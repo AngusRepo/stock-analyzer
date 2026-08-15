@@ -45,7 +45,7 @@ from services.alpha_framework import (
 from services.active_model_policy import ACTIVE_ALPHA_MODELS, gnn_return_history_lookback
 from services.ensemble_v2 import ENSEMBLE_V2_SEMANTIC_VERSION, build_formal_model_input_contract
 from services.fundamental_quality import score_fundamental_quality
-from services.market_segment_policy import normalize_segment, policy_for_segment
+from services.market_segment_policy import is_explicitly_enabled, normalize_segment, policy_for_segment
 from services.evidence_contracts import (
     ALLOCATOR_EV_ARTIFACT_CONTRACT_VERSION,
     ALLOCATOR_EV_FEATURE_SEMANTIC_VERSION,
@@ -192,7 +192,11 @@ def _enrich_stock_meta_with_segment_policy(stock_meta: dict | None) -> dict:
     lane = str(meta.get("recommendation_lane") or "").strip() or policy.recommendation_lane
     if not policy.eligible_for_execution:
         lane = policy.recommendation_lane
-    eligible_for_execution = bool(policy.eligible_for_execution and lane == "tradable")
+    eligible_for_execution = bool(
+        policy.eligible_for_execution
+        and lane == "tradable"
+        and is_explicitly_enabled(meta.get("eligible_for_pending_buy"))
+    )
 
     meta.update({
         "market_segment": segment,
@@ -1789,7 +1793,7 @@ def filter_and_score_recommendations(
         stock_meta = _enrich_stock_meta_with_segment_policy(raw_stock_meta)
         recommendation_lane = stock_meta.get("recommendation_lane") or "tradable"
         market_segment = stock_meta.get("market_segment") or "UNKNOWN"
-        eligible_for_pending_buy = bool(stock_meta.get("eligible_for_pending_buy", recommendation_lane == "tradable"))
+        eligible_for_pending_buy = is_explicitly_enabled(stock_meta.get("eligible_for_pending_buy"))
         env_for_stock = payload.get("market_env", {}) if payload else {}
 
         # Extract latest indicator values from payload. If the indicator table
@@ -2115,7 +2119,7 @@ def _signal_tier(sig: Optional[str]) -> float:
 def _can_promote_ranking_candidate(row: dict, ranking_config: dict, alpha_policy: dict | None = None) -> bool:
     """Avoid turning a negative/weak ML expectation into a BUY label."""
     lane = row.get("recommendation_lane") or "tradable"
-    if row.get("eligible_for_pending_buy") is False or lane != "tradable":
+    if not is_explicitly_enabled(row.get("eligible_for_pending_buy")) or lane != "tradable":
         row["promotion_blocked_reason"] = "research_only_or_not_tradable"
         return False
     expected_return, expected_return_source = _row_expected_return_with_source(row, alpha_policy=alpha_policy)
@@ -2631,7 +2635,7 @@ def _observational_potential_buy_evidence(
 ) -> dict[str, Any] | None:
     """Expose formal upstream BUY while Fusion is unavailable, without making it executable."""
     lane = str(row.get("recommendation_lane") or "tradable").strip().lower()
-    if lane != "tradable" or row.get("eligible_for_pending_buy") is False:
+    if lane != "tradable" or not is_explicitly_enabled(row.get("eligible_for_pending_buy")):
         return None
     score_components = row.get("score_components")
     if isinstance(score_components, str):
@@ -4925,7 +4929,7 @@ def update_recommendations_in_d1(
                 r.get("market_segment") or "UNKNOWN",
                 r.get("recommendation_lane") or "tradable",
                 1 if r.get("eligible_for_ml", True) else 0,
-                1 if r.get("eligible_for_pending_buy", True) else 0,
+                1 if is_explicitly_enabled(r.get("eligible_for_pending_buy")) else 0,
                 json.dumps(alpha_context, ensure_ascii=False) if alpha_context is not None else None,
                 json.dumps(alpha_allocation, ensure_ascii=False) if alpha_allocation is not None else None,
                 json.dumps(ml_vote_summary, ensure_ascii=False) if ml_vote_summary is not None else None,

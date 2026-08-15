@@ -5,6 +5,8 @@ import json
 from datetime import datetime, timezone
 from typing import Any
 
+from services.market_segment_policy import is_explicitly_enabled
+
 
 DECISION_ENGINE_SCHEMA_VERSION = "decision-engine-v1"
 
@@ -144,7 +146,7 @@ def _primary_candidate_decision(inputs: dict[str, Any]) -> tuple[str, list[str]]
     reasons: list[str] = []
 
     lane = str(screener.get("recommendation_lane") or "research_only")
-    eligible_for_pending_buy = bool(screener.get("eligible_for_pending_buy", lane == "tradable"))
+    eligible_for_pending_buy = is_explicitly_enabled(screener.get("eligible_for_pending_buy"))
     if lane != "tradable" or not eligible_for_pending_buy:
         reasons.append(f"non_tradable_lane:{lane}")
         return "watchlist", reasons

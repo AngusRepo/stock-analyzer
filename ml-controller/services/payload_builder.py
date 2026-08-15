@@ -19,7 +19,7 @@ from services import d1_client, kv_client
 from services.adaptive import resolve_adaptive_params_for_regime
 from services.active_model_policy import daily_price_history_limit, daily_price_lookback_years
 from services.market_regime_state import resolve_market_regime_contract
-from services.market_segment_policy import policy_for_segment
+from services.market_segment_policy import is_explicitly_enabled, policy_for_segment
 from services.model_lifecycle_policy import resolve_degraded_dampening
 
 logger = logging.getLogger(__name__)
@@ -1002,7 +1002,11 @@ def build_stock_meta_with_segment(
     lane = str(stock.get("recommendation_lane") or "").strip() or policy.recommendation_lane
     if not policy.eligible_for_execution:
         lane = policy.recommendation_lane
-    eligible_for_execution = policy.eligible_for_execution and lane == "tradable"
+    eligible_for_execution = (
+        policy.eligible_for_execution
+        and lane == "tradable"
+        and is_explicitly_enabled(stock.get("eligible_for_pending_buy"))
+    )
     return {
         **base_meta,
         "market_segment": segment,
@@ -1034,12 +1038,18 @@ def build_ml_universe(active_stocks: list[dict], screener_recs: list[dict]) -> l
             continue
         segment = infer_market_segment(stock)
         lane = _lane_for_segment(segment, stock)
+        eligible_for_execution = (
+            lane == "tradable"
+            and segment in {"LISTED", "OTC"}
+            and is_explicitly_enabled(stock.get("eligible_for_pending_buy"))
+        )
         by_symbol[symbol] = {
             **stock,
             "market_segment": segment,
             "recommendation_lane": lane,
             "eligible_for_ml": True,
-            "eligible_for_execution": lane == "tradable",
+            "eligible_for_execution": eligible_for_execution,
+            "eligible_for_pending_buy": eligible_for_execution,
         }
 
     for rec in screener_recs or []:
@@ -1064,7 +1074,11 @@ def build_ml_universe(active_stocks: list[dict], screener_recs: list[dict]) -> l
         else:
             segment = _normalize_market(segment)
             lane = lane or ("tradable" if segment in {"LISTED", "OTC"} else "research_only")
-        eligible_for_execution = lane == "tradable" and segment in {"LISTED", "OTC"}
+        eligible_for_execution = (
+            lane == "tradable"
+            and segment in {"LISTED", "OTC"}
+            and is_explicitly_enabled(rec.get("eligible_for_pending_buy"))
+        )
         by_symbol[symbol] = {
             "id": stock_id,
             "symbol": symbol,
@@ -1076,6 +1090,7 @@ def build_ml_universe(active_stocks: list[dict], screener_recs: list[dict]) -> l
             "recommendation_lane": lane,
             "eligible_for_ml": True,
             "eligible_for_execution": eligible_for_execution,
+            "eligible_for_pending_buy": eligible_for_execution,
         }
 
     return sorted(by_symbol.values(), key=lambda row: int(row.get("id") or 0))

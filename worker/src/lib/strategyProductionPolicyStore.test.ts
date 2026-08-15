@@ -4,6 +4,7 @@ import { buildStrategyProductionContributionFirewall } from './strategyProductio
 import {
   STRATEGY_PRODUCTION_POLICY_POINT_IN_TIME_SQL,
   deserializeStrategyProductionPolicyRow,
+  hasPositiveStrategyAllocation,
   sha256StrategyProductionPolicyPayload,
   resolveRuntimeStrategyWeights,
 } from './strategyProductionPolicyStore'
@@ -69,14 +70,20 @@ async function main(): Promise<void> {
   )
 
   const missingPolicy = resolveRuntimeStrategyWeights(['active-b', 'active-a'], null)
-  assert.deepEqual(missingPolicy.weights, { 'active-a': 0, 'active-b': 0 })
+  assert.deepEqual(missingPolicy.allocationWeights, { 'active-a': 0, 'active-b': 0 })
+  assert.deepEqual(missingPolicy.evaluationWeights, { 'active-a': 1, 'active-b': 1 })
   assert.equal(missingPolicy.source, 'production_policy_unavailable_abstain')
   assert.equal(missingPolicy.abstained, true)
+  assert.equal(hasPositiveStrategyAllocation(['active-a'], missingPolicy.allocationWeights), false)
 
   const authoritativePolicy = resolveRuntimeStrategyWeights(['active-a', 'active-b'], loaded)
-  assert.deepEqual(authoritativePolicy.weights, { 'active-a': 1, 'active-b': 0 })
+  assert.deepEqual(authoritativePolicy.allocationWeights, { 'active-a': 1, 'active-b': 0 })
+  assert.deepEqual(authoritativePolicy.evaluationWeights, { 'active-a': 1, 'active-b': 1 })
   assert.equal(authoritativePolicy.source, 'authoritative_production_policy')
   assert.equal(authoritativePolicy.abstained, false)
+  assert.equal(hasPositiveStrategyAllocation(['active-b'], authoritativePolicy.allocationWeights), false)
+  assert.equal(hasPositiveStrategyAllocation(['active-b', 'active-a'], authoritativePolicy.allocationWeights), true)
+  assert.equal(hasPositiveStrategyAllocation([], authoritativePolicy.allocationWeights), false)
 
   assert.doesNotMatch(STRATEGY_PRODUCTION_POLICY_POINT_IN_TIME_SQL, /knowledge_cutoff_date\s*<=\s*\?/)
 

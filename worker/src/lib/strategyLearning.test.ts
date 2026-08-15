@@ -914,6 +914,77 @@ runStrategyCandidateDailyFeatureHydrationTest().catch((error) => {
 {
   const spec = { ...DEFAULT_STRATEGY_SPECS[0], status: 'active' as const }
   const summary = {
+    version: 'strategy-learning-v5',
+    date: '2026-08-14',
+    spec_source: 'registry',
+    specs: [{
+      ...spec,
+      learning: strategyLearningEvidence({
+        decisions: 900,
+        matched: 200,
+        match_rate: 0.222222,
+        rolling_decisions: 90,
+        rolling_matched: 20,
+        rolling_match_rate: 0.222222,
+        samples: 450,
+        hit_rate: 0.5106,
+        avg_return_pct: 0.005824,
+        max_drawdown_pct: -0.04,
+        rolling_samples: 45,
+        rolling_hit_rate: 0.5106,
+        rolling_avg_return_pct: 0.005824,
+        rolling_max_drawdown_pct: -0.04,
+        rolling_reward_dates: 13,
+        rolling_date_return_mean: 0.005824,
+        rolling_date_return_lcb90: 0.001,
+      }),
+    }],
+    promotion_gate: [],
+    replacement_gate: strategyReplacementGateEvidence(),
+    policy_state_preview: {} as any,
+  } satisfies StrategyLearningSummary
+  const gate = evaluateStrategyPromotionGate(summary)
+  assert(gate[0].decision === 'active_monitor', 'retained incumbent must remain active-monitor')
+  assert(gate[0].allocation_eligible === true, '48% incumbent hysteresis must retain positive allocation eligibility')
+  assert(gate[0].missing_evidence.length === 0, 'candidate-only 52% hit-rate deficit must not block incumbent retention')
+  const policy = buildStrategyAdaptivePolicyState({ ...summary, promotion_gate: gate })
+  assert(policy.strategy_weights[spec.id] === 1, 'retained incumbent must receive the available production allocation')
+}
+
+{
+  const spec = { ...DEFAULT_STRATEGY_SPECS[0], status: 'active' as const }
+  const summary = {
+    version: 'strategy-learning-v5',
+    date: '2026-08-14',
+    spec_source: 'registry',
+    specs: [{
+      ...spec,
+      learning: strategyLearningEvidence({
+        rolling_decisions: 90,
+        rolling_matched: 20,
+        rolling_match_rate: 0.222222,
+        rolling_samples: 45,
+        rolling_hit_rate: 0.5106,
+        rolling_avg_return_pct: 0.004508,
+        rolling_max_drawdown_pct: -0.04,
+        rolling_reward_dates: 9,
+        rolling_date_return_mean: 0.004508,
+        rolling_date_return_lcb90: 0.001,
+      }),
+    }],
+    promotion_gate: [],
+    replacement_gate: strategyReplacementGateEvidence(),
+    policy_state_preview: {} as any,
+  } satisfies StrategyLearningSummary
+  const gate = evaluateStrategyPromotionGate(summary)
+  assert(gate[0].decision === 'active_monitor', 'immature incumbent must remain observable')
+  assert(gate[0].allocation_eligible === false, 'incumbent with fewer than 10 mature dates must remain allocation-ineligible')
+  assert(gate[0].missing_evidence.includes('mature_dates_lt_10'), 'retention gate must expose the mature-date deficit')
+}
+
+{
+  const spec = { ...DEFAULT_STRATEGY_SPECS[0], status: 'active' as const }
+  const summary = {
     version: 'strategy-learning-v4',
     date: '2026-08-15',
     spec_source: 'registry',

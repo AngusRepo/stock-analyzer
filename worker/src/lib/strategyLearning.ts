@@ -170,6 +170,7 @@ export interface StrategyPromotionThresholds {
   min_match_rate: number
   min_reward_samples: number
   min_hit_rate: number
+  active_retention_min_hit_rate: number
   min_avg_cost_net_return_exclusive: number
   min_max_drawdown: number
   min_mature_dates: number
@@ -361,6 +362,7 @@ const PROMOTION_MIN_DECISIONS = 30
 const PROMOTION_MIN_MATCH_RATE = 0.02
 const PROMOTION_MIN_SAMPLES = 30
 const PROMOTION_MIN_HIT_RATE = 0.52
+const ACTIVE_RETENTION_MIN_HIT_RATE = 0.48
 const PROMOTION_MIN_AVG_RETURN = 0
 const PROMOTION_MIN_MAX_DRAWDOWN = -0.08
 const PROMOTION_MIN_MATURE_DATES = 10
@@ -370,6 +372,7 @@ export const STRATEGY_PROMOTION_THRESHOLDS = Object.freeze({
   min_match_rate: PROMOTION_MIN_MATCH_RATE,
   min_reward_samples: PROMOTION_MIN_SAMPLES,
   min_hit_rate: PROMOTION_MIN_HIT_RATE,
+  active_retention_min_hit_rate: ACTIVE_RETENTION_MIN_HIT_RATE,
   min_avg_cost_net_return_exclusive: PROMOTION_MIN_AVG_RETURN,
   min_max_drawdown: PROMOTION_MIN_MAX_DRAWDOWN,
   min_mature_dates: PROMOTION_MIN_MATURE_DATES,
@@ -378,7 +381,6 @@ export const STRATEGY_PROMOTION_THRESHOLDS = Object.freeze({
 const STRATEGY_LEARNING_ROLLING_SESSIONS = 60
 const STRATEGY_DAILY_RECONCILIATION_CALENDAR_DAYS = 21
 const ACTIVE_COOLDOWN_MIN_SAMPLES = 30
-const ACTIVE_COOLDOWN_HIT_RATE = 0.48
 const STRATEGY_LEARNING_DEFAULT_CANDIDATE_LIMIT = 2000
 const STRATEGY_LEARNING_D1_BATCH_SIZE = 250
 
@@ -2338,16 +2340,28 @@ export function evaluateStrategyPromotionGate(summary: StrategyLearningSummary):
     const activeMonitor = spec.status === 'active'
     const activeEvidenceReady = evidence.samples >= ACTIVE_COOLDOWN_MIN_SAMPLES
       && evidence.mature_dates >= PROMOTION_MIN_MATURE_DATES
+    const activeRetentionMissing = activeMonitor
+      ? [
+        evidence.samples < ACTIVE_COOLDOWN_MIN_SAMPLES ? `samples_lt_${ACTIVE_COOLDOWN_MIN_SAMPLES}` : null,
+        evidence.mature_dates < PROMOTION_MIN_MATURE_DATES ? `mature_dates_lt_${PROMOTION_MIN_MATURE_DATES}` : null,
+        evidence.hit_rate == null ? 'active_hit_rate_missing' : null,
+        evidence.avg_return_pct == null ? 'active_avg_return_missing' : null,
+        evidence.max_drawdown_pct == null ? 'active_max_drawdown_missing' : null,
+        evidence.date_return_lcb90 == null ? 'active_date_return_lcb90_missing' : null,
+      ].filter((reason): reason is string => reason != null)
+      : []
     const activeCooldownReasons = activeMonitor && activeEvidenceReady
       ? [
-        evidence.hit_rate != null && evidence.hit_rate < ACTIVE_COOLDOWN_HIT_RATE ? `active_hit_rate_lt_${ACTIVE_COOLDOWN_HIT_RATE}` : null,
+        evidence.hit_rate != null && evidence.hit_rate < ACTIVE_RETENTION_MIN_HIT_RATE ? `active_hit_rate_lt_${ACTIVE_RETENTION_MIN_HIT_RATE}` : null,
         evidence.avg_return_pct != null && evidence.avg_return_pct <= 0 ? 'active_avg_return_not_positive' : null,
         evidence.max_drawdown_pct != null && evidence.max_drawdown_pct < PROMOTION_MIN_MAX_DRAWDOWN ? `active_max_drawdown_lt_${PROMOTION_MIN_MAX_DRAWDOWN}` : null,
         evidence.date_return_lcb90 != null && evidence.date_return_lcb90 <= PROMOTION_MIN_DATE_RETURN_LCB90 ? 'active_date_return_lcb90_not_positive' : null,
       ].filter((reason): reason is string => reason != null)
       : []
     const activeCooldown = activeMonitor && activeCooldownReasons.length > 0
-    const allocationEligible = activeMonitor && !activeCooldown && missing.length === 0
+    const allocationEligible = activeMonitor
+      && activeRetentionMissing.length === 0
+      && !activeCooldown
     const ready = !activeMonitor && missing.length === 0
     const currentStage = stageForStrategyStatus(spec.status)
     const recommendedNextStatus = activeCooldown
@@ -2392,8 +2406,8 @@ export function evaluateStrategyPromotionGate(summary: StrategyLearningSummary):
       allocation_eligible: allocationEligible,
       missing_evidence: activeCooldown
         ? activeCooldownReasons
-        : activeMonitor && allocationEligible
-          ? []
+        : activeMonitor
+          ? activeRetentionMissing
           : missing,
       thresholds: STRATEGY_PROMOTION_THRESHOLDS,
       evidence,

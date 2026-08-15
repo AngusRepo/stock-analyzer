@@ -383,7 +383,7 @@ export async function loadEntryModelReplayCasesFromD1(
     'dr.date >= ?',
     'dr.date <= ?',
     "COALESCE(dr.recommendation_lane, 'tradable') = 'tradable'",
-    'COALESCE(dr.eligible_for_pending_buy, 1) = 1',
+    'dr.eligible_for_pending_buy = 1',
   ]
   const binds: unknown[] = [startDate, endDate]
   if (symbols.length > 0) {

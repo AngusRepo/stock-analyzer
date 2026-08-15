@@ -13,6 +13,7 @@ import type { Bindings } from '../types'
 import { databaseForDataDomain } from './dataDomainRegistry'
 import { getTradingConfig, type TradingConfig } from './tradingConfig'
 import { buildScreenerSeedRow, buildScreenerSeedUpsertSql } from './screenerSeedQuality'
+import { hasPositiveStrategyAllocation } from './strategyProductionPolicyStore'
 import { computeAndStoreIndicators, computeTechnicalIndicators } from './technicalIndicators'
 import { loadMarketDataFromD1, type CanonicalScreenerChip, type CanonicalScreenerPrice } from './screenerMarketData'
 import {
@@ -3692,6 +3693,7 @@ export async function runBottomUpScreener(env: Bindings, runDate?: string | null
   let passesLayer1TopUpQualityGuard: ((candidate: any) => boolean) | null = null
   let runtimeStrategySpecs: StrategySpec[] = []
   let runtimeStrategyRegime: string | null = null
+  let runtimeStrategyAllocationWeights: Record<string, number> = {}
   let selectionEvidence: {
     references: SelectionReferenceRowV1[]
     matrix: StrategyLabelMatrixRowV4[]
@@ -3736,14 +3738,15 @@ export async function runBottomUpScreener(env: Bindings, runDate?: string | null
     const productionPolicyState = productionPolicyLoad.value
     const strategyOofReturns = strategyOofLoad.returns
     const runtimeStrategyWeightResolution = resolveRuntimeStrategyWeights(strategyIds, productionPolicyState)
-    const activeStrategyWeights = runtimeStrategyWeightResolution.weights
+    const evaluationStrategyWeights = runtimeStrategyWeightResolution.evaluationWeights
+    runtimeStrategyAllocationWeights = runtimeStrategyWeightResolution.allocationWeights
     const strategySimilarityPayload = buildStrategySimilarityEvidencePayload(
       strategySourceUniverse as any,
       specs,
       {
         regime: currentRegime,
         evidenceMode: monthlyRevenue.evidenceMode,
-        strategyWeights: activeStrategyWeights,
+        strategyWeights: evaluationStrategyWeights,
       },
       strategyOofReturns,
     )
@@ -3789,7 +3792,7 @@ export async function runBottomUpScreener(env: Bindings, runDate?: string | null
         coarseMlQueueSize: coarseQueueSize,
         regime: currentRegime,
         evidenceMode: monthlyRevenue.evidenceMode,
-        strategyWeights: activeStrategyWeights,
+        strategyWeights: evaluationStrategyWeights,
         strategyPortfolioMetrics: strategyPortfolioMetrics.metrics,
         strategyPortfolioMetricSource: strategyPortfolioMetrics.telemetry.source,
         strategySimilarityGraphEvidence: strategySimilarityEvidence.evidence,
@@ -3876,6 +3879,9 @@ export async function runBottomUpScreener(env: Bindings, runDate?: string | null
       promoted_route_calibration_run_id: promotedRouteCalibration?.runId ?? null,
       promoted_route_calibration_load_error: promotedRouteCalibrationLoad.error,
       effective_strategy_weight_source: runtimeStrategyWeightResolution.source,
+      positive_allocation_strategy_count: Object.values(runtimeStrategyAllocationWeights)
+        .filter((weight) => weight > 0).length,
+      evaluation_strategy_count: Object.keys(evaluationStrategyWeights).length,
       strategy_production_policy_abstained: runtimeStrategyWeightResolution.abstained,
       strategy_production_policy_id: productionPolicyState?.state.policy_id ?? null,
       strategy_production_policy_version: productionPolicyState?.state.version ?? null,
@@ -5308,6 +5314,10 @@ export async function runBottomUpScreener(env: Bindings, runDate?: string | null
         ...(breeze2WatchPoint ? [breeze2WatchPoint] : []),
         ...(sc.strategy_watch_points ?? []),
       ]))
+      const eligibleForPendingBuy = hasPositiveStrategyAllocation(
+        sc.strategy_pool_ids ?? [],
+        runtimeStrategyAllocationWeights,
+      )
       return env.DB.prepare(buildScreenerSeedUpsertSql()).bind(
         endDate, seed.row.symbol, seed.row.symbol, seed.row.name, seed.row.sector,
         seed.rank, seed.row.seedScore,
@@ -5317,7 +5327,7 @@ export async function runBottomUpScreener(env: Bindings, runDate?: string | null
         tpexSymbolSet.has(c.symbol) ? 'OTC' : 'LISTED',
         'tradable',
         1,
-        1,
+        eligibleForPendingBuy ? 1 : 0,
       )
     })
     const emergingRecBatch = emergingResearchCandidates.map((c, i) => {

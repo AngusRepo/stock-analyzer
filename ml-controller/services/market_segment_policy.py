@@ -105,5 +105,12 @@ def policy_for_segment(segment: Any) -> SegmentMlPolicy:
     return SEGMENT_POLICIES[normalize_segment(segment)]
 
 
+def is_explicitly_enabled(value: Any) -> bool:
+    """Accept only a persisted boolean true or numeric 1 execution grant."""
+    if value is True:
+        return True
+    return not isinstance(value, bool) and isinstance(value, (int, float)) and value == 1
+
+
 def governance_snapshot() -> dict[str, dict[str, Any]]:
     return {key: policy.to_dict() for key, policy in SEGMENT_POLICIES.items()}

@@ -47,3 +47,23 @@ def test_segment_policy_declares_independent_calibration_scopes():
     assert emerging.calibration_scope != listed.calibration_scope
     assert emerging.model_pool_scope == "emerging_research_pool"
     assert emerging.eligible_for_execution is False
+
+
+def test_listed_segment_requires_explicit_pending_buy_grant_across_train_serve_boundary():
+    granted_payload = build_stock_meta_with_segment(
+        base_meta={},
+        stock={
+            "market": "LISTED",
+            "recommendation_lane": "tradable",
+            "eligible_for_pending_buy": 1,
+        },
+    )
+    blocked_payload = build_stock_meta_with_segment(
+        base_meta={},
+        stock={"market": "LISTED", "recommendation_lane": "tradable"},
+    )
+
+    assert granted_payload["eligible_for_pending_buy"] is True
+    assert _enrich_stock_meta_with_segment_policy(granted_payload)["eligible_for_pending_buy"] is True
+    assert blocked_payload["eligible_for_pending_buy"] is False
+    assert _enrich_stock_meta_with_segment_policy(blocked_payload)["eligible_for_pending_buy"] is False

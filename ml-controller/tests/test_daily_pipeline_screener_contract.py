@@ -124,6 +124,30 @@ def test_build_ml_universe_uses_tradable_screener_rows_without_watchlist():
     assert universe[0]["source"] == "daily_recommendations"
     assert universe[0]["recommendation_lane"] == "tradable"
     assert universe[0]["eligible_for_execution"] is True
+    assert universe[0]["eligible_for_pending_buy"] is True
+
+
+def test_build_ml_universe_never_upgrades_zero_or_missing_pending_buy_eligibility():
+    from services.payload_builder import build_ml_universe  # noqa: E402
+
+    universe = build_ml_universe([], [
+        {
+            "stock_id": 1,
+            "symbol": "2330",
+            "market_segment": "LISTED",
+            "recommendation_lane": "tradable",
+            "eligible_for_pending_buy": 0,
+        },
+        {
+            "stock_id": 2,
+            "symbol": "2317",
+            "market_segment": "LISTED",
+            "recommendation_lane": "tradable",
+        },
+    ])
+
+    assert [row["eligible_for_pending_buy"] for row in universe] == [False, False]
+    assert [row["eligible_for_execution"] for row in universe] == [False, False]
 
 
 def test_l2_timesfm_replaces_tree_gate_without_split_target():

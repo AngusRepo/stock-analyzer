@@ -750,13 +750,7 @@ async def node_load_inputs(state: PipelineStateV2) -> dict:
                 END
             ) AS recommendation_lane,
             COALESCE(dr.eligible_for_ml, 1) AS eligible_for_ml,
-            COALESCE(
-                dr.eligible_for_pending_buy,
-                CASE
-                    WHEN upper(COALESCE(st.market, '')) IN ('TWSE', 'TSE', 'LISTED', 'OTC', 'TPEX') THEN 1
-                    ELSE 0
-                END
-            ) AS eligible_for_pending_buy,
+            COALESCE(dr.eligible_for_pending_buy, 0) AS eligible_for_pending_buy,
             dr.alpha_context AS alpha_context,
             dr.alpha_allocation AS alpha_allocation,
             dr.ml_vote_summary AS ml_vote_summary,

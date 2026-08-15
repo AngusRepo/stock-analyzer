@@ -666,12 +666,14 @@ export type StrategyPromotionGate = {
   requires_wei_approval: boolean
   l3_requires_wei_approval?: boolean
   production_effect: false
+  allocation_eligible: boolean
   missing_evidence: string[]
   thresholds: {
     min_evaluable_decisions: number
     min_match_rate: number
     min_reward_samples: number
     min_hit_rate: number
+    active_retention_min_hit_rate: number
     min_avg_cost_net_return_exclusive: number
     min_max_drawdown: number
     min_mature_dates: number

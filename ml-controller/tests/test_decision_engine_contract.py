@@ -3,6 +3,8 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
+import pytest
+
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from services.decision_engine_contract import (  # noqa: E402
@@ -150,6 +152,20 @@ def test_emerging_or_non_tradable_lane_stays_watchlist_even_with_good_ml():
     assert decision["decision"] == "watchlist"
     assert "non_tradable_lane:emerging_watchlist" in decision["blocking_reasons"]
     assert decision["allowed_next_steps"] == ["watchlist_review"]
+
+
+@pytest.mark.parametrize("eligibility", [None, 0, False])
+def test_tradable_lane_requires_explicit_pending_buy_grant(eligibility):
+    inputs = _inputs()
+    if eligibility is None:
+        inputs["screener"].pop("eligible_for_pending_buy", None)
+    else:
+        inputs["screener"]["eligible_for_pending_buy"] = eligibility
+
+    decision = build_decision_engine_decision(inputs)
+
+    assert decision["decision"] == "watchlist"
+    assert "non_tradable_lane:tradable" in decision["blocking_reasons"]
 
 
 def test_validator_rejects_tampered_decision_with_external_owner_or_write_authority():

@@ -61,9 +61,20 @@ export interface LoadedStrategyProductionPolicy {
   created_at: string
 }
 export type RuntimeStrategyWeightResolution = {
-  weights: Record<string, number>
+  allocationWeights: Record<string, number>
+  evaluationWeights: Record<string, number>
   source: 'authoritative_production_policy' | 'production_policy_unavailable_abstain'
   abstained: boolean
+}
+
+export function hasPositiveStrategyAllocation(
+  strategyIds: readonly string[] | null | undefined,
+  allocationWeights: Readonly<Record<string, number>>,
+): boolean {
+  return (strategyIds ?? []).some((strategyId) => {
+    const value = Number(allocationWeights[String(strategyId).trim()])
+    return Number.isFinite(value) && value > 0
+  })
 }
 
 export function resolveRuntimeStrategyWeights(
@@ -71,18 +82,21 @@ export function resolveRuntimeStrategyWeights(
   policy: LoadedStrategyProductionPolicy | null | undefined,
 ): RuntimeStrategyWeightResolution {
   const ids = [...new Set(strategyIds.map((id) => String(id).trim()).filter(Boolean))].sort()
+  const evaluationWeights = Object.fromEntries(ids.map((id) => [id, 1]))
   if (!policy) {
     return {
-      weights: Object.fromEntries(ids.map((id) => [id, 0])),
+      allocationWeights: Object.fromEntries(ids.map((id) => [id, 0])),
+      evaluationWeights,
       source: 'production_policy_unavailable_abstain',
       abstained: true,
     }
   }
   return {
-    weights: Object.fromEntries(ids.map((id) => {
+    allocationWeights: Object.fromEntries(ids.map((id) => {
       const value = Number(policy.state.strategy_weights[id])
       return [id, Number.isFinite(value) && value > 0 ? value : 0]
     })),
+    evaluationWeights,
     source: 'authoritative_production_policy',
     abstained: false,
   }

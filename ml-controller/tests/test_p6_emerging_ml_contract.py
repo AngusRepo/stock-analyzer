@@ -55,7 +55,14 @@ def _score_seed_inputs() -> dict:
 
 
 def test_emerging_daily_recommendation_enters_ml_universe_but_not_execution():
-    active = [{"id": 1, "symbol": "2330", "name": "TSMC", "market": "TWSE", "sector": "semi"}]
+    active = [{
+        "id": 1,
+        "symbol": "2330",
+        "name": "TSMC",
+        "market": "TWSE",
+        "sector": "semi",
+        "eligible_for_pending_buy": 1,
+    }]
     screener_recs = [
         {
             "stock_id": 2,

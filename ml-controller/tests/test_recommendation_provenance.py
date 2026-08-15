@@ -12,7 +12,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from services import recommendation_service  # noqa: E402
 from services import trading_config_loader  # noqa: E402
 from services.recommendation_service import (  # noqa: E402
-    apply_sparse_tangent_allocation,
+    apply_sparse_tangent_allocation as _apply_sparse_tangent_allocation,
     build_reason,
     build_core_family_vote,
     build_ml_vote_summary_data,
@@ -21,6 +21,19 @@ from services.recommendation_service import (  # noqa: E402
     update_recommendations_in_d1,
     write_predictions_to_d1,
 )
+
+
+def apply_sparse_tangent_allocation(rows, *args, **kwargs):
+    """Keep legacy allocator unit fixtures explicit about their execution grant."""
+    eligible_rows = [
+        {
+            **row,
+            "recommendation_lane": row.get("recommendation_lane", "tradable"),
+            "eligible_for_pending_buy": row.get("eligible_for_pending_buy", 1),
+        }
+        for row in rows
+    ]
+    return _apply_sparse_tangent_allocation(eligible_rows, *args, **kwargs)
 
 
 def test_ensemble_v2_toggle_does_not_hide_trading_config_failure(monkeypatch):
@@ -425,6 +438,27 @@ def test_emerging_segment_overrides_dirty_tradable_lane(monkeypatch):
     assert row["eligible_for_pending_buy"] is False
     assert row["has_buy_signal"] == 0
     assert "research_only:emerging_not_for_auto_trade" in row["watch_points"]
+
+
+def test_tradable_recommendation_preserves_zero_pending_buy_eligibility(monkeypatch):
+    monkeypatch.setattr(recommendation_service, "_is_use_ensemble_v2", lambda: True)
+    rec = {**_screener_rec("2330"), "eligible_for_pending_buy": 0}
+    payload = _payload("2330")
+    payload["stock_meta"] = {
+        "market_segment": "LISTED",
+        "recommendation_lane": "tradable",
+        "eligible_for_pending_buy": 0,
+    }
+
+    final, _sell_count = filter_and_score_recommendations(
+        [rec],
+        {"2330": _prediction_with_ensemble_v2()},
+        [payload],
+    )
+
+    assert final[0]["recommendation_lane"] == "tradable"
+    assert final[0]["eligible_for_pending_buy"] is False
+    assert final[0]["has_buy_signal"] == 0
 
 
 def test_ensemble_v2_zero_forecast_does_not_fall_back_to_legacy_negative(monkeypatch):

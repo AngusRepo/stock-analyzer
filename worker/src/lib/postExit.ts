@@ -190,7 +190,7 @@ export async function onPostExit(
              dr.eligible_for_ml, dr.eligible_for_pending_buy, dr.alpha_allocation
         FROM daily_recommendations dr
        WHERE dr.date = ?
-         AND COALESCE(dr.eligible_for_pending_buy, 1) = 1
+         AND dr.eligible_for_pending_buy = 1
          AND COALESCE(dr.has_buy_signal, 0) = 1
          AND json_valid(dr.alpha_allocation)
          AND json_extract(dr.alpha_allocation, '$.selected') = 1

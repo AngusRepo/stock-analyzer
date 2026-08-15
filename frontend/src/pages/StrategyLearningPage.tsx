@@ -109,6 +109,10 @@ function StrategyGateDetails({
   }
   const thresholds = gate.thresholds
   const evidence = gate.evidence
+  const isActiveIncumbent = gate.strategy_status === 'active'
+  const hitRateThreshold = isActiveIncumbent
+    ? thresholds.active_retention_min_hit_rate
+    : thresholds.min_hit_rate
   const isS12ExecutionOwner = row.learning.reward_owner === 's12_execution_replay_v3_net'
   const decision = paired?.decision ?? null
   const policy = replacementGate?.policy ?? null
@@ -118,7 +122,7 @@ function StrategyGateDetails({
     { label: 'Evaluable decisions', value: String(evidence.decisions), target: `>= ${thresholds.min_evaluable_decisions}`, pass: evidence.decisions >= thresholds.min_evaluable_decisions },
     { label: 'Setup match rate', value: pct(evidence.match_rate), target: `>= ${pct(thresholds.min_match_rate)}`, pass: evidence.match_rate == null ? null : evidence.match_rate >= thresholds.min_match_rate },
     { label: 'Reward samples', value: String(evidence.samples), target: `>= ${thresholds.min_reward_samples}`, pass: evidence.samples >= thresholds.min_reward_samples },
-    { label: 'Hit rate', value: pct(evidence.hit_rate), target: `>= ${pct(thresholds.min_hit_rate)}`, pass: evidence.hit_rate == null ? null : evidence.hit_rate >= thresholds.min_hit_rate },
+    { label: 'Hit rate', value: pct(evidence.hit_rate), target: `>= ${pct(hitRateThreshold)}`, pass: evidence.hit_rate == null ? null : evidence.hit_rate >= hitRateThreshold },
     { label: 'Cost-net average', value: rewardMetric(evidence.avg_return_pct, row.learning.reward_unit), target: '> 0', pass: evidence.avg_return_pct == null ? null : evidence.avg_return_pct > thresholds.min_avg_cost_net_return_exclusive },
     { label: 'Date LCB90', value: rewardMetric(evidence.date_return_lcb90, row.learning.reward_unit), target: '> 0', pass: evidence.date_return_lcb90 == null ? null : evidence.date_return_lcb90 > thresholds.min_date_return_lcb90_exclusive },
     { label: 'Max drawdown', value: rewardMetric(evidence.max_drawdown_pct, row.learning.reward_unit), target: `>= ${rewardMetric(thresholds.min_max_drawdown, row.learning.reward_unit)}`, pass: mddPass },
@@ -157,8 +161,8 @@ function StrategyGateDetails({
     <div className="mt-3 space-y-3 border-t border-slate-800 pt-3 text-[11px]">
       <div>
         <div className="mb-1 flex items-center justify-between gap-2">
-          <span className="font-semibold text-slate-300">Candidate readiness thresholds</span>
-          <span className="text-slate-500">rolling evidence</span>
+          <span className="font-semibold text-slate-300">{isActiveIncumbent ? 'Active incumbent retention thresholds' : 'Candidate promotion thresholds'}</span>
+          <span className="text-slate-500">{isActiveIncumbent ? `retain >= ${pct(thresholds.active_retention_min_hit_rate)}` : `promote >= ${pct(thresholds.min_hit_rate)}`} · rolling evidence</span>
         </div>
         <div className="grid gap-x-4 md:grid-cols-2">
           {readiness.map((item) => <GateMetric key={item.label} {...item} />)}
@@ -167,7 +171,7 @@ function StrategyGateDetails({
 
       <div className="border-t border-slate-800 pt-3">
         <div className="mb-1 flex flex-wrap items-center justify-between gap-2">
-          <span className="font-semibold text-slate-300">Atomic replacement thresholds</span>
+          <span className="font-semibold text-slate-300">Atomic V7 replacement thresholds</span>
           <span className="font-mono text-slate-500">{run ? `Evidence as of ${run.as_of_date} · mature paired dates ${run.sample_dates} · ${run.status === 'shadow' ? 'shadow（不影響 production）' : run.status}` : replacementGate?.evidence_status ?? 'evidence not ready'}</span>
         </div>
         {isS12ExecutionOwner ? (
@@ -192,7 +196,7 @@ function StrategyGateDetails({
           </>
         ) : policy ? (
           <p className="leading-5 text-slate-500">
-            No paired proposal for this strategy in the latest V6 run. Required: {policy.min_paired_dates}+ paired dates, residual LCB90 &gt; 0, cost-net mean &gt; 0, MDD within {pct(policy.max_drawdown_degradation)}, turnover within {pct(policy.max_turnover_increase)}, and correlation &le; {policy.max_duplicate_return_correlation.toFixed(2)} unless risk improves. Cross-family replacement also requires every full-portfolio gate to pass.
+            No paired proposal for this strategy in the latest Atomic V7 run. Required: {policy.min_paired_dates}+ paired dates, residual LCB90 &gt; 0, cost-net mean &gt; 0, MDD within {pct(policy.max_drawdown_degradation)}, turnover within {pct(policy.max_turnover_increase)}, and correlation &le; {policy.max_duplicate_return_correlation.toFixed(2)} unless risk improves. Cross-family replacement also requires every full-portfolio gate to pass.
           </p>
         ) : (
           <p className="text-slate-500">Replacement policy evidence is unavailable.</p>
@@ -282,6 +286,7 @@ function StrategyLedgerGroup({
           const gate = gateById.get(`${row.id}:${row.version}`)
           const hasWeight = Object.prototype.hasOwnProperty.call(policyWeights, row.id)
           const weight = Number(policyWeights[row.id] ?? 0)
+          const executionEligible = gate?.allocation_eligible === true && Number.isFinite(weight) && weight > 0
           const paired = bestReplacementDecision(row, replacementGate)
           const evidence = gate?.missing_evidence ?? []
           const evidenceLabels = gate ? (evidence.length ? evidence : ['evidence ready']) : ['reward ledger unavailable']
@@ -334,10 +339,17 @@ function StrategyLedgerGroup({
 
               <div className="grid gap-3">
                 <div className="rounded-xl border border-slate-800 bg-slate-900/35 p-3">
-                  <div className="flex justify-between gap-3 text-xs text-slate-500"><span>Policy weight</span><span className="font-mono text-slate-300">{hasWeight ? pct(weight) : 'Not allocated'}</span></div>
+                  <div className="flex flex-wrap items-center justify-between gap-2 text-xs text-slate-500">
+                    <span>Execution allocation</span>
+                    <div className="flex items-center gap-2">
+                      <Badge variant="outline" className={executionEligible ? statusClass('active') : statusClass('not_ready')}>{executionEligible ? 'Execution eligible' : 'Evaluation only'}</Badge>
+                      <span className="font-mono text-slate-300">{hasWeight ? pct(weight) : 'Not allocated'}</span>
+                    </div>
+                  </div>
                   <div className="mt-2 h-2 overflow-hidden rounded-full bg-slate-800">
                     <div className="h-full bg-emerald-300" style={{ width: `${hasWeight ? Math.max(0, Math.min(100, weight * 100)) : 0}%` }} />
                   </div>
+                  <p className="mt-2 text-xs text-slate-500">Weight 只控制 pending-buy 執行；0% 仍保留在同一推薦與 evaluation stream。</p>
                 </div>
 
                 <div className="rounded-xl border border-slate-800 bg-slate-900/35 p-3">
@@ -414,7 +426,14 @@ export default function StrategyLearningPage() {
   const activeRows = useMemo(() => visibleRows.filter((row) => row.status === 'active'), [visibleRows])
   const learningRows = useMemo(() => visibleRows.filter((row) => row.status === 'research' || row.status === 'shadow' || row.status === 'candidate'), [visibleRows])
   const gateById = useMemo(() => new Map((learning?.promotion_gate ?? []).map((gate) => [`${gate.strategy_id}:${gate.strategy_version}`, gate])), [learning])
-  const totals = useMemo(() => visibleRows.reduce((acc, row) => ({ decisions: acc.decisions + row.learning.decisions, samples: acc.samples + row.learning.samples }), { decisions: 0, samples: 0 }), [visibleRows])
+  const executionEligibleCount = useMemo(() => {
+    const weights = learning?.policy_state_preview?.strategy_weights ?? {}
+    return (learning?.promotion_gate ?? []).filter((gate) => (
+      gate.allocation_eligible === true
+      && Number.isFinite(Number(weights[gate.strategy_id]))
+      && Number(weights[gate.strategy_id]) > 0
+    )).length
+  }, [learning])
   const policy = learning?.policy_state_preview
 
   async function runAction(key: string, action: () => Promise<unknown>, success: string) {
@@ -450,11 +469,17 @@ export default function StrategyLearningPage() {
           <div className="flex items-center gap-2 rounded-2xl border border-slate-800 bg-slate-950/70 p-5 text-sm text-slate-400"><Loader2 className="h-4 w-4 animate-spin" /> Loading reward ledger...</div>
         ) : (
           <>
-            <section className="grid gap-2 sm:grid-cols-2 xl:grid-cols-4">
-              <div className="rounded-xl border border-slate-800 bg-slate-950/70 p-4"><div className="text-xs text-slate-500">Active strategies</div><div className="mt-2 font-mono text-2xl text-emerald-200">{activeRows.length}</div></div>
-              <div className="rounded-xl border border-slate-800 bg-slate-950/70 p-4"><div className="text-xs text-slate-500">Learning + shadowing</div><div className="mt-2 font-mono text-2xl text-cyan-200">{learningRows.length}</div></div>
-              <div className="rounded-xl border border-slate-800 bg-slate-950/70 p-4"><div className="text-xs text-slate-500">Lifetime decision / reward rows</div><div className="mt-2 font-mono text-2xl text-slate-100">{learning ? totals.decisions : '-'} / {learning ? totals.samples : '-'}</div></div>
-              <div className="rounded-xl border border-emerald-400/20 bg-emerald-400/[0.06] p-4"><div className="text-xs text-slate-400">Adaptive policy</div><div className="mt-2 flex items-center gap-2 font-mono text-lg text-emerald-100"><ShieldCheck className="h-4 w-4" /> {policy?.status ?? 'unavailable'}</div><div className="mt-1 text-xs text-slate-500">{learning ? policy?.evidence.production_effect ? `production active · owner ${policy.evidence.threshold_owner}` : 'shadow only · no production effect' : 'ledger unavailable'}</div></div>
+            <section className="grid gap-2 sm:grid-cols-2 xl:grid-cols-5">
+              <div className="rounded-xl border border-slate-800 bg-slate-950/70 p-4"><div className="text-xs text-slate-500">Active specs</div><div className="mt-2 font-mono text-2xl text-emerald-200">{activeRows.length}</div><div className="mt-1 text-xs text-slate-500">registry status，不等於可下單數</div></div>
+              <div className="rounded-xl border border-emerald-400/20 bg-emerald-400/[0.06] p-4"><div className="text-xs text-slate-400">Execution eligible</div><div className="mt-2 font-mono text-2xl text-emerald-100">{learning ? executionEligibleCount : '-'}</div><div className="mt-1 text-xs text-slate-500">allocation &gt; 0 且 gate 明確通過</div></div>
+              <div className="rounded-xl border border-slate-800 bg-slate-950/70 p-4"><div className="text-xs text-slate-500">Single evaluation stream</div><div className="mt-2 font-mono text-2xl text-cyan-200">{visibleRows.length}</div><div className="mt-1 text-xs text-slate-500">0% allocation 仍持續學習</div></div>
+              <div className="rounded-xl border border-slate-800 bg-slate-950/70 p-4"><div className="text-xs text-slate-500">Promotion / retention</div><div className="mt-2 font-mono text-xl text-slate-100">52% / 48%</div><div className="mt-1 text-xs text-slate-500">candidate / active incumbent</div></div>
+              <div className="rounded-xl border border-slate-800 bg-slate-950/70 p-4"><div className="text-xs text-slate-500">Policy preview</div><div className="mt-2 flex items-center gap-2 font-mono text-lg text-slate-100"><ShieldCheck className="h-4 w-4" /> {policy?.status ?? 'unavailable'}</div><div className="mt-1 text-xs text-slate-500">read-only preview；execution 仍需 pending-buy eligibility</div></div>
+            </section>
+
+            <section className="rounded-2xl border border-cyan-400/20 bg-cyan-400/[0.05] px-4 py-3 text-sm leading-6 text-cyan-50">
+              <span className="font-semibold">Single recommendation stream：</span>
+              所有非 retired strategy 都可持續選股、推薦與累積 evidence；只有 execution allocation 與 <code className="rounded bg-slate-950/70 px-1.5 py-0.5 text-xs">eligible_for_pending_buy</code> 控制 pending-buy，不新增成熟度 lane。
             </section>
 
             {error && <div className="rounded-xl border border-rose-400/25 bg-rose-400/[0.06] p-4 text-sm text-rose-200">{error}</div>}
@@ -464,7 +489,7 @@ export default function StrategyLearningPage() {
             <div className="grid gap-4 xl:grid-cols-2 xl:items-start">
               <StrategyLedgerGroup
                 title="Active strategies"
-                description="目前 production active 的策略。Reward ledger 用來監控已上線策略，不在此頁改變 production allocation。"
+                description="目前 registry status=active 的 specs；其中只有通過 48% incumbent retention 與其餘風險門檻者取得 execution allocation，其他策略仍留在同一 evaluation stream。"
                 rows={activeRows}
                 gateById={gateById}
                 policyWeights={policy?.strategy_weights ?? {}}
@@ -474,7 +499,7 @@ export default function StrategyLearningPage() {
               />
               <StrategyLedgerGroup
                 title="Learning + shadowing strategies"
-                description="Research、shadow 與 candidate 策略集中在這裡，依 reward samples 與 evidence gap 決定是否繼續學習。"
+                description="Research、shadow 與 candidate 與 active specs 共用同一推薦/evaluation stream；52% hit-rate 只管 candidate promotion，不阻斷 evidence 累積。"
                 rows={learningRows}
                 gateById={gateById}
                 policyWeights={policy?.strategy_weights ?? {}}
@@ -485,7 +510,7 @@ export default function StrategyLearningPage() {
             </div>
 
             <footer className="flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-slate-800 bg-slate-950/70 p-4">
-              <p className="max-w-2xl text-xs leading-5 text-slate-500">Decision log → verify/paper outcome → reward ledger → Adaptive strategy policy。自動效果只限策略權重與門檻；不直接下單，也不改模型 vote。</p>
+              <p className="max-w-2xl text-xs leading-5 text-slate-500">Decision log → verify/paper outcome → reward ledger → allocation policy。選股與 evaluation 不受 allocation=0 影響；所有 pending-buy 入口都必須取得明確 execution eligibility。</p>
               <div className="flex flex-wrap gap-2">
                 <Button size="sm" variant="outline" disabled={busy != null} onClick={() => void runAction('decision log', () => strategyLabApi.materializeDecisionLog({ limit: 500, dry_run: false, confirm: true }), 'Decision log 已更新。')}>Materialize decision log</Button>
                 <Button size="sm" variant="outline" disabled={busy != null} onClick={() => void runAction('reward ledger', () => strategyLabApi.refreshStrategyRewardLedger({ limit: 5000, dry_run: false, confirm: true }), 'Reward ledger 已更新。')}>Refresh reward ledger</Button>

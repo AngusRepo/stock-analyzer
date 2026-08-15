@@ -43,7 +43,7 @@ export function dataDomainControlRevisionTriggerName(
 
 // Wrangler remote migrations cannot reliably split CREATE TRIGGER bodies.
 // Migrations own the table/seed; the protected admin task installs these
-// idempotently through the D1 binding exec() path after schema rebuilds.
+// idempotently as single static prepared statements after schema rebuilds.
 export function dataDomainControlRevisionTriggerStatements(): string[] {
   return DATA_DOMAIN_CONTROL_TABLES.flatMap((table) => (
     DATA_DOMAIN_CONTROL_REVISION_OPERATIONS.map((operation) => `
@@ -71,7 +71,7 @@ export async function installDataDomainControlRevisionTriggers(
     `).bind(table).run()
   }
   const statements = dataDomainControlRevisionTriggerStatements()
-  for (const statement of statements) await db.exec(statement)
+  for (const statement of statements) await db.prepare(statement).run()
 
   const expectedNames = statements.map((statement) => {
     const match = statement.match(/CREATE TRIGGER IF NOT EXISTS\s+(\S+)/i)

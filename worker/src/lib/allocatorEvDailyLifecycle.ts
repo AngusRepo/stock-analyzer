@@ -1,6 +1,8 @@
 import type { Bindings } from '../types'
 import { L4_ALPHA_EV_CONTRACT } from './evidenceContracts'
+import { historicalLearningLineageDecision } from './historicalLearningLineageGuard'
 import { nextTwTradingDate } from './schedulerPolicy'
+import type { SchedulerRunLogEntry } from './schedulerRunLogger'
 
 export type AllocatorEvLifecycleState =
   | 'lineage_ready'
@@ -57,6 +59,120 @@ export interface AllocatorEvMaturityCoverage {
   incompatibleOrLegacyL4Rows: number
   latestSnapshotDate: string | null
   state: 'awaiting_first_point_in_time_l4' | 'accumulating_point_in_time_l4'
+}
+
+type AllocatorEvSchedulerEvidence = Pick<
+  SchedulerRunLogEntry,
+  'status' | 'summary' | 'run_id'
+>
+
+export interface AllocatorEvRecoveryUpstreamGate {
+  ready: boolean
+  blockers: string[]
+  rootStatus: string
+  pipelineStatus: string
+  mlPredictStatus: string
+  rootRunId: string | null
+  pipelineRunId: string | null
+  mlPredictRunId: string | null
+}
+
+function schedulerEvidenceText(value: unknown): string {
+  return typeof value === 'string' ? value.trim() : ''
+}
+
+/**
+ * Fail closed unless the canonical pipeline and ML child evidence describe the
+ * same successful run and explicitly prove complete active-model coverage.
+ *
+ * The root chain can already be terminal-error because a downstream callback
+ * failed; that is exactly what this watchdog is allowed to recover. A root
+ * error owned by the pipeline callback itself is upstream failure and must not
+ * be bypassed.
+ */
+export function evaluateAllocatorEvRecoveryUpstreamGate(input: {
+  root: AllocatorEvSchedulerEvidence | null
+  pipeline: AllocatorEvSchedulerEvidence | null
+  mlPredict: AllocatorEvSchedulerEvidence | null
+}): AllocatorEvRecoveryUpstreamGate {
+  const rootStatus = schedulerEvidenceText(input.root?.status) || 'missing'
+  const pipelineStatus = schedulerEvidenceText(input.pipeline?.status) || 'missing'
+  const mlPredictStatus = schedulerEvidenceText(input.mlPredict?.status) || 'missing'
+  const rootRunId = schedulerEvidenceText(input.root?.run_id) || null
+  const pipelineRunId = schedulerEvidenceText(input.pipeline?.run_id) || null
+  const mlPredictRunId = schedulerEvidenceText(input.mlPredict?.run_id) || null
+  const rootSummary = schedulerEvidenceText(input.root?.summary)
+  const mlPredictSummary = schedulerEvidenceText(input.mlPredict?.summary)
+  const blockers: string[] = []
+
+  if (pipelineStatus !== 'success') {
+    blockers.push(`pipeline_terminal_not_success:${pipelineStatus}`)
+  }
+  if (mlPredictStatus !== 'success') {
+    blockers.push(`ml_predict_terminal_not_success:${mlPredictStatus}`)
+  }
+  if (!rootRunId) blockers.push('root_run_id_missing')
+  if (!pipelineRunId) blockers.push('pipeline_run_id_missing')
+  if (!mlPredictRunId) blockers.push('ml_predict_run_id_missing')
+  if (rootRunId && pipelineRunId && rootRunId !== pipelineRunId) {
+    blockers.push(`root_pipeline_run_id_mismatch:root=${rootRunId}:pipeline=${pipelineRunId}`)
+  }
+  if (rootRunId && mlPredictRunId && rootRunId !== mlPredictRunId) {
+    blockers.push(`root_ml_run_id_mismatch:root=${rootRunId}:ml=${mlPredictRunId}`)
+  }
+  if (pipelineRunId && mlPredictRunId && pipelineRunId !== mlPredictRunId) {
+    blockers.push(`pipeline_ml_run_id_mismatch:pipeline=${pipelineRunId}:ml=${mlPredictRunId}`)
+  }
+  if (!/(?:^|\s)active_model_closure=true(?:\s|$)/i.test(mlPredictSummary)) {
+    blockers.push('active_model_closure_not_proven')
+  }
+
+  const rootStoppedAtPipeline = /^root chain stopped at pipeline callback:/i.test(rootSummary)
+  const downstreamRootRecovery = /^(?:root chain stopped in post-pipeline callback chain:|root chain stopped at allocator snapshot callback:)/i.test(rootSummary)
+  if (['error', 'skipped'].includes(rootStatus) && rootStoppedAtPipeline) {
+    blockers.push(`root_pipeline_terminal_error:${rootStatus}`)
+  } else if (!['running', 'triggered', 'success'].includes(rootStatus)
+    && !(['error', 'skipped'].includes(rootStatus) && downstreamRootRecovery)) {
+    blockers.push(`root_terminal_not_recoverable:${rootStatus}`)
+  }
+
+  return {
+    ready: blockers.length === 0,
+    blockers,
+    rootStatus,
+    pipelineStatus,
+    mlPredictStatus,
+    rootRunId,
+    pipelineRunId,
+    mlPredictRunId,
+  }
+}
+
+async function readAllocatorEvSchedulerEvidence(
+  kv: KVNamespace,
+  task: 'evening-chain' | 'pipeline' | 'ml-predict',
+  businessDate: string,
+): Promise<AllocatorEvSchedulerEvidence | null> {
+  try {
+    const value = await kv.get(`scheduler:run:${task}:${businessDate}`, 'json')
+    return value && typeof value === 'object'
+      ? value as AllocatorEvSchedulerEvidence
+      : null
+  } catch {
+    return null
+  }
+}
+
+export async function inspectAllocatorEvRecoveryUpstreamGate(
+  kv: KVNamespace,
+  businessDate: string,
+): Promise<AllocatorEvRecoveryUpstreamGate> {
+  const [root, pipeline, mlPredict] = await Promise.all([
+    readAllocatorEvSchedulerEvidence(kv, 'evening-chain', businessDate),
+    readAllocatorEvSchedulerEvidence(kv, 'pipeline', businessDate),
+    readAllocatorEvSchedulerEvidence(kv, 'ml-predict', businessDate),
+  ])
+  return evaluateAllocatorEvRecoveryUpstreamGate({ root, pipeline, mlPredict })
 }
 
 function validDate(value: string): boolean {
@@ -214,16 +330,57 @@ export async function recordAllocatorEvLifecycle(
     upstreamRunId?: string | null
     lastError?: string | null
     incrementAttempt?: boolean
+    expectedLifecycleRunId?: string | null
+    stageAuthority?: {
+      businessDate?: string
+      stage: string
+      canonicalRunId: string
+      leaseOwner?: string | null
+    }
   },
-): Promise<void> {
+): Promise<boolean> {
   if (!validDate(input.businessDate)) throw new Error(`invalid allocator EV lifecycle date: ${input.businessDate}`)
   const closed = input.state === 'replay_complete' ? new Date().toISOString() : null
-  await db.prepare(`
+  const authority = input.stageAuthority
+  const authoritySql = authority
+    ? `EXISTS (
+        SELECT 1 FROM pipeline_stage_runs authority
+         WHERE authority.business_date=?
+           AND authority.stage=?
+           AND authority.canonical_run_id=?
+           AND (? IS NULL OR (
+             authority.status='running'
+             AND authority.lease_owner=?
+             AND authority.lease_expires_at >= CURRENT_TIMESTAMP
+           ))
+      )`
+    : '1=1'
+  const authorityBindings = authority
+    ? [
+        authority.businessDate ?? input.businessDate,
+        authority.stage,
+        authority.canonicalRunId,
+        authority.leaseOwner ?? null,
+        authority.leaseOwner ?? null,
+      ]
+    : []
+  const expectedLifecycleRunId = input.expectedLifecycleRunId?.trim() || null
+  const updated = await db.prepare(`
     INSERT INTO allocator_ev_daily_lifecycle (
       business_date, state, native_lineage_rows, snapshot_run_id,
       snapshot_rows, replay_rows, replay_maturity_as_of_date,
       upstream_run_id, attempt_count, last_error, created_at, updated_at, closed_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, ?)
+    )
+    SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, ?
+     WHERE ${authoritySql}
+       AND (
+         ? IS NULL
+         OR EXISTS (
+           SELECT 1 FROM allocator_ev_daily_lifecycle current_lifecycle
+            WHERE current_lifecycle.business_date=?
+              AND current_lifecycle.upstream_run_id=?
+         )
+       )
     ON CONFLICT(business_date) DO UPDATE SET
       state = CASE
         WHEN allocator_ev_daily_lifecycle.state = 'replay_complete' THEN allocator_ev_daily_lifecycle.state
@@ -251,6 +408,9 @@ export async function recordAllocatorEvLifecycle(
       last_error = excluded.last_error,
       updated_at = CURRENT_TIMESTAMP,
       closed_at = COALESCE(excluded.closed_at, allocator_ev_daily_lifecycle.closed_at)
+    WHERE ${authoritySql}
+      AND (? IS NULL OR allocator_ev_daily_lifecycle.upstream_run_id=?)
+    RETURNING business_date
   `).bind(
     input.businessDate,
     input.state,
@@ -263,7 +423,15 @@ export async function recordAllocatorEvLifecycle(
     input.incrementAttempt ? 1 : 0,
     input.lastError ?? null,
     closed,
-  ).run()
+    ...authorityBindings,
+    expectedLifecycleRunId,
+    input.businessDate,
+    expectedLifecycleRunId,
+    ...authorityBindings,
+    expectedLifecycleRunId,
+    expectedLifecycleRunId,
+  ).first<{ business_date: string }>()
+  return Boolean(updated)
 }
 
 export async function inspectAllocatorSnapshotClosure(
@@ -509,11 +677,18 @@ export async function runAllocatorEvLifecycleWatchdog(
     && [
       'verify_triggered', 'replay_pending_maturity', 'replay_enqueued', 'replay_complete',
     ].includes(lifecycle.state)
-  if (snapshot.ready && postPipelineReached) {
-    const { markPipelineStage } = await import('./pipelineStageLease')
-    await markPipelineStage(env.DB, {
+  if (
+    snapshot.ready
+    && postPipelineReached
+    && lifecycle?.upstream_run_id
+    && postPipelineStage?.canonical_run_id === lifecycle.upstream_run_id
+    && postPipelineStage?.status === 'waiting'
+  ) {
+    const { markPipelineStageFenced } = await import('./pipelineStageLease')
+    await markPipelineStageFenced(env.DB, {
       businessDate,
       stage: 'post_pipeline_chain',
+      canonicalRunId: lifecycle.upstream_run_id,
       status: 'success',
       error: null,
     })
@@ -527,6 +702,17 @@ export async function runAllocatorEvLifecycleWatchdog(
   if (snapshot.ready && lifecycle?.state === 'replay_pending_maturity' && matureReplayMissingRows > 0) {
     const maturityAsOfDate = twTodayDate()
     const runId = `allocator-ev-lifecycle-mature-replay-${businessDate}-${Date.now()}`
+    const replayRecorded = await recordAllocatorEvLifecycle(env.DB, {
+      businessDate,
+      state: 'replay_enqueued',
+      replayMaturityAsOfDate: maturityAsOfDate,
+      upstreamRunId: lifecycle.upstream_run_id,
+      expectedLifecycleRunId: lifecycle.upstream_run_id,
+      incrementAttempt: true,
+    })
+    if (!replayRecorded) {
+      return `allocator EV lifecycle stale replay enqueue ignored date=${businessDate} run_id=${runId}`
+    }
     await env.UPDATE_QUEUE.send({
       type: 's12_replay_backfill_chunk',
       cursor: 0,
@@ -535,14 +721,8 @@ export async function runAllocatorEvLifecycleWatchdog(
       replayScope: 'fusion_snapshot_missing',
       maturityAsOfDate,
       statusRunDate: businessDate,
+      lifecycleRunId: lifecycle.upstream_run_id,
     } as any)
-    await recordAllocatorEvLifecycle(env.DB, {
-      businessDate,
-      state: 'replay_enqueued',
-      replayMaturityAsOfDate: maturityAsOfDate,
-      upstreamRunId: runId,
-      incrementAttempt: true,
-    })
     return `allocator EV lifecycle replay enqueued date=${businessDate} mature_missing=${matureReplayMissingRows} as_of=${maturityAsOfDate}; ${maturitySummary(maturity)}`
   }
   if (snapshot.ready && (
@@ -553,16 +733,36 @@ export async function runAllocatorEvLifecycleWatchdog(
   }
   if (snapshot.ready && lifecycle?.state === 'verify_triggered') {
     const verifyStage = await env.DB.prepare(`
-      SELECT status
+      SELECT status, canonical_run_id, cursor_key
         FROM pipeline_stage_runs
        WHERE business_date=? AND stage='verify_v2'
-    `).bind(businessDate).first<{ status?: string | null }>()
+    `).bind(businessDate).first<{
+      status?: string | null
+      canonical_run_id?: string | null
+      cursor_key?: string | null
+    }>()
     if (verifyStage?.status === 'success') {
+      const lifecycleRunId = String(lifecycle.upstream_run_id ?? '').trim()
+      const verifyCanonicalRunId = String(verifyStage.canonical_run_id ?? '').trim()
+      const verifyCursorKey = String(verifyStage.cursor_key ?? '').trim()
+      if (!lifecycleRunId || verifyCanonicalRunId !== lifecycleRunId || !verifyCursorKey) {
+        return `allocator EV lifecycle post-verify authority mismatch date=${businessDate} `
+          + `lifecycle_run_id=${lifecycleRunId || 'missing'} `
+          + `verify_canonical_run_id=${verifyCanonicalRunId || 'missing'} `
+          + `verify_cursor_key=${verifyCursorKey || 'missing'}`
+      }
       const { queuePostVerifyStage } = await import('./pipelineStageLease')
       const continuation = await queuePostVerifyStage(env, {
         businessDate,
-        runId: lifecycle.upstream_run_id || `allocator-ev-lifecycle-watchdog-${businessDate}`,
+        runId: lifecycleRunId,
         resumeWaiting: true,
+        expectedCanonicalRunId: lifecycleRunId,
+        authority: {
+          stage: 'verify_v2',
+          canonicalRunId: lifecycleRunId,
+          status: 'success',
+          cursorKey: verifyCursorKey,
+        },
         attempt: Math.max(1, Number(lifecycle.attempt_count ?? 0) + 1),
       })
       return continuation.queued
@@ -570,8 +770,13 @@ export async function runAllocatorEvLifecycleWatchdog(
         : `allocator EV lifecycle post-verify current date=${businessDate} status=${continuation.status}`
     }
   }
-  if (!snapshot.ready && businessDate < twTodayDate()) {
+  const repairBoundary = !snapshot.ready
+    ? await historicalLearningLineageDecision(env.DB, env.KV, 'evening-chain', businessDate)
+    : null
+  if (!snapshot.ready && repairBoundary && !repairBoundary.allowed) {
     return `skipped: allocator EV native snapshot repair window closed for historical date=${businessDate} `
+      + `reason=${repairBoundary.reason} next_session=${repairBoundary.nextSessionDate ?? 'missing'} `
+      + `next_open_utc=${repairBoundary.nextSessionOpenUtc ?? 'missing'} `
       + `recommendations=${snapshot.recommendationRows} lineage=${snapshot.nativeLineageRows} `
       + `run_native=${snapshot.runNativeLineageRows} reconstructed=${snapshot.reconstructedLineageRows} `
       + `rejected=${snapshot.rejectedLineageRows} expected=${snapshot.expectedRows} published=${snapshot.publishedRows} actual=${snapshot.actualRows} `
@@ -579,12 +784,26 @@ export async function runAllocatorEvLifecycleWatchdog(
       + `${maturitySummary(maturity)}`
   }
 
+  const upstreamGate = await inspectAllocatorEvRecoveryUpstreamGate(env.KV, businessDate)
+  if (!upstreamGate.ready) {
+    return `skipped: allocator EV lifecycle upstream closure not proven date=${businessDate} `
+      + `root=${upstreamGate.rootStatus} pipeline=${upstreamGate.pipelineStatus} `
+      + `ml_predict=${upstreamGate.mlPredictStatus} `
+      + `root_run_id=${upstreamGate.rootRunId ?? 'missing'} `
+      + `pipeline_run_id=${upstreamGate.pipelineRunId ?? 'missing'} `
+      + `ml_run_id=${upstreamGate.mlPredictRunId ?? 'missing'} `
+      + `blockers=${upstreamGate.blockers.join(',')}`
+  }
+
   const { queuePostPipelineStage } = await import('./pipelineStageLease')
+  const recoveryRunId = upstreamGate.pipelineRunId
+  if (!recoveryRunId) throw new Error('allocator_ev_recovery_gate_invariant:pipeline_run_id_missing')
   const recoveryAttempt = Math.max(1, Number(postPipelineStage?.attempt_count ?? 1))
   const continuation = await queuePostPipelineStage(env, {
     businessDate,
-    runId: lifecycle?.upstream_run_id || `allocator-ev-lifecycle-watchdog-${businessDate}`,
+    runId: recoveryRunId,
     resumeWaiting: true,
+    expectedCanonicalRunId: recoveryRunId,
     attempt: recoveryAttempt,
   })
   return continuation.queued

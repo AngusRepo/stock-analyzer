@@ -307,12 +307,6 @@ def predict_stock(req: PredictRequest) -> dict:
         print(f"[Anomaly] {req.symbol} soft penalty, score={anomaly_score:.3f}")
 
     meta_bundle = None
-    try:
-        from .stacking import load_meta_learner
-
-        meta_bundle = load_meta_learner(stock_id)
-    except Exception as e:
-        print(f"[Stacking] load failed: {e}")
 
     bandit_multipliers = None
     market_risk = float((req.market_env or {}).get("risk_score") or 50) / 100.0
@@ -501,6 +495,7 @@ _BATCH_CHALLENGER_MODEL_ERRORS_KEY = "__batch_challenger_model_errors"
 _BATCH_MODEL_POOL_KEY = "__batch_model_pool"
 _BATCH_IC_WEIGHTS_KEY = "__batch_ic_weights"
 _BATCH_RANK_STACKER_KEY = "__batch_rank_stacker"
+_BATCH_RANK_STACKER_AUDIT_KEY = "__batch_rank_stacker_audit"
 _BATCH_RUNTIME_OPTION_KEYS = {
     _BATCH_FEATURE_RANK_SCORES_KEY,
     _BATCH_FEATURE_MODEL_ERRORS_KEY,
@@ -510,6 +505,7 @@ _BATCH_RUNTIME_OPTION_KEYS = {
     _BATCH_MODEL_POOL_KEY,
     _BATCH_IC_WEIGHTS_KEY,
     _BATCH_RANK_STACKER_KEY,
+    _BATCH_RANK_STACKER_AUDIT_KEY,
 }
 _MODEL_POOL_ALLOWED_STATUSES = {"active", "degraded", "challenger", "retired"}
 
@@ -876,21 +872,23 @@ def predict_stock_v2(req: PredictRequest) -> dict:
     )
 
     rank_stacker_info = {"applied": False, "reason": "not_loaded"}
-    try:
-        from .stacking import apply_rank_stacker, load_meta_learner
+    frozen_rank_audit = runtime_options.get(_BATCH_RANK_STACKER_AUDIT_KEY)
+    if isinstance(frozen_rank_audit, dict):
+        rank_stacker_info = {**frozen_rank_audit, "applied": False}
+    elif _BATCH_RANK_STACKER_KEY not in runtime_options:
+        rank_stacker_info = {"applied": False, "reason": "not_in_frozen_governance"}
+    else:
+        try:
+            from .stacking import apply_rank_stacker
 
-        rank_bundle = (
-            runtime_options.get(_BATCH_RANK_STACKER_KEY)
-            if _BATCH_RANK_STACKER_KEY in runtime_options
-            else load_meta_learner(0)
-        )
-        rank_scores, effective_ic_weights, rank_stacker_info = apply_rank_stacker(
-            rank_scores,
-            rank_bundle,
-            effective_ic_weights,
-        )
-    except Exception as e:
-        rank_stacker_info = {"applied": False, "reason": f"load_or_apply_failed: {e}"}
+            rank_bundle = runtime_options.get(_BATCH_RANK_STACKER_KEY)
+            rank_scores, effective_ic_weights, rank_stacker_info = apply_rank_stacker(
+                rank_scores,
+                rank_bundle,
+                effective_ic_weights,
+            )
+        except Exception as e:
+            rank_stacker_info = {"applied": False, "reason": f"load_or_apply_failed: {e}"}
 
     rank_thresholds = _rank_signal_thresholds(req.trading_config, req.adaptive_params)
     public_runtime_options = {

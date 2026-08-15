@@ -294,6 +294,7 @@ export interface S12HistoricalReplayRunOptions {
   signedEligibleRepair?: boolean
   persistUnavailableOutcomes?: boolean
   loadBarsTimeoutMs?: number
+  expectedLifecycleRunId?: string | null
 }
 
 export interface S12HistoricalReplayRunSummary {
@@ -1081,21 +1082,32 @@ export function s12ReplayEligibleLineageBlockers(outcome: S12ReplayOutcome): str
 export async function persistS12ReplayOutcome(
   db: D1Database,
   outcome: S12ReplayOutcome,
-): Promise<void> {
+  options: { expectedLifecycleRunId?: string | null } = {},
+): Promise<boolean> {
   const lineageBlockers = s12ReplayEligibleLineageBlockers(outcome)
   if (lineageBlockers.length > 0) {
     throw new Error(`s12_replay_eligible_lineage_invalid:${outcome.symbol}:${outcome.signal_date}:${lineageBlockers.join('|')}`)
   }
   const rawSetupId = outcome.setup_id ?? `${outcome.symbol}:${outcome.trade_date}:${outcome.status_reason}`
   const setupId = `${outcome.signal_date}:${rawSetupId}`
-  await db.prepare(`
+  const expectedLifecycleRunId = options.expectedLifecycleRunId?.trim() || null
+  const lifecycleAuthoritySql = `(
+    ? IS NULL OR EXISTS (
+      SELECT 1 FROM allocator_ev_daily_lifecycle lifecycle_authority
+       WHERE lifecycle_authority.business_date=?
+         AND lifecycle_authority.upstream_run_id=?
+    )
+  )`
+  const result = await db.prepare(`
     INSERT INTO s12_replay_trade_outcomes (
       symbol, market, signal_date, trade_date, assessment_state, setup_id,
       entry_ms, exit_ms, entry_price, stop_price,
       target1_price, target2_price, target3_price, exit_price,
       pnl_pct, trade_pnl_r, max_favorable_pct, max_adverse_pct,
       bars_to_exit, exit_reason, sample_eligible, source, detail_json
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    )
+    SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+     WHERE ${lifecycleAuthoritySql}
     ON CONFLICT(symbol, signal_date, setup_id) WHERE signal_date IS NOT NULL DO UPDATE SET
       market=excluded.market,
       trade_date=excluded.trade_date,
@@ -1117,6 +1129,7 @@ export async function persistS12ReplayOutcome(
       sample_eligible=excluded.sample_eligible,
       source=excluded.source,
       detail_json=excluded.detail_json
+    WHERE ${lifecycleAuthoritySql}
   `).bind(
     outcome.symbol,
     outcome.market,
@@ -1141,7 +1154,15 @@ export async function persistS12ReplayOutcome(
     outcome.sample_eligible ? 1 : 0,
     outcome.source,
     JSON.stringify(outcome),
+    expectedLifecycleRunId,
+    outcome.signal_date,
+    expectedLifecycleRunId,
+    expectedLifecycleRunId,
+    outcome.signal_date,
+    expectedLifecycleRunId,
   ).run()
+  const persisted = Number(result.meta?.changes ?? 0) === 1
+  if (!persisted) return false
   if (!isS12ReplayRetryableUnavailableReason(outcome.status_reason)) {
     await db.prepare(`
       DELETE FROM s12_replay_trade_outcomes
@@ -1153,8 +1174,17 @@ export async function persistS12ReplayOutcome(
            'missing_intraday_bars', 'missing_entry_session_bars', 'missing_post_entry_bars',
            'missing_five_session_lifecycle_bars', 'unresolved_execution_date'
          )
-    `).bind(outcome.signal_date, outcome.symbol, setupId).run()
+         AND ${lifecycleAuthoritySql}
+    `).bind(
+      outcome.signal_date,
+      outcome.symbol,
+      setupId,
+      expectedLifecycleRunId,
+      outcome.signal_date,
+      expectedLifecycleRunId,
+    ).run()
   }
+  return true
 }
 
 export async function runS12HistoricalReplayForDate(
@@ -1183,6 +1213,18 @@ export async function runS12HistoricalReplayForDate(
   let unresolvedExecutionDates = 0
   let terminalDataSourceReason: string | null = null
   const executionDates = new Set<string>()
+  const persistOutcome = async (outcome: S12ReplayOutcome): Promise<void> => {
+    if (options.persist === false) return
+    const accepted = await persistS12ReplayOutcome(env.DB, outcome, {
+      expectedLifecycleRunId: options.expectedLifecycleRunId,
+    })
+    if (!accepted) {
+      throw new Error(
+        `s12_replay_lifecycle_authority_lost:${signalDate}:${options.expectedLifecycleRunId ?? 'missing'}`,
+      )
+    }
+    persisted += 1
+  }
   for (const row of selected) {
     attempted += 1
     const executionDate = await (
@@ -1210,10 +1252,7 @@ export async function runS12HistoricalReplayForDate(
           },
         }, 'skipped', 'unresolved_execution_date', null)
         outcomes.push(outcome)
-        if (options.persist !== false) {
-          await persistS12ReplayOutcome(env.DB, outcome)
-          persisted += 1
-        }
+        await persistOutcome(outcome)
       }
       continue
     }
@@ -1269,10 +1308,7 @@ export async function runS12HistoricalReplayForDate(
           },
         }, 'skipped', 'missing_five_session_lifecycle_bars', null)
         outcomes.push(outcome)
-        if (options.persist !== false) {
-          await persistS12ReplayOutcome(env.DB, outcome)
-          persisted += 1
-        }
+        await persistOutcome(outcome)
       }
       continue
     }
@@ -1336,10 +1372,7 @@ export async function runS12HistoricalReplayForDate(
       }
     }
     outcomes.push(outcome)
-    if (options.persist !== false) {
-      await persistS12ReplayOutcome(env.DB, outcome)
-      persisted += 1
-    }
+    await persistOutcome(outcome)
   }
   return {
     schema_version: 's12-historical-replay-run-summary-v3',

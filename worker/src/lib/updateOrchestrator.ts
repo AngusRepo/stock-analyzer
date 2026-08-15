@@ -3088,50 +3088,94 @@ export async function processUpdateBatch(
       return
     }
     const {
+      PIPELINE_STAGE_LEASE_SECONDS,
       claimPipelineStage,
       enqueuePipelineStage,
-      markPipelineStage,
+      isPipelineStageLeaseLost,
+      markPipelineStageFenced,
+      startPipelineStageLeaseHeartbeat,
     } = await import('./pipelineStageLease')
-    await enqueuePipelineStage(env.DB, {
+    const state = await enqueuePipelineStage(env.DB, {
       businessDate: triggerTime,
       stage: 'post_pipeline_chain',
       runId,
       resumeWaiting: true,
+      expectedCanonicalRunId: runId,
     })
+    if (state.row.canonical_run_id !== runId) {
+      console.warn(`[Queue] stale post-pipeline message ignored date=${triggerTime} incoming=${runId} canonical=${state.row.canonical_run_id}`)
+      return
+    }
+    const leaseOwner = `${runId}:post-pipeline:${crypto.randomUUID()}`
     const claimed = await claimPipelineStage(env.DB, {
       businessDate: triggerTime,
       stage: 'post_pipeline_chain',
-      ownerId: runId,
-      leaseSeconds: 900,
+      ownerId: leaseOwner,
+      canonicalRunId: runId,
+      leaseSeconds: PIPELINE_STAGE_LEASE_SECONDS,
     })
     if (!claimed) {
       console.log(`[Queue] post-pipeline stage already claimed/closed date=${triggerTime}`)
       return
     }
+    const heartbeat = startPipelineStageLeaseHeartbeat(env.DB, {
+      businessDate: triggerTime,
+      stage: 'post_pipeline_chain',
+      canonicalRunId: runId,
+      leaseOwner,
+      leaseSeconds: PIPELINE_STAGE_LEASE_SECONDS,
+    })
     const { runPostPipelineCallbackChain } = await import('./postMarketChain')
     try {
+      await heartbeat.assertActive('post-pipeline:before_chain')
       const status = await runPostPipelineCallbackChain(env, {
         runDate: triggerTime,
-        upstreamRunId: claimed.canonical_run_id,
+        upstreamRunId: runId,
+        stageLeaseOwner: leaseOwner,
+        assertStageLease: heartbeat.assertActive,
         recoveryAttempt: Math.max(
           0,
           Number(msg.attempt ?? 0),
           Number(claimed.attempt_count ?? 1) - 1,
         ),
       })
-      await markPipelineStage(env.DB, {
+      await heartbeat.assertActive('post-pipeline:before_finalize')
+      const finalized = await markPipelineStageFenced(env.DB, {
         businessDate: triggerTime,
         stage: 'post_pipeline_chain',
+        canonicalRunId: runId,
+        leaseOwner,
         status,
       })
+      if (!finalized) {
+        console.warn(`[Queue] stale post-pipeline finalizer ignored date=${triggerTime} run_id=${runId}`)
+      }
     } catch (error) {
-      await markPipelineStage(env.DB, {
+      if (isPipelineStageLeaseLost(error) || heartbeat.leaseError()) {
+        console.warn(`[Queue] post-pipeline lease lost; stale worker stopped date=${triggerTime} run_id=${runId}`)
+        return
+      }
+      try {
+        await heartbeat.assertActive('post-pipeline:before_error_finalize')
+      } catch {
+        console.warn(`[Queue] post-pipeline lease lost before error finalizer date=${triggerTime} run_id=${runId}`)
+        return
+      }
+      const finalized = await markPipelineStageFenced(env.DB, {
         businessDate: triggerTime,
         stage: 'post_pipeline_chain',
+        canonicalRunId: runId,
+        leaseOwner,
         status: 'error',
         error: error instanceof Error ? error.message : String(error),
       })
+      if (!finalized) {
+        console.warn(`[Queue] stale post-pipeline error finalizer ignored date=${triggerTime} run_id=${runId}`)
+        return
+      }
       throw error
+    } finally {
+      await heartbeat.stop()
     }
     return
   }
@@ -3144,50 +3188,142 @@ export async function processUpdateBatch(
       return
     }
     const {
+      PIPELINE_STAGE_LEASE_SECONDS,
       claimPipelineStage,
       enqueuePipelineStage,
-      markPipelineStage,
+      isPipelineStageCanonicalState,
+      isPipelineStageLeaseLost,
+      markPipelineStageFenced,
+      startPipelineStageLeaseHeartbeat,
     } = await import('./pipelineStageLease')
-    await enqueuePipelineStage(env.DB, {
+    const state = await enqueuePipelineStage(env.DB, {
       businessDate: triggerTime,
       stage: 'post_verify_chain',
       runId,
       resumeWaiting: true,
+      expectedCanonicalRunId: runId,
     })
+    if (state.row.canonical_run_id !== runId) {
+      console.warn(`[Queue] stale post-verify message ignored date=${triggerTime} incoming=${runId} canonical=${state.row.canonical_run_id}`)
+      return
+    }
+    const leaseOwner = `${runId}:post-verify:${crypto.randomUUID()}`
     const claimed = await claimPipelineStage(env.DB, {
       businessDate: triggerTime,
       stage: 'post_verify_chain',
-      ownerId: runId,
-      leaseSeconds: 900,
+      ownerId: leaseOwner,
+      canonicalRunId: runId,
+      leaseSeconds: PIPELINE_STAGE_LEASE_SECONDS,
     })
     if (!claimed) {
       console.log(`[Queue] post-verify stage already claimed/closed date=${triggerTime}`)
       return
     }
+    const heartbeat = startPipelineStageLeaseHeartbeat(env.DB, {
+      businessDate: triggerTime,
+      stage: 'post_verify_chain',
+      canonicalRunId: runId,
+      leaseOwner,
+      leaseSeconds: PIPELINE_STAGE_LEASE_SECONDS,
+    })
     const { runPostVerifyCallbackChain } = await import('./postMarketChain')
     try {
+      await heartbeat.assertActive('post-verify:before_chain')
       const status = await runPostVerifyCallbackChain(env, {
         runDate: triggerTime,
-        upstreamRunId: claimed.canonical_run_id,
+        upstreamRunId: runId,
+        stageLeaseOwner: leaseOwner,
+        assertStageLease: heartbeat.assertActive,
         recoveryAttempt: Math.max(
           0,
           Number(msg.attempt ?? 0),
           Number(claimed.attempt_count ?? 1) - 1,
         ),
       })
-      await markPipelineStage(env.DB, {
+      await heartbeat.assertActive('post-verify:before_finalize')
+      const finalized = await markPipelineStageFenced(env.DB, {
         businessDate: triggerTime,
         stage: 'post_verify_chain',
+        canonicalRunId: runId,
+        leaseOwner,
         status,
       })
-    } catch (error) {
-      await markPipelineStage(env.DB, {
+      if (!finalized) {
+        console.warn(`[Queue] stale post-verify finalizer ignored date=${triggerTime} run_id=${runId}`)
+        return
+      }
+      const chain = await env.KV.get(`scheduler:run:post-verify-chain:${triggerTime}`, 'json') as {
+        status?: 'success' | 'error' | 'running'
+        summary?: string
+        duration_ms?: number
+        run_scope?: 'live_canonical' | 'historical_replay' | 'derived'
+      } | null
+      const rootStatus = chain?.status ?? status
+      const terminalStillCurrent = await isPipelineStageCanonicalState(env.DB, {
         businessDate: triggerTime,
         stage: 'post_verify_chain',
-        status: 'error',
-        error: error instanceof Error ? error.message : String(error),
+        canonicalRunId: runId,
+        status,
       })
+      if (!terminalStillCurrent) {
+        console.warn(`[Queue] post-verify root telemetry skipped after canonical changed date=${triggerTime} run_id=${runId}`)
+        return
+      }
+      await logSchedulerResult(env.KV, 'evening-chain', {
+        status: rootStatus,
+        summary: rootStatus === 'running'
+          ? `root chain waiting for queued strategy-learning: ${chain?.summary ?? 'post-verify continuation'}`
+          : `root chain closed after post-verify: ${chain?.summary ?? status}`,
+        duration_ms: Number(chain?.duration_ms ?? 0),
+        run_id: runId,
+        run_date: triggerTime,
+        run_scope: chain?.run_scope,
+      }, env)
+    } catch (error) {
+      if (isPipelineStageLeaseLost(error) || heartbeat.leaseError()) {
+        console.warn(`[Queue] post-verify lease lost; stale worker stopped date=${triggerTime} run_id=${runId}`)
+        return
+      }
+      try {
+        await heartbeat.assertActive('post-verify:before_error_finalize')
+      } catch {
+        console.warn(`[Queue] post-verify lease lost before error finalizer date=${triggerTime} run_id=${runId}`)
+        return
+      }
+      const errorMessage = error instanceof Error ? error.message : String(error)
+      const finalized = await markPipelineStageFenced(env.DB, {
+        businessDate: triggerTime,
+        stage: 'post_verify_chain',
+        canonicalRunId: runId,
+        leaseOwner,
+        status: 'error',
+        error: errorMessage,
+      })
+      if (!finalized) {
+        console.warn(`[Queue] stale post-verify error finalizer ignored date=${triggerTime} run_id=${runId}`)
+        return
+      }
+      const terminalStillCurrent = await isPipelineStageCanonicalState(env.DB, {
+        businessDate: triggerTime,
+        stage: 'post_verify_chain',
+        canonicalRunId: runId,
+        status: 'error',
+      })
+      if (!terminalStillCurrent) {
+        console.warn(`[Queue] stale post-verify error telemetry ignored date=${triggerTime} run_id=${runId}`)
+        return
+      }
+      await logSchedulerResult(env.KV, 'evening-chain', {
+        status: 'error',
+        summary: `root chain stopped in post-verify callback chain: ${errorMessage}`,
+        duration_ms: 0,
+        error: errorMessage,
+        run_id: runId,
+        run_date: triggerTime,
+      }, env)
       throw error
+    } finally {
+      await heartbeat.stop()
     }
     return
   }
@@ -3295,6 +3431,52 @@ export async function processUpdateBatch(
     }
 
     const {
+      checkpointStrategyLearningPage,
+      claimStrategyLearningPage,
+      completeStrategyLearningRun,
+      deferStrategyLearningFinalizer,
+      failStrategyLearningRun,
+      initializeStrategyLearningRun,
+      isStrategyLearningLeaseLost,
+      loadStrategyLearningRun,
+      markStrategyLearningRunFinalized,
+      startStrategyLearningLeaseHeartbeat,
+      STRATEGY_LEARNING_LEASE_SECONDS,
+    } = await import('./strategyLearningRunState')
+    const {
+      reconcileAndReleaseStrategyLearningFinalizedTelemetry,
+      reconcileStrategyLearningFinalizedRetryFastPath,
+    } = await import('./strategyLearningFinalizedTelemetry')
+    const handleFinalizedRetry = async (
+      finalizedState: Awaited<ReturnType<typeof loadStrategyLearningRun>>,
+    ): Promise<boolean> => {
+      const outcome = await reconcileStrategyLearningFinalizedRetryFastPath(
+        env.DB,
+        env.KV,
+        finalizedState,
+        {
+          attemptId: `${finalizedState?.canonical_run_id ?? runId}:telemetry-reconcile:${Date.now().toString(36)}`,
+        },
+      )
+      if (outcome === 'not_finalized') return false
+      if (outcome === 'no_live_telemetry_lease') {
+        console.warn(
+          `[Queue] strategy-learning finalized without live telemetry lease; root telemetry unchanged date=${triggerTime} run_id=${finalizedState?.canonical_run_id ?? runId}`,
+        )
+      } else if (outcome === 'authority_changed') {
+        console.warn(
+          `[Queue] strategy-learning finalized telemetry authority changed; root telemetry unchanged date=${triggerTime} run_id=${finalizedState?.canonical_run_id ?? runId}`,
+        )
+      } else {
+        console.log(`[Queue] strategy-learning already complete date=${triggerTime} run_id=${finalizedState?.canonical_run_id ?? runId}`)
+      }
+      return true
+    }
+
+    const existingState = await loadStrategyLearningRun(env.DB, triggerTime)
+    if (await handleFinalizedRetry(existingState)) return
+
+    const {
       finalizeStrategyLearningEvidenceV5,
       listStrategySpecsForLearning,
       materializeStrategyDecisionLogChunk,
@@ -3304,24 +3486,12 @@ export async function processUpdateBatch(
       await seedDefaultStrategySpecRegistry(env.DB)
     }
     const { specs } = await listStrategySpecsForLearning(env.DB)
-    const {
-      checkpointStrategyLearningPage,
-      claimStrategyLearningPage,
-      completeStrategyLearningRun,
-      deferStrategyLearningFinalizer,
-      failStrategyLearningRun,
-      initializeStrategyLearningRun,
-      markStrategyLearningRunFinalized,
-    } = await import('./strategyLearningRunState')
     const state = await initializeStrategyLearningRun(env.DB, {
       businessDate: triggerTime,
       runId,
       strategyCount: specs.length,
     })
-    if (state.status === 'success') {
-      console.log(`[Queue] strategy-learning already complete date=${triggerTime} run_id=${state.canonical_run_id}`)
-      return
-    }
+    if (await handleFinalizedRetry(state)) return
     const expectedCandidates = Math.max(0, Number(state.expected_candidates ?? 0))
     const expectedRows = Math.max(0, Number(state.expected_decision_rows ?? 0))
     const materializationAlreadyComplete = expectedCandidates > 0
@@ -3336,11 +3506,15 @@ export async function processUpdateBatch(
     const canonicalRunId = state.canonical_run_id
     const finalizerAttemptId = `${canonicalRunId}:finalize:${Date.now().toString(36)}`
     const leaseOwner = `${canonicalRunId}:lease:${crypto.randomUUID()}`
-    const claimed = await claimStrategyLearningPage(env.DB, {
+    const leaseIdentity = {
       businessDate: triggerTime,
-      runId: leaseOwner,
+      canonicalRunId,
+      leaseOwner,
+    }
+    const claimed = await claimStrategyLearningPage(env.DB, {
+      ...leaseIdentity,
       cursorSymbol: durableCursor,
-      leaseSeconds: 300,
+      leaseSeconds: STRATEGY_LEARNING_LEASE_SECONDS,
     })
     if (!claimed) {
       const leaseRetryAttempt = Math.max(0, Number(msg.leaseRetryAttempt ?? 0))
@@ -3368,6 +3542,8 @@ export async function processUpdateBatch(
     }
 
     let materializationValidated = materializationAlreadyComplete
+    let durableFinalized = false
+    let finalizerHeartbeat: ReturnType<typeof startStrategyLearningLeaseHeartbeat> | null = null
     try {
       let chunk: Awaited<ReturnType<typeof materializeStrategyDecisionLogChunk>> | null = null
       if (!materializationAlreadyComplete) {
@@ -3383,8 +3559,7 @@ export async function processUpdateBatch(
         throw new Error(`strategy_learning_keyset_stalled:${durableCursor}`)
       }
       const checkpointed = await checkpointStrategyLearningPage(env.DB, {
-        businessDate: triggerTime,
-        runId: canonicalRunId,
+        ...leaseIdentity,
         previousCursor: durableCursor,
         nextCursor: chunk.next_cursor_symbol,
         processedCandidates: chunk.candidate_count,
@@ -3435,10 +3610,18 @@ export async function processUpdateBatch(
       }
 
       const coverage = await completeStrategyLearningRun(env.DB, {
-        businessDate: triggerTime,
-        runId: leaseOwner,
+        ...leaseIdentity,
+        leaseSeconds: STRATEGY_LEARNING_LEASE_SECONDS,
       })
+      if (!coverage) {
+        throw new Error(`strategy_learning_lease_lost:${triggerTime}:${canonicalRunId}:${leaseOwner}`)
+      }
       materializationValidated = true
+      finalizerHeartbeat = startStrategyLearningLeaseHeartbeat(env.DB, {
+        ...leaseIdentity,
+        leaseSeconds: STRATEGY_LEARNING_LEASE_SECONDS,
+      })
+      const assertFinalizerLease = async (_stage: string): Promise<void> => finalizerHeartbeat!.assertActive()
 
       const productionAuthority = Boolean(msg.force)
         ? await resolveEveningChainRunAuthority(env, {
@@ -3489,6 +3672,7 @@ export async function processUpdateBatch(
       const historicalPriorityDate = await resolveExpectedMatureSignalDate(env, triggerTime)
       const { recoverMatureSelectionEvidence } = await import('./matureSelectionEvidenceRecovery')
       let matureRecovery: Awaited<ReturnType<typeof recoverMatureSelectionEvidence>>
+      await assertFinalizerLease('mature_recovery')
       if (Object.prototype.hasOwnProperty.call(finalizerStageResults, 'mature_recovery')) {
         await logFinalizerStage('mature_recovery', 'cached')
         matureRecovery = finalizerStageResults.mature_recovery as typeof matureRecovery
@@ -3498,7 +3682,9 @@ export async function processUpdateBatch(
         matureRecovery = await recoverMatureSelectionEvidence(env, triggerTime, {
           maxRecoveryDates: 4,
         })
+        await assertFinalizerLease('mature_recovery')
         await persistFinalizerStage('mature_recovery', matureRecovery)
+        await assertFinalizerLease('mature_recovery')
         await logFinalizerStage(
           'mature_recovery', 'success', `duration_ms=${Date.now() - matureRecoveryStartedAt}`,
         )
@@ -3510,6 +3696,7 @@ export async function processUpdateBatch(
           persistPolicy: policyMutationAllowed,
           historicalPriorityDate,
           cachedStageResults: finalizerStageResults,
+          assertLease: assertFinalizerLease,
           onStageTransition: logFinalizerStage,
           onStageComplete: persistFinalizerStage,
           resolveHistoricalRegime: async (signalDate) => {
@@ -3556,21 +3743,36 @@ export async function processUpdateBatch(
       `policy_mutation=${policyMutationAllowed}`,
       ].join(' ')
 
-      await logSchedulerResult(env.KV, 'strategy-learning', {
-        status: 'success', summary, duration_ms: chainDurationMs, run_id: canonicalRunId,
-        attempt_id: finalizerAttemptId, run_date: triggerTime, run_scope: runScope,
-      })
-      await logSchedulerResult(env.KV, 'post-verify-chain', {
-        status: 'success', summary: `strategy-learning queue closed; ${summary}`,
-        duration_ms: chainDurationMs, run_id: canonicalRunId, attempt_id: finalizerAttemptId,
-        run_date: triggerTime, run_scope: runScope,
-      })
-      await logSchedulerResult(env.KV, 'evening-chain', {
-        status: 'success', summary: `root chain closed after queued strategy-learning: ${summary}`,
-        duration_ms: chainDurationMs, run_id: canonicalRunId, attempt_id: finalizerAttemptId,
-        run_date: triggerTime, run_scope: runScope,
-      })
-      await markStrategyLearningRunFinalized(env.DB, { businessDate: triggerTime, runId: canonicalRunId })
+      await assertFinalizerLease('finalize')
+      const finalized = await markStrategyLearningRunFinalized(env.DB, leaseIdentity)
+      if (!finalized) {
+        const deferred = await deferStrategyLearningFinalizer(env.DB, {
+          ...leaseIdentity,
+          error: `strategy_learning_finalize_authority_lost:${triggerTime}:${canonicalRunId}`,
+        })
+        if (!deferred) {
+          throw new Error(`strategy_learning_lease_lost:${triggerTime}:${canonicalRunId}:${leaseOwner}`)
+        }
+        console.warn(`[Queue] strategy-learning finalizer lost post-verify authority date=${triggerTime} run_id=${canonicalRunId}`)
+        return
+      }
+      durableFinalized = true
+      const telemetryFinalized = await reconcileAndReleaseStrategyLearningFinalizedTelemetry(
+        env.DB,
+        env.KV,
+        leaseIdentity,
+        {
+          runDate: triggerTime,
+          canonicalRunId,
+          summary,
+          durationMs: chainDurationMs,
+          attemptId: finalizerAttemptId,
+          runScope,
+        },
+      )
+      if (!telemetryFinalized) {
+        throw new Error(`strategy_learning_finalized_telemetry_authority_lost:${triggerTime}:${canonicalRunId}`)
+      }
       if (currentBusinessDateRun) {
         try {
           const { enqueueNextDataDomainShadowBackfill } = await import('./dataDomainShadowBackfillDrain')
@@ -3604,17 +3806,23 @@ export async function processUpdateBatch(
       return
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : String(error)
-      if (materializationValidated) {
-        await deferStrategyLearningFinalizer(env.DB, {
-          businessDate: triggerTime,
-          runId: canonicalRunId,
+      if (durableFinalized) throw error
+      if (isStrategyLearningLeaseLost(error)) {
+        console.warn(`[Queue] strategy-learning lease lost; queue retry required date=${triggerTime} run_id=${canonicalRunId}`)
+        throw error
+      }
+      const transitioned = materializationValidated
+        ? await deferStrategyLearningFinalizer(env.DB, {
+            ...leaseIdentity,
+            error: errorMessage,
+          })
+        : await failStrategyLearningRun(env.DB, {
+            ...leaseIdentity,
           error: errorMessage,
         })
-      } else {
-        await failStrategyLearningRun(env.DB, {
-          businessDate: triggerTime,
-          error: errorMessage,
-        })
+      if (!transitioned) {
+        console.warn(`[Queue] strategy-learning terminal fence lost; queue retry required date=${triggerTime} run_id=${canonicalRunId}`)
+        throw error
       }
       await Promise.allSettled([
         logSchedulerResult(env.KV, 'strategy-learning', {
@@ -3633,6 +3841,8 @@ export async function processUpdateBatch(
         }),
       ])
       throw error
+    } finally {
+      await finalizerHeartbeat?.stop()
     }
   }
 
@@ -3827,6 +4037,7 @@ export async function processUpdateBatch(
     const statusRunDate = /^\d{4}-\d{2}-\d{2}$/.test(requestedStatusRunDate)
       ? requestedStatusRunDate
       : triggerTime
+    const lifecycleRunId = String((msg as any).lifecycleRunId ?? '').trim()
     const replayScope = requestedScope === 'fusion_snapshot_missing'
       ? 'fusion_snapshot_missing'
       : requestedScope === 'fusion_snapshot_structure'
@@ -3837,6 +4048,18 @@ export async function processUpdateBatch(
     if (!/^\d{4}-\d{2}-\d{2}$/.test(triggerTime)) {
       console.log(`[Queue] Invalid S12 replay backfill date ${triggerTime}, skipping.`)
       return
+    }
+    if (replayScope === 'fusion_snapshot_missing') {
+      if (!lifecycleRunId) {
+        console.warn(`[Queue] Fusion replay missing lifecycle generation date=${triggerTime} run_id=${runId}`)
+        return
+      }
+      const lifecycle = await env.DB.prepare(`SELECT upstream_run_id FROM allocator_ev_daily_lifecycle WHERE business_date=?`)
+        .bind(triggerTime).first<{ upstream_run_id?: string | null }>()
+      if (String(lifecycle?.upstream_run_id ?? '') !== lifecycleRunId) {
+        console.warn(`[Queue] Stale fusion replay ignored date=${triggerTime} incoming=${lifecycleRunId} canonical=${lifecycle?.upstream_run_id ?? 'missing'}`)
+        return
+      }
     }
     const {
       loadFusionSnapshotMissingReplaySymbols,
@@ -3870,6 +4093,7 @@ export async function processUpdateBatch(
           runId,
           replayScope,
           statusRunDate,
+          lifecycleRunId,
         } as any)
       }
       return
@@ -3890,9 +4114,14 @@ export async function processUpdateBatch(
         maturityAsOfDate,
         signedEligibleRepair: replayScope === 'signed_eligible_repair',
         persistUnavailableOutcomes: dynamicCohortScope,
+        expectedLifecycleRunId: replayScope === 'fusion_snapshot_missing' ? lifecycleRunId : null,
       })
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error)
+      if (message.startsWith('s12_replay_lifecycle_authority_lost:')) {
+        console.warn(`[Queue] Stale S12 replay stopped before outcome persistence date=${triggerTime} run_id=${runId} reason=${message}`)
+        return
+      }
       if (!message.startsWith('s12_research_lease_busy:')) throw error
       const leaseRetryAttempt = Math.max(0, Number((msg as any).leaseRetryAttempt ?? 0))
       if (leaseRetryAttempt >= S12_REPLAY_LEASE_RETRY_MAX_ATTEMPTS) {
@@ -3969,7 +4198,8 @@ export async function processUpdateBatch(
           state: 'error',
           replayRows: Math.max(0, Number(result.persisted ?? 0)),
           replayMaturityAsOfDate: maturityAsOfDate,
-          upstreamRunId: runId,
+          upstreamRunId: lifecycleRunId || runId,
+          expectedLifecycleRunId: lifecycleRunId || null,
           lastError: failureReason,
         })
       }
@@ -4033,6 +4263,7 @@ export async function processUpdateBatch(
         replayScope,
         maturityAsOfDate,
         statusRunDate,
+        lifecycleRunId,
       } as any)
     } else if (replayClosed) {
       const { recordAllocatorEvLifecycle } = await import('./allocatorEvDailyLifecycle')
@@ -4041,7 +4272,8 @@ export async function processUpdateBatch(
         state: 'replay_complete',
         replayRows: replayCoverage?.replayRows ?? 0,
         replayMaturityAsOfDate: maturityAsOfDate,
-        upstreamRunId: runId,
+        upstreamRunId: lifecycleRunId || runId,
+        expectedLifecycleRunId: lifecycleRunId || null,
       })
     } else {
       const { recordAllocatorEvLifecycle } = await import('./allocatorEvDailyLifecycle')
@@ -4052,7 +4284,8 @@ export async function processUpdateBatch(
           : 'replay_enqueued',
         replayRows: replayCoverage?.replayRows ?? 0,
         replayMaturityAsOfDate: maturityAsOfDate,
-        upstreamRunId: runId,
+        upstreamRunId: lifecycleRunId || runId,
+        expectedLifecycleRunId: lifecycleRunId || null,
         lastError: replayCoverage && replayCoverage.pendingMaturityRows > 0
           ? `waiting for stock-specific five-session maturity symbols=${replayCoverage.pendingMaturityRows}`
           : retryableUnavailableOnly

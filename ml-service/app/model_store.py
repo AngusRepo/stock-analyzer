@@ -25,7 +25,7 @@ logger = logging.getLogger(__name__)
 
 # ?? GCS ????lazy嚗?璈葫閰行?銋?鋆?google-cloud嚗??????????????????????
 _bucket = None
-_MODEL_LOAD_CACHE: dict[tuple[str, str | None], tuple[Any, dict]] = {}
+_MODEL_LOAD_CACHE: dict[tuple[Any, ...], tuple[Any, dict]] = {}
 _MODEL_CACHE_STATS = {
     "hits": 0,
     "misses": 0,
@@ -156,6 +156,11 @@ def load_model(
     model_name: str,
     gcs_prefix: str | None = None,  # 2026-04-18 #32: walk-forward override
     explicit_path: str | None = None,  # 2026-04-19 Stage 3: challenger override
+    explicit_metadata_path: str | None = None,
+    expected_version: str | None = None,
+    expected_artifact_id: str | None = None,
+    expected_checksum: str | None = None,
+    require_governed_artifact: bool = False,
 ) -> tuple[Any | None, dict | None]:
     """
     敺?GCS 頛撌脰?蝺渡?璅∪???metadata
@@ -181,16 +186,20 @@ def load_model(
         meta_path: str | None = None
         used_pool = False
         if explicit_path is not None:
-            blob_path = explicit_path
-            # Derive sibling metadata path: e.g. universal/xgboost/v2.joblib
-            #   ??universal/xgboost/metadata_v2.json
-            try:
-                folder, fname = explicit_path.rsplit("/", 1)
-                stem, _ext = fname.rsplit(".", 1)
-                meta_path = f"{folder}/metadata_{stem}.json"
-            except ValueError:
-                meta_path = None
+            blob_path = str(explicit_path).strip()
+            meta_path = str(explicit_metadata_path or "").strip() or None
+            if meta_path is None and not require_governed_artifact:
+                # Compatibility only. Governed serving must use the exact
+                # metadata path selected by the registry.
+                try:
+                    folder, fname = explicit_path.rsplit("/", 1)
+                    stem, _ext = fname.rsplit(".", 1)
+                    meta_path = f"{folder}/metadata_{stem}.json"
+                except ValueError:
+                    meta_path = None
         elif gcs_prefix is not None:
+            if explicit_metadata_path is not None:
+                raise ValueError("explicit_metadata_path requires explicit_path")
             prefix = gcs_prefix.rstrip("/")
             blob_path = f"{prefix}/{model_name.lower()}.joblib"
             meta_path = f"{prefix}/metadata_{model_name.lower()}.json"
@@ -238,7 +247,35 @@ def load_model(
             blob_path = f"{prefix}/{model_name.lower()}.joblib"
             meta_path = f"{prefix}/metadata_{model_name.lower()}.json"
 
-        cache_key = (blob_path, meta_path)
+        if require_governed_artifact:
+            required_identity = {
+                "artifact_path": blob_path,
+                "metadata_path": meta_path,
+                "model_name": str(model_name or "").strip(),
+                "version": str(expected_version or "").strip(),
+                "artifact_id": str(expected_artifact_id or "").strip(),
+                "checksum": str(expected_checksum or "").strip().lower(),
+            }
+            missing_identity = [
+                key for key, value in required_identity.items() if not value
+            ]
+            if missing_identity:
+                logger.warning(
+                    "[ModelStore] governed identity incomplete for %s: %s",
+                    model_name,
+                    ",".join(missing_identity),
+                )
+                return None, None
+            used_pool = True
+        cache_key = (
+            blob_path,
+            meta_path,
+            used_pool,
+            str(model_name or "").strip(),
+            str(expected_version or "").strip(),
+            str(expected_artifact_id or "").strip(),
+            str(expected_checksum or "").strip().lower(),
+        )
         cacheable = stock_id == 0 or explicit_path is not None or gcs_prefix is not None
         if cacheable and cache_key in _MODEL_LOAD_CACHE:
             cached_model, cached_meta = _MODEL_LOAD_CACHE[cache_key]
@@ -256,12 +293,51 @@ def load_model(
         buf = io.BytesIO()
         blob.download_to_file(buf)
         _MODEL_CACHE_STATS["gcs_downloads"] += 1
+        raw_artifact = buf.getvalue()
+        registry_integrity_report = None
+        if require_governed_artifact:
+            try:
+                registry_integrity_report = verify_artifact_bytes(
+                    raw_artifact,
+                    expected_checksum,
+                    artifact_name=blob_path,
+                )
+            except ArtifactValidationError as exc:
+                logger.warning(
+                    "[ModelStore] registry checksum failed for %s: %s report=%s",
+                    model_name, exc, exc.report,
+                )
+                return None, None
         # 頛 metadata
         metadata = {}
         if meta_path:
             meta_blob = bucket.blob(meta_path)
             if meta_blob.exists():
                 metadata = json.loads(meta_blob.download_as_text().lstrip("\ufeff"))
+                if require_governed_artifact:
+                    metadata_model = str(
+                        metadata.get("model_name") or metadata.get("model") or ""
+                    ).strip()
+                    if metadata_model and metadata_model != str(model_name).strip():
+                        logger.warning(
+                            "[ModelStore] registry metadata model mismatch: expected=%s actual=%s path=%s",
+                            model_name, metadata_model or "<missing>", meta_path,
+                        )
+                        return None, None
+                    declared_version = str(metadata.get("version") or "").strip()
+                    if declared_version and declared_version != str(expected_version).strip():
+                        logger.warning(
+                            "[ModelStore] registry metadata version mismatch for %s: expected=%s actual=%s",
+                            model_name, expected_version, declared_version,
+                        )
+                        return None, None
+                    declared_artifact_id = str(metadata.get("artifact_id") or "").strip()
+                    if declared_artifact_id and declared_artifact_id != str(expected_artifact_id).strip():
+                        logger.warning(
+                            "[ModelStore] registry metadata artifact id mismatch for %s",
+                            model_name,
+                        )
+                        return None, None
                 if metadata.get("schema_version") == ARTIFACT_SCHEMA_VERSION:
                     try:
                         metadata["artifact_contract_report"] = validate_model_artifact_metadata(metadata)
@@ -292,12 +368,29 @@ def load_model(
                         metadata["runtime_version_report"].get("runtime_sklearn"),
                     )
 
-        # Governed artifacts are verified before any deserialization occurs.
-        buf.seek(0)
-        model, artifact_health = load_joblib_with_artifact_health(buf, artifact_name=blob_path)
-        if metadata:
-            metadata["artifact_health_report"] = artifact_health
-
+        if require_governed_artifact and metadata:
+            metadata_checksum = str(
+                metadata.get("artifact_checksum") or metadata.get("checksum") or ""
+            ).strip().lower()
+            expected_normalized = str(expected_checksum or "").strip().lower()
+            if metadata_checksum != expected_normalized:
+                logger.warning(
+                    "[ModelStore] registry/metadata checksum mismatch for %s: registry=%s metadata=%s",
+                    model_name,
+                    expected_normalized or "<missing>",
+                    metadata_checksum or "<missing>",
+                )
+                return None, None
+            metadata["serving_identity_report"] = {
+                "status": "verified",
+                "model_name": str(model_name),
+                "version": str(expected_version),
+                "artifact_id": str(expected_artifact_id),
+                "artifact_path": blob_path,
+                "metadata_path": meta_path,
+                "checksum": expected_normalized,
+                "registry_integrity_report": registry_integrity_report,
+            }
         if used_pool:
             if not metadata:
                 logger.warning(
@@ -313,6 +406,14 @@ def load_model(
                     meta_path,
                 )
                 return None, None
+
+        # Governed artifacts are verified before any deserialization occurs.
+        buf.seek(0)
+        model, artifact_health = load_joblib_with_artifact_health(buf, artifact_name=blob_path)
+        if metadata:
+            metadata["artifact_health_report"] = artifact_health
+
+        if used_pool:
             if artifact_health.get("status") != "ok":
                 logger.warning(
                     "[ModelStore] production artifact health failed for %s at %s: %s",

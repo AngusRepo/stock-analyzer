@@ -28,9 +28,9 @@ def test_runtime_scaling_manifest_matches_scheduler_and_warm_ownership() -> None
     monthly_down = scaling["scaler_jobs"]["ml-controller-monthly-min-0"]
     assert monthly_up["calendar_gate"] == "first_saturday_only"
     assert monthly_down["calendar_gate"] == "first_saturday_only"
-    cron_by_name = {row["name"]: row["cron"] for row in scaling["schedules"]}
-    assert cron_by_name["ml-controller-min-1-monthly-sat"] == "50 9 * * 6"
-    assert cron_by_name["ml-controller-min-0-monthly-sat"] == "30 16 * * 6"
+    schedule_by_name = {row["name"]: row["cron"] for row in scaling["schedules"]}
+    assert schedule_by_name["ml-controller-min-1-monthly-sat"] == "first saturday of month 09:50"
+    assert schedule_by_name["ml-controller-min-0-monthly-sat"] == "first saturday of month 16:30"
 
 
 def test_scaler_has_repository_scoped_pull_permission_and_fail_open_calendar() -> None:

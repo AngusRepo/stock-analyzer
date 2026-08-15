@@ -1143,6 +1143,79 @@ def test_allocator_ev_feature_snapshot_backfill_does_not_cleanup_after_partial_w
     assert "status='failed'" in calls[1][0][0]
 
 
+def test_allocator_ev_feature_snapshot_backfill_rejects_partial_candidate_cohort_before_staging():
+    valid_candidate = {
+        "stock_id": 1,
+        "symbol": "2330",
+        "recommendation_date": "2026-07-07",
+        "prediction_generated_at": "2026-07-07T12:00:00Z",
+        "forecast_data": _ensemble_forecast(0.35, 0.72),
+        "score": 70,
+        "score_components": json.dumps({
+            "version": "score_v2",
+            "semanticVersion": "score-v2-active8-components-v3",
+            "finalScore": 70,
+            "components": {
+                "mlEdge": 18,
+                "fundamentalQuality": 19,
+                "chipFlow": 20,
+                "technicalStructure": 21,
+            },
+        }),
+        "alpha_context": "{}",
+        "existing_alpha_allocation": "{}",
+        "current_price": 100,
+        "candidate_total_count": 2,
+    }
+    invalid_forecast = json.loads(_ensemble_forecast(0.35, 0.72))
+    invalid_forecast["ensemble_v2"].pop("target_semantic_version")
+    invalid_candidate = {
+        **valid_candidate,
+        "stock_id": 2,
+        "symbol": "2317",
+        "forecast_data": json.dumps(invalid_forecast),
+    }
+    calls: list[list[tuple[str, list[object]]]] = []
+
+    def query_fn(sql: str, _params: list[object] | None = None) -> list[dict]:
+        if "FROM model_champion_history" in sql:
+            return _champion_history_rows()
+        if "canonical_reference_snapshot_candidates_v4" in sql:
+            return [valid_candidate, invalid_candidate]
+        return []
+
+    def writer(statements: list[tuple[str, list[object]]]) -> dict:
+        calls.append(statements)
+        return {
+            "success_count": len(statements),
+            "error_count": 0,
+            "changes_total": len(statements),
+        }
+
+    with pytest.raises(
+        RuntimeError,
+        match=r"allocator_snapshot_candidate_closure_mismatch:.*expected=2:accepted=1:rejected=1",
+    ):
+        build_allocator_ev_feature_snapshots_for_date(
+            snapshot_date="2026-07-07",
+            query_fn=query_fn,
+            write_fn=writer,
+            dry_run=False,
+            lineage_cohort_id="pipeline-v2-partial",
+        )
+
+    assert len(calls) == 1
+    assert len(calls[0]) == 2
+    assert "INSERT INTO allocator_ev_snapshot_runs" in calls[0][0][0]
+    assert calls[0][0][1][4] == 2
+    assert "status='failed'" in calls[0][1][0]
+    assert all(
+        "allocator_ev_feature_snapshot_staging" not in sql
+        and "allocator_ev_feature_snapshots" not in sql
+        for sql, _params in calls[0]
+    )
+
+
 def test_allocator_ev_feature_snapshot_backfill_recomputes_opaque_s12_payload():
     existing = {
         "snapshot_source": SNAPSHOT_BACKFILL_SOURCE,

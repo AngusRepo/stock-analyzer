@@ -7,6 +7,8 @@ function assert(condition: unknown, message: string): void {
 const callbackRoutes = fs.readFileSync('src/routes/adminControlRoutes.ts', 'utf8')
 const postMarketChain = fs.readFileSync('src/lib/postMarketChain.ts', 'utf8')
 const pipelineStageLease = fs.readFileSync('src/lib/pipelineStageLease.ts', 'utf8')
+const mlPipelineTrigger = fs.readFileSync('src/lib/mlPipelineTrigger.ts', 'utf8')
+const postScreenerContinuation = fs.readFileSync('src/lib/postScreenerContinuation.ts', 'utf8')
 const researchWorkflows = fs.readFileSync('src/lib/controllerResearchWorkflows.ts', 'utf8')
 const updateOrchestrator = fs.readFileSync('src/lib/updateOrchestrator.ts', 'utf8')
 const strategyLearning = fs.readFileSync('src/lib/strategyLearning.ts', 'utf8')
@@ -14,21 +16,27 @@ const logger = fs.readFileSync('src/lib/schedulerRunLogger.ts', 'utf8')
 const adminTasks = fs.readFileSync('src/lib/adminTriggerGcpTasks.ts', 'utf8')
 const schedulerPolicy = fs.readFileSync('src/lib/schedulerPolicy.ts', 'utf8')
 const controllerDailyWorkflows = fs.readFileSync('src/lib/controllerDailyWorkflows.ts', 'utf8')
+const allocatorCallbackMarker = callbackRoutes.indexOf("body.task === 'allocator-ev-feature-snapshot-backfill'")
+const pipelineCallbackMarker = callbackRoutes.indexOf("if (body.task === 'pipeline'", allocatorCallbackMarker)
 const pipelineCallbackBlock = callbackRoutes.slice(
-  callbackRoutes.indexOf("if (body.task === 'pipeline'"),
-  callbackRoutes.indexOf("const verifyCanContinue"),
+  pipelineCallbackMarker,
+  callbackRoutes.indexOf("const verifyCanContinue", pipelineCallbackMarker),
 )
 const verifyCallbackBlock = callbackRoutes.slice(
   callbackRoutes.indexOf("const verifyCanContinue"),
   callbackRoutes.indexOf("if (body.task === 'verify-v2' && String(body.status) === 'error')"),
 )
 const allocatorSnapshotCallbackBlock = callbackRoutes.slice(
-  callbackRoutes.indexOf("body.task === 'allocator-ev-feature-snapshot-backfill'"),
-  callbackRoutes.indexOf("if (body.task === 'pipeline'"),
+  allocatorCallbackMarker,
+  pipelineCallbackMarker,
 )
 const postScreenerContinuationBlock = updateOrchestrator.slice(
   updateOrchestrator.indexOf('async function continuePostScreenerPipeline'),
   updateOrchestrator.indexOf('async function markShardComplete'),
+)
+const postVerifyQueueBlock = updateOrchestrator.slice(
+  updateOrchestrator.indexOf("if (msg.type === 'post_verify_chain')"),
+  updateOrchestrator.indexOf("if (msg.type === 'allocator_ev_lifecycle_recovery')"),
 )
 const metaShadowBlock = postMarketChain.slice(
   postMarketChain.indexOf("'meta-learning-shadow', () => enqueueMetaLearningShadowClosureTask"),
@@ -46,8 +54,9 @@ assert(
 )
 assert(
   controllerDailyWorkflows.includes('verify-v2 already has an active execution') &&
-    controllerDailyWorkflows.includes('triggered existing active verify-v2 execution'),
-  'duplicate pipeline callbacks must reuse an active verify execution instead of failing the root chain',
+    controllerDailyWorkflows.includes('verify_v2_active_execution_conflict') &&
+    controllerDailyWorkflows.includes('retry_required'),
+  'an unproven active verify execution must fail closed for bounded retry instead of waiting for a nonexistent callback',
 )
 assert(callbackRoutes.includes('lock:ml-predict'), 'pipeline terminal callback must clear the ML predict lock')
 assert(
@@ -57,20 +66,24 @@ assert(
   'pipeline and snapshot callbacks must share the durable date-level post-pipeline stage',
 )
 assert(
-  pipelineStageLease.includes("status='success'") &&
-    pipelineStageLease.includes('canonical_run_id<>?') &&
-    pipelineStageLease.includes('completed_at=NULL') &&
-    postMarketChain.includes('supersedeSuccess: true') &&
-    (callbackRoutes.match(/supersedeSuccess: true/g)?.length ?? 0) >= 3,
-  'a new same-date pipeline or snapshot run must supersede stale success while duplicate run IDs remain idempotent',
+  pipelineStageLease.includes('expectedCanonicalRunId') &&
+    allocatorSnapshotCallbackBlock.includes('expectedCanonicalRunId: callbackRunId') &&
+    !allocatorSnapshotCallbackBlock.includes('supersedeSuccess: true'),
+  'allocator snapshot callbacks must atomically resume only their exact canonical stage and never supersede success',
 )
 assert(
-  pipelineStageLease.includes('adoptRunIdOnResume') &&
-    pipelineStageLease.includes("status IN ('waiting', 'error')") &&
-    pipelineStageLease.includes("status='running' AND lease_expires_at < CURRENT_TIMESTAMP") &&
-    pipelineCallbackBlock.includes('adoptRunIdOnResume: true') &&
-    verifyCallbackBlock.includes('adoptRunIdOnResume: true'),
-  'a newer successful pipeline or verify callback must adopt canonical ownership from an errored, waiting, or stale stage',
+  pipelineCallbackBlock.includes("stage: 'pipeline_execution'") &&
+    pipelineCallbackBlock.includes("status: 'success'") &&
+    !pipelineCallbackBlock.includes('adoptRunIdOnResume') &&
+    verifyCallbackBlock.includes('cursorKey: callbackRunId') &&
+    verifyCallbackBlock.includes('authority: {'),
+  'pipeline continuation must be owned by exact D1 dispatch authority while verify uses producer cursor plus D1 authority',
+)
+assert(
+  pipelineStageLease.includes('FROM strategy_learning_runs strategy_learning')
+    && pipelineStageLease.includes("strategy_learning.status IN ('running', 'success')")
+    && pipelineStageLease.includes('strategy_learning.lease_expires_at >= CURRENT_TIMESTAMP'),
+  'post-verify canonical takeover must preserve a live strategy-learning lease owned by the prior canonical run',
 )
 assert(
   callbackRoutes.includes('queuePostVerifyStage') &&
@@ -147,7 +160,7 @@ assert(
   'post-screener continuation must retain a same-date regime assertion before pipeline/recommendation',
 )
 assert(
-  updateOrchestrator.includes("type: 'post_screener_pipeline'") &&
+  postScreenerContinuation.includes("type: 'post_screener_pipeline'") &&
     updateOrchestrator.includes("if (msg.type === 'post_screener_pipeline')") &&
     updateOrchestrator.includes('continuePostScreenerPipeline(env, deps, triggerTime, runId)'),
   'indicator-queue finalization must enqueue and consume post-screener continuation instead of requiring manual pipeline trigger',
@@ -267,6 +280,28 @@ assert(
   'post-market callback tasks must emit compute profile events from the shared task logger',
 )
 assert(
+  postMarketChain.includes('assertStageLease') &&
+    postMarketChain.includes('assertChainStageAuthority') &&
+    updateOrchestrator.includes('startPipelineStageLeaseHeartbeat') &&
+    updateOrchestrator.includes('isPipelineStageLeaseLost') &&
+    updateOrchestrator.includes('terminalStillCurrent'),
+  'post-pipeline and post-verify workers must heartbeat, assert authority at side-effect boundaries, and fence root telemetry',
+)
+assert(
+  mlPipelineTrigger.indexOf('reservePipelineExecutionDispatch') < mlPipelineTrigger.indexOf('/pipeline/v2/run?date=') &&
+    mlPipelineTrigger.indexOf('commitPipelineExecutionDispatch', mlPipelineTrigger.indexOf('/pipeline/v2/run?date=')) > mlPipelineTrigger.indexOf('/pipeline/v2/run?date=') &&
+    pipelineStageLease.includes("stage='pipeline_execution'"),
+  'pipeline dispatch must reserve D1 authority before controller fetch and commit the producer run id afterward',
+)
+assert(
+  pipelineStageLease.match(/FROM strategy_learning_runs strategy_learning/g)?.length === 4,
+  'both generic and authorized post-verify canonical transitions must share the live strategy-learning guard',
+)
+assert(
+  pipelineStageLease.includes("expectedStatus: 'queued'") && pipelineStageLease.includes('requireUnleased: true'),
+  'ambiguous queue send errors may only close a still-queued unleased stage',
+)
+assert(
   postMarketChain.includes('Promise.allSettled') &&
     postMarketChain.includes('withObservabilityTimeout') &&
     postMarketChain.includes('TASK_OBSERVABILITY_TIMEOUT_MS'),
@@ -279,16 +314,20 @@ assert(
   'non-critical evidence closures must have execution timeout protection so post-verify cannot leave evening-chain triggered forever',
 )
 assert(
-  postMarketChain.includes("task === 'post-verify-chain'") &&
-    postMarketChain.includes("'evening-chain'") &&
-    postMarketChain.includes('root chain closed after post-verify'),
-  'post-verify closure must write final evening-chain status so OBS does not treat pipeline trigger as full-chain success',
+  postVerifyQueueBlock.includes('stale post-verify finalizer ignored') &&
+    postVerifyQueueBlock.includes('root chain closed after post-verify') &&
+    postVerifyQueueBlock.indexOf('markPipelineStageFenced(env.DB') <
+      postVerifyQueueBlock.indexOf("logSchedulerResult(env.KV, 'evening-chain'"),
+  'post-verify root status must be written only after the canonical run and lease-owner finalizer succeeds',
 )
 assert(
   callbackRoutes.includes('root chain stopped at pipeline callback') &&
     callbackRoutes.includes('root chain stopped at verify-v2 callback') &&
-    callbackRoutes.includes('root chain stopped in post-pipeline callback chain'),
-  'terminal pipeline/verify callback failures must close evening-chain as error instead of leaving it triggered; durable continuation failures retry in queue',
+    pipelineCallbackBlock.includes('post_pipeline_stage_owner_conflict') &&
+    pipelineCallbackBlock.includes('post_pipeline_callback_chain_failed') &&
+    !pipelineCallbackBlock.slice(pipelineCallbackBlock.indexOf('} catch (e: any) {'))
+      .includes("logSchedulerResult(c.env.KV, 'evening-chain'"),
+  'terminal pipeline/verify failures close their root; pre-adoption continuation failures remain retryable without stealing root ownership',
 )
 assert(
   allocatorSnapshotCallbackBlock.includes('isTransientD1Reset(callbackError)') &&

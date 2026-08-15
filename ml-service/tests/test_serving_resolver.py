@@ -31,6 +31,7 @@ def test_d1_champion_pool_serves_only_valid_production_artifact():
             "state": "production",
             "artifact_path": "universal/tabm/vGood.pt",
             "metadata_path": "universal/tabm/metadata_vGood.json",
+            "checksum": "sha256:" + "a" * 64,
             "offline_gate_decision": "STRONG_PASS",
             "live_gate_status": "passed",
             "metadata": {"target_semantic_version": resolver.LABEL_SCHEMA_VERSION},
@@ -101,6 +102,7 @@ def test_patchtst_d1_champion_rejects_legacy_pt_artifact():
             "state": "production",
             "artifact_path": "universal/patchtst/vLegacy.pt",
             "metadata_path": "universal/patchtst/metadata_vLegacy.json",
+            "checksum": "sha256:" + "b" * 64,
             "offline_gate_decision": "STRONG_PASS",
             "live_gate_status": "passed",
         }],
@@ -135,6 +137,7 @@ def test_oof_champion_projects_version_bound_ic_prior_and_quarantines_stale_live
         "state": "production",
         "artifact_path": "universal/xgboost/v2.joblib",
         "metadata_path": "universal/xgboost/metadata_v2.json",
+        "checksum": "sha256:" + "c" * 64,
         "offline_gate_decision": "STRONG_PASS",
         "live_gate_status": "not_started",
         "metadata": {

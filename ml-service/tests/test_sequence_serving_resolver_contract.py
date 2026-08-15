@@ -23,6 +23,8 @@ def test_sequence_contract_is_projected_from_exact_registry_artifact():
             "candidate_type": "oof_full_fit_release",
             "state": "production",
             "artifact_path": "universal/dlinear/vNew.pt",
+            "metadata_path": "universal/dlinear/metadata_vNew.json",
+            "checksum": "sha256:" + "d" * 64,
             "offline_gate_decision": "STRONG_PASS",
             "live_gate_status": "passed",
             "offline_evidence_json": {
@@ -70,6 +72,8 @@ def test_sequence_artifact_without_exact_contract_is_not_served():
             "candidate_type": "oof_full_fit_release",
             "state": "production",
             "artifact_path": "universal/dlinear/vBad.pt",
+            "metadata_path": "universal/dlinear/metadata_vBad.json",
+            "checksum": "sha256:" + "e" * 64,
             "offline_gate_decision": "STRONG_PASS",
             "live_gate_status": "passed",
             "offline_evidence_json": {

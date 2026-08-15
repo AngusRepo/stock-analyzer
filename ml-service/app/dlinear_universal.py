@@ -27,7 +27,7 @@ import io
 import json
 import logging
 import time
-from typing import Optional
+from typing import Any, Optional
 
 import numpy as np
 
@@ -433,16 +433,67 @@ def save_to_gcs(state_dict, metadata: dict, version: str = "v1") -> dict:
     }
 
 
-def load_from_gcs(version: str = "v1"):
+def _governed_identity(version: str, artifact_identity: dict[str, Any] | None) -> dict[str, str] | None:
+    if artifact_identity is None:
+        return None
+    if not isinstance(artifact_identity, dict):
+        raise ValueError("DLinear governed artifact identity must be an object")
+    identity = {
+        key: str(artifact_identity.get(key) or "").strip()
+        for key in ("model", "version", "artifact_id", "artifact_path", "metadata_path", "checksum")
+    }
+    missing = [key for key, value in identity.items() if not value]
+    if missing:
+        raise ValueError(f"DLinear governed artifact identity missing: {','.join(missing)}")
+    if identity["model"] != "DLinear":
+        raise ValueError(f"DLinear governed artifact model mismatch: {identity['model']}")
+    if str(version).strip() != identity["version"]:
+        raise ValueError(
+            f"DLinear governed artifact version mismatch: requested={version} expected={identity['version']}"
+        )
+    return identity
+
+
+def _validate_governed_metadata(meta: dict[str, Any], identity: dict[str, str]) -> None:
+    metadata_model = str(meta.get("model_name") or meta.get("model") or "").strip()
+    metadata_version = str(meta.get("version") or meta.get("model_version") or "").strip()
+    metadata_checksum = str(meta.get("checksum") or meta.get("artifact_checksum") or "").strip().lower()
+    if metadata_model and metadata_model != identity["model"]:
+        raise ValueError(
+            f"DLinear governed metadata model mismatch: expected={identity['model']} actual={metadata_model or '<missing>'}"
+        )
+    if metadata_version != identity["version"]:
+        raise ValueError(
+            f"DLinear governed metadata version mismatch: expected={identity['version']} actual={metadata_version or '<missing>'}"
+        )
+    if metadata_checksum != identity["checksum"].lower():
+        raise ValueError("DLinear governed metadata checksum mismatch")
+    for field in ("artifact_path", "metadata_path"):
+        actual = str(meta.get(field) or "").strip()
+        if actual and actual != identity[field]:
+            raise ValueError(f"DLinear governed metadata {field} mismatch")
+    metadata_artifact_id = str(meta.get("artifact_id") or meta.get("serving_artifact_id") or "").strip()
+    if metadata_artifact_id and metadata_artifact_id != identity["artifact_id"]:
+        raise ValueError("DLinear governed metadata artifact_id mismatch")
+
+
+def load_from_gcs(version: str = "v1", *, artifact_identity: dict[str, Any] | None = None):
     """Load DLinear model + metadata from GCS. Returns (model, metadata) or (None, None)."""
     import torch
+    governed = _governed_identity(version, artifact_identity)
     try:
         bucket = _get_bucket()
-        weights_blob = bucket.blob(f"{GCS_WEIGHTS_PREFIX}/{version}.pt")
-        meta_blob = bucket.blob(f"{GCS_WEIGHTS_PREFIX}/metadata_{version}.json")
+        weights_path = governed["artifact_path"] if governed else f"{GCS_WEIGHTS_PREFIX}/{version}.pt"
+        metadata_path = governed["metadata_path"] if governed else f"{GCS_WEIGHTS_PREFIX}/metadata_{version}.json"
+        weights_blob = bucket.blob(weights_path)
+        meta_blob = bucket.blob(metadata_path)
         if not weights_blob.exists():
             return None, None
+        if governed and not meta_blob.exists():
+            raise ValueError("DLinear governed metadata object missing")
         meta = json.loads(meta_blob.download_as_text()) if meta_blob.exists() else {}
+        if governed:
+            _validate_governed_metadata(meta, governed)
         seq_len = meta.get("seq_len", DEFAULT_SEQ_LEN)
         pred_len = meta.get("pred_len", DEFAULT_PRED_LEN)
         kernel = meta.get("kernel", DEFAULT_KERNEL)
@@ -451,17 +502,25 @@ def load_from_gcs(version: str = "v1"):
         try:
             meta["artifact_integrity_report"] = verify_artifact_bytes(
                 raw,
-                meta.get("checksum") or meta.get("artifact_checksum"),
-                artifact_name=f"{GCS_WEIGHTS_PREFIX}/{version}.pt",
+                governed["checksum"] if governed else meta.get("checksum") or meta.get("artifact_checksum"),
+                artifact_name=weights_path,
             )
         except ArtifactValidationError as exc:
             raise RuntimeError(f"DLinear artifact integrity failed: {exc.report}") from exc
+        if governed:
+            verify_artifact_bytes(
+                raw,
+                meta.get("checksum") or meta.get("artifact_checksum"),
+                artifact_name=weights_path,
+            )
         buf = io.BytesIO(raw)
         state = torch.load(buf, map_location="cpu", weights_only=True)
         model.load_state_dict(state)
         model.eval()
         return model, meta
     except Exception as e:
+        if governed:
+            raise
         logger.warning(f"[DLinearUniversal] Load failed: {e}")
         return None, None
 
@@ -471,22 +530,34 @@ def load_from_gcs(version: str = "v1"):
 # ─────────────────────────────────────────────────────────────────────────────
 
 # Module-level model cache
-_MODEL_CACHE: dict = {"model": None, "meta": None, "version": None}
+_MODEL_CACHE: dict[tuple[str, ...], tuple[Any, dict[str, Any]]] = {}
 
 
-def _get_model(version: str = "v1"):
+def _get_model(version: str = "v1", *, artifact_identity: dict[str, Any] | None = None):
     """Lazy load: cache model in module memory."""
-    if _MODEL_CACHE["model"] is not None and _MODEL_CACHE["version"] == version:
-        return _MODEL_CACHE["model"], _MODEL_CACHE["meta"]
-    model, meta = load_from_gcs(version)
-    _MODEL_CACHE["model"] = model
-    _MODEL_CACHE["meta"] = meta
-    _MODEL_CACHE["version"] = version
+    governed = _governed_identity(version, artifact_identity)
+    cache_key = (
+        "DLinear",
+        str(version),
+        *((governed or {}).get(key, "") for key in (
+            "artifact_id", "artifact_path", "metadata_path", "checksum"
+        )),
+    )
+    cached = _MODEL_CACHE.get(cache_key)
+    if cached is not None:
+        return cached
+    model, meta = load_from_gcs(version, artifact_identity=governed)
+    if model is not None and isinstance(meta, dict):
+        _MODEL_CACHE[cache_key] = (model, meta)
     return model, meta
 
 
 def dlinear_batch_predict(
-    series_list: list[dict], horizon_used: int = DEFAULT_PRED_LEN, version: str = "v1"
+    series_list: list[dict],
+    horizon_used: int = DEFAULT_PRED_LEN,
+    version: str = "v1",
+    *,
+    artifact_identity: dict[str, Any] | None = None,
 ) -> list[dict]:
     """Batch predict via universal DLinear.
 
@@ -503,7 +574,7 @@ def dlinear_batch_predict(
     """
     import torch
 
-    model, meta = _get_model(version)
+    model, meta = _get_model(version, artifact_identity=artifact_identity)
     if model is None:
         # No trained model yet — return error rows (caller handles)
         return [

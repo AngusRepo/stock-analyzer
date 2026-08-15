@@ -29,6 +29,7 @@ export const TASK_POLICIES: Record<string, SchedulerTaskPolicy> = {
   'market-close-refresh': { kind: 'trading_day', holidayGated: true, description: '18:10 market-close data refresh before evening chain' },
   'meta-learning-shadow': { kind: 'research', holidayGated: false, description: 'evidence-only neural meta-policy comparison and reward hydration' },
   'evening-chain': { kind: 'trading_day', holidayGated: true, description: 'post-market event-driven chain root' },
+  'screener-v2-watchdog': { kind: 'trading_day', holidayGated: true, description: 'recover incomplete same-session screener funnel and callback stages' },
   'finlab-backfill-watchdog': { kind: 'trading_day', holidayGated: true, description: 'reclaim orphaned FinLab Modal pending dispatches' },
   'allocator-ev-lifecycle-watchdog': { kind: 'trading_day', holidayGated: true, description: 'recover incomplete allocator EV lineage, snapshot, verify, and replay stages' },
   'active8-oof-daily': { kind: 'maintenance', holidayGated: false, description: 'post-midnight continuation that materializes the prior session ready purged OOF cohort' },

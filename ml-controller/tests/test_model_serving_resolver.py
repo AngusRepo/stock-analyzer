@@ -3,8 +3,11 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
+import pytest
+
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+from services import model_artifact_registry as registry  # noqa: E402
 from services import model_serving_resolver as resolver  # noqa: E402
 
 
@@ -18,6 +21,80 @@ def _fallback_pool() -> dict:
             "TimesFM": {"status": "active", "version": "old", "gcs_path": "legacy/timesfm.json"}
         },
     }
+
+
+def test_artifact_id_query_is_parameterized_deduplicated_and_bounded(monkeypatch):
+    observed: dict = {}
+
+    def fake_query(sql, params, timeout=60.0):
+        observed.update({"sql": sql, "params": params, "timeout": timeout})
+        return [{
+            "artifact_id": "XGBoost:v1:test",
+            "offline_evidence_json": '{"registration":{"metadata":{"version":"v1"}}}',
+            "live_evidence_json": "{}",
+            "offline_gate_failed_gates": "[]",
+        }]
+
+    monkeypatch.setattr(registry.d1_client, "query", fake_query)
+    rows = registry.list_artifacts_by_ids([
+        "XGBoost:v1:test",
+        "GNN:v1:test",
+        "XGBoost:v1:test",
+    ])
+
+    assert "WHERE artifact_id IN (?, ?)" in observed["sql"]
+    assert observed["params"] == ["XGBoost:v1:test", "GNN:v1:test"]
+    assert rows[0]["offline_evidence_json"]["registration"]["metadata"]["version"] == "v1"
+
+    with pytest.raises(ValueError, match="artifact_id_query_exceeds_bound"):
+        registry.list_artifacts_by_ids([f"artifact-{index}" for index in range(10)])
+
+
+def test_load_d1_champion_pool_never_uses_broad_registry_query(monkeypatch):
+    pointers = [
+        {
+            "model_name": "XGBoost",
+            "champion_version": "v1",
+            "champion_artifact_id": "XGBoost:v1:test",
+        },
+        {
+            "model_name": "GNN",
+            "champion_version": "v1",
+            "champion_artifact_id": "GNN:v1:test",
+        },
+        {
+            "model_name": "Unrelated",
+            "champion_version": "v1",
+            "champion_artifact_id": "Unrelated:v1:test",
+        },
+    ]
+    observed: dict = {}
+    monkeypatch.setattr(registry, "list_champion_pointers", lambda: pointers)
+    monkeypatch.setattr(
+        registry,
+        "list_artifact_registry",
+        lambda **_kwargs: (_ for _ in ()).throw(
+            AssertionError("broad registry query must not be used by serving")
+        ),
+    )
+
+    def exact_query(artifact_ids, *, max_ids=9):
+        observed.update({"artifact_ids": artifact_ids, "max_ids": max_ids})
+        return []
+
+    monkeypatch.setattr(registry, "list_artifacts_by_ids", exact_query)
+    pool = resolver.load_d1_champion_pool(
+        fallback_pool=_fallback_pool(),
+        required_models=("XGBoost", "GNN"),
+        sidecar_models=(),
+    )
+
+    assert observed == {
+        "artifact_ids": ["XGBoost:v1:test", "GNN:v1:test"],
+        "max_ids": 2,
+    }
+    assert pool["models"]["XGBoost"]["serving_eligible"] is False
+    assert pool["models"]["XGBoost"]["serving_block_reason"] == "missing_registry_artifact"
 
 
 def test_build_pool_from_d1_champion_pointer_serves_production_artifact():

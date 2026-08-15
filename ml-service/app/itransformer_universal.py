@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import Any
+
 from .neuralforecast_sequence_runtime import (
     DEFAULT_PRED_LEN,
     DEFAULT_SEQ_LEN,
@@ -21,10 +23,13 @@ def itransformer_batch_predict(
     series_list: list[dict],
     horizon_used: int = DEFAULT_PRED_LEN,
     version: str = "v1",
+    *,
+    artifact_identity: dict[str, Any] | None = None,
 ) -> list[dict]:
     return neuralforecast_batch_predict(
         model_name=MODEL_NAME,
         series_list=series_list,
         horizon_used=horizon_used,
         version=version,
+        artifact_identity=artifact_identity,
     )

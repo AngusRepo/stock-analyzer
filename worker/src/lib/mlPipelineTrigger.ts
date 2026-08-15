@@ -3,6 +3,11 @@ import type { Bindings } from '../types'
 import { assertMarketDataReady, type MarketDataReadinessResult } from './marketDataReadiness'
 import { readMarketRegimeState } from './marketRegimeState'
 import { buildMarketRegimeFactorPacket, upsertMarketRegimeFactorPacket } from './marketRegimeFactorPacket'
+import {
+  commitPipelineExecutionDispatch,
+  failPipelineExecutionDispatch,
+  reservePipelineExecutionDispatch,
+} from './pipelineStageLease'
 
 function resolvePipelineRunDate(runDate?: string | null): string {
   const value = (runDate || '').trim()
@@ -47,6 +52,10 @@ export async function runMLAndRiskV2(
   }
 
   await env.KV.put(lockKey, '1', { expirationTtl: 1800 })
+  let dispatchAttemptId: string | null = null
+  let dispatchReserved = false
+  let controllerAccepted = false
+  let dispatchAmbiguous = false
 
   try {
     if (!env.ML_CONTROLLER_URL) {
@@ -132,37 +141,132 @@ export async function runMLAndRiskV2(
     const headers: Record<string, string> = { 'Content-Type': 'application/json' }
     if (env.ML_CONTROLLER_SECRET) headers['X-Controller-Token'] = env.ML_CONTROLLER_SECRET
 
+    dispatchAttemptId = `pipeline-dispatch:${twDate}:${crypto.randomUUID()}`
+    headers['X-Pipeline-Run-Id'] = dispatchAttemptId
+    const reservation = await reservePipelineExecutionDispatch(env.DB, {
+      businessDate: twDate,
+      attemptId: dispatchAttemptId,
+    })
+    if (!reservation) {
+      const current = await env.DB.prepare(`
+        SELECT canonical_run_id, status
+          FROM pipeline_stage_runs
+         WHERE business_date=? AND stage='pipeline_execution'
+      `).bind(twDate).first<{ canonical_run_id?: string | null; status?: string | null }>()
+      if (current?.status === 'success') {
+        console.log(`[ML V2] Same-date pipeline already completed for ${twDate} run_id=${current.canonical_run_id ?? 'unknown'}`)
+        return `ALREADY_COMPLETED pipeline execution for ${twDate} run_id=${current.canonical_run_id ?? 'unknown'}`
+      }
+      console.log(`[ML V2] Durable pipeline execution already active for ${twDate}`)
+      return `LOCKED durable pipeline execution for ${twDate} run_id=${current?.canonical_run_id ?? 'unknown'} status=${current?.status ?? 'unknown'}`
+    }
+    dispatchReserved = true
+
     console.log(`[ML V2] Triggering ml-controller /pipeline/v2/run date=${twDate} (async, expect 202)...`)
     const t0 = Date.now()
-    const res = await fetch(`${env.ML_CONTROLLER_URL}/pipeline/v2/run?date=${twDate}`, {
-      method: 'POST',
-      headers,
-      body: JSON.stringify({}),
-      signal: AbortSignal.timeout(30_000),
-    })
+    let res: Response
+    try {
+      res = await fetch(`${env.ML_CONTROLLER_URL}/pipeline/v2/run?date=${twDate}`, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({}),
+        signal: AbortSignal.timeout(30_000),
+      })
+    } catch (error) {
+      dispatchAmbiguous = true
+      const reason = error instanceof Error ? error.message : String(error)
+      console.warn(`[ML V2] Ambiguous controller handoff; D1 reservation retained run_id=${dispatchAttemptId}: ${reason}`)
+      return `LOCKED ambiguous pipeline dispatch for ${twDate} run_id=${dispatchAttemptId}; callback or lease expiry required`
+    }
     const elapsed = ((Date.now() - t0) / 1000).toFixed(1)
 
     if (res.status !== 202 && !res.ok) {
       const text = await res.text().catch(() => '')
+      if (res.status >= 500) {
+        dispatchAmbiguous = true
+        console.warn(
+          `[ML V2] Ambiguous controller HTTP ${res.status}; D1 reservation retained run_id=${dispatchAttemptId}`,
+        )
+        return `LOCKED ambiguous pipeline dispatch for ${twDate} run_id=${dispatchAttemptId} HTTP ${res.status}; callback or lease expiry required`
+      }
       if (res.status === 409 && text.toLowerCase().includes('active execution')) {
+        await failPipelineExecutionDispatch(env.DB, {
+          businessDate: twDate,
+          attemptId: dispatchAttemptId!,
+          error: `controller_active_execution:${text.slice(0, 300)}`,
+        })
+        dispatchReserved = false
         console.log(`[ML V2] Controller reports active execution for ${twDate}; preserving active-run contract`)
         return `LOCKED active execution for ${twDate}: ${text.slice(0, 220)}`
       }
       throw new Error(`Pipeline V2 trigger HTTP ${res.status}: ${text.slice(0, 300)}`)
     }
 
-    let runId = 'unknown'
+    controllerAccepted = true
+    let responseRunId = dispatchAttemptId
     try {
       const body = await res.json() as any
-      runId = String(body?.run_id ?? 'unknown')
+      responseRunId = String(body?.run_id ?? dispatchAttemptId)
     } catch {
-      // ignore empty response body
+      responseRunId = dispatchAttemptId
+    }
+    if (responseRunId !== dispatchAttemptId) {
+      dispatchAmbiguous = true
+      throw new Error(
+        `pipeline_execution_response_identity_mismatch:requested=${dispatchAttemptId}:received=${responseRunId}`,
+      )
     }
 
-    console.log(`[ML V2] Triggered in ${elapsed}s, run_id=${runId} (awaiting callback for final status)`)
-    return `triggered run_id=${runId}, callback expected`
+    let committed = null
+    let commitError: unknown = null
+    for (let attempt = 0; attempt < 3 && !committed; attempt += 1) {
+      try {
+        committed = await commitPipelineExecutionDispatch(env.DB, {
+          businessDate: twDate,
+          attemptId: dispatchAttemptId!,
+          runId: dispatchAttemptId!,
+        })
+      } catch (error) {
+        commitError = error
+      }
+      if (!committed && attempt < 2) {
+        await new Promise((resolve) => setTimeout(resolve, 100 * (2 ** attempt)))
+      }
+    }
+    if (!committed) {
+      const current = await env.DB.prepare(`
+        SELECT canonical_run_id, status
+          FROM pipeline_stage_runs
+         WHERE business_date=? AND stage='pipeline_execution'
+      `).bind(twDate).first<{ canonical_run_id?: string | null; status?: string | null }>()
+      if (current?.canonical_run_id !== dispatchAttemptId) {
+        dispatchAmbiguous = true
+        throw new Error(
+          `pipeline_execution_dispatch_commit_lost:${twDate}:${dispatchAttemptId}:${commitError instanceof Error ? commitError.message : String(commitError ?? 'cas_rejected')}`,
+        )
+      }
+      dispatchReserved = false
+      await env.KV.put(lockKey, dispatchAttemptId, { expirationTtl: 1800 }).catch(() => {})
+      console.warn(
+        `[ML V2] Controller accepted but D1 remained status=${current.status ?? 'unknown'}; exact callback can close run_id=${dispatchAttemptId}`,
+      )
+      return `triggered run_id=${dispatchAttemptId}, authority commit pending exact callback`
+    }
+    dispatchReserved = false
+    await env.KV.put(lockKey, dispatchAttemptId, { expirationTtl: 1800 })
+    console.log(`[ML V2] Triggered in ${elapsed}s, run_id=${dispatchAttemptId} (awaiting callback for final status)`)
+    return `triggered run_id=${dispatchAttemptId}, callback expected`
   } catch (e: any) {
-    await env.KV.delete(lockKey).catch(() => {})
+    if (dispatchReserved && dispatchAttemptId && !controllerAccepted && !dispatchAmbiguous) {
+      await failPipelineExecutionDispatch(env.DB, {
+        businessDate: twDate,
+        attemptId: dispatchAttemptId,
+        error: e?.message ?? String(e),
+      }).catch(() => false)
+    }
+    if (!controllerAccepted && !dispatchAmbiguous) {
+      await env.KV.delete(lockKey).catch(() => {})
+    }
     throw e
   }
 }

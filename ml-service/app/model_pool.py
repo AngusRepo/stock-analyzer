@@ -214,13 +214,15 @@ def load_pool() -> Optional[dict]:
             return None
         _POOL_CACHE = json.loads(blob.download_as_text().lstrip("\ufeff"))
         _POOL_CACHE_LOADED_AT = time.time()
-        pool = sanitize_pool_active_alpha(json.loads(json.dumps(_POOL_CACHE)))
-        from .serving_resolver import resolve_serving_pool
-
-        return resolve_serving_pool(pool)
     except Exception as e:
         logger.warning(f"[ModelPool] Load failed: {e}")
         return None
+    pool = sanitize_pool_active_alpha(json.loads(json.dumps(_POOL_CACHE)))
+    from .serving_resolver import resolve_serving_pool
+
+    # D1 resolution failures are serving failures, not missing GCS pool files.
+    # Preserve their typed root cause for the batch fail-closed envelope.
+    return resolve_serving_pool(pool)
 
 
 def save_pool(pool: dict) -> None:

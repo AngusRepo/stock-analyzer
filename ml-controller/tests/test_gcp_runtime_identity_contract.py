@@ -14,7 +14,8 @@ def test_no_runtime_workload_uses_default_compute_identity() -> None:
         assert accounts[alias] != default_email
     for alias in contract["jobs"].values():
         assert accounts[alias] != default_email
-    assert len(contract["scheduler_oauth_callers"]) == 10
+    assert len(contract["scheduler_oauth_callers"]) == 9
+    assert "ml-controller-min-1-evening" not in contract["scheduler_oauth_callers"]
     assert set(contract["scheduler_oauth_callers"].values()) == {
         "ml-controller-min-0",
         "ml-controller-min-1",

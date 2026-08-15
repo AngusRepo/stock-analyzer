@@ -3,6 +3,7 @@ from __future__ import annotations
 import io
 import json
 import sys
+import hashlib
 from pathlib import Path
 
 import joblib
@@ -263,3 +264,132 @@ def test_model_pool_active_rejects_inconsistent_sklearn_health(monkeypatch):
 
     assert model is None
     assert metadata is None
+
+
+def _governed_metadata(raw: bytes, *, schema_version: str = "model-artifact-v2") -> str:
+    return json.dumps({
+        "schema_version": schema_version,
+        "model_name": "XGBoost",
+        "feature_names": ["a"],
+        "feature_medians": {"a": 0.0},
+        "sample_count": 10,
+        "trained_at": "2026-08-14T00:00:00Z",
+        "artifact_checksum": "sha256:" + hashlib.sha256(raw).hexdigest(),
+        "training_run_id": "test-governed-explicit-path",
+    })
+
+
+def test_governed_explicit_path_accepts_valid_v2_metadata_and_checksum(monkeypatch):
+    model_buf = io.BytesIO()
+    joblib.dump({"model": "xgb"}, model_buf)
+    raw = model_buf.getvalue()
+    bucket = _FakeBucket({
+        "universal/xgboost/v1.joblib": _FakeBlob(raw),
+        "universal/xgboost/metadata_v1.json": _FakeBlob(_governed_metadata(raw)),
+    })
+    monkeypatch.setattr(model_store, "_bucket", bucket)
+    model_store.clear_model_cache()
+    checksum = "sha256:" + hashlib.sha256(raw).hexdigest()
+
+    model, metadata = model_store.load_model(
+        0,
+        "XGBoost",
+        explicit_path="universal/xgboost/v1.joblib",
+        explicit_metadata_path="universal/xgboost/metadata_v1.json",
+        expected_version="v1",
+        expected_artifact_id="XGBoost:v1:test",
+        expected_checksum=checksum,
+        require_governed_artifact=True,
+    )
+
+    assert model == {"model": "xgb"}
+    assert metadata["artifact_integrity_report"]["status"] == "ok"
+    assert metadata["artifact_health_report"]["status"] == "ok"
+
+
+def test_governed_explicit_path_rejects_missing_metadata_before_deserialization(monkeypatch):
+    model_buf = io.BytesIO()
+    joblib.dump({"model": "xgb"}, model_buf)
+    bucket = _FakeBucket({
+        "universal/xgboost/v1.joblib": _FakeBlob(model_buf.getvalue()),
+    })
+    monkeypatch.setattr(model_store, "_bucket", bucket)
+    monkeypatch.setattr(
+        model_store,
+        "load_joblib_with_artifact_health",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("governed artifact must not deserialize without metadata")
+        ),
+    )
+    model_store.clear_model_cache()
+
+    assert model_store.load_model(
+        0,
+        "XGBoost",
+        explicit_path="universal/xgboost/v1.joblib",
+        explicit_metadata_path="universal/xgboost/metadata_v1.json",
+        expected_version="v1",
+        expected_artifact_id="XGBoost:v1:test",
+        expected_checksum="sha256:" + hashlib.sha256(model_buf.getvalue()).hexdigest(),
+        require_governed_artifact=True,
+    ) == (None, None)
+
+
+def test_governed_explicit_path_rejects_legacy_metadata_before_deserialization(monkeypatch):
+    model_buf = io.BytesIO()
+    joblib.dump({"model": "xgb"}, model_buf)
+    bucket = _FakeBucket({
+        "universal/xgboost/v1.joblib": _FakeBlob(model_buf.getvalue()),
+        "universal/xgboost/metadata_v1.json": _FakeBlob(json.dumps({"feature_names": ["a"]})),
+    })
+    monkeypatch.setattr(model_store, "_bucket", bucket)
+    monkeypatch.setattr(
+        model_store,
+        "load_joblib_with_artifact_health",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("governed artifact must not deserialize legacy metadata")
+        ),
+    )
+    model_store.clear_model_cache()
+
+    assert model_store.load_model(
+        0,
+        "XGBoost",
+        explicit_path="universal/xgboost/v1.joblib",
+        explicit_metadata_path="universal/xgboost/metadata_v1.json",
+        expected_version="v1",
+        expected_artifact_id="XGBoost:v1:test",
+        expected_checksum="sha256:" + hashlib.sha256(model_buf.getvalue()).hexdigest(),
+        require_governed_artifact=True,
+    ) == (None, None)
+
+
+def test_governed_explicit_path_does_not_reuse_ungoverned_cache(monkeypatch):
+    model_buf = io.BytesIO()
+    joblib.dump({"model": "xgb"}, model_buf)
+    raw = model_buf.getvalue()
+    bucket = _FakeBucket({
+        "universal/xgboost/v1.joblib": _FakeBlob(raw),
+        "universal/xgboost/metadata_v1.json": _FakeBlob(json.dumps({"feature_names": ["a"]})),
+    })
+    monkeypatch.setattr(model_store, "_bucket", bucket)
+    model_store.clear_model_cache()
+
+    ungoverned, _ = model_store.load_model(
+        0,
+        "XGBoost",
+        explicit_path="universal/xgboost/v1.joblib",
+    )
+    governed = model_store.load_model(
+        0,
+        "XGBoost",
+        explicit_path="universal/xgboost/v1.joblib",
+        explicit_metadata_path="universal/xgboost/metadata_v1.json",
+        expected_version="v1",
+        expected_artifact_id="XGBoost:v1:test",
+        expected_checksum="sha256:" + hashlib.sha256(raw).hexdigest(),
+        require_governed_artifact=True,
+    )
+
+    assert ungoverned == {"model": "xgb"}
+    assert governed == (None, None)

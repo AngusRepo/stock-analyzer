@@ -14,6 +14,7 @@ Real LangGraph this time:
 """
 from __future__ import annotations
 import asyncio
+import hashlib
 import json
 import logging
 import math
@@ -45,6 +46,7 @@ from services.payload_builder import (
 )
 from services.active_model_policy import (
     ACTIVE_ALPHA_MODELS,
+    CORE_CROSS_SECTIONAL_ALPHA_MODELS,
     TIMESFM_L2_SIDECAR_MODELS,
     RETIRED_ALPHA_MODELS,
     daily_sequence_target_points,
@@ -117,6 +119,58 @@ TIMESFM_L2_SIDECAR_MODEL_SET = set(TIMESFM_L2_SIDECAR_MODELS)
 RETIRED_ALPHA_MODEL_SET = set(RETIRED_ALPHA_MODELS)
 MODEL_POOL_ALLOWED_STATUSES = {"active", "degraded", "challenger", "retired"}
 MODEL_POOL_SERVING_STATUSES = {"active", "degraded"}
+
+PIPELINE_MODAL_SERVING_MANIFEST_SCHEMA = "pipeline-modal-serving-manifest-v1"
+
+PIPELINE_MODAL_ENSEMBLE_FIELDS = (
+    "rolling_ic",
+    "ic_4w_avg",
+    "weekly_ic",
+    "consecutive_negative_weeks",
+    "last_ic_status",
+    "last_ic_root_cause",
+    "last_ic_sample_count",
+    "last_ic_score_sources",
+    "last_ic_by_segment",
+    "last_ic_error",
+    "last_ic_diagnostics",
+    "last_ic_evaluation_contract",
+    "last_ic_semantic_version",
+    "last_ic_target_semantic_version",
+    "last_ic_artifact_version",
+    "serving_ic_prior",
+    "serving_ic_source",
+)
+PIPELINE_MODAL_RESIDUAL_SHADOW_FIELDS = (
+    "status",
+    "version",
+    "gcs_path",
+    "metadata_path",
+    "serving_artifact_id",
+    "checksum",
+    "model_type",
+    "balance_family",
+    "shadow_since",
+    "weekly_ic",
+    "ic_4w_avg",
+    "consecutive_negative_weeks",
+    "vote_weight",
+)
+PIPELINE_MODAL_FORMAL_SLOT_FIELDS = (
+    "status", "version", "gcs_path", "metadata_path", "artifact_schema",
+    "canonical_source", "direct_prediction", "vote_weight", "note",
+)
+PIPELINE_MODAL_RANK_STACKER_SCHEMA = "pipeline-modal-rank-stacker-snapshot-v1"
+PIPELINE_MODAL_RANK_STACKER_ARTIFACT_PATH = "0/stacking_meta.joblib"
+PIPELINE_MODAL_RANK_STACKER_METADATA_PATH = "0/metadata_stacking.json"
+PIPELINE_MODAL_RANK_STACKER_MAX_BYTES = 65_536
+PIPELINE_MODAL_RANK_STACKER_EXCLUDED_REASON = (
+    "legacy_freshness_contract_invalid_not_serving"
+)
+PIPELINE_MODAL_COMPACT_FIELD_MAX_BYTES = 65_536
+PIPELINE_MODAL_MANIFEST_MAX_BYTES = 1_048_576
+PIPELINE_MODAL_COMPACT_MAX_DEPTH = 8
+PIPELINE_MODAL_COMPACT_MAX_COLLECTION = 256
 
 D1_RETRY_DELAYS_SECONDS = (3.0, 8.0, 15.0)
 D1_RETRYABLE_MARKERS = (
@@ -3448,8 +3502,560 @@ def _read_pipeline_async_state_artifact(gcs_uri: str) -> PipelineStateV2:
     return state
 
 
+def _pipeline_modal_canonical_digest(value: dict[str, Any]) -> str:
+    encoded = json.dumps(
+        value,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    if len(encoded) > PIPELINE_MODAL_MANIFEST_MAX_BYTES:
+        raise RuntimeError(
+            f"pipeline_modal_serving_manifest:total_bytes:{len(encoded)}"
+        )
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def _pipeline_modal_registry_checksum(value: Any, *, model_name: str) -> str:
+    checksum = str(value or "").strip().lower()
+    if len(checksum) == 64 and all(char in "0123456789abcdef" for char in checksum):
+        checksum = f"sha256:{checksum}"
+    digest = checksum.removeprefix("sha256:")
+    if (
+        not checksum.startswith("sha256:")
+        or len(digest) != 64
+        or any(char not in "0123456789abcdef" for char in digest)
+    ):
+        raise RuntimeError(
+            f"pipeline_modal_serving_manifest:registry_checksum_invalid:{model_name}"
+        )
+    return checksum
+
+
+def _pipeline_modal_compact_value(value: Any, *, label: str) -> Any:
+    def visit(current: Any, *, depth: int, path: str) -> None:
+        if depth > PIPELINE_MODAL_COMPACT_MAX_DEPTH:
+            raise RuntimeError(f"pipeline_modal_serving_manifest:compact_depth:{path}")
+        if current is None or isinstance(current, (str, bool)):
+            if isinstance(current, str) and len(current) > 4096:
+                raise RuntimeError(f"pipeline_modal_serving_manifest:compact_string:{path}")
+            return
+        if isinstance(current, (int, float)):
+            if not math.isfinite(float(current)):
+                raise RuntimeError(f"pipeline_modal_serving_manifest:compact_non_finite:{path}")
+            return
+        if isinstance(current, list):
+            if len(current) > PIPELINE_MODAL_COMPACT_MAX_COLLECTION:
+                raise RuntimeError(f"pipeline_modal_serving_manifest:compact_list:{path}")
+            for index, item in enumerate(current):
+                visit(item, depth=depth + 1, path=f"{path}[{index}]")
+            return
+        if isinstance(current, dict):
+            if len(current) > PIPELINE_MODAL_COMPACT_MAX_COLLECTION:
+                raise RuntimeError(f"pipeline_modal_serving_manifest:compact_object:{path}")
+            for key, item in current.items():
+                if not isinstance(key, str) or len(key) > 256:
+                    raise RuntimeError(f"pipeline_modal_serving_manifest:compact_key:{path}")
+                visit(item, depth=depth + 1, path=f"{path}.{key}")
+            return
+        raise RuntimeError(
+            f"pipeline_modal_serving_manifest:compact_type:{path}:{type(current).__name__}"
+        )
+
+    visit(value, depth=0, path=label)
+    encoded = json.dumps(
+        value,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+        allow_nan=False,
+    ).encode("utf-8")
+    if len(encoded) > PIPELINE_MODAL_COMPACT_FIELD_MAX_BYTES:
+        raise RuntimeError(
+            f"pipeline_modal_serving_manifest:compact_bytes:{label}:{len(encoded)}"
+        )
+    return json.loads(encoded.decode("utf-8"))
+
+
+def _pipeline_modal_ensemble_projection(
+    entry: dict[str, Any],
+    *,
+    model_name: str,
+) -> dict[str, Any]:
+    projection = {
+        field: entry.get(field)
+        for field in PIPELINE_MODAL_ENSEMBLE_FIELDS
+    }
+    if not isinstance(projection.get("weekly_ic"), list):
+        projection["weekly_ic"] = []
+    return _pipeline_modal_compact_value(
+        projection,
+        label=f"ensemble.{model_name}",
+    )
+
+
+def _pipeline_modal_shadow_projection(serving_pool: dict[str, Any]) -> list[dict[str, Any]]:
+    shadows = serving_pool.get("shadow_models")
+    shadows = shadows if isinstance(shadows, dict) else {}
+    entry = shadows.get("ResidualMLP")
+    if entry is None:
+        return []
+    if not isinstance(entry, dict):
+        raise RuntimeError("pipeline_modal_serving_manifest:residual_shadow_invalid")
+    projection = {
+        field: entry.get(field)
+        for field in PIPELINE_MODAL_RESIDUAL_SHADOW_FIELDS
+    }
+    required_identity = (
+        "version", "gcs_path", "metadata_path", "serving_artifact_id", "checksum"
+    )
+    missing = [field for field in required_identity if not str(projection.get(field) or "").strip()]
+    if missing:
+        raise RuntimeError(
+            "pipeline_modal_serving_manifest:residual_shadow_identity_missing:"
+            + ",".join(missing)
+        )
+    if str(projection.get("status") or "").strip() != "challenger":
+        raise RuntimeError("pipeline_modal_serving_manifest:residual_shadow_status_invalid")
+    try:
+        vote_weight = float(projection.get("vote_weight") or 0.0)
+    except (TypeError, ValueError) as exc:
+        raise RuntimeError("pipeline_modal_serving_manifest:residual_shadow_vote_invalid") from exc
+    if not math.isfinite(vote_weight) or vote_weight != 0.0:
+        raise RuntimeError("pipeline_modal_serving_manifest:residual_shadow_vote_nonzero")
+    projection["checksum"] = _pipeline_modal_registry_checksum(
+        projection["checksum"],
+        model_name="ResidualMLP",
+    )
+    projection["model"] = "ResidualMLP"
+    return [_pipeline_modal_compact_value(projection, label="shadow.ResidualMLP")]
+
+
+def _pipeline_modal_formal_slot_projection(
+    serving_pool: dict[str, Any],
+) -> list[dict[str, Any]]:
+    slots = serving_pool.get("formal_layer3_slots")
+    slots = slots if isinstance(slots, dict) else {}
+    projection: list[dict[str, Any]] = []
+    for model_name in sorted(str(name) for name in slots):
+        entry = slots.get(model_name)
+        if not isinstance(entry, dict):
+            raise RuntimeError(
+                f"pipeline_modal_serving_manifest:formal_slot_invalid:{model_name}"
+            )
+        row = {
+            "model": model_name,
+            **{field: entry.get(field) for field in PIPELINE_MODAL_FORMAL_SLOT_FIELDS},
+        }
+        try:
+            vote_weight = float(row.get("vote_weight") or 0.0)
+        except (TypeError, ValueError) as exc:
+            raise RuntimeError(
+                f"pipeline_modal_serving_manifest:formal_slot_vote_invalid:{model_name}"
+            ) from exc
+        if not math.isfinite(vote_weight):
+            raise RuntimeError(
+                f"pipeline_modal_serving_manifest:formal_slot_vote_non_finite:{model_name}"
+            )
+        row["vote_weight"] = vote_weight
+        row["direct_prediction"] = bool(row.get("direct_prediction"))
+        if row["direct_prediction"] or vote_weight != 0.0:
+            raise RuntimeError(
+                f"pipeline_modal_serving_manifest:formal_slot_not_audit_only:{model_name}"
+            )
+        projection.append(
+            _pipeline_modal_compact_value(row, label=f"formal_slot.{model_name}")
+        )
+    return projection
+
+
+def _load_pipeline_modal_rank_stacker_snapshot() -> dict[str, Any]:
+    """Freeze audit identity without activating the legacy stacker."""
+    from google.cloud import storage
+
+    bucket_name = os.environ.get("GCS_BUCKET_NAME", "").strip()
+    if not bucket_name:
+        raise RuntimeError("pipeline_modal_serving_manifest:rank_stacker_bucket_missing")
+    bucket = storage.Client().bucket(bucket_name)
+    artifact_blob = bucket.blob(PIPELINE_MODAL_RANK_STACKER_ARTIFACT_PATH)
+    metadata_blob = bucket.blob(PIPELINE_MODAL_RANK_STACKER_METADATA_PATH)
+    if not artifact_blob.exists() or not metadata_blob.exists():
+        return {
+            "schema_version": PIPELINE_MODAL_RANK_STACKER_SCHEMA,
+            "status": "absent",
+            "effective_status": "excluded",
+            "reason": "artifact_or_metadata_missing",
+        }
+
+    artifact_blob.reload()
+    metadata_bytes = metadata_blob.download_as_bytes()
+    artifact_identity = {
+        "generation": str(artifact_blob.generation or ""),
+        "etag": str(artifact_blob.etag or ""),
+        "md5_hash": str(artifact_blob.md5_hash or ""),
+        "crc32c": str(artifact_blob.crc32c or ""),
+        "size": int(artifact_blob.size or 0),
+    }
+    if (
+        not artifact_identity["generation"]
+        or not (artifact_identity["md5_hash"] or artifact_identity["crc32c"])
+        or artifact_identity["size"] <= 0
+        or artifact_identity["size"] > PIPELINE_MODAL_RANK_STACKER_MAX_BYTES
+    ):
+        raise RuntimeError(
+            "pipeline_modal_serving_manifest:rank_stacker_artifact_identity_invalid"
+        )
+    if not metadata_bytes or len(metadata_bytes) > PIPELINE_MODAL_RANK_STACKER_MAX_BYTES:
+        raise RuntimeError(
+            "pipeline_modal_serving_manifest:rank_stacker_metadata_size_invalid"
+        )
+    try:
+        metadata = json.loads(metadata_bytes.decode("utf-8-sig"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise RuntimeError(
+            "pipeline_modal_serving_manifest:rank_stacker_metadata_invalid"
+        ) from exc
+    if not isinstance(metadata, dict):
+        raise RuntimeError(
+            "pipeline_modal_serving_manifest:rank_stacker_metadata_not_object"
+        )
+    required_metadata = {
+        "stock_id": 0,
+        "target_type": "rank",
+        "model_family": "ridge_rank_stacker",
+        "stacker_version": "v2_rank_stacker",
+    }
+    mismatched = [
+        key for key, expected in required_metadata.items()
+        if metadata.get(key) != expected
+    ]
+    model_order = metadata.get("model_order")
+    try:
+        dimension_matches = int(metadata.get("meta_feature_dim") or -1) == len(model_order or [])
+    except (TypeError, ValueError):
+        dimension_matches = False
+    if (
+        mismatched
+        or not isinstance(model_order, list)
+        or not model_order
+        or any(str(name) not in ACTIVE_ALPHA_MODEL_SET for name in model_order)
+        or not dimension_matches
+    ):
+        raise RuntimeError(
+            "pipeline_modal_serving_manifest:rank_stacker_contract_invalid:"
+            + ",".join(mismatched or ["model_order_or_dimension"])
+        )
+    trained_at_raw = str(metadata.get("trained_at") or "").strip()
+    normalized_utc_fresh = False
+    naive_timestamp = False
+    try:
+        trained_at = datetime.fromisoformat(trained_at_raw.replace("Z", "+00:00"))
+        naive_timestamp = trained_at.tzinfo is None
+        if naive_timestamp:
+            trained_at = trained_at.replace(tzinfo=timezone.utc)
+        age = datetime.now(timezone.utc) - trained_at.astimezone(timezone.utc)
+        normalized_utc_fresh = age >= timedelta(0) and age.days <= 10
+    except (TypeError, ValueError):
+        pass
+    return _pipeline_modal_compact_value(
+        {
+            "schema_version": PIPELINE_MODAL_RANK_STACKER_SCHEMA,
+            "status": "present",
+            "effective_status": "excluded",
+            "reason": PIPELINE_MODAL_RANK_STACKER_EXCLUDED_REASON,
+            "artifact_path": PIPELINE_MODAL_RANK_STACKER_ARTIFACT_PATH,
+            "metadata_path": PIPELINE_MODAL_RANK_STACKER_METADATA_PATH,
+            "artifact_identity": artifact_identity,
+            "metadata_checksum": "sha256:" + hashlib.sha256(metadata_bytes).hexdigest(),
+            "metadata": metadata,
+            "freshness_audit": {
+                "trained_at": trained_at_raw or None,
+                "naive_timestamp": naive_timestamp,
+                "normalized_utc_fresh": normalized_utc_fresh,
+                "serving_enabled": False,
+            },
+        },
+        label="rank_stacker",
+    )
+
+
+def _pipeline_modal_rank_stacker_snapshot() -> dict[str, Any]:
+    try:
+        return _load_pipeline_modal_rank_stacker_snapshot()
+    except Exception as exc:  # noqa: BLE001 - audit-only dependency must not block serving.
+        typed_code = type(exc).__name__.lower()
+        if not typed_code.replace("_", "").isalnum():
+            typed_code = "unknown_error"
+        return {
+            "schema_version": PIPELINE_MODAL_RANK_STACKER_SCHEMA,
+            "status": "unavailable",
+            "effective_status": "excluded",
+            "reason": f"audit_snapshot_unavailable:{typed_code}",
+        }
+
+
+def _pipeline_modal_ic_weight_policy() -> dict[str, Any]:
+    try:
+        prior = float(os.environ.get("IC_WEIGHT_PRIOR", "0.015") or "0.015")
+        prior_strength = float(
+            os.environ.get("IC_WEIGHT_PRIOR_STRENGTH", "20") or "20"
+        )
+        min_samples = int(
+            os.environ.get("IC_WEIGHT_MIN_SAMPLES_FOR_HARD_ZERO", "40") or "40"
+        )
+    except (TypeError, ValueError) as exc:
+        raise RuntimeError(
+            "pipeline_modal_serving_manifest:ic_weight_policy_invalid"
+        ) from exc
+    if (
+        not math.isfinite(prior)
+        or not -1.0 <= prior <= 1.0
+        or not math.isfinite(prior_strength)
+        or not 0.0 <= prior_strength <= 1_000_000.0
+        or not 0 <= min_samples <= 1_000_000
+    ):
+        raise RuntimeError(
+            "pipeline_modal_serving_manifest:ic_weight_policy_out_of_bounds"
+        )
+    return {
+        "schema_version": "ic-weight-policy-v1",
+        "prior_ic": prior,
+        "prior_strength": prior_strength,
+        "min_samples_for_hard_zero": min_samples,
+        "source": "controller_dispatch_environment",
+    }
+
+
+def _pipeline_modal_registry_identity_rows(serving_pool: dict[str, Any]) -> list[dict[str, Any]]:
+    pool_models = serving_pool.get("models") if isinstance(serving_pool.get("models"), dict) else {}
+    artifact_ids = [
+        str((pool_models.get(model_name) or {}).get("serving_artifact_id") or "").strip()
+        for model_name in ACTIVE_ALPHA_MODELS
+    ]
+    if any(not artifact_id for artifact_id in artifact_ids):
+        missing = [
+            model_name
+            for model_name, artifact_id in zip(ACTIVE_ALPHA_MODELS, artifact_ids)
+            if not artifact_id
+        ]
+        raise RuntimeError(
+            "pipeline_modal_serving_manifest:artifact_id_missing:"
+            + ",".join(missing)
+        )
+    placeholders = ", ".join("?" for _ in artifact_ids)
+    return d1_client.query(
+        f"""
+        SELECT artifact_id, model_name, version, artifact_path, metadata_path,
+               checksum, state, offline_gate_decision, live_gate_status,
+               json_extract(
+                   offline_evidence_json,
+                   '$.registration.metadata.schema_version'
+               ) AS metadata_schema_version,
+               json_extract(
+                   offline_evidence_json,
+                   '$.registration.metadata.target_semantic_version'
+               ) AS registry_target_semantic_version
+          FROM model_artifact_registry
+         WHERE artifact_id IN ({placeholders})
+        """,
+        artifact_ids,
+    )
+
+
+def _build_pipeline_modal_serving_manifest(
+    serving_pool: dict[str, Any],
+    *,
+    registry_rows: list[dict[str, Any]],
+    rank_stacker_snapshot: dict[str, Any] | None = None,
+) -> tuple[dict[str, Any], str]:
+    """Project one frozen, compact Active-8 identity snapshot for Modal."""
+    pool_models = serving_pool.get("models") if isinstance(serving_pool.get("models"), dict) else {}
+    rows_by_id: dict[str, dict[str, Any]] = {}
+    duplicate_ids: list[str] = []
+    for row in registry_rows:
+        artifact_id = str((row or {}).get("artifact_id") or "").strip()
+        if not artifact_id:
+            continue
+        if artifact_id in rows_by_id:
+            duplicate_ids.append(artifact_id)
+        rows_by_id[artifact_id] = row
+    if duplicate_ids:
+        raise RuntimeError(
+            "pipeline_modal_serving_manifest:duplicate_registry_artifact_id:"
+            + ",".join(sorted(set(duplicate_ids)))
+        )
+
+    models: list[dict[str, Any]] = []
+    for model_name in ACTIVE_ALPHA_MODELS:
+        entry = pool_models.get(model_name)
+        if not isinstance(entry, dict):
+            raise RuntimeError(
+                f"pipeline_modal_serving_manifest:pool_entry_missing:{model_name}"
+            )
+        status = str(entry.get("status") or "").strip()
+        if status not in MODEL_POOL_SERVING_STATUSES:
+            raise RuntimeError(
+                f"pipeline_modal_serving_manifest:active8_not_serving:{model_name}:{status or '<missing>'}"
+            )
+        serving_block_reason = str(entry.get("serving_block_reason") or "").strip()
+        serving_eligible = entry.get("serving_eligible") is not False and not serving_block_reason
+        effective_status = status if serving_eligible else "challenger"
+        if not serving_eligible and not serving_block_reason:
+            raise RuntimeError(
+                f"pipeline_modal_serving_manifest:exclusion_reason_missing:{model_name}"
+            )
+        if len(serving_block_reason) > 4096:
+            raise RuntimeError(
+                f"pipeline_modal_serving_manifest:exclusion_reason_too_large:{model_name}"
+            )
+        expected = {
+            "model_name": model_name,
+            "version": str(entry.get("version") or "").strip(),
+            "artifact_id": str(entry.get("serving_artifact_id") or "").strip(),
+            "artifact_path": str(entry.get("gcs_path") or "").strip(),
+            "metadata_path": str(entry.get("metadata_path") or "").strip(),
+        }
+        missing = [key for key, value in expected.items() if not value]
+        if missing:
+            raise RuntimeError(
+                f"pipeline_modal_serving_manifest:pool_identity_missing:{model_name}:"
+                + ",".join(missing)
+            )
+        registry = rows_by_id.get(expected["artifact_id"])
+        if not registry:
+            raise RuntimeError(
+                f"pipeline_modal_serving_manifest:registry_artifact_missing:{model_name}:"
+                f"{expected['artifact_id']}"
+            )
+        actual = {
+            "model_name": str(registry.get("model_name") or "").strip(),
+            "version": str(registry.get("version") or "").strip(),
+            "artifact_id": str(registry.get("artifact_id") or "").strip(),
+            "artifact_path": str(registry.get("artifact_path") or "").strip(),
+            "metadata_path": str(registry.get("metadata_path") or "").strip(),
+        }
+        mismatches = [
+            key for key in expected
+            if actual.get(key) != expected[key]
+        ]
+        if mismatches:
+            raise RuntimeError(
+                f"pipeline_modal_serving_manifest:pool_registry_identity_mismatch:{model_name}:"
+                + ",".join(mismatches)
+            )
+        target_semantic_version = str(
+            registry.get("registry_target_semantic_version")
+            or entry.get("target_semantic_version")
+            or ""
+        ).strip()
+        if serving_eligible and target_semantic_version != LABEL_SCHEMA_VERSION:
+            raise RuntimeError(
+                "pipeline_modal_serving_manifest:target_semantic_mismatch:"
+                f"{model_name}:{target_semantic_version or '<missing>'}:"
+                f"expected={LABEL_SCHEMA_VERSION}"
+            )
+
+        checksum = _pipeline_modal_registry_checksum(
+            registry.get("checksum"),
+            model_name=model_name,
+        )
+        models.append({
+            "model": model_name,
+            "status": status,
+            "effective_status": effective_status,
+            "version": expected["version"],
+            "artifact_id": expected["artifact_id"],
+            "artifact_path": expected["artifact_path"],
+            "metadata_path": expected["metadata_path"],
+            "checksum": checksum,
+            "health": {
+                "registry_state": str(registry.get("state") or "").strip(),
+                "offline_gate_decision": str(registry.get("offline_gate_decision") or "").strip(),
+                "live_gate_status": str(registry.get("live_gate_status") or "").strip(),
+                "serving_eligible": serving_eligible,
+                "serving_block_reason": serving_block_reason or None,
+            },
+            "schema": {
+                "metadata_schema_version": str(registry.get("metadata_schema_version") or "").strip() or None,
+                "target_semantic_version": target_semantic_version or None,
+                "sequence_contract": _json_safe(entry.get("sequence_contract"))
+                if isinstance(entry.get("sequence_contract"), dict)
+                else None,
+            },
+            "ensemble": _pipeline_modal_ensemble_projection(entry, model_name=model_name),
+        })
+
+    manifest = {
+        "schema_version": PIPELINE_MODAL_SERVING_MANIFEST_SCHEMA,
+        "source_of_truth": "model_champion_pointers/model_artifact_registry",
+        "models": models,
+        "shadow_models": _pipeline_modal_shadow_projection(serving_pool),
+        "formal_layer3_slots": _pipeline_modal_formal_slot_projection(serving_pool),
+        "rank_stacker": rank_stacker_snapshot or {
+            "schema_version": PIPELINE_MODAL_RANK_STACKER_SCHEMA,
+            "status": "absent",
+            "effective_status": "excluded",
+            "reason": "snapshot_not_provided",
+        },
+        "ic_weight_policy": _pipeline_modal_ic_weight_policy(),
+    }
+    return manifest, _pipeline_modal_canonical_digest(manifest)
+
+
+def _pipeline_modal_manifest_identities(
+    manifest: dict[str, Any],
+    *,
+    serving_only: bool = False,
+) -> dict[str, dict[str, Any]]:
+    return {
+        str(row.get("model") or ""): {
+            key: row.get(key)
+            for key in (
+                "version",
+                "artifact_id",
+                "artifact_path",
+                "metadata_path",
+                "checksum",
+            )
+        }
+        for row in (manifest.get("models") or [])
+        if isinstance(row, dict) and str(row.get("model") or "").strip()
+        and (
+            not serving_only
+            or str(row.get("effective_status") or "") in MODEL_POOL_SERVING_STATUSES
+        )
+    }
+
+
+def _pipeline_modal_manifest_coverage(manifest: dict[str, Any]) -> dict[str, Any]:
+    rows = [row for row in (manifest.get("models") or []) if isinstance(row, dict)]
+    excluded = [
+        {
+            "model": str(row.get("model") or ""),
+            "effective_status": str(row.get("effective_status") or ""),
+            "reason": str((row.get("health") or {}).get("serving_block_reason") or "")
+            or "not_serving_eligible",
+        }
+        for row in rows
+        if str(row.get("effective_status") or "") not in MODEL_POOL_SERVING_STATUSES
+    ]
+    return {
+        "slot_count": len(rows),
+        "serving_model_count": len(rows) - len(excluded),
+        "excluded_models": excluded,
+    }
+
+
+def _pipeline_modal_expected_source_sha() -> str:
+    source_sha = str(os.environ.get("STOCKVISION_SOURCE_SHA") or "").strip().lower()
+    if (
+        len(source_sha) != 40 or any(char not in "0123456789abcdef" for char in source_sha)
+    ):
+        raise RuntimeError("pipeline_modal_source_sha_missing_or_invalid")
+    return source_sha
+
+
 async def _attach_pipeline_modal_serving_context(state: PipelineStateV2) -> dict:
-    model_status, active_versions, _challenger_versions, _pool_versions_loaded = await asyncio.to_thread(_load_model_pool_versions)
     (
         serving_model_status,
         _serving_ic_universe,
@@ -3458,19 +4064,62 @@ async def _attach_pipeline_modal_serving_context(state: PipelineStateV2) -> dict
         _serving_used_pool,
         _serving_pool,
     ) = await asyncio.to_thread(_load_pool_and_ic)
-    if serving_model_status:
-        model_status = _merge_model_status_preserving_sidecars(model_status, serving_model_status)
+    if not isinstance(_serving_pool, dict) or not _serving_pool:
+        raise RuntimeError("pipeline_modal_serving_context:serving_pool_missing")
+    model_status = dict(serving_model_status or {})
+    active_versions: dict[str, str] = {}
+    for section_name in ("models", "l2_feature_sidecars", "state_overlays"):
+        section = _serving_pool.get(section_name)
+        if not isinstance(section, dict):
+            continue
+        for model_name, entry in section.items():
+            if not isinstance(entry, dict):
+                continue
+            status = _require_model_pool_status(
+                entry,
+                str(model_name),
+                "pipeline_modal_serving_context",
+            )
+            model_status[str(model_name)] = status
+            if status in MODEL_POOL_SERVING_STATUSES:
+                active_versions[str(model_name)] = _require_serving_model_version(
+                    entry,
+                    str(model_name),
+                    "pipeline_modal_serving_context",
+                )
+    registry_rows, rank_stacker_snapshot = await asyncio.gather(
+        asyncio.to_thread(_pipeline_modal_registry_identity_rows, _serving_pool),
+        asyncio.to_thread(_pipeline_modal_rank_stacker_snapshot),
+    )
+    serving_manifest, serving_manifest_digest = _build_pipeline_modal_serving_manifest(
+        _serving_pool,
+        registry_rows=registry_rows,
+        rank_stacker_snapshot=rank_stacker_snapshot,
+    )
+    expected_source_sha = _pipeline_modal_expected_source_sha()
+    for row in serving_manifest.get("models") or []:
+        if not isinstance(row, dict):
+            continue
+        model_name = str(row.get("model") or "").strip()
+        effective_status = str(row.get("effective_status") or "").strip()
+        model_status[model_name] = effective_status
+        active_versions.pop(model_name, None)
+        if effective_status in MODEL_POOL_SERVING_STATUSES:
+            active_versions[model_name] = str(row.get("version") or "").strip()
     context = {
         "schema_version": "pipeline-modal-serving-context-v1",
         "created_at": datetime.now(timezone.utc).isoformat(),
         "model_status": _json_safe(model_status),
         "active_versions": _json_safe(active_versions),
-        "pool_versions_loaded": bool(_pool_versions_loaded),
+        "expected_source_sha": expected_source_sha,
+        "pool_versions_loaded": True,
         "serving_model_status": _json_safe(serving_model_status),
         "serving_degraded_dampening": _serving_degraded_dampening,
         "serving_ev2_cfg": _json_safe(_serving_ev2_cfg),
         "serving_used_pool": bool(_serving_used_pool),
         "serving_pool": _json_safe(_serving_pool),
+        "serving_manifest": serving_manifest,
+        "serving_manifest_digest": serving_manifest_digest,
     }
     state["pipeline_modal_serving_context"] = context
     return context
@@ -3483,6 +4132,14 @@ async def _build_pipeline_modal_prediction_payload(state: PipelineStateV2, *, st
     model_status = dict(context.get("model_status") or {})
     active_versions = dict(context.get("active_versions") or {})
     serving_pool = dict(context.get("serving_pool") or {})
+    serving_manifest = context.get("serving_manifest")
+    serving_manifest_digest = str(context.get("serving_manifest_digest") or "").strip()
+    if (
+        not isinstance(serving_manifest, dict)
+        or serving_manifest.get("schema_version") != PIPELINE_MODAL_SERVING_MANIFEST_SCHEMA
+        or _pipeline_modal_canonical_digest(serving_manifest) != serving_manifest_digest
+    ):
+        raise RuntimeError("pipeline_modal_prediction_request:serving_manifest_invalid")
 
     payloads = state.get("l3_payloads") or state.get("payloads") or []
     batch_ab_key = "|".join(sorted(
@@ -3536,6 +4193,15 @@ async def _build_pipeline_modal_prediction_payload(state: PipelineStateV2, *, st
         },
         "model_status": model_status,
         "active_versions": active_versions,
+        "serving_manifest": serving_manifest,
+        "serving_manifest_digest": serving_manifest_digest,
+        "slot_artifact_identities": _pipeline_modal_manifest_identities(serving_manifest),
+        "expected_source_sha": str(context.get("expected_source_sha") or "").strip().lower(),
+        "active_artifact_identities": _pipeline_modal_manifest_identities(
+            serving_manifest,
+            serving_only=True,
+        ),
+        "serving_coverage": _pipeline_modal_manifest_coverage(serving_manifest),
         "state_space_overlay_mode": _state_space_overlay_mode(),
         "state_space_soft_deadline_sec": _state_space_overlay_soft_deadline_seconds(),
         "state_space_models": state_space_models,
@@ -3543,6 +4209,269 @@ async def _build_pipeline_modal_prediction_payload(state: PipelineStateV2, *, st
         "callback_token": _pipeline_modal_prediction_callback_token(),
         "snapshot_recovery_lineage": _json_safe(recovery_lineage) if recovery_lineage else None,
     }
+
+
+def _validate_pipeline_modal_feature_bundle_before_writes(
+    state: PipelineStateV2,
+    bundle: dict,
+) -> dict[str, Any]:
+    """Fail closed on incomplete Modal feature results before downstream writes."""
+    serving_context = state.get("pipeline_modal_serving_context")
+    if not isinstance(serving_context, dict) or serving_context.get("schema_version") != "pipeline-modal-serving-context-v1":
+        raise RuntimeError("pipeline_modal_prediction_bundle_contract:serving_context_missing")
+    expected_manifest = serving_context.get("serving_manifest")
+    expected_digest = str(serving_context.get("serving_manifest_digest") or "").strip()
+    if (
+        not isinstance(expected_manifest, dict)
+        or expected_manifest.get("schema_version") != PIPELINE_MODAL_SERVING_MANIFEST_SCHEMA
+        or _pipeline_modal_canonical_digest(expected_manifest) != expected_digest
+    ):
+        raise RuntimeError(
+            "pipeline_modal_prediction_bundle_contract:expected_serving_manifest_invalid"
+        )
+    actual_digest = str(bundle.get("serving_manifest_digest") or "").strip()
+    if actual_digest != expected_digest:
+        raise RuntimeError(
+            "pipeline_modal_prediction_bundle_contract:serving_manifest_digest_mismatch"
+        )
+    expected_slot_identities = _pipeline_modal_manifest_identities(expected_manifest)
+    actual_slot_identities = bundle.get("slot_artifact_identities")
+    if (
+        not isinstance(actual_slot_identities, dict)
+        or actual_slot_identities != expected_slot_identities
+    ):
+        raise RuntimeError(
+            "pipeline_modal_prediction_bundle_contract:slot_artifact_identity_mismatch"
+        )
+    expected_identities = _pipeline_modal_manifest_identities(
+        expected_manifest,
+        serving_only=True,
+    )
+    actual_identities = bundle.get("active_artifact_identities")
+    if not isinstance(actual_identities, dict) or actual_identities != expected_identities:
+        raise RuntimeError(
+            "pipeline_modal_prediction_bundle_contract:active_artifact_identity_mismatch"
+        )
+    expected_versions = {
+        model_name: str(identity.get("version") or "")
+        for model_name, identity in expected_identities.items()
+    }
+    actual_versions = bundle.get("active_artifact_versions")
+    if not isinstance(actual_versions, dict) or actual_versions != expected_versions:
+        raise RuntimeError(
+            "pipeline_modal_prediction_bundle_contract:active_artifact_version_mismatch"
+        )
+    expected_coverage = _pipeline_modal_manifest_coverage(expected_manifest)
+    actual_coverage = bundle.get("serving_coverage")
+    if not isinstance(actual_coverage, dict) or actual_coverage != expected_coverage:
+        raise RuntimeError(
+            "pipeline_modal_prediction_bundle_contract:serving_coverage_mismatch"
+        )
+
+    schema_version = str(bundle.get("schema_version") or "").strip()
+    expected_source_sha = str(serving_context.get("expected_source_sha") or "").strip().lower()
+    actual_source_sha = str(bundle.get("modal_source_sha") or "").strip().lower()
+    if not expected_source_sha or actual_source_sha != expected_source_sha:
+        raise RuntimeError(
+            "pipeline_modal_prediction_bundle_contract:modal_source_sha_mismatch"
+        )
+
+    if schema_version != "pipeline-modal-prediction-bundle-v1":
+        raise RuntimeError(
+            "pipeline_modal_prediction_bundle_contract:invalid_schema:"
+            f"{schema_version or '<missing>'}"
+        )
+
+    payloads = state.get("l3_payloads") or state.get("payloads") or []
+    expected_symbols = [
+        str(row.get("symbol") or row.get("stock_id") or "").strip()
+        for row in payloads
+        if isinstance(row, dict)
+    ]
+    expected_symbols = [symbol for symbol in expected_symbols if symbol]
+    expected_symbol_set = set(expected_symbols)
+    expected_duplicates = sorted({
+        symbol for symbol in expected_symbols if expected_symbols.count(symbol) > 1
+    })
+    if not expected_symbols or expected_duplicates:
+        raise RuntimeError(
+            "pipeline_modal_prediction_bundle_contract:invalid_expected_symbols:"
+            + json.dumps(
+                {
+                    "count": len(expected_symbols),
+                    "duplicates": expected_duplicates[:20],
+                },
+                ensure_ascii=False,
+                sort_keys=True,
+            )
+        )
+
+    model_status = serving_context.get("model_status")
+    if not isinstance(model_status, dict):
+        raise RuntimeError("pipeline_modal_prediction_bundle_contract:model_status_missing")
+
+    def _status(model_name: str) -> str:
+        raw = model_status.get(model_name)
+        if isinstance(raw, dict):
+            raw = raw.get("status")
+        return str(raw or "").strip()
+
+    # GNN has its own formal full-universe validator; sequence models keep their
+    # existing eligibility-aware validators. Shadow/challenger models are never
+    # part of this feature-result closure contract.
+    required_feature_models = [
+        model_name
+        for model_name in CORE_CROSS_SECTIONAL_ALPHA_MODELS
+        if model_name != "GNN" and _status(model_name) in MODEL_POOL_SERVING_STATUSES
+    ]
+    if not required_feature_models:
+        raise RuntimeError("pipeline_modal_prediction_bundle_contract:active_feature_models_missing")
+
+    results = bundle.get("predict_batch_v2_results")
+    if not isinstance(results, list):
+        raise RuntimeError("pipeline_modal_prediction_bundle_contract:feature_results_not_list")
+
+    observed_symbols: list[str] = []
+    invalid_row_indexes: list[int] = []
+    row_errors: dict[str, str] = {}
+    missing_active_feature_ranks: dict[str, list[str]] = {}
+    for index, row in enumerate(results):
+        if not isinstance(row, dict):
+            invalid_row_indexes.append(index)
+            continue
+        symbol = str(row.get("symbol") or row.get("stock_id") or "").strip()
+        if not symbol:
+            invalid_row_indexes.append(index)
+            continue
+        observed_symbols.append(symbol)
+        if row.get("error"):
+            row_errors[symbol] = str(row.get("error"))[:500]
+            continue
+        rank_scores = row.get("rank_scores")
+        missing_models: list[str] = []
+        for model_name in required_feature_models:
+            value = rank_scores.get(model_name) if isinstance(rank_scores, dict) else None
+            try:
+                valid = value is not None and math.isfinite(float(value))
+            except (TypeError, ValueError):
+                valid = False
+            if not valid:
+                missing_models.append(model_name)
+        if missing_models:
+            missing_active_feature_ranks[symbol] = missing_models
+
+    observed_symbol_set = set(observed_symbols)
+    duplicate_symbols = sorted({
+        symbol for symbol in observed_symbols if observed_symbols.count(symbol) > 1
+    })
+    missing_symbols = sorted(expected_symbol_set - observed_symbol_set)
+    unexpected_symbols = sorted(observed_symbol_set - expected_symbol_set)
+    try:
+        bundle_n_input = int(bundle.get("n_input"))
+    except (TypeError, ValueError):
+        bundle_n_input = -1
+    cardinality_mismatch = (
+        bundle_n_input != len(expected_symbols)
+        or len(results) != len(expected_symbols)
+        or len(observed_symbols) != len(expected_symbols)
+    )
+    blockers = {
+        "cardinality_mismatch": cardinality_mismatch,
+        "expected_count": len(expected_symbols),
+        "bundle_n_input": bundle_n_input,
+        "result_count": len(results),
+        "observed_symbol_count": len(observed_symbols),
+        "invalid_row_indexes": invalid_row_indexes[:20],
+        "duplicate_symbols": duplicate_symbols[:20],
+        "missing_symbols": missing_symbols[:20],
+        "unexpected_symbols": unexpected_symbols[:20],
+        "row_errors": dict(list(row_errors.items())[:20]),
+        "missing_active_feature_ranks": dict(list(missing_active_feature_ranks.items())[:20]),
+        "required_feature_models": required_feature_models,
+    }
+    if any((
+        cardinality_mismatch,
+        invalid_row_indexes,
+        duplicate_symbols,
+        missing_symbols,
+        unexpected_symbols,
+        row_errors,
+        missing_active_feature_ranks,
+    )):
+        raise RuntimeError(
+            "pipeline_modal_active_feature_closure_failed:"
+            + json.dumps(blockers, ensure_ascii=False, sort_keys=True)
+        )
+    runtime_model_bundle_keys = {
+        "GNN": "gnn_graphsage_raw",
+        "DLinear": "dlinear_raw",
+        "PatchTST": "patchtst_raw",
+        "iTransformer": "itransformer_raw",
+    }
+    required_runtime_models = [
+        model_name
+        for model_name in runtime_model_bundle_keys
+        if _status(model_name) in MODEL_POOL_SERVING_STATUSES
+    ]
+    runtime_closure: dict[str, Any] = {}
+    for model_name in required_runtime_models:
+        bundle_key = runtime_model_bundle_keys[model_name]
+        raw = bundle.get(bundle_key)
+        rows = raw.get("results") if isinstance(raw, dict) else None
+        observed: list[str] = []
+        invalid_indexes: list[int] = []
+        errors: dict[str, str] = {}
+        if isinstance(rows, list):
+            for index, row in enumerate(rows):
+                if not isinstance(row, dict):
+                    invalid_indexes.append(index)
+                    continue
+                symbol = str(row.get("symbol") or row.get("stock_id") or "").strip()
+                if not symbol:
+                    invalid_indexes.append(index)
+                    continue
+                observed.append(symbol)
+                if row.get("error"):
+                    errors[symbol] = str(row.get("error"))[:500]
+        duplicates = sorted({
+            symbol for symbol in observed if observed.count(symbol) > 1
+        })
+        observed_set = set(observed)
+        model_blockers = {
+            "payload_error": (
+                str(raw.get("error"))[:500]
+                if isinstance(raw, dict) and raw.get("error")
+                else None
+            ),
+            "results_not_list": not isinstance(rows, list),
+            "expected_count": len(expected_symbols),
+            "result_count": len(rows) if isinstance(rows, list) else -1,
+            "observed_symbol_count": len(observed),
+            "invalid_row_indexes": invalid_indexes[:20],
+            "duplicate_symbols": duplicates[:20],
+            "missing_symbols": sorted(expected_symbol_set - observed_set)[:20],
+            "unexpected_symbols": sorted(observed_set - expected_symbol_set)[:20],
+            "row_errors": dict(list(errors.items())[:20]),
+        }
+        runtime_closure[model_name] = model_blockers
+        if any((
+            model_blockers["payload_error"],
+            model_blockers["results_not_list"],
+            model_blockers["result_count"] != len(expected_symbols),
+            len(observed) != len(expected_symbols),
+            invalid_indexes,
+            duplicates,
+            model_blockers["missing_symbols"],
+            model_blockers["unexpected_symbols"],
+            errors,
+        )):
+            raise RuntimeError(
+                f"pipeline_modal_{model_name.lower()}_closure_failed:"
+                + json.dumps(model_blockers, ensure_ascii=False, sort_keys=True)
+            )
+    blockers["required_runtime_models"] = required_runtime_models
+    blockers["runtime_model_closure"] = runtime_closure
+    return blockers
 
 
 def _merge_pipeline_state_update(state: PipelineStateV2, update: dict | None) -> None:
@@ -3886,11 +4815,11 @@ async def run_pipeline_v2_from_modal_prediction_callback(callback_payload: dict)
         if not expected or callback_lineage[key] != expected or bundle_lineage[key] != expected:
             raise ValueError(f"pipeline Modal prediction lineage mismatch: {key}")
 
-    state["modal_prediction_state_gcs_uri"] = state_gcs_uri
-    state["modal_prediction_bundle"] = result
-
     t0 = asyncio.get_event_loop().time()
     try:
+        _validate_pipeline_modal_feature_bundle_before_writes(state, result)
+        state["modal_prediction_state_gcs_uri"] = state_gcs_uri
+        state["modal_prediction_bundle"] = result
         await _run_pipeline_nodes(state, [node_l3_formal_predict])
         recovery_lineage = state.get("snapshot_recovery_lineage")
         if isinstance(recovery_lineage, dict):

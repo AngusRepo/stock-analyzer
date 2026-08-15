@@ -988,6 +988,49 @@ def list_artifact_registry(
     return rows
 
 
+def list_artifacts_by_ids(
+    artifact_ids: list[str] | tuple[str, ...],
+    *,
+    max_ids: int = 9,
+) -> list[dict[str, Any]]:
+    """Read only the bounded champion artifacts needed for one serving snapshot."""
+    normalized = list(dict.fromkeys(
+        str(artifact_id or "").strip()
+        for artifact_id in artifact_ids
+        if str(artifact_id or "").strip()
+    ))
+    if not normalized:
+        return []
+    if len(normalized) > max_ids:
+        raise ValueError(
+            f"artifact_id_query_exceeds_bound:actual={len(normalized)}:max={max_ids}"
+        )
+    placeholders = ", ".join("?" for _ in normalized)
+    rows = d1_client.query(
+        f"""
+        SELECT *
+        FROM model_artifact_registry
+        WHERE artifact_id IN ({placeholders})
+        ORDER BY updated_at DESC, created_at DESC
+        """,
+        normalized,
+    )
+    for row in rows:
+        for key in (
+            "offline_gate_failed_gates",
+            "offline_evidence_json",
+            "live_evidence_json",
+        ):
+            raw = row.get(key)
+            if not isinstance(raw, str):
+                continue
+            try:
+                row[key] = _json_safe(json.loads(raw))
+            except json.JSONDecodeError:
+                row[key] = raw
+    return rows
+
+
 def list_champion_pointers(model_name: str | None = None) -> list[dict[str, Any]]:
     """Read registry-owned champion pointers when the D1 migration is present.
 

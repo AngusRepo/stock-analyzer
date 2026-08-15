@@ -653,7 +653,8 @@ def build_allocator_ev_feature_snapshots_for_date(
         market_contexts = {}
         market_context_load_error = f"{type(exc).__name__}:{exc}"
     candidate_total = max(
-        [int(row.get("candidate_total_count") or 0) for row in raw_candidates] or [0]
+        len(raw_candidates),
+        max([int(row.get("candidate_total_count") or 0) for row in raw_candidates] or [0]),
     )
     if candidate_total > len(raw_candidates):
         raise RuntimeError(
@@ -847,13 +848,36 @@ def build_allocator_ev_feature_snapshots_for_date(
 
     write_result: dict[str, Any] = {"dry_run": True, "changes_total": 0}
     publish_result: dict[str, Any] = {"dry_run": True, "changes_total": 0}
+    if not dry_run and candidate_total != len(statements):
+        closure_error = (
+            "allocator_snapshot_candidate_closure_mismatch:"
+            f"date={snapshot_date}:expected={candidate_total}:"
+            f"accepted={len(statements)}:rejected={rejected_lineage_rows}"
+        )
+        writer = write_fn or (
+            lambda items: d1_client.batch_execute(items, timeout=60.0, chunk_size=100)
+        )
+        closure_statements = [
+            _snapshot_run_start_statement(
+                run_id=run_id,
+                snapshot_date=snapshot_date,
+                expected_rows=candidate_total,
+                native_lineage_rows=native_lineage_rows,
+                reconstructed_lineage_rows=reconstructed_lineage_rows,
+                rejected_lineage_rows=rejected_lineage_rows,
+            ),
+            _snapshot_run_fail_statement(run_id=run_id, error_code=closure_error),
+        ]
+        closure_result = writer(closure_statements)
+        _assert_complete_write(closure_result, len(closure_statements), phase="closure")
+        raise RuntimeError(closure_error)
     if statements and not dry_run:
         writer = write_fn or (lambda items: d1_client.batch_execute(items, timeout=60.0, chunk_size=100))
         stage_statements = [
             _snapshot_run_start_statement(
                 run_id=run_id,
                 snapshot_date=snapshot_date,
-                expected_rows=len(statements),
+                expected_rows=candidate_total,
                 native_lineage_rows=native_lineage_rows,
                 reconstructed_lineage_rows=reconstructed_lineage_rows,
                 rejected_lineage_rows=rejected_lineage_rows,
@@ -868,15 +892,15 @@ def build_allocator_ev_feature_snapshots_for_date(
                 [run_id],
             )
             staged_count = int((staged_rows[0] if staged_rows else {}).get("row_count") or 0)
-            if staged_count != len(statements):
+            if staged_count != candidate_total:
                 raise RuntimeError(
                     "allocator_snapshot_staging_count_mismatch:"
-                    f"run_id={run_id}:expected={len(statements)}:actual={staged_count}"
+                    f"run_id={run_id}:expected={candidate_total}:actual={staged_count}"
                 )
             publish_statements = _snapshot_publish_statements(
                 run_id=run_id,
                 snapshot_date=snapshot_date,
-                expected_rows=len(statements),
+                expected_rows=candidate_total,
             )
             publish_result = writer(publish_statements)
             _assert_complete_write(publish_result, len(publish_statements), phase="publish")
@@ -887,12 +911,12 @@ def build_allocator_ev_feature_snapshots_for_date(
             published = published_run[0] if published_run else {}
             if (
                 str(published.get("status") or "") != "ready"
-                or int(published.get("published_rows") or 0) != len(statements)
+                or int(published.get("published_rows") or 0) != candidate_total
             ):
                 raise RuntimeError(
                     "allocator_snapshot_publish_readback_mismatch:"
                     f"run_id={run_id}:status={published.get('status')}:"
-                    f"expected={len(statements)}:actual={published.get('published_rows')}"
+                    f"expected={candidate_total}:actual={published.get('published_rows')}"
                 )
         except Exception as exc:
             try:

@@ -33,6 +33,40 @@ def _safe_run_id(value: str) -> str:
     return safe[:160]
 
 
+def _continuation_receipt_path(*, run_id: str, run_date: str) -> str:
+    """Return one stable receipt identity for one canonical pipeline run.
+
+    The result checksum is deliberately excluded. A repeated callback with a
+    divergent bundle must collide with the original claim and fail closed
+    instead of dispatching a second continuation that can write D1 first.
+    """
+    run_digest = hashlib.sha256(run_id.encode("utf-8")).hexdigest()[:16]
+    return (
+        f"pipeline-v2/modal-continuations/{run_date}/"
+        f"{_safe_run_id(run_id)}-{run_digest}.json"
+    )
+
+
+def _require_same_continuation_claim(
+    existing: Any,
+    incoming: dict[str, Any],
+) -> dict[str, Any]:
+    if not isinstance(existing, dict):
+        raise ValueError("pipeline_modal_continuation_receipt_invalid")
+    for field in (
+        "run_id",
+        "run_date",
+        "state_gcs_uri",
+        "result_gcs_uri",
+        "result_checksum",
+    ):
+        if str(existing.get(field) or "") != str(incoming.get(field) or ""):
+            raise ValueError(
+                f"pipeline_modal_continuation_receipt_conflict:{field}"
+            )
+    return existing
+
+
 def load_verified_modal_prediction_bundle(
     *,
     result_gcs_uri: str,
@@ -88,10 +122,7 @@ def dispatch_modal_prediction_continuation(
 
     bucket_name = os.environ.get("GCS_BUCKET_NAME", "").strip() or result_bucket
     bucket = client.bucket(bucket_name)
-    receipt_path = (
-        f"pipeline-v2/modal-continuations/{run_date}/"
-        f"{_safe_run_id(run_id)}-{result_checksum[:16]}.json"
-    )
+    receipt_path = _continuation_receipt_path(run_id=run_id, run_date=run_date)
     blob = bucket.blob(receipt_path)
     now = datetime.now(timezone.utc)
     claim = {
@@ -113,7 +144,10 @@ def dispatch_modal_prediction_continuation(
         )
     except PreconditionFailed:
         blob.reload()
-        existing = json.loads(blob.download_as_text())
+        existing = _require_same_continuation_claim(
+            json.loads(blob.download_as_text()),
+            claim,
+        )
         status = str(existing.get("status") or "")
         if status == "dispatched":
             return {**existing, "idempotent": True, "receipt_path": receipt_path}

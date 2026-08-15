@@ -571,10 +571,25 @@ def load_d1_champion_pool(
     required_models: tuple[str, ...] = DIRECT_ALPHA_MODELS,
     sidecar_models: tuple[str, ...] = L2_SIDECARS,
 ) -> dict[str, Any]:
-    from services.model_artifact_registry import list_artifact_registry, list_champion_pointers
+    from services.model_artifact_registry import (
+        list_artifacts_by_ids,
+        list_champion_pointers,
+    )
 
     pointers = list_champion_pointers()
-    artifacts = list_artifact_registry(limit=1000)
+    requested_models = set((*required_models, *sidecar_models))
+    artifact_ids = list(dict.fromkeys(
+        str(pointer.get("champion_artifact_id") or "").strip()
+        for pointer in pointers
+        if (
+            str(pointer.get("model_name") or "").strip() in requested_models
+            and str(pointer.get("champion_artifact_id") or "").strip()
+        )
+    ))
+    artifacts = list_artifacts_by_ids(
+        artifact_ids,
+        max_ids=len(requested_models),
+    )
     return build_pool_from_champion_pointers(
         pointers=pointers,
         artifacts=artifacts,

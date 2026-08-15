@@ -3,12 +3,12 @@ param(
   [string]$Location = 'asia-east1',
   [string]$ManifestPath = (Join-Path (Split-Path -Parent $PSScriptRoot) 'infra/gcp-scheduler-jobs.json'),
   [string]$WorkerBaseUrl = $env:STOCKVISION_WORKER_BASE_URL,
-  [string]$AuthToken = $env:SCHEDULER_AUTH_TOKEN,
   [switch]$DryRun,
   [switch]$DeleteStale
 )
 
 $ErrorActionPreference = 'Stop'
+$AuthToken = $env:SCHEDULER_AUTH_TOKEN
 
 if (-not $Project) {
   $Project = (gcloud config get-value project 2>$null)
@@ -22,6 +22,14 @@ if ($DryRun -and -not $AuthToken) {
 }
 if (-not $WorkerBaseUrl) { throw 'Missing STOCKVISION_WORKER_BASE_URL.' }
 if (-not $AuthToken) { throw 'Missing SCHEDULER_AUTH_TOKEN.' }
+if (-not $DryRun) {
+  throw @'
+Production mutation is blocked in this legacy script because it places the
+service bearer token in gcloud child-process argv. Use
+scripts/rotate_stockvision_auth_token.ps1 for auth-header rotation. Keep this
+script dry-run only until its full schedule-sync path uses HTTPS request bodies.
+'@
+}
 
 $manifest = Get-Content -LiteralPath $ManifestPath -Raw | ConvertFrom-Json
 if (-not $DryRun -and $null -ne $manifest.mutationAllowed -and -not [bool]$manifest.mutationAllowed) {

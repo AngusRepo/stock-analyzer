@@ -300,6 +300,7 @@ async def pipeline_modal_prediction_callback(request: Request) -> JSONResponse:
 
 @router.post("/v2/run")
 async def trigger_pipeline_v2(
+    request: Request,
     date: str = Query(default="", description="Run date (YYYY-MM-DD, default today TW)"),
 ):
     """Trigger the Cloud Run Job `pipeline-v2` and return 202 with execution id.
@@ -312,12 +313,19 @@ async def trigger_pipeline_v2(
     Worker subrequest timeout (~100-150 s) is far larger than the Jobs API
     round-trip, so no timeout concerns on the trigger side.
     """
-    run_id = f"pv2-{int(time.time())}-{uuid.uuid4().hex[:8]}"
+    requested_run_id = request.headers.get("X-Pipeline-Run-Id", "").strip()
+    if requested_run_id and (
+        len(requested_run_id) > 180
+        or any(not (char.isalnum() or char in {"-", "_", ":", "."}) for char in requested_run_id)
+    ):
+        raise HTTPException(status_code=400, detail="invalid X-Pipeline-Run-Id")
+    run_id = requested_run_id or f"pv2-{int(time.time())}-{uuid.uuid4().hex[:8]}"
+    env_overrides = {"PIPELINE_PARENT_RUN_ID": run_id}
+    if date:
+        env_overrides["PIPELINE_RUN_DATE"] = date
 
     try:
-        execution = _jobs_client.run_job(
-            env_overrides={"PIPELINE_RUN_DATE": date} if date else None,
-        )
+        execution = _jobs_client.run_job(env_overrides=env_overrides)
     except JobAlreadyRunningError as e:
         raise HTTPException(
             status_code=409,

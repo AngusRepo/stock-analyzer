@@ -6,6 +6,8 @@ const migration0090 = readFileSync('migrations/0090_daily_technical_strategy_pro
 const learning = readFileSync('src/lib/strategyLearning.ts', 'utf8')
 const edge = readFileSync('src/lib/strategyMarginalEdgeV4.ts', 'utf8')
 const runState = readFileSync('src/lib/strategyLearningRunState.ts', 'utf8')
+const orchestrator = readFileSync('src/lib/updateOrchestrator.ts', 'utf8')
+const adminTasks = readFileSync('src/lib/adminTriggerWorkerDomainTasks.ts', 'utf8')
 const selectionEvidence = readFileSync('src/lib/selectionReferenceEvidence.ts', 'utf8')
 const routes = readFileSync('src/routes/other.ts', 'utf8')
 
@@ -56,10 +58,10 @@ assert(selectionEvidence.includes('producer_run_id = ? AND hard_gate_passed = 1'
   'reference persistence coverage must count the canonical hard-gate universe only')
 assert(edge.includes("mr.status='ready'") && learning.includes("mr.status='ready'") && routes.includes("mr.status='ready'"),
   'Edge, reward, and UI consumers must reject partial matrix rebuilds')
-assert(runState.includes('priorCanonicalSuccess'), 'completed historical runs need a frozen lineage fast path')
+assert(orchestrator.includes('reconcileStrategyLearningFinalizedRetryFastPath'), 'queued finalized runs need an idempotent fenced telemetry-repair fast path')
+assert(adminTasks.includes('reconcileStrategyLearningFinalizedRetryFastPath'),
+  'manual finalized runs need an idempotent fenced telemetry-repair fast path')
 assert(runState.includes('completed_at=CASE'), 'a new producer run must clear stale completion provenance')
-assert(runState.indexOf('priorCanonicalSuccess') < runState.indexOf('JOIN strategy_spec_registry'),
-  'historical completion provenance must be evaluated before current-registry coverage')
 
 assert(edge.includes('const MIN_EDGE_DATES = 10'), 'strategy edge and learning gates must both require ten dates')
 assert(edge.includes('STRATEGY_REPLACEMENT_POLICY_V6'), 'replacement thresholds need one exported backend source of truth')
@@ -87,7 +89,6 @@ assert(edge.includes('for (const key of registryActiveKeys)'), 'first V5 artifac
 assert(edge.includes("existing?.status === 'promoted'"), 'repeating the same promoted evidence run must be idempotent')
 assert(migration.includes('CHECK(precondition_ok=1)'), 'failed cutover assertions must roll back the D1 batch')
 
-const orchestrator = readFileSync('src/lib/updateOrchestrator.ts', 'utf8')
 assert(orchestrator.includes('finalizeStrategyLearningEvidenceV5'), 'production queue must use the canonical strategy finalizer')
 assert(learning.includes('strategy_learning_finalizer_stage_failed:'), 'finalizer failures must persist the exact failed stage')
 assert(!learning.includes("'threshold_calibration'"), 'retired Threshold calibrator must not remain a parallel finalizer owner')

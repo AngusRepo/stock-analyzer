@@ -227,7 +227,9 @@ export async function runVerifyV2(env: Bindings, runDate?: string, idempotencyKe
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error)
     if (message.includes('verify-v2 already has an active execution')) {
-      return `triggered existing active verify-v2 execution for ${runDate ?? 'current date'}, callback expected`
+      throw new Error(
+        `verify_v2_active_execution_conflict:${runDate ?? 'current-date'}:retry_required`,
+      )
     }
     throw error
   }

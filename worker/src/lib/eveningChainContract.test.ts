@@ -48,6 +48,7 @@ for (const removed of ['update', 'screener', 'pipeline', 'ml-warmup', 'adapt', '
 }
 
 const workerTasks = fs.readFileSync('src/lib/adminTriggerWorkerDomainTasks.ts', 'utf8')
+const postScreenerContinuation = fs.readFileSync('src/lib/postScreenerContinuation.ts', 'utf8')
 const gcpTasks = fs.readFileSync('src/lib/adminTriggerGcpTasks.ts', 'utf8')
 assert(workerTasks.includes("'evening-chain'"), 'admin trigger map must expose evening-chain')
 assert(workerTasks.includes("'market-close-refresh'"), 'admin trigger map must expose market-close-refresh')
@@ -59,7 +60,7 @@ assert(
 assert(
   workerTasks.includes("'post-screener-pipeline'") &&
     workerTasks.includes('enqueuePostScreenerPipelineContinuation') &&
-    workerTasks.includes("type: 'post_screener_pipeline'"),
+    postScreenerContinuation.includes("type: 'post_screener_pipeline'"),
   'admin trigger map must expose a minimal post-screener continuation repair without rerunning the full evening chain',
 )
 

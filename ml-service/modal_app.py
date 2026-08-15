@@ -134,6 +134,8 @@ runtime_env_secret = modal.Secret.from_dict({
         "FINLAB_API_KEY": os.environ.get("FINLAB_API_KEY", "").strip(),
         "FINLAB_REFRESH_TOKEN": os.environ.get("FINLAB_REFRESH_TOKEN", "").strip(),
         "FINLAB_SESSION_ID": os.environ.get("FINLAB_SESSION_ID", "").strip(),
+        "STOCKVISION_SOURCE_SHA": os.environ.get("STOCKVISION_SOURCE_SHA", "").strip(),
+        "STOCKVISION_SOURCE_TREE_SHA": os.environ.get("STOCKVISION_SOURCE_TREE_SHA", "").strip(),
     }.items()
     if value
 })
@@ -1361,13 +1363,33 @@ def pipeline_prediction_bundle(payload: dict) -> dict:
     import time
     import traceback
 
-    from app.batch_prediction import predict_gnn_graphsage_batch, predict_stock_v2_batch_with_metrics
+    from app.batch_prediction import (
+        predict_gnn_graphsage_batch,
+        predict_stock_v2_chunked_with_metrics,
+    )
     from app.dlinear_universal import dlinear_batch_predict
     from app.itransformer_universal import itransformer_batch_predict
     from app.patchtst_universal import patchtst_batch_predict
     from app.state_space_universal import state_space_overlays_batch_predict
+    from app.serving_resolver import (
+        build_pool_from_frozen_manifest,
+        serving_manifest_coverage,
+        serving_manifest_identities,
+    )
 
     started = time.time()
+    expected_source_sha = str(payload.get("expected_source_sha") or "").strip()
+    modal_source_sha = str(os.environ.get("STOCKVISION_SOURCE_SHA") or "").strip()
+    sha_values = (expected_source_sha, modal_source_sha)
+    if any(
+        len(value) != 40
+        or value != value.lower()
+        or any(character not in "0123456789abcdef" for character in value)
+        for value in sha_values
+    ):
+        raise ValueError("pipeline_modal_source_sha_missing")
+    if modal_source_sha != expected_source_sha:
+        raise ValueError("pipeline_modal_source_sha_mismatch")
     payloads = payload.get("payloads") or []
     sequence_model_series_by_model = payload.get("sequence_model_series_by_model") or {}
     sequence_model_contracts = payload.get("sequence_model_contracts") or {}
@@ -1377,8 +1399,60 @@ def pipeline_prediction_bundle(payload: dict) -> dict:
     state_space_models = payload.get("state_space_models") or {}
     state_space_mode = str(payload.get("state_space_overlay_mode") or "blocking").strip().lower()
 
+    serving_manifest = payload.get("serving_manifest")
+    serving_manifest_digest = str(payload.get("serving_manifest_digest") or "").strip().lower()
+    frozen_pool = build_pool_from_frozen_manifest(
+        serving_manifest,
+        expected_digest=serving_manifest_digest,
+        l2_sidecar_context={"version": active_versions.get("TimesFM")},
+    )
+    slot_identities = serving_manifest_identities(serving_manifest)
+    serving_identities = serving_manifest_identities(serving_manifest, serving_only=True)
+    coverage = serving_manifest_coverage(serving_manifest)
+    dispatched_slots = payload.get("slot_artifact_identities")
+    if not isinstance(dispatched_slots, dict) or dispatched_slots != slot_identities:
+        raise ValueError("pipeline_modal_slot_artifact_identity_dispatch_mismatch")
+    dispatched_identities = payload.get("active_artifact_identities")
+    if not isinstance(dispatched_identities, dict) or dispatched_identities != serving_identities:
+        raise ValueError("pipeline_modal_active_artifact_identity_dispatch_mismatch")
+    if payload.get("serving_coverage") != coverage:
+        raise ValueError("pipeline_modal_serving_coverage_dispatch_mismatch")
+    serving_versions = {
+        model_name: str(identity.get("version") or "")
+        for model_name, identity in serving_identities.items()
+    }
+    manifest_rows = {
+        str(row.get("model") or ""): row
+        for row in (serving_manifest.get("models") or [])
+        if isinstance(row, dict)
+    }
+    for model_name, row in manifest_rows.items():
+        dispatched_status = str(model_status.get(model_name) or "").strip()
+        effective_status = str(row.get("effective_status") or "").strip()
+        if dispatched_status != effective_status:
+            raise ValueError(
+                f"pipeline_modal_model_status_dispatch_mismatch:{model_name}"
+            )
+        expected_version = serving_versions.get(model_name)
+        dispatched_version = str(active_versions.get(model_name) or "").strip()
+        if expected_version is not None and dispatched_version != expected_version:
+            raise ValueError(
+                f"pipeline_modal_active_version_dispatch_mismatch:{model_name}"
+            )
+        if expected_version is None and dispatched_version:
+            raise ValueError(
+                f"pipeline_modal_excluded_version_dispatch_present:{model_name}"
+            )
+
     def _is_active(model_name: str) -> bool:
         return str(model_status.get(model_name) or "").strip() in {"active", "degraded"}
+
+    def _artifact_identity(model_name: str) -> dict:
+        identity = serving_identities.get(model_name)
+        if not isinstance(identity, dict):
+            raise ValueError(f"pipeline_modal_serving_identity_missing:{model_name}")
+        return {"model": model_name, **identity}
+
 
     def _skip(reason: str) -> dict:
         return {"error": reason, "results": []}
@@ -1403,49 +1477,17 @@ def pipeline_prediction_bundle(payload: dict) -> dict:
         except (TypeError, ValueError):
             chunk_size = len(payloads) or 1
         chunk_size = max(1, chunk_size)
-        chunks = [payloads[i:i + chunk_size] for i in range(0, len(payloads), chunk_size)]
-        results: list[dict] = []
-        batch_responses: list[dict] = []
-
-        def _chunk_error_rows(chunk: list[dict], reason: str) -> list[dict]:
-            return [
-                {
-                    "stock_id": p.get("stock_id", 0) if isinstance(p, dict) else 0,
-                    "symbol": p.get("symbol", "?") if isinstance(p, dict) else "?",
-                    "error": reason,
-                    "signal": "NO_SIGNAL",
-                    "direction": "neutral",
-                    "confidence": 0.0,
-                }
-                for p in chunk
-            ]
-
-        for chunk in chunks:
-            try:
-                batch = predict_stock_v2_batch_with_metrics(chunk)
-                batch_responses.append(batch)
-                chunk_results = batch.get("results") if isinstance(batch, dict) else None
-                if isinstance(chunk_results, list):
-                    results.extend(chunk_results)
-                else:
-                    results.extend(_chunk_error_rows(chunk, "predict_batch_v2 returned invalid payload"))
-            except Exception as exc:  # noqa: BLE001
-                reason = f"predict_batch_v2 chunk error: {type(exc).__name__}: {exc}"
-                results.extend(_chunk_error_rows(chunk, reason))
-        return {
-            "results": results,
-            "n_input": len(payloads),
-            "n_error": sum(1 for row in results if isinstance(row, dict) and row.get("error")),
-            "chunk_count": len(chunks),
-            "chunk_size": chunk_size,
-            "batch_contract": payload.get("predict_batch_v2_contract") or {},
-            "batch_metrics": [batch.get("metrics") or {} for batch in batch_responses],
-        }
+        return predict_stock_v2_chunked_with_metrics(
+            payloads,
+            chunk_size=chunk_size,
+            batch_contract=payload.get("predict_batch_v2_contract") or {},
+            pool_snapshot=frozen_pool,
+        )
 
     def _gnn() -> dict:
         if not _is_active("GNN"):
             return _skip("GNN retired by model_pool")
-        return predict_gnn_graphsage_batch(payloads)
+        return predict_gnn_graphsage_batch(payloads, pool_snapshot=frozen_pool)
 
     def _dlinear() -> dict:
         series = _sequence_input("DLinear")
@@ -1455,6 +1497,7 @@ def pipeline_prediction_bundle(payload: dict) -> dict:
             series_list=series,
             horizon_used=5,
             version=active_versions.get("DLinear", "v1"),
+            artifact_identity=_artifact_identity("DLinear"),
         )
         return {"results": results, "n_input": len(series), "n_success": sum(1 for r in results if not r.get("error"))}
 
@@ -1466,6 +1509,7 @@ def pipeline_prediction_bundle(payload: dict) -> dict:
             series_list=series,
             horizon_used=5,
             version=active_versions.get("PatchTST", "v1"),
+            artifact_identity=_artifact_identity("PatchTST"),
         )
         return {"results": results, "n_input": len(series), "n_success": sum(1 for r in results if not r.get("error"))}
 
@@ -1477,6 +1521,7 @@ def pipeline_prediction_bundle(payload: dict) -> dict:
             series_list=series,
             horizon_used=5,
             version=active_versions.get("iTransformer", "v1"),
+            artifact_identity=_artifact_identity("iTransformer"),
         )
         return {"results": results, "n_input": len(series), "n_success": sum(1 for r in results if not r.get("error"))}
 
@@ -1494,10 +1539,10 @@ def pipeline_prediction_bundle(payload: dict) -> dict:
 
     stages = {
         "predict_batch_v2": (_feature, True),
-        "gnn_graphsage_universal_predict": (_gnn, True),
-        "dlinear_universal_predict": (_dlinear, True),
-        "patchtst_universal_predict": (_patchtst, True),
-        "itransformer_universal_predict": (_itransformer, True),
+        "gnn_graphsage_universal_predict": (_gnn, _is_active("GNN")),
+        "dlinear_universal_predict": (_dlinear, _is_active("DLinear")),
+        "patchtst_universal_predict": (_patchtst, _is_active("PatchTST")),
+        "itransformer_universal_predict": (_itransformer, _is_active("iTransformer")),
         "state_space_universal_predict": (_state_space, False),
     }
     outputs: dict[str, object] = {}
@@ -1543,12 +1588,89 @@ def pipeline_prediction_bundle(payload: dict) -> dict:
         outputs[stage_name] = result
         timings[stage_name] = timing
 
+    expected_symbols = [
+        str(row.get("symbol") or row.get("stock_id") or "").strip()
+        for row in payloads
+        if isinstance(row, dict)
+    ]
+    expected_symbols = [symbol for symbol in expected_symbols if symbol]
+    expected_symbol_set = set(expected_symbols)
+    if (
+        not expected_symbols
+        or len(expected_symbol_set) != len(expected_symbols)
+    ):
+        raise ValueError("pipeline_modal_expected_symbol_contract_invalid")
+
+    feature_output = outputs.get("predict_batch_v2")
+    feature_rows = (
+        feature_output.get("results")
+        if isinstance(feature_output, dict)
+        else feature_output
+    )
+    if not isinstance(feature_rows, list):
+        raise ValueError("pipeline_modal_feature_results_not_list")
+    feature_models = [
+        name for name in ("LightGBM", "XGBoost", "ExtraTrees", "TabM")
+        if _is_active(name)
+    ]
+
+    def _assert_exact_rows(model_name: str, rows: object, *, require_rank: bool = False) -> None:
+        if not isinstance(rows, list):
+            raise ValueError(f"pipeline_modal_{model_name.lower()}_results_not_list")
+        observed: list[str] = []
+        for row in rows:
+            if not isinstance(row, dict):
+                raise ValueError(f"pipeline_modal_{model_name.lower()}_row_invalid")
+            symbol = str(row.get("symbol") or row.get("stock_id") or "").strip()
+            if not symbol or row.get("error"):
+                raise ValueError(f"pipeline_modal_{model_name.lower()}_row_error:{symbol or '<missing>'}")
+            observed.append(symbol)
+            if require_rank:
+                rank_scores = row.get("rank_scores")
+                for feature_model in feature_models:
+                    value = rank_scores.get(feature_model) if isinstance(rank_scores, dict) else None
+                    try:
+                        valid = value is not None and math.isfinite(float(value))
+                    except (TypeError, ValueError):
+                        valid = False
+                    if not valid:
+                        raise ValueError(
+                            f"pipeline_modal_feature_rank_missing:{symbol}:{feature_model}"
+                        )
+        if (
+            len(rows) != len(expected_symbols)
+            or len(observed) != len(expected_symbols)
+            or len(set(observed)) != len(observed)
+            or set(observed) != expected_symbol_set
+        ):
+            raise ValueError(f"pipeline_modal_{model_name.lower()}_cardinality_mismatch")
+
+    _assert_exact_rows("feature", feature_rows, require_rank=True)
+    runtime_output_keys = {
+        "GNN": "gnn_graphsage_universal_predict",
+        "DLinear": "dlinear_universal_predict",
+        "PatchTST": "patchtst_universal_predict",
+        "iTransformer": "itransformer_universal_predict",
+    }
+    for model_name, output_key in runtime_output_keys.items():
+        if not _is_active(model_name):
+            continue
+        output = outputs.get(output_key)
+        rows = output.get("results") if isinstance(output, dict) else None
+        _assert_exact_rows(model_name, rows)
+
     elapsed_s = round(time.time() - started, 3)
     bundle = {
         "schema_version": "pipeline-modal-prediction-bundle-v1",
         "run_date": payload.get("run_date"),
         "run_id": payload.get("run_id"),
         "state_gcs_uri": payload.get("state_gcs_uri"),
+        "serving_manifest_digest": serving_manifest_digest,
+        "slot_artifact_identities": slot_identities,
+        "active_artifact_identities": serving_identities,
+        "active_artifact_versions": serving_versions,
+        "serving_coverage": coverage,
+        "modal_source_sha": modal_source_sha,
         "elapsed_s": elapsed_s,
         "predict_batch_v2_results": (outputs.get("predict_batch_v2") or {}).get("results") if isinstance(outputs.get("predict_batch_v2"), dict) else (outputs.get("predict_batch_v2") or []),
         "predict_batch_v2_raw": outputs.get("predict_batch_v2") or {},

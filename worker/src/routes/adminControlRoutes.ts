@@ -14,7 +14,13 @@ import {
   resolveLegacyScreenerEvidence,
 } from '../lib/legacyEvidenceResolver'
 import { isTransientD1Reset } from '../lib/d1TransientRetry'
-import { markPipelineStage, queuePostPipelineStage, queuePostVerifyStage } from '../lib/pipelineStageLease'
+import {
+  acceptPipelineExecutionCallback,
+  isPipelineStageCanonicalState,
+  markPipelineStageFenced,
+  queuePostPipelineStage,
+  queuePostVerifyStage,
+} from '../lib/pipelineStageLease'
 
 export const adminControlRoutes = new Hono<{ Bindings: Bindings; Variables: Variables }>()
 
@@ -604,7 +610,68 @@ async function handleSchedulerCallback(c: any) {
     }
   }
 
-  await logSchedulerResult(c.env.KV, String(body.task), {
+  const criticalTerminalCallback = ['pipeline', 'allocator-ev-feature-snapshot-backfill', 'verify-v2']
+    .includes(String(body.task))
+    && ['success', 'error', 'skipped'].includes(String(body.status))
+  let verifyCallbackCanonicalRunId: string | null = null
+  if (criticalTerminalCallback) {
+    if (!callbackRunDate || !callbackRunId) {
+      return c.json({ error: 'critical callback missing run_date or run_id' }, 400)
+    }
+    if (body.task === 'pipeline') {
+      const accepted = await acceptPipelineExecutionCallback(c.env.DB, {
+        businessDate: callbackRunDate,
+        runId: callbackRunId,
+        status: body.status === 'success' ? 'success' : 'error',
+        error: body.error != null ? String(body.error) : null,
+      })
+      if (!accepted) {
+        const current = await c.env.DB.prepare(`
+          SELECT canonical_run_id
+            FROM pipeline_stage_runs
+           WHERE business_date=? AND stage='pipeline_execution'
+        `).bind(callbackRunDate).first() as { canonical_run_id?: string | null } | null
+        return c.json({
+          success: false,
+          ignored: true,
+          reason: 'stale_pipeline_callback',
+          incoming_run_id: callbackRunId,
+          active_run_id: current?.canonical_run_id ?? null,
+        }, 409)
+      }
+    } else {
+      const stageName = body.task === 'verify-v2' ? 'verify_v2' : 'post_pipeline_chain'
+      const stage = await c.env.DB.prepare(`
+        SELECT canonical_run_id, cursor_key, status
+          FROM pipeline_stage_runs
+         WHERE business_date=? AND stage=?
+      `).bind(callbackRunDate, stageName).first() as {
+        canonical_run_id?: string | null
+        cursor_key?: string | null
+        status?: string | null
+      } | null
+      const identityMatches = body.task === 'verify-v2'
+        ? String(stage?.cursor_key ?? '') === callbackRunId
+        : String(stage?.canonical_run_id ?? '') === callbackRunId
+      if (!stage || !identityMatches) {
+        return c.json({
+          success: false,
+          ignored: true,
+          reason: body.task === 'verify-v2'
+            ? 'stale_verify_callback'
+            : 'stale_allocator_snapshot_callback',
+          incoming_run_id: callbackRunId,
+          active_run_id: stage?.canonical_run_id ?? null,
+          expected_producer_run_id: stage?.cursor_key ?? null,
+        }, 409)
+      }
+      if (body.task === 'verify-v2') {
+        verifyCallbackCanonicalRunId = String(stage.canonical_run_id ?? '').trim() || null
+      }
+    }
+  }
+
+  const logAcceptedCallbackTask = () => logSchedulerResult(c.env.KV, String(body.task), {
     status: body.status,
     summary: String(body.summary ?? ''),
     duration_ms: Number(body.duration_ms ?? 0),
@@ -613,6 +680,7 @@ async function handleSchedulerCallback(c: any) {
     attempt_id: callbackAttemptId,
     run_date: callbackRunDate,
   })
+  if (!criticalTerminalCallback) await logAcceptedCallbackTask()
 
   if (
     body.task === 'active8-oof-daily'
@@ -816,8 +884,12 @@ async function handleSchedulerCallback(c: any) {
         businessDate: callbackRunDate,
         runId: callbackRunId,
         resumeWaiting: true,
-        supersedeSuccess: true,
+        expectedCanonicalRunId: callbackRunId,
       })
+      if (continuation.canonicalRunId !== callbackRunId) {
+        return c.json({ success: false, ignored: true, reason: 'stale_allocator_snapshot_callback' }, 409)
+      }
+      await logAcceptedCallbackTask()
       await logSchedulerResult(c.env.KV, 'post-pipeline-chain', {
         status: 'triggered',
         summary: continuation.queued
@@ -833,21 +905,25 @@ async function handleSchedulerCallback(c: any) {
       const stage = transientD1Failure
         ? await c.env.DB.prepare(`
             SELECT attempt_count FROM pipeline_stage_runs
-             WHERE business_date=? AND stage='post_pipeline_chain'
-          `).bind(callbackRunDate).first() as { attempt_count?: number | string | null } | null
+             WHERE business_date=? AND stage='post_pipeline_chain' AND canonical_run_id=?
+          `).bind(callbackRunDate, callbackRunId).first() as { attempt_count?: number | string | null } | null
         : null
       const nextAttempt = Math.max(1, Number(stage?.attempt_count ?? 1))
       if (transientD1Failure && nextAttempt < 3) {
         const callbackAttemptId = String(body.attempt_id ?? 'unknown-attempt')
         const retryDedupeKey = `allocator:snapshot-transient-retry:${callbackRunDate}:${callbackRunId}:${callbackAttemptId}`
         const alreadyScheduled = Boolean(await c.env.KV.get(retryDedupeKey))
+        const marked = await markPipelineStageFenced(c.env.DB, {
+          businessDate: callbackRunDate,
+          stage: 'post_pipeline_chain',
+          canonicalRunId: callbackRunId,
+          status: 'waiting',
+          error: callbackError,
+        })
+        if (!marked) {
+          return c.json({ success: false, ignored: true, reason: 'stale_allocator_snapshot_callback' }, 409)
+        }
         if (!alreadyScheduled) {
-          await markPipelineStage(c.env.DB, {
-            businessDate: callbackRunDate,
-            stage: 'post_pipeline_chain',
-            status: 'waiting',
-            error: callbackError,
-          })
           await (c.env.UPDATE_QUEUE as any).send({
             type: 'allocator_ev_lifecycle_recovery',
             cursor: 0,
@@ -857,6 +933,7 @@ async function handleSchedulerCallback(c: any) {
           }, { delaySeconds: Math.min(300, 60 * (2 ** (nextAttempt - 1))) })
           await c.env.KV.put(retryDedupeKey, new Date().toISOString(), { expirationTtl: 86400 })
         }
+        await logAcceptedCallbackTask()
         await logSchedulerResult(c.env.KV, 'evening-chain', {
           status: 'running',
           summary: `allocator snapshot transient D1 failure scheduled=${!alreadyScheduled} attempt=${nextAttempt}/2; awaiting durable recovery`,
@@ -867,12 +944,17 @@ async function handleSchedulerCallback(c: any) {
           run_date: callbackRunDate,
         }, c.env as any)
       } else {
-        await markPipelineStage(c.env.DB, {
+        const marked = await markPipelineStageFenced(c.env.DB, {
           businessDate: callbackRunDate,
           stage: 'post_pipeline_chain',
+          canonicalRunId: callbackRunId,
           status: 'error',
           error: callbackError,
         })
+        if (!marked) {
+          return c.json({ success: false, ignored: true, reason: 'stale_allocator_snapshot_callback' }, 409)
+        }
+        await logAcceptedCallbackTask()
         await logSchedulerResult(c.env.KV, 'evening-chain', {
           status: body.status === 'skipped' ? 'skipped' : 'error',
           summary: `root chain stopped at allocator snapshot callback: ${String(body.summary ?? body.status)}`,
@@ -889,7 +971,11 @@ async function handleSchedulerCallback(c: any) {
   if (body.task === 'pipeline' && ['success', 'error', 'skipped'].includes(String(body.status))) {
     try {
       if (callbackRunDate) {
-        await c.env.KV.delete(`lock:ml-predict:${callbackRunDate}`).catch(() => {})
+        const lockKey = `lock:ml-predict:${callbackRunDate}`
+        const lockOwner = await c.env.KV.get(lockKey).catch(() => null)
+        if (lockOwner === callbackRunId || lockOwner === '1') {
+          await c.env.KV.delete(lockKey).catch(() => {})
+        }
       }
       if (body.status === 'success') {
         if (!callbackRunDate || !callbackRunId) {
@@ -898,9 +984,50 @@ async function handleSchedulerCallback(c: any) {
         const continuation = await queuePostPipelineStage(c.env, {
           businessDate: callbackRunDate,
           runId: callbackRunId,
-          adoptRunIdOnResume: true,
-          supersedeSuccess: true,
+          authority: {
+            stage: 'pipeline_execution',
+            canonicalRunId: callbackRunId,
+            status: 'success',
+          },
         })
+        if (continuation.canonicalRunId !== callbackRunId) {
+          const ownershipConflict = [
+            'post_pipeline_stage_owner_conflict',
+            `incoming_run_id=${callbackRunId}`,
+            `active_run_id=${continuation.canonicalRunId}`,
+            `active_status=${continuation.status}`,
+            'root_owner_unchanged=true',
+          ].join(':')
+          return c.json({
+            ok: false,
+            retryable: true,
+            waiting: true,
+            error: 'post_pipeline_stage_owner_conflict',
+            incoming_run_id: callbackRunId,
+            active_run_id: continuation.canonicalRunId,
+            active_status: continuation.status,
+            root_owner_unchanged: true,
+            detail: ownershipConflict,
+          }, 409)
+        }
+        const executionStillCurrent = await isPipelineStageCanonicalState(c.env.DB, {
+          businessDate: callbackRunDate,
+          stage: 'pipeline_execution',
+          canonicalRunId: callbackRunId,
+          status: 'success',
+        })
+        if (!executionStillCurrent) {
+          return c.json({ success: false, ignored: true, reason: 'stale_pipeline_callback' }, 409)
+        }
+        await logAcceptedCallbackTask()
+        await logSchedulerResult(c.env.KV, 'evening-chain', {
+          status: 'running',
+          summary: `pipeline terminal success accepted; post-pipeline owner confirmed run_id=${callbackRunId}`,
+          duration_ms: 0,
+          run_id: callbackRunId,
+          run_date: callbackRunDate,
+          strict: true,
+        }, c.env as any)
         await logSchedulerResult(c.env.KV, 'post-pipeline-chain', {
           status: 'triggered',
           summary: continuation.queued
@@ -911,6 +1038,18 @@ async function handleSchedulerCallback(c: any) {
           run_date: callbackRunDate,
         }, c.env as any)
       } else {
+        const executionStillCurrent = callbackRunDate && callbackRunId
+          ? await isPipelineStageCanonicalState(c.env.DB, {
+              businessDate: callbackRunDate,
+              stage: 'pipeline_execution',
+              canonicalRunId: callbackRunId,
+              status: 'error',
+            })
+          : false
+        if (!executionStillCurrent) {
+          return c.json({ success: false, ignored: true, reason: 'stale_pipeline_callback' }, 409)
+        }
+        await logAcceptedCallbackTask()
         await logSchedulerResult(c.env.KV, 'evening-chain', {
           status: body.status === 'skipped' ? 'skipped' : 'error',
           summary: `root chain stopped at pipeline callback: ${String(body.summary ?? body.status)}`,
@@ -921,22 +1060,31 @@ async function handleSchedulerCallback(c: any) {
         }, c.env as any)
       }
     } catch (e: any) {
+      const callbackError = e?.message ?? 'post-pipeline callback chain failed'
+      const executionStillCurrent = callbackRunDate && callbackRunId
+        ? await isPipelineStageCanonicalState(c.env.DB, {
+            businessDate: callbackRunDate,
+            stage: 'pipeline_execution',
+            canonicalRunId: callbackRunId,
+          })
+        : false
+      if (!executionStillCurrent) {
+        return c.json({ success: false, ignored: true, reason: 'stale_pipeline_callback' }, 409)
+      }
       await logSchedulerResult(c.env.KV, 'post-pipeline-chain', {
         status: 'error',
-        summary: e?.message ?? 'post-pipeline callback chain failed',
+        summary: callbackError,
         duration_ms: 0,
         error: String(e),
         run_id: callbackRunId,
         run_date: callbackRunDate,
       }, c.env as any)
-      await logSchedulerResult(c.env.KV, 'evening-chain', {
-        status: 'error',
-        summary: e?.message ?? 'root chain stopped in post-pipeline callback chain',
-        duration_ms: 0,
-        error: String(e),
-        run_id: callbackRunId,
-        run_date: callbackRunDate,
-      }, c.env as any)
+      return c.json({
+        ok: false,
+        retryable: true,
+        error: 'post_pipeline_callback_chain_failed',
+        detail: callbackError,
+      }, 503)
     }
   }
 
@@ -962,51 +1110,71 @@ async function handleSchedulerCallback(c: any) {
     }, c.env as any)
   }
 
-  const verifyCanContinue =    body.task === 'verify-v2' &&
-    ['success', 'skipped'].includes(String(body.status)) &&
-    c.env.ML_CONTROLLER_URL
+  const verifyCanContinue = body.task === 'verify-v2'
+    && ['success', 'skipped'].includes(String(body.status))
+    && c.env.ML_CONTROLLER_URL
   if (verifyCanContinue) {
-    if (!callbackRunDate || !callbackRunId) {
-      return c.json({ error: 'verify callback missing run_date or run_id for post-verify continuation' }, 400)
+    if (!callbackRunDate || !callbackRunId || !verifyCallbackCanonicalRunId) {
+      return c.json({ error: 'verify callback missing canonical identity for post-verify continuation' }, 400)
     }
-    await markPipelineStage(c.env.DB, {
+    const marked = await markPipelineStageFenced(c.env.DB, {
       businessDate: callbackRunDate,
       stage: 'verify_v2',
+      canonicalRunId: verifyCallbackCanonicalRunId,
+      cursorKey: callbackRunId,
       status: 'success',
     })
+    if (!marked) {
+      return c.json({ success: false, ignored: true, reason: 'stale_verify_callback' }, 409)
+    }
     const continuation = await queuePostVerifyStage(c.env, {
       businessDate: callbackRunDate,
-      runId: callbackRunId,
-      resumeWaiting: true,
-      adoptRunIdOnResume: true,
-      supersedeSuccess: true,
+      runId: verifyCallbackCanonicalRunId,
+      authority: {
+        stage: 'verify_v2',
+        canonicalRunId: verifyCallbackCanonicalRunId,
+        status: 'success',
+        cursorKey: callbackRunId,
+      },
     })
+    if (continuation.canonicalRunId !== verifyCallbackCanonicalRunId) {
+      return c.json({ success: false, ignored: true, reason: 'post_verify_stage_owner_conflict' }, 409)
+    }
+    await logAcceptedCallbackTask()
     await logSchedulerResult(c.env.KV, 'post-verify-chain', {
       status: 'triggered',
       summary: continuation.queued
         ? `post-verify continuation durably queued run_id=${continuation.canonicalRunId}`
         : `post-verify continuation already ${continuation.status} run_id=${continuation.canonicalRunId}`,
       duration_ms: 0,
-      run_id: callbackRunId,
+      run_id: verifyCallbackCanonicalRunId,
       run_date: callbackRunDate,
     }, c.env as any)
   }
 
   if (body.task === 'verify-v2' && String(body.status) === 'error') {
-    if (callbackRunDate) {
-      await markPipelineStage(c.env.DB, {
-        businessDate: callbackRunDate,
-        stage: 'verify_v2',
-        status: 'error',
-        error: body.error != null ? String(body.error) : String(body.summary ?? 'verify-v2 callback failed'),
-      })
+    if (!callbackRunDate || !callbackRunId || !verifyCallbackCanonicalRunId) {
+      return c.json({ error: 'verify callback missing canonical identity' }, 400)
     }
+    const error = body.error != null ? String(body.error) : String(body.summary ?? 'verify-v2 callback failed')
+    const marked = await markPipelineStageFenced(c.env.DB, {
+      businessDate: callbackRunDate,
+      stage: 'verify_v2',
+      canonicalRunId: verifyCallbackCanonicalRunId,
+      cursorKey: callbackRunId,
+      status: 'error',
+      error,
+    })
+    if (!marked) {
+      return c.json({ success: false, ignored: true, reason: 'stale_verify_callback' }, 409)
+    }
+    await logAcceptedCallbackTask()
     await logSchedulerResult(c.env.KV, 'post-verify-chain', {
       status: 'error',
       summary: `post-verify chain blocked by verify-v2 error: ${String(body.summary ?? '')}`,
       duration_ms: 0,
       error: body.error != null ? String(body.error) : undefined,
-      run_id: callbackRunId,
+      run_id: verifyCallbackCanonicalRunId,
       run_date: callbackRunDate,
     }, c.env as any)
     await logSchedulerResult(c.env.KV, 'evening-chain', {
@@ -1014,7 +1182,7 @@ async function handleSchedulerCallback(c: any) {
       summary: `root chain stopped at verify-v2 callback: ${String(body.summary ?? '')}`,
       duration_ms: 0,
       error: body.error != null ? String(body.error) : undefined,
-      run_id: callbackRunId,
+      run_id: verifyCallbackCanonicalRunId,
       run_date: callbackRunDate,
     }, c.env as any)
   }

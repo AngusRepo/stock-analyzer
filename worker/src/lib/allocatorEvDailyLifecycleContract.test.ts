@@ -60,7 +60,26 @@ assert(lifecycle.match(/&& rejectedLineageRows === 0/g)?.length === 2, 'native a
 assert(controllerResearch.includes('allowPointInTimeReconstruction: true'), 'explicit research backfill may opt into reconstructed closure')
 assert(controllerResearch.includes('kv: env.KV'), 'explicit backfill closure must use the canonical calendar owner')
 assert(lifecycle.match(/allowPointInTimeReconstruction: true/g)?.length === 1, 'watchdog must inspect reconstructed operational closure once before durable recovery')
+assert(lifecycle.includes('inspectAllocatorEvRecoveryUpstreamGate(env.KV, businessDate)'), 'watchdog must read canonical upstream scheduler evidence before recovery')
+assert(lifecycle.includes('pipeline_ml_run_id_mismatch'), 'watchdog must fence stale ML evidence from a different pipeline run')
+assert(lifecycle.includes('root_pipeline_run_id_mismatch'), 'watchdog must fence matching stale pipeline/ML evidence under a newer root run')
+assert(lifecycle.includes('active_model_closure=true'), 'watchdog must require explicit active-model symbol closure')
+assert(lifecycle.includes("historicalLearningLineageDecision(env.DB, env.KV, 'evening-chain', businessDate)"), 'watchdog repair window must use the canonical next-session-open boundary')
+assert(!lifecycle.includes('businessDate < twTodayDate()'), 'midnight rollover alone must not close the allocator repair window')
+assert(lifecycle.includes('runId: recoveryRunId') && lifecycle.includes('expectedCanonicalRunId: recoveryRunId') && !lifecycle.slice(lifecycle.indexOf('const recoveryRunId')).includes('adoptRunIdOnResume: true'), 'recovery must resume only the already-canonical verified pipeline run')
+assert(
+  lifecycle.indexOf('inspectAllocatorEvRecoveryUpstreamGate(env.KV, businessDate)')
+    < lifecycle.indexOf("const { queuePostPipelineStage }"),
+  'upstream closure gate must run before the watchdog can enqueue post-pipeline recovery',
+)
 assert(lifecycle.includes('queuePostPipelineStage(env') && lifecycle.includes('attempt: recoveryAttempt'), 'watchdog recovery must enqueue the durable post-pipeline owner with the stage retry attempt')
+assert(
+  lifecycle.includes('verifyCanonicalRunId !== lifecycleRunId')
+    && lifecycle.includes('expectedCanonicalRunId: lifecycleRunId')
+    && lifecycle.includes("stage: 'verify_v2'")
+    && lifecycle.includes('cursorKey: verifyCursorKey'),
+  'watchdog post-verify recovery must require exact lifecycle canonical plus verify producer cursor authority',
+)
 assert(fusionArtifactBuilder.includes('generation_mode == "native"'), 'Fusion promotion must remain native-lineage only')
 assert(fusionArtifactBuilder.includes('native_rows == published_rows'), 'Fusion promotion must require complete native rows')
 assert(fusionArtifactBuilder.includes('reconstructed_rows == 0'), 'Fusion promotion must reject reconstructed rows')

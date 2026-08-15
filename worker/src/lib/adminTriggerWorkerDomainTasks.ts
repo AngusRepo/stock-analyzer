@@ -324,25 +324,75 @@ export function buildAdminWorkerDomainTaskMap(c: any, deps: TriggerDeps): Record
     'strategy-learning': () => enqueueStrategyLearningMaterialization(c, requestedRunDate()),
     'strategy-learning-finalize': async () => {
       const runDate = assertRunDate(requestedRunDate())
-      const { finalizeStrategyLearningEvidenceV5 } = await import('./strategyLearning')
       const {
+        claimStrategyLearningPage,
         completeStrategyLearningRun,
         deferStrategyLearningFinalizer,
         failStrategyLearningRun,
+        isStrategyLearningLeaseLost,
         loadStrategyLearningRun,
         markStrategyLearningRunFinalized,
+        startStrategyLearningLeaseHeartbeat,
+        STRATEGY_LEARNING_LEASE_SECONDS,
       } = await import('./strategyLearningRunState')
-      const { logSchedulerResult } = await import('./schedulerRunLogger')
+      const {
+        reconcileAndReleaseStrategyLearningFinalizedTelemetry,
+        reconcileStrategyLearningFinalizedRetryFastPath,
+      } = await import('./strategyLearningFinalizedTelemetry')
       const runState = await loadStrategyLearningRun(c.env.DB, runDate)
       if (!runState) throw new Error(`strategy_learning_run_missing:${runDate}`)
+      const finalizedRetry = await reconcileStrategyLearningFinalizedRetryFastPath(
+        c.env.DB,
+        c.env.KV,
+        runState,
+        {
+          attemptId: `${runState.canonical_run_id}:manual-telemetry-reconcile:${Date.now().toString(36)}`,
+        },
+      )
+      if (finalizedRetry === 'reconciled') {
+        return `strategy_learning_finalize date=${runDate} already_finalized run_id=${runState.canonical_run_id}`
+      }
+      if (finalizedRetry === 'no_live_telemetry_lease') {
+        return `strategy_learning_finalize date=${runDate} already_finalized_without_live_telemetry_lease run_id=${runState.canonical_run_id}`
+      }
+      if (finalizedRetry === 'authority_changed') {
+        return `strategy_learning_finalize date=${runDate} already_finalized_authority_changed run_id=${runState.canonical_run_id}`
+      }
+
+      const { finalizeStrategyLearningEvidenceV5 } = await import('./strategyLearning')
+      const { logSchedulerResult } = await import('./schedulerRunLogger')
       const finalizerAttemptId = `${runState.canonical_run_id}:manual-finalize:${Date.now().toString(36)}`
+      const leaseOwner = `${runState.canonical_run_id}:manual-finalize-lease:${crypto.randomUUID()}`
+      const leaseIdentity = {
+        businessDate: runDate,
+        canonicalRunId: runState.canonical_run_id,
+        leaseOwner,
+      }
+      const claimed = await claimStrategyLearningPage(c.env.DB, {
+        ...leaseIdentity,
+        cursorSymbol: String(runState.cursor_symbol ?? ''),
+        leaseSeconds: STRATEGY_LEARNING_LEASE_SECONDS,
+      })
+      if (!claimed) {
+        throw new Error(`strategy_learning_finalizer_lease_busy:${runDate}:${runState.canonical_run_id}`)
+      }
       let materializationValidated = false
+      let durableFinalized = false
+      let finalizerHeartbeat: ReturnType<typeof startStrategyLearningLeaseHeartbeat> | null = null
       try {
         const coverage = await completeStrategyLearningRun(c.env.DB, {
-          businessDate: runDate,
-          runId: runState.canonical_run_id,
+          ...leaseIdentity,
+          leaseSeconds: STRATEGY_LEARNING_LEASE_SECONDS,
         })
+        if (!coverage) {
+          throw new Error(`strategy_learning_lease_lost:${runDate}:${runState.canonical_run_id}:${leaseOwner}`)
+        }
         materializationValidated = true
+        finalizerHeartbeat = startStrategyLearningLeaseHeartbeat(c.env.DB, {
+          ...leaseIdentity,
+          leaseSeconds: STRATEGY_LEARNING_LEASE_SECONDS,
+        })
+        const assertFinalizerLease = async (_stage: string): Promise<void> => finalizerHeartbeat!.assertActive()
         const productionAuthority = c.req.query('force_policy') === '1'
           ? await resolveEveningChainRunAuthority(c.env, {
               businessDate: runDate,
@@ -360,15 +410,18 @@ export function buildAdminWorkerDomainTaskMap(c: any, deps: TriggerDeps): Record
         } = await import('./eveningChainEvidenceClosure')
         const historicalPriorityDate = await resolveExpectedMatureSignalDate(c.env, runDate)
         const { recoverMatureSelectionEvidence } = await import('./matureSelectionEvidenceRecovery')
+        await assertFinalizerLease('mature_recovery')
         const matureRecovery = await recoverMatureSelectionEvidence(c.env, runDate, {
           maxRecoveryDates: 4,
         })
+        await assertFinalizerLease('mature_recovery')
         let closureSummary = ''
         const { decisionEvidence, historicalEvidence, labels, marginalEdge, routeBackfillEligibility, rewards, policy, productionPolicy }
           = await finalizeStrategyLearningEvidenceV5(c.env.DB, runDate, {
             allowPromotion: currentBusinessDateRun,
             persistPolicy: currentBusinessDateRun,
             historicalPriorityDate,
+            assertLease: assertFinalizerLease,
             resolveHistoricalRegime: async (signalDate) => {
               const { readHistoricalHmmRegimeFamily } = await import('./marketRegimeState')
               return readHistoricalHmmRegimeFamily(c.env.KV, signalDate)
@@ -409,38 +462,55 @@ export function buildAdminWorkerDomainTaskMap(c: any, deps: TriggerDeps): Record
         `run_scope=${runScope}`,
         `production_authority=${authorityReason}`,
         ].join(' ')
-        await logSchedulerResult(c.env.KV, 'strategy-learning', {
-          status: 'success', summary, duration_ms: chainDurationMs, run_id: runState.canonical_run_id,
-          attempt_id: finalizerAttemptId, run_date: runDate, run_scope: runScope,
-        })
-        await logSchedulerResult(c.env.KV, 'post-verify-chain', {
-          status: 'success', summary: `strategy-learning finalizer recovered; ${summary}`,
-          duration_ms: chainDurationMs, run_id: runState.canonical_run_id,
-          attempt_id: finalizerAttemptId, run_date: runDate, run_scope: runScope,
-        })
-        await logSchedulerResult(c.env.KV, 'evening-chain', {
-          status: 'success', summary: `root chain closed by strategy-learning finalizer; ${summary}`,
-          duration_ms: chainDurationMs, run_id: runState.canonical_run_id,
-          attempt_id: finalizerAttemptId, run_date: runDate, run_scope: runScope,
-        })
-        await markStrategyLearningRunFinalized(c.env.DB, {
-          businessDate: runDate,
-          runId: runState.canonical_run_id,
-        })
+        await assertFinalizerLease('finalize')
+        const finalized = await markStrategyLearningRunFinalized(c.env.DB, leaseIdentity)
+        if (!finalized) {
+          const deferred = await deferStrategyLearningFinalizer(c.env.DB, {
+            ...leaseIdentity,
+            error: `strategy_learning_finalize_authority_lost:${runDate}:${runState.canonical_run_id}`,
+          })
+          if (!deferred) {
+            throw new Error(`strategy_learning_lease_lost:${runDate}:${runState.canonical_run_id}:${leaseOwner}`)
+          }
+          return `strategy_learning_finalize date=${runDate} authority_lost_deferred`
+        }
+        durableFinalized = true
+        const telemetryFinalized = await reconcileAndReleaseStrategyLearningFinalizedTelemetry(
+          c.env.DB,
+          c.env.KV,
+          leaseIdentity,
+          {
+            runDate,
+            canonicalRunId: runState.canonical_run_id,
+            summary,
+            durationMs: chainDurationMs,
+            attemptId: finalizerAttemptId,
+            runScope,
+          },
+        )
+        if (!telemetryFinalized) {
+          throw new Error(`strategy_learning_finalized_telemetry_authority_lost:${runDate}:${runState.canonical_run_id}`)
+        }
         return summary
       } catch (error) {
         const errorMessage = error instanceof Error ? error.message : String(error)
-        if (materializationValidated) {
-          await deferStrategyLearningFinalizer(c.env.DB, {
-            businessDate: runDate,
-            runId: runState.canonical_run_id,
+        if (durableFinalized) throw error
+        if (isStrategyLearningLeaseLost(error)) {
+          console.warn(`[Admin] strategy-learning lease lost; explicit retry required date=${runDate} run_id=${runState.canonical_run_id}`)
+          throw error
+        }
+        const transitioned = materializationValidated
+          ? await deferStrategyLearningFinalizer(c.env.DB, {
+              ...leaseIdentity,
+              error: errorMessage,
+            })
+          : await failStrategyLearningRun(c.env.DB, {
+              ...leaseIdentity,
             error: errorMessage,
           })
-        } else {
-          await failStrategyLearningRun(c.env.DB, {
-            businessDate: runDate,
-            error: errorMessage,
-          })
+        if (!transitioned) {
+          console.warn(`[Admin] strategy-learning terminal fence lost; explicit retry required date=${runDate} run_id=${runState.canonical_run_id}`)
+          throw error
         }
         await Promise.allSettled([
           logSchedulerResult(c.env.KV, 'strategy-learning', {
@@ -459,6 +529,8 @@ export function buildAdminWorkerDomainTaskMap(c: any, deps: TriggerDeps): Record
           }),
         ])
         throw error
+      } finally {
+        await finalizerHeartbeat?.stop()
       }
     },
     'selection-reference-identity-repair': async () => {

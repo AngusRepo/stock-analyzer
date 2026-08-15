@@ -1113,13 +1113,21 @@ MODAL_RESULT=""
 if [ "$WITH_MODAL" = "1" ]; then
   echo "=== Step 5/5: Deploy Modal from local release identity ==="
   detect_modal_python
-  if ! PYTHONIOENCODING="${PYTHONIOENCODING:-utf-8}" \
+  if ! STOCKVISION_SOURCE_SHA="$SOURCE_SHA" \
+    STOCKVISION_SOURCE_TREE_SHA="$SOURCE_TREE_SHA" \
+    STOCKVISION_SOURCE_BRANCH="$SOURCE_BRANCH" \
+    STOCKVISION_SCHEDULER_MANIFEST_SHA256="$SCHEDULER_MANIFEST_SHA256" \
+    PYTHONIOENCODING="${PYTHONIOENCODING:-utf-8}" \
     "$MODAL_PYTHON_BIN" -m modal deploy --tag "$SOURCE_SHA" "$MLS_DIR/modal_app.py"; then
     echo "ERROR: direct Modal deploy failed" >&2
     exit 6
   fi
   MODAL_RESULT="Modal         : deployed tag=${SOURCE_SHA}"
-  if ! PYTHONIOENCODING="${PYTHONIOENCODING:-utf-8}" \
+  if ! STOCKVISION_SOURCE_SHA="$SOURCE_SHA" \
+    STOCKVISION_SOURCE_TREE_SHA="$SOURCE_TREE_SHA" \
+    STOCKVISION_SOURCE_BRANCH="$SOURCE_BRANCH" \
+    STOCKVISION_SCHEDULER_MANIFEST_SHA256="$SCHEDULER_MANIFEST_SHA256" \
+    PYTHONIOENCODING="${PYTHONIOENCODING:-utf-8}" \
     "$MODAL_PYTHON_BIN" -m modal deploy --tag "$SOURCE_SHA" "$MLS_DIR/modal_strategy_mining_app.py"; then
     echo "ERROR: dedicated strategy-mining Modal deploy failed" >&2
     exit 6

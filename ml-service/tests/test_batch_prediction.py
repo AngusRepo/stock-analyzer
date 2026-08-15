@@ -34,6 +34,10 @@ def _full_model_pool(
                 "status": statuses.get(name, "retired"),
                 "version": "v1",
                 "gcs_path": f"universal/{name.lower()}/v1",
+                "metadata_path": f"universal/{name.lower()}/metadata_v1.json",
+                "serving_artifact_id": f"{name}:v1:test",
+                "checksum": "sha256:" + "a" * 64,
+                "serving_eligible": True,
             }
             for name in _ACTIVE_ALPHA_MODEL_NAMES
         },
@@ -227,6 +231,7 @@ def test_feature_model_batch_overrides_vectorize_regular_models(monkeypatch):
         _BATCH_IC_WEIGHTS_KEY,
         _BATCH_MODEL_POOL_KEY,
         _BATCH_RANK_STACKER_KEY,
+        _BATCH_RANK_STACKER_AUDIT_KEY,
     )
     from app.schemas import PredictRequest
 
@@ -240,15 +245,16 @@ def test_feature_model_batch_overrides_vectorize_regular_models(monkeypatch):
 
     fake_model = FakeModel()
 
-    def fake_load_artifact(model_name, explicit_path=None):
+    def fake_load_artifact(model_name, explicit_path=None, **kwargs):
         if model_name == "XGBoost":
+            assert kwargs["require_governed_artifact"] is True
+            assert kwargs["explicit_metadata_path"].endswith("metadata_v1.json")
+            assert kwargs["expected_artifact_id"] == "XGBoost:v1:test"
             return fake_model, {"feature_names": [], "feature_medians": {}}
         return None, {}
 
     pool = _full_model_pool({"XGBoost": "active"})
-    rank_stacker_bundle = {"target_type": "rank", "eval_ic": 0.04}
     monkeypatch.setattr(batch_prediction, "_load_model_pool", lambda: pool)
-    monkeypatch.setattr(batch_prediction, "_load_rank_stacker_artifact", lambda: rank_stacker_bundle)
     monkeypatch.setattr(batch_prediction, "_load_feature_artifact", fake_load_artifact)
 
     requests = [
@@ -264,8 +270,9 @@ def test_feature_model_batch_overrides_vectorize_regular_models(monkeypatch):
     assert overrides[1][_BATCH_FEATURE_RANK_SCORES_KEY]["XGBoost"] == pytest.approx(0.75)
     assert overrides[0][_BATCH_MODEL_POOL_KEY] is pool
     assert overrides[1][_BATCH_MODEL_POOL_KEY] is pool
-    assert overrides[0][_BATCH_RANK_STACKER_KEY] is rank_stacker_bundle
-    assert overrides[1][_BATCH_RANK_STACKER_KEY] is rank_stacker_bundle
+    assert overrides[0][_BATCH_RANK_STACKER_KEY] is None
+    assert overrides[1][_BATCH_RANK_STACKER_KEY] is None
+    assert overrides[0][_BATCH_RANK_STACKER_AUDIT_KEY]["effective_status"] == "excluded"
     assert isinstance(overrides[0][_BATCH_IC_WEIGHTS_KEY], dict)
 
 
@@ -439,7 +446,15 @@ def test_tabm_batch_overrides_use_torch_artifact_runtime(monkeypatch):
     pool["models"]["TabM"].update({"version": "v1", "gcs_path": "universal/tabm/v1.pt"})
     artifact = tabm_batch_runtime.TabMArtifact(
         model=object(),
-        metadata={"feature_names": [], "feature_medians": {}},
+        metadata={
+            "feature_names": [],
+            "feature_medians": {},
+            "checksum": "sha256:" + "a" * 64,
+            "artifact_integrity_report": {
+                "status": "ok",
+                "expected_checksum": "sha256:" + "a" * 64,
+            },
+        },
         source_path="universal/tabm/v1.pt",
         version="v1",
     )
@@ -523,7 +538,11 @@ def test_shadow_challenger_batch_overrides_vectorize_residual_mlp(monkeypatch):
 
 
 def test_predict_stock_v2_batch_attaches_true_batch_overrides(monkeypatch):
-    from app.prediction_runtime import _BATCH_FEATURE_CONTEXT_KEY, _BATCH_FEATURE_RANK_SCORES_KEY
+    from app.prediction_runtime import (
+        _BATCH_FEATURE_CONTEXT_KEY,
+        _BATCH_FEATURE_RANK_SCORES_KEY,
+        _BATCH_MODEL_POOL_KEY,
+    )
 
     class Request:
         __module__ = "app.schemas"
@@ -538,6 +557,7 @@ def test_predict_stock_v2_batch_attaches_true_batch_overrides(monkeypatch):
         return {"symbol": req.symbol, "stock_id": req.stock_id, "signal": "HOLD"}
 
     fake_predict.__module__ = "app.prediction_runtime"
+    pool = _full_model_pool({"XGBoost": "active"})
 
     def fake_overrides(reqs):
         assert [req.symbol for req in reqs] == ["2330", "2317"]
@@ -545,10 +565,12 @@ def test_predict_stock_v2_batch_attaches_true_batch_overrides(monkeypatch):
             {
                 _BATCH_FEATURE_CONTEXT_KEY: {"x_latest": np.array([[1.0]]), "feature_names": ["f1"]},
                 _BATCH_FEATURE_RANK_SCORES_KEY: {"XGBoost": 0.7},
+                _BATCH_MODEL_POOL_KEY: pool,
             },
             {
                 _BATCH_FEATURE_CONTEXT_KEY: {"x_latest": np.array([[2.0]]), "feature_names": ["f1"]},
                 _BATCH_FEATURE_RANK_SCORES_KEY: {"XGBoost": 0.3},
+                _BATCH_MODEL_POOL_KEY: pool,
             },
         ]
 
@@ -715,5 +737,65 @@ def test_true_batch_override_failure_is_fail_closed(monkeypatch):
     assert [row["symbol"] for row in results] == ["2330", "2317"]
     assert all(
         "batch_override_build_failed:RuntimeError:artifact schema drift" in row["error"]
+        for row in results
+    )
+
+
+def test_active_feature_core_missing_score_becomes_top_level_error(monkeypatch):
+    from app.prediction_runtime import (
+        _BATCH_FEATURE_RANK_SCORES_KEY,
+        _BATCH_MODEL_POOL_KEY,
+    )
+
+    class Request:
+        __module__ = "app.schemas"
+
+        def __init__(self, **payload):
+            self.__dict__.update(payload)
+
+    predict_calls: list[str] = []
+
+    def fake_predict(req):
+        predict_calls.append(req.symbol)
+        return {
+            "symbol": req.symbol,
+            "signal": "BUY",
+            "rank_scores": {"XGBoost": 0.9},
+        }
+
+    fake_predict.__module__ = "app.prediction_runtime"
+    pool = _full_model_pool({
+        "XGBoost": "active",
+        "ExtraTrees": "active",
+    })
+
+    def fake_overrides(requests):
+        return [
+            {
+                _BATCH_FEATURE_RANK_SCORES_KEY: {"XGBoost": 0.9},
+                _BATCH_MODEL_POOL_KEY: pool,
+            }
+            for _request in requests
+        ]
+
+    monkeypatch.setattr(batch_prediction, "PredictRequest", Request)
+    monkeypatch.setattr(batch_prediction, "predict_stock_v2", fake_predict)
+    monkeypatch.setattr(
+        batch_prediction,
+        "_build_feature_model_batch_runtime_overrides",
+        fake_overrides,
+    )
+
+    results = batch_prediction.predict_stock_v2_batch([
+        {"symbol": "2330", "stock_id": 2330},
+        {"symbol": "2317", "stock_id": 2317},
+    ])
+
+    assert predict_calls == []
+    assert len(results) == 2
+    assert all(row["signal"] == "NO_SIGNAL" for row in results)
+    assert all(
+        "active_feature_model_coverage_incomplete:missing_or_invalid=ExtraTrees"
+        in row["error"]
         for row in results
     )

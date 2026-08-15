@@ -445,13 +445,20 @@ export async function runAllocatorEvFeatureSnapshotBackfill(
         + `expected=${closure.expectedRows} published=${closure.publishedRows} actual=${closure.actualRows}`,
       )
     }
-    await recordAllocatorEvLifecycle(env.DB, {
+    const recorded = await recordAllocatorEvLifecycle(env.DB, {
       businessDate: params.startDate,
       state: 'snapshot_ready',
       nativeLineageRows: closure.nativeLineageRows,
       snapshotRunId: closure.snapshotRunId,
       snapshotRows: closure.actualRows,
+      upstreamRunId: params.runId,
+      stageAuthority: params.runId
+        ? { stage: 'post_pipeline_chain', canonicalRunId: params.runId }
+        : undefined,
     })
+    if (!recorded) {
+      throw new Error(`allocator EV feature snapshot stale lifecycle owner run_id=${params.runId ?? 'missing'}`)
+    }
   }
   return String(data.summary ?? `allocator_ev_feature_snapshot_backfill status=${data.status ?? 'unknown'}`)
 }

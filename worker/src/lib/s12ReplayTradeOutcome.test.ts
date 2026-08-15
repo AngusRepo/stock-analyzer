@@ -436,7 +436,7 @@ async function runPersistenceTests(): Promise<void> {
       return {
         bind(...params: unknown[]) {
           binds.push(params)
-          return { async run() { return {} } }
+          return { async run() { return { meta: { changes: 1 } } } }
         },
       }
     },
@@ -517,7 +517,7 @@ async function runHistoricalReplayRunnerTests(): Promise<void> {
             return {
               async run() {
                 writes += 1
-                return {}
+                return { meta: { changes: 1 } }
               },
             }
           },
@@ -591,7 +591,7 @@ async function runHistoricalReplayRunnerTests(): Promise<void> {
         return {
           bind(...params: unknown[]) {
             unavailableWrites.push(params)
-            return { async run() { return {} } }
+            return { async run() { return { meta: { changes: 1 } } } }
           },
         }
       },
@@ -615,5 +615,60 @@ async function runHistoricalReplayRunnerTests(): Promise<void> {
 }
 
 void runHistoricalReplayRunnerTests().catch((error) => {
+  throw error
+})
+
+async function runLifecycleTakeoverFenceTest(): Promise<void> {
+  let activeLifecycleRunId = 'run-A'
+  let persistedOutcomes = 0
+  const guardedSql: string[] = []
+  const env = {
+    DB: {
+      prepare(sql: string) {
+        return {
+          bind(...params: unknown[]) {
+            return {
+              async all() { return { results: [] } },
+              async first() { return null },
+              async run() {
+                if (!sql.includes('INSERT INTO s12_replay_trade_outcomes')) {
+                  return { meta: { changes: 0 } }
+                }
+                guardedSql.push(sql)
+                const expectedLifecycleRunId = String(params.at(-1) ?? '')
+                const accepted = activeLifecycleRunId === expectedLifecycleRunId
+                if (accepted) persistedOutcomes += 1
+                return { meta: { changes: accepted ? 1 : 0 } }
+              },
+            }
+          },
+        }
+      },
+    },
+  } as any
+  let lost = false
+  try {
+    await runS12HistoricalReplayForDate(env, '2026-07-02', {
+      symbols: [{ symbol: '8091', market: 'OTC', market_segment: 'LISTED' }],
+      resolveExecutionDate: async () => '2026-07-03',
+      loadBars: async () => {
+        activeLifecycleRunId = 'run-B'
+        return { bars: [] }
+      },
+      expectedLifecycleRunId: 'run-A',
+      persist: true,
+    })
+  } catch (error) {
+    lost = String(error).includes('s12_replay_lifecycle_authority_lost:2026-07-02:run-A')
+  }
+  assert(lost, 'A must fail closed when lifecycle generation changes during loadBars')
+  assert(persistedOutcomes === 0, 'A must persist zero outcomes after B takes lifecycle authority')
+  assert(
+    guardedSql.length === 1 && guardedSql[0].includes('allocator_ev_daily_lifecycle lifecycle_authority'),
+    'each replay outcome must use an atomic lifecycle-generation guarded write',
+  )
+}
+
+void runLifecycleTakeoverFenceTest().catch((error) => {
   throw error
 })

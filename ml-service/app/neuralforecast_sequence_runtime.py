@@ -803,12 +803,77 @@ def _save_nf_artifact(bucket: Any, nf: Any, *, model_name: str, version: str, me
 _MODEL_CACHE: dict[str, dict[str, Any]] = {}
 
 
-def load_neuralforecast_artifact(model_name: str, version: str = "v1") -> tuple[Any | None, dict[str, Any] | None]:
+def _governed_sequence_identity(
+    model_name: str,
+    version: str,
+    artifact_identity: dict[str, Any] | None,
+) -> dict[str, str] | None:
+    if artifact_identity is None:
+        return None
+    if not isinstance(artifact_identity, dict):
+        raise ValueError(f"{model_name} governed artifact identity must be an object")
+    identity = {
+        key: str(artifact_identity.get(key) or "").strip()
+        for key in ("model", "version", "artifact_id", "artifact_path", "metadata_path", "checksum")
+    }
+    missing = [key for key, value in identity.items() if not value]
+    if missing:
+        raise ValueError(f"{model_name} governed artifact identity missing: {','.join(missing)}")
+    if identity["model"] != model_name:
+        raise ValueError(f"{model_name} governed artifact model mismatch: {identity['model']}")
+    if str(version).strip() != identity["version"]:
+        raise ValueError(
+            f"{model_name} governed artifact version mismatch: requested={version} expected={identity['version']}"
+        )
+    return identity
+
+
+def _validate_governed_sequence_metadata(
+    metadata: dict[str, Any],
+    *,
+    model_name: str,
+    identity: dict[str, str],
+) -> None:
+    metadata_model = str(metadata.get("model_name") or metadata.get("model") or "").strip()
+    metadata_version = str(metadata.get("version") or metadata.get("model_version") or "").strip()
+    metadata_checksum = str(metadata.get("checksum") or metadata.get("artifact_checksum") or "").strip().lower()
+    if metadata_model != model_name:
+        raise ValueError(
+            f"{model_name} governed metadata model mismatch: actual={metadata_model or '<missing>'}"
+        )
+    if metadata_version != identity["version"]:
+        raise ValueError(
+            f"{model_name} governed metadata version mismatch: expected={identity['version']} actual={metadata_version or '<missing>'}"
+        )
+    if metadata_checksum != identity["checksum"].lower():
+        raise ValueError(f"{model_name} governed metadata checksum mismatch")
+    for field in ("artifact_path", "metadata_path"):
+        actual = str(metadata.get(field) or "").strip()
+        if actual and actual != identity[field]:
+            raise ValueError(f"{model_name} governed metadata {field} mismatch")
+    metadata_artifact_id = str(metadata.get("artifact_id") or metadata.get("serving_artifact_id") or "").strip()
+    if metadata_artifact_id and metadata_artifact_id != identity["artifact_id"]:
+        raise ValueError(f"{model_name} governed metadata artifact_id mismatch")
+
+
+def load_neuralforecast_artifact(
+    model_name: str,
+    version: str = "v1",
+    *,
+    artifact_identity: dict[str, Any] | None = None,
+) -> tuple[Any | None, dict[str, Any] | None]:
     _configure_neuralforecast_runtime()
     from neuralforecast import NeuralForecast
 
     cfg = _require_model(model_name)
-    cache_key = f"{model_name}:{version}"
+    governed = _governed_sequence_identity(model_name, version, artifact_identity)
+    cache_key = ":".join((
+        model_name,
+        str(version),
+        *((governed or {}).get(key, "") for key in (
+            "artifact_id", "artifact_path", "metadata_path", "checksum"
+        )),
+    ))
     if cache_key in _MODEL_CACHE:
         cached = _MODEL_CACHE[cache_key]
         return cached["model"], cached["metadata"]
@@ -816,26 +881,40 @@ def load_neuralforecast_artifact(model_name: str, version: str = "v1") -> tuple[
         bucket = _get_bucket()
         if bucket is None:
             raise RuntimeError("GCS bucket not available")
-        artifact_blob = bucket.blob(f"{cfg['gcs_prefix']}/{version}.zip")
-        meta_blob = bucket.blob(f"{cfg['gcs_prefix']}/metadata_{version}.json")
+        artifact_path = governed["artifact_path"] if governed else f"{cfg['gcs_prefix']}/{version}.zip"
+        metadata_path = governed["metadata_path"] if governed else f"{cfg['gcs_prefix']}/metadata_{version}.json"
+        artifact_blob = bucket.blob(artifact_path)
+        meta_blob = bucket.blob(metadata_path)
         if not artifact_blob.exists():
             return None, None
+        if governed and not meta_blob.exists():
+            raise ValueError(f"{model_name} governed metadata object missing")
         metadata = json.loads(meta_blob.download_as_text()) if meta_blob.exists() else {}
+        if governed:
+            _validate_governed_sequence_metadata(metadata, model_name=model_name, identity=governed)
         raw = artifact_blob.download_as_bytes()
         try:
             metadata["artifact_integrity_report"] = verify_artifact_bytes(
                 raw,
-                metadata.get("checksum") or metadata.get("artifact_checksum"),
-                artifact_name=str(getattr(artifact_blob, "name", f"{cfg['gcs_prefix']}/{version}.zip")),
+                governed["checksum"] if governed else metadata.get("checksum") or metadata.get("artifact_checksum"),
+                artifact_name=str(getattr(artifact_blob, "name", artifact_path)),
             )
         except ArtifactValidationError as exc:
             raise RuntimeError(f"{model_name} artifact integrity failed: {exc.report}") from exc
+        if governed:
+            verify_artifact_bytes(
+                raw,
+                metadata.get("checksum") or metadata.get("artifact_checksum"),
+                artifact_name=str(getattr(artifact_blob, "name", artifact_path)),
+            )
         tmp = Path(tempfile.mkdtemp(prefix=f"nf_load_{model_name.lower()}_"))
         _unzip_bytes(raw, tmp)
         nf = NeuralForecast.load(path=str(tmp))
         _MODEL_CACHE[cache_key] = {"model": nf, "metadata": metadata, "tmp_dir": str(tmp)}
         return nf, metadata
     except Exception as exc:  # noqa: BLE001
+        if governed:
+            raise
         logger.warning("[%s NeuralForecast] load failed: %s", model_name, exc)
         return None, None
 
@@ -854,8 +933,11 @@ def neuralforecast_batch_predict(
     series_list: list[dict[str, Any]],
     horizon_used: int = DEFAULT_PRED_LEN,
     version: str = "v1",
+    artifact_identity: dict[str, Any] | None = None,
 ) -> list[dict[str, Any]]:
-    nf, metadata = load_neuralforecast_artifact(model_name, version)
+    nf, metadata = load_neuralforecast_artifact(
+        model_name, version, artifact_identity=artifact_identity
+    )
     cfg = _require_model(model_name)
     if nf is None:
         return [

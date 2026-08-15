@@ -12,17 +12,29 @@ import { recordWorkerTaskComputeProfile } from './computeProfileEvents'
 import { runAllocatorEvFeatureSnapshotBackfill } from './controllerResearchWorkflows'
 import {
   inspectAllocatorSnapshotClosure,
+  readAllocatorEvLifecycle,
   recordAllocatorEvLifecycle,
 } from './allocatorEvDailyLifecycle'
-import { claimPipelineStage, enqueuePipelineStage, markPipelineStage } from './pipelineStageLease'
+import {
+  claimPipelineStage,
+  enqueuePipelineStageAuthorized,
+  markPipelineStageFenced,
+  setPipelineStageCursorFenced,
+} from './pipelineStageLease'
 import { materializePriceHorizonLabels } from './priceHorizonProjection'
 import { resolveEveningChainRunAuthority } from './eveningChainRunAuthority'
 
 export type ChainContext = {
   runDate?: string
   upstreamRunId?: string
+  stageLeaseOwner?: string
   recoveryAttempt?: number
   runScope?: 'live_canonical' | 'historical_replay' | 'derived'
+  assertStageLease?: (boundary?: string) => Promise<void>
+}
+
+async function assertChainStageAuthority(ctx: ChainContext, boundary: string): Promise<void> {
+  if (ctx.assertStageLease) await ctx.assertStageLease(boundary)
 }
 
 export function resolveChainAttemptId(ctx: ChainContext): string | undefined {
@@ -99,6 +111,7 @@ async function emitChainedTaskObservability(
   durationMs: number,
   error?: string,
 ): Promise<void> {
+  await assertChainStageAuthority(ctx, `${task}:observability`)
   const results = await Promise.allSettled([
     withObservabilityTimeout(`${task} scheduler log`, logSchedulerResult(env.KV, task, {
       status,
@@ -126,7 +139,7 @@ async function emitChainedTaskObservability(
   }
 }
 
-async function logChainedTask(
+export async function logChainedTask(
   env: Bindings,
   ctx: ChainContext,
   task: string,
@@ -136,15 +149,18 @@ async function logChainedTask(
   const t0 = Date.now()
   const critical = options.critical !== false
   try {
+    await assertChainStageAuthority(ctx, `${task}:before_task`)
     const rawSummary = options.timeoutMs
       ? await withTaskExecutionTimeout(task, fn(), options.timeoutMs)
       : await fn()
+    await assertChainStageAuthority(ctx, `${task}:after_task`)
     const summary = normalizeSummary(rawSummary)
     const status = classifySchedulerSummary(summary)
     const durationMs = Date.now() - t0
     await emitChainedTaskObservability(env, ctx, task, status, summary, durationMs)
     return { task, summary, status, critical }
   } catch (e: any) {
+    await assertChainStageAuthority(ctx, `${task}:error_observability`)
     const summary = e?.message ?? `${task} failed`
     const durationMs = Date.now() - t0
     await emitChainedTaskObservability(env, ctx, task, 'error', summary, durationMs, String(e))
@@ -153,6 +169,7 @@ async function logChainedTask(
 }
 
 async function logSkippedHistoricalTask(env: Bindings, ctx: ChainContext, task: string): Promise<ChainedTask> {
+  await assertChainStageAuthority(ctx, `${task}:before_skipped_log`)
   const summary = `skipped non-production-authoritative callback run_date=${ctx.runDate ?? 'unknown'}; ${task} is live-canonical only`
   await logSchedulerResult(env.KV, task, {
     status: 'skipped',
@@ -239,6 +256,7 @@ async function enqueueMetaLearningShadowClosureTask(
 ): Promise<string> {
   const runDate = ctx.runDate ?? new Date(Date.now() + 8 * 3600_000).toISOString().slice(0, 10)
   const runId = ctx.upstreamRunId || `meta-learning-shadow-${runDate}-${Date.now()}`
+  await assertChainStageAuthority(ctx, 'meta-learning-shadow:before_queue')
   await env.UPDATE_QUEUE.send({
     type: 'meta_learning_shadow_closure',
     cursor: 0,
@@ -256,6 +274,7 @@ async function enqueueStrategyLearningClosureTask(
 ): Promise<string> {
   const runDate = ctx.runDate ?? new Date(Date.now() + 8 * 3600_000).toISOString().slice(0, 10)
   const runId = ctx.upstreamRunId || `strategy-learning-${runDate}-${Date.now()}`
+  await assertChainStageAuthority(ctx, 'strategy-learning:before_queue')
   await env.UPDATE_QUEUE.send({
     type: 'strategy_learning_materialize',
     cursor: 0,
@@ -269,10 +288,33 @@ async function enqueueStrategyLearningClosureTask(
 
 async function enqueueS12ReplayBackfillTask(env: Bindings, ctx: ChainContext): Promise<string> {
   const runDate = ctx.runDate ?? new Date(Date.now() + 8 * 3600_000).toISOString().slice(0, 10)
+  const canonicalRunId = String(ctx.upstreamRunId ?? '').trim()
+  const leaseOwner = String(ctx.stageLeaseOwner ?? '').trim()
+  if (!canonicalRunId || !leaseOwner) throw new Error('post_verify_stage_authority_missing')
   const { loadReplayReadySignalDates } = await import('./s12ReplayTradeOutcome')
   const signalDates = await loadReplayReadySignalDates(env.DB, runDate, 5)
   for (const signalDate of signalDates) {
-    const runId = `${ctx.upstreamRunId || 'post-verify'}-s12-${signalDate}-${Date.now()}`
+    const lifecycle = await readAllocatorEvLifecycle(env.DB, signalDate)
+    const lifecycleRunId = String(lifecycle?.upstream_run_id ?? '').trim()
+    if (!lifecycleRunId) {
+      throw new Error(`s12_replay_lifecycle_generation_missing:${signalDate}`)
+    }
+    const runId = `${canonicalRunId}-s12-${signalDate}-${Date.now()}`
+    const recorded = await recordAllocatorEvLifecycle(env.DB, {
+      businessDate: signalDate,
+      state: 'replay_enqueued',
+      replayMaturityAsOfDate: runDate,
+      upstreamRunId: lifecycleRunId,
+      expectedLifecycleRunId: lifecycleRunId,
+      stageAuthority: {
+        businessDate: runDate,
+        stage: 'post_verify_chain',
+        canonicalRunId,
+        leaseOwner,
+      },
+    })
+    if (!recorded) throw new Error(`stale_s12_replay_enqueue:${signalDate}:${canonicalRunId}`)
+    await assertChainStageAuthority(ctx, `s12-replay:${signalDate}:before_queue`)
     await env.UPDATE_QUEUE.send({
       type: 's12_replay_backfill_chunk',
       cursor: 0,
@@ -281,24 +323,25 @@ async function enqueueS12ReplayBackfillTask(env: Bindings, ctx: ChainContext): P
       replayScope: 'fusion_snapshot_missing',
       maturityAsOfDate: runDate,
       statusRunDate: runDate,
+      lifecycleRunId,
     } as any)
-    await recordAllocatorEvLifecycle(env.DB, {
-      businessDate: signalDate,
-      state: 'replay_enqueued',
-      replayMaturityAsOfDate: runDate,
-      upstreamRunId: runId,
-    })
   }
-  await recordAllocatorEvLifecycle(env.DB, {
+  const currentRecorded = await recordAllocatorEvLifecycle(env.DB, {
     businessDate: runDate,
     state: 'replay_pending_maturity',
-    upstreamRunId: ctx.upstreamRunId,
+    upstreamRunId: canonicalRunId,
+    stageAuthority: {
+      businessDate: runDate,
+      stage: 'post_verify_chain',
+      canonicalRunId,
+      leaseOwner,
+    },
   })
+  if (!currentRecorded) throw new Error(`stale_post_verify_lifecycle:${runDate}:${canonicalRunId}`)
   return signalDates.length
     ? `triggered next-session S12 replay signal_dates=${signalDates.join(',')} as_of=${runDate}`
     : `next-session S12 replay current as_of=${runDate}`
 }
-
 async function logChainSummary(
   env: Bindings,
   ctx: ChainContext,
@@ -306,6 +349,7 @@ async function logChainSummary(
   startedAt: number,
   results: ChainedTask[],
 ): Promise<void> {
+  await assertChainStageAuthority(ctx, `${task}:before_summary`)
   const hasError = results.some((row) => row.critical !== false && row.status === 'error')
   const waitingForQueuedStrategyLearning = task === 'post-verify-chain'
     && results.some((row) => row.task === 'strategy-learning' && row.status === 'triggered')
@@ -322,19 +366,40 @@ async function logChainSummary(
     run_date: ctx.runDate,
     run_scope: ctx.runScope,
   }, env)
-  if (task === 'post-verify-chain') {
-    await logSchedulerResult(env.KV, 'evening-chain', {
-      status,
-      summary: waitingForQueuedStrategyLearning
-        ? `root chain waiting for queued strategy-learning: ${summary || 'success'}`
-        : `root chain closed after post-verify: ${summary || 'success'}`,
-      duration_ms: Date.now() - startedAt,
-      run_id: ctx.upstreamRunId,
-      attempt_id: resolveChainAttemptId(ctx),
-      run_date: ctx.runDate,
-      run_scope: ctx.runScope,
-    }, env)
+}
+
+async function recordPostPipelineLifecycle(
+  env: Bindings,
+  ctx: ChainContext,
+  input: Parameters<typeof recordAllocatorEvLifecycle>[1],
+): Promise<void> {
+  await assertChainStageAuthority(ctx, `allocator-lifecycle:${input.state}:before_write`)
+  const canonicalRunId = String(ctx.upstreamRunId ?? '').trim()
+  const leaseOwner = String(ctx.stageLeaseOwner ?? '').trim()
+  if (!canonicalRunId || !leaseOwner) {
+    throw new Error('post_pipeline_stage_authority_missing')
   }
+  const recorded = await recordAllocatorEvLifecycle(env.DB, {
+    ...input,
+    upstreamRunId: canonicalRunId,
+    stageAuthority: {
+      stage: 'post_pipeline_chain',
+      canonicalRunId,
+      leaseOwner,
+    },
+  })
+  if (!recorded) {
+    throw new Error(`post_pipeline_stage_authority_lost:${input.businessDate}:${canonicalRunId}`)
+  }
+}
+
+async function expectedVerifyProducerRunId(runDate: string, idempotencyKey: string): Promise<string> {
+  const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(idempotencyKey))
+  const shortHash = Array.from(new Uint8Array(digest))
+    .map((value) => value.toString(16).padStart(2, '0'))
+    .join('')
+    .slice(0, 12)
+  return `verify-${runDate.replaceAll('/', '-')}-${shortHash}`
 }
 
 export async function runPostPipelineCallbackChain(
@@ -344,6 +409,7 @@ export async function runPostPipelineCallbackChain(
   const startedAt = Date.now()
   const results: ChainedTask[] = []
 
+  await assertChainStageAuthority(ctx, 'post-pipeline:entry')
   if (ctx.runDate) {
     await env.KV.delete(`lock:ml-predict:${ctx.runDate}`).catch(() => {})
   }
@@ -358,13 +424,15 @@ export async function runPostPipelineCallbackChain(
     await logChainSummary(env, ctx, 'post-pipeline-chain', startedAt, results)
     return 'error'
   }
+  await assertChainStageAuthority(ctx, 'post-pipeline:before_snapshot_inspection')
   let snapshotClosure = await inspectAllocatorSnapshotClosure(env.DB, ctx.runDate, {
     // This stage owns the explicit PIT backfill. Reconstruction may close the
     // operational evidence chain, while Fusion promotion remains native-only.
     allowPointInTimeReconstruction: true,
     kv: env.KV,
   })
-  await recordAllocatorEvLifecycle(env.DB, {
+  await assertChainStageAuthority(ctx, 'post-pipeline:after_snapshot_inspection')
+  await recordPostPipelineLifecycle(env, ctx, {
     businessDate: ctx.runDate,
     state: 'lineage_ready',
     nativeLineageRows: snapshotClosure.nativeLineageRows,
@@ -383,7 +451,7 @@ export async function runPostPipelineCallbackChain(
       status: 'error',
       critical: true,
     })
-    await recordAllocatorEvLifecycle(env.DB, {
+    await recordPostPipelineLifecycle(env, ctx, {
       businessDate: ctx.runDate,
       state: 'error',
       nativeLineageRows: snapshotClosure.nativeLineageRows,
@@ -416,7 +484,7 @@ export async function runPostPipelineCallbackChain(
   const snapshotPending = snapshotTask.status !== 'error'
     && /\bstatus=(?:spawned|pending)\b/i.test(snapshotTask.summary)
   if (snapshotPending) {
-    await recordAllocatorEvLifecycle(env.DB, {
+    await recordPostPipelineLifecycle(env, ctx, {
       businessDate: ctx.runDate,
       state: 'lineage_ready',
       nativeLineageRows: snapshotClosure.nativeLineageRows,
@@ -425,17 +493,19 @@ export async function runPostPipelineCallbackChain(
     await logChainSummary(env, ctx, 'post-pipeline-chain', startedAt, results)
     return 'waiting'
   }
+  await assertChainStageAuthority(ctx, 'post-pipeline:before_snapshot_readback')
   snapshotClosure = await inspectAllocatorSnapshotClosure(env.DB, ctx.runDate, {
     allowPointInTimeReconstruction: true,
     kv: env.KV,
   })
+  await assertChainStageAuthority(ctx, 'post-pipeline:after_snapshot_readback')
   if (snapshotTask.status === 'error' || !snapshotClosure.ready) {
     const error = snapshotTask.status === 'error'
       ? snapshotTask.summary
       : `snapshot readback incomplete native=${snapshotClosure.runNativeLineageRows} `
         + `reconstructed=${snapshotClosure.reconstructedLineageRows} rejected=${snapshotClosure.rejectedLineageRows} `
         + `expected=${snapshotClosure.expectedRows} published=${snapshotClosure.publishedRows} actual=${snapshotClosure.actualRows}`
-    await recordAllocatorEvLifecycle(env.DB, {
+    await recordPostPipelineLifecycle(env, ctx, {
       businessDate: ctx.runDate,
       state: 'error',
       nativeLineageRows: snapshotClosure.nativeLineageRows,
@@ -447,6 +517,7 @@ export async function runPostPipelineCallbackChain(
     const attempt = snapshotAttempt
     const retryScheduled = attempt < 3
     if (attempt < 3) {
+      await assertChainStageAuthority(ctx, 'allocator-snapshot-recovery:before_queue')
       await (env.UPDATE_QUEUE as any).send({
         type: 'allocator_ev_lifecycle_recovery',
         cursor: 0,
@@ -458,7 +529,7 @@ export async function runPostPipelineCallbackChain(
     await logChainSummary(env, ctx, 'post-pipeline-chain', startedAt, results)
     return retryScheduled ? 'waiting' : 'error'
   }
-  await recordAllocatorEvLifecycle(env.DB, {
+  await recordPostPipelineLifecycle(env, ctx, {
     businessDate: ctx.runDate,
     state: 'snapshot_ready',
     nativeLineageRows: snapshotClosure.nativeLineageRows,
@@ -466,57 +537,88 @@ export async function runPostPipelineCallbackChain(
     snapshotRows: snapshotClosure.actualRows,
     upstreamRunId: ctx.upstreamRunId,
   })
-  const verifyStage = await enqueuePipelineStage(env.DB, {
+  const pipelineRunId = String(ctx.upstreamRunId ?? '').trim()
+  const pipelineLeaseOwner = String(ctx.stageLeaseOwner ?? '').trim()
+  await assertChainStageAuthority(ctx, 'verify-v2:before_stage_enqueue')
+  const verifyStage = await enqueuePipelineStageAuthorized(env.DB, {
     businessDate: ctx.runDate,
     stage: 'verify_v2',
-    runId: ctx.upstreamRunId || `verify-v2-${ctx.runDate}`,
-    resumeWaiting: true,
-    supersedeSuccess: true,
+    runId: pipelineRunId,
+    authority: {
+      stage: 'post_pipeline_chain',
+      canonicalRunId: pipelineRunId,
+      status: 'running',
+      leaseOwner: pipelineLeaseOwner,
+    },
   })
+  if (verifyStage.row.canonical_run_id !== pipelineRunId) {
+    throw new Error(
+      `verify_stage_owner_conflict:incoming=${pipelineRunId}:canonical=${verifyStage.row.canonical_run_id}`,
+    )
+  }
   let verifyTask: ChainedTask
   if (!verifyStage.shouldEnqueue) {
     verifyTask = {
       task: 'verify-v2',
-      status: 'success',
+      status: verifyStage.row.status === 'success' ? 'success' : 'triggered',
       critical: true,
       summary: `verify stage already status=${verifyStage.row.status} run_id=${verifyStage.row.canonical_run_id}`,
     }
   } else {
+    const verifyLeaseOwner = `${pipelineRunId}:verify:${crypto.randomUUID()}`
     const claimed = await claimPipelineStage(env.DB, {
       businessDate: ctx.runDate,
       stage: 'verify_v2',
-      ownerId: verifyStage.row.canonical_run_id,
+      ownerId: verifyLeaseOwner,
+      canonicalRunId: pipelineRunId,
       leaseSeconds: 120,
     })
-    verifyTask = claimed
-      ? await logChainedTask(
-        env,
-        ctx,
-        'verify-v2',
-        () => runVerifyV2(
-          env,
-          ctx.runDate,
-          `verify_v2:${ctx.runDate}:${snapshotClosure.snapshotRunId}`,
-        ),
-      )
-      : {
+    if (!claimed) {
+      verifyTask = {
         task: 'verify-v2',
-        status: 'success',
+        status: 'triggered',
         critical: true,
         summary: 'verify stage was claimed by another worker',
       }
-    if (claimed) {
-      await markPipelineStage(env.DB, {
+    } else {
+      const verifyIdempotencyKey = `verify_v2:${ctx.runDate}:${snapshotClosure.snapshotRunId}`
+      const expectedProducerRunId = await expectedVerifyProducerRunId(ctx.runDate, verifyIdempotencyKey)
+      const cursorStored = await setPipelineStageCursorFenced(env.DB, {
         businessDate: ctx.runDate,
         stage: 'verify_v2',
+        canonicalRunId: pipelineRunId,
+        leaseOwner: verifyLeaseOwner,
+        cursorKey: expectedProducerRunId,
+      })
+      if (!cursorStored) throw new Error('verify_stage_cursor_fence_lost')
+      verifyTask = await logChainedTask(
+        env,
+        ctx,
+        'verify-v2',
+        () => runVerifyV2(env, ctx.runDate, verifyIdempotencyKey),
+      )
+      const finalized = await markPipelineStageFenced(env.DB, {
+        businessDate: ctx.runDate,
+        stage: 'verify_v2',
+        canonicalRunId: pipelineRunId,
+        cursorKey: expectedProducerRunId,
+        leaseOwner: verifyLeaseOwner,
         status: verifyTask.status === 'error' ? 'error' : 'waiting',
         error: verifyTask.status === 'error' ? verifyTask.summary : null,
       })
+      if (!finalized) {
+        const callbackWonRace = await env.DB.prepare(`
+          SELECT 1 AS ok FROM pipeline_stage_runs
+           WHERE business_date=? AND stage='verify_v2'
+             AND canonical_run_id=? AND cursor_key=? AND status='success'
+        `).bind(ctx.runDate, pipelineRunId, expectedProducerRunId).first<{ ok: number }>()
+        if (!callbackWonRace) throw new Error('verify_stage_finalize_fence_lost')
+      }
     }
   }
   results.push(verifyTask)
   if (verifyTask.status !== 'error') {
-    await recordAllocatorEvLifecycle(env.DB, {
+    await recordPostPipelineLifecycle(env, ctx, {
       businessDate: ctx.runDate,
       state: 'verify_triggered',
       nativeLineageRows: snapshotClosure.nativeLineageRows,
@@ -535,6 +637,7 @@ export async function runPostVerifyCallbackChain(
 ): Promise<'success' | 'error'> {
   const startedAt = Date.now()
   const results: ChainedTask[] = []
+  await assertChainStageAuthority(ctx, 'post-verify:entry')
   const productionAuthority = await resolveEveningChainRunAuthority(env, {
     businessDate: String(ctx.runDate ?? ''),
     canonicalRunId: String(ctx.upstreamRunId ?? ''),

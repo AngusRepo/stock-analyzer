@@ -14,6 +14,25 @@ export type StrategyLearningRunRow = {
   completed_at: string | null
 }
 
+export const STRATEGY_LEARNING_LEASE_SECONDS = 900
+
+export type StrategyLearningLeaseIdentity = {
+  businessDate: string
+  canonicalRunId: string
+  leaseOwner: string
+}
+
+const STRATEGY_LEARNING_LEASE_LOST_PREFIX = 'strategy_learning_lease_lost:'
+
+export function isStrategyLearningLeaseLost(error: unknown): boolean {
+  const reason = error instanceof Error ? error.message : String(error)
+  return reason.startsWith(STRATEGY_LEARNING_LEASE_LOST_PREFIX)
+}
+
+function strategyLearningLeaseLost(input: StrategyLearningLeaseIdentity): Error {
+  return new Error(`${STRATEGY_LEARNING_LEASE_LOST_PREFIX}${input.businessDate}:${input.canonicalRunId}:${input.leaseOwner}`)
+}
+
 type UniverseRow = {
   producer_run_id: string | null
   expected_candidates: number
@@ -104,6 +123,7 @@ export async function initializeStrategyLearningRun(
         ELSE strategy_learning_runs.completed_at
       END,
       updated_at=CURRENT_TIMESTAMP
+    WHERE strategy_learning_runs.status<>'success'
   `).bind(
     input.businessDate,
     input.runId,
@@ -133,14 +153,14 @@ export async function loadStrategyLearningRun(
 
 export async function claimStrategyLearningPage(
   db: D1Database,
-  input: { businessDate: string; runId: string; cursorSymbol: string; leaseSeconds?: number },
+  input: StrategyLearningLeaseIdentity & { cursorSymbol: string; leaseSeconds?: number },
 ): Promise<StrategyLearningRunRow | null> {
-  const modifier = `+${Math.max(30, Math.floor(input.leaseSeconds ?? 300))} seconds`
+  const modifier = `+${Math.max(30, Math.floor(input.leaseSeconds ?? STRATEGY_LEARNING_LEASE_SECONDS))} seconds`
   return db.prepare(`
     UPDATE strategy_learning_runs
        SET status='running', lease_owner=?, lease_expires_at=datetime('now', ?),
            attempt_count=attempt_count+1, updated_at=CURRENT_TIMESTAMP, last_error=NULL
-     WHERE business_date=?
+     WHERE business_date=? AND canonical_run_id=?
        AND status IN ('queued', 'running')
        AND COALESCE(cursor_symbol, '')=?
        AND (
@@ -153,19 +173,119 @@ export async function claimStrategyLearningPage(
               expected_decision_rows, persisted_decision_rows,
               lease_owner, lease_expires_at, completed_at
   `).bind(
-    input.runId,
+    input.leaseOwner,
     modifier,
     input.businessDate,
+    input.canonicalRunId,
     input.cursorSymbol,
-    input.runId,
+    input.leaseOwner,
   ).first<StrategyLearningRunRow>()
+}
+
+export async function heartbeatStrategyLearningLease(
+  db: D1Database,
+  input: StrategyLearningLeaseIdentity & { leaseSeconds?: number },
+): Promise<boolean> {
+  const modifier = `+${Math.max(30, Math.floor(input.leaseSeconds ?? STRATEGY_LEARNING_LEASE_SECONDS))} seconds`
+  const result = await db.prepare(`
+    UPDATE strategy_learning_runs
+       SET lease_expires_at=datetime('now', ?), updated_at=CURRENT_TIMESTAMP
+     WHERE business_date=? AND canonical_run_id=?
+       AND status IN ('running', 'success') AND lease_owner=?
+       AND lease_expires_at >= CURRENT_TIMESTAMP
+  `).bind(
+    modifier,
+    input.businessDate,
+    input.canonicalRunId,
+    input.leaseOwner,
+  ).run()
+  return Number(result.meta?.changes ?? 0) === 1
+}
+
+export async function assertStrategyLearningLease(
+  db: D1Database,
+  input: StrategyLearningLeaseIdentity & { leaseSeconds?: number },
+): Promise<void> {
+  if (!(await heartbeatStrategyLearningLease(db, input))) {
+    throw strategyLearningLeaseLost(input)
+  }
+}
+
+type StrategyLearningHeartbeatTimer = number
+
+export type StrategyLearningLeaseHeartbeatController = {
+  assertActive: () => Promise<void>
+  stop: () => Promise<void>
+  leaseError: () => Error | null
+}
+
+export function startStrategyLearningLeaseHeartbeat(
+  db: D1Database,
+  input: StrategyLearningLeaseIdentity & { leaseSeconds?: number },
+  options: {
+    intervalMs?: number
+    heartbeat?: () => Promise<boolean>
+    setIntervalFn?: (callback: () => void, intervalMs: number) => StrategyLearningHeartbeatTimer
+    clearIntervalFn?: (timer: StrategyLearningHeartbeatTimer) => void
+  } = {},
+): StrategyLearningLeaseHeartbeatController {
+  const intervalMs = Math.max(1_000, Math.floor(options.intervalMs ?? 60_000))
+  const heartbeat = options.heartbeat
+    ?? (() => heartbeatStrategyLearningLease(db, input))
+  const setIntervalFn = options.setIntervalFn
+    ?? ((callback, delayMs) => globalThis.setInterval(callback, delayMs) as unknown as number)
+  const clearIntervalFn = options.clearIntervalFn
+    ?? ((timer) => globalThis.clearInterval(timer))
+  let stopped = false
+  let lostError: Error | null = null
+  let heartbeatInFlight: Promise<void> | null = null
+
+  const pulse = (): Promise<void> => {
+    if (lostError) return Promise.reject(lostError)
+    if (heartbeatInFlight) return heartbeatInFlight
+    const current = (async () => {
+      try {
+        if (!(await heartbeat())) throw strategyLearningLeaseLost(input)
+      } catch (error) {
+        lostError = isStrategyLearningLeaseLost(error)
+          ? error as Error
+          : strategyLearningLeaseLost(input)
+        throw lostError
+      }
+    })()
+    heartbeatInFlight = current
+    void current.finally(() => {
+      if (heartbeatInFlight === current) heartbeatInFlight = null
+    }).catch(() => {})
+    return current
+  }
+
+  const timer = setIntervalFn(() => {
+    if (stopped || lostError) return
+    void pulse().catch(() => {})
+  }, intervalMs)
+
+  return {
+    assertActive: async () => {
+      if (stopped) throw strategyLearningLeaseLost(input)
+      await pulse()
+    },
+    stop: async () => {
+      if (stopped) return
+      stopped = true
+      clearIntervalFn(timer)
+      if (heartbeatInFlight) await heartbeatInFlight.catch(() => {})
+    },
+    leaseError: () => lostError,
+  }
 }
 
 export async function checkpointStrategyLearningPage(
   db: D1Database,
   input: {
     businessDate: string
-    runId: string
+    canonicalRunId: string
+    leaseOwner: string
     previousCursor: string
     nextCursor: string
     processedCandidates: number
@@ -179,13 +299,16 @@ export async function checkpointStrategyLearningPage(
            persisted_decision_rows=persisted_decision_rows+?,
            lease_owner=NULL, lease_expires_at=NULL, updated_at=CURRENT_TIMESTAMP
      WHERE business_date=? AND canonical_run_id=?
+       AND status='running' AND lease_owner=?
+       AND lease_expires_at >= CURRENT_TIMESTAMP
        AND COALESCE(cursor_symbol, '')=?
   `).bind(
     input.nextCursor,
     input.processedCandidates,
     input.persistedRows,
     input.businessDate,
-    input.runId,
+    input.canonicalRunId,
+    input.leaseOwner,
     input.previousCursor,
   ).run()
   return Number(result.meta?.changes ?? 0) === 1
@@ -193,29 +316,17 @@ export async function checkpointStrategyLearningPage(
 
 export async function completeStrategyLearningRun(
   db: D1Database,
-  input: { businessDate: string; runId: string },
-): Promise<{ candidateRows: number; decisionRows: number; expectedCandidates: number; expectedRows: number }> {
+  input: StrategyLearningLeaseIdentity & { leaseSeconds?: number },
+): Promise<{ candidateRows: number; decisionRows: number; expectedCandidates: number; expectedRows: number } | null> {
   const state = await loadStrategyLearningRun(db, input.businessDate)
   if (!state) throw new Error(`strategy_learning_run_missing:${input.businessDate}`)
+  if (
+    state.canonical_run_id !== input.canonicalRunId
+    || state.status !== 'running'
+    || state.lease_owner !== input.leaseOwner
+  ) return null
   const expectedCandidates = Math.max(0, Number(state.expected_candidates ?? 0))
   const expectedRows = Math.max(0, Number(state.expected_decision_rows ?? 0))
-  const priorCanonicalSuccess = state.status === 'success' && Boolean(state.completed_at)
-    && Math.max(0, Number(state.processed_candidates ?? 0)) === expectedCandidates
-    && Math.max(0, Number(state.persisted_decision_rows ?? 0)) === expectedRows
-  if (priorCanonicalSuccess) {
-    await db.prepare(`
-      UPDATE strategy_learning_runs
-         SET status='success', lease_owner=NULL, lease_expires_at=NULL,
-             updated_at=CURRENT_TIMESTAMP, last_error=NULL
-       WHERE business_date=? AND canonical_run_id=?
-    `).bind(input.businessDate, state.canonical_run_id).run()
-    return {
-      candidateRows: expectedCandidates,
-      decisionRows: expectedRows,
-      expectedCandidates,
-      expectedRows,
-    }
-  }
   const durableCoverageComplete = expectedCandidates > 0
     && expectedRows > 0
     && Boolean(state.cursor_symbol)
@@ -237,60 +348,145 @@ export async function completeStrategyLearningRun(
   }
   if (candidateRows !== expectedCandidates || decisionRows !== expectedRows) {
     const error = `strategy_learning_incomplete:candidates=${candidateRows}/${expectedCandidates}:rows=${decisionRows}/${expectedRows}`
-    await failStrategyLearningRun(db, { businessDate: input.businessDate, error })
     throw new Error(error)
   }
-  await db.prepare(`
+  const modifier = `+${Math.max(30, Math.floor(input.leaseSeconds ?? STRATEGY_LEARNING_LEASE_SECONDS))} seconds`
+  const result = await db.prepare(`
     UPDATE strategy_learning_runs
        SET status='running', processed_candidates=?, persisted_decision_rows=?,
-           lease_owner=?, lease_expires_at=datetime('now', '+300 seconds'), completed_at=NULL,
+            lease_expires_at=datetime('now', ?), completed_at=NULL,
            updated_at=CURRENT_TIMESTAMP, last_error=NULL
      WHERE business_date=? AND canonical_run_id=?
+       AND status='running' AND lease_owner=?
+       AND lease_expires_at >= CURRENT_TIMESTAMP
   `).bind(
-    candidateRows, decisionRows, input.runId, input.businessDate, state.canonical_run_id,
+    candidateRows, decisionRows, modifier, input.businessDate, input.canonicalRunId, input.leaseOwner,
   ).run()
+  if (Number(result.meta?.changes ?? 0) !== 1) return null
   return { candidateRows, decisionRows, expectedCandidates, expectedRows }
 }
 
 export async function markStrategyLearningRunFinalized(
   db: D1Database,
-  input: { businessDate: string; runId: string },
-): Promise<void> {
+  input: StrategyLearningLeaseIdentity,
+): Promise<boolean> {
   const result = await db.prepare(`
     UPDATE strategy_learning_runs
-       SET status='success', lease_owner=NULL, lease_expires_at=NULL,
-           completed_at=CURRENT_TIMESTAMP, updated_at=CURRENT_TIMESTAMP, last_error=NULL
+       SET status='success', completed_at=CURRENT_TIMESTAMP,
+           updated_at=CURRENT_TIMESTAMP, last_error=NULL
      WHERE business_date=? AND canonical_run_id=?
+       AND status='running' AND lease_owner=?
+       AND lease_expires_at >= CURRENT_TIMESTAMP
        AND processed_candidates=expected_candidates
        AND persisted_decision_rows=expected_decision_rows
-  `).bind(input.businessDate, input.runId).run()
-  if (Number(result.meta?.changes ?? 0) !== 1) {
-    throw new Error(`strategy_learning_finalize_state_conflict:${input.businessDate}`)
-  }
+       AND EXISTS (
+         SELECT 1
+           FROM pipeline_stage_runs p
+          WHERE p.business_date=strategy_learning_runs.business_date
+            AND p.stage='post_verify_chain'
+            AND p.canonical_run_id=strategy_learning_runs.canonical_run_id
+            AND p.status IN ('running', 'waiting', 'success')
+       )
+  `).bind(input.businessDate, input.canonicalRunId, input.leaseOwner).run()
+  return Number(result.meta?.changes ?? 0) === 1
+}
+
+export async function hasStrategyLearningPostVerifyAuthority(
+  db: D1Database,
+  input: Pick<StrategyLearningLeaseIdentity, 'businessDate' | 'canonicalRunId'>,
+): Promise<boolean> {
+  const row = await db.prepare(`
+    SELECT 1 AS authorized
+      FROM pipeline_stage_runs
+     WHERE business_date=?
+       AND stage='post_verify_chain'
+       AND canonical_run_id=?
+       AND status IN ('running', 'waiting', 'success')
+     LIMIT 1
+  `).bind(input.businessDate, input.canonicalRunId).first<{ authorized: number }>()
+  return Number(row?.authorized ?? 0) === 1
+}
+
+export async function reclaimStrategyLearningFinalizedLease(
+  db: D1Database,
+  input: StrategyLearningLeaseIdentity & { leaseSeconds?: number },
+): Promise<boolean> {
+  const modifier = `+${Math.max(30, Math.floor(input.leaseSeconds ?? STRATEGY_LEARNING_LEASE_SECONDS))} seconds`
+  const result = await db.prepare(`
+    UPDATE strategy_learning_runs
+       SET lease_expires_at=datetime('now', ?), updated_at=CURRENT_TIMESTAMP
+     WHERE business_date=? AND canonical_run_id=?
+       AND status='success' AND completed_at IS NOT NULL
+       AND lease_owner IS NOT NULL AND lease_owner=?
+       AND lease_expires_at IS NOT NULL
+       AND lease_expires_at < CURRENT_TIMESTAMP
+       AND EXISTS (
+         SELECT 1
+           FROM pipeline_stage_runs p
+          WHERE p.business_date=strategy_learning_runs.business_date
+            AND p.stage='post_verify_chain'
+            AND p.canonical_run_id=strategy_learning_runs.canonical_run_id
+            AND p.status IN ('running', 'waiting', 'success')
+       )
+  `).bind(
+    modifier,
+    input.businessDate,
+    input.canonicalRunId,
+    input.leaseOwner,
+  ).run()
+  return Number(result.meta?.changes ?? 0) === 1
+}
+
+export async function releaseStrategyLearningFinalizedLease(
+  db: D1Database,
+  input: StrategyLearningLeaseIdentity,
+): Promise<boolean> {
+  const result = await db.prepare(`
+    UPDATE strategy_learning_runs
+       SET lease_owner=NULL, lease_expires_at=NULL, updated_at=CURRENT_TIMESTAMP
+     WHERE business_date=? AND canonical_run_id=?
+       AND status='success' AND completed_at IS NOT NULL
+       AND lease_owner=? AND lease_expires_at >= CURRENT_TIMESTAMP
+       AND EXISTS (
+         SELECT 1
+           FROM pipeline_stage_runs p
+          WHERE p.business_date=strategy_learning_runs.business_date
+            AND p.stage='post_verify_chain'
+            AND p.canonical_run_id=strategy_learning_runs.canonical_run_id
+            AND p.status IN ('running', 'waiting', 'success')
+       )
+  `).bind(input.businessDate, input.canonicalRunId, input.leaseOwner).run()
+  return Number(result.meta?.changes ?? 0) === 1
 }
 
 export async function deferStrategyLearningFinalizer(
   db: D1Database,
-  input: { businessDate: string; runId: string; error: string },
-): Promise<void> {
-  await db.prepare(`
+  input: StrategyLearningLeaseIdentity & { error: string },
+): Promise<boolean> {
+  const result = await db.prepare(`
     UPDATE strategy_learning_runs
        SET status='queued', lease_owner=NULL, lease_expires_at=NULL, completed_at=NULL,
            last_error=?, updated_at=CURRENT_TIMESTAMP
      WHERE business_date=? AND canonical_run_id=?
+       AND status='running' AND lease_owner=?
+       AND lease_expires_at >= CURRENT_TIMESTAMP
        AND processed_candidates=expected_candidates
        AND persisted_decision_rows=expected_decision_rows
-  `).bind(input.error.slice(0, 1000), input.businessDate, input.runId).run()
+  `).bind(input.error.slice(0, 1000), input.businessDate, input.canonicalRunId, input.leaseOwner).run()
+  return Number(result.meta?.changes ?? 0) === 1
 }
 
 export async function failStrategyLearningRun(
   db: D1Database,
-  input: { businessDate: string; error: string },
-): Promise<void> {
-  await db.prepare(`
+  input: StrategyLearningLeaseIdentity & { error: string },
+): Promise<boolean> {
+  const result = await db.prepare(`
     UPDATE strategy_learning_runs
        SET status='error', lease_owner=NULL, lease_expires_at=NULL, completed_at=NULL,
            last_error=?, updated_at=CURRENT_TIMESTAMP
-     WHERE business_date=?
-  `).bind(input.error.slice(0, 1000), input.businessDate).run()
+     WHERE business_date=? AND canonical_run_id=?
+       AND status='running' AND lease_owner=?
+       AND lease_expires_at >= CURRENT_TIMESTAMP
+  `).bind(input.error.slice(0, 1000), input.businessDate, input.canonicalRunId, input.leaseOwner).run()
+  return Number(result.meta?.changes ?? 0) === 1
 }

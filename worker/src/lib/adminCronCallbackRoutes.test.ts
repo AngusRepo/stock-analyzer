@@ -7,6 +7,21 @@ function assert(condition: unknown, message: string): void {
 const adminControlRoutes = fs.readFileSync('src/routes/adminControlRoutes.ts', 'utf8')
 const schedulerRunLogger = fs.readFileSync('src/lib/schedulerRunLogger.ts', 'utf8')
 const finLabDispatchFence = fs.readFileSync('src/lib/finLabDispatchFence.ts', 'utf8')
+const pipelineCallbackMarker = adminControlRoutes.indexOf("if (body.task === 'pipeline'")
+const pipelineCallbackEndMarker = adminControlRoutes.indexOf("if (body.task === 's12-structure-batch')", pipelineCallbackMarker)
+const pipelineCallbackBlock = adminControlRoutes.slice(pipelineCallbackMarker, pipelineCallbackEndMarker)
+const pipelineContinuationMarker = pipelineCallbackBlock.indexOf(
+  'const continuation = await queuePostPipelineStage(c.env',
+)
+const pipelineOwnershipFenceMarker = pipelineCallbackBlock.indexOf(
+  'if (continuation.canonicalRunId !== callbackRunId)',
+)
+const pipelineRootAdoptionMarker = adminControlRoutes.indexOf(
+  'pipeline terminal success accepted; post-pipeline owner confirmed',
+  pipelineCallbackMarker,
+)
+const pipelineCatchMarker = pipelineCallbackBlock.indexOf('} catch (e: any) {')
+const pipelineCatchBlock = pipelineCallbackBlock.slice(pipelineCatchMarker)
 
 assert(
   adminControlRoutes.includes("adminControlRoutes.post('/api/admin/cron-callback'") &&
@@ -26,6 +41,32 @@ assert(
     adminControlRoutes.includes('run_id: callbackRunId') &&
     adminControlRoutes.includes('run_date: callbackRunDate'),
   'callback handler must persist run_id and run_date to scheduler logs',
+)
+
+assert(
+  pipelineCallbackMarker >= 0 &&
+    pipelineCallbackEndMarker > pipelineCallbackMarker &&
+    pipelineContinuationMarker >= 0 &&
+    pipelineOwnershipFenceMarker > pipelineContinuationMarker &&
+    pipelineRootAdoptionMarker > pipelineCallbackMarker + pipelineOwnershipFenceMarker &&
+    pipelineCallbackBlock.slice(pipelineOwnershipFenceMarker).includes('strict: true'),
+  'pipeline success callback must queue the durable stage and verify canonical ownership before adopting the root run id',
+)
+
+assert(
+  pipelineCallbackBlock.includes("error: 'post_pipeline_stage_owner_conflict'") &&
+    pipelineCallbackBlock.includes('root_owner_unchanged=true') &&
+    pipelineCallbackBlock.includes('active_run_id: continuation.canonicalRunId') &&
+    pipelineCallbackBlock.includes('}, 409)'),
+  'an active old stage lease must fail closed as retryable waiting without changing the root owner',
+)
+
+assert(
+  pipelineCatchMarker >= 0 &&
+    !pipelineCatchBlock.includes("logSchedulerResult(c.env.KV, 'evening-chain'") &&
+    pipelineCatchBlock.includes("error: 'post_pipeline_callback_chain_failed'") &&
+    pipelineCatchBlock.includes('}, 503)'),
+  'callback exceptions before confirmed stage ownership must remain retryable and must never adopt the root owner',
 )
 
 assert(

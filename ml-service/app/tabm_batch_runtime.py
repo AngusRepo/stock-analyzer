@@ -17,7 +17,7 @@ from .artifact_contract import ArtifactValidationError, verify_artifact_bytes
 
 MODEL_NAME = "TabM"
 
-_ARTIFACT_CACHE: dict[tuple[str, str], "TabMArtifact"] = {}
+_ARTIFACT_CACHE: dict[tuple[str, ...], "TabMArtifact"] = {}
 
 
 @dataclass(frozen=True)
@@ -56,11 +56,16 @@ def _active_tabm_entry(pool: dict | None = None) -> dict:
     version = str(entry.get("version") or "").strip()
     if not version:
         raise RuntimeError("TabM active model_pool entry is missing version")
-    return {
+    resolved = {
         **entry,
         "version": version,
         "gcs_path": str(entry.get("gcs_path") or gcs_path_for(MODEL_NAME, version)),
     }
+    if str(entry.get("serving_owner") or "") == "frozen_pipeline_modal_serving_manifest":
+        for key in ("gcs_path", "metadata_path", "checksum", "serving_artifact_id"):
+            if not str(resolved.get(key) or "").strip():
+                raise RuntimeError(f"TabM frozen artifact identity missing {key}")
+    return resolved
 
 
 def _metadata_path_for(artifact_path: str, version: str) -> str:
@@ -93,13 +98,18 @@ def load_tabm_artifact(pool: dict | None = None) -> TabMArtifact:
     entry = _active_tabm_entry(pool)
     artifact_path = str(entry["gcs_path"])
     version = str(entry["version"])
+    metadata_path = str(entry.get("metadata_path") or "").strip()
+    expected_checksum = str(entry.get("checksum") or "").strip().lower()
+    artifact_id = str(entry.get("serving_artifact_id") or "").strip()
+    if not metadata_path:
+        metadata_path = _metadata_path_for(artifact_path, version)
     if not artifact_path.endswith((".pt", ".pth")):
         raise RuntimeError(
             "TabM production artifact must be a .pt/.pth torch artifact; "
             f"got {artifact_path}"
         )
 
-    cache_key = (artifact_path, version)
+    cache_key = (artifact_path, metadata_path, version, artifact_id, expected_checksum)
     if cache_key in _ARTIFACT_CACHE:
         return _ARTIFACT_CACHE[cache_key]
 
@@ -113,18 +123,48 @@ def load_tabm_artifact(pool: dict | None = None) -> TabMArtifact:
     buf = io.BytesIO()
     blob.download_to_file(buf)
     raw = buf.getvalue()
-    meta_blob = bucket.blob(_metadata_path_for(artifact_path, version))
+    meta_blob = bucket.blob(metadata_path)
     if not meta_blob.exists():
         raise RuntimeError("TabM production artifact metadata is missing")
     metadata = json.loads(meta_blob.download_as_text().lstrip("\ufeff"))
+    metadata_model = str(metadata.get("model_name") or metadata.get("model") or "").strip()
+    metadata_version = str(metadata.get("version") or "").strip()
+    metadata_artifact_id = str(metadata.get("artifact_id") or "").strip()
+    metadata_checksum = str(
+        metadata.get("checksum") or metadata.get("artifact_checksum") or ""
+    ).strip().lower()
+    frozen_owner = (
+        str(entry.get("serving_owner") or "") == "frozen_pipeline_modal_serving_manifest"
+    )
+    if frozen_owner and not metadata_model:
+        raise RuntimeError("TabM registry metadata model missing")
+    if frozen_owner and not metadata_version:
+        raise RuntimeError("TabM registry metadata version missing")
+    if metadata_model and metadata_model != MODEL_NAME:
+        raise RuntimeError("TabM registry metadata model mismatch")
+    if metadata_version and metadata_version != version:
+        raise RuntimeError("TabM registry metadata version mismatch")
+    if metadata_artifact_id and artifact_id and metadata_artifact_id != artifact_id:
+        raise RuntimeError("TabM registry metadata artifact id mismatch")
+    if expected_checksum and metadata_checksum != expected_checksum:
+        raise RuntimeError("TabM registry/metadata checksum mismatch")
     try:
         metadata["artifact_integrity_report"] = verify_artifact_bytes(
             raw,
-            metadata.get("checksum") or metadata.get("artifact_checksum"),
+            expected_checksum or metadata_checksum,
             artifact_name=artifact_path,
         )
     except ArtifactValidationError as exc:
         raise RuntimeError(f"TabM artifact integrity failed: {exc.report}") from exc
+    metadata["serving_identity_report"] = {
+        "status": "verified",
+        "model_name": MODEL_NAME,
+        "version": version,
+        "artifact_id": artifact_id or None,
+        "artifact_path": artifact_path,
+        "metadata_path": metadata_path,
+        "checksum": expected_checksum or metadata_checksum,
+    }
     buf.seek(0)
     payload = torch.load(buf, map_location="cpu", weights_only=False)
     if not isinstance(payload, dict):

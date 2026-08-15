@@ -3788,6 +3788,7 @@ type StrategyLearningFinalizerStageRuntime = {
   cachedStageResults?: Record<string, unknown>
   onStageTransition?: (stage: string, status: 'running' | 'cached' | 'success' | 'error', reason?: string) => Promise<void>
   onStageComplete?: (stage: string, result: unknown) => Promise<void>
+  assertLease?: (stage: string) => Promise<void>
 }
 
 async function emitStrategyLearningFinalizerStage(
@@ -3803,11 +3804,12 @@ async function emitStrategyLearningFinalizerStage(
   }
 }
 
-async function runStrategyLearningFinalizerStage<T>(
+export async function runStrategyLearningFinalizerStage<T>(
   stage: string,
   task: () => Promise<T>,
   runtime: StrategyLearningFinalizerStageRuntime = {},
 ): Promise<T> {
+  await runtime.assertLease?.(stage)
   if (Object.prototype.hasOwnProperty.call(runtime.cachedStageResults ?? {}, stage)) {
     await emitStrategyLearningFinalizerStage(runtime, stage, 'cached')
     return runtime.cachedStageResults?.[stage] as T
@@ -3816,15 +3818,23 @@ async function runStrategyLearningFinalizerStage<T>(
   await emitStrategyLearningFinalizerStage(runtime, stage, 'running')
   try {
     const result = await task()
+    await runtime.assertLease?.(stage)
     try {
       await runtime.onStageComplete?.(stage, result ?? null)
     } catch (error) {
       console.warn(`[StrategyLearningFinalizer] checkpoint_failed stage=${stage}`, error)
     }
+    await runtime.assertLease?.(stage)
     await emitStrategyLearningFinalizerStage(runtime, stage, 'success', `duration_ms=${Date.now() - startedAt}`)
     return result
   } catch (error) {
     const reason = error instanceof Error ? error.message : String(error)
+    if (reason.startsWith('strategy_learning_lease_lost:')) throw error
+    try {
+      await runtime.assertLease?.(stage)
+    } catch (leaseError) {
+      throw leaseError
+    }
     await emitStrategyLearningFinalizerStage(runtime, stage, 'error', reason)
     if (reason.startsWith('strategy_learning_finalizer_stage_failed:')) throw error
     throw new Error(`strategy_learning_finalizer_stage_failed:${stage}:${reason}`)
@@ -3843,6 +3853,7 @@ export async function finalizeStrategyLearningEvidenceV5(
     cachedStageResults?: Record<string, unknown>
     onStageTransition?: StrategyLearningFinalizerStageRuntime['onStageTransition']
     onStageComplete?: StrategyLearningFinalizerStageRuntime['onStageComplete']
+    assertLease?: StrategyLearningFinalizerStageRuntime['assertLease']
   } = {},
 ) {
   const { materializeCanonicalSelectionLabelsV4 } = await import('./canonicalSelectionLabels')

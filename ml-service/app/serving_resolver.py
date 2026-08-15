@@ -1,8 +1,11 @@
 from __future__ import annotations
 
 import copy
+import hashlib
 import json
 import os
+import threading
+import time
 from datetime import datetime, timezone
 from typing import Any
 
@@ -24,6 +27,7 @@ SEQUENCE_ALPHA_MODELS = ("DLinear", "PatchTST", "iTransformer")
 SEQUENCE_CONTRACT_FIELDS = ("seq_len", "pred_len", "sequence_contract")
 SEQUENCE_CONTRACT_SCHEMA_VERSION = "model-serving-sequence-contract-v1"
 L2_SIDECARS = ("TimesFM",)
+PIPELINE_MODAL_SERVING_MANIFEST_SCHEMA = "pipeline-modal-serving-manifest-v1"
 SERVING_OK_STATES = {"production"}
 SERVING_OK_OFFLINE_DECISIONS = {"STRONG_PASS", "PASS"}
 SERVING_BAD_LIVE_STATUSES = {"failed", "rolling_ic_failed", "live_gate_failed"}
@@ -49,6 +53,27 @@ IC_STATE_FIELDS = (
     "last_ic_target_semantic_version",
     "last_ic_artifact_version",
 )
+FROZEN_ENSEMBLE_FIELDS = IC_STATE_FIELDS + (
+    "serving_ic_prior",
+    "serving_ic_source",
+)
+FROZEN_SHADOW_FIELDS = (
+    "status", "version", "gcs_path", "metadata_path", "serving_artifact_id",
+    "checksum", "model_type", "balance_family", "shadow_since", "weekly_ic",
+    "ic_4w_avg", "consecutive_negative_weeks", "vote_weight", "model",
+)
+FROZEN_FORMAL_SLOT_FIELDS = (
+    "model", "status", "version", "gcs_path", "metadata_path",
+    "artifact_schema", "canonical_source", "direct_prediction", "vote_weight",
+    "note",
+)
+PIPELINE_MODAL_RANK_STACKER_SCHEMA = "pipeline-modal-rank-stacker-snapshot-v1"
+FROZEN_MANIFEST_SERVING_STATUSES = {"active", "degraded"}
+FROZEN_MANIFEST_EFFECTIVE_STATUSES = {
+    "active", "degraded", "challenger",
+}
+FROZEN_COMPACT_MAX_BYTES = 65_536
+FROZEN_MANIFEST_MAX_BYTES = 1_048_576
 ARTIFACT_EXTENSIONS = {
     "LightGBM": "joblib",
     "XGBoost": "joblib",
@@ -62,6 +87,16 @@ ARTIFACT_EXTENSIONS = {
 }
 
 
+class ServingPoolResolutionError(RuntimeError):
+    """D1 champion snapshot could not be resolved safely."""
+
+
+_RESOLVED_POOL_CACHE: dict[str, Any] | None = None
+_RESOLVED_POOL_CACHE_KEY: str | None = None
+_RESOLVED_POOL_CACHE_LOADED_AT = 0.0
+_RESOLVED_POOL_CACHE_LOCK = threading.Lock()
+
+
 def d1_champion_serving_enabled() -> bool:
     owner = str(os.environ.get("MODEL_SERVING_OWNER") or "d1_champion").strip().lower()
     return owner in {"d1", "d1_champion", "model_champion_pointers"}
@@ -69,6 +104,464 @@ def d1_champion_serving_enabled() -> bool:
 
 def _d1_env_configured() -> bool:
     return all(str(os.environ.get(key) or "").strip() for key in ("CF_API_TOKEN", "CF_ACCOUNT_ID", "CF_D1_DB_ID"))
+
+
+def clear_serving_pool_cache() -> None:
+    """Clear the single-entry container cache used by Modal serving."""
+    global _RESOLVED_POOL_CACHE, _RESOLVED_POOL_CACHE_KEY, _RESOLVED_POOL_CACHE_LOADED_AT
+    with _RESOLVED_POOL_CACHE_LOCK:
+        _RESOLVED_POOL_CACHE = None
+        _RESOLVED_POOL_CACHE_KEY = None
+        _RESOLVED_POOL_CACHE_LOADED_AT = 0.0
+
+
+def _bounded_env_float(name: str, default: float, *, minimum: float, maximum: float) -> float:
+    try:
+        value = float(os.environ.get(name, str(default)) or default)
+    except (TypeError, ValueError):
+        value = default
+    return max(minimum, min(maximum, value))
+
+
+def _bounded_env_int(name: str, default: int, *, minimum: int, maximum: int) -> int:
+    try:
+        value = int(os.environ.get(name, str(default)) or default)
+    except (TypeError, ValueError):
+        value = default
+    return max(minimum, min(maximum, value))
+
+
+def _fallback_pool_cache_key(fallback_pool: dict[str, Any] | None) -> str:
+    payload = json.dumps(fallback_pool or {}, sort_keys=True, separators=(",", ":"), default=str)
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+def serving_manifest_digest(manifest: dict[str, Any]) -> str:
+    payload = json.dumps(
+        manifest,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    payload_bytes = payload.encode("utf-8")
+    if len(payload_bytes) > FROZEN_MANIFEST_MAX_BYTES:
+        raise ServingPoolResolutionError(
+            f"frozen_serving_manifest_total_bytes:{len(payload_bytes)}"
+        )
+    return hashlib.sha256(payload_bytes).hexdigest()
+
+
+def serving_manifest_identities(
+    manifest: dict[str, Any],
+    *,
+    serving_only: bool = False,
+) -> dict[str, dict[str, Any]]:
+    return {
+        str(row.get("model") or ""): {
+            key: row.get(key)
+            for key in (
+                "version",
+                "artifact_id",
+                "artifact_path",
+                "metadata_path",
+                "checksum",
+            )
+        }
+        for row in (manifest.get("models") or [])
+        if isinstance(row, dict) and str(row.get("model") or "").strip()
+        and (
+            not serving_only
+            or str(row.get("effective_status") or "")
+            in FROZEN_MANIFEST_SERVING_STATUSES
+        )
+    }
+
+
+def serving_manifest_coverage(manifest: dict[str, Any]) -> dict[str, Any]:
+    rows = [row for row in (manifest.get("models") or []) if isinstance(row, dict)]
+    excluded = [
+        {
+            "model": str(row.get("model") or ""),
+            "effective_status": str(row.get("effective_status") or ""),
+            "reason": str((row.get("health") or {}).get("serving_block_reason") or "")
+            or "not_serving_eligible",
+        }
+        for row in rows
+        if str(row.get("effective_status") or "")
+        not in FROZEN_MANIFEST_SERVING_STATUSES
+    ]
+    return {
+        "slot_count": len(rows),
+        "serving_model_count": len(rows) - len(excluded),
+        "excluded_models": excluded,
+    }
+
+
+def _require_compact_mapping(
+    value: Any,
+    *,
+    label: str,
+    allowed_fields: tuple[str, ...],
+) -> dict[str, Any]:
+    if not isinstance(value, dict) or set(value) != set(allowed_fields):
+        raise ServingPoolResolutionError(
+            f"frozen_serving_manifest_{label}_fields_invalid"
+        )
+    try:
+        encoded = json.dumps(
+            value,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+            allow_nan=False,
+        ).encode("utf-8")
+    except (TypeError, ValueError) as exc:
+        raise ServingPoolResolutionError(
+            f"frozen_serving_manifest_{label}_value_invalid"
+        ) from exc
+    if len(encoded) > FROZEN_COMPACT_MAX_BYTES:
+        raise ServingPoolResolutionError(
+            f"frozen_serving_manifest_{label}_too_large"
+        )
+    return copy.deepcopy(value)
+
+
+def _require_manifest_checksum(value: Any, *, model_name: str) -> str:
+    checksum = str(value or "").strip().lower()
+    digest = checksum.removeprefix("sha256:")
+    if (
+        not checksum.startswith("sha256:")
+        or len(digest) != 64
+        or any(char not in "0123456789abcdef" for char in digest)
+    ):
+        raise ServingPoolResolutionError(
+            f"frozen_serving_manifest_checksum_invalid:{model_name}"
+        )
+    return checksum
+
+
+def _require_frozen_ic_weight_policy(value: Any) -> dict[str, Any]:
+    expected_fields = (
+        "schema_version",
+        "prior_ic",
+        "prior_strength",
+        "min_samples_for_hard_zero",
+        "source",
+    )
+    policy = _require_compact_mapping(
+        value,
+        label="ic_weight_policy",
+        allowed_fields=expected_fields,
+    )
+    if (
+        policy.get("schema_version") != "ic-weight-policy-v1"
+        or policy.get("source") != "controller_dispatch_environment"
+    ):
+        raise ServingPoolResolutionError(
+            "frozen_serving_manifest_ic_weight_policy_contract_invalid"
+        )
+    try:
+        prior = float(policy.get("prior_ic"))
+        strength = float(policy.get("prior_strength"))
+        min_samples = int(policy.get("min_samples_for_hard_zero"))
+    except (TypeError, ValueError) as exc:
+        raise ServingPoolResolutionError(
+            "frozen_serving_manifest_ic_weight_policy_value_invalid"
+        ) from exc
+    if (
+        not -1.0 <= prior <= 1.0
+        or not 0.0 <= strength <= 1_000_000.0
+        or not 0 <= min_samples <= 1_000_000
+    ):
+        raise ServingPoolResolutionError(
+            "frozen_serving_manifest_ic_weight_policy_value_out_of_bounds"
+        )
+    policy["prior_ic"] = prior
+    policy["prior_strength"] = strength
+    policy["min_samples_for_hard_zero"] = min_samples
+    return policy
+
+
+def _require_frozen_rank_stacker(value: Any) -> dict[str, Any]:
+    if not isinstance(value, dict):
+        raise ServingPoolResolutionError(
+            "frozen_serving_manifest_rank_stacker_not_object"
+        )
+    if value.get("schema_version") != PIPELINE_MODAL_RANK_STACKER_SCHEMA:
+        raise ServingPoolResolutionError(
+            "frozen_serving_manifest_rank_stacker_schema_invalid"
+        )
+    if value.get("effective_status") != "excluded" or not str(value.get("reason") or "").strip():
+        raise ServingPoolResolutionError(
+            "frozen_serving_manifest_rank_stacker_must_be_excluded"
+        )
+    status = str(value.get("status") or "").strip()
+    if status not in {"absent", "present", "unavailable"}:
+        raise ServingPoolResolutionError(
+            "frozen_serving_manifest_rank_stacker_status_invalid"
+        )
+    if status == "present":
+        identity = value.get("artifact_identity")
+        metadata = value.get("metadata")
+        freshness = value.get("freshness_audit")
+        if not isinstance(identity, dict) or not isinstance(metadata, dict) or not isinstance(freshness, dict):
+            raise ServingPoolResolutionError(
+                "frozen_serving_manifest_rank_stacker_audit_identity_invalid"
+            )
+        try:
+            artifact_size = int(identity.get("size") or 0)
+        except (TypeError, ValueError) as exc:
+            raise ServingPoolResolutionError(
+                "frozen_serving_manifest_rank_stacker_size_invalid"
+            ) from exc
+        if (
+            not str(value.get("artifact_path") or "").strip()
+            or not str(value.get("metadata_path") or "").strip()
+            or not str(identity.get("generation") or "").strip()
+            or not (
+                str(identity.get("md5_hash") or "").strip()
+                or str(identity.get("crc32c") or "").strip()
+            )
+            or artifact_size <= 0
+            or artifact_size > FROZEN_COMPACT_MAX_BYTES
+        ):
+            raise ServingPoolResolutionError(
+                "frozen_serving_manifest_rank_stacker_audit_identity_invalid"
+            )
+        _require_manifest_checksum(value.get("metadata_checksum"), model_name="StackingRankMetadata")
+    return copy.deepcopy(value)
+
+
+def build_pool_from_frozen_manifest(
+    manifest: dict[str, Any],
+    *,
+    expected_digest: str,
+    l2_sidecar_context: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Build Modal's pool only from the Controller-dispatched immutable manifest."""
+    if not isinstance(manifest, dict):
+        raise ServingPoolResolutionError("frozen_serving_manifest_not_object")
+    if manifest.get("schema_version") != PIPELINE_MODAL_SERVING_MANIFEST_SCHEMA:
+        raise ServingPoolResolutionError("frozen_serving_manifest_schema_invalid")
+    actual_digest = serving_manifest_digest(manifest)
+    if not expected_digest or actual_digest != str(expected_digest).strip().lower():
+        raise ServingPoolResolutionError("frozen_serving_manifest_digest_mismatch")
+    if manifest.get("source_of_truth") != "model_champion_pointers/model_artifact_registry":
+        raise ServingPoolResolutionError("frozen_serving_manifest_source_invalid")
+
+    rows = manifest.get("models")
+    if not isinstance(rows, list):
+        raise ServingPoolResolutionError("frozen_serving_manifest_models_not_list")
+    by_model: dict[str, dict[str, Any]] = {}
+    duplicates: list[str] = []
+    for row in rows:
+        if not isinstance(row, dict):
+            raise ServingPoolResolutionError("frozen_serving_manifest_model_not_object")
+        model_name = str(row.get("model") or "").strip()
+        if model_name in by_model:
+            duplicates.append(model_name)
+        by_model[model_name] = row
+    missing = sorted(set(DIRECT_ALPHA_MODELS) - set(by_model))
+    unexpected = sorted(set(by_model) - set(DIRECT_ALPHA_MODELS))
+    if missing or unexpected or duplicates:
+        raise ServingPoolResolutionError(
+            "frozen_serving_manifest_model_set_invalid:"
+            f"missing={missing}:unexpected={unexpected}:duplicates={sorted(set(duplicates))}"
+        )
+
+    pool: dict[str, Any] = {
+        "schema_version": "model_pool_v2",
+        "source_of_truth": "frozen_pipeline_modal_serving_manifest",
+        "serving_manifest_digest": actual_digest,
+        "models": {},
+        "l2_feature_sidecars": {},
+        "shadow_models": {},
+        "formal_layer3_slots": {},
+        "rank_stacker": {},
+        "ic_weight_policy": {},
+        "serving_coverage": serving_manifest_coverage(manifest),
+    }
+    for model_name in DIRECT_ALPHA_MODELS:
+        row = by_model[model_name]
+        status = str(row.get("status") or "").strip()
+        if status not in {"active", "degraded"}:
+            raise ServingPoolResolutionError(
+                f"frozen_serving_manifest_status_invalid:{model_name}:{status or '<missing>'}"
+            )
+        effective_status = str(row.get("effective_status") or "").strip()
+        if effective_status not in FROZEN_MANIFEST_EFFECTIVE_STATUSES:
+            raise ServingPoolResolutionError(
+                f"frozen_serving_manifest_effective_status_invalid:{model_name}:"
+                f"{effective_status or '<missing>'}"
+            )
+        identity = {
+            "version": str(row.get("version") or "").strip(),
+            "artifact_id": str(row.get("artifact_id") or "").strip(),
+            "artifact_path": str(row.get("artifact_path") or "").strip(),
+            "metadata_path": str(row.get("metadata_path") or "").strip(),
+        }
+        missing_identity = [key for key, value in identity.items() if not value]
+        if missing_identity:
+            raise ServingPoolResolutionError(
+                f"frozen_serving_manifest_identity_missing:{model_name}:"
+                + ",".join(missing_identity)
+            )
+        health = row.get("health")
+        schema = row.get("schema")
+        if not isinstance(health, dict) or not isinstance(schema, dict):
+            raise ServingPoolResolutionError(
+                f"frozen_serving_manifest_contract_missing:{model_name}"
+            )
+        serving_block_reason = str(health.get("serving_block_reason") or "").strip()
+        serving_eligible = health.get("serving_eligible") is not False and not serving_block_reason
+        expected_effective_status = status if serving_eligible else "challenger"
+        if effective_status != expected_effective_status:
+            raise ServingPoolResolutionError(
+                f"frozen_serving_manifest_effective_status_mismatch:{model_name}:"
+                f"expected={expected_effective_status}:actual={effective_status}"
+            )
+        if not serving_eligible and not serving_block_reason:
+            raise ServingPoolResolutionError(
+                f"frozen_serving_manifest_exclusion_reason_missing:{model_name}"
+            )
+        if len(serving_block_reason) > 4096:
+            raise ServingPoolResolutionError(
+                f"frozen_serving_manifest_exclusion_reason_too_large:{model_name}"
+            )
+        target_semantic_version = str(schema.get("target_semantic_version") or "").strip()
+        if serving_eligible and target_semantic_version != LABEL_SCHEMA_VERSION:
+            raise ServingPoolResolutionError(
+                "frozen_serving_manifest_target_semantic_mismatch:"
+                f"{model_name}:{target_semantic_version or '<missing>'}:"
+                f"expected={LABEL_SCHEMA_VERSION}"
+            )
+
+        ensemble = _require_compact_mapping(
+            row.get("ensemble"),
+            label=f"ensemble_{model_name}",
+            allowed_fields=FROZEN_ENSEMBLE_FIELDS,
+        )
+        checksum = _require_manifest_checksum(row.get("checksum"), model_name=model_name)
+        entry = {
+            "status": effective_status,
+            "lifecycle_status": status,
+            "effective_status": effective_status,
+            "version": identity["version"],
+            "gcs_path": identity["artifact_path"],
+            "metadata_path": identity["metadata_path"],
+            "checksum": checksum,
+            "serving_artifact_id": identity["artifact_id"],
+            "serving_owner": "frozen_pipeline_modal_serving_manifest",
+            "serving_eligible": serving_eligible,
+            "serving_block_reason": serving_block_reason or None,
+            "offline_gate_decision": health.get("offline_gate_decision"),
+            "live_gate_status": health.get("live_gate_status"),
+            "target_semantic_version": schema.get("target_semantic_version"),
+        }
+        entry.update(ensemble)
+        if isinstance(schema.get("sequence_contract"), dict):
+            entry["sequence_contract"] = copy.deepcopy(schema["sequence_contract"])
+            entry["seq_len"] = schema["sequence_contract"].get("seq_len")
+            entry["pred_len"] = schema["sequence_contract"].get("pred_len")
+        pool["models"][model_name] = entry
+
+    shadow_rows = manifest.get("shadow_models")
+    if not isinstance(shadow_rows, list):
+        raise ServingPoolResolutionError(
+            "frozen_serving_manifest_shadow_models_not_list"
+        )
+    shadow_names: set[str] = set()
+    for row in shadow_rows:
+        shadow = _require_compact_mapping(
+            row,
+            label="shadow_model",
+            allowed_fields=FROZEN_SHADOW_FIELDS,
+        )
+        model_name = str(shadow.get("model") or "").strip()
+        if model_name != "ResidualMLP" or model_name in shadow_names:
+            raise ServingPoolResolutionError(
+                "frozen_serving_manifest_shadow_model_set_invalid"
+            )
+        shadow_names.add(model_name)
+        if str(shadow.get("status") or "").strip() != "challenger":
+            raise ServingPoolResolutionError(
+                "frozen_serving_manifest_shadow_status_invalid"
+            )
+        try:
+            vote_weight = float(shadow.get("vote_weight") or 0.0)
+        except (TypeError, ValueError) as exc:
+            raise ServingPoolResolutionError(
+                "frozen_serving_manifest_shadow_vote_invalid"
+            ) from exc
+        if vote_weight != 0.0:
+            raise ServingPoolResolutionError(
+                "frozen_serving_manifest_shadow_vote_nonzero"
+            )
+        for field in (
+            "version", "gcs_path", "metadata_path", "serving_artifact_id",
+        ):
+            if not str(shadow.get(field) or "").strip():
+                raise ServingPoolResolutionError(
+                    f"frozen_serving_manifest_shadow_identity_missing:{field}"
+                )
+        shadow["checksum"] = _require_manifest_checksum(
+            shadow.get("checksum"),
+            model_name=model_name,
+        )
+        shadow["serving_owner"] = "frozen_pipeline_modal_serving_manifest"
+        shadow["serving_eligible"] = False
+        shadow["vote_weight"] = 0.0
+        pool["shadow_models"][model_name] = shadow
+
+    formal_rows = manifest.get("formal_layer3_slots")
+    if not isinstance(formal_rows, list):
+        raise ServingPoolResolutionError(
+            "frozen_serving_manifest_formal_slots_not_list"
+        )
+    formal_names: set[str] = set()
+    for row in formal_rows:
+        slot = _require_compact_mapping(
+            row,
+            label="formal_slot",
+            allowed_fields=FROZEN_FORMAL_SLOT_FIELDS,
+        )
+        model_name = str(slot.get("model") or "").strip()
+        if not model_name or model_name in formal_names:
+            raise ServingPoolResolutionError(
+                "frozen_serving_manifest_formal_slot_set_invalid"
+            )
+        formal_names.add(model_name)
+        try:
+            vote_weight = float(slot.get("vote_weight") or 0.0)
+        except (TypeError, ValueError) as exc:
+            raise ServingPoolResolutionError(
+                f"frozen_serving_manifest_formal_slot_vote_invalid:{model_name}"
+            ) from exc
+        if bool(slot.get("direct_prediction")) or vote_weight != 0.0:
+            raise ServingPoolResolutionError(
+                f"frozen_serving_manifest_formal_slot_not_audit_only:{model_name}"
+            )
+        slot["vote_weight"] = vote_weight
+        slot["direct_prediction"] = bool(slot.get("direct_prediction"))
+        pool["formal_layer3_slots"][model_name] = slot
+
+    pool["rank_stacker"] = _require_frozen_rank_stacker(
+        manifest.get("rank_stacker")
+    )
+    pool["ic_weight_policy"] = _require_frozen_ic_weight_policy(
+        manifest.get("ic_weight_policy")
+    )
+
+    sidecar = dict(l2_sidecar_context or {})
+    pool["l2_feature_sidecars"]["TimesFM"] = {
+        "status": "retired",
+        "version": str(sidecar.get("version") or "controller-l2-precomputed"),
+        "serving_eligible": False,
+        "serving_block_reason": "controller_l2_precomputed_not_modal_runtime",
+        "role": "l2_feature_sidecar",
+        "direct_prediction": False,
+    }
+    return pool
 
 
 def _json_obj(value: Any) -> dict[str, Any]:
@@ -152,6 +645,12 @@ def _artifact_block_reason(artifact: dict[str, Any] | None, *, model_name: str) 
     artifact_path = str(artifact.get("artifact_path") or "").strip()
     if not artifact_path:
         return "missing_artifact_path"
+    if not str(artifact.get("metadata_path") or "").strip():
+        return "missing_metadata_path"
+    try:
+        _require_manifest_checksum(artifact.get("checksum"), model_name=model_name)
+    except ServingPoolResolutionError:
+        return "invalid_artifact_checksum"
     expected_ext = str(ARTIFACT_EXTENSIONS.get(model_name) or "").strip().lower()
     actual_ext = artifact_path.rsplit(".", 1)[-1].lower() if "." in artifact_path else ""
     if expected_ext and actual_ext != expected_ext:
@@ -162,6 +661,27 @@ def _artifact_block_reason(artifact: dict[str, Any] | None, *, model_name: str) 
             return f"artifact_target_semantic_{target_semantic or 'missing'}_expected_{LABEL_SCHEMA_VERSION}"
     if model_name in SEQUENCE_ALPHA_MODELS and _sequence_artifact_contract(model_name, artifact) is None:
         return "artifact_sequence_contract_missing_or_invalid"
+    return None
+
+
+def _artifact_identity_block_reason(
+    artifact: dict[str, Any] | None,
+    *,
+    model_name: str,
+    version: str,
+    artifact_id: str | None,
+) -> str | None:
+    if not artifact:
+        return None
+    if str(artifact.get("model_name") or "").strip() != model_name:
+        return "artifact_model_pointer_mismatch"
+    if str(artifact.get("version") or "").strip() != version:
+        return "artifact_version_pointer_mismatch"
+    if (
+        artifact_id
+        and str(artifact.get("artifact_id") or "").strip() != artifact_id
+    ):
+        return "artifact_id_pointer_mismatch"
     return None
 
 
@@ -312,6 +832,12 @@ def build_pool_from_champion_pointers(
         artifact_id = str((pointer or {}).get("champion_artifact_id") or "").strip() or None
         artifact = latest_artifact(model_name, version, artifact_id) if pointer and version else None
         block_reason = None if pointer and version else "missing_d1_champion_pointer"
+        block_reason = block_reason or _artifact_identity_block_reason(
+            artifact,
+            model_name=model_name,
+            version=version,
+            artifact_id=artifact_id,
+        )
         block_reason = block_reason or _artifact_block_reason(artifact, model_name=model_name)
         entry = dict(fallback_entry or {})
         if model_name in SEQUENCE_ALPHA_MODELS:
@@ -328,8 +854,9 @@ def build_pool_from_champion_pointers(
         entry["serving_block_reason"] = block_reason
         if artifact:
             artifact_metadata = _artifact_metadata(artifact)
-            entry["gcs_path"] = str(artifact.get("artifact_path") or _default_artifact_path(model_name, version))
-            entry["metadata_path"] = str(artifact.get("metadata_path") or _default_metadata_path(model_name, version))
+            entry["gcs_path"] = str(artifact.get("artifact_path") or "")
+            entry["metadata_path"] = str(artifact.get("metadata_path") or "")
+            entry["checksum"] = str(artifact.get("checksum") or "")
             entry["candidate_type"] = artifact.get("candidate_type")
             entry["offline_gate_decision"] = artifact.get("offline_gate_decision")
             entry["live_gate_status"] = artifact.get("live_gate_status")
@@ -357,38 +884,135 @@ def build_pool_from_champion_pointers(
     return pool
 
 
-def _query_rows(sql: str, params: list[Any] | None = None) -> list[dict[str, Any]]:
+def _query_rows_once(
+    sql: str,
+    params: list[Any] | None = None,
+    *,
+    timeout: float,
+) -> list[dict[str, Any]]:
     from . import d1_client
 
-    return d1_client.query(sql, params=params or [], timeout=30.0)
+    return d1_client.query(sql, params=params or [], timeout=timeout)
 
 
-def load_d1_champion_pool(*, fallback_pool: dict[str, Any] | None = None) -> dict[str, Any]:
-    pointers = _query_rows(
-        """
-        SELECT model_name, champion_version, champion_artifact_id,
-               promotion_reason, promotion_evidence_json, updated_at
-        FROM model_champion_pointers
-        """
+def _classify_d1_error(exc: Exception) -> str:
+    message = str(exc).lower()
+    if "timed out" in message or "timeout" in message:
+        return "d1_timeout"
+    if "http 429" in message or "rate limit" in message:
+        return "d1_rate_limited"
+    if any(f"http {status}" in message for status in (500, 502, 503, 504, 524)):
+        return "d1_upstream"
+    if "network error" in message or "connection" in message or "reset by peer" in message:
+        return "d1_network"
+    return "d1_query_failed"
+
+
+def _query_rows(sql: str, params: list[Any] | None = None) -> list[dict[str, Any]]:
+    attempts = _bounded_env_int("MODEL_SERVING_D1_QUERY_ATTEMPTS", 3, minimum=1, maximum=3)
+    timeout = _bounded_env_float(
+        "MODEL_SERVING_D1_QUERY_TIMEOUT_SECONDS",
+        10.0,
+        minimum=1.0,
+        maximum=30.0,
     )
-    artifacts = _query_rows(
-        """
-        SELECT artifact_id, model_name, version, candidate_type, state,
-               artifact_path, metadata_path, offline_gate_decision,
-               live_gate_status, live_evidence_json, offline_evidence_json,
-               updated_at, created_at
-        FROM model_artifact_registry
-        WHERE model_name IS NOT NULL
-        """
+    backoff = _bounded_env_float(
+        "MODEL_SERVING_D1_RETRY_BACKOFF_SECONDS",
+        0.25,
+        minimum=0.0,
+        maximum=2.0,
     )
+    transient = {"d1_timeout", "d1_rate_limited", "d1_upstream", "d1_network"}
+    for attempt in range(1, attempts + 1):
+        try:
+            return _query_rows_once(sql, params, timeout=timeout)
+        except Exception as exc:  # noqa: BLE001 - normalize the D1 boundary.
+            category = _classify_d1_error(exc)
+            if category not in transient or attempt >= attempts:
+                raise ServingPoolResolutionError(
+                    f"{category}: attempts={attempt}: {type(exc).__name__}: {exc}"
+                ) from exc
+            if backoff > 0:
+                time.sleep(backoff * attempt)
+    raise AssertionError("unreachable")
+
+
+def load_d1_champion_pool(
+    *,
+    fallback_pool: dict[str, Any] | None = None,
+    required_models: tuple[str, ...] = DIRECT_ALPHA_MODELS,
+    sidecar_models: tuple[str, ...] = L2_SIDECARS,
+) -> dict[str, Any]:
+    model_names = tuple(dict.fromkeys((*required_models, *sidecar_models)))
+    if not model_names:
+        return build_pool_from_champion_pointers(
+            pointers=[],
+            artifacts=[],
+            fallback_pool=fallback_pool,
+            required_models=required_models,
+            sidecar_models=sidecar_models,
+        )
+    placeholders = ", ".join("?" for _ in model_names)
+    rows = _query_rows(
+        f"""
+        SELECT p.model_name AS pointer_model_name,
+               p.champion_version, p.champion_artifact_id,
+               p.promotion_reason, p.promotion_evidence_json,
+               p.updated_at AS pointer_updated_at,
+               a.artifact_id,
+               a.model_name AS artifact_model_name,
+               a.version AS artifact_version,
+               a.candidate_type, a.state, a.artifact_path, a.metadata_path, a.checksum,
+               a.offline_gate_decision, a.live_gate_status,
+               a.live_evidence_json, a.offline_evidence_json,
+               a.updated_at AS artifact_updated_at,
+               a.created_at AS artifact_created_at
+        FROM model_champion_pointers AS p
+        LEFT JOIN model_artifact_registry AS a
+          ON a.artifact_id = p.champion_artifact_id
+        WHERE p.model_name IN ({placeholders})
+        """,
+        list(model_names),
+    )
+    pointers: list[dict[str, Any]] = []
+    artifacts: list[dict[str, Any]] = []
+    for row in rows:
+        pointers.append({
+            "model_name": row.get("pointer_model_name"),
+            "champion_version": row.get("champion_version"),
+            "champion_artifact_id": row.get("champion_artifact_id"),
+            "promotion_reason": row.get("promotion_reason"),
+            "promotion_evidence_json": row.get("promotion_evidence_json"),
+            "updated_at": row.get("pointer_updated_at"),
+        })
+        if row.get("artifact_id"):
+            artifacts.append({
+                "artifact_id": row.get("artifact_id"),
+                "model_name": row.get("artifact_model_name"),
+                "version": row.get("artifact_version"),
+                "candidate_type": row.get("candidate_type"),
+                "state": row.get("state"),
+                "artifact_path": row.get("artifact_path"),
+                "metadata_path": row.get("metadata_path"),
+                "checksum": row.get("checksum"),
+                "offline_gate_decision": row.get("offline_gate_decision"),
+                "live_gate_status": row.get("live_gate_status"),
+                "live_evidence_json": row.get("live_evidence_json"),
+                "offline_evidence_json": row.get("offline_evidence_json"),
+                "updated_at": row.get("artifact_updated_at"),
+                "created_at": row.get("artifact_created_at"),
+            })
     return build_pool_from_champion_pointers(
         pointers=pointers,
         artifacts=artifacts,
         fallback_pool=fallback_pool,
+        required_models=required_models,
+        sidecar_models=sidecar_models,
     )
 
 
 def resolve_serving_pool(fallback_pool: dict[str, Any] | None) -> dict[str, Any] | None:
+    global _RESOLVED_POOL_CACHE, _RESOLVED_POOL_CACHE_KEY, _RESOLVED_POOL_CACHE_LOADED_AT
     if not d1_champion_serving_enabled():
         return fallback_pool
     if not _d1_env_configured():
@@ -396,12 +1020,35 @@ def resolve_serving_pool(fallback_pool: dict[str, Any] | None) -> dict[str, Any]
         pool["source_of_truth"] = "model_pool.json"
         pool["serving_owner_warning"] = "d1_champion_env_missing_local_compat"
         return pool
+    cache_key = _fallback_pool_cache_key(fallback_pool)
+    ttl = _bounded_env_float(
+        "MODEL_SERVING_RESOLVED_POOL_CACHE_TTL_SECONDS",
+        60.0,
+        minimum=0.0,
+        maximum=300.0,
+    )
     try:
-        return load_d1_champion_pool(fallback_pool=fallback_pool)
-    except Exception:
+        with _RESOLVED_POOL_CACHE_LOCK:
+            now = time.monotonic()
+            if (
+                ttl > 0
+                and _RESOLVED_POOL_CACHE is not None
+                and _RESOLVED_POOL_CACHE_KEY == cache_key
+                and now - _RESOLVED_POOL_CACHE_LOADED_AT < ttl
+            ):
+                return copy.deepcopy(_RESOLVED_POOL_CACHE)
+            resolved = load_d1_champion_pool(fallback_pool=fallback_pool)
+            _RESOLVED_POOL_CACHE = copy.deepcopy(resolved)
+            _RESOLVED_POOL_CACHE_KEY = cache_key
+            _RESOLVED_POOL_CACHE_LOADED_AT = time.monotonic()
+            return resolved
+    except Exception as exc:
         if os.environ.get("MODEL_SERVING_ALLOW_GCS_COMPAT_FALLBACK", "").strip().lower() in {"1", "true", "yes", "on"}:
             pool = copy.deepcopy(fallback_pool or {})
             pool["source_of_truth"] = "model_pool.json"
-            pool["serving_owner_warning"] = "d1_champion_unavailable_gcs_compat_fallback"
+            pool["serving_owner_warning"] = (
+                "d1_champion_unavailable_gcs_compat_fallback:"
+                f"{_classify_d1_error(exc)}"
+            )
             return pool
         raise

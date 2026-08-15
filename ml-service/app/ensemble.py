@@ -165,10 +165,25 @@ def _entry_ic_sample_count(entry: dict, market_segment: str | None = None) -> in
     return 0
 
 
-def _shrink_ic_weight(ic_value: float, sample_count: int) -> float:
-    prior_ic = float(os.environ.get("IC_WEIGHT_PRIOR", "0.015") or "0.015")
-    prior_strength = max(0.0, float(os.environ.get("IC_WEIGHT_PRIOR_STRENGTH", "20") or "20"))
-    min_samples_for_hard_zero = int(os.environ.get("IC_WEIGHT_MIN_SAMPLES_FOR_HARD_ZERO", "40") or "40")
+def _shrink_ic_weight(
+    ic_value: float,
+    sample_count: int,
+    *,
+    policy: dict[str, Any] | None = None,
+) -> float:
+    frozen_policy = policy if isinstance(policy, dict) else {}
+    use_frozen_policy = (
+        frozen_policy.get("schema_version") == "ic-weight-policy-v1"
+        and frozen_policy.get("source") == "controller_dispatch_environment"
+    )
+    if use_frozen_policy:
+        prior_ic = float(frozen_policy["prior_ic"])
+        prior_strength = max(0.0, float(frozen_policy["prior_strength"]))
+        min_samples_for_hard_zero = int(frozen_policy["min_samples_for_hard_zero"])
+    else:
+        prior_ic = float(os.environ.get("IC_WEIGHT_PRIOR", "0.015") or "0.015")
+        prior_strength = max(0.0, float(os.environ.get("IC_WEIGHT_PRIOR_STRENGTH", "20") or "20"))
+        min_samples_for_hard_zero = int(os.environ.get("IC_WEIGHT_MIN_SAMPLES_FOR_HARD_ZERO", "40") or "40")
     n = max(0, int(sample_count or 0))
     alpha = n / (n + prior_strength) if (n + prior_strength) > 0 else 1.0
     posterior = (alpha * float(ic_value)) + ((1.0 - alpha) * prior_ic)
@@ -184,11 +199,16 @@ def _extract_model_pool_ic(pool: dict, market_segment: str | None = None) -> dic
     weight zeroed because the same model underperformed on OTC/emerging names.
     """
     weights: dict[str, float] = {}
+    policy = (
+        pool.get("ic_weight_policy")
+        if isinstance(pool.get("ic_weight_policy"), dict)
+        else None
+    )
     for name, entry in (pool.get("models") or {}).items():
         ic_value = _entry_serving_ic(entry, market_segment=market_segment)
         if ic_value is not None:
             sample_count = _entry_ic_sample_count(entry, market_segment=market_segment)
-            weights[name] = _shrink_ic_weight(ic_value, sample_count)
+            weights[name] = _shrink_ic_weight(ic_value, sample_count, policy=policy)
     return weights
 
 @dataclass

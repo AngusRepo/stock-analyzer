@@ -31,12 +31,14 @@ def test_pipeline_modal_prediction_callback_route_is_service_token_callback() ->
 
 def test_pipeline_modal_prediction_bundle_contract_exists_on_modal() -> None:
     modal_app = _read("ml-service/modal_app.py")
+    batch_prediction = _read("ml-service/app/batch_prediction.py")
     modal_client = _read("ml-controller/services/modal_client.py")
     graph = _read("ml-controller/graphs/daily_pipeline_v2.py")
     assert "def pipeline_prediction_bundle(payload: dict) -> dict:" in modal_app
     assert "pipeline-modal-prediction-bundle-v1" in modal_app
     assert "predict_batch_v2_chunk_size" in modal_app
-    assert "predict_batch_v2 chunk error" in modal_app
+    assert "predict_stock_v2_chunked_with_metrics" in modal_app
+    assert "predict_batch_v2 chunk error" in batch_prediction
     assert '"signal": "NO_SIGNAL"' in modal_app
     assert "predict_batch_v2_contract" in graph
     assert "sequence_model_series_by_model" in graph

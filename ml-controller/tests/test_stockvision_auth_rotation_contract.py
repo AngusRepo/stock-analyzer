@@ -57,7 +57,9 @@ def test_rotation_helper_keeps_tokens_out_of_native_argv_and_disk() -> None:
     assert "rotation_wrangler_json_empty:$Operation" in wrangler_json
     for permissive_parser in ("Substring", "IndexOf", "[regex]", "-match"):
         assert permissive_parser not in wrangler_json
-    assert "modal.Secret.create_deployed" in source
+    assert "from modal.secret import _Secret" in source
+    assert "_Secret._create_deployed(" in source
+    assert "environment_name=" in source
     assert "overwrite=True" in source
 
     for required_modal_key in (

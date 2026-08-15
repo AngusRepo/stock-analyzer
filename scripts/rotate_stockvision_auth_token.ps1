@@ -349,8 +349,10 @@ function Set-ModalSecret([string]$WorkerToken, [string]$CloudflareApiToken) {
     $env:ROTATION_MODAL_SECRET_NAME = $ModalSecretName
     $env:ROTATION_MODAL_ENVIRONMENT = $ModalEnvironment
     $python = @'
+import asyncio
 import os
-import modal
+
+from modal.secret import _Secret
 
 required = {
     "CF_API_TOKEN": os.environ["ROTATION_CF_API_TOKEN"],
@@ -362,11 +364,13 @@ required = {
 }
 if any(not value for value in required.values()):
     raise SystemExit(9)
-modal.Secret.create_deployed(
-    os.environ["ROTATION_MODAL_SECRET_NAME"],
-    required,
-    environment_name=(os.environ.get("ROTATION_MODAL_ENVIRONMENT") or None),
-    overwrite=True,
+asyncio.run(
+    _Secret._create_deployed(
+        os.environ["ROTATION_MODAL_SECRET_NAME"],
+        required,
+        environment_name=(os.environ.get("ROTATION_MODAL_ENVIRONMENT") or None),
+        overwrite=True,
+    )
 )
 '@
     [void](Invoke-SafeNative -FilePath $ModalPython -Arguments @('-c', $python) -Operation 'modal_secret_replace')

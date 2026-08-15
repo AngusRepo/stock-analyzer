@@ -2,6 +2,7 @@ import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import { DatabaseSync } from 'node:sqlite'
 import test from 'node:test'
+import { dataDomainControlRevisionTriggerStatements } from './dataDomainControlRevision'
 
 const workerRoot = new URL('../../', import.meta.url)
 const lanes = [
@@ -244,6 +245,10 @@ function applyLikeD1(db: DatabaseSync, sql: string): void {
   }
 }
 
+function installPostMigrationRevisionTriggers(db: DatabaseSync): void {
+  for (const statement of dataDomainControlRevisionTriggerStatements()) db.exec(statement)
+}
+
 function pragmaNumber(db: DatabaseSync, name: 'foreign_keys' | 'defer_foreign_keys'): number {
   return Number((db.prepare(`PRAGMA ${name}`).get() as Record<string, unknown>)[name])
 }
@@ -348,6 +353,7 @@ for (const lane of lanes) {
       const revisionsBefore = revisionMap(db)
       const indexesBefore = namedIndexes(db)
       applyLikeD1(db, migrationSql(lane.migrationPath))
+      installPostMigrationRevisionTriggers(db)
 
       assert.deepEqual(controlRows(db), rowsBefore)
       assert.deepEqual(db.prepare('PRAGMA foreign_key_check').all(), [])
@@ -384,6 +390,7 @@ for (const lane of lanes) {
     try {
       installPreMigrationSchema(db)
       applyLikeD1(db, migrationSql(lane.migrationPath))
+      installPostMigrationRevisionTriggers(db)
       const triggers = revisionTriggers(db)
       assert.deepEqual(triggers.map(({ name }) => name), expectedRevisionTriggerNames())
       for (const trigger of triggers) {
@@ -430,6 +437,7 @@ for (const lane of lanes) {
     try {
       installPreMigrationSchema(db)
       applyLikeD1(db, migrationSql(lane.migrationPath))
+      installPostMigrationRevisionTriggers(db)
       db.prepare(`
         INSERT INTO model_artifact_registry(
           artifact_id, model_name, version, candidate_type, state, checksum

@@ -1,6 +1,6 @@
--- Monotonic mutation epochs for the four Learning control tables in Learning D1.
--- Keep this schema and trigger behavior equivalent to legacy migration 0108 so
--- source and target receipts have the same revision contract.
+-- Monotonic mutation epochs for the four Learning control tables in Learning DB.
+-- Keep this schema equivalent to legacy migration 0108; trigger bodies are
+-- installed through the protected Worker binding task after schema migrations.
 CREATE TABLE IF NOT EXISTS data_domain_control_revisions (
   table_name TEXT PRIMARY KEY CHECK(table_name IN (
     'model_artifact_registry',
@@ -20,122 +20,6 @@ VALUES
   ('model_champion_pointers', 0)
 ON CONFLICT(table_name) DO NOTHING;
 
-CREATE TRIGGER IF NOT EXISTS trg_model_artifact_registry_revision_insert
-AFTER INSERT ON model_artifact_registry
-BEGIN
-  INSERT INTO data_domain_control_revisions(table_name, revision, updated_at)
-  VALUES ('model_artifact_registry', 1, CURRENT_TIMESTAMP)
-  ON CONFLICT(table_name) DO UPDATE SET
-    revision=revision + 1,
-    updated_at=CURRENT_TIMESTAMP;
-END;
-
-CREATE TRIGGER IF NOT EXISTS trg_model_artifact_registry_revision_update
-AFTER UPDATE ON model_artifact_registry
-BEGIN
-  INSERT INTO data_domain_control_revisions(table_name, revision, updated_at)
-  VALUES ('model_artifact_registry', 1, CURRENT_TIMESTAMP)
-  ON CONFLICT(table_name) DO UPDATE SET
-    revision=revision + 1,
-    updated_at=CURRENT_TIMESTAMP;
-END;
-
-CREATE TRIGGER IF NOT EXISTS trg_model_artifact_registry_revision_delete
-AFTER DELETE ON model_artifact_registry
-BEGIN
-  INSERT INTO data_domain_control_revisions(table_name, revision, updated_at)
-  VALUES ('model_artifact_registry', 1, CURRENT_TIMESTAMP)
-  ON CONFLICT(table_name) DO UPDATE SET
-    revision=revision + 1,
-    updated_at=CURRENT_TIMESTAMP;
-END;
-
-CREATE TRIGGER IF NOT EXISTS trg_expected_return_artifact_payloads_revision_insert
-AFTER INSERT ON expected_return_artifact_payloads
-BEGIN
-  INSERT INTO data_domain_control_revisions(table_name, revision, updated_at)
-  VALUES ('expected_return_artifact_payloads', 1, CURRENT_TIMESTAMP)
-  ON CONFLICT(table_name) DO UPDATE SET
-    revision=revision + 1,
-    updated_at=CURRENT_TIMESTAMP;
-END;
-
-CREATE TRIGGER IF NOT EXISTS trg_expected_return_artifact_payloads_revision_update
-AFTER UPDATE ON expected_return_artifact_payloads
-BEGIN
-  INSERT INTO data_domain_control_revisions(table_name, revision, updated_at)
-  VALUES ('expected_return_artifact_payloads', 1, CURRENT_TIMESTAMP)
-  ON CONFLICT(table_name) DO UPDATE SET
-    revision=revision + 1,
-    updated_at=CURRENT_TIMESTAMP;
-END;
-
-CREATE TRIGGER IF NOT EXISTS trg_expected_return_artifact_payloads_revision_delete
-AFTER DELETE ON expected_return_artifact_payloads
-BEGIN
-  INSERT INTO data_domain_control_revisions(table_name, revision, updated_at)
-  VALUES ('expected_return_artifact_payloads', 1, CURRENT_TIMESTAMP)
-  ON CONFLICT(table_name) DO UPDATE SET
-    revision=revision + 1,
-    updated_at=CURRENT_TIMESTAMP;
-END;
-
-CREATE TRIGGER IF NOT EXISTS trg_model_champion_history_revision_insert
-AFTER INSERT ON model_champion_history
-BEGIN
-  INSERT INTO data_domain_control_revisions(table_name, revision, updated_at)
-  VALUES ('model_champion_history', 1, CURRENT_TIMESTAMP)
-  ON CONFLICT(table_name) DO UPDATE SET
-    revision=revision + 1,
-    updated_at=CURRENT_TIMESTAMP;
-END;
-
-CREATE TRIGGER IF NOT EXISTS trg_model_champion_history_revision_update
-AFTER UPDATE ON model_champion_history
-BEGIN
-  INSERT INTO data_domain_control_revisions(table_name, revision, updated_at)
-  VALUES ('model_champion_history', 1, CURRENT_TIMESTAMP)
-  ON CONFLICT(table_name) DO UPDATE SET
-    revision=revision + 1,
-    updated_at=CURRENT_TIMESTAMP;
-END;
-
-CREATE TRIGGER IF NOT EXISTS trg_model_champion_history_revision_delete
-AFTER DELETE ON model_champion_history
-BEGIN
-  INSERT INTO data_domain_control_revisions(table_name, revision, updated_at)
-  VALUES ('model_champion_history', 1, CURRENT_TIMESTAMP)
-  ON CONFLICT(table_name) DO UPDATE SET
-    revision=revision + 1,
-    updated_at=CURRENT_TIMESTAMP;
-END;
-
-CREATE TRIGGER IF NOT EXISTS trg_model_champion_pointers_revision_insert
-AFTER INSERT ON model_champion_pointers
-BEGIN
-  INSERT INTO data_domain_control_revisions(table_name, revision, updated_at)
-  VALUES ('model_champion_pointers', 1, CURRENT_TIMESTAMP)
-  ON CONFLICT(table_name) DO UPDATE SET
-    revision=revision + 1,
-    updated_at=CURRENT_TIMESTAMP;
-END;
-
-CREATE TRIGGER IF NOT EXISTS trg_model_champion_pointers_revision_update
-AFTER UPDATE ON model_champion_pointers
-BEGIN
-  INSERT INTO data_domain_control_revisions(table_name, revision, updated_at)
-  VALUES ('model_champion_pointers', 1, CURRENT_TIMESTAMP)
-  ON CONFLICT(table_name) DO UPDATE SET
-    revision=revision + 1,
-    updated_at=CURRENT_TIMESTAMP;
-END;
-
-CREATE TRIGGER IF NOT EXISTS trg_model_champion_pointers_revision_delete
-AFTER DELETE ON model_champion_pointers
-BEGIN
-  INSERT INTO data_domain_control_revisions(table_name, revision, updated_at)
-  VALUES ('model_champion_pointers', 1, CURRENT_TIMESTAMP)
-  ON CONFLICT(table_name) DO UPDATE SET
-    revision=revision + 1,
-    updated_at=CURRENT_TIMESTAMP;
-END;
+-- Wrangler remote migrations split CREATE TRIGGER BEGIN/END bodies and return
+-- SQLITE_ERROR "incomplete input". The post-migration installer is idempotent;
+-- missing triggers keep all strict cutover readiness gates fail-closed.

@@ -46,6 +46,7 @@ const SYNC_REQUIRED_TASKS = new Set([
   'storage-integrity-audit', 'storage-capacity-report',
   'data-domain-shadow-backfill',
   'data-domain-shadow-backfill-next',
+  'data-domain-control-revision-trigger-install',
   'monthly-retrain',
 ])
 

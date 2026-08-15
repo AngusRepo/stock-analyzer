@@ -2,8 +2,10 @@ import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import { DatabaseSync } from 'node:sqlite'
 import {
+  dataDomainControlRevisionTriggerStatements,
   dataDomainControlRevisionBlockers,
   dataDomainControlRevisionEvidence,
+  installDataDomainControlRevisionTriggers,
   loadDataDomainControlRevisionPair,
   strictDataDomainControlRevision,
 } from './dataDomainControlRevision'
@@ -23,14 +25,46 @@ function revisionDb(revisions: Record<string, number | string | null>): D1Databa
   } as unknown as D1Database
 }
 
-function verifyMigration(relativePath: string): void {
+function sqliteD1(db: DatabaseSync): D1Database {
+  return {
+    exec: async (sql: string) => {
+      db.exec(sql)
+      return { count: 1, duration: 0 }
+    },
+    prepare: (sql: string) => {
+      let values: unknown[] = []
+      const statement = {
+        bind: (...binds: unknown[]) => {
+          values = binds
+          return statement
+        },
+        run: async () => {
+          db.prepare(sql).run(...values as any[])
+          return { success: true }
+        },
+        all: async <T>() => ({
+          results: db.prepare(sql).all(...values as any[]) as T[],
+        }),
+      }
+      return statement
+    },
+  } as unknown as D1Database
+}
+
+async function verifyMigration(relativePath: string): Promise<void> {
   const db = new DatabaseSync(':memory:')
   try {
     for (const table of DATA_DOMAIN_CONTROL_TABLES) {
       db.exec(`CREATE TABLE "${table}" (id INTEGER PRIMARY KEY, value TEXT)`)
     }
     const workerRoot = new URL('../../', import.meta.url)
-    db.exec(readFileSync(new URL(relativePath, workerRoot), 'utf8'))
+    const migrationSql = readFileSync(new URL(relativePath, workerRoot), 'utf8')
+    assert.doesNotMatch(migrationSql.replace(/^--.*$/gm, ''), /CREATE\s+TRIGGER/i)
+    db.exec(migrationSql)
+    const installed = await installDataDomainControlRevisionTriggers(sqliteD1(db))
+    assert.equal(installed.revisionRows, 4)
+    assert.equal(installed.triggerCount, 12)
+    assert.deepEqual(installed.triggerNames, [...installed.triggerNames].sort())
     for (const table of DATA_DOMAIN_CONTROL_TABLES) {
       const initial = db.prepare(
         'SELECT revision FROM data_domain_control_revisions WHERE table_name=?',
@@ -55,6 +89,21 @@ void (async () => {
   assert.equal(strictDataDomainControlRevision('01'), null)
   assert.equal(strictDataDomainControlRevision(-1), null)
   assert.equal(strictDataDomainControlRevision(Number.MAX_SAFE_INTEGER + 1), null)
+  assert.equal(dataDomainControlRevisionTriggerStatements().length, 12)
+  const workerRoot = new URL('../../', import.meta.url)
+  const adminTaskSource = readFileSync(
+    new URL('src/lib/adminTriggerWorkerDomainTasks.ts', workerRoot),
+    'utf8',
+  )
+  const adminRouteSource = readFileSync(
+    new URL('src/routes/adminTriggerRoutes.ts', workerRoot),
+    'utf8',
+  )
+  assert.match(adminTaskSource, /X-Confirm-Data-Domain-Control-Revision/)
+  assert.match(adminTaskSource, /shadowDatabaseForDataDomain\(c\.env, 'learning'\)/)
+  assert.match(adminTaskSource, /installDataDomainControlRevisionTriggers\(c\.env\.DB\)/)
+  assert.match(adminTaskSource, /installDataDomainControlRevisionTriggers\(learningDb\)/)
+  assert.match(adminRouteSource, /'data-domain-control-revision-trigger-install'/)
 
   const live = await loadDataDomainControlRevisionPair(
     revisionDb({ model_artifact_registry: 7 }),
@@ -86,8 +135,8 @@ void (async () => {
     /data_domain_control_revision_missing:model_artifact_registry/,
   )
 
-  verifyMigration('migrations/0108_data_domain_control_revision_fence.sql')
-  verifyMigration('domain-migrations/learning/0006_data_domain_control_revision_fence.sql')
+  await verifyMigration('migrations/0108_data_domain_control_revision_fence.sql')
+  await verifyMigration('domain-migrations/learning/0006_data_domain_control_revision_fence.sql')
   console.log('data domain control revision tests passed')
 })().catch((error) => {
   console.error(error)

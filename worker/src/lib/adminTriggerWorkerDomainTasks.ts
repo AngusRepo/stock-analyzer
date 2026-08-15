@@ -1,5 +1,5 @@
 import type { TaskHandler, TriggerDeps } from './adminTriggerTaskMap'
-import { databaseForDataDomain } from './dataDomainRegistry'
+import { databaseForDataDomain, shadowDatabaseForDataDomain } from './dataDomainRegistry'
 import { runVerifyV2 } from './controllerWorkflows'
 import { twToday } from './dateUtils'
 import { runMorningWarmup } from './localMaintenance'
@@ -28,6 +28,7 @@ const D1_HEAVY_MAINTENANCE_TASKS = new Set([
   'strategy-learning-finalize',
   'selection-reference-repair', 'selection-reference-identity-repair',
   'data-domain-shadow-backfill', 'data-domain-shadow-backfill-next',
+  'data-domain-control-revision-trigger-install',
 ])
 const D1_MAINTENANCE_REQUEST_BUDGET_MS = 45_000
 const PAPER_SHADOW_BACKFILL_ACTIVE_KEY = 'data-domain-shadow-backfill:paper:active'
@@ -1062,6 +1063,20 @@ export function buildAdminWorkerDomainTaskMap(c: any, deps: TriggerDeps): Record
       })
       if (next.caughtUp) return 'data_domain_shadow_backfill_next all_domains_caught_up=true'
       return `data_domain_shadow_backfill_next domain=${next.domain} queued=${next.queued} run_id=${next.runId}`
+    },
+    'data-domain-control-revision-trigger-install': async () => {
+      if (c.req.header('X-Confirm-Data-Domain-Control-Revision') !== 'true') {
+        throw new Error(
+          'data-domain-control-revision-trigger-install requires '
+          + 'X-Confirm-Data-Domain-Control-Revision:true',
+        )
+      }
+      const learningDb = shadowDatabaseForDataDomain(c.env, 'learning')
+      if (!learningDb) throw new Error('data_domain_shadow_binding_missing:learning')
+      const { installDataDomainControlRevisionTriggers } = await import('./dataDomainControlRevision')
+      const legacy = await installDataDomainControlRevisionTriggers(c.env.DB)
+      const learning = await installDataDomainControlRevisionTriggers(learningDb)
+      return `data_domain_control_revision_trigger_install legacy=${JSON.stringify(legacy)} learning=${JSON.stringify(learning)}`
     },
     'storage-health-check': async () => {
       const { runStorageHealthCheck } = await import('./artifactLifecycle')

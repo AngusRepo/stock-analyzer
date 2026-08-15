@@ -142,47 +142,8 @@ UPDATE data_domain_control_revisions
    SET revision=revision + 1, updated_at=CURRENT_TIMESTAMP
  WHERE table_name IN ('model_artifact_registry','expected_return_artifact_payloads');
 
-CREATE TRIGGER trg_model_artifact_registry_revision_insert
-AFTER INSERT ON model_artifact_registry BEGIN
-  INSERT INTO data_domain_control_revisions(table_name, revision, updated_at)
-  VALUES ('model_artifact_registry', 1, CURRENT_TIMESTAMP)
-  ON CONFLICT(table_name) DO UPDATE SET
-    revision=revision + 1, updated_at=CURRENT_TIMESTAMP;
-END;
-CREATE TRIGGER trg_model_artifact_registry_revision_update
-AFTER UPDATE ON model_artifact_registry BEGIN
-  INSERT INTO data_domain_control_revisions(table_name, revision, updated_at)
-  VALUES ('model_artifact_registry', 1, CURRENT_TIMESTAMP)
-  ON CONFLICT(table_name) DO UPDATE SET
-    revision=revision + 1, updated_at=CURRENT_TIMESTAMP;
-END;
-CREATE TRIGGER trg_model_artifact_registry_revision_delete
-AFTER DELETE ON model_artifact_registry BEGIN
-  INSERT INTO data_domain_control_revisions(table_name, revision, updated_at)
-  VALUES ('model_artifact_registry', 1, CURRENT_TIMESTAMP)
-  ON CONFLICT(table_name) DO UPDATE SET
-    revision=revision + 1, updated_at=CURRENT_TIMESTAMP;
-END;
-CREATE TRIGGER trg_expected_return_artifact_payloads_revision_insert
-AFTER INSERT ON expected_return_artifact_payloads BEGIN
-  INSERT INTO data_domain_control_revisions(table_name, revision, updated_at)
-  VALUES ('expected_return_artifact_payloads', 1, CURRENT_TIMESTAMP)
-  ON CONFLICT(table_name) DO UPDATE SET
-    revision=revision + 1, updated_at=CURRENT_TIMESTAMP;
-END;
-CREATE TRIGGER trg_expected_return_artifact_payloads_revision_update
-AFTER UPDATE ON expected_return_artifact_payloads BEGIN
-  INSERT INTO data_domain_control_revisions(table_name, revision, updated_at)
-  VALUES ('expected_return_artifact_payloads', 1, CURRENT_TIMESTAMP)
-  ON CONFLICT(table_name) DO UPDATE SET
-    revision=revision + 1, updated_at=CURRENT_TIMESTAMP;
-END;
-CREATE TRIGGER trg_expected_return_artifact_payloads_revision_delete
-AFTER DELETE ON expected_return_artifact_payloads BEGIN
-  INSERT INTO data_domain_control_revisions(table_name, revision, updated_at)
-  VALUES ('expected_return_artifact_payloads', 1, CURRENT_TIMESTAMP)
-  ON CONFLICT(table_name) DO UPDATE SET
-    revision=revision + 1, updated_at=CURRENT_TIMESTAMP;
-END;
+-- The table rebuild drops registry/payload triggers. Reinstall all twelve only
+-- after both D1 lanes finish migrating via the protected Worker binding task;
+-- missing triggers leave strict cutover fail-closed.
 
 PRAGMA defer_foreign_keys=OFF;

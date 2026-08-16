@@ -3,7 +3,7 @@ import { Activity, Loader2, RefreshCw, ShieldCheck } from 'lucide-react'
 import AppShell from '@/components/AppShell'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
-import { strategyLabApi, type StrategyLearningResponse, type StrategyPromotionGate, type StrategyReplacementDecisionSummary, type StrategyReplacementGateSummary, type StrategySpec } from '@/lib/api'
+import { strategyLabApi, type StrategyEvidenceProfile, type StrategyLearningResponse, type StrategyPromotionGate, type StrategyReplacementDecisionSummary, type StrategyReplacementGateSummary, type StrategySpec } from '@/lib/api'
 
 type LearningRow = StrategyLearningResponse['specs'][number]
 
@@ -108,6 +108,21 @@ function gateReasonLabel(reason: string): string {
     return `最大回撤超過容許範圍（門檻 ${pct(Number(reason.replace(/^(active_)?max_drawdown_lt_/, ''))) }）`
   }
   return labels[reason] ?? reason.replace(/_/g, ' ')
+}
+
+const evidenceMetricLabels: Record<string, string> = {
+  residual_return_lcb90: '相對大盤報酬的 90% 保守下界',
+  rank_ic: '排名與未來報酬的一致性',
+  max_drawdown: '最大回撤',
+  turnover_after_cost: '扣成本後換手效率',
+  regime_consistency: '不同盤勢的一致性',
+  false_breakout_rate: '假突破率',
+  tail_loss_cvar95: '最差 5% 尾部損失',
+  time_to_reversion: '回歸所需時間',
+  maximum_adverse_excursion: '持有期間最大不利波動',
+  downside_capture: '大盤下跌時的承受幅度',
+  crowding_decay: '訊號擁擠後的衰退速度',
+  fundamental_revision_persistence: '基本面修正的延續性',
 }
 
 function bestReplacementDecision(
@@ -331,6 +346,7 @@ function StrategyLedgerGroup({
   description,
   rows,
   gateById,
+  profileById,
   policyWeights,
   replacementGate,
   requestedDate,
@@ -340,6 +356,7 @@ function StrategyLedgerGroup({
   description: string
   rows: LearningRow[]
   gateById: Map<string, StrategyPromotionGate>
+  profileById: Map<string, StrategyEvidenceProfile>
   policyWeights: Record<string, number>
   replacementGate: StrategyReplacementGateSummary | null
   requestedDate: string | null
@@ -358,6 +375,7 @@ function StrategyLedgerGroup({
       <div className="grid grid-cols-1 gap-px bg-slate-900 xl:grid-cols-2">
         {rows.map((row) => {
           const gate = gateById.get(`${row.id}:${row.version}`)
+          const profile = profileById.get(`${row.id}:${row.version}`)
           const hasWeight = Object.prototype.hasOwnProperty.call(policyWeights, row.id)
           const weight = Number(policyWeights[row.id] ?? 0)
           const executionEligible = gate?.allocation_eligible === true && Number.isFinite(weight) && weight > 0
@@ -413,6 +431,32 @@ function StrategyLedgerGroup({
                 <div className="rounded-lg border border-slate-800/80 bg-slate-900/45 p-2"><dt className="text-xs text-slate-500">Rolling MDD</dt><dd className={`mt-1 font-mono text-sm ${signedClass(row.learning.rolling_max_drawdown_pct)}`}>{rewardPending || rewardMissing || noMatches ? rollingMature : rewardMetric(row.learning.rolling_max_drawdown_pct, row.learning.reward_unit)}</dd></div>
               </dl>
 
+              <div className="rounded-xl border border-cyan-400/20 bg-cyan-400/[0.05] p-3">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <span className="text-xs font-semibold text-cyan-100">此策略自己的 evidence 契約</span>
+                  <Badge variant="outline" className={profile?.outcome_contract_status === 'fixed_5d_available' ? statusClass('active') : statusClass('not_ready')}>
+                    {profile?.outcome_contract_status === 'fixed_5d_available' ? '主要週期已有正式結果' : profile ? '主要週期結果待物化' : 'Profile 尚未取得'}
+                  </Badge>
+                </div>
+                {profile ? (
+                  <>
+                    <p className="mt-2 text-xs leading-5 text-slate-400">
+                      主要觀察 <span className="font-mono text-cyan-100">{profile.primary_horizon_days} 個交易日</span>
+                      {' · '}交叉檢查 {profile.evaluation_horizon_days.join('／')} 日
+                      {' · '}目前有 {profile.available_outcome_horizon_days.join('／')} 日結果。
+                    </p>
+                    <div className="mt-2 flex flex-wrap gap-1.5">
+                      {profile.required_metrics.map((metric) => (
+                        <span key={metric} className="rounded-md border border-slate-700 bg-slate-900/70 px-2 py-1 text-[11px] text-slate-300">{evidenceMetricLabels[metric] ?? metric}</span>
+                      ))}
+                    </div>
+                    <p className="mt-2 text-xs leading-5 text-cyan-100/70">
+                      影子觀察（shadow only）：已在正式環境計算與比較，但不會改待買權重、策略升級或任何下單決策。通過多週期結果與上述指標前，舊 5 日 gate 仍是正式權責。
+                    </p>
+                  </>
+                ) : <p className="mt-2 text-xs text-amber-200">Evidence profile API 未回傳此策略；這是資料缺漏，不代表策略績效失敗。</p>}
+              </div>
+
               <div className="grid gap-3">
                 <div className="rounded-xl border border-slate-800 bg-slate-900/35 p-3">
                   <div className="flex flex-wrap items-center justify-between gap-2 text-xs text-slate-500">
@@ -451,6 +495,7 @@ function StrategyLedgerGroup({
 }
 export default function StrategyLearningPage() {
   const [learning, setLearning] = useState<StrategyLearningResponse | null>(null)
+  const [profiles, setProfiles] = useState<StrategyEvidenceProfile[]>([])
   const [rows, setRows] = useState<LearningRow[]>([])
   const [loading, setLoading] = useState(true)
   const [refreshing, setRefreshing] = useState(false)
@@ -463,12 +508,14 @@ export default function StrategyLearningPage() {
     try {
       setError(null)
       setNotice(null)
-      const [ledgerResult, registryResult] = await Promise.allSettled([
+      const [ledgerResult, registryResult, profilesResult] = await Promise.allSettled([
         strategyLabApi.learning(),
         strategyLabApi.specs(),
+        strategyLabApi.evidenceProfiles(),
       ])
       const ledger = ledgerResult.status === 'fulfilled' ? ledgerResult.value : null
       const registry = registryResult.status === 'fulfilled' ? registryResult.value : null
+      const evidenceProfiles = profilesResult.status === 'fulfilled' ? profilesResult.value.profiles : []
       if (!ledger && !registry) {
         const ledgerError = ledgerResult.status === 'rejected' ? String(ledgerResult.reason) : 'unknown ledger error'
         const registryError = registryResult.status === 'rejected' ? String(registryResult.reason) : 'unknown registry error'
@@ -476,6 +523,7 @@ export default function StrategyLearningPage() {
       }
 
       setLearning(ledger)
+      setProfiles(evidenceProfiles)
       if (registry) {
         const ledgerById = new Map((ledger?.specs ?? []).map((row) => [`${row.id}:${row.version}`, row]))
         setRows(registry.specs.map((spec) => ledgerById.get(`${spec.id}:${spec.version}`) ?? registryLearningRow(spec)))
@@ -486,8 +534,10 @@ export default function StrategyLearningPage() {
       if (!ledger) setNotice('Reward ledger API unavailable; showing canonical strategy registry rows without reward metrics.')
       else if (!registry) setNotice('Strategy registry API unavailable; showing the latest reward-ledger snapshot.')
       else if ((ledger.specs ?? []).length === 0) setNotice('Reward ledger returned no specs; showing canonical strategy registry rows.')
+      else if (profilesResult.status === 'rejected') setNotice('Strategy evidence profile API unavailable; legacy 5-day gate remains visible, but strategy-specific horizon details cannot be shown.')
     } catch (cause) {
       setLearning(null)
+      setProfiles([])
       setRows([])
       setError(cause instanceof Error ? cause.message : 'Strategy APIs unavailable')
     } finally {
@@ -502,6 +552,7 @@ export default function StrategyLearningPage() {
   const activeRows = useMemo(() => visibleRows.filter((row) => row.status === 'active'), [visibleRows])
   const learningRows = useMemo(() => visibleRows.filter((row) => row.status === 'research' || row.status === 'shadow' || row.status === 'candidate'), [visibleRows])
   const gateById = useMemo(() => new Map((learning?.promotion_gate ?? []).map((gate) => [`${gate.strategy_id}:${gate.strategy_version}`, gate])), [learning])
+  const profileById = useMemo(() => new Map(profiles.map((profile) => [`${profile.strategy_id}:${profile.strategy_version}`, profile])), [profiles])
   const activeHealthCounts = useMemo(() => {
     const counts: Record<StrategyHealthBucket, number> = {
       healthy: 0,
@@ -623,6 +674,7 @@ export default function StrategyLearningPage() {
                 description="Registry 狀態為 active 的選股參與者。待買相對權重是另一份執行資格政策；0% 不會停止推薦、標籤或報酬證據累積。"
                 rows={activeRows}
                 gateById={gateById}
+                profileById={profileById}
                 policyWeights={policy?.strategy_weights ?? {}}
                 replacementGate={learning?.replacement_gate ?? null}
                 requestedDate={learning?.date ?? null}
@@ -633,6 +685,7 @@ export default function StrategyLearningPage() {
                 description="研究、影子與候選策略跟正式策略共用同一條推薦／評估資料流；52% 勝率只管候選升級，不阻斷證據累積。"
                 rows={learningRows}
                 gateById={gateById}
+                profileById={profileById}
                 policyWeights={policy?.strategy_weights ?? {}}
                 replacementGate={learning?.replacement_gate ?? null}
                 requestedDate={learning?.date ?? null}

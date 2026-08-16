@@ -600,6 +600,46 @@ export type StrategyDryRunResponse = {
   results: StrategyDryRunResult[]
 }
 
+export type StrategyEvidenceMetric =
+  | 'residual_return_lcb90'
+  | 'rank_ic'
+  | 'max_drawdown'
+  | 'turnover_after_cost'
+  | 'regime_consistency'
+  | 'false_breakout_rate'
+  | 'tail_loss_cvar95'
+  | 'time_to_reversion'
+  | 'maximum_adverse_excursion'
+  | 'downside_capture'
+  | 'crowding_decay'
+  | 'fundamental_revision_persistence'
+
+export type StrategyEvidenceProfile = {
+  schema_version: 'strategy-specific-evidence-profile-v1'
+  strategy_id: string
+  strategy_version: string
+  strategy_status: StrategySpecStatus
+  primary_horizon_days: number
+  evaluation_horizon_days: number[]
+  available_outcome_horizon_days: number[]
+  supported_regimes: string[]
+  required_metrics: StrategyEvidenceMetric[]
+  outcome_contract_status: 'fixed_5d_available' | 'multi_horizon_pending'
+  outcome_source: 'canonical_selection_labels_v4.residual_return_net'
+  production_authority: 'shadow_only'
+}
+
+export type StrategyEvidenceProfilesResponse = {
+  success: boolean
+  mode: 'read_only'
+  source: 'registry' | 'default_fallback'
+  schema_version: 'strategy-specific-evidence-profile-v1'
+  runtime_strategy_count: number
+  profile_count: number
+  complete: boolean
+  profiles: StrategyEvidenceProfile[]
+}
+
 export type StrategyLearningResponse = {
   success: boolean
   mode: 'read_only'
@@ -1055,6 +1095,7 @@ export type ResearchGateResponse = {
 
 export const strategyLabApi = {
   specs: () => get<StrategySpecsResponse>('/admin/strategy/specs'),
+  evidenceProfiles: () => get<StrategyEvidenceProfilesResponse>('/admin/strategy/evidence-profiles'),
   dryRun: (date?: string) => post<StrategyDryRunResponse>(`/admin/strategy/dry-run${date ? `?date=${date}` : ''}`),
   learning: (date?: string) => get<StrategyLearningResponse>(`/admin/strategy/learning${date ? `?date=${date}` : ''}`),
   policyState: (date?: string) => get<StrategyPolicyStateResponse>(`/admin/strategy/policy-state${date ? `?date=${date}` : ''}`),

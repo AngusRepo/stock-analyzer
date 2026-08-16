@@ -147,6 +147,59 @@ void (async () => {
   assert.match(String(skipped.summary), /window_closed/)
   assert.match(String(skipped.summary), /backlog_remaining=true/)
 
+  const protectedValues = new Map<string, string>()
+  const protectedDeletes: string[] = []
+  const protectedMessages: unknown[] = []
+  const protectedEnv = {
+    DB: {
+      prepare: () => { throw new Error('ops_shadow_backfill_active_must_not_touch_d1') },
+    },
+    KV: {
+      get: async (key: string, type?: string) => {
+        const value = protectedValues.get(key)
+        if (value === undefined) return null
+        return type === 'json' ? JSON.parse(value) : value
+      },
+      put: async (key: string, value: string) => { protectedValues.set(key, value) },
+      delete: async (key: string) => {
+        protectedDeletes.push(key)
+        protectedValues.delete(key)
+      },
+    },
+    UPDATE_QUEUE: {
+      send: async (message: unknown) => { protectedMessages.push(message) },
+    },
+  } as any
+  const protectedActiveKey = 'maintenance:backlog-drain:audit-json-retention:active'
+  protectedValues.set(protectedActiveKey, 'audit-ops-protection-test')
+  protectedValues.set(
+    'data-domain-shadow-backfill:ops:active',
+    JSON.stringify({ run_id: 'ops-backfill-1', started_at: '2026-08-15T17:00:00.000Z' }),
+  )
+  await processMaintenanceBacklogDrain(protectedEnv, {
+    type: 'maintenance_backlog_drain',
+    maintenanceTask: 'audit-json-retention',
+    cursor: 0,
+    triggerTime: '2026-08-15',
+    runId: 'audit-ops-protection-test',
+    attempt: 0,
+    maxAttempts: 240,
+    maintenanceCycle: 0,
+    maxMaintenanceCycles: 1,
+    maintenanceTargets: ['strategy_decision_log'],
+    maintenanceRetentionDays: 30,
+    maintenanceLimitPerTable: 500,
+    maintenanceMinBlobBytes: 1024,
+  }, new Date('2026-08-15T17:30:00.000Z'))
+  assert.equal(protectedMessages.length, 0)
+  assert.ok(protectedDeletes.includes(protectedActiveKey))
+  const protectedSkipped = JSON.parse(
+    protectedValues.get('scheduler:run:audit-json-retention:2026-08-15') ?? '{}',
+  ) as { status?: string; summary?: string }
+  assert.equal(protectedSkipped.status, 'skipped')
+  assert.match(String(protectedSkipped.summary), /ops_shadow_backfill_active/)
+  assert.match(String(protectedSkipped.summary), /ops-backfill-1/)
+
   const failedSendValues = new Map<string, string>()
   let failedSendAttempts = 0
   const failedSendEnv = {

@@ -800,9 +800,10 @@ export async function buildDataDomainAggregateParitySnapshot(
   }
 }
 
-function parseCursor(value: unknown): unknown[] | null {
+export function parseDomainBackfillCursor(value: unknown): unknown[] | null {
   if (typeof value !== 'string' || !value.trim()) return null
   const parsed = JSON.parse(value)
+  if (parsed === null) return null
   if (!Array.isArray(parsed)) throw new Error('domain_backfill_cursor_invalid')
   return parsed
 }
@@ -862,7 +863,7 @@ export async function backfillDataDomainTableShadow(
   const cursorRow = options.reset ? null : await env.DB.prepare(`
     SELECT cursor_json FROM data_domain_backfill_cursors WHERE domain=? AND table_name=?
   `).bind(domain, table).first<{ cursor_json?: string | null }>()
-  const cursor = parseCursor(cursorRow?.cursor_json)
+  const cursor = parseDomainBackfillCursor(cursorRow?.cursor_json)
   const keyset = domainBackfillKeysetWhere(primaryKeys, cursor)
   const limit = dataDomainManifestPageLimit(table, domainBackfillBatchLimit(options.limit))
   const order = primaryKeys.map(identifier).join(", ")

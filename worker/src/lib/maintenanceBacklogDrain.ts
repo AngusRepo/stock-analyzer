@@ -1,6 +1,7 @@
 import type { Bindings, UpdateQueueMsg } from '../types'
 import { logSchedulerResult } from './schedulerRunLogger'
 import { runWithMaintenanceLease } from './maintenanceLease'
+import { activeDataDomainShadowBackfillRunId } from './dataDomainShadowSession'
 
 export type MaintenanceBacklogTask =
   | 'legacy-evidence-migration'
@@ -25,7 +26,7 @@ export type AuditJsonDrainOptions = {
 type MaintenanceChunkResult = {
   summary: string
   backlogRemaining: boolean
-  deferred?: 'window_closed'
+  deferred?: 'window_closed' | 'ops_shadow_backfill_active'
 }
 
 export function isAuditJsonDurableWindowOpen(now: Date): boolean {
@@ -39,6 +40,14 @@ function auditJsonWindowClosedResult(): MaintenanceChunkResult {
     summary: 'deferred=window_closed utc_window=17:00-22:40',
     backlogRemaining: true,
     deferred: 'window_closed',
+  }
+}
+
+function auditJsonOpsShadowBackfillActiveResult(runId: string): MaintenanceChunkResult {
+  return {
+    summary: `deferred=ops_shadow_backfill_active run_id=${runId}`,
+    backlogRemaining: true,
+    deferred: 'ops_shadow_backfill_active',
   }
 }
 
@@ -268,14 +277,22 @@ export async function processMaintenanceBacklogDrain(
   const cycle = Math.max(0, Math.floor(msg.maintenanceCycle ?? 0))
   const maxCycles = Math.max(1, Math.min(Math.floor(msg.maxMaintenanceCycles ?? defaultMaxCycles(task)), MAX_CYCLES))
   const runId = msg.runId ?? `${task}:${msg.triggerTime}:queue`
-  const leaseResult = task === 'audit-json-retention' && !isAuditJsonDurableWindowOpen(now)
-    ? auditJsonWindowClosedResult()
-    : await runWithMaintenanceLease(env.DB, {
+  let leaseResult: MaintenanceChunkResult | { skipped: true; reason: string }
+  if (task === 'audit-json-retention' && !isAuditJsonDurableWindowOpen(now)) {
+    leaseResult = auditJsonWindowClosedResult()
+  } else {
+    const opsShadowBackfillRunId = task === 'audit-json-retention'
+      ? await activeDataDomainShadowBackfillRunId(env.KV, 'ops')
+      : null
+    leaseResult = opsShadowBackfillRunId
+      ? auditJsonOpsShadowBackfillActiveResult(opsShadowBackfillRunId)
+      : await runWithMaintenanceLease(env.DB, {
         taskName: `${task}:queue`,
         leaseGroup: 'd1_heavy_maintenance',
         leaseSeconds: 300,
         run: () => runChunk(env, task, msg, now),
       })
+  }
 
   if ('skipped' in leaseResult && leaseResult.skipped) {
     await sendMaintenanceContinuation(env, {
@@ -310,7 +327,7 @@ export async function processMaintenanceBacklogDrain(
     updated_at: now.toISOString(),
   }), { expirationTtl: ACTIVE_TTL_SECONDS })
 
-  if (result.deferred === 'window_closed') {
+  if (result.deferred === 'window_closed' || result.deferred === 'ops_shadow_backfill_active') {
     await env.KV.delete(activeKey(task))
     await logSchedulerResult(env.KV, task, {
       status: 'skipped',

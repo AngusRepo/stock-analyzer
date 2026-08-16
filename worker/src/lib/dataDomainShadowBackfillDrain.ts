@@ -33,6 +33,7 @@ import {
 import { runWithMaintenanceLease } from './maintenanceLease'
 import { twDaysAgo } from './dateUtils'
 import { logSchedulerResult, type SchedulerRunLogEntry } from './schedulerRunLogger'
+import { dataDomainShadowBackfillActiveKey } from './dataDomainShadowSession'
 
 const ACTIVE_TTL_SECONDS = 6 * 3600
 const DEFAULT_MAX_ATTEMPTS = 5000
@@ -102,10 +103,6 @@ export function isDataDomainShadowProgressStale(
   const referenceMs = Date.parse(reference)
   return Number.isFinite(referenceMs) && nowMs - referenceMs >= STALE_PROGRESS_MS
 }
-function activeKey(domain: DataDomain): string {
-  return `data-domain-shadow-backfill:${domain}:active`
-}
-
 function progressKey(domain: DataDomain): string {
   return `data-domain-shadow-backfill:${domain}:progress`
 }
@@ -609,7 +606,7 @@ export async function enqueueDataDomainShadowBackfill(
     throw new Error(`data_domain_shadow_backfill_dependency_closure_required:${input.domain}:${input.table}`)
   }
   const runId = input.runId ?? `data-domain-shadow-backfill:${input.domain}:${input.runDate}:${crypto.randomUUID()}`
-  const key = activeKey(input.domain)
+  const key = dataDomainShadowBackfillActiveKey(input.domain)
   const existing = await env.KV.get(key)
   if (existing) {
     const active = parseActiveState(existing)
@@ -686,7 +683,7 @@ export async function processDataDomainShadowBackfillDrain(
       || await nextIncompleteTable(env, domain))
   if (!table) {
     const checksumReady = await domainChecksumReady(env, domain, parityNotBefore)
-    await env.KV.delete(activeKey(domain))
+    await env.KV.delete(dataDomainShadowBackfillActiveKey(domain))
     let sweepNext: Awaited<ReturnType<typeof enqueueDataDomainShadowBackfill>> | null = null
     let sweepNextDomain: DataDomain | null = null
     if (shouldContinueDataDomainGlobalSweep({
@@ -719,7 +716,7 @@ export async function processDataDomainShadowBackfillDrain(
     await assertDataDomainShadowMutationAuthority(env, domain)
   } catch (error) {
     const errorMessage = error instanceof Error ? error.message : String(error)
-    await env.KV.delete(activeKey(domain))
+    await env.KV.delete(dataDomainShadowBackfillActiveKey(domain))
     await logSchedulerResult(env.KV, 'data-domain-shadow-backfill', {
       status: 'error',
       summary: `domain=${domain} table=${table} mutation_authority_blocked=true error=${errorMessage}`,
@@ -747,7 +744,7 @@ export async function processDataDomainShadowBackfillDrain(
   } catch (error) {
     const errorMessage = error instanceof Error ? error.message : String(error)
     if (isDataDomainShadowAuthorityError(error)) {
-      await env.KV.delete(activeKey(domain))
+      await env.KV.delete(dataDomainShadowBackfillActiveKey(domain))
       await logSchedulerResult(env.KV, 'data-domain-shadow-backfill', {
         status: 'error',
         summary: `domain=${domain} table=${table} mutation_authority_changed=true error=${errorMessage}`,
@@ -779,7 +776,7 @@ export async function processDataDomainShadowBackfillDrain(
       updated_at: new Date().toISOString(),
     }), { expirationTtl: ACTIVE_TTL_SECONDS })
     if (nextAttempt >= maxAttempts || nextErrorAttempt >= 3) {
-      await env.KV.delete(activeKey(domain))
+      await env.KV.delete(dataDomainShadowBackfillActiveKey(domain))
       await logSchedulerResult(env.KV, 'data-domain-shadow-backfill', {
         status: 'error',
         summary: `domain=${domain} table=${table} consecutive_errors=${nextErrorAttempt} error=${errorCode} run_id=${runId}`,
@@ -831,7 +828,7 @@ export async function processDataDomainShadowBackfillDrain(
 
   const continuation = resolveDataDomainShadowBackfillContinuation(requestedTable, result.status)
   if (continuation === 'requested_table_complete') {
-    await env.KV.delete(activeKey(domain))
+    await env.KV.delete(dataDomainShadowBackfillActiveKey(domain))
     await logSchedulerResult(env.KV, 'data-domain-shadow-backfill', {
       status: 'success',
       summary: `domain=${domain} table=${table} requested_table_complete=true table_checksum_ready=true source_rows=${result.source_rows} target_rows=${result.target_rows} run_id=${runId}`,
@@ -842,7 +839,7 @@ export async function processDataDomainShadowBackfillDrain(
     return
   }
   if (continuation === 'requested_table_dependency_blocked') {
-    await env.KV.delete(activeKey(domain))
+    await env.KV.delete(dataDomainShadowBackfillActiveKey(domain))
     await logSchedulerResult(env.KV, 'data-domain-shadow-backfill', {
       status: 'error',
       summary: `domain=${domain} table=${table} requested_table_dependency_closure_required=true run_id=${runId}`,
@@ -854,7 +851,7 @@ export async function processDataDomainShadowBackfillDrain(
   }
 
   if (attempt + 1 >= maxAttempts) {
-    await env.KV.delete(activeKey(domain))
+    await env.KV.delete(dataDomainShadowBackfillActiveKey(domain))
     await logSchedulerResult(env.KV, 'data-domain-shadow-backfill', {
       status: 'error',
       summary: `domain=${domain} exhausted attempts=${attempt + 1}/${maxAttempts} table=${table}`,
@@ -870,7 +867,7 @@ export async function processDataDomainShadowBackfillDrain(
     : await nextDataDomainIncrementalCatchupTable(env, domain, parityNotBefore)
       || await nextIncompleteTable(env, domain)
   if (nextTable) {
-    await env.KV.put(activeKey(domain), JSON.stringify({
+    await env.KV.put(dataDomainShadowBackfillActiveKey(domain), JSON.stringify({
       run_id: runId,
       started_at: parityNotBefore,
     }), { expirationTtl: ACTIVE_TTL_SECONDS })
@@ -888,7 +885,7 @@ export async function processDataDomainShadowBackfillDrain(
     return
   }
 
-  await env.KV.delete(activeKey(domain))
+  await env.KV.delete(dataDomainShadowBackfillActiveKey(domain))
   let sweepNext: Awaited<ReturnType<typeof enqueueDataDomainShadowBackfill>> | null = null
   let sweepNextDomain: DataDomain | null = null
   if (shouldContinueDataDomainGlobalSweep({

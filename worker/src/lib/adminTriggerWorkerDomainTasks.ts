@@ -11,6 +11,7 @@ import {
   resolveEveningChainRunAuthority,
 } from './eveningChainRunAuthority'
 import { classifySchedulerSummary, logSchedulerResult } from './schedulerRunLogger'
+import { activeDataDomainShadowBackfillRunId } from './dataDomainShadowSession'
 
 const RESCORE_SLOT_TASK_BY_CRON: Record<string, string> = {
   '0 2 * * 1-5': 'rescore-10',
@@ -949,7 +950,14 @@ export function buildAdminWorkerDomainTaskMap(c: any, deps: TriggerDeps): Record
       const dryRun = c.req.query('confirm_retirement') !== LEGACY_HOT_DATA_RETIREMENT_CONFIRM_PHRASE
       const summaries: string[] = []
       const paperShadowProtected = await paperShadowSourceMutationProtected(c.env)
+      const opsShadowBackfillRunId = dryRun
+        ? null
+        : await activeDataDomainShadowBackfillRunId(c.env.KV, 'ops')
       for (const target of targets) {
+        if (opsShadowBackfillRunId) {
+          summaries.push(`${target}:skipped=ops_shadow_backfill_active,run_id=${opsShadowBackfillRunId}`)
+          continue
+        }
         if (paperShadowProtected && target === 'superseded_pending_events') {
           summaries.push('superseded_pending_events:skipped=paper_shadow_parity_protected')
           continue

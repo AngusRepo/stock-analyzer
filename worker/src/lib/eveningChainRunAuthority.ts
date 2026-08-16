@@ -1,4 +1,5 @@
 import type { Bindings } from '../types'
+import { databaseForDataDomain } from './dataDomainRegistry'
 import { historicalLearningLineageDecision } from './historicalLearningLineageGuard'
 
 export type EveningChainRunScope = 'live_canonical' | 'historical_replay'
@@ -27,7 +28,7 @@ export async function resolveEveningChainRunAuthority(
     }
   }
 
-  const stage = await env.DB.prepare(`
+  const stage = await databaseForDataDomain(env, 'ops').prepare(`
     SELECT queued_at,
            date(queued_at, '+8 hours') AS queued_taipei_date
       FROM pipeline_stage_runs

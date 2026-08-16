@@ -96,6 +96,7 @@ const DOMAIN_TABLES: Record<DataDomain, ReadonlySet<string>> = {
     'legacy_migration_cursors', 'scheduler_locks', 'artifact_hard_references',
     'domain_projection_outbox', 'domain_projection_inbox', 'data_domain_cutovers',
     'data_domain_writer_epochs', 'data_domain_table_writer_epochs',
+    'data_domain_cutover_probe_receipts', 'data_domain_cutover_probe_canary',
     'data_retention_policies', 'data_retention_runs', 'storage_capacity_daily',
     'price_horizon_projection_status', 'price_horizon_projection_runs',
     'sector_flow_pit_rebuild_runs_v1',
@@ -221,6 +222,8 @@ const SHADOW_BACKFILL_EXCLUDED_TABLES: Partial<Record<DataDomain, ReadonlySet<st
     'data_domain_table_writer_epochs',
     'data_domain_backfill_cursors',
     'data_domain_parity_checks',
+    'data_domain_cutover_probe_receipts',
+    'data_domain_cutover_probe_canary',
   ]),
 }
 

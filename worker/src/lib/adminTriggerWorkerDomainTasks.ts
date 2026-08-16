@@ -64,6 +64,7 @@ type WarmupSummary = {
 async function paperShadowSourceMutationProtected(env: any): Promise<boolean> {
   const [active, cutover] = await Promise.all([
     env.KV.get(PAPER_SHADOW_BACKFILL_ACTIVE_KEY),
+    // multi-d1-intentional-legacy-source: cutover authority is anchored in source DB.
     env.DB.prepare('SELECT status FROM data_domain_cutovers WHERE domain=?')
       .bind('paper').first(),
   ])
@@ -249,7 +250,7 @@ function assertRunDate(value?: string): string {
 
 async function enqueuePostScreenerPipelineContinuation(c: any, runDate?: string): Promise<string> {
   const triggerTime = assertRunDate(runDate)
-  const screener = await c.env.DB.prepare(`
+  const screener = await databaseForDataDomain(c.env, 'ops').prepare(`
     SELECT sfr.run_id, sfr.final_count, sfr.emerging_count
       FROM screener_funnel_runs sfr
      WHERE sfr.run_id = COALESCE(
@@ -1111,6 +1112,37 @@ export function buildAdminWorkerDomainTaskMap(c: any, deps: TriggerDeps): Record
       const installed = await installDataDomainWriterEpochTriggers(c.env.DB, 'ops')
       return `data_domain_writer_epoch_trigger_install ${JSON.stringify(installed)}`
     },
+    'data-domain-cutover-probe': async () => {
+      if (c.req.header('X-Confirm-Data-Domain-Cutover-Probe') !== 'true') {
+        throw new Error(
+          'data-domain-cutover-probe requires '
+          + 'X-Confirm-Data-Domain-Cutover-Probe:true',
+        )
+      }
+      const requestedDomain = String(c.req.query('domain') ?? 'ops').trim().toLowerCase()
+      if (requestedDomain !== 'ops') {
+        throw new Error(`data_domain_cutover_probe_not_yet_closed:${requestedDomain}`)
+      }
+      const opsDb = shadowDatabaseForDataDomain(c.env, 'ops')
+      if (!opsDb) throw new Error('data_domain_shadow_binding_missing:ops')
+      // multi-d1-intentional-legacy-source: canary binds the source authority receipt.
+      const cutover = await c.env.DB.prepare(`
+        SELECT status, parity_checked_at
+          FROM data_domain_cutovers
+         WHERE domain='ops'
+      `).first() as { status?: string; parity_checked_at?: string } | null
+      if (cutover?.status !== 'shadow') {
+        throw new Error(`data_domain_cutover_probe_shadow_required:ops:${cutover?.status ?? 'missing'}`)
+      }
+      const { runDataDomainCutoverProbe } = await import('./dataDomainWriterEpoch')
+      const receipt = await runDataDomainCutoverProbe({
+        sourceDb: c.env.DB,
+        targetDb: opsDb,
+        domain: 'ops',
+        parityCheckedAt: String(cutover.parity_checked_at ?? ''),
+      })
+      return `data_domain_cutover_probe ${JSON.stringify(receipt)}`
+    },
     'storage-health-check': async () => {
       const { runStorageHealthCheck } = await import('./artifactLifecycle')
       const result = await runStorageHealthCheck(c.env)
@@ -1137,7 +1169,7 @@ export function buildAdminWorkerDomainTaskMap(c: any, deps: TriggerDeps): Record
     'storage-capacity-report': async () => {
       const { runStorageHealthCheck } = await import('./artifactLifecycle')
       const health = await runStorageHealthCheck(c.env)
-      const { results } = await c.env.DB.prepare(`
+      const { results } = await databaseForDataDomain(c.env, 'ops').prepare(`
         SELECT retention_class, status, COUNT(*) AS artifacts,
                COALESCE(SUM(byte_size), 0) AS bytes
           FROM run_artifacts

@@ -1,6 +1,7 @@
 import { Hono } from 'hono'
 import type { Bindings, Variables } from '../types'
 import { hasServiceToken, requireAdminOrServiceToken } from '../lib/auth'
+import { databaseForDataDomain } from '../lib/dataDomainRegistry'
 import { resolveFinLabDispatchFence } from '../lib/finLabDispatchFence'
 import { writeEvidenceArtifact } from '../lib/artifactLifecycle'
 import type { EvidenceArtifactWriteInput } from '../lib/evidenceArtifactContract'
@@ -293,7 +294,7 @@ adminControlRoutes.post('/api/internal/evidence-artifacts/s12-research/read', as
   if (!/^evidence\/class=raw_market_unreferenced\/domain=s12_research_minute_bars\//.test(r2Key)) {
     return c.json({ error: 'invalid_s12_research_artifact_key' }, 400)
   }
-  const manifest = await c.env.DB.prepare(`
+  const manifest = await databaseForDataDomain(c.env, 'ops').prepare(`
     SELECT artifact_id
       FROM run_artifacts
      WHERE r2_key=?
@@ -619,14 +620,14 @@ async function handleSchedulerCallback(c: any) {
       return c.json({ error: 'critical callback missing run_date or run_id' }, 400)
     }
     if (body.task === 'pipeline') {
-      const accepted = await acceptPipelineExecutionCallback(c.env.DB, {
+      const accepted = await acceptPipelineExecutionCallback(databaseForDataDomain(c.env, 'ops'), {
         businessDate: callbackRunDate,
         runId: callbackRunId,
         status: body.status === 'success' ? 'success' : 'error',
         error: body.error != null ? String(body.error) : null,
       })
       if (!accepted) {
-        const current = await c.env.DB.prepare(`
+        const current = await databaseForDataDomain(c.env, 'ops').prepare(`
           SELECT canonical_run_id
             FROM pipeline_stage_runs
            WHERE business_date=? AND stage='pipeline_execution'
@@ -641,7 +642,7 @@ async function handleSchedulerCallback(c: any) {
       }
     } else {
       const stageName = body.task === 'verify-v2' ? 'verify_v2' : 'post_pipeline_chain'
-      const stage = await c.env.DB.prepare(`
+      const stage = await databaseForDataDomain(c.env, 'ops').prepare(`
         SELECT canonical_run_id, cursor_key, status
           FROM pipeline_stage_runs
          WHERE business_date=? AND stage=?
@@ -903,7 +904,7 @@ async function handleSchedulerCallback(c: any) {
       const callbackError = String(body.error ?? body.summary ?? body.status)
       const transientD1Failure = body.status === 'error' && isTransientD1Reset(callbackError)
       const stage = transientD1Failure
-        ? await c.env.DB.prepare(`
+        ? await databaseForDataDomain(c.env, 'ops').prepare(`
             SELECT attempt_count FROM pipeline_stage_runs
              WHERE business_date=? AND stage='post_pipeline_chain' AND canonical_run_id=?
           `).bind(callbackRunDate, callbackRunId).first() as { attempt_count?: number | string | null } | null
@@ -913,7 +914,7 @@ async function handleSchedulerCallback(c: any) {
         const callbackAttemptId = String(body.attempt_id ?? 'unknown-attempt')
         const retryDedupeKey = `allocator:snapshot-transient-retry:${callbackRunDate}:${callbackRunId}:${callbackAttemptId}`
         const alreadyScheduled = Boolean(await c.env.KV.get(retryDedupeKey))
-        const marked = await markPipelineStageFenced(c.env.DB, {
+        const marked = await markPipelineStageFenced(databaseForDataDomain(c.env, 'ops'), {
           businessDate: callbackRunDate,
           stage: 'post_pipeline_chain',
           canonicalRunId: callbackRunId,
@@ -944,7 +945,7 @@ async function handleSchedulerCallback(c: any) {
           run_date: callbackRunDate,
         }, c.env as any)
       } else {
-        const marked = await markPipelineStageFenced(c.env.DB, {
+        const marked = await markPipelineStageFenced(databaseForDataDomain(c.env, 'ops'), {
           businessDate: callbackRunDate,
           stage: 'post_pipeline_chain',
           canonicalRunId: callbackRunId,
@@ -1010,7 +1011,7 @@ async function handleSchedulerCallback(c: any) {
             detail: ownershipConflict,
           }, 409)
         }
-        const executionStillCurrent = await isPipelineStageCanonicalState(c.env.DB, {
+        const executionStillCurrent = await isPipelineStageCanonicalState(databaseForDataDomain(c.env, 'ops'), {
           businessDate: callbackRunDate,
           stage: 'pipeline_execution',
           canonicalRunId: callbackRunId,
@@ -1039,7 +1040,7 @@ async function handleSchedulerCallback(c: any) {
         }, c.env as any)
       } else {
         const executionStillCurrent = callbackRunDate && callbackRunId
-          ? await isPipelineStageCanonicalState(c.env.DB, {
+          ? await isPipelineStageCanonicalState(databaseForDataDomain(c.env, 'ops'), {
               businessDate: callbackRunDate,
               stage: 'pipeline_execution',
               canonicalRunId: callbackRunId,
@@ -1062,7 +1063,7 @@ async function handleSchedulerCallback(c: any) {
     } catch (e: any) {
       const callbackError = e?.message ?? 'post-pipeline callback chain failed'
       const executionStillCurrent = callbackRunDate && callbackRunId
-        ? await isPipelineStageCanonicalState(c.env.DB, {
+        ? await isPipelineStageCanonicalState(databaseForDataDomain(c.env, 'ops'), {
             businessDate: callbackRunDate,
             stage: 'pipeline_execution',
             canonicalRunId: callbackRunId,
@@ -1117,7 +1118,7 @@ async function handleSchedulerCallback(c: any) {
     if (!callbackRunDate || !callbackRunId || !verifyCallbackCanonicalRunId) {
       return c.json({ error: 'verify callback missing canonical identity for post-verify continuation' }, 400)
     }
-    const marked = await markPipelineStageFenced(c.env.DB, {
+    const marked = await markPipelineStageFenced(databaseForDataDomain(c.env, 'ops'), {
       businessDate: callbackRunDate,
       stage: 'verify_v2',
       canonicalRunId: verifyCallbackCanonicalRunId,
@@ -1157,7 +1158,7 @@ async function handleSchedulerCallback(c: any) {
       return c.json({ error: 'verify callback missing canonical identity' }, 400)
     }
     const error = body.error != null ? String(body.error) : String(body.summary ?? 'verify-v2 callback failed')
-    const marked = await markPipelineStageFenced(c.env.DB, {
+    const marked = await markPipelineStageFenced(databaseForDataDomain(c.env, 'ops'), {
       businessDate: callbackRunDate,
       stage: 'verify_v2',
       canonicalRunId: verifyCallbackCanonicalRunId,

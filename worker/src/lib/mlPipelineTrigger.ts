@@ -1,5 +1,6 @@
 import { twToday } from './dateUtils'
 import type { Bindings } from '../types'
+import { databaseForDataDomain } from './dataDomainRegistry'
 import { assertMarketDataReady, type MarketDataReadinessResult } from './marketDataReadiness'
 import { readMarketRegimeState } from './marketRegimeState'
 import { buildMarketRegimeFactorPacket, upsertMarketRegimeFactorPacket } from './marketRegimeFactorPacket'
@@ -38,6 +39,7 @@ export async function runMLAndRiskV2(
   options: PipelineTriggerOptions = {},
 ): Promise<string> {
   const twDate = resolvePipelineRunDate(runDate)
+  const opsDb = databaseForDataDomain(env, 'ops')
   if (options.prevalidatedEventChain) {
     await assertMarketDataReady(env.DB, twDate)
   } else {
@@ -143,12 +145,12 @@ export async function runMLAndRiskV2(
 
     dispatchAttemptId = `pipeline-dispatch:${twDate}:${crypto.randomUUID()}`
     headers['X-Pipeline-Run-Id'] = dispatchAttemptId
-    const reservation = await reservePipelineExecutionDispatch(env.DB, {
+    const reservation = await reservePipelineExecutionDispatch(opsDb, {
       businessDate: twDate,
       attemptId: dispatchAttemptId,
     })
     if (!reservation) {
-      const current = await env.DB.prepare(`
+      const current = await databaseForDataDomain(env, 'ops').prepare(`
         SELECT canonical_run_id, status
           FROM pipeline_stage_runs
          WHERE business_date=? AND stage='pipeline_execution'
@@ -190,7 +192,7 @@ export async function runMLAndRiskV2(
         return `LOCKED ambiguous pipeline dispatch for ${twDate} run_id=${dispatchAttemptId} HTTP ${res.status}; callback or lease expiry required`
       }
       if (res.status === 409 && text.toLowerCase().includes('active execution')) {
-        await failPipelineExecutionDispatch(env.DB, {
+        await failPipelineExecutionDispatch(opsDb, {
           businessDate: twDate,
           attemptId: dispatchAttemptId!,
           error: `controller_active_execution:${text.slice(0, 300)}`,
@@ -221,7 +223,7 @@ export async function runMLAndRiskV2(
     let commitError: unknown = null
     for (let attempt = 0; attempt < 3 && !committed; attempt += 1) {
       try {
-        committed = await commitPipelineExecutionDispatch(env.DB, {
+        committed = await commitPipelineExecutionDispatch(opsDb, {
           businessDate: twDate,
           attemptId: dispatchAttemptId!,
           runId: dispatchAttemptId!,
@@ -234,7 +236,7 @@ export async function runMLAndRiskV2(
       }
     }
     if (!committed) {
-      const current = await env.DB.prepare(`
+      const current = await databaseForDataDomain(env, 'ops').prepare(`
         SELECT canonical_run_id, status
           FROM pipeline_stage_runs
          WHERE business_date=? AND stage='pipeline_execution'
@@ -258,7 +260,7 @@ export async function runMLAndRiskV2(
     return `triggered run_id=${dispatchAttemptId}, callback expected`
   } catch (e: any) {
     if (dispatchReserved && dispatchAttemptId && !controllerAccepted && !dispatchAmbiguous) {
-      await failPipelineExecutionDispatch(env.DB, {
+      await failPipelineExecutionDispatch(opsDb, {
         businessDate: twDate,
         attemptId: dispatchAttemptId,
         error: e?.message ?? String(e),

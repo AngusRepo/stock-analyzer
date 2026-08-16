@@ -1,4 +1,5 @@
 import type { Bindings } from '../types'
+import { databaseForDataDomain } from '../lib/dataDomainRegistry'
 import { runBottomUpScreener } from '../lib/marketScreener'
 import { assertAllocatorContractRunDate } from './allocatorContractGuard'
 import {
@@ -89,7 +90,7 @@ async function funnelRunByProducerId(env: Bindings, date: string, producerRunId:
   final_count?: number
   emerging_count?: number
 } | null> {
-  return env.DB.prepare(`
+  return databaseForDataDomain(env, 'ops').prepare(`
     SELECT run_id, universe_count, candidate_count, final_count, emerging_count
       FROM screener_funnel_runs
      WHERE date = ?

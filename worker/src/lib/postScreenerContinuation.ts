@@ -1,4 +1,5 @@
 import type { Bindings } from '../types'
+import { databaseForDataDomain } from './dataDomainRegistry'
 import {
   enqueuePipelineStage,
   markPipelineStageFenced,
@@ -18,7 +19,7 @@ export async function enqueuePostScreenerPipelineContinuation(
   },
 ): Promise<{ queued: boolean; canonicalRunId: string; status: string }> {
   const shardCount = Math.max(1, Math.floor(Number(options.shardCount ?? 1) || 1))
-  const state = await enqueuePipelineStage(env.DB, {
+  const state = await enqueuePipelineStage(databaseForDataDomain(env, 'ops'), {
     businessDate: options.triggerTime,
     stage: POST_SCREENER_CONTINUATION_STAGE,
     runId: options.runId,
@@ -50,7 +51,7 @@ export async function enqueuePostScreenerPipelineContinuation(
       attempt: 1,
     })
   } catch (error) {
-    await markPipelineStageFenced(env.DB, {
+    await markPipelineStageFenced(databaseForDataDomain(env, 'ops'), {
       businessDate: options.triggerTime,
       stage: POST_SCREENER_CONTINUATION_STAGE,
       canonicalRunId: state.row.canonical_run_id,

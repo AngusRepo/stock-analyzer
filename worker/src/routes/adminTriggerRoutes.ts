@@ -48,6 +48,7 @@ const SYNC_REQUIRED_TASKS = new Set([
   'data-domain-shadow-backfill-next',
   'data-domain-control-revision-trigger-install',
   'data-domain-writer-epoch-trigger-install',
+  'data-domain-cutover-probe',
   'monthly-retrain',
 ])
 

@@ -187,6 +187,7 @@ async function buildMarketRiskFallback(reason: string) {
 }
 
 import type { Bindings, Variables } from '../types'
+import { databaseForDataDomain } from '../lib/dataDomainRegistry'
 import { authMiddleware, adminMiddleware } from '../lib/auth'
 import { rateLimitMiddleware } from '../lib/rateLimit'
 import { withCache, TTL } from '../lib/cache'
@@ -2914,7 +2915,7 @@ ml.get('/system-logs', async (c) => {
   const level = c.req.query('level')  // filter by 'error' | 'warn' | 'info'
   const whereLevel = level ? `AND level=?` : ''
   const params = level ? [limit, level] : [limit]
-  const { results } = await c.env.DB.prepare(`
+  const { results } = await databaseForDataDomain(c.env, 'ops').prepare(`
     SELECT * FROM system_logs
     ${level ? 'WHERE level=?' : ''}
     ORDER BY created_at DESC LIMIT ?
@@ -3327,8 +3328,13 @@ function binaryCorr(left: Set<string>, right: Set<string>, universeSize: number)
   return ((both * neither) - (leftOnly * rightOnly)) / denom
 }
 
-async function buildDailyPipelineSummaries(db: Bindings['DB'], date: string): Promise<Record<string, any>> {
-  const latestRun = await db.prepare(`
+async function buildDailyPipelineSummaries(
+  opsDb: Bindings['DB'],
+  coreDb: Bindings['DB'],
+  learningDb: Bindings['DB'],
+  date: string,
+): Promise<Record<string, any>> {
+  const latestRun = await opsDb.prepare(`
     SELECT run_id, date, status, universe_count, candidate_count, final_count, emerging_count, created_at
       FROM screener_funnel_runs
      WHERE date = ?
@@ -3342,7 +3348,7 @@ async function buildDailyPipelineSummaries(db: Bindings['DB'], date: string): Pr
     }
   }
 
-  const { results: stageRows } = await db.prepare(`
+  const { results: stageRows } = await opsDb.prepare(`
     SELECT stage,
            COUNT(DISTINCT symbol) AS total_count,
            COUNT(DISTINCT CASE WHEN decision = 'pass' THEN symbol END) AS pass_count,
@@ -3355,7 +3361,7 @@ async function buildDailyPipelineSummaries(db: Bindings['DB'], date: string): Pr
   `).bind(latestRun.run_id).all<any>()
   const byStage = new Map<string, Record<string, any>>((stageRows ?? []).map((row: any) => [String(row.stage ?? ''), row]))
   const pickStage = (...names: string[]) => names.map((name) => byStage.get(name)).find(Boolean) ?? null
-  const signalCounts = await db.prepare(`
+  const signalCounts = await coreDb.prepare(`
     SELECT COUNT(DISTINCT symbol) AS recommendation_count,
            COUNT(DISTINCT CASE WHEN signal IN ('BUY', 'STRONG_BUY') OR has_buy_signal = 1 THEN symbol END) AS buy_signal_count,
            COUNT(DISTINCT CASE WHEN signal = 'HOLD' THEN symbol END) AS hold_count
@@ -3405,7 +3411,7 @@ async function buildDailyPipelineSummaries(db: Bindings['DB'], date: string): Pr
     }
   })
 
-  const { results: rawMatrixRows } = await db.prepare(`
+  const { results: rawMatrixRows } = await learningDb.prepare(`
     SELECT symbol, strategy_id
       FROM strategy_label_matrix_v4
      WHERE producer_run_id = ?
@@ -3423,7 +3429,7 @@ async function buildDailyPipelineSummaries(db: Bindings['DB'], date: string): Pr
     STRATEGY_FORMAL_LABELER_VERSION,
     STRATEGY_FORMAL_RECONSTRUCTION_LABELER_VERSION,
   ).all<any>().catch(() => ({ results: [] as any[] }))
-  const referenceCount = await db.prepare(`
+  const referenceCount = await learningDb.prepare(`
     SELECT COUNT(*) AS candidate_count
       FROM selection_reference_snapshots_v1
      WHERE producer_run_id = ?
@@ -3440,7 +3446,7 @@ async function buildDailyPipelineSummaries(db: Bindings['DB'], date: string): Pr
     STRATEGY_FORMAL_LABELER_VERSION,
     STRATEGY_FORMAL_RECONSTRUCTION_LABELER_VERSION,
   ).first<any>().catch(() => null)
-  const matrixRun = await db.prepare(`
+  const matrixRun = await learningDb.prepare(`
     SELECT status, reference_candidate_count, expected_cell_count, persisted_cell_count
       FROM strategy_label_matrix_runs_v4
      WHERE producer_run_id=?
@@ -3451,7 +3457,7 @@ async function buildDailyPipelineSummaries(db: Bindings['DB'], date: string): Pr
     STRATEGY_FORMAL_LABELER_VERSION,
     STRATEGY_FORMAL_RECONSTRUCTION_LABELER_VERSION,
   ).first<any>().catch(() => null)
-  const loadStageStrategyRows = async (stage: string) => db.prepare(`
+  const loadStageStrategyRows = async (stage: string) => opsDb.prepare(`
     SELECT symbol, evidence
       FROM screener_funnel_items
      WHERE run_id = ?
@@ -3494,7 +3500,7 @@ async function buildDailyPipelineSummaries(db: Bindings['DB'], date: string): Pr
   const candidateCount = hasCanonicalRawMatrix
     ? Number(referenceCount?.candidate_count ?? 0)
     : new Set((routerRows ?? []).map((row: any) => String(row.symbol ?? '').trim()).filter(Boolean)).size
-  const registryActiveRows = await db.prepare(`
+  const registryActiveRows = await learningDb.prepare(`
     SELECT strategy_id
       FROM strategy_spec_registry
      WHERE status = 'active'
@@ -3990,7 +3996,7 @@ recommendations.get('/daily', async (c) => {
   if (resultSymbols.length > 0) {
     try {
       const placeholders = resultSymbols.map(() => '?').join(',')
-      const { results: funnelRows } = await c.env.DB.prepare(`
+      const { results: funnelRows } = await databaseForDataDomain(c.env, 'ops').prepare(`
         WITH latest_screener_run AS (
           SELECT run_id
             FROM screener_funnel_runs
@@ -4166,7 +4172,12 @@ recommendations.get('/daily', async (c) => {
   )
   let pipelineSummaries: Record<string, any> = { funnel_summary: null, strategy_summary: null }
   try {
-    pipelineSummaries = await buildDailyPipelineSummaries(c.env.DB, String(date))
+    pipelineSummaries = await buildDailyPipelineSummaries(
+      databaseForDataDomain(c.env, 'ops'),
+      databaseForDataDomain(c.env, 'core'),
+      databaseForDataDomain(c.env, 'learning'),
+      String(date),
+    )
   } catch (e) {
     console.warn('[recommendations/daily] daily pipeline summaries unavailable:', e)
   }

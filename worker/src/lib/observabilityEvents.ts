@@ -1,4 +1,5 @@
 import type { Bindings } from '../types'
+import { databaseForDataDomain } from './dataDomainRegistry'
 import { twToday } from './dateUtils'
 import { buildDataQualityReport, type DataQualityCheck } from './dataQualityMonitor'
 import { buildDeployGateReport } from './deployGate'
@@ -1169,7 +1170,7 @@ export async function listObservabilityAuditEvents(env: Bindings, options: {
   }
 
   const where = conditions.length ? `WHERE ${conditions.join(' AND ')}` : ''
-  const { results } = await env.DB.prepare(`
+  const { results } = await databaseForDataDomain(env, 'ops').prepare(`
     SELECT event_id, date, severity, domain, source, status, title, summary,
            owner, impact, next_action, evidence, created_at
       FROM observability_events
@@ -1190,7 +1191,7 @@ export async function listObservabilityAuditEventsByIds(
   if (ids.length === 0) return []
   const limit = Math.max(1, Math.min(Number(options.limit ?? 200), 500))
   const placeholders = ids.map(() => '?').join(', ')
-  const { results } = await env.DB.prepare(`
+  const { results } = await databaseForDataDomain(env, 'ops').prepare(`
     SELECT event_id, date, severity, domain, source, status, title, summary,
            owner, impact, next_action, evidence, created_at
       FROM observability_events
@@ -1232,9 +1233,10 @@ export async function persistObservabilitySnapshot(env: Bindings, report: Observ
 }> {
   let inserted = 0
   let skipped = 0
+  const opsDb = databaseForDataDomain(env, 'ops')
 
   for (const event of selectPersistableObservabilityEvents(report.events)) {
-    const existing = await env.DB.prepare(`
+    const existing = await opsDb.prepare(`
       SELECT id FROM observability_events
        WHERE event_id = ?
          AND date = ?
@@ -1249,7 +1251,7 @@ export async function persistObservabilitySnapshot(env: Bindings, report: Observ
       continue
     }
 
-    await env.DB.prepare(`
+    await opsDb.prepare(`
       INSERT INTO observability_events (
         event_id, date, severity, domain, source, status, title, summary,
         owner, impact, next_action, evidence, created_at

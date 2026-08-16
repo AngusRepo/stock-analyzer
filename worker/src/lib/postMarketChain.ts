@@ -1,4 +1,5 @@
 import type { Bindings } from '../types'
+import { databaseForDataDomain } from './dataDomainRegistry'
 import { runAdaptiveUpdate, runLinUcbRewardLedgerRefresh } from './adaptiveEngine'
 import { runArtifactAutoPromotion, runModelIcRollingRefresh, runObsidianDaily, runPaperActivePostmarketPromotion, runVerifyV2 } from './controllerWorkflows'
 import { generateDailyReport } from './dailyReport'
@@ -540,7 +541,7 @@ export async function runPostPipelineCallbackChain(
   const pipelineRunId = String(ctx.upstreamRunId ?? '').trim()
   const pipelineLeaseOwner = String(ctx.stageLeaseOwner ?? '').trim()
   await assertChainStageAuthority(ctx, 'verify-v2:before_stage_enqueue')
-  const verifyStage = await enqueuePipelineStageAuthorized(env.DB, {
+  const verifyStage = await enqueuePipelineStageAuthorized(databaseForDataDomain(env, 'ops'), {
     businessDate: ctx.runDate,
     stage: 'verify_v2',
     runId: pipelineRunId,
@@ -566,7 +567,7 @@ export async function runPostPipelineCallbackChain(
     }
   } else {
     const verifyLeaseOwner = `${pipelineRunId}:verify:${crypto.randomUUID()}`
-    const claimed = await claimPipelineStage(env.DB, {
+    const claimed = await claimPipelineStage(databaseForDataDomain(env, 'ops'), {
       businessDate: ctx.runDate,
       stage: 'verify_v2',
       ownerId: verifyLeaseOwner,
@@ -583,7 +584,7 @@ export async function runPostPipelineCallbackChain(
     } else {
       const verifyIdempotencyKey = `verify_v2:${ctx.runDate}:${snapshotClosure.snapshotRunId}`
       const expectedProducerRunId = await expectedVerifyProducerRunId(ctx.runDate, verifyIdempotencyKey)
-      const cursorStored = await setPipelineStageCursorFenced(env.DB, {
+      const cursorStored = await setPipelineStageCursorFenced(databaseForDataDomain(env, 'ops'), {
         businessDate: ctx.runDate,
         stage: 'verify_v2',
         canonicalRunId: pipelineRunId,
@@ -597,7 +598,7 @@ export async function runPostPipelineCallbackChain(
         'verify-v2',
         () => runVerifyV2(env, ctx.runDate, verifyIdempotencyKey),
       )
-      const finalized = await markPipelineStageFenced(env.DB, {
+      const finalized = await markPipelineStageFenced(databaseForDataDomain(env, 'ops'), {
         businessDate: ctx.runDate,
         stage: 'verify_v2',
         canonicalRunId: pipelineRunId,
@@ -607,7 +608,7 @@ export async function runPostPipelineCallbackChain(
         error: verifyTask.status === 'error' ? verifyTask.summary : null,
       })
       if (!finalized) {
-        const callbackWonRace = await env.DB.prepare(`
+        const callbackWonRace = await databaseForDataDomain(env, 'ops').prepare(`
           SELECT 1 AS ok FROM pipeline_stage_runs
            WHERE business_date=? AND stage='verify_v2'
              AND canonical_run_id=? AND cursor_key=? AND status='success'

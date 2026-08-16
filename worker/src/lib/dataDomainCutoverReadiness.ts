@@ -46,6 +46,20 @@ type CutoverRow = {
   parity_checked_at?: string | null
 }
 
+type CutoverProbeRow = {
+  source_epoch?: number | string | null
+  parity_checked_at?: string | null
+  read_write_readback_passed?: number | string | null
+  rollback_restore_passed?: number | string | null
+  status?: string | null
+  checked_at?: string | null
+}
+
+type WriterEpochRow = {
+  epoch?: number | string | null
+  writer_state?: string | null
+}
+
 export type DataDomainCutoverReadiness = {
   domain: DataDomain
   data_ready: boolean
@@ -63,6 +77,10 @@ export type DataDomainCutoverReadiness = {
   required_parity_not_before: string | null
   routing_contract_ready: boolean
   projection_contract_ready: boolean
+  cutover_probe_checked_at: string | null
+  cutover_probe_epoch: number | null
+  current_writer_epoch: number | null
+  current_writer_state: string | null
 }
 
 function numeric(value: number | string | null | undefined): number {
@@ -121,7 +139,7 @@ export async function inspectDataDomainCutoverReadiness(
   const results: DataDomainCutoverReadiness[] = []
   for (const domain of domains) {
     const owned = new Set(tablesForDataDomainShadowBackfill(domain))
-    const [cursorQuery, parityQuery, pending, errors, cutover] = await Promise.all([
+    const [cursorQuery, parityQuery, pending, errors, cutover, probe, writerEpoch] = await Promise.all([
       db.prepare(`
         SELECT table_name, status FROM data_domain_backfill_cursors
          WHERE domain=?
@@ -146,6 +164,19 @@ export async function inspectDataDomainCutoverReadiness(
                source_checksum, target_checksum, parity_checked_at
           FROM data_domain_cutovers WHERE domain=?
       `).bind(domain).first<CutoverRow>(),
+      db.prepare(`
+        SELECT source_epoch, parity_checked_at, read_write_readback_passed,
+               rollback_restore_passed, status, checked_at
+          FROM data_domain_cutover_probe_receipts
+         WHERE domain=?
+         ORDER BY checked_at DESC
+         LIMIT 1
+      `).bind(domain).first<CutoverProbeRow>(),
+      db.prepare(`
+        SELECT epoch, writer_state
+          FROM data_domain_writer_epochs
+         WHERE domain=?
+      `).bind(domain).first<WriterEpochRow>(),
     ])
 
     const completed = new Set(
@@ -235,6 +266,21 @@ export async function inspectDataDomainCutoverReadiness(
     const contractBlockers: string[] = []
     if (!MULTI_D1_STRICT_ROUTING_READY) contractBlockers.push('domain_access_router_not_closed')
     if (!MULTI_D1_PROJECTION_CONTRACT_READY) contractBlockers.push('projection_contract_not_closed')
+    const probeEpoch = probe ? numeric(probe.source_epoch) : null
+    const currentWriterEpoch = writerEpoch ? numeric(writerEpoch.epoch) : null
+    if (probe?.status !== 'passed' || numeric(probe?.read_write_readback_passed) !== 1) {
+      contractBlockers.push('active_read_write_readback_probe_missing')
+    }
+    if (probe?.status !== 'passed' || numeric(probe?.rollback_restore_passed) !== 1) {
+      contractBlockers.push('rollback_restore_probe_missing')
+    }
+    if (
+      !probe
+      || !writerEpoch
+      || writerEpoch.writer_state !== 'open'
+      || probeEpoch !== currentWriterEpoch
+      || probe.parity_checked_at !== cutover?.parity_checked_at
+    ) contractBlockers.push('writer_quiescence_epoch_receipt_stale_or_missing')
 
     results.push({
       domain,
@@ -253,6 +299,10 @@ export async function inspectDataDomainCutoverReadiness(
       required_parity_not_before: context.parityNotBefore ?? null,
       routing_contract_ready: MULTI_D1_STRICT_ROUTING_READY,
       projection_contract_ready: MULTI_D1_PROJECTION_CONTRACT_READY,
+      cutover_probe_checked_at: probe?.checked_at ?? null,
+      cutover_probe_epoch: probeEpoch,
+      current_writer_epoch: currentWriterEpoch,
+      current_writer_state: writerEpoch?.writer_state ?? null,
     })
   }
 

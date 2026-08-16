@@ -1,4 +1,5 @@
 import type { Bindings } from '../types'
+import { databaseForDataDomain } from './dataDomainRegistry'
 
 export interface ComputeProfileEventInput {
   eventDate?: string | null
@@ -125,7 +126,7 @@ export async function recordComputeProfileEvent(
   input: ComputeProfileEventInput,
 ): Promise<void> {
   const event = normalizeComputeProfileEvent(input)
-  await runSafely(() => env.DB.prepare(`
+  await runSafely(() => databaseForDataDomain(env, 'ops').prepare(`
     INSERT INTO compute_profile_events
       (event_date, provider, job_name, run_id, wall_sec, compute_sec, cpu, memory_mb,
        gpu, est_usd, rows, features, symbols, trials, cache_hit_ratio, profile_json, created_at)
@@ -179,7 +180,7 @@ export async function recordComputeEfficiencyReportEvent(
   report: Record<string, unknown>,
 ): Promise<void> {
   const event = normalizeComputeEfficiencyReportEvent(report)
-  await runSafely(() => env.DB.prepare(`
+  await runSafely(() => databaseForDataDomain(env, 'ops').prepare(`
     INSERT INTO compute_efficiency_reports
       (report_date, job_name, decision, baseline_profile_json, optimized_profile_json,
        quality_json, efficiency_json, report_json, created_at)

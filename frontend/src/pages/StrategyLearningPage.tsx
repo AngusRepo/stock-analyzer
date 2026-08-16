@@ -52,6 +52,64 @@ function statusLabel(status: string): string {
   return labels[status] ?? status.replace(/_/g, ' ')
 }
 
+type StrategyHealthBucket = 'healthy' | 'evidence_repair' | 'accumulating' | 'performance_cooldown'
+
+function strategyHealthBucket(row: LearningRow, gate?: StrategyPromotionGate): StrategyHealthBucket {
+  if (gate?.allocation_eligible === true) return 'healthy'
+  if (
+    !gate
+    || row.learning.reward_state === 'reward_join_missing'
+    || row.learning.reward_state === 'unavailable'
+    || gate.missing_evidence.some((reason) => reason.includes('missing'))
+  ) return 'evidence_repair'
+  if (
+    row.learning.reward_state === 'pending_maturity'
+    || row.learning.reward_state === 'no_matches'
+    || gate.missing_evidence.every((reason) => (
+      reason.startsWith('decisions_lt_')
+      || reason.startsWith('samples_lt_')
+      || reason.startsWith('mature_dates_lt_')
+    ))
+  ) return 'accumulating'
+  return 'performance_cooldown'
+}
+
+function strategyHealthLabel(bucket: StrategyHealthBucket): string {
+  return {
+    healthy: '健康：可進待買',
+    evidence_repair: '資料管線待修',
+    accumulating: '證據累積中',
+    performance_cooldown: '績效未過門檻',
+  }[bucket]
+}
+
+function gateReasonLabel(reason: string): string {
+  if (reason.startsWith('decisions_lt_')) return `可評估決策不足 ${reason.replace('decisions_lt_', '')} 筆`
+  if (reason.startsWith('samples_lt_')) return `成熟報酬樣本不足 ${reason.replace('samples_lt_', '')} 筆`
+  if (reason.startsWith('mature_dates_lt_')) return `成熟交易日不足 ${reason.replace('mature_dates_lt_', '')} 天`
+  if (reason.startsWith('match_rate_lt_')) return `型態命中率低於 ${pct(Number(reason.replace('match_rate_lt_', '')))}`
+  if (reason.startsWith('hit_rate_lt_') || reason.startsWith('active_hit_rate_lt_')) {
+    return `勝率低於 ${pct(Number(reason.replace(/^(active_)?hit_rate_lt_/, '')))}`
+  }
+  const labels: Record<string, string> = {
+    avg_return_not_positive: '扣成本平均報酬未大於 0',
+    active_avg_return_not_positive: '現任策略扣成本平均報酬未大於 0',
+    date_return_lcb90_not_positive: '每日報酬 90% 保守下界未大於 0',
+    active_date_return_lcb90_not_positive: '現任策略每日報酬 90% 保守下界未大於 0',
+    max_drawdown_missing: '最大回撤資料缺漏',
+    active_max_drawdown_missing: '現任策略最大回撤資料缺漏',
+    active_hit_rate_missing: '現任策略勝率資料缺漏',
+    active_avg_return_missing: '現任策略平均報酬資料缺漏',
+    active_date_return_lcb90_missing: '現任策略 LCB90 資料缺漏',
+    status_must_enter_shadow_before_promotion: '必須先進入影子觀察階段',
+    production_owned_by_s12_calibration_not_selection_replacement: '正式權責屬於 S12 校準，不由選股策略替換流程升級',
+  }
+  if (reason.startsWith('max_drawdown_lt_') || reason.startsWith('active_max_drawdown_lt_')) {
+    return `最大回撤超過容許範圍（門檻 ${pct(Number(reason.replace(/^(active_)?max_drawdown_lt_/, ''))) }）`
+  }
+  return labels[reason] ?? reason.replace(/_/g, ' ')
+}
+
 function bestReplacementDecision(
   row: LearningRow,
   replacement: StrategyReplacementGateSummary | null,
@@ -305,7 +363,8 @@ function StrategyLedgerGroup({
           const executionEligible = gate?.allocation_eligible === true && Number.isFinite(weight) && weight > 0
           const paired = bestReplacementDecision(row, replacementGate)
           const evidence = gate?.missing_evidence ?? []
-          const evidenceLabels = gate ? (evidence.length ? evidence : ['evidence ready']) : ['reward ledger unavailable']
+          const evidenceLabels = gate ? (evidence.length ? evidence : ['全部待買門檻已通過']) : ['報酬帳本資料未取得']
+          const healthBucket = strategyHealthBucket(row, gate)
           const rewardPending = row.learning.reward_state === 'pending_maturity'
           const rewardMissing = row.learning.reward_state === 'reward_join_missing'
           const noMatches = row.learning.reward_state === 'no_matches'
@@ -322,6 +381,7 @@ function StrategyLedgerGroup({
                   <h3 className="min-w-0 flex-1 truncate text-sm font-semibold text-slate-100">{row.name}</h3>
                   <Badge variant="outline" className={statusClass(row.status)}>{statusLabel(row.status)}</Badge>
                   <Badge variant="outline" className={statusClass(row.learning.status)}>{statusLabel(row.learning.status)}</Badge>
+                  <Badge variant="outline" className={statusClass(healthBucket === 'healthy' ? 'active' : healthBucket === 'evidence_repair' ? 'reward_join_missing' : 'not_ready')}>{strategyHealthLabel(healthBucket)}</Badge>
                 </div>
                 <p className="mt-1 truncate font-mono text-xs text-slate-500">{row.id} &middot; {row.alphaBucket}</p>
               </div>
@@ -375,7 +435,7 @@ function StrategyLedgerGroup({
                   </div>
                   <div className="mt-2 flex flex-wrap gap-1.5">
                     {evidenceLabels.slice(0, 3).map((item) => (
-                      <span key={item} className={`rounded-md border px-2 py-1 text-xs ${evidence.length ? 'border-amber-400/20 bg-amber-400/[0.06] text-amber-200' : gate ? 'border-emerald-400/20 bg-emerald-400/[0.06] text-emerald-200' : 'border-slate-600/40 bg-slate-800/50 text-slate-400'}`}>{item.replace(/_/g, ' ')}</span>
+                      <span key={item} className={`rounded-md border px-2 py-1 text-xs ${evidence.length ? 'border-amber-400/20 bg-amber-400/[0.06] text-amber-200' : gate ? 'border-emerald-400/20 bg-emerald-400/[0.06] text-emerald-200' : 'border-slate-600/40 bg-slate-800/50 text-slate-400'}`}>{gateReasonLabel(item)}</span>
                     ))}
                   </div>
                   <StrategyGateDetails row={row} gate={gate} paired={paired} replacementGate={replacementGate} />
@@ -442,6 +502,18 @@ export default function StrategyLearningPage() {
   const activeRows = useMemo(() => visibleRows.filter((row) => row.status === 'active'), [visibleRows])
   const learningRows = useMemo(() => visibleRows.filter((row) => row.status === 'research' || row.status === 'shadow' || row.status === 'candidate'), [visibleRows])
   const gateById = useMemo(() => new Map((learning?.promotion_gate ?? []).map((gate) => [`${gate.strategy_id}:${gate.strategy_version}`, gate])), [learning])
+  const activeHealthCounts = useMemo(() => {
+    const counts: Record<StrategyHealthBucket, number> = {
+      healthy: 0,
+      evidence_repair: 0,
+      accumulating: 0,
+      performance_cooldown: 0,
+    }
+    for (const row of activeRows) {
+      counts[strategyHealthBucket(row, gateById.get(`${row.id}:${row.version}`))] += 1
+    }
+    return counts
+  }, [activeRows, gateById])
   const executionEligibleCount = useMemo(() => {
     const weights = learning?.policy_state_preview?.strategy_weights ?? {}
     return (learning?.promotion_gate ?? []).filter((gate) => (
@@ -520,6 +592,26 @@ export default function StrategyLearningPage() {
                 目前 13 個正式策略只有 <code className="rounded bg-slate-950/70 px-1.5 py-0.5 text-xs">{concentratedStrategy[0]}</code> 通過全部門檻，所以在通過者之間的相對權重會顯示 {pct(Number(concentratedStrategy[1]))}。這不是全帳戶押一個策略；其餘 {activeRows.length - 1} 個策略仍選股與學習，但暫時不能單靠自身訊號讓推薦進待買。系統維持 fail-closed，不會為了湊數放寬門檻。
               </section>
             ) : null}
+
+            <section className="rounded-2xl border border-slate-700/80 bg-slate-950/70 p-4">
+              <div className="flex flex-wrap items-start justify-between gap-3">
+                <div>
+                  <h2 className="font-semibold text-slate-100">正式策略健康分流</h2>
+                  <p className="mt-1 text-xs leading-5 text-slate-500">不把所有未通過都叫 Blocked：先分辨是能自動補資料、只需等待成熟，還是真實績效不合格。</p>
+                </div>
+                <div className="grid grid-cols-2 gap-2 text-center sm:grid-cols-4">
+                  <div className="rounded-lg border border-emerald-400/20 bg-emerald-400/[0.06] px-3 py-2"><div className="font-mono text-lg text-emerald-200">{activeHealthCounts.healthy}</div><div className="text-[11px] text-slate-500">可進待買</div></div>
+                  <div className="rounded-lg border border-cyan-400/20 bg-cyan-400/[0.06] px-3 py-2"><div className="font-mono text-lg text-cyan-200">{activeHealthCounts.accumulating}</div><div className="text-[11px] text-slate-500">證據累積</div></div>
+                  <div className="rounded-lg border border-rose-400/20 bg-rose-400/[0.06] px-3 py-2"><div className="font-mono text-lg text-rose-200">{activeHealthCounts.evidence_repair}</div><div className="text-[11px] text-slate-500">資料待修</div></div>
+                  <div className="rounded-lg border border-amber-400/20 bg-amber-400/[0.06] px-3 py-2"><div className="font-mono text-lg text-amber-200">{activeHealthCounts.performance_cooldown}</div><div className="text-[11px] text-slate-500">績效降溫</div></div>
+                </div>
+              </div>
+              <div className="mt-3 grid gap-2 text-xs leading-5 text-slate-400 md:grid-cols-3">
+                <p><span className="font-semibold text-rose-200">資料待修：</span>重建 decision／PIT reference／reward join；這類才應進自動修復 queue。</p>
+                <p><span className="font-semibold text-cyan-200">證據累積：</span>維持選股與評估，等 T+5、樣本數與成熟交易日自然增加，不用人工放行。</p>
+                <p><span className="font-semibold text-amber-200">績效降溫：</span>勝率、扣成本報酬、回撤或 LCB90 真的不合格；保留研究資料，但待買權重維持 0，交由一進一出替換流程處理。</p>
+              </div>
+            </section>
 
             {error && <div className="rounded-xl border border-rose-400/25 bg-rose-400/[0.06] p-4 text-sm text-rose-200">{error}</div>}
             {notice && <div className="rounded-xl border border-amber-400/25 bg-amber-400/[0.06] p-4 text-sm text-amber-100">{notice}</div>}

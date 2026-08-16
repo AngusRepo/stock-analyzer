@@ -185,7 +185,7 @@ export async function auditEveningChainEvidenceClosure(
   let canonicalLabelRows = 0
   let canonicalUnavailableRows = 0
   if (matureSignalDate) {
-    const matureHead = await env.DB.prepare(`
+    const matureHead = await opsDb.prepare(`
       SELECT run_id
         FROM canonical_run_heads
        WHERE logical_run_key=?

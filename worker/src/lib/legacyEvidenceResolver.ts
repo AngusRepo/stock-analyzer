@@ -1,4 +1,5 @@
 import type { Bindings } from '../types'
+import { databaseForDataDomain } from './dataDomainRegistry'
 import { sha256Text } from './datasetSnapshots'
 
 const POINTER_SCHEMA = 'legacy-screener-evidence-pointer-v1'
@@ -114,7 +115,8 @@ export async function resolveLegacyScreenerEvidence(
 ): Promise<{ rows: ResolvedLegacyEvidenceRow[]; artifacts: number }> {
   if (!env.ARTIFACTS) throw new LegacyEvidenceResolveError('artifact_r2_binding_missing', 503)
   const requests = parseRequests(rawRequests)
-  const manifestResults = await env.DB.batch(requests.map((request) => env.DB.prepare(`
+  const opsDb = databaseForDataDomain(env, 'ops')
+  const manifestResults = await opsDb.batch(requests.map((request) => opsDb.prepare(`
     SELECT artifact_id, status, domain, producer_run_id, r2_key, checksum,
            schema_version, payload_deleted_at
       FROM run_artifacts

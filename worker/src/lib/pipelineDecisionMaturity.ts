@@ -388,7 +388,7 @@ export async function buildPipelineDecisionMaturityPacket(
   if (!validDate(requestedDate)) throw new Error(`invalid_pipeline_maturity_date:${requestedDate}`)
   const learningDb = databaseForDataDomain(env, 'learning')
 
-  const canonicalHead = await safeQuery(() => env.DB.prepare(`
+  const canonicalHead = await safeQuery(() => databaseForDataDomain(env, 'ops').prepare(`
     SELECT substr(logical_run_key, 10, 10) signal_date, run_id
       FROM canonical_run_heads
      WHERE logical_run_key LIKE 'screener:%:TW:production:market_screener'

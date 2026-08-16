@@ -1,6 +1,7 @@
 import { Hono } from 'hono'
 import { twToday } from '../lib/dateUtils'
 import { requireAdminOrServiceToken } from '../lib/auth'
+import { databaseForDataDomain } from '../lib/dataDomainRegistry'
 import type { Bindings, Variables } from '../types'
 
 export const adminReadRoutes = new Hono<{ Bindings: Bindings; Variables: Variables }>()
@@ -467,7 +468,8 @@ adminReadRoutes.get('/api/admin/costs/month', async (c) => {
   const authError = await requireAdminOrServiceToken(c)
   if (authError) return authError
 
-  const { results } = await c.env.DB.prepare(
+  const opsDb = databaseForDataDomain(c.env, 'ops')
+  const { results } = await opsDb.prepare(
     `SELECT source, provider, model, SUM(est_usd) AS total_usd, COUNT(*) AS calls,
             SUM(COALESCE(tokens_in, 0)) AS tokens_in, SUM(COALESCE(tokens_out, 0)) AS tokens_out
      FROM cost_events WHERE date >= date('now', '-30 days')
@@ -475,7 +477,7 @@ adminReadRoutes.get('/api/admin/costs/month', async (c) => {
   ).all<any>()
 
   const total = (results ?? []).reduce((sum: number, row: any) => sum + (row.total_usd ?? 0), 0)
-  const { results: daily } = await c.env.DB.prepare(
+  const { results: daily } = await opsDb.prepare(
     `SELECT date, ROUND(SUM(est_usd), 4) AS total_usd
      FROM cost_events WHERE date >= date('now', '-30 days')
      GROUP BY date ORDER BY date`

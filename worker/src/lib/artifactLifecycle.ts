@@ -1,4 +1,5 @@
 import type { Bindings } from '../types'
+import { activeDataDomains, databaseForDataDomain } from './dataDomainRegistry'
 import { resolveExpectedCompletedDataDate } from './dataQualityMonitor'
 import { sha256Text } from './datasetSnapshots'
 import { collectStorageCapacityTelemetry, type StorageCapacityRow } from './storageCapacityTelemetry'
@@ -23,6 +24,10 @@ export type PipelineRunStatus =
   | 'superseded'
   | 'failed'
   | 'reused'
+
+function artifactOpsDb(env: Pick<Bindings, 'DB'>): D1Database {
+  return databaseForDataDomain(env as Pick<Bindings, 'DB'> & Partial<Bindings>, 'ops')
+}
 
 const RETENTION_DAYS: Record<RetentionClass, number | null> = {
   canonical_execution: 7 * 365,
@@ -185,7 +190,7 @@ export async function writeEvidenceArtifact(
     checksum_verified_at: verifiedAt,
     metadata_json: JSON.stringify(input.metadata ?? {}),
   }
-  await env.DB.prepare(`
+  await artifactOpsDb(env).prepare(`
     INSERT INTO run_artifacts (
       artifact_id, retention_class, status, domain, business_date,
       producer_run_id, canonical_run_id, r2_key, checksum, schema_version,
@@ -401,7 +406,8 @@ export async function runR2RetentionSweep(
   if (!env.ARTIFACTS) throw new Error('artifact_r2_binding_missing')
   const now = options.now ?? new Date().toISOString()
   const limit = Math.max(1, Math.min(Math.floor(options.limit ?? 250), 1000))
-  const { results } = await env.DB.prepare(`
+  const opsDb = artifactOpsDb(env)
+  const { results } = await opsDb.prepare(`
     SELECT artifact_id, r2_key
       FROM run_artifacts
      WHERE status = 'ready'
@@ -424,7 +430,7 @@ export async function runR2RetentionSweep(
   for (const row of results ?? []) {
     try {
       await (env.ARTIFACTS as any).delete(row.r2_key)
-      await env.DB.prepare(`
+      await opsDb.prepare(`
         UPDATE run_artifacts
            SET status='payload_deleted', payload_deleted_at=?, updated_at=CURRENT_TIMESTAMP
          WHERE artifact_id=? AND status='ready'
@@ -459,7 +465,7 @@ async function verifyArtifactObject(
   if (!env.ARTIFACTS) throw new Error('artifact_r2_binding_missing')
   const object = await (env.ARTIFACTS as any).get(row.r2_key)
   if (!object) {
-    await env.DB.prepare(`
+    await artifactOpsDb(env).prepare(`
       UPDATE run_artifacts
          SET status='integrity_blocked', updated_at=CURRENT_TIMESTAMP
        WHERE artifact_id=? AND status <> 'payload_deleted'
@@ -468,14 +474,14 @@ async function verifyArtifactObject(
   }
   const actual = await sha256Text(await object.text())
   if (actual !== row.checksum) {
-    await env.DB.prepare(`
+    await artifactOpsDb(env).prepare(`
       UPDATE run_artifacts
          SET status='integrity_blocked', updated_at=CURRENT_TIMESTAMP
        WHERE artifact_id=? AND status <> 'payload_deleted'
     `).bind(row.artifact_id).run()
     return 'mismatched'
   }
-  await env.DB.prepare(`
+  await artifactOpsDb(env).prepare(`
     UPDATE run_artifacts
        SET status='ready', checksum_verified_at=COALESCE(checksum_verified_at, CURRENT_TIMESTAMP),
            updated_at=CURRENT_TIMESTAMP
@@ -491,7 +497,7 @@ export async function runArtifactIntegrityAudit(
   if (!env.ARTIFACTS) throw new Error('artifact_r2_binding_missing')
   const limit = Math.max(1, Math.min(Math.floor(options.limit ?? 100), 500))
   const statuses = options.includeBlocked ? "('ready','validating','integrity_blocked')" : "('ready','validating')"
-  const { results } = await env.DB.prepare(`
+  const { results } = await artifactOpsDb(env).prepare(`
     SELECT artifact_id, r2_key, checksum, status
       FROM run_artifacts
      WHERE status IN ${statuses}
@@ -539,6 +545,9 @@ export async function runD1EvidenceScrub(
   env: Pick<Bindings, 'DB'>,
   options: { limit?: number; now?: string } = {},
 ): Promise<{ candidates: number; scrubbed: number; failed: number; blocked: number; errors: string[] }> {
+  if (activeDataDomains(env as Partial<Bindings>).has('ops')) {
+    throw new Error('legacy_d1_evidence_scrub_disabled_after_ops_cutover')
+  }
   const limit = Math.max(1, Math.min(Math.floor(options.limit ?? 250), 1000))
   const now = options.now ?? new Date().toISOString()
   const selectRows = async (status: 'failed' | 'pending', rowLimit: number): Promise<any[]> => {
@@ -549,6 +558,7 @@ export async function runD1EvidenceScrub(
     const orderBy = status === 'failed'
       ? 'q.next_attempt_at, q.created_at'
       : 'q.created_at'
+    // multi-d1-intentional-legacy-source: pre-cutover atomic scrub drain only.
     const statement = env.DB.prepare(`
       SELECT q.scrub_id, q.artifact_id, q.target_table, q.target_pk_column,
              q.target_pk_value, q.target_column, q.replacement_json,
@@ -578,6 +588,7 @@ export async function runD1EvidenceScrub(
   for (const row of results ?? []) {
     const targetKey = `${row.target_table}:${row.target_pk_column}:${row.target_column}`
     if (row.artifact_status !== 'ready' || !row.checksum_verified_at || !SCRUB_TARGETS.has(targetKey)) {
+      // multi-d1-intentional-legacy-source: same-DB queue state is part of the atomic drain.
       await env.DB.prepare(`
         UPDATE artifact_d1_scrub_queue
            SET status='integrity_blocked', last_error=?, attempts=attempts+1, updated_at=CURRENT_TIMESTAMP
@@ -590,8 +601,10 @@ export async function runD1EvidenceScrub(
   }
 
   const atomicStatements = (row: any): D1PreparedStatement[] => [
+    // multi-d1-intentional-legacy-source: bounded pre-cutover atomic target mutation.
     env.DB.prepare(`UPDATE ${row.target_table} SET ${row.target_column}=? WHERE ${row.target_pk_column}=?`)
       .bind(row.replacement_json, row.target_pk_value),
+    // multi-d1-intentional-legacy-source: queue completion commits in the same legacy batch.
     env.DB.prepare(`
       UPDATE artifact_d1_scrub_queue
          SET status='complete', last_error=NULL, attempts=attempts+1, updated_at=CURRENT_TIMESTAMP
@@ -616,6 +629,7 @@ export async function runD1EvidenceScrub(
       }
       const row = chunk[0]
       const message = error instanceof Error ? error.message : String(error)
+      // multi-d1-intentional-legacy-source: failed pre-cutover drain remains retryable in DB.
       await env.DB.prepare(`
         UPDATE artifact_d1_scrub_queue
            SET status='failed', last_error=?, attempts=attempts+1,
@@ -647,7 +661,7 @@ export async function runOrphanReachabilityGc(
   for (const object of listed.objects ?? []) {
     const uploaded = object.uploaded instanceof Date ? object.uploaded : new Date(object.uploaded)
     if (!Number.isFinite(uploaded.getTime()) || now.getTime() - uploaded.getTime() < 7 * 86_400_000) continue
-    const manifest = await env.DB.prepare(`SELECT artifact_id FROM run_artifacts WHERE r2_key=? LIMIT 1`)
+    const manifest = await artifactOpsDb(env).prepare(`SELECT artifact_id FROM run_artifacts WHERE r2_key=? LIMIT 1`)
       .bind(object.key).first<{ artifact_id?: string }>()
     if (manifest?.artifact_id) {
       referenced += 1
@@ -693,6 +707,8 @@ export interface StorageHealthResult {
 export async function runStorageHealthCheck(
   env: Pick<Bindings, 'DB'> & Partial<Bindings>,
 ): Promise<StorageHealthResult> {
+  const opsDb = artifactOpsDb(env)
+  const learningDb = databaseForDataDomain(env, 'learning')
   let capacityRows: StorageCapacityRow[] = []
   let capacityError: string | null = null
   try {
@@ -701,23 +717,23 @@ export async function runStorageHealthCheck(
   } catch (error) {
     capacityError = error instanceof Error ? error.message : String(error)
   }
-  const counts = await env.DB.prepare(`
+  const counts = await opsDb.prepare(`
     SELECT
       SUM(CASE WHEN status='integrity_blocked' THEN 1 ELSE 0 END) AS integrity_blocked,
       SUM(CASE WHEN status IN ('writing','validating') AND created_at < datetime('now','-24 hours') THEN 1 ELSE 0 END) AS cleanup_backlog_over_24h
     FROM run_artifacts
   `).first<any>()
-  const dlq = await env.DB.prepare(`
+  const dlq = await opsDb.prepare(`
     SELECT COUNT(*) AS count FROM artifact_cleanup_dlq WHERE status IN ('pending','running','blocked')
   `).first<any>()
-  const allocatorSnapshots = await env.DB.prepare(`
+  const allocatorSnapshots = await learningDb.prepare(`
     SELECT COUNT(*) AS row_count, COUNT(DISTINCT snapshot_date) AS date_count
       FROM allocator_ev_feature_snapshots
      WHERE snapshot_source='allocator_ev_asof_backfill_v2'
        AND as_of_guard IS NOT NULL
        AND LENGTH(TRIM(as_of_guard)) > 0
   `).first<any>()
-  const allocatorSnapshotLifecycle = await env.DB.prepare(`
+  const allocatorSnapshotLifecycle = await learningDb.prepare(`
     SELECT
       SUM(CASE WHEN status='writing' AND updated_at < datetime('now','-2 hours') THEN 1 ELSE 0 END) AS incomplete_runs,
       (SELECT COUNT(*)
@@ -727,7 +743,7 @@ export async function runStorageHealthCheck(
           AND r.updated_at < datetime('now','-7 days')) AS staging_orphans
       FROM allocator_ev_snapshot_runs
   `).first<any>()
-  const hardReferences = await env.DB.prepare(`
+  const hardReferences = await opsDb.prepare(`
     SELECT COUNT(*) AS drift_count
       FROM run_artifacts a
      WHERE a.hard_ref_count <> (
@@ -735,14 +751,14 @@ export async function runStorageHealthCheck(
         WHERE r.artifact_id=a.artifact_id AND r.active=1
      )
   `).first<any>()
-  const hardReferenceReachability = await env.DB.prepare(`
+  const hardReferenceReachability = await opsDb.prepare(`
     SELECT COUNT(*) active_references,
            SUM(CASE WHEN a.artifact_id IS NULL THEN 1 ELSE 0 END) true_orphan_references
       FROM artifact_hard_references r
       LEFT JOIN run_artifacts a ON a.artifact_id=r.artifact_id
      WHERE r.active=1
   `).first<any>()
-  const hardReferenceOrphanIds = await env.DB.prepare(`
+  const hardReferenceOrphanIds = await opsDb.prepare(`
     SELECT DISTINCT r.artifact_id
       FROM artifact_hard_references r
       LEFT JOIN run_artifacts a ON a.artifact_id=r.artifact_id
@@ -757,7 +773,7 @@ export async function runStorageHealthCheck(
   let executionLineageReady = false
   let paperLineageReady = false
   if (expectedLineageDate) {
-    const lineage = await env.DB.prepare(`
+    const lineage = await opsDb.prepare(`
       SELECT domain, status, checksum_verified_at,
              ROW_NUMBER() OVER (PARTITION BY domain ORDER BY created_at DESC, artifact_id DESC) ordinal
         FROM run_artifacts
@@ -776,6 +792,8 @@ export async function runStorageHealthCheck(
       if (row.domain === 'paper_daily_closure') paperLineageReady = ready
     }
   }
+  // multi-d1-intentional-legacy-source: this audit measures the retirement
+  // backlog remaining in DB; it must not read already-routed domain shards.
   const legacyRetention = await env.DB.prepare(`
     SELECT
       (
@@ -914,7 +932,8 @@ export async function runCleanupDlqReplay(
   options: { limit?: number } = {},
 ): Promise<{ candidates: number; resolved: number; blocked: number }> {
   const limit = Math.max(1, Math.min(Math.floor(options.limit ?? 100), 500))
-  const { results } = await env.DB.prepare(`
+  const opsDb = artifactOpsDb(env)
+  const { results } = await opsDb.prepare(`
     SELECT dlq_id, artifact_id
       FROM artifact_cleanup_dlq
      WHERE status IN ('pending','blocked')
@@ -929,18 +948,18 @@ export async function runCleanupDlqReplay(
   let blocked = 0
   for (const row of results ?? []) {
     const artifact = row.artifact_id
-      ? await env.DB.prepare(`SELECT status FROM run_artifacts WHERE artifact_id=? LIMIT 1`)
+      ? await opsDb.prepare(`SELECT status FROM run_artifacts WHERE artifact_id=? LIMIT 1`)
         .bind(row.artifact_id).first<{ status?: string }>()
       : null
     if (artifact?.status === 'ready') {
-      await env.DB.prepare(`
+      await opsDb.prepare(`
         UPDATE artifact_cleanup_dlq
            SET status='resolved', attempts=attempts+1, last_error=NULL, updated_at=CURRENT_TIMESTAMP
          WHERE dlq_id=?
       `).bind(row.dlq_id).run()
       resolved += 1
     } else {
-      await env.DB.prepare(`
+      await opsDb.prepare(`
         UPDATE artifact_cleanup_dlq
            SET status='blocked', attempts=attempts+1,
                next_attempt_at=datetime('now', '+' || MIN(1440, 1 << MIN(attempts, 10)) || ' minutes'),

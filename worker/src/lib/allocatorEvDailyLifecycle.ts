@@ -1,4 +1,5 @@
 import type { Bindings } from '../types'
+import { databaseForDataDomain } from './dataDomainRegistry'
 import { L4_ALPHA_EV_CONTRACT } from './evidenceContracts'
 import { historicalLearningLineageDecision } from './historicalLearningLineageGuard'
 import { nextTwTradingDate } from './schedulerPolicy'
@@ -645,7 +646,7 @@ export async function runAllocatorEvLifecycleWatchdog(
     })
     throw new Error(`allocator_ev_missing_point_in_time_lineage:${businessDate}:${reason}`)
   }
-  const postPipelineStage = await env.DB.prepare(`
+  const postPipelineStage = await databaseForDataDomain(env, 'ops').prepare(`
     SELECT status, canonical_run_id, updated_at, attempt_count
       FROM pipeline_stage_runs
      WHERE business_date=? AND stage='post_pipeline_chain'
@@ -732,7 +733,7 @@ export async function runAllocatorEvLifecycleWatchdog(
     return `allocator EV lifecycle current date=${businessDate} state=${lifecycle?.state} snapshot_rows=${snapshot.actualRows}; ${maturitySummary(maturity)}`
   }
   if (snapshot.ready && lifecycle?.state === 'verify_triggered') {
-    const verifyStage = await env.DB.prepare(`
+    const verifyStage = await databaseForDataDomain(env, 'ops').prepare(`
       SELECT status, canonical_run_id, cursor_key
         FROM pipeline_stage_runs
        WHERE business_date=? AND stage='verify_v2'

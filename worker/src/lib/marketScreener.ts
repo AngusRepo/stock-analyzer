@@ -300,21 +300,24 @@ export async function prepareStrategyRedundancyBackfill(
   env: Bindings,
   asOfDate: string,
 ): Promise<PreparedStrategyRedundancyBackfill> {
-  const run = await env.DB.prepare(`
+  const canonical = await databaseForDataDomain(env, 'ops').prepare(`
+    SELECT run_id FROM canonical_run_heads
+     WHERE logical_run_key=?
+     LIMIT 1
+  `).bind(`screener:${asOfDate}:TW:production:market_screener`).first<{ run_id?: string }>()
+  const canonicalRunId = String(canonical?.run_id ?? '').trim()
+  if (!canonicalRunId) throw new Error(`strategy_redundancy_canonical_run_missing:${asOfDate}`)
+  const learningDb = databaseForDataDomain(env, 'learning')
+  const run = await learningDb.prepare(`
     SELECT mr.producer_run_id, mr.status, mr.strategy_count,
            mr.expected_cell_count, mr.persisted_cell_count,
            mr.strategy_registry_checksum, mr.labeler_version,
            mr.reference_contract_version
-      FROM strategy_label_matrix_runs_v4 mr
-     WHERE mr.signal_date=?
-       AND EXISTS (
-         SELECT 1 FROM canonical_run_heads h
-          WHERE h.logical_run_key='screener:' || mr.signal_date || ':TW:production:market_screener'
-            AND h.run_id=mr.producer_run_id
-       )
+     FROM strategy_label_matrix_runs_v4 mr
+     WHERE mr.signal_date=? AND mr.producer_run_id=?
      ORDER BY datetime(mr.updated_at) DESC
      LIMIT 1
-  `).bind(asOfDate).first<{
+  `).bind(asOfDate, canonicalRunId).first<{
     producer_run_id: string
     status: string
     strategy_count: number
@@ -338,7 +341,7 @@ export async function prepareStrategyRedundancyBackfill(
     throw new Error(`strategy_redundancy_reference_contract_invalid:${asOfDate}:${run.reference_contract_version ?? 'missing'}`)
   }
 
-  const matrix = await env.DB.prepare(`
+  const matrix = await learningDb.prepare(`
     SELECT strategy_id, strategy_version, strategy_status, family_id,
            symbol, evaluable, strategy_hit, affinity,
            strategy_registry_checksum, labeler_version,
@@ -841,6 +844,8 @@ async function writeScreenerFunnel(
     }
   },
 ): Promise<void> {
+  const opsDb = databaseForDataDomain(env, 'ops')
+  const learningDb = databaseForDataDomain(env, 'learning')
   if (!env.ARTIFACTS && !env.EVIDENCE_ARTIFACT_WRITER) {
     throw new Error('screener_r2_artifact_transport_missing')
   }
@@ -874,7 +879,7 @@ async function writeScreenerFunnel(
       final_count: input.finalCount,
     },
   })
-  const registry = await registerPipelineRun(env.DB, {
+  const registry = await registerPipelineRun(opsDb, {
     runId: input.runId,
     logicalRunKey,
     domain: 'screener',
@@ -897,7 +902,7 @@ async function writeScreenerFunnel(
     : debugLog
 
   try {
-    await env.DB.prepare(`
+    await opsDb.prepare(`
       INSERT INTO screener_funnel_runs
         (run_id, date, status, universe_count, candidate_count, final_count, emerging_count, metadata, debug_log)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
@@ -937,7 +942,7 @@ async function writeScreenerFunnel(
         ...nonCritical.slice(0, Math.max(0, SCREENER_FUNNEL_MAX_ITEMS - pipelineSeed.length - auditCritical.length)),
       ].slice(0, SCREENER_FUNNEL_MAX_ITEMS)
       const batch = persistedItems.map((item) =>
-        env.DB.prepare(`
+        opsDb.prepare(`
           INSERT INTO screener_funnel_items
             (run_id, date, symbol, name, stage, decision, reason_code, score_before, score_after, rank, evidence)
           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
@@ -956,11 +961,11 @@ async function writeScreenerFunnel(
         )
       )
       for (let i = 0; i < batch.length; i += 50) {
-        await env.DB.batch(batch.slice(i, i + 50))
+        await opsDb.batch(batch.slice(i, i + 50))
       }
     }
 
-    await persistSelectionEvidenceV4(env.DB, {
+    await persistSelectionEvidenceV4(learningDb, {
       signalDate: input.date,
       producerRunId: input.runId,
       references: input.selectionEvidence.references,
@@ -971,7 +976,7 @@ async function writeScreenerFunnel(
       evidenceArtifactId: artifact.artifact_id,
     }, databaseForDataDomain(env, 'core'))
 
-    await env.DB.prepare(`
+    await opsDb.prepare(`
       INSERT INTO screener_funnel_runs
         (run_id, date, status, universe_count, candidate_count, final_count, emerging_count, metadata, debug_log)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
@@ -995,15 +1000,15 @@ async function writeScreenerFunnel(
       debugLog,
     ).run()
     if (input.status === 'success') {
-      await env.DB.prepare(`
+      await opsDb.prepare(`
         UPDATE pipeline_runs
            SET status='ready', artifact_id=?, updated_at=CURRENT_TIMESTAMP
          WHERE run_id=? AND status='writing'
       `).bind(artifact.artifact_id, input.runId).run()
-      await promoteCanonicalRun(env.DB, logicalRunKey, input.runId, artifact.artifact_id)
+      await promoteCanonicalRun(opsDb, logicalRunKey, input.runId, artifact.artifact_id)
     }
   } catch (error) {
-    await env.DB.prepare(`
+    await opsDb.prepare(`
       INSERT INTO screener_funnel_runs
         (run_id, date, status, universe_count, candidate_count, final_count, emerging_count, metadata, debug_log)
       VALUES (?, ?, 'error', ?, ?, ?, ?, ?, ?)
@@ -1028,7 +1033,7 @@ async function writeScreenerFunnel(
         `funnel persistence failed: ${error instanceof Error ? error.message : String(error)}`,
       ]),
     ).run().catch(() => {})
-    await env.DB.prepare(`
+    await opsDb.prepare(`
       UPDATE pipeline_runs
          SET status='failed', error_code=?, updated_at=CURRENT_TIMESTAMP
        WHERE run_id=?

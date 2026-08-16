@@ -28,6 +28,8 @@ const intentionalLegacyControlFiles = new Set([
   'dataDomainShadowBackfill.ts',
   'dataDomainShadowBackfillDrain.ts',
   'dailyExecutionPaperLineage.ts',
+  'legacyEvidenceMigration.ts',
+  'legacyHotDataRetirement.ts',
 ])
 
 const ownership = new Map<string, DataDomain>()
@@ -43,6 +45,8 @@ for (const file of runtimeSources) {
   const source = fs.readFileSync(file, 'utf8')
   const directPrepare = /(?:\benv|\bc\.env)\.DB\.prepare\(\s*([`'"])([\s\S]*?)\1/g
   for (const statement of source.matchAll(directPrepare)) {
+    const markerWindow = source.slice(Math.max(0, Number(statement.index ?? 0) - 240), Number(statement.index ?? 0))
+    if (markerWindow.includes('multi-d1-intentional-legacy-source')) continue
     const sql = statement[2]
     const tableReference = /\b(?:FROM|JOIN|INTO|UPDATE|DELETE\s+FROM)\s+["`]?([A-Za-z_][A-Za-z0-9_]*)/gi
     for (const match of sql.matchAll(tableReference)) {

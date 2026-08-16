@@ -1,4 +1,5 @@
 import type { Bindings } from '../types'
+import { databaseForDataDomain } from './dataDomainRegistry'
 import { writeEvidenceArtifact } from './artifactLifecycle'
 import { sha256Text } from './datasetSnapshots'
 import { floorRollingBarIntervalMs, type IntradayRollingBar } from './intradayTechnicalSnapshot'
@@ -450,7 +451,7 @@ async function loadCachedS12ResearchBars(
   tradeDate: string,
 ): Promise<{ bars: IntradayRollingBar[]; artifactBusinessDate: string } | null> {
   if (!env.ARTIFACTS && !env.EVIDENCE_ARTIFACT_READER) return null
-  const manifest = await env.DB.prepare(`
+  const manifest = await databaseForDataDomain(env, 'ops').prepare(`
     SELECT r2_key, checksum, schema_version, business_date
       FROM run_artifacts
      WHERE domain = ?

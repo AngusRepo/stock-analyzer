@@ -18,6 +18,8 @@ type MockOptions = {
   pending?: number
   errors?: number
   revisions?: Record<string, number>
+  probe?: Record<string, unknown> | null
+  writerEpoch?: Record<string, unknown> | null
 }
 
 function readinessDb(options: MockOptions): D1Database {
@@ -39,6 +41,8 @@ function readinessDb(options: MockOptions): D1Database {
             return revision === undefined ? null : { revision }
           }
           if (sql.includes('data_domain_cutovers')) return options.cutover ?? null
+          if (sql.includes('data_domain_cutover_probe_receipts')) return options.probe ?? null
+          if (sql.includes('data_domain_writer_epochs')) return options.writerEpoch ?? null
           if (sql.includes("status = 'error'")) return { count: options.errors ?? 0 }
           if (sql.includes('domain_projection_outbox')) return { count: options.pending ?? 0 }
           return null
@@ -102,6 +106,9 @@ void (async () => {
   assert.deepEqual(complete.domains[0].contract_blockers, [
     'domain_access_router_not_closed',
     'projection_contract_not_closed',
+    'active_read_write_readback_probe_missing',
+    'rollback_restore_probe_missing',
+    'writer_quiescence_epoch_receipt_stale_or_missing',
   ])
 
   const staleAfterChain = await inspectDataDomainCutoverReadiness(

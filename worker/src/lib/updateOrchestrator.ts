@@ -1,4 +1,5 @@
 import type { Bindings, UpdateQueueMsg } from '../types'
+import { databaseForDataDomain } from './dataDomainRegistry'
 import {
   historicalLearningLineageBlockedMessage,
   historicalLearningLineageDecision,
@@ -1935,7 +1936,7 @@ async function acquireFinalizeLock(env: Bindings, triggerTime: string, runId: st
   const leaseOwner = `indicator_finalize:${crypto.randomUUID()}`
   const expiresAt = new Date(Date.now() + FINALIZE_LEASE_TTL_MS).toISOString()
   try {
-    const result = await env.DB.prepare(`
+    const result = await databaseForDataDomain(env, 'ops').prepare(`
       INSERT INTO scheduler_locks (lock_key, owner, run_date, run_id, created_at, expires_at)
       VALUES (?, ?, ?, ?, ?, ?)
       ON CONFLICT(lock_key) DO UPDATE SET
@@ -1971,7 +1972,7 @@ async function renewFinalizeLock(
   const lockKey = `indicator-finalize:${triggerTime}:${runId}`
   const now = new Date().toISOString()
   const expiresAt = new Date(Date.now() + FINALIZE_LEASE_TTL_MS).toISOString()
-  const result = await env.DB.prepare(`
+  const result = await databaseForDataDomain(env, 'ops').prepare(`
     UPDATE scheduler_locks
        SET expires_at = ?
      WHERE lock_key = ?
@@ -1998,7 +1999,7 @@ type FinalizeLockRow = { owner?: string | null; expires_at?: string | null }
 
 async function loadFinalizeLock(env: Bindings, triggerTime: string, runId: string): Promise<FinalizeLockRow | null> {
   const lockKey = `indicator-finalize:${triggerTime}:${runId}`
-  return await env.DB.prepare(`
+  return await databaseForDataDomain(env, 'ops').prepare(`
     SELECT owner, expires_at
       FROM scheduler_locks
      WHERE lock_key = ?
@@ -2082,7 +2083,7 @@ async function repairFinalizeContinuationIfNeeded(
     return true
   }
 
-  if (await hasSuccessfulScreenerRun(env.DB, triggerTime)) {
+  if (await hasSuccessfulScreenerRun(databaseForDataDomain(env, 'ops'), triggerTime)) {
     await logSchedulerResult(env.KV, 'indicator-queue', {
       status: 'success',
       summary: `indicator queue finalizer repaired from existing lock for ${triggerTime}; run_id=${runId}; shards=${shardCount}`,
@@ -3115,7 +3116,7 @@ export async function processUpdateBatch(
       markPipelineStageFenced,
       startPipelineStageLeaseHeartbeat,
     } = await import('./pipelineStageLease')
-    const state = await enqueuePipelineStage(env.DB, {
+    const state = await enqueuePipelineStage(databaseForDataDomain(env, 'ops'), {
       businessDate: triggerTime,
       stage: 'post_pipeline_chain',
       runId,
@@ -3127,7 +3128,7 @@ export async function processUpdateBatch(
       return
     }
     const leaseOwner = `${runId}:post-pipeline:${crypto.randomUUID()}`
-    const claimed = await claimPipelineStage(env.DB, {
+    const claimed = await claimPipelineStage(databaseForDataDomain(env, 'ops'), {
       businessDate: triggerTime,
       stage: 'post_pipeline_chain',
       ownerId: leaseOwner,
@@ -3160,7 +3161,7 @@ export async function processUpdateBatch(
         ),
       })
       await heartbeat.assertActive('post-pipeline:before_finalize')
-      const finalized = await markPipelineStageFenced(env.DB, {
+      const finalized = await markPipelineStageFenced(databaseForDataDomain(env, 'ops'), {
         businessDate: triggerTime,
         stage: 'post_pipeline_chain',
         canonicalRunId: runId,
@@ -3181,7 +3182,7 @@ export async function processUpdateBatch(
         console.warn(`[Queue] post-pipeline lease lost before error finalizer date=${triggerTime} run_id=${runId}`)
         return
       }
-      const finalized = await markPipelineStageFenced(env.DB, {
+      const finalized = await markPipelineStageFenced(databaseForDataDomain(env, 'ops'), {
         businessDate: triggerTime,
         stage: 'post_pipeline_chain',
         canonicalRunId: runId,
@@ -3216,7 +3217,7 @@ export async function processUpdateBatch(
       markPipelineStageFenced,
       startPipelineStageLeaseHeartbeat,
     } = await import('./pipelineStageLease')
-    const state = await enqueuePipelineStage(env.DB, {
+    const state = await enqueuePipelineStage(databaseForDataDomain(env, 'ops'), {
       businessDate: triggerTime,
       stage: 'post_verify_chain',
       runId,
@@ -3228,7 +3229,7 @@ export async function processUpdateBatch(
       return
     }
     const leaseOwner = `${runId}:post-verify:${crypto.randomUUID()}`
-    const claimed = await claimPipelineStage(env.DB, {
+    const claimed = await claimPipelineStage(databaseForDataDomain(env, 'ops'), {
       businessDate: triggerTime,
       stage: 'post_verify_chain',
       ownerId: leaseOwner,
@@ -3261,7 +3262,7 @@ export async function processUpdateBatch(
         ),
       })
       await heartbeat.assertActive('post-verify:before_finalize')
-      const finalized = await markPipelineStageFenced(env.DB, {
+      const finalized = await markPipelineStageFenced(databaseForDataDomain(env, 'ops'), {
         businessDate: triggerTime,
         stage: 'post_verify_chain',
         canonicalRunId: runId,
@@ -3311,7 +3312,7 @@ export async function processUpdateBatch(
         return
       }
       const errorMessage = error instanceof Error ? error.message : String(error)
-      const finalized = await markPipelineStageFenced(env.DB, {
+      const finalized = await markPipelineStageFenced(databaseForDataDomain(env, 'ops'), {
         businessDate: triggerTime,
         stage: 'post_verify_chain',
         canonicalRunId: runId,
@@ -3971,7 +3972,7 @@ export async function processUpdateBatch(
       return
     }
     const { POST_SCREENER_CONTINUATION_STAGE } = await import('./postScreenerContinuation')
-    const state = await enqueuePipelineStage(env.DB, {
+    const state = await enqueuePipelineStage(databaseForDataDomain(env, 'ops'), {
       businessDate: triggerTime,
       stage: POST_SCREENER_CONTINUATION_STAGE,
       runId,
@@ -3985,7 +3986,7 @@ export async function processUpdateBatch(
       return
     }
     const ownerId = `${runId}:post-screener:${crypto.randomUUID()}`
-    const claimed = await claimPipelineStage(env.DB, {
+    const claimed = await claimPipelineStage(databaseForDataDomain(env, 'ops'), {
       businessDate: triggerTime,
       stage: POST_SCREENER_CONTINUATION_STAGE,
       ownerId,
@@ -3997,14 +3998,14 @@ export async function processUpdateBatch(
     }
     try {
       await continuePostScreenerPipeline(env, deps, triggerTime, runId)
-      await markPipelineStageFenced(env.DB, {
+      await markPipelineStageFenced(databaseForDataDomain(env, 'ops'), {
         businessDate: triggerTime,
         stage: POST_SCREENER_CONTINUATION_STAGE,
         canonicalRunId: runId,
         status: 'success',
       })
     } catch (error) {
-      await markPipelineStageFenced(env.DB, {
+      await markPipelineStageFenced(databaseForDataDomain(env, 'ops'), {
         businessDate: triggerTime,
         stage: POST_SCREENER_CONTINUATION_STAGE,
         canonicalRunId: runId,

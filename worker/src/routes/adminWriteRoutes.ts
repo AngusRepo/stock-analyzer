@@ -1,6 +1,7 @@
 import { Hono } from 'hono'
 import { twToday } from '../lib/dateUtils'
 import { requireAdminJWT, requireAdminOrServiceToken, requireServiceToken } from '../lib/auth'
+import { databaseForDataDomain } from '../lib/dataDomainRegistry'
 import { runDailyUpdate } from '../lib/updateOrchestrator'
 import type { Bindings, Variables } from '../types'
 import {
@@ -30,7 +31,7 @@ adminWriteRoutes.post('/api/admin/costs/manual', async (c) => {
   const now = new Date()
   const date = body.date ?? twToday()
 
-  await c.env.DB.prepare(
+  await databaseForDataDomain(c.env, 'ops').prepare(
     `INSERT INTO cost_events (ts, date, source, provider, model, tokens_in, tokens_out, compute_sec, est_usd, meta)
      VALUES (?, ?, ?, ?, ?, 0, 0, ?, ?, ?)`
   ).bind(
@@ -609,8 +610,19 @@ adminWriteRoutes.post('/api/admin/strategy/redundancy/backfill', async (c) => {
     }, 400)
   }
 
-  const dateRows = await c.env.DB.prepare(`
-    SELECT DISTINCT mr.signal_date
+  const opsDb = databaseForDataDomain(c.env, 'ops')
+  const learningDb = databaseForDataDomain(c.env, 'learning')
+  const canonicalRows = await opsDb.prepare(`
+    SELECT substr(logical_run_key, 10, 10) AS signal_date, run_id
+      FROM canonical_run_heads
+     WHERE logical_run_key LIKE 'screener:%:TW:production:market_screener'
+       AND substr(logical_run_key, 10, 10) BETWEEN ? AND ?
+  `).bind(startDate, endDate).all<{ signal_date: string; run_id: string }>()
+  const canonicalRunByDate = new Map(
+    (canonicalRows.results ?? []).map((row) => [row.signal_date, row.run_id]),
+  )
+  const dateRows = await learningDb.prepare(`
+    SELECT DISTINCT mr.signal_date, mr.producer_run_id
       FROM strategy_label_matrix_runs_v4 mr
      WHERE mr.signal_date BETWEEN ? AND ?
        AND mr.status='ready'
@@ -625,19 +637,16 @@ adminWriteRoutes.post('/api/admin/strategy/redundancy/backfill', async (c) => {
           WHERE r.producer_run_id=mr.producer_run_id
             AND r.strategy_labeler_version IS NOT mr.labeler_version
        )
-       AND EXISTS (
-         SELECT 1 FROM canonical_run_heads h
-          WHERE h.logical_run_key='screener:' || mr.signal_date || ':TW:production:market_screener'
-            AND h.run_id=mr.producer_run_id
-       )
      ORDER BY mr.signal_date
   `).bind(
     startDate,
     endDate,
     STRATEGY_FORMAL_LABELER_VERSION,
     STRATEGY_FORMAL_RECONSTRUCTION_LABELER_VERSION,
-  ).all<{ signal_date: string }>()
-  const dates = (dateRows.results ?? []).map((row) => row.signal_date)
+  ).all<{ signal_date: string; producer_run_id: string }>()
+  const dates = (dateRows.results ?? [])
+    .filter((row) => canonicalRunByDate.get(row.signal_date) === row.producer_run_id)
+    .map((row) => row.signal_date)
   const {
     prepareStrategyRedundancyBackfill,
     rebuildStrategyRedundancyArtifactForDate,

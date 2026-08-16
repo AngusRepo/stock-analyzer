@@ -109,7 +109,7 @@ async function loadCanonicalHeads(
   startDate: string,
   endDate: string,
 ): Promise<CanonicalHeadRow[]> {
-  const result = await env.DB.prepare(`
+  const result = await databaseForDataDomain(env, 'ops').prepare(`
     SELECT substr(logical_run_key, 10, 10) signal_date, run_id
       FROM canonical_run_heads
      WHERE logical_run_key LIKE 'screener:%:TW:production:market_screener'

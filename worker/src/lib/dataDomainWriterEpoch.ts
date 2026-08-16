@@ -183,3 +183,110 @@ export async function reopenDataDomainWriters(
     throw new Error(`data_domain_writer_epoch_reopen_conflict:${domain}:${expectedQuiescedEpoch}`)
   }
 }
+
+export const DATA_DOMAIN_CUTOVER_PROBE_SCHEMA_VERSION = 'data-domain-cutover-probe-v1' as const
+
+export type DataDomainCutoverProbeReceipt = {
+  schema_version: typeof DATA_DOMAIN_CUTOVER_PROBE_SCHEMA_VERSION
+  receipt_id: string
+  domain: DataDomain
+  source_epoch: number
+  parity_checked_at: string
+  read_write_readback_passed: true
+  rollback_restore_passed: true
+  checked_at: string
+}
+
+export async function runDataDomainCutoverProbe(input: {
+  sourceDb: D1Database
+  targetDb: D1Database
+  domain: DataDomain
+  parityCheckedAt: string
+}): Promise<DataDomainCutoverProbeReceipt> {
+  if (!Number.isFinite(Date.parse(input.parityCheckedAt))) {
+    throw new Error(`data_domain_cutover_probe_parity_missing:${input.domain}`)
+  }
+  const before = await readDataDomainWriterEpochSnapshot(input.sourceDb, input.domain)
+  if (before.writer_state !== 'open') {
+    throw new Error(`data_domain_cutover_probe_writer_not_open:${input.domain}:${before.writer_state}`)
+  }
+
+  const quiescedEpoch = await beginDataDomainWriterQuiescence(
+    input.sourceDb,
+    input.domain,
+    before.epoch,
+  )
+  const receiptId = `data-domain-cutover-probe:${input.domain}:${crypto.randomUUID()}`
+  const probeId = `canary:${input.domain}:${crypto.randomUUID()}`
+  const originalPayload = `before:${crypto.randomUUID()}`
+  const changedPayload = `after:${crypto.randomUUID()}`
+  let reopenRequired = true
+  try {
+    await input.targetDb.prepare(`
+      INSERT INTO data_domain_cutover_probe_canary(probe_id, domain, payload, updated_at)
+      VALUES (?, ?, ?, STRFTIME('%Y-%m-%dT%H:%M:%fZ', 'now'))
+    `).bind(probeId, input.domain, originalPayload).run()
+    const inserted = await input.targetDb.prepare(`
+      SELECT payload FROM data_domain_cutover_probe_canary WHERE probe_id=? AND domain=?
+    `).bind(probeId, input.domain).first<{ payload?: string }>()
+    if (inserted?.payload !== originalPayload) {
+      throw new Error(`data_domain_cutover_probe_readback_failed:${input.domain}`)
+    }
+
+    await input.targetDb.prepare(`
+      UPDATE data_domain_cutover_probe_canary
+         SET payload=?, updated_at=STRFTIME('%Y-%m-%dT%H:%M:%fZ', 'now')
+       WHERE probe_id=? AND domain=? AND payload=?
+    `).bind(changedPayload, probeId, input.domain, originalPayload).run()
+    await input.targetDb.prepare(`
+      UPDATE data_domain_cutover_probe_canary
+         SET payload=?, updated_at=STRFTIME('%Y-%m-%dT%H:%M:%fZ', 'now')
+       WHERE probe_id=? AND domain=? AND payload=?
+    `).bind(originalPayload, probeId, input.domain, changedPayload).run()
+    const restored = await input.targetDb.prepare(`
+      SELECT payload FROM data_domain_cutover_probe_canary WHERE probe_id=? AND domain=?
+    `).bind(probeId, input.domain).first<{ payload?: string }>()
+    if (restored?.payload !== originalPayload) {
+      throw new Error(`data_domain_cutover_probe_rollback_restore_failed:${input.domain}`)
+    }
+
+    await input.targetDb.prepare(`
+      DELETE FROM data_domain_cutover_probe_canary WHERE probe_id=? AND domain=?
+    `).bind(probeId, input.domain).run()
+    const removed = await input.targetDb.prepare(`
+      SELECT probe_id FROM data_domain_cutover_probe_canary WHERE probe_id=? AND domain=?
+    `).bind(probeId, input.domain).first<{ probe_id?: string }>()
+    if (removed) throw new Error(`data_domain_cutover_probe_cleanup_failed:${input.domain}`)
+
+    const stable = await readDataDomainWriterEpochSnapshot(input.sourceDb, input.domain)
+    if (stable.writer_state !== 'quiescing' || stable.epoch !== quiescedEpoch) {
+      throw new Error(`data_domain_cutover_probe_epoch_changed:${input.domain}:${stable.epoch}/${quiescedEpoch}`)
+    }
+    const checkedAt = new Date().toISOString()
+    await input.sourceDb.prepare(`
+      INSERT INTO data_domain_cutover_probe_receipts (
+        receipt_id, domain, source_epoch, parity_checked_at,
+        read_write_readback_passed, rollback_restore_passed, status, checked_at
+      ) VALUES (?, ?, ?, ?, 1, 1, 'passed', ?)
+    `).bind(receiptId, input.domain, quiescedEpoch, input.parityCheckedAt, checkedAt).run()
+    await reopenDataDomainWriters(input.sourceDb, input.domain, quiescedEpoch)
+    reopenRequired = false
+    return {
+      schema_version: DATA_DOMAIN_CUTOVER_PROBE_SCHEMA_VERSION,
+      receipt_id: receiptId,
+      domain: input.domain,
+      source_epoch: quiescedEpoch,
+      parity_checked_at: input.parityCheckedAt,
+      read_write_readback_passed: true,
+      rollback_restore_passed: true,
+      checked_at: checkedAt,
+    }
+  } finally {
+    if (reopenRequired) {
+      await input.targetDb.prepare(`
+        DELETE FROM data_domain_cutover_probe_canary WHERE probe_id=? AND domain=?
+      `).bind(probeId, input.domain).run().catch(() => undefined)
+      await reopenDataDomainWriters(input.sourceDb, input.domain, quiescedEpoch)
+    }
+  }
+}

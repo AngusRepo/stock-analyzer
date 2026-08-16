@@ -39,6 +39,10 @@ export const STRATEGY_PRODUCTION_POLICY_POINT_IN_TIME_SQL = `
    LIMIT 1
 `
 
+export const LEGACY_STRATEGY_PRODUCTION_FIREWALL_POLICY_ID =
+  'strategy-production-contribution-firewall-v1' as const
+export const LEGACY_STRATEGY_PRODUCTION_FIREWALL_VERSION = 1 as const
+
 export interface StrategyProductionPolicyHistoryRow {
   policy_id: string
   knowledge_cutoff_date: string
@@ -65,6 +69,14 @@ export type RuntimeStrategyWeightResolution = {
   evaluationWeights: Record<string, number>
   source: 'authoritative_production_policy' | 'production_policy_unavailable_abstain'
   abstained: boolean
+}
+export interface LoadedLegacyStrategyProductionWeights {
+  policy_id: typeof LEGACY_STRATEGY_PRODUCTION_FIREWALL_POLICY_ID
+  version: typeof LEGACY_STRATEGY_PRODUCTION_FIREWALL_VERSION
+  knowledge_cutoff_date: string
+  strategy_weights: Record<string, number>
+  checksum: string
+  created_at: string
 }
 
 export function hasPositiveStrategyAllocation(
@@ -194,6 +206,37 @@ export function deserializeStrategyProductionPolicyRow(
   }
 }
 
+export function deserializeLegacyStrategyProductionWeightsRow(
+  row: StrategyProductionPolicyHistoryRow,
+  expectedStrategyIds: readonly string[],
+): LoadedLegacyStrategyProductionWeights {
+  if (
+    row.policy_id !== LEGACY_STRATEGY_PRODUCTION_FIREWALL_POLICY_ID
+    || Number(row.version) !== LEGACY_STRATEGY_PRODUCTION_FIREWALL_VERSION
+    || row.status !== 'active'
+  ) {
+    throw new Error('invalid_legacy_strategy_production_policy_identity')
+  }
+  const evidence = parseJsonRecord(row.evidence_json)
+  if (
+    evidence.production_effect !== true
+    || evidence.safety_reducing_only !== true
+    || evidence.raw_labels_preserved !== true
+    || evidence.experimental_threshold_deltas_applied !== false
+    || evidence.complete_non_retired_weight_map !== true
+  ) {
+    throw new Error('invalid_legacy_strategy_production_policy_evidence')
+  }
+  return {
+    policy_id: LEGACY_STRATEGY_PRODUCTION_FIREWALL_POLICY_ID,
+    version: LEGACY_STRATEGY_PRODUCTION_FIREWALL_VERSION,
+    knowledge_cutoff_date: row.knowledge_cutoff_date,
+    strategy_weights: parseWeights(row.strategy_weights_json, expectedStrategyIds),
+    checksum: row.checksum,
+    created_at: row.created_at,
+  }
+}
+
 export async function sha256StrategyProductionPolicyPayload(payload: string): Promise<string> {
   const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(payload))
   return [...new Uint8Array(digest)].map((value) => value.toString(16).padStart(2, '0')).join('')
@@ -256,4 +299,21 @@ export async function loadStrategyProductionPolicyBefore(
     .bind(STRATEGY_PRODUCTION_FIREWALL_POLICY_ID, knowledgeCutoffDate)
     .first<StrategyProductionPolicyHistoryRow>()
   return row ? deserializeStrategyProductionPolicyRow(row, expectedStrategyIds) : null
+}
+
+/**
+ * Historical reconstruction only: reads the immutable v1 policy that was
+ * actually available before a legacy-labeler signal date. Runtime serving
+ * must continue to use loadStrategyProductionPolicyBefore and the v2 policy.
+ */
+export async function loadLegacyStrategyProductionWeightsBefore(
+  db: D1Database,
+  knowledgeCutoffDate: string,
+  expectedStrategyIds: readonly string[],
+): Promise<LoadedLegacyStrategyProductionWeights | null> {
+  await ensureStrategyProductionPolicyHistoryTable(db)
+  const row = await db.prepare(STRATEGY_PRODUCTION_POLICY_POINT_IN_TIME_SQL)
+    .bind(LEGACY_STRATEGY_PRODUCTION_FIREWALL_POLICY_ID, knowledgeCutoffDate)
+    .first<StrategyProductionPolicyHistoryRow>()
+  return row ? deserializeLegacyStrategyProductionWeightsRow(row, expectedStrategyIds) : null
 }

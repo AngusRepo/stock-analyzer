@@ -52,6 +52,10 @@ assert(
   !historicalRebuild.includes('legacy_strategy_matrix_pit_unavailable'),
   'legacy source identity must not circularly block PIT reconstruction when immutable candidate contexts are complete',
 )
+assert(historicalRebuild.includes("referenceLabeler === 'strategy-labeler-v1'"),
+  'legacy label reconstruction must select the immutable v1 prior-policy identity explicitly')
+assert(historicalRebuild.includes('loadLegacyStrategyProductionWeightsBefore'),
+  'legacy policy compatibility must remain scoped to historical reconstruction, never runtime serving')
 assert(historicalRebuild.includes('new Map(referenceRows.map'), 'raw reference lineage must be deduplicated by symbol after validation')
 assert(historicalRebuild.includes("cleanToken(row.evaluation_contract_version) !== 'strategy-evaluation-v2'"),
   'historical retries must skip decision rows already reconstructed under the V2 evaluation contract')

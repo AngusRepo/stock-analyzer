@@ -3440,7 +3440,10 @@ export async function rebuildHistoricalStrategyEvidenceV5(
     resolveStrategyThresholdMarginAffinityPolicy,
     STRATEGY_AFFINITY_CHALLENGER_VERSION,
   } = await import('./multiStrategyPleRouter')
-  const { loadStrategyProductionPolicyBefore } = await import('./strategyProductionPolicyStore')
+  const {
+    loadLegacyStrategyProductionWeightsBefore,
+    loadStrategyProductionPolicyBefore,
+  } = await import('./strategyProductionPolicyStore')
   let successfulDates = 0
   let blockedDates = 0
   let rebuiltDecisions = 0
@@ -3587,8 +3590,14 @@ export async function rebuildHistoricalStrategyEvidenceV5(
           const strategyIds = effectiveSpecs
             .filter((spec) => spec.status !== 'retired')
             .map((spec) => spec.id)
-          const productionPolicy = await loadStrategyProductionPolicyBefore(db, date, strategyIds)
-          const strategyWeights = productionPolicy?.state.strategy_weights
+          const productionPolicy = referenceLabeler === 'strategy-labeler-v1'
+            ? await loadLegacyStrategyProductionWeightsBefore(db, date, strategyIds)
+            : await loadStrategyProductionPolicyBefore(db, date, strategyIds)
+          const strategyWeights = productionPolicy == null
+            ? undefined
+            : 'state' in productionPolicy
+              ? productionPolicy.state.strategy_weights
+              : productionPolicy.strategy_weights
           if (!productionPolicy) throw new Error(`strategy_production_policy_pit_missing:${date}`)
           const projectionUpdates: D1PreparedStatement[] = []
           for (const key of strategyKeys) {
@@ -3804,8 +3813,14 @@ export async function rebuildHistoricalStrategyEvidenceV5(
         const strategyIds = effectiveSpecs
           .filter((spec) => spec.status !== 'retired')
           .map((spec) => spec.id)
-        const productionPolicy = await loadStrategyProductionPolicyBefore(db, date, strategyIds)
-        const strategyWeights = productionPolicy?.state.strategy_weights
+        const productionPolicy = referenceLabeler === 'strategy-labeler-v1'
+          ? await loadLegacyStrategyProductionWeightsBefore(db, date, strategyIds)
+          : await loadStrategyProductionPolicyBefore(db, date, strategyIds)
+        const strategyWeights = productionPolicy == null
+          ? undefined
+          : 'state' in productionPolicy
+            ? productionPolicy.state.strategy_weights
+            : productionPolicy.strategy_weights
         if (!productionPolicy) throw new Error(`strategy_production_policy_pit_missing:${date}`)
 
         if (existingMatrix) {

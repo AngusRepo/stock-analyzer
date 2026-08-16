@@ -3,6 +3,7 @@ import assert from 'node:assert/strict'
 import { buildStrategyProductionContributionFirewall } from './strategyProductionContributionFirewall'
 import {
   STRATEGY_PRODUCTION_POLICY_POINT_IN_TIME_SQL,
+  deserializeLegacyStrategyProductionWeightsRow,
   deserializeStrategyProductionPolicyRow,
   hasPositiveStrategyAllocation,
   sha256StrategyProductionPolicyPayload,
@@ -68,6 +69,28 @@ async function main(): Promise<void> {
     }, ['active-a', 'active-b']),
     /invalid_strategy_production_policy_identity/,
   )
+  const legacyWeights = deserializeLegacyStrategyProductionWeightsRow({
+    policy_id: 'strategy-production-contribution-firewall-v1',
+    knowledge_cutoff_date: '2026-08-01',
+    version: 1,
+    status: 'active',
+    strategy_weights_json: JSON.stringify({ 'active-a': 0.6, 'active-b': 0.4 }),
+    quarantined_strategy_ids_json: '[]',
+    candidate_ready_strategy_ids_json: '[]',
+    base_weight_source: 'adaptive_strategy_policy_v2',
+    base_weight_run_id: 'legacy-policy-run',
+    evidence_json: JSON.stringify({
+      production_effect: true,
+      safety_reducing_only: true,
+      raw_labels_preserved: true,
+      experimental_threshold_deltas_applied: false,
+      complete_non_retired_weight_map: true,
+    }),
+    canonical_payload: '{}',
+    checksum: 'legacy-checksum',
+    created_at: '2026-08-01T18:00:00.000Z',
+  }, ['active-a', 'active-b'])
+  assert.deepEqual(legacyWeights.strategy_weights, { 'active-a': 0.6, 'active-b': 0.4 })
 
   const missingPolicy = resolveRuntimeStrategyWeights(['active-b', 'active-a'], null)
   assert.deepEqual(missingPolicy.allocationWeights, { 'active-a': 0, 'active-b': 0 })

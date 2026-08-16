@@ -148,6 +148,17 @@ const opsRuntimeTables = [
 ]
 assert(opsRuntimeTables.every((table) => tablesForDataDomainShadowBackfill('ops').includes(table)))
 assert(!tablesForDataDomainShadowBackfill('learning').includes('entry_model_replay_reports'))
+const domainNativeLearningTables = [
+  'price_horizon_labels_v2',
+  'price_horizon_label_rejections_v2',
+  'canonical_selection_outcomes_v1',
+]
+assert(domainNativeLearningTables.every((table) => tablesForDataDomain('learning').includes(table)))
+assert(domainNativeLearningTables.every((table) => tablesForDataDomainRouteReady('learning').includes(table)))
+assert(domainNativeLearningTables.every((table) => !tablesForDataDomainShadowBackfill('learning').includes(table)))
+assert(tablesForDataDomain('ops').includes('price_horizon_projection_status_v2'))
+assert(tablesForDataDomainRouteReady('ops').includes('price_horizon_projection_status_v2'))
+assert(!tablesForDataDomainShadowBackfill('ops').includes('price_horizon_projection_status_v2'))
 
 const assertParentBeforeChild = (domain: Parameters<typeof tablesForDataDomainShadowBackfill>[0], parent: string, child: string) => {
   const tables = tablesForDataDomainShadowBackfill(domain)

@@ -212,7 +212,15 @@ const DEFERRED_PRODUCTION_TABLE_OWNERSHIP: readonly TableOwnershipMetadata[] = [
   { table: 'strategy_similarity_matrix', domain: 'research', disposition: 'compact_projection', route_ready: false, shadow_ready: false },
 ]
 const SHADOW_BACKFILL_EXCLUDED_TABLES: Partial<Record<DataDomain, ReadonlySet<string>>> = {
-  learning: new Set(['entry_model_replay_reports']),
+  // Domain-native tables have no legacy source by design. They are created and
+  // populated only after the split, so routing/schema readiness includes them
+  // while the legacy-to-domain backfill drain must skip them.
+  learning: new Set([
+    'entry_model_replay_reports',
+    'price_horizon_labels_v2',
+    'price_horizon_label_rejections_v2',
+    'canonical_selection_outcomes_v1',
+  ]),
   ops: new Set([
     'maintenance_task_leases',
     'data_domain_cutovers',
@@ -222,6 +230,7 @@ const SHADOW_BACKFILL_EXCLUDED_TABLES: Partial<Record<DataDomain, ReadonlySet<st
     'data_domain_parity_checks',
     'data_domain_cutover_probe_receipts',
     'data_domain_cutover_probe_canary',
+    'price_horizon_projection_status_v2',
   ]),
 }
 

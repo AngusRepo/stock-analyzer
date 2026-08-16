@@ -114,3 +114,38 @@ def test_strict_requires_an_explicit_active_domain_set(monkeypatch):
         assert str(exc) == "multi_d1_strict_active_domains_missing"
     else:
         raise AssertionError("strict routing must not silently activate every domain")
+
+
+def test_shadow_domain_client_uses_specific_id_without_activating_routing(monkeypatch):
+    monkeypatch.setenv("CF_D1_DB_ID", "legacy")
+    monkeypatch.setenv("CF_D1_CORE_DB_ID", "core-shadow")
+    monkeypatch.delenv("MULTI_D1_ACTIVE_DOMAINS", raising=False)
+    captured = {}
+
+    def fake_post(body, timeout=60.0, database_id=None):
+        captured.update(body=body, timeout=timeout, database_id=database_id)
+        return {"result": [{"results": [{"ok": 1}]}]}
+
+    monkeypatch.setattr(d1_domain_client.d1_client, "_post", fake_post)
+    rows = d1_domain_client.shadow_client_for_domain("core").query("SELECT 1")
+
+    assert rows == [{"ok": 1}]
+    assert captured["database_id"] == "core-shadow"
+
+
+def test_shadow_domain_client_rejects_every_mutation_surface(monkeypatch):
+    monkeypatch.setenv("CF_D1_OPS_DB_ID", "ops-shadow")
+    client = d1_domain_client.shadow_client_for_domain("ops")
+
+    for sql in (
+        "UPDATE x SET y=1",
+        "WITH selected AS (SELECT 1) DELETE FROM x",
+        "CREATE TABLE x(y INTEGER)",
+        "PRAGMA journal_mode=WAL",
+    ):
+        try:
+            client.query(sql)
+        except RuntimeError as exc:
+            assert str(exc) == "d1_shadow_client_read_only_violation"
+        else:
+            raise AssertionError(f"shadow client accepted mutation: {sql}")

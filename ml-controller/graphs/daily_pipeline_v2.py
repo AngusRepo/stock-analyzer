@@ -109,6 +109,10 @@ from services.persona_service import (
     compute_retail_opinion,
     write_opinions as write_persona_opinions,
 )
+from services.screener_seed_domain_shadow import (
+    run_screener_seed_domain_shadow_comparison,
+    screener_seed_shadow_compare_enabled,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -782,6 +786,22 @@ async def node_load_inputs(state: PipelineStateV2) -> dict:
         """,
         [run_date, run_date, run_date],
     )
+    if screener_seed_shadow_compare_enabled():
+        try:
+            shadow_report = await asyncio.to_thread(
+                run_screener_seed_domain_shadow_comparison,
+                run_date=run_date,
+                legacy_rows=screener_recs,
+            )
+            logger.info(
+                "[Pipeline V2] D1 screener seed shadow equivalence %s",
+                json.dumps(shadow_report, ensure_ascii=False, sort_keys=True),
+            )
+        except Exception:  # noqa: BLE001
+            logger.exception(
+                "[Pipeline V2] D1 screener seed shadow comparator failed; "
+                "legacy output remains authoritative"
+            )
     if not screener_recs:
         raise RuntimeError(
             "screener_recs_missing: daily pipeline requires latest screener "

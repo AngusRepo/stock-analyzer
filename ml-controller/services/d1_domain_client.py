@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import os
+import re
 from dataclasses import dataclass
 from enum import Enum
 from typing import Any
@@ -31,6 +32,25 @@ _DOMAIN_ENV = {
 }
 
 MULTI_D1_STRICT_ROUTING_READY = False
+
+_SHADOW_READ_MUTATION = re.compile(
+    r"\b(alter|attach|create|delete|detach|drop|insert|replace|truncate|update|vacuum)\b",
+    re.IGNORECASE,
+)
+
+
+def _assert_shadow_read_only_sql(sql: str) -> None:
+    token = d1_client._first_sql_token(sql)
+    if token not in {"select", "with", "explain"} or _SHADOW_READ_MUTATION.search(sql or ""):
+        raise RuntimeError("d1_shadow_client_read_only_violation")
+
+
+def shadow_database_id_for_domain(domain: D1DataDomain | str) -> str:
+    resolved_domain = D1DataDomain(domain)
+    specific = os.environ.get(_DOMAIN_ENV[resolved_domain], "").strip()
+    if not specific:
+        raise RuntimeError(f"D1 shadow database id missing: {resolved_domain.value}")
+    return specific
 
 
 def _active_domains() -> set[D1DataDomain]:
@@ -167,5 +187,34 @@ class DomainD1Client:
         return {**result, "atomic": True}
 
 
+@dataclass(frozen=True)
+class ShadowDomainD1Client:
+    """Explicit target-domain reader that can never mutate or activate routing."""
+
+    domain: D1DataDomain
+
+    @property
+    def database_id(self) -> str:
+        return shadow_database_id_for_domain(self.domain)
+
+    def query(
+        self,
+        sql: str,
+        params: list[Any] | None = None,
+        timeout: float = 60.0,
+    ) -> list[dict]:
+        _assert_shadow_read_only_sql(sql)
+        body: dict[str, Any] = {"sql": sql}
+        if params:
+            body["params"] = params
+        data = d1_client._post(body, timeout=timeout, database_id=self.database_id)
+        results = data.get("result") or []
+        return (results[0].get("results") or []) if results else []
+
+
 def client_for_domain(domain: D1DataDomain | str) -> DomainD1Client:
     return DomainD1Client(D1DataDomain(domain))
+
+
+def shadow_client_for_domain(domain: D1DataDomain | str) -> ShadowDomainD1Client:
+    return ShadowDomainD1Client(D1DataDomain(domain))

@@ -294,6 +294,8 @@ export interface StrategyAdaptivePolicyState {
     requires_approval_to_activate: boolean
     threshold_owner: 'adaptive_strategy_policy'
     pit_rule: 'knowledge_cutoff_lt_signal_date'
+    weight_semantics: 'relative_pending_buy_gate_share_not_capital_allocation'
+    selection_participation_semantics: 'all_non_retired_strategies_single_evaluation_stream'
     eligible_strategy_count: number
     missing_evidence: Record<string, string[]>
   }
@@ -2606,6 +2608,8 @@ export function buildStrategyAdaptivePolicyState(
       requires_approval_to_activate: false,
       threshold_owner: 'adaptive_strategy_policy',
       pit_rule: 'knowledge_cutoff_lt_signal_date',
+      weight_semantics: 'relative_pending_buy_gate_share_not_capital_allocation',
+      selection_participation_semantics: 'all_non_retired_strategies_single_evaluation_stream',
       eligible_strategy_count: Object.values(strategyWeights).filter((weight) => weight > 0).length,
       missing_evidence: Object.fromEntries(gates.map((gate) => [gate.strategy_id, gate.missing_evidence])),
     },
@@ -2645,6 +2649,8 @@ function parseStrategyPolicyStateRow(row: StrategyPolicyStateRow): StrategyAdapt
       requires_approval_to_activate: evidence.requires_approval_to_activate !== false,
       threshold_owner: 'adaptive_strategy_policy',
       pit_rule: 'knowledge_cutoff_lt_signal_date',
+      weight_semantics: 'relative_pending_buy_gate_share_not_capital_allocation',
+      selection_participation_semantics: 'all_non_retired_strategies_single_evaluation_stream',
       eligible_strategy_count: evidence.eligible_strategy_count ?? 0,
       missing_evidence: evidence.missing_evidence ?? {},
     },

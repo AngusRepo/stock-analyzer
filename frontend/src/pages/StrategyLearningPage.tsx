@@ -340,16 +340,16 @@ function StrategyLedgerGroup({
               <div className="grid gap-3">
                 <div className="rounded-xl border border-slate-800 bg-slate-900/35 p-3">
                   <div className="flex flex-wrap items-center justify-between gap-2 text-xs text-slate-500">
-                    <span>Execution allocation</span>
+                    <span>Pending-buy strategy gate share</span>
                     <div className="flex items-center gap-2">
-                      <Badge variant="outline" className={executionEligible ? statusClass('active') : statusClass('not_ready')}>{executionEligible ? 'Execution eligible' : 'Evaluation only'}</Badge>
+                      <Badge variant="outline" className={executionEligible ? statusClass('active') : statusClass('not_ready')}>{executionEligible ? 'Pending-buy gate pass' : 'Selection + evaluation only'}</Badge>
                       <span className="font-mono text-slate-300">{hasWeight ? pct(weight) : 'Not allocated'}</span>
                     </div>
                   </div>
                   <div className="mt-2 h-2 overflow-hidden rounded-full bg-slate-800">
                     <div className="h-full bg-emerald-300" style={{ width: `${hasWeight ? Math.max(0, Math.min(100, weight * 100)) : 0}%` }} />
                   </div>
-                  <p className="mt-2 text-xs text-slate-500">Weight 只控制 pending-buy 執行；0% 仍保留在同一推薦與 evaluation stream。</p>
+                  <p className="mt-2 text-xs text-slate-500">相對 gate share 只控制 pending-buy eligibility；不是帳戶資金或部位比例。0% 仍保留在同一推薦與 evaluation stream。</p>
                 </div>
 
                 <div className="rounded-xl border border-slate-800 bg-slate-900/35 p-3">
@@ -435,6 +435,11 @@ export default function StrategyLearningPage() {
     )).length
   }, [learning])
   const policy = learning?.policy_state_preview
+  const positiveGateWeights = Object.entries(policy?.strategy_weights ?? {})
+    .filter(([, weight]) => Number.isFinite(Number(weight)) && Number(weight) > 0)
+    .sort((left, right) => Number(right[1]) - Number(left[1]))
+  const concentratedGateShare = activeRows.length > 1 && positiveGateWeights.length === 1
+  const concentratedStrategy = positiveGateWeights[0] ?? null
 
   async function runAction(key: string, action: () => Promise<unknown>, success: string) {
     try {
@@ -458,7 +463,7 @@ export default function StrategyLearningPage() {
           <div>
             <p className="text-xs font-semibold tracking-[0.14em] text-emerald-300">STRATEGY LEARNING</p>
             <h1 className="mt-2 flex items-center gap-2 font-['Space_Grotesk'] text-2xl font-semibold tracking-tight text-slate-50"><Activity className="h-5 w-5 text-emerald-300" /> Learning + Reward Ledger</h1>
-            <p className="mt-2 max-w-3xl text-sm leading-6 text-slate-400">只保留後驗學習、reward evidence、shadow policy weight 與 promotion readiness；不在此頁重複實驗、模型或 dry-run 操作。</p>
+            <p className="mt-2 max-w-3xl text-sm leading-6 text-slate-400">分開呈現選股參與、reward evidence、promotion readiness 與 pending-buy gate；0% gate share 不等於策略停用，也不是帳戶資金比例。</p>
           </div>
           <Button size="sm" variant="outline" className="rounded-full border-emerald-400/25 text-emerald-200" disabled={refreshing} onClick={() => { setRefreshing(true); void load() }}>
             <RefreshCw className={`mr-1.5 h-3.5 w-3.5 ${refreshing ? 'animate-spin' : ''}`} /> Refresh ledger
@@ -471,16 +476,22 @@ export default function StrategyLearningPage() {
           <>
             <section className="grid gap-2 sm:grid-cols-2 xl:grid-cols-5">
               <div className="rounded-xl border border-slate-800 bg-slate-950/70 p-4"><div className="text-xs text-slate-500">Active specs</div><div className="mt-2 font-mono text-2xl text-emerald-200">{activeRows.length}</div><div className="mt-1 text-xs text-slate-500">registry status，不等於可下單數</div></div>
-              <div className="rounded-xl border border-emerald-400/20 bg-emerald-400/[0.06] p-4"><div className="text-xs text-slate-400">Execution eligible</div><div className="mt-2 font-mono text-2xl text-emerald-100">{learning ? executionEligibleCount : '-'}</div><div className="mt-1 text-xs text-slate-500">allocation &gt; 0 且 gate 明確通過</div></div>
+              <div className="rounded-xl border border-emerald-400/20 bg-emerald-400/[0.06] p-4"><div className="text-xs text-slate-400">Pending-buy gate eligible</div><div className="mt-2 font-mono text-2xl text-emerald-100">{learning ? executionEligibleCount : '-'}</div><div className="mt-1 text-xs text-slate-500">只計 execution gate，不是選股存活數或資金比例</div></div>
               <div className="rounded-xl border border-slate-800 bg-slate-950/70 p-4"><div className="text-xs text-slate-500">Single evaluation stream</div><div className="mt-2 font-mono text-2xl text-cyan-200">{visibleRows.length}</div><div className="mt-1 text-xs text-slate-500">0% allocation 仍持續學習</div></div>
               <div className="rounded-xl border border-slate-800 bg-slate-950/70 p-4"><div className="text-xs text-slate-500">Promotion / retention</div><div className="mt-2 font-mono text-xl text-slate-100">52% / 48%</div><div className="mt-1 text-xs text-slate-500">candidate / active incumbent</div></div>
-              <div className="rounded-xl border border-slate-800 bg-slate-950/70 p-4"><div className="text-xs text-slate-500">Policy preview</div><div className="mt-2 flex items-center gap-2 font-mono text-lg text-slate-100"><ShieldCheck className="h-4 w-4" /> {policy?.status ?? 'unavailable'}</div><div className="mt-1 text-xs text-slate-500">read-only preview；execution 仍需 pending-buy eligibility</div></div>
+              <div className="rounded-xl border border-slate-800 bg-slate-950/70 p-4"><div className="text-xs text-slate-500">Gate policy preview</div><div className="mt-2 flex items-center gap-2 font-mono text-lg text-slate-100"><ShieldCheck className="h-4 w-4" /> {policy?.status ?? 'unavailable'}</div><div className="mt-1 text-xs text-slate-500">{policy?.evidence.production_effect ? 'production-effect contract' : 'shadow only'}；read-only preview</div></div>
             </section>
 
             <section className="rounded-2xl border border-cyan-400/20 bg-cyan-400/[0.05] px-4 py-3 text-sm leading-6 text-cyan-50">
               <span className="font-semibold">Single recommendation stream：</span>
               所有非 retired strategy 都可持續選股、推薦與累積 evidence；只有 execution allocation 與 <code className="rounded bg-slate-950/70 px-1.5 py-0.5 text-xs">eligible_for_pending_buy</code> 控制 pending-buy，不新增成熟度 lane。
             </section>
+            {concentratedGateShare && concentratedStrategy ? (
+              <section className="rounded-2xl border border-amber-400/30 bg-amber-400/[0.08] px-4 py-3 text-sm leading-6 text-amber-50">
+                <span className="font-semibold">Pending-buy gate 集中：</span>
+                現行 policy preview 只有 <code className="rounded bg-slate-950/70 px-1.5 py-0.5 text-xs">{concentratedStrategy[0]}</code> 通過全部 gates，因此相對 gate share 正規化為 {pct(Number(concentratedStrategy[1]))}。這不是帳戶資金或部位比例；其餘 {activeRows.length - 1} 個 active strategies 仍選股與累積 evidence，但其推薦目前不因該策略取得 pending-buy eligibility。
+              </section>
+            ) : null}
 
             {error && <div className="rounded-xl border border-rose-400/25 bg-rose-400/[0.06] p-4 text-sm text-rose-200">{error}</div>}
             {notice && <div className="rounded-xl border border-amber-400/25 bg-amber-400/[0.06] p-4 text-sm text-amber-100">{notice}</div>}
@@ -489,7 +500,7 @@ export default function StrategyLearningPage() {
             <div className="grid gap-4 xl:grid-cols-2 xl:items-start">
               <StrategyLedgerGroup
                 title="Active strategies"
-                description="目前 registry status=active 的 specs；其中只有通過 48% incumbent retention 與其餘風險門檻者取得 execution allocation，其他策略仍留在同一 evaluation stream。"
+                description="Registry status=active 的選股參與者。Pending-buy gate share 是另一份 execution policy；0% 不會停止推薦、label 或 reward evidence。"
                 rows={activeRows}
                 gateById={gateById}
                 policyWeights={policy?.strategy_weights ?? {}}

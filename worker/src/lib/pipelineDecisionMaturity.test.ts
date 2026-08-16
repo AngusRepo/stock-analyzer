@@ -47,6 +47,8 @@ test('pipeline maturity API preserves canonical lineage and explicit evidence fi
   assert.match(source, /databaseForDataDomain\(env, 'learning'\)/)
   assert.match(source, /canonical_run_heads/)
   assert.match(source, /strategy_challenger_affinity_version/)
+  assert.match(source, /formal_labeler_upgrade_pending:/)
+  assert.match(source, /incumbent exact-run strategy matrix \(display-only fallback\)/)
   assert.match(source, /strategy_redundancy_artifacts_v1/)
   assert.match(source, /m\.challenger_affinity_version=\?/)
   assert.match(source, /adaptExpectedReturnCandidate/)

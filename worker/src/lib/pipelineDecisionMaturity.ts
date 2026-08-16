@@ -337,7 +337,7 @@ function candidateStatus(
   dateCount: number | null,
   minDates: number,
 ): PipelineMaturityStatus {
-  if (servingState === 'serving') return 'serving'
+  if (servingState === 'serving' || servingState === 'safe_abstention') return 'serving'
   if (dateCount == null) return 'blocked'
   if (String(decision ?? '').toUpperCase() === 'FAIL' && dateCount >= minDates) return 'failed_quality'
   if (dateCount < minDates) return 'collecting'
@@ -429,7 +429,7 @@ export async function buildPipelineDecisionMaturityPacket(
     ).first<any>() : Promise.resolve(null)),
     safeQuery(() => head ? learningDb.prepare(`
       SELECT r.status, r.reference_candidate_count, r.strategy_count,
-             r.expected_cell_count, r.persisted_cell_count,
+             r.expected_cell_count, r.persisted_cell_count, r.labeler_version,
              (SELECT COUNT(*) FROM strategy_label_matrix_v4 m
                WHERE m.producer_run_id=r.producer_run_id AND m.labeler_version=r.labeler_version AND m.evaluable=1 AND m.strategy_hit=1) matched_rows,
              (SELECT COUNT(*) FROM strategy_label_matrix_v4 m
@@ -553,8 +553,74 @@ export async function buildPipelineDecisionMaturityPacket(
   ])
 
   const stages: PipelineMaturityStage[] = []
-  const referenceRow = reference.value
-  const matrixRow = matrix.value
+  let referenceRow = reference.value
+  let matrixRow = matrix.value
+  if (head && (!referenceRow || !matrixRow)) {
+    const incumbentMatrix = await safeQuery(() => learningDb.prepare(`
+      SELECT r.status, r.reference_candidate_count, r.strategy_count,
+             r.expected_cell_count, r.persisted_cell_count, r.labeler_version,
+             (SELECT COUNT(*) FROM strategy_label_matrix_v4 m
+               WHERE m.producer_run_id=r.producer_run_id AND m.labeler_version=r.labeler_version AND m.evaluable=1 AND m.strategy_hit=1) matched_rows,
+             (SELECT COUNT(*) FROM strategy_label_matrix_v4 m
+               WHERE m.producer_run_id=r.producer_run_id AND m.labeler_version=r.labeler_version AND m.evaluable=1 AND m.strategy_hit=1
+                 AND m.affinity_evidence_count>0) raw_threshold_rows,
+             (SELECT COUNT(*) FROM strategy_label_matrix_v4 m
+               WHERE m.producer_run_id=r.producer_run_id AND m.labeler_version=r.labeler_version AND m.evaluable=1 AND m.strategy_hit=1
+                 AND m.affinity_evidence_count>0 AND m.challenger_affinity_version=?) projected_threshold_rows,
+             (SELECT COUNT(*) FROM strategy_label_matrix_v4 m
+               WHERE m.producer_run_id=r.producer_run_id AND m.labeler_version=r.labeler_version AND m.challenger_affinity_version=?) challenger_projection_cells,
+             r.updated_at
+        FROM strategy_label_matrix_runs_v4 r
+       WHERE r.signal_date=? AND r.producer_run_id=?
+         AND r.status='ready'
+         AND r.reference_contract_version=?
+         AND r.labeler_version NOT IN (?, ?)
+       ORDER BY r.updated_at DESC
+       LIMIT 1
+    `).bind(
+      STRATEGY_ROUTE_CHALLENGER_VERSION,
+      STRATEGY_ROUTE_CHALLENGER_VERSION,
+      head.signal_date,
+      head.run_id,
+      SELECTION_REFERENCE_CONTRACT_VERSION,
+      STRATEGY_FORMAL_LABELER_VERSION,
+      STRATEGY_FORMAL_RECONSTRUCTION_LABELER_VERSION,
+    ).first<any>())
+    const incumbentMatrixRow = incumbentMatrix.value
+    if (incumbentMatrixRow) {
+      const incumbentReference = await safeQuery(() => learningDb.prepare(`
+        SELECT COUNT(*) reference_rows,
+               SUM(CASE WHEN strategy_challenger_affinity_version=? THEN 1 ELSE 0 END) affinity_v2_rows,
+               SUM(CASE WHEN strategy_challenger_route_version=? AND strategy_challenger_route_score IS NOT NULL THEN 1 ELSE 0 END) challenger_route_rows,
+               AVG(strategy_router_score) incumbent_route_avg,
+               AVG(strategy_challenger_route_score) challenger_route_avg,
+               SUM(CASE WHEN strategy_selected=1 THEN 1 ELSE 0 END) strategy_selected_rows,
+               SUM(CASE WHEN allocation_selected=1 THEN 1 ELSE 0 END) allocation_selected_rows
+          FROM selection_reference_snapshots_v1
+         WHERE signal_date=? AND producer_run_id=? AND hard_gate_passed=1
+           AND strategy_labeler_version=?
+           AND EXISTS (
+             SELECT 1 FROM strategy_label_matrix_runs_v4 mr
+              WHERE mr.signal_date=selection_reference_snapshots_v1.signal_date
+                AND mr.producer_run_id=selection_reference_snapshots_v1.producer_run_id
+                AND mr.status='ready'
+                AND mr.reference_contract_version=?
+                AND mr.labeler_version=selection_reference_snapshots_v1.strategy_labeler_version
+           )
+      `).bind(
+        STRATEGY_ROUTE_CHALLENGER_VERSION,
+        STRATEGY_ROUTE_CHALLENGER_VERSION,
+        head.signal_date,
+        head.run_id,
+        incumbentMatrixRow.labeler_version,
+        SELECTION_REFERENCE_CONTRACT_VERSION,
+      ).first<any>())
+      if (incumbentReference.value) {
+        matrixRow = incumbentMatrixRow
+        referenceRow = incumbentReference.value
+      }
+    }
+  }
   if (!head || !referenceRow || !matrixRow) {
     stages.push(unavailableStage(
       'threshold_margin_affinity_v2', 'L1', 'Threshold-margin affinity V2', requestedDate,
@@ -562,6 +628,10 @@ export async function buildPipelineDecisionMaturityPacket(
       [canonicalHead.error, reference.error, matrix.error, !head ? 'canonical_run_head_missing' : null],
     ))
   } else {
+    const formalLabeler = (
+      matrixRow.labeler_version === STRATEGY_FORMAL_LABELER_VERSION
+      || matrixRow.labeler_version === STRATEGY_FORMAL_RECONSTRUCTION_LABELER_VERSION
+    )
     const matched = finite(matrixRow.matched_rows)
     const rawCovered = finite(matrixRow.raw_threshold_rows)
     const projected = finite(matrixRow.projected_threshold_rows)
@@ -570,23 +640,31 @@ export async function buildPipelineDecisionMaturityPacket(
     const rawComplete = matched > 0 && rawCovered === matched
     const projectionComplete = projected === matched && projectionCells === finite(matrixRow.expected_cell_count) && referenceProjectionRows === finite(referenceRow.reference_rows)
     const complete = rawComplete && projectionComplete
-    const blockers = [...(rawComplete ? [] : ['threshold_margin_evidence_incomplete']), ...(projectionComplete ? [] : ['challenger_affinity_projection_incomplete'])]
+    const blockers = [
+      ...(formalLabeler ? [] : [`formal_labeler_upgrade_pending:${matrixRow.labeler_version}`]),
+      ...(rawComplete ? [] : ['threshold_margin_evidence_incomplete']),
+      ...(projectionComplete ? [] : ['challenger_affinity_projection_incomplete']),
+    ]
     stages.push({
       id: 'threshold_margin_affinity_v2',
       layer: 'L1',
       title: 'Threshold-margin affinity V2',
       version: STRATEGY_ROUTE_CHALLENGER_VERSION,
-      status: complete ? 'ready' : 'blocked',
-      contribution_mode: 'shadow',
+      status: formalLabeler ? (complete ? 'ready' : 'blocked') : 'collecting',
+      contribution_mode: formalLabeler ? 'shadow' : 'evidence_only',
       maturity_kind: 'daily_coverage',
       progress: maturityProgress(projected, matched, 'rows'),
-      decision: complete
-        ? `當日 ${projected}/${matched} 筆策略命中均有 threshold margin 與 challenger affinity projection。`
+      decision: !formalLabeler
+        ? `既有 production run 的 ${projected}/${matched} 筆 threshold/challenger evidence 仍存在；正式 revenue-PIT labeler 尚未物化，不能冒充 formal V2 通過。`
+        : complete
+          ? `當日 ${projected}/${matched} 筆策略命中均有 threshold margin 與 challenger affinity projection。`
         : rawComplete
           ? `Raw threshold margin 已完整 ${rawCovered}/${matched}；但 challenger projection 只有 ${projected}/${matched}，全矩陣 ${projectionCells}/${finite(matrixRow.expected_cell_count)}。`
           : `Raw threshold margin 只有 ${rawCovered}/${matched}，尚未具備完整 projection 前置證據。`,
       contribution: '用各策略自己的門檻距離與 signal strength 產生 challenger affinity，避免所有策略共用同一份 raw quality。',
-      production_effect: '目前只餵給 challenger route；不直接改變 incumbent route、L4 或 BUY/HOLD。',
+      production_effect: formalLabeler
+        ? '目前只餵給 challenger route；不直接改變 incumbent route、L4 或 BUY/HOLD。'
+        : 'Incumbent production 選股仍有資料並持續運作；此 fallback 只供可觀測性，不取得 formal promotion 權限。',
       blockers,
       metrics: [
         gateMetric('raw_threshold_rows', 'Raw threshold margin', rawCovered, matched, 'rows'),
@@ -603,7 +681,9 @@ export async function buildPipelineDecisionMaturityPacket(
         oof_applicable: false,
         evidence_semantics: 'Daily canonical decision-universe coverage; this is not cumulative and not OOF.',
         artifact_id: head.run_id,
-        source: 'canonical selection reference + strategy matrix',
+        source: formalLabeler
+          ? 'canonical selection reference + formal strategy matrix'
+          : 'canonical selection reference + incumbent exact-run strategy matrix (display-only fallback)',
         updated_at: matrixRow.updated_at ?? null,
       },
     })
@@ -764,7 +844,7 @@ export async function buildPipelineDecisionMaturityPacket(
     const blockerGroups: PipelineMaturityBlockerGroup[] = [
       {
         scope: 'offline_candidate',
-        title: 'Offline candidate',
+        title: 'Promotion candidate (not serving)',
         blockers: offlineBlockers,
       },
       {
@@ -774,7 +854,7 @@ export async function buildPipelineDecisionMaturityPacket(
       },
       {
         scope: 'frozen_forward',
-        title: 'Active-8 cohort causal shadow (not serving artifact)',
+        title: 'Frozen-forward monitoring evidence (not serving)',
         blockers: shadowBlockers,
       },
     ]
@@ -935,7 +1015,7 @@ export async function buildPipelineDecisionMaturityPacket(
     const blockerGroups: PipelineMaturityBlockerGroup[] = [
       {
         scope: 'offline_candidate',
-        title: 'Offline candidate',
+        title: 'Promotion candidate (not serving)',
         blockers: offlineBlockers,
       },
       {
@@ -945,7 +1025,7 @@ export async function buildPipelineDecisionMaturityPacket(
       },
       {
         scope: 'frozen_forward',
-        title: 'Active-8 cohort causal shadow (not serving artifact)',
+        title: 'Frozen-forward monitoring evidence (not serving)',
         blockers: shadowBlockers,
       },
       {

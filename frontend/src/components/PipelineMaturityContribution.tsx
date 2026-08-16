@@ -64,6 +64,7 @@ const BLOCKER_LABELS: Record<string, string> = {
   current_day_challenger_route_complete: '當日 Route V2 分數尚未完整持久化',
   current_day_challenger_route_incomplete: '當日通過 L0 的股票尚未全部留下 Route V2 分數',
   joint_promotion_not_committed: 'Threshold V2 與 Route V2 尚未共同完成 promotion commit',
+  formal_labeler_upgrade_pending: '既有 production evidence 存在；正式 revenue-PIT labeler 尚未物化',
 }
 
 function stageIcon(id: PipelineMaturityStage['id']) {
@@ -105,6 +106,9 @@ function targetText(metric: PipelineMaturityMetric): string | null {
 
 function blockerText(blocker: string): string {
   const normalized = blocker.replace(/^serving_contract:/, '')
+  if (normalized.startsWith('formal_labeler_upgrade_pending:')) {
+    return BLOCKER_LABELS.formal_labeler_upgrade_pending
+  }
   const direct = BLOCKER_LABELS[normalized]
   if (direct) return direct
   const suffix = Object.entries(BLOCKER_LABELS).find(([key]) => normalized.endsWith(key))
@@ -177,28 +181,17 @@ function StageRow({ stage }: { stage: PipelineMaturityStage }) {
     ? stage.blocker_groups
     : [{ scope: 'stage', title: 'Blockers', blockers: stage.blockers }]
   const evidenceScopes = stage.lineage.evidence_scopes
+  const productionServingState = evidenceScopes?.serving_pointer
+    ? evidenceScopes.serving_pointer.artifact_state === 'safe_abstention'
+      ? 'Production：安全基線運作中（learned alpha 貢獻 0；上游選股流程持續運作）'
+      : evidenceScopes.serving_pointer.artifact_state === 'serving'
+        ? 'Production：learned expected-return artifact 正式服務中'
+        : `Production：serving pointer ${evidenceScopes.serving_pointer.availability}`
+    : null
   const evidenceScopeRows = [
-    evidenceScopes?.offline_candidate ? {
-      scope: 'offline_candidate',
-      title: `${evidenceScopes.offline_candidate.cadence} offline candidate`,
-      rows: [
-        ['Cadence', evidenceScopes.offline_candidate.cadence],
-        ['Role', evidenceScopes.offline_candidate.role],
-        ['Date means', evidenceScopes.offline_candidate.date_semantic],
-        ['Availability', evidenceScopes.offline_candidate.availability],
-        ['Reason', evidenceScopes.offline_candidate.reason_code],
-        ['Identity', evidenceScopes.offline_candidate.identity_assurance],
-        ['Artifact', evidenceScopes.offline_candidate.artifact_id],
-        ['Model', evidenceScopes.offline_candidate.model_version],
-        ['Contract', evidenceScopes.offline_candidate.artifact_contract_version],
-        ['Validation', evidenceScopes.offline_candidate.validation_schema_version],
-        ['Run date', evidenceScopes.offline_candidate.source_run_date],
-        ['OOF max', evidenceScopes.offline_candidate.oof_max_date],
-      ],
-    } : null,
     evidenceScopes?.serving_pointer ? {
       scope: 'serving_pointer',
-      title: 'event-driven current production serving pointer',
+      title: 'Production serving state (current pointer)',
       rows: [
         ['Artifact', evidenceScopes.serving_pointer.artifact_id],
         ['Cadence', evidenceScopes.serving_pointer.cadence],
@@ -214,9 +207,27 @@ function StageRow({ stage }: { stage: PipelineMaturityStage }) {
         ['Observed at', evidenceScopes.serving_pointer.observed_at],
       ],
     } : null,
+    evidenceScopes?.offline_candidate ? {
+      scope: 'offline_candidate',
+      title: `${evidenceScopes.offline_candidate.cadence} promotion candidate (not serving)`,
+      rows: [
+        ['Cadence', evidenceScopes.offline_candidate.cadence],
+        ['Role', evidenceScopes.offline_candidate.role],
+        ['Date means', evidenceScopes.offline_candidate.date_semantic],
+        ['Availability', evidenceScopes.offline_candidate.availability],
+        ['Reason', evidenceScopes.offline_candidate.reason_code],
+        ['Identity', evidenceScopes.offline_candidate.identity_assurance],
+        ['Artifact', evidenceScopes.offline_candidate.artifact_id],
+        ['Model', evidenceScopes.offline_candidate.model_version],
+        ['Contract', evidenceScopes.offline_candidate.artifact_contract_version],
+        ['Validation', evidenceScopes.offline_candidate.validation_schema_version],
+        ['Run date', evidenceScopes.offline_candidate.source_run_date],
+        ['OOF max', evidenceScopes.offline_candidate.oof_max_date],
+      ],
+    } : null,
     evidenceScopes?.frozen_forward ? {
       scope: 'frozen_forward',
-      title: 'daily Active-8 monitoring shadow (not serving artifact)',
+      title: 'Daily frozen-forward monitoring evidence (not serving)',
       rows: [
         ['Cohort', evidenceScopes.frozen_forward.cohort_id],
         ['Evaluation', evidenceScopes.frozen_forward.evaluation_id],
@@ -269,6 +280,7 @@ function StageRow({ stage }: { stage: PipelineMaturityStage }) {
             <Badge variant="outline" className={`h-auto whitespace-normal rounded-full px-2 py-0.5 text-[11px] ${status.cls}`}>{status.label}</Badge>
             <Badge variant="outline" className={`h-auto whitespace-normal rounded-full px-2 py-0.5 text-[11px] ${mode.cls}`}>{mode.label}</Badge>
           </div>
+          {productionServingState ? <p className="mt-2 text-xs font-semibold leading-5 text-emerald-200">{productionServingState}</p> : null}
         </div>
 
         <div className="min-w-0">

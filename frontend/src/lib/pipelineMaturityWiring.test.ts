@@ -47,9 +47,9 @@ test('maturity lineage labels cadence, role, availability, and comparable contra
   for (const label of [
     'Candidate cutoff',
     'OOF through',
-    '${evidenceScopes.offline_candidate.cadence} offline candidate',
-    'event-driven current production serving pointer',
-    'daily Active-8 monitoring shadow',
+    'Production serving state (current pointer)',
+    '${evidenceScopes.offline_candidate.cadence} promotion candidate (not serving)',
+    'Daily frozen-forward monitoring evidence (not serving)',
     'First comparable',
   ]) {
     assert(panel.includes(label), `missing explicit maturity label: ${label}`)

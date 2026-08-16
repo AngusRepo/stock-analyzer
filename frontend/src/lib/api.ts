@@ -779,6 +779,8 @@ export type StrategyAdaptivePolicyState = {
     requires_approval_to_activate: boolean
     threshold_owner: 'adaptive_strategy_policy'
     pit_rule: 'knowledge_cutoff_lt_signal_date'
+    weight_semantics: 'relative_pending_buy_gate_share_not_capital_allocation'
+    selection_participation_semantics: 'all_non_retired_strategies_single_evaluation_stream'
     eligible_strategy_count: number
     missing_evidence: Record<string, string[]>
   }

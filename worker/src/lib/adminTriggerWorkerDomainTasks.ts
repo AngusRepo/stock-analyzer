@@ -1092,6 +1092,7 @@ export function buildAdminWorkerDomainTaskMap(c: any, deps: TriggerDeps): Record
       const next = await enqueueNextDataDomainShadowBackfill(c.env, {
         runDate: closure.runDate!,
         maxAttempts: parseBoundedPositiveInt(c.req.query('max_attempts'), 5000, 20000),
+        parityNotBefore: closure.timestamp,
       })
       if (next.caughtUp) return 'data_domain_shadow_backfill_next all_domains_caught_up=true'
       return `data_domain_shadow_backfill_next domain=${next.domain} queued=${next.queued} run_id=${next.runId}`

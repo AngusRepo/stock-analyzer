@@ -97,6 +97,9 @@ assert.equal(shouldContinueDataDomainGlobalSweep({
 
 assert(drain.includes('inspectLatestEveningChainClosure'))
 assert(drain.includes('enqueueNextDataDomainShadowBackfill'))
+assert(drain.includes('input.parityNotBefore || dataDomainParitySessionWatermark()'))
+assert(admin.includes('parityNotBefore: closure.timestamp'))
+assert(!admin.includes('parityNotBefore: dataDomainParitySessionWatermark()'))
 const latestRunning = resolveLatestEveningChainClosure([
   {
     task: 'evening-chain', status: 'success', summary: 'closed', duration_ms: 1,

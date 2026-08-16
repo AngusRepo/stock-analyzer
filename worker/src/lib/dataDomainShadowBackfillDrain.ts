@@ -414,9 +414,13 @@ export async function nextDataDomainBackfillDomain(
 
 export async function enqueueNextDataDomainShadowBackfill(
   env: Bindings,
-  input: { runDate: string; maxAttempts?: number },
+  input: {
+    runDate: string
+    maxAttempts?: number
+    parityNotBefore?: string | null
+  },
 ): Promise<{ caughtUp: boolean; domain: DataDomain | null; queued: boolean; runId: string | null }> {
-  const parityNotBefore = dataDomainParitySessionWatermark()
+  const parityNotBefore = input.parityNotBefore || dataDomainParitySessionWatermark()
   const domain = await nextDataDomainBackfillDomain(env, parityNotBefore)
   if (!domain) return { caughtUp: true, domain: null, queued: false, runId: null }
   const queued = await enqueueDataDomainShadowBackfill(env, {

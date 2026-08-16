@@ -177,6 +177,44 @@ async function nextIncompleteTable(env: Bindings, domain: DataDomain): Promise<s
   return tablesForDataDomainShadowBackfill(domain).find((table) => !completedSet.has(table)) ?? null
 }
 
+async function nextDataDomainReceiptRefreshTable(
+  env: Bindings,
+  domain: DataDomain,
+  parityNotBefore?: string | null,
+): Promise<string | null> {
+  const completedSet = new Set(await completedDomainTables(env, domain))
+  const receipts = await env.DB.prepare(`
+    SELECT table_name, status, source_count, target_count,
+           source_checksum, target_checksum, evidence_json, checked_at
+      FROM data_domain_parity_checks
+     WHERE domain=? AND check_kind='full_table'
+     ORDER BY checked_at DESC, check_id DESC
+  `).bind(domain).all<{
+    table_name: string
+    status?: string | null
+    source_count?: number | string | null
+    target_count?: number | string | null
+    source_checksum?: string | null
+    target_checksum?: string | null
+    evidence_json?: string | null
+    checked_at?: string | null
+  }>()
+  const latest = new Map<string, typeof receipts.results[number]>()
+  for (const receipt of receipts.results ?? []) {
+    const table = String(receipt.table_name)
+    if (!latest.has(table)) latest.set(table, receipt)
+  }
+  for (const table of tablesForDataDomainShadowBackfill(domain)) {
+    if (!completedSet.has(table)) return table
+    const receipt = latest.get(table)
+    if (
+      !isAuthoritativeDataDomainFullTableParity(table, receipt)
+      || !isDataDomainFullTableParityFresh(table, receipt, parityNotBefore)
+    ) return table
+  }
+  return null
+}
+
 async function tableRowCount(db: D1Database, table: string): Promise<number> {
   const trustedTable = table.replace(/[^a-z0-9_]/g, '')
   if (trustedTable !== table) throw new Error(`invalid_data_domain_table:${table}`)
@@ -345,6 +383,12 @@ export async function nextDataDomainBackfillDomain(
   for (const domain of DOMAIN_BACKFILL_ORDER) {
     if (activeDomains.has(domain)) continue
     await assertDataDomainShadowMutationAuthority(env, domain)
+    const receiptRefresh = await nextDataDomainReceiptRefreshTable(
+      env,
+      domain,
+      parityNotBefore,
+    )
+    if (receiptRefresh) return domain
     const incremental = await nextDataDomainIncrementalCatchupTable(
       env,
       domain,
@@ -672,7 +716,8 @@ export async function runDataDomainShadowBackfillHttpStep(
   }), { expirationTtl: ACTIVE_TTL_SECONDS })
 
   const table = input.table
-    ?? (await nextDataDomainIncrementalCatchupTable(env, input.domain, parityNotBefore)
+    ?? (await nextDataDomainReceiptRefreshTable(env, input.domain, parityNotBefore)
+      || await nextDataDomainIncrementalCatchupTable(env, input.domain, parityNotBefore)
       || await nextIncompleteTable(env, input.domain))
   if (!table) {
     const caughtUp = await domainChecksumReady(env, input.domain, parityNotBefore)
@@ -748,7 +793,8 @@ export async function processDataDomainShadowBackfillDrain(
   }
   const table = currentTable
     ?? requestedTable
-    ?? (await nextDataDomainIncrementalCatchupTable(env, domain, parityNotBefore)
+    ?? (await nextDataDomainReceiptRefreshTable(env, domain, parityNotBefore)
+      || await nextDataDomainIncrementalCatchupTable(env, domain, parityNotBefore)
       || await nextIncompleteTable(env, domain))
   if (!table) {
     const checksumReady = await domainChecksumReady(env, domain, parityNotBefore)
@@ -933,7 +979,8 @@ export async function processDataDomainShadowBackfillDrain(
 
   const nextTable = continuation === 'same_table'
     ? table
-    : await nextDataDomainIncrementalCatchupTable(env, domain, parityNotBefore)
+    : await nextDataDomainReceiptRefreshTable(env, domain, parityNotBefore)
+      || await nextDataDomainIncrementalCatchupTable(env, domain, parityNotBefore)
       || await nextIncompleteTable(env, domain)
   if (nextTable) {
     await env.KV.put(dataDomainShadowBackfillActiveKey(domain), JSON.stringify({

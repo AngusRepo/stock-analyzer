@@ -1021,16 +1021,39 @@ export function buildAdminWorkerDomainTaskMap(c: any, deps: TriggerDeps): Record
       return `cleanup_dlq_replay candidates=${result.candidates} resolved=${result.resolved}`
     },
     'price-horizon-projection': async () => {
-      const { materializePriceHorizonLabels } = await import('./priceHorizonProjection')
+      const {
+        materializePriceHorizonLabels,
+        materializeStrategyMultiHorizonPriceLabels,
+      } = await import('./priceHorizonProjection')
+      const { materializeStrategyMultiHorizonOutcomes } = await import('./strategyMultiHorizonOutcomes')
       const endDate = c.req.query('end_date') || requestedRunDate() || twToday()
-      const result = await materializePriceHorizonLabels(c.env, {
-        startDate: c.req.query('start_date') || undefined,
+      const outcomeAsOfDate = c.req.query('outcome_as_of_date') || twToday()
+      const startDate = c.req.query('start_date') || undefined
+      const maxSignalDates = parseBoundedPositiveInt(c.req.query('max_signal_dates'), 60, 260)
+      const maxProcessDates = parseBoundedPositiveInt(c.req.query('max_process_dates'), 8, 40)
+      const force = c.req.query('force') === '1'
+      const canonical = await materializePriceHorizonLabels(c.env, {
+        startDate,
         endDate,
-        outcomeAsOfDate: c.req.query('outcome_as_of_date') || twToday(),
-        maxSignalDates: parseBoundedPositiveInt(c.req.query('max_signal_dates'), 60, 260),
-        force: c.req.query('force') === '1',
+        outcomeAsOfDate,
+        maxSignalDates,
+        maxProcessDates,
+        force,
       })
-      return result.summary
+      const multiHorizon = await materializeStrategyMultiHorizonPriceLabels(c.env, {
+        startDate,
+        endDate,
+        outcomeAsOfDate,
+        maxSignalDates,
+        maxProcessDates,
+        force,
+      })
+      const outcomes = await materializeStrategyMultiHorizonOutcomes(c.env, {
+        asOfDate: outcomeAsOfDate,
+        startDate,
+        endDate,
+      })
+      return `${canonical.summary} | ${multiHorizon.summary} | ${outcomes.summary}`
     },
     'data-domain-shadow-backfill': async () => {
       const domain = String(c.req.query('domain') ?? '').trim().toLowerCase()

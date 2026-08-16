@@ -31,8 +31,8 @@ export interface StrategyEvidenceProfile {
   available_outcome_horizon_days: number[]
   supported_regimes: string[]
   required_metrics: StrategyEvidenceMetric[]
-  outcome_contract_status: 'fixed_5d_available' | 'multi_horizon_pending'
-  outcome_source: 'canonical_selection_labels_v4.residual_return_net'
+  outcome_contract_status: 'fixed_5d_available' | 'primary_horizon_shadow_available' | 'multi_horizon_pending'
+  outcome_source: 'canonical_selection_labels_v4.residual_return_net' | 'canonical_selection_outcomes_v1.residual_return_net'
   production_authority: 'shadow_only'
 }
 
@@ -171,11 +171,21 @@ const STRATEGY_EVIDENCE_PLANS: Record<string, EvidencePlan> = {
   },
 }
 
-export function buildStrategyEvidenceProfile(spec: StrategySpec): StrategyEvidenceProfile {
+export function buildStrategyEvidenceProfile(
+  spec: StrategySpec,
+  options: { availableOutcomeHorizonDays?: number[] } = {},
+): StrategyEvidenceProfile {
   const plan = STRATEGY_EVIDENCE_PLANS[spec.id] ?? BUCKET_EVIDENCE_PLANS[spec.alphaBucket]
-  const outcomeContractStatus = plan.primary_horizon_days === CURRENT_CANONICAL_OUTCOME_HORIZON_DAYS
-    ? 'fixed_5d_available'
-    : 'multi_horizon_pending'
+  const availableOutcomeHorizonDays = [...new Set(
+    options.availableOutcomeHorizonDays ?? [CURRENT_CANONICAL_OUTCOME_HORIZON_DAYS],
+  )].filter((value) => [3, 5, 10].includes(value)).sort((left, right) => left - right)
+  const primaryShadowAvailable = availableOutcomeHorizonDays.includes(plan.primary_horizon_days)
+  const outcomeContractStatus: StrategyEvidenceProfile['outcome_contract_status'] =
+    plan.primary_horizon_days === CURRENT_CANONICAL_OUTCOME_HORIZON_DAYS
+      ? 'fixed_5d_available'
+      : primaryShadowAvailable
+        ? 'primary_horizon_shadow_available'
+        : 'multi_horizon_pending'
   return {
     schema_version: STRATEGY_EVIDENCE_PROFILE_VERSION,
     strategy_id: spec.id,
@@ -183,19 +193,22 @@ export function buildStrategyEvidenceProfile(spec: StrategySpec): StrategyEviden
     strategy_status: spec.status,
     primary_horizon_days: plan.primary_horizon_days,
     evaluation_horizon_days: [...plan.evaluation_horizon_days],
-    available_outcome_horizon_days: [CURRENT_CANONICAL_OUTCOME_HORIZON_DAYS],
+    available_outcome_horizon_days: availableOutcomeHorizonDays,
     supported_regimes: [...spec.supportedRegimes],
     required_metrics: [...plan.required_metrics],
     outcome_contract_status: outcomeContractStatus,
-    outcome_source: 'canonical_selection_labels_v4.residual_return_net',
+    outcome_source: outcomeContractStatus === 'primary_horizon_shadow_available'
+      ? 'canonical_selection_outcomes_v1.residual_return_net'
+      : 'canonical_selection_labels_v4.residual_return_net',
     production_authority: 'shadow_only',
   }
 }
 
 export function listStrategyEvidenceProfiles(
   specs: StrategySpec[] = DEFAULT_STRATEGY_SPECS,
+  options: { availableOutcomeHorizonDays?: number[] } = {},
 ): StrategyEvidenceProfile[] {
   return specs
     .filter((spec) => spec.status !== 'retired')
-    .map(buildStrategyEvidenceProfile)
+    .map((spec) => buildStrategyEvidenceProfile(spec, options))
 }

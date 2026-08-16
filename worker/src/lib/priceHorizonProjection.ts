@@ -1,8 +1,10 @@
 import type { Bindings } from '../types'
-import { databaseForDataDomain } from './dataDomainRegistry'
+import { databaseForDataDomain, shadowDatabaseForDataDomain } from './dataDomainRegistry'
 import { SELECTION_REFERENCE_CONTRACT_VERSION } from './selectionReferenceEvidence'
 
 export const PRICE_HORIZON_PROJECTION_VERSION = 'price_horizon_v3_canonical_reference_identity'
+export const STRATEGY_MULTI_HORIZON_PROJECTION_VERSION = 'strategy_multi_horizon_price_v1'
+export const STRATEGY_EVIDENCE_HORIZON_DAYS = [3, 5, 10] as const
 export const PRICE_HORIZON_SOURCE = 'stock_prices:finlab_primary_canonical_mirror'
 const MIN_SESSION_SAMPLE_SIZE = 100
 const DEFAULT_LOOKBACK_DAYS = 120
@@ -53,6 +55,19 @@ export type PriceHorizonProjectionResult = {
   summary: string
 }
 
+export type StrategyMultiHorizonProjectionResult = {
+  horizons: number[]
+  eligibleSignalDates: number
+  processedSignalDates: number
+  skippedCompleteDates: number
+  deferredSignalDates: number
+  candidateCount: number
+  materializedCount: number
+  rejectedCount: number
+  status: 'success' | 'complete_with_rejections'
+  summary: string
+}
+
 type ObservedSession = { session_date: string; sample_size: number }
 
 export type PriceHorizonRow = {
@@ -70,7 +85,7 @@ export type PriceHorizonProjectionStatusRow = PriceHorizonRow & {
 export function planPriceHorizonWork(
   horizons: PriceHorizonRow[],
   statuses: PriceHorizonProjectionStatusRow[],
-  options: { force?: boolean; maxProcessDates?: number; nowMs?: number } = {},
+  options: { force?: boolean; maxProcessDates?: number; nowMs?: number; projectionVersion?: string } = {},
 ): {
   work: PriceHorizonRow[]
   skippedCompleteDates: number
@@ -80,6 +95,7 @@ export function planPriceHorizonWork(
   const maxProcessDates = Math.max(1, Math.floor(options.maxProcessDates ?? DEFAULT_MAX_PROCESS_DATES))
   const retryAfterMs = INCOMPLETE_RETRY_DAYS * 86400_000
   const nowMs = options.nowMs ?? Date.now()
+  const projectionVersion = options.projectionVersion ?? PRICE_HORIZON_PROJECTION_VERSION
   const statusByDate = new Map(statuses.map((row) => [row.signal_date, row]))
   const pending: PriceHorizonRow[] = []
   let skippedCompleteDates = 0
@@ -90,7 +106,7 @@ export function planPriceHorizonWork(
     const sameContract = status
       && status.entry_date === horizon.entry_date
       && status.exit_date === horizon.exit_date
-      && status.projection_version === PRICE_HORIZON_PROJECTION_VERSION
+      && status.projection_version === projectionVersion
     if (!force && sameContract && status.status === 'success') {
       skippedCompleteDates += 1
       continue
@@ -650,4 +666,181 @@ export async function materializePriceHorizonLabels(
     `).bind(String(error), runId).run().catch(() => undefined)
     throw error
   }
+}
+
+async function upsertMultiHorizonLabels(
+  db: D1Database,
+  horizonDays: number,
+  rows: PriceHorizonLabel[],
+): Promise<void> {
+  const statements = chunks(rows, UPSERT_ROWS_PER_STATEMENT).map((group) => {
+    const values = group.map(() => '(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)').join(', ')
+    const params = group.flatMap((row) => [
+      row.stockId, row.priceDate, horizonDays, row.entryDate, row.entryRawOpen,
+      row.entryAdjustmentFactor, row.exitDate, row.exitRawClose, row.exitAdjustmentFactor,
+      row.exitDate, PRICE_HORIZON_SOURCE, STRATEGY_MULTI_HORIZON_PROJECTION_VERSION,
+    ])
+    return db.prepare(`
+      INSERT INTO price_horizon_labels_v2 (
+        stock_id, price_date, horizon_days, entry_date, entry_raw_open,
+        entry_adjustment_factor, exit_date, exit_raw_close, exit_adjustment_factor,
+        outcome_known_date, source, projection_version
+      ) VALUES ${values}
+      ON CONFLICT(stock_id, price_date, horizon_days) DO UPDATE SET
+        entry_date=excluded.entry_date,
+        entry_raw_open=excluded.entry_raw_open,
+        entry_adjustment_factor=excluded.entry_adjustment_factor,
+        exit_date=excluded.exit_date,
+        exit_raw_close=excluded.exit_raw_close,
+        exit_adjustment_factor=excluded.exit_adjustment_factor,
+        outcome_known_date=excluded.outcome_known_date,
+        source=excluded.source,
+        projection_version=excluded.projection_version,
+        materialized_at=CURRENT_TIMESTAMP
+    `).bind(...params)
+  })
+  await executeStatementBatches(db, statements)
+}
+
+async function upsertMultiHorizonRejections(
+  db: D1Database,
+  horizonDays: number,
+  rows: PriceHorizonRejection[],
+): Promise<void> {
+  const statements = chunks(rows, UPSERT_ROWS_PER_STATEMENT).map((group) => {
+    const values = group.map(() => '(?, ?, ?, ?, ?, ?, ?, ?)').join(', ')
+    const params = group.flatMap((row) => [
+      row.stockId, row.priceDate, horizonDays, row.entryDate, row.exitDate,
+      row.reason, PRICE_HORIZON_SOURCE, STRATEGY_MULTI_HORIZON_PROJECTION_VERSION,
+    ])
+    return db.prepare(`
+      INSERT INTO price_horizon_label_rejections_v2 (
+        stock_id, price_date, horizon_days, entry_date, exit_date,
+        rejection_reason, source, projection_version
+      ) VALUES ${values}
+      ON CONFLICT(stock_id, price_date, horizon_days) DO UPDATE SET
+        entry_date=excluded.entry_date,
+        exit_date=excluded.exit_date,
+        rejection_reason=excluded.rejection_reason,
+        source=excluded.source,
+        projection_version=excluded.projection_version,
+        updated_at=CURRENT_TIMESTAMP
+    `).bind(...params)
+  })
+  await executeStatementBatches(db, statements)
+}
+
+export async function materializeStrategyMultiHorizonPriceLabels(
+  env: Bindings,
+  options: {
+    startDate?: string
+    endDate?: string
+    outcomeAsOfDate?: string
+    maxSignalDates?: number
+    maxProcessDates?: number
+    force?: boolean
+  } = {},
+): Promise<StrategyMultiHorizonProjectionResult> {
+  const today = new Date(Date.now() + 8 * 3600_000).toISOString().slice(0, 10)
+  const outcomeAsOfDate = isoDate(options.outcomeAsOfDate ?? today, 'outcome_as_of_date')
+  const endDate = isoDate(options.endDate ?? outcomeAsOfDate, 'end_date')
+  const startDate = isoDate(options.startDate ?? shiftDate(endDate, -DEFAULT_LOOKBACK_DAYS), 'start_date')
+  if (startDate > endDate || endDate > outcomeAsOfDate) throw new Error('invalid_multi_horizon_date_range')
+  const maxSignalDates = Math.max(1, Math.min(Number(options.maxSignalDates ?? DEFAULT_MAX_SIGNAL_DATES), 260))
+  const maxProcessDates = Math.max(1, Math.min(Number(options.maxProcessDates ?? DEFAULT_MAX_PROCESS_DATES), 40))
+  const marketDb = databaseForDataDomain(env, 'market')
+  const sourceLearningDb = databaseForDataDomain(env, 'learning')
+  const targetLearningDb = shadowDatabaseForDataDomain(env, 'learning') ?? sourceLearningDb
+  const sourceOpsDb = databaseForDataDomain(env, 'ops')
+  const targetOpsDb = shadowDatabaseForDataDomain(env, 'ops') ?? sourceOpsDb
+  const candidateSignalDates = await loadCandidateSignalDates(sourceLearningDb, startDate, endDate)
+  let eligibleSignalDates = 0
+  let processedSignalDates = 0
+  let skippedCompleteDates = 0
+  let deferredSignalDates = 0
+  let candidateCount = 0
+  let materializedCount = 0
+  let rejectedCount = 0
+
+  for (const horizonDays of STRATEGY_EVIDENCE_HORIZON_DAYS) {
+    const exitOffset = horizonDays - 1
+    const horizonResult = await marketDb.prepare(`
+      WITH horizons AS (
+        SELECT s.session_date AS signal_date,
+               (SELECT e.session_date FROM market_trading_sessions e
+                 WHERE e.session_date > s.session_date ORDER BY e.session_date LIMIT 1) AS entry_date,
+               (SELECT x.session_date FROM market_trading_sessions x
+                 WHERE x.session_date > s.session_date ORDER BY x.session_date LIMIT 1 OFFSET ${exitOffset}) AS exit_date
+          FROM market_trading_sessions s
+         WHERE s.session_date >= ? AND s.session_date <= ?
+      )
+      SELECT signal_date, entry_date, exit_date
+        FROM horizons
+       WHERE entry_date IS NOT NULL AND exit_date IS NOT NULL AND exit_date <= ?
+       ORDER BY signal_date DESC
+       LIMIT ?
+    `).bind(startDate, endDate, outcomeAsOfDate, maxSignalDates).all<PriceHorizonRow>()
+    const horizons = (horizonResult.results ?? []).filter((row) => candidateSignalDates.has(row.signal_date))
+    eligibleSignalDates += horizons.length
+    const statusResult = horizons.length
+      ? await targetOpsDb.prepare(`
+          SELECT signal_date, entry_date, exit_date, status, projection_version, updated_at
+            FROM price_horizon_projection_status_v2
+           WHERE horizon_days=? AND signal_date >= ? AND signal_date <= ?
+        `).bind(horizonDays, startDate, endDate).all<PriceHorizonProjectionStatusRow>()
+      : { results: [] as PriceHorizonProjectionStatusRow[] }
+    const plan = planPriceHorizonWork(horizons, statusResult.results ?? [], {
+      force: options.force,
+      maxProcessDates,
+      projectionVersion: STRATEGY_MULTI_HORIZON_PROJECTION_VERSION,
+    })
+    skippedCompleteDates += plan.skippedCompleteDates
+    deferredSignalDates += plan.deferredSignalDates
+    for (const horizon of plan.work) {
+      const coverage = await loadCandidateStockIds(sourceLearningDb, horizon.signal_date)
+      if (coverage.referenceRows > 0 && coverage.identifiedReferenceRows !== coverage.referenceRows) {
+        throw new Error(`multi_horizon_reference_identity_incomplete:${horizonDays}:${horizon.signal_date}`)
+      }
+      if (!coverage.stockIds.length) throw new Error(`multi_horizon_candidate_identity_empty:${horizonDays}:${horizon.signal_date}`)
+      const [entryRows, exitRows] = await Promise.all([
+        loadPriceRows(marketDb, horizon.entry_date),
+        loadPriceRows(marketDb, horizon.exit_date),
+      ])
+      const observations = buildPriceHorizonObservations(
+        coverage.stockIds, horizon.signal_date, horizon.entry_date, horizon.exit_date,
+        entryRows, exitRows,
+      )
+      await upsertMultiHorizonLabels(targetLearningDb, horizonDays, observations.labels)
+      await upsertMultiHorizonRejections(targetLearningDb, horizonDays, observations.rejections)
+      const resolved = observations.labels.map((row) => targetLearningDb.prepare(`
+        DELETE FROM price_horizon_label_rejections_v2
+         WHERE stock_id=? AND price_date=? AND horizon_days=?
+      `).bind(row.stockId, row.priceDate, horizonDays))
+      await executeStatementBatches(targetLearningDb, resolved)
+      await targetOpsDb.prepare(`
+        INSERT INTO price_horizon_projection_status_v2 (
+          signal_date, horizon_days, entry_date, exit_date, candidate_count,
+          materialized_count, rejected_count, status, source, projection_version
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, 'success', ?, ?)
+        ON CONFLICT(signal_date, horizon_days) DO UPDATE SET
+          entry_date=excluded.entry_date, exit_date=excluded.exit_date,
+          candidate_count=excluded.candidate_count, materialized_count=excluded.materialized_count,
+          rejected_count=excluded.rejected_count, status=excluded.status,
+          source=excluded.source, projection_version=excluded.projection_version,
+          updated_at=CURRENT_TIMESTAMP
+      `).bind(
+        horizon.signal_date, horizonDays, horizon.entry_date, horizon.exit_date,
+        coverage.stockIds.length, observations.labels.length, observations.rejections.length,
+        PRICE_HORIZON_SOURCE, STRATEGY_MULTI_HORIZON_PROJECTION_VERSION,
+      ).run()
+      processedSignalDates += 1
+      candidateCount += coverage.stockIds.length
+      materializedCount += observations.labels.length
+      rejectedCount += observations.rejections.length
+    }
+  }
+  const status = rejectedCount > 0 ? 'complete_with_rejections' : 'success'
+  const summary = `strategy_multi_horizon horizons=3,5,10 eligible=${eligibleSignalDates} processed=${processedSignalDates} skipped=${skippedCompleteDates} deferred=${deferredSignalDates} candidates=${candidateCount} materialized=${materializedCount} rejected=${rejectedCount} status=${status}`
+  return { horizons: [...STRATEGY_EVIDENCE_HORIZON_DAYS], eligibleSignalDates, processedSignalDates,
+    skippedCompleteDates, deferredSignalDates, candidateCount, materializedCount, rejectedCount, status, summary }
 }

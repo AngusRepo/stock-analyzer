@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict'
 import {
   PRICE_HORIZON_PROJECTION_VERSION,
+  STRATEGY_MULTI_HORIZON_PROJECTION_VERSION,
   buildPriceHorizonObservations,
   planPriceHorizonWork,
 } from './priceHorizonProjection'
@@ -88,6 +89,15 @@ assert.deepEqual(
 )
 assert.equal(plan.skippedCompleteDates, 1)
 assert.equal(plan.deferredSignalDates, 7)
+const independentContractPlan = planPriceHorizonWork(horizons.slice(0, 1), statuses.slice(0, 1), {
+  maxProcessDates: 1,
+  projectionVersion: STRATEGY_MULTI_HORIZON_PROJECTION_VERSION,
+})
+assert.deepEqual(
+  independentContractPlan.work.map((row) => row.signal_date),
+  ['2026-06-01'],
+  'canonical 5d success must not suppress a distinct strategy multi-horizon projection contract',
+)
 
 const forced = planPriceHorizonWork(horizons, statuses, {
   force: true,

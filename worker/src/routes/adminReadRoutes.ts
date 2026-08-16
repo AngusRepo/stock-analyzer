@@ -261,20 +261,42 @@ adminReadRoutes.get('/api/admin/strategy/evidence-profiles', async (c) => {
 
   const [
     { listStrategySpecsForLearning },
-    { listStrategyEvidenceProfiles, STRATEGY_EVIDENCE_PROFILE_VERSION },
+    {
+      CURRENT_CANONICAL_OUTCOME_HORIZON_DAYS,
+      listStrategyEvidenceProfiles,
+      STRATEGY_EVIDENCE_PROFILE_VERSION,
+    },
+    { shadowDatabaseForDataDomain },
   ] = await Promise.all([
     import('../lib/strategyLearning'),
     import('../lib/strategyEvidenceProfile'),
+    import('../lib/dataDomainRegistry'),
   ])
   const { specs, source } = await listStrategySpecsForLearning(c.env.DB)
   const runtimeSpecs = specs.filter((spec) => spec.status !== 'retired')
-  const profiles = listStrategyEvidenceProfiles(runtimeSpecs)
+  const shadowLearningDb = shadowDatabaseForDataDomain(c.env, 'learning') ?? c.env.DB
+  const horizonRows = await shadowLearningDb.prepare(`
+    SELECT horizon_days, COUNT(*) AS outcome_rows
+      FROM canonical_selection_outcomes_v1
+     GROUP BY horizon_days
+     ORDER BY horizon_days
+  `).all<{ horizon_days: number; outcome_rows: number }>().catch(() => ({ results: [] }))
+  const multiHorizonCoverage = (horizonRows.results ?? [])
+    .map((row) => ({ horizon_days: Number(row.horizon_days), outcome_rows: Number(row.outcome_rows) }))
+    .filter((row) => [3, 5, 10].includes(row.horizon_days) && row.outcome_rows > 0)
+  const availableOutcomeHorizonDays = [...new Set([
+    CURRENT_CANONICAL_OUTCOME_HORIZON_DAYS,
+    ...multiHorizonCoverage.map((row) => row.horizon_days),
+  ])].sort((left, right) => left - right)
+  const profiles = listStrategyEvidenceProfiles(runtimeSpecs, { availableOutcomeHorizonDays })
   return c.json({
     success: true, mode: 'read_only', source,
     schema_version: STRATEGY_EVIDENCE_PROFILE_VERSION,
     runtime_strategy_count: runtimeSpecs.length,
     profile_count: profiles.length,
     complete: profiles.length === runtimeSpecs.length,
+    multi_horizon_authority: 'shadow_only',
+    multi_horizon_coverage: multiHorizonCoverage,
     profiles,
   })
 })

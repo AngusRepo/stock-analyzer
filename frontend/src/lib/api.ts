@@ -624,8 +624,8 @@ export type StrategyEvidenceProfile = {
   available_outcome_horizon_days: number[]
   supported_regimes: string[]
   required_metrics: StrategyEvidenceMetric[]
-  outcome_contract_status: 'fixed_5d_available' | 'multi_horizon_pending'
-  outcome_source: 'canonical_selection_labels_v4.residual_return_net'
+  outcome_contract_status: 'fixed_5d_available' | 'primary_horizon_shadow_available' | 'multi_horizon_pending'
+  outcome_source: 'canonical_selection_labels_v4.residual_return_net' | 'canonical_selection_outcomes_v1.residual_return_net'
   production_authority: 'shadow_only'
 }
 

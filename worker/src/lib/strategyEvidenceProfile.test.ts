@@ -89,4 +89,18 @@ assert.equal(runtimeProfiles.find((row) => row.strategy_id === 'runtime_breakout
 assert.equal(runtimeProfiles.find((row) => row.strategy_id === 'runtime_research_strategy')?.primary_horizon_days, 10)
 assert(runtimeProfiles.every((row) => row.production_authority === 'shadow_only'))
 
+const materializedProfiles = listStrategyEvidenceProfiles(runtimeRegistrySpecs, {
+  availableOutcomeHorizonDays: [3, 5, 10],
+})
+assert(materializedProfiles.every((row) => row.available_outcome_horizon_days.join(',') === '3,5,10'))
+assert.equal(
+  materializedProfiles.find((row) => row.strategy_id === 'runtime_reversion_strategy')?.outcome_contract_status,
+  'primary_horizon_shadow_available',
+)
+assert.equal(
+  materializedProfiles.find((row) => row.strategy_id === 'runtime_research_strategy')?.outcome_source,
+  'canonical_selection_outcomes_v1.residual_return_net',
+)
+assert(materializedProfiles.every((row) => row.production_authority === 'shadow_only'))
+
 console.log('strategy evidence profile tests passed')

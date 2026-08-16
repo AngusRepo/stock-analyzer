@@ -100,6 +100,7 @@ console.log(JSON.stringify({
     domain,
     uniqueFindings.filter((finding) => finding.domain === domain).length,
   ])),
+  findings: uniqueFindings,
   outbox_producer_present: outboxProducerPresent,
   inbox_consumer_present: inboxConsumerPresent,
 }, null, 2))

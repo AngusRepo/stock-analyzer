@@ -434,8 +434,12 @@ function StrategyLedgerGroup({
               <div className="rounded-xl border border-cyan-400/20 bg-cyan-400/[0.05] p-3">
                 <div className="flex flex-wrap items-center justify-between gap-2">
                   <span className="text-xs font-semibold text-cyan-100">此策略自己的 evidence 契約</span>
-                  <Badge variant="outline" className={profile?.outcome_contract_status === 'fixed_5d_available' ? statusClass('active') : statusClass('not_ready')}>
-                    {profile?.outcome_contract_status === 'fixed_5d_available' ? '主要週期已有正式結果' : profile ? '主要週期結果待物化' : 'Profile 尚未取得'}
+                  <Badge variant="outline" className={profile?.outcome_contract_status !== 'multi_horizon_pending' ? statusClass('active') : statusClass('not_ready')}>
+                    {profile?.outcome_contract_status === 'primary_horizon_shadow_available'
+                      ? '主要週期已有影子結果'
+                      : profile?.outcome_contract_status === 'fixed_5d_available'
+                        ? '主要週期沿用正式 5 日結果'
+                        : profile ? '主要週期結果待物化' : 'Profile 尚未取得'}
                   </Badge>
                 </div>
                 {profile ? (
@@ -443,7 +447,7 @@ function StrategyLedgerGroup({
                     <p className="mt-2 text-xs leading-5 text-slate-400">
                       主要觀察 <span className="font-mono text-cyan-100">{profile.primary_horizon_days} 個交易日</span>
                       {' · '}交叉檢查 {profile.evaluation_horizon_days.join('／')} 日
-                      {' · '}目前有 {profile.available_outcome_horizon_days.join('／')} 日結果。
+                      {' · '}目前有 {profile.available_outcome_horizon_days.join('／')} 日可用結果。
                     </p>
                     <div className="mt-2 flex flex-wrap gap-1.5">
                       {profile.required_metrics.map((metric) => (
@@ -451,7 +455,7 @@ function StrategyLedgerGroup({
                       ))}
                     </div>
                     <p className="mt-2 text-xs leading-5 text-cyan-100/70">
-                      影子觀察（shadow only）：已在正式環境計算與比較，但不會改待買權重、策略升級或任何下單決策。通過多週期結果與上述指標前，舊 5 日 gate 仍是正式權責。
+                      影子觀察（shadow only）：這些數據已在正式環境產生並拿來比較策略，但只有觀察權，沒有決策權；不會改待買權重、策略升級或任何下單決策。多週期樣本與各策略指標通過前，舊 5 日 gate 仍是正式權責。
                     </p>
                   </>
                 ) : <p className="mt-2 text-xs text-amber-200">Evidence profile API 未回傳此策略；這是資料缺漏，不代表策略績效失敗。</p>}

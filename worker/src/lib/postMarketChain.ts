@@ -22,7 +22,11 @@ import {
   markPipelineStageFenced,
   setPipelineStageCursorFenced,
 } from './pipelineStageLease'
-import { materializePriceHorizonLabels } from './priceHorizonProjection'
+import {
+  materializePriceHorizonLabels,
+  materializeStrategyMultiHorizonPriceLabels,
+} from './priceHorizonProjection'
+import { materializeStrategyMultiHorizonOutcomes } from './strategyMultiHorizonOutcomes'
 import { resolveEveningChainRunAuthority } from './eveningChainRunAuthority'
 
 export type ChainContext = {
@@ -647,13 +651,24 @@ export async function runPostVerifyCallbackChain(
   ctx = { ...ctx, runScope: productionAuthority.runScope }
 
   const projectionTask = await logChainedTask(env, ctx, 'price-horizon-projection', async () => {
-    const result = await materializePriceHorizonLabels(env, {
+    const outcomeAsOfDate = twDateToday()
+    const canonical = await materializePriceHorizonLabels(env, {
       endDate: ctx.runDate,
-      outcomeAsOfDate: twDateToday(),
+      outcomeAsOfDate,
       maxSignalDates: 60,
       maxProcessDates: 8,
     })
-    return result.summary
+    const multiHorizon = await materializeStrategyMultiHorizonPriceLabels(env, {
+      endDate: ctx.runDate,
+      outcomeAsOfDate,
+      maxSignalDates: 60,
+      maxProcessDates: 3,
+    })
+    const outcomes = await materializeStrategyMultiHorizonOutcomes(env, {
+      asOfDate: outcomeAsOfDate,
+      endDate: ctx.runDate,
+    })
+    return `${canonical.summary} | ${multiHorizon.summary} | ${outcomes.summary}`
   }, { timeoutMs: 240_000 })
   results.push(projectionTask)
   if (projectionTask.status === 'error') {

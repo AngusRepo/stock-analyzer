@@ -1037,6 +1037,19 @@ export function buildAdminWorkerDomainTaskMap(c: any, deps: TriggerDeps): Record
       const allowed = new Set(['core', 'market', 'learning', 'ops', 'execution', 'paper', 'research'])
       if (!allowed.has(domain)) throw new Error('invalid data domain')
       const table = String(c.req.query('table') ?? '').trim().toLowerCase()
+      if (c.req.query('carry_forward') === '1') {
+        if (c.req.header('X-Confirm-Data-Domain-Parity-Carry-Forward') !== 'true') {
+          throw new Error('data-domain-shadow-backfill carry_forward requires explicit confirmation')
+        }
+        const parityNotBefore = String(c.req.query('parity_not_before') ?? '').trim()
+        const { carryForwardStableDataDomainParityReceipts } = await import('./dataDomainShadowBackfillDrain')
+        const result = await carryForwardStableDataDomainParityReceipts(
+          c.env,
+          domain as any,
+          parityNotBefore,
+        )
+        return `data_domain_shadow_backfill carry_forward=true ${JSON.stringify(result)}`
+      }
       if (c.req.query('durable') === '1') {
         if (c.req.query('direct_step') === '1') {
           const { runDataDomainShadowBackfillHttpStep } = await import('./dataDomainShadowBackfillDrain')

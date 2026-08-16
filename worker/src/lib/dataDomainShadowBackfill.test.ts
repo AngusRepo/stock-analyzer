@@ -15,7 +15,10 @@ import {
   isDomainShadowCutoverReady,
   parseDomainBackfillCursor,
 } from './dataDomainShadowBackfill'
-import { isDataDomainShadowProgressStale } from './dataDomainShadowBackfillDrain'
+import {
+  dataDomainParityCarryForwardBlockers,
+  isDataDomainShadowProgressStale,
+} from './dataDomainShadowBackfillDrain'
 import { dataDomainManifestPageLimit } from './dataDomainShadowManifest'
 
 assert.deepEqual(domainBackfillKeysetWhere(['id'], null), { sql: '', binds: [] })
@@ -84,6 +87,39 @@ assert.deepEqual(domainBackfillFinalCountFenceBlockers({
 assert.equal(isDataDomainShadowProgressStale(null, null, Date.parse('2026-08-03T12:10:00Z')), false)
 assert.equal(isDataDomainShadowProgressStale('2026-08-03T12:06:00Z', null, Date.parse('2026-08-03T12:10:00Z')), false)
 assert.equal(isDataDomainShadowProgressStale('2026-08-03T12:00:00Z', '2026-08-03T12:04:59Z', Date.parse('2026-08-03T12:10:00Z')), true)
+assert.deepEqual(dataDomainParityCarryForwardBlockers({
+  authoritative: true,
+  receiptCheckedAt: '2026-08-16T05:01:32Z',
+  tableEpochUpdatedAt: '2026-08-16T04:23:42Z',
+  epochBefore: 0,
+  epochAfter: 0,
+  sourceCount: 465096,
+  targetCount: 465096,
+  receiptSourceCount: 465096,
+  receiptTargetCount: 465096,
+}), [])
+assert(dataDomainParityCarryForwardBlockers({
+  authoritative: true,
+  receiptCheckedAt: '2026-08-16T05:01:32Z',
+  tableEpochUpdatedAt: '2026-08-16T05:02:00Z',
+  epochBefore: 1,
+  epochAfter: 1,
+  sourceCount: 465096,
+  targetCount: 465096,
+  receiptSourceCount: 465096,
+  receiptTargetCount: 465096,
+}).includes('source_write_after_receipt'))
+assert(dataDomainParityCarryForwardBlockers({
+  authoritative: true,
+  receiptCheckedAt: '2026-08-16T05:01:32Z',
+  tableEpochUpdatedAt: '2026-08-16T04:23:42Z',
+  epochBefore: 0,
+  epochAfter: 1,
+  sourceCount: 465097,
+  targetCount: 465096,
+  receiptSourceCount: 465096,
+  receiptTargetCount: 465096,
+}).includes('table_writer_epoch_changed'))
 const schemaA = [
   { cid: 0, name: 'id', type: 'INTEGER', notnull: 0, pk: 1 },
   { cid: 1, name: 'value', type: 'TEXT', notnull: 1, pk: 0 },

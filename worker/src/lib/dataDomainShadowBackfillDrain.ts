@@ -34,6 +34,11 @@ import { runWithMaintenanceLease } from './maintenanceLease'
 import { twDaysAgo } from './dateUtils'
 import { logSchedulerResult, type SchedulerRunLogEntry } from './schedulerRunLogger'
 import { dataDomainShadowBackfillActiveKey } from './dataDomainShadowSession'
+import {
+  beginDataDomainWriterQuiescence,
+  readDataDomainWriterEpochSnapshot,
+  reopenDataDomainWriters,
+} from './dataDomainWriterEpoch'
 
 const ACTIVE_TTL_SECONDS = 6 * 3600
 const DEFAULT_MAX_ATTEMPTS = 5000
@@ -703,6 +708,173 @@ async function domainChecksumReady(
     parityTables.push(table)
   }
   return isDomainShadowCutoverReady(tablesForDataDomainShadowBackfill(domain), completedTables, parityTables)
+}
+
+export type DataDomainParityCarryForwardInput = {
+  authoritative: boolean
+  receiptCheckedAt: string | null
+  tableEpochUpdatedAt: string | null
+  epochBefore: number | null
+  epochAfter: number | null
+  sourceCount: number
+  targetCount: number
+  receiptSourceCount: number
+  receiptTargetCount: number
+}
+
+export function dataDomainParityCarryForwardBlockers(
+  input: DataDomainParityCarryForwardInput,
+): string[] {
+  const blockers: string[] = []
+  if (!input.authoritative) blockers.push('authoritative_receipt_missing')
+  const receiptMs = Date.parse(String(input.receiptCheckedAt ?? ''))
+  const epochUpdatedMs = Date.parse(String(input.tableEpochUpdatedAt ?? ''))
+  if (!Number.isFinite(receiptMs) || !Number.isFinite(epochUpdatedMs)) {
+    blockers.push('writer_epoch_timestamp_missing')
+  } else if (epochUpdatedMs > receiptMs) {
+    blockers.push('source_write_after_receipt')
+  }
+  if (
+    input.epochBefore === null
+    || input.epochAfter === null
+    || input.epochBefore !== input.epochAfter
+  ) blockers.push('table_writer_epoch_changed')
+  if (input.sourceCount !== input.receiptSourceCount) blockers.push('source_count_changed')
+  if (input.targetCount !== input.receiptTargetCount) blockers.push('target_count_changed')
+  if (input.sourceCount !== input.targetCount) blockers.push('live_count_mismatch')
+  return blockers
+}
+
+type CarryForwardReceipt = {
+  check_id?: string | null
+  table_name?: string | null
+  status?: string | null
+  source_count?: number | string | null
+  target_count?: number | string | null
+  source_checksum?: string | null
+  target_checksum?: string | null
+  evidence_json?: string | null
+  checked_at?: string | null
+}
+
+export async function carryForwardStableDataDomainParityReceipts(
+  env: Bindings,
+  domain: DataDomain,
+  parityNotBefore: string,
+): Promise<{
+  schema_version: 'data-domain-parity-carry-forward-v1'
+  domain: DataDomain
+  parity_not_before: string
+  carried_tables: string[]
+  already_fresh_tables: string[]
+  blocked: Array<{ table: string; blockers: string[] }>
+}> {
+  if (domain !== 'ops') throw new Error(`data_domain_parity_carry_forward_not_closed:${domain}`)
+  if (String(env.MULTI_D1_STRICT ?? '').trim().toLowerCase() === 'true' || activeDataDomains(env).has(domain)) {
+    throw new Error(`data_domain_parity_carry_forward_requires_inactive_target:${domain}`)
+  }
+  if (!Number.isFinite(Date.parse(parityNotBefore))) {
+    throw new Error('data_domain_parity_carry_forward_watermark_invalid')
+  }
+  const target = shadowDatabaseForDataDomain(env, domain)
+  if (!target) throw new Error(`data_domain_shadow_binding_missing:${domain}`)
+  const before = await readDataDomainWriterEpochSnapshot(env.DB, domain)
+  if (before.writer_state !== 'open') {
+    throw new Error(`data_domain_parity_carry_forward_writer_not_open:${domain}:${before.writer_state}`)
+  }
+  const quiescedEpoch = await beginDataDomainWriterQuiescence(env.DB, domain, before.epoch)
+  const carriedTables: string[] = []
+  const alreadyFreshTables: string[] = []
+  const blocked: Array<{ table: string; blockers: string[] }> = []
+  try {
+    for (const table of tablesForDataDomainShadowBackfill(domain)) {
+      const receipt = await env.DB.prepare(`
+        SELECT check_id, table_name, status, source_count, target_count,
+               source_checksum, target_checksum, evidence_json, checked_at
+          FROM data_domain_parity_checks
+         WHERE check_id=?
+      `).bind(`domain-parity:${domain}:${table}:full-table`).first<CarryForwardReceipt>()
+      if (receipt && isDataDomainFullTableParityFresh(table, receipt, parityNotBefore)) {
+        alreadyFreshTables.push(table)
+        continue
+      }
+      const epochBefore = await env.DB.prepare(`
+        SELECT epoch, updated_at FROM data_domain_table_writer_epochs
+         WHERE domain=? AND table_name=?
+      `).bind(domain, table).first<{ epoch?: number | string; updated_at?: string | null }>()
+      const [sourceCount, targetCount] = await Promise.all([
+        tableRowCount(env.DB, table),
+        tableRowCount(target, table),
+      ])
+      const epochAfter = await env.DB.prepare(`
+        SELECT epoch, updated_at FROM data_domain_table_writer_epochs
+         WHERE domain=? AND table_name=?
+      `).bind(domain, table).first<{ epoch?: number | string; updated_at?: string | null }>()
+      const epochBeforeValue = epochBefore && Number.isSafeInteger(Number(epochBefore.epoch))
+        ? Number(epochBefore.epoch)
+        : null
+      const epochAfterValue = epochAfter && Number.isSafeInteger(Number(epochAfter.epoch))
+        ? Number(epochAfter.epoch)
+        : null
+      const blockers = dataDomainParityCarryForwardBlockers({
+        authoritative: Boolean(receipt && isAuthoritativeDataDomainFullTableParity(table, receipt)),
+        receiptCheckedAt: receipt?.checked_at ?? null,
+        tableEpochUpdatedAt: epochBefore?.updated_at ?? null,
+        epochBefore: epochBeforeValue,
+        epochAfter: epochAfterValue,
+        sourceCount,
+        targetCount,
+        receiptSourceCount: Number(receipt?.source_count ?? -1),
+        receiptTargetCount: Number(receipt?.target_count ?? -1),
+      })
+      if (blockers.length) {
+        blocked.push({ table, blockers })
+        continue
+      }
+      let previousEvidence: Record<string, unknown> = {}
+      try {
+        previousEvidence = JSON.parse(String(receipt?.evidence_json ?? '{}')) as Record<string, unknown>
+      } catch {}
+      const carriedAt = new Date().toISOString()
+      const evidence = JSON.stringify({
+        ...previousEvidence,
+        carry_forward_schema_version: 'data-domain-parity-carry-forward-v1',
+        carried_from_checked_at: receipt!.checked_at,
+        carried_at: carriedAt,
+        table_writer_epoch: epochAfterValue,
+        table_writer_epoch_updated_at: epochAfter?.updated_at ?? null,
+        count_revalidated: true,
+      })
+      const updated = await env.DB.prepare(`
+        UPDATE data_domain_parity_checks
+           SET evidence_json=?, checked_at=?
+         WHERE check_id=? AND status='pass' AND checked_at=?
+           AND source_count=? AND target_count=? AND source_checksum=target_checksum
+      `).bind(
+        evidence,
+        carriedAt,
+        receipt!.check_id,
+        receipt!.checked_at,
+        sourceCount,
+        targetCount,
+      ).run()
+      if (Number(updated.meta?.changes ?? 0) !== 1) {
+        blocked.push({ table, blockers: ['receipt_compare_and_swap_failed'] })
+        continue
+      }
+      carriedTables.push(table)
+    }
+  } finally {
+    await reopenDataDomainWriters(env.DB, domain, quiescedEpoch)
+  }
+  return {
+    schema_version: 'data-domain-parity-carry-forward-v1',
+    domain,
+    parity_not_before: parityNotBefore,
+    carried_tables: carriedTables,
+    already_fresh_tables: alreadyFreshTables,
+    blocked,
+  }
 }
 
 export async function enqueueDataDomainShadowBackfill(

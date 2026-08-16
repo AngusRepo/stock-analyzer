@@ -12,6 +12,8 @@ const admin = fs.readFileSync('src/lib/adminTriggerWorkerDomainTasks.ts', 'utf8'
 const types = fs.readFileSync('src/types.ts', 'utf8')
 
 assert(drain.includes("leaseGroup: 'd1_heavy_maintenance'"))
+assert(drain.includes('SHADOW_BACKFILL_QUEUE_BATCH_LIMIT = 50'))
+assert(drain.includes('limit: SHADOW_BACKFILL_QUEUE_BATCH_LIMIT'))
 assert(drain.includes('tablesForDataDomainShadowBackfill'))
 assert(drain.includes('msg.dataDomainRequestedTable'))
 assert(drain.includes('data_domain_shadow_backfill_scope_mismatch'))

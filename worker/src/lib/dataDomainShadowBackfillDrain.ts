@@ -39,6 +39,7 @@ const ACTIVE_TTL_SECONDS = 6 * 3600
 const DEFAULT_MAX_ATTEMPTS = 5000
 const MAX_ATTEMPTS = 20_000
 const STALE_PROGRESS_MS = 5 * 60 * 1000
+const SHADOW_BACKFILL_QUEUE_BATCH_LIMIT = 50
 
 type DataDomainShadowMutationAuthority = {
   domain: DataDomain
@@ -737,7 +738,7 @@ export async function processDataDomainShadowBackfillDrain(
       run: () => backfillDataDomainTableShadow(env, {
         domain,
         table,
-        limit: 500,
+        limit: SHADOW_BACKFILL_QUEUE_BATCH_LIMIT,
         parityNotBefore,
       }),
     })

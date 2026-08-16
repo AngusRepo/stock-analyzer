@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from types import SimpleNamespace
 
 from services import recommendation_service
 from services.recommendation_service import write_layer3_formal_gate_audit
@@ -13,7 +14,11 @@ def test_write_layer3_formal_gate_audit_persists_pass_and_drop(monkeypatch):
         captured.extend(statements)
         return {"success": True}
 
-    monkeypatch.setattr(recommendation_service.d1_client, "batch_execute", fake_batch_execute)
+    monkeypatch.setattr(
+        recommendation_service,
+        "OPS_D1_CLIENT",
+        SimpleNamespace(batch_execute=fake_batch_execute),
+    )
 
     inserted = write_layer3_formal_gate_audit(
         predictions={
@@ -81,9 +86,11 @@ def test_write_layer3_formal_gate_audit_persists_pass_and_drop(monkeypatch):
 def test_write_layer3_formal_gate_audit_keeps_family_breadth_advisory(monkeypatch):
     captured = []
     monkeypatch.setattr(
-        recommendation_service.d1_client,
-        "batch_execute",
-        lambda statements: captured.extend(statements) or {"success": True},
+        recommendation_service,
+        "OPS_D1_CLIENT",
+        SimpleNamespace(
+            batch_execute=lambda statements: captured.extend(statements) or {"success": True}
+        ),
     )
 
     write_layer3_formal_gate_audit(
@@ -122,9 +129,11 @@ def test_write_layer3_formal_gate_audit_keeps_family_breadth_advisory(monkeypatc
 def test_write_layer3_formal_gate_audit_distinguishes_universe_ineligible(monkeypatch):
     captured = []
     monkeypatch.setattr(
-        recommendation_service.d1_client,
-        "batch_execute",
-        lambda statements: captured.extend(statements) or {"success": True},
+        recommendation_service,
+        "OPS_D1_CLIENT",
+        SimpleNamespace(
+            batch_execute=lambda statements: captured.extend(statements) or {"success": True}
+        ),
     )
 
     write_layer3_formal_gate_audit(

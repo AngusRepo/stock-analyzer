@@ -5,6 +5,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+from services import cost_tracker  # noqa: E402
 from services.cost_tracker import (  # noqa: E402
     build_compute_profile_event_payload,
     build_modal_compute_profile,
@@ -186,3 +187,19 @@ def test_compute_profile_event_json_round_trips_artifact_count_to_contract():
 
     assert normalized["rows"] == 1250
     assert normalized["artifact_count"] == 4
+
+
+def test_ops_d1_url_uses_domain_router(monkeypatch):
+    routed_domains = []
+    monkeypatch.setattr(cost_tracker, "_CF_ACCOUNT_ID", "account-id")
+    monkeypatch.setattr(
+        cost_tracker,
+        "database_id_for_domain",
+        lambda domain: routed_domains.append(domain) or "ops-db-id",
+    )
+
+    assert cost_tracker._ops_d1_url() == (
+        "https://api.cloudflare.com/client/v4/accounts/account-id"
+        "/d1/database/ops-db-id/query"
+    )
+    assert routed_domains == [cost_tracker.D1DataDomain.OPS]

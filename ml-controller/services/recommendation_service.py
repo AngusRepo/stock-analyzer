@@ -19,6 +19,7 @@ from numbers import Integral, Real
 from typing import Any, Optional
 
 from services import d1_client
+from services.d1_domain_client import D1DataDomain, client_for_domain
 from services._predictions_schema import (
     COL_STOCK_ID,
     COL_MODEL_NAME,
@@ -67,6 +68,7 @@ from services.fusion_market_context import build_runtime_market_context
 from services.price_horizon_projection_contract import PRICE_HORIZONS_CTE
 
 logger = logging.getLogger(__name__)
+OPS_D1_CLIENT = client_for_domain(D1DataDomain.OPS)
 
 D1_IN_CLAUSE_CHUNK_SIZE = 80
 POTENTIAL_BUY_SIGNAL = "POTENTIAL_BUY"
@@ -4386,7 +4388,7 @@ def write_layer2_timesfm_enrichment_audit(
             ],
         ))
 
-    d1_client.batch_execute(statements)
+    OPS_D1_CLIENT.batch_execute(statements)
     inserted = len(statements) - 1
     logger.info(
         "[recommendation_service] Wrote %s L2 TimesFM enrichment audit rows run_id=%s date=%s",
@@ -4518,7 +4520,7 @@ def write_layer3_formal_gate_audit(
             ],
         ))
 
-    d1_client.batch_execute(statements)
+    OPS_D1_CLIENT.batch_execute(statements)
     inserted = len(statements) - 1
     logger.info(
         "[recommendation_service] Wrote %s L3 formal gate audit rows run_id=%s date=%s",

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from types import SimpleNamespace
 
 from services import recommendation_service
 from services.recommendation_service import write_layer2_timesfm_enrichment_audit
@@ -13,7 +14,11 @@ def test_write_layer2_timesfm_enrichment_audit_persists_feature_sidecar_evidence
         captured.extend(statements)
         return {"success": True}
 
-    monkeypatch.setattr(recommendation_service.d1_client, "batch_execute", fake_batch_execute)
+    monkeypatch.setattr(
+        recommendation_service,
+        "OPS_D1_CLIENT",
+        SimpleNamespace(batch_execute=fake_batch_execute),
+    )
 
     inserted = write_layer2_timesfm_enrichment_audit(
         predictions={

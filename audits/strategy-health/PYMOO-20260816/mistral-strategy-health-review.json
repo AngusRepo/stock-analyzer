@@ -1,0 +1,356 @@
+{
+  "schema_version": "stockvision-mistral-strategy-health-review-v1",
+  "generated_at": "2026-08-16T07:08:55.4426775Z",
+  "source_type": "REAL",
+  "evidence_level": "E0_E1_HYPOTHESIS",
+  "model_id": "@cf/mistralai/mistral-small-3.1-24b-instruct",
+  "outbound_privacy": "anonymous_handles_and_aggregate_metrics_only",
+  "schema_normalization": "model_returned_valid_json_with_alternate_field_names; normalized losslessly; confidence forced low",
+  "strategy_reviews": [
+    {
+      "strategy_id": "alpha223_0009",
+      "handle": "S01",
+      "evidence_class": "E0",
+      "diagnosis": "Insufficient evidence to conclude economic failure. Monitor date_return_lcb90.",
+      "optimization_actions": [
+        "Insufficient evidence to conclude economic failure. Monitor date_return_lcb90."
+      ],
+      "falsification_tests": [
+        "Verify date_return_lcb90 positivity over extended period."
+      ],
+      "confidence": "low"
+    },
+    {
+      "strategy_id": "alpha223_0166",
+      "handle": "S02",
+      "evidence_class": "E1",
+      "diagnosis": "Economic failure indicated by multiple metrics. Investigate trend following model assumptions.",
+      "optimization_actions": [
+        "Economic failure indicated by multiple metrics. Investigate trend following model assumptions."
+      ],
+      "falsification_tests": [
+        "Backtest with varied trend detection parameters.",
+        "Stress test under different market regimes."
+      ],
+      "confidence": "low"
+    },
+    {
+      "strategy_id": "alpha223_0283",
+      "handle": "S03",
+      "evidence_class": "E1",
+      "diagnosis": "Economic failure suggested by hit rate and date_return_lcb90. Review breakout volatility expansion logic.",
+      "optimization_actions": [
+        "Economic failure suggested by hit rate and date_return_lcb90. Review breakout volatility expansion logic."
+      ],
+      "falsification_tests": [
+        "Test with alternative volatility measures.",
+        "Evaluate performance in different volatility regimes."
+      ],
+      "confidence": "low"
+    },
+    {
+      "strategy_id": "alpha_miner_pymoo_nsga3_novelty_0193",
+      "handle": "S04",
+      "evidence_class": "E0",
+      "diagnosis": "Insufficient mature dates for conclusive diagnosis. Continue monitoring.",
+      "optimization_actions": [
+        "Insufficient mature dates for conclusive diagnosis. Continue monitoring."
+      ],
+      "falsification_tests": [
+        "Wait for more mature dates before further evaluation."
+      ],
+      "confidence": "low"
+    },
+    {
+      "strategy_id": "defensive_accumulation_seed_v1",
+      "handle": "S05",
+      "evidence_class": "E1",
+      "diagnosis": "Severe economic failure. Re-evaluate defensive accumulation strategy fundamentals.",
+      "optimization_actions": [
+        "Severe economic failure. Re-evaluate defensive accumulation strategy fundamentals."
+      ],
+      "falsification_tests": [
+        "Conduct thorough backtesting with varied parameters.",
+        "Assess performance under different market conditions."
+      ],
+      "confidence": "low"
+    },
+    {
+      "strategy_id": "finlab_ai_skill_reversion_value_v1",
+      "handle": "S06",
+      "evidence_class": "E0",
+      "diagnosis": "Insufficient evidence to conclude economic failure. Monitor date_return_lcb90.",
+      "optimization_actions": [
+        "Insufficient evidence to conclude economic failure. Monitor date_return_lcb90."
+      ],
+      "falsification_tests": [
+        "Verify date_return_lcb90 positivity over extended period."
+      ],
+      "confidence": "low"
+    },
+    {
+      "strategy_id": "smrc_vwap_reclaim_v1",
+      "handle": "S07",
+      "evidence_class": "E1",
+      "diagnosis": "Severe economic failure. Investigate breakout volatility expansion model robustness.",
+      "optimization_actions": [
+        "Severe economic failure. Investigate breakout volatility expansion model robustness."
+      ],
+      "falsification_tests": [
+        "Backtest with varied breakout detection parameters.",
+        "Stress test under different market regimes."
+      ],
+      "confidence": "low"
+    },
+    {
+      "strategy_id": "trend_quality_breakout_fused_v1",
+      "handle": "S08",
+      "evidence_class": "E1",
+      "diagnosis": "Economic failure indicated by multiple metrics. Review trend following model assumptions.",
+      "optimization_actions": [
+        "Economic failure indicated by multiple metrics. Review trend following model assumptions."
+      ],
+      "falsification_tests": [
+        "Backtest with varied trend detection parameters.",
+        "Stress test under different market regimes."
+      ],
+      "confidence": "low"
+    },
+    {
+      "strategy_id": "alpha_miner_pymoo_nsga3_novelty_0187",
+      "handle": "S09",
+      "evidence_class": "E0",
+      "diagnosis": "Insufficient evidence to conclude economic failure. Monitor hit rate and date_return_lcb90.",
+      "optimization_actions": [
+        "Insufficient evidence to conclude economic failure. Monitor hit rate and date_return_lcb90."
+      ],
+      "falsification_tests": [
+        "Verify hit rate stability and date_return_lcb90 positivity over extended period."
+      ],
+      "confidence": "low"
+    },
+    {
+      "strategy_id": "stock_tech_s08_rsi2_bull_mean_reversion_v1",
+      "handle": "S10",
+      "evidence_class": "E0",
+      "diagnosis": "Insufficient mature dates for conclusive diagnosis. Continue monitoring.",
+      "optimization_actions": [
+        "Insufficient mature dates for conclusive diagnosis. Continue monitoring."
+      ],
+      "falsification_tests": [
+        "Wait for more mature dates before further evaluation."
+      ],
+      "confidence": "low"
+    },
+    {
+      "strategy_id": "stock_tech_s08_rsi2_risk_filter_v1",
+      "handle": "S11",
+      "evidence_class": "E0",
+      "diagnosis": "Insufficient mature dates for conclusive diagnosis. Continue monitoring.",
+      "optimization_actions": [
+        "Insufficient mature dates for conclusive diagnosis. Continue monitoring."
+      ],
+      "falsification_tests": [
+        "Wait for more mature dates before further evaluation."
+      ],
+      "confidence": "low"
+    },
+    {
+      "strategy_id": "stock_tech_s12_multitimeframe_smc_reclaim_v2",
+      "handle": "S12",
+      "evidence_class": "E1",
+      "diagnosis": "Severe economic failure. Re-evaluate breakout volatility expansion strategy fundamentals.",
+      "optimization_actions": [
+        "Severe economic failure. Re-evaluate breakout volatility expansion strategy fundamentals."
+      ],
+      "falsification_tests": [
+        "Conduct thorough backtesting with varied parameters.",
+        "Assess performance under different market conditions."
+      ],
+      "confidence": "low"
+    },
+    {
+      "strategy_id": "alpha223_0109",
+      "handle": "S13",
+      "evidence_class": "E1",
+      "diagnosis": "Economic failure indicated by multiple metrics. Review trend following model assumptions.",
+      "optimization_actions": [
+        "Economic failure indicated by multiple metrics. Review trend following model assumptions."
+      ],
+      "falsification_tests": [
+        "Backtest with varied trend detection parameters.",
+        "Stress test under different market regimes."
+      ],
+      "confidence": "low"
+    },
+    {
+      "strategy_id": "alpha_miner_pymoo_nsga3_novelty_0081",
+      "handle": "S14",
+      "evidence_class": "E0",
+      "diagnosis": "Insufficient evidence to conclude economic failure due to low match rate. Monitor drawdown and date_return_lcb90.",
+      "optimization_actions": [
+        "Insufficient evidence to conclude economic failure due to low match rate. Monitor drawdown and date_return_lcb90."
+      ],
+      "falsification_tests": [
+        "Verify drawdown and date_return_lcb90 under varied conditions."
+      ],
+      "confidence": "low"
+    },
+    {
+      "strategy_id": "stock_tech_s02_52w_dual_momentum_v1",
+      "handle": "S15",
+      "evidence_class": "E1",
+      "diagnosis": "Severe economic failure. Investigate trend following model robustness.",
+      "optimization_actions": [
+        "Severe economic failure. Investigate trend following model robustness."
+      ],
+      "falsification_tests": [
+        "Backtest with varied trend detection parameters.",
+        "Stress test under different market regimes."
+      ],
+      "confidence": "low"
+    },
+    {
+      "strategy_id": "stock_tech_s06_nr7_inside_bar_breakout_v1",
+      "handle": "S16",
+      "evidence_class": "E1",
+      "diagnosis": "Severe economic failure. Re-evaluate breakout volatility expansion strategy fundamentals.",
+      "optimization_actions": [
+        "Severe economic failure. Re-evaluate breakout volatility expansion strategy fundamentals."
+      ],
+      "falsification_tests": [
+        "Conduct thorough backtesting with varied parameters.",
+        "Assess performance under different market conditions."
+      ],
+      "confidence": "low"
+    },
+    {
+      "strategy_id": "finlab_ai_skill_quality_trend_v1",
+      "handle": "S17",
+      "evidence_class": "E1",
+      "diagnosis": "Severe economic failure. Investigate trend following model robustness.",
+      "optimization_actions": [
+        "Severe economic failure. Investigate trend following model robustness."
+      ],
+      "falsification_tests": [
+        "Backtest with varied trend detection parameters.",
+        "Stress test under different market regimes."
+      ],
+      "confidence": "low"
+    },
+    {
+      "strategy_id": "finlab_ai_skill_revenue_revision_breakout_v1",
+      "handle": "S18",
+      "evidence_class": "E0",
+      "diagnosis": "Insufficient evidence to conclude economic failure due to low match rate. Monitor date_return_lcb90.",
+      "optimization_actions": [
+        "Insufficient evidence to conclude economic failure due to low match rate. Monitor date_return_lcb90."
+      ],
+      "falsification_tests": [
+        "Verify date_return_lcb90 positivity over extended period."
+      ],
+      "confidence": "low"
+    },
+    {
+      "strategy_id": "stock_tech_s01_55d_trend_volume_breakout_v1",
+      "handle": "S19",
+      "evidence_class": "E1",
+      "diagnosis": "Severe economic failure. Re-evaluate breakout volatility expansion strategy fundamentals.",
+      "optimization_actions": [
+        "Severe economic failure. Re-evaluate breakout volatility expansion strategy fundamentals."
+      ],
+      "falsification_tests": [
+        "Conduct thorough backtesting with varied parameters.",
+        "Assess performance under different market conditions."
+      ],
+      "confidence": "low"
+    },
+    {
+      "strategy_id": "stock_tech_s04_ma_deduct_turn_breakout_v1",
+      "handle": "S20",
+      "evidence_class": "E1",
+      "diagnosis": "Severe economic failure. Investigate trend following model robustness.",
+      "optimization_actions": [
+        "Severe economic failure. Investigate trend following model robustness."
+      ],
+      "falsification_tests": [
+        "Backtest with varied trend detection parameters.",
+        "Stress test under different market regimes."
+      ],
+      "confidence": "low"
+    },
+    {
+      "strategy_id": "stock_tech_s03_vcp_contraction_breakout_v1",
+      "handle": "S21",
+      "evidence_class": "E0",
+      "diagnosis": "Insufficient evidence for diagnosis. Gather more data before evaluation.",
+      "optimization_actions": [
+        "Insufficient evidence for diagnosis. Gather more data before evaluation."
+      ],
+      "falsification_tests": [
+        "Collect more samples and mature dates."
+      ],
+      "confidence": "low"
+    },
+    {
+      "strategy_id": "stock_tech_s05_first_dry_pullback_v1",
+      "handle": "S22",
+      "evidence_class": "E0",
+      "diagnosis": "Insufficient evidence for diagnosis. Gather more data before evaluation.",
+      "optimization_actions": [
+        "Insufficient evidence for diagnosis. Gather more data before evaluation."
+      ],
+      "falsification_tests": [
+        "Collect more samples and mature dates."
+      ],
+      "confidence": "low"
+    },
+    {
+      "strategy_id": "stock_tech_s07_2b_false_break_reversal_v1",
+      "handle": "S23",
+      "evidence_class": "E1",
+      "diagnosis": "Economic failure indicated by hit rate and avg_return. Investigate mean reversion model assumptions.",
+      "optimization_actions": [
+        "Economic failure indicated by hit rate and avg_return. Investigate mean reversion model assumptions."
+      ],
+      "falsification_tests": [
+        "Backtest with varied mean reversion parameters.",
+        "Stress test under different market regimes."
+      ],
+      "confidence": "low"
+    },
+    {
+      "strategy_id": "stock_tech_s09_three_soldiers_base_breakout_v1",
+      "handle": "S24",
+      "evidence_class": "E0",
+      "diagnosis": "Insufficient evidence for diagnosis. Gather more data before evaluation.",
+      "optimization_actions": [
+        "Insufficient evidence for diagnosis. Gather more data before evaluation."
+      ],
+      "falsification_tests": [
+        "Collect more samples and mature dates."
+      ],
+      "confidence": "low"
+    },
+    {
+      "strategy_id": "stock_tech_s10_island_reversal_v1",
+      "handle": "S25",
+      "evidence_class": "E0",
+      "diagnosis": "Insufficient evidence for diagnosis. Gather more data before evaluation.",
+      "optimization_actions": [
+        "Insufficient evidence for diagnosis. Gather more data before evaluation."
+      ],
+      "falsification_tests": [
+        "Collect more samples and mature dates."
+      ],
+      "confidence": "low"
+    }
+  ],
+  "system_findings": [],
+  "prioritized_actions": [],
+  "limitations": [
+    "Mistral suggestions are hypotheses, not repository jury verdicts.",
+    "Model did not follow the requested output field names.",
+    "Parameter variation and backtest suggestions require locked PIT, costs, and multiple-testing controls."
+  ]
+}

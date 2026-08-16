@@ -1,0 +1,281 @@
+{
+  "evidence_cutoff": "2026-08-16",
+  "method": {
+    "algorithm": "pymoo NonDominatedSorting",
+    "guardrail": "diagnostic_only_no_threshold_tuning_no_promotion_no_weight_change",
+    "objectives_minimized": [
+      "negative_date_return_lcb90",
+      "negative_avg_cost_net_return",
+      "negative_hit_rate",
+      "max_drawdown_magnitude",
+      "negative_log1p_samples",
+      "max_absolute_return_correlation"
+    ]
+  },
+  "schema_version": "stockvision-anonymous-strategy-health-review-v1",
+  "strategies": [
+    {
+      "diagnosis": "E0",
+      "handle": "S01",
+      "recommendations": [
+        "Insufficient evidence to conclude economic failure. Monitor date_return_lcb90."
+      ],
+      "tests": [
+        "Verify date_return_lcb90 positivity over extended period."
+      ]
+    },
+    {
+      "diagnosis": "E1",
+      "handle": "S02",
+      "recommendations": [
+        "Economic failure indicated by multiple metrics. Investigate trend following model assumptions."
+      ],
+      "tests": [
+        "Backtest with varied trend detection parameters.",
+        "Stress test under different market regimes."
+      ]
+    },
+    {
+      "diagnosis": "E1",
+      "handle": "S03",
+      "recommendations": [
+        "Economic failure suggested by hit rate and date_return_lcb90. Review breakout volatility expansion logic."
+      ],
+      "tests": [
+        "Test with alternative volatility measures.",
+        "Evaluate performance in different volatility regimes."
+      ]
+    },
+    {
+      "diagnosis": "E0",
+      "handle": "S04",
+      "recommendations": [
+        "Insufficient mature dates for conclusive diagnosis. Continue monitoring."
+      ],
+      "tests": [
+        "Wait for more mature dates before further evaluation."
+      ]
+    },
+    {
+      "diagnosis": "E1",
+      "handle": "S05",
+      "recommendations": [
+        "Severe economic failure. Re-evaluate defensive accumulation strategy fundamentals."
+      ],
+      "tests": [
+        "Conduct thorough backtesting with varied parameters.",
+        "Assess performance under different market conditions."
+      ]
+    },
+    {
+      "diagnosis": "E0",
+      "handle": "S06",
+      "recommendations": [
+        "Insufficient evidence to conclude economic failure. Monitor date_return_lcb90."
+      ],
+      "tests": [
+        "Verify date_return_lcb90 positivity over extended period."
+      ]
+    },
+    {
+      "diagnosis": "E1",
+      "handle": "S07",
+      "recommendations": [
+        "Severe economic failure. Investigate breakout volatility expansion model robustness."
+      ],
+      "tests": [
+        "Backtest with varied breakout detection parameters.",
+        "Stress test under different market regimes."
+      ]
+    },
+    {
+      "diagnosis": "E1",
+      "handle": "S08",
+      "recommendations": [
+        "Economic failure indicated by multiple metrics. Review trend following model assumptions."
+      ],
+      "tests": [
+        "Backtest with varied trend detection parameters.",
+        "Stress test under different market regimes."
+      ]
+    },
+    {
+      "diagnosis": "E0",
+      "handle": "S09",
+      "recommendations": [
+        "Insufficient evidence to conclude economic failure. Monitor hit rate and date_return_lcb90."
+      ],
+      "tests": [
+        "Verify hit rate stability and date_return_lcb90 positivity over extended period."
+      ]
+    },
+    {
+      "diagnosis": "E0",
+      "handle": "S10",
+      "recommendations": [
+        "Insufficient mature dates for conclusive diagnosis. Continue monitoring."
+      ],
+      "tests": [
+        "Wait for more mature dates before further evaluation."
+      ]
+    },
+    {
+      "diagnosis": "E0",
+      "handle": "S11",
+      "recommendations": [
+        "Insufficient mature dates for conclusive diagnosis. Continue monitoring."
+      ],
+      "tests": [
+        "Wait for more mature dates before further evaluation."
+      ]
+    },
+    {
+      "diagnosis": "E1",
+      "handle": "S12",
+      "recommendations": [
+        "Severe economic failure. Re-evaluate breakout volatility expansion strategy fundamentals."
+      ],
+      "tests": [
+        "Conduct thorough backtesting with varied parameters.",
+        "Assess performance under different market conditions."
+      ]
+    },
+    {
+      "diagnosis": "E1",
+      "handle": "S13",
+      "recommendations": [
+        "Economic failure indicated by multiple metrics. Review trend following model assumptions."
+      ],
+      "tests": [
+        "Backtest with varied trend detection parameters.",
+        "Stress test under different market regimes."
+      ]
+    },
+    {
+      "diagnosis": "E0",
+      "handle": "S14",
+      "recommendations": [
+        "Insufficient evidence to conclude economic failure due to low match rate. Monitor drawdown and date_return_lcb90."
+      ],
+      "tests": [
+        "Verify drawdown and date_return_lcb90 under varied conditions."
+      ]
+    },
+    {
+      "diagnosis": "E1",
+      "handle": "S15",
+      "recommendations": [
+        "Severe economic failure. Investigate trend following model robustness."
+      ],
+      "tests": [
+        "Backtest with varied trend detection parameters.",
+        "Stress test under different market regimes."
+      ]
+    },
+    {
+      "diagnosis": "E1",
+      "handle": "S16",
+      "recommendations": [
+        "Severe economic failure. Re-evaluate breakout volatility expansion strategy fundamentals."
+      ],
+      "tests": [
+        "Conduct thorough backtesting with varied parameters.",
+        "Assess performance under different market conditions."
+      ]
+    },
+    {
+      "diagnosis": "E1",
+      "handle": "S17",
+      "recommendations": [
+        "Severe economic failure. Investigate trend following model robustness."
+      ],
+      "tests": [
+        "Backtest with varied trend detection parameters.",
+        "Stress test under different market regimes."
+      ]
+    },
+    {
+      "diagnosis": "E0",
+      "handle": "S18",
+      "recommendations": [
+        "Insufficient evidence to conclude economic failure due to low match rate. Monitor date_return_lcb90."
+      ],
+      "tests": [
+        "Verify date_return_lcb90 positivity over extended period."
+      ]
+    },
+    {
+      "diagnosis": "E1",
+      "handle": "S19",
+      "recommendations": [
+        "Severe economic failure. Re-evaluate breakout volatility expansion strategy fundamentals."
+      ],
+      "tests": [
+        "Conduct thorough backtesting with varied parameters.",
+        "Assess performance under different market conditions."
+      ]
+    },
+    {
+      "diagnosis": "E1",
+      "handle": "S20",
+      "recommendations": [
+        "Severe economic failure. Investigate trend following model robustness."
+      ],
+      "tests": [
+        "Backtest with varied trend detection parameters.",
+        "Stress test under different market regimes."
+      ]
+    },
+    {
+      "diagnosis": "E0",
+      "handle": "S21",
+      "recommendations": [
+        "Insufficient evidence for diagnosis. Gather more data before evaluation."
+      ],
+      "tests": [
+        "Collect more samples and mature dates."
+      ]
+    },
+    {
+      "diagnosis": "E0",
+      "handle": "S22",
+      "recommendations": [
+        "Insufficient evidence for diagnosis. Gather more data before evaluation."
+      ],
+      "tests": [
+        "Collect more samples and mature dates."
+      ]
+    },
+    {
+      "diagnosis": "E1",
+      "handle": "S23",
+      "recommendations": [
+        "Economic failure indicated by hit rate and avg_return. Investigate mean reversion model assumptions."
+      ],
+      "tests": [
+        "Backtest with varied mean reversion parameters.",
+        "Stress test under different market regimes."
+      ]
+    },
+    {
+      "diagnosis": "E0",
+      "handle": "S24",
+      "recommendations": [
+        "Insufficient evidence for diagnosis. Gather more data before evaluation."
+      ],
+      "tests": [
+        "Collect more samples and mature dates."
+      ]
+    },
+    {
+      "diagnosis": "E0",
+      "handle": "S25",
+      "recommendations": [
+        "Insufficient evidence for diagnosis. Gather more data before evaluation."
+      ],
+      "tests": [
+        "Collect more samples and mature dates."
+      ]
+    }
+  ]
+}

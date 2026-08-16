@@ -55,6 +55,7 @@ assert.equal(domainBackfillBatchLimit(5000), 500)
 assert.equal(domainBackfillParityBatchLimit(500), 4000)
 assert.equal(domainBackfillParityBatchLimit(50), 400)
 assert.equal(domainBackfillRowsPerStatement(13), 7)
+assert.equal(domainBackfillRowsPerStatement(3), 33)
 assert.equal(domainBackfillRowsPerStatement(100), 1)
 assert.equal(domainBackfillRowsPerStatement(0), 100)
 assert.deepEqual(domainBackfillFinalCountFenceBlockers({

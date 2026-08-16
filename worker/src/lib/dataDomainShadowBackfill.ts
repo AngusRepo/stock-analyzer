@@ -1682,13 +1682,20 @@ export async function backfillDataDomainTableShadow(
     },
   )
   await upsertDomainRows(target, table, columns, primaryKeys, rows)
-  const exactKeys = domainBackfillExactKeyWhere(primaryKeys, rows)
-  const verify = await target.prepare(`
-    SELECT ${columnSql} FROM ${identifier(table)}
-     ${exactKeys.sql}
-     ORDER BY ${order}
-  `).bind(...exactKeys.binds).all<Record<string, unknown>>()
-  const targetRows = verify.results ?? []
+  const targetRows: Record<string, unknown>[] = []
+  const exactKeyRowsPerStatement = domainBackfillRowsPerStatement(primaryKeys.length)
+  for (let offset = 0; offset < rows.length; offset += exactKeyRowsPerStatement) {
+    const exactKeys = domainBackfillExactKeyWhere(
+      primaryKeys,
+      rows.slice(offset, offset + exactKeyRowsPerStatement),
+    )
+    const verify = await target.prepare(`
+      SELECT ${columnSql} FROM ${identifier(table)}
+       ${exactKeys.sql}
+       ORDER BY ${order}
+    `).bind(...exactKeys.binds).all<Record<string, unknown>>()
+    targetRows.push(...(verify.results ?? []))
+  }
   const sourceChecksum = await checksumRows(rows, columns)
   const targetChecksum = await checksumRows(targetRows, columns)
   if (sourceChecksum !== targetChecksum) throw new Error(`domain_shadow_checksum_mismatch:${domain}:${table}`)

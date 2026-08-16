@@ -13,6 +13,7 @@ import {
   parseDomainBackfillCursor,
 } from './dataDomainShadowBackfill'
 import { isDataDomainShadowProgressStale } from './dataDomainShadowBackfillDrain'
+import { dataDomainManifestPageLimit } from './dataDomainShadowManifest'
 
 assert.deepEqual(domainBackfillKeysetWhere(['id'], null), { sql: '', binds: [] })
 assert.deepEqual(domainBackfillKeysetWhere(['date', 'symbol'], ['2026-07-23', '2330']), {
@@ -25,6 +26,8 @@ assert.equal(parseDomainBackfillCursor(undefined), null)
 assert.equal(parseDomainBackfillCursor('null'), null)
 assert.deepEqual(parseDomainBackfillCursor('["paper","paper_settlements"]'), ['paper', 'paper_settlements'])
 assert.throws(() => parseDomainBackfillCursor('{}'), /domain_backfill_cursor_invalid/)
+assert.equal(dataDomainManifestPageLimit('screener_funnel_runs', 50), 5)
+assert.equal(dataDomainManifestPageLimit('screener_funnel_items', 4000), 4000)
 
 assert.equal(isDomainShadowCopyComplete(['runs', 'items'], ['runs']), false)
 assert.equal(isDomainShadowCopyComplete(['runs', 'items'], ['items', 'runs']), true)

@@ -20,11 +20,12 @@ export const DATA_DOMAIN_CONTROL_TABLES = [
 ] as const
 export type DataDomainControlTable = typeof DATA_DOMAIN_CONTROL_TABLES[number]
 
-const CONTROL_TABLE_PAGE_LIMITS: Readonly<Record<string, number>> = {
+const TABLE_PAGE_LIMITS: Readonly<Record<string, number>> = {
   model_artifact_registry: 25,
   expected_return_artifact_payloads: 25,
   model_champion_history: 25,
   model_champion_pointers: 25,
+  screener_funnel_runs: 5,
 }
 
 export function isDataDomainControlTable(table: string): table is DataDomainControlTable {
@@ -44,7 +45,7 @@ function identifier(value: string): string {
 export function dataDomainManifestPageLimit(table: string, requested: number): number {
   const finiteRequested = Number.isFinite(requested) ? Math.floor(requested) : 1
   const normalized = Math.max(1, Math.min(finiteRequested, 4000))
-  return Math.min(normalized, CONTROL_TABLE_PAGE_LIMITS[table] ?? normalized)
+  return Math.min(normalized, TABLE_PAGE_LIMITS[table] ?? normalized)
 }
 
 export type DataDomainFullTableParityReceipt = {

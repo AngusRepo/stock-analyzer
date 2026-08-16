@@ -25,7 +25,7 @@ const TABLE_PAGE_LIMITS: Readonly<Record<string, number>> = {
   expected_return_artifact_payloads: 25,
   model_champion_history: 25,
   model_champion_pointers: 25,
-  screener_funnel_runs: 1,
+  screener_funnel_runs: 10,
 }
 
 export function isDataDomainControlTable(table: string): table is DataDomainControlTable {

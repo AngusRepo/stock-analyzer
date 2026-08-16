@@ -625,34 +625,36 @@ export async function persistSelectionEvidenceV4(
       await db.batch(referenceStatements.slice(offset, offset + 200))
     }
 
-    const matrixStatements = input.matrix.map((row) => db.prepare(`
-      INSERT INTO strategy_label_matrix_v4 (
-        signal_date, symbol, producer_run_id, strategy_id, strategy_version,
-        strategy_status, alpha_bucket, family_id, production_owner,
-        strategy_hit, weak_label, affinity, affinity_version, match_strength,
-        threshold_margin, affinity_evidence_count, position_weight,
-        challenger_affinity, challenger_affinity_version, challenger_position_weight, overlap,
-        evaluable, evaluability_status, unavailable_reason, label_reason, labeler_version,
-        strategy_registry_checksum, reference_contract_version
-      ) VALUES (
-        ?, ?, ?, ?, ?,
-        ?, ?, ?, ?,
-        ?, ?, ?, ?, ?,
-        ?, ?, ?, ?, ?, ?, ?,
-        ?, ?, ?, NULL, ?, ?, ?
-      )
-    `).bind(
-      row.signal_date, row.symbol, row.producer_run_id, row.strategy_id,
-      row.strategy_version, row.strategy_status, row.alpha_bucket, row.family_id,
-      row.production_owner, row.strategy_hit, row.weak_label, row.affinity,
-      row.affinity_version, row.match_strength, row.threshold_margin, row.affinity_evidence_count,
-      row.position_weight, row.challenger_affinity, row.challenger_affinity_version,
-      row.challenger_position_weight,
-      row.overlap, row.evaluable, row.evaluability_status, row.unavailable_reason, row.labeler_version,
-      row.strategy_registry_checksum, SELECTION_REFERENCE_CONTRACT_VERSION,
-    ))
-    for (let offset = 0; offset < matrixStatements.length; offset += 250) {
-      await db.batch(matrixStatements.slice(offset, offset + 250))
+    const matrixJsonChunkSize = 1000
+    for (let offset = 0; offset < input.matrix.length; offset += matrixJsonChunkSize) {
+      const payload = JSON.stringify(input.matrix.slice(offset, offset + matrixJsonChunkSize))
+      await db.prepare(`
+        INSERT INTO strategy_label_matrix_v4 (
+          signal_date, symbol, producer_run_id, strategy_id, strategy_version,
+          strategy_status, alpha_bucket, family_id, production_owner,
+          strategy_hit, weak_label, affinity, affinity_version, match_strength,
+          threshold_margin, affinity_evidence_count, position_weight,
+          challenger_affinity, challenger_affinity_version, challenger_position_weight, overlap,
+          evaluable, evaluability_status, unavailable_reason, label_reason, labeler_version,
+          strategy_registry_checksum, reference_contract_version
+        )
+        SELECT
+          json_extract(value, '$.signal_date'), json_extract(value, '$.symbol'),
+          json_extract(value, '$.producer_run_id'), json_extract(value, '$.strategy_id'),
+          json_extract(value, '$.strategy_version'), json_extract(value, '$.strategy_status'),
+          json_extract(value, '$.alpha_bucket'), json_extract(value, '$.family_id'),
+          json_extract(value, '$.production_owner'), json_extract(value, '$.strategy_hit'),
+          json_extract(value, '$.weak_label'), json_extract(value, '$.affinity'),
+          json_extract(value, '$.affinity_version'), json_extract(value, '$.match_strength'),
+          json_extract(value, '$.threshold_margin'), json_extract(value, '$.affinity_evidence_count'),
+          json_extract(value, '$.position_weight'), json_extract(value, '$.challenger_affinity'),
+          json_extract(value, '$.challenger_affinity_version'), json_extract(value, '$.challenger_position_weight'),
+          json_extract(value, '$.overlap'), json_extract(value, '$.evaluable'),
+          json_extract(value, '$.evaluability_status'), json_extract(value, '$.unavailable_reason'),
+          NULL, json_extract(value, '$.labeler_version'),
+          json_extract(value, '$.strategy_registry_checksum'), ?
+          FROM json_each(?)
+      `).bind(SELECTION_REFERENCE_CONTRACT_VERSION, payload).run()
     }
 
     const counts = await db.prepare(`

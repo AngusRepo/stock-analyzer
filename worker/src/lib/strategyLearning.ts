@@ -3716,24 +3716,28 @@ export async function rebuildHistoricalStrategyEvidenceV5(
             no_lookahead: true,
           },
         }
-        decisionUpdates.push(db.prepare(`
-          UPDATE strategy_decision_log
-             SET evaluable=?, evaluability_status=?, unavailable_reason=?,
-                 evaluation_contract_version='strategy-evaluation-v2',
-                 matched=?, match_score=?, reason_code=?, evidence_json=json_patch(CASE WHEN json_valid(evidence_json) THEN evidence_json ELSE '{}' END, ?)
-           WHERE date=? AND symbol=? AND strategy_id=? AND strategy_version=?
-        `).bind(
-          classification.evaluable,
-          classification.status,
-          unavailableReason,
-          matched ? 1 : 0,
-          matchScore(candidate, matched, historicalEvidenceOptions.evidenceMode),
-          isNotApplicableStrategyEvaluability(classification.status)
-            ? 'strategy_spec_not_applicable:' + unavailableReason
-            : classification.evaluable === 1 ? (matched ? 'strategy_spec_matched' : 'strategy_spec_no_match') : 'strategy_spec_unavailable:' + unavailableReason,
-          JSON.stringify(evidence),
-          date, row.symbol, row.strategy_id, row.strategy_version,
-        ))
+        const decisionRowNeedsUpdate = cleanToken(row.evaluation_contract_version) !== 'strategy-evaluation-v2'
+          || cleanToken(row.evaluability_status) === 'UNKNOWN_LEGACY'
+        if (decisionRowNeedsUpdate) {
+          decisionUpdates.push(db.prepare(`
+            UPDATE strategy_decision_log
+               SET evaluable=?, evaluability_status=?, unavailable_reason=?,
+                   evaluation_contract_version='strategy-evaluation-v2',
+                   matched=?, match_score=?, reason_code=?, evidence_json=json_patch(CASE WHEN json_valid(evidence_json) THEN evidence_json ELSE '{}' END, ?)
+             WHERE date=? AND symbol=? AND strategy_id=? AND strategy_version=?
+          `).bind(
+            classification.evaluable,
+            classification.status,
+            unavailableReason,
+            matched ? 1 : 0,
+            matchScore(candidate, matched, historicalEvidenceOptions.evidenceMode),
+            isNotApplicableStrategyEvaluability(classification.status)
+              ? 'strategy_spec_not_applicable:' + unavailableReason
+              : classification.evaluable === 1 ? (matched ? 'strategy_spec_matched' : 'strategy_spec_no_match') : 'strategy_spec_unavailable:' + unavailableReason,
+            JSON.stringify(evidence),
+            date, row.symbol, row.strategy_id, row.strategy_version,
+          ))
+        }
         return { row, spec, candidate, evaluability, matched, match }
       })
       for (let offset = 0; offset < decisionUpdates.length; offset += STRATEGY_LEARNING_D1_BATCH_SIZE) {

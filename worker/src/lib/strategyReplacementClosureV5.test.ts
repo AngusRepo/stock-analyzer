@@ -53,6 +53,10 @@ assert(
   'legacy source identity must not circularly block PIT reconstruction when immutable candidate contexts are complete',
 )
 assert(historicalRebuild.includes('new Map(referenceRows.map'), 'raw reference lineage must be deduplicated by symbol after validation')
+assert(historicalRebuild.includes("cleanToken(row.evaluation_contract_version) !== 'strategy-evaluation-v2'"),
+  'historical retries must skip decision rows already reconstructed under the V2 evaluation contract')
+assert(historicalRebuild.includes("cleanToken(row.evaluability_status) === 'UNKNOWN_LEGACY'"),
+  'historical retries must still repair legacy rows whose evaluability remains unknown')
 assert(!historicalRebuild.includes('JOIN selection_reference_snapshots_v1 r'),
   'reference membership must use EXISTS so duplicate snapshots cannot multiply decision rows')
 assert.equal((historicalRebuild.match(/r\.hard_gate_passed=1/g) ?? []).length, 3,
@@ -67,6 +71,10 @@ assert(selectionEvidence.includes('reference_candidate_count=excluded.reference_
   'matrix retry must replace stale run metadata with the current canonical universe')
 assert(selectionEvidence.includes('producer_run_id = ? AND hard_gate_passed = 1'),
   'reference persistence coverage must count the canonical hard-gate universe only')
+assert(selectionEvidence.includes('FROM json_each(?)'),
+  'matrix persistence must use bounded set-based JSON inserts instead of one D1 statement per row')
+assert(selectionEvidence.includes('const matrixJsonChunkSize = 1000'),
+  'matrix JSON inserts must remain bounded while keeping the reconstruction inside the execution budget')
 assert(edge.includes("mr.status='ready'") && learning.includes("mr.status='ready'") && routes.includes("mr.status='ready'"),
   'Edge, reward, and UI consumers must reject partial matrix rebuilds')
 assert(orchestrator.includes('reconcileStrategyLearningFinalizedRetryFastPath'), 'queued finalized runs need an idempotent fenced telemetry-repair fast path')

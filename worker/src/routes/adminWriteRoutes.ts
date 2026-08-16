@@ -544,10 +544,7 @@ adminWriteRoutes.post('/api/admin/strategy/evidence-v5/rebuild', async (c) => {
   const asOfDate = body.as_of_date ?? c.req.query('as_of_date') ?? twToday()
   const maxDates = Math.max(1, Math.min(5, Math.floor(body.max_dates ?? 2)))
   const dryRun = body.dry_run !== false
-  const {
-    listHistoricalStrategyEvidenceV5Dates,
-    rebuildHistoricalStrategyEvidenceV5,
-  } = await import('../lib/strategyLearning')
+  const { listHistoricalStrategyEvidenceV5Dates } = await import('../lib/strategyLearning')
 
   if (dryRun) {
     const candidateDates = await listHistoricalStrategyEvidenceV5Dates(c.env.DB, { asOfDate, maxDates })
@@ -567,20 +564,22 @@ adminWriteRoutes.post('/api/admin/strategy/evidence-v5/rebuild', async (c) => {
     }, 400)
   }
 
-  const { readHistoricalHmmRegimeFamily } = await import('../lib/marketRegimeState')
-  const report = await rebuildHistoricalStrategyEvidenceV5(c.env.DB, {
-    asOfDate,
-    maxDates,
-    resolveHistoricalRegime: (signalDate) => readHistoricalHmmRegimeFamily(c.env.KV, signalDate),
+  const runId = `strategy-evidence-rebuild-${asOfDate}-${Date.now().toString(36)}`
+  await c.env.UPDATE_QUEUE.send({
+    type: 'strategy_evidence_rebuild',
+    cursor: 0,
+    triggerTime: asOfDate,
+    runId,
+    strategyEvidenceMaxDates: maxDates,
   })
   return c.json({
-    success: report.blockedDates === 0,
-    mode: 'persisted',
+    success: true,
+    mode: 'queued',
     as_of_date: asOfDate,
     max_dates: maxDates,
-    ...report,
-    note: 'Historical PIT strategy evidence rebuilt without mutating evening-chain scheduler status.',
-  })
+    run_id: runId,
+    note: 'Historical PIT strategy evidence rebuild queued on the durable owner; evening-chain scheduler status is not mutated.',
+  }, 202)
 })
 
 adminWriteRoutes.post('/api/admin/strategy/redundancy/backfill', async (c) => {

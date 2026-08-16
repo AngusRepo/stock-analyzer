@@ -3011,6 +3011,26 @@ export async function processUpdateBatch(
     return
   }
 
+  if (msg.type === 'strategy_evidence_rebuild') {
+    const signalDate = String(msg.triggerTime ?? '').trim()
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(signalDate)) {
+      throw new Error(`strategy_evidence_rebuild_date_invalid:${signalDate}`)
+    }
+    const { rebuildHistoricalStrategyEvidenceV5 } = await import('./strategyLearning')
+    const { readHistoricalHmmRegimeFamily } = await import('./marketRegimeState')
+    const report = await rebuildHistoricalStrategyEvidenceV5(env.DB, {
+      asOfDate: signalDate,
+      maxDates: Math.max(1, Math.min(5, Number(msg.strategyEvidenceMaxDates ?? 1))),
+      priorityDate: signalDate,
+      priorityOnly: true,
+      resolveHistoricalRegime: (date) => readHistoricalHmmRegimeFamily(env.KV, date),
+    })
+    if (report.successfulDates !== 1 || report.blockedDates !== 0) {
+      throw new Error(`strategy_evidence_rebuild_incomplete:${signalDate}:${JSON.stringify(report)}`)
+    }
+    return
+  }
+
   if (msg.type === 'maintenance_backlog_drain') {
     const { processMaintenanceBacklogDrain } = await import('./maintenanceBacklogDrain')
     await processMaintenanceBacklogDrain(env, msg)

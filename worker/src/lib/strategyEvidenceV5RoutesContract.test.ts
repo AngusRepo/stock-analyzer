@@ -4,14 +4,26 @@ import test from 'node:test'
 
 const routes = fs.readFileSync('src/routes/adminWriteRoutes.ts', 'utf8')
 const learning = fs.readFileSync('src/lib/strategyLearning.ts', 'utf8')
+const orchestrator = fs.readFileSync('src/lib/updateOrchestrator.ts', 'utf8')
+const types = fs.readFileSync('src/types.ts', 'utf8')
 
 test('historical strategy evidence has a bounded standalone admin lifecycle', () => {
   assert(routes.includes("/api/admin/strategy/evidence-v5/rebuild"))
   assert(routes.includes('X-Confirm-Strategy-Learning'))
   assert(routes.includes("mode: 'dry_run'"))
   assert(routes.includes('listHistoricalStrategyEvidenceV5Dates'))
-  assert(routes.includes('rebuildHistoricalStrategyEvidenceV5'))
+  assert(routes.includes("type: 'strategy_evidence_rebuild'"))
+  assert(routes.includes("mode: 'queued'"))
+  assert(routes.includes('UPDATE_QUEUE.send'))
   assert(routes.includes('never marks evening-chain complete'))
+})
+
+test('persisted rebuild runs on the durable queue owner', () => {
+  assert(types.includes("| 'strategy_evidence_rebuild'"))
+  assert(orchestrator.includes("msg.type === 'strategy_evidence_rebuild'"))
+  assert(orchestrator.includes('rebuildHistoricalStrategyEvidenceV5'))
+  assert(orchestrator.includes('priorityOnly: true'))
+  assert(orchestrator.includes('report.successfulDates !== 1 || report.blockedDates !== 0'))
 })
 
 test('historical strategy evidence preview and rebuild share one eligibility owner', () => {

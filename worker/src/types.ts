@@ -338,6 +338,7 @@ export interface UpdateQueueMsg {
     | 'maintenance_backlog_drain'
     | 'scheduled_admin_task'
     | 'data_domain_shadow_backfill'
+    | 'strategy_evidence_rebuild'
   newsStocks?: Array<{
     id: number
     symbol: string
@@ -375,6 +376,7 @@ export interface UpdateQueueMsg {
   maxMaintenanceCycles?: number
   scheduledTask?: 'external-evidence' | 'weekly-cleanup'
   force?: boolean
+  strategyEvidenceMaxDates?: number
 }
 
 // MLQueueMsg removed in Phase 3 — ML batch predict now goes through Controller

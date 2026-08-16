@@ -94,6 +94,10 @@ export function domainBackfillRowsPerStatement(columnCount: number): number {
   return Math.max(1, Math.floor(100 / Math.max(1, Math.floor(columnCount))))
 }
 
+export function domainBackfillExactKeyRowsPerStatement(primaryKeyCount: number): number {
+  return Math.min(48, domainBackfillRowsPerStatement(primaryKeyCount))
+}
+
 export function domainBackfillParityBatchLimit(copyBatchLimit: number): number {
   return Math.max(1, Math.min(Math.floor(copyBatchLimit) * 8, 4000))
 }
@@ -1697,7 +1701,7 @@ export async function backfillDataDomainTableShadow(
   )
   await upsertDomainRows(target, table, columns, primaryKeys, rows)
   const targetRows: Record<string, unknown>[] = []
-  const exactKeyRowsPerStatement = domainBackfillRowsPerStatement(primaryKeys.length)
+  const exactKeyRowsPerStatement = domainBackfillExactKeyRowsPerStatement(primaryKeys.length)
   for (let offset = 0; offset < rows.length; offset += exactKeyRowsPerStatement) {
     const exactKeys = domainBackfillExactKeyWhere(
       primaryKeys,

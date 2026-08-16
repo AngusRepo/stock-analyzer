@@ -2,6 +2,7 @@ import assert from 'node:assert/strict'
 import {
   buildDataDomainAggregateParitySnapshot,
   domainBackfillBatchLimit,
+  domainBackfillExactKeyRowsPerStatement,
   domainBackfillExactKeyWhere,
   domainBackfillFinalCountFenceBlockers,
   domainBackfillKeysetWhere,
@@ -61,6 +62,10 @@ assert.equal(domainBackfillRowsPerStatement(13), 7)
 assert.equal(domainBackfillRowsPerStatement(3), 33)
 assert.equal(domainBackfillRowsPerStatement(100), 1)
 assert.equal(domainBackfillRowsPerStatement(0), 100)
+assert.equal(domainBackfillExactKeyRowsPerStatement(1), 48)
+assert.equal(domainBackfillExactKeyRowsPerStatement(2), 48)
+assert.equal(domainBackfillExactKeyRowsPerStatement(3), 33)
+assert.equal(domainBackfillExactKeyRowsPerStatement(100), 1)
 assert.deepEqual(domainBackfillFinalCountFenceBlockers({
   expectedSourceRows: 100,
   expectedTargetRows: 100,

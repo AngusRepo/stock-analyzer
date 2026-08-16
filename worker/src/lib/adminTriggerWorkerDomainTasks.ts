@@ -1037,6 +1037,16 @@ export function buildAdminWorkerDomainTaskMap(c: any, deps: TriggerDeps): Record
       if (!allowed.has(domain)) throw new Error('invalid data domain')
       const table = String(c.req.query('table') ?? '').trim().toLowerCase()
       if (c.req.query('durable') === '1') {
+        if (c.req.query('direct_step') === '1') {
+          const { runDataDomainShadowBackfillHttpStep } = await import('./dataDomainShadowBackfillDrain')
+          const step = await runDataDomainShadowBackfillHttpStep(c.env, {
+            domain: domain as any,
+            runDate: requestedRunDate() || twToday(),
+            table: table || undefined,
+            limit: parseBoundedPositiveInt(c.req.query('limit'), 50, 500),
+          })
+          return `data_domain_shadow_backfill direct_step=true ${JSON.stringify(step)}`
+        }
         const { enqueueDataDomainShadowBackfill } = await import('./dataDomainShadowBackfillDrain')
         const queued = await enqueueDataDomainShadowBackfill(c.env, {
           domain: domain as any,

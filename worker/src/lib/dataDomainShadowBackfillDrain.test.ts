@@ -30,6 +30,8 @@ assert(drain.includes("status='error', last_batch_rows=0, error_code=excluded.er
 assert(drain.includes('consecutive_errors='))
 assert(types.includes('dataDomainErrorAttempt?: number'))
 assert(admin.includes("c.req.query('durable') === '1'"))
+assert(admin.includes("c.req.query('direct_step') === '1'"))
+assert(admin.includes('runDataDomainShadowBackfillHttpStep'))
 assert(admin.includes('enqueueDataDomainShadowBackfill'))
 assert(types.includes("| 'data_domain_shadow_backfill'"))
 assert(types.includes('dataDomainTable?: string'))

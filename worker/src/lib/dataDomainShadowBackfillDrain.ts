@@ -642,6 +642,74 @@ export async function enqueueDataDomainShadowBackfill(
   }
 }
 
+export async function runDataDomainShadowBackfillHttpStep(
+  env: Bindings,
+  input: {
+    domain: DataDomain
+    runDate: string
+    table?: string
+    limit?: number
+  },
+): Promise<{
+  runId: string
+  parityNotBefore: string
+  table: string | null
+  caughtUp: boolean
+  result: DomainShadowBackfillResult | null
+}> {
+  if (input.table && !tablesForDataDomainShadowBackfill(input.domain).includes(input.table)) {
+    throw new Error(`data_domain_shadow_backfill_requested_table_not_owned:${input.domain}:${input.table}`)
+  }
+  const key = dataDomainShadowBackfillActiveKey(input.domain)
+  const existing = await env.KV.get(key)
+  const active = existing ? parseActiveState(existing) : null
+  const parityNotBefore = active?.started_at ?? dataDomainParitySessionWatermark()
+  const runId = active?.run_id
+    ?? `data-domain-shadow-backfill-http:${input.domain}:${input.runDate}:${crypto.randomUUID()}`
+  await env.KV.put(key, JSON.stringify({
+    run_id: runId,
+    started_at: parityNotBefore,
+  }), { expirationTtl: ACTIVE_TTL_SECONDS })
+
+  const table = input.table
+    ?? (await nextDataDomainIncrementalCatchupTable(env, input.domain, parityNotBefore)
+      || await nextIncompleteTable(env, input.domain))
+  if (!table) {
+    const caughtUp = await domainChecksumReady(env, input.domain, parityNotBefore)
+    if (caughtUp) await env.KV.delete(key)
+    return { runId, parityNotBefore, table: null, caughtUp, result: null }
+  }
+
+  const result = await backfillDataDomainTableShadow(env, {
+    domain: input.domain,
+    table,
+    limit: input.limit ?? SHADOW_BACKFILL_QUEUE_BATCH_LIMIT,
+    parityNotBefore,
+  })
+  await env.KV.put(progressKey(input.domain), JSON.stringify({
+    run_id: runId,
+    transport: 'http_step',
+    table,
+    result,
+    updated_at: new Date().toISOString(),
+  }), { expirationTtl: ACTIVE_TTL_SECONDS })
+  if (result.domain_shadow_ready) {
+    await env.KV.delete(key)
+  } else {
+    await env.KV.put(key, JSON.stringify({
+      run_id: runId,
+      started_at: parityNotBefore,
+    }), { expirationTtl: ACTIVE_TTL_SECONDS })
+  }
+  return {
+    runId,
+    parityNotBefore,
+    table,
+    caughtUp: Boolean(result.domain_shadow_ready),
+    result,
+  }
+}
+
 export async function processDataDomainShadowBackfillDrain(
   env: Bindings,
   msg: UpdateQueueMsg,

@@ -14,6 +14,14 @@ assert.match(String(audit.query), /min_blob_bytes=1024/)
 assert.match(String(audit.query), /confirm_archive=ARCHIVE_D1_AUDIT_JSON_TO_R2/)
 assert.match(String(audit.query), /durable=1/)
 
+const ops = manifest.jobs.find((job) => job.id === 'data-domain-shadow-backfill-ops')
+assert(ops, 'OPS HTTP-isolated shadow backfill scheduler must exist')
+assert.equal(ops.schedule, '*/5 17-22 * * *')
+assert.match(String(ops.query), /durable=1/)
+assert.match(String(ops.query), /direct_step=1/)
+assert.match(String(ops.query), /domain=ops/)
+assert.match(String(ops.query), /limit=50/)
+
 for (const domain of ['execution', 'paper']) {
   const job = manifest.jobs.find((entry) => entry.id === `data-domain-shadow-backfill-${domain}`)
   assert(job, `${domain} durable shadow backfill scheduler must exist`)

@@ -11,6 +11,11 @@ assert.match(queueConsumer, /await processUpdateBatch\(msg\.body/)
 assert.match(queueConsumer, /msg\.ack\(\)/)
 assert.match(queueConsumer, /msg\.retry\(\)/)
 assert.match(
+  queueConsumer,
+  /msg\.body\.type === 'data_domain_shadow_backfill' && msg\.body\.dataDomain === 'ops'/,
+)
+assert.match(queueConsumer, /OPS shadow backfill moved to HTTP-isolated scheduler/)
+assert.match(
   wrangler,
   /\[\[queues\.consumers\]\]\s+queue = "stockvision-update-queue"\s+max_batch_size = 1/,
 )

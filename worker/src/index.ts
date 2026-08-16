@@ -183,6 +183,11 @@ export default {
     void ctx
     for (const msg of batch.messages) {
       try {
+        if (msg.body.type === 'data_domain_shadow_backfill' && msg.body.dataDomain === 'ops') {
+          console.warn('[Queue] OPS shadow backfill moved to HTTP-isolated scheduler; acknowledging legacy message')
+          msg.ack()
+          continue
+        }
         await processUpdateBatch(msg.body, env, {
           runMarketScreener,
           runMarketScreenerAsync: runScreenerV2,

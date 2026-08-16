@@ -61,7 +61,7 @@ test('Multi-D1 and daily lineage watchdogs remain automatic and non-serving', ()
 
 test('frontend explains joint readiness instead of showing isolated threshold green', () => {
   const panel = fs.readFileSync(path.join(process.cwd(), '../frontend/src/components/PipelineMaturityContribution.tsx'), 'utf8')
-  assert(panel.includes('Threshold V2 + Route V2 joint promotion'))
+  assert(panel.includes('門檻證據 V2 + 路由分數 V2 必須一起升級'))
   assert(panel.includes('current_route_rows'))
   assert(panel.includes('同一份 promotion commit'))
 })

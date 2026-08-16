@@ -377,10 +377,10 @@ export class RestD1Database implements D1Database {
     this.baseUrl = `https://api.cloudflare.com/client/v4/accounts/${config.accountId}/d1/database/${config.databaseId}`
   }
 
-  static fromEnv(): RestD1Database {
+  static fromEnv(databaseIdEnv = 'CF_D1_DB_ID'): RestD1Database {
     return new RestD1Database({
       accountId: requiredEnv('CF_ACCOUNT_ID'),
-      databaseId: requiredEnv('CF_D1_DB_ID'),
+      databaseId: requiredEnv(databaseIdEnv),
       apiToken: requiredEnv('CF_API_TOKEN'),
       maxRetries: optionalIntEnv('D1_CLIENT_MAX_RETRIES', 3),
     })

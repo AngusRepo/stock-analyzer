@@ -38,6 +38,7 @@ function buildBindings(): Bindings {
   const env = process.env
   return {
     DB: RestD1Database.fromEnv(),
+    OPS_DB: RestD1Database.fromEnv('CF_D1_OPS_DB_ID'),
     KV: RestKVNamespace.fromEnv(),
     EVIDENCE_ARTIFACT_WRITER: RestEvidenceArtifactWriter.fromEnv(),
     EVIDENCE_ARTIFACT_READER: RestEvidenceArtifactReader.fromEnv(),

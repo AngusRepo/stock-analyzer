@@ -6,12 +6,24 @@ const learningSource = readFileSync(resolve(process.cwd(), 'src/lib/strategyLear
 const screenerSource = readFileSync(resolve(process.cwd(), 'src/lib/marketScreener.ts'), 'utf8')
 const policyStoreSource = readFileSync(resolve(process.cwd(), 'src/lib/strategyProductionPolicyStore.ts'), 'utf8')
 const policyServiceSource = readFileSync(resolve(process.cwd(), 'src/lib/strategyProductionPolicyService.ts'), 'utf8')
+const adminWriteSource = readFileSync(resolve(process.cwd(), 'src/routes/adminWriteRoutes.ts'), 'utf8')
 
 assert.match(
   learningSource,
   /const productionPolicy = policy == null[\s\S]*?'production_policy'[\s\S]*?refreshStrategyProductionContributionPolicy/,
   'production firewall must only materialize after the persisted adaptive-policy evidence stage',
 )
+assert.match(adminWriteSource, /\/api\/admin\/strategy\/production-policy\/recover/,
+  'production firewall recovery needs an explicit protected owner outside the high-write finalizer')
+assert.match(adminWriteSource, /formal_strategy_evidence_closure_required:/,
+  'production firewall recovery must require successful formal revenue-PIT closure')
+assert.match(adminWriteSource, /X-Confirm-Strategy-Production-Policy/,
+  'production firewall recovery must require a distinct confirmation header')
+assert.doesNotMatch(adminWriteSource.slice(
+  adminWriteSource.indexOf("adminWriteRoutes.post('/api/admin/strategy/production-policy/recover'"),
+  adminWriteSource.indexOf("adminWriteRoutes.post('/api/admin/entry-model-v2/replay'"),
+), /allowPromotion|submitOrder|LIVE_EXECUTION/,
+  'production firewall recovery must not promote strategies or reach order submission')
 assert.match(
   learningSource,
   /knowledgeCutoffDate: date,[\s\S]*?gates: policy\.promotion_gate,[\s\S]*?adaptiveState: policy\.policy_state/,

@@ -766,6 +766,89 @@ adminWriteRoutes.post('/api/admin/strategy/policy-state/refresh', async (c) => {
   })
 })
 
+adminWriteRoutes.post('/api/admin/strategy/production-policy/recover', async (c) => {
+  const authError = await requireAdminOrServiceToken(c)
+  if (authError) return authError
+
+  type Body = { date?: string; dry_run?: boolean }
+  const body = await c.req.json<Body>().catch(() => ({} as Body))
+  const date = body.date ?? c.req.query('date') ?? twToday()
+  const dryRun = body.dry_run !== false
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) {
+    return c.json({ error: 'date must be YYYY-MM-DD' }, 400)
+  }
+  if (!dryRun && c.req.header('X-Confirm-Strategy-Production-Policy') !== 'true') {
+    return c.json({
+      error: 'Production policy recovery requires header X-Confirm-Strategy-Production-Policy: true',
+      hint: 'This writes one immutable firewall policy row. It cannot promote strategies or submit orders.',
+    }, 400)
+  }
+
+  const closure = await c.env.DB.prepare(`
+    SELECT status, labeler_version, evaluation_contract_version, candidate_count, strategy_count, matrix_rows
+      FROM strategy_evidence_rebuild_runs_v5
+     WHERE signal_date=?
+  `).bind(date).first<{
+    status?: string
+    labeler_version?: string
+    evaluation_contract_version?: string
+    candidate_count?: number | string
+    strategy_count?: number | string
+    matrix_rows?: number | string
+  }>()
+  if (
+    closure?.status !== 'success'
+    || closure.labeler_version !== 'strategy-decision-log-pit-reconstruction-v7-revenue-pit-fuse-v1'
+    || closure.evaluation_contract_version !== 'strategy-evaluation-v2'
+    || Number(closure.candidate_count ?? 0) <= 0
+    || Number(closure.strategy_count ?? 0) <= 0
+    || Number(closure.matrix_rows ?? 0) !== Number(closure.candidate_count) * Number(closure.strategy_count)
+  ) {
+    return c.json({ error: `formal_strategy_evidence_closure_required:${date}`, closure }, 409)
+  }
+
+  const [{ refreshStrategyAdaptivePolicyState, listStrategySpecsForLearning }, { refreshStrategyProductionContributionPolicy }] = await Promise.all([
+    import('../lib/strategyLearning'),
+    import('../lib/strategyProductionPolicyService'),
+  ])
+  const [policy, specsResult] = await Promise.all([
+    refreshStrategyAdaptivePolicyState(c.env.DB, { date, dryRun: true }),
+    listStrategySpecsForLearning(c.env.DB, { applyAdaptivePolicy: false }),
+  ])
+  const eligibleStrategyIds = policy.promotion_gate
+    .filter((gate) => gate.allocation_eligible === true)
+    .map((gate) => gate.strategy_id)
+    .sort()
+  if (dryRun) {
+    return c.json({
+      success: true,
+      mode: 'dry_run',
+      date,
+      eligible_strategy_ids: eligibleStrategyIds,
+      closure,
+      note: 'No production policy row was written.',
+    })
+  }
+
+  const recovered = await refreshStrategyProductionContributionPolicy(c.env.DB, {
+    knowledgeCutoffDate: date,
+    strategies: specsResult.specs,
+    gates: policy.promotion_gate,
+    adaptiveState: policy.policy_state,
+  })
+  return c.json({
+    success: true,
+    mode: 'persisted',
+    date,
+    eligible_strategy_ids: eligibleStrategyIds,
+    policy_id: recovered.state.policy_id,
+    policy_version: recovered.state.version,
+    checksum: recovered.checksum,
+    inserted: recovered.inserted,
+    note: 'One immutable production firewall row persisted; no strategy promotion or order submission occurred.',
+  })
+})
+
 adminWriteRoutes.post('/api/admin/entry-model-v2/replay', async (c) => {
   const authError = await requireAdminOrServiceToken(c)
   if (authError) return authError

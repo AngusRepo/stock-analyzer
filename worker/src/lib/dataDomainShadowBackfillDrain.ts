@@ -108,6 +108,10 @@ function progressKey(domain: DataDomain): string {
   return `data-domain-shadow-backfill:${domain}:progress`
 }
 
+function incrementalScanKey(domain: DataDomain): string {
+  return `data-domain-shadow-backfill:${domain}:incremental-scan`
+}
+
 function queueMessage(input: {
   domain: DataDomain
   table?: string
@@ -430,6 +434,7 @@ export async function nextDataDomainIncrementalCatchupTable(
   domain: DataDomain,
   parityNotBefore?: string | null,
   mutate = true,
+  tableScope?: string[],
 ): Promise<string | null> {
   const target = shadowDatabaseForDataDomain(env, domain)
   if (!target) throw new Error(`data_domain_shadow_binding_missing:${domain}`)
@@ -438,7 +443,7 @@ export async function nextDataDomainIncrementalCatchupTable(
     ? assertInactiveLearningShadowAuthority(env)
     : null
   const completedSet = new Set(await completedDomainTables(env, domain))
-  const orderedTables = tablesForDataDomainShadowBackfill(domain)
+  const orderedTables = tableScope ?? tablesForDataDomainShadowBackfill(domain)
   for (const table of [...orderedTables].reverse()) {
     if (!completedSet.has(table)) continue
     const [sourceRows, targetRows] = await Promise.all([
@@ -585,6 +590,82 @@ export async function nextDataDomainIncrementalCatchupTable(
   return null
 }
 
+async function nextDataDomainIncrementalCatchupTableStep(
+  env: Bindings,
+  domain: DataDomain,
+  parityNotBefore: string | null,
+): Promise<{
+  table: string | null
+  scannedTable: string | null
+  scannedTables: number
+  totalTables: number
+  sweepComplete: boolean
+}> {
+  const tables = [...tablesForDataDomainShadowBackfill(domain)].reverse()
+  const key = incrementalScanKey(domain)
+  const state = await env.KV.get(key, 'json') as {
+    parity_not_before?: string | null
+    next_index?: number
+  } | null
+  const sameSession = state?.parity_not_before === parityNotBefore
+  const nextIndex = sameSession && Number.isSafeInteger(state?.next_index)
+    ? Math.max(0, Math.min(Number(state?.next_index), tables.length))
+    : 0
+  if (nextIndex >= tables.length) {
+    await env.KV.delete(key)
+    return {
+      table: null,
+      scannedTable: null,
+      scannedTables: tables.length,
+      totalTables: tables.length,
+      sweepComplete: true,
+    }
+  }
+
+  const scannedTable = tables[nextIndex]
+  const table = await nextDataDomainIncrementalCatchupTable(
+    env,
+    domain,
+    parityNotBefore,
+    true,
+    [scannedTable],
+  )
+  if (table) {
+    await env.KV.delete(key)
+    return {
+      table,
+      scannedTable,
+      scannedTables: nextIndex + 1,
+      totalTables: tables.length,
+      sweepComplete: false,
+    }
+  }
+
+  const scannedTables = nextIndex + 1
+  if (scannedTables >= tables.length) {
+    await env.KV.delete(key)
+    return {
+      table: null,
+      scannedTable,
+      scannedTables,
+      totalTables: tables.length,
+      sweepComplete: true,
+    }
+  }
+  await env.KV.put(key, JSON.stringify({
+    parity_not_before: parityNotBefore,
+    next_index: scannedTables,
+    updated_at: new Date().toISOString(),
+  }), { expirationTtl: ACTIVE_TTL_SECONDS })
+  return {
+    table: null,
+    scannedTable,
+    scannedTables,
+    totalTables: tables.length,
+    sweepComplete: false,
+  }
+}
+
 async function domainChecksumReady(
   env: Bindings,
   domain: DataDomain,
@@ -715,10 +796,33 @@ export async function runDataDomainShadowBackfillHttpStep(
     started_at: parityNotBefore,
   }), { expirationTtl: ACTIVE_TTL_SECONDS })
 
-  const table = input.table
-    ?? (await nextDataDomainReceiptRefreshTable(env, input.domain, parityNotBefore)
-      || await nextDataDomainIncrementalCatchupTable(env, input.domain, parityNotBefore)
-      || await nextIncompleteTable(env, input.domain))
+  let table: string | null = input.table ?? null
+  if (!table) {
+    table = await nextDataDomainReceiptRefreshTable(env, input.domain, parityNotBefore)
+      || await nextIncompleteTable(env, input.domain)
+    if (table) {
+      await env.KV.delete(incrementalScanKey(input.domain))
+    } else {
+      const scan = await nextDataDomainIncrementalCatchupTableStep(
+        env,
+        input.domain,
+        parityNotBefore,
+      )
+      table = scan.table
+      if (!table && !scan.sweepComplete) {
+        await env.KV.put(progressKey(input.domain), JSON.stringify({
+          run_id: runId,
+          transport: 'http_step',
+          phase: 'incremental_scan',
+          scanned_table: scan.scannedTable,
+          scanned_tables: scan.scannedTables,
+          total_tables: scan.totalTables,
+          updated_at: new Date().toISOString(),
+        }), { expirationTtl: ACTIVE_TTL_SECONDS })
+        return { runId, parityNotBefore, table: null, caughtUp: false, result: null }
+      }
+    }
+  }
   if (!table) {
     const caughtUp = await domainChecksumReady(env, input.domain, parityNotBefore)
     if (caughtUp) await env.KV.delete(key)

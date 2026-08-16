@@ -24,8 +24,11 @@ assert(drain.includes('nextIncompleteTable'))
 assert(drain.includes('nextDataDomainReceiptRefreshTable'))
 assert(
   drain.indexOf('await nextDataDomainReceiptRefreshTable(env, input.domain')
-  < drain.indexOf('await nextDataDomainIncrementalCatchupTable(env, input.domain'),
+  < drain.indexOf('await nextIncompleteTable(env, input.domain)'),
 )
+assert(drain.includes('nextDataDomainIncrementalCatchupTableStep'))
+assert(drain.includes("phase: 'incremental_scan'"))
+assert(drain.includes('scanned_tables: scan.scannedTables'))
 assert(drain.includes("status: result.domain_shadow_ready ? 'success' : 'error'"))
 assert(drain.includes("status: checksumReady ? 'success' : 'error'"))
 assert(drain.includes('checksum_ready='))

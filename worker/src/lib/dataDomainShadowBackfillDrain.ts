@@ -1,6 +1,7 @@
 import type { Bindings, UpdateQueueMsg } from '../types'
 import {
   backfillDataDomainTableShadow,
+  buildDataDomainAggregateParitySnapshot,
   invalidateGenericManifestProgress,
   isDomainShadowCutoverReady,
   type DomainShadowBackfillResult,
@@ -710,6 +711,53 @@ async function domainChecksumReady(
   return isDomainShadowCutoverReady(tablesForDataDomainShadowBackfill(domain), completedTables, parityTables)
 }
 
+async function refreshDataDomainAggregateCutover(
+  env: Bindings,
+  domain: DataDomain,
+  parityNotBefore: string,
+): Promise<boolean> {
+  const ownedTables = tablesForDataDomainShadowBackfill(domain)
+  const parity = await env.DB.prepare(`
+    SELECT table_name, status, source_count, target_count,
+           source_checksum, target_checksum, evidence_json, checked_at
+      FROM data_domain_parity_checks
+     WHERE domain=? AND check_kind='full_table'
+     ORDER BY checked_at DESC, check_id DESC
+  `).bind(domain).all<{
+    table_name: string
+    status: string
+    source_count: number | string | null
+    target_count: number | string | null
+    source_checksum: string | null
+    target_checksum: string | null
+    evidence_json?: string | null
+    checked_at?: string | null
+  }>()
+  const aggregate = await buildDataDomainAggregateParitySnapshot(
+    ownedTables,
+    parity.results ?? [],
+    parityNotBefore,
+  )
+  if (!aggregate || aggregate.source_checksum !== aggregate.target_checksum) return false
+  const checkedAt = new Date().toISOString()
+  const updated = await env.DB.prepare(`
+    UPDATE data_domain_cutovers
+       SET status='shadow', target_binding=?,
+           source_row_count=?, target_row_count=?,
+           source_checksum=?, target_checksum=?, parity_checked_at=?,
+           updated_at=CURRENT_TIMESTAMP
+     WHERE domain=? AND status IN ('legacy','shadow')
+  `).bind(
+    `${domain.toUpperCase()}_DB`,
+    aggregate.source_row_count,
+    aggregate.target_row_count,
+    aggregate.source_checksum,
+    aggregate.target_checksum,
+    checkedAt,
+    domain,
+  ).run()
+  return Number(updated.meta?.changes ?? 0) === 1
+}
 export type DataDomainParityCarryForwardInput = {
   authoritative: boolean
   receiptCheckedAt: string | null
@@ -996,7 +1044,9 @@ export async function runDataDomainShadowBackfillHttpStep(
     }
   }
   if (!table) {
-    const caughtUp = await domainChecksumReady(env, input.domain, parityNotBefore)
+    const checksumReady = await domainChecksumReady(env, input.domain, parityNotBefore)
+    const caughtUp = checksumReady
+      && await refreshDataDomainAggregateCutover(env, input.domain, parityNotBefore)
     if (caughtUp) await env.KV.delete(key)
     return { runId, parityNotBefore, table: null, caughtUp, result: null }
   }

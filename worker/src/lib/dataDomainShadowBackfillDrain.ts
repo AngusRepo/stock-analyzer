@@ -1124,13 +1124,15 @@ export async function processDataDomainShadowBackfillDrain(
       || await nextIncompleteTable(env, domain))
   if (!table) {
     const checksumReady = await domainChecksumReady(env, domain, parityNotBefore)
+    const aggregateShadowReady = checksumReady
+      && await refreshDataDomainAggregateCutover(env, domain, parityNotBefore)
     await env.KV.delete(dataDomainShadowBackfillActiveKey(domain))
     let sweepNext: Awaited<ReturnType<typeof enqueueDataDomainShadowBackfill>> | null = null
     let sweepNextDomain: DataDomain | null = null
     if (shouldContinueDataDomainGlobalSweep({
       globalSweep,
       requestedTable,
-      domainShadowReady: checksumReady,
+      domainShadowReady: aggregateShadowReady,
     })) {
       sweepNextDomain = await nextDataDomainBackfillDomain(env, parityNotBefore)
       if (sweepNextDomain) {
@@ -1144,8 +1146,8 @@ export async function processDataDomainShadowBackfillDrain(
       }
     }
     await logSchedulerResult(env.KV, 'data-domain-shadow-backfill', {
-      status: checksumReady ? 'success' : 'error',
-      summary: `domain=${domain} initial_copy_complete checksum_ready=${checksumReady} global_sweep=${globalSweep} sweep_next_domain=${sweepNextDomain ?? 'none'} sweep_next_queued=${sweepNext?.queued ?? false} run_id=${runId}`,
+      status: aggregateShadowReady ? 'success' : 'error',
+      summary: `domain=${domain} initial_copy_complete checksum_ready=${checksumReady} aggregate_shadow_ready=${aggregateShadowReady} global_sweep=${globalSweep} sweep_next_domain=${sweepNextDomain ?? 'none'} sweep_next_queued=${sweepNext?.queued ?? false} run_id=${runId}`,
       duration_ms: 0,
       run_id: runId,
       run_date: msg.triggerTime,

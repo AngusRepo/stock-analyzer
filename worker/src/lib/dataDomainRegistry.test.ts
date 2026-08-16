@@ -93,10 +93,10 @@ const duplicateOwnership: TableOwnershipMetadata[] = [
 assert.throws(() => assertOwnershipEntries(duplicateOwnership), /duplicate_data_domain_ownership:duplicate_table:core\|ops/)
 
 const deferredProductionTables = productionTableNames.filter((table) => tableOwnershipMetadata(table)?.route_ready === false)
-assert.equal(deferredProductionTables.length, 78, 'production tables without target schema readiness require explicit review')
+assert.equal(deferredProductionTables.length, 70, 'production tables without target schema readiness require explicit review')
 assert.equal(
   deferredProductionTables.filter((table) => tableOwnershipMetadata(table)?.disposition === 'legacy_only').length,
-  6,
+  5,
   'legacy-only table count changed; retirement evidence must be reviewed',
 )
 for (const table of deferredProductionTables) {
@@ -136,6 +136,17 @@ const opsControlTables = [
 ]
 assert(opsControlTables.every((table) => tablesForDataDomain('ops').includes(table)))
 assert(opsControlTables.every((table) => !tablesForDataDomainShadowBackfill('ops').includes(table)))
+const opsRuntimeTables = [
+  'pipeline_runs',
+  'canonical_run_heads',
+  'run_artifacts',
+  'artifact_cleanup_cursors',
+  'artifact_cleanup_dlq',
+  'compute_profile_events',
+  'compute_efficiency_reports',
+  'cost_events',
+]
+assert(opsRuntimeTables.every((table) => tablesForDataDomainShadowBackfill('ops').includes(table)))
 assert(!tablesForDataDomainShadowBackfill('learning').includes('entry_model_replay_reports'))
 
 const assertParentBeforeChild = (domain: Parameters<typeof tablesForDataDomainShadowBackfill>[0], parent: string, child: string) => {

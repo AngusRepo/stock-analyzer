@@ -1,4 +1,5 @@
 import type { Bindings } from '../types'
+import { activeDataDomains } from './dataDomainRegistry'
 import { retainArtifactHardReference, writeEvidenceArtifact } from './artifactLifecycle'
 import { checkpointLegacyMigration, loadLegacyMigrationCursor } from './legacyMigrationCursor'
 
@@ -30,6 +31,9 @@ export async function runLegacyEvidenceMigration(
   queued_scrubs: number
   backlog_remaining: boolean
 }> {
+  if (activeDataDomains(env as Partial<Bindings>).has('ops')) {
+    throw new Error('legacy_evidence_migration_disabled_after_ops_cutover')
+  }
   if (!env.ARTIFACTS) throw new Error('artifact_r2_binding_missing')
   const limit = Math.max(1, Math.min(Math.floor(options.limit ?? 200), 500))
   const taskName = 'legacy_screener_evidence_v2'

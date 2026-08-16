@@ -660,6 +660,19 @@ function schedulerDetailTone(detail: string): WorkstationTone {
   return 'neutral'
 }
 
+function schedulerPlainSummary(job: SchedulerJob): string {
+  const raw = String(job.lastError || job.summary || job.durationConcernReason || '').trim()
+  if (!raw) return ''
+  const utilization = raw.match(/utilization=([0-9.]+)%/i)?.[1]
+  if (/weekly_readiness_blocked/i.test(raw) && /storage admission/i.test(raw)) {
+    return `本週流程未完成閉環：必要的高寫入研究工作被 D1 容量保護擋住${utilization ? `（legacy D1 ${utilization}%）` : ''}。已完成的 weekly 工作仍有效，但整體 readiness 維持 blocked。`
+  }
+  if (/blocked by storage admission/i.test(raw)) {
+    return `D1 容量保護已阻擋這個高寫入工作${utilization ? `；legacy D1 目前使用 ${utilization}%` : ''}。這不是策略或模型失敗，而是為避免資料庫碰到 10 GB 上限而停止新增研究資料。`
+  }
+  return raw
+}
+
 function schedulerReadinessDetails(job: SchedulerJob): string[] {
   const details = Array.isArray(job.details) ? job.details.filter(Boolean) : []
   if (!details.length) return []
@@ -694,7 +707,7 @@ function SchedulerJobRow({ job, compact = false }: { job: SchedulerJob; compact?
       </div>
       {(job.summary || job.lastError || job.durationConcernReason) && (
         <p className={`mt-2 line-clamp-3 min-w-0 break-words text-xs leading-5 [overflow-wrap:anywhere] ${tone === 'error' ? 'text-rose-200' : tone === 'warn' ? 'text-amber-100' : 'text-[#9badbf]'}`}>
-          {job.lastError || job.summary || job.durationConcernReason}
+          {schedulerPlainSummary(job)}
         </p>
       )}
       {readinessDetails.length > 0 && (
@@ -1393,7 +1406,7 @@ function AdaptiveMetaPanel({
 }
 
 function schedulerStatusLog(job: SchedulerJob) {
-  if (job.summary) return job.summary
+  if (job.summary) return schedulerPlainSummary(job)
   if (job.lastStatus === 'success') return '已完成，產物可供後續流程使用。'
   if (job.lastStatus === 'waiting') return '等待前序 stage callback 完成。'
   if (job.lastStatus === 'sleep') return '今天不是此排程的執行日。'
@@ -1410,11 +1423,11 @@ function schedulerHasRootCause(job: SchedulerJob) {
 }
 
 function schedulerRootCause(job: SchedulerJob) {
-  if (job.lastError) return job.lastError
+  if (job.lastError) return schedulerPlainSummary(job)
   if (job.durationConcern && job.durationConcern !== 'expected_short') {
     return job.durationConcernReason || job.summary || job.durationConcern
   }
-  if (schedulerHasRootCause(job) && job.summary) return job.summary
+  if (schedulerHasRootCause(job) && job.summary) return schedulerPlainSummary(job)
   if (job.lastStatus === 'waiting') return '等待前序 stage callback 完成。'
   if (job.lastStatus === 'sleep') return '今天不是此排程的執行日。'
   if (job.lastStatus === 'skip') return '沒有今日 run log，或被交易日曆 / policy 跳過。'

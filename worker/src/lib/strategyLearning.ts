@@ -3482,8 +3482,12 @@ export async function rebuildHistoricalStrategyEvidenceV5(
         throw new Error('reference_lineage_incomplete')
       }
       const referenceLabeler = [...referenceLabelers][0]
-      if (!STRATEGY_FORMAL_LABELER_VERSIONS.some((version) => version === referenceLabeler)) {
-        throw new Error(`legacy_strategy_matrix_pit_unavailable:${date}:${referenceLabeler || 'missing'}`)
+      const acceptedHistoricalSourceLabelers = new Set([
+        ...STRATEGY_FORMAL_LABELER_VERSIONS,
+        'strategy-labeler-v1',
+      ])
+      if (!acceptedHistoricalSourceLabelers.has(referenceLabeler)) {
+        throw new Error(`strategy_matrix_source_labeler_unsupported:${date}:${referenceLabeler || 'missing'}`)
       }
       const references = [...new Map(referenceRows.map((row) => [cleanToken(row.symbol), row])).values()]
       const referenceBySymbol = new Map(references.map((row) => [cleanToken(row.symbol), row]))
@@ -3501,12 +3505,12 @@ export async function rebuildHistoricalStrategyEvidenceV5(
       const referenceChecksum = [...checksums][0]
       if (
         !sourceMatrixRun
-        || !STRATEGY_FORMAL_LABELER_VERSIONS.some((version) => version === sourceMatrixLabeler)
+        || !acceptedHistoricalSourceLabelers.has(sourceMatrixLabeler)
         || sourceMatrixLabeler !== referenceLabeler
         || cleanToken(sourceMatrixRun.strategy_registry_checksum) !== referenceChecksum
         || cleanToken(sourceMatrixRun.reference_contract_version) !== SELECTION_REFERENCE_CONTRACT_VERSION
       ) {
-        throw new Error(`legacy_strategy_matrix_pit_unavailable:${date}:${sourceMatrixLabeler || 'missing'}`)
+        throw new Error(`strategy_matrix_source_lineage_invalid:${date}:${sourceMatrixLabeler || 'missing'}`)
       }
       const decisionResult = await db.prepare(`
         SELECT d.date, d.symbol, d.name, d.strategy_id, d.strategy_version,
@@ -3700,6 +3704,8 @@ export async function rebuildHistoricalStrategyEvidenceV5(
           pit_reconstruction: {
             schema_version: 'strategy-decision-pit-reconstruction-v5',
             source: context?.context_raw_signals_json ? 'strategy_candidate_contexts' : 'strategy_decision_context',
+            source_labeler_version: referenceLabeler,
+            output_labeler_version: labelerVersion,
             strategy_id: row.strategy_id,
             strategy_version: row.strategy_version,
             evaluability,
@@ -3922,7 +3928,8 @@ export async function rebuildHistoricalStrategyEvidenceV5(
       const status = reason.startsWith('reference_lineage_incomplete')
         || reason.startsWith('decision_grid_incomplete')
         || reason.startsWith('matrix_strategy_spec_version_missing')
-        || reason.startsWith('legacy_strategy_matrix_pit_unavailable')
+        || reason.startsWith('strategy_matrix_source_labeler_unsupported')
+        || reason.startsWith('strategy_matrix_source_lineage_invalid')
         ? 'blocked'
         : 'failed'
       await db.prepare(`

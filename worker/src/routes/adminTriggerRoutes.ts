@@ -47,6 +47,7 @@ const SYNC_REQUIRED_TASKS = new Set([
   'data-domain-shadow-backfill',
   'data-domain-shadow-backfill-next',
   'data-domain-control-revision-trigger-install',
+  'data-domain-writer-epoch-trigger-install',
   'monthly-retrain',
 ])
 
@@ -232,6 +233,7 @@ export function createAdminTriggerRoutes(deps: TriggerRouteDeps) {
       'storage-integrity-audit',
       'storage-capacity-report',
       'data-domain-shadow-backfill',
+      'data-domain-writer-epoch-trigger-install',
       'weekly-optuna',
       'l4-alpha-ev-refresh',
       'allocator-ev-fusion-refresh',

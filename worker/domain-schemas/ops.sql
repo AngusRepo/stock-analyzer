@@ -228,6 +228,21 @@ CREATE TABLE IF NOT EXISTS data_domain_cutovers (
   updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
+CREATE TABLE IF NOT EXISTS data_domain_writer_epochs (
+  domain TEXT PRIMARY KEY,
+  epoch INTEGER NOT NULL DEFAULT 0 CHECK(epoch >= 0),
+  writer_state TEXT NOT NULL DEFAULT 'open' CHECK(writer_state IN ('open', 'quiescing', 'cutover')),
+  updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS data_domain_table_writer_epochs (
+  domain TEXT NOT NULL,
+  table_name TEXT NOT NULL,
+  epoch INTEGER NOT NULL DEFAULT 0 CHECK(epoch >= 0),
+  updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY(domain, table_name)
+);
+
 CREATE TABLE IF NOT EXISTS data_retention_policies (
   policy_id TEXT PRIMARY KEY, domain TEXT NOT NULL, dataset_pattern TEXT NOT NULL,
   hot_retention_days INTEGER NOT NULL, cold_retention_days INTEGER,

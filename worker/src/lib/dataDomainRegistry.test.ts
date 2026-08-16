@@ -61,7 +61,7 @@ assert.deepEqual(
   [...migrationTransientTables].sort(),
   'every migration-created table must be explicitly owned or explicitly transient',
 )
-assert.equal(productionTableNames.length, 229, 'production schema table count changed; ownership review is required')
+assert.equal(productionTableNames.length, 231, 'production schema table count changed; ownership review is required')
 const tableNames = [...new Set([
   ...productionTableNames,
   ...domainSqlFiles.flatMap(tableNamesFromSql)
@@ -129,6 +129,8 @@ const legacy = { kind: 'legacy' } as unknown as D1Database
 const opsControlTables = [
   'maintenance_task_leases',
   'data_domain_cutovers',
+  'data_domain_writer_epochs',
+  'data_domain_table_writer_epochs',
   'data_domain_backfill_cursors',
   'data_domain_parity_checks',
 ]

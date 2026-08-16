@@ -1096,6 +1096,21 @@ export function buildAdminWorkerDomainTaskMap(c: any, deps: TriggerDeps): Record
       const learning = await installDataDomainControlRevisionTriggers(learningDb)
       return `data_domain_control_revision_trigger_install legacy=${JSON.stringify(legacy)} learning=${JSON.stringify(learning)}`
     },
+    'data-domain-writer-epoch-trigger-install': async () => {
+      if (c.req.header('X-Confirm-Data-Domain-Writer-Epoch') !== 'true') {
+        throw new Error(
+          'data-domain-writer-epoch-trigger-install requires '
+          + 'X-Confirm-Data-Domain-Writer-Epoch:true',
+        )
+      }
+      const requestedDomain = String(c.req.query('domain') ?? 'ops').trim().toLowerCase()
+      if (requestedDomain !== 'ops') {
+        throw new Error(`data_domain_writer_epoch_install_not_yet_closed:${requestedDomain}`)
+      }
+      const { installDataDomainWriterEpochTriggers } = await import('./dataDomainWriterEpoch')
+      const installed = await installDataDomainWriterEpochTriggers(c.env.DB, 'ops')
+      return `data_domain_writer_epoch_trigger_install ${JSON.stringify(installed)}`
+    },
     'storage-health-check': async () => {
       const { runStorageHealthCheck } = await import('./artifactLifecycle')
       const result = await runStorageHealthCheck(c.env)

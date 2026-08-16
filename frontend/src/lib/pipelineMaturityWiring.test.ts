@@ -26,7 +26,7 @@ test('maturity panel exposes independent maturity owners without pretending to b
   ]) {
     assert(contract.includes(`'${stage}'`), `missing maturity owner contract: ${stage}`)
   }
-  for (const text of ['data.stages', 'stage.title', 'Production serving', 'Shadow learning', 'Blockers', 'Lineage']) {
+  for (const text of ['data.stages', 'stage.title', '正式服務中', '影子學習', '尚未通過的必要條件', '資料來源與版本 lineage']) {
     assert(panel.includes(text), `missing maturity UI contract: ${text}`)
   }
   assert(panel.includes('progress?.complete'))
@@ -45,11 +45,11 @@ test('maturity lineage labels cadence, role, availability, and comparable contra
     assert(contract.includes(field), `missing maturity evidence scope field: ${field}`)
   }
   for (const label of [
-    'Candidate cutoff',
-    'OOF through',
-    'Production serving state (current pointer)',
-    '${evidenceScopes.offline_candidate.cadence} promotion candidate (not serving)',
-    'Daily frozen-forward monitoring evidence (not serving)',
+    '候選資料截止日',
+    '樣本外證據截至',
+    '目前正式服務中的產物（Production pointer）',
+    '${evidenceScopes.offline_candidate.cadence} 升級候選（尚未正式服務）',
+    '每日固定樣本 forward 監控證據（不影響正式結果）',
     'First comparable',
   ]) {
     assert(panel.includes(label), `missing explicit maturity label: ${label}`)

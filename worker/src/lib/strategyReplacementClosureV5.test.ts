@@ -41,6 +41,17 @@ const historicalSelector = learning.slice(learning.indexOf('export async functio
 assert(historicalSelector.indexOf('if (options.priorityOnly)') < historicalSelector.indexOf('WITH decision_dates'),
   'priority-only live closure must return from the single-date ledger fast path before the full-history CTE')
 const historicalRebuild = learning.slice(learning.indexOf('export async function rebuildHistoricalStrategyEvidenceV5'), learning.indexOf('export async function finalizeStrategyLearningEvidenceV5'))
+assert(
+  historicalRebuild.includes("'strategy-labeler-v1'")
+    && historicalRebuild.includes('strategy_matrix_source_labeler_unsupported')
+    && historicalRebuild.includes('source_labeler_version: referenceLabeler')
+    && historicalRebuild.includes('output_labeler_version: labelerVersion'),
+  'historical reconstruction must accept the exact lineage-bound v1 matrix only as input and emit explicit formal reconstruction lineage',
+)
+assert(
+  !historicalRebuild.includes('legacy_strategy_matrix_pit_unavailable'),
+  'legacy source identity must not circularly block PIT reconstruction when immutable candidate contexts are complete',
+)
 assert(historicalRebuild.includes('new Map(referenceRows.map'), 'raw reference lineage must be deduplicated by symbol after validation')
 assert(!historicalRebuild.includes('JOIN selection_reference_snapshots_v1 r'),
   'reference membership must use EXISTS so duplicate snapshots cannot multiply decision rows')

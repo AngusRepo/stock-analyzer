@@ -8,11 +8,11 @@ import { strategyLabApi, type StrategyLearningResponse, type StrategyPromotionGa
 type LearningRow = StrategyLearningResponse['specs'][number]
 
 function pct(value: number | null | undefined): string {
-  if (value == null || !Number.isFinite(Number(value))) return 'Unavailable'
+  if (value == null || !Number.isFinite(Number(value))) return '資料尚未具備'
   return `${(Number(value) * 100).toFixed(1)}%`
 }
 function rewardMetric(value: number | null | undefined, unit: 'return_fraction' | 'r_multiple'): string {
-  if (value == null || !Number.isFinite(Number(value))) return 'Unavailable'
+  if (value == null || !Number.isFinite(Number(value))) return '資料尚未具備'
   return unit === 'r_multiple' ? `${Number(value).toFixed(3)}R` : pct(value)
 }
 
@@ -37,8 +37,19 @@ function gateResultClass(pass: boolean | null): string {
 }
 
 function gateResultLabel(pass: boolean | null): string {
-  if (pass == null) return 'PENDING'
-  return pass ? 'PASS' : 'FAIL'
+  if (pass == null) return '待累積'
+  return pass ? '通過' : '未通過'
+}
+
+function statusLabel(status: string): string {
+  const labels: Record<string, string> = {
+    active: '正式選股中', active_monitor: '正式保留', active_cooldown: '正式降溫',
+    learning: '持續學習', shadow: '影子觀察', candidate: '候選', candidate_ready: '候選已成熟',
+    research: '研究中', not_ready: '證據未成熟', no_reward: '尚無成熟報酬',
+    pending_maturity: '等待 T+5', no_matches: '尚未命中型態', reward_join_missing: '報酬串接缺漏',
+    unavailable: '資料尚未具備',
+  }
+  return labels[status] ?? status.replace(/_/g, ' ')
 }
 
 function bestReplacementDecision(
@@ -73,18 +84,23 @@ function compactStrategyId(strategyId: string): string {
 
 function GateMetric({
   label,
+  description,
   value,
   target,
   pass,
 }: {
   label: string
+  description: string
   value: string
   target: string
   pass: boolean | null
 }) {
   return (
     <div className="flex min-w-0 items-baseline justify-between gap-2 border-b border-slate-800/60 py-1 last:border-0">
-      <span className="truncate text-slate-500">{label}</span>
+      <span className="min-w-0 text-slate-500">
+        <span className="block truncate">{label}</span>
+        <span className="mt-0.5 block text-[10px] leading-4 text-slate-600">{description}</span>
+      </span>
       <span className="shrink-0 text-right font-mono text-slate-300">
         {value} <span className="text-slate-600">/ {target}</span>{' '}
         <span className={gateResultClass(pass)}>{gateResultLabel(pass)}</span>
@@ -119,17 +135,17 @@ function StrategyGateDetails({
   const run = replacementGate?.latest_run ?? null
   const mddPass = evidence.max_drawdown_pct == null ? null : evidence.max_drawdown_pct >= thresholds.min_max_drawdown
   const readiness = [
-    { label: 'Evaluable decisions', value: String(evidence.decisions), target: `>= ${thresholds.min_evaluable_decisions}`, pass: evidence.decisions >= thresholds.min_evaluable_decisions },
-    { label: 'Setup match rate', value: pct(evidence.match_rate), target: `>= ${pct(thresholds.min_match_rate)}`, pass: evidence.match_rate == null ? null : evidence.match_rate >= thresholds.min_match_rate },
-    { label: 'Reward samples', value: String(evidence.samples), target: `>= ${thresholds.min_reward_samples}`, pass: evidence.samples >= thresholds.min_reward_samples },
-    { label: 'Hit rate', value: pct(evidence.hit_rate), target: `>= ${pct(hitRateThreshold)}`, pass: evidence.hit_rate == null ? null : evidence.hit_rate >= hitRateThreshold },
-    { label: 'Cost-net average', value: rewardMetric(evidence.avg_return_pct, row.learning.reward_unit), target: '> 0', pass: evidence.avg_return_pct == null ? null : evidence.avg_return_pct > thresholds.min_avg_cost_net_return_exclusive },
-    { label: 'Date LCB90', value: rewardMetric(evidence.date_return_lcb90, row.learning.reward_unit), target: '> 0', pass: evidence.date_return_lcb90 == null ? null : evidence.date_return_lcb90 > thresholds.min_date_return_lcb90_exclusive },
-    { label: 'Max drawdown', value: rewardMetric(evidence.max_drawdown_pct, row.learning.reward_unit), target: `>= ${rewardMetric(thresholds.min_max_drawdown, row.learning.reward_unit)}`, pass: mddPass },
-    { label: 'Mature dates', value: String(evidence.mature_dates), target: `>= ${thresholds.min_mature_dates}`, pass: evidence.mature_dates >= thresholds.min_mature_dates },
+    { label: '可評估決策數', description: 'PIT 欄位齊全、可公平判定策略是否命中的決策筆數。', value: String(evidence.decisions), target: `>= ${thresholds.min_evaluable_decisions}`, pass: evidence.decisions >= thresholds.min_evaluable_decisions },
+    { label: '型態命中率', description: '可評估股票中，符合這個策略進場型態的比例。', value: pct(evidence.match_rate), target: `>= ${pct(thresholds.min_match_rate)}`, pass: evidence.match_rate == null ? null : evidence.match_rate >= thresholds.min_match_rate },
+    { label: '成熟報酬樣本', description: '已走完 T+5 並扣除交易成本、可計算績效的樣本數。', value: String(evidence.samples), target: `>= ${thresholds.min_reward_samples}`, pass: evidence.samples >= thresholds.min_reward_samples },
+    { label: '勝率', description: '成熟樣本中，扣除成本後仍為正報酬的比例。', value: pct(evidence.hit_rate), target: `>= ${pct(hitRateThreshold)}`, pass: evidence.hit_rate == null ? null : evidence.hit_rate >= hitRateThreshold },
+    { label: '扣成本平均報酬', description: '每筆成熟樣本扣除來回交易成本後的平均結果。', value: rewardMetric(evidence.avg_return_pct, row.learning.reward_unit), target: '> 0', pass: evidence.avg_return_pct == null ? null : evidence.avg_return_pct > thresholds.min_avg_cost_net_return_exclusive },
+    { label: '每日報酬 90% 保守下界（LCB90）', description: '把統計不確定性算進去後，仍有九成信心水準可守住的報酬下界。', value: rewardMetric(evidence.date_return_lcb90, row.learning.reward_unit), target: '> 0', pass: evidence.date_return_lcb90 == null ? null : evidence.date_return_lcb90 > thresholds.min_date_return_lcb90_exclusive },
+    { label: '最大回撤（MDD）', description: '觀察期內從高點跌到低點的最差幅度；越接近 0 越好。', value: rewardMetric(evidence.max_drawdown_pct, row.learning.reward_unit), target: `>= ${rewardMetric(thresholds.min_max_drawdown, row.learning.reward_unit)}`, pass: mddPass },
+    { label: '成熟交易日數', description: '至少有一筆報酬已成熟、可納入每日統計的不同交易日數。', value: String(evidence.mature_dates), target: `>= ${thresholds.min_mature_dates}`, pass: evidence.mature_dates >= thresholds.min_mature_dates },
   ]
 
-  let pairMetrics: Array<{ label: string; value: string; target: string; pass: boolean | null }> = []
+  let pairMetrics: Array<{ label: string; description: string; value: string; target: string; pass: boolean | null }> = []
   if (decision && policy) {
     const pairMddPass = decision.candidate_max_drawdown == null || decision.incumbent_max_drawdown == null
       ? null
@@ -143,12 +159,12 @@ function StrategyGateDetails({
         || (decision.candidate_max_drawdown != null && decision.incumbent_max_drawdown != null && decision.candidate_max_drawdown > decision.incumbent_max_drawdown)
         || (decision.candidate_turnover != null && decision.incumbent_turnover != null && decision.candidate_turnover < decision.incumbent_turnover)
     pairMetrics = [
-      { label: 'Paired dates', value: String(decision.paired_dates), target: `>= ${policy.min_paired_dates}`, pass: decision.paired_dates >= policy.min_paired_dates },
-      { label: 'Residual delta LCB90', value: pct(decision.paired_delta_lcb90), target: '> 0', pass: decision.paired_delta_lcb90 == null ? null : decision.paired_delta_lcb90 > policy.min_paired_delta_lcb90_exclusive },
-      { label: 'Candidate cost-net mean', value: pct(decision.candidate_absolute_cost_net_mean), target: '> 0', pass: decision.candidate_absolute_cost_net_mean == null ? null : decision.candidate_absolute_cost_net_mean > policy.min_candidate_absolute_cost_net_mean_exclusive },
-      { label: 'MDD vs incumbent', value: `${pct(decision.candidate_max_drawdown)} / ${pct(decision.incumbent_max_drawdown)}`, target: `within ${pct(policy.max_drawdown_degradation)}`, pass: pairMddPass },
-      { label: 'Turnover vs incumbent', value: `${pct(decision.candidate_turnover)} / ${pct(decision.incumbent_turnover)}`, target: `within ${pct(policy.max_turnover_increase)}`, pass: pairTurnoverPass },
-      { label: 'Return correlation', value: decision.return_correlation == null ? 'Unavailable' : decision.return_correlation.toFixed(3), target: `<= ${policy.max_duplicate_return_correlation.toFixed(2)} or risk improves`, pass: pairCorrelationPass },
+      { label: '同日配對樣本', description: '候選與現任策略在同一批交易日可直接公平比較的日數。', value: String(decision.paired_dates), target: `>= ${policy.min_paired_dates}`, pass: decision.paired_dates >= policy.min_paired_dates },
+      { label: '相對優勢 90% 保守下界', description: '候選扣除現任策略後的增量報酬，算入不確定性後是否仍大於 0。', value: pct(decision.paired_delta_lcb90), target: '> 0', pass: decision.paired_delta_lcb90 == null ? null : decision.paired_delta_lcb90 > policy.min_paired_delta_lcb90_exclusive },
+      { label: '候選扣成本平均報酬', description: '候選本身必須賺錢，不能只因現任更差就通過。', value: pct(decision.candidate_absolute_cost_net_mean), target: '> 0', pass: decision.candidate_absolute_cost_net_mean == null ? null : decision.candidate_absolute_cost_net_mean > policy.min_candidate_absolute_cost_net_mean_exclusive },
+      { label: '回撤相對現任', description: '候選的最差跌幅不能比被替換策略惡化太多。', value: `${pct(decision.candidate_max_drawdown)} / ${pct(decision.incumbent_max_drawdown)}`, target: `within ${pct(policy.max_drawdown_degradation)}`, pass: pairMddPass },
+      { label: '換手率相對現任', description: '候選不能靠過度交易製造紙上績效。', value: `${pct(decision.candidate_turnover)} / ${pct(decision.incumbent_turnover)}`, target: `within ${pct(policy.max_turnover_increase)}`, pass: pairTurnoverPass },
+      { label: '報酬相關性', description: '越高代表兩策略越像；過度重複通常不值得替換。', value: decision.return_correlation == null ? '資料尚未具備' : decision.return_correlation.toFixed(3), target: `<= ${policy.max_duplicate_return_correlation.toFixed(2)} or risk improves`, pass: pairCorrelationPass },
     ]
   }
   const counterpart = decision
@@ -161,8 +177,8 @@ function StrategyGateDetails({
     <div className="mt-3 space-y-3 border-t border-slate-800 pt-3 text-[11px]">
       <div>
         <div className="mb-1 flex items-center justify-between gap-2">
-          <span className="font-semibold text-slate-300">{isActiveIncumbent ? 'Active incumbent retention thresholds' : 'Candidate promotion thresholds'}</span>
-          <span className="text-slate-500">{isActiveIncumbent ? `retain >= ${pct(thresholds.active_retention_min_hit_rate)}` : `promote >= ${pct(thresholds.min_hit_rate)}`} · rolling evidence</span>
+          <span className="font-semibold text-slate-300">{isActiveIncumbent ? '正式策略續留門檻' : '候選策略升級門檻'}</span>
+          <span className="text-slate-500">{isActiveIncumbent ? `續留勝率 >= ${pct(thresholds.active_retention_min_hit_rate)}` : `升級勝率 >= ${pct(thresholds.min_hit_rate)}`} · 使用滾動證據</span>
         </div>
         <div className="grid gap-x-4 md:grid-cols-2">
           {readiness.map((item) => <GateMetric key={item.label} {...item} />)}
@@ -171,7 +187,7 @@ function StrategyGateDetails({
 
       <div className="border-t border-slate-800 pt-3">
         <div className="mb-1 flex flex-wrap items-center justify-between gap-2">
-          <span className="font-semibold text-slate-300">Atomic V7 replacement thresholds</span>
+          <span className="font-semibold text-slate-300">原子替換 V7 門檻（候選能否取代現任）</span>
           <span className="font-mono text-slate-500">{run ? `Evidence as of ${run.as_of_date} · mature paired dates ${run.sample_dates} · ${run.status === 'shadow' ? 'shadow（不影響 production）' : run.status}` : replacementGate?.evidence_status ?? 'evidence not ready'}</span>
         </div>
         {isS12ExecutionOwner ? (
@@ -304,8 +320,8 @@ function StrategyLedgerGroup({
               <div className="min-w-0">
                 <div className="flex flex-wrap items-center gap-2">
                   <h3 className="min-w-0 flex-1 truncate text-sm font-semibold text-slate-100">{row.name}</h3>
-                  <Badge variant="outline" className={statusClass(row.status)}>{row.status}</Badge>
-                  <Badge variant="outline" className={statusClass(row.learning.status)}>{row.learning.status}</Badge>
+                  <Badge variant="outline" className={statusClass(row.status)}>{statusLabel(row.status)}</Badge>
+                  <Badge variant="outline" className={statusClass(row.learning.status)}>{statusLabel(row.learning.status)}</Badge>
                 </div>
                 <p className="mt-1 truncate font-mono text-xs text-slate-500">{row.id} &middot; {row.alphaBucket}</p>
               </div>
@@ -324,12 +340,12 @@ function StrategyLedgerGroup({
                   <div className="mt-1 text-xs text-slate-500">{row.learning.evidence_available ? <>PIT 欄位不足 {row.learning.rolling_unavailable_decisions} · {row.learning.rolling_sessions} 個決策日</> : 'evidence not ready'}</div>
                 </div>
                 <div className="rounded-lg border border-slate-800/80 bg-slate-900/45 p-2">
-                  <dt className="text-xs text-slate-500">Lifetime rewards</dt>
+                  <dt className="text-xs text-slate-500">累積成熟報酬樣本</dt>
                   <dd className={`mt-1 font-mono text-sm ${rewardMissing ? 'text-rose-300' : rewardPending || noMatches ? 'text-amber-200' : 'text-slate-200'}`}>{row.learning.evidence_available ? rewardCount : '-'}</dd>
                   <div className="mt-1 text-xs leading-4 text-slate-500">{row.learning.reward_status_reason}</div>
                 </div>
                 <div className="rounded-lg border border-slate-800/80 bg-slate-900/45 p-2">
-                  <dt className="text-xs text-slate-500">Rolling mature dates</dt>
+                  <dt className="text-xs text-slate-500">滾動成熟交易日</dt>
                   <dd className="mt-1 font-mono text-sm text-cyan-200">{row.learning.evidence_available ? rollingMature : '-'}</dd>
                   <div className={`mt-1 text-xs ${signedClass(row.learning.rolling_date_return_lcb90)}`}>{row.learning.evidence_available ? rewardPending || rewardMissing || noMatches ? rollingMature : <>LCB90 {rewardMetric(row.learning.rolling_date_return_lcb90, row.learning.reward_unit)}</> : 'Unavailable'}</div>
                 </div>
@@ -340,16 +356,16 @@ function StrategyLedgerGroup({
               <div className="grid gap-3">
                 <div className="rounded-xl border border-slate-800 bg-slate-900/35 p-3">
                   <div className="flex flex-wrap items-center justify-between gap-2 text-xs text-slate-500">
-                    <span>Pending-buy strategy gate share</span>
+                    <span>待買資格相對權重（Pending-buy gate share）</span>
                     <div className="flex items-center gap-2">
-                      <Badge variant="outline" className={executionEligible ? statusClass('active') : statusClass('not_ready')}>{executionEligible ? 'Pending-buy gate pass' : 'Selection + evaluation only'}</Badge>
-                      <span className="font-mono text-slate-300">{hasWeight ? pct(weight) : 'Not allocated'}</span>
+                      <Badge variant="outline" className={executionEligible ? statusClass('active') : statusClass('not_ready')}>{executionEligible ? '可讓推薦進入待買' : '只選股與評估，不進待買'}</Badge>
+                      <span className="font-mono text-slate-300">{hasWeight ? pct(weight) : '未取得待買權重'}</span>
                     </div>
                   </div>
                   <div className="mt-2 h-2 overflow-hidden rounded-full bg-slate-800">
                     <div className="h-full bg-emerald-300" style={{ width: `${hasWeight ? Math.max(0, Math.min(100, weight * 100)) : 0}%` }} />
                   </div>
-                  <p className="mt-2 text-xs text-slate-500">相對 gate share 只控制 pending-buy eligibility；不是帳戶資金或部位比例。0% 仍保留在同一推薦與 evaluation stream。</p>
+                  <p className="mt-2 text-xs text-slate-500">這個百分比只在「已通過全部門檻」的策略之間正規化，用來決定哪個策略可讓推薦進待買；不是帳戶資金、下單金額或部位比例。0% 仍繼續選股與累積證據。</p>
                 </div>
 
                 <div className="rounded-xl border border-slate-800 bg-slate-900/35 p-3">
@@ -461,12 +477,12 @@ export default function StrategyLearningPage() {
       <main className="space-y-5 p-4 lg:p-6">
         <header className="flex flex-col gap-4 rounded-3xl border border-emerald-400/15 bg-[radial-gradient(circle_at_14%_15%,rgba(52,211,153,0.12),transparent_30%),linear-gradient(135deg,#101714,#0b0f14_68%)] p-5 lg:flex-row lg:items-end lg:justify-between">
           <div>
-            <p className="text-xs font-semibold tracking-[0.14em] text-emerald-300">STRATEGY LEARNING</p>
-            <h1 className="mt-2 flex items-center gap-2 font-['Space_Grotesk'] text-2xl font-semibold tracking-tight text-slate-50"><Activity className="h-5 w-5 text-emerald-300" /> Learning + Reward Ledger</h1>
-            <p className="mt-2 max-w-3xl text-sm leading-6 text-slate-400">分開呈現選股參與、reward evidence、promotion readiness 與 pending-buy gate；0% gate share 不等於策略停用，也不是帳戶資金比例。</p>
+            <p className="text-xs font-semibold tracking-[0.14em] text-emerald-300">策略學習與報酬帳本</p>
+            <h1 className="mt-2 flex items-center gap-2 font-['Space_Grotesk'] text-2xl font-semibold tracking-tight text-slate-50"><Activity className="h-5 w-5 text-emerald-300" /> 策略現在能做什麼、為什麼</h1>
+            <p className="mt-2 max-w-3xl text-sm leading-6 text-slate-400">這裡分開顯示：是否仍參與選股、證據累積到哪裡、是否達到升級門檻，以及推薦能否進入待買。0% 待買權重不等於策略死亡，也不是帳戶資金比例。</p>
           </div>
           <Button size="sm" variant="outline" className="rounded-full border-emerald-400/25 text-emerald-200" disabled={refreshing} onClick={() => { setRefreshing(true); void load() }}>
-            <RefreshCw className={`mr-1.5 h-3.5 w-3.5 ${refreshing ? 'animate-spin' : ''}`} /> Refresh ledger
+            <RefreshCw className={`mr-1.5 h-3.5 w-3.5 ${refreshing ? 'animate-spin' : ''}`} /> 重新讀取證據
           </Button>
         </header>
 
@@ -475,21 +491,33 @@ export default function StrategyLearningPage() {
         ) : (
           <>
             <section className="grid gap-2 sm:grid-cols-2 xl:grid-cols-5">
-              <div className="rounded-xl border border-slate-800 bg-slate-950/70 p-4"><div className="text-xs text-slate-500">Active specs</div><div className="mt-2 font-mono text-2xl text-emerald-200">{activeRows.length}</div><div className="mt-1 text-xs text-slate-500">registry status，不等於可下單數</div></div>
-              <div className="rounded-xl border border-emerald-400/20 bg-emerald-400/[0.06] p-4"><div className="text-xs text-slate-400">Pending-buy gate eligible</div><div className="mt-2 font-mono text-2xl text-emerald-100">{learning ? executionEligibleCount : '-'}</div><div className="mt-1 text-xs text-slate-500">只計 execution gate，不是選股存活數或資金比例</div></div>
-              <div className="rounded-xl border border-slate-800 bg-slate-950/70 p-4"><div className="text-xs text-slate-500">Single evaluation stream</div><div className="mt-2 font-mono text-2xl text-cyan-200">{visibleRows.length}</div><div className="mt-1 text-xs text-slate-500">0% allocation 仍持續學習</div></div>
-              <div className="rounded-xl border border-slate-800 bg-slate-950/70 p-4"><div className="text-xs text-slate-500">Promotion / retention</div><div className="mt-2 font-mono text-xl text-slate-100">52% / 48%</div><div className="mt-1 text-xs text-slate-500">candidate / active incumbent</div></div>
-              <div className="rounded-xl border border-slate-800 bg-slate-950/70 p-4"><div className="text-xs text-slate-500">Gate policy preview</div><div className="mt-2 flex items-center gap-2 font-mono text-lg text-slate-100"><ShieldCheck className="h-4 w-4" /> {policy?.status ?? 'unavailable'}</div><div className="mt-1 text-xs text-slate-500">{policy?.evidence.production_effect ? 'production-effect contract' : 'shadow only'}；read-only preview</div></div>
+              <div className="rounded-xl border border-slate-800 bg-slate-950/70 p-4"><div className="text-xs text-slate-500">正式參與選股的策略</div><div className="mt-2 font-mono text-2xl text-emerald-200">{activeRows.length}</div><div className="mt-1 text-xs text-slate-500">代表 registry=active，不代表每個都能進待買</div></div>
+              <div className="rounded-xl border border-emerald-400/20 bg-emerald-400/[0.06] p-4"><div className="text-xs text-slate-400">目前可讓推薦進待買</div><div className="mt-2 font-mono text-2xl text-emerald-100">{learning ? executionEligibleCount : '-'}</div><div className="mt-1 text-xs text-slate-500">必須同時通過報酬、勝率、回撤、成熟度與保守下界</div></div>
+              <div className="rounded-xl border border-slate-800 bg-slate-950/70 p-4"><div className="text-xs text-slate-500">持續接受評估的策略</div><div className="mt-2 font-mono text-2xl text-cyan-200">{visibleRows.length}</div><div className="mt-1 text-xs text-slate-500">共用同一條推薦／評估資料流；待買權重 0% 仍持續學習</div></div>
+              <div className="rounded-xl border border-slate-800 bg-slate-950/70 p-4"><div className="text-xs text-slate-500">升級／續留勝率門檻</div><div className="mt-2 font-mono text-xl text-slate-100">52% / 48%</div><div className="mt-1 text-xs text-slate-500">候選策略至少 52%；現任策略至少 48%</div></div>
+              <div className="rounded-xl border border-slate-800 bg-slate-950/70 p-4"><div className="text-xs text-slate-500">待買政策預覽</div><div className="mt-2 flex items-center gap-2 font-mono text-lg text-slate-100"><ShieldCheck className="h-4 w-4" /> {statusLabel(policy?.status ?? 'unavailable')}</div><div className="mt-1 text-xs text-slate-500">{policy?.evidence.production_effect ? '會影響待買資格' : '只做影子觀察'}；此頁只讀、不會直接改權重</div></div>
             </section>
 
+            <details className="rounded-2xl border border-slate-700/80 bg-slate-950/70 px-4 py-3 text-sm text-slate-300">
+              <summary className="cursor-pointer font-semibold text-slate-100">名詞白話說明（點開查看）</summary>
+              <dl className="mt-3 grid gap-3 md:grid-cols-2 xl:grid-cols-3">
+                <div><dt className="font-semibold text-emerald-200">PIT（當時可知資料）</dt><dd className="mt-1 text-xs leading-5 text-slate-500">只使用那個交易日當下已公開、已入庫的資料，禁止拿未來資訊回頭美化結果。</dd></div>
+                <div><dt className="font-semibold text-emerald-200">T+5 成熟報酬</dt><dd className="mt-1 text-xs leading-5 text-slate-500">推薦後走完五個交易日，才能知道扣除成本後的真實結果。</dd></div>
+                <div><dt className="font-semibold text-emerald-200">LCB90</dt><dd className="mt-1 text-xs leading-5 text-slate-500">90% 信心水準的保守報酬下界；大於 0 才代表不是只靠運氣看起來賺錢。</dd></div>
+                <div><dt className="font-semibold text-emerald-200">Pending-buy gate</dt><dd className="mt-1 text-xs leading-5 text-slate-500">最後一道待買資格門。沒通過仍會選股與學習，但不能單靠該策略把推薦送進待買。</dd></div>
+                <div><dt className="font-semibold text-emerald-200">Gate share</dt><dd className="mt-1 text-xs leading-5 text-slate-500">只在通過待買門檻的策略間比較的相對權重；不是資金配置或下單比例。</dd></div>
+                <div><dt className="font-semibold text-emerald-200">Blocked／資料尚未具備／不適用</dt><dd className="mt-1 text-xs leading-5 text-slate-500">Blocked 是必要條件明確失敗；資料尚未具備是證據缺漏；不適用表示這個欄位本來就不屬於該階段。</dd></div>
+              </dl>
+            </details>
+
             <section className="rounded-2xl border border-cyan-400/20 bg-cyan-400/[0.05] px-4 py-3 text-sm leading-6 text-cyan-50">
-              <span className="font-semibold">Single recommendation stream：</span>
-              所有非 retired strategy 都可持續選股、推薦與累積 evidence；只有 execution allocation 與 <code className="rounded bg-slate-950/70 px-1.5 py-0.5 text-xs">eligible_for_pending_buy</code> 控制 pending-buy，不新增成熟度 lane。
+              <span className="font-semibold">單一推薦資料流：</span>
+              所有未退役策略都持續選股、產生推薦標籤並累積證據；只有「待買資格」控制推薦能不能進入待買，不會把未過門檻的策略移出學習系統。
             </section>
             {concentratedGateShare && concentratedStrategy ? (
               <section className="rounded-2xl border border-amber-400/30 bg-amber-400/[0.08] px-4 py-3 text-sm leading-6 text-amber-50">
-                <span className="font-semibold">Pending-buy gate 集中：</span>
-                現行 policy preview 只有 <code className="rounded bg-slate-950/70 px-1.5 py-0.5 text-xs">{concentratedStrategy[0]}</code> 通過全部 gates，因此相對 gate share 正規化為 {pct(Number(concentratedStrategy[1]))}。這不是帳戶資金或部位比例；其餘 {activeRows.length - 1} 個 active strategies 仍選股與累積 evidence，但其推薦目前不因該策略取得 pending-buy eligibility。
+                <span className="font-semibold">待買資格過度集中（非健康穩態）：</span>
+                目前 13 個正式策略只有 <code className="rounded bg-slate-950/70 px-1.5 py-0.5 text-xs">{concentratedStrategy[0]}</code> 通過全部門檻，所以在通過者之間的相對權重會顯示 {pct(Number(concentratedStrategy[1]))}。這不是全帳戶押一個策略；其餘 {activeRows.length - 1} 個策略仍選股與學習，但暫時不能單靠自身訊號讓推薦進待買。系統維持 fail-closed，不會為了湊數放寬門檻。
               </section>
             ) : null}
 
@@ -499,8 +527,8 @@ export default function StrategyLearningPage() {
 
             <div className="grid gap-4 xl:grid-cols-2 xl:items-start">
               <StrategyLedgerGroup
-                title="Active strategies"
-                description="Registry status=active 的選股參與者。Pending-buy gate share 是另一份 execution policy；0% 不會停止推薦、label 或 reward evidence。"
+                title="正式選股策略"
+                description="Registry 狀態為 active 的選股參與者。待買相對權重是另一份執行資格政策；0% 不會停止推薦、標籤或報酬證據累積。"
                 rows={activeRows}
                 gateById={gateById}
                 policyWeights={policy?.strategy_weights ?? {}}
@@ -509,8 +537,8 @@ export default function StrategyLearningPage() {
                 empty="目前沒有 active strategy reward rows。"
               />
               <StrategyLedgerGroup
-                title="Learning + shadowing strategies"
-                description="Research、shadow 與 candidate 與 active specs 共用同一推薦/evaluation stream；52% hit-rate 只管 candidate promotion，不阻斷 evidence 累積。"
+                title="研究、影子與候選策略"
+                description="研究、影子與候選策略跟正式策略共用同一條推薦／評估資料流；52% 勝率只管候選升級，不阻斷證據累積。"
                 rows={learningRows}
                 gateById={gateById}
                 policyWeights={policy?.strategy_weights ?? {}}
@@ -523,9 +551,9 @@ export default function StrategyLearningPage() {
             <footer className="flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-slate-800 bg-slate-950/70 p-4">
               <p className="max-w-2xl text-xs leading-5 text-slate-500">Decision log → verify/paper outcome → reward ledger → allocation policy。選股與 evaluation 不受 allocation=0 影響；所有 pending-buy 入口都必須取得明確 execution eligibility。</p>
               <div className="flex flex-wrap gap-2">
-                <Button size="sm" variant="outline" disabled={busy != null} onClick={() => void runAction('decision log', () => strategyLabApi.materializeDecisionLog({ limit: 500, dry_run: false, confirm: true }), 'Decision log 已更新。')}>Materialize decision log</Button>
-                <Button size="sm" variant="outline" disabled={busy != null} onClick={() => void runAction('reward ledger', () => strategyLabApi.refreshStrategyRewardLedger({ limit: 5000, dry_run: false, confirm: true }), 'Reward ledger 已更新。')}>Refresh reward ledger</Button>
-                <Button size="sm" variant="outline" disabled={busy != null} onClick={() => void runAction('adaptive policy', () => strategyLabApi.refreshStrategyPolicyState({ dry_run: false, confirm: true }), 'Adaptive strategy policy 已更新。')}>Refresh adaptive policy</Button>
+                <Button size="sm" variant="outline" disabled={busy != null} onClick={() => void runAction('decision log', () => strategyLabApi.materializeDecisionLog({ limit: 500, dry_run: false, confirm: true }), '決策紀錄已更新。')}>物化決策紀錄</Button>
+                <Button size="sm" variant="outline" disabled={busy != null} onClick={() => void runAction('reward ledger', () => strategyLabApi.refreshStrategyRewardLedger({ limit: 5000, dry_run: false, confirm: true }), '報酬帳本已更新。')}>更新報酬帳本</Button>
+                <Button size="sm" variant="outline" disabled={busy != null} onClick={() => void runAction('adaptive policy', () => strategyLabApi.refreshStrategyPolicyState({ dry_run: false, confirm: true }), '自適應策略政策已更新。')}>重算待買政策</Button>
               </div>
             </footer>
           </>

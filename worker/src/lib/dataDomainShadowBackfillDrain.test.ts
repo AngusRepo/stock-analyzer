@@ -97,6 +97,10 @@ assert.equal(shouldContinueDataDomainGlobalSweep({
 
 assert(drain.includes('inspectLatestEveningChainClosure'))
 assert(drain.includes('enqueueNextDataDomainShadowBackfill'))
+assert(drain.includes("if (domain === 'ops')"))
+assert(drain.includes('const step = await runDataDomainShadowBackfillHttpStep(env'))
+assert(drain.includes('queued: false, runId: step.runId'))
+assert(drain.indexOf("if (domain === 'ops')") < drain.indexOf('const queued = await enqueueDataDomainShadowBackfill(env'))
 assert(drain.includes('input.parityNotBefore || dataDomainParitySessionWatermark()'))
 assert(admin.includes('parityNotBefore: closure.timestamp'))
 assert(!admin.includes('parityNotBefore: dataDomainParitySessionWatermark()'))

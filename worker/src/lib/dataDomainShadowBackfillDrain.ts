@@ -423,6 +423,17 @@ export async function enqueueNextDataDomainShadowBackfill(
   const parityNotBefore = input.parityNotBefore || dataDomainParitySessionWatermark()
   const domain = await nextDataDomainBackfillDomain(env, parityNotBefore)
   if (!domain) return { caughtUp: true, domain: null, queued: false, runId: null }
+  // Ops messages are intentionally acknowledged by the Queue consumer because
+  // this domain must stay inside the HTTP-isolated request memory envelope.
+  // The global coordinator must therefore execute one bounded HTTP step instead
+  // of enqueueing a message that cannot be consumed.
+  if (domain === 'ops') {
+    const step = await runDataDomainShadowBackfillHttpStep(env, {
+      domain,
+      runDate: input.runDate,
+    })
+    return { caughtUp: step.caughtUp, domain, queued: false, runId: step.runId }
+  }
   const queued = await enqueueDataDomainShadowBackfill(env, {
     domain,
     runDate: input.runDate,

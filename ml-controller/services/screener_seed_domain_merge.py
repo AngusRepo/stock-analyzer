@@ -1,6 +1,7 @@
 """Pure OPS/Core screener-seed merge used for cutover equivalence checks."""
 from __future__ import annotations
 
+import hashlib
 import json
 from typing import Any
 
@@ -156,3 +157,109 @@ def merge_screener_seed_domains(
             -_sort_number(row.get("score"), 0),
         ),
     )
+
+
+SCREENER_SEED_EQUIVALENCE_FIELDS = (
+    "id",
+    "screener_run_id",
+    "decision_universe_frozen_at",
+    "date",
+    "stock_id",
+    "symbol",
+    "name",
+    "sector",
+    "industry",
+    "rank",
+    "score",
+    "signal",
+    "confidence",
+    "reason",
+    "watch_points",
+    "has_buy_signal",
+    "current_price",
+    "foreign_net_5d",
+    "trust_net_5d",
+    "rsi14",
+    "macd_hist",
+    "sector_rank",
+    "market_segment",
+    "recommendation_lane",
+    "eligible_for_ml",
+    "eligible_for_pending_buy",
+    "alpha_context",
+    "alpha_allocation",
+    "ml_vote_summary",
+    "score_components",
+)
+
+
+def _canonical_json_value(value: Any) -> Any:
+    if not isinstance(value, str):
+        return value
+    stripped = value.strip()
+    if not stripped or stripped[0] not in "[{":
+        return value
+    try:
+        return json.loads(stripped)
+    except (TypeError, ValueError):
+        return value
+
+
+def _canonical_row(row: dict[str, Any]) -> dict[str, Any]:
+    return {
+        field: _canonical_json_value(row.get(field))
+        for field in SCREENER_SEED_EQUIVALENCE_FIELDS
+    }
+
+
+def _row_digest(row: dict[str, Any]) -> str:
+    payload = json.dumps(_canonical_row(row), ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+def compare_screener_seed_domain_results(
+    legacy_rows: list[dict[str, Any]],
+    split_rows: list[dict[str, Any]],
+) -> dict[str, Any]:
+    """Compare legacy cross-domain SQL and split merge output without mutating either."""
+    legacy_by_symbol = {
+        str(row.get("symbol") or "").strip(): row
+        for row in legacy_rows
+        if str(row.get("symbol") or "").strip()
+    }
+    split_by_symbol = {
+        str(row.get("symbol") or "").strip(): row
+        for row in split_rows
+        if str(row.get("symbol") or "").strip()
+    }
+    symbols = sorted(set(legacy_by_symbol) | set(split_by_symbol))
+    missing_from_split = [symbol for symbol in symbols if symbol not in split_by_symbol]
+    unexpected_in_split = [symbol for symbol in symbols if symbol not in legacy_by_symbol]
+    mismatches: list[dict[str, Any]] = []
+    for symbol in symbols:
+        legacy = legacy_by_symbol.get(symbol)
+        split = split_by_symbol.get(symbol)
+        if legacy is None or split is None:
+            continue
+        differing_fields = [
+            field
+            for field in SCREENER_SEED_EQUIVALENCE_FIELDS
+            if _canonical_json_value(legacy.get(field)) != _canonical_json_value(split.get(field))
+        ]
+        if differing_fields:
+            mismatches.append({
+                "symbol": symbol,
+                "fields": differing_fields,
+                "legacy_digest": _row_digest(legacy),
+                "split_digest": _row_digest(split),
+            })
+    status = "pass" if not missing_from_split and not unexpected_in_split and not mismatches else "fail"
+    return {
+        "schema_version": "screener-seed-domain-equivalence-v1",
+        "status": status,
+        "legacy_count": len(legacy_rows),
+        "split_count": len(split_rows),
+        "missing_from_split": missing_from_split,
+        "unexpected_in_split": unexpected_in_split,
+        "mismatches": mismatches,
+    }

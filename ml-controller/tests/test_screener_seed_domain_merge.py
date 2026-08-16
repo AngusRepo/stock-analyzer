@@ -2,7 +2,10 @@ from __future__ import annotations
 
 import json
 
-from services.screener_seed_domain_merge import merge_screener_seed_domains
+from services.screener_seed_domain_merge import (
+    compare_screener_seed_domain_results,
+    merge_screener_seed_domains,
+)
 
 
 def test_merge_preserves_legacy_coalesce_precedence_and_json_semantics():
@@ -113,3 +116,51 @@ def test_merge_orders_by_rank_then_score_descending():
     )
 
     assert [row["symbol"] for row in rows] == ["C", "B", "A"]
+
+
+def test_equivalence_comparator_normalizes_json_text():
+    legacy = [{
+        "symbol": "2330",
+        "stock_id": 1,
+        "watch_points": '["a", "b"]',
+        "score_components": '{"quality": 0.8}',
+    }]
+    split = [{
+        "symbol": "2330",
+        "stock_id": 1,
+        "watch_points": '["a","b"]',
+        "score_components": '{"quality":0.8}',
+    }]
+
+    result = compare_screener_seed_domain_results(legacy, split)
+
+    assert result == {
+        "schema_version": "screener-seed-domain-equivalence-v1",
+        "status": "pass",
+        "legacy_count": 1,
+        "split_count": 1,
+        "missing_from_split": [],
+        "unexpected_in_split": [],
+        "mismatches": [],
+    }
+
+
+def test_equivalence_comparator_reports_missing_and_field_mismatch():
+    legacy = [
+        {"symbol": "2330", "stock_id": 1, "score": 88.0},
+        {"symbol": "2317", "stock_id": 2, "score": 70.0},
+    ]
+    split = [
+        {"symbol": "2330", "stock_id": 1, "score": 87.0},
+        {"symbol": "2454", "stock_id": 3, "score": 90.0},
+    ]
+
+    result = compare_screener_seed_domain_results(legacy, split)
+
+    assert result["status"] == "fail"
+    assert result["missing_from_split"] == ["2317"]
+    assert result["unexpected_in_split"] == ["2454"]
+    assert result["mismatches"][0]["symbol"] == "2330"
+    assert result["mismatches"][0]["fields"] == ["score"]
+    assert len(result["mismatches"][0]["legacy_digest"]) == 64
+    assert len(result["mismatches"][0]["split_digest"]) == 64

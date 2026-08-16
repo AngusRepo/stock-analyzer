@@ -7,11 +7,10 @@ import {
 } from './strategyEvidenceProfile'
 import { DEFAULT_STRATEGY_SPECS } from './strategySpec'
 
-const eligibleSpecs = DEFAULT_STRATEGY_SPECS.filter((spec) =>
-  spec.status === 'active' || spec.status === 'candidate' || spec.status === 'shadow')
+const eligibleSpecs = DEFAULT_STRATEGY_SPECS.filter((spec) => spec.status !== 'retired')
 const profiles = listStrategyEvidenceProfiles()
 
-assert.equal(profiles.length, eligibleSpecs.length, 'every active/candidate/shadow strategy needs an evidence profile')
+assert.equal(profiles.length, eligibleSpecs.length, 'every non-retired strategy needs an evidence profile')
 assert.deepEqual(
   profiles.map((profile) => profile.strategy_id).sort(),
   eligibleSpecs.map((spec) => spec.id).sort(),
@@ -60,3 +59,34 @@ assert.notDeepEqual(
   reversion.required_metrics,
   'different strategy mechanisms must not share one generic metric gate',
 )
+
+const runtimeRegistrySpecs = [
+  {
+    ...DEFAULT_STRATEGY_SPECS[0], id: 'runtime_trend_strategy',
+    status: 'active' as const, alphaBucket: 'trend_following' as const,
+  },
+  {
+    ...DEFAULT_STRATEGY_SPECS[0], id: 'runtime_reversion_strategy',
+    status: 'candidate' as const, alphaBucket: 'mean_reversion' as const,
+  },
+  {
+    ...DEFAULT_STRATEGY_SPECS[0], id: 'runtime_breakout_strategy',
+    status: 'shadow' as const, alphaBucket: 'breakout_vol_expansion' as const,
+  },
+  {
+    ...DEFAULT_STRATEGY_SPECS[0], id: 'runtime_research_strategy',
+    status: 'research' as const, alphaBucket: 'defensive_accumulation' as const,
+  },
+]
+const runtimeProfiles = listStrategyEvidenceProfiles(runtimeRegistrySpecs)
+assert.equal(
+  runtimeProfiles.length,
+  runtimeRegistrySpecs.length,
+  'every non-retired runtime strategy must receive a profile',
+)
+assert.equal(runtimeProfiles.find((row) => row.strategy_id === 'runtime_reversion_strategy')?.primary_horizon_days, 3)
+assert.equal(runtimeProfiles.find((row) => row.strategy_id === 'runtime_breakout_strategy')?.primary_horizon_days, 5)
+assert.equal(runtimeProfiles.find((row) => row.strategy_id === 'runtime_research_strategy')?.primary_horizon_days, 10)
+assert(runtimeProfiles.every((row) => row.production_authority === 'shadow_only'))
+
+console.log('strategy evidence profile tests passed')

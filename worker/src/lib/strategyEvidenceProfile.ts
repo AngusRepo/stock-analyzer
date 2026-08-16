@@ -41,6 +41,29 @@ type EvidencePlan = Pick<
   'primary_horizon_days' | 'evaluation_horizon_days' | 'required_metrics'
 >
 
+const BUCKET_EVIDENCE_PLANS: Record<StrategySpec['alphaBucket'], EvidencePlan> = {
+  trend_following: {
+    primary_horizon_days: 10,
+    evaluation_horizon_days: [5, 10],
+    required_metrics: ['residual_return_lcb90', 'rank_ic', 'max_drawdown', 'turnover_after_cost', 'regime_consistency'],
+  },
+  mean_reversion: {
+    primary_horizon_days: 3,
+    evaluation_horizon_days: [3, 5],
+    required_metrics: ['residual_return_lcb90', 'time_to_reversion', 'maximum_adverse_excursion', 'tail_loss_cvar95', 'regime_consistency'],
+  },
+  breakout_vol_expansion: {
+    primary_horizon_days: 5,
+    evaluation_horizon_days: [3, 5],
+    required_metrics: ['residual_return_lcb90', 'false_breakout_rate', 'tail_loss_cvar95', 'turnover_after_cost', 'regime_consistency'],
+  },
+  defensive_accumulation: {
+    primary_horizon_days: 10,
+    evaluation_horizon_days: [5, 10],
+    required_metrics: ['residual_return_lcb90', 'downside_capture', 'max_drawdown', 'tail_loss_cvar95', 'crowding_decay'],
+  },
+}
+
 const STRATEGY_EVIDENCE_PLANS: Record<string, EvidencePlan> = {
   trend_following_seed_v1: {
     primary_horizon_days: 10,
@@ -144,8 +167,7 @@ const STRATEGY_EVIDENCE_PLANS: Record<string, EvidencePlan> = {
 }
 
 export function buildStrategyEvidenceProfile(spec: StrategySpec): StrategyEvidenceProfile {
-  const plan = STRATEGY_EVIDENCE_PLANS[spec.id]
-  if (!plan) throw new Error(`strategy_evidence_profile_missing:${spec.id}`)
+  const plan = STRATEGY_EVIDENCE_PLANS[spec.id] ?? BUCKET_EVIDENCE_PLANS[spec.alphaBucket]
   const outcomeContractStatus = plan.primary_horizon_days === CURRENT_CANONICAL_OUTCOME_HORIZON_DAYS
     ? 'fixed_5d_available'
     : 'multi_horizon_pending'
@@ -169,6 +191,6 @@ export function listStrategyEvidenceProfiles(
   specs: StrategySpec[] = DEFAULT_STRATEGY_SPECS,
 ): StrategyEvidenceProfile[] {
   return specs
-    .filter((spec) => spec.status === 'active' || spec.status === 'candidate' || spec.status === 'shadow')
+    .filter((spec) => spec.status !== 'retired')
     .map(buildStrategyEvidenceProfile)
 }

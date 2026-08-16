@@ -255,6 +255,30 @@ adminReadRoutes.get('/api/admin/strategy/specs', async (c) => {
     owner_boundaries: STRATEGY_OWNER_BOUNDARIES,
   })
 })
+adminReadRoutes.get('/api/admin/strategy/evidence-profiles', async (c) => {
+  const authError = await requireAdminOrServiceToken(c)
+  if (authError) return authError
+
+  const [
+    { listStrategySpecsForLearning },
+    { listStrategyEvidenceProfiles, STRATEGY_EVIDENCE_PROFILE_VERSION },
+  ] = await Promise.all([
+    import('../lib/strategyLearning'),
+    import('../lib/strategyEvidenceProfile'),
+  ])
+  const { specs, source } = await listStrategySpecsForLearning(c.env.DB)
+  const runtimeSpecs = specs.filter((spec) => spec.status !== 'retired')
+  const profiles = listStrategyEvidenceProfiles(runtimeSpecs)
+  return c.json({
+    success: true, mode: 'read_only', source,
+    schema_version: STRATEGY_EVIDENCE_PROFILE_VERSION,
+    runtime_strategy_count: runtimeSpecs.length,
+    profile_count: profiles.length,
+    complete: profiles.length === runtimeSpecs.length,
+    profiles,
+  })
+})
+
 
 adminReadRoutes.get('/api/admin/strategy/learning', async (c) => {
   const authError = await requireAdminOrServiceToken(c)

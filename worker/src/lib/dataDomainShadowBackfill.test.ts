@@ -2,6 +2,7 @@ import assert from 'node:assert/strict'
 import {
   buildDataDomainAggregateParitySnapshot,
   domainBackfillBatchLimit,
+  domainBackfillExactKeyWhere,
   domainBackfillFinalCountFenceBlockers,
   domainBackfillKeysetWhere,
   domainBackfillParityBatchLimit,
@@ -22,6 +23,20 @@ assert.deepEqual(domainBackfillKeysetWhere(['date', 'symbol'], ['2026-07-23', '2
 })
 assert.throws(() => domainBackfillKeysetWhere(['id'], [1, 2]), /cursor_shape_mismatch/)
 assert.throws(() => domainBackfillKeysetWhere(['bad-name'], [1]), /invalid_sql_identifier/)
+assert.deepEqual(domainBackfillExactKeyWhere(['id'], [{ id: 2 }, { id: 4 }]), {
+  sql: 'WHERE ("id" IS ?) OR ("id" IS ?)',
+  binds: [2, 4],
+})
+assert.deepEqual(
+  domainBackfillExactKeyWhere(
+    ['date', 'symbol'],
+    [{ date: '2026-08-15', symbol: '2330' }, { date: '2026-08-15', symbol: '2317' }],
+  ),
+  {
+    sql: 'WHERE ("date" IS ? AND "symbol" IS ?) OR ("date" IS ? AND "symbol" IS ?)',
+    binds: ['2026-08-15', '2330', '2026-08-15', '2317'],
+  },
+)
 assert.equal(parseDomainBackfillCursor(undefined), null)
 assert.equal(parseDomainBackfillCursor('null'), null)
 assert.deepEqual(parseDomainBackfillCursor('["paper","paper_settlements"]'), ['paper', 'paper_settlements'])

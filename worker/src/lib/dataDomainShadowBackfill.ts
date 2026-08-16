@@ -739,6 +739,18 @@ export function domainBackfillKeysetWhere(primaryKeys: string[], cursor: unknown
   return { sql: `WHERE (${tuple}) > (${primaryKeys.map(() => '?').join(', ')})`, binds: cursor }
 }
 
+export function domainBackfillExactKeyWhere(
+  primaryKeys: string[],
+  rows: Record<string, unknown>[],
+): { sql: string; binds: unknown[] } {
+  if (!primaryKeys.length || !rows.length) throw new Error('domain_backfill_exact_keys_empty')
+  const clause = `(${primaryKeys.map((key) => `${identifier(key)} IS ?`).join(' AND ')})`
+  return {
+    sql: `WHERE ${rows.map(() => clause).join(' OR ')}`,
+    binds: rows.flatMap((row) => primaryKeys.map((key) => row[key] ?? null)),
+  }
+}
+
 export function isDomainShadowCopyComplete(ownedTables: string[], completedTables: string[]): boolean {
   const completed = new Set(completedTables.map((table) => table.trim().toLowerCase()))
   return ownedTables.length > 0 && ownedTables.every((table) => completed.has(table))
@@ -1670,12 +1682,12 @@ export async function backfillDataDomainTableShadow(
     },
   )
   await upsertDomainRows(target, table, columns, primaryKeys, rows)
+  const exactKeys = domainBackfillExactKeyWhere(primaryKeys, rows)
   const verify = await target.prepare(`
     SELECT ${columnSql} FROM ${identifier(table)}
-     ${keyset.sql}
+     ${exactKeys.sql}
      ORDER BY ${order}
-     LIMIT ?
-  `).bind(...keyset.binds, limit).all<Record<string, unknown>>()
+  `).bind(...exactKeys.binds).all<Record<string, unknown>>()
   const targetRows = verify.results ?? []
   const sourceChecksum = await checksumRows(rows, columns)
   const targetChecksum = await checksumRows(targetRows, columns)

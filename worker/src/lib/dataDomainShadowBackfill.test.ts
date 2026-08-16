@@ -6,6 +6,7 @@ import {
   domainBackfillFinalCountFenceBlockers,
   domainBackfillKeysetWhere,
   domainBackfillParityBatchLimit,
+  domainBackfillResumeParityBatchLimit,
   domainBackfillRollingManifest,
   domainBackfillRowsPerStatement,
   isDomainTableSchemaCompatible,
@@ -54,6 +55,8 @@ assert.equal(domainBackfillBatchLimit(0), 1)
 assert.equal(domainBackfillBatchLimit(5000), 500)
 assert.equal(domainBackfillParityBatchLimit(500), 4000)
 assert.equal(domainBackfillParityBatchLimit(50), 400)
+assert.equal(domainBackfillResumeParityBatchLimit(416000, 4000, 400), 400)
+assert.equal(domainBackfillResumeParityBatchLimit(0, 4000, 400), 400)
 assert.equal(domainBackfillRowsPerStatement(13), 7)
 assert.equal(domainBackfillRowsPerStatement(3), 33)
 assert.equal(domainBackfillRowsPerStatement(100), 1)

@@ -98,6 +98,16 @@ export function domainBackfillParityBatchLimit(copyBatchLimit: number): number {
   return Math.max(1, Math.min(Math.floor(copyBatchLimit) * 8, 4000))
 }
 
+export function domainBackfillResumeParityBatchLimit(
+  progressRows: number,
+  recordedParityLimit: number,
+  requestedParityLimit: number,
+): number {
+  return progressRows > 0
+    ? Math.min(recordedParityLimit, requestedParityLimit)
+    : requestedParityLimit
+}
+
 export function domainBackfillFinalCountFenceBlockers(input: {
   expectedSourceRows: number
   expectedTargetRows: number
@@ -1235,7 +1245,11 @@ export async function backfillDataDomainTableShadow(
       const targetRevisionObserved = controlTableRolling
         ? (progressRow ? recordedTargetRevision! : revisionBeforePage!.targetRevision)
         : null
-      const parityLimit = progressRows > 0 ? recordedParityLimit : requestedParityLimit
+      const parityLimit = domainBackfillResumeParityBatchLimit(
+        progressRows,
+        recordedParityLimit,
+        requestedParityLimit,
+      )
       actualManifestPageLimit = parityLimit
       const sourcePageResult = await env.DB.prepare(`
         SELECT ${columnSql}

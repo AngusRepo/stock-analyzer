@@ -41,7 +41,7 @@ type EvidencePlan = Pick<
   'primary_horizon_days' | 'evaluation_horizon_days' | 'required_metrics'
 >
 
-const BUCKET_EVIDENCE_PLANS: Record<StrategySpec['alphaBucket'], EvidencePlan> = {
+const BUCKET_EVIDENCE_PLANS: Record<string, EvidencePlan> = {
   trend_following: {
     primary_horizon_days: 10,
     evaluation_horizon_days: [5, 10],
@@ -58,6 +58,11 @@ const BUCKET_EVIDENCE_PLANS: Record<StrategySpec['alphaBucket'], EvidencePlan> =
     required_metrics: ['residual_return_lcb90', 'false_breakout_rate', 'tail_loss_cvar95', 'turnover_after_cost', 'regime_consistency'],
   },
   defensive_accumulation: {
+    primary_horizon_days: 10,
+    evaluation_horizon_days: [5, 10],
+    required_metrics: ['residual_return_lcb90', 'downside_capture', 'max_drawdown', 'tail_loss_cvar95', 'crowding_decay'],
+  },
+  smart_money_accumulation: {
     primary_horizon_days: 10,
     evaluation_horizon_days: [5, 10],
     required_metrics: ['residual_return_lcb90', 'downside_capture', 'max_drawdown', 'tail_loss_cvar95', 'crowding_decay'],

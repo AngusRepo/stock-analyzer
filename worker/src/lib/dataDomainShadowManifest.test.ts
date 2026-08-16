@@ -60,6 +60,8 @@ void (async () => {
     assert.equal(dataDomainManifestPageLimit(table, 500), 25)
   }
 
+  assert.equal(dataDomainManifestPageLimit('allocator_ev_feature_snapshots', 400), 10)
+
   const rows: TestRow[] = Array.from({ length: 61 }, (_, index) => ({
     id: index + 1,
     payload: index % 5 === 0 ? null : index === 7 ? '  原始 JSON 空白 ✓  ' : `row-${index + 1}`,

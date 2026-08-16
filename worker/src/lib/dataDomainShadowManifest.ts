@@ -26,6 +26,10 @@ const TABLE_PAGE_LIMITS: Readonly<Record<string, number>> = {
   model_champion_history: 25,
   model_champion_pointers: 25,
   screener_funnel_runs: 10,
+  // Feature payload rows contain wide JSON evidence.  A 400-row parity page
+  // can exceed the Worker memory/time envelope after source + target copies
+  // and canonical checksum bodies are held together.
+  allocator_ev_feature_snapshots: 10,
 }
 
 export function isDataDomainControlTable(table: string): table is DataDomainControlTable {

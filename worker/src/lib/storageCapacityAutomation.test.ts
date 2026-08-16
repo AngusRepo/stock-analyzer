@@ -16,7 +16,7 @@ assert.match(String(audit.query), /durable=1/)
 
 const ops = manifest.jobs.find((job) => job.id === 'data-domain-shadow-backfill-ops')
 assert(ops, 'OPS HTTP-isolated shadow backfill scheduler must exist')
-assert.equal(ops.schedule, '*/5 17-22 * * *')
+assert.equal(ops.schedule, '* 17-22 * * *')
 assert.match(String(ops.query), /durable=1/)
 assert.match(String(ops.query), /direct_step=1/)
 assert.match(String(ops.query), /domain=ops/)

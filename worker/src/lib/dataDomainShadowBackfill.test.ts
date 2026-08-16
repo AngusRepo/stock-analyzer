@@ -26,7 +26,7 @@ assert.equal(parseDomainBackfillCursor(undefined), null)
 assert.equal(parseDomainBackfillCursor('null'), null)
 assert.deepEqual(parseDomainBackfillCursor('["paper","paper_settlements"]'), ['paper', 'paper_settlements'])
 assert.throws(() => parseDomainBackfillCursor('{}'), /domain_backfill_cursor_invalid/)
-assert.equal(dataDomainManifestPageLimit('screener_funnel_runs', 50), 5)
+assert.equal(dataDomainManifestPageLimit('screener_funnel_runs', 50), 1)
 assert.equal(dataDomainManifestPageLimit('screener_funnel_items', 4000), 4000)
 
 assert.equal(isDomainShadowCopyComplete(['runs', 'items'], ['runs']), false)

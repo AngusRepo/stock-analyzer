@@ -4645,9 +4645,44 @@ INSERT INTO predictions (
 """.strip()
 
 
+def _latest_screener_seed_symbols(run_date: str) -> tuple[bool, set[str]]:
+    rows = OPS_D1_CLIENT.query(
+        """
+        WITH latest_screener_run AS (
+            SELECT run_id
+              FROM screener_funnel_runs
+             WHERE date = ?
+               AND status = 'success'
+             ORDER BY created_at DESC
+             LIMIT 1
+        )
+        SELECT latest.run_id, sfi.symbol
+          FROM latest_screener_run latest
+          LEFT JOIN screener_funnel_items sfi
+            ON sfi.run_id = latest.run_id
+           AND (
+                (sfi.stage = 'l1_candidate_seed_after_overlay' AND sfi.decision = 'selected')
+             OR (sfi.stage = 'final_selection' AND sfi.decision = 'selected')
+           )
+        """,
+        [run_date],
+        timeout=60,
+    )
+    if not rows:
+        return False, set()
+    return True, {
+        str(row.get("symbol") or "").strip()
+        for row in rows
+        if str(row.get("symbol") or "").strip()
+    }
+
+
 def _existing_recommendation_seed_stock_ids(recommendations: list[dict], run_date: str) -> set[int]:
     stock_ids = sorted({int(r["stock_id"]) for r in recommendations if r.get("stock_id")})
     if not stock_ids:
+        return set()
+    run_exists, seed_symbols = _latest_screener_seed_symbols(run_date)
+    if not run_exists or not seed_symbols:
         return set()
     existing: set[int] = set()
     chunk_size = 80
@@ -4656,29 +4691,19 @@ def _existing_recommendation_seed_stock_ids(recommendations: list[dict], run_dat
         placeholders = ",".join("?" for _ in chunk)
         rows = d1_client.query(
             f"""
-            WITH latest_screener_run AS (
-                SELECT run_id
-                  FROM screener_funnel_runs
-                 WHERE date = ?
-                   AND status = 'success'
-                 ORDER BY created_at DESC
-                 LIMIT 1
-            )
-            SELECT dr.stock_id
-              FROM daily_recommendations dr
-              JOIN screener_funnel_items sfi
-                ON sfi.run_id = (SELECT run_id FROM latest_screener_run)
-               AND sfi.symbol = dr.symbol
-               AND (
-                    (sfi.stage = 'l1_candidate_seed_after_overlay' AND sfi.decision = 'selected')
-                 OR (sfi.stage = 'final_selection' AND sfi.decision = 'selected')
-               )
-             WHERE dr.date = ?
-               AND dr.stock_id IN ({placeholders})
+            SELECT stock_id, symbol
+              FROM daily_recommendations
+             WHERE date = ?
+               AND stock_id IN ({placeholders})
             """,
-            [run_date, run_date, *chunk],
+            [run_date, *chunk],
         )
-        existing.update(int(row["stock_id"]) for row in rows if row.get("stock_id") is not None)
+        existing.update(
+            int(row["stock_id"])
+            for row in rows
+            if row.get("stock_id") is not None
+            and str(row.get("symbol") or "").strip() in seed_symbols
+        )
     return existing
 
 
@@ -4722,58 +4747,36 @@ def _delete_stale_recommendation_rows(recommendations: list[dict], run_date: str
     """Keep only rows owned by the latest screener candidate seed for run_date."""
     if not recommendations:
         return 0
+    run_exists, seed_symbols = _latest_screener_seed_symbols(run_date)
+    if not run_exists:
+        logger.warning(
+            "[recommendation_service] No latest screener candidate-seed run for run_date=%s; skip stale cleanup",
+            run_date,
+        )
+        return 0
+    if not seed_symbols:
+        logger.warning(
+            "[recommendation_service] Latest screener candidate-seed run has no selected symbols for run_date=%s; "
+            "skip stale cleanup fail-closed",
+            run_date,
+        )
+        return 0
     rows = d1_client.query(
         """
-        WITH latest_screener_run AS (
-            SELECT run_id
-              FROM screener_funnel_runs
-             WHERE date = ?
-               AND status = 'success'
-             ORDER BY created_at DESC
-             LIMIT 1
-        )
-        SELECT dr.stock_id
-          FROM daily_recommendations dr
-         WHERE dr.date = ?
-           AND COALESCE(dr.recommendation_lane, 'tradable') = 'tradable'
-           AND COALESCE(dr.eligible_for_ml, 1) = 1
-           AND NOT EXISTS (
-             SELECT 1
-               FROM screener_funnel_items sfi
-             WHERE sfi.run_id = (SELECT run_id FROM latest_screener_run)
-                AND sfi.symbol = dr.symbol
-                AND (
-                     (sfi.stage = 'l1_candidate_seed_after_overlay' AND sfi.decision = 'selected')
-                  OR (sfi.stage = 'final_selection' AND sfi.decision = 'selected')
-                )
-           )
+        SELECT stock_id, symbol
+          FROM daily_recommendations
+         WHERE date = ?
+           AND COALESCE(recommendation_lane, 'tradable') = 'tradable'
+           AND COALESCE(eligible_for_ml, 1) = 1
         """,
-        [run_date, run_date],
+        [run_date],
         timeout=60,
     )
-    if not rows:
-        run = d1_client.query(
-            """
-            SELECT run_id
-              FROM screener_funnel_runs
-             WHERE date = ?
-               AND status = 'success'
-             ORDER BY created_at DESC
-             LIMIT 1
-            """,
-            [run_date],
-            timeout=60,
-        )
-        if not run:
-            logger.warning(
-                "[recommendation_service] No latest screener candidate-seed run for run_date=%s; skip stale cleanup",
-                run_date,
-            )
-        return 0
     stale_ids = sorted({
         int(row["stock_id"])
         for row in rows or []
         if row.get("stock_id") is not None
+        and str(row.get("symbol") or "").strip() not in seed_symbols
     })
     changes = 0
     for chunk in _chunked(stale_ids):

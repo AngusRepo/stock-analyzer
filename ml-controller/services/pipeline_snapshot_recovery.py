@@ -271,8 +271,9 @@ async def run_pipeline_snapshot_recovery(
     if pit_state_checksum(state) != source_pit_checksum:
         raise ValueError("pipeline_snapshot_recovery_pit_state_mutated")
 
+    modal_payload = await build_modal_payload(state, state_gcs_uri="")
     derived_state_gcs_uri = await asyncio.to_thread(write_state_artifact, state)
-    modal_payload = await build_modal_payload(state, state_gcs_uri=derived_state_gcs_uri)
+    modal_payload["state_gcs_uri"] = derived_state_gcs_uri
     sequence_after = await asyncio.to_thread(
         long_history_sequence_artifact_evidence,
         as_of_utc=lineage["source_state_created_at"],

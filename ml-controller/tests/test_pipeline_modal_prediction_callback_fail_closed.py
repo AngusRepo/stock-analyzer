@@ -15,6 +15,32 @@ from graphs import daily_pipeline_v2 as pipeline  # noqa: E402
 RUN_DATE = "2026-08-14"
 RUN_ID = "pipeline-v2-contract-test"
 STATE_URI = "gs://stockvision-models/pipeline-v2/test/partial_state.json"
+
+def _sequence_input_contract(
+    *,
+    dlinear_symbols: list[str] | None = None,
+    itransformer_symbols: list[str] | None = None,
+) -> dict:
+    core = {
+        "schema_version": "pipeline-modal-sequence-input-contract-v1",
+        "serving_manifest_digest": pipeline._pipeline_modal_canonical_digest(_manifest()),
+        "by_model": {
+            "DLinear": {
+                "symbols": dlinear_symbols or ["2330", "2317"],
+                "sequence_contract": {"seq_len": 64},
+            },
+            "iTransformer": {
+                "symbols": itransformer_symbols or ["2330", "2317"],
+                "sequence_contract": {"seq_len": 64},
+            },
+        },
+    }
+    return {
+        **core,
+        "digest": pipeline._pipeline_modal_canonical_digest(core),
+    }
+
+
 SOURCE_SHA = "0123456789abcdef0123456789abcdef01234567"
 
 
@@ -80,6 +106,7 @@ def _state() -> dict:
             "serving_manifest_digest": pipeline._pipeline_modal_canonical_digest(manifest),
             "expected_source_sha": SOURCE_SHA,
         },
+        "pipeline_modal_sequence_input_contract": _sequence_input_contract(),
         "errors": [],
         "metrics": {},
     }
@@ -119,6 +146,7 @@ def _bundle(*, schema_version: str = "pipeline-modal-prediction-bundle-v1") -> d
         },
         "serving_coverage": pipeline._pipeline_modal_manifest_coverage(manifest),
         "modal_source_sha": SOURCE_SHA,
+        "sequence_input_contract": _sequence_input_contract(),
         "n_input": 2,
         "predict_batch_v2_results": [
             _feature_row("2330"),
@@ -300,6 +328,24 @@ def test_callback_rejects_partial_sequence_rows_before_writes() -> None:
 
     with pytest.raises(RuntimeError, match="pipeline_modal_dlinear_closure_failed"):
         pipeline._validate_pipeline_modal_feature_bundle_before_writes(_state(), bundle)
+
+
+def test_callback_accepts_frozen_sequence_eligible_subset() -> None:
+    state = _state()
+    bundle = _bundle()
+    contract = _sequence_input_contract(dlinear_symbols=["2330"])
+    state["pipeline_modal_sequence_input_contract"] = contract
+    bundle["sequence_input_contract"] = copy.deepcopy(contract)
+    bundle["dlinear_raw"]["results"] = [
+        row
+        for row in bundle["dlinear_raw"]["results"]
+        if row["symbol"] == "2330"
+    ]
+
+    result = pipeline._validate_pipeline_modal_feature_bundle_before_writes(state, bundle)
+
+    assert result["runtime_model_closure"]["DLinear"]["expected_count"] == 1
+    assert result["runtime_model_closure"]["DLinear"]["result_count"] == 1
 
 
 def test_callback_rejects_excluded_reason_and_source_sha_tamper() -> None:

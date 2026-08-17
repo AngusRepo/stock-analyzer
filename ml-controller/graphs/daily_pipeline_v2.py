@@ -4181,6 +4181,27 @@ async def _build_pipeline_modal_prediction_payload(state: PipelineStateV2, *, st
         for model_name in ("KalmanFilter", "MarkovSwitching")
         if _is_optional_loaded_serving_model(model_status, model_name, "pipeline_modal_prediction_bundle")
     }
+    sequence_input_contract_core = {
+        "schema_version": "pipeline-modal-sequence-input-contract-v1",
+        "serving_manifest_digest": serving_manifest_digest,
+        "by_model": {
+            model_name: {
+                "symbols": [
+                    str(row.get("symbol") or row.get("stock_id") or "").strip()
+                    for row in rows
+                    if isinstance(row, dict) and (row.get("symbol") or row.get("stock_id"))
+                ],
+                "sequence_contract": contract,
+            }
+            for model_name, rows in sequence_series_by_model.items()
+            for contract in [sequence_contracts.get(model_name) or {}]
+        },
+    }
+    sequence_input_contract = {
+        **sequence_input_contract_core,
+        "digest": _pipeline_modal_canonical_digest(sequence_input_contract_core),
+    }
+    state["pipeline_modal_sequence_input_contract"] = sequence_input_contract
     return {
         "schema_version": "pipeline-modal-prediction-request-v1",
         "run_date": state["run_date"],
@@ -4192,6 +4213,7 @@ async def _build_pipeline_modal_prediction_payload(state: PipelineStateV2, *, st
         "sequence_series": _json_safe(sequence_series),
         "sequence_model_series_by_model": _json_safe(sequence_series_by_model),
         "sequence_model_contracts": _json_safe(sequence_contracts),
+        "sequence_input_contract": _json_safe(sequence_input_contract),
         "sequence_dataset_meta": {
             **sequence_dataset_meta,
             "sequence_model_contracts": {
@@ -4280,6 +4302,35 @@ def _validate_pipeline_modal_feature_bundle_before_writes(
     if not isinstance(actual_coverage, dict) or actual_coverage != expected_coverage:
         raise RuntimeError(
             "pipeline_modal_prediction_bundle_contract:serving_coverage_mismatch"
+        )
+    expected_sequence_input_contract = state.get("pipeline_modal_sequence_input_contract")
+    actual_sequence_input_contract = bundle.get("sequence_input_contract")
+    if not isinstance(expected_sequence_input_contract, dict):
+        raise RuntimeError(
+            "pipeline_modal_prediction_bundle_contract:sequence_input_contract_missing"
+        )
+    expected_sequence_core = {
+        key: value
+        for key, value in expected_sequence_input_contract.items()
+        if key != "digest"
+    }
+    if (
+        expected_sequence_input_contract.get("schema_version")
+        != "pipeline-modal-sequence-input-contract-v1"
+        or expected_sequence_input_contract.get("serving_manifest_digest")
+        != expected_digest
+        or expected_sequence_input_contract.get("digest")
+        != _pipeline_modal_canonical_digest(expected_sequence_core)
+        or not isinstance(actual_sequence_input_contract, dict)
+        or actual_sequence_input_contract != expected_sequence_input_contract
+    ):
+        raise RuntimeError(
+            "pipeline_modal_prediction_bundle_contract:sequence_input_contract_mismatch"
+        )
+    sequence_inputs_by_model = expected_sequence_input_contract.get("by_model")
+    if not isinstance(sequence_inputs_by_model, dict):
+        raise RuntimeError(
+            "pipeline_modal_prediction_bundle_contract:sequence_input_models_missing"
         )
 
     schema_version = str(bundle.get("schema_version") or "").strip()
@@ -4426,6 +4477,14 @@ def _validate_pipeline_modal_feature_bundle_before_writes(
         model_name
         for model_name in runtime_model_bundle_keys
         if _status(model_name) in MODEL_POOL_SERVING_STATUSES
+        and (
+            model_name == "GNN"
+            or bool(
+                (sequence_inputs_by_model.get(model_name) or {}).get("symbols")
+                if isinstance(sequence_inputs_by_model.get(model_name), dict)
+                else []
+            )
+        )
     ]
     runtime_closure: dict[str, Any] = {}
     for model_name in required_runtime_models:
@@ -4435,6 +4494,15 @@ def _validate_pipeline_modal_feature_bundle_before_writes(
         observed: list[str] = []
         invalid_indexes: list[int] = []
         errors: dict[str, str] = {}
+        model_expected_symbols = expected_symbols
+        if model_name != "GNN":
+            model_contract = sequence_inputs_by_model.get(model_name)
+            model_expected_symbols = (
+                list(model_contract.get("symbols") or [])
+                if isinstance(model_contract, dict)
+                else []
+            )
+        model_expected_symbol_set = set(model_expected_symbols)
         if isinstance(rows, list):
             for index, row in enumerate(rows):
                 if not isinstance(row, dict):
@@ -4458,21 +4526,21 @@ def _validate_pipeline_modal_feature_bundle_before_writes(
                 else None
             ),
             "results_not_list": not isinstance(rows, list),
-            "expected_count": len(expected_symbols),
+            "expected_count": len(model_expected_symbols),
             "result_count": len(rows) if isinstance(rows, list) else -1,
             "observed_symbol_count": len(observed),
             "invalid_row_indexes": invalid_indexes[:20],
             "duplicate_symbols": duplicates[:20],
-            "missing_symbols": sorted(expected_symbol_set - observed_set)[:20],
-            "unexpected_symbols": sorted(observed_set - expected_symbol_set)[:20],
+            "missing_symbols": sorted(model_expected_symbol_set - observed_set)[:20],
+            "unexpected_symbols": sorted(observed_set - model_expected_symbol_set)[:20],
             "row_errors": dict(list(errors.items())[:20]),
         }
         runtime_closure[model_name] = model_blockers
         if any((
             model_blockers["payload_error"],
             model_blockers["results_not_list"],
-            model_blockers["result_count"] != len(expected_symbols),
-            len(observed) != len(expected_symbols),
+            model_blockers["result_count"] != len(model_expected_symbols),
+            len(observed) != len(model_expected_symbols),
             invalid_indexes,
             duplicates,
             model_blockers["missing_symbols"],
@@ -4729,8 +4797,9 @@ async def run_pipeline_v2_until_modal_prediction_spawn(run_date: str = "", produ
         ])
         state["l3_payloads"] = list(state.get("payloads") or [])
         await _attach_pipeline_modal_serving_context(state)
+        modal_payload = await _build_pipeline_modal_prediction_payload(state, state_gcs_uri="")
         state_gcs_uri = _write_pipeline_async_state_artifact(state)
-        modal_payload = await _build_pipeline_modal_prediction_payload(state, state_gcs_uri=state_gcs_uri)
+        modal_payload["state_gcs_uri"] = state_gcs_uri
 
         from services import modal_client
 

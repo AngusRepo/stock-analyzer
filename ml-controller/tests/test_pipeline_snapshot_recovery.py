@@ -168,11 +168,13 @@ def test_snapshot_recovery_spawns_with_same_artifact_versions_and_non_native_lin
 
     def write_state(state):
         assert state["snapshot_recovery_lineage"]["eligible_for_native_learning"] is False
+        assert state["pipeline_modal_sequence_input_contract"]["schema_version"] == "test-contract-v1"
         return "gs://stockvision-models/derived/partial_state.json"
 
     async def build_payload(state, *, state_gcs_uri):
-        assert state_gcs_uri.endswith("partial_state.json")
-        return {"run_id": state["producer_run_id"], "payloads": state["payloads"]}
+        assert state_gcs_uri == ""
+        state["pipeline_modal_sequence_input_contract"] = {"schema_version": "test-contract-v1"}
+        return {"run_id": state["producer_run_id"], "payloads": state["payloads"], "state_gcs_uri": state_gcs_uri}
 
     result = asyncio.run(recovery.run_pipeline_snapshot_recovery(
         source_gcs_uri=SOURCE_URI,

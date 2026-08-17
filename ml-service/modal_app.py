@@ -1696,6 +1696,7 @@ def pipeline_prediction_bundle(payload: dict) -> dict:
         "state_space_raw": outputs.get("state_space_universal_predict") or {"results": []},
         "stage_timings": timings,
         "sequence_dataset": payload.get("sequence_dataset_meta") or {},
+        "sequence_input_contract": payload.get("sequence_input_contract") or {},
         "n_input": len(payloads),
     }
     bundle["durable_handoff"] = _persist_pipeline_prediction_bundle(payload, bundle)

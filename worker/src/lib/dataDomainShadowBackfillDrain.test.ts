@@ -6,6 +6,7 @@ import {
   LEARNING_CRITICAL_EVIDENCE_BACKFILL_TABLES,
   resolveDataDomainShadowBackfillContinuation,
   shouldYieldToLearningCriticalEvidence,
+  shouldRefreshStrategyEvidenceMetricsAfterBackfill,
   resolveLatestEveningChainClosure,
   shouldContinueDataDomainGlobalSweep,
 } from './dataDomainShadowBackfillDrain'
@@ -44,6 +45,19 @@ assert.equal(shouldYieldToLearningCriticalEvidence({
 }), false)
 assert(drain.includes('nextLearningCriticalEvidenceTable(env)'))
 assert.equal(dataDomainShadowBackfillPauseKey('learning'), 'data-domain-shadow-backfill:learning:paused')
+assert.equal(shouldRefreshStrategyEvidenceMetricsAfterBackfill({
+  domain: 'learning', table: 'strategy_label_matrix_v4', status: 'shadow_table_complete',
+}), true)
+assert.equal(shouldRefreshStrategyEvidenceMetricsAfterBackfill({
+  domain: 'learning', table: 'strategy_label_matrix_v4', status: 'shadow_progress',
+}), false)
+assert.equal(shouldRefreshStrategyEvidenceMetricsAfterBackfill({
+  domain: 'learning', table: 'predictions', status: 'shadow_table_complete',
+}), false)
+assert.equal(shouldRefreshStrategyEvidenceMetricsAfterBackfill({
+  domain: 'paper', table: 'strategy_label_matrix_v4', status: 'shadow_table_complete',
+}), false)
+assert(drain.includes('strategy_metric_refresh: strategyMetricRefresh'))
 assert(drain.includes('backfill_paused=true durable_cursor_preserved=true'))
 assert(drain.includes('tablesForDataDomainShadowBackfill'))
 assert(drain.includes('msg.dataDomainRequestedTable'))

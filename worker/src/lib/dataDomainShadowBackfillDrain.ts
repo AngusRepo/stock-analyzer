@@ -33,6 +33,7 @@ import {
 } from './dataDomainControlRevision'
 import { runWithMaintenanceLease } from './maintenanceLease'
 import { twDaysAgo } from './dateUtils'
+import { materializeStrategyEvidenceMetrics } from './strategyEvidenceMetrics'
 import { logSchedulerResult, type SchedulerRunLogEntry } from './schedulerRunLogger'
 import { dataDomainShadowBackfillActiveKey } from './dataDomainShadowSession'
 import {
@@ -188,6 +189,16 @@ export function resolveDataDomainShadowBackfillContinuation(
     ].includes(requestedTable)
   ) return 'requested_table_dependency_blocked'
   return requestedTable ? 'requested_table_complete' : 'next_domain_table'
+}
+
+export function shouldRefreshStrategyEvidenceMetricsAfterBackfill(input: {
+  domain: DataDomain
+  table: string
+  status: DomainShadowBackfillResult['status']
+}): boolean {
+  return input.domain === 'learning'
+    && input.table === 'strategy_label_matrix_v4'
+    && input.status === 'shadow_table_complete'
 }
 
 export function shouldContinueDataDomainGlobalSweep(input: {
@@ -1349,11 +1360,26 @@ export async function processDataDomainShadowBackfillDrain(
   }
 
   const result = leased as DomainShadowBackfillResult
+  let strategyMetricRefresh: { status: 'success' | 'error'; summary: string } | null = null
+  if (shouldRefreshStrategyEvidenceMetricsAfterBackfill({ domain, table, status: result.status })) {
+    try {
+      const metrics = await materializeStrategyEvidenceMetrics(env, {
+        outcomeAsOfDate: msg.triggerTime.slice(0, 10),
+      })
+      strategyMetricRefresh = { status: 'success', summary: metrics.summary }
+    } catch (error) {
+      strategyMetricRefresh = {
+        status: 'error',
+        summary: (error instanceof Error ? error.message : String(error)).slice(0, 500),
+      }
+    }
+  }
   await env.KV.put(progressKey(domain), JSON.stringify({
     run_id: runId,
     attempt,
     table,
     result,
+    strategy_metric_refresh: strategyMetricRefresh,
     updated_at: new Date().toISOString(),
   }), { expirationTtl: ACTIVE_TTL_SECONDS })
 

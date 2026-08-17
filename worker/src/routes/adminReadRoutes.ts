@@ -384,6 +384,11 @@ adminReadRoutes.get('/api/admin/strategy/evidence-profiles', async (c) => {
       },
     }
   })
+  const { loadStrategyEvidenceOwnerSnapshotBefore } = await import('../lib/strategyEvidenceOwnerFusion')
+  const evidenceOwnerSnapshot = await loadStrategyEvidenceOwnerSnapshotBefore(
+    shadowLearningDb, runtimeSpecs, twToday(),
+  )
+  const activeProfiles = profiles.filter((profile) => profile.strategy_status === 'active')
   const metricReadyProfiles = profilesWithMetrics.filter((profile) => (
     profile.metric_completion.ready === profile.metric_completion.total
   )).length
@@ -399,7 +404,7 @@ adminReadRoutes.get('/api/admin/strategy/evidence-profiles', async (c) => {
   const primaryProfilesReady = profiles.filter((profile) => (
     profile.outcome_contract_status !== 'multi_horizon_pending'
   )).length
-  const requiredMultiHorizonMetrics = [...new Set(profiles.flatMap((profile) => profile.required_metrics))].sort()
+  const requiredMultiHorizonMetrics = [...new Set(activeProfiles.flatMap((profile) => profile.required_metrics))].sort()
   const materializedMultiHorizonMetrics = [...new Set(metricArtifacts
     .filter((row) => row.metric_value != null && Number.isFinite(Number(row.metric_value)))
     .map((row) => row.metric_name))].sort()
@@ -410,7 +415,7 @@ adminReadRoutes.get('/api/admin/strategy/evidence-profiles', async (c) => {
     runtime_strategy_count: runtimeSpecs.length,
     profile_count: profiles.length,
     complete: profiles.length === runtimeSpecs.length,
-    multi_horizon_authority: 'shadow_only',
+    multi_horizon_authority: evidenceOwnerSnapshot.integration_ready ? 'formal_owner_input_ready' : 'shadow_only',
     multi_horizon_coverage: multiHorizonCoverage,
     lanes: {
       formal: {
@@ -439,27 +444,25 @@ adminReadRoutes.get('/api/admin/strategy/evidence-profiles', async (c) => {
         lane_id: 'strategy_multi_horizon_evidence_shadow',
         label: 'Shadow B：策略專屬 3／5／10 日證據',
         version: STRATEGY_EVIDENCE_PROFILE_VERSION,
-        status: completeHorizonCoverage && primaryProfilesReady === profiles.length
-          ? metricReadyProfiles === profiles.length
-            ? 'metric_evidence_ready'
-            : 'outcomes_ready_metrics_materializing'
-          : 'materializing',
+        status: evidenceOwnerSnapshot.integration_ready
+          ? 'owner_integration_ready'
+          : completeHorizonCoverage ? 'outcomes_ready_metrics_materializing' : 'materializing',
         as_of_date: metricAsOfDate,
         horizon_coverage: multiHorizonCoverage,
         ready_primary_profiles: primaryProfilesReady,
         total_profiles: profiles.length,
         outcome_data_ready: completeHorizonCoverage && primaryProfilesReady === profiles.length,
         production_integration_ready: completeHorizonCoverage
-          && primaryProfilesReady === profiles.length
-          && metricReadyProfiles === profiles.length,
+          && evidenceOwnerSnapshot.integration_ready,
         production_owner: 'strategy-adaptive-lifecycle-v2',
         materialized_metrics: materializedMultiHorizonMetrics,
         missing_required_metrics: missingMultiHorizonMetrics,
         metric_materialized_profiles: metricMaterializedProfiles,
         metric_ready_profiles: metricReadyProfiles,
-        integration_effect: 'shadow_evidence_input_only',
+        evidence_owner_snapshot: evidenceOwnerSnapshot,
+        integration_effect: 'status_aware_owner_input_ready',
         production_effect: false,
-        authority: 'comparison_only',
+        authority: 'formal_owner_input_pending_policy_closure',
       },
     },
     profiles: profilesWithMetrics,

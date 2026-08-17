@@ -3331,15 +3331,17 @@ export async function listHistoricalStrategyEvidenceV5Dates(
     const priorityDate = String(options.priorityDate ?? '').slice(0, 10)
     if (!/^\d{4}-\d{2}-\d{2}$/.test(priorityDate)) return []
     const ledger = await db.prepare(`
-      SELECT status, evaluation_contract_version
+      SELECT status, evaluation_contract_version, labeler_version
         FROM strategy_evidence_rebuild_runs_v5
        WHERE signal_date=?
        LIMIT 1
-    `).bind(priorityDate).first<{ status: string; evaluation_contract_version: string | null }>()
-    if (
-      ['success', 'blocked'].includes(String(ledger?.status ?? ''))
-      && String(ledger?.evaluation_contract_version ?? '') === 'strategy-evaluation-v2'
-    ) return []
+    `).bind(priorityDate).first<{ status: string; evaluation_contract_version: string | null; labeler_version: string | null }>()
+    const ledgerStatus = String(ledger?.status ?? '')
+    const evaluationCurrent = String(ledger?.evaluation_contract_version ?? '') === 'strategy-evaluation-v2'
+    const labelerCurrent = String(ledger?.labeler_version ?? '') === STRATEGY_FORMAL_RECONSTRUCTION_LABELER_VERSION
+    if (evaluationCurrent && (
+      ledgerStatus === 'blocked' || (ledgerStatus === 'success' && labelerCurrent)
+    )) return []
     const decisionDate = await db.prepare(`
       SELECT date
         FROM strategy_decision_log

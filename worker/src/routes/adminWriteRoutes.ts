@@ -498,6 +498,83 @@ adminWriteRoutes.post('/api/admin/strategy/spec-registry/seed', async (c) => {
   })
 })
 
+adminWriteRoutes.post('/api/admin/strategy-learning/resume', async (c) => {
+  const authError = await requireAdminOrServiceToken(c)
+  if (authError) return authError
+  if (c.req.header('X-Confirm-Strategy-Learning-Recovery') !== 'true') {
+    return c.json({
+      error: 'Strategy learning recovery requires header X-Confirm-Strategy-Learning-Recovery: true',
+      hint: 'This only resumes an existing canonical queued run. It cannot create a run or mutate production policy.',
+    }, 400)
+  }
+
+  type Body = { date?: string }
+  const body = await c.req.json<Body>().catch(() => ({} as Body))
+  const date = body.date ?? c.req.query('date') ?? twToday()
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) {
+    return c.json({ error: 'date must be YYYY-MM-DD' }, 400)
+  }
+
+  const learningDb = databaseForDataDomain(c.env, 'learning')
+  const opsDb = databaseForDataDomain(c.env, 'ops')
+  const run = await learningDb.prepare(`
+    SELECT canonical_run_id, status, cursor_symbol, expected_candidates,
+           processed_candidates, expected_decision_rows, persisted_decision_rows,
+           lease_owner, lease_expires_at
+      FROM strategy_learning_runs
+     WHERE business_date=?
+     LIMIT 1
+  `).bind(date).first<{
+    canonical_run_id: string
+    status: string
+    cursor_symbol: string | null
+    expected_candidates: number
+    processed_candidates: number
+    expected_decision_rows: number
+    persisted_decision_rows: number
+    lease_owner: string | null
+    lease_expires_at: string | null
+  }>()
+  const incomplete = run
+    && Number(run.processed_candidates) > 0
+    && Number(run.processed_candidates) < Number(run.expected_candidates)
+    && Number(run.persisted_decision_rows) < Number(run.expected_decision_rows)
+  if (!run || run.status !== 'queued' || !incomplete || run.lease_owner || run.lease_expires_at) {
+    return c.json({ error: `canonical_queued_strategy_learning_recovery_required:${date}`, run }, 409)
+  }
+
+  const authority = await opsDb.prepare(`
+    SELECT status, canonical_run_id
+      FROM pipeline_stage_runs
+     WHERE business_date=? AND stage='post_verify_chain'
+     LIMIT 1
+  `).bind(date).first<{ status: string; canonical_run_id: string }>()
+  if (authority?.status !== 'success' || authority.canonical_run_id !== run.canonical_run_id) {
+    return c.json({ error: `post_verify_canonical_authority_required:${date}`, authority, run }, 409)
+  }
+
+  await c.env.UPDATE_QUEUE.send({
+    type: 'strategy_learning_materialize',
+    cursor: 0,
+    cursorKey: String(run.cursor_symbol ?? ''),
+    triggerTime: date,
+    runId: run.canonical_run_id,
+    force: false,
+    policyMutationAllowed: false,
+    leaseRetryAttempt: 0,
+  })
+  return c.json({
+    success: true,
+    mode: 'canonical_resume_queued',
+    date,
+    canonical_run_id: run.canonical_run_id,
+    cursor_symbol: run.cursor_symbol,
+    processed_candidates: Number(run.processed_candidates),
+    expected_candidates: Number(run.expected_candidates),
+    production_policy_mutation: false,
+  })
+})
+
 adminWriteRoutes.post('/api/admin/strategy/decision-log/materialize', async (c) => {
   const authError = await requireAdminOrServiceToken(c)
   if (authError) return authError

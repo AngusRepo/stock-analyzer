@@ -49,6 +49,7 @@ const SYNC_REQUIRED_TASKS = new Set([
   'data-domain-control-revision-trigger-install',
   'data-domain-writer-epoch-trigger-install',
   'data-domain-cutover-probe',
+  'strategy-evidence-metrics',
   'monthly-retrain',
 ])
 

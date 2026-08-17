@@ -1069,6 +1069,21 @@ export function buildAdminWorkerDomainTaskMap(c: any, deps: TriggerDeps): Record
       const metrics = await materializeStrategyEvidenceMetrics(c.env, { outcomeAsOfDate })
       return `${canonical.summary} | ${multiHorizon.summary} | ${outcomes.summary} | ${metrics.summary}`
     },
+    'strategy-evidence-metrics': async () => {
+      const { materializeStrategyEvidenceMetrics } = await import('./strategyEvidenceMetrics')
+      const outcomeAsOfDate = c.req.query('outcome_as_of_date') || twToday()
+      const sourceMode = c.req.query('source_mode') === 'learning_target'
+        ? 'learning_target'
+        : 'authority_bridge'
+      const metrics = await materializeStrategyEvidenceMetrics(c.env, {
+        outcomeAsOfDate,
+        sourceMode,
+      })
+      if (metrics.observations <= 0 || metrics.metric_rows <= 0) {
+        throw new Error('strategy_evidence_metrics_refresh_empty')
+      }
+      return metrics.summary
+    },
     'data-domain-shadow-backfill': async () => {
       const domain = String(c.req.query('domain') ?? '').trim().toLowerCase()
       const allowed = new Set(['core', 'market', 'learning', 'ops', 'execution', 'paper', 'research'])

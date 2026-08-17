@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict'
 import fs from 'node:fs'
 import {
+  dataDomainShadowBackfillPauseKey,
   dataDomainShadowBackfillQueueBatchLimit,
   resolveDataDomainShadowBackfillContinuation,
   resolveLatestEveningChainClosure,
@@ -25,6 +26,8 @@ assert.equal(dataDomainShadowBackfillQueueBatchLimit('expected_return_artifact_p
 assert.equal(dataDomainShadowBackfillQueueBatchLimit('strategy_label_matrix_v4'), 500)
 assert.equal(dataDomainShadowBackfillQueueBatchLimit('stock_prices'), 500)
 assert(drain.includes('limit: dataDomainShadowBackfillQueueBatchLimit(table)'))
+assert.equal(dataDomainShadowBackfillPauseKey('learning'), 'data-domain-shadow-backfill:learning:paused')
+assert(drain.includes('backfill_paused=true durable_cursor_preserved=true'))
 assert(drain.includes('tablesForDataDomainShadowBackfill'))
 assert(drain.includes('msg.dataDomainRequestedTable'))
 assert(drain.includes('data_domain_shadow_backfill_scope_mismatch'))

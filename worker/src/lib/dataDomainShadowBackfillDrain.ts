@@ -133,6 +133,10 @@ function incrementalScanKey(domain: DataDomain): string {
   return `data-domain-shadow-backfill:${domain}:incremental-scan`
 }
 
+export function dataDomainShadowBackfillPauseKey(domain: DataDomain): string {
+  return `data-domain-shadow-backfill:${domain}:paused`
+}
+
 function queueMessage(input: {
   domain: DataDomain
   table?: string
@@ -1141,6 +1145,17 @@ export async function processDataDomainShadowBackfillDrain(
   const parityNotBefore = msg.dataDomainParityNotBefore
     ?? dataDomainParitySessionWatermark()
   const globalSweep = msg.dataDomainGlobalSweep === true
+  if (await env.KV.get(dataDomainShadowBackfillPauseKey(domain))) {
+    await env.KV.delete(dataDomainShadowBackfillActiveKey(domain))
+    await logSchedulerResult(env.KV, 'data-domain-shadow-backfill', {
+      status: 'success',
+      summary: `domain=${domain} backfill_paused=true durable_cursor_preserved=true run_id=${runId}`,
+      duration_ms: 0,
+      run_id: runId,
+      run_date: msg.triggerTime,
+    }, env)
+    return
+  }
   const backfillTables = tablesForDataDomainShadowBackfill(domain)
   const currentTable = msg.dataDomainTable
   const requestedTable = msg.dataDomainRequestedTable

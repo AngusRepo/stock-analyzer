@@ -56,6 +56,7 @@ export const LEARNING_CRITICAL_EVIDENCE_BACKFILL_TABLES = [
 ] as const
 
 const NARROW_SHADOW_BACKFILL_TABLES = new Set([
+  'strategy_decision_log',
   'strategy_label_matrix_v4',
   'selection_reference_snapshots_v1',
   'stock_prices',

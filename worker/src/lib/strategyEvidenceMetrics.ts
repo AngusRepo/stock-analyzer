@@ -7,7 +7,7 @@ import {
 } from './strategyEvidenceProfile'
 import { listStrategySpecsForLearning } from './strategyLearning'
 
-export const STRATEGY_EVIDENCE_METRIC_DEFINITION_VERSION = 'strategy-evidence-metrics-v2'
+export const STRATEGY_EVIDENCE_METRIC_DEFINITION_VERSION = 'strategy-evidence-metrics-v3'
 export const STRATEGY_EVIDENCE_MIN_SAMPLES = 20
 export const STRATEGY_EVIDENCE_MIN_MATURE_DATES = 5
 
@@ -40,6 +40,7 @@ export type StrategyEvidenceObservation = {
   market_regime?: string | null
   maximum_adverse_excursion?: number | null
   fundamental_revision_persistence?: number | null
+  fundamental_revision_persistence_mode?: string | null
 }
 
 export type StrategyEvidenceMatrixRow = Pick<StrategyEvidenceObservation,
@@ -366,11 +367,15 @@ export function computeStrategyEvidenceMetricRows(
       value = round6(mean(persistenceByDate))
       samples = primary.filter((row) => finite(row.fundamental_revision_persistence) != null).length
       matureDates = persistenceByDate.length
+      const estimatorModes = [...new Set(primary
+        .map((row) => row.fundamental_revision_persistence_mode)
+        .filter((mode): mode is string => Boolean(mode)))]
       evidence = {
-        semantic: 'date_clustered_signed_persistence_of_consecutive_pit_revenue_revisions',
+        semantic: 'date_clustered_signed_persistence_of_consecutive_pit_revenue_change',
         source: 'market.canonical_revenue_observations_v2',
         range: [-1, 1],
-        missing_reason: value == null ? 'fewer_than_two_distinct_revenue_month_revision_pairs' : null,
+        estimator_modes: estimatorModes,
+        missing_reason: value == null ? 'fewer_than_three_distinct_pit_revenue_months' : null,
       }
     } else if (metric === 'residual_return_lcb90') {
       value = lcb90(residualByDate)
@@ -660,6 +665,13 @@ export function fundamentalRevisionPersistenceAsOf(
   rows: RevenueRevisionObservation[],
   signalDate: string,
 ): number | null {
+  return fundamentalRevisionPersistenceEvidenceAsOf(rows, signalDate).value
+}
+
+export function fundamentalRevisionPersistenceEvidenceAsOf(
+  rows: RevenueRevisionObservation[],
+  signalDate: string,
+): { value: number | null; mode: 'same_month_revision' | 'consecutive_month_pit_trend' | null } {
   const cutoff = `${signalDate}T23:59:59.999Z`
   const byMonth = new Map<string, RevenueRevisionObservation[]>()
   for (const row of rows) {
@@ -667,7 +679,7 @@ export function fundamentalRevisionPersistenceAsOf(
     byMonth.set(row.revenue_month, [...(byMonth.get(row.revenue_month) ?? []), row])
   }
   const revisions = [...byMonth.entries()].map(([revenueMonth, monthRows]) => {
-    const ordered = monthRows.sort((left, right) => left.knowledge_time.localeCompare(right.knowledge_time))
+    const ordered = [...monthRows].sort((left, right) => left.knowledge_time.localeCompare(right.knowledge_time))
     if (ordered.length < 2) return null
     const previous = ordered.at(-2)!
     const latest = ordered.at(-1)!
@@ -678,11 +690,32 @@ export function fundamentalRevisionPersistenceAsOf(
       : null
   }).filter((item): item is { revenueMonth: string; delta: number } => item != null)
     .sort((left, right) => left.revenueMonth.localeCompare(right.revenueMonth))
-  if (revisions.length < 2) return null
-  const [previous, latest] = revisions.slice(-2)
-  const previousSign = Math.abs(previous.delta) <= 1e-9 ? 0 : Math.sign(previous.delta)
-  const latestSign = Math.abs(latest.delta) <= 1e-9 ? 0 : Math.sign(latest.delta)
-  return previousSign !== 0 && previousSign === latestSign ? latestSign : 0
+  if (revisions.length >= 2) {
+    const [previous, latest] = revisions.slice(-2)
+    const previousSign = Math.abs(previous.delta) <= 1e-9 ? 0 : Math.sign(previous.delta)
+    const latestSign = Math.abs(latest.delta) <= 1e-9 ? 0 : Math.sign(latest.delta)
+    return {
+      value: previousSign !== 0 && previousSign === latestSign ? latestSign : 0,
+      mode: 'same_month_revision',
+    }
+  }
+
+  const monthlyValues = [...byMonth.entries()].map(([revenueMonth, monthRows]) => {
+    const latest = [...monthRows].sort((left, right) => left.knowledge_time.localeCompare(right.knowledge_time)).at(-1)!
+    const value = finite(latest.yoy) ?? finite(latest.previous_comparison_pct)
+    return value == null ? null : { revenueMonth, value }
+  }).filter((item): item is { revenueMonth: string; value: number } => item != null)
+    .sort((left, right) => left.revenueMonth.localeCompare(right.revenueMonth))
+  if (monthlyValues.length < 3) return { value: null, mode: null }
+  const [oldest, previous, latest] = monthlyValues.slice(-3)
+  const previousDelta = previous.value - oldest.value
+  const latestDelta = latest.value - previous.value
+  const previousSign = Math.abs(previousDelta) <= 1e-9 ? 0 : Math.sign(previousDelta)
+  const latestSign = Math.abs(latestDelta) <= 1e-9 ? 0 : Math.sign(latestDelta)
+  return {
+    value: previousSign !== 0 && previousSign === latestSign ? latestSign : 0,
+    mode: 'consecutive_month_pit_trend',
+  }
 }
 
 async function attachFundamentalRevisionPersistence(
@@ -708,13 +741,15 @@ async function attachFundamentalRevisionPersistence(
       revisionsBySymbol.set(row.stock_id, [...(revisionsBySymbol.get(row.stock_id) ?? []), row])
     }
   }
-  const cache = new Map<string, number | null>()
+  const cache = new Map<string, ReturnType<typeof fundamentalRevisionPersistenceEvidenceAsOf>>()
   for (const row of relevant) {
     const key = `${row.symbol}|${row.signal_date}`
     if (!cache.has(key)) {
-      cache.set(key, fundamentalRevisionPersistenceAsOf(revisionsBySymbol.get(row.symbol) ?? [], row.signal_date))
+      cache.set(key, fundamentalRevisionPersistenceEvidenceAsOf(revisionsBySymbol.get(row.symbol) ?? [], row.signal_date))
     }
-    row.fundamental_revision_persistence = cache.get(key) ?? null
+    const evidence = cache.get(key)
+    row.fundamental_revision_persistence = evidence?.value ?? null
+    row.fundamental_revision_persistence_mode = evidence?.mode ?? null
   }
 }
 

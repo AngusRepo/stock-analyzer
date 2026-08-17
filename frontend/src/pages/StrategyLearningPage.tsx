@@ -182,8 +182,8 @@ function evidenceMetricAvailabilityReason(metricRow: {
       ? '目前觀察窗沒有策略命中，因此沒有持有路徑；不是價格資料依賴未物化。'
       : '部分命中尚未對到完整的進場日至出場日還原權息價格路徑。'
   }
-  if (missing === 'fewer_than_two_distinct_revenue_month_revision_pairs') {
-    return 'Append-only 月營收觀測已啟用；需至少 2 個不同月份各出現前後修正版，才能判斷修正是否延續。'
+  if (missing === 'fewer_than_three_distinct_pit_revenue_months') {
+    return '至少需要三個在當時已知的營收月份，才能形成兩段連續變化並判斷改善或惡化是否延續。'
   }
   if (metricRow.metric === 'turnover_after_cost' && Number(metricRow.evidence?.average_one_way_turnover ?? 0) === 0) {
     return '候選集合在目前成熟日期沒有變動，實測單邊周轉為 0，報酬 ÷ 周轉的分母無法成立。'

@@ -48,4 +48,9 @@ assert.doesNotMatch(adminWrite, /(?:seedDefaultStrategySpecRegistry|materializeS
 const screener = fs.readFileSync('src/lib/marketScreener.ts', 'utf8')
 assert.doesNotMatch(screener, /listStrategySpecsForLearning\(env\.DB/)
 
+const cronGcp = fs.readFileSync('src/lib/cronGcpDomainTasks.ts', 'utf8')
+assert.match(cronGcp, /runS12TwCalibration\(databaseForDataDomain\(env, 'learning'\)/)
+assert.doesNotMatch(cronGcp, /runS12TwCalibration\(env\.DB/)
+assert.match(manual, /runS12TwCalibration\(databaseForDataDomain\(c\.env, 'learning'\)/)
+assert.doesNotMatch(manual, /runS12TwCalibration\(c\.env\.DB/)
 console.log('strategy learning domain routing contract tests passed')

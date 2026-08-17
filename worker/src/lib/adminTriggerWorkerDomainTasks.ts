@@ -607,7 +607,7 @@ export function buildAdminWorkerDomainTaskMap(c: any, deps: TriggerDeps): Record
       const { resolveS12CalibrationCadence } = await import('./s12CalibrationCadence')
       const runDate = requestedRunDate() ?? twToday()
       const cadence = resolveS12CalibrationCadence(c.req.query('cadence'), runDate)
-      const result = await runS12TwCalibration(c.env.DB, {
+      const result = await runS12TwCalibration(databaseForDataDomain(c.env, 'learning'), {
         runDate,
         cadence,
         dryRun: c.req.query('dry_run') === '1',

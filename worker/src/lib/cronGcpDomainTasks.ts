@@ -15,6 +15,7 @@ import {
   summarizeWeeklyValidationChain,
 } from './controllerWorkflows'
 import { twToday } from './dateUtils'
+import { databaseForDataDomain } from './dataDomainRegistry'
 
 interface GcpCronDeps {
   cron: string
@@ -76,7 +77,7 @@ export async function handleGcpDomainCron(deps: GcpCronDeps): Promise<boolean> {
   if (cron === '45 22 * * 6') {
     runWithLog('s12-smcvwap-calibration', async () => {
       const { runS12TwCalibration } = await import('./s12TwEquityCalibration')
-      const result = await runS12TwCalibration(env.DB, {
+      const result = await runS12TwCalibration(databaseForDataDomain(env, 'learning'), {
         runDate: twToday(),
         cadence: 'weekly',
         dryRun: false,

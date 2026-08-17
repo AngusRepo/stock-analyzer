@@ -187,19 +187,20 @@ export async function heartbeatStrategyLearningLease(
   input: StrategyLearningLeaseIdentity & { leaseSeconds?: number },
 ): Promise<boolean> {
   const modifier = `+${Math.max(30, Math.floor(input.leaseSeconds ?? STRATEGY_LEARNING_LEASE_SECONDS))} seconds`
-  const result = await db.prepare(`
+  const row = await db.prepare(`
     UPDATE strategy_learning_runs
        SET lease_expires_at=datetime('now', ?), updated_at=CURRENT_TIMESTAMP
      WHERE business_date=? AND canonical_run_id=?
        AND status IN ('running', 'success') AND lease_owner=?
        AND lease_expires_at >= CURRENT_TIMESTAMP
+    RETURNING 1 AS renewed
   `).bind(
     modifier,
     input.businessDate,
     input.canonicalRunId,
     input.leaseOwner,
-  ).run()
-  return Number(result.meta?.changes ?? 0) === 1
+  ).first<{ renewed: number }>()
+  return Number(row?.renewed ?? 0) === 1
 }
 
 export async function assertStrategyLearningLease(
@@ -292,7 +293,7 @@ export async function checkpointStrategyLearningPage(
     persistedRows: number
   },
 ): Promise<boolean> {
-  const result = await db.prepare(`
+  const row = await db.prepare(`
     UPDATE strategy_learning_runs
        SET status='queued', cursor_symbol=?,
            processed_candidates=processed_candidates+?,
@@ -302,6 +303,7 @@ export async function checkpointStrategyLearningPage(
        AND status='running' AND lease_owner=?
        AND lease_expires_at >= CURRENT_TIMESTAMP
        AND COALESCE(cursor_symbol, '')=?
+    RETURNING 1 AS checkpointed
   `).bind(
     input.nextCursor,
     input.processedCandidates,
@@ -310,8 +312,8 @@ export async function checkpointStrategyLearningPage(
     input.canonicalRunId,
     input.leaseOwner,
     input.previousCursor,
-  ).run()
-  return Number(result.meta?.changes ?? 0) === 1
+  ).first<{ checkpointed: number }>()
+  return Number(row?.checkpointed ?? 0) === 1
 }
 
 export async function completeStrategyLearningRun(
@@ -351,7 +353,7 @@ export async function completeStrategyLearningRun(
     throw new Error(error)
   }
   const modifier = `+${Math.max(30, Math.floor(input.leaseSeconds ?? STRATEGY_LEARNING_LEASE_SECONDS))} seconds`
-  const result = await db.prepare(`
+  const row = await db.prepare(`
     UPDATE strategy_learning_runs
        SET status='running', processed_candidates=?, persisted_decision_rows=?,
             lease_expires_at=datetime('now', ?), completed_at=NULL,
@@ -359,10 +361,11 @@ export async function completeStrategyLearningRun(
      WHERE business_date=? AND canonical_run_id=?
        AND status='running' AND lease_owner=?
        AND lease_expires_at >= CURRENT_TIMESTAMP
+    RETURNING 1 AS completed
   `).bind(
     candidateRows, decisionRows, modifier, input.businessDate, input.canonicalRunId, input.leaseOwner,
-  ).run()
-  if (Number(result.meta?.changes ?? 0) !== 1) return null
+  ).first<{ completed: number }>()
+  if (Number(row?.completed ?? 0) !== 1) return null
   return { candidateRows, decisionRows, expectedCandidates, expectedRows }
 }
 
@@ -370,7 +373,7 @@ export async function markStrategyLearningRunFinalized(
   db: D1Database,
   input: StrategyLearningLeaseIdentity,
 ): Promise<boolean> {
-  const result = await db.prepare(`
+  const row = await db.prepare(`
     UPDATE strategy_learning_runs
        SET status='success', completed_at=CURRENT_TIMESTAMP,
            updated_at=CURRENT_TIMESTAMP, last_error=NULL
@@ -387,8 +390,9 @@ export async function markStrategyLearningRunFinalized(
             AND p.canonical_run_id=strategy_learning_runs.canonical_run_id
             AND p.status IN ('running', 'waiting', 'success')
        )
-  `).bind(input.businessDate, input.canonicalRunId, input.leaseOwner).run()
-  return Number(result.meta?.changes ?? 0) === 1
+    RETURNING 1 AS finalized
+  `).bind(input.businessDate, input.canonicalRunId, input.leaseOwner).first<{ finalized: number }>()
+  return Number(row?.finalized ?? 0) === 1
 }
 
 export async function hasStrategyLearningPostVerifyAuthority(
@@ -412,7 +416,7 @@ export async function reclaimStrategyLearningFinalizedLease(
   input: StrategyLearningLeaseIdentity & { leaseSeconds?: number },
 ): Promise<boolean> {
   const modifier = `+${Math.max(30, Math.floor(input.leaseSeconds ?? STRATEGY_LEARNING_LEASE_SECONDS))} seconds`
-  const result = await db.prepare(`
+  const row = await db.prepare(`
     UPDATE strategy_learning_runs
        SET lease_expires_at=datetime('now', ?), updated_at=CURRENT_TIMESTAMP
      WHERE business_date=? AND canonical_run_id=?
@@ -428,20 +432,21 @@ export async function reclaimStrategyLearningFinalizedLease(
             AND p.canonical_run_id=strategy_learning_runs.canonical_run_id
             AND p.status IN ('running', 'waiting', 'success')
        )
+    RETURNING 1 AS reclaimed
   `).bind(
     modifier,
     input.businessDate,
     input.canonicalRunId,
     input.leaseOwner,
-  ).run()
-  return Number(result.meta?.changes ?? 0) === 1
+  ).first<{ reclaimed: number }>()
+  return Number(row?.reclaimed ?? 0) === 1
 }
 
 export async function releaseStrategyLearningFinalizedLease(
   db: D1Database,
   input: StrategyLearningLeaseIdentity,
 ): Promise<boolean> {
-  const result = await db.prepare(`
+  const row = await db.prepare(`
     UPDATE strategy_learning_runs
        SET lease_owner=NULL, lease_expires_at=NULL, updated_at=CURRENT_TIMESTAMP
      WHERE business_date=? AND canonical_run_id=?
@@ -455,15 +460,16 @@ export async function releaseStrategyLearningFinalizedLease(
             AND p.canonical_run_id=strategy_learning_runs.canonical_run_id
             AND p.status IN ('running', 'waiting', 'success')
        )
-  `).bind(input.businessDate, input.canonicalRunId, input.leaseOwner).run()
-  return Number(result.meta?.changes ?? 0) === 1
+    RETURNING 1 AS released
+  `).bind(input.businessDate, input.canonicalRunId, input.leaseOwner).first<{ released: number }>()
+  return Number(row?.released ?? 0) === 1
 }
 
 export async function deferStrategyLearningFinalizer(
   db: D1Database,
   input: StrategyLearningLeaseIdentity & { error: string },
 ): Promise<boolean> {
-  const result = await db.prepare(`
+  const row = await db.prepare(`
     UPDATE strategy_learning_runs
        SET status='queued', lease_owner=NULL, lease_expires_at=NULL, completed_at=NULL,
            last_error=?, updated_at=CURRENT_TIMESTAMP
@@ -472,21 +478,23 @@ export async function deferStrategyLearningFinalizer(
        AND lease_expires_at >= CURRENT_TIMESTAMP
        AND processed_candidates=expected_candidates
        AND persisted_decision_rows=expected_decision_rows
-  `).bind(input.error.slice(0, 1000), input.businessDate, input.canonicalRunId, input.leaseOwner).run()
-  return Number(result.meta?.changes ?? 0) === 1
+    RETURNING 1 AS deferred
+  `).bind(input.error.slice(0, 1000), input.businessDate, input.canonicalRunId, input.leaseOwner).first<{ deferred: number }>()
+  return Number(row?.deferred ?? 0) === 1
 }
 
 export async function failStrategyLearningRun(
   db: D1Database,
   input: StrategyLearningLeaseIdentity & { error: string },
 ): Promise<boolean> {
-  const result = await db.prepare(`
+  const row = await db.prepare(`
     UPDATE strategy_learning_runs
        SET status='error', lease_owner=NULL, lease_expires_at=NULL, completed_at=NULL,
            last_error=?, updated_at=CURRENT_TIMESTAMP
      WHERE business_date=? AND canonical_run_id=?
        AND status='running' AND lease_owner=?
        AND lease_expires_at >= CURRENT_TIMESTAMP
-  `).bind(input.error.slice(0, 1000), input.businessDate, input.canonicalRunId, input.leaseOwner).run()
-  return Number(result.meta?.changes ?? 0) === 1
+    RETURNING 1 AS failed
+  `).bind(input.error.slice(0, 1000), input.businessDate, input.canonicalRunId, input.leaseOwner).first<{ failed: number }>()
+  return Number(row?.failed ?? 0) === 1
 }

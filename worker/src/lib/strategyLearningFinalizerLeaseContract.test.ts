@@ -28,6 +28,10 @@ for (const writer of [
   assert.match(block, /lease_owner=\?/)
   assert.match(block, /lease_expires_at >= CURRENT_TIMESTAMP/)
 }
+assert.doesNotMatch(runState, /meta\?\.changes/, 'writer-epoch triggers make meta.changes unsafe for lease fencing')
+for (const alias of ['renewed', 'checkpointed', 'completed', 'finalized', 'reclaimed', 'released', 'deferred', 'failed']) {
+  assert.match(runState, new RegExp(`RETURNING 1 AS ${alias}`), `${alias} mutation must fence by returned target row`)
+}
 const finalizeWriter = runState.slice(runState.indexOf('export async function markStrategyLearningRunFinalized'))
 assert.match(finalizeWriter, /FROM pipeline_stage_runs p/)
 assert.match(finalizeWriter, /p\.stage='post_verify_chain'/)

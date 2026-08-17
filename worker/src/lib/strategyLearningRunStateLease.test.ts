@@ -94,6 +94,7 @@ class FakeStrategyLearningD1 {
     | { candidate_rows: number; decision_rows: number }
     | { authorized: number }
     | { producer_run_id: string; expected_candidates: number }
+    | Record<string, number>
     | null {
     if (sql.includes('FROM selection_reference_snapshots_v1')) {
       return {
@@ -117,6 +118,12 @@ class FakeStrategyLearningD1 {
       ) return null
       this.row = { ...this.row, status: 'running', lease_owner: leaseOwner, lease_expires_at: FUTURE }
       return { ...this.row }
+    }
+
+    const returnedAlias = sql.match(/RETURNING 1 AS (\w+)/)?.[1]
+    if (sql.includes('UPDATE strategy_learning_runs') && returnedAlias) {
+      const changes = this.run(sql, values)
+      return changes === 1 ? { [returnedAlias]: 1 } : null
     }
 
     if (sql.includes('SELECT 1 AS authorized') && sql.includes('FROM pipeline_stage_runs')) {

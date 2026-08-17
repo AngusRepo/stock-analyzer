@@ -1383,6 +1383,7 @@ export async function processDataDomainShadowBackfillDrain(
     try {
       const metrics = await materializeStrategyEvidenceMetrics(env, {
         outcomeAsOfDate,
+        sourceMode: result.status === 'shadow_table_complete' ? 'learning_target' : 'authority_bridge',
       })
       if (metrics.observations <= 0 || metrics.metric_rows <= 0) {
         throw new Error('strategy_evidence_metric_bridge_observations_empty')

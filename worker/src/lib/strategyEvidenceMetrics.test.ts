@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict'
+import fs from 'node:fs'
 import { buildStrategyEvidenceProfile } from './strategyEvidenceProfile'
 import {
   computeStrategyEvidenceMetricRows,
@@ -26,6 +27,11 @@ assert.equal(joined.length, 1)
 assert.equal(joined[0].strategy_id, 'trend')
 assert.equal(joined[0].horizon_days, 5)
 assert.equal(joined[0].residual_return_net, 0.02)
+
+const metricSource = fs.readFileSync('src/lib/strategyEvidenceMetrics.ts', 'utf8')
+assert(metricSource.includes("sourceMode?: 'authority_bridge' | 'learning_target'"))
+assert(metricSource.includes("throw new Error('strategy_evidence_metric_learning_target_missing')"))
+assert(metricSource.includes("const observationDb = targetJoinRequested ? learningTargetDb! : authorityDb"))
 
 function observations(strategyId: string, strategyVersion: string, strategyStatus: string, alphaBucket: string): StrategyEvidenceObservation[] {
   const rows: StrategyEvidenceObservation[] = []

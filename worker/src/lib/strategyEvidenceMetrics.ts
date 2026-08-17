@@ -451,17 +451,23 @@ async function persistMetricRows(db: D1Database, rows: StrategyEvidenceMetricRow
 
 export async function materializeStrategyEvidenceMetrics(
   env: Bindings,
-  options: { outcomeAsOfDate: string },
+  options: { outcomeAsOfDate: string; sourceMode?: 'authority_bridge' | 'learning_target' },
 ): Promise<{ profiles: number; observations: number; metric_rows: number; ready_rows: number; source: string; summary: string }> {
   if (!/^\d{4}-\d{2}-\d{2}$/.test(options.outcomeAsOfDate)) throw new Error('invalid_strategy_metric_outcome_as_of_date')
   const authorityDb = databaseForDataDomain(env, 'learning')
-  const db = shadowDatabaseForDataDomain(env, 'learning') ?? authorityDb
-  const source = authorityDb === db ? 'learning_target_join' : 'authoritative_cross_d1_bridge'
+  const learningTargetDb = shadowDatabaseForDataDomain(env, 'learning')
+  const db = learningTargetDb ?? authorityDb
+  const targetJoinRequested = options.sourceMode === 'learning_target'
+  if (targetJoinRequested && !learningTargetDb) {
+    throw new Error('strategy_evidence_metric_learning_target_missing')
+  }
+  const observationDb = targetJoinRequested ? learningTargetDb! : authorityDb
+  const source = observationDb === db ? 'learning_target_join' : 'authoritative_cross_d1_bridge'
   const [{ specs }, observations] = await Promise.all([
-    listStrategySpecsForLearning(authorityDb, { asOfDate: options.outcomeAsOfDate }),
-    authorityDb === db
+    listStrategySpecsForLearning(observationDb, { asOfDate: options.outcomeAsOfDate }),
+    observationDb === db
       ? loadObservations(db, options.outcomeAsOfDate)
-      : loadObservationsAcrossDatabases(authorityDb, db, options.outcomeAsOfDate),
+      : loadObservationsAcrossDatabases(observationDb, db, options.outcomeAsOfDate),
   ])
   const profiles = listStrategyEvidenceProfiles(specs.filter((spec) => spec.status !== 'retired'), {
     availableOutcomeHorizonDays: [3, 5, 10],

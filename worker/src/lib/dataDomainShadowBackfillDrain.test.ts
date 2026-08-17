@@ -61,6 +61,7 @@ assert.equal(shouldRefreshStrategyEvidenceMetricsAfterBackfill({
   domain: 'paper', table: 'strategy_label_matrix_v4', status: 'shadow_table_complete',
 }), false)
 assert(drain.includes('strategy_metric_refresh: strategyMetricRefresh'))
+assert(drain.includes("sourceMode: result.status === 'shadow_table_complete' ? 'learning_target' : 'authority_bridge'"))
 assert(drain.includes('backfill_paused=true durable_cursor_preserved=true'))
 assert(drain.includes('tablesForDataDomainShadowBackfill'))
 assert(drain.includes('msg.dataDomainRequestedTable'))

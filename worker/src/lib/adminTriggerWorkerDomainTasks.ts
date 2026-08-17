@@ -38,7 +38,7 @@ const AUDIT_JSON_NON_PAPER_TARGETS_DURING_PARITY_PROTECTION = [
   'strategy_decision_log', 'screener_funnel_items', 'canonical_screener_funnel_items',
 ]
 
-const CUTOVER_PROBE_DOMAINS = new Set<DataDomain>(['ops', 'execution', 'paper'])
+const CUTOVER_PROBE_DOMAINS = new Set<DataDomain>(['ops', 'execution', 'paper', 'learning'])
 
 function resolveCutoverProbeDomain(rawDomain: string): DataDomain {
   const domain = rawDomain.trim().toLowerCase() as DataDomain

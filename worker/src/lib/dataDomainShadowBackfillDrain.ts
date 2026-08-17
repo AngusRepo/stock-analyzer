@@ -68,6 +68,9 @@ export function dataDomainShadowBackfillQueueBatchLimit(table: string): number {
   if (table === 'strategy_label_matrix_v4') {
     return STRATEGY_MATRIX_SHADOW_BACKFILL_QUEUE_BATCH_LIMIT
   }
+  if (table === 'predictions') {
+    return 200
+  }
   return NARROW_SHADOW_BACKFILL_TABLES.has(table)
     ? NARROW_SHADOW_BACKFILL_QUEUE_BATCH_LIMIT
     : SHADOW_BACKFILL_QUEUE_BATCH_LIMIT

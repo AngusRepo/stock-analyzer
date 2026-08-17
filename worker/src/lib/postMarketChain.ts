@@ -27,6 +27,7 @@ import {
   materializeStrategyMultiHorizonPriceLabels,
 } from './priceHorizonProjection'
 import { materializeStrategyMultiHorizonOutcomes } from './strategyMultiHorizonOutcomes'
+import { materializeStrategyEvidenceMetrics } from './strategyEvidenceMetrics'
 import { resolveEveningChainRunAuthority } from './eveningChainRunAuthority'
 
 export type ChainContext = {
@@ -668,7 +669,8 @@ export async function runPostVerifyCallbackChain(
       asOfDate: outcomeAsOfDate,
       endDate: ctx.runDate,
     })
-    return `${canonical.summary} | ${multiHorizon.summary} | ${outcomes.summary}`
+    const metrics = await materializeStrategyEvidenceMetrics(env, { outcomeAsOfDate })
+    return `${canonical.summary} | ${multiHorizon.summary} | ${outcomes.summary} | ${metrics.summary}`
   }, { timeoutMs: 240_000 })
   results.push(projectionTask)
   if (projectionTask.status === 'error') {

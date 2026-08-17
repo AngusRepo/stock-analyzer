@@ -152,6 +152,7 @@ const domainNativeLearningTables = [
   'price_horizon_labels_v2',
   'price_horizon_label_rejections_v2',
   'canonical_selection_outcomes_v1',
+  'strategy_evidence_metrics_v1',
 ]
 assert(domainNativeLearningTables.every((table) => tablesForDataDomain('learning').includes(table)))
 assert(domainNativeLearningTables.every((table) => tablesForDataDomainRouteReady('learning').includes(table)))

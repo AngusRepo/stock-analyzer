@@ -82,7 +82,7 @@ const DOMAIN_TABLES: Record<DataDomain, ReadonlySet<string>> = {
     'strategy_marginal_edge_head_v4',
     'price_horizon_labels_v1', 'price_horizon_label_rejections_v1',
     'price_horizon_labels_v2', 'price_horizon_label_rejections_v2',
-    'canonical_selection_outcomes_v1',
+    'canonical_selection_outcomes_v1', 'strategy_evidence_metrics_v1',
     'allocator_ev_daily_lifecycle',
     'strategy_production_policy_history_v1', 'expected_return_shadow_evaluation_packets',
     'expected_return_serving_forward_evaluations',
@@ -220,6 +220,7 @@ const SHADOW_BACKFILL_EXCLUDED_TABLES: Partial<Record<DataDomain, ReadonlySet<st
     'price_horizon_labels_v2',
     'price_horizon_label_rejections_v2',
     'canonical_selection_outcomes_v1',
+    'strategy_evidence_metrics_v1',
   ]),
   ops: new Set([
     'maintenance_task_leases',

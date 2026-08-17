@@ -47,6 +47,12 @@ const MAX_ATTEMPTS = 20_000
 const STALE_PROGRESS_MS = 5 * 60 * 1000
 const SHADOW_BACKFILL_QUEUE_BATCH_LIMIT = 50
 const NARROW_SHADOW_BACKFILL_QUEUE_BATCH_LIMIT = 500
+export const LEARNING_CRITICAL_EVIDENCE_BACKFILL_TABLES = [
+  'strategy_spec_registry',
+  'strategy_label_matrix_runs_v4',
+  'strategy_label_matrix_v4',
+] as const
+
 const NARROW_SHADOW_BACKFILL_TABLES = new Set([
   'strategy_label_matrix_v4',
   'selection_reference_snapshots_v1',
@@ -201,9 +207,29 @@ async function completedDomainTables(env: Bindings, domain: DataDomain): Promise
   return (completed.results ?? []).map((row) => String(row.table_name))
 }
 
+async function nextLearningCriticalEvidenceTable(env: Bindings): Promise<string | null> {
+  const completedSet = new Set(await completedDomainTables(env, 'learning'))
+  return LEARNING_CRITICAL_EVIDENCE_BACKFILL_TABLES.find((table) => !completedSet.has(table)) ?? null
+}
+
+export function shouldYieldToLearningCriticalEvidence(input: {
+  domain: DataDomain
+  currentTable: string
+  requestedTable?: string
+  criticalTable: string | null
+}): boolean {
+  return input.domain === 'learning'
+    && !input.requestedTable
+    && Boolean(input.criticalTable)
+    && input.criticalTable !== input.currentTable
+}
+
 async function nextIncompleteTable(env: Bindings, domain: DataDomain): Promise<string | null> {
   const completedSet = new Set(await completedDomainTables(env, domain))
-  return tablesForDataDomainShadowBackfill(domain).find((table) => !completedSet.has(table)) ?? null
+  const priority = domain === 'learning'
+    ? LEARNING_CRITICAL_EVIDENCE_BACKFILL_TABLES.find((table) => !completedSet.has(table))
+    : null
+  return priority ?? tablesForDataDomainShadowBackfill(domain).find((table) => !completedSet.has(table)) ?? null
 }
 
 async function nextDataDomainReceiptRefreshTable(
@@ -1367,11 +1393,19 @@ export async function processDataDomainShadowBackfillDrain(
     return
   }
 
-  const nextTable = continuation === 'same_table'
-    ? table
-    : await nextDataDomainReceiptRefreshTable(env, domain, parityNotBefore)
+  let nextTable: string | null
+  if (continuation === 'same_table') {
+    const criticalTable = domain === 'learning'
+      ? await nextLearningCriticalEvidenceTable(env)
+      : null
+    nextTable = shouldYieldToLearningCriticalEvidence({
+      domain, currentTable: table, requestedTable, criticalTable,
+    }) ? criticalTable : table
+  } else {
+    nextTable = await nextDataDomainReceiptRefreshTable(env, domain, parityNotBefore)
       || await nextDataDomainIncrementalCatchupTable(env, domain, parityNotBefore)
       || await nextIncompleteTable(env, domain)
+  }
   if (nextTable) {
     await env.KV.put(dataDomainShadowBackfillActiveKey(domain), JSON.stringify({
       run_id: runId,

@@ -1038,6 +1038,7 @@ export function buildAdminWorkerDomainTaskMap(c: any, deps: TriggerDeps): Record
         materializeStrategyMultiHorizonPriceLabels,
       } = await import('./priceHorizonProjection')
       const { materializeStrategyMultiHorizonOutcomes } = await import('./strategyMultiHorizonOutcomes')
+      const { materializeStrategyEvidenceMetrics } = await import('./strategyEvidenceMetrics')
       const endDate = c.req.query('end_date') || requestedRunDate() || twToday()
       const outcomeAsOfDate = c.req.query('outcome_as_of_date') || twToday()
       const startDate = c.req.query('start_date') || undefined
@@ -1065,7 +1066,8 @@ export function buildAdminWorkerDomainTaskMap(c: any, deps: TriggerDeps): Record
         startDate,
         endDate,
       })
-      return `${canonical.summary} | ${multiHorizon.summary} | ${outcomes.summary}`
+      const metrics = await materializeStrategyEvidenceMetrics(c.env, { outcomeAsOfDate })
+      return `${canonical.summary} | ${multiHorizon.summary} | ${outcomes.summary} | ${metrics.summary}`
     },
     'data-domain-shadow-backfill': async () => {
       const domain = String(c.req.query('domain') ?? '').trim().toLowerCase()

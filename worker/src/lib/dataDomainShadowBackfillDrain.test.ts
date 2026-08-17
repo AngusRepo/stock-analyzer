@@ -3,7 +3,9 @@ import fs from 'node:fs'
 import {
   dataDomainShadowBackfillPauseKey,
   dataDomainShadowBackfillQueueBatchLimit,
+  LEARNING_CRITICAL_EVIDENCE_BACKFILL_TABLES,
   resolveDataDomainShadowBackfillContinuation,
+  shouldYieldToLearningCriticalEvidence,
   resolveLatestEveningChainClosure,
   shouldContinueDataDomainGlobalSweep,
 } from './dataDomainShadowBackfillDrain'
@@ -26,6 +28,21 @@ assert.equal(dataDomainShadowBackfillQueueBatchLimit('expected_return_artifact_p
 assert.equal(dataDomainShadowBackfillQueueBatchLimit('strategy_label_matrix_v4'), 500)
 assert.equal(dataDomainShadowBackfillQueueBatchLimit('stock_prices'), 500)
 assert(drain.includes('limit: dataDomainShadowBackfillQueueBatchLimit(table)'))
+assert.deepEqual(LEARNING_CRITICAL_EVIDENCE_BACKFILL_TABLES, [
+  'strategy_spec_registry',
+  'strategy_label_matrix_runs_v4',
+  'strategy_label_matrix_v4',
+])
+assert.equal(shouldYieldToLearningCriticalEvidence({
+  domain: 'learning', currentTable: 'predictions', criticalTable: 'strategy_spec_registry',
+}), true)
+assert.equal(shouldYieldToLearningCriticalEvidence({
+  domain: 'learning', currentTable: 'predictions', requestedTable: 'predictions', criticalTable: 'strategy_spec_registry',
+}), false)
+assert.equal(shouldYieldToLearningCriticalEvidence({
+  domain: 'paper', currentTable: 'paper_orders', criticalTable: 'strategy_spec_registry',
+}), false)
+assert(drain.includes('nextLearningCriticalEvidenceTable(env)'))
 assert.equal(dataDomainShadowBackfillPauseKey('learning'), 'data-domain-shadow-backfill:learning:paused')
 assert(drain.includes('backfill_paused=true durable_cursor_preserved=true'))
 assert(drain.includes('tablesForDataDomainShadowBackfill'))

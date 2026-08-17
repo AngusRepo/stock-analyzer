@@ -627,6 +627,21 @@ export type StrategyEvidenceProfile = {
   outcome_contract_status: 'fixed_5d_available' | 'primary_horizon_shadow_available' | 'multi_horizon_pending'
   outcome_source: 'canonical_selection_labels_v4.residual_return_net' | 'canonical_selection_outcomes_v1.residual_return_net'
   production_authority: 'shadow_only'
+  metric_evidence?: Array<{
+    metric: StrategyEvidenceMetric
+    value: number | null
+    status: 'ready' | 'insufficient_samples' | 'dependency_pending' | 'not_available' | 'not_materialized'
+    sample_count: number
+    mature_dates: number
+    outcome_as_of_date: string | null
+    definition_version: string | null
+    evidence: Record<string, unknown>
+  }>
+  metric_completion?: {
+    materialized: number
+    ready: number
+    total: number
+  }
 }
 
 export type StrategyEvidenceLane = {
@@ -643,6 +658,8 @@ export type StrategyEvidenceLane = {
   gate_results?: Record<string, unknown>
   horizon_coverage?: Array<{ horizon_days: number; outcome_rows: number }>
   ready_primary_profiles?: number
+  metric_materialized_profiles?: number
+  metric_ready_profiles?: number
   total_profiles?: number
   outcome_data_ready?: boolean
   production_integration_ready?: boolean

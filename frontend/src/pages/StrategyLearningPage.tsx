@@ -125,6 +125,25 @@ const evidenceMetricLabels: Record<string, string> = {
   fundamental_revision_persistence: '基本面修正的延續性',
 }
 
+function evidenceMetricStatusLabel(status: string | undefined): string {
+  return {
+    ready: '已成熟',
+    insufficient_samples: '已算出，樣本累積中',
+    dependency_pending: '等待正式資料依賴',
+    not_available: '目前無可計算資料',
+    not_materialized: '尚未執行物化',
+  }[status ?? 'not_materialized'] ?? String(status)
+}
+
+function evidenceMetricValue(metric: string, value: number | null | undefined): string {
+  if (value == null || !Number.isFinite(Number(value))) return '尚無數值'
+  if (metric === 'time_to_reversion') return `${Number(value).toFixed(1)} 個交易日`
+  if (metric === 'rank_ic' || metric === 'regime_consistency' || metric === 'fundamental_revision_persistence') {
+    return Number(value).toFixed(3)
+  }
+  return pct(Number(value))
+}
+
 function bestReplacementDecision(
   row: LearningRow,
   replacement: StrategyReplacementGateSummary | null,
@@ -212,7 +231,7 @@ function StrategyGateDetails({
     { label: '型態命中率', description: '可評估股票中，符合這個策略進場型態的比例。', value: pct(evidence.match_rate), target: `>= ${pct(thresholds.min_match_rate)}`, pass: evidence.match_rate == null ? null : evidence.match_rate >= thresholds.min_match_rate },
     { label: '成熟報酬樣本', description: '已走完 T+5 並扣除交易成本、可計算績效的樣本數。', value: String(evidence.samples), target: `>= ${thresholds.min_reward_samples}`, pass: evidence.samples >= thresholds.min_reward_samples },
     { label: '勝率', description: '成熟樣本中，扣除成本後仍為正報酬的比例。', value: pct(evidence.hit_rate), target: `>= ${pct(hitRateThreshold)}`, pass: evidence.hit_rate == null ? null : evidence.hit_rate >= hitRateThreshold },
-    { label: '扣成本平均報酬', description: '每筆成熟樣本扣除來回交易成本後的平均結果。', value: rewardMetric(evidence.avg_return_pct, row.learning.reward_unit), target: '> 0', pass: evidence.avg_return_pct == null ? null : evidence.avg_return_pct > thresholds.min_avg_cost_net_return_exclusive },
+    { label: isS12ExecutionOwner ? '扣成本平均 R' : '相對基準扣成本平均 Alpha', description: isS12ExecutionOwner ? '每筆執行 replay 扣除成本後的平均 R multiple。' : '先扣來回成本，再扣同產業／市場同期報酬；不是股票絕對漲跌。', value: rewardMetric(evidence.avg_return_pct, row.learning.reward_unit), target: '> 0', pass: evidence.avg_return_pct == null ? null : evidence.avg_return_pct > thresholds.min_avg_cost_net_return_exclusive },
     { label: '每日報酬 90% 保守下界（LCB90）', description: '把統計不確定性算進去後，仍有九成信心水準可守住的報酬下界。', value: rewardMetric(evidence.date_return_lcb90, row.learning.reward_unit), target: '> 0', pass: evidence.date_return_lcb90 == null ? null : evidence.date_return_lcb90 > thresholds.min_date_return_lcb90_exclusive },
     { label: '最大回撤（MDD）', description: '觀察期內從高點跌到低點的最差幅度；越接近 0 越好。', value: rewardMetric(evidence.max_drawdown_pct, row.learning.reward_unit), target: `>= ${rewardMetric(thresholds.min_max_drawdown, row.learning.reward_unit)}`, pass: mddPass },
     { label: '成熟交易日數', description: '至少有一筆報酬已成熟、可納入每日統計的不同交易日數。', value: String(evidence.mature_dates), target: `>= ${thresholds.min_mature_dates}`, pass: evidence.mature_dates >= thresholds.min_mature_dates },
@@ -427,8 +446,8 @@ function StrategyLedgerGroup({
                   <dd className="mt-1 font-mono text-sm text-cyan-200">{row.learning.evidence_available ? rollingMature : '-'}</dd>
                   <div className={`mt-1 text-xs ${signedClass(row.learning.rolling_date_return_lcb90)}`}>{row.learning.evidence_available ? rewardPending || rewardMissing || noMatches ? rollingMature : <>LCB90 {rewardMetric(row.learning.rolling_date_return_lcb90, row.learning.reward_unit)}</> : 'Unavailable'}</div>
                 </div>
-                <div className="rounded-lg border border-slate-800/80 bg-slate-900/45 p-2"><dt className="text-xs text-slate-500">Rolling hit / avg</dt><dd className="mt-1 font-mono text-sm text-slate-300">{rewardPending || rewardMissing || noMatches ? rollingMature : <>{pct(row.learning.rolling_hit_rate)} / <span className={signedClass(row.learning.rolling_avg_return_pct)}>{rewardMetric(row.learning.rolling_avg_return_pct, row.learning.reward_unit)}</span></>}</dd></div>
-                <div className="rounded-lg border border-slate-800/80 bg-slate-900/45 p-2"><dt className="text-xs text-slate-500">Rolling MDD</dt><dd className={`mt-1 font-mono text-sm ${signedClass(row.learning.rolling_max_drawdown_pct)}`}>{rewardPending || rewardMissing || noMatches ? rollingMature : rewardMetric(row.learning.rolling_max_drawdown_pct, row.learning.reward_unit)}</dd></div>
+                <div className="rounded-lg border border-slate-800/80 bg-slate-900/45 p-2"><dt className="text-xs text-slate-500">{row.learning.reward_owner === 's12_execution_replay_v3_net' ? 'Execution 勝率 / 平均 R' : '相對基準勝率 / 平均 Alpha'}</dt><dd className="mt-1 font-mono text-sm text-slate-300">{rewardPending || rewardMissing || noMatches ? rollingMature : <>{pct(row.learning.rolling_hit_rate)} / <span className={signedClass(row.learning.rolling_avg_return_pct)}>{rewardMetric(row.learning.rolling_avg_return_pct, row.learning.reward_unit)}</span></>}</dd><div className="mt-1 text-[10px] leading-4 text-slate-600">{row.learning.reward_owner === 's12_execution_replay_v3_net' ? '執行 replay 的扣成本結果。' : '扣成本並扣除同產業／市場同期報酬；不等於股票絕對漲跌。'}</div></div>
+                <div className="rounded-lg border border-slate-800/80 bg-slate-900/45 p-2"><dt className="text-xs text-slate-500">{row.learning.reward_owner === 's12_execution_replay_v3_net' ? 'Execution MDD' : '相對基準 Alpha MDD'}</dt><dd className={`mt-1 font-mono text-sm ${signedClass(row.learning.rolling_max_drawdown_pct)}`}>{rewardPending || rewardMissing || noMatches ? rollingMature : rewardMetric(row.learning.rolling_max_drawdown_pct, row.learning.reward_unit)}</dd></div>
               </dl>
 
               <div className="rounded-xl border border-cyan-400/20 bg-cyan-400/[0.05] p-3">
@@ -449,10 +468,19 @@ function StrategyLedgerGroup({
                       {' · '}交叉檢查 {profile.evaluation_horizon_days.join('／')} 日
                       {' · '}目前有 {profile.available_outcome_horizon_days.join('／')} 日可用結果。
                     </p>
+                    <p className="mt-1 text-[11px] text-cyan-100/70">指標已算出 {profile.metric_completion?.materialized ?? 0} / {profile.metric_completion?.total ?? profile.required_metrics.length}；樣本與成熟交易日都達標 {profile.metric_completion?.ready ?? 0} / {profile.metric_completion?.total ?? profile.required_metrics.length}。</p>
                     <div className="mt-2 flex flex-wrap gap-1.5">
-                      {profile.required_metrics.map((metric) => (
-                        <span key={metric} className="rounded-md border border-slate-700 bg-slate-900/70 px-2 py-1 text-[11px] text-slate-300">{evidenceMetricLabels[metric] ?? metric}</span>
-                      ))}
+                      {profile.required_metrics.map((metric) => {
+                        const metricRow = profile.metric_evidence?.find((item) => item.metric === metric)
+                        const ready = metricRow?.status === 'ready'
+                        const pendingDependency = metricRow?.status === 'dependency_pending'
+                        return (
+                          <span key={metric} className={`rounded-md border px-2 py-1 text-[11px] ${ready ? 'border-emerald-400/25 bg-emerald-400/[0.06] text-emerald-200' : pendingDependency ? 'border-amber-400/25 bg-amber-400/[0.06] text-amber-200' : 'border-cyan-400/20 bg-cyan-400/[0.04] text-cyan-200'}`}>
+                            <span className="block">{evidenceMetricLabels[metric] ?? metric}</span>
+                            <span className="mt-0.5 block font-mono text-[10px] opacity-75">{evidenceMetricStatusLabel(metricRow?.status)} · {evidenceMetricValue(metric, metricRow?.value)} · n={metricRow?.sample_count ?? 0} / {metricRow?.mature_dates ?? 0} 日</span>
+                          </span>
+                        )
+                      })}
                     </div>
                     <p className="mt-2 text-xs leading-5 text-cyan-100/70">
                       影子觀察（shadow only）：這些數據已在正式環境產生並拿來比較策略，但只有觀察權，沒有決策權；不會改待買權重、策略升級或任何下單決策。多週期樣本與各策略指標通過前，舊 5 日 gate 仍是正式權責。
@@ -641,7 +669,7 @@ export default function StrategyLearningPage() {
               <article className="rounded-2xl border border-violet-400/25 bg-violet-400/[0.06] p-4">
                 <div className="flex items-center justify-between gap-2"><h2 className="font-semibold text-violet-100">Shadow B：3／5／10 日策略證據</h2><Badge variant="outline" className="border-violet-400/30 bg-violet-400/10 text-violet-200">{strategyLanes?.multi_horizon_shadow.production_integration_ready ? '已可交給正式 owner' : '結果資料已齊，指標建置中'}</Badge></div>
                 <p className="mt-2 text-xs leading-5 text-slate-400">各策略今晚打標本來就使用自己的特徵與門檻；Shadow B 負責用適合該策略的 3、5 或 10 日結果窗評估表現。主週期結果已具資料的 profile：<span className="font-mono text-violet-100">{strategyLanes?.multi_horizon_shadow.ready_primary_profiles ?? 0} / {strategyLanes?.multi_horizon_shadow.total_profiles ?? profiles.length}</span>。</p>
-                <p className="mt-1 text-[11px] text-slate-500">目前尚缺 {strategyLanes?.multi_horizon_shadow.missing_required_metrics?.length ?? 0} 種策略專屬績效指標的正式物化；完成前只累積比較證據，不改打標、待買權重或 promotion。</p>
+                <p className="mt-1 text-[11px] text-slate-500">已完整算出全部必要指標的策略 profile：{strategyLanes?.multi_horizon_shadow.metric_materialized_profiles ?? 0} / {strategyLanes?.multi_horizon_shadow.total_profiles ?? profiles.length}；連同樣本門檻都成熟：{strategyLanes?.multi_horizon_shadow.metric_ready_profiles ?? 0}。仍有 {strategyLanes?.multi_horizon_shadow.missing_required_metrics?.length ?? 0} 種正式資料依賴待關閉；完成前不改打標、待買權重或 promotion。</p>
                 <p className="mt-1 text-[11px] text-slate-500">物化筆數：{(strategyLanes?.multi_horizon_shadow.horizon_coverage ?? []).map((row) => `${row.horizon_days} 日 ${row.outcome_rows}`).join(' · ') || '尚未開始'}</p>
               </article>
             </section>

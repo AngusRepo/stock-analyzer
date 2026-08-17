@@ -1,0 +1,90 @@
+import assert from 'node:assert/strict'
+import { buildStrategyEvidenceProfile } from './strategyEvidenceProfile'
+import {
+  computeStrategyEvidenceMetricRows,
+  STRATEGY_EVIDENCE_MIN_MATURE_DATES,
+  STRATEGY_EVIDENCE_MIN_SAMPLES,
+  type StrategyEvidenceObservation,
+} from './strategyEvidenceMetrics'
+import { DEFAULT_STRATEGY_SPECS } from './strategySpec'
+
+function observations(strategyId: string, strategyVersion: string, strategyStatus: string, alphaBucket: string): StrategyEvidenceObservation[] {
+  const rows: StrategyEvidenceObservation[] = []
+  for (let day = 0; day < 10; day += 1) {
+    const date = `2026-07-${String(day + 1).padStart(2, '0')}`
+    for (let symbolIndex = 0; symbolIndex < 4; symbolIndex += 1) {
+      for (const horizon of [3, 5, 10]) {
+        const residual = 0.002 + symbolIndex * 0.001 - day * 0.00005 + (horizon === 3 ? 0.0005 : 0)
+        const benchmark = day % 2 === 0 ? -0.006 : 0.004
+        rows.push({
+          signal_date: date,
+          symbol: `S${symbolIndex}`,
+          producer_run_id: `run-${date}`,
+          strategy_id: strategyId,
+          strategy_version: strategyVersion,
+          strategy_status: strategyStatus,
+          alpha_bucket: alphaBucket,
+          affinity: symbolIndex + 1,
+          position_weight: 1 + ((day + symbolIndex) % 3),
+          overlap: symbolIndex / 3,
+          horizon_days: horizon,
+          outcome_known_date: `2026-08-${String(day + 1).padStart(2, '0')}`,
+          absolute_return_net: benchmark + residual,
+          benchmark_return_net: benchmark,
+          residual_return_net: residual,
+          cross_section_rank: symbolIndex / 3,
+        })
+      }
+    }
+  }
+  return rows
+}
+
+const trend = DEFAULT_STRATEGY_SPECS.find((spec) => spec.id === 'trend_following_seed_v1')!
+const trendProfile = buildStrategyEvidenceProfile(trend, { availableOutcomeHorizonDays: [3, 5, 10] })
+const trendRows = computeStrategyEvidenceMetricRows(
+  trendProfile,
+  observations(trend.id, trend.version, trend.status, trend.alphaBucket),
+  '2026-08-16',
+)
+assert.equal(trendRows.length, trendProfile.required_metrics.length)
+assert.equal(trendRows.find((row) => row.metric_name === 'regime_consistency')?.metric_status, 'dependency_pending')
+for (const metric of ['residual_return_lcb90', 'rank_ic', 'max_drawdown', 'turnover_after_cost']) {
+  const row = trendRows.find((item) => item.metric_name === metric)
+  assert(row, `${metric} row must exist`)
+  assert.equal(row.metric_status, 'ready', `${metric} must be ready with mature synthetic evidence`)
+  assert.notEqual(row.metric_value, null)
+  assert(row.sample_count >= STRATEGY_EVIDENCE_MIN_SAMPLES)
+  assert(row.mature_dates >= STRATEGY_EVIDENCE_MIN_MATURE_DATES)
+}
+
+const reversion = DEFAULT_STRATEGY_SPECS.find((spec) => spec.id === 'finlab_ai_skill_reversion_value_v1')!
+const reversionProfile = buildStrategyEvidenceProfile(reversion, { availableOutcomeHorizonDays: [3, 5, 10] })
+const reversionRows = computeStrategyEvidenceMetricRows(
+  reversionProfile,
+  observations(reversion.id, reversion.version, reversion.status, reversion.alphaBucket),
+  '2026-08-16',
+)
+assert.equal(reversionRows.find((row) => row.metric_name === 'time_to_reversion')?.metric_status, 'ready')
+assert.equal(reversionRows.find((row) => row.metric_name === 'time_to_reversion')?.metric_value, 3)
+assert.equal(reversionRows.find((row) => row.metric_name === 'maximum_adverse_excursion')?.metric_status, 'dependency_pending')
+assert.equal(reversionRows.find((row) => row.metric_name === 'regime_consistency')?.metric_status, 'dependency_pending')
+
+const defensive = DEFAULT_STRATEGY_SPECS.find((spec) => spec.id === 'defensive_accumulation_seed_v1')!
+const defensiveProfile = buildStrategyEvidenceProfile(defensive, { availableOutcomeHorizonDays: [3, 5, 10] })
+const defensiveRows = computeStrategyEvidenceMetricRows(
+  defensiveProfile,
+  observations(defensive.id, defensive.version, defensive.status, defensive.alphaBucket),
+  '2026-08-16',
+)
+assert(defensiveRows.every((row) => row.metric_status === 'ready'))
+assert(defensiveRows.every((row) => row.metric_value != null))
+
+const immatureRows = computeStrategyEvidenceMetricRows(
+  defensiveProfile,
+  observations(defensive.id, defensive.version, defensive.status, defensive.alphaBucket).slice(0, 12),
+  '2026-08-16',
+)
+assert(immatureRows.some((row) => row.metric_status === 'insufficient_samples' || row.metric_status === 'not_available'))
+
+console.log('strategy evidence metrics tests passed')

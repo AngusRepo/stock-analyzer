@@ -390,30 +390,32 @@ export async function nextDataDomainBackfillDomain(
     throw new Error('data_domain_shadow_requires_strict_disabled:selector')
   }
   const activeDomains = activeDataDomains(env)
-  // Finish every legacy domain's initial copy before refreshing drift on a
-  // domain that already reached shadow. Otherwise a continuously-written Ops
-  // shard can starve Learning/Market/Core forever.
-  for (const cutoverStatus of ['legacy', 'shadow'] as const) {
-    for (const domain of DOMAIN_BACKFILL_ORDER) {
-      if (activeDomains.has(domain)) continue
-      const authority = await assertDataDomainShadowMutationAuthority(env, domain)
-      if (authority.cutoverStatus !== cutoverStatus) continue
-      const receiptRefresh = await nextDataDomainReceiptRefreshTable(
-        env,
-        domain,
-        parityNotBefore,
-      )
-      if (receiptRefresh) return domain
-      const incremental = await nextDataDomainIncrementalCatchupTable(
-        env,
-        domain,
-        parityNotBefore,
-        false,
-      )
-      if (incremental) return domain
-      const incomplete = await nextIncompleteTable(env, domain)
-      if (incomplete) return domain
-    }
+  // Initial-copy cursors are durable even when a later source write invalidates
+  // the aggregate cutover row. Finish every domain's first copy before spending
+  // coordinator capacity on freshness refreshes, or hot Ops writes can starve
+  // Learning/Market/Core indefinitely.
+  for (const domain of DOMAIN_BACKFILL_ORDER) {
+    if (activeDomains.has(domain)) continue
+    await assertDataDomainShadowMutationAuthority(env, domain)
+    const incomplete = await nextIncompleteTable(env, domain)
+    if (incomplete) return domain
+  }
+  for (const domain of DOMAIN_BACKFILL_ORDER) {
+    if (activeDomains.has(domain)) continue
+    await assertDataDomainShadowMutationAuthority(env, domain)
+    const receiptRefresh = await nextDataDomainReceiptRefreshTable(
+      env,
+      domain,
+      parityNotBefore,
+    )
+    if (receiptRefresh) return domain
+    const incremental = await nextDataDomainIncrementalCatchupTable(
+      env,
+      domain,
+      parityNotBefore,
+      false,
+    )
+    if (incremental) return domain
   }
   return null
 }

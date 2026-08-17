@@ -104,9 +104,9 @@ assert.equal(shouldContinueDataDomainGlobalSweep({
 
 assert(drain.includes('inspectLatestEveningChainClosure'))
 assert(drain.includes('enqueueNextDataDomainShadowBackfill'))
-assert(drain.includes("for (const cutoverStatus of ['legacy', 'shadow'] as const)"))
-assert(drain.includes('authority.cutoverStatus !== cutoverStatus'))
-assert(nextDomainSelector.indexOf("['legacy', 'shadow']") < nextDomainSelector.indexOf('nextDataDomainReceiptRefreshTable'))
+assert((nextDomainSelector.match(/for \(const domain of DOMAIN_BACKFILL_ORDER\)/g) ?? []).length === 2)
+assert(nextDomainSelector.indexOf('const incomplete = await nextIncompleteTable')
+  < nextDomainSelector.indexOf('const receiptRefresh = await nextDataDomainReceiptRefreshTable'))
 assert(drain.includes("if (domain === 'ops')"))
 assert(drain.includes('run: () => runDataDomainShadowBackfillHttpStep(env'))
 assert(drain.includes('queued: false, runId: step.runId'))

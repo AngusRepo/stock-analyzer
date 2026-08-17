@@ -184,5 +184,10 @@ assert.equal(resolveLatestEveningChainClosure([{
   timestamp: '2026-08-06T16:00:00Z', run_date: '2026-08-06', run_scope: 'historical_replay',
 }]).terminalSuccess, false)
 assert.equal(resolveLatestEveningChainClosure([]).reason, 'latest_evening_chain_missing')
+assert(drain.includes("closure.runScope !== 'historical_replay'"))
+assert(drain.includes('FROM market_trading_sessions'))
+assert(drain.includes("stage='post_verify_chain'"))
+assert(drain.includes('FROM strategy_learning_runs'))
+assert(drain.includes('latest_evening_chain_latest_completed_session_recovery_success'))
 
 console.log('data domain shadow backfill drain contract tests passed')

@@ -1138,7 +1138,7 @@ export function buildAdminWorkerDomainTaskMap(c: any, deps: TriggerDeps): Record
         enqueueNextDataDomainShadowBackfill,
         inspectLatestEveningChainClosure,
       } = await import('./dataDomainShadowBackfillDrain')
-      const closure = await inspectLatestEveningChainClosure(c.env.KV)
+      const closure = await inspectLatestEveningChainClosure(c.env.KV, c.env.DB)
       if (!closure.terminalSuccess) {
         return `skipped: data_domain_shadow_backfill_next ${closure.reason} run_date=${closure.runDate ?? 'missing'}`
       }

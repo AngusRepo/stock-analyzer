@@ -402,6 +402,7 @@ export type LatestEveningChainClosure = {
   status: string
   runScope: string | null
   timestamp: string | null
+  runId: string | null
   terminalSuccess: boolean
   reason: string
 }
@@ -421,6 +422,7 @@ export function resolveLatestEveningChainClosure(
       status: 'missing',
       runScope: null,
       timestamp: null,
+      runId: null,
       terminalSuccess: false,
       reason: 'latest_evening_chain_missing',
     }
@@ -430,6 +432,7 @@ export function resolveLatestEveningChainClosure(
   return {
     runDate: latest.run_date ?? null,
     status: latest.status,
+    runId: latest.run_id ?? null,
     runScope: latest.run_scope ?? null,
     timestamp: latest.timestamp ?? null,
     terminalSuccess,
@@ -441,12 +444,49 @@ export function resolveLatestEveningChainClosure(
 
 export async function inspectLatestEveningChainClosure(
   kv: KVNamespace,
+  db?: D1Database,
 ): Promise<LatestEveningChainClosure> {
   const entries = await Promise.all(
     Array.from({ length: 8 }, (_, days) => twDaysAgo(days))
       .map((date) => kv.get(`scheduler:run:evening-chain:${date}`, 'json') as Promise<SchedulerRunLogEntry | null>),
   )
-  return resolveLatestEveningChainClosure(entries)
+  const closure = resolveLatestEveningChainClosure(entries)
+  if (
+    closure.terminalSuccess
+    || !db
+    || closure.status !== 'success'
+    || closure.runScope !== 'historical_replay'
+    || !closure.runDate
+    || !closure.runId
+  ) return closure
+  const lineage = await db.prepare(`
+    WITH completed_session AS (
+      SELECT MAX(session_date) session_date
+        FROM market_trading_sessions
+       WHERE session_date <= CASE
+         WHEN time('now', '+8 hours') < '15:00:00'
+         THEN date('now', '+8 hours', '-1 day')
+         ELSE date('now', '+8 hours')
+       END
+    )
+    SELECT CASE WHEN
+      ?=(SELECT session_date FROM completed_session)
+      AND EXISTS (
+        SELECT 1 FROM pipeline_stage_runs
+         WHERE business_date=? AND stage='post_verify_chain'
+           AND status='success' AND canonical_run_id=?
+      )
+      AND EXISTS (
+        SELECT 1 FROM strategy_learning_runs
+         WHERE business_date=? AND status='success'
+           AND canonical_run_id=? AND completed_at IS NOT NULL
+      )
+      THEN 1 ELSE 0 END authorized
+  `).bind(
+    closure.runDate, closure.runDate, closure.runId, closure.runDate, closure.runId,
+  ).first<{ authorized: number }>()
+  if (Number(lineage?.authorized ?? 0) !== 1) return closure
+  return { ...closure, terminalSuccess: true, reason: 'latest_evening_chain_latest_completed_session_recovery_success' }
 }
 
 

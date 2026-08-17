@@ -748,7 +748,7 @@ adminReadRoutes.get('/api/admin/data-domains/cutover-readiness', async (c) => {
     import('../lib/dataDomainCutoverReadiness'),
     import('../lib/dataDomainShadowBackfillDrain'),
   ])
-  const latestEveningChain = await inspectLatestEveningChainClosure(c.env.KV)
+  const latestEveningChain = await inspectLatestEveningChainClosure(c.env.KV, c.env.DB)
   const report = await inspectDataDomainCutoverReadiness(c.env.DB, c.req.query('domain'), {
     upstreamTerminalReady: latestEveningChain.terminalSuccess,
     parityNotBefore: latestEveningChain.timestamp,

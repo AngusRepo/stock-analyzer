@@ -36,6 +36,7 @@ assert(learning.includes('maxDates: 1'), 'critical finalizer must repair at most
 assert(learning.includes('priorityOnly: true'), 'critical finalizer must not block live closure on older maintenance backlog')
 assert(!learning.includes('d.strategy_status, d.alpha_bucket, d.context_json, d.evidence_json'), 'historical decision query must not duplicate large JSON per strategy row')
 assert(learning.includes('GROUP BY d.symbol'), 'historical context must be loaded once per symbol')
+assert(learning.includes('historicalCandidateBySymbol'), 'historical raw-signal derivation must be memoized once per symbol')
 assert(learning.includes('evidence_json=json_patch'), 'historical evidence must merge in D1 without a read-modify-write payload')
 const historicalSelector = learning.slice(learning.indexOf('export async function listHistoricalStrategyEvidenceV5Dates'), learning.indexOf('export async function rebuildHistoricalStrategyEvidenceV5'))
 assert(historicalSelector.indexOf('if (options.priorityOnly)') < historicalSelector.indexOf('WITH decision_dates'),

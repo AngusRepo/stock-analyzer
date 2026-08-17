@@ -3653,16 +3653,11 @@ export async function rebuildHistoricalStrategyEvidenceV5(
          GROUP BY d.symbol
       `).bind(date, producerRunId).all<HistoricalStrategyContextRowV5>()
       const contextBySymbol = new Map((contextResult?.results ?? []).map((row) => [row.symbol, row]))
-      const decisionUpdates: D1PreparedStatement[] = []
-      let evaluableRows = projectedExistingMatrix
-        ? decisions.filter((row) => row.evaluability_status === 'EVALUABLE' && Number(row.evaluable) === 1).length : 0
-      let unavailableRows = projectedExistingMatrix
-        ? decisions.filter((row) => Number(row.evaluable) === 0
-          && !isNotApplicableStrategyEvaluability(row.evaluability_status)).length
-        : 0
-      const rebuilt = projectedExistingMatrix ? [] : decisions.map((row) => {
-        const key = row.strategy_id + '|' + row.strategy_version
-        const spec = specByKey.get(key)
+      const historicalEvidenceOptions = { evidenceMode: 'historical_replay' as const }
+      const historicalCandidateBySymbol = new Map<string, StrategyCandidateInput>()
+      const resolveHistoricalCandidate = (row: HistoricalStrategyDecisionRowV5): StrategyCandidateInput => {
+        const cached = historicalCandidateBySymbol.get(row.symbol)
+        if (cached) return cached
         const context = contextBySymbol.get(row.symbol)
         const fullContext = parseJson<any>(context?.context_json, {})
         const contextRaw = parseJson<Record<string, any>>(context?.context_raw_signals_json, {})
@@ -3678,11 +3673,26 @@ export async function rebuildHistoricalStrategyEvidenceV5(
           raw_signals: rawSignals,
           score_v2: contextRaw.score_v2 ?? fullContext?.score_v2 ?? null,
         }
-        const historicalEvidenceOptions = { evidenceMode: 'historical_replay' as const }
         const candidate: StrategyCandidateInput = {
           ...candidateInput,
           raw_signals: deriveStrategyRawSignals(candidateInput, historicalEvidenceOptions),
         }
+        historicalCandidateBySymbol.set(row.symbol, candidate)
+        return candidate
+      }
+
+      const decisionUpdates: D1PreparedStatement[] = []
+      let evaluableRows = projectedExistingMatrix
+        ? decisions.filter((row) => row.evaluability_status === 'EVALUABLE' && Number(row.evaluable) === 1).length : 0
+      let unavailableRows = projectedExistingMatrix
+        ? decisions.filter((row) => Number(row.evaluable) === 0
+          && !isNotApplicableStrategyEvaluability(row.evaluability_status)).length
+        : 0
+      const rebuilt = projectedExistingMatrix ? [] : decisions.map((row) => {
+        const key = row.strategy_id + '|' + row.strategy_version
+        const spec = specByKey.get(key)
+        const context = contextBySymbol.get(row.symbol)
+        const candidate = resolveHistoricalCandidate(row)
         const evaluability = spec
           ? assessStrategySpecEvaluability(candidate, spec, historicalEvidenceOptions)
           : {

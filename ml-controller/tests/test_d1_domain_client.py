@@ -14,7 +14,7 @@ def test_domain_database_id_prefers_specific_then_legacy(monkeypatch):
     try:
         d1_domain_client.database_id_for_domain("market")
     except RuntimeError as exc:
-        assert str(exc) == "multi_d1_strict_routing_not_closed"
+        assert str(exc) == "multi_d1_strict_routing_not_closed:market"
     else:
         raise AssertionError("active domains must remain closed while the routing contract is incomplete")
     monkeypatch.setattr(d1_domain_client, "MULTI_D1_STRICT_ROUTING_READY", True)
@@ -90,6 +90,35 @@ def test_active_domain_fails_closed_when_specific_id_is_missing(monkeypatch):
         assert "execution" in str(exc)
     else:
         raise AssertionError("an active domain must not silently fall back to legacy")
+
+
+def test_execution_domain_is_independently_closed(monkeypatch):
+    monkeypatch.setattr(d1_domain_client, "MULTI_D1_STRICT_ROUTING_READY", False)
+    monkeypatch.setenv("CF_D1_DB_ID", "legacy")
+    monkeypatch.setenv("CF_D1_EXECUTION_DB_ID", "execution-db")
+    monkeypatch.setenv("MULTI_D1_ACTIVE_DOMAINS", "execution")
+    monkeypatch.setenv("MULTI_D1_EXECUTION_ROUTING_CONTRACT", "execution-single-writer-epoch-v1")
+    monkeypatch.setenv("MULTI_D1_EXECUTION_CUTOVER_RECEIPT_ID", "data-domain-cutover-probe:execution:test")
+    monkeypatch.delenv("MULTI_D1_STRICT", raising=False)
+
+    assert d1_domain_client.database_id_for_domain("execution") == "execution-db"
+    assert d1_domain_client.database_id_for_domain("paper") == "legacy"
+
+
+def test_execution_domain_stays_closed_without_bound_receipt(monkeypatch):
+    monkeypatch.setattr(d1_domain_client, "MULTI_D1_STRICT_ROUTING_READY", False)
+    monkeypatch.setenv("CF_D1_DB_ID", "legacy")
+    monkeypatch.setenv("CF_D1_EXECUTION_DB_ID", "execution-db")
+    monkeypatch.setenv("MULTI_D1_ACTIVE_DOMAINS", "execution")
+    monkeypatch.delenv("MULTI_D1_EXECUTION_ROUTING_CONTRACT", raising=False)
+    monkeypatch.delenv("MULTI_D1_EXECUTION_CUTOVER_RECEIPT_ID", raising=False)
+
+    try:
+        d1_domain_client.database_id_for_domain("execution")
+    except RuntimeError as exc:
+        assert str(exc) == "multi_d1_strict_routing_not_closed:execution"
+    else:
+        raise AssertionError("execution routing must require an attested cutover receipt")
 
 
 def test_invalid_active_domain_fails_closed(monkeypatch):

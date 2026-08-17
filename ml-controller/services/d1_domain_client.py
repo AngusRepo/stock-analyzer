@@ -32,6 +32,7 @@ _DOMAIN_ENV = {
 }
 
 MULTI_D1_STRICT_ROUTING_READY = False
+EXECUTION_ROUTING_CONTRACT_VERSION = "execution-single-writer-epoch-v1"
 
 _SHADOW_READ_MUTATION = re.compile(
     r"\b(alter|attach|create|delete|detach|drop|insert|replace|truncate|update|vacuum)\b",
@@ -66,12 +67,27 @@ def _active_domains() -> set[D1DataDomain]:
     return {domain for domain in D1DataDomain if domain.value in values}
 
 
+def _routing_closed_domains() -> frozenset[D1DataDomain]:
+    execution_contract = os.environ.get("MULTI_D1_EXECUTION_ROUTING_CONTRACT", "").strip()
+    execution_receipt = os.environ.get("MULTI_D1_EXECUTION_CUTOVER_RECEIPT_ID", "").strip()
+    if (
+        execution_contract == EXECUTION_ROUTING_CONTRACT_VERSION
+        and execution_receipt.startswith("data-domain-cutover-probe:execution:")
+    ):
+        return frozenset({D1DataDomain.EXECUTION})
+    return frozenset()
+
+
 def database_id_for_domain(domain: D1DataDomain | str) -> str:
     resolved_domain = D1DataDomain(domain)
     strict = os.environ.get("MULTI_D1_STRICT", "").strip().lower() in {"1", "true", "yes", "on"}
     active_domains = _active_domains()
-    if (strict or active_domains) and not MULTI_D1_STRICT_ROUTING_READY:
-        raise RuntimeError("multi_d1_strict_routing_not_closed")
+    unclosed = sorted(
+        domain.value for domain in active_domains
+        if not MULTI_D1_STRICT_ROUTING_READY and domain not in _routing_closed_domains()
+    )
+    if (strict or active_domains) and unclosed:
+        raise RuntimeError(f"multi_d1_strict_routing_not_closed:{','.join(unclosed)}")
     if strict and not active_domains:
         raise RuntimeError("multi_d1_strict_active_domains_missing")
     domain_active = resolved_domain in active_domains

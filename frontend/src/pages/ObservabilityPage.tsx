@@ -12,6 +12,7 @@ import {
 } from 'lucide-react'
 import AppShell from '@/components/AppShell'
 import ExecutionChainPanel, { schedulerRefreshInterval } from '@/components/observability/ExecutionChainPanel'
+import LearningCutoverPanel from '@/components/observability/LearningCutoverPanel'
 import { Button } from '@/components/ui/button'
 import {
   WorkstationPageTitle,
@@ -29,6 +30,7 @@ import {
   dataQualityApi,
   deployGateApi,
   observabilityApi,
+  opsApi,
   schedulerApi,
   systemApi,
   type DataQualityCheck,
@@ -1461,6 +1463,7 @@ export default function ObservabilityPage() {
   const deployGate = useQuery({ queryKey: ['obs', 'deploy-gate'], queryFn: () => deployGateApi.predeploy(), refetchInterval: 60_000, staleTime: 30_000 })
   const system = useQuery({ queryKey: ['obs', 'system'], queryFn: systemApi.status, refetchInterval: 60_000, staleTime: 30_000 })
   const observability = useQuery({ queryKey: ['obs', 'events'], queryFn: () => observabilityApi.events(), refetchInterval: 60_000, staleTime: 30_000 })
+  const cutover = useQuery({ queryKey: ['ops', 'cutover-readiness', 'learning'], queryFn: () => opsApi.cutoverReadiness('learning'), refetchInterval: 60_000, staleTime: 30_000 })
   const gaReview = useMutation({
     mutationFn: ({ action, level }: { action: 'request' | 'approve' | 'reject'; level: 'L3' | 'L4' }) =>
       observabilityApi.reviewGaPromotion({ action, level, reason: `obs_ui_${action}` }),
@@ -1477,13 +1480,14 @@ export default function ObservabilityPage() {
   const dataQualityScore = computeDataQualityScore(dataQuality.data)
   const deployScore = deployGate.data ? deployGate.data.decision === 'PASS' ? 100 : deployGate.data.decision === 'WARN' ? 70 : 30 : 0
   const failedChecks = dqChecks.filter((check) => check.status === 'fail').length
-  const initialLoading = [scheduler, dataQuality, deployGate, system, observability].some((query) => query.isLoading)
+  const initialLoading = [scheduler, dataQuality, deployGate, system, observability, cutover].some((query) => query.isLoading)
   const apiErrors = [
     { label: 'Scheduler API', message: schedulerApiError },
     { label: 'Data Quality API', message: errorMessage(dataQuality.error) },
     { label: 'Deploy Gate API', message: errorMessage(deployGate.error) },
     { label: 'OBS Events API', message: errorMessage(observability.error) },
     { label: 'System API', message: errorMessage(system.error) },
+    { label: 'D1 Cutover API', message: errorMessage(cutover.error) },
   ].filter((item): item is { label: string; message: string } => Boolean(item.message))
 
   return (
@@ -1512,6 +1516,8 @@ export default function ObservabilityPage() {
             </div>
           }
         />
+
+        <LearningCutoverPanel report={cutover.data} />
 
         <WorkstationPanel title="Operational Drilldown / 維運追蹤" kicker="full rows, not fake tabs">
           <OperationalReadinessDeck

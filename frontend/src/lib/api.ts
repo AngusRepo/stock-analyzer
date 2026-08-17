@@ -547,9 +547,41 @@ export type OpsResourceAuditReport = {
   }>
 }
 
+export type DataDomainCutoverReadinessReport = {
+  success: true
+  schema_version: 'data-domain-cutover-readiness-v2'
+  strict_enable_allowed: boolean
+  routing_contract_gates: Record<string, boolean>
+  projection_contract_gates: Record<string, boolean>
+  domains: Array<{
+    domain: string
+    data_ready: boolean
+    cutover_ready: boolean
+    blockers: string[]
+    data_blockers: string[]
+    contract_blockers: string[]
+    owned_tables: number
+    completed_tables: number
+    parity_tables: number
+    pending_projection_events: number
+    projection_error_events: number
+    cutover_status: string
+    aggregate_parity_checked_at: string | null
+    required_parity_not_before: string | null
+    routing_contract_ready: boolean
+    projection_contract_ready: boolean
+    cutover_probe_checked_at: string | null
+    cutover_probe_epoch: number | null
+    current_writer_epoch: number | null
+    current_writer_state: string | null
+  }>
+}
+
 export const opsApi = {
   runbook: () => get<OpsRunbookReport>('/admin/ops/runbook'),
   resourceAudit: () => get<OpsResourceAuditReport>('/admin/ops/resource-audit'),
+  cutoverReadiness: (domain = 'learning') =>
+    get<DataDomainCutoverReadinessReport>(`/admin/data-domains/cutover-readiness?domain=${encodeURIComponent(domain)}`),
 }
 
 export type StrategySpecStatus = 'research' | 'shadow' | 'candidate' | 'active' | 'retired'

@@ -644,6 +644,12 @@ export type StrategyEvidenceLane = {
   horizon_coverage?: Array<{ horizon_days: number; outcome_rows: number }>
   ready_primary_profiles?: number
   total_profiles?: number
+  outcome_data_ready?: boolean
+  production_integration_ready?: boolean
+  production_owner?: 'strategy-adaptive-lifecycle-v2'
+  materialized_metrics?: string[]
+  missing_required_metrics?: string[]
+  integration_effect?: 'shadow_evidence_input_only'
 }
 
 export type StrategyEvidenceProfilesResponse = {

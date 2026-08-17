@@ -639,8 +639,9 @@ export default function StrategyLearningPage() {
                 <p className="mt-2 text-xs leading-5 text-slate-400">測試每個策略自己的命中門檻與送評路由。目前成熟交易日 <span className="font-mono text-cyan-100">{strategyLanes?.threshold_route_shadow.mature_dates ?? 0} / {strategyLanes?.threshold_route_shadow.required_mature_dates ?? 11}</span>；滿 11 日後仍須通過扣成本 LCB90、殘差優勢與校準誤差，才可申請取代。</p>
               </article>
               <article className="rounded-2xl border border-violet-400/25 bg-violet-400/[0.06] p-4">
-                <div className="flex items-center justify-between gap-2"><h2 className="font-semibold text-violet-100">Shadow B：3／5／10 日策略證據</h2><Badge variant="outline" className="border-violet-400/30 bg-violet-400/10 text-violet-200">只比較，不改 production</Badge></div>
-                <p className="mt-2 text-xs leading-5 text-slate-400">依策略型態使用 3、5 或 10 個交易日主週期，不再強迫全部策略共用 5 日。主週期已具資料的 profile：<span className="font-mono text-violet-100">{strategyLanes?.multi_horizon_shadow.ready_primary_profiles ?? 0} / {strategyLanes?.multi_horizon_shadow.total_profiles ?? profiles.length}</span>。</p>
+                <div className="flex items-center justify-between gap-2"><h2 className="font-semibold text-violet-100">Shadow B：3／5／10 日策略證據</h2><Badge variant="outline" className="border-violet-400/30 bg-violet-400/10 text-violet-200">{strategyLanes?.multi_horizon_shadow.production_integration_ready ? '已可交給正式 owner' : '結果資料已齊，指標建置中'}</Badge></div>
+                <p className="mt-2 text-xs leading-5 text-slate-400">各策略今晚打標本來就使用自己的特徵與門檻；Shadow B 負責用適合該策略的 3、5 或 10 日結果窗評估表現。主週期結果已具資料的 profile：<span className="font-mono text-violet-100">{strategyLanes?.multi_horizon_shadow.ready_primary_profiles ?? 0} / {strategyLanes?.multi_horizon_shadow.total_profiles ?? profiles.length}</span>。</p>
+                <p className="mt-1 text-[11px] text-slate-500">目前尚缺 {strategyLanes?.multi_horizon_shadow.missing_required_metrics?.length ?? 0} 種策略專屬績效指標的正式物化；完成前只累積比較證據，不改打標、待買權重或 promotion。</p>
                 <p className="mt-1 text-[11px] text-slate-500">物化筆數：{(strategyLanes?.multi_horizon_shadow.horizon_coverage ?? []).map((row) => `${row.horizon_days} 日 ${row.outcome_rows}`).join(' · ') || '尚未開始'}</p>
               </article>
             </section>

@@ -338,6 +338,10 @@ adminReadRoutes.get('/api/admin/strategy/evidence-profiles', async (c) => {
   const primaryProfilesReady = profiles.filter((profile) => (
     profile.outcome_contract_status !== 'multi_horizon_pending'
   )).length
+  const requiredMultiHorizonMetrics = [...new Set(profiles.flatMap((profile) => profile.required_metrics))].sort()
+  // Shadow B currently materializes outcomes, not the declared strategy-specific metric bundles.
+  const materializedMultiHorizonMetrics: string[] = []
+  const missingMultiHorizonMetrics = requiredMultiHorizonMetrics.filter((metric) => !materializedMultiHorizonMetrics.includes(metric))
   return c.json({
     success: true, mode: 'read_only', source,
     schema_version: STRATEGY_EVIDENCE_PROFILE_VERSION,
@@ -374,12 +378,18 @@ adminReadRoutes.get('/api/admin/strategy/evidence-profiles', async (c) => {
         label: 'Shadow B：策略專屬 3／5／10 日證據',
         version: STRATEGY_EVIDENCE_PROFILE_VERSION,
         status: completeHorizonCoverage && primaryProfilesReady === profiles.length
-          ? 'evidence_available'
+          ? 'outcomes_ready_metrics_pending'
           : 'materializing',
         as_of_date: null,
         horizon_coverage: multiHorizonCoverage,
         ready_primary_profiles: primaryProfilesReady,
         total_profiles: profiles.length,
+        outcome_data_ready: completeHorizonCoverage && primaryProfilesReady === profiles.length,
+        production_integration_ready: missingMultiHorizonMetrics.length === 0,
+        production_owner: 'strategy-adaptive-lifecycle-v2',
+        materialized_metrics: materializedMultiHorizonMetrics,
+        missing_required_metrics: missingMultiHorizonMetrics,
+        integration_effect: 'shadow_evidence_input_only',
         production_effect: false,
         authority: 'comparison_only',
       },

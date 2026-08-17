@@ -94,6 +94,10 @@ export function domainBackfillBatchLimit(value?: number, table?: string): number
 export function domainBackfillRowsPerStatement(columnCount: number): number {
   return Math.max(1, Math.floor(100 / Math.max(1, Math.floor(columnCount))))
 }
+export function domainBackfillStatementsPerBatch(table: string): number {
+  return table === 'strategy_label_matrix_v4' ? 100 : 50
+}
+
 
 export function domainBackfillExactKeyRowsPerStatement(primaryKeyCount: number): number {
   return Math.min(48, domainBackfillRowsPerStatement(primaryKeyCount))
@@ -162,8 +166,9 @@ async function upsertDomainRows(
       ON CONFLICT (${primaryKeys.map(identifier).join(', ')}) ${updateSql}
     `).bind(...statementRows.flatMap((row) => columns.map((column) => row[column] ?? null))))
   }
-  for (let offset = 0; offset < statements.length; offset += 50) {
-    await target.batch(statements.slice(offset, offset + 50))
+  const statementsPerBatch = domainBackfillStatementsPerBatch(table)
+  for (let offset = 0; offset < statements.length; offset += statementsPerBatch) {
+    await target.batch(statements.slice(offset, offset + statementsPerBatch))
   }
 }
 

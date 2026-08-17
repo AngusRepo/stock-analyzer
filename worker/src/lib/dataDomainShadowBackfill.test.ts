@@ -9,6 +9,7 @@ import {
   domainBackfillParityBatchLimit,
   domainBackfillResumeParityBatchLimit,
   domainBackfillRollingManifest,
+  domainBackfillStatementsPerBatch,
   domainBackfillRowsPerStatement,
   isDomainTableSchemaCompatible,
   isDomainShadowCopyComplete,
@@ -59,6 +60,8 @@ assert.equal(domainBackfillBatchLimit(), 500)
 assert.equal(domainBackfillBatchLimit(0), 1)
 assert.equal(domainBackfillBatchLimit(5000), 500)
 assert.equal(domainBackfillBatchLimit(5000, 'strategy_label_matrix_v4'), 1000)
+assert.equal(domainBackfillStatementsPerBatch('strategy_label_matrix_v4'), 100)
+assert.equal(domainBackfillStatementsPerBatch('predictions'), 50)
 assert.equal(domainBackfillParityBatchLimit(500), 4000)
 assert.equal(domainBackfillParityBatchLimit(50), 400)
 assert.equal(domainBackfillResumeParityBatchLimit(416000, 4000, 400), 400)

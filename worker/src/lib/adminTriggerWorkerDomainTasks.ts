@@ -947,7 +947,9 @@ export function buildAdminWorkerDomainTaskMap(c: any, deps: TriggerDeps): Record
         .filter((value): value is LegacyHotDataTarget => allowedTargets.includes(value as LegacyHotDataTarget))
       const targets = requestedTargets.length ? requestedTargets : allowedTargets
       const limit = parseBoundedPositiveInt(c.req.query('limit'), 100, 500)
-      const maxChunks = parseBoundedPositiveInt(c.req.query('max_chunks'), 1, 5)
+      const obsoleteScreenerOnly = targets.length === 1 && targets[0] === 'obsolete_screener_items'
+      const maxChunksCap = obsoleteScreenerOnly ? 20 : 5
+      const maxChunks = parseBoundedPositiveInt(c.req.query('max_chunks'), 1, maxChunksCap)
       const dryRun = c.req.query('confirm_retirement') !== LEGACY_HOT_DATA_RETIREMENT_CONFIRM_PHRASE
       const summaries: string[] = []
       const paperShadowProtected = await paperShadowSourceMutationProtected(c.env)

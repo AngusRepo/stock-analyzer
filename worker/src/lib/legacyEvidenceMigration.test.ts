@@ -3,6 +3,7 @@ import fs from 'node:fs'
 
 const migration = fs.readFileSync('src/lib/legacyEvidenceMigration.ts', 'utf8')
 const scheduler = fs.readFileSync('../infra/gcp-scheduler-jobs.json', 'utf8')
+const workerTasks = fs.readFileSync('src/lib/adminTriggerWorkerDomainTasks.ts', 'utf8')
 
 assert.match(migration, /writeEvidenceArtifact/)
 assert.match(migration, /NOT EXISTS \(\s*SELECT 1 FROM canonical_run_heads/)
@@ -19,6 +20,8 @@ assert.ok(
 )
 assert.doesNotMatch(scheduler, /"id": "legacy-evidence-migration"/)
 assert.match(scheduler, /"legacy-evidence-migration"/)
-assert.match(scheduler, /limit=500&max_chunks=5/)
+assert.match(scheduler, /targets=obsolete_screener_items&limit=500&max_chunks=20/)
+assert.match(workerTasks, /obsoleteScreenerOnly \? 20 : 5/)
+assert.match(workerTasks, /targets\.length === 1 && targets\[0\] === 'obsolete_screener_items'/)
 
 console.log('legacy evidence migration contract tests passed')

@@ -27,6 +27,7 @@ export default function LearningCutoverPanel({ report }: { report?: DataDomainCu
   const domain = report?.domains.find((item) => item.domain === 'learning')
   const routingGates = Object.values(report?.routing_contract_gates ?? {})
   const projectionGates = Object.values(report?.projection_contract_gates ?? {})
+  const learningActive = report?.active_domains?.includes('learning') === true
   const completed = Number(domain?.completed_tables ?? 0)
   const owned = Number(domain?.owned_tables ?? 0)
   const parity = Number(domain?.parity_tables ?? 0)
@@ -45,15 +46,17 @@ export default function LearningCutoverPanel({ report }: { report?: DataDomainCu
             <WorkstationPill tone={domain?.cutover_ready ? 'ok' : 'warn'}>
               {domain?.cutover_ready ? '可切換正式' : '禁止切換'}
             </WorkstationPill>
-            <WorkstationPill tone={domain?.cutover_status === 'legacy' ? 'info' : 'warn'}>
-              正式 owner：{domain?.cutover_status || 'unknown'}
+            <WorkstationPill tone={learningActive ? 'ok' : 'info'}>
+              正式 owner：{learningActive ? 'Learning D1' : 'legacy D1'}
             </WorkstationPill>
             <WorkstationPill tone={domain?.current_writer_state === 'open' ? 'ok' : 'error'}>
               writer fence：{domain?.current_writer_state || '未安裝'}
             </WorkstationPill>
           </div>
           <p className="text-xs leading-5 text-slate-400">
-            今晚 jobs 仍由 legacy 單一 owner 寫入；初始搬移、逐表 parity、跨域 contract 與 rollback probe 全部通過後，才允許把 Learning D1 切成正式 owner。
+            {learningActive
+              ? 'Learning D1 已是正式讀寫 owner；weekly、S12、Active8 與策略學習依 Learning D1 容量執行，legacy D1 不再承擔這些寫入。'
+              : '目前 jobs 仍由 legacy 單一 owner 寫入；初始搬移、逐表 parity、跨域 contract 與 rollback probe 全部通過後，才允許把 Learning D1 切成正式 owner。'}
           </p>
           {progress.map((item) => (
             <div key={item.label}>

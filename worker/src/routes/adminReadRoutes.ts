@@ -1,7 +1,7 @@
 import { Hono } from 'hono'
 import { twToday } from '../lib/dateUtils'
 import { requireAdminOrServiceToken } from '../lib/auth'
-import { databaseForDataDomain } from '../lib/dataDomainRegistry'
+import { activeDataDomains, databaseForDataDomain } from '../lib/dataDomainRegistry'
 import type { Bindings, Variables } from '../types'
 
 export const adminReadRoutes = new Hono<{ Bindings: Bindings; Variables: Variables }>()
@@ -754,5 +754,10 @@ adminReadRoutes.get('/api/admin/data-domains/cutover-readiness', async (c) => {
     parityNotBefore: latestEveningChain.timestamp,
     learningTargetDb: c.env.LEARNING_DB,
   })
-  return c.json({ success: true, latest_evening_chain: latestEveningChain, ...report })
+  const activeDomains = [...activeDataDomains(c.env)].sort()
+  return c.json({
+    success: true, latest_evening_chain: latestEveningChain, ...report,
+    active_domains: activeDomains,
+    strict_requested: String(c.env.MULTI_D1_STRICT ?? '').trim().toLowerCase() === 'true',
+  })
 })

@@ -551,6 +551,8 @@ export type DataDomainCutoverReadinessReport = {
   success: true
   schema_version: 'data-domain-cutover-readiness-v2'
   strict_enable_allowed: boolean
+  active_domains: string[]
+  strict_requested: boolean
   routing_contract_gates: Record<string, boolean>
   projection_contract_gates: Record<string, boolean>
   domains: Array<{

@@ -13,6 +13,10 @@ const types = fs.readFileSync('src/types.ts', 'utf8')
 const heavyMaintenanceSet = admin.slice(
   admin.indexOf('const D1_HEAVY_MAINTENANCE_TASKS'), admin.indexOf('])', admin.indexOf('const D1_HEAVY_MAINTENANCE_TASKS')) + 2,
 )
+const nextDomainSelector = drain.slice(
+  drain.indexOf('export async function nextDataDomainBackfillDomain'),
+  drain.indexOf('export async function enqueueNextDataDomainShadowBackfill'),
+)
 
 assert(drain.includes("leaseGroup: 'd1_heavy_maintenance'"))
 assert(drain.includes('SHADOW_BACKFILL_QUEUE_BATCH_LIMIT = 50'))
@@ -100,6 +104,9 @@ assert.equal(shouldContinueDataDomainGlobalSweep({
 
 assert(drain.includes('inspectLatestEveningChainClosure'))
 assert(drain.includes('enqueueNextDataDomainShadowBackfill'))
+assert(drain.includes("for (const cutoverStatus of ['legacy', 'shadow'] as const)"))
+assert(drain.includes('authority.cutoverStatus !== cutoverStatus'))
+assert(nextDomainSelector.indexOf("['legacy', 'shadow']") < nextDomainSelector.indexOf('nextDataDomainReceiptRefreshTable'))
 assert(drain.includes("if (domain === 'ops')"))
 assert(drain.includes('run: () => runDataDomainShadowBackfillHttpStep(env'))
 assert(drain.includes('queued: false, runId: step.runId'))

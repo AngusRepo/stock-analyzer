@@ -4,6 +4,7 @@ import {
   classifyStorageAdmission,
   inspectStorageAdmission,
   isStorageAdmissionManagedTask,
+  storageAdmissionOwner,
 } from './storageAdmissionControl'
 
 function capacityDb(sizeAfter: number | null, error?: Error): D1Database {
@@ -40,6 +41,25 @@ test('managed tasks fail closed when capacity cannot be measured', async () => {
   assert.equal(decision.managed, true)
   assert.equal(decision.status, 'unknown')
   assert.equal(decision.reason, 'legacy_d1_capacity_unknown')
+})
+
+test('Learning-owned jobs probe Learning D1 after cutover and legacy before cutover', async () => {
+  const legacy = capacityDb(9_000_000_000)
+  const learning = capacityDb(2_000_000_000)
+  const active = await inspectStorageAdmission({
+    DB: legacy,
+    LEARNING_DB: learning,
+    MULTI_D1_ACTIVE_DOMAINS: 'learning',
+    MULTI_D1_STRICT: 'true',
+  }, 'weekly-backtest')
+  assert.equal(storageAdmissionOwner('weekly-backtest'), 'learning')
+  assert.equal(active.allowed, true)
+  assert.equal(active.utilizationPct, 20)
+
+  const legacyOwner = await inspectStorageAdmission({ DB: legacy, LEARNING_DB: learning }, 'weekly-backtest')
+  assert.equal(legacyOwner.allowed, false)
+  assert.equal(legacyOwner.utilizationPct, 90)
+  assert.equal(storageAdmissionOwner('legacy-evidence-migration'), 'legacy')
 })
 
 test('major admin writers have explicit drain or critical admission coverage', () => {

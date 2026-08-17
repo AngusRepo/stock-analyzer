@@ -1,4 +1,5 @@
 import type { Bindings } from '../types'
+import { databaseForDataDomain } from './dataDomainRegistry'
 
 const D1_MAX_BYTES = 10_000_000_000
 const DRAIN_UTILIZATION_PCT = 75
@@ -47,6 +48,42 @@ const CRITICAL_BLOCKED_TASKS = new Set([
   'monthly-allocator-ev-fusion-refresh',
   'monthly-opb-arm-prior-refresh',
 ])
+
+const LEARNING_OWNER_CAPACITY_TASKS = new Set([
+  'weekly-backtest',
+  'monte-carlo',
+  'pbo',
+  'allocator-ev-feature-snapshot-backfill',
+  'selection-reference-repair',
+  'selection-reference-identity-repair',
+  's12-smcvwap-calibration',
+  's12-research-recovery',
+  's12-replay-backfill',
+  'adaptive-meta-policy-replay',
+  'linucb-multiplier-replay',
+  'neural-ucb-shadow',
+  'neural-ts-shadow',
+  'neucb-shadow',
+  'weekly-drift-retrain',
+  'strategy-learning',
+  'strategy-learning-finalize',
+  'active8-oof-lifecycle',
+  'active8-oof-daily',
+  'active8-oof-weekly',
+  'active8-oof-monthly',
+  'monthly-retrain',
+  'retrain',
+  'l4-alpha-ev-refresh',
+  'allocator-ev-fusion-refresh',
+  'opb-arm-prior-refresh',
+  'monthly-l4-alpha-ev-refresh',
+  'monthly-allocator-ev-fusion-refresh',
+  'monthly-opb-arm-prior-refresh',
+])
+
+export function storageAdmissionOwner(task: string): 'legacy' | 'learning' {
+  return LEARNING_OWNER_CAPACITY_TASKS.has(task) ? 'learning' : 'legacy'
+}
 
 export interface StorageAdmissionDecision {
   allowed: boolean
@@ -112,11 +149,14 @@ export function classifyStorageAdmission(
 }
 
 export async function inspectStorageAdmission(
-  env: Pick<Bindings, 'DB'>,
+  env: Pick<Bindings, 'DB'> & Partial<Bindings>,
   task: string,
 ): Promise<StorageAdmissionDecision> {
   try {
-    const probe = await env.DB.prepare('SELECT 1 AS storage_admission_probe').all()
+    const db = storageAdmissionOwner(task) === 'learning'
+      ? databaseForDataDomain(env, 'learning')
+      : env.DB
+    const probe = await db.prepare('SELECT 1 AS storage_admission_probe').all()
     const usedBytes = Number(probe.meta?.size_after)
     const utilizationPct = Number.isFinite(usedBytes) && usedBytes >= 0
       ? Number(((usedBytes / D1_MAX_BYTES) * 100).toFixed(4))

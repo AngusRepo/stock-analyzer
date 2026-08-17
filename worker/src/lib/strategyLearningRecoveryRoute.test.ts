@@ -15,6 +15,7 @@ assert(start >= 0 && end > start, 'canonical strategy-learning resume route must
 assert(route.includes('X-Confirm-Strategy-Learning-Recovery'), 'resume must require an explicit recovery confirmation')
 assert(route.includes("run.status !== 'queued'"), 'resume must reject non-queued runs')
 assert(route.includes('Number(run.processed_candidates) > 0'), 'resume must reject new zero-progress runs')
+assert(route.includes('Number(run.processed_candidates) <= Number(run.expected_candidates)'), 'resume must allow a fully materialized queued run to enter its durable finalizer')
 assert(route.includes("stage='post_verify_chain'"), 'resume must require post-verify authority')
 assert(route.includes("authority?.status !== 'success'"), 'resume must require terminal successful post-verify')
 assert(route.includes('authority.canonical_run_id !== run.canonical_run_id'), 'resume must preserve the canonical run owner')

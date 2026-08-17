@@ -535,11 +535,13 @@ adminWriteRoutes.post('/api/admin/strategy-learning/resume', async (c) => {
     lease_owner: string | null
     lease_expires_at: string | null
   }>()
-  const incomplete = run
+  const recoverableProgress = run
     && Number(run.processed_candidates) > 0
-    && Number(run.processed_candidates) < Number(run.expected_candidates)
-    && Number(run.persisted_decision_rows) < Number(run.expected_decision_rows)
-  if (!run || run.status !== 'queued' || !incomplete || run.lease_owner || run.lease_expires_at) {
+    && Number(run.expected_candidates) > 0
+    && Number(run.processed_candidates) <= Number(run.expected_candidates)
+    && Number(run.expected_decision_rows) > 0
+    && Number(run.persisted_decision_rows) <= Number(run.expected_decision_rows)
+  if (!run || run.status !== 'queued' || !recoverableProgress || run.lease_owner || run.lease_expires_at) {
     return c.json({ error: `canonical_queued_strategy_learning_recovery_required:${date}`, run }, 409)
   }
 

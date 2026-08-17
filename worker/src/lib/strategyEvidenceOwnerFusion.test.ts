@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict'
-import { buildStrategyEvidenceOwnerSnapshot } from './strategyEvidenceOwnerFusion'
+import { buildStrategyEvidenceOwnerSnapshot, strategyEvidenceOwnerLineageMatches } from './strategyEvidenceOwnerFusion'
 import { DEFAULT_STRATEGY_SPECS } from './strategySpec'
 
 async function main(): Promise<void> {
@@ -31,6 +31,10 @@ const snapshot = await buildStrategyEvidenceOwnerSnapshot({
 })
 assert.equal(snapshot.integration_ready, true)
 assert.equal(snapshot.active_materialized_profile_count, 1)
+assert.equal(strategyEvidenceOwnerLineageMatches(snapshot, `adaptive|${snapshot.version}:${snapshot.checksum}`), true)
+assert.equal(strategyEvidenceOwnerLineageMatches(snapshot, `adaptive|${snapshot.version}:wrong`), false)
+assert.equal(strategyEvidenceOwnerLineageMatches(snapshot, null), false)
+
 assert.equal(snapshot.active_ready_profile_count, 0)
 assert.equal(snapshot.profiles[0]?.integration_status, 'materialized_learning')
 assert.equal(snapshot.weight_effect, 'mature_ready_only')

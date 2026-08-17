@@ -342,6 +342,19 @@ adminReadRoutes.get('/api/admin/strategy/evidence-profiles', async (c) => {
       created_at: string
     }>(),
   ])
+  const productionPolicy = await learningDb.prepare(`
+    SELECT base_weight_run_id, knowledge_cutoff_date, checksum, created_at
+      FROM strategy_production_policy_history_v1
+     WHERE status='active'
+     ORDER BY knowledge_cutoff_date DESC, created_at DESC
+     LIMIT 1
+  `).first<{
+    base_weight_run_id: string | null
+    knowledge_cutoff_date: string
+    checksum: string
+    created_at: string
+  }>().catch(() => null)
+
   const parseObject = (value: string | null | undefined): Record<string, unknown> => {
     try {
       const parsed = JSON.parse(String(value ?? '{}'))
@@ -384,7 +397,7 @@ adminReadRoutes.get('/api/admin/strategy/evidence-profiles', async (c) => {
       },
     }
   })
-  const { loadStrategyEvidenceOwnerSnapshotBefore } = await import('../lib/strategyEvidenceOwnerFusion')
+  const { loadStrategyEvidenceOwnerSnapshotBefore, strategyEvidenceOwnerLineageMatches } = await import('../lib/strategyEvidenceOwnerFusion')
   const evidenceOwnerSnapshot = await loadStrategyEvidenceOwnerSnapshotBefore(
     shadowLearningDb, runtimeSpecs, twToday(),
   )
@@ -409,13 +422,17 @@ adminReadRoutes.get('/api/admin/strategy/evidence-profiles', async (c) => {
     .filter((row) => row.metric_value != null && Number.isFinite(Number(row.metric_value)))
     .map((row) => row.metric_name))].sort()
   const missingMultiHorizonMetrics = requiredMultiHorizonMetrics.filter((metric) => !materializedMultiHorizonMetrics.includes(metric))
+  const formalOwnerIntegrated = completeHorizonCoverage
+    && evidenceOwnerSnapshot.integration_ready
+    && strategyEvidenceOwnerLineageMatches(evidenceOwnerSnapshot, productionPolicy?.base_weight_run_id)
+
   return c.json({
     success: true, mode: 'read_only', source,
     schema_version: STRATEGY_EVIDENCE_PROFILE_VERSION,
     runtime_strategy_count: runtimeSpecs.length,
     profile_count: profiles.length,
     complete: profiles.length === runtimeSpecs.length,
-    multi_horizon_authority: evidenceOwnerSnapshot.integration_ready ? 'formal_owner_input_ready' : 'shadow_only',
+    multi_horizon_authority: formalOwnerIntegrated ? 'formal_owner' : evidenceOwnerSnapshot.integration_ready ? 'formal_owner_input_ready' : 'shadow_only',
     multi_horizon_coverage: multiHorizonCoverage,
     lanes: {
       formal: {
@@ -444,9 +461,11 @@ adminReadRoutes.get('/api/admin/strategy/evidence-profiles', async (c) => {
         lane_id: 'strategy_multi_horizon_evidence_shadow',
         label: 'Shadow B：策略專屬 3／5／10 日證據',
         version: STRATEGY_EVIDENCE_PROFILE_VERSION,
-        status: evidenceOwnerSnapshot.integration_ready
-          ? 'owner_integration_ready'
-          : completeHorizonCoverage ? 'outcomes_ready_metrics_materializing' : 'materializing',
+        status: formalOwnerIntegrated
+          ? 'owner_integrated'
+          : evidenceOwnerSnapshot.integration_ready
+            ? 'owner_integration_ready'
+            : completeHorizonCoverage ? 'outcomes_ready_metrics_materializing' : 'materializing',
         as_of_date: metricAsOfDate,
         horizon_coverage: multiHorizonCoverage,
         ready_primary_profiles: primaryProfilesReady,
@@ -460,9 +479,10 @@ adminReadRoutes.get('/api/admin/strategy/evidence-profiles', async (c) => {
         metric_materialized_profiles: metricMaterializedProfiles,
         metric_ready_profiles: metricReadyProfiles,
         evidence_owner_snapshot: evidenceOwnerSnapshot,
-        integration_effect: 'status_aware_owner_input_ready',
-        production_effect: false,
-        authority: 'formal_owner_input_pending_policy_closure',
+        formal_policy_lineage: productionPolicy,
+        integration_effect: formalOwnerIntegrated ? 'status_aware_owner_input_active' : 'status_aware_owner_input_ready',
+        production_effect: formalOwnerIntegrated,
+        authority: formalOwnerIntegrated ? 'formal_owner' : 'formal_owner_input_pending_policy_closure',
       },
     },
     profiles: profilesWithMetrics,

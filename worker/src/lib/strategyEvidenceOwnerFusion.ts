@@ -135,3 +135,12 @@ export async function loadStrategyEvidenceOwnerSnapshotBefore(
     knowledgeCutoffDate,
   })
 }
+
+export function strategyEvidenceOwnerLineageMatches(
+  snapshot: StrategyEvidenceOwnerSnapshot,
+  baseWeightRunId: string | null | undefined,
+): boolean {
+  return snapshot.integration_ready
+    && Boolean(baseWeightRunId)
+    && String(baseWeightRunId).includes(`${snapshot.version}:${snapshot.checksum}`)
+}

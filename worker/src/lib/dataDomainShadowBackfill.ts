@@ -1701,18 +1701,24 @@ export async function backfillDataDomainTableShadow(
   )
   await upsertDomainRows(target, table, columns, primaryKeys, rows)
   const targetRows: Record<string, unknown>[] = []
+  const verifyStatements: D1PreparedStatement[] = []
   const exactKeyRowsPerStatement = domainBackfillExactKeyRowsPerStatement(primaryKeys.length)
   for (let offset = 0; offset < rows.length; offset += exactKeyRowsPerStatement) {
     const exactKeys = domainBackfillExactKeyWhere(
       primaryKeys,
       rows.slice(offset, offset + exactKeyRowsPerStatement),
     )
-    const verify = await target.prepare(`
+    verifyStatements.push(target.prepare(`
       SELECT ${columnSql} FROM ${identifier(table)}
        ${exactKeys.sql}
        ORDER BY ${order}
-    `).bind(...exactKeys.binds).all<Record<string, unknown>>()
-    targetRows.push(...(verify.results ?? []))
+    `).bind(...exactKeys.binds))
+  }
+  for (let offset = 0; offset < verifyStatements.length; offset += 50) {
+    const verified = await target.batch<Record<string, unknown>>(
+      verifyStatements.slice(offset, offset + 50),
+    )
+    for (const result of verified) targetRows.push(...(result.results ?? []))
   }
   const sourceChecksum = await checksumRows(rows, columns)
   const targetChecksum = await checksumRows(targetRows, columns)

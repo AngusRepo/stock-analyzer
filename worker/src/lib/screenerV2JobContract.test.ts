@@ -55,7 +55,9 @@ assert(
 
 assert(
   screenerJobMain.includes('const observedTaipeiDate = twToday()') &&
-    screenerJobMain.includes("runDate === observedTaipeiDate ? 'live_current' : 'historical_replay'") &&
+    screenerJobMain.includes("historicalLearningLineageDecision(env.DB, env.KV, 'screener-v2', runDate)") &&
+    screenerJobMain.includes('runDate === observedTaipeiDate || historicalBoundary?.allowed') &&
+    screenerJobMain.includes("? 'live_current' : 'historical_replay'") &&
     screenerJobMain.includes('runBottomUpScreener(env, runDate, { producerRunId: runId, evidenceMode })') &&
     screenerJobMain.includes('funnelRunByProducerId') &&
     screenerJobMain.includes('AND run_id = ?') &&

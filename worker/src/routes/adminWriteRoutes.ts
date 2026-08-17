@@ -635,8 +635,10 @@ adminWriteRoutes.post('/api/admin/strategy/evidence-v5/rebuild', async (c) => {
   const dryRun = body.dry_run !== false
   const { listHistoricalStrategyEvidenceV5Dates } = await import('../lib/strategyLearning')
 
+  const candidateDates = await listHistoricalStrategyEvidenceV5Dates(
+    databaseForDataDomain(c.env, 'learning'), { asOfDate, maxDates },
+  )
   if (dryRun) {
-    const candidateDates = await listHistoricalStrategyEvidenceV5Dates(databaseForDataDomain(c.env, 'learning'), { asOfDate, maxDates })
     return c.json({
       success: true,
       mode: 'dry_run',
@@ -653,21 +655,34 @@ adminWriteRoutes.post('/api/admin/strategy/evidence-v5/rebuild', async (c) => {
     }, 400)
   }
 
+  if (!candidateDates.length) {
+    return c.json({
+      success: true,
+      mode: 'already_complete',
+      as_of_date: asOfDate,
+      max_dates: maxDates,
+      queued_dates: [],
+      note: 'No eligible historical PIT evidence dates require rebuild.',
+    })
+  }
   const runId = `strategy-evidence-rebuild-${asOfDate}-${Date.now().toString(36)}`
-  await c.env.UPDATE_QUEUE.send({
-    type: 'strategy_evidence_rebuild',
-    cursor: 0,
-    triggerTime: asOfDate,
-    runId,
-    strategyEvidenceMaxDates: maxDates,
-  })
+  await c.env.UPDATE_QUEUE.sendBatch(candidateDates.map((signalDate) => ({
+    body: {
+      type: 'strategy_evidence_rebuild' as const,
+      cursor: 0,
+      triggerTime: signalDate,
+      runId: `${runId}:${signalDate}`,
+      strategyEvidenceMaxDates: 1,
+    },
+  })))
   return c.json({
     success: true,
     mode: 'queued',
     as_of_date: asOfDate,
     max_dates: maxDates,
     run_id: runId,
-    note: 'Historical PIT strategy evidence rebuild queued on the durable owner; evening-chain scheduler status is not mutated.',
+    queued_dates: candidateDates,
+    note: 'Each eligible historical PIT strategy evidence date was queued on the durable owner; evening-chain scheduler status is not mutated.',
   }, 202)
 })
 

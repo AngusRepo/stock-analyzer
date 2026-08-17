@@ -25,8 +25,6 @@ function explainBlocker(blocker: string) {
 
 export default function LearningCutoverPanel({ report }: { report?: DataDomainCutoverReadinessReport }) {
   const domain = report?.domains.find((item) => item.domain === 'learning')
-  const routingGates = Object.values(report?.routing_contract_gates ?? {})
-  const projectionGates = Object.values(report?.projection_contract_gates ?? {})
   const learningActive = report?.active_domains?.includes('learning') === true
   const completed = Number(domain?.completed_tables ?? 0)
   const owned = Number(domain?.owned_tables ?? 0)
@@ -70,8 +68,8 @@ export default function LearningCutoverPanel({ report }: { report?: DataDomainCu
             </div>
           ))}
           <div className="grid grid-cols-2 gap-2 text-xs">
-            <div className="rounded border border-[#263247] p-2 text-slate-400">Routing contract <span className="float-right sv-num text-slate-200">{routingGates.filter(Boolean).length}/{routingGates.length}</span></div>
-            <div className="rounded border border-[#263247] p-2 text-slate-400">Projection contract <span className="float-right sv-num text-slate-200">{projectionGates.filter(Boolean).length}/{projectionGates.length}</span></div>
+            <div className="rounded border border-[#263247] p-2 text-slate-400">Learning routing contract <span className="float-right text-slate-200">{domain?.routing_contract_ready ? '已 closure' : '未 closure'}</span></div>
+            <div className="rounded border border-[#263247] p-2 text-slate-400">Learning 跨域 contract <span className="float-right text-slate-200">{domain?.projection_contract_ready ? '已 closure' : '未 closure'}</span></div>
             <div className="rounded border border-[#263247] p-2 text-slate-400">Writer epoch <span className="float-right sv-num text-slate-200">{domain?.current_writer_epoch ?? 'N/A'}</span></div>
             <div className="rounded border border-[#263247] p-2 text-slate-400">Projection errors <span className="float-right sv-num text-slate-200">{domain?.projection_error_events ?? 'N/A'}</span></div>
           </div>

@@ -90,6 +90,9 @@ export type StrategyEvidenceMetricRow = {
 
 
 function finite(value: unknown): number | null {
+  if (value == null || (typeof value === 'string' && value.trim() === '')) {
+    return null
+  }
   const parsed = Number(value)
   return Number.isFinite(parsed) ? parsed : null
 }

@@ -111,18 +111,33 @@ function gateReasonLabel(reason: string): string {
 }
 
 const evidenceMetricLabels: Record<string, string> = {
-  residual_return_lcb90: '相對大盤報酬的 90% 保守下界',
-  rank_ic: '排名與未來報酬的一致性',
-  max_drawdown: '最大回撤',
-  turnover_after_cost: '扣成本後換手效率',
+  residual_return_lcb90: '相對適用基準 Alpha 的 90% 保守下界',
+  rank_ic: '策略分數與未來 Alpha 的排名一致性',
+  max_drawdown: '扣成本絕對報酬最大回撤',
+  turnover_after_cost: '每單位換手帶來的扣成本報酬',
   regime_consistency: '不同盤勢的一致性',
   false_breakout_rate: '假突破率',
   tail_loss_cvar95: '最差 5% 尾部損失',
   time_to_reversion: '回歸所需時間',
   maximum_adverse_excursion: '持有期間最大不利波動',
-  downside_capture: '大盤下跌時的承受幅度',
-  crowding_decay: '訊號擁擠後的衰退速度',
+  downside_capture: '適用基準下跌時的損失承受比',
+  crowding_decay: '高擁擠與低擁擠訊號的 Alpha 差',
   fundamental_revision_persistence: '基本面修正的延續性',
+}
+
+const evidenceMetricDescriptions: Record<string, string> = {
+  residual_return_lcb90: '已扣交易成本並扣除同產業／市場分群／大盤同期報酬；> 0 才是嚴格通過。負值是信心下界，不是平均 Alpha。',
+  rank_ic: '越接近 +1，策略分數越能把未來 Alpha 高低排對；0 代表沒有穩定排序能力。',
+  max_drawdown: '用每日扣成本絕對報酬複利計算；通常為負，越接近 0 越好。',
+  turnover_after_cost: '扣成本平均報酬 ÷ 單邊換手率；> 0 較好，避免靠頻繁交易製造紙上績效。',
+  regime_consistency: '檢查多頭、空頭、盤整是否都能維持效果；等待正式 PIT 盤勢切片。',
+  false_breakout_rate: '主要觀察週期扣成本報酬 <= 0 的比例；越低越好。',
+  tail_loss_cvar95: '最差 5% 樣本的平均扣成本報酬；通常為負，越接近 0 越好。',
+  time_to_reversion: '第一次出現正相對 Alpha 的離散週期；交易日越短越好。',
+  maximum_adverse_excursion: '持有期間曾經承受的最深浮虧；等待調整後的區間低點路徑。',
+  downside_capture: '基準下跌時，策略跌幅 ÷ 基準跌幅；低於 1 代表少跌。',
+  crowding_decay: '高重疊訊號 Alpha 減低重疊訊號 Alpha；負值代表越擁擠越衰退。',
+  fundamental_revision_persistence: '基本面上修是否能跨期延續；等待正式 PIT 修正序列。',
 }
 
 function evidenceMetricStatusLabel(status: string | undefined): string {
@@ -469,6 +484,7 @@ function StrategyLedgerGroup({
                       {' · '}目前有 {profile.available_outcome_horizon_days.join('／')} 日可用結果。
                     </p>
                     <p className="mt-1 text-[11px] text-cyan-100/70">指標已算出 {profile.metric_completion?.materialized ?? 0} / {profile.metric_completion?.total ?? profile.required_metrics.length}；樣本與成熟交易日都達標 {profile.metric_completion?.ready ?? 0} / {profile.metric_completion?.total ?? profile.required_metrics.length}。</p>
+                    <p className="mt-1 text-[11px] text-slate-500">「已成熟」只代表資料量足以判讀，不代表績效通過；請依各指標下方的好壞方向解讀。</p>
                     <div className="mt-2 flex flex-wrap gap-1.5">
                       {profile.required_metrics.map((metric) => {
                         const metricRow = profile.metric_evidence?.find((item) => item.metric === metric)
@@ -478,6 +494,7 @@ function StrategyLedgerGroup({
                           <span key={metric} className={`rounded-md border px-2 py-1 text-[11px] ${ready ? 'border-emerald-400/25 bg-emerald-400/[0.06] text-emerald-200' : pendingDependency ? 'border-amber-400/25 bg-amber-400/[0.06] text-amber-200' : 'border-cyan-400/20 bg-cyan-400/[0.04] text-cyan-200'}`}>
                             <span className="block">{evidenceMetricLabels[metric] ?? metric}</span>
                             <span className="mt-0.5 block font-mono text-[10px] opacity-75">{evidenceMetricStatusLabel(metricRow?.status)} · {evidenceMetricValue(metric, metricRow?.value)} · n={metricRow?.sample_count ?? 0} / {metricRow?.mature_dates ?? 0} 日</span>
+                            <span className="mt-1 block max-w-sm text-[10px] leading-4 text-slate-400">{evidenceMetricDescriptions[metric] ?? '此指標尚未提供白話定義。'}</span>
                           </span>
                         )
                       })}

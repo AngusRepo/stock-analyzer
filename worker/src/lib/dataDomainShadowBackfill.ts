@@ -121,6 +121,16 @@ export function domainBackfillResumeParityBatchLimit(
     : requestedParityLimit
 }
 
+export function shouldUseRollingDataDomainManifest(input: {
+  sourceRows: number
+  cursorStatus?: string | null
+  controlTableRolling: boolean
+}): boolean {
+  return input.controlTableRolling
+    || input.sourceRows > DATA_DOMAIN_FULL_CHECKSUM_LIMIT
+    || input.cursorStatus === 'complete'
+}
+
 export function domainBackfillFinalCountFenceBlockers(input: {
   expectedSourceRows: number
   expectedTargetRows: number
@@ -897,8 +907,8 @@ export async function backfillDataDomainTableShadow(
       ? await beginExpectedReturnPointerShadowGuard(env, target, options.parityNotBefore)
       : null
   const cursorRow = options.reset ? null : await env.DB.prepare(`
-    SELECT cursor_json FROM data_domain_backfill_cursors WHERE domain=? AND table_name=?
-  `).bind(domain, table).first<{ cursor_json?: string | null }>()
+    SELECT cursor_json, status FROM data_domain_backfill_cursors WHERE domain=? AND table_name=?
+  `).bind(domain, table).first<{ cursor_json?: string | null; status?: string | null }>()
   const cursor = parseDomainBackfillCursor(cursorRow?.cursor_json)
   const keyset = domainBackfillKeysetWhere(primaryKeys, cursor)
   const limit = dataDomainManifestPageLimit(table, domainBackfillBatchLimit(options.limit, table))
@@ -1095,7 +1105,11 @@ export async function backfillDataDomainTableShadow(
         table === 'expected_return_artifact_payloads'
         || table === 'model_champion_history'
       )
-    const useRollingManifest = controlTableRolling || sourceRows > fullChecksumLimit
+    const useRollingManifest = shouldUseRollingDataDomainManifest({
+      sourceRows,
+      cursorStatus: cursorRow?.status,
+      controlTableRolling,
+    })
     const columnSql = columns.map(identifier).join(", ")
     let sourceFullChecksum: string | null = null
     let targetFullChecksum: string | null = null

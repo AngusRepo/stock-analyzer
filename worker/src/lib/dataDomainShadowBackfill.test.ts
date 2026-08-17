@@ -15,6 +15,7 @@ import {
   isDomainShadowCopyComplete,
   isDomainShadowCutoverReady,
   parseDomainBackfillCursor,
+  shouldUseRollingDataDomainManifest,
 } from './dataDomainShadowBackfill'
 import {
   dataDomainParityCarryForwardBlockers,
@@ -69,6 +70,9 @@ assert.equal(domainBackfillParityBatchLimit(500), 4000)
 assert.equal(domainBackfillParityBatchLimit(50), 400)
 assert.equal(domainBackfillResumeParityBatchLimit(416000, 4000, 400), 400)
 assert.equal(domainBackfillResumeParityBatchLimit(0, 4000, 400), 400)
+assert.equal(shouldUseRollingDataDomainManifest({ sourceRows: 529, cursorStatus: 'complete', controlTableRolling: false }), true)
+assert.equal(shouldUseRollingDataDomainManifest({ sourceRows: 529, cursorStatus: 'running', controlTableRolling: false }), false)
+assert.equal(shouldUseRollingDataDomainManifest({ sourceRows: 1001, cursorStatus: 'running', controlTableRolling: false }), true)
 assert.equal(domainBackfillRowsPerStatement(13), 7)
 assert.equal(domainBackfillRowsPerStatement(3), 33)
 assert.equal(domainBackfillRowsPerStatement(100), 1)

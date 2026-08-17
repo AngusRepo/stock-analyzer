@@ -87,7 +87,11 @@ export async function domainBackfillRollingManifest(
 }
 
 export function domainBackfillBatchLimit(value?: number, table?: string): number {
-  const maximum = table === 'strategy_label_matrix_v4' ? 1000 : 500
+  const maximum = table === 'strategy_label_matrix_v4'
+    ? 1000
+    : table === 's12_structure_snapshots'
+      ? 100
+      : 500
   return Math.max(1, Math.min(Math.floor(value ?? 500), maximum))
 }
 

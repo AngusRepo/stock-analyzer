@@ -3695,6 +3695,7 @@ def finlab_v4_backfill(payload: dict) -> dict:
         "FINLAB_CONTROLLER_D1_BATCH_URL": payload.get("controller_d1_batch_url"),
         "FINLAB_CONTROLLER_TOKEN": payload.get("controller_token"),
         "ML_CONTROLLER_TOKEN": payload.get("controller_token"),
+        "CF_D1_MARKET_DB_ID": payload.get("cf_d1_market_db_id"),
     }
     for key, value in controller_env.items():
         if value:

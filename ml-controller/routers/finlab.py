@@ -191,6 +191,9 @@ def build_finlab_backfill_modal_payload(req: FinLabBackfillRunRequest) -> dict[s
         payload["controller_d1_batch_url"] = f"{controller_base_url}/finlab/backfill/d1/batch"
     if controller_token:
         payload["controller_token"] = controller_token
+    market_database_id = os.environ.get("CF_D1_MARKET_DB_ID", "").strip()
+    if market_database_id:
+        payload["cf_d1_market_db_id"] = market_database_id
     return payload
 
 

@@ -1,5 +1,6 @@
 import type { TaskHandler, TriggerDeps } from './adminTriggerTaskMap'
 import { databaseForDataDomain, shadowDatabaseForDataDomain } from './dataDomainRegistry'
+import type { DataDomain } from './dataDomainRegistry'
 import { runVerifyV2 } from './controllerWorkflows'
 import { twToday } from './dateUtils'
 import { runMorningWarmup } from './localMaintenance'
@@ -37,6 +38,15 @@ const AUDIT_JSON_NON_PAPER_TARGETS_DURING_PARITY_PROTECTION = [
   'strategy_decision_log', 'screener_funnel_items', 'canonical_screener_funnel_items',
 ]
 
+const CUTOVER_PROBE_DOMAINS = new Set<DataDomain>(['ops', 'execution', 'paper'])
+
+function resolveCutoverProbeDomain(rawDomain: string): DataDomain {
+  const domain = rawDomain.trim().toLowerCase() as DataDomain
+  if (!CUTOVER_PROBE_DOMAINS.has(domain)) {
+    throw new Error(`data_domain_cutover_probe_not_yet_closed:${domain || 'missing'}`)
+  }
+  return domain
+}
 export function normalizeAndValidateAuditJsonTargets(
   rawTargets: Array<string | null | undefined>,
   allowedTargets: readonly string[],
@@ -1143,12 +1153,9 @@ export function buildAdminWorkerDomainTaskMap(c: any, deps: TriggerDeps): Record
           + 'X-Confirm-Data-Domain-Writer-Epoch:true',
         )
       }
-      const requestedDomain = String(c.req.query('domain') ?? 'ops').trim().toLowerCase()
-      if (requestedDomain !== 'ops') {
-        throw new Error(`data_domain_writer_epoch_install_not_yet_closed:${requestedDomain}`)
-      }
+      const requestedDomain = resolveCutoverProbeDomain(String(c.req.query('domain') ?? 'ops'))
       const { installDataDomainWriterEpochTriggers } = await import('./dataDomainWriterEpoch')
-      const installed = await installDataDomainWriterEpochTriggers(c.env.DB, 'ops')
+      const installed = await installDataDomainWriterEpochTriggers(c.env.DB, requestedDomain)
       return `data_domain_writer_epoch_trigger_install ${JSON.stringify(installed)}`
     },
     'data-domain-cutover-probe': async () => {
@@ -1158,26 +1165,23 @@ export function buildAdminWorkerDomainTaskMap(c: any, deps: TriggerDeps): Record
           + 'X-Confirm-Data-Domain-Cutover-Probe:true',
         )
       }
-      const requestedDomain = String(c.req.query('domain') ?? 'ops').trim().toLowerCase()
-      if (requestedDomain !== 'ops') {
-        throw new Error(`data_domain_cutover_probe_not_yet_closed:${requestedDomain}`)
-      }
-      const opsDb = shadowDatabaseForDataDomain(c.env, 'ops')
-      if (!opsDb) throw new Error('data_domain_shadow_binding_missing:ops')
+      const requestedDomain = resolveCutoverProbeDomain(String(c.req.query('domain') ?? 'ops'))
+      const targetDb = shadowDatabaseForDataDomain(c.env, requestedDomain)
+      if (!targetDb) throw new Error(`data_domain_shadow_binding_missing:${requestedDomain}`)
       // multi-d1-intentional-legacy-source: canary binds the source authority receipt.
       const cutover = await c.env.DB.prepare(`
         SELECT status, parity_checked_at
           FROM data_domain_cutovers
-         WHERE domain='ops'
-      `).first() as { status?: string; parity_checked_at?: string } | null
+         WHERE domain=?
+      `).bind(requestedDomain).first() as { status?: string; parity_checked_at?: string } | null
       if (cutover?.status !== 'shadow') {
-        throw new Error(`data_domain_cutover_probe_shadow_required:ops:${cutover?.status ?? 'missing'}`)
+        throw new Error(`data_domain_cutover_probe_shadow_required:${requestedDomain}:${cutover?.status ?? 'missing'}`)
       }
       const { runDataDomainCutoverProbe } = await import('./dataDomainWriterEpoch')
       const receipt = await runDataDomainCutoverProbe({
         sourceDb: c.env.DB,
-        targetDb: opsDb,
-        domain: 'ops',
+        targetDb,
+        domain: requestedDomain,
         parityCheckedAt: String(cutover.parity_checked_at ?? ''),
       })
       return `data_domain_cutover_probe ${JSON.stringify(receipt)}`

@@ -25,6 +25,7 @@ const nextDomainSelector = drain.slice(
 
 assert(drain.includes("leaseGroup: 'd1_heavy_maintenance'"))
 assert.equal(dataDomainShadowBackfillQueueBatchLimit('predictions'), 200)
+assert.equal(dataDomainShadowBackfillQueueBatchLimit('s12_structure_snapshots'), 100)
 assert.equal(dataDomainShadowBackfillQueueBatchLimit('expected_return_artifact_payloads'), 50)
 assert.equal(dataDomainShadowBackfillQueueBatchLimit('strategy_label_matrix_v4'), 1000)
 assert.equal(dataDomainShadowBackfillQueueBatchLimit('stock_prices'), 500)

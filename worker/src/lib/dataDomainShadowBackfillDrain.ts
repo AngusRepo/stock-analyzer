@@ -71,6 +71,9 @@ export function dataDomainShadowBackfillQueueBatchLimit(table: string): number {
   if (table === 'predictions') {
     return 200
   }
+  if (table === 's12_structure_snapshots') {
+    return 100
+  }
   return NARROW_SHADOW_BACKFILL_TABLES.has(table)
     ? NARROW_SHADOW_BACKFILL_QUEUE_BATCH_LIMIT
     : SHADOW_BACKFILL_QUEUE_BATCH_LIMIT

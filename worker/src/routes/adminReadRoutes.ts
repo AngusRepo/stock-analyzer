@@ -245,7 +245,8 @@ adminReadRoutes.get('/api/admin/strategy/specs', async (c) => {
   const { listStrategySpecsForLearning } = await import('../lib/strategyLearning')
   const { validateStrategySpec } = await import('../lib/strategySpec')
   const { STRATEGY_OWNER_BOUNDARIES } = await import('../lib/strategyOwnerFreeze')
-  const { specs, source } = await listStrategySpecsForLearning(c.env.DB)
+  const learningDb = databaseForDataDomain(c.env, 'learning')
+  const { specs, source } = await listStrategySpecsForLearning(learningDb)
   return c.json({
     success: true,
     version: specs[0]?.version ?? 'strategy-spec-v1',
@@ -274,9 +275,10 @@ adminReadRoutes.get('/api/admin/strategy/evidence-profiles', async (c) => {
     import('../lib/dataDomainRegistry'),
     import('../lib/strategyRouteCalibration'),
   ])
-  const { specs, source } = await listStrategySpecsForLearning(c.env.DB)
+  const learningDb = databaseForDataDomain(c.env, 'learning')
+  const { specs, source } = await listStrategySpecsForLearning(learningDb)
   const runtimeSpecs = specs.filter((spec) => spec.status !== 'retired')
-  const shadowLearningDb = shadowDatabaseForDataDomain(c.env, 'learning') ?? c.env.DB
+  const shadowLearningDb = shadowDatabaseForDataDomain(c.env, 'learning') ?? learningDb
   const horizonRows = await shadowLearningDb.prepare(`
     SELECT horizon_days, COUNT(*) AS outcome_rows
       FROM canonical_selection_outcomes_v1
@@ -312,7 +314,7 @@ adminReadRoutes.get('/api/admin/strategy/evidence-profiles', async (c) => {
   ])].sort((left, right) => left - right)
   const profiles = listStrategyEvidenceProfiles(runtimeSpecs, { availableOutcomeHorizonDays })
   const [formalPolicy, routeCalibration] = await Promise.all([
-    c.env.DB.prepare(`
+    learningDb.prepare(`
       SELECT policy_id, version, status, knowledge_cutoff_date, evidence_json, created_at
         FROM strategy_adaptive_policy_history_v2
        WHERE status='active'
@@ -326,7 +328,7 @@ adminReadRoutes.get('/api/admin/strategy/evidence-profiles', async (c) => {
       evidence_json: string
       created_at: string
     }>(),
-    c.env.DB.prepare(`
+    learningDb.prepare(`
       SELECT run_id, as_of_date, status, date_count, gate_json, created_at
         FROM strategy_route_calibration_runs_v1
        ORDER BY as_of_date DESC, created_at DESC
@@ -474,7 +476,7 @@ adminReadRoutes.get('/api/admin/strategy/learning', async (c) => {
   return c.json({
     success: true,
     mode: 'read_only',
-    ...(await buildStrategyLearningSummary(c.env.DB, date)),
+    ...(await buildStrategyLearningSummary(databaseForDataDomain(c.env, 'learning'), date)),
   })
 })
 
@@ -484,12 +486,13 @@ adminReadRoutes.get('/api/admin/strategy/policy-state', async (c) => {
 
   const date = c.req.query('date') ?? twToday()
   const { buildStrategyLearningSummary, getLatestStrategyPolicyState } = await import('../lib/strategyLearning')
-  const summary = await buildStrategyLearningSummary(c.env.DB, date)
+  const learningDb = databaseForDataDomain(c.env, 'learning')
+  const summary = await buildStrategyLearningSummary(learningDb, date)
   return c.json({
     success: true,
     mode: 'read_only',
     date,
-    latest: await getLatestStrategyPolicyState(c.env.DB),
+    latest: await getLatestStrategyPolicyState(learningDb),
     preview: summary.policy_state_preview,
     promotion_gate: summary.promotion_gate,
   })

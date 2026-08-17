@@ -504,7 +504,7 @@ adminWriteRoutes.post('/api/admin/strategy-learning/resume', async (c) => {
   if (c.req.header('X-Confirm-Strategy-Learning-Recovery') !== 'true') {
     return c.json({
       error: 'Strategy learning recovery requires header X-Confirm-Strategy-Learning-Recovery: true',
-      hint: 'This only resumes an existing canonical queued run. It cannot create a run or mutate production policy.',
+      hint: 'This only resumes an existing canonical queued or expired-running run. It cannot create a run or mutate production policy.',
     }, 400)
   }
 
@@ -520,7 +520,8 @@ adminWriteRoutes.post('/api/admin/strategy-learning/resume', async (c) => {
   const run = await learningDb.prepare(`
     SELECT canonical_run_id, status, cursor_symbol, expected_candidates,
            processed_candidates, expected_decision_rows, persisted_decision_rows,
-           lease_owner, lease_expires_at
+           lease_owner, lease_expires_at,
+           CASE WHEN lease_expires_at IS NOT NULL AND lease_expires_at < CURRENT_TIMESTAMP THEN 1 ELSE 0 END lease_expired
       FROM strategy_learning_runs
      WHERE business_date=?
      LIMIT 1
@@ -534,6 +535,7 @@ adminWriteRoutes.post('/api/admin/strategy-learning/resume', async (c) => {
     persisted_decision_rows: number
     lease_owner: string | null
     lease_expires_at: string | null
+    lease_expired: number
   }>()
   const recoverableProgress = run
     && Number(run.processed_candidates) > 0
@@ -541,8 +543,12 @@ adminWriteRoutes.post('/api/admin/strategy-learning/resume', async (c) => {
     && Number(run.processed_candidates) <= Number(run.expected_candidates)
     && Number(run.expected_decision_rows) > 0
     && Number(run.persisted_decision_rows) <= Number(run.expected_decision_rows)
-  if (!run || run.status !== 'queued' || !recoverableProgress || run.lease_owner || run.lease_expires_at) {
-    return c.json({ error: `canonical_queued_strategy_learning_recovery_required:${date}`, run }, 409)
+  const recoverableLease = run && (
+    (run.status === 'queued' && !run.lease_owner && !run.lease_expires_at)
+    || (run.status === 'running' && Number(run.lease_expired) === 1)
+  )
+  if (!run || !recoverableLease || !recoverableProgress) {
+    return c.json({ error: `canonical_resumable_strategy_learning_recovery_required:${date}`, run }, 409)
   }
 
   const authority = await opsDb.prepare(`
@@ -567,7 +573,7 @@ adminWriteRoutes.post('/api/admin/strategy-learning/resume', async (c) => {
   })
   return c.json({
     success: true,
-    mode: 'canonical_resume_queued',
+    mode: run.status === 'running' ? 'canonical_resume_expired_running' : 'canonical_resume_queued',
     date,
     canonical_run_id: run.canonical_run_id,
     cursor_symbol: run.cursor_symbol,

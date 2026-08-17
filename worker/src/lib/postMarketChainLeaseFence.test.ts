@@ -2,7 +2,7 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 
 import { logChainedTask } from './postMarketChain'
-import { startPipelineStageLeaseHeartbeat } from './pipelineStageLease'
+import { heartbeatPipelineStageLease, startPipelineStageLeaseHeartbeat } from './pipelineStageLease'
 
 test('lost lease after a blocked task prevents observability and the next task', async () => {
   let active = true
@@ -58,4 +58,32 @@ test('pipeline heartbeat latches lease loss and every later boundary fails close
   assert.ok(heartbeat.leaseError())
   await assert.rejects(heartbeat.assertActive('later-boundary'), /pipeline_stage_lease_lost/)
   await heartbeat.stop()
+})
+
+test('pipeline heartbeat uses the returned target row instead of trigger-amplified change counts', async () => {
+  let sql = ''
+  const db = {
+    prepare(statement: string) {
+      sql = statement
+      return {
+        bind() {
+          return {
+            async first() {
+              return { business_date: '2026-08-14' }
+            },
+          }
+        },
+      }
+    },
+  } as unknown as D1Database
+
+  const renewed = await heartbeatPipelineStageLease(db, {
+    businessDate: '2026-08-14',
+    stage: 'post_pipeline_chain',
+    canonicalRunId: 'run-A',
+    leaseOwner: 'owner-A',
+  })
+
+  assert.equal(renewed, true)
+  assert.match(sql, /RETURNING business_date/)
 })

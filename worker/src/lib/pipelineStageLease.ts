@@ -184,20 +184,21 @@ export async function heartbeatPipelineStageLease(
   db: D1Database,
   input: PipelineStageLeaseIdentity & { leaseSeconds?: number },
 ): Promise<boolean> {
-  const result = await db.prepare(`
+  const renewed = await db.prepare(`
     UPDATE pipeline_stage_runs
        SET lease_expires_at=datetime('now', ?), updated_at=CURRENT_TIMESTAMP
      WHERE business_date=? AND stage=? AND canonical_run_id=?
        AND status='running' AND lease_owner=?
        AND lease_expires_at >= CURRENT_TIMESTAMP
+    RETURNING business_date
   `).bind(
     leaseModifier(input.leaseSeconds ?? PIPELINE_STAGE_LEASE_SECONDS),
     input.businessDate,
     input.stage,
     input.canonicalRunId,
     input.leaseOwner,
-  ).run()
-  return Number(result.meta?.changes ?? 0) === 1
+  ).first<{ business_date: string }>()
+  return Boolean(renewed)
 }
 
 type PipelineStageHeartbeatTimer = number

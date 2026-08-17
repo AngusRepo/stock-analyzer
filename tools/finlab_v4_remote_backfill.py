@@ -2983,7 +2983,11 @@ def materialize_canonical_to_d1(
     chunk_size: int = 250,
     dry_run: bool = False,
 ) -> dict[str, Any]:
-    from services.finlab_canonical_materializer import build_d1_upsert_statements, materialize_finlab_canonical_outputs
+    from services.finlab_canonical_materializer import (
+        build_d1_upsert_statements,
+        build_market_domain_insert_statements,
+        materialize_finlab_canonical_outputs,
+    )
 
     manifest_lanes = {
         str(dataset.get("lane") or "").strip()
@@ -3002,13 +3006,34 @@ def materialize_canonical_to_d1(
         include_emerging=include_emerging,
     )
     statements = build_d1_upsert_statements(outputs)
-    apply_result = {"total": len(statements), "success_count": 0, "error_count": 0, "changes_total": 0, "dry_run": True}
+    market_statements = build_market_domain_insert_statements(outputs)
+    apply_result = {"total": len(statements) + len(market_statements), "success_count": 0, "error_count": 0, "changes_total": 0, "dry_run": True}
+    writes_by_domain = {"legacy": len(statements), "market": len(market_statements)}
+    if not dry_run:
+        apply_result = {"total": 0, "success_count": 0, "error_count": 0, "changes_total": 0}
     if not dry_run and statements:
-        apply_result = controller_d1_batch_execute(statements, timeout=120.0, chunk_size=chunk_size)
-        if apply_result is None:
+        legacy_result = controller_d1_batch_execute(statements, timeout=120.0, chunk_size=chunk_size)
+        if legacy_result is None:
             from services.d1_client import batch_execute
 
-            apply_result = batch_execute(statements, timeout=120.0, chunk_size=chunk_size)
+            legacy_result = batch_execute(statements, timeout=120.0, chunk_size=chunk_size)
+        apply_result = dict(legacy_result)
+    if not dry_run and market_statements:
+        from services import d1_client
+        from services.d1_domain_client import D1DataDomain, shadow_database_id_for_domain
+
+        market_result = d1_client._raw_batch_execute(
+            market_statements,
+            timeout=120.0,
+            chunk_size=chunk_size,
+            database_id=shadow_database_id_for_domain(D1DataDomain.MARKET),
+        )
+        apply_result = {
+            "total": int(apply_result.get("total") or 0) + int(market_result.get("total") or 0),
+            "success_count": int(apply_result.get("success_count") or 0) + int(market_result.get("success_count") or 0),
+            "error_count": int(apply_result.get("error_count") or 0) + int(market_result.get("error_count") or 0),
+            "changes_total": int(apply_result.get("changes_total") or 0) + int(market_result.get("changes_total") or 0),
+        }
     return {
         "schema_version": "finlab-canonical-d1-apply-v1",
         "run_id": manifest["run_id"],
@@ -3018,7 +3043,8 @@ def materialize_canonical_to_d1(
         "end_date": end_date,
         "datasets": datasets,
         "row_counts": outputs.manifest.get("row_counts", {}),
-        "statement_count": len(statements),
+        "statement_count": len(statements) + len(market_statements),
+        "writes_by_domain": writes_by_domain,
         "apply_result": apply_result,
         "checksum": outputs.manifest.get("checksum"),
     }

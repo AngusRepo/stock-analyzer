@@ -158,6 +158,7 @@ const domainNativeLearningTables = [
 assert(domainNativeLearningTables.every((table) => tablesForDataDomain('learning').includes(table)))
 assert(domainNativeLearningTables.every((table) => tablesForDataDomainRouteReady('learning').includes(table)))
 assert(domainNativeLearningTables.every((table) => !tablesForDataDomainShadowBackfill('learning').includes(table)))
+assert(!tablesForDataDomainShadowBackfill('market').includes('canonical_revenue_observations_v2'))
 assert(tablesForDataDomain('ops').includes('price_horizon_projection_status_v2'))
 assert(tablesForDataDomainRouteReady('ops').includes('price_horizon_projection_status_v2'))
 assert(!tablesForDataDomainShadowBackfill('ops').includes('price_horizon_projection_status_v2'))

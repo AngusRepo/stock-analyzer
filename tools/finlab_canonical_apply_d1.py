@@ -12,6 +12,7 @@ sys.path.insert(0, str(ML_CONTROLLER))
 
 from services.finlab_canonical_materializer import (  # noqa: E402
     build_d1_upsert_statements,
+    build_market_domain_insert_statements,
     materialize_finlab_canonical_outputs,
 )
 
@@ -42,12 +43,14 @@ def main() -> int:
         datasets=datasets or None,
     )
     statements = build_d1_upsert_statements(outputs)
+    market_statements = build_market_domain_insert_statements(outputs)
     summary = {
         "mode": "apply" if args.apply else "dry_run",
         "run_id": outputs.run_id,
         "artifact_root": outputs.artifact_root,
         "row_counts": outputs.manifest["row_counts"],
-        "statement_count": len(statements),
+        "statement_count": len(statements) + len(market_statements),
+        "writes_by_domain": {"legacy": len(statements), "market": len(market_statements)},
         "checksum": outputs.manifest["checksum"],
     }
 
@@ -56,11 +59,26 @@ def main() -> int:
         return 0
 
     from services.d1_client import batch_execute  # noqa: WPS433
+    from services import d1_client  # noqa: WPS433
+    from services.d1_domain_client import D1DataDomain, shadow_database_id_for_domain  # noqa: WPS433
 
-    result = batch_execute(statements, chunk_size=args.chunk_size, timeout=60.0)
-    summary["d1_result"] = result
+    result = batch_execute(statements, chunk_size=args.chunk_size, timeout=60.0) if statements else {
+        "total": 0, "success_count": 0, "error_count": 0, "changes_total": 0,
+    }
+    market_result = d1_client._raw_batch_execute(
+        market_statements,
+        chunk_size=args.chunk_size,
+        timeout=60.0,
+        database_id=shadow_database_id_for_domain(D1DataDomain.MARKET),
+    ) if market_statements else {
+        "total": 0, "success_count": 0, "error_count": 0, "changes_total": 0,
+    }
+    summary["d1_result"] = {
+        "legacy": result,
+        "market": market_result,
+    }
     print(json.dumps(summary, ensure_ascii=False, sort_keys=True, default=str))
-    if int(result.get("error_count") or 0) > 0:
+    if int(result.get("error_count") or 0) > 0 or int(market_result.get("error_count") or 0) > 0:
         return 2
     return 0
 

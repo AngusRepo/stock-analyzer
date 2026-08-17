@@ -223,6 +223,10 @@ const SHADOW_BACKFILL_EXCLUDED_TABLES: Partial<Record<DataDomain, ReadonlySet<st
     'canonical_selection_outcomes_v1',
     'strategy_evidence_metrics_v1',
   ]),
+  market: new Set([
+    // Append-only knowledge-time rows start at domain creation; mutable legacy revenue cannot seed them.
+    'canonical_revenue_observations_v2',
+  ]),
   ops: new Set([
     'maintenance_task_leases',
     'data_domain_cutovers',

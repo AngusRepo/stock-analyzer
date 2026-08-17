@@ -16,6 +16,7 @@ sys.path.insert(0, str(ROOT / "ml-controller"))
 
 from services.finlab_canonical_materializer import (
     build_d1_upsert_statements,
+    build_market_domain_insert_statements,
     build_broker_rank_rows,
     build_emerging_broker_rows,
     build_fundamental_rows,
@@ -937,8 +938,12 @@ def test_materialize_outputs_can_apply_revenue_dataset_only() -> None:
     assert outputs.canonical_revenue_monthly[0]["knowledge_time"] == "2026-05-18T00:00:00+00:00"
     assert outputs.canonical_revenue_monthly[0]["payload_checksum"].startswith("sha256:")
     observation_sql = next(
-        sql for sql, _ in build_d1_upsert_statements(outputs)
+        sql for sql, _ in build_market_domain_insert_statements(outputs)
         if "INSERT INTO canonical_revenue_observations_v2" in sql
+    )
+    assert not any(
+        "INSERT INTO canonical_revenue_observations_v2" in sql
+        for sql, _ in build_d1_upsert_statements(outputs)
     )
     assert "ON CONFLICT(stock_id, revenue_month, source, payload_checksum) DO NOTHING" in observation_sql
     assert "knowledge_time" in observation_sql

@@ -732,7 +732,7 @@ export async function materializeStrategyEvidenceMetrics(
   const byStrategy = new Map<string, StrategyEvidenceObservation[]>()
   await attachFundamentalRevisionPersistence(
     observations,
-    databaseForDataDomain(env, 'market'),
+    shadowDatabaseForDataDomain(env, 'market') ?? databaseForDataDomain(env, 'market'),
     new Set(profiles.filter((profile) => profile.required_metrics.includes('fundamental_revision_persistence'))
       .map((profile) => `${profile.strategy_id}|${profile.strategy_version}`)),
     options.outcomeAsOfDate,

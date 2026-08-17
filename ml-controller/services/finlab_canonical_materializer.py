@@ -2669,32 +2669,6 @@ def build_d1_upsert_statements(outputs: FinLabCanonicalOutputs) -> list[tuple[st
         ],
     ))
     statements.extend(_row_statements(
-        "canonical_revenue_observations_v2",
-        outputs.canonical_revenue_monthly,
-        [
-            "stock_id",
-            "revenue_month",
-            "market_segment",
-            "revenue",
-            "previous_month_revenue",
-            "last_year_month_revenue",
-            "mom",
-            "yoy",
-            "cumulative_revenue",
-            "last_year_cumulative_revenue",
-            "previous_comparison_pct",
-            "source",
-            "lineage_json",
-            "source_as_of_date",
-            "knowledge_time",
-            "observation_run_id",
-            "payload_checksum",
-        ],
-        ["stock_id", "revenue_month", "source", "payload_checksum"],
-        [],
-        required_columns=["knowledge_time", "observation_run_id", "payload_checksum"],
-    ))
-    statements.extend(_row_statements(
         "canonical_fundamental_features",
         outputs.canonical_fundamental_features,
         [
@@ -2907,3 +2881,35 @@ def build_d1_upsert_statements(outputs: FinLabCanonicalOutputs) -> list[tuple[st
         ],
     ))
     return statements
+
+
+def build_market_domain_insert_statements(
+    outputs: FinLabCanonicalOutputs,
+) -> list[tuple[str, list[Any]]]:
+    """Build writes owned by the Market target and forbidden in legacy D1."""
+    return _row_statements(
+        "canonical_revenue_observations_v2",
+        outputs.canonical_revenue_monthly,
+        [
+            "stock_id",
+            "revenue_month",
+            "market_segment",
+            "revenue",
+            "previous_month_revenue",
+            "last_year_month_revenue",
+            "mom",
+            "yoy",
+            "cumulative_revenue",
+            "last_year_cumulative_revenue",
+            "previous_comparison_pct",
+            "source",
+            "lineage_json",
+            "source_as_of_date",
+            "knowledge_time",
+            "observation_run_id",
+            "payload_checksum",
+        ],
+        ["stock_id", "revenue_month", "source", "payload_checksum"],
+        [],
+        required_columns=["knowledge_time", "observation_run_id", "payload_checksum"],
+    )

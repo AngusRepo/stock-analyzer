@@ -130,14 +130,14 @@ const evidenceMetricDescriptions: Record<string, string> = {
   rank_ic: '越接近 +1，策略分數越能把未來 Alpha 高低排對；0 代表沒有穩定排序能力。',
   max_drawdown: '用每日扣成本絕對報酬複利計算；通常為負，越接近 0 越好。',
   turnover_after_cost: '扣成本平均報酬 ÷ 單邊換手率；> 0 較好，避免靠頻繁交易製造紙上績效。',
-  regime_consistency: '檢查多頭、空頭、盤整是否都能維持效果；等待正式 PIT 盤勢切片。',
+  regime_consistency: '使用訊號當下已記錄的 PIT 盤勢切片，取各支援盤勢 Alpha 90% 保守下界中的最差值；> 0 才算跨盤勢穩定。',
   false_breakout_rate: '主要觀察週期扣成本報酬 <= 0 的比例；越低越好。',
   tail_loss_cvar95: '最差 5% 樣本的平均扣成本報酬；通常為負，越接近 0 越好。',
   time_to_reversion: '第一次出現正相對 Alpha 的離散週期；交易日越短越好。',
-  maximum_adverse_excursion: '持有期間曾經承受的最深浮虧；等待調整後的區間低點路徑。',
+  maximum_adverse_excursion: '由正式 Market 價格的還原權息開盤與持有期間最低價計算最深浮虧；通常為負，越接近 0 越好。',
   downside_capture: '基準下跌時，策略跌幅 ÷ 基準跌幅；低於 1 代表少跌。',
   crowding_decay: '高重疊訊號 Alpha 減低重疊訊號 Alpha；負值代表越擁擠越衰退。',
-  fundamental_revision_persistence: '基本面上修是否能跨期延續；等待正式 PIT 修正序列。',
+  fundamental_revision_persistence: '由 append-only revenue observations 比較連續月份修正方向；+1 代表連續上修、-1 代表連續下修、0 代表方向未延續。',
 }
 
 function evidenceMetricStatusLabel(status: string | undefined): string {
@@ -145,7 +145,7 @@ function evidenceMetricStatusLabel(status: string | undefined): string {
     ready: '已成熟',
     insufficient_samples: '已算出，樣本累積中',
     dependency_pending: '等待正式資料依賴',
-    not_available: '目前無可計算資料',
+    not_available: '目前條件不足（原因見下方）',
     not_materialized: '尚未執行物化',
   }[status ?? 'not_materialized'] ?? String(status)
 }
@@ -157,6 +157,34 @@ function evidenceMetricValue(metric: string, value: number | null | undefined): 
     return Number(value).toFixed(3)
   }
   return pct(Number(value))
+}
+
+function evidenceMetricAvailabilityReason(metricRow: {
+  metric: string
+  status: string
+  sample_count: number
+  mature_dates: number
+  evidence: Record<string, unknown>
+} | undefined): string | null {
+  if (!metricRow || metricRow.status === 'ready') return null
+  const missing = String(metricRow.evidence?.missing_reason ?? '')
+  if (missing === 'fewer_than_two_supported_regimes_with_two_mature_dates') {
+    return '正式 PIT 盤勢已接通，但目前還沒有至少 2 種支援盤勢、且各自累積 2 個成熟交易日。'
+  }
+  if (missing === 'adjusted_price_path_unavailable') {
+    return metricRow.sample_count === 0
+      ? '目前觀察窗沒有策略命中，因此沒有持有路徑；不是價格資料依賴未物化。'
+      : '部分命中尚未對到完整的進場日至出場日還原權息價格路徑。'
+  }
+  if (missing === 'fewer_than_two_distinct_revenue_month_revision_pairs') {
+    return 'Append-only 月營收觀測已啟用；需至少 2 個不同月份各出現前後修正版，才能判斷修正是否延續。'
+  }
+  if (metricRow.metric === 'turnover_after_cost' && Number(metricRow.evidence?.average_one_way_turnover ?? 0) === 0) {
+    return '候選集合在目前成熟日期沒有變動，實測單邊周轉為 0，報酬 ÷ 周轉的分母無法成立。'
+  }
+  if (metricRow.sample_count === 0) return '策略在目前觀察窗沒有正式命中；這是零訊號，不是資料流中斷。'
+  if (metricRow.mature_dates < 2) return `已有 ${metricRow.sample_count} 筆，但只涵蓋 ${metricRow.mature_dates} 個成熟交易日，暫時無法估計穩定性。`
+  return `已取得 ${metricRow.sample_count} 筆／${metricRow.mature_dates} 個成熟交易日，仍未達正式成熟門檻。`
 }
 
 function bestReplacementDecision(
@@ -490,11 +518,13 @@ function StrategyLedgerGroup({
                         const metricRow = profile.metric_evidence?.find((item) => item.metric === metric)
                         const ready = metricRow?.status === 'ready'
                         const pendingDependency = metricRow?.status === 'dependency_pending'
+                        const availabilityReason = evidenceMetricAvailabilityReason(metricRow)
                         return (
                           <span key={metric} className={`rounded-md border px-2 py-1 text-[11px] ${ready ? 'border-emerald-400/25 bg-emerald-400/[0.06] text-emerald-200' : pendingDependency ? 'border-amber-400/25 bg-amber-400/[0.06] text-amber-200' : 'border-cyan-400/20 bg-cyan-400/[0.04] text-cyan-200'}`}>
                             <span className="block">{evidenceMetricLabels[metric] ?? metric}</span>
                             <span className="mt-0.5 block font-mono text-[10px] opacity-75">{evidenceMetricStatusLabel(metricRow?.status)} · {evidenceMetricValue(metric, metricRow?.value)} · n={metricRow?.sample_count ?? 0} / {metricRow?.mature_dates ?? 0} 日</span>
                             <span className="mt-1 block max-w-sm text-[10px] leading-4 text-slate-400">{evidenceMetricDescriptions[metric] ?? '此指標尚未提供白話定義。'}</span>
+                            {availabilityReason && <span className="mt-1 block max-w-sm text-[10px] leading-4 text-amber-200/80">原因：{availabilityReason}</span>}
                           </span>
                         )
                       })}

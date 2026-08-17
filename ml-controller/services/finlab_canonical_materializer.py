@@ -1627,7 +1627,17 @@ def build_revenue_rows(
         "lineage_json",
         "as_of_date",
     ])
-    return _rows(df, limit)
+    rows = _rows(df, limit)
+    for row in rows:
+        revision_payload = {
+            field: row.get(field)
+            for field in fields
+        }
+        row["source_as_of_date"] = row.get("as_of_date")
+        row["knowledge_time"] = generated_at
+        row["observation_run_id"] = run_id
+        row["payload_checksum"] = sha256_json(revision_payload)
+    return rows
 
 
 def build_fundamental_rows(
@@ -2307,9 +2317,12 @@ def _upsert_statement(
         values_clause = "VALUES " + ", ".join(
             placeholders for _ in range(max(1, rows_per_statement))
         )
+    conflict_action = (
+        f"DO UPDATE SET {update_sql}" if update_columns else "DO NOTHING"
+    )
     return (
         f"INSERT INTO {table} ({column_sql}) {values_clause} "
-        f"ON CONFLICT({conflict_sql}) DO UPDATE SET {update_sql}"
+        f"ON CONFLICT({conflict_sql}) {conflict_action}"
     )
 
 
@@ -2654,6 +2667,32 @@ def build_d1_upsert_statements(outputs: FinLabCanonicalOutputs) -> list[tuple[st
             "lineage_json",
             "as_of_date",
         ],
+    ))
+    statements.extend(_row_statements(
+        "canonical_revenue_observations_v2",
+        outputs.canonical_revenue_monthly,
+        [
+            "stock_id",
+            "revenue_month",
+            "market_segment",
+            "revenue",
+            "previous_month_revenue",
+            "last_year_month_revenue",
+            "mom",
+            "yoy",
+            "cumulative_revenue",
+            "last_year_cumulative_revenue",
+            "previous_comparison_pct",
+            "source",
+            "lineage_json",
+            "source_as_of_date",
+            "knowledge_time",
+            "observation_run_id",
+            "payload_checksum",
+        ],
+        ["stock_id", "revenue_month", "source", "payload_checksum"],
+        [],
+        required_columns=["knowledge_time", "observation_run_id", "payload_checksum"],
     ))
     statements.extend(_row_statements(
         "canonical_fundamental_features",

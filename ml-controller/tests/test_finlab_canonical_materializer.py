@@ -934,6 +934,14 @@ def test_materialize_outputs_can_apply_revenue_dataset_only() -> None:
     assert outputs.canonical_revenue_monthly[0]["previous_comparison_pct"] == 16.3
     assert outputs.source_quality_metrics[0]["dataset"] == "canonical_revenue_monthly"
     revenue_sql = next(sql for sql, _ in build_d1_upsert_statements(outputs) if "INSERT INTO canonical_revenue_monthly" in sql)
+    assert outputs.canonical_revenue_monthly[0]["knowledge_time"] == "2026-05-18T00:00:00+00:00"
+    assert outputs.canonical_revenue_monthly[0]["payload_checksum"].startswith("sha256:")
+    observation_sql = next(
+        sql for sql, _ in build_d1_upsert_statements(outputs)
+        if "INSERT INTO canonical_revenue_observations_v2" in sql
+    )
+    assert "ON CONFLICT(stock_id, revenue_month, source, payload_checksum) DO NOTHING" in observation_sql
+    assert "knowledge_time" in observation_sql
     assert "previous_month_revenue" in revenue_sql
     assert "last_year_cumulative_revenue" in revenue_sql
 

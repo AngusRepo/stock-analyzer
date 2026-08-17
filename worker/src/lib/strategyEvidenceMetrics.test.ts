@@ -4,6 +4,8 @@ import { buildStrategyEvidenceProfile } from './strategyEvidenceProfile'
 import {
   computeStrategyEvidenceMetricRows,
   joinStrategyEvidenceObservations,
+  fundamentalRevisionPersistenceAsOf,
+  maximumAdverseExcursionFromPricePath,
   STRATEGY_EVIDENCE_MIN_MATURE_DATES,
   STRATEGY_EVIDENCE_MIN_SAMPLES,
   type StrategyEvidenceObservation,
@@ -52,6 +54,8 @@ function observations(strategyId: string, strategyVersion: string, strategyStatu
           affinity: symbolIndex + 1,
           position_weight: 1 + ((day + symbolIndex) % 3),
           overlap: symbolIndex / 3,
+          market_regime: day % 2 === 0 ? 'sideways' : 'volatile',
+          maximum_adverse_excursion: -0.01 - symbolIndex * 0.001,
           horizon_days: horizon,
           outcome_known_date: `2026-08-${String(day + 1).padStart(2, '0')}`,
           absolute_return_net: benchmark + residual,
@@ -73,7 +77,7 @@ const trendRows = computeStrategyEvidenceMetricRows(
   '2026-08-16',
 )
 assert.equal(trendRows.length, trendProfile.required_metrics.length)
-assert.equal(trendRows.find((row) => row.metric_name === 'regime_consistency')?.metric_status, 'dependency_pending')
+assert.equal(trendRows.find((row) => row.metric_name === 'regime_consistency')?.metric_status, 'ready')
 for (const metric of ['residual_return_lcb90', 'rank_ic', 'max_drawdown', 'turnover_after_cost']) {
   const row = trendRows.find((item) => item.metric_name === metric)
   assert(row, `${metric} row must exist`)
@@ -92,8 +96,8 @@ const reversionRows = computeStrategyEvidenceMetricRows(
 )
 assert.equal(reversionRows.find((row) => row.metric_name === 'time_to_reversion')?.metric_status, 'ready')
 assert.equal(reversionRows.find((row) => row.metric_name === 'time_to_reversion')?.metric_value, 3)
-assert.equal(reversionRows.find((row) => row.metric_name === 'maximum_adverse_excursion')?.metric_status, 'dependency_pending')
-assert.equal(reversionRows.find((row) => row.metric_name === 'regime_consistency')?.metric_status, 'dependency_pending')
+assert.equal(reversionRows.find((row) => row.metric_name === 'maximum_adverse_excursion')?.metric_status, 'ready')
+assert.equal(reversionRows.find((row) => row.metric_name === 'regime_consistency')?.metric_status, 'ready')
 
 const defensive = DEFAULT_STRATEGY_SPECS.find((spec) => spec.id === 'defensive_accumulation_seed_v1')!
 const defensiveProfile = buildStrategyEvidenceProfile(defensive, { availableOutcomeHorizonDays: [3, 5, 10] })
@@ -111,5 +115,35 @@ const immatureRows = computeStrategyEvidenceMetricRows(
   '2026-08-16',
 )
 assert(immatureRows.some((row) => row.metric_status === 'insufficient_samples' || row.metric_status === 'not_available'))
+
+const zeroWeightRows = observations(trend.id, trend.version, trend.status, trend.alphaBucket)
+  .filter((row) => (
+    Number(row.signal_date.slice(-2)) % 2 === 0 ? row.symbol !== 'S3' : row.symbol !== 'S0'
+  ))
+  .map((row) => ({ ...row, position_weight: 0 }))
+const zeroWeightTurnover = computeStrategyEvidenceMetricRows(
+  trendProfile,
+  zeroWeightRows,
+  '2026-08-16',
+).find((row) => row.metric_name === 'turnover_after_cost')
+assert.notEqual(zeroWeightTurnover?.metric_value, null, 'zero-authority shadow weights must use equal-weight observation turnover')
+
+assert.equal(maximumAdverseExcursionFromPricePath([{
+  stock_id: 1, date: '2026-08-03', open: 100, low: 98, close: 100, adj_close: 50,
+}, {
+  stock_id: 1, date: '2026-08-04', open: 99, low: 90, close: 100, adj_close: 50,
+}, {
+  stock_id: 1, date: '2026-08-05', open: 95, low: 92, close: 100, adj_close: 50,
+}], '2026-08-03', '2026-08-05'), -0.1)
+assert.equal(fundamentalRevisionPersistenceAsOf([
+  { stock_id: '2330', revenue_month: '2026-05-01', yoy: 10, previous_comparison_pct: null, knowledge_time: '2026-06-10T00:00:00.000Z', payload_checksum: 'a' },
+  { stock_id: '2330', revenue_month: '2026-05-01', yoy: 12, previous_comparison_pct: null, knowledge_time: '2026-06-20T00:00:00.000Z', payload_checksum: 'b' },
+  { stock_id: '2330', revenue_month: '2026-06-01', yoy: 11, previous_comparison_pct: null, knowledge_time: '2026-07-10T00:00:00.000Z', payload_checksum: 'c' },
+  { stock_id: '2330', revenue_month: '2026-06-01', yoy: 13, previous_comparison_pct: null, knowledge_time: '2026-07-20T00:00:00.000Z', payload_checksum: 'd' },
+], '2026-07-31'), 1)
+assert.equal(fundamentalRevisionPersistenceAsOf([
+  { stock_id: '2330', revenue_month: '2026-05-01', yoy: 10, previous_comparison_pct: null, knowledge_time: '2026-06-10T00:00:00.000Z', payload_checksum: 'a' },
+  { stock_id: '2330', revenue_month: '2026-05-01', yoy: 12, previous_comparison_pct: null, knowledge_time: '2026-06-20T00:00:00.000Z', payload_checksum: 'b' },
+], '2026-07-31'), null)
 
 console.log('strategy evidence metrics tests passed')

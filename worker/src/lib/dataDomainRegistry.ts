@@ -48,6 +48,7 @@ const DOMAIN_TABLES: Record<DataDomain, ReadonlySet<string>> = {
   ]),
   market: new Set([
     'stock_prices', 'technical_indicators', 'financials', 'canonical_fundamental_features',
+    'canonical_revenue_observations_v2',
     'chip_data', 'news', 'factor_scores', 'sector_flow', 'market_breadth',
     'market_trading_sessions', 'intraday_minute_bars',
     'sector_taxonomy_membership_snapshots_v1', 'sector_taxonomy_snapshot_runs_v1',

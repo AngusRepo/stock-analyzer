@@ -267,10 +267,12 @@ adminReadRoutes.get('/api/admin/strategy/evidence-profiles', async (c) => {
       STRATEGY_EVIDENCE_PROFILE_VERSION,
     },
     { shadowDatabaseForDataDomain },
+    { STRATEGY_ROUTE_MIN_TOTAL_DATES },
   ] = await Promise.all([
     import('../lib/strategyLearning'),
     import('../lib/strategyEvidenceProfile'),
     import('../lib/dataDomainRegistry'),
+    import('../lib/strategyRouteCalibration'),
   ])
   const { specs, source } = await listStrategySpecsForLearning(c.env.DB)
   const runtimeSpecs = specs.filter((spec) => spec.status !== 'retired')
@@ -289,6 +291,53 @@ adminReadRoutes.get('/api/admin/strategy/evidence-profiles', async (c) => {
     ...multiHorizonCoverage.map((row) => row.horizon_days),
   ])].sort((left, right) => left - right)
   const profiles = listStrategyEvidenceProfiles(runtimeSpecs, { availableOutcomeHorizonDays })
+  const [formalPolicy, routeCalibration] = await Promise.all([
+    c.env.DB.prepare(`
+      SELECT policy_id, version, status, knowledge_cutoff_date, evidence_json, created_at
+        FROM strategy_adaptive_policy_history_v2
+       WHERE status='active'
+       ORDER BY knowledge_cutoff_date DESC, created_at DESC
+       LIMIT 1
+    `).first<{
+      policy_id: string
+      version: string
+      status: string
+      knowledge_cutoff_date: string
+      evidence_json: string
+      created_at: string
+    }>(),
+    c.env.DB.prepare(`
+      SELECT run_id, as_of_date, status, date_count, gate_json, created_at
+        FROM strategy_route_calibration_runs_v1
+       ORDER BY as_of_date DESC, created_at DESC
+       LIMIT 1
+    `).first<{
+      run_id: string
+      as_of_date: string
+      status: string
+      date_count: number
+      gate_json: string
+      created_at: string
+    }>(),
+  ])
+  const parseObject = (value: string | null | undefined): Record<string, unknown> => {
+    try {
+      const parsed = JSON.parse(String(value ?? '{}'))
+      return parsed && typeof parsed === 'object' && !Array.isArray(parsed)
+        ? parsed as Record<string, unknown>
+        : {}
+    } catch {
+      return {}
+    }
+  }
+  const formalEvidence = parseObject(formalPolicy?.evidence_json)
+  const routeDates = Number(routeCalibration?.date_count ?? 0)
+  const completeHorizonCoverage = [3, 5, 10].every((horizon) => (
+    multiHorizonCoverage.some((row) => row.horizon_days === horizon && row.outcome_rows > 0)
+  ))
+  const primaryProfilesReady = profiles.filter((profile) => (
+    profile.outcome_contract_status !== 'multi_horizon_pending'
+  )).length
   return c.json({
     success: true, mode: 'read_only', source,
     schema_version: STRATEGY_EVIDENCE_PROFILE_VERSION,
@@ -297,6 +346,44 @@ adminReadRoutes.get('/api/admin/strategy/evidence-profiles', async (c) => {
     complete: profiles.length === runtimeSpecs.length,
     multi_horizon_authority: 'shadow_only',
     multi_horizon_coverage: multiHorizonCoverage,
+    lanes: {
+      formal: {
+        lane_id: 'formal_adaptive_policy',
+        label: '正式策略政策',
+        version: formalPolicy?.version ?? null,
+        status: formalPolicy?.status ?? 'unavailable',
+        as_of_date: formalPolicy?.knowledge_cutoff_date ?? null,
+        production_effect: formalEvidence.production_effect === true,
+        authority: 'pending_buy_and_strategy_weights',
+      },
+      threshold_route_shadow: {
+        lane_id: 'strategy_threshold_route_shadow',
+        label: 'Shadow A：各策略門檻與路由',
+        version: 'strategy-threshold-margin-affinity-v2',
+        status: routeCalibration?.status ?? 'not_materialized',
+        as_of_date: routeCalibration?.as_of_date ?? null,
+        mature_dates: routeDates,
+        required_mature_dates: STRATEGY_ROUTE_MIN_TOTAL_DATES,
+        remaining_mature_dates: Math.max(0, STRATEGY_ROUTE_MIN_TOTAL_DATES - routeDates),
+        gate_results: parseObject(routeCalibration?.gate_json),
+        production_effect: false,
+        authority: 'comparison_only',
+      },
+      multi_horizon_shadow: {
+        lane_id: 'strategy_multi_horizon_evidence_shadow',
+        label: 'Shadow B：策略專屬 3／5／10 日證據',
+        version: STRATEGY_EVIDENCE_PROFILE_VERSION,
+        status: completeHorizonCoverage && primaryProfilesReady === profiles.length
+          ? 'evidence_available'
+          : 'materializing',
+        as_of_date: null,
+        horizon_coverage: multiHorizonCoverage,
+        ready_primary_profiles: primaryProfilesReady,
+        total_profiles: profiles.length,
+        production_effect: false,
+        authority: 'comparison_only',
+      },
+    },
     profiles,
   })
 })

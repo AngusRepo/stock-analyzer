@@ -3,7 +3,7 @@ import { Activity, Loader2, RefreshCw, ShieldCheck } from 'lucide-react'
 import AppShell from '@/components/AppShell'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
-import { strategyLabApi, type StrategyEvidenceProfile, type StrategyLearningResponse, type StrategyPromotionGate, type StrategyReplacementDecisionSummary, type StrategyReplacementGateSummary, type StrategySpec } from '@/lib/api'
+import { strategyLabApi, type StrategyEvidenceProfile, type StrategyEvidenceProfilesResponse, type StrategyLearningResponse, type StrategyPromotionGate, type StrategyReplacementDecisionSummary, type StrategyReplacementGateSummary, type StrategySpec } from '@/lib/api'
 
 type LearningRow = StrategyLearningResponse['specs'][number]
 
@@ -500,6 +500,7 @@ function StrategyLedgerGroup({
 export default function StrategyLearningPage() {
   const [learning, setLearning] = useState<StrategyLearningResponse | null>(null)
   const [profiles, setProfiles] = useState<StrategyEvidenceProfile[]>([])
+  const [strategyLanes, setStrategyLanes] = useState<StrategyEvidenceProfilesResponse['lanes'] | null>(null)
   const [rows, setRows] = useState<LearningRow[]>([])
   const [loading, setLoading] = useState(true)
   const [refreshing, setRefreshing] = useState(false)
@@ -519,7 +520,8 @@ export default function StrategyLearningPage() {
       ])
       const ledger = ledgerResult.status === 'fulfilled' ? ledgerResult.value : null
       const registry = registryResult.status === 'fulfilled' ? registryResult.value : null
-      const evidenceProfiles = profilesResult.status === 'fulfilled' ? profilesResult.value.profiles : []
+      const evidencePayload = profilesResult.status === 'fulfilled' ? profilesResult.value : null
+      const evidenceProfiles = evidencePayload?.profiles ?? []
       if (!ledger && !registry) {
         const ledgerError = ledgerResult.status === 'rejected' ? String(ledgerResult.reason) : 'unknown ledger error'
         const registryError = registryResult.status === 'rejected' ? String(registryResult.reason) : 'unknown registry error'
@@ -528,6 +530,7 @@ export default function StrategyLearningPage() {
 
       setLearning(ledger)
       setProfiles(evidenceProfiles)
+      setStrategyLanes(evidencePayload?.lanes ?? null)
       if (registry) {
         const ledgerById = new Map((ledger?.specs ?? []).map((row) => [`${row.id}:${row.version}`, row]))
         setRows(registry.specs.map((spec) => ledgerById.get(`${spec.id}:${spec.version}`) ?? registryLearningRow(spec)))
@@ -542,6 +545,7 @@ export default function StrategyLearningPage() {
     } catch (cause) {
       setLearning(null)
       setProfiles([])
+      setStrategyLanes(null)
       setRows([])
       setError(cause instanceof Error ? cause.message : 'Strategy APIs unavailable')
     } finally {
@@ -623,6 +627,22 @@ export default function StrategyLearningPage() {
               <div className="rounded-xl border border-slate-800 bg-slate-950/70 p-4"><div className="text-xs text-slate-500">持續接受評估的策略</div><div className="mt-2 font-mono text-2xl text-cyan-200">{visibleRows.length}</div><div className="mt-1 text-xs text-slate-500">共用同一條推薦／評估資料流；待買權重 0% 仍持續學習</div></div>
               <div className="rounded-xl border border-slate-800 bg-slate-950/70 p-4"><div className="text-xs text-slate-500">升級／續留勝率門檻</div><div className="mt-2 font-mono text-xl text-slate-100">52% / 48%</div><div className="mt-1 text-xs text-slate-500">候選策略至少 52%；現任策略至少 48%</div></div>
               <div className="rounded-xl border border-slate-800 bg-slate-950/70 p-4"><div className="text-xs text-slate-500">待買政策預覽</div><div className="mt-2 flex items-center gap-2 font-mono text-lg text-slate-100"><ShieldCheck className="h-4 w-4" /> {statusLabel(policy?.status ?? 'unavailable')}</div><div className="mt-1 text-xs text-slate-500">{policy?.evidence.production_effect ? '會影響待買資格' : '只做影子觀察'}；此頁只讀、不會直接改權重</div></div>
+            </section>
+
+            <section className="grid gap-3 lg:grid-cols-3">
+              <article className="rounded-2xl border border-emerald-400/25 bg-emerald-400/[0.06] p-4">
+                <div className="flex items-center justify-between gap-2"><h2 className="font-semibold text-emerald-100">正式：Adaptive policy</h2><Badge variant="outline" className={statusClass(strategyLanes?.formal.status ?? 'unavailable')}>{strategyLanes?.formal.production_effect ? '有 production 權限' : '權限資料未取得'}</Badge></div>
+                <p className="mt-2 text-xs leading-5 text-slate-400">目前唯一能改待買資格與策略相對權重的機制。版本 {strategyLanes?.formal.version ?? '資料尚未具備'}；證據截止 {strategyLanes?.formal.as_of_date ?? '資料尚未具備'}。</p>
+              </article>
+              <article className="rounded-2xl border border-cyan-400/25 bg-cyan-400/[0.06] p-4">
+                <div className="flex items-center justify-between gap-2"><h2 className="font-semibold text-cyan-100">Shadow A：各策略門檻／路由</h2><Badge variant="outline" className={statusClass(strategyLanes?.threshold_route_shadow.status ?? 'not_ready')}>只比較，不改 production</Badge></div>
+                <p className="mt-2 text-xs leading-5 text-slate-400">測試每個策略自己的命中門檻與送評路由。目前成熟交易日 <span className="font-mono text-cyan-100">{strategyLanes?.threshold_route_shadow.mature_dates ?? 0} / {strategyLanes?.threshold_route_shadow.required_mature_dates ?? 11}</span>；滿 11 日後仍須通過扣成本 LCB90、殘差優勢與校準誤差，才可申請取代。</p>
+              </article>
+              <article className="rounded-2xl border border-violet-400/25 bg-violet-400/[0.06] p-4">
+                <div className="flex items-center justify-between gap-2"><h2 className="font-semibold text-violet-100">Shadow B：3／5／10 日策略證據</h2><Badge variant="outline" className="border-violet-400/30 bg-violet-400/10 text-violet-200">只比較，不改 production</Badge></div>
+                <p className="mt-2 text-xs leading-5 text-slate-400">依策略型態使用 3、5 或 10 個交易日主週期，不再強迫全部策略共用 5 日。主週期已具資料的 profile：<span className="font-mono text-violet-100">{strategyLanes?.multi_horizon_shadow.ready_primary_profiles ?? 0} / {strategyLanes?.multi_horizon_shadow.total_profiles ?? profiles.length}</span>。</p>
+                <p className="mt-1 text-[11px] text-slate-500">物化筆數：{(strategyLanes?.multi_horizon_shadow.horizon_coverage ?? []).map((row) => `${row.horizon_days} 日 ${row.outcome_rows}`).join(' · ') || '尚未開始'}</p>
+              </article>
             </section>
 
             <details className="rounded-2xl border border-slate-700/80 bg-slate-950/70 px-4 py-3 text-sm text-slate-300">

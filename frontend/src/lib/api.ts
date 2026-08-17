@@ -629,6 +629,23 @@ export type StrategyEvidenceProfile = {
   production_authority: 'shadow_only'
 }
 
+export type StrategyEvidenceLane = {
+  lane_id: string
+  label: string
+  version: string | null
+  status: string
+  as_of_date: string | null
+  production_effect: boolean
+  authority: 'pending_buy_and_strategy_weights' | 'comparison_only'
+  mature_dates?: number
+  required_mature_dates?: number
+  remaining_mature_dates?: number
+  gate_results?: Record<string, unknown>
+  horizon_coverage?: Array<{ horizon_days: number; outcome_rows: number }>
+  ready_primary_profiles?: number
+  total_profiles?: number
+}
+
 export type StrategyEvidenceProfilesResponse = {
   success: boolean
   mode: 'read_only'
@@ -637,6 +654,13 @@ export type StrategyEvidenceProfilesResponse = {
   runtime_strategy_count: number
   profile_count: number
   complete: boolean
+  multi_horizon_authority: 'shadow_only'
+  multi_horizon_coverage: Array<{ horizon_days: number; outcome_rows: number }>
+  lanes: {
+    formal: StrategyEvidenceLane
+    threshold_route_shadow: StrategyEvidenceLane
+    multi_horizon_shadow: StrategyEvidenceLane
+  }
   profiles: StrategyEvidenceProfile[]
 }
 

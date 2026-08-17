@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict'
 import fs from 'node:fs'
 import {
+  dataDomainShadowBackfillQueueBatchLimit,
   resolveDataDomainShadowBackfillContinuation,
   resolveLatestEveningChainClosure,
   shouldContinueDataDomainGlobalSweep,
@@ -19,8 +20,11 @@ const nextDomainSelector = drain.slice(
 )
 
 assert(drain.includes("leaseGroup: 'd1_heavy_maintenance'"))
-assert(drain.includes('SHADOW_BACKFILL_QUEUE_BATCH_LIMIT = 50'))
-assert(drain.includes('limit: SHADOW_BACKFILL_QUEUE_BATCH_LIMIT'))
+assert.equal(dataDomainShadowBackfillQueueBatchLimit('predictions'), 50)
+assert.equal(dataDomainShadowBackfillQueueBatchLimit('expected_return_artifact_payloads'), 50)
+assert.equal(dataDomainShadowBackfillQueueBatchLimit('strategy_label_matrix_v4'), 500)
+assert.equal(dataDomainShadowBackfillQueueBatchLimit('stock_prices'), 500)
+assert(drain.includes('limit: dataDomainShadowBackfillQueueBatchLimit(table)'))
 assert(drain.includes('tablesForDataDomainShadowBackfill'))
 assert(drain.includes('msg.dataDomainRequestedTable'))
 assert(drain.includes('data_domain_shadow_backfill_scope_mismatch'))

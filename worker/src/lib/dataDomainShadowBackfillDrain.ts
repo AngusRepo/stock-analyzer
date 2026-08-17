@@ -46,6 +46,21 @@ const DEFAULT_MAX_ATTEMPTS = 5000
 const MAX_ATTEMPTS = 20_000
 const STALE_PROGRESS_MS = 5 * 60 * 1000
 const SHADOW_BACKFILL_QUEUE_BATCH_LIMIT = 50
+const NARROW_SHADOW_BACKFILL_QUEUE_BATCH_LIMIT = 500
+const NARROW_SHADOW_BACKFILL_TABLES = new Set([
+  'strategy_label_matrix_v4',
+  'selection_reference_snapshots_v1',
+  'stock_prices',
+  'technical_indicators',
+  'chip_data',
+  'financials',
+])
+
+export function dataDomainShadowBackfillQueueBatchLimit(table: string): number {
+  return NARROW_SHADOW_BACKFILL_TABLES.has(table)
+    ? NARROW_SHADOW_BACKFILL_QUEUE_BATCH_LIMIT
+    : SHADOW_BACKFILL_QUEUE_BATCH_LIMIT
+}
 
 type DataDomainShadowMutationAuthority = {
   domain: DataDomain
@@ -1086,7 +1101,7 @@ export async function runDataDomainShadowBackfillHttpStep(
   const result = await backfillDataDomainTableShadow(env, {
     domain: input.domain,
     table,
-    limit: input.limit ?? SHADOW_BACKFILL_QUEUE_BATCH_LIMIT,
+    limit: input.limit ?? dataDomainShadowBackfillQueueBatchLimit(table),
     parityNotBefore,
   })
   await env.KV.put(progressKey(input.domain), JSON.stringify({
@@ -1212,7 +1227,7 @@ export async function processDataDomainShadowBackfillDrain(
       run: () => backfillDataDomainTableShadow(env, {
         domain,
         table,
-        limit: SHADOW_BACKFILL_QUEUE_BATCH_LIMIT,
+        limit: dataDomainShadowBackfillQueueBatchLimit(table),
         parityNotBefore,
       }),
     })

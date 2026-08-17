@@ -128,58 +128,95 @@ async function loadCoverageRows(
 ): Promise<CoverageRow[]> {
   const output: CoverageRow[] = []
   for (const page of chunks(heads, HEAD_PAGE_SIZE)) {
-    const clauses = page.map(() => '(r.signal_date=? AND r.producer_run_id=?)').join(' OR ')
+    const targetRows = page.map(() => '(?, ?)').join(', ')
     const binds = page.flatMap((row) => [row.signal_date, row.run_id])
     const result = await db.prepare(`
-      WITH formal_runs AS (
-        SELECT producer_run_id, signal_date, expected_cell_count, persisted_cell_count, labeler_version
-          FROM strategy_label_matrix_runs_v4
-         WHERE status='ready' AND reference_contract_version=?
-           AND labeler_version IN (?, ?)
+      WITH target_heads(signal_date, producer_run_id) AS (
+        VALUES ${targetRows}
+      ),
+      formal_runs AS (
+        SELECT mr.producer_run_id, mr.signal_date, mr.expected_cell_count,
+               mr.persisted_cell_count, mr.labeler_version
+          FROM strategy_label_matrix_runs_v4 mr
+          JOIN target_heads t
+            ON t.signal_date=mr.signal_date
+           AND t.producer_run_id=mr.producer_run_id
+         WHERE mr.status='ready' AND mr.reference_contract_version=?
+           AND mr.labeler_version IN (?, ?)
+      ),
+      horizon AS (
+        SELECT DISTINCT p.price_date, p.stock_id
+          FROM price_horizon_labels_v1 p
+          JOIN target_heads t ON t.signal_date=p.price_date
+         WHERE p.projection_version=?
+      ),
+      horizon_rejections AS (
+        SELECT DISTINCT p.price_date, p.stock_id
+          FROM price_horizon_label_rejections_v1 p
+          JOIN target_heads t ON t.signal_date=p.price_date
+         WHERE p.projection_version=?
+      ),
+      labels AS (
+        SELECT DISTINCT l.signal_date, l.symbol, l.producer_run_id
+          FROM canonical_selection_labels_v4 l
+          JOIN target_heads t
+            ON t.signal_date=l.signal_date
+           AND t.producer_run_id=l.producer_run_id
+         WHERE l.label_schema_version=? AND l.reference_contract_version=?
+      ),
+      label_rejections AS (
+        SELECT DISTINCT x.signal_date, x.symbol, x.producer_run_id
+          FROM canonical_selection_label_rejections_v4 x
+          JOIN target_heads t
+            ON t.signal_date=x.signal_date
+           AND t.producer_run_id=x.producer_run_id
+      ),
+      matrix_counts AS (
+        SELECT m.signal_date, m.producer_run_id, m.labeler_version, COUNT(*) matrix_rows
+          FROM strategy_label_matrix_v4 m
+          JOIN target_heads t
+            ON t.signal_date=m.signal_date
+           AND t.producer_run_id=m.producer_run_id
+         GROUP BY m.signal_date, m.producer_run_id, m.labeler_version
       )
       SELECT r.signal_date, r.producer_run_id,
              COUNT(*) reference_rows,
              SUM(CASE WHEN r.stock_id IS NOT NULL THEN 1 ELSE 0 END) identity_rows,
-             SUM(CASE WHEN EXISTS (
-               SELECT 1 FROM price_horizon_labels_v1 p
-                WHERE p.price_date=r.signal_date AND p.stock_id=r.stock_id
-                  AND p.projection_version=?
-             ) THEN 1 ELSE 0 END) horizon_rows,
-             SUM(CASE WHEN EXISTS (
-               SELECT 1 FROM price_horizon_label_rejections_v1 p
-                WHERE p.price_date=r.signal_date AND p.stock_id=r.stock_id
-                  AND p.projection_version=?
-             ) THEN 1 ELSE 0 END) horizon_unavailable_rows,
-             SUM(CASE WHEN EXISTS (
-               SELECT 1 FROM canonical_selection_labels_v4 l
-                WHERE l.signal_date=r.signal_date AND l.symbol=r.symbol
-                  AND l.producer_run_id=r.producer_run_id
-                  AND l.label_schema_version=?
-                  AND l.reference_contract_version=?
-             ) THEN 1 ELSE 0 END) label_rows,
-             COALESCE((
-               SELECT COUNT(*) FROM strategy_label_matrix_v4 m
-                WHERE m.signal_date=r.signal_date AND m.producer_run_id=r.producer_run_id
-                 AND m.labeler_version=mr.labeler_version
-             ), 0) matrix_rows,
-             COALESCE(mr.expected_cell_count, 0) expected_matrix_rows,
-             COALESCE(mr.persisted_cell_count, 0) persisted_matrix_rows,
-             SUM(CASE WHEN EXISTS (
-               SELECT 1 FROM canonical_selection_label_rejections_v4 x
-                WHERE x.signal_date=r.signal_date AND x.symbol=r.symbol
-                  AND x.producer_run_id=r.producer_run_id
-             ) THEN 1 ELSE 0 END) label_unavailable_rows
+             SUM(CASE WHEN h.stock_id IS NOT NULL THEN 1 ELSE 0 END) horizon_rows,
+             SUM(CASE WHEN hr.stock_id IS NOT NULL THEN 1 ELSE 0 END) horizon_unavailable_rows,
+             SUM(CASE WHEN l.symbol IS NOT NULL THEN 1 ELSE 0 END) label_rows,
+             COALESCE(MAX(mc.matrix_rows), 0) matrix_rows,
+             COALESCE(MAX(mr.expected_cell_count), 0) expected_matrix_rows,
+             COALESCE(MAX(mr.persisted_cell_count), 0) persisted_matrix_rows,
+             SUM(CASE WHEN x.symbol IS NOT NULL THEN 1 ELSE 0 END) label_unavailable_rows
         FROM selection_reference_snapshots_v1 r
+        JOIN target_heads t
+          ON t.signal_date=r.signal_date
+         AND t.producer_run_id=r.producer_run_id
         JOIN formal_runs mr
           ON mr.signal_date=r.signal_date
          AND mr.producer_run_id=r.producer_run_id
          AND mr.labeler_version=r.strategy_labeler_version
+        LEFT JOIN horizon h
+          ON h.price_date=r.signal_date AND h.stock_id=r.stock_id
+        LEFT JOIN horizon_rejections hr
+          ON hr.price_date=r.signal_date AND hr.stock_id=r.stock_id
+        LEFT JOIN labels l
+          ON l.signal_date=r.signal_date AND l.symbol=r.symbol
+         AND l.producer_run_id=r.producer_run_id
+        LEFT JOIN label_rejections x
+          ON x.signal_date=r.signal_date AND x.symbol=r.symbol
+         AND x.producer_run_id=r.producer_run_id
+        LEFT JOIN matrix_counts mc
+          ON mc.signal_date=r.signal_date
+         AND mc.producer_run_id=r.producer_run_id
+         AND mc.labeler_version=mr.labeler_version
        WHERE r.hard_gate_passed=1
          AND r.feature_contract_version=?
-         AND (${clauses})
        GROUP BY r.signal_date, r.producer_run_id
        ORDER BY r.signal_date
     `).bind(
+      ...binds,
       SELECTION_REFERENCE_CONTRACT_VERSION,
       STRATEGY_FORMAL_LABELER_VERSION,
       STRATEGY_FORMAL_RECONSTRUCTION_LABELER_VERSION,
@@ -188,7 +225,6 @@ async function loadCoverageRows(
       CANONICAL_SELECTION_LABEL_SCHEMA_VERSION,
       SELECTION_REFERENCE_CONTRACT_VERSION,
       SELECTION_REFERENCE_CONTRACT_VERSION,
-      ...binds,
     ).all<CoverageRow>()
     output.push(...(result.results ?? []))
   }

@@ -2,6 +2,7 @@ import type { Bindings } from '../types'
 import { retainArtifactHardReference, writeEvidenceArtifact } from './artifactLifecycle'
 import { sha256Text } from './datasetSnapshots'
 import { checkpointLegacyMigration, loadLegacyMigrationCursor } from './legacyMigrationCursor'
+import { databaseForDataDomain } from './dataDomainRegistry'
 
 type LegacyStrategyDecisionRow = {
   decision_id: string
@@ -84,7 +85,7 @@ export async function runLegacyStrategyEvidenceMigration(
   }
   const cursorDate = cursor?.cursor_date ?? ''
   const cursorSymbol = cursor?.cursor_key ?? ''
-  const { results } = await env.DB.prepare(`
+  const { results } = await databaseForDataDomain(env, 'learning').prepare(`
     WITH candidate_contexts AS (
       SELECT date, symbol
         FROM strategy_decision_log
@@ -185,7 +186,7 @@ export async function runLegacyStrategyEvidenceMigration(
       const candidate = parseJsonObject(JSON.stringify(parsed?.candidate ?? null))
       const rawSignals = parseJsonObject(JSON.stringify(candidate?.raw_signals ?? null)) ?? {}
       if (parsed?.score_v2 !== undefined) rawSignals.score_v2 = parsed.score_v2
-      contextStatements.push(env.DB.prepare(`
+      contextStatements.push(databaseForDataDomain(env, 'learning').prepare(`
         INSERT OR IGNORE INTO strategy_candidate_contexts (
           context_id, date, symbol, context_hash, raw_signals_json,
           current_price, industry, artifact_id, r2_key, checksum, created_at
@@ -233,7 +234,7 @@ export async function runLegacyStrategyEvidenceMigration(
       })
       compactBlobBytes += new TextEncoder().encode(compactContext).length
       compactBlobBytes += new TextEncoder().encode(compactEvidence).length
-      updateStatements.push(env.DB.prepare(`
+      updateStatements.push(databaseForDataDomain(env, 'learning').prepare(`
         UPDATE strategy_decision_log
            SET context_json=?, evidence_json=?, context_id=?, evidence_artifact_id=?
          WHERE decision_id=?

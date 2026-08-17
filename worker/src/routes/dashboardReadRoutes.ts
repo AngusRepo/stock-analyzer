@@ -6,6 +6,7 @@ import type { Bindings, Variables } from '../types'
 import { buildDashboardV4ChartPacket } from '../lib/dashboardV4Contract'
 import { readMarketRegimeState } from '../lib/marketRegimeState'
 import { readV41DataRuntimeStatus } from '../lib/v41DataRuntime'
+import { databaseForDataDomain } from '../lib/dataDomainRegistry'
 
 export const dashboardReadRoutes = new Hono<{ Bindings: Bindings; Variables: Variables }>()
 
@@ -50,7 +51,7 @@ dashboardReadRoutes.get('/api/dashboard/v4/stocks/:id/chart', async (c) => {
     c.env.DB.prepare(
       'SELECT date, open, high, low, close, volume FROM stock_prices WHERE stock_id=? AND date>=? ORDER BY date',
     ).bind(id, since).all<any>().then((r) => r.results ?? []),
-    c.env.DB.prepare(`
+    databaseForDataDomain(c.env, 'learning').prepare(`
       SELECT prediction_date, generated_at, model_name, trade_signal, direction_accuracy
       FROM predictions
       WHERE stock_id=? AND prediction_date IS NOT NULL

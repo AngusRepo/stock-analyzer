@@ -24,6 +24,7 @@ import {
 } from './recommendationContext'
 import { buildL4SparseAllocationWatchPoint } from './l4SparseAllocationSizing'
 import type { Bindings } from '../types'
+import { databaseForDataDomain } from './dataDomainRegistry'
 import type { CircuitBreakerState as _CBState, LegacyLayerDeps } from './riskTypes'
 import {
   applyPendingBuyExecutionStatusUpdates,
@@ -817,10 +818,10 @@ export async function setupMorningPendingBuys(env: Bindings): Promise<void> {
              dr.eligible_for_ml, dr.eligible_for_pending_buy, dr.reason,
              dr.watch_points, dr.score_components, dr.alpha_allocation,
              s.market AS market,
-             p.entry_price AS ml_entry_price,
-             p.stop_loss AS ml_stop_loss,
-             p.target1 AS ml_target1,
-             p.target2 AS ml_target2,
+             NULL AS ml_entry_price,
+             NULL AS ml_stop_loss,
+             NULL AS ml_target1,
+             NULL AS ml_target2,
              (
                SELECT sp.close
                  FROM stock_prices sp
@@ -845,7 +846,7 @@ export async function setupMorningPendingBuys(env: Bindings): Promise<void> {
                 ORDER BY sp.date DESC
                 LIMIT 1
              ) AS latest_avg_price,
-             p.forecast_data AS forecast_data,
+             NULL AS forecast_data,
              CASE WHEN json_valid(dr.alpha_allocation) THEN
                COALESCE(
                  json_extract(dr.alpha_allocation, '$.engine'),
@@ -854,15 +855,6 @@ export async function setupMorningPendingBuys(env: Bindings): Promise<void> {
              ELSE NULL END AS signal_source
         FROM daily_recommendations dr
         LEFT JOIN stocks s ON s.symbol = dr.symbol
-        LEFT JOIN predictions p ON p.id = (
-          SELECT p2.id
-            FROM predictions p2
-           WHERE p2.stock_id = s.id
-             AND p2.model_name = 'ensemble'
-             AND p2.prediction_date IN (dr.date, ?)
-           ORDER BY p2.generated_at DESC, p2.id DESC
-           LIMIT 1
-       )
        WHERE dr.date = ?
          AND dr.eligible_for_pending_buy = 1
          AND COALESCE(dr.has_buy_signal, 0) = 1
@@ -885,12 +877,9 @@ export async function setupMorningPendingBuys(env: Bindings): Promise<void> {
              0
            ) ELSE 0 END DESC,
            dr.confidence DESC
-    `).bind(sourceRecoDate,
-      sourceRecoDate,
-    ).all<BuyRecommendationRow>())
+    `).bind(sourceRecoDate).all<BuyRecommendationRow>())
 
     const buyRecs = (results ?? []) as BuyRecommendationRow[]
-    applyRecommendationProvenance(buyRecs)
     const filterAudit = newFilterAuditSummary(buyRecs.length)
     if (buyRecs.length === 0) {
       await persistPendingBuys(env, pendingDate, [], {
@@ -904,6 +893,40 @@ export async function setupMorningPendingBuys(env: Bindings): Promise<void> {
     }
 
     const stockIds = [...new Set(buyRecs.map((rec) => Number(rec.stock_id)).filter((id) => Number.isFinite(id)))]
+    const learningDb = databaseForDataDomain(env, 'learning')
+    if (stockIds.length > 0) {
+      const placeholders = stockIds.map(() => '?').join(',')
+      const ensembleRows = await learningDb.prepare(`
+        SELECT stock_id, entry_price, stop_loss, target1, target2, forecast_data
+          FROM predictions
+         WHERE stock_id IN (${placeholders})
+           AND model_name = 'ensemble'
+           AND prediction_date IN (?, ?)
+         ORDER BY stock_id, generated_at DESC, id DESC
+      `).bind(...stockIds, pendingDate, sourceRecoDate).all<{
+        stock_id: number
+        entry_price: number | null
+        stop_loss: number | null
+        target1: number | null
+        target2: number | null
+        forecast_data: string | null
+      }>()
+      const latestByStock = new Map<number, NonNullable<typeof ensembleRows.results>[number]>()
+      for (const row of ensembleRows.results ?? []) {
+        if (!latestByStock.has(Number(row.stock_id))) latestByStock.set(Number(row.stock_id), row)
+      }
+      for (const rec of buyRecs) {
+        const prediction = latestByStock.get(Number(rec.stock_id))
+        if (!prediction) continue
+        rec.ml_entry_price = prediction.entry_price
+        rec.ml_stop_loss = prediction.stop_loss
+        rec.ml_target1 = prediction.target1
+        rec.ml_target2 = prediction.target2
+        rec.forecast_data = prediction.forecast_data
+      }
+    }
+    applyRecommendationProvenance(buyRecs)
+
     const ohlcvLevelsByStock = await batchLoadOhlcvTradePlanLevels(env.DB, stockIds, sourceRecoDate).catch((error) => {
       console.warn('[MorningSetup] OHLCV trade plan levels unavailable:', error)
       return new Map()
@@ -911,12 +934,12 @@ export async function setupMorningPendingBuys(env: Bindings): Promise<void> {
     const perModelByStock = new Map<number, PerModelPredictionRow[]>()
     if (stockIds.length > 0) {
       const placeholders = stockIds.map(() => '?').join(',')
-      const { results: perModelRows } = await env.DB.prepare(`
+      const { results: perModelRows } = await learningDb.prepare(`
         SELECT stock_id, model_name, signal_raw, direction_accuracy, forecast_data
           FROM predictions
          WHERE stock_id IN (${placeholders})
            AND model_name != 'ensemble'
-          AND instr(model_name, '::') = 0
+           AND instr(model_name, '::') = 0
            AND prediction_date IN (?, ?)
          ORDER BY stock_id, model_name, generated_at DESC
       `).bind(

@@ -1,11 +1,11 @@
 import {
   DATA_DOMAINS,
   MULTI_D1_PROJECTION_CONTRACT_GATES,
-  MULTI_D1_PROJECTION_CONTRACT_READY,
   MULTI_D1_ROUTING_CONTRACT_GATES,
-  MULTI_D1_STRICT_ROUTING_READY,
   tablesForDataDomainShadowBackfill,
   type DataDomain,
+  dataDomainProjectionContractReady,
+  dataDomainRoutingContractReady,
 } from './dataDomainRegistry'
 import {
   isAuthoritativeDataDomainFullTableParity,
@@ -264,8 +264,10 @@ export async function inspectDataDomainCutoverReadiness(
     }
 
     const contractBlockers: string[] = []
-    if (!MULTI_D1_STRICT_ROUTING_READY) contractBlockers.push('domain_access_router_not_closed')
-    if (!MULTI_D1_PROJECTION_CONTRACT_READY) contractBlockers.push('projection_contract_not_closed')
+    const domainRoutingReady = dataDomainRoutingContractReady(domain)
+    const domainProjectionReady = dataDomainProjectionContractReady(domain)
+    if (!domainRoutingReady) contractBlockers.push('domain_access_router_not_closed')
+    if (!domainProjectionReady) contractBlockers.push('projection_contract_not_closed')
     const probeEpoch = probe ? numeric(probe.source_epoch) : null
     const currentWriterEpoch = writerEpoch ? numeric(writerEpoch.epoch) : null
     if (probe?.status !== 'passed' || numeric(probe?.read_write_readback_passed) !== 1) {
@@ -297,8 +299,8 @@ export async function inspectDataDomainCutoverReadiness(
       cutover_status: cutoverStatus,
       aggregate_parity_checked_at: cutover?.parity_checked_at ?? null,
       required_parity_not_before: context.parityNotBefore ?? null,
-      routing_contract_ready: MULTI_D1_STRICT_ROUTING_READY,
-      projection_contract_ready: MULTI_D1_PROJECTION_CONTRACT_READY,
+      routing_contract_ready: domainRoutingReady,
+      projection_contract_ready: domainProjectionReady,
       cutover_probe_checked_at: probe?.checked_at ?? null,
       cutover_probe_epoch: probeEpoch,
       current_writer_epoch: currentWriterEpoch,
@@ -308,8 +310,7 @@ export async function inspectDataDomainCutoverReadiness(
 
   return {
     schema_version: 'data-domain-cutover-readiness-v2',
-    strict_enable_allowed: results.length === DATA_DOMAINS.length
-      && results.every((item) => item.cutover_ready),
+    strict_enable_allowed: results.every((item) => item.cutover_ready),
     routing_contract_gates: MULTI_D1_ROUTING_CONTRACT_GATES,
     projection_contract_gates: MULTI_D1_PROJECTION_CONTRACT_GATES,
     domains: results,

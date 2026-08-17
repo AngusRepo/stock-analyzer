@@ -2,6 +2,7 @@ import { Hono } from 'hono'
 import { twToday } from '../lib/dateUtils'
 import { requireServiceToken } from '../lib/auth'
 import type { Bindings, Variables } from '../types'
+import { databaseForDataDomain } from '../lib/dataDomainRegistry'
 
 export const adminConfigLifecycleRoutes = new Hono<{ Bindings: Bindings; Variables: Variables }>()
 
@@ -132,7 +133,7 @@ adminConfigLifecycleRoutes.post('/api/admin/config/challenger', async (c) => {
     note: body.note,
   })
 
-  await c.env.DB.prepare(
+  await databaseForDataDomain(c.env, 'learning').prepare(
     `INSERT INTO config_lifecycle_events
      (event_date, event_type, challenger_source, challenger_hash, detail)
      VALUES (?, ?, ?, ?, ?)`
@@ -176,7 +177,7 @@ adminConfigLifecycleRoutes.delete('/api/admin/config/challenger', async (c) => {
   await retireChallenger(c.env.KV)
 
   const reason = c.req.query('reason') || 'manual'
-  await c.env.DB.prepare(
+  await databaseForDataDomain(c.env, 'learning').prepare(
     `INSERT INTO config_lifecycle_events
      (event_date, event_type, challenger_source, challenger_hash, detail)
      VALUES (?, ?, ?, ?, ?)`
@@ -198,7 +199,7 @@ adminConfigLifecycleRoutes.get('/api/admin/config/challenger/state', async (c) =
   const authError = await requireServiceToken(c)
   if (authError) return authError
 
-  const row = await c.env.DB.prepare(
+  const row = await databaseForDataDomain(c.env, 'learning').prepare(
     `SELECT state_json, last_eval_json, updated_at FROM config_lifecycle_state WHERE id = 1`
   ).first<{ state_json: string; last_eval_json: string | null; updated_at: string }>()
 
@@ -221,7 +222,7 @@ adminConfigLifecycleRoutes.get('/api/admin/config/parameter-candidates', async (
   const { ensureParameterCandidateTables } = await import('../lib/parameterCandidateRegistry')
   await ensureParameterCandidateTables(c.env.DB)
   const limit = Math.max(1, Math.min(100, Number(c.req.query('limit')) || 50))
-  const rows = await c.env.DB.prepare(
+  const rows = await databaseForDataDomain(c.env, 'learning').prepare(
     `SELECT candidate_id, source, config_hash, sandbox_id, cadence, run_id, status,
             metadata_json, latest_evidence_json, promotion_packet_id, created_at, updated_at
      FROM parameter_candidate_registry
@@ -258,7 +259,7 @@ adminConfigLifecycleRoutes.post('/api/admin/config/challenger/eval_commit', asyn
 
   const now = new Date().toISOString()
 
-  await c.env.DB.prepare(
+  await databaseForDataDomain(c.env, 'learning').prepare(
     `INSERT INTO config_lifecycle_state (id, state_json, last_eval_json, updated_at)
      VALUES (1, ?, ?, ?)
      ON CONFLICT(id) DO UPDATE SET
@@ -271,7 +272,7 @@ adminConfigLifecycleRoutes.post('/api/admin/config/challenger/eval_commit', asyn
     now,
   ).run()
 
-  await c.env.DB.prepare(
+  await databaseForDataDomain(c.env, 'learning').prepare(
     `INSERT INTO config_lifecycle_events
      (event_date, event_type, challenger_source, champion_hash, challenger_hash,
       sharpe_delta, win_rate_delta, max_dd_delta, detail)
@@ -354,7 +355,7 @@ adminConfigLifecycleRoutes.post('/api/admin/config/challenger/promote_to_prod', 
 
   await retireChallenger(c.env.KV)
 
-  await c.env.DB.prepare(
+  await databaseForDataDomain(c.env, 'learning').prepare(
     `INSERT INTO config_lifecycle_events
      (event_date, event_type, challenger_source, challenger_hash, detail)
      VALUES (?, ?, ?, ?, ?)`
@@ -403,7 +404,7 @@ adminConfigLifecycleRoutes.get('/api/admin/config/challenger/events', async (c) 
   if (authError) return authError
 
   const limit = Math.max(1, Math.min(100, Number(c.req.query('limit')) || 20))
-  const rows = await c.env.DB.prepare(
+  const rows = await databaseForDataDomain(c.env, 'learning').prepare(
     `SELECT id, event_date, event_type, challenger_source, champion_hash, challenger_hash,
             sharpe_delta, win_rate_delta, max_dd_delta, detail, created_at
      FROM config_lifecycle_events ORDER BY id DESC LIMIT ?`

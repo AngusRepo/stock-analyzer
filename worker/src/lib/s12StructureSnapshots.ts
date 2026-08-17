@@ -1,3 +1,4 @@
+import { databaseForDataDomain } from './dataDomainRegistry'
 import type { S12IntradayAssessment } from './s12IntradayStructure'
 
 function finiteNumber(value: unknown): number | null {
@@ -83,7 +84,7 @@ export async function persistS12StructureSnapshot(
     positiveNumber(assessment.execution?.stopLoss)
   const entryContext = buildS12SnapshotEntryContext(assessment)
   try {
-    await env.DB.prepare(`
+    await databaseForDataDomain(env, 'learning').prepare(`
       INSERT INTO s12_structure_snapshots (
         trade_date, symbol, source, side, state, ready, invalidated, setup_id,
         entry_price, chase_ceiling, structure_stop,
@@ -181,7 +182,7 @@ export async function persistS12UnavailableStructureSnapshot(
   }
 
   try {
-    await env.DB.prepare(`
+    await databaseForDataDomain(env, 'learning').prepare(`
       INSERT INTO s12_structure_snapshots (
         trade_date, symbol, source, side, state, ready, invalidated,
         detail, entry_context_json, raw_json, pending_run_id, updated_at

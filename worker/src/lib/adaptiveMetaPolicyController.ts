@@ -1,5 +1,6 @@
 import type { Bindings } from '../types'
 import { getAdaptiveParams, setAdaptiveParams, type AdaptiveParams } from './adaptiveConfig'
+import { databaseForDataDomain } from './dataDomainRegistry'
 
 const STATE_KEY = 'meta:adaptive_policy_controller:state'
 const CONTROLLER_VERSION = 'adaptive-meta-policy-controller-v1'
@@ -238,7 +239,7 @@ async function writeDecisionStart(
   evidence: Record<string, any>,
   previousPolicyId: string | null,
 ): Promise<void> {
-  await env.DB.prepare(`
+  await databaseForDataDomain(env, 'learning').prepare(`
     INSERT INTO adaptive_meta_policy_decisions (
       decision_id, run_date, candidate_policy_id, method, decision, reason,
       phase, consecutive_passes, previous_policy_id, serving_policy_id,
@@ -261,7 +262,7 @@ async function writeDecisionStart(
 }
 
 async function finishDecision(env: Pick<Bindings, 'DB'>, decisionId: string, status: 'applied' | 'failed', error?: string): Promise<void> {
-  await env.DB.prepare(`
+  await databaseForDataDomain(env, 'learning').prepare(`
     UPDATE adaptive_meta_policy_decisions
        SET apply_status=?, apply_error=?, updated_at=CURRENT_TIMESTAMP
      WHERE decision_id=?

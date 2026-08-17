@@ -2081,21 +2081,23 @@ export const llm = new Hono<{ Bindings: Bindings; Variables: Variables }>()
 llm.use('/*', rateLimitMiddleware('llm'))
 
 // Helper: build snapshot + rich context from DB
-async function buildSnapshot(db: D1Database, stockId: number) {
+async function buildSnapshot(env: Bindings, stockId: number) {
+  const db = env.DB
+  const learningDb = databaseForDataDomain(env, 'learning')
   const [stock, latestPrice, latestInd, prediction, factor, risk,
          recentNews, marketRisk, modelAccuracy, stockMemories, recentPredictions] = await Promise.all([
     db.prepare('SELECT * FROM stocks WHERE id=?').bind(stockId).first<any>(),
     db.prepare('SELECT * FROM stock_prices WHERE stock_id=? ORDER BY date DESC LIMIT 1').bind(stockId).first<any>(),
     db.prepare('SELECT * FROM technical_indicators WHERE stock_id=? ORDER BY date DESC LIMIT 1').bind(stockId).first<any>(),
-    db.prepare('SELECT * FROM predictions WHERE stock_id=? ORDER BY generated_at DESC LIMIT 1').bind(stockId).first<any>(),
+    learningDb.prepare('SELECT * FROM predictions WHERE stock_id=? ORDER BY generated_at DESC LIMIT 1').bind(stockId).first<any>(),
     db.prepare('SELECT * FROM factor_scores WHERE stock_id=? ORDER BY date DESC LIMIT 1').bind(stockId).first<any>(),
     db.prepare("SELECT * FROM risk_metrics WHERE stock_id=? AND period='1y' ORDER BY calculated_at DESC LIMIT 1").bind(stockId).first<any>(),
     // rich context
     db.prepare("SELECT title, sentiment, published_at FROM news WHERE stock_id=? ORDER BY published_at DESC LIMIT 7").bind(stockId).all<any>(),
     db.prepare("SELECT risk_level, risk_score, risk_summary FROM market_risk ORDER BY date DESC LIMIT 1").all<any>(),
-    db.prepare("SELECT model_name, accuracy, total_count, period FROM model_accuracy WHERE stock_id=? AND period IN ('30d','all') ORDER BY period, model_name").bind(stockId).all<any>(),
+    learningDb.prepare("SELECT model_name, accuracy, total_count, period FROM model_accuracy WHERE stock_id=? AND period IN ('30d','all') ORDER BY period, model_name").bind(stockId).all<any>(),
     db.prepare("SELECT memory_type, content FROM stock_memories WHERE stock_id=? ORDER BY updated_at DESC LIMIT 5").bind(stockId).all<any>(),
-    db.prepare("SELECT trade_signal as signal, direction_correct, generated_at FROM predictions WHERE stock_id=? ORDER BY generated_at DESC LIMIT 5").bind(stockId).all<any>(),
+    learningDb.prepare("SELECT trade_signal as signal, direction_correct, generated_at FROM predictions WHERE stock_id=? ORDER BY generated_at DESC LIMIT 5").bind(stockId).all<any>(),
   ])
 
   if (!stock) return null
@@ -2149,7 +2151,7 @@ llm.post('/technical-analysis', authMiddleware, async (c) => {
   const cached = await c.env.KV.get(cacheKey)
   if (cached) return c.json({ analysis: cached, cached: true })
 
-  const result = await buildSnapshot(c.env.DB, stockId)
+  const result = await buildSnapshot(c.env, stockId)
   if (!result) return c.json({ error: '股票不存在' }, 404)
   const analysis = await generateTechnicalAnalysis(c.env.ANTHROPIC_API_KEY, result.snapshot, result.rich)
   await c.env.KV.put(cacheKey, analysis, { expirationTtl: 86400 })
@@ -2162,7 +2164,7 @@ llm.post('/trading-advice', authMiddleware, async (c) => {
   const cached = await c.env.KV.get(cacheKey)
   if (cached) return c.json({ advice: cached, cached: true })
 
-  const result = await buildSnapshot(c.env.DB, stockId)
+  const result = await buildSnapshot(c.env, stockId)
   if (!result) return c.json({ error: '股票不存在' }, 404)
   const advice = await generateTradingAdvice(c.env.ANTHROPIC_API_KEY, result.snapshot, result.rich)
   await c.env.KV.put(cacheKey, advice, { expirationTtl: 86400 })
@@ -2175,7 +2177,7 @@ llm.post('/analyst-summary', authMiddleware, async (c) => {
   const cached = await c.env.KV.get(cacheKey)
   if (cached) return c.json({ summary: cached, cached: true })
 
-  const result = await buildSnapshot(c.env.DB, stockId)
+  const result = await buildSnapshot(c.env, stockId)
   if (!result) return c.json({ error: '股票不存在' }, 404)
 
   const [latestFin, latestChip] = await Promise.all([
@@ -2195,7 +2197,7 @@ llm.post('/ask', authMiddleware, async (c) => {
   const { stockId, question, conversationHistory } = await c.req.json()
   if (!question?.trim()) return c.json({ error: '請輸入問題' }, 400)
 
-  const result = await buildSnapshot(c.env.DB, stockId)
+  const result = await buildSnapshot(c.env, stockId)
   if (!result) return c.json({ error: '股票不存在' }, 404)
 
   const [latestFin, latestChip] = await Promise.all([
@@ -2423,7 +2425,7 @@ ml.post('/predict/:stockId', async (c) => {
     c.env.DB.prepare('SELECT date, foreign_net, trust_net, dealer_net FROM chip_data WHERE symbol=? ORDER BY date DESC LIMIT 200').bind(stock.symbol).all<any>(),
     c.env.DB.prepare('SELECT date(published_at) as date, AVG(CASE sentiment WHEN \'positive\' THEN 1 WHEN \'negative\' THEN -1 ELSE 0 END) as score FROM news WHERE stock_id=? GROUP BY date(published_at) ORDER BY date DESC LIMIT 90').bind(stockId).all<any>(),
     // 各模型 30d 準確率（供 weighted_vote 動態加權）
-    c.env.DB.prepare("SELECT model_name, accuracy FROM model_accuracy WHERE stock_id=? AND period='30d'").bind(stockId).all<any>(),
+    databaseForDataDomain(c.env, 'learning').prepare("SELECT model_name, accuracy FROM model_accuracy WHERE stock_id=? AND period='30d'").bind(stockId).all<any>(),
     // 當前市場風險環境（供 HMM Regime / LinUCB bandit context）
     c.env.DB.prepare('SELECT risk_level, risk_score, twii_bias AS twii_bias_20d, twii_close FROM market_risk ORDER BY date DESC LIMIT 1').first<any>(),
   ])
@@ -2526,7 +2528,7 @@ ml.post('/predict/:stockId', async (c) => {
     // 儲存預測結果到 D1
     const d = data as any
     if (d.signal && d.forecasts) {
-      await c.env.DB.prepare(
+      await databaseForDataDomain(c.env, 'learning').prepare(
         `INSERT INTO predictions
          (stock_id, model_name, horizon, direction_accuracy, forecast_data, trade_signal, entry_price, stop_loss, target1, target2, best_model, created_at)
          VALUES (?, 'Ensemble', 14, ?, ?, ?, ?, ?, ?, ?, 1, datetime('now'))`
@@ -2560,7 +2562,7 @@ ml.get('/predict/:stockId', async (c) => {
   if (cached) return c.json(JSON.parse(cached))
 
   // 從 D1 取最新儲存的預測（model_name 存入時為 'ensemble' 小寫）
-  const row = await c.env.DB.prepare(
+  const row = await databaseForDataDomain(c.env, 'learning').prepare(
     `SELECT * FROM predictions WHERE stock_id=? AND model_name='ensemble' ORDER BY generated_at DESC LIMIT 1`
   ).bind(stockId).first<any>()
 
@@ -2926,7 +2928,7 @@ ml.get('/system-logs', async (c) => {
 ml.get('/trade-performance/:stockId', async (c) => {
   const stockId = parseId(c.req.param('stockId'))
   if (!stockId) return c.json({ error: '無效 ID' }, 400)
-  const { results } = await c.env.DB.prepare(`
+  const { results } = await databaseForDataDomain(c.env, 'learning').prepare(`
     SELECT tp.*,
            ma.accuracy, ma.profit_factor as acc_profit_factor
     FROM trade_performance tp
@@ -2940,7 +2942,7 @@ ml.get('/trade-performance/:stockId', async (c) => {
 
 ml.get('/trade-performance/global', async (c) => {
   // 全局績效統計（所有股票加總）
-  const { results } = await c.env.DB.prepare(`
+  const { results } = await databaseForDataDomain(c.env, 'learning').prepare(`
     SELECT model_name, period,
            SUM(total_trades)  as total_trades,
            SUM(win_trades)    as win_trades,
@@ -2962,7 +2964,7 @@ ml.get('/trade-history/:stockId', async (c) => {
   const stockId = parseId(c.req.param('stockId'))
   if (!stockId) return c.json({ error: '無效 ID' }, 400)
   const limit   = parsePosInt(c.req.query('limit'), 50)
-  const { results } = await c.env.DB.prepare(`
+  const { results } = await databaseForDataDomain(c.env, 'learning').prepare(`
     SELECT generated_at, model_name, trade_signal,
            predicted_direction, actual_direction, direction_correct,
            entry_price, stop_loss, target1, target2,
@@ -2981,7 +2983,7 @@ ml.get('/trade-history/:stockId', async (c) => {
 ml.get('/accuracy/:stockId', async (c) => {
   const stockId = parseId(c.req.param('stockId'))
   if (!stockId) return c.json({ error: '無效 ID' }, 400)
-  const { results } = await c.env.DB.prepare(`
+  const { results } = await databaseForDataDomain(c.env, 'learning').prepare(`
     SELECT model_name, accuracy, total_count, correct_count, avg_price_error, period, last_updated
     FROM model_accuracy
     WHERE stock_id=?
@@ -2992,7 +2994,7 @@ ml.get('/accuracy/:stockId', async (c) => {
 
 ml.get('/accuracy/global', async (c) => {
   // 跨所有股票的準確率統計
-  const { results } = await c.env.DB.prepare(`
+  const { results } = await databaseForDataDomain(c.env, 'learning').prepare(`
     SELECT model_name, period,
            SUM(total_count) as total, SUM(correct_count) as correct,
            ROUND(CAST(SUM(correct_count) AS REAL) / SUM(total_count), 3) as accuracy
@@ -3066,7 +3068,7 @@ system.get('/status', async (c) => {
     `).first<any>(),
     db.prepare('SELECT MAX(date) as d FROM chip_data').first<any>(),
     db.prepare('SELECT MAX(published_at) as d, COUNT(*) as cnt FROM news').first<any>(),
-    db.prepare('SELECT MAX(generated_at) as d FROM predictions').first<any>(),
+    databaseForDataDomain(c.env, 'learning').prepare('SELECT MAX(generated_at) as d FROM predictions').first<any>(),
     db.prepare('SELECT date, risk_level, risk_score, calculated_at FROM market_risk ORDER BY date DESC LIMIT 1').first<any>(),
     db.prepare('SELECT COUNT(*) as cnt FROM stocks WHERE in_current_watchlist=1').first<any>(),
     db.prepare('SELECT COUNT(*) as cnt FROM news').first<any>(),
@@ -3791,7 +3793,7 @@ recommendations.get('/daily', async (c) => {
   const requestedOrToday = requestedDate ?? new Date(Date.now() + 8 * 3600_000).toISOString().slice(0, 10)
   const cardDataAsOfDate = String(requestedOrToday)
   const { results } = await c.env.DB.prepare(`
-    SELECT r.*, s.market, p.forecast_data AS prediction_forecast_data,
+    SELECT r.*, s.market, NULL AS prediction_forecast_data,
            ROUND(COALESCE(r.foreign_net_5d, 0), 6) AS chip_cash_foreign_5d,
            ROUND(COALESCE(r.trust_net_5d, 0), 6) AS chip_cash_trust_5d,
            0 AS dealer_net_5d,
@@ -3879,15 +3881,6 @@ recommendations.get('/daily', async (c) => {
            ) AS latest_avg_price
     FROM daily_recommendations r
     LEFT JOIN stocks s ON s.id = r.stock_id
-    LEFT JOIN predictions p ON p.id = (
-      SELECT p2.id
-        FROM predictions p2
-       WHERE p2.stock_id = r.stock_id
-         AND p2.model_name = 'ensemble'
-         AND p2.prediction_date = r.date
-       ORDER BY p2.generated_at DESC, p2.id DESC
-       LIMIT 1
-    )
     WHERE r.date = ? AND ${FINAL_RECOMMENDATION_ROW_WHERE}
       AND COALESCE(r.recommendation_lane, '') != 'emerging_watchlist'
       AND UPPER(COALESCE(r.market_segment, s.market, '')) NOT IN ('EMERGING', 'ESB', 'ROTC')
@@ -4038,16 +4031,34 @@ recommendations.get('/daily', async (c) => {
   const perModelByStock = new Map<number, any[]>()
   if (stockIds.length > 0) {
     const placeholders = stockIds.map(() => '?').join(',')
-    const { results: perModelRows } = await c.env.DB.prepare(`
-      SELECT stock_id, model_name, signal_raw, direction_accuracy, forecast_data
-        FROM predictions
-       WHERE stock_id IN (${placeholders})
-         AND model_name != 'ensemble'
-         AND model_name NOT LIKE '%::challenger'
-         AND prediction_date = ?
-       ORDER BY stock_id, model_name
-    `).bind(...stockIds, date).all<any>().catch(() => ({ results: [] as any[] }))
-    for (const row of perModelRows ?? []) {
+    const learningDb = databaseForDataDomain(c.env, 'learning')
+    const [ensembleRows, perModelRows] = await Promise.all([
+      learningDb.prepare(`
+        SELECT stock_id, forecast_data
+          FROM predictions
+         WHERE stock_id IN (${placeholders})
+           AND model_name = 'ensemble'
+           AND prediction_date = ?
+         ORDER BY stock_id, generated_at DESC, id DESC
+      `).bind(...stockIds, date).all<any>().catch(() => ({ results: [] as any[] })),
+      learningDb.prepare(`
+        SELECT stock_id, model_name, signal_raw, direction_accuracy, forecast_data
+          FROM predictions
+         WHERE stock_id IN (${placeholders})
+           AND model_name != 'ensemble'
+           AND model_name NOT LIKE '%::challenger'
+           AND prediction_date = ?
+         ORDER BY stock_id, model_name
+      `).bind(...stockIds, date).all<any>().catch(() => ({ results: [] as any[] })),
+    ])
+    const ensembleByStock = new Map<number, any>()
+    for (const row of ensembleRows.results ?? []) {
+      if (!ensembleByStock.has(Number(row.stock_id))) ensembleByStock.set(Number(row.stock_id), row)
+    }
+    for (const row of results ?? []) {
+      row.prediction_forecast_data = ensembleByStock.get(Number(row.stock_id))?.forecast_data ?? null
+    }
+    for (const row of perModelRows.results ?? []) {
       const id = Number(row.stock_id)
       const list = perModelByStock.get(id) ?? []
       list.push(row)
@@ -4210,22 +4221,32 @@ recommendations.get('/daily', async (c) => {
 recommendations.get('/history', async (c) => {
   const days = Math.min(parsePosInt(c.req.query('days'), 7), 30)
   const { results } = await c.env.DB.prepare(`
-    SELECT r.date, r.symbol, r.name, r.sector, r.rank, r.score,
+    SELECT r.stock_id, r.date, r.symbol, r.name, r.sector, r.rank, r.score,
            r.score_components, r.ml_score, r.chip_score, r.tech_score,
            COALESCE(r.momentum_score, 0) AS momentum_score,
-           r.signal, r.confidence, r.has_buy_signal,
-           r.current_price,
-           -- 回測：推薦後實際表現（從 predictions 取）
-           p.actual_return_pct, p.direction_correct, p.trade_outcome
-    FROM daily_recommendations r
-    LEFT JOIN predictions p
-      ON p.stock_id = r.stock_id
-      AND p.model_name = 'ensemble'
-      AND p.prediction_date = r.date
-    WHERE r.date >= date('now', '-' || ? || ' days')
-    ORDER BY r.date DESC, r.rank ASC
+           r.signal, r.confidence, r.has_buy_signal, r.current_price
+      FROM daily_recommendations r
+     WHERE r.date >= date('now', '-' || ? || ' days')
+     ORDER BY r.date DESC, r.rank ASC
   `).bind(days).all<any>()
-  return c.json(results ?? [])
+  const predictionRows = await databaseForDataDomain(c.env, 'learning').prepare(`
+    SELECT stock_id, prediction_date, actual_return_pct, direction_correct, trade_outcome
+      FROM predictions
+     WHERE model_name = 'ensemble'
+       AND prediction_date >= date('now', '-' || ? || ' days')
+     ORDER BY generated_at DESC, id DESC
+  `).bind(days).all<any>().catch(() => ({ results: [] as any[] }))
+  const byKey = new Map<string, any>()
+  for (const row of predictionRows.results ?? []) {
+    const key = `${row.stock_id}|${row.prediction_date}`
+    if (!byKey.has(key)) byKey.set(key, row)
+  }
+  return c.json((results ?? []).map((row: any) => ({
+    ...row,
+    ...(byKey.get(`${row.stock_id}|${row.date}`) ?? {
+      actual_return_pct: null, direction_correct: null, trade_outcome: null,
+    }),
+  })))
 })
 
 // GET /api/recommendations/sector-flow?date=YYYY-MM-DD&type=industry|theme

@@ -978,7 +978,7 @@ async function readLatestValidationPackets(env: Bindings): Promise<{
 
 async function readLinUcbLedgerSummary(env: Bindings): Promise<Record<string, unknown>> {
   try {
-    const row = await env.DB.prepare(`
+    const row = await databaseForDataDomain(env, 'learning').prepare(`
       SELECT COUNT(*) AS ledger_rows,
              COUNT(DISTINCT arm_id) AS arm_count,
              COALESCE(SUM(samples), 0) AS total_samples,
@@ -1044,7 +1044,7 @@ async function readLatestMlThresholdPolicyEvidence(env: Bindings, date: string):
   error?: string
 }> {
   try {
-    const { results } = await env.DB.prepare(`
+    const { results } = await databaseForDataDomain(env, 'learning').prepare(`
       SELECT forecast_data
         FROM predictions
        WHERE prediction_date = ?

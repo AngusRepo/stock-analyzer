@@ -2030,7 +2030,7 @@ async function hasPipelineEvidence(env: Bindings, triggerTime: string): Promise<
   if (['running', 'triggered', 'success'].includes(String(pipelineLog?.status ?? ''))) return true
 
   try {
-    const prediction = await env.DB.prepare(`
+    const prediction = await databaseForDataDomain(env, 'learning').prepare(`
       SELECT id
         FROM predictions
        WHERE prediction_date = ?
@@ -4075,7 +4075,7 @@ export async function processUpdateBatch(
         console.warn(`[Queue] Fusion replay missing lifecycle generation date=${triggerTime} run_id=${runId}`)
         return
       }
-      const lifecycle = await env.DB.prepare(`SELECT upstream_run_id FROM allocator_ev_daily_lifecycle WHERE business_date=?`)
+      const lifecycle = await databaseForDataDomain(env, 'learning').prepare(`SELECT upstream_run_id FROM allocator_ev_daily_lifecycle WHERE business_date=?`)
         .bind(triggerTime).first<{ upstream_run_id?: string | null }>()
       if (String(lifecycle?.upstream_run_id ?? '') !== lifecycleRunId) {
         console.warn(`[Queue] Stale fusion replay ignored date=${triggerTime} incoming=${lifecycleRunId} canonical=${lifecycle?.upstream_run_id ?? 'missing'}`)

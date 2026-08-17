@@ -190,7 +190,7 @@ async function persistStrategyRedundancyArtifact(
     r2_key: evidenceManifest.r2_key,
     checksum: evidenceManifest.checksum,
   })
-  await env.DB.prepare(`
+  await databaseForDataDomain(env, 'learning').prepare(`
     INSERT INTO strategy_redundancy_artifacts_v1 (
       artifact_id, as_of_date, status, source_contract,
       strategy_count, paired_date_count, oof_max_date,
@@ -5761,7 +5761,7 @@ export async function analyzeMAE(env: Bindings): Promise<{
   }
   distribution: { bucket: string; winning: number; losing: number }[]
 }> {
-  const { results: trades } = await env.DB.prepare(`
+  const { results: trades } = await databaseForDataDomain(env, 'learning').prepare(`
     SELECT max_adverse_pct, actual_return_pct, trade_outcome
     FROM predictions
     WHERE max_adverse_pct IS NOT NULL AND actual_return_pct IS NOT NULL

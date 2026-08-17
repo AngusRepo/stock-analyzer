@@ -1,5 +1,6 @@
 import type { Bindings } from '../types'
 import type { ExpectedReturnOwner } from './expectedReturnServingState'
+import { databaseForDataDomain } from './dataDomainRegistry'
 
 type JsonRecord = Record<string, any>
 
@@ -372,7 +373,7 @@ export async function inspectExpectedReturnLifecycleHealth(
     if (!projection.valid) alerts.push(...projection.blockers.map((item) => `${owner}:${item}`))
     if (projection.serving_mode === 'abstention_baseline') warnings.push(`${owner}:alpha_champion_not_promoted`)
   }
-  const candidateRows = await env.DB.prepare(`
+  const candidateRows = await databaseForDataDomain(env, 'learning').prepare(`
     SELECT artifact_id, model_name, version, state, offline_gate_decision,
            offline_gate_failed_gates, source_run_date, updated_at
       FROM model_artifact_registry
@@ -397,7 +398,7 @@ export async function inspectExpectedReturnLifecycleHealth(
       alerts.push(`${owner}:production_candidate_not_champion_pointer`)
     }
   }
-  const maxRows = await env.DB.prepare(`
+  const maxRows = await databaseForDataDomain(env, 'learning').prepare(`
     SELECT current.artifact_kind,
            current.max_date
       FROM active8_oof_materialized_artifacts current
@@ -420,7 +421,7 @@ export async function inspectExpectedReturnLifecycleHealth(
     l4_predictions: null,
   }
   for (const row of maxRows.results ?? []) oofBaseMaxDates[row.artifact_kind] = row.max_date
-  const shadowRows = await env.DB.prepare(`
+  const shadowRows = await databaseForDataDomain(env, 'learning').prepare(`
     SELECT current.artifact_kind, MAX(current.max_date) AS max_date
       FROM active8_oof_forward_extension_coverage current
       JOIN active8_oof_cohorts cohort
@@ -458,7 +459,7 @@ export async function inspectExpectedReturnLifecycleHealth(
       .sort()
     oofMaxDates[kind] = candidates.at(-1) ?? null
   }
-  const sessions = await env.DB.prepare(`
+  const sessions = await databaseForDataDomain(env, 'market').prepare(`
     SELECT session_date
       FROM (
         SELECT DISTINCT date(date) AS session_date

@@ -2,6 +2,7 @@ import { getAdaptiveParams, setAdaptiveParams } from './adaptiveConfig'
 import { summarizeSellOrderLosses } from './paperOrderAccounting'
 import { refreshLinUcbRewardLedger } from './metaLearningRewardLedger'
 import { getTradingConfig } from './tradingConfig'
+import { databaseForDataDomain } from './dataDomainRegistry'
 
 interface AdaptiveEngineEnv {
   DB: D1Database
@@ -141,7 +142,7 @@ async function queryAdaptiveInputs(env: { DB: D1Database }) {
   ).first<{ risk_score: number; risk_level: string }>()
 
   const active8Placeholders = ACTIVE_8_MODELS.map(() => '?').join(', ')
-  const accGlobal = await env.DB.prepare(`
+  const accGlobal = await databaseForDataDomain(env, 'learning').prepare(`
     SELECT CAST(SUM(correct_count) AS REAL) / NULLIF(SUM(total_count), 0) AS avg_acc,
            SUM(total_count) AS sample_count,
            COUNT(DISTINCT model_name) AS model_count
@@ -150,7 +151,7 @@ async function queryAdaptiveInputs(env: { DB: D1Database }) {
       AND model_name IN (${active8Placeholders})
   `).bind(...ACTIVE_8_MODELS).first<{ avg_acc: number | null; sample_count: number | null; model_count: number | null }>()
 
-  const { results: rows30d } = await env.DB.prepare(`
+  const { results: rows30d } = await databaseForDataDomain(env, 'learning').prepare(`
     SELECT model_name,
            SUM(total_count) AS total_count,
            CAST(SUM(correct_count) AS REAL) / NULLIF(SUM(total_count), 0) AS accuracy,
@@ -163,7 +164,7 @@ async function queryAdaptiveInputs(env: { DB: D1Database }) {
     GROUP BY model_name
   `).bind(...ACTIVE_8_MODELS).all<any>().catch(() => ({ results: [] as any[] }))
 
-  const { results: rows90d } = await env.DB.prepare(`
+  const { results: rows90d } = await databaseForDataDomain(env, 'learning').prepare(`
     SELECT model_name,
            SUM(total_count) AS total_count,
            CAST(SUM(correct_count) AS REAL) / NULLIF(SUM(total_count), 0) AS accuracy,

@@ -793,7 +793,7 @@ adminWriteRoutes.post('/api/admin/strategy/production-policy/recover', async (c)
     }, 400)
   }
 
-  const closure = await c.env.DB.prepare(`
+  const closure = await databaseForDataDomain(c.env, 'learning').prepare(`
     SELECT status, labeler_version, evaluation_contract_version, candidate_count, strategy_count, matrix_rows
       FROM strategy_evidence_rebuild_runs_v5
      WHERE signal_date=?

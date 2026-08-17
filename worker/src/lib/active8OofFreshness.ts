@@ -1,3 +1,4 @@
+import { databaseForDataDomain } from './dataDomainRegistry'
 export type Active8OofFreshnessStatus = 'fresh' | 'failed' | 'missing'
 
 export interface Active8OofFreshnessAudit {
@@ -58,7 +59,7 @@ export async function persistActive8OofFreshnessAudit(env: any, input: {
     input.runId || input.runDate || 'unknown-run',
     input.attemptId || 'unknown-attempt',
   ].join(':')
-  await env.DB.prepare(`
+  await databaseForDataDomain(env, 'learning').prepare(`
     INSERT INTO active8_oof_freshness_sla (
       decision_key, task, run_id, attempt_id, run_date, cadence,
       status, reason, expected_max_date, effective_max_date,

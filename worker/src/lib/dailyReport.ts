@@ -9,6 +9,7 @@ import {
   type ScoreV2SnapshotSummary,
   type ScoreV2StorageRow,
 } from './scoreV2Taxonomy'
+import { databaseForDataDomain } from './dataDomainRegistry'
 
 function twDateToday(): string {
   return new Date(Date.now() + 8 * 3600_000).toISOString().slice(0, 10)
@@ -74,12 +75,24 @@ function directionLabel(direction: string | undefined): string {
 
 export async function generateDailyReport(env: Bindings): Promise<string> {
   const reportDate = twDateToday()
+  const learningDb = databaseForDataDomain(env, 'learning')
+  const coreDb = databaseForDataDomain(env, 'core')
+  const attachStockIdentity = async (rows: any[]): Promise<any[]> => {
+    const ids = [...new Set(rows.map((row) => Number(row.stock_id)).filter((id) => Number.isSafeInteger(id) && id > 0))]
+    if (!ids.length) return rows
+    const placeholders = ids.map(() => '?').join(',')
+    const stocks = await coreDb.prepare(
+      `SELECT id, symbol, name FROM stocks WHERE id IN (${placeholders})`,
+    ).bind(...ids).all<{ id: number; symbol: string; name: string }>()
+    const byId = new Map((stocks.results ?? []).map((stock) => [Number(stock.id), stock]))
+    return rows.map((row) => ({ ...row, ...(byId.get(Number(row.stock_id)) ?? {}) }))
+  }
   const embeds: DiscordEmbed[] = []
 
-  const risk = await env.DB.prepare(
+  const risk = await coreDb.prepare(
     'SELECT risk_level, risk_score, risk_summary FROM market_risk WHERE date=?',
   ).bind(reportDate).first<any>().catch(() => null)
-    ?? await env.DB.prepare(
+    ?? await coreDb.prepare(
       'SELECT risk_level, risk_score, risk_summary FROM market_risk ORDER BY date DESC LIMIT 1',
     ).first<any>()
 
@@ -100,7 +113,7 @@ export async function generateDailyReport(env: Bindings): Promise<string> {
     timestamp: new Date().toISOString(),
   })
 
-  const { results: signalCounts } = await env.DB.prepare(`
+  const { results: signalCounts } = await learningDb.prepare(`
     SELECT trade_signal, COUNT(*) AS cnt, ROUND(AVG(direction_accuracy), 3) AS avg_conf
       FROM predictions
      WHERE model_name='ensemble'
@@ -124,17 +137,17 @@ export async function generateDailyReport(env: Bindings): Promise<string> {
     ],
   })
 
-  const { results: buyStocks } = await env.DB.prepare(`
-    SELECT s.symbol, s.name, p.direction_accuracy AS confidence,
-           p.entry_price, p.stop_loss, p.target1, p.target2, p.forecast_data
-      FROM predictions p
-      JOIN stocks s ON p.stock_id=s.id
-     WHERE p.model_name='ensemble'
-       AND p.prediction_date=?
-       AND p.trade_signal='buy'
-     ORDER BY p.direction_accuracy DESC
+  const { results: buyPredictions } = await learningDb.prepare(`
+    SELECT stock_id, direction_accuracy AS confidence,
+           entry_price, stop_loss, target1, target2, forecast_data
+      FROM predictions
+     WHERE model_name='ensemble'
+       AND prediction_date=?
+       AND trade_signal='buy'
+     ORDER BY direction_accuracy DESC
      LIMIT 15
   `).bind(reportDate).all<any>()
+  const buyStocks = await attachStockIdentity(buyPredictions ?? [])
 
   for (const stock of buyStocks ?? []) {
     const forecast = safeParseJSON(stock.forecast_data)
@@ -162,16 +175,16 @@ export async function generateDailyReport(env: Bindings): Promise<string> {
     })
   }
 
-  const { results: sellStocks } = await env.DB.prepare(`
-    SELECT s.symbol, s.name, p.direction_accuracy AS confidence, p.forecast_data
-      FROM predictions p
-      JOIN stocks s ON p.stock_id=s.id
-     WHERE p.model_name='ensemble'
-       AND p.prediction_date=?
-       AND p.trade_signal='sell'
-     ORDER BY p.direction_accuracy DESC
+  const { results: sellPredictions } = await learningDb.prepare(`
+    SELECT stock_id, direction_accuracy AS confidence, forecast_data
+      FROM predictions
+     WHERE model_name='ensemble'
+       AND prediction_date=?
+       AND trade_signal='sell'
+     ORDER BY direction_accuracy DESC
      LIMIT 10
   `).bind(reportDate).all<any>()
+  const sellStocks = await attachStockIdentity(sellPredictions ?? [])
 
   if (sellStocks?.length) {
     const sellText = sellStocks.map((stock: any) => {

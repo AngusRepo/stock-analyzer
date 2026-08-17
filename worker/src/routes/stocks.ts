@@ -1,4 +1,5 @@
 import { Hono } from 'hono'
+import { databaseForDataDomain } from '../lib/dataDomainRegistry'
 
 // ── 安全的 ID 解析（parseInt NaN 防護）─────────────────────────────────────
 function parseId(s: string | undefined | null): number | null {
@@ -179,7 +180,7 @@ stocks.get('/:id', async (c) => {
   const [latestPrice, latestChip, latestPred] = await Promise.all([
     c.env.DB.prepare('SELECT date FROM stock_prices WHERE stock_id=? ORDER BY date DESC LIMIT 1').bind(id).first<any>(),
     c.env.DB.prepare('SELECT date FROM chip_data    WHERE symbol=? ORDER BY date DESC LIMIT 1').bind(row.symbol).first<any>(),
-    c.env.DB.prepare('SELECT generated_at FROM predictions WHERE stock_id=? ORDER BY generated_at DESC LIMIT 1').bind(id).first<any>(),
+    databaseForDataDomain(c.env, 'learning').prepare('SELECT generated_at FROM predictions WHERE stock_id=? ORDER BY generated_at DESC LIMIT 1').bind(id).first<any>(),
   ])
 
   return c.json({
@@ -385,7 +386,7 @@ stocks.get('/:id/news', async (c) => {
 stocks.get('/:id/predictions', async (c) => {
   const id = parseId(c.req.param('id'))
   if (!id) return c.json({ error: '無效 ID' }, 400)
-  const { results } = await c.env.DB.prepare(
+  const { results } = await databaseForDataDomain(c.env, 'learning').prepare(
     'SELECT * FROM predictions WHERE stock_id=? ORDER BY generated_at DESC LIMIT 10'
   ).bind(id).all()
   return c.json(results)
@@ -552,7 +553,7 @@ stocks.get('/:id/ai-summary', async (c) => {
   let recommendation = recRow
   if (recRow) {
     const [ensembleRow, perModelRows] = await Promise.all([
-      c.env.DB.prepare(`
+      databaseForDataDomain(c.env, 'learning').prepare(`
         SELECT forecast_data
          FROM predictions
          WHERE stock_id = ?
@@ -561,7 +562,7 @@ stocks.get('/:id/ai-summary', async (c) => {
          ORDER BY generated_at DESC, id DESC
          LIMIT 1
       `).bind(id, recRow.date).first<any>().catch(() => null),
-      c.env.DB.prepare(`
+      databaseForDataDomain(c.env, 'learning').prepare(`
         SELECT stock_id, model_name, signal_raw, direction_accuracy, forecast_data
           FROM predictions
          WHERE stock_id = ?

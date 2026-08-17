@@ -209,6 +209,14 @@ assert.throws(
   () => databaseForDataDomain({ ...shadowEnv, MULTI_D1_ACTIVE_DOMAINS: 'market' }, 'market'),
   /multi_d1_strict_routing_not_closed/,
 )
+const learning = { kind: 'learning' } as unknown as D1Database
+const learningActiveEnv = {
+  DB: legacy,
+  LEARNING_DB: learning,
+  MULTI_D1_ACTIVE_DOMAINS: 'learning',
+}
+assert.equal(databaseForDataDomain(learningActiveEnv, 'learning'), learning)
+assert.equal(databaseForDataDomain(learningActiveEnv, 'market'), legacy)
 
 assert.equal(MULTI_D1_STRICT_ROUTING_READY, false)
 assert.equal(MULTI_D1_PROJECTION_CONTRACT_READY, false)
@@ -217,7 +225,7 @@ assert.equal(MULTI_D1_ROUTING_CONTRACT_GATES.writer_quiescence_shared_epoch_cas,
 assert.equal(MULTI_D1_PROJECTION_CONTRACT_GATES.typed_outbox_producers_wired, false)
 assert.throws(
   () => databaseForDataDomain({ ...shadowEnv, MULTI_D1_STRICT: 'true' }, 'market'),
-  /multi_d1_strict_routing_not_closed/,
+  /multi_d1_strict_active_domains_missing/,
 )
 assert.equal(resolveDataDomainRoute({
   domain: 'market', activeDomains: new Set(['market']), strictRequested: true, routingReady: true,

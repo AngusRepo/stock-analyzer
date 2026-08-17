@@ -41,6 +41,18 @@ export const MULTI_D1_PROJECTION_CONTRACT_READY = Object.values(
   MULTI_D1_PROJECTION_CONTRACT_GATES,
 ).every(Boolean)
 
+const DOMAIN_ROUTING_CONTRACT_READY = new Set<DataDomain>(['learning'])
+const DOMAIN_PROJECTION_FREE_CLOSURE = new Set<DataDomain>(['learning'])
+
+export function dataDomainRoutingContractReady(domain: DataDomain): boolean {
+  return DOMAIN_ROUTING_CONTRACT_READY.has(domain)
+}
+
+export function dataDomainProjectionContractReady(domain: DataDomain): boolean {
+  // Learning cross-domain reads are split by binding and joined in memory;
+  // there is no transactional cross-domain write projection in its runtime path.
+  return DOMAIN_PROJECTION_FREE_CLOSURE.has(domain)
+}
 const DOMAIN_TABLES: Record<DataDomain, ReadonlySet<string>> = {
   core: new Set([
     'users', 'stocks', 'watchlist', 'risk_metrics', 'alert_rules', 'market_risk',
@@ -416,7 +428,7 @@ export function resolveDataDomainRoute(input: {
   if (input.invalidDomains?.length) {
     throw new Error(`multi_d1_active_domain_invalid:${[...new Set(input.invalidDomains)].sort().join(',')}`)
   }
-  if ((input.strictRequested || input.activeDomains.size > 0) && !input.routingReady) {
+  if (input.activeDomains.has(input.domain) && !input.routingReady) {
     throw new Error('multi_d1_strict_routing_not_closed')
   }
   if (input.strictRequested && input.activeDomains.size === 0) {
@@ -441,12 +453,22 @@ export function databaseForDataDomain(
   const route = resolveDataDomainRoute({
     domain, activeDomains: active, invalidDomains: invalidActiveDataDomains(env),
     strictRequested: String(env.MULTI_D1_STRICT ?? '').toLowerCase() === 'true',
-    routingReady: MULTI_D1_STRICT_ROUTING_READY,
+    routingReady: dataDomainRoutingContractReady(domain),
   })
   if (route === 'legacy') return env.DB
   const selected = bindings[domain]
   if (selected) return selected
   throw new Error(`data_domain_binding_missing:${domain}`)
+}
+
+export function databaseForTable(
+  env: Pick<Bindings, 'DB'> & Partial<Bindings>,
+  tableName: string,
+): D1Database {
+  const table = tableName.trim().toLowerCase()
+  const domain = dataDomainForTable(table)
+  if (!domain) throw new Error(`unowned_data_domain_table:${table}`)
+  return databaseForDataDomain(env, domain)
 }
 export function assertSingleDomainOwnership(tableNames: string[]): void {
   assertOwnershipEntries(TABLE_OWNERSHIP)

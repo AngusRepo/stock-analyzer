@@ -1,5 +1,6 @@
 import type { Bindings } from '../types'
 import { twNow, twToday } from './dateUtils'
+import { databaseForDataDomain } from './dataDomainRegistry'
 
 export type DataQualityStatus = 'ok' | 'warn' | 'fail'
 
@@ -1361,14 +1362,14 @@ export async function buildDataQualityReport(env: Bindings, options: { date?: st
       targetDate,
       targetDate,
     ).catch((): CountRow => ({})),
-    env.DB.prepare(
+    databaseForDataDomain(env, 'learning').prepare(
       `SELECT model_name, COUNT(*) AS count, COUNT(DISTINCT stock_id) AS stocks
        FROM predictions
        WHERE prediction_date = ?
        GROUP BY model_name ORDER BY model_name`,
     ).bind(targetDate).all<PredictionCoverageRow>(),
     firstCount(
-      env.DB,
+      databaseForDataDomain(env, 'learning'),
       `SELECT COUNT(*) AS total,
               SUM(CASE WHEN feature_version IS NULL OR TRIM(feature_version) = '' THEN 1 ELSE 0 END) AS missing_feature_version,
               COUNT(DISTINCT CASE WHEN feature_version IS NOT NULL AND TRIM(feature_version) <> '' THEN feature_version END) AS distinct_feature_versions
@@ -1376,7 +1377,7 @@ export async function buildDataQualityReport(env: Bindings, options: { date?: st
        WHERE prediction_date = ?`,
       targetDate,
     ).catch((): CountRow => ({})),
-    env.DB.prepare(
+    databaseForDataDomain(env, 'learning').prepare(
       `SELECT model_name,
               COUNT(*) AS count,
               COUNT(DISTINCT stock_id) AS stocks,
@@ -1391,7 +1392,7 @@ export async function buildDataQualityReport(env: Bindings, options: { date?: st
     ).bind(...EXPECTED_V2_MODELS).all<ModelIcEvidenceRow>(),
     env.DB.prepare('PRAGMA table_info(daily_recommendations)').all<{ name: string }>(),
     firstCount(
-      env.DB,
+      databaseForDataDomain(env, 'learning'),
       `SELECT COUNT(*) AS manifest_total,
               SUM(CASE WHEN kind = 'price_hot_window' AND access_tier = 'serving' AND status = 'ready' THEN 1 ELSE 0 END) AS price_hot_window_manifest,
               SUM(CASE WHEN kind = 'technical_indicator_hot_window' AND access_tier = 'serving' AND status = 'ready' THEN 1 ELSE 0 END) AS technical_indicator_hot_window_manifest,

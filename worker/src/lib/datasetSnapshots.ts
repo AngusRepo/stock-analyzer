@@ -1,4 +1,5 @@
 import type { Bindings } from '../types'
+import { databaseForDataDomain, databaseForTable } from './dataDomainRegistry'
 
 export type SnapshotPrimaryStore = 'd1' | 'gcs' | 'r2'
 export type SnapshotAccessTier = 'serving' | 'compute' | 'report' | 'preview' | 'archive'
@@ -142,7 +143,7 @@ export async function listDatasetSnapshots(
     ORDER BY business_date DESC, created_at DESC
     LIMIT ?
   `
-  const { results } = await env.DB.prepare(sql).bind(...params, capLimit(filters.limit)).all<DatasetSnapshotManifest>()
+  const { results } = await databaseForDataDomain(env, 'learning').prepare(sql).bind(...params, capLimit(filters.limit)).all<DatasetSnapshotManifest>()
   return (results ?? []).map((row) => ({
     ...row,
     manifest_errors: validateDatasetSnapshotManifest(row),
@@ -153,7 +154,7 @@ export async function getDatasetSnapshotManifest(
   env: Pick<Bindings, 'DB'>,
   snapshotId: string,
 ): Promise<(DatasetSnapshotManifest & { manifest_errors: string[] }) | null> {
-  const row = await env.DB.prepare('SELECT * FROM dataset_snapshots WHERE snapshot_id = ? LIMIT 1')
+  const row = await databaseForDataDomain(env, 'learning').prepare('SELECT * FROM dataset_snapshots WHERE snapshot_id = ? LIMIT 1')
     .bind(snapshotId)
     .first<DatasetSnapshotManifest>()
   if (!row) return null
@@ -237,7 +238,7 @@ export async function upsertDatasetSnapshotManifest(
     throw new Error(`dataset_snapshot_manifest_invalid:${manifest.kind}:${errors.join(',')}`)
   }
 
-  await env.DB.prepare(`
+  await databaseForDataDomain(env, 'learning').prepare(`
     INSERT OR REPLACE INTO dataset_snapshots (
       snapshot_id, kind, business_date, market_segment, schema_version,
       row_count, checksum, primary_store, access_tier, gcs_uri, r2_key,
@@ -356,7 +357,7 @@ export async function recordD1HotWindowDatasetManifests(
 
   for (const spec of D1_HOT_WINDOW_MANIFESTS) {
     const where = spec.where ? `WHERE ${spec.where}` : ''
-    const row = await env.DB.prepare(
+    const row = await databaseForTable(env, spec.table).prepare(
       `SELECT MAX(${spec.dateColumn}) AS latest_date, COUNT(*) AS row_count FROM ${spec.table} ${where}`,
     ).first<{ latest_date: string | null; row_count: number }>()
 
@@ -480,7 +481,7 @@ async function findColdArchiveCoverage(
     }
   }
 
-  const { results } = await env.DB.prepare(`
+  const { results } = await databaseForDataDomain(env, 'learning').prepare(`
     SELECT snapshot_id, gcs_uri, metadata_json
       FROM dataset_snapshots
      WHERE kind = ?
@@ -529,7 +530,7 @@ export async function buildDatasetRetentionPlan(
   const tables = []
 
   for (const spec of D1_RETENTION_TABLES) {
-    const row = await env.DB.prepare(`
+    const row = await databaseForTable(env, spec.table).prepare(`
       SELECT COUNT(*) AS cold_rows,
              MIN(${spec.dateColumn}) AS min_date,
              MAX(${spec.dateColumn}) AS max_date

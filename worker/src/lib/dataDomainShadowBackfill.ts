@@ -86,8 +86,9 @@ export async function domainBackfillRollingManifest(
   return checksumRollingManifest(previousManifest, batchChecksum, batchRows)
 }
 
-export function domainBackfillBatchLimit(value?: number): number {
-  return Math.max(1, Math.min(Math.floor(value ?? 500), 500))
+export function domainBackfillBatchLimit(value?: number, table?: string): number {
+  const maximum = table === 'strategy_label_matrix_v4' ? 1000 : 500
+  return Math.max(1, Math.min(Math.floor(value ?? 500), maximum))
 }
 
 export function domainBackfillRowsPerStatement(columnCount: number): number {
@@ -891,7 +892,7 @@ export async function backfillDataDomainTableShadow(
   `).bind(domain, table).first<{ cursor_json?: string | null }>()
   const cursor = parseDomainBackfillCursor(cursorRow?.cursor_json)
   const keyset = domainBackfillKeysetWhere(primaryKeys, cursor)
-  const limit = dataDomainManifestPageLimit(table, domainBackfillBatchLimit(options.limit))
+  const limit = dataDomainManifestPageLimit(table, domainBackfillBatchLimit(options.limit, table))
   const order = primaryKeys.map(identifier).join(", ")
   const selected = await env.DB.prepare(`
     SELECT ${columns.map(identifier).join(", ")}

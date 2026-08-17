@@ -48,6 +48,7 @@ const MAX_ATTEMPTS = 20_000
 const STALE_PROGRESS_MS = 5 * 60 * 1000
 const SHADOW_BACKFILL_QUEUE_BATCH_LIMIT = 50
 const NARROW_SHADOW_BACKFILL_QUEUE_BATCH_LIMIT = 500
+const STRATEGY_MATRIX_SHADOW_BACKFILL_QUEUE_BATCH_LIMIT = 1000
 export const LEARNING_CRITICAL_EVIDENCE_BACKFILL_TABLES = [
   'strategy_spec_registry',
   'strategy_label_matrix_runs_v4',
@@ -64,6 +65,9 @@ const NARROW_SHADOW_BACKFILL_TABLES = new Set([
 ])
 
 export function dataDomainShadowBackfillQueueBatchLimit(table: string): number {
+  if (table === 'strategy_label_matrix_v4') {
+    return STRATEGY_MATRIX_SHADOW_BACKFILL_QUEUE_BATCH_LIMIT
+  }
   return NARROW_SHADOW_BACKFILL_TABLES.has(table)
     ? NARROW_SHADOW_BACKFILL_QUEUE_BATCH_LIMIT
     : SHADOW_BACKFILL_QUEUE_BATCH_LIMIT

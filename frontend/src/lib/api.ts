@@ -683,7 +683,11 @@ export type StrategyEvidenceLane = {
   status: string
   as_of_date: string | null
   production_effect: boolean
-  authority: 'pending_buy_and_strategy_weights' | 'comparison_only'
+  authority:
+    | 'pending_buy_and_strategy_weights'
+    | 'comparison_only'
+    | 'formal_owner'
+    | 'formal_owner_input_pending_policy_closure'
   mature_dates?: number
   required_mature_dates?: number
   remaining_mature_dates?: number
@@ -698,7 +702,9 @@ export type StrategyEvidenceLane = {
   production_owner?: 'strategy-adaptive-lifecycle-v2'
   materialized_metrics?: string[]
   missing_required_metrics?: string[]
-  integration_effect?: 'shadow_evidence_input_only'
+  integration_effect?: 'status_aware_owner_input_active' | 'status_aware_owner_input_ready'
+  evidence_owner_snapshot?: Record<string, unknown>
+  formal_policy_lineage?: Record<string, unknown> | null
 }
 
 export type StrategyEvidenceProfilesResponse = {
@@ -709,7 +715,7 @@ export type StrategyEvidenceProfilesResponse = {
   runtime_strategy_count: number
   profile_count: number
   complete: boolean
-  multi_horizon_authority: 'shadow_only'
+  multi_horizon_authority: 'shadow_only' | 'formal_owner_input_ready' | 'formal_owner'
   multi_horizon_coverage: Array<{ horizon_days: number; outcome_rows: number }>
   lanes: {
     formal: StrategyEvidenceLane

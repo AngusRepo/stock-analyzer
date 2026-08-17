@@ -89,6 +89,8 @@ assert(lifecycle.includes('postPipelineStage?.attempt_count'), 'snapshot retry b
 assert(lifecycle.includes('postPipelineReached') && lifecycle.includes("status: 'success'"), 'snapshot-ready downstream lifecycle must reconcile stale post-pipeline errors')
 assert(lifecycle.includes('callbackGraceActive'), 'watchdog must respect the durable callback grace window')
 assert(lifecycle.includes('stageAgeMs < 15 * 60_000'), 'watchdog callback grace must be bounded to fifteen minutes')
+assert(lifecycle.includes('stageLeaseLive'), 'watchdog callback grace must not protect an expired running lease')
+assert(lifecycle.includes("postPipelineStage?.status !== 'running' || stageLeaseLive"), 'expired running callbacks must be recoverable immediately')
 assert(lifecycle.includes('allocator EV lifecycle awaiting durable callback'), 'watchdog must report an in-flight callback instead of racing recovery')
 assert(lifecycle.includes("excluded.state = 'replay_pending_maturity'"), 'replay queue must be able to return to stock-specific maturity waiting')
 assert(lifecycle.includes('MAX(prediction_date) AS business_date'), 'cross-midnight watchdog must follow the latest native lineage date')

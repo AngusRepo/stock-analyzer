@@ -647,13 +647,14 @@ export async function runAllocatorEvLifecycleWatchdog(
     throw new Error(`allocator_ev_missing_point_in_time_lineage:${businessDate}:${reason}`)
   }
   const postPipelineStage = await databaseForDataDomain(env, 'ops').prepare(`
-    SELECT status, canonical_run_id, updated_at, attempt_count
+    SELECT status, canonical_run_id, updated_at, lease_expires_at, attempt_count
       FROM pipeline_stage_runs
      WHERE business_date=? AND stage='post_pipeline_chain'
   `).bind(businessDate).first<{
     status?: string | null
     canonical_run_id?: string | null
     updated_at?: string | null
+    lease_expires_at?: string | null
     attempt_count?: number | string | null
   }>()
   const stageTimestamp = String(postPipelineStage?.updated_at ?? '').trim()
@@ -661,8 +662,14 @@ export async function runAllocatorEvLifecycleWatchdog(
     ? `${stageTimestamp.replace(' ', 'T')}Z`
     : stageTimestamp
   const stageAgeMs = Date.now() - Date.parse(stageTimestampUtc)
+  const stageLeaseExpiresAt = String(postPipelineStage?.lease_expires_at ?? '').trim()
+  const stageLeaseExpiresAtUtc = stageLeaseExpiresAt && !/[zZ]|[+-]\d{2}:?\d{2}$/.test(stageLeaseExpiresAt)
+    ? `${stageLeaseExpiresAt.replace(' ', 'T')}Z`
+    : stageLeaseExpiresAt
+  const stageLeaseLive = Date.parse(stageLeaseExpiresAtUtc) >= Date.now()
   const callbackGraceActive = !snapshot.ready
     && ['queued', 'running', 'waiting'].includes(String(postPipelineStage?.status ?? ''))
+    && (postPipelineStage?.status !== 'running' || stageLeaseLive)
     && Number.isFinite(stageAgeMs)
     && stageAgeMs >= 0
     && stageAgeMs < 15 * 60_000

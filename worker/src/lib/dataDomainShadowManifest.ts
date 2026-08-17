@@ -30,6 +30,9 @@ const TABLE_PAGE_LIMITS: Readonly<Record<string, number>> = {
   // can exceed the Worker memory/time envelope after source + target copies
   // and canonical checksum bodies are held together.
   allocator_ev_feature_snapshots: 10,
+  // Replay outcomes are wide enough that the generic 4,000-row rolling
+  // manifest page exceeds the Worker CPU envelope while hashing both D1s.
+  s12_replay_trade_outcomes: 500,
 }
 
 export function isDataDomainControlTable(table: string): table is DataDomainControlTable {

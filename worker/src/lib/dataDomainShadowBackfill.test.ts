@@ -50,6 +50,7 @@ assert.throws(() => parseDomainBackfillCursor('{}'), /domain_backfill_cursor_inv
 assert.equal(dataDomainManifestPageLimit('screener_funnel_runs', 50), 10)
 assert.equal(dataDomainManifestPageLimit('screener_funnel_items', 4000), 4000)
 assert.equal(dataDomainManifestPageLimit('allocator_ev_feature_snapshots', 400), 10)
+assert.equal(dataDomainManifestPageLimit('s12_replay_trade_outcomes', 4000), 500)
 
 assert.equal(isDomainShadowCopyComplete(['runs', 'items'], ['runs']), false)
 assert.equal(isDomainShadowCopyComplete(['runs', 'items'], ['items', 'runs']), true)

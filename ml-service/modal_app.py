@@ -1594,10 +1594,9 @@ def pipeline_prediction_bundle(payload: dict) -> dict:
         if isinstance(row, dict)
     ]
     expected_symbols = [symbol for symbol in expected_symbols if symbol]
-    expected_symbol_set = set(expected_symbols)
     if (
         not expected_symbols
-        or len(expected_symbol_set) != len(expected_symbols)
+        or len(set(expected_symbols)) != len(expected_symbols)
     ):
         raise ValueError("pipeline_modal_expected_symbol_contract_invalid")
 
@@ -1614,7 +1613,17 @@ def pipeline_prediction_bundle(payload: dict) -> dict:
         if _is_active(name)
     ]
 
-    def _assert_exact_rows(model_name: str, rows: object, *, require_rank: bool = False) -> None:
+    def _assert_exact_rows(
+        model_name: str,
+        rows: object,
+        *,
+        expected: list[str] | None = None,
+        require_rank: bool = False,
+    ) -> None:
+        model_expected = expected_symbols if expected is None else expected
+        model_expected_set = set(model_expected)
+        if not model_expected or len(model_expected_set) != len(model_expected):
+            raise ValueError(f"pipeline_modal_{model_name.lower()}_expected_symbol_contract_invalid")
         if not isinstance(rows, list):
             raise ValueError(f"pipeline_modal_{model_name.lower()}_results_not_list")
         observed: list[str] = []
@@ -1638,10 +1647,10 @@ def pipeline_prediction_bundle(payload: dict) -> dict:
                             f"pipeline_modal_feature_rank_missing:{symbol}:{feature_model}"
                         )
         if (
-            len(rows) != len(expected_symbols)
-            or len(observed) != len(expected_symbols)
+            len(rows) != len(model_expected)
+            or len(observed) != len(model_expected)
             or len(set(observed)) != len(observed)
-            or set(observed) != expected_symbol_set
+            or set(observed) != model_expected_set
         ):
             raise ValueError(f"pipeline_modal_{model_name.lower()}_cardinality_mismatch")
 
@@ -1657,7 +1666,13 @@ def pipeline_prediction_bundle(payload: dict) -> dict:
             continue
         output = outputs.get(output_key)
         rows = output.get("results") if isinstance(output, dict) else None
-        _assert_exact_rows(model_name, rows)
+        model_symbols = [
+            str(row.get("symbol") or row.get("stock_id") or "").strip()
+            for row in _sequence_input(model_name)
+            if isinstance(row, dict)
+            and (row.get("symbol") or row.get("stock_id"))
+        ]
+        _assert_exact_rows(model_name, rows, expected=model_symbols)
 
     elapsed_s = round(time.time() - started, 3)
     bundle = {

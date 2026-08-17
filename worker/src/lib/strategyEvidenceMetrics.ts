@@ -424,6 +424,13 @@ export function computeStrategyEvidenceMetricRows(
         remediation: 'shadow_coverage_diagnostics_before_threshold_change',
         observation_window_end: outcomeAsOfDate,
       }
+    } else if (value == null && evidence.missing_reason == null) {
+      evidence = {
+        ...evidence,
+        missing_reason: matureDates < 2 ? 'insufficient_mature_dates_for_estimator' : 'metric_estimator_not_resolved',
+        root_cause_class: 'evidence_maturity',
+        remediation: 'accumulate_distinct_mature_dates_without_threshold_change',
+      }
     }
     return {
       ...base,

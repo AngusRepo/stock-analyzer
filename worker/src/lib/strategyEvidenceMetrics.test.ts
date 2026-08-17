@@ -129,6 +129,15 @@ assert(zeroHitRows.every((row) => (
   JSON.parse(row.evidence_json).root_cause_class === 'strategy_coverage'
 )))
 
+const oneMatureDateLcb = computeStrategyEvidenceMetricRows(
+  trendProfile,
+  observations(trend.id, trend.version, trend.status, trend.alphaBucket)
+    .filter((row) => row.signal_date === '2026-07-01'),
+  '2026-08-16',
+).find((row) => row.metric_name === 'residual_return_lcb90')
+assert.equal(oneMatureDateLcb?.metric_status, 'not_available')
+assert.equal(JSON.parse(oneMatureDateLcb!.evidence_json).missing_reason, 'insufficient_mature_dates_for_estimator')
+
 const zeroWeightRows = observations(trend.id, trend.version, trend.status, trend.alphaBucket)
   .filter((row) => (
     Number(row.signal_date.slice(-2)) % 2 === 0 ? row.symbol !== 'S3' : row.symbol !== 'S0'

@@ -171,6 +171,9 @@ function evidenceMetricAvailabilityReason(metricRow: {
   if (missing === 'no_strategy_hits_in_observation_window') {
     return '目前觀察窗沒有正式命中。候選／研究策略現在不參與正式選股；需先在 Shadow A／B 恢復可驗證命中，再談調整門檻或升級。'
   }
+  if (missing === 'insufficient_mature_dates_for_estimator') {
+    return `已有 ${metricRow.sample_count} 筆，但只涵蓋 ${metricRow.mature_dates} 個成熟交易日；至少需 2 個不同成熟日才能估計穩定性。`
+  }
   if (missing === 'fewer_than_two_supported_regimes_with_two_mature_dates') {
     return '正式 PIT 盤勢已接通，但目前還沒有至少 2 種支援盤勢、且各自累積 2 個成熟交易日。'
   }

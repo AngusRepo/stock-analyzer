@@ -428,10 +428,19 @@ export async function enqueueNextDataDomainShadowBackfill(
   // The global coordinator must therefore execute one bounded HTTP step instead
   // of enqueueing a message that cannot be consumed.
   if (domain === 'ops') {
-    const step = await runDataDomainShadowBackfillHttpStep(env, {
-      domain,
-      runDate: input.runDate,
+    const leased = await runWithMaintenanceLease(env.DB, {
+      taskName: 'data-domain-shadow-backfill:ops-coordinator',
+      leaseGroup: 'd1_heavy_maintenance',
+      leaseSeconds: 300,
+      run: () => runDataDomainShadowBackfillHttpStep(env, {
+        domain,
+        runDate: input.runDate,
+      }),
     })
+    if ('skipped' in leased && leased.skipped) {
+      return { caughtUp: false, domain, queued: false, runId: null }
+    }
+    const step = leased as Awaited<ReturnType<typeof runDataDomainShadowBackfillHttpStep>>
     return { caughtUp: step.caughtUp, domain, queued: false, runId: step.runId }
   }
   const queued = await enqueueDataDomainShadowBackfill(env, {

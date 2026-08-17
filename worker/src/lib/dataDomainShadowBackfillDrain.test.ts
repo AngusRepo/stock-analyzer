@@ -10,6 +10,9 @@ const drain = fs.readFileSync('src/lib/dataDomainShadowBackfillDrain.ts', 'utf8'
 const orchestrator = fs.readFileSync('src/lib/updateOrchestrator.ts', 'utf8')
 const admin = fs.readFileSync('src/lib/adminTriggerWorkerDomainTasks.ts', 'utf8')
 const types = fs.readFileSync('src/types.ts', 'utf8')
+const heavyMaintenanceSet = admin.slice(
+  admin.indexOf('const D1_HEAVY_MAINTENANCE_TASKS'), admin.indexOf('])', admin.indexOf('const D1_HEAVY_MAINTENANCE_TASKS')) + 2,
+)
 
 assert(drain.includes("leaseGroup: 'd1_heavy_maintenance'"))
 assert(drain.includes('SHADOW_BACKFILL_QUEUE_BATCH_LIMIT = 50'))
@@ -98,8 +101,11 @@ assert.equal(shouldContinueDataDomainGlobalSweep({
 assert(drain.includes('inspectLatestEveningChainClosure'))
 assert(drain.includes('enqueueNextDataDomainShadowBackfill'))
 assert(drain.includes("if (domain === 'ops')"))
-assert(drain.includes('const step = await runDataDomainShadowBackfillHttpStep(env'))
+assert(drain.includes('run: () => runDataDomainShadowBackfillHttpStep(env'))
 assert(drain.includes('queued: false, runId: step.runId'))
+assert(drain.includes("taskName: 'data-domain-shadow-backfill:ops-coordinator'"))
+assert(drain.includes("leaseGroup: 'd1_heavy_maintenance'"))
+assert(!heavyMaintenanceSet.includes("'data-domain-shadow-backfill-next'"))
 assert(drain.indexOf("if (domain === 'ops')") < drain.indexOf('const queued = await enqueueDataDomainShadowBackfill(env'))
 assert(drain.includes('input.parityNotBefore || dataDomainParitySessionWatermark()'))
 assert(admin.includes('parityNotBefore: closure.timestamp'))

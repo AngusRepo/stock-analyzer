@@ -28,7 +28,7 @@ const D1_HEAVY_MAINTENANCE_TASKS = new Set([
   'price-horizon-projection',
   'strategy-learning-finalize',
   'selection-reference-repair', 'selection-reference-identity-repair',
-  'data-domain-shadow-backfill', 'data-domain-shadow-backfill-next',
+  'data-domain-shadow-backfill',
   'data-domain-control-revision-trigger-install',
 ])
 const D1_MAINTENANCE_REQUEST_BUDGET_MS = 45_000

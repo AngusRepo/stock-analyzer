@@ -78,6 +78,8 @@ assert(
   < drain.indexOf('await nextIncompleteTable(env, input.domain)'),
 )
 assert(drain.includes('nextDataDomainIncrementalCatchupTableStep'))
+assert((drain.match(/nextDataDomainIncrementalCatchupTableStep\(env, domain, parityNotBefore\)/g) ?? []).length >= 2)
+assert(drain.includes('enqueueDataDomainIncrementalScanContinuation'))
 assert(drain.includes("phase: 'incremental_scan'"))
 assert(drain.includes('scanned_tables: scan.scannedTables'))
 assert(drain.includes("status: result.domain_shadow_ready ? 'success' : 'error'"))

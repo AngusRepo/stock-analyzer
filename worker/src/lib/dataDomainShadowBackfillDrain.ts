@@ -776,6 +776,47 @@ async function nextDataDomainIncrementalCatchupTableStep(
   }
 }
 
+async function enqueueDataDomainIncrementalScanContinuation(
+  env: Bindings,
+  input: {
+    domain: DataDomain
+    runId: string
+    runDate: string
+    attempt: number
+    maxAttempts: number
+    errorAttempt: number
+    requestedTable?: string
+    parityNotBefore: string
+    globalSweep: boolean
+    scan: Awaited<ReturnType<typeof nextDataDomainIncrementalCatchupTableStep>>
+  },
+): Promise<void> {
+  await env.KV.put(progressKey(input.domain), JSON.stringify({
+    run_id: input.runId,
+    attempt: input.attempt,
+    phase: 'incremental_scan',
+    scanned_table: input.scan.scannedTable,
+    scanned_tables: input.scan.scannedTables,
+    total_tables: input.scan.totalTables,
+    updated_at: new Date().toISOString(),
+  }), { expirationTtl: ACTIVE_TTL_SECONDS })
+  await env.KV.put(dataDomainShadowBackfillActiveKey(input.domain), JSON.stringify({
+    run_id: input.runId,
+    started_at: input.parityNotBefore,
+  }), { expirationTtl: ACTIVE_TTL_SECONDS })
+  await (env.UPDATE_QUEUE as any).send(queueMessage({
+    domain: input.domain,
+    requestedTable: input.requestedTable,
+    runDate: input.runDate,
+    runId: input.runId,
+    attempt: input.attempt,
+    maxAttempts: input.maxAttempts,
+    errorAttempt: input.errorAttempt,
+    parityNotBefore: input.parityNotBefore,
+    globalSweep: input.globalSweep,
+  }), { delaySeconds: 1 })
+}
+
 async function domainChecksumReady(
   env: Bindings,
   domain: DataDomain,
@@ -1232,11 +1273,29 @@ export async function processDataDomainShadowBackfillDrain(
   ) {
     throw new Error(`data_domain_shadow_backfill_dependency_closure_required:${domain}:${requestedTable}`)
   }
-  const table = currentTable
+  let table: string | null = currentTable
     ?? requestedTable
-    ?? (await nextDataDomainReceiptRefreshTable(env, domain, parityNotBefore)
-      || await nextDataDomainIncrementalCatchupTable(env, domain, parityNotBefore)
-      || await nextIncompleteTable(env, domain))
+    ?? await nextDataDomainReceiptRefreshTable(env, domain, parityNotBefore)
+  if (!table) {
+    const scan = await nextDataDomainIncrementalCatchupTableStep(env, domain, parityNotBefore)
+    table = scan.table
+    if (!table && !scan.sweepComplete) {
+      await enqueueDataDomainIncrementalScanContinuation(env, {
+        domain,
+        runId,
+        runDate: msg.triggerTime,
+        attempt,
+        maxAttempts,
+        errorAttempt,
+        requestedTable,
+        parityNotBefore,
+        globalSweep,
+        scan,
+      })
+      return
+    }
+    if (!table) table = await nextIncompleteTable(env, domain)
+  }
   if (!table) {
     const checksumReady = await domainChecksumReady(env, domain, parityNotBefore)
     const aggregateShadowReady = checksumReady
@@ -1461,8 +1520,26 @@ export async function processDataDomainShadowBackfillDrain(
     }) ? criticalTable : table
   } else {
     nextTable = await nextDataDomainReceiptRefreshTable(env, domain, parityNotBefore)
-      || await nextDataDomainIncrementalCatchupTable(env, domain, parityNotBefore)
-      || await nextIncompleteTable(env, domain)
+    if (!nextTable) {
+      const scan = await nextDataDomainIncrementalCatchupTableStep(env, domain, parityNotBefore)
+      nextTable = scan.table
+      if (!nextTable && !scan.sweepComplete) {
+        await enqueueDataDomainIncrementalScanContinuation(env, {
+          domain,
+          runId,
+          runDate: msg.triggerTime,
+          attempt: attempt + 1,
+          maxAttempts,
+          errorAttempt,
+          requestedTable,
+          parityNotBefore,
+          globalSweep,
+          scan,
+        })
+        return
+      }
+      if (!nextTable) nextTable = await nextIncompleteTable(env, domain)
+    }
   }
   if (nextTable) {
     await env.KV.put(dataDomainShadowBackfillActiveKey(domain), JSON.stringify({

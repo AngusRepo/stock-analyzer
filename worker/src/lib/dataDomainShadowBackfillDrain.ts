@@ -199,10 +199,15 @@ export function shouldRefreshStrategyEvidenceMetricsAfterBackfill(input: {
   domain: DataDomain
   table: string
   status: DomainShadowBackfillResult['status']
+  bridgeReady?: boolean
 }): boolean {
-  return input.domain === 'learning'
-    && input.table === 'strategy_label_matrix_v4'
-    && input.status === 'shadow_table_complete'
+  if (input.domain !== 'learning' || input.table !== 'strategy_label_matrix_v4') return false
+  return input.status === 'shadow_table_complete'
+    || (input.status === 'shadow_progress' && input.bridgeReady !== true)
+}
+
+function strategyMetricBridgeKey(outcomeAsOfDate: string): string {
+  return `strategy-evidence-metrics:authoritative-bridge:${outcomeAsOfDate}`
 }
 
 export function shouldContinueDataDomainGlobalSweep(input: {
@@ -1364,13 +1369,28 @@ export async function processDataDomainShadowBackfillDrain(
   }
 
   const result = leased as DomainShadowBackfillResult
+  const outcomeAsOfDate = msg.triggerTime.slice(0, 10)
+  const metricBridgeKey = strategyMetricBridgeKey(outcomeAsOfDate)
+  const metricBridgeReady = domain === 'learning'
+    && table === 'strategy_label_matrix_v4'
+    && result.status === 'shadow_progress'
+    ? await env.KV.get(metricBridgeKey) != null
+    : false
   let strategyMetricRefresh: { status: 'success' | 'error'; summary: string } | null = null
-  if (shouldRefreshStrategyEvidenceMetricsAfterBackfill({ domain, table, status: result.status })) {
+  if (shouldRefreshStrategyEvidenceMetricsAfterBackfill({
+    domain, table, status: result.status, bridgeReady: metricBridgeReady,
+  })) {
     try {
       const metrics = await materializeStrategyEvidenceMetrics(env, {
-        outcomeAsOfDate: msg.triggerTime.slice(0, 10),
+        outcomeAsOfDate,
       })
+      if (metrics.observations <= 0 || metrics.metric_rows <= 0) {
+        throw new Error('strategy_evidence_metric_bridge_observations_empty')
+      }
       strategyMetricRefresh = { status: 'success', summary: metrics.summary }
+      if (result.status === 'shadow_progress') {
+        await env.KV.put(metricBridgeKey, metrics.summary, { expirationTtl: 24 * 3600 })
+      }
     } catch (error) {
       strategyMetricRefresh = {
         status: 'error',

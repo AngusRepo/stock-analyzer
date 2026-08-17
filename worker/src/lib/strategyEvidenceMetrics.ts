@@ -36,6 +36,33 @@ export type StrategyEvidenceObservation = {
   cross_section_rank: number | string
 }
 
+export type StrategyEvidenceMatrixRow = Pick<StrategyEvidenceObservation,
+  'signal_date' | 'symbol' | 'producer_run_id' | 'strategy_id' | 'strategy_version'
+  | 'strategy_status' | 'alpha_bucket' | 'affinity' | 'position_weight' | 'overlap'>
+
+export type StrategyEvidenceOutcomeRow = Pick<StrategyEvidenceObservation,
+  'signal_date' | 'symbol' | 'producer_run_id' | 'horizon_days' | 'outcome_known_date'
+  | 'absolute_return_net' | 'benchmark_return_net' | 'residual_return_net' | 'cross_section_rank'>
+
+function strategyEvidenceJoinKey(row: Pick<StrategyEvidenceObservation,
+  'signal_date' | 'symbol' | 'producer_run_id'>): string {
+  return `${row.signal_date}|${row.symbol}|${row.producer_run_id}`
+}
+
+export function joinStrategyEvidenceObservations(
+  matrixRows: StrategyEvidenceMatrixRow[],
+  outcomeRows: StrategyEvidenceOutcomeRow[],
+): StrategyEvidenceObservation[] {
+  const outcomesBySelection = new Map<string, StrategyEvidenceOutcomeRow[]>()
+  for (const outcome of outcomeRows) {
+    const key = strategyEvidenceJoinKey(outcome)
+    outcomesBySelection.set(key, [...(outcomesBySelection.get(key) ?? []), outcome])
+  }
+  return matrixRows.flatMap((matrix) => (
+    (outcomesBySelection.get(strategyEvidenceJoinKey(matrix)) ?? []).map((outcome) => ({ ...matrix, ...outcome }))
+  ))
+}
+
 export type StrategyEvidenceMetricRow = {
   strategy_id: string
   strategy_version: string
@@ -321,6 +348,49 @@ export function computeStrategyEvidenceMetricRows(
   })
 }
 
+async function loadObservationsAcrossDatabases(
+  matrixDb: D1Database,
+  outcomeDb: D1Database,
+  outcomeAsOfDate: string,
+): Promise<StrategyEvidenceObservation[]> {
+  const outcomeRows: StrategyEvidenceOutcomeRow[] = []
+  let outcomeRowId = 0
+  for (;;) {
+    const page = await outcomeDb.prepare(`
+      SELECT rowid source_row_id, signal_date, symbol, producer_run_id,
+             horizon_days, outcome_known_date, absolute_return_net,
+             benchmark_return_net, residual_return_net, cross_section_rank
+        FROM canonical_selection_outcomes_v1
+       WHERE outcome_known_date<=? AND rowid>?
+       ORDER BY rowid
+       LIMIT 2000
+    `).bind(outcomeAsOfDate, outcomeRowId).all<StrategyEvidenceOutcomeRow & { source_row_id: number }>()
+    const rows = page.results ?? []
+    outcomeRows.push(...rows)
+    if (rows.length < 2000) break
+    outcomeRowId = Number(rows.at(-1)!.source_row_id)
+  }
+
+  const observations: StrategyEvidenceObservation[] = []
+  let matrixRowId = 0
+  for (;;) {
+    const page = await matrixDb.prepare(`
+      SELECT rowid source_row_id, signal_date, symbol, producer_run_id,
+             strategy_id, strategy_version, strategy_status, alpha_bucket,
+             affinity, position_weight, overlap
+        FROM strategy_label_matrix_v4
+       WHERE strategy_hit=1 AND evaluable=1 AND rowid>?
+       ORDER BY rowid
+       LIMIT 2000
+    `).bind(matrixRowId).all<StrategyEvidenceMatrixRow & { source_row_id: number }>()
+    const rows = page.results ?? []
+    observations.push(...joinStrategyEvidenceObservations(rows, outcomeRows))
+    if (rows.length < 2000) break
+    matrixRowId = Number(rows.at(-1)!.source_row_id)
+  }
+  return observations
+}
+
 async function loadObservations(db: D1Database, outcomeAsOfDate: string): Promise<StrategyEvidenceObservation[]> {
   const output: StrategyEvidenceObservation[] = []
   let matrixRowId = 0
@@ -382,12 +452,16 @@ async function persistMetricRows(db: D1Database, rows: StrategyEvidenceMetricRow
 export async function materializeStrategyEvidenceMetrics(
   env: Bindings,
   options: { outcomeAsOfDate: string },
-): Promise<{ profiles: number; observations: number; metric_rows: number; ready_rows: number; summary: string }> {
+): Promise<{ profiles: number; observations: number; metric_rows: number; ready_rows: number; source: string; summary: string }> {
   if (!/^\d{4}-\d{2}-\d{2}$/.test(options.outcomeAsOfDate)) throw new Error('invalid_strategy_metric_outcome_as_of_date')
-  const db = shadowDatabaseForDataDomain(env, 'learning') ?? databaseForDataDomain(env, 'learning')
+  const authorityDb = databaseForDataDomain(env, 'learning')
+  const db = shadowDatabaseForDataDomain(env, 'learning') ?? authorityDb
+  const source = authorityDb === db ? 'learning_target_join' : 'authoritative_cross_d1_bridge'
   const [{ specs }, observations] = await Promise.all([
-    listStrategySpecsForLearning(db, { asOfDate: options.outcomeAsOfDate }),
-    loadObservations(db, options.outcomeAsOfDate),
+    listStrategySpecsForLearning(authorityDb, { asOfDate: options.outcomeAsOfDate }),
+    authorityDb === db
+      ? loadObservations(db, options.outcomeAsOfDate)
+      : loadObservationsAcrossDatabases(authorityDb, db, options.outcomeAsOfDate),
   ])
   const profiles = listStrategyEvidenceProfiles(specs.filter((spec) => spec.status !== 'retired'), {
     availableOutcomeHorizonDays: [3, 5, 10],
@@ -401,7 +475,13 @@ export async function materializeStrategyEvidenceMetrics(
     profile,
     byStrategy.get(`${profile.strategy_id}|${profile.strategy_version}`) ?? [],
     options.outcomeAsOfDate,
-  ))
+  )).map((row) => ({
+    ...row,
+    evidence_json: JSON.stringify({
+      ...JSON.parse(row.evidence_json) as Record<string, unknown>,
+      materialization_source: source,
+    }),
+  }))
   await persistMetricRows(db, metricRows)
   const readyRows = metricRows.filter((row) => row.metric_status === 'ready').length
   return {
@@ -409,6 +489,7 @@ export async function materializeStrategyEvidenceMetrics(
     observations: observations.length,
     metric_rows: metricRows.length,
     ready_rows: readyRows,
-    summary: `strategy_evidence_metrics profiles=${profiles.length} observations=${observations.length} rows=${metricRows.length} ready=${readyRows}`,
+    source,
+    summary: `strategy_evidence_metrics source=${source} profiles=${profiles.length} observations=${observations.length} rows=${metricRows.length} ready=${readyRows}`,
   }
 }

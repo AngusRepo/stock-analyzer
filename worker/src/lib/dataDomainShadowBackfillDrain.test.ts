@@ -49,8 +49,11 @@ assert.equal(shouldRefreshStrategyEvidenceMetricsAfterBackfill({
   domain: 'learning', table: 'strategy_label_matrix_v4', status: 'shadow_table_complete',
 }), true)
 assert.equal(shouldRefreshStrategyEvidenceMetricsAfterBackfill({
-  domain: 'learning', table: 'strategy_label_matrix_v4', status: 'shadow_progress',
+  domain: 'learning', table: 'strategy_label_matrix_v4', status: 'shadow_progress', bridgeReady: true,
 }), false)
+assert.equal(shouldRefreshStrategyEvidenceMetricsAfterBackfill({
+  domain: 'learning', table: 'strategy_label_matrix_v4', status: 'shadow_progress', bridgeReady: false,
+}), true)
 assert.equal(shouldRefreshStrategyEvidenceMetricsAfterBackfill({
   domain: 'learning', table: 'predictions', status: 'shadow_table_complete',
 }), false)

@@ -2,11 +2,30 @@ import assert from 'node:assert/strict'
 import { buildStrategyEvidenceProfile } from './strategyEvidenceProfile'
 import {
   computeStrategyEvidenceMetricRows,
+  joinStrategyEvidenceObservations,
   STRATEGY_EVIDENCE_MIN_MATURE_DATES,
   STRATEGY_EVIDENCE_MIN_SAMPLES,
   type StrategyEvidenceObservation,
 } from './strategyEvidenceMetrics'
 import { DEFAULT_STRATEGY_SPECS } from './strategySpec'
+
+const joined = joinStrategyEvidenceObservations([{
+  signal_date: '2026-08-01', symbol: '2330', producer_run_id: 'run-1',
+  strategy_id: 'trend', strategy_version: 'v1', strategy_status: 'active',
+  alpha_bucket: 'trend', affinity: 0.8, position_weight: 1, overlap: 0.2,
+}], [{
+  signal_date: '2026-08-01', symbol: '2330', producer_run_id: 'run-1',
+  horizon_days: 5, outcome_known_date: '2026-08-08', absolute_return_net: 0.03,
+  benchmark_return_net: 0.01, residual_return_net: 0.02, cross_section_rank: 0.9,
+}, {
+  signal_date: '2026-08-01', symbol: '2330', producer_run_id: 'other-run',
+  horizon_days: 5, outcome_known_date: '2026-08-08', absolute_return_net: -0.03,
+  benchmark_return_net: 0.01, residual_return_net: -0.04, cross_section_rank: 0.1,
+}])
+assert.equal(joined.length, 1)
+assert.equal(joined[0].strategy_id, 'trend')
+assert.equal(joined[0].horizon_days, 5)
+assert.equal(joined[0].residual_return_net, 0.02)
 
 function observations(strategyId: string, strategyVersion: string, strategyStatus: string, alphaBucket: string): StrategyEvidenceObservation[] {
   const rows: StrategyEvidenceObservation[] = []

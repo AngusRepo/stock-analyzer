@@ -116,6 +116,19 @@ const immatureRows = computeStrategyEvidenceMetricRows(
 )
 assert(immatureRows.some((row) => row.metric_status === 'insufficient_samples' || row.metric_status === 'not_available'))
 
+const zeroHitRows = computeStrategyEvidenceMetricRows(
+  reversionProfile,
+  [],
+  '2026-08-16',
+)
+assert(zeroHitRows.every((row) => row.metric_status === 'not_available'))
+assert(zeroHitRows.every((row) => (
+  JSON.parse(row.evidence_json).missing_reason === 'no_strategy_hits_in_observation_window'
+)), 'zero-hit strategies must not be misclassified as missing price or regime dependencies')
+assert(zeroHitRows.every((row) => (
+  JSON.parse(row.evidence_json).root_cause_class === 'strategy_coverage'
+)))
+
 const zeroWeightRows = observations(trend.id, trend.version, trend.status, trend.alphaBucket)
   .filter((row) => (
     Number(row.signal_date.slice(-2)) % 2 === 0 ? row.symbol !== 'S3' : row.symbol !== 'S0'

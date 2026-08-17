@@ -416,6 +416,15 @@ export function computeStrategyEvidenceMetricRows(
       samples = result.samples
       evidence = { semantic: 'high_overlap_quartile_minus_low_overlap_quartile_residual_return' }
     }
+    if (primary.length === 0) {
+      evidence = {
+        ...evidence,
+        missing_reason: 'no_strategy_hits_in_observation_window',
+        root_cause_class: 'strategy_coverage',
+        remediation: 'shadow_coverage_diagnostics_before_threshold_change',
+        observation_window_end: outcomeAsOfDate,
+      }
+    }
     return {
       ...base,
       metric_name: metric,

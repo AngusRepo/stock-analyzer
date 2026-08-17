@@ -121,8 +121,8 @@ dashboardReadRoutes.get('/api/dashboard/v4/expected-return/status', async (c) =>
   ])
   const [serving, candidates, maturity] = await Promise.all([
     readCurrentExpectedReturnServingState(c.env, date),
-    inspectExpectedReturnCandidateEvidence(c.env.DB),
-    inspectAllocatorEvMaturityCoverage(c.env.DB, date),
+    inspectExpectedReturnCandidateEvidence(databaseForDataDomain(c.env, 'learning')),
+    inspectAllocatorEvMaturityCoverage(databaseForDataDomain(c.env, 'learning'), date),
   ])
   return c.json({ date, serving, candidates, maturity })
 })

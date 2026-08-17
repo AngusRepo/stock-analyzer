@@ -406,7 +406,7 @@ export async function prepareStrategyRedundancyBackfill(
     throw new Error(`strategy_redundancy_strategy_count_mismatch:${asOfDate}:${strategyRows.size}/${run.strategy_count}`)
   }
 
-  const oofReturns = await loadMatureStrategyOofReturns(env.DB, asOfDate)
+  const oofReturns = await loadMatureStrategyOofReturns(databaseForDataDomain(env, 'learning'), asOfDate)
   const strategies = [...strategyRows.entries()]
     .sort(([left], [right]) => left.localeCompare(right))
     .map(([strategyId, row]) => ({
@@ -3720,20 +3720,20 @@ export async function runBottomUpScreener(env: Bindings, runDate?: string | null
     )
     const currentRegime = canonicalRegimeState.family
     runtimeStrategyRegime = currentRegime
-    const { specs, source, registryRowCount, activeCount } = await listStrategySpecsForLearning(env.DB, { asOfDate: endDate })
+    const { specs, source, registryRowCount, activeCount } = await listStrategySpecsForLearning(databaseForDataDomain(env, 'learning'), { asOfDate: endDate })
     runtimeStrategySpecs = specs
     const strategyIds = specs
       .filter((spec: StrategySpec) => spec.status !== 'retired')
       .map((spec: StrategySpec) => spec.id)
     const { loadStrategyProductionPolicyBefore, resolveRuntimeStrategyWeights } = await import('./strategyProductionPolicyStore')
     const [productionPolicyLoad, strategyOofLoad] = await Promise.all([
-      loadStrategyProductionPolicyBefore(env.DB, endDate, strategyIds)
+      loadStrategyProductionPolicyBefore(databaseForDataDomain(env, 'learning'), endDate, strategyIds)
         .then((value) => ({ value, error: null as string | null }))
         .catch((error) => ({
           value: null,
           error: error instanceof Error ? error.message.slice(0, 300) : String(error).slice(0, 300),
         })),
-      loadMatureStrategyOofReturns(env.DB, endDate)
+      loadMatureStrategyOofReturns(databaseForDataDomain(env, 'learning'), endDate)
         .then((returns) => ({ returns, error: null as string | null }))
         .catch((error) => ({
           returns: {} as Record<string, Array<{ signal_date: string; residual_return: number; sample_count: number }>>,
@@ -3757,7 +3757,7 @@ export async function runBottomUpScreener(env: Bindings, runDate?: string | null
     )
     const { loadPromotedStrategyRouteCalibration } = await import('./strategyRouteCalibration')
     const [strategyPortfolioMetrics, strategySimilarityEvidence, runtimeTeacherEvidence, previousL15SlateLoad, promotedRouteCalibrationLoad] = await Promise.all([
-      loadStrategyPortfolioMetricOverrides(env.DB, {
+      loadStrategyPortfolioMetricOverrides(databaseForDataDomain(env, 'learning'), {
         regime: currentRegime,
         marketSegment: 'all',
         asOfDate: endDate,
@@ -3780,7 +3780,7 @@ export async function runBottomUpScreener(env: Bindings, runDate?: string | null
           value: { date: null, runId: null, symbols: [] as string[] },
           error: error instanceof Error ? error.message.slice(0, 300) : String(error).slice(0, 300),
         })),
-      loadPromotedStrategyRouteCalibration(env.DB)
+      loadPromotedStrategyRouteCalibration(databaseForDataDomain(env, 'learning'))
         .then((value) => ({ value, error: null as string | null }))
         .catch((error) => ({
           value: null,

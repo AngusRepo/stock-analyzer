@@ -5,6 +5,7 @@ import { readCurrentExpectedReturnServingState } from './expectedReturnServingSt
 import { nextTwTradingDate } from './schedulerPolicy'
 import { twToday } from './dateUtils'
 import { strategyMiningDispatchKey } from './strategyMiningGateway'
+import { databaseForDataDomain } from './dataDomainRegistry'
 
 function requireController(env: Bindings): void {
   if (!env.ML_CONTROLLER_URL) {
@@ -445,7 +446,7 @@ export async function runAllocatorEvFeatureSnapshotBackfill(
         + `expected=${closure.expectedRows} published=${closure.publishedRows} actual=${closure.actualRows}`,
       )
     }
-    const recorded = await recordAllocatorEvLifecycle(env.DB, {
+    const recorded = await recordAllocatorEvLifecycle(databaseForDataDomain(env, 'learning'), {
       businessDate: params.startDate,
       state: 'snapshot_ready',
       nativeLineageRows: closure.nativeLineageRows,

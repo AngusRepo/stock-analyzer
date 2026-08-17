@@ -1,4 +1,5 @@
 import type { Bindings } from '../types'
+import { databaseForDataDomain } from './dataDomainRegistry'
 import {
   buildNeuralMetaBanditTrainingPayload,
   listLinUcbRewardSourceRows,
@@ -24,7 +25,7 @@ export interface NeuralShadowRunOptions {
 export async function runNeuralMetaShadow(env: Bindings, options: NeuralShadowRunOptions) {
   const mlUrl = env.ML_SERVICE_URL?.trim()?.replace(/\/+$/, '')
   if (!mlUrl) throw new Error('ML_SERVICE_URL not set; cannot run neural meta shadow')
-  const rows = options.sourceRows ?? await listLinUcbRewardSourceRows(env.DB, {
+  const rows = options.sourceRows ?? await listLinUcbRewardSourceRows(databaseForDataDomain(env, 'learning'), {
     startDate: options.startDate,
     endDate: options.endDate,
     limit: options.limit ?? 5000,
@@ -75,7 +76,7 @@ export async function runNeuralMetaShadow(env: Bindings, options: NeuralShadowRu
   }
 
   const dryRun = options.dryRun !== false
-  const persisted = dryRun ? 0 : await persistMetaShadowDecisionRows(env.DB, normalized.rows)
+  const persisted = dryRun ? 0 : await persistMetaShadowDecisionRows(databaseForDataDomain(env, 'learning'), normalized.rows)
   return {
     success: true,
     mode: dryRun ? 'dry_run' : 'persisted',

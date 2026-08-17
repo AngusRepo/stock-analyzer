@@ -1,4 +1,5 @@
 import type { Bindings } from '../types'
+import { databaseForDataDomain } from './dataDomainRegistry'
 
 export interface AdaptiveMetaPolicyReplayRow {
   date?: string | null
@@ -208,7 +209,7 @@ export async function runAdaptiveMetaPolicyReplay(
 
   const startDate = options.startDate ?? daysAgoTw(90)
   const endDate = options.endDate ?? todayTw()
-  const rows = await listAdaptiveMetaPolicyReplayRows(env.DB, {
+  const rows = await listAdaptiveMetaPolicyReplayRows(databaseForDataDomain(env, 'learning'), {
     startDate,
     endDate,
     limit: options.limit ?? 20000,

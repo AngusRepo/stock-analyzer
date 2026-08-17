@@ -371,10 +371,11 @@ export function buildAdminWorkerDomainTaskMap(c: any, deps: TriggerDeps): Record
         reconcileAndReleaseStrategyLearningFinalizedTelemetry,
         reconcileStrategyLearningFinalizedRetryFastPath,
       } = await import('./strategyLearningFinalizedTelemetry')
-      const runState = await loadStrategyLearningRun(c.env.DB, runDate)
+      const learningDb = databaseForDataDomain(c.env, 'learning')
+      const runState = await loadStrategyLearningRun(learningDb, runDate)
       if (!runState) throw new Error(`strategy_learning_run_missing:${runDate}`)
       const finalizedRetry = await reconcileStrategyLearningFinalizedRetryFastPath(
-        c.env.DB,
+        learningDb,
         c.env.KV,
         runState,
         {
@@ -400,7 +401,7 @@ export function buildAdminWorkerDomainTaskMap(c: any, deps: TriggerDeps): Record
         canonicalRunId: runState.canonical_run_id,
         leaseOwner,
       }
-      const claimed = await claimStrategyLearningPage(c.env.DB, {
+      const claimed = await claimStrategyLearningPage(learningDb, {
         ...leaseIdentity,
         cursorSymbol: String(runState.cursor_symbol ?? ''),
         leaseSeconds: STRATEGY_LEARNING_LEASE_SECONDS,
@@ -412,7 +413,7 @@ export function buildAdminWorkerDomainTaskMap(c: any, deps: TriggerDeps): Record
       let durableFinalized = false
       let finalizerHeartbeat: ReturnType<typeof startStrategyLearningLeaseHeartbeat> | null = null
       try {
-        const coverage = await completeStrategyLearningRun(c.env.DB, {
+        const coverage = await completeStrategyLearningRun(learningDb, {
           ...leaseIdentity,
           leaseSeconds: STRATEGY_LEARNING_LEASE_SECONDS,
         })
@@ -420,7 +421,7 @@ export function buildAdminWorkerDomainTaskMap(c: any, deps: TriggerDeps): Record
           throw new Error(`strategy_learning_lease_lost:${runDate}:${runState.canonical_run_id}:${leaseOwner}`)
         }
         materializationValidated = true
-        finalizerHeartbeat = startStrategyLearningLeaseHeartbeat(c.env.DB, {
+        finalizerHeartbeat = startStrategyLearningLeaseHeartbeat(learningDb, {
           ...leaseIdentity,
           leaseSeconds: STRATEGY_LEARNING_LEASE_SECONDS,
         })
@@ -449,7 +450,7 @@ export function buildAdminWorkerDomainTaskMap(c: any, deps: TriggerDeps): Record
         await assertFinalizerLease('mature_recovery')
         let closureSummary = ''
         const { decisionEvidence, historicalEvidence, labels, marginalEdge, routeBackfillEligibility, rewards, policy, productionPolicy }
-          = await finalizeStrategyLearningEvidenceV5(c.env.DB, runDate, {
+          = await finalizeStrategyLearningEvidenceV5(learningDb, runDate, {
             allowPromotion: currentBusinessDateRun,
             persistPolicy: currentBusinessDateRun,
             historicalPriorityDate,
@@ -495,9 +496,9 @@ export function buildAdminWorkerDomainTaskMap(c: any, deps: TriggerDeps): Record
         `production_authority=${authorityReason}`,
         ].join(' ')
         await assertFinalizerLease('finalize')
-        const finalized = await markStrategyLearningRunFinalized(c.env.DB, leaseIdentity)
+        const finalized = await markStrategyLearningRunFinalized(learningDb, leaseIdentity)
         if (!finalized) {
-          const deferred = await deferStrategyLearningFinalizer(c.env.DB, {
+          const deferred = await deferStrategyLearningFinalizer(learningDb, {
             ...leaseIdentity,
             error: `strategy_learning_finalize_authority_lost:${runDate}:${runState.canonical_run_id}`,
           })
@@ -508,7 +509,7 @@ export function buildAdminWorkerDomainTaskMap(c: any, deps: TriggerDeps): Record
         }
         durableFinalized = true
         const telemetryFinalized = await reconcileAndReleaseStrategyLearningFinalizedTelemetry(
-          c.env.DB,
+          learningDb,
           c.env.KV,
           leaseIdentity,
           {
@@ -532,11 +533,11 @@ export function buildAdminWorkerDomainTaskMap(c: any, deps: TriggerDeps): Record
           throw error
         }
         const transitioned = materializationValidated
-          ? await deferStrategyLearningFinalizer(c.env.DB, {
+          ? await deferStrategyLearningFinalizer(learningDb, {
               ...leaseIdentity,
               error: errorMessage,
             })
-          : await failStrategyLearningRun(c.env.DB, {
+          : await failStrategyLearningRun(learningDb, {
               ...leaseIdentity,
             error: errorMessage,
           })

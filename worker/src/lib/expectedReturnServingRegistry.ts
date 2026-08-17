@@ -367,7 +367,7 @@ export async function inspectExpectedReturnLifecycleHealth(
 }> {
   const alerts: string[] = []
   const warnings: string[] = []
-  const projections = await loadExpectedReturnPointerProjections(env.DB)
+  const projections = await loadExpectedReturnPointerProjections(databaseForDataDomain(env, 'learning'))
   for (const owner of Object.keys(projections) as ExpectedReturnOwner[]) {
     const projection = projections[owner]
     if (!projection.valid) alerts.push(...projection.blockers.map((item) => `${owner}:${item}`))

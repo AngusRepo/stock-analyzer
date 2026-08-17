@@ -629,7 +629,7 @@ export async function runAllocatorEvLifecycleWatchdog(
       allowPointInTimeReconstruction: true,
       kv: env.KV,
     }),
-    inspectAllocatorEvMaturityCoverage(env.DB, businessDate),
+    inspectAllocatorEvMaturityCoverage(databaseForDataDomain(env, 'learning'), businessDate),
   ])
   if (snapshot.nativeLineageRows <= 0) {
     if (snapshot.recommendationRows <= 0) {
@@ -637,7 +637,7 @@ export async function runAllocatorEvLifecycleWatchdog(
     }
     const reason = `missing point-in-time ensemble lineage before next executable session open `
       + `recommendations=${snapshot.recommendationRows}; ${maturitySummary(maturity)}`
-    await recordAllocatorEvLifecycle(env.DB, {
+    await recordAllocatorEvLifecycle(databaseForDataDomain(env, 'learning'), {
       businessDate,
       state: 'error',
       nativeLineageRows: 0,
@@ -672,7 +672,7 @@ export async function runAllocatorEvLifecycleWatchdog(
       + `run_id=${postPipelineStage?.canonical_run_id ?? 'unknown'} `
       + `lineage=${snapshot.nativeLineageRows} expected=${snapshot.expectedRows} actual=${snapshot.actualRows}`
   }
-  const lifecycle = await readAllocatorEvLifecycle(env.DB, businessDate)
+  const lifecycle = await readAllocatorEvLifecycle(databaseForDataDomain(env, 'learning'), businessDate)
   const postVerifyReached = lifecycle && ['replay_pending_maturity', 'replay_enqueued', 'replay_complete'].includes(lifecycle.state)
   const postPipelineReached = lifecycle
     && [
@@ -703,7 +703,7 @@ export async function runAllocatorEvLifecycleWatchdog(
   if (snapshot.ready && lifecycle?.state === 'replay_pending_maturity' && matureReplayMissingRows > 0) {
     const maturityAsOfDate = twTodayDate()
     const runId = `allocator-ev-lifecycle-mature-replay-${businessDate}-${Date.now()}`
-    const replayRecorded = await recordAllocatorEvLifecycle(env.DB, {
+    const replayRecorded = await recordAllocatorEvLifecycle(databaseForDataDomain(env, 'learning'), {
       businessDate,
       state: 'replay_enqueued',
       replayMaturityAsOfDate: maturityAsOfDate,

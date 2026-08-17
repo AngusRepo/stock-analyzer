@@ -1,5 +1,6 @@
 import type { Bindings } from '../types'
 import { listAdaptiveMetaPolicyReplayRows } from './adaptiveMetaPolicyReplayRunner'
+import { databaseForDataDomain } from './dataDomainRegistry'
 
 export const LINUCB_MULTIPLIER_REPLAY_DEFAULT_LIMIT = 5000
 export const LINUCB_MULTIPLIER_REPLAY_DEFAULT_MAX_GRID_EVALS = 32
@@ -64,7 +65,7 @@ export async function runLinUcbMultiplierReplay(
 
   const startDate = options.startDate ?? daysAgoTw(90)
   const endDate = options.endDate ?? todayTw()
-  const rows = await listAdaptiveMetaPolicyReplayRows(env.DB, {
+  const rows = await listAdaptiveMetaPolicyReplayRows(databaseForDataDomain(env, 'learning'), {
     startDate,
     endDate,
     limit: options.limit ?? LINUCB_MULTIPLIER_REPLAY_DEFAULT_LIMIT,

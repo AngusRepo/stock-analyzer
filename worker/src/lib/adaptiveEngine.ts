@@ -204,7 +204,7 @@ function dateDaysAgo(days: number): string {
 
 export async function refreshLinUcbLedgerForAdaptive(env: AdaptiveEngineEnv, endDate: string): Promise<Record<string, unknown>> {
   try {
-    const report = await refreshLinUcbRewardLedger(env.DB, {
+    const report = await refreshLinUcbRewardLedger(databaseForDataDomain(env, 'learning'), {
       startDate: dateDaysAgo(90),
       endDate,
       limit: 5000,

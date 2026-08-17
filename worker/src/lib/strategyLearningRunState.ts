@@ -65,9 +65,9 @@ export async function inspectCanonicalStrategyUniverse(
 
 export async function initializeStrategyLearningRun(
   db: D1Database,
-  input: { businessDate: string; runId: string; strategyCount: number },
+  input: { businessDate: string; runId: string; strategyCount: number; universeDb?: D1Database },
 ): Promise<StrategyLearningRunRow> {
-  const universe = await inspectCanonicalStrategyUniverse(db, input.businessDate)
+  const universe = await inspectCanonicalStrategyUniverse(input.universeDb ?? db, input.businessDate)
   if (!universe.producer_run_id || universe.expected_candidates <= 0) {
     throw new Error(`strategy_learning_reference_universe_missing:${input.businessDate}`)
   }

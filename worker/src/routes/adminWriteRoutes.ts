@@ -369,7 +369,7 @@ adminWriteRoutes.post('/api/admin/meta-learning/linucb/reward-ledger/refresh', a
     }, 400)
   }
 
-  const report = await refreshLinUcbRewardLedger(c.env.DB, {
+  const report = await refreshLinUcbRewardLedger(databaseForDataDomain(c.env, 'learning'), {
     startDate: body.start_date,
     endDate: body.end_date,
     limit: body.limit,
@@ -419,7 +419,7 @@ adminWriteRoutes.post('/api/admin/meta-learning/shadow-decisions', async (c) => 
     }, 400)
   }
 
-  const persisted = await persistMetaShadowDecisionRows(c.env.DB, normalized.rows)
+  const persisted = await persistMetaShadowDecisionRows(databaseForDataDomain(c.env, 'learning'), normalized.rows)
   return c.json({
     success: true,
     mode: 'persisted',
@@ -490,7 +490,7 @@ adminWriteRoutes.post('/api/admin/strategy/spec-registry/seed', async (c) => {
     }, 400)
   }
   const { seedDefaultStrategySpecRegistry } = await import('../lib/strategyLearning')
-  const report = await seedDefaultStrategySpecRegistry(c.env.DB)
+  const report = await seedDefaultStrategySpecRegistry(databaseForDataDomain(c.env, 'learning'))
   return c.json({
     success: true,
     mode: 'persisted',
@@ -516,11 +516,14 @@ adminWriteRoutes.post('/api/admin/strategy/decision-log/materialize', async (c) 
     }, 400)
   }
   const { materializeStrategyDecisionLog, seedDefaultStrategySpecRegistry } = await import('../lib/strategyLearning')
-  if (!dryRun) await seedDefaultStrategySpecRegistry(c.env.DB)
-  const report = await materializeStrategyDecisionLog(c.env.DB, {
+  const learningDb = databaseForDataDomain(c.env, 'learning')
+  const opsDb = databaseForDataDomain(c.env, 'ops')
+  if (!dryRun) await seedDefaultStrategySpecRegistry(learningDb)
+  const report = await materializeStrategyDecisionLog(learningDb, {
     date: body.date ?? c.req.query('date') ?? twToday(),
     limit: body.limit,
     dryRun,
+    candidateDb: opsDb,
     artifactEnv: c.env,
     producerRunId: `manual-strategy-learning-${body.date ?? c.req.query('date') ?? twToday()}-${Date.now().toString(36)}`,
   })
@@ -548,7 +551,7 @@ adminWriteRoutes.post('/api/admin/strategy/evidence-v5/rebuild', async (c) => {
   const { listHistoricalStrategyEvidenceV5Dates } = await import('../lib/strategyLearning')
 
   if (dryRun) {
-    const candidateDates = await listHistoricalStrategyEvidenceV5Dates(c.env.DB, { asOfDate, maxDates })
+    const candidateDates = await listHistoricalStrategyEvidenceV5Dates(databaseForDataDomain(c.env, 'learning'), { asOfDate, maxDates })
     return c.json({
       success: true,
       mode: 'dry_run',
@@ -702,7 +705,7 @@ adminWriteRoutes.post('/api/admin/strategy/marginal-edge-v4/refresh', async (c) 
   }
 
   const { refreshStrategyMarginalEdgeV4 } = await import('../lib/strategyMarginalEdgeV4')
-  const report = await refreshStrategyMarginalEdgeV4(c.env.DB, asOfDate, { allowPromotion: false })
+  const report = await refreshStrategyMarginalEdgeV4(databaseForDataDomain(c.env, 'learning'), asOfDate, { allowPromotion: false })
   return c.json({
     success: true,
     mode: 'persisted_shadow',
@@ -732,7 +735,7 @@ adminWriteRoutes.post('/api/admin/strategy/reward-ledger/refresh', async (c) => 
     }, 400)
   }
   const { refreshStrategyRewardLedger } = await import('../lib/strategyLearning')
-  const report = await refreshStrategyRewardLedger(c.env.DB, {
+  const report = await refreshStrategyRewardLedger(databaseForDataDomain(c.env, 'learning'), {
     startDate: body.start_date,
     endDate: body.end_date,
     limit: body.limit,
@@ -763,7 +766,7 @@ adminWriteRoutes.post('/api/admin/strategy/policy-state/refresh', async (c) => {
     }, 400)
   }
   const { refreshStrategyAdaptivePolicyState } = await import('../lib/strategyLearning')
-  const report = await refreshStrategyAdaptivePolicyState(c.env.DB, {
+  const report = await refreshStrategyAdaptivePolicyState(databaseForDataDomain(c.env, 'learning'), {
     date: body.date ?? c.req.query('date') ?? twToday(),
     dryRun,
   })
@@ -820,9 +823,10 @@ adminWriteRoutes.post('/api/admin/strategy/production-policy/recover', async (c)
     import('../lib/strategyLearning'),
     import('../lib/strategyProductionPolicyService'),
   ])
+  const learningDb = databaseForDataDomain(c.env, 'learning')
   const [policy, specsResult] = await Promise.all([
-    refreshStrategyAdaptivePolicyState(c.env.DB, { date, dryRun: true }),
-    listStrategySpecsForLearning(c.env.DB, { applyAdaptivePolicy: false }),
+    refreshStrategyAdaptivePolicyState(learningDb, { date, dryRun: true }),
+    listStrategySpecsForLearning(learningDb, { applyAdaptivePolicy: false }),
   ])
   const eligibleStrategyIds = policy.promotion_gate
     .filter((gate) => gate.allocation_eligible === true)
@@ -839,7 +843,7 @@ adminWriteRoutes.post('/api/admin/strategy/production-policy/recover', async (c)
     })
   }
 
-  const recovered = await refreshStrategyProductionContributionPolicy(c.env.DB, {
+  const recovered = await refreshStrategyProductionContributionPolicy(learningDb, {
     knowledgeCutoffDate: date,
     strategies: specsResult.specs,
     gates: policy.promotion_gate,
@@ -894,7 +898,7 @@ adminWriteRoutes.post('/api/admin/entry-model-v2/replay', async (c) => {
     minRank: body.min_rank,
     maxRank: body.max_rank,
   })
-  const persisted = dryRun ? null : await persistEntryModelReplayReport(c.env.DB, report)
+  const persisted = dryRun ? null : await persistEntryModelReplayReport(databaseForDataDomain(c.env, 'learning'), report)
   return c.json({
     success: true,
     mode: dryRun ? 'dry_run' : 'persisted',

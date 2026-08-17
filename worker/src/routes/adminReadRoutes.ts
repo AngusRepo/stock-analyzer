@@ -68,8 +68,8 @@ adminReadRoutes.get('/api/admin/expected-return/serving-state', async (c) => {
   ])
   const [serving, candidates, maturity] = await Promise.all([
     readCurrentExpectedReturnServingState(c.env, date),
-    inspectExpectedReturnCandidateEvidence(c.env.DB),
-    inspectAllocatorEvMaturityCoverage(c.env.DB, date),
+    inspectExpectedReturnCandidateEvidence(databaseForDataDomain(c.env, 'learning')),
+    inspectAllocatorEvMaturityCoverage(databaseForDataDomain(c.env, 'learning'), date),
   ])
   return c.json({ success: true, date, serving, candidates, maturity })
 })
@@ -526,7 +526,7 @@ adminReadRoutes.get('/api/admin/entry-model-v2/replay/latest', async (c) => {
   if (authError) return authError
 
   const { getLatestEntryModelReplayReport } = await import('../lib/entryModelReplay')
-  const latest = await getLatestEntryModelReplayReport(c.env.DB)
+  const latest = await getLatestEntryModelReplayReport(databaseForDataDomain(c.env, 'learning'))
   return c.json({
     success: true,
     mode: 'read_only',
@@ -550,9 +550,11 @@ adminReadRoutes.post('/api/admin/strategy/dry-run', async (c) => {
   let candidateSource = 'request_body'
   const { listStrategySpecsForLearning, listStrategyLearningCandidates } = await import('../lib/strategyLearning')
   const { dryRunStrategySpec, listStrategySpecs } = await import('../lib/strategyLab')
-  const { specs, source: specSource } = await listStrategySpecsForLearning(c.env.DB)
+  const learningDb = databaseForDataDomain(c.env, 'learning')
+  const opsDb = databaseForDataDomain(c.env, 'ops')
+  const { specs, source: specSource } = await listStrategySpecsForLearning(learningDb)
   if (!candidates.length) {
-    candidates = await listStrategyLearningCandidates(c.env.DB, date, limit) as unknown as Array<Record<string, unknown>>
+    candidates = await listStrategyLearningCandidates(opsDb, date, limit) as unknown as Array<Record<string, unknown>>
     candidateSource = 'screener_funnel_scoring_pass'
   }
   const runtimeSpecs = listStrategySpecs(specs)
@@ -585,8 +587,8 @@ adminReadRoutes.get('/api/admin/research/experiments', async (c) => {
   const experiments = await listResearchExperiments(c.env.KV, limit)
   const metaLearningTracks = listMetaLearningTracks(experiments)
   const [rewardLedger, shadowDecisions] = await Promise.all([
-    listMetaRewardLedgerRows(c.env.DB),
-    listMetaShadowDecisionEvidence(c.env.DB),
+    listMetaRewardLedgerRows(databaseForDataDomain(c.env, 'learning')),
+    listMetaShadowDecisionEvidence(databaseForDataDomain(c.env, 'learning')),
   ])
   return c.json({
     success: true,

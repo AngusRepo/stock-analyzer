@@ -192,15 +192,15 @@ async function logSkippedHistoricalTask(env: Bindings, ctx: ChainContext, task: 
 export async function runMetaLearningShadowClosure(env: Bindings, ctx: ChainContext): Promise<string> {
   const runDate = ctx.runDate ?? new Date(Date.now() + 8 * 3600_000).toISOString().slice(0, 10)
   const registry = await ensureMetaLearningResearchRegistry(env.KV)
-  const hydration = await hydrateMatureMetaShadowDecisionRewards(env.DB, {
+  const hydration = await hydrateMatureMetaShadowDecisionRewards(databaseForDataDomain(env, 'learning'), {
     endDate: runDate,
     limit: 50000,
   })
-  const sourceRows = await listLinUcbRewardSourceRows(env.DB, {
+  const sourceRows = await listLinUcbRewardSourceRows(databaseForDataDomain(env, 'learning'), {
     endDate: runDate,
     limit: 5000,
   })
-  const decisionRows = await listLinUcbRewardSourceRows(env.DB, {
+  const decisionRows = await listLinUcbRewardSourceRows(databaseForDataDomain(env, 'learning'), {
     startDate: runDate,
     endDate: runDate,
     limit: 5000,
@@ -300,13 +300,13 @@ async function enqueueS12ReplayBackfillTask(env: Bindings, ctx: ChainContext): P
   const { loadReplayReadySignalDates } = await import('./s12ReplayTradeOutcome')
   const signalDates = await loadReplayReadySignalDates(env.DB, runDate, 5)
   for (const signalDate of signalDates) {
-    const lifecycle = await readAllocatorEvLifecycle(env.DB, signalDate)
+    const lifecycle = await readAllocatorEvLifecycle(databaseForDataDomain(env, 'learning'), signalDate)
     const lifecycleRunId = String(lifecycle?.upstream_run_id ?? '').trim()
     if (!lifecycleRunId) {
       throw new Error(`s12_replay_lifecycle_generation_missing:${signalDate}`)
     }
     const runId = `${canonicalRunId}-s12-${signalDate}-${Date.now()}`
-    const recorded = await recordAllocatorEvLifecycle(env.DB, {
+    const recorded = await recordAllocatorEvLifecycle(databaseForDataDomain(env, 'learning'), {
       businessDate: signalDate,
       state: 'replay_enqueued',
       replayMaturityAsOfDate: runDate,
@@ -332,7 +332,7 @@ async function enqueueS12ReplayBackfillTask(env: Bindings, ctx: ChainContext): P
       lifecycleRunId,
     } as any)
   }
-  const currentRecorded = await recordAllocatorEvLifecycle(env.DB, {
+  const currentRecorded = await recordAllocatorEvLifecycle(databaseForDataDomain(env, 'learning'), {
     businessDate: runDate,
     state: 'replay_pending_maturity',
     upstreamRunId: canonicalRunId,
@@ -385,7 +385,7 @@ async function recordPostPipelineLifecycle(
   if (!canonicalRunId || !leaseOwner) {
     throw new Error('post_pipeline_stage_authority_missing')
   }
-  const recorded = await recordAllocatorEvLifecycle(env.DB, {
+  const recorded = await recordAllocatorEvLifecycle(databaseForDataDomain(env, 'learning'), {
     ...input,
     upstreamRunId: canonicalRunId,
     stageAuthority: {

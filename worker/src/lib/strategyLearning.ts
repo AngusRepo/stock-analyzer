@@ -1647,6 +1647,7 @@ export async function materializeStrategyDecisionLog(
     date: string
     limit?: number
     dryRun?: boolean
+    candidateDb?: D1Database
     artifactEnv?: Pick<Bindings, 'DB' | 'ARTIFACTS'>
     producerRunId?: string
   },
@@ -1661,7 +1662,7 @@ export async function materializeStrategyDecisionLog(
   preview: StrategyDecisionLogRow[]
 }> {
   const { specs, source } = await listStrategySpecsForLearning(db, { asOfDate: options.date })
-  const candidates = await listStrategyLearningCandidates(db, options.date, options.limit)
+  const candidates = await listStrategyLearningCandidates(options.candidateDb ?? db, options.date, options.limit)
   const rows = buildStrategyDecisionRows(options.date, candidates, specs)
   const dryRun = options.dryRun !== false
   const persisted = dryRun ? 0 : await persistStrategyDecisionRows(db, rows, options.artifactEnv, options.producerRunId)
@@ -2149,6 +2150,7 @@ export async function materializeStrategyDecisionLogChunk(
     dryRun?: boolean
     artifactEnv?: Pick<Bindings, 'DB' | 'ARTIFACTS'>
     producerRunId?: string
+    candidateDb?: D1Database
   },
 ): Promise<{
   success: boolean
@@ -2168,7 +2170,7 @@ export async function materializeStrategyDecisionLogChunk(
   const afterSymbol = cleanToken(options.afterSymbol)
   const limit = Math.max(1, Math.min(Math.floor(options.limit ?? 80), 250))
   const { specs, source } = await listStrategySpecsForLearning(db, { asOfDate: options.date })
-  const candidatePage = await listStrategyLearningCandidates(db, options.date, limit + 1, afterSymbol)
+  const candidatePage = await listStrategyLearningCandidates(options.candidateDb ?? db, options.date, limit + 1, afterSymbol)
   const hasMore = candidatePage.length > limit
   const candidates = candidatePage.slice(0, limit)
   const nextCursorSymbol = cleanToken(candidates[candidates.length - 1]?.symbol) || afterSymbol

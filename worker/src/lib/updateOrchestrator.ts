@@ -1754,8 +1754,8 @@ export async function refreshMatureStrategyEvidenceBeforeScreener(
       maxRecoveryDates: 4,
     })
     const labels = await materializeCanonicalSelectionLabelsV4(env.DB, { asOfDate })
-    const marginalEdge = await refreshStrategyMarginalEdgeV4(env.DB, asOfDate)
-    const rewards = await refreshStrategyRewardLedger(env.DB, { endDate: asOfDate, dryRun: false })
+    const marginalEdge = await refreshStrategyMarginalEdgeV4(databaseForDataDomain(env, 'learning'), asOfDate)
+    const rewards = await refreshStrategyRewardLedger(databaseForDataDomain(env, 'learning'), { endDate: asOfDate, dryRun: false })
     const summary = [
       `mature_recovery=${recovery.summary}`,
       `labels=${labels.persisted_rows}`,
@@ -3019,7 +3019,7 @@ export async function processUpdateBatch(
     }
     const { rebuildHistoricalStrategyEvidenceV5 } = await import('./strategyLearning')
     const { readHistoricalHmmRegimeFamily } = await import('./marketRegimeState')
-    const report = await rebuildHistoricalStrategyEvidenceV5(env.DB, {
+    const report = await rebuildHistoricalStrategyEvidenceV5(databaseForDataDomain(env, 'learning'), {
       asOfDate: signalDate,
       maxDates: Math.max(1, Math.min(5, Number(msg.strategyEvidenceMaxDates ?? 1))),
       priorityDate: signalDate,
@@ -3450,6 +3450,8 @@ export async function processUpdateBatch(
       console.log(`[Queue] Invalid strategy-learning date ${triggerTime}, skipping.`)
       return
     }
+    const learningDb = databaseForDataDomain(env, 'learning')
+    const opsDb = databaseForDataDomain(env, 'ops')
 
     const {
       checkpointStrategyLearningPage,
@@ -3472,7 +3474,7 @@ export async function processUpdateBatch(
       finalizedState: Awaited<ReturnType<typeof loadStrategyLearningRun>>,
     ): Promise<boolean> => {
       const outcome = await reconcileStrategyLearningFinalizedRetryFastPath(
-        env.DB,
+        learningDb,
         env.KV,
         finalizedState,
         {
@@ -3494,7 +3496,7 @@ export async function processUpdateBatch(
       return true
     }
 
-    const existingState = await loadStrategyLearningRun(env.DB, triggerTime)
+    const existingState = await loadStrategyLearningRun(learningDb, triggerTime)
     if (await handleFinalizedRetry(existingState)) return
 
     const {
@@ -3504,13 +3506,14 @@ export async function processUpdateBatch(
       seedDefaultStrategySpecRegistry,
     } = await import('./strategyLearning')
     if (!requestedCursor) {
-      await seedDefaultStrategySpecRegistry(env.DB)
+      await seedDefaultStrategySpecRegistry(learningDb)
     }
-    const { specs } = await listStrategySpecsForLearning(env.DB)
-    const state = await initializeStrategyLearningRun(env.DB, {
+    const { specs } = await listStrategySpecsForLearning(learningDb)
+    const state = await initializeStrategyLearningRun(learningDb, {
       businessDate: triggerTime,
       runId,
       strategyCount: specs.length,
+      universeDb: opsDb,
     })
     if (await handleFinalizedRetry(state)) return
     const expectedCandidates = Math.max(0, Number(state.expected_candidates ?? 0))
@@ -3532,7 +3535,7 @@ export async function processUpdateBatch(
       canonicalRunId,
       leaseOwner,
     }
-    const claimed = await claimStrategyLearningPage(env.DB, {
+    const claimed = await claimStrategyLearningPage(learningDb, {
       ...leaseIdentity,
       cursorSymbol: durableCursor,
       leaseSeconds: STRATEGY_LEARNING_LEASE_SECONDS,
@@ -3568,10 +3571,11 @@ export async function processUpdateBatch(
     try {
       let chunk: Awaited<ReturnType<typeof materializeStrategyDecisionLogChunk>> | null = null
       if (!materializationAlreadyComplete) {
-        chunk = await materializeStrategyDecisionLogChunk(env.DB, {
+        chunk = await materializeStrategyDecisionLogChunk(learningDb, {
         date: triggerTime,
         afterSymbol: durableCursor,
         limit: STRATEGY_LEARNING_QUEUE_CHUNK_SIZE,
+        candidateDb: opsDb,
         dryRun: false,
         artifactEnv: env,
         producerRunId: `${canonicalRunId}:after=${encodeURIComponent(durableCursor || 'start')}`,
@@ -3579,7 +3583,7 @@ export async function processUpdateBatch(
       if (chunk.has_more && (!chunk.next_cursor_symbol || chunk.next_cursor_symbol === durableCursor)) {
         throw new Error(`strategy_learning_keyset_stalled:${durableCursor}`)
       }
-      const checkpointed = await checkpointStrategyLearningPage(env.DB, {
+      const checkpointed = await checkpointStrategyLearningPage(learningDb, {
         ...leaseIdentity,
         previousCursor: durableCursor,
         nextCursor: chunk.next_cursor_symbol,
@@ -3630,7 +3634,7 @@ export async function processUpdateBatch(
       return
       }
 
-      const coverage = await completeStrategyLearningRun(env.DB, {
+      const coverage = await completeStrategyLearningRun(learningDb, {
         ...leaseIdentity,
         leaseSeconds: STRATEGY_LEARNING_LEASE_SECONDS,
       })
@@ -3638,7 +3642,7 @@ export async function processUpdateBatch(
         throw new Error(`strategy_learning_lease_lost:${triggerTime}:${canonicalRunId}:${leaseOwner}`)
       }
       materializationValidated = true
-      finalizerHeartbeat = startStrategyLearningLeaseHeartbeat(env.DB, {
+      finalizerHeartbeat = startStrategyLearningLeaseHeartbeat(learningDb, {
         ...leaseIdentity,
         leaseSeconds: STRATEGY_LEARNING_LEASE_SECONDS,
       })
@@ -3712,7 +3716,7 @@ export async function processUpdateBatch(
       }
       let closureSummary = ''
       const { decisionEvidence, historicalEvidence, labels, marginalEdge, routeBackfillEligibility, rewards, policy, productionPolicy }
-        = await finalizeStrategyLearningEvidenceV5(env.DB, triggerTime, {
+        = await finalizeStrategyLearningEvidenceV5(learningDb, triggerTime, {
           allowPromotion: policyMutationAllowed,
           persistPolicy: policyMutationAllowed,
           historicalPriorityDate,
@@ -3765,9 +3769,9 @@ export async function processUpdateBatch(
       ].join(' ')
 
       await assertFinalizerLease('finalize')
-      const finalized = await markStrategyLearningRunFinalized(env.DB, leaseIdentity)
+      const finalized = await markStrategyLearningRunFinalized(learningDb, leaseIdentity)
       if (!finalized) {
-        const deferred = await deferStrategyLearningFinalizer(env.DB, {
+        const deferred = await deferStrategyLearningFinalizer(learningDb, {
           ...leaseIdentity,
           error: `strategy_learning_finalize_authority_lost:${triggerTime}:${canonicalRunId}`,
         })
@@ -3779,7 +3783,7 @@ export async function processUpdateBatch(
       }
       durableFinalized = true
       const telemetryFinalized = await reconcileAndReleaseStrategyLearningFinalizedTelemetry(
-        env.DB,
+        learningDb,
         env.KV,
         leaseIdentity,
         {
@@ -3833,11 +3837,11 @@ export async function processUpdateBatch(
         throw error
       }
       const transitioned = materializationValidated
-        ? await deferStrategyLearningFinalizer(env.DB, {
+        ? await deferStrategyLearningFinalizer(learningDb, {
             ...leaseIdentity,
             error: errorMessage,
           })
-        : await failStrategyLearningRun(env.DB, {
+        : await failStrategyLearningRun(learningDb, {
             ...leaseIdentity,
           error: errorMessage,
         })
@@ -4214,7 +4218,7 @@ export async function processUpdateBatch(
       }, env)
       if (replayScope === 'fusion_snapshot_missing') {
         const { recordAllocatorEvLifecycle } = await import('./allocatorEvDailyLifecycle')
-        await recordAllocatorEvLifecycle(env.DB, {
+        await recordAllocatorEvLifecycle(databaseForDataDomain(env, 'learning'), {
           businessDate: triggerTime,
           state: 'error',
           replayRows: Math.max(0, Number(result.persisted ?? 0)),
@@ -4288,7 +4292,7 @@ export async function processUpdateBatch(
       } as any)
     } else if (replayClosed) {
       const { recordAllocatorEvLifecycle } = await import('./allocatorEvDailyLifecycle')
-      await recordAllocatorEvLifecycle(env.DB, {
+      await recordAllocatorEvLifecycle(databaseForDataDomain(env, 'learning'), {
         businessDate: triggerTime,
         state: 'replay_complete',
         replayRows: replayCoverage?.replayRows ?? 0,
@@ -4298,7 +4302,7 @@ export async function processUpdateBatch(
       })
     } else {
       const { recordAllocatorEvLifecycle } = await import('./allocatorEvDailyLifecycle')
-      await recordAllocatorEvLifecycle(env.DB, {
+      await recordAllocatorEvLifecycle(databaseForDataDomain(env, 'learning'), {
         businessDate: triggerTime,
         state: replayCoverage && replayCoverage.pendingMaturityRows > 0
           ? 'replay_pending_maturity'

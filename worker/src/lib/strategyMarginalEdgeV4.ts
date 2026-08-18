@@ -1076,11 +1076,14 @@ async function sourceFingerprint(cells: OutcomeCell[]): Promise<string> {
 export async function refreshStrategyMarginalEdgeV4(
   db: D1Database,
   asOfDate: string,
-  options: { allowPromotion?: boolean } = {},
+  options: { allowPromotion?: boolean; canonicalRunIds?: Record<string, string> } = {},
 ): Promise<{ runId: string; status: 'shadow' | 'promoted'; sampleDates: number; eligibleStrategies: number }> {
   const asOfMs = Date.parse(`${asOfDate}T00:00:00Z`)
   if (!Number.isFinite(asOfMs)) throw new Error(`invalid_strategy_edge_as_of_date:${asOfDate}`)
   const startDate = new Date(asOfMs - EDGE_LOOKBACK_CALENDAR_DAYS * 86_400_000).toISOString().slice(0, 10)
+  const canonicalOwnerClause = options.canonicalRunIds
+    ? "EXISTS (SELECT 1 FROM json_each(?) h WHERE h.key=m.signal_date AND h.value=m.producer_run_id)"
+    : "EXISTS (SELECT 1 FROM canonical_run_heads h WHERE h.logical_run_key='screener:' || m.signal_date || ':TW:production:market_screener' AND h.run_id=m.producer_run_id)"
   const cells: OutcomeCell[] = []
   let cursorDate = ''
   let cursorSymbol = ''
@@ -1115,11 +1118,7 @@ export async function refreshStrategyMarginalEdgeV4(
               AND eligible_owner.promotion_status <> 'retired'
               AND eligible_owner.variant_id NOT LIKE 's12_%'
          )
-         AND EXISTS (
-           SELECT 1 FROM canonical_run_heads h
-            WHERE h.logical_run_key='screener:' || m.signal_date || ':TW:production:market_screener'
-              AND h.run_id=m.producer_run_id
-         )
+         AND ${canonicalOwnerClause}
          AND (
            m.signal_date > ?
            OR (m.signal_date = ? AND m.symbol > ?)
@@ -1132,6 +1131,7 @@ export async function refreshStrategyMarginalEdgeV4(
       STRATEGY_FORMAL_LABELER_VERSION,
       STRATEGY_FORMAL_RECONSTRUCTION_LABELER_VERSION,
       startDate, asOfDate, asOfDate,
+      ...(options.canonicalRunIds ? [JSON.stringify(options.canonicalRunIds)] : []),
       cursorDate,
       cursorDate, cursorSymbol,
       cursorDate, cursorSymbol, cursorStrategyId,

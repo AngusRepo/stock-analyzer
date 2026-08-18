@@ -106,6 +106,21 @@ const staleReceipt = {
 
 {
   const kv = new FakeKv()
+  kv.values.set(
+    `scheduler:run:indicator-queue:${date}`,
+    JSON.stringify({ ...staleReceipt, status: 'success' }),
+  )
+  for (let shard = 0; shard < 4; shard += 1) {
+    kv.values.set(`${prefix}:done:${shard}`, '1')
+  }
+  const { env, sent } = fakeEnv(kv)
+  const summary = await runIndicatorQueueRecoveryWatchdog(env, date)
+  assert.match(summary, /finalizer re-enqueued/)
+  assert.equal(sent[0].type, 'finalize_update')
+}
+
+{
+  const kv = new FakeKv()
   kv.values.set(`scheduler:run:indicator-queue:${date}`, JSON.stringify(staleReceipt))
   kv.values.set(`${prefix}:watchdog-recoveries`, '6')
   const { env } = fakeEnv(kv)

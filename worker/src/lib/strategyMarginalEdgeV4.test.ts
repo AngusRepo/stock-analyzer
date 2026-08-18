@@ -195,6 +195,13 @@ assert(matureV7.accepted[0].pairedDeltaPowerAtMinimumEconomicDelta! >= 0.8)
 assert.equal(matureV7.globalRiskPass, true)
 assert.equal(matureV7.finalWeights.size, 1)
 const source = fs.readFileSync('src/lib/strategyMarginalEdgeV4.ts', 'utf8')
+const orchestratorSource = fs.readFileSync('src/lib/updateOrchestrator.ts', 'utf8')
+assert.match(source, /canonicalRunIds\?: Record<string, string>/)
+assert.match(source, /json_each\(\?\)/)
+assert.match(
+  orchestratorSource,
+  /refreshStrategyMarginalEdgeV4\(learningDb, asOfDate, \{ canonicalRunIds \}\)/,
+)
 assert.match(
   source,
   /l\.outcome_known_date <= \?/,

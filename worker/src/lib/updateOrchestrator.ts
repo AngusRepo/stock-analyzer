@@ -1767,7 +1767,7 @@ export async function refreshMatureStrategyEvidenceBeforeScreener(
     const learningDb = databaseForDataDomain(env, 'learning')
     const canonicalRunIds = await loadCanonicalScreenerRunIds(env, asOfDate)
     const labels = await materializeCanonicalSelectionLabelsV4(learningDb, { asOfDate, canonicalRunIds })
-    const marginalEdge = await refreshStrategyMarginalEdgeV4(learningDb, asOfDate)
+    const marginalEdge = await refreshStrategyMarginalEdgeV4(learningDb, asOfDate, { canonicalRunIds })
     const rewards = await refreshStrategyRewardLedger(learningDb, { endDate: asOfDate, dryRun: false, canonicalRunIds })
     const summary = [
       `mature_recovery=${recovery.summary}`,

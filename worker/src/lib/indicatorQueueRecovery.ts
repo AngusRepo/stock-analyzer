@@ -120,18 +120,20 @@ export async function runIndicatorQueueRecoveryWatchdog(
     'json',
   ) as SchedulerRunLogEntry | null
   if (!entry) return `skipped: indicator queue receipt missing for ${triggerTime}`
-  if (entry.status === 'success') return `skipped: indicator queue already complete for ${triggerTime}`
 
   const runId = schedulerRunId(entry)
   if (!runId) throw new Error(`indicator_queue_watchdog_run_id_missing:${triggerTime}`)
   const shardCount = schedulerShardCount(entry)
+  const prefix = runPrefix(triggerTime, runId)
+  if (entry.status === 'success' && await env.KV.get(`${prefix}:finalized`)) {
+    return `skipped: indicator queue and finalizer already complete for ${triggerTime}; run_id=${runId}`
+  }
   const timestampMs = Date.parse(String(entry.timestamp ?? ''))
   const ageMs = Number.isFinite(timestampMs) ? Date.now() - timestampMs : Number.POSITIVE_INFINITY
   if (ageMs < INDICATOR_QUEUE_STALE_MS) {
     return `skipped: indicator queue heartbeat fresh for ${triggerTime}; run_id=${runId}; age_ms=${Math.max(0, ageMs)}`
   }
 
-  const prefix = runPrefix(triggerTime, runId)
   const leaseKey = `${prefix}:watchdog-lease`
   if (await env.KV.get(leaseKey)) {
     return `skipped: indicator queue watchdog lease active for ${triggerTime}; run_id=${runId}`

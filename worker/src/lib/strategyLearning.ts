@@ -3437,7 +3437,7 @@ export async function listHistoricalStrategyEvidenceV5Dates(
          OR COALESCE(r.evaluation_contract_version, '') <> 'strategy-evaluation-v2'
          OR r.status NOT IN ('success','blocked')
          OR (r.status='success' AND v.signal_date IS NULL)
-         OR (r.status='blocked' AND r.blocker_reason LIKE 'strategy_matrix_source_labeler_unsupported:%:strategy-decision-log-pit-reconstruction-v6')
+         OR (r.status='blocked' AND r.blocker_reason='strategy_matrix_source_labeler_unsupported:' || r.signal_date || ':strategy-decision-log-pit-reconstruction-v6')
        )
      ORDER BY CASE WHEN d.date=? THEN 0 ELSE 1 END, d.date DESC
      LIMIT ?

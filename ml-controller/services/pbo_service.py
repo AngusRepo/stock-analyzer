@@ -24,7 +24,10 @@ from datetime import datetime, timezone
 from itertools import combinations
 from typing import Optional
 
-from services.backtest_trade_evidence import decode_backtest_trade_evidence
+from services.backtest_trade_evidence import (
+    decode_backtest_trade_evidence,
+    resolve_backtest_evidence_run_date,
+)
 
 from services.bounded_json import (
     BoundedJsonContractError,
@@ -643,6 +646,7 @@ async def run_pbo_analysis(
 
         # ── Step 3: Write to D1 ──
         today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        evidence_run_date = resolve_backtest_evidence_run_date(source, expected_run_date, today)
 
         raw_json = bounded_json_dumps({
             "method": pbo.method,
@@ -679,7 +683,7 @@ async def run_pbo_analysis(
                 go_live_verdict, verdict_reason, raw_details)
                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             [
-                today, source, pbo.n_partitions, pbo.n_combinations, pbo.n_trades,
+                evidence_run_date, source, pbo.n_partitions, pbo.n_combinations, pbo.n_trades,
                 pbo.pbo, pbo.n_oos_negative, pbo.oos_mean_return, pbo.is_mean_return,
                 pbo.degradation, pbo.go_live_verdict, pbo.verdict_reason,
                 raw_json,
@@ -688,7 +692,7 @@ async def run_pbo_analysis(
 
         summary = {
             "status": "success" if success else "d1_write_failed",
-            "run_date": today,
+            "run_date": evidence_run_date,
             "source": source,
             "method": pbo.method,
             "n_partitions": pbo.n_partitions,

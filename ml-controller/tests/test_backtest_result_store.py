@@ -8,7 +8,10 @@ from types import SimpleNamespace
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from services.backtest_result_store import build_replay_backtest_insert
-from services.backtest_trade_evidence import decode_backtest_trade_evidence
+from services.backtest_trade_evidence import (
+    decode_backtest_trade_evidence,
+    resolve_backtest_evidence_run_date,
+)
 
 
 def _trade(symbol: str, pnl: float, regime: str):
@@ -122,3 +125,9 @@ def test_backtest_evidence_can_grow_past_default_limit_without_sampling_exact_fi
     assert len(evidence) == len(trades)
     assert len(raw["trades"]) == 100
     assert raw["trades_complete"] is False
+
+
+def test_historical_backtest_consumers_preserve_expected_run_date():
+    assert resolve_backtest_evidence_run_date("backtest", "2026-08-16", "2026-08-18") == "2026-08-16"
+    assert resolve_backtest_evidence_run_date("paper", None, "2026-08-18") == "2026-08-18"
+    assert resolve_backtest_evidence_run_date("paper", "2026-08-16", "2026-08-18") == "2026-08-18"

@@ -19,7 +19,10 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Optional
 
-from services.backtest_trade_evidence import decode_backtest_trade_evidence
+from services.backtest_trade_evidence import (
+    decode_backtest_trade_evidence,
+    resolve_backtest_evidence_run_date,
+)
 from services.bounded_json import (
     BoundedJsonContractError,
     assert_bounded_json_fields_complete,
@@ -637,6 +640,7 @@ async def run_monte_carlo_mdd(
 
         # ── Step 4: Write to D1 ──
         today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        evidence_run_date = resolve_backtest_evidence_run_date(source, expected_run_date, today)
 
         # Reuse sorted MDD distribution from simulation (no recompute)
         mdds_for_dist = mc.mdds_sorted or []
@@ -683,7 +687,7 @@ async def run_monte_carlo_mdd(
                 go_live_verdict, verdict_reason, raw_distribution)
                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             [
-                today,
+                evidence_run_date,
                 source,
                 mc.n_simulations,
                 mc.n_trades,
@@ -703,7 +707,7 @@ async def run_monte_carlo_mdd(
 
         summary = {
             "status": "success" if success else "d1_write_failed",
-            "run_date": today,
+            "run_date": evidence_run_date,
             "source": source,
             "n_simulations": mc.n_simulations,
             "n_trades": mc.n_trades,

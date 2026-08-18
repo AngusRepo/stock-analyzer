@@ -8,6 +8,14 @@ from typing import Any
 
 BACKTEST_TRADE_EVIDENCE_SCHEMA_VERSION = "backtest-trade-evidence-v1"
 
+def resolve_backtest_evidence_run_date(
+    source: str,
+    expected_run_date: str | None,
+    wall_clock_date: str,
+) -> str:
+    return expected_run_date if source == "backtest" and expected_run_date else wall_clock_date
+
+
 
 def _read(trade: Any, key: str) -> Any:
     if isinstance(trade, dict):

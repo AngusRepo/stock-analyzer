@@ -1054,7 +1054,7 @@ export const demoteStaleActiveDiscoveryStrategySpecs = retireGeneratedDiscoveryS
 
 export async function listStrategySpecsForLearning(
   db: D1Database,
-  options: { asOfDate?: string; applyAdaptivePolicy?: boolean } = {},
+  options: { asOfDate?: string; applyAdaptivePolicy?: boolean; includeRetired?: boolean } = {},
 ): Promise<{ specs: StrategySpec[]; source: 'registry'; registryRowCount: number; activeCount: number }> {
   assertOwnerCanOwn('strategy', 'strategy_spec')
   await ensureStrategyLearningTables(db)
@@ -1100,8 +1100,10 @@ export async function listStrategySpecsForLearning(
   const adaptiveState = options.applyAdaptivePolicy === false || !options.asOfDate
     ? null
     : await getStrategyPolicyStateBeforeDate(db, options.asOfDate)
-  const specs = applyStrategyAdaptivePolicyThresholds(registrySpecs, adaptiveState)
-    .filter((spec) => spec.status !== 'retired')
+  const policyAdjustedSpecs = applyStrategyAdaptivePolicyThresholds(registrySpecs, adaptiveState)
+  const specs = options.includeRetired
+    ? policyAdjustedSpecs
+    : policyAdjustedSpecs.filter((spec) => spec.status !== 'retired')
   if (specs.length === 0) {
     throw new Error('strategy_spec_registry_no_runtime_specs_seed_required')
   }
@@ -3351,12 +3353,14 @@ export async function listHistoricalStrategyEvidenceV5Dates(
     const ledgerStatus = String(ledger?.status ?? '')
     const evaluationCurrent = String(ledger?.evaluation_contract_version ?? '') === 'strategy-evaluation-v2'
     const labelerCurrent = String(ledger?.labeler_version ?? '') === STRATEGY_FORMAL_RECONSTRUCTION_LABELER_VERSION
+    const historicalSpecLineageRetry = ledgerStatus === 'blocked'
+      && String(ledger?.blocker_reason ?? '').startsWith('matrix_strategy_spec_version_missing:')
     const immutableV1CarrierRetry = ledgerStatus === 'blocked'
       && String(ledger?.blocker_reason ?? '').startsWith(
         `strategy_matrix_source_labeler_unsupported:${priorityDate}:strategy-decision-log-pit-reconstruction-v6`,
       )
     if (evaluationCurrent && (
-      (ledgerStatus === 'blocked' && !immutableV1CarrierRetry)
+      (ledgerStatus === 'blocked' && !immutableV1CarrierRetry && !historicalSpecLineageRetry)
       || (ledgerStatus === 'success' && labelerCurrent)
     )) return []
     const decisionDate = await db.prepare(`
@@ -3438,6 +3442,7 @@ export async function listHistoricalStrategyEvidenceV5Dates(
          OR r.status NOT IN ('success','blocked')
          OR (r.status='success' AND v.signal_date IS NULL)
          OR (r.status='blocked' AND r.blocker_reason='strategy_matrix_source_labeler_unsupported:' || r.signal_date || ':strategy-decision-log-pit-reconstruction-v6')
+         OR (r.status='blocked' AND instr(r.blocker_reason, 'matrix_strategy_spec_version_missing:')=1)
        )
      ORDER BY CASE WHEN d.date=? THEN 0 ELSE 1 END, d.date DESC
      LIMIT ?
@@ -3579,14 +3584,30 @@ export async function rebuildHistoricalStrategyEvidenceV5(
       }
       const labelerVersion = STRATEGY_EVIDENCE_RECONSTRUCTION_LABELER_VERSION
       const expectedMatrixRows = references.length * strategyKeys.size
-      const { specs: effectiveSpecs } = await listStrategySpecsForLearning(db, { asOfDate: date })
+      const { specs: registrySpecs } = await listStrategySpecsForLearning(db, {
+        asOfDate: date,
+        includeRetired: true,
+      })
+      const historicalStatusByKey = new Map<string, StrategySpecStatus>()
+      for (const row of decisions) {
+        const key = row.strategy_id + '|' + row.strategy_version
+        const existingStatus = historicalStatusByKey.get(key)
+        if (existingStatus && existingStatus !== row.strategy_status) {
+          throw new Error('matrix_strategy_status_inconsistent:' + key + ':' + existingStatus + '/' + row.strategy_status)
+        }
+        historicalStatusByKey.set(key, row.strategy_status)
+      }
+      const effectiveSpecs = registrySpecs
+        .filter((spec) => strategyKeys.has(spec.id + '|' + spec.version))
+        .map((spec) => ({
+          ...spec,
+          status: historicalStatusByKey.get(spec.id + '|' + spec.version) ?? spec.status,
+        }))
       const specByKey = new Map(effectiveSpecs.map((spec) => [
         spec.id + '|' + spec.version,
         spec,
       ]))
-      const strategyIds = effectiveSpecs
-        .filter((spec) => spec.status !== 'retired')
-        .map((spec) => spec.id)
+      const strategyIds = [...new Set(decisions.map((row) => row.strategy_id))].sort()
       const productionPolicy = productionPolicySourceLabeler === 'strategy-labeler-v1'
         ? await loadLegacyStrategyProductionWeightsBefore(db, date, strategyIds)
         : await loadStrategyProductionPolicyBefore(db, date, strategyIds)

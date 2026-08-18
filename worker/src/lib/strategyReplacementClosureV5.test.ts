@@ -80,6 +80,16 @@ assert(historicalArtifact.includes("p.canonical_at IS NOT NULL")
   && historicalArtifact.includes('expectedCellCount !== candidateCount * strategyCount')
   && historicalArtifact.includes('coverageRatio !== 1'),
   'artifact recovery must verify past canonical status, retained payload, checksum, v1 labeler, and exact matrix coverage')
+assert(historicalRebuild.includes('includeRetired: true')
+  && historicalRebuild.includes('historicalStatusByKey')
+  && historicalRebuild.includes('status: historicalStatusByKey.get'),
+  'historical reconstruction must load retired registry lineage and restore the immutable decision-date status')
+assert(historicalSelector.includes("startsWith('matrix_strategy_spec_version_missing:')")
+  && historicalSelector.includes("instr(r.blocker_reason, 'matrix_strategy_spec_version_missing:')=1"),
+  'maintenance retry must reopen only the repaired historical spec-lineage blocker')
+assert(!historicalRebuild.includes(".filter((spec) => spec.status !== 'retired')\n        .map((spec) => spec.id)"),
+  'historical production weights must cover the decision-date strategy universe, including later-retired IDs')
+
 assert(orchestrator.includes('loadHistoricalScreenerArtifactEvidence')
   && adminTasks.includes('loadHistoricalScreenerArtifactEvidence'),
   'queue and manual finalizers must use the same immutable artifact verifier')

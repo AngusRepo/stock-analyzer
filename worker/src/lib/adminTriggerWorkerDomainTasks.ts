@@ -1105,9 +1105,17 @@ export function buildAdminWorkerDomainTaskMap(c: any, deps: TriggerDeps): Record
       }
       if (c.req.query('durable') === '1') {
         if (c.req.query('direct_step') === '1') {
-          const { runDataDomainShadowBackfillHttpStep } = await import('./dataDomainShadowBackfillDrain')
+          const {
+            inspectLatestEveningChainClosure,
+            runDataDomainShadowBackfillHttpStep,
+          } = await import('./dataDomainShadowBackfillDrain')
+          const closure = await inspectLatestEveningChainClosure(c.env.KV, c.env.DB)
+          if (!closure.terminalSuccess || !closure.timestamp) {
+            return `skipped: data_domain_shadow_backfill direct_step ${closure.reason}`
+          }
           const step = await runDataDomainShadowBackfillHttpStep(c.env, {
             domain: domain as any,
+            parityNotBefore: closure.timestamp,
             runDate: requestedRunDate() || twToday(),
             table: table || undefined,
             limit: parseBoundedPositiveInt(c.req.query('limit'), 50, 500),

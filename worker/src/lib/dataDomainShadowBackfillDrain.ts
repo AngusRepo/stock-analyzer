@@ -1180,6 +1180,7 @@ export async function runDataDomainShadowBackfillHttpStep(
     domain: DataDomain
     runDate: string
     table?: string
+    parityNotBefore?: string
     limit?: number
   },
 ): Promise<{
@@ -1195,7 +1196,7 @@ export async function runDataDomainShadowBackfillHttpStep(
   const key = dataDomainShadowBackfillActiveKey(input.domain)
   const existing = await env.KV.get(key)
   const active = existing ? parseActiveState(existing) : null
-  const parityNotBefore = active?.started_at ?? dataDomainParitySessionWatermark()
+  const parityNotBefore = input.parityNotBefore ?? active?.started_at ?? dataDomainParitySessionWatermark()
   const runId = active?.run_id
     ?? `data-domain-shadow-backfill-http:${input.domain}:${input.runDate}:${crypto.randomUUID()}`
   await env.KV.put(key, JSON.stringify({
@@ -1251,7 +1252,9 @@ export async function runDataDomainShadowBackfillHttpStep(
     result,
     updated_at: new Date().toISOString(),
   }), { expirationTtl: ACTIVE_TTL_SECONDS })
-  if (result.domain_shadow_ready) {
+  const httpAggregateShadowReady = Boolean(result.domain_shadow_ready)
+    && await refreshDataDomainAggregateCutover(env, input.domain, parityNotBefore)
+  if (httpAggregateShadowReady) {
     await env.KV.delete(key)
   } else {
     await env.KV.put(key, JSON.stringify({
@@ -1263,7 +1266,7 @@ export async function runDataDomainShadowBackfillHttpStep(
     runId,
     parityNotBefore,
     table,
-    caughtUp: Boolean(result.domain_shadow_ready),
+    caughtUp: httpAggregateShadowReady,
     result,
   }
 }

@@ -41,7 +41,23 @@ type UniverseRow = {
 export async function inspectCanonicalStrategyUniverse(
   db: D1Database,
   businessDate: string,
+  canonicalProducerRunId?: string | null,
 ): Promise<UniverseRow> {
+  if (canonicalProducerRunId) {
+    const row = await db.prepare(`
+      SELECT ? AS producer_run_id, COUNT(*) AS expected_candidates
+        FROM selection_reference_snapshots_v1
+       WHERE signal_date=?
+         AND producer_run_id=?
+         AND hard_gate_passed=1
+         AND strategy_labeled=1
+         AND strategy_matrix_status='ready'
+    `).bind(canonicalProducerRunId, businessDate, canonicalProducerRunId).first<UniverseRow>()
+    return {
+      producer_run_id: canonicalProducerRunId,
+      expected_candidates: Math.max(0, Number(row?.expected_candidates ?? 0)),
+    }
+  }
   const row = await db.prepare(`
     SELECT MAX(r.producer_run_id) AS producer_run_id,
            COUNT(*) AS expected_candidates
@@ -65,9 +81,17 @@ export async function inspectCanonicalStrategyUniverse(
 
 export async function initializeStrategyLearningRun(
   db: D1Database,
-  input: { businessDate: string; runId: string; strategyCount: number; universeDb?: D1Database },
+  input: {
+    businessDate: string
+    runId: string
+    strategyCount: number
+    universeDb?: D1Database
+    canonicalProducerRunId?: string | null
+  },
 ): Promise<StrategyLearningRunRow> {
-  const universe = await inspectCanonicalStrategyUniverse(input.universeDb ?? db, input.businessDate)
+  const universe = await inspectCanonicalStrategyUniverse(
+    input.universeDb ?? db, input.businessDate, input.canonicalProducerRunId,
+  )
   if (!universe.producer_run_id || universe.expected_candidates <= 0) {
     throw new Error(`strategy_learning_reference_universe_missing:${input.businessDate}`)
   }

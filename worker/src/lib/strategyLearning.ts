@@ -1335,6 +1335,119 @@ export async function listStrategyLearningCandidates(
   return candidates
 }
 
+type CrossDomainStrategyReferenceRow = {
+  symbol: string
+  name?: string | null
+  sector?: string | null
+  market_segment?: string | null
+  score_components?: unknown
+}
+
+type CrossDomainStrategyEnrichmentRow = {
+  symbol: string
+  name?: string | null
+  sector?: string | null
+  industry?: string | null
+  score_components?: unknown
+  current_price?: number | null
+  evidence?: string | null
+  score_after?: number | null
+  rank?: number | null
+}
+
+export async function listStrategyLearningCandidatesAcrossDomains(
+  referenceDb: D1Database,
+  enrichmentDb: D1Database,
+  date: string,
+  canonicalProducerRunId: string,
+  limit = STRATEGY_LEARNING_DEFAULT_CANDIDATE_LIMIT,
+  afterSymbol = '',
+): Promise<StrategyCandidateInput[]> {
+  const safeLimit = Math.max(1, Math.min(Math.floor(limit), 2000))
+  const safeAfterSymbol = cleanToken(afterSymbol)
+  const referencePage = await referenceDb.prepare(`
+    SELECT symbol, name, sector, market_segment, score_components
+      FROM selection_reference_snapshots_v1
+     WHERE signal_date=?
+       AND producer_run_id=?
+       AND hard_gate_passed=1
+       AND strategy_labeled=1
+       AND strategy_matrix_status='ready'
+       AND symbol>?
+     ORDER BY symbol ASC
+     LIMIT ?
+  `).bind(date, canonicalProducerRunId, safeAfterSymbol, safeLimit).all<CrossDomainStrategyReferenceRow>()
+  const references = referencePage.results ?? []
+  if (!references.length) return []
+
+  const symbols = references.map((row) => cleanToken(row.symbol)).filter(Boolean)
+  const funnelBySymbol = new Map<string, CrossDomainStrategyEnrichmentRow>()
+  const recommendationBySymbol = new Map<string, CrossDomainStrategyEnrichmentRow>()
+  for (let offset = 0; offset < symbols.length; offset += 80) {
+    const chunk = symbols.slice(offset, offset + 80)
+    const placeholders = chunk.map(() => '?').join(', ')
+    const funnelPage = await enrichmentDb.prepare(`
+      WITH ranked AS (
+        SELECT i.symbol, i.name, i.evidence, i.score_after, i.rank,
+               ROW_NUMBER() OVER (
+                 PARTITION BY i.symbol
+                 ORDER BY
+                   CASE i.stage
+                     WHEN 'scoring' THEN 1
+                     WHEN 'layer1_strategy_breadth_gate' THEN 2
+                     WHEN 'l1_candidate_seed_after_overlay' THEN 3
+                     WHEN 'final_selection' THEN 4
+                     ELSE 4
+                   END,
+                   COALESCE(i.rank, 999999) ASC
+               ) AS row_rank
+          FROM screener_funnel_items i
+         WHERE i.run_id=?
+           AND i.symbol IN (${placeholders})
+      )
+      SELECT symbol, name, evidence, score_after, rank
+        FROM ranked
+       WHERE row_rank=1
+    `).bind(canonicalProducerRunId, ...chunk).all<CrossDomainStrategyEnrichmentRow>()
+    for (const row of funnelPage.results ?? []) funnelBySymbol.set(cleanToken(row.symbol), row)
+
+    const recommendationPage = await enrichmentDb.prepare(`
+      SELECT symbol, name, sector, industry, score_components, current_price
+        FROM daily_recommendations
+       WHERE date=?
+         AND symbol IN (${placeholders})
+    `).bind(date, ...chunk).all<CrossDomainStrategyEnrichmentRow>()
+    for (const row of recommendationPage.results ?? []) {
+      recommendationBySymbol.set(cleanToken(row.symbol), row)
+    }
+  }
+
+  const candidates = references.map((reference) => {
+    const symbol = cleanToken(reference.symbol)
+    const funnel = funnelBySymbol.get(symbol)
+    const recommendation = recommendationBySymbol.get(symbol)
+    const evidence = parseJson<Record<string, any>>(funnel?.evidence, {})
+    const rawSignals = evidence && typeof evidence.raw_signals === 'object'
+      ? evidence.raw_signals
+      : null
+    const taxonomy = evidence && typeof evidence.taxonomy === 'object' && !Array.isArray(evidence.taxonomy)
+      ? evidence.taxonomy as Record<string, unknown>
+      : {}
+    return {
+      symbol,
+      name: firstCleanToken(recommendation?.name, reference.name, funnel?.name),
+      sector: firstCleanToken(recommendation?.sector, reference.sector, taxonomy.industryTheme, taxonomy.industry),
+      industry: firstCleanToken(recommendation?.industry, taxonomy.industry, taxonomy.subindustry),
+      market_segment: reference.market_segment ?? null,
+      score_v2: recommendation?.score_components ?? reference.score_components ?? evidence.score_components,
+      current_price: recommendation?.current_price ?? finiteNumber((rawSignals as any)?.close),
+      raw_signals: rawSignals,
+    } satisfies StrategyCandidateInput
+  })
+  await hydrateStrategyCandidateDailyFeatures(enrichmentDb, date, candidates)
+  await hydrateS12StrategyEvidence(enrichmentDb, date, candidates)
+  return candidates
+}
 interface StrategyS12EvidenceRow {
   symbol: string
   source: string
@@ -2159,6 +2272,8 @@ export async function materializeStrategyDecisionLogChunk(
     artifactEnv?: Pick<Bindings, 'DB' | 'ARTIFACTS'>
     producerRunId?: string
     candidateDb?: D1Database
+    candidateReferenceDb?: D1Database
+    canonicalProducerRunId?: string | null
   },
 ): Promise<{
   success: boolean
@@ -2178,7 +2293,12 @@ export async function materializeStrategyDecisionLogChunk(
   const afterSymbol = cleanToken(options.afterSymbol)
   const limit = Math.max(1, Math.min(Math.floor(options.limit ?? 80), 250))
   const { specs, source } = await listStrategySpecsForLearning(db, { asOfDate: options.date })
-  const candidatePage = await listStrategyLearningCandidates(options.candidateDb ?? db, options.date, limit + 1, afterSymbol)
+  const candidatePage = options.candidateReferenceDb && options.canonicalProducerRunId
+    ? await listStrategyLearningCandidatesAcrossDomains(
+        options.candidateReferenceDb, options.candidateDb ?? db, options.date,
+        options.canonicalProducerRunId, limit + 1, afterSymbol,
+      )
+    : await listStrategyLearningCandidates(options.candidateDb ?? db, options.date, limit + 1, afterSymbol)
   const hasMore = candidatePage.length > limit
   const candidates = candidatePage.slice(0, limit)
   const nextCursorSymbol = cleanToken(candidates[candidates.length - 1]?.symbol) || afterSymbol

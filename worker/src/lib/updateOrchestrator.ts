@@ -3533,11 +3533,15 @@ export async function processUpdateBatch(
       await seedDefaultStrategySpecRegistry(learningDb)
     }
     const { specs } = await listStrategySpecsForLearning(learningDb)
+    const { loadCanonicalScreenerRunIds } = await import('./historicalScreenerArtifactEvidence')
+    const canonicalRunIds = await loadCanonicalScreenerRunIds(env, triggerTime)
+    const canonicalProducerRunId = canonicalRunIds[triggerTime] ?? null
     const state = await initializeStrategyLearningRun(runStateDb, {
       businessDate: triggerTime,
       runId,
       strategyCount: specs.length,
-      universeDb: opsDb,
+      universeDb: learningDb,
+      canonicalProducerRunId,
     })
     if (await handleFinalizedRetry(state)) return
     const expectedCandidates = Math.max(0, Number(state.expected_candidates ?? 0))
@@ -3600,6 +3604,8 @@ export async function processUpdateBatch(
         afterSymbol: durableCursor,
         limit: STRATEGY_LEARNING_QUEUE_CHUNK_SIZE,
         candidateDb: opsDb,
+        candidateReferenceDb: learningDb,
+        canonicalProducerRunId: state.producer_run_id,
         dryRun: false,
         artifactEnv: env,
         producerRunId: `${canonicalRunId}:after=${encodeURIComponent(durableCursor || 'start')}`,

@@ -24,11 +24,12 @@ param(
   [string]$PreviousSecretVersion = '',
   [string[]]$AllowedSchedulerCreateIds = @(
     'screener-v2-watchdog',
+    'indicator-queue-watchdog',
     'data-domain-shadow-backfill-ops',
     'learning-retention-readiness',
     'legacy-learning-deletion-readiness'
   ),
-  [int]$ExpectedSchedulerCount = 56
+  [int]$ExpectedSchedulerCount = 57
 )
 
 Set-StrictMode -Version Latest

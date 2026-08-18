@@ -9,6 +9,8 @@ from typing import Any
 
 DEFAULT_MAX_UTF8_BYTES = 50_000
 
+BACKTEST_EVIDENCE_MAX_UTF8_BYTES = 250_000
+
 
 class BoundedJsonContractError(ValueError):
     """Raised when a bounded payload cannot preserve its declared evidence contract."""

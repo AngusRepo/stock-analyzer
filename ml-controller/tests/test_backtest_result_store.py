@@ -81,3 +81,41 @@ def test_build_replay_backtest_insert_preserves_mode_b_and_regime_arrays():
     assert raw["metric_explanations"][0]["metric"] == "sharpe"
     assert raw["strategy_lab_record"]["schema_version"] == "strategy-lab-record-v1"
     assert raw["walk_forward"]["windows"] == 6
+
+
+def test_backtest_evidence_can_grow_past_default_limit_without_sampling_exact_fields():
+    trades = [_trade(f"{index:04d}", 0.01 if index % 2 else -0.005, "green") for index in range(500)]
+    metrics = SimpleNamespace(
+        mode="B",
+        start_date="2026-01-01",
+        end_date="2026-08-16",
+        total_trades=len(trades),
+        win_rate=0.5,
+        sharpe=1.0,
+        sortino=1.2,
+        calmar=0.8,
+        max_drawdown=0.12,
+        cagr=0.18,
+        profit_factor=1.1,
+        expectancy=0.002,
+        per_regime={},
+        realism_warnings=[],
+        absolute_confidence="moderate",
+        sanity_flags=[],
+        partition_returns=[],
+        trades=trades,
+    )
+
+    _, params = build_replay_backtest_insert(
+        metrics,
+        run_date="2026-08-16",
+    )
+
+    encoded = params[-1]
+    raw = json.loads(encoded)
+    assert len(encoded.encode("utf-8")) > 50_000
+    assert len(encoded.encode("utf-8")) <= 250_000
+    assert raw["all_returns"] == [trade.profit_ratio for trade in trades]
+    assert raw["all_regimes"] == [trade.entry_regime for trade in trades]
+    assert len(raw["trades"]) == len(trades)
+    assert raw["trades_complete"] is True

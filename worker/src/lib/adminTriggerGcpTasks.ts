@@ -71,15 +71,15 @@ export function buildAdminGcpTriggerTaskMap(c: any, deps: TriggerDeps): Record<s
     'paper-active-postmarket': async () => runPaperActivePostmarketPromotion(c.env, requestedRunDate()),
     'weekly-audit': () => deps.runWeeklyAudit(),
     'verify-v2': async () => runVerifyV2(c.env, requestedRunDate()),
-    backtest: () => deps.runWeeklyBacktest(),
+    backtest: () => deps.runWeeklyBacktest(requestedRunDate()),
     'weekly-backtest': async () => {
-      const bt = await deps.runWeeklyBacktest()
-      const mc = await deps.runWeeklyMonteCarlo()
-      const pbo = await deps.runWeeklyPBO()
+      const bt = await deps.runWeeklyBacktest(requestedRunDate())
+      const mc = await deps.runWeeklyMonteCarlo(requestedRunDate())
+      const pbo = await deps.runWeeklyPBO(requestedRunDate())
       return summarizeWeeklyValidationChain({ backtest: bt, monteCarlo: mc, pbo })
     },
-    'monte-carlo': () => deps.runWeeklyMonteCarlo(),
-    pbo: () => deps.runWeeklyPBO(),
+    'monte-carlo': () => deps.runWeeklyMonteCarlo(requestedRunDate()),
+    pbo: () => deps.runWeeklyPBO(requestedRunDate()),
     'alpha-quality': () => deps.runWeeklyAlphaQuality(),
     lifecycle: () => deps.runWeeklyLifecycleCheck(),
     'weekly-optuna': () => deps.runWeeklyOptunaResearch(requestedRunDate()),

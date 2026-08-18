@@ -17,9 +17,9 @@ export interface TriggerDeps {
   runDailySnapshot: (runDate?: string) => Promise<any>
   runMorningWarmup: () => Promise<any>
   runWeeklyAudit: () => Promise<any>
-  runWeeklyBacktest: () => Promise<any>
-  runWeeklyMonteCarlo: () => Promise<any>
-  runWeeklyPBO: () => Promise<any>
+  runWeeklyBacktest: (runDate?: string) => Promise<any>
+  runWeeklyMonteCarlo: (runDate?: string) => Promise<any>
+  runWeeklyPBO: (runDate?: string) => Promise<any>
   runWeeklyModelArtifactCandidateValidation: () => Promise<any>
   runWeeklyModelArtifactValidation: () => Promise<any>
   runWeeklyAlphaQuality: () => Promise<any>

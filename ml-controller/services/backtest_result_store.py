@@ -5,7 +5,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from typing import Any
 
-from services.bounded_json import bounded_json_dumps
+from services.bounded_json import BACKTEST_EVIDENCE_MAX_UTF8_BYTES, bounded_json_dumps
 
 
 def _num(value: Any, default: float = 0.0) -> float:
@@ -75,6 +75,7 @@ def build_replay_backtest_insert(
     }
     raw_json = bounded_json_dumps(
         raw,
+        max_utf8_bytes=BACKTEST_EVIDENCE_MAX_UTF8_BYTES,
         preserve_exact_keys=("all_returns", "all_regimes", "trades", "trades_complete"),
     )
     sql = """

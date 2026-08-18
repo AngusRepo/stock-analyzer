@@ -36,6 +36,9 @@ assert(metricSource.includes("throw new Error('strategy_evidence_metric_learning
 assert(metricSource.includes("const observationDb = targetJoinRequested ? learningTargetDb! : authorityDb"))
 assert(metricSource.includes('const outcomesBySelection = indexStrategyEvidenceOutcomes(outcomeRows)'))
 assert(!metricSource.includes('joinStrategyEvidenceObservations(rows, outcomeRows)'))
+assert(metricSource.includes("profile?: Pick<StrategyEvidenceProfile, 'strategy_id' | 'strategy_version'>"))
+assert(metricSource.includes('for (const profile of profiles)'))
+assert(metricSource.includes('loadObservations(db, options.outcomeAsOfDate, profile)'))
 
 function observations(strategyId: string, strategyVersion: string, strategyStatus: string, alphaBucket: string): StrategyEvidenceObservation[] {
   const rows: StrategyEvidenceObservation[] = []

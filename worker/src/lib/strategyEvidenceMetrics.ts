@@ -520,10 +520,20 @@ async function loadObservationsAcrossDatabases(
   return observations
 }
 
-async function loadObservations(db: D1Database, outcomeAsOfDate: string): Promise<StrategyEvidenceObservation[]> {
+async function loadObservations(
+  db: D1Database,
+  outcomeAsOfDate: string,
+  profile?: Pick<StrategyEvidenceProfile, 'strategy_id' | 'strategy_version'>,
+): Promise<StrategyEvidenceObservation[]> {
   const output: StrategyEvidenceObservation[] = []
   let matrixRowId = 0
   let horizonDays = 0
+  const profilePredicate = profile
+    ? 'AND m.strategy_id=? AND m.strategy_version=?'
+    : ''
+  const profileParams = profile
+    ? [profile.strategy_id, profile.strategy_version]
+    : []
   for (;;) {
     const page = await db.prepare(`
       SELECT m.rowid matrix_row_id, m.signal_date, m.symbol, m.producer_run_id,
@@ -540,10 +550,17 @@ async function loadObservations(db: D1Database, outcomeAsOfDate: string): Promis
          AND o.producer_run_id=m.producer_run_id
        WHERE m.strategy_hit=1 AND m.evaluable=1
          AND o.outcome_known_date<=?
+         ${profilePredicate}
          AND (m.rowid>? OR (m.rowid=? AND o.horizon_days>?))
        ORDER BY m.rowid, o.horizon_days
        LIMIT 5000
-    `).bind(outcomeAsOfDate, matrixRowId, matrixRowId, horizonDays).all<StrategyEvidenceObservation & { matrix_row_id: number }>()
+    `).bind(
+      outcomeAsOfDate,
+      ...profileParams,
+      matrixRowId,
+      matrixRowId,
+      horizonDays,
+    ).all<StrategyEvidenceObservation & { matrix_row_id: number }>()
     const rows = page.results ?? []
     output.push(...rows.map((row) => ({
       ...row,
@@ -788,53 +805,101 @@ export async function materializeStrategyEvidenceMetrics(
   }
   const observationDb = targetJoinRequested ? learningTargetDb! : authorityDb
   const source = observationDb === db ? 'learning_target_join' : 'authoritative_cross_d1_bridge'
-  const [{ specs }, observations] = await Promise.all([
-    listStrategySpecsForLearning(observationDb, { asOfDate: options.outcomeAsOfDate }),
-    observationDb === db
-      ? loadObservations(db, options.outcomeAsOfDate)
-      : loadObservationsAcrossDatabases(observationDb, db, options.outcomeAsOfDate),
-  ])
+  const { specs } = await listStrategySpecsForLearning(observationDb, {
+    asOfDate: options.outcomeAsOfDate,
+  })
   const profiles = listStrategyEvidenceProfiles(specs.filter((spec) => spec.status !== 'retired'), {
     availableOutcomeHorizonDays: [3, 5, 10],
   })
-  await attachMaximumAdverseExcursions(
-    observations,
-    databaseForDataDomain(env, 'core'),
-    databaseForDataDomain(env, 'market'),
-    new Set(profiles.filter((profile) => profile.required_metrics.includes('maximum_adverse_excursion'))
-      .map((profile) => `${profile.strategy_id}|${profile.strategy_version}`)),
-  )
-  const byStrategy = new Map<string, StrategyEvidenceObservation[]>()
-  await attachFundamentalRevisionPersistence(
-    observations,
-    shadowDatabaseForDataDomain(env, 'market') ?? databaseForDataDomain(env, 'market'),
-    new Set(profiles.filter((profile) => profile.required_metrics.includes('fundamental_revision_persistence'))
-      .map((profile) => `${profile.strategy_id}|${profile.strategy_version}`)),
-    options.outcomeAsOfDate,
-  )
-  for (const row of observations) {
-    const key = `${row.strategy_id}|${row.strategy_version}`
-    byStrategy.set(key, [...(byStrategy.get(key) ?? []), row])
+  const coreDb = databaseForDataDomain(env, 'core')
+  const marketDb = databaseForDataDomain(env, 'market')
+  const revisionMarketDb = shadowDatabaseForDataDomain(env, 'market') ?? marketDb
+  let observationCount = 0
+  let metricRowCount = 0
+  let readyRows = 0
+
+  if (observationDb === db) {
+    // Bound the in-memory observation graph by one runtime profile. The full
+    // joined cohort can exceed a Worker isolate's resource limit as history grows.
+    for (const profile of profiles) {
+      const observations = await loadObservations(db, options.outcomeAsOfDate, profile)
+      const profileKey = new Set([`${profile.strategy_id}|${profile.strategy_version}`])
+      await attachMaximumAdverseExcursions(
+        observations,
+        coreDb,
+        marketDb,
+        profile.required_metrics.includes('maximum_adverse_excursion') ? profileKey : new Set(),
+      )
+      await attachFundamentalRevisionPersistence(
+        observations,
+        revisionMarketDb,
+        profile.required_metrics.includes('fundamental_revision_persistence') ? profileKey : new Set(),
+        options.outcomeAsOfDate,
+      )
+      const rows = computeStrategyEvidenceMetricRows(
+        profile,
+        observations,
+        options.outcomeAsOfDate,
+      ).map((row) => ({
+        ...row,
+        evidence_json: JSON.stringify({
+          ...JSON.parse(row.evidence_json) as Record<string, unknown>,
+          materialization_source: source,
+        }),
+      }))
+      await persistMetricRows(db, rows)
+      observationCount += observations.length
+      metricRowCount += rows.length
+      readyRows += rows.filter((row) => row.metric_status === 'ready').length
+    }
+  } else {
+    const observations = await loadObservationsAcrossDatabases(
+      observationDb,
+      db,
+      options.outcomeAsOfDate,
+    )
+    await attachMaximumAdverseExcursions(
+      observations,
+      coreDb,
+      marketDb,
+      new Set(profiles.filter((profile) => profile.required_metrics.includes('maximum_adverse_excursion'))
+        .map((profile) => `${profile.strategy_id}|${profile.strategy_version}`)),
+    )
+    await attachFundamentalRevisionPersistence(
+      observations,
+      revisionMarketDb,
+      new Set(profiles.filter((profile) => profile.required_metrics.includes('fundamental_revision_persistence'))
+        .map((profile) => `${profile.strategy_id}|${profile.strategy_version}`)),
+      options.outcomeAsOfDate,
+    )
+    const byStrategy = new Map<string, StrategyEvidenceObservation[]>()
+    for (const row of observations) {
+      const key = `${row.strategy_id}|${row.strategy_version}`
+      byStrategy.set(key, [...(byStrategy.get(key) ?? []), row])
+    }
+    const rows = profiles.flatMap((profile) => computeStrategyEvidenceMetricRows(
+      profile,
+      byStrategy.get(`${profile.strategy_id}|${profile.strategy_version}`) ?? [],
+      options.outcomeAsOfDate,
+    )).map((row) => ({
+      ...row,
+      evidence_json: JSON.stringify({
+        ...JSON.parse(row.evidence_json) as Record<string, unknown>,
+        materialization_source: source,
+      }),
+    }))
+    await persistMetricRows(db, rows)
+    observationCount = observations.length
+    metricRowCount = rows.length
+    readyRows = rows.filter((row) => row.metric_status === 'ready').length
   }
-  const metricRows = profiles.flatMap((profile) => computeStrategyEvidenceMetricRows(
-    profile,
-    byStrategy.get(`${profile.strategy_id}|${profile.strategy_version}`) ?? [],
-    options.outcomeAsOfDate,
-  )).map((row) => ({
-    ...row,
-    evidence_json: JSON.stringify({
-      ...JSON.parse(row.evidence_json) as Record<string, unknown>,
-      materialization_source: source,
-    }),
-  }))
-  await persistMetricRows(db, metricRows)
-  const readyRows = metricRows.filter((row) => row.metric_status === 'ready').length
+
   return {
     profiles: profiles.length,
-    observations: observations.length,
-    metric_rows: metricRows.length,
+    observations: observationCount,
+    metric_rows: metricRowCount,
     ready_rows: readyRows,
     source,
-    summary: `strategy_evidence_metrics source=${source} profiles=${profiles.length} observations=${observations.length} rows=${metricRows.length} ready=${readyRows}`,
+    summary: `strategy_evidence_metrics source=${source} profiles=${profiles.length} observations=${observationCount} rows=${metricRowCount} ready=${readyRows}`,
   }
 }

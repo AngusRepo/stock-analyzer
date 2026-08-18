@@ -585,9 +585,8 @@ adminWriteRoutes.post('/api/admin/strategy-learning/resume', async (c) => {
     return c.json({ error: 'date must be YYYY-MM-DD' }, 400)
   }
 
-  const learningDb = databaseForDataDomain(c.env, 'learning')
   const opsDb = databaseForDataDomain(c.env, 'ops')
-  const run = await learningDb.prepare(`
+  const run = await opsDb.prepare(`
     SELECT canonical_run_id, status, cursor_symbol, expected_candidates,
            processed_candidates, expected_decision_rows, persisted_decision_rows,
            lease_owner, lease_expires_at,
@@ -627,8 +626,22 @@ adminWriteRoutes.post('/api/admin/strategy-learning/resume', async (c) => {
      WHERE business_date=? AND stage='post_verify_chain'
      LIMIT 1
   `).bind(date).first<{ status: string; canonical_run_id: string }>()
-  if (authority?.status !== 'success' || authority.canonical_run_id !== run.canonical_run_id) {
+  if (authority?.status !== 'success') {
     return c.json({ error: `post_verify_canonical_authority_required:${date}`, authority, run }, 409)
+  }
+
+  let mode = run.status === 'running' ? 'canonical_resume_expired_running' : 'canonical_resume_queued'
+  if (authority.canonical_run_id !== run.canonical_run_id) {
+    const { adoptStrategyLearningPostVerifyAuthority } = await import('../lib/strategyLearningRunState')
+    const adopted = await adoptStrategyLearningPostVerifyAuthority(opsDb, {
+      businessDate: date,
+      canonicalRunId: authority.canonical_run_id,
+    })
+    if (!adopted) {
+      return c.json({ error: `post_verify_canonical_authority_adoption_rejected:${date}`, authority, run }, 409)
+    }
+    run.canonical_run_id = authority.canonical_run_id
+    mode = 'canonical_post_verify_authority_adopted'
   }
 
   await c.env.UPDATE_QUEUE.send({
@@ -643,7 +656,7 @@ adminWriteRoutes.post('/api/admin/strategy-learning/resume', async (c) => {
   })
   return c.json({
     success: true,
-    mode: run.status === 'running' ? 'canonical_resume_expired_running' : 'canonical_resume_queued',
+    mode,
     date,
     canonical_run_id: run.canonical_run_id,
     cursor_symbol: run.cursor_symbol,

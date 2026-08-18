@@ -435,6 +435,40 @@ export async function hasStrategyLearningPostVerifyAuthority(
   return Number(row?.authorized ?? 0) === 1
 }
 
+export async function adoptStrategyLearningPostVerifyAuthority(
+  db: D1Database,
+  input: Pick<StrategyLearningLeaseIdentity, 'businessDate' | 'canonicalRunId'>,
+): Promise<boolean> {
+  const row = await db.prepare(`
+    UPDATE strategy_learning_runs
+       SET canonical_run_id=?, last_error=NULL, updated_at=CURRENT_TIMESTAMP
+     WHERE business_date=?
+       AND canonical_run_id<>?
+       AND status='queued'
+       AND lease_owner IS NULL AND lease_expires_at IS NULL
+       AND expected_candidates>0
+       AND processed_candidates=expected_candidates
+       AND expected_decision_rows>0
+       AND persisted_decision_rows=expected_decision_rows
+       AND last_error LIKE 'strategy_learning_finalize_authority_lost:%'
+       AND EXISTS (
+         SELECT 1
+           FROM pipeline_stage_runs p
+          WHERE p.business_date=strategy_learning_runs.business_date
+            AND p.stage='post_verify_chain'
+            AND p.canonical_run_id=?
+            AND p.status='success'
+       )
+    RETURNING 1 AS adopted
+  `).bind(
+    input.canonicalRunId,
+    input.businessDate,
+    input.canonicalRunId,
+    input.canonicalRunId,
+  ).first<{ adopted: number }>()
+  return Number(row?.adopted ?? 0) === 1
+}
+
 export async function reclaimStrategyLearningFinalizedLease(
   db: D1Database,
   input: StrategyLearningLeaseIdentity & { leaseSeconds?: number },

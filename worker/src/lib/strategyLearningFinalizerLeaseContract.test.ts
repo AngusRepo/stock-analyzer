@@ -41,6 +41,18 @@ assert.doesNotMatch(
   /SET status='success', lease_owner=NULL/,
 )
 assert.match(runState, /export async function hasStrategyLearningPostVerifyAuthority/)
+assert.match(runState, /export async function adoptStrategyLearningPostVerifyAuthority/)
+const authorityAdoption = runState.slice(
+  runState.indexOf('export async function adoptStrategyLearningPostVerifyAuthority'),
+  runState.indexOf('export async function reclaimStrategyLearningFinalizedLease'),
+)
+assert.match(authorityAdoption, /status='queued'/)
+assert.match(authorityAdoption, /lease_owner IS NULL AND lease_expires_at IS NULL/)
+assert.match(authorityAdoption, /processed_candidates=expected_candidates/)
+assert.match(authorityAdoption, /persisted_decision_rows=expected_decision_rows/)
+assert.match(authorityAdoption, /last_error LIKE 'strategy_learning_finalize_authority_lost:%'/)
+assert.match(authorityAdoption, /p\.stage='post_verify_chain'/)
+assert.match(authorityAdoption, /p\.status='success'/)
 assert.match(runState, /export async function releaseStrategyLearningFinalizedLease/)
 assert.match(runState, /export async function reclaimStrategyLearningFinalizedLease/)
 const reclaimWriter = runState.slice(runState.indexOf('export async function reclaimStrategyLearningFinalizedLease'))

@@ -467,11 +467,17 @@ export async function inspectAllocatorSnapshotClosure(
   businessDate: string,
   options: {
     allowPointInTimeReconstruction?: boolean
+    learningDb?: D1Database
+    opsDb?: D1Database
+    coreDb?: D1Database
     kv?: KVNamespace
     nowMs?: number
   } = {},
 ): Promise<AllocatorSnapshotClosure> {
   if (!validDate(businessDate)) throw new Error(`invalid allocator snapshot date: ${businessDate}`)
+  const learningDb = options.learningDb ?? db
+  const opsDb = options.opsDb ?? db
+  const coreDb = options.coreDb ?? db
   const nowMs = options.nowMs ?? Date.now()
   const today = new Date(nowMs + 8 * 3600_000).toISOString().slice(0, 10)
   let nextSessionOpenUtc: string | null = null
@@ -486,49 +492,22 @@ export async function inspectAllocatorSnapshotClosure(
       console.warn(`[allocatorEvDailyLifecycle] next session unresolved for ${businessDate}:`, error)
     }
   }
-  const [lineage, run, actual] = await Promise.all([
-    db.prepare(`
-      WITH canonical_reference AS (
-        SELECT r.*
-          FROM selection_reference_snapshots_v1 r
-         WHERE r.signal_date = ?
-           AND EXISTS (
-             SELECT 1 FROM canonical_run_heads h
-              WHERE h.logical_run_key = 'screener:' || r.signal_date || ':TW:production:market_screener'
-                AND h.run_id = r.producer_run_id
-           )
-      )
-      SELECT
-        COUNT(*) AS recommendation_rows,
-        MAX(dr.created_at) AS recommendation_max_created_at,
-        COALESCE(SUM(CASE WHEN EXISTS (
-          SELECT 1
-            FROM predictions p
-           WHERE p.stock_id = COALESCE(dr.stock_id, st.id)
-             AND p.prediction_date >= dr.date
-             AND p.prediction_date < date(dr.date, '+1 day')
-             AND p.model_name = 'ensemble'
-             AND p.forecast_data IS NOT NULL
-             AND (
-               date(datetime(p.generated_at, '+8 hours')) <= substr(p.prediction_date, 1, 10)
-               OR (
-                 ? IS NOT NULL
-                 AND datetime(p.generated_at) < datetime(?)
-               )
-             )
-        ) THEN 1 ELSE 0 END), 0) AS row_count
-        FROM daily_recommendations dr
-        JOIN canonical_reference r
-          ON r.signal_date = dr.date AND r.symbol = dr.symbol
-        LEFT JOIN stocks st ON st.symbol = dr.symbol
-       WHERE r.score_components IS NOT NULL
-         AND json_extract(r.score_components, '$.version') = 'score_v2'
-    `).bind(businessDate, nextSessionOpenUtc, nextSessionOpenUtc).first<{
-      recommendation_rows?: number
-      recommendation_max_created_at?: string | null
-      row_count?: number
-    }>(),
-    db.prepare(`
+  const [canonicalHead, references, run, actual] = await Promise.all([
+    opsDb.prepare(`
+      SELECT run_id
+        FROM canonical_run_heads
+       WHERE logical_run_key = ?
+       LIMIT 1
+    `).bind(`screener:${businessDate}:TW:production:market_screener`)
+      .first<{ run_id?: string | null }>(),
+    learningDb.prepare(`
+      SELECT symbol, producer_run_id
+        FROM selection_reference_snapshots_v1
+       WHERE signal_date = ?
+         AND score_components IS NOT NULL
+         AND json_extract(score_components, '$.version') = 'score_v2'
+    `).bind(businessDate).all<{ symbol: string; producer_run_id: string }>(),
+    learningDb.prepare(`
       SELECT run_id, expected_rows, published_rows, status,
              native_lineage_rows, reconstructed_lineage_rows, rejected_lineage_rows
         FROM allocator_ev_snapshot_runs
@@ -545,7 +524,7 @@ export async function inspectAllocatorSnapshotClosure(
       reconstructed_lineage_rows?: number
       rejected_lineage_rows?: number
     }>(),
-    db.prepare(`
+    learningDb.prepare(`
       SELECT COUNT(*) AS row_count,
              MAX(generated_at) AS max_generated_at
         FROM allocator_ev_feature_snapshots
@@ -553,6 +532,50 @@ export async function inspectAllocatorSnapshotClosure(
          AND snapshot_source = 'allocator_ev_asof_backfill_v2'
     `).bind(businessDate).first<{ row_count?: number; max_generated_at?: string | null }>(),
   ])
+  const canonicalRunId = String(canonicalHead?.run_id ?? '').trim()
+  const canonicalSymbols = new Set(
+    (references.results ?? [])
+      .filter((row) => canonicalRunId && String(row.producer_run_id ?? '').trim() === canonicalRunId)
+      .map((row) => String(row.symbol ?? '').trim())
+      .filter(Boolean),
+  )
+  const [recommendations, predictions] = await Promise.all([
+    coreDb.prepare(`
+      SELECT COALESCE(dr.stock_id, st.id) AS stock_id, dr.symbol, dr.created_at
+        FROM daily_recommendations dr
+        LEFT JOIN stocks st ON st.symbol = dr.symbol
+       WHERE dr.date = ?
+    `).bind(businessDate).all<{ stock_id?: number | string | null; symbol: string; created_at?: string | null }>(),
+    learningDb.prepare(`
+      SELECT DISTINCT stock_id
+        FROM predictions
+       WHERE prediction_date >= ?
+         AND prediction_date < date(?, '+1 day')
+         AND model_name = 'ensemble'
+         AND stock_id IS NOT NULL
+         AND forecast_data IS NOT NULL
+         AND (
+           date(datetime(generated_at, '+8 hours')) <= substr(prediction_date, 1, 10)
+           OR (? IS NOT NULL AND datetime(generated_at) < datetime(?))
+         )
+    `).bind(businessDate, businessDate, nextSessionOpenUtc, nextSessionOpenUtc)
+      .all<{ stock_id: number | string }>(),
+  ])
+  const canonicalRecommendations = (recommendations.results ?? [])
+    .filter((row) => canonicalSymbols.has(String(row.symbol ?? '').trim()))
+  const causalPredictionStockIds = new Set(
+    (predictions.results ?? []).map((row) => String(row.stock_id)),
+  )
+  const canonicalRecommendationMaxCreatedAt = canonicalRecommendations.reduce<string | null>((latest, row) => {
+    const createdAt = String(row.created_at ?? '').trim()
+    return createdAt && (!latest || createdAt > latest) ? createdAt : latest
+  }, null)
+  const lineage = {
+    recommendation_rows: canonicalRecommendations.length,
+    recommendation_max_created_at: canonicalRecommendationMaxCreatedAt,
+    row_count: canonicalRecommendations.filter((row) =>
+      row.stock_id != null && causalPredictionStockIds.has(String(row.stock_id))).length,
+  }
   const expectedRows = Number(run?.expected_rows ?? 0)
   const publishedRows = Number(run?.published_rows ?? 0)
   const actualRows = Number(actual?.row_count ?? 0)
@@ -654,6 +677,9 @@ export async function runAllocatorEvLifecycleWatchdog(
   const [snapshot, maturity] = await Promise.all([
     inspectAllocatorSnapshotClosure(env.DB, businessDate, {
       allowPointInTimeReconstruction: true,
+      learningDb: databaseForDataDomain(env, 'learning'),
+      opsDb: databaseForDataDomain(env, 'ops'),
+      coreDb: databaseForDataDomain(env, 'core'),
       kv: env.KV,
     }),
     inspectAllocatorEvMaturityCoverage(databaseForDataDomain(env, 'learning'), businessDate),

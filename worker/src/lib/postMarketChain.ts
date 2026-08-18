@@ -435,6 +435,9 @@ export async function runPostPipelineCallbackChain(
   let snapshotClosure = await inspectAllocatorSnapshotClosure(env.DB, ctx.runDate, {
     // This stage owns the explicit PIT backfill. Reconstruction may close the
     // operational evidence chain, while Fusion promotion remains native-only.
+    learningDb: databaseForDataDomain(env, 'learning'),
+    opsDb: databaseForDataDomain(env, 'ops'),
+    coreDb: databaseForDataDomain(env, 'core'),
     allowPointInTimeReconstruction: true,
     kv: env.KV,
   })
@@ -503,6 +506,9 @@ export async function runPostPipelineCallbackChain(
   await assertChainStageAuthority(ctx, 'post-pipeline:before_snapshot_readback')
   snapshotClosure = await inspectAllocatorSnapshotClosure(env.DB, ctx.runDate, {
     allowPointInTimeReconstruction: true,
+    learningDb: databaseForDataDomain(env, 'learning'),
+    opsDb: databaseForDataDomain(env, 'ops'),
+    coreDb: databaseForDataDomain(env, 'core'),
     kv: env.KV,
   })
   await assertChainStageAuthority(ctx, 'post-pipeline:after_snapshot_readback')

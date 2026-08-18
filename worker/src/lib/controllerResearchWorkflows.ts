@@ -436,6 +436,9 @@ export async function runAllocatorEvFeatureSnapshotBackfill(
     } = await import('./allocatorEvDailyLifecycle')
     const closure = await inspectAllocatorSnapshotClosure(env.DB, params.startDate, {
       allowPointInTimeReconstruction: true,
+      learningDb: databaseForDataDomain(env, 'learning'),
+      opsDb: databaseForDataDomain(env, 'ops'),
+      coreDb: databaseForDataDomain(env, 'core'),
       kv: env.KV,
     })
     if (!closure.ready) {
@@ -456,7 +459,7 @@ export async function runAllocatorEvFeatureSnapshotBackfill(
       stageAuthority: params.runId
         ? { stage: 'post_pipeline_chain', canonicalRunId: params.runId }
         : undefined,
-    })
+    }, databaseForDataDomain(env, 'ops'))
     if (!recorded) {
       throw new Error(`allocator EV feature snapshot stale lifecycle owner run_id=${params.runId ?? 'missing'}`)
     }

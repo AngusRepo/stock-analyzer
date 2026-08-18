@@ -1493,3 +1493,83 @@ def test_allocator_ev_fusion_missing_unused_market_context_is_diagnostic_only():
     assert "primary_market_context_dates_low" not in artifact["promotion_blockers"]
     assert artifact["validation_packet"]["promotion"]["primary_requirements"]["optional_context_features_gate_only_when_supported_by_training_window"] is True
     assert artifact["validation_packet"]["sample_audit"]["market_context_available_coverage"] == 0.0
+
+
+def test_allocator_snapshot_candidate_loader_joins_split_d1_domains_in_memory():
+    def reject_legacy_cross_join(sql, params=None):
+        raise AssertionError(f"legacy cross-domain query must not run: {sql[:80]}")
+
+    def learning_query(sql, params=None):
+        if "selection_reference_snapshots_v1" in sql:
+            return [{
+                "symbol": "2330",
+                "signal_date": "2026-08-18",
+                "score_v2": 88.0,
+                "score_components": json.dumps({
+                    "version": "score_v2",
+                    "semanticVersion": "score-v2-test",
+                }),
+                "market_segment": "listed",
+                "producer_run_id": "screener-run-1",
+                "feature_contract_version": "selection-reference-v1",
+                "feature_available": 1,
+                "feature_rejection_reason": None,
+            }]
+        if "FROM predictions" in sql:
+            return [{
+                "id": 7,
+                "stock_id": 1,
+                "generated_at": "2026-08-18T19:40:00Z",
+                "forecast_data": _ensemble_forecast(),
+            }]
+        raise AssertionError(sql)
+
+    def ops_query(sql, params=None):
+        assert "canonical_run_heads" in sql
+        return [{"run_id": "screener-run-1"}]
+
+    def core_query(sql, params=None):
+        assert "daily_recommendations" in sql
+        return [{
+            "stock_id": 1,
+            "symbol": "2330",
+            "score": 87.0,
+            "alpha_context": "{}",
+            "existing_alpha_allocation": "{}",
+            "market_segment": "listed",
+            "recommendation_lane": "BUY",
+            "current_price": 1000.0,
+            "confidence": 0.8,
+            "chip_score": 80.0,
+            "tech_score": 82.0,
+            "ml_score": 85.0,
+            "rank": 1,
+        }]
+
+    def market_query(sql, params=None):
+        assert "canonical_market_daily" in sql
+        return [{"next_session_date": "2026-08-19"}]
+
+    rows = load_allocator_ev_snapshot_candidate_rows(
+        reject_legacy_cross_join,
+        snapshot_date="2026-08-18",
+        limit=1000,
+        learning_query_fn=learning_query,
+        ops_query_fn=ops_query,
+        core_query_fn=core_query,
+        market_query_fn=market_query,
+    )
+
+    assert len(rows) == 1
+    assert rows[0]["symbol"] == "2330"
+    assert rows[0]["candidate_total_count"] == 1
+    assert rows[0]["reference_producer_run_id"] == "screener-run-1"
+    assert rows[0]["reference_feature_rejection_reason"] is None
+
+
+def test_allocator_snapshot_production_writer_is_learning_domain_owned():
+    source = inspect.getsource(build_allocator_ev_feature_snapshots_for_date)
+    assert "client_for_domain(D1DataDomain.LEARNING)" in source
+    assert "writer = learning_writer" in source
+    assert "staged_rows = learning_query(" in source
+    assert "published_run = learning_query(" in source

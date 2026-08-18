@@ -8,6 +8,7 @@ from typing import Any, Callable
 
 from services import d1_client
 from services.active8_score_semantics import MODEL_TARGET_SEMANTIC_VERSION
+from services.d1_domain_client import D1DataDomain, client_for_domain
 from services.ev_lineage_contract import (
     attach_next_session_open_evidence,
     attach_same_run_model_version_evidence,
@@ -118,13 +119,187 @@ def _date_lte(left: str, right: str) -> bool:
         return False
 
 
+def _load_allocator_ev_snapshot_candidate_rows_split(
+    *,
+    snapshot_date: str,
+    next_session_date: str | None,
+    limit: int,
+    learning_query_fn: QueryFn,
+    ops_query_fn: QueryFn,
+    core_query_fn: QueryFn,
+    market_query_fn: QueryFn,
+) -> list[dict[str, Any]]:
+    next_date = (date.fromisoformat(snapshot_date) + timedelta(days=1)).isoformat()
+    supplied_next_session = str(next_session_date or "").strip()[:10] or None
+    if supplied_next_session is not None and (
+        not _date_lte(next_date, supplied_next_session)
+        or not _date_lte(
+            supplied_next_session,
+            (date.fromisoformat(snapshot_date) + timedelta(days=15)).isoformat(),
+        )
+    ):
+        raise ValueError("next_session_date_outside_snapshot_window")
+    resolved_next_session = supplied_next_session
+    if resolved_next_session is None:
+        sessions = market_query_fn(
+            """
+            SELECT MIN(date) AS next_session_date
+              FROM canonical_market_daily
+             WHERE stock_id='0050' AND source='finlab.price' AND date(date)>date(?)
+            """,
+            [snapshot_date],
+        )
+        resolved_next_session = str(
+            (sessions[0] if sessions else {}).get("next_session_date") or ""
+        )[:10] or None
+
+    heads = ops_query_fn(
+        """
+        SELECT run_id
+          FROM canonical_run_heads
+         WHERE logical_run_key=?
+         LIMIT 1
+        """,
+        [f"screener:{snapshot_date}:TW:production:market_screener"],
+    )
+    canonical_run_id = str((heads[0] if heads else {}).get("run_id") or "").strip()
+    references = learning_query_fn(
+        """
+        SELECT symbol, signal_date, score_v2, score_components, market_segment,
+               producer_run_id, feature_contract_version, feature_available,
+               feature_rejection_reason
+          FROM selection_reference_snapshots_v1
+         WHERE signal_date>=? AND signal_date<?
+           AND score_components IS NOT NULL
+           AND json_extract(score_components, '$.version')='score_v2'
+        """,
+        [snapshot_date, next_date],
+    )
+    reference_by_symbol = {
+        str(row.get("symbol") or "").strip(): row
+        for row in references
+        if canonical_run_id
+        and str(row.get("producer_run_id") or "").strip() == canonical_run_id
+        and str(row.get("symbol") or "").strip()
+    }
+    recommendations = core_query_fn(
+        """
+        SELECT COALESCE(dr.stock_id, st.id) stock_id, dr.symbol, dr.score,
+               dr.alpha_context, dr.alpha_allocation existing_alpha_allocation,
+               dr.market_segment, dr.recommendation_lane, dr.current_price,
+               dr.confidence, dr.chip_score, dr.tech_score, dr.ml_score, dr.rank
+          FROM daily_recommendations dr
+          LEFT JOIN stocks st ON st.symbol=dr.symbol
+         WHERE dr.date=?
+        """,
+        [snapshot_date],
+    )
+    predictions = learning_query_fn(
+        """
+        SELECT id, stock_id, generated_at, forecast_data
+          FROM predictions
+         WHERE prediction_date>=? AND prediction_date<?
+           AND model_name='ensemble' AND forecast_data IS NOT NULL
+           AND (
+             date(datetime(generated_at, '+8 hours'))<=substr(prediction_date,1,10)
+             OR datetime(generated_at)<datetime(? || ' 01:00:00')
+           )
+         ORDER BY stock_id, datetime(generated_at) DESC, id DESC
+        """,
+        [snapshot_date, next_date, resolved_next_session],
+    )
+    prediction_by_stock: dict[str, dict[str, Any]] = {}
+    for prediction in predictions:
+        stock_key = str(prediction.get("stock_id") or "")
+        if stock_key and stock_key not in prediction_by_stock:
+            prediction_by_stock[stock_key] = prediction
+
+    candidates: list[dict[str, Any]] = []
+    for recommendation in recommendations:
+        symbol = str(recommendation.get("symbol") or "").strip()
+        reference = reference_by_symbol.get(symbol)
+        if reference is None:
+            continue
+        stock_id = recommendation.get("stock_id")
+        prediction = prediction_by_stock.get(str(stock_id)) if stock_id is not None else None
+        score_components = reference.get("score_components")
+        parsed_score_components = _loads(score_components)
+        rejection: str | None = None
+        if int(reference.get("feature_available") or 0) != 1:
+            rejection = str(
+                reference.get("feature_rejection_reason") or "reference_feature_unavailable"
+            )
+        elif stock_id is None:
+            rejection = "missing_stock_identity"
+        elif prediction is None:
+            rejection = "missing_point_in_time_ensemble_prediction"
+        elif not score_components:
+            rejection = "missing_score_v2_components"
+        elif not parsed_score_components:
+            rejection = "invalid_score_v2_json"
+        elif parsed_score_components.get("version") != "score_v2":
+            rejection = "invalid_score_v2_semantic"
+        candidates.append({
+            "stock_id": stock_id,
+            "symbol": symbol,
+            "recommendation_date": snapshot_date,
+            "prediction_generated_at": prediction.get("generated_at") if prediction else None,
+            "forecast_data": prediction.get("forecast_data") if prediction else None,
+            "score": reference.get("score_v2") or recommendation.get("score"),
+            "score_components": score_components,
+            "alpha_context": recommendation.get("alpha_context"),
+            "existing_alpha_allocation": recommendation.get("existing_alpha_allocation"),
+            "market_segment": reference.get("market_segment") or recommendation.get("market_segment"),
+            "recommendation_lane": recommendation.get("recommendation_lane") or "REFERENCE",
+            "current_price": recommendation.get("current_price"),
+            "confidence": recommendation.get("confidence"),
+            "chip_score": recommendation.get("chip_score"),
+            "tech_score": recommendation.get("tech_score"),
+            "ml_score": recommendation.get("ml_score"),
+            "reference_producer_run_id": reference.get("producer_run_id"),
+            "reference_contract_version": reference.get("feature_contract_version"),
+            "reference_feature_rejection_reason": rejection,
+            "_rank": int(recommendation.get("rank") or 999999),
+        })
+    candidates.sort(key=lambda row: (
+        int(row.get("_rank") or 999999),
+        -float(row.get("score") or 0.0),
+        str(row.get("symbol") or ""),
+    ))
+    candidate_total = len(candidates)
+    for row in candidates:
+        row["candidate_total_count"] = candidate_total
+        row.pop("_rank", None)
+    return candidates[: max(0, int(limit))]
+
+
 def load_allocator_ev_snapshot_candidate_rows(
     query_fn: QueryFn,
     *,
     snapshot_date: str,
     next_session_date: str | None = None,
     limit: int = 1000,
+    learning_query_fn: QueryFn | None = None,
+    ops_query_fn: QueryFn | None = None,
+    core_query_fn: QueryFn | None = None,
+    market_query_fn: QueryFn | None = None,
 ) -> list[dict[str, Any]]:
+    split_queries = (
+        learning_query_fn,
+        ops_query_fn,
+        core_query_fn,
+        market_query_fn,
+    )
+    if any(candidate is not None for candidate in split_queries):
+        return _load_allocator_ev_snapshot_candidate_rows_split(
+            snapshot_date=snapshot_date,
+            next_session_date=next_session_date,
+            limit=limit,
+            learning_query_fn=learning_query_fn or query_fn,
+            ops_query_fn=ops_query_fn or query_fn,
+            core_query_fn=core_query_fn or query_fn,
+            market_query_fn=market_query_fn or query_fn,
+        )
     next_date = (date.fromisoformat(snapshot_date) + timedelta(days=1)).isoformat()
     supplied_next_session = str(next_session_date or "").strip()[:10] or None
     if supplied_next_session is not None and (
@@ -626,6 +801,28 @@ def build_allocator_ev_feature_snapshots_for_date(
     resolved_lineage_cohort_id = str(lineage_cohort_id or run_id).strip()
     if not resolved_lineage_cohort_id:
         raise ValueError("allocator_snapshot_lineage_cohort_id_missing")
+    production_domain_routing = query_fn is d1_client.query
+    if production_domain_routing:
+        learning_client = client_for_domain(D1DataDomain.LEARNING)
+        learning_query = learning_client.query
+        ops_query = client_for_domain(D1DataDomain.OPS).query
+        core_query = client_for_domain(D1DataDomain.CORE).query
+        market_query = client_for_domain(D1DataDomain.MARKET).query
+        learning_writer = write_fn or (
+            lambda items: learning_client.batch_execute(items)
+        )
+    else:
+        learning_query = query_fn
+        ops_query = query_fn
+        core_query = query_fn
+        market_query = query_fn
+        learning_writer = write_fn or (
+            lambda items: d1_client.batch_execute(
+                items,
+                timeout=60.0,
+                chunk_size=100,
+            )
+        )
     l4_result = _build_l4_asof_artifact(
         query_fn,
         snapshot_date=snapshot_date,
@@ -645,6 +842,10 @@ def build_allocator_ev_feature_snapshots_for_date(
         snapshot_date=snapshot_date,
         next_session_date=next_session_date,
         limit=candidate_limit,
+        learning_query_fn=learning_query if production_domain_routing else None,
+        ops_query_fn=ops_query if production_domain_routing else None,
+        core_query_fn=core_query if production_domain_routing else None,
+        market_query_fn=market_query if production_domain_routing else None,
     )
     market_context_load_error: str | None = None
     try:
@@ -671,7 +872,7 @@ def build_allocator_ev_feature_snapshots_for_date(
         ),
     )
     candidates, row_version_evidence_load = attach_same_run_model_version_evidence(
-        query_fn,
+        learning_query,
         timed_candidates,
     )
     sector_alpha_load_error: str | None = None
@@ -686,7 +887,7 @@ def build_allocator_ev_feature_snapshots_for_date(
         if str(row.get("prediction_generated_at") or "").strip()
     )
     champion_events, champion_history_load = load_model_champion_history(
-        query_fn,
+        learning_query,
         start_at=generated_values[0] if generated_values else f"{snapshot_date}T00:00:00Z",
         end_at=generated_values[-1] if generated_values else f"{snapshot_date}T23:59:59Z",
     )
@@ -854,9 +1055,7 @@ def build_allocator_ev_feature_snapshots_for_date(
             f"date={snapshot_date}:expected={candidate_total}:"
             f"accepted={len(statements)}:rejected={rejected_lineage_rows}"
         )
-        writer = write_fn or (
-            lambda items: d1_client.batch_execute(items, timeout=60.0, chunk_size=100)
-        )
+        writer = learning_writer
         closure_statements = [
             _snapshot_run_start_statement(
                 run_id=run_id,
@@ -872,7 +1071,7 @@ def build_allocator_ev_feature_snapshots_for_date(
         _assert_complete_write(closure_result, len(closure_statements), phase="closure")
         raise RuntimeError(closure_error)
     if statements and not dry_run:
-        writer = write_fn or (lambda items: d1_client.batch_execute(items, timeout=60.0, chunk_size=100))
+        writer = learning_writer
         stage_statements = [
             _snapshot_run_start_statement(
                 run_id=run_id,
@@ -887,7 +1086,7 @@ def build_allocator_ev_feature_snapshots_for_date(
         try:
             write_result = writer(stage_statements)
             _assert_complete_write(write_result, len(stage_statements), phase="staging")
-            staged_rows = query_fn(
+            staged_rows = learning_query(
                 "SELECT COUNT(*) AS row_count FROM allocator_ev_feature_snapshot_staging WHERE run_id=?",
                 [run_id],
             )
@@ -904,7 +1103,7 @@ def build_allocator_ev_feature_snapshots_for_date(
             )
             publish_result = writer(publish_statements)
             _assert_complete_write(publish_result, len(publish_statements), phase="publish")
-            published_run = query_fn(
+            published_run = learning_query(
                 "SELECT status, published_rows FROM allocator_ev_snapshot_runs WHERE run_id=?",
                 [run_id],
             )

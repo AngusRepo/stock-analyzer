@@ -454,6 +454,7 @@ export function buildAdminWorkerDomainTaskMap(c: any, deps: TriggerDeps): Record
             allowPromotion: currentBusinessDateRun,
             persistPolicy: currentBusinessDateRun,
             historicalPriorityDate,
+            identityDb: databaseForDataDomain(c.env, 'core'),
             assertLease: assertFinalizerLease,
             resolveCanonicalScreenerRunIds: async (asOfDate) => {
               const { loadCanonicalScreenerRunIds } = await import('./historicalScreenerArtifactEvidence')

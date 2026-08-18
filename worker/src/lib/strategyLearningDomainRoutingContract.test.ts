@@ -34,12 +34,16 @@ const manualStart = manual.indexOf("'strategy-learning-finalize': async () =>")
 const manualEnd = manual.indexOf("'selection-reference-identity-repair': async () =>", manualStart)
 const manualBlock = manual.slice(manualStart, manualEnd)
 assert.match(manualBlock, /const learningDb = databaseForDataDomain\(c\.env, 'learning'\)/)
+assert.match(manualBlock, /identityDb: databaseForDataDomain\(c\.env, 'core'\)/)
+assert.match(orchestrator, /identityDb: databaseForDataDomain\(env, 'core'\)/)
 for (const name of learningOwnerFunctions) {
   assert.doesNotMatch(manualBlock, new RegExp(`${name}\\(c\\.env\\.DB`), `${name} must use the Learning binding`)
 }
 
 const learning = fs.readFileSync('src/lib/strategyLearning.ts', 'utf8')
 const runState = fs.readFileSync('src/lib/strategyLearningRunState.ts', 'utf8')
+assert.match(learning, /persistSelectionEvidenceV4\(db,[\s\S]*options\.identityDb \?\? db\)/)
+assert.match(learning, /identityDb: options\.identityDb/)
 assert.match(learning, /listStrategyLearningCandidates\(options\.candidateDb \?\? db/)
 assert.match(runState, /inspectCanonicalStrategyUniverse\(input\.universeDb \?\? db/)
 

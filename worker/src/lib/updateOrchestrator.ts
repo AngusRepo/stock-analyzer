@@ -3022,6 +3022,7 @@ export async function processUpdateBatch(
     const report = await rebuildHistoricalStrategyEvidenceV5(databaseForDataDomain(env, 'learning'), {
       asOfDate: signalDate,
       maxDates: Math.max(1, Math.min(5, Number(msg.strategyEvidenceMaxDates ?? 1))),
+      identityDb: databaseForDataDomain(env, 'core'),
       priorityDate: signalDate,
       priorityOnly: false,
       resolveHistoricalRegime: (date) => readHistoricalHmmRegimeFamily(env.KV, date),
@@ -3728,6 +3729,7 @@ export async function processUpdateBatch(
           allowPromotion: policyMutationAllowed,
           persistPolicy: policyMutationAllowed,
           historicalPriorityDate,
+          identityDb: databaseForDataDomain(env, 'core'),
           cachedStageResults: finalizerStageResults,
           assertLease: assertFinalizerLease,
           onStageTransition: logFinalizerStage,

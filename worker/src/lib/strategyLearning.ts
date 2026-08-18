@@ -3461,6 +3461,7 @@ export async function rebuildHistoricalStrategyEvidenceV5(
   options: {
     asOfDate: string
     maxDates?: number
+    identityDb?: D1Database
     priorityDate?: string | null
     priorityOnly?: boolean
     resolveCanonicalScreenerRunIds?: (asOfDate: string) => Promise<Record<string, string>>
@@ -3997,7 +3998,7 @@ export async function rebuildHistoricalStrategyEvidenceV5(
           strategyRegistryChecksum: [...checksums][0],
           labelerVersion,
           evidenceArtifactId: [...artifactIds][0],
-        })
+        }, options.identityDb ?? db)
         matrixRows = persisted.matrixRows
       }
       const marginCoverage = await db.prepare(`
@@ -4133,6 +4134,7 @@ export async function finalizeStrategyLearningEvidenceV5(
     allowPromotion?: boolean
     persistPolicy?: boolean
     beforePromotion?: () => Promise<unknown>
+    identityDb?: D1Database
     historicalPriorityDate?: string | null
     resolveCanonicalScreenerRunIds?: (asOfDate: string) => Promise<Record<string, string>>
     resolveHistoricalRegime?: (signalDate: string) => Promise<string | null>
@@ -4161,6 +4163,7 @@ export async function finalizeStrategyLearningEvidenceV5(
       // Keep the critical chain bounded; the next canonical date drains the next PIT repair.
       maxDates: 1,
       priorityDate: options.historicalPriorityDate,
+      identityDb: options.identityDb,
       priorityOnly: true,
       resolveCanonicalScreenerRunIds: options.resolveCanonicalScreenerRunIds,
       resolveHistoricalRegime: options.resolveHistoricalRegime,
@@ -4243,6 +4246,7 @@ export async function runStrategyLearningClosure(
     allowPromotion?: boolean
     persistPolicy?: boolean
     historicalPriorityDate?: string | null
+    identityDb?: D1Database
     resolveHistoricalRegime?: (signalDate: string) => Promise<string | null>
     resolveCanonicalScreenerRunIds?: (asOfDate: string) => Promise<Record<string, string>>
     resolveHistoricalArtifactEvidence?: (

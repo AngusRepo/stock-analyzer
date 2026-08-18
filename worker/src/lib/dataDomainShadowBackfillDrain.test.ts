@@ -30,6 +30,7 @@ assert.equal(dataDomainShadowBackfillQueueBatchLimit('expected_return_artifact_p
 assert.equal(dataDomainShadowBackfillQueueBatchLimit('strategy_label_matrix_v4'), 1000)
 assert.equal(dataDomainShadowBackfillQueueBatchLimit('stock_prices'), 500)
 assert.equal(dataDomainShadowBackfillQueueBatchLimit('price_horizon_labels_v1'), 500)
+assert.equal(dataDomainShadowBackfillQueueBatchLimit('s12_replay_trade_outcomes'), 500)
 assert.equal(dataDomainShadowBackfillQueueBatchLimit('strategy_decision_log'), 500)
 assert(drain.includes('limit: dataDomainShadowBackfillQueueBatchLimit(table)'))
 assert.deepEqual(LEARNING_CRITICAL_EVIDENCE_BACKFILL_TABLES, [

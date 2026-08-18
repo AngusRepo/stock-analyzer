@@ -59,6 +59,7 @@ const NARROW_SHADOW_BACKFILL_TABLES = new Set([
   'strategy_decision_log',
   'strategy_label_matrix_v4',
   'price_horizon_labels_v1',
+  's12_replay_trade_outcomes',
   'selection_reference_snapshots_v1',
   'stock_prices',
   'technical_indicators',

@@ -2020,7 +2020,7 @@ export async function refreshStrategyLearningHeads(db: D1Database): Promise<numb
 
 export async function listStrategyRewardSourceRows(
   db: D1Database,
-  options: { startDate?: string; endDate?: string; limit?: number } = {},
+  options: { startDate?: string; endDate?: string; limit?: number; canonicalRunIds?: Record<string, string> } = {},
 ): Promise<StrategyRewardSourceRow[]> {
   const pageSize = Math.max(1, Math.min(options.limit ?? 1000, 5000))
   const rows: StrategyRewardSourceRow[] = []
@@ -2044,7 +2044,6 @@ export async function listStrategyRewardSourceRows(
          WHERE mr.producer_run_id=m.producer_run_id AND mr.status='ready'
            AND mr.labeler_version=m.labeler_version
       )`,
-      "EXISTS (SELECT 1 FROM canonical_run_heads h WHERE h.logical_run_key = 'screener:' || m.signal_date || ':TW:production:market_screener' AND h.run_id = m.producer_run_id)",
       `(
         m.signal_date > ?
         OR (m.signal_date = ? AND m.strategy_id > ?)
@@ -2058,6 +2057,12 @@ export async function listStrategyRewardSourceRows(
       cursorDate, cursorStrategyId, cursorSymbol,
       cursorDate, cursorStrategyId, cursorSymbol, cursorStrategyVersion,
     ]
+    if (options.canonicalRunIds) {
+      clauses.push("EXISTS (SELECT 1 FROM json_each(?) h WHERE h.key=m.signal_date AND h.value=m.producer_run_id)")
+      binds.push(JSON.stringify(options.canonicalRunIds))
+    } else {
+      clauses.push("EXISTS (SELECT 1 FROM canonical_run_heads h WHERE h.logical_run_key = 'screener:' || m.signal_date || ':TW:production:market_screener' AND h.run_id = m.producer_run_id)")
+    }
     if (options.startDate) { clauses.push('m.signal_date >= ?'); binds.push(options.startDate) }
     if (options.endDate) { clauses.push('m.signal_date <= ?'); binds.push(options.endDate) }
     binds.push(pageSize)
@@ -2199,7 +2204,7 @@ export async function materializeStrategyDecisionLogChunk(
 
 export async function refreshStrategyRewardLedger(
   db: D1Database,
-  options: { startDate?: string; endDate?: string; limit?: number; dryRun?: boolean } = {},
+  options: { startDate?: string; endDate?: string; limit?: number; dryRun?: boolean; canonicalRunIds?: Record<string, string> } = {},
 ): Promise<{
   success: boolean
   mode: 'dry_run' | 'persisted'
@@ -4151,6 +4156,7 @@ export async function finalizeStrategyLearningEvidenceV5(
   const { materializeCanonicalSelectionLabelsV4 } = await import('./canonicalSelectionLabels')
   const { reconcileSelectionDecisionEvidenceV4 } = await import('./selectionReferenceEvidence')
   const { refreshStrategyMarginalEdgeV4 } = await import('./strategyMarginalEdgeV4')
+  const canonicalRunIds = await options.resolveCanonicalScreenerRunIds?.(date)
   const decisionEvidence = await runStrategyLearningFinalizerStage(
     'decision_evidence',
     () => reconcileSelectionDecisionEvidenceV4(db, date),
@@ -4173,12 +4179,12 @@ export async function finalizeStrategyLearningEvidenceV5(
   )
   const labels = await runStrategyLearningFinalizerStage(
     'selection_labels',
-    () => materializeCanonicalSelectionLabelsV4(db, { asOfDate: date }),
+    () => materializeCanonicalSelectionLabelsV4(db, { asOfDate: date, canonicalRunIds }),
     options,
   )
   const rewards = await runStrategyLearningFinalizerStage(
     'reward_ledger',
-    () => refreshStrategyRewardLedger(db, { endDate: date, dryRun: false }),
+    () => refreshStrategyRewardLedger(db, { endDate: date, dryRun: false, canonicalRunIds }),
     options,
   )
   const { auditStrategyRouteBackfillEligibility } = await import('./strategyRouteBackfillEligibility')

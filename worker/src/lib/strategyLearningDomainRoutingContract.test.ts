@@ -41,13 +41,22 @@ for (const name of learningOwnerFunctions) {
 }
 
 const learning = fs.readFileSync('src/lib/strategyLearning.ts', 'utf8')
+const canonicalLabels = fs.readFileSync('src/lib/canonicalSelectionLabels.ts', 'utf8')
 const runState = fs.readFileSync('src/lib/strategyLearningRunState.ts', 'utf8')
+const adminWrite = fs.readFileSync('src/routes/adminWriteRoutes.ts', 'utf8')
 assert.match(learning, /persistSelectionEvidenceV4\(db,[\s\S]*options\.identityDb \?\? db\)/)
 assert.match(learning, /identityDb: options\.identityDb/)
 assert.match(learning, /listStrategyLearningCandidates\(options\.candidateDb \?\? db/)
 assert.match(runState, /inspectCanonicalStrategyUniverse\(input\.universeDb \?\? db/)
+assert.match(learning, /FROM json_each\(\?\) h WHERE h\.key=m\.signal_date AND h\.value=m\.producer_run_id/)
+assert.match(learning, /refreshStrategyRewardLedger\(db, \{ endDate: date, dryRun: false, canonicalRunIds \}\)/)
+assert.match(canonicalLabels, /FROM json_each\(\?\) h WHERE h\.key=r\.signal_date AND h\.value=r\.producer_run_id/)
+assert.match(canonicalLabels, /listCanonicalReferences\(db, options\.asOfDate, options\.startDate, options\.endDate, options\.canonicalRunIds\)/)
+assert.match(manualBlock, /loadCanonicalScreenerRunIds/)
+assert.match(orchestrator, /materializeCanonicalSelectionLabelsV4\(learningDb, \{ asOfDate, canonicalRunIds \}\)/)
+assert.match(orchestrator, /refreshStrategyRewardLedger\(learningDb, \{ endDate: asOfDate, dryRun: false, canonicalRunIds \}\)/)
+assert.match(adminWrite, /canonicalRunIds = await loadCanonicalScreenerRunIds\(c\.env, body\.end_date \?\? twToday\(\)\)/)
 
-const adminWrite = fs.readFileSync('src/routes/adminWriteRoutes.ts', 'utf8')
 assert.doesNotMatch(adminWrite, /(?:seedDefaultStrategySpecRegistry|materializeStrategyDecisionLog|refreshStrategyRewardLedger|refreshStrategyAdaptivePolicyState|refreshStrategyProductionContributionPolicy)\(c\.env\.DB/)
 const screener = fs.readFileSync('src/lib/marketScreener.ts', 'utf8')
 assert.doesNotMatch(screener, /listStrategySpecsForLearning\(env\.DB/)

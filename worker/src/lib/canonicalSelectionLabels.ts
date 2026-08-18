@@ -143,6 +143,7 @@ async function listCanonicalReferences(
   asOfDate: string,
   startDate?: string,
   endDate?: string,
+  canonicalRunIds?: Record<string, string>,
 ): Promise<ReferenceRow[]> {
   const rows: ReferenceRow[] = []
   let cursorDate = ''
@@ -152,8 +153,6 @@ async function listCanonicalReferences(
       "r.signal_date <= ?",
       "r.feature_contract_version = ?",
       "(r.signal_date > ? OR (r.signal_date = ? AND r.symbol > ?))",
-      "EXISTS (SELECT 1 FROM canonical_run_heads h WHERE h.logical_run_key = 'screener:' || r.signal_date || ':TW:production:market_screener' AND h.run_id = r.producer_run_id)",
-      "NOT EXISTS (SELECT 1 FROM canonical_selection_labels_v4 l WHERE l.signal_date = r.signal_date AND l.symbol = r.symbol AND l.producer_run_id = r.producer_run_id AND l.label_schema_version = 'canonical-strategy-selection-label-v4' AND l.reference_contract_version = ?)",
     ]
     const binds: unknown[] = [
       asOfDate,
@@ -161,9 +160,16 @@ async function listCanonicalReferences(
       cursorDate,
       cursorDate,
       cursorSymbol,
-      SELECTION_REFERENCE_CONTRACT_VERSION,
     ]
     if (startDate) { clauses.push('r.signal_date >= ?'); binds.push(startDate) }
+    if (canonicalRunIds) {
+      clauses.push("EXISTS (SELECT 1 FROM json_each(?) h WHERE h.key=r.signal_date AND h.value=r.producer_run_id)")
+      binds.push(JSON.stringify(canonicalRunIds))
+    } else {
+      clauses.push("EXISTS (SELECT 1 FROM canonical_run_heads h WHERE h.logical_run_key = 'screener:' || r.signal_date || ':TW:production:market_screener' AND h.run_id = r.producer_run_id)")
+    }
+    clauses.push("NOT EXISTS (SELECT 1 FROM canonical_selection_labels_v4 l WHERE l.signal_date = r.signal_date AND l.symbol = r.symbol AND l.producer_run_id = r.producer_run_id AND l.label_schema_version = 'canonical-strategy-selection-label-v4' AND l.reference_contract_version = ?)")
+    binds.push(SELECTION_REFERENCE_CONTRACT_VERSION)
     if (endDate) { clauses.push('r.signal_date <= ?'); binds.push(endDate) }
     const page = await db.prepare(`
       SELECT r.signal_date, r.symbol, r.producer_run_id, r.stock_id, r.market_segment, r.sector
@@ -225,13 +231,13 @@ async function loadPriceHorizonEvidence(
 }
 export async function materializeCanonicalSelectionLabelsV4(
   db: D1Database,
-  options: { asOfDate: string; startDate?: string; endDate?: string; transactionCostBps?: number },
+  options: { asOfDate: string; startDate?: string; endDate?: string; transactionCostBps?: number; canonicalRunIds?: Record<string, string> },
 ): Promise<CanonicalSelectionLabelMaterializationResult> {
   const costBps = Number.isFinite(options.transactionCostBps)
     ? Math.max(0, Number(options.transactionCostBps))
     : CANONICAL_SELECTION_ROUNDTRIP_COST_BPS
   const runId = `selection-label-v4-${options.asOfDate}-${options.startDate ?? 'all'}-${options.endDate ?? 'all'}`
-  const references = await listCanonicalReferences(db, options.asOfDate, options.startDate, options.endDate)
+  const references = await listCanonicalReferences(db, options.asOfDate, options.startDate, options.endDate, options.canonicalRunIds)
   const horizonEvidence = references.length
     ? await loadPriceHorizonEvidence(db, references)
     : { labels: new Map<string, PriceHorizonEvidenceRow>(), rejections: new Map<string, PriceHorizonRejectionRow>() }

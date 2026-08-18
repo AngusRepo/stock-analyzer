@@ -840,11 +840,14 @@ adminWriteRoutes.post('/api/admin/strategy/reward-ledger/refresh', async (c) => 
     }, 400)
   }
   const { refreshStrategyRewardLedger } = await import('../lib/strategyLearning')
+  const { loadCanonicalScreenerRunIds } = await import('../lib/historicalScreenerArtifactEvidence')
+  const canonicalRunIds = await loadCanonicalScreenerRunIds(c.env, body.end_date ?? twToday())
   const report = await refreshStrategyRewardLedger(databaseForDataDomain(c.env, 'learning'), {
     startDate: body.start_date,
     endDate: body.end_date,
     limit: body.limit,
     dryRun,
+    canonicalRunIds,
   })
   return c.json({
     ...report,

@@ -1750,12 +1750,15 @@ export async function refreshMatureStrategyEvidenceBeforeScreener(
     const { materializeCanonicalSelectionLabelsV4 } = await import('./canonicalSelectionLabels')
     const { refreshStrategyMarginalEdgeV4 } = await import('./strategyMarginalEdgeV4')
     const { refreshStrategyRewardLedger } = await import('./strategyLearning')
+    const { loadCanonicalScreenerRunIds } = await import('./historicalScreenerArtifactEvidence')
     const recovery = await recoverMatureSelectionEvidence(env, asOfDate, {
       maxRecoveryDates: 4,
     })
-    const labels = await materializeCanonicalSelectionLabelsV4(env.DB, { asOfDate })
-    const marginalEdge = await refreshStrategyMarginalEdgeV4(databaseForDataDomain(env, 'learning'), asOfDate)
-    const rewards = await refreshStrategyRewardLedger(databaseForDataDomain(env, 'learning'), { endDate: asOfDate, dryRun: false })
+    const learningDb = databaseForDataDomain(env, 'learning')
+    const canonicalRunIds = await loadCanonicalScreenerRunIds(env, asOfDate)
+    const labels = await materializeCanonicalSelectionLabelsV4(learningDb, { asOfDate, canonicalRunIds })
+    const marginalEdge = await refreshStrategyMarginalEdgeV4(learningDb, asOfDate)
+    const rewards = await refreshStrategyRewardLedger(learningDb, { endDate: asOfDate, dryRun: false, canonicalRunIds })
     const summary = [
       `mature_recovery=${recovery.summary}`,
       `labels=${labels.persisted_rows}`,

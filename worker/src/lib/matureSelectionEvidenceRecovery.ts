@@ -326,6 +326,9 @@ export async function recoverMatureSelectionEvidence(
   const blocked = before.gaps.filter((gap) => !isMatureSelectionEvidenceGapRecoverable(gap))
   const targeted = recoverable.slice(0, maxRecoveryDates)
 
+  const { loadCanonicalScreenerRunIds } = await import('./historicalScreenerArtifactEvidence')
+  const canonicalRunIds = targeted.length ? await loadCanonicalScreenerRunIds(env, businessDate) : {}
+
   let projectionRuns = 0
   let labelRowsPersisted = 0
   for (const gap of targeted) {
@@ -343,7 +346,7 @@ export async function recoverMatureSelectionEvidence(
     if (gap.labelRows + gap.labelUnavailableRows !== gap.referenceRows) {
       const labels = await materializeCanonicalSelectionLabelsV4(
         databaseForDataDomain(env, 'learning'),
-        { asOfDate: businessDate, startDate: gap.signalDate, endDate: gap.signalDate },
+        { asOfDate: businessDate, startDate: gap.signalDate, endDate: gap.signalDate, canonicalRunIds },
       )
       labelRowsPersisted += labels.persisted_rows
     }

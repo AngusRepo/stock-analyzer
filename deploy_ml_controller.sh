@@ -39,8 +39,10 @@ SCREENER_JOB_NAME="${SCREENER_JOB_NAME:-screener-v2}"
 S12_STRUCTURE_JOB_NAME="${S12_STRUCTURE_JOB_NAME:-s12-structure-batch}"
 OPTUNA_JOB_NAME="${OPTUNA_JOB_NAME:-optuna-research-sweep}"
 OOF_MATERIALIZE_JOB_NAME="${OOF_MATERIALIZE_JOB_NAME:-active8-oof-materialize}"
+DATASET_SNAPSHOT_JOB_NAME="${DATASET_SNAPSHOT_JOB_NAME:-dataset-snapshot-export}"
 OPTUNA_JOB_TIMEOUT="${OPTUNA_JOB_TIMEOUT:-10800s}"
 OOF_MATERIALIZE_JOB_TIMEOUT="${OOF_MATERIALIZE_JOB_TIMEOUT:-3600s}"
+DATASET_SNAPSHOT_JOB_TIMEOUT="${DATASET_SNAPSHOT_JOB_TIMEOUT:-3600s}"
 SCREENER_JOB_TIMEOUT="${SCREENER_JOB_TIMEOUT:-7200s}"
 S12_STRUCTURE_JOB_TIMEOUT="${S12_STRUCTURE_JOB_TIMEOUT:-21600s}"
 STRATEGY_MINING_JOB_TIMEOUT="${STRATEGY_MINING_JOB_TIMEOUT:-28800s}"
@@ -92,6 +94,7 @@ STRATEGY_MINING_JOB_NAME="${STRATEGY_MINING_JOB_NAME:-strategy-mining-research}"
 STRATEGY_MINING_EXECUTION_ENABLED="${STRATEGY_MINING_EXECUTION_ENABLED:-true}"
 STRATEGY_MINING_BACKEND="${STRATEGY_MINING_BACKEND:-modal}"
 RUNTIME_ENV_VARS="GCS_BUCKET_NAME=${GCS_BUCKET_NAME},RETRAIN_LOCK_BUCKET=${RETRAIN_LOCK_BUCKET},GCP_PROJECT_ID=${GCP_PROJECT_ID},GCP_REGION=${GCP_REGION},PIPELINE_JOB_NAME=${PIPELINE_JOB_NAME},VERIFY_JOB_NAME=${VERIFY_JOB_NAME},SCREENER_JOB_NAME=${SCREENER_JOB_NAME},S12_STRUCTURE_JOB_NAME=${S12_STRUCTURE_JOB_NAME},OPTUNA_JOB_NAME=${OPTUNA_JOB_NAME},OOF_MATERIALIZE_JOB_NAME=${OOF_MATERIALIZE_JOB_NAME},STOCKVISION_WORKER_URL=${STOCKVISION_WORKER_URL},ML_CONTROLLER_PUBLIC_URL=${ML_CONTROLLER_PUBLIC_URL},CF_D1_DB_ID=${CF_D1_DB_ID},CF_KV_NAMESPACE_ID=${CF_KV_NAMESPACE_ID},S12_RESEARCH_KBARS_URL=https://shioaji-research-530028717113.asia-east1.run.app,SHIOAJI_CERT_PATH=${SHIOAJI_CERT_MOUNT_PATH},PIPELINE_STATE_SPACE_OVERLAY_MODE=${PIPELINE_STATE_SPACE_OVERLAY_MODE},PIPELINE_STATE_SPACE_OVERLAY_SOFT_DEADLINE_SECONDS=${PIPELINE_STATE_SPACE_OVERLAY_SOFT_DEADLINE_SECONDS},MODAL_PREDICT_BATCH_SIZE_CANDIDATES=${MODAL_PREDICT_BATCH_SIZE_CANDIDATES},MODAL_PREDICT_BATCH_SIZE_OBSERVATION_SOURCE=${MODAL_PREDICT_BATCH_SIZE_OBSERVATION_SOURCE},TIMESFM_MIN_SEQUENCE_COVERAGE=${TIMESFM_MIN_SEQUENCE_COVERAGE},TIMESFM_MIN_SEQUENCE_POINTS=${TIMESFM_MIN_SEQUENCE_POINTS},FINLAB_BACKFILL_EXECUTOR=${FINLAB_BACKFILL_EXECUTOR},STRATEGY_MINING_JOB_NAME=${STRATEGY_MINING_JOB_NAME},STRATEGY_MINING_EXECUTION_ENABLED=${STRATEGY_MINING_EXECUTION_ENABLED},STRATEGY_MINING_BACKEND=${STRATEGY_MINING_BACKEND}"
+RUNTIME_ENV_VARS="${RUNTIME_ENV_VARS},DATASET_SNAPSHOT_JOB_NAME=${DATASET_SNAPSHOT_JOB_NAME}"
 RUNTIME_ENV_VARS="${RUNTIME_ENV_VARS},CF_D1_LEARNING_DB_ID=${CF_D1_LEARNING_DB_ID}"
 RUNTIME_ENV_VARS="${RUNTIME_ENV_VARS},CF_D1_OPS_DB_ID=${CF_D1_OPS_DB_ID}"
 RUNTIME_ENV_VARS="${RUNTIME_ENV_VARS},MULTI_D1_ACTIVE_DOMAINS=${MULTI_D1_ACTIVE_DOMAINS}"
@@ -130,6 +133,7 @@ REQUIRED_ENV_VARS=(
   S12_STRUCTURE_JOB_NAME
   OPTUNA_JOB_NAME
   OOF_MATERIALIZE_JOB_NAME
+  DATASET_SNAPSHOT_JOB_NAME
   STRATEGY_MINING_JOB_NAME
   STRATEGY_MINING_EXECUTION_ENABLED
   STRATEGY_MINING_BACKEND
@@ -418,6 +422,12 @@ load_live_image_state() {
     --region="$REGION" \
     --format="value(spec.template.spec.template.spec.containers[0].image)" 2>/dev/null || true)
   LIVE_OOF_MATERIALIZE_JOB_ENTRYPOINT=$(gcloud run jobs describe "$OOF_MATERIALIZE_JOB_NAME" \
+    --region="$REGION" \
+    --format="value(spec.template.spec.template.spec.containers[0].command[0],spec.template.spec.template.spec.containers[0].args)" 2>/dev/null || true)
+  LIVE_DATASET_SNAPSHOT_JOB_IMG=$(gcloud run jobs describe "$DATASET_SNAPSHOT_JOB_NAME" \
+    --region="$REGION" \
+    --format="value(spec.template.spec.template.spec.containers[0].image)" 2>/dev/null || true)
+  LIVE_DATASET_SNAPSHOT_JOB_ENTRYPOINT=$(gcloud run jobs describe "$DATASET_SNAPSHOT_JOB_NAME" \
     --region="$REGION" \
     --format="value(spec.template.spec.template.spec.containers[0].command[0],spec.template.spec.template.spec.containers[0].args)" 2>/dev/null || true)
 }
@@ -845,6 +855,58 @@ sync_oof_materialize_job() {
   echo "OOF materialize job sync succeeded"
   echo ""
 }
+
+sync_dataset_snapshot_job() {
+  local env_file="$1"
+  local service_account_args=()
+  if [ -n "${VERIFY_JOB_SERVICE_ACCOUNT:-}" ]; then
+    service_account_args=(--service-account="$VERIFY_JOB_SERVICE_ACCOUNT")
+  fi
+
+  if gcloud run jobs describe "$DATASET_SNAPSHOT_JOB_NAME" \
+      --region="$REGION" \
+      --format="value(metadata.name)" >/dev/null 2>&1; then
+    echo "=== Step 3g/4: Update Job $DATASET_SNAPSHOT_JOB_NAME ==="
+    if ! gcloud run jobs update "$DATASET_SNAPSHOT_JOB_NAME" \
+        --region="$REGION" \
+        --image="$NEW_IMAGE" \
+        --command=python \
+        --args=-m \
+        --args=dataset_snapshot_job_main \
+        --cpu="${DATASET_SNAPSHOT_JOB_CPU:-4}" \
+        --memory="${DATASET_SNAPSHOT_JOB_MEMORY:-8Gi}" \
+        --task-timeout="$DATASET_SNAPSHOT_JOB_TIMEOUT" \
+        --max-retries=0 \
+        "${service_account_args[@]}" \
+        --update-labels="$PROVENANCE_LABELS" \
+        --update-secrets="$RUN_SECRET_BINDINGS" \
+        --env-vars-file="$env_file"; then
+      echo "Dataset snapshot job update failed" >&2
+      exit 4
+    fi
+  else
+    echo "=== Step 3g/4: Create Job $DATASET_SNAPSHOT_JOB_NAME ==="
+    if ! gcloud run jobs create "$DATASET_SNAPSHOT_JOB_NAME" \
+        --region="$REGION" \
+        --image="$NEW_IMAGE" \
+        --command=python \
+        --args=-m \
+        --args=dataset_snapshot_job_main \
+        --cpu="${DATASET_SNAPSHOT_JOB_CPU:-4}" \
+        --memory="${DATASET_SNAPSHOT_JOB_MEMORY:-8Gi}" \
+        --task-timeout="$DATASET_SNAPSHOT_JOB_TIMEOUT" \
+        --max-retries=0 \
+        "${service_account_args[@]}" \
+        --labels="$PROVENANCE_LABELS" \
+        --set-secrets="$RUN_SECRET_BINDINGS" \
+        --env-vars-file="$env_file"; then
+      echo "Dataset snapshot job create failed" >&2
+      exit 4
+    fi
+  fi
+  echo "Dataset snapshot job sync succeeded"
+  echo ""
+}
 run_preflight() {
   echo "=== Preflight: local deploy inputs ==="
   require_nonempty "GCS_BUCKET_NAME" "Example: export GCS_BUCKET_NAME=stockvision-models"
@@ -856,6 +918,7 @@ run_preflight() {
   require_nonempty "SCREENER_JOB_NAME" "Required by ml-controller /screener/v2/run Cloud Run Job trigger"
   require_nonempty "OPTUNA_JOB_NAME" "Required by ml-controller /optuna/research_sweep/run Cloud Run Job trigger"
   require_nonempty "OOF_MATERIALIZE_JOB_NAME" "Required by Active-8 OOF durable materialization"
+  require_nonempty "DATASET_SNAPSHOT_JOB_NAME" "Required by deferred research snapshot export"
   require_nonempty "CF_API_TOKEN_SECRET" "Secret Manager reference for Cloudflare API token, e.g. stockvision-cf-api-token:latest"
   require_nonempty "STOCKVISION_AUTH_TOKEN_SECRET" "Secret Manager reference for Worker service token, e.g. stockvision-stockvision-auth-token:latest"
   require_nonempty "STRATEGY_MINING_CALLBACK_TOKEN_SECRET" "Secret Manager reference for the dedicated Pymoo callback token"
@@ -930,10 +993,14 @@ run_preflight() {
     echo "  Live OOF materialize  : ${LIVE_OOF_MATERIALIZE_JOB_IMG}"
     echo "  Live OOF entrypoint   : ${LIVE_OOF_MATERIALIZE_JOB_ENTRYPOINT:-unknown}"
   fi
+  if [ -n "${LIVE_DATASET_SNAPSHOT_JOB_IMG:-}" ]; then
+    echo "  Live snapshot image   : ${LIVE_DATASET_SNAPSHOT_JOB_IMG}"
+    echo "  Live snapshot entrypt : ${LIVE_DATASET_SNAPSHOT_JOB_ENTRYPOINT:-unknown}"
+  fi
 
-  if [ -z "${LIVE_SERVICE_IMG:-}" ] || [ -z "${LIVE_JOB_IMG:-}" ] || [ -z "${LIVE_VERIFY_JOB_IMG:-}" ] || [ -z "${LIVE_SCREENER_JOB_IMG:-}" ] || [ -z "${LIVE_OPTUNA_JOB_IMG:-}" ] || [ -z "${LIVE_OOF_MATERIALIZE_JOB_IMG:-}" ]; then
+  if [ -z "${LIVE_SERVICE_IMG:-}" ] || [ -z "${LIVE_JOB_IMG:-}" ] || [ -z "${LIVE_VERIFY_JOB_IMG:-}" ] || [ -z "${LIVE_SCREENER_JOB_IMG:-}" ] || [ -z "${LIVE_OPTUNA_JOB_IMG:-}" ] || [ -z "${LIVE_OOF_MATERIALIZE_JOB_IMG:-}" ] || [ -z "${LIVE_DATASET_SNAPSHOT_JOB_IMG:-}" ]; then
     echo "  Unable to fully verify Service / Job image drift from current environment."
-  elif [ "$LIVE_SERVICE_IMG" = "$LIVE_JOB_IMG" ] && [ "$LIVE_SERVICE_IMG" = "$LIVE_VERIFY_JOB_IMG" ] && [ "$LIVE_SERVICE_IMG" = "$LIVE_SCREENER_JOB_IMG" ] && [ "$LIVE_SERVICE_IMG" = "$LIVE_OPTUNA_JOB_IMG" ] && [ "$LIVE_SERVICE_IMG" = "$LIVE_OOF_MATERIALIZE_JOB_IMG" ]; then
+  elif [ "$LIVE_SERVICE_IMG" = "$LIVE_JOB_IMG" ] && [ "$LIVE_SERVICE_IMG" = "$LIVE_VERIFY_JOB_IMG" ] && [ "$LIVE_SERVICE_IMG" = "$LIVE_SCREENER_JOB_IMG" ] && [ "$LIVE_SERVICE_IMG" = "$LIVE_OPTUNA_JOB_IMG" ] && [ "$LIVE_SERVICE_IMG" = "$LIVE_OOF_MATERIALIZE_JOB_IMG" ] && [ "$LIVE_SERVICE_IMG" = "$LIVE_DATASET_SNAPSHOT_JOB_IMG" ]; then
     echo "  Service / Job image sync: OK"
   else
     echo "  Service / Job image sync: DRIFT DETECTED"
@@ -1032,6 +1099,7 @@ sync_s12_structure_job "$VERIFY_JOB_ENV_FILE"
 sync_optuna_job "$VERIFY_JOB_ENV_FILE"
 sync_strategy_mining_job "$STRATEGY_MINING_JOB_ENV_FILE"
 sync_oof_materialize_job "$OOF_MATERIALIZE_JOB_ENV_FILE"
+sync_dataset_snapshot_job "$VERIFY_JOB_ENV_FILE"
 
 echo "=== Step 4/4: Verify Service and Job image match ==="
 SERVICE_IMG=$(gcloud run services describe "$SERVICE" --region="$REGION" \
@@ -1049,6 +1117,8 @@ OPTUNA_JOB_IMG=$(gcloud run jobs describe "$OPTUNA_JOB_NAME" --region="$REGION" 
 STRATEGY_MINING_JOB_IMG=$(gcloud run jobs describe "$STRATEGY_MINING_JOB_NAME" --region="$REGION" \
   --format="value(spec.template.spec.template.spec.containers[0].image)")
 OOF_MATERIALIZE_JOB_IMG=$(gcloud run jobs describe "$OOF_MATERIALIZE_JOB_NAME" --region="$REGION" \
+  --format="value(spec.template.spec.template.spec.containers[0].image)")
+DATASET_SNAPSHOT_JOB_IMG=$(gcloud run jobs describe "$DATASET_SNAPSHOT_JOB_NAME" --region="$REGION" \
   --format="value(spec.template.spec.template.spec.containers[0].image)")
 VERIFY_JOB_COMMAND=$(gcloud run jobs describe "$VERIFY_JOB_NAME" --region="$REGION" \
   --format="value(spec.template.spec.template.spec.containers[0].command[0])")
@@ -1074,6 +1144,10 @@ OOF_MATERIALIZE_JOB_COMMAND=$(gcloud run jobs describe "$OOF_MATERIALIZE_JOB_NAM
   --format="value(spec.template.spec.template.spec.containers[0].command[0])")
 OOF_MATERIALIZE_JOB_ARGS=$(gcloud run jobs describe "$OOF_MATERIALIZE_JOB_NAME" --region="$REGION" \
   --format="value(spec.template.spec.template.spec.containers[0].args)")
+DATASET_SNAPSHOT_JOB_COMMAND=$(gcloud run jobs describe "$DATASET_SNAPSHOT_JOB_NAME" --region="$REGION" \
+  --format="value(spec.template.spec.template.spec.containers[0].command[0])")
+DATASET_SNAPSHOT_JOB_ARGS=$(gcloud run jobs describe "$DATASET_SNAPSHOT_JOB_NAME" --region="$REGION" \
+  --format="value(spec.template.spec.template.spec.containers[0].args)")
 
 if [ "$SERVICE_IMG" != "$JOB_IMG" ] || [ "$SERVICE_IMG" != "$VERIFY_JOB_IMG" ] || [ "$SERVICE_IMG" != "$SCREENER_JOB_IMG" ] || [ "$SERVICE_IMG" != "$S12_STRUCTURE_JOB_IMG" ] || [ "$SERVICE_IMG" != "$OPTUNA_JOB_IMG" ] || [ "$SERVICE_IMG" != "$STRATEGY_MINING_JOB_IMG" ] || [ "$SERVICE_IMG" != "$OOF_MATERIALIZE_JOB_IMG" ]; then
   echo "❌ VERIFICATION FAILED — images differ:" >&2
@@ -1085,6 +1159,13 @@ if [ "$SERVICE_IMG" != "$JOB_IMG" ] || [ "$SERVICE_IMG" != "$VERIFY_JOB_IMG" ] |
   echo "  Optuna : $OPTUNA_JOB_IMG" >&2
   echo "  Mining : $STRATEGY_MINING_JOB_IMG" >&2
   echo "  OOF    : $OOF_MATERIALIZE_JOB_IMG" >&2
+  exit 5
+fi
+
+if [ "$SERVICE_IMG" != "$DATASET_SNAPSHOT_JOB_IMG" ]; then
+  echo "VERIFICATION FAILED - dataset snapshot image differs:" >&2
+  echo "  Service : $SERVICE_IMG" >&2
+  echo "  Snapshot: $DATASET_SNAPSHOT_JOB_IMG" >&2
   exit 5
 fi
 
@@ -1125,6 +1206,13 @@ if [ "$OOF_MATERIALIZE_JOB_COMMAND" != "python" ] || [ "$OOF_MATERIALIZE_JOB_ARG
   echo "VERIFICATION FAILED - OOF materialize job entrypoint drift:" >&2
   echo "  command : $OOF_MATERIALIZE_JOB_COMMAND" >&2
   echo "  args    : $OOF_MATERIALIZE_JOB_ARGS" >&2
+  exit 5
+fi
+
+if [ "$DATASET_SNAPSHOT_JOB_COMMAND" != "python" ] || [ "$DATASET_SNAPSHOT_JOB_ARGS" != "-m;dataset_snapshot_job_main" ]; then
+  echo "VERIFICATION FAILED - dataset snapshot job entrypoint drift:" >&2
+  echo "  command : $DATASET_SNAPSHOT_JOB_COMMAND" >&2
+  echo "  args    : $DATASET_SNAPSHOT_JOB_ARGS" >&2
   exit 5
 fi
 

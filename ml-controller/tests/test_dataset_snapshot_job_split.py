@@ -130,3 +130,15 @@ def test_detached_dataset_snapshot_job_exports_and_callbacks(monkeypatch):
     assert payloads[0]["run_date"] == "2026-05-18"
     assert "backtest=backtest-1 rows=12" in payloads[0]["summary"]
     assert "price=price-1 rows=5" in payloads[0]["summary"]
+
+
+def test_deploy_provisions_detached_dataset_snapshot_job():
+    deploy = (Path(__file__).resolve().parents[2] / "deploy_ml_controller.sh").read_text(encoding="utf-8")
+
+    assert 'DATASET_SNAPSHOT_JOB_NAME="${DATASET_SNAPSHOT_JOB_NAME:-dataset-snapshot-export}"' in deploy
+    assert 'RUNTIME_ENV_VARS="${RUNTIME_ENV_VARS},DATASET_SNAPSHOT_JOB_NAME=${DATASET_SNAPSHOT_JOB_NAME}"' in deploy
+    assert "sync_dataset_snapshot_job()" in deploy
+    assert "--args=dataset_snapshot_job_main" in deploy
+    assert 'sync_dataset_snapshot_job "$VERIFY_JOB_ENV_FILE"' in deploy
+    assert "DATASET_SNAPSHOT_JOB_IMG=$(gcloud run jobs describe" in deploy
+    assert '"-m;dataset_snapshot_job_main"' in deploy

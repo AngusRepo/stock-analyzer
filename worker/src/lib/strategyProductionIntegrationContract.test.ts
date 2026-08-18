@@ -44,7 +44,7 @@ assert.doesNotMatch(
 )
 assert.match(
   screenerSource,
-  /loadStrategyProductionPolicyBefore\(env\.DB, endDate, strategyIds\)/,
+  /loadStrategyProductionPolicyBefore\(databaseForDataDomain\(env, 'learning'\), endDate, strategyIds\)/,
   'screener must load the immutable production policy point-in-time',
 )
 assert.doesNotMatch(
@@ -54,7 +54,7 @@ assert.doesNotMatch(
 )
 assert.match(
   screenerSource,
-  /listStrategySpecsForLearning\(env\.DB, \{ asOfDate: endDate \}\)/,
+  /listStrategySpecsForLearning\(databaseForDataDomain\(env, 'learning'\), \{ asOfDate: endDate \}\)/,
   'production firewall must take precedence over PIT marginal-edge weights',
 )
 assert.match(

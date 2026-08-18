@@ -3025,6 +3025,10 @@ export async function processUpdateBatch(
       priorityDate: signalDate,
       priorityOnly: true,
       resolveHistoricalRegime: (date) => readHistoricalHmmRegimeFamily(env.KV, date),
+      resolveHistoricalArtifactEvidence: async (date, producerRunId) => {
+        const { loadHistoricalScreenerArtifactEvidence } = await import('./historicalScreenerArtifactEvidence')
+        return loadHistoricalScreenerArtifactEvidence(env, date, producerRunId)
+      },
     })
     if (report.successfulDates !== 1 || report.blockedDates !== 0) {
       throw new Error(`strategy_evidence_rebuild_incomplete:${signalDate}:${JSON.stringify(report)}`)
@@ -3727,6 +3731,10 @@ export async function processUpdateBatch(
           resolveHistoricalRegime: async (signalDate) => {
             const { readHistoricalHmmRegimeFamily } = await import('./marketRegimeState')
             return readHistoricalHmmRegimeFamily(env.KV, signalDate)
+          },
+          resolveHistoricalArtifactEvidence: async (signalDate, producerRunId) => {
+            const { loadHistoricalScreenerArtifactEvidence } = await import('./historicalScreenerArtifactEvidence')
+            return loadHistoricalScreenerArtifactEvidence(env, signalDate, producerRunId)
           },
           beforePromotion: async () => {
             const closureAudit = await auditEveningChainEvidenceClosure(

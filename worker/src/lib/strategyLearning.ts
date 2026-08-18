@@ -27,6 +27,7 @@ import type { OhlcvRow } from './ohlcvTradePlanLevels'
 import type { Bindings } from '../types'
 import { writeEvidenceArtifact } from './artifactLifecycle'
 import { sha256Text } from './datasetSnapshots'
+import type { HistoricalScreenerArtifactEvidence } from './historicalScreenerArtifactEvidence'
 import { CANONICAL_SELECTION_LABEL_SCHEMA_VERSION, CANONICAL_SELECTION_ROUNDTRIP_COST_BPS } from './canonicalSelectionLabels'
 import { S12_REPLAY_ENGINE_SIGNATURE } from './s12ReplayContract'
 import { STRATEGY_MARGINAL_EDGE_SCHEMA_VERSION, STRATEGY_REPLACEMENT_POLICY_V7 } from './strategyMarginalEdgeV4'
@@ -3434,6 +3435,10 @@ export async function rebuildHistoricalStrategyEvidenceV5(
     priorityDate?: string | null
     priorityOnly?: boolean
     resolveHistoricalRegime?: (signalDate: string) => Promise<string | null>
+    resolveHistoricalArtifactEvidence?: (
+      signalDate: string,
+      producerRunId: string,
+    ) => Promise<HistoricalScreenerArtifactEvidence | null>
   },
 ): Promise<{ attemptedDates: number; successfulDates: number; blockedDates: number; rebuiltDecisions: number; rebuiltMatrixRows: number }> {
   await ensureStrategyLearningTables(db)
@@ -3489,16 +3494,23 @@ export async function rebuildHistoricalStrategyEvidenceV5(
         throw new Error('reference_lineage_incomplete')
       }
       const referenceLabeler = [...referenceLabelers][0]
+      const references = [...new Map(referenceRows.map((row) => [cleanToken(row.symbol), row])).values()]
+      const referenceBySymbol = new Map(references.map((row) => [cleanToken(row.symbol), row]))
+      const producerRunId = [...producerRunIds][0]
+      const artifactEvidence = await options.resolveHistoricalArtifactEvidence?.(date, producerRunId) ?? null
       const acceptedHistoricalSourceLabelers = new Set([
         ...STRATEGY_FORMAL_LABELER_VERSIONS,
         'strategy-labeler-v1',
       ])
-      if (!acceptedHistoricalSourceLabelers.has(referenceLabeler)) {
+      const artifactBackedV1Carrier = referenceLabeler === 'strategy-decision-log-pit-reconstruction-v6'
+        && artifactEvidence?.source_labeler_version === 'strategy-labeler-v1'
+        && artifactEvidence.candidate_count === references.length
+      if (!acceptedHistoricalSourceLabelers.has(referenceLabeler) && !artifactBackedV1Carrier) {
         throw new Error(`strategy_matrix_source_labeler_unsupported:${date}:${referenceLabeler || 'missing'}`)
       }
-      const references = [...new Map(referenceRows.map((row) => [cleanToken(row.symbol), row])).values()]
-      const referenceBySymbol = new Map(references.map((row) => [cleanToken(row.symbol), row]))
-      const producerRunId = [...producerRunIds][0]
+      const productionPolicySourceLabeler = artifactBackedV1Carrier
+        ? artifactEvidence.source_labeler_version
+        : referenceLabeler
       const sourceMatrixRun = await db.prepare(`
         SELECT labeler_version, strategy_registry_checksum, reference_contract_version
           FROM strategy_label_matrix_runs_v4
@@ -3512,7 +3524,7 @@ export async function rebuildHistoricalStrategyEvidenceV5(
       const referenceChecksum = [...checksums][0]
       if (
         !sourceMatrixRun
-        || !acceptedHistoricalSourceLabelers.has(sourceMatrixLabeler)
+        || (!acceptedHistoricalSourceLabelers.has(sourceMatrixLabeler) && !artifactBackedV1Carrier)
         || sourceMatrixLabeler !== referenceLabeler
         || cleanToken(sourceMatrixRun.strategy_registry_checksum) !== referenceChecksum
         || cleanToken(sourceMatrixRun.reference_contract_version) !== SELECTION_REFERENCE_CONTRACT_VERSION
@@ -3547,6 +3559,13 @@ export async function rebuildHistoricalStrategyEvidenceV5(
         spec.id + '|' + spec.version,
         spec,
       ]))
+      if (artifactBackedV1Carrier && (
+        artifactEvidence.strategy_count !== strategyKeys.size
+        || artifactEvidence.expected_cell_count !== expectedMatrixRows
+        || artifactEvidence.matrix_coverage_ratio !== 1
+      )) {
+        throw new Error(`strategy_artifact_source_coverage_invalid:${date}:${artifactEvidence.expected_cell_count}/${expectedMatrixRows}`)
+      }
       const decisionContractComplete = decisions.every((row) => (
         cleanToken(row.evaluation_contract_version) === 'strategy-evaluation-v2'
         && (Number(row.evaluable) === 0 || Number(row.evaluable) === 1)
@@ -3588,13 +3607,13 @@ export async function rebuildHistoricalStrategyEvidenceV5(
           && Number(projectionSource.reference_contract_rows) === references.length
           && Number(projectionSource.matched_rows) > 0
           && Number(projectionSource.threshold_evidence_rows) === Number(projectionSource.matched_rows)
-        if (projectionSourceReady) {
-          const regime = await options.resolveHistoricalRegime?.(date) ?? null
+        if (projectionSourceReady && !artifactBackedV1Carrier) {
+          const regime = await options.resolveHistoricalRegime?.(date) ?? artifactEvidence?.regime ?? null
           if (!regime) throw new Error(`strategy_regime_pit_missing:${date}`)
           const strategyIds = effectiveSpecs
             .filter((spec) => spec.status !== 'retired')
             .map((spec) => spec.id)
-          const productionPolicy = referenceLabeler === 'strategy-labeler-v1'
+          const productionPolicy = productionPolicySourceLabeler === 'strategy-labeler-v1'
             ? await loadLegacyStrategyProductionWeightsBefore(db, date, strategyIds)
             : await loadStrategyProductionPolicyBefore(db, date, strategyIds)
           const strategyWeights = productionPolicy == null
@@ -3729,6 +3748,12 @@ export async function rebuildHistoricalStrategyEvidenceV5(
             source: context?.context_raw_signals_json ? 'strategy_candidate_contexts' : 'strategy_decision_context',
             source_labeler_version: referenceLabeler,
             output_labeler_version: labelerVersion,
+            canonical_artifact_source: artifactEvidence ? {
+              artifact_id: artifactEvidence.artifact_id,
+              artifact_checksum: artifactEvidence.artifact_checksum,
+              canonical_at: artifactEvidence.canonical_at,
+              source_labeler_version: artifactEvidence.source_labeler_version,
+            } : null,
             strategy_id: row.strategy_id,
             strategy_version: row.strategy_version,
             evaluability,
@@ -3739,7 +3764,8 @@ export async function rebuildHistoricalStrategyEvidenceV5(
             no_lookahead: true,
           },
         }
-        const decisionRowNeedsUpdate = cleanToken(row.evaluation_contract_version) !== 'strategy-evaluation-v2'
+        const decisionRowNeedsUpdate = artifactBackedV1Carrier
+          || cleanToken(row.evaluation_contract_version) !== 'strategy-evaluation-v2'
           || cleanToken(row.evaluability_status) === 'UNKNOWN_LEGACY'
         if (decisionRowNeedsUpdate) {
           decisionUpdates.push(db.prepare(`
@@ -3807,6 +3833,7 @@ export async function rebuildHistoricalStrategyEvidenceV5(
       const existingMatrixProjectedThresholdRows = Number(existingMatrixCoverage?.projected_threshold_rows ?? 0)
       let matrixRows = 0
       const reusableExistingMatrix = existingMatrix?.status === 'ready'
+        && !artifactBackedV1Carrier
         && Number(existingMatrix.reference_candidate_count) === references.length
         && Number(existingMatrix.strategy_count) === strategyKeys.size
         && Number(existingMatrix.expected_cell_count) === expectedMatrixRows
@@ -3822,12 +3849,12 @@ export async function rebuildHistoricalStrategyEvidenceV5(
       if (reusableExistingMatrix) {
         matrixRows = expectedMatrixRows
       } else {
-        const regime = await options.resolveHistoricalRegime?.(date) ?? null
+        const regime = await options.resolveHistoricalRegime?.(date) ?? artifactEvidence?.regime ?? null
         if (!regime) throw new Error(`strategy_regime_pit_missing:${date}`)
         const strategyIds = effectiveSpecs
           .filter((spec) => spec.status !== 'retired')
           .map((spec) => spec.id)
-        const productionPolicy = referenceLabeler === 'strategy-labeler-v1'
+        const productionPolicy = productionPolicySourceLabeler === 'strategy-labeler-v1'
           ? await loadLegacyStrategyProductionWeightsBefore(db, date, strategyIds)
           : await loadStrategyProductionPolicyBefore(db, date, strategyIds)
         const strategyWeights = productionPolicy == null
@@ -3963,6 +3990,7 @@ export async function rebuildHistoricalStrategyEvidenceV5(
         || reason.startsWith('matrix_strategy_spec_version_missing')
         || reason.startsWith('strategy_matrix_source_labeler_unsupported')
         || reason.startsWith('strategy_matrix_source_lineage_invalid')
+        || reason.startsWith('strategy_artifact_source_coverage_invalid')
         ? 'blocked'
         : 'failed'
       await db.prepare(`
@@ -4050,6 +4078,10 @@ export async function finalizeStrategyLearningEvidenceV5(
     beforePromotion?: () => Promise<unknown>
     historicalPriorityDate?: string | null
     resolveHistoricalRegime?: (signalDate: string) => Promise<string | null>
+    resolveHistoricalArtifactEvidence?: (
+      signalDate: string,
+      producerRunId: string,
+    ) => Promise<HistoricalScreenerArtifactEvidence | null>
     cachedStageResults?: Record<string, unknown>
     onStageTransition?: StrategyLearningFinalizerStageRuntime['onStageTransition']
     onStageComplete?: StrategyLearningFinalizerStageRuntime['onStageComplete']
@@ -4073,6 +4105,7 @@ export async function finalizeStrategyLearningEvidenceV5(
       priorityDate: options.historicalPriorityDate,
       priorityOnly: true,
       resolveHistoricalRegime: options.resolveHistoricalRegime,
+      resolveHistoricalArtifactEvidence: options.resolveHistoricalArtifactEvidence,
     }),
     options,
   )
@@ -4152,6 +4185,10 @@ export async function runStrategyLearningClosure(
     persistPolicy?: boolean
     historicalPriorityDate?: string | null
     resolveHistoricalRegime?: (signalDate: string) => Promise<string | null>
+    resolveHistoricalArtifactEvidence?: (
+      signalDate: string,
+      producerRunId: string,
+    ) => Promise<HistoricalScreenerArtifactEvidence | null>
   } = {},
 ): Promise<string> {
   if (options.allowPromotion === true || options.persistPolicy === true) {

@@ -7,6 +7,7 @@ const learning = readFileSync('src/lib/strategyLearning.ts', 'utf8')
 const edge = readFileSync('src/lib/strategyMarginalEdgeV4.ts', 'utf8')
 const runState = readFileSync('src/lib/strategyLearningRunState.ts', 'utf8')
 const orchestrator = readFileSync('src/lib/updateOrchestrator.ts', 'utf8')
+const historicalArtifact = readFileSync('src/lib/historicalScreenerArtifactEvidence.ts', 'utf8')
 const adminTasks = readFileSync('src/lib/adminTriggerWorkerDomainTasks.ts', 'utf8')
 const selectionEvidence = readFileSync('src/lib/selectionReferenceEvidence.ts', 'utf8')
 const routes = readFileSync('src/routes/other.ts', 'utf8')
@@ -53,8 +54,23 @@ assert(
   !historicalRebuild.includes('legacy_strategy_matrix_pit_unavailable'),
   'legacy source identity must not circularly block PIT reconstruction when immutable candidate contexts are complete',
 )
-assert(historicalRebuild.includes("referenceLabeler === 'strategy-labeler-v1'"),
+assert(historicalRebuild.includes("productionPolicySourceLabeler === 'strategy-labeler-v1'"),
   'legacy label reconstruction must select the immutable v1 prior-policy identity explicitly')
+assert(historicalRebuild.includes("referenceLabeler === 'strategy-decision-log-pit-reconstruction-v6'")
+  && historicalRebuild.includes("artifactEvidence?.source_labeler_version === 'strategy-labeler-v1'")
+  && historicalRebuild.includes('artifactEvidence.expected_cell_count !== expectedMatrixRows')
+  && historicalRebuild.includes('!artifactBackedV1Carrier'),
+  'a v6 carrier may be rebuilt only from an exact immutable v1 artifact with full matrix coverage')
+assert(historicalArtifact.includes("p.canonical_at IS NOT NULL")
+  && historicalArtifact.includes("a.payload_deleted_at IS NULL")
+  && historicalArtifact.includes("await sha256(body) !== row.checksum")
+  && historicalArtifact.includes("sourceLabeler !== HISTORICAL_SCREENER_ARTIFACT_SOURCE_LABELER")
+  && historicalArtifact.includes('expectedCellCount !== candidateCount * strategyCount')
+  && historicalArtifact.includes('coverageRatio !== 1'),
+  'artifact recovery must verify past canonical status, retained payload, checksum, v1 labeler, and exact matrix coverage')
+assert(orchestrator.includes('loadHistoricalScreenerArtifactEvidence')
+  && adminTasks.includes('loadHistoricalScreenerArtifactEvidence'),
+  'queue and manual finalizers must use the same immutable artifact verifier')
 assert(historicalRebuild.includes('loadLegacyStrategyProductionWeightsBefore'),
   'legacy policy compatibility must remain scoped to historical reconstruction, never runtime serving')
 assert(historicalRebuild.includes('new Map(referenceRows.map'), 'raw reference lineage must be deduplicated by symbol after validation')

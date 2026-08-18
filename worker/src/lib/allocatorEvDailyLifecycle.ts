@@ -859,7 +859,9 @@ export async function runAllocatorEvLifecycleWatchdog(
   const { queuePostPipelineStage } = await import('./pipelineStageLease')
   const recoveryRunId = upstreamGate.pipelineRunId
   if (!recoveryRunId) throw new Error('allocator_ev_recovery_gate_invariant:pipeline_run_id_missing')
-  const recoveryAttempt = Math.max(1, Number(postPipelineStage?.attempt_count ?? 1))
+  // Stage claims also count routing/callback failures that never reached the
+  // allocator snapshot. Only the lifecycle counter scopes this retry budget.
+  const recoveryAttempt = Math.max(0, Number(lifecycle?.attempt_count ?? 0))
   const continuation = await queuePostPipelineStage(env, {
     businessDate,
     runId: recoveryRunId,

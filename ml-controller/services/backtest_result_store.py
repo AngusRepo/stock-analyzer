@@ -6,6 +6,7 @@ from datetime import datetime, timezone
 from typing import Any
 
 from services.bounded_json import BACKTEST_EVIDENCE_MAX_UTF8_BYTES, bounded_json_dumps
+from services.backtest_trade_evidence import build_backtest_trade_evidence
 
 
 def _num(value: Any, default: float = 0.0) -> float:
@@ -68,15 +69,14 @@ def build_replay_backtest_insert(
         "metric_explanations": metric_explanations or [],
         "strategy_lab_record": strategy_lab_record or {},
         "walk_forward": walk_forward or {},
-        "all_returns": [t["profit_ratio"] for t in trades],
-        "all_regimes": [str(t.get("entry_regime") or "unknown") for t in trades],
-        "trades": trades[:500],
-        "trades_complete": len(trades) <= 500,
+        "trade_evidence": build_backtest_trade_evidence(trades),
+        "trades": trades[:100],
+        "trades_complete": len(trades) <= 100,
     }
     raw_json = bounded_json_dumps(
         raw,
         max_utf8_bytes=BACKTEST_EVIDENCE_MAX_UTF8_BYTES,
-        preserve_exact_keys=("all_returns", "all_regimes", "trades", "trades_complete"),
+        preserve_exact_keys=("trade_evidence",),
     )
     sql = """
         INSERT OR REPLACE INTO backtest_results

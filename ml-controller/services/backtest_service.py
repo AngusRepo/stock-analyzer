@@ -33,6 +33,7 @@ from typing import Optional
 import httpx
 import polars as pl
 from services.bounded_json import BACKTEST_EVIDENCE_MAX_UTF8_BYTES, bounded_json_dumps
+from services.backtest_trade_evidence import build_backtest_trade_evidence
 from services.research_data_access import (
     latest_snapshot_business_end_date,
     resolve_research_data_access,
@@ -770,12 +771,12 @@ async def run_full_backtest(run_date: str | None = None) -> dict:
 
         # ── Step 4: Write to D1 ──
         today = wall_clock_date
-        # Store full profit_ratio list for Monte Carlo (compact), trades truncated for display
-        all_returns = [t["profit_ratio"] for t in all_trades]
+        # MC and PBO share one complete dictionary-encoded evidence field; UI trades are a sample.
+        trade_evidence = build_backtest_trade_evidence(all_trades)
         raw_json = bounded_json_dumps({
-            "trades": all_trades[:500],
-            "trades_complete": len(all_trades) <= 500,
-            "all_returns": all_returns,  # full list for Monte Carlo source=backtest
+            "trade_evidence": trade_evidence,
+            "trades": all_trades[:100],
+            "trades_complete": len(all_trades) <= 100,
             "exit_distribution": exit_dist,
             "summary": {
                 "total_trades": result.total_trades,
@@ -796,9 +797,9 @@ async def run_full_backtest(run_date: str | None = None) -> dict:
                 "signal_diagnostics": signal_diagnostics,
             },
         },
-        max_utf8_bytes=BACKTEST_EVIDENCE_MAX_UTF8_BYTES,
-        ensure_ascii=False,
-        preserve_exact_keys=("all_returns", "trades", "trades_complete"),
+            max_utf8_bytes=BACKTEST_EVIDENCE_MAX_UTF8_BYTES,
+            ensure_ascii=False,
+            preserve_exact_keys=("trade_evidence",),
         )
 
         success = await _d1_exec(

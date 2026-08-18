@@ -19,6 +19,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Optional
 
+from services.backtest_trade_evidence import decode_backtest_trade_evidence
 from services.bounded_json import (
     BoundedJsonContractError,
     assert_bounded_json_fields_complete,
@@ -343,6 +344,15 @@ def _sample_regime_block_bootstrap_path(
 
 def _extract_backtest_returns_and_regimes(raw: dict) -> tuple[list[float], list[str] | None]:
     returns = [_r for _r in raw.get("all_returns") or [] if _as_number(_r) is not None]
+    evidence_trades = decode_backtest_trade_evidence(raw)
+    if evidence_trades:
+        return (
+            [float(trade["profit_ratio"]) for trade in evidence_trades],
+            [
+                str(trade.get("entry_regime") or "unknown")
+                for trade in evidence_trades
+            ],
+        )
     regimes = raw.get("all_regimes")
     if not returns:
         trades = raw.get("trades", []) or []
@@ -585,16 +595,20 @@ async def run_monte_carlo_mdd(
                 "source_payload_sha256": hashlib.sha256(raw_text.encode("utf-8")).hexdigest(),
             }
             raw = json.loads(raw_text)
-            consumed_field = "all_returns" if raw.get("all_returns") else "trades"
+            consumed_field = (
+                "trade_evidence"
+                if raw.get("trade_evidence")
+                else "all_returns" if raw.get("all_returns") else "trades"
+            )
             try:
                 assert_bounded_json_fields_complete(raw, (consumed_field,))
-            except BoundedJsonContractError as exc:
+                trade_returns, trade_regimes = _extract_backtest_returns_and_regimes(raw)
+            except (BoundedJsonContractError, ValueError) as exc:
                 return {
                     "error": str(exc),
                     "status": "failed",
                     "evidence_complete": False,
                 }
-            trade_returns, trade_regimes = _extract_backtest_returns_and_regimes(raw)
 
         else:
             return {"error": f"Unknown source: {source}", "status": "failed"}

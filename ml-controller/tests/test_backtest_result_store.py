@@ -8,6 +8,7 @@ from types import SimpleNamespace
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from services.backtest_result_store import build_replay_backtest_insert
+from services.backtest_trade_evidence import decode_backtest_trade_evidence
 
 
 def _trade(symbol: str, pnl: float, regime: str):
@@ -71,8 +72,9 @@ def test_build_replay_backtest_insert_preserves_mode_b_and_regime_arrays():
     assert params[1] == "replay_mode_b"
     raw = json.loads(params[-1])
     assert raw["mode"] == "B"
-    assert raw["all_returns"] == [0.03, -0.01]
-    assert raw["all_regimes"] == ["green", "red"]
+    evidence = decode_backtest_trade_evidence(raw)
+    assert [trade["profit_ratio"] for trade in evidence] == [0.03, -0.01]
+    assert [trade["entry_regime"] for trade in evidence] == ["green", "red"]
     assert raw["trades_complete"] is True
     assert raw["partition_returns"] == [0.01, 0.02]
     assert raw["absolute_confidence"] == "moderate"
@@ -113,9 +115,10 @@ def test_backtest_evidence_can_grow_past_default_limit_without_sampling_exact_fi
 
     encoded = params[-1]
     raw = json.loads(encoded)
-    assert len(encoded.encode("utf-8")) > 50_000
-    assert len(encoded.encode("utf-8")) <= 250_000
-    assert raw["all_returns"] == [trade.profit_ratio for trade in trades]
-    assert raw["all_regimes"] == [trade.entry_regime for trade in trades]
-    assert len(raw["trades"]) == len(trades)
-    assert raw["trades_complete"] is True
+    assert len(encoded.encode("utf-8")) < 50_000
+    evidence = decode_backtest_trade_evidence(raw)
+    assert [trade["profit_ratio"] for trade in evidence] == [trade.profit_ratio for trade in trades]
+    assert [trade["entry_regime"] for trade in evidence] == [trade.entry_regime for trade in trades]
+    assert len(evidence) == len(trades)
+    assert len(raw["trades"]) == 100
+    assert raw["trades_complete"] is False

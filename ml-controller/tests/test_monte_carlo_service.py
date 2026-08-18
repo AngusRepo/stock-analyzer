@@ -6,6 +6,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from services.monte_carlo_service import _extract_backtest_returns_and_regimes, _run_monte_carlo
+from services.backtest_trade_evidence import build_backtest_trade_evidence
 
 
 def test_block_bootstrap_records_method_and_block_size():
@@ -150,3 +151,20 @@ def test_extract_backtest_returns_and_regimes_drops_incomplete_regime_series():
 
     assert returns == [0.01, -0.02, 0.03]
     assert regimes is None
+
+
+def test_extract_backtest_returns_and_regimes_prefers_compact_complete_evidence():
+    raw = {
+        "trade_evidence": build_backtest_trade_evidence([
+            {"exit_date": "2026-08-14", "profit_ratio": 0.03, "entry_regime": "green", "days_held": 3},
+            {"exit_date": "2026-08-15", "profit_ratio": -0.01, "entry_regime": "red", "days_held": 5},
+        ]),
+        "all_returns": [0.99],
+        "all_regimes": ["legacy"],
+        "trades": [{"profit_ratio": 0.88, "entry_regime": "sample"}],
+    }
+
+    returns, regimes = _extract_backtest_returns_and_regimes(raw)
+
+    assert returns == [0.03, -0.01]
+    assert regimes == ["green", "red"]

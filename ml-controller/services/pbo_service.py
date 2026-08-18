@@ -24,6 +24,8 @@ from datetime import datetime, timezone
 from itertools import combinations
 from typing import Optional
 
+from services.backtest_trade_evidence import decode_backtest_trade_evidence
+
 from services.bounded_json import (
     BoundedJsonContractError,
     assert_bounded_json_fields_complete,
@@ -329,6 +331,13 @@ def _backtest_trade_evidence_incomplete_reason(raw: dict, trades: list[dict]) ->
         expected = int((raw.get("summary") or {}).get("total_trades", 0) or 0)
     except (TypeError, ValueError):
         expected = 0
+    compact = raw.get("trade_evidence")
+    if isinstance(compact, dict) and compact.get("complete") is True:
+        if compact.get("row_count") == len(trades) and expected <= len(trades):
+            return None
+        return (
+            f"backtest_trade_evidence_incomplete:stored={len(trades)}:expected={expected}"
+        )
     if raw.get("trades_complete") is False or expected > len(trades):
         return (
             "backtest_trade_evidence_incomplete:"
@@ -547,6 +556,8 @@ async def run_pbo_analysis(
                 if raw.get("strategy_returns_by_partition")
                 else ("candidate_partition_returns",)
                 if raw.get("candidate_partition_returns")
+                else ("trade_evidence",)
+                if raw.get("trade_evidence")
                 else ("trades",)
             )
             try:
@@ -564,7 +575,16 @@ async def run_pbo_analysis(
                 "source_created_at": row[0].get("created_at"),
             }
             strategy_partition_returns = _extract_strategy_partition_returns(raw)
-            trades = [] if strategy_partition_returns else raw.get("trades", [])
+            try:
+                trades = (
+                    []
+                    if strategy_partition_returns
+                    else decode_backtest_trade_evidence(raw)
+                    if raw.get("trade_evidence")
+                    else raw.get("trades", [])
+                )
+            except ValueError as exc:
+                return {"error": str(exc), "status": "failed", "evidence_complete": False}
 
             if not trades and not strategy_partition_returns:
                 return {"error": "No trade details in backtest results", "status": "failed"}

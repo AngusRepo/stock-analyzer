@@ -6,6 +6,10 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+from services.backtest_trade_evidence import (
+    build_backtest_trade_evidence,
+    decode_backtest_trade_evidence,
+)
 from services.pbo_service import (  # noqa: E402
     DEFAULT_EMBARGO_DAYS,
     _backtest_trade_evidence_incomplete_reason,
@@ -100,5 +104,21 @@ def test_pbo_accepts_complete_backtest_trade_evidence():
         "trades": trades,
         "trades_complete": True,
     }
+
+    assert _backtest_trade_evidence_incomplete_reason(raw, trades) is None
+
+
+def test_pbo_accepts_dictionary_encoded_complete_trade_evidence():
+    compact = build_backtest_trade_evidence([
+        {"exit_date": "2026-08-14", "profit_ratio": 0.01, "entry_regime": "green", "days_held": 3},
+        {"exit_date": "2026-08-15", "profit_ratio": -0.005, "entry_regime": "red", "days_held": 4},
+    ])
+    raw = {
+        "summary": {"total_trades": 2},
+        "trade_evidence": compact,
+        "trades": [{"profit_ratio": 0.99}],
+        "trades_complete": False,
+    }
+    trades = decode_backtest_trade_evidence(raw)
 
     assert _backtest_trade_evidence_incomplete_reason(raw, trades) is None

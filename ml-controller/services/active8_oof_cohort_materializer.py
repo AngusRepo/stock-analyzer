@@ -1511,6 +1511,7 @@ def archive_ev_shadow_evaluation_packets(
     l4_result: dict[str, Any],
     fusion_result: dict[str, Any],
     forward_row_count: int,
+    execute_fn: Callable[..., dict[str, Any]] = d1_client.execute,
 ) -> dict[str, Any]:
     """Persist daily evaluation evidence without creating a promotion candidate."""
 
@@ -1598,7 +1599,7 @@ def archive_ev_shadow_evaluation_packets(
         evaluation_id = hashlib.sha256(
             json.dumps(evaluation_identity, sort_keys=True).encode("utf-8")
         ).hexdigest()
-        d1_client.execute(
+        execute_fn(
             """
             INSERT INTO expected_return_shadow_evaluation_packets (
               evaluation_id, identity_schema_version, subject_artifact_checksum,
@@ -1765,6 +1766,7 @@ def persist_oof_cohort(
     prediction_storage_mode: str = "gcs_indexed_v1",
     query_fn: Callable[..., list[dict[str, Any]]] = d1_client.query,
     batch_fn: Callable[..., dict[str, Any]] = d1_client.batch_execute,
+    execute_fn: Callable[..., dict[str, Any]] = d1_client.execute,
 ) -> dict[str, Any]:
     cohort_id = str(manifest["cohort_id"])
     if prediction_storage_mode not in {"gcs_indexed_v1", "d1_full_v1"}:
@@ -1832,7 +1834,7 @@ def persist_oof_cohort(
     )
     parent = manifest.get("parent_manifest") or {}
     if not existing:
-        d1_client.execute(
+        execute_fn(
             """
             INSERT INTO active8_oof_cohorts (
           cohort_id, generation_mode, status, target_semantic_version,
@@ -2078,7 +2080,7 @@ def persist_oof_cohort(
     ):
         raise RuntimeError("active8_oof_materialization_count_mismatch")
     if refreshing_ready:
-        d1_client.execute(
+        execute_fn(
             """
             UPDATE active8_oof_cohorts
             SET prediction_rows = ?, prediction_dates = ?, updated_at = CURRENT_TIMESTAMP
@@ -2087,7 +2089,7 @@ def persist_oof_cohort(
             [len(prediction_rows), prediction_dates, cohort_id],
         )
     else:
-        d1_client.execute(
+        execute_fn(
             """
             UPDATE active8_oof_cohorts
             SET status = 'ready', completed_folds = expected_folds,

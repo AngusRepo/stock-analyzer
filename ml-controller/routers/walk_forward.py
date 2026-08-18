@@ -1369,8 +1369,10 @@ async def materialize_walk_forward_oof(req: OofMaterializeRequest):
         evaluate_serving_forward_guard,
     )
     from services.fusion_market_context import load_pit_market_contexts
+    from services.d1_domain_client import D1DataDomain, client_for_domain
     from services import d1_client
 
+    learning_client = client_for_domain(D1DataDomain.LEARNING)
     bucket = _get_bucket()
     if bucket is None:
         raise HTTPException(status_code=500, detail="GCS unavailable")
@@ -1379,7 +1381,7 @@ async def materialize_walk_forward_oof(req: OofMaterializeRequest):
         manifest, _raw = load_verified_oof_manifest(path, bucket=bucket)
         if manifest["cohort_id"] != req.cohort_id:
             raise ValueError("requested_cohort_manifest_mismatch")
-        persisted = d1_client.query(
+        persisted = learning_client.query(
             """
             SELECT status, prediction_storage_mode
               FROM active8_oof_cohorts
@@ -1387,7 +1389,7 @@ async def materialize_walk_forward_oof(req: OofMaterializeRequest):
             """,
             [req.cohort_id],
         )
-        materialized_indexes = d1_client.query(
+        materialized_indexes = learning_client.query(
             """
             SELECT artifact_kind, source_manifest_checksum,
                    eligibility_policy_version
@@ -1487,6 +1489,7 @@ async def materialize_walk_forward_oof(req: OofMaterializeRequest):
             snapshot_rows,
             l4_predictions,
             knowledge_cutoff_date=req.knowledge_cutoff_date,
+            query_fn=learning_client.query,
         )
         fusion_result = build_allocator_ev_fusion_artifact_from_rows(
             fusion_rows,
@@ -1507,6 +1510,7 @@ async def materialize_walk_forward_oof(req: OofMaterializeRequest):
                 knowledge_cutoff_date=req.knowledge_cutoff_date,
                 snapshot_rows=snapshot_rows,
                 l4_predictions=l4_predictions,
+                batch_fn=learning_client.batch_execute,
             )
         if forward_extension:
             for result in (l4_result, fusion_result):
@@ -1538,6 +1542,7 @@ async def materialize_walk_forward_oof(req: OofMaterializeRequest):
                     l4_result=l4_result,
                     fusion_result=fusion_result,
                     forward_row_count=len(forward_prediction_rows),
+                    execute_fn=learning_client.execute,
                 )
                 serving_forward_guard = evaluate_serving_forward_guard(
                     as_of_date=req.knowledge_cutoff_date,
@@ -1560,6 +1565,9 @@ async def materialize_walk_forward_oof(req: OofMaterializeRequest):
                 knowledge_cutoff_date=req.knowledge_cutoff_date,
                 dry_run=req.dry_run,
                 prediction_storage_mode=req.prediction_storage_mode,
+                query_fn=learning_client.query,
+                batch_fn=learning_client.batch_execute,
+                execute_fn=learning_client.execute,
             )
         )
         parity = None

@@ -925,6 +925,7 @@ def test_forward_shadow_evaluation_packets_are_separate_from_candidates(monkeypa
             },
         },
         forward_row_count=20,
+        execute_fn=execute,
     )
     assert set(result) == {"l4_alpha_ev", "allocator_ev_fusion"}
     assert all(packet["policy_decision"] == "shadow_only" for packet in result.values())
@@ -1131,3 +1132,22 @@ def test_indexed_oof_loader_enforces_checksum_lineage_and_point_in_time_cutoff()
     assert evidence["snapshot_rows_mature"] == 1
     assert evidence["l4_rows_eligible"] == 1
     assert evidence["d1_full_row_tables_required"] is False
+
+
+def test_active8_owned_state_routes_to_learning_domain_client():
+    route = (ROOT / "ml-controller" / "routers" / "walk_forward.py").read_text()
+    materializer = (
+        ROOT / "ml-controller" / "services" / "active8_oof_cohort_materializer.py"
+    ).read_text()
+
+    assert "learning_client = client_for_domain(D1DataDomain.LEARNING)" in route
+    for call in (
+        "persisted = learning_client.query(",
+        "materialized_indexes = learning_client.query(",
+        "query_fn=learning_client.query,",
+        "batch_fn=learning_client.batch_execute,",
+        "execute_fn=learning_client.execute,",
+    ):
+        assert call in route
+    assert "d1_client.execute(" not in materializer
+    assert "execute_fn: Callable[..., dict[str, Any]] = d1_client.execute" in materializer

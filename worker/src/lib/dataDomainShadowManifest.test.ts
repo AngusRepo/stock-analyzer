@@ -63,6 +63,8 @@ void (async () => {
   assert.equal(dataDomainManifestPageLimit('allocator_ev_feature_snapshots', 400), 10)
   assert.equal(dataDomainManifestPageLimit('s12_replay_trade_outcomes', 4000), 500)
   assert.equal(dataDomainManifestPageLimit('s12_structure_snapshots', 4000), 100)
+  assert.equal(dataDomainManifestPageLimit('meta_reward_ledger', 4000), 100)
+  assert.equal(dataDomainManifestPageLimit('meta_shadow_decisions', 4000), 100)
 
   const rows: TestRow[] = Array.from({ length: 61 }, (_, index) => ({
     id: index + 1,

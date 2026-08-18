@@ -97,9 +97,13 @@ assert.equal(tableOwnershipMetadata('strategy_candidate_contexts')?.route_ready,
   'strategy candidate contexts must be materialized in the active Learning owner')
 assert.equal(tableOwnershipMetadata('strategy_candidate_contexts')?.shadow_ready, false,
   'active-owner context materialization must not re-enter the inactive-only shadow backfill drain')
+for (const table of ['meta_reward_ledger', 'meta_shadow_decisions']) {
+  assert.equal(tableOwnershipMetadata(table)?.route_ready, true, `${table} must route to Learning D1`)
+  assert.equal(tableOwnershipMetadata(table)?.shadow_ready, true, `${table} must retain legacy continuity through backfill`)
+}
 
 const deferredProductionTables = productionTableNames.filter((table) => tableOwnershipMetadata(table)?.route_ready === false)
-assert.equal(deferredProductionTables.length, 69, 'production tables without target schema readiness require explicit review')
+assert.equal(deferredProductionTables.length, 67, 'production tables without target schema readiness require explicit review')
 assert.equal(
   deferredProductionTables.filter((table) => tableOwnershipMetadata(table)?.disposition === 'legacy_only').length,
   5,

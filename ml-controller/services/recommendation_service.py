@@ -69,8 +69,23 @@ from services.price_horizon_projection_contract import PRICE_HORIZONS_CTE
 
 logger = logging.getLogger(__name__)
 OPS_D1_CLIENT = client_for_domain(D1DataDomain.OPS)
+PREDICTIONS_D1_CLIENT = client_for_domain(D1DataDomain.LEARNING)
 
 D1_IN_CLAUSE_CHUNK_SIZE = 80
+
+
+def _predictions_query(sql: str, params: list[Any] | None = None, timeout: float = 60.0) -> list[dict]:
+    return PREDICTIONS_D1_CLIENT.query(sql, params, timeout)
+
+
+def _predictions_execute(sql: str, params: list[Any] | None = None, timeout: float = 60.0) -> dict:
+    return PREDICTIONS_D1_CLIENT.execute(sql, params, timeout)
+
+
+def _predictions_batch_execute(statements: list[tuple[str, list[Any]]]) -> dict:
+    return PREDICTIONS_D1_CLIENT.batch_execute(statements)
+
+
 POTENTIAL_BUY_SIGNAL = "POTENTIAL_BUY"
 POTENTIAL_BUY_SELECTION_REASON = "positive_edge_but_zero_weight_due_to_better_alternative"
 POTENTIAL_BUY_POLICY = "positive_expected_edge_zero_sparse_weight_not_final_buy"
@@ -127,14 +142,14 @@ def prune_predictions_outside_universe(stock_ids: list[int], run_date: str) -> i
     """Remove same-date prediction rows that no longer belong to the current V2 universe."""
     safe_ids = {int(stock_id) for stock_id in stock_ids if stock_id}
     if not safe_ids:
-        result = d1_client.execute(
+        result = _predictions_execute(
             f"DELETE FROM predictions WHERE {COL_PREDICTION_DATE} = ?",
             [run_date],
             timeout=60,
         )
         return int(((result or {}).get("meta") or {}).get("changes") or 0)
 
-    existing_rows = d1_client.query(
+    existing_rows = _predictions_query(
         f"SELECT DISTINCT {COL_STOCK_ID} AS stock_id FROM predictions WHERE {COL_PREDICTION_DATE} = ?",
         [run_date],
         timeout=60,
@@ -147,7 +162,7 @@ def prune_predictions_outside_universe(stock_ids: list[int], run_date: str) -> i
     deleted = 0
     for chunk in _chunked(stale_ids):
         placeholders = ",".join("?" for _ in chunk)
-        result = d1_client.execute(
+        result = _predictions_execute(
             f"DELETE FROM predictions WHERE {COL_PREDICTION_DATE} = ? AND {COL_STOCK_ID} IN ({placeholders})",
             [run_date, *chunk],
             timeout=60,
@@ -4319,7 +4334,7 @@ def write_predictions_to_d1(
 
     if not statements:
         return 0
-    d1_client.batch_execute(statements)
+    _predictions_batch_execute(statements)
     # Count inserted rows explicitly because cleanup adds delete-only statements.
     logger.info(f"[recommendation_service] Wrote {inserted_rows} prediction rows to D1 (incl. per-model)")
     return inserted_rows

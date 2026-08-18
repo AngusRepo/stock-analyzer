@@ -1966,7 +1966,7 @@ def test_write_predictions_to_d1_preserves_policy_signal_source(monkeypatch):
         captured["statements"] = statements
         return {"success_count": len(statements)}
 
-    monkeypatch.setattr(recommendation_service.d1_client, "batch_execute", _fake_batch_execute)
+    monkeypatch.setattr(recommendation_service, "_predictions_batch_execute", _fake_batch_execute)
 
     predictions = {
         "2330": {
@@ -2084,7 +2084,7 @@ def test_write_predictions_to_d1_clears_stale_per_model_rows(monkeypatch):
         captured["statements"] = statements
         return {"success_count": len(statements)}
 
-    monkeypatch.setattr(recommendation_service.d1_client, "batch_execute", _fake_batch_execute)
+    monkeypatch.setattr(recommendation_service, "_predictions_batch_execute", _fake_batch_execute)
 
     written = write_predictions_to_d1(
         {
@@ -2120,7 +2120,7 @@ def test_write_predictions_to_d1_persists_active8_challenger_rows(monkeypatch):
         captured["statements"] = statements
         return {"success_count": len(statements)}
 
-    monkeypatch.setattr(recommendation_service.d1_client, "batch_execute", _fake_batch_execute)
+    monkeypatch.setattr(recommendation_service, "_predictions_batch_execute", _fake_batch_execute)
 
     written = write_predictions_to_d1(
         {
@@ -2169,7 +2169,7 @@ def test_write_predictions_to_d1_keeps_timesfm_sidecar_out_of_alpha_rows(monkeyp
         captured["statements"] = statements
         return {"success_count": len(statements)}
 
-    monkeypatch.setattr(recommendation_service.d1_client, "batch_execute", _fake_batch_execute)
+    monkeypatch.setattr(recommendation_service, "_predictions_batch_execute", _fake_batch_execute)
 
     written = write_predictions_to_d1(
         {
@@ -2221,8 +2221,8 @@ def test_prune_predictions_outside_universe_deletes_same_date_non_universe(monke
         captured["timeout"] = timeout
         return {"meta": {"changes": 12}}
 
-    monkeypatch.setattr(recommendation_service.d1_client, "execute", _fake_execute)
-    monkeypatch.setattr(recommendation_service.d1_client, "query", lambda *_args, **_kwargs: [{"stock_id": 9}])
+    monkeypatch.setattr(recommendation_service, "_predictions_execute", _fake_execute)
+    monkeypatch.setattr(recommendation_service, "_predictions_query", lambda *_args, **_kwargs: [{"stock_id": 9}])
 
     deleted = prune_predictions_outside_universe([1, 2, 3], "2026-04-30")
 

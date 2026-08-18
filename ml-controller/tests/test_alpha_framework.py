@@ -311,7 +311,7 @@ def test_write_predictions_to_d1_persists_alpha_context(monkeypatch):
         captured["statements"] = statements
         return {"success_count": len(statements)}
 
-    monkeypatch.setattr(recommendation_service.d1_client, "batch_execute", _fake_batch_execute)
+    monkeypatch.setattr(recommendation_service, "_predictions_batch_execute", _fake_batch_execute)
 
     write_predictions_to_d1(
         {
@@ -353,7 +353,7 @@ def test_write_predictions_to_d1_persists_state_space_overlay_context(monkeypatc
         captured["statements"] = statements
         return {"success_count": len(statements)}
 
-    monkeypatch.setattr(recommendation_service.d1_client, "batch_execute", _fake_batch_execute)
+    monkeypatch.setattr(recommendation_service, "_predictions_batch_execute", _fake_batch_execute)
 
     write_predictions_to_d1(
         {

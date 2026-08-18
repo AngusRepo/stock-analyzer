@@ -10,6 +10,10 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from services import recommendation_service  # noqa: E402
 from services.recommendation_service import write_predictions_to_d1  # noqa: E402
+def test_prediction_writer_routes_learning_domain():
+    assert recommendation_service.PREDICTIONS_D1_CLIENT.domain.value == "learning"
+
+
 
 
 def test_prediction_writer_requires_feature_version(monkeypatch):
@@ -18,7 +22,7 @@ def test_prediction_writer_requires_feature_version(monkeypatch):
     def _fake_batch_execute(_statements):
         raise AssertionError("writer must fail before D1 write when feature_version is missing")
 
-    monkeypatch.setattr(recommendation_service.d1_client, "batch_execute", _fake_batch_execute)
+    monkeypatch.setattr(recommendation_service, "_predictions_batch_execute", _fake_batch_execute)
 
     with pytest.raises(ValueError, match="missing_feature_version_contract"):
         write_predictions_to_d1(

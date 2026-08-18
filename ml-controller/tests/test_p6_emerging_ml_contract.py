@@ -179,7 +179,7 @@ def test_prediction_forecast_data_preserves_market_segment_metadata(monkeypatch)
             captured["seed_query"] = (sql, params)
         return [{"stock_id": 2}]
 
-    monkeypatch.setattr("services.recommendation_service.d1_client.batch_execute", fake_batch)
+    monkeypatch.setattr("services.recommendation_service._predictions_batch_execute", fake_batch)
     monkeypatch.setattr("services.recommendation_service.d1_client.query", fake_query)
     monkeypatch.setattr("services.recommendation_service._is_use_ensemble_v2", lambda: False)
 

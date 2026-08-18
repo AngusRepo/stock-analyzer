@@ -6,7 +6,7 @@ import { generateDailyReport } from './dailyReport'
 import { ensureMetaLearningResearchRegistry } from './metaLearningResearchTrack'
 import { runNeuralMetaShadow } from './metaLearningShadowRunner'
 import { hydrateMatureMetaShadowDecisionRewards } from './metaLearningShadowDecisions'
-import { listLinUcbRewardSourceRows } from './metaLearningRewardLedger'
+import { listLinUcbRewardSourceRowsAcrossDomains } from './metaLearningRewardLedger'
 import { clearOpenPositionIntradayPriceCache } from './paperIntradayPriceCache'
 import { classifySchedulerSummary, logSchedulerResult, type SchedulerRunStatus } from './schedulerRunLogger'
 import { recordWorkerTaskComputeProfile } from './computeProfileEvents'
@@ -196,11 +196,13 @@ export async function runMetaLearningShadowClosure(env: Bindings, ctx: ChainCont
     endDate: runDate,
     limit: 50000,
   })
-  const sourceRows = await listLinUcbRewardSourceRows(databaseForDataDomain(env, 'learning'), {
+  const predictionDb = databaseForDataDomain(env, 'learning')
+  const recommendationDb = databaseForDataDomain(env, 'core')
+  const sourceRows = await listLinUcbRewardSourceRowsAcrossDomains(predictionDb, recommendationDb, {
     endDate: runDate,
     limit: 5000,
   })
-  const decisionRows = await listLinUcbRewardSourceRows(databaseForDataDomain(env, 'learning'), {
+  const decisionRows = await listLinUcbRewardSourceRowsAcrossDomains(predictionDb, recommendationDb, {
     startDate: runDate,
     endDate: runDate,
     limit: 5000,

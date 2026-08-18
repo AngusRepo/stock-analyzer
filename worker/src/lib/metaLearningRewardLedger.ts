@@ -436,11 +436,121 @@ export async function listLinUcbRewardSourceRows(
   return results ?? []
 }
 
+
+type LinUcbRecommendationContextRow = {
+  date?: string | null
+  stock_id?: string | null
+  market_segment?: string | null
+  recommendation_lane?: string | null
+  has_buy_signal?: number | boolean | null
+  ml_vote_summary?: string | null
+  score_components?: string | null
+  alpha_context?: string | null
+  alpha_allocation?: string | null
+}
+
+function linUcbScalar(...values: unknown[]): string | number | null {
+  const value = firstPresent(...values)
+  if (typeof value === 'number' && Number.isFinite(value)) return value
+  return typeof value === 'string' && value.trim() ? value : null
+}
+
+export async function listLinUcbRewardSourceRowsAcrossDomains(
+  predictionDb: D1Database,
+  recommendationDb: D1Database,
+  options: LinUcbRewardRefreshOptions = {},
+): Promise<LinUcbRewardSourceRow[]> {
+  const limit = Math.max(1, Math.min(options.limit ?? 5000, 20000))
+  const clauses: string[] = options.requireOutcome === false
+    ? []
+    : ['(p.trade_pnl_pct IS NOT NULL OR p.actual_return_pct IS NOT NULL)']
+  const binds: unknown[] = []
+  if (options.startDate) {
+    clauses.push('date(p.prediction_date) >= date(?)')
+    binds.push(options.startDate)
+  }
+  if (options.endDate) {
+    clauses.push('date(p.prediction_date) <= date(?)')
+    binds.push(options.endDate)
+  }
+  binds.push(limit)
+  const whereClause = clauses.length ? clauses.join(' AND ') : '1=1'
+  const predictionResult = await predictionDb.prepare(`
+    SELECT p.prediction_date AS date, p.stock_id, p.model_name,
+           p.direction_correct,
+           COALESCE(
+             CASE WHEN json_valid(p.forecast_data) THEN json_extract(p.forecast_data, '$.rank_score') END,
+             CASE WHEN json_valid(p.forecast_data) THEN json_extract(p.forecast_data, '$.ensemble_v2.avg_rank') END,
+             p.direction_accuracy
+           ) AS rank_score,
+           p.market_risk_score, p.trade_pnl_pct, p.actual_return_pct
+      FROM predictions p
+     WHERE ${whereClause}
+     ORDER BY date(p.prediction_date) DESC, p.stock_id DESC, p.model_name DESC
+     LIMIT ?
+  `).bind(...binds).all<LinUcbRewardSourceRow & { market_risk_score?: number | string | null }>()
+  const predictions = predictionResult.results ?? []
+  if (!predictions.length) return []
+
+  const contextPairs = [...new Map(predictions.map((row) => ({
+    date: String(row.date ?? '').slice(0, 10),
+    stockId: String(row.stock_id ?? ''),
+  })).filter((row) => /^\d{4}-\d{2}-\d{2}$/.test(row.date) && row.stockId)
+    .map((row) => [`${row.date}|${row.stockId}`, row] as const)).values()]
+  const recommendationRows: LinUcbRecommendationContextRow[] = []
+  for (let offset = 0; offset < contextPairs.length; offset += 40) {
+    const batch = contextPairs.slice(offset, offset + 40)
+    const pairClause = batch.map(() => '(date=? AND stock_id=?)').join(' OR ')
+    const pairBinds = batch.flatMap((row) => [row.date, row.stockId])
+    const result = await recommendationDb.prepare(`
+      SELECT date, stock_id, market_segment, recommendation_lane, has_buy_signal,
+             ml_vote_summary, score_components, alpha_context, alpha_allocation
+        FROM daily_recommendations
+       WHERE ${pairClause}
+    `).bind(...pairBinds).all<LinUcbRecommendationContextRow>()
+    recommendationRows.push(...(result.results ?? []))
+  }
+  const recommendations = new Map(recommendationRows.map((row) => [
+    `${String(row.date ?? '').slice(0, 10)}|${String(row.stock_id ?? '')}`,
+    row,
+  ]))
+
+  return predictions.map((prediction) => {
+    const key = `${String(prediction.date ?? '').slice(0, 10)}|${String(prediction.stock_id ?? '')}`
+    const recommendation = recommendations.get(key)
+    const vote = parseJsonRecord(recommendation?.ml_vote_summary)
+    const score = parseJsonRecord(recommendation?.score_components)
+    const context = parseJsonRecord(recommendation?.alpha_context)
+    const allocation = parseJsonRecord(recommendation?.alpha_allocation)
+    return {
+      ...prediction,
+      market_segment: recommendation?.market_segment ?? null,
+      recommendation_lane: recommendation?.recommendation_lane ?? null,
+      has_buy_signal: recommendation?.has_buy_signal ?? null,
+      ml_vote_summary: recommendation?.ml_vote_summary ?? null,
+      score_components: recommendation?.score_components ?? null,
+      alpha_context: recommendation?.alpha_context ?? null,
+      alpha_allocation: recommendation?.alpha_allocation ?? null,
+      model_ic: linUcbScalar(vote.ic_4w_avg, vote.model_ic, score.model_ic),
+      coverage: linUcbScalar(vote.coverage, score.ml_coverage),
+      prediction_dispersion: linUcbScalar(nestedValue(vote, 'dispersion.rawRankStd'), vote.raw_rank_std, score.prediction_dispersion),
+      data_quality: linUcbScalar(score.data_quality, context.data_quality),
+      market_breadth: linUcbScalar(context.market_breadth, allocation.market_breadth),
+      sector_heat: linUcbScalar(score.sector_heat, context.sector_heat, allocation.sector_heat),
+      liquidity: linUcbScalar(context.liquidity, context.liquidity_score, score.liquidity),
+      fill_quality: linUcbScalar(score.fill_quality, context.fill_quality),
+      regime: linUcbScalar(context.regime, allocation.regime),
+      volatility: linUcbScalar(context.volatility, context.volatility_score, score.volatility),
+      market_risk: linUcbScalar(prediction.market_risk_score, context.market_risk, context.market_risk_score, score.market_risk),
+    }
+  })
+}
+
 export async function refreshLinUcbRewardLedger(
   db: D1Database,
-  options: LinUcbRewardRefreshOptions & { dryRun?: boolean } = {},
+  options: LinUcbRewardRefreshOptions & { dryRun?: boolean; sourceRows?: LinUcbRewardSourceRow[] } = {},
 ): Promise<LinUcbRewardRefreshReport> {
-  const sourceRows = await listLinUcbRewardSourceRows(db, options)
+  const sourceRows = options.sourceRows ?? await listLinUcbRewardSourceRows(db, options)
   const ledgerRows = buildLinUcbRewardLedgerRows(sourceRows, { nowIso: options.nowIso })
   if (options.dryRun !== false) {
     return {

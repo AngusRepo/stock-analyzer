@@ -2,7 +2,7 @@ import type { Bindings } from '../types'
 import { databaseForDataDomain } from './dataDomainRegistry'
 import {
   buildNeuralMetaBanditTrainingPayload,
-  listLinUcbRewardSourceRows,
+  listLinUcbRewardSourceRowsAcrossDomains,
   type LinUcbRewardSourceRow,
 } from './metaLearningRewardLedger'
 import {
@@ -25,11 +25,15 @@ export interface NeuralShadowRunOptions {
 export async function runNeuralMetaShadow(env: Bindings, options: NeuralShadowRunOptions) {
   const mlUrl = env.ML_SERVICE_URL?.trim()?.replace(/\/+$/, '')
   if (!mlUrl) throw new Error('ML_SERVICE_URL not set; cannot run neural meta shadow')
-  const rows = options.sourceRows ?? await listLinUcbRewardSourceRows(databaseForDataDomain(env, 'learning'), {
-    startDate: options.startDate,
-    endDate: options.endDate,
-    limit: options.limit ?? 5000,
-  })
+  const rows = options.sourceRows ?? await listLinUcbRewardSourceRowsAcrossDomains(
+    databaseForDataDomain(env, 'learning'),
+    databaseForDataDomain(env, 'core'),
+    {
+      startDate: options.startDate,
+      endDate: options.endDate,
+      limit: options.limit ?? 5000,
+    },
+  )
   const payload = buildNeuralMetaBanditTrainingPayload(options.policyId, rows, {
     businessDate: options.endDate,
     decisionRows: options.decisionRows,

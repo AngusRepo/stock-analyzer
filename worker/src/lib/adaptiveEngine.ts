@@ -1,6 +1,9 @@
 import { getAdaptiveParams, setAdaptiveParams } from './adaptiveConfig'
 import { summarizeSellOrderLosses } from './paperOrderAccounting'
-import { refreshLinUcbRewardLedger } from './metaLearningRewardLedger'
+import {
+  listLinUcbRewardSourceRowsAcrossDomains,
+  refreshLinUcbRewardLedger,
+} from './metaLearningRewardLedger'
 import { getTradingConfig } from './tradingConfig'
 import { databaseForDataDomain } from './dataDomainRegistry'
 
@@ -204,10 +207,20 @@ function dateDaysAgo(days: number): string {
 
 export async function refreshLinUcbLedgerForAdaptive(env: AdaptiveEngineEnv, endDate: string): Promise<Record<string, unknown>> {
   try {
-    const report = await refreshLinUcbRewardLedger(databaseForDataDomain(env, 'learning'), {
+    const predictionDb = databaseForDataDomain(env, 'learning')
+    const sourceOptions = {
       startDate: dateDaysAgo(90),
       endDate,
       limit: 5000,
+    }
+    const sourceRows = await listLinUcbRewardSourceRowsAcrossDomains(
+      predictionDb,
+      databaseForDataDomain(env, 'core'),
+      sourceOptions,
+    )
+    const report = await refreshLinUcbRewardLedger(predictionDb, {
+      ...sourceOptions,
+      sourceRows,
       dryRun: false,
     })
     const totalSamples = report.ledger_rows.reduce((sum, row) => sum + row.samples, 0)

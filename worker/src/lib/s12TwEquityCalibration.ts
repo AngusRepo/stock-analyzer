@@ -319,11 +319,10 @@ export function applyS12TwCalibrationArtifact(
 async function loadEvidence(db: D1Database, startDate: string, endDate: string): Promise<CalibrationEvidence[]> {
   const { results } = await db.prepare(`
     SELECT o.symbol, o.trade_date, o.assessment_state,
-           COALESCE(NULLIF(TRIM(o.market), ''), s.market, 'UNKNOWN') AS market,
+           COALESCE(NULLIF(TRIM(o.market), ''), 'UNKNOWN') AS market,
            o.entry_ms, o.entry_price, o.stop_price, o.pnl_pct,
            o.max_favorable_pct, o.max_adverse_pct, o.detail_json
       FROM s12_replay_trade_outcomes o
-      LEFT JOIN stocks s ON s.symbol = o.symbol
      WHERE o.trade_date >= ?
        AND o.trade_date <= ?
        AND o.sample_eligible = 1

@@ -53,4 +53,8 @@ assert.match(cronGcp, /runS12TwCalibration\(databaseForDataDomain\(env, 'learnin
 assert.doesNotMatch(cronGcp, /runS12TwCalibration\(env\.DB/)
 assert.match(manual, /runS12TwCalibration\(databaseForDataDomain\(c\.env, 'learning'\)/)
 assert.doesNotMatch(manual, /runS12TwCalibration\(c\.env\.DB/)
+const s12Calibration = fs.readFileSync('src/lib/s12TwEquityCalibration.ts', 'utf8')
+assert.doesNotMatch(s12Calibration, /JOIN\s+stocks/i)
+assert.match(s12Calibration, /NULLIF\(TRIM\(o\.market\), ''\)/)
+
 console.log('strategy learning domain routing contract tests passed')

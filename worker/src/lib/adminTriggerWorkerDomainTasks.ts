@@ -1122,9 +1122,17 @@ export function buildAdminWorkerDomainTaskMap(c: any, deps: TriggerDeps): Record
           })
           return `data_domain_shadow_backfill direct_step=true ${JSON.stringify(step)}`
         }
-        const { enqueueDataDomainShadowBackfill } = await import('./dataDomainShadowBackfillDrain')
+        const {
+          enqueueDataDomainShadowBackfill,
+          inspectLatestEveningChainClosure,
+        } = await import('./dataDomainShadowBackfillDrain')
+        const closure = await inspectLatestEveningChainClosure(c.env.KV, c.env.DB)
+        if (!closure.terminalSuccess || !closure.timestamp) {
+          return `skipped: data_domain_shadow_backfill durable ${closure.reason}`
+        }
         const queued = await enqueueDataDomainShadowBackfill(c.env, {
           domain: domain as any,
+          parityNotBefore: closure.timestamp,
           table: table || undefined,
           runDate: requestedRunDate() || twToday(),
           maxAttempts: parseBoundedPositiveInt(c.req.query('max_attempts'), 5000, 20000),

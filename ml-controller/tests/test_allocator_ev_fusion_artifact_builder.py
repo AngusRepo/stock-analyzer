@@ -1570,6 +1570,7 @@ def test_allocator_snapshot_candidate_loader_joins_split_d1_domains_in_memory():
 def test_allocator_snapshot_production_writer_is_learning_domain_owned():
     source = inspect.getsource(build_allocator_ev_feature_snapshots_for_date)
     assert "client_for_domain(D1DataDomain.LEARNING)" in source
+    assert "chunk_size=50" in source
     assert "writer = learning_writer" in source
     assert "staged_rows = learning_query(" in source
     assert "published_run = learning_query(" in source

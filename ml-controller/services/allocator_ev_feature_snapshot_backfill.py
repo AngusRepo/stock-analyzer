@@ -809,7 +809,11 @@ def build_allocator_ev_feature_snapshots_for_date(
         core_query = client_for_domain(D1DataDomain.CORE).query
         market_query = client_for_domain(D1DataDomain.MARKET).query
         learning_writer = write_fn or (
-            lambda items: learning_client.batch_execute(items)
+            lambda items: learning_client.batch_execute(
+                items,
+                timeout=60.0,
+                chunk_size=50,
+            )
         )
     else:
         learning_query = query_fn

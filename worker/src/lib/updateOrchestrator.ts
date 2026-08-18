@@ -3185,11 +3185,7 @@ export async function processUpdateBatch(
         upstreamRunId: runId,
         stageLeaseOwner: leaseOwner,
         assertStageLease: heartbeat.assertActive,
-        recoveryAttempt: Math.max(
-          0,
-          Number(msg.attempt ?? 0),
-          Number(claimed.attempt_count ?? 1) - 1,
-        ),
+        recoveryAttempt: Math.max(0, Number(msg.attempt ?? 0)),
       })
       await heartbeat.assertActive('post-pipeline:before_finalize')
       const finalized = await markPipelineStageFenced(databaseForDataDomain(env, 'ops'), {
@@ -3286,11 +3282,7 @@ export async function processUpdateBatch(
         upstreamRunId: runId,
         stageLeaseOwner: leaseOwner,
         assertStageLease: heartbeat.assertActive,
-        recoveryAttempt: Math.max(
-          0,
-          Number(msg.attempt ?? 0),
-          Number(claimed.attempt_count ?? 1) - 1,
-        ),
+        recoveryAttempt: Math.max(0, Number(msg.attempt ?? 0)),
       })
       await heartbeat.assertActive('post-verify:before_finalize')
       const finalized = await markPipelineStageFenced(databaseForDataDomain(env, 'ops'), {

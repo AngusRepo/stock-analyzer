@@ -136,9 +136,10 @@ assert(
 assert(
   pipelineStageLease.includes('attempt_count') &&
     pipelineStageLease.includes('input.attempt ?? state.row.attempt_count') &&
-    updateOrchestrator.includes('Number(claimed.attempt_count ?? 1) - 1') &&
+    updateOrchestrator.match(/recoveryAttempt: Math\.max\(0, Number\(msg\.attempt \?\? 0\)\)/g)?.length === 2 &&
+    !updateOrchestrator.includes('Number(claimed.attempt_count ?? 1) - 1') &&
     postMarketChain.includes('allocator snapshot retry budget exhausted'),
-  'allocator snapshot retries must use the durable stage attempt counter and stop after a bounded budget',
+  'allocator snapshot retries must use the durable message attempt and ignore generic stage claims',
 )
 assert(
   postMarketChain.includes('attempt_id: resolveChainAttemptId(ctx)') &&

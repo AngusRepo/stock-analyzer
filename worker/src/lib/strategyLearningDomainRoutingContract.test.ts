@@ -7,10 +7,11 @@ const queueEnd = orchestrator.indexOf("if (msg.type === 'source_readiness_retry'
 const queueBlock = orchestrator.slice(queueStart, queueEnd)
 assert.match(queueBlock, /const learningDb = databaseForDataDomain\(env, 'learning'\)/)
 assert.match(queueBlock, /const opsDb = databaseForDataDomain\(env, 'ops'\)/)
-assert.match(queueBlock, /initializeStrategyLearningRun\(learningDb,[\s\S]*universeDb: opsDb/)
+assert.match(queueBlock, /const runStateDb = opsDb/)
+assert.match(queueBlock, /initializeStrategyLearningRun\(runStateDb,[\s\S]*universeDb: opsDb/)
 assert.match(queueBlock, /materializeStrategyDecisionLogChunk\(learningDb,[\s\S]*candidateDb: opsDb/)
 
-const learningOwnerFunctions = [
+const domainRoutedFunctions = [
   'loadStrategyLearningRun',
   'seedDefaultStrategySpecRegistry',
   'listStrategySpecsForLearning',
@@ -25,18 +26,26 @@ const learningOwnerFunctions = [
   'deferStrategyLearningFinalizer',
   'failStrategyLearningRun',
 ]
-for (const name of learningOwnerFunctions) {
+for (const name of domainRoutedFunctions) {
   assert.doesNotMatch(queueBlock, new RegExp(`${name}\\(env\\.DB`), `${name} must use the Learning binding`)
 }
+
+assert.match(queueBlock, /loadStrategyLearningRun\(runStateDb/)
+assert.match(queueBlock, /markStrategyLearningRunFinalized\(runStateDb/)
+assert.doesNotMatch(queueBlock, /(?:loadStrategyLearningRun|initializeStrategyLearningRun|claimStrategyLearningPage|checkpointStrategyLearningPage|completeStrategyLearningRun|startStrategyLearningLeaseHeartbeat|markStrategyLearningRunFinalized|deferStrategyLearningFinalizer|failStrategyLearningRun|reconcileStrategyLearningFinalizedRetryFastPath|reconcileAndReleaseStrategyLearningFinalizedTelemetry)\(\s*learningDb/, 'run state must not use Learning D1')
 
 const manual = fs.readFileSync('src/lib/adminTriggerWorkerDomainTasks.ts', 'utf8')
 const manualStart = manual.indexOf("'strategy-learning-finalize': async () =>")
 const manualEnd = manual.indexOf("'selection-reference-identity-repair': async () =>", manualStart)
 const manualBlock = manual.slice(manualStart, manualEnd)
 assert.match(manualBlock, /const learningDb = databaseForDataDomain\(c\.env, 'learning'\)/)
+assert.match(manualBlock, /const runStateDb = databaseForDataDomain\(c\.env, 'ops'\)/)
+assert.match(manualBlock, /loadStrategyLearningRun\(runStateDb/)
+assert.match(manualBlock, /markStrategyLearningRunFinalized\(runStateDb/)
+assert.doesNotMatch(manualBlock, /(?:loadStrategyLearningRun|claimStrategyLearningPage|completeStrategyLearningRun|startStrategyLearningLeaseHeartbeat|markStrategyLearningRunFinalized|deferStrategyLearningFinalizer|failStrategyLearningRun|reconcileStrategyLearningFinalizedRetryFastPath|reconcileAndReleaseStrategyLearningFinalizedTelemetry)\(\s*learningDb/, 'manual run state must not use Learning D1')
 assert.match(manualBlock, /identityDb: databaseForDataDomain\(c\.env, 'core'\)/)
 assert.match(orchestrator, /identityDb: databaseForDataDomain\(env, 'core'\)/)
-for (const name of learningOwnerFunctions) {
+for (const name of domainRoutedFunctions) {
   assert.doesNotMatch(manualBlock, new RegExp(`${name}\\(c\\.env\\.DB`), `${name} must use the Learning binding`)
 }
 

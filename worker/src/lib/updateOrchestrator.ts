@@ -3475,6 +3475,7 @@ export async function processUpdateBatch(
     }
     const learningDb = databaseForDataDomain(env, 'learning')
     const opsDb = databaseForDataDomain(env, 'ops')
+    const runStateDb = opsDb
 
     const {
       checkpointStrategyLearningPage,
@@ -3497,7 +3498,7 @@ export async function processUpdateBatch(
       finalizedState: Awaited<ReturnType<typeof loadStrategyLearningRun>>,
     ): Promise<boolean> => {
       const outcome = await reconcileStrategyLearningFinalizedRetryFastPath(
-        learningDb,
+        runStateDb,
         env.KV,
         finalizedState,
         {
@@ -3519,7 +3520,7 @@ export async function processUpdateBatch(
       return true
     }
 
-    const existingState = await loadStrategyLearningRun(learningDb, triggerTime)
+    const existingState = await loadStrategyLearningRun(runStateDb, triggerTime)
     if (await handleFinalizedRetry(existingState)) return
 
     const {
@@ -3532,7 +3533,7 @@ export async function processUpdateBatch(
       await seedDefaultStrategySpecRegistry(learningDb)
     }
     const { specs } = await listStrategySpecsForLearning(learningDb)
-    const state = await initializeStrategyLearningRun(learningDb, {
+    const state = await initializeStrategyLearningRun(runStateDb, {
       businessDate: triggerTime,
       runId,
       strategyCount: specs.length,
@@ -3558,7 +3559,7 @@ export async function processUpdateBatch(
       canonicalRunId,
       leaseOwner,
     }
-    const claimed = await claimStrategyLearningPage(learningDb, {
+    const claimed = await claimStrategyLearningPage(runStateDb, {
       ...leaseIdentity,
       cursorSymbol: durableCursor,
       leaseSeconds: STRATEGY_LEARNING_LEASE_SECONDS,
@@ -3606,7 +3607,7 @@ export async function processUpdateBatch(
       if (chunk.has_more && (!chunk.next_cursor_symbol || chunk.next_cursor_symbol === durableCursor)) {
         throw new Error(`strategy_learning_keyset_stalled:${durableCursor}`)
       }
-      const checkpointed = await checkpointStrategyLearningPage(learningDb, {
+      const checkpointed = await checkpointStrategyLearningPage(runStateDb, {
         ...leaseIdentity,
         previousCursor: durableCursor,
         nextCursor: chunk.next_cursor_symbol,
@@ -3657,7 +3658,7 @@ export async function processUpdateBatch(
       return
       }
 
-      const coverage = await completeStrategyLearningRun(learningDb, {
+      const coverage = await completeStrategyLearningRun(runStateDb, {
         ...leaseIdentity,
         leaseSeconds: STRATEGY_LEARNING_LEASE_SECONDS,
       })
@@ -3665,7 +3666,7 @@ export async function processUpdateBatch(
         throw new Error(`strategy_learning_lease_lost:${triggerTime}:${canonicalRunId}:${leaseOwner}`)
       }
       materializationValidated = true
-      finalizerHeartbeat = startStrategyLearningLeaseHeartbeat(learningDb, {
+      finalizerHeartbeat = startStrategyLearningLeaseHeartbeat(runStateDb, {
         ...leaseIdentity,
         leaseSeconds: STRATEGY_LEARNING_LEASE_SECONDS,
       })
@@ -3801,9 +3802,9 @@ export async function processUpdateBatch(
       ].join(' ')
 
       await assertFinalizerLease('finalize')
-      const finalized = await markStrategyLearningRunFinalized(learningDb, leaseIdentity)
+      const finalized = await markStrategyLearningRunFinalized(runStateDb, leaseIdentity)
       if (!finalized) {
-        const deferred = await deferStrategyLearningFinalizer(learningDb, {
+        const deferred = await deferStrategyLearningFinalizer(runStateDb, {
           ...leaseIdentity,
           error: `strategy_learning_finalize_authority_lost:${triggerTime}:${canonicalRunId}`,
         })
@@ -3815,7 +3816,7 @@ export async function processUpdateBatch(
       }
       durableFinalized = true
       const telemetryFinalized = await reconcileAndReleaseStrategyLearningFinalizedTelemetry(
-        learningDb,
+        runStateDb,
         env.KV,
         leaseIdentity,
         {
@@ -3869,11 +3870,11 @@ export async function processUpdateBatch(
         throw error
       }
       const transitioned = materializationValidated
-        ? await deferStrategyLearningFinalizer(learningDb, {
+        ? await deferStrategyLearningFinalizer(runStateDb, {
             ...leaseIdentity,
             error: errorMessage,
           })
-        : await failStrategyLearningRun(learningDb, {
+        : await failStrategyLearningRun(runStateDb, {
             ...leaseIdentity,
           error: errorMessage,
         })

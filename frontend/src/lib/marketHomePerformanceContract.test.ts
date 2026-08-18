@@ -34,8 +34,10 @@ assert(css.includes('translate3d(') && css.includes('will-change: transform;'), 
 assert(css.includes(".sv-home-keyword-cloud[data-animate='false'] .sv-home-keyword") && css.includes('animation-play-state: paused !important;'), 'Offscreen keyword animations should pause')
 
 assert(main.includes("navigator.serviceWorker.addEventListener('controllerchange'"), 'PWA should detect an activated replacement worker')
-assert(main.includes('stockvision:sw-reload:${import.meta.env.VITE_BUILD_ID}'), 'PWA reload guard should be scoped to the deployed build')
-assert(main.includes('sessionStorage.getItem(serviceWorkerReloadKey)') && main.includes('window.location.reload()'), 'PWA should reload an existing document at most once per build')
+assert(main.includes('if (serviceWorkerReloadScheduled) return') && main.includes('window.location.reload()'), 'PWA should reload an existing document exactly once when a replacement worker claims it')
+assert(!main.includes('sessionStorage.getItem(serviceWorkerReloadKey)'), 'PWA reload suppression must not survive across deployments and strand an old lazy-chunk graph')
+assert(main.includes("window.addEventListener('vite:preloadError'") && main.includes('recoverStaleAssetGraph()'), 'stale lazy chunks must self-recover after a deployment')
+assert(main.includes("window.addEventListener('unhandledrejection'") && main.includes('Failed to fetch dynamically imported module'), 'dynamic-import failures must self-recover when browsers do not emit vite:preloadError')
 assert(main.includes('void updateServiceWorker(false)'), 'PWA refresh should delegate reloading to the guarded controllerchange handler')
 
 console.log('marketHomePerformanceContract: OK')

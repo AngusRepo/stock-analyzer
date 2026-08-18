@@ -6,17 +6,36 @@ import App from './App'
 import { defaultQueryOptions } from './lib/queryPolicy'
 import './index.css'
 
-const serviceWorkerReloadKey = `stockvision:sw-reload:${import.meta.env.VITE_BUILD_ID}`
 let serviceWorkerReloadScheduled = false
+let assetRecoveryScheduled = false
+
+function recoverStaleAssetGraph() {
+  if (assetRecoveryScheduled) return
+  assetRecoveryScheduled = true
+  void navigator.serviceWorker?.getRegistration()
+    .then((registration) => registration?.update())
+    .finally(() => window.location.reload())
+}
 
 if ('serviceWorker' in navigator) {
   navigator.serviceWorker.addEventListener('controllerchange', () => {
-    if (serviceWorkerReloadScheduled || sessionStorage.getItem(serviceWorkerReloadKey) === '1') return
+    if (serviceWorkerReloadScheduled) return
     serviceWorkerReloadScheduled = true
-    sessionStorage.setItem(serviceWorkerReloadKey, '1')
     window.location.reload()
   })
 }
+
+window.addEventListener('vite:preloadError', (event) => {
+  event.preventDefault()
+  recoverStaleAssetGraph()
+})
+
+window.addEventListener('unhandledrejection', (event) => {
+  const detail = String(event.reason?.message ?? event.reason ?? '')
+  if (!/Failed to fetch dynamically imported module|Importing a module script failed|ChunkLoadError/i.test(detail)) return
+  event.preventDefault()
+  recoverStaleAssetGraph()
+})
 
 const updateServiceWorker = registerSW({
   immediate: true,

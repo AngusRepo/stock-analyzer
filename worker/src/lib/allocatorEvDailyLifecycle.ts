@@ -339,11 +339,37 @@ export async function recordAllocatorEvLifecycle(
       leaseOwner?: string | null
     }
   },
+  authorityDb: D1Database = db,
 ): Promise<boolean> {
   if (!validDate(input.businessDate)) throw new Error(`invalid allocator EV lifecycle date: ${input.businessDate}`)
   const closed = input.state === 'replay_complete' ? new Date().toISOString() : null
   const authority = input.stageAuthority
-  const authoritySql = authority
+  const splitAuthorityDb = Boolean(authority && authorityDb !== db)
+  const hasAuthority = async (): Promise<boolean> => {
+    if (!authority) return true
+    const row = await authorityDb.prepare(`
+      SELECT 1 AS authorized
+        FROM pipeline_stage_runs authority
+       WHERE authority.business_date=?
+         AND authority.stage=?
+         AND authority.canonical_run_id=?
+         AND (? IS NULL OR (
+           authority.status='running'
+           AND authority.lease_owner=?
+           AND authority.lease_expires_at >= CURRENT_TIMESTAMP
+         ))
+       LIMIT 1
+    `).bind(
+      authority.businessDate ?? input.businessDate,
+      authority.stage,
+      authority.canonicalRunId,
+      authority.leaseOwner ?? null,
+      authority.leaseOwner ?? null,
+    ).first<{ authorized: number }>()
+    return Boolean(row?.authorized)
+  }
+  if (splitAuthorityDb && !(await hasAuthority())) return false
+  const authoritySql = authority && !splitAuthorityDb
     ? `EXISTS (
         SELECT 1 FROM pipeline_stage_runs authority
          WHERE authority.business_date=?
@@ -432,7 +458,8 @@ export async function recordAllocatorEvLifecycle(
     expectedLifecycleRunId,
     expectedLifecycleRunId,
   ).first<{ business_date: string }>()
-  return Boolean(updated)
+  if (!updated) return false
+  return splitAuthorityDb ? await hasAuthority() : true
 }
 
 export async function inspectAllocatorSnapshotClosure(

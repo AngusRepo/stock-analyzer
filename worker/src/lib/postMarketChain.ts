@@ -318,7 +318,7 @@ async function enqueueS12ReplayBackfillTask(env: Bindings, ctx: ChainContext): P
         canonicalRunId,
         leaseOwner,
       },
-    })
+    }, databaseForDataDomain(env, 'ops'))
     if (!recorded) throw new Error(`stale_s12_replay_enqueue:${signalDate}:${canonicalRunId}`)
     await assertChainStageAuthority(ctx, `s12-replay:${signalDate}:before_queue`)
     await env.UPDATE_QUEUE.send({
@@ -342,7 +342,7 @@ async function enqueueS12ReplayBackfillTask(env: Bindings, ctx: ChainContext): P
       canonicalRunId,
       leaseOwner,
     },
-  })
+  }, databaseForDataDomain(env, 'ops'))
   if (!currentRecorded) throw new Error(`stale_post_verify_lifecycle:${runDate}:${canonicalRunId}`)
   return signalDates.length
     ? `triggered next-session S12 replay signal_dates=${signalDates.join(',')} as_of=${runDate}`
@@ -393,7 +393,8 @@ async function recordPostPipelineLifecycle(
       canonicalRunId,
       leaseOwner,
     },
-  })
+  }, databaseForDataDomain(env, 'ops'))
+  await assertChainStageAuthority(ctx, `allocator-lifecycle:${input.state}:after_write`)
   if (!recorded) {
     throw new Error(`post_pipeline_stage_authority_lost:${input.businessDate}:${canonicalRunId}`)
   }

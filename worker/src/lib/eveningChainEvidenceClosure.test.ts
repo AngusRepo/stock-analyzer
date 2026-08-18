@@ -70,7 +70,7 @@ class FakeD1 {
     }
     if (normalized.includes('FROM canonical_run_heads')) {
       const producerRunId = this.overrides.matureOwner === undefined ? 'screener-2026-07-22' : this.overrides.matureOwner
-      return { run_id: producerRunId }
+      return { run_id: producerRunId, signal_date: '2026-07-22' }
     }
     if (normalized.includes('FROM strategy_label_matrix_runs_v4')) {
       return {

@@ -100,8 +100,18 @@ export async function resolveExpectedMatureSignalDate(
      ORDER BY session_date DESC
      LIMIT 1 OFFSET 4
   `).bind(businessDate).first<{ session_date: string | null }>()
-  const date = String(row?.session_date ?? '').slice(0, 10)
-  return /^\d{4}-\d{2}-\d{2}$/.test(date) ? date : null
+  const maturityBoundary = String(row?.session_date ?? '').slice(0, 10)
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(maturityBoundary)) return null
+  const canonical = await databaseForDataDomain(env, 'ops').prepare(`
+    SELECT substr(logical_run_key, 10, 10) AS signal_date
+      FROM canonical_run_heads
+     WHERE logical_run_key LIKE 'screener:%:TW:production:market_screener'
+       AND substr(logical_run_key, 10, 10) <= ?
+     ORDER BY signal_date DESC
+     LIMIT 1
+  `).bind(maturityBoundary).first<{ signal_date: string | null }>()
+  const canonicalDate = String(canonical?.signal_date ?? '').slice(0, 10)
+  return /^\d{4}-\d{2}-\d{2}$/.test(canonicalDate) ? canonicalDate : null
 }
 
 async function loadCanonicalHeads(

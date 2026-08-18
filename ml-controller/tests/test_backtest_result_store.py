@@ -2,17 +2,19 @@ from __future__ import annotations
 
 import json
 import sys
+import pytest
 from datetime import date, timedelta
 from pathlib import Path
 from types import SimpleNamespace
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from services.backtest_result_store import build_replay_backtest_insert
+from services.backtest_result_store import build_replay_backtest_insert, persist_replay_backtest
 from services.backtest_trade_evidence import (
     decode_backtest_portfolio_return_evidence,
     decode_backtest_trade_evidence,
     resolve_backtest_evidence_run_date,
+    canonical_weekly_evidence_error,
 )
 
 
@@ -78,7 +80,7 @@ def test_build_replay_backtest_insert_preserves_mode_b_and_regime_arrays():
         walk_forward={"passed": True, "windows": 6},
     )
 
-    assert "INSERT OR REPLACE INTO backtest_results" in sql
+    assert "INSERT OR IGNORE INTO backtest_results" in sql
     assert params[0] == "2026-04-26"
     assert params[1] == "replay_mode_b"
     raw = json.loads(params[-1])
@@ -150,4 +152,88 @@ def test_backtest_evidence_can_grow_past_default_limit_without_sampling_exact_fi
 def test_historical_backtest_consumers_preserve_expected_run_date():
     assert resolve_backtest_evidence_run_date("backtest", "2026-08-16", "2026-08-18") == "2026-08-16"
     assert resolve_backtest_evidence_run_date("paper", None, "2026-08-18") == "2026-08-18"
-    assert resolve_backtest_evidence_run_date("paper", "2026-08-16", "2026-08-18") == "2026-08-18"
+    assert resolve_backtest_evidence_run_date("paper", "2026-08-16", "2026-08-18") == "2026-08-16"
+
+
+def test_canonical_weekly_evidence_clock_is_fail_closed():
+    raw = {
+        "strategy_lab_record": {
+            "evidence_clock": {
+                "schema_version": "weekly-evidence-clock-v1",
+                "as_of_date": "2026-08-23",
+                "data_end_date": "2026-08-21",
+                "snapshot_business_date": "2026-08-21",
+                "mode": "B",
+                "research_data_source": "snapshot",
+                "evidence_scope": "canonical_current",
+                "production_effect": True,
+                "look_ahead_check": "PASS",
+            }
+        }
+    }
+
+    assert canonical_weekly_evidence_error(raw, "2026-08-23") is None
+    raw["strategy_lab_record"]["evidence_clock"]["data_end_date"] = "2026-08-24"
+    assert canonical_weekly_evidence_error(raw, "2026-08-23") == (
+        "canonical_weekly_evidence_lookahead_detected:data_end_date"
+    )
+
+def _minimal_metrics_for_persist():
+    return SimpleNamespace(
+        mode="B",
+        start_date="2026-08-01",
+        end_date="2026-08-14",
+        total_trades=1,
+        win_rate=1.0,
+        sharpe=1.0,
+        sortino=1.0,
+        calmar=1.0,
+        max_drawdown=0.1,
+        cagr=0.1,
+        profit_factor=2.0,
+        expectancy=0.01,
+        per_regime={},
+        realism_warnings=[],
+        absolute_confidence="moderate",
+        sanity_flags=[],
+        partition_returns=[],
+        initial_capital=1_000_000.0,
+        equity_curve=[("2026-08-14", 1_010_000.0)],
+        trades=[_trade("2330", 0.01, "green")],
+    )
+
+
+def test_backtest_persist_is_idempotent_only_for_identical_payload(monkeypatch):
+    from services import d1_client
+
+    metrics = _minimal_metrics_for_persist()
+    _, params = build_replay_backtest_insert(metrics, run_date="2026-08-23")
+    monkeypatch.setattr(
+        d1_client,
+        "query",
+        lambda *_args, **_kwargs: [{"id": 7, "raw_results": params[-1]}],
+    )
+    monkeypatch.setattr(
+        d1_client,
+        "execute",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("must not write")),
+    )
+
+    result = persist_replay_backtest(metrics, run_date="2026-08-23")
+
+    assert result["idempotent"] is True
+    assert result["rows_written"] == 0
+
+
+def test_backtest_persist_rejects_immutable_payload_conflict(monkeypatch):
+    from services import d1_client
+
+    metrics = _minimal_metrics_for_persist()
+    monkeypatch.setattr(
+        d1_client,
+        "query",
+        lambda *_args, **_kwargs: [{"id": 8, "raw_results": "different"}],
+    )
+
+    with pytest.raises(RuntimeError, match="immutable_backtest_evidence_conflict"):
+        persist_replay_backtest(metrics, run_date="2026-08-23")

@@ -11,9 +11,13 @@ from fastapi import APIRouter, Body, Query
 from pydantic import BaseModel, Field
 from typing import Optional
 
-from services.backtest_service import run_full_backtest
 from services.monte_carlo_service import run_monte_carlo_mdd
 from services.pbo_service import run_pbo_analysis
+from services.weekly_evidence_service import (
+    run_canonical_weekly_backtest,
+    run_historical_weekly_comparison,
+    taiwan_today,
+)
 from services.alpha_evidence_runner import run_alpha_candidate_evidence
 from services.promotion_service import (
     evaluate_alpha_policy_evidence_gate,
@@ -54,7 +58,7 @@ async def trigger_backtest(
     """
     logger.info("[Backtest] Triggered via API")
     try:
-        return await run_full_backtest(run_date=run_date)
+        return run_canonical_weekly_backtest(run_date=run_date)
     except Exception as e:
         logger.exception("[Backtest] Pipeline failed")
         return {"status": "error", "error": str(e)}
@@ -70,6 +74,8 @@ async def trigger_monte_carlo(
     block_size: int | None = Query(default=None, ge=1, le=60,
                                    description="Optional moving-block size for block bootstrap"),
     expected_run_date: str | None = Query(default=None, pattern=r"^\d{4}-\d{2}-\d{2}$"),
+    persist: bool = Query(default=True),
+    evidence_scope: str = Query(default="canonical_current", pattern="^(canonical_current|comparison_only)$"),
 ):
     """
     P0#5 Monte Carlo MDD Simulation:
@@ -87,6 +93,8 @@ async def trigger_monte_carlo(
             method=method,
             block_size=block_size,
             expected_run_date=expected_run_date,
+            persist=persist,
+            evidence_scope=evidence_scope,
         )
     except Exception as e:
         logger.exception("[MonteCarlo] Pipeline failed")
@@ -150,6 +158,45 @@ class ReplayRequest(BaseModel):
                     "None = flat sltp (backward-compat).",
     )
 
+
+class HistoricalWeeklyReplayRequest(BaseModel):
+    """Immutable point-in-time comparison. This route never persists or promotes."""
+
+    as_of_date: str = Field(..., pattern=r"^\d{4}-\d{2}-\d{2}$")
+    params: dict = Field(..., description="Frozen strategy config effective at as_of_date.")
+    config_version: str = Field(..., min_length=1, description="Version/id of the frozen config payload.")
+    config_checksum: str = Field(..., pattern=r"^[0-9a-fA-F]{64}$")
+    config_effective_at: str = Field(..., pattern=r"^\d{4}-\d{2}-\d{2}$")
+    initial_capital: float = Field(default=1_000_000, gt=0)
+    symbols: Optional[list[str]] = Field(default=None)
+    mc_simulations: int = Field(default=1000, ge=100, le=10000)
+    pbo_partitions: int = Field(default=10, ge=4, le=20)
+
+
+@router.post("/historical-weekly-replay")
+def post_historical_weekly_replay(req: HistoricalWeeklyReplayRequest = Body(...)):
+    """Run frozen-snapshot Mode B + MC + PBO as comparison-only evidence."""
+    try:
+        return run_historical_weekly_comparison(
+            as_of_date=req.as_of_date,
+            params=req.params,
+            config_version=req.config_version,
+            config_checksum=req.config_checksum,
+            config_effective_at=req.config_effective_at,
+            initial_capital=req.initial_capital,
+            symbols=req.symbols,
+            mc_simulations=req.mc_simulations,
+            pbo_partitions=req.pbo_partitions,
+        )
+    except Exception as exc:
+        logger.exception("[HistoricalWeeklyReplay] Evaluation failed")
+        return {
+            "status": "error",
+            "error": str(exc),
+            "evidence_scope": "comparison_only",
+            "production_effect": False,
+            "persisted": False,
+        }
 
 class AlphaPromotionGateRequest(BaseModel):
     candidate: dict = Field(
@@ -249,6 +296,20 @@ async def trigger_replay(req: ReplayRequest = Body(...)):
         f"symbols={len(req.symbols) if req.symbols else 'full'}"
     )
     try:
+        if req.persist_results and req.end_date < taiwan_today():
+            return {
+                "status": "error",
+                "error": "historical_replay_persistence_forbidden",
+                "required_path": "/backtest/historical-weekly-replay",
+                "production_effect": False,
+            }
+        if req.end_date < taiwan_today() and not req.params:
+            return {
+                "status": "error",
+                "error": "historical_replay_requires_frozen_config",
+                "required_path": "/backtest/historical-weekly-replay",
+                "production_effect": False,
+            }
         from services.trading_config_loader import load_merged_trading_config_with_contract
         params = req.params
         config_contract = None
@@ -314,6 +375,7 @@ async def trigger_replay(req: ReplayRequest = Body(...)):
                 }
             persist_result = persist_replay_backtest(
                 metrics,
+                run_date=req.end_date,
                 parity_audit=req.parity_audit,
                 validation_packet=validation_packet,
                 metric_explanations=metric_explanations,
@@ -467,6 +529,8 @@ async def trigger_pbo(
     source: str = Query(default="backtest", pattern="^(paper|backtest)$",
                         description="Data source: backtest or paper"),
     expected_run_date: str | None = Query(default=None, pattern=r"^\d{4}-\d{2}-\d{2}$"),
+    persist: bool = Query(default=True),
+    evidence_scope: str = Query(default="canonical_current", pattern="^(canonical_current|comparison_only)$"),
 ):
     """
     P0#6 Probability of Backtest Overfitting (CPCV):
@@ -481,6 +545,8 @@ async def trigger_pbo(
             n_partitions=partitions,
             source=source,
             expected_run_date=expected_run_date,
+            persist=persist,
+            evidence_scope=evidence_scope,
         )
     except Exception as e:
         logger.exception("[PBO] Pipeline failed")

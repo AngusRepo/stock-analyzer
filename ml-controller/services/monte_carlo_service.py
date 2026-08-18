@@ -16,13 +16,15 @@ import logging
 import random
 import statistics
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime
+from zoneinfo import ZoneInfo
 from typing import Optional
 
 from services.backtest_trade_evidence import (
     decode_backtest_portfolio_return_evidence,
     decode_backtest_trade_evidence,
     resolve_backtest_evidence_run_date,
+    canonical_weekly_evidence_error,
 )
 from services.bounded_json import (
     BoundedJsonContractError,
@@ -532,6 +534,8 @@ async def run_monte_carlo_mdd(
     method: str | None = None,
     block_size: int | None = None,
     expected_run_date: str | None = None,
+    persist: bool = True,
+    evidence_scope: str = "canonical_current",
 ) -> dict:
     """
     Full Monte Carlo MDD pipeline:
@@ -540,6 +544,19 @@ async def run_monte_carlo_mdd(
     3. Run Monte Carlo simulation
     4. Write results to D1
     """
+    today = datetime.now(ZoneInfo("Asia/Taipei")).strftime("%Y-%m-%d")
+    if persist and evidence_scope != "canonical_current":
+        return {"error": "persist_requires_canonical_current_scope", "status": "failed"}
+    if not persist and evidence_scope != "comparison_only":
+        return {"error": "read_only_requires_comparison_only_scope", "status": "failed"}
+    if persist and expected_run_date and expected_run_date != today:
+        return {
+            "error": "historical_canonical_monte_carlo_rerun_forbidden",
+            "status": "failed",
+            "required_path": "/backtest/historical-weekly-replay",
+            "production_effect": False,
+        }
+
     if not CF_API_TOKEN:
         return {"error": "CF_API_TOKEN not set", "status": "failed"}
     if httpx is None:
@@ -562,7 +579,9 @@ async def run_monte_carlo_mdd(
                    FROM paper_daily_snapshots
                    WHERE account_id = 1
                      AND total_value > 0
+                     AND (? IS NULL OR date <= ?)
                    ORDER BY date ASC, created_at ASC, id ASC""",
+                [expected_run_date, expected_run_date],
             )
 
             if not snapshots:
@@ -597,6 +616,7 @@ async def run_monte_carlo_mdd(
                 client,
                 """SELECT id, run_date, created_at, raw_results FROM backtest_results
                    WHERE run_date = ?
+                     AND strategy = 'replay_mode_b'
                    ORDER BY created_at DESC LIMIT 1""",
                 [expected_run_date],
             )
@@ -613,6 +633,13 @@ async def run_monte_carlo_mdd(
                 "source_payload_sha256": hashlib.sha256(raw_text.encode("utf-8")).hexdigest(),
             }
             raw = json.loads(raw_text)
+            clock_error = canonical_weekly_evidence_error(raw, expected_run_date)
+            if clock_error:
+                return {
+                    "error": clock_error,
+                    "status": "failed",
+                    "promotion_gate_eligible": False,
+                }
             consumed_field = (
                 "portfolio_return_evidence"
                 if raw.get("portfolio_return_evidence")
@@ -664,7 +691,6 @@ async def run_monte_carlo_mdd(
         )
 
         # ── Step 4: Write to D1 ──
-        today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
         evidence_run_date = resolve_backtest_evidence_run_date(source, expected_run_date, today)
 
         # Reuse sorted MDD distribution from simulation (no recompute)
@@ -705,35 +731,57 @@ async def run_monte_carlo_mdd(
         ),
     )
 
-        success = await _d1_exec(
-            client,
-            """INSERT OR REPLACE INTO monte_carlo_results
-               (run_date, source, n_simulations, n_trades,
-                historical_mdd, mdd_median, mdd_mean, mdd_std,
-                mdd_95th, mdd_99th, mdd_worst, mdd_best,
-                go_live_verdict, verdict_reason, raw_distribution)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-            [
-                evidence_run_date,
-                source,
-                mc.n_simulations,
-                mc.n_trades,
-                mc.historical_mdd,
-                mc.mdd_median,
-                mc.mdd_mean,
-                mc.mdd_std,
-                mc.mdd_95th,
-                mc.mdd_99th,
-                mc.mdd_worst,
-                mc.mdd_best,
-                mc.go_live_verdict,
-                mc.verdict_reason,
-                raw_json,
-            ],
-        )
+        success = True
+        idempotent = False
+        if persist:
+            existing = await _d1_query(
+                client,
+                """SELECT id, raw_distribution
+                   FROM monte_carlo_results
+                   WHERE run_date = ? AND source = ?
+                   LIMIT 1""",
+                [evidence_run_date, source],
+            )
+            if existing:
+                if str(existing[0].get("raw_distribution") or "") != raw_json:
+                    return {
+                        "error": "immutable_monte_carlo_evidence_conflict",
+                        "status": "failed",
+                        "run_date": evidence_run_date,
+                        "source": source,
+                        "promotion_gate_eligible": False,
+                    }
+                idempotent = True
+            else:
+                success = await _d1_exec(
+                    client,
+                    """INSERT OR IGNORE INTO monte_carlo_results
+                       (run_date, source, n_simulations, n_trades,
+                        historical_mdd, mdd_median, mdd_mean, mdd_std,
+                        mdd_95th, mdd_99th, mdd_worst, mdd_best,
+                        go_live_verdict, verdict_reason, raw_distribution)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    [
+                        evidence_run_date,
+                        source,
+                        mc.n_simulations,
+                        mc.n_trades,
+                        mc.historical_mdd,
+                        mc.mdd_median,
+                        mc.mdd_mean,
+                        mc.mdd_std,
+                        mc.mdd_95th,
+                        mc.mdd_99th,
+                        mc.mdd_worst,
+                        mc.mdd_best,
+                        mc.go_live_verdict,
+                        mc.verdict_reason,
+                        raw_json,
+                    ],
+                )
 
         summary = {
-            "status": "success" if success else "d1_write_failed",
+            "status": ("success" if persist else "comparison_only") if success else "d1_write_failed",
             "run_date": evidence_run_date,
             "source": source,
             "n_simulations": mc.n_simulations,
@@ -752,7 +800,10 @@ async def run_monte_carlo_mdd(
             "source_provenance": source_provenance,
             "tail_risk_status": mc.tail_risk_status,
             "return_semantics": return_semantics,
-            "promotion_gate_eligible": True,
+            "promotion_gate_eligible": bool(persist),
+            "production_effect": bool(persist),
+            "persisted": bool(persist),
+            "idempotent": idempotent,
             "min_full_tail_risk_trades": mc.min_full_tail_risk_trades,
         }
         logger.info(f"[MonteCarlo] Done: {mc.go_live_verdict} — 95th MDD = {mc.mdd_95th:.2%}")

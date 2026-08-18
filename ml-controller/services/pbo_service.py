@@ -20,13 +20,15 @@ import math
 import os
 import statistics
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import datetime
+from zoneinfo import ZoneInfo
 from itertools import combinations
 from typing import Optional
 
 from services.backtest_trade_evidence import (
     decode_backtest_trade_evidence,
     resolve_backtest_evidence_run_date,
+    canonical_weekly_evidence_error,
 )
 
 from services.bounded_json import (
@@ -517,6 +519,8 @@ async def run_pbo_analysis(
     n_partitions: int = DEFAULT_N_PARTITIONS,
     source: str = "backtest",
     expected_run_date: str | None = None,
+    persist: bool = True,
+    evidence_scope: str = "canonical_current",
 ) -> dict:
     """
     Full PBO pipeline:
@@ -524,6 +528,19 @@ async def run_pbo_analysis(
     2. Run CPCV
     3. Write results to D1
     """
+    today = datetime.now(ZoneInfo("Asia/Taipei")).strftime("%Y-%m-%d")
+    if persist and evidence_scope != "canonical_current":
+        return {"error": "persist_requires_canonical_current_scope", "status": "failed"}
+    if not persist and evidence_scope != "comparison_only":
+        return {"error": "read_only_requires_comparison_only_scope", "status": "failed"}
+    if persist and expected_run_date and expected_run_date != today:
+        return {
+            "error": "historical_canonical_pbo_rerun_forbidden",
+            "status": "failed",
+            "required_path": "/backtest/historical-weekly-replay",
+            "production_effect": False,
+        }
+
     if not CF_API_TOKEN:
         return {"error": "CF_API_TOKEN not set", "status": "failed"}
     if httpx is None:
@@ -547,6 +564,7 @@ async def run_pbo_analysis(
                 client,
                 """SELECT id, run_date, created_at, raw_results FROM backtest_results
                    WHERE run_date = ?
+                     AND strategy = 'replay_mode_b'
                    ORDER BY created_at DESC LIMIT 1""",
                 [expected_run_date],
             )
@@ -554,6 +572,13 @@ async def run_pbo_analysis(
                 return {"error": f"No backtest results found for run_date={expected_run_date}", "status": "failed"}
 
             raw = json.loads(row[0]["raw_results"])
+            clock_error = canonical_weekly_evidence_error(raw, expected_run_date)
+            if clock_error:
+                return {
+                    "error": clock_error,
+                    "status": "failed",
+                    "promotion_gate_eligible": False,
+                }
             consumed_fields = (
                 ("strategy_returns_by_partition",)
                 if raw.get("strategy_returns_by_partition")
@@ -609,7 +634,9 @@ async def run_pbo_analysis(
                 client,
                 """SELECT symbol, side, shares, price, note, created_at
                    FROM paper_orders WHERE account_id = 1
+                     AND (? IS NULL OR substr(created_at, 1, 10) <= ?)
                    ORDER BY created_at ASC""",
+                [expected_run_date, expected_run_date],
             )
             if not orders:
                 return {"error": "No paper orders found", "status": "failed"}
@@ -645,7 +672,6 @@ async def run_pbo_analysis(
             pbo = _run_cpcv(trades, n_partitions)
 
         # ── Step 3: Write to D1 ──
-        today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
         evidence_run_date = resolve_backtest_evidence_run_date(source, expected_run_date, today)
 
         raw_json = bounded_json_dumps({
@@ -661,6 +687,9 @@ async def run_pbo_analysis(
             "selected_strategy_counts": pbo.selected_strategy_counts,
             "source": source,
             "source_provenance": source_provenance or None,
+            "promotion_gate_eligible": bool(persist),
+            "production_effect": bool(persist),
+            "persisted": bool(persist),
         },
         ensure_ascii=False,
         preserve_exact_keys=(
@@ -675,23 +704,45 @@ async def run_pbo_analysis(
         ),
     )
 
-        success = await _d1_exec(
-            client,
-            """INSERT OR REPLACE INTO pbo_results
-               (run_date, source, n_partitions, n_combinations, n_trades,
-                pbo, n_oos_negative, oos_mean_return, is_mean_return, degradation,
-                go_live_verdict, verdict_reason, raw_details)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-            [
-                evidence_run_date, source, pbo.n_partitions, pbo.n_combinations, pbo.n_trades,
-                pbo.pbo, pbo.n_oos_negative, pbo.oos_mean_return, pbo.is_mean_return,
-                pbo.degradation, pbo.go_live_verdict, pbo.verdict_reason,
-                raw_json,
-            ],
-        )
+        success = True
+        idempotent = False
+        if persist:
+            existing = await _d1_query(
+                client,
+                """SELECT id, raw_details
+                   FROM pbo_results
+                   WHERE run_date = ? AND source = ?
+                   LIMIT 1""",
+                [evidence_run_date, source],
+            )
+            if existing:
+                if str(existing[0].get("raw_details") or "") != raw_json:
+                    return {
+                        "error": "immutable_pbo_evidence_conflict",
+                        "status": "failed",
+                        "run_date": evidence_run_date,
+                        "source": source,
+                        "promotion_gate_eligible": False,
+                    }
+                idempotent = True
+            else:
+                success = await _d1_exec(
+                    client,
+                    """INSERT OR IGNORE INTO pbo_results
+                       (run_date, source, n_partitions, n_combinations, n_trades,
+                        pbo, n_oos_negative, oos_mean_return, is_mean_return, degradation,
+                        go_live_verdict, verdict_reason, raw_details)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    [
+                        evidence_run_date, source, pbo.n_partitions, pbo.n_combinations, pbo.n_trades,
+                        pbo.pbo, pbo.n_oos_negative, pbo.oos_mean_return, pbo.is_mean_return,
+                        pbo.degradation, pbo.go_live_verdict, pbo.verdict_reason,
+                        raw_json,
+                    ],
+                )
 
         summary = {
-            "status": "success" if success else "d1_write_failed",
+            "status": ("success" if persist else "comparison_only") if success else "d1_write_failed",
             "run_date": evidence_run_date,
             "source": source,
             "method": pbo.method,
@@ -710,6 +761,10 @@ async def run_pbo_analysis(
             "embargo_days": pbo.embargo_days,
             "embargo_source": pbo.embargo_source,
             "source_provenance": source_provenance or None,
+            "promotion_gate_eligible": bool(persist),
+            "production_effect": bool(persist),
+            "persisted": bool(persist),
+            "idempotent": idempotent,
         }
         logger.info(f"[PBO] Done: {pbo.go_live_verdict} — PBO = {pbo.pbo:.1%}")
         return summary

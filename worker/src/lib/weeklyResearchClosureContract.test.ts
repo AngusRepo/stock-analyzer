@@ -11,6 +11,7 @@ const gcpCron = fs.readFileSync('src/lib/cronGcpDomainTasks.ts', 'utf8')
 const adminGcp = fs.readFileSync('src/lib/adminTriggerGcpTasks.ts', 'utf8')
 const workerCron = fs.readFileSync('src/lib/cronWorkerDomainTasks.ts', 'utf8')
 const adminWorker = fs.readFileSync('src/lib/adminTriggerWorkerDomainTasks.ts', 'utf8')
+const durableScheduler = fs.readFileSync('src/lib/durableSchedulerTask.ts', 'utf8')
 const dailyWorkflows = fs.readFileSync('src/lib/controllerDailyWorkflows.ts', 'utf8')
 const triggerRoutes = fs.readFileSync('src/routes/adminTriggerRoutes.ts', 'utf8')
 const index = fs.readFileSync('src/index.ts', 'utf8')
@@ -98,7 +99,8 @@ assert(
   workflows.includes("jsonBody: { apply: false, confirm: false }") &&
     dailyWorkflows.includes("jsonBody: { apply: false, confirm: false }") &&
     workerCron.includes('lifecycle dry-run') &&
-    adminWorker.includes('lifecycle dry-run') &&
+    adminWorker.includes('runWeeklyCleanupClosure') &&
+    durableScheduler.includes('lifecycle dry-run') &&
     !workflows.includes("jsonBody: { apply: true, confirm: true }") &&
     !dailyWorkflows.includes("jsonBody: { apply: true, confirm: true }"),
   'weekly cleanup and IC tracker must not mutate production model_pool lifecycle; promotion/retire needs explicit controller action',

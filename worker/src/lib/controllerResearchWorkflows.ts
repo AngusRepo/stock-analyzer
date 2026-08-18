@@ -1047,6 +1047,10 @@ export async function runWeeklyLifecycleCheck(env: Bindings) {
 export async function runWeeklyBacktest(env: Bindings, runDate = twToday()) {
   requireController(env)
 
+  if (runDate !== twToday()) {
+    return `failed: historical canonical rerun forbidden (requested=${runDate}; use /backtest/historical-weekly-replay comparison-only)`
+  }
+
   const resp = await controllerFetch(env, `/backtest/run?run_date=${encodeURIComponent(runDate)}`, {
     method: 'POST',
     timeoutMs: 300_000,
@@ -1064,12 +1068,14 @@ export async function runWeeklyBacktest(env: Bindings, runDate = twToday()) {
 export async function runWeeklyMonteCarlo(env: Bindings, runDate = twToday()) {
   requireController(env)
 
+  if (runDate !== twToday()) {
+    return `failed: historical canonical MC rerun forbidden (requested=${runDate}; use historical comparison-only replay)`
+  }
+
   const results: string[] = []
   for (const source of ['paper', 'backtest'] as const) {
-    const evidenceDate = source === 'backtest'
-      ? `&expected_run_date=${encodeURIComponent(runDate)}`
-      : ''
-    const resp = await controllerFetch(env, `/backtest/monte-carlo?n=1000&source=${source}${evidenceDate}`, {
+    const evidenceDate = `&expected_run_date=${encodeURIComponent(runDate)}`
+    const resp = await controllerFetch(env, `/backtest/monte-carlo?n=1000&source=${source}${evidenceDate}&persist=true&evidence_scope=canonical_current`, {
       method: 'POST',
       timeoutMs: 120_000,
     }).catch(() => null)
@@ -1107,7 +1113,11 @@ export async function runWeeklyMonteCarlo(env: Bindings, runDate = twToday()) {
 export async function runWeeklyPBO(env: Bindings, runDate = twToday()) {
   requireController(env)
 
-  const resp = await controllerFetch(env, `/backtest/pbo?partitions=10&source=backtest&expected_run_date=${encodeURIComponent(runDate)}`, {
+  if (runDate !== twToday()) {
+    return `failed: historical canonical PBO rerun forbidden (requested=${runDate}; use historical comparison-only replay)`
+  }
+
+  const resp = await controllerFetch(env, `/backtest/pbo?partitions=10&source=backtest&expected_run_date=${encodeURIComponent(runDate)}&persist=true&evidence_scope=canonical_current`, {
     method: 'POST',
     timeoutMs: 120_000,
   }).catch(() => null)

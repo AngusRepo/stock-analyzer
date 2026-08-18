@@ -14,9 +14,36 @@ def resolve_backtest_evidence_run_date(
     expected_run_date: str | None,
     wall_clock_date: str,
 ) -> str:
-    return expected_run_date if source == "backtest" and expected_run_date else wall_clock_date
+    return expected_run_date if expected_run_date else wall_clock_date
 
 
+
+def canonical_weekly_evidence_error(
+    raw: dict[str, Any],
+    expected_run_date: str,
+) -> str | None:
+    record = raw.get("strategy_lab_record")
+    clock = record.get("evidence_clock") if isinstance(record, dict) else None
+    if not isinstance(clock, dict):
+        return "canonical_weekly_evidence_clock_missing"
+    checks = {
+        "schema_version": "weekly-evidence-clock-v1",
+        "as_of_date": expected_run_date,
+        "mode": "B",
+        "research_data_source": "snapshot",
+        "evidence_scope": "canonical_current",
+        "look_ahead_check": "PASS",
+    }
+    for key, expected in checks.items():
+        if clock.get(key) != expected:
+            return f"canonical_weekly_evidence_clock_invalid:{key}"
+    if clock.get("production_effect") is not True:
+        return "canonical_weekly_evidence_clock_invalid:production_effect"
+    if str(clock.get("data_end_date") or "")[:10] > expected_run_date:
+        return "canonical_weekly_evidence_lookahead_detected:data_end_date"
+    if str(clock.get("snapshot_business_date") or "")[:10] > expected_run_date:
+        return "canonical_weekly_evidence_lookahead_detected:snapshot_business_date"
+    return None
 
 def _read(trade: Any, key: str) -> Any:
     if isinstance(trade, dict):

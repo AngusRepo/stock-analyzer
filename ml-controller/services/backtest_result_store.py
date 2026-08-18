@@ -91,7 +91,7 @@ def build_replay_backtest_insert(
         preserve_exact_keys=tuple(exact_keys),
     )
     sql = """
-        INSERT OR REPLACE INTO backtest_results
+        INSERT OR IGNORE INTO backtest_results
         (run_date, strategy, timerange, total_trades, win_rate,
          sharpe, sortino, calmar, max_drawdown, cagr,
          profit_factor, expectancy, raw_results)
@@ -125,7 +125,7 @@ def persist_replay_backtest(
     strategy_lab_record: dict[str, Any] | None = None,
     walk_forward: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    from services.d1_client import execute
+    from services.d1_client import execute, query
 
     sql, params = build_replay_backtest_insert(
         metrics,
@@ -136,4 +136,27 @@ def persist_replay_backtest(
         strategy_lab_record=strategy_lab_record,
         walk_forward=walk_forward,
     )
-    return execute(sql, params=params, timeout=60.0)
+    existing = query(
+        """
+        SELECT id, raw_results
+        FROM backtest_results
+        WHERE run_date = ? AND strategy = ? AND timerange = ?
+        LIMIT 1
+        """,
+        params[:3],
+        timeout=60.0,
+    )
+    if existing:
+        if str(existing[0].get("raw_results") or "") != str(params[-1]):
+            raise RuntimeError(
+                "immutable_backtest_evidence_conflict:"
+                f"run_date={params[0]}:strategy={params[1]}:timerange={params[2]}"
+            )
+        return {
+            "success": True,
+            "idempotent": True,
+            "existing_row_id": existing[0].get("id"),
+            "rows_written": 0,
+        }
+    result = execute(sql, params=params, timeout=60.0)
+    return {**result, "idempotent": False}

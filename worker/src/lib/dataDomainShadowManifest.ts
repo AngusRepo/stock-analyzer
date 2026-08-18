@@ -34,8 +34,6 @@ const TABLE_PAGE_LIMITS: Readonly<Record<string, number>> = {
   // manifest page exceeds the Worker CPU envelope while hashing both D1s.
   s12_replay_trade_outcomes: 500,
   s12_structure_snapshots: 100,
-  meta_reward_ledger: 100,
-  meta_shadow_decisions: 100,
 }
 
 export function isDataDomainControlTable(table: string): table is DataDomainControlTable {

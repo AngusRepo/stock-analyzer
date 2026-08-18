@@ -182,8 +182,8 @@ const DEFERRED_PRODUCTION_TABLE_OWNERSHIP: readonly TableOwnershipMetadata[] = [
 
   { table: 'config_lifecycle_events', domain: 'learning', disposition: 'active_window', route_ready: false, shadow_ready: false },
   { table: 'config_lifecycle_state', domain: 'learning', disposition: 'full_scalar', route_ready: false, shadow_ready: false },
-  { table: 'meta_reward_ledger', domain: 'learning', disposition: 'active_window', route_ready: true, shadow_ready: true },
-  { table: 'meta_shadow_decisions', domain: 'learning', disposition: 'active_window', route_ready: true, shadow_ready: true },
+  { table: 'meta_reward_ledger', domain: 'learning', disposition: 'active_window', route_ready: true, shadow_ready: false },
+  { table: 'meta_shadow_decisions', domain: 'learning', disposition: 'active_window', route_ready: true, shadow_ready: false },
   { table: 'model_health_daily', domain: 'learning', disposition: 'legacy_only', route_ready: false, shadow_ready: false },
   { table: 'model_lifecycle_events', domain: 'learning', disposition: 'legacy_only', route_ready: false, shadow_ready: false },
   { table: 'model_lifecycle_state', domain: 'learning', disposition: 'legacy_only', route_ready: false, shadow_ready: false },

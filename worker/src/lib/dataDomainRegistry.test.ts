@@ -99,7 +99,8 @@ assert.equal(tableOwnershipMetadata('strategy_candidate_contexts')?.shadow_ready
   'active-owner context materialization must not re-enter the inactive-only shadow backfill drain')
 for (const table of ['meta_reward_ledger', 'meta_shadow_decisions']) {
   assert.equal(tableOwnershipMetadata(table)?.route_ready, true, `${table} must route to Learning D1`)
-  assert.equal(tableOwnershipMetadata(table)?.shadow_ready, true, `${table} must retain legacy continuity through backfill`)
+  assert.equal(tableOwnershipMetadata(table)?.shadow_ready, false,
+    `${table} is active-owner materialization and must not re-enter inactive-only shadow backfill`)
 }
 
 const deferredProductionTables = productionTableNames.filter((table) => tableOwnershipMetadata(table)?.route_ready === false)

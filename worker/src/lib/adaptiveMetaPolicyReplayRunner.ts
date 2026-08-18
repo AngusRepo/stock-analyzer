@@ -176,6 +176,137 @@ export async function listAdaptiveMetaPolicyReplayRows(
   return results ?? []
 }
 
+type CoreReplayContextRow = {
+  date?: string | null
+  stock_id?: string | null
+  market_segment?: string | null
+  recommendation_lane?: string | null
+  has_buy_signal?: number | boolean | null
+  ml_vote_summary?: string | null
+  score_components?: string | null
+  alpha_context?: string | null
+  alpha_allocation?: string | null
+}
+
+function parseRecord(value: unknown): Record<string, any> {
+  if (typeof value !== 'string' || !value.trim()) return {}
+  try {
+    const parsed = JSON.parse(value)
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : {}
+  } catch {
+    return {}
+  }
+}
+
+function firstScalar(...values: unknown[]): string | number | null {
+  for (const value of values) {
+    if (typeof value === 'number' && Number.isFinite(value)) return value
+    if (typeof value === 'string' && value.trim()) return value
+  }
+  return null
+}
+
+export async function listAdaptiveMetaPolicyReplayRowsAcrossDomains(
+  learningDb: D1Database,
+  coreDb: D1Database,
+  options: Pick<AdaptiveMetaPolicyReplayOptions, 'startDate' | 'endDate' | 'limit'> = {},
+): Promise<AdaptiveMetaPolicyReplayRow[]> {
+  const limit = boundedInt(options.limit, 20000, 1, 50000)
+  const placeholders = ACTIVE_MODELS.map(() => '?').join(', ')
+  const clauses = [
+    `p.model_name IN (${placeholders})`,
+    'p.verified_at IS NOT NULL',
+    'p.actual_return_pct IS NOT NULL',
+  ]
+  const binds: unknown[] = [...ACTIVE_MODELS]
+  if (options.startDate) {
+    clauses.push('date(p.prediction_date) >= date(?)')
+    binds.push(options.startDate)
+  }
+  if (options.endDate) {
+    clauses.push('date(p.prediction_date) <= date(?)')
+    binds.push(options.endDate)
+  }
+  binds.push(limit)
+
+  const predictionResult = await learningDb.prepare(`
+    WITH recent AS (
+      SELECT p.*
+        FROM predictions p
+       WHERE ${clauses.join(' AND ')}
+       ORDER BY date(p.prediction_date) DESC, p.stock_id DESC, p.model_name DESC
+       LIMIT ?
+    )
+    SELECT
+      p.prediction_date AS date,
+      p.stock_id,
+      p.model_name,
+      p.direction_correct,
+      p.direction_accuracy,
+      p.price_error_pct,
+      p.actual_return_pct,
+      p.trade_pnl_pct,
+      COALESCE(
+        CASE WHEN json_valid(p.forecast_data) THEN json_extract(p.forecast_data, '$.rank_score') END,
+        CASE WHEN json_valid(p.forecast_data) THEN json_extract(p.forecast_data, '$.ensemble_v2.avg_rank') END,
+        p.direction_accuracy
+      ) AS rank_score,
+      p.market_risk_score
+    FROM recent p
+    ORDER BY date(p.prediction_date) ASC, p.stock_id ASC, p.model_name ASC
+  `).bind(...binds).all<AdaptiveMetaPolicyReplayRow>()
+  const predictions = predictionResult.results ?? []
+  if (!predictions.length) return []
+
+  const dates = [...new Set(predictions
+    .map((row) => String(row.date ?? '').slice(0, 10))
+    .filter((date) => /^\d{4}-\d{2}-\d{2}$/.test(date)))].sort()
+  const recommendationSql = dates.length
+    ? `SELECT date, stock_id, market_segment, recommendation_lane, has_buy_signal,
+              ml_vote_summary, score_components, alpha_context, alpha_allocation
+         FROM daily_recommendations
+        WHERE date IN (${dates.map(() => '?').join(', ')})`
+    : `SELECT date, stock_id, market_segment, recommendation_lane, has_buy_signal,
+              ml_vote_summary, score_components, alpha_context, alpha_allocation
+         FROM daily_recommendations WHERE 1=0`
+  const [stockResult, recommendationResult] = await Promise.all([
+    coreDb.prepare('SELECT id AS stock_id, symbol FROM stocks').all<{ stock_id?: string; symbol?: string | null }>(),
+    coreDb.prepare(recommendationSql).bind(...dates).all<CoreReplayContextRow>(),
+  ])
+  const symbols = new Map((stockResult.results ?? []).map((row) => [String(row.stock_id ?? ''), row.symbol ?? null]))
+  const recommendations = new Map((recommendationResult.results ?? []).map((row) => [
+    `${String(row.date ?? '').slice(0, 10)}|${String(row.stock_id ?? '')}`,
+    row,
+  ]))
+
+  return predictions.map((prediction) => {
+    const stockId = String(prediction.stock_id ?? '')
+    const date = String(prediction.date ?? '').slice(0, 10)
+    const recommendation = recommendations.get(`${date}|${stockId}`)
+    const vote = parseRecord(recommendation?.ml_vote_summary)
+    const score = parseRecord(recommendation?.score_components)
+    const alpha = parseRecord(recommendation?.alpha_context)
+    const allocation = parseRecord(recommendation?.alpha_allocation)
+    return {
+      ...prediction,
+      symbol: symbols.get(stockId) ?? null,
+      market_segment: recommendation?.market_segment ?? null,
+      recommendation_lane: recommendation?.recommendation_lane ?? null,
+      has_buy_signal: recommendation?.has_buy_signal ?? null,
+      model_ic: firstScalar(vote.ic_4w_avg, vote.model_ic, score.model_ic),
+      coverage: firstScalar(vote.coverage, score.ml_coverage),
+      prediction_dispersion: firstScalar(vote.dispersion?.rawRankStd, vote.raw_rank_std, score.prediction_dispersion),
+      data_quality: firstScalar(score.data_quality, alpha.data_quality),
+      market_breadth: firstScalar(alpha.market_breadth, allocation.market_breadth),
+      sector_heat: firstScalar(score.sector_heat, alpha.sector_heat, allocation.sector_heat),
+      liquidity: firstScalar(alpha.liquidity, alpha.liquidity_score, score.liquidity),
+      fill_quality: firstScalar(score.fill_quality, alpha.fill_quality),
+      regime: firstScalar(alpha.regime, allocation.regime),
+      volatility: firstScalar(alpha.volatility, alpha.volatility_score, score.volatility),
+      market_risk: firstScalar(prediction.market_risk_score, alpha.market_risk, alpha.market_risk_score, score.market_risk),
+    }
+  })
+}
 function replaySummary(report: Record<string, any>, sourceRows: number): string {
   const failedGates = Array.isArray(report.failed_gates)
     ? report.failed_gates.map(String).filter(Boolean)
@@ -201,7 +332,7 @@ function replaySummary(report: Record<string, any>, sourceRows: number): string 
 }
 
 export async function runAdaptiveMetaPolicyReplay(
-  env: Pick<Bindings, 'DB' | 'KV' | 'ML_SERVICE_URL' | 'ML_SERVICE_SECRET'>,
+  env: Pick<Bindings, 'DB' | 'KV' | 'ML_SERVICE_URL' | 'ML_SERVICE_SECRET'> & Partial<Bindings>,
   options: AdaptiveMetaPolicyReplayOptions = {},
 ): Promise<Record<string, any>> {
   const mlUrl = env.ML_SERVICE_URL?.trim()?.replace(/\/+$/, '')
@@ -209,11 +340,12 @@ export async function runAdaptiveMetaPolicyReplay(
 
   const startDate = options.startDate ?? daysAgoTw(90)
   const endDate = options.endDate ?? todayTw()
-  const rows = await listAdaptiveMetaPolicyReplayRows(databaseForDataDomain(env, 'learning'), {
-    startDate,
-    endDate,
-    limit: options.limit ?? 20000,
-  })
+  const learningDb = databaseForDataDomain(env, 'learning')
+  const coreDb = databaseForDataDomain(env, 'core')
+  const rowOptions = { startDate, endDate, limit: options.limit ?? 20000 }
+  const rows = learningDb === coreDb
+    ? await listAdaptiveMetaPolicyReplayRows(learningDb, rowOptions)
+    : await listAdaptiveMetaPolicyReplayRowsAcrossDomains(learningDb, coreDb, rowOptions)
 
   const actualSourceDates = rows
     .map((row) => String(row.date ?? '').slice(0, 10))

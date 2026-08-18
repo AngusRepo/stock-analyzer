@@ -1,5 +1,5 @@
 import type { Bindings } from '../types'
-import { listAdaptiveMetaPolicyReplayRows } from './adaptiveMetaPolicyReplayRunner'
+import { listAdaptiveMetaPolicyReplayRows, listAdaptiveMetaPolicyReplayRowsAcrossDomains } from './adaptiveMetaPolicyReplayRunner'
 import { databaseForDataDomain } from './dataDomainRegistry'
 
 export const LINUCB_MULTIPLIER_REPLAY_DEFAULT_LIMIT = 5000
@@ -57,7 +57,7 @@ function replaySummary(report: Record<string, any>, sourceRows: number): string 
 }
 
 export async function runLinUcbMultiplierReplay(
-  env: Pick<Bindings, 'DB' | 'KV' | 'ML_SERVICE_URL' | 'ML_SERVICE_SECRET'>,
+  env: Pick<Bindings, 'DB' | 'KV' | 'ML_SERVICE_URL' | 'ML_SERVICE_SECRET'> & Partial<Bindings>,
   options: LinUcbMultiplierReplayOptions = {},
 ): Promise<Record<string, any>> {
   const mlUrl = env.ML_SERVICE_URL?.trim()?.replace(/\/+$/, '')
@@ -65,11 +65,12 @@ export async function runLinUcbMultiplierReplay(
 
   const startDate = options.startDate ?? daysAgoTw(90)
   const endDate = options.endDate ?? todayTw()
-  const rows = await listAdaptiveMetaPolicyReplayRows(databaseForDataDomain(env, 'learning'), {
-    startDate,
-    endDate,
-    limit: options.limit ?? LINUCB_MULTIPLIER_REPLAY_DEFAULT_LIMIT,
-  })
+  const learningDb = databaseForDataDomain(env, 'learning')
+  const coreDb = databaseForDataDomain(env, 'core')
+  const rowOptions = { startDate, endDate, limit: options.limit ?? LINUCB_MULTIPLIER_REPLAY_DEFAULT_LIMIT }
+  const rows = learningDb === coreDb
+    ? await listAdaptiveMetaPolicyReplayRows(learningDb, rowOptions)
+    : await listAdaptiveMetaPolicyReplayRowsAcrossDomains(learningDb, coreDb, rowOptions)
 
   const headers: Record<string, string> = { 'Content-Type': 'application/json' }
   if (env.ML_SERVICE_SECRET) headers['X-Service-Token'] = env.ML_SERVICE_SECRET

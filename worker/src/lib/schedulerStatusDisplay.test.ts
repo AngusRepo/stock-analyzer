@@ -566,6 +566,36 @@ const logs: SchedulerDisplayLogCandidate[] = [
 {
   const status = resolveSchedulerDisplayStatus({
     lastAttempt: {
+      task: 'indicator-queue',
+      status: 'success',
+      summary: '8/18 indicator queue completed before midnight',
+      duration_ms: 1_000,
+      run_date: '2026-08-18',
+      timestamp: '2026-08-18T15:59:57.399Z',
+    },
+    activeReplayLog: {
+      task: 'indicator-queue',
+      status: 'success',
+      summary: '8/18 indicator queue completed before midnight',
+      duration_ms: 1_000,
+      run_date: '2026-08-18',
+      timestamp: '2026-08-18T15:59:57.399Z',
+    },
+    activeReplayRunDate: '2026-08-18',
+    activeReplayClosureAt: '2026-08-18T22:37:44.643Z',
+    activeReplayIsRunning: false,
+    def: { id: 'indicator-queue', group: 'pipeline_chain', chainIndex: 5 },
+    nextRun: '8/19 21:00',
+    today: '2026-08-19',
+    nowMs: Date.parse('2026-08-18T22:40:00.000Z'),
+  })
+  assert(status.status === 'success', 'terminal root closure must restore same-date child receipts after midnight')
+  assert(status.statusScope === 'historical_replay', 'restored child receipt must retain historical replay scope')
+  assert(status.statusRunDate === '2026-08-18', 'restored child receipt must retain the root business date')
+}
+{
+  const status = resolveSchedulerDisplayStatus({
+    lastAttempt: {
       task: 'weekly-audit',
       status: 'success',
       summary: 'Friday weekly audit closed',

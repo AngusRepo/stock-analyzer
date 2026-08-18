@@ -592,6 +592,7 @@ export function resolveSchedulerDisplayStatus(input: {
   activeReplayLog?: CronLogEntry
   activeReplayRunDate?: string | null
   activeReplayHeartbeatAt?: string | null
+  activeReplayClosureAt?: string | null
   activeReplayIsRunning?: boolean
   def: Pick<JobDef, 'id' | 'group' | 'chainIndex'>
   nextRun: string
@@ -605,6 +606,7 @@ export function resolveSchedulerDisplayStatus(input: {
     activeReplayLog,
     activeReplayRunDate,
     activeReplayHeartbeatAt,
+    activeReplayClosureAt,
     activeReplayIsRunning = false,
     def,
     nextRun,
@@ -615,11 +617,12 @@ export function resolveSchedulerDisplayStatus(input: {
   const activeLogRunDate = String(activeReplayLog?.run_date ?? '').trim()
   const replayObservedToday = timestampTwDate(activeReplayLog?.timestamp) === today
   const rootHeartbeatObservedToday = def.id === 'evening-chain' && timestampTwDate(activeReplayHeartbeatAt ?? undefined) === today
+  const replayClosureObservedToday = timestampTwDate(activeReplayClosureAt ?? undefined) === today
   const hasActiveReplayLog = Boolean(
     activeRunDate
     && activeRunDate !== today
     && activeLogRunDate === activeRunDate
-    && (activeReplayIsRunning || replayObservedToday || rootHeartbeatObservedToday),
+    && (activeReplayIsRunning || replayObservedToday || rootHeartbeatObservedToday || replayClosureObservedToday),
   )
   const resolvedToday = resolveSchedulerLogStatus(todayLog, def, nowMs)
   if (resolvedToday.status && !hasActiveReplayLog) {
@@ -756,6 +759,9 @@ export async function getSchedulerStatus(env: Bindings, anchorDate?: string) {
         return latestMs == null || timestampMs > latestMs ? String(entry.timestamp) : latest
       }, undefined)
     : undefined
+  const replayClosureAt = chainStatusDate
+    ? (allLogs[chainStatusDate] ?? []).find((entry) => entry.task === 'evening-chain' && entry.status === 'success')?.timestamp
+    : undefined
 
   const jobs = await Promise.all(JOB_DEFS.map(async (def) => {
     const todayLog = getJobDisplayLog(allLogs[today], def)
@@ -787,6 +793,7 @@ export async function getSchedulerStatus(env: Bindings, anchorDate?: string) {
       activeReplayLog: chainReplayLog,
       activeReplayRunDate: chainStatusDate,
       activeReplayHeartbeatAt,
+      activeReplayClosureAt: replayClosureAt,
       activeReplayIsRunning: Boolean(activeChainDate && chainStatusDate === activeChainDate),
       def,
       cadenceCycleLog,

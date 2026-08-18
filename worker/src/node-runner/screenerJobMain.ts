@@ -44,7 +44,10 @@ function buildBindings(): Bindings {
   const env = process.env
   return {
     DB: RestD1Database.fromEnv(),
+    LEARNING_DB: RestD1Database.fromEnv('CF_D1_LEARNING_DB_ID'),
     OPS_DB: RestD1Database.fromEnv('CF_D1_OPS_DB_ID'),
+    MULTI_D1_ACTIVE_DOMAINS: env.MULTI_D1_ACTIVE_DOMAINS ?? 'learning',
+    MULTI_D1_STRICT: env.MULTI_D1_STRICT ?? 'true',
     KV: RestKVNamespace.fromEnv(),
     EVIDENCE_ARTIFACT_WRITER: RestEvidenceArtifactWriter.fromEnv(),
     UPDATE_QUEUE: createNoopQueue(),

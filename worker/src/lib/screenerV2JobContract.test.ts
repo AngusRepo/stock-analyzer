@@ -13,6 +13,7 @@ const multiStrategyPleRouter = fs.readFileSync('src/lib/multiStrategyPleRouter.t
 const adminControlRoutes = fs.readFileSync('src/routes/adminControlRoutes.ts', 'utf8')
 const screenerJobTrigger = fs.readFileSync('src/lib/screenerJobTrigger.ts', 'utf8')
 const index = fs.readFileSync('src/index.ts', 'utf8')
+const deploy = fs.readFileSync('../deploy_ml_controller.sh', 'utf8')
 
 assert(
   updateOrchestrator.includes('runMarketScreenerAsync') &&
@@ -67,6 +68,18 @@ assert(
     pipelineOrchestrator.includes('resolveMarketScreenerEvidenceMode') &&
     pipelineOrchestrator.includes('runBottomUpScreener(env, resolved.runDate, { evidenceMode: resolved.evidenceMode })'),
   'Cloud Run producer run id must be the exact screener funnel identity used by callback closure',
+)
+
+assert(
+  screenerJobMain.includes("LEARNING_DB: RestD1Database.fromEnv('CF_D1_LEARNING_DB_ID')") &&
+    screenerJobMain.includes("MULTI_D1_ACTIVE_DOMAINS: env.MULTI_D1_ACTIVE_DOMAINS ?? 'learning'") &&
+    screenerJobMain.includes("MULTI_D1_STRICT: env.MULTI_D1_STRICT ?? 'true'") &&
+    marketScreener.includes("databaseForDataDomain(env, 'learning')") &&
+    marketScreener.includes('persistSelectionEvidenceV4(learningDb') &&
+    deploy.includes('CF_D1_LEARNING_DB_ID=${CF_D1_LEARNING_DB_ID}') &&
+    deploy.includes('MULTI_D1_ACTIVE_DOMAINS=${MULTI_D1_ACTIVE_DOMAINS}') &&
+    deploy.includes('MULTI_D1_STRICT=${MULTI_D1_STRICT}'),
+  'Cloud Run screener must route selection evidence to strict Learning D1 after cutover',
 )
 
 assert(

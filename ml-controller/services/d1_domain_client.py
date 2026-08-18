@@ -33,6 +33,7 @@ _DOMAIN_ENV = {
 
 MULTI_D1_STRICT_ROUTING_READY = False
 EXECUTION_ROUTING_CONTRACT_VERSION = "execution-single-writer-epoch-v1"
+LEARNING_ROUTING_CONTRACT_VERSION = "learning-single-writer-epoch-v1"
 
 _SHADOW_READ_MUTATION = re.compile(
     r"\b(alter|attach|create|delete|detach|drop|insert|replace|truncate|update|vacuum)\b",
@@ -68,14 +69,27 @@ def _active_domains() -> set[D1DataDomain]:
 
 
 def _routing_closed_domains() -> frozenset[D1DataDomain]:
+    closed: set[D1DataDomain] = set()
     execution_contract = os.environ.get("MULTI_D1_EXECUTION_ROUTING_CONTRACT", "").strip()
     execution_receipt = os.environ.get("MULTI_D1_EXECUTION_CUTOVER_RECEIPT_ID", "").strip()
     if (
         execution_contract == EXECUTION_ROUTING_CONTRACT_VERSION
         and execution_receipt.startswith("data-domain-cutover-probe:execution:")
     ):
-        return frozenset({D1DataDomain.EXECUTION})
-    return frozenset()
+        closed.add(D1DataDomain.EXECUTION)
+
+    learning_contract = os.environ.get("MULTI_D1_LEARNING_ROUTING_CONTRACT", "").strip()
+    learning_receipt = os.environ.get("MULTI_D1_LEARNING_CUTOVER_RECEIPT_ID", "").strip()
+    learning_epoch = os.environ.get("MULTI_D1_LEARNING_WRITER_EPOCH", "").strip()
+    if (
+        learning_contract == LEARNING_ROUTING_CONTRACT_VERSION
+        and learning_receipt.startswith("data-domain-cutover-probe:learning:")
+        and learning_epoch.isdigit()
+        and int(learning_epoch) > 0
+    ):
+        closed.add(D1DataDomain.LEARNING)
+
+    return frozenset(closed)
 
 
 def database_id_for_domain(domain: D1DataDomain | str) -> str:

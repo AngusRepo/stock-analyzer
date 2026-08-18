@@ -78,7 +78,10 @@ assert(
     marketScreener.includes('persistSelectionEvidenceV4(learningDb') &&
     deploy.includes('CF_D1_LEARNING_DB_ID=${CF_D1_LEARNING_DB_ID}') &&
     deploy.includes('MULTI_D1_ACTIVE_DOMAINS=${MULTI_D1_ACTIVE_DOMAINS}') &&
-    deploy.includes('MULTI_D1_STRICT=${MULTI_D1_STRICT}'),
+    deploy.includes('MULTI_D1_STRICT=${MULTI_D1_STRICT}') &&
+    deploy.includes('MULTI_D1_LEARNING_ROUTING_CONTRACT=${MULTI_D1_LEARNING_ROUTING_CONTRACT}') &&
+    deploy.includes('MULTI_D1_LEARNING_CUTOVER_RECEIPT_ID=${MULTI_D1_LEARNING_CUTOVER_RECEIPT_ID}') &&
+    deploy.includes('MULTI_D1_LEARNING_WRITER_EPOCH=${MULTI_D1_LEARNING_WRITER_EPOCH}'),
   'Cloud Run screener must route selection evidence to strict Learning D1 after cutover',
 )
 

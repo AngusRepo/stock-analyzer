@@ -120,6 +120,40 @@ def test_execution_domain_stays_closed_without_bound_receipt(monkeypatch):
     else:
         raise AssertionError("execution routing must require an attested cutover receipt")
 
+def test_learning_domain_is_independently_closed_by_attested_epoch(monkeypatch):
+    monkeypatch.setattr(d1_domain_client, "MULTI_D1_STRICT_ROUTING_READY", False)
+    monkeypatch.setenv("CF_D1_DB_ID", "legacy")
+    monkeypatch.setenv("CF_D1_LEARNING_DB_ID", "learning-db")
+    monkeypatch.setenv("MULTI_D1_ACTIVE_DOMAINS", "learning")
+    monkeypatch.setenv("MULTI_D1_STRICT", "true")
+    monkeypatch.setenv("MULTI_D1_LEARNING_ROUTING_CONTRACT", "learning-single-writer-epoch-v1")
+    monkeypatch.setenv(
+        "MULTI_D1_LEARNING_CUTOVER_RECEIPT_ID",
+        "data-domain-cutover-probe:learning:test",
+    )
+    monkeypatch.setenv("MULTI_D1_LEARNING_WRITER_EPOCH", "260906")
+
+    assert d1_domain_client.database_id_for_domain("learning") == "learning-db"
+    assert d1_domain_client.database_id_for_domain("paper") == "legacy"
+
+
+def test_learning_domain_stays_closed_without_valid_receipt_and_epoch(monkeypatch):
+    monkeypatch.setattr(d1_domain_client, "MULTI_D1_STRICT_ROUTING_READY", False)
+    monkeypatch.setenv("CF_D1_DB_ID", "legacy")
+    monkeypatch.setenv("CF_D1_LEARNING_DB_ID", "learning-db")
+    monkeypatch.setenv("MULTI_D1_ACTIVE_DOMAINS", "learning")
+    monkeypatch.setenv("MULTI_D1_LEARNING_ROUTING_CONTRACT", "learning-single-writer-epoch-v1")
+    monkeypatch.setenv("MULTI_D1_LEARNING_CUTOVER_RECEIPT_ID", "unattested")
+    monkeypatch.setenv("MULTI_D1_LEARNING_WRITER_EPOCH", "260906")
+
+    try:
+        d1_domain_client.database_id_for_domain("learning")
+    except RuntimeError as exc:
+        assert str(exc) == "multi_d1_strict_routing_not_closed:learning"
+    else:
+        raise AssertionError("learning routing must require an attested cutover receipt and epoch")
+
+
 
 def test_invalid_active_domain_fails_closed(monkeypatch):
     monkeypatch.setenv("CF_D1_DB_ID", "legacy")

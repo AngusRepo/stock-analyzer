@@ -6,8 +6,10 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from services.dataset_snapshots import (  # noqa: E402
+    build_dataset_snapshot_manifest,
     latest_dataset_snapshot,
     resolve_snapshot_store_role,
+    upsert_dataset_snapshot_manifest,
     validate_dataset_snapshot_manifest,
 )
 
@@ -97,9 +99,10 @@ def test_manifest_validation_accepts_compute_gcs_report_r2_and_archive_gcs():
 def test_latest_dataset_snapshot_supports_as_of_business_date(monkeypatch):
     captured = {}
 
-    def fake_query(sql, params):
+    def fake_query(sql, params, timeout=60.0):
         captured["sql"] = sql
         captured["params"] = params
+        captured["timeout"] = timeout
         return [{
             "snapshot_id": "snap-2026-05-06",
             "kind": "backtest_dataset",
@@ -114,7 +117,14 @@ def test_latest_dataset_snapshot_supports_as_of_business_date(monkeypatch):
             "status": "ready",
         }]
 
-    monkeypatch.setattr("services.dataset_snapshots.d1_client.query", fake_query)
+    class FakeLearningClient:
+        query = staticmethod(fake_query)
+
+    def fake_client_for_domain(domain):
+        captured["domain"] = domain
+        return FakeLearningClient()
+
+    monkeypatch.setattr("services.dataset_snapshots.client_for_domain", fake_client_for_domain)
 
     row = latest_dataset_snapshot(
         kind="backtest_dataset",
@@ -125,6 +135,39 @@ def test_latest_dataset_snapshot_supports_as_of_business_date(monkeypatch):
     assert row["snapshot_id"] == "snap-2026-05-06"
     assert "business_date <= ?" in captured["sql"]
     assert captured["params"] == ["backtest_dataset", "compute", "2026-05-07"]
+    assert captured["domain"] == "learning"
+
+
+def test_upsert_dataset_snapshot_routes_to_learning_domain(monkeypatch):
+    captured = {}
+
+    class FakeLearningClient:
+        def execute(self, sql, params, timeout=60.0):
+            captured.update(sql=sql, params=params, timeout=timeout)
+            return {"success": True, "meta": {"changes": 1}, "results": []}
+
+    def fake_client_for_domain(domain):
+        captured["domain"] = domain
+        return FakeLearningClient()
+
+    monkeypatch.setattr("services.dataset_snapshots.client_for_domain", fake_client_for_domain)
+    manifest = build_dataset_snapshot_manifest(
+        snapshot_id="backtest_dataset:2026-08-18:test",
+        kind="backtest_dataset",
+        business_date="2026-08-18",
+        schema_version="backtest-dataset-parquet-v2",
+        row_count=10,
+        checksum="sha256:test",
+        access_tier="compute",
+        producer_run_id="test",
+        gcs_uri="gs://stockvision-models/test",
+    )
+
+    result = upsert_dataset_snapshot_manifest(manifest)
+
+    assert result["meta"]["changes"] == 1
+    assert captured["domain"] == "learning"
+    assert "INSERT OR REPLACE INTO dataset_snapshots" in captured["sql"]
 
 
 def test_latest_dataset_snapshot_rejects_conflicting_date_filters():

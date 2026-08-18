@@ -141,6 +141,7 @@ def test_replay_callers_share_loader_while_walk_forward_uses_immutable_prep():
 
 def test_dataset_snapshot_exporter_produces_gcs_manifest():
     source = (ROOT / "services" / "dataset_snapshot_exporter.py").read_text(encoding="utf-8")
+    registry_source = (ROOT / "services" / "dataset_snapshots.py").read_text(encoding="utf-8")
     main_source = (ROOT / "main.py").read_text(encoding="utf-8")
     route_source = (ROOT / "routers" / "dataset_snapshots.py").read_text(encoding="utf-8")
 
@@ -158,6 +159,10 @@ def test_dataset_snapshot_exporter_produces_gcs_manifest():
     assert '"shareholding": shareholding' in source
     assert "dataset_export_no_prices" in source
     assert "dataset_export_no_ensemble_signals" in source
+    assert 'query_client=client_for_domain("learning")' in source
+    assert 'query_client = client_for_domain("learning") if table == "predictions"' in source
+    assert 'client_for_domain("learning").query' in registry_source
+    assert 'client_for_domain("learning").execute' in registry_source
     assert "price-history-parquet-v1" in source
     assert 'supported = {"backtest_dataset", "price_history"}' in route_source
     assert "dataset_snapshots.router" in main_source

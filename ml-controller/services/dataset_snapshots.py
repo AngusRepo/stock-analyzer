@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any, Literal, TypedDict
 
-from services import d1_client
+from services.d1_domain_client import client_for_domain
 
 SnapshotPrimaryStore = Literal["d1", "gcs", "r2"]
 SnapshotAccessTier = Literal["serving", "compute", "report", "preview", "archive"]
@@ -149,7 +149,7 @@ def latest_dataset_snapshot(
         where.append("(market_segment = ? OR market_segment IS NULL)")
         params.append(market_segment)
 
-    rows = d1_client.query(
+    rows = client_for_domain("learning").query(
         f"""
         SELECT *
         FROM dataset_snapshots
@@ -171,7 +171,7 @@ def upsert_dataset_snapshot_manifest(manifest: dict[str, Any]) -> dict:
     if errors:
         raise ValueError(f"dataset_snapshot_manifest_invalid:{','.join(errors)}")
 
-    return d1_client.execute(
+    return client_for_domain("learning").execute(
         """
         INSERT OR REPLACE INTO dataset_snapshots (
           snapshot_id, kind, business_date, market_segment, schema_version,

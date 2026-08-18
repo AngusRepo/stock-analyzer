@@ -4321,13 +4321,19 @@ export async function finalizeStrategyLearningEvidenceV5(
   }
   const marginalEdge = await runStrategyLearningFinalizerStage(
     'marginal_edge',
-    () => refreshStrategyMarginalEdgeV4(db, date, { allowPromotion: options.allowPromotion === true }),
+    () => refreshStrategyMarginalEdgeV4(db, date, {
+      allowPromotion: options.allowPromotion === true,
+      canonicalRunIds,
+    }),
     options,
   )
   const { refreshStrategyRouteCalibration } = await import('./strategyRouteCalibration')
   const routeCalibration = await runStrategyLearningFinalizerStage(
     'route_calibration',
-    () => refreshStrategyRouteCalibration(db, date, { allowPromotion: options.allowPromotion === true }),
+    () => refreshStrategyRouteCalibration(db, date, {
+      allowPromotion: options.allowPromotion === true,
+      canonicalRunIds,
+    }),
     options,
   )
   const policy = options.persistPolicy === false

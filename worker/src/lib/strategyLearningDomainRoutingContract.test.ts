@@ -64,6 +64,8 @@ assert.match(learning, /reconcileSelectionDecisionEvidenceV4\(db, date, \{[\s\S]
 assert.match(selectionReference, /reconcileSelectionDecisionEvidenceV4\([\s\S]*options\.identityDb[\s\S]*canonicalProducerRunId[\s\S]*FROM selection_reference_snapshots_v1[\s\S]*options\.identityDb\.prepare[\s\S]*FROM daily_recommendations/)
 assert.match(learning, /FROM json_each\(\?\) h WHERE h\.key=m\.signal_date AND h\.value=m\.producer_run_id/)
 assert.match(learning, /refreshStrategyRewardLedger\(db, \{ endDate: date, dryRun: false, canonicalRunIds \}\)/)
+assert.match(learning, /refreshStrategyMarginalEdgeV4\(db, date, \{[\s\S]*canonicalRunIds/)
+assert.match(learning, /refreshStrategyRouteCalibration\(db, date, \{[\s\S]*canonicalRunIds/)
 assert.match(canonicalLabels, /FROM json_each\(\?\) h WHERE h\.key=r\.signal_date AND h\.value=r\.producer_run_id/)
 assert.match(canonicalLabels, /listCanonicalReferences\(db, options\.asOfDate, options\.startDate, options\.endDate, options\.canonicalRunIds\)/)
 assert.match(manualBlock, /loadCanonicalScreenerRunIds/)

@@ -45,6 +45,8 @@ assert.equal(evaluateStrategyRouteCalibration(noEdge).status, 'fail', 'non-infor
 
 const source = readFileSync(new URL('./strategyRouteCalibration.ts', import.meta.url), 'utf8')
 assert(source.includes('l.outcome_known_date <= ?'), 'calibration loader must enforce outcome-known PIT cutoff')
+assert(source.includes('canonicalRunIds?: Record<string, string>'), 'calibration loader must accept cross-D1 canonical authority')
+assert(source.includes('FROM json_each(?)'), 'calibration loader must use the canonical run-id map after Learning D1 cutover')
 assert(source.includes('const PURGE_DATES = 5'), 'calibration must purge overlapping five-session target windows')
 assert(source.includes('no_top_k: true'), 'artifact evidence must state that admission is threshold-based, not top-k')
 assert(source.includes("r.status='promoted'"), 'serving loader must only accept promoted artifacts')

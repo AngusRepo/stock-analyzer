@@ -258,23 +258,32 @@ export async function listAdaptiveMetaPolicyReplayRowsAcrossDomains(
   const predictions = predictionResult.results ?? []
   if (!predictions.length) return []
 
-  const dates = [...new Set(predictions
-    .map((row) => String(row.date ?? '').slice(0, 10))
-    .filter((date) => /^\d{4}-\d{2}-\d{2}$/.test(date)))].sort()
-  const recommendationSql = dates.length
-    ? `SELECT date, stock_id, market_segment, recommendation_lane, has_buy_signal,
-              ml_vote_summary, score_components, alpha_context, alpha_allocation
-         FROM daily_recommendations
-        WHERE date IN (${dates.map(() => '?').join(', ')})`
-    : `SELECT date, stock_id, market_segment, recommendation_lane, has_buy_signal,
-              ml_vote_summary, score_components, alpha_context, alpha_allocation
-         FROM daily_recommendations WHERE 1=0`
-  const [stockResult, recommendationResult] = await Promise.all([
-    coreDb.prepare('SELECT id AS stock_id, symbol FROM stocks').all<{ stock_id?: string; symbol?: string | null }>(),
-    coreDb.prepare(recommendationSql).bind(...dates).all<CoreReplayContextRow>(),
-  ])
+  const contextPairs = [...new Map(predictions
+    .map((row) => ({
+      date: String(row.date ?? '').slice(0, 10),
+      stockId: String(row.stock_id ?? ''),
+    }))
+    .filter((row) => /^\d{4}-\d{2}-\d{2}$/.test(row.date) && row.stockId)
+    .map((row) => [`${row.date}|${row.stockId}`, row] as const)).values()]
+  const stockPromise = coreDb.prepare('SELECT id AS stock_id, symbol FROM stocks')
+    .all<{ stock_id?: string; symbol?: string | null }>()
+  const recommendationRows: CoreReplayContextRow[] = []
+  const contextBatchSize = 40
+  for (let offset = 0; offset < contextPairs.length; offset += contextBatchSize) {
+    const batch = contextPairs.slice(offset, offset + contextBatchSize)
+    const clauses = batch.map(() => '(date=? AND stock_id=?)').join(' OR ')
+    const binds = batch.flatMap((row) => [row.date, row.stockId])
+    const result = await coreDb.prepare(`
+      SELECT date, stock_id, market_segment, recommendation_lane, has_buy_signal,
+             ml_vote_summary, score_components, alpha_context, alpha_allocation
+        FROM daily_recommendations
+       WHERE ${clauses}
+    `).bind(...binds).all<CoreReplayContextRow>()
+    recommendationRows.push(...(result.results ?? []))
+  }
+  const stockResult = await stockPromise
   const symbols = new Map((stockResult.results ?? []).map((row) => [String(row.stock_id ?? ''), row.symbol ?? null]))
-  const recommendations = new Map((recommendationResult.results ?? []).map((row) => [
+  const recommendations = new Map(recommendationRows.map((row) => [
     `${String(row.date ?? '').slice(0, 10)}|${String(row.stock_id ?? '')}`,
     row,
   ]))

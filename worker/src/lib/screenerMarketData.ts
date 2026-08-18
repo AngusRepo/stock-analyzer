@@ -366,6 +366,7 @@ async function loadCanonicalChipsFromD1(
 }
 
 const SCREENER_PRICE_DATE_PAGE_SIZE = 5
+const SCREENER_PRICE_PAGE_CONCURRENCY = 3
 const SCREENER_PRICE_PAGE_MAX_ATTEMPTS = 3
 
 function waitForPricePageRetry(delayMs: number): Promise<void> {
@@ -405,9 +406,15 @@ export async function loadScreenerPriceRowsPaged(
   tradingDates: string[],
 ): Promise<ScreenerPriceRow[]> {
   const rows: ScreenerPriceRow[] = []
+  const pages: string[][] = []
   for (let offset = 0; offset < tradingDates.length; offset += SCREENER_PRICE_DATE_PAGE_SIZE) {
-    const pageDates = tradingDates.slice(offset, offset + SCREENER_PRICE_DATE_PAGE_SIZE)
-    rows.push(...await loadScreenerPriceDatePage(db, pageDates[0], pageDates[pageDates.length - 1]))
+    pages.push(tradingDates.slice(offset, offset + SCREENER_PRICE_DATE_PAGE_SIZE))
+  }
+  for (let offset = 0; offset < pages.length; offset += SCREENER_PRICE_PAGE_CONCURRENCY) {
+    const batch = pages.slice(offset, offset + SCREENER_PRICE_PAGE_CONCURRENCY)
+    const batchRows = await Promise.all(batch.map((pageDates) =>
+      loadScreenerPriceDatePage(db, pageDates[0], pageDates[pageDates.length - 1])))
+    for (const pageRows of batchRows) rows.push(...pageRows)
   }
   return rows
 }

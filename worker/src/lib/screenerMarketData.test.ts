@@ -109,11 +109,17 @@ assert(staleMisclassifiedEmerging.laneCounts.stale_excluded === 1, 'stale symbol
 async function assertPagedPriceLoader(): Promise<void> {
   const calls: Array<[string, string]> = []
   let firstAttempt = true
+  let activeCalls = 0
+  let maxActiveCalls = 0
   const fakeDb = {
     prepare: () => ({
       bind: (minDate: string, maxDate: string) => ({
         all: async () => {
           calls.push([minDate, maxDate])
+          activeCalls += 1
+          maxActiveCalls = Math.max(maxActiveCalls, activeCalls)
+          await new Promise((resolve) => setTimeout(resolve, 5))
+          activeCalls -= 1
           if (firstAttempt) {
             firstAttempt = false
             throw new Error('HTTP 504')
@@ -139,8 +145,15 @@ async function assertPagedPriceLoader(): Promise<void> {
   const paged = await loadScreenerPriceRowsPaged(fakeDb, dates)
   assert(paged.length === 3, 'twelve trading dates must load through three bounded pages')
   assert(calls.length === 4, 'one transient page failure must retry without replaying completed pages')
-  assert(calls[0][0] === '2026-08-01' && calls[0][1] === '2026-08-05', 'first page must contain five dates')
-  assert(calls[3][0] === '2026-08-11' && calls[3][1] === '2026-08-12', 'last page must contain only remaining dates')
+  assert(maxActiveCalls === 3, 'price pages must use bounded concurrency of three')
+  const callCounts = new Map<string, number>()
+  for (const [minDate, maxDate] of calls) {
+    const key = `${minDate}|${maxDate}`
+    callCounts.set(key, (callCounts.get(key) ?? 0) + 1)
+  }
+  assert(callCounts.get('2026-08-01|2026-08-05') === 2, 'failed first page must retry exactly once')
+  assert(callCounts.get('2026-08-06|2026-08-10') === 1, 'completed middle page must not replay')
+  assert(callCounts.get('2026-08-11|2026-08-12') === 1, 'remaining dates must load once')
 }
 
 assertPagedPriceLoader().catch((error) => {

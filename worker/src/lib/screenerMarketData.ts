@@ -365,6 +365,52 @@ async function loadCanonicalChipsFromD1(
   return { chips, sourceSummary }
 }
 
+const SCREENER_PRICE_DATE_PAGE_SIZE = 5
+const SCREENER_PRICE_PAGE_MAX_ATTEMPTS = 3
+
+function waitForPricePageRetry(delayMs: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, delayMs))
+}
+
+async function loadScreenerPriceDatePage(
+  db: D1Database,
+  minDate: string,
+  maxDate: string,
+): Promise<ScreenerPriceRow[]> {
+  let lastError: unknown
+  for (let attempt = 1; attempt <= SCREENER_PRICE_PAGE_MAX_ATTEMPTS; attempt += 1) {
+    try {
+      const result = await db.prepare(
+        `SELECT s.symbol, s.market, sp.date,
+                sp.open, sp.high, sp.low, sp.close,
+                sp.volume, sp.avg_price
+           FROM stock_prices sp
+           JOIN stocks s ON sp.stock_id = s.id
+          WHERE sp.date >= ? AND sp.date <= ?
+          ORDER BY s.symbol, sp.date`,
+      ).bind(minDate, maxDate).all<ScreenerPriceRow>()
+      return result.results ?? []
+    } catch (error) {
+      lastError = error
+      if (attempt < SCREENER_PRICE_PAGE_MAX_ATTEMPTS) {
+        await waitForPricePageRetry(250 * (2 ** (attempt - 1)))
+      }
+    }
+  }
+  throw lastError
+}
+
+export async function loadScreenerPriceRowsPaged(
+  db: D1Database,
+  tradingDates: string[],
+): Promise<ScreenerPriceRow[]> {
+  const rows: ScreenerPriceRow[] = []
+  for (let offset = 0; offset < tradingDates.length; offset += SCREENER_PRICE_DATE_PAGE_SIZE) {
+    const pageDates = tradingDates.slice(offset, offset + SCREENER_PRICE_DATE_PAGE_SIZE)
+    rows.push(...await loadScreenerPriceDatePage(db, pageDates[0], pageDates[pageDates.length - 1]))
+  }
+  return rows
+}
 export async function loadMarketDataFromD1(
   env: Bindings,
   priceDays: number = 20,
@@ -401,20 +447,9 @@ export async function loadMarketDataFromD1(
       chipSourceSummary: {},
     }
   }
-  const minDate = tradingDates[0]
   const maxDate = tradingDates[tradingDates.length - 1]
 
-  const { results: priceRows } = await env.DB.prepare(
-    `SELECT s.symbol, s.market, sp.date,
-            sp.open, sp.high, sp.low, sp.close,
-            sp.volume, sp.avg_price
-     FROM stock_prices sp
-     JOIN stocks s ON sp.stock_id = s.id
-     WHERE sp.date >= ? AND sp.date <= ?
-     ORDER BY s.symbol, sp.date`,
-  ).bind(minDate, maxDate)
-   .all<ScreenerPriceRow>()
-
+  const priceRows = await loadScreenerPriceRowsPaged(env.DB, tradingDates)
   const { allPrices, tpexSymbols, laneCounts } = splitPriceRowsByBoard(priceRows ?? [], maxDate)
 
   const { results: chipDateRows } = await env.DB.prepare(

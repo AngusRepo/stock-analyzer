@@ -1,4 +1,8 @@
-import { splitPriceRowsByBoard, type ScreenerPriceRow } from './screenerMarketData'
+import {
+  loadScreenerPriceRowsPaged,
+  splitPriceRowsByBoard,
+  type ScreenerPriceRow,
+} from './screenerMarketData'
 
 function assert(condition: unknown, message: string): void {
   if (!condition) throw new Error(message)
@@ -101,3 +105,45 @@ const staleMisclassifiedEmerging = splitPriceRowsByBoard([
 assert(!staleMisclassifiedEmerging.allPrices.some((row) => row.stock_id === '3184'), 'stale 7/1 symbol must not enter the 8/5 L0 universe even when stocks.market says OTC')
 assert(staleMisclassifiedEmerging.allPrices.filter((row) => row.stock_id === '2330').length === 2, 'fresh symbols should retain their PIT history after the latest-date gate')
 assert(staleMisclassifiedEmerging.laneCounts.stale_excluded === 1, 'stale symbol exclusion must be explicit telemetry')
+
+async function assertPagedPriceLoader(): Promise<void> {
+  const calls: Array<[string, string]> = []
+  let firstAttempt = true
+  const fakeDb = {
+    prepare: () => ({
+      bind: (minDate: string, maxDate: string) => ({
+        all: async () => {
+          calls.push([minDate, maxDate])
+          if (firstAttempt) {
+            firstAttempt = false
+            throw new Error('HTTP 504')
+          }
+          return {
+            results: [{
+              symbol: `TEST-${minDate}`,
+              market: 'TWSE',
+              date: maxDate,
+              open: 1,
+              high: 1,
+              low: 1,
+              close: 1,
+              volume: 1,
+              avg_price: 1,
+            }],
+          }
+        },
+      }),
+    }),
+  } as unknown as D1Database
+  const dates = Array.from({ length: 12 }, (_, index) => `2026-08-${String(index + 1).padStart(2, '0')}`)
+  const paged = await loadScreenerPriceRowsPaged(fakeDb, dates)
+  assert(paged.length === 3, 'twelve trading dates must load through three bounded pages')
+  assert(calls.length === 4, 'one transient page failure must retry without replaying completed pages')
+  assert(calls[0][0] === '2026-08-01' && calls[0][1] === '2026-08-05', 'first page must contain five dates')
+  assert(calls[3][0] === '2026-08-11' && calls[3][1] === '2026-08-12', 'last page must contain only remaining dates')
+}
+
+assertPagedPriceLoader().catch((error) => {
+  console.error(error)
+  process.exitCode = 1
+})

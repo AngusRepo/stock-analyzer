@@ -3337,17 +3337,18 @@ export async function runBottomUpScreener(env: Bindings, runDate?: string | null
   try {
     const buzzKeywords = await loadBuzzKeywords(env.DB, env.KV).catch(() => undefined)
 
-    const [marketData, stockTechnicalMarketData, pttBuzz, newsBuzz, anueBuzz, runtimeThemeSignals] = await Promise.all([
-      loadMarketDataFromD1(env, 70, 5, endDate),
-      loadMarketDataFromD1(env, STOCK_TECHNICAL_HISTORY_PRICE_DAYS, 0, endDate)
-        .catch(() => ({ allPrices: [] as CanonicalScreenerPrice[] })),
+    const [marketData, pttBuzz, newsBuzz, anueBuzz, runtimeThemeSignals] = await Promise.all([
+      loadMarketDataFromD1(env, STOCK_TECHNICAL_HISTORY_PRICE_DAYS, 5, endDate),
       detectPttBuzz(buzzKeywords).catch(() => [] as BuzzResult),
       detectNewsBuzz(env.DB, buzzKeywords).catch(() => [] as BuzzResult),
       detectAnueBuzz(buzzKeywords).catch(() => [] as BuzzResult),
       loadRuntimeThemeSignals(env.DB, endDate).catch(() => []),
     ])
-    allPrices = marketData.allPrices
-    stockTechnicalLongPrices = stockTechnicalMarketData.allPrices ?? []
+    stockTechnicalLongPrices = marketData.allPrices
+    const primaryDates = new Set([...new Set(stockTechnicalLongPrices.map((row) => row.date))]
+      .sort()
+      .slice(-70))
+    allPrices = stockTechnicalLongPrices.filter((row) => primaryDates.has(row.date))
     emergingResearchPrices = marketData.emergingResearchPrices
     allChips = marketData.allChips
     tpexSymbolSet = marketData.tpexSymbols

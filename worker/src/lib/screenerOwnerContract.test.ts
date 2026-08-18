@@ -43,12 +43,17 @@ const dailyPipeline = fs.readFileSync('../ml-controller/graphs/daily_pipeline_v2
   assert(marketScreener.includes("from './screenerMarketData'"), 'marketScreener should import the market data loader module')
   assert(!marketScreener.includes('async function loadMarketDataFromD1'), 'marketScreener should not own D1 market data loading')
   assert(marketScreener.includes('resolveScreenerRunDate'), 'screener must resolve an explicit rerun date instead of always using today')
-  assert(marketScreener.includes('runBottomUpScreener(env: Bindings, runDate?: string | null)'), 'screener public contract must accept a backfill date')
+  assert(marketScreener.includes('runBottomUpScreener(env: Bindings, runDate?: string | null, options:'), 'screener public contract must accept a backfill date')
   assert(marketScreener.includes('canonicalRegimeState.run_date !== endDate'), 'screener must fail closed unless regime state matches the signal date')
   assert(marketScreener.includes("canonicalRegimeState.source !== 'hmm'"), 'screener must reject legacy regime fallback for production/backfill admission')
   assert(marketScreener.includes('getAdaptiveParamsForRegime(env.KV, canonicalRegimeState.family)'), 'adaptive overlay must resolve from the verified PIT regime owner')
   assert(screenerMarketData.includes('asOfDate?: string'), 'screener D1 loader must support as-of-date backfills')
   assert(screenerMarketData.includes('WHERE date <= ?'), 'screener D1 loader must cap price/chip data by requested date')
+  assert(
+    screenerMarketData.includes('SCREENER_PRICE_DATE_PAGE_SIZE = 5') &&
+      screenerMarketData.includes('loadScreenerPriceRowsPaged(env.DB, tradingDates)'),
+    'full-market price history must use bounded D1 pages instead of one timeout-prone response',
+  )
   assert(
     marketScreener.includes('const bestOrderBlockStrength = priceAction ? bestOrderBlock?.strength ?? 0 : null'),
     'SMRC must distinguish an evaluable no-order-block observation (zero) from unavailable price action (null)',
@@ -59,7 +64,7 @@ const dailyPipeline = fs.readFileSync('../ml-controller/graphs/daily_pipeline_v2
   assert(marketScreener.includes("label_schema_version = 'canonical-strategy-selection-label-v4'"), 'OOF redundancy evidence must use canonical selection labels')
   assert(marketScreener.includes('mature_oof_residual_returns_with_same_day_overlap_diagnostic'), 'same-day strategy overlap must remain diagnostic-only')
   assert(marketScreener.includes('strategy_oof_return_load_error'), 'OOF loader failure must be explicit telemetry, not an empty silent fallback')
-  assert(marketScreener.includes('promoted_marginal_edge_load_error'), 'marginal-edge weight loader failure must remain visible')
+  assert(marketScreener.includes('strategy_production_policy_load_error'), 'formal production-policy weight loader failure must remain visible')
   assert(marketScreener.includes('promoted_route_calibration_load_error'), 'route calibration loader failure must remain visible')
   assert(marketScreener.includes("domain: 'strategy_redundancy_oof'"), 'full OOF redundancy evidence must be archived through the R2 artifact lifecycle')
   assert(marketScreener.includes('r2_artifact_id: evidenceManifest.artifact_id'), 'D1 redundancy rows must retain a compact R2 pointer')

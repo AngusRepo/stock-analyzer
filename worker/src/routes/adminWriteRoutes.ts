@@ -880,7 +880,12 @@ adminWriteRoutes.post('/api/admin/strategy/marginal-edge-v4/refresh', async (c) 
   }
 
   const { refreshStrategyMarginalEdgeV4 } = await import('../lib/strategyMarginalEdgeV4')
-  const report = await refreshStrategyMarginalEdgeV4(databaseForDataDomain(c.env, 'learning'), asOfDate, { allowPromotion: false })
+  const { loadCanonicalScreenerRunIds } = await import('../lib/historicalScreenerArtifactEvidence')
+  const canonicalRunIds = await loadCanonicalScreenerRunIds(c.env, asOfDate)
+  const report = await refreshStrategyMarginalEdgeV4(databaseForDataDomain(c.env, 'learning'), asOfDate, {
+    allowPromotion: false,
+    canonicalRunIds,
+  })
   return c.json({
     success: true,
     mode: 'persisted_shadow',

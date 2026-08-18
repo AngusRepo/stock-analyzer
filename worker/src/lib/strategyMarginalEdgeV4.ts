@@ -1081,9 +1081,7 @@ export async function refreshStrategyMarginalEdgeV4(
   const asOfMs = Date.parse(`${asOfDate}T00:00:00Z`)
   if (!Number.isFinite(asOfMs)) throw new Error(`invalid_strategy_edge_as_of_date:${asOfDate}`)
   const startDate = new Date(asOfMs - EDGE_LOOKBACK_CALENDAR_DAYS * 86_400_000).toISOString().slice(0, 10)
-  const canonicalOwnerClause = options.canonicalRunIds
-    ? "EXISTS (SELECT 1 FROM json_each(?) h WHERE h.key=m.signal_date AND h.value=m.producer_run_id)"
-    : "EXISTS (SELECT 1 FROM canonical_run_heads h WHERE h.logical_run_key='screener:' || m.signal_date || ':TW:production:market_screener' AND h.run_id=m.producer_run_id)"
+  const canonicalOwnerClause = "EXISTS (SELECT 1 FROM json_each(?) h WHERE h.key=m.signal_date AND h.value=m.producer_run_id)"
   const cells: OutcomeCell[] = []
   let cursorDate = ''
   let cursorSymbol = ''
@@ -1131,7 +1129,7 @@ export async function refreshStrategyMarginalEdgeV4(
       STRATEGY_FORMAL_LABELER_VERSION,
       STRATEGY_FORMAL_RECONSTRUCTION_LABELER_VERSION,
       startDate, asOfDate, asOfDate,
-      ...(options.canonicalRunIds ? [JSON.stringify(options.canonicalRunIds)] : []),
+      JSON.stringify(options.canonicalRunIds ?? {}),
       cursorDate,
       cursorDate, cursorSymbol,
       cursorDate, cursorSymbol, cursorStrategyId,

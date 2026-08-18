@@ -243,9 +243,7 @@ export async function inspectStrategyRouteCurrentCoverage(
   asOfDate: string,
   canonicalRunIds?: Record<string, string>,
 ): Promise<StrategyRouteCurrentCoverage> {
-  const canonicalOwnerClause = canonicalRunIds
-    ? 'EXISTS (SELECT 1 FROM json_each(?) h WHERE h.key=r.signal_date AND h.value=r.producer_run_id)'
-    : `EXISTS (SELECT 1 FROM canonical_run_heads h WHERE h.logical_run_key='screener:' || r.signal_date || ':TW:production:market_screener' AND h.run_id=r.producer_run_id)`
+  const canonicalOwnerClause = 'EXISTS (SELECT 1 FROM json_each(?) h WHERE h.key=r.signal_date AND h.value=r.producer_run_id)'
   const row = await db.prepare(`
     SELECT COUNT(*) reference_rows,
            SUM(CASE WHEN r.strategy_challenger_affinity_version=? THEN 1 ELSE 0 END) threshold_affinity_rows,
@@ -259,7 +257,7 @@ export async function inspectStrategyRouteCurrentCoverage(
     STRATEGY_ROUTE_CHALLENGER_VERSION,
     STRATEGY_ROUTE_CHALLENGER_VERSION,
     asOfDate,
-    ...(canonicalRunIds ? [JSON.stringify(canonicalRunIds)] : []),
+    JSON.stringify(canonicalRunIds ?? {}),
   ).first<{
     reference_rows?: number | string
     threshold_affinity_rows?: number | string
@@ -286,9 +284,7 @@ export async function refreshStrategyRouteCalibration(
   if (!Number.isFinite(endMs)) throw new Error('invalid_strategy_route_calibration_date:' + asOfDate)
   const startDate = new Date(endMs - LOOKBACK_CALENDAR_DAYS * 86_400_000).toISOString().slice(0, 10)
   const rows: StrategyRouteObservation[] = []
-  const canonicalOwnerClause = options.canonicalRunIds
-    ? 'EXISTS (SELECT 1 FROM json_each(?) h WHERE h.key=r.signal_date AND h.value=r.producer_run_id)'
-    : `EXISTS (SELECT 1 FROM canonical_run_heads h WHERE h.logical_run_key='screener:' || r.signal_date || ':TW:production:market_screener' AND h.run_id=r.producer_run_id)`
+  const canonicalOwnerClause = 'EXISTS (SELECT 1 FROM json_each(?) h WHERE h.key=r.signal_date AND h.value=r.producer_run_id)'
   let cursorDate = ''
   let cursorSymbol = ''
   for (;;) {
@@ -309,7 +305,7 @@ export async function refreshStrategyRouteCalibration(
        LIMIT ?
     `).bind(
       startDate, asOfDate, STRATEGY_ROUTE_CHALLENGER_VERSION, asOfDate,
-      ...(options.canonicalRunIds ? [JSON.stringify(options.canonicalRunIds)] : []),
+      JSON.stringify(options.canonicalRunIds ?? {}),
       cursorDate, cursorDate, cursorSymbol, PAGE_SIZE,
     ).all<StrategyRouteObservation>()
     const pageRows = page.results ?? []

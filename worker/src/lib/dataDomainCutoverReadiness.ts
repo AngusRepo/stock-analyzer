@@ -276,10 +276,11 @@ export async function inspectDataDomainCutoverReadiness(
     if (probe?.status !== 'passed' || numeric(probe?.rollback_restore_passed) !== 1) {
       contractBlockers.push('rollback_restore_probe_missing')
     }
+    const requiredWriterState = cutoverStatus === 'complete' ? 'cutover' : 'open'
     if (
       !probe
       || !writerEpoch
-      || writerEpoch.writer_state !== 'open'
+      || writerEpoch.writer_state !== requiredWriterState
       || probeEpoch !== currentWriterEpoch
       || probe.parity_checked_at !== cutover?.parity_checked_at
     ) contractBlockers.push('writer_quiescence_epoch_receipt_stale_or_missing')

@@ -2,6 +2,11 @@ import { Hono } from 'hono'
 import { twToday } from '../lib/dateUtils'
 import { requireAdminJWT, requireAdminOrServiceToken, requireServiceToken } from '../lib/auth'
 import { databaseForDataDomain } from '../lib/dataDomainRegistry'
+import {
+  completeLearningDataDomainCutover,
+  inspectLearningDataDomainCompletion,
+  LEARNING_CUTOVER_CONFIRMATION,
+} from '../lib/dataDomainCutoverCompletion'
 import { runDailyUpdate } from '../lib/updateOrchestrator'
 import type { Bindings, Variables } from '../types'
 import {
@@ -10,6 +15,71 @@ import {
 } from '../lib/strategySpec'
 
 export const adminWriteRoutes = new Hono<{ Bindings: Bindings; Variables: Variables }>()
+
+adminWriteRoutes.post('/api/admin/data-domains/learning/cutover/complete', async (c) => {
+  const authError = await requireAdminOrServiceToken(c)
+  if (authError) return authError
+
+  type Body = { dry_run?: boolean }
+  const body: Body = await c.req.json<Body>().catch(() => ({}))
+  const dryRun = body.dry_run !== false
+  const preflight = await inspectLearningDataDomainCompletion(c.env)
+
+  if (dryRun) {
+    const payload = {
+      ok: preflight.ready,
+      dry_run: true,
+      confirmation_header: 'X-Confirm-Data-Domain-Cutover',
+      confirmation_value: LEARNING_CUTOVER_CONFIRMATION,
+      preflight,
+      note: 'Control-ledger transition only; strict runtime routing and the legacy writer fence remain enforced.',
+    }
+    return preflight.ready ? c.json(payload) : c.json(payload, 409)
+  }
+
+  if (c.req.header('X-Confirm-Data-Domain-Cutover') !== LEARNING_CUTOVER_CONFIRMATION) {
+    return c.json({
+      ok: false,
+      error: 'explicit_data_domain_cutover_confirmation_required',
+      required_header: 'X-Confirm-Data-Domain-Cutover',
+      required_value: LEARNING_CUTOVER_CONFIRMATION,
+    }, 400)
+  }
+  if (!preflight.ready) {
+    return c.json({ ok: false, error: 'learning_data_domain_completion_blocked', preflight }, 409)
+  }
+
+  try {
+    const transition = await completeLearningDataDomainCutover(c.env)
+    const readback = await inspectLearningDataDomainCompletion(c.env)
+    const domain = readback.domain
+    if (
+      !readback.ready
+      || domain?.cutover_status !== 'complete'
+      || domain.current_writer_state !== 'cutover'
+    ) {
+      return c.json({
+        ok: false,
+        error: 'learning_data_domain_completion_readback_failed',
+        transition,
+        readback,
+      }, 500)
+    }
+    return c.json({
+      ok: true,
+      dry_run: false,
+      transition,
+      readback,
+      note: 'Learning is formally complete; legacy Learning writes are fenced and Time Travel remains the rollback source.',
+    })
+  } catch (error) {
+    return c.json({
+      ok: false,
+      error: error instanceof Error ? error.message : String(error),
+      preflight,
+    }, 409)
+  }
+})
 
 adminWriteRoutes.post('/api/admin/update', async (c) => {
   const authError = await requireAdminJWT(c)

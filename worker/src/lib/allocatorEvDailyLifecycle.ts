@@ -382,7 +382,7 @@ export async function recordAllocatorEvLifecycle(
            ))
       )`
     : '1=1'
-  const authorityBindings = authority
+  const authorityBindings = authority && !splitAuthorityDb
     ? [
         authority.businessDate ?? input.businessDate,
         authority.stage,

@@ -13,6 +13,7 @@ const writer = lifecycle.slice(
 assert.match(writer, /authorityDb: D1Database = db/)
 assert.match(writer, /if \(splitAuthorityDb && !\(await hasAuthority\(\)\)\) return false/)
 assert.match(writer, /return splitAuthorityDb \? await hasAuthority\(\) : true/)
+assert.match(writer, /const authorityBindings = authority && !splitAuthorityDb/)
 assert.match(writer, /FROM pipeline_stage_runs authority/)
 
 const authorityCalls = chain.match(/recordAllocatorEvLifecycle\([\s\S]*?stageAuthority:[\s\S]*?\},\s*databaseForDataDomain\(env, 'ops'\)\)/g) ?? []

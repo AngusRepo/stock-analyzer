@@ -890,12 +890,16 @@ adminWriteRoutes.post('/api/admin/strategy/production-policy/recover', async (c)
   const authError = await requireAdminOrServiceToken(c)
   if (authError) return authError
 
-  type Body = { date?: string; dry_run?: boolean }
+  type Body = { date?: string; closure_date?: string; dry_run?: boolean }
   const body = await c.req.json<Body>().catch(() => ({} as Body))
   const date = body.date ?? c.req.query('date') ?? twToday()
+  const requestedClosureDate = body.closure_date ?? c.req.query('closure_date')
   const dryRun = body.dry_run !== false
   if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) {
     return c.json({ error: 'date must be YYYY-MM-DD' }, 400)
+  }
+  if (requestedClosureDate != null && !/^\d{4}-\d{2}-\d{2}$/.test(requestedClosureDate)) {
+    return c.json({ error: 'closure_date must be YYYY-MM-DD' }, 400)
   }
   if (!dryRun && c.req.header('X-Confirm-Strategy-Production-Policy') !== 'true') {
     return c.json({
@@ -904,11 +908,15 @@ adminWriteRoutes.post('/api/admin/strategy/production-policy/recover', async (c)
     }, 400)
   }
 
-  const closure = await databaseForDataDomain(c.env, 'learning').prepare(`
-    SELECT status, labeler_version, evaluation_contract_version, candidate_count, strategy_count, matrix_rows
+  const learningDb = databaseForDataDomain(c.env, 'learning')
+  const closure = await learningDb.prepare(`
+    SELECT signal_date, status, labeler_version, evaluation_contract_version, candidate_count, strategy_count, matrix_rows
       FROM strategy_evidence_rebuild_runs_v5
-     WHERE signal_date=?
+     WHERE signal_date<=? AND status='success'
+     ORDER BY signal_date DESC
+     LIMIT 1
   `).bind(date).first<{
+    signal_date?: string
     status?: string
     labeler_version?: string
     evaluation_contract_version?: string
@@ -916,6 +924,7 @@ adminWriteRoutes.post('/api/admin/strategy/production-policy/recover', async (c)
     strategy_count?: number | string
     matrix_rows?: number | string
   }>()
+  const closureDate = String(closure?.signal_date ?? '')
   if (
     closure?.status !== 'success'
     || closure.labeler_version !== 'strategy-decision-log-pit-reconstruction-v7-revenue-pit-fuse-v1'
@@ -926,12 +935,15 @@ adminWriteRoutes.post('/api/admin/strategy/production-policy/recover', async (c)
   ) {
     return c.json({ error: `formal_strategy_evidence_closure_required:${date}`, closure }, 409)
   }
+  if (requestedClosureDate != null && requestedClosureDate !== closureDate) {
+    return c.json({ error: `latest_formal_strategy_evidence_closure_mismatch:${requestedClosureDate}:${closureDate}`, closure }, 409)
+  }
 
-  const [{ refreshStrategyAdaptivePolicyState, listStrategySpecsForLearning }, { refreshStrategyProductionContributionPolicy }] = await Promise.all([
+  const [{ refreshStrategyAdaptivePolicyState, listStrategySpecsForLearning }, { refreshStrategyProductionContributionPolicy }, { loadStrategyEvidenceOwnerSnapshotBefore }] = await Promise.all([
     import('../lib/strategyLearning'),
     import('../lib/strategyProductionPolicyService'),
+    import('../lib/strategyEvidenceOwnerFusion'),
   ])
-  const learningDb = databaseForDataDomain(c.env, 'learning')
   const [policy, specsResult] = await Promise.all([
     refreshStrategyAdaptivePolicyState(learningDb, { date, dryRun: true }),
     listStrategySpecsForLearning(learningDb, { applyAdaptivePolicy: false }),
@@ -940,15 +952,24 @@ adminWriteRoutes.post('/api/admin/strategy/production-policy/recover', async (c)
     .filter((gate) => gate.allocation_eligible === true)
     .map((gate) => gate.strategy_id)
     .sort()
+  const evidenceOwnerSnapshot = await loadStrategyEvidenceOwnerSnapshotBefore(learningDb, specsResult.specs, date)
   if (dryRun) {
     return c.json({
       success: true,
       mode: 'dry_run',
       date,
+      closure_date: closureDate,
       eligible_strategy_ids: eligibleStrategyIds,
       closure,
+      evidence_owner_snapshot: evidenceOwnerSnapshot,
       note: 'No production policy row was written.',
     })
+  }
+  if (!evidenceOwnerSnapshot.integration_ready) {
+    return c.json({
+      error: `strategy_evidence_owner_integration_not_ready:${evidenceOwnerSnapshot.active_materialized_profile_count}/${evidenceOwnerSnapshot.active_profile_count}`,
+      evidence_owner_snapshot: evidenceOwnerSnapshot,
+    }, 409)
   }
 
   const recovered = await refreshStrategyProductionContributionPolicy(learningDb, {
@@ -961,10 +982,12 @@ adminWriteRoutes.post('/api/admin/strategy/production-policy/recover', async (c)
     success: true,
     mode: 'persisted',
     date,
+    closure_date: closureDate,
     eligible_strategy_ids: eligibleStrategyIds,
     policy_id: recovered.state.policy_id,
     policy_version: recovered.state.version,
     checksum: recovered.checksum,
+    evidence_owner_checksum: recovered.evidenceFusion.checksum,
     inserted: recovered.inserted,
     note: 'One immutable production firewall row persisted; no strategy promotion or order submission occurred.',
   })

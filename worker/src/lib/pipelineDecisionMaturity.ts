@@ -53,6 +53,7 @@ export interface PipelineMaturityMetric {
   note?: string
   availability?: 'available' | 'pending' | 'not_applicable' | 'missing' | 'blocked'
   reason_code?: string | null
+  scope?: 'promotion_gate' | 'lifecycle' | 'monitoring' | 'diagnostic' | 'production'
 }
 
 export interface PipelineMaturityBlockerGroup {
@@ -210,6 +211,12 @@ type QueryResult<T> = { value: T | null; error: string | null }
 
 type CanonicalHead = { signal_date: string; run_id: string }
 
+type SectorPitReadiness = {
+  first_signal_date: string | null
+  latest_signal_date: string | null
+  signal_dates: number | null
+}
+
 function validDate(value: string): boolean {
   return /^\d{4}-\d{2}-\d{2}$/.test(value)
 }
@@ -293,7 +300,7 @@ function gateMetric(
   target: number,
   unit: PipelineMaturityMetric['unit'],
   comparator: 'gte' | 'gt' = 'gte',
-  options: Pick<PipelineMaturityMetric, 'availability' | 'reason_code'> = {},
+  options: Pick<PipelineMaturityMetric, 'availability' | 'reason_code' | 'scope' | 'note'> = {},
 ): PipelineMaturityMetric {
   const current = optionalFinite(value)
   return metric(key, label, current, {
@@ -387,6 +394,7 @@ export async function buildPipelineDecisionMaturityPacket(
 ): Promise<PipelineDecisionMaturityPacket> {
   if (!validDate(requestedDate)) throw new Error(`invalid_pipeline_maturity_date:${requestedDate}`)
   const learningDb = databaseForDataDomain(env, 'learning')
+  const marketDb = databaseForDataDomain(env, 'market')
 
   const canonicalHead = await safeQuery(() => databaseForDataDomain(env, 'ops').prepare(`
     SELECT substr(logical_run_key, 10, 10) signal_date, run_id
@@ -398,7 +406,7 @@ export async function buildPipelineDecisionMaturityPacket(
   `).bind(requestedDate).first<CanonicalHead>())
   const head = canonicalHead.value
 
-  const [reference, matrix, redundancy, routeRun, routeHead, evRows, evShadowRows, serving, l4Maturity] = await Promise.all([
+  const [reference, matrix, redundancy, routeRun, routeHead, evRows, evShadowRows, serving, l4Maturity, sectorPit] = await Promise.all([
     safeQuery(() => head ? learningDb.prepare(`
       SELECT COUNT(*) reference_rows,
              SUM(CASE WHEN strategy_challenger_affinity_version=? THEN 1 ELSE 0 END) affinity_v2_rows,
@@ -551,6 +559,30 @@ export async function buildPipelineDecisionMaturityPacket(
     `).bind(requestedDate).all<ExpectedReturnShadowDbRow>().then((result) => result.results ?? [])),
     safeQuery(() => readCurrentExpectedReturnServingState({ ...env, DB: learningDb }, requestedDate)),
     safeQuery(() => inspectAllocatorEvMaturityCoverage(learningDb, requestedDate)),
+    safeQuery(() => marketDb.prepare(`
+      WITH sessions AS (
+        SELECT date, LAG(date) OVER (ORDER BY date) previous_session
+          FROM market_risk
+         WHERE twii_close IS NOT NULL AND date <= ?
+      ), sector_sources AS (
+        SELECT date, COUNT(DISTINCT classification) layer_count,
+               MAX(COALESCE(updated_at, created_at)) source_available_at
+          FROM sector_flow
+         WHERE pit_lineage_version='sector-flow-pit-v1'
+         GROUP BY date
+      ), ready_signals AS (
+        SELECT sessions.date signal_date
+          FROM sessions
+          JOIN sector_sources ON sector_sources.date=sessions.previous_session
+         WHERE sector_sources.layer_count=4
+           AND datetime(sector_sources.source_available_at)
+               <= datetime(sessions.date || 'T13:30:00+08:00')
+      )
+      SELECT MIN(signal_date) first_signal_date,
+             MAX(signal_date) latest_signal_date,
+             COUNT(*) signal_dates
+        FROM ready_signals
+    `).bind(requestedDate).first<SectorPitReadiness>()),
   ])
 
   const stages: PipelineMaturityStage[] = []
@@ -808,6 +840,7 @@ export async function buildPipelineDecisionMaturityPacket(
   const servingState = serving.value
   const runtimeGuard = servingState?.runtime_forward_guard
   const maturity = l4Maturity.value
+  const sectorReadiness = sectorPit.value
   const shadowRows = evShadowRows.value ?? []
   const shadowModels = new Set(shadowRows.map((row) => row.model_name))
   const shadowPairComplete = shadowRows.length === 2
@@ -882,26 +915,27 @@ export async function buildPipelineDecisionMaturityPacket(
       blockers: offlineBlockers,
       blocker_groups: blockerGroups,
       metrics: [
-        gateMetric('samples', 'Usable OOF samples', sampleCount, minSamples, 'rows', 'gte', candidateMetricScope),
-        gateMetric('dates', 'Usable OOF dates', dateCount, minDates, 'dates', 'gte', candidateMetricScope),
-        gateMetric('sector_samples', 'Offline candidate PIT sector-alpha samples', l4?.sector_samples, Math.max(1, finite(l4?.min_sector_samples, 300)), 'rows', 'gte', candidateMetricScope),
-        gateMetric('sector_dates', 'Offline candidate PIT sector-alpha dates', l4?.sector_dates, Math.max(1, finite(l4?.min_sector_dates, 8)), 'dates', 'gte', candidateMetricScope),
-        gateMetric('corr_lcb90', 'Offline candidate corr LCB90', l4?.l4_corr_lcb90, 0, 'ratio', 'gt', candidateMetricScope),
-        gateMetric('spread_lcb90', 'Offline candidate spread LCB90', l4?.l4_spread_lcb90, 0, 'return', 'gt', candidateMetricScope),
-        gateMetric('top_return', 'Offline candidate top-quintile mean', l4?.l4_top_return, 0, 'return', 'gt', candidateMetricScope),
-        gateMetric('top_lcb90', 'Offline candidate top-quintile LCB90', l4?.l4_top_lcb90, 0, 'return', 'gt', candidateMetricScope),
-        metric('walk_forward', 'Offline candidate walk-forward', l4?.walk_forward_passed, { target: true, comparator: 'eq', unit: 'status', passed: l4?.walk_forward_passed == null ? null : l4.walk_forward_passed, ...candidateMetricScope }),
-        metric('strict_pit_rows', 'Materialized strict L4 PIT', maturity?.strictL4PitRows ?? null, { unit: 'rows' }),
-        metric('strict_pit_dates', 'Materialized strict L4 PIT dates', maturity?.strictL4PitDates ?? null, { unit: 'dates' }),
-        gateMetric('shadow_sector_samples', 'Latest shadow PIT sector-alpha samples', l4Shadow?.sector_samples, Math.max(1, finite(l4?.min_sector_samples, 300)), 'rows', 'gte', shadowMetricScope),
-        gateMetric('shadow_sector_dates', 'Latest shadow PIT sector-alpha dates', l4Shadow?.sector_dates, Math.max(1, finite(l4?.min_sector_dates, 8)), 'dates', 'gte', shadowMetricScope),
-        gateMetric('shadow_corr_lcb90', 'Latest shadow corr LCB90', l4Shadow?.l4_corr_lcb90, 0, 'ratio', 'gt', shadowMetricScope),
-        gateMetric('shadow_spread_lcb90', 'Latest shadow spread LCB90', l4Shadow?.l4_spread_lcb90, 0, 'return', 'gt', shadowMetricScope),
-        gateMetric('shadow_top_return', 'Latest shadow top-quintile mean', l4Shadow?.l4_top_return, 0, 'return', 'gt', shadowMetricScope),
-        gateMetric('shadow_top_lcb90', 'Latest shadow top-quintile LCB90', l4Shadow?.l4_top_lcb90, 0, 'return', 'gt', shadowMetricScope),
-        metric('shadow_walk_forward', 'Latest shadow walk-forward', l4Shadow?.walk_forward_passed, { target: true, comparator: 'eq', unit: 'status', passed: l4Shadow?.walk_forward_passed ?? null, ...shadowMetricScope }),
-        metric('frozen_forward_quality', 'Active-8 cohort causal shadow quality', l4Shadow?.quality_decision ?? null, { target: 'PASS', comparator: 'eq', unit: 'status', passed: l4Shadow == null ? null : l4Shadow.quality_decision === 'PASS', ...shadowMetricScope }),
-        metric('frozen_forward_dates', 'Active-8 cohort causal shadow dates', l4Shadow?.oof_date_count ?? null, { unit: 'dates', ...shadowMetricScope, note: 'Rebuilds causal validation on a fixed Active-8 cohort; it is not the production serving artifact, training evidence, or promotion evidence.' }),
+        gateMetric('samples', 'Usable OOF samples', sampleCount, minSamples, 'rows', 'gte', { ...candidateMetricScope, scope: 'promotion_gate' }),
+        gateMetric('dates', 'Usable OOF dates', dateCount, minDates, 'dates', 'gte', { ...candidateMetricScope, scope: 'promotion_gate' }),
+        gateMetric('sector_samples', 'Offline candidate PIT sector-alpha samples', l4?.sector_samples, Math.max(1, finite(l4?.min_sector_samples, 300)), 'rows', 'gte', { ...candidateMetricScope, scope: 'promotion_gate', note: '只計入該 candidate OOF 截止日前已合法存在的 PIT sector features；不以今日 source coverage 回填舊 candidate。' }),
+        gateMetric('sector_dates', 'Offline candidate PIT sector-alpha dates', l4?.sector_dates, Math.max(1, finite(l4?.min_sector_dates, 8)), 'dates', 'gte', { ...candidateMetricScope, scope: 'promotion_gate' }),
+        gateMetric('corr_lcb90', 'Offline candidate corr LCB90', l4?.l4_corr_lcb90, 0, 'ratio', 'gt', { ...candidateMetricScope, scope: 'promotion_gate' }),
+        gateMetric('spread_lcb90', 'Offline candidate spread LCB90', l4?.l4_spread_lcb90, 0, 'return', 'gt', { ...candidateMetricScope, scope: 'promotion_gate' }),
+        gateMetric('top_return', 'Offline candidate top-quintile mean', l4?.l4_top_return, 0, 'return', 'gt', { ...candidateMetricScope, scope: 'promotion_gate' }),
+        gateMetric('top_lcb90', 'Offline candidate top-quintile LCB90', l4?.l4_top_lcb90, 0, 'return', 'gt', { ...candidateMetricScope, scope: 'promotion_gate' }),
+        metric('walk_forward', 'Offline candidate walk-forward', l4?.walk_forward_passed, { target: true, comparator: 'eq', unit: 'status', passed: l4?.walk_forward_passed == null ? null : l4.walk_forward_passed, ...candidateMetricScope, scope: 'promotion_gate' }),
+        metric('strict_pit_rows', 'Materialized strict L4 PIT', maturity?.strictL4PitRows ?? null, { unit: 'rows', scope: 'lifecycle' }),
+        metric('strict_pit_dates', 'Materialized strict L4 PIT dates', maturity?.strictL4PitDates ?? null, { unit: 'dates', scope: 'lifecycle' }),
+        metric('sector_source_signal_dates', '目前可供後續 cohort 使用的 PIT sector signal dates', sectorReadiness?.signal_dates ?? null, { unit: 'dates', scope: 'lifecycle', note: `合法 prior-session source window：${sectorReadiness?.first_signal_date ?? '尚無'} → ${sectorReadiness?.latest_signal_date ?? '尚無'}。這是 source readiness，不是舊 candidate 的 promotion evidence。` }),
+        gateMetric('shadow_sector_samples', 'Latest shadow PIT sector-alpha samples', l4Shadow?.sector_samples, Math.max(1, finite(l4?.min_sector_samples, 300)), 'rows', 'gte', { ...shadowMetricScope, scope: 'monitoring' }),
+        gateMetric('shadow_sector_dates', 'Latest shadow PIT sector-alpha dates', l4Shadow?.sector_dates, Math.max(1, finite(l4?.min_sector_dates, 8)), 'dates', 'gte', { ...shadowMetricScope, scope: 'monitoring' }),
+        gateMetric('shadow_corr_lcb90', 'Latest shadow corr LCB90', l4Shadow?.l4_corr_lcb90, 0, 'ratio', 'gt', { ...shadowMetricScope, scope: 'monitoring' }),
+        gateMetric('shadow_spread_lcb90', 'Latest shadow spread LCB90', l4Shadow?.l4_spread_lcb90, 0, 'return', 'gt', { ...shadowMetricScope, scope: 'monitoring' }),
+        gateMetric('shadow_top_return', 'Latest shadow top-quintile mean', l4Shadow?.l4_top_return, 0, 'return', 'gt', { ...shadowMetricScope, scope: 'monitoring' }),
+        gateMetric('shadow_top_lcb90', 'Latest shadow top-quintile LCB90', l4Shadow?.l4_top_lcb90, 0, 'return', 'gt', { ...shadowMetricScope, scope: 'monitoring' }),
+        metric('shadow_walk_forward', 'Latest shadow walk-forward', l4Shadow?.walk_forward_passed, { target: true, comparator: 'eq', unit: 'status', passed: l4Shadow?.walk_forward_passed ?? null, ...shadowMetricScope, scope: 'monitoring' }),
+        metric('frozen_forward_quality', 'Active-8 cohort causal shadow quality', l4Shadow?.quality_decision ?? null, { target: 'PASS', comparator: 'eq', unit: 'status', passed: l4Shadow == null ? null : l4Shadow.quality_decision === 'PASS', ...shadowMetricScope, scope: 'monitoring' }),
+        metric('frozen_forward_dates', 'Active-8 cohort causal shadow dates', l4Shadow?.oof_date_count ?? null, { unit: 'dates', ...shadowMetricScope, scope: 'monitoring', note: 'Rebuilds causal validation on a fixed Active-8 cohort; it is not the production serving artifact, training evidence, or promotion evidence.' }),
       ],
       lineage: {
         requested_date: requestedDate,
@@ -1058,46 +1092,49 @@ export async function buildPipelineDecisionMaturityPacket(
       blockers: offlineBlockers,
       blocker_groups: blockerGroups,
       metrics: [
-        gateMetric('samples', 'Offline candidate usable samples', sampleCount, minSamples, 'rows', 'gte', candidateMetricScope),
-        gateMetric('dates', 'Offline candidate usable dates', dateCount, minDates, 'dates', 'gte', candidateMetricScope),
-        gateMetric('l4_samples', 'Offline candidate L4 PIT samples', fusion?.l4_samples, Math.max(1, finite(fusion?.min_l4_samples, 300)), 'rows', 'gte', candidateMetricScope),
-        gateMetric('l4_dates', 'Offline candidate L4 PIT dates', fusion?.l4_dates, Math.max(1, finite(fusion?.min_l4_dates, 8)), 'dates', 'gte', candidateMetricScope),
-        metric('structure_samples', 'S12 shadow diagnostic structure samples', fusion?.structure_samples, { unit: 'rows', availability: fusion?.structure_samples == null ? 'not_applicable' : 'available', reason_code: fusion?.structure_samples == null ? 'diagnostic_not_served_by_fusion_v14' : null, note: 'Diagnostic only; not a Fusion v14 serving gate.' }),
-        metric('structure_dates', 'S12 shadow diagnostic structure dates', fusion?.structure_dates, { unit: 'dates', availability: fusion?.structure_dates == null ? 'not_applicable' : 'available', reason_code: fusion?.structure_dates == null ? 'diagnostic_not_served_by_fusion_v14' : null, note: 'Diagnostic only; not a Fusion v14 serving gate.' }),
-        metric('execution_samples', 'S12 shadow diagnostic executed samples', fusion?.execution_samples, { unit: 'rows', availability: fusion?.execution_samples == null ? 'not_applicable' : 'available', reason_code: fusion?.execution_samples == null ? 'diagnostic_not_served_by_fusion_v14' : null, note: 'Diagnostic only; not a Fusion v14 serving gate.' }),
-        metric('execution_dates', 'S12 shadow diagnostic executed dates', fusion?.execution_dates, { unit: 'dates', availability: fusion?.execution_dates == null ? 'not_applicable' : 'available', reason_code: fusion?.execution_dates == null ? 'diagnostic_not_served_by_fusion_v14' : null, note: 'Diagnostic only; not a Fusion v14 serving gate.' }),
-        gateMetric('market_samples', 'Offline candidate PIT market-context samples', fusion?.market_samples, Math.max(1, finite(fusion?.min_market_samples, 300)), 'rows', 'gte', candidateMetricScope),
-        gateMetric('market_dates', 'Offline candidate PIT market-context dates', fusion?.market_dates, Math.max(1, finite(fusion?.min_market_dates, 8)), 'dates', 'gte', candidateMetricScope),
-        gateMetric('sector_samples', 'Offline candidate PIT sector-alpha samples', fusion?.sector_samples, Math.max(1, finite(fusion?.min_sector_samples, 300)), 'rows', 'gte', candidateMetricScope),
-        gateMetric('sector_dates', 'Offline candidate PIT sector-alpha dates', fusion?.sector_dates, Math.max(1, finite(fusion?.min_sector_dates, 8)), 'dates', 'gte', candidateMetricScope),
-        gateMetric('residual_corr_lcb90', 'Residual adjustment corr LCB90', fusion?.residual_corr_lcb90, 0, 'ratio', 'gt', candidateMetricScope),
-        gateMetric('residual_spread_lcb90', 'Residual adjustment spread LCB90', fusion?.residual_spread_lcb90, 0, 'return', 'gt', candidateMetricScope),
-        metric('selection_corr_lcb90', 'Selection diagnostic corr LCB90', fusion?.selection_corr_lcb90, { unit: 'ratio', ...candidateMetricScope, note: 'Reported for diagnosis only; the v14 serving head is residual_adjustment_model.' }),
-        metric('selection_spread_lcb90', 'Selection diagnostic spread LCB90', fusion?.selection_spread_lcb90, { unit: 'return', ...candidateMetricScope, note: 'Reported for diagnosis only; the v14 serving head is residual_adjustment_model.' }),
-        metric('champion_corr_delta', 'Selection diagnostic corr delta vs canonical L4 LCB90', fusion?.fusion_corr_delta_lcb90, { unit: 'ratio', ...candidateMetricScope, note: 'Not a v14 serving gate.' }),
-        metric('champion_spread_delta', 'Selection diagnostic spread delta vs canonical L4 LCB90', fusion?.fusion_spread_delta_lcb90, { unit: 'return', ...candidateMetricScope, note: 'Not a v14 serving gate.' }),
-        gateMetric('top_trade_ev_lcb90', 'Offline candidate final top trade EV LCB90', fusion?.fusion_top_trade_ev_lcb90, 0, 'return', 'gt', candidateMetricScope),
+        gateMetric('samples', 'Offline candidate usable samples', sampleCount, minSamples, 'rows', 'gte', { ...candidateMetricScope, scope: 'promotion_gate' }),
+        gateMetric('dates', 'Offline candidate usable dates', dateCount, minDates, 'dates', 'gte', { ...candidateMetricScope, scope: 'promotion_gate' }),
+        gateMetric('l4_samples', 'Offline candidate L4 PIT samples', fusion?.l4_samples, Math.max(1, finite(fusion?.min_l4_samples, 300)), 'rows', 'gte', { ...candidateMetricScope, scope: 'promotion_gate' }),
+        gateMetric('l4_dates', 'Offline candidate L4 PIT dates', fusion?.l4_dates, Math.max(1, finite(fusion?.min_l4_dates, 8)), 'dates', 'gte', { ...candidateMetricScope, scope: 'promotion_gate' }),
+        metric('structure_samples', 'S12 shadow diagnostic structure samples', fusion?.structure_samples, { unit: 'rows', scope: 'diagnostic', availability: fusion?.structure_samples == null ? 'not_applicable' : 'available', reason_code: fusion?.structure_samples == null ? 'diagnostic_not_served_by_fusion_v14' : null, note: 'Diagnostic only; not a Fusion v14 serving gate.' }),
+        metric('structure_dates', 'S12 shadow diagnostic structure dates', fusion?.structure_dates, { unit: 'dates', scope: 'diagnostic', availability: fusion?.structure_dates == null ? 'not_applicable' : 'available', reason_code: fusion?.structure_dates == null ? 'diagnostic_not_served_by_fusion_v14' : null, note: 'Diagnostic only; not a Fusion v14 serving gate.' }),
+        metric('execution_samples', 'S12 shadow diagnostic executed samples', fusion?.execution_samples, { unit: 'rows', scope: 'diagnostic', availability: fusion?.execution_samples == null ? 'not_applicable' : 'available', reason_code: fusion?.execution_samples == null ? 'diagnostic_not_served_by_fusion_v14' : null, note: 'Diagnostic only; not a Fusion v14 serving gate.' }),
+        metric('execution_dates', 'S12 shadow diagnostic executed dates', fusion?.execution_dates, { unit: 'dates', scope: 'diagnostic', availability: fusion?.execution_dates == null ? 'not_applicable' : 'available', reason_code: fusion?.execution_dates == null ? 'diagnostic_not_served_by_fusion_v14' : null, note: 'Diagnostic only; not a Fusion v14 serving gate.' }),
+        gateMetric('market_samples', 'Offline candidate PIT market-context samples', fusion?.market_samples, Math.max(1, finite(fusion?.min_market_samples, 300)), 'rows', 'gte', { ...candidateMetricScope, scope: 'promotion_gate' }),
+        gateMetric('market_dates', 'Offline candidate PIT market-context dates', fusion?.market_dates, Math.max(1, finite(fusion?.min_market_dates, 8)), 'dates', 'gte', { ...candidateMetricScope, scope: 'promotion_gate' }),
+        gateMetric('sector_samples', 'Offline candidate PIT sector-alpha samples', fusion?.sector_samples, Math.max(1, finite(fusion?.min_sector_samples, 300)), 'rows', 'gte', { ...candidateMetricScope, scope: 'lifecycle', note: 'Fusion v14 不以此欄作獨立 serving blocker；它顯示 candidate 是否取得 sector feature coverage。' }),
+        gateMetric('sector_dates', 'Offline candidate PIT sector-alpha dates', fusion?.sector_dates, Math.max(1, finite(fusion?.min_sector_dates, 8)), 'dates', 'gte', { ...candidateMetricScope, scope: 'lifecycle' }),
+        metric('sector_source_signal_dates', '目前可供後續 cohort 使用的 PIT sector signal dates', sectorReadiness?.signal_dates ?? null, { unit: 'dates', scope: 'lifecycle', note: `合法 prior-session source window：${sectorReadiness?.first_signal_date ?? '尚無'} → ${sectorReadiness?.latest_signal_date ?? '尚無'}。這是 source readiness，不是舊 candidate 的 promotion evidence。` }),
+        gateMetric('residual_corr_lcb90', 'Residual adjustment corr LCB90', fusion?.residual_corr_lcb90, 0, 'ratio', 'gt', { ...candidateMetricScope, scope: 'promotion_gate' }),
+        gateMetric('residual_spread_lcb90', 'Residual adjustment spread LCB90', fusion?.residual_spread_lcb90, 0, 'return', 'gt', { ...candidateMetricScope, scope: 'promotion_gate' }),
+        metric('walk_forward', 'Offline candidate residual walk-forward', fusion?.walk_forward_passed, { target: true, comparator: 'eq', unit: 'status', passed: fusion?.walk_forward_passed ?? null, ...candidateMetricScope, scope: 'promotion_gate' }),
+        metric('selection_corr_lcb90', 'Selection diagnostic corr LCB90', fusion?.selection_corr_lcb90, { unit: 'ratio', ...candidateMetricScope, scope: 'diagnostic', note: 'Reported for diagnosis only; the v14 serving head is residual_adjustment_model.' }),
+        metric('selection_spread_lcb90', 'Selection diagnostic spread LCB90', fusion?.selection_spread_lcb90, { unit: 'return', ...candidateMetricScope, scope: 'diagnostic', note: 'Reported for diagnosis only; the v14 serving head is residual_adjustment_model.' }),
+        metric('champion_corr_delta', 'Selection diagnostic corr delta vs canonical L4 LCB90', fusion?.fusion_corr_delta_lcb90, { unit: 'ratio', ...candidateMetricScope, scope: 'diagnostic', note: 'Not a v14 serving gate.' }),
+        metric('champion_spread_delta', 'Selection diagnostic spread delta vs canonical L4 LCB90', fusion?.fusion_spread_delta_lcb90, { unit: 'return', ...candidateMetricScope, scope: 'diagnostic', note: 'Not a v14 serving gate.' }),
+        gateMetric('top_trade_ev_lcb90', 'Offline candidate final top trade EV LCB90', fusion?.fusion_top_trade_ev_lcb90, 0, 'return', 'gt', { ...candidateMetricScope, scope: 'diagnostic', note: '此為 final trade EV 診斷，不是 Fusion v14 residual serving gate。' }),
         metric('final_champion_comparison', 'Offline candidate final trade EV paired comparison', fusion?.fusion_final_comparison_reason ? null : fusion?.fusion_final_comparison_decision, {
           unit: 'status',
           passed: fusion?.fusion_final_comparison_reason ? null : fusion?.fusion_final_comparison_decision == null ? null : fusion.fusion_final_comparison_decision === 'PASS',
           ...candidateMetricScope,
+          scope: 'diagnostic',
           availability: fusion?.fusion_final_comparison_reason ? 'blocked' : candidateMetricScope.availability,
           reason_code: fusion?.fusion_final_comparison_reason ?? candidateMetricScope.reason_code,
           note: fusion?.fusion_final_comparison_reason ?? (optionalFinite(fusion?.fusion_final_comparison_samples) != null && optionalFinite(fusion?.fusion_final_comparison_dates) != null ? `${optionalFinite(fusion?.fusion_final_comparison_samples)}/paired rows across ${optionalFinite(fusion?.fusion_final_comparison_dates)} dates.` : 'Paired comparison evidence unavailable.'),
         }),
-        metric('execution_expert', 'Shadow diagnostic conditional execution expert', fusion?.execution_decision, { unit: 'status', passed: null, availability: fusion?.execution_decision == null ? 'not_applicable' : 'available', reason_code: fusion?.execution_decision == null ? 'diagnostic_not_served_by_fusion_v14' : null, note: 'Diagnostic only; not served by Fusion v14.' }),
-        metric('execution_probability', 'Shadow diagnostic execution probability expert', fusion?.execution_probability_decision, { unit: 'status', passed: null, availability: fusion?.execution_probability_decision == null ? 'not_applicable' : 'available', reason_code: fusion?.execution_probability_decision == null ? 'diagnostic_not_served_by_fusion_v14' : null, note: 'Diagnostic only; not served by Fusion v14.' }),
-        gateMetric('shadow_sector_samples', 'Latest shadow PIT sector-alpha samples', fusionShadow?.sector_samples, Math.max(1, finite(fusion?.min_sector_samples, 300)), 'rows', 'gte', shadowMetricScope),
-        gateMetric('shadow_sector_dates', 'Latest shadow PIT sector-alpha dates', fusionShadow?.sector_dates, Math.max(1, finite(fusion?.min_sector_dates, 8)), 'dates', 'gte', shadowMetricScope),
-        gateMetric('shadow_residual_corr_lcb90', 'Latest shadow residual corr LCB90', fusionShadow?.residual_corr_lcb90, 0, 'ratio', 'gt', shadowMetricScope),
-        gateMetric('shadow_residual_spread_lcb90', 'Latest shadow residual spread LCB90', fusionShadow?.residual_spread_lcb90, 0, 'return', 'gt', shadowMetricScope),
-        metric('shadow_walk_forward', 'Latest shadow residual walk-forward', fusionShadow?.walk_forward_passed, { target: true, comparator: 'eq', unit: 'status', passed: fusionShadow?.walk_forward_passed ?? null, ...shadowMetricScope }),
-        metric('frozen_forward_quality', 'Active-8 cohort causal shadow quality', fusionShadow?.quality_decision ?? null, { target: 'PASS', comparator: 'eq', unit: 'status', passed: fusionShadow == null ? null : fusionShadow.quality_decision === 'PASS', ...shadowMetricScope }),
-        metric('frozen_forward_dates', 'Active-8 cohort causal shadow dates', fusionShadow?.oof_date_count ?? null, { unit: 'dates', ...shadowMetricScope, note: 'Rebuilds causal validation on a fixed Active-8 cohort; it is not the production serving artifact.' }),
-        metric('serving_forward_guard_state', 'Actual serving artifact T+5 guard', runtimeGuardBound ? runtimeGuard?.state ?? null : runtimeGuard ? 'IDENTITY_MISMATCH' : null, { unit: 'status', passed: runtimeGuardBound ? runtimeGuard?.state !== 'residual_bypass' : null, ...runtimeGuardMetricScope, note: 'Bound by artifact ID and model fingerprint; it can only bypass the Fusion residual back to canonical L4.' }),
-        metric('serving_forward_evaluable_dates', 'Serving-forward evaluable dates', runtimeGuardBound ? runtimeGuard?.evaluable_date_count ?? 0 : null, { unit: 'dates', ...runtimeGuardMetricScope }),
-        metric('serving_forward_degraded_streak', 'Serving-forward degraded streak', runtimeGuardBound ? runtimeGuard?.degraded_streak ?? 0 : null, { unit: 'dates', target: 3, comparator: 'lt', passed: runtimeGuardBound ? (runtimeGuard?.degraded_streak ?? 0) < 3 : null, ...runtimeGuardMetricScope }),
-        metric('serving_forward_recovery_streak', 'Serving-forward recovery streak', runtimeGuardBound ? runtimeGuard?.recovery_streak ?? 0 : null, { unit: 'dates', ...runtimeGuardMetricScope }),
+        metric('execution_expert', 'Shadow diagnostic conditional execution expert', fusion?.execution_decision, { unit: 'status', scope: 'diagnostic', passed: null, availability: fusion?.execution_decision == null ? 'not_applicable' : 'available', reason_code: fusion?.execution_decision == null ? 'diagnostic_not_served_by_fusion_v14' : null, note: 'Diagnostic only; not served by Fusion v14.' }),
+        metric('execution_probability', 'Shadow diagnostic execution probability expert', fusion?.execution_probability_decision, { unit: 'status', scope: 'diagnostic', passed: null, availability: fusion?.execution_probability_decision == null ? 'not_applicable' : 'available', reason_code: fusion?.execution_probability_decision == null ? 'diagnostic_not_served_by_fusion_v14' : null, note: 'Diagnostic only; not served by Fusion v14.' }),
+        gateMetric('shadow_sector_samples', 'Latest shadow PIT sector-alpha samples', fusionShadow?.sector_samples, Math.max(1, finite(fusion?.min_sector_samples, 300)), 'rows', 'gte', { ...shadowMetricScope, scope: 'monitoring' }),
+        gateMetric('shadow_sector_dates', 'Latest shadow PIT sector-alpha dates', fusionShadow?.sector_dates, Math.max(1, finite(fusion?.min_sector_dates, 8)), 'dates', 'gte', { ...shadowMetricScope, scope: 'monitoring' }),
+        gateMetric('shadow_residual_corr_lcb90', 'Latest shadow residual corr LCB90', fusionShadow?.residual_corr_lcb90, 0, 'ratio', 'gt', { ...shadowMetricScope, scope: 'monitoring' }),
+        gateMetric('shadow_residual_spread_lcb90', 'Latest shadow residual spread LCB90', fusionShadow?.residual_spread_lcb90, 0, 'return', 'gt', { ...shadowMetricScope, scope: 'monitoring' }),
+        metric('shadow_walk_forward', 'Latest shadow residual walk-forward', fusionShadow?.walk_forward_passed, { target: true, comparator: 'eq', unit: 'status', passed: fusionShadow?.walk_forward_passed ?? null, ...shadowMetricScope, scope: 'monitoring' }),
+        metric('frozen_forward_quality', 'Active-8 cohort causal shadow quality', fusionShadow?.quality_decision ?? null, { target: 'PASS', comparator: 'eq', unit: 'status', passed: fusionShadow == null ? null : fusionShadow.quality_decision === 'PASS', ...shadowMetricScope, scope: 'monitoring' }),
+        metric('frozen_forward_dates', 'Active-8 cohort causal shadow dates', fusionShadow?.oof_date_count ?? null, { unit: 'dates', ...shadowMetricScope, scope: 'monitoring', note: 'Rebuilds causal validation on a fixed Active-8 cohort; it is not the production serving artifact.' }),
+        metric('serving_forward_guard_state', 'Actual serving artifact T+5 guard', runtimeGuardBound ? runtimeGuard?.state ?? null : runtimeGuard ? 'IDENTITY_MISMATCH' : null, { unit: 'status', passed: runtimeGuardBound ? runtimeGuard?.state !== 'residual_bypass' : null, ...runtimeGuardMetricScope, scope: 'production', note: 'Bound by artifact ID and model fingerprint; it can only bypass the Fusion residual back to canonical L4.' }),
+        metric('serving_forward_evaluable_dates', 'Serving-forward evaluable dates', runtimeGuardBound ? runtimeGuard?.evaluable_date_count ?? 0 : null, { unit: 'dates', ...runtimeGuardMetricScope, scope: 'production' }),
+        metric('serving_forward_degraded_streak', 'Serving-forward degraded streak', runtimeGuardBound ? runtimeGuard?.degraded_streak ?? 0 : null, { unit: 'dates', target: 3, comparator: 'lt', passed: runtimeGuardBound ? (runtimeGuard?.degraded_streak ?? 0) < 3 : null, ...runtimeGuardMetricScope, scope: 'production' }),
+        metric('serving_forward_recovery_streak', 'Serving-forward recovery streak', runtimeGuardBound ? runtimeGuard?.recovery_streak ?? 0 : null, { unit: 'dates', ...runtimeGuardMetricScope, scope: 'production' }),
       ],
       lineage: {
         requested_date: requestedDate,

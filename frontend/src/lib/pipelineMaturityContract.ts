@@ -19,6 +19,7 @@ export type PipelineMaturityMetric = {
   note?: string
   availability?: 'available' | 'pending' | 'not_applicable' | 'missing' | 'blocked'
   reason_code?: string | null
+  scope?: 'promotion_gate' | 'lifecycle' | 'monitoring' | 'diagnostic' | 'production'
 }
 
 export type PipelineMaturityStage = {

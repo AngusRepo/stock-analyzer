@@ -28,7 +28,7 @@ const STATUS_STYLE: Record<PipelineMaturityStatus, { label: string; cls: string 
 }
 
 const MODE_STYLE = {
-  production: { label: '正式貢獻', cls: 'border-emerald-400/25 text-emerald-200' },
+  production: { label: '正式路徑', cls: 'border-emerald-400/25 text-emerald-200' },
   shadow: { label: '影子學習（不影響正式結果）', cls: 'border-violet-400/25 text-violet-200' },
   evidence_only: { label: '只累積證據', cls: 'border-amber-400/25 text-amber-200' },
 } as const
@@ -47,6 +47,7 @@ const METRIC_LABELS: Record<string, string> = {
   execution_expert: '條件式執行專家（影子診斷）', execution_probability: '執行機率專家（影子診斷）',
   serving_forward_guard_state: '正式服務 artifact 的 T+5 保護狀態', serving_forward_evaluable_dates: '正式服務 forward 可評估交易日',
   serving_forward_degraded_streak: '正式服務品質連續惡化日數', serving_forward_recovery_streak: '正式服務品質連續恢復日數',
+  sector_source_signal_dates: '目前已合法累積的 PIT sector signal dates（供後續 cohort）',
 }
 
 const FIELD_LABELS: Record<string, string> = {
@@ -106,7 +107,7 @@ function displayValue(metric: PipelineMaturityMetric): string {
     if (metric.availability === 'pending') return '等待中'
     if (metric.availability === 'not_applicable') return '不適用'
     if (metric.availability === 'missing') return '資料缺漏'
-    if (metric.availability === 'blocked') return '必要條件被擋住'
+    if (metric.availability === 'blocked') return '此範圍證據被 lineage 擋住'
     return '資料尚未具備'
   }
   if (typeof value === 'boolean') return value ? '通過' : '未通過'
@@ -163,6 +164,39 @@ function MetricCell({ metric }: { metric: PipelineMaturityMetric }) {
   )
 }
 
+function MetricSection({
+  title,
+  description,
+  metrics,
+  collapsible = false,
+}: {
+  title: string
+  description: string
+  metrics: PipelineMaturityMetric[]
+  collapsible?: boolean
+}) {
+  if (!metrics.length) return null
+  const body = (
+    <>
+      <p className="text-xs font-semibold text-slate-200">{title}</p>
+      <p className="mt-1 text-[11px] leading-4 text-slate-500">{description}</p>
+      <div className="mt-2 grid border-y border-white/[0.07] px-1 sm:grid-cols-2">
+        {metrics.map((item) => <MetricCell key={item.key} metric={item} />)}
+      </div>
+    </>
+  )
+  if (!collapsible) return <div>{body}</div>
+  return (
+    <details className="rounded-lg border border-white/[0.07] bg-black/15 p-3">
+      <summary className="cursor-pointer text-xs font-semibold text-slate-300">{title} · {metrics.length} 項</summary>
+      <p className="mt-1 text-[11px] leading-4 text-slate-500">{description}</p>
+      <div className="mt-2 grid border-y border-white/[0.07] px-1 sm:grid-cols-2">
+        {metrics.map((item) => <MetricCell key={item.key} metric={item} />)}
+      </div>
+    </details>
+  )
+}
+
 function StageRow({ stage }: { stage: PipelineMaturityStage }) {
   const status = STATUS_STYLE[stage.status]
   const mode = MODE_STYLE[stage.contribution_mode]
@@ -205,6 +239,13 @@ function StageRow({ stage }: { stage: PipelineMaturityStage }) {
     ? stage.blocker_groups
     : [{ scope: 'stage', title: 'Blockers', blockers: stage.blockers }]
   const scopedCandidateStage = stage.id === 'l4' || stage.id === 'fusion'
+  const promotionMetrics = scopedCandidateStage
+    ? stage.metrics.filter((item) => item.scope === 'promotion_gate')
+    : stage.metrics
+  const lifecycleMetrics = stage.metrics.filter((item) => item.scope === 'lifecycle')
+  const productionMetrics = stage.metrics.filter((item) => item.scope === 'production')
+  const monitoringMetrics = stage.metrics.filter((item) => item.scope === 'monitoring')
+  const diagnosticMetrics = stage.metrics.filter((item) => item.scope === 'diagnostic')
   const evidenceScopes = stage.lineage.evidence_scopes
   const productionServingState = evidenceScopes?.serving_pointer
     ? evidenceScopes.serving_pointer.artifact_state === 'safe_abstention'
@@ -338,8 +379,36 @@ function StageRow({ stage }: { stage: PipelineMaturityStage }) {
                 <p className="mt-1 text-xs leading-5 text-slate-400">{stage.contribution}</p>
               </div>
             </div>
-            <div className="grid border-y border-white/[0.07] px-1 sm:grid-cols-2">
-              {stage.metrics.map((item) => <MetricCell key={item.key} metric={item} />)}
+            <div className="space-y-4">
+              <MetricSection
+                title={scopedCandidateStage ? '正式升級門檻（只約束 promotion candidate）' : '成熟度證據'}
+                description={scopedCandidateStage
+                  ? '這些欄位只決定 learned artifact 能否升級；不代表 safe-abstention production pointer 或上游選股被擋住。'
+                  : '本階段的正式成熟度欄位。'}
+                metrics={promotionMetrics}
+              />
+              <MetricSection
+                title="資料生命週期與下一批候選 readiness"
+                description="顯示目前 source/materialization 累積，不回頭改寫舊 candidate，也不直接取得 promotion 權限。"
+                metrics={lifecycleMetrics}
+              />
+              <MetricSection
+                title="正式 serving artifact runtime guard"
+                description="只監控目前實際 serving 的 artifact；N/A 表示 safe-abstention 下不需要 residual guard。"
+                metrics={productionMetrics}
+              />
+              <MetricSection
+                title="Frozen-forward 監控（comparison-only）"
+                description="只觀察同一 candidate 的 forward 品質；沒有決策權，lineage 阻擋只顯示一次且不算 promotion blocker。"
+                metrics={monitoringMetrics}
+                collapsible
+              />
+              <MetricSection
+                title="診斷與不適用欄位（非必要門檻）"
+                description="供 root-cause 分析；FAIL、缺值或 N/A 不會單獨阻擋 Fusion v14 serving。"
+                metrics={diagnosticMetrics}
+                collapsible
+              />
             </div>
           </div>
 

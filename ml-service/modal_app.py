@@ -1349,15 +1349,61 @@ def _post_pipeline_prediction_callback(input_payload: dict, bundle: dict, elapse
     return last_error or {"status": "error", "error": "unknown_callback_failure"}
 
 
-@app.function(
-    cpu=4,
-    memory=8192,
-    timeout=3600,
-    min_containers=0,
-    scaledown_window=900,
-    max_containers=1,
-)
-def pipeline_prediction_bundle(payload: dict) -> dict:
+def _post_pipeline_prediction_error_callback(input_payload: dict, error: Exception, elapsed_s: float) -> dict:
+    import json
+    import time
+    import urllib.error
+    import urllib.request
+
+    callback_url = str(input_payload.get("callback_url") or "").strip()
+    token = str(input_payload.get("callback_token") or _controller_callback_token()).strip()
+    if not callback_url or not token:
+        return {"status": "skipped", "reason": "callback_url_or_token_missing"}
+    safe_error = sanitize_callback_error(error, token)
+    body = {
+        "schema_version": "pipeline-modal-prediction-callback-v2",
+        "status": "error",
+        "run_date": input_payload.get("run_date"),
+        "run_id": input_payload.get("run_id"),
+        "state_gcs_uri": input_payload.get("state_gcs_uri"),
+        "elapsed_s": elapsed_s,
+        "error": safe_error,
+        "summary": f"Modal prediction failed: {safe_error[:300]}",
+    }
+    req = urllib.request.Request(
+        callback_url,
+        data=json.dumps(body, ensure_ascii=False, default=str).encode("utf-8"),
+        headers={
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {token}",
+            "X-Service-Token": token,
+        },
+        method="POST",
+    )
+    last_error: dict | None = None
+    for attempt in range(1, 4):
+        try:
+            with urllib.request.urlopen(req, timeout=60) as resp:
+                text = resp.read().decode("utf-8", errors="replace")
+                return {"status": "ok", "code": resp.status, "attempt": attempt, "text": text[:500]}
+        except urllib.error.HTTPError as exc:
+            last_error = {
+                "status": "error",
+                "code": exc.code,
+                "attempt": attempt,
+                "text": exc.read().decode("utf-8", errors="replace")[:500],
+            }
+        except Exception as exc:
+            last_error = {
+                "status": "error",
+                "attempt": attempt,
+                "error": sanitize_callback_error(exc, token),
+            }
+        time.sleep(min(attempt * 2, 5))
+    return last_error or {"status": "error", "error": "unknown_callback_failure"}
+
+
+def _pipeline_prediction_bundle_impl(payload: dict) -> dict:
     """Run pipeline-v2 raw L3 prediction families inside Modal, then callback controller."""
     _setup_env()
     import time
@@ -1701,8 +1747,36 @@ def pipeline_prediction_bundle(payload: dict) -> dict:
     }
     bundle["durable_handoff"] = _persist_pipeline_prediction_bundle(payload, bundle)
     callback_status = _post_pipeline_prediction_callback(payload, bundle, elapsed_s)
+
+
     bundle["callback_status"] = callback_status
     return bundle
+@app.function(
+    cpu=4,
+    memory=8192,
+    timeout=3600,
+    min_containers=0,
+    scaledown_window=900,
+    max_containers=1,
+)
+def pipeline_prediction_bundle(payload: dict) -> dict:
+    """Run Modal predictions and always close the parent pipeline on terminal failure."""
+    import time
+
+    started = time.time()
+    try:
+        return _pipeline_prediction_bundle_impl(payload)
+    except Exception as exc:
+        callback = _post_pipeline_prediction_error_callback(
+            payload or {},
+            exc,
+            round(time.time() - started, 3),
+        )
+        if callback.get("status") != "ok":
+            raise RuntimeError(f"pipeline_modal_error_callback_unclosed:{callback}") from exc
+        raise
+
+
 
 
 @app.function(

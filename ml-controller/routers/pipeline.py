@@ -267,6 +267,36 @@ async def pipeline_modal_prediction_callback(request: Request) -> JSONResponse:
     payload = await request.json()
     if not isinstance(payload, dict):
         raise HTTPException(status_code=400, detail="callback payload must be an object")
+    callback_status = str(payload.get("status") or "").strip().lower()
+    if callback_status == "error":
+        run_id = str(payload.get("run_id") or "").strip()
+        run_date = str(payload.get("run_date") or "")[:10]
+        error = str(payload.get("error") or "pipeline Modal prediction failed").strip()
+        if not run_id or not run_date:
+            raise HTTPException(status_code=400, detail="terminal error callback missing run_id or run_date")
+        try:
+            duration_ms = max(0, int(float(payload.get("elapsed_s") or 0) * 1000))
+        except (TypeError, ValueError):
+            duration_ms = 0
+        await _callback_worker({
+            "task": "pipeline",
+            "status": "error",
+            "summary": str(payload.get("summary") or error)[:500],
+            "duration_ms": duration_ms,
+            "run_id": run_id,
+            "run_date": run_date,
+            "error": error[:1000],
+        })
+        return JSONResponse(
+            status_code=202,
+            content={
+                "status": "accepted",
+                "terminal": "error",
+                "run_id": run_id,
+                "run_date": run_date,
+            },
+        )
+
 
     from services.pipeline_modal_handoff import dispatch_modal_prediction_continuation
 

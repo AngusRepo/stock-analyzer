@@ -22,6 +22,9 @@ def test_pipeline_modal_prediction_callback_route_is_service_token_callback() ->
     assert 'callback_router.post("/v2/modal-prediction/callback")' in source
     assert "_check_service_token(request)" in source
     assert "dispatch_modal_prediction_continuation" in source
+    assert 'callback_status == "error"' in source
+    assert '"task": "pipeline"' in source
+    assert '"status": "error"' in source
     assert "asyncio.to_thread" in source
     assert "status_code=202" in source
     assert "pipeline_v2_async_modal_prediction_callback" in source
@@ -45,6 +48,10 @@ def test_pipeline_modal_prediction_bundle_contract_exists_on_modal() -> None:
     assert "sequence_model_contracts" in graph
     assert "active serving artifact missing valid version-bound sequence contract" in graph
     assert "_post_pipeline_prediction_callback" in modal_app
+    assert "_post_pipeline_prediction_error_callback" in modal_app
+    assert "_pipeline_prediction_bundle_impl" in modal_app
+    assert "pipeline_modal_error_callback_unclosed" in modal_app
+    assert '"status": "error"' in modal_app
     assert "_persist_pipeline_prediction_bundle" in modal_app
     assert "pipeline-modal-prediction-callback-v2" in modal_app
     assert "PIPELINE_MODAL_CONTINUATION_MODE" in _read("ml-controller/pipeline_job_main.py")

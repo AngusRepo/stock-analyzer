@@ -33,7 +33,7 @@ export interface StrategyEvidenceProfile {
   required_metrics: StrategyEvidenceMetric[]
   outcome_contract_status: 'fixed_5d_available' | 'primary_horizon_shadow_available' | 'multi_horizon_pending'
   outcome_source: 'canonical_selection_labels_v4.residual_return_net' | 'canonical_selection_outcomes_v1.residual_return_net'
-  production_authority: 'shadow_only'
+  production_authority: 'comparison_only' | 'formal_owner_input_ready' | 'formal_owner_input_active'
 }
 
 type EvidencePlan = Pick<
@@ -200,7 +200,7 @@ export function buildStrategyEvidenceProfile(
     outcome_source: outcomeContractStatus === 'primary_horizon_shadow_available'
       ? 'canonical_selection_outcomes_v1.residual_return_net'
       : 'canonical_selection_labels_v4.residual_return_net',
-    production_authority: 'shadow_only',
+    production_authority: 'comparison_only',
   }
 }
 

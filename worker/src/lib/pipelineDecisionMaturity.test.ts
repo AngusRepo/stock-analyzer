@@ -50,6 +50,7 @@ test('pipeline maturity API preserves canonical lineage and explicit evidence fi
   assert.match(source, /formal_labeler_upgrade_pending:/)
   assert.match(source, /incumbent exact-run strategy matrix \(display-only fallback\)/)
   assert.match(source, /strategy_redundancy_artifacts_v1/)
+  assert.match(source, /CASE WHEN status='pass' THEN 0 ELSE 1 END/)
   assert.match(source, /m\.challenger_affinity_version=\?/)
   assert.match(source, /adaptExpectedReturnCandidate/)
   assert.match(source, /adaptExpectedReturnShadow/)

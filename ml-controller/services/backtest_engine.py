@@ -2587,12 +2587,19 @@ class AccountState:
     pending_settlements: list[PendingSettlement] = field(default_factory=list)
 
     @property
+    def settlement_adjusted_cash(self) -> float:
+        """Economic cash including unsettled T+2 receivables and payables."""
+        pending_buy = sum(s.amount for s in self.pending_settlements if s.side == "buy")
+        pending_sell = sum(s.amount for s in self.pending_settlements if s.side == "sell")
+        return self.cash - pending_buy + pending_sell
+
+    @property
     def total_portfolio(self) -> float:
         """cash + position market value. For sizing we use `cash + sum(cost)`
         as a conservative proxy (paper.ts does same). Uses entry_price as the
         'cost basis' since OpenPosition tracks entry_price (post-slippage fill)."""
         pos_value = sum(p.shares * p.entry_price for p in self.positions.values())
-        return self.cash + pos_value
+        return self.settlement_adjusted_cash + pos_value
 
     @property
     def available_cash(self) -> float:
@@ -4668,7 +4675,10 @@ def _mark_to_market(account: AccountState, dataset: BacktestDataset, date: str) 
     Missing bars (halted / data gaps) fall back to last known close → avg_cost
     (conservative: no unrealized markup for halted positions).
     """
-    total = account.cash
+    # T+2 settlement changes buying power, not economic NAV.  A pending buy is
+    # a payable and a pending sell is a receivable; omitting either creates an
+    # artificial equity spike or near-100% drawdown around every settlement.
+    total = account.settlement_adjusted_cash
     for symbol, pos in account.positions.items():
         bar = dataset.get_bar(symbol, date)
         close = float(bar.get("close") or 0) if bar else 0

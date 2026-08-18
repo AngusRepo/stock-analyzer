@@ -23,7 +23,9 @@ def test_rotation_helper_keeps_tokens_out_of_native_argv_and_disk() -> None:
     assert "[switch]$Apply" in source
     assert "[switch]$DryRun" in source
     assert "[switch]$DrainVerified" in source
-    assert "[int]$ExpectedSchedulerCount = 54" in source
+    assert "[int]$ExpectedSchedulerCount = 56" in source
+    assert "'learning-retention-readiness'" in source
+    assert "'legacy-learning-deletion-readiness'" in source
     assert "versions', 'secret', 'bulk'" in source
     assert "-StandardInput $stdin" in source
     assert ". $schedulerRestHelper" in source

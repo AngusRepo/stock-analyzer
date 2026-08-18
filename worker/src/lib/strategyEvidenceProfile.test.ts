@@ -25,7 +25,7 @@ for (const spec of eligibleSpecs) {
     [CURRENT_CANONICAL_OUTCOME_HORIZON_DAYS],
     `${spec.id} must not claim unmaterialized multi-horizon outcomes`,
   )
-  assert.equal(profile.production_authority, 'shadow_only', `${spec.id} profile cannot mutate production gates`)
+  assert.equal(profile.production_authority, 'comparison_only', `${spec.id} registry default cannot mutate production gates before API owner resolution`)
   assert(profile.required_metrics.length >= 5, `${spec.id} needs a strategy-specific metric bundle`)
   assert(profile.evaluation_horizon_days.includes(profile.primary_horizon_days))
   assert.equal(
@@ -87,7 +87,7 @@ assert.equal(
 assert.equal(runtimeProfiles.find((row) => row.strategy_id === 'runtime_reversion_strategy')?.primary_horizon_days, 3)
 assert.equal(runtimeProfiles.find((row) => row.strategy_id === 'runtime_breakout_strategy')?.primary_horizon_days, 5)
 assert.equal(runtimeProfiles.find((row) => row.strategy_id === 'runtime_research_strategy')?.primary_horizon_days, 10)
-assert(runtimeProfiles.every((row) => row.production_authority === 'shadow_only'))
+assert(runtimeProfiles.every((row) => row.production_authority === 'comparison_only'))
 
 const materializedProfiles = listStrategyEvidenceProfiles(runtimeRegistrySpecs, {
   availableOutcomeHorizonDays: [3, 5, 10],
@@ -101,6 +101,6 @@ assert.equal(
   materializedProfiles.find((row) => row.strategy_id === 'runtime_research_strategy')?.outcome_source,
   'canonical_selection_outcomes_v1.residual_return_net',
 )
-assert(materializedProfiles.every((row) => row.production_authority === 'shadow_only'))
+assert(materializedProfiles.every((row) => row.production_authority === 'comparison_only'))
 
 console.log('strategy evidence profile tests passed')

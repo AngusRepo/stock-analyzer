@@ -49,9 +49,11 @@ export const STORAGE_LIFECYCLE_SCHEDULE = [
   { task: 'r2-retention-sweep', cron: '40 2 * * *', timezone: 'Asia/Taipei' },
   { task: 'orphan-reachability-gc', cron: '0 3 * * *', timezone: 'Asia/Taipei' },
   { task: 'storage-health-check', cron: '45 6 * * *', timezone: 'Asia/Taipei' },
+  { task: 'learning-retention-readiness', cron: '20 2 * * *', timezone: 'Asia/Taipei' },
+  { task: 'legacy-learning-deletion-readiness', cron: '50 6 * * *', timezone: 'Asia/Taipei' },
   { task: 'storage-integrity-audit', cron: '30 3 * * 0', timezone: 'Asia/Taipei' },
   { task: 'weekly-cleanup-v2', cron: '0 4 * * 0', timezone: 'Asia/Taipei' },
-  { task: 'storage-capacity-report', cron: '30 4 1 * *', timezone: 'Asia/Taipei' },
+  { task: 'storage-capacity-report', cron: '55 6 * * *', timezone: 'Asia/Taipei' },
 ] as const
 
 function cleanPart(value: string): string {

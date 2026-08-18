@@ -1,13 +1,13 @@
 """
 monte_carlo_service.py — Monte Carlo MDD Simulation
 
-Shuffle completed paper_orders trade sequence 1000x, compute equity curve + MDD
-for each permutation. Output: 95th percentile worst-case MDD distribution.
+Bootstrap portfolio daily returns 1000x, compute equity curve + MDD for each
+path. Output: 95th percentile worst-case MDD distribution.
 
 Purpose: Answer "if I was unlucky with trade ordering, how bad could MDD get?"
 This number decides if the strategy can go live with real money.
 
-Data source: D1 paper_orders (real paper trading history, buy→sell FIFO paired)
+Data source: D1 paper_daily_snapshots or complete backtest portfolio NAV evidence.
 """
 import hashlib
 import os
@@ -20,6 +20,7 @@ from datetime import datetime, timezone
 from typing import Optional
 
 from services.backtest_trade_evidence import (
+    decode_backtest_portfolio_return_evidence,
     decode_backtest_trade_evidence,
     resolve_backtest_evidence_run_date,
 )
@@ -346,6 +347,9 @@ def _sample_regime_block_bootstrap_path(
 
 
 def _extract_backtest_returns_and_regimes(raw: dict) -> tuple[list[float], list[str] | None]:
+    portfolio_rows = decode_backtest_portfolio_return_evidence(raw)
+    if portfolio_rows:
+        return [float(row["portfolio_return"]) for row in portfolio_rows], None
     returns = [_r for _r in raw.get("all_returns") or [] if _as_number(_r) is not None]
     evidence_trades = decode_backtest_trade_evidence(raw)
     if evidence_trades:
@@ -376,6 +380,33 @@ def _extract_backtest_returns_and_regimes(raw: dict) -> tuple[list[float], list[
     if isinstance(regimes, list) and len(regimes) == len(returns):
         return returns, [str(r or "unknown") for r in regimes]
     return returns, None
+
+
+def _extract_paper_portfolio_returns(rows: list[dict]) -> list[float]:
+    """Build one return per paper NAV date; repeated same-day snapshots use the latest row."""
+    by_date: dict[str, dict] = {}
+    for row in rows:
+        date = str(row.get("date") or "")[:10]
+        total_value = _as_number(row.get("total_value"))
+        if date and total_value is not None and total_value > 0:
+            by_date[date] = row
+    ordered = [by_date[date] for date in sorted(by_date)]
+    if not ordered:
+        return []
+    first_value = float(ordered[0]["total_value"])
+    first_pnl = _as_number(ordered[0].get("pnl"))
+    previous = first_value - first_pnl if first_pnl is not None else first_value
+    if previous <= 0:
+        previous = first_value
+    returns: list[float] = []
+    for row in ordered:
+        current = float(row["total_value"])
+        value = (current / previous) - 1.0
+        if not (-1.0 < value < float("inf")):
+            raise ValueError("paper_portfolio_return_invalid")
+        returns.append(value)
+        previous = current
+    return returns
 
 
 def _as_number(value) -> float | None:
@@ -521,54 +552,38 @@ async def run_monte_carlo_mdd(
 
         data_quality_info: dict = {}
         source_provenance: dict = {}
+        return_semantics = "unknown"
 
         if source == "paper":
-            logger.info("[MonteCarlo] Fetching paper_orders from D1...")
-            orders = await _d1_query(
+            logger.info("[MonteCarlo] Fetching paper portfolio NAV snapshots from D1...")
+            snapshots = await _d1_query(
                 client,
-                """SELECT symbol, side, shares, price, note, created_at
-                   FROM paper_orders
+                """SELECT id, date, total_value, pnl, created_at
+                   FROM paper_daily_snapshots
                    WHERE account_id = 1
-                   ORDER BY created_at ASC""",
+                     AND total_value > 0
+                   ORDER BY date ASC, created_at ASC, id ASC""",
             )
 
-            if not orders:
-                return {"error": "No paper orders found", "status": "failed"}
+            if not snapshots:
+                return {"error": "No paper portfolio NAV snapshots found", "status": "failed"}
 
             source_provenance = {
-                "source_table": "paper_orders",
-                "source_row_count": len(orders),
-                "source_first_created_at": orders[0].get("created_at"),
-                "source_last_created_at": orders[-1].get("created_at"),
+                "source_table": "paper_daily_snapshots",
+                "source_row_count": len(snapshots),
+                "source_first_date": snapshots[0].get("date"),
+                "source_last_date": snapshots[-1].get("date"),
                 "source_payload_sha256": hashlib.sha256(
-                    json.dumps(orders, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
+                    json.dumps(snapshots, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
                 ).hexdigest(),
             }
-            logger.info(f"[MonteCarlo] Found {len(orders)} orders, validating + pairing...")
-            pairing = _validate_and_pair_orders(orders)
-
-            # Reject if data is too dirty
-            if pairing.data_quality == "DIRTY":
-                return {
-                    "error": "Paper orders data too dirty for reliable Monte Carlo",
-                    "status": "failed",
-                    "data_quality": pairing.data_quality,
-                    "detail": pairing.quality_detail,
-                    "orphan_sells": pairing.orphan_sells,
-                    "excess_shares": pairing.excess_shares,
-                    "dirty_symbols": pairing.dirty_symbols[:20],
-                }
-
-            trade_returns = [t["profit_ratio"] for t in pairing.trades]
+            trade_returns = _extract_paper_portfolio_returns(snapshots)
+            return_semantics = "daily_paper_portfolio_nav_return"
             data_quality_info = {
-                "data_quality": pairing.data_quality,
-                "total_orders": pairing.total_orders,
-                "paired_trades": pairing.paired_trades,
-                "orphan_sells": pairing.orphan_sells,
-                "excess_shares": pairing.excess_shares,
-                "open_positions": pairing.open_positions,
-                "dirty_symbols": pairing.dirty_symbols[:10],
-                "quality_detail": pairing.quality_detail,
+                "data_quality": "CLEAN",
+                "portfolio_snapshot_rows": len(snapshots),
+                "distinct_nav_dates": len(trade_returns),
+                "return_semantics": return_semantics,
             }
 
         elif source == "backtest":
@@ -599,10 +614,18 @@ async def run_monte_carlo_mdd(
             }
             raw = json.loads(raw_text)
             consumed_field = (
-                "trade_evidence"
-                if raw.get("trade_evidence")
+                "portfolio_return_evidence"
+                if raw.get("portfolio_return_evidence")
+                else "trade_evidence" if raw.get("trade_evidence")
                 else "all_returns" if raw.get("all_returns") else "trades"
             )
+            if consumed_field != "portfolio_return_evidence":
+                return {
+                    "error": "backtest_portfolio_return_evidence_missing",
+                    "status": "failed",
+                    "promotion_gate_eligible": False,
+                    "legacy_trade_return_mc_allowed": False,
+                }
             try:
                 assert_bounded_json_fields_complete(raw, (consumed_field,))
                 trade_returns, trade_regimes = _extract_backtest_returns_and_regimes(raw)
@@ -612,17 +635,19 @@ async def run_monte_carlo_mdd(
                     "status": "failed",
                     "evidence_complete": False,
                 }
+            return_semantics = "daily_backtest_portfolio_nav_return"
+            source_provenance["return_semantics"] = return_semantics
 
         else:
             return {"error": f"Unknown source: {source}", "status": "failed"}
 
         if len(trade_returns) < 5:
             return {
-                "error": f"Only {len(trade_returns)} completed trades, need >= 5",
+                "error": f"Only {len(trade_returns)} portfolio return observations, need >= 5",
                 "status": "failed",
             }
         logger.info(
-            f"[MonteCarlo] {len(trade_returns)} trades, "
+            f"[MonteCarlo] {len(trade_returns)} portfolio return observations, "
             f"running {n_simulations} simulations..."
         )
 
@@ -660,6 +685,7 @@ async def run_monte_carlo_mdd(
             "block_size": mc.block_size,
             "regime_counts": mc.regime_counts,
             "tail_risk_status": mc.tail_risk_status,
+            "return_semantics": return_semantics,
             "min_full_tail_risk_trades": mc.min_full_tail_risk_trades,
             "data_quality": data_quality_info or None,
             "source_provenance": source_provenance,
@@ -672,6 +698,7 @@ async def run_monte_carlo_mdd(
             "block_size",
             "regime_counts",
             "tail_risk_status",
+            "return_semantics",
             "min_full_tail_risk_trades",
             "data_quality",
             "source_provenance",
@@ -724,6 +751,8 @@ async def run_monte_carlo_mdd(
             "data_quality": data_quality_info or None,
             "source_provenance": source_provenance,
             "tail_risk_status": mc.tail_risk_status,
+            "return_semantics": return_semantics,
+            "promotion_gate_eligible": True,
             "min_full_tail_risk_trades": mc.min_full_tail_risk_trades,
         }
         logger.info(f"[MonteCarlo] Done: {mc.go_live_verdict} — 95th MDD = {mc.mdd_95th:.2%}")

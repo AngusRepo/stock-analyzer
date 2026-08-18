@@ -6,7 +6,10 @@ from datetime import datetime, timezone
 from typing import Any
 
 from services.bounded_json import BACKTEST_EVIDENCE_MAX_UTF8_BYTES, bounded_json_dumps
-from services.backtest_trade_evidence import build_backtest_trade_evidence
+from services.backtest_trade_evidence import (
+    build_backtest_portfolio_return_evidence,
+    build_backtest_trade_evidence,
+)
 
 
 def _num(value: Any, default: float = 0.0) -> float:
@@ -45,6 +48,7 @@ def build_replay_backtest_insert(
     run_date = run_date or datetime.now(timezone.utc).strftime("%Y-%m-%d")
     mode = str(getattr(metrics, "mode", "") or "unknown").upper()
     trades = [_trade_to_dict(t) for t in (getattr(metrics, "trades", None) or [])]
+    equity_curve = list(getattr(metrics, "equity_curve", None) or [])
     raw = {
         "mode": mode,
         "source": "backtest_replay",
@@ -73,10 +77,18 @@ def build_replay_backtest_insert(
         "trades": trades[:100],
         "trades_complete": len(trades) <= 100,
     }
+    if equity_curve:
+        raw["portfolio_return_evidence"] = build_backtest_portfolio_return_evidence(
+            equity_curve,
+            initial_capital=_num(getattr(metrics, "initial_capital", 0.0)),
+        )
+    exact_keys = ["trade_evidence"]
+    if "portfolio_return_evidence" in raw:
+        exact_keys.append("portfolio_return_evidence")
     raw_json = bounded_json_dumps(
         raw,
         max_utf8_bytes=BACKTEST_EVIDENCE_MAX_UTF8_BYTES,
-        preserve_exact_keys=("trade_evidence",),
+        preserve_exact_keys=tuple(exact_keys),
     )
     sql = """
         INSERT OR REPLACE INTO backtest_results

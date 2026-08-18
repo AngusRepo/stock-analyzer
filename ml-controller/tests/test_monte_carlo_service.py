@@ -5,8 +5,15 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from services.monte_carlo_service import _extract_backtest_returns_and_regimes, _run_monte_carlo
-from services.backtest_trade_evidence import build_backtest_trade_evidence
+from services.monte_carlo_service import (
+    _extract_backtest_returns_and_regimes,
+    _extract_paper_portfolio_returns,
+    _run_monte_carlo,
+)
+from services.backtest_trade_evidence import (
+    build_backtest_portfolio_return_evidence,
+    build_backtest_trade_evidence,
+)
 
 
 def test_block_bootstrap_records_method_and_block_size():
@@ -168,3 +175,30 @@ def test_extract_backtest_returns_and_regimes_prefers_compact_complete_evidence(
 
     assert returns == [0.03, -0.01]
     assert regimes == ["green", "red"]
+
+
+def test_extract_backtest_returns_prefers_portfolio_nav_over_full_capital_trade_returns():
+    raw = {
+        "portfolio_return_evidence": build_backtest_portfolio_return_evidence(
+            [("2026-08-14", 1_010_000), ("2026-08-15", 999_900)],
+            initial_capital=1_000_000,
+        ),
+        "trade_evidence": build_backtest_trade_evidence([
+            {"exit_date": "2026-08-14", "profit_ratio": 0.25, "entry_regime": "green", "days_held": 3},
+        ]),
+    }
+
+    returns, regimes = _extract_backtest_returns_and_regimes(raw)
+
+    assert [round(value, 6) for value in returns] == [0.01, -0.01]
+    assert regimes is None
+
+
+def test_paper_monte_carlo_uses_daily_nav_and_latest_same_day_snapshot():
+    returns = _extract_paper_portfolio_returns([
+        {"date": "2026-08-14", "total_value": 1_010_000, "pnl": 10_000},
+        {"date": "2026-08-15", "total_value": 1_005_000, "pnl": 5_000},
+        {"date": "2026-08-15", "total_value": 999_900, "pnl": -100},
+    ])
+
+    assert [round(value, 6) for value in returns] == [0.01, -0.01]

@@ -46,6 +46,33 @@ assert.equal(promotedState.evidence.complete_non_retired_weight_map, true)
 assert.equal(promotedState.evidence.positive_weight_count, 1)
 assert.equal(promotedState.base_weight_run_id, 'adaptive-v2-2026-08-02')
 
+const diversityState = buildStrategyProductionContributionFirewall({
+  knowledgeCutoffDate: '2026-08-02',
+  strategies,
+  gates: [
+    { strategy_id: 'active-a', decision: 'active_monitor', allocation_eligible: true, contribution_mode: 'full' },
+    { strategy_id: 'active-b', decision: 'active_cooldown', allocation_eligible: false, contribution_mode: 'diversity_retention' },
+  ],
+  base: {
+    source: 'adaptive_strategy_policy_v2',
+    run_id: 'adaptive-v2|strategy-evidence-owner-fusion-v2:checksum',
+    weights: { 'active-a': 1, 'active-b': 0.15 },
+    evidence_owner: {
+      version: 'strategy-evidence-owner-fusion-v2',
+      checksum: 'checksum',
+      weight_effect: 'mature_ready_only_bounded_bidirectional',
+      ready_profile_count: 2,
+    },
+  },
+})
+assert.equal(diversityState.strategy_weights['active-a'], 0.869565217391)
+assert.equal(diversityState.strategy_weights['active-b'], 0.130434782609)
+assert.deepEqual(diversityState.quarantined_strategy_ids, [])
+assert.equal(diversityState.evidence.diversity_retained_strategy_count, 1)
+assert.equal(diversityState.evidence.bounded_bidirectional_adjustment, true)
+assert.equal(diversityState.evidence.safety_reducing_only, false)
+assert.equal(diversityState.evidence.evidence_owner?.checksum, 'checksum')
+
 const unitWeightState = buildStrategyProductionContributionFirewall({
   knowledgeCutoffDate: '2026-08-02',
   strategies,

@@ -660,7 +660,7 @@ export type StrategyEvidenceProfile = {
   required_metrics: StrategyEvidenceMetric[]
   outcome_contract_status: 'fixed_5d_available' | 'primary_horizon_shadow_available' | 'multi_horizon_pending'
   outcome_source: 'canonical_selection_labels_v4.residual_return_net' | 'canonical_selection_outcomes_v1.residual_return_net'
-  production_authority: 'shadow_only'
+  production_authority: 'comparison_only' | 'formal_owner_input_ready' | 'formal_owner_input_active'
   metric_evidence?: Array<{
     metric: StrategyEvidenceMetric
     value: number | null
@@ -701,7 +701,7 @@ export type StrategyEvidenceLane = {
   total_profiles?: number
   outcome_data_ready?: boolean
   production_integration_ready?: boolean
-  production_owner?: 'strategy-adaptive-lifecycle-v2'
+  production_owner?: 'strategy-adaptive-lifecycle-v2' | 'strategy-production-contribution-firewall-v3'
   materialized_metrics?: string[]
   missing_required_metrics?: string[]
   integration_effect?: 'status_aware_owner_input_active' | 'status_aware_owner_input_ready'

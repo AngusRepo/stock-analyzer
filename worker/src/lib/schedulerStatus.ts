@@ -77,6 +77,8 @@ const JOB_DEFS: JobDef[] = [
   { id: 'r2-retention-sweep', name: 'R2 Retention Sweep', schedule: 'Daily 02:40', cron: '40 18 * * *', group: 'daily' },
   { id: 'orphan-reachability-gc', name: 'Orphan Reachability GC', schedule: 'Daily 03:00', cron: '0 19 * * *', group: 'daily' },
   { id: 'storage-health-check', name: 'Storage Health Check', schedule: 'Daily 06:45', cron: '45 22 * * *', group: 'daily' },
+  { id: 'learning-retention-readiness', name: 'Learning Ten-Year Retention Readiness', schedule: 'Daily 02:20', cron: '20 18 * * *', group: 'daily' },
+  { id: 'legacy-learning-deletion-readiness', name: 'Legacy Learning Deletion Readiness', schedule: 'Daily 06:50', cron: '50 22 * * *', group: 'daily' },
   { id: 'storage-integrity-audit', name: 'Storage Integrity Audit', schedule: 'Sunday 03:30', cron: '30 19 * * 6', group: 'weekly' },
 
   { id: 'intraday-check', name: 'Intraday Check', schedule: 'Mon-Fri 09:00-13:30 per-min', cron: '* 1-4 * * 1-5 + 0-30 5 * * 1-5', group: 'intraday' },
@@ -106,7 +108,7 @@ const JOB_DEFS: JobDef[] = [
   { id: 'monthly-strategy-mining', name: 'Monthly Strategy Mining', schedule: 'First Sat 10:00', cron: 'first saturday of month 10:00 taipei', group: 'monthly' },
   { id: 'monthly-readiness', name: 'Monthly Readiness', schedule: 'First Sunday 12:30', cron: 'first sunday of month 12:30 taipei', group: 'monthly' },
   { id: 'monthly-retrain', name: 'Monthly Universal Retrain', schedule: 'First Sunday 02:00', cron: 'first sunday of month 02:00 taipei', group: 'monthly' },
-  { id: 'storage-capacity-report', name: 'Storage Capacity Report', schedule: 'First day 04:30', cron: '30 4 1 * * taipei', group: 'monthly' },
+  { id: 'storage-capacity-report', name: 'Storage Capacity Report', schedule: 'Daily 06:55', cron: '55 22 * * *', group: 'daily' },
 
   { id: 'optuna-queue', name: 'Optuna Queue Processor', schedule: 'Every 6h', cron: '0 */6 * * *', group: 'daily' },
 ]

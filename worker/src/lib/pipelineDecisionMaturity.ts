@@ -463,9 +463,10 @@ export async function buildPipelineDecisionMaturityPacket(
              json_extract(graph_json, '$.pair_count_with_any_overlap') overlap_pair_count,
              json_extract(graph_json, '$.eligible_oof_pair_count') eligible_pair_count,
              evidence_artifact_id, created_at
-        FROM strategy_redundancy_artifacts_v1
+       FROM strategy_redundancy_artifacts_v1
        WHERE as_of_date<=?
-       ORDER BY as_of_date DESC, created_at DESC
+       ORDER BY CASE WHEN status='pass' THEN 0 ELSE 1 END,
+                as_of_date DESC, created_at DESC
        LIMIT 1
     `).bind(requestedDate).first<any>()),
     safeQuery(() => learningDb.prepare(`

@@ -79,6 +79,8 @@ const TASK_NAMES: Record<string, string> = {
   'storage-health-gate': 'Storage Health Check (Legacy Alias)',
   'storage-integrity-audit': 'Storage Integrity Audit',
   'storage-capacity-report': 'Storage Capacity Report',
+  'learning-retention-readiness': 'Learning Ten-Year Retention Readiness',
+  'legacy-learning-deletion-readiness': 'Legacy Learning Deletion Readiness',
   'strategy-learning-finalize': 'Strategy Learning Finalizer',
   'data-domain-shadow-backfill': 'Data Domain Shadow Backfill',
   'intraday-check': 'Limit Buy + SL/TP',

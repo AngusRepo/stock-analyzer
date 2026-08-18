@@ -504,7 +504,7 @@ function StrategyLedgerGroup({
                   <span className="text-xs font-semibold text-cyan-100">此策略自己的 evidence 契約</span>
                   <Badge variant="outline" className={profile?.outcome_contract_status !== 'multi_horizon_pending' ? statusClass('active') : statusClass('not_ready')}>
                     {profile?.outcome_contract_status === 'primary_horizon_shadow_available'
-                      ? '主要週期已有影子結果'
+                      ? '主要週期結果已物化'
                       : profile?.outcome_contract_status === 'fixed_5d_available'
                         ? '主要週期沿用正式 5 日結果'
                         : profile ? '主要週期結果待物化' : 'Profile 尚未取得'}
@@ -536,7 +536,11 @@ function StrategyLedgerGroup({
                       })}
                     </div>
                     <p className="mt-2 text-xs leading-5 text-cyan-100/70">
-                      影子觀察（shadow only）：這些數據已在正式環境產生並拿來比較策略，但只有觀察權，沒有決策權；不會改待買權重、策略升級或任何下單決策。多週期樣本與各策略指標通過前，舊 5 日 gate 仍是正式權責。
+                      {profile.production_authority === 'formal_owner_input_active'
+                        ? '正式 multi-horizon evidence input：fully ready 指標會在 ±25% 上限內調整此策略正式待買權重；樣本不足維持中性，不會被當成 0 分。'
+                        : profile.production_authority === 'formal_owner_input_ready'
+                          ? '正式 evidence input 已就緒，等待下一版 immutable production policy materialization 後生效。'
+                          : 'Comparison-only evidence：此 profile 尚未取得正式權責，只供比較與持續學習。'}
                     </p>
                   </>
                 ) : <p className="mt-2 text-xs text-amber-200">Evidence profile API 未回傳此策略；這是資料缺漏，不代表策略績效失敗。</p>}
@@ -704,7 +708,7 @@ export default function StrategyLearningPage() {
           <>
             <section className="grid gap-2 sm:grid-cols-2 xl:grid-cols-5">
               <div className="rounded-xl border border-slate-800 bg-slate-950/70 p-4"><div className="text-xs text-slate-500">正式參與選股的策略</div><div className="mt-2 font-mono text-2xl text-emerald-200">{activeRows.length}</div><div className="mt-1 text-xs text-slate-500">代表 registry=active，不代表每個都能進待買</div></div>
-              <div className="rounded-xl border border-emerald-400/20 bg-emerald-400/[0.06] p-4"><div className="text-xs text-slate-400">目前可讓推薦進待買</div><div className="mt-2 font-mono text-2xl text-emerald-100">{learning ? executionEligibleCount : '-'}</div><div className="mt-1 text-xs text-slate-500">必須同時通過報酬、勝率、回撤、成熟度與保守下界</div></div>
+              <div className="rounded-xl border border-emerald-400/20 bg-emerald-400/[0.06] p-4"><div className="text-xs text-slate-400">目前可讓推薦進待買</div><div className="mt-2 font-mono text-2xl text-emerald-100">{learning ? executionEligibleCount : '-'}</div><div className="mt-1 text-xs text-slate-500">硬風險／資料缺漏維持 0；純績效降溫可進 bounded diversity sleeve</div></div>
               <div className="rounded-xl border border-slate-800 bg-slate-950/70 p-4"><div className="text-xs text-slate-500">持續接受評估的策略</div><div className="mt-2 font-mono text-2xl text-cyan-200">{visibleRows.length}</div><div className="mt-1 text-xs text-slate-500">共用同一條推薦／評估資料流；待買權重 0% 仍持續學習</div></div>
               <div className="rounded-xl border border-slate-800 bg-slate-950/70 p-4"><div className="text-xs text-slate-500">升級／續留勝率門檻</div><div className="mt-2 font-mono text-xl text-slate-100">52% / 48%</div><div className="mt-1 text-xs text-slate-500">候選策略至少 52%；現任策略至少 48%</div></div>
               <div className="rounded-xl border border-slate-800 bg-slate-950/70 p-4"><div className="text-xs text-slate-500">待買政策預覽</div><div className="mt-2 flex items-center gap-2 font-mono text-lg text-slate-100"><ShieldCheck className="h-4 w-4" /> {statusLabel(policy?.status ?? 'unavailable')}</div><div className="mt-1 text-xs text-slate-500">{policy?.evidence.production_effect ? '會影響待買資格' : '只做影子觀察'}；此頁只讀、不會直接改權重</div></div>
@@ -713,15 +717,15 @@ export default function StrategyLearningPage() {
             <section className="grid gap-3 lg:grid-cols-3">
               <article className="rounded-2xl border border-emerald-400/25 bg-emerald-400/[0.06] p-4">
                 <div className="flex items-center justify-between gap-2"><h2 className="font-semibold text-emerald-100">正式：Adaptive policy</h2><Badge variant="outline" className={statusClass(strategyLanes?.formal.status ?? 'unavailable')}>{strategyLanes?.formal.production_effect ? '有 production 權限' : '權限資料未取得'}</Badge></div>
-                <p className="mt-2 text-xs leading-5 text-slate-400">目前唯一能改待買資格與策略相對權重的機制。版本 {strategyLanes?.formal.version ?? '資料尚未具備'}；證據截止 {strategyLanes?.formal.as_of_date ?? '資料尚未具備'}。</p>
+                <p className="mt-2 text-xs leading-5 text-slate-400">正式 firewall 負責最後待買資格與相對權重；multi-horizon evidence 是其中的正式輸入。版本 {strategyLanes?.formal.version ?? '資料尚未具備'}；證據截止 {strategyLanes?.formal.as_of_date ?? '資料尚未具備'}。</p>
               </article>
               <article className="rounded-2xl border border-cyan-400/25 bg-cyan-400/[0.06] p-4">
                 <div className="flex items-center justify-between gap-2"><h2 className="font-semibold text-cyan-100">Shadow A：各策略門檻／路由</h2><Badge variant="outline" className={statusClass(strategyLanes?.threshold_route_shadow.status ?? 'not_ready')}>只比較，不改 production</Badge></div>
                 <p className="mt-2 text-xs leading-5 text-slate-400">測試每個策略自己的命中門檻與送評路由。目前成熟交易日 <span className="font-mono text-cyan-100">{strategyLanes?.threshold_route_shadow.mature_dates ?? 0} / {strategyLanes?.threshold_route_shadow.required_mature_dates ?? 11}</span>；滿 11 日後仍須通過扣成本 LCB90、殘差優勢與校準誤差，才可申請取代。</p>
               </article>
               <article className="rounded-2xl border border-violet-400/25 bg-violet-400/[0.06] p-4">
-                <div className="flex items-center justify-between gap-2"><h2 className="font-semibold text-violet-100">Shadow B：3／5／10 日策略證據</h2><Badge variant="outline" className="border-violet-400/30 bg-violet-400/10 text-violet-200">{strategyLanes?.multi_horizon_shadow.production_effect ? '已融合正式 owner' : strategyLanes?.multi_horizon_shadow.production_integration_ready ? '已就緒，待正式 policy closure' : '結果資料已齊，指標建置中'}</Badge></div>
-                <p className="mt-2 text-xs leading-5 text-slate-400">各策略今晚打標本來就使用自己的特徵與門檻；Shadow B 負責用適合該策略的 3、5 或 10 日結果窗評估表現。主週期結果已具資料的 profile：<span className="font-mono text-violet-100">{strategyLanes?.multi_horizon_shadow.ready_primary_profiles ?? 0} / {strategyLanes?.multi_horizon_shadow.total_profiles ?? profiles.length}</span>。</p>
+                <div className="flex items-center justify-between gap-2"><h2 className="font-semibold text-violet-100">正式：Multi-horizon evidence（原 Shadow B）</h2><Badge variant="outline" className="border-violet-400/30 bg-violet-400/10 text-violet-200">{strategyLanes?.multi_horizon_shadow.production_effect ? '正式 evidence owner' : strategyLanes?.multi_horizon_shadow.production_integration_ready ? '已就緒，待正式 policy closure' : '結果資料已齊，指標建置中'}</Badge></div>
+                <p className="mt-2 text-xs leading-5 text-slate-400">依策略特性使用 3、5 或 10 日結果窗評估；fully ready 才以 bounded multiplier 加減正式權重，未成熟保持 1.0 中性。主週期結果已具資料的 profile：<span className="font-mono text-violet-100">{strategyLanes?.multi_horizon_shadow.ready_primary_profiles ?? 0} / {strategyLanes?.multi_horizon_shadow.total_profiles ?? profiles.length}</span>。</p>
                 <p className="mt-1 text-[11px] text-slate-500">已完整算出全部必要指標的策略 profile：{strategyLanes?.multi_horizon_shadow.metric_materialized_profiles ?? 0} / {strategyLanes?.multi_horizon_shadow.total_profiles ?? profiles.length}；連同樣本門檻都成熟：{strategyLanes?.multi_horizon_shadow.metric_ready_profiles ?? 0}。仍有 {strategyLanes?.multi_horizon_shadow.missing_required_metrics?.length ?? 0} 種正式資料依賴待關閉；{strategyLanes?.multi_horizon_shadow.production_effect ? '正式 owner 已依 metric status 吸收策略專屬證據；樣本不足或不可計算維持中性，不會被當成 0 分。' : '完成 policy lineage closure 前不改正式待買權重。'}</p>
                 <p className="mt-1 text-[11px] text-slate-500">物化筆數：{(strategyLanes?.multi_horizon_shadow.horizon_coverage ?? []).map((row) => `${row.horizon_days} 日 ${row.outcome_rows}`).join(' · ') || '尚未開始'}</p>
               </article>

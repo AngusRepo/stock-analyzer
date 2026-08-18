@@ -458,8 +458,8 @@ adminReadRoutes.get('/api/admin/strategy/evidence-profiles', async (c) => {
         authority: 'comparison_only',
       },
       multi_horizon_shadow: {
-        lane_id: 'strategy_multi_horizon_evidence_shadow',
-        label: 'Shadow B：策略專屬 3／5／10 日證據',
+        lane_id: 'strategy_multi_horizon_formal_evidence',
+        label: 'Multi-horizon formal evidence：策略專屬 3／5／10 日證據',
         version: STRATEGY_EVIDENCE_PROFILE_VERSION,
         status: formalOwnerIntegrated
           ? 'owner_integrated'
@@ -473,7 +473,9 @@ adminReadRoutes.get('/api/admin/strategy/evidence-profiles', async (c) => {
         outcome_data_ready: completeHorizonCoverage && primaryProfilesReady === profiles.length,
         production_integration_ready: completeHorizonCoverage
           && evidenceOwnerSnapshot.integration_ready,
-        production_owner: 'strategy-adaptive-lifecycle-v2',
+        production_owner: formalOwnerIntegrated
+          ? 'strategy-production-contribution-firewall-v3'
+          : 'strategy-adaptive-lifecycle-v2',
         materialized_metrics: materializedMultiHorizonMetrics,
         missing_required_metrics: missingMultiHorizonMetrics,
         metric_materialized_profiles: metricMaterializedProfiles,
@@ -485,7 +487,16 @@ adminReadRoutes.get('/api/admin/strategy/evidence-profiles', async (c) => {
         authority: formalOwnerIntegrated ? 'formal_owner' : 'formal_owner_input_pending_policy_closure',
       },
     },
-    profiles: profilesWithMetrics,
+    profiles: profilesWithMetrics.map((profile) => ({
+      ...profile,
+      production_authority: profile.strategy_status !== 'active'
+        ? 'comparison_only'
+        : formalOwnerIntegrated
+          ? 'formal_owner_input_active'
+          : evidenceOwnerSnapshot.integration_ready
+            ? 'formal_owner_input_ready'
+            : 'comparison_only',
+    })),
   })
 })
 

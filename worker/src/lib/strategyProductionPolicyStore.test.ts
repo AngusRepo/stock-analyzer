@@ -4,6 +4,7 @@ import { buildStrategyProductionContributionFirewall } from './strategyProductio
 import {
   STRATEGY_PRODUCTION_POLICY_POINT_IN_TIME_SQL,
   deserializeLegacyStrategyProductionWeightsRow,
+  deserializePreviousStrategyProductionPolicyRow,
   deserializeStrategyProductionPolicyRow,
   hasPositiveStrategyAllocation,
   resolveLegacyImplicitUnitWeightsBeforeFirewall,
@@ -48,6 +49,32 @@ async function main(): Promise<void> {
 
   assert.deepEqual(loaded.state.strategy_weights, { 'active-a': 1, 'active-b': 0 })
   assert.equal(loaded.checksum, checksum)
+  const previous = deserializePreviousStrategyProductionPolicyRow({
+    policy_id: 'strategy-production-contribution-firewall-v2',
+    knowledge_cutoff_date: '2026-08-18',
+    version: 2,
+    status: 'active',
+    strategy_weights_json: JSON.stringify({ 'active-a': 1, 'active-b': 0 }),
+    quarantined_strategy_ids_json: JSON.stringify(['active-b']),
+    candidate_ready_strategy_ids_json: '[]',
+    base_weight_source: 'adaptive_strategy_policy_v2',
+    base_weight_run_id: 'adaptive|strategy-evidence-owner-fusion-v1:checksum',
+    evidence_json: JSON.stringify({
+      production_effect: true,
+      safety_reducing_only: true,
+      raw_labels_preserved: true,
+      experimental_threshold_deltas_applied: false,
+      complete_non_retired_weight_map: true,
+      allocation_eligibility_contract_version: 'strategy-allocation-eligibility-v2',
+      normalized_promoted_weights: true,
+      positive_weight_count: 1,
+    }),
+    canonical_payload: '{}',
+    checksum: 'previous-checksum',
+    created_at: '2026-08-18T06:00:00.000Z',
+  }, ['active-a', 'active-b'])
+  assert.equal(previous.state.policy_id, 'strategy-production-contribution-firewall-v2')
+  assert.deepEqual(previous.state.strategy_weights, { 'active-a': 1, 'active-b': 0 })
   assert.match(STRATEGY_PRODUCTION_POLICY_POINT_IN_TIME_SQL, /knowledge_cutoff_date\s*<\s*\?/)
   assert.throws(
     () => deserializeStrategyProductionPolicyRow({

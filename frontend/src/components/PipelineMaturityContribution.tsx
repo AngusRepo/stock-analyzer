@@ -204,6 +204,7 @@ function StageRow({ stage }: { stage: PipelineMaturityStage }) {
   const blockerGroups = stage.blocker_groups?.length
     ? stage.blocker_groups
     : [{ scope: 'stage', title: 'Blockers', blockers: stage.blockers }]
+  const scopedCandidateStage = stage.id === 'l4' || stage.id === 'fusion'
   const evidenceScopes = stage.lineage.evidence_scopes
   const productionServingState = evidenceScopes?.serving_pointer
     ? evidenceScopes.serving_pointer.artifact_state === 'safe_abstention'
@@ -344,7 +345,14 @@ function StageRow({ stage }: { stage: PipelineMaturityStage }) {
 
           <div className="min-w-0 space-y-3">
             <div>
-              <p className="text-xs font-semibold text-slate-500">尚未通過的必要條件</p>
+              <p className="text-xs font-semibold text-slate-500">
+                {scopedCandidateStage ? '分範圍的未通過條件' : '尚未通過的必要條件'}
+              </p>
+              {scopedCandidateStage ? (
+                <p className="mt-1 text-[11px] leading-4 text-slate-600">
+                  離線候選門檻只決定候選能否升級，不等於目前 production 被擋；正式狀態請以 Production serving pointer 範圍為準。
+                </p>
+              ) : null}
               {blockerGroups.some((group) => group.blockers.length) ? (
                 <div className="mt-2 space-y-3">
                   {blockerGroups.map((group) => (

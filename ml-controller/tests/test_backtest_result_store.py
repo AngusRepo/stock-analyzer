@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import sys
+from datetime import date, timedelta
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -9,6 +10,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from services.backtest_result_store import build_replay_backtest_insert
 from services.backtest_trade_evidence import (
+    decode_backtest_portfolio_return_evidence,
     decode_backtest_trade_evidence,
     resolve_backtest_evidence_run_date,
 )
@@ -48,6 +50,12 @@ def test_build_replay_backtest_insert_preserves_mode_b_and_regime_arrays():
         absolute_confidence="moderate",
         sanity_flags=[],
         partition_returns=[0.01, 0.02],
+        initial_capital=1_000_000.0,
+        equity_curve=[
+            ("2026-04-01", 1_010_000.0),
+            ("2026-04-02", 999_900.0),
+            ("2026-04-03", 1_019_898.0),
+        ],
         trades=[_trade("2330", 0.03, "green"), _trade("2317", -0.01, "red")],
     )
 
@@ -78,6 +86,8 @@ def test_build_replay_backtest_insert_preserves_mode_b_and_regime_arrays():
     evidence = decode_backtest_trade_evidence(raw)
     assert [trade["profit_ratio"] for trade in evidence] == [0.03, -0.01]
     assert [trade["entry_regime"] for trade in evidence] == ["green", "red"]
+    portfolio = decode_backtest_portfolio_return_evidence(raw)
+    assert [round(row["portfolio_return"], 6) for row in portfolio] == [0.01, -0.01, 0.02]
     assert raw["trades_complete"] is True
     assert raw["partition_returns"] == [0.01, 0.02]
     assert raw["absolute_confidence"] == "moderate"
@@ -90,6 +100,11 @@ def test_build_replay_backtest_insert_preserves_mode_b_and_regime_arrays():
 
 def test_backtest_evidence_can_grow_past_default_limit_without_sampling_exact_fields():
     trades = [_trade(f"{index:04d}", 0.01 if index % 2 else -0.005, "green") for index in range(500)]
+    start = date(2024, 1, 1)
+    equity_curve = [
+        ((start + timedelta(days=index)).isoformat(), 1_000_000.0 * (1.0002 ** (index + 1)))
+        for index in range(875)
+    ]
     metrics = SimpleNamespace(
         mode="B",
         start_date="2026-01-01",
@@ -108,6 +123,8 @@ def test_backtest_evidence_can_grow_past_default_limit_without_sampling_exact_fi
         absolute_confidence="moderate",
         sanity_flags=[],
         partition_returns=[],
+        initial_capital=1_000_000.0,
+        equity_curve=equity_curve,
         trades=trades,
     )
 
@@ -118,11 +135,14 @@ def test_backtest_evidence_can_grow_past_default_limit_without_sampling_exact_fi
 
     encoded = params[-1]
     raw = json.loads(encoded)
-    assert len(encoded.encode("utf-8")) < 50_000
+    assert len(encoded.encode("utf-8")) < 1_000_000
     evidence = decode_backtest_trade_evidence(raw)
     assert [trade["profit_ratio"] for trade in evidence] == [trade.profit_ratio for trade in trades]
     assert [trade["entry_regime"] for trade in evidence] == [trade.entry_regime for trade in trades]
     assert len(evidence) == len(trades)
+    portfolio = decode_backtest_portfolio_return_evidence(raw)
+    assert len(portfolio) == len(equity_curve)
+    assert all(round(row["portfolio_return"], 7) == 0.0002 for row in portfolio)
     assert len(raw["trades"]) == 100
     assert raw["trades_complete"] is False
 

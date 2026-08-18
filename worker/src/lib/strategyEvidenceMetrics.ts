@@ -61,11 +61,29 @@ export function joinStrategyEvidenceObservations(
   matrixRows: StrategyEvidenceMatrixRow[],
   outcomeRows: StrategyEvidenceOutcomeRow[],
 ): StrategyEvidenceObservation[] {
+  return joinStrategyEvidenceObservationsFromIndex(
+    matrixRows,
+    indexStrategyEvidenceOutcomes(outcomeRows),
+  )
+}
+
+function indexStrategyEvidenceOutcomes(
+  outcomeRows: StrategyEvidenceOutcomeRow[],
+): Map<string, StrategyEvidenceOutcomeRow[]> {
   const outcomesBySelection = new Map<string, StrategyEvidenceOutcomeRow[]>()
   for (const outcome of outcomeRows) {
     const key = strategyEvidenceJoinKey(outcome)
-    outcomesBySelection.set(key, [...(outcomesBySelection.get(key) ?? []), outcome])
+    const existing = outcomesBySelection.get(key)
+    if (existing) existing.push(outcome)
+    else outcomesBySelection.set(key, [outcome])
   }
+  return outcomesBySelection
+}
+
+function joinStrategyEvidenceObservationsFromIndex(
+  matrixRows: StrategyEvidenceMatrixRow[],
+  outcomesBySelection: Map<string, StrategyEvidenceOutcomeRow[]>,
+): StrategyEvidenceObservation[] {
   return matrixRows.flatMap((matrix) => (
     (outcomesBySelection.get(strategyEvidenceJoinKey(matrix)) ?? []).map((outcome) => ({ ...matrix, ...outcome }))
   ))
@@ -480,6 +498,9 @@ async function loadObservationsAcrossDatabases(
   }
 
   const observations: StrategyEvidenceObservation[] = []
+  // Build the cross-D1 outcome index once. Rebuilding all outcomes for every
+  // matrix page made the post-verify Worker CPU cost O(pages * outcomes).
+  const outcomesBySelection = indexStrategyEvidenceOutcomes(outcomeRows)
   let matrixRowId = 0
   for (;;) {
     const page = await matrixDb.prepare(`
@@ -492,7 +513,7 @@ async function loadObservationsAcrossDatabases(
        LIMIT 2000
     `).bind(matrixRowId).all<StrategyEvidenceMatrixRow & { source_row_id: number }>()
     const rows = page.results ?? []
-    observations.push(...joinStrategyEvidenceObservations(rows, outcomeRows))
+    observations.push(...joinStrategyEvidenceObservationsFromIndex(rows, outcomesBySelection))
     if (rows.length < 2000) break
     matrixRowId = Number(rows.at(-1)!.source_row_id)
   }

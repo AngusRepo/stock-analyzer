@@ -34,6 +34,8 @@ const metricSource = fs.readFileSync('src/lib/strategyEvidenceMetrics.ts', 'utf8
 assert(metricSource.includes("sourceMode?: 'authority_bridge' | 'learning_target'"))
 assert(metricSource.includes("throw new Error('strategy_evidence_metric_learning_target_missing')"))
 assert(metricSource.includes("const observationDb = targetJoinRequested ? learningTargetDb! : authorityDb"))
+assert(metricSource.includes('const outcomesBySelection = indexStrategyEvidenceOutcomes(outcomeRows)'))
+assert(!metricSource.includes('joinStrategyEvidenceObservations(rows, outcomeRows)'))
 
 function observations(strategyId: string, strategyVersion: string, strategyStatus: string, alphaBucket: string): StrategyEvidenceObservation[] {
   const rows: StrategyEvidenceObservation[] = []

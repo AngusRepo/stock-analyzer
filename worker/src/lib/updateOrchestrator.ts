@@ -3023,7 +3023,7 @@ export async function processUpdateBatch(
       asOfDate: signalDate,
       maxDates: Math.max(1, Math.min(5, Number(msg.strategyEvidenceMaxDates ?? 1))),
       priorityDate: signalDate,
-      priorityOnly: true,
+      priorityOnly: false,
       resolveHistoricalRegime: (date) => readHistoricalHmmRegimeFamily(env.KV, date),
       resolveCanonicalScreenerRunIds: async (asOfDate) => {
         const { loadCanonicalScreenerRunIds } = await import('./historicalScreenerArtifactEvidence')

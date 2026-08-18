@@ -93,6 +93,8 @@ assert(orchestrator.includes('loadCanonicalScreenerRunIds')
   && adminTasks.includes('loadCanonicalScreenerRunIds')
   && adminWrite.includes('loadCanonicalScreenerRunIds'),
   'queue, finalizers, and admin dry-runs must resolve canonical screener authority from Ops D1')
+assert(orchestrator.includes("msg.type === 'strategy_evidence_rebuild'") && orchestrator.includes('priorityOnly: false'),
+  'explicit maintenance rebuild queues must validate the full canonical matrix instead of using the live-finalizer success fast path')
 assert(historicalRebuild.includes('superseded_by_strategy_decision_log_pit_reconstruction_v5'),
   'legacy ready matrices must be durably superseded before V5 replacement')
 assert(historicalRebuild.includes('existingMatrixMatchedRows > 0'),

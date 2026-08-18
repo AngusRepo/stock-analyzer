@@ -15,7 +15,11 @@ export type EveningChainRunAuthority = {
 
 export async function resolveEveningChainRunAuthority(
   env: Pick<Bindings, 'DB' | 'KV'>,
-  input: { businessDate: string; canonicalRunId: string },
+  input: {
+    businessDate: string
+    canonicalRunId: string
+    authorityStage?: 'post_verify_chain' | 'screener_v2'
+  },
 ): Promise<EveningChainRunAuthority> {
   if (!/^\d{4}-\d{2}-\d{2}$/.test(input.businessDate) || !input.canonicalRunId.trim()) {
     return {
@@ -28,15 +32,16 @@ export async function resolveEveningChainRunAuthority(
     }
   }
 
+  const authorityStage = input.authorityStage ?? 'post_verify_chain'
   const stage = await databaseForDataDomain(env, 'ops').prepare(`
     SELECT queued_at,
            date(queued_at, '+8 hours') AS queued_taipei_date
       FROM pipeline_stage_runs
      WHERE business_date=?
-       AND stage='post_verify_chain'
+       AND stage=?
        AND canonical_run_id=?
      LIMIT 1
-  `).bind(input.businessDate, input.canonicalRunId).first<{
+  `).bind(input.businessDate, authorityStage, input.canonicalRunId).first<{
     queued_at?: string | null
     queued_taipei_date?: string | null
   }>()
@@ -46,7 +51,9 @@ export async function resolveEveningChainRunAuthority(
     return {
       allowed: false,
       runScope: 'historical_replay',
-      reason: 'canonical_post_verify_stage_missing',
+      reason: authorityStage === 'post_verify_chain'
+        ? 'canonical_post_verify_stage_missing'
+        : 'canonical_screener_v2_stage_missing',
       queuedAt,
       queuedTaipeiDate,
       nextSessionOpenUtc: null,

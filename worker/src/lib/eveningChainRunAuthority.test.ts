@@ -23,7 +23,7 @@ function fakeDb(options: FakeDbOptions): D1Database {
                 return { started_at: options.startedAt ?? null }
               }
               if (sql.includes('pipeline_stage_runs')) {
-                if (String(values[1] ?? '') !== String(options.expectedRunId ?? '')) return null
+                if (String(values.at(-1) ?? '') !== String(options.expectedRunId ?? '')) return null
                 return {
                   queued_at: options.queuedAt ?? null,
                   queued_taipei_date: options.queuedTaipeiDate ?? null,
@@ -62,6 +62,14 @@ try {
   assert.equal(allowed.runScope, 'live_canonical')
   assert.equal(allowed.reason, 'pre_next_session_open_historical_write_window')
   assert.equal(allowed.nextSessionOpenUtc, '2026-07-31T01:00:00.000Z')
+
+  const screenerAllowed = await resolveEveningChainRunAuthority(env, {
+    businessDate: '2026-07-30',
+    canonicalRunId: 'verify-2026-07-30-canonical',
+    authorityStage: 'screener_v2',
+  })
+  assert.equal(screenerAllowed.allowed, true)
+  assert.equal(screenerAllowed.runScope, 'live_canonical')
 
   const wrongRun = await resolveEveningChainRunAuthority(env, {
     businessDate: '2026-07-30',

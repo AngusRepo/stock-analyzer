@@ -70,7 +70,7 @@ async function loadCanonicalChainRunId(db: D1Database, businessDate: string): Pr
   const row = await db.prepare(`
     SELECT canonical_run_id
       FROM pipeline_stage_runs
-     WHERE business_date=? AND stage='post_verify_chain'
+     WHERE business_date=? AND stage='screener_v2'
      ORDER BY updated_at DESC
      LIMIT 1
   `).bind(businessDate).first<{ canonical_run_id?: string | null }>()
@@ -316,9 +316,13 @@ export async function runScreenerRecoveryWatchdog(
     throw new Error(`invalid_screener_watchdog_date:${businessDate}`)
   }
   const canonicalRunId = await loadCanonicalChainRunId(env.DB, businessDate)
-  if (!canonicalRunId) return `SKIPPED canonical post-verify run missing for ${businessDate}`
+  if (!canonicalRunId) return `SKIPPED canonical screener run missing for ${businessDate}`
 
-  const authority = await resolveEveningChainRunAuthority(env, { businessDate, canonicalRunId })
+  const authority = await resolveEveningChainRunAuthority(env, {
+    businessDate,
+    canonicalRunId,
+    authorityStage: 'screener_v2',
+  })
   if (!authority.allowed) {
     return `SKIPPED screener recovery authority denied: ${authority.reason}`
   }

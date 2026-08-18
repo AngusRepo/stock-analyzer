@@ -3025,6 +3025,10 @@ export async function processUpdateBatch(
       priorityDate: signalDate,
       priorityOnly: true,
       resolveHistoricalRegime: (date) => readHistoricalHmmRegimeFamily(env.KV, date),
+      resolveCanonicalScreenerRunIds: async (asOfDate) => {
+        const { loadCanonicalScreenerRunIds } = await import('./historicalScreenerArtifactEvidence')
+        return loadCanonicalScreenerRunIds(env, asOfDate)
+      },
       resolveHistoricalArtifactEvidence: async (date, producerRunId) => {
         const { loadHistoricalScreenerArtifactEvidence } = await import('./historicalScreenerArtifactEvidence')
         return loadHistoricalScreenerArtifactEvidence(env, date, producerRunId)
@@ -3728,6 +3732,10 @@ export async function processUpdateBatch(
           assertLease: assertFinalizerLease,
           onStageTransition: logFinalizerStage,
           onStageComplete: persistFinalizerStage,
+          resolveCanonicalScreenerRunIds: async (asOfDate) => {
+            const { loadCanonicalScreenerRunIds } = await import('./historicalScreenerArtifactEvidence')
+            return loadCanonicalScreenerRunIds(env, asOfDate)
+          },
           resolveHistoricalRegime: async (signalDate) => {
             const { readHistoricalHmmRegimeFamily } = await import('./marketRegimeState')
             return readHistoricalHmmRegimeFamily(env.KV, signalDate)

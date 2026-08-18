@@ -23,6 +23,24 @@ type ArtifactIndexRow = {
   canonical_at: string
 }
 
+export async function loadCanonicalScreenerRunIds(
+  env: Pick<Bindings, 'DB' | 'OPS_DB'>,
+  asOfDate: string,
+): Promise<Record<string, string>> {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(asOfDate)) return {}
+  const opsDb = databaseForDataDomain(env as Bindings, 'ops')
+  const result = await opsDb.prepare(`
+    SELECT substr(logical_run_key, 10, 10) AS signal_date, run_id
+      FROM canonical_run_heads
+     WHERE logical_run_key LIKE 'screener:%:TW:production:market_screener'
+       AND substr(logical_run_key, 10, 10) <= ?
+     ORDER BY signal_date DESC
+  `).bind(asOfDate).all<{ signal_date: string; run_id: string }>().catch(() => ({ results: [] }))
+  return Object.fromEntries((result.results ?? [])
+    .filter((row) => /^\d{4}-\d{2}-\d{2}$/.test(row.signal_date) && Boolean(row.run_id))
+    .map((row) => [row.signal_date, row.run_id]))
+}
+
 function finiteInteger(value: unknown): number | null {
   const parsed = Number(value)
   return Number.isInteger(parsed) && parsed > 0 ? parsed : null

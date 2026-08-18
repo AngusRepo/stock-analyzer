@@ -455,6 +455,10 @@ export function buildAdminWorkerDomainTaskMap(c: any, deps: TriggerDeps): Record
             persistPolicy: currentBusinessDateRun,
             historicalPriorityDate,
             assertLease: assertFinalizerLease,
+            resolveCanonicalScreenerRunIds: async (asOfDate) => {
+              const { loadCanonicalScreenerRunIds } = await import('./historicalScreenerArtifactEvidence')
+              return loadCanonicalScreenerRunIds(c.env, asOfDate)
+            },
             resolveHistoricalRegime: async (signalDate) => {
               const { readHistoricalHmmRegimeFamily } = await import('./marketRegimeState')
               return readHistoricalHmmRegimeFamily(c.env.KV, signalDate)

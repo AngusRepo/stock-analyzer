@@ -1,7 +1,10 @@
 import assert from 'node:assert/strict'
 import { createHash } from 'node:crypto'
 
-import { loadHistoricalScreenerArtifactEvidence } from './historicalScreenerArtifactEvidence'
+import {
+  loadCanonicalScreenerRunIds,
+  loadHistoricalScreenerArtifactEvidence,
+} from './historicalScreenerArtifactEvidence'
 
 const signalDate = '2026-07-30'
 const producerRunId = 'screener-2026-07-30-canonical'
@@ -54,6 +57,18 @@ async function main() {
   assert.equal(verified?.source_labeler_version, 'strategy-labeler-v1')
   assert.equal(verified?.candidate_count, 590)
   assert.equal(verified?.strategy_count, 27)
+
+  const canonicalRunIds = await loadCanonicalScreenerRunIds({
+    DB: {
+      prepare: () => ({
+        bind: () => ({
+          all: async () => ({ results: [{ signal_date: signalDate, run_id: producerRunId }] }),
+        }),
+      }),
+    },
+  } as any, signalDate)
+  assert.deepEqual(canonicalRunIds, { [signalDate]: producerRunId })
+
   assert.equal(verified?.expected_cell_count, 15930)
   assert.equal(verified?.matrix_coverage_ratio, 1)
   assert.equal(verified?.regime, 'sideways')

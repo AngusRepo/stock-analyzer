@@ -3325,23 +3325,39 @@ interface HistoricalStrategyContextRowV5 {
 
 export async function listHistoricalStrategyEvidenceV5Dates(
   db: D1Database,
-  options: { asOfDate: string; maxDates?: number; priorityDate?: string | null; priorityOnly?: boolean },
+  options: {
+    asOfDate: string
+    maxDates?: number
+    priorityDate?: string | null
+    priorityOnly?: boolean
+    resolveCanonicalScreenerRunIds?: (asOfDate: string) => Promise<Record<string, string>>
+  },
 ): Promise<string[]> {
   const maxDates = Math.max(1, Math.min(5, Math.floor(options.maxDates ?? 2)))
   if (options.priorityOnly) {
     const priorityDate = String(options.priorityDate ?? '').slice(0, 10)
     if (!/^\d{4}-\d{2}-\d{2}$/.test(priorityDate)) return []
     const ledger = await db.prepare(`
-      SELECT status, evaluation_contract_version, labeler_version
+      SELECT status, evaluation_contract_version, labeler_version, blocker_reason
         FROM strategy_evidence_rebuild_runs_v5
        WHERE signal_date=?
        LIMIT 1
-    `).bind(priorityDate).first<{ status: string; evaluation_contract_version: string | null; labeler_version: string | null }>()
+    `).bind(priorityDate).first<{
+      status: string
+      evaluation_contract_version: string | null
+      labeler_version: string | null
+      blocker_reason: string | null
+    }>()
     const ledgerStatus = String(ledger?.status ?? '')
     const evaluationCurrent = String(ledger?.evaluation_contract_version ?? '') === 'strategy-evaluation-v2'
     const labelerCurrent = String(ledger?.labeler_version ?? '') === STRATEGY_FORMAL_RECONSTRUCTION_LABELER_VERSION
+    const immutableV1CarrierRetry = ledgerStatus === 'blocked'
+      && String(ledger?.blocker_reason ?? '').startsWith(
+        `strategy_matrix_source_labeler_unsupported:${priorityDate}:strategy-decision-log-pit-reconstruction-v6`,
+      )
     if (evaluationCurrent && (
-      ledgerStatus === 'blocked' || (ledgerStatus === 'success' && labelerCurrent)
+      (ledgerStatus === 'blocked' && !immutableV1CarrierRetry)
+      || (ledgerStatus === 'success' && labelerCurrent)
     )) return []
     const decisionDate = await db.prepare(`
       SELECT date
@@ -3351,6 +3367,7 @@ export async function listHistoricalStrategyEvidenceV5Dates(
     `).bind(priorityDate).first<{ date: string }>()
     return decisionDate?.date === priorityDate ? [priorityDate] : []
   }
+  const canonicalRunIds = await options.resolveCanonicalScreenerRunIds?.(options.asOfDate) ?? {}
   const dateRows = await db.prepare(`
     WITH decision_dates AS (
       SELECT date
@@ -3405,9 +3422,9 @@ export async function listHistoricalStrategyEvidenceV5Dates(
               AND sr.strategy_challenger_affinity_version='strategy-threshold-margin-affinity-v2'
          )=mr.reference_candidate_count
          AND EXISTS (
-           SELECT 1 FROM canonical_run_heads h
-            WHERE h.logical_run_key='screener:' || mr.signal_date || ':TW:production:market_screener'
-              AND h.run_id=mr.producer_run_id
+           SELECT 1 FROM json_each(?) h
+            WHERE h.key=mr.signal_date
+              AND h.value=mr.producer_run_id
          )
        GROUP BY mr.signal_date
     )
@@ -3420,10 +3437,17 @@ export async function listHistoricalStrategyEvidenceV5Dates(
          OR COALESCE(r.evaluation_contract_version, '') <> 'strategy-evaluation-v2'
          OR r.status NOT IN ('success','blocked')
          OR (r.status='success' AND v.signal_date IS NULL)
+         OR (r.status='blocked' AND r.blocker_reason LIKE 'strategy_matrix_source_labeler_unsupported:%:strategy-decision-log-pit-reconstruction-v6')
        )
      ORDER BY CASE WHEN d.date=? THEN 0 ELSE 1 END, d.date DESC
      LIMIT ?
-  `).bind(options.asOfDate, options.asOfDate, options.priorityDate ?? '', maxDates).all<{ date: string }>()
+  `).bind(
+    options.asOfDate,
+    options.asOfDate,
+    JSON.stringify(canonicalRunIds),
+    options.priorityDate ?? '',
+    maxDates,
+  ).all<{ date: string }>()
   return (dateRows.results ?? []).map((row) => row.date)
 }
 
@@ -3434,6 +3458,7 @@ export async function rebuildHistoricalStrategyEvidenceV5(
     maxDates?: number
     priorityDate?: string | null
     priorityOnly?: boolean
+    resolveCanonicalScreenerRunIds?: (asOfDate: string) => Promise<Record<string, string>>
     resolveHistoricalRegime?: (signalDate: string) => Promise<string | null>
     resolveHistoricalArtifactEvidence?: (
       signalDate: string,
@@ -3443,6 +3468,7 @@ export async function rebuildHistoricalStrategyEvidenceV5(
 ): Promise<{ attemptedDates: number; successfulDates: number; blockedDates: number; rebuiltDecisions: number; rebuiltMatrixRows: number }> {
   await ensureStrategyLearningTables(db)
   const candidateDates = await listHistoricalStrategyEvidenceV5Dates(db, options)
+  const canonicalRunIds = await options.resolveCanonicalScreenerRunIds?.(options.asOfDate) ?? {}
   const { persistSelectionEvidenceV4, SELECTION_REFERENCE_CONTRACT_VERSION } = await import('./selectionReferenceEvidence')
   const {
     assessStrategyThresholdMarginAffinity,
@@ -3469,6 +3495,8 @@ export async function rebuildHistoricalStrategyEvidenceV5(
         evaluation_contract_version='strategy-evaluation-v2', blocker_reason=NULL, updated_at=CURRENT_TIMESTAMP
     `).bind(date, STRATEGY_EVIDENCE_RECONSTRUCTION_LABELER_VERSION).run()
     try {
+      const canonicalRunId = canonicalRunIds[date]
+      if (!canonicalRunId) throw new Error(`canonical_screener_run_missing:${date}`)
       const referencesResult = await db.prepare(`
         SELECT r.signal_date, r.symbol, r.producer_run_id, r.name, r.market_segment, r.sector,
                r.strategy_selected, r.selection_stage, r.rejection_reason, r.score_v2,
@@ -3478,13 +3506,9 @@ export async function rebuildHistoricalStrategyEvidenceV5(
           FROM selection_reference_snapshots_v1 r
          WHERE r.signal_date=?
            AND r.hard_gate_passed=1
-           AND EXISTS (
-             SELECT 1 FROM canonical_run_heads h
-              WHERE h.logical_run_key='screener:' || r.signal_date || ':TW:production:market_screener'
-                AND h.run_id=r.producer_run_id
-           )
+           AND r.producer_run_id=?
          ORDER BY r.symbol
-      `).bind(date).all<any>()
+      `).bind(date, canonicalRunId).all<any>()
       const referenceRows = referencesResult.results ?? []
       const producerRunIds = new Set(referenceRows.map((row) => cleanToken(row.producer_run_id)))
       const checksums = new Set(referenceRows.map((row) => cleanToken(row.strategy_registry_checksum)).filter(Boolean))
@@ -3986,6 +4010,7 @@ export async function rebuildHistoricalStrategyEvidenceV5(
     } catch (error) {
       const reason = error instanceof Error ? error.message.slice(0, 500) : String(error).slice(0, 500)
       const status = reason.startsWith('reference_lineage_incomplete')
+        || reason.startsWith('canonical_screener_run_missing')
         || reason.startsWith('decision_grid_incomplete')
         || reason.startsWith('matrix_strategy_spec_version_missing')
         || reason.startsWith('strategy_matrix_source_labeler_unsupported')
@@ -4077,6 +4102,7 @@ export async function finalizeStrategyLearningEvidenceV5(
     persistPolicy?: boolean
     beforePromotion?: () => Promise<unknown>
     historicalPriorityDate?: string | null
+    resolveCanonicalScreenerRunIds?: (asOfDate: string) => Promise<Record<string, string>>
     resolveHistoricalRegime?: (signalDate: string) => Promise<string | null>
     resolveHistoricalArtifactEvidence?: (
       signalDate: string,
@@ -4104,6 +4130,7 @@ export async function finalizeStrategyLearningEvidenceV5(
       maxDates: 1,
       priorityDate: options.historicalPriorityDate,
       priorityOnly: true,
+      resolveCanonicalScreenerRunIds: options.resolveCanonicalScreenerRunIds,
       resolveHistoricalRegime: options.resolveHistoricalRegime,
       resolveHistoricalArtifactEvidence: options.resolveHistoricalArtifactEvidence,
     }),
@@ -4185,6 +4212,7 @@ export async function runStrategyLearningClosure(
     persistPolicy?: boolean
     historicalPriorityDate?: string | null
     resolveHistoricalRegime?: (signalDate: string) => Promise<string | null>
+    resolveCanonicalScreenerRunIds?: (asOfDate: string) => Promise<Record<string, string>>
     resolveHistoricalArtifactEvidence?: (
       signalDate: string,
       producerRunId: string,

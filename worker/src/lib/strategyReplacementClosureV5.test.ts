@@ -10,6 +10,7 @@ const orchestrator = readFileSync('src/lib/updateOrchestrator.ts', 'utf8')
 const historicalArtifact = readFileSync('src/lib/historicalScreenerArtifactEvidence.ts', 'utf8')
 const adminTasks = readFileSync('src/lib/adminTriggerWorkerDomainTasks.ts', 'utf8')
 const selectionEvidence = readFileSync('src/lib/selectionReferenceEvidence.ts', 'utf8')
+const adminWrite = readFileSync('src/routes/adminWriteRoutes.ts', 'utf8')
 const routes = readFileSync('src/routes/other.ts', 'utf8')
 
 assert(migration.includes('evaluable INTEGER NOT NULL DEFAULT 0'), 'legacy strategy decisions must fail closed')
@@ -54,6 +55,12 @@ assert(
   !historicalRebuild.includes('legacy_strategy_matrix_pit_unavailable'),
   'legacy source identity must not circularly block PIT reconstruction when immutable candidate contexts are complete',
 )
+assert(historicalSelector.includes('FROM json_each(?) h')
+  && !historicalSelector.includes('FROM canonical_run_heads h'),
+  'historical date selection must receive canonical screener authority from Ops instead of querying an Ops table in Learning D1')
+assert(historicalRebuild.includes('r.producer_run_id=?')
+  && !historicalRebuild.includes('FROM canonical_run_heads h'),
+  'historical rebuild must bind the Ops-resolved canonical producer instead of cross-querying canonical_run_heads')
 assert(historicalRebuild.includes("productionPolicySourceLabeler === 'strategy-labeler-v1'"),
   'legacy label reconstruction must select the immutable v1 prior-policy identity explicitly')
 assert(historicalRebuild.includes("referenceLabeler === 'strategy-decision-log-pit-reconstruction-v6'")
@@ -82,6 +89,10 @@ assert(!historicalRebuild.includes('JOIN selection_reference_snapshots_v1 r'),
   'reference membership must use EXISTS so duplicate snapshots cannot multiply decision rows')
 assert.equal((historicalRebuild.match(/r\.hard_gate_passed=1/g) ?? []).length, 3,
   'reference, decision, and context sets must share the canonical L0 hard-gate predicate')
+assert(orchestrator.includes('loadCanonicalScreenerRunIds')
+  && adminTasks.includes('loadCanonicalScreenerRunIds')
+  && adminWrite.includes('loadCanonicalScreenerRunIds'),
+  'queue, finalizers, and admin dry-runs must resolve canonical screener authority from Ops D1')
 assert(historicalRebuild.includes('superseded_by_strategy_decision_log_pit_reconstruction_v5'),
   'legacy ready matrices must be durably superseded before V5 replacement')
 assert(historicalRebuild.includes('existingMatrixMatchedRows > 0'),

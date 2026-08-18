@@ -635,8 +635,13 @@ adminWriteRoutes.post('/api/admin/strategy/evidence-v5/rebuild', async (c) => {
   const dryRun = body.dry_run !== false
   const { listHistoricalStrategyEvidenceV5Dates } = await import('../lib/strategyLearning')
 
+  const { loadCanonicalScreenerRunIds } = await import('../lib/historicalScreenerArtifactEvidence')
   const candidateDates = await listHistoricalStrategyEvidenceV5Dates(
-    databaseForDataDomain(c.env, 'learning'), { asOfDate, maxDates },
+    databaseForDataDomain(c.env, 'learning'), {
+      asOfDate,
+      maxDates,
+      resolveCanonicalScreenerRunIds: (date) => loadCanonicalScreenerRunIds(c.env, date),
+    },
   )
   if (dryRun) {
     return c.json({

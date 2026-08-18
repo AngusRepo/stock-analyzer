@@ -48,7 +48,7 @@ function shiftUtcDate(date: string, days: number): string {
 export async function auditStrategyRouteBackfillEligibility(
   db: D1Database,
   asOfDate: string,
-  options: { startDate?: string; persist?: boolean } = {},
+  options: { startDate?: string; persist?: boolean; canonicalRunIds?: Record<string, string> } = {},
 ): Promise<StrategyRouteBackfillEligibility[]> {
   if (!/^\d{4}-\d{2}-\d{2}$/.test(asOfDate)) throw new Error(`invalid_strategy_route_eligibility_date:${asOfDate}`)
   const startDate = /^\d{4}-\d{2}-\d{2}$/.test(String(options.startDate ?? ''))
@@ -108,9 +108,8 @@ export async function auditStrategyRouteBackfillEligibility(
        AND r.hard_gate_passed=1
        AND r.feature_contract_version=?
        AND EXISTS (
-         SELECT 1 FROM canonical_run_heads h
-          WHERE h.logical_run_key='screener:' || r.signal_date || ':TW:production:market_screener'
-            AND h.run_id=r.producer_run_id
+         SELECT 1 FROM json_each(?) h
+          WHERE h.key=r.signal_date AND h.value=r.producer_run_id
        )
      GROUP BY r.signal_date, r.producer_run_id
      ORDER BY r.signal_date
@@ -123,6 +122,7 @@ export async function auditStrategyRouteBackfillEligibility(
     asOfDate,
     STRATEGY_ROUTE_CHALLENGER_VERSION,
     STRATEGY_ROUTE_CHALLENGER_VERSION,
+    JSON.stringify(options.canonicalRunIds ?? {}),
     startDate,
     asOfDate,
     SELECTION_REFERENCE_CONTRACT_VERSION,

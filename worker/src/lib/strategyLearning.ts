@@ -4313,7 +4313,7 @@ export async function finalizeStrategyLearningEvidenceV5(
   const { auditStrategyRouteBackfillEligibility } = await import('./strategyRouteBackfillEligibility')
   const routeBackfillEligibility = await runStrategyLearningFinalizerStage(
     'route_backfill_eligibility',
-    () => auditStrategyRouteBackfillEligibility(db, date),
+    () => auditStrategyRouteBackfillEligibility(db, date, { canonicalRunIds }),
     options,
   )
   if (options.beforePromotion) {

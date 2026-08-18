@@ -24,8 +24,9 @@ class FakeStatement {
 
 class FakeD1 {
   batches = 0
+  sqls: string[] = []
   constructor(readonly rows: Row[]) {}
-  prepare(sql: string): FakeStatement { return new FakeStatement(this, sql) }
+  prepare(sql: string): FakeStatement { this.sqls.push(sql); return new FakeStatement(this, sql) }
   async batch(statements: FakeStatement[]): Promise<unknown[]> {
     this.batches += 1
     assert(statements.every((statement) => statement.sql.includes('strategy_route_backfill_eligibility_v1')))
@@ -64,7 +65,11 @@ async function main(): Promise<void> {
     },
   ])
 
-  const rows = await auditStrategyRouteBackfillEligibility(db as unknown as D1Database, '2026-07-30')
+  const rows = await auditStrategyRouteBackfillEligibility(db as unknown as D1Database, '2026-07-30', {
+    canonicalRunIds: { '2026-07-15': 'run-15' },
+  })
+  assert(db.sqls[0].includes('FROM json_each(?)'))
+  assert(!db.sqls[0].includes('canonical_run_heads'))
 
   assert.equal(rows[0].status, 'eligible')
   assert.deepEqual(rows[0].blockers, [])

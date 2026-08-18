@@ -6,6 +6,10 @@ import {
   runMarketCloseRefresh,
   processUpdateBatch,
 } from './lib/updateOrchestrator'
+import {
+  indicatorQueueRetryDelaySeconds,
+  recordIndicatorQueueMessageFailure,
+} from './lib/indicatorQueueRecovery'
 import { runMorningWarmup } from './lib/localMaintenance'
 import {
   runDailyRecommendation,
@@ -195,8 +199,17 @@ export default {
         })
         msg.ack()
       } catch (e) {
-        console.error(`[Queue] Message failed, will retry:`, e)
-        msg.retry()
+        const attempts = Math.max(1, Number(msg.attempts ?? 1))
+        console.error(`[Queue] Message failed, will retry (attempt=${attempts}):`, e)
+        if (msg.body.type === 'update_batch') {
+          await recordIndicatorQueueMessageFailure(env, msg.body, e, attempts).catch((logError) => {
+            console.error('[Queue] Indicator failure receipt write failed:', logError)
+          })
+          const shardIndex = Number.isFinite(msg.body.shardIndex) ? Number(msg.body.shardIndex) : 0
+          msg.retry({ delaySeconds: indicatorQueueRetryDelaySeconds(attempts, shardIndex) })
+        } else {
+          msg.retry()
+        }
       }
     }
   },

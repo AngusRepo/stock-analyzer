@@ -40,6 +40,10 @@ export function buildAdminGcpTriggerTaskMap(c: any, deps: TriggerDeps): Record<s
       const { runFinLabBackfillWatchdog } = await import('./updateOrchestrator')
       return runFinLabBackfillWatchdog(c.env, requestedRunDate())
     },
+    'indicator-queue-watchdog': async () => {
+      const { runIndicatorQueueRecoveryWatchdog } = await import('./indicatorQueueRecovery')
+      return runIndicatorQueueRecoveryWatchdog(c.env, requestedRunDate())
+    },
     'active8-oof-lifecycle': async () => {
       const rawCadence = c.req.query('cadence')
       const cadence = rawCadence === 'monthly' ? 'monthly' : rawCadence === 'weekly' ? 'weekly' : 'daily'

@@ -38,6 +38,7 @@ const JOB_DEFS: JobDef[] = [
   { id: 'evening-chain', name: 'Evening Chain', schedule: 'Weekdays 21:00', cron: '0 13 * * 1-5', group: 'pipeline_chain', chainIndex: 2 },
   { id: 'finlab-v4-backfill', name: 'FinLab V4 Backfill', schedule: 'Inside evening chain', cron: '', group: 'pipeline_chain', chainIndex: 3 },
   { id: 'finlab-backfill-watchdog', name: 'FinLab Pending Watchdog', schedule: 'Weekdays 21:20-23:50 / 10m', cron: '*/10 13-15 * * 1-5', group: 'pipeline_chain', chainIndex: 3 },
+  { id: 'indicator-queue-watchdog', name: 'Indicator Queue Watchdog', schedule: 'Weekdays 21:00-01:55 / 5m', cron: '*/5 13-17 * * 1-5', group: 'pipeline_chain', chainIndex: 5 },
   { id: 'allocator-ev-lifecycle-watchdog', name: 'Allocator EV Lifecycle Watchdog', schedule: 'Weekdays 21:00-01:50 / 10m', cron: '*/10 13-17 * * 1-5', group: 'pipeline_chain', chainIndex: 13 },
   { id: 'active8-oof-daily', name: 'Active-8 OOF Materialize', schedule: 'Tue-Sat 01:55 (prior trading session)', cron: '55 17 * * 1-5', group: 'pipeline_chain' },
   { id: 'update', name: 'Market Data Update', schedule: 'After FinLab canonical ready', cron: '', group: 'pipeline_chain', chainIndex: 4 },

@@ -96,8 +96,9 @@ declare interface MessageBatch<T = unknown> {
 declare interface Message<T = unknown> {
   readonly id: string
   readonly timestamp: Date
+  readonly attempts: number
   readonly body: T
   ack(): void
-  retry(): void
+  retry(options?: { delaySeconds?: number }): void
 }
 

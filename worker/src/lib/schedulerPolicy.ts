@@ -31,6 +31,7 @@ export const TASK_POLICIES: Record<string, SchedulerTaskPolicy> = {
   'evening-chain': { kind: 'trading_day', holidayGated: true, description: 'post-market event-driven chain root' },
   'screener-v2-watchdog': { kind: 'trading_day', holidayGated: true, description: 'recover incomplete same-session screener funnel and callback stages' },
   'finlab-backfill-watchdog': { kind: 'trading_day', holidayGated: true, description: 'reclaim orphaned FinLab Modal pending dispatches' },
+  'indicator-queue-watchdog': { kind: 'trading_day', holidayGated: true, description: 'recover stale or dead-lettered indicator shards and orphaned finalizers' },
   'allocator-ev-lifecycle-watchdog': { kind: 'trading_day', holidayGated: true, description: 'recover incomplete allocator EV lineage, snapshot, verify, and replay stages' },
   'active8-oof-daily': { kind: 'maintenance', holidayGated: false, description: 'post-midnight continuation that materializes the prior session ready purged OOF cohort' },
   update: { kind: 'trading_day', holidayGated: true, description: 'post-market TWSE/TPEX market data update' },

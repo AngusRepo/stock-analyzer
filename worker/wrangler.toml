@@ -82,7 +82,8 @@ queue = "stockvision-news-queue"
 queue = "stockvision-update-queue"
 max_batch_size = 1
 max_batch_timeout = 10
-max_retries = 2
+max_retries = 8
+retry_delay = 30
 dead_letter_queue = "stockvision-update-queue-dlq"
 
 [[queues.consumers]]

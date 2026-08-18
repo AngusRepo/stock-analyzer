@@ -38,9 +38,13 @@ import {
   finLabRequiredFieldsForLane,
   finLabSentinelFieldForLane,
 } from './finlabSourceContract'
+import {
+  INDICATOR_QUEUE_SHARD_COUNT,
+  recordIndicatorQueueBatchProgress,
+} from './indicatorQueueRecovery'
 
 const UPDATE_BATCH_SIZE = 40
-const UPDATE_SHARD_COUNT = 4
+const UPDATE_SHARD_COUNT = INDICATOR_QUEUE_SHARD_COUNT
 const INDICATOR_BATCH_CONCURRENCY = 4
 const NEWS_BATCH_CONCURRENCY = 2
 const FINALIZE_RECHECK_DELAY_MS = 30_000
@@ -1618,10 +1622,16 @@ export async function runQueueUpdate(env: Bindings, runDate?: string, force = fa
         },
       })),
     )
+    await env.KV.put(
+      `cron:indicator-queue:${triggerTime}:${runId}:meta`,
+      JSON.stringify({ trigger_time: triggerTime, run_id: runId, shard_count: UPDATE_SHARD_COUNT, started_at: new Date().toISOString() }),
+      { expirationTtl: 7 * 86400 },
+    )
     await logSchedulerResult(env.KV, 'indicator-queue', {
       status: 'running',
       summary: `indicator queue started for ${triggerTime}; run_id=${runId}; shards=${UPDATE_SHARD_COUNT}`,
       duration_ms: 0,
+      run_id: runId,
       run_date: triggerTime,
     })
     await env.KV.put(lockKey, '1', { expirationTtl: 86400 })
@@ -1803,6 +1813,7 @@ async function runFinalizeContinuation(
     status: 'success',
     summary: `indicator queue complete for ${triggerTime}; run_id=${runId}; shards=${shardCount}; source=${source}`,
     duration_ms: 0,
+    run_id: runId,
     run_date: triggerTime,
   })
   try {
@@ -2091,6 +2102,7 @@ async function repairFinalizeContinuationIfNeeded(
       status: 'success',
       summary: `indicator queue finalizer repaired from existing lock for ${triggerTime}; run_id=${runId}; shards=${shardCount}`,
       duration_ms: 0,
+      run_id: runId,
       run_date: triggerTime,
     })
     await logSchedulerResult(env.KV, 'evening-chain', {
@@ -2348,6 +2360,7 @@ async function markShardComplete(
       status: 'running',
       summary: `indicator queue shards ${doneCount}/${shardCount} complete for ${triggerTime}; run_id=${runId}`,
       duration_ms: 0,
+      run_id: runId,
       run_date: triggerTime,
     })
     await env.UPDATE_QUEUE.send({
@@ -3970,6 +3983,7 @@ export async function processUpdateBatch(
       status: 'running',
       summary: `indicator queue finalize wait ${doneCount}/${shardCount} for ${triggerTime}; run_id=${runId}; attempt=${attempt}`,
       duration_ms: 0,
+      run_id: runId,
       run_date: triggerTime,
     })
 
@@ -4412,6 +4426,8 @@ export async function processUpdateBatch(
     })
     console.log(`[Queue] News batch queued: ${watchlistNewsStocks.length} watchlist stocks (shard=${shardIndex + 1}/${shardCount})`)
   }
+
+  await recordIndicatorQueueBatchProgress(env, msg, Number(lastId), hasMore)
 
   if (hasMore) {
     await env.UPDATE_QUEUE.send({

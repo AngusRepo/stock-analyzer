@@ -35,6 +35,7 @@ const TASK_NAMES: Record<string, string> = {
   'evening-chain': 'Evening Chain',
   update: 'Market Data Update',
   'indicator-queue': 'Indicator Queue',
+  'indicator-queue-watchdog': 'Indicator Queue Recovery Watchdog',
   'ml-warmup': 'ML Warmup',
   'post-pipeline-chain': 'Post Pipeline Chain',
   'post-verify-chain': 'Post Verify Chain',

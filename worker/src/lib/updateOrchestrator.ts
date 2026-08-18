@@ -1995,7 +1995,13 @@ async function renewFinalizeLock(
        AND run_id = ?
        AND expires_at > ?
   `).bind(expiresAt, lockKey, leaseOwner, triggerTime, runId, now).run()
-  return Number(result.meta?.changes ?? 0) > 0
+  if (Number(result.meta?.changes ?? 0) > 0) return true
+  // D1 can report a zero-change metadata result even when the existing lease
+  // remains owned and unexpired. Preserve fail-closed ownership semantics by
+  // validating the durable row before declaring the lease lost.
+  const current = await loadFinalizeLock(env, triggerTime, runId)
+  const currentExpiryMs = current?.expires_at ? Date.parse(current.expires_at) : NaN
+  return current?.owner === leaseOwner && Number.isFinite(currentExpiryMs) && currentExpiryMs > Date.now()
 }
 
 async function assertFinalizeLockRenewed(

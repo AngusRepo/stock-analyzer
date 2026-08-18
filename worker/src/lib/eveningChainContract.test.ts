@@ -65,6 +65,11 @@ assert(
 )
 
 const updateOrchestrator = fs.readFileSync('src/lib/updateOrchestrator.ts', 'utf8')
+assert(
+  updateOrchestrator.includes('const current = await loadFinalizeLock') &&
+    updateOrchestrator.includes('current?.owner === leaseOwner'),
+  'finalizer lease renewal must verify the durable owner before treating D1 zero-change metadata as lease loss',
+)
 const expectedReturnServingState = fs.readFileSync('src/lib/expectedReturnServingState.ts', 'utf8')
 const controllerDailyWorkflows = fs.readFileSync('src/lib/controllerDailyWorkflows.ts', 'utf8')
 assert(

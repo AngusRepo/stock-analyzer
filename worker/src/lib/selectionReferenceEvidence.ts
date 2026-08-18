@@ -312,24 +312,12 @@ export function buildSelectionEvidenceV4(input: {
 export async function reconcileSelectionDecisionEvidenceV4(
   db: D1Database,
   signalDate: string,
+  options: {
+    identityDb?: D1Database
+    canonicalProducerRunId?: string | null
+  } = {},
 ): Promise<{ referenceRows: number; mlEvaluatedRows: number; evOwnerRows: number; allocationSelectedRows: number; finalSignalRows: number }> {
-  const result = await db.prepare(`
-    SELECT r.symbol, r.producer_run_id, r.rejection_reason,
-           dr.ml_score, dr.ml_vote_summary, dr.alpha_allocation,
-           dr.signal, dr.score_components
-      FROM selection_reference_snapshots_v1 r
-      LEFT JOIN daily_recommendations dr
-        ON dr.date=r.signal_date AND dr.symbol=r.symbol
-     WHERE r.signal_date=?
-       AND r.strategy_labeled=1
-       AND r.strategy_matrix_status='ready'
-       AND EXISTS (
-         SELECT 1 FROM canonical_run_heads h
-          WHERE h.logical_run_key='screener:' || r.signal_date || ':TW:production:market_screener'
-            AND h.run_id=r.producer_run_id
-       )
-     ORDER BY r.symbol
-  `).bind(signalDate).all<{
+  type DecisionEvidenceRow = {
     symbol: string
     producer_run_id: string
     rejection_reason?: string | null
@@ -338,8 +326,62 @@ export async function reconcileSelectionDecisionEvidenceV4(
     alpha_allocation?: string | null
     signal?: string | null
     score_components?: string | null
-  }>()
-  const rows = result.results ?? []
+  }
+
+  let rows: DecisionEvidenceRow[]
+  if (options.identityDb && options.canonicalProducerRunId) {
+    const referenceResult = await db.prepare(`
+      SELECT symbol, producer_run_id, rejection_reason
+        FROM selection_reference_snapshots_v1
+       WHERE signal_date=?
+         AND producer_run_id=?
+         AND strategy_labeled=1
+         AND strategy_matrix_status='ready'
+       ORDER BY symbol
+    `).bind(signalDate, options.canonicalProducerRunId).all<DecisionEvidenceRow>()
+    const references = referenceResult.results ?? []
+    const recommendationBySymbol = new Map<string, DecisionEvidenceRow>()
+    const symbols = references.map((row) => clean(row.symbol)).filter(Boolean)
+    for (let offset = 0; offset < symbols.length; offset += 80) {
+      const chunk = symbols.slice(offset, offset + 80)
+      const placeholders = chunk.map(() => '?').join(', ')
+      const recommendationResult = await options.identityDb.prepare(`
+        SELECT symbol, ml_score, ml_vote_summary, alpha_allocation, signal, score_components
+          FROM daily_recommendations
+         WHERE date=?
+           AND symbol IN (${placeholders})
+      `).bind(signalDate, ...chunk).all<DecisionEvidenceRow>()
+      for (const row of recommendationResult.results ?? []) {
+        recommendationBySymbol.set(clean(row.symbol), row)
+      }
+    }
+    rows = references.map((reference) => ({
+      ...reference,
+      ...recommendationBySymbol.get(clean(reference.symbol)),
+      symbol: reference.symbol,
+      producer_run_id: reference.producer_run_id,
+      rejection_reason: reference.rejection_reason,
+    }))
+  } else {
+    const result = await db.prepare(`
+      SELECT r.symbol, r.producer_run_id, r.rejection_reason,
+             dr.ml_score, dr.ml_vote_summary, dr.alpha_allocation,
+             dr.signal, dr.score_components
+        FROM selection_reference_snapshots_v1 r
+        LEFT JOIN daily_recommendations dr
+          ON dr.date=r.signal_date AND dr.symbol=r.symbol
+       WHERE r.signal_date=?
+         AND r.strategy_labeled=1
+         AND r.strategy_matrix_status='ready'
+         AND EXISTS (
+           SELECT 1 FROM canonical_run_heads h
+            WHERE h.logical_run_key='screener:' || r.signal_date || ':TW:production:market_screener'
+              AND h.run_id=r.producer_run_id
+         )
+       ORDER BY r.symbol
+    `).bind(signalDate).all<DecisionEvidenceRow>()
+    rows = result.results ?? []
+  }
   let mlEvaluatedRows = 0
   let evOwnerRows = 0
   let allocationSelectedRows = 0

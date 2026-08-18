@@ -4279,7 +4279,10 @@ export async function finalizeStrategyLearningEvidenceV5(
   const canonicalRunIds = await options.resolveCanonicalScreenerRunIds?.(date)
   const decisionEvidence = await runStrategyLearningFinalizerStage(
     'decision_evidence',
-    () => reconcileSelectionDecisionEvidenceV4(db, date),
+    () => reconcileSelectionDecisionEvidenceV4(db, date, {
+      identityDb: options.identityDb,
+      canonicalProducerRunId: canonicalRunIds?.[date],
+    }),
     options,
   )
   const historicalEvidence = await runStrategyLearningFinalizerStage(

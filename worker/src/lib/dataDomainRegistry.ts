@@ -188,7 +188,7 @@ const DEFERRED_PRODUCTION_TABLE_OWNERSHIP: readonly TableOwnershipMetadata[] = [
   { table: 'model_lifecycle_events', domain: 'learning', disposition: 'legacy_only', route_ready: false, shadow_ready: false },
   { table: 'model_lifecycle_state', domain: 'learning', disposition: 'legacy_only', route_ready: false, shadow_ready: false },
   { table: 'persona_opinions', domain: 'learning', disposition: 'compact_projection', route_ready: false, shadow_ready: false },
-  { table: 'strategy_candidate_contexts', domain: 'learning', disposition: 'compact_projection', route_ready: false, shadow_ready: false },
+  { table: 'strategy_candidate_contexts', domain: 'learning', disposition: 'compact_projection', route_ready: true, shadow_ready: false },
   { table: 'strategy_threshold_calibration_artifacts', domain: 'learning', disposition: 'legacy_only', route_ready: false, shadow_ready: false },
   { table: 'strategy_threshold_calibration_runs', domain: 'learning', disposition: 'legacy_only', route_ready: false, shadow_ready: false },
 

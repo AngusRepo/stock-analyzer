@@ -93,8 +93,13 @@ const duplicateOwnership: TableOwnershipMetadata[] = [
 ]
 assert.throws(() => assertOwnershipEntries(duplicateOwnership), /duplicate_data_domain_ownership:duplicate_table:core\|ops/)
 
+assert.equal(tableOwnershipMetadata('strategy_candidate_contexts')?.route_ready, true,
+  'strategy candidate contexts must be materialized in the active Learning owner')
+assert.equal(tableOwnershipMetadata('strategy_candidate_contexts')?.shadow_ready, false,
+  'active-owner context materialization must not re-enter the inactive-only shadow backfill drain')
+
 const deferredProductionTables = productionTableNames.filter((table) => tableOwnershipMetadata(table)?.route_ready === false)
-assert.equal(deferredProductionTables.length, 70, 'production tables without target schema readiness require explicit review')
+assert.equal(deferredProductionTables.length, 69, 'production tables without target schema readiness require explicit review')
 assert.equal(
   deferredProductionTables.filter((table) => tableOwnershipMetadata(table)?.disposition === 'legacy_only').length,
   5,

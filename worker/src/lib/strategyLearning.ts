@@ -3478,6 +3478,7 @@ export async function rebuildHistoricalStrategyEvidenceV5(
   const {
     loadLegacyStrategyProductionWeightsBefore,
     loadStrategyProductionPolicyBefore,
+    resolveLegacyImplicitUnitWeightsBeforeFirewall,
   } = await import('./strategyProductionPolicyStore')
   let successfulDates = 0
   let blockedDates = 0
@@ -3583,6 +3584,39 @@ export async function rebuildHistoricalStrategyEvidenceV5(
         spec.id + '|' + spec.version,
         spec,
       ]))
+      const strategyIds = effectiveSpecs
+        .filter((spec) => spec.status !== 'retired')
+        .map((spec) => spec.id)
+      const productionPolicy = productionPolicySourceLabeler === 'strategy-labeler-v1'
+        ? await loadLegacyStrategyProductionWeightsBefore(db, date, strategyIds)
+        : await loadStrategyProductionPolicyBefore(db, date, strategyIds)
+      const implicitLegacyWeights = productionPolicy == null
+        && productionPolicySourceLabeler === 'strategy-labeler-v1'
+        ? resolveLegacyImplicitUnitWeightsBeforeFirewall(date, strategyIds)
+        : null
+      const strategyWeights = productionPolicy == null
+        ? implicitLegacyWeights?.strategy_weights
+        : 'state' in productionPolicy
+          ? productionPolicy.state.strategy_weights
+          : productionPolicy.strategy_weights
+      const productionWeightEvidence = productionPolicy == null
+        ? implicitLegacyWeights?.evidence ?? null
+        : 'state' in productionPolicy
+          ? {
+              source: 'persisted_strategy_production_policy' as const,
+              policy_id: productionPolicy.state.policy_id,
+              knowledge_cutoff_date: productionPolicy.state.knowledge_cutoff_date,
+              checksum: productionPolicy.checksum,
+            }
+          : {
+              source: 'persisted_strategy_production_policy' as const,
+              policy_id: productionPolicy.policy_id,
+              knowledge_cutoff_date: productionPolicy.knowledge_cutoff_date,
+              checksum: productionPolicy.checksum,
+            }
+      if (!strategyWeights || !productionWeightEvidence) {
+        throw new Error(`strategy_production_policy_pit_missing:${date}`)
+      }
       if (artifactBackedV1Carrier && (
         artifactEvidence.strategy_count !== strategyKeys.size
         || artifactEvidence.expected_cell_count !== expectedMatrixRows
@@ -3634,18 +3668,6 @@ export async function rebuildHistoricalStrategyEvidenceV5(
         if (projectionSourceReady && !artifactBackedV1Carrier) {
           const regime = await options.resolveHistoricalRegime?.(date) ?? artifactEvidence?.regime ?? null
           if (!regime) throw new Error(`strategy_regime_pit_missing:${date}`)
-          const strategyIds = effectiveSpecs
-            .filter((spec) => spec.status !== 'retired')
-            .map((spec) => spec.id)
-          const productionPolicy = productionPolicySourceLabeler === 'strategy-labeler-v1'
-            ? await loadLegacyStrategyProductionWeightsBefore(db, date, strategyIds)
-            : await loadStrategyProductionPolicyBefore(db, date, strategyIds)
-          const strategyWeights = productionPolicy == null
-            ? undefined
-            : 'state' in productionPolicy
-              ? productionPolicy.state.strategy_weights
-              : productionPolicy.strategy_weights
-          if (!productionPolicy) throw new Error(`strategy_production_policy_pit_missing:${date}`)
           const projectionUpdates: D1PreparedStatement[] = []
           for (const key of strategyKeys) {
             const spec = specByKey.get(key)
@@ -3778,6 +3800,7 @@ export async function rebuildHistoricalStrategyEvidenceV5(
               canonical_at: artifactEvidence.canonical_at,
               source_labeler_version: artifactEvidence.source_labeler_version,
             } : null,
+            production_weight_source: productionWeightEvidence,
             strategy_id: row.strategy_id,
             strategy_version: row.strategy_version,
             evaluability,
@@ -3875,18 +3898,6 @@ export async function rebuildHistoricalStrategyEvidenceV5(
       } else {
         const regime = await options.resolveHistoricalRegime?.(date) ?? artifactEvidence?.regime ?? null
         if (!regime) throw new Error(`strategy_regime_pit_missing:${date}`)
-        const strategyIds = effectiveSpecs
-          .filter((spec) => spec.status !== 'retired')
-          .map((spec) => spec.id)
-        const productionPolicy = productionPolicySourceLabeler === 'strategy-labeler-v1'
-          ? await loadLegacyStrategyProductionWeightsBefore(db, date, strategyIds)
-          : await loadStrategyProductionPolicyBefore(db, date, strategyIds)
-        const strategyWeights = productionPolicy == null
-          ? undefined
-          : 'state' in productionPolicy
-            ? productionPolicy.state.strategy_weights
-            : productionPolicy.strategy_weights
-        if (!productionPolicy) throw new Error(`strategy_production_policy_pit_missing:${date}`)
 
         if (existingMatrix) {
           await db.prepare(`

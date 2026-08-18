@@ -42,6 +42,10 @@ export const STRATEGY_PRODUCTION_POLICY_POINT_IN_TIME_SQL = `
 export const LEGACY_STRATEGY_PRODUCTION_FIREWALL_POLICY_ID =
   'strategy-production-contribution-firewall-v1' as const
 export const LEGACY_STRATEGY_PRODUCTION_FIREWALL_VERSION = 1 as const
+export const LEGACY_STRATEGY_IMPLICIT_UNIT_WEIGHTS_LAST_SIGNAL_DATE = '2026-08-04' as const
+export const LEGACY_STRATEGY_IMPLICIT_UNIT_WEIGHTS_CONTRACT_VERSION =
+  'multi-strategy-ple-runtime-default-unit-weights-v1' as const
+export const LEGACY_STRATEGY_IMPLICIT_UNIT_WEIGHTS_SOURCE_COMMIT = '9132ce95' as const
 
 export interface StrategyProductionPolicyHistoryRow {
   policy_id: string
@@ -77,6 +81,40 @@ export interface LoadedLegacyStrategyProductionWeights {
   strategy_weights: Record<string, number>
   checksum: string
   created_at: string
+}
+
+export interface LegacyImplicitUnitWeightsResolution {
+  strategy_weights: Record<string, number>
+  evidence: {
+    source: 'implicit_runtime_default_unit_weights'
+    contract_version: typeof LEGACY_STRATEGY_IMPLICIT_UNIT_WEIGHTS_CONTRACT_VERSION
+    source_commit: typeof LEGACY_STRATEGY_IMPLICIT_UNIT_WEIGHTS_SOURCE_COMMIT
+    firewall_materialization_date: typeof LEGACY_STRATEGY_IMPLICIT_UNIT_WEIGHTS_LAST_SIGNAL_DATE
+    no_lookahead: true
+  }
+}
+
+export function resolveLegacyImplicitUnitWeightsBeforeFirewall(
+  knowledgeCutoffDate: string,
+  expectedStrategyIds: readonly string[],
+): LegacyImplicitUnitWeightsResolution | null {
+  if (
+    !/^\d{4}-\d{2}-\d{2}$/.test(knowledgeCutoffDate)
+    || knowledgeCutoffDate > LEGACY_STRATEGY_IMPLICIT_UNIT_WEIGHTS_LAST_SIGNAL_DATE
+  ) return null
+  const strategyIds = [...new Set(expectedStrategyIds.map((id) => String(id).trim()).filter(Boolean))]
+    .sort((left, right) => left.localeCompare(right))
+  if (!strategyIds.length) return null
+  return {
+    strategy_weights: Object.fromEntries(strategyIds.map((id) => [id, 1])),
+    evidence: {
+      source: 'implicit_runtime_default_unit_weights',
+      contract_version: LEGACY_STRATEGY_IMPLICIT_UNIT_WEIGHTS_CONTRACT_VERSION,
+      source_commit: LEGACY_STRATEGY_IMPLICIT_UNIT_WEIGHTS_SOURCE_COMMIT,
+      firewall_materialization_date: LEGACY_STRATEGY_IMPLICIT_UNIT_WEIGHTS_LAST_SIGNAL_DATE,
+      no_lookahead: true,
+    },
+  }
 }
 
 export function hasPositiveStrategyAllocation(

@@ -6,6 +6,7 @@ import {
   deserializeLegacyStrategyProductionWeightsRow,
   deserializeStrategyProductionPolicyRow,
   hasPositiveStrategyAllocation,
+  resolveLegacyImplicitUnitWeightsBeforeFirewall,
   sha256StrategyProductionPolicyPayload,
   resolveRuntimeStrategyWeights,
 } from './strategyProductionPolicyStore'
@@ -91,6 +92,17 @@ async function main(): Promise<void> {
     created_at: '2026-08-01T18:00:00.000Z',
   }, ['active-a', 'active-b'])
   assert.deepEqual(legacyWeights.strategy_weights, { 'active-a': 0.6, 'active-b': 0.4 })
+  const implicitWeights = resolveLegacyImplicitUnitWeightsBeforeFirewall(
+    '2026-08-04', ['active-b', 'active-a', 'active-a'],
+  )
+  assert.deepEqual(implicitWeights?.strategy_weights, { 'active-a': 1, 'active-b': 1 })
+  assert.equal(implicitWeights?.evidence.source_commit, '9132ce95')
+  assert.equal(implicitWeights?.evidence.no_lookahead, true)
+  assert.equal(resolveLegacyImplicitUnitWeightsBeforeFirewall(
+    '2026-08-05', ['active-a'],
+  ), null)
+  assert.equal(resolveLegacyImplicitUnitWeightsBeforeFirewall('invalid', ['active-a']), null)
+
 
   const missingPolicy = resolveRuntimeStrategyWeights(['active-b', 'active-a'], null)
   assert.deepEqual(missingPolicy.allocationWeights, { 'active-a': 0, 'active-b': 0 })

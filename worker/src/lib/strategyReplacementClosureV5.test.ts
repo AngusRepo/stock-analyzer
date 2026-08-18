@@ -63,6 +63,11 @@ assert(historicalRebuild.includes('r.producer_run_id=?')
   'historical rebuild must bind the Ops-resolved canonical producer instead of cross-querying canonical_run_heads')
 assert(historicalRebuild.includes("productionPolicySourceLabeler === 'strategy-labeler-v1'"),
   'legacy label reconstruction must select the immutable v1 prior-policy identity explicitly')
+assert(historicalRebuild.includes('resolveLegacyImplicitUnitWeightsBeforeFirewall')
+  && historicalRebuild.includes('production_weight_source: productionWeightEvidence')
+  && historicalRebuild.includes("productionPolicySourceLabeler === 'strategy-labeler-v1'"),
+  'pre-firewall v1 reconstruction may use only the source-commit-bound implicit unit-weight contract and must persist its provenance')
+
 assert(historicalRebuild.includes("referenceLabeler === 'strategy-decision-log-pit-reconstruction-v6'")
   && historicalRebuild.includes("artifactEvidence?.source_labeler_version === 'strategy-labeler-v1'")
   && historicalRebuild.includes('artifactEvidence.expected_cell_count !== expectedMatrixRows')

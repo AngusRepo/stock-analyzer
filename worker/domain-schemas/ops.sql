@@ -243,6 +243,27 @@ CREATE TABLE IF NOT EXISTS data_domain_table_writer_epochs (
   PRIMARY KEY(domain, table_name)
 );
 
+CREATE TABLE IF NOT EXISTS data_domain_cutover_probe_receipts (
+  receipt_id TEXT PRIMARY KEY,
+  domain TEXT NOT NULL,
+  source_epoch INTEGER NOT NULL CHECK(source_epoch >= 0),
+  parity_checked_at TEXT NOT NULL,
+  read_write_readback_passed INTEGER NOT NULL CHECK(read_write_readback_passed IN (0, 1)),
+  rollback_restore_passed INTEGER NOT NULL CHECK(rollback_restore_passed IN (0, 1)),
+  status TEXT NOT NULL CHECK(status IN ('passed', 'failed')),
+  checked_at TEXT NOT NULL DEFAULT (STRFTIME('%Y-%m-%dT%H:%M:%fZ', 'now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_data_domain_cutover_probe_latest
+  ON data_domain_cutover_probe_receipts(domain, checked_at DESC);
+
+CREATE TABLE IF NOT EXISTS data_domain_cutover_probe_canary (
+  probe_id TEXT PRIMARY KEY,
+  domain TEXT NOT NULL,
+  payload TEXT NOT NULL,
+  updated_at TEXT NOT NULL DEFAULT (STRFTIME('%Y-%m-%dT%H:%M:%fZ', 'now'))
+);
+
 CREATE TABLE IF NOT EXISTS data_retention_policies (
   policy_id TEXT PRIMARY KEY, domain TEXT NOT NULL, dataset_pattern TEXT NOT NULL,
   hot_retention_days INTEGER NOT NULL, cold_retention_days INTEGER,
@@ -358,6 +379,319 @@ CREATE TABLE IF NOT EXISTS data_domain_parity_checks (
 CREATE INDEX IF NOT EXISTS idx_data_domain_parity_latest
   ON data_domain_parity_checks(domain, table_name, checked_at DESC);
 
+INSERT INTO data_domain_cutovers(domain, status, source_binding, target_binding)
+VALUES
+  ('core', 'legacy', 'DB', 'CORE_DB'),
+  ('market', 'legacy', 'DB', 'MARKET_DB'),
+  ('learning', 'legacy', 'DB', 'LEARNING_DB'),
+  ('ops', 'legacy', 'DB', 'OPS_DB'),
+  ('execution', 'legacy', 'DB', 'EXECUTION_DB'),
+  ('paper', 'legacy', 'DB', 'PAPER_DB'),
+  ('research', 'legacy', 'DB', 'RESEARCH_DB')
+ON CONFLICT(domain) DO NOTHING;
+
+CREATE TABLE IF NOT EXISTS weekly_audit_reports (
+  id            INTEGER PRIMARY KEY AUTOINCREMENT,
+  report_date   TEXT NOT NULL UNIQUE,
+  report_text   TEXT NOT NULL,
+  l1_json       TEXT,
+  l2_json       TEXT,
+  l3_json       TEXT,
+  risk_json     TEXT,
+  created_at    TEXT DEFAULT (datetime('now'))
+);
+
+CREATE TABLE IF NOT EXISTS webhook_log (
+  idempotency_key TEXT PRIMARY KEY,
+  received_at     TEXT NOT NULL,
+  source          TEXT NOT NULL,
+  action          TEXT NOT NULL,
+  payload_summary TEXT,
+  status          TEXT NOT NULL,
+  downstream_notes TEXT
+);
+
+CREATE TABLE IF NOT EXISTS cost_events (
+  id              INTEGER PRIMARY KEY AUTOINCREMENT,
+  ts              TEXT NOT NULL,
+  date            TEXT NOT NULL,
+  source          TEXT NOT NULL,
+  provider        TEXT,
+  model           TEXT,
+  tokens_in       INTEGER,
+  tokens_out      INTEGER,
+  compute_sec     REAL,
+  est_usd         REAL NOT NULL,
+  meta            TEXT
+);
+
+CREATE TABLE IF NOT EXISTS compute_profile_events (
+  id              INTEGER PRIMARY KEY AUTOINCREMENT,
+  event_date      TEXT NOT NULL,
+  provider        TEXT NOT NULL,
+  job_name        TEXT NOT NULL,
+  run_id          TEXT,
+  wall_sec        REAL,
+  compute_sec     REAL,
+  cpu             REAL,
+  memory_mb       INTEGER,
+  gpu             TEXT,
+  est_usd         REAL,
+  rows            INTEGER,
+  features        INTEGER,
+  symbols         INTEGER,
+  trials          INTEGER,
+  cache_hit_ratio REAL,
+  profile_json    TEXT NOT NULL,
+  created_at      TEXT NOT NULL DEFAULT (datetime('now'))
+, await_sec REAL, compute_owner TEXT, remote_function TEXT);
+
+CREATE TABLE IF NOT EXISTS compute_efficiency_reports (
+  id                     INTEGER PRIMARY KEY AUTOINCREMENT,
+  report_date             TEXT NOT NULL,
+  job_name                TEXT NOT NULL,
+  decision                TEXT NOT NULL,
+  baseline_profile_json   TEXT,
+  optimized_profile_json  TEXT,
+  quality_json            TEXT,
+  efficiency_json         TEXT,
+  report_json             TEXT NOT NULL,
+  created_at              TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE TABLE IF NOT EXISTS finlab_backfill_runs (
+  run_id          TEXT PRIMARY KEY,
+  generated_at    TEXT NOT NULL,
+  lookback_years  INTEGER NOT NULL DEFAULT 5,
+  dataset_count   INTEGER NOT NULL DEFAULT 0,
+  finlab_rows     INTEGER NOT NULL DEFAULT 0,
+  gap_fill_rows   INTEGER NOT NULL DEFAULT 0,
+  value_conflicts INTEGER NOT NULL DEFAULT 0,
+  checksum        TEXT NOT NULL,
+  status          TEXT NOT NULL DEFAULT 'ready',
+  metadata_json   TEXT,
+  created_at      TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS source_diff_report (
+  id                     INTEGER PRIMARY KEY AUTOINCREMENT,
+  run_id                 TEXT NOT NULL,
+  dataset_lane           TEXT NOT NULL,
+  source                 TEXT NOT NULL DEFAULT 'finlab',
+  generated_at           TEXT NOT NULL,
+  finlab_rows            INTEGER NOT NULL DEFAULT 0,
+  stockvision_rows       INTEGER NOT NULL DEFAULT 0,
+  matched_rows           INTEGER NOT NULL DEFAULT 0,
+  missing_in_stockvision INTEGER NOT NULL DEFAULT 0,
+  missing_in_finlab      INTEGER NOT NULL DEFAULT 0,
+  value_conflicts        INTEGER NOT NULL DEFAULT 0,
+  schema_extra_fields    TEXT,
+  report_json            TEXT NOT NULL,
+  checksum               TEXT NOT NULL,
+  created_at             TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS gap_fill_candidates (
+  id                     INTEGER PRIMARY KEY AUTOINCREMENT,
+  run_id                 TEXT NOT NULL,
+  dataset_lane           TEXT NOT NULL,
+  canonical_table        TEXT NOT NULL,
+  stock_id               TEXT,
+  symbol                 TEXT,
+  date                   TEXT,
+  market_segment         TEXT,
+  field                  TEXT,
+  finlab_value           TEXT,
+  stockvision_value      TEXT,
+  source                 TEXT NOT NULL DEFAULT 'finlab',
+  lineage_json           TEXT NOT NULL,
+  decision               TEXT NOT NULL DEFAULT 'candidate',
+  generated_at           TEXT NOT NULL,
+  created_at             TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS data_source_inventory (
+  id                     INTEGER PRIMARY KEY AUTOINCREMENT,
+  source                 TEXT NOT NULL,
+  dataset                TEXT NOT NULL,
+  field                  TEXT NOT NULL,
+  stock_id               TEXT,
+  market_segment         TEXT,
+  date                   TEXT,
+  as_of_date             TEXT NOT NULL,
+  coverage_status        TEXT NOT NULL,
+  freshness_status       TEXT NOT NULL,
+  lineage_json           TEXT NOT NULL,
+  created_at             TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  UNIQUE(source, dataset, field, stock_id, market_segment, as_of_date)
+);
+
+CREATE TABLE IF NOT EXISTS finlab_materialization_manifest (
+  run_id                 TEXT PRIMARY KEY,
+  generated_at           TEXT NOT NULL,
+  source_run_id          TEXT,
+  artifact_root          TEXT NOT NULL,
+  row_counts_json        TEXT NOT NULL,
+  freshness_json         TEXT NOT NULL,
+  checksum               TEXT NOT NULL,
+  status                 TEXT NOT NULL DEFAULT 'ready',
+  created_at             TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS source_key_attempts (
+  id                INTEGER PRIMARY KEY AUTOINCREMENT,
+  run_id            TEXT NOT NULL,
+  target_date       TEXT NOT NULL,
+  lane              TEXT NOT NULL,
+  canonical_dataset TEXT,
+  field             TEXT NOT NULL,
+  api_key           TEXT NOT NULL,
+  source            TEXT NOT NULL DEFAULT 'finlab',
+  required          INTEGER NOT NULL DEFAULT 1,
+  status            TEXT NOT NULL,
+  rows              INTEGER NOT NULL DEFAULT 0,
+  target_rows       INTEGER NOT NULL DEFAULT 0,
+  latest_date       TEXT,
+  artifact_uri      TEXT,
+  artifact_path     TEXT,
+  artifact_checksum TEXT,
+  error_code        TEXT,
+  error_message     TEXT,
+  generated_at      TEXT NOT NULL,
+  metadata_json     TEXT,
+  created_at        TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS source_key_report (
+  target_date       TEXT NOT NULL,
+  lane              TEXT NOT NULL,
+  field             TEXT NOT NULL,
+  api_key           TEXT NOT NULL,
+  source            TEXT NOT NULL DEFAULT 'finlab',
+  canonical_dataset TEXT,
+  required          INTEGER NOT NULL DEFAULT 1,
+  status            TEXT NOT NULL,
+  rows              INTEGER NOT NULL DEFAULT 0,
+  target_rows       INTEGER NOT NULL DEFAULT 0,
+  latest_date       TEXT,
+  artifact_uri      TEXT,
+  artifact_path     TEXT,
+  artifact_checksum TEXT,
+  last_run_id       TEXT NOT NULL,
+  attempt_count     INTEGER NOT NULL DEFAULT 1,
+  error_code        TEXT,
+  error_message     TEXT,
+  generated_at      TEXT NOT NULL,
+  updated_at        TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  metadata_json     TEXT,
+  PRIMARY KEY(target_date, lane, field, api_key)
+);
+
+CREATE TABLE IF NOT EXISTS pipeline_runs (
+  run_id TEXT PRIMARY KEY,
+  logical_run_key TEXT NOT NULL,
+  domain TEXT NOT NULL,
+  business_date TEXT NOT NULL,
+  market TEXT NOT NULL DEFAULT 'TW',
+  mode TEXT NOT NULL DEFAULT 'production',
+  stage TEXT NOT NULL,
+  status TEXT NOT NULL CHECK(status IN (
+    'writing','validating','ready','canonical','superseded','failed','reused'
+  )),
+  input_fingerprint TEXT NOT NULL,
+  code_version TEXT NOT NULL,
+  config_version TEXT NOT NULL,
+  artifact_id TEXT,
+  supersedes_run_id TEXT,
+  reused_from_run_id TEXT,
+  parent_run_ids_json TEXT NOT NULL DEFAULT '[]',
+  error_code TEXT,
+  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  canonical_at TEXT,
+  superseded_at TEXT
+);
+
+CREATE TABLE IF NOT EXISTS canonical_run_heads (
+  logical_run_key TEXT PRIMARY KEY,
+  run_id TEXT NOT NULL,
+  previous_run_id TEXT,
+  promoted_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS run_artifacts (
+  artifact_id TEXT PRIMARY KEY,
+  retention_class TEXT NOT NULL CHECK(retention_class IN (
+    'canonical_execution','canonical_model_evidence','paper_shadow',
+    'superseded_run','failed_debug','request_debug','raw_market_unreferenced',
+    'staging_orphan','incident_pinned'
+  )),
+  status TEXT NOT NULL CHECK(status IN (
+    'writing','validating','ready','integrity_blocked','payload_deleted'
+  )),
+  domain TEXT NOT NULL,
+  business_date TEXT NOT NULL,
+  producer_run_id TEXT NOT NULL,
+  canonical_run_id TEXT,
+  r2_key TEXT NOT NULL UNIQUE,
+  checksum TEXT NOT NULL,
+  schema_version TEXT NOT NULL,
+  row_count INTEGER NOT NULL DEFAULT 0,
+  byte_size INTEGER NOT NULL DEFAULT 0,
+  created_at TEXT NOT NULL,
+  retain_until TEXT,
+  pinned INTEGER NOT NULL DEFAULT 0 CHECK(pinned IN (0,1)),
+  legal_hold INTEGER NOT NULL DEFAULT 0 CHECK(legal_hold IN (0,1)),
+  hard_ref_count INTEGER NOT NULL DEFAULT 0,
+  checksum_verified_at TEXT,
+  payload_deleted_at TEXT,
+  metadata_json TEXT NOT NULL DEFAULT '{}',
+  updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS artifact_cleanup_cursors (
+  task TEXT PRIMARY KEY,
+  cursor_value TEXT,
+  status TEXT NOT NULL CHECK(status IN ('idle','running','failed','complete')),
+  processed_rows INTEGER NOT NULL DEFAULT 0,
+  processed_bytes INTEGER NOT NULL DEFAULT 0,
+  last_error TEXT,
+  last_success_at TEXT,
+  updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS artifact_d1_scrub_queue (
+  scrub_id TEXT PRIMARY KEY,
+  artifact_id TEXT NOT NULL,
+  target_table TEXT NOT NULL,
+  target_pk_column TEXT NOT NULL,
+  target_pk_value TEXT NOT NULL,
+  target_column TEXT NOT NULL,
+  replacement_json TEXT NOT NULL,
+  status TEXT NOT NULL DEFAULT 'pending' CHECK(status IN (
+    'pending','running','complete','failed','integrity_blocked'
+  )),
+  attempts INTEGER NOT NULL DEFAULT 0,
+  next_attempt_at TEXT,
+  last_error TEXT,
+  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS artifact_cleanup_dlq (
+  dlq_id TEXT PRIMARY KEY,
+  task TEXT NOT NULL,
+  artifact_id TEXT,
+  payload_json TEXT NOT NULL DEFAULT '{}',
+  attempts INTEGER NOT NULL DEFAULT 0,
+  status TEXT NOT NULL DEFAULT 'pending' CHECK(status IN ('pending','running','resolved','blocked')),
+  next_attempt_at TEXT,
+  last_error TEXT,
+  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
 CREATE TABLE IF NOT EXISTS data_retention_cursors (
   policy_id TEXT NOT NULL,
   dataset_id TEXT NOT NULL,
@@ -443,8 +777,70 @@ CREATE TABLE IF NOT EXISTS s12_structure_batch_shards (
   FOREIGN KEY(run_id) REFERENCES s12_structure_batch_runs(run_id)
 );
 
+CREATE INDEX IF NOT EXISTS idx_webhook_log_received ON webhook_log(received_at);
+
+CREATE INDEX IF NOT EXISTS idx_webhook_log_action   ON webhook_log(action);
+
+CREATE INDEX IF NOT EXISTS idx_cost_events_date     ON cost_events(date DESC);
+
+CREATE INDEX IF NOT EXISTS idx_cost_events_source   ON cost_events(source, date DESC);
+
+CREATE INDEX IF NOT EXISTS idx_cost_events_provider ON cost_events(provider, date DESC);
+
 CREATE INDEX IF NOT EXISTS idx_screener_funnel_items_run_symbol_stage
   ON screener_funnel_items(run_id, symbol, stage, created_at);
+
+CREATE INDEX IF NOT EXISTS idx_compute_profile_events_job_date
+  ON compute_profile_events(job_name, event_date DESC);
+
+CREATE INDEX IF NOT EXISTS idx_compute_profile_events_provider_date
+  ON compute_profile_events(provider, event_date DESC);
+
+CREATE INDEX IF NOT EXISTS idx_compute_efficiency_reports_job_date
+  ON compute_efficiency_reports(job_name, report_date DESC);
+
+CREATE INDEX IF NOT EXISTS idx_compute_efficiency_reports_decision
+  ON compute_efficiency_reports(decision, report_date DESC);
+
+CREATE INDEX IF NOT EXISTS idx_source_diff_report_run ON source_diff_report(run_id, dataset_lane);
+
+CREATE INDEX IF NOT EXISTS idx_source_diff_report_lane ON source_diff_report(dataset_lane, generated_at DESC);
+
+CREATE INDEX IF NOT EXISTS idx_gap_fill_candidates_run ON gap_fill_candidates(run_id, dataset_lane);
+
+CREATE INDEX IF NOT EXISTS idx_gap_fill_candidates_key ON gap_fill_candidates(stock_id, date, field);
+
+CREATE INDEX IF NOT EXISTS idx_data_source_inventory_dataset ON data_source_inventory(dataset, as_of_date DESC);
+
+CREATE INDEX IF NOT EXISTS idx_source_key_attempts_target_lane
+  ON source_key_attempts(target_date, lane, created_at DESC);
+
+CREATE INDEX IF NOT EXISTS idx_source_key_attempts_run
+  ON source_key_attempts(run_id, lane, field);
+
+CREATE INDEX IF NOT EXISTS idx_source_key_report_target_lane
+  ON source_key_report(target_date, lane, status);
+
+CREATE INDEX IF NOT EXISTS idx_source_key_report_key_status
+  ON source_key_report(target_date, lane, field, status);
+
+CREATE INDEX IF NOT EXISTS idx_pipeline_runs_logical_status
+  ON pipeline_runs(logical_run_key, status, updated_at DESC);
+
+CREATE INDEX IF NOT EXISTS idx_pipeline_runs_fingerprint
+  ON pipeline_runs(logical_run_key, input_fingerprint, code_version, config_version);
+
+CREATE INDEX IF NOT EXISTS idx_run_artifacts_retention
+  ON run_artifacts(status, retain_until, pinned, legal_hold, hard_ref_count);
+
+CREATE INDEX IF NOT EXISTS idx_run_artifacts_producer
+  ON run_artifacts(producer_run_id, domain, business_date);
+
+CREATE INDEX IF NOT EXISTS idx_artifact_d1_scrub_queue_status
+  ON artifact_d1_scrub_queue(status, next_attempt_at, created_at);
+
+CREATE INDEX IF NOT EXISTS idx_artifact_cleanup_dlq_status
+  ON artifact_cleanup_dlq(status, next_attempt_at, created_at);
 
 CREATE INDEX IF NOT EXISTS idx_data_retention_cursors_backlog
   ON data_retention_cursors(status, backlog_remaining, policy_id, updated_at);

@@ -4,16 +4,37 @@ import path from 'node:path'
 const root = path.resolve(import.meta.dirname, '..')
 const registry = fs.readFileSync(path.join(root, 'src/lib/dataDomainRegistry.ts'), 'utf8')
 const domains = ['core', 'market', 'learning', 'ops', 'execution', 'paper', 'research']
+const permanentLegacyControlTable = (table) => (
+  table.startsWith('data_domain_') || table.startsWith('domain_projection_')
+)
 const owner = new Map()
+const baselineOwner = new Map()
 
 for (const domain of domains) {
   const match = registry.match(new RegExp('\\b' + domain + ': new Set\\(\\[([\\s\\S]*?)\\]\\)', 'm'))
   if (!match) throw new Error('domain registry block missing: ' + domain)
-  for (const item of match[1].matchAll(/'([^']+)'/g)) owner.set(item[1], domain)
+  for (const item of match[1].matchAll(/'([^']+)'/g)) {
+    owner.set(item[1], domain)
+    baselineOwner.set(item[1], domain)
+  }
+}
+
+for (const match of registry.matchAll(/\{\s*table:\s*'([^']+)',\s*domain:\s*'([^']+)'/g)) {
+  const [, table, domain] = match
+  if (!domains.includes(domain)) throw new Error('invalid explicit ownership domain: ' + domain)
+  const existing = owner.get(table)
+  if (existing && existing !== domain) throw new Error(`conflicting domain owner: ${table}:${existing}:${domain}`)
+  owner.set(table, domain)
 }
 
 function stripComments(input) {
   return input.replace(/--.*$/gm, '')
+}
+
+function stripRuntimeTriggers(input) {
+  // Writer/revision triggers are installed by the cutover control plane after
+  // both source and target bindings exist; they are not immutable shard schema.
+  return input.replace(/CREATE TRIGGER[\s\S]*?\nEND;/gi, '')
 }
 
 function sqlStatements(input) {
@@ -71,6 +92,8 @@ function stripCrossDomainInlineReferences(statement, domain) {
 }
 
 const grouped = Object.fromEntries(domains.map((domain) => [domain, []]))
+const baselineGrouped = Object.fromEntries(domains.map((domain) => [domain, []]))
+const runtimeGrouped = Object.fromEntries(domains.map((domain) => [domain, []]))
 const seenTables = new Set()
 const seenIndexes = new Set()
 
@@ -84,6 +107,7 @@ function addStatement(raw, source, strict) {
   }
   const domain = owner.get(identity.table) ?? (identity.table.startsWith('paper_') ? 'paper' : null)
   if (!domain) {
+    if (permanentLegacyControlTable(identity.table)) return
     if (strict) throw new Error(`unowned schema table: ${identity.table}`)
     return
   }
@@ -91,15 +115,18 @@ function addStatement(raw, source, strict) {
   if (identity.kind === 'index' && seenIndexes.has(identity.name)) return
   if (identity.kind === 'table') seenTables.add(identity.name)
   if (identity.kind === 'index') seenIndexes.add(identity.name)
-  grouped[domain].push(stripCrossDomainInlineReferences(normalizeCreate(statement), domain) + ';')
+  const normalized = stripCrossDomainInlineReferences(normalizeCreate(statement), domain) + ';'
+  grouped[domain].push(normalized)
+  const target = baselineOwner.has(identity.table) ? baselineGrouped : runtimeGrouped
+  target[domain].push(normalized)
 }
 
-const primary = stripComments(fs.readFileSync(path.join(root, 'schema.sql'), 'utf8'))
+const primary = stripRuntimeTriggers(stripComments(fs.readFileSync(path.join(root, 'schema.sql'), 'utf8')))
 for (const statement of sqlStatements(primary)) addStatement(statement, 'primary', true)
 
 const supplementalPath = path.join(root, 'bootstrap/schema.production.snapshot.sql')
 if (fs.existsSync(supplementalPath)) {
-  const supplemental = stripComments(fs.readFileSync(supplementalPath, 'utf8'))
+  const supplemental = stripRuntimeTriggers(stripComments(fs.readFileSync(supplementalPath, 'utf8')))
   for (const statement of sqlStatements(supplemental)) addStatement(statement, 'production snapshot', false)
 }
 
@@ -118,12 +145,29 @@ for (const domain of domains) {
   const domainMigrationDir = path.join(migrationOutput, domain)
   fs.mkdirSync(domainMigrationDir, { recursive: true })
   const migrationPath = path.join(domainMigrationDir, `0001_${domain}_baseline.sql`)
-  const migration = (`-- Immutable baseline for the ${domain} D1 binding.\n${body}`)
+  if (!fs.existsSync(migrationPath)) throw new Error(`immutable domain migration missing: ${migrationPath}`)
+  const runtimeMigrationName = '0002_runtime_owned_tables.sql'
+  const existingIdentities = new Set(fs.readdirSync(domainMigrationDir)
+    .filter((name) => name.endsWith('.sql') && name !== runtimeMigrationName)
+    .flatMap((name) => sqlStatements(stripComments(
+      fs.readFileSync(path.join(domainMigrationDir, name), 'utf8'),
+    )))
+    .flatMap((statement) => {
+      const identity = statementIdentity(statement.trim())
+      return identity ? [`${identity.kind}:${identity.name}`] : []
+    }))
+  const runtimeStatements = grouped[domain].filter((statement) => {
+    const identity = statementIdentity(statement)
+    return identity && !existingIdentities.has(`${identity.kind}:${identity.name}`)
+  }).join('\n\n')
+  const runtimeBody = runtimeStatements ? runtimeStatements + '\n' : ''
+  const runtimeMigrationPath = path.join(domainMigrationDir, runtimeMigrationName)
+  const runtimeMigration = (`-- Add runtime-owned tables deferred from the immutable domain baseline.\n${runtimeBody}`)
     .replace(/[ \t]+$/gm, '')
-  if (!fs.existsSync(migrationPath)) {
-    fs.writeFileSync(migrationPath, migration)
-  } else if (fs.readFileSync(migrationPath, 'utf8') !== migration) {
-    throw new Error(`immutable domain migration drift: ${migrationPath}`)
+  if (!fs.existsSync(runtimeMigrationPath)) {
+    fs.writeFileSync(runtimeMigrationPath, runtimeMigration)
+  } else if (fs.readFileSync(runtimeMigrationPath, 'utf8') !== runtimeMigration) {
+    throw new Error(`immutable domain migration drift: ${runtimeMigrationPath}`)
   }
-  console.log(`${domain}: ${grouped[domain].length} statements`)
+  console.log(`${domain}: existing=${existingIdentities.size} runtime=${runtimeStatements ? sqlStatements(runtimeStatements).length : 0}`)
 }

@@ -11,9 +11,11 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from services.backtest_engine import (  # noqa: E402
     AccountState,
     Candidate,
+    FormalPositionRiskParams,
     OpenPosition,
     PositionSizeParams,
     _correlation_dedup_skip,
+    _formal_position_correlation_skip,
 )
 
 
@@ -28,6 +30,18 @@ class FakeDataset:
         return {
             "n": len(values),
             "close": np.asarray(values, dtype=float),
+        }
+
+
+class FormalFakeDataset(FakeDataset):
+    def get_price_history_np(self, symbol: str, _end_date: str, lookback_days: int):
+        values = self.closes.get(symbol, [])[-lookback_days:]
+        if not values:
+            return None
+        return {
+            'n': len(values),
+            'dates': np.asarray([f'2026-05-{index + 1:02d}' for index in range(len(values))]),
+            'close': np.asarray(values, dtype=float),
         }
 
 
@@ -121,3 +135,42 @@ def test_backtest_correlation_dedup_does_not_skip_when_graph_has_no_edge():
     )
 
     assert skip is None
+
+
+def test_formal_position_correlation_uses_fixed_threshold_and_date_overlap():
+    dataset = FormalFakeDataset({
+        'AAA': [100 + index for index in range(25)],
+        'BBB': [50 + (index * 0.5) for index in range(25)],
+    })
+    risk = FormalPositionRiskParams(
+        max_per_sector=2,
+        max_single_name_pct=0.2,
+        correlation_threshold=0.7,
+        correlation_window=60,
+        min_correlation_overlap=20,
+    )
+
+    skip = _formal_position_correlation_skip(
+        dataset,
+        'BBB',
+        ['AAA'],
+        '2026-06-12',
+        risk,
+    )
+
+    assert skip is not None
+    assert skip[0] == 'skipped_position_correlation_cap'
+    assert 'threshold=0.7000' in skip[1]
+    assert 'overlap=24' in skip[1]
+
+
+def test_formal_position_correlation_does_not_block_insufficient_overlap():
+    dataset = FormalFakeDataset({
+        'AAA': [100 + index for index in range(10)],
+        'BBB': [50 + index for index in range(10)],
+    })
+    risk = FormalPositionRiskParams(2, 0.2, 0.7, 60, 20)
+
+    assert _formal_position_correlation_skip(
+        dataset, 'BBB', ['AAA'], '2026-06-12', risk
+    ) is None

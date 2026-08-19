@@ -429,9 +429,9 @@ CREATE TABLE IF NOT EXISTS expected_return_artifact_payloads (
 CREATE INDEX IF NOT EXISTS idx_expected_return_artifact_payloads_owner
   ON expected_return_artifact_payloads(model_name, serving_mode, updated_at DESC);
 
-
 CREATE INDEX IF NOT EXISTS idx_expected_return_artifact_payloads_version
   ON expected_return_artifact_payloads(model_name, model_version, updated_at DESC);
+
 CREATE TABLE IF NOT EXISTS allocator_ev_feature_snapshots (
   snapshot_date               TEXT NOT NULL,
   stock_id                    INTEGER NOT NULL,
@@ -781,15 +781,22 @@ CREATE TABLE IF NOT EXISTS strategy_decision_log (
   strategy_version         TEXT NOT NULL,
   strategy_status          TEXT NOT NULL,
   alpha_bucket             TEXT NOT NULL,
-  evaluable                INTEGER NOT NULL DEFAULT 0 CHECK(evaluable IN (0, 1)),
-  unavailable_reason       TEXT,
-  evaluation_contract_version TEXT NOT NULL DEFAULT 'strategy-evaluation-legacy-unverified',
   matched                  INTEGER NOT NULL DEFAULT 0,
   match_score              REAL,
   reason_code              TEXT NOT NULL,
   context_json             TEXT NOT NULL DEFAULT '{}',
   evidence_json            TEXT NOT NULL DEFAULT '{}',
   created_at               TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  context_id               TEXT,
+  evidence_artifact_id     TEXT,
+  evaluable                INTEGER NOT NULL DEFAULT 0 CHECK(evaluable IN (0, 1)),
+  evaluability_status      TEXT NOT NULL DEFAULT 'UNKNOWN_LEGACY'
+    CHECK(evaluability_status IN (
+      'EVALUABLE','NOT_APPLICABLE_PHASE','NOT_APPLICABLE_OWNER','PENDING_AVAILABILITY',
+      'MISSING_SOURCE','STALE_SOURCE','SOURCE_ERROR','INVALID_SPEC','PIT_VIOLATION','UNKNOWN_LEGACY'
+    )),
+  unavailable_reason       TEXT,
+  evaluation_contract_version TEXT NOT NULL DEFAULT 'strategy-evaluation-legacy-unverified',
   UNIQUE(date, symbol, strategy_id, strategy_version)
 );
 
@@ -905,6 +912,11 @@ CREATE TABLE IF NOT EXISTS strategy_label_matrix_v4 (
   production_owner INTEGER NOT NULL CHECK(production_owner IN (0, 1)),
   strategy_hit INTEGER NOT NULL CHECK(strategy_hit IN (0, 1)),
   evaluable INTEGER NOT NULL DEFAULT 0 CHECK(evaluable IN (0, 1)),
+  evaluability_status TEXT NOT NULL DEFAULT 'UNKNOWN_LEGACY'
+    CHECK(evaluability_status IN (
+      'EVALUABLE','NOT_APPLICABLE_PHASE','NOT_APPLICABLE_OWNER','PENDING_AVAILABILITY',
+      'MISSING_SOURCE','STALE_SOURCE','SOURCE_ERROR','INVALID_SPEC','PIT_VIOLATION','UNKNOWN_LEGACY'
+    )),
   unavailable_reason TEXT,
   weak_label REAL NOT NULL,
   affinity REAL NOT NULL,
@@ -1421,6 +1433,204 @@ CREATE TABLE IF NOT EXISTS strategy_redundancy_artifacts_v1 (
 CREATE INDEX IF NOT EXISTS idx_strategy_redundancy_artifacts_v1_date
   ON strategy_redundancy_artifacts_v1(as_of_date DESC, status, created_at DESC);
 
+CREATE TABLE IF NOT EXISTS expected_return_serving_forward_evaluations (
+  evaluation_id TEXT PRIMARY KEY,
+  prediction_date TEXT NOT NULL,
+  label_known_date TEXT NOT NULL,
+  model_name TEXT NOT NULL CHECK(model_name = 'allocator_ev_fusion'),
+  artifact_id TEXT NOT NULL,
+  model_fingerprint TEXT NOT NULL CHECK(length(model_fingerprint) = 64),
+  model_version TEXT NOT NULL,
+  sample_count INTEGER NOT NULL CHECK(sample_count >= 0),
+  final_corr REAL,
+  l4_corr REAL,
+  corr_delta REAL,
+  final_spread REAL,
+  l4_spread REAL,
+  spread_delta REAL,
+  quality_decision TEXT NOT NULL CHECK(quality_decision IN ('PASS', 'DEGRADED', 'INSUFFICIENT')),
+  evidence_json TEXT NOT NULL CHECK(json_valid(evidence_json)),
+  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  UNIQUE(artifact_id, model_fingerprint, prediction_date)
+);
+
+CREATE INDEX IF NOT EXISTS idx_expected_return_serving_forward_identity_date
+  ON expected_return_serving_forward_evaluations(artifact_id, model_fingerprint, prediction_date DESC);
+
+CREATE TABLE IF NOT EXISTS expected_return_forward_guard_state (
+  model_name TEXT PRIMARY KEY CHECK(model_name = 'allocator_ev_fusion'),
+  artifact_id TEXT NOT NULL,
+  model_fingerprint TEXT NOT NULL CHECK(length(model_fingerprint) = 64),
+  model_version TEXT NOT NULL,
+  state TEXT NOT NULL CHECK(state IN ('monitoring', 'residual_bypass')),
+  evaluable_date_count INTEGER NOT NULL DEFAULT 0 CHECK(evaluable_date_count >= 0),
+  degraded_streak INTEGER NOT NULL DEFAULT 0 CHECK(degraded_streak >= 0),
+  recovery_streak INTEGER NOT NULL DEFAULT 0 CHECK(recovery_streak >= 0),
+  last_prediction_date TEXT NOT NULL,
+  evidence_json TEXT NOT NULL CHECK(json_valid(evidence_json)),
+  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX IF NOT EXISTS idx_expected_return_forward_guard_state_updated
+  ON expected_return_forward_guard_state(state, updated_at DESC);
+
+CREATE INDEX IF NOT EXISTS idx_model_champion_history_semantic_scan
+  ON model_champion_history(model_name, effective_at, event_id);
+
+CREATE TABLE IF NOT EXISTS model_health_daily (
+  id              INTEGER PRIMARY KEY AUTOINCREMENT,
+  date            TEXT NOT NULL,
+  model_name      TEXT NOT NULL,
+  accuracy_30d    REAL,
+  accuracy_90d    REAL,
+  profit_factor   REAL,
+  expectancy      REAL,
+  lifecycle_status TEXT,
+  lifecycle_weight REAL,
+  ic_mean         REAL,
+  drift_detected  INTEGER DEFAULT 0,
+  created_at      TEXT DEFAULT (datetime('now')),
+  UNIQUE(date, model_name)
+);
+
+CREATE TABLE IF NOT EXISTS model_lifecycle_state (
+  id            INTEGER PRIMARY KEY DEFAULT 1,
+  state_json    TEXT NOT NULL,
+  events_json   TEXT,
+  updated_at    TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS model_lifecycle_events (
+  id            INTEGER PRIMARY KEY AUTOINCREMENT,
+  event_date    TEXT NOT NULL,
+  model_name    TEXT NOT NULL,
+  event_type    TEXT NOT NULL,
+  from_status   TEXT,
+  to_status     TEXT,
+  accuracy_30d  REAL,
+  detail        TEXT,
+  created_at    TEXT DEFAULT (datetime('now'))
+);
+
+CREATE TABLE IF NOT EXISTS persona_opinions (
+  date                   TEXT NOT NULL,
+  symbol                 TEXT NOT NULL,
+
+
+  trust_signal           TEXT,
+  trust_strength         REAL,
+  trust_reason           TEXT,
+  trust_is_window_dress  INTEGER DEFAULT 0,
+
+
+  retail_signal          TEXT,
+  retail_strength        REAL,
+  retail_reason          TEXT,
+
+
+  created_at             TEXT DEFAULT (datetime('now')),
+  PRIMARY KEY (date, symbol)
+);
+
+CREATE TABLE IF NOT EXISTS config_lifecycle_state (
+  id                        INTEGER PRIMARY KEY DEFAULT 1,
+  state_json                TEXT NOT NULL,
+  last_eval_json            TEXT,
+  updated_at                TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS config_lifecycle_events (
+  id                INTEGER PRIMARY KEY AUTOINCREMENT,
+  event_date        TEXT NOT NULL,
+  event_type        TEXT NOT NULL,
+  challenger_source TEXT,
+  champion_hash     TEXT,
+  challenger_hash   TEXT,
+  sharpe_delta      REAL,
+  win_rate_delta    REAL,
+  max_dd_delta      REAL,
+  detail            TEXT,
+  created_at        TEXT DEFAULT (datetime('now'))
+);
+
+CREATE TABLE IF NOT EXISTS meta_reward_ledger (
+  policy_id TEXT NOT NULL,
+  arm_id TEXT NOT NULL,
+  context_hash TEXT NOT NULL DEFAULT 'global',
+  samples INTEGER NOT NULL DEFAULT 0,
+  reward_sum REAL NOT NULL DEFAULT 0,
+  reward_mean REAL,
+  last_reward_at TEXT,
+  updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  evidence_json TEXT,
+  PRIMARY KEY (policy_id, arm_id, context_hash)
+);
+
+CREATE TABLE IF NOT EXISTS meta_shadow_decisions (
+  decision_id TEXT PRIMARY KEY,
+  policy_id TEXT NOT NULL,
+  business_date TEXT NOT NULL,
+  symbol TEXT,
+  arm_id TEXT,
+  baseline_action TEXT,
+  shadow_action TEXT,
+  counterfactual_reward REAL,
+  context_json TEXT,
+  evidence_json TEXT,
+  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS strategy_threshold_calibration_runs (
+  run_id TEXT PRIMARY KEY,
+  run_date TEXT NOT NULL,
+  cadence TEXT NOT NULL CHECK(cadence IN ('daily_drift','weekly','monthly','regime_shift')),
+  status TEXT NOT NULL CHECK(status IN ('success','partial','skipped','failed')),
+  specs_seen INTEGER NOT NULL DEFAULT 0,
+  artifacts_written INTEGER NOT NULL DEFAULT 0,
+  guardrails_json TEXT NOT NULL DEFAULT '{}',
+  summary_json TEXT NOT NULL DEFAULT '{}',
+  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS strategy_threshold_calibration_artifacts (
+  artifact_id TEXT PRIMARY KEY,
+  run_id TEXT NOT NULL,
+  strategy_id TEXT NOT NULL,
+  strategy_version TEXT NOT NULL,
+  target_key TEXT NOT NULL DEFAULT 'featureRefs.weightedScore.min',
+  status TEXT NOT NULL CHECK(status IN ('approved','rejected','frozen','rolled_back')),
+  cadence TEXT NOT NULL CHECK(cadence IN ('daily_drift','weekly','monthly','regime_shift')),
+  base_min REAL NOT NULL,
+  previous_min REAL,
+  calibrated_min REAL NOT NULL,
+  delta REAL NOT NULL,
+  validation_start TEXT NOT NULL,
+  validation_end TEXT NOT NULL,
+  guardrails_json TEXT NOT NULL DEFAULT '{}',
+  metrics_json TEXT NOT NULL DEFAULT '{}',
+  source_refs_json TEXT NOT NULL DEFAULT '[]',
+  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  approved_at TEXT,
+  superseded_at TEXT
+);
+
+CREATE TABLE IF NOT EXISTS strategy_candidate_contexts (
+  context_id TEXT PRIMARY KEY,
+  date TEXT NOT NULL,
+  symbol TEXT NOT NULL,
+  context_hash TEXT NOT NULL,
+  raw_signals_json TEXT NOT NULL DEFAULT '{}',
+  current_price REAL,
+  industry TEXT,
+  artifact_id TEXT NOT NULL,
+  r2_key TEXT NOT NULL,
+  checksum TEXT NOT NULL,
+  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  UNIQUE(date, symbol, context_hash)
+);
+
 CREATE TABLE IF NOT EXISTS allocator_ev_daily_lifecycle (
   business_date TEXT PRIMARY KEY,
   state TEXT NOT NULL,
@@ -1464,6 +1674,17 @@ CREATE TABLE IF NOT EXISTS s12_formal_ev_decisions (
   CHECK(json_valid(evidence_json))
 );
 
+CREATE INDEX IF NOT EXISTS idx_model_health_date ON model_health_daily(date DESC);
+
+CREATE INDEX IF NOT EXISTS idx_lifecycle_events_date ON model_lifecycle_events(event_date DESC);
+
+CREATE INDEX IF NOT EXISTS idx_persona_opinions_date
+  ON persona_opinions(date DESC);
+
+CREATE INDEX IF NOT EXISTS idx_config_lifecycle_events_date ON config_lifecycle_events(event_date DESC);
+
+CREATE INDEX IF NOT EXISTS idx_config_lifecycle_events_type ON config_lifecycle_events(event_type, event_date DESC);
+
 CREATE INDEX IF NOT EXISTS idx_pred_date_model_stock
   ON predictions(prediction_date, model_name, stock_id);
 
@@ -1479,9 +1700,24 @@ CREATE INDEX IF NOT EXISTS idx_pred_model_verified_date
 CREATE INDEX IF NOT EXISTS idx_model_acc_period_model
   ON model_accuracy(period, model_name);
 
+CREATE INDEX IF NOT EXISTS idx_meta_reward_ledger_policy
+  ON meta_reward_ledger(policy_id, updated_at DESC);
+
+CREATE INDEX IF NOT EXISTS idx_meta_shadow_decisions_policy_date
+  ON meta_shadow_decisions(policy_id, business_date DESC, created_at DESC);
+
+CREATE INDEX IF NOT EXISTS idx_strategy_threshold_artifacts_latest
+  ON strategy_threshold_calibration_artifacts(strategy_id, strategy_version, target_key, status, approved_at DESC);
+
+CREATE INDEX IF NOT EXISTS idx_strategy_threshold_artifacts_run
+  ON strategy_threshold_calibration_artifacts(run_id, status);
+
 CREATE INDEX IF NOT EXISTS idx_predictions_verification_label
   ON predictions(verification_label_schema_version, prediction_date, model_name)
   WHERE verified_at IS NOT NULL;
+
+CREATE INDEX IF NOT EXISTS idx_strategy_candidate_contexts_date_symbol
+  ON strategy_candidate_contexts(date DESC, symbol);
 
 CREATE INDEX IF NOT EXISTS idx_strategy_decision_log_context
   ON strategy_decision_log(context_id);
@@ -1496,195 +1732,3 @@ CREATE INDEX IF NOT EXISTS idx_s12_formal_ev_decisions_symbol
   ON s12_formal_ev_decisions(symbol, observation_date DESC, created_at DESC);
 
 CREATE INDEX IF NOT EXISTS idx_strategy_decision_log_evaluability ON strategy_decision_log(date DESC, strategy_id, evaluable, matched);
-
--- Serving-bound T+5 evidence for the exact Fusion artifact used at decision time.
-CREATE TABLE IF NOT EXISTS expected_return_serving_forward_evaluations (
-  evaluation_id TEXT PRIMARY KEY,
-  prediction_date TEXT NOT NULL,
-  label_known_date TEXT NOT NULL,
-  model_name TEXT NOT NULL CHECK(model_name = 'allocator_ev_fusion'),
-  artifact_id TEXT NOT NULL,
-  model_fingerprint TEXT NOT NULL CHECK(length(model_fingerprint) = 64),
-  model_version TEXT NOT NULL,
-  sample_count INTEGER NOT NULL CHECK(sample_count >= 0),
-  final_corr REAL,
-  l4_corr REAL,
-  corr_delta REAL,
-  final_spread REAL,
-  l4_spread REAL,
-  spread_delta REAL,
-  quality_decision TEXT NOT NULL CHECK(quality_decision IN ('PASS', 'DEGRADED', 'INSUFFICIENT')),
-  evidence_json TEXT NOT NULL CHECK(json_valid(evidence_json)),
-  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-  updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-  UNIQUE(artifact_id, model_fingerprint, prediction_date)
-);
-CREATE INDEX IF NOT EXISTS idx_expected_return_serving_forward_identity_date
-  ON expected_return_serving_forward_evaluations(artifact_id, model_fingerprint, prediction_date DESC);
-
-CREATE TABLE IF NOT EXISTS expected_return_forward_guard_state (
-  model_name TEXT PRIMARY KEY CHECK(model_name = 'allocator_ev_fusion'),
-  artifact_id TEXT NOT NULL,
-  model_fingerprint TEXT NOT NULL CHECK(length(model_fingerprint) = 64),
-  model_version TEXT NOT NULL,
-  state TEXT NOT NULL CHECK(state IN ('monitoring', 'residual_bypass')),
-  evaluable_date_count INTEGER NOT NULL DEFAULT 0 CHECK(evaluable_date_count >= 0),
-  degraded_streak INTEGER NOT NULL DEFAULT 0 CHECK(degraded_streak >= 0),
-  recovery_streak INTEGER NOT NULL DEFAULT 0 CHECK(recovery_streak >= 0),
-  last_prediction_date TEXT NOT NULL,
-  evidence_json TEXT NOT NULL CHECK(json_valid(evidence_json)),
-  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-  updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
-);
-CREATE INDEX IF NOT EXISTS idx_expected_return_forward_guard_state_updated
-  ON expected_return_forward_guard_state(state, updated_at DESC);
-
--- Fresh-schema parity for Learning control-table revision fencing and
--- bounded expected-return history validation. Keep equivalent to 0006-0007.
--- Monotonic mutation epochs for the four Learning control tables in Learning D1.
--- Keep this schema and trigger behavior equivalent to legacy migration 0108 so
--- source and target receipts have the same revision contract.
-CREATE TABLE IF NOT EXISTS data_domain_control_revisions (
-  table_name TEXT PRIMARY KEY CHECK(table_name IN (
-    'model_artifact_registry',
-    'expected_return_artifact_payloads',
-    'model_champion_history',
-    'model_champion_pointers'
-  )),
-  revision INTEGER NOT NULL DEFAULT 0 CHECK(revision >= 0),
-  updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
-);
-
-INSERT INTO data_domain_control_revisions(table_name, revision)
-VALUES
-  ('model_artifact_registry', 0),
-  ('expected_return_artifact_payloads', 0),
-  ('model_champion_history', 0),
-  ('model_champion_pointers', 0)
-ON CONFLICT(table_name) DO NOTHING;
-
-CREATE TRIGGER IF NOT EXISTS trg_model_artifact_registry_revision_insert
-AFTER INSERT ON model_artifact_registry
-BEGIN
-  INSERT INTO data_domain_control_revisions(table_name, revision, updated_at)
-  VALUES ('model_artifact_registry', 1, CURRENT_TIMESTAMP)
-  ON CONFLICT(table_name) DO UPDATE SET
-    revision=revision + 1,
-    updated_at=CURRENT_TIMESTAMP;
-END;
-
-CREATE TRIGGER IF NOT EXISTS trg_model_artifact_registry_revision_update
-AFTER UPDATE ON model_artifact_registry
-BEGIN
-  INSERT INTO data_domain_control_revisions(table_name, revision, updated_at)
-  VALUES ('model_artifact_registry', 1, CURRENT_TIMESTAMP)
-  ON CONFLICT(table_name) DO UPDATE SET
-    revision=revision + 1,
-    updated_at=CURRENT_TIMESTAMP;
-END;
-
-CREATE TRIGGER IF NOT EXISTS trg_model_artifact_registry_revision_delete
-AFTER DELETE ON model_artifact_registry
-BEGIN
-  INSERT INTO data_domain_control_revisions(table_name, revision, updated_at)
-  VALUES ('model_artifact_registry', 1, CURRENT_TIMESTAMP)
-  ON CONFLICT(table_name) DO UPDATE SET
-    revision=revision + 1,
-    updated_at=CURRENT_TIMESTAMP;
-END;
-
-CREATE TRIGGER IF NOT EXISTS trg_expected_return_artifact_payloads_revision_insert
-AFTER INSERT ON expected_return_artifact_payloads
-BEGIN
-  INSERT INTO data_domain_control_revisions(table_name, revision, updated_at)
-  VALUES ('expected_return_artifact_payloads', 1, CURRENT_TIMESTAMP)
-  ON CONFLICT(table_name) DO UPDATE SET
-    revision=revision + 1,
-    updated_at=CURRENT_TIMESTAMP;
-END;
-
-CREATE TRIGGER IF NOT EXISTS trg_expected_return_artifact_payloads_revision_update
-AFTER UPDATE ON expected_return_artifact_payloads
-BEGIN
-  INSERT INTO data_domain_control_revisions(table_name, revision, updated_at)
-  VALUES ('expected_return_artifact_payloads', 1, CURRENT_TIMESTAMP)
-  ON CONFLICT(table_name) DO UPDATE SET
-    revision=revision + 1,
-    updated_at=CURRENT_TIMESTAMP;
-END;
-
-CREATE TRIGGER IF NOT EXISTS trg_expected_return_artifact_payloads_revision_delete
-AFTER DELETE ON expected_return_artifact_payloads
-BEGIN
-  INSERT INTO data_domain_control_revisions(table_name, revision, updated_at)
-  VALUES ('expected_return_artifact_payloads', 1, CURRENT_TIMESTAMP)
-  ON CONFLICT(table_name) DO UPDATE SET
-    revision=revision + 1,
-    updated_at=CURRENT_TIMESTAMP;
-END;
-
-CREATE TRIGGER IF NOT EXISTS trg_model_champion_history_revision_insert
-AFTER INSERT ON model_champion_history
-BEGIN
-  INSERT INTO data_domain_control_revisions(table_name, revision, updated_at)
-  VALUES ('model_champion_history', 1, CURRENT_TIMESTAMP)
-  ON CONFLICT(table_name) DO UPDATE SET
-    revision=revision + 1,
-    updated_at=CURRENT_TIMESTAMP;
-END;
-
-CREATE TRIGGER IF NOT EXISTS trg_model_champion_history_revision_update
-AFTER UPDATE ON model_champion_history
-BEGIN
-  INSERT INTO data_domain_control_revisions(table_name, revision, updated_at)
-  VALUES ('model_champion_history', 1, CURRENT_TIMESTAMP)
-  ON CONFLICT(table_name) DO UPDATE SET
-    revision=revision + 1,
-    updated_at=CURRENT_TIMESTAMP;
-END;
-
-CREATE TRIGGER IF NOT EXISTS trg_model_champion_history_revision_delete
-AFTER DELETE ON model_champion_history
-BEGIN
-  INSERT INTO data_domain_control_revisions(table_name, revision, updated_at)
-  VALUES ('model_champion_history', 1, CURRENT_TIMESTAMP)
-  ON CONFLICT(table_name) DO UPDATE SET
-    revision=revision + 1,
-    updated_at=CURRENT_TIMESTAMP;
-END;
-
-CREATE TRIGGER IF NOT EXISTS trg_model_champion_pointers_revision_insert
-AFTER INSERT ON model_champion_pointers
-BEGIN
-  INSERT INTO data_domain_control_revisions(table_name, revision, updated_at)
-  VALUES ('model_champion_pointers', 1, CURRENT_TIMESTAMP)
-  ON CONFLICT(table_name) DO UPDATE SET
-    revision=revision + 1,
-    updated_at=CURRENT_TIMESTAMP;
-END;
-
-CREATE TRIGGER IF NOT EXISTS trg_model_champion_pointers_revision_update
-AFTER UPDATE ON model_champion_pointers
-BEGIN
-  INSERT INTO data_domain_control_revisions(table_name, revision, updated_at)
-  VALUES ('model_champion_pointers', 1, CURRENT_TIMESTAMP)
-  ON CONFLICT(table_name) DO UPDATE SET
-    revision=revision + 1,
-    updated_at=CURRENT_TIMESTAMP;
-END;
-
-CREATE TRIGGER IF NOT EXISTS trg_model_champion_pointers_revision_delete
-AFTER DELETE ON model_champion_pointers
-BEGIN
-  INSERT INTO data_domain_control_revisions(table_name, revision, updated_at)
-  VALUES ('model_champion_pointers', 1, CURRENT_TIMESTAMP)
-  ON CONFLICT(table_name) DO UPDATE SET
-    revision=revision + 1,
-    updated_at=CURRENT_TIMESTAMP;
-END;
-
-
--- Keep Learning D1 query shape equivalent to legacy DB for bounded pointer
--- history semantic validation.
-CREATE INDEX IF NOT EXISTS idx_model_champion_history_semantic_scan
-  ON model_champion_history(model_name, effective_at, event_id);

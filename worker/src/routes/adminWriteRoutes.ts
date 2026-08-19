@@ -7,6 +7,12 @@ import {
   inspectLearningDataDomainCompletion,
   LEARNING_CUTOVER_CONFIRMATION,
 } from '../lib/dataDomainCutoverCompletion'
+import {
+  completeFormalDataDomainCutover,
+  formalDataDomainCutoverConfirmation,
+  inspectFormalDataDomainCutover,
+  parseFormalDataDomain,
+} from '../lib/dataDomainFormalCutover'
 import { runDailyUpdate } from '../lib/updateOrchestrator'
 import type { Bindings, Variables } from '../types'
 import {
@@ -79,6 +85,30 @@ adminWriteRoutes.post('/api/admin/data-domains/learning/cutover/complete', async
       preflight,
     }, 409)
   }
+})
+
+adminWriteRoutes.post('/api/admin/data-domains/:domain/cutover/complete', async (c) => {
+  const authError = await requireAdminOrServiceToken(c)
+  if (authError) return authError
+  const domain = parseFormalDataDomain(c.req.param('domain'))
+  const body: { dry_run?: boolean } = await c.req
+    .json<{ dry_run?: boolean }>()
+    .catch(() => ({}))
+  const dryRun = body.dry_run !== false
+  const preflight = await inspectFormalDataDomainCutover(c.env, domain)
+  if (dryRun) return preflight.ready ? c.json({ ok: true, dry_run: true, preflight }) : c.json({ ok: false, dry_run: true, preflight }, 409)
+  const expectedConfirmation = formalDataDomainCutoverConfirmation(domain)
+  if (c.req.header('X-Confirm-Data-Domain-Cutover') !== expectedConfirmation) {
+    return c.json({
+      ok: false,
+      error: 'explicit_data_domain_cutover_confirmation_required',
+      required_header: 'X-Confirm-Data-Domain-Cutover',
+      required_value: expectedConfirmation,
+    }, 400)
+  }
+  if (!preflight.ready) return c.json({ ok: false, error: 'formal_data_domain_cutover_blocked', preflight }, 409)
+  const transition = await completeFormalDataDomainCutover(c.env, domain)
+  return c.json({ ok: true, dry_run: false, transition })
 })
 
 adminWriteRoutes.post('/api/admin/update', async (c) => {

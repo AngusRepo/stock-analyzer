@@ -156,6 +156,13 @@ assert.equal(shouldContinueDataDomainGlobalSweep({
 
 assert(drain.includes('inspectLatestEveningChainClosure'))
 assert(drain.includes('enqueueNextDataDomainShadowBackfill'))
+assert(!nextDomainSelector.includes('data_domain_shadow_requires_strict_disabled'))
+const mutationAuthority = drain.slice(
+  drain.indexOf('async function assertDataDomainShadowMutationAuthority'),
+  drain.indexOf('export function dataDomainParitySessionWatermark'),
+)
+assert(!mutationAuthority.includes('data_domain_shadow_requires_strict_disabled'))
+assert(mutationAuthority.includes('data_domain_shadow_requires_inactive_target'))
 assert((nextDomainSelector.match(/for \(const domain of DOMAIN_BACKFILL_ORDER\)/g) ?? []).length === 2)
 assert(nextDomainSelector.indexOf('const incomplete = await nextIncompleteTable')
   < nextDomainSelector.indexOf('const receiptRefresh = await nextDataDomainReceiptRefreshTable'))

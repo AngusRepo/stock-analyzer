@@ -962,7 +962,7 @@ async function readLatestValidationPackets(env: Bindings): Promise<{
   error?: string
 }> {
   try {
-    const row = await env.DB.prepare(`
+    const row = await databaseForDataDomain(env, 'research').prepare(`
       SELECT raw_results
         FROM backtest_results
        WHERE raw_results IS NOT NULL

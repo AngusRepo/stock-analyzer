@@ -171,6 +171,8 @@ CREATE TABLE IF NOT EXISTS daily_recommendations (
 
 CREATE INDEX IF NOT EXISTS idx_rec_date ON daily_recommendations(date DESC);
 
+CREATE TABLE IF NOT EXISTS stock_analysis_reports (id INTEGER PRIMARY KEY AUTOINCREMENT, date TEXT NOT NULL, report_type TEXT NOT NULL DEFAULT 'daily', market_summary TEXT, ml_overview TEXT, buy_details TEXT, sell_alerts TEXT, recommendations TEXT, performance TEXT, theme_flow TEXT, created_at TEXT NOT NULL DEFAULT (datetime('now')), UNIQUE(date, report_type));
+
 CREATE INDEX IF NOT EXISTS idx_rec_date_rank_score
   ON daily_recommendations(date, rank, score DESC);
 

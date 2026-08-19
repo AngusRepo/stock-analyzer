@@ -141,7 +141,7 @@ dashboardReadRoutes.get('/api/backtest/latest', async (c) => {
   const authError = await requireValidToken(c)
   if (authError) return authError
 
-  const row = await c.env.DB.prepare(
+  const row = await databaseForDataDomain(c.env, 'research').prepare(
     'SELECT * FROM backtest_results ORDER BY run_date DESC, created_at DESC LIMIT 1'
   ).first()
   return c.json(row ?? null)
@@ -151,7 +151,7 @@ dashboardReadRoutes.get('/api/backtest/monte-carlo', async (c) => {
   const authError = await requireValidToken(c)
   if (authError) return authError
 
-  const row = await c.env.DB.prepare(
+  const row = await databaseForDataDomain(c.env, 'research').prepare(
     'SELECT * FROM monte_carlo_results ORDER BY run_date DESC, created_at DESC LIMIT 1'
   ).first()
   return c.json(row ?? null)
@@ -350,7 +350,7 @@ dashboardReadRoutes.get('/api/backtest/pbo', async (c) => {
   const authError = await requireValidToken(c)
   if (authError) return authError
 
-  const row = await c.env.DB.prepare(
+  const row = await databaseForDataDomain(c.env, 'research').prepare(
     'SELECT * FROM pbo_results ORDER BY run_date DESC, created_at DESC LIMIT 1'
   ).first()
   return c.json(row ?? null)

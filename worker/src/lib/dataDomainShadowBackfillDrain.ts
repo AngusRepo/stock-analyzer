@@ -100,9 +100,6 @@ async function assertDataDomainShadowMutationAuthority(
   if (invalidDomains.length) {
     throw new Error(`data_domain_shadow_active_domain_invalid:${invalidDomains.sort().join(',')}`)
   }
-  if (String(env.MULTI_D1_STRICT ?? '').trim().toLowerCase() === 'true') {
-    throw new Error(`data_domain_shadow_requires_strict_disabled:${domain}`)
-  }
   if (activeDataDomains(env).has(domain)) {
     throw new Error(`data_domain_shadow_requires_inactive_target:${domain}`)
   }
@@ -499,9 +496,6 @@ export async function nextDataDomainBackfillDomain(
   const invalidDomains = invalidActiveDataDomains(env)
   if (invalidDomains.length) {
     throw new Error(`data_domain_shadow_active_domain_invalid:${invalidDomains.sort().join(',')}`)
-  }
-  if (String(env.MULTI_D1_STRICT ?? '').trim().toLowerCase() === 'true') {
-    throw new Error('data_domain_shadow_requires_strict_disabled:selector')
   }
   const activeDomains = activeDataDomains(env)
   // Initial-copy cursors are durable even when a later source write invalidates

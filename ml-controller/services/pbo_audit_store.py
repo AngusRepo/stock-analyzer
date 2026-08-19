@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 from typing import Any
 
-from services.d1_client import execute
+from services.d1_domain_client import D1DataDomain, client_for_domain
 
 
 def build_pbo_audit_insert(
@@ -53,7 +53,7 @@ def persist_pbo_audit(
     audit: dict[str, Any],
 ) -> dict[str, Any]:
     sql, params = build_pbo_audit_insert(run_date=run_date, source=source, audit=audit)
-    result = execute(sql, params=params)
+    result = client_for_domain(D1DataDomain.RESEARCH).execute(sql, params=params)
     return {
         "status": "success",
         "source": source,

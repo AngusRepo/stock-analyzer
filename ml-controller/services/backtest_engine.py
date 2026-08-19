@@ -56,7 +56,7 @@ import logging
 import math
 import json
 import tempfile
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, Optional
@@ -2504,6 +2504,41 @@ class PositionSizeParams:
         )
 
 
+@dataclass(frozen=True)
+class FormalPositionRiskParams:
+    max_per_sector: int
+    max_single_name_pct: float
+    correlation_threshold: float
+    correlation_window: int
+    min_correlation_overlap: int = 20
+
+    @classmethod
+    def from_config(cls, raw: Optional[dict]) -> Optional[FormalPositionRiskParams]:
+        if not isinstance(raw, dict):
+            return None
+        result = cls(
+            max_per_sector=int(raw.get('maxPerSector') or raw.get('max_per_sector') or 0),
+            max_single_name_pct=float(raw.get('maxSingleNamePct') or raw.get('max_single_name_pct') or 0),
+            correlation_threshold=float(raw.get('correlationThreshold') or raw.get('correlation_threshold') or 0),
+            correlation_window=int(raw.get('correlationWindow') or raw.get('correlation_window') or 0),
+            min_correlation_overlap=int(raw.get('minCorrelationOverlap') or raw.get('min_correlation_overlap') or 20),
+        )
+        result.validate()
+        return result
+
+    def validate(self) -> None:
+        if self.max_per_sector < 1:
+            raise ValueError('position_risk_max_per_sector_invalid')
+        if not 0 < self.max_single_name_pct <= 1:
+            raise ValueError('position_risk_max_single_name_pct_invalid')
+        if not -1 <= self.correlation_threshold <= 1:
+            raise ValueError('position_risk_correlation_threshold_invalid')
+        if not 10 <= self.correlation_window <= 252:
+            raise ValueError('position_risk_correlation_window_invalid')
+        if not 3 <= self.min_correlation_overlap <= self.correlation_window:
+            raise ValueError('position_risk_min_correlation_overlap_invalid')
+
+
 @dataclass
 class SLTPParams:
     """Subset of trading:config.sltp for synthetic stop/target generation."""
@@ -2961,6 +2996,58 @@ def _correlation_dedup_skip(
     )
 
 
+def _dated_return_history(
+    dataset: BacktestDataset,
+    symbol: str,
+    decision_date: str,
+    lookback_days: int,
+) -> dict[str, float]:
+    prices = dataset.get_price_history_np(symbol, decision_date, lookback_days + 1)
+    if not prices or int(prices.get('n') or 0) < 3:
+        return {}
+    dates = np.asarray(prices.get('dates')).tolist()
+    closes = np.asarray(prices.get('close'), dtype=float).tolist()
+    result: dict[str, float] = {}
+    for index in range(1, min(len(dates), len(closes))):
+        previous = float(closes[index - 1])
+        current = float(closes[index])
+        if previous > 0 and current > 0 and math.isfinite(previous) and math.isfinite(current):
+            result[str(dates[index])[:10]] = (current / previous) - 1.0
+    return result
+
+
+def _formal_position_correlation_skip(
+    dataset: BacktestDataset,
+    candidate_symbol: str,
+    existing_symbols: list[str],
+    decision_date: str,
+    risk: FormalPositionRiskParams,
+) -> tuple[str, str] | None:
+    candidate_returns = _dated_return_history(
+        dataset, candidate_symbol, decision_date, risk.correlation_window
+    )
+    if len(candidate_returns) < risk.min_correlation_overlap:
+        return None
+    for existing_symbol in sorted(set(existing_symbols)):
+        existing_returns = _dated_return_history(
+            dataset, existing_symbol, decision_date, risk.correlation_window
+        )
+        shared_dates = sorted(set(candidate_returns).intersection(existing_returns))
+        if len(shared_dates) < risk.min_correlation_overlap:
+            continue
+        candidate_values = np.asarray([candidate_returns[date] for date in shared_dates], dtype=float)
+        existing_values = np.asarray([existing_returns[date] for date in shared_dates], dtype=float)
+        correlation = float(np.corrcoef(candidate_values, existing_values)[0, 1])
+        if math.isfinite(correlation) and correlation >= risk.correlation_threshold:
+            return (
+                'skipped_position_correlation_cap',
+                f'corr={correlation:.4f} threshold={risk.correlation_threshold:.4f} '
+                f'window={risk.correlation_window} overlap={len(shared_dates)} '
+                f'existing={existing_symbol}',
+            )
+    return None
+
+
 def _synth_stop_target(
     entry: float, atr14: float, sl_mult: float, tp_mult: float
 ) -> tuple[float, float, float]:
@@ -3025,6 +3112,7 @@ def simulate_entries_for_date(
     pf_30d: Optional[float] = None,
     pf_90d: Optional[float] = None,
     correlation_dedup_cfg: Optional[dict] = None,
+    position_risk_distribution_cfg: Optional[dict] = None,
 ) -> list[EntryAttempt]:
     """
     Given screener output for date T, try to open positions on T+1.
@@ -3051,6 +3139,15 @@ def simulate_entries_for_date(
     if not buy_candidates:
         return attempts
     filled_entry_symbols: set[str] = set()
+    formal_position_risk = FormalPositionRiskParams.from_config(position_risk_distribution_cfg)
+    if formal_position_risk is not None:
+        pos = replace(
+            pos,
+            max_pct_of_portfolio=min(
+                pos.max_pct_of_portfolio,
+                formal_position_risk.max_single_name_pct,
+            ),
+        )
 
     # ─── 2026-04-20 #28 P2: L2 circuit breakers (Layer 1 + 2) ────────────────
     # Only apply when Mode B is active (ml_predictions cache present) AND
@@ -3193,11 +3290,12 @@ def simulate_entries_for_date(
             ))
             continue
 
-        if industry_count.get(cand.industry, 0) >= 2:
+        sector_limit = formal_position_risk.max_per_sector if formal_position_risk else 2
+        if industry_count.get(cand.industry, 0) >= sector_limit:
             attempts.append(EntryAttempt(
                 symbol=cand.symbol, decision_date=decision_date, entry_date=entry_date,
                 status="skipped_industry", adjusted_entry=cand.close,
-                reason=f"industry {cand.industry} already has 2 positions",
+                reason=f'industry {cand.industry} already has {sector_limit} positions',
             ))
             continue
 
@@ -3210,6 +3308,14 @@ def simulate_entries_for_date(
             pos=pos,
             correlation_dedup_cfg=correlation_dedup_cfg,
         )
+        if formal_position_risk is not None:
+            correlation_skip = _formal_position_correlation_skip(
+                dataset=dataset,
+                candidate_symbol=cand.symbol,
+                existing_symbols=[*account.positions.keys(), *filled_entry_symbols],
+                decision_date=decision_date,
+                risk=formal_position_risk,
+            )
         if correlation_skip is not None:
             status, reason = correlation_skip
             attempts.append(EntryAttempt(
@@ -4912,6 +5018,10 @@ def replay_period(
                 pf_90d=(
                     compute_profit_factor(all_trades, day, window_days=90, min_trades=10)
                     if mode == "B" and circuit_cfg_b is not None else None
+                ),
+                position_risk_distribution_cfg=(
+                    (params or {}).get('positionRiskDistribution')
+                    or (params or {}).get('position_risk_distribution')
                 ),
                 correlation_dedup_cfg=(
                     (params or {}).get("correlationDedup")

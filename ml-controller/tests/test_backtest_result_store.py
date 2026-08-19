@@ -204,20 +204,18 @@ def _minimal_metrics_for_persist():
 
 
 def test_backtest_persist_is_idempotent_only_for_identical_payload(monkeypatch):
-    from services import d1_client
+    import services.backtest_result_store as store
 
     metrics = _minimal_metrics_for_persist()
     _, params = build_replay_backtest_insert(metrics, run_date="2026-08-23")
-    monkeypatch.setattr(
-        d1_client,
-        "query",
-        lambda *_args, **_kwargs: [{"id": 7, "raw_results": params[-1]}],
-    )
-    monkeypatch.setattr(
-        d1_client,
-        "execute",
-        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("must not write")),
-    )
+    class FakeResearchClient:
+        def query(self, *_args, **_kwargs):
+            return [{'id': 7, 'raw_results': params[-1]}]
+
+        def execute(self, *_args, **_kwargs):
+            raise AssertionError('must not write')
+
+    monkeypatch.setattr(store, 'client_for_domain', lambda domain: FakeResearchClient())
 
     result = persist_replay_backtest(metrics, run_date="2026-08-23")
 
@@ -226,14 +224,14 @@ def test_backtest_persist_is_idempotent_only_for_identical_payload(monkeypatch):
 
 
 def test_backtest_persist_rejects_immutable_payload_conflict(monkeypatch):
-    from services import d1_client
+    import services.backtest_result_store as store
 
     metrics = _minimal_metrics_for_persist()
-    monkeypatch.setattr(
-        d1_client,
-        "query",
-        lambda *_args, **_kwargs: [{"id": 8, "raw_results": "different"}],
-    )
+    class FakeResearchClient:
+        def query(self, *_args, **_kwargs):
+            return [{'id': 8, 'raw_results': 'different'}]
+
+    monkeypatch.setattr(store, 'client_for_domain', lambda domain: FakeResearchClient())
 
     with pytest.raises(RuntimeError, match="immutable_backtest_evidence_conflict"):
         persist_replay_backtest(metrics, run_date="2026-08-23")

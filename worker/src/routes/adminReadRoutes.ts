@@ -10,7 +10,8 @@ adminReadRoutes.get('/api/admin/debate-ab/stats', async (c) => {
   const authError = await requireAdminOrServiceToken(c)
   if (authError) return authError
 
-  const { results: byModel } = await c.env.DB.prepare(
+  const researchDb = databaseForDataDomain(c.env, 'research')
+  const { results: byModel } = await researchDb.prepare(
     `SELECT model_assigned,
             COUNT(*) AS calls,
             AVG(conviction_score) AS avg_conviction,
@@ -24,7 +25,7 @@ adminReadRoutes.get('/api/admin/debate-ab/stats', async (c) => {
      GROUP BY model_assigned`
   ).all<any>()
 
-  const { results: byDay } = await c.env.DB.prepare(
+  const { results: byDay } = await researchDb.prepare(
     `SELECT date, model_assigned, COUNT(*) AS calls, AVG(conviction_score) AS avg_conviction
      FROM debate_ab_log
      WHERE date >= date('now', '-30 days')
@@ -271,6 +272,7 @@ adminReadRoutes.get('/api/admin/storage/capacity', async (c) => {
        WHERE r2_key IS NOT NULL
          AND status NOT IN ('deleted', 'purged')
     `).first<{ object_count: number; tracked_bytes: number }>(),
+    // multi-d1-intentional-legacy-source: cutover receipts live in the permanent control plane.
     c.env.DB.prepare(`
       SELECT status, parity_checked_at, updated_at
         FROM data_domain_cutovers
@@ -857,9 +859,16 @@ adminReadRoutes.get('/api/admin/data-domains/cutover-readiness', async (c) => {
     learningTargetDb: c.env.LEARNING_DB,
   })
   const activeDomains = [...activeDataDomains(c.env)].sort()
+  const { buildDataDomainTenYearClosure } = await import('../lib/dataDomainTenYearClosure')
+  const tenYearClosure = buildDataDomainTenYearClosure({
+    activeDomains,
+    strictRequested: String(c.env.MULTI_D1_STRICT ?? '').trim().toLowerCase() === 'true',
+    domains: report.domains,
+  })
   return c.json({
     success: true, latest_evening_chain: latestEveningChain, ...report,
     active_domains: activeDomains,
     strict_requested: String(c.env.MULTI_D1_STRICT ?? '').trim().toLowerCase() === 'true',
+    ten_year_closure: tenYearClosure,
   })
 })

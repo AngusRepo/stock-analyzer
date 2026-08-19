@@ -1,8 +1,10 @@
 import { inspectDataDomainCutoverReadiness } from './dataDomainCutoverReadiness'
+import { tablesForDataDomainShadowBackfill } from './dataDomainRegistry'
 
 export const LEARNING_HOT_RETENTION_DAYS = 730 as const
 export const LEARNING_COLD_RETENTION_DAYS = 3650 as const
 export const LEGACY_LEARNING_EARLIEST_CLEAR_DATE = '2026-09-17' as const
+export const LEGACY_LEARNING_TABLE_MANIFEST = tablesForDataDomainShadowBackfill('learning')
 
 type DatasetSpec = {
   table: string
@@ -103,7 +105,7 @@ export async function inspectLegacyLearningDeletionReadiness(
   learningDb: D1Database,
   asOfDate: string,
 ) {
-  const [cutover, writer, projections, probe, parity] = await Promise.all([
+  const [cutover, writer, projections, probe, cursors, parity] = await Promise.all([
     opsDb.prepare(
       `SELECT status, parity_checked_at, updated_at
          FROM data_domain_cutovers WHERE domain='learning'`,
@@ -126,12 +128,19 @@ export async function inspectLegacyLearningDeletionReadiness(
         ORDER BY checked_at DESC LIMIT 1`,
     ).first<Record<string, unknown>>(),
     opsDb.prepare(
+      `SELECT COUNT(*) tracked_tables,
+              SUM(CASE WHEN status='complete' THEN 1 ELSE 0 END) completed_tables,
+              SUM(CASE WHEN status='failed' THEN 1 ELSE 0 END) failed_tables
+         FROM data_domain_backfill_cursors
+        WHERE domain='learning'`,
+    ).first<Record<string, unknown>>(),
+    opsDb.prepare(
       `SELECT COUNT(*) checked_tables,
               SUM(CASE WHEN status='pass' THEN 1 ELSE 0 END) matched_tables
          FROM (
            SELECT table_name, status,
                   ROW_NUMBER() OVER (PARTITION BY table_name ORDER BY checked_at DESC) rn
-             FROM data_domain_parity_receipts
+             FROM data_domain_parity_checks
             WHERE domain='learning' AND check_kind='full_table'
          ) WHERE rn=1`,
     ).first<Record<string, unknown>>(),
@@ -152,9 +161,16 @@ export async function inspectLegacyLearningDeletionReadiness(
     || numeric(probe?.read_write_readback_passed) !== 1
     || numeric(probe?.rollback_restore_passed) !== 1
   ) blockers.push('rollback_probe_not_passed')
-  if (numeric(parity?.checked_tables) !== numeric(parity?.matched_tables) || numeric(parity?.checked_tables) === 0) {
-    blockers.push('latest_full_table_parity_not_complete')
-  }
+  const expectedTables = LEGACY_LEARNING_TABLE_MANIFEST.length
+  if (
+    numeric(cursors?.tracked_tables) !== expectedTables
+    || numeric(cursors?.completed_tables) !== expectedTables
+    || numeric(cursors?.failed_tables) > 0
+  ) blockers.push('legacy_learning_66_table_backfill_not_complete')
+  if (
+    numeric(parity?.checked_tables) !== expectedTables
+    || numeric(parity?.matched_tables) !== expectedTables
+  ) blockers.push('legacy_learning_66_table_parity_not_complete')
   if (!domainReadiness?.cutover_ready) {
     blockers.push(...(domainReadiness?.blockers ?? ['learning_cutover_readiness_missing']))
   }
@@ -176,6 +192,13 @@ export async function inspectLegacyLearningDeletionReadiness(
         errors: numeric(projections?.errors),
       },
       probe: probe ?? null,
+      legacy_learning_manifest: {
+        expected_tables: expectedTables,
+        tables: LEGACY_LEARNING_TABLE_MANIFEST,
+        tracked_tables: numeric(cursors?.tracked_tables),
+        completed_tables: numeric(cursors?.completed_tables),
+        failed_tables: numeric(cursors?.failed_tables),
+      },
       parity: {
         checked_tables: numeric(parity?.checked_tables),
         matched_tables: numeric(parity?.matched_tables),

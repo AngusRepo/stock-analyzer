@@ -39,16 +39,17 @@ def test_build_pbo_audit_insert_maps_optuna_l2_audit_to_pbo_results_schema():
     assert raw["origin"] == "optuna_l2"
 
 
-def test_persist_pbo_audit_uses_d1_execute(monkeypatch):
+def test_persist_pbo_audit_uses_research_domain_client(monkeypatch):
     calls = []
 
-    def fake_execute(sql, params=None, timeout=60.0):
-        calls.append((sql, params, timeout))
-        return {"success": True, "meta": {"changes": 1}}
+    class FakeResearchClient:
+        def execute(self, sql, params=None, timeout=60.0):
+            calls.append((sql, params, timeout))
+            return {'success': True, 'meta': {'changes': 1}}
 
     import services.pbo_audit_store as store
 
-    monkeypatch.setattr(store, "execute", fake_execute)
+    monkeypatch.setattr(store, 'client_for_domain', lambda domain: FakeResearchClient())
 
     out = persist_pbo_audit(
         run_date="2026-04-26",

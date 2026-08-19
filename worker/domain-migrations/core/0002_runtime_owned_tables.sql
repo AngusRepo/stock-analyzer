@@ -1,0 +1,2 @@
+-- Add runtime-owned tables deferred from the immutable domain baseline.
+CREATE TABLE IF NOT EXISTS stock_analysis_reports (id INTEGER PRIMARY KEY AUTOINCREMENT, date TEXT NOT NULL, report_type TEXT NOT NULL DEFAULT 'daily', market_summary TEXT, ml_overview TEXT, buy_details TEXT, sell_alerts TEXT, recommendations TEXT, performance TEXT, theme_flow TEXT, created_at TEXT NOT NULL DEFAULT (datetime('now')), UNIQUE(date, report_type));

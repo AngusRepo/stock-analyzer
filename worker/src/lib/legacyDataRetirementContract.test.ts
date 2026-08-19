@@ -53,4 +53,9 @@ assert.match(dashboard, /prediction_date IS NOT NULL/)
 assert.doesNotMatch(dashboard, /COALESCE\(prediction_date, substr\(generated_at/)
 assert.match(manifest, /"id": "legacy-strategy-evidence-migration"/)
 assert.match(manifest, /"id": "legacy-hot-data-retirement"/)
-assert.match(manifest, /confirm_retirement=RETIRE_VERIFIED_LEGACY_HOT_DATA/)
+const scheduledRetirement = JSON.parse(manifest).jobs.find((job: { id?: string }) => (
+  job.id === 'legacy-hot-data-retirement'
+))
+assert.ok(scheduledRetirement)
+assert.doesNotMatch(String(scheduledRetirement.query ?? ''), /confirm_retirement=/)
+assert.match(String(scheduledRetirement.description ?? ''), /read-only/)

@@ -20,9 +20,9 @@ from services.validation_governance import build_validation_packet
 
 
 def query(sql: str, params: list[Any] | None = None, timeout: float = 60.0) -> list[dict[str, Any]]:
-    from services.d1_client import query as d1_query
+    from services.d1_domain_client import D1DataDomain, client_for_domain
 
-    return d1_query(sql, params=params, timeout=timeout)
+    return client_for_domain(D1DataDomain.RESEARCH).query(sql, params=params, timeout=timeout)
 
 
 def _safe_json(raw: Any) -> dict[str, Any]:

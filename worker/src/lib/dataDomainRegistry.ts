@@ -16,6 +16,19 @@ export const DATA_DOMAINS: readonly DataDomain[] = [
   'core', 'market', 'learning', 'ops', 'execution', 'paper', 'research',
 ]
 
+export const LEGACY_CONTROL_PLANE_TABLES = new Set([
+  'domain_projection_outbox',
+  'domain_projection_inbox',
+  'data_domain_cutovers',
+  'data_domain_writer_epochs',
+  'data_domain_table_writer_epochs',
+  'data_domain_cutover_probe_receipts',
+  'data_domain_cutover_probe_canary',
+  'data_domain_backfill_cursors',
+  'data_domain_parity_checks',
+  'data_domain_control_revisions',
+])
+
 export const MULTI_D1_ROUTING_CONTRACT_GATES = {
   active_domain_ready_guard: true,
   invalid_domain_config_fail_closed: true,
@@ -41,16 +54,17 @@ export const MULTI_D1_PROJECTION_CONTRACT_READY = Object.values(
   MULTI_D1_PROJECTION_CONTRACT_GATES,
 ).every(Boolean)
 
-const DOMAIN_ROUTING_CONTRACT_READY = new Set<DataDomain>(['learning'])
-const DOMAIN_PROJECTION_FREE_CLOSURE = new Set<DataDomain>(['learning'])
+const DOMAIN_ROUTING_CONTRACT_READY = new Set<DataDomain>(['learning', 'execution'])
+const DOMAIN_PROJECTION_FREE_CLOSURE = new Set<DataDomain>(['learning', 'execution'])
 
 export function dataDomainRoutingContractReady(domain: DataDomain): boolean {
   return DOMAIN_ROUTING_CONTRACT_READY.has(domain)
 }
 
 export function dataDomainProjectionContractReady(domain: DataDomain): boolean {
-  // Learning cross-domain reads are split by binding and joined in memory;
-  // there is no transactional cross-domain write projection in its runtime path.
+  // Learning cross-domain reads are split by binding and joined in memory.
+  // Execution owns an isolated intent/leg/event ledger through the domain client.
+  // Neither runtime path requires a transactional cross-domain projection.
   return DOMAIN_PROJECTION_FREE_CLOSURE.has(domain)
 }
 const DOMAIN_TABLES: Record<DataDomain, ReadonlySet<string>> = {
@@ -258,8 +272,9 @@ const TABLE_OWNERSHIP: readonly TableOwnershipMetadata[] = [
       table,
       domain,
       disposition: 'full_scalar',
-      route_ready: true,
-      shadow_ready: !(SHADOW_BACKFILL_EXCLUDED_TABLES[domain] ?? new Set<string>()).has(table),
+      route_ready: !LEGACY_CONTROL_PLANE_TABLES.has(table),
+      shadow_ready: !LEGACY_CONTROL_PLANE_TABLES.has(table)
+        && !(SHADOW_BACKFILL_EXCLUDED_TABLES[domain] ?? new Set<string>()).has(table),
     }))
   )),
   ...DEFERRED_PRODUCTION_TABLE_OWNERSHIP,
@@ -466,6 +481,7 @@ export function databaseForTable(
   tableName: string,
 ): D1Database {
   const table = tableName.trim().toLowerCase()
+  if (LEGACY_CONTROL_PLANE_TABLES.has(table)) return env.DB
   const domain = dataDomainForTable(table)
   if (!domain) throw new Error(`unowned_data_domain_table:${table}`)
   return databaseForDataDomain(env, domain)

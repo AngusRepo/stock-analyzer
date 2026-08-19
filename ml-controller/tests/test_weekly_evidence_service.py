@@ -9,6 +9,7 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from services import weekly_evidence_service as service
+from services import kv_client
 
 
 def test_canonical_historical_rerun_fails_before_any_runtime_read(monkeypatch):
@@ -86,6 +87,35 @@ def test_historical_bundle_is_comparison_only_and_not_promotion_eligible(monkeyp
     assert result["persisted"] is False
     assert result["promotion_gate_eligible"] is False
     assert result["monte_carlo"]["n_returns"] == 5
+
+
+def test_formal_position_risk_is_frozen_into_replay_config(monkeypatch):
+    risk_config = {
+        'position': {
+            'maxPerSector': 3,
+            'maxSingleNamePct': 0.18,
+            'correlationThreshold': 0.65,
+            'correlationWindow': 60,
+        },
+    }
+    monkeypatch.setattr(kv_client, 'get_json', lambda *_, **__: risk_config)
+    merged = service._with_formal_position_risk({'position': {'maxPositions': 5}})
+    formal = merged['positionRiskDistribution']
+    assert formal['contractVersion'] == 'position-risk-distribution-v1'
+    assert formal['maxPerSector'] == 3
+    assert formal['maxSingleNamePct'] == 0.18
+    assert formal['correlationThreshold'] == 0.65
+    assert formal['sourceRiskConfigChecksum'] == service._stable_checksum(risk_config)
+
+
+def test_replay_fails_before_dataset_read_when_formal_risk_contract_missing():
+    with pytest.raises(RuntimeError, match='weekly_position_risk_contract_missing'):
+        service._replay(
+            as_of_date='2026-08-16',
+            params={'position': {}},
+            initial_capital=1_000_000,
+            symbols=None,
+        )
 
 
 def test_historical_bundle_rejects_config_lookahead(monkeypatch):

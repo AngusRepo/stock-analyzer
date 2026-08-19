@@ -1,5 +1,5 @@
 import type { TaskHandler, TriggerDeps } from './adminTriggerTaskMap'
-import { databaseForDataDomain, shadowDatabaseForDataDomain } from './dataDomainRegistry'
+import { DATA_DOMAINS, databaseForDataDomain, shadowDatabaseForDataDomain } from './dataDomainRegistry'
 import type { DataDomain } from './dataDomainRegistry'
 import { runVerifyV2 } from './controllerWorkflows'
 import { twToday } from './dateUtils'
@@ -38,7 +38,7 @@ const AUDIT_JSON_NON_PAPER_TARGETS_DURING_PARITY_PROTECTION = [
   'strategy_decision_log', 'screener_funnel_items', 'canonical_screener_funnel_items',
 ]
 
-const CUTOVER_PROBE_DOMAINS = new Set<DataDomain>(['ops', 'execution', 'paper', 'learning'])
+const CUTOVER_PROBE_DOMAINS = new Set<DataDomain>(DATA_DOMAINS)
 
 function resolveCutoverProbeDomain(rawDomain: string): DataDomain {
   const domain = rawDomain.trim().toLowerCase() as DataDomain

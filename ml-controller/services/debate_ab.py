@@ -15,18 +15,19 @@ import os
 from typing import Optional
 
 import httpx
+from services.d1_domain_client import D1DataDomain, database_id_for_domain
 
 logger = logging.getLogger(__name__)
 
 _ENABLED = os.environ.get("DEBATE_AB_ENABLED", "true").lower() == "true"
 
 _CF_ACCOUNT_ID = os.environ.get("CF_ACCOUNT_ID", "")
-_CF_D1_DB_ID = os.environ.get("CF_D1_DB_ID", "")
 _CF_API_TOKEN = os.environ.get("CF_API_TOKEN", "")
-_CF_D1_URL = (
-    f"https://api.cloudflare.com/client/v4/accounts/{_CF_ACCOUNT_ID}"
-    f"/d1/database/{_CF_D1_DB_ID}/query"
-) if _CF_ACCOUNT_ID and _CF_D1_DB_ID else ""
+
+
+def _research_d1_url() -> str:
+    database_id = database_id_for_domain(D1DataDomain.RESEARCH)
+    return f'https://api.cloudflare.com/client/v4/accounts/{_CF_ACCOUNT_ID}/d1/database/{database_id}/query'
 
 
 def assign_model(symbol: str, date: Optional[str] = None) -> Optional[str]:
@@ -50,7 +51,7 @@ async def log_debate(
     meta: Optional[dict] = None,
 ) -> None:
     """Fire-and-forget D1 insert to debate_ab_log."""
-    if not _ENABLED or not _CF_D1_URL or not _CF_API_TOKEN:
+    if not _ENABLED or not _CF_ACCOUNT_ID or not _CF_API_TOKEN:
         return
     now = _dt.datetime.now(_dt.timezone.utc)
     tw_date = (now + _dt.timedelta(hours=8)).date().isoformat()
@@ -79,7 +80,7 @@ async def log_debate(
     try:
         async with httpx.AsyncClient(timeout=10.0) as client:
             r = await client.post(
-                _CF_D1_URL,
+                _research_d1_url(),
                 json=payload,
                 headers={
                     "Authorization": f"Bearer {_CF_API_TOKEN}",

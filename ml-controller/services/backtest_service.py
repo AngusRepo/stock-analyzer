@@ -39,18 +39,17 @@ from services.research_data_access import (
     resolve_research_data_access,
 )
 from services.snapshot_parquet import read_snapshot_component
+from services.d1_domain_client import D1DataDomain, database_id_for_domain
 
 logger = logging.getLogger(__name__)
 
 # ── D1 API Config ────────────────────────────────────────────────────────────
 CF_ACCOUNT_ID = os.environ.get("CF_ACCOUNT_ID", "")
-CF_D1_DB_ID = os.environ.get("CF_D1_DB_ID", "")
 CF_API_TOKEN = os.environ.get("CF_API_TOKEN", "")
 
-D1_API = (
-    f"https://api.cloudflare.com/client/v4/accounts/{CF_ACCOUNT_ID}"
-    f"/d1/database/{CF_D1_DB_ID}/query"
-)
+def _d1_api(domain: D1DataDomain) -> str:
+    database_id = database_id_for_domain(domain)
+    return f'https://api.cloudflare.com/client/v4/accounts/{CF_ACCOUNT_ID}/d1/database/{database_id}/query'
 
 # ── Strategy Parameters (mirror Worker tradingConfig + paper.ts) ──────────────
 HARD_STOP_PCT = -0.12
@@ -174,7 +173,7 @@ class BacktestResult:
 
 # ── D1 Helpers ────────────────────────────────────────────────────────────────
 
-async def _d1_query(client: httpx.AsyncClient, sql: str, params: list = None) -> list[dict]:
+async def _d1_query(client: httpx.AsyncClient, sql: str, params: list = None, *, domain: D1DataDomain) -> list[dict]:
     """Execute a D1 SQL query via REST API."""
     if not CF_API_TOKEN:
         logger.error("CF_API_TOKEN not set")
@@ -185,7 +184,7 @@ async def _d1_query(client: httpx.AsyncClient, sql: str, params: list = None) ->
         body["params"] = params
 
     resp = await client.post(
-        D1_API,
+        _d1_api(domain),
         json=body,
         headers={
             "Authorization": f"Bearer {CF_API_TOKEN}",
@@ -209,7 +208,7 @@ async def _d1_query(client: httpx.AsyncClient, sql: str, params: list = None) ->
     return []
 
 
-async def _d1_exec(client: httpx.AsyncClient, sql: str, params: list = None) -> bool:
+async def _d1_exec(client: httpx.AsyncClient, sql: str, params: list = None, *, domain: D1DataDomain) -> bool:
     """Execute a D1 SQL statement (INSERT/UPDATE)."""
     if not CF_API_TOKEN:
         logger.error("CF_API_TOKEN not set")
@@ -220,7 +219,7 @@ async def _d1_exec(client: httpx.AsyncClient, sql: str, params: list = None) -> 
         body["params"] = params
 
     resp = await client.post(
-        D1_API,
+        _d1_api(domain),
         json=body,
         headers={
             "Authorization": f"Bearer {CF_API_TOKEN}",
@@ -324,6 +323,7 @@ async def _bulk_load_prices_by_stock(
             ORDER BY stock_id, date ASC
             """,
             ids,
+            domain=D1DataDomain.MARKET,
         )
         query_count += 1
         for row in rows:
@@ -355,6 +355,7 @@ async def _bulk_load_ensemble_signals_by_stock(
             ORDER BY stock_id, prediction_date, generated_at
             """,
             ids,
+            domain=D1DataDomain.LEARNING,
         )
         query_count += 1
         for row in rows:
@@ -684,7 +685,7 @@ async def run_full_backtest(run_date: str | None = None) -> dict:
                 FROM stocks s
                 WHERE (s.delisted_date IS NULL OR s.delisted_date >= '2023-01-01')
                   AND (s.listed_date IS NULL OR s.listed_date <= date('now'))
-            """)
+            """, domain=D1DataDomain.CORE)
 
             if not stocks:
                 return {"error": "No stocks found in D1", "status": "failed"}
@@ -824,6 +825,7 @@ async def run_full_backtest(run_date: str | None = None) -> dict:
                 result.expectancy,
                 raw_json,
             ],
+            domain=D1DataDomain.RESEARCH,
         )
 
         summary = {

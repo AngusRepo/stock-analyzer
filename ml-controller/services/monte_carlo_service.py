@@ -31,6 +31,7 @@ from services.bounded_json import (
     assert_bounded_json_fields_complete,
     bounded_json_dumps,
 )
+from services.d1_domain_client import D1DataDomain, database_id_for_domain
 
 try:
     import httpx
@@ -41,13 +42,11 @@ logger = logging.getLogger(__name__)
 
 # ── D1 API Config (shared with backtest_service) ─────────────────────────────
 CF_ACCOUNT_ID = os.environ.get("CF_ACCOUNT_ID", "")
-CF_D1_DB_ID = os.environ.get("CF_D1_DB_ID", "")
 CF_API_TOKEN = os.environ.get("CF_API_TOKEN", "")
 
-D1_API = (
-    f"https://api.cloudflare.com/client/v4/accounts/{CF_ACCOUNT_ID}"
-    f"/d1/database/{CF_D1_DB_ID}/query"
-)
+def _d1_api(domain: D1DataDomain) -> str:
+    database_id = database_id_for_domain(domain)
+    return f'https://api.cloudflare.com/client/v4/accounts/{CF_ACCOUNT_ID}/d1/database/{database_id}/query'
 
 # ── Simulation Parameters ─────────────────────────────────────────────────────
 DEFAULT_N_SIMULATIONS = 1000
@@ -78,7 +77,7 @@ class MonteCarloResult:
     min_full_tail_risk_trades: int = MIN_FULL_TAIL_RISK_TRADES
 
 
-async def _d1_query(client, sql: str, params: list = None) -> list[dict]:
+async def _d1_query(client, sql: str, params: list = None, *, domain: D1DataDomain) -> list[dict]:
     """Execute a D1 SQL query via REST API."""
     if not CF_API_TOKEN:
         logger.error("CF_API_TOKEN not set")
@@ -89,7 +88,7 @@ async def _d1_query(client, sql: str, params: list = None) -> list[dict]:
         body["params"] = params
 
     resp = await client.post(
-        D1_API,
+        _d1_api(domain),
         json=body,
         headers={
             "Authorization": f"Bearer {CF_API_TOKEN}",
@@ -113,7 +112,7 @@ async def _d1_query(client, sql: str, params: list = None) -> list[dict]:
     return []
 
 
-async def _d1_exec(client, sql: str, params: list = None) -> bool:
+async def _d1_exec(client, sql: str, params: list = None, *, domain: D1DataDomain) -> bool:
     """Execute a D1 SQL statement."""
     if not CF_API_TOKEN:
         return False
@@ -123,7 +122,7 @@ async def _d1_exec(client, sql: str, params: list = None) -> bool:
         body["params"] = params
 
     resp = await client.post(
-        D1_API,
+        _d1_api(domain),
         json=body,
         headers={
             "Authorization": f"Bearer {CF_API_TOKEN}",
@@ -582,6 +581,7 @@ async def run_monte_carlo_mdd(
                      AND (? IS NULL OR date <= ?)
                    ORDER BY date ASC, created_at ASC, id ASC""",
                 [expected_run_date, expected_run_date],
+                domain=D1DataDomain.PAPER,
             )
 
             if not snapshots:
@@ -619,6 +619,7 @@ async def run_monte_carlo_mdd(
                      AND strategy = 'replay_mode_b'
                    ORDER BY created_at DESC LIMIT 1""",
                 [expected_run_date],
+                domain=D1DataDomain.RESEARCH,
             )
 
             if not row or not row[0].get("raw_results"):
@@ -741,6 +742,7 @@ async def run_monte_carlo_mdd(
                    WHERE run_date = ? AND source = ?
                    LIMIT 1""",
                 [evidence_run_date, source],
+                domain=D1DataDomain.RESEARCH,
             )
             if existing:
                 if str(existing[0].get("raw_distribution") or "") != raw_json:
@@ -778,6 +780,7 @@ async def run_monte_carlo_mdd(
                         mc.verdict_reason,
                         raw_json,
                     ],
+                    domain=D1DataDomain.RESEARCH,
                 )
 
         summary = {

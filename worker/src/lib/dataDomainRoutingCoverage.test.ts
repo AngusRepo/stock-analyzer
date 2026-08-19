@@ -25,6 +25,8 @@ function sourceFiles(root: string): string[] {
 
 const intentionalLegacyControlFiles = new Set([
   'dataDomainCutoverReadiness.ts',
+  'dataDomainCutoverCompletion.ts',
+  'dataDomainFormalCutover.ts',
   'dataDomainShadowBackfill.ts',
   'dataDomainShadowBackfillDrain.ts',
   'dailyExecutionPaperLineage.ts',

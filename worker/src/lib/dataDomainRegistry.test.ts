@@ -8,6 +8,10 @@ import {
   assertSingleDomainOwnership,
   databaseForDataDomain,
   dataDomainForTable,
+  dataDomainProjectionContractReady,
+  databaseForTable,
+  LEGACY_CONTROL_PLANE_TABLES,
+  dataDomainRoutingContractReady,
   invalidActiveDataDomains,
   MULTI_D1_PROJECTION_CONTRACT_GATES,
   MULTI_D1_PROJECTION_CONTRACT_READY,
@@ -103,7 +107,9 @@ for (const table of ['meta_reward_ledger', 'meta_shadow_decisions']) {
     `${table} is active-owner materialization and must not re-enter inactive-only shadow backfill`)
 }
 
-const deferredProductionTables = productionTableNames.filter((table) => tableOwnershipMetadata(table)?.route_ready === false)
+const deferredProductionTables = productionTableNames.filter((table) => (
+  tableOwnershipMetadata(table)?.route_ready === false && !LEGACY_CONTROL_PLANE_TABLES.has(table)
+))
 assert.equal(deferredProductionTables.length, 67, 'production tables without target schema readiness require explicit review')
 assert.equal(
   deferredProductionTables.filter((table) => tableOwnershipMetadata(table)?.disposition === 'legacy_only').length,
@@ -227,6 +233,14 @@ const learningActiveEnv = {
 }
 assert.equal(databaseForDataDomain(learningActiveEnv, 'learning'), learning)
 assert.equal(databaseForDataDomain(learningActiveEnv, 'market'), legacy)
+assert.equal(dataDomainRoutingContractReady('execution'), true)
+assert.equal(dataDomainProjectionContractReady('execution'), true)
+assert.equal(dataDomainRoutingContractReady('paper'), false)
+assert.equal(dataDomainProjectionContractReady('paper'), false)
+assert(LEGACY_CONTROL_PLANE_TABLES.has('data_domain_cutovers'))
+const legacyControlDb = {} as D1Database
+assert.equal(databaseForTable({ DB: legacyControlDb }, 'data_domain_cutovers'), legacyControlDb)
+assert(!tablesForDataDomainShadowBackfill('ops').includes('data_domain_cutovers'))
 
 assert.equal(MULTI_D1_STRICT_ROUTING_READY, false)
 assert.equal(MULTI_D1_PROJECTION_CONTRACT_READY, false)

@@ -10,6 +10,7 @@ from services.backtest_trade_evidence import (
     build_backtest_portfolio_return_evidence,
     build_backtest_trade_evidence,
 )
+from services.d1_domain_client import D1DataDomain, client_for_domain
 
 
 def _num(value: Any, default: float = 0.0) -> float:
@@ -125,7 +126,7 @@ def persist_replay_backtest(
     strategy_lab_record: dict[str, Any] | None = None,
     walk_forward: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    from services.d1_client import execute, query
+    research_client = client_for_domain(D1DataDomain.RESEARCH)
 
     sql, params = build_replay_backtest_insert(
         metrics,
@@ -136,7 +137,7 @@ def persist_replay_backtest(
         strategy_lab_record=strategy_lab_record,
         walk_forward=walk_forward,
     )
-    existing = query(
+    existing = research_client.query(
         """
         SELECT id, raw_results
         FROM backtest_results
@@ -158,5 +159,5 @@ def persist_replay_backtest(
             "existing_row_id": existing[0].get("id"),
             "rows_written": 0,
         }
-    result = execute(sql, params=params, timeout=60.0)
+    result = research_client.execute(sql, params=params, timeout=60.0)
     return {**result, "idempotent": False}

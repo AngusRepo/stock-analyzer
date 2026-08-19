@@ -4,11 +4,12 @@ from __future__ import annotations
 
 import hashlib
 import json
+from copy import deepcopy
 from datetime import datetime
 from typing import Any
 from zoneinfo import ZoneInfo
 
-from services.backtest_engine import BacktestDataset, replay_period
+from services.backtest_engine import BacktestDataset, FormalPositionRiskParams, replay_period
 from services.backtest_result_store import persist_replay_backtest
 from services.backtest_trade_evidence import build_backtest_portfolio_return_evidence
 from services.dataset_snapshots import latest_dataset_snapshot, validate_dataset_snapshot_manifest
@@ -104,6 +105,28 @@ def _metric_summary(metrics: Any) -> dict[str, Any]:
     }
 
 
+def _with_formal_position_risk(trading_config: dict[str, Any]) -> dict[str, Any]:
+    from services.kv_client import get_json
+
+    raw = get_json('trading:risk_config', default=None, timeout=5.0)
+    position = raw.get('position') if isinstance(raw, dict) else None
+    if not isinstance(position, dict):
+        raise RuntimeError('weekly_position_risk_config_unavailable')
+    formal = {
+        'contractVersion': 'position-risk-distribution-v1',
+        'maxPerSector': position.get('maxPerSector'),
+        'maxSingleNamePct': position.get('maxSingleNamePct'),
+        'correlationThreshold': position.get('correlationThreshold'),
+        'correlationWindow': position.get('correlationWindow'),
+        'minCorrelationOverlap': 20,
+        'sourceRiskConfigChecksum': _stable_checksum(raw),
+    }
+    FormalPositionRiskParams.from_config(formal)
+    merged = deepcopy(trading_config)
+    merged['positionRiskDistribution'] = formal
+    return merged
+
+
 def _replay(
     *,
     as_of_date: str,
@@ -111,6 +134,9 @@ def _replay(
     initial_capital: float,
     symbols: list[str] | None,
 ) -> tuple[Any, dict[str, Any]]:
+    formal_risk = params.get('positionRiskDistribution')
+    if FormalPositionRiskParams.from_config(formal_risk) is None:
+        raise RuntimeError('weekly_position_risk_contract_missing')
     snapshot, start_date, end_date = _resolve_snapshot(as_of_date)
     dataset = BacktestDataset.load_from_snapshot_manifest(
         manifest=snapshot,
@@ -143,6 +169,7 @@ def _replay(
         "config_checksum": _stable_checksum(params),
         "look_ahead_check": "PASS",
     }
+    provenance['position_risk_contract'] = formal_risk
     return metrics, provenance
 
 
@@ -163,9 +190,10 @@ def run_canonical_weekly_backtest(run_date: str | None = None) -> dict[str, Any]
     from services.trading_config_loader import load_merged_trading_config_with_contract
 
     config_result = load_merged_trading_config_with_contract()
+    replay_params = _with_formal_position_risk(config_result.config)
     metrics, provenance = _replay(
         as_of_date=requested_date,
-        params=config_result.config,
+        params=replay_params,
         initial_capital=1_000_000,
         symbols=None,
     )

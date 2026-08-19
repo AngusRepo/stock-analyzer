@@ -93,6 +93,7 @@ def test_active_domain_fails_closed_when_specific_id_is_missing(monkeypatch):
 
 
 def test_execution_domain_is_independently_closed(monkeypatch):
+    monkeypatch.setenv('MULTI_D1_EXECUTION_WRITER_EPOCH', '1')
     monkeypatch.setattr(d1_domain_client, "MULTI_D1_STRICT_ROUTING_READY", False)
     monkeypatch.setenv("CF_D1_DB_ID", "legacy")
     monkeypatch.setenv("CF_D1_EXECUTION_DB_ID", "execution-db")
@@ -152,6 +153,22 @@ def test_learning_domain_stays_closed_without_valid_receipt_and_epoch(monkeypatc
         assert str(exc) == "multi_d1_strict_routing_not_closed:learning"
     else:
         raise AssertionError("learning routing must require an attested cutover receipt and epoch")
+
+
+def test_every_domain_supports_independent_attested_cutover(monkeypatch):
+    monkeypatch.setattr(d1_domain_client, 'MULTI_D1_STRICT_ROUTING_READY', False)
+    monkeypatch.setenv('CF_D1_DB_ID', 'legacy')
+    monkeypatch.setenv('MULTI_D1_ACTIVE_DOMAINS', 'core,market,learning,ops,execution,paper,research')
+    monkeypatch.setenv('MULTI_D1_STRICT', 'true')
+    for domain in d1_domain_client.D1DataDomain:
+        prefix = f'MULTI_D1_{domain.value.upper()}'
+        monkeypatch.setenv(f'CF_D1_{domain.value.upper()}_DB_ID', f'{domain.value}-db')
+        monkeypatch.setenv(f'{prefix}_ROUTING_CONTRACT', f'{domain.value}-single-writer-epoch-v1')
+        monkeypatch.setenv(f'{prefix}_CUTOVER_RECEIPT_ID', f'data-domain-cutover-probe:{domain.value}:test')
+        monkeypatch.setenv(f'{prefix}_WRITER_EPOCH', '1')
+
+    for domain in d1_domain_client.D1DataDomain:
+        assert d1_domain_client.database_id_for_domain(domain) == f'{domain.value}-db'
 
 
 

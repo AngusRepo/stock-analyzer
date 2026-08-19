@@ -156,11 +156,10 @@ const DOMAIN_TABLES: Record<DataDomain, ReadonlySet<string>> = {
   ]),
 }
 
-// These tables exist in the production legacy D1 but do not yet exist in the
-// corresponding domain schemas. Ownership is explicit so schema drift cannot
-// remain invisible, while route_ready/shadow_ready stay false until a table's
-// target migration, parity proof, retention policy, and read/write cutover are
-// independently closed. Adding a table here must never enqueue row backfill.
+// These tables were discovered after the base domain manifests were created.
+// Ownership is explicit so schema drift cannot remain invisible. shadow_ready
+// means the target schema is safe for legacy-authority copy/parity; route_ready
+// remains the independent live read/write cutover gate.
 const DEFERRED_PRODUCTION_TABLE_OWNERSHIP: readonly TableOwnershipMetadata[] = [
   { table: 'stock_analysis_reports', domain: 'core', disposition: 'compact_projection', route_ready: false, shadow_ready: false },
 
@@ -220,13 +219,13 @@ const DEFERRED_PRODUCTION_TABLE_OWNERSHIP: readonly TableOwnershipMetadata[] = [
 
   { table: 'risk_audit_log', domain: 'execution', disposition: 'active_window', route_ready: false, shadow_ready: false },
 
-  { table: 'debate_memory', domain: 'paper', disposition: 'active_window', route_ready: false, shadow_ready: false },
-  { table: 'decision_logs', domain: 'paper', disposition: 'active_window', route_ready: false, shadow_ready: false },
-  { table: 'exit_shadow_log', domain: 'paper', disposition: 'active_window', route_ready: false, shadow_ready: false },
-  { table: 'pending_buy_filter_audit', domain: 'paper', disposition: 'active_window', route_ready: false, shadow_ready: false },
-  { table: 'pending_buy_items', domain: 'paper', disposition: 'active_window', route_ready: false, shadow_ready: false },
-  { table: 'pending_buy_runs', domain: 'paper', disposition: 'active_window', route_ready: false, shadow_ready: false },
-  { table: 'promotion_audit_events', domain: 'paper', disposition: 'active_window', route_ready: false, shadow_ready: false },
+  { table: 'debate_memory', domain: 'paper', disposition: 'active_window', route_ready: false, shadow_ready: true },
+  { table: 'decision_logs', domain: 'paper', disposition: 'active_window', route_ready: false, shadow_ready: true },
+  { table: 'exit_shadow_log', domain: 'paper', disposition: 'active_window', route_ready: false, shadow_ready: true },
+  { table: 'pending_buy_filter_audit', domain: 'paper', disposition: 'active_window', route_ready: false, shadow_ready: true },
+  { table: 'pending_buy_items', domain: 'paper', disposition: 'active_window', route_ready: false, shadow_ready: true },
+  { table: 'pending_buy_runs', domain: 'paper', disposition: 'active_window', route_ready: false, shadow_ready: true },
+  { table: 'promotion_audit_events', domain: 'paper', disposition: 'active_window', route_ready: false, shadow_ready: true },
 
   { table: 'active_strategy_backtest_results', domain: 'research', disposition: 'compact_projection', route_ready: false, shadow_ready: false },
   { table: 'backtest_results', domain: 'research', disposition: 'compact_projection', route_ready: false, shadow_ready: false },

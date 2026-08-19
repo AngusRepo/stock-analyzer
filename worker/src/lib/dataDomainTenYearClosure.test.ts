@@ -3,6 +3,10 @@ import { buildDataDomainTenYearClosure } from './dataDomainTenYearClosure'
 import { DATA_DOMAINS, type DataDomain } from './dataDomainRegistry'
 import type { DataDomainCutoverReadiness } from './dataDomainCutoverReadiness'
 
+const noUnresolvedRoutes = Object.fromEntries(
+  DATA_DOMAINS.map((domain) => [domain, [] as string[]]),
+) as unknown as Record<DataDomain, readonly string[]>
+
 const completeDomain = (domain: DataDomain): DataDomainCutoverReadiness => ({
   domain,
   data_ready: true,
@@ -30,6 +34,7 @@ const complete = buildDataDomainTenYearClosure({
   activeDomains: DATA_DOMAINS,
   strictRequested: true,
   domains: DATA_DOMAINS.map(completeDomain),
+  unresolvedRouteTables: noUnresolvedRoutes,
 })
 assert.equal(complete.complete, true)
 assert.equal(complete.claim_allowed, true)
@@ -38,6 +43,7 @@ assert.equal(complete.completed_domains, 7)
 const postCutoverParityDrift = buildDataDomainTenYearClosure({
   activeDomains: DATA_DOMAINS,
   strictRequested: true,
+  unresolvedRouteTables: noUnresolvedRoutes,
   domains: DATA_DOMAINS.map((domain) => domain === 'learning'
     ? {
         ...completeDomain(domain),
@@ -54,6 +60,7 @@ assert.equal(postCutoverParityDrift.completed_domains, 7)
 const finalizedContractFailure = buildDataDomainTenYearClosure({
   activeDomains: DATA_DOMAINS,
   strictRequested: true,
+  unresolvedRouteTables: noUnresolvedRoutes,
   domains: DATA_DOMAINS.map((domain) => domain === 'learning'
     ? {
         ...completeDomain(domain),
@@ -69,6 +76,7 @@ assert.equal(finalizedContractFailure.completed_domains, 6)
 const learningOnly = buildDataDomainTenYearClosure({
   activeDomains: ['learning'],
   strictRequested: true,
+  unresolvedRouteTables: noUnresolvedRoutes,
   domains: DATA_DOMAINS.map((domain) => domain === 'learning'
     ? completeDomain(domain)
     : { ...completeDomain(domain), cutover_ready: false, cutover_status: 'legacy', current_writer_state: 'open' }),
@@ -78,5 +86,18 @@ assert.equal(learningOnly.claim_allowed, false)
 assert.equal(learningOnly.completed_domains, 1)
 assert.equal(learningOnly.legacy_role, 'mixed_runtime_source_do_not_delete')
 assert(learningOnly.blockers.includes('seven_domain_cutover_incomplete'))
+
+const deferredRoute = buildDataDomainTenYearClosure({
+  activeDomains: DATA_DOMAINS,
+  strictRequested: true,
+  domains: DATA_DOMAINS.map(completeDomain),
+  unresolvedRouteTables: { ...noUnresolvedRoutes, paper: ['pending_buy_runs'] },
+})
+assert.equal(deferredRoute.complete, false)
+assert.equal(deferredRoute.completed_domains, 6)
+assert.deepEqual(
+  deferredRoute.domains.find((item) => item.domain === 'paper')?.unresolved_route_tables,
+  ['pending_buy_runs'],
+)
 
 console.log('data domain ten-year closure tests passed')

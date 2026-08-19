@@ -1,10 +1,17 @@
-import { DATA_DOMAINS, type DataDomain } from './dataDomainRegistry'
+import {
+  DATA_DOMAINS,
+  LEGACY_CONTROL_PLANE_TABLES,
+  tableOwnershipMetadata,
+  tablesForDataDomain,
+  type DataDomain,
+} from './dataDomainRegistry'
 import type { DataDomainCutoverReadiness } from './dataDomainCutoverReadiness'
 
 export type TenYearDomainClosureInput = {
   activeDomains: readonly string[]
   strictRequested: boolean
   domains: readonly DataDomainCutoverReadiness[]
+  unresolvedRouteTables?: Partial<Record<DataDomain, readonly string[]>>
 }
 
 export function buildDataDomainTenYearClosure(input: TenYearDomainClosureInput) {
@@ -13,6 +20,15 @@ export function buildDataDomainTenYearClosure(input: TenYearDomainClosureInput) 
   const domainReceipts = DATA_DOMAINS.map((domain) => {
     const item = byDomain.get(domain)
     const blockers: string[] = []
+    const unresolvedRouteTables = [
+      ...(input.unresolvedRouteTables?.[domain] ?? tablesForDataDomain(domain).filter((table) => (
+        !LEGACY_CONTROL_PLANE_TABLES.has(table)
+        && tableOwnershipMetadata(table)?.route_ready !== true
+      ))),
+    ].sort()
+    if (unresolvedRouteTables.length) {
+      blockers.push(`domain_table_routes_not_closed:${unresolvedRouteTables.length}`)
+    }
     if (!active.has(domain)) blockers.push('runtime_route_not_active')
     if (!item) blockers.push('readiness_receipt_missing')
     const finalized = item?.cutover_status === 'complete' && item.current_writer_state === 'cutover'
@@ -31,6 +47,7 @@ export function buildDataDomainTenYearClosure(input: TenYearDomainClosureInput) 
       blockers: [...new Set(blockers)],
       cutover_status: item?.cutover_status ?? 'missing',
       writer_state: item?.current_writer_state ?? 'missing',
+      unresolved_route_tables: unresolvedRouteTables,
     }
   })
   const globalBlockers: string[] = []

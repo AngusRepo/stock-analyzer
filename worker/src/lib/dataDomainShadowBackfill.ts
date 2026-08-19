@@ -4,6 +4,7 @@ import {
   dataDomainForTable,
   invalidActiveDataDomains,
   shadowDatabaseForDataDomain,
+  tableOwnershipMetadata,
   tablesForDataDomainShadowBackfill,
   type DataDomain,
 } from './dataDomainRegistry'
@@ -46,6 +47,20 @@ import {
 import { validateExpectedReturnControlSemanticPage } from './expectedReturnControlTableSemanticValidation'
 
 export const DATA_DOMAIN_SHADOW_SCHEMA_VERSION = 'data-domain-shadow-backfill-v1'
+
+export function isFinalizedDeferredTableRepairAuthority(input: {
+  domainActive: boolean
+  routeReady: boolean
+  shadowReady: boolean
+  cutoverStatus: string | null
+  writerState: string | null
+}): boolean {
+  return input.domainActive
+    && !input.routeReady
+    && input.shadowReady
+    && input.cutoverStatus === 'complete'
+    && input.writerState === 'cutover'
+}
 
 export interface TableColumn {
   cid: number
@@ -694,10 +709,24 @@ export async function invalidateGenericManifestProgress(
   reasonInput: string,
 ): Promise<void> {
   const cutover = await control.prepare(`
-    SELECT status FROM data_domain_cutovers WHERE domain=?
-  `).bind(domain).first<{ status?: string }>()
+    SELECT c.status, w.writer_state
+      FROM data_domain_cutovers c
+      LEFT JOIN data_domain_writer_epochs w ON w.domain=c.domain
+     WHERE c.domain=?
+  `).bind(domain).first<{ status?: string; writer_state?: string }>()
   const status = cutover?.status ? String(cutover.status) : null
-  if (!status || !['legacy', 'shadow'].includes(status)) {
+  const ownership = tableOwnershipMetadata(table)
+  const finalizedDeferredRepair = Boolean(
+    ownership?.domain === domain
+    && isFinalizedDeferredTableRepairAuthority({
+      domainActive: true,
+      routeReady: ownership.route_ready,
+      shadowReady: ownership.shadow_ready,
+      cutoverStatus: status,
+      writerState: cutover?.writer_state ? String(cutover.writer_state) : null,
+    }),
+  )
+  if ((!status || !['legacy', 'shadow'].includes(status)) && !finalizedDeferredRepair) {
     throw new Error(`domain_manifest_invalidation_cutover_blocked:${domain}:${status ?? 'missing'}`)
   }
   const reason = reasonInput.slice(0, 1000)
@@ -866,15 +895,36 @@ export async function backfillDataDomainTableShadow(
 ): Promise<DomainShadowBackfillResult> {
   const domain = options.domain
   const table = String(options.table ?? "").trim().toLowerCase()
-  if (dataDomainForTable(table) !== domain || !tablesForDataDomainShadowBackfill(domain).includes(table)) {
+  const ownership = tableOwnershipMetadata(table)
+  if (ownership?.domain !== domain || !tablesForDataDomainShadowBackfill(domain).includes(table)) {
     throw new Error(`domain_table_ownership_mismatch:${domain}:${table}`)
   }
   const invalidDomains = invalidActiveDataDomains(env)
   if (invalidDomains.length) {
     throw new Error(`data_domain_shadow_active_domain_invalid:${invalidDomains.sort().join(',')}`)
   }
-  if (activeDataDomains(env).has(domain)) {
+  const domainActive = activeDataDomains(env).has(domain)
+  const shadowCutover = await env.DB.prepare(`
+    SELECT c.status, w.writer_state
+      FROM data_domain_cutovers c
+      LEFT JOIN data_domain_writer_epochs w ON w.domain=c.domain
+     WHERE c.domain=?
+  `).bind(domain).first<{ status?: string; writer_state?: string }>()
+  const shadowCutoverStatus = shadowCutover?.status ? String(shadowCutover.status) : null
+  const finalizedDeferredRepair = isFinalizedDeferredTableRepairAuthority({
+    domainActive,
+    routeReady: ownership.route_ready,
+    shadowReady: ownership.shadow_ready,
+    cutoverStatus: shadowCutoverStatus,
+    writerState: shadowCutover?.writer_state ? String(shadowCutover.writer_state) : null,
+  })
+  if (domainActive && !finalizedDeferredRepair) {
     throw new Error(`data_domain_shadow_requires_inactive_target:${domain}`)
+  }
+  if (!domainActive && (!shadowCutoverStatus || !['legacy', 'shadow'].includes(shadowCutoverStatus))) {
+    throw new Error(
+      `domain_shadow_cutover_authority_blocked:${domain}:${shadowCutoverStatus ?? 'missing'}`,
+    )
   }
   const learningAuthority: InactiveLearningShadowAuthority | null =
     domain === 'learning'
@@ -882,15 +932,6 @@ export async function backfillDataDomainTableShadow(
       : null
   const target = shadowDatabaseForDataDomain(env, domain)
   if (!target) throw new Error(`data_domain_shadow_binding_missing:${domain}`)
-  const shadowCutover = await env.DB.prepare(`
-    SELECT status FROM data_domain_cutovers WHERE domain=?
-  `).bind(domain).first<{ status?: string }>()
-  const shadowCutoverStatus = shadowCutover?.status ? String(shadowCutover.status) : null
-  if (!shadowCutoverStatus || !['legacy', 'shadow'].includes(shadowCutoverStatus)) {
-    throw new Error(
-      `domain_shadow_cutover_authority_blocked:${domain}:${shadowCutoverStatus ?? 'missing'}`,
-    )
-  }
   const sourceColumns = await tableColumns(env.DB, table)
   const targetColumns = await tableColumns(target, table)
   assertSchemaParity(sourceColumns, targetColumns, table)
@@ -1607,6 +1648,21 @@ export async function backfillDataDomainTableShadow(
     `).bind(domain).all<DomainAggregateParityRow>()
     const completedTables = (completedResult.results ?? []).map((row) => String(row.table_name))
     const parityRows = parityResult.results ?? []
+    if (finalizedDeferredRepair) {
+      return {
+        domain,
+        table,
+        status: 'shadow_table_complete',
+        source_rows: sourceRows,
+        target_rows: targetRows,
+        batch_rows: 0,
+        batch_checksum: sourceFullChecksum,
+        cursor,
+        domain_tables_completed: completedTables.filter((completed) => ownedTables.includes(completed)).length,
+        domain_tables_total: ownedTables.length,
+        domain_shadow_ready: false,
+      }
+    }
     const liveRevisionReady = new Set<string>()
     if (domain === 'learning') {
       for (const controlTable of ownedTables.filter(isDataDomainControlTable)) {

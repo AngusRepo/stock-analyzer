@@ -120,8 +120,11 @@ for (const table of deferredProductionTables) {
   const metadata = tableOwnershipMetadata(table)
   assert(metadata, `missing metadata for deferred production table ${table}`)
   assert.equal(metadata.route_ready, false, `${table} must not route before target schema closure`)
-  assert.equal(metadata.shadow_ready, false, `${table} must not enter row backfill before projection closure`)
-  assert(!tablesForDataDomainShadowBackfill(metadata.domain).includes(table), `${table} leaked into shadow backfill`)
+  assert.equal(
+    tablesForDataDomainShadowBackfill(metadata.domain).includes(table),
+    metadata.shadow_ready,
+    `${table} shadow registry mismatch`,
+  )
 }
 
 for (const domain of DATA_DOMAINS) {
@@ -136,8 +139,6 @@ for (const domain of DATA_DOMAINS) {
     assert(targetTables.has(table), `${domain}.${table} route_ready without target schema`)
   }
   for (const table of tablesForDataDomainShadowBackfill(domain)) {
-    const metadata = tableOwnershipMetadata(table)
-    assert(metadata?.route_ready, `${domain}.${table} shadow_ready without route_ready`)
     assert(targetTables.has(table), `${domain}.${table} shadow_ready without target schema`)
   }
 }

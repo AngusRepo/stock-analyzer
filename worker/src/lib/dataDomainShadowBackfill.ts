@@ -772,6 +772,51 @@ export async function invalidateGenericManifestProgress(
   ])
 }
 
+async function resetGenericTableForFullRecopy(
+  control: D1Database,
+  domain: DataDomain,
+  table: string,
+  reasonInput: string,
+): Promise<void> {
+  const cutover = await control.prepare(`
+    SELECT status FROM data_domain_cutovers WHERE domain=?
+  `).bind(domain).first<{ status?: string }>()
+  const status = cutover?.status ? String(cutover.status) : null
+  if (!status || !['legacy', 'shadow'].includes(status)) {
+    throw new Error(`domain_full_recopy_reset_cutover_blocked:${domain}:${status ?? 'missing'}`)
+  }
+  const reason = reasonInput.slice(0, 1000)
+  await control.batch([
+    control.prepare(`
+      UPDATE data_domain_backfill_cursors
+         SET status='running', cursor_json=NULL, rows_copied=0, last_batch_rows=0,
+             last_source_checksum=NULL, last_target_checksum=NULL,
+             error_code=?, updated_at=CURRENT_TIMESTAMP
+       WHERE domain=? AND table_name=?
+    `).bind(reason, domain, table),
+    control.prepare(`
+      UPDATE data_domain_parity_checks
+         SET status='blocked', source_checksum=NULL, target_checksum=NULL,
+             evidence_json=json_object('schema_version', 'data-domain-full-recopy-reset-v1',
+                                       'invalidated_reason', ?),
+             checked_at=CURRENT_TIMESTAMP
+       WHERE domain=? AND table_name=? AND check_kind='full_table'
+    `).bind(reason, domain, table),
+    control.prepare(`DELETE FROM data_domain_parity_checks WHERE check_id IN (?, ?)`)
+      .bind(
+        `domain-parity:${domain}:${table}:manifest-progress`,
+        `domain-parity:${domain}:${table}:delete-progress`,
+      ),
+    control.prepare(`
+      UPDATE data_domain_cutovers
+         SET status='legacy', source_row_count=NULL, target_row_count=NULL,
+             source_checksum=NULL, target_checksum=NULL, parity_checked_at=NULL,
+             updated_at=CURRENT_TIMESTAMP
+       WHERE domain=? AND status IN ('legacy','shadow')
+    `).bind(domain),
+  ])
+}
+
 async function tableColumns(db: D1Database, table: string): Promise<TableColumn[]> {
   const result = await db.prepare(`PRAGMA table_info(${identifier(table)})`).all<TableColumn>()
   return (result.results ?? []).sort((left, right) => Number(left.cid) - Number(right.cid))
@@ -1171,12 +1216,26 @@ export async function backfillDataDomainTableShadow(
         pageLimit: actualManifestPageLimit, mode: 'canonical',
       })
       if (sourceFull.rowCount !== sourceRows || targetFull.rowCount !== targetRows) {
-        throw new Error(`domain_shadow_source_changed_during_parity:${domain}:${table}`)
+        await resetGenericTableForFullRecopy(
+          env.DB, domain, table,
+          `domain_shadow_source_changed_during_parity:${domain}:${table}`,
+        )
+        return {
+          domain, table, status: 'shadow_progress', source_rows: sourceRows,
+          target_rows: targetRows, batch_rows: 0, batch_checksum: null, cursor: null,
+        }
       }
       sourceFullChecksum = sourceFull.checksum
       targetFullChecksum = targetFull.checksum
       if (sourceFullChecksum !== targetFullChecksum) {
-        throw new Error(`domain_shadow_full_checksum_mismatch:${domain}:${table}`)
+        await resetGenericTableForFullRecopy(
+          env.DB, domain, table,
+          `domain_shadow_full_checksum_recopy_required:${domain}:${table}`,
+        )
+        return {
+          domain, table, status: 'shadow_progress', source_rows: sourceRows,
+          target_rows: targetRows, batch_rows: 0, batch_checksum: null, cursor: null,
+        }
       }
       parityStatus = 'pass'
     } else {

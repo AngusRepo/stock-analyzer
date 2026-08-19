@@ -21,7 +21,7 @@ from services import verify_service  # noqa: E402
 
 
 def test_verify_feedback_keeps_return_pct_and_pnl_r_separate(monkeypatch):
-    monkeypatch.setattr(verify_service.d1_client, "execute", lambda *args, **kwargs: None)
+
     monkeypatch.setattr(
         verify_service,
         "load_bars_for_prediction",
@@ -188,12 +188,26 @@ def test_rebuild_verification_labels_clears_stale_unrepairable_rows(monkeypatch)
 def test_verify_uses_prediction_business_date_for_future_bars(monkeypatch):
     captured: dict[str, object] = {}
 
-    def fake_query(sql, params):
+    def fake_core_query(sql, params):
+        assert "FROM stocks" in sql
+        assert params == [1]
+        return [{"id": 1, "symbol": "2330", "market": "TWSE"}]
+
+    def fake_market_query(sql, params):
         captured["sql"] = sql
         captured["params"] = params
         return []
 
-    monkeypatch.setattr(verify_service.d1_client, "query", fake_query)
+    monkeypatch.setattr(
+        verify_service,
+        "CORE_D1_CLIENT",
+        types.SimpleNamespace(query=fake_core_query),
+    )
+    monkeypatch.setattr(
+        verify_service,
+        "MARKET_D1_CLIENT",
+        types.SimpleNamespace(query=fake_market_query),
+    )
 
     verify_service.load_bars_for_prediction(
         stock_id=1,
@@ -201,7 +215,7 @@ def test_verify_uses_prediction_business_date_for_future_bars(monkeypatch):
         prediction_date="2026-04-30",
     )
 
-    assert captured["params"] == [1, "2026-04-30"]
+    assert captured["params"] == ["2330", "2026-04-30"]
     assert "date > ?" in str(captured["sql"])
     assert "date <= ?" not in str(captured["sql"])
 
@@ -209,16 +223,28 @@ def test_verify_uses_prediction_business_date_for_future_bars(monkeypatch):
 def test_load_pending_predictions_uses_bounded_run_date_window(monkeypatch):
     captured: dict[str, object] = {"pending_params": None}
 
-    def fake_query(sql, params):
+    def fake_market_query(sql, params):
         if "MAX(date) AS latest_date" in sql:
             return [{"latest_date": "2026-05-04"}]
         if "mature_prediction_date" in sql:
             return [{"mature_prediction_date": "2026-04-24"}]
+        raise AssertionError("unexpected Market D1 query")
+
+    def fake_learning_query(sql, params):
         captured["sql"] = sql
         captured["pending_params"] = params
         return []
 
-    monkeypatch.setattr(verify_service.d1_client, "query", fake_query)
+    monkeypatch.setattr(
+        verify_service,
+        "MARKET_D1_CLIENT",
+        types.SimpleNamespace(query=fake_market_query),
+    )
+    monkeypatch.setattr(
+        verify_service,
+        "LEARNING_D1_CLIENT",
+        types.SimpleNamespace(query=fake_learning_query),
+    )
 
     verify_service.load_pending_predictions(
         lookback_days=5,
@@ -231,7 +257,8 @@ def test_load_pending_predictions_uses_bounded_run_date_window(monkeypatch):
     assert "date(COALESCE" not in str(captured["sql"])
     assert "UPPER(COALESCE" not in str(captured["sql"])
     assert "p.prediction_date BETWEEN ? AND ?" in str(captured["sql"])
-    assert "s.market IN ('TWSE', 'OTC', 'TPEX', 'EMERGING')" in str(captured["sql"])
+    assert "JOIN stocks" not in str(captured["sql"])
+    assert "s.market" not in str(captured["sql"])
     assert captured["pending_params"] == [
         verify_service.VERIFICATION_RETURN_SEMANTIC_VERSION,
         "2026-04-14",
@@ -253,7 +280,11 @@ def test_verification_window_does_not_use_calendar_days_across_holidays(monkeypa
             return [{"mature_prediction_date": "2026-04-24"}]
         return []
 
-    monkeypatch.setattr(verify_service.d1_client, "query", fake_query)
+    monkeypatch.setattr(
+        verify_service,
+        "MARKET_D1_CLIENT",
+        types.SimpleNamespace(query=fake_query),
+    )
 
     min_date, max_date = verify_service._resolve_verification_prediction_window(
         as_of=verify_service._parse_run_date("2026-05-04"),
@@ -264,6 +295,69 @@ def test_verification_window_does_not_use_calendar_days_across_holidays(monkeypa
     assert (min_date, max_date) == ("2026-04-14", "2026-04-24")
     assert max_date != "2026-04-29"
     assert len(queries) == 2
+
+
+def test_pending_predictions_attach_core_identity_after_learning_read(monkeypatch):
+    def fake_market_query(sql, params):
+        if "MAX(date) AS latest_date" in sql:
+            return [{"latest_date": "2026-05-04"}]
+        return [{"mature_prediction_date": "2026-04-24"}]
+
+    def fake_learning_query(sql, params):
+        assert "FROM predictions p" in sql
+        assert "JOIN stocks" not in sql
+        return [{"id": 7, "stock_id": 1, "prediction_date": "2026-04-24"}]
+
+    def fake_core_query(sql, params):
+        assert "FROM stocks" in sql
+        return [{"id": 1, "symbol": "2330", "market": "TWSE"}]
+
+    monkeypatch.setattr(
+        verify_service,
+        "MARKET_D1_CLIENT",
+        types.SimpleNamespace(query=fake_market_query),
+    )
+    monkeypatch.setattr(
+        verify_service,
+        "LEARNING_D1_CLIENT",
+        types.SimpleNamespace(query=fake_learning_query),
+    )
+    monkeypatch.setattr(
+        verify_service,
+        "CORE_D1_CLIENT",
+        types.SimpleNamespace(query=fake_core_query),
+    )
+
+    rows = verify_service.load_pending_predictions(run_date="2026-05-04")
+
+    assert rows == [{
+        "id": 7,
+        "stock_id": 1,
+        "prediction_date": "2026-04-24",
+        "symbol": "2330",
+        "market": "TWSE",
+    }]
+
+
+def test_write_verified_predictions_uses_learning_owner(monkeypatch):
+    captured: list[tuple[str, list[object]]] = []
+
+    def fake_batch_execute(statements):
+        captured.extend(statements)
+        return {"changes_total": len(statements)}
+
+    monkeypatch.setattr(
+        verify_service,
+        "LEARNING_D1_CLIENT",
+        types.SimpleNamespace(batch_execute=fake_batch_execute),
+    )
+
+    written = verify_service.write_verified_predictions([{"bind": ["up", 7]}])
+
+    assert written == 1
+    assert len(captured) == 1
+    assert "UPDATE predictions" in captured[0][0]
+    assert captured[0][1] == ["up", 7]
 
 
 def test_prepare_verification_updates_batches_bars(monkeypatch):

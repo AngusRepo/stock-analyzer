@@ -18,7 +18,7 @@ import logging
 from datetime import date, datetime, timedelta, timezone
 from typing import Any
 
-from . import d1_client
+from .d1_domain_client import D1DataDomain, client_for_domain
 from .evidence_contracts import (
     CANONICAL_ROUNDTRIP_COST_RATE,
     LABEL_SCHEMA_VERSION,
@@ -31,9 +31,44 @@ from ._trade_simulator import simulate_trade
 
 logger = logging.getLogger(__name__)
 
+LEARNING_D1_CLIENT = client_for_domain(D1DataDomain.LEARNING)
+CORE_D1_CLIENT = client_for_domain(D1DataDomain.CORE)
+MARKET_D1_CLIENT = client_for_domain(D1DataDomain.MARKET)
+
 VERIFIABLE_MARKETS = {"TWSE", "OTC", "TPEX", "EMERGING"}
 VERIFICATION_HORIZON_SESSIONS = 5
 VERIFICATION_RETURN_SEMANTIC_VERSION = LABEL_SCHEMA_VERSION
+
+
+def _stock_metadata_by_id(
+    stock_ids: list[int],
+    chunk_size: int = 80,
+) -> dict[int, dict]:
+    """Resolve stock identity from the Core D1 owner without cross-D1 joins."""
+    unique_ids = sorted({int(stock_id) for stock_id in stock_ids})
+    metadata: dict[int, dict] = {}
+    for index in range(0, len(unique_ids), chunk_size):
+        chunk = unique_ids[index:index + chunk_size]
+        placeholders = ",".join("?" for _ in chunk)
+        rows = CORE_D1_CLIENT.query(
+            f"SELECT id, symbol, market FROM stocks WHERE id IN ({placeholders})",
+            params=chunk,
+        )
+        for row in rows:
+            metadata[int(row["id"])] = row
+    return metadata
+
+
+def _attach_stock_metadata(rows: list[dict]) -> list[dict]:
+    """Attach Core-owned identity and preserve the former inner-join semantics."""
+    metadata = _stock_metadata_by_id([int(row["stock_id"]) for row in rows])
+    enriched: list[dict] = []
+    for row in rows:
+        stock = metadata.get(int(row["stock_id"]))
+        if not stock or str(stock.get("market") or "") not in VERIFIABLE_MARKETS:
+            continue
+        enriched.append({**row, "symbol": stock.get("symbol"), "market": stock.get("market")})
+    return enriched
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -58,14 +93,14 @@ def _resolve_verification_prediction_window(
     sessions after it. Calendar-day offsets are invalid around holidays and
     unscheduled closures.
     """
-    latest_rows = d1_client.query(
+    latest_rows = MARKET_D1_CLIENT.query(
         "SELECT MAX(date) AS latest_date FROM canonical_market_daily "
         "WHERE stock_id = '0050' AND source = 'finlab.price' AND date <= ?",
         params=[as_of.isoformat()],
     )
     latest_price_date = latest_rows[0].get("latest_date") if latest_rows else None
     if latest_price_date:
-        mature_rows = d1_client.query(
+        mature_rows = MARKET_D1_CLIENT.query(
             """
             SELECT date AS mature_prediction_date
             FROM (
@@ -139,9 +174,8 @@ def load_pending_predictions(
             cursor_id,
         ])
     sql = f"""
-        SELECT p.*, s.symbol, s.market
+        SELECT p.*
         FROM predictions p
-        JOIN stocks s ON p.stock_id = s.id
         WHERE (
                p.verified_at IS NULL
             OR p.actual_return_pct IS NULL
@@ -151,16 +185,16 @@ def load_pending_predictions(
             OR p.verification_label_known_date IS NULL
         )
           AND p.prediction_date BETWEEN ? AND ?
-          AND s.market IN ('TWSE', 'OTC', 'TPEX', 'EMERGING')
           AND p.forecast_data IS NOT NULL
           {cursor_sql}
         ORDER BY p.prediction_date ASC, COALESCE(p.generated_at, '') ASC, p.id ASC
         LIMIT ?
     """
     params.append(limit)
-    rows = d1_client.query(sql, params=params)
-    logger.info(f"[verify] Loaded {len(rows)} pending predictions")
-    return rows
+    rows = LEARNING_D1_CLIENT.query(sql, params=params)
+    enriched = _attach_stock_metadata(rows)
+    logger.info(f"[verify] Loaded {len(enriched)} pending predictions")
+    return enriched
 
 
 def load_pending_prediction_workset(
@@ -221,19 +255,18 @@ def load_predictions_for_verification_repair(
     limit: int = 5000,
 ) -> list[dict]:
     """Load an explicit date slice for deterministic five-session label rebuild."""
-    return d1_client.query(
+    rows = LEARNING_D1_CLIENT.query(
         """
-        SELECT p.*, s.symbol, s.market
+        SELECT p.*
         FROM predictions p
-        JOIN stocks s ON p.stock_id = s.id
         WHERE p.prediction_date BETWEEN ? AND ?
-          AND s.market IN ('TWSE', 'OTC', 'TPEX', 'EMERGING')
           AND p.forecast_data IS NOT NULL
         ORDER BY p.prediction_date ASC, p.generated_at ASC
         LIMIT ?
         """,
         params=[start_date, end_date, limit],
     )
+    return _attach_stock_metadata(rows)
 
 
 def rebuild_verification_labels(
@@ -268,42 +301,36 @@ def rebuild_verification_labels(
 
 def load_market_risk() -> dict:
     """Latest market_risk row for risk_level/risk_score stamping on verified predictions."""
-    rows = d1_client.query(
+    rows = CORE_D1_CLIENT.query(
         "SELECT risk_level, risk_score FROM market_risk ORDER BY date DESC LIMIT 1"
     )
     return rows[0] if rows else {}
 
 
 def load_bars_for_prediction(stock_id: int, generated_at: str, prediction_date: str | None = None) -> list[dict]:
-    """
-    Load the first seven actual stock sessions after the prediction date.
-
-    Do not impose a calendar-day ceiling: exchange holidays and stock-specific
-    suspensions can push the fifth observable session beyond ten calendar days.
-    """
+    """Load the first seven post-prediction sessions from the Market D1 owner."""
     if prediction_date:
         business_date = datetime.fromisoformat(prediction_date).date()
     else:
         business_date = datetime.fromisoformat(generated_at.replace("Z", "+00:00")).date()
-    look_from = business_date.isoformat()
-
-    sql = """
-        SELECT c.date, c.open, c.high, c.low, c.close,
-               c.adj_open, c.adj_high, c.adj_low, c.adj_close
-        FROM stocks s
-        JOIN canonical_market_daily c
-          ON c.stock_id = s.symbol
-         AND c.source = 'finlab.price'
-        WHERE s.id = ? AND c.date > ?
-          AND c.open > 0 AND c.high > 0 AND c.low > 0 AND c.close > 0
-          AND c.adj_open > 0 AND c.adj_high > 0 AND c.adj_low > 0 AND c.adj_close > 0
-        ORDER BY c.date ASC LIMIT 7
-    """
-    return d1_client.query(sql, params=[stock_id, look_from])
-
+    stock = _stock_metadata_by_id([stock_id]).get(int(stock_id))
+    if not stock or not stock.get("symbol"):
+        return []
+    return MARKET_D1_CLIENT.query(
+        """
+        SELECT date, open, high, low, close,
+               adj_open, adj_high, adj_low, adj_close
+        FROM canonical_market_daily
+        WHERE stock_id = ? AND source = 'finlab.price' AND date > ?
+          AND open > 0 AND high > 0 AND low > 0 AND close > 0
+          AND adj_open > 0 AND adj_high > 0 AND adj_low > 0 AND adj_close > 0
+        ORDER BY date ASC LIMIT 7
+        """,
+        params=[str(stock["symbol"]), business_date.isoformat()],
+    )
 
 def load_bars_for_predictions(predictions: list[dict], chunk_size: int = 80) -> dict[int, list[dict]]:
-    """Load OHLC bars for all pending predictions in a few D1 reads."""
+    """Load OHLC bars from Market D1 after resolving stock identity in Core D1."""
     if not predictions:
         return {}
 
@@ -313,39 +340,42 @@ def load_bars_for_predictions(predictions: list[dict], chunk_size: int = 80) -> 
             business_date = datetime.fromisoformat(str(pred["prediction_date"])).date()
         else:
             business_date = datetime.fromisoformat(str(pred["generated_at"]).replace("Z", "+00:00")).date()
-        windows.append((
-            int(pred["stock_id"]),
-            business_date.isoformat(),
-        ))
+        windows.append((int(pred["stock_id"]), business_date.isoformat()))
 
-    stock_ids = sorted({w[0] for w in windows})
-    min_date = min(w[1] for w in windows)
+    stock_ids = sorted({window[0] for window in windows})
+    min_date = min(window[1] for window in windows)
+    metadata = _stock_metadata_by_id(stock_ids)
+    id_by_symbol = {
+        str(stock["symbol"]): stock_id
+        for stock_id, stock in metadata.items()
+        if stock.get("symbol")
+    }
+    symbols = sorted(id_by_symbol)
     bars_by_stock: dict[int, list[dict]] = {}
 
-    for i in range(0, len(stock_ids), chunk_size):
-        chunk = stock_ids[i:i + chunk_size]
+    for index in range(0, len(symbols), chunk_size):
+        chunk = symbols[index:index + chunk_size]
         placeholders = ",".join("?" for _ in chunk)
-        rows = d1_client.query(
+        rows = MARKET_D1_CLIENT.query(
             f"""
-            SELECT s.id AS stock_id, c.date, c.open, c.high, c.low, c.close,
-                   c.adj_open, c.adj_high, c.adj_low, c.adj_close
-            FROM stocks s
-            JOIN canonical_market_daily c
-              ON c.stock_id = s.symbol
-             AND c.source = 'finlab.price'
-            WHERE s.id IN ({placeholders})
-              AND c.date > ?
-              AND c.open > 0 AND c.high > 0 AND c.low > 0 AND c.close > 0
-              AND c.adj_open > 0 AND c.adj_high > 0 AND c.adj_low > 0 AND c.adj_close > 0
-            ORDER BY s.id ASC, c.date ASC
+            SELECT stock_id AS symbol, date, open, high, low, close,
+                   adj_open, adj_high, adj_low, adj_close
+            FROM canonical_market_daily
+            WHERE stock_id IN ({placeholders})
+              AND source = 'finlab.price'
+              AND date > ?
+              AND open > 0 AND high > 0 AND low > 0 AND close > 0
+              AND adj_open > 0 AND adj_high > 0 AND adj_low > 0 AND adj_close > 0
+            ORDER BY stock_id ASC, date ASC
             """,
             params=[*chunk, min_date],
         )
         for row in rows:
-            bars_by_stock.setdefault(int(row["stock_id"]), []).append(row)
+            stock_id = id_by_symbol.get(str(row.get("symbol") or ""))
+            if stock_id is not None:
+                bars_by_stock.setdefault(stock_id, []).append(row)
 
     return bars_by_stock
-
 
 def _prediction_bar_start(pred: dict) -> str:
     if pred.get("prediction_date"):
@@ -517,7 +547,7 @@ def write_verified_predictions(updates: list[dict]) -> int:
     if not updates:
         return 0
     statements = [(UPDATE_VERIFY_SQL, u["bind"]) for u in updates]
-    result = d1_client.batch_execute(statements)
+    result = LEARNING_D1_CLIENT.batch_execute(statements)
     return result.get("changes_total", 0)
 
 
@@ -544,7 +574,7 @@ def clear_verification_labels(prediction_ids: list[int]) -> int:
             verified_at = NULL
         WHERE id = ?
     """.strip()
-    result = d1_client.batch_execute([(sql, [prediction_id]) for prediction_id in prediction_ids])
+    result = LEARNING_D1_CLIENT.batch_execute([(sql, [prediction_id]) for prediction_id in prediction_ids])
     return result.get("changes_total", 0)
 
 
@@ -623,7 +653,7 @@ def update_model_accuracy() -> int:
     1:1 port of predictionVerifier.ts:299-418.
     Returns number of (stock_id, model_name) groups updated.
     """
-    groups = d1_client.query(
+    groups = LEARNING_D1_CLIENT.query(
         "SELECT DISTINCT stock_id, model_name FROM predictions "
         "WHERE direction_correct IN (0, 1)"
     )
@@ -655,7 +685,7 @@ def _upsert_accuracy(
         where_base = "stock_id=? AND model_name=? AND direction_correct IN (0,1)"
         params = [stock_id, model_name]
 
-    row = d1_client.query(
+    row = LEARNING_D1_CLIENT.query(
         f"SELECT COUNT(*) as total, SUM(direction_correct) as correct, "
         f"AVG(price_error_pct) as avg_err FROM predictions WHERE {where_base}",
         params=params,
@@ -664,31 +694,31 @@ def _upsert_accuracy(
         return
     r = row[0]
 
-    low_risk = d1_client.query(
+    low_risk = LEARNING_D1_CLIENT.query(
         f"SELECT COUNT(*) as total, SUM(direction_correct) as correct "
         f"FROM predictions WHERE {where_base} "
         f"AND market_risk_level IN ('green','yellow')",
         params=params,
     )
-    high_risk = d1_client.query(
+    high_risk = LEARNING_D1_CLIENT.query(
         f"SELECT COUNT(*) as total, SUM(direction_correct) as correct "
         f"FROM predictions WHERE {where_base} "
         f"AND market_risk_level IN ('red','black')",
         params=params,
     )
-    win_rows = d1_client.query(
+    win_rows = LEARNING_D1_CLIENT.query(
         f"SELECT AVG(actual_return_pct) as avg_win FROM predictions "
         f"WHERE {where_base} AND direction_correct=1 "
         f"AND actual_return_pct IS NOT NULL",
         params=params,
     )
-    loss_rows = d1_client.query(
+    loss_rows = LEARNING_D1_CLIENT.query(
         f"SELECT AVG(actual_return_pct) as avg_loss FROM predictions "
         f"WHERE {where_base} AND direction_correct=0 "
         f"AND actual_return_pct IS NOT NULL",
         params=params,
     )
-    trade_rows = d1_client.query(
+    trade_rows = LEARNING_D1_CLIENT.query(
         f"SELECT AVG(trade_pnl_pct) as avg_pnl, "
         f"AVG(trade_pnl_r) as avg_r, "
         f"SUM(CASE WHEN trade_pnl_pct > 0 THEN trade_pnl_pct ELSE 0 END) as gross_profit, "
@@ -724,7 +754,7 @@ def _upsert_accuracy(
     hit_target_rate = tr.get("hit_target") / tc if tc > 0 else None
     hit_stop_rate = tr.get("hit_stop") / tc if tc > 0 else None
 
-    d1_client.execute(
+    LEARNING_D1_CLIENT.execute(
         """
         INSERT INTO model_accuracy (
           stock_id, model_name, period,
@@ -770,7 +800,7 @@ def _upsert_accuracy(
 
 def update_trade_performance() -> int:
     """1:1 port of predictionVerifier.ts:422-513."""
-    groups = d1_client.query(
+    groups = LEARNING_D1_CLIENT.query(
         "SELECT DISTINCT stock_id, model_name FROM predictions "
         "WHERE trade_pnl_pct IS NOT NULL"
     )
@@ -804,7 +834,7 @@ def _upsert_trade_perf(
         )
         params = [stock_id, model_name]
 
-    rows = d1_client.query(
+    rows = LEARNING_D1_CLIENT.query(
         f"""
         SELECT
           COUNT(*) as total,
@@ -843,7 +873,7 @@ def _upsert_trade_perf(
         if (avg_win is not None and avg_loss is not None) else None
     )
 
-    d1_client.execute(
+    LEARNING_D1_CLIENT.execute(
         """
         INSERT INTO trade_performance (
           stock_id, model_name, period,

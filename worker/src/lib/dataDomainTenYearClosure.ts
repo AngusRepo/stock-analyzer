@@ -21,7 +21,7 @@ export function buildDataDomainTenYearClosure(input: TenYearDomainClosureInput) 
     const item = byDomain.get(domain)
     const blockers: string[] = []
     const unresolvedRouteTables = [
-      ...(input.unresolvedRouteTables?.[domain] ?? tablesForDataDomain(domain).filter((table) => (
+      ...(input.unresolvedRouteTables?.[domain] ?? item?.unresolved_route_tables ?? tablesForDataDomain(domain).filter((table) => (
         !LEGACY_CONTROL_PLANE_TABLES.has(table)
         && tableOwnershipMetadata(table)?.route_ready !== true
       ))),

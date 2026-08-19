@@ -261,3 +261,95 @@ def test_oof_materialize_job_keeps_prep_dependency_terminal_and_retriable(monkey
     assert callbacks[0]["status"] == "error"
     assert "oof_dependency_retry_required:immutable_sequence_behind_compute_snapshot" in callbacks[0]["error"]
     assert "immutable_sequence_behind_compute_snapshot" in callbacks[0]["summary"]
+
+
+def test_weekly_spawned_cohort_requests_bounded_materialization_continuation(monkeypatch):
+    callbacks = []
+    lifecycle_kwargs = {}
+
+    async def fake_execute_lifecycle(**kwargs):
+        lifecycle_kwargs.update(kwargs)
+        return {
+            "status": "spawned",
+            "reason": "cohort_generation_spawned",
+            "cohort_id": "cohort-weekly-20260816",
+        }
+
+    async def fake_callback(payload):
+        callbacks.append(payload)
+
+    monkeypatch.setattr(oof_materialize_job_main, "_execute_lifecycle", fake_execute_lifecycle)
+    monkeypatch.setattr(oof_materialize_job_main, "_callback_worker", fake_callback)
+    monkeypatch.setenv("OOF_MATERIALIZE_CADENCE", "weekly")
+    monkeypatch.setenv("OOF_MATERIALIZE_END_DATE", "2026-08-16")
+    monkeypatch.setenv("OOF_MATERIALIZE_RUN_ID", "run-weekly-spawned")
+
+    assert asyncio.run(oof_materialize_job_main._run()) == 0
+    assert lifecycle_kwargs["continuation_attempt"] == 0
+    assert lifecycle_kwargs["continuation_only"] is False
+    assert callbacks[0]["status"] == "triggered"
+    assert callbacks[0]["metadata"]["lifecycle_status"] == "spawned"
+    assert callbacks[0]["metadata"]["cohort_id"] == "cohort-weekly-20260816"
+    assert callbacks[0]["metadata"]["continuation_attempt"] == 0
+    assert callbacks[0]["metadata"]["continuation_max_attempts"] == 12
+
+
+def test_weekly_continuation_is_materialization_only_and_remains_retryable(monkeypatch):
+    callbacks = []
+
+    async def fake_execute_lifecycle(**kwargs):
+        assert kwargs["expected_cohort_id"] == "cohort-weekly-20260816"
+        assert kwargs["continuation_attempt"] == 3
+        assert kwargs["continuation_only"] is True
+        assert kwargs["promote"] is False
+        assert kwargs["dispatch_full_fit"] is False
+        return {
+            "status": "pending",
+            "reason": "cohort_manifest_not_ready_for_continuation",
+            "cohort_id": "cohort-weekly-20260816",
+            "training_dispatched": False,
+            "promotion_attempted": False,
+        }
+
+    async def fake_callback(payload):
+        callbacks.append(payload)
+
+    monkeypatch.setattr(oof_materialize_job_main, "_execute_lifecycle", fake_execute_lifecycle)
+    monkeypatch.setattr(oof_materialize_job_main, "_callback_worker", fake_callback)
+    monkeypatch.setenv("OOF_MATERIALIZE_CADENCE", "weekly")
+    monkeypatch.setenv("OOF_MATERIALIZE_END_DATE", "2026-08-16")
+    monkeypatch.setenv("OOF_MATERIALIZE_EXPECTED_COHORT_ID", "cohort-weekly-20260816")
+    monkeypatch.setenv("OOF_MATERIALIZE_CONTINUATION_ATTEMPT", "3")
+    monkeypatch.setenv("OOF_MATERIALIZE_CONTINUATION_ONLY", "1")
+    monkeypatch.setenv("OOF_MATERIALIZE_PROMOTE", "0")
+    monkeypatch.setenv("OOF_MATERIALIZE_DISPATCH_FULL_FIT", "0")
+
+    assert asyncio.run(oof_materialize_job_main._run()) == 0
+    assert callbacks[0]["status"] == "triggered"
+    assert callbacks[0]["metadata"]["continuation_only"] is True
+    assert callbacks[0]["metadata"]["continuation_attempt"] == 3
+
+
+def test_weekly_continuation_fails_closed_after_bounded_attempts(monkeypatch):
+    callbacks = []
+
+    async def fake_execute_lifecycle(**_kwargs):
+        return {
+            "status": "pending",
+            "reason": "cohort_manifest_not_ready_for_continuation",
+            "cohort_id": "cohort-weekly-20260816",
+        }
+
+    async def fake_callback(payload):
+        callbacks.append(payload)
+
+    monkeypatch.setattr(oof_materialize_job_main, "_execute_lifecycle", fake_execute_lifecycle)
+    monkeypatch.setattr(oof_materialize_job_main, "_callback_worker", fake_callback)
+    monkeypatch.setenv("OOF_MATERIALIZE_CADENCE", "weekly")
+    monkeypatch.setenv("OOF_MATERIALIZE_END_DATE", "2026-08-16")
+    monkeypatch.setenv("OOF_MATERIALIZE_CONTINUATION_ATTEMPT", "12")
+    monkeypatch.setenv("OOF_MATERIALIZE_CONTINUATION_ONLY", "1")
+
+    assert asyncio.run(oof_materialize_job_main._run()) == 1
+    assert callbacks[0]["status"] == "error"
+    assert "oof_cohort_continuation_exhausted" in callbacks[0]["error"]

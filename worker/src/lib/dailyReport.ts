@@ -286,7 +286,7 @@ export async function generateDailyReport(env: Bindings): Promise<string> {
   })
 
   try {
-    await env.DB.prepare(`
+    await databaseForDataDomain(env, 'core').prepare(`
       INSERT INTO stock_analysis_reports
         (date, report_type, market_summary, ml_overview, buy_details, sell_alerts, recommendations, performance, theme_flow)
       VALUES (?, 'daily', ?, ?, ?, ?, ?, ?, ?)

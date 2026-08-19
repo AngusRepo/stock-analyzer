@@ -110,7 +110,7 @@ for (const table of ['meta_reward_ledger', 'meta_shadow_decisions']) {
 const deferredProductionTables = productionTableNames.filter((table) => (
   tableOwnershipMetadata(table)?.route_ready === false && !LEGACY_CONTROL_PLANE_TABLES.has(table)
 ))
-assert.equal(deferredProductionTables.length, 41, 'production tables without completed routing closure require explicit review')
+assert.equal(deferredProductionTables.length, 40, 'production tables without completed routing closure require explicit review')
 for (const table of [
   'active_strategy_backtest_results', 'backtest_results', 'debate_ab_log',
   'monte_carlo_results', 'pbo_results', 'strategy_backtest_results',
@@ -256,6 +256,9 @@ assert.equal(dataDomainRoutingContractReady('execution'), true)
 assert.equal(dataDomainProjectionContractReady('execution'), true)
 assert.equal(dataDomainRoutingContractReady('paper'), true)
 assert.equal(dataDomainProjectionContractReady('paper'), true)
+assert.equal(dataDomainRoutingContractReady('core'), true)
+assert.equal(dataDomainProjectionContractReady('core'), true)
+assert.equal(tableOwnershipMetadata('stock_analysis_reports')?.route_ready, true)
 assert(LEGACY_CONTROL_PLANE_TABLES.has('data_domain_cutovers'))
 const legacyControlDb = {} as D1Database
 assert.equal(databaseForTable({ DB: legacyControlDb }, 'data_domain_cutovers'), legacyControlDb)

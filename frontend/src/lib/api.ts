@@ -601,6 +601,9 @@ export type DataDomainCutoverReadinessReport = {
     owned_tables: number
     completed_tables: number
     parity_tables: number
+    incomplete_tables: string[]
+    parity_blocked_tables: string[]
+    unresolved_route_tables: string[]
     pending_projection_events: number
     projection_error_events: number
     cutover_status: string

@@ -4354,13 +4354,14 @@ recommendations.get('/sector-flow-stocks', async (c) => {
 recommendations.get('/daily-report', async (c) => {
   const date = c.req.query('date') ?? new Date(Date.now() + 8 * 3600_000).toISOString().slice(0, 10)
 
-  let report = await c.env.DB.prepare(
+  const coreDb = databaseForDataDomain(c.env, 'core')
+  let report = await coreDb.prepare(
     'SELECT * FROM stock_analysis_reports WHERE date=? AND report_type=?'
   ).bind(date, 'daily').first<any>().catch(() => null)
 
   // fallback 最近一筆
   if (!report) {
-    report = await c.env.DB.prepare(
+    report = await coreDb.prepare(
       'SELECT * FROM stock_analysis_reports WHERE report_type=? ORDER BY date DESC LIMIT 1'
     ).bind('daily').first<any>().catch(() => null)
   }

@@ -1,11 +1,13 @@
 import {
   DATA_DOMAINS,
+  LEGACY_CONTROL_PLANE_TABLES,
   MULTI_D1_PROJECTION_CONTRACT_GATES,
   MULTI_D1_ROUTING_CONTRACT_GATES,
   tablesForDataDomainShadowBackfill,
   type DataDomain,
   dataDomainProjectionContractReady,
   dataDomainRoutingContractReady,
+  tableOwnershipMetadata,
 } from './dataDomainRegistry'
 import {
   isAuthoritativeDataDomainFullTableParity,
@@ -70,6 +72,9 @@ export type DataDomainCutoverReadiness = {
   owned_tables: number
   completed_tables: number
   parity_tables: number
+  incomplete_tables: string[]
+  parity_blocked_tables: string[]
+  unresolved_route_tables: string[]
   pending_projection_events: number
   projection_error_events: number
   cutover_status: string
@@ -223,6 +228,15 @@ export async function inspectDataDomainCutoverReadiness(
       latestParity.get(table),
       context.parityNotBefore,
     ) && (!isDataDomainControlTable(table) || revisionReady.has(table))).length
+    const incompleteTables = [...owned].filter((table) => !completed.has(table)).sort()
+    const parityBlockedTables = [...owned].filter((table) => !(
+      exactParityPass(table, latestParity.get(table), context.parityNotBefore)
+      && (!isDataDomainControlTable(table) || revisionReady.has(table))
+    )).sort()
+    const unresolvedRouteTables = [...owned].filter((table) => (
+      !LEGACY_CONTROL_PLANE_TABLES.has(table)
+      && tableOwnershipMetadata(table)?.route_ready !== true
+    )).sort()
     const aggregateSnapshot = parityTables === owned.size
       ? await buildDataDomainAggregateParitySnapshot(
           [...owned],
@@ -295,6 +309,9 @@ export async function inspectDataDomainCutoverReadiness(
       owned_tables: owned.size,
       completed_tables: completed.size,
       parity_tables: parityTables,
+      incomplete_tables: incompleteTables,
+      parity_blocked_tables: parityBlockedTables,
+      unresolved_route_tables: unresolvedRouteTables,
       pending_projection_events: pendingProjectionEvents,
       projection_error_events: projectionErrorEvents,
       cutover_status: cutoverStatus,

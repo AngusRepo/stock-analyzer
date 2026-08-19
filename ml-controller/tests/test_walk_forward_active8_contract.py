@@ -983,6 +983,11 @@ def test_daily_oof_materialization_reuses_checksum_verified_gcs_indexes():
     materializer = (ROOT / "ml-controller" / "services" / "active8_oof_cohort_materializer.py").read_text(encoding="utf-8")
 
     assert "load_indexed_oof_ev_rows" in router
+    indexed_call = router[
+        router.index("snapshot_rows, l4_predictions, indexed_loader_evidence = load_indexed_oof_ev_rows("):
+        router.index("snapshot_evidence = {", router.index("snapshot_rows, l4_predictions, indexed_loader_evidence = load_indexed_oof_ev_rows("))
+    ]
+    assert "query_fn=learning_client.query" in indexed_call
     assert 'prediction_storage_mode") == "gcs_indexed_v1"' in router
     assert "len(materialized_indexes) == 2" in router
     assert "OOF_PIT_ELIGIBILITY_POLICY_VERSION" in router

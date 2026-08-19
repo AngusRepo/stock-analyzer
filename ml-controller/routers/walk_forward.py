@@ -17,7 +17,7 @@ import os
 import statistics
 from typing import Any, Literal
 from fastapi import APIRouter, HTTPException, Response
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from services.d1_domain_client import D1DataDomain, client_proxy_for_domain
 
@@ -1438,6 +1438,7 @@ async def materialize_walk_forward_oof(req: OofMaterializeRequest):
                 cohort_id=req.cohort_id,
                 source_manifest_checksum=manifest["manifest_checksum"],
                 knowledge_cutoff_date=req.knowledge_cutoff_date,
+                query_fn=learning_client.query,
             )
             snapshot_evidence = {
                 **indexed_loader_evidence,
@@ -1867,6 +1868,8 @@ class OofLifecycleRequest(BaseModel):
     promote: bool = True
     dispatch_full_fit: bool = False
     expected_cohort_id: str | None = None
+    continuation_attempt: int = Field(default=0, ge=0, le=24)
+    continuation_only: bool = False
 
 
 OOF_TRAIN_SESSIONS = 60
@@ -2346,6 +2349,8 @@ async def run_walk_forward_oof_lifecycle(req: OofLifecycleRequest):
             "OOF_MATERIALIZE_DISPATCH_FULL_FIT": "1" if req.dispatch_full_fit else "0",
             "OOF_MATERIALIZE_RUN_ID": run_id,
             "OOF_MATERIALIZE_CALLBACK_TASK": callback_task,
+            "OOF_MATERIALIZE_CONTINUATION_ATTEMPT": str(req.continuation_attempt),
+            "OOF_MATERIALIZE_CONTINUATION_ONLY": "1" if req.continuation_only else "0",
         }
         if req.expected_cohort_id:
             env_overrides["OOF_MATERIALIZE_EXPECTED_COHORT_ID"] = req.expected_cohort_id
@@ -2605,6 +2610,15 @@ async def run_walk_forward_oof_lifecycle(req: OofLifecycleRequest):
                         }, sort_keys=True),
                         content_type="application/json",
                     )
+            if req.continuation_only:
+                return {
+                    "status": "pending",
+                    "reason": "cohort_manifest_not_ready_for_continuation",
+                    "cadence": cadence,
+                    "cohort_id": cohort_id,
+                    "training_dispatched": False,
+                    "promotion_attempted": False,
+                }
             plan = WalkForwardRequest(
                 start_date=start_date,
                 end_date=signal_end_date,

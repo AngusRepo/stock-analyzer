@@ -62,6 +62,7 @@ const S12_REPLAY_QUEUE_CHUNK_SIZE = 20
 const S12_REPLAY_LEASE_RETRY_BASE_DELAY_SECONDS = 60
 const S12_REPLAY_LEASE_RETRY_MAX_DELAY_SECONDS = 180
 const S12_REPLAY_LEASE_RETRY_MAX_ATTEMPTS = 60
+const ACTIVE8_OOF_CONTINUATION_MAX_ATTEMPTS = 12
 
 function s12ReplayLeaseRetryDelaySeconds(signalDate: string, attempt: number): number {
   const seed = `${signalDate}:${attempt}`
@@ -3024,6 +3025,27 @@ export async function processUpdateBatch(
   env: Bindings,
   deps: ProcessUpdateBatchDeps,
 ): Promise<void> {
+  if (msg.type === 'active8_oof_continuation') {
+    const cadence = msg.oofCadence === 'monthly' ? 'monthly' : 'weekly'
+    const runDate = String(msg.triggerTime ?? '').slice(0, 10)
+    const attempt = Number(msg.oofContinuationAttempt)
+    const expectedCohortId = String(msg.oofExpectedCohortId ?? '').trim()
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(runDate)) {
+      throw new Error(`active8_oof_continuation_date_invalid:${runDate}`)
+    }
+    if (!Number.isInteger(attempt) || attempt < 1 || attempt > ACTIVE8_OOF_CONTINUATION_MAX_ATTEMPTS) {
+      throw new Error(`active8_oof_continuation_exhausted:${cadence}:${runDate}:${attempt}`)
+    }
+    if (!expectedCohortId) throw new Error(`active8_oof_continuation_cohort_missing:${cadence}:${runDate}`)
+    const { runActive8OofLifecycle } = await import('./controllerWorkflows')
+    await runActive8OofLifecycle(env, runDate, cadence, {
+      expectedCohortId,
+      continuationAttempt: attempt,
+      continuationOnly: true,
+    })
+    return
+  }
+
   if (msg.type === 'scheduled_admin_task') {
     const { processDurableSchedulerTask } = await import('./durableSchedulerTask')
     await processDurableSchedulerTask(msg, env)

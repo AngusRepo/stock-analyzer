@@ -229,6 +229,11 @@ export async function runActive8OofLifecycle(
   env: Bindings,
   runDate?: string,
   cadence: 'daily' | 'weekly' | 'monthly' = 'daily',
+  options: {
+    expectedCohortId?: string
+    continuationAttempt?: number
+    continuationOnly?: boolean
+  } = {},
 ) {
   requireController(env)
 
@@ -238,8 +243,11 @@ export async function runActive8OofLifecycle(
       cadence,
       end_date: runDate,
       dry_run: false,
-      promote: true,
-      dispatch_full_fit: cadence !== 'daily',
+      promote: options.continuationOnly ? false : true,
+      dispatch_full_fit: options.continuationOnly ? false : cadence !== 'daily',
+      expected_cohort_id: options.expectedCohortId,
+      continuation_attempt: Math.max(0, Math.min(12, Number(options.continuationAttempt ?? 0))),
+      continuation_only: options.continuationOnly === true,
     },
     // The controller only dispatches a durable Cloud Run Job. The terminal
     // result arrives through /api/admin/scheduler-callback.

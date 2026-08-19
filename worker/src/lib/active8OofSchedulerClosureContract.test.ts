@@ -27,7 +27,10 @@ assert(!manifest.jobs.some((job: any) => ['l4-alpha-ev-refresh', 'allocator-ev-f
 assert(!['l4-alpha-ev-refresh', 'allocator-ev-fusion-refresh', 'monthly-l4-alpha-ev-refresh', 'monthly-allocator-ev-fusion-refresh', 'opb-arm-prior-refresh', 'monthly-opb-arm-prior-refresh'].some((task) => scheduleReadRoutes.includes(`task: '${task}'`)), 'schedule UI must not advertise legacy independent EV/OPB jobs removed from the canonical manifest')
 
 assert(workflows.includes("'/walk_forward/oof/lifecycle'"), 'all Worker cadence tasks must call the same controller OOF lifecycle owner')
-assert(workflows.includes("dispatch_full_fit: cadence !== 'daily'"), 'daily evidence materialization must not implicitly dispatch Active-8 full-fit training')
+assert(workflows.includes("dispatch_full_fit: options.continuationOnly ? false : cadence !== 'daily'"), 'daily evidence materialization must not implicitly dispatch Active-8 full-fit training')
+assert(workflows.includes('promote: options.continuationOnly ? false : true'), 'cohort continuation must never promote a candidate')
+assert(workflows.includes("dispatch_full_fit: options.continuationOnly ? false : cadence !== 'daily'"), 'cohort continuation must never dispatch full-fit training')
+assert(workflows.includes('continuation_only: options.continuationOnly === true'), 'Worker must explicitly attest materialization-only continuation')
 assert(workflows.includes("evidence_mode: 'purged_oof'"), 'manual Fusion refresh must use formal purged OOF evidence')
 for (const task of ['active8-oof-daily', 'active8-oof-weekly', 'active8-oof-monthly']) {
   assert(adminTasks.includes(`'${task}'`), `${task} must have an admin trigger handler`)
@@ -51,12 +54,24 @@ assert(/!safeProductionLane\s+\? 'safe_abstain'/.test(updateOrchestrator), 'miss
 assert(updateOrchestrator.includes("status: state === 'fatal' ? 'error' : 'success'"), 'safe abstention must close Scheduler green while preserving fatal infrastructure errors')
 assert(updateOrchestrator.includes('action_ready=${safeProductionLane ? 1 : 0}'), 'Allocator summary must separate job completion from BUY/allocation readiness')
 assert(!adminControlRoutes.includes("active8FreshnessStatus === 'fresh'\n    && callbackRunDate\n    &&"), 'OOF follow-up must not silently add an unrelated promotion or training condition')
+assert(adminControlRoutes.includes("type: 'active8_oof_continuation'"), 'weekly/monthly spawned cohorts must enqueue a delayed durable continuation')
+assert(adminControlRoutes.includes('oofExpectedCohortId: expectedCohortId'), 'continuation must stay pinned to the exact immutable cohort identity')
+assert(adminControlRoutes.includes('delaySeconds: 300'), 'continuation retries must be delayed instead of hot-looping')
+assert(updateOrchestrator.includes("if (msg.type === 'active8_oof_continuation')"), 'update queue must consume the durable OOF continuation')
+assert(updateOrchestrator.includes('continuationOnly: true'), 'queue continuation must enforce materialization-only mode')
 
 assert(walkForward.includes('@router.post("/walk_forward/oof/lifecycle")'), 'controller must expose the shared OOF lifecycle owner')
 assert(walkForward.includes('label_known_dates') && walkForward.includes('known <= cutoff'), 'OOF cohort generation must use row-level immutable label-known dates')
 assert(walkForward.includes('cohort_dates = mature_dates[-OOF_MIN_MATURE_SESSIONS:]'), 'weekly/monthly OOF must use the deterministic mature-session cohort')
 assert(walkForward.includes('train_window_days=OOF_TRAIN_SESSIONS') && walkForward.includes('test_window_days=OOF_TEST_SESSIONS'), 'OOF cohort must use the canonical 60/10 purged walk-forward windows')
 assert(walkForward.includes('active8-oof-dispatch-v1') && walkForward.includes('cohort_orchestrator_active'), 'OOF generation must have a durable idempotent dispatch fence')
+assert(
+  walkForward.includes('if req.continuation_only:') &&
+    walkForward.includes('cohort_manifest_not_ready_for_continuation') &&
+    walkForward.includes('"training_dispatched": False') &&
+    walkForward.indexOf('if req.continuation_only:') < walkForward.indexOf('plan = WalkForwardRequest('),
+  'continuation must stop before training dispatch while the existing cohort manifest is not ready',
+)
 assert(
   walkForward.includes('active8-oof-lifecycle-receipt-v10-durable-shadow-base') &&
     walkForward.includes('_oof_lifecycle_receipt_matches_active_policy'),

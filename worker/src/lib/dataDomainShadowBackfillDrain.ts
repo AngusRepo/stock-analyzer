@@ -417,7 +417,9 @@ async function resetDataDomainTableForCatchup(
   ])
 }
 
-const DOMAIN_BACKFILL_ORDER: DataDomain[] = ['execution', 'paper', 'ops', 'learning', 'market', 'research', 'core']
+// Prefer the smallest route-closed domain before the large Market corpus so the
+// coordinator can reach a formally cuttable boundary without starving Market.
+const DOMAIN_BACKFILL_ORDER: DataDomain[] = ['execution', 'paper', 'ops', 'learning', 'research', 'core', 'market']
 
 export type LatestEveningChainClosure = {
   runDate: string | null

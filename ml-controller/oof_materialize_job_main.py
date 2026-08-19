@@ -15,6 +15,8 @@ logging.basicConfig(
 )
 logger = logging.getLogger("oof_materialize_job")
 
+OOF_CONTINUATION_MAX_ATTEMPTS = 12
+
 
 async def _callback_worker(payload: dict[str, Any]) -> None:
     from routers.pipeline import _callback_worker as callback
@@ -44,6 +46,8 @@ async def _execute_lifecycle(
     promote: bool,
     dispatch_full_fit: bool,
     expected_cohort_id: str | None,
+    continuation_attempt: int,
+    continuation_only: bool,
 ) -> dict[str, Any]:
     from routers.walk_forward import OofLifecycleRequest, run_walk_forward_oof_lifecycle
     from services.active8_prep_lifecycle import (
@@ -67,6 +71,8 @@ async def _execute_lifecycle(
         promote=promote,
         dispatch_full_fit=dispatch_full_fit,
         expected_cohort_id=expected_cohort_id,
+        continuation_attempt=continuation_attempt,
+        continuation_only=continuation_only,
     ))
     result["prep_lifecycle"] = prep
     return result
@@ -203,6 +209,12 @@ async def _run() -> int:
     expected_cohort_id = (
         os.environ.get("OOF_MATERIALIZE_EXPECTED_COHORT_ID", "").strip() or None
     )
+    continuation_attempt = _bounded_int(
+        "OOF_MATERIALIZE_CONTINUATION_ATTEMPT", 0, 0, OOF_CONTINUATION_MAX_ATTEMPTS
+    )
+    continuation_only = _truthy(
+        os.environ.get("OOF_MATERIALIZE_CONTINUATION_ONLY", "0")
+    )
     callback_task = os.environ.get(
         "OOF_MATERIALIZE_CALLBACK_TASK",
         f"active8-oof-{cadence}",
@@ -252,6 +264,8 @@ async def _run() -> int:
                 promote=promote,
                 dispatch_full_fit=dispatch_full_fit,
                 expected_cohort_id=expected_cohort_id,
+                continuation_attempt=continuation_attempt,
+                continuation_only=continuation_only,
             )
             status = str(result.get("status") or "").lower()
             if result.get("dependency_retry_required"):
@@ -278,6 +292,13 @@ async def _run() -> int:
                         f"effective={freshness['effective_max_date']}"
                     )
                 callback_status = "success"
+            elif status in {"pending", "spawned"} and cadence in {"weekly", "monthly"}:
+                if continuation_attempt >= OOF_CONTINUATION_MAX_ATTEMPTS:
+                    raise RuntimeError(
+                        "oof_cohort_continuation_exhausted:"
+                        f"status={status}:attempt={continuation_attempt}"
+                    )
+                callback_status = "triggered"
             elif status in {"skipped", "pending", "spawned"}:
                 callback_status = "skipped"
             else:
@@ -299,7 +320,15 @@ async def _run() -> int:
     }
     if mode == "oof_lifecycle":
         freshness = freshness or _oof_freshness_evidence(result)
-        payload["metadata"] = {"oof_freshness": freshness, "cadence": cadence}
+        payload["metadata"] = {
+            "oof_freshness": freshness,
+            "cadence": cadence,
+            "lifecycle_status": str(result.get("status") or "").lower(),
+            "cohort_id": result.get("cohort_id"),
+            "continuation_attempt": continuation_attempt,
+            "continuation_max_attempts": OOF_CONTINUATION_MAX_ATTEMPTS,
+            "continuation_only": continuation_only,
+        }
         calendar = result.get("calendar")
         calendar = calendar if isinstance(calendar, dict) else {}
         payload["run_date"] = end_date or str(calendar.get("cutoff") or "")[:10]

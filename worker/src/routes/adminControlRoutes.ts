@@ -543,6 +543,29 @@ async function handleSchedulerCallback(c: any) {
       ].join(':')
       body.summary = `${String(body.summary ?? '')} ${body.error}`.trim()
     }
+    const lifecycleStatus = String(callbackMetadata?.lifecycle_status ?? '').toLowerCase()
+    const cadence = String(callbackMetadata?.cadence ?? '').toLowerCase()
+    const continuationAttempt = Math.max(0, Number(callbackMetadata?.continuation_attempt ?? 0))
+    const continuationMaxAttempts = Math.max(1, Number(callbackMetadata?.continuation_max_attempts ?? 12))
+    const expectedCohortId = String(callbackMetadata?.cohort_id ?? '').trim()
+    if (
+      body.status === 'triggered'
+      && ['weekly', 'monthly'].includes(cadence)
+      && ['pending', 'spawned'].includes(lifecycleStatus)
+      && callbackRunDate
+      && expectedCohortId
+      && continuationAttempt < continuationMaxAttempts
+    ) {
+      await c.env.UPDATE_QUEUE.send({
+        type: 'active8_oof_continuation',
+        cursor: 0,
+        triggerTime: callbackRunDate,
+        runId: callbackRunId,
+        oofCadence: cadence as 'weekly' | 'monthly',
+        oofExpectedCohortId: expectedCohortId,
+        oofContinuationAttempt: continuationAttempt + 1,
+      }, { delaySeconds: 300 })
+    }
   }
 
   if (body.task === 'finlab-v4-backfill' && callbackRunDate) {

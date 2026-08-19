@@ -54,14 +54,15 @@ export const MULTI_D1_PROJECTION_CONTRACT_READY = Object.values(
   MULTI_D1_PROJECTION_CONTRACT_GATES,
 ).every(Boolean)
 
-const DOMAIN_ROUTING_CONTRACT_READY = new Set<DataDomain>(['learning', 'execution', 'paper', 'research'])
-const DOMAIN_PROJECTION_FREE_CLOSURE = new Set<DataDomain>(['learning', 'execution', 'paper', 'research'])
+const DOMAIN_ROUTING_CONTRACT_READY = new Set<DataDomain>(['core', 'learning', 'execution', 'paper', 'research'])
+const DOMAIN_PROJECTION_FREE_CLOSURE = new Set<DataDomain>(['core', 'learning', 'execution', 'paper', 'research'])
 
 export function dataDomainRoutingContractReady(domain: DataDomain): boolean {
   return DOMAIN_ROUTING_CONTRACT_READY.has(domain)
 }
 
 export function dataDomainProjectionContractReady(domain: DataDomain): boolean {
+  // Core state is read independently; recommendation views join other domains in memory.
   // Learning cross-domain reads are split by binding and joined in memory.
   // Execution owns an isolated intent/leg/event ledger through the domain client.
   // Paper reads Core/Market/Learning independently and joins in memory; its state writes remain Paper-owned.
@@ -161,7 +162,7 @@ const DOMAIN_TABLES: Record<DataDomain, ReadonlySet<string>> = {
 // means the target schema is safe for legacy-authority copy/parity; route_ready
 // remains the independent live read/write cutover gate.
 const DEFERRED_PRODUCTION_TABLE_OWNERSHIP: readonly TableOwnershipMetadata[] = [
-  { table: 'stock_analysis_reports', domain: 'core', disposition: 'compact_projection', route_ready: false, shadow_ready: true },
+  { table: 'stock_analysis_reports', domain: 'core', disposition: 'compact_projection', route_ready: true, shadow_ready: true },
 
   { table: 'canonical_broker_flow_daily', domain: 'market', disposition: 'full_scalar', route_ready: false, shadow_ready: true },
   { table: 'canonical_broker_rank_daily', domain: 'market', disposition: 'full_scalar', route_ready: false, shadow_ready: true },

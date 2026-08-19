@@ -939,6 +939,23 @@ adminWriteRoutes.post('/api/admin/strategy/marginal-edge-v4/refresh', async (c) 
   })
 })
 
+adminWriteRoutes.post('/api/admin/strategy/cutover-continuity-repair', async (c) => {
+  const authError = await requireAdminOrServiceToken(c)
+  if (authError) return authError
+  type Body = { start_date?: string; as_of_date?: string; dry_run?: boolean }
+  const body = await c.req.json<Body>().catch(() => ({} as Body))
+  const startDate = body.start_date ?? '2026-07-01'
+  const asOfDate = body.as_of_date ?? twToday()
+  const dryRun = body.dry_run !== false
+  const confirmation = 'repair-learning-cutover-continuity-v1'
+  if (!dryRun && c.req.header('X-Confirm-Strategy-Learning') !== confirmation) {
+    return c.json({ success: false, error: 'strategy_learning_cutover_continuity_confirmation_required', required_header: 'X-Confirm-Strategy-Learning', required_value: confirmation }, 400)
+  }
+  const { repairStrategyLearningCutoverContinuity } = await import('../lib/strategyLearningCutoverContinuity')
+  const report = await repairStrategyLearningCutoverContinuity(c.env, { startDate, asOfDate, dryRun })
+  return c.json({ success: true, report, note: 'PIT continuity repair only; no retrain, threshold change, promotion, job trigger, or order submission.' })
+})
+
 adminWriteRoutes.post('/api/admin/strategy/reward-ledger/refresh', async (c) => {
   const authError = await requireAdminOrServiceToken(c)
   if (authError) return authError

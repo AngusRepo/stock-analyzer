@@ -484,8 +484,8 @@ export async function buildPipelineDecisionMaturityPacket(
              top_bucket_net_return_lcb90, residual_spread, residual_spread_lcb90,
              brier_score, climatology_brier_score, log_loss, gate_json, created_at
         FROM strategy_route_calibration_runs_v1
-       WHERE as_of_date<=?
-       ORDER BY as_of_date DESC, created_at DESC
+       WHERE as_of_date<=? AND sample_count>0 AND date_count>0
+       ORDER BY date_count DESC, as_of_date DESC, created_at DESC
        LIMIT 1
     `).bind(requestedDate).first<any>()),
     safeQuery(() => learningDb.prepare(`
@@ -1023,7 +1023,8 @@ export async function buildPipelineDecisionMaturityPacket(
     const minDates = Math.max(1, finite(fusion?.min_primary_dates, 20))
     const sampleCount = optionalFinite(fusion?.sample_count)
     const dateCount = optionalFinite(fusion?.date_count)
-    const offlineBlockers = fusion?.offline_gate_failed_gates ?? ['offline_candidate_missing']
+    const offlineBlockers = (fusion?.offline_gate_failed_gates ?? ['offline_candidate_missing'])
+      .filter((blocker) => blocker !== 'residual_champion:residual_adjustment_model_not_validated')
     const servingBlockers = fusionServing?.blockers ?? ['serving_pointer_missing']
     const shadowBlockers = shadowBatchReason ? [shadowBatchReason] : fusionShadowPacket?.failed_gates ?? ['frozen_forward_packet_missing']
     const candidateMetricScope = evidenceAvailability(fusion, 'offline_candidate_missing')
@@ -1118,7 +1119,7 @@ export async function buildPipelineDecisionMaturityPacket(
           passed: fusion?.fusion_final_comparison_reason ? null : fusion?.fusion_final_comparison_decision == null ? null : fusion.fusion_final_comparison_decision === 'PASS',
           ...candidateMetricScope,
           scope: 'diagnostic',
-          availability: fusion?.fusion_final_comparison_reason ? 'blocked' : candidateMetricScope.availability,
+          availability: fusion?.fusion_final_comparison_reason ? 'not_applicable' : candidateMetricScope.availability,
           reason_code: fusion?.fusion_final_comparison_reason ?? candidateMetricScope.reason_code,
           note: fusion?.fusion_final_comparison_reason ?? (optionalFinite(fusion?.fusion_final_comparison_samples) != null && optionalFinite(fusion?.fusion_final_comparison_dates) != null ? `${optionalFinite(fusion?.fusion_final_comparison_samples)}/paired rows across ${optionalFinite(fusion?.fusion_final_comparison_dates)} dates.` : 'Paired comparison evidence unavailable.'),
         }),
@@ -1272,15 +1273,15 @@ export async function buildPipelineDecisionMaturityPacket(
       SELECT as_of_date evidence_date, paired_date_count value,
              json_extract(graph_json, '$.paired_date_requirement') target
         FROM strategy_redundancy_artifacts_v1
-       WHERE as_of_date <= ?
+       WHERE as_of_date <= ? AND status='pass'
        ORDER BY as_of_date DESC, created_at DESC
        LIMIT 7
     `).bind(requestedDate).all<{ evidence_date: string; value: number | null; target: number | null }>().then((result) => result.results ?? [])),
     safeQuery(() => learningDb.prepare(`
       SELECT as_of_date evidence_date, date_count value, ? target
         FROM strategy_route_calibration_runs_v1
-       WHERE as_of_date <= ?
-       ORDER BY as_of_date DESC, created_at DESC
+       WHERE as_of_date <= ? AND sample_count>0 AND date_count>0
+       ORDER BY date_count DESC, as_of_date DESC, created_at DESC
        LIMIT 7
     `).bind(STRATEGY_ROUTE_MIN_TOTAL_DATES, requestedDate).all<{ evidence_date: string; value: number | null; target: number | null }>().then((result) => result.results ?? [])),
     safeQuery(() => learningDb.prepare(`

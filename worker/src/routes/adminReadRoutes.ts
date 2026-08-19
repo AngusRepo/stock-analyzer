@@ -424,7 +424,8 @@ adminReadRoutes.get('/api/admin/strategy/evidence-profiles', async (c) => {
     learningDb.prepare(`
       SELECT run_id, as_of_date, status, date_count, gate_json, created_at
         FROM strategy_route_calibration_runs_v1
-       ORDER BY as_of_date DESC, created_at DESC
+       WHERE sample_count>0 AND date_count>0
+       ORDER BY date_count DESC, as_of_date DESC, created_at DESC
        LIMIT 1
     `).first<{
       run_id: string
@@ -436,7 +437,7 @@ adminReadRoutes.get('/api/admin/strategy/evidence-profiles', async (c) => {
     }>(),
   ])
   const productionPolicy = await learningDb.prepare(`
-    SELECT base_weight_run_id, knowledge_cutoff_date, checksum, created_at
+    SELECT base_weight_run_id, knowledge_cutoff_date, evidence_json, checksum, created_at
       FROM strategy_production_policy_history_v1
      WHERE status='active'
      ORDER BY knowledge_cutoff_date DESC, created_at DESC
@@ -444,6 +445,7 @@ adminReadRoutes.get('/api/admin/strategy/evidence-profiles', async (c) => {
   `).first<{
     base_weight_run_id: string | null
     knowledge_cutoff_date: string
+    evidence_json: string
     checksum: string
     created_at: string
   }>().catch(() => null)
@@ -490,7 +492,7 @@ adminReadRoutes.get('/api/admin/strategy/evidence-profiles', async (c) => {
       },
     }
   })
-  const { loadStrategyEvidenceOwnerSnapshotBefore, strategyEvidenceOwnerLineageMatches } = await import('../lib/strategyEvidenceOwnerFusion')
+  const { loadStrategyEvidenceOwnerSnapshotBefore } = await import('../lib/strategyEvidenceOwnerFusion')
   const evidenceOwnerSnapshot = await loadStrategyEvidenceOwnerSnapshotBefore(
     shadowLearningDb, runtimeSpecs, twToday(),
   )
@@ -503,6 +505,16 @@ adminReadRoutes.get('/api/admin/strategy/evidence-profiles', async (c) => {
   )).length
   const metricAsOfDate = metricArtifacts.map((row) => row.outcome_as_of_date).sort().at(-1) ?? null
   const formalEvidence = parseObject(formalPolicy?.evidence_json)
+  const productionEvidence = parseObject(productionPolicy?.evidence_json)
+  const storedEvidenceOwner = productionEvidence.evidence_owner && typeof productionEvidence.evidence_owner === 'object'
+    ? productionEvidence.evidence_owner as Record<string, unknown>
+    : {}
+  const storedOwnerVersion = String(storedEvidenceOwner.version ?? '')
+  const storedOwnerChecksum = String(storedEvidenceOwner.checksum ?? '')
+  const storedOwnerLineageValid = productionEvidence.production_effect === true
+    && storedOwnerVersion === 'strategy-evidence-owner-fusion-v2'
+    && storedOwnerChecksum.length === 64
+    && String(productionPolicy?.base_weight_run_id ?? '').includes(`${storedOwnerVersion}:${storedOwnerChecksum}`)
   const routeDates = Number(routeCalibration?.date_count ?? 0)
   const completeHorizonCoverage = [3, 5, 10].every((horizon) => (
     multiHorizonCoverage.some((row) => row.horizon_days === horizon && row.outcome_rows > 0)
@@ -515,9 +527,7 @@ adminReadRoutes.get('/api/admin/strategy/evidence-profiles', async (c) => {
     .filter((row) => row.metric_value != null && Number.isFinite(Number(row.metric_value)))
     .map((row) => row.metric_name))].sort()
   const missingMultiHorizonMetrics = requiredMultiHorizonMetrics.filter((metric) => !materializedMultiHorizonMetrics.includes(metric))
-  const formalOwnerIntegrated = completeHorizonCoverage
-    && evidenceOwnerSnapshot.integration_ready
-    && strategyEvidenceOwnerLineageMatches(evidenceOwnerSnapshot, productionPolicy?.base_weight_run_id)
+  const formalOwnerIntegrated = storedOwnerLineageValid
 
   return c.json({
     success: true, mode: 'read_only', source,
@@ -531,10 +541,12 @@ adminReadRoutes.get('/api/admin/strategy/evidence-profiles', async (c) => {
       formal: {
         lane_id: 'formal_adaptive_policy',
         label: '正式策略政策',
-        version: formalPolicy?.version ?? null,
-        status: formalPolicy?.status ?? 'unavailable',
-        as_of_date: formalPolicy?.knowledge_cutoff_date ?? null,
-        production_effect: formalEvidence.production_effect === true,
+        version: formalOwnerIntegrated ? 'strategy-production-contribution-firewall-v3' : formalPolicy?.version ?? null,
+        status: formalOwnerIntegrated ? 'active' : formalPolicy?.status ?? 'unavailable',
+        as_of_date: productionPolicy?.knowledge_cutoff_date ?? formalPolicy?.knowledge_cutoff_date ?? null,
+        base_policy_version: formalPolicy?.version ?? null,
+        base_policy_as_of_date: formalPolicy?.knowledge_cutoff_date ?? null,
+        production_effect: formalOwnerIntegrated || formalEvidence.production_effect === true,
         authority: 'pending_buy_and_strategy_weights',
       },
       threshold_route_shadow: {
@@ -564,7 +576,8 @@ adminReadRoutes.get('/api/admin/strategy/evidence-profiles', async (c) => {
         ready_primary_profiles: primaryProfilesReady,
         total_profiles: profiles.length,
         outcome_data_ready: completeHorizonCoverage && primaryProfilesReady === profiles.length,
-        production_integration_ready: completeHorizonCoverage
+        production_integration_ready: formalOwnerIntegrated,
+        latest_input_integration_ready: completeHorizonCoverage
           && evidenceOwnerSnapshot.integration_ready,
         production_owner: formalOwnerIntegrated
           ? 'strategy-production-contribution-firewall-v3'
@@ -574,6 +587,7 @@ adminReadRoutes.get('/api/admin/strategy/evidence-profiles', async (c) => {
         metric_materialized_profiles: metricMaterializedProfiles,
         metric_ready_profiles: metricReadyProfiles,
         evidence_owner_snapshot: evidenceOwnerSnapshot,
+        active_policy_evidence_owner: storedEvidenceOwner,
         formal_policy_lineage: productionPolicy,
         integration_effect: formalOwnerIntegrated ? 'status_aware_owner_input_active' : 'status_aware_owner_input_ready',
         production_effect: formalOwnerIntegrated,

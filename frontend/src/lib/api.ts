@@ -737,11 +737,15 @@ export type StrategyEvidenceLane = {
   total_profiles?: number
   outcome_data_ready?: boolean
   production_integration_ready?: boolean
+  latest_input_integration_ready?: boolean
+  base_policy_version?: string | null
+  base_policy_as_of_date?: string | null
   production_owner?: 'strategy-adaptive-lifecycle-v2' | 'strategy-production-contribution-firewall-v3'
   materialized_metrics?: string[]
   missing_required_metrics?: string[]
   integration_effect?: 'status_aware_owner_input_active' | 'status_aware_owner_input_ready'
   evidence_owner_snapshot?: Record<string, unknown>
+  active_policy_evidence_owner?: Record<string, unknown>
   formal_policy_lineage?: Record<string, unknown> | null
 }
 

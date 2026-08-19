@@ -93,7 +93,7 @@ test('pipeline maturity API preserves canonical lineage and explicit evidence fi
   assert.match(source, /identity_valid: evidence\.identity_valid/)
   assert.doesNotMatch(source, /'NOT_EVALUATED'/)
   assert.match(source, /fusion\?\.fusion_final_comparison_reason \? null/)
-  assert.match(source, /availability: fusion\?\.fusion_final_comparison_reason \? 'blocked'/)
+  assert.match(source, /availability: fusion\?\.fusion_final_comparison_reason \? 'not_applicable'/)
   assert.match(source, /reason_code: fusion\?\.fusion_final_comparison_reason \?\?/)
   assert.match(evidenceAdapter, /residual_adjustment_model_not_validated/)
   assert.match(evidenceAdapter, /allocator-ev-fusion-validation-packet-v14/)

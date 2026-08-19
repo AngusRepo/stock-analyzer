@@ -1964,8 +1964,9 @@ export function buildStrategyRewardDailyStatsRows(
 export async function materializeStrategyDecisionDailyStats(
   db: D1Database,
   date: string,
+  options: { canonicalProducerRunId?: string; skipEnsure?: boolean } = {},
 ): Promise<number> {
-  await ensureStrategyLearningTables(db)
+  if (!options.skipEnsure) await ensureStrategyLearningTables(db)
   const { results } = await db.prepare(`
     SELECT strategy_id,
            strategy_version,
@@ -1979,11 +1980,29 @@ export async function materializeStrategyDecisionDailyStats(
              THEN 1 ELSE 0
            END) AS unavailable_decisions,
            SUM(CASE WHEN matched = 1 THEN 1 ELSE 0 END) AS matched
-      FROM strategy_decision_log
-     WHERE date = ?
-       AND evaluation_contract_version = 'strategy-evaluation-v2'
-     GROUP BY strategy_id, strategy_version
-  `).bind(date).all<{
+      FROM strategy_decision_log d
+     WHERE d.date = ?
+       AND d.evaluation_contract_version = 'strategy-evaluation-v2'
+       AND (
+         ? = ''
+         OR EXISTS (
+           SELECT 1 FROM strategy_label_matrix_v4 m
+            JOIN strategy_label_matrix_runs_v4 mr
+              ON mr.producer_run_id=m.producer_run_id AND mr.status='ready'
+            JOIN canonical_run_heads h
+              ON h.logical_run_key='screener:' || m.signal_date || ':TW:production:market_screener'
+             AND h.run_id=mr.producer_run_id
+           WHERE m.signal_date=d.date AND m.symbol=d.symbol
+             AND m.strategy_id=d.strategy_id AND m.strategy_version=d.strategy_version
+             AND m.producer_run_id=?
+         )
+       )
+     GROUP BY d.strategy_id, d.strategy_version
+  `).bind(
+    date,
+    options.canonicalProducerRunId ?? '',
+    options.canonicalProducerRunId ?? '',
+  ).all<{
     strategy_id: string
     strategy_version: string
     decisions: number
@@ -1992,8 +2011,14 @@ export async function materializeStrategyDecisionDailyStats(
     matched: number
   }>()
   const rows = results ?? []
-  if (!rows.length) return 0
   const nowIso = new Date().toISOString()
+  const reset = db.prepare(`
+    UPDATE strategy_learning_daily_stats
+       SET decisions=0, evaluable_decisions=0, unavailable_decisions=0, matched=0,
+           decision_contract_version='strategy-evaluation-v2',
+           projection_version='strategy-learning-daily-v2', updated_at=?
+     WHERE date=? AND decision_contract_version='strategy-evaluation-v2'
+  `).bind(nowIso, date)
   const statements = rows.map((row) => db.prepare(`
     INSERT INTO strategy_learning_daily_stats (
       date, strategy_id, strategy_version, decisions, evaluable_decisions, unavailable_decisions,
@@ -2020,9 +2045,7 @@ export async function materializeStrategyDecisionDailyStats(
     'strategy-learning-daily-v2',
     nowIso,
   ))
-  for (let i = 0; i < statements.length; i += STRATEGY_LEARNING_D1_BATCH_SIZE) {
-    await db.batch(statements.slice(i, i + STRATEGY_LEARNING_D1_BATCH_SIZE))
-  }
+  await db.batch([reset, ...statements])
   return rows.length
 }
 
@@ -2350,7 +2373,9 @@ export async function refreshStrategyRewardLedger(
   const dailyStatsRows = buildStrategyRewardDailyStatsRows(sourceRows, { refreshRunId })
     .filter((row) => dailyProjectionStart == null || row.date >= dailyProjectionStart)
   const dailyDecisionRows = !dryRun && options.endDate
-    ? await materializeStrategyDecisionDailyStats(db, options.endDate)
+    ? await materializeStrategyDecisionDailyStats(db, options.endDate, {
+        canonicalProducerRunId: options.canonicalRunIds?.[options.endDate],
+      })
     : 0
   const persisted = dryRun ? 0 : await persistStrategyRewardLedgerRows(db, ledgerRows, refreshRunId)
   const dailyRewardRows = dryRun ? 0 : await persistStrategyRewardDailyStatsRows(db, dailyStatsRows)
@@ -3633,7 +3658,10 @@ export async function rebuildHistoricalStrategyEvidenceV5(
         SELECT r.signal_date, r.symbol, r.producer_run_id, r.name, r.market_segment, r.sector,
                r.strategy_selected, r.selection_stage, r.rejection_reason, r.score_v2,
                r.score_components, r.feature_available, r.feature_rejection_reason,
-               r.strategy_labeler_version, r.strategy_router_version,
+               r.strategy_labeler_version, r.strategy_affinity_version,
+               r.strategy_router_version, r.strategy_router_score,
+               r.strategy_challenger_affinity_version,
+               r.strategy_challenger_route_version, r.strategy_challenger_route_score,
                r.strategy_registry_checksum, r.evidence_artifact_id
           FROM selection_reference_snapshots_v1 r
          WHERE r.signal_date=?
@@ -4110,12 +4138,13 @@ export async function rebuildHistoricalStrategyEvidenceV5(
             feature_available: Number(row.feature_available) === 1 ? 1 : 0,
             feature_rejection_reason: cleanToken(row.feature_rejection_reason) || null,
             strategy_labeler_version: labelerVersion,
-            strategy_affinity_version: 'strategy-affinity-binary-pit-reconstruction-v1',
+            strategy_affinity_version: cleanToken(row.strategy_affinity_version)
+              || 'strategy-affinity-binary-pit-reconstruction-v1',
             strategy_router_version: cleanToken(row.strategy_router_version) || null,
-            strategy_router_score: null,
+            strategy_router_score: finiteNumber(row.strategy_router_score),
             strategy_challenger_affinity_version: STRATEGY_AFFINITY_CHALLENGER_VERSION,
-            strategy_challenger_route_version: null,
-            strategy_challenger_route_score: null,
+            strategy_challenger_route_version: cleanToken(row.strategy_challenger_route_version) || null,
+            strategy_challenger_route_score: finiteNumber(row.strategy_challenger_route_score),
             strategy_registry_checksum: [...checksums][0],
           })),
           matrix,
@@ -4150,7 +4179,9 @@ export async function rebuildHistoricalStrategyEvidenceV5(
       if (challengerProjectionRows !== expectedMatrixRows || projectedThresholdRows !== matchedRows) {
         throw new Error(`challenger_affinity_projection_incomplete:${date}:${challengerProjectionRows}/${expectedMatrixRows}:${projectedThresholdRows}/${matchedRows}`)
       }
-      await materializeStrategyDecisionDailyStats(db, date)
+      await materializeStrategyDecisionDailyStats(db, date, {
+        canonicalProducerRunId: producerRunId,
+      })
       await db.prepare(`
         UPDATE strategy_evidence_rebuild_runs_v5
            SET status='success', candidate_count=?, strategy_count=?, decision_rows=?,

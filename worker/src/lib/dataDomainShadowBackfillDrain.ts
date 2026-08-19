@@ -69,6 +69,7 @@ const NARROW_SHADOW_BACKFILL_TABLES = new Set([
   'financials',
   'exit_shadow_log',
   'pending_buy_runs',
+  'persona_opinions',
 ])
 
 export function dataDomainShadowBackfillQueueBatchLimit(table: string): number {

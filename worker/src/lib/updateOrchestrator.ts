@@ -2172,6 +2172,8 @@ export async function runDailyAllocatorEvReadiness(
   parts.push(`oof_l4_base=${health.oof_base_max_dates.l4_predictions ?? 'missing'}`)
   parts.push(`oof_snapshot_shadow=${health.oof_shadow_max_dates.allocator_ev_snapshots ?? 'missing'}`)
   parts.push(`oof_l4_shadow=${health.oof_shadow_max_dates.l4_predictions ?? 'missing'}`)
+  parts.push(`oof_snapshot_not_evaluable=${health.oof_not_evaluable_dates.allocator_ev_snapshots.join(',') || 'none'}`)
+  parts.push(`oof_l4_not_evaluable=${health.oof_not_evaluable_dates.l4_predictions.join(',') || 'none'}`)
 
   for (const owner of ['l4_alpha_ev', 'allocator_ev_fusion'] as const) {
     const artifactState = servingState.artifacts[owner]

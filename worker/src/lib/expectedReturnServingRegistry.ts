@@ -352,6 +352,31 @@ export function resolveExpectedOofCoverageDates(sessionDatesInput: string[]): {
     newlyMatureSignalDate: sessionDates[sessionDates.length - 6],
   }
 }
+
+export function resolveLegalForwardNotEvaluableDates(input: unknown): string[] {
+  let payload = input
+  if (typeof input === 'string') {
+    try { payload = JSON.parse(input) } catch { return [] }
+  }
+  if (!payload || typeof payload !== 'object') return []
+  const rows = (payload as JsonRecord).not_evaluable
+  if (!Array.isArray(rows)) return []
+  return [...new Set(rows
+    .filter((row) => row && typeof row === 'object' && row.reason === 'missing_native_pit_components')
+    .map((row) => String(row.date ?? '').slice(0, 10))
+    .filter((date) => /^\d{4}-\d{2}-\d{2}$/.test(date)))]
+    .sort()
+}
+
+export function isExpectedOofCurrentCloseCovered(
+  maxDate: string | null,
+  newlyMatureSignalDate: string | null,
+  legalNotEvaluableDates: string[],
+): boolean {
+  if (!newlyMatureSignalDate) return true
+  return Boolean(maxDate && maxDate >= newlyMatureSignalDate)
+    || legalNotEvaluableDates.includes(newlyMatureSignalDate)
+}
 export async function inspectExpectedReturnLifecycleHealth(
   env: Pick<Bindings, 'DB'>,
   runDate: string,
@@ -363,6 +388,7 @@ export async function inspectExpectedReturnLifecycleHealth(
   oof_max_dates: Record<string, string | null>
   oof_base_max_dates: Record<string, string | null>
   oof_shadow_max_dates: Record<string, string | null>
+  oof_not_evaluable_dates: Record<string, string[]>
   latest_candidates: Record<ExpectedReturnOwner, JsonRecord | null>
 }> {
   const alerts: string[] = []
@@ -422,7 +448,7 @@ export async function inspectExpectedReturnLifecycleHealth(
   }
   for (const row of maxRows.results ?? []) oofBaseMaxDates[row.artifact_kind] = row.max_date
   const shadowRows = await databaseForDataDomain(env, 'learning').prepare(`
-    SELECT current.artifact_kind, MAX(current.max_date) AS max_date
+    SELECT current.artifact_kind, current.max_date, current.date_eligibility_json
       FROM active8_oof_forward_extension_coverage current
       JOIN active8_oof_cohorts cohort
         ON cohort.cohort_id = current.cohort_id
@@ -442,13 +468,32 @@ export async function inspectExpectedReturnLifecycleHealth(
           ORDER BY candidate.max_date DESC, candidate.updated_at DESC, candidate.cohort_id DESC
           LIMIT 1
        )
-     GROUP BY current.artifact_kind
-  `).bind(runDate).all<{ artifact_kind: string; max_date: string | null }>()
+     ORDER BY current.artifact_kind, current.max_date DESC, current.updated_at DESC
+  `).bind(runDate).all<{
+    artifact_kind: string
+    max_date: string | null
+    date_eligibility_json: string | null
+  }>()
   const oofShadowMaxDates: Record<string, string | null> = {
     allocator_ev_snapshots: null,
     l4_predictions: null,
   }
-  for (const row of shadowRows.results ?? []) oofShadowMaxDates[row.artifact_kind] = row.max_date
+  const oofNotEvaluableDateSets: Record<string, Set<string>> = {
+    allocator_ev_snapshots: new Set(),
+    l4_predictions: new Set(),
+  }
+  for (const row of shadowRows.results ?? []) {
+    const currentMax = oofShadowMaxDates[row.artifact_kind]
+    if (!currentMax || (row.max_date && row.max_date > currentMax)) {
+      oofShadowMaxDates[row.artifact_kind] = row.max_date
+    }
+    for (const date of resolveLegalForwardNotEvaluableDates(row.date_eligibility_json)) {
+      oofNotEvaluableDateSets[row.artifact_kind]?.add(date)
+    }
+  }
+  const oofNotEvaluableDates = Object.fromEntries(
+    Object.entries(oofNotEvaluableDateSets).map(([kind, dates]) => [kind, [...dates].sort()]),
+  )
   const oofMaxDates: Record<string, string | null> = {
     allocator_ev_snapshots: null,
     l4_predictions: null,
@@ -483,7 +528,11 @@ export async function inspectExpectedReturnLifecycleHealth(
       const maxDate = oofMaxDates[kind]
       if (!maxDate || maxDate < expectedMatureSignalDate) {
         alerts.push(`${kind}:oof_max_date_stale:${maxDate ?? 'missing'}<${expectedMatureSignalDate}`)
-      } else if (newlyMatureSignalDate && maxDate < newlyMatureSignalDate) {
+      } else if (!isExpectedOofCurrentCloseCovered(
+        maxDate,
+        newlyMatureSignalDate,
+        oofNotEvaluableDates[kind] ?? [],
+      )) {
         warnings.push(`${kind}:awaiting_current_close_oof_materialization:${maxDate}<${newlyMatureSignalDate}`)
       }
     }
@@ -496,6 +545,7 @@ export async function inspectExpectedReturnLifecycleHealth(
     oof_max_dates: oofMaxDates,
     oof_base_max_dates: oofBaseMaxDates,
     oof_shadow_max_dates: oofShadowMaxDates,
+    oof_not_evaluable_dates: oofNotEvaluableDates,
     latest_candidates: latestCandidates,
   }
 }

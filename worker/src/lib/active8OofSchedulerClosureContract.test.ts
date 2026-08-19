@@ -58,7 +58,7 @@ assert(walkForward.includes('cohort_dates = mature_dates[-OOF_MIN_MATURE_SESSION
 assert(walkForward.includes('train_window_days=OOF_TRAIN_SESSIONS') && walkForward.includes('test_window_days=OOF_TEST_SESSIONS'), 'OOF cohort must use the canonical 60/10 purged walk-forward windows')
 assert(walkForward.includes('active8-oof-dispatch-v1') && walkForward.includes('cohort_orchestrator_active'), 'OOF generation must have a durable idempotent dispatch fence')
 assert(
-  walkForward.includes('active8-oof-lifecycle-receipt-v9-post-close-watermark') &&
+  walkForward.includes('active8-oof-lifecycle-receipt-v10-durable-shadow-base') &&
     walkForward.includes('_oof_lifecycle_receipt_matches_active_policy'),
   'materialization/promotion must invalidate stale receipts when the active PIT policy changes',
 )

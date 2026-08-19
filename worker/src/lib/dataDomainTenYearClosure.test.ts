@@ -35,6 +35,37 @@ assert.equal(complete.complete, true)
 assert.equal(complete.claim_allowed, true)
 assert.equal(complete.completed_domains, 7)
 
+const postCutoverParityDrift = buildDataDomainTenYearClosure({
+  activeDomains: DATA_DOMAINS,
+  strictRequested: true,
+  domains: DATA_DOMAINS.map((domain) => domain === 'learning'
+    ? {
+        ...completeDomain(domain),
+        data_ready: false,
+        cutover_ready: false,
+        blockers: ['aggregate_parity_stale_after_evening_chain', 'full_table_parity_incomplete_or_mismatch'],
+        data_blockers: ['aggregate_parity_stale_after_evening_chain', 'full_table_parity_incomplete_or_mismatch'],
+      }
+    : completeDomain(domain)),
+})
+assert.equal(postCutoverParityDrift.complete, true)
+assert.equal(postCutoverParityDrift.completed_domains, 7)
+
+const finalizedContractFailure = buildDataDomainTenYearClosure({
+  activeDomains: DATA_DOMAINS,
+  strictRequested: true,
+  domains: DATA_DOMAINS.map((domain) => domain === 'learning'
+    ? {
+        ...completeDomain(domain),
+        cutover_ready: false,
+        blockers: ['projection_contract_not_closed'],
+        contract_blockers: ['projection_contract_not_closed'],
+      }
+    : completeDomain(domain)),
+})
+assert.equal(finalizedContractFailure.complete, false)
+assert.equal(finalizedContractFailure.completed_domains, 6)
+
 const learningOnly = buildDataDomainTenYearClosure({
   activeDomains: ['learning'],
   strictRequested: true,

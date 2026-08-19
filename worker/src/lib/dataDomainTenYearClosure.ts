@@ -15,7 +15,12 @@ export function buildDataDomainTenYearClosure(input: TenYearDomainClosureInput) 
     const blockers: string[] = []
     if (!active.has(domain)) blockers.push('runtime_route_not_active')
     if (!item) blockers.push('readiness_receipt_missing')
-    if (item && !item.cutover_ready) blockers.push(...item.blockers)
+    const finalized = item?.cutover_status === 'complete' && item.current_writer_state === 'cutover'
+    if (item && !item.cutover_ready) {
+      // Once the CAS receipt is finalized, the domain DB is the writer authority.
+      // Legacy parity is a cutover-time proof and is expected to drift afterward.
+      blockers.push(...(finalized ? item.contract_blockers : item.blockers))
+    }
     if (item?.cutover_status !== 'complete') blockers.push('cutover_status_not_complete')
     if (item?.current_writer_state !== 'cutover') blockers.push('writer_state_not_cutover')
     if (Number(item?.pending_projection_events ?? 0) !== 0) blockers.push('projection_pending_not_zero')

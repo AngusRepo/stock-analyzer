@@ -121,6 +121,25 @@ if [ -n "${CF_ACCOUNT_ID:-}" ]; then
   RUNTIME_ENV_VARS="${RUNTIME_ENV_VARS},CF_ACCOUNT_ID=${CF_ACCOUNT_ID}"
 fi
 
+gcloud_runtime_env_vars() {
+  local comma_placeholder="__STOCKVISION_ACTIVE_DOMAIN_COMMA__"
+  local active_pair="MULTI_D1_ACTIVE_DOMAINS=${MULTI_D1_ACTIVE_DOMAINS}"
+  local encoded_active="${MULTI_D1_ACTIVE_DOMAINS//,/${comma_placeholder}}"
+  local encoded
+  if [[ "$RUNTIME_ENV_VARS" != *"$active_pair"* ]]; then
+    echo "ERROR: active-domain env pair missing from runtime env vars" >&2
+    return 1
+  fi
+  encoded="${RUNTIME_ENV_VARS/${active_pair}/MULTI_D1_ACTIVE_DOMAINS=${encoded_active}}"
+  if [[ "$encoded" == *"@"* ]]; then
+    echo "ERROR: runtime env value contains reserved gcloud delimiter @" >&2
+    return 1
+  fi
+  encoded="${encoded//,/@}"
+  encoded="${encoded//${comma_placeholder}/,}"
+  printf '^@^%s' "$encoded"
+}
+
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 MLC_DIR="$SCRIPT_DIR/ml-controller"
 MLS_DIR="$SCRIPT_DIR/ml-service"
@@ -1048,6 +1067,7 @@ if [ ! -f "$ROOT_DOCKERFILE" ]; then
 fi
 
 run_preflight
+GCLOUD_RUNTIME_ENV_VARS="$(gcloud_runtime_env_vars)"
 if [ "$CHECK_ONLY" = "1" ]; then
   echo "✅ Preflight passed (--check-only). No deploy performed."
   exit 0
@@ -1063,7 +1083,7 @@ if ! gcloud run deploy "$SERVICE" \
     --timeout=3600 \
     --service-account="$SERVICE_RUNTIME_SERVICE_ACCOUNT" \
     --update-labels="$PROVENANCE_LABELS" \
-    --update-env-vars="$RUNTIME_ENV_VARS" \
+    --update-env-vars="$GCLOUD_RUNTIME_ENV_VARS" \
     --update-secrets="$SERVICE_SECRET_BINDINGS" \
     --quiet; then
   echo "❌ Service deploy failed" >&2
@@ -1103,7 +1123,7 @@ if ! gcloud run jobs update "$JOB" \
     --service-account="$JOB_RUNTIME_SERVICE_ACCOUNT" \
     --update-labels="$PROVENANCE_LABELS" \
     --update-secrets="$RUN_SECRET_BINDINGS" \
-    --update-env-vars="$RUNTIME_ENV_VARS"; then
+    --update-env-vars="$GCLOUD_RUNTIME_ENV_VARS"; then
   echo "❌ Job update failed" >&2
   exit 4
 fi

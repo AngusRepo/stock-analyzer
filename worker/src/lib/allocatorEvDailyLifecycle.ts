@@ -254,7 +254,7 @@ export async function inspectAllocatorEvMaturityCoverage(
          AND f.coverage_status = 'verified'
          AND f.promotion_eligible = 0
          AND f.training_dispatched = 0
-         AND f.policy_version = 'verified-frozen-forward-monitoring-v1'
+         AND f.policy_version = 'verified-frozen-forward-monitoring-v2'
          AND f.row_count > 0
          AND f.date_count > 0
          AND date(f.knowledge_cutoff_date) <= date(?)

@@ -839,6 +839,13 @@ def test_forward_shadow_coverage_is_complete_checksum_bound_and_non_promotable()
         "promotion_eligible": False,
         "training_dispatched": False,
     }
+    snapshot_evidence = {
+        "stacker_eligible_by_date": {"2026-07-22": 1, "2026-07-23": 1},
+        "native_matched_by_date": {"2026-07-22": 1, "2026-07-23": 1},
+        "snapshot_rows_by_date": {"2026-07-22": 1, "2026-07-23": 1},
+        "rejected_by_date": {},
+    }
+
     result = persist_verified_oof_forward_coverage(
         cohort_id="cohort-1",
         base_manifest_checksum="a" * 64,
@@ -849,6 +856,7 @@ def test_forward_shadow_coverage_is_complete_checksum_bound_and_non_promotable()
             {"snapshot_date": "2026-07-22"},
             {"snapshot_date": "2026-07-23"},
         ],
+        snapshot_evidence=snapshot_evidence,
         l4_predictions=[
             {"prediction_date": "2026-07-22"},
             {"prediction_date": "2026-07-23"},
@@ -859,6 +867,7 @@ def test_forward_shadow_coverage_is_complete_checksum_bound_and_non_promotable()
     assert result["promotion_eligible"] is False
     assert result["training_dispatched"] is False
     assert len(captured) == 2
+    assert all(sql.count("?") == len(params) for sql, params in captured)
     assert all(row[1][-2] == OOF_FORWARD_COVERAGE_POLICY_VERSION for row in captured)
     assert all("promotion_eligible=0" in row[0] for row in captured)
 
@@ -871,7 +880,96 @@ def test_forward_shadow_coverage_is_complete_checksum_bound_and_non_promotable()
             knowledge_cutoff_date="2026-07-30",
             snapshot_rows=[{"snapshot_date": "2026-07-22"}],
             l4_predictions=[{"prediction_date": "2026-07-22"}],
+            snapshot_evidence=snapshot_evidence,
             batch_fn=lambda *_args, **_kwargs: {"error_count": 0},
+        )
+
+
+def test_forward_shadow_coverage_classifies_missing_native_pit_without_lookahead():
+    import json
+
+    from services.active8_oof_cohort_materializer import (
+        OOF_FORWARD_COVERAGE_POLICY_VERSION,
+        persist_verified_oof_forward_coverage,
+    )
+
+    captured = []
+
+    def batch_fn(statements, **_kwargs):
+        captured.extend(statements)
+        return {"error_count": 0}
+
+    dates = ["2026-08-06", "2026-08-07", "2026-08-10", "2026-08-11"]
+    evaluable = dates[:3]
+    result = persist_verified_oof_forward_coverage(
+        cohort_id="cohort-1",
+        base_manifest_checksum="a" * 64,
+        extension_manifest_path="forward/manifest.json",
+        extension_manifest={
+            "manifest_checksum": "b" * 64,
+            "base_cohort_id": "cohort-1",
+            "base_manifest_checksum": "a" * 64,
+            "dates": dates,
+            "promotion_eligible": False,
+            "training_dispatched": False,
+        },
+        knowledge_cutoff_date="2026-08-19",
+        snapshot_rows=[{"snapshot_date": date} for date in evaluable],
+        snapshot_evidence={
+            "stacker_eligible_by_date": {date: 100 for date in dates},
+            "native_matched_by_date": {
+                "2026-08-06": 90,
+                "2026-08-07": 90,
+                "2026-08-10": 90,
+            },
+            "snapshot_rows_by_date": {date: 90 for date in evaluable},
+            "rejected_by_date": {
+                "2026-08-11": {"native_pit_components_missing": 100},
+            },
+        },
+        l4_predictions=[{"prediction_date": date} for date in evaluable],
+        batch_fn=batch_fn,
+    )
+
+    assert result["status"] == "verified"
+    assert result["date_evaluability"]["evaluable_dates"] == evaluable
+    assert result["date_evaluability"]["not_evaluable"] == [{
+        "date": "2026-08-11",
+        "reason": "missing_native_pit_components",
+        "stacker_eligible_rows": 100,
+        "native_matched_rows": 0,
+    }]
+    assert len(captured) == 2
+    assert all(sql.count("?") == len(params) for sql, params in captured)
+    for _sql, params in captured:
+        assert params[11] == 4
+        assert params[12] == 1
+        eligibility = json.loads(params[13])
+        assert eligibility["evaluable_dates"] == evaluable
+        assert eligibility["not_evaluable"][0]["date"] == "2026-08-11"
+        assert params[-2] == OOF_FORWARD_COVERAGE_POLICY_VERSION
+
+
+def test_forward_shadow_coverage_rejects_unresolved_date_exclusions():
+    from services.active8_oof_cohort_materializer import _classify_forward_evaluability
+
+    with pytest.raises(
+        RuntimeError,
+        match="active8_oof_forward_date_evaluability_unresolved",
+    ):
+        _classify_forward_evaluability(
+            ["2026-08-10", "2026-08-11"],
+            {
+                "stacker_eligible_by_date": {
+                    "2026-08-10": 100,
+                    "2026-08-11": 100,
+                },
+                "native_matched_by_date": {"2026-08-10": 90},
+                "snapshot_rows_by_date": {"2026-08-10": 90},
+                "rejected_by_date": {
+                    "2026-08-11": {"oof_native_score_semantic_mismatch": 100},
+                },
+            },
         )
 
 

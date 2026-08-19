@@ -430,7 +430,7 @@ export async function inspectExpectedReturnLifecycleHealth(
      WHERE current.coverage_status = 'verified'
        AND current.promotion_eligible = 0
        AND current.training_dispatched = 0
-       AND current.policy_version = 'verified-frozen-forward-monitoring-v1'
+       AND current.policy_version = 'verified-frozen-forward-monitoring-v2'
        AND current.knowledge_cutoff_date <= date(?)
        AND current.cohort_id = (
          SELECT candidate.cohort_id

@@ -29,7 +29,7 @@ assert(lifecycle.includes('active8_oof_materialized_artifacts'), 'maturity must 
 assert(lifecycle.includes("a.artifact_kind = 'l4_predictions'"), 'indexed maturity must only count L4 prediction artifacts')
 assert(lifecycle.includes("c.status = 'ready'"), 'indexed maturity must reject non-ready OOF cohorts')
 assert(lifecycle.includes('active8_oof_forward_extension_coverage'), 'maturity must include verified frozen-forward monitoring coverage')
-assert(lifecycle.includes("f.policy_version = 'verified-frozen-forward-monitoring-v1'"), 'shadow maturity must enforce the frozen-forward policy')
+assert(lifecycle.includes("f.policy_version = 'verified-frozen-forward-monitoring-v2'"), 'shadow maturity must enforce the frozen-forward policy')
 assert(lifecycle.includes('ORDER BY a.max_date DESC'), 'base maturity must select by evidence date, not write time')
 assert(lifecycle.includes('indexedL4PitBaseMaxDate'), 'maturity must expose base and effective OOF dates separately')
 assert(lifecycle.includes('Math.max(nativeStrictL4PitRows, indexedL4PitRows)'), 'maturity must not double-count native and indexed L4 evidence')

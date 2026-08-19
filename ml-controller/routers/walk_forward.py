@@ -1509,6 +1509,7 @@ async def materialize_walk_forward_oof(req: OofMaterializeRequest):
                 extension_manifest=forward_extension,
                 knowledge_cutoff_date=req.knowledge_cutoff_date,
                 snapshot_rows=snapshot_rows,
+                snapshot_evidence=snapshot_evidence,
                 l4_predictions=l4_predictions,
                 batch_fn=learning_client.batch_execute,
             )

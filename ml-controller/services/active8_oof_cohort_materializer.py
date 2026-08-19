@@ -47,7 +47,7 @@ OOF_MATERIALIZED_ARTIFACT_KINDS = {
     "allocator_ev_snapshots": "snapshot_date",
     "l4_predictions": "prediction_date",
 }
-OOF_FORWARD_COVERAGE_POLICY_VERSION = "verified-frozen-forward-monitoring-v1"
+OOF_FORWARD_COVERAGE_POLICY_VERSION = "verified-frozen-forward-monitoring-v2"
 EXPECTED_RETURN_SHADOW_EVALUATION_IDENTITY_VERSION = (
     "expected-return-shadow-evaluation-identity-v2"
 )
@@ -833,17 +833,20 @@ def build_oof_snapshot_rows(
     sector_alpha_rows = 0
     snapshots: list[dict[str, Any]] = []
     rejected = defaultdict(int)
+    rejected_by_date: dict[str, Counter[str]] = defaultdict(Counter)
     stacker_eligible_by_date: Counter[str] = Counter()
     native_matched_by_date: Counter[str] = Counter()
     snapshot_rows_by_date: Counter[str] = Counter()
     for stacked in stack_rows:
         if not stacked["eligible_for_efficacy"]:
             rejected["stacker_warmup"] += 1
+            rejected_by_date[stacked["prediction_date"]]["stacker_warmup"] += 1
             continue
         stacker_eligible_by_date[stacked["prediction_date"]] += 1
         native = native_by_key.get((stacked["prediction_date"], stacked["symbol"]))
         if native is None:
             rejected["native_pit_components_missing"] += 1
+            rejected_by_date[stacked["prediction_date"]]["native_pit_components_missing"] += 1
             continue
         native_matched_by_date[stacked["prediction_date"]] += 1
         try:
@@ -862,12 +865,14 @@ def build_oof_snapshot_rows(
                 fundamental_pit_rows += 1
         except ValueError as exc:
             rejected[str(exc)] += 1
+            rejected_by_date[stacked["prediction_date"]][str(exc)] += 1
             continue
         versions = dict(stacked["artifact_versions"])
         contributors = [name for name in ACTIVE8_MODELS if name in versions]
         signature = build_model_set_signature(versions, contributors)
         if signature is None:
             rejected["model_set_signature_invalid"] += 1
+            rejected_by_date[stacked["prediction_date"]]["model_set_signature_invalid"] += 1
             continue
         forecast = _loads(native.get("forecast_data"))
         forecast["ensemble_v2"] = {
@@ -943,6 +948,10 @@ def build_oof_snapshot_rows(
         "sector_alpha_rows": sector_alpha_rows,
         "sector_alpha_coverage": round(sector_alpha_rows / max(1, len(snapshots)), 6),
         "rejected": dict(sorted(rejected.items())),
+        "rejected_by_date": {
+            date: dict(sorted(reasons.items()))
+            for date, reasons in sorted(rejected_by_date.items())
+        },
         "stacker_eligible_by_date": dict(sorted(stacker_eligible_by_date.items())),
         "native_matched_by_date": dict(sorted(native_matched_by_date.items())),
         "snapshot_rows_by_date": dict(sorted(snapshot_rows_by_date.items())),
@@ -1324,6 +1333,81 @@ def persist_l4_oof_predictions(
     return {"status": "ready", "rows": len(predictions), "result": result}
 
 
+def _classify_forward_evaluability(
+    expected_dates: list[str],
+    snapshot_evidence: dict[str, Any],
+) -> dict[str, Any]:
+    """Classify every mature extension date without fabricating missing PIT inputs."""
+
+    stacker_by_date = {
+        str(date)[:10]: int(count or 0)
+        for date, count in dict(snapshot_evidence.get("stacker_eligible_by_date") or {}).items()
+    }
+    native_by_date = {
+        str(date)[:10]: int(count or 0)
+        for date, count in dict(snapshot_evidence.get("native_matched_by_date") or {}).items()
+    }
+    snapshots_by_date = {
+        str(date)[:10]: int(count or 0)
+        for date, count in dict(snapshot_evidence.get("snapshot_rows_by_date") or {}).items()
+    }
+    rejected_by_date = {
+        str(date)[:10]: {
+            str(reason): int(count or 0)
+            for reason, count in dict(reasons or {}).items()
+        }
+        for date, reasons in dict(snapshot_evidence.get("rejected_by_date") or {}).items()
+    }
+
+    evaluable_dates: list[str] = []
+    not_evaluable: list[dict[str, Any]] = []
+    unresolved: list[dict[str, Any]] = []
+    for date in expected_dates:
+        snapshot_count = snapshots_by_date.get(date, 0)
+        stacker_count = stacker_by_date.get(date, 0)
+        native_count = native_by_date.get(date, 0)
+        rejected = rejected_by_date.get(date, {})
+        if snapshot_count > 0:
+            evaluable_dates.append(date)
+            continue
+        if (
+            stacker_count > 0
+            and native_count == 0
+            and rejected == {"native_pit_components_missing": stacker_count}
+        ):
+            not_evaluable.append({
+                "date": date,
+                "reason": "missing_native_pit_components",
+                "stacker_eligible_rows": stacker_count,
+                "native_matched_rows": 0,
+            })
+            continue
+        unresolved.append({
+            "date": date,
+            "stacker_eligible_rows": stacker_count,
+            "native_matched_rows": native_count,
+            "snapshot_rows": snapshot_count,
+            "rejected": rejected,
+        })
+
+    if not evaluable_dates or unresolved:
+        raise RuntimeError(
+            "active8_oof_forward_date_evaluability_unresolved:"
+            + json.dumps({
+                "expected_dates": expected_dates,
+                "evaluable_dates": evaluable_dates,
+                "not_evaluable": not_evaluable,
+                "unresolved": unresolved,
+            }, sort_keys=True)
+        )
+    return {
+        "schema_version": "active8-oof-forward-date-evaluability-v1",
+        "expected_dates": expected_dates,
+        "evaluable_dates": evaluable_dates,
+        "not_evaluable": not_evaluable,
+    }
+
+
 def persist_verified_oof_forward_coverage(
     *,
     cohort_id: str,
@@ -1332,6 +1416,7 @@ def persist_verified_oof_forward_coverage(
     extension_manifest: dict[str, Any],
     knowledge_cutoff_date: str,
     snapshot_rows: list[dict[str, Any]],
+    snapshot_evidence: dict[str, Any],
     l4_predictions: list[dict[str, Any]],
     batch_fn: Callable[..., dict[str, Any]] = d1_client.batch_execute,
 ) -> dict[str, Any]:
@@ -1355,6 +1440,11 @@ def persist_verified_oof_forward_coverage(
     ):
         raise ValueError("active8_oof_forward_coverage_contract_invalid")
 
+    evaluability = _classify_forward_evaluability(expected_dates, snapshot_evidence)
+    evaluable_dates = list(evaluability["evaluable_dates"])
+    not_evaluable = list(evaluability["not_evaluable"])
+    eligibility_json = json.dumps(evaluability, sort_keys=True, separators=(",", ":"))
+
     rows_by_kind = {
         "allocator_ev_snapshots": (snapshot_rows, "snapshot_date"),
         "l4_predictions": (l4_predictions, "prediction_date"),
@@ -1364,9 +1454,10 @@ def persist_verified_oof_forward_coverage(
           cohort_id, extension_manifest_checksum, artifact_kind,
           base_manifest_checksum, extension_manifest_path, knowledge_cutoff_date,
           min_date, max_date, date_count, row_count, date_checksum,
-          coverage_status, promotion_eligible, training_dispatched,
-          policy_version, verified_at, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0, ?,
+          expected_date_count, not_evaluable_date_count, date_eligibility_json,
+          coverage_status, promotion_eligible, training_dispatched, policy_version,
+          verified_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0, ?,
                   CASE WHEN ? = 'verified' THEN CURRENT_TIMESTAMP ELSE NULL END,
                   CURRENT_TIMESTAMP)
         ON CONFLICT(cohort_id, extension_manifest_checksum, artifact_kind)
@@ -1379,6 +1470,9 @@ def persist_verified_oof_forward_coverage(
           date_count=excluded.date_count,
           row_count=excluded.row_count,
           date_checksum=excluded.date_checksum,
+          expected_date_count=excluded.expected_date_count,
+          not_evaluable_date_count=excluded.not_evaluable_date_count,
+          date_eligibility_json=excluded.date_eligibility_json,
           coverage_status=excluded.coverage_status,
           promotion_eligible=0,
           training_dispatched=0,
@@ -1392,24 +1486,25 @@ def persist_verified_oof_forward_coverage(
     for artifact_kind, (rows, date_field) in rows_by_kind.items():
         extension_rows = [
             row for row in rows
-            if str(row.get(date_field) or "")[:10] in expected_dates
+            if str(row.get(date_field) or "")[:10] in evaluable_dates
         ]
         actual_dates = sorted({
             str(row.get(date_field) or "")[:10]
             for row in extension_rows
             if str(row.get(date_field) or "")[:10]
         })
-        status = "verified" if actual_dates == expected_dates and extension_rows else "partial"
+        status = "verified" if actual_dates == evaluable_dates and extension_rows else "partial"
         all_verified = all_verified and status == "verified"
         date_checksum = hashlib.sha256(
             json.dumps(actual_dates, separators=(",", ":")).encode("utf-8")
         ).hexdigest()
-        min_date = actual_dates[0] if actual_dates else expected_dates[0]
-        max_date = actual_dates[-1] if actual_dates else expected_dates[0]
+        min_date = actual_dates[0] if actual_dates else evaluable_dates[0]
+        max_date = actual_dates[-1] if actual_dates else evaluable_dates[0]
         statements.append((sql, [
             cohort_id, extension_checksum, artifact_kind,
             base_manifest_checksum, extension_manifest_path, knowledge_cutoff_date,
             min_date, max_date, len(actual_dates), len(extension_rows), date_checksum,
+            len(expected_dates), len(not_evaluable), eligibility_json,
             status, OOF_FORWARD_COVERAGE_POLICY_VERSION, status,
         ]))
         evidence[artifact_kind] = {
@@ -1419,6 +1514,8 @@ def persist_verified_oof_forward_coverage(
             "min_date": min_date,
             "max_date": max_date,
             "date_checksum": date_checksum,
+            "expected_dates": len(expected_dates),
+            "not_evaluable_dates": len(not_evaluable),
         }
 
     result = batch_fn(statements, timeout=30.0, chunk_size=2)
@@ -1434,6 +1531,7 @@ def persist_verified_oof_forward_coverage(
         "promotion_eligible": False,
         "training_dispatched": False,
         "extension_manifest_checksum": extension_checksum,
+        "date_evaluability": evaluability,
         "artifacts": evidence,
     }
 

@@ -104,7 +104,7 @@ class_name = "StrategyDiscoveryWorkflow"
 
 [vars]
 ENVIRONMENT = "production"
-MULTI_D1_ACTIVE_DOMAINS = "learning"
+MULTI_D1_ACTIVE_DOMAINS = "learning,execution"
 MULTI_D1_STRICT = "true"
 PAGES_ORIGIN = "https://stockvision-frontend.pages.dev"
 FINLAB_L5_MARKET_DATA_ENABLED = "1"

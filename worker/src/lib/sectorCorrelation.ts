@@ -1,311 +1,227 @@
-/**
- * #16 Sector leader correlation (dannyquant_tw 啟發, 2026-04-21)
- *
- * Weekly cron → computeSectorLeaders(): per sector, rank stocks by 60d avg
- *   turnover (close*volume), keep top 3, upsert sector_leaders table.
- *
- * Screener integration → sectorLeaderBonus(symbol, sector): compute 60d return
- *   correlation between candidate and its sector leaders (top 3), bonus when
- *   avg(corr) > threshold (KV-driven default 0.7).
- *
- * Rationale: 族群連動 is a persistent TW market edge (ETF/基金 tend to rotate
- *   sector-wide). Candidates correlated with sector leaders ride the same flow;
- *   uncorrelated candidates are either idiosyncratic plays or laggards.
- */
+import type { Bindings } from '../types'
+import { databaseForDataDomain } from './dataDomainRegistry'
+import { loadActiveCoreStockIdentities, loadMarketPriceHistoryBySymbols } from './stockIdentityMarketBridge'
 
 const LOOKBACK_DAYS_TURNOVER = 60
 const LOOKBACK_DAYS_CORR = 60
 const D1_IN_CHUNK_SIZE = 40
 
-function chunks<T>(items: T[], size = D1_IN_CHUNK_SIZE): T[][] {
-  const out: T[][] = []
-  for (let i = 0; i < items.length; i += size) out.push(items.slice(i, i + size))
-  return out
+type DomainEnv = Pick<Bindings, 'DB'> & Partial<Bindings>
+
+type LeaderRow = {
+  sector: string
+  stock_id: number
+  symbol: string
+  avg_turnover: number
+  rank: number
 }
 
-/**
- * Compute top-3 stocks per sector by 60d avg turnover (close*volume).
- * Skips sectors with fewer than 3 stocks with sufficient data.
- */
-export async function computeSectorLeaders(db: D1Database): Promise<{
-  sectorCount: number
-  leaderCount: number
-}> {
-  const now = new Date().toISOString()
-
-  const { results } = await db.prepare(`
-    WITH sector_avg AS (
-      SELECT s.sector, s.id AS stock_id, s.symbol,
-             AVG(sp.close * sp.volume) AS avg_turnover
-      FROM stocks s
-      JOIN stock_prices sp ON sp.stock_id = s.id
-      WHERE s.sector IS NOT NULL AND s.sector != ''
-        AND sp.date >= date('now', '-${LOOKBACK_DAYS_TURNOVER * 2} days')
-        AND sp.close IS NOT NULL AND sp.volume IS NOT NULL AND sp.volume > 0
-      GROUP BY s.sector, s.id, s.symbol
-      HAVING COUNT(*) >= 30
-    ),
-    ranked AS (
-      SELECT sector, stock_id, symbol, avg_turnover,
-             ROW_NUMBER() OVER (PARTITION BY sector ORDER BY avg_turnover DESC) AS rnk
-      FROM sector_avg
-    )
-    SELECT sector, stock_id, symbol, avg_turnover, rnk
-    FROM ranked WHERE rnk <= 3
-    ORDER BY sector, rnk
-  `).all<{ sector: string; stock_id: number; symbol: string; avg_turnover: number; rnk: number }>()
-
-  const rows = results ?? []
-  if (!rows.length) {
-    console.warn('[SectorLeaders] compute produced 0 rows')
-    return { sectorCount: 0, leaderCount: 0 }
-  }
-
-  await db.prepare('DELETE FROM sector_leaders').run()
-  const batch = rows.map(r => db.prepare(
-    `INSERT INTO sector_leaders (sector, rank, stock_id, symbol, avg_turnover_60d, computed_at)
-     VALUES (?, ?, ?, ?, ?, ?)`
-  ).bind(r.sector, r.rnk, r.stock_id, r.symbol, r.avg_turnover, now))
-  for (let b = 0; b < batch.length; b += 50) {
-    await db.batch(batch.slice(b, b + 50))
-  }
-
-  const sectors = new Set(rows.map(r => r.sector)).size
-  console.log(`[SectorLeaders] computed ${rows.length} leaders across ${sectors} sectors`)
-  return { sectorCount: sectors, leaderCount: rows.length }
+function chunks<T>(items: T[], size = D1_IN_CHUNK_SIZE): T[][] {
+  const output: T[][] = []
+  for (let offset = 0; offset < items.length; offset += size) output.push(items.slice(offset, offset + size))
+  return output
 }
 
 async function loadSectorLeaderRows(
-  db: D1Database,
+  env: DomainEnv,
   sectors: string[],
 ): Promise<Array<{ sector: string; symbol: string }>> {
-  if (!sectors.length) return []
+  const marketDb = databaseForDataDomain(env, 'market')
   const rows: Array<{ sector: string; symbol: string }> = []
   for (const chunk of chunks([...new Set(sectors.filter(Boolean))])) {
-    const sectorPh = chunk.map(() => '?').join(',')
-    const { results } = await db.prepare(
-      `SELECT sector, symbol
-         FROM sector_leaders
-        WHERE sector IN (${sectorPh})
-        ORDER BY sector, rank`
-    ).bind(...chunk).all<{ sector: string; symbol: string }>()
-    rows.push(...(results ?? []))
+    const marks = chunk.map(() => '?').join(',')
+    const result = await marketDb.prepare(`
+      SELECT sector, symbol FROM sector_leaders
+       WHERE sector IN (${marks}) ORDER BY sector, rank
+    `).bind(...chunk).all<{ sector: string; symbol: string }>()
+    rows.push(...(result.results ?? []))
   }
   return rows
 }
 
-export async function ensureSectorLeadersForScreener(
-  db: D1Database,
-  sectors: string[],
-): Promise<{ refreshed: boolean; sectorCount: number; leaderCount: number }> {
-  const uniqueSectors = [...new Set(sectors.filter(Boolean))]
-  if (!uniqueSectors.length) return { refreshed: false, sectorCount: 0, leaderCount: 0 }
-
-  const existingRows = await loadSectorLeaderRows(db, uniqueSectors)
-  if (existingRows.length > 0) {
-    return {
-      refreshed: false,
-      sectorCount: new Set(existingRows.map(row => row.sector)).size,
-      leaderCount: existingRows.length,
-    }
+export async function computeSectorLeaders(env: DomainEnv): Promise<{
+  sectorCount: number
+  leaderCount: number
+}> {
+  const identities = await loadActiveCoreStockIdentities(env)
+  const eligible = [...identities.values()].filter((row) => String(row.sector ?? '').trim())
+  const prices = await loadMarketPriceHistoryBySymbols(env, eligible.map((row) => row.symbol), {
+    rowsPerSymbol: LOOKBACK_DAYS_TURNOVER * 2,
+  })
+  const bySymbol = new Map<string, Array<{ close: number; volume: number }>>()
+  for (const row of prices) {
+    const close = Number(row.close)
+    const volume = Number(row.volume)
+    if (!Number.isFinite(close) || !Number.isFinite(volume) || volume <= 0) continue
+    const series = bySymbol.get(row.symbol) ?? []
+    series.push({ close, volume })
+    bySymbol.set(row.symbol, series)
   }
 
-  const computed = await computeSectorLeaders(db)
+  const bySector = new Map<string, LeaderRow[]>()
+  for (const identity of eligible) {
+    const series = bySymbol.get(identity.symbol) ?? []
+    if (series.length < 30) continue
+    const avgTurnover = series.reduce((sum, row) => sum + row.close * row.volume, 0) / series.length
+    const sector = String(identity.sector)
+    const rows = bySector.get(sector) ?? []
+    rows.push({ sector, stock_id: identity.id, symbol: identity.symbol, avg_turnover: avgTurnover, rank: 0 })
+    bySector.set(sector, rows)
+  }
+
+  const leaders: LeaderRow[] = []
+  for (const rows of bySector.values()) {
+    rows.sort((a, b) => b.avg_turnover - a.avg_turnover)
+    leaders.push(...rows.slice(0, 3).map((row, index) => ({ ...row, rank: index + 1 })))
+  }
+  if (!leaders.length) return { sectorCount: 0, leaderCount: 0 }
+
+  const marketDb = databaseForDataDomain(env, 'market')
+  await marketDb.prepare('DELETE FROM sector_leaders').run()
+  const now = new Date().toISOString()
+  const statements = leaders.map((row) => marketDb.prepare(`
+    INSERT INTO sector_leaders (sector, rank, stock_id, symbol, avg_turnover_60d, computed_at)
+    VALUES (?, ?, ?, ?, ?, ?)
+  `).bind(row.sector, row.rank, row.stock_id, row.symbol, row.avg_turnover, now))
+  for (const batch of chunks(statements, 50)) await marketDb.batch(batch)
+  return { sectorCount: new Set(leaders.map((row) => row.sector)).size, leaderCount: leaders.length }
+}
+
+export async function ensureSectorLeadersForScreener(
+  env: DomainEnv,
+  sectors: string[],
+): Promise<{ refreshed: boolean; sectorCount: number; leaderCount: number }> {
+  const unique = [...new Set(sectors.filter(Boolean))]
+  if (!unique.length) return { refreshed: false, sectorCount: 0, leaderCount: 0 }
+  const existing = await loadSectorLeaderRows(env, unique)
+  if (existing.length) {
+    return {
+      refreshed: false,
+      sectorCount: new Set(existing.map((row) => row.sector)).size,
+      leaderCount: existing.length,
+    }
+  }
+  const computed = await computeSectorLeaders(env)
   return { refreshed: true, ...computed }
 }
 
-/**
- * Pearson correlation of two numeric arrays (assumes aligned, no NaN).
- */
 function pearson(a: number[], b: number[]): number {
   const n = Math.min(a.length, b.length)
   if (n < 10) return 0
-  let sa = 0, sb = 0
-  for (let i = 0; i < n; i++) { sa += a[i]; sb += b[i] }
-  const ma = sa / n, mb = sb / n
-  let num = 0, da = 0, dbb = 0
-  for (let i = 0; i < n; i++) {
-    const xa = a[i] - ma, xb = b[i] - mb
-    num += xa * xb; da += xa * xa; dbb += xb * xb
+  const meanA = a.slice(0, n).reduce((sum, value) => sum + value, 0) / n
+  const meanB = b.slice(0, n).reduce((sum, value) => sum + value, 0) / n
+  let numerator = 0
+  let sumA = 0
+  let sumB = 0
+  for (let index = 0; index < n; index++) {
+    const da = a[index] - meanA
+    const db = b[index] - meanB
+    numerator += da * db
+    sumA += da * da
+    sumB += db * db
   }
-  const den = Math.sqrt(da * dbb)
-  return den === 0 ? 0 : num / den
+  const denominator = Math.sqrt(sumA * sumB)
+  return denominator === 0 ? 0 : numerator / denominator
 }
 
-/**
- * Compute sector-leader correlation bonus for one candidate.
- * Returns bonus points if avg corr with sector leaders > threshold, else 0.
- * Graceful-degrade: missing sector / no leaders / insufficient price rows → 0.
- */
+function returnSeries(rows: Array<{ date: string; close: number }>): Map<string, number> {
+  const sorted = [...rows].sort((a, b) => a.date.localeCompare(b.date))
+  const output = new Map<string, number>()
+  for (let index = 1; index < sorted.length; index++) {
+    const previous = sorted[index - 1].close
+    if (previous > 0) output.set(sorted[index].date, (sorted[index].close - previous) / previous)
+  }
+  return output
+}
+
 export async function sectorLeaderBonus(
-  db: D1Database,
+  env: DomainEnv,
   candidateSymbol: string,
   candidateSector: string | null,
   corrThreshold: number,
   bonusPoints: number,
 ): Promise<{ bonus: number; avgCorr: number | null; leaderCount: number }> {
-  if (!candidateSector) return { bonus: 0, avgCorr: null, leaderCount: 0 }
-
-  const { results: leaders } = await db.prepare(
-    'SELECT symbol FROM sector_leaders WHERE sector = ? AND symbol != ? ORDER BY rank LIMIT 3'
-  ).bind(candidateSector, candidateSymbol).all<{ symbol: string }>()
-  if (!leaders?.length) return { bonus: 0, avgCorr: null, leaderCount: 0 }
-
-  const allSymbols = [candidateSymbol, ...leaders.map(l => l.symbol)]
-  const placeholders = allSymbols.map(() => '?').join(',')
-  const { results: priceRows } = await db.prepare(
-    `SELECT s.symbol, sp.date, sp.close
-     FROM stock_prices sp
-     JOIN stocks s ON sp.stock_id = s.id
-     WHERE s.symbol IN (${placeholders})
-       AND sp.date >= date('now', '-${LOOKBACK_DAYS_CORR * 2} days')
-       AND sp.close IS NOT NULL
-     ORDER BY s.symbol, sp.date`
-  ).bind(...allSymbols).all<{ symbol: string; date: string; close: number }>()
-
-  const seriesBySymbol = new Map<string, { date: string; close: number }[]>()
-  for (const row of priceRows ?? []) {
-    if (!seriesBySymbol.has(row.symbol)) seriesBySymbol.set(row.symbol, [])
-    seriesBySymbol.get(row.symbol)!.push({ date: row.date, close: row.close })
-  }
-
-  const candSeries = seriesBySymbol.get(candidateSymbol)
-  if (!candSeries || candSeries.length < LOOKBACK_DAYS_CORR) {
-    return { bonus: 0, avgCorr: null, leaderCount: leaders.length }
-  }
-
-  const toReturns = (series: { date: string; close: number }[]): Map<string, number> => {
-    const m = new Map<string, number>()
-    for (let i = 1; i < series.length; i++) {
-      const r = (series[i].close - series[i - 1].close) / series[i - 1].close
-      m.set(series[i].date, r)
-    }
-    return m
-  }
-
-  const candRet = toReturns(candSeries)
-  const corrs: number[] = []
-  for (const ldr of leaders) {
-    const lSeries = seriesBySymbol.get(ldr.symbol)
-    if (!lSeries || lSeries.length < LOOKBACK_DAYS_CORR) continue
-    const lRet = toReturns(lSeries)
-    const a: number[] = [], b: number[] = []
-    for (const [date, rv] of candRet) {
-      const lv = lRet.get(date)
-      if (lv !== undefined) { a.push(rv); b.push(lv) }
-    }
-    const c = pearson(a, b)
-    if (Number.isFinite(c)) corrs.push(c)
-  }
-  if (!corrs.length) return { bonus: 0, avgCorr: null, leaderCount: leaders.length }
-
-  const avgCorr = corrs.reduce((s, x) => s + x, 0) / corrs.length
-  const bonus = avgCorr > corrThreshold ? bonusPoints : 0
-  return { bonus, avgCorr, leaderCount: leaders.length }
+  const result = await sectorLeaderBonusBatch(
+    env,
+    [{ symbol: candidateSymbol, sector: candidateSector }],
+    corrThreshold,
+    bonusPoints,
+  )
+  return result.get(candidateSymbol) ?? { bonus: 0, avgCorr: null, leaderCount: 0 }
 }
 
 export async function sectorLeaderBonusBatch(
-  db: D1Database,
+  env: DomainEnv,
   candidates: Array<{ symbol: string; sector?: string | null }>,
   corrThreshold: number,
   bonusPoints: number,
 ): Promise<Map<string, { bonus: number; avgCorr: number | null; leaderCount: number }>> {
   const output = new Map<string, { bonus: number; avgCorr: number | null; leaderCount: number }>()
-  const cleanCandidates = candidates
-    .map(c => ({ symbol: String(c.symbol || '').trim(), sector: c.sector || null }))
-    .filter(c => c.symbol)
-  for (const c of cleanCandidates) output.set(c.symbol, { bonus: 0, avgCorr: null, leaderCount: 0 })
-  const sectors = [...new Set(cleanCandidates.map(c => c.sector).filter(Boolean) as string[])]
-  if (!cleanCandidates.length || !sectors.length) return output
+  const clean = candidates
+    .map((row) => ({ symbol: String(row.symbol ?? '').trim(), sector: row.sector ?? null }))
+    .filter((row) => row.symbol)
+  for (const row of clean) output.set(row.symbol, { bonus: 0, avgCorr: null, leaderCount: 0 })
+  const sectors = [...new Set(clean.map((row) => row.sector).filter(Boolean) as string[])]
+  if (!clean.length || !sectors.length) return output
 
-  let leaderRows = await loadSectorLeaderRows(db, sectors)
+  let leaderRows = await loadSectorLeaderRows(env, sectors)
   if (!leaderRows.length) {
-    const refresh = await ensureSectorLeadersForScreener(db, sectors)
-    if (refresh.leaderCount > 0) {
-      leaderRows = await loadSectorLeaderRows(db, sectors)
-    }
+    const refresh = await ensureSectorLeadersForScreener(env, sectors)
+    if (refresh.leaderCount > 0) leaderRows = await loadSectorLeaderRows(env, sectors)
   }
-
   const leadersBySector = new Map<string, string[]>()
   for (const row of leaderRows) {
-    if (!leadersBySector.has(row.sector)) leadersBySector.set(row.sector, [])
-    const leaders = leadersBySector.get(row.sector)!
+    const leaders = leadersBySector.get(row.sector) ?? []
     if (leaders.length < 3) leaders.push(row.symbol)
+    leadersBySector.set(row.sector, leaders)
   }
 
-  const symbols = new Set(cleanCandidates.map(c => c.symbol))
-  for (const leaders of leadersBySector.values()) {
-    for (const symbol of leaders) symbols.add(symbol)
+  const symbols = new Set(clean.map((row) => row.symbol))
+  for (const leaders of leadersBySector.values()) for (const symbol of leaders) symbols.add(symbol)
+  const prices = await loadMarketPriceHistoryBySymbols(env, [...symbols], { rowsPerSymbol: LOOKBACK_DAYS_CORR * 2 })
+  const seriesBySymbol = new Map<string, Array<{ date: string; close: number }>>()
+  for (const row of prices) {
+    const close = Number(row.close)
+    if (!Number.isFinite(close) || close <= 0) continue
+    const series = seriesBySymbol.get(row.symbol) ?? []
+    series.push({ date: row.date, close })
+    seriesBySymbol.set(row.symbol, series)
   }
-  const allSymbols = [...symbols]
-  if (!allSymbols.length) return output
+  const returnsBySymbol = new Map([...seriesBySymbol].map(([symbol, rows]) => [symbol, returnSeries(rows)]))
 
-  const priceRows: Array<{ symbol: string; date: string; close: number }> = []
-  for (const chunk of chunks(allSymbols)) {
-    const symbolPh = chunk.map(() => '?').join(',')
-    const { results } = await db.prepare(
-      `SELECT s.symbol, sp.date, sp.close
-         FROM stock_prices sp
-         JOIN stocks s ON sp.stock_id = s.id
-        WHERE s.symbol IN (${symbolPh})
-          AND sp.date >= date('now', '-${LOOKBACK_DAYS_CORR * 2} days')
-          AND sp.close IS NOT NULL
-        ORDER BY s.symbol, sp.date`
-    ).bind(...chunk).all<{ symbol: string; date: string; close: number }>()
-    priceRows.push(...(results ?? []))
-  }
-
-  const seriesBySymbol = new Map<string, { date: string; close: number }[]>()
-  for (const row of priceRows) {
-    if (!seriesBySymbol.has(row.symbol)) seriesBySymbol.set(row.symbol, [])
-    seriesBySymbol.get(row.symbol)!.push({ date: row.date, close: row.close })
-  }
-  const returnsBySymbol = new Map<string, Map<string, number>>()
-  const toReturns = (series: { date: string; close: number }[]): Map<string, number> => {
-    const cached = new Map<string, number>()
-    for (let i = 1; i < series.length; i++) {
-      const prev = series[i - 1].close
-      if (prev > 0) cached.set(series[i].date, (series[i].close - prev) / prev)
-    }
-    return cached
-  }
-  for (const [symbol, series] of seriesBySymbol) {
-    returnsBySymbol.set(symbol, toReturns(series))
-  }
-
-  for (const candidate of cleanCandidates) {
+  for (const candidate of clean) {
     if (!candidate.sector) continue
-    const leaders = (leadersBySector.get(candidate.sector) ?? []).filter(symbol => symbol !== candidate.symbol).slice(0, 3)
-    if (!leaders.length) continue
-    const candSeries = seriesBySymbol.get(candidate.symbol)
-    if (!candSeries || candSeries.length < LOOKBACK_DAYS_CORR) {
+    const leaders = (leadersBySector.get(candidate.sector) ?? [])
+      .filter((symbol) => symbol !== candidate.symbol)
+      .slice(0, 3)
+    const candidateRows = seriesBySymbol.get(candidate.symbol) ?? []
+    if (!leaders.length || candidateRows.length < LOOKBACK_DAYS_CORR) {
       output.set(candidate.symbol, { bonus: 0, avgCorr: null, leaderCount: leaders.length })
       continue
     }
-    const candRet = returnsBySymbol.get(candidate.symbol)
-    if (!candRet) continue
-    const corrs: number[] = []
+    const candidateReturns = returnsBySymbol.get(candidate.symbol) ?? new Map<string, number>()
+    const correlations: number[] = []
     for (const leader of leaders) {
-      const leaderSeries = seriesBySymbol.get(leader)
-      const leaderRet = returnsBySymbol.get(leader)
-      if (!leaderSeries || leaderSeries.length < LOOKBACK_DAYS_CORR || !leaderRet) continue
+      const leaderRowsForSymbol = seriesBySymbol.get(leader) ?? []
+      if (leaderRowsForSymbol.length < LOOKBACK_DAYS_CORR) continue
+      const leaderReturns = returnsBySymbol.get(leader) ?? new Map<string, number>()
       const a: number[] = []
       const b: number[] = []
-      for (const [date, rv] of candRet) {
-        const lv = leaderRet.get(date)
-        if (lv !== undefined) {
-          a.push(rv)
-          b.push(lv)
+      for (const [date, value] of candidateReturns) {
+        const peer = leaderReturns.get(date)
+        if (peer != null) {
+          a.push(value)
+          b.push(peer)
         }
       }
-      const corr = pearson(a, b)
-      if (Number.isFinite(corr)) corrs.push(corr)
+      const correlation = pearson(a, b)
+      if (Number.isFinite(correlation)) correlations.push(correlation)
     }
-    if (!corrs.length) {
+    if (!correlations.length) {
       output.set(candidate.symbol, { bonus: 0, avgCorr: null, leaderCount: leaders.length })
       continue
     }
-    const avgCorr = corrs.reduce((sum, value) => sum + value, 0) / corrs.length
+    const avgCorr = correlations.reduce((sum, value) => sum + value, 0) / correlations.length
     output.set(candidate.symbol, {
       bonus: avgCorr > corrThreshold ? bonusPoints : 0,
       avgCorr,

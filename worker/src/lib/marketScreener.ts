@@ -11,6 +11,10 @@
 
 import type { Bindings } from '../types'
 import { databaseForDataDomain } from './dataDomainRegistry'
+import {
+  loadCoreStockIdentitiesBySymbols,
+  loadMarketPriceHistoryBySymbols,
+} from './stockIdentityMarketBridge'
 import { getTradingConfig, type TradingConfig } from './tradingConfig'
 import { buildScreenerSeedRow, buildScreenerSeedUpsertSql } from './screenerSeedQuality'
 import { hasPositiveStrategyAllocation } from './strategyProductionPolicyStore'
@@ -1152,7 +1156,7 @@ async function getSectorMapping(env: Bindings): Promise<SectorMap> {
   if (cached) return cached
 
   // D1 stocks 銵剁?sector 撌脩 TWSE opendata ??screener ????憛怠嚗?
-  const { results: dbStocks } = await env.DB.prepare(
+  const { results: dbStocks } = await databaseForDataDomain(env, 'core').prepare(
     "SELECT symbol, name, sector, market FROM stocks WHERE sector IS NOT NULL AND sector != ''"
   ).all<{ symbol: string; name: string; sector: string; market?: string }>()
   const map: SectorMap = {}
@@ -1555,7 +1559,7 @@ async function loadStrategyRawFundamentalSignals(
     const canonicalColumns = RAW_FUNDAMENTAL_FIELDS.map(([, column]) => column).join(', ')
     const nonNullPredicate = RAW_FUNDAMENTAL_FIELDS.map(([, column]) => `${column} IS NOT NULL`).join(' OR ')
     try {
-      const { results } = await env.DB.prepare(`
+      const { results } = await databaseForDataDomain(env, 'market').prepare(`
         SELECT stock_id AS symbol,
                available_date,
                period,
@@ -1620,7 +1624,7 @@ async function loadStrategyRawFundamentalSignals(
 
     if (monthlyRevenue.queryAllowed) {
     try {
-      const { results } = await env.DB.prepare(`
+      const { results } = await databaseForDataDomain(env, 'market').prepare(`
         SELECT r.stock_id AS symbol, r.yoy, r.mom
           FROM canonical_revenue_monthly r
          WHERE r.stock_id IN (${placeholders})
@@ -1675,7 +1679,7 @@ async function loadStrategyRawSectorRotationSignals(
 
   let advanceRatio: number | null = null
   try {
-    const row = await env.DB.prepare(
+    const row = await databaseForDataDomain(env, 'market').prepare(
       'SELECT advance_ratio FROM market_breadth WHERE date <= ? ORDER BY date DESC LIMIT 1',
     ).bind(endDate).first<{ advance_ratio: number | null }>()
     advanceRatio = finiteOrNull(row?.advance_ratio)
@@ -1685,7 +1689,7 @@ async function loadStrategyRawSectorRotationSignals(
 
   let usSentimentScore: number | null = null
   try {
-    const row = await env.DB.prepare(
+    const row = await databaseForDataDomain(env, 'market').prepare(
       'SELECT sentiment FROM us_market_signals WHERE date <= ? ORDER BY date DESC LIMIT 1',
     ).bind(endDate).first<{ sentiment: string | null }>()
     const sentiment = String(row?.sentiment ?? '').toLowerCase()
@@ -1708,7 +1712,7 @@ async function loadStrategyRawSectorRotationSignals(
   for (const chunk of chunkArray(uniqueSymbols, D1_IN_CHUNK_SIZE)) {
     const placeholders = chunk.map(() => '?').join(',')
     try {
-      const { results } = await env.DB.prepare(`
+      const { results } = await databaseForDataDomain(env, 'market').prepare(`
         SELECT s.symbol,
                MAX(COALESCE(s.net_amount, 0)) AS sector_net_amount,
                MAX(CASE WHEN s.classification = 'top' THEN 1 ELSE 0 END) AS sector_flow_core,
@@ -3335,14 +3339,14 @@ export async function runBottomUpScreener(env: Bindings, runDate?: string | null
   let conceptEvidenceBreakdown = new Map<string, Record<string, number>>()
 
   try {
-    const buzzKeywords = await loadBuzzKeywords(env.DB, env.KV).catch(() => undefined)
+    const buzzKeywords = await loadBuzzKeywords(env, env.KV).catch(() => undefined)
 
     const [marketData, pttBuzz, newsBuzz, anueBuzz, runtimeThemeSignals] = await Promise.all([
       loadMarketDataFromD1(env, STOCK_TECHNICAL_HISTORY_PRICE_DAYS, 5, endDate),
       detectPttBuzz(buzzKeywords).catch(() => [] as BuzzResult),
-      detectNewsBuzz(env.DB, buzzKeywords).catch(() => [] as BuzzResult),
+      detectNewsBuzz(databaseForDataDomain(env, 'market'), buzzKeywords).catch(() => [] as BuzzResult),
       detectAnueBuzz(buzzKeywords).catch(() => [] as BuzzResult),
-      loadRuntimeThemeSignals(env.DB, endDate).catch(() => []),
+      loadRuntimeThemeSignals(databaseForDataDomain(env, 'market'), endDate).catch(() => []),
     ])
     stockTechnicalLongPrices = marketData.allPrices
     const primaryDates = new Set([...new Set(stockTechnicalLongPrices.map((row) => row.date))]
@@ -3388,12 +3392,12 @@ export async function runBottomUpScreener(env: Bindings, runDate?: string | null
   debugLog.push(`[Guard] trading restriction policy hard_block=${punishedSet.size} risk_evidence=${restrictionRiskSet.size} (attention/notice soft; disposition/punish hard)`)
 
   // ?? 霈???寧璆?mapping + 璁艙璅惜 ??
-  const industryMap = await getIndustryMapping(env.DB, env.KV)
+  const industryMap = await getIndustryMapping(databaseForDataDomain(env, 'market'), env.KV)
   const taxonomyUniverse = [...new Set([
     ...allPrices.map((p) => p.stock_id),
     ...emergingResearchPrices.map((p) => p.stock_id),
   ].map((symbol) => String(symbol || '').trim()).filter(Boolean))]
-  const taxonomyProfiles = await loadSymbolTaxonomyProfiles(env.DB, taxonomyUniverse, endDate)
+  const taxonomyProfiles = await loadSymbolTaxonomyProfiles(databaseForDataDomain(env, 'market'), taxonomyUniverse, endDate)
   const tagRows = [...taxonomyProfiles.entries()].flatMap(([symbol, profile]) =>
     profile.tags.map((tag) => ({ symbol, tag, weight: 1 })),
   )
@@ -3416,10 +3420,10 @@ export async function runBottomUpScreener(env: Bindings, runDate?: string | null
   // 0050 餈質馱???嚗?蝛拙??之?支誨?瘝?撠梁???餈撮
   let marketReturn5d = 0
   try {
-    const latestDate = await env.DB.prepare(
+    const latestDate = await databaseForDataDomain(env, 'market').prepare(
       'SELECT MAX(date) as d FROM stock_prices WHERE date <= ?',
     ).bind(endDate).first<{ d: string }>()
-    const fiveDaysAgoDate = await env.DB.prepare(
+    const fiveDaysAgoDate = await databaseForDataDomain(env, 'market').prepare(
       `SELECT date
          FROM (SELECT DISTINCT date FROM stock_prices WHERE date <= ? ORDER BY date DESC LIMIT 6)
         ORDER BY date ASC LIMIT 1`,
@@ -3427,17 +3431,25 @@ export async function runBottomUpScreener(env: Bindings, runDate?: string | null
 
     if (latestDate?.d && fiveDaysAgoDate?.date) {
       // ?岫 0050 ETF
-      const row0050 = await env.DB.prepare(`
-        SELECT
-          (SELECT close FROM stock_prices sp JOIN stocks s ON sp.stock_id=s.id WHERE s.symbol='0050' AND sp.date=?) as latest,
-          (SELECT close FROM stock_prices sp JOIN stocks s ON sp.stock_id=s.id WHERE s.symbol='0050' AND sp.date=?) as old
-      `).bind(latestDate.d, fiveDaysAgoDate.date).first<{ latest: number; old: number }>()
+      const identity0050 = (await loadCoreStockIdentitiesBySymbols(env, ['0050'])).get('0050')
+      const row0050 = identity0050
+        ? await databaseForDataDomain(env, 'market').prepare(`
+            SELECT
+              MAX(CASE WHEN date=? THEN close END) AS latest,
+              MAX(CASE WHEN date=? THEN close END) AS old
+              FROM stock_prices
+             WHERE stock_id=? AND date IN (?, ?)
+          `).bind(
+            latestDate.d, fiveDaysAgoDate.date, identity0050.id,
+            latestDate.d, fiveDaysAgoDate.date,
+          ).first<{ latest: number; old: number }>()
+        : null
 
       if (row0050?.latest && row0050?.old && row0050.old > 0) {
         marketReturn5d = (row0050.latest - row0050.old) / row0050.old
       } else {
         // Fallback: ?典??港葉雿嚗Ⅱ摰改?銝 LIMIT嚗?
-        const { results: allRets } = await env.DB.prepare(`
+        const { results: allRets } = await databaseForDataDomain(env, 'market').prepare(`
           SELECT (sp1.close - sp2.close) / sp2.close as ret
           FROM stock_prices sp1
           JOIN stock_prices sp2 ON sp1.stock_id = sp2.stock_id
@@ -3767,7 +3779,7 @@ export async function runBottomUpScreener(env: Bindings, runDate?: string | null
       }),
       loadL125StrategySimilarityGraphEvidence(env, strategySimilarityPayload, endDate),
       loadRuntimeTeacherEvidence(
-        env.DB,
+        env,
         strategySourceUniverse.map((candidate: any) => String(candidate.symbol || '').trim()).filter(Boolean),
         {
           runDate: endDate,
@@ -3775,7 +3787,7 @@ export async function runBottomUpScreener(env: Bindings, runDate?: string | null
           verifiedOnly: true,
         },
       ),
-      loadPreviousCanonicalL15Slate(env.DB, endDate)
+      loadPreviousCanonicalL15Slate(databaseForDataDomain(env, 'ops'), endDate)
         .then((value) => ({ value, error: null as string | null }))
         .catch((error) => ({
           value: { date: null, runId: null, symbols: [] as string[] },
@@ -4230,7 +4242,7 @@ export async function runBottomUpScreener(env: Bindings, runDate?: string | null
   if (rrgCfg && scored.length > 0) {
     try {
       // (a) 瘥???∠? top (highest weight) concept tag
-      const topTagRows = await queryTopConceptTagsForSymbols(env.DB, [...overlayEligibleSymbols], 400, endDate)
+      const topTagRows = await queryTopConceptTagsForSymbols(databaseForDataDomain(env, 'market'), [...overlayEligibleSymbols], 400, endDate)
       const symbolTags = new Map<string, Array<{ tag: string; classification: string }>>()
       for (const r of topTagRows ?? []) {
         const tags = symbolTags.get(r.symbol) ?? []
@@ -4238,7 +4250,7 @@ export async function runBottomUpScreener(env: Bindings, runDate?: string | null
         symbolTags.set(r.symbol, tags)
       }
       // (b) ???sector_flow ??撅?taxonomy quadrant
-      const { results: qRows } = await env.DB.prepare(
+      const { results: qRows } = await databaseForDataDomain(env, 'market').prepare(
         `SELECT sector, classification, quadrant, rs_ratio, rs_momentum, turnover_share_delta,
                 rotation_score, rotation_regime, rotation_hysteresis, rotation_velocity,
                 rotation_acceleration, quadrant_age, transition_path, rotation_window
@@ -4435,16 +4447,21 @@ export async function runBottomUpScreener(env: Bindings, runDate?: string | null
     if (topSymbols.length > 0) {
       // ??stocks 銵冽 stock_id
       const newsAgg: { symbol: string; sentiment: string; cnt: number }[] = []
-      for (const chunk of chunkArray(topSymbols, 400)) {
+      const identities = await loadCoreStockIdentitiesBySymbols(env, topSymbols)
+      const symbolById = new Map([...identities.values()].map((row) => [row.id, row.symbol]))
+      const ids = [...symbolById.keys()]
+      for (const chunk of chunkArray(ids, 400)) {
         const ph = chunk.map(() => '?').join(',')
-        const { results } = await env.DB.prepare(`
-          SELECT s.symbol, n.sentiment, COUNT(*) as cnt
-          FROM news n
-          JOIN stocks s ON n.stock_id = s.id
-          WHERE s.symbol IN (${ph}) AND n.published_at >= date('now', '-7 days')
-          GROUP BY s.symbol, n.sentiment
-        `).bind(...chunk).all<{ symbol: string; sentiment: string; cnt: number }>()
-        newsAgg.push(...(results ?? []))
+        const { results } = await databaseForDataDomain(env, 'market').prepare(`
+          SELECT stock_id, sentiment, COUNT(*) as cnt
+            FROM news
+           WHERE stock_id IN (${ph}) AND published_at >= date('now', '-7 days')
+           GROUP BY stock_id, sentiment
+        `).bind(...chunk).all<{ stock_id: number; sentiment: string; cnt: number }>()
+        for (const row of results ?? []) {
+          const symbol = symbolById.get(Number(row.stock_id))
+          if (symbol) newsAgg.push({ symbol, sentiment: row.sentiment, cnt: Number(row.cnt ?? 0) })
+        }
       }
 
       const sentimentMap = new Map<string, { pos: number; neg: number; total: number }>()
@@ -4512,7 +4529,7 @@ export async function runBottomUpScreener(env: Bindings, runDate?: string | null
 
   // ?? Step 5: ?? + ?駁? + ?芣 ??
   try {
-    const evidenceRisk = await loadExternalEvidenceRiskOverlays(env.DB, endDate, [...overlayEligibleSymbols])
+    const evidenceRisk = await loadExternalEvidenceRiskOverlays(databaseForDataDomain(env, 'market'), endDate, [...overlayEligibleSymbols])
     let vetoed = 0
     let penalized = 0
     for (let i = scored.length - 1; i >= 0; i--) {
@@ -4574,7 +4591,7 @@ export async function runBottomUpScreener(env: Bindings, runDate?: string | null
     let foreignSource = 'canonical_chip_daily'
     let foreignRows: Array<{ date: string; total_foreign_net: number }> = []
     try {
-      const canonical = await env.DB.prepare(`
+      const canonical = await databaseForDataDomain(env, 'market').prepare(`
         SELECT date, SUM(foreign_net) as total_foreign_net
         FROM canonical_chip_daily
         WHERE date >= date('now', '-40 days')
@@ -4586,7 +4603,7 @@ export async function runBottomUpScreener(env: Bindings, runDate?: string | null
     }
 
     if (foreignRows.length < 10) {
-      const legacy = await env.DB.prepare(`
+      const legacy = await databaseForDataDomain(env, 'market').prepare(`
         SELECT date, SUM(foreign_net) as total_foreign_net
         FROM chip_data
         WHERE date >= date('now', '-40 days')
@@ -4617,18 +4634,21 @@ export async function runBottomUpScreener(env: Bindings, runDate?: string | null
   try {
     const policyPoolSymbols = [...overlayEligibleSymbols]
     if (policyPoolSymbols.length > 0) {
-      const histRows: Array<{ symbol: string; date: string; open: number; high: number; low: number; close: number; volume: number }> = []
-      for (const chunk of chunkArray(policyPoolSymbols, D1_IN_CHUNK_SIZE)) {
-        const ph = chunk.map(() => '?').join(',')
-      // ??60 憭?OHLCV嚗DX ?閬?high/low嚗?
-        const { results } = await env.DB.prepare(`
-        SELECT s.symbol, sp.date, sp.open, sp.high, sp.low, sp.close, sp.volume
-        FROM stock_prices sp JOIN stocks s ON sp.stock_id = s.id
-        WHERE s.symbol IN (${ph}) AND sp.date >= date('now', '-90 days')
-        ORDER BY s.symbol, sp.date
-        `).bind(...chunk).all<{ symbol: string; date: string; open: number; high: number; low: number; close: number; volume: number }>()
-        histRows.push(...(results ?? []))
-      }
+      const histRows = await loadMarketPriceHistoryBySymbols(env, policyPoolSymbols, {
+        onOrBeforeDate: endDate,
+        rowsPerSymbol: 65,
+      })
+        .then((rows) => rows.map((row) => ({
+            symbol: row.symbol,
+            date: row.date,
+            open: Number(row.open ?? row.close ?? 0),
+            high: Number(row.high ?? row.close ?? 0),
+            low: Number(row.low ?? row.close ?? 0),
+            close: Number(row.close ?? 0),
+            volume: Number(row.volume ?? 0),
+          })))
+      // Keep the bounded 65-session bridge window; indicator calculations below require at most 60 bars.
+      histRows.sort((a, b) => a.symbol.localeCompare(b.symbol) || a.date.localeCompare(b.date))
 
       // ??symbol ??
       const histBySymbol = new Map<string, { close: number; high: number; low: number; volume: number }[]>()
@@ -4731,7 +4751,7 @@ export async function runBottomUpScreener(env: Bindings, runDate?: string | null
   let selectionFlagMap = new Map<string, ScreenerSelectionFlag>()
   try {
     const policyPoolSymbols = [...overlayEligibleSymbols]
-    selectionFlagMap = await loadSelectionHistoryFlags(env.DB, policyPoolSymbols, endDate, {
+    selectionFlagMap = await loadSelectionHistoryFlags(databaseForDataDomain(env, 'market'), policyPoolSymbols, endDate, {
       highFreqThreshold: (sc as any).highFreq20dThreshold ?? 12,
     })
     const highFreqPenalty = Number((sc as any).highFreqPenalty ?? 6)
@@ -5022,18 +5042,24 @@ export async function runBottomUpScreener(env: Bindings, runDate?: string | null
   try {
     const candSymbols = finalCandidates.map(c => c.symbol)
     if (candSymbols.length > 0) {
-      const recentRows: Array<{ symbol: string; days_count: number }> = []
-      for (const chunk of chunkArray(candSymbols, D1_IN_CHUNK_SIZE)) {
+      const identities = await loadCoreStockIdentitiesBySymbols(env, candSymbols)
+      const symbolById = new Map([...identities.values()].map((row) => [row.id, row.symbol]))
+      const recentCountBySymbol = new Map(candSymbols.map((symbol) => [symbol, 0]))
+      const ids = [...symbolById.keys()]
+      for (const chunk of chunkArray(ids, D1_IN_CHUNK_SIZE)) {
         const ph = chunk.map(() => '?').join(',')
-        const { results } = await env.DB.prepare(`
-          SELECT s.symbol, COUNT(sp.date) as days_count
-          FROM stocks s
-          LEFT JOIN stock_prices sp ON sp.stock_id = s.id AND sp.date >= date('now', '-7 days')
-          WHERE s.symbol IN (${ph})
-          GROUP BY s.symbol
-        `).bind(...chunk).all<{ symbol: string; days_count: number }>()
-        recentRows.push(...(results ?? []))
+        const { results } = await databaseForDataDomain(env, 'market').prepare(`
+          SELECT stock_id, COUNT(date) AS days_count
+            FROM stock_prices
+           WHERE stock_id IN (${ph}) AND date >= date(?, '-7 days') AND date <= ?
+           GROUP BY stock_id
+        `).bind(...chunk, endDate, endDate).all<{ stock_id: number; days_count: number }>()
+        for (const row of results ?? []) {
+          const symbol = symbolById.get(Number(row.stock_id))
+          if (symbol) recentCountBySymbol.set(symbol, Number(row.days_count ?? 0))
+        }
       }
+      const recentRows = [...recentCountBySymbol].map(([symbol, days_count]) => ({ symbol, days_count }))
       const delistRisk = new Set<string>()
       for (const r of recentRows) {
         if (r.days_count <= 2) delistRisk.add(r.symbol)
@@ -5247,7 +5273,7 @@ export async function runBottomUpScreener(env: Bindings, runDate?: string | null
 
   // ?? DB 撖怠 ??
   try {
-    await updateScreenerWatchlist(env.DB, finalCandidates, tpexSymbolSet)
+    await updateScreenerWatchlist(databaseForDataDomain(env, 'core'), finalCandidates, tpexSymbolSet)
   } catch (e) {
     console.error('[Screener v2] Watchlist update failed:', e)
   }
@@ -5269,7 +5295,7 @@ export async function runBottomUpScreener(env: Bindings, runDate?: string | null
     const bonusPoints = sc.sectorLeaderBonusPoints ?? 5
     const corrThreshold = sc.sectorLeaderCorrThreshold ?? 0.7
     const bulkBonus = await sectorLeaderBonusBatch(
-      env.DB,
+      env,
       finalCandidates.map(c => ({ symbol: c.symbol, sector: c.sector ?? null })),
       corrThreshold,
       bonusPoints,
@@ -5324,7 +5350,7 @@ export async function runBottomUpScreener(env: Bindings, runDate?: string | null
         sc.strategy_pool_ids ?? [],
         runtimeStrategyAllocationWeights,
       )
-      return env.DB.prepare(buildScreenerSeedUpsertSql()).bind(
+      return databaseForDataDomain(env, 'core').prepare(buildScreenerSeedUpsertSql()).bind(
         endDate, seed.row.symbol, seed.row.symbol, seed.row.name, seed.row.sector,
         seed.rank, seed.row.seedScore,
         seed.row.chipScore, seed.row.techScore, seed.row.momentumScore,
@@ -5360,7 +5386,7 @@ export async function runBottomUpScreener(env: Bindings, runDate?: string | null
         ...(taxPoint ? [taxPoint] : ['taxonomy:missing']),
         ...(sc.strategy_watch_points ?? []),
       ]))
-      return env.DB.prepare(buildScreenerSeedUpsertSql()).bind(
+      return databaseForDataDomain(env, 'core').prepare(buildScreenerSeedUpsertSql()).bind(
         endDate, seed.row.symbol, seed.row.symbol, seed.row.name, seed.row.sector,
         seed.rank, seed.row.seedScore,
         seed.row.chipScore, seed.row.techScore, seed.row.momentumScore,
@@ -5375,20 +5401,20 @@ export async function runBottomUpScreener(env: Bindings, runDate?: string | null
     recBatch.push(...emergingRecBatch)
     const BATCH = 50
     for (let b = 0; b < recBatch.length; b += BATCH) {
-      await env.DB.batch(recBatch.slice(b, b + BATCH))
+      await databaseForDataDomain(env, 'core').batch(recBatch.slice(b, b + BATCH))
     }
 
     const seedSymbols = [
       ...finalCandidates.map(c => c.symbol),
       ...emergingResearchCandidates.map(c => c.symbol),
     ].map(s => String(s || '').trim()).filter(Boolean)
-    await pruneScreenerSeedRows(env.DB, endDate, seedSymbols)
+    await pruneScreenerSeedRows(databaseForDataDomain(env, 'core'), endDate, seedSymbols)
 
     // 靽?????in_current_watchlist=1嚗甇?updateScreenerWatchlist batch 憭望?????瘜?
     if (finalCandidates.length > 0) {
       for (const chunk of chunkArray(finalCandidates.map(c => c.symbol), D1_IN_CHUNK_SIZE)) {
         const ph = chunk.map(() => '?').join(',')
-        await env.DB.prepare(
+        await databaseForDataDomain(env, 'core').prepare(
           `UPDATE stocks SET in_current_watchlist=1 WHERE symbol IN (${ph})`
         ).bind(...chunk).run()
       }
@@ -5400,7 +5426,7 @@ export async function runBottomUpScreener(env: Bindings, runDate?: string | null
     )
 
     try {
-      const themeRuntime = await materializeScreenerThemeRuntime(env.DB, endDate, seedSymbols)
+      const themeRuntime = await materializeScreenerThemeRuntime(databaseForDataDomain(env, 'market'), endDate, seedSymbols)
       const themeRuntimeStatus = themeRuntime.signals > 0 && themeRuntime.features > 0
         ? 'ok'
         : themeRuntime.signals > 0
@@ -5425,19 +5451,23 @@ export async function runBottomUpScreener(env: Bindings, runDate?: string | null
 
     // #15 ?郊撖?screener_selection_history 靘?甈?run 閮? freq flag
     try {
-      const histBatch = finalCandidates.map(c => {
+      const identities = await loadCoreStockIdentitiesBySymbols(env, finalCandidates.map((row) => row.symbol))
+      const marketDb = databaseForDataDomain(env, 'market')
+      const histBatch = finalCandidates.flatMap(c => {
+        const identity = identities.get(c.symbol)
+        if (!identity) return []
         const sc = c as any
         const scoreV2 = readScoreV2Snapshot({ score_components: sc.score_components } as ScoreV2StorageRow)
         const combined = Number.isFinite(Number(sc.score))
           ? Number(sc.score)
           : scoreV2?.finalScore ?? 0
-        return env.DB.prepare(
+        return [marketDb.prepare(
           `INSERT OR IGNORE INTO screener_selection_history (date, stock_id, symbol, score, industry)
-           VALUES (?, (SELECT id FROM stocks WHERE symbol=?), ?, ?, ?)`
-        ).bind(endDate, c.symbol, c.symbol, combined, sc.industry ?? c.sector ?? null)
+           VALUES (?, ?, ?, ?, ?)`
+        ).bind(endDate, identity.id, c.symbol, combined, sc.industry ?? c.sector ?? null)]
       })
       for (let b = 0; b < histBatch.length; b += 50) {
-        await env.DB.batch(histBatch.slice(b, b + 50))
+        await marketDb.batch(histBatch.slice(b, b + 50))
       }
       const hiCount = [...selectionFlagMap.values()].filter(f => f.highFreq).length
       const newCount = [...selectionFlagMap.values()].filter(f => f.newMoney).length
@@ -5455,27 +5485,33 @@ export async function runBottomUpScreener(env: Bindings, runDate?: string | null
       if (!seedSymbolsForIndicators.length) {
         debugLog.push('[DB] skipped technical_indicators seed backfill: no seed symbols')
       } else {
+        const identities = await loadCoreStockIdentitiesBySymbols(env, seedSymbolsForIndicators)
+        const marketDb = databaseForDataDomain(env, 'market')
         const noTiStocks: Array<{ id: number; symbol: string }> = []
-        for (const chunk of chunkArray(seedSymbolsForIndicators, D1_IN_CHUNK_SIZE)) {
-          const ph = chunk.map(() => '?').join(',')
-          const { results } = await env.DB.prepare(`
-            SELECT s.id, s.symbol FROM stocks s
-            WHERE s.symbol IN (${ph})
-              AND NOT EXISTS (
-                SELECT 1 FROM technical_indicators ti
-                 WHERE ti.stock_id = s.id
-                   AND ti.date >= date(?, '-3 days')
-                   AND ti.date <= ?
-              )
-              AND EXISTS (SELECT 1 FROM stock_prices sp WHERE sp.stock_id = s.id LIMIT 1)
-          `).bind(...chunk, endDate, endDate).all<{ id: number; symbol: string }>()
-          noTiStocks.push(...(results ?? []))
+        const identityRows = [...identities.values()]
+        for (const chunk of chunkArray(identityRows, D1_IN_CHUNK_SIZE)) {
+          const ids = chunk.map((row) => row.id)
+          const symbolById = new Map(chunk.map((row) => [row.id, row.symbol]))
+          const ph = ids.map(() => '?').join(',')
+          const { results } = await marketDb.prepare(`
+            SELECT prices.stock_id
+              FROM (SELECT DISTINCT stock_id FROM stock_prices WHERE stock_id IN (${ph})) prices
+             WHERE NOT EXISTS (
+               SELECT 1 FROM technical_indicators ti
+                WHERE ti.stock_id=prices.stock_id AND ti.date >= date(?, '-3 days') AND ti.date <= ?
+             )
+          `).bind(...ids, endDate, endDate).all<{ stock_id: number }>()
+          for (const row of results ?? []) {
+            const id = Number(row.stock_id)
+            const symbol = symbolById.get(id)
+            if (symbol) noTiStocks.push({ id, symbol })
+          }
         }
 
         if (noTiStocks?.length) {
           let computed = 0
           for (const stock of noTiStocks) {
-            await computeAndStoreIndicators(env.DB, stock.id, endDate)
+            await computeAndStoreIndicators(databaseForDataDomain(env, 'market'), stock.id, endDate)
             computed++
           }
           debugLog.push(`[DB] backfilled technical_indicators for seed symbols=${computed}: ${noTiStocks.map(s => s.symbol).join(', ')}`)
@@ -5489,7 +5525,7 @@ export async function runBottomUpScreener(env: Bindings, runDate?: string | null
   }
 
   try {
-    await storeSectorHeat(env.DB, endDate, sectorHeatScores)
+    await storeSectorHeat(databaseForDataDomain(env, 'market'), endDate, sectorHeatScores)
   } catch (e) {
     console.warn('[Screener v2] sector_heat write failed:', e)
   }
@@ -5501,9 +5537,9 @@ export async function runBottomUpScreener(env: Bindings, runDate?: string | null
       aggregateFromPrices, loadOversoldHistory, assessZone, writeMomentumSnapshot,
     } = await import('./momentumZone')
     const indicator = aggregateFromPrices(finalCandidates, data.prices)
-    const history = await loadOversoldHistory(env.DB, endDate)
+    const history = await loadOversoldHistory(databaseForDataDomain(env, 'market'), endDate)
     const assessment = assessZone(indicator.pct_oversold, history)
-    await writeMomentumSnapshot(env.DB, endDate, indicator, assessment)
+    await writeMomentumSnapshot(databaseForDataDomain(env, 'market'), endDate, indicator, assessment)
     debugLog.push(
       `[Screener v2] momentum zone ${assessment.zone} ` +
       `(pct_oversold=${(indicator.pct_oversold * 100).toFixed(1)}%, ` +
@@ -5514,7 +5550,7 @@ export async function runBottomUpScreener(env: Bindings, runDate?: string | null
   }
 
   try {
-    await storePttBuzz(env.DB, endDate, combinedBuzz)
+    await storePttBuzz(databaseForDataDomain(env, 'market'), endDate, combinedBuzz)
   } catch (e) {
     console.warn('[Screener v2] buzz write failed:', e)
   }
@@ -5627,7 +5663,7 @@ export async function calcFactorIC(env: Bindings): Promise<{
   factors: { name: string; ic_5d: number; ic_10d: number; ic_20d: number; sample: number }[]
 }> {
   // Score V2 payload is canonical; factor IC must not read legacy projection columns.
-  const { results: recRows } = await env.DB.prepare(`
+  const { results: recRows } = await databaseForDataDomain(env, 'core').prepare(`
     SELECT r.symbol, r.date, r.score_components
     FROM daily_recommendations r
     WHERE r.date >= date('now', '-30 days')
@@ -5638,17 +5674,9 @@ export async function calcFactorIC(env: Bindings): Promise<{
 
   // ?交??航蟡函??芯??梢嚗?d, 10d, 20d嚗?
   const symbols = [...new Set(recRows.map(r => r.symbol))]
-  const priceRows: { symbol: string; date: string; close: number }[] = []
-  for (const chunk of chunkArray(symbols, 400)) {
-    const ph = chunk.map(() => '?').join(',')
-    const { results } = await env.DB.prepare(`
-      SELECT s.symbol, sp.date, sp.close
-      FROM stock_prices sp JOIN stocks s ON sp.stock_id = s.id
-      WHERE s.symbol IN (${ph}) AND sp.date >= date('now', '-60 days')
-      ORDER BY s.symbol, sp.date
-    `).bind(...chunk).all<{ symbol: string; date: string; close: number }>()
-    priceRows.push(...(results ?? []))
-  }
+  const priceRows = (await loadMarketPriceHistoryBySymbols(env, symbols, { rowsPerSymbol: 60 }))
+    .map((row) => ({ symbol: row.symbol, date: row.date, close: Number(row.close ?? 0) }))
+    .filter((row) => Number.isFinite(row.close) && row.close > 0)
 
   // 撱?symbol ??date ??close map
   const priceMap = new Map<string, Map<string, number>>()

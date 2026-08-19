@@ -196,7 +196,7 @@ export async function generateDailyReport(env: Bindings): Promise<string> {
     embeds.push({ title: 'SELL / 風險提醒', color: 0xe74c3c, description: sellText })
   }
 
-  const { results: recs } = await env.DB.prepare(`
+  const { results: recs } = await databaseForDataDomain(env, 'core').prepare(`
     SELECT symbol, name, sector, signal, confidence, reason,
            score_components
       FROM daily_recommendations
@@ -254,14 +254,25 @@ export async function generateDailyReport(env: Bindings): Promise<string> {
     ],
   })
 
-  const { results: untaggedStocks } = await env.DB.prepare(`
-    SELECT s.symbol, s.name
-      FROM stocks s
-     WHERE s.in_current_watchlist = 1
-       AND NOT EXISTS (SELECT 1 FROM stock_tags t WHERE t.symbol = s.symbol)
-     ORDER BY s.symbol
-     LIMIT 20
-  `).all<any>().catch(() => ({ results: [] as any[] }))
+  const coreWatchlistRows = await databaseForDataDomain(env, 'core').prepare(`
+    SELECT symbol, name
+      FROM stocks
+     WHERE in_current_watchlist = 1
+     ORDER BY symbol
+  `).all<{ symbol: string; name: string }>().catch(() => ({ results: [] as Array<{ symbol: string; name: string }> }))
+  const taggedSymbols = new Set<string>()
+  const watchlistSymbols = (coreWatchlistRows.results ?? []).map((row) => row.symbol)
+  for (let offset = 0; offset < watchlistSymbols.length; offset += 400) {
+    const chunk = watchlistSymbols.slice(offset, offset + 400)
+    const marks = chunk.map(() => '?').join(',')
+    const { results } = await databaseForDataDomain(env, 'market').prepare(`
+      SELECT DISTINCT symbol FROM stock_tags WHERE symbol IN (${marks})
+    `).bind(...chunk).all<{ symbol: string }>().catch(() => ({ results: [] as Array<{ symbol: string }> }))
+    for (const row of results ?? []) taggedSymbols.add(row.symbol)
+  }
+  const untaggedStocks = (coreWatchlistRows.results ?? [])
+    .filter((row) => !taggedSymbols.has(row.symbol))
+    .slice(0, 20)
 
   if (untaggedStocks?.length) {
     const list = untaggedStocks.map((stock: any) => `${stock.symbol} ${stock.name}`).join('\n')
@@ -272,7 +283,7 @@ export async function generateDailyReport(env: Bindings): Promise<string> {
     })
   }
 
-  const { results: themeFlows } = await env.DB.prepare(`
+  const { results: themeFlows } = await databaseForDataDomain(env, 'market').prepare(`
     SELECT sector, total_net, stock_count, quadrant, rs_ratio, rs_momentum
       FROM sector_flow
      WHERE date=? AND classification='theme'

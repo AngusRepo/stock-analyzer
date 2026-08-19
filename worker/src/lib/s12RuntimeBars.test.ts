@@ -65,7 +65,7 @@ function twText(ms: number): string {
   assert(source.includes('start=${encodeURIComponent(tradeDate)}&end=${encodeURIComponent(tradeDate)}'), 'execution proxy may only receive current-session kbar requests')
   assert(!source.includes('s12KbarStartDate'), 'execution proxy must not receive historical date ranges')
   assert(source.includes('identifier_namespace_rank'), 'canonical daily context must rank identifier namespaces explicitly')
-  assert(source.includes('namespace_collision.symbol = CAST(requested_stock.id AS TEXT)'), 'internal-id fallback must reject collisions with real symbols')
+  assert(source.includes('const numericNamespaceCollision = namespaceIdentities.has(numericNamespace)') && source.includes('AND ? = 0'), 'internal-id fallback must reject collisions with real symbols')
   assert(!source.includes('CAST((SELECT id FROM stocks WHERE symbol = ? LIMIT 1) AS TEXT)'), 'ambiguous internal stock ids must not share the canonical symbol namespace')
   assert(source.includes('export async function loadS12ResearchUsageStatus'), 'quota recovery must expose a typed usage preflight')
   assert(source.includes('fetch(`${researchUrl}/usage`'), 'quota preflight must use the isolated research usage endpoint')

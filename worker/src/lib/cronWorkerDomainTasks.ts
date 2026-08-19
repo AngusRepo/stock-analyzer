@@ -167,7 +167,7 @@ export async function handleWorkerDomainCron(deps: WorkerCronDeps): Promise<bool
   if (cron === '30 22 * * 6') {
     runWithLog('sector-leaders', async () => {
       const { computeSectorLeaders } = await import('./sectorCorrelation')
-      const result = await computeSectorLeaders(env.DB)
+      const result = await computeSectorLeaders(env)
       return `sectors=${result.sectorCount} leaders=${result.leaderCount}`
     })
     return true

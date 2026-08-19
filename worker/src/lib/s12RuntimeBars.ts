@@ -5,6 +5,7 @@ import { sha256Text } from './datasetSnapshots'
 import { floorRollingBarIntervalMs, type IntradayRollingBar } from './intradayTechnicalSnapshot'
 import type { OhlcvRow } from './ohlcvTradePlanLevels'
 import { paperDomainDatabase } from './paperDomainDatabase'
+import { loadCoreStockIdentitiesBySymbols } from './stockIdentityMarketBridge'
 
 interface IntradaySnapshotSample {
   startMs: number
@@ -273,7 +274,7 @@ async function loadCanonicalIntradayMinuteBars(
   tradeDate: string,
 ): Promise<{ bars: IntradayRollingBar[]; error: string | null }> {
   try {
-    const { results } = await env.DB.prepare(`
+    const { results } = await databaseForDataDomain(env, 'market').prepare(`
       SELECT minute_start, open, high, low, close, volume
         FROM intraday_minute_bars
        WHERE trade_date = ? AND symbol = ?
@@ -320,7 +321,7 @@ async function appendCanonicalIntradayMinuteBars(
   try {
     for (let offset = 0; offset < completed.length; offset += 50) {
       const chunk = completed.slice(offset, offset + 50)
-      const results = await env.DB.batch(chunk.map((bar) => env.DB.prepare(`
+      const results = await env.DB.batch(chunk.map((bar) => databaseForDataDomain(env, 'market').prepare(`
         INSERT OR IGNORE INTO intraday_minute_bars
           (trade_date, symbol, minute_start, open, high, low, close, volume, source)
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'shioaji_streaming_tick_accumulator')
@@ -902,87 +903,67 @@ async function loadPreviousTradingDayContext(
     raw_close?: number | string | null
     volume: number | string | null
   }
+  const identities = await loadCoreStockIdentitiesBySymbols(env, [symbol])
+  const requestedIdentity = identities.get(symbol) ?? null
   let dailyRows: DailyRow[] = []
-  try {
-    const { results } = await env.DB.prepare(`
-      WITH requested_stock AS (
-        SELECT id, symbol
-          FROM stocks
-         WHERE symbol = ?
-         LIMIT 1
-      ),
-      candidate_rows AS (
-        SELECT cmd.date,
-               cmd.open AS open,
-               cmd.high AS high,
-               cmd.low AS low,
-               cmd.close AS close,
-               cmd.close AS raw_close,
-               cmd.volume,
-               cmd.source,
-               cmd.created_at,
-               0 AS identifier_namespace_rank
-          FROM canonical_market_daily cmd
-          JOIN requested_stock ON cmd.stock_id = requested_stock.symbol
-         WHERE cmd.date < ?
-           AND cmd.open IS NOT NULL
-           AND cmd.high IS NOT NULL
-           AND cmd.low IS NOT NULL
-           AND cmd.close IS NOT NULL
-        UNION ALL
-        SELECT cmd.date,
-               cmd.open AS open,
-               cmd.high AS high,
-               cmd.low AS low,
-               cmd.close AS close,
-               cmd.close AS raw_close,
-               cmd.volume,
-               cmd.source,
-               cmd.created_at,
-               1 AS identifier_namespace_rank
-          FROM canonical_market_daily cmd
-          JOIN requested_stock ON cmd.stock_id = CAST(requested_stock.id AS TEXT)
-         WHERE cmd.date < ?
-           AND cmd.open IS NOT NULL
-           AND cmd.high IS NOT NULL
-           AND cmd.low IS NOT NULL
-           AND cmd.close IS NOT NULL
-           AND NOT EXISTS (
-             SELECT 1
-               FROM stocks namespace_collision
-              WHERE namespace_collision.symbol = CAST(requested_stock.id AS TEXT)
-           )
-      ),
-      ranked AS (
-        SELECT date, open, high, low, close, raw_close, volume, identifier_namespace_rank,
-               ROW_NUMBER() OVER (
-                 PARTITION BY date
-                 ORDER BY identifier_namespace_rank,
-                          CASE WHEN source LIKE 'finlab%' THEN 0 ELSE 1 END,
-                          created_at DESC
-               ) AS source_rank
-          FROM candidate_rows
-      )
-      SELECT date, open, high, low, close, raw_close, volume
-        FROM ranked
-       WHERE source_rank = 1
-       ORDER BY date DESC
-       LIMIT 120
-    `).bind(symbol, tradeDate, tradeDate).all<DailyRow>()
-    dailyRows = results ?? []
-  } catch {
-    dailyRows = []
+  if (requestedIdentity) {
+    const numericNamespace = String(requestedIdentity.id)
+    const namespaceIdentities = await loadCoreStockIdentitiesBySymbols(env, [numericNamespace])
+    const numericNamespaceCollision = namespaceIdentities.has(numericNamespace) ? 1 : 0
+    try {
+      const { results } = await databaseForDataDomain(env, 'market').prepare(`
+        WITH candidate_rows AS (
+          SELECT cmd.date, cmd.open, cmd.high, cmd.low, cmd.close,
+                 cmd.close AS raw_close, cmd.volume, cmd.source, cmd.created_at,
+                 0 AS identifier_namespace_rank
+            FROM canonical_market_daily cmd
+           WHERE cmd.stock_id = ?
+             AND cmd.date < ?
+             AND cmd.open IS NOT NULL AND cmd.high IS NOT NULL
+             AND cmd.low IS NOT NULL AND cmd.close IS NOT NULL
+          UNION ALL
+          SELECT cmd.date, cmd.open, cmd.high, cmd.low, cmd.close,
+                 cmd.close AS raw_close, cmd.volume, cmd.source, cmd.created_at,
+                 1 AS identifier_namespace_rank
+            FROM canonical_market_daily cmd
+           WHERE cmd.stock_id = ?
+             AND cmd.date < ?
+             AND ? = 0
+             AND cmd.open IS NOT NULL AND cmd.high IS NOT NULL
+             AND cmd.low IS NOT NULL AND cmd.close IS NOT NULL
+        ),
+        ranked AS (
+          SELECT date, open, high, low, close, raw_close, volume, identifier_namespace_rank,
+                 ROW_NUMBER() OVER (
+                   PARTITION BY date
+                   ORDER BY identifier_namespace_rank,
+                            CASE WHEN source LIKE 'finlab%' THEN 0 ELSE 1 END,
+                            created_at DESC
+                 ) AS source_rank
+            FROM candidate_rows
+        )
+        SELECT date, open, high, low, close, raw_close, volume
+          FROM ranked
+         WHERE source_rank = 1
+         ORDER BY date DESC
+         LIMIT 120
+      `).bind(symbol, tradeDate, numericNamespace, tradeDate, numericNamespaceCollision).all<DailyRow>()
+      dailyRows = results ?? []
+    } catch {
+      dailyRows = []
+    }
   }
-  const rawReference = await env.DB.prepare(`
-    SELECT sp.date, sp.close
-      FROM stock_prices sp
-      JOIN stocks s ON s.id = sp.stock_id
-     WHERE s.symbol = ?
-       AND sp.date < ?
-       AND sp.close IS NOT NULL
-     ORDER BY sp.date DESC
-     LIMIT 1
-  `).bind(symbol, tradeDate).first<{ date?: string | null; close?: number | string | null }>()
+  const rawReference = requestedIdentity
+    ? await databaseForDataDomain(env, 'market').prepare(`
+        SELECT date, close
+          FROM stock_prices
+         WHERE stock_id = ?
+           AND date < ?
+           AND close IS NOT NULL
+         ORDER BY date DESC
+         LIMIT 1
+      `).bind(requestedIdentity.id, tradeDate).first<{ date?: string | null; close?: number | string | null }>()
+    : null
   const bars = dailyRows
     .map((row): IntradayRollingBar | null => {
       const open = finiteNumber(row.open)
@@ -1352,20 +1333,22 @@ export async function loadS12HistoricalReplayLifecycleBars(
   diagnostics: S12BaseBarDiagnostics
 }> {
   const sessionLimit = Math.max(1, Math.min(10, Math.floor(maxSessions)))
-  const { results } = await env.DB.prepare(`
-    SELECT DISTINCT date(sp.date) AS session_date
-      FROM stock_prices sp
-      JOIN stocks st ON st.id = sp.stock_id
-     WHERE st.symbol = ?
-       AND date(sp.date) >= date(?)
-       AND date(sp.date) <= date(?)
-       AND sp.open IS NOT NULL
-       AND sp.high IS NOT NULL
-       AND sp.low IS NOT NULL
-       AND sp.close IS NOT NULL
-     ORDER BY date(sp.date) ASC
-     LIMIT ?
-  `).bind(symbol, entryDate, maxAvailableDate, sessionLimit).all<{ session_date?: string | null }>()
+  const replayIdentity = (await loadCoreStockIdentitiesBySymbols(env, [symbol])).get(symbol) ?? null
+  const { results } = replayIdentity
+    ? await databaseForDataDomain(env, 'market').prepare(`
+        SELECT DISTINCT date(date) AS session_date
+          FROM stock_prices
+         WHERE stock_id = ?
+           AND date(date) >= date(?)
+           AND date(date) <= date(?)
+           AND open IS NOT NULL
+           AND high IS NOT NULL
+           AND low IS NOT NULL
+           AND close IS NOT NULL
+         ORDER BY date(date) ASC
+         LIMIT ?
+      `).bind(replayIdentity.id, entryDate, maxAvailableDate, sessionLimit).all<{ session_date?: string | null }>()
+    : { results: [] as Array<{ session_date?: string | null }> }
   const sessionDates = (results ?? [])
     .map((row) => String(row.session_date ?? '').slice(0, 10))
     .filter((value) => /^\d{4}-\d{2}-\d{2}$/.test(value))

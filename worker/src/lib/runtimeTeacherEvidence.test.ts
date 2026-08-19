@@ -4,10 +4,7 @@ function assert(condition: unknown, message: string): void {
   if (!condition) throw new Error(message)
 }
 
-function fakeDb(input: {
-  rows?: Array<Record<string, unknown>>
-  error?: Error
-}): D1Database {
+function fakeDb(input: { rows?: Array<Record<string, unknown>>; error?: Error }): D1Database {
   return {
     prepare(sql: string) {
       return {
@@ -28,20 +25,20 @@ function fakeDb(input: {
 
 async function main(): Promise<void> {
   {
-    const db = fakeDb({
-      rows: [
-        { symbol: '2330', model_name: 'LightGBM', direction_accuracy: 0.82, forecast_data: '{}', prediction_date: '2026-06-11', generated_at: '2026-06-11T09:00:00Z', id: 2 },
-        { symbol: '2330', model_name: 'LightGBM', direction_accuracy: 0.4, forecast_data: '{}', prediction_date: '2026-06-10', generated_at: '2026-06-10T09:00:00Z', id: 1 },
-        { symbol: '2330', model_name: 'TimesFM', direction_accuracy: null, forecast_data: JSON.stringify({ rank_score: 0.63 }), prediction_date: '2026-06-11', generated_at: '2026-06-11T09:00:00Z', id: 3 },
-        { symbol: '2317', model_name: 'XGBoost', direction_accuracy: 77, forecast_data: '{}', prediction_date: '2026-06-11', generated_at: '2026-06-11T09:00:00Z', id: 4 },
-      ],
-    })
-
-    const result = await loadRuntimeTeacherEvidence(db, ['2330', '2317'], {
+    const coreDb = fakeDb({ rows: [
+      { id: 1, symbol: '2330', name: 'TSMC', market: 'TWSE', sector: 'Semiconductor' },
+      { id: 2, symbol: '2317', name: 'Hon Hai', market: 'TWSE', sector: 'Electronics' },
+    ] })
+    const learningDb = fakeDb({ rows: [
+      { stock_id: 1, model_name: 'LightGBM', direction_accuracy: 0.82, forecast_data: '{}', prediction_date: '2026-06-11', generated_at: '2026-06-11T09:00:00Z', id: 2 },
+      { stock_id: 1, model_name: 'LightGBM', direction_accuracy: 0.4, forecast_data: '{}', prediction_date: '2026-06-10', generated_at: '2026-06-10T09:00:00Z', id: 1 },
+      { stock_id: 1, model_name: 'TimesFM', direction_accuracy: null, forecast_data: JSON.stringify({ rank_score: 0.63 }), prediction_date: '2026-06-11', generated_at: '2026-06-11T09:00:00Z', id: 3 },
+      { stock_id: 2, model_name: 'XGBoost', direction_accuracy: 77, forecast_data: '{}', prediction_date: '2026-06-11', generated_at: '2026-06-11T09:00:00Z', id: 4 },
+    ] })
+    const result = await loadRuntimeTeacherEvidence({ DB: coreDb, CORE_DB: coreDb, LEARNING_DB: learningDb, MULTI_D1_ACTIVE_DOMAINS: 'core,learning' } as any, ['2330', '2317'], {
       runDate: '2026-06-12',
       lookbackDays: 20,
     })
-
     assert(result.telemetry.status === 'loaded', 'runtime teacher evidence should load verified historical rows')
     assert(result.telemetry.source === 'predictions_per_model_latest_verified_before_run_date', 'loader source must be explicit')
     assert(result.telemetry.input_scope === 'previous_trading_day_or_latest_verified_teacher_cache', 'loader must document historical cache scope')
@@ -59,8 +56,9 @@ async function main(): Promise<void> {
   }
 
   {
-    const db = fakeDb({ error: new Error('D1 unavailable') })
-    const result = await loadRuntimeTeacherEvidence(db, ['2330'], {
+    const coreDb = fakeDb({ rows: [{ id: 1, symbol: '2330', name: 'TSMC', market: 'TWSE', sector: null }] })
+    const learningDb = fakeDb({ error: new Error('D1 unavailable') })
+    const result = await loadRuntimeTeacherEvidence({ DB: coreDb, CORE_DB: coreDb, LEARNING_DB: learningDb, MULTI_D1_ACTIVE_DOMAINS: 'core,learning' } as any, ['2330'], {
       runDate: '2026-06-12',
     })
     assert(result.telemetry.status === 'unavailable', 'loader should fail closed with telemetry on D1 errors')

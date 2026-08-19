@@ -121,7 +121,7 @@ assert(
 
 assert(
   sectorCorrelation.includes('ensureSectorLeadersForScreener') &&
-    sectorCorrelation.includes('computeSectorLeaders(db)') &&
+    sectorCorrelation.includes('computeSectorLeaders(env)') &&
     sectorCorrelation.includes('if (!leaderRows.length)'),
   'sector leader evidence must be backfilled from the screener path before sector-leaders scheduler can be consolidated',
 )

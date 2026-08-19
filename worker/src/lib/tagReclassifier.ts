@@ -1,3 +1,4 @@
+import { databaseForDataDomain } from './dataDomainRegistry'
 /**
  * tagReclassifier.ts — LLM 概念標籤重新分類
  *
@@ -19,7 +20,7 @@ interface TagWeight {
 
 export async function reclassifyTags(env: Bindings): Promise<{ processed: number; updated: number; errors: string[] }> {
   // 1. 取所有有 stock_tags 的股票（重新分類全部，清除錯誤 tags）
-  const { results: multiTagStocks } = await env.DB.prepare(`
+  const { results: multiTagStocks } = await databaseForDataDomain(env, 'market').prepare(`
     SELECT symbol, COUNT(*) as cnt
     FROM stock_tags GROUP BY symbol
     ORDER BY cnt DESC
@@ -33,13 +34,13 @@ export async function reclassifyTags(env: Bindings): Promise<{ processed: number
   console.log(`[Reclassify] ${multiTagStocks.length} 支股票待分類`)
 
   // 2. 取 stock_profiles（TimeVerse 公司描述）
-  const { results: profileRows } = await env.DB.prepare(
+  const { results: profileRows } = await databaseForDataDomain(env, 'market').prepare(
     'SELECT symbol, name, business_desc, key_customers, key_suppliers FROM stock_profiles'
   ).all<any>()
   const profileMap = new Map((profileRows ?? []).map((r: any) => [r.symbol, r]))
 
   // 3. 取所有可用概念標籤
-  const { results: allTags } = await env.DB.prepare(
+  const { results: allTags } = await databaseForDataDomain(env, 'market').prepare(
     'SELECT DISTINCT tag FROM stock_tags ORDER BY tag'
   ).all<{ tag: string }>()
   const availableTags = (allTags ?? []).map(t => t.tag)
@@ -53,15 +54,15 @@ export async function reclassifyTags(env: Bindings): Promise<{ processed: number
   for (const stock of multiTagStocks.slice(0, 30)) { // 最多處理 30 股/次
     try {
       // 取現有 tags
-      const { results: currentTags } = await env.DB.prepare(
+      const { results: currentTags } = await databaseForDataDomain(env, 'market').prepare(
         'SELECT tag, weight FROM stock_tags WHERE symbol = ?'
       ).bind(stock.symbol).all<{ tag: string; weight: number }>()
 
       const profile = profileMap.get(stock.symbol)
-      const { results: stockInfo } = await env.DB.prepare(
+      const { results: stockInfo } = await databaseForDataDomain(env, 'core').prepare(
         'SELECT name, sector FROM stocks WHERE symbol = ?'
       ).bind(stock.symbol).first<any>() ?
-        { results: [await env.DB.prepare('SELECT name, sector FROM stocks WHERE symbol = ?').bind(stock.symbol).first<any>()] } :
+        { results: [await databaseForDataDomain(env, 'core').prepare('SELECT name, sector FROM stocks WHERE symbol = ?').bind(stock.symbol).first<any>()] } :
         { results: [] }
 
       const stockName = stockInfo?.[0]?.name ?? stock.symbol
@@ -170,9 +171,9 @@ export async function reclassifyTags(env: Bindings): Promise<{ processed: number
       if (!validTags.length) continue
 
       // 5. 更新 D1：先刪除所有 tags，再插入 1~3 with weights（不強制湊滿）
-      await env.DB.prepare('DELETE FROM stock_tags WHERE symbol = ?').bind(stock.symbol).run()
+      await databaseForDataDomain(env, 'market').prepare('DELETE FROM stock_tags WHERE symbol = ?').bind(stock.symbol).run()
       const stmts = validTags.slice(0, 3).map(tw =>
-        env.DB.prepare('INSERT INTO stock_tags (symbol, tag, weight) VALUES (?, ?, ?)')
+        databaseForDataDomain(env, 'market').prepare('INSERT INTO stock_tags (symbol, tag, weight) VALUES (?, ?, ?)')
           .bind(stock.symbol, tw.tag, Math.min(1.0, Math.max(0.1, tw.weight)))
       )
       await env.DB.batch(stmts)

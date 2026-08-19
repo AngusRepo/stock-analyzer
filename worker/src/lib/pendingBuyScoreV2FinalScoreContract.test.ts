@@ -208,7 +208,7 @@ const paperRoute = readFileSync('src/routes/paper.ts', 'utf8')
 }
 
 {
-  const postExitRecommendationQueryStart = postExit.indexOf('const { results: recs } = await ctx.db.prepare')
+  const postExitRecommendationQueryStart = postExit.indexOf('const { results: recs } = await coreDb.prepare')
   const postExitRecommendationQueryEnd = postExit.indexOf(').bind(ctx.today)', postExitRecommendationQueryStart)
   assert(
     postExitRecommendationQueryStart >= 0 && postExitRecommendationQueryEnd > postExitRecommendationQueryStart,
@@ -303,7 +303,7 @@ const paperRoute = readFileSync('src/routes/paper.ts', 'utf8')
 }
 
 {
-  const decisionLogQueryStart = paperEntryTasks.indexOf('const recRow = await env.DB.prepare')
+  const decisionLogQueryStart = paperEntryTasks.indexOf("const recRow = await databaseForDataDomain(env, 'core').prepare")
   const decisionLogQueryEnd = paperEntryTasks.indexOf(').bind(today, pending.symbol)', decisionLogQueryStart)
   assert(
     decisionLogQueryStart >= 0 && decisionLogQueryEnd > decisionLogQueryStart,
@@ -320,7 +320,7 @@ const paperRoute = readFileSync('src/routes/paper.ts', 'utf8')
       `paper entry decision log must not read legacy ${legacyField} from daily_recommendations`,
     )
   }
-  const decisionLogInsertStart = paperEntryTasks.indexOf('INSERT OR REPLACE INTO decision_logs', decisionLogQueryEnd)
+  const decisionLogInsertStart = paperEntryTasks.indexOf('INSERT INTO decision_logs', decisionLogQueryEnd)
   const decisionLogInsertEnd = paperEntryTasks.indexOf(').bind(', decisionLogInsertStart)
   assert(
     decisionLogInsertStart >= 0 && decisionLogInsertEnd > decisionLogInsertStart,

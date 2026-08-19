@@ -141,7 +141,7 @@ async function loadGaOptimizerAdaptiveContext(kv: KVNamespace): Promise<Record<s
 }
 
 async function queryAdaptiveInputs(env: { DB: D1Database }) {
-  const riskRow = await env.DB.prepare(
+  const riskRow = await databaseForDataDomain(env, 'core').prepare(
     'SELECT risk_score, risk_level FROM market_risk ORDER BY date DESC LIMIT 1',
   ).first<{ risk_score: number; risk_level: string }>()
 

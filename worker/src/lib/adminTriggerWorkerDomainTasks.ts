@@ -1396,7 +1396,7 @@ export function buildAdminWorkerDomainTaskMap(c: any, deps: TriggerDeps): Record
     },
     'sector-leaders': async () => {
       const { computeSectorLeaders } = await import('./sectorCorrelation')
-      const r = await computeSectorLeaders(c.env.DB)
+      const r = await computeSectorLeaders(c.env)
       return `sectors=${r.sectorCount} leaders=${r.leaderCount}`
     },
     'neural-ucb-shadow': () => runNeuralShadowTask(c, 'NeuralUCB', requestedRunDate()),

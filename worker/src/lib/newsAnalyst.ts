@@ -1,3 +1,4 @@
+import { databaseForDataDomain } from './dataDomainRegistry'
 /**
  * newsAnalyst.ts — Daily macro news analyst agent
  *
@@ -79,7 +80,7 @@ async function gatherContext(env: NewsAnalystEnv, today: string): Promise<Gather
 
   // Market risk
   try {
-    const r = await env.DB.prepare(
+    const r = await databaseForDataDomain(env, 'core').prepare(
       'SELECT risk_level, date FROM market_risk ORDER BY date DESC LIMIT 1'
     ).first<{ risk_level: string; date: string }>()
     if (r) out.market_risk = r
@@ -87,7 +88,7 @@ async function gatherContext(env: NewsAnalystEnv, today: string): Promise<Gather
 
   // Market breadth
   try {
-    const b = await env.DB.prepare(
+    const b = await databaseForDataDomain(env, 'market').prepare(
       'SELECT bull_alignment_pct, advance_ratio, date FROM market_breadth ORDER BY date DESC LIMIT 1'
     ).first<any>()
     if (b) out.market_breadth = b
@@ -95,7 +96,7 @@ async function gatherContext(env: NewsAnalystEnv, today: string): Promise<Gather
 
   // Top concept buzz for today
   try {
-    const { results } = await env.DB.prepare(`
+    const { results } = await databaseForDataDomain(env, 'market').prepare(`
       SELECT concept, mention_count, sentiment_avg
         FROM concept_buzz
        WHERE date = ?

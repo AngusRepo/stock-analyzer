@@ -1,3 +1,4 @@
+import { databaseForDataDomain } from './dataDomainRegistry'
 /**
  * usLeading.ts — 美股先行指標
  *
@@ -121,7 +122,7 @@ export async function fetchAndStoreUSLeading(env: Bindings): Promise<USSignal | 
 
   // 存 D1
   try {
-    await env.DB.prepare(`
+    await databaseForDataDomain(env, 'market').prepare(`
       INSERT INTO us_market_signals (date, sox_close, sox_return, sox_ma5, tsm_close, tsm_return, tsm_premium,
         gspc_close, gspc_return, dxy_close, dxy_return, hy_spread, hy_spread_chg, vix_close, sentiment)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)

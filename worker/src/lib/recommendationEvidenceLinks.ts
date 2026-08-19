@@ -1,3 +1,6 @@
+import type { Bindings } from '../types'
+import { databaseForDataDomain } from './dataDomainRegistry'
+import { loadCoreStockIdentitiesBySymbols } from './stockIdentityMarketBridge'
 export interface RecommendationEvidenceLink {
   source: string
   title: string
@@ -134,7 +137,7 @@ export function isFallbackNewsRelevant(row: NewsFallbackRow, target: Recommendat
 }
 
 export async function loadRecommendationEvidenceLinks(
-  db: D1Database,
+  env: Pick<Bindings, 'DB'> & Partial<Bindings>,
   date: string,
   targetsOrSymbols: Array<string | Partial<RecommendationEvidenceTarget>>,
   limitPerSymbol = 3,
@@ -144,6 +147,7 @@ export async function loadRecommendationEvidenceLinks(
   const targetBySymbol = new Map(targets.map((target) => [target.symbol, target]))
   const linksBySymbol = new Map<string, RecommendationEvidenceLink[]>()
   if (!uniqueSymbols.length) return linksBySymbol
+  const marketDb = databaseForDataDomain(env, 'market')
 
   try {
     for (let i = 0; i < uniqueSymbols.length; i += 40) {
@@ -154,7 +158,7 @@ export async function loadRecommendationEvidenceLinks(
         date,
         ...chunk.map((symbol) => `%"${symbol}"%`),
       ]
-      const { results } = await db.prepare(`
+      const { results } = await marketDb.prepare(`
         SELECT source_id, source_kind, title, source_url, published_at, symbols_json,
                decision_effect, source_quality_score, entity_linking_confidence
           FROM external_evidence_items
@@ -190,17 +194,25 @@ export async function loadRecommendationEvidenceLinks(
   try {
     for (let i = 0; i < needsFallback.length; i += 40) {
       const chunk = needsFallback.slice(i, i + 40)
-      const placeholders = chunk.map(() => '?').join(',')
-      const { results } = await db.prepare(`
-        SELECT s.symbol, s.name, n.source, n.title, n.url, n.published_at, n.summary
-          FROM news n
-          JOIN stocks s ON s.id = n.stock_id
-         WHERE s.symbol IN (${placeholders})
-           AND date(n.published_at) >= date(?, '-10 days')
-           AND date(n.published_at) <= date(?)
-         ORDER BY n.published_at DESC
+      const identities = await loadCoreStockIdentitiesBySymbols(env, chunk)
+      const symbolById = new Map([...identities.values()].map((row) => [row.id, row.symbol]))
+      const ids = [...symbolById.keys()]
+      if (!ids.length) continue
+      const placeholders = ids.map(() => '?').join(',')
+      const { results: marketRows } = await marketDb.prepare(`
+        SELECT stock_id, source, title, url, published_at, summary
+          FROM news
+         WHERE stock_id IN (${placeholders})
+           AND date(published_at) >= date(?, '-10 days')
+           AND date(published_at) <= date(?)
+         ORDER BY published_at DESC
          LIMIT 240
-      `).bind(...chunk, date, date).all<NewsFallbackRow>()
+      `).bind(...ids, date, date).all<{ stock_id: number; source: string | null; title: string | null; url: string | null; published_at: string | null; summary?: string | null }>()
+      const results = (marketRows ?? []).flatMap((row) => {
+        const symbol = symbolById.get(Number(row.stock_id))
+        const target = symbol ? targetBySymbol.get(symbol) : null
+        return symbol && target ? [{ ...row, symbol, name: target.name ?? '' } as NewsFallbackRow] : []
+      })
       for (const row of results ?? []) {
         const symbol = cleanSymbol(row.symbol)
         const target = targetBySymbol.get(symbol)

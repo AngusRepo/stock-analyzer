@@ -1,3 +1,4 @@
+import { databaseForDataDomain } from './dataDomainRegistry'
 import type { Bindings } from '../types'
 import { fetchAttentionStocks, fetchPunishedStocks, fetchTpexAttentionStocks, fetchTpexPunishedStocks } from './twseApi'
 
@@ -248,7 +249,7 @@ async function reconcileOfficialRestrictions(
     : (isTpex
         ? 'https://www.tpex.org.tw/openapi/v1/tpex_disposal_information'
         : 'https://www.twse.com.tw/rwd/zh/announcement/punish?response=json')
-  const statements = [env.DB.prepare(`
+  const statements = [databaseForDataDomain(env, 'market').prepare(`
     UPDATE canonical_trading_restrictions
        SET active = 0,
            end_date = date(?, '-1 day'),
@@ -256,7 +257,7 @@ async function reconcileOfficialRestrictions(
      WHERE source = ?
        AND COALESCE(active, 1) = 1
        AND date(source_date) < date(?)
-  `).bind(tradeDate, source, tradeDate), ...symbols.map((symbol) => env.DB.prepare(`
+  `).bind(tradeDate, source, tradeDate), ...symbols.map((symbol) => databaseForDataDomain(env, 'market').prepare(`
     INSERT INTO canonical_trading_restrictions (
       symbol, restriction_type, market_segment, start_date, end_date, source,
       source_date, title, source_url, lineage_json, active, updated_at
@@ -425,7 +426,7 @@ export async function loadTradingRestrictionBuckets(
   let canonicalDetailsSucceeded = true
 
   try {
-    const { results } = await env.DB.prepare(`
+    const { results } = await databaseForDataDomain(env, 'market').prepare(`
       SELECT symbol, restriction_type, source
         FROM canonical_trading_restrictions
        WHERE 1 = 1
@@ -448,7 +449,7 @@ export async function loadTradingRestrictionBuckets(
 
   let governanceDetailsSucceeded = true
   try {
-    const { results } = await env.DB.prepare(`
+    const { results } = await databaseForDataDomain(env, 'market').prepare(`
       SELECT symbol, restriction_type, source
         FROM stock_trading_restrictions
        WHERE 1 = 1

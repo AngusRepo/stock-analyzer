@@ -1,4 +1,7 @@
+import type { Bindings } from '../types'
 import { ACTIVE_8_ML_TEACHERS } from './multiStrategyPleRouter'
+import { databaseForDataDomain } from './dataDomainRegistry'
+import { loadCoreStockIdentitiesBySymbols } from './stockIdentityMarketBridge'
 
 const D1_IN_CHUNK_SIZE = 40
 
@@ -95,7 +98,7 @@ function baseTelemetry(input: {
 }
 
 export async function loadRuntimeTeacherEvidence(
-  db: D1Database,
+  env: Pick<Bindings, 'DB'> & Partial<Bindings>,
   symbols: string[],
   options: {
     runDate: string
@@ -118,6 +121,8 @@ export async function loadRuntimeTeacherEvidence(
   }
 
   const labels: Record<string, Record<string, number>> = {}
+  const identities = await loadCoreStockIdentitiesBySymbols(env, requestedSymbols)
+  const symbolById = new Map([...identities.values()].map((row) => [row.id, row.symbol]))
   let rowCount = 0
   try {
     for (let offset = 0; offset < requestedSymbols.length; offset += D1_IN_CHUNK_SIZE) {
@@ -125,8 +130,11 @@ export async function loadRuntimeTeacherEvidence(
       const symbolPlaceholders = chunk.map(() => '?').join(',')
       const modelPlaceholders = ACTIVE_8_ML_TEACHERS.map(() => '?').join(',')
       const verifiedClause = verifiedOnly ? 'AND p.verified_at IS NOT NULL' : ''
-      const result = await db.prepare(`
-        SELECT s.symbol,
+      const ids = chunk.map((symbol) => identities.get(symbol)?.id).filter((id): id is number => id != null)
+      if (!ids.length) continue
+      const idPlaceholders = ids.map(() => '?').join(',')
+      const result = await databaseForDataDomain(env, 'learning').prepare(`
+        SELECT p.stock_id,
                p.model_name,
                p.direction_accuracy,
                p.forecast_data,
@@ -134,20 +142,19 @@ export async function loadRuntimeTeacherEvidence(
                p.generated_at,
                p.id
           FROM predictions p
-          JOIN stocks s ON s.id = p.stock_id
-         WHERE s.symbol IN (${symbolPlaceholders})
+         WHERE p.stock_id IN (${idPlaceholders})
            AND p.model_name IN (${modelPlaceholders})
            AND p.model_name NOT LIKE '%::challenger'
            AND p.prediction_date < ?
            AND date(p.prediction_date) >= date(?, ?)
            ${verifiedClause}
-         ORDER BY s.symbol ASC,
+         ORDER BY p.stock_id ASC,
                   p.model_name ASC,
                   date(p.prediction_date) DESC,
                   p.generated_at DESC,
                   p.id DESC
       `).bind(
-        ...chunk,
+        ...ids,
         ...ACTIVE_8_ML_TEACHERS,
         runDate,
         runDate,
@@ -156,7 +163,7 @@ export async function loadRuntimeTeacherEvidence(
       const rows = result.results ?? []
       rowCount += rows.length
       for (const row of rows) {
-        const symbol = normalizeSymbol(row.symbol)
+        const symbol = normalizeSymbol(symbolById.get(Number(row.stock_id)))
         const modelName = cleanText(row.model_name)
         if (!symbol || !ACTIVE_8_ML_TEACHERS.includes(modelName as typeof ACTIVE_8_ML_TEACHERS[number])) continue
         labels[symbol] ??= {}

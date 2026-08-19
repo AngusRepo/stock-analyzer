@@ -1,3 +1,6 @@
+import type { Bindings } from '../types'
+import { databaseForDataDomain } from './dataDomainRegistry'
+
 export type FundamentalRowsOptions = {
   limit?: number
   asOf?: string | null
@@ -140,8 +143,8 @@ function buildCanonicalQuery(db: D1Database, symbol: string, asOfDate: string | 
     `).bind(symbol)
 }
 
-async function loadStockSymbol(db: D1Database, stockId: number): Promise<string | null> {
-  const stock = await db.prepare('SELECT id, symbol FROM stocks WHERE id=?').bind(stockId).first<any>()
+async function loadStockSymbol(env: Pick<Bindings, 'DB'> & Partial<Bindings>, stockId: number): Promise<string | null> {
+  const stock = await databaseForDataDomain(env, 'core').prepare('SELECT id, symbol FROM stocks WHERE id=?').bind(stockId).first<any>()
   const symbol = String(stock?.symbol ?? '').trim()
   return symbol || null
 }
@@ -172,41 +175,42 @@ function buildCanonicalRevenueQuery(db: D1Database, symbol: string, limit: numbe
 }
 
 export async function loadStockMonthlyRevenueRows(
-  db: D1Database,
+  env: Pick<Bindings, 'DB'> & Partial<Bindings>,
   stockId: number,
   options: { months?: number; asOf?: string | null } = {},
 ): Promise<MonthlyRevenueSnapshot[]> {
   const limit = Math.max(1, Number(options.months ?? 12) || 12)
   const asOfDate = options.asOf && /^\d{4}-\d{2}-\d{2}$/.test(options.asOf) ? options.asOf : null
-  const symbol = await loadStockSymbol(db, stockId)
+  const symbol = await loadStockSymbol(env, stockId)
   if (!symbol) return []
-  const result = await buildCanonicalRevenueQuery(db, symbol, limit, asOfDate)
+  const result = await buildCanonicalRevenueQuery(databaseForDataDomain(env, 'market'), symbol, limit, asOfDate)
     .all<MonthlyRevenueSnapshot>()
     .catch(() => ({ results: [] as MonthlyRevenueSnapshot[] }))
   return result.results ?? []
 }
 
 export async function loadStockFinancialRows(
-  db: D1Database,
+  env: Pick<Bindings, 'DB'> & Partial<Bindings>,
   stockId: number,
   options: FundamentalRowsOptions = {},
 ): Promise<FundamentalSnapshot[]> {
   const limit = Math.max(1, Number(options.limit ?? 12) || 12)
   const asOfDate = options.asOf && /^\d{4}-\d{2}-\d{2}$/.test(options.asOf) ? options.asOf : null
 
-  const symbol = await loadStockSymbol(db, stockId)
+  const symbol = await loadStockSymbol(env, stockId)
   if (!symbol) return []
+  const marketDb = databaseForDataDomain(env, 'market')
 
   const [financialResult, canonicalResult, revenueRow, epsTrendResult, profileRow] = await Promise.all([
-    db.prepare(
+    marketDb.prepare(
       'SELECT * FROM financials WHERE stock_id=? ORDER BY period DESC LIMIT ?',
     ).bind(stockId, limit).all<any>(),
-    buildCanonicalQuery(db, symbol, asOfDate).all<any>().catch(() => ({ results: [] as any[] })),
-    loadStockMonthlyRevenueRows(db, stockId, { months: 1, asOf: asOfDate }).then((rows) => rows[0] ?? null),
-    db.prepare(
+    buildCanonicalQuery(marketDb, symbol, asOfDate).all<any>().catch(() => ({ results: [] as any[] })),
+    loadStockMonthlyRevenueRows(env, stockId, { months: 1, asOf: asOfDate }).then((rows) => rows[0] ?? null),
+    marketDb.prepare(
       "SELECT period, eps FROM financials WHERE stock_id=? AND eps IS NOT NULL AND period LIKE '%Q%' ORDER BY period DESC LIMIT 4",
     ).bind(stockId).all<any>().catch(() => ({ results: [] as any[] })),
-    db.prepare(
+    marketDb.prepare(
       'SELECT financials_summary FROM stock_profiles WHERE symbol=? LIMIT 1',
     ).bind(symbol).first<any>().catch(() => null),
   ])
@@ -287,11 +291,11 @@ export async function loadStockFinancialRows(
 }
 
 export async function loadLatestStockFinancialSnapshot(
-  db: D1Database,
+  env: Pick<Bindings, 'DB'> & Partial<Bindings>,
   stockId: number,
   options: Pick<FundamentalRowsOptions, 'asOf'> = {},
 ): Promise<FundamentalSnapshot | null> {
-  const rows = await loadStockFinancialRows(db, stockId, { limit: 8, asOf: options.asOf })
+  const rows = await loadStockFinancialRows(env, stockId, { limit: 8, asOf: options.asOf })
   return rows[0] ?? null
 }
 

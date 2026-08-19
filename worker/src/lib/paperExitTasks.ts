@@ -12,6 +12,7 @@ import {
   recordSellSettlement,
 } from './paperMarketData'
 import { batchGetAtrByDomain } from './paperMarketDomainData'
+import { loadPreviousMarketCloseBySymbols } from './stockIdentityMarketBridge'
 import { databaseForDataDomain, databaseForTable } from './dataDomainRegistry'
 import { calcCommission, calcTax, resolveMarketSellFill } from './paperTradeMath'
 import { buildSellOrderNote, calcRealizedPnlSnapshot } from './paperOrderAccounting'
@@ -864,7 +865,7 @@ async function evaluateS12HoldingDefense(
          ORDER BY id DESC
          LIMIT 1
       `).bind(ACCOUNT_ID, pos.symbol, tradeDate).first<any>(),
-      env.DB.prepare('SELECT market FROM stocks WHERE symbol = ? LIMIT 1').bind(pos.symbol).first<{ market?: string | null }>(),
+      databaseForDataDomain(env, 'core').prepare('SELECT market FROM stocks WHERE symbol = ? LIMIT 1').bind(pos.symbol).first<{ market?: string | null }>(),
       listApprovedS12TwCalibrationArtifacts(env.DB).catch(() => []),
     ])
     const calibration = resolveS12TwCalibrationArtifact(calibrationArtifacts, {
@@ -1158,9 +1159,8 @@ export async function forceDayTradeClose(env: Bindings, cfg: TradingConfig, toda
     const price = quote.last
     const atr = atrMap.get(pos.symbol) ?? price * cfg.exit.fallbackAtrPct
 
-    const prevCloseRow = await env.DB.prepare(
-      'SELECT close, volume FROM stock_prices WHERE stock_id=(SELECT id FROM stocks WHERE symbol=?) ORDER BY date DESC LIMIT 1',
-    ).bind(pos.symbol).first<any>()
+    const previousClose = await loadPreviousMarketCloseBySymbols(env, [pos.symbol])
+    const prevCloseRow = previousClose.get(pos.symbol) ?? null
     if (prevCloseRow && prevCloseRow.close > 0) {
       const referencePrice = quote.referencePrice ?? prevCloseRow.close
       const priceBand = resolveTwEquityPriceBand(referencePrice)
@@ -1341,7 +1341,7 @@ export async function runEODExit(env: Bindings): Promise<void> {
   const sellRecMap = new Map<string, any>()
   if (exitSymbols.length > 0) {
     const placeholders = exitSymbols.map(() => '?').join(',')
-    const { results: sellRecs } = await env.DB.prepare(`
+    const { results: sellRecs } = await databaseForDataDomain(env, 'core').prepare(`
       SELECT symbol, signal, confidence FROM daily_recommendations
       WHERE date=? AND symbol IN (${placeholders})
         AND signal IN ('SELL','STRONG_SELL') AND confidence >= ?
@@ -1666,19 +1666,8 @@ export async function pollIntradayStopLoss(env: Bindings): Promise<IntradayStopL
     })),
   )
 
-  const prevCloseMapSell = new Map<string, number>()
-  if (symbols.length > 0) {
-    const ph = symbols.map(() => '?').join(',')
-    const { results: prevRows } = await env.DB.prepare(`
-      SELECT s.symbol, sp.close FROM stock_prices sp
-      JOIN stocks s ON s.id = sp.stock_id
-      WHERE s.symbol IN (${ph}) AND sp.date < ?
-      ORDER BY sp.date DESC
-    `).bind(...symbols, intradayToday).all<{ symbol: string; close: number }>()
-    for (const r of prevRows ?? []) {
-      if (!prevCloseMapSell.has(r.symbol)) prevCloseMapSell.set(r.symbol, r.close)
-    }
-  }
+  const previousMarketCloseSell = await loadPreviousMarketCloseBySymbols(env, symbols, intradayToday)
+  const prevCloseMapSell = new Map([...previousMarketCloseSell].map(([symbol, row]) => [symbol, row.close]))
 
   for (const pos of positions) {
     const quote = quoteMap.get(pos.symbol)

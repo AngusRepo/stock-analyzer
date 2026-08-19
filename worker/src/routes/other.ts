@@ -1,6 +1,7 @@
 import { Hono } from 'hono'
 
 import { loadLatestStockFinancialSnapshot, toLlmFinancialContext } from '../lib/fundamentalData'
+import { loadCoreStockIdentitiesByIds, loadMarketPriceHistoryBySymbols } from '../lib/stockIdentityMarketBridge'
 import {
   DEFAULT_STRATEGY_SPECS,
   STRATEGY_FORMAL_LABELER_VERSION,
@@ -1889,8 +1890,8 @@ async function loadCanonicalRegimeRiskDetail(db: D1Database) {
 market.get('/indices', async (c) => {
   const data = await withCache(c.env.KV, 'market:indices:finlab-clean:v16-twii-canonical-date-fallback', async () => {
     const [canonicalTwii, finlabTwoii, finlabTxfDay, finlabTxfNight, taifexDay, taifexNight, twseOfficialTwii] = await Promise.all([
-      loadCanonicalTwiiSeries(c.env.DB),
-      loadFinlabSeries(c.env.DB, 'TWOII', '櫃買指數', [
+      loadCanonicalTwiiSeries(databaseForDataDomain(c.env, 'market')),
+      loadFinlabSeries(databaseForDataDomain(c.env, 'market'), 'TWOII', '櫃買指數', [
         {
           sql: 'SELECT date, close FROM canonical_market_index_daily WHERE symbol IN (?, ?, ?) AND close > 10 AND close < 10000 ORDER BY date DESC LIMIT 30',
           binds: ['TWOII', 'OTC', 'TPEX'],
@@ -1907,7 +1908,7 @@ market.get('/indices', async (c) => {
           source: 'FinLab etl:finlab_tw_stock_market_ind',
         },
       ]),
-      loadFinlabSeries(c.env.DB, 'TXF', '台指期貨', [
+      loadFinlabSeries(databaseForDataDomain(c.env, 'market'), 'TXF', '台指期貨', [
         {
           sql: "SELECT date, close FROM canonical_futures_daily WHERE symbol IN (?, ?) AND session = 'day' AND close > 1000 ORDER BY date DESC, contract_month ASC LIMIT 30",
           binds: ['TXF', 'TX'],
@@ -1929,7 +1930,7 @@ market.get('/indices', async (c) => {
           source: 'FinLab futures_price',
         },
       ]),
-      loadFinlabSeries(c.env.DB, 'TXF', '台指期貨夜盤', [
+      loadFinlabSeries(databaseForDataDomain(c.env, 'market'), 'TXF', '台指期貨夜盤', [
         {
           sql: "SELECT date, close FROM canonical_futures_daily WHERE symbol IN (?, ?) AND session = 'night' AND close > 1000 ORDER BY date DESC, contract_month ASC LIMIT 30",
           binds: ['TXF', 'TX'],
@@ -2024,7 +2025,7 @@ market.get('/news', async (c) => {
       fetchCnyesStockNews(limitPerSource),
     ])
 
-    const d1Rows = await c.env.DB.prepare(`
+    const d1Rows = await databaseForDataDomain(c.env, 'market').prepare(`
       SELECT source, title, url, published_at, summary
       FROM news
       WHERE published_at >= datetime('now', '-10 days')
@@ -2082,24 +2083,23 @@ llm.use('/*', rateLimitMiddleware('llm'))
 
 // Helper: build snapshot + rich context from DB
 async function buildSnapshot(env: Bindings, stockId: number) {
-  const db = env.DB
+  const coreDb = databaseForDataDomain(env, 'core')
+  const marketDb = databaseForDataDomain(env, 'market')
   const learningDb = databaseForDataDomain(env, 'learning')
   const [stock, latestPrice, latestInd, prediction, factor, risk,
          recentNews, marketRisk, modelAccuracy, stockMemories, recentPredictions] = await Promise.all([
-    db.prepare('SELECT * FROM stocks WHERE id=?').bind(stockId).first<any>(),
-    db.prepare('SELECT * FROM stock_prices WHERE stock_id=? ORDER BY date DESC LIMIT 1').bind(stockId).first<any>(),
-    db.prepare('SELECT * FROM technical_indicators WHERE stock_id=? ORDER BY date DESC LIMIT 1').bind(stockId).first<any>(),
+    coreDb.prepare('SELECT * FROM stocks WHERE id=?').bind(stockId).first<any>(),
+    marketDb.prepare('SELECT * FROM stock_prices WHERE stock_id=? ORDER BY date DESC LIMIT 1').bind(stockId).first<any>(),
+    marketDb.prepare('SELECT * FROM technical_indicators WHERE stock_id=? ORDER BY date DESC LIMIT 1').bind(stockId).first<any>(),
     learningDb.prepare('SELECT * FROM predictions WHERE stock_id=? ORDER BY generated_at DESC LIMIT 1').bind(stockId).first<any>(),
-    db.prepare('SELECT * FROM factor_scores WHERE stock_id=? ORDER BY date DESC LIMIT 1').bind(stockId).first<any>(),
-    db.prepare("SELECT * FROM risk_metrics WHERE stock_id=? AND period='1y' ORDER BY calculated_at DESC LIMIT 1").bind(stockId).first<any>(),
-    // rich context
-    db.prepare("SELECT title, sentiment, published_at FROM news WHERE stock_id=? ORDER BY published_at DESC LIMIT 7").bind(stockId).all<any>(),
-    db.prepare("SELECT risk_level, risk_score, risk_summary FROM market_risk ORDER BY date DESC LIMIT 1").all<any>(),
+    marketDb.prepare('SELECT * FROM factor_scores WHERE stock_id=? ORDER BY date DESC LIMIT 1').bind(stockId).first<any>(),
+    coreDb.prepare("SELECT * FROM risk_metrics WHERE stock_id=? AND period='1y' ORDER BY calculated_at DESC LIMIT 1").bind(stockId).first<any>(),
+    marketDb.prepare('SELECT title, sentiment, published_at FROM news WHERE stock_id=? ORDER BY published_at DESC LIMIT 7').bind(stockId).all<any>(),
+    coreDb.prepare('SELECT risk_level, risk_score, risk_summary FROM market_risk ORDER BY date DESC LIMIT 1').all<any>(),
     learningDb.prepare("SELECT model_name, accuracy, total_count, period FROM model_accuracy WHERE stock_id=? AND period IN ('30d','all') ORDER BY period, model_name").bind(stockId).all<any>(),
-    db.prepare("SELECT memory_type, content FROM stock_memories WHERE stock_id=? ORDER BY updated_at DESC LIMIT 5").bind(stockId).all<any>(),
-    learningDb.prepare("SELECT trade_signal as signal, direction_correct, generated_at FROM predictions WHERE stock_id=? ORDER BY generated_at DESC LIMIT 5").bind(stockId).all<any>(),
+    learningDb.prepare('SELECT memory_type, content FROM stock_memories WHERE stock_id=? ORDER BY updated_at DESC LIMIT 5').bind(stockId).all<any>(),
+    learningDb.prepare('SELECT trade_signal as signal, direction_correct, generated_at FROM predictions WHERE stock_id=? ORDER BY generated_at DESC LIMIT 5').bind(stockId).all<any>(),
   ])
-
   if (!stock) return null
 
   const rich = {
@@ -2181,8 +2181,8 @@ llm.post('/analyst-summary', authMiddleware, async (c) => {
   if (!result) return c.json({ error: '股票不存在' }, 404)
 
   const [latestFin, latestChip] = await Promise.all([
-    loadLatestStockFinancialSnapshot(c.env.DB, stockId),
-    c.env.DB.prepare('SELECT * FROM chip_data WHERE symbol=? ORDER BY date DESC LIMIT 1').bind(result.stock.symbol).first<any>(),
+    loadLatestStockFinancialSnapshot(c.env, stockId),
+    databaseForDataDomain(c.env, 'market').prepare('SELECT * FROM chip_data WHERE symbol=? ORDER BY date DESC LIMIT 1').bind(result.stock.symbol).first<any>(),
   ])
 
   const financials = toLlmFinancialContext(latestFin)
@@ -2201,8 +2201,8 @@ llm.post('/ask', authMiddleware, async (c) => {
   if (!result) return c.json({ error: '股票不存在' }, 404)
 
   const [latestFin, latestChip] = await Promise.all([
-    loadLatestStockFinancialSnapshot(c.env.DB, stockId),
-    c.env.DB.prepare('SELECT * FROM chip_data WHERE symbol=? ORDER BY date DESC LIMIT 1').bind(result.stock.symbol).first<any>(),
+    loadLatestStockFinancialSnapshot(c.env, stockId),
+    databaseForDataDomain(c.env, 'market').prepare('SELECT * FROM chip_data WHERE symbol=? ORDER BY date DESC LIMIT 1').bind(result.stock.symbol).first<any>(),
   ])
 
   const answer = await answerStockQuestion(c.env.ANTHROPIC_API_KEY, {
@@ -2224,31 +2224,60 @@ watchlist.use('*', authMiddleware)
 // GET /api/watchlist — 回傳用戶追蹤清單（含股票基本資訊 + 最新報價）
 watchlist.get('/', async (c) => {
   const userId = c.get('userId')
-  const { results } = await c.env.DB.prepare(`
+  const coreDb = databaseForDataDomain(c.env, 'core')
+  const marketDb = databaseForDataDomain(c.env, 'market')
+  const coreRows = await coreDb.prepare(`
     SELECT w.stock_id, w.cost_price, w.shares, w.note,
-           s.symbol, s.name, s.market, s.sector,
-           COALESCE(p.avg_price, p.close) as close, p.open, p.high, p.low, p.volume,
-           ROUND((COALESCE(p.avg_price, p.close) - COALESCE(p2.avg_price, p2.close)) / COALESCE(p2.avg_price, p2.close) * 100, 2) as change_pct,
-           (SELECT GROUP_CONCAT(tag, ',') FROM (SELECT tag FROM stock_tags WHERE symbol = s.symbol ORDER BY weight DESC LIMIT 3)) as tags
-    FROM watchlist w
-    JOIN stocks s ON s.id = w.stock_id
-    LEFT JOIN (SELECT stock_id, close, open, high, low, volume FROM stock_prices
-               WHERE (stock_id, date) IN (SELECT stock_id, MAX(date) FROM stock_prices GROUP BY stock_id)) p
-      ON p.stock_id = w.stock_id
-    LEFT JOIN (SELECT stock_id, close, avg_price, date FROM stock_prices
-               WHERE (stock_id, date) IN (
-                 SELECT stock_id, MAX(date) FROM stock_prices
-                 WHERE date < (SELECT MAX(date) FROM stock_prices sp2 WHERE sp2.stock_id = stock_prices.stock_id)
-                 GROUP BY stock_id
-               )) p2 ON p2.stock_id = w.stock_id
-    WHERE w.user_id = ?
-    ORDER BY w.created_at DESC
-  `).bind(userId).all()
+           s.symbol, s.name, s.market, s.sector
+      FROM watchlist w
+      JOIN stocks s ON s.id=w.stock_id
+     WHERE w.user_id=?
+     ORDER BY w.created_at DESC
+  `).bind(userId).all<any>()
+  const symbols = (coreRows.results ?? []).map((row) => String(row.symbol))
+  const prices = await loadMarketPriceHistoryBySymbols(c.env, symbols, { rowsPerSymbol: 2 })
+  const pricesBySymbol = new Map<string, typeof prices>()
+  for (const row of prices) {
+    const list = pricesBySymbol.get(row.symbol) ?? []
+    list.push(row)
+    pricesBySymbol.set(row.symbol, list)
+  }
+  const tagsBySymbol = new Map<string, string[]>()
+  for (const chunk of Array.from({ length: Math.ceil(symbols.length / 400) }, (_, index) => symbols.slice(index * 400, index * 400 + 400))) {
+    if (!chunk.length) continue
+    const marks = chunk.map(() => '?').join(',')
+    const tags = await marketDb.prepare(`
+      SELECT symbol, tag FROM stock_tags
+       WHERE symbol IN (${marks}) ORDER BY symbol, weight DESC
+    `).bind(...chunk).all<{ symbol: string; tag: string }>()
+    for (const row of tags.results ?? []) {
+      const list = tagsBySymbol.get(row.symbol) ?? []
+      if (list.length < 3) list.push(row.tag)
+      tagsBySymbol.set(row.symbol, list)
+    }
+  }
+  const results = (coreRows.results ?? []).map((row) => {
+    const series = (pricesBySymbol.get(String(row.symbol)) ?? []).sort((a, b) => b.date.localeCompare(a.date))
+    const latest = series[0]
+    const previous = series[1]
+    const close = Number(latest?.avg_price ?? latest?.close ?? 0)
+    const previousClose = Number(previous?.avg_price ?? previous?.close ?? 0)
+    return {
+      ...row,
+      close: latest ? close : null,
+      open: latest?.open ?? null,
+      high: latest?.high ?? null,
+      low: latest?.low ?? null,
+      volume: latest?.volume ?? null,
+      change_pct: previousClose > 0 ? Math.round(((close - previousClose) / previousClose) * 10000) / 100 : null,
+      tags: (tagsBySymbol.get(String(row.symbol)) ?? []).join(',') || null,
+    }
+  })
   return c.json(results ?? [])
 })
 
 watchlist.get('/:stockId', async (c) => {
-  const row = await c.env.DB.prepare(
+  const row = await databaseForDataDomain(c.env, 'core').prepare(
     'SELECT * FROM watchlist WHERE user_id=? AND stock_id=?'
   ).bind(c.get('userId'), parseInt(c.req.param('stockId'))).first()
   return c.json(row ?? null)
@@ -2259,7 +2288,7 @@ watchlist.put('/:stockId', async (c) => {
   const stockId = parseId(c.req.param('stockId'))
   if (!stockId) return c.json({ error: '無效 ID' }, 400)
   const { costPrice, shares, note } = await c.req.json()
-  await c.env.DB.prepare(
+  await databaseForDataDomain(c.env, 'core').prepare(
     `INSERT INTO watchlist (user_id, stock_id, cost_price, shares, note)
      VALUES (?,?,?,?,?)
      ON CONFLICT(user_id, stock_id) DO UPDATE SET
@@ -2274,7 +2303,7 @@ watchlist.post('/:stockId', async (c) => {
   const userId  = c.get('userId')
   const stockId = parseId(c.req.param('stockId'))
   if (!stockId) return c.json({ error: '無效 ID' }, 400)
-  await c.env.DB.prepare(
+  await databaseForDataDomain(c.env, 'core').prepare(
     `INSERT OR IGNORE INTO watchlist (user_id, stock_id) VALUES (?,?)`
   ).bind(userId, stockId).run()
   return c.json({ success: true })
@@ -2285,7 +2314,7 @@ watchlist.delete('/:stockId', async (c) => {
   const userId  = c.get('userId')
   const stockId = parseId(c.req.param('stockId'))
   if (!stockId) return c.json({ error: '無效 ID' }, 400)
-  await c.env.DB.prepare(
+  await databaseForDataDomain(c.env, 'core').prepare(
     'DELETE FROM watchlist WHERE user_id=? AND stock_id=?'
   ).bind(userId, stockId).run()
   return c.json({ success: true })
@@ -2298,7 +2327,7 @@ export const alerts = new Hono<{ Bindings: Bindings; Variables: Variables }>()
 alerts.use('*', authMiddleware)
 
 alerts.get('/', async (c) => {
-  const { results } = await c.env.DB.prepare(
+  const { results } = await databaseForDataDomain(c.env, 'core').prepare(
     'SELECT a.*, s.symbol, s.name FROM alert_rules a JOIN stocks s ON a.stock_id=s.id WHERE a.user_id=? AND a.is_active=1'
   ).bind(c.get('userId')).all()
   return c.json(results)
@@ -2308,12 +2337,12 @@ alerts.post('/', async (c) => {
   const userId = c.get('userId')
   const { stockId, ruleType, threshold } = await c.req.json()
 
-  const count = await c.env.DB.prepare(
+  const count = await databaseForDataDomain(c.env, 'core').prepare(
     'SELECT COUNT(*) as cnt FROM alert_rules WHERE user_id=? AND is_active=1'
   ).bind(userId).first<{ cnt: number }>()
   if ((count?.cnt ?? 0) >= 20) return c.json({ error: '最多設定 20 個警報' }, 400)
 
-  await c.env.DB.prepare(
+  await databaseForDataDomain(c.env, 'core').prepare(
     'INSERT INTO alert_rules (user_id, stock_id, rule_type, threshold) VALUES (?,?,?,?)'
   ).bind(userId, stockId, ruleType, threshold ?? null).run()
   return c.json({ success: true }, 201)
@@ -2321,7 +2350,7 @@ alerts.post('/', async (c) => {
 
 alerts.delete('/:id', async (c) => {
   const userId = c.get('userId')
-  await c.env.DB.prepare(
+  await databaseForDataDomain(c.env, 'core').prepare(
     'UPDATE alert_rules SET is_active=0 WHERE id=? AND user_id=?'
   ).bind(parseInt(c.req.param('id')), userId).run()
   return c.json({ success: true })
@@ -2337,9 +2366,9 @@ export const news = new Hono<{ Bindings: Bindings; Variables: Variables }>()
 news.post('/:stockId/crawl', authMiddleware, async (c) => {
   const stockId = parseId(c.req.param('stockId'))
   if (!stockId) return c.json({ error: '無效 ID' }, 400)
-  const stock = await c.env.DB.prepare('SELECT * FROM stocks WHERE id=?').bind(stockId).first<any>()
+  const stock = await databaseForDataDomain(c.env, 'core').prepare('SELECT * FROM stocks WHERE id=?').bind(stockId).first<any>()
   if (!stock) return c.json({ error: '股票不存在' }, 404)
-  const result = await crawlAndStoreNews(c.env.DB, stock)
+  const result = await crawlAndStoreNews(databaseForDataDomain(c.env, 'market'), stock)
   return c.json({ success: true, count: result.count })
 })
 
@@ -2350,7 +2379,7 @@ news.get('/:stockId/sentiment', async (c) => {
   const days = parsePosInt(c.req.query('days'), 30)
   const since = new Date(Date.now() - days * 86400000).toISOString().split('T')[0]
 
-  const { results } = await c.env.DB.prepare(
+  const { results } = await databaseForDataDomain(c.env, 'market').prepare(
     `SELECT sentiment, COUNT(*) as count FROM news
      WHERE stock_id=? AND published_at>=? GROUP BY sentiment`
   ).bind(stockId, since).all<any>()
@@ -2370,7 +2399,7 @@ news.get('/:stockId/trend', async (c) => {
   const days = parsePosInt(c.req.query('days'), 30)
   const since = new Date(Date.now() - days * 86400000).toISOString().split('T')[0]
 
-  const { results } = await c.env.DB.prepare(
+  const { results } = await databaseForDataDomain(c.env, 'market').prepare(
     `SELECT date(published_at) as date, sentiment, COUNT(*) as count
      FROM news WHERE stock_id=? AND published_at>=?
      GROUP BY date(published_at), sentiment ORDER BY date`
@@ -2393,7 +2422,7 @@ news.get('/:stockId/keywords', async (c) => {
   const days = parsePosInt(c.req.query('days'), 30)
   const since = new Date(Date.now() - days * 86400000).toISOString().split('T')[0]
 
-  const { results } = await c.env.DB.prepare(
+  const { results } = await databaseForDataDomain(c.env, 'market').prepare(
     `SELECT title, summary FROM news WHERE stock_id=? AND published_at>=?`
   ).bind(stockId, since).all<any>()
 
@@ -2416,18 +2445,18 @@ ml.post('/predict/:stockId', async (c) => {
   if (!mlUrl) return c.json({ error: 'ML service not configured' }, 503)
 
   // ── Step 1：基礎資料查詢 ──────────────────────────────────────────────────
-  const stock = await c.env.DB.prepare('SELECT * FROM stocks WHERE id=?').bind(stockId).first<any>()
+  const stock = await databaseForDataDomain(c.env, 'core').prepare('SELECT * FROM stocks WHERE id=?').bind(stockId).first<any>()
   if (!stock) return c.json({ error: 'Stock not found' }, 404)
 
   const [prices, indicators, chips, news, modelAccRows, marketRiskRow] = await Promise.all([
-    c.env.DB.prepare('SELECT date, close, high, low, open, volume FROM stock_prices WHERE stock_id=? ORDER BY date DESC LIMIT 500').bind(stockId).all<any>(),
-    c.env.DB.prepare('SELECT date, ma5, ma10, ma20, ma60, rsi14, macd_hist as macdHist, bb_upper, bb_lower, atr14, plus_di14 as plusDi14, minus_di14 as minusDi14, adx14, parabolic_sar as parabolicSar, cci20, volume_weighted_rsi14 as volumeWeightedRsi14, volume_momentum_divergence_13_27_10 as volumeMomentumDivergence132710 FROM technical_indicators WHERE stock_id=? ORDER BY date DESC LIMIT 500').bind(stockId).all<any>(),
-    c.env.DB.prepare('SELECT date, foreign_net, trust_net, dealer_net FROM chip_data WHERE symbol=? ORDER BY date DESC LIMIT 200').bind(stock.symbol).all<any>(),
-    c.env.DB.prepare('SELECT date(published_at) as date, AVG(CASE sentiment WHEN \'positive\' THEN 1 WHEN \'negative\' THEN -1 ELSE 0 END) as score FROM news WHERE stock_id=? GROUP BY date(published_at) ORDER BY date DESC LIMIT 90').bind(stockId).all<any>(),
+    databaseForDataDomain(c.env, 'market').prepare('SELECT date, close, high, low, open, volume FROM stock_prices WHERE stock_id=? ORDER BY date DESC LIMIT 500').bind(stockId).all<any>(),
+    databaseForDataDomain(c.env, 'market').prepare('SELECT date, ma5, ma10, ma20, ma60, rsi14, macd_hist as macdHist, bb_upper, bb_lower, atr14, plus_di14 as plusDi14, minus_di14 as minusDi14, adx14, parabolic_sar as parabolicSar, cci20, volume_weighted_rsi14 as volumeWeightedRsi14, volume_momentum_divergence_13_27_10 as volumeMomentumDivergence132710 FROM technical_indicators WHERE stock_id=? ORDER BY date DESC LIMIT 500').bind(stockId).all<any>(),
+    databaseForDataDomain(c.env, 'market').prepare('SELECT date, foreign_net, trust_net, dealer_net FROM chip_data WHERE symbol=? ORDER BY date DESC LIMIT 200').bind(stock.symbol).all<any>(),
+    databaseForDataDomain(c.env, 'market').prepare('SELECT date(published_at) as date, AVG(CASE sentiment WHEN \'positive\' THEN 1 WHEN \'negative\' THEN -1 ELSE 0 END) as score FROM news WHERE stock_id=? GROUP BY date(published_at) ORDER BY date DESC LIMIT 90').bind(stockId).all<any>(),
     // 各模型 30d 準確率（供 weighted_vote 動態加權）
     databaseForDataDomain(c.env, 'learning').prepare("SELECT model_name, accuracy FROM model_accuracy WHERE stock_id=? AND period='30d'").bind(stockId).all<any>(),
     // 當前市場風險環境（供 HMM Regime / LinUCB bandit context）
-    c.env.DB.prepare('SELECT risk_level, risk_score, twii_bias AS twii_bias_20d, twii_close FROM market_risk ORDER BY date DESC LIMIT 1').first<any>(),
+    databaseForDataDomain(c.env, 'core').prepare('SELECT risk_level, risk_score, twii_bias AS twii_bias_20d, twii_close FROM market_risk ORDER BY date DESC LIMIT 1').first<any>(),
   ])
 
   // ── Step 2：新股票自動初始化（資料不足 60 筆時）───────────────────────────
@@ -2438,14 +2467,14 @@ ml.post('/predict/:stockId', async (c) => {
     console.log(`[ML predict] ${stock.symbol} 資料不足（${priceRows.length} 筆），自動觸發初始化...`)
     try {
       // 從 FinMind / Yahoo 抓最近 365 天資料（約 3-5 秒）
-      await fetchAndStoreStockData(c.env.DB, c.env.KV, stock, (c.env as any).FINMIND_TOKEN)
+      await fetchAndStoreStockData(databaseForDataDomain(c.env, 'market'), c.env.KV, stock, (c.env as any).FINMIND_TOKEN)
       // 計算技術指標（約 1 秒）
-      await computeAndStoreIndicators(c.env.DB, stockId)
+      await computeAndStoreIndicators(databaseForDataDomain(c.env, 'market'), stockId)
 
       // 重新查詢
       const [p2, i2] = await Promise.all([
-        c.env.DB.prepare('SELECT date, close, high, low, open, volume FROM stock_prices WHERE stock_id=? ORDER BY date DESC LIMIT 500').bind(stockId).all<any>(),
-        c.env.DB.prepare('SELECT date, ma5, ma10, ma20, ma60, rsi14, macd_hist as macdHist, bb_upper, bb_lower, atr14, plus_di14 as plusDi14, minus_di14 as minusDi14, adx14, parabolic_sar as parabolicSar, cci20, volume_weighted_rsi14 as volumeWeightedRsi14, volume_momentum_divergence_13_27_10 as volumeMomentumDivergence132710 FROM technical_indicators WHERE stock_id=? ORDER BY date DESC LIMIT 500').bind(stockId).all<any>(),
+        databaseForDataDomain(c.env, 'market').prepare('SELECT date, close, high, low, open, volume FROM stock_prices WHERE stock_id=? ORDER BY date DESC LIMIT 500').bind(stockId).all<any>(),
+        databaseForDataDomain(c.env, 'market').prepare('SELECT date, ma5, ma10, ma20, ma60, rsi14, macd_hist as macdHist, bb_upper, bb_lower, atr14, plus_di14 as plusDi14, minus_di14 as minusDi14, adx14, parabolic_sar as parabolicSar, cci20, volume_weighted_rsi14 as volumeWeightedRsi14, volume_momentum_divergence_13_27_10 as volumeMomentumDivergence132710 FROM technical_indicators WHERE stock_id=? ORDER BY date DESC LIMIT 500').bind(stockId).all<any>(),
       ])
       priceRows = p2.results ?? []
       indRows   = i2.results ?? []
@@ -2594,7 +2623,7 @@ market.get('/risk', async (c) => {
   // 從 D1 取最新一筆
   let row: any | null = null
   try {
-    row = await c.env.DB.prepare(
+    row = await databaseForDataDomain(c.env, 'core').prepare(
       'SELECT * FROM market_risk ORDER BY date DESC LIMIT 1'
     ).first<any>()
   } catch (error) {
@@ -2645,20 +2674,20 @@ market.get('/risk', async (c) => {
     factor('lppls', 'LPPLS', String((monitors as any).lppls ?? 'context'), (transitionGuard as any).bubble_risk ? 'warn' : 'info', 'market_regime_state.monitors.lppls'),
     factor('hawkes', 'Hawkes', String((monitors as any).hawkes ?? 'context'), (transitionGuard as any).contagion_risk ? 'warn' : 'info', 'market_regime_state.monitors.hawkes'),
   ]
-  let factorPacket = await buildMarketRegimeFactorPacket(c.env.DB, row, regimeState).catch(() => null)
+  let factorPacket = await buildMarketRegimeFactorPacket(databaseForDataDomain(c.env, 'market'), row, regimeState).catch(() => null)
   if (factorPacket) {
-    await upsertMarketRegimeFactorPacket(c.env.DB, factorPacket).catch(() => {})
+    await upsertMarketRegimeFactorPacket(databaseForDataDomain(c.env, 'market'), factorPacket).catch(() => {})
   } else {
-    factorPacket = await loadMarketRegimeFactorPacket(c.env.DB, row.date).catch(() => null)
+    factorPacket = await loadMarketRegimeFactorPacket(databaseForDataDomain(c.env, 'market'), row.date).catch(() => null)
   }
   const [canonicalOverview, creditTradingBase, institutionalFlows, regimeContext, usMarketSignal, globalEventContext, marketRiskDetail] = await Promise.all([
-    loadCanonicalMarketOverview(c.env.DB),
-    loadCanonicalCreditTrading(c.env.DB),
-    loadCanonicalInstitutionalFlows(c.env.DB),
-    loadCanonicalRegimeContext(c.env.DB),
-    loadLatestUsMarketSignal(c.env.DB),
-    loadGdeltGlobalEventContext(c.env.DB),
-    loadMarketRiskDetailBreakdown(c.env.DB),
+    loadCanonicalMarketOverview(databaseForDataDomain(c.env, 'market')),
+    loadCanonicalCreditTrading(databaseForDataDomain(c.env, 'market')),
+    loadCanonicalInstitutionalFlows(databaseForDataDomain(c.env, 'market')),
+    loadCanonicalRegimeContext(databaseForDataDomain(c.env, 'market')),
+    loadLatestUsMarketSignal(databaseForDataDomain(c.env, 'market')),
+    loadGdeltGlobalEventContext(databaseForDataDomain(c.env, 'market')),
+    loadMarketRiskDetailBreakdown(databaseForDataDomain(c.env, 'market')),
   ])
   const creditTrading = creditTradingBase
   const businessCycle = regimeContext?.businessCycle ?? businessCycleFromFactorPacket(factorPacket, row.date)
@@ -2772,7 +2801,7 @@ market.get('/risk', async (c) => {
 market.get('/risk/history', async (c) => {
   const days = Math.min(parsePosInt(c.req.query('days'), 30), 90)
   const since = new Date(Date.now() - days * 86400000).toISOString().split('T')[0]
-  const { results } = await c.env.DB.prepare(
+  const { results } = await databaseForDataDomain(c.env, 'core').prepare(
     `SELECT date, risk_score, risk_level, vix, twii_close, twii_vol20, twii_bias,
             foreign_consecutive_sell, foreign_net_5d
      FROM market_risk WHERE date >= ? ORDER BY date ASC`
@@ -2808,7 +2837,7 @@ chat.get('/sessions', async (c) => {
   // Fix: userId 從 JWT 取，不信任 query param
   const userId  = String(c.get('userId'))
   const stockId = c.req.query('stockId')
-  const { results } = await c.env.DB.prepare(`
+  const { results } = await databaseForDataDomain(c.env, 'core').prepare(`
     SELECT cs.*, s.symbol, s.name as stock_name,
            (SELECT content FROM chat_messages WHERE session_id=cs.id ORDER BY created_at DESC LIMIT 1) as last_message
     FROM chat_sessions cs
@@ -2824,7 +2853,7 @@ chat.get('/sessions/:id/messages', async (c) => {
   if (!sessionId) return c.json({ error: '無效 ID' }, 400)
 
   // Fix IDOR: 確認 session 屬於當前用戶
-  const session = await c.env.DB.prepare(
+  const session = await databaseForDataDomain(c.env, 'core').prepare(
     'SELECT user_id FROM chat_sessions WHERE id=?'
   ).bind(sessionId).first<{ user_id: string }>()
   if (!session) return c.json({ error: '對話不存在' }, 404)
@@ -2835,7 +2864,7 @@ chat.get('/sessions/:id/messages', async (c) => {
   const before = parseId(c.req.query('before'))  // 往前翻頁：載入比此 ID 更早的訊息
   const limit  = Math.min(parsePosInt(c.req.query('limit'), 50), 100)
 
-  const { results } = await c.env.DB.prepare(
+  const { results } = await databaseForDataDomain(c.env, 'core').prepare(
     before
       ? 'SELECT id, role, content, created_at FROM chat_messages WHERE session_id=? AND id < ? ORDER BY id DESC LIMIT ?'
       : 'SELECT id, role, content, created_at FROM chat_messages WHERE session_id=? ORDER BY id DESC LIMIT ?'
@@ -2849,7 +2878,7 @@ chat.post('/sessions', async (c) => {
   // Fix: userId 永遠從 JWT 取
   const userId  = String(c.get('userId'))
   const { stockId, title } = await c.req.json()
-  const result = await c.env.DB.prepare(`
+  const result = await databaseForDataDomain(c.env, 'core').prepare(`
     INSERT INTO chat_sessions (user_id, stock_id, title) VALUES (?,?,?)
   `).bind(userId, stockId ?? null, title ?? null).run()
   return c.json({ id: result.meta?.last_row_id, userId, stockId })
@@ -2860,7 +2889,7 @@ chat.post('/sessions/:id/messages', async (c) => {
   if (!sessionId) return c.json({ error: '無效 ID' }, 400)
 
   // Fix IDOR: 確認 session 屬於當前用戶
-  const session = await c.env.DB.prepare(
+  const session = await databaseForDataDomain(c.env, 'core').prepare(
     'SELECT user_id FROM chat_sessions WHERE id=?'
   ).bind(sessionId).first<{ user_id: string }>()
   if (!session) return c.json({ error: '對話不存在' }, 404)
@@ -2877,10 +2906,10 @@ chat.post('/sessions/:id/messages', async (c) => {
   const safeContent = typeof content === 'string' ? content.slice(0, 8000) : ''
   if (!safeContent) return c.json({ error: 'content 不可為空' }, 400)
 
-  await c.env.DB.prepare(
+  await databaseForDataDomain(c.env, 'core').prepare(
     'INSERT INTO chat_messages (session_id, role, content) VALUES (?,?,?)'
   ).bind(sessionId, role, safeContent).run()
-  await c.env.DB.prepare(
+  await databaseForDataDomain(c.env, 'core').prepare(
     "UPDATE chat_sessions SET updated_at=datetime('now') WHERE id=?"
   ).bind(sessionId).run()
   return c.json({ ok: true })
@@ -2891,7 +2920,7 @@ chat.delete('/sessions/:id', async (c) => {
   if (!sessionId) return c.json({ error: '無效 ID' }, 400)
 
   // Fix IDOR: 確認 session 屬於當前用戶（或 admin 可刪任何 session）
-  const session = await c.env.DB.prepare(
+  const session = await databaseForDataDomain(c.env, 'core').prepare(
     'SELECT user_id FROM chat_sessions WHERE id=?'
   ).bind(sessionId).first<{ user_id: string }>()
   if (!session) return c.json({ error: '對話不存在' }, 404)
@@ -2900,7 +2929,7 @@ chat.delete('/sessions/:id', async (c) => {
     return c.json({ error: '無權限' }, 403)
   }
 
-  await c.env.DB.prepare('DELETE FROM chat_sessions WHERE id=?').bind(sessionId).run()
+  await databaseForDataDomain(c.env, 'core').prepare('DELETE FROM chat_sessions WHERE id=?').bind(sessionId).run()
   return c.json({ ok: true })
 })
 
@@ -3015,7 +3044,7 @@ notifications.use('/*', authMiddleware)
 // GET /api/notifications — 未讀通知列表
 notifications.get('/', async (c) => {
   const userId = c.get('userId')
-  const { results } = await c.env.DB.prepare(
+  const { results } = await databaseForDataDomain(c.env, 'core').prepare(
     `SELECT id, stock_symbol, rule_type, threshold, triggered_price, created_at
      FROM alert_notifications WHERE user_id=? AND is_read=0
      ORDER BY created_at DESC LIMIT 20`
@@ -3026,7 +3055,7 @@ notifications.get('/', async (c) => {
 // GET /api/notifications/count — 未讀數量（badge 用）
 notifications.get('/count', async (c) => {
   const userId = c.get('userId')
-  const row = await c.env.DB.prepare(
+  const row = await databaseForDataDomain(c.env, 'core').prepare(
     'SELECT COUNT(*) as cnt FROM alert_notifications WHERE user_id=? AND is_read=0'
   ).bind(userId).first<{ cnt: number }>()
   return c.json({ count: row?.cnt ?? 0 })
@@ -3035,7 +3064,7 @@ notifications.get('/count', async (c) => {
 // POST /api/notifications/read-all — 全部標為已讀
 notifications.post('/read-all', async (c) => {
   const userId = c.get('userId')
-  await c.env.DB.prepare(
+  await databaseForDataDomain(c.env, 'core').prepare(
     "UPDATE alert_notifications SET is_read=1 WHERE user_id=? AND is_read=0"
   ).bind(userId).run()
   return c.json({ success: true })
@@ -3047,7 +3076,8 @@ notifications.post('/read-all', async (c) => {
 export const system = new Hono<{ Bindings: Bindings; Variables: Variables }>()
 
 system.get('/status', async (c) => {
-  const db = c.env.DB
+  const marketDb = databaseForDataDomain(c.env, 'market')
+  const coreDb = databaseForDataDomain(c.env, 'core')
 
   // 查各資料表最新一筆的日期
   const [
@@ -3060,19 +3090,19 @@ system.get('/status', async (c) => {
     totalNews,
     dbSize,
   ] = await Promise.all([
-    db.prepare(`
+    marketDb.prepare(`
       SELECT latest.date AS d, COUNT(prices.stock_id) AS cnt
         FROM (SELECT date FROM stock_prices ORDER BY date DESC LIMIT 1) latest
         LEFT JOIN stock_prices prices ON prices.date = latest.date
        GROUP BY latest.date
     `).first<any>(),
-    db.prepare('SELECT MAX(date) as d FROM chip_data').first<any>(),
-    db.prepare('SELECT MAX(published_at) as d, COUNT(*) as cnt FROM news').first<any>(),
+    marketDb.prepare('SELECT MAX(date) as d FROM chip_data').first<any>(),
+    marketDb.prepare('SELECT MAX(published_at) as d, COUNT(*) as cnt FROM news').first<any>(),
     databaseForDataDomain(c.env, 'learning').prepare('SELECT MAX(generated_at) as d FROM predictions').first<any>(),
-    db.prepare('SELECT date, risk_level, risk_score, calculated_at FROM market_risk ORDER BY date DESC LIMIT 1').first<any>(),
-    db.prepare('SELECT COUNT(*) as cnt FROM stocks WHERE in_current_watchlist=1').first<any>(),
-    db.prepare('SELECT COUNT(*) as cnt FROM news').first<any>(),
-    db.prepare("SELECT SUM(pgsize * ncell) as sz FROM dbstat").first<any>().catch(() => null),
+    coreDb.prepare('SELECT date, risk_level, risk_score, calculated_at FROM market_risk ORDER BY date DESC LIMIT 1').first<any>(),
+    coreDb.prepare('SELECT COUNT(*) as cnt FROM stocks WHERE in_current_watchlist=1').first<any>(),
+    marketDb.prepare('SELECT COUNT(*) as cnt FROM news').first<any>(),
+    c.env.DB.prepare("SELECT SUM(pgsize * ncell) as sz FROM dbstat").first<any>().catch(() => null),
   ])
 
   // 判斷各資料是否為今日（台灣交易日）
@@ -3776,14 +3806,14 @@ recommendations.get('/daily', async (c) => {
   if (!date) {
     const twToday = new Date(Date.now() + 8 * 3600_000).toISOString().slice(0, 10)
     // 先看今天有沒有
-    const todayCount = await c.env.DB.prepare(
+    const todayCount = await databaseForDataDomain(c.env, 'core').prepare(
       `SELECT COUNT(*) as cnt FROM daily_recommendations WHERE date = ? AND ${FINAL_RECOMMENDATION_WHERE}`
     ).bind(twToday).first<{ cnt: number }>()
     if ((todayCount?.cnt ?? 0) > 0) {
       date = twToday
     } else {
       // 沒有 → 查上一個交易日（最新有推薦資料的日期）
-      const prev = await c.env.DB.prepare(
+      const prev = await databaseForDataDomain(c.env, 'core').prepare(
         `SELECT date FROM daily_recommendations WHERE date < ? AND ${FINAL_RECOMMENDATION_WHERE} ORDER BY date DESC LIMIT 1`
       ).bind(twToday).first<{ date: string }>()
       date = prev?.date ?? twToday
@@ -3792,103 +3822,74 @@ recommendations.get('/daily', async (c) => {
   }
   const requestedOrToday = requestedDate ?? new Date(Date.now() + 8 * 3600_000).toISOString().slice(0, 10)
   const cardDataAsOfDate = String(requestedOrToday)
-  const { results } = await c.env.DB.prepare(`
+  const coreResult = await databaseForDataDomain(c.env, 'core').prepare(`
     SELECT r.*, s.market, NULL AS prediction_forecast_data,
            ROUND(COALESCE(r.foreign_net_5d, 0), 6) AS chip_cash_foreign_5d,
            ROUND(COALESCE(r.trust_net_5d, 0), 6) AS chip_cash_trust_5d,
            0 AS dealer_net_5d,
-           CASE
-             WHEN r.recommendation_lane = 'emerging_watchlist'
-               OR UPPER(COALESCE(r.market_segment, '')) = 'EMERGING'
-             THEN ROUND(COALESCE((
-               SELECT SUM(cbf.estimated_amount)
-                 FROM canonical_broker_flow_daily cbf
-                WHERE cbf.stock_id = r.symbol
-                  AND cbf.date <= r.date
-                  AND cbf.date >= date(r.date, '-14 days')
-             ), 0) / 100000000.0, 6)
-             ELSE ROUND(COALESCE(r.foreign_net_5d, 0) + COALESCE(r.trust_net_5d, 0), 6)
-           END AS chip_cash_total_5d,
-           ROUND(COALESCE((
-             SELECT SUM(cbf.estimated_amount)
-               FROM canonical_broker_flow_daily cbf
-              WHERE cbf.stock_id = r.symbol
-                AND cbf.date <= r.date
-                AND cbf.date >= date(r.date, '-14 days')
-           ), 0) / 100000000.0, 6) AS broker_chip_cash_total_5d,
-           ROUND(COALESCE((
-             SELECT cbf.estimated_amount
-               FROM canonical_broker_flow_daily cbf
-              WHERE cbf.stock_id = r.symbol
-                AND cbf.date <= r.date
-              ORDER BY cbf.date DESC
-              LIMIT 1
-           ), 0) / 100000000.0, 6) AS broker_chip_cash_latest,
-           (
-             SELECT SUM(cbf.net_shares)
-               FROM canonical_broker_flow_daily cbf
-              WHERE cbf.stock_id = r.symbol
-                AND cbf.date <= r.date
-                AND cbf.date >= date(r.date, '-14 days')
-           ) AS broker_net_shares_5d,
-           (
-             SELECT cbf.broker_count
-               FROM canonical_broker_flow_daily cbf
-              WHERE cbf.stock_id = r.symbol
-                AND cbf.date <= r.date
-              ORDER BY cbf.date DESC
-              LIMIT 1
-           ) AS broker_count_latest,
-           (
-             SELECT cbf.concentration
-               FROM canonical_broker_flow_daily cbf
-              WHERE cbf.stock_id = r.symbol
-                AND cbf.date <= r.date
-              ORDER BY cbf.date DESC
-              LIMIT 1
-           ) AS broker_concentration_latest,
-           (
-             SELECT cbf.source
-               FROM canonical_broker_flow_daily cbf
-              WHERE cbf.stock_id = r.symbol
-                AND cbf.date <= r.date
-              ORDER BY cbf.date DESC
-              LIMIT 1
-           ) AS broker_flow_source,
-           (
-             SELECT cbf.date
-               FROM canonical_broker_flow_daily cbf
-              WHERE cbf.stock_id = r.symbol
-                AND cbf.date <= r.date
-              ORDER BY cbf.date DESC
-              LIMIT 1
-           ) AS broker_flow_source_date,
-           (
-             SELECT sp.open
-               FROM stock_prices sp
-              WHERE sp.stock_id = r.stock_id
-                AND sp.date <= r.date
-              ORDER BY sp.date DESC
-              LIMIT 1
-           ) AS latest_open,
-           (
-             SELECT sp.avg_price
-               FROM stock_prices sp
-              WHERE sp.stock_id = r.stock_id
-                AND sp.date <= r.date
-              ORDER BY sp.date DESC
-              LIMIT 1
-           ) AS latest_avg_price
-    FROM daily_recommendations r
-    LEFT JOIN stocks s ON s.id = r.stock_id
-    WHERE r.date = ? AND ${FINAL_RECOMMENDATION_ROW_WHERE}
-      AND COALESCE(r.recommendation_lane, '') != 'emerging_watchlist'
-      AND UPPER(COALESCE(r.market_segment, s.market, '')) NOT IN ('EMERGING', 'ESB', 'ROTC')
-    -- Frontend panels need the complete final set so BUY / potential BUY rows
-    -- that rank beyond the card display limit are still eligible for priority UI.
-    ORDER BY r.rank ASC
+           ROUND(COALESCE(r.foreign_net_5d, 0) + COALESCE(r.trust_net_5d, 0), 6) AS chip_cash_total_5d,
+           NULL AS broker_chip_cash_total_5d,
+           NULL AS broker_chip_cash_latest,
+           NULL AS broker_net_shares_5d,
+           NULL AS broker_count_latest,
+           NULL AS broker_concentration_latest,
+           NULL AS broker_flow_source,
+           NULL AS broker_flow_source_date,
+           NULL AS latest_open,
+           NULL AS latest_avg_price
+      FROM daily_recommendations r
+      LEFT JOIN stocks s ON s.id=r.stock_id
+     WHERE r.date=? AND ${FINAL_RECOMMENDATION_ROW_WHERE}
+       AND COALESCE(r.recommendation_lane, '') != 'emerging_watchlist'
+       AND UPPER(COALESCE(r.market_segment, s.market, '')) NOT IN ('EMERGING', 'ESB', 'ROTC')
+     ORDER BY r.rank ASC
   `).bind(date).all<any>()
-
+  const results = coreResult.results ?? []
+  const symbolsForHydration = [...new Set(results.map((row: any) => String(row.symbol ?? '').trim()).filter(Boolean))]
+  if (symbolsForHydration.length) {
+    const marketDb = databaseForDataDomain(c.env, 'market')
+    const prices = await loadMarketPriceHistoryBySymbols(c.env, symbolsForHydration, {
+      onOrBeforeDate: String(date),
+      rowsPerSymbol: 1,
+    })
+    const priceBySymbol = new Map(prices.map((row) => [row.symbol, row]))
+    const brokerBySymbol = new Map<string, any>()
+    for (const chunk of Array.from({ length: Math.ceil(symbolsForHydration.length / 400) }, (_, index) => symbolsForHydration.slice(index * 400, index * 400 + 400))) {
+      const marks = chunk.map(() => '?').join(',')
+      const broker = await marketDb.prepare(`
+        WITH scoped AS (
+          SELECT stock_id, date, estimated_amount, net_shares, broker_count, concentration, source,
+                 ROW_NUMBER() OVER (PARTITION BY stock_id ORDER BY date DESC) AS rn
+            FROM canonical_broker_flow_daily
+           WHERE stock_id IN (${marks}) AND date <= ? AND date >= date(?, '-14 days')
+        )
+        SELECT stock_id,
+               SUM(estimated_amount) AS amount_5d,
+               SUM(net_shares) AS net_shares_5d,
+               MAX(CASE WHEN rn=1 THEN estimated_amount END) AS latest_amount,
+               MAX(CASE WHEN rn=1 THEN broker_count END) AS broker_count_latest,
+               MAX(CASE WHEN rn=1 THEN concentration END) AS concentration_latest,
+               MAX(CASE WHEN rn=1 THEN source END) AS latest_source,
+               MAX(CASE WHEN rn=1 THEN date END) AS latest_date
+          FROM scoped GROUP BY stock_id
+      `).bind(...chunk, date, date).all<any>()
+      for (const row of broker.results ?? []) brokerBySymbol.set(String(row.stock_id), row)
+    }
+    for (const row of results) {
+      const symbol = String(row.symbol ?? '').trim()
+      const price = priceBySymbol.get(symbol)
+      const broker = brokerBySymbol.get(symbol)
+      row.latest_open = price?.open ?? null
+      row.latest_avg_price = price?.avg_price ?? null
+      row.broker_chip_cash_total_5d = broker?.amount_5d == null ? 0 : Math.round((Number(broker.amount_5d) / 100000000) * 1e6) / 1e6
+      row.broker_chip_cash_latest = broker?.latest_amount == null ? 0 : Math.round((Number(broker.latest_amount) / 100000000) * 1e6) / 1e6
+      row.broker_net_shares_5d = broker?.net_shares_5d ?? null
+      row.broker_count_latest = broker?.broker_count_latest ?? null
+      row.broker_concentration_latest = broker?.concentration_latest ?? null
+      row.broker_flow_source = broker?.latest_source ?? null
+      row.broker_flow_source_date = broker?.latest_date ?? null
+    }
+  }
   const screenerFunnelBySymbol = new Map<string, any>()
   const resultSymbols = [...new Set((results ?? [])
     .map((r: any) => String(r.symbol ?? '').trim())
@@ -3899,7 +3900,7 @@ recommendations.get('/daily', async (c) => {
   if (resultSymbols.length > 0) {
     const placeholders = resultSymbols.map(() => '?').join(',')
     try {
-      const { results: chipRows } = await c.env.DB.prepare(`
+      const { results: chipRows } = await databaseForDataDomain(c.env, 'market').prepare(`
         WITH latest_chip AS (
           SELECT symbol, MAX(date) AS date
             FROM chip_data
@@ -3924,14 +3925,14 @@ recommendations.get('/daily', async (c) => {
       console.warn('[recommendations/daily] institutional raw card data unavailable:', e)
     }
     try {
-      const rankTable = await c.env.DB.prepare(`
+      const rankTable = await databaseForDataDomain(c.env, 'market').prepare(`
         SELECT name FROM sqlite_master
          WHERE type = 'table'
            AND name = 'canonical_broker_rank_daily'
          LIMIT 1
       `).first<{ name: string }>()
       if (rankTable?.name) {
-        const { results: rankRows } = await c.env.DB.prepare(`
+        const { results: rankRows } = await databaseForDataDomain(c.env, 'market').prepare(`
           WITH latest_rank AS (
             SELECT stock_id, MAX(date) AS date
               FROM canonical_broker_rank_daily
@@ -3959,7 +3960,7 @@ recommendations.get('/daily', async (c) => {
       console.warn('[recommendations/daily] broker top5 rank table unavailable:', e)
     }
     try {
-      const { results: brokerRows } = await c.env.DB.prepare(`
+      const { results: brokerRows } = await databaseForDataDomain(c.env, 'market').prepare(`
         WITH latest_broker_flow AS (
           SELECT stock_id, MAX(date) AS date
             FROM canonical_broker_flow_daily
@@ -4158,7 +4159,7 @@ recommendations.get('/daily', async (c) => {
     }
   })
   const evidenceLinksBySymbol = await loadRecommendationEvidenceLinks(
-    c.env.DB,
+    c.env,
     String(date),
     recs.map((r: any) => ({ symbol: String(r.symbol ?? ''), name: String(r.name ?? '') })),
     3,
@@ -4220,7 +4221,7 @@ recommendations.get('/daily', async (c) => {
 // 近 N 天的推薦歷史（用於追蹤推薦準確率）
 recommendations.get('/history', async (c) => {
   const days = Math.min(parsePosInt(c.req.query('days'), 7), 30)
-  const { results } = await c.env.DB.prepare(`
+  const { results } = await databaseForDataDomain(c.env, 'core').prepare(`
     SELECT r.stock_id, r.date, r.symbol, r.name, r.sector, r.rank, r.score,
            r.score_components, r.ml_score, r.chip_score, r.tech_score,
            COALESCE(r.momentum_score, 0) AS momentum_score,
@@ -4258,7 +4259,7 @@ recommendations.get('/sector-flow', async (c) => {
   const typeFilter = type ? 'AND classification = ?' : ''
   const binds = type ? [date, type] : [date]
 
-  const { results } = await c.env.DB.prepare(`
+  const { results } = await databaseForDataDomain(c.env, 'market').prepare(`
     SELECT *
     FROM sector_flow
     WHERE date = ? ${typeFilter}
@@ -4267,7 +4268,7 @@ recommendations.get('/sector-flow', async (c) => {
 
   // 若今天沒資料，取最近一筆
   if (!results?.length) {
-    const { results: latest } = await c.env.DB.prepare(`
+    const { results: latest } = await databaseForDataDomain(c.env, 'market').prepare(`
       SELECT *
       FROM sector_flow
       WHERE date = (SELECT MAX(date) FROM sector_flow WHERE 1=1 ${typeFilter})
@@ -4298,7 +4299,7 @@ recommendations.get('/sector-trend', async (c) => {
   const typeFilter = type ? 'AND classification = ?' : ''
   const binds = type ? [sector, days, type] : [sector, days]
 
-  const { results } = await c.env.DB.prepare(`
+  const { results } = await databaseForDataDomain(c.env, 'market').prepare(`
     SELECT date, foreign_net, trust_net, total_net, avg_rsi, avg_momentum_5d, up_count, stock_count,
            classification, turnover_value, turnover_share, turnover_share_delta
     FROM sector_flow
@@ -4322,7 +4323,7 @@ recommendations.get('/sector-flow-stocks', async (c) => {
   if (cls)   { sql += ' AND classification = ?'; binds.push(cls) }
   sql += ' ORDER BY theme, classification, net_amount DESC'
 
-  const { results } = await c.env.DB.prepare(sql).bind(...binds).all<any>()
+  const { results } = await databaseForDataDomain(c.env, 'market').prepare(sql).bind(...binds).all<any>()
 
   // 若今天沒資料，fallback 最近一天
   if (!results?.length) {
@@ -4331,7 +4332,7 @@ recommendations.get('/sector-flow-stocks', async (c) => {
     if (theme) { fbSql += ' AND theme = ?'; fbBinds.push(theme) }
     if (cls)   { fbSql += ' AND classification = ?'; fbBinds.push(cls) }
     fbSql += ' ORDER BY theme, classification, net_amount DESC'
-    const { results: fb } = await c.env.DB.prepare(fbSql).bind(...fbBinds).all<any>()
+    const { results: fb } = await databaseForDataDomain(c.env, 'market').prepare(fbSql).bind(...fbBinds).all<any>()
     const staleDate = fb?.[0]?.date ?? null
     return c.json({
       date,

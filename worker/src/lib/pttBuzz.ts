@@ -7,6 +7,8 @@
  */
 
 import type { Bindings } from '../types'
+import { databaseForDataDomain } from './dataDomainRegistry'
+import { loadCoreStockIdentitiesBySymbols } from './stockIdentityMarketBridge'
 
 // ── FALLBACK 概念關鍵字（當 D1 動態載入失敗時使用）────────────────────────
 // 正常情況下由 loadBuzzKeywords(db) 從 D1 stock_tags 動態生成
@@ -123,46 +125,40 @@ export interface ConceptBuzzResult {
  * tag name 本身作為 keyword + 每個 tag 的 top 5 成員股名稱
  * KV 快取 24h，避免重複查詢
  */
-export async function loadBuzzKeywords(db: D1Database, kv?: KVNamespace): Promise<Record<string, string[]>> {
-  // 嘗試 KV 快取
+export async function loadBuzzKeywords(
+  env: Pick<Bindings, 'DB'> & Partial<Bindings>,
+  kv?: KVNamespace,
+): Promise<Record<string, string[]>> {
   if (kv) {
     const cached = await kv.get('buzz:keywords', 'json') as Record<string, string[]> | null
     if (cached) return cached
   }
 
-  // 從 D1 讀取所有 concept tags + 成員股名稱
-  // Phase 6.6 follow-up: filter to concept-only. Without this, industry +
-  // subindustry tags become buzz keywords and pollute concept_buzz counts.
-  const { results: tagRows } = await db.prepare(`
-    SELECT st.tag, s.name
-    FROM stock_tags st
-    JOIN stocks s ON s.symbol = st.symbol
-    WHERE st.weight >= 0.3 AND st.tag_type = 'concept'
-    ORDER BY st.tag, st.weight DESC
-  `).all<{ tag: string; name: string }>()
+  const { results: tagRows } = await databaseForDataDomain(env, 'market').prepare(`
+    SELECT tag, symbol
+      FROM stock_tags
+     WHERE weight >= 0.3 AND tag_type = 'concept'
+     ORDER BY tag, weight DESC
+  `).all<{ tag: string; symbol: string }>()
+  if (!tagRows?.length) return CONCEPT_KEYWORDS
 
-  if (!tagRows?.length) return CONCEPT_KEYWORDS  // fallback
-
+  const identities = await loadCoreStockIdentitiesBySymbols(env, tagRows.map((row) => row.symbol))
   const kwMap: Record<string, string[]> = {}
-  const tagStocks = new Map<string, string[]>()  // tag → stock names
-
+  const tagStocks = new Map<string, string[]>()
   for (const row of tagRows) {
+    const identity = identities.get(row.symbol)
+    if (!identity) continue
     if (!tagStocks.has(row.tag)) tagStocks.set(row.tag, [])
     const names = tagStocks.get(row.tag)!
-    if (names.length < 5) names.push(row.name)
+    if (names.length < 5) names.push(identity.name)
   }
 
   for (const [tag, stockNames] of tagStocks) {
-    // tag name 本身 + 去掉常見後綴的短版 + 成員股名稱
     const keywords = new Set<string>()
     keywords.add(tag)
-    // 拆分 tag name：'塑膠工業' → '塑膠'、'HBM記憶體' → 'HBM', '記憶體'
-    const parts = tag.split(/[_（）()、]/).filter(p => p.length >= 2)
-    for (const p of parts) keywords.add(p)
-    // 去掉「工業」「業」等通用後綴
+    for (const part of tag.split(/[_（）()、]/).filter((value) => value.length >= 2)) keywords.add(part)
     const stripped = tag.replace(/(工業|纖維|業|及週邊設備|保險|百貨|燃氣|餐旅)$/, '')
     if (stripped.length >= 2 && stripped !== tag) keywords.add(stripped)
-    // 成員股名稱（去掉常見公司後綴）
     for (const name of stockNames) {
       const clean = name.replace(/(股份有限公司|-KY|投控|控股)$/, '').trim()
       if (clean.length >= 2) keywords.add(clean)
@@ -170,21 +166,14 @@ export async function loadBuzzKeywords(db: D1Database, kv?: KVNamespace): Promis
     kwMap[tag] = [...keywords]
   }
 
-  // 寫入 KV 快取 24h
-  if (kv) {
-    await kv.put('buzz:keywords', JSON.stringify(kwMap), { expirationTtl: 86400 })
-  }
-
-  console.log(`[BuzzKeywords] Loaded ${Object.keys(kwMap).length} concepts from D1 (${tagRows.length} tag-stock pairs)`)
+  if (kv) await kv.put('buzz:keywords', JSON.stringify(kwMap), { expirationTtl: 86400 })
+  console.log(`[BuzzKeywords] Loaded ${Object.keys(kwMap).length} concepts from split D1 (${tagRows.length} tag-stock pairs)`)
   return kwMap
 }
 
 /**
  * 偵測 PTT Stock 板的概念題材熱度
- * 爬最近 ~60 篇文章，統計各概念被提及次數
- * @param keywords — 動態概念關鍵字（由 loadBuzzKeywords 預載），fallback 用 hardcoded
- */
-export async function detectPttBuzz(keywords?: Record<string, string[]>): Promise<ConceptBuzzResult[]> {
+ */export async function detectPttBuzz(keywords?: Record<string, string[]>): Promise<ConceptBuzzResult[]> {
   const kwMap = keywords ?? CONCEPT_KEYWORDS
   // 抓最新 2 頁（~40 篇）
   const prevPage = await getPttPrevPage()

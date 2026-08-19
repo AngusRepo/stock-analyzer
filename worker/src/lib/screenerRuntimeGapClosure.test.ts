@@ -43,6 +43,18 @@ void (async () => {
           if (params.length > 40) throw new Error(`too many SQL variables: ${params.length}`)
           return {
             async all<T>() {
+              if (sql.includes('FROM stocks')) {
+                return { results: params.map((symbol, index) => ({
+                  id: Number(String(symbol).replace(/\D/g, '')) || index + 1,
+                  symbol: String(symbol),
+                  name: String(symbol),
+                  market: 'TWSE',
+                  sector: 'Semiconductor',
+                })) as T[] }
+              }
+              if (sql.includes('FROM stock_prices')) {
+                return { results: [] as T[] }
+              }
               if (sql.includes('FROM sector_leaders')) {
                 return { results: [
                   { sector: 'Semiconductor', symbol: 'L1' },
@@ -58,7 +70,7 @@ void (async () => {
     },
   } as unknown as D1Database
   await sectorLeaderBonusBatch(
-    sectorDb,
+    { DB: sectorDb, CORE_DB: sectorDb, MARKET_DB: sectorDb } as any,
     Array.from({ length: 160 }, (_, index) => ({ symbol: `S${index}`, sector: 'Semiconductor' })),
     0.7,
     5,

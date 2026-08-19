@@ -1,3 +1,4 @@
+import { databaseForDataDomain } from './dataDomainRegistry'
 import type { Bindings } from '../types'
 import {
   assessS12IntradayStructureFromBaseBars,
@@ -183,7 +184,7 @@ export async function runS12ResearchStructureSnapshots(
         recordSkipReason(terminalDataSourceReason ?? reason)
         continue
       }
-      const stockRow = await env.DB.prepare('SELECT market FROM stocks WHERE symbol = ? LIMIT 1').bind(row.symbol).first<{ market?: string | null }>()
+      const stockRow = await databaseForDataDomain(env, 'core').prepare('SELECT market FROM stocks WHERE symbol = ? LIMIT 1').bind(row.symbol).first<{ market?: string | null }>()
       const assess = (calibration: S12TwCalibrationArtifact | null) => assessS12IntradayStructureFromBaseBars({
         symbol: row.symbol,
         baseBars: loaded.bars,

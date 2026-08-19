@@ -1,5 +1,29 @@
+import { databaseForDataDomain } from './dataDomainRegistry'
 import { twToday } from './dateUtils'
 import type { Bindings } from '../types'
+async function selectTopStockByMarketHistory(env: Bindings): Promise<{ id: number; symbol: string } | null> {
+  const { results: identities } = await databaseForDataDomain(env, 'core').prepare(`
+    SELECT id, symbol FROM stocks WHERE in_current_watchlist=1
+  `).all<{ id: number; symbol: string }>()
+  let selected: { id: number; symbol: string; rows: number } | null = null
+  for (let offset = 0; offset < (identities ?? []).length; offset += 400) {
+    const chunk = (identities ?? []).slice(offset, offset + 400)
+    const marks = chunk.map(() => '?').join(',')
+    const { results } = await databaseForDataDomain(env, 'market').prepare(`
+      SELECT stock_id, COUNT(*) AS rows
+        FROM stock_prices
+       WHERE stock_id IN (${marks})
+       GROUP BY stock_id
+    `).bind(...chunk.map((row) => row.id)).all<{ stock_id: number; rows: number }>()
+    const symbols = new Map(chunk.map((row) => [Number(row.id), row.symbol]))
+    for (const row of results ?? []) {
+      const count = Number(row.rows ?? 0)
+      const symbol = symbols.get(Number(row.stock_id))
+      if (symbol && (!selected || count > selected.rows)) selected = { id: Number(row.stock_id), symbol, rows: count }
+    }
+  }
+  return selected ? { id: selected.id, symbol: selected.symbol } : null
+}
 
 export async function runMorningWarmup(env: Bindings) {
   console.log('[Cron] Morning warmup starting...')
@@ -38,18 +62,14 @@ export async function runWeeklyICAudit(env: Bindings) {
   const mlUrl = env.ML_SERVICE_URL
   if (!mlUrl) return
 
-  const topStock = await env.DB.prepare(`
-    SELECT s.id, s.symbol FROM stocks s
-    JOIN stock_prices sp ON sp.stock_id=s.id
-    WHERE s.in_current_watchlist=1
-    GROUP BY s.id ORDER BY COUNT(*) DESC LIMIT 1
-  `).first<any>()
+  const topStock = await selectTopStockByMarketHistory(env)
+
   if (!topStock) return
 
   const [prices, indicators, chips] = await Promise.all([
-    env.DB.prepare('SELECT date, close, high, low, open, volume FROM stock_prices WHERE stock_id=? ORDER BY date DESC LIMIT 500').bind(topStock.id).all<any>(),
-    env.DB.prepare('SELECT date, ma5, ma10, ma20, ma60, rsi14, macd_hist as macdHist, bb_upper, bb_lower, atr14, plus_di14 as plusDi14, minus_di14 as minusDi14, adx14, parabolic_sar as parabolicSar, cci20, volume_weighted_rsi14 as volumeWeightedRsi14, volume_momentum_divergence_13_27_10 as volumeMomentumDivergence132710 FROM technical_indicators WHERE stock_id=? ORDER BY date DESC LIMIT 500').bind(topStock.id).all<any>(),
-    env.DB.prepare('SELECT date, foreign_net, trust_net, dealer_net FROM chip_data WHERE symbol=? ORDER BY date DESC LIMIT 200').bind(topStock.symbol).all<any>(),
+    databaseForDataDomain(env, 'market').prepare('SELECT date, close, high, low, open, volume FROM stock_prices WHERE stock_id=? ORDER BY date DESC LIMIT 500').bind(topStock.id).all<any>(),
+    databaseForDataDomain(env, 'market').prepare('SELECT date, ma5, ma10, ma20, ma60, rsi14, macd_hist as macdHist, bb_upper, bb_lower, atr14, plus_di14 as plusDi14, minus_di14 as minusDi14, adx14, parabolic_sar as parabolicSar, cci20, volume_weighted_rsi14 as volumeWeightedRsi14, volume_momentum_divergence_13_27_10 as volumeMomentumDivergence132710 FROM technical_indicators WHERE stock_id=? ORDER BY date DESC LIMIT 500').bind(topStock.id).all<any>(),
+    databaseForDataDomain(env, 'market').prepare('SELECT date, foreign_net, trust_net, dealer_net FROM chip_data WHERE symbol=? ORDER BY date DESC LIMIT 200').bind(topStock.symbol).all<any>(),
   ])
 
   const headers: Record<string, string> = { 'Content-Type': 'application/json' }
@@ -80,7 +100,7 @@ export async function runWeeklyICAudit(env: Bindings) {
   for (const row of (data.details ?? [])) {
     const feature = String(row.feature ?? '').trim()
     if (!feature) continue
-    await env.DB.prepare(`
+    await databaseForDataDomain(env, 'market').prepare(`
       INSERT OR REPLACE INTO factor_scores (feature, ic_mean, ic_std, icir, ic_trend, effective, updated_at)
       VALUES (?, ?, ?, ?, ?, ?, datetime('now'))
     `).bind(feature, row.ic_mean ?? row.ic ?? null, row.ic_std ?? null, row.icir ?? null, row.ic_trend ?? null, row.effective ? 1 : 0)
@@ -92,18 +112,14 @@ export async function runWeeklyDriftCheck(env: Bindings) {
   const mlUrl = env.ML_SERVICE_URL
   if (!mlUrl) return
 
-  const topStock = await env.DB.prepare(`
-    SELECT s.id, s.symbol FROM stocks s
-    JOIN stock_prices sp ON sp.stock_id=s.id
-    WHERE s.in_current_watchlist=1
-    GROUP BY s.id ORDER BY COUNT(*) DESC LIMIT 1
-  `).first<any>()
+  const topStock = await selectTopStockByMarketHistory(env)
+
   if (!topStock) return
 
   const [prices, indicators, chips] = await Promise.all([
-    env.DB.prepare('SELECT * FROM stock_prices WHERE stock_id=? ORDER BY date DESC LIMIT 252').bind(topStock.id).all<any>(),
-    env.DB.prepare('SELECT * FROM technical_indicators WHERE stock_id=? ORDER BY date DESC LIMIT 252').bind(topStock.id).all<any>(),
-    env.DB.prepare('SELECT * FROM chip_data WHERE symbol=? ORDER BY date DESC LIMIT 252').bind(topStock.symbol).all<any>(),
+    databaseForDataDomain(env, 'market').prepare('SELECT * FROM stock_prices WHERE stock_id=? ORDER BY date DESC LIMIT 252').bind(topStock.id).all<any>(),
+    databaseForDataDomain(env, 'market').prepare('SELECT * FROM technical_indicators WHERE stock_id=? ORDER BY date DESC LIMIT 252').bind(topStock.id).all<any>(),
+    databaseForDataDomain(env, 'market').prepare('SELECT * FROM chip_data WHERE symbol=? ORDER BY date DESC LIMIT 252').bind(topStock.symbol).all<any>(),
   ])
 
   const headers: Record<string, string> = { 'Content-Type': 'application/json' }
@@ -175,7 +191,7 @@ export async function runWeeklyCleanup(env: Bindings): Promise<MaintenanceRunRes
 }
 
 export async function checkAlerts(env: Bindings) {
-  const { results } = await env.DB.prepare(
+  const { results } = await databaseForDataDomain(env, 'core').prepare(
     'SELECT a.*, s.symbol, s.market FROM alert_rules a JOIN stocks s ON a.stock_id=s.id WHERE a.is_active=1'
   ).all<any>()
 
@@ -195,11 +211,11 @@ export async function checkAlerts(env: Bindings) {
 
       if (!triggered) continue
 
-      await env.DB.prepare(
+      await databaseForDataDomain(env, 'core').prepare(
         "UPDATE alert_rules SET last_triggered=datetime('now'), is_active=0 WHERE id=?"
       ).bind(alert.id).run()
 
-      await env.DB.prepare(`
+      await databaseForDataDomain(env, 'core').prepare(`
         INSERT INTO alert_notifications
           (user_id, alert_id, stock_symbol, rule_type, threshold, triggered_price)
         VALUES (?,?,?,?,?,?)
@@ -240,7 +256,7 @@ export async function fetchWeeklyShareholding(env: Bindings): Promise<void> {
       throw new Error('tdcc_shareholding_empty_response')
     }
 
-    const { results: dbStocks } = await env.DB.prepare(
+    const { results: dbStocks } = await databaseForDataDomain(env, 'core').prepare(
       'SELECT id, symbol FROM stocks WHERE in_current_watchlist=1'
     ).all<any>()
     const idMap = new Map<string, number>()
@@ -285,7 +301,7 @@ export async function fetchWeeklyShareholding(env: Bindings): Promise<void> {
         .filter((row) => largeLevels.has(holdingLevel(row)))
         .reduce((sum, row) => sum + shareCount(row), 0)
 
-      statements.push(env.DB.prepare(`
+      statements.push(databaseForDataDomain(env, 'market').prepare(`
         INSERT INTO shareholding (stock_id, date, total_shares, holder_count, retail_shares, retail_pct, large_holder_shares, large_holder_pct)
         VALUES (?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(stock_id, date) DO UPDATE SET

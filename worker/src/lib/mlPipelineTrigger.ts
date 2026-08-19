@@ -69,7 +69,7 @@ export async function runMLAndRiskV2(
       const shouldRecomputeRisk = twDate === twToday()
       const existingRisk = shouldRecomputeRisk
         ? null
-        : await env.DB.prepare('SELECT * FROM market_risk WHERE date=? LIMIT 1').bind(twDate).first<any>()
+        : await databaseForDataDomain(env, 'core').prepare('SELECT * FROM market_risk WHERE date=? LIMIT 1').bind(twDate).first<any>()
       const existingRiskComplete = existingRisk
         && existingRisk.twii_close != null
         && existingRisk.twii_ma20 != null
@@ -91,7 +91,7 @@ export async function runMLAndRiskV2(
           env.GEMINI_API_KEY,
           twDate,
         )
-        await env.DB.prepare(`
+        await databaseForDataDomain(env, 'core').prepare(`
           INSERT OR REPLACE INTO market_risk
             (date, vix, vix_level, twii_close, twii_vol20, twii_ma20, twii_bias,
              foreign_consecutive_sell, foreign_net_5d, margin_ratio,

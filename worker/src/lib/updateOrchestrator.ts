@@ -1,5 +1,6 @@
 import type { Bindings, UpdateQueueMsg } from '../types'
 import { databaseForDataDomain } from './dataDomainRegistry'
+import { loadActiveCoreStockIdentities, loadCoreStockIdentitiesBySymbols } from './stockIdentityMarketBridge'
 import {
   historicalLearningLineageBlockedMessage,
   historicalLearningLineageDecision,
@@ -38,6 +39,12 @@ import {
   finLabRequiredFieldsForLane,
   finLabSentinelFieldForLane,
 } from './finlabSourceContract'
+import {
+  loadSplitFusionSnapshotMissingReplaySymbols,
+  loadSplitFusionSnapshotReplayCoverage,
+  loadSplitFusionSnapshotSymbols,
+  loadSplitSignedEligibleRepairSymbolsByHistoricalDate,
+} from './s12ReplaySplitReadModels'
 import {
   INDICATOR_QUEUE_SHARD_COUNT,
   recordIndicatorQueueBatchProgress,
@@ -342,7 +349,7 @@ async function tradingRestrictionsDailyReadinessCheck(
   const key = 'canonical_trading_restrictions:daily_micro_lane'
   try {
     const [quality, canonical, checkedAt, officialRefresh] = await Promise.all([
-      env.DB.prepare(`
+      databaseForDataDomain(env, 'market').prepare(`
         SELECT freshness_status, missing_rate, latest_materialization, metrics_json
           FROM source_quality_metrics
          WHERE source = 'finlab'
@@ -356,7 +363,7 @@ async function tradingRestrictionsDailyReadinessCheck(
         latest_materialization: string | null
         metrics_json: string | null
       }>(),
-      env.DB.prepare(`
+      databaseForDataDomain(env, 'market').prepare(`
         SELECT COUNT(*) AS count,
                MAX(source_date) AS latest_source_date,
                MAX(updated_at) AS latest_materialization
@@ -434,11 +441,11 @@ async function checkEveningChainSourceReadiness(
 ): Promise<SourceReadinessSnapshot> {
   const checks: ReadinessCheck[] = []
 
-  checks.push(...await finLabCanonicalDailyReadinessChecks(env.DB, targetDate))
+  checks.push(...await finLabCanonicalDailyReadinessChecks(databaseForDataDomain(env, 'market'), targetDate))
   checks.push(await tradingRestrictionsDailyReadinessCheck(env, targetDate))
 
   try {
-    const ready = await assertMarketDataReady(env.DB, targetDate, { requireIndicators: false })
+    const ready = await assertMarketDataReady(databaseForDataDomain(env, 'market'), targetDate, { requireIndicators: false })
     checks.push({ key: 'official_supplemental_market_data', ok: true, summary: ready.summary })
   } catch (e) {
     checks.push({
@@ -450,56 +457,56 @@ async function checkEveningChainSourceReadiness(
 
   const canonicalChecks = await Promise.all([
     countReadinessRows(
-      env.DB,
+      databaseForDataDomain(env, 'market'),
       'canonical_market_index_daily:twii',
       "SELECT COUNT(*) AS count FROM canonical_market_index_daily WHERE date = ? AND symbol IN ('TWII', 'TAIEX')",
       [targetDate],
       1,
     ),
     countReadinessRows(
-      env.DB,
+      databaseForDataDomain(env, 'market'),
       'canonical_market_index_daily:twoii',
       "SELECT COUNT(*) AS count FROM canonical_market_index_daily WHERE date = ? AND symbol IN ('TWOII', 'OTC', 'TPEX')",
       [targetDate],
       1,
     ),
     countReadinessRows(
-      env.DB,
+      databaseForDataDomain(env, 'market'),
       'canonical_futures_daily:txf_day',
       "SELECT COUNT(*) AS count FROM canonical_futures_daily WHERE date = ? AND symbol IN ('TXF', 'TX') AND session = 'day'",
       [targetDate],
       1,
     ),
     countReadinessRows(
-      env.DB,
+      databaseForDataDomain(env, 'market'),
       'canonical_market_summary_daily:listed_otc',
       "SELECT COUNT(DISTINCT market_segment) AS count FROM canonical_market_summary_daily WHERE date = ? AND market_segment IN ('LISTED', 'OTC')",
       [targetDate],
       2,
     ),
     countReadinessRows(
-      env.DB,
+      databaseForDataDomain(env, 'market'),
       'canonical_regime_context_daily:pcr',
       "SELECT COUNT(*) AS count FROM canonical_regime_context_daily WHERE date = ? AND dataset = 'tw_option_put_call_ratio'",
       [targetDate],
       1,
     ),
     countReadinessRows(
-      env.DB,
+      databaseForDataDomain(env, 'market'),
       'canonical_regime_context_daily:large_trader',
       "SELECT COUNT(*) AS count FROM canonical_regime_context_daily WHERE date = ? AND dataset = 'tw_taifex_futures_large_trader'",
       [targetDate],
       1,
     ),
     countReadinessRows(
-      env.DB,
+      databaseForDataDomain(env, 'market'),
       'canonical_broker_flow_daily:listed_otc',
       "SELECT COUNT(*) AS count FROM canonical_broker_flow_daily WHERE date = ? AND source = 'finlab.broker_transactions' AND market_segment = 'LISTED_OTC'",
       [targetDate],
       1000,
     ),
     countReadinessRows(
-      env.DB,
+      databaseForDataDomain(env, 'market'),
       'canonical_broker_rank_daily:listed_otc',
       "SELECT COUNT(*) AS count FROM canonical_broker_rank_daily WHERE date = ? AND source = 'finlab.broker_transactions' AND market_segment = 'LISTED_OTC'",
       [targetDate],
@@ -1133,232 +1140,222 @@ function d1ChangeCount(result: unknown): number {
   return Number.isFinite(n) ? n : 0
 }
 
+async function runMarketStatements(db: D1Database, statements: D1PreparedStatement[]): Promise<number> {
+  let changes = 0
+  for (let offset = 0; offset < statements.length; offset += 50) {
+    const results = await db.batch(statements.slice(offset, offset + 50))
+    changes += results.reduce((sum, result) => sum + d1ChangeCount(result), 0)
+  }
+  return changes
+}
+
+function activeIdentityChunks(
+  identities: Map<string, { id: number; market: string | null }>,
+  size = 300,
+): Array<Array<[string, { id: number; market: string | null }]>> {
+  const rows = [...identities.entries()]
+  const chunks: Array<Array<[string, { id: number; market: string | null }]>> = []
+  for (let offset = 0; offset < rows.length; offset += size) chunks.push(rows.slice(offset, offset + size))
+  return chunks
+}
+
 export async function syncLegacyMarketDataFromFinLabCanonical(
-  db: D1Database,
+  env: Pick<Bindings, 'DB'> & Partial<Bindings>,
   targetDate: string,
 ): Promise<FinLabLegacyMarketDataSyncSummary> {
-  const priceResult = await db.prepare(`
-    INSERT INTO stock_prices (stock_id, date, open, high, low, close, adj_close, volume, avg_price)
-    SELECT
-      s.id,
-      c.date,
-      c.open,
-      c.high,
-      c.low,
-      c.close,
-      COALESCE(c.adj_close, c.close),
-      CAST(ROUND(COALESCE(c.volume, 0)) AS INTEGER),
-      c.avg_price
-    FROM canonical_market_daily c
-    JOIN stocks s ON s.symbol = c.stock_id
-    WHERE c.date = ?
-      AND c.source IN ('finlab.price', 'finlab.rotc_price')
-      AND c.close IS NOT NULL
-      AND COALESCE(UPPER(s.market), '') IN ('TWSE', 'OTC')
-    ON CONFLICT(stock_id, date) DO UPDATE SET
-      open=excluded.open,
-      high=excluded.high,
-      low=excluded.low,
-      close=excluded.close,
-      adj_close=excluded.adj_close,
-      volume=excluded.volume,
-      avg_price=COALESCE(stock_prices.avg_price, excluded.avg_price)
-  `).bind(targetDate).run()
+  const marketDb = databaseForDataDomain(env, 'market')
+  const identities = await loadActiveCoreStockIdentities(env)
+  const [{ results: priceRows }, { results: chipRows }] = await Promise.all([
+    marketDb.prepare(`
+      SELECT stock_id, date, open, high, low, close, adj_close, volume, avg_price
+        FROM canonical_market_daily
+       WHERE date = ?
+         AND source IN ('finlab.price', 'finlab.rotc_price')
+         AND close IS NOT NULL
+    `).bind(targetDate).all<any>(),
+    marketDb.prepare(`
+      SELECT stock_id, date,
+             MAX(foreign_buy) AS foreign_buy, MAX(foreign_sell) AS foreign_sell,
+             MAX(foreign_net) AS foreign_net, MAX(trust_buy) AS trust_buy,
+             MAX(trust_sell) AS trust_sell, MAX(trust_net) AS trust_net,
+             MAX(dealer_buy) AS dealer_buy, MAX(dealer_sell) AS dealer_sell,
+             MAX(dealer_net) AS dealer_net, MAX(margin_balance) AS margin_balance,
+             MAX(short_balance) AS short_balance
+        FROM canonical_chip_daily
+       WHERE date = ? AND source LIKE 'finlab.%'
+       GROUP BY stock_id, date
+    `).bind(targetDate).all<any>(),
+  ])
 
-  const chipResult = await db.prepare(`
-    INSERT INTO chip_data (
-      symbol, date,
-      foreign_buy, foreign_sell, foreign_net,
-      trust_buy, trust_sell, trust_net,
-      dealer_buy, dealer_sell, dealer_net,
-      margin_balance, short_balance
-    )
-    SELECT
-      c.stock_id,
-      c.date,
-      CAST(ROUND(MAX(c.foreign_buy)) AS INTEGER),
-      CAST(ROUND(MAX(c.foreign_sell)) AS INTEGER),
-      CAST(ROUND(MAX(c.foreign_net)) AS INTEGER),
-      CAST(ROUND(MAX(c.trust_buy)) AS INTEGER),
-      CAST(ROUND(MAX(c.trust_sell)) AS INTEGER),
-      CAST(ROUND(MAX(c.trust_net)) AS INTEGER),
-      CAST(ROUND(MAX(c.dealer_buy)) AS INTEGER),
-      CAST(ROUND(MAX(c.dealer_sell)) AS INTEGER),
-      CAST(ROUND(MAX(c.dealer_net)) AS INTEGER),
-      CAST(ROUND(MAX(c.margin_balance)) AS INTEGER),
-      CAST(ROUND(MAX(c.short_balance)) AS INTEGER)
-    FROM canonical_chip_daily c
-    JOIN stocks s ON s.symbol = c.stock_id
-    WHERE c.date = ?
-      AND c.source LIKE 'finlab.%'
-      AND COALESCE(UPPER(s.market), '') IN ('TWSE', 'OTC')
-    GROUP BY c.stock_id, c.date
-    ON CONFLICT(symbol, date) DO UPDATE SET
-      foreign_buy=COALESCE(excluded.foreign_buy, chip_data.foreign_buy),
-      foreign_sell=COALESCE(excluded.foreign_sell, chip_data.foreign_sell),
-      foreign_net=COALESCE(excluded.foreign_net, chip_data.foreign_net),
-      trust_buy=COALESCE(excluded.trust_buy, chip_data.trust_buy),
-      trust_sell=COALESCE(excluded.trust_sell, chip_data.trust_sell),
-      trust_net=COALESCE(excluded.trust_net, chip_data.trust_net),
-      dealer_buy=COALESCE(excluded.dealer_buy, chip_data.dealer_buy),
-      dealer_sell=COALESCE(excluded.dealer_sell, chip_data.dealer_sell),
-      dealer_net=COALESCE(excluded.dealer_net, chip_data.dealer_net),
-      margin_balance=COALESCE(excluded.margin_balance, chip_data.margin_balance),
-      short_balance=COALESCE(excluded.short_balance, chip_data.short_balance)
-  `).bind(targetDate).run()
+  const priceStatements = (priceRows ?? []).flatMap((row: any) => {
+    const identity = identities.get(String(row.stock_id))
+    if (!identity) return []
+    return [marketDb.prepare(`
+      INSERT INTO stock_prices (stock_id, date, open, high, low, close, adj_close, volume, avg_price)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(stock_id, date) DO UPDATE SET
+        open=excluded.open, high=excluded.high, low=excluded.low, close=excluded.close,
+        adj_close=excluded.adj_close, volume=excluded.volume,
+        avg_price=COALESCE(stock_prices.avg_price, excluded.avg_price)
+    `).bind(
+      identity.id, row.date, row.open, row.high, row.low, row.close,
+      row.adj_close ?? row.close, Math.round(Number(row.volume ?? 0)), row.avg_price,
+    )]
+  })
+  const chipStatements: D1PreparedStatement[] = []
+  const marginStatements: D1PreparedStatement[] = []
+  for (const row of chipRows ?? []) {
+    const symbol = String(row.stock_id)
+    const identity = identities.get(symbol)
+    if (!identity) continue
+    chipStatements.push(marketDb.prepare(`
+      INSERT INTO chip_data (
+        symbol, date, foreign_buy, foreign_sell, foreign_net, trust_buy, trust_sell,
+        trust_net, dealer_buy, dealer_sell, dealer_net, margin_balance, short_balance
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(symbol, date) DO UPDATE SET
+        foreign_buy=COALESCE(excluded.foreign_buy, chip_data.foreign_buy),
+        foreign_sell=COALESCE(excluded.foreign_sell, chip_data.foreign_sell),
+        foreign_net=COALESCE(excluded.foreign_net, chip_data.foreign_net),
+        trust_buy=COALESCE(excluded.trust_buy, chip_data.trust_buy),
+        trust_sell=COALESCE(excluded.trust_sell, chip_data.trust_sell),
+        trust_net=COALESCE(excluded.trust_net, chip_data.trust_net),
+        dealer_buy=COALESCE(excluded.dealer_buy, chip_data.dealer_buy),
+        dealer_sell=COALESCE(excluded.dealer_sell, chip_data.dealer_sell),
+        dealer_net=COALESCE(excluded.dealer_net, chip_data.dealer_net),
+        margin_balance=COALESCE(excluded.margin_balance, chip_data.margin_balance),
+        short_balance=COALESCE(excluded.short_balance, chip_data.short_balance)
+    `).bind(
+      symbol, row.date,
+      row.foreign_buy == null ? null : Math.round(Number(row.foreign_buy)),
+      row.foreign_sell == null ? null : Math.round(Number(row.foreign_sell)),
+      row.foreign_net == null ? null : Math.round(Number(row.foreign_net)),
+      row.trust_buy == null ? null : Math.round(Number(row.trust_buy)),
+      row.trust_sell == null ? null : Math.round(Number(row.trust_sell)),
+      row.trust_net == null ? null : Math.round(Number(row.trust_net)),
+      row.dealer_buy == null ? null : Math.round(Number(row.dealer_buy)),
+      row.dealer_sell == null ? null : Math.round(Number(row.dealer_sell)),
+      row.dealer_net == null ? null : Math.round(Number(row.dealer_net)),
+      row.margin_balance == null ? null : Math.round(Number(row.margin_balance)),
+      row.short_balance == null ? null : Math.round(Number(row.short_balance)),
+    ))
+    if (row.margin_balance != null || row.short_balance != null) {
+      const margin = row.margin_balance == null ? null : Math.round(Number(row.margin_balance))
+      const short = row.short_balance == null ? null : Math.round(Number(row.short_balance))
+      const shortRatio = margin == null || Math.abs(margin) < 1 || short == null ? null : short / margin
+      marginStatements.push(marketDb.prepare(`
+        INSERT INTO margin_data (
+          stock_id, date, margin_buy, margin_sell, margin_balance,
+          short_buy, short_sell, short_balance, margin_usage_pct, short_ratio
+        ) VALUES (?, ?, NULL, NULL, ?, NULL, NULL, ?, NULL, ?)
+        ON CONFLICT(stock_id, date) DO UPDATE SET
+          margin_balance=COALESCE(excluded.margin_balance, margin_data.margin_balance),
+          short_balance=COALESCE(excluded.short_balance, margin_data.short_balance),
+          short_ratio=COALESCE(excluded.short_ratio, margin_data.short_ratio)
+      `).bind(identity.id, row.date, margin, short, shortRatio))
+    }
+  }
 
-  const marginResult = await db.prepare(`
-    INSERT INTO margin_data (
-      stock_id, date,
-      margin_buy, margin_sell, margin_balance,
-      short_buy, short_sell, short_balance,
-      margin_usage_pct, short_ratio
-    )
-    SELECT
-      s.id,
-      c.date,
-      NULL,
-      NULL,
-      CAST(ROUND(MAX(c.margin_balance)) AS INTEGER),
-      NULL,
-      NULL,
-      CAST(ROUND(MAX(c.short_balance)) AS INTEGER),
-      NULL,
-      CASE
-        WHEN MAX(c.margin_balance) IS NULL OR ABS(MAX(c.margin_balance)) < 1 THEN NULL
-        ELSE MAX(c.short_balance) / MAX(c.margin_balance)
-      END
-    FROM canonical_chip_daily c
-    JOIN stocks s ON s.symbol = c.stock_id
-    WHERE c.date = ?
-      AND c.source LIKE 'finlab.%'
-      AND COALESCE(UPPER(s.market), '') IN ('TWSE', 'OTC')
-      AND (c.margin_balance IS NOT NULL OR c.short_balance IS NOT NULL)
-    GROUP BY s.id, c.date
-    ON CONFLICT(stock_id, date) DO UPDATE SET
-      margin_balance=COALESCE(excluded.margin_balance, margin_data.margin_balance),
-      short_balance=COALESCE(excluded.short_balance, margin_data.short_balance),
-      short_ratio=COALESCE(excluded.short_ratio, margin_data.short_ratio)
-  `).bind(targetDate).run()
-
-  const priceRows = d1ChangeCount(priceResult)
-  const chipRows = d1ChangeCount(chipResult)
-  const marginRows = d1ChangeCount(marginResult)
+  const priceCount = await runMarketStatements(marketDb, priceStatements)
+  const chipCount = await runMarketStatements(marketDb, chipStatements)
+  const marginCount = await runMarketStatements(marketDb, marginStatements)
   return {
-    priceRows,
-    chipRows,
-    marginRows,
+    priceRows: priceCount,
+    chipRows: chipCount,
+    marginRows: marginCount,
     sourceRole: 'finlab_primary_canonical_mirror',
-    summary: `FinLab canonical mirrored to legacy serving tables for ${targetDate}: stock_prices=${priceRows} chip_data=${chipRows} margin_data=${marginRows}`,
+    summary: `FinLab canonical mirrored to legacy serving tables for ${targetDate}: stock_prices=${priceCount} chip_data=${chipCount} margin_data=${marginCount}`,
   }
 }
 
 export async function syncMarketBreadthFromFinLabCanonical(
-  db: D1Database,
+  env: Pick<Bindings, 'DB'> & Partial<Bindings>,
   targetDate: string,
 ): Promise<{ rows: number; sampleSize: number; advanceCount: number; declineCount: number; unchangedCount: number; limitDownCount: number }> {
-  const breadth = await db.prepare(`
+  const marketDb = databaseForDataDomain(env, 'market')
+  const identities = await loadActiveCoreStockIdentities(env)
+  const { results } = await marketDb.prepare(`
     WITH current_prices AS (
-      SELECT c.stock_id, c.date, c.open, c.close
-      FROM canonical_market_daily c
-      JOIN stocks s ON s.symbol = c.stock_id
-      WHERE c.date = ?
-        AND c.source IN ('finlab.price', 'finlab.rotc_price')
-        AND c.close IS NOT NULL
-        AND c.close > 0
-        AND COALESCE(UPPER(s.market), '') IN ('TWSE', 'OTC')
-    ),
-    prev_dates AS (
+      SELECT stock_id, date, open, close
+        FROM canonical_market_daily
+       WHERE date = ? AND source IN ('finlab.price', 'finlab.rotc_price')
+         AND close IS NOT NULL AND close > 0
+    ), prev_dates AS (
       SELECT cur.stock_id, MAX(prev.date) AS prev_date
-      FROM current_prices cur
-      JOIN canonical_market_daily prev
-        ON prev.stock_id = cur.stock_id
-       AND prev.date < cur.date
-       AND prev.source IN ('finlab.price', 'finlab.rotc_price')
-       AND prev.close IS NOT NULL
-       AND prev.close > 0
-      GROUP BY cur.stock_id
-    ),
-    paired AS (
-      SELECT cur.open AS open, cur.close AS close, prev.close AS prev_close
+        FROM current_prices cur
+        JOIN canonical_market_daily prev
+          ON prev.stock_id = cur.stock_id AND prev.date < cur.date
+         AND prev.source IN ('finlab.price', 'finlab.rotc_price')
+         AND prev.close IS NOT NULL AND prev.close > 0
+       GROUP BY cur.stock_id
+    )
+    SELECT cur.stock_id, cur.open, cur.close, prev.close AS prev_close
       FROM current_prices cur
       JOIN prev_dates pd ON pd.stock_id = cur.stock_id
       JOIN canonical_market_daily prev
-        ON prev.stock_id = pd.stock_id
-       AND prev.date = pd.prev_date
+        ON prev.stock_id = pd.stock_id AND prev.date = pd.prev_date
        AND prev.source IN ('finlab.price', 'finlab.rotc_price')
-    )
-    SELECT
-      COUNT(*) AS sample_size,
-      SUM(CASE WHEN close > prev_close THEN 1 ELSE 0 END) AS advance_count,
-      SUM(CASE WHEN close < prev_close THEN 1 ELSE 0 END) AS decline_count,
-      SUM(CASE WHEN close = prev_close THEN 1 ELSE 0 END) AS unchanged_count,
-      SUM(CASE WHEN open > 0 AND close >= open * 0.9 AND close <= open * 0.905 THEN 1 ELSE 0 END) AS limit_down_count
-    FROM paired
-  `).bind(targetDate).first<{
-    sample_size: number | null
-    advance_count: number | null
-    decline_count: number | null
-    unchanged_count: number | null
-    limit_down_count: number | null
-  }>()
-
-  const sampleSize = Number(breadth?.sample_size ?? 0)
-  const advanceCount = Number(breadth?.advance_count ?? 0)
-  const declineCount = Number(breadth?.decline_count ?? 0)
-  const unchangedCount = Number(breadth?.unchanged_count ?? 0)
-  const limitDownCount = Number(breadth?.limit_down_count ?? 0)
-  if (sampleSize < 1000) {
-    return { rows: 0, sampleSize, advanceCount, declineCount, unchangedCount, limitDownCount }
+  `).bind(targetDate).all<any>()
+  const paired = (results ?? []).filter((row: any) => identities.has(String(row.stock_id)))
+  const sampleSize = paired.length
+  let advanceCount = 0
+  let declineCount = 0
+  let unchangedCount = 0
+  let limitDownCount = 0
+  for (const row of paired) {
+    const open = Number(row.open)
+    const close = Number(row.close)
+    const previous = Number(row.prev_close)
+    if (close > previous) advanceCount++
+    else if (close < previous) declineCount++
+    else unchangedCount++
+    if (open > 0 && close >= open * 0.9 && close <= open * 0.905) limitDownCount++
   }
-  const ratio = sampleSize > 0 ? advanceCount / sampleSize : null
-  const result = await db.prepare(`
+  if (sampleSize < 1000) return { rows: 0, sampleSize, advanceCount, declineCount, unchangedCount, limitDownCount }
+  const result = await marketDb.prepare(`
     INSERT INTO market_breadth (
       date, advance_count, decline_count, unchanged_count, advance_ratio, sample_size, limit_down_count
     ) VALUES (?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT(date) DO UPDATE SET
-      advance_count=excluded.advance_count,
-      decline_count=excluded.decline_count,
-      unchanged_count=excluded.unchanged_count,
-      advance_ratio=excluded.advance_ratio,
-      sample_size=excluded.sample_size,
-      limit_down_count=excluded.limit_down_count
-  `).bind(targetDate, advanceCount, declineCount, unchangedCount, ratio, sampleSize, limitDownCount).run()
-  return {
-    rows: d1ChangeCount(result),
-    sampleSize,
-    advanceCount,
-    declineCount,
-    unchangedCount,
-    limitDownCount,
-  }
+      advance_count=excluded.advance_count, decline_count=excluded.decline_count,
+      unchanged_count=excluded.unchanged_count, advance_ratio=excluded.advance_ratio,
+      sample_size=excluded.sample_size, limit_down_count=excluded.limit_down_count
+  `).bind(
+    targetDate, advanceCount, declineCount, unchangedCount,
+    advanceCount / sampleSize, sampleSize, limitDownCount,
+  ).run()
+  return { rows: d1ChangeCount(result), sampleSize, advanceCount, declineCount, unchangedCount, limitDownCount }
 }
 
 export async function syncLegacyRevenueFromFinLabCanonical(
-  db: D1Database,
+  env: Pick<Bindings, 'DB'> & Partial<Bindings>,
   targetDate: string,
 ): Promise<number> {
-  const result = await db.prepare(`
-    INSERT INTO monthly_revenue (stock_id, date, revenue, revenue_yoy, revenue_mom)
-    SELECT
-      s.id,
-      r.revenue_month,
-      r.revenue,
-      r.yoy,
-      r.mom
-    FROM canonical_revenue_monthly r
-    JOIN stocks s ON s.symbol = r.stock_id
-    WHERE r.source LIKE 'finlab.%'
-      AND r.revenue_month >= strftime('%Y-%m', date(?, '-18 months'))
-      AND r.revenue_month <= strftime('%Y-%m', ?)
-      AND r.revenue IS NOT NULL
-      AND COALESCE(UPPER(s.market), '') IN ('TWSE', 'OTC')
-    ON CONFLICT(stock_id, date) DO UPDATE SET
-      revenue=excluded.revenue,
-      revenue_yoy=excluded.revenue_yoy,
-      revenue_mom=excluded.revenue_mom
-  `).bind(targetDate, targetDate).run()
-  return d1ChangeCount(result)
+  const marketDb = databaseForDataDomain(env, 'market')
+  const identities = await loadActiveCoreStockIdentities(env)
+  const statements: D1PreparedStatement[] = []
+  for (const chunk of activeIdentityChunks(identities)) {
+    const symbols = chunk.map(([symbol]) => symbol)
+    const marks = symbols.map(() => '?').join(',')
+    const { results } = await marketDb.prepare(`
+      SELECT stock_id, revenue_month, revenue, yoy, mom
+        FROM canonical_revenue_monthly
+       WHERE stock_id IN (${marks}) AND source LIKE 'finlab.%'
+         AND revenue_month >= strftime('%Y-%m', date(?, '-18 months'))
+         AND revenue_month <= strftime('%Y-%m', ?) AND revenue IS NOT NULL
+    `).bind(...symbols, targetDate, targetDate).all<any>()
+    for (const row of results ?? []) {
+      const identity = identities.get(String(row.stock_id))
+      if (!identity) continue
+      statements.push(marketDb.prepare(`
+        INSERT INTO monthly_revenue (stock_id, date, revenue, revenue_yoy, revenue_mom)
+        VALUES (?, ?, ?, ?, ?)
+        ON CONFLICT(stock_id, date) DO UPDATE SET
+          revenue=excluded.revenue, revenue_yoy=excluded.revenue_yoy, revenue_mom=excluded.revenue_mom
+      `).bind(identity.id, row.revenue_month, row.revenue, row.yoy, row.mom))
+    }
+  }
+  return runMarketStatements(marketDb, statements)
 }
 
 function quarterFromIsoDate(date: string): string {
@@ -1368,121 +1365,99 @@ function quarterFromIsoDate(date: string): string {
   return `${year}Q${quarter}`
 }
 
+function normalizeCanonicalQuarter(period: string): string {
+  const raw = String(period ?? '').trim()
+  if (raw.includes('Q')) return raw
+  if (raw.length < 7) return raw
+  const month = Number(raw.slice(5, 7))
+  return Number.isFinite(month) ? `${raw.slice(0, 4)}Q${Math.max(1, Math.min(4, Math.ceil(month / 3)))}` : raw
+}
+
 export async function syncLegacyFinancialsFromFinLabCanonical(
-  db: D1Database,
+  env: Pick<Bindings, 'DB'> & Partial<Bindings>,
   targetDate: string,
 ): Promise<{ financialRows: number; valuationRows: number }> {
-  const factResult = await db.prepare(`
-    WITH normalized AS (
-      SELECT
-        s.id AS legacy_stock_id,
-        CASE
-          WHEN instr(f.period, 'Q') > 0 THEN f.period
-          WHEN length(f.period) >= 7 THEN substr(f.period, 1, 4) || 'Q' || CAST(((CAST(substr(f.period, 6, 2) AS INTEGER) + 2) / 3) AS INTEGER)
-          ELSE f.period
-        END AS legacy_period,
-        COALESCE(f.available_date, f.report_date, f.period) AS source_date,
-        f.revenue,
-        f.eps,
-        f.roe,
-        f.operating_income,
-        f.net_income,
-        f.total_assets,
-        f.total_liabilities
-      FROM canonical_fundamental_features f
-      JOIN stocks s ON s.symbol = f.stock_id
-      WHERE f.source LIKE 'finlab.%'
-        AND COALESCE(f.available_date, f.report_date, f.period) <= ?
-        AND f.as_of_date <= ?
-        AND COALESCE(f.available_date, f.report_date, f.period) >= date(?, '-3 years')
-        AND COALESCE(UPPER(s.market), '') IN ('TWSE', 'OTC')
-        AND (
-          f.revenue IS NOT NULL OR f.eps IS NOT NULL OR f.roe IS NOT NULL
-          OR f.operating_income IS NOT NULL OR f.net_income IS NOT NULL
-          OR f.total_assets IS NOT NULL OR f.total_liabilities IS NOT NULL
-        )
-    ),
-    ranked AS (
-      SELECT *,
-        ROW_NUMBER() OVER (
-          PARTITION BY legacy_stock_id, legacy_period
-          ORDER BY source_date DESC
-        ) AS rn
-      FROM normalized
-      WHERE legacy_period IS NOT NULL AND legacy_period != ''
-    )
-    INSERT INTO financials (
-      stock_id, period, period_type,
-      revenue, eps, roe, operating_income, net_income, total_assets, total_liabilities
-    )
-    SELECT
-      legacy_stock_id,
-      legacy_period,
-      'quarterly',
-      revenue,
-      eps,
-      roe,
-      operating_income,
-      net_income,
-      total_assets,
-      total_liabilities
-    FROM ranked
-    WHERE rn = 1
-    ON CONFLICT(stock_id, period) DO UPDATE SET
-      revenue=COALESCE(excluded.revenue, financials.revenue),
-      eps=COALESCE(excluded.eps, financials.eps),
-      roe=COALESCE(excluded.roe, financials.roe),
-      operating_income=COALESCE(excluded.operating_income, financials.operating_income),
-      net_income=COALESCE(excluded.net_income, financials.net_income),
-      total_assets=COALESCE(excluded.total_assets, financials.total_assets),
-      total_liabilities=COALESCE(excluded.total_liabilities, financials.total_liabilities)
-  `).bind(targetDate, targetDate, targetDate).run()
-
+  const marketDb = databaseForDataDomain(env, 'market')
+  const identities = await loadActiveCoreStockIdentities(env)
+  const factStatements: D1PreparedStatement[] = []
+  const valuationStatements: D1PreparedStatement[] = []
   const currentQuarter = quarterFromIsoDate(targetDate)
-  const valuationResult = await db.prepare(`
-    WITH latest_valuation AS (
-      SELECT
-        s.id AS legacy_stock_id,
-        f.pe,
-        f.pb,
-        f.dividend_yield,
-        COALESCE(f.available_date, f.report_date, f.period) AS source_date,
-        ROW_NUMBER() OVER (
-          PARTITION BY s.id
-          ORDER BY COALESCE(f.available_date, f.report_date, f.period) DESC
-        ) AS rn
-      FROM canonical_fundamental_features f
-      JOIN stocks s ON s.symbol = f.stock_id
-      WHERE f.source LIKE 'finlab.%'
-        AND COALESCE(f.available_date, f.report_date, f.period) <= ?
-        AND f.as_of_date <= ?
-        AND (f.pe IS NOT NULL OR f.pb IS NOT NULL OR f.dividend_yield IS NOT NULL)
-        AND COALESCE(UPPER(s.market), '') IN ('TWSE', 'OTC')
-    )
-    INSERT INTO financials (stock_id, period, period_type, pe, pb, dividend_yield)
-    SELECT
-      legacy_stock_id,
-      COALESCE((
-        SELECT MAX(existing.period)
-        FROM financials existing
-        WHERE existing.stock_id = latest_valuation.legacy_stock_id
-          AND existing.period LIKE '%Q%'
-      ), ?),
-      'quarterly',
-      pe,
-      pb,
-      dividend_yield
-    FROM latest_valuation
-    WHERE rn = 1
-    ON CONFLICT(stock_id, period) DO UPDATE SET
-      pe=COALESCE(excluded.pe, financials.pe),
-      pb=COALESCE(excluded.pb, financials.pb),
-      dividend_yield=COALESCE(excluded.dividend_yield, financials.dividend_yield)
-  `).bind(targetDate, targetDate, currentQuarter).run()
+  for (const chunk of activeIdentityChunks(identities)) {
+    const symbols = chunk.map(([symbol]) => symbol)
+    const marks = symbols.map(() => '?').join(',')
+    const { results: facts } = await marketDb.prepare(`
+      WITH normalized AS (
+        SELECT stock_id, period, COALESCE(available_date, report_date, period) AS source_date,
+               revenue, eps, roe, operating_income, net_income, total_assets, total_liabilities
+          FROM canonical_fundamental_features
+         WHERE stock_id IN (${marks}) AND source LIKE 'finlab.%'
+           AND COALESCE(available_date, report_date, period) <= ? AND f.as_of_date <= ?
+           AND COALESCE(available_date, report_date, period) >= date(?, '-3 years')
+           AND (revenue IS NOT NULL OR eps IS NOT NULL OR roe IS NOT NULL
+             OR operating_income IS NOT NULL OR net_income IS NOT NULL
+             OR total_assets IS NOT NULL OR total_liabilities IS NOT NULL)
+      )
+      SELECT * FROM normalized ORDER BY stock_id, source_date DESC
+    `).bind(...symbols, targetDate, targetDate, targetDate).all<any>()
+    const latestFacts = new Map<string, any>()
+    for (const row of facts ?? []) {
+      const period = normalizeCanonicalQuarter(row.period)
+      const key = `${row.stock_id}:${period}`
+      if (period && !latestFacts.has(key)) latestFacts.set(key, { ...row, period })
+    }
+    for (const row of latestFacts.values()) {
+      const identity = identities.get(String(row.stock_id))
+      if (!identity) continue
+      factStatements.push(marketDb.prepare(`
+        INSERT INTO financials (
+          stock_id, period, period_type, revenue, eps, roe,
+          operating_income, net_income, total_assets, total_liabilities
+        ) VALUES (?, ?, 'quarterly', ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(stock_id, period) DO UPDATE SET
+          revenue=COALESCE(excluded.revenue, financials.revenue),
+          eps=COALESCE(excluded.eps, financials.eps), roe=COALESCE(excluded.roe, financials.roe),
+          operating_income=COALESCE(excluded.operating_income, financials.operating_income),
+          net_income=COALESCE(excluded.net_income, financials.net_income),
+          total_assets=COALESCE(excluded.total_assets, financials.total_assets),
+          total_liabilities=COALESCE(excluded.total_liabilities, financials.total_liabilities)
+      `).bind(
+        identity.id, row.period, row.revenue, row.eps, row.roe,
+        row.operating_income, row.net_income, row.total_assets, row.total_liabilities,
+      ))
+    }
 
+    const { results: valuations } = await marketDb.prepare(`
+      SELECT stock_id, pe, pb, dividend_yield,
+             COALESCE(available_date, report_date, period) AS source_date
+        FROM canonical_fundamental_features
+       WHERE stock_id IN (${marks}) AND source LIKE 'finlab.%'
+         AND COALESCE(available_date, report_date, period) <= ? AND f.as_of_date <= ?
+         AND (pe IS NOT NULL OR pb IS NOT NULL OR dividend_yield IS NOT NULL)
+       ORDER BY stock_id, source_date DESC
+    `).bind(...symbols, targetDate, targetDate).all<any>()
+    const latestValuations = new Map<string, any>()
+    for (const row of valuations ?? []) {
+      const symbol = String(row.stock_id)
+      if (!latestValuations.has(symbol)) latestValuations.set(symbol, row)
+    }
+    for (const [symbol, row] of latestValuations) {
+      const identity = identities.get(symbol)
+      if (!identity) continue
+      valuationStatements.push(marketDb.prepare(`
+        INSERT INTO financials (stock_id, period, period_type, pe, pb, dividend_yield)
+        VALUES (
+          ?, COALESCE((SELECT MAX(period) FROM financials WHERE stock_id=? AND period LIKE '%Q%'), ?),
+          'quarterly', ?, ?, ?
+        )
+        ON CONFLICT(stock_id, period) DO UPDATE SET
+          pe=COALESCE(excluded.pe, financials.pe), pb=COALESCE(excluded.pb, financials.pb),
+          dividend_yield=COALESCE(excluded.dividend_yield, financials.dividend_yield)
+      `).bind(identity.id, identity.id, currentQuarter, row.pe, row.pb, row.dividend_yield))
+    }
+  }
   return {
-    financialRows: d1ChangeCount(factResult),
-    valuationRows: d1ChangeCount(valuationResult),
+    financialRows: await runMarketStatements(marketDb, factStatements),
+    valuationRows: await runMarketStatements(marketDb, valuationStatements),
   }
 }
 
@@ -1537,10 +1512,10 @@ export async function runBulkFetch(env: Bindings, force = false, runDate?: strin
   let finlabMirrorSummary: string | null = null
 
   try {
-    const mirror = await syncLegacyMarketDataFromFinLabCanonical(env.DB, twDate)
+    const mirror = await syncLegacyMarketDataFromFinLabCanonical(env, twDate)
     finlabMirrorSummary = mirror.summary
     if (supplementalMode !== 'always') {
-      const ready = await assertMarketDataReady(env.DB, twDate, { requireIndicators: false })
+      const ready = await assertMarketDataReady(databaseForDataDomain(env, 'market'), twDate, { requireIndicators: false })
       await env.KV.put(lockKey, '1', { expirationTtl: 86400 })
       return `${ready.summary}; ${mirror.summary}; TWSE/TPEX supplemental bulk fetch skipped; source_role=${mirror.sourceRole}; supplemental_mode=${supplementalMode}`
     }
@@ -1553,7 +1528,7 @@ export async function runBulkFetch(env: Bindings, force = false, runDate?: strin
 
   if (isHistoricalReplayDate(twDate)) {
     try {
-      const ready = await assertMarketDataReady(env.DB, twDate, { requireIndicators: false })
+      const ready = await assertMarketDataReady(databaseForDataDomain(env, 'market'), twDate, { requireIndicators: false })
       await env.KV.put(lockKey, '1', { expirationTtl: 86400 })
       return `TWSE/TPEX supplemental fetch skipped for historical replay; ${ready.summary}; ${finlabMirrorSummary ?? 'FinLab canonical mirror not applied'}; source_role=legacy_ready_after_finlab_primary_attempt`
     } catch {
@@ -1563,7 +1538,7 @@ export async function runBulkFetch(env: Bindings, force = false, runDate?: strin
   }
   if (!force && await env.KV.get(lockKey)) {
     console.log(`[Cron] TWSE/TPEX supplemental fetch already done today (${twDate}), skipping.`)
-    const ready = await assertMarketDataReady(env.DB, twDate, { requireIndicators: false })
+    const ready = await assertMarketDataReady(databaseForDataDomain(env, 'market'), twDate, { requireIndicators: false })
     return `TWSE/TPEX supplemental fetch skipped; ${ready.summary}; ${finlabMirrorSummary ?? 'FinLab canonical mirror not applied'}; source_role=legacy_ready_after_finlab_primary_attempt`
   }
 
@@ -1571,11 +1546,11 @@ export async function runBulkFetch(env: Bindings, force = false, runDate?: strin
     const { bulkFetchAndStoreChipData, bulkFetchAndStorePrices } = await import('./twseApi')
     const controllerUrl = env.ML_CONTROLLER_URL ?? env.SHIOAJI_PROXY_URL
     const [{ chipCount, marginCount }, priceCount] = await Promise.all([
-      bulkFetchAndStoreChipData(env.DB, twDate, controllerUrl, env.ML_CONTROLLER_SECRET),
-      bulkFetchAndStorePrices(env.DB, twDate, controllerUrl, env.ML_CONTROLLER_SECRET),
+      bulkFetchAndStoreChipData(databaseForDataDomain(env, 'market'), twDate, controllerUrl, env.ML_CONTROLLER_SECRET),
+      bulkFetchAndStorePrices(databaseForDataDomain(env, 'market'), twDate, controllerUrl, env.ML_CONTROLLER_SECRET),
     ])
     console.log(`[Cron] TWSE/TPEX supplemental: ${priceCount} prices + ${chipCount} chips + ${marginCount} margins`)
-    const ready = await assertMarketDataReady(env.DB, twDate, { requireIndicators: false })
+    const ready = await assertMarketDataReady(databaseForDataDomain(env, 'market'), twDate, { requireIndicators: false })
     await env.KV.put(lockKey, '1', { expirationTtl: 86400 })
     await fetchWave2Data(env, twDate).catch((e) => console.warn('[Wave2] failed:', e))
     return `${ready.summary}; ${finlabMirrorSummary ?? 'FinLab canonical mirror not applied'}; TWSE/TPEX supplemental fetched price=${priceCount} chip=${chipCount} margin=${marginCount}; source_role=official_fallback_after_finlab_primary_attempt`
@@ -2069,7 +2044,7 @@ async function hasPipelineEvidence(env: Bindings, triggerTime: string): Promise<
     // Older/dev databases may not have prediction_date; recommendation evidence is enough.
   }
 
-  const recommendation = await env.DB.prepare(`
+  const recommendation = await databaseForDataDomain(env, 'core').prepare(`
     SELECT id
       FROM daily_recommendations
      WHERE date = ?
@@ -2435,7 +2410,7 @@ export async function runMarketCloseRefresh(env: Bindings, force = false, runDat
   const twDate = resolveUpdateDate(runDate)
   const lockKey = `cron:market-close-refresh:${twDate}`
   if (!force && await env.KV.get(lockKey)) {
-    const stats = await loadMarketDataReadinessStats(env.DB, twDate)
+    const stats = await loadMarketDataReadinessStats(databaseForDataDomain(env, 'market'), twDate)
     return `SKIP: market-close-refresh already ran for ${twDate}; price=${stats.priceRowsOnLatest} latest=${stats.priceLatestDate ?? 'none'}`
   }
 
@@ -2449,7 +2424,7 @@ export async function runMarketCloseRefresh(env: Bindings, force = false, runDat
     try {
       const { bulkFetchAndStorePrices } = await import('./twseApi')
       const controllerUrl = env.ML_CONTROLLER_URL ?? env.SHIOAJI_PROXY_URL
-      const priceCount = await bulkFetchAndStorePrices(env.DB, twDate, controllerUrl, env.ML_CONTROLLER_SECRET)
+      const priceCount = await bulkFetchAndStorePrices(databaseForDataDomain(env, 'market'), twDate, controllerUrl, env.ML_CONTROLLER_SECRET)
       parts.push(`official_prices=${priceCount}`)
     } catch (e) {
       sourceWaiting = true
@@ -2497,7 +2472,7 @@ export async function runMarketCloseRefresh(env: Bindings, force = false, runDat
     parts.push(`post_close_price_warn=${e instanceof Error ? e.message : String(e)}`)
   }
 
-  const stats = await loadMarketDataReadinessStats(env.DB, twDate)
+  const stats = await loadMarketDataReadinessStats(databaseForDataDomain(env, 'market'), twDate)
   const priceReady =
     stats.priceLatestDate === twDate &&
     stats.priceRowsOnLatest >= 1000 &&
@@ -2525,7 +2500,7 @@ export async function runMarketCloseRefresh(env: Bindings, force = false, runDat
 export async function runDailyUpdate(env: Bindings, force = false, runDate?: string): Promise<string> {
   const twDate = resolveUpdateDate(runDate)
   if (runDate && isHistoricalReplayDate(twDate)) {
-    const lineageBoundary = await historicalLearningLineageDecision(env.DB, env.KV, 'evening-chain', twDate)
+    const lineageBoundary = await historicalLearningLineageDecision(databaseForDataDomain(env, 'market'), env.KV, 'evening-chain', twDate)
     if (!lineageBoundary.allowed) throw new Error(historicalLearningLineageBlockedMessage(lineageBoundary))
   }
   if (!force && await hasEveningChainSucceeded(env, twDate)) {
@@ -2772,7 +2747,7 @@ export async function fetchWave2Data(
   const fetchOfficialBreadth = async () => {
     const breadth = await fetchMarketBreadth()
     if (breadth) {
-      await env.DB.prepare(`
+      await databaseForDataDomain(env, 'market').prepare(`
         INSERT INTO market_breadth (date, advance_count, decline_count, unchanged_count, advance_ratio)
         VALUES (?, ?, ?, ?, ?)
         ON CONFLICT(date) DO UPDATE SET
@@ -2795,7 +2770,7 @@ export async function fetchWave2Data(
 
   if (useFinLabMirror) {
     try {
-      const finlabBreadth = await syncMarketBreadthFromFinLabCanonical(env.DB, today)
+      const finlabBreadth = await syncMarketBreadthFromFinLabCanonical(env, today)
       if (finlabBreadth.sampleSize >= 1000) {
         console.log(
           `[Wave2] FinLab market breadth: ${finlabBreadth.advanceCount}/${finlabBreadth.declineCount}/${finlabBreadth.unchangedCount} sample=${finlabBreadth.sampleSize}`,
@@ -2824,7 +2799,7 @@ export async function fetchWave2Data(
 
   if (useFinLabMirror) {
     try {
-      const finlabFinancials = await syncLegacyFinancialsFromFinLabCanonical(env.DB, today)
+      const finlabFinancials = await syncLegacyFinancialsFromFinLabCanonical(env, today)
       finlabFinancialRows = finlabFinancials.financialRows
       finlabValuationRows = finlabFinancials.valuationRows
       console.log(
@@ -2847,33 +2822,28 @@ export async function fetchWave2Data(
       const twNow = new Date(Date.now() + 8 * 3600_000)
       const currentQ = `${twNow.getFullYear()}Q${Math.ceil((twNow.getMonth() + 1) / 3)}`
 
+      const marketDb = databaseForDataDomain(env, 'market')
+      const identities = await loadCoreStockIdentitiesBySymbols(env, valRows.map((row) => row.symbol))
       const stmts = valRows
         .filter((v) => v.pe !== null || v.pb !== null || v.dividend_yield !== null)
-        .flatMap((v) => [
-          env.DB.prepare(`
-            UPDATE financials SET pe=?, pb=?, dividend_yield=?
-            WHERE stock_id = (SELECT id FROM stocks WHERE symbol=?)
-            AND period = (
-              SELECT MAX(period)
-              FROM financials
-              WHERE stock_id = (SELECT id FROM stocks WHERE symbol=?)
-                AND period LIKE '%Q%'
-            )
-          `).bind(v.pe, v.pb, v.dividend_yield, v.symbol, v.symbol),
-          env.DB.prepare(`
-            INSERT INTO financials (stock_id, period, period_type, pe, pb, dividend_yield)
-            SELECT s.id, ?, 'quarterly', ?, ?, ?
-            FROM stocks s WHERE s.symbol = ?
-            AND NOT EXISTS (
-              SELECT 1 FROM financials f
-              WHERE f.stock_id = s.id AND f.period LIKE '%Q%'
-            )
-          `).bind(currentQ, v.pe, v.pb, v.dividend_yield, v.symbol),
-        ])
+        .flatMap((v) => {
+          const identity = identities.get(v.symbol)
+          if (!identity) return []
+          return [
+            marketDb.prepare(`
+              UPDATE financials SET pe=?, pb=?, dividend_yield=?
+               WHERE stock_id=?
+                 AND period=(SELECT MAX(period) FROM financials WHERE stock_id=? AND period LIKE '%Q%')
+            `).bind(v.pe, v.pb, v.dividend_yield, identity.id, identity.id),
+            marketDb.prepare(`
+              INSERT INTO financials (stock_id, period, period_type, pe, pb, dividend_yield)
+              SELECT ?, ?, 'quarterly', ?, ?, ?
+               WHERE NOT EXISTS (SELECT 1 FROM financials WHERE stock_id=? AND period LIKE '%Q%')
+            `).bind(identity.id, currentQ, v.pe, v.pb, v.dividend_yield, identity.id),
+          ]
+        })
 
-      for (let i = 0; i < stmts.length; i += 50) {
-        await env.DB.batch(stmts.slice(i, i + 50))
-      }
+      await runMarketStatements(marketDb, stmts)
 
       console.log(
         `[Wave2] PER/PBR: ${valRows.length} stocks (TWSE ${twseVal.status === 'fulfilled' ? twseVal.value.length : 0} + TPEX ${tpexVal.status === 'fulfilled' ? tpexVal.value.length : 0})`,
@@ -2888,7 +2858,7 @@ export async function fetchWave2Data(
   let finlabRevenueRows = 0
   if (useFinLabMirror && day <= 12) {
     try {
-      finlabRevenueRows = await syncLegacyRevenueFromFinLabCanonical(env.DB, today)
+      finlabRevenueRows = await syncLegacyRevenueFromFinLabCanonical(env, today)
       console.log(`[Wave2] FinLab monthly revenue mirror: rows=${finlabRevenueRows}`)
     } catch (e) {
       console.warn('[Wave2] FinLab monthly revenue mirror failed:', e)
@@ -2904,21 +2874,20 @@ export async function fetchWave2Data(
       ]
 
       if (revData.length) {
-        const stmts = revData.map((r) =>
-          env.DB.prepare(`
+        const marketDb = databaseForDataDomain(env, 'market')
+        const identities = await loadCoreStockIdentitiesBySymbols(env, revData.map((row) => row.symbol))
+        const stmts = revData.flatMap((row) => {
+          const identity = identities.get(row.symbol)
+          if (!identity) return []
+          return [marketDb.prepare(`
             INSERT INTO monthly_revenue (stock_id, date, revenue, revenue_yoy, revenue_mom)
-            SELECT s.id, ?, ?, ?, ?
-            FROM stocks s WHERE s.symbol = ?
+            VALUES (?, ?, ?, ?, ?)
             ON CONFLICT(stock_id, date) DO UPDATE SET
-              revenue=excluded.revenue,
-              revenue_yoy=excluded.revenue_yoy,
-              revenue_mom=excluded.revenue_mom
-          `).bind(r.year_month, r.revenue, r.revenue_yoy, r.revenue_mom, r.symbol),
-        )
+              revenue=excluded.revenue, revenue_yoy=excluded.revenue_yoy, revenue_mom=excluded.revenue_mom
+          `).bind(identity.id, row.year_month, row.revenue, row.revenue_yoy, row.revenue_mom)]
+        })
 
-        for (let i = 0; i < stmts.length; i += 50) {
-          await env.DB.batch(stmts.slice(i, i + 50))
-        }
+        await runMarketStatements(marketDb, stmts)
 
         console.log(
           `[Wave2] Monthly revenue: ${revData.length} entries (TWSE ${twseRev.status === 'fulfilled' ? twseRev.value.length : 0} + TPEX ${tpexRev.status === 'fulfilled' ? tpexRev.value.length : 0})`,
@@ -2938,14 +2907,19 @@ export async function fetchWave2Data(
     ]
 
     if (finRows.length) {
+      const marketDb = databaseForDataDomain(env, 'market')
+      const identities = await loadCoreStockIdentitiesBySymbols(env, finRows.map((row) => row.symbol))
       const stmts = finRows
-        .filter((f) => f.eps !== null)
-        .map((f) => {
-          const period = `${f.year}Q${f.quarter}`
-          return env.DB.prepare(`
-            INSERT INTO financials (stock_id, period, period_type, eps, revenue, roe, operating_income, net_income, total_assets, total_liabilities)
-            SELECT s.id, ?, 'quarterly', ?, ?, ?, ?, ?, ?, ?
-            FROM stocks s WHERE s.symbol = ?
+        .filter((row) => row.eps !== null)
+        .flatMap((row) => {
+          const identity = identities.get(row.symbol)
+          if (!identity) return []
+          const period = `${row.year}Q${row.quarter}`
+          return [marketDb.prepare(`
+            INSERT INTO financials (
+              stock_id, period, period_type, eps, revenue, roe,
+              operating_income, net_income, total_assets, total_liabilities
+            ) VALUES (?, ?, 'quarterly', ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(stock_id, period) DO UPDATE SET
               eps=COALESCE(excluded.eps, financials.eps),
               revenue=COALESCE(excluded.revenue, financials.revenue),
@@ -2955,21 +2929,12 @@ export async function fetchWave2Data(
               total_assets=COALESCE(excluded.total_assets, financials.total_assets),
               total_liabilities=COALESCE(excluded.total_liabilities, financials.total_liabilities)
           `).bind(
-            period,
-            f.eps,
-            f.revenue,
-            f.roe,
-            f.operating_income,
-            f.net_income,
-            f.total_assets,
-            f.total_liabilities,
-            f.symbol,
-          )
+            identity.id, period, row.eps, row.revenue, row.roe,
+            row.operating_income, row.net_income, row.total_assets, row.total_liabilities,
+          )]
         })
 
-      for (let i = 0; i < stmts.length; i += 50) {
-        await env.DB.batch(stmts.slice(i, i + 50))
-      }
+      await runMarketStatements(marketDb, stmts)
 
       console.log(`[Wave2] Financials: ${finRows.length} entries (TWSE+TPEX EPS+ROE)`)
     }
@@ -3201,7 +3166,7 @@ export async function processUpdateBatch(
       console.log(`[Queue] post-pipeline stage already claimed/closed date=${triggerTime}`)
       return
     }
-    const heartbeat = startPipelineStageLeaseHeartbeat(env.DB, {
+    const heartbeat = startPipelineStageLeaseHeartbeat(databaseForDataDomain(env, 'ops'), {
       businessDate: triggerTime,
       stage: 'post_pipeline_chain',
       canonicalRunId: runId,
@@ -3298,7 +3263,7 @@ export async function processUpdateBatch(
       console.log(`[Queue] post-verify stage already claimed/closed date=${triggerTime}`)
       return
     }
-    const heartbeat = startPipelineStageLeaseHeartbeat(env.DB, {
+    const heartbeat = startPipelineStageLeaseHeartbeat(databaseForDataDomain(env, 'ops'), {
       businessDate: triggerTime,
       stage: 'post_verify_chain',
       canonicalRunId: runId,
@@ -3334,7 +3299,7 @@ export async function processUpdateBatch(
         run_scope?: 'live_canonical' | 'historical_replay' | 'derived'
       } | null
       const rootStatus = chain?.status ?? status
-      const terminalStillCurrent = await isPipelineStageCanonicalState(env.DB, {
+      const terminalStillCurrent = await isPipelineStageCanonicalState(databaseForDataDomain(env, 'ops'), {
         businessDate: triggerTime,
         stage: 'post_verify_chain',
         canonicalRunId: runId,
@@ -3378,7 +3343,7 @@ export async function processUpdateBatch(
         console.warn(`[Queue] stale post-verify error finalizer ignored date=${triggerTime} run_id=${runId}`)
         return
       }
-      const terminalStillCurrent = await isPipelineStageCanonicalState(env.DB, {
+      const terminalStillCurrent = await isPipelineStageCanonicalState(databaseForDataDomain(env, 'ops'), {
         businessDate: triggerTime,
         stage: 'post_verify_chain',
         canonicalRunId: runId,
@@ -3749,7 +3714,7 @@ export async function processUpdateBatch(
           run_scope: runScope,
         })
       }
-      const chainDurationMs = await resolveEveningChainClosureDurationMs(env.DB, triggerTime)
+      const chainDurationMs = await resolveEveningChainClosureDurationMs(databaseForDataDomain(env, 'ops'), triggerTime)
       const {
         auditEveningChainEvidenceClosure,
         resolveExpectedMatureSignalDate,
@@ -3987,7 +3952,7 @@ export async function processUpdateBatch(
     let crawled = 0
     await runBounded(stocks, NEWS_BATCH_CONCURRENCY, async (stock) => {
       try {
-        await crawlAndStoreNews(env.DB, stock)
+        await crawlAndStoreNews(databaseForDataDomain(env, 'market'), stock)
         crawled++
       } catch (e) {
         console.warn(`[Queue] News crawl failed ${stock.symbol}:`, e)
@@ -4166,7 +4131,7 @@ export async function processUpdateBatch(
       runS12HistoricalReplayForDate,
     } = await import('./s12ReplayTradeOutcome')
     if (replayScope === 'fusion_snapshot_structure') {
-      const symbols = await loadFusionSnapshotSymbols(env.DB, triggerTime, UPDATE_BATCH_SIZE, offset)
+      const symbols = await loadSplitFusionSnapshotSymbols(env, triggerTime, UPDATE_BATCH_SIZE, offset)
       const { runS12ResearchStructureSnapshots } = await import('./s12ResearchStructureSnapshots')
       const snapshotResult = await runS12ResearchStructureSnapshots(env, triggerTime, {
         limit: UPDATE_BATCH_SIZE,
@@ -4196,9 +4161,9 @@ export async function processUpdateBatch(
     }
     const dynamicCohortScope = replayScope === 'fusion_snapshot_missing' || replayScope === 'signed_eligible_repair'
     const cohortSymbols = replayScope === 'fusion_snapshot_missing'
-      ? await loadFusionSnapshotMissingReplaySymbols(env.DB, triggerTime, maturityAsOfDate)
+      ? await loadSplitFusionSnapshotMissingReplaySymbols(env, triggerTime, maturityAsOfDate)
       : replayScope === 'signed_eligible_repair'
-        ? await loadSignedEligibleRepairSymbolsByHistoricalDate(env.DB, triggerTime)
+        ? await loadSplitSignedEligibleRepairSymbolsByHistoricalDate(env, triggerTime)
         : undefined
     let result
     try {
@@ -4248,9 +4213,9 @@ export async function processUpdateBatch(
       ? 0
       : offset + Math.max(0, Number(result.attempted ?? 0))
     const remainingReplaySymbols = replayScope === 'fusion_snapshot_missing'
-      ? await loadFusionSnapshotMissingReplaySymbols(env.DB, triggerTime, maturityAsOfDate)
+      ? await loadSplitFusionSnapshotMissingReplaySymbols(env, triggerTime, maturityAsOfDate)
       : replayScope === 'signed_eligible_repair'
-        ? await loadSignedEligibleRepairSymbolsByHistoricalDate(env.DB, triggerTime)
+        ? await loadSplitSignedEligibleRepairSymbolsByHistoricalDate(env, triggerTime)
         : []
     const terminalDataSourceReason = String(result.terminal_data_source_reason ?? '').trim()
     const retryableUnavailableOnly = replayScope === 'fusion_snapshot_missing'
@@ -4302,7 +4267,7 @@ export async function processUpdateBatch(
       return
     }
     const replayCoverage = replayScope === 'fusion_snapshot_missing' && !hasMore
-      ? await loadFusionSnapshotReplayCoverage(env.DB, triggerTime, maturityAsOfDate)
+      ? await loadSplitFusionSnapshotReplayCoverage(env, triggerTime, maturityAsOfDate)
       : null
     const replayClosed = !hasMore && (
       replayScope === 'signed_eligible_repair'
@@ -4401,7 +4366,7 @@ export async function processUpdateBatch(
     return
   }
 
-  const { results: batch } = await env.DB.prepare(
+  const { results: batch } = await databaseForDataDomain(env, 'core').prepare(
     `SELECT id, symbol, market, name, in_current_watchlist
        FROM stocks
       WHERE ${UPDATE_UNIVERSE_WHERE}
@@ -4422,7 +4387,7 @@ export async function processUpdateBatch(
   console.log(`[Queue] Update batch: ${currentBatch.length} stocks (cursor=${cursor}, shard=${shardIndex + 1}/${shardCount}, hasMore=${hasMore})`)
 
   const priceMetaByStockId = await loadPriceMetadataForBatch(
-    env.DB,
+    databaseForDataDomain(env, 'market'),
     currentBatch.map((stock) => Number(stock.id)),
   )
   const watchlistNewsStocks: UpdateStockRow[] = []
@@ -4432,10 +4397,10 @@ export async function processUpdateBatch(
       const priceMeta = priceMetaByStockId.get(Number(stock.id))
 
       if ((priceMeta?.count ?? 0) < 20 && Number(stock.in_current_watchlist ?? 0) === 1) {
-        await fetchAndStoreStockData(env.DB, env.KV, stock, env.FINMIND_TOKEN)
+        await fetchAndStoreStockData(databaseForDataDomain(env, 'market'), env.KV, stock, env.FINMIND_TOKEN)
       }
 
-      await computeAndStoreIndicators(env.DB, stock.id)
+      await computeAndStoreIndicators(databaseForDataDomain(env, 'market'), stock.id)
       if (Number(stock.in_current_watchlist ?? 0) === 1) {
         watchlistNewsStocks.push({
           id: stock.id,

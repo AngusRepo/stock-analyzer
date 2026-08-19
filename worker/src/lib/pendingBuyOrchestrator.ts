@@ -25,6 +25,7 @@ import {
 import { buildL4SparseAllocationWatchPoint } from './l4SparseAllocationSizing'
 import type { Bindings } from '../types'
 import { databaseForDataDomain, databaseForTable } from './dataDomainRegistry'
+import { loadMarketPriceHistoryBySymbols } from './stockIdentityMarketBridge'
 import type { CircuitBreakerState as _CBState, LegacyLayerDeps } from './riskTypes'
 import type { PortfolioRiskDatabases } from './riskChain'
 import {
@@ -827,10 +828,10 @@ export async function setupMorningPendingBuys(env: Bindings): Promise<void> {
   }
 
   try {
-    const prevDay = await withD1Retry('previous_trading_day', () => getPrevTradingDay(env.DB, env.KV))
+    const prevDay = await withD1Retry('previous_trading_day', () => getPrevTradingDay(databaseForDataDomain(env, 'core'), env.KV))
     const sourceRecoDate = prevDay
     const configuredBuySignalCount = Math.max(1, Math.floor(cfg.alphaFramework?.allocation?.buySignalCount ?? 3))
-    const { results } = await withD1Retry('buy_recommendations', () => env.DB.prepare(`
+    const { results: coreRecommendationRows } = await withD1Retry('buy_recommendations', () => databaseForDataDomain(env, 'core').prepare(`
       SELECT s.id AS stock_id, dr.symbol, dr.name, dr.signal, dr.confidence, dr.has_buy_signal,
              dr.eligible_for_ml, dr.eligible_for_pending_buy, dr.reason,
              dr.watch_points, dr.score_components, dr.alpha_allocation,
@@ -839,30 +840,9 @@ export async function setupMorningPendingBuys(env: Bindings): Promise<void> {
              NULL AS ml_stop_loss,
              NULL AS ml_target1,
              NULL AS ml_target2,
-             (
-               SELECT sp.close
-                 FROM stock_prices sp
-                WHERE sp.stock_id = s.id
-                  AND sp.date <= dr.date
-                ORDER BY sp.date DESC
-                LIMIT 1
-             ) AS latest_close,
-             (
-               SELECT sp.open
-                 FROM stock_prices sp
-                WHERE sp.stock_id = s.id
-                  AND sp.date <= dr.date
-                ORDER BY sp.date DESC
-                LIMIT 1
-             ) AS latest_open,
-             (
-               SELECT sp.avg_price
-                 FROM stock_prices sp
-                WHERE sp.stock_id = s.id
-                  AND sp.date <= dr.date
-                ORDER BY sp.date DESC
-                LIMIT 1
-             ) AS latest_avg_price,
+             NULL AS latest_close,
+             NULL AS latest_open,
+             NULL AS latest_avg_price,
              NULL AS forecast_data,
              CASE WHEN json_valid(dr.alpha_allocation) THEN
                COALESCE(
@@ -879,14 +859,6 @@ export async function setupMorningPendingBuys(env: Bindings): Promise<void> {
          AND json_extract(dr.alpha_allocation, '$.selected') = 1
          AND json_extract(dr.alpha_allocation, '$.engine') = 'sparse_tangent_inverse_risk'
          AND COALESCE(UPPER(s.market), '') NOT IN ('EMERGING', 'ESB')
-         AND (
-           SELECT sp_exec.open
-             FROM stock_prices sp_exec
-            WHERE sp_exec.stock_id = s.id
-              AND sp_exec.date <= dr.date
-            ORDER BY sp_exec.date DESC
-            LIMIT 1
-         ) IS NOT NULL
         ORDER BY CASE WHEN json_valid(dr.score_components) THEN
            COALESCE(
              CAST(json_extract(dr.score_components, '$.finalScore') AS REAL),
@@ -895,8 +867,23 @@ export async function setupMorningPendingBuys(env: Bindings): Promise<void> {
            ) ELSE 0 END DESC,
            dr.confidence DESC
     `).bind(sourceRecoDate).all<BuyRecommendationRow>())
-
-    const buyRecs = (results ?? []) as BuyRecommendationRow[]
+    const marketPriceRows = await loadMarketPriceHistoryBySymbols(
+      env,
+      (coreRecommendationRows ?? []).map((row) => row.symbol),
+      { onOrBeforeDate: sourceRecoDate, rowsPerSymbol: 1 },
+    )
+    const marketPriceBySymbol = new Map(marketPriceRows.map((row) => [row.symbol, row]))
+    const buyRecs = (coreRecommendationRows ?? [])
+      .map((row) => {
+        const price = marketPriceBySymbol.get(row.symbol)
+        return {
+          ...row,
+          latest_close: price?.close ?? null,
+          latest_open: price?.open ?? null,
+          latest_avg_price: price?.avg_price ?? null,
+        }
+      })
+      .filter((row) => row.latest_open != null) as BuyRecommendationRow[]
     const filterAudit = newFilterAuditSummary(buyRecs.length)
     if (buyRecs.length === 0) {
       await persistPendingBuys(env, pendingDate, [], {
@@ -944,7 +931,7 @@ export async function setupMorningPendingBuys(env: Bindings): Promise<void> {
     }
     applyRecommendationProvenance(buyRecs)
 
-    const ohlcvLevelsByStock = await batchLoadOhlcvTradePlanLevels(env.DB, stockIds, sourceRecoDate).catch((error) => {
+    const ohlcvLevelsByStock = await batchLoadOhlcvTradePlanLevels(databaseForDataDomain(env, 'market'), stockIds, sourceRecoDate).catch((error) => {
       console.warn('[MorningSetup] OHLCV trade plan levels unavailable:', error)
       return new Map()
     })

@@ -1,3 +1,4 @@
+import { databaseForDataDomain } from '../lib/dataDomainRegistry'
 import { Hono } from 'hono'
 import type { Bindings, Variables } from '../types'
 import { signJWT, verifyJWT, revokeJWT, authMiddleware, adminMiddleware } from '../lib/auth'
@@ -158,7 +159,7 @@ auth.get('/callback', async (c) => {
     }
 
     // 3. Upsert user
-    const existing = await c.env.DB.prepare(
+    const existing = await databaseForDataDomain(c.env, 'core').prepare(
       'SELECT id, role, approval_status FROM users WHERE google_id = ?'
     ).bind(googleUser.id).first<{ id: number; role: string; approval_status: string }>()
 
@@ -170,7 +171,7 @@ auth.get('/callback', async (c) => {
       userId         = existing.id
       userRole       = existing.role
       approvalStatus = existing.approval_status
-      await c.env.DB.prepare(
+      await databaseForDataDomain(c.env, 'core').prepare(
         `UPDATE users SET name=?, avatar=?, last_login=datetime('now') WHERE id=?`
       ).bind(googleUser.name, googleUser.picture, userId).run()
     } else {
@@ -188,7 +189,7 @@ auth.get('/callback', async (c) => {
         approvalStatus = 'pending'
       }
 
-      const result = await c.env.DB.prepare(
+      const result = await databaseForDataDomain(c.env, 'core').prepare(
         `INSERT INTO users (google_id, email, name, avatar, role, approval_status)
          VALUES (?,?,?,?,?,?) RETURNING id`
       ).bind(googleUser.id, googleUser.email, googleUser.name, googleUser.picture,
@@ -271,7 +272,7 @@ auth.get('/me', authMiddleware, async (c) => {
       created_at: new Date().toISOString(),
     })
   }
-  const user = await c.env.DB.prepare(
+  const user = await databaseForDataDomain(c.env, 'core').prepare(
     'SELECT id, email, name, avatar, role, approval_status, created_at FROM users WHERE id = ?'
   ).bind(c.get('userId')).first()
   if (!user) return c.json({ error: '使用者不存在' }, 404)
@@ -294,7 +295,7 @@ auth.post('/logout', async (c) => {
 // ══════════════════════════════════════════════════════════════════════════════
 
 auth.get('/admin/users', authMiddleware, adminMiddleware, async (c) => {
-  const { results } = await c.env.DB.prepare(
+  const { results } = await databaseForDataDomain(c.env, 'core').prepare(
     `SELECT id, email, name, avatar, role, approval_status, created_at, last_login
      FROM users
      ORDER BY CASE approval_status WHEN 'pending' THEN 0 WHEN 'approved' THEN 1 ELSE 2 END,
@@ -318,7 +319,7 @@ auth.post('/admin/approve', authMiddleware, adminMiddleware, async (c) => {
   const { userId } = JSON.parse(raw) as { userId: number }
   await c.env.KV.delete(`approval:token:${approvalToken}`)  // 用後即刪
 
-  const user = await c.env.DB.prepare(
+  const user = await databaseForDataDomain(c.env, 'core').prepare(
     'SELECT id, email, name, approval_status FROM users WHERE id=?'
   ).bind(userId).first<{ id: number; email: string; name: string; approval_status: string }>()
 
@@ -328,7 +329,7 @@ auth.post('/admin/approve', authMiddleware, adminMiddleware, async (c) => {
   }
 
   const newStatus = action === 'approve' ? 'approved' : 'rejected'
-  await c.env.DB.prepare(
+  await databaseForDataDomain(c.env, 'core').prepare(
     'UPDATE users SET approval_status=? WHERE id=?'
   ).bind(newStatus, userId).run()
 
@@ -349,12 +350,12 @@ auth.post('/admin/users/:userId/status', authMiddleware, adminMiddleware, async 
   const { status } = await c.req.json()
   if (!['approved', 'rejected'].includes(status)) return c.json({ error: '無效 status' }, 400)
 
-  const user = await c.env.DB.prepare(
+  const user = await databaseForDataDomain(c.env, 'core').prepare(
     'SELECT id, email, name FROM users WHERE id=?'
   ).bind(targetId).first<{ id: number; email: string; name: string }>()
   if (!user) return c.json({ error: '用戶不存在' }, 404)
 
-  await c.env.DB.prepare(
+  await databaseForDataDomain(c.env, 'core').prepare(
     'UPDATE users SET approval_status=? WHERE id=?'
   ).bind(status, targetId).run()
 
@@ -379,7 +380,7 @@ auth.post('/admin/users/:userId/role', authMiddleware, adminMiddleware, async (c
     return c.json({ error: '不能降級自己的 admin 權限' }, 403)
   }
 
-  await c.env.DB.prepare('UPDATE users SET role=? WHERE id=?').bind(role, targetId).run()
+  await databaseForDataDomain(c.env, 'core').prepare('UPDATE users SET role=? WHERE id=?').bind(role, targetId).run()
   return c.json({ success: true })
 })
 

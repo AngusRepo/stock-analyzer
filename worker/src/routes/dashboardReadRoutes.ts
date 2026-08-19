@@ -40,7 +40,7 @@ dashboardReadRoutes.get('/api/dashboard/v4/stocks/:id/chart', async (c) => {
 
   const days = parseDashboardPosInt(c.req.query('days'), 180, 720)
   const since = new Date(Date.now() - days * 86400000).toISOString().slice(0, 10)
-  const stock = await c.env.DB.prepare(
+  const stock = await databaseForDataDomain(c.env, 'core').prepare(
     'SELECT id, symbol, name, market, sector FROM stocks WHERE id=?',
   ).bind(id).first<any>()
   if (!stock) return c.json({ error: 'stock_not_found' }, 404)
@@ -49,7 +49,7 @@ dashboardReadRoutes.get('/api/dashboard/v4/stocks/:id/chart', async (c) => {
   const flowLimit = parseDashboardPosInt(c.req.query('flow'), 90, 300)
 
   const [prices, signals, regimeState, dataQuality, previewEvents, finlabDiff, sectorFlow] = await Promise.all([
-    c.env.DB.prepare(
+    databaseForDataDomain(c.env, 'market').prepare(
       'SELECT date, open, high, low, close, volume FROM stock_prices WHERE stock_id=? AND date>=? ORDER BY date',
     ).bind(id, since).all<any>().then((r) => r.results ?? []),
     databaseForDataDomain(c.env, 'learning').prepare(`
@@ -76,7 +76,7 @@ dashboardReadRoutes.get('/api/dashboard/v4/stocks/:id/chart', async (c) => {
       .then((raw: any) => Array.isArray(raw?.rows) ? raw.rows : [])
       .catch(() => []),
     stock.sector
-      ? c.env.DB.prepare(`
+      ? databaseForDataDomain(c.env, 'market').prepare(`
           SELECT date, sector, classification, total_net, foreign_net, trust_net
           FROM sector_flow
           WHERE sector=?

@@ -73,6 +73,9 @@ const NARROW_SHADOW_BACKFILL_TABLES = new Set([
 ])
 
 export function dataDomainShadowBackfillQueueBatchLimit(table: string): number {
+  if (tableOwnershipMetadata(table)?.domain === 'market') {
+    return NARROW_SHADOW_BACKFILL_QUEUE_BATCH_LIMIT
+  }
   if (table === 'strategy_label_matrix_v4') {
     return STRATEGY_MATRIX_SHADOW_BACKFILL_QUEUE_BATCH_LIMIT
   }

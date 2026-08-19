@@ -1,3 +1,4 @@
+import { databaseForDataDomain } from './dataDomainRegistry'
 import type { Bindings } from '../types'
 import { classifyBoard } from './boardTradability'
 
@@ -436,7 +437,7 @@ export async function loadMarketDataFromD1(
 
   const maxAllowedDate = asOfDate || new Date(Date.now() + 8 * 3600_000).toISOString().slice(0, 10)
 
-  const { results: dateRows } = await env.DB.prepare(
+  const { results: dateRows } = await databaseForDataDomain(env, 'market').prepare(
     `SELECT DISTINCT date FROM stock_prices
      WHERE date <= ?
        AND date >= date(?, '-${lookbackDays} days')
@@ -459,7 +460,7 @@ export async function loadMarketDataFromD1(
   const priceRows = await loadScreenerPriceRowsPaged(env.DB, tradingDates)
   const { allPrices, tpexSymbols, laneCounts } = splitPriceRowsByBoard(priceRows ?? [], maxDate)
 
-  const { results: chipDateRows } = await env.DB.prepare(
+  const { results: chipDateRows } = await databaseForDataDomain(env, 'market').prepare(
     `SELECT DISTINCT date FROM chip_data
      WHERE date <= ?
        AND date >= date(?, '-${chipLookback} days')
@@ -477,7 +478,7 @@ export async function loadMarketDataFromD1(
   if (chipDates.length) {
     const minChipDate = chipDates[0]
     const maxChipDate = chipDates[chipDates.length - 1]
-    const { results: chipRows } = await env.DB.prepare(
+    const { results: chipRows } = await databaseForDataDomain(env, 'market').prepare(
       `SELECT symbol, date, foreign_buy, foreign_sell,
               trust_buy, trust_sell, dealer_buy, dealer_sell
        FROM chip_data

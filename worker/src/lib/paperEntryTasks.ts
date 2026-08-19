@@ -1,3 +1,4 @@
+import { databaseForDataDomain } from './dataDomainRegistry'
 import { sendDiscordNotification } from './notify'
 import { getCurrentRegime as getCurrentSltpRegime, getTradingConfig, resolveSltpForRegime } from './tradingConfig'
 import { batchGetIntradayOHLC, batchGetIntradayPrices } from './paperIntradayData'
@@ -105,9 +106,9 @@ import {
 import { l4SparseSizingFromWatchPoints, resolveL4SparseBudgetFloor } from './l4SparseAllocationSizing'
 import { withD1ReadRetry } from './d1TransientRetry'
 import { getRiskConfig } from './riskConfig'
-import { assessPositionCorrelation, loadPositionPriceRows } from './positionRiskDistribution'
+import { assessPositionCorrelation } from './positionRiskDistribution'
 import {
-  batchLoadOhlcvTradePlanLevelsBySymbol,
+  batchLoadOhlcvTradePlanLevels,
   formatOhlcvTradePlanWatchPoint,
   resolveOhlcvEntryPlan,
 } from './ohlcvTradePlanLevels'
@@ -116,6 +117,12 @@ import { buildPriceActionStructure } from './priceActionStructure'
 import type { Bindings } from '../types'
 import { paperDomainDatabase } from './paperDomainDatabase'
 import { databaseForTable } from './dataDomainRegistry'
+import {
+  loadAverageMarketVolumeBySymbols,
+  loadCoreStockIdentitiesBySymbols,
+  loadMarketPriceHistoryBySymbols,
+  loadPreviousMarketCloseBySymbols,
+} from './stockIdentityMarketBridge'
 
 const ACCOUNT_ID = 1
 const EXECUTION_RESTRICTED_REFRESH_TTL_MS = 30 * 60_000
@@ -308,31 +315,34 @@ interface IntradayTechnicalBaseline {
 }
 
 async function batchGetIntradayTechnicalBaselines(
-  db: D1Database,
+  env: Bindings,
   symbols: string[],
   beforeDate: string,
 ): Promise<Map<string, IntradayTechnicalBaseline>> {
-  const clean = [...new Set(symbols.map((symbol) => String(symbol).trim()).filter(Boolean))]
+  const identities = await loadCoreStockIdentitiesBySymbols(env, symbols)
+  const byId = new Map([...identities.values()].map((row) => [Number(row.id), row.symbol]))
   const out = new Map<string, IntradayTechnicalBaseline>()
-  if (clean.length === 0) return out
-  const placeholders = clean.map(() => '?').join(',')
-  const { results } = await db.prepare(`
-    SELECT s.symbol,
-           ti.obv_temperature_60 AS obvTemperature60,
-           ti.adaptive_rsi_upper_50 AS adaptiveRsiUpper50
-      FROM technical_indicators ti
-      JOIN stocks s ON s.id = ti.stock_id
-     WHERE s.symbol IN (${placeholders})
-       AND ti.date < ?
-     ORDER BY s.symbol, ti.date DESC
-  `).bind(...clean, beforeDate).all<any>()
-  for (const row of results ?? []) {
-    const symbol = String(row.symbol ?? '')
-    if (!symbol || out.has(symbol)) continue
-    out.set(symbol, {
-      obvTemperature60: finiteNumber(row.obvTemperature60),
-      adaptiveRsiUpper50: finiteNumber(row.adaptiveRsiUpper50),
-    })
+  const ids = [...byId.keys()]
+  for (let offset = 0; offset < ids.length; offset += 400) {
+    const chunk = ids.slice(offset, offset + 400)
+    const placeholders = chunk.map(() => '?').join(',')
+    const { results } = await databaseForDataDomain(env, 'market').prepare(`
+      SELECT ti.stock_id,
+             ti.obv_temperature_60 AS obvTemperature60,
+             ti.adaptive_rsi_upper_50 AS adaptiveRsiUpper50
+        FROM technical_indicators ti
+       WHERE ti.stock_id IN (${placeholders})
+         AND ti.date < ?
+       ORDER BY ti.stock_id, ti.date DESC
+    `).bind(...chunk, beforeDate).all<any>()
+    for (const row of results ?? []) {
+      const symbol = byId.get(Number(row.stock_id))
+      if (!symbol || out.has(symbol)) continue
+      out.set(symbol, {
+        obvTemperature60: finiteNumber(row.obvTemperature60),
+        adaptiveRsiUpper50: finiteNumber(row.adaptiveRsiUpper50),
+      })
+    }
   }
   return out
 }
@@ -418,18 +428,8 @@ async function loadPreTradeMomentum(
     const trendData = trendRes.ok ? ((await trendRes.json()) as any) : null
 
     const avgVolumeLookbackDays = Math.max(1, Math.floor(Number(cfg.momentum?.avgVolumeLookbackDays ?? 20)))
-    const avgVolRow = await env.DB.prepare(
-      `SELECT AVG(volume) as avg_vol
-         FROM (
-           SELECT sp.volume
-             FROM stock_prices sp
-             JOIN stocks s ON s.id=sp.stock_id
-            WHERE s.symbol=?
-            ORDER BY sp.date DESC
-            LIMIT ?
-         )`,
-    ).bind(symbol, avgVolumeLookbackDays).first<any>()
-    const avgVol = avgVolRow?.avg_vol ?? 0
+    const avgVolume = await loadAverageMarketVolumeBySymbols(env, [symbol], undefined, avgVolumeLookbackDays)
+    const avgVol = avgVolume.get(symbol) ?? 0
     const twNow = new Date(Date.now() + 8 * 3600_000)
     const minutesSinceOpen = Math.max(1, twNow.getUTCHours() * 60 + twNow.getUTCMinutes() - 9 * 60)
     const tradingMin = cfg.momentum?.tradingDayMinutes ?? 270
@@ -1014,11 +1014,22 @@ async function runIntradayCheckUnlocked(env: Bindings, leaseRunId: string): Prom
   }
 
   const atrMap = await batchGetAtrByDomain(env, pendingSymbols, today)
-  const technicalBaselineMap = await batchGetIntradayTechnicalBaselines(env.DB, pendingSymbols, today).catch((error) => {
+  const technicalBaselineMap = await batchGetIntradayTechnicalBaselines(env, pendingSymbols, today).catch((error) => {
     console.warn('[Intraday] technical baselines unavailable:', error)
     return new Map<string, IntradayTechnicalBaseline>()
   })
-  const ohlcvLevelsBySymbol = await batchLoadOhlcvTradePlanLevelsBySymbol(env.DB, pendingSymbols, today).catch((error) => {
+  const ohlcvLevelsBySymbol = await (async () => {
+    const identities = await loadCoreStockIdentitiesBySymbols(env, pendingSymbols)
+    const levelsById = await batchLoadOhlcvTradePlanLevels(
+      databaseForDataDomain(env, 'market'),
+      [...identities.values()].map((row) => Number(row.id)),
+      today,
+    )
+    return new Map([...identities].flatMap(([symbol, row]) => {
+      const levels = levelsById.get(Number(row.id))
+      return levels ? [[symbol, levels] as const] : []
+    }))
+  })().catch((error) => {
     console.warn('[Intraday] OHLCV trade plan levels unavailable:', error)
     return new Map()
   })
@@ -1040,19 +1051,22 @@ async function runIntradayCheckUnlocked(env: Bindings, leaseRunId: string): Prom
     'SELECT symbol, shares, avg_cost, entry_date, tp1_hit, initial_stop, trailing_stop, highest_since_entry FROM paper_positions WHERE account_id=? AND shares>0',
   ).bind(ACCOUNT_ID).all<any>()
   const capitalPositionSymbols = (capitalPositionRows ?? []).map((p: any) => p.symbol).filter(Boolean)
-  const positionPriceRows = await loadPositionPriceRows(
-    env.DB,
+  const positionPriceRows = await loadMarketPriceHistoryBySymbols(
+    env,
     [...pendingSymbols, ...capitalPositionSymbols],
-    riskCfg.position.correlationWindow,
-  ).catch((error) => {
-    console.warn('[Intraday] position correlation history unavailable:', error)
-    return []
-  })
+    { rowsPerSymbol: riskCfg.position.correlationWindow + 1 },
+  ).then((rows) => rows
+    .filter((row) => Number.isFinite(Number(row.close)))
+    .map((row) => ({ symbol: row.symbol, date: row.date, close: Number(row.close) })))
+    .catch((error) => {
+      console.warn('[Intraday] position correlation history unavailable:', error)
+      return []
+    })
 
   const sectorCountMap = new Map<string, number>()
   if (capitalPositionSymbols.length > 0) {
     const sectorPlaceholders = capitalPositionSymbols.map(() => '?').join(',')
-    const { results: sectorRows } = await env.DB.prepare(
+    const { results: sectorRows } = await databaseForDataDomain(env, 'core').prepare(
       `SELECT symbol, sector FROM stocks WHERE symbol IN (${sectorPlaceholders})`,
     ).bind(...capitalPositionSymbols).all<{ symbol: string; sector: string | null }>()
     for (const row of sectorRows ?? []) {
@@ -1061,44 +1075,10 @@ async function runIntradayCheckUnlocked(env: Bindings, leaseRunId: string): Prom
     }
   }
 
-  const prevCloseMap = new Map<string, number>()
-  if (pendingSymbols.length > 0) {
-    const ph = pendingSymbols.map(() => '?').join(',')
-    const { results: prevRows } = await env.DB.prepare(`
-      SELECT s.symbol, sp.close FROM stock_prices sp
-      JOIN stocks s ON s.id = sp.stock_id
-      WHERE s.symbol IN (${ph})
-        AND sp.date < ?
-      ORDER BY sp.date DESC
-    `).bind(...pendingSymbols, today).all<{ symbol: string; close: number }>()
-    for (const r of prevRows ?? []) {
-      if (!prevCloseMap.has(r.symbol)) prevCloseMap.set(r.symbol, r.close)
-    }
-  }
-
-  const avgVolume20dMap = new Map<string, number>()
-  if (pendingSymbols.length > 0) {
-    const lookback = Math.max(1, Math.floor(Number(cfg.momentum?.avgVolumeLookbackDays ?? 20)))
-    const ph = pendingSymbols.map(() => '?').join(',')
-    const { results: volumeRows } = await env.DB.prepare(`
-      SELECT symbol, AVG(volume) AS avg_volume
-        FROM (
-          SELECT s.symbol, sp.volume,
-                 ROW_NUMBER() OVER (PARTITION BY s.symbol ORDER BY sp.date DESC) AS rn
-            FROM stock_prices sp
-            JOIN stocks s ON s.id = sp.stock_id
-           WHERE s.symbol IN (${ph})
-             AND sp.date < ?
-             AND sp.volume IS NOT NULL
-        )
-       WHERE rn <= ?
-       GROUP BY symbol
-    `).bind(...pendingSymbols, today, lookback).all<{ symbol: string; avg_volume: number | null }>()
-    for (const row of volumeRows ?? []) {
-      const avg = Number(row.avg_volume ?? 0)
-      if (Number.isFinite(avg) && avg > 0) avgVolume20dMap.set(row.symbol, avg)
-    }
-  }
+  const previousMarketClose = await loadPreviousMarketCloseBySymbols(env, pendingSymbols, today)
+  const prevCloseMap = new Map([...previousMarketClose].map(([symbol, row]) => [symbol, row.close]))
+  const lookback = Math.max(1, Math.floor(Number(cfg.momentum?.avgVolumeLookbackDays ?? 20)))
+  const avgVolume20dMap = await loadAverageMarketVolumeBySymbols(env, pendingSymbols, today, lookback)
 
   const blockedSymbols = await loadExecutionBlockedSymbols(env, today)
 
@@ -1333,7 +1313,7 @@ async function runIntradayCheckUnlocked(env: Bindings, leaseRunId: string): Prom
            ORDER BY id DESC
            LIMIT 1
         `).bind(ACCOUNT_ID, pending.symbol, today).first<any>(),
-        env.DB.prepare('SELECT market FROM stocks WHERE symbol = ? LIMIT 1').bind(pending.symbol).first<{ market?: string | null }>(),
+        databaseForDataDomain(env, 'core').prepare('SELECT market FROM stocks WHERE symbol = ? LIMIT 1').bind(pending.symbol).first<{ market?: string | null }>(),
         s12CalibrationArtifactsPromise,
       ])
       const twClock = getTwClockParts()
@@ -2073,7 +2053,7 @@ async function runIntradayCheckUnlocked(env: Bindings, leaseRunId: string): Prom
     if (dailyBuyTotal >= DAILY_BUY_LIMIT) break
     if (acc.cash < cfg.position.minCashToTrade) break
 
-    const recSector = (await env.DB.prepare('SELECT sector FROM stocks WHERE symbol=?').bind(pending.symbol).first<any>())?.sector ?? 'UNKNOWN'
+    const recSector = (await databaseForDataDomain(env, 'core').prepare('SELECT sector FROM stocks WHERE symbol=?').bind(pending.symbol).first<any>())?.sector ?? 'UNKNOWN'
     if ((sectorCountMap.get(recSector) ?? 0) >= riskCfg.position.maxPerSector) {
       const detail = `sector=${recSector};holdings=${sectorCountMap.get(recSector) ?? 0};cap=${riskCfg.position.maxPerSector}`
       console.log(`[Intraday] ${pending.symbol}: sector cap reached, skip (${detail})`)
@@ -2622,7 +2602,7 @@ async function runIntradayCheckUnlocked(env: Bindings, leaseRunId: string): Prom
     sectorCountMap.set(recSector, (sectorCountMap.get(recSector) ?? 0) + 1)
 
     try {
-      const recRow = await env.DB.prepare(
+      const recRow = await databaseForDataDomain(env, 'core').prepare(
         `SELECT score_components
            FROM daily_recommendations
           WHERE date=? AND symbol=?`,

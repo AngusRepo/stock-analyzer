@@ -1,3 +1,4 @@
+import { databaseForDataDomain } from './dataDomainRegistry'
 import type { Bindings } from '../types'
 import { sendReportToChannels, type DiscordEmbed } from './notify'
 import { loadPendingBuySnapshot } from './pendingBuyStore'
@@ -77,7 +78,7 @@ export async function generateMorningBriefing(env: Bindings): Promise<string> {
   const twToday = new Date(Date.now() + 8 * 3600_000).toISOString().slice(0, 10)
   const evidence = await ensureMorningEvidence(env, twToday)
 
-  const risk = await env.DB.prepare(
+  const risk = await databaseForDataDomain(env, 'core').prepare(
     'SELECT risk_level, risk_score, risk_summary FROM market_risk ORDER BY date DESC LIMIT 1',
   ).first<any>()
 

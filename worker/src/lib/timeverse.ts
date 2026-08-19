@@ -1,3 +1,4 @@
+import { databaseForDataDomain } from './dataDomainRegistry'
 /**
  * timeverse.ts — Timeverse 台股研究資料庫同步
  *
@@ -168,7 +169,7 @@ export async function syncTimeverse(env: Bindings): Promise<string> {
           if (!profile) continue
 
           // Upsert D1
-          await env.DB.prepare(`
+          await databaseForDataDomain(env, 'market').prepare(`
             INSERT INTO stock_profiles (symbol, name, sector, business_desc, supply_chain, key_customers, key_suppliers, financials_summary, wikilinks, updated_at)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
             ON CONFLICT(symbol) DO UPDATE SET

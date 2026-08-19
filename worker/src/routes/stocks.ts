@@ -153,7 +153,7 @@ const stocks = new Hono<{ Bindings: Bindings; Variables: Variables }>()
 
 // ─── GET /api/stocks  →  list all active stocks ───────────────────────────────
 stocks.get('/', async (c) => {
-  const { results } = await c.env.DB.prepare(
+  const { results } = await databaseForDataDomain(c.env, 'core').prepare(
     'SELECT * FROM stocks WHERE in_current_watchlist=1 ORDER BY symbol'
   ).all()
   return c.json(results)
@@ -163,7 +163,7 @@ stocks.get('/', async (c) => {
 stocks.get('/search', async (c) => {
   const q     = c.req.query('q') ?? ''
   const limit = parsePosInt(c.req.query('limit'), 20)
-  const { results } = await c.env.DB.prepare(
+  const { results } = await databaseForDataDomain(c.env, 'core').prepare(
     `SELECT * FROM stocks WHERE (symbol LIKE ? OR name LIKE ?) ORDER BY in_current_watchlist DESC, symbol LIMIT ?`
   ).bind(`%${q}%`, `%${q}%`, limit).all()
   return c.json(results)
@@ -173,13 +173,13 @@ stocks.get('/search', async (c) => {
 stocks.get('/:id', async (c) => {
   const id = parseId(c.req.param('id'))
   if (!id) return c.json({ error: '無效 ID' }, 400)
-  const row = await c.env.DB.prepare('SELECT * FROM stocks WHERE id=?').bind(id).first<any>()
+  const row = await databaseForDataDomain(c.env, 'core').prepare('SELECT * FROM stocks WHERE id=?').bind(id).first<any>()
   if (!row) return c.json({ error: '股票不存在' }, 404)
 
   // 附帶各資料表最新日期（讓前端顯示更新狀態）
   const [latestPrice, latestChip, latestPred] = await Promise.all([
-    c.env.DB.prepare('SELECT date FROM stock_prices WHERE stock_id=? ORDER BY date DESC LIMIT 1').bind(id).first<any>(),
-    c.env.DB.prepare('SELECT date FROM chip_data    WHERE symbol=? ORDER BY date DESC LIMIT 1').bind(row.symbol).first<any>(),
+    databaseForDataDomain(c.env, 'market').prepare('SELECT date FROM stock_prices WHERE stock_id=? ORDER BY date DESC LIMIT 1').bind(id).first<any>(),
+    databaseForDataDomain(c.env, 'market').prepare('SELECT date FROM chip_data    WHERE symbol=? ORDER BY date DESC LIMIT 1').bind(row.symbol).first<any>(),
     databaseForDataDomain(c.env, 'learning').prepare('SELECT generated_at FROM predictions WHERE stock_id=? ORDER BY generated_at DESC LIMIT 1').bind(id).first<any>(),
   ])
 
@@ -199,26 +199,26 @@ stocks.post('/', rateLimitMiddleware('api'), authMiddleware, adminMiddleware, as
   if (!symbol || !name) return c.json({ error: '請提供 symbol 與 name' }, 400)
 
   const sym = symbol.toUpperCase()
-  const existing = await c.env.DB.prepare(
+  const existing = await databaseForDataDomain(c.env, 'core').prepare(
     'SELECT id, in_current_watchlist FROM stocks WHERE symbol=?'
   ).bind(sym).first<{ id: number; in_current_watchlist: number }>()
 
   if (existing?.in_current_watchlist) return c.json({ error: '股票已存在' }, 409)
 
   if (existing) {
-    await c.env.DB.prepare('UPDATE stocks SET in_current_watchlist=1, name=?, sector=? WHERE id=?')
+    await databaseForDataDomain(c.env, 'core').prepare('UPDATE stocks SET in_current_watchlist=1, name=?, sector=? WHERE id=?')
       .bind(name, sector ?? null, existing.id).run()
-    const row = await c.env.DB.prepare('SELECT * FROM stocks WHERE id=?').bind(existing.id).first()
+    const row = await databaseForDataDomain(c.env, 'core').prepare('SELECT * FROM stocks WHERE id=?').bind(existing.id).first()
     return c.json(row, 201)
   }
 
-  const result = await c.env.DB.prepare(
+  const result = await databaseForDataDomain(c.env, 'core').prepare(
     'INSERT INTO stocks (symbol, name, market, sector) VALUES (?,?,?,?) RETURNING id'
   ).bind(sym, name, market, sector ?? null).first<{ id: number }>()
 
   if (!result) return c.json({ error: '新增失敗' }, 500)
 
-  const row = await c.env.DB.prepare('SELECT * FROM stocks WHERE id=?').bind(result.id).first()
+  const row = await databaseForDataDomain(c.env, 'core').prepare('SELECT * FROM stocks WHERE id=?').bind(result.id).first()
   return c.json(row, 201)
 })
 
@@ -227,7 +227,7 @@ stocks.post('/', rateLimitMiddleware('api'), authMiddleware, adminMiddleware, as
 stocks.delete('/:id', authMiddleware, adminMiddleware, async (c) => {
   const id = parseId(c.req.param('id'))
   if (!id) return c.json({ error: '無效 ID' }, 400)
-  await c.env.DB.prepare('UPDATE stocks SET in_current_watchlist=0 WHERE id=?').bind(id).run()
+  await databaseForDataDomain(c.env, 'core').prepare('UPDATE stocks SET in_current_watchlist=0 WHERE id=?').bind(id).run()
   return c.json({ success: true })
 })
 
@@ -238,7 +238,7 @@ stocks.get('/:id/prices', async (c) => {
   const days = parsePosInt(c.req.query('days'), 365)
   const since = new Date(Date.now() - days * 86400000).toISOString().split('T')[0]
 
-  const { results } = await c.env.DB.prepare(
+  const { results } = await databaseForDataDomain(c.env, 'market').prepare(
     'SELECT * FROM stock_prices WHERE stock_id=? AND date>=? ORDER BY date'
   ).bind(id, since).all()
   return c.json(results)
@@ -251,7 +251,7 @@ stocks.get('/:id/indicators', async (c) => {
   const days = parsePosInt(c.req.query('days'), 365)
   const since = new Date(Date.now() - days * 86400000).toISOString().split('T')[0]
 
-  let { results } = await c.env.DB.prepare(
+  let { results } = await databaseForDataDomain(c.env, 'market').prepare(
     'SELECT * FROM technical_indicators WHERE stock_id=? AND date>=? ORDER BY date'
   ).bind(id, since).all()
 
@@ -259,7 +259,7 @@ stocks.get('/:id/indicators', async (c) => {
   if (!results?.length) {
     try {
       await computeAndStoreIndicators(c.env.DB, id)
-      const retry = await c.env.DB.prepare(
+      const retry = await databaseForDataDomain(c.env, 'market').prepare(
         'SELECT * FROM technical_indicators WHERE stock_id=? AND date>=? ORDER BY date'
       ).bind(id, since).all()
       results = retry.results
@@ -278,7 +278,7 @@ stocks.get('/:id/financials', async (c) => {
   const limit = parsePosInt(c.req.query('limit'), 12)
   const asOfDate = parseIsoDate(c.req.query('asOf'))
 
-  const rows = await loadStockFinancialRows(c.env.DB, id, { limit, asOf: asOfDate })
+  const rows = await loadStockFinancialRows(c.env, id, { limit, asOf: asOfDate })
   if (!rows.length) return c.json({ error: 'stock_not_found' }, 404)
   return c.json(rows)
 })
@@ -289,13 +289,13 @@ stocks.get('/:id/card-chip-context', async (c) => {
   const asOfDate = parseIsoDate(c.req.query('asOf'))
     ?? new Date(Date.now() + 8 * 3600_000).toISOString().slice(0, 10)
 
-  const stock = await c.env.DB.prepare('SELECT id, symbol FROM stocks WHERE id=?').bind(id).first<any>()
+  const stock = await databaseForDataDomain(c.env, 'core').prepare('SELECT id, symbol FROM stocks WHERE id=?').bind(id).first<any>()
   if (!stock) return c.json({ error: '股票不存在' }, 404)
   const symbol = String(stock.symbol ?? '').trim()
   if (!symbol) return c.json({ error: '股票代號不存在' }, 404)
 
   const [chipRow, rankTable, brokerRow] = await Promise.all([
-    c.env.DB.prepare(`
+    databaseForDataDomain(c.env, 'market').prepare(`
       SELECT symbol, date,
              foreign_buy, foreign_sell, foreign_net,
              trust_buy, trust_sell, trust_net,
@@ -312,7 +312,7 @@ stocks.get('/:id/card-chip-context', async (c) => {
          AND name = 'canonical_broker_rank_daily'
        LIMIT 1
     `).first<{ name: string }>().catch(() => null),
-    c.env.DB.prepare(`
+    databaseForDataDomain(c.env, 'market').prepare(`
       SELECT stock_id, date, market_segment, buy_shares, sell_shares, net_shares,
              dominant_net_shares, gross_imbalance_shares, estimated_amount,
              broker_count, concentration, source
@@ -326,7 +326,7 @@ stocks.get('/:id/card-chip-context', async (c) => {
 
   const brokerDate = String(brokerRow?.date ?? asOfDate)
   const rankRows = rankTable?.name
-    ? (await c.env.DB.prepare(`
+    ? (await databaseForDataDomain(c.env, 'market').prepare(`
         SELECT stock_id, date, market_segment, rank_side, rank_no,
                broker_code, broker_name, buy_lots, sell_lots, net_lots, source
           FROM canonical_broker_rank_daily
@@ -351,19 +351,19 @@ stocks.get('/:id/monthly-revenue', async (c) => {
   const id = parseId(c.req.param('id'))
   if (!id) return c.json({ error: '無效 ID' }, 400)
   const months = parsePosInt(c.req.query('months'), 12)
-  return c.json(await loadStockMonthlyRevenueRows(c.env.DB, id, { months }))
+  return c.json(await loadStockMonthlyRevenueRows(c.env, id, { months }))
 })
 
 // ─── GET /api/stocks/:id/chips?days=60 ───────────────────────────────────────
 stocks.get('/:id/chips', async (c) => {
   const id = parseId(c.req.param('id'))
   if (!id) return c.json({ error: '無效 ID' }, 400)
-  const stock = await c.env.DB.prepare('SELECT symbol FROM stocks WHERE id=?').bind(id).first<any>()
+  const stock = await databaseForDataDomain(c.env, 'core').prepare('SELECT symbol FROM stocks WHERE id=?').bind(id).first<any>()
   if (!stock) return c.json({ error: '股票不存在' }, 404)
   const days = parsePosInt(c.req.query('days'), 60)
   const since = new Date(Date.now() - days * 86400000).toISOString().split('T')[0]
 
-  const { results } = await c.env.DB.prepare(
+  const { results } = await databaseForDataDomain(c.env, 'market').prepare(
     'SELECT * FROM chip_data WHERE symbol=? AND date>=? ORDER BY date'
   ).bind(stock.symbol, since).all()
   return c.json(results)
@@ -376,7 +376,7 @@ stocks.get('/:id/news', async (c) => {
   const days = parsePosInt(c.req.query('days'), 30)
   const since = new Date(Date.now() - days * 86400000).toISOString().split('T')[0]
 
-  const { results } = await c.env.DB.prepare(
+  const { results } = await databaseForDataDomain(c.env, 'market').prepare(
     'SELECT * FROM news WHERE stock_id=? AND published_at>=? ORDER BY published_at DESC LIMIT 50'
   ).bind(id, since).all()
   return c.json(results)
@@ -396,11 +396,11 @@ stocks.get('/:id/predictions', async (c) => {
 stocks.get('/:id/factors', async (c) => {
   const id = parseId(c.req.param('id'))
   if (!id) return c.json({ error: '無效 ID' }, 400)
-  const row = await c.env.DB.prepare(
+  const row = await databaseForDataDomain(c.env, 'market').prepare(
     'SELECT * FROM factor_scores WHERE stock_id=? ORDER BY date DESC LIMIT 1'
   ).bind(id).first()
   if (!row) {
-    const priceCount = await c.env.DB.prepare(
+    const priceCount = await databaseForDataDomain(c.env, 'market').prepare(
       'SELECT COUNT(*) as cnt FROM stock_prices WHERE stock_id=?'
     ).bind(id).first<{ cnt: number }>()
     return c.json({ empty: true, reason: (priceCount?.cnt ?? 0) < 60
@@ -415,11 +415,11 @@ stocks.get('/:id/risk', async (c) => {
   const id = parseId(c.req.param('id'))
   if (!id) return c.json({ error: '無效 ID' }, 400)
   const period = c.req.query('period') ?? '1y'
-  const row    = await c.env.DB.prepare(
+  const row    = await databaseForDataDomain(c.env, 'core').prepare(
     'SELECT * FROM risk_metrics WHERE stock_id=? AND period=? ORDER BY calculated_at DESC LIMIT 1'
   ).bind(id, period).first()
   if (!row) {
-    const priceCount = await c.env.DB.prepare(
+    const priceCount = await databaseForDataDomain(c.env, 'market').prepare(
       'SELECT COUNT(*) as cnt FROM stock_prices WHERE stock_id=?'
     ).bind(id).first<{ cnt: number }>()
     return c.json({ empty: true, reason: (priceCount?.cnt ?? 0) < 60
@@ -433,10 +433,10 @@ stocks.get('/:id/risk', async (c) => {
 stocks.get('/:id/valuations', async (c) => {
   const id = parseId(c.req.param('id'))
   if (!id) return c.json({ error: '無效 ID' }, 400)
-  const stock = await c.env.DB.prepare('SELECT * FROM stocks WHERE id=?').bind(id).first<any>()
+  const stock = await databaseForDataDomain(c.env, 'core').prepare('SELECT * FROM stocks WHERE id=?').bind(id).first<any>()
   if (!stock) return c.json({ error: '股票不存在' }, 404)
 
-  const history = await loadStockFinancialRows(c.env.DB, id, { limit: 8 })
+  const history = await loadStockFinancialRows(c.env, id, { limit: 8 })
   const current = history[0] ?? null
 
   return c.json({ stock, current, history })
@@ -447,7 +447,7 @@ stocks.get('/:id/valuations', async (c) => {
 stocks.post('/:id/refresh', authMiddleware, adminMiddleware, async (c) => {
   const id = parseId(c.req.param('id'))
   if (!id) return c.json({ error: '無效 ID' }, 400)
-  const stock = await c.env.DB.prepare('SELECT * FROM stocks WHERE id=?').bind(id).first<any>()
+  const stock = await databaseForDataDomain(c.env, 'core').prepare('SELECT * FROM stocks WHERE id=?').bind(id).first<any>()
   if (!stock) return c.json({ error: '股票不存在' }, 404)
 
   // Fetch from Yahoo Finance
@@ -507,7 +507,7 @@ stocks.get('/:id/margin', async (c) => {
   if (!id) return c.json({ error: '無效 ID' }, 400)
   const days = parsePosInt(c.req.query('days'), 60)
 
-  const { results } = await c.env.DB.prepare(
+  const { results } = await databaseForDataDomain(c.env, 'market').prepare(
     'SELECT date, margin_buy, margin_sell, margin_balance, short_buy, short_sell, short_balance, margin_usage_pct, short_ratio FROM margin_data WHERE stock_id=? ORDER BY date DESC LIMIT ?'
   ).bind(id, days).all()
   return c.json(results ?? [])
@@ -517,21 +517,21 @@ stocks.get('/:id/margin', async (c) => {
 stocks.get('/:id/ai-summary', async (c) => {
   const id = parseId(c.req.param('id'))
   if (!id) return c.json({ error: '無效 ID' }, 400)
-  const stock = await c.env.DB.prepare('SELECT symbol, name, sector, market FROM stocks WHERE id=?').bind(id).first<any>()
+  const stock = await databaseForDataDomain(c.env, 'core').prepare('SELECT symbol, name, sector, market FROM stocks WHERE id=?').bind(id).first<any>()
   if (!stock) return c.json({ error: '股票不存在' }, 404)
 
   // 平行查詢
   const [recRow, tagsRows, chipRows, profileRow, finRow] = await Promise.all([
     // 最新推薦
-    c.env.DB.prepare(
+    databaseForDataDomain(c.env, 'core').prepare(
       'SELECT * FROM daily_recommendations WHERE symbol=? ORDER BY date DESC LIMIT 1'
     ).bind(stock.symbol).first<any>().catch(() => null),
     // 概念標籤
-    c.env.DB.prepare(
+    databaseForDataDomain(c.env, 'market').prepare(
       'SELECT tag, weight FROM stock_tags WHERE symbol=? ORDER BY weight DESC'
     ).bind(stock.symbol).all<any>().then(r => r.results ?? []).catch(() => []),
     // 近 5 日法人
-    c.env.DB.prepare(`
+    databaseForDataDomain(c.env, 'market').prepare(`
       SELECT SUM(foreign_net) as foreign_net,
              SUM(trust_net) as trust_net,
              SUM(dealer_net) as dealer_net
@@ -543,11 +543,11 @@ stocks.get('/:id/ai-summary', async (c) => {
       )
     `).bind(stock.symbol).first<any>().catch(() => null),
     // 公司概況
-    c.env.DB.prepare(
+    databaseForDataDomain(c.env, 'market').prepare(
       'SELECT business_desc, key_customers, key_suppliers FROM stock_profiles WHERE symbol=?'
     ).bind(stock.symbol).first<any>().catch(() => null),
     // 最新財報
-    loadLatestStockFinancialSnapshot(c.env.DB, id).catch(() => null),
+    loadLatestStockFinancialSnapshot(c.env, id).catch(() => null),
   ])
 
   let recommendation = recRow

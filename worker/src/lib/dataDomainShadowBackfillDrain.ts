@@ -1417,12 +1417,25 @@ export async function processDataDomainShadowBackfillDrain(
       taskName: `data-domain-shadow-backfill:${domain}`,
       leaseGroup: 'd1_heavy_maintenance',
       leaseSeconds: 300,
-      run: () => backfillDataDomainTableShadow(env, {
-        domain,
-        table,
-        limit: dataDomainShadowBackfillQueueBatchLimit(table),
-        parityNotBefore,
-      }),
+      run: async () => {
+        const iterations = tableOwnershipMetadata(table)?.route_ready === false ? 3 : 1
+        let result: DomainShadowBackfillResult | null = null
+        for (let iteration = 0; iteration < iterations; iteration += 1) {
+          result = await backfillDataDomainTableShadow(env, {
+            domain,
+            table,
+            limit: dataDomainShadowBackfillQueueBatchLimit(table),
+            parityNotBefore,
+          })
+          if (
+            result.status === 'shadow_table_complete'
+            || result.status === 'shadow_delete_reconciliation_deferred'
+            || result.status === 'shadow_parent_revalidation_required'
+          ) break
+        }
+        if (!result) throw new Error(`data_domain_shadow_batch_result_missing:${domain}:${table}`)
+        return result
+      },
     })
   } catch (error) {
     const errorMessage = error instanceof Error ? error.message : String(error)

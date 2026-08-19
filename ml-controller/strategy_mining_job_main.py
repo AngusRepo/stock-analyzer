@@ -17,7 +17,23 @@ from zoneinfo import ZoneInfo
 import httpx
 import pandas as pd
 
-from services import d1_client
+from services.d1_domain_client import D1DataDomain, client_for_domain
+
+
+class _ResearchD1ClientProxy:
+    """Mutable compatibility seam that resolves the Research route per call."""
+
+    def query(self, *args: Any, **kwargs: Any) -> list[dict]:
+        return client_for_domain(D1DataDomain.RESEARCH).query(*args, **kwargs)
+
+    def execute(self, *args: Any, **kwargs: Any) -> dict:
+        return client_for_domain(D1DataDomain.RESEARCH).execute(*args, **kwargs)
+
+    def batch_execute(self, *args: Any, **kwargs: Any) -> dict:
+        return client_for_domain(D1DataDomain.RESEARCH).batch_execute(*args, **kwargs)
+
+
+d1_client = _ResearchD1ClientProxy()
 from services.finlab_auth import login_finlab_sdk
 from services.strategy_mining_evidence import build_strategy_mining_evidence
 

@@ -110,7 +110,16 @@ for (const table of ['meta_reward_ledger', 'meta_shadow_decisions']) {
 const deferredProductionTables = productionTableNames.filter((table) => (
   tableOwnershipMetadata(table)?.route_ready === false && !LEGACY_CONTROL_PLANE_TABLES.has(table)
 ))
-assert.equal(deferredProductionTables.length, 51, 'production tables without target schema readiness require explicit review')
+assert.equal(deferredProductionTables.length, 41, 'production tables without completed routing closure require explicit review')
+for (const table of [
+  'active_strategy_backtest_results', 'backtest_results', 'debate_ab_log',
+  'monte_carlo_results', 'pbo_results', 'strategy_backtest_results',
+  'strategy_mining_candidates', 'strategy_mining_runs',
+  'strategy_promotion_ledger', 'strategy_similarity_matrix',
+]) {
+  assert.equal(tableOwnershipMetadata(table)?.route_ready, true, `${table} must route to Research D1`)
+  assert.equal(tableOwnershipMetadata(table)?.shadow_ready, true, `${table} must retain backfill/parity evidence`)
+}
 assert.equal(
   deferredProductionTables.filter((table) => tableOwnershipMetadata(table)?.disposition === 'legacy_only').length,
   0,

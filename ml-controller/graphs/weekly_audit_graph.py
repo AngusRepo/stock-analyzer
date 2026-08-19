@@ -8,6 +8,7 @@ Friday post-close pipeline:
   4. LLM writes human-readable report
   5. Return report (Worker pushes to Discord + archives to D1)
 """
+import asyncio
 import json
 import logging
 import os
@@ -17,18 +18,13 @@ from typing import Any
 
 import httpx
 
+from services.d1_domain_client import D1DataDomain, client_for_domain
 from services.model_pool_health import read_model_pool_health_rows
 from services.no_lookahead_audit import CHECKS as NO_LOOKAHEAD_CHECKS
 
 logger = logging.getLogger(__name__)
 
-CF_ACCOUNT_ID = os.environ.get("CF_ACCOUNT_ID", "")
-CF_D1_DB_ID = os.environ.get("CF_D1_DB_ID", "")
 CF_API_TOKEN = os.environ.get("CF_API_TOKEN", "")
-D1_API = (
-    f"https://api.cloudflare.com/client/v4/accounts/{CF_ACCOUNT_ID}"
-    f"/d1/database/{CF_D1_DB_ID}/query"
-)
 
 SCORE_V2_COMPONENTS = (
     ("mlEdge", "ML Edge"),
@@ -105,40 +101,31 @@ def _component_contributions(row: dict[str, Any]) -> tuple[dict[str, float], boo
     }, False
 
 
-async def _d1_query(client: httpx.AsyncClient, sql: str, params: list = None) -> list[dict]:
+async def _d1_query(
+    client: httpx.AsyncClient,
+    sql: str,
+    params: list | None = None,
+    *,
+    domain: D1DataDomain,
+) -> list[dict]:
+    del client
     if not CF_API_TOKEN:
         return []
-    body = {"sql": sql}
-    if params:
-        body["params"] = params
-    resp = await client.post(
-        D1_API, json=body,
-        headers={"Authorization": f"Bearer {CF_API_TOKEN}", "Content-Type": "application/json"},
-        timeout=30.0,
-    )
-    if resp.status_code != 200:
-        return []
-    data = resp.json()
-    if not data.get("success"):
-        return []
-    results = data.get("result", [])
-    if results and isinstance(results, list) and "results" in results[0]:
-        return results[0]["results"]
-    return []
+    return await asyncio.to_thread(client_for_domain(domain).query, sql, params, 30.0)
 
 
-async def _d1_exec(client: httpx.AsyncClient, sql: str, params: list = None) -> bool:
+async def _d1_exec(
+    client: httpx.AsyncClient,
+    sql: str,
+    params: list | None = None,
+    *,
+    domain: D1DataDomain,
+) -> bool:
+    del client
     if not CF_API_TOKEN:
         return False
-    body = {"sql": sql}
-    if params:
-        body["params"] = params
-    resp = await client.post(
-        D1_API, json=body,
-        headers={"Authorization": f"Bearer {CF_API_TOKEN}", "Content-Type": "application/json"},
-        timeout=30.0,
-    )
-    return resp.status_code == 200 and resp.json().get("success", False)
+    result = await asyncio.to_thread(client_for_domain(domain).execute, sql, params, 30.0)
+    return bool(result.get("success"))
 
 
 async def generate_weekly_audit() -> dict:
@@ -160,14 +147,14 @@ async def generate_weekly_audit() -> dict:
             FROM paper_daily_snapshots
             WHERE account_id = 1 AND date >= ?
             ORDER BY date ASC
-        """, [week_ago])
+        """, [week_ago], domain=D1DataDomain.PAPER)
 
         orders = await _d1_query(client, """
             SELECT side, symbol, price, shares, note, created_at
             FROM paper_orders
             WHERE account_id = 1 AND created_at >= ?
             ORDER BY created_at
-        """, [week_ago])
+        """, [week_ago], domain=D1DataDomain.PAPER)
 
         buys = [o for o in orders if o["side"] == "buy"]
         sells = [o for o in orders if o["side"] == "sell"]
@@ -198,7 +185,7 @@ async def generate_weekly_audit() -> dict:
                    chip_pct, tech_pct, ml_pct, debate_verdict, ml_signal, ml_confidence
             FROM decision_logs
             WHERE date >= ? ORDER BY date
-        """, [week_ago])
+        """, [week_ago], domain=D1DataDomain.PAPER)
 
         # Aggregate Score V2 factor contributions. Historical rows without
         # score_components are read as a storage projection only.
@@ -267,15 +254,16 @@ async def generate_weekly_audit() -> dict:
         mc = await _d1_query(client, """
             SELECT mdd_95th, go_live_verdict FROM monte_carlo_results
             ORDER BY run_date DESC LIMIT 1
-        """)
+        """, domain=D1DataDomain.RESEARCH)
         pbo = await _d1_query(client, """
             SELECT pbo, go_live_verdict FROM pbo_results
             ORDER BY run_date DESC LIMIT 1
-        """)
+        """, domain=D1DataDomain.RESEARCH)
 
         point_in_time_checks = []
         for check_name, sql, params in NO_LOOKAHEAD_CHECKS:
-            rows = await _d1_query(client, sql, params or None)
+            audit_domain = D1DataDomain.MARKET if check_name == "fundamental_pit" else D1DataDomain.LEARNING
+            rows = await _d1_query(client, sql, params or None, domain=audit_domain)
             if not rows or "violations" not in rows[0]:
                 point_in_time_checks.append({
                     "name": check_name,
@@ -369,7 +357,7 @@ async def generate_weekly_audit() -> dict:
             json.dumps(l2, ensure_ascii=False),
             json.dumps(l3, ensure_ascii=False),
             json.dumps(risk_assessment, ensure_ascii=False),
-        ])
+        ], domain=D1DataDomain.OPS)
 
         return {
             "status": "success",

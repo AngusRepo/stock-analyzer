@@ -54,8 +54,8 @@ export const MULTI_D1_PROJECTION_CONTRACT_READY = Object.values(
   MULTI_D1_PROJECTION_CONTRACT_GATES,
 ).every(Boolean)
 
-const DOMAIN_ROUTING_CONTRACT_READY = new Set<DataDomain>(['learning', 'execution', 'paper'])
-const DOMAIN_PROJECTION_FREE_CLOSURE = new Set<DataDomain>(['learning', 'execution', 'paper'])
+const DOMAIN_ROUTING_CONTRACT_READY = new Set<DataDomain>(['learning', 'execution', 'paper', 'research'])
+const DOMAIN_PROJECTION_FREE_CLOSURE = new Set<DataDomain>(['learning', 'execution', 'paper', 'research'])
 
 export function dataDomainRoutingContractReady(domain: DataDomain): boolean {
   return DOMAIN_ROUTING_CONTRACT_READY.has(domain)
@@ -227,16 +227,16 @@ const DEFERRED_PRODUCTION_TABLE_OWNERSHIP: readonly TableOwnershipMetadata[] = [
   { table: 'pending_buy_runs', domain: 'paper', disposition: 'active_window', route_ready: true, shadow_ready: true },
   { table: 'promotion_audit_events', domain: 'paper', disposition: 'active_window', route_ready: true, shadow_ready: true },
 
-  { table: 'active_strategy_backtest_results', domain: 'research', disposition: 'compact_projection', route_ready: false, shadow_ready: true },
-  { table: 'backtest_results', domain: 'research', disposition: 'compact_projection', route_ready: false, shadow_ready: true },
-  { table: 'debate_ab_log', domain: 'research', disposition: 'active_window', route_ready: false, shadow_ready: true },
-  { table: 'monte_carlo_results', domain: 'research', disposition: 'compact_projection', route_ready: false, shadow_ready: true },
-  { table: 'pbo_results', domain: 'research', disposition: 'compact_projection', route_ready: false, shadow_ready: true },
-  { table: 'strategy_backtest_results', domain: 'research', disposition: 'compact_projection', route_ready: false, shadow_ready: true },
-  { table: 'strategy_mining_candidates', domain: 'research', disposition: 'compact_projection', route_ready: false, shadow_ready: true },
-  { table: 'strategy_mining_runs', domain: 'research', disposition: 'active_window', route_ready: false, shadow_ready: true },
-  { table: 'strategy_promotion_ledger', domain: 'research', disposition: 'active_window', route_ready: false, shadow_ready: true },
-  { table: 'strategy_similarity_matrix', domain: 'research', disposition: 'compact_projection', route_ready: false, shadow_ready: true },
+  { table: 'active_strategy_backtest_results', domain: 'research', disposition: 'compact_projection', route_ready: true, shadow_ready: true },
+  { table: 'backtest_results', domain: 'research', disposition: 'compact_projection', route_ready: true, shadow_ready: true },
+  { table: 'debate_ab_log', domain: 'research', disposition: 'active_window', route_ready: true, shadow_ready: true },
+  { table: 'monte_carlo_results', domain: 'research', disposition: 'compact_projection', route_ready: true, shadow_ready: true },
+  { table: 'pbo_results', domain: 'research', disposition: 'compact_projection', route_ready: true, shadow_ready: true },
+  { table: 'strategy_backtest_results', domain: 'research', disposition: 'compact_projection', route_ready: true, shadow_ready: true },
+  { table: 'strategy_mining_candidates', domain: 'research', disposition: 'compact_projection', route_ready: true, shadow_ready: true },
+  { table: 'strategy_mining_runs', domain: 'research', disposition: 'active_window', route_ready: true, shadow_ready: true },
+  { table: 'strategy_promotion_ledger', domain: 'research', disposition: 'active_window', route_ready: true, shadow_ready: true },
+  { table: 'strategy_similarity_matrix', domain: 'research', disposition: 'compact_projection', route_ready: true, shadow_ready: true },
 ]
 const SHADOW_BACKFILL_EXCLUDED_TABLES: Partial<Record<DataDomain, ReadonlySet<string>>> = {
   // Domain-native tables have no legacy source by design. They are created and

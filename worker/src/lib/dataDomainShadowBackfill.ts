@@ -927,7 +927,7 @@ export async function backfillDataDomainTableShadow(
     )
   }
   const learningAuthority: InactiveLearningShadowAuthority | null =
-    domain === 'learning'
+    domain === 'learning' && !finalizedDeferredRepair
       ? assertInactiveLearningShadowAuthority(env)
       : null
   const target = shadowDatabaseForDataDomain(env, domain)

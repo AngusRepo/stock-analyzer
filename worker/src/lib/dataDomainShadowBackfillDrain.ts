@@ -1419,7 +1419,7 @@ export async function processDataDomainShadowBackfillDrain(
       leaseGroup: 'd1_heavy_maintenance',
       leaseSeconds: 300,
       run: async () => {
-        const iterations = tableOwnershipMetadata(table)?.route_ready === false ? 3 : 1
+        const iterations = !activeDataDomains(env).has(domain) || tableOwnershipMetadata(table)?.route_ready === false ? 3 : 1
         let result: DomainShadowBackfillResult | null = null
         for (let iteration = 0; iteration < iterations; iteration += 1) {
           result = await backfillDataDomainTableShadow(env, {

@@ -114,13 +114,17 @@ export function createAdminTriggerRoutes(deps: TriggerRouteDeps) {
     const authError = await requireServiceToken(c)
     if (authError) return authError
 
-    const rlKey = `ratelimit:admin:${new Date(Date.now() + 8 * 3600_000).toISOString().slice(0, 13)}`
-    const rlCount = parseInt((await c.env.KV.get(rlKey)) ?? '0', 10)
-    if (rlCount >= 100) return c.json({ error: 'Rate limit exceeded (100/hr)' }, 429)
-    await c.env.KV.put(rlKey, String(rlCount + 1), { expirationTtl: 3600 })
-
     const requestedTask = c.req.param('task')
     const task = resolveSchedulerTaskAlias(requestedTask)
+    const maintenanceBackfill = task === 'data-domain-shadow-backfill'
+    const rateLimitNamespace = maintenanceBackfill
+      ? 'admin-maintenance:data-domain-shadow-backfill'
+      : 'admin'
+    const rateLimit = maintenanceBackfill ? 500 : 100
+    const rlKey = `ratelimit:${rateLimitNamespace}:${new Date(Date.now() + 8 * 3600_000).toISOString().slice(0, 13)}`
+    const rlCount = parseInt((await c.env.KV.get(rlKey)) ?? '0', 10)
+    if (rlCount >= rateLimit) return c.json({ error: `Rate limit exceeded (${rateLimit}/hr)` }, 429)
+    await c.env.KV.put(rlKey, String(rlCount + 1), { expirationTtl: 3600 })
     const requestedRunDate = c.req.query('date') || undefined
     const taskMap = deps.buildTaskMap(c)
     const fn = taskMap[task]

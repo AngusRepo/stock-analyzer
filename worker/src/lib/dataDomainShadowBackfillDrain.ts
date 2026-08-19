@@ -1270,7 +1270,12 @@ export async function runDataDomainShadowBackfillHttpStep(
   }), { expirationTtl: ACTIVE_TTL_SECONDS })
   const httpAggregateShadowReady = Boolean(result.domain_shadow_ready)
     && await refreshDataDomainAggregateCutover(env, input.domain, parityNotBefore)
-  if (httpAggregateShadowReady) {
+  const explicitDeferredRepairComplete = Boolean(
+    input.table
+    && result.status === 'shadow_table_complete'
+    && tableOwnershipMetadata(input.table)?.route_ready === false
+  )
+  if (httpAggregateShadowReady || explicitDeferredRepairComplete) {
     await env.KV.delete(key)
   } else {
     await env.KV.put(key, JSON.stringify({

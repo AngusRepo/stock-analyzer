@@ -63,6 +63,7 @@ async function loadLegacyRouteRows(
   legacyDb: D1Database,
   startDate: string,
   asOfDate: string,
+  canonicalRunIds: Record<string, string>,
 ): Promise<LegacyRouteRow[]> {
   const rows: LegacyRouteRow[] = []
   let cursorDate = ''
@@ -78,9 +79,8 @@ async function loadLegacyRouteRows(
          AND r.strategy_challenger_route_version=?
          AND r.strategy_challenger_route_score IS NOT NULL
          AND EXISTS (
-           SELECT 1 FROM canonical_run_heads h
-            WHERE h.logical_run_key='screener:' || r.signal_date || ':TW:production:market_screener'
-              AND h.run_id=r.producer_run_id
+           SELECT 1 FROM json_each(?) h
+            WHERE h.key=r.signal_date AND h.value=r.producer_run_id
          )
          AND (
            r.signal_date > ?
@@ -91,6 +91,7 @@ async function loadLegacyRouteRows(
        LIMIT 400
     `).bind(
       startDate, asOfDate, STRATEGY_ROUTE_CHALLENGER_VERSION,
+      JSON.stringify(canonicalRunIds),
       cursorDate, cursorDate, cursorSymbol,
       cursorDate, cursorSymbol, cursorRunId,
     ).all<LegacyRouteRow>()
@@ -139,14 +140,15 @@ export async function repairStrategyLearningCutoverContinuity(
     throw new Error('strategy_learning_cutover_continuity_requires_active_learning_domain')
   }
   if (!env.LEARNING_DB) throw new Error('strategy_learning_cutover_continuity_learning_binding_missing')
+  if (!env.OPS_DB) throw new Error('strategy_learning_cutover_continuity_ops_binding_missing')
 
   const legacyDb = env.DB
   const learningDb = env.LEARNING_DB
-  const [heads, legacyRouteRows] = await Promise.all([
-    loadCanonicalHeads(legacyDb, input.startDate, input.asOfDate),
-    loadLegacyRouteRows(legacyDb, input.startDate, input.asOfDate),
-  ])
+  const heads = await loadCanonicalHeads(env.OPS_DB, input.startDate, input.asOfDate)
   const canonicalRunIds = Object.fromEntries(heads.map((row) => [row.signal_date, row.run_id]))
+  const legacyRouteRows = await loadLegacyRouteRows(
+    legacyDb, input.startDate, input.asOfDate, canonicalRunIds,
+  )
   const targetBefore = await countTargetRouteRows(
     learningDb, input.startDate, input.asOfDate, canonicalRunIds,
   )

@@ -1989,9 +1989,6 @@ export async function materializeStrategyDecisionDailyStats(
            SELECT 1 FROM strategy_label_matrix_v4 m
             JOIN strategy_label_matrix_runs_v4 mr
               ON mr.producer_run_id=m.producer_run_id AND mr.status='ready'
-            JOIN canonical_run_heads h
-              ON h.logical_run_key='screener:' || m.signal_date || ':TW:production:market_screener'
-             AND h.run_id=mr.producer_run_id
            WHERE m.signal_date=d.date AND m.symbol=d.symbol
              AND m.strategy_id=d.strategy_id AND m.strategy_version=d.strategy_version
              AND m.producer_run_id=?

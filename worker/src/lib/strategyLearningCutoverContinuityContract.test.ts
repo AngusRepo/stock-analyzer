@@ -18,6 +18,8 @@ test('daily stats bind canonical producer and clear orphan projections', () => {
 })
 test('continuity repair is bounded and cannot promote', () => {
   assert.match(repair, /activeDataDomains\(env\)\.has\('learning'\)/)
+  assert.match(repair, /loadCanonicalHeads\(env\.OPS_DB/)
+  assert.match(repair, /loadLegacyRouteRows\([\s\S]*canonicalRunIds/)
   assert.match(repair, /allowPromotion: false/)
   assert.doesNotMatch(repair, /DELETE FROM|DROP TABLE|TRUNCATE/)
   assert.match(writeRoutes, /repair-learning-cutover-continuity-v1/)

@@ -50,6 +50,19 @@ const fullyReady = await buildStrategyEvidenceOwnerSnapshot({
 assert.equal(fullyReady.active_ready_profile_count, 1)
 assert.equal(fullyReady.profiles[0]?.weight_effect, 'bounded_bidirectional')
 assert.notEqual(fullyReady.profiles[0]?.weight_multiplier, 1)
+const materializedButUnavailable = await buildStrategyEvidenceOwnerSnapshot({
+  strategies: [active],
+  rows: profileRows.map((row, index) => index === 0
+    ? { ...row, metric_value: null, metric_status: 'not_available' }
+    : row),
+  knowledgeCutoffDate: '2026-08-17',
+})
+assert.equal(materializedButUnavailable.integration_ready, true)
+assert.equal(materializedButUnavailable.active_materialized_profile_count, 1)
+assert.equal(materializedButUnavailable.active_ready_profile_count, 0)
+assert.equal(materializedButUnavailable.profiles[0]?.integration_status, 'materialized_learning')
+assert.equal(materializedButUnavailable.profiles[0]?.weight_multiplier, 1, 'unavailable estimator stays neutral without becoming missing evidence')
+
 assert(fullyReady.profiles[0]!.weight_multiplier >= 0.75 && fullyReady.profiles[0]!.weight_multiplier <= 1.25)
 
 const futureOnly = await buildStrategyEvidenceOwnerSnapshot({

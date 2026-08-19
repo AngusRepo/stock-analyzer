@@ -130,7 +130,7 @@ export async function buildStrategyEvidenceOwnerSnapshot(input: {
           : null,
       }
     })
-    const materializedMetrics = metricEvidence.filter((row) => row.metric_value != null).length
+    const materializedMetrics = rows.filter((row) => row != null).length
     const readyMetrics = rows.filter((row) => row?.metric_status === 'ready').length
     const fullyReady = readyMetrics === profile.required_metrics.length
     const normalizedScores = metricEvidence

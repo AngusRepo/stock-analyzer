@@ -529,7 +529,13 @@ export async function runAuditJsonArchiveRetention(
     const cursor = dryRun
       ? null
       : await loadRetentionCursor(env.DB, AUDIT_JSON_RETENTION_POLICY_ID, target.id)
-    const rows = await loadCandidateRows(env, target, cutoffDate, limitPerTable, minBlobBytes, cursor)
+    let rows = await loadCandidateRows(env, target, cutoffDate, limitPerTable, minBlobBytes, cursor)
+    // Keyset cursors are only a scan accelerator. Rows can become eligible after
+    // the cursor passed them (for example after evidence migration or parity
+    // protection is lifted), so a tail miss must re-check the head once.
+    if (!dryRun && rows.length === 0 && cursor?.backlog_remaining && cursor.cursor_date) {
+      rows = await loadCandidateRows(env, target, cutoffDate, limitPerTable, minBlobBytes, null)
+    }
     const archivedBlobBytes = rows.reduce((sum, row) => sum + rowBlobBytes(row, target), 0)
     if (dryRun || rows.length === 0) {
       result.tables.push({

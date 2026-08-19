@@ -104,6 +104,8 @@ import {
 } from './fiveSlotCapitalAllocator'
 import { l4SparseSizingFromWatchPoints, resolveL4SparseBudgetFloor } from './l4SparseAllocationSizing'
 import { withD1ReadRetry } from './d1TransientRetry'
+import { getRiskConfig } from './riskConfig'
+import { assessPositionCorrelation, loadPositionPriceRows } from './positionRiskDistribution'
 import {
   batchLoadOhlcvTradePlanLevelsBySymbol,
   formatOhlcvTradePlanWatchPoint,
@@ -485,6 +487,11 @@ function shouldPersistActiveExecutionStatus(status: PendingBuyActiveExecutionSta
 
 async function runIntradayCheckUnlocked(env: Bindings, leaseRunId: string): Promise<IntradayStopLossPollResult> {
   const cfg = await getTradingConfig(env.KV)
+  const riskCfg = await getRiskConfig(env.KV)
+  const maxSingleNamePct = Math.min(
+    cfg.position.maxPctOfPortfolio,
+    riskCfg.position.maxSingleNamePct,
+  )
   const { hour: twHour, minute: twMin } = getTwClockParts()
   const minutesSinceOpen = minutesSinceTwMarketOpen(twHour, twMin)
   const isMarketOpen = isTwIntradayTradingMinute()
@@ -777,7 +784,7 @@ async function runIntradayCheckUnlocked(env: Bindings, leaseRunId: string): Prom
       marketContext: allocatorMarketContext,
       config: {
         maxPositions: maxPos,
-        maxPctOfPortfolio: cfg.position.maxPctOfPortfolio,
+        maxPctOfPortfolio: maxSingleNamePct,
         maxPctOfCash: cfg.position.maxPctOfCash,
         dailyBuyLimit: cfg.position.dailyBuyLimit,
         minPositionValue: cfg.position.minPositionValue ?? 30_000,
@@ -1031,6 +1038,14 @@ async function runIntradayCheckUnlocked(env: Bindings, leaseRunId: string): Prom
     'SELECT symbol, shares, avg_cost, entry_date, tp1_hit, initial_stop, trailing_stop, highest_since_entry FROM paper_positions WHERE account_id=? AND shares>0',
   ).bind(ACCOUNT_ID).all<any>()
   const capitalPositionSymbols = (capitalPositionRows ?? []).map((p: any) => p.symbol).filter(Boolean)
+  const positionPriceRows = await loadPositionPriceRows(
+    env.DB,
+    [...pendingSymbols, ...capitalPositionSymbols],
+    riskCfg.position.correlationWindow,
+  ).catch((error) => {
+    console.warn('[Intraday] position correlation history unavailable:', error)
+    return []
+  })
 
   const sectorCountMap = new Map<string, number>()
   if (capitalPositionSymbols.length > 0) {
@@ -1141,7 +1156,7 @@ async function runIntradayCheckUnlocked(env: Bindings, leaseRunId: string): Prom
     }
     const config = {
       maxPositions: maxPos,
-      maxPctOfPortfolio: cfg.position.maxPctOfPortfolio,
+      maxPctOfPortfolio: maxSingleNamePct,
       maxPctOfCash: cfg.position.maxPctOfCash,
       dailyBuyLimit: DAILY_BUY_LIMIT,
       minPositionValue: cfg.position.minPositionValue ?? 30_000,
@@ -1215,7 +1230,7 @@ async function runIntradayCheckUnlocked(env: Bindings, leaseRunId: string): Prom
     marketContext: allocatorMarketContext,
     config: {
       maxPositions: maxPos,
-      maxPctOfPortfolio: cfg.position.maxPctOfPortfolio,
+      maxPctOfPortfolio: maxSingleNamePct,
       maxPctOfCash: cfg.position.maxPctOfCash,
       dailyBuyLimit: DAILY_BUY_LIMIT,
       minPositionValue: cfg.position.minPositionValue ?? 30_000,
@@ -2057,9 +2072,33 @@ async function runIntradayCheckUnlocked(env: Bindings, leaseRunId: string): Prom
     if (acc.cash < cfg.position.minCashToTrade) break
 
     const recSector = (await env.DB.prepare('SELECT sector FROM stocks WHERE symbol=?').bind(pending.symbol).first<any>())?.sector ?? 'UNKNOWN'
-    if ((sectorCountMap.get(recSector) ?? 0) >= 2) {
-      console.log(`[Intraday] ${pending.symbol}: sector cap reached, skip`)
+    if ((sectorCountMap.get(recSector) ?? 0) >= riskCfg.position.maxPerSector) {
+      const detail = `sector=${recSector};holdings=${sectorCountMap.get(recSector) ?? 0};cap=${riskCfg.position.maxPerSector}`
+      console.log(`[Intraday] ${pending.symbol}: sector cap reached, skip (${detail})`)
+      recordActiveExecutionStatus(pending.symbol, 'checked_waiting', 'position_sector_cap', detail)
       continue
+    }
+
+    const currentRiskHoldings = await loadCurrentCapitalHoldings()
+    const correlationRisk = assessPositionCorrelation({
+      candidateSymbol: pending.symbol,
+      holdingSymbols: currentRiskHoldings.map((holding) => holding.symbol),
+      priceRows: positionPriceRows,
+      threshold: riskCfg.position.correlationThreshold,
+    })
+    if (correlationRisk.status === 'blocked') {
+      const detail = JSON.stringify(correlationRisk)
+      console.log(`[Intraday] ${pending.symbol}: correlation cap reached, skip (${detail})`)
+      recordActiveExecutionStatus(pending.symbol, 'checked_waiting', 'position_correlation_cap', detail)
+      continue
+    }
+    if (correlationRisk.status === 'fallback_insufficient_data') {
+      recordExecutionNote(
+        pending.symbol,
+        'position_risk_fallback',
+        'correlation_history_insufficient',
+        JSON.stringify(correlationRisk),
+      )
     }
 
     const atr14 = atrMap.get(pending.symbol) ?? price * cfg.exit.fallbackAtrPct
@@ -2085,7 +2124,7 @@ async function runIntradayCheckUnlocked(env: Bindings, leaseRunId: string): Prom
         ? allocatorDecision.slotFloorBudget
         : null
       const baseBudget = Math.max(sparseFloor.budget, allocatorDecision.slotFloorBudget)
-      budget = Math.min(baseBudget, allocatorDecision.budgetCap, totalPortfolio * cfg.position.maxPctOfPortfolio, acc.cash, dailyRemaining)
+      budget = Math.min(baseBudget, allocatorDecision.budgetCap, totalPortfolio * maxSingleNamePct, acc.cash, dailyRemaining)
       sizingMode = navSlotFloorBudget != null
         ? 'nav_slot_floor'
         : sparseFloor.sizingMode === 'l4_sparse_weight' ? 'l4_sparse_weight' : 'kelly'
@@ -2103,7 +2142,7 @@ async function runIntradayCheckUnlocked(env: Bindings, leaseRunId: string): Prom
         ? allocatorDecision.slotFloorBudget
         : null
       const baseBudget = Math.max(sparseFloor.budget, allocatorDecision.slotFloorBudget)
-      budget = Math.min(baseBudget, allocatorDecision.budgetCap, totalPortfolio * cfg.position.maxPctOfPortfolio, acc.cash, dailyRemaining)
+      budget = Math.min(baseBudget, allocatorDecision.budgetCap, totalPortfolio * maxSingleNamePct, acc.cash, dailyRemaining)
       sizingMode = navSlotFloorBudget != null ? 'nav_slot_floor' : sparseFloor.sizingMode
     }
 

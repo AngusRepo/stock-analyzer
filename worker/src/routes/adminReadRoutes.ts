@@ -245,7 +245,7 @@ adminReadRoutes.get('/api/admin/storage/capacity', async (c) => {
   const { inspectStorageCapacityTelemetry } = await import('../lib/storageCapacityTelemetry')
   const opsDb = databaseForDataDomain(c.env, 'ops')
   const today = twToday()
-  const [d1Rows, previousCapacity, r2Manifest] = await Promise.all([
+  const [d1Rows, previousCapacity, r2Manifest, learningCutover] = await Promise.all([
     inspectStorageCapacityTelemetry(c.env),
     opsDb.prepare(`
       SELECT domain, binding_name, used_bytes, observed_date
@@ -271,16 +271,29 @@ adminReadRoutes.get('/api/admin/storage/capacity', async (c) => {
        WHERE r2_key IS NOT NULL
          AND status NOT IN ('deleted', 'purged')
     `).first<{ object_count: number; tracked_bytes: number }>(),
+    c.env.DB.prepare(`
+      SELECT status, parity_checked_at, updated_at
+        FROM data_domain_cutovers
+       WHERE domain='learning'
+       LIMIT 1
+    `).first<{ status: string; parity_checked_at: string | null; updated_at: string }>(),
   ])
   const previousByBinding = new Map(
     (previousCapacity.results ?? []).map((row) => [row.binding_name, row] as const),
   )
   const capacities = d1Rows.map((row) => {
     const previous = previousByBinding.get(row.binding_name)
+    const learningCutoverDate = String(
+      learningCutover?.parity_checked_at ?? learningCutover?.updated_at ?? '',
+    ).slice(0, 10)
+    const awaitingPostCutoverBaseline = row.domain === 'legacy'
+      && learningCutover?.status === 'complete'
+      && Boolean(learningCutoverDate)
+      && (!previous || previous.observed_date <= learningCutoverDate)
     const elapsedDays = previous
       ? Math.max(1, Math.round((Date.parse(today) - Date.parse(previous.observed_date)) / 86_400_000))
       : null
-    const dailyGrowthBytes = previous && elapsedDays
+    const dailyGrowthBytes = previous && elapsedDays && !awaitingPostCutoverBaseline
       ? Math.round((row.used_bytes - Number(previous.used_bytes ?? 0)) / elapsedDays)
       : null
     const projectedDaysToMax = dailyGrowthBytes != null && dailyGrowthBytes > 0
@@ -289,6 +302,8 @@ adminReadRoutes.get('/api/admin/storage/capacity', async (c) => {
     return {
       ...row,
       previous_observed_date: previous?.observed_date ?? null,
+      growth_baseline_status: awaitingPostCutoverBaseline ? 'awaiting_post_cutover_observation' : 'ready',
+      growth_baseline_after: awaitingPostCutoverBaseline ? learningCutoverDate : null,
       daily_growth_bytes: dailyGrowthBytes,
       projected_days_to_max: projectedDaysToMax,
     }

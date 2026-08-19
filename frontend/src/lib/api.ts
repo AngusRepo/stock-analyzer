@@ -500,6 +500,8 @@ export type StorageCapacitySnapshot = {
       utilization_pct: number
       status: 'healthy' | 'warning' | 'drain' | 'critical'
       previous_observed_date: string | null
+      growth_baseline_status: 'ready' | 'awaiting_post_cutover_observation'
+      growth_baseline_after: string | null
       daily_growth_bytes: number | null
       projected_days_to_max: number | null
     }>

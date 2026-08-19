@@ -17,6 +17,8 @@ assert(readRoutes.includes("'/api/admin/ops/runbook'"), 'OPS must expose read-on
 assert(readRoutes.includes("'/api/admin/ops/resource-audit'"), 'OPS must expose read-only resource audit route')
 assert(readRoutes.includes("'/api/admin/storage/capacity'"), 'OBS must expose read-only D1 and R2 capacity route')
 assert(readRoutes.includes('WHERE observed_date < ?'), 'Capacity growth must compare against a prior date, never the current-day ledger row')
+assert(readRoutes.includes('awaiting_post_cutover_observation'), 'Legacy growth projection must wait for a post-cutover capacity baseline')
+assert(readRoutes.includes("WHERE domain='learning'"), 'Capacity route must anchor the legacy baseline to the Learning cutover date')
 assert(writeRoutes.includes("'/api/admin/observability/snapshot'"), 'OBS must expose snapshot writer route')
 assert(readRoutes.includes('requireAdminOrServiceToken'), 'OBS read routes must require admin or service token')
 assert(writeRoutes.includes('requireAdminOrServiceToken'), 'OBS snapshot route must require admin or service token')

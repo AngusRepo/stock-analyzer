@@ -418,6 +418,11 @@ function StorageCapacityPanel({
                     +{formatStorageBytes(row.daily_growth_bytes)}/日 · 預估 {row.projected_days_to_max ?? 'N/A'} 日滿載
                   </p>
                 )}
+                {row.growth_baseline_status === 'awaiting_post_cutover_observation' && (
+                  <p className="mt-1 text-xs text-cyan-200">
+                    等待 {row.growth_baseline_after ?? 'Learning 切轉'} 後容量基線
+                  </p>
+                )}
               </div>
             )
           })}

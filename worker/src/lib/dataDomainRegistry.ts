@@ -219,13 +219,13 @@ const DEFERRED_PRODUCTION_TABLE_OWNERSHIP: readonly TableOwnershipMetadata[] = [
 
   { table: 'risk_audit_log', domain: 'execution', disposition: 'active_window', route_ready: false, shadow_ready: true },
 
-  { table: 'debate_memory', domain: 'paper', disposition: 'active_window', route_ready: false, shadow_ready: true },
-  { table: 'decision_logs', domain: 'paper', disposition: 'active_window', route_ready: false, shadow_ready: true },
-  { table: 'exit_shadow_log', domain: 'paper', disposition: 'active_window', route_ready: false, shadow_ready: true },
-  { table: 'pending_buy_filter_audit', domain: 'paper', disposition: 'active_window', route_ready: false, shadow_ready: true },
-  { table: 'pending_buy_items', domain: 'paper', disposition: 'active_window', route_ready: false, shadow_ready: true },
-  { table: 'pending_buy_runs', domain: 'paper', disposition: 'active_window', route_ready: false, shadow_ready: true },
-  { table: 'promotion_audit_events', domain: 'paper', disposition: 'active_window', route_ready: false, shadow_ready: true },
+  { table: 'debate_memory', domain: 'paper', disposition: 'active_window', route_ready: true, shadow_ready: true },
+  { table: 'decision_logs', domain: 'paper', disposition: 'active_window', route_ready: true, shadow_ready: true },
+  { table: 'exit_shadow_log', domain: 'paper', disposition: 'active_window', route_ready: true, shadow_ready: true },
+  { table: 'pending_buy_filter_audit', domain: 'paper', disposition: 'active_window', route_ready: true, shadow_ready: true },
+  { table: 'pending_buy_items', domain: 'paper', disposition: 'active_window', route_ready: true, shadow_ready: true },
+  { table: 'pending_buy_runs', domain: 'paper', disposition: 'active_window', route_ready: true, shadow_ready: true },
+  { table: 'promotion_audit_events', domain: 'paper', disposition: 'active_window', route_ready: true, shadow_ready: true },
 
   { table: 'active_strategy_backtest_results', domain: 'research', disposition: 'compact_projection', route_ready: false, shadow_ready: true },
   { table: 'backtest_results', domain: 'research', disposition: 'compact_projection', route_ready: false, shadow_ready: true },

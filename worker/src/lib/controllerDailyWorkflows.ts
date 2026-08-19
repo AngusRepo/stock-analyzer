@@ -17,7 +17,10 @@ export async function runObsidianDaily(env: Bindings, date: string) {
     jsonBody: { date },
     timeoutMs: 60_000,
   })
-  return res.ok ? await res.json() : `HTTP ${res.status}`
+  if (!res.ok) {
+    throw new Error(`Controller /obsidian/daily HTTP ${res.status}: ${(await res.text()).slice(0, 200)}`)
+  }
+  return await res.json()
 }
 
 const REGIME_SURFACE_LABELS = ['bull_market', 'volatile', 'sideways', 'bear_market'] as const

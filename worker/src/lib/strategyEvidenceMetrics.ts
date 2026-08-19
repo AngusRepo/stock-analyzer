@@ -581,7 +581,7 @@ async function persistMetricRows(db: D1Database, rows: StrategyEvidenceMetricRow
       sample_count, mature_dates, date_start, date_end, outcome_as_of_date,
       definition_version, evidence_json, updated_at
     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
-    ON CONFLICT(strategy_id, strategy_version, primary_horizon_days, metric_name) DO UPDATE SET
+    ON CONFLICT(strategy_id, strategy_version, primary_horizon_days, metric_name, outcome_as_of_date) DO UPDATE SET
       strategy_status=excluded.strategy_status, alpha_bucket=excluded.alpha_bucket,
       metric_value=excluded.metric_value, metric_status=excluded.metric_status,
       sample_count=excluded.sample_count, mature_dates=excluded.mature_dates,

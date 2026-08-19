@@ -84,6 +84,11 @@ assert(
     controllerDailyWorkflows.includes('market_regime_state readback mismatch'),
   'regime compute must verify same-date KV persistence and posterior surface before downstream stages',
 )
+assert(
+  controllerDailyWorkflows.includes('Controller /obsidian/daily HTTP ${res.status}') &&
+    !controllerDailyWorkflows.includes('return res.ok ? await res.json()'),
+  'obsidian sync must classify non-2xx controller responses as scheduler errors',
+)
 assert(updateOrchestrator.includes('refreshExpectedReturnServingState'), 'daily readiness must persist canonical expected-return serving state')
 assert(expectedReturnServingState.includes("'retired_incompatible'"), 'stale promoted artifacts must be explicitly retired from serving without rewriting evidence')
 assert(expectedReturnServingState.includes("'fusion_primary_required'"), 'no-owner production behavior must require a primary Fusion artifact and fail closed')

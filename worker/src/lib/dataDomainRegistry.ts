@@ -217,7 +217,7 @@ const DEFERRED_PRODUCTION_TABLE_OWNERSHIP: readonly TableOwnershipMetadata[] = [
   { table: 'webhook_log', domain: 'ops', disposition: 'active_window', route_ready: false, shadow_ready: true },
   { table: 'weekly_audit_reports', domain: 'ops', disposition: 'compact_projection', route_ready: false, shadow_ready: true },
 
-  { table: 'risk_audit_log', domain: 'execution', disposition: 'active_window', route_ready: false, shadow_ready: true },
+  { table: 'risk_audit_log', domain: 'execution', disposition: 'active_window', route_ready: true, shadow_ready: true },
 
   { table: 'debate_memory', domain: 'paper', disposition: 'active_window', route_ready: true, shadow_ready: true },
   { table: 'decision_logs', domain: 'paper', disposition: 'active_window', route_ready: true, shadow_ready: true },

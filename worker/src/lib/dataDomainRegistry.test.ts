@@ -110,7 +110,7 @@ for (const table of ['meta_reward_ledger', 'meta_shadow_decisions']) {
 const deferredProductionTables = productionTableNames.filter((table) => (
   tableOwnershipMetadata(table)?.route_ready === false && !LEGACY_CONTROL_PLANE_TABLES.has(table)
 ))
-assert.equal(deferredProductionTables.length, 60, 'production tables without target schema readiness require explicit review')
+assert.equal(deferredProductionTables.length, 59, 'production tables without target schema readiness require explicit review')
 assert.equal(
   deferredProductionTables.filter((table) => tableOwnershipMetadata(table)?.disposition === 'legacy_only').length,
   5,

@@ -32,6 +32,9 @@ const TABLE_PAGE_LIMITS: Readonly<Record<string, number>> = {
   allocator_ev_feature_snapshots: 10,
   // Replay outcomes are wide enough that the generic 4,000-row rolling
   // manifest page exceeds the Worker CPU envelope while hashing both D1s.
+  // Recommendation rows carry several JSON evidence columns; the generic
+  // 4,000-row source + target checksum page exceeds the Worker memory limit.
+  daily_recommendations: 500,
   s12_replay_trade_outcomes: 500,
   s12_structure_snapshots: 100,
 }

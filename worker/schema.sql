@@ -23,7 +23,12 @@ CREATE TABLE IF NOT EXISTS stocks (
   sector     TEXT,
   in_current_watchlist  INTEGER NOT NULL DEFAULT 1,
   added_at   TEXT NOT NULL DEFAULT (datetime('now')),
-  updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+  updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+  source     TEXT DEFAULT 'manual',
+  pinned     INTEGER NOT NULL DEFAULT 0,
+  listed_date TEXT,
+  delisted_date TEXT,
+  delist_reason TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_stocks_symbol ON stocks(symbol);
 
@@ -507,6 +512,11 @@ CREATE TABLE IF NOT EXISTS market_risk (
   risk_score      INTEGER,           -- 0-100，越高越危險
   risk_level      TEXT,              -- green/yellow/orange/red/black
   risk_summary    TEXT,              -- AI 生成的文字說明
+  adl_value       REAL,
+  adl_trend       TEXT,
+  margin_maintenance_rate REAL,
+  bull_alignment_count INTEGER,
+  bull_alignment_pct REAL,
   calculated_at   TEXT NOT NULL DEFAULT (datetime('now'))
 );
 CREATE INDEX IF NOT EXISTS idx_market_risk_date ON market_risk(date);
@@ -624,6 +634,7 @@ CREATE TABLE IF NOT EXISTS daily_recommendations (
   symbol       TEXT NOT NULL,
   name         TEXT NOT NULL,
   sector       TEXT,                    -- 所屬族群
+  industry     TEXT,
   rank         INTEGER NOT NULL,        -- 當日排名（1=最強）
   score        REAL NOT NULL,           -- 綜合分數 0-100
   signal       TEXT,                    -- ML 訊號：BUY / STRONG_BUY / HOLD

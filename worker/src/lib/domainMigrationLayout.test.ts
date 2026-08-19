@@ -26,6 +26,9 @@ const executionCutoverProbe = fs.readFileSync('domain-migrations/execution/0002_
 const learningCutoverProbe = fs.readFileSync('domain-migrations/learning/0013_data_domain_cutover_probe_canary.sql', 'utf8')
 const paperCutoverProbe = fs.readFileSync('domain-migrations/paper/0002_data_domain_cutover_probe_canary.sql', 'utf8')
 const coreCutoverProbe = fs.readFileSync('domain-migrations/core/0003_data_domain_cutover_probe_canary.sql', 'utf8')
+const coreMarketRiskV2 = fs.readFileSync('domain-migrations/core/0004_market_risk_extended_columns.sql', 'utf8')
+const coreStocksLifecycle = fs.readFileSync('domain-migrations/core/0005_stocks_lifecycle_columns.sql', 'utf8')
+const coreDailyRecommendationIndustry = fs.readFileSync('domain-migrations/core/0006_daily_recommendations_industry.sql', 'utf8')
 const marketCutoverProbe = fs.readFileSync('domain-migrations/market/0003_data_domain_cutover_probe_canary.sql', 'utf8')
 const researchCutoverProbe = fs.readFileSync('domain-migrations/research/0003_data_domain_cutover_probe_canary.sql', 'utf8')
 const learningIncremental = fs.readFileSync('domain-migrations/learning/0002_learning_policy_evidence.sql', 'utf8')
@@ -63,6 +66,28 @@ assert.match(paperCutoverProbe, /CREATE TABLE IF NOT EXISTS data_domain_cutover_
 assert.match(learningCutoverProbe, /CREATE TABLE IF NOT EXISTS data_domain_cutover_probe_canary/)
 assert.match(learningCutoverProbe, /CHECK\(domain = 'learning'\)/)
 assert.match(paperCutoverProbe, /CHECK\(domain = 'paper'\)/)
+assert.match(coreDailyRecommendationIndustry, /ALTER TABLE daily_recommendations ADD COLUMN industry TEXT/)
+
+for (const column of [
+  'source',
+  'pinned',
+  'listed_date',
+  'delisted_date',
+  'delist_reason',
+]) {
+  assert.match(coreStocksLifecycle, new RegExp(`ALTER TABLE stocks ADD COLUMN ${column}`))
+}
+
+for (const column of [
+  'adl_value',
+  'adl_trend',
+  'margin_maintenance_rate',
+  'bull_alignment_count',
+  'bull_alignment_pct',
+]) {
+  assert.match(coreMarketRiskV2, new RegExp(`ALTER TABLE market_risk ADD COLUMN ${column}`))
+}
+
 for (const [domain, migration] of [
   ['core', coreCutoverProbe],
   ['market', marketCutoverProbe],

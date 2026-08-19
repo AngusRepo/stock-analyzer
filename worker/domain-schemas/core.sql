@@ -22,7 +22,12 @@ CREATE TABLE IF NOT EXISTS stocks (
   sector     TEXT,
   in_current_watchlist  INTEGER NOT NULL DEFAULT 1,
   added_at   TEXT NOT NULL DEFAULT (datetime('now')),
-  updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+  updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+  source     TEXT DEFAULT 'manual',
+  pinned     INTEGER NOT NULL DEFAULT 0,
+  listed_date TEXT,
+  delisted_date TEXT,
+  delist_reason TEXT
 );
 
 CREATE INDEX IF NOT EXISTS idx_stocks_symbol ON stocks(symbol);
@@ -90,6 +95,11 @@ CREATE TABLE IF NOT EXISTS market_risk (
   risk_score      INTEGER,
   risk_level      TEXT,
   risk_summary    TEXT,
+  adl_value       REAL,
+  adl_trend       TEXT,
+  margin_maintenance_rate REAL,
+  bull_alignment_count INTEGER,
+  bull_alignment_pct REAL,
   calculated_at   TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
@@ -138,6 +148,7 @@ CREATE TABLE IF NOT EXISTS daily_recommendations (
   symbol       TEXT NOT NULL,
   name         TEXT NOT NULL,
   sector       TEXT,
+  industry     TEXT,
   rank         INTEGER NOT NULL,
   score        REAL NOT NULL,
   signal       TEXT,

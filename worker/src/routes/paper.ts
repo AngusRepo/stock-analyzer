@@ -1,4 +1,4 @@
-﻿/**
+/**
  * paper.ts — Paper Trading API
  *
  * Default paper account:
@@ -14,11 +14,8 @@
 import { Hono, type Context } from 'hono'
 import { verifyJWT }  from '../lib/auth'
 import { getCurrentRegime as getCurrentSltpRegime, getTradingConfig, resolveSltpForRegime } from '../lib/tradingConfig'
-import {
-  batchGetATR,
-  getLatestPrice,
-  getStockName,
-} from '../lib/paperMarketData'
+import { getStockName } from '../lib/paperMarketData'
+import { batchGetAtrByDomain, getLatestPriceByDomain } from '../lib/paperMarketDomainData'
 import {
   calcCommission,
   calcTax,
@@ -59,6 +56,8 @@ import {
 } from '../lib/recommendationContext'
 import { readScoreV2Snapshot, serializeScoreV2Snapshot, type ScoreV2StorageRow } from '../lib/scoreV2Taxonomy'
 import type { Bindings, Variables } from '../types'
+import { databaseForDataDomain } from '../lib/dataDomainRegistry'
+import { paperDomainDatabase } from '../lib/paperDomainDatabase'
 
 const paper = new Hono<{ Bindings: Bindings; Variables: Variables }>()
 
@@ -666,7 +665,7 @@ paper.use('*', paperAuth)
 // GET /api/paper/account — account snapshot.
 
 paper.get('/account', async (c) => {
-  const acc = await c.env.DB.prepare(
+  const acc = await paperDomainDatabase(c.env).prepare(
     'SELECT * FROM paper_accounts WHERE id=?'
   ).bind(ACCOUNT_ID).first<any>()
 
@@ -679,12 +678,12 @@ if (!acc) return c.json({ error: '找不到 paper account，請先完成 migrati
 paper.get('/positions', async (c) => {
   c.header('Cache-Control', 'no-store, max-age=0')
   c.header('Pragma', 'no-cache')
-  const acc = await c.env.DB.prepare(
+  const acc = await paperDomainDatabase(c.env).prepare(
     'SELECT cash, initial_cash FROM paper_accounts WHERE id=?'
   ).bind(ACCOUNT_ID).first<any>()
   if (!acc) return c.json({ error: '找不到 paper account' }, 404)
 
-  const { results: positions } = await c.env.DB.prepare(
+  const { results: positions } = await paperDomainDatabase(c.env).prepare(
     'SELECT * FROM paper_positions WHERE account_id=? AND shares>0 ORDER BY symbol'
   ).bind(ACCOUNT_ID).all<any>()
   const positionSymbols = [...new Set((positions ?? []).map((p: any) => String(p.symbol ?? '').trim()).filter(Boolean))]
@@ -721,14 +720,14 @@ paper.get('/positions', async (c) => {
     const symbols = positionSymbols
     if (symbols.length > 0) {
       const placeholders = symbols.map(() => '?').join(',')
-      const { results: stockMarkets } = await c.env.DB.prepare(`
+      const { results: stockMarkets } = await databaseForDataDomain(c.env, 'core').prepare(`
         SELECT symbol, market FROM stocks WHERE symbol IN (${placeholders})
       `).bind(...symbols).all<{ symbol?: string | null; market?: string | null }>()
       for (const row of stockMarkets ?? []) {
         const symbol = String(row.symbol ?? '').trim()
         if (symbol) marketBySymbol.set(symbol, String(row.market ?? 'UNKNOWN'))
       }
-      const { results: s12Events } = await c.env.DB.prepare(`
+      const { results: s12Events } = await paperDomainDatabase(c.env).prepare(`
         SELECT symbol, status, reason, detail_json, created_at
           FROM paper_execution_events
          WHERE account_id = ?
@@ -759,7 +758,7 @@ paper.get('/positions', async (c) => {
         })
       }
 
-      const { results: pendingExitEvents } = await c.env.DB.prepare(`
+      const { results: pendingExitEvents } = await paperDomainDatabase(c.env).prepare(`
         SELECT symbol, status, reason, detail_json, created_at
           FROM paper_execution_events
          WHERE account_id = ?
@@ -795,7 +794,7 @@ paper.get('/positions', async (c) => {
       }
 
       const orderLimit = Math.min(200, Math.max(80, symbols.length * 8))
-      const { results: buyOrders } = await c.env.DB.prepare(`
+      const { results: buyOrders } = await paperDomainDatabase(c.env).prepare(`
         SELECT symbol, note, created_at
           FROM paper_orders
          WHERE account_id = ?
@@ -829,7 +828,7 @@ paper.get('/positions', async (c) => {
       ? Math.max(0, Date.now() - Date.parse(intradaySnapshot.as_of))
       : null
     const intradayQuoteFresh = intradayQuoteAgeMs != null && intradayQuoteAgeMs <= INTRADAY_PRICE_DISPLAY_MAX_AGE_MS
-    const currentPrice = intradaySnapshot?.price ?? postClosePrice?.price ?? await getLatestPrice(c.env.DB, pos.symbol)
+    const currentPrice = intradaySnapshot?.price ?? postClosePrice?.price ?? await getLatestPriceByDomain(c.env, pos.symbol)
     const marketValue  = currentPrice ? currentPrice * pos.shares : 0
     const costBasis    = pos.avg_cost * pos.shares
     const unrealizedPnl    = marketValue - costBasis
@@ -894,7 +893,7 @@ paper.get('/positions', async (c) => {
     }
   }))
 
-  const settlement = await getUnsettledSettlementSummary(c.env.DB, ACCOUNT_ID)
+  const settlement = await getUnsettledSettlementSummary(paperDomainDatabase(c.env), ACCOUNT_ID)
   const totalValue    = computePaperTotalValue({
     settledCash: acc.cash,
     positionsValue: totalPositionValue,
@@ -923,12 +922,12 @@ paper.get('/positions', async (c) => {
 // GET /api/paper/pnl — PnL snapshots for the recent window.
 
 paper.get('/pnl', async (c) => {
-  const acc = await c.env.DB.prepare(
+  const acc = await paperDomainDatabase(c.env).prepare(
     'SELECT cash, initial_cash FROM paper_accounts WHERE id=?'
   ).bind(ACCOUNT_ID).first<any>()
   if (!acc) return c.json({ error: '找不到 paper account' }, 404)
 
-  const { results: snapshots } = await c.env.DB.prepare(
+  const { results: snapshots } = await paperDomainDatabase(c.env).prepare(
     'SELECT date, total_value, pnl, pnl_pct, benchmark_value, twii_value, max_drawdown_to_date, sharpe_30d, sortino_30d, calmar, cagr FROM paper_daily_snapshots WHERE account_id=? ORDER BY date ASC'
   ).bind(ACCOUNT_ID).all<any>()
   const snapshotRows = snapshots ?? []
@@ -950,7 +949,7 @@ paper.get('/pnl', async (c) => {
 
 paper.get('/orders', async (c) => {
   const limit = Math.min(parseInt(c.req.query('limit') ?? '50'), 200)
-  const { results } = await c.env.DB.prepare(
+  const { results } = await paperDomainDatabase(c.env).prepare(
     'SELECT * FROM paper_orders WHERE account_id=? ORDER BY created_at DESC LIMIT ?'
   ).bind(ACCOUNT_ID, limit).all<any>()
 
@@ -979,7 +978,7 @@ paper.get('/orders', async (c) => {
 // GET /api/paper/realized — server-side realized PnL summary.
 
 paper.get('/realized', async (c) => {
-  const { results: sells } = await c.env.DB.prepare(
+  const { results: sells } = await paperDomainDatabase(c.env).prepare(
     'SELECT symbol, price, shares, commission, tax, note, created_at FROM paper_orders WHERE account_id=? AND side=? ORDER BY created_at ASC'
   ).bind(ACCOUNT_ID, 'sell').all<any>()
 
@@ -994,7 +993,7 @@ paper.get('/realized', async (c) => {
 // GET /api/paper/journal — server-side trade journal with FIFO matching.
 
 paper.get('/journal', async (c) => {
-  const { results: allOrders } = await c.env.DB.prepare(
+  const { results: allOrders } = await paperDomainDatabase(c.env).prepare(
     'SELECT symbol, side, price, shares, commission, tax, note, created_at FROM paper_orders WHERE account_id=? ORDER BY created_at ASC'
   ).bind(ACCOUNT_ID).all<any>()
 
@@ -1133,7 +1132,7 @@ paper.get('/pending-buys', async (c) => {
 
 paper.get('/execution-events', async (c) => {
   const limit = Math.min(parseInt(c.req.query('limit') ?? '100'), 300)
-  const { results } = await c.env.DB.prepare(
+  const { results } = await paperDomainDatabase(c.env).prepare(
     'SELECT * FROM paper_execution_events WHERE account_id=? ORDER BY created_at DESC LIMIT ?',
   ).bind(ACCOUNT_ID, limit).all<any>().catch(() => ({ results: [] as any[] }))
 
@@ -1147,7 +1146,7 @@ paper.get('/gate-calibration', async (c) => {
   const days = Math.max(1, Math.min(Number.isFinite(rawDays) ? rawDays : 7, 60))
   const sinceModifier = `-${days} days`
 
-  const { results } = await c.env.DB.prepare(`
+  const { results } = await paperDomainDatabase(c.env).prepare(`
     SELECT
       status,
       reason,
@@ -1207,9 +1206,9 @@ paper.post('/buy', async (c) => {
   if (!rawPrice) return c.json({ error: resolvedPrice.error ?? `找不到 ${symbol} 的可用成交價格，請稍後再試` }, 404)
   const price = normalizeTwLimitPrice(rawPrice, 'buy')
 
-  const name        = await getStockName(c.env.DB, symbol)
+  const name        = await getStockName(databaseForDataDomain(c.env, 'core'), symbol)
   const todayStr = new Date(Date.now() + 8 * 3600_000).toISOString().slice(0, 10)
-  const atr14 = (await batchGetATR(c.env.DB, [symbol])).get(symbol) ?? price * cfg.exit.fallbackAtrPct
+  const atr14 = (await batchGetAtrByDomain(c.env, [symbol])).get(symbol) ?? price * cfg.exit.fallbackAtrPct
   const regimeLabel = await getCurrentSltpRegime(c.env.KV)
   const sltp = resolveSltpForRegime(cfg, regimeLabel)
   const volPct = atr14 / price
@@ -1259,10 +1258,10 @@ paper.post('/buy', async (c) => {
   })
 
   // T+2 cash rule: use settled cash minus pending buys plus same-day sell offsets.
-  const acc = await c.env.DB.prepare('SELECT cash FROM paper_accounts WHERE id=?').bind(ACCOUNT_ID).first<any>()
+  const acc = await paperDomainDatabase(c.env).prepare('SELECT cash FROM paper_accounts WHERE id=?').bind(ACCOUNT_ID).first<any>()
   if (!acc) return c.json({ error: '找不到 paper account' }, 404)
   const { getAvailableCash, getSettlementDate } = await import('../lib/dateUtils')
-  const availableCash = await getAvailableCash(c.env.DB, ACCOUNT_ID)
+  const availableCash = await getAvailableCash(paperDomainDatabase(c.env), ACCOUNT_ID)
   if (availableCash < totalCost) {
     return c.json({
       error: `可用現金不足，需 NT$${Math.round(totalCost).toLocaleString()}，目前可用 NT$${Math.round(availableCash).toLocaleString()}，帳面現金 NT$${Math.round(acc.cash).toLocaleString()}`,
@@ -1273,7 +1272,7 @@ paper.post('/buy', async (c) => {
 
   // Guardrail: enforce manual daily buy limit.
   const MANUAL_DAILY_LIMIT = cfg.position.manualDailyLimit
-  const todayBoughtManual = await c.env.DB.prepare(
+  const todayBoughtManual = await paperDomainDatabase(c.env).prepare(
     "SELECT COALESCE(SUM(total_cost), 0) as total FROM paper_orders WHERE account_id=? AND side='buy' AND created_at >= ?"
   ).bind(ACCOUNT_ID, todayStr).first<any>()
   if ((todayBoughtManual?.total ?? 0) + totalCost > MANUAL_DAILY_LIMIT) {
@@ -1283,7 +1282,7 @@ paper.post('/buy', async (c) => {
   }
 
   // Position upsert bookkeeping.
-  const existing = await c.env.DB.prepare(
+  const existing = await paperDomainDatabase(c.env).prepare(
     'SELECT shares, avg_cost FROM paper_positions WHERE account_id=? AND symbol=?'
   ).bind(ACCOUNT_ID, symbol).first<any>()
 
@@ -1294,7 +1293,7 @@ paper.post('/buy', async (c) => {
   const newAvgCost = (oldShares * oldCost + txValue + commission) / newShares
 
   // Record buy-side settlement so available cash follows T+2 rules.
-  const orderInsert = c.env.DB.prepare(`
+  const orderInsert = paperDomainDatabase(c.env).prepare(`
     INSERT INTO paper_orders
       (account_id, symbol, name, side, shares, price, commission, tax, total_cost, source, signal, confidence, note)
     VALUES (?, ?, ?, 'buy', ?, ?, ?, 0, ?, ?, ?, ?, ?)
@@ -1319,9 +1318,9 @@ paper.post('/buy', async (c) => {
     }),
   )
 
-  await c.env.DB.batch([
+  await paperDomainDatabase(c.env).batch([
     // Upsert position immediately for T+0 paper state.
-    c.env.DB.prepare(`
+    paperDomainDatabase(c.env).prepare(`
       INSERT INTO paper_positions (account_id, symbol, name, shares, avg_cost, updated_at,
         entry_price, entry_date, initial_stop, trailing_stop, highest_since_entry,
         stop_multiplier, tp1_price, tp2_price, tp1_hit, original_shares)
@@ -1353,11 +1352,11 @@ paper.post('/buy', async (c) => {
   ])
 
   // Resolve inserted order id for settlement linkage.
-  const lastOrder = await c.env.DB.prepare(
+  const lastOrder = await paperDomainDatabase(c.env).prepare(
     "SELECT id FROM paper_orders WHERE account_id=? AND symbol=? AND side='buy' ORDER BY id DESC LIMIT 1"
   ).bind(ACCOUNT_ID, symbol).first<{ id: number }>()
 
-  await c.env.DB.prepare(`
+  await paperDomainDatabase(c.env).prepare(`
     INSERT INTO paper_settlements (account_id, order_id, symbol, side, amount, trade_date, settlement_date)
     VALUES (?, ?, ?, 'buy', ?, ?, ?)
   `).bind(ACCOUNT_ID, lastOrder?.id ?? 0, symbol, totalCost, todayStr, settlementDate).run()
@@ -1404,7 +1403,7 @@ paper.post('/sell', async (c) => {
   if (!sharesRaw || sharesRaw <= 0) return c.json({ error: 'shares 必須為正整數' }, 400)
 
   // Check available position before selling.
-  const pos = await c.env.DB.prepare(
+  const pos = await paperDomainDatabase(c.env).prepare(
     'SELECT * FROM paper_positions WHERE account_id=? AND symbol=?'
   ).bind(ACCOUNT_ID, symbol).first<any>()
   if (!pos || pos.shares < sharesRaw) {
@@ -1418,7 +1417,7 @@ paper.post('/sell', async (c) => {
   if (!rawPrice) return c.json({ error: resolvedPrice.error ?? `找不到 ${symbol} 的可用成交價格` }, 404)
   const price = normalizeTwLimitPrice(rawPrice, 'sell')
 
-  const name       = pos.name || await getStockName(c.env.DB, symbol)
+  const name       = pos.name || await getStockName(databaseForDataDomain(c.env, 'core'), symbol)
   const txValue    = price * sharesRaw
   const commission = calcCommission(txValue, cfg)
   const tax        = calcTax(txValue, cfg)
@@ -1465,19 +1464,19 @@ paper.post('/sell', async (c) => {
     { entryPrice: pos.avg_cost, exitPrice: price, shares: sharesRaw, commission, tax },
   )
 
-  const sellOrderInsert = c.env.DB.prepare(`
+  const sellOrderInsert = paperDomainDatabase(c.env).prepare(`
     INSERT INTO paper_orders
       (account_id, symbol, name, side, shares, price, commission, tax, total_cost, source, signal, confidence, note)
     VALUES (?, ?, ?, 'sell', ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `).bind(ACCOUNT_ID, symbol, name, sharesRaw, price, commission, tax, proceeds, source, signal ?? null, confidence ?? null, sellNote)
 
-  await c.env.DB.batch([
+  await paperDomainDatabase(c.env).batch([
     // Update or delete position row depending on remaining shares.
     newShares > 0
-      ? c.env.DB.prepare(
+      ? paperDomainDatabase(c.env).prepare(
           "UPDATE paper_positions SET shares=?, updated_at=datetime('now') WHERE account_id=? AND symbol=?"
         ).bind(newShares, ACCOUNT_ID, symbol)
-      : c.env.DB.prepare(
+      : paperDomainDatabase(c.env).prepare(
           'DELETE FROM paper_positions WHERE account_id=? AND symbol=?'
         ).bind(ACCOUNT_ID, symbol),
 
@@ -1486,11 +1485,11 @@ paper.post('/sell', async (c) => {
   ])
 
   // 用最新 sell order_id 寫入 settlement 紀錄。
-  const lastSellOrder = await c.env.DB.prepare(
+  const lastSellOrder = await paperDomainDatabase(c.env).prepare(
     "SELECT id FROM paper_orders WHERE account_id=? AND symbol=? AND side='sell' ORDER BY id DESC LIMIT 1"
   ).bind(ACCOUNT_ID, symbol).first<{ id: number }>()
 
-  await c.env.DB.prepare(`
+  await paperDomainDatabase(c.env).prepare(`
     INSERT INTO paper_settlements (account_id, order_id, symbol, side, amount, trade_date, settlement_date)
     VALUES (?, ?, ?, 'sell', ?, ?, ?)
   `).bind(ACCOUNT_ID, lastSellOrder?.id ?? 0, symbol, proceeds, todayStr, settlementDate).run()
@@ -1528,7 +1527,7 @@ paper.post('/snapshot', async (c) => {
   const requestedDate = c.req.query('date') || undefined
   const result = await runDailySnapshot(c.env, { date: requestedDate })
   const today = result.date
-  const snapshot = await c.env.DB.prepare(
+  const snapshot = await paperDomainDatabase(c.env).prepare(
     `SELECT date, total_value, pnl, pnl_pct, benchmark_value, twii_value,
             max_drawdown_to_date, sharpe_30d, sortino_30d, calmar, cagr
        FROM paper_daily_snapshots
@@ -1562,11 +1561,11 @@ paper.post('/reset', async (c) => {
     return c.json({ error: 'Reset 只允許 service token 執行' }, 403)
   }
 
-  await c.env.DB.batch([
-    c.env.DB.prepare("UPDATE paper_accounts SET cash=1000000.0, updated_at=datetime('now') WHERE id=?").bind(ACCOUNT_ID),
-    c.env.DB.prepare('DELETE FROM paper_positions WHERE account_id=?').bind(ACCOUNT_ID),
-    c.env.DB.prepare('DELETE FROM paper_orders WHERE account_id=?').bind(ACCOUNT_ID),
-    c.env.DB.prepare('DELETE FROM paper_daily_snapshots WHERE account_id=?').bind(ACCOUNT_ID),
+  await paperDomainDatabase(c.env).batch([
+    paperDomainDatabase(c.env).prepare("UPDATE paper_accounts SET cash=1000000.0, updated_at=datetime('now') WHERE id=?").bind(ACCOUNT_ID),
+    paperDomainDatabase(c.env).prepare('DELETE FROM paper_positions WHERE account_id=?').bind(ACCOUNT_ID),
+    paperDomainDatabase(c.env).prepare('DELETE FROM paper_orders WHERE account_id=?').bind(ACCOUNT_ID),
+    paperDomainDatabase(c.env).prepare('DELETE FROM paper_daily_snapshots WHERE account_id=?').bind(ACCOUNT_ID),
   ])
 
   return c.json({ status: 'success', message: '模擬帳戶已重置為 NT$1,000,000' })

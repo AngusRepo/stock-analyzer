@@ -1313,6 +1313,14 @@ async def dispatch_oof_full_fit_training(
     }
 
 
+def _without_frozen_forward_rows(
+    rows: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Keep immutable base-fold rows separate from monitoring-only forward evidence."""
+
+    return [row for row in rows if str(row.get("fold_id") or "") != "frozen_forward"]
+
+
 @router.post("/walk_forward/oof/materialize")
 async def materialize_walk_forward_oof(req: OofMaterializeRequest):
     """Verify one OOF manifest and build the L4/Fusion offline evidence chain."""
@@ -1548,6 +1556,21 @@ async def materialize_walk_forward_oof(req: OofMaterializeRequest):
                 serving_forward_guard = evaluate_serving_forward_guard(
                     as_of_date=req.knowledge_cutoff_date,
                 )
+        durable_shadow_base_materialization = bool(
+            forward_extension and req.persist_forward_shadow_coverage
+        )
+        persistence_prediction_rows = (
+            _without_frozen_forward_rows(prediction_rows)
+            if durable_shadow_base_materialization else prediction_rows
+        )
+        persistence_snapshot_rows = (
+            _without_frozen_forward_rows(snapshot_rows)
+            if durable_shadow_base_materialization else snapshot_rows
+        )
+        persistence_l4_predictions = (
+            _without_frozen_forward_rows(l4_predictions)
+            if durable_shadow_base_materialization else l4_predictions
+        )
         full_fit_plan = build_oof_full_fit_dispatch_plan(manifest)
         persistence = (
             {
@@ -1559,12 +1582,12 @@ async def materialize_walk_forward_oof(req: OofMaterializeRequest):
             if reuse_indexed
             else persist_oof_cohort(
                 manifest=manifest,
-                prediction_rows=prediction_rows,
-                snapshot_rows=snapshot_rows,
-                l4_predictions=l4_predictions,
+                prediction_rows=persistence_prediction_rows,
+                snapshot_rows=persistence_snapshot_rows,
+                l4_predictions=persistence_l4_predictions,
                 bucket=bucket,
                 knowledge_cutoff_date=req.knowledge_cutoff_date,
-                dry_run=req.dry_run,
+                dry_run=req.dry_run and not durable_shadow_base_materialization,
                 prediction_storage_mode=req.prediction_storage_mode,
                 query_fn=learning_client.query,
                 batch_fn=learning_client.batch_execute,
@@ -1783,6 +1806,7 @@ async def materialize_walk_forward_oof(req: OofMaterializeRequest):
             "base_prediction_rows": len(prediction_rows) - len(forward_prediction_rows),
             "forward_prediction_rows": len(forward_prediction_rows),
             "forward_extension": forward_extension,
+            "durable_shadow_base_materialization": durable_shadow_base_materialization,
             "forward_shadow_coverage": forward_shadow_coverage,
             "shadow_evaluation_packets": shadow_evaluation_packets,
             "serving_forward_guard": serving_forward_guard,

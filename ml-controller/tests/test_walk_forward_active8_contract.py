@@ -995,6 +995,7 @@ def test_oof_lifecycle_receipt_is_bound_to_active_materialization_policy():
         _oof_lifecycle_materialization_controls,
         _oof_lifecycle_receipt_path,
         _oof_lifecycle_receipt_matches_active_policy,
+        _without_frozen_forward_rows,
     )
     from services.active8_oof_cohort_materializer import (
         OOF_PIT_ELIGIBILITY_POLICY_VERSION,
@@ -1136,8 +1137,19 @@ def test_oof_lifecycle_receipt_is_bound_to_active_materialization_policy():
         "dispatch_full_fit": False,
         "frozen_forward_shadow": True,
     }
+    rows = [
+        {"fold_id": "w5", "row_id": "base"},
+        {"fold_id": "frozen_forward", "row_id": "shadow"},
+    ]
+    assert _without_frozen_forward_rows(rows) == [
+        {"fold_id": "w5", "row_id": "base"}
+    ]
     request_source = (ROOT / "ml-controller" / "routers" / "walk_forward.py").read_text(encoding="utf-8")
     assert "persist_forward_shadow_coverage" in request_source
+    assert "durable_shadow_base_materialization" in request_source
+    assert "prediction_rows=persistence_prediction_rows" in request_source
+    assert "dry_run=req.dry_run and not durable_shadow_base_materialization" in request_source
+    assert '"durable_shadow_base_materialization": durable_shadow_base_materialization' in request_source
     assert "forward shadow coverage may only be recorded by the daily durable OOF lifecycle" in request_source
     assert 'materialization_controls["frozen_forward_shadow"] and not req.dry_run' in request_source
     assert '"forward_shadow_coverage": result.get("forward_shadow_coverage")' in request_source

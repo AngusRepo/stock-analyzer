@@ -233,6 +233,15 @@ const learningActiveEnv = {
 }
 assert.equal(databaseForDataDomain(learningActiveEnv, 'learning'), learning)
 assert.equal(databaseForDataDomain(learningActiveEnv, 'market'), legacy)
+const paperDb = { kind: 'paper' } as unknown as D1Database
+const paperActiveEnv = {
+  DB: legacy,
+  PAPER_DB: paperDb,
+  MULTI_D1_ACTIVE_DOMAINS: 'paper',
+}
+assert.equal(databaseForTable(paperActiveEnv, 'paper_orders'), paperDb)
+assert.equal(databaseForTable(paperActiveEnv, 'pending_buy_runs'), legacy)
+assert.equal(databaseForTable(paperActiveEnv, 'exit_shadow_log'), legacy)
 assert.equal(dataDomainRoutingContractReady('execution'), true)
 assert.equal(dataDomainProjectionContractReady('execution'), true)
 assert.equal(dataDomainRoutingContractReady('paper'), true)

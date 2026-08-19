@@ -24,8 +24,7 @@ import {
 } from './recommendationContext'
 import { buildL4SparseAllocationWatchPoint } from './l4SparseAllocationSizing'
 import type { Bindings } from '../types'
-import { databaseForDataDomain } from './dataDomainRegistry'
-import { paperDomainDatabase } from './paperDomainDatabase'
+import { databaseForDataDomain, databaseForTable } from './dataDomainRegistry'
 import type { CircuitBreakerState as _CBState, LegacyLayerDeps } from './riskTypes'
 import type { PortfolioRiskDatabases } from './riskChain'
 import {
@@ -319,7 +318,7 @@ async function persistPendingBuyFilterAudit(
   if (!runId || entries.length === 0) return
   try {
     for (const entry of entries) {
-      await paperDomainDatabase(env).prepare(
+      await databaseForTable(env, 'pending_buy_filter_audit').prepare(
         `INSERT INTO pending_buy_filter_audit
           (run_id, trade_date, source_reco_date, symbol, name, stage, action, reason_code,
            theme, classification, quadrant, rs_ratio, rs_momentum, risk_multiplier, details_json, created_at)

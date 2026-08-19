@@ -12,7 +12,7 @@ import {
   recordSellSettlement,
 } from './paperMarketData'
 import { batchGetAtrByDomain } from './paperMarketDomainData'
-import { databaseForDataDomain } from './dataDomainRegistry'
+import { databaseForDataDomain, databaseForTable } from './dataDomainRegistry'
 import { calcCommission, calcTax, resolveMarketSellFill } from './paperTradeMath'
 import { buildSellOrderNote, calcRealizedPnlSnapshot } from './paperOrderAccounting'
 import { putIntradayPrice } from './paperIntradayPriceCache'
@@ -1189,7 +1189,7 @@ export async function forceDayTradeClose(env: Bindings, cfg: TradingConfig, toda
       resolveSltpForRegime(cfg, await getCurrentSltpRegime(env.KV)),
       regime ?? undefined,
     )
-    if (regime) logRegimeShadow('forceDayTradeClose', pos.symbol, regime, decision.action, decision.reason, paperDomainDatabase(env))
+    if (regime) logRegimeShadow('forceDayTradeClose', pos.symbol, regime, decision.action, decision.reason, databaseForTable(env, 'exit_shadow_log'))
     if (decision.action === 'hold') continue
 
     const exitIntentKind = decision.exitIntentKind ?? 'forced_close'
@@ -1376,7 +1376,7 @@ export async function runEODExit(env: Bindings): Promise<void> {
       eodRegime ?? undefined,
     )
     let decision = resolveS12PrimaryExitDecision(s12ExitDecision, fallbackDecision)
-    if (eodRegime) logRegimeShadow('runEODExit', pos.symbol, eodRegime, decision.action, decision.reason, paperDomainDatabase(env))
+    if (eodRegime) logRegimeShadow('runEODExit', pos.symbol, eodRegime, decision.action, decision.reason, databaseForTable(env, 'exit_shadow_log'))
 
     let dayTradeSell = false
     if (pos.entry_date === eodToday && decision.action !== 'hold') {
@@ -1709,7 +1709,7 @@ export async function pollIntradayStopLoss(env: Bindings): Promise<IntradayStopL
       intraRegime ?? undefined,
     )
     let decision = resolveS12PrimaryExitDecision(s12ExitDecision, fallbackDecision)
-    if (intraRegime) logRegimeShadow('pollIntradayStopLoss', pos.symbol, intraRegime, decision.action, decision.reason, paperDomainDatabase(env))
+    if (intraRegime) logRegimeShadow('pollIntradayStopLoss', pos.symbol, intraRegime, decision.action, decision.reason, databaseForTable(env, 'exit_shadow_log'))
 
     if (decision.action !== 'hold') {
       const prevC = prevCloseMapSell.get(pos.symbol)

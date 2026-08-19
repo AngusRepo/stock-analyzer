@@ -1,5 +1,6 @@
 import type { Bindings } from '../types'
 import { paperDomainDatabase } from './paperDomainDatabase'
+import { databaseForTable } from './dataDomainRegistry'
 
 export const PAPER_ACTIVE_RUNTIME_SCHEMA_VERSION = 'paper-active-runtime-v1' as const
 
@@ -357,7 +358,7 @@ export async function recordPaperActivePromotionAudit(
   input: PromotionAuditEventInput,
 ): Promise<void> {
   const audit = normalizePromotionAuditEvent(input)
-  await runSafely(() => paperDomainDatabase(env).prepare(`
+  await runSafely(() => databaseForTable(env, 'promotion_audit_events').prepare(`
     INSERT INTO promotion_audit_events
       (candidate_id, from_state, to_state, decision, failed_gates_json,
        packet_json, real_trading_effect, created_at)

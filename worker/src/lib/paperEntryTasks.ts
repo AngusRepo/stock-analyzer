@@ -115,6 +115,7 @@ import { buildEntryPriceModelV2FromOhlcvPlan, buildVolumeProfileV2 } from './ent
 import { buildPriceActionStructure } from './priceActionStructure'
 import type { Bindings } from '../types'
 import { paperDomainDatabase } from './paperDomainDatabase'
+import { databaseForTable } from './dataDomainRegistry'
 
 const ACCOUNT_ID = 1
 const EXECUTION_RESTRICTED_REFRESH_TTL_MS = 30 * 60_000
@@ -2636,7 +2637,7 @@ async function runIntradayCheckUnlocked(env: Bindings, leaseRunId: string): Prom
             finalScore: scoreV2.finalScore,
             alphaAdjustment: scoreV2.alphaAdjustment,
           })
-          await paperDomainDatabase(env).prepare(`
+          await databaseForTable(env, 'decision_logs').prepare(`
             INSERT INTO decision_logs
               (date, symbol, action, score_components, ml_signal, ml_confidence,
                debate_verdict, debate_summary, market_risk, sector, entry_price)

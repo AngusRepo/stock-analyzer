@@ -483,9 +483,10 @@ export function databaseForTable(
 ): D1Database {
   const table = tableName.trim().toLowerCase()
   if (LEGACY_CONTROL_PLANE_TABLES.has(table)) return env.DB
-  const domain = dataDomainForTable(table)
-  if (!domain) throw new Error(`unowned_data_domain_table:${table}`)
-  return databaseForDataDomain(env, domain)
+  const ownership = tableOwnershipMetadata(table)
+  if (!ownership) throw new Error(`unowned_data_domain_table:${table}`)
+  if (!ownership.route_ready) return env.DB
+  return databaseForDataDomain(env, ownership.domain)
 }
 export function assertSingleDomainOwnership(tableNames: string[]): void {
   assertOwnershipEntries(TABLE_OWNERSHIP)

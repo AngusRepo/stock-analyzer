@@ -6,7 +6,7 @@ import type { Bindings, Variables } from '../types'
 import { buildDashboardV4ChartPacket } from '../lib/dashboardV4Contract'
 import { readMarketRegimeState } from '../lib/marketRegimeState'
 import { readV41DataRuntimeStatus } from '../lib/v41DataRuntime'
-import { databaseForDataDomain } from '../lib/dataDomainRegistry'
+import { databaseForDataDomain, databaseForTable } from '../lib/dataDomainRegistry'
 import { paperDomainDatabase } from '../lib/paperDomainDatabase'
 
 export const dashboardReadRoutes = new Hono<{ Bindings: Bindings; Variables: Variables }>()
@@ -163,7 +163,7 @@ dashboardReadRoutes.get('/api/observability/decisions', async (c) => {
   if (authError) return authError
 
   const date = c.req.query('date') ?? twToday()
-  const { results } = await paperDomainDatabase(c.env).prepare(
+  const { results } = await databaseForTable(c.env, 'decision_logs').prepare(
     'SELECT * FROM decision_logs WHERE date=? ORDER BY total_score DESC'
   ).bind(date).all()
   return c.json({ date, decisions: results ?? [] })

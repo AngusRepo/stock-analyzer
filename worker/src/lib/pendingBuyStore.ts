@@ -1,5 +1,5 @@
 import type { Bindings } from '../types'
-import { databaseForDataDomain } from './dataDomainRegistry'
+import { databaseForDataDomain, databaseForTable } from './dataDomainRegistry'
 import { paperDomainDatabase } from './paperDomainDatabase'
 import {
   appendPendingBuyExecutionNote,
@@ -16,6 +16,10 @@ import {
   type ScoreV2SnapshotSummary,
   type ScoreV2StorageRow,
 } from './scoreV2Taxonomy'
+
+function pendingBuyDatabase(env: Bindings): D1Database {
+  return databaseForTable(env, 'pending_buy_runs')
+}
 
 export type PendingBuyRunStatus =
   | 'ready'
@@ -559,7 +563,7 @@ async function readD1Snapshot(
   let run: PendingBuyRunRow | null = null
   let resolvedDate = requestedDate
   for (const date of dates) {
-    run = await findRunForDate(paperDomainDatabase(env), date)
+    run = await findRunForDate(pendingBuyDatabase(env), date)
     if (run) {
       resolvedDate = date
       break
@@ -576,10 +580,10 @@ async function readD1Snapshot(
     }
   }
 
-  const withDebateTurns = await hasDebateTurnsColumn(paperDomainDatabase(env))
+  const withDebateTurns = await hasDebateTurnsColumn(pendingBuyDatabase(env))
   let itemRows: PendingBuyItemRow[] = []
   try {
-    const { results } = await paperDomainDatabase(env).prepare(
+    const { results } = await pendingBuyDatabase(env).prepare(
       `SELECT ${withDebateTurns ? PENDING_BUY_COLUMNS_WITH_TURNS : PENDING_BUY_BASE_COLUMNS}
        FROM pending_buy_items
       WHERE run_id = ?
@@ -590,7 +594,7 @@ async function readD1Snapshot(
   } catch (error) {
     if (!withDebateTurns || !isMissingColumnError(error)) throw error
     debateTurnsColumnCache = false
-    const { results } = await paperDomainDatabase(env).prepare(
+    const { results } = await pendingBuyDatabase(env).prepare(
       `SELECT ${PENDING_BUY_BASE_COLUMNS}
        FROM pending_buy_items
       WHERE run_id = ?
@@ -600,13 +604,13 @@ async function readD1Snapshot(
     itemRows = results ?? []
   }
   const [executionCountRows, debateCountRows, intradayEventRows] = await Promise.all([
-    paperDomainDatabase(env).prepare(
+    pendingBuyDatabase(env).prepare(
       `SELECT COALESCE(execution_status, 'pending') AS key, COUNT(*) AS count
          FROM pending_buy_items
         WHERE run_id = ?
         GROUP BY COALESCE(execution_status, 'pending')`
     ).bind(run.id).all<PendingBuyCountRow>(),
-    paperDomainDatabase(env).prepare(
+    pendingBuyDatabase(env).prepare(
       `SELECT COALESCE(debate_status, 'pending') AS key, COUNT(*) AS count
          FROM pending_buy_items
         WHERE run_id = ?
@@ -667,7 +671,7 @@ export async function loadPendingBuyRunHistory(
 ): Promise<PendingBuyRunHistory> {
   const limit = Math.max(1, Math.min(opts.limit ?? 5, 10))
   try {
-    const { results: runs } = await paperDomainDatabase(env).prepare(
+    const { results: runs } = await pendingBuyDatabase(env).prepare(
       `SELECT id, trade_date, source_reco_date, status, debate_status, candidate_count, error_message, created_at, updated_at
          FROM pending_buy_runs
         WHERE trade_date <= ? AND status != 'superseded'
@@ -675,22 +679,22 @@ export async function loadPendingBuyRunHistory(
         LIMIT ?`
     ).bind(requestedDate, limit).all<PendingBuyRunRow>()
     const out: PendingBuyRunHistoryEntry[] = []
-    const withDebateTurns = await hasDebateTurnsColumn(paperDomainDatabase(env))
+    const withDebateTurns = await hasDebateTurnsColumn(pendingBuyDatabase(env))
     for (const run of runs ?? []) {
       const [itemRows, executionCountRows, debateCountRows] = await Promise.all([
-        paperDomainDatabase(env).prepare(
+        pendingBuyDatabase(env).prepare(
           `SELECT ${withDebateTurns ? PENDING_BUY_COLUMNS_WITH_TURNS : PENDING_BUY_BASE_COLUMNS}
              FROM pending_buy_items
             WHERE run_id = ?
             ORDER BY symbol ASC`
         ).bind(run.id).all<PendingBuyItemRow>().then((res) => res.results ?? []),
-        paperDomainDatabase(env).prepare(
+        pendingBuyDatabase(env).prepare(
           `SELECT COALESCE(execution_status, 'pending') AS key, COUNT(*) AS count
              FROM pending_buy_items
             WHERE run_id = ?
             GROUP BY COALESCE(execution_status, 'pending')`
         ).bind(run.id).all<PendingBuyCountRow>(),
-        paperDomainDatabase(env).prepare(
+        pendingBuyDatabase(env).prepare(
           `SELECT COALESCE(debate_status, 'pending') AS key, COUNT(*) AS count
              FROM pending_buy_items
             WHERE run_id = ?
@@ -740,13 +744,13 @@ export async function replacePendingBuyState(
   }
   let runId: number | null = null
   try {
-    await paperDomainDatabase(env).prepare(
+    await pendingBuyDatabase(env).prepare(
       `UPDATE pending_buy_runs
           SET status='superseded', updated_at=datetime('now')
         WHERE trade_date=? AND status IN (${ACTIVE_RUN_STATUSES.map(() => '?').join(',')})`
     ).bind(params.tradeDate, ...ACTIVE_RUN_STATUSES).run()
 
-    const runRow = await paperDomainDatabase(env).prepare(
+    const runRow = await pendingBuyDatabase(env).prepare(
       `INSERT INTO pending_buy_runs
         (trade_date, source_reco_date, status, debate_status, candidate_count, error_message, created_at, updated_at)
        VALUES (?, ?, ?, ?, ?, ?, datetime('now'), datetime('now'))
@@ -765,7 +769,7 @@ export async function replacePendingBuyState(
     if (!runId) {
       throw new Error(`pending_buy_runs insert did not return id for ${params.tradeDate}`)
     }
-    const withDebateTurns = runId != null ? await hasDebateTurnsColumn(paperDomainDatabase(env)) : false
+    const withDebateTurns = runId != null ? await hasDebateTurnsColumn(pendingBuyDatabase(env)) : false
     if (runId != null && pendingBuys.length > 0) {
       for (const item of pendingBuys) {
         const baseValues = [
@@ -795,7 +799,7 @@ export async function replacePendingBuyState(
         ]
         try {
           if (withDebateTurns) {
-            await paperDomainDatabase(env).prepare(
+            await pendingBuyDatabase(env).prepare(
               `INSERT INTO pending_buy_items
                 (run_id, symbol, name, signal, confidence, ml_entry_price, ml_stop_loss, ml_target1, ml_target2,
                  reason, watch_points_json, debate_verdict, debate_status, execution_status, risk_pct, kelly_pct,
@@ -806,7 +810,7 @@ export async function replacePendingBuyState(
               toDebateTurnsJson(item.debate_turns),
             ).run()
           } else {
-            await paperDomainDatabase(env).prepare(
+            await pendingBuyDatabase(env).prepare(
               `INSERT INTO pending_buy_items
                 (run_id, symbol, name, signal, confidence, ml_entry_price, ml_stop_loss, ml_target1, ml_target2,
                  reason, watch_points_json, debate_verdict, debate_status, execution_status, risk_pct, kelly_pct,
@@ -817,7 +821,7 @@ export async function replacePendingBuyState(
         } catch (error) {
           if (!withDebateTurns || !isMissingColumnError(error)) throw error
           debateTurnsColumnCache = false
-          await paperDomainDatabase(env).prepare(
+          await pendingBuyDatabase(env).prepare(
             `INSERT INTO pending_buy_items
               (run_id, symbol, name, signal, confidence, ml_entry_price, ml_stop_loss, ml_target1, ml_target2,
                reason, watch_points_json, debate_verdict, debate_status, execution_status, risk_pct, kelly_pct,
@@ -827,7 +831,7 @@ export async function replacePendingBuyState(
         }
       }
 
-      const inserted = await paperDomainDatabase(env).prepare(
+      const inserted = await pendingBuyDatabase(env).prepare(
         'SELECT COUNT(*) AS count FROM pending_buy_items WHERE run_id = ?',
       ).bind(runId).first<{ count: number }>()
       if (Number(inserted?.count ?? 0) !== pendingBuys.length) {

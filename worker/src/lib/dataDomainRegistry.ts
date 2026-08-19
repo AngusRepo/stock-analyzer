@@ -54,8 +54,8 @@ export const MULTI_D1_PROJECTION_CONTRACT_READY = Object.values(
   MULTI_D1_PROJECTION_CONTRACT_GATES,
 ).every(Boolean)
 
-const DOMAIN_ROUTING_CONTRACT_READY = new Set<DataDomain>(['learning', 'execution'])
-const DOMAIN_PROJECTION_FREE_CLOSURE = new Set<DataDomain>(['learning', 'execution'])
+const DOMAIN_ROUTING_CONTRACT_READY = new Set<DataDomain>(['learning', 'execution', 'paper'])
+const DOMAIN_PROJECTION_FREE_CLOSURE = new Set<DataDomain>(['learning', 'execution', 'paper'])
 
 export function dataDomainRoutingContractReady(domain: DataDomain): boolean {
   return DOMAIN_ROUTING_CONTRACT_READY.has(domain)
@@ -64,7 +64,8 @@ export function dataDomainRoutingContractReady(domain: DataDomain): boolean {
 export function dataDomainProjectionContractReady(domain: DataDomain): boolean {
   // Learning cross-domain reads are split by binding and joined in memory.
   // Execution owns an isolated intent/leg/event ledger through the domain client.
-  // Neither runtime path requires a transactional cross-domain projection.
+  // Paper reads Core/Market/Learning independently and joins in memory; its state writes remain Paper-owned.
+  // None of these runtime paths requires a transactional cross-domain projection.
   return DOMAIN_PROJECTION_FREE_CLOSURE.has(domain)
 }
 const DOMAIN_TABLES: Record<DataDomain, ReadonlySet<string>> = {

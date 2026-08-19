@@ -224,10 +224,6 @@ CREATE TABLE IF NOT EXISTS sector_flow (
   rotation_regime TEXT,
   rotation_hysteresis TEXT,
   rotation_window INTEGER,
-  taxonomy_snapshot_id TEXT,
-  taxonomy_membership_checksum TEXT,
-  knowledge_cutoff_date TEXT,
-  reconstruction_mode TEXT,
   rrg_tail_json   TEXT,
   UNIQUE(date, sector, classification)
 );

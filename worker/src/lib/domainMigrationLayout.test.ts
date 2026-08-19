@@ -30,6 +30,7 @@ const coreMarketRiskV2 = fs.readFileSync('domain-migrations/core/0004_market_ris
 const coreStocksLifecycle = fs.readFileSync('domain-migrations/core/0005_stocks_lifecycle_columns.sql', 'utf8')
 const coreDailyRecommendationIndustry = fs.readFileSync('domain-migrations/core/0006_daily_recommendations_industry.sql', 'utf8')
 const marketCutoverProbe = fs.readFileSync('domain-migrations/market/0003_data_domain_cutover_probe_canary.sql', 'utf8')
+const marketLegacySchemaAlignment = fs.readFileSync('domain-migrations/market/0004_legacy_schema_alignment.sql', 'utf8')
 const researchCutoverProbe = fs.readFileSync('domain-migrations/research/0003_data_domain_cutover_probe_canary.sql', 'utf8')
 const learningIncremental = fs.readFileSync('domain-migrations/learning/0002_learning_policy_evidence.sql', 'utf8')
 const learningForwardExtension = fs.readFileSync('domain-migrations/learning/0003_learning_active8_forward_extension.sql', 'utf8')
@@ -67,6 +68,12 @@ assert.match(learningCutoverProbe, /CREATE TABLE IF NOT EXISTS data_domain_cutov
 assert.match(learningCutoverProbe, /CHECK\(domain = 'learning'\)/)
 assert.match(paperCutoverProbe, /CHECK\(domain = 'paper'\)/)
 assert.match(coreDailyRecommendationIndustry, /ALTER TABLE daily_recommendations ADD COLUMN industry TEXT/)
+assert.match(marketLegacySchemaAlignment, /ALTER TABLE financials ADD COLUMN operating_income REAL/)
+assert.match(marketLegacySchemaAlignment, /ALTER TABLE stock_prices ADD COLUMN avg_price REAL/)
+assert.match(marketLegacySchemaAlignment, /ALTER TABLE sector_flow ADD COLUMN taxonomy_snapshot_id TEXT/)
+assert.match(marketLegacySchemaAlignment, /available_date TEXT NOT NULL/)
+assert.match(marketLegacySchemaAlignment, /lineage_json TEXT NOT NULL/)
+assert.match(marketLegacySchemaAlignment, /as_of_date TEXT NOT NULL/)
 
 for (const column of [
   'source',

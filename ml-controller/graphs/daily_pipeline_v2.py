@@ -28,6 +28,7 @@ from langgraph.graph import StateGraph, END
 from langgraph.types import RetryPolicy
 
 from services import d1_client, kv_client
+from services.d1_domain_client import D1DataDomain, client_for_domain
 from services.ensemble_v2 import attach_ensemble_v2
 from services.expected_return_calibration import load_expected_return_calibration_report
 from services.evidence_contracts import LABEL_SCHEMA_VERSION
@@ -2786,7 +2787,7 @@ async def node_compute_personas(state: PipelineStateV2) -> dict:
 
     # ???? Persist to D1 (non-fatal) ??????????????????????????????????????????????????????????????????????????????????????
     try:
-        written = write_persona_opinions(d1_client, opinions)
+        written = write_persona_opinions(client_for_domain(D1DataDomain.LEARNING), opinions)
         logger.info(f"[Pipeline V2] persona opinions written: {written}/{len(opinions)}")
     except Exception as e:
         logger.warning(f"[Pipeline V2] persona D1 write failed (non-fatal): {e}")

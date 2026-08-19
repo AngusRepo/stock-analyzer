@@ -2,6 +2,7 @@ import type { Bindings, UpdateQueueMsg } from '../types'
 import {
   backfillDataDomainTableShadow,
   buildDataDomainAggregateParitySnapshot,
+  isFinalizedDeferredTableRepairAuthority,
   invalidateGenericManifestProgress,
   isDomainShadowCutoverReady,
   type DomainShadowBackfillResult,
@@ -10,6 +11,7 @@ import {
   activeDataDomains,
   invalidActiveDataDomains,
   shadowDatabaseForDataDomain,
+  tableOwnershipMetadata,
   tablesForDataDomainShadowBackfill,
   type DataDomain,
 } from './dataDomainRegistry'
@@ -65,6 +67,8 @@ const NARROW_SHADOW_BACKFILL_TABLES = new Set([
   'technical_indicators',
   'chip_data',
   'financials',
+  'exit_shadow_log',
+  'pending_buy_runs',
 ])
 
 export function dataDomainShadowBackfillQueueBatchLimit(table: string): number {
@@ -84,7 +88,7 @@ export function dataDomainShadowBackfillQueueBatchLimit(table: string): number {
 
 type DataDomainShadowMutationAuthority = {
   domain: DataDomain
-  cutoverStatus: 'legacy' | 'shadow'
+  cutoverStatus: 'legacy' | 'shadow' | 'complete'
 }
 
 function isDataDomainShadowAuthorityError(error: unknown): boolean {
@@ -95,18 +99,36 @@ function isDataDomainShadowAuthorityError(error: unknown): boolean {
 async function assertDataDomainShadowMutationAuthority(
   env: Bindings,
   domain: DataDomain,
+  table?: string,
 ): Promise<DataDomainShadowMutationAuthority> {
   const invalidDomains = invalidActiveDataDomains(env)
   if (invalidDomains.length) {
     throw new Error(`data_domain_shadow_active_domain_invalid:${invalidDomains.sort().join(',')}`)
   }
-  if (activeDataDomains(env).has(domain)) {
-    throw new Error(`data_domain_shadow_requires_inactive_target:${domain}`)
-  }
   const cutover = await env.DB.prepare(`
-    SELECT status FROM data_domain_cutovers WHERE domain=?
-  `).bind(domain).first<{ status?: string }>()
+    SELECT c.status, w.writer_state
+      FROM data_domain_cutovers c
+      LEFT JOIN data_domain_writer_epochs w ON w.domain=c.domain
+     WHERE c.domain=?
+  `).bind(domain).first<{ status?: string; writer_state?: string }>()
   const status = cutover?.status ? String(cutover.status) : null
+  if (activeDataDomains(env).has(domain)) {
+    const ownership = table ? tableOwnershipMetadata(table) : null
+    const repairAllowed = Boolean(
+      ownership?.domain === domain
+      && isFinalizedDeferredTableRepairAuthority({
+        domainActive: true,
+        routeReady: ownership.route_ready,
+        shadowReady: ownership.shadow_ready,
+        cutoverStatus: status,
+        writerState: cutover?.writer_state ? String(cutover.writer_state) : null,
+      }),
+    )
+    if (!repairAllowed) {
+      throw new Error(`data_domain_shadow_requires_inactive_target:${domain}`)
+    }
+    return { domain, cutoverStatus: 'complete' }
+  }
   if (status !== 'legacy' && status !== 'shadow') {
     throw new Error(`domain_shadow_cutover_authority_blocked:${domain}:${status ?? 'missing'}`)
   }
@@ -1369,7 +1391,7 @@ export async function processDataDomainShadowBackfillDrain(
   }
 
   try {
-    await assertDataDomainShadowMutationAuthority(env, domain)
+    await assertDataDomainShadowMutationAuthority(env, domain, table)
   } catch (error) {
     const errorMessage = error instanceof Error ? error.message : String(error)
     await env.KV.delete(dataDomainShadowBackfillActiveKey(domain))

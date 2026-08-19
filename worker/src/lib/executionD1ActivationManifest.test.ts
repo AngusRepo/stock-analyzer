@@ -4,8 +4,8 @@ import { readFileSync } from 'node:fs'
 const deploy = readFileSync(new URL('../../../deploy_ml_controller.sh', import.meta.url), 'utf8')
 const wrangler = readFileSync(new URL('../../wrangler.toml', import.meta.url), 'utf8')
 
-assert(wrangler.includes('MULTI_D1_ACTIVE_DOMAINS = "learning,ops,execution,paper,research"'))
-assert(deploy.includes('MULTI_D1_ACTIVE_DOMAINS="${MULTI_D1_ACTIVE_DOMAINS:-learning,ops,execution,paper,research}"'))
+assert(wrangler.includes('MULTI_D1_ACTIVE_DOMAINS = "learning,ops,core,execution,paper,research"'))
+assert(deploy.includes('MULTI_D1_ACTIVE_DOMAINS="${MULTI_D1_ACTIVE_DOMAINS:-learning,ops,core,execution,paper,research}"'))
 assert(deploy.includes('CF_D1_EXECUTION_DB_ID=${CF_D1_EXECUTION_DB_ID}'))
 assert(deploy.includes('CF_D1_PAPER_DB_ID=${CF_D1_PAPER_DB_ID}'))
 assert(deploy.includes('CF_D1_RESEARCH_DB_ID=${CF_D1_RESEARCH_DB_ID}'))

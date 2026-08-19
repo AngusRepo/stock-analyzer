@@ -1256,12 +1256,25 @@ export async function runDataDomainShadowBackfillHttpStep(
     return { runId, parityNotBefore, table: null, caughtUp, result: null }
   }
 
-  const result = await backfillDataDomainTableShadow(env, {
-    domain: input.domain,
-    table,
-    limit: input.limit ?? dataDomainShadowBackfillQueueBatchLimit(table),
-    parityNotBefore,
-  })
+  const iterations = !activeDataDomains(env).has(input.domain)
+    || tableOwnershipMetadata(table)?.route_ready === false
+    ? 3
+    : 1
+  let result: DomainShadowBackfillResult | null = null
+  for (let iteration = 0; iteration < iterations; iteration += 1) {
+    result = await backfillDataDomainTableShadow(env, {
+      domain: input.domain,
+      table,
+      limit: input.limit ?? dataDomainShadowBackfillQueueBatchLimit(table),
+      parityNotBefore,
+    })
+    if (
+      result.status === 'shadow_table_complete'
+      || result.status === 'shadow_delete_reconciliation_deferred'
+      || result.status === 'shadow_parent_revalidation_required'
+    ) break
+  }
+  if (!result) throw new Error(`data_domain_shadow_http_batch_result_missing:${input.domain}:${table}`)
   await env.KV.put(progressKey(input.domain), JSON.stringify({
     run_id: runId,
     transport: 'http_step',

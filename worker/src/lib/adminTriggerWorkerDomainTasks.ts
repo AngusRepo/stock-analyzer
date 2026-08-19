@@ -1128,7 +1128,7 @@ export function buildAdminWorkerDomainTaskMap(c: any, deps: TriggerDeps): Record
             parityNotBefore: closure.timestamp,
             runDate: requestedRunDate() || twToday(),
             table: table || undefined,
-            limit: parseBoundedPositiveInt(c.req.query('limit'), 50, 500),
+            limit: parseBoundedPositiveInt(c.req.query('limit'), 50, 1000),
           })
           return `data_domain_shadow_backfill direct_step=true ${JSON.stringify(step)}`
         }

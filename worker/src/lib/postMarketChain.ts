@@ -680,7 +680,7 @@ export async function runPostVerifyCallbackChain(
     })
     const metrics = await materializeStrategyEvidenceMetrics(env, { outcomeAsOfDate })
     return `${canonical.summary} | ${multiHorizon.summary} | ${outcomes.summary} | ${metrics.summary}`
-  }, { timeoutMs: 240_000 })
+  }, { timeoutMs: 360_000 })
   results.push(projectionTask)
   if (projectionTask.status === 'error') {
     await logChainSummary(env, ctx, 'post-verify-chain', startedAt, results)

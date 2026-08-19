@@ -9,6 +9,8 @@ import { SELECTION_REFERENCE_CONTRACT_VERSION } from './selectionReferenceEviden
 export const STRATEGY_MULTI_HORIZON_OUTCOME_SCHEMA_VERSION = 'canonical-strategy-selection-outcome-v1'
 export const STRATEGY_MULTI_HORIZON_ROUNDTRIP_COST_BPS = 18
 const DEFAULT_OUTCOME_LOOKBACK_DAYS = 120
+const OUTCOME_ROWS_PER_STATEMENT = 5
+const OUTCOME_BATCH_STATEMENTS = 100
 
 type ReferenceRow = {
   signal_date: string
@@ -83,6 +85,14 @@ function shiftDate(value: string, days: number): string {
   const date = new Date(`${value}T00:00:00.000Z`)
   date.setUTCDate(date.getUTCDate() + days)
   return date.toISOString().slice(0, 10)
+}
+
+function chunks<T>(rows: T[], size: number): T[][] {
+  const output: T[][] = []
+  for (let offset = 0; offset < rows.length; offset += size) {
+    output.push(rows.slice(offset, offset + size))
+  }
+  return output
 }
 
 function neutralize(rows: PendingOutcome[]): MaterializedOutcome[] {
@@ -210,40 +220,47 @@ async function persistOutcomes(
   costBps: number,
 ): Promise<number> {
   if (!rows.length) return 0
-  const statements = rows.map((row) => learningDb.prepare(`
-    INSERT INTO canonical_selection_outcomes_v1 (
-      signal_date, symbol, producer_run_id, horizon_days, label_schema_version,
-      market_segment, sector, entry_date, exit_date, outcome_known_date,
-      gross_return, transaction_cost_bps, absolute_return_net,
-      benchmark_return_net, benchmark_scope, residual_return_net, cross_section_rank,
-      adjustment_source, reference_contract_version
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    ON CONFLICT(signal_date, symbol, producer_run_id, horizon_days, label_schema_version) DO UPDATE SET
-      market_segment=excluded.market_segment, sector=excluded.sector,
-      entry_date=excluded.entry_date, exit_date=excluded.exit_date,
-      outcome_known_date=excluded.outcome_known_date, gross_return=excluded.gross_return,
-      transaction_cost_bps=excluded.transaction_cost_bps,
-      absolute_return_net=excluded.absolute_return_net,
-      benchmark_return_net=excluded.benchmark_return_net,
-      benchmark_scope=excluded.benchmark_scope,
-      residual_return_net=excluded.residual_return_net,
-      cross_section_rank=excluded.cross_section_rank,
-      adjustment_source=excluded.adjustment_source,
-      reference_contract_version=excluded.reference_contract_version,
-      created_at=CURRENT_TIMESTAMP
-  `).bind(
-    row.reference.signal_date, row.reference.symbol, row.reference.producer_run_id,
-    row.horizonDays, STRATEGY_MULTI_HORIZON_OUTCOME_SCHEMA_VERSION,
-    row.reference.market_segment, row.reference.sector, row.entryDate, row.exitDate,
-    row.exitDate, row.grossReturn, costBps, row.absoluteReturnNet,
-    row.benchmarkReturnNet, row.benchmarkScope, row.residualReturnNet,
-    row.crossSectionRank, 'price_horizon_labels_v2:finlab_primary_canonical_mirror',
-    SELECTION_REFERENCE_CONTRACT_VERSION,
-  ))
-  for (let offset = 0; offset < statements.length; offset += 100) {
-    await learningDb.batch(statements.slice(offset, offset + 100))
+  // D1 accepts at most 100 bound parameters per prepared statement. Five
+  // outcome rows use 95 bindings and reduce the fixed 120-day refresh from one
+  // statement per row to one statement per five rows without changing identity.
+  const statements = chunks(rows, OUTCOME_ROWS_PER_STATEMENT).map((group) => {
+    const values = group.map(() => '(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)').join(', ')
+    const params = group.flatMap((row) => [
+      row.reference.signal_date, row.reference.symbol, row.reference.producer_run_id,
+      row.horizonDays, STRATEGY_MULTI_HORIZON_OUTCOME_SCHEMA_VERSION,
+      row.reference.market_segment, row.reference.sector, row.entryDate, row.exitDate,
+      row.exitDate, row.grossReturn, costBps, row.absoluteReturnNet,
+      row.benchmarkReturnNet, row.benchmarkScope, row.residualReturnNet,
+      row.crossSectionRank, 'price_horizon_labels_v2:finlab_primary_canonical_mirror',
+      SELECTION_REFERENCE_CONTRACT_VERSION,
+    ])
+    return learningDb.prepare(`
+      INSERT INTO canonical_selection_outcomes_v1 (
+        signal_date, symbol, producer_run_id, horizon_days, label_schema_version,
+        market_segment, sector, entry_date, exit_date, outcome_known_date,
+        gross_return, transaction_cost_bps, absolute_return_net,
+        benchmark_return_net, benchmark_scope, residual_return_net, cross_section_rank,
+        adjustment_source, reference_contract_version
+      ) VALUES ${values}
+      ON CONFLICT(signal_date, symbol, producer_run_id, horizon_days, label_schema_version) DO UPDATE SET
+        market_segment=excluded.market_segment, sector=excluded.sector,
+        entry_date=excluded.entry_date, exit_date=excluded.exit_date,
+        outcome_known_date=excluded.outcome_known_date, gross_return=excluded.gross_return,
+        transaction_cost_bps=excluded.transaction_cost_bps,
+        absolute_return_net=excluded.absolute_return_net,
+        benchmark_return_net=excluded.benchmark_return_net,
+        benchmark_scope=excluded.benchmark_scope,
+        residual_return_net=excluded.residual_return_net,
+        cross_section_rank=excluded.cross_section_rank,
+        adjustment_source=excluded.adjustment_source,
+        reference_contract_version=excluded.reference_contract_version,
+        created_at=CURRENT_TIMESTAMP
+    `).bind(...params)
+  })
+  for (let offset = 0; offset < statements.length; offset += OUTCOME_BATCH_STATEMENTS) {
+    await learningDb.batch(statements.slice(offset, offset + OUTCOME_BATCH_STATEMENTS))
   }
-  return statements.length
+  return rows.length
 }
 
 export async function materializeStrategyMultiHorizonOutcomes(

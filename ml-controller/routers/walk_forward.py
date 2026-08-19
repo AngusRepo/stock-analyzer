@@ -19,7 +19,10 @@ from typing import Any, Literal
 from fastapi import APIRouter, HTTPException, Response
 from pydantic import BaseModel
 
+from services.d1_domain_client import D1DataDomain, client_proxy_for_domain
+
 logger = logging.getLogger("walk_forward")
+OPS_D1_CLIENT = client_proxy_for_domain(D1DataDomain.OPS)
 router = APIRouter()
 
 
@@ -855,7 +858,6 @@ async def dispatch_oof_full_fit_training(
     lifecycle_cadence: str,
 ) -> dict[str, Any]:
     from services import d1_client
-
     plan = build_oof_full_fit_dispatch_plan(manifest)
     if plan["status"] != "ready":
         return plan
@@ -1004,7 +1006,7 @@ async def dispatch_oof_full_fit_training(
             )
             return {**plan, **completed, "retry_required": False, "receipt_path": receipt_path}
 
-        webhook = d1_client.query(
+        webhook = OPS_D1_CLIENT.query(
             "SELECT status, payload_summary FROM webhook_log WHERE idempotency_key = ? LIMIT 1",
             [prior_run_id],
         )
@@ -1120,7 +1122,7 @@ async def dispatch_oof_full_fit_training(
                 )
             except Exception as exc:  # noqa: BLE001 - lock TTL remains the final safety net.
                 logger.warning("OOF full-fit terminal lock release failed: %s", exc)
-            d1_client.execute(
+            OPS_D1_CLIENT.execute(
                 """
                 UPDATE webhook_log
                 SET received_at = datetime('now'), source = ?, payload_summary = ?,

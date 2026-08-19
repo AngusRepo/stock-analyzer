@@ -24,6 +24,7 @@ from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, Field
 
 from services import d1_client, retrain_lock
+from services.d1_domain_client import D1DataDomain, client_proxy_for_domain
 from services.model_artifact_registry import (
     backfill_champion_pointers_from_model_pool,
     build_artifact_records_from_retrain_followup,
@@ -40,6 +41,7 @@ from services.cost_tracker import record_modal_call
 from services.modal_client import _modal_resource_spec
 
 logger = logging.getLogger("retrain_followup")
+OPS_D1_CLIENT = client_proxy_for_domain(D1DataDomain.OPS)
 router = APIRouter()
 WORKER_URL = os.environ.get("STOCKVISION_WORKER_URL", "").strip()
 WORKER_AUTH = os.environ.get("STOCKVISION_AUTH_TOKEN", "").strip()
@@ -451,7 +453,7 @@ async def retrain_followup(payload: RetrainFollowupPayload, request: Request) ->
     """
 
     try:
-        res = d1_client.execute(
+        res = OPS_D1_CLIENT.execute(
             sql,
             [
                 idem_key,
@@ -568,7 +570,7 @@ async def retrain_followup_registry_backfill(req: RetrainFollowupRegistryBackfil
     if not run_id:
         raise HTTPException(status_code=400, detail="run_id is required")
 
-    rows = d1_client.query(
+    rows = OPS_D1_CLIENT.query(
         """
         SELECT idempotency_key, payload_summary
         FROM webhook_log

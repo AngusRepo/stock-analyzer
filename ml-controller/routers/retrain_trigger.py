@@ -27,6 +27,7 @@ from pydantic import BaseModel, Field
 from dataclasses import asdict
 
 from services import d1_client, retrain_lock
+from services.d1_domain_client import D1DataDomain, client_proxy_for_domain
 from services.payload_builder import (
     load_market_env,
     _bulk_load_prices,
@@ -41,6 +42,7 @@ from services.training_policy import TrainingPolicy
 from services.modal_client import batch_retrain, prep_universal_batch, train_universal, shap_audit
 
 logger = logging.getLogger(__name__)
+OPS_D1_CLIENT = client_proxy_for_domain(D1DataDomain.OPS)
 router = APIRouter(prefix="/retrain", tags=["retrain"])
 
 # ?? Idempotency lock (P0-4 + persistent GCS layer) ??????????????????????????
@@ -946,7 +948,7 @@ def _upsert_retrain_status(
           status = excluded.status,
           downstream_notes = excluded.downstream_notes
     """
-    d1_client.execute(
+    OPS_D1_CLIENT.execute(
         sql,
         [
             run_id,

@@ -586,6 +586,7 @@ def test_dispatch_completed_oof_callback_repairs_registry_without_retraining(mon
         },
     )
     monkeypatch.setattr(d1_client, "query", fake_query)
+    monkeypatch.setattr(walk_forward.OPS_D1_CLIENT, "query", fake_query)
     monkeypatch.setattr(
         walk_forward,
         "_materialize_completed_oof_release_aliases",

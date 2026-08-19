@@ -241,5 +241,25 @@ def client_for_domain(domain: D1DataDomain | str) -> DomainD1Client:
     return DomainD1Client(D1DataDomain(domain))
 
 
+class DomainD1ClientProxy:
+    """Mutable test seam that resolves active-domain routing for every call."""
+
+    def __init__(self, domain: D1DataDomain | str) -> None:
+        self.domain = D1DataDomain(domain)
+
+    def query(self, *args: Any, **kwargs: Any) -> list[dict]:
+        return client_for_domain(self.domain).query(*args, **kwargs)
+
+    def execute(self, *args: Any, **kwargs: Any) -> dict:
+        return client_for_domain(self.domain).execute(*args, **kwargs)
+
+    def batch_execute(self, *args: Any, **kwargs: Any) -> dict:
+        return client_for_domain(self.domain).batch_execute(*args, **kwargs)
+
+
+def client_proxy_for_domain(domain: D1DataDomain | str) -> DomainD1ClientProxy:
+    return DomainD1ClientProxy(domain)
+
+
 def shadow_client_for_domain(domain: D1DataDomain | str) -> ShadowDomainD1Client:
     return ShadowDomainD1Client(D1DataDomain(domain))

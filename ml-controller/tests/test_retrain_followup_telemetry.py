@@ -33,7 +33,7 @@ def test_retrain_followup_records_modal_runtime_telemetry(monkeypatch):
         calls.append(kwargs)
 
     monkeypatch.setattr(followup_router, "_valid_service_tokens", lambda: [])
-    monkeypatch.setattr(followup_router.d1_client, "execute", lambda *args, **kwargs: {"meta": {"changes": 1}})
+    monkeypatch.setattr(followup_router.OPS_D1_CLIENT, "execute", lambda *args, **kwargs: {"meta": {"changes": 1}})
     monkeypatch.setattr(followup_router.retrain_lock, "release", lambda key, **kwargs: True)
     monkeypatch.setattr(followup_router, "record_modal_call", fake_record_modal_call)
     monkeypatch.setattr(
@@ -101,7 +101,7 @@ def test_retrain_followup_writes_artifact_registry_records(monkeypatch):
     written: list[dict] = []
 
     monkeypatch.setattr(followup_router, "_valid_service_tokens", lambda: [])
-    monkeypatch.setattr(followup_router.d1_client, "execute", lambda *args, **kwargs: {"meta": {"changes": 1}})
+    monkeypatch.setattr(followup_router.OPS_D1_CLIENT, "execute", lambda *args, **kwargs: {"meta": {"changes": 1}})
     monkeypatch.setattr(followup_router.retrain_lock, "release", lambda key, **kwargs: True)
     monkeypatch.setattr(followup_router, "record_modal_call", lambda **kwargs: None)
     monkeypatch.setattr(
@@ -147,7 +147,7 @@ def test_retrain_followup_reconciles_champion_pointer_after_artifact_lifecycle_c
     reconcile_calls: list[dict] = []
 
     monkeypatch.setattr(followup_router, "_valid_service_tokens", lambda: [])
-    monkeypatch.setattr(followup_router.d1_client, "execute", lambda *args, **kwargs: {"meta": {"changes": 1}})
+    monkeypatch.setattr(followup_router.OPS_D1_CLIENT, "execute", lambda *args, **kwargs: {"meta": {"changes": 1}})
     monkeypatch.setattr(followup_router.retrain_lock, "release", lambda key, **kwargs: True)
     monkeypatch.setattr(followup_router, "record_modal_call", lambda **kwargs: None)
     monkeypatch.setattr(
@@ -226,7 +226,7 @@ def test_retrain_followup_enriches_timesfm_foundation_evidence(monkeypatch):
         return {"attempted": True, "updated": True, "oos_ic": 0.088, "samples": 80}
 
     monkeypatch.setattr(followup_router, "_valid_service_tokens", lambda: [])
-    monkeypatch.setattr(followup_router.d1_client, "execute", lambda *args, **kwargs: {"meta": {"changes": 1}})
+    monkeypatch.setattr(followup_router.OPS_D1_CLIENT, "execute", lambda *args, **kwargs: {"meta": {"changes": 1}})
     monkeypatch.setattr(followup_router.retrain_lock, "release", lambda key, **kwargs: True)
     monkeypatch.setattr(followup_router, "record_modal_call", lambda **kwargs: None)
     monkeypatch.setattr(
@@ -363,7 +363,7 @@ def test_registry_backfill_only_writes_artifact_registry(monkeypatch):
         lambda payload: payload,
     )
     monkeypatch.setattr(
-        followup_router.d1_client,
+        followup_router.OPS_D1_CLIENT,
         "query",
         lambda *args, **kwargs: [{
             "idempotency_key": "run-backfill",
@@ -400,7 +400,7 @@ def test_registry_backfill_only_writes_artifact_registry(monkeypatch):
             "errors": [],
         },
     )
-    monkeypatch.setattr(followup_router.d1_client, "execute", lambda *args, **kwargs: executed.append(args))
+    monkeypatch.setattr(followup_router.OPS_D1_CLIENT, "execute", lambda *args, **kwargs: executed.append(args))
     monkeypatch.setattr(followup_router.retrain_lock, "release", lambda key, **kwargs: (_ for _ in ()).throw(AssertionError("must not release lock")))
     monkeypatch.setattr(followup_router, "_callback_worker_scheduler", lambda payload: (_ for _ in ()).throw(AssertionError("must not callback scheduler")))
 

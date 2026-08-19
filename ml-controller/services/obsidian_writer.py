@@ -9,6 +9,7 @@ Trigger:
 Flow: D1 query → Jinja2 template → GitHub Git Trees API batch push
 """
 
+import asyncio
 import os
 import json
 import base64
@@ -19,6 +20,7 @@ from typing import Any
 import httpx
 from jinja2 import Environment, FileSystemLoader
 
+from services.d1_domain_client import D1DataDomain, client_for_domain
 from services.model_pool_health import read_model_pool_health_rows
 
 logger = logging.getLogger("obsidian")
@@ -178,33 +180,15 @@ _jinja_env.globals.update(
 
 # ── D1 Helpers (same pattern as backtest_service.py) ─────────────────────────
 
-async def _d1_query(client: httpx.AsyncClient, sql: str, params: list = None) -> list[dict]:
-    if not (CF_API_TOKEN and D1_API):
-        return []
-    body: dict = {"sql": sql}
-    if params:
-        body["params"] = params
-    try:
-        resp = await client.post(
-            D1_API, json=body,
-            headers={"Authorization": f"Bearer {CF_API_TOKEN}", "Content-Type": "application/json"},
-            timeout=30.0,
-        )
-        if resp.status_code != 200:
-            logger.warning(f"D1 query failed: {resp.status_code}")
-            return []
-        data = resp.json()
-        if not data.get("success"):
-            return []
-        results = data.get("result", [])
-        if results and isinstance(results, list) and "results" in results[0]:
-            return results[0]["results"]
-    except Exception as e:
-        logger.warning(f"D1 query error: {e}")
-    return []
-
-
-# ── GitHub Git Trees API ─────────────────────────────────────────────────────
+async def _d1_query(
+    client: httpx.AsyncClient,
+    sql: str,
+    params: list | None = None,
+    *,
+    domain: D1DataDomain,
+) -> list[dict]:
+    del client
+    return await asyncio.to_thread(client_for_domain(domain).query, sql, params, 30.0)
 
 async def _push_to_github(
     client: httpx.AsyncClient,
@@ -298,29 +282,29 @@ class ObsidianWriter:
 
         async with httpx.AsyncClient() as client:
             # ── Fetch all data from D1 ──
-            risk = (await _d1_query(client, "SELECT * FROM market_risk ORDER BY date DESC LIMIT 1")) or [{}]
+            risk = (await _d1_query(client, "SELECT * FROM market_risk ORDER BY date DESC LIMIT 1", domain=D1DataDomain.CORE)) or [{}]
             risk = risk[0] if risk else {}
 
             recommendations = await _d1_query(client,
-                "SELECT * FROM daily_recommendations WHERE date=? ORDER BY score DESC", [date])
+                "SELECT * FROM daily_recommendations WHERE date=? ORDER BY score DESC", [date], domain=D1DataDomain.CORE)
 
             snapshot = (await _d1_query(client,
-                "SELECT * FROM paper_daily_snapshots WHERE account_id=1 AND date=? LIMIT 1", [date])) or [{}]
+                "SELECT * FROM paper_daily_snapshots WHERE account_id=1 AND date=? LIMIT 1", [date], domain=D1DataDomain.PAPER)) or [{}]
             snapshot = snapshot[0] if snapshot else {}
 
             orders = await _d1_query(client,
-                "SELECT * FROM paper_orders WHERE account_id=1 AND DATE(created_at, '+8 hours')=? ORDER BY created_at", [date])
+                "SELECT * FROM paper_orders WHERE account_id=1 AND DATE(created_at, '+8 hours')=? ORDER BY created_at", [date], domain=D1DataDomain.PAPER)
 
             positions = await _d1_query(client,
                 "SELECT symbol, name, shares, avg_cost, entry_price, current_price, "
-                "unrealized_pnl, unrealized_pnl_pct FROM paper_positions WHERE account_id=1")
+                "unrealized_pnl, unrealized_pnl_pct FROM paper_positions WHERE account_id=1", domain=D1DataDomain.PAPER)
 
             decisions = await _d1_query(client,
-                "SELECT * FROM decision_logs WHERE date=? ORDER BY total_score DESC", [date])
+                "SELECT * FROM decision_logs WHERE date=? ORDER BY total_score DESC", [date], domain=D1DataDomain.PAPER)
 
             # T2 pending buys (may not exist yet if morning hasn't run)
             t2_buys = await _d1_query(client,
-                "SELECT * FROM paper_orders WHERE account_id=1 AND side='buy' AND DATE(created_at, '+8 hours')=? AND source='auto_ml'", [date])
+                "SELECT * FROM paper_orders WHERE account_id=1 AND side='buy' AND DATE(created_at, '+8 hours')=? AND source='auto_ml'", [date], domain=D1DataDomain.PAPER)
 
             # ── Generate Daily note ──
             daily_content = _render("daily.md.j2",
@@ -404,7 +388,7 @@ class ObsidianWriter:
         async with httpx.AsyncClient() as client:
             # Find the audit report for this week
             audit = (await _d1_query(client,
-                "SELECT * FROM weekly_audit_reports ORDER BY report_date DESC LIMIT 1")) or [{}]
+                "SELECT * FROM weekly_audit_reports ORDER BY report_date DESC LIMIT 1", domain=D1DataDomain.OPS)) or [{}]
             audit = audit[0] if audit else {}
 
             # Parse JSON fields
@@ -438,7 +422,7 @@ class ObsidianWriter:
             trades = await _d1_query(client,
                 "SELECT side, symbol, signal, price, shares, created_at FROM paper_orders "
                 "WHERE account_id=1 AND DATE(created_at, '+8 hours') >= ? AND DATE(created_at, '+8 hours') <= ? ORDER BY created_at",
-                [week_start, week_end])
+                [week_start, week_end], domain=D1DataDomain.PAPER)
 
             weekly_content = _render("weekly_review.md.j2",
                 week_start=week_start,

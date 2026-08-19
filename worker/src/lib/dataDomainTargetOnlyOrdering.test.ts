@@ -47,7 +47,7 @@ class OrderingDb {
   }
 
   first(sql: string, values: readonly unknown[]): unknown {
-    if (/SELECT\s+status\s+FROM\s+data_domain_cutovers/i.test(sql)) {
+    if (/FROM\s+data_domain_cutovers/i.test(sql)) {
       if (this.side !== 'source') throw new Error(`unexpected_target_cutover_query:${sql}`)
       return { status: 'legacy' }
     }

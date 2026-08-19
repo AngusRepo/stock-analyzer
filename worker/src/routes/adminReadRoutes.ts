@@ -867,17 +867,22 @@ adminReadRoutes.get('/api/admin/data-domains/cutover-readiness', async (c) => {
     import('../lib/dataDomainShadowBackfillDrain'),
   ])
   const latestEveningChain = await inspectLatestEveningChainClosure(c.env.KV, c.env.DB)
-  const report = await inspectDataDomainCutoverReadiness(c.env.DB, c.req.query('domain'), {
+  const requestedDomain = c.req.query('domain')
+  const readinessContext = {
     upstreamTerminalReady: latestEveningChain.terminalSuccess,
     parityNotBefore: latestEveningChain.timestamp,
     learningTargetDb: c.env.LEARNING_DB,
-  })
+  }
+  const report = await inspectDataDomainCutoverReadiness(c.env.DB, requestedDomain, readinessContext)
+  const closureReport = requestedDomain
+    ? await inspectDataDomainCutoverReadiness(c.env.DB, null, readinessContext)
+    : report
   const activeDomains = [...activeDataDomains(c.env)].sort()
   const { buildDataDomainTenYearClosure } = await import('../lib/dataDomainTenYearClosure')
   const tenYearClosure = buildDataDomainTenYearClosure({
     activeDomains,
     strictRequested: String(c.env.MULTI_D1_STRICT ?? '').trim().toLowerCase() === 'true',
-    domains: report.domains,
+    domains: closureReport.domains,
   })
   return c.json({
     success: true, latest_evening_chain: latestEveningChain, ...report,

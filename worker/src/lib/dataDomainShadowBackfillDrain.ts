@@ -1225,8 +1225,8 @@ export async function runDataDomainShadowBackfillHttpStep(
 
   let table: string | null = input.table ?? null
   if (!table) {
-    table = await nextDataDomainReceiptRefreshTable(env, input.domain, parityNotBefore)
-      || await nextIncompleteTable(env, input.domain)
+    table = await nextIncompleteTable(env, input.domain)
+      || await nextDataDomainReceiptRefreshTable(env, input.domain, parityNotBefore)
     if (table) {
       await env.KV.delete(incrementalScanKey(input.domain))
     } else {

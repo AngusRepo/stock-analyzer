@@ -22,6 +22,10 @@ const nextDomainSelector = drain.slice(
   drain.indexOf('export async function nextDataDomainBackfillDomain'),
   drain.indexOf('export async function enqueueNextDataDomainShadowBackfill'),
 )
+const httpStepSelector = drain.slice(
+  drain.indexOf('export async function runDataDomainShadowBackfillHttpStep'),
+  drain.indexOf('export async function runQueuedDataDomainShadowBackfill'),
+)
 
 assert(drain.includes("leaseGroup: 'd1_heavy_maintenance'"))
 assert.equal(dataDomainShadowBackfillQueueBatchLimit('predictions'), 200)
@@ -76,8 +80,8 @@ assert((drain.match(/\n\s+requestedTable,/g) ?? []).length >= 3)
 assert(drain.includes('nextIncompleteTable'))
 assert(drain.includes('nextDataDomainReceiptRefreshTable'))
 assert(
-  drain.indexOf('await nextDataDomainReceiptRefreshTable(env, input.domain')
-  < drain.indexOf('await nextIncompleteTable(env, input.domain)'),
+  httpStepSelector.indexOf('await nextIncompleteTable(env, input.domain)')
+  < httpStepSelector.indexOf('await nextDataDomainReceiptRefreshTable(env, input.domain'),
 )
 assert(drain.includes('nextDataDomainIncrementalCatchupTableStep'))
 assert((drain.match(/nextDataDomainIncrementalCatchupTableStep\(env, domain, parityNotBefore\)/g) ?? []).length >= 2)

@@ -3,6 +3,7 @@ import fs from 'node:fs'
 import {
   dataDomainShadowBackfillPauseKey,
   dataDomainShadowBackfillQueueBatchLimit,
+  dataDomainShadowBackfillIterations,
   LEARNING_CRITICAL_EVIDENCE_BACKFILL_TABLES,
   resolveDataDomainShadowBackfillContinuation,
   shouldYieldToLearningCriticalEvidence,
@@ -38,6 +39,15 @@ assert.equal(dataDomainShadowBackfillQueueBatchLimit('canonical_broker_flow_dail
 assert.equal(dataDomainShadowBackfillQueueBatchLimit('price_horizon_labels_v1'), 500)
 assert.equal(dataDomainShadowBackfillQueueBatchLimit('s12_replay_trade_outcomes'), 500)
 assert.equal(dataDomainShadowBackfillQueueBatchLimit('strategy_decision_log'), 500)
+assert.equal(dataDomainShadowBackfillIterations({
+  domain: 'market', domainActive: false, routeReady: false,
+}), 10)
+assert.equal(dataDomainShadowBackfillIterations({
+  domain: 'market', domainActive: true, routeReady: true,
+}), 1)
+assert.equal(dataDomainShadowBackfillIterations({
+  domain: 'learning', domainActive: false, routeReady: false,
+}), 3)
 assert(drain.includes('limit: dataDomainShadowBackfillQueueBatchLimit(table)'))
 assert.deepEqual(LEARNING_CRITICAL_EVIDENCE_BACKFILL_TABLES, [
   'strategy_spec_registry',
@@ -106,7 +116,7 @@ assert(admin.includes("c.req.query('durable') === '1'"))
 assert(admin.includes("c.req.query('direct_step') === '1'"))
 assert(admin.includes('runDataDomainShadowBackfillHttpStep'))
 assert(admin.includes("parseBoundedPositiveInt(c.req.query('limit'), 50, 1000)"))
-assert(drain.includes('const iterations = !activeDataDomains(env).has(input.domain)'))
+assert(drain.includes('const inputDomainActive = activeDataDomains(env).has(input.domain)'))
 assert(drain.includes('data_domain_shadow_http_batch_result_missing'))
 assert(admin.includes('enqueueDataDomainShadowBackfill'))
 assert(drain.includes('input.parityNotBefore ?? active?.started_at ?? dataDomainParitySessionWatermark()'))

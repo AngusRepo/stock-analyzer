@@ -89,6 +89,16 @@ export function dataDomainShadowBackfillQueueBatchLimit(table: string): number {
     ? NARROW_SHADOW_BACKFILL_QUEUE_BATCH_LIMIT
     : SHADOW_BACKFILL_QUEUE_BATCH_LIMIT
 }
+export function dataDomainShadowBackfillIterations(input: {
+  domain: DataDomain
+  domainActive: boolean
+  routeReady: boolean | undefined
+}): number {
+  if (input.domain === 'market' && (!input.domainActive || input.routeReady === false)) {
+    return 10
+  }
+  return !input.domainActive || input.routeReady === false ? 3 : 1
+}
 
 type DataDomainShadowMutationAuthority = {
   domain: DataDomain
@@ -1261,10 +1271,12 @@ export async function runDataDomainShadowBackfillHttpStep(
     return { runId, parityNotBefore, table: null, caughtUp, result: null }
   }
 
-  const iterations = !activeDataDomains(env).has(input.domain)
-    || tableOwnershipMetadata(table)?.route_ready === false
-    ? 3
-    : 1
+  const inputDomainActive = activeDataDomains(env).has(input.domain)
+  const iterations = dataDomainShadowBackfillIterations({
+    domain: input.domain,
+    domainActive: inputDomainActive,
+    routeReady: tableOwnershipMetadata(table)?.route_ready,
+  })
   let result: DomainShadowBackfillResult | null = null
   for (let iteration = 0; iteration < iterations; iteration += 1) {
     result = await backfillDataDomainTableShadow(env, {
@@ -1437,7 +1449,12 @@ export async function processDataDomainShadowBackfillDrain(
       leaseGroup: 'd1_heavy_maintenance',
       leaseSeconds: 300,
       run: async () => {
-        const iterations = !activeDataDomains(env).has(domain) || tableOwnershipMetadata(table)?.route_ready === false ? 3 : 1
+        const domainActive = activeDataDomains(env).has(domain)
+        const iterations = dataDomainShadowBackfillIterations({
+          domain,
+          domainActive,
+          routeReady: tableOwnershipMetadata(table)?.route_ready,
+        })
         let result: DomainShadowBackfillResult | null = null
         for (let iteration = 0; iteration < iterations; iteration += 1) {
           result = await backfillDataDomainTableShadow(env, {

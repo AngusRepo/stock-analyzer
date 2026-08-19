@@ -999,7 +999,7 @@ export async function carryForwardStableDataDomainParityReceipts(
   blocked: Array<{ table: string; blockers: string[] }>
 }> {
   if (domain !== 'ops') throw new Error(`data_domain_parity_carry_forward_not_closed:${domain}`)
-  if (String(env.MULTI_D1_STRICT ?? '').trim().toLowerCase() === 'true' || activeDataDomains(env).has(domain)) {
+  if (activeDataDomains(env).has(domain)) {
     throw new Error(`data_domain_parity_carry_forward_requires_inactive_target:${domain}`)
   }
   if (!Number.isFinite(Date.parse(parityNotBefore))) {

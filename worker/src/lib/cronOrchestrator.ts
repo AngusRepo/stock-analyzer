@@ -9,6 +9,7 @@ import { runIntradayCheck } from './paperEntryTasks'
 import { formatPendingBuyCronSummary } from './pendingBuyCronSummary'
 import { buildPendingBuyStateSummary } from './pendingBuyStateSummary'
 import { isTwIntradayTradingMinute } from './twMarketSession'
+import { paperDomainDatabase } from './paperDomainDatabase'
 
 function twNow() {
   return new Date(Date.now() + 8 * 3600_000)
@@ -94,18 +95,18 @@ async function probeMlController(env: Bindings): Promise<string> {
 
 export async function settlePaperT2(env: Bindings) {
   const today = twToday()
-  const matured = await env.DB.prepare(
+  const matured = await paperDomainDatabase(env).prepare(
     "SELECT account_id, SUM(CASE WHEN side='buy' THEN -amount ELSE amount END) as net FROM paper_settlements WHERE settled=0 AND settlement_date <= ? GROUP BY account_id",
   ).bind(today).all<{ account_id: number; net: number }>()
 
   for (const row of matured?.results ?? []) {
-    await env.DB.prepare(
+    await paperDomainDatabase(env).prepare(
       'UPDATE paper_accounts SET cash=cash+?, updated_at=datetime(\'now\') WHERE id=?',
     ).bind(row.net, row.account_id).run()
   }
 
   if ((matured?.results?.length ?? 0) > 0) {
-    await env.DB.prepare(
+    await paperDomainDatabase(env).prepare(
       'UPDATE paper_settlements SET settled=1, settled_at=datetime(\'now\') WHERE settled=0 AND settlement_date <= ?',
     ).bind(today).run()
     console.log(`[T+2] settled ${matured.results.length} accounts: ${matured.results.map((r) => r.net).join(',')}`)
@@ -171,7 +172,7 @@ async function runIntradayHeartbeat(env: Bindings, ctx: ExecutionContext, twToda
       )
       return
     }
-    const beforeRow = await env.DB.prepare(
+    const beforeRow = await paperDomainDatabase(env).prepare(
       "SELECT COUNT(*) as cnt FROM paper_orders WHERE created_at >= ? AND side='buy'",
     ).bind(twTodayStr).first<{ cnt: number }>()
     const before = beforeRow?.cnt ?? 0
@@ -194,7 +195,7 @@ async function runIntradayHeartbeat(env: Bindings, ctx: ExecutionContext, twToda
       await env.KV.delete('cron:intraday-lock')
     }
 
-    const afterRow = await env.DB.prepare(
+    const afterRow = await paperDomainDatabase(env).prepare(
       "SELECT COUNT(*) as cnt FROM paper_orders WHERE created_at >= ? AND side='buy'",
     ).bind(twTodayStr).first<{ cnt: number }>()
     const after = afterRow?.cnt ?? 0
@@ -226,7 +227,7 @@ export async function runIntradayRescore(env: Bindings, cron: string, twTodayStr
   const controllerUrl = env.ML_CONTROLLER_URL
   if (!controllerUrl) return 'SKIP: no ML_CONTROLLER_URL'
 
-  const { results: positions } = await env.DB.prepare(`
+  const { results: positions } = await paperDomainDatabase(env).prepare(`
     SELECT symbol, name, shares, avg_cost, entry_price, entry_date,
            initial_stop, trailing_stop, tp1_price, tp1_hit
     FROM paper_positions WHERE account_id=1 AND shares>0

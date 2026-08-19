@@ -7,6 +7,7 @@ import { loadPendingBuySnapshot } from './pendingBuyStore'
 import { reconcilePendingBuyDebates, setupMorningPendingBuys } from './pendingBuyOrchestrator'
 import { formatPendingBuyCronSummary } from './pendingBuyCronSummary'
 import { buildPendingBuyStateSummary } from './pendingBuyStateSummary'
+import { paperDomainDatabase } from './paperDomainDatabase'
 
 interface WorkerCronDeps {
   cron: string
@@ -66,7 +67,7 @@ export async function handleWorkerDomainCron(deps: WorkerCronDeps): Promise<bool
 
   if (cron === '0 19 * * *') {
     runWithLog('debate-memory-retention', async () => {
-      const res = await env.DB.prepare(
+      const res = await paperDomainDatabase(env).prepare(
         `DELETE FROM debate_memory WHERE debate_date < DATE('now', '-180 days')`,
       ).run()
       const meta = (res as any)?.meta ?? {}

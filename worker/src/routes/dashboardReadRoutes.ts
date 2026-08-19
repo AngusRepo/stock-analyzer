@@ -7,6 +7,7 @@ import { buildDashboardV4ChartPacket } from '../lib/dashboardV4Contract'
 import { readMarketRegimeState } from '../lib/marketRegimeState'
 import { readV41DataRuntimeStatus } from '../lib/v41DataRuntime'
 import { databaseForDataDomain } from '../lib/dataDomainRegistry'
+import { paperDomainDatabase } from '../lib/paperDomainDatabase'
 
 export const dashboardReadRoutes = new Hono<{ Bindings: Bindings; Variables: Variables }>()
 
@@ -62,7 +63,7 @@ dashboardReadRoutes.get('/api/dashboard/v4/stocks/:id/chart', async (c) => {
     import('../lib/dataQualityMonitor')
       .then(({ buildDataQualityReport }) => buildDataQualityReport(c.env, { date: c.req.query('date') }))
       .catch(() => ({ overall: 'unknown', checks: [] })),
-    c.env.DB.prepare(`
+    paperDomainDatabase(c.env).prepare(`
       SELECT event_type, status, reason, detail_json, created_at
       FROM paper_execution_events
       WHERE symbol=?
@@ -162,7 +163,7 @@ dashboardReadRoutes.get('/api/observability/decisions', async (c) => {
   if (authError) return authError
 
   const date = c.req.query('date') ?? twToday()
-  const { results } = await c.env.DB.prepare(
+  const { results } = await paperDomainDatabase(c.env).prepare(
     'SELECT * FROM decision_logs WHERE date=? ORDER BY total_score DESC'
   ).bind(date).all()
   return c.json({ date, decisions: results ?? [] })

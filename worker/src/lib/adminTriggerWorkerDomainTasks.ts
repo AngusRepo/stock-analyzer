@@ -13,6 +13,7 @@ import {
 } from './eveningChainRunAuthority'
 import { classifySchedulerSummary, logSchedulerResult } from './schedulerRunLogger'
 import { activeDataDomainShadowBackfillRunId } from './dataDomainShadowSession'
+import { paperDomainDatabase } from './paperDomainDatabase'
 
 const RESCORE_SLOT_TASK_BY_CRON: Record<string, string> = {
   '0 2 * * 1-5': 'rescore-10',
@@ -798,7 +799,7 @@ export function buildAdminWorkerDomainTaskMap(c: any, deps: TriggerDeps): Record
       return `bias=${report.bias} conf=${report.confidence.toFixed(2)} factors=${report.key_factors.length}`
     },
     'debate-memory-retention': async () => {
-      const res = await c.env.DB.prepare(
+      const res = await paperDomainDatabase(c.env).prepare(
         `DELETE FROM debate_memory WHERE debate_date < DATE('now', '-180 days')`,
       ).run()
       const meta = (res as any)?.meta ?? {}

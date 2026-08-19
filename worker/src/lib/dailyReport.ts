@@ -10,6 +10,7 @@ import {
   type ScoreV2StorageRow,
 } from './scoreV2Taxonomy'
 import { databaseForDataDomain } from './dataDomainRegistry'
+import { paperDomainDatabase } from './paperDomainDatabase'
 
 function twDateToday(): string {
   return new Date(Date.now() + 8 * 3600_000).toISOString().slice(0, 10)
@@ -218,7 +219,7 @@ export async function generateDailyReport(env: Bindings): Promise<string> {
     embeds.push({ title: '每日推薦摘要', color: 0xf39c12, description: recText })
   }
 
-  const snapshot = await env.DB.prepare(`
+  const snapshot = await paperDomainDatabase(env).prepare(`
     SELECT total_value, cumulative_return, daily_return, max_drawdown, sharpe_30d, trade_count
       FROM paper_daily_snapshots
      WHERE date=?

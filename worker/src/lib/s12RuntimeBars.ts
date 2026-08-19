@@ -4,6 +4,7 @@ import { writeEvidenceArtifact } from './artifactLifecycle'
 import { sha256Text } from './datasetSnapshots'
 import { floorRollingBarIntervalMs, type IntradayRollingBar } from './intradayTechnicalSnapshot'
 import type { OhlcvRow } from './ohlcvTradePlanLevels'
+import { paperDomainDatabase } from './paperDomainDatabase'
 
 interface IntradaySnapshotSample {
   startMs: number
@@ -1084,7 +1085,7 @@ export async function loadIntradayTechnicalRollingBars(
   const intervalMs = floorRollingBarIntervalMs(Number(options.intervalMs ?? (env as any).INTRADAY_TECHNICAL_BAR_INTERVAL_MS ?? 30_000))
   const defaultLookback = options.lookback ?? Number((env as any).INTRADAY_TECHNICAL_BAR_LOOKBACK ?? 40)
   const lookback = Math.max(6, Math.min(720, Math.floor(Number(defaultLookback))))
-  const { results } = await env.DB.prepare(`
+  const { results } = await paperDomainDatabase(env).prepare(`
     SELECT created_at, detail_json
       FROM paper_execution_events
      WHERE trade_date = ?

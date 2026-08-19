@@ -6,6 +6,7 @@ import {
 } from './metaLearningRewardLedger'
 import { getTradingConfig } from './tradingConfig'
 import { databaseForDataDomain } from './dataDomainRegistry'
+import { paperDomainDatabase } from './paperDomainDatabase'
 
 interface AdaptiveEngineEnv {
   DB: D1Database
@@ -181,7 +182,7 @@ async function queryAdaptiveInputs(env: { DB: D1Database }) {
   `).bind(...ACTIVE_8_MODELS).all<any>().catch(() => ({ results: [] as any[] }))
 
   const fiveDaysAgo = new Date(Date.now() + 8 * 3600_000 - 5 * 86_400_000).toISOString().slice(0, 10)
-  const { results: recentSellRows } = await env.DB.prepare(`
+  const { results: recentSellRows } = await paperDomainDatabase(env).prepare(`
     SELECT price, shares, commission, tax, note
     FROM paper_orders
     WHERE side='sell' AND created_at >= ?

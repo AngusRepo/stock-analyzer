@@ -1875,7 +1875,7 @@ OOF_MIN_MATURE_SESSIONS = (
     OOF_TRAIN_SESSIONS + OOF_TEST_SESSIONS * OOF_PROMOTION_MIN_FOLDS
 )
 OOF_COHORT_ID_VERSION = "v7-immutable-fold-evidence"
-OOF_LIFECYCLE_RECEIPT_SCHEMA_VERSION = "active8-oof-lifecycle-receipt-v9-post-close-watermark"
+OOF_LIFECYCLE_RECEIPT_SCHEMA_VERSION = "active8-oof-lifecycle-receipt-v10-durable-shadow-base"
 
 
 def _oof_lifecycle_materialization_controls(
@@ -1966,6 +1966,12 @@ def _oof_lifecycle_receipt_matches_active_policy(
     l4_coverage = coverage_artifacts.get("l4_predictions")
     shadow_packets = evidence.get("shadow_evaluation_packets")
     shadow_packets = shadow_packets if isinstance(shadow_packets, dict) else {}
+    persistence = receipt.get("persistence")
+    persistence = persistence if isinstance(persistence, dict) else {}
+    persistence_counts = persistence.get("counts")
+    persistence_counts = (
+        persistence_counts if isinstance(persistence_counts, dict) else {}
+    )
     shadow_complete = (
         cadence == "daily"
         and receipt.get("status") == "shadow_evaluated"
@@ -1983,6 +1989,11 @@ def _oof_lifecycle_receipt_matches_active_policy(
         and all(
             packet.get("policy_decision") == "shadow_only" for packet in shadow_packets.values()
         )
+        and persistence.get("status") in {"ready", "ready_refreshed"}
+        and persistence.get("prediction_storage_mode") == "gcs_indexed_v1"
+        and int(persistence_counts.get("materialized_artifact_rows") or 0) == 2
+        and int(persistence_counts.get("indexed_snapshot_rows") or 0) > 0
+        and int(persistence_counts.get("indexed_l4_prediction_rows") or 0) > 0
     )
     if not contract_current or not (materialized_complete or shadow_complete):
         return False

@@ -1069,6 +1069,15 @@ def test_oof_lifecycle_receipt_is_bound_to_active_materialization_policy():
         **current,
         "status": "shadow_evaluated",
         "cadence": "daily",
+        "persistence": {
+            "status": "ready",
+            "prediction_storage_mode": "gcs_indexed_v1",
+            "counts": {
+                "materialized_artifact_rows": 2,
+                "indexed_snapshot_rows": 100,
+                "indexed_l4_prediction_rows": 100,
+            },
+        },
         "evidence_closure": {
             "materialized": False,
             "shadow_evaluated": True,
@@ -1099,6 +1108,12 @@ def test_oof_lifecycle_receipt_is_bound_to_active_materialization_policy():
         cadence="daily",
         require_full_fit=False,
     )
+    assert not _oof_lifecycle_receipt_matches_active_policy(
+        {**shadow, "persistence": {"status": "dry_run"}},
+        cadence="daily",
+        require_full_fit=False,
+    )
+
     missing_packets = {
         **shadow,
         "evidence_closure": {

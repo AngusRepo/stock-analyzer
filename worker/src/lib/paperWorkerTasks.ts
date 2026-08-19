@@ -1,6 +1,7 @@
 import type { Bindings } from '../types'
 import { formatDailySummary, sendDiscordNotification } from './notify'
-import { batchGetLatestPrices, recordSellSettlement } from './paperMarketData'
+import { recordSellSettlement } from './paperMarketData'
+import { batchGetLatestPricesByDomain, getLatestPriceByDomain } from './paperMarketDomainData'
 import { batchGetIntradayPrices, type IntradayOHLC } from './paperIntradayData'
 import { refreshOpenPositionPostClosePriceCache } from './paperIntradayPriceCache'
 import { calcCommission, calcTax, resolveMarketSellFill } from './paperTradeMath'
@@ -10,6 +11,8 @@ import { reconcilePendingBuyDebates, setupMorningPendingBuys } from './pendingBu
 import { computePaperTotalValue, getUnsettledSettlementSummary } from './paperAccountValue'
 import { buildStockVisionSellOrderIntent } from './stockvisionOrderIntent'
 import { writeDailyExecutionPaperClosureArtifacts } from './dailyExecutionPaperLineage'
+import { databaseForDataDomain } from './dataDomainRegistry'
+import { paperDomainDatabase } from './paperDomainDatabase'
 
 const ACCOUNT_ID = 1
 
@@ -26,11 +29,12 @@ function snapshotDate(raw?: string): string {
 export async function runDailySnapshot(env: Bindings, options: DailySnapshotOptions = {}): Promise<{ date: string }> {
   console.log('[Snapshot] Starting...')
   const today = snapshotDate(options.date)
+  const paperDb = paperDomainDatabase(env)
 
-  const updatedAcc = await env.DB.prepare('SELECT cash, initial_cash FROM paper_accounts WHERE id=?').bind(ACCOUNT_ID).first<any>()
+  const updatedAcc = await paperDb.prepare('SELECT cash, initial_cash FROM paper_accounts WHERE id=?').bind(ACCOUNT_ID).first<any>()
   if (!updatedAcc) return
 
-  const { results: finalPos } = await env.DB.prepare(
+  const { results: finalPos } = await paperDb.prepare(
     'SELECT symbol, shares FROM paper_positions WHERE account_id=? AND shares>0',
   ).bind(ACCOUNT_ID).all<any>()
 
@@ -49,7 +53,7 @@ export async function runDailySnapshot(env: Bindings, options: DailySnapshotOpti
   }
   const missingFinalSymbols = finalSymbols.filter((symbol: string) => !finalPriceMap.has(symbol))
   if (missingFinalSymbols.length) {
-    const eodPrices = await batchGetLatestPrices(env.DB, missingFinalSymbols)
+    const eodPrices = await batchGetLatestPricesByDomain(env, missingFinalSymbols, today)
     for (const [symbol, price] of eodPrices) finalPriceMap.set(symbol, price)
     console.log(
       `[Snapshot] price coverage post_close=${postCloseRefresh.refreshed}/${finalSymbols.length} ` +
@@ -66,7 +70,7 @@ export async function runDailySnapshot(env: Bindings, options: DailySnapshotOpti
     if (px) finalPosValue += px * p.shares
   }
 
-  const settlement = await getUnsettledSettlementSummary(env.DB, ACCOUNT_ID)
+  const settlement = await getUnsettledSettlementSummary(paperDb, ACCOUNT_ID)
   const totalValue = computePaperTotalValue({
     settledCash: updatedAcc.cash,
     positionsValue: finalPosValue,
@@ -75,17 +79,16 @@ export async function runDailySnapshot(env: Bindings, options: DailySnapshotOpti
   const pnl = totalValue - updatedAcc.initial_cash
   const pnlPct = updatedAcc.initial_cash > 0 ? pnl / updatedAcc.initial_cash * 100 : 0
 
-  const [benchRow, twiiRow] = await Promise.all([
-    env.DB.prepare(`
-      SELECT sp.close FROM stock_prices sp JOIN stocks s ON s.id = sp.stock_id
-      WHERE s.symbol = '0050' AND sp.date <= ? AND sp.close IS NOT NULL ORDER BY sp.date DESC LIMIT 1
-    `).bind(today).first<any>(),
-    env.DB.prepare('SELECT twii_close FROM market_risk WHERE date <= ? ORDER BY date DESC LIMIT 1').bind(today).first<any>(),
+  const [benchmarkValue, twiiRow] = await Promise.all([
+    getLatestPriceByDomain(env, '0050', today),
+    databaseForDataDomain(env, 'core').prepare(
+      'SELECT twii_close FROM market_risk WHERE date <= ? ORDER BY date DESC LIMIT 1',
+    ).bind(today).first<any>(),
   ])
-  const benchmarkValue: number | null = benchRow?.close ?? null
+  const normalizedBenchmarkValue: number | null = benchmarkValue ?? null
   const twiiValue: number | null = twiiRow?.twii_close ?? null
 
-  const { results: allSnapshots } = await env.DB.prepare(
+  const { results: allSnapshots } = await paperDb.prepare(
     'SELECT total_value FROM paper_daily_snapshots WHERE account_id=? AND date < ? ORDER BY date ASC',
   ).bind(ACCOUNT_ID, today).all<any>()
   let maxDrawdownToDate: number | null = null
@@ -106,7 +109,7 @@ export async function runDailySnapshot(env: Bindings, options: DailySnapshotOpti
   let cagr: number | null = null
   let calmar: number | null = null
 
-  const { results: recent30 } = await env.DB.prepare(
+  const { results: recent30 } = await paperDb.prepare(
     'SELECT total_value FROM paper_daily_snapshots WHERE account_id=? AND date < ? ORDER BY date DESC LIMIT 30',
   ).bind(ACCOUNT_ID, today).all<any>()
   if (recent30 && recent30.length >= 9) {
@@ -126,7 +129,7 @@ export async function runDailySnapshot(env: Bindings, options: DailySnapshotOpti
     }
   }
 
-  const firstSnapshot = await env.DB.prepare(
+  const firstSnapshot = await paperDb.prepare(
     'SELECT date FROM paper_daily_snapshots WHERE account_id=? ORDER BY date ASC LIMIT 1',
   ).bind(ACCOUNT_ID).first<any>()
   if (firstSnapshot?.date && updatedAcc.initial_cash > 0 && totalValue > 0) {
@@ -139,7 +142,7 @@ export async function runDailySnapshot(env: Bindings, options: DailySnapshotOpti
     calmar = cagr / maxDrawdownToDate
   }
 
-  await env.DB.prepare(`
+  await paperDb.prepare(`
     INSERT INTO paper_daily_snapshots
       (account_id, date, cash, positions_value, total_value, pnl, pnl_pct,
        benchmark_value, twii_value, max_drawdown_to_date, sharpe_30d,
@@ -160,7 +163,7 @@ export async function runDailySnapshot(env: Bindings, options: DailySnapshotOpti
     totalValue,
     pnl,
     pnlPct,
-    benchmarkValue,
+    normalizedBenchmarkValue,
     twiiValue,
     maxDrawdownToDate,
     sharpe30d,
@@ -180,7 +183,7 @@ export async function runDailySnapshot(env: Bindings, options: DailySnapshotOpti
 
   console.log(`[Snapshot] total_value=NT$${Math.round(totalValue).toLocaleString()} pnl=${pnlPct.toFixed(2)}%`)
 
-  const todayOrderCount = await env.DB.prepare(
+  const todayOrderCount = await paperDb.prepare(
     "SELECT COUNT(*) as cnt FROM paper_orders WHERE account_id=? AND created_at >= ?",
   ).bind(ACCOUNT_ID, today).first<any>()
   void sendDiscordNotification(
@@ -209,6 +212,7 @@ export async function executeRescoreSell(env: Bindings, params: RescoreSellParam
   const { getTradingConfig } = await import('./tradingConfig')
   const cfg = await getTradingConfig(env.KV)
   const { symbol, shares, price, quote, reason, source } = params
+  const paperDb = paperDomainDatabase(env)
 
   const fill = resolveMarketSellFill({
     currentPrice: quote?.last ?? price,
@@ -250,7 +254,7 @@ export async function executeRescoreSell(env: Bindings, params: RescoreSellParam
   const tax = calcTax(txValue, cfg, false)
   const proceeds = txValue - commission - tax
 
-  const pos = await env.DB.prepare(
+  const pos = await paperDb.prepare(
     'SELECT name, entry_price, entry_date, avg_cost FROM paper_positions WHERE account_id=? AND symbol=?',
   ).bind(ACCOUNT_ID, symbol).first<any>()
 
@@ -279,9 +283,9 @@ export async function executeRescoreSell(env: Bindings, params: RescoreSellParam
     { entryPrice, exitPrice: sellPrice, shares, commission, tax },
   )
 
-  await env.DB.batch([
-    env.DB.prepare('DELETE FROM paper_positions WHERE account_id=? AND symbol=?').bind(ACCOUNT_ID, symbol),
-    env.DB.prepare(`
+  await paperDb.batch([
+    paperDb.prepare('DELETE FROM paper_positions WHERE account_id=? AND symbol=?').bind(ACCOUNT_ID, symbol),
+    paperDb.prepare(`
       INSERT INTO paper_orders
         (account_id, symbol, name, side, shares, price, commission, tax, total_cost, source, signal, confidence, note)
       VALUES (?, ?, ?, 'sell', ?, ?, ?, ?, ?, ?, 'EXIT', NULL, ?)
@@ -298,7 +302,7 @@ export async function executeRescoreSell(env: Bindings, params: RescoreSellParam
       sellNote,
     ),
   ])
-  const orderId = await recordSellSettlement(env.DB, env.KV, ACCOUNT_ID, symbol, proceeds)
+  const orderId = await recordSellSettlement(paperDb, env.KV, ACCOUNT_ID, symbol, proceeds)
   await recordPaperExecutionEvent(env, {
     symbol,
     side: 'sell',

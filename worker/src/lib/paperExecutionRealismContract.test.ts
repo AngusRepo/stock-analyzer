@@ -42,7 +42,7 @@ assert(
 )
 assert(
   workerTasks.includes('missingFinalSymbols') &&
-    workerTasks.includes('batchGetLatestPrices(env.DB, missingFinalSymbols)') &&
+    workerTasks.includes('batchGetLatestPricesByDomain(env, missingFinalSymbols, today)') &&
     !workerTasks.includes('if (finalPriceMap.size === 0) finalPriceMap = await batchGetLatestPrices'),
   'daily snapshot must fill missing intraday quotes from EOD prices instead of treating partial intraday coverage as complete',
 )

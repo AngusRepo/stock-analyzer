@@ -484,6 +484,40 @@ export type ObservabilityDrilldownReport = {
   }>
 }
 
+export type StorageCapacitySnapshot = {
+  success: true
+  schema_version: 'storage-capacity-snapshot-v1'
+  mode: 'read_only'
+  generated_at: string
+  d1: {
+    count: number
+    expected_count: number
+    capacities: Array<{
+      domain: string
+      binding_name: string
+      used_bytes: number
+      max_bytes: number
+      utilization_pct: number
+      status: 'healthy' | 'warning' | 'drain' | 'critical'
+      previous_observed_date: string | null
+      daily_growth_bytes: number | null
+      projected_days_to_max: number | null
+    }>
+  }
+  r2: {
+    count: number
+    binding_name: string
+    tracked_object_count: number
+    tracked_bytes: number
+    utilization_pct: null
+    capacity_basis: 'no_fixed_bucket_quota'
+  }
+}
+
+export const storageApi = {
+  capacity: () => get<StorageCapacitySnapshot>('/admin/storage/capacity'),
+}
+
 export const observabilityApi = {
   events: (opts?: { date?: string; live?: boolean }) => {
     const params = new URLSearchParams()

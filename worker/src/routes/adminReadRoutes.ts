@@ -238,6 +238,82 @@ adminReadRoutes.get('/api/admin/ops/resource-audit', async (c) => {
   return c.json(await buildOpsResourceAudit(c.env))
 })
 
+adminReadRoutes.get('/api/admin/storage/capacity', async (c) => {
+  const authError = await requireAdminOrServiceToken(c)
+  if (authError) return authError
+
+  const { inspectStorageCapacityTelemetry } = await import('../lib/storageCapacityTelemetry')
+  const opsDb = databaseForDataDomain(c.env, 'ops')
+  const today = twToday()
+  const [d1Rows, previousCapacity, r2Manifest] = await Promise.all([
+    inspectStorageCapacityTelemetry(c.env),
+    opsDb.prepare(`
+      SELECT domain, binding_name, used_bytes, observed_date
+        FROM (
+          SELECT domain, binding_name, used_bytes, observed_date,
+                 ROW_NUMBER() OVER (
+                   PARTITION BY domain, binding_name
+                   ORDER BY observed_date DESC, observed_at DESC
+                 ) AS ordinal
+            FROM storage_capacity_daily
+           WHERE observed_date < ?
+        )
+       WHERE ordinal=1
+    `).bind(today).all<{
+      domain: string
+      binding_name: string
+      used_bytes: number
+      observed_date: string
+    }>(),
+    opsDb.prepare(`
+      SELECT COUNT(*) AS object_count, COALESCE(SUM(byte_size), 0) AS tracked_bytes
+        FROM run_artifacts
+       WHERE r2_key IS NOT NULL
+         AND status NOT IN ('deleted', 'purged')
+    `).first<{ object_count: number; tracked_bytes: number }>(),
+  ])
+  const previousByBinding = new Map(
+    (previousCapacity.results ?? []).map((row) => [row.binding_name, row] as const),
+  )
+  const capacities = d1Rows.map((row) => {
+    const previous = previousByBinding.get(row.binding_name)
+    const elapsedDays = previous
+      ? Math.max(1, Math.round((Date.parse(today) - Date.parse(previous.observed_date)) / 86_400_000))
+      : null
+    const dailyGrowthBytes = previous && elapsedDays
+      ? Math.round((row.used_bytes - Number(previous.used_bytes ?? 0)) / elapsedDays)
+      : null
+    const projectedDaysToMax = dailyGrowthBytes != null && dailyGrowthBytes > 0
+      ? Math.max(0, Math.floor((row.max_bytes - row.used_bytes) / dailyGrowthBytes))
+      : null
+    return {
+      ...row,
+      previous_observed_date: previous?.observed_date ?? null,
+      daily_growth_bytes: dailyGrowthBytes,
+      projected_days_to_max: projectedDaysToMax,
+    }
+  })
+  return c.json({
+    success: true,
+    schema_version: 'storage-capacity-snapshot-v1',
+    mode: 'read_only',
+    generated_at: new Date().toISOString(),
+    d1: {
+      count: capacities.length,
+      expected_count: 8,
+      capacities,
+    },
+    r2: {
+      count: c.env.ARTIFACTS ? 1 : 0,
+      binding_name: 'ARTIFACTS',
+      tracked_object_count: Number(r2Manifest?.object_count ?? 0),
+      tracked_bytes: Number(r2Manifest?.tracked_bytes ?? 0),
+      utilization_pct: null,
+      capacity_basis: 'no_fixed_bucket_quota',
+    },
+  })
+})
+
 adminReadRoutes.get('/api/admin/strategy/specs', async (c) => {
   const authError = await requireAdminOrServiceToken(c)
   if (authError) return authError

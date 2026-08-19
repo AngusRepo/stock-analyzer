@@ -528,7 +528,11 @@ function StrategyLedgerGroup({
                         return (
                           <span key={metric} className={`rounded-md border px-2 py-1 text-[11px] ${ready ? 'border-emerald-400/25 bg-emerald-400/[0.06] text-emerald-200' : pendingDependency ? 'border-amber-400/25 bg-amber-400/[0.06] text-amber-200' : 'border-cyan-400/20 bg-cyan-400/[0.04] text-cyan-200'}`}>
                             <span className="block">{evidenceMetricLabels[metric] ?? metric}</span>
-                            <span className="mt-0.5 block font-mono text-[10px] opacity-75">{evidenceMetricStatusLabel(metricRow?.status)} · {evidenceMetricValue(metric, metricRow?.value)} · n={metricRow?.sample_count ?? 0} / {metricRow?.mature_dates ?? 0} 日</span>
+                            <span className="mt-0.5 block font-mono text-[10px]">
+                              <span className="opacity-75">{evidenceMetricStatusLabel(metricRow?.status)} · </span>
+                              <span className={signedClass(metricRow?.value)}>{evidenceMetricValue(metric, metricRow?.value)}</span>
+                              <span className="opacity-75"> · n={metricRow?.sample_count ?? 0} / {metricRow?.mature_dates ?? 0} 日</span>
+                            </span>
                             <span className="mt-1 block max-w-sm text-[10px] leading-4 text-slate-400">{evidenceMetricDescriptions[metric] ?? '此指標尚未提供白話定義。'}</span>
                             {availabilityReason && <span className="mt-1 block max-w-sm text-[10px] leading-4 text-amber-200/80">原因：{availabilityReason}</span>}
                           </span>

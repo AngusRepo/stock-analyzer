@@ -1,12 +1,12 @@
 import { lazy, Suspense, type ReactNode } from 'react'
 import { Route, Switch } from 'wouter'
 import ErrorBoundary from './components/ErrorBoundary'
-import Dashboard from './pages/Dashboard'
 import MarketHomePage from './pages/MarketHomePage'
 import Unauthorized from './pages/Unauthorized'
 import { useAuth } from './_core/hooks/useAuth'
 import { isPrimaryAdminUser } from './lib/adminAccess'
 
+const Dashboard = lazy(() => import('./pages/Dashboard'))
 const BotDashboard = lazy(() => import('./pages/BotDashboard'))
 const StockReportPage = lazy(() => import('./pages/StockReportPage'))
 const PipelinePage = lazy(() => import('./pages/PipelinePage'))
@@ -39,7 +39,11 @@ export default function App() {
         <Route path="/" component={MarketHomePage} />
         <Route path="/dashboard" component={MarketHomePage} />
         <Route path="/home" component={MarketHomePage} />
-        <Route path="/stock/:id" component={Dashboard} />
+        <Route path="/stock/:id">
+          <Suspense fallback={<PageLoader label="Stock Dashboard" />}>
+            <Dashboard />
+          </Suspense>
+        </Route>
         <Route path="/unauthorized" component={Unauthorized} />
 
         <Route path="/report/:symbol">

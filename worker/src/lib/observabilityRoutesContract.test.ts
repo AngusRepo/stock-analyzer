@@ -15,6 +15,8 @@ assert(readRoutes.includes("'/api/admin/observability/audit'"), 'OBS must expose
 assert(readRoutes.includes("'/api/admin/observability/drilldown'"), 'OBS must expose incident drilldown route')
 assert(readRoutes.includes("'/api/admin/ops/runbook'"), 'OPS must expose read-only runbook route')
 assert(readRoutes.includes("'/api/admin/ops/resource-audit'"), 'OPS must expose read-only resource audit route')
+assert(readRoutes.includes("'/api/admin/storage/capacity'"), 'OBS must expose read-only D1 and R2 capacity route')
+assert(readRoutes.includes('WHERE observed_date < ?'), 'Capacity growth must compare against a prior date, never the current-day ledger row')
 assert(writeRoutes.includes("'/api/admin/observability/snapshot'"), 'OBS must expose snapshot writer route')
 assert(readRoutes.includes('requireAdminOrServiceToken'), 'OBS read routes must require admin or service token')
 assert(writeRoutes.includes('requireAdminOrServiceToken'), 'OBS snapshot route must require admin or service token')

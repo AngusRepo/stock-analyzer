@@ -42,9 +42,8 @@ async function inspectBinding(
   }
 }
 
-export async function collectStorageCapacityTelemetry(
+export async function inspectStorageCapacityTelemetry(
   env: Pick<Bindings, 'DB'> & Partial<Bindings>,
-  observedDate: string,
 ): Promise<StorageCapacityRow[]> {
   const sources: Array<{ domain: StorageCapacityRow['domain']; binding: string; db: D1Database }> = [
     { domain: 'legacy', binding: 'DB', db: env.DB },
@@ -58,8 +57,16 @@ export async function collectStorageCapacityTelemetry(
     const db = env[binding] as D1Database | undefined
     if (db) sources.push({ domain, binding: String(binding), db })
   }
-  const rows: StorageCapacityRow[] = []
-  for (const source of sources) rows.push(await inspectBinding(source.domain, source.binding, source.db))
+  return Promise.all(
+    sources.map((source) => inspectBinding(source.domain, source.binding, source.db)),
+  )
+}
+
+export async function collectStorageCapacityTelemetry(
+  env: Pick<Bindings, 'DB'> & Partial<Bindings>,
+  observedDate: string,
+): Promise<StorageCapacityRow[]> {
+  const rows = await inspectStorageCapacityTelemetry(env)
   const opsDb = databaseForDataDomain(env, 'ops')
   const statements = rows.map((row) => opsDb.prepare(`
     INSERT INTO storage_capacity_daily (

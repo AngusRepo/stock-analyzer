@@ -1,18 +1,14 @@
 import { useMutation, useQuery } from '@tanstack/react-query'
 import {
   ArrowRight,
-  CheckCircle2,
   Database,
   ExternalLink,
   Loader2,
-  RadioTower,
   ShieldAlert,
-  TimerReset,
   Workflow,
 } from 'lucide-react'
 import AppShell from '@/components/AppShell'
 import ExecutionChainPanel, { schedulerRefreshInterval } from '@/components/observability/ExecutionChainPanel'
-import LearningCutoverPanel from '@/components/observability/LearningCutoverPanel'
 import { Button } from '@/components/ui/button'
 import {
   WorkstationPageTitle,
@@ -30,14 +26,15 @@ import {
   dataQualityApi,
   deployGateApi,
   observabilityApi,
-  opsApi,
   schedulerApi,
+  storageApi,
   systemApi,
   type DataQualityCheck,
   type DataQualityReport,
   type ObservabilityEvent,
   type ObservabilitySeverity,
   type SchedulerJob,
+  type StorageCapacitySnapshot,
 } from '@/lib/api'
 
 function statusTone(status?: string | null): WorkstationTone {
@@ -352,6 +349,89 @@ function ReadinessGauge({ score, tone }: { score: number; tone: WorkstationTone 
           <p className="sv-num text-xs normal-case text-[#7f8ba0]">readiness</p>
         </div>
       </div>
+    </div>
+  )
+}
+
+function formatStorageBytes(bytes: number | null | undefined): string {
+  const value = Number(bytes)
+  if (!Number.isFinite(value)) return 'N/A'
+  if (Math.abs(value) >= 1_000_000_000) return `${(value / 1_000_000_000).toFixed(2)} GB`
+  if (Math.abs(value) >= 1_000_000) return `${(value / 1_000_000).toFixed(1)} MB`
+  return `${Math.round(value).toLocaleString()} B`
+}
+
+function capacityTone(status?: string): WorkstationTone {
+  if (status === 'critical') return 'error'
+  if (status === 'drain' || status === 'warning') return 'warn'
+  return 'ok'
+}
+
+function StorageCapacityPanel({
+  report,
+  loading,
+  error,
+}: {
+  report?: StorageCapacitySnapshot
+  loading: boolean
+  error?: string | null
+}) {
+  const priorities = new Map([['DB', 0], ['LEARNING_DB', 1], ['OPS_DB', 2]])
+  const rows = [...(report?.d1.capacities ?? [])].sort((a, b) =>
+    (priorities.get(a.binding_name) ?? 10) - (priorities.get(b.binding_name) ?? 10)
+      || a.binding_name.localeCompare(b.binding_name),
+  )
+  const r2 = report?.r2
+
+  return (
+    <div className="rounded-2xl border border-[#2b3a49] bg-[radial-gradient(circle_at_18%_0%,rgba(0,210,255,0.13),transparent_32%),linear-gradient(135deg,#10141d,#0b1118_58%,#141109)] p-4 shadow-[inset_0_1px_0_rgba(255,255,255,0.04)]">
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div>
+          <div className="flex items-center gap-2 text-sky-200">
+            <Database className="h-4 w-4" />
+            <p className="text-sm font-semibold">D1 / R2 Storage Capacity</p>
+          </div>
+          <h3 className="mt-2 font-['Space_Grotesk'] text-xl font-semibold text-[#f8efe0]">資料庫容量</h3>
+          <p className="mt-1 text-xs leading-5 text-[#9badbf]">D1 顯示即時 binding query metadata；R2 顯示可稽核 manifest 容量。</p>
+        </div>
+        <div className="flex gap-2">
+          <WorkstationPill tone={rows.length === report?.d1.expected_count ? 'ok' : 'warn'}>D1 {report?.d1.count ?? 0}/{report?.d1.expected_count ?? 8}</WorkstationPill>
+          <WorkstationPill tone={r2?.count ? 'ok' : 'warn'}>R2 {r2?.count ?? 0}</WorkstationPill>
+        </div>
+      </div>
+      {loading && <p className="mt-4 sv-num text-xs normal-case text-sky-200">Loading current storage snapshot...</p>}
+      {error && <p className="mt-4 text-xs text-rose-200">Capacity API：{error}</p>}
+      {!loading && !error && (
+        <div className="mt-4 grid gap-2 sm:grid-cols-2">
+          {rows.map((row) => {
+            const tone = capacityTone(row.status)
+            return (
+              <div key={row.binding_name} className={`rounded-xl border p-2 ${statusRingClass(tone)}`}>
+                <div className="flex items-center justify-between gap-2">
+                  <p className="truncate sv-num text-xs normal-case text-[#f2ead8]">{row.domain} · {row.binding_name}</p>
+                  <span className="sv-num text-xs normal-case" style={{ color: toneColor(tone) }}>{row.utilization_pct.toFixed(2)}%</span>
+                </div>
+                <MiniBar value={row.utilization_pct} tone={tone} />
+                <p className="mt-1 sv-num text-xs normal-case text-[#9badbf]">{formatStorageBytes(row.used_bytes)} / {formatStorageBytes(row.max_bytes)}</p>
+                {row.daily_growth_bytes != null && row.daily_growth_bytes > 0 && (
+                  <p className={`mt-1 text-xs ${row.projected_days_to_max != null && row.projected_days_to_max < 30 ? 'text-rose-200' : 'text-slate-400'}`}>
+                    +{formatStorageBytes(row.daily_growth_bytes)}/日 · 預估 {row.projected_days_to_max ?? 'N/A'} 日滿載
+                  </p>
+                )}
+              </div>
+            )
+          })}
+          <div className="rounded-xl border border-violet-400/20 bg-violet-400/[0.05] p-2 text-violet-100">
+            <div className="flex items-center justify-between gap-2">
+              <p className="sv-num text-xs normal-case">R2 · {r2?.binding_name ?? 'ARTIFACTS'}</p>
+              <span className="sv-num text-xs normal-case">容量百分比 N/A</span>
+            </div>
+            <p className="mt-2 sv-num text-xs normal-case text-violet-200">{formatStorageBytes(r2?.tracked_bytes)} · {(r2?.tracked_object_count ?? 0).toLocaleString()} objects</p>
+            <p className="mt-1 text-xs leading-4 text-slate-400">R2 bucket 無固定容量上限；不偽造百分比，改顯示 manifest 可稽核用量。</p>
+          </div>
+        </div>
+      )}
+      <p className="mt-3 sv-num text-xs normal-case text-[#70809b]">snapshot {report?.generated_at ?? 'pending'}</p>
     </div>
   )
 }
@@ -901,103 +981,28 @@ function CriticalSchedulerErrors({ jobs }: { jobs: SchedulerJob[] }) {
 function OperationalReadinessDeck({
   jobs,
   checks,
-  schedulerScore,
-  dataQualityScore,
-  deployScore,
-  reportDate,
-  deployDecision,
-  apiErrors,
   schedulerApiError,
   schedulerFetching,
   schedulerDataUpdatedAt,
+  capacityReport,
+  capacityLoading,
+  capacityError,
 }: {
   jobs: SchedulerJob[]
   checks: DataQualityCheck[]
-  schedulerScore: number
-  dataQualityScore: number
-  deployScore: number
-  reportDate?: string
-  deployDecision?: string
-  apiErrors: Array<{ label: string; message: string }>
   schedulerApiError?: string | null
   schedulerFetching: boolean
   schedulerDataUpdatedAt: number
+  capacityReport?: StorageCapacitySnapshot
+  capacityLoading: boolean
+  capacityError?: string | null
 }) {
-  const stages = READINESS_STAGES.map((stage) => stageFromDefinition(stage, jobs))
   const gates = buildReadinessGates(checks)
-  const blockedStages = stages.filter((stage) => stage.status === 'blocked')
-  const waitingStages = stages.filter((stage) => stage.status === 'waiting' || stage.status === 'running')
-  const blockedGates = gates.filter((gate) => gate.status === 'blocked')
-  const waitingGates = gates.filter((gate) => gate.status === 'waiting' || gate.status === 'pending')
-  const score = Math.round((schedulerScore * 0.32) + (dataQualityScore * 0.48) + (deployScore * 0.20))
-  const hasApiError = apiErrors.length > 0
-  const authBlocked = hasApiError && apiErrors.every((item) => item.message.toLowerCase().includes('unauthorized'))
-  const decisionTone: WorkstationTone = hasApiError || blockedStages.length || blockedGates.length || deployDecision === 'BLOCK'
-    ? 'error'
-    : waitingStages.length || waitingGates.length || deployDecision === 'WARN'
-      ? 'warn'
-      : 'ok'
-  const currentStage = blockedStages[0] ?? waitingStages[0] ?? stages.find((stage) => stage.status !== 'ready')
 
   return (
     <div className="border-b border-[#263247] bg-[#080b11] p-3">
       <div className="grid items-stretch gap-3 xl:grid-cols-[minmax(0,2fr)_minmax(0,3fr)]">
-        <div className="rounded-2xl border border-[#2b3a49] bg-[radial-gradient(circle_at_18%_0%,rgba(0,210,255,0.13),transparent_32%),linear-gradient(135deg,#10141d,#0b1118_58%,#141109)] p-4 shadow-[inset_0_1px_0_rgba(255,255,255,0.04)]">
-          <div className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
-            <div className="min-w-0">
-              <div className="flex flex-wrap items-center gap-2">
-                <WorkstationPill tone={decisionTone}>{authBlocked ? 'AUTH REQUIRED' : hasApiError ? 'API OFFLINE' : deployDecision ?? readinessLabel(currentStage?.status ?? 'ready')}</WorkstationPill>
-                <WorkstationPill tone="info">report {reportDate ?? 'latest'}</WorkstationPill>
-              </div>
-              <h3 className="mt-3 font-['Space_Grotesk'] text-2xl font-semibold text-[#f8efe0]">Readiness-gated Chain Control</h3>
-              <p className="mt-2 max-w-3xl text-sm leading-6 text-[#a8b6c5]">
-                用正式 scheduler callback 與 readiness gate 驅動 execution chain；running 時每 3 秒同步，final callback 後自動完成當前 stage 並聚焦下一個 stage。
-              </p>
-            </div>
-            <div className="flex shrink-0 items-center gap-3">
-              <ReadinessGauge score={score} tone={decisionTone} />
-              <div className="grid gap-2 sv-num text-xs normal-case text-[#9badbf]">
-                <span>Scheduler {Math.round(schedulerScore || 0)}%</span>
-                <span>Data Quality {dataQualityScore}%</span>
-                <span>Deploy Gate {deployScore}%</span>
-              </div>
-            </div>
-          </div>
-
-          <div className="mt-4 grid gap-2 md:grid-cols-3">
-            <div className="rounded-2xl border border-sky-400/20 bg-sky-400/[0.06] p-3">
-              <div className="flex items-center gap-2 text-sky-200">
-                <RadioTower className="h-4 w-4" />
-                <p className="text-sm font-semibold">目前階段</p>
-              </div>
-              <p className="mt-2 text-lg font-semibold text-[#f2ead8]">{currentStage?.label ?? '全段 ready'}</p>
-              <p className="mt-1 text-xs leading-5 text-[#9badbf]">
-                {authBlocked
-                  ? '請先登入；未取得 admin token 時 OBS 只能顯示靜態結構，不能判斷 runtime。'
-                  : hasApiError
-                    ? '先修 API / auth / CORS 連線；UI 目前只顯示 local preview skeleton。'
-                    : currentStage?.nextAction ?? '等待下一個交易日流程。'}
-              </p>
-            </div>
-            <div className="rounded-2xl border border-amber-400/20 bg-amber-400/[0.06] p-3">
-              <div className="flex items-center gap-2 text-amber-200">
-                <TimerReset className="h-4 w-4" />
-                <p className="text-sm font-semibold">建議節奏</p>
-              </div>
-              <p className="mt-2 text-lg font-semibold text-[#f2ead8]">18:10 refresh → readiness polling → pipeline</p>
-              <p className="mt-1 text-xs leading-5 text-[#9badbf]">資料晚到就等資料；超過 SLA 才 fallback 到原本 22:00 chain。</p>
-            </div>
-            <div className="rounded-2xl border border-emerald-400/20 bg-emerald-400/[0.06] p-3">
-              <div className="flex items-center gap-2 text-emerald-200">
-                <CheckCircle2 className="h-4 w-4" />
-                <p className="text-sm font-semibold">資料閘門</p>
-              </div>
-              <p className="mt-2 text-lg font-semibold text-[#f2ead8]">{gates.filter((gate) => gate.status === 'ready').length}/{gates.length} ready</p>
-              <p className="mt-1 text-xs leading-5 text-[#9badbf]">只要 critical gate 未 ready，下游推薦不應直接更新。</p>
-            </div>
-
-          </div>
-        </div>
+        <StorageCapacityPanel report={capacityReport} loading={capacityLoading} error={capacityError} />
 
         <section className="flex h-full min-w-0 flex-col rounded-2xl border border-[#2b3a49] bg-[#0f151d] p-3" aria-labelledby="source-gates-title">
           <div className="mb-3 flex items-center justify-between gap-3">
@@ -1022,32 +1027,6 @@ function OperationalReadinessDeck({
         />
       </div>
 
-    </div>
-  )
-}
-
-function DataQualityPanel({ checks }: { checks: DataQualityCheck[] }) {
-  if (!checks.length) return <div className="p-4 text-sm text-slate-500">目前沒有 data quality checks。</div>
-  const sortedChecks = [...checks].sort((a, b) => {
-    const rank = (status: string) => status === 'fail' ? 0 : status === 'warn' ? 1 : 2
-    return rank(a.status) - rank(b.status) || a.id.localeCompare(b.id)
-  })
-  const gates: ReadinessGate[] = sortedChecks.map((check) => {
-    const status = gateStatusFromQuality(check.status)
-    return {
-      id: check.id,
-      label: check.label,
-      status,
-      tone: readinessTone(status),
-      value: check.status.toUpperCase(),
-      source: 'data-quality report',
-      detail: check.summary,
-      latestDate: null,
-    }
-  })
-  return (
-    <div className="min-w-0 overflow-hidden rounded-xl border border-[#263247] bg-[#05070c] p-2">
-      <DataQualityCompactMatrix gates={gates} />
     </div>
   )
 }
@@ -1463,7 +1442,13 @@ export default function ObservabilityPage() {
   const deployGate = useQuery({ queryKey: ['obs', 'deploy-gate'], queryFn: () => deployGateApi.predeploy(), refetchInterval: 60_000, staleTime: 30_000 })
   const system = useQuery({ queryKey: ['obs', 'system'], queryFn: systemApi.status, refetchInterval: 60_000, staleTime: 30_000 })
   const observability = useQuery({ queryKey: ['obs', 'events'], queryFn: () => observabilityApi.events(), refetchInterval: 60_000, staleTime: 30_000 })
-  const cutover = useQuery({ queryKey: ['ops', 'cutover-readiness', 'learning'], queryFn: () => opsApi.cutoverReadiness('learning'), refetchInterval: 60_000, staleTime: 30_000 })
+  const capacity = useQuery({
+    queryKey: ['obs', 'storage-capacity'],
+    queryFn: storageApi.capacity,
+    refetchInterval: 300_000,
+    refetchIntervalInBackground: false,
+    staleTime: 240_000,
+  })
   const gaReview = useMutation({
     mutationFn: ({ action, level }: { action: 'request' | 'approve' | 'reject'; level: 'L3' | 'L4' }) =>
       observabilityApi.reviewGaPromotion({ action, level, reason: `obs_ui_${action}` }),
@@ -1479,16 +1464,25 @@ export default function ObservabilityPage() {
   const schedulerApiError = errorMessage(scheduler.error)
   const dataQualityScore = computeDataQualityScore(dataQuality.data)
   const deployScore = deployGate.data ? deployGate.data.decision === 'PASS' ? 100 : deployGate.data.decision === 'WARN' ? 70 : 30 : 0
-  const failedChecks = dqChecks.filter((check) => check.status === 'fail').length
-  const initialLoading = [scheduler, dataQuality, deployGate, system, observability, cutover].some((query) => query.isLoading)
+  const initialLoading = [scheduler, dataQuality, deployGate, system, observability].some((query) => query.isLoading)
   const apiErrors = [
     { label: 'Scheduler API', message: schedulerApiError },
     { label: 'Data Quality API', message: errorMessage(dataQuality.error) },
     { label: 'Deploy Gate API', message: errorMessage(deployGate.error) },
     { label: 'OBS Events API', message: errorMessage(observability.error) },
     { label: 'System API', message: errorMessage(system.error) },
-    { label: 'D1 Cutover API', message: errorMessage(cutover.error) },
   ].filter((item): item is { label: string; message: string } => Boolean(item.message))
+  const readinessStages = READINESS_STAGES.map((stage) => stageFromDefinition(stage, jobs))
+  const readinessGates = buildReadinessGates(dqChecks)
+  const readinessScore = Math.round((schedulerScore * 0.32) + (dataQualityScore * 0.48) + (deployScore * 0.20))
+  const readinessTone: WorkstationTone = apiErrors.length
+    || readinessStages.some((stage) => stage.status === 'blocked')
+    || readinessGates.some((gate) => gate.status === 'blocked')
+    || deployGate.data?.decision === 'BLOCK'
+    ? 'error'
+    : readinessStages.some((stage) => stage.status === 'waiting' || stage.status === 'running')
+      || readinessGates.some((gate) => gate.status === 'waiting' || gate.status === 'pending')
+      || deployGate.data?.decision === 'WARN' ? 'warn' : 'ok'
 
   return (
     <AppShell>
@@ -1508,30 +1502,29 @@ export default function ObservabilityPage() {
           title="OBS 可觀測中心"
           description="用事件、時間、count、SLO 與 drilldown CTA 回答：哪裡壞、多久了、影響哪一層。"
           action={
-            <div className="flex flex-wrap gap-2">
-              <WorkstationPill tone={statusTone(dataQuality.data?.overall)}>DQ {formatStatus(dataQuality.data?.overall)}</WorkstationPill>
-              <WorkstationPill tone={statusTone(deployGate.data?.decision)}>Gate {formatStatus(deployGate.data?.decision)}</WorkstationPill>
-              <WorkstationPill tone={severityTone(observability.data?.overall)}>OBS {formatStatus(observability.data?.overall)}</WorkstationPill>
-              <WorkstationPill tone={system.error ? 'error' : 'ok'}>System {system.error ? 'ERROR' : 'ONLINE'}</WorkstationPill>
+            <div className="flex flex-wrap items-center gap-3">
+              <ReadinessGauge score={readinessScore} tone={readinessTone} />
+              <div className="flex max-w-xs flex-wrap gap-2">
+                <WorkstationPill tone={statusTone(dataQuality.data?.overall)}>DQ {formatStatus(dataQuality.data?.overall)}</WorkstationPill>
+                <WorkstationPill tone={statusTone(deployGate.data?.decision)}>Gate {formatStatus(deployGate.data?.decision)}</WorkstationPill>
+                <WorkstationPill tone={severityTone(observability.data?.overall)}>OBS {formatStatus(observability.data?.overall)}</WorkstationPill>
+                <WorkstationPill tone={system.error ? 'error' : 'ok'}>System {system.error ? 'ERROR' : 'ONLINE'}</WorkstationPill>
+                <span className="w-full sv-num text-xs normal-case text-slate-500">Readiness-gated Chain Control</span>
+              </div>
             </div>
           }
         />
-
-        <LearningCutoverPanel report={cutover.data} />
 
         <WorkstationPanel title="Operational Drilldown / 維運追蹤" kicker="full rows, not fake tabs">
           <OperationalReadinessDeck
             jobs={jobs}
             checks={dqChecks}
-            schedulerScore={schedulerScore}
-            dataQualityScore={dataQualityScore}
-            deployScore={deployScore}
-            reportDate={dataQuality.data?.date}
-            deployDecision={deployGate.data?.decision}
-            apiErrors={apiErrors}
             schedulerApiError={schedulerApiError}
             schedulerFetching={scheduler.isFetching}
             schedulerDataUpdatedAt={scheduler.dataUpdatedAt}
+            capacityReport={capacity.data}
+            capacityLoading={capacity.isLoading}
+            capacityError={errorMessage(capacity.error)}
           />
           <div className="border-b border-[#263247] p-3">
             <div className="flex flex-wrap items-center justify-between gap-3">
@@ -1542,24 +1535,7 @@ export default function ObservabilityPage() {
                 <a href="/scheduler" className="inline-flex items-center gap-1 rounded border border-sky-500/25 bg-sky-500/10 px-3 py-1.5 sv-num text-sky-200 hover:border-sky-300/50">
                   Scheduler <ExternalLink className="h-3 w-3" />
                 </a>
-                <a href={`/data-quality${dataQuality.data?.date ? `?date=${dataQuality.data.date}` : ''}`} className="inline-flex items-center gap-1 rounded border border-emerald-500/25 bg-emerald-500/10 px-3 py-1.5 sv-num text-emerald-200 hover:border-emerald-300/50">
-                  Data Quality <ExternalLink className="h-3 w-3" />
-                </a>
-                <a href={`/data-quality?focus=price_freshness${dataQuality.data?.date ? `&date=${dataQuality.data.date}` : ''}`} className="inline-flex items-center gap-1 rounded border border-amber-500/25 bg-amber-500/10 px-3 py-1.5 sv-num text-amber-200 hover:border-amber-300/50">
-                  Price Data <ExternalLink className="h-3 w-3" />
-                </a>
               </div>
-            </div>
-          </div>
-          <div className="grid gap-3 p-3">
-            <div>
-              <div className="mb-2 flex items-center justify-between gap-4">
-                <p className="shrink-0 whitespace-nowrap sv-num text-xs normal-case text-slate-400">Data Quality / 資料品質</p>
-                <div className="hidden items-center gap-3 sm:flex">
-                  <span className={`sv-num text-xs ${failedChecks ? 'text-rose-300' : 'text-emerald-300'}`}>{dataQualityScore}%</span>
-                </div>
-              </div>
-              <DataQualityPanel checks={dqChecks} />
             </div>
           </div>
         </WorkstationPanel>

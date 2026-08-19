@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, type ComponentType, type CSSProperties, type ReactNode } from 'react'
+import { lazy, Suspense, useEffect, useMemo, useRef, useState, type ComponentType, type CSSProperties, type ReactNode } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import {
   Activity,
@@ -17,10 +17,13 @@ import {
 } from 'lucide-react'
 import AppShell from '@/components/AppShell'
 import { MarketRiskDetailBreakdown } from '@/components/MarketRiskDetailBreakdown'
-import { RecommendationCardClean } from '@/components/RecommendationCardClean'
 import { marketApi, recommendationsApi } from '@/lib/api'
 import { splitRecommendationLanes } from '@/lib/recommendationLanes'
 import { queryTtl, recommendationDailyKey } from '@/lib/queryPolicy'
+
+const RecommendationCardClean = lazy(() =>
+  import('@/components/RecommendationCardClean').then((module) => ({ default: module.RecommendationCardClean })),
+)
 
 type Tone = 'red' | 'green' | 'blue' | 'amber' | 'slate'
 
@@ -1573,11 +1576,19 @@ function RecommendationPanel() {
         </div>
       ) : displayRows.length ? (
         <div className="bg-[#101116] p-4">
-          <div className="grid gap-3 lg:grid-cols-2">
-            {displayRows.map((rec: any, index: number) => (
-              <RecommendationCardClean key={rec.stock_id ?? rec.symbol ?? index} rec={rec} rank={index + 1} context="home" />
-            ))}
-          </div>
+          <Suspense fallback={(
+            <div className="grid gap-3 lg:grid-cols-2">
+              {[1, 2, 3, 4].map((index) => (
+                <div key={index} className="h-28 animate-pulse rounded-[18px] border border-white/[0.06] bg-white/[0.035]" />
+              ))}
+            </div>
+          )}>
+            <div className="grid gap-3 lg:grid-cols-2">
+              {displayRows.map((rec: any, index: number) => (
+                <RecommendationCardClean key={rec.stock_id ?? rec.symbol ?? index} rec={rec} rank={index + 1} context="home" />
+              ))}
+            </div>
+          </Suspense>
           {displayRows.length < eligibleRows.length && (
             <button
               type="button"

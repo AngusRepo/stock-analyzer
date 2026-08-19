@@ -25,6 +25,9 @@ const learningBaseline = fs.readFileSync('domain-migrations/learning/0001_learni
 const executionCutoverProbe = fs.readFileSync('domain-migrations/execution/0002_data_domain_cutover_probe_canary.sql', 'utf8')
 const learningCutoverProbe = fs.readFileSync('domain-migrations/learning/0013_data_domain_cutover_probe_canary.sql', 'utf8')
 const paperCutoverProbe = fs.readFileSync('domain-migrations/paper/0002_data_domain_cutover_probe_canary.sql', 'utf8')
+const coreCutoverProbe = fs.readFileSync('domain-migrations/core/0003_data_domain_cutover_probe_canary.sql', 'utf8')
+const marketCutoverProbe = fs.readFileSync('domain-migrations/market/0003_data_domain_cutover_probe_canary.sql', 'utf8')
+const researchCutoverProbe = fs.readFileSync('domain-migrations/research/0003_data_domain_cutover_probe_canary.sql', 'utf8')
 const learningIncremental = fs.readFileSync('domain-migrations/learning/0002_learning_policy_evidence.sql', 'utf8')
 const learningForwardExtension = fs.readFileSync('domain-migrations/learning/0003_learning_active8_forward_extension.sql', 'utf8')
 const opsIncremental = fs.readFileSync('domain-migrations/ops/0002_ops_retention_s12_pit.sql', 'utf8')
@@ -60,4 +63,12 @@ assert.match(paperCutoverProbe, /CREATE TABLE IF NOT EXISTS data_domain_cutover_
 assert.match(learningCutoverProbe, /CREATE TABLE IF NOT EXISTS data_domain_cutover_probe_canary/)
 assert.match(learningCutoverProbe, /CHECK\(domain = 'learning'\)/)
 assert.match(paperCutoverProbe, /CHECK\(domain = 'paper'\)/)
+for (const [domain, migration] of [
+  ['core', coreCutoverProbe],
+  ['market', marketCutoverProbe],
+  ['research', researchCutoverProbe],
+] as const) {
+  assert.match(migration, /CREATE TABLE IF NOT EXISTS data_domain_cutover_probe_canary/)
+  assert.match(migration, new RegExp(`CHECK\\(domain = '${domain}'\\)`))
+}
 console.log('domain migration layout contract passed')

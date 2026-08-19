@@ -121,6 +121,42 @@ def test_execution_domain_stays_closed_without_bound_receipt(monkeypatch):
     else:
         raise AssertionError("execution routing must require an attested cutover receipt")
 
+def test_paper_domain_is_independently_closed_by_attested_epoch(monkeypatch):
+    monkeypatch.setattr(d1_domain_client, "MULTI_D1_STRICT_ROUTING_READY", False)
+    monkeypatch.setenv("CF_D1_DB_ID", "legacy")
+    monkeypatch.setenv("CF_D1_PAPER_DB_ID", "paper-db")
+    monkeypatch.setenv("MULTI_D1_ACTIVE_DOMAINS", "paper")
+    monkeypatch.setenv("MULTI_D1_STRICT", "true")
+    monkeypatch.setenv("MULTI_D1_PAPER_ROUTING_CONTRACT", "paper-single-writer-epoch-v1")
+    monkeypatch.setenv(
+        "MULTI_D1_PAPER_CUTOVER_RECEIPT_ID",
+        "data-domain-cutover-probe:paper:test",
+    )
+    monkeypatch.setenv("MULTI_D1_PAPER_WRITER_EPOCH", "5")
+
+    assert d1_domain_client.database_id_for_domain("paper") == "paper-db"
+    assert d1_domain_client.database_id_for_domain("research") == "legacy"
+
+
+def test_paper_domain_stays_closed_without_attested_epoch(monkeypatch):
+    monkeypatch.setattr(d1_domain_client, "MULTI_D1_STRICT_ROUTING_READY", False)
+    monkeypatch.setenv("CF_D1_DB_ID", "legacy")
+    monkeypatch.setenv("CF_D1_PAPER_DB_ID", "paper-db")
+    monkeypatch.setenv("MULTI_D1_ACTIVE_DOMAINS", "paper")
+    monkeypatch.setenv("MULTI_D1_PAPER_ROUTING_CONTRACT", "paper-single-writer-epoch-v1")
+    monkeypatch.setenv(
+        "MULTI_D1_PAPER_CUTOVER_RECEIPT_ID",
+        "data-domain-cutover-probe:paper:test",
+    )
+    monkeypatch.setenv("MULTI_D1_PAPER_WRITER_EPOCH", "0")
+
+    try:
+        d1_domain_client.database_id_for_domain("paper")
+    except RuntimeError as exc:
+        assert str(exc) == "multi_d1_strict_routing_not_closed:paper"
+    else:
+        raise AssertionError("paper routing must require a positive attested epoch")
+
 def test_learning_domain_is_independently_closed_by_attested_epoch(monkeypatch):
     monkeypatch.setattr(d1_domain_client, "MULTI_D1_STRICT_ROUTING_READY", False)
     monkeypatch.setenv("CF_D1_DB_ID", "legacy")

@@ -42,8 +42,15 @@ export interface AggregatedPortfolioState extends CircuitBreakerState {
   haltReasons: string[]
 }
 
+export interface PortfolioRiskDatabases {
+  paper: D1Database
+  core: D1Database
+  market: D1Database
+  learning: D1Database
+}
+
 export async function runPortfolioChecks(
-  db: D1Database,
+  db: D1Database | PortfolioRiskDatabases,
   cfg: TradingConfig,
   kv: KVNamespace | undefined,
   deps: LegacyLayerDeps,
@@ -51,18 +58,21 @@ export async function runPortfolioChecks(
   // R3 expand: S1 killSwitch (Level 1) + P8 dailyPnl (Level 2) added alongside
   // P1-P7. KV `trading:risk_config` fetched once here for all R3 checkers.
   const riskCfg = await getRiskConfig(kv)
+  const databases: PortfolioRiskDatabases = 'paper' in db
+    ? db
+    : { paper: db, core: db, market: db, learning: db }
 
   // Run 9 checks in parallel — none depend on each other's output.
   const [s1, p1, p2, p3, p4, p5, p6, p7, p8] = await Promise.all([
     checkS1KillSwitch(kv, deps),
-    checkP1Mdd(db, cfg, deps),
-    checkP2Accuracy(db, kv, cfg, deps),
-    checkP3MarketRisk(db, cfg, deps),
-    checkP4Breadth(db, cfg, deps),
-    checkP5Losses(db, deps),
-    checkP6Momentum(db, deps),
-    checkP7Streak(db, cfg, deps),
-    checkP8DailyPnl(db, riskCfg, deps),
+    checkP1Mdd(databases.paper, cfg, deps),
+    checkP2Accuracy(databases.learning, kv, cfg, deps),
+    checkP3MarketRisk(databases.core, cfg, deps),
+    checkP4Breadth(databases.market, cfg, deps),
+    checkP5Losses(databases.paper, deps),
+    checkP6Momentum(databases.core, deps),
+    checkP7Streak(databases.learning, cfg, deps),
+    checkP8DailyPnl(databases.paper, riskCfg, deps),
   ])
 
   const entries: Array<[string, CircuitBreakerState | null]> = [

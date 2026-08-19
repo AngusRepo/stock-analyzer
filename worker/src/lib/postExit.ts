@@ -9,6 +9,9 @@
 
 import { appendPendingBuy, loadPendingBuySnapshot } from './pendingBuyStore'
 import { readScoreV2Snapshot, serializeScoreV2Snapshot } from './scoreV2Taxonomy'
+import type { Bindings } from '../types'
+import { databaseForDataDomain } from './dataDomainRegistry'
+import { paperDomainDatabase } from './paperDomainDatabase'
 
 export type ExitReasonCategory =
   | 'HardStop'
@@ -21,8 +24,7 @@ export type ExitReasonCategory =
   | 'Unknown'
 
 export interface PostExitContext {
-  kv: KVNamespace
-  db: D1Database
+  env: Bindings
   today: string
   soldSymbol: string
   exitReason: string
@@ -148,6 +150,8 @@ export async function onPostExit(
   },
 ): Promise<PostExitOutcome> {
   const category = classifyExitReason(ctx.exitReason)
+  const paperDb = paperDomainDatabase(ctx.env)
+  const coreDb = databaseForDataDomain(ctx.env, 'core')
   const outcome: PostExitOutcome = {
     category,
     cooldown_days: 0,
@@ -155,10 +159,10 @@ export async function onPostExit(
     rerank_queued: false,
   }
 
-  outcome.cooldown_days = await setCooldown(ctx.kv, ctx.soldSymbol, category)
+  outcome.cooldown_days = await setCooldown(ctx.env.KV, ctx.soldSymbol, category)
 
   if (category === 'HardStop' || category === 'InitStop') {
-    await markStopDayFreeze(ctx.kv, ctx.today, ctx.soldSymbol, category)
+    await markStopDayFreeze(ctx.env.KV, ctx.today, ctx.soldSymbol, category)
     outcome.freeze_applied = true
     outcome.reason = `stop_day_freeze(${category})`
     return outcome
@@ -170,7 +174,7 @@ export async function onPostExit(
   }
 
   try {
-    const holdingsRow = await ctx.db.prepare(
+    const holdingsRow = await paperDb.prepare(
       'SELECT COUNT(*) AS n FROM paper_positions WHERE account_id = ?',
     ).bind(ctx.accountId).first<{ n: number }>()
     const nHoldings = Number(holdingsRow?.n ?? 0)
@@ -179,12 +183,12 @@ export async function onPostExit(
       return outcome
     }
 
-    if (await isStopDayFrozen(ctx.kv, ctx.today)) {
+    if (await isStopDayFrozen(ctx.env.KV, ctx.today)) {
       outcome.reason = 'stop_day_frozen_earlier'
       return outcome
     }
 
-    const { results: recs } = await ctx.db.prepare(`
+    const { results: recs } = await coreDb.prepare(`
       SELECT dr.symbol, dr.name, dr.signal, dr.confidence, dr.current_price,
              dr.reason, dr.score_components, dr.has_buy_signal,
              dr.eligible_for_ml, dr.eligible_for_pending_buy, dr.alpha_allocation
@@ -209,7 +213,7 @@ export async function onPostExit(
       return outcome
     }
 
-    const { results: heldRows } = await ctx.db.prepare(
+    const { results: heldRows } = await paperDb.prepare(
       'SELECT symbol FROM paper_positions WHERE account_id = ?',
     ).bind(ctx.accountId).all<{ symbol: string }>()
     const heldSet = new Set((heldRows ?? []).map((row) => row.symbol))
@@ -217,14 +221,14 @@ export async function onPostExit(
 
     let punishedSet = new Set<string>()
     try {
-      const punished = await ctx.kv.get('market:punished_stocks', 'json') as string[] | null
+      const punished = await ctx.env.KV.get('market:punished_stocks', 'json') as string[] | null
       if (punished) punishedSet = new Set(punished)
     } catch {
       punishedSet = new Set()
     }
 
     const candidates = recs.filter((row: any) => !heldSet.has(row.symbol) && !punishedSet.has(row.symbol)) as any[]
-    const eligibleSet = new Set(await filterOutCooldowns(ctx.kv, candidates.map((row) => row.symbol)))
+    const eligibleSet = new Set(await filterOutCooldowns(ctx.env.KV, candidates.map((row) => row.symbol)))
     const best = candidates.find((row: any) => eligibleSet.has(row.symbol))
     if (!best) {
       outcome.reason = 'all_candidates_cooldown_or_excluded'
@@ -238,7 +242,7 @@ export async function onPostExit(
     const rerankSignal = best.signal ?? 'BUY'
     const rerankSource = 'post_exit_l4_sparse_rerank'
 
-    const snapshot = await loadPendingBuySnapshot(ctx as any, ctx.today, { allowFallbackRecent: false })
+    const snapshot = await loadPendingBuySnapshot(ctx.env, ctx.today, { allowFallbackRecent: false })
     const alreadyQueued = (snapshot.pendingBuys ?? []).some((item: any) => item.symbol === best.symbol)
     if (alreadyQueued) {
       outcome.reason = 'already_queued'
@@ -262,7 +266,7 @@ export async function onPostExit(
       source: rerankSource,
     }
 
-    await appendPendingBuy(ctx as any, ctx.today, newEntry as any, {
+    await appendPendingBuy(ctx.env, ctx.today, newEntry as any, {
       stage: 'post_exit_rerank',
       sold_symbol: ctx.soldSymbol,
       exit_reason: ctx.exitReason,

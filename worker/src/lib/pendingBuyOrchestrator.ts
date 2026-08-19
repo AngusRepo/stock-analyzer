@@ -27,6 +27,7 @@ import type { Bindings } from '../types'
 import { databaseForDataDomain } from './dataDomainRegistry'
 import { paperDomainDatabase } from './paperDomainDatabase'
 import type { CircuitBreakerState as _CBState, LegacyLayerDeps } from './riskTypes'
+import type { PortfolioRiskDatabases } from './riskChain'
 import {
   applyPendingBuyExecutionStatusUpdates,
 } from './pendingBuyExecutionState'
@@ -708,7 +709,7 @@ async function persistPendingBuys(
 }
 
 export async function checkCircuitBreakers(
-  db: D1Database,
+  db: D1Database | PortfolioRiskDatabases,
   cfg: TradingConfig,
   kv?: KVNamespace,
 ): Promise<CircuitBreakerState> {
@@ -742,6 +743,9 @@ export async function checkCircuitBreakers(
     sellConfThreshold: effectiveSell,
   }
   const deps: LegacyLayerDeps = { defaults, effectiveBuy, effectiveSell }
+  const databases: PortfolioRiskDatabases = 'paper' in db
+    ? db
+    : { paper: db, core: db, market: db, learning: db }
 
   const flag = (await kv?.get('risk:use_chain')) ?? 'v1'
   if (flag === 'v1') {
@@ -758,19 +762,32 @@ export async function checkCircuitBreakers(
   }
 
   const layers: Array<() => Promise<CircuitBreakerState | null>> = [
-    () => checkP1Mdd(db, cfg, deps),
-    () => checkP2Accuracy(db, kv, cfg, deps),
-    () => checkP3MarketRisk(db, cfg, deps),
-    () => checkP4Breadth(db, cfg, deps),
-    () => checkP6Momentum(db, deps),
-    () => checkP7Streak(db, cfg, deps),
-    () => checkP5Losses(db, deps),
+    () => checkP1Mdd(databases.paper, cfg, deps),
+    () => checkP2Accuracy(databases.learning, kv, cfg, deps),
+    () => checkP3MarketRisk(databases.core, cfg, deps),
+    () => checkP4Breadth(databases.market, cfg, deps),
+    () => checkP6Momentum(databases.core, deps),
+    () => checkP7Streak(databases.learning, cfg, deps),
+    () => checkP5Losses(databases.paper, deps),
   ]
   for (const run of layers) {
     const result = await run()
     if (result) return result
   }
   return defaults
+}
+
+export async function checkCircuitBreakersForDomains(
+  env: Pick<Bindings, 'DB'> & Partial<Bindings>,
+  cfg: TradingConfig,
+  kv?: KVNamespace,
+): Promise<CircuitBreakerState> {
+  return checkCircuitBreakers({
+    paper: databaseForDataDomain(env, 'paper'),
+    core: databaseForDataDomain(env, 'core'),
+    market: databaseForDataDomain(env, 'market'),
+    learning: databaseForDataDomain(env, 'learning'),
+  }, cfg, kv)
 }
 
 export async function setupMorningPendingBuys(env: Bindings): Promise<void> {
@@ -784,7 +801,7 @@ export async function setupMorningPendingBuys(env: Bindings): Promise<void> {
   if (expiredStale > 0) console.log(`[MorningSetup] expired ${expiredStale} stale pending buys`)
   let cb: CircuitBreakerState
   try {
-    cb = await withD1Retry('circuit_breakers', () => checkCircuitBreakers(env.DB, cfg, env.KV))
+    cb = await withD1Retry('circuit_breakers', () => checkCircuitBreakersForDomains(env, cfg, env.KV))
   } catch (error) {
     await recordMorningSetupFailureWithoutReplacingState(env, pendingDate, error)
     throw error
@@ -795,7 +812,7 @@ export async function setupMorningPendingBuys(env: Bindings): Promise<void> {
 
   {
     const { writeAuditEntry } = await import('./riskAudit')
-    writeAuditEntry(env.DB, {
+    writeAuditEntry(databaseForDataDomain(env, 'execution'), {
       triggerEvent: 'morning_setup',
       decision: cb.halt ? 'halt' : 'executed',
       riskState: cb,

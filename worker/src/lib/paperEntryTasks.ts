@@ -2,13 +2,13 @@ import { sendDiscordNotification } from './notify'
 import { getCurrentRegime as getCurrentSltpRegime, getTradingConfig, resolveSltpForRegime } from './tradingConfig'
 import { batchGetIntradayOHLC, batchGetIntradayPrices } from './paperIntradayData'
 import {
-  batchGetLatestPrices,
-  batchGetATR,
+
   getCurrentRegime,
   isDayTradeAllowed,
   logRegimeShadow,
   recordSellSettlement,
 } from './paperMarketData'
+import { batchGetAtrByDomain, batchGetLatestPricesByDomain } from './paperMarketDomainData'
 import { calcCommission, calcTax, resolveLimitBuyFill, resolveMarketSellFill } from './paperTradeMath'
 import { matchPaperOrderAgainstAuthoritativeDepth } from './paperOrderBookMatcher'
 import { buildSellOrderNote } from './paperOrderAccounting'
@@ -21,7 +21,7 @@ import {
   type PendingBuy,
 } from './pendingBuyStore'
 import type { PendingBuyExecutionEvent, PendingBuyTerminalExecutionStatus } from './pendingBuyExecutionState'
-import { checkCircuitBreakers, reconcilePendingBuyDebates } from './pendingBuyOrchestrator'
+import { reconcilePendingBuyDebates } from './pendingBuyOrchestrator'
 import { acquirePaperBuyIntent, completePaperBuyIntent } from './paperOrderIntent'
 import { evaluatePreTradeExecution, type PreTradeMomentumContext, type PreTradeOhlcvTradePlan } from './preTradeExecutionPolicy'
 import { resolveAdaptiveExecutionPolicy } from './executionAdaptivePolicy'
@@ -114,6 +114,7 @@ import {
 import { buildEntryPriceModelV2FromOhlcvPlan, buildVolumeProfileV2 } from './entryPriceModelV2'
 import { buildPriceActionStructure } from './priceActionStructure'
 import type { Bindings } from '../types'
+import { paperDomainDatabase } from './paperDomainDatabase'
 
 const ACCOUNT_ID = 1
 const EXECUTION_RESTRICTED_REFRESH_TTL_MS = 30 * 60_000
@@ -370,7 +371,7 @@ async function loadRecentFinLabL5QuoteHistory(
     const previousLimit = Math.max(0, Math.min(20, Math.floor(limit)) - (currentQuote ? 1 : 0))
     const previousQuotes: FinLabL5Quote[] = []
     if (previousLimit > 0) {
-      const { results } = await env.DB.prepare(`
+      const { results } = await paperDomainDatabase(env).prepare(`
         SELECT detail_json, created_at
           FROM paper_execution_events
          WHERE trade_date = ?
@@ -459,7 +460,7 @@ async function loadPreTradeMomentum(
 }
 
 async function hasFilledBuyToday(env: Bindings, symbol: string, today: string): Promise<boolean> {
-  const existing = await env.DB.prepare(
+  const existing = await paperDomainDatabase(env).prepare(
     "SELECT id FROM paper_orders WHERE account_id=? AND symbol=? AND side='buy' AND created_at >= ? LIMIT 1",
   ).bind(ACCOUNT_ID, symbol, today).first<{ id: number }>()
   return Boolean(existing?.id)
@@ -644,19 +645,19 @@ async function runIntradayCheckUnlocked(env: Bindings, leaseRunId: string): Prom
   const acc = await withD1ReadRetry(
     'account_snapshot',
     'paper_accounts',
-    () => env.DB.prepare('SELECT cash, initial_cash FROM paper_accounts WHERE id=?').bind(ACCOUNT_ID).first<any>(),
+    () => paperDomainDatabase(env).prepare('SELECT cash, initial_cash FROM paper_accounts WHERE id=?').bind(ACCOUNT_ID).first<any>(),
   )
   if (!acc) return holdingPoll
   const settledCash = Number(acc.cash ?? 0)
   const { getAvailableCash: getAvailCash } = await import('./dateUtils')
-  const availableCash = await getAvailCash(env.DB, ACCOUNT_ID)
+  const availableCash = await getAvailCash(paperDomainDatabase(env), ACCOUNT_ID)
   ;(acc as any).cash = availableCash
   if (availableCash < cfg.position.minCashToTrade) return holdingPoll
 
   const { results: positions } = await withD1ReadRetry(
     'position_snapshot',
     'paper_positions',
-    () => env.DB.prepare(
+    () => paperDomainDatabase(env).prepare(
       'SELECT symbol, shares FROM paper_positions WHERE account_id=? AND shares>0',
     ).bind(ACCOUNT_ID).all<any>(),
   )
@@ -676,7 +677,7 @@ async function runIntradayCheckUnlocked(env: Bindings, leaseRunId: string): Prom
     ? await withD1ReadRetry(
       'position_price_fallback',
       'stock_prices_latest',
-      () => batchGetLatestPrices(env.DB, quoteMissingPosSymbols),
+      () => batchGetLatestPricesByDomain(env, quoteMissingPosSymbols, today),
     )
     : new Map<string, number>()
   const positionValuation = computePaperPositionValuation({
@@ -698,7 +699,7 @@ async function runIntradayCheckUnlocked(env: Bindings, leaseRunId: string): Prom
   const settlement = await withD1ReadRetry(
     'settlement_snapshot',
     'paper_settlement_ledger',
-    () => getUnsettledSettlementSummary(env.DB, ACCOUNT_ID),
+    () => getUnsettledSettlementSummary(paperDomainDatabase(env), ACCOUNT_ID),
   )
   const totalPortfolio = computePaperTotalValue({
     settledCash,
@@ -746,7 +747,7 @@ async function runIntradayCheckUnlocked(env: Bindings, leaseRunId: string): Prom
     const { results: fullPositions } = await withD1ReadRetry(
       'replacement_position_snapshot',
       'paper_positions_full',
-      () => env.DB.prepare(`
+      () => paperDomainDatabase(env).prepare(`
         SELECT symbol, name, shares, avg_cost, entry_date, entry_price,
                initial_stop, trailing_stop, tp1_price, tp1_hit, highest_since_entry
         FROM paper_positions WHERE account_id=? AND shares>0
@@ -960,8 +961,8 @@ async function runIntradayCheckUnlocked(env: Bindings, leaseRunId: string): Prom
         tax: sellTax,
       })
 
-      await env.DB.batch([
-        env.DB.prepare(`
+      await paperDomainDatabase(env).batch([
+        paperDomainDatabase(env).prepare(`
           INSERT INTO paper_orders (account_id, symbol, name, side, shares, price, commission, tax, total_cost, source, note, created_at)
           VALUES (?, ?, ?, 'sell', ?, ?, ?, ?, ?, 'auto_swap', ?, datetime('now'))
         `).bind(
@@ -975,9 +976,9 @@ async function runIntradayCheckUnlocked(env: Bindings, leaseRunId: string): Prom
           sellProceeds,
           sellNote,
         ),
-        env.DB.prepare('DELETE FROM paper_positions WHERE account_id=? AND symbol=?').bind(ACCOUNT_ID, weakest.symbol),
+        paperDomainDatabase(env).prepare('DELETE FROM paper_positions WHERE account_id=? AND symbol=?').bind(ACCOUNT_ID, weakest.symbol),
       ])
-      const swapOrderId = await recordSellSettlement(env.DB, env.KV, ACCOUNT_ID, weakest.symbol, sellProceeds)
+      const swapOrderId = await recordSellSettlement(paperDomainDatabase(env), env.KV, ACCOUNT_ID, weakest.symbol, sellProceeds)
       await recordPaperExecutionEvent(env, {
         tradeDate: today,
         symbol: weakest.symbol,
@@ -1011,7 +1012,7 @@ async function runIntradayCheckUnlocked(env: Bindings, leaseRunId: string): Prom
     }
   }
 
-  const atrMap = await batchGetATR(env.DB, pendingSymbols)
+  const atrMap = await batchGetAtrByDomain(env, pendingSymbols, today)
   const technicalBaselineMap = await batchGetIntradayTechnicalBaselines(env.DB, pendingSymbols, today).catch((error) => {
     console.warn('[Intraday] technical baselines unavailable:', error)
     return new Map<string, IntradayTechnicalBaseline>()
@@ -1021,7 +1022,7 @@ async function runIntradayCheckUnlocked(env: Bindings, leaseRunId: string): Prom
     return new Map()
   })
 
-  const recentSells = await env.DB.prepare(
+  const recentSells = await paperDomainDatabase(env).prepare(
     "SELECT SUM(total_cost) as unsettled FROM paper_orders WHERE account_id=? AND side='sell' AND created_at > datetime('now', '-2 days')",
   ).bind(ACCOUNT_ID).first<any>()
   if (recentSells?.unsettled > 0) {
@@ -1029,12 +1030,12 @@ async function runIntradayCheckUnlocked(env: Bindings, leaseRunId: string): Prom
   }
 
   const DAILY_BUY_LIMIT = cfg.position.dailyBuyLimit
-  const todayBought = await env.DB.prepare(
+  const todayBought = await paperDomainDatabase(env).prepare(
     "SELECT COALESCE(SUM(total_cost), 0) as total FROM paper_orders WHERE account_id=? AND side='buy' AND created_at >= ?",
   ).bind(ACCOUNT_ID, today).first<any>()
   let dailyBuyTotal = todayBought?.total ?? 0
 
-  const { results: capitalPositionRows } = await env.DB.prepare(
+  const { results: capitalPositionRows } = await paperDomainDatabase(env).prepare(
     'SELECT symbol, shares, avg_cost, entry_date, tp1_hit, initial_stop, trailing_stop, highest_since_entry FROM paper_positions WHERE account_id=? AND shares>0',
   ).bind(ACCOUNT_ID).all<any>()
   const capitalPositionSymbols = (capitalPositionRows ?? []).map((p: any) => p.symbol).filter(Boolean)
@@ -1117,7 +1118,7 @@ async function runIntradayCheckUnlocked(env: Bindings, leaseRunId: string): Prom
     }
   }
   const loadCurrentCapitalHoldings = async (): Promise<FiveSlotHolding[]> => {
-    const { results } = await env.DB.prepare(`
+    const { results } = await paperDomainDatabase(env).prepare(`
       SELECT symbol, name, shares, avg_cost, entry_date, tp1_hit, initial_stop, trailing_stop, highest_since_entry
       FROM paper_positions WHERE account_id=? AND shares>0
     `).bind(ACCOUNT_ID).all<any>()
@@ -1320,7 +1321,7 @@ async function runIntradayCheckUnlocked(env: Bindings, leaseRunId: string): Prom
         Number(currentOhlc?.totalVolume ?? 0),
       )
       const [latestTakeoverEvent, stockRow, calibrationArtifacts] = await Promise.all([
-        env.DB.prepare(`
+        paperDomainDatabase(env).prepare(`
           SELECT detail_json
             FROM paper_execution_events
            WHERE account_id = ?
@@ -2052,7 +2053,7 @@ async function runIntradayCheckUnlocked(env: Bindings, leaseRunId: string): Prom
       continue
     }
 
-    const currentCount = await env.DB.prepare(
+    const currentCount = await paperDomainDatabase(env).prepare(
       'SELECT COUNT(*) as cnt FROM paper_positions WHERE account_id=? AND shares>0',
     ).bind(ACCOUNT_ID).first<any>()
     if ((currentCount?.cnt ?? 0) >= maxPos && allocatorDecision.action !== 'add') {
@@ -2420,7 +2421,7 @@ async function runIntradayCheckUnlocked(env: Bindings, leaseRunId: string): Prom
       entryFusionTargets,
     ) ?? serializeCanonicalTradeLifecycle(canonicalTradeLifecycle)
 
-    const existing = await env.DB.prepare(
+    const existing = await paperDomainDatabase(env).prepare(
       'SELECT shares, avg_cost FROM paper_positions WHERE account_id=? AND symbol=?',
     ).bind(ACCOUNT_ID, pending.symbol).first<any>()
     const oldShares = existing?.shares ?? 0
@@ -2438,8 +2439,8 @@ async function runIntradayCheckUnlocked(env: Bindings, leaseRunId: string): Prom
     }
 
     try {
-      await env.DB.batch([
-        env.DB.prepare(`
+      await paperDomainDatabase(env).batch([
+        paperDomainDatabase(env).prepare(`
           INSERT INTO paper_positions (account_id, symbol, name, shares, avg_cost, updated_at,
             entry_price, entry_date, initial_stop, trailing_stop, highest_since_entry,
             stop_multiplier, tp1_price, tp2_price, tp1_hit, original_shares, trade_lifecycle_json)
@@ -2464,7 +2465,7 @@ async function runIntradayCheckUnlocked(env: Bindings, leaseRunId: string): Prom
           shares,
           canonicalTradeLifecycleJson,
         ),
-        env.DB.prepare(`
+        paperDomainDatabase(env).prepare(`
           INSERT INTO paper_orders
             (account_id, symbol, name, side, shares, price, commission, tax, total_cost, source, signal, confidence, note)
           VALUES (?, ?, ?, 'buy', ?, ?, ?, 0, ?, 'auto_ml', ?, ?, ?)
@@ -2564,13 +2565,13 @@ async function runIntradayCheckUnlocked(env: Bindings, leaseRunId: string): Prom
       throw error
     }
 
-    const autoOrderId = await env.DB.prepare(
+    const autoOrderId = await paperDomainDatabase(env).prepare(
       "SELECT id FROM paper_orders WHERE account_id=? AND symbol=? AND side='buy' ORDER BY id DESC LIMIT 1",
     ).bind(ACCOUNT_ID, pending.symbol).first<{ id: number }>()
     await completePaperBuyIntent(env, intent.intentKey, isPartialFill ? 'partial' : 'filled', autoOrderId?.id ?? null)
     const { getSettlementDate } = await import('./dateUtils')
     const settleDate = await getSettlementDate(today, env.KV)
-    await env.DB.prepare(
+    await paperDomainDatabase(env).prepare(
       "INSERT INTO paper_settlements (account_id, order_id, symbol, side, amount, trade_date, settlement_date) VALUES (?, ?, ?, 'buy', ?, ?, ?)",
     ).bind(ACCOUNT_ID, autoOrderId?.id ?? 0, pending.symbol, totalCost, today, settleDate).run()
     await recordPaperExecutionEvent(env, {
@@ -2635,7 +2636,7 @@ async function runIntradayCheckUnlocked(env: Bindings, leaseRunId: string): Prom
             finalScore: scoreV2.finalScore,
             alphaAdjustment: scoreV2.alphaAdjustment,
           })
-          await env.DB.prepare(`
+          await paperDomainDatabase(env).prepare(`
             INSERT INTO decision_logs
               (date, symbol, action, score_components, ml_signal, ml_confidence,
                debate_verdict, debate_summary, market_risk, sector, entry_price)

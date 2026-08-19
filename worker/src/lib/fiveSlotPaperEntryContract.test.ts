@@ -13,7 +13,7 @@ assert(source.includes('const allocatorMarketContext = {'), 'paper entry should 
 assert(source.includes('marketContext: allocatorMarketContext'), 'paper entry should pass market context into the 5-slot allocator')
 assert(source.includes('computePaperPositionValuation'), 'paper entry allocator NAV must use the shared position valuation helper')
 assert(
-  source.includes('batchGetLatestPrices(env.DB, quoteMissingPosSymbols)') &&
+  source.includes('batchGetLatestPricesByDomain(env, quoteMissingPosSymbols, today)') &&
     source.includes('valuation_missing_symbols'),
   'paper entry allocator must fall back quote-missing holdings to EOD prices and expose valuation misses',
 )

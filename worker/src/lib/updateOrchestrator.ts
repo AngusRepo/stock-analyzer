@@ -279,7 +279,8 @@ async function countReadinessRows(
 }
 
 async function sourceKeyCanonicalParityReadiness(
-  db: D1Database,
+  sourceDb: D1Database,
+  canonicalDb: D1Database,
   options: {
     key: string
     targetDate: string
@@ -291,7 +292,7 @@ async function sourceKeyCanonicalParityReadiness(
 ): Promise<ReadinessCheck> {
   try {
     const [sourceKey, canonical] = await Promise.all([
-      db.prepare(`
+      sourceDb.prepare(`
         SELECT status, target_rows, latest_date
           FROM source_key_report
          WHERE target_date=? AND lane=? AND field=?
@@ -302,7 +303,7 @@ async function sourceKeyCanonicalParityReadiness(
         target_rows: number | null
         latest_date: string | null
       }>(),
-      db.prepare(options.canonicalSql).bind(...options.canonicalParams).first<{ count: number | null }>(),
+      canonicalDb.prepare(options.canonicalSql).bind(...options.canonicalParams).first<{ count: number | null }>(),
     ])
     const status = String(sourceKey?.status ?? '').toLowerCase()
     const expected = Number(sourceKey?.target_rows ?? 0)
@@ -504,7 +505,10 @@ async function checkEveningChainSourceReadiness(
       [targetDate],
       1000,
     ),
-    sourceKeyCanonicalParityReadiness(env.DB, {
+    sourceKeyCanonicalParityReadiness(
+      databaseForDataDomain(env, 'ops'),
+      databaseForDataDomain(env, 'market'),
+      {
       key: 'canonical_fundamental_features:valuation_daily_pe',
       targetDate,
       lane: 'fundamental_factor_diversity',
@@ -512,7 +516,10 @@ async function checkEveningChainSourceReadiness(
       canonicalSql: "SELECT COUNT(*) AS count FROM canonical_fundamental_features WHERE available_date=? AND as_of_date<=? AND source='finlab.daily_valuation' AND pe IS NOT NULL",
       canonicalParams: [targetDate, targetDate],
     }),
-    sourceKeyCanonicalParityReadiness(env.DB, {
+    sourceKeyCanonicalParityReadiness(
+      databaseForDataDomain(env, 'ops'),
+      databaseForDataDomain(env, 'market'),
+      {
       key: 'canonical_fundamental_features:valuation_daily_pb',
       targetDate,
       lane: 'fundamental_factor_diversity',
@@ -795,7 +802,7 @@ async function finLabRetryScopeForReadiness(
   }
 
   const laneLevelRetryScope = async (): Promise<FinLabRetryScope> => {
-    const fetchedLanes = await fetchedFinLabSourceLanesForTarget(env.DB, targetDate)
+    const fetchedLanes = await fetchedFinLabSourceLanesForTarget(databaseForDataDomain(env, 'ops'), targetDate)
     const retryLanes = options.allowFetchedLaneRefetch
       ? requestedLanes
       : requestedLanes.filter((lane) => !fetchedLanes.has(lane))
@@ -817,7 +824,7 @@ async function finLabRetryScopeForReadiness(
     return laneLevelRetryScope()
   }
 
-  const keyRows = await readFinLabSourceKeyReportForTarget(env.DB, targetDate, requestedLanes)
+  const keyRows = await readFinLabSourceKeyReportForTarget(databaseForDataDomain(env, 'ops'), targetDate, requestedLanes)
   if (keyRows.length) {
     const rowsByLane = new Map<string, SourceKeyReportRow[]>()
     for (const row of keyRows) {

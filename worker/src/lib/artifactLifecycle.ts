@@ -1,5 +1,5 @@
 import type { Bindings } from '../types'
-import { activeDataDomains, databaseForDataDomain } from './dataDomainRegistry'
+import { databaseForDataDomain } from './dataDomainRegistry'
 import { resolveExpectedCompletedDataDate } from './dataQualityMonitor'
 import { sha256Text } from './datasetSnapshots'
 import { collectStorageCapacityTelemetry, type StorageCapacityRow } from './storageCapacityTelemetry'
@@ -544,12 +544,10 @@ const SCRUB_TARGETS = new Set([
 ])
 
 export async function runD1EvidenceScrub(
-  env: Pick<Bindings, 'DB'>,
+  env: Pick<Bindings, 'DB'> & Partial<Bindings>,
   options: { limit?: number; now?: string } = {},
 ): Promise<{ candidates: number; scrubbed: number; failed: number; blocked: number; errors: string[] }> {
-  if (activeDataDomains(env as Partial<Bindings>).has('ops')) {
-    throw new Error('legacy_d1_evidence_scrub_disabled_after_ops_cutover')
-  }
+  const opsDb = artifactOpsDb(env)
   const limit = Math.max(1, Math.min(Math.floor(options.limit ?? 250), 1000))
   const now = options.now ?? new Date().toISOString()
   const selectRows = async (status: 'failed' | 'pending', rowLimit: number): Promise<any[]> => {
@@ -560,8 +558,8 @@ export async function runD1EvidenceScrub(
     const orderBy = status === 'failed'
       ? 'q.next_attempt_at, q.created_at'
       : 'q.created_at'
-    // multi-d1-intentional-legacy-source: pre-cutover atomic scrub drain only.
-    const statement = env.DB.prepare(`
+    // multi-d1-domain-owner: queue, artifact registry, and scrub target remain atomic in Ops D1.
+    const statement = opsDb.prepare(`
       SELECT q.scrub_id, q.artifact_id, q.target_table, q.target_pk_column,
              q.target_pk_value, q.target_column, q.replacement_json,
              a.status AS artifact_status, a.checksum_verified_at
@@ -590,8 +588,8 @@ export async function runD1EvidenceScrub(
   for (const row of results ?? []) {
     const targetKey = `${row.target_table}:${row.target_pk_column}:${row.target_column}`
     if (row.artifact_status !== 'ready' || !row.checksum_verified_at || !SCRUB_TARGETS.has(targetKey)) {
-      // multi-d1-intentional-legacy-source: same-DB queue state is part of the atomic drain.
-      await env.DB.prepare(`
+      // multi-d1-domain-owner: same-Ops-D1 queue state is part of the atomic drain.
+      await opsDb.prepare(`
         UPDATE artifact_d1_scrub_queue
            SET status='integrity_blocked', last_error=?, attempts=attempts+1, updated_at=CURRENT_TIMESTAMP
          WHERE scrub_id=?
@@ -603,11 +601,11 @@ export async function runD1EvidenceScrub(
   }
 
   const atomicStatements = (row: any): D1PreparedStatement[] => [
-    // multi-d1-intentional-legacy-source: bounded pre-cutover atomic target mutation.
-    env.DB.prepare(`UPDATE ${row.target_table} SET ${row.target_column}=? WHERE ${row.target_pk_column}=?`)
+    // multi-d1-domain-owner: bounded same-Ops-D1 target mutation.
+    opsDb.prepare(`UPDATE ${row.target_table} SET ${row.target_column}=? WHERE ${row.target_pk_column}=?`)
       .bind(row.replacement_json, row.target_pk_value),
-    // multi-d1-intentional-legacy-source: queue completion commits in the same legacy batch.
-    env.DB.prepare(`
+    // multi-d1-domain-owner: queue completion commits in the same Ops batch.
+    opsDb.prepare(`
       UPDATE artifact_d1_scrub_queue
          SET status='complete', last_error=NULL, attempts=attempts+1, updated_at=CURRENT_TIMESTAMP
        WHERE scrub_id=?
@@ -619,7 +617,7 @@ export async function runD1EvidenceScrub(
   }
   const scrubChunk = async (chunk: any[]): Promise<void> => {
     try {
-      assertBatchSuccess(await env.DB.batch(chunk.flatMap(atomicStatements)))
+      assertBatchSuccess(await opsDb.batch(chunk.flatMap(atomicStatements)))
       scrubbed += chunk.length
       return
     } catch (error) {
@@ -631,8 +629,8 @@ export async function runD1EvidenceScrub(
       }
       const row = chunk[0]
       const message = error instanceof Error ? error.message : String(error)
-      // multi-d1-intentional-legacy-source: failed pre-cutover drain remains retryable in DB.
-      await env.DB.prepare(`
+      // multi-d1-domain-owner: failed Ops drain remains retryable in the owner DB.
+      await opsDb.prepare(`
         UPDATE artifact_d1_scrub_queue
            SET status='failed', last_error=?, attempts=attempts+1,
                next_attempt_at=datetime('now', '+' || MIN(60, 1 << MIN(attempts, 5)) || ' minutes'),

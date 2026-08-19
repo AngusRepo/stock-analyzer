@@ -110,7 +110,12 @@ for (const table of ['meta_reward_ledger', 'meta_shadow_decisions']) {
 const deferredProductionTables = productionTableNames.filter((table) => (
   tableOwnershipMetadata(table)?.route_ready === false && !LEGACY_CONTROL_PLANE_TABLES.has(table)
 ))
-assert.equal(deferredProductionTables.length, 40, 'production tables without completed routing closure require explicit review')
+assert.equal(deferredProductionTables.length, 30, 'production tables without completed routing closure require explicit review')
+assert.deepEqual(
+  [...new Set(deferredProductionTables.map((table) => tableOwnershipMetadata(table)?.domain))],
+  ['market'],
+  'after Ops closure, every deferred production table must belong to the remaining Market cutover',
+)
 for (const table of [
   'active_strategy_backtest_results', 'backtest_results', 'debate_ab_log',
   'monte_carlo_results', 'pbo_results', 'strategy_backtest_results',

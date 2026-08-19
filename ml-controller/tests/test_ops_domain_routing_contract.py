@@ -28,3 +28,14 @@ def test_obsidian_writer_routes_core_paper_and_ops_reads() -> None:
     assert "domain=D1DataDomain.CORE" in source
     assert source.count("domain=D1DataDomain.PAPER") >= 6
     assert "domain=D1DataDomain.OPS" in source
+
+def test_finlab_ops_metadata_uses_domain_proxy() -> None:
+    router = read("ml-controller/routers/finlab.py")
+    tool = read("tools/finlab_v4_remote_backfill.py")
+    assert "domain: str = 'legacy'" in router
+    assert "client = _d1_proxy_client(req.domain)" in router
+    assert 'body["domain"] = domain' in tool
+    assert 'domain="ops"' in tool
+    assert '"data_source_inventory"' in tool
+    assert '"finlab_materialization_manifest"' in tool
+    assert "partition_finlab_canonical_statements" in tool

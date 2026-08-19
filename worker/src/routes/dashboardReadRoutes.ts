@@ -103,7 +103,11 @@ dashboardReadRoutes.get('/api/dashboard/v4/data-runtime/status', async (c) => {
   if (authError) return authError
 
   const date = c.req.query('date') ?? twToday()
-  return c.json(await readV41DataRuntimeStatus(c.env.DB, date))
+  return c.json(await readV41DataRuntimeStatus(
+    databaseForDataDomain(c.env, 'market'),
+    databaseForDataDomain(c.env, 'ops'),
+    date,
+  ))
 })
 
 dashboardReadRoutes.get('/api/dashboard/v4/expected-return/status', async (c) => {

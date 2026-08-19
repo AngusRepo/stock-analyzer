@@ -197,6 +197,56 @@ def test_controller_d1_batch_preserves_zero_success_and_fails_fast(monkeypatch):
         tool.controller_d1_batch_execute([("INSERT INTO sample VALUES (?)", [1])])
 
 
+def test_controller_d1_batch_forwards_ops_domain(monkeypatch):
+    tool = _load_tool_module()
+    captured: dict = {}
+
+    class Response:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def read(self):
+            return json.dumps({
+                "ok": True,
+                "total": 1,
+                "success_count": 1,
+                "error_count": 0,
+            }).encode("utf-8")
+
+    def fake_urlopen(request, **_kwargs):
+        captured.update(json.loads(request.data.decode("utf-8")))
+        return Response()
+
+    monkeypatch.setattr(tool, "controller_d1_batch_url", lambda: "https://controller.example/d1/batch")
+    monkeypatch.setattr(tool, "controller_proxy_token", lambda: "token")
+    monkeypatch.setattr(tool.urllib.request, "urlopen", fake_urlopen)
+
+    result = tool.controller_d1_batch_execute(
+        [("INSERT INTO source_key_report VALUES (?)", [1])],
+        domain="ops",
+    )
+
+    assert result["success_count"] == 1
+    assert captured["domain"] == "ops"
+
+
+def test_finlab_canonical_statement_partition_routes_ops_metadata_only():
+    tool = _load_tool_module()
+    statements = [
+        ("INSERT INTO canonical_market_daily VALUES (?)", [1]),
+        ("INSERT INTO data_source_inventory VALUES (?)", [2]),
+        ("INSERT OR REPLACE INTO finlab_materialization_manifest VALUES (?)", [3]),
+    ]
+
+    legacy, ops = tool.partition_finlab_canonical_statements(statements)
+
+    assert [params for _sql, params in legacy] == [[1]]
+    assert [params for _sql, params in ops] == [[2], [3]]
+
+
 def test_finlab_fundamental_fields_fail_closed_without_deadline_owner():
     import pytest
 
@@ -241,7 +291,7 @@ def test_source_quality_zero_finlab_rows_is_empty_not_ok(monkeypatch):
     tool = _load_tool_module()
     calls: list[tuple[str, list]] = []
 
-    def fake_d1_exec(sql, params=None):
+    def fake_d1_exec(sql, params=None, **_kwargs):
         calls.append((sql, list(params or [])))
         return {"success": True}
 
@@ -289,7 +339,7 @@ def test_source_quality_aggregates_duplicate_lane_reports_without_empty_overwrit
     tool = _load_tool_module()
     calls: list[tuple[str, list]] = []
 
-    def fake_d1_exec(sql, params=None):
+    def fake_d1_exec(sql, params=None, **_kwargs):
         calls.append((sql, list(params or [])))
         return {"success": True}
 
@@ -701,6 +751,7 @@ def test_source_key_report_writeback_records_attempt_and_latest_state(monkeypatc
 
     assert result["status"] == "written"
     assert result["rows"] == 1
+    assert captured["kwargs"]["domain"] == "ops"
     assert len(captured["statements"]) == 2
     assert "INSERT INTO source_key_attempts" in captured["statements"][0][0]
     assert "INSERT INTO source_key_report" in captured["statements"][1][0]
@@ -715,7 +766,8 @@ def test_reuse_ready_field_artifacts_completes_partial_institutional_lane(monkey
     pd.DataFrame({"foreign": [70.0]}, index=pd.to_datetime(["2026-07-03"])).to_parquet(sell_path)
     pd.DataFrame({"foreign": [30.0]}, index=pd.to_datetime(["2026-07-03"])).to_parquet(net_path)
 
-    def fake_d1_query(_sql, params=None):
+    def fake_d1_query(_sql, params=None, **kwargs):
+        assert kwargs.get("domain") == "ops"
         assert params[:2] == ["2026-07-03", "institutional_amount_summary"]
         return [
             {

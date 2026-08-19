@@ -54,8 +54,8 @@ export const MULTI_D1_PROJECTION_CONTRACT_READY = Object.values(
   MULTI_D1_PROJECTION_CONTRACT_GATES,
 ).every(Boolean)
 
-const DOMAIN_ROUTING_CONTRACT_READY = new Set<DataDomain>(['core', 'learning', 'execution', 'paper', 'research'])
-const DOMAIN_PROJECTION_FREE_CLOSURE = new Set<DataDomain>(['core', 'learning', 'execution', 'paper', 'research'])
+const DOMAIN_ROUTING_CONTRACT_READY = new Set<DataDomain>(['core', 'learning', 'ops', 'execution', 'paper', 'research'])
+const DOMAIN_PROJECTION_FREE_CLOSURE = new Set<DataDomain>(['core', 'learning', 'ops', 'execution', 'paper', 'research'])
 
 export function dataDomainRoutingContractReady(domain: DataDomain): boolean {
   return DOMAIN_ROUTING_CONTRACT_READY.has(domain)
@@ -207,16 +207,16 @@ const DEFERRED_PRODUCTION_TABLE_OWNERSHIP: readonly TableOwnershipMetadata[] = [
   { table: 'strategy_threshold_calibration_artifacts', domain: 'learning', disposition: 'compact_projection', route_ready: true, shadow_ready: true },
   { table: 'strategy_threshold_calibration_runs', domain: 'learning', disposition: 'active_window', route_ready: true, shadow_ready: true },
 
-  { table: 'artifact_d1_scrub_queue', domain: 'ops', disposition: 'active_window', route_ready: false, shadow_ready: true },
-  { table: 'data_source_inventory', domain: 'ops', disposition: 'full_scalar', route_ready: false, shadow_ready: true },
-  { table: 'finlab_backfill_runs', domain: 'ops', disposition: 'active_window', route_ready: false, shadow_ready: true },
-  { table: 'finlab_materialization_manifest', domain: 'ops', disposition: 'compact_projection', route_ready: false, shadow_ready: true },
-  { table: 'gap_fill_candidates', domain: 'ops', disposition: 'active_window', route_ready: false, shadow_ready: true },
-  { table: 'source_diff_report', domain: 'ops', disposition: 'compact_projection', route_ready: false, shadow_ready: true },
-  { table: 'source_key_attempts', domain: 'ops', disposition: 'active_window', route_ready: false, shadow_ready: true },
-  { table: 'source_key_report', domain: 'ops', disposition: 'full_scalar', route_ready: false, shadow_ready: true },
-  { table: 'webhook_log', domain: 'ops', disposition: 'active_window', route_ready: false, shadow_ready: true },
-  { table: 'weekly_audit_reports', domain: 'ops', disposition: 'compact_projection', route_ready: false, shadow_ready: true },
+  { table: 'artifact_d1_scrub_queue', domain: 'ops', disposition: 'active_window', route_ready: true, shadow_ready: true },
+  { table: 'data_source_inventory', domain: 'ops', disposition: 'full_scalar', route_ready: true, shadow_ready: true },
+  { table: 'finlab_backfill_runs', domain: 'ops', disposition: 'active_window', route_ready: true, shadow_ready: true },
+  { table: 'finlab_materialization_manifest', domain: 'ops', disposition: 'compact_projection', route_ready: true, shadow_ready: true },
+  { table: 'gap_fill_candidates', domain: 'ops', disposition: 'active_window', route_ready: true, shadow_ready: true },
+  { table: 'source_diff_report', domain: 'ops', disposition: 'compact_projection', route_ready: true, shadow_ready: true },
+  { table: 'source_key_attempts', domain: 'ops', disposition: 'active_window', route_ready: true, shadow_ready: true },
+  { table: 'source_key_report', domain: 'ops', disposition: 'full_scalar', route_ready: true, shadow_ready: true },
+  { table: 'webhook_log', domain: 'ops', disposition: 'active_window', route_ready: true, shadow_ready: true },
+  { table: 'weekly_audit_reports', domain: 'ops', disposition: 'compact_projection', route_ready: true, shadow_ready: true },
 
   { table: 'risk_audit_log', domain: 'execution', disposition: 'active_window', route_ready: true, shadow_ready: true },
 

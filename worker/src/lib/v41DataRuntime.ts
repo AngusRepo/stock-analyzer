@@ -353,7 +353,7 @@ export async function refreshStockThemeFeaturesFromSignals(db: D1Database, date:
   return { signals: signals.length, tags: tags.length, features: features.length }
 }
 
-export async function readV41DataRuntimeStatus(db: D1Database, date: string) {
+export async function readV41DataRuntimeStatus(db: D1Database, opsDb: D1Database, date: string) {
   const [theme, stockTheme, evidence, backfill, diff, quality, themeSources, evidenceSources, gapFill, canonical] = await Promise.all([
     db.prepare(`
       SELECT COUNT(*) AS total, COUNT(DISTINCT source) AS sources, MAX(generated_at) AS latest_generated_at
@@ -372,14 +372,14 @@ export async function readV41DataRuntimeStatus(db: D1Database, date: string) {
              MAX(published_at) AS latest_published_at
       FROM external_evidence_items
     `).first<any>().catch(() => ({})),
-    db.prepare(`
+    opsDb.prepare(`
       SELECT run_id, generated_at, lookback_years, dataset_count, finlab_rows,
              gap_fill_rows, value_conflicts, status
       FROM finlab_backfill_runs
       ORDER BY generated_at DESC
       LIMIT 1
     `).first<any>().catch(() => null),
-    db.prepare(`
+    opsDb.prepare(`
       SELECT COUNT(*) AS total,
              SUM(missing_in_stockvision) AS missing_in_stockvision,
              SUM(value_conflicts) AS value_conflicts,
@@ -410,7 +410,7 @@ export async function readV41DataRuntimeStatus(db: D1Database, date: string) {
       WHERE accepted = 1
       GROUP BY source_id
     `).all<any>().catch(() => ({ results: [] })),
-    db.prepare(`
+    opsDb.prepare(`
       SELECT COUNT(*) AS total,
              SUM(CASE WHEN decision = 'candidate' THEN 1 ELSE 0 END) AS candidates,
              SUM(CASE WHEN decision = 'quarantine' THEN 1 ELSE 0 END) AS quarantined,

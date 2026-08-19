@@ -62,6 +62,7 @@ class FinLabBackfillRunRequest(BaseModel):
 class FinLabD1QueryRequest(BaseModel):
     sql: str
     params: list[Any] = Field(default_factory=list)
+    domain: str = 'legacy'
 
 
 class FinLabD1BatchStatement(BaseModel):
@@ -72,6 +73,7 @@ class FinLabD1BatchStatement(BaseModel):
 class FinLabD1BatchRequest(BaseModel):
     statements: list[FinLabD1BatchStatement]
     chunk_size: int = Field(250, ge=1, le=500)
+    domain: str = 'legacy'
 
 
 class FinLabBackfillCallbackRequest(BaseModel):
@@ -165,6 +167,21 @@ def _validate_d1_proxy_sql(sql: str, *, allow_read: bool, allow_dml: bool) -> st
     if verb not in allowed:
         raise ValueError(f"SQL verb not allowed for FinLab D1 proxy: {verb}")
     return verb
+
+
+def _d1_proxy_client(domain: str):
+    normalized = str(domain or 'legacy').strip().lower()
+    if normalized == 'legacy':
+        from services import d1_client
+
+        return d1_client
+    from services.d1_domain_client import D1DataDomain, client_for_domain
+
+    try:
+        resolved = D1DataDomain(normalized)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=f'invalid D1 proxy domain: {normalized}') from exc
+    return client_for_domain(resolved)
 
 
 def build_finlab_backfill_modal_payload(req: FinLabBackfillRunRequest) -> dict[str, Any]:
@@ -410,17 +427,17 @@ async def finlab_backfill_d1_query(req: FinLabD1QueryRequest) -> dict:
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
-    from services import d1_client
+    client = _d1_proxy_client(req.domain)
 
     if verb in D1_PROXY_ALLOWED_READ:
-        rows = d1_client.query(req.sql, req.params, timeout=120.0)
+        rows = client.query(req.sql, req.params, timeout=120.0)
         item = {
             "success": True,
             "results": rows,
             "meta": {"mode": "controller_d1_proxy", "operation": "query"},
         }
     else:
-        result = d1_client.execute(req.sql, req.params, timeout=120.0)
+        result = client.execute(req.sql, req.params, timeout=120.0)
         item = {
             "success": True,
             "results": result.get("results", []),
@@ -442,9 +459,8 @@ async def finlab_backfill_d1_batch(req: FinLabD1BatchRequest) -> dict:
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
-    from services import d1_client
-
-    result = d1_client.batch_execute(statements, timeout=120.0, chunk_size=req.chunk_size)
+    client = _d1_proxy_client(req.domain)
+    result = client.batch_execute(statements, timeout=120.0, chunk_size=req.chunk_size)
     return {"ok": True, **result}
 
 

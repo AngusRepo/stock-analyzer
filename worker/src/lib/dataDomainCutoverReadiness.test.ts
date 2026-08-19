@@ -102,27 +102,11 @@ void (async () => {
   assert.equal(complete.domains[0].parity_tables, owned.length)
   assert.deepEqual(complete.domains[0].incomplete_tables, [])
   assert.deepEqual(complete.domains[0].parity_blocked_tables, [])
-  assert.deepEqual(
-    complete.domains[0].unresolved_route_tables,
-    tablesForDataDomainShadowBackfill('ops').filter((table) => [
-      'artifact_d1_scrub_queue',
-      'data_source_inventory',
-      'finlab_backfill_runs',
-      'finlab_materialization_manifest',
-      'gap_fill_candidates',
-      'source_diff_report',
-      'source_key_attempts',
-      'source_key_report',
-      'webhook_log',
-      'weekly_audit_reports',
-    ].includes(table)),
-  )
+  assert.deepEqual(complete.domains[0].unresolved_route_tables, [])
   assert.equal(complete.domains[0].data_ready, true)
   assert.equal(complete.domains[0].cutover_ready, false)
   assert.deepEqual(complete.domains[0].data_blockers, [])
   assert.deepEqual(complete.domains[0].contract_blockers, [
-    'domain_access_router_not_closed',
-    'projection_contract_not_closed',
     'active_read_write_readback_probe_missing',
     'rollback_restore_probe_missing',
     'writer_quiescence_epoch_receipt_stale_or_missing',

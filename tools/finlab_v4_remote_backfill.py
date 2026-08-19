@@ -429,12 +429,14 @@ def controller_d1_proxy_configured() -> bool:
     return bool(controller_proxy_token() and controller_d1_query_url())
 
 
-def controller_d1_request(sql: str, params: list[Any] | None = None) -> dict[str, Any] | None:
+def controller_d1_request(sql: str, params: list[Any] | None = None, *, domain: str | None = None) -> dict[str, Any] | None:
     url = controller_d1_query_url()
     token = controller_proxy_token()
     if not url or not token:
         return None
     body = {"sql": sql, "params": params or []}
+    if domain:
+        body["domain"] = domain
     req = urllib.request.Request(
         url,
         data=json.dumps(body).encode("utf-8"),
@@ -460,6 +462,7 @@ def controller_d1_batch_execute(
     *,
     timeout: float = 120.0,
     chunk_size: int = 250,
+    domain: str | None = None,
 ) -> dict[str, Any] | None:
     url = controller_d1_batch_url()
     token = controller_proxy_token()
@@ -479,6 +482,8 @@ def controller_d1_batch_execute(
             "statements": [{"sql": sql, "params": params or []} for sql, params in part],
             "chunk_size": chunk,
         }
+        if domain:
+            body["domain"] = domain
         if chunk_no == 1 or chunk_no == chunk_count or chunk_no % 10 == 0:
             print(
                 f"[finlab-backfill] controller_d1_batch chunk={chunk_no}/{chunk_count} statements={len(part)}",
@@ -551,11 +556,35 @@ def canonical_dataset_chunk_size(dataset: str, default_chunk_size: int | None = 
     return max(1, min(default, int(cap)))
 
 
-def d1_query(sql: str, params: list[Any] | None = None) -> list[dict[str, Any]]:
+def d1_query(
+    sql: str,
+    params: list[Any] | None = None,
+    *,
+    domain: str | None = None,
+) -> list[dict[str, Any]]:
+    if domain:
+        proxied = controller_d1_request(sql, params, domain=domain)
+        if proxied is not None:
+            return proxied.get("results") or []
+        from services.d1_domain_client import D1DataDomain, client_for_domain
+
+        return client_for_domain(D1DataDomain(domain)).query(sql, params=params, timeout=120.0)
     return d1_request(sql, params).get("results") or []
 
 
-def d1_exec(sql: str, params: list[Any] | None = None) -> dict[str, Any]:
+def d1_exec(
+    sql: str,
+    params: list[Any] | None = None,
+    *,
+    domain: str | None = None,
+) -> dict[str, Any]:
+    if domain:
+        proxied = controller_d1_request(sql, params, domain=domain)
+        if proxied is not None:
+            return proxied
+        from services.d1_domain_client import D1DataDomain, client_for_domain
+
+        return client_for_domain(D1DataDomain(domain)).execute(sql, params=params, timeout=120.0)
     return d1_request(sql, params)
 
 
@@ -564,13 +593,41 @@ def d1_batch_execute(
     *,
     timeout: float = 120.0,
     chunk_size: int = 250,
+    domain: str | None = None,
 ) -> dict[str, Any]:
-    proxied = controller_d1_batch_execute(statements, timeout=timeout, chunk_size=chunk_size)
+    proxied = controller_d1_batch_execute(
+        statements, timeout=timeout, chunk_size=chunk_size, domain=domain,
+    )
     if proxied is not None:
         return proxied
+    if domain:
+        from services.d1_domain_client import D1DataDomain, client_for_domain
+
+        return client_for_domain(D1DataDomain(domain)).batch_execute(
+            statements, timeout=timeout, chunk_size=chunk_size,
+        )
     from services.d1_client import batch_execute
 
     return batch_execute(statements, timeout=timeout, chunk_size=chunk_size)
+
+
+def ops_d1_query(sql: str, params: list[Any] | None = None) -> list[dict[str, Any]]:
+    return d1_query(sql, params, domain="ops")
+
+
+def ops_d1_exec(sql: str, params: list[Any] | None = None) -> dict[str, Any]:
+    return d1_exec(sql, params, domain="ops")
+
+
+def ops_d1_batch_execute(
+    statements: list[tuple[str, list[Any]]],
+    *,
+    timeout: float = 120.0,
+    chunk_size: int = 250,
+) -> dict[str, Any]:
+    return d1_batch_execute(
+        statements, timeout=timeout, chunk_size=chunk_size, domain="ops",
+    )
 
 
 def normalize_wide_index(df: pd.DataFrame) -> pd.DataFrame:
@@ -930,7 +987,7 @@ def read_ready_source_key_artifacts(
         return {}
     placeholders = ",".join("?" for _ in wanted)
     try:
-        rows = d1_query(
+        rows = ops_d1_query(
             f"""
             SELECT field, api_key, status, rows, target_rows, latest_date,
                    artifact_uri, artifact_path, artifact_checksum, last_run_id
@@ -2253,7 +2310,7 @@ def insert_d1_summary(manifest: dict[str, Any]) -> None:
         str(manifest.get("source_end_date") or manifest.get("canonical_end_date") or generated_at)[:10]
     )
     summary = manifest["summary"]
-    d1_exec(
+    ops_d1_exec(
         """
         INSERT OR REPLACE INTO finlab_backfill_runs (
           run_id, generated_at, lookback_years, dataset_count, finlab_rows,
@@ -2300,7 +2357,7 @@ def insert_d1_summary(manifest: dict[str, Any]) -> None:
             lane_quality[key] += int(diff_summary.get(key) or 0)
         lane_quality["schema_extra_fields"].update(str(field) for field in diff_summary.get("schema_extra_fields") or [])
         lane_quality["reports"].append(diff_summary)
-        d1_exec(
+        ops_d1_exec(
             """
             INSERT INTO source_diff_report (
               run_id, dataset_lane, source, generated_at, finlab_rows, stockvision_rows,
@@ -2325,7 +2382,7 @@ def insert_d1_summary(manifest: dict[str, Any]) -> None:
             ],
         )
         if diff_summary["missing_in_stockvision"] > 0:
-            d1_exec(
+            ops_d1_exec(
                 """
                 INSERT INTO gap_fill_candidates (
                   run_id, dataset_lane, canonical_table, stock_id, symbol, date, market_segment,
@@ -2531,7 +2588,7 @@ def insert_source_key_report(manifest: dict[str, Any], *, chunk_size: int = 250)
             ],
         ))
 
-    result = d1_batch_execute(statements, chunk_size=chunk_size)
+    result = ops_d1_batch_execute(statements, chunk_size=chunk_size)
     return {"status": "written", "rows": len(rows), "statements": len(statements), "result": result}
 
 
@@ -2973,6 +3030,25 @@ def default_canonical_window(*, generated_at: str, window_days: int) -> tuple[st
     return start.isoformat(), end.isoformat()
 
 
+FINLAB_OPS_METADATA_TABLES = {
+    "data_source_inventory",
+    "finlab_materialization_manifest",
+}
+
+
+def partition_finlab_canonical_statements(
+    statements: list[tuple[str, list[Any]]],
+) -> tuple[list[tuple[str, list[Any]]], list[tuple[str, list[Any]]]]:
+    legacy: list[tuple[str, list[Any]]] = []
+    ops: list[tuple[str, list[Any]]] = []
+    for statement in statements:
+        sql = statement[0]
+        match = re.search(r"\b(?:INSERT\s+(?:OR\s+\w+\s+)?INTO|UPDATE)\s+[\"`]?([a-z_][a-z0-9_]*)", sql, re.IGNORECASE)
+        target = match.group(1).lower() if match else ""
+        (ops if target in FINLAB_OPS_METADATA_TABLES else legacy).append(statement)
+    return legacy, ops
+
+
 def materialize_canonical_to_d1(
     manifest: dict[str, Any],
     *,
@@ -3005,10 +3081,11 @@ def materialize_canonical_to_d1(
         datasets=datasets,
         include_emerging=include_emerging,
     )
-    statements = build_d1_upsert_statements(outputs)
+    all_statements = build_d1_upsert_statements(outputs)
+    statements, ops_statements = partition_finlab_canonical_statements(all_statements)
     market_statements = build_market_domain_insert_statements(outputs)
-    apply_result = {"total": len(statements) + len(market_statements), "success_count": 0, "error_count": 0, "changes_total": 0, "dry_run": True}
-    writes_by_domain = {"legacy": len(statements), "market": len(market_statements)}
+    apply_result = {"total": len(statements) + len(ops_statements) + len(market_statements), "success_count": 0, "error_count": 0, "changes_total": 0, "dry_run": True}
+    writes_by_domain = {"legacy": len(statements), "ops": len(ops_statements), "market": len(market_statements)}
     if not dry_run:
         apply_result = {"total": 0, "success_count": 0, "error_count": 0, "changes_total": 0}
     if not dry_run and statements:
@@ -3018,6 +3095,16 @@ def materialize_canonical_to_d1(
 
             legacy_result = batch_execute(statements, timeout=120.0, chunk_size=chunk_size)
         apply_result = dict(legacy_result)
+    if not dry_run and ops_statements:
+        ops_result = ops_d1_batch_execute(
+            ops_statements, timeout=120.0, chunk_size=chunk_size,
+        )
+        apply_result = {
+            "total": int(apply_result.get("total") or 0) + int(ops_result.get("total") or 0),
+            "success_count": int(apply_result.get("success_count") or 0) + int(ops_result.get("success_count") or 0),
+            "error_count": int(apply_result.get("error_count") or 0) + int(ops_result.get("error_count") or 0),
+            "changes_total": int(apply_result.get("changes_total") or 0) + int(ops_result.get("changes_total") or 0),
+        }
     if not dry_run and market_statements:
         from services import d1_client
         from services.d1_domain_client import D1DataDomain, shadow_database_id_for_domain
@@ -3043,7 +3130,7 @@ def materialize_canonical_to_d1(
         "end_date": end_date,
         "datasets": datasets,
         "row_counts": outputs.manifest.get("row_counts", {}),
-        "statement_count": len(statements) + len(market_statements),
+        "statement_count": len(statements) + len(ops_statements) + len(market_statements),
         "writes_by_domain": writes_by_domain,
         "apply_result": apply_result,
         "checksum": outputs.manifest.get("checksum"),

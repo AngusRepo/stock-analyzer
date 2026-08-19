@@ -250,12 +250,14 @@ function readyDomainDb(baseline: string, tables: string[]): MockDb {
 }
 
 const executionDomainDb = readyDomainDb('0001_execution_baseline.sql', [
-  'broker_execution_intents', 'broker_execution_legs', 'broker_execution_events',
+  'broker_execution_intents', 'broker_execution_legs', 'broker_execution_events', 'risk_audit_log',
 ])
 const paperDomainDb = readyDomainDb('0001_paper_baseline.sql', [
-  'paper_accounts', 'paper_orders', 'paper_positions', 'paper_settlements', 'paper_daily_snapshots',
-  'paper_execution_events', 'paper_order_intents', 'paper_exit_intents', 'paper_challenger_candidates',
-  'paper_challenger_daily_metrics', 'paper_decision_attribution',
+  'debate_memory', 'decision_logs', 'exit_shadow_log', 'paper_accounts', 'paper_orders',
+  'paper_positions', 'paper_settlements', 'paper_daily_snapshots', 'paper_execution_events',
+  'paper_order_intents', 'paper_exit_intents', 'paper_challenger_candidates',
+  'paper_challenger_daily_metrics', 'paper_decision_attribution', 'pending_buy_filter_audit',
+  'pending_buy_items', 'pending_buy_runs', 'promotion_audit_events',
 ])
 
 async function testStorageHealthCheckUsesD1ResultSizeAndReportsTruthfulScope(): Promise<void> {

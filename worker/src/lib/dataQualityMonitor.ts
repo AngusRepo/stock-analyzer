@@ -1427,7 +1427,7 @@ export async function buildDataQualityReport(env: Bindings, options: { date?: st
       targetDate,
     ).catch((): CountRow => ({})),
     firstCount(
-      env.DB,
+      databaseForDataDomain(env, 'ops'),
       `SELECT COUNT(*) AS awaiting_retrain_followup,
               SUM(CASE WHEN julianday(received_at) < julianday('now') - (4.0 / 24.0) THEN 1 ELSE 0 END) AS stale_retrain_followup,
               MIN(received_at) AS oldest_retrain_followup_at,

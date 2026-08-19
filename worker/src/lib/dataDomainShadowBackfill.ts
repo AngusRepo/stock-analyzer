@@ -873,10 +873,7 @@ export async function backfillDataDomainTableShadow(
   if (invalidDomains.length) {
     throw new Error(`data_domain_shadow_active_domain_invalid:${invalidDomains.sort().join(',')}`)
   }
-  if (
-    String(env.MULTI_D1_STRICT ?? '').trim().toLowerCase() === 'true'
-    || activeDataDomains(env).has(domain)
-  ) {
+  if (activeDataDomains(env).has(domain)) {
     throw new Error(`data_domain_shadow_requires_inactive_target:${domain}`)
   }
   const learningAuthority: InactiveLearningShadowAuthority | null =

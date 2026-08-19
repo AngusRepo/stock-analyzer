@@ -23,6 +23,7 @@
  */
 
 import type { Bindings } from '../types'
+import { paperDomainDatabase } from './paperDomainDatabase'
 import { enqueueOptunaRequest } from './optunaQueue'
 
 // Default thresholds — mirror ratings.md defaults, overridable via KV.
@@ -71,7 +72,7 @@ export async function checkRollingSharpe(
   threshold: number = DEFAULT_SHARPE_THRESHOLD,
 ): Promise<string> {
   try {
-    const row = await env.DB.prepare(
+    const row = await paperDomainDatabase(env).prepare(
       'SELECT date, sharpe_30d FROM paper_daily_snapshots WHERE sharpe_30d IS NOT NULL ORDER BY date DESC LIMIT 1'
     ).first<{ date: string; sharpe_30d: number }>()
 
@@ -107,7 +108,7 @@ export async function checkDailyDrawdown(
   threshold: number = DEFAULT_DD_SPIKE_THRESHOLD,
 ): Promise<string> {
   try {
-    const { results } = await env.DB.prepare(
+    const { results } = await paperDomainDatabase(env).prepare(
       'SELECT date, total_value FROM paper_daily_snapshots ORDER BY date DESC LIMIT 2'
     ).all<{ date: string; total_value: number }>()
 

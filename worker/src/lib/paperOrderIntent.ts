@@ -1,4 +1,5 @@
 import type { Bindings } from '../types'
+import { paperDomainDatabase } from './paperDomainDatabase'
 
 const ACCOUNT_ID = 1
 
@@ -52,7 +53,7 @@ export async function acquirePaperBuyIntent(
 ): Promise<PaperOrderIntent> {
   const intentKey = buildPaperBuyIntentKey(tradeDate, symbol)
   try {
-    const result = await env.DB.prepare(
+    const result = await paperDomainDatabase(env).prepare(
       `INSERT OR IGNORE INTO paper_order_intents
         (intent_key, account_id, trade_date, symbol, side, source, status, created_at, updated_at)
        VALUES (?, ?, ?, ?, 'buy', 'auto_ml', 'running', datetime('now'), datetime('now'))`,
@@ -61,14 +62,14 @@ export async function acquirePaperBuyIntent(
       return { acquired: true, intentKey, fallback: false }
     }
 
-    const existing = await env.DB.prepare(
+    const existing = await paperDomainDatabase(env).prepare(
       'SELECT status, updated_at FROM paper_order_intents WHERE intent_key=? LIMIT 1',
     ).bind(intentKey).first<PaperOrderIntentRow>()
     if (!shouldRecoverPaperBuyIntent(existing)) {
       return { acquired: false, intentKey, fallback: false, reason: existing?.status ?? 'duplicate' }
     }
 
-    const recover = await env.DB.prepare(
+    const recover = await paperDomainDatabase(env).prepare(
       `UPDATE paper_order_intents
           SET status='running', order_id=NULL, error_message=NULL, updated_at=datetime('now')
         WHERE intent_key=?
@@ -93,7 +94,7 @@ export async function completePaperBuyIntent(
   errorMessage?: string | null,
 ): Promise<void> {
   try {
-    await env.DB.prepare(
+    await paperDomainDatabase(env).prepare(
       `UPDATE paper_order_intents
           SET status=?, order_id=?, error_message=?, updated_at=datetime('now')
         WHERE intent_key=?`,

@@ -1,4 +1,5 @@
 import type { Bindings } from '../types'
+import { paperDomainDatabase } from './paperDomainDatabase'
 import { batchGetIntradayOHLC } from './paperIntradayData'
 
 const ACCOUNT_ID = 1
@@ -164,7 +165,7 @@ export async function refreshOpenPositionPostClosePriceCache(
   options: { tradeDate?: string } = {},
 ): Promise<PostClosePriceRefreshResult> {
   const tradeDate = options.tradeDate ?? twToday()
-  const { results } = await env.DB.prepare(
+  const { results } = await paperDomainDatabase(env).prepare(
     'SELECT symbol FROM paper_positions WHERE account_id=? AND shares>0',
   ).bind(ACCOUNT_ID).all<{ symbol: string }>()
   const symbols = [...new Set((results ?? []).map((row) => String(row.symbol ?? '').trim()).filter(Boolean))]
@@ -228,7 +229,7 @@ export async function clearOpenPositionIntradayPriceCache(
   env: Pick<Bindings, 'DB' | 'KV'>,
   accountId = ACCOUNT_ID,
 ): Promise<string> {
-  const { results } = await env.DB.prepare(
+  const { results } = await paperDomainDatabase(env).prepare(
     'SELECT symbol FROM paper_positions WHERE account_id=? AND shares>0',
   ).bind(accountId).all<{ symbol: string }>()
 

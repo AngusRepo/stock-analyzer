@@ -1,4 +1,5 @@
 import type { Bindings } from '../types'
+import { paperDomainDatabase } from './paperDomainDatabase'
 
 export const PAPER_ACTIVE_RUNTIME_SCHEMA_VERSION = 'paper-active-runtime-v1' as const
 
@@ -263,7 +264,7 @@ export async function recordPaperChallengerCandidate(
   input: PaperChallengerCandidateInput,
 ): Promise<void> {
   const candidate = normalizePaperChallengerCandidate(input)
-  await runSafely(() => env.DB.prepare(`
+  await runSafely(() => paperDomainDatabase(env).prepare(`
     INSERT INTO paper_challenger_candidates
       (candidate_id, candidate_type, current_state, source, feature_set_version,
        promotion_packet_json, notes, updated_at)
@@ -292,7 +293,7 @@ export async function recordPaperDecisionAttribution(
   input: PaperDecisionAttributionInput,
 ): Promise<void> {
   const attribution = normalizePaperDecisionAttribution(input)
-  await runSafely(() => env.DB.prepare(`
+  await runSafely(() => paperDomainDatabase(env).prepare(`
     INSERT INTO paper_decision_attribution
       (trade_date, symbol, decision, paper_lane, candidate_source, baseline_score,
        challenger_score, decision_delta, feature_set_version, regime_version,
@@ -318,7 +319,7 @@ export async function recordPaperChallengerDailyMetrics(
   input: PaperChallengerDailyMetricsInput,
 ): Promise<void> {
   const metrics = normalizePaperChallengerDailyMetrics(input)
-  await runSafely(() => env.DB.prepare(`
+  await runSafely(() => paperDomainDatabase(env).prepare(`
     INSERT INTO paper_challenger_daily_metrics
       (trade_date, candidate_id, paper_decision_count, precision_at_k, hit_rate,
        avg_return_pct, max_drawdown_pct, turnover_ratio, topk_overlap,
@@ -356,7 +357,7 @@ export async function recordPaperActivePromotionAudit(
   input: PromotionAuditEventInput,
 ): Promise<void> {
   const audit = normalizePromotionAuditEvent(input)
-  await runSafely(() => env.DB.prepare(`
+  await runSafely(() => paperDomainDatabase(env).prepare(`
     INSERT INTO promotion_audit_events
       (candidate_id, from_state, to_state, decision, failed_gates_json,
        packet_json, real_trading_effect, created_at)

@@ -1,4 +1,5 @@
 import type { Bindings } from '../types'
+import { paperDomainDatabase } from './paperDomainDatabase'
 import { twToday } from './dateUtils'
 import { writeEvidenceArtifact } from './artifactLifecycle'
 
@@ -88,7 +89,7 @@ export async function recordPaperExecutionEvent(
     }
   }
   try {
-    await env.DB.prepare(`
+    await paperDomainDatabase(env).prepare(`
       INSERT INTO paper_execution_events
         (account_id, trade_date, symbol, side, event_type, status, reason,
          detail_json, order_id, pending_run_id, source, created_at)

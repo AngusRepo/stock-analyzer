@@ -41,7 +41,7 @@ assert.equal(dataDomainShadowBackfillQueueBatchLimit('s12_replay_trade_outcomes'
 assert.equal(dataDomainShadowBackfillQueueBatchLimit('strategy_decision_log'), 500)
 assert.equal(dataDomainShadowBackfillIterations({
   domain: 'market', domainActive: false, routeReady: false,
-}), 1)
+}), 2)
 assert.equal(dataDomainShadowBackfillIterations({
   domain: 'market', domainActive: true, routeReady: true,
 }), 1)

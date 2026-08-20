@@ -94,7 +94,7 @@ export function dataDomainShadowBackfillIterations(input: {
   domainActive: boolean
   routeReady: boolean | undefined
 }): number {
-  if (input.domain === 'market') return 1
+  if (input.domain === 'market') return input.domainActive ? 1 : 2
   return !input.domainActive || input.routeReady === false ? 3 : 1
 }
 

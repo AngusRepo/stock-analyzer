@@ -3674,14 +3674,19 @@ def _write_finlab_macro_context_to_d1() -> dict:
         if path not in sys.path:
             sys.path.insert(0, path)
 
-    from services import d1_client
     from tools import finlab_macro_context_snapshot
+    from tools import finlab_v4_remote_backfill
 
     finlab_macro_context_snapshot.login_finlab()
     rows = finlab_macro_context_snapshot.collect_snapshot()
     canonical_rows = finlab_macro_context_snapshot.collect_canonical_regime_context_rows(rows)
     statements = finlab_macro_context_snapshot.build_d1_upsert_statements(rows, canonical_rows)
-    result = d1_client.batch_execute(statements, timeout=60.0, chunk_size=50)
+    result = finlab_v4_remote_backfill.d1_batch_execute(
+        statements,
+        timeout=60.0,
+        chunk_size=50,
+        domain=finlab_v4_remote_backfill.market_owner_domain(),
+    )
     return {"rows": len(rows), "canonical_rows": len(canonical_rows), "writeback": result}
 
 
@@ -3786,6 +3791,8 @@ def finlab_v4_backfill(payload: dict) -> dict:
         "FINLAB_CONTROLLER_TOKEN": payload.get("controller_token"),
         "ML_CONTROLLER_TOKEN": payload.get("controller_token"),
         "CF_D1_MARKET_DB_ID": payload.get("cf_d1_market_db_id"),
+        "CF_D1_CORE_DB_ID": payload.get("cf_d1_core_db_id"),
+        "MULTI_D1_ACTIVE_DOMAINS": payload.get("multi_d1_active_domains"),
     }
     for key, value in controller_env.items():
         if value:

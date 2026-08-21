@@ -34,7 +34,7 @@ def test_cleanup_finlab_trading_restrictions_reads_d1_changes(monkeypatch):
     tool = _load_tool_module()
 
     monkeypatch.setattr(tool, "TRADING_RESTRICTION_CLEANUP_ENABLED", True)
-    monkeypatch.setattr(tool, "d1_exec", lambda _sql, _params=None: {"meta": {"changes": 7}})
+    monkeypatch.setattr(tool, "d1_exec", lambda _sql, _params=None, **_kwargs: {"meta": {"changes": 7}})
 
     assert tool.cleanup_finlab_trading_restrictions(retention_days=31) == 7
 
@@ -87,7 +87,7 @@ def test_finlab_esb_attention_disposal_writes_canonical_restrictions(monkeypatch
 
     monkeypatch.setattr(tool, "d1_batch_execute", fake_batch_execute)
     d1_calls: list[tuple[str, list]] = []
-    monkeypatch.setattr(tool, "d1_exec", lambda sql, params=None: d1_calls.append((sql, list(params or []))) or {"success": True})
+    monkeypatch.setattr(tool, "d1_exec", lambda sql, params=None, **_kwargs: d1_calls.append((sql, list(params or []))) or {"success": True})
 
     assert tool.insert_finlab_trading_restrictions(manifest, lookback_days=31, max_rows=20) == 2
     params = [item[1] for item in captured["statements"]]
@@ -233,7 +233,7 @@ def test_controller_d1_batch_forwards_ops_domain(monkeypatch):
     assert captured["domain"] == "ops"
 
 
-def test_finlab_canonical_statement_partition_routes_ops_metadata_only():
+def test_finlab_canonical_statement_partition_routes_domain_owners():
     tool = _load_tool_module()
     statements = [
         ("INSERT INTO canonical_market_daily VALUES (?)", [1]),
@@ -241,10 +241,11 @@ def test_finlab_canonical_statement_partition_routes_ops_metadata_only():
         ("INSERT OR REPLACE INTO finlab_materialization_manifest VALUES (?)", [3]),
     ]
 
-    legacy, ops = tool.partition_finlab_canonical_statements(statements)
+    legacy, ops, market = tool.partition_finlab_canonical_statements(statements, market_active=True)
 
-    assert [params for _sql, params in legacy] == [[1]]
+    assert legacy == []
     assert [params for _sql, params in ops] == [[2], [3]]
+    assert [params for _sql, params in market] == [[1]]
 
 
 def test_finlab_fundamental_fields_fail_closed_without_deadline_owner():

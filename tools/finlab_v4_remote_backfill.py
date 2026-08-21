@@ -630,6 +630,41 @@ def ops_d1_batch_execute(
     )
 
 
+def multi_d1_active_domains() -> set[str]:
+    return {
+        value.strip().lower()
+        for value in os.environ.get("MULTI_D1_ACTIVE_DOMAINS", "").split(",")
+        if value.strip()
+    }
+
+
+def market_domain_active() -> bool:
+    return "market" in multi_d1_active_domains()
+
+
+def market_owner_domain() -> str | None:
+    return "market" if market_domain_active() else None
+
+
+def market_d1_query(sql: str, params: list[Any] | None = None) -> list[dict[str, Any]]:
+    return d1_query(sql, params, domain=market_owner_domain())
+
+
+def market_d1_exec(sql: str, params: list[Any] | None = None) -> dict[str, Any]:
+    return d1_exec(sql, params, domain=market_owner_domain())
+
+
+def market_d1_batch_execute(
+    statements: list[tuple[str, list[Any]]],
+    *,
+    timeout: float = 120.0,
+    chunk_size: int = 250,
+) -> dict[str, Any]:
+    return d1_batch_execute(
+        statements, timeout=timeout, chunk_size=chunk_size, domain=market_owner_domain(),
+    )
+
+
 def normalize_wide_index(df: pd.DataFrame) -> pd.DataFrame:
     out = pd.DataFrame(df).copy()
     out.index = pd.to_datetime(out.index, errors="coerce")
@@ -1513,7 +1548,7 @@ def d1_counts(start: str) -> dict[str, int]:
     counts: dict[str, int] = {}
     for key, sql in queries.items():
         try:
-            rows = d1_query(sql, [start])
+            rows = market_d1_query(sql, [start])
             counts[key] = int((rows[0] if rows else {}).get("n") or 0)
         except Exception:
             counts[key] = 0
@@ -2436,7 +2471,7 @@ def insert_d1_summary(manifest: dict[str, Any]) -> None:
             "report_count": len(lane_summary["reports"]),
             "as_of_date_owner": "source_end_date_or_canonical_end_date",
         }
-        d1_exec(
+        market_d1_exec(
             """
             INSERT INTO source_quality_metrics (
               source, dataset, as_of_date, freshness_status, missing_rate, duplicate_rate,
@@ -2865,9 +2900,9 @@ def insert_finlab_trading_restrictions(
             row["lineage_json"],
         ]))
     if batch_statements:
-        d1_batch_execute(batch_statements, timeout=120.0, chunk_size=250)
+        market_d1_batch_execute(batch_statements, timeout=120.0, chunk_size=250)
     inserted = len(batch_statements)
-    d1_exec(
+    market_d1_exec(
         """
         INSERT INTO source_quality_metrics (
           source, dataset, as_of_date, freshness_status, missing_rate, duplicate_rate,
@@ -2913,7 +2948,7 @@ def cleanup_finlab_trading_restrictions(*, retention_days: int = TRADING_RESTRIC
     if not TRADING_RESTRICTION_CLEANUP_ENABLED:
         return 0
     cutoff = (datetime.now(timezone.utc) - timedelta(days=retention_days)).date().isoformat()
-    result = d1_exec(
+    result = market_d1_exec(
         """
         DELETE FROM canonical_trading_restrictions
          WHERE source = 'finlab.trading_attention'
@@ -2971,7 +3006,7 @@ def insert_finlab_cnyes_evidence(manifest: dict[str, Any], *, max_rows: int = 80
             published_at,
         ]))
     if batch_statements:
-        d1_batch_execute(batch_statements, timeout=120.0, chunk_size=250)
+        market_d1_batch_execute(batch_statements, timeout=120.0, chunk_size=250)
     return len(batch_statements)
 
     inserted = 0
@@ -3049,18 +3084,47 @@ FINLAB_OPS_METADATA_TABLES = {
     "finlab_materialization_manifest",
 }
 
+FINLAB_MARKET_TABLES = {
+    "canonical_market_daily",
+    "canonical_chip_daily",
+    "canonical_institutional_amount_daily",
+    "canonical_market_index_daily",
+    "canonical_futures_daily",
+    "canonical_market_summary_daily",
+    "canonical_regime_context_daily",
+    "canonical_revenue_monthly",
+    "canonical_fundamental_features",
+    "canonical_broker_flow_daily",
+    "canonical_broker_rank_daily",
+    "finlab_taxonomy_tags",
+    "source_quality_metrics",
+}
+
 
 def partition_finlab_canonical_statements(
     statements: list[tuple[str, list[Any]]],
-) -> tuple[list[tuple[str, list[Any]]], list[tuple[str, list[Any]]]]:
+    *,
+    market_active: bool | None = None,
+) -> tuple[
+    list[tuple[str, list[Any]]],
+    list[tuple[str, list[Any]]],
+    list[tuple[str, list[Any]]],
+]:
     legacy: list[tuple[str, list[Any]]] = []
     ops: list[tuple[str, list[Any]]] = []
+    market: list[tuple[str, list[Any]]] = []
+    route_market = market_domain_active() if market_active is None else market_active
     for statement in statements:
         sql = statement[0]
         match = re.search(r"\b(?:INSERT\s+(?:OR\s+\w+\s+)?INTO|UPDATE)\s+[\"`]?([a-z_][a-z0-9_]*)", sql, re.IGNORECASE)
         target = match.group(1).lower() if match else ""
-        (ops if target in FINLAB_OPS_METADATA_TABLES else legacy).append(statement)
-    return legacy, ops
+        if target in FINLAB_OPS_METADATA_TABLES:
+            ops.append(statement)
+        elif route_market and target in FINLAB_MARKET_TABLES:
+            market.append(statement)
+        else:
+            legacy.append(statement)
+    return legacy, ops, market
 
 
 def materialize_canonical_to_d1(
@@ -3096,8 +3160,8 @@ def materialize_canonical_to_d1(
         include_emerging=include_emerging,
     )
     all_statements = build_d1_upsert_statements(outputs)
-    statements, ops_statements = partition_finlab_canonical_statements(all_statements)
-    market_statements = build_market_domain_insert_statements(outputs)
+    statements, ops_statements, routed_market_statements = partition_finlab_canonical_statements(all_statements)
+    market_statements = routed_market_statements + build_market_domain_insert_statements(outputs)
     apply_result = {"total": len(statements) + len(ops_statements) + len(market_statements), "success_count": 0, "error_count": 0, "changes_total": 0, "dry_run": True}
     writes_by_domain = {"legacy": len(statements), "ops": len(ops_statements), "market": len(market_statements)}
     if not dry_run:
@@ -3120,15 +3184,23 @@ def materialize_canonical_to_d1(
             "changes_total": int(apply_result.get("changes_total") or 0) + int(ops_result.get("changes_total") or 0),
         }
     if not dry_run and market_statements:
-        from services import d1_client
-        from services.d1_domain_client import D1DataDomain, shadow_database_id_for_domain
+        if market_domain_active():
+            market_result = d1_batch_execute(
+                market_statements,
+                timeout=120.0,
+                chunk_size=chunk_size,
+                domain="market",
+            )
+        else:
+            from services import d1_client
+            from services.d1_domain_client import D1DataDomain, shadow_database_id_for_domain
 
-        market_result = d1_client._raw_batch_execute(
-            market_statements,
-            timeout=120.0,
-            chunk_size=chunk_size,
-            database_id=shadow_database_id_for_domain(D1DataDomain.MARKET),
-        )
+            market_result = d1_client._raw_batch_execute(
+                market_statements,
+                timeout=120.0,
+                chunk_size=chunk_size,
+                database_id=shadow_database_id_for_domain(D1DataDomain.MARKET),
+            )
         apply_result = {
             "total": int(apply_result.get("total") or 0) + int(market_result.get("total") or 0),
             "success_count": int(apply_result.get("success_count") or 0) + int(market_result.get("success_count") or 0),

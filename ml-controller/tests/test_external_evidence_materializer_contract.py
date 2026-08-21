@@ -16,6 +16,9 @@ def test_external_evidence_materializer_uses_dynamic_recommendation_date() -> No
     assert 'Path("/root")' in source
     assert "SELECT MAX(date) AS date" in source
     assert "daily_recommendations" in source
+    assert 'domain="core"' in source
+    assert 'domain="market"' in source
+    assert 'CF_D1_{normalized.upper()}_DB_ID' in source
     assert '"2026-05-15"' not in source
     assert '"2026-05-18"' not in source
 

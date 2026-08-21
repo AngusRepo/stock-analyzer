@@ -211,6 +211,12 @@ def build_finlab_backfill_modal_payload(req: FinLabBackfillRunRequest) -> dict[s
     market_database_id = os.environ.get("CF_D1_MARKET_DB_ID", "").strip()
     if market_database_id:
         payload["cf_d1_market_db_id"] = market_database_id
+    core_database_id = os.environ.get("CF_D1_CORE_DB_ID", "").strip()
+    if core_database_id:
+        payload["cf_d1_core_db_id"] = core_database_id
+    active_domains = os.environ.get("MULTI_D1_ACTIVE_DOMAINS", "").strip()
+    if active_domains:
+        payload["multi_d1_active_domains"] = active_domains
     return payload
 
 

@@ -35,7 +35,6 @@ from services.external_evidence_runtime import (  # noqa: E402
 ACCOUNT = os.environ["CF_ACCOUNT_ID"]
 DB_ID = os.environ["CF_D1_DB_ID"]
 CF_TOKEN = os.environ["CF_API_TOKEN"]
-D1_ENDPOINT = f"https://api.cloudflare.com/client/v4/accounts/{ACCOUNT}/d1/database/{DB_ID}/query"
 TARGET_DATE = os.environ.get("TARGET_DATE", "").strip()
 AS_OF_DATE = os.environ.get("AS_OF_DATE", "").strip()
 GENERATED_AT = datetime.now(timezone.utc).isoformat()
@@ -59,14 +58,34 @@ def reset_d1_stats() -> None:
         D1_STATS[key] = 0
 
 
-def d1(sql: str, params: list[Any] | None = None) -> list[dict[str, Any]]:
+def active_d1_domains() -> set[str]:
+    return {
+        value.strip().lower()
+        for value in os.environ.get("MULTI_D1_ACTIVE_DOMAINS", "").split(",")
+        if value.strip()
+    }
+
+
+def database_id_for_owner(domain: str | None) -> str:
+    normalized = str(domain or "").strip().lower()
+    if normalized and normalized in active_d1_domains():
+        database_id = os.environ.get(f"CF_D1_{normalized.upper()}_DB_ID", "").strip()
+        if not database_id:
+            raise RuntimeError(f"D1 domain database id missing: {normalized}")
+        return database_id
+    return DB_ID
+
+
+def d1(sql: str, params: list[Any] | None = None, *, domain: str | None = None) -> list[dict[str, Any]]:
     D1_STATS["logical_queries"] += 1
     request_body = json.dumps({"sql": sql, "params": params or []}).encode("utf-8")
+    database_id = database_id_for_owner(domain)
+    endpoint = f"https://api.cloudflare.com/client/v4/accounts/{ACCOUNT}/d1/database/{database_id}/query"
     last_error: Exception | None = None
     for attempt in range(D1_MAX_ATTEMPTS):
         D1_STATS["http_attempts"] += 1
         req = urllib.request.Request(
-            D1_ENDPOINT,
+            endpoint,
             data=request_body,
             headers={"Authorization": f"Bearer {CF_TOKEN}", "Content-Type": "application/json"},
             method="POST",
@@ -126,7 +145,8 @@ def resolve_run_dates() -> None:
             WHERE signal IS NOT NULL
               AND confidence IS NOT NULL
               AND score_components LIKE '%score_v2%'
-            """
+            """,
+            domain="core",
         )
         TARGET_DATE = str((rows[0] if rows else {}).get("date") or "").strip()
     if not TARGET_DATE:
@@ -243,12 +263,14 @@ def tags_query(symbols: list[str]) -> dict[str, list[str]]:
         d1(
             f"SELECT symbol, tag, tag_type, weight FROM finlab_taxonomy_tags WHERE symbol IN ({placeholders})",
             symbols,
+            domain="market",
         )
     )
     rows.extend(
         d1(
             f"SELECT symbol, tag, tag_type, weight FROM stock_tags WHERE symbol IN ({placeholders})",
             symbols,
+            domain="market",
         )
     )
     out: dict[str, list[str]] = defaultdict(list)
@@ -275,6 +297,7 @@ def finlab_taxonomy_tags_query(symbols: list[str]) -> dict[str, list[dict[str, A
            AND tag_type IN ('industry', 'industry_theme', 'subindustry', 'concept')
         """,
         symbols,
+        domain="market",
     )
     out: dict[str, list[dict[str, Any]]] = defaultdict(list)
     seen: set[tuple[str, str, str]] = set()
@@ -674,6 +697,7 @@ def upsert_external(rows: list[dict[str, Any]]) -> None:
              )
             """,
             params,
+            domain="market",
         )
         D1_STATS["write_batches"] += 1
         D1_STATS["rows_submitted"] += len(batch)
@@ -706,6 +730,7 @@ def upsert_theme(rows: list[dict[str, Any]]) -> None:
               generated_at=excluded.generated_at
             """,
             params,
+            domain="market",
         )
         D1_STATS["write_batches"] += 1
         D1_STATS["rows_submitted"] += len(batch)
@@ -735,6 +760,7 @@ def upsert_features(rows: list[dict[str, Any]]) -> None:
               generated_at=excluded.generated_at
             """,
             params,
+            domain="market",
         )
         D1_STATS["write_batches"] += 1
         D1_STATS["rows_submitted"] += len(batch)
@@ -793,6 +819,7 @@ def upsert_quality(
             latest or GENERATED_AT,
             json.dumps({"rows": rows, "root_cause": root_cause, "generated_at": GENERATED_AT}, ensure_ascii=False, sort_keys=True),
         ],
+        domain="market",
     )
 
 
@@ -810,6 +837,7 @@ def build_materialization_receipt(
               AND source IN ('official_rss','company_ir_rss','gdelt_events')) AS quality_rows
         """,
         [GENERATED_AT, GENERATED_AT, AS_OF_DATE],
+        domain="market",
     )
     actual = rows[0] if rows else {}
     actual_theme = int(actual.get("theme_rows") or 0)
@@ -836,11 +864,12 @@ def build_materialization_receipt(
 def main() -> dict[str, Any]:
     started = time.perf_counter()
     reset_d1_stats()
-    d1("SELECT 1 AS ok")
+    d1("SELECT 1 AS ok", domain="core")
     resolve_run_dates()
     recommendations = d1(
         "SELECT symbol, name, market_segment, score FROM daily_recommendations WHERE date=? ORDER BY rank ASC LIMIT 80",
         [TARGET_DATE],
+        domain="core",
     )
     symbols = [str(row.get("symbol")) for row in recommendations if row.get("symbol")]
     target_symbols = set(symbols)
@@ -923,7 +952,8 @@ def main() -> dict[str, Any]:
         FROM external_evidence_items
         GROUP BY source_id
         ORDER BY source_id
-        """
+        """,
+        domain="market",
     )
     quality = d1(
         """
@@ -932,7 +962,8 @@ def main() -> dict[str, Any]:
         FROM source_quality_metrics
         WHERE source IN ('official_rss','company_ir_rss','gdelt_events')
         ORDER BY source, dataset
-        """
+        """,
+        domain="market",
     )
     result = {
         "status": "ok",

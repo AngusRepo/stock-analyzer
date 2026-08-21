@@ -25,7 +25,11 @@ def test_finlab_backfill_modal_function_and_spawn_contract_exist() -> None:
     assert "except (Exception, SystemExit) as exc" in modal_app
     assert "FINLAB_CONTROLLER_D1_QUERY_URL" in modal_app
     assert '"CF_D1_MARKET_DB_ID": payload.get("cf_d1_market_db_id")' in modal_app
+    assert '"CF_D1_CORE_DB_ID": payload.get("cf_d1_core_db_id")' in modal_app
+    assert '"MULTI_D1_ACTIVE_DOMAINS": payload.get("multi_d1_active_domains")' in modal_app
     assert 'payload["cf_d1_market_db_id"] = market_database_id' in finlab_router
+    assert 'payload["cf_d1_core_db_id"] = core_database_id' in finlab_router
+    assert 'payload["multi_d1_active_domains"] = active_domains' in finlab_router
     assert "X-Controller-Token" in modal_app
     assert "continue_evening_chain" in modal_app
     assert '"--lanes"' in modal_app

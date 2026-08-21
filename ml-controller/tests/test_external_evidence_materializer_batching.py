@@ -26,7 +26,7 @@ def test_materializer_batches_d1_writes_under_parameter_limit(monkeypatch) -> No
     module = load_materializer(monkeypatch)
     calls: list[tuple[str, list[Any]]] = []
 
-    def capture(sql: str, params: list[Any] | None = None) -> list[dict[str, Any]]:
+    def capture(sql: str, params: list[Any] | None = None, **_kwargs: Any) -> list[dict[str, Any]]:
         calls.append((sql, params or []))
         return []
 
@@ -107,7 +107,7 @@ def test_source_quality_freshness_is_relative_to_as_of_date(monkeypatch) -> None
     module = load_materializer(monkeypatch)
     params_seen: list[list[Any]] = []
 
-    def capture(_sql: str, params: list[Any] | None = None) -> list[dict[str, Any]]:
+    def capture(_sql: str, params: list[Any] | None = None, **_kwargs: Any) -> list[dict[str, Any]]:
         params_seen.append(params or [])
         return []
 
@@ -125,7 +125,7 @@ def test_materialization_receipt_tracks_the_current_generated_batch(monkeypatch)
     module = load_materializer(monkeypatch)
     params_seen: list[Any] = []
 
-    def capture(_sql: str, params: list[Any] | None = None) -> list[dict[str, Any]]:
+    def capture(_sql: str, params: list[Any] | None = None, **_kwargs: Any) -> list[dict[str, Any]]:
         params_seen.extend(params or [])
         return [{"theme_rows": 3, "feature_rows": 7, "quality_rows": 3}]
 
@@ -165,7 +165,7 @@ def test_external_batch_sql_is_sqlite_compatible_and_idempotent(monkeypatch) -> 
         """
     )
 
-    def execute(sql: str, params: list[Any] | None = None) -> list[dict[str, Any]]:
+    def execute(sql: str, params: list[Any] | None = None, **_kwargs: Any) -> list[dict[str, Any]]:
         conn.execute(sql, params or [])
         conn.commit()
         return []

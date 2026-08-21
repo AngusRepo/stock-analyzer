@@ -111,7 +111,7 @@ async function assertPagedPriceLoader(): Promise<void> {
   let firstAttempt = true
   let activeCalls = 0
   let maxActiveCalls = 0
-  const fakeDb = {
+  const marketDb = {
     prepare: () => ({
       bind: (minDate: string, maxDate: string) => ({
         all: async () => {
@@ -126,8 +126,7 @@ async function assertPagedPriceLoader(): Promise<void> {
           }
           return {
             results: [{
-              symbol: `TEST-${minDate}`,
-              market: 'TWSE',
+              stock_id: 1,
               date: maxDate,
               open: 1,
               high: 1,
@@ -141,8 +140,24 @@ async function assertPagedPriceLoader(): Promise<void> {
       }),
     }),
   } as unknown as D1Database
+  const coreDb = {
+    prepare: () => ({
+      bind: (...ids: number[]) => ({
+        all: async () => ({
+          results: ids.map((id) => ({ id, symbol: `TEST-${id}`, name: `Test ${id}`, market: 'TWSE', sector: 'Test' })),
+        }),
+      }),
+    }),
+  } as unknown as D1Database
+  const fakeEnv = {
+    DB: coreDb,
+    CORE_DB: coreDb,
+    MARKET_DB: marketDb,
+    MULTI_D1_ACTIVE_DOMAINS: 'core,market',
+    MULTI_D1_STRICT: 'true',
+  }
   const dates = Array.from({ length: 12 }, (_, index) => `2026-08-${String(index + 1).padStart(2, '0')}`)
-  const paged = await loadScreenerPriceRowsPaged(fakeDb, dates)
+  const paged = await loadScreenerPriceRowsPaged(fakeEnv, dates)
   assert(paged.length === 3, 'twelve trading dates must load through three bounded pages')
   assert(calls.length === 4, 'one transient page failure must retry without replaying completed pages')
   assert(maxActiveCalls === 3, 'price pages must use bounded concurrency of three')

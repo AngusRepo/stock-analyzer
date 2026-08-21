@@ -1,6 +1,7 @@
 import { databaseForDataDomain } from './dataDomainRegistry'
 import type { Bindings } from '../types'
 import { classifyBoard } from './boardTradability'
+import { loadCoreStockIdentitiesByIds } from './stockIdentityMarketBridge'
 
 export interface CanonicalScreenerPrice {
   date: string
@@ -374,23 +375,31 @@ function waitForPricePageRetry(delayMs: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, delayMs))
 }
 
+interface ScreenerPriceStorageRow {
+  stock_id: number | string
+  date: string
+  open: number | null
+  high: number | null
+  low: number | null
+  close: number | null
+  volume: number | null
+  avg_price: number | null
+}
+
 async function loadScreenerPriceDatePage(
   db: D1Database,
   minDate: string,
   maxDate: string,
-): Promise<ScreenerPriceRow[]> {
+): Promise<ScreenerPriceStorageRow[]> {
   let lastError: unknown
   for (let attempt = 1; attempt <= SCREENER_PRICE_PAGE_MAX_ATTEMPTS; attempt += 1) {
     try {
       const result = await db.prepare(
-        `SELECT s.symbol, s.market, sp.date,
-                sp.open, sp.high, sp.low, sp.close,
-                sp.volume, sp.avg_price
-           FROM stock_prices sp
-           JOIN stocks s ON sp.stock_id = s.id
-          WHERE sp.date >= ? AND sp.date <= ?
-          ORDER BY s.symbol, sp.date`,
-      ).bind(minDate, maxDate).all<ScreenerPriceRow>()
+        `SELECT stock_id, date, open, high, low, close, volume, avg_price
+           FROM stock_prices
+          WHERE date >= ? AND date <= ?
+          ORDER BY stock_id, date`,
+      ).bind(minDate, maxDate).all<ScreenerPriceStorageRow>()
       return result.results ?? []
     } catch (error) {
       lastError = error
@@ -403,10 +412,11 @@ async function loadScreenerPriceDatePage(
 }
 
 export async function loadScreenerPriceRowsPaged(
-  db: D1Database,
+  env: Pick<Bindings, 'DB'> & Partial<Bindings>,
   tradingDates: string[],
 ): Promise<ScreenerPriceRow[]> {
-  const rows: ScreenerPriceRow[] = []
+  const marketDb = databaseForDataDomain(env, 'market')
+  const storageRows: ScreenerPriceStorageRow[] = []
   const pages: string[][] = []
   for (let offset = 0; offset < tradingDates.length; offset += SCREENER_PRICE_DATE_PAGE_SIZE) {
     pages.push(tradingDates.slice(offset, offset + SCREENER_PRICE_DATE_PAGE_SIZE))
@@ -414,10 +424,28 @@ export async function loadScreenerPriceRowsPaged(
   for (let offset = 0; offset < pages.length; offset += SCREENER_PRICE_PAGE_CONCURRENCY) {
     const batch = pages.slice(offset, offset + SCREENER_PRICE_PAGE_CONCURRENCY)
     const batchRows = await Promise.all(batch.map((pageDates) =>
-      loadScreenerPriceDatePage(db, pageDates[0], pageDates[pageDates.length - 1])))
-    for (const pageRows of batchRows) rows.push(...pageRows)
+      loadScreenerPriceDatePage(marketDb, pageDates[0], pageDates[pageDates.length - 1])))
+    for (const pageRows of batchRows) storageRows.push(...pageRows)
   }
-  return rows
+  const identities = await loadCoreStockIdentitiesByIds(
+    env,
+    storageRows.map((row) => Number(row.stock_id)).filter(Number.isSafeInteger),
+  )
+  return storageRows.flatMap((row) => {
+    const identity = identities.get(Number(row.stock_id))
+    if (!identity?.symbol) return []
+    return [{
+      symbol: identity.symbol,
+      market: identity.market,
+      date: row.date,
+      open: row.open,
+      high: row.high,
+      low: row.low,
+      close: row.close,
+      volume: row.volume,
+      avg_price: row.avg_price,
+    }]
+  })
 }
 export async function loadMarketDataFromD1(
   env: Bindings,
@@ -437,7 +465,8 @@ export async function loadMarketDataFromD1(
 
   const maxAllowedDate = asOfDate || new Date(Date.now() + 8 * 3600_000).toISOString().slice(0, 10)
 
-  const { results: dateRows } = await databaseForDataDomain(env, 'market').prepare(
+  const marketDb = databaseForDataDomain(env, 'market')
+  const { results: dateRows } = await marketDb.prepare(
     `SELECT DISTINCT date FROM stock_prices
      WHERE date <= ?
        AND date >= date(?, '-${lookbackDays} days')
@@ -457,10 +486,10 @@ export async function loadMarketDataFromD1(
   }
   const maxDate = tradingDates[tradingDates.length - 1]
 
-  const priceRows = await loadScreenerPriceRowsPaged(env.DB, tradingDates)
+  const priceRows = await loadScreenerPriceRowsPaged(env, tradingDates)
   const { allPrices, tpexSymbols, laneCounts } = splitPriceRowsByBoard(priceRows ?? [], maxDate)
 
-  const { results: chipDateRows } = await databaseForDataDomain(env, 'market').prepare(
+  const { results: chipDateRows } = await marketDb.prepare(
     `SELECT DISTINCT date FROM chip_data
      WHERE date <= ?
        AND date >= date(?, '-${chipLookback} days')
@@ -469,7 +498,7 @@ export async function loadMarketDataFromD1(
   const chipDates = (chipDateRows ?? []).map((r) => r.date).sort()
 
   const { chips: canonicalChips, sourceSummary: canonicalChipSources } = await loadCanonicalChipsFromD1(
-    env.DB,
+    marketDb,
     maxAllowedDate,
     chipLookback,
     chipDays,
@@ -478,7 +507,7 @@ export async function loadMarketDataFromD1(
   if (chipDates.length) {
     const minChipDate = chipDates[0]
     const maxChipDate = chipDates[chipDates.length - 1]
-    const { results: chipRows } = await databaseForDataDomain(env, 'market').prepare(
+    const { results: chipRows } = await marketDb.prepare(
       `SELECT symbol, date, foreign_buy, foreign_sell,
               trust_buy, trust_sell, dealer_buy, dealer_sell
        FROM chip_data

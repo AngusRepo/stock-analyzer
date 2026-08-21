@@ -445,7 +445,7 @@ async function checkEveningChainSourceReadiness(
   checks.push(await tradingRestrictionsDailyReadinessCheck(env, targetDate))
 
   try {
-    const ready = await assertMarketDataReady(databaseForDataDomain(env, 'market'), targetDate, { requireIndicators: false })
+    const ready = await assertMarketDataReady(env, targetDate, { requireIndicators: false })
     checks.push({ key: 'official_supplemental_market_data', ok: true, summary: ready.summary })
   } catch (e) {
     checks.push({
@@ -1515,7 +1515,7 @@ export async function runBulkFetch(env: Bindings, force = false, runDate?: strin
     const mirror = await syncLegacyMarketDataFromFinLabCanonical(env, twDate)
     finlabMirrorSummary = mirror.summary
     if (supplementalMode !== 'always') {
-      const ready = await assertMarketDataReady(databaseForDataDomain(env, 'market'), twDate, { requireIndicators: false })
+      const ready = await assertMarketDataReady(env, twDate, { requireIndicators: false })
       await env.KV.put(lockKey, '1', { expirationTtl: 86400 })
       return `${ready.summary}; ${mirror.summary}; TWSE/TPEX supplemental bulk fetch skipped; source_role=${mirror.sourceRole}; supplemental_mode=${supplementalMode}`
     }
@@ -1528,7 +1528,7 @@ export async function runBulkFetch(env: Bindings, force = false, runDate?: strin
 
   if (isHistoricalReplayDate(twDate)) {
     try {
-      const ready = await assertMarketDataReady(databaseForDataDomain(env, 'market'), twDate, { requireIndicators: false })
+      const ready = await assertMarketDataReady(env, twDate, { requireIndicators: false })
       await env.KV.put(lockKey, '1', { expirationTtl: 86400 })
       return `TWSE/TPEX supplemental fetch skipped for historical replay; ${ready.summary}; ${finlabMirrorSummary ?? 'FinLab canonical mirror not applied'}; source_role=legacy_ready_after_finlab_primary_attempt`
     } catch {
@@ -1538,7 +1538,7 @@ export async function runBulkFetch(env: Bindings, force = false, runDate?: strin
   }
   if (!force && await env.KV.get(lockKey)) {
     console.log(`[Cron] TWSE/TPEX supplemental fetch already done today (${twDate}), skipping.`)
-    const ready = await assertMarketDataReady(databaseForDataDomain(env, 'market'), twDate, { requireIndicators: false })
+    const ready = await assertMarketDataReady(env, twDate, { requireIndicators: false })
     return `TWSE/TPEX supplemental fetch skipped; ${ready.summary}; ${finlabMirrorSummary ?? 'FinLab canonical mirror not applied'}; source_role=legacy_ready_after_finlab_primary_attempt`
   }
 
@@ -1550,7 +1550,7 @@ export async function runBulkFetch(env: Bindings, force = false, runDate?: strin
       bulkFetchAndStorePrices(databaseForDataDomain(env, 'market'), twDate, controllerUrl, env.ML_CONTROLLER_SECRET),
     ])
     console.log(`[Cron] TWSE/TPEX supplemental: ${priceCount} prices + ${chipCount} chips + ${marginCount} margins`)
-    const ready = await assertMarketDataReady(databaseForDataDomain(env, 'market'), twDate, { requireIndicators: false })
+    const ready = await assertMarketDataReady(env, twDate, { requireIndicators: false })
     await env.KV.put(lockKey, '1', { expirationTtl: 86400 })
     await fetchWave2Data(env, twDate).catch((e) => console.warn('[Wave2] failed:', e))
     return `${ready.summary}; ${finlabMirrorSummary ?? 'FinLab canonical mirror not applied'}; TWSE/TPEX supplemental fetched price=${priceCount} chip=${chipCount} margin=${marginCount}; source_role=official_fallback_after_finlab_primary_attempt`
@@ -2410,7 +2410,7 @@ export async function runMarketCloseRefresh(env: Bindings, force = false, runDat
   const twDate = resolveUpdateDate(runDate)
   const lockKey = `cron:market-close-refresh:${twDate}`
   if (!force && await env.KV.get(lockKey)) {
-    const stats = await loadMarketDataReadinessStats(databaseForDataDomain(env, 'market'), twDate)
+    const stats = await loadMarketDataReadinessStats(env, twDate)
     return `SKIP: market-close-refresh already ran for ${twDate}; price=${stats.priceRowsOnLatest} latest=${stats.priceLatestDate ?? 'none'}`
   }
 
@@ -2472,7 +2472,7 @@ export async function runMarketCloseRefresh(env: Bindings, force = false, runDat
     parts.push(`post_close_price_warn=${e instanceof Error ? e.message : String(e)}`)
   }
 
-  const stats = await loadMarketDataReadinessStats(databaseForDataDomain(env, 'market'), twDate)
+  const stats = await loadMarketDataReadinessStats(env, twDate)
   const priceReady =
     stats.priceLatestDate === twDate &&
     stats.priceRowsOnLatest >= 1000 &&

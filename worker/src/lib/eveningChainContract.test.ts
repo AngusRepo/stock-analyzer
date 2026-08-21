@@ -255,7 +255,7 @@ const mlPipelineTrigger = fs.readFileSync('src/lib/mlPipelineTrigger.ts', 'utf8'
 const marketDataReadiness = fs.readFileSync('src/lib/marketDataReadiness.ts', 'utf8')
 assert(
   marketDataReadiness.includes('targetAwareTableStats') &&
-    marketDataReadiness.includes("targetAwareTableStats(db, 'stock_prices', targetDate)") &&
+    marketDataReadiness.includes("targetAwareTableStats(marketDb, 'stock_prices', targetDate)") &&
     marketDataReadiness.includes('if (targetRows > 0) return { latestDate: targetDate'),
   'market-data readiness must evaluate target-date rows for historical replay instead of only MAX(date)',
 )
@@ -273,7 +273,7 @@ assert(
 )
 assert(
   mlPipelineTrigger.includes('prevalidatedEventChain') &&
-    mlPipelineTrigger.includes('assertMarketDataReady(env.DB, twDate)') &&
+    mlPipelineTrigger.includes('assertMarketDataReady(env, twDate)') &&
     updateOrchestrator.includes('prevalidatedEventChain: true'),
   'event-driven post-screener pipeline trigger must not depend on KV scheduler telemetry after the chain has already validated indicator/screener/regime stages',
 )

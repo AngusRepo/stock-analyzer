@@ -1,3 +1,7 @@
+import type { Bindings } from '../types'
+import { databaseForDataDomain } from './dataDomainRegistry'
+import { loadCoreStockIdentitiesByIds } from './stockIdentityMarketBridge'
+
 export interface MarketDataReadinessStats {
   targetDate: string
   priceLatestDate: string | null
@@ -110,34 +114,39 @@ async function targetAwareTableStats(
 }
 
 async function latestPriceSegmentStats(
-  db: D1Database,
+  env: Pick<Bindings, 'DB'> & Partial<Bindings>,
   latestDate: string | null,
 ): Promise<{ twseRows: number; otcRows: number }> {
   if (!latestDate) return { twseRows: 0, otcRows: 0 }
-  const row = await db.prepare(`
-    SELECT
-      SUM(CASE WHEN s.market = 'TWSE' THEN 1 ELSE 0 END) AS twse_rows,
-      SUM(CASE WHEN s.market = 'OTC' THEN 1 ELSE 0 END) AS otc_rows
-    FROM stock_prices sp
-    JOIN stocks s ON s.id = sp.stock_id
-    WHERE sp.date = ?
-  `).bind(latestDate).first<{ twse_rows: number | null; otc_rows: number | null }>()
-  return {
-    twseRows: normalizeRows(row?.twse_rows),
-    otcRows: normalizeRows(row?.otc_rows),
+  const marketDb = databaseForDataDomain(env, 'market')
+  const { results } = await marketDb.prepare(`
+    SELECT stock_id
+      FROM stock_prices
+     WHERE date = ?
+  `).bind(latestDate).all<{ stock_id: number | string }>()
+  const ids = (results ?? []).map((row) => Number(row.stock_id)).filter(Number.isSafeInteger)
+  const identities = await loadCoreStockIdentitiesByIds(env, ids)
+  let twseRows = 0
+  let otcRows = 0
+  for (const row of results ?? []) {
+    const market = String(identities.get(Number(row.stock_id))?.market ?? '').trim().toUpperCase()
+    if (market === 'TWSE') twseRows += 1
+    else if (market === 'OTC') otcRows += 1
   }
+  return { twseRows, otcRows }
 }
 
 export async function loadMarketDataReadinessStats(
-  db: D1Database,
+  env: Pick<Bindings, 'DB'> & Partial<Bindings>,
   targetDate: string,
 ): Promise<MarketDataReadinessStats> {
+  const marketDb = databaseForDataDomain(env, 'market')
   const [price, chip, indicators] = await Promise.all([
-    targetAwareTableStats(db, 'stock_prices', targetDate),
-    targetAwareTableStats(db, 'chip_data', targetDate),
-    targetAwareTableStats(db, 'technical_indicators', targetDate),
+    targetAwareTableStats(marketDb, 'stock_prices', targetDate),
+    targetAwareTableStats(marketDb, 'chip_data', targetDate),
+    targetAwareTableStats(marketDb, 'technical_indicators', targetDate),
   ])
-  const priceSegments = await latestPriceSegmentStats(db, price.latestDate)
+  const priceSegments = await latestPriceSegmentStats(env, price.latestDate)
   return {
     targetDate,
     priceLatestDate: price.latestDate,
@@ -152,11 +161,11 @@ export async function loadMarketDataReadinessStats(
 }
 
 export async function assertMarketDataReady(
-  db: D1Database,
+  env: Pick<Bindings, 'DB'> & Partial<Bindings>,
   targetDate: string,
   options: MarketDataReadinessOptions = {},
 ): Promise<MarketDataReadinessResult> {
-  const stats = await loadMarketDataReadinessStats(db, targetDate)
+  const stats = await loadMarketDataReadinessStats(env, targetDate)
   const result = evaluateMarketDataReadiness(stats, options)
   if (!result.ok) {
     throw new Error(result.summary)

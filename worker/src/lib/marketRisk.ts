@@ -173,30 +173,30 @@ async function fetchMarketForeignChip(db: D1Database): Promise<{
 }> {
   try {
     const { results } = await db.prepare(`
-      SELECT c.date, SUM(COALESCE(c.foreign_net, 0) * COALESCE(sp.close, 0)) / 1e8 AS daily_net
-      FROM chip_data c
-      JOIN stocks s ON s.symbol = c.symbol
-      JOIN stock_prices sp ON sp.stock_id = s.id AND sp.date = c.date
-      WHERE c.date >= date('now', '-25 days')
-      GROUP BY c.date
-      ORDER BY c.date
+      SELECT date, SUM(COALESCE(net_amount, 0)) / 1e8 AS daily_net
+        FROM canonical_institutional_amount_daily
+       WHERE investor = 'foreign'
+         AND date >= date('now', '-25 days')
+       GROUP BY date
+       ORDER BY date
     `).all<{ date: string; daily_net: number }>()
 
     if (!results?.length) return { net5d: null, consecutiveSell: 0 }
-
     const last5 = results.slice(-5)
-    const net5d = last5.reduce((s, r) => s + (r.daily_net ?? 0), 0)
-
+    const net5d = last5.reduce((sum, row) => sum + Number(row.daily_net ?? 0), 0)
     let consecutive = 0
-    for (let i = results.length - 1; i >= 0; i--) {
-      const net = results[i].daily_net ?? 0
-      if (net < 0) consecutive--
-      else if (net > 0) { if (consecutive === 0) consecutive = 1; break }
-      else break
+    for (let index = results.length - 1; index >= 0; index -= 1) {
+      const net = Number(results[index].daily_net ?? 0)
+      if (net < 0) consecutive -= 1
+      else if (net > 0) {
+        if (consecutive === 0) consecutive = 1
+        break
+      } else break
     }
-
     return { net5d: Math.round(net5d * 100) / 100, consecutiveSell: consecutive }
-  } catch { return { net5d: null, consecutiveSell: 0 } }
+  } catch {
+    return { net5d: null, consecutiveSell: 0 }
+  }
 }
 
 // ── 4/6. 融資統計（透過 Controller proxy 取 TWSE MI_MARGN）──────────────────

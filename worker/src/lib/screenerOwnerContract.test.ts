@@ -51,7 +51,7 @@ const dailyPipeline = fs.readFileSync('../ml-controller/graphs/daily_pipeline_v2
   assert(screenerMarketData.includes('WHERE date <= ?'), 'screener D1 loader must cap price/chip data by requested date')
   assert(
     screenerMarketData.includes('SCREENER_PRICE_DATE_PAGE_SIZE = 5') &&
-      screenerMarketData.includes('loadScreenerPriceRowsPaged(env.DB, tradingDates)'),
+      screenerMarketData.includes('loadScreenerPriceRowsPaged(env, tradingDates)'),
     'full-market price history must use bounded D1 pages instead of one timeout-prone response',
   )
   assert(
@@ -148,7 +148,7 @@ const dailyPipeline = fs.readFileSync('../ml-controller/graphs/daily_pipeline_v2
   assert(!marketScreener.includes('c.score += adjustment'), 'RRG evidence must not mutate the L1/L1.5 candidate score')
   assert(marketScreener.includes("applicationMode: 'shadow_late_l4_fusion_feature_only'"), 'RRG must declare its late learned consumer scope')
   assert(marketScreener.includes('candidateSetMutationAllowed: false'), 'RRG must explicitly forbid candidate-set mutation')
-  assert(marketScreener.includes('queryTopConceptTagsForSymbols(env.DB, [...overlayEligibleSymbols], 400, endDate)'), 'RRG taxonomy must be point-in-time as of the screener date')
+  assert(marketScreener.includes("queryTopConceptTagsForSymbols(databaseForDataDomain(env, 'market'), [...overlayEligibleSymbols], 400, endDate)"), 'RRG taxonomy must be point-in-time as of the screener date')
   assert(marketScreener.includes(').bind(endDate, endDate).all<{'), 'RRG snapshot must not read sector_flow rows after the screener date')
   assert(marketScreener.includes('latestThemeUniverse'), 'RRG overlay must align FinLab taxonomy tags to the latest sector_flow taxonomy universe')
   assert(marketScreener.includes("SELECT sector, classification, quadrant"), 'screener RRG overlay must keep sector_flow classification with the sector')
@@ -179,7 +179,7 @@ const dailyPipeline = fs.readFileSync('../ml-controller/graphs/daily_pipeline_v2
   assert(screenerSeedQuality.includes('eligible_for_pending_buy'), 'screener seed SQL must persist pending-buy eligibility')
   assert(pendingBuyOrchestrator.includes("from './boardTradability'"), 'pending-buy setup must consume the board/tradability contract')
   assert(pendingBuyOrchestrator.includes("NOT IN ('EMERGING', 'ESB')"), 'pending-buy setup must exclude explicit emerging-board stocks')
-  assert(pendingBuyOrchestrator.includes('sp_exec.open'), 'pending-buy setup must reject emerging-style rows without an executable open price')
+  assert(pendingBuyOrchestrator.includes('row.latest_open != null'), 'pending-buy setup must reject emerging-style rows without an executable open price')
   assert(pendingBuyOrchestrator.includes('latest_avg_price'), 'pending-buy setup must inspect avg-price-only emerging-style rows')
   assert(pendingBuyOrchestrator.includes("execution_pool_policy: 'l4_sparse_final_buy_only'"), 'pending-buy setup must only execute L4 sparse final BUY rows')
   assert(pendingBuyOrchestrator.includes("json_extract(dr.alpha_allocation, '$.selected') = 1"), 'pending-buy setup must require L4 sparse selected allocation evidence')

@@ -28,12 +28,12 @@ assert(
 )
 
 assert(
-  updateOrchestrator.includes('computeAndStoreIndicators(env.DB, stock.id)'),
+  updateOrchestrator.includes("computeAndStoreIndicators(databaseForDataDomain(env, 'market'), stock.id)"),
   'market data queue must compute indicators for the update universe',
 )
 
 assert(
-  updateOrchestrator.includes('assertMarketDataReady(env.DB, twDate, { requireIndicators: false })'),
+  updateOrchestrator.includes('assertMarketDataReady(env, twDate, { requireIndicators: false })'),
   'bulk fetch readiness must not require indicators before the indicator queue has run',
 )
 
@@ -62,7 +62,7 @@ assert(
 assert(
   updateOrchestrator.includes('Number(stock.in_current_watchlist ?? 0) === 1') &&
     updateOrchestrator.includes("type: 'news_batch'") &&
-    updateOrchestrator.includes('crawlAndStoreNews(env.DB, stock)'),
+    updateOrchestrator.includes("crawlAndStoreNews(databaseForDataDomain(env, 'market'), stock)"),
   'news crawling should stay limited to selected watchlist stocks and run outside the price/indicator hot path',
 )
 

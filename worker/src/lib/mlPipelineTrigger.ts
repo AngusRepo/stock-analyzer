@@ -40,8 +40,9 @@ export async function runMLAndRiskV2(
 ): Promise<string> {
   const twDate = resolvePipelineRunDate(runDate)
   const opsDb = databaseForDataDomain(env, 'ops')
+  const marketDb = databaseForDataDomain(env, 'market')
   if (options.prevalidatedEventChain) {
-    await assertMarketDataReady(env.DB, twDate)
+    await assertMarketDataReady(env, twDate)
   } else {
     await assertEveningPipelineReady(env, twDate)
   }
@@ -78,13 +79,13 @@ export async function runMLAndRiskV2(
       if (!shouldRecomputeRisk && existingRiskComplete) {
         console.log(`[ML V2] Market risk preserved for backfill date=${twDate}; skip current-market overwrite`)
         const regimeState = await readMarketRegimeState(env.KV).catch(() => null)
-        const packet = await buildMarketRegimeFactorPacket(env.DB, existingRisk, regimeState)
-        await upsertMarketRegimeFactorPacket(env.DB, packet)
+        const packet = await buildMarketRegimeFactorPacket(marketDb, existingRisk, regimeState)
+        await upsertMarketRegimeFactorPacket(marketDb, packet)
         await clearMarketRiskLatestCaches(env)
         console.log(`[ML V2] Market regime factor packet refreshed from preserved row: ${packet.level} (${packet.score}/100) date=${packet.date}`)
       } else {
         const risk = await calcMarketRisk(
-          env.DB,
+          marketDb,
           env.ANTHROPIC_API_KEY,
           env.ML_CONTROLLER_URL,
           env.ML_CONTROLLER_SECRET,
@@ -115,7 +116,7 @@ export async function runMLAndRiskV2(
           risk.riskSummary,
         ).run()
         const regimeState = await readMarketRegimeState(env.KV).catch(() => null)
-        const packet = await buildMarketRegimeFactorPacket(env.DB, {
+        const packet = await buildMarketRegimeFactorPacket(marketDb, {
           date: risk.date,
           vix: risk.vix,
           vix_level: risk.vixLevel,
@@ -132,7 +133,7 @@ export async function runMLAndRiskV2(
           risk_level: risk.riskLevel,
           risk_summary: risk.riskSummary,
         }, regimeState)
-        await upsertMarketRegimeFactorPacket(env.DB, packet)
+        await upsertMarketRegimeFactorPacket(marketDb, packet)
         await clearMarketRiskLatestCaches(env)
         console.log(`[ML V2] Market risk: ${packet.level} (${packet.score}/100) date=${risk.date}`)
       }
@@ -277,7 +278,7 @@ export async function assertEveningPipelineReady(
   env: Bindings,
   twDate: string,
 ): Promise<MarketDataReadinessResult> {
-  const ready = await assertMarketDataReady(env.DB, twDate)
+  const ready = await assertMarketDataReady(env, twDate)
   const queueLog = await env.KV.get(`scheduler:run:indicator-queue:${twDate}`, 'json') as {
     status?: string
     summary?: string

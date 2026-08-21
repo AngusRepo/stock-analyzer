@@ -70,6 +70,21 @@ assert(
   'Cloud Run producer run id must be the exact screener funnel identity used by callback closure',
 )
 
+for (const [binding, envName] of [
+  ['CORE_DB', 'CF_D1_CORE_DB_ID'],
+  ['MARKET_DB', 'CF_D1_MARKET_DB_ID'],
+  ['LEARNING_DB', 'CF_D1_LEARNING_DB_ID'],
+  ['OPS_DB', 'CF_D1_OPS_DB_ID'],
+  ['EXECUTION_DB', 'CF_D1_EXECUTION_DB_ID'],
+  ['PAPER_DB', 'CF_D1_PAPER_DB_ID'],
+  ['RESEARCH_DB', 'CF_D1_RESEARCH_DB_ID'],
+] as const) {
+  assert(
+    screenerJobMain.includes(`${binding}: RestD1Database.fromEnv('${envName}')`),
+    `Cloud Run screener must bind active ${binding} through ${envName}`,
+  )
+}
+
 assert(
   screenerJobMain.includes("LEARNING_DB: RestD1Database.fromEnv('CF_D1_LEARNING_DB_ID')") &&
     screenerJobMain.includes("MULTI_D1_ACTIVE_DOMAINS: env.MULTI_D1_ACTIVE_DOMAINS ?? 'learning'") &&

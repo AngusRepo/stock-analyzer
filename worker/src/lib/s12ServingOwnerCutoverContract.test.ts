@@ -26,6 +26,23 @@ assert(!recommendationRoute.includes('intraday_s12_formal_ev'), 'daily recommend
 assert(!controllerMain.includes('s12_formal_ev'), 'ml-controller must not mount the retired formal-EV route')
 assert(!wrangler.includes('S12_DURABLE_STRUCTURE_JOB_ENABLED'), 'production Worker must not enable retired durable S12 serving')
 
+for (const [binding, envName] of [
+  ['CORE_DB', 'CF_D1_CORE_DB_ID'],
+  ['MARKET_DB', 'CF_D1_MARKET_DB_ID'],
+  ['LEARNING_DB', 'CF_D1_LEARNING_DB_ID'],
+  ['OPS_DB', 'CF_D1_OPS_DB_ID'],
+  ['EXECUTION_DB', 'CF_D1_EXECUTION_DB_ID'],
+  ['PAPER_DB', 'CF_D1_PAPER_DB_ID'],
+  ['RESEARCH_DB', 'CF_D1_RESEARCH_DB_ID'],
+] as const) {
+  assert(
+    researchRunner.includes(`${binding}: RestD1Database.fromEnv('${envName}')`),
+    `S12 research runner must bind active ${binding} through ${envName}`,
+  )
+}
+assert(researchRunner.includes("MULTI_D1_ACTIVE_DOMAINS: env.MULTI_D1_ACTIVE_DOMAINS ?? 'learning'"), 'S12 research runner must route active D1 domains')
+assert(researchRunner.includes("MULTI_D1_STRICT: env.MULTI_D1_STRICT ?? 'true'"), 'S12 research runner must fail closed when active bindings are absent')
+
 assert(researchRunner.includes('runS12ResearchStructureSnapshots'), 'remaining S12 batch job must use the research producer')
 assert(researchRunner.includes("type S12StructureRunSource = 'historical_shadow' | 'manual_repair'"), 'remaining S12 batch job must allow research sources only')
 assert(researchRunner.includes('invalid_s12_structure_run_source'), 'remaining S12 batch job must fail closed on retired sources')

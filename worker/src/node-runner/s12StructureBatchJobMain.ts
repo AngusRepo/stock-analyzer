@@ -38,7 +38,15 @@ function buildBindings(): Bindings {
   const env = process.env
   return {
     DB: RestD1Database.fromEnv(),
+    CORE_DB: RestD1Database.fromEnv('CF_D1_CORE_DB_ID'),
+    MARKET_DB: RestD1Database.fromEnv('CF_D1_MARKET_DB_ID'),
+    LEARNING_DB: RestD1Database.fromEnv('CF_D1_LEARNING_DB_ID'),
     OPS_DB: RestD1Database.fromEnv('CF_D1_OPS_DB_ID'),
+    EXECUTION_DB: RestD1Database.fromEnv('CF_D1_EXECUTION_DB_ID'),
+    PAPER_DB: RestD1Database.fromEnv('CF_D1_PAPER_DB_ID'),
+    RESEARCH_DB: RestD1Database.fromEnv('CF_D1_RESEARCH_DB_ID'),
+    MULTI_D1_ACTIVE_DOMAINS: env.MULTI_D1_ACTIVE_DOMAINS ?? 'learning',
+    MULTI_D1_STRICT: env.MULTI_D1_STRICT ?? 'true',
     KV: RestKVNamespace.fromEnv(),
     EVIDENCE_ARTIFACT_WRITER: RestEvidenceArtifactWriter.fromEnv(),
     EVIDENCE_ARTIFACT_READER: RestEvidenceArtifactReader.fromEnv(),

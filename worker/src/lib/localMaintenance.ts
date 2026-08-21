@@ -280,6 +280,7 @@ export async function fetchWeeklyShareholding(env: Bindings): Promise<void> {
       bySymbol.get(symbol)!.rows.push(row)
     }
 
+    const marketDb = databaseForDataDomain(env, 'market')
     const statements: any[] = []
     for (const [symbol, { date: rawDate, rows }] of bySymbol.entries()) {
       const stockId = idMap.get(symbol)!
@@ -301,7 +302,7 @@ export async function fetchWeeklyShareholding(env: Bindings): Promise<void> {
         .filter((row) => largeLevels.has(holdingLevel(row)))
         .reduce((sum, row) => sum + shareCount(row), 0)
 
-      statements.push(databaseForDataDomain(env, 'market').prepare(`
+      statements.push(marketDb.prepare(`
         INSERT INTO shareholding (stock_id, date, total_shares, holder_count, retail_shares, retail_pct, large_holder_shares, large_holder_pct)
         VALUES (?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(stock_id, date) DO UPDATE SET
@@ -321,7 +322,7 @@ export async function fetchWeeklyShareholding(env: Bindings): Promise<void> {
     }
 
     for (let i = 0; i < statements.length; i += 50) {
-      await env.DB.batch(statements.slice(i, i + 50))
+      await marketDb.batch(statements.slice(i, i + 50))
     }
 
     console.log(`[Wave3] Shareholding (TDCC): ${statements.length} stocks written`)

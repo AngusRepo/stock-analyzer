@@ -14,6 +14,11 @@ test('selection evidence UPSERT preserves and refreshes route fields', () => {
   ]) {
     assert(selection.includes(`${field}=COALESCE(`), `missing conflict refresh for ${field}`)
     assert(selection.includes(`selection_reference_snapshots_v1.${field}`), `historical null must preserve ${field}`)
+    if (field === 'strategy_challenger_route_score') {
+      assert(selection.includes('previousRoutingRows'))
+      assert(selection.includes('previousRoutingBySymbol'))
+      assert(selection.includes('row.strategy_challenger_route_score ?? previousRouting?.strategy_challenger_route_score ?? null'))
+    }
   }
 })
 

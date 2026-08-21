@@ -11,6 +11,7 @@
 
 import type { Bindings } from '../types'
 import { databaseForDataDomain } from './dataDomainRegistry'
+import { loadCanonicalScreenerRunIds } from './historicalScreenerArtifactEvidence'
 import {
   loadCoreStockIdentitiesBySymbols,
   loadMarketPriceHistoryBySymbols,
@@ -410,7 +411,10 @@ export async function prepareStrategyRedundancyBackfill(
     throw new Error(`strategy_redundancy_strategy_count_mismatch:${asOfDate}:${strategyRows.size}/${run.strategy_count}`)
   }
 
-  const oofReturns = await loadMatureStrategyOofReturns(databaseForDataDomain(env, 'learning'), asOfDate)
+  const canonicalRunIds = await loadCanonicalScreenerRunIds(env, asOfDate)
+  const oofReturns = await loadMatureStrategyOofReturns(
+    databaseForDataDomain(env, 'learning'), asOfDate, canonicalRunIds,
+  )
   const strategies = [...strategyRows.entries()]
     .sort(([left], [right]) => left.localeCompare(right))
     .map(([strategyId, row]) => ({
@@ -582,6 +586,7 @@ export async function loadPreviousCanonicalL15Slate(
 export async function loadMatureStrategyOofReturns(
   db: D1Database,
   asOfDate: string,
+  canonicalRunIds: Record<string, string>,
 ): Promise<Record<string, Array<{ signal_date: string; residual_return: number; sample_count: number }>>> {
   const { results } = await db.prepare(`
     WITH mature_dates AS (
@@ -613,9 +618,8 @@ export async function loadMatureStrategyOofReturns(
             AND mr.labeler_version=m.labeler_version
        )
        AND EXISTS (
-         SELECT 1 FROM canonical_run_heads h
-          WHERE h.logical_run_key='screener:' || m.signal_date || ':TW:production:market_screener'
-            AND h.run_id=m.producer_run_id
+         SELECT 1 FROM json_each(?) h
+          WHERE h.key=m.signal_date AND h.value=m.producer_run_id
        )
      GROUP BY m.strategy_id, m.signal_date
     HAVING COUNT(*) >= 3
@@ -623,6 +627,7 @@ export async function loadMatureStrategyOofReturns(
   `).bind(
     asOfDate,
     asOfDate,
+    JSON.stringify(canonicalRunIds),
     SELECTION_REFERENCE_CONTRACT_VERSION,
     ...STRATEGY_FORMAL_LABELER_VERSIONS,
   ).all<{
@@ -3746,7 +3751,10 @@ export async function runBottomUpScreener(env: Bindings, runDate?: string | null
           value: null,
           error: error instanceof Error ? error.message.slice(0, 300) : String(error).slice(0, 300),
         })),
-      loadMatureStrategyOofReturns(databaseForDataDomain(env, 'learning'), endDate)
+      loadCanonicalScreenerRunIds(env, endDate)
+        .then((canonicalRunIds) => loadMatureStrategyOofReturns(
+          databaseForDataDomain(env, 'learning'), endDate, canonicalRunIds,
+        ))
         .then((returns) => ({ returns, error: null as string | null }))
         .catch((error) => ({
           returns: {} as Record<string, Array<{ signal_date: string; residual_return: number; sample_count: number }>>,

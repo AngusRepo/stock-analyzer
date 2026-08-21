@@ -578,6 +578,19 @@ export async function persistSelectionEvidenceV4(
     return { referenceRows: input.references.length, matrixRows: expectedCells }
   }
 
+  const previousRoutingRows = await db.prepare(`
+    SELECT symbol, strategy_router_version, strategy_router_score,
+           strategy_challenger_route_version, strategy_challenger_route_score
+      FROM selection_reference_snapshots_v1
+     WHERE producer_run_id=?
+  `).bind(input.producerRunId).all<Pick<
+    SelectionReferenceRowV1,
+    'symbol' | 'strategy_router_version' | 'strategy_router_score'
+      | 'strategy_challenger_route_version' | 'strategy_challenger_route_score'
+  >>()
+  const previousRoutingBySymbol = new Map(
+    (previousRoutingRows.results ?? []).map((row) => [clean(row.symbol), row]),
+  )
   await db.prepare(`
     INSERT INTO strategy_label_matrix_runs_v4 (
       producer_run_id, signal_date, status, reference_candidate_count,
@@ -612,7 +625,9 @@ export async function persistSelectionEvidenceV4(
       db.prepare('DELETE FROM strategy_label_matrix_v4 WHERE producer_run_id=?').bind(input.producerRunId),
       db.prepare('DELETE FROM selection_reference_snapshots_v1 WHERE producer_run_id=?').bind(input.producerRunId),
     ])
-    const referenceStatements = input.references.map((row) => db.prepare(`
+    const referenceStatements = input.references.map((row) => {
+      const previousRouting = previousRoutingBySymbol.get(clean(row.symbol))
+      return db.prepare(`
       INSERT INTO selection_reference_snapshots_v1 (
         signal_date, symbol, producer_run_id, stock_id, name, market_segment, sector,
         hard_gate_passed, hard_gate_reason, feature_available, feature_rejection_reason, strategy_labeled,
@@ -658,11 +673,15 @@ export async function persistSelectionEvidenceV4(
       row.market_segment, row.sector, row.feature_available, row.feature_rejection_reason,
       row.strategy_selected, row.selection_stage, row.rejection_reason, row.score_v2,
       row.score_components, row.strategy_labeler_version, row.strategy_affinity_version,
-      row.strategy_router_version, row.strategy_router_score,
-      row.strategy_challenger_affinity_version, row.strategy_challenger_route_version,
-      row.strategy_challenger_route_score, row.strategy_registry_checksum, SELECTION_REFERENCE_CONTRACT_VERSION,
+      row.strategy_router_version ?? previousRouting?.strategy_router_version ?? null,
+      row.strategy_router_score ?? previousRouting?.strategy_router_score ?? null,
+      row.strategy_challenger_affinity_version,
+      row.strategy_challenger_route_version ?? previousRouting?.strategy_challenger_route_version ?? null,
+      row.strategy_challenger_route_score ?? previousRouting?.strategy_challenger_route_score ?? null,
+      row.strategy_registry_checksum, SELECTION_REFERENCE_CONTRACT_VERSION,
       input.evidenceArtifactId,
-    ))
+      )
+    })
     for (let offset = 0; offset < referenceStatements.length; offset += 200) {
       await db.batch(referenceStatements.slice(offset, offset + 200))
     }

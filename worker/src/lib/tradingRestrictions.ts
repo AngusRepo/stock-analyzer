@@ -249,7 +249,8 @@ async function reconcileOfficialRestrictions(
     : (isTpex
         ? 'https://www.tpex.org.tw/openapi/v1/tpex_disposal_information'
         : 'https://www.twse.com.tw/rwd/zh/announcement/punish?response=json')
-  const statements = [databaseForDataDomain(env, 'market').prepare(`
+  const marketDb = databaseForDataDomain(env, 'market')
+  const statements = [marketDb.prepare(`
     UPDATE canonical_trading_restrictions
        SET active = 0,
            end_date = date(?, '-1 day'),
@@ -257,7 +258,7 @@ async function reconcileOfficialRestrictions(
      WHERE source = ?
        AND COALESCE(active, 1) = 1
        AND date(source_date) < date(?)
-  `).bind(tradeDate, source, tradeDate), ...symbols.map((symbol) => databaseForDataDomain(env, 'market').prepare(`
+  `).bind(tradeDate, source, tradeDate), ...symbols.map((symbol) => marketDb.prepare(`
     INSERT INTO canonical_trading_restrictions (
       symbol, restriction_type, market_segment, start_date, end_date, source,
       source_date, title, source_url, lineage_json, active, updated_at
@@ -282,7 +283,7 @@ async function reconcileOfficialRestrictions(
     JSON.stringify({ schema_version: 'canonical-trading-restrictions-v1', source, fetch_mode: 'official_fallback' }),
   ))]
   for (let i = 0; i < statements.length; i += 50) {
-    await env.DB.batch(statements.slice(i, i + 50))
+    await marketDb.batch(statements.slice(i, i + 50))
   }
 }
 

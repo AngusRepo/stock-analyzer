@@ -614,7 +614,7 @@ async function handleSchedulerCallback(c: any) {
         }, 400)
       }
       const { recordCanonicalScreenerCallback } = await import('../lib/screenerRecoveryWatchdog')
-      const receipt = await recordCanonicalScreenerCallback(c.env.DB, {
+      const receipt = await recordCanonicalScreenerCallback(databaseForDataDomain(c.env, 'ops'), {
         businessDate: callbackRunDate,
         canonicalRunId: screenerChainRunId,
         producerRunId: callbackRunId,

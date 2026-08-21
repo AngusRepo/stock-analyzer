@@ -171,12 +171,13 @@ export async function reclassifyTags(env: Bindings): Promise<{ processed: number
       if (!validTags.length) continue
 
       // 5. 更新 D1：先刪除所有 tags，再插入 1~3 with weights（不強制湊滿）
-      await databaseForDataDomain(env, 'market').prepare('DELETE FROM stock_tags WHERE symbol = ?').bind(stock.symbol).run()
+      const marketDb = databaseForDataDomain(env, 'market')
+      await marketDb.prepare('DELETE FROM stock_tags WHERE symbol = ?').bind(stock.symbol).run()
       const stmts = validTags.slice(0, 3).map(tw =>
-        databaseForDataDomain(env, 'market').prepare('INSERT INTO stock_tags (symbol, tag, weight) VALUES (?, ?, ?)')
+        marketDb.prepare('INSERT INTO stock_tags (symbol, tag, weight) VALUES (?, ?, ?)')
           .bind(stock.symbol, tw.tag, Math.min(1.0, Math.max(0.1, tw.weight)))
       )
-      await env.DB.batch(stmts)
+      await marketDb.batch(stmts)
 
       updated++
       console.log(`[Reclassify] ${stock.symbol} ${stockName}: ${(currentTags ?? []).length} tags → ${validTags.length} (${validTags.map(t => `${t.tag}:${t.weight}`).join(', ')})`)

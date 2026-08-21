@@ -236,9 +236,9 @@ assert.equal(databaseForDataDomain(shadowEnv, 'market'), legacy)
 assert.equal(shadowDatabaseForDataDomain(shadowEnv, 'market'), market)
 assert(activeDataDomains({ MULTI_D1_ACTIVE_DOMAINS: ' market,ops ' }).has('ops'))
 assert.deepEqual(invalidActiveDataDomains({ MULTI_D1_ACTIVE_DOMAINS: ' market,unknown,ops,bad ' }), ['unknown', 'bad'])
-assert.throws(
-  () => databaseForDataDomain({ ...shadowEnv, MULTI_D1_ACTIVE_DOMAINS: 'market' }, 'market'),
-  /multi_d1_strict_routing_not_closed/,
+assert.equal(
+  databaseForDataDomain({ ...shadowEnv, MULTI_D1_ACTIVE_DOMAINS: 'market' }, 'market'),
+  market,
 )
 const learning = { kind: 'learning' } as unknown as D1Database
 const learningActiveEnv = {
@@ -263,6 +263,8 @@ assert.equal(dataDomainRoutingContractReady('paper'), true)
 assert.equal(dataDomainProjectionContractReady('paper'), true)
 assert.equal(dataDomainRoutingContractReady('core'), true)
 assert.equal(dataDomainProjectionContractReady('core'), true)
+assert.equal(dataDomainRoutingContractReady('market'), true)
+assert.equal(dataDomainProjectionContractReady('market'), true)
 assert.equal(tableOwnershipMetadata('stock_analysis_reports')?.route_ready, true)
 assert(LEGACY_CONTROL_PLANE_TABLES.has('data_domain_cutovers'))
 const legacyControlDb = {} as D1Database
@@ -271,7 +273,7 @@ assert(!tablesForDataDomainShadowBackfill('ops').includes('data_domain_cutovers'
 
 assert.equal(MULTI_D1_STRICT_ROUTING_READY, false)
 assert.equal(MULTI_D1_PROJECTION_CONTRACT_READY, false)
-assert.equal(MULTI_D1_ROUTING_CONTRACT_GATES.direct_legacy_db_paths_closed, false)
+assert.equal(MULTI_D1_ROUTING_CONTRACT_GATES.direct_legacy_db_paths_closed, true)
 assert.equal(MULTI_D1_ROUTING_CONTRACT_GATES.writer_quiescence_shared_epoch_cas, false)
 assert.equal(MULTI_D1_PROJECTION_CONTRACT_GATES.typed_outbox_producers_wired, false)
 assert.throws(

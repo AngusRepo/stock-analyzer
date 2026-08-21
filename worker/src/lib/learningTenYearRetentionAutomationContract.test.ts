@@ -39,6 +39,16 @@ assert.match(routes, /'learning-retention-readiness'/)
 assert.match(routes, /'legacy-learning-deletion-readiness'/)
 assert.match(handlers, /inspectLearningTenYearRetentionReadiness/)
 assert.match(handlers, /inspectLegacyLearningDeletionReadiness/)
+const learningHandler = handlers.slice(
+  handlers.indexOf("'learning-retention-readiness'"),
+  handlers.indexOf("'legacy-learning-deletion-readiness'"),
+)
+const legacyHandler = handlers.slice(
+  handlers.indexOf("'legacy-learning-deletion-readiness'"),
+  handlers.indexOf("'timeverse-sync'"),
+)
+assert.match(learningHandler, /requestedRunDate\(\) \|\| twToday\(\)/)
+assert.match(legacyHandler, /requestedRunDate\(\) \|\| twToday\(\)/)
 assert.match(handlers, /size_after/)
 assert.match(handlers, /utilization >= 85/)
 assert.match(handlers, /utilization >= 75/)

@@ -63,7 +63,7 @@ function evidencePointer(input: {
 }
 
 export async function runLegacyStrategyEvidenceMigration(
-  env: Pick<Bindings, 'DB' | 'ARTIFACTS'>,
+  env: Pick<Bindings, 'DB' | 'ARTIFACTS'> & Partial<Bindings>,
   options: { symbolLimit?: number } = {},
 ): Promise<{
   candidate_contexts: number
@@ -74,9 +74,11 @@ export async function runLegacyStrategyEvidenceMigration(
   backlog_remaining: boolean
 }> {
   if (!env.ARTIFACTS) throw new Error('artifact_r2_binding_missing')
+  const opsDb = databaseForDataDomain(env, 'ops')
+  const learningDb = databaseForDataDomain(env, 'learning')
   const symbolLimit = Math.max(1, Math.min(Math.floor(options.symbolLimit ?? 20), 40))
   const taskName = 'legacy_strategy_evidence_v2'
-  const cursor = await loadLegacyMigrationCursor(env.DB, taskName)
+  const cursor = await loadLegacyMigrationCursor(opsDb, taskName)
   if (cursor?.status === 'complete') {
     return {
       candidate_contexts: 0, migrated_decisions: 0, artifacts: 0,
@@ -85,7 +87,7 @@ export async function runLegacyStrategyEvidenceMigration(
   }
   const cursorDate = cursor?.cursor_date ?? ''
   const cursorSymbol = cursor?.cursor_key ?? ''
-  const { results } = await databaseForDataDomain(env, 'learning').prepare(`
+  const { results } = await learningDb.prepare(`
     WITH candidate_contexts AS (
       SELECT date, symbol
         FROM strategy_decision_log
@@ -105,7 +107,7 @@ export async function runLegacyStrategyEvidenceMigration(
   `).bind(cursorDate, cursorDate, cursorSymbol, symbolLimit).all<LegacyStrategyDecisionRow>()
   const rows = results ?? []
   if (!rows.length) {
-    await checkpointLegacyMigration(env.DB, { taskName, status: 'complete' })
+    await checkpointLegacyMigration(opsDb, { taskName, status: 'complete' })
     return {
       candidate_contexts: 0, migrated_decisions: 0, artifacts: 0,
       original_blob_bytes: 0, compact_blob_bytes: 0, backlog_remaining: false,
@@ -143,7 +145,7 @@ export async function runLegacyStrategyEvidenceMigration(
     }
     const first = dateRows[0]
     const last = dateRows[dateRows.length - 1]
-    const artifact = await writeEvidenceArtifact(env, {
+    const artifact = await writeEvidenceArtifact({ ...env, DB: opsDb }, {
       domain: 'legacy_strategy_decision_evidence',
       businessDate: date,
       producerRunId: `legacy-strategy:${date}:${first.decision_id}:${last.decision_id}`,
@@ -186,7 +188,7 @@ export async function runLegacyStrategyEvidenceMigration(
       const candidate = parseJsonObject(JSON.stringify(parsed?.candidate ?? null))
       const rawSignals = parseJsonObject(JSON.stringify(candidate?.raw_signals ?? null)) ?? {}
       if (parsed?.score_v2 !== undefined) rawSignals.score_v2 = parsed.score_v2
-      contextStatements.push(databaseForDataDomain(env, 'learning').prepare(`
+      contextStatements.push(learningDb.prepare(`
         INSERT OR IGNORE INTO strategy_candidate_contexts (
           context_id, date, symbol, context_hash, raw_signals_json,
           current_price, industry, artifact_id, r2_key, checksum, created_at
@@ -206,10 +208,10 @@ export async function runLegacyStrategyEvidenceMigration(
       ))
     }
     for (let offset = 0; offset < contextStatements.length; offset += 50) {
-      await env.DB.batch(contextStatements.slice(offset, offset + 50))
+      await learningDb.batch(contextStatements.slice(offset, offset + 50))
     }
 
-    await retainArtifactHardReference(env.DB, {
+    await retainArtifactHardReference(opsDb, {
       artifactId: artifact.artifact_id,
       ownerType: 'strategy_decision_evidence_batch',
       ownerId: artifact.artifact_id,
@@ -234,7 +236,7 @@ export async function runLegacyStrategyEvidenceMigration(
       })
       compactBlobBytes += new TextEncoder().encode(compactContext).length
       compactBlobBytes += new TextEncoder().encode(compactEvidence).length
-      updateStatements.push(databaseForDataDomain(env, 'learning').prepare(`
+      updateStatements.push(learningDb.prepare(`
         UPDATE strategy_decision_log
            SET context_json=?, evidence_json=?, context_id=?, evidence_artifact_id=?
          WHERE decision_id=?
@@ -248,14 +250,14 @@ export async function runLegacyStrategyEvidenceMigration(
       ))
     }
     for (let offset = 0; offset < updateStatements.length; offset += 50) {
-      await env.DB.batch(updateStatements.slice(offset, offset + 50))
+      await learningDb.batch(updateStatements.slice(offset, offset + 50))
     }
     migratedDecisions += dateRows.length
   }
 
   const lastRow = rows[rows.length - 1]
   const backlogRemaining = contextKeys.length === symbolLimit
-  await checkpointLegacyMigration(env.DB, {
+  await checkpointLegacyMigration(opsDb, {
     taskName,
     status: backlogRemaining ? 'running' : 'complete',
     cursorDate: lastRow.date,

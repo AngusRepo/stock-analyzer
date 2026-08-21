@@ -488,6 +488,7 @@ function shouldPersistActiveExecutionStatus(status: PendingBuyActiveExecutionSta
 }
 
 async function runIntradayCheckUnlocked(env: Bindings, leaseRunId: string): Promise<IntradayStopLossPollResult> {
+  const opsDb = databaseForDataDomain(env, 'ops')
   const cfg = await getTradingConfig(env.KV)
   const riskCfg = await getRiskConfig(env.KV)
   const maxSingleNamePct = Math.min(
@@ -503,7 +504,7 @@ async function runIntradayCheckUnlocked(env: Bindings, leaseRunId: string): Prom
   await reconcilePendingBuyDebates(env, today).catch((e) =>
     console.warn('[Intraday] pending debate reconcile failed:', e),
   )
-  if (!await refreshIntradayExecutionLease(env.DB, leaseRunId)) {
+  if (!await refreshIntradayExecutionLease(opsDb, leaseRunId)) {
     throw new Error('intraday_execution_lease_lost_after_reconcile')
   }
 
@@ -543,7 +544,7 @@ async function runIntradayCheckUnlocked(env: Bindings, leaseRunId: string): Prom
     await new Promise((r) => setTimeout(r, 30_000))
     holdingPoll = await pollIntradayStopLoss(env)
   }
-  if (!await refreshIntradayExecutionLease(env.DB, leaseRunId)) {
+  if (!await refreshIntradayExecutionLease(opsDb, leaseRunId)) {
     throw new Error('intraday_execution_lease_lost_after_holding_poll')
   }
 
@@ -2685,7 +2686,8 @@ export async function runIntradayCheck(env: Bindings): Promise<IntradayStopLossP
   }
   const today = new Date(Date.now() + 8 * 3600_000).toISOString().slice(0, 10)
   const runId = `intraday-check:${today}:${crypto.randomUUID()}`
-  const acquired = await acquireIntradayExecutionLease(env.DB, runId, today)
+  const opsDb = databaseForDataDomain(env, 'ops')
+  const acquired = await acquireIntradayExecutionLease(opsDb, runId, today)
   if (!acquired) {
     console.log('[Intraday] atomic D1 lease busy; overlapping trigger suppressed')
     return { status: 'partial', positions: 0, quoted: 0, missing_symbols: [] }
@@ -2693,7 +2695,7 @@ export async function runIntradayCheck(env: Bindings): Promise<IntradayStopLossP
   try {
     return await runIntradayCheckUnlocked(env, runId)
   } finally {
-    await releaseIntradayExecutionLease(env.DB, runId).catch((error) => {
+    await releaseIntradayExecutionLease(opsDb, runId).catch((error) => {
       console.warn('[Intraday] D1 lease release failed:',
         error instanceof Error ? error.message : String(error))
     })

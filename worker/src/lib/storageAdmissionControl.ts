@@ -57,6 +57,7 @@ const LEARNING_OWNER_CAPACITY_TASKS = new Set([
   'selection-reference-repair',
   'selection-reference-identity-repair',
   's12-smcvwap-calibration',
+  'legacy-strategy-evidence-migration',
   's12-research-recovery',
   's12-replay-backfill',
   'adaptive-meta-policy-replay',

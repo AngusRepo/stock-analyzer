@@ -263,6 +263,36 @@ def test_oof_materialize_job_keeps_prep_dependency_terminal_and_retriable(monkey
     assert "immutable_sequence_behind_compute_snapshot" in callbacks[0]["summary"]
 
 
+def test_oof_materialize_job_exposes_prep_dependency_dates(monkeypatch):
+    callbacks = []
+
+    async def fake_execute_lifecycle(**_kwargs):
+        return {
+            "status": "pending",
+            "reason": "compute_snapshot_behind_market_session",
+            "dependency_retry_required": True,
+            "prep_lifecycle": {
+                "expected_business_date": "2026-08-19",
+                "snapshot_business_date": "2026-08-18",
+                "snapshot_id": "backtest_dataset:2026-08-18:test",
+            },
+        }
+
+    async def fake_callback(payload):
+        callbacks.append(payload)
+
+    monkeypatch.setattr(oof_materialize_job_main, "_execute_lifecycle", fake_execute_lifecycle)
+    monkeypatch.setattr(oof_materialize_job_main, "_callback_worker", fake_callback)
+    monkeypatch.setenv("OOF_MATERIALIZE_CADENCE", "daily")
+    monkeypatch.setenv("OOF_MATERIALIZE_RUN_ID", "run-prep-behind")
+
+    assert asyncio.run(oof_materialize_job_main._run()) == 1
+    callback = callbacks[0]
+    assert callback["metadata"]["prep_lifecycle"]["expected_business_date"] == "2026-08-19"
+    assert callback["metadata"]["prep_lifecycle"]["snapshot_business_date"] == "2026-08-18"
+    assert "expected_snapshot_date=2026-08-19" in callback["summary"]
+    assert "actual_snapshot_date=2026-08-18" in callback["summary"]
+
 def test_weekly_spawned_cohort_requests_bounded_materialization_continuation(monkeypatch):
     callbacks = []
     lifecycle_kwargs = {}

@@ -1,4 +1,5 @@
 import type { Bindings } from '../types'
+import { databaseForDataDomain } from './dataDomainRegistry'
 import { resolveEveningChainRunAuthority } from './eveningChainRunAuthority'
 import {
   claimPipelineStage,
@@ -168,7 +169,8 @@ export async function triggerCanonicalScreenerStage(
     ownerId?: string
   },
 ): Promise<string> {
-  const state = await enqueuePipelineStage(env.DB, {
+  const opsDb = databaseForDataDomain(env, 'ops')
+  const state = await enqueuePipelineStage(opsDb, {
     businessDate: input.businessDate,
     stage: SCREENER_STAGE,
     runId: input.canonicalRunId,
@@ -185,7 +187,7 @@ export async function triggerCanonicalScreenerStage(
   }
 
   const ownerId = input.ownerId || `${input.canonicalRunId}:screener:${Date.now().toString(36)}`
-  const claimed = await claimPipelineStage(env.DB, {
+  const claimed = await claimPipelineStage(opsDb, {
     businessDate: input.businessDate,
     stage: SCREENER_STAGE,
     ownerId,
@@ -193,7 +195,7 @@ export async function triggerCanonicalScreenerStage(
   })
   if (!claimed) return 'LOCKED screener stage claim unavailable'
   if (Number(claimed.attempt_count ?? 0) > SCREENER_MAX_ATTEMPTS) {
-    await settleScreenerTriggerFailure(env.DB, {
+    await settleScreenerTriggerFailure(opsDb, {
       businessDate: input.businessDate,
       canonicalRunId: input.canonicalRunId,
       ownerId,
@@ -207,7 +209,7 @@ export async function triggerCanonicalScreenerStage(
     const result = await input.trigger(env, input.businessDate, { chainRunId: input.canonicalRunId })
     const producerRunId = triggerProducerRunId(result)
     if (!producerRunId) throw new Error('screener_trigger_producer_run_id_missing')
-    const bound = await bindScreenerProducerRun(env.DB, {
+    const bound = await bindScreenerProducerRun(opsDb, {
       businessDate: input.businessDate,
       canonicalRunId: input.canonicalRunId,
       ownerId,
@@ -216,7 +218,7 @@ export async function triggerCanonicalScreenerStage(
     if (!bound) throw new Error('screener_trigger_stage_fence_lost')
     return typeof result === 'string' ? result : JSON.stringify(result)?.slice(0, 500) ?? 'triggered'
   } catch (error) {
-    await settleScreenerTriggerFailure(env.DB, {
+    await settleScreenerTriggerFailure(opsDb, {
       businessDate: input.businessDate,
       canonicalRunId: input.canonicalRunId,
       ownerId,
@@ -315,7 +317,8 @@ export async function runScreenerRecoveryWatchdog(
   if (!/^\d{4}-\d{2}-\d{2}$/.test(businessDate)) {
     throw new Error(`invalid_screener_watchdog_date:${businessDate}`)
   }
-  const canonicalRunId = await loadCanonicalChainRunId(env.DB, businessDate)
+  const opsDb = databaseForDataDomain(env, 'ops')
+  const canonicalRunId = await loadCanonicalChainRunId(opsDb, businessDate)
   if (!canonicalRunId) return `SKIPPED canonical screener run missing for ${businessDate}`
 
   const authority = await resolveEveningChainRunAuthority(env, {
@@ -327,7 +330,7 @@ export async function runScreenerRecoveryWatchdog(
     return `SKIPPED screener recovery authority denied: ${authority.reason}`
   }
 
-  const stage = await loadScreenerStage(env.DB, businessDate)
+  const stage = await loadScreenerStage(opsDb, businessDate)
   if (stage && stage.canonical_run_id !== canonicalRunId) {
     throw new Error(
       `screener_watchdog_canonical_lineage_mismatch:${businessDate}:${stage.canonical_run_id}:${canonicalRunId}`,
@@ -335,10 +338,10 @@ export async function runScreenerRecoveryWatchdog(
   }
   const producerRunId = String(stage?.cursor_key ?? '').trim()
   const funnel = producerRunId
-    ? await loadSuccessfulFunnel(env.DB, businessDate, producerRunId)
+    ? await loadSuccessfulFunnel(opsDb, businessDate, producerRunId)
     : null
   if (funnel?.run_id) {
-    const receipt = await recordCanonicalScreenerCallback(env.DB, {
+    const receipt = await recordCanonicalScreenerCallback(opsDb, {
       businessDate,
       canonicalRunId,
       producerRunId,

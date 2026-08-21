@@ -319,9 +319,10 @@ async function appendCanonicalIntradayMinuteBars(
   if (completed.length === 0) return { appended: 0, error: null }
   let appended = 0
   try {
+    const marketDb = databaseForDataDomain(env, 'market')
     for (let offset = 0; offset < completed.length; offset += 50) {
       const chunk = completed.slice(offset, offset + 50)
-      const results = await env.DB.batch(chunk.map((bar) => databaseForDataDomain(env, 'market').prepare(`
+      const results = await marketDb.batch(chunk.map((bar) => marketDb.prepare(`
         INSERT OR IGNORE INTO intraday_minute_bars
           (trade_date, symbol, minute_start, open, high, low, close, volume, source)
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'shioaji_streaming_tick_accumulator')

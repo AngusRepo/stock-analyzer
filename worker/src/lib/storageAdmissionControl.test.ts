@@ -53,8 +53,18 @@ test('Learning-owned jobs probe Learning D1 after cutover and legacy before cuto
     MULTI_D1_STRICT: 'true',
   }, 'weekly-backtest')
   assert.equal(storageAdmissionOwner('weekly-backtest'), 'learning')
+  assert.equal(storageAdmissionOwner('legacy-strategy-evidence-migration'), 'learning')
   assert.equal(active.allowed, true)
   assert.equal(active.utilizationPct, 20)
+
+  const migration = await inspectStorageAdmission({
+    DB: legacy,
+    LEARNING_DB: learning,
+    MULTI_D1_ACTIVE_DOMAINS: 'learning',
+    MULTI_D1_STRICT: 'true',
+  }, 'legacy-strategy-evidence-migration')
+  assert.equal(migration.allowed, true)
+  assert.equal(migration.utilizationPct, 20)
 
   const legacyOwner = await inspectStorageAdmission({ DB: legacy, LEARNING_DB: learning }, 'weekly-backtest')
   assert.equal(legacyOwner.allowed, false)

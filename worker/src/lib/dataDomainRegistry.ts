@@ -33,7 +33,7 @@ export const MULTI_D1_ROUTING_CONTRACT_GATES = {
   active_domain_ready_guard: true,
   invalid_domain_config_fail_closed: true,
   shadow_owned_registry_complete: true,
-  direct_legacy_db_paths_closed: false,
+  direct_legacy_db_paths_closed: true,
   cross_domain_read_models_closed: false,
   active_read_write_readback_probes_automated: false,
   rollback_restore_probes_automated: false,
@@ -54,8 +54,8 @@ export const MULTI_D1_PROJECTION_CONTRACT_READY = Object.values(
   MULTI_D1_PROJECTION_CONTRACT_GATES,
 ).every(Boolean)
 
-const DOMAIN_ROUTING_CONTRACT_READY = new Set<DataDomain>(['core', 'learning', 'ops', 'execution', 'paper', 'research'])
-const DOMAIN_PROJECTION_FREE_CLOSURE = new Set<DataDomain>(['core', 'learning', 'ops', 'execution', 'paper', 'research'])
+const DOMAIN_ROUTING_CONTRACT_READY = new Set<DataDomain>(['core', 'market', 'learning', 'ops', 'execution', 'paper', 'research'])
+const DOMAIN_PROJECTION_FREE_CLOSURE = new Set<DataDomain>(['core', 'market', 'learning', 'ops', 'execution', 'paper', 'research'])
 
 export function dataDomainRoutingContractReady(domain: DataDomain): boolean {
   return DOMAIN_ROUTING_CONTRACT_READY.has(domain)

@@ -13,6 +13,9 @@ assert.match(strategy, /strategy_candidate_contexts/)
 assert.match(strategy, /context_id=\?, evidence_artifact_id=\?/)
 assert.match(strategy, /source_rows_preserved: true/)
 assert.match(strategy, /cursor\?\.status === 'complete'/)
+assert.match(strategy, /const opsDb = databaseForDataDomain\(env, 'ops'\)/)
+assert.match(strategy, /const learningDb = databaseForDataDomain\(env, 'learning'\)/)
+assert.doesNotMatch(strategy, /env\.DB\.batch|checkpointLegacyMigration\(env\.DB|retainArtifactHardReference\(env\.DB/)
 assert.ok(
   strategy.indexOf("cursor?.status === 'complete'") < strategy.indexOf('WITH candidate_contexts AS'),
   'completed migration must return before scanning strategy_decision_log',

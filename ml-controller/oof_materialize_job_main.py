@@ -124,6 +124,14 @@ def _summary(run_id: str, result: dict[str, Any], *, mode: str) -> str:
         f"reason={result.get('promotion_reason') or result.get('reason') or 'none'}",
         f"full_fit={str((result.get('full_fit_dispatch') or {}).get('status') or 'none')}",
     ]
+    prep_lifecycle = result.get("prep_lifecycle")
+    prep_lifecycle = prep_lifecycle if isinstance(prep_lifecycle, dict) else {}
+    if prep_lifecycle.get("expected_business_date") or prep_lifecycle.get("snapshot_business_date"):
+        parts.extend([
+            f"expected_snapshot_date={prep_lifecycle.get('expected_business_date') or 'missing'}",
+            f"actual_snapshot_date={prep_lifecycle.get('snapshot_business_date') or 'missing'}",
+            f"snapshot_id={prep_lifecycle.get('snapshot_id') or 'missing'}",
+        ])
     freshness = _oof_freshness_evidence(result)
     if freshness.get("expected_max_date") or freshness.get("effective_max_date"):
         parts.extend([
@@ -328,6 +336,7 @@ async def _run() -> int:
             "continuation_attempt": continuation_attempt,
             "continuation_max_attempts": OOF_CONTINUATION_MAX_ATTEMPTS,
             "continuation_only": continuation_only,
+            "prep_lifecycle": result.get("prep_lifecycle") if isinstance(result.get("prep_lifecycle"), dict) else {},
         }
         calendar = result.get("calendar")
         calendar = calendar if isinstance(calendar, dict) else {}

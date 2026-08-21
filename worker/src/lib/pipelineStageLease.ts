@@ -1,4 +1,5 @@
 import type { Bindings } from '../types'
+import { databaseForDataDomain } from './dataDomainRegistry'
 
 export type PipelineStageStatus = 'queued' | 'running' | 'waiting' | 'success' | 'error'
 
@@ -716,7 +717,7 @@ export async function markPipelineStageFenced(
 }
 
 export async function queuePostPipelineStage(
-  env: Pick<Bindings, 'DB' | 'UPDATE_QUEUE'>,
+  env: Pick<Bindings, 'DB' | 'UPDATE_QUEUE'> & Partial<Bindings>,
   input: {
     businessDate: string
     runId: string
@@ -728,14 +729,15 @@ export async function queuePostPipelineStage(
     attempt?: number
   },
 ): Promise<{ queued: boolean; canonicalRunId: string; status: PipelineStageStatus }> {
+  const opsDb = databaseForDataDomain(env, 'ops')
   const state = input.authority
-    ? await enqueuePipelineStageAuthorized(env.DB, {
+    ? await enqueuePipelineStageAuthorized(opsDb, {
         businessDate: input.businessDate,
         stage: 'post_pipeline_chain',
         runId: input.runId,
         authority: input.authority,
       })
-    : await enqueuePipelineStage(env.DB, {
+    : await enqueuePipelineStage(opsDb, {
         businessDate: input.businessDate,
         stage: 'post_pipeline_chain',
         runId: input.runId,
@@ -759,7 +761,7 @@ export async function queuePostPipelineStage(
       attempt: Math.max(0, Math.floor(input.attempt ?? state.row.attempt_count)),
     })
   } catch (error) {
-    await markPipelineStageFenced(env.DB, {
+    await markPipelineStageFenced(opsDb, {
       businessDate: input.businessDate,
       stage: 'post_pipeline_chain',
       canonicalRunId: state.row.canonical_run_id,
@@ -774,7 +776,7 @@ export async function queuePostPipelineStage(
 }
 
 export async function queuePostVerifyStage(
-  env: Pick<Bindings, 'DB' | 'UPDATE_QUEUE'>,
+  env: Pick<Bindings, 'DB' | 'UPDATE_QUEUE'> & Partial<Bindings>,
   input: {
     businessDate: string
     runId: string
@@ -786,14 +788,15 @@ export async function queuePostVerifyStage(
     attempt?: number
   },
 ): Promise<{ queued: boolean; canonicalRunId: string; status: PipelineStageStatus }> {
+  const opsDb = databaseForDataDomain(env, 'ops')
   const state = input.authority
-    ? await enqueuePipelineStageAuthorized(env.DB, {
+    ? await enqueuePipelineStageAuthorized(opsDb, {
         businessDate: input.businessDate,
         stage: 'post_verify_chain',
         runId: input.runId,
         authority: input.authority,
       })
-    : await enqueuePipelineStage(env.DB, {
+    : await enqueuePipelineStage(opsDb, {
     businessDate: input.businessDate,
     stage: 'post_verify_chain',
     runId: input.runId,
@@ -817,7 +820,7 @@ export async function queuePostVerifyStage(
       attempt: Math.max(0, Math.floor(input.attempt ?? state.row.attempt_count)),
     })
   } catch (error) {
-    await markPipelineStageFenced(env.DB, {
+    await markPipelineStageFenced(opsDb, {
       businessDate: input.businessDate,
       stage: 'post_verify_chain',
       canonicalRunId: state.row.canonical_run_id,

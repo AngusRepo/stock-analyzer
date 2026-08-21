@@ -1337,7 +1337,7 @@ export function buildAdminWorkerDomainTaskMap(c: any, deps: TriggerDeps): Record
       const result = await inspectLearningTenYearRetentionReadiness(
         databaseForDataDomain(c.env, 'learning'),
         databaseForDataDomain(c.env, 'ops'),
-        requestedRunDate(),
+        requestedRunDate() || twToday(),
       )
       return `learning_retention_readiness ${JSON.stringify(result)}`
     },
@@ -1346,7 +1346,7 @@ export function buildAdminWorkerDomainTaskMap(c: any, deps: TriggerDeps): Record
       const result = await inspectLegacyLearningDeletionReadiness(
         databaseForDataDomain(c.env, 'ops'),
         databaseForDataDomain(c.env, 'learning'),
-        requestedRunDate(),
+        requestedRunDate() || twToday(),
       )
       return `legacy_learning_deletion_readiness ${JSON.stringify(result)}`
     },

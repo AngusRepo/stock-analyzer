@@ -113,7 +113,7 @@ function resolveUpdateDate(runDate?: string | null): string {
 
 function isBulkPriceSourceNotReady(error: unknown): boolean {
   const message = error instanceof Error ? error.message : String(error)
-  return /Bulk price source incomplete|TWSE source failed|TPEX source failed|price rows=\d+\/|chip latest=|chip rows=\d+\/|margin rows=\d+\//i.test(message)
+  return /Bulk price source incomplete|TWSE source failed|TPEX source failed|official[_ ]market[_ ]summary|price rows=\d+\/|chip latest=|chip rows=\d+\/|margin rows=\d+\//i.test(message)
 }
 
 function isFinLabCanonicalReadinessError(error: unknown): boolean {
@@ -3915,6 +3915,10 @@ export async function processUpdateBatch(
     }
 
     try {
+      const officialMarketSummary = await refreshOfficialMarketSummaryIfMissing(env, triggerTime, Date.now())
+      if (officialMarketSummary?.startsWith('official_market_summary_waiting=')) {
+        throw new Error(officialMarketSummary)
+      }
       const readiness = await checkEveningChainSourceReadiness(env, triggerTime)
       if (hasFinLabRefreshableMissing(readiness)) {
         const retrySummary = await runDailyUpdate(env, true, triggerTime)

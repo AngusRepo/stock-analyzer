@@ -111,11 +111,16 @@ assert(
     schedulerLockMigration.includes('lock_key   TEXT PRIMARY KEY'),
   'scheduler_locks migration must exist before the atomic finalizer lock is deployed',
 )
+const sourceRetryStart = updateOrchestrator.indexOf("if (msg.type === 'source_readiness_retry')")
+const sourceRetryEnd = updateOrchestrator.indexOf("if (msg.type === 'news_batch')", sourceRetryStart)
+const sourceRetryBody = updateOrchestrator.slice(sourceRetryStart, sourceRetryEnd)
 assert(
   updateOrchestrator.includes("'source_readiness_retry'") &&
     updateOrchestrator.includes('SOURCE_READINESS_RETRY_DELAY_SECONDS') &&
-    updateOrchestrator.includes('source waiting'),
-  'evening-chain must defer/retry same-day source readiness instead of fail-closing immediately at the scheduled root time',
+    updateOrchestrator.includes('source waiting') &&
+    sourceRetryBody.includes('refreshOfficialMarketSummaryIfMissing(env, triggerTime, Date.now())') &&
+    sourceRetryBody.indexOf('refreshOfficialMarketSummaryIfMissing') < sourceRetryBody.indexOf('checkEveningChainSourceReadiness'),
+  'evening-chain retry must refresh same-day official market summary before rechecking source readiness',
 )
 assert(
   updateOrchestrator.includes('runMarketCloseRefresh') &&

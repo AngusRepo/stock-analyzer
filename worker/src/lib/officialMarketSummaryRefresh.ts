@@ -1,4 +1,5 @@
 import type { Bindings } from '../types'
+import { databaseForDataDomain } from './dataDomainRegistry'
 
 const OFFICIAL_HEADERS = { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36' }
 
@@ -363,15 +364,16 @@ async function upsertMarketSummaryRows(db: D1Database, rows: MarketSummaryRow[])
 export async function runOfficialMarketSummaryRefresh(env: Bindings, targetDate: string): Promise<string> {
   const generatedAt = new Date().toISOString()
   const runId = `official-market-summary-${targetDate.replace(/-/g, '')}-${Date.now()}`
+  const marketDb = databaseForDataDomain(env, 'market')
   const rows = await deriveOtcSummaryFromCanonicalChip(
-    env.DB,
+    marketDb,
     await fetchOfficialMarketSummaryRows(targetDate, runId, generatedAt),
     targetDate,
     runId,
     generatedAt,
   )
   validateTargetDateRows(rows, targetDate)
-  await upsertMarketSummaryRows(env.DB, rows)
+  await upsertMarketSummaryRows(marketDb, rows)
   const summary = rows.map((row) => `${row.market_segment}:${row.date}:${row.source}`).join(',')
   return `official market summary refreshed for ${targetDate}: rows=${rows.length} ${summary}`
 }

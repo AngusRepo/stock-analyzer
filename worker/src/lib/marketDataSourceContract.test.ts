@@ -9,6 +9,7 @@ function assert(condition: unknown, message: string): void {
 const updateOrchestrator = fs.readFileSync('src/lib/updateOrchestrator.ts', 'utf8')
 const marketScreener = fs.readFileSync('src/lib/marketScreener.ts', 'utf8')
 const twseApi = fs.readFileSync('src/lib/twseApi.ts', 'utf8')
+const officialMarketSummaryRefresh = fs.readFileSync('src/lib/officialMarketSummaryRefresh.ts', 'utf8')
 const otherRoutes = fs.readFileSync('src/routes/other.ts', 'utf8')
 const wranglerToml = fs.readFileSync('wrangler.toml', 'utf8')
 
@@ -43,6 +44,14 @@ assert(
     twseApi.includes('MIN_TPEX_BULK_PRICE_ROWS = 700') &&
     twseApi.includes('Bulk price source incomplete'),
   'bulk price fetch must fail before D1 writes when TWSE/TPEX source rows are incomplete',
+)
+
+assert(
+  officialMarketSummaryRefresh.includes("const marketDb = databaseForDataDomain(env, 'market')") &&
+    officialMarketSummaryRefresh.includes('deriveOtcSummaryFromCanonicalChip(\n    marketDb,') &&
+    officialMarketSummaryRefresh.includes('upsertMarketSummaryRows(marketDb, rows)') &&
+    !officialMarketSummaryRefresh.includes('upsertMarketSummaryRows(env.DB, rows)'),
+  'official market summary must read canonical chip and write summary through the Market D1 owner',
 )
 
 assert(

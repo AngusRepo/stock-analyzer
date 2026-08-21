@@ -1039,6 +1039,16 @@ def reuse_ready_field_artifacts(
             )
             if not copied:
                 continue
+            expected_checksum = str(row.get("artifact_checksum") or "").strip()
+            actual_checksum = file_sha256(path)
+            if not expected_checksum.startswith("sha256:") or actual_checksum != expected_checksum:
+                path.unlink(missing_ok=True)
+                print(
+                    f"[finlab-backfill] source_key_artifact_checksum_rejected lane={lane} field={field} "
+                    f"expected={expected_checksum or 'missing'} actual={actual_checksum or 'missing'}",
+                    flush=True,
+                )
+                continue
             frame = pd.read_parquet(path)
         except Exception as exc:
             print(
@@ -1770,7 +1780,11 @@ def materialize_specs(
         spec_keys = spec_keys_for_scope(spec, key_scope)
         if key_scope and spec.lane not in key_scope:
             continue
-        if key_scope and spec.kind not in {"official_market_summary"} and not spec_keys:
+        special_scoped_fields = key_scope.get(spec.lane, set()) - set(spec.keys)
+        supports_special_scoped_fields = spec.lane == "regime_context" and bool(
+            special_scoped_fields & {"official_twse_index", "official_tpex_index"}
+        )
+        if key_scope and spec.kind not in {"official_market_summary"} and not spec_keys and not supports_special_scoped_fields:
             continue
         artifacts: list[dict[str, Any]] = []
         finlab_rows = 0

@@ -607,8 +607,8 @@ def test_finlab_source_contract_drives_required_fields_and_flags():
 
     assert tool.FINLAB_SOURCE_CONTRACT["schema_version"] == "stockvision-finlab-source-contract-v1"
     assert tool.finlab_contract_flag_default("FINLAB_KEY_REPORT_ENABLED") is True
-    assert tool.finlab_contract_flag_default("FINLAB_KEY_LEVEL_RETRY_ENABLED") is False
-    assert tool.finlab_contract_flag_default("FINLAB_ARTIFACT_REUSE_ENABLED") is False
+    assert tool.finlab_contract_flag_default("FINLAB_KEY_LEVEL_RETRY_ENABLED") is True
+    assert tool.finlab_contract_flag_default("FINLAB_ARTIFACT_REUSE_ENABLED") is True
     assert tool.REQUIRED_ATOMIC_WIDE_FIELDS["institutional_amount_summary"] == {"buy_amount", "sell_amount", "net_amount"}
     assert tool.source_key_required("daily_price", "close") is True
     assert tool.source_key_required("daily_price", "trade_count") is False
@@ -779,7 +779,7 @@ def test_reuse_ready_field_artifacts_completes_partial_institutional_lane(monkey
                 "latest_date": "2026-07-03",
                 "artifact_path": str(sell_path),
                 "artifact_uri": None,
-                "artifact_checksum": "sha256:sell",
+                "artifact_checksum": tool.file_sha256(sell_path),
                 "last_run_id": "previous-run",
             },
             {
@@ -791,7 +791,7 @@ def test_reuse_ready_field_artifacts_completes_partial_institutional_lane(monkey
                 "latest_date": "2026-07-03",
                 "artifact_path": str(net_path),
                 "artifact_uri": None,
-                "artifact_checksum": "sha256:net",
+                "artifact_checksum": tool.file_sha256(net_path),
                 "last_run_id": "previous-run",
             },
         ]

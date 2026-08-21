@@ -2,8 +2,8 @@
   "schema_version": "stockvision-finlab-source-contract-v1",
   "feature_flags": {
     "FINLAB_KEY_REPORT_ENABLED": true,
-    "FINLAB_KEY_LEVEL_RETRY_ENABLED": false,
-    "FINLAB_ARTIFACT_REUSE_ENABLED": false
+    "FINLAB_KEY_LEVEL_RETRY_ENABLED": true,
+    "FINLAB_ARTIFACT_REUSE_ENABLED": true
   },
   "statuses": [
     "ok",

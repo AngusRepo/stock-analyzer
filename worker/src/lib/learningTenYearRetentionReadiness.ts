@@ -56,8 +56,8 @@ export async function inspectLearningTenYearRetentionReadiness(
   const [datasets, policy, runTotals] = await Promise.all([
     Promise.all(LEARNING_DATASETS.map((dataset) => inspectDataset(learningDb, dataset, hotCutoffDate))),
     opsDb.prepare(
-      `SELECT policy_id, hot_days, cold_days, cold_tier, action, checksum_required,
-              hard_reference_blocking, status
+      `SELECT policy_id, hot_retention_days, cold_retention_days, archive_store, action,
+              hard_reference_protected, version, status
          FROM data_retention_policies
         WHERE policy_id='learning_lineage_v1'`,
     ).first<Record<string, unknown>>(),
@@ -70,12 +70,11 @@ export async function inspectLearningTenYearRetentionReadiness(
         WHERE policy_id='learning_lineage_v1'`,
     ).first<Record<string, unknown>>(),
   ])
-  const policyReady = numeric(policy?.hot_days) === LEARNING_HOT_RETENTION_DAYS
-    && numeric(policy?.cold_days) === LEARNING_COLD_RETENTION_DAYS
-    && policy?.cold_tier === 'r2'
+  const policyReady = numeric(policy?.hot_retention_days) === LEARNING_HOT_RETENTION_DAYS
+    && numeric(policy?.cold_retention_days) === LEARNING_COLD_RETENTION_DAYS
+    && policy?.archive_store === 'r2'
     && policy?.action === 'archive_delete'
-    && numeric(policy?.checksum_required) === 1
-    && numeric(policy?.hard_reference_blocking) === 1
+    && numeric(policy?.hard_reference_protected) === 1
     && policy?.status === 'active'
   return {
     schema_version: 'learning-ten-year-retention-readiness-v1' as const,

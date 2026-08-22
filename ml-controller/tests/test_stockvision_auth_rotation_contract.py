@@ -166,8 +166,11 @@ def test_scheduler_inventory_create_patch_parity_and_rollback_contract() -> None
 
     for required_contract in (
         "Assert-SchedulerPlanBaseline",
+        "scheduler_planned_patch_drift ids=$driftText",
         "rotation_scheduler_create_not_allowed",
         "rotation_scheduler_inventory_drift:changed_existing",
+        "rotation_scheduler_inventory_parity_drift",
+        "rotation_scheduler_rollback_drift_mismatch",
         "Invoke-GoogleJson -Method POST",
         "Invoke-GoogleJson -Method PATCH",
         "Invoke-GoogleJson -Method DELETE",

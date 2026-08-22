@@ -804,6 +804,75 @@ adminWriteRoutes.post('/api/admin/strategy/evidence-v5/rebuild', async (c) => {
   }, 202)
 })
 
+adminWriteRoutes.post('/api/admin/strategy/route-backfill/eligibility', async (c) => {
+  const authError = await requireAdminOrServiceToken(c)
+  if (authError) return authError
+
+  type Body = {
+    as_of_date?: string
+    start_date?: string
+    dry_run?: boolean
+  }
+  const body = await c.req.json<Body>().catch(() => ({} as Body))
+  const asOfDate = body.as_of_date ?? c.req.query('as_of_date') ?? twToday()
+  const startDate = body.start_date ?? c.req.query('start_date') ?? undefined
+  const dryRun = body.dry_run !== false
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(asOfDate)) {
+    return c.json({ success: false, error: 'valid as_of_date is required' }, 400)
+  }
+  if (startDate && (!/^\d{4}-\d{2}-\d{2}$/.test(startDate) || startDate > asOfDate)) {
+    return c.json({ success: false, error: 'start_date must be a valid date not after as_of_date' }, 400)
+  }
+  if (!dryRun && c.req.header('X-Confirm-Strategy-Learning') !== 'true') {
+    return c.json({
+      success: false,
+      error: 'Strategy route eligibility audit requires header X-Confirm-Strategy-Learning: true',
+      hint: 'Run dry_run first. This only refreshes eligibility receipts; it never changes weights, recommendations, or thresholds.',
+    }, 400)
+  }
+
+  const [
+    { auditStrategyRouteBackfillEligibility },
+    { loadCanonicalScreenerRunIds },
+  ] = await Promise.all([
+    import('../lib/strategyRouteBackfillEligibility'),
+    import('../lib/historicalScreenerArtifactEvidence'),
+  ])
+  const canonicalRunIds = await loadCanonicalScreenerRunIds(c.env, asOfDate)
+  const rows = await auditStrategyRouteBackfillEligibility(
+    databaseForDataDomain(c.env, 'learning'),
+    asOfDate,
+    {
+      startDate,
+      persist: !dryRun,
+      canonicalRunIds,
+    },
+  )
+  if (rows.length === 0) {
+    return c.json({
+      success: false,
+      mode: dryRun ? 'dry_run' : 'persisted',
+      as_of_date: asOfDate,
+      start_date: startDate ?? null,
+      error: 'canonical_route_eligibility_rows_missing',
+      rows: [],
+    }, 409)
+  }
+  return c.json({
+    success: true,
+    mode: dryRun ? 'dry_run' : 'persisted',
+    as_of_date: asOfDate,
+    start_date: startDate ?? null,
+    counts: {
+      total: rows.length,
+      eligible: rows.filter((row) => row.status === 'eligible').length,
+      unavailable: rows.filter((row) => row.status === 'unavailable').length,
+      pending_maturity: rows.filter((row) => row.status === 'pending_maturity').length,
+    },
+    rows,
+  })
+})
+
 adminWriteRoutes.post('/api/admin/strategy/redundancy/backfill', async (c) => {
   const authError = await requireAdminOrServiceToken(c)
   if (authError) return authError

@@ -247,13 +247,16 @@ function New-SchedulerInventoryPlan {
   $liveJobs = Get-SchedulerLiveJobs -AccessToken $AccessToken
   $missing = [System.Collections.Generic.List[string]]::new()
   $existing = [System.Collections.Generic.List[string]]::new()
+  $drift = [System.Collections.Generic.List[string]]::new()
   $rollbackById = @{}
   foreach ($definition in @($Manifest.jobs)) {
     $id = [string]$definition.id
     $desired = New-SchedulerDesiredJob -Manifest $Manifest -Definition $definition -Token $ExpectedToken
     if ($liveJobs.ContainsKey($id)) {
-      Assert-SchedulerJobParity -Id $id -Actual $liveJobs[$id] -Desired $desired
       [void]$existing.Add($id)
+      if (-not (Test-SchedulerJobParity -Id $id -Actual $liveJobs[$id] -Desired $desired)) {
+        [void]$drift.Add($id)
+      }
       $rollbackById[$id] = ConvertTo-SchedulerRollbackJob -Job $liveJobs[$id]
     } else {
       [void]$missing.Add($id)
@@ -261,17 +264,21 @@ function New-SchedulerInventoryPlan {
   }
   $missingIds = @($missing | Sort-Object)
   $existingIds = @($existing | Sort-Object)
+  $driftIds = @($drift | Sort-Object)
   if (($missingIds.Count + $existingIds.Count) -ne $ExpectedSchedulerCount) {
     throw 'rotation_scheduler_inventory_accounting_mismatch'
   }
   if ($LogPlan) {
     $missingText = if ($missingIds.Count -gt 0) { [string]::Join(',', $missingIds) } else { 'none' }
+    $driftText = if ($driftIds.Count -gt 0) { [string]::Join(',', $driftIds) } else { 'none' }
     Write-RotationLog "scheduler_inventory existing=$($existingIds.Count) planned_create=$($missingIds.Count) expected=$ExpectedSchedulerCount"
     Write-RotationLog "scheduler_planned_create ids=$missingText"
+    Write-RotationLog "scheduler_planned_patch_drift ids=$driftText"
   }
   return [pscustomobject]@{
     MissingIds = $missingIds
     ExistingIds = $existingIds
+    DriftIds = $driftIds
     RollbackById = $rollbackById
   }
 }
@@ -444,6 +451,9 @@ function Restore-SchedulerInventory {
   if ([string]::Join(',', @($restored.MissingIds)) -ne [string]::Join(',', @($Plan.MissingIds))) {
     throw 'rotation_scheduler_rollback_inventory_mismatch'
   }
+  if ([string]::Join(',', @($restored.DriftIds)) -ne [string]::Join(',', @($Plan.DriftIds))) {
+    throw 'rotation_scheduler_rollback_drift_mismatch'
+  }
 }
 
 function Assert-SchedulerState([object]$Manifest, [string]$AccessToken, [string]$ExpectedToken) {
@@ -453,5 +463,8 @@ function Assert-SchedulerState([object]$Manifest, [string]$AccessToken, [string]
   }
   if ($plan.ExistingIds.Count -ne $ExpectedSchedulerCount) {
     throw "rotation_scheduler_inventory_count_mismatch:expected=$ExpectedSchedulerCount`:actual=$($plan.ExistingIds.Count)"
+  }
+  if ($plan.DriftIds.Count -gt 0) {
+    throw "rotation_scheduler_inventory_parity_drift:$([string]::Join(',', @($plan.DriftIds)))"
   }
 }

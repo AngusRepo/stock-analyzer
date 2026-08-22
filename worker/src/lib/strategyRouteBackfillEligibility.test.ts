@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict'
+import { readFileSync } from 'node:fs'
 import { auditStrategyRouteBackfillEligibility } from './strategyRouteBackfillEligibility'
 
 type Row = {
@@ -98,6 +99,14 @@ async function main(): Promise<void> {
   assert(rows[3].blockers.includes('threshold_margin_evidence_incomplete'))
   assert(rows[3].blockers.includes('challenger_route_score_missing'))
   assert.equal(db.batches, 1)
+
+  const routeSource = readFileSync(new URL('../routes/adminWriteRoutes.ts', import.meta.url), 'utf8')
+  assert.match(routeSource, /\/api\/admin\/strategy\/route-backfill\/eligibility/)
+  assert.match(routeSource, /auditStrategyRouteBackfillEligibility/)
+  assert.match(routeSource, /loadCanonicalScreenerRunIds/)
+  assert.match(routeSource, /persist: !dryRun/)
+  assert.match(routeSource, /X-Confirm-Strategy-Learning/)
+  assert.match(routeSource, /canonical_route_eligibility_rows_missing/)
 }
 
 void main()

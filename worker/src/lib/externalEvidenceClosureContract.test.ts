@@ -29,6 +29,6 @@ assert(risk.includes("quality.freshness_status IN ('present', 'degraded_context_
 assert(themes.includes("WHERE date >= date(?, '-4 days')"))
 assert(themes.includes(').bind(date, date).all<'))
 assert(links.match(/date\(published_at\) <= date\(\?\)/))
-assert(links.includes(').bind(...chunk, date, date).all<NewsFallbackRow>()'))
+assert(links.match(/\.bind\(\.\.\.ids, date, date\)\.all<\{ stock_id: number;/))
 
 console.log('external evidence closure contract tests passed')

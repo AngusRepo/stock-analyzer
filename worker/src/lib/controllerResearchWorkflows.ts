@@ -986,6 +986,7 @@ export async function runExternalEvidenceMaterializeDetailed(
 ): Promise<ExternalEvidenceMaterializeResult> {
   requireController(env)
 
+  const requestStartedAt = new Date().toISOString()
   const resp = await controllerFetch(env, '/external-evidence/materialize', {
     method: 'POST',
     jsonBody: {
@@ -998,6 +999,19 @@ export async function runExternalEvidenceMaterializeDetailed(
   })
   const text = await resp.text().catch(() => '')
   if (!resp.ok) {
+    const targetDate = runDate ?? twToday()
+    if (resp.status === 524) {
+      const receipt = await awaitExternalEvidenceMaterializationReceipt(env, targetDate, requestStartedAt)
+      if (receipt) {
+        return {
+          summary: `external evidence receipt=ready_via_d1_readback target=${targetDate} controller_http=524`,
+          targetDate,
+          receipt,
+          d1Stats: { readback_fallback: 1, controller_http_status: 524 },
+          controllerDurationMs: 0,
+        }
+      }
+    }
     throw new Error(
       'external evidence materialize HTTP'
       + resp.status
@@ -1547,4 +1561,73 @@ export async function triggerRetrain(env: Bindings, forceMonthly: boolean, taskI
   }).catch((e) => console.error('[retrain] fire-and-forget error:', e))
 
   return `${taskId} triggered (force_monthly=${forceMonthly}); callback expected from Modal retrain followup`
+}
+
+type ExternalEvidenceReadbackRow = {
+  generated_at: string | null
+  source_quality_rows: number | null
+  theme_rows: number | null
+  feature_rows: number | null
+}
+
+export async function readExternalEvidenceMaterializationReceipt(
+  env: Bindings,
+  targetDate: string,
+  notBefore?: string,
+): Promise<Record<string, unknown> | null> {
+  const marketDb = databaseForDataDomain(env, 'market')
+  const row = await marketDb.prepare(`
+    WITH latest_quality AS (
+      SELECT json_extract(metrics_json, '$.generated_at') AS generated_at,
+             COUNT(*) AS source_quality_rows
+        FROM source_quality_metrics
+       WHERE as_of_date = ?
+         AND source IN ('official_rss', 'company_ir_rss', 'gdelt_events')
+       GROUP BY json_extract(metrics_json, '$.generated_at')
+      HAVING COUNT(*) = 3
+       ORDER BY generated_at DESC
+       LIMIT 1
+    )
+    SELECT latest_quality.generated_at,
+           latest_quality.source_quality_rows,
+           (SELECT COUNT(*) FROM theme_signals
+             WHERE date = ? AND generated_at = latest_quality.generated_at) AS theme_rows,
+           (SELECT COUNT(*) FROM stock_theme_features
+             WHERE date = ? AND generated_at = latest_quality.generated_at) AS feature_rows
+      FROM latest_quality
+  `).bind(targetDate, targetDate, targetDate).first<ExternalEvidenceReadbackRow>()
+
+  const sourceQualityRows = Number(row?.source_quality_rows ?? 0)
+  const themeRows = Number(row?.theme_rows ?? 0)
+  const featureRows = Number(row?.feature_rows ?? 0)
+  const generatedAt = String(row?.generated_at ?? '').trim()
+  if (!generatedAt || sourceQualityRows !== 3 || themeRows < 1 || featureRows < 1) return null
+  const generatedAtMs = Date.parse(generatedAt)
+  const notBeforeMs = Date.parse(String(notBefore ?? ''))
+  if (Number.isFinite(notBeforeMs) && (!Number.isFinite(generatedAtMs) || generatedAtMs < notBeforeMs)) return null
+
+  return {
+    schema_version: 'external-evidence-d1-readback-receipt-v1',
+    status: 'ready',
+    target_date: targetDate,
+    as_of_date: targetDate,
+    generated_at: generatedAt,
+    source_quality_rows: sourceQualityRows,
+    actual_theme_rows: themeRows,
+    actual_feature_rows: featureRows,
+    recovery_reason: 'controller_http_524_after_origin_commit',
+  }
+}
+
+async function awaitExternalEvidenceMaterializationReceipt(
+  env: Bindings,
+  targetDate: string,
+  notBefore: string,
+): Promise<Record<string, unknown> | null> {
+  for (const delayMs of [2_000, 5_000, 10_000, 15_000]) {
+    await new Promise((resolve) => setTimeout(resolve, delayMs))
+    const receipt = await readExternalEvidenceMaterializationReceipt(env, targetDate, notBefore).catch(() => null)
+    if (receipt) return receipt
+  }
+  return null
 }

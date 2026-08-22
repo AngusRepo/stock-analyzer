@@ -170,7 +170,7 @@ export async function inspectLegacyLearningDeletionReadiness(
     numeric(parity?.checked_tables) !== expectedTables
     || numeric(parity?.matched_tables) !== expectedTables
   ) blockers.push('legacy_learning_66_table_parity_not_complete')
-  if (!domainReadiness?.cutover_ready) {
+  if (cutover?.status !== 'complete' && !domainReadiness?.cutover_ready) {
     blockers.push(...(domainReadiness?.blockers ?? ['learning_cutover_readiness_missing']))
   }
   return {
@@ -202,6 +202,10 @@ export async function inspectLegacyLearningDeletionReadiness(
         checked_tables: numeric(parity?.checked_tables),
         matched_tables: numeric(parity?.matched_tables),
       },
+      deletion_gate_policy: 'formal_cutover_receipt_plus_time_travel_window',
+      post_cutover_target_drift: cutover?.status === 'complete'
+        ? domainReadiness?.blockers ?? []
+        : [],
       cutover_readiness: domainReadiness,
     },
   }

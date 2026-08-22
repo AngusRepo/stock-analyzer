@@ -73,9 +73,10 @@ export async function auditStrategyRouteBackfillEligibility(
                 AND l.outcome_known_date<=?
            ) THEN 1 ELSE 0 END) mature_label_rows,
            SUM(CASE WHEN EXISTS (
-             SELECT 1 FROM price_horizon_label_rejections_v1 q
-              WHERE q.price_date=r.signal_date
-                AND CAST(q.stock_id AS TEXT)=r.symbol
+             SELECT 1 FROM canonical_selection_label_rejections_v4 q
+              WHERE q.signal_date=r.signal_date
+                AND q.symbol=r.symbol
+                AND q.producer_run_id=r.producer_run_id
            ) THEN 1 ELSE 0 END) rejected_label_rows,
            COALESCE((
              SELECT COUNT(*) FROM strategy_label_matrix_v4 m

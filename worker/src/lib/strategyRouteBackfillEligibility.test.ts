@@ -92,6 +92,7 @@ async function main(): Promise<void> {
     canonicalRunIds: { '2026-07-15': 'run-15' },
   })
   assert(db.sqls[0].includes('FROM json_each(?)'))
+  assert(db.sqls[0].includes('canonical_selection_label_rejections_v4'))
   assert(!db.sqls[0].includes('canonical_run_heads'))
   assert.equal(
     db.statements[0].boundArgs.at(-1),

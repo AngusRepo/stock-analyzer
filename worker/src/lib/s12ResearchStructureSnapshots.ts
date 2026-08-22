@@ -99,6 +99,30 @@ export async function loadS12ResearchCohortSymbolsByDate(
   })).filter((row) => row.symbol)
 }
 
+async function loadS12ResearchCohortSymbolsAcrossDomains(
+  env: Bindings,
+  tradeDate: string,
+  limit: number,
+): Promise<S12ResearchCohortSymbol[]> {
+  const head = await databaseForDataDomain(env, 'ops').prepare(`
+    SELECT run_id FROM canonical_run_heads WHERE logical_run_key=? LIMIT 1
+  `).bind(`screener:${tradeDate}:TW:production:market_screener`).first<{ run_id?: string | null }>()
+  const canonicalRunId = String(head?.run_id ?? '').trim()
+  if (!canonicalRunId) return []
+  const cappedLimit = Math.max(1, Math.min(2000, Math.floor(limit)))
+  const result = await databaseForDataDomain(env, 'learning').prepare(`
+    SELECT symbol, name, NULL AS rank, score_v2 AS score_after, selection_stage AS stage
+      FROM selection_reference_snapshots_v1
+     WHERE signal_date=? AND producer_run_id=?
+     ORDER BY symbol
+     LIMIT ?
+  `).bind(tradeDate, canonicalRunId, cappedLimit + 1).all<S12ResearchCohortSymbol>()
+  return (result.results ?? []).map((row) => ({
+    ...row,
+    symbol: String(row.symbol ?? '').trim(),
+  })).filter((row) => row.symbol)
+}
+
 export async function runS12ResearchStructureSnapshots(
   env: Bindings,
   tradeDate: string,
@@ -112,19 +136,21 @@ export async function runS12ResearchStructureSnapshots(
 ): Promise<S12ResearchSnapshotSummary> {
   const snapshotSource = options.source ?? 's12_research_structure_snapshot'
   const leaseRunId = `s12-research-structure:${snapshotSource}:${tradeDate}:${crypto.randomUUID()}`
+  const opsDb = databaseForDataDomain(env, 'ops')
+  const learningDb = databaseForDataDomain(env, 'learning')
   const leaseAcquired = options.loadBars
     ? false
-    : await acquireS12ResearchLease(env.DB, leaseRunId, tradeDate)
+    : await acquireS12ResearchLease(opsDb, leaseRunId, tradeDate)
   if (!options.loadBars && !leaseAcquired) {
     throw new Error(`s12_research_lease_busy:${tradeDate}`)
   }
   try {
   const limit = Math.min(2000, positiveLimit(options.limit ?? (env as any).S12_RESEARCH_SNAPSHOT_LIMIT, 1000))
-  const candidates = options.symbols ?? await loadS12ResearchCohortSymbolsByDate(env.DB, tradeDate, limit)
+  const candidates = options.symbols ?? await loadS12ResearchCohortSymbolsAcrossDomains(env, tradeDate, limit)
   const selected = candidates.slice(0, limit)
   const loadBars = options.loadBars ?? loadS12HistoricalReplayBars
   const basePolicy = s12TimingPolicyFromEnv(env as any)
-  const calibrationArtifacts = await listApprovedS12TwCalibrationArtifacts(env.DB, { includeSuperseded: true }).catch(() => [])
+  const calibrationArtifacts = await listApprovedS12TwCalibrationArtifacts(learningDb, { includeSuperseded: true }).catch(() => [])
   let persisted = 0
   let ready = 0
   let setupOnly = 0
@@ -252,6 +278,6 @@ export async function runS12ResearchStructureSnapshots(
     skip_reasons: skipReasons,
   }
   } finally {
-    if (leaseAcquired) await releaseS12ResearchLease(env.DB, leaseRunId)
+    if (leaseAcquired) await releaseS12ResearchLease(opsDb, leaseRunId)
   }
 }

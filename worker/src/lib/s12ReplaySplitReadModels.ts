@@ -53,7 +53,7 @@ async function enrichCoreRows(
   }).filter((row) => row.symbol)
 }
 
-async function canonicalSelectionRows(env: DomainEnv, signalDate: string): Promise<S12L0PassedSymbol[]> {
+export async function loadSplitCanonicalSelectionSymbols(env: DomainEnv, signalDate: string): Promise<S12L0PassedSymbol[]> {
   const head = await databaseForDataDomain(env, 'ops').prepare(`
     SELECT run_id FROM canonical_run_heads
      WHERE logical_run_key=? LIMIT 1
@@ -124,7 +124,7 @@ async function sealedFusionRows(env: DomainEnv, signalDate: string): Promise<S12
 
 async function replayCandidates(env: DomainEnv, signalDate: string): Promise<S12L0PassedSymbol[]> {
   const [canonical, sealed] = await Promise.all([
-    canonicalSelectionRows(env, signalDate),
+    loadSplitCanonicalSelectionSymbols(env, signalDate),
     sealedFusionRows(env, signalDate),
   ])
   const bySymbol = new Map<string, S12L0PassedSymbol>()

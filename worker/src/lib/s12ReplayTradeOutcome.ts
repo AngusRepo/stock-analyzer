@@ -9,6 +9,7 @@ import {
   s12ResearchTerminalDataSourceReason,
 } from './s12RuntimeBars'
 import type { Bindings } from '../types'
+import { databaseForDataDomain } from './dataDomainRegistry'
 import { EVIDENCE_LABEL_SCHEMA_VERSION } from './evidenceContracts'
 import {
   S12_REPLAY_ENGINE_SIGNATURE,
@@ -518,6 +519,29 @@ export async function resolveNextExecutableSessionDate(
   return executionDate || null
 }
 
+
+async function resolveNextExecutableSessionDateAcrossDomains(
+  env: Bindings,
+  symbol: string,
+  signalDate: string,
+): Promise<string | null> {
+  const identity = await databaseForDataDomain(env, 'core').prepare(`
+    SELECT id FROM stocks WHERE symbol=? LIMIT 1
+  `).bind(symbol).first<{ id?: number | null }>()
+  const stockId = Number(identity?.id)
+  if (!Number.isSafeInteger(stockId)) return null
+  const row = await databaseForDataDomain(env, 'market').prepare(`
+    SELECT date(date) AS execution_date
+      FROM stock_prices
+     WHERE stock_id=?
+       AND date(date)>date(?)
+       AND open IS NOT NULL AND high IS NOT NULL AND low IS NOT NULL AND close IS NOT NULL
+     ORDER BY date(date) ASC
+     LIMIT 1
+  `).bind(stockId, signalDate).first<{ execution_date?: string | null }>()
+  const executionDate = String(row?.execution_date ?? '').trim().slice(0, 10)
+  return executionDate || null
+}
 
 export async function loadReplayReadySignalDates(
   db: D1Database,
@@ -1193,21 +1217,24 @@ export async function runS12HistoricalReplayForDate(
   options: S12HistoricalReplayRunOptions = {},
 ): Promise<S12HistoricalReplayRunSummary> {
   const leaseRunId = `s12-replay:${signalDate}:${crypto.randomUUID()}`
+  const opsDb = databaseForDataDomain(env, 'ops')
+  const learningDb = databaseForDataDomain(env, 'learning')
   const leaseAcquired = options.loadBars
     ? false
-    : await acquireS12ResearchLease(env.DB, leaseRunId, signalDate)
+    : await acquireS12ResearchLease(opsDb, leaseRunId, signalDate)
   if (!options.loadBars && !leaseAcquired) {
     throw new Error(`s12_research_lease_busy:${signalDate}`)
   }
   try {
-  const l0 = options.symbols ?? await loadL0PassedSymbolsByHistoricalDate(env.DB, signalDate)
+  const l0 = options.symbols ?? await import('./s12ReplaySplitReadModels')
+    .then(({ loadSplitCanonicalSelectionSymbols }) => loadSplitCanonicalSelectionSymbols(env, signalDate))
   const persistUnavailableOutcomes = options.persistUnavailableOutcomes === true
   const requestedLimit = options.limit ?? (l0.length || 1)
   const limit = Math.max(1, Math.min(5000, Math.floor(Number(requestedLimit))))
   const offset = Math.max(0, Math.floor(Number(options.offset ?? 0)))
   const selected = l0.slice(offset, offset + limit)
   const outcomes: S12ReplayOutcome[] = []
-  const calibrationArtifacts = await listApprovedS12TwCalibrationArtifacts(env.DB, { includeSuperseded: true }).catch(() => [])
+  const calibrationArtifacts = await listApprovedS12TwCalibrationArtifacts(learningDb, { includeSuperseded: true }).catch(() => [])
   let persisted = 0
   let attempted = 0
   let unresolvedExecutionDates = 0
@@ -1215,7 +1242,7 @@ export async function runS12HistoricalReplayForDate(
   const executionDates = new Set<string>()
   const persistOutcome = async (outcome: S12ReplayOutcome): Promise<void> => {
     if (options.persist === false) return
-    const accepted = await persistS12ReplayOutcome(env.DB, outcome, {
+    const accepted = await persistS12ReplayOutcome(learningDb, outcome, {
       expectedLifecycleRunId: options.expectedLifecycleRunId,
     })
     if (!accepted) {
@@ -1230,7 +1257,7 @@ export async function runS12HistoricalReplayForDate(
     const executionDate = await (
       options.resolveExecutionDate
         ? options.resolveExecutionDate(row.symbol, signalDate)
-        : resolveNextExecutableSessionDate(env.DB, row.symbol, signalDate)
+        : resolveNextExecutableSessionDateAcrossDomains(env, row.symbol, signalDate)
     )
     if (!executionDate) {
       unresolvedExecutionDates += 1
@@ -1389,6 +1416,6 @@ export async function runS12HistoricalReplayForDate(
     outcomes,
   }
   } finally {
-    if (leaseAcquired) await releaseS12ResearchLease(env.DB, leaseRunId)
+    if (leaseAcquired) await releaseS12ResearchLease(opsDb, leaseRunId)
   }
 }

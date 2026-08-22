@@ -293,6 +293,21 @@ def test_oof_materialize_job_exposes_prep_dependency_dates(monkeypatch):
     assert "expected_snapshot_date=2026-08-19" in callback["summary"]
     assert "actual_snapshot_date=2026-08-18" in callback["summary"]
 
+def test_oof_materialize_summary_uses_verified_business_date_for_legacy_receipt():
+    summary = oof_materialize_job_main._summary(
+        "run-ready",
+        {
+            "status": "shadow_evaluated",
+            "prep_lifecycle": {
+                "expected_business_date": "2026-08-21",
+                "business_date": "2026-08-21",
+                "snapshot_id": "backtest_dataset:2026-08-21:test",
+            },
+        },
+        mode="oof_lifecycle",
+    )
+    assert "actual_snapshot_date=2026-08-21" in summary
+
 def test_weekly_spawned_cohort_requests_bounded_materialization_continuation(monkeypatch):
     callbacks = []
     lifecycle_kwargs = {}

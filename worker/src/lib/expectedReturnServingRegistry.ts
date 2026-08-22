@@ -353,7 +353,7 @@ export function resolveExpectedOofCoverageDates(sessionDatesInput: string[]): {
   }
 }
 
-export function resolveLegalForwardNotEvaluableDates(input: unknown): string[] {
+function resolveForwardNotEvaluableRows(input: unknown): JsonRecord[] {
   let payload = input
   if (typeof input === 'string') {
     try { payload = JSON.parse(input) } catch { return [] }
@@ -361,8 +361,19 @@ export function resolveLegalForwardNotEvaluableDates(input: unknown): string[] {
   if (!payload || typeof payload !== 'object') return []
   const rows = (payload as JsonRecord).not_evaluable
   if (!Array.isArray(rows)) return []
-  return [...new Set(rows
-    .filter((row) => row && typeof row === 'object' && row.reason === 'missing_native_pit_components')
+  return rows.filter((row): row is JsonRecord => Boolean(row && typeof row === 'object'))
+}
+
+export function resolveForwardNotEvaluableDates(input: unknown): string[] {
+  return [...new Set(resolveForwardNotEvaluableRows(input)
+    .map((row) => String(row.date ?? '').slice(0, 10))
+    .filter((date) => /^\d{4}-\d{2}-\d{2}$/.test(date)))]
+    .sort()
+}
+
+export function resolveLegalForwardNotEvaluableDates(input: unknown): string[] {
+  return [...new Set(resolveForwardNotEvaluableRows(input)
+    .filter((row) => row.reason === 'missing_native_pit_components')
     .map((row) => String(row.date ?? '').slice(0, 10))
     .filter((date) => /^\d{4}-\d{2}-\d{2}$/.test(date)))]
     .sort()
@@ -482,17 +493,27 @@ export async function inspectExpectedReturnLifecycleHealth(
     allocator_ev_snapshots: new Set(),
     l4_predictions: new Set(),
   }
+  const oofLegalNotEvaluableDateSets: Record<string, Set<string>> = {
+    allocator_ev_snapshots: new Set(),
+    l4_predictions: new Set(),
+  }
   for (const row of shadowRows.results ?? []) {
     const currentMax = oofShadowMaxDates[row.artifact_kind]
     if (!currentMax || (row.max_date && row.max_date > currentMax)) {
       oofShadowMaxDates[row.artifact_kind] = row.max_date
     }
     for (const date of resolveLegalForwardNotEvaluableDates(row.date_eligibility_json)) {
+      oofLegalNotEvaluableDateSets[row.artifact_kind]?.add(date)
+    }
+    for (const date of resolveForwardNotEvaluableDates(row.date_eligibility_json)) {
       oofNotEvaluableDateSets[row.artifact_kind]?.add(date)
     }
   }
   const oofNotEvaluableDates = Object.fromEntries(
     Object.entries(oofNotEvaluableDateSets).map(([kind, dates]) => [kind, [...dates].sort()]),
+  )
+  const oofLegalNotEvaluableDates = Object.fromEntries(
+    Object.entries(oofLegalNotEvaluableDateSets).map(([kind, dates]) => [kind, [...dates].sort()]),
   )
   const oofMaxDates: Record<string, string | null> = {
     allocator_ev_snapshots: null,
@@ -531,7 +552,7 @@ export async function inspectExpectedReturnLifecycleHealth(
       } else if (!isExpectedOofCurrentCloseCovered(
         maxDate,
         newlyMatureSignalDate,
-        oofNotEvaluableDates[kind] ?? [],
+        oofLegalNotEvaluableDates[kind] ?? [],
       )) {
         warnings.push(`${kind}:awaiting_current_close_oof_materialization:${maxDate}<${newlyMatureSignalDate}`)
       }

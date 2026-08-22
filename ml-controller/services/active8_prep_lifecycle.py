@@ -240,6 +240,7 @@ async def ensure_active8_daily_prep(
         "cutoff": cutoff,
         "business_date": business_date,
         "expected_business_date": expected_business_date,
+        "snapshot_business_date": business_date,
         **market_session_evidence,
         "snapshot_id": snapshot.get("snapshot_id"),
         "snapshot_checksum": snapshot_checksum,

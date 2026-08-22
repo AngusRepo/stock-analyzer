@@ -129,7 +129,7 @@ def _summary(run_id: str, result: dict[str, Any], *, mode: str) -> str:
     if prep_lifecycle.get("expected_business_date") or prep_lifecycle.get("snapshot_business_date"):
         parts.extend([
             f"expected_snapshot_date={prep_lifecycle.get('expected_business_date') or 'missing'}",
-            f"actual_snapshot_date={prep_lifecycle.get('snapshot_business_date') or 'missing'}",
+            f"actual_snapshot_date={prep_lifecycle.get('snapshot_business_date') or prep_lifecycle.get('business_date') or 'missing'}",
             f"snapshot_id={prep_lifecycle.get('snapshot_id') or 'missing'}",
         ])
     freshness = _oof_freshness_evidence(result)

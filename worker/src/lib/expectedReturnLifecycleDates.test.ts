@@ -2,6 +2,7 @@ import assert from 'node:assert/strict'
 import {
   isExpectedOofCurrentCloseCovered,
   resolveExpectedOofCoverageDates,
+  resolveForwardNotEvaluableDates,
   resolveLegalForwardNotEvaluableDates,
 } from './expectedReturnServingRegistry'
 
@@ -27,11 +28,19 @@ assert.deepEqual(resolveExpectedOofCoverageDates([...dates].reverse()), {
 
 const legalNotEvaluable = resolveLegalForwardNotEvaluableDates(JSON.stringify({
   not_evaluable: [
+    { date: '2026-08-06', reason: 'l4_chronological_history_not_ready' },
     { date: '2026-08-11', reason: 'missing_native_pit_components' },
     { date: '2026-08-12', reason: 'unapproved_reason' },
   ],
 }))
 assert.deepEqual(legalNotEvaluable, ['2026-08-11'])
+assert.deepEqual(resolveForwardNotEvaluableDates(JSON.stringify({
+  not_evaluable: [
+    { date: '2026-08-06', reason: 'l4_chronological_history_not_ready' },
+    { date: '2026-08-11', reason: 'missing_native_pit_components' },
+    { date: '2026-08-12', reason: 'unapproved_reason' },
+  ],
+})), ['2026-08-06', '2026-08-11', '2026-08-12'])
 assert.equal(isExpectedOofCurrentCloseCovered('2026-08-10', '2026-08-11', legalNotEvaluable), true)
 assert.equal(isExpectedOofCurrentCloseCovered('2026-08-10', '2026-08-12', legalNotEvaluable), false)
 assert.equal(isExpectedOofCurrentCloseCovered('2026-08-12', '2026-08-12', []), true)

@@ -18,13 +18,17 @@ from __future__ import annotations
 import json
 import hashlib
 import logging
+from bisect import bisect_right
 from datetime import datetime, timezone
 from typing import Literal, Optional, TypedDict
 
-from services import d1_client
+from services.d1_domain_client import D1DataDomain, client_proxy_for_domain
 from services._rrg_calculator import build_rotation_model, build_rrg_point, RrgHistoryPoint, RrgPoint
 
 logger = logging.getLogger(__name__)
+CORE_D1_CLIENT = client_proxy_for_domain(D1DataDomain.CORE)
+MARKET_D1_CLIENT = client_proxy_for_domain(D1DataDomain.MARKET)
+OPS_D1_CLIENT = client_proxy_for_domain(D1DataDomain.OPS)
 
 TagType = Literal["concept", "industry", "industry_theme", "subindustry"]
 Classification = Literal["theme", "industry", "industry_theme", "subindustry"]
@@ -63,49 +67,54 @@ def _tag_type_to_classification(tag_type: TagType) -> Classification:
     return "industry"
 
 
+def _load_stock_identities() -> tuple[dict[str, str], dict[str, object]]:
+    rows = CORE_D1_CLIENT.query("SELECT id, symbol FROM stocks")
+    id_to_symbol: dict[str, str] = {}
+    symbol_to_id: dict[str, object] = {}
+    for row in rows:
+        symbol = str(row.get("symbol") or "").strip()
+        stock_id = row.get("id")
+        if symbol and stock_id is not None:
+            id_to_symbol[str(stock_id)] = symbol
+            symbol_to_id[symbol] = stock_id
+    return id_to_symbol, symbol_to_id
+
+
 def _load_member_returns_5d(as_of_date: str) -> dict[str, float]:
-    """
-    Load 5-trading-day returns for ALL stocks (NO in_current_watchlist filter — Bug B8 fix).
-
-    Returns {symbol: return_5d} where return_5d = (close_now - close_5d_ago) / close_5d_ago.
-    Uses last 6 price points per stock (most recent is "now", 6th is "5 days ago").
-
-    as_of_date: the latest date to include (inclusive), e.g. "2026-04-08".
-    """
-    sql = """
-    SELECT
-      s.symbol,
-      sp.date,
-      sp.close
-    FROM stock_prices sp
-    JOIN stocks s ON s.id = sp.stock_id
-    WHERE sp.date <= ?
-      AND sp.date >= date(?, '-20 days')
-    ORDER BY s.symbol ASC, sp.date DESC
-    """
-    rows = d1_client.query(sql, [as_of_date, as_of_date])
-    # Group by symbol, take [0] and [5]
+    """Load five-session returns from Market D1 and join Core identities in memory."""
+    id_to_symbol, _ = _load_stock_identities()
+    rows = MARKET_D1_CLIENT.query(
+        """
+        SELECT stock_id, date, close
+          FROM stock_prices
+         WHERE date <= ?
+           AND date >= date(?, '-20 days')
+         ORDER BY stock_id ASC, date DESC
+        """,
+        [as_of_date, as_of_date],
+    )
     by_sym: dict[str, list[float]] = {}
-    for r in rows:
-        sym = r.get("symbol")
-        close = r.get("close")
-        if sym is None or close is None:
+    for row in rows:
+        symbol = id_to_symbol.get(str(row.get("stock_id")))
+        close = row.get("close")
+        if not symbol or close is None:
             continue
-        by_sym.setdefault(sym, []).append(float(close))
+        by_sym.setdefault(symbol, []).append(float(close))
 
     returns: dict[str, float] = {}
-    for sym, closes in by_sym.items():
+    for symbol, closes in by_sym.items():
         if len(closes) < 6:
-            continue  # not enough history
+            continue
         latest = closes[0]
         ago5 = closes[5]
         if ago5 > 0:
-            returns[sym] = (latest - ago5) / ago5
+            returns[symbol] = (latest - ago5) / ago5
     return returns
 
 
 def _load_symbol_session_state(as_of_date: str) -> dict[str, SymbolSessionState]:
-    rows = d1_client.query(
+    id_to_symbol, _ = _load_stock_identities()
+    rows = MARKET_D1_CLIENT.query(
         """
         WITH sessions AS (
           SELECT DISTINCT date
@@ -117,13 +126,12 @@ def _load_symbol_session_state(as_of_date: str) -> dict[str, SymbolSessionState]
         bounds AS (
           SELECT MAX(date) current_date, MIN(date) previous_date FROM sessions
         )
-        SELECT s.symbol,
+        SELECT cur.stock_id,
                cur.close current_close, cur.volume current_volume,
                prev.close previous_close, prev.volume previous_volume
           FROM bounds b
           JOIN stock_prices cur ON cur.date=b.current_date
           JOIN stock_prices prev ON prev.stock_id=cur.stock_id AND prev.date=b.previous_date
-          JOIN stocks s ON s.id=cur.stock_id
          WHERE b.current_date<>b.previous_date
            AND cur.close>0 AND prev.close>0
            AND cur.volume IS NOT NULL AND cur.volume>=0
@@ -133,7 +141,7 @@ def _load_symbol_session_state(as_of_date: str) -> dict[str, SymbolSessionState]
     )
     output: dict[str, SymbolSessionState] = {}
     for row in rows:
-        symbol = str(row.get("symbol") or "").strip()
+        symbol = id_to_symbol.get(str(row.get("stock_id")), "")
         current_close = float(row.get("current_close") or 0)
         previous_close = float(row.get("previous_close") or 0)
         current_turnover = current_close * float(row.get("current_volume") or 0)
@@ -186,7 +194,7 @@ def _load_twii_return_5d(as_of_date: str) -> float:
     WHERE date <= ?
     ORDER BY date DESC LIMIT 6
     """
-    rows = d1_client.query(sql, [as_of_date])
+    rows = CORE_D1_CLIENT.query(sql, [as_of_date])
     if not rows or len(rows) < 2:
         return 0.0
     latest = rows[0].get("twii_close")
@@ -217,7 +225,7 @@ def _load_persisted_taxonomy_snapshot(
     tag_type: TagType,
     as_of_date: str,
 ) -> dict[str, list[str]] | None:
-    manifests = d1_client.query(
+    manifests = MARKET_D1_CLIENT.query(
         """
         SELECT snapshot_id, membership_checksum, expected_row_count, persisted_row_count, status
           FROM sector_taxonomy_snapshot_runs_v1
@@ -232,7 +240,7 @@ def _load_persisted_taxonomy_snapshot(
     snapshot_id = str(manifest.get("snapshot_id") or "").strip()
     expected_checksum = str(manifest.get("membership_checksum") or "").strip()
     expected_count = int(manifest.get("expected_row_count") or 0)
-    rows = d1_client.query(
+    rows = MARKET_D1_CLIENT.query(
         """
         SELECT tag, symbol
           FROM sector_taxonomy_membership_snapshots_v1
@@ -267,7 +275,7 @@ def _persist_taxonomy_snapshot(
 ) -> tuple[str, str]:
     snapshot_id, checksum = _taxonomy_snapshot_identity(tag_type, as_of_date, tag_members)
     expected_count = sum(len(set(symbols)) for symbols in tag_members.values())
-    existing = d1_client.query(
+    existing = MARKET_D1_CLIENT.query(
         """
         SELECT snapshot_id, membership_checksum, status
           FROM sector_taxonomy_snapshot_runs_v1
@@ -284,7 +292,7 @@ def _persist_taxonomy_snapshot(
         if str(existing[0].get("status") or "") == "ready":
             return snapshot_id, checksum
 
-    d1_client.execute(
+    MARKET_D1_CLIENT.execute(
         """
         INSERT INTO sector_taxonomy_snapshot_runs_v1 (
           snapshot_date, tag_type, snapshot_id, membership_checksum,
@@ -326,8 +334,8 @@ def _persist_taxonomy_snapshot(
         ))
     try:
         if statements:
-            d1_client.batch_execute(statements, chunk_size=100)
-        counts = d1_client.query(
+            MARKET_D1_CLIENT.batch_execute(statements, chunk_size=100)
+        counts = MARKET_D1_CLIENT.query(
             """
             SELECT COUNT(*) row_count,
                    MIN(membership_checksum) min_checksum,
@@ -349,7 +357,7 @@ def _persist_taxonomy_snapshot(
                 f"sector_taxonomy_snapshot_write_incomplete:{as_of_date}:{tag_type}:"
                 f"{persisted_count}/{expected_count}"
             )
-        d1_client.execute(
+        MARKET_D1_CLIENT.execute(
             """
             UPDATE sector_taxonomy_snapshot_runs_v1
                SET persisted_row_count=?, status='ready', error_code=NULL,
@@ -359,7 +367,7 @@ def _persist_taxonomy_snapshot(
             [persisted_count, as_of_date, tag_type, snapshot_id],
         )
     except Exception as exc:
-        d1_client.execute(
+        MARKET_D1_CLIENT.execute(
             """
             UPDATE sector_taxonomy_snapshot_runs_v1
                SET status='failed', error_code=?, updated_at=CURRENT_TIMESTAMP
@@ -397,7 +405,7 @@ def _load_stock_tags(
             if as_of_date:
                 sql += " AND date(as_of_date) <= date(?)"
                 params.append(as_of_date)
-            rows.extend(d1_client.query(sql, params))
+            rows.extend(MARKET_D1_CLIENT.query(sql, params))
         except Exception as exc:
             logger.warning("[sector_flow] FinLab taxonomy load failed for %s: %s", tag_type, exc)
     try:
@@ -410,7 +418,7 @@ def _load_stock_tags(
         if as_of_date:
             sql += " AND date(updated_at) <= date(?)"
             params.append(as_of_date)
-        rows.extend(d1_client.query(sql, params))
+        rows.extend(MARKET_D1_CLIENT.query(sql, params))
     except Exception as exc:
         logger.warning("[sector_flow] stock_tags load failed for %s: %s", tag_type, exc)
 
@@ -457,49 +465,84 @@ def _accumulate_cash_flow(
     entry["total_net"] += foreign_cash + trust_cash + dealer_cash
 
 
+def _attach_market_closes(rows: list[dict]) -> None:
+    """Attach latest known Market close at or before each row date without a cross-D1 join."""
+    if not rows:
+        return
+    id_to_symbol, symbol_to_id = _load_stock_identities()
+    dated_rows = [row for row in rows if str(row.get("date") or "").strip()]
+    required_ids = sorted({
+        symbol_to_id[str(row.get("symbol") or "").strip()]
+        for row in dated_rows
+        if str(row.get("symbol") or "").strip() in symbol_to_id
+    }, key=str)
+    if not required_ids:
+        return
+    min_date = min(str(row["date"]) for row in dated_rows)
+    max_date = max(str(row["date"]) for row in dated_rows)
+    prices_by_symbol: dict[str, list[tuple[str, float]]] = {}
+    for offset in range(0, len(required_ids), 80):
+        chunk = required_ids[offset:offset + 80]
+        placeholders = ",".join("?" for _ in chunk)
+        price_rows = MARKET_D1_CLIENT.query(
+            f"""
+            SELECT stock_id, date, close
+              FROM stock_prices
+             WHERE stock_id IN ({placeholders})
+               AND date <= ?
+               AND date >= date(?, '-20 days')
+               AND close IS NOT NULL
+             ORDER BY stock_id, date
+            """,
+            [*chunk, max_date, min_date],
+        )
+        for price_row in price_rows:
+            symbol = id_to_symbol.get(str(price_row.get("stock_id")))
+            if symbol:
+                prices_by_symbol.setdefault(symbol, []).append(
+                    (str(price_row.get("date") or ""), float(price_row.get("close") or 0))
+                )
+    for row in rows:
+        symbol = str(row.get("symbol") or "").strip()
+        target_date = str(row.get("date") or "").strip()
+        history = prices_by_symbol.get(symbol) or []
+        dates = [date for date, _ in history]
+        index = bisect_right(dates, target_date) - 1
+        row["close"] = history[index][1] if index >= 0 else None
+
+
 def _load_canonical_symbol_cash_flows_5d(
     as_of_date: str,
     lookback_days: int,
     flows: dict[str, CashFlow],
     seen_symbol_dates: set[tuple[str, str]],
 ) -> None:
-    date_rows = d1_client.query(
+    date_rows = MARKET_D1_CLIENT.query(
         """
         SELECT DISTINCT date
-        FROM canonical_chip_daily
-        WHERE date <= ?
-        ORDER BY date DESC
-        LIMIT ?
+          FROM canonical_chip_daily
+         WHERE date <= ?
+         ORDER BY date DESC
+         LIMIT ?
         """,
         [as_of_date, lookback_days],
     )
-    dates = [r.get("date") for r in date_rows if r.get("date")]
+    dates = [row.get("date") for row in date_rows if row.get("date")]
     if not dates:
         return
-
-    placeholders = ",".join("?" * len(dates))
-    rows = d1_client.query(
+    placeholders = ",".join("?" for _ in dates)
+    rows = MARKET_D1_CLIENT.query(
         f"""
-        SELECT
-          c.stock_id AS symbol,
-          c.date,
-          COALESCE(c.foreign_net, 0) AS foreign_net,
-          COALESCE(c.trust_net, 0) AS trust_net,
-          COALESCE(c.dealer_net, 0) AS dealer_net,
-          (
-            SELECT sp.close
-            FROM stock_prices sp
-            JOIN stocks s ON s.id = sp.stock_id
-            WHERE s.symbol = c.stock_id
-              AND sp.date <= c.date
-            ORDER BY sp.date DESC
-            LIMIT 1
-          ) AS close
-        FROM canonical_chip_daily c
-        WHERE c.date IN ({placeholders})
+        SELECT c.stock_id AS symbol, c.date,
+               COALESCE(c.foreign_net, 0) AS foreign_net,
+               COALESCE(c.trust_net, 0) AS trust_net,
+               COALESCE(c.dealer_net, 0) AS dealer_net
+          FROM canonical_chip_daily c
+         WHERE c.date IN ({placeholders})
         """,
         dates,
     )
+    _attach_market_closes(rows)
     for row in rows:
         _accumulate_cash_flow(flows, row, seen_symbol_dates=seen_symbol_dates)
 
@@ -510,46 +553,34 @@ def _load_legacy_symbol_cash_flows_5d(
     flows: dict[str, CashFlow],
     seen_symbol_dates: set[tuple[str, str]],
 ) -> None:
-    date_rows = d1_client.query(
+    date_rows = MARKET_D1_CLIENT.query(
         """
         SELECT DISTINCT date
-        FROM chip_data
-        WHERE date <= ?
-        ORDER BY date DESC
-        LIMIT ?
+          FROM chip_data
+         WHERE date <= ?
+         ORDER BY date DESC
+         LIMIT ?
         """,
         [as_of_date, lookback_days],
     )
-    dates = [r.get("date") for r in date_rows if r.get("date")]
+    dates = [row.get("date") for row in date_rows if row.get("date")]
     if not dates:
-        return {}
-
-    placeholders = ",".join("?" * len(dates))
-    rows = d1_client.query(
+        return
+    placeholders = ",".join("?" for _ in dates)
+    rows = MARKET_D1_CLIENT.query(
         f"""
-        SELECT
-          c.symbol,
-          c.date,
-          COALESCE(c.foreign_net, 0) AS foreign_net,
-          COALESCE(c.trust_net, 0) AS trust_net,
-          COALESCE(c.dealer_net, 0) AS dealer_net,
-          (
-            SELECT sp.close
-            FROM stock_prices sp
-            JOIN stocks s ON s.id = sp.stock_id
-            WHERE s.symbol = c.symbol
-              AND sp.date <= c.date
-            ORDER BY sp.date DESC
-            LIMIT 1
-          ) AS close
-        FROM chip_data c
-        WHERE c.date IN ({placeholders})
+        SELECT c.symbol, c.date,
+               COALESCE(c.foreign_net, 0) AS foreign_net,
+               COALESCE(c.trust_net, 0) AS trust_net,
+               COALESCE(c.dealer_net, 0) AS dealer_net
+          FROM chip_data c
+         WHERE c.date IN ({placeholders})
         """,
         dates,
     )
-
-    for r in rows:
-        _accumulate_cash_flow(flows, r, seen_symbol_dates=seen_symbol_dates)
+    _attach_market_closes(rows)
+    for row in rows:
+        _accumulate_cash_flow(flows, row, seen_symbol_dates=seen_symbol_dates)
 
 
 def _load_symbol_cash_flows_5d(as_of_date: str, lookback_days: int = 5) -> dict[str, CashFlow]:
@@ -585,7 +616,7 @@ def _aggregate_tag_cash_flows(
 
 
 def _load_stock_names() -> dict[str, str]:
-    rows = d1_client.query("SELECT symbol, name FROM stocks")
+    rows = CORE_D1_CLIENT.query("SELECT symbol, name FROM stocks")
     return {
         str(r.get("symbol")): str(r.get("name") or r.get("symbol"))
         for r in rows
@@ -641,9 +672,9 @@ def write_sector_flow_stock_details(
             ))
 
     if len(statements) == 1:
-        d1_client.execute(statements[0][0], statements[0][1])
+        MARKET_D1_CLIENT.execute(statements[0][0], statements[0][1])
         return 0
-    result = d1_client.batch_execute(statements, chunk_size=100)
+    result = MARKET_D1_CLIENT.batch_execute(statements, chunk_size=100)
     written = max(0, int(result.get("success_count") or result.get("total") or 0) - 1)
     logger.info(f"[sector_flow] Wrote {written} sector_flow_stocks rows for {as_of_date}")
     return written
@@ -673,7 +704,7 @@ def _load_prev_rs_ratios(
       )
     ORDER BY sector
     """
-    rows = d1_client.query(sql, [
+    rows = MARKET_D1_CLIENT.query(sql, [
         classification, SECTOR_FLOW_PIT_LINEAGE_VERSION,
         classification, SECTOR_FLOW_PIT_LINEAGE_VERSION, as_of_date,
     ])
@@ -714,7 +745,7 @@ def _load_rrg_history(
       )
     ORDER BY sector ASC, date ASC
     """
-    rows = d1_client.query(sql, [
+    rows = MARKET_D1_CLIENT.query(sql, [
         classification, SECTOR_FLOW_PIT_LINEAGE_VERSION,
         classification, SECTOR_FLOW_PIT_LINEAGE_VERSION, as_of_date, int(tail_window),
     ])
@@ -898,7 +929,7 @@ def write_sector_flow(
 
     if not statements:
         return 0
-    result = d1_client.batch_execute(statements)
+    result = MARKET_D1_CLIENT.batch_execute(statements)
     written = result.get("total", 0)
     logger.info(f"[sector_flow] Wrote {written} {classification} rows for {as_of_date}")
     return written
@@ -915,7 +946,7 @@ def _persist_sector_flow_rebuild_run(
     rows_written: int,
     blockers: list[str],
 ) -> None:
-    d1_client.execute(
+    OPS_D1_CLIENT.execute(
         """
         INSERT INTO sector_flow_pit_rebuild_runs_v1 (
           run_id, signal_date, status, reconstruction_mode,

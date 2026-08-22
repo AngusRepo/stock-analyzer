@@ -16,9 +16,16 @@ def test_symbol_cash_flows_convert_chip_shares_to_twd_billions(monkeypatch):
                 "dealer_net": -60_587,
                 "close": 82.3,
             }]
+        if "FROM stock_prices" in sql:
+            return [{"stock_id": 1, "date": "2026-04-30", "close": 82.3}]
         return []
 
-    monkeypatch.setattr(sector_flow_service.d1_client, "query", fake_query)
+    monkeypatch.setattr(
+        sector_flow_service.CORE_D1_CLIENT,
+        "query",
+        lambda *_args, **_kwargs: [{"id": 1, "symbol": "4938"}],
+    )
+    monkeypatch.setattr(sector_flow_service.MARKET_D1_CLIENT, "query", fake_query)
 
     flows = sector_flow_service._load_symbol_cash_flows_5d("2026-04-30")
 
@@ -26,6 +33,55 @@ def test_symbol_cash_flows_convert_chip_shares_to_twd_billions(monkeypatch):
     assert flows["4938"]["foreign_net"] == pytest.approx(-17_248 * 82.3 / 1e8)
     assert flows["4938"]["trust_net"] == pytest.approx(-447_258 * 82.3 / 1e8)
 
+
+def test_member_returns_reads_core_and_market_separately(monkeypatch):
+    core_calls = []
+    market_calls = []
+
+    def core_query(sql, params=None):
+        core_calls.append((sql, params))
+        return [{"id": 1, "symbol": "2330"}]
+
+    def market_query(sql, params=None):
+        market_calls.append((sql, params))
+        return [
+            {"stock_id": 1, "date": f"2026-04-{day:02d}", "close": close}
+            for day, close in zip(range(30, 24, -1), [106, 105, 104, 103, 102, 100])
+        ]
+
+    monkeypatch.setattr(sector_flow_service.CORE_D1_CLIENT, "query", core_query)
+    monkeypatch.setattr(sector_flow_service.MARKET_D1_CLIENT, "query", market_query)
+
+    returns = sector_flow_service._load_member_returns_5d("2026-04-30")
+
+    assert returns == {"2330": pytest.approx(0.06)}
+    assert "FROM stocks" in core_calls[0][0]
+    assert "FROM stock_prices" in market_calls[0][0]
+    assert "JOIN stocks" not in market_calls[0][0]
+
+
+def test_sector_flow_rebuild_receipt_writes_ops_owner(monkeypatch):
+    captured = []
+    monkeypatch.setattr(
+        sector_flow_service.OPS_D1_CLIENT,
+        "execute",
+        lambda sql, params: captured.append((sql, params)) or {"success": True},
+    )
+
+    sector_flow_service._persist_sector_flow_rebuild_run(
+        run_id="sector-flow:2026-08-21:test",
+        signal_date="2026-08-21",
+        status="pass",
+        reconstruction_mode="native",
+        taxonomy_snapshot_ids={},
+        membership_checksums={},
+        rows_written=588,
+        blockers=[],
+    )
+
+    assert len(captured) == 1
+    assert "sector_flow_pit_rebuild_runs_v1" in captured[0][0]
+    assert captured[0][1][0] == "sector-flow:2026-08-21:test"
 
 def test_load_stock_tags_uses_finlab_taxonomy_with_stock_tags_overlay(monkeypatch):
     def fake_query(sql, params=None):
@@ -41,7 +97,7 @@ def test_load_stock_tags_uses_finlab_taxonomy_with_stock_tags_overlay(monkeypatc
             ]
         return []
 
-    monkeypatch.setattr(sector_flow_service.d1_client, "query", fake_query)
+    monkeypatch.setattr(sector_flow_service.MARKET_D1_CLIENT, "query", fake_query)
 
     tags = sector_flow_service._load_stock_tags("industry_theme")
 
@@ -49,7 +105,7 @@ def test_load_stock_tags_uses_finlab_taxonomy_with_stock_tags_overlay(monkeypatc
     assert tags["MEMORY"] == ["3665"]
 
 def test_historical_taxonomy_reconstruction_requires_exact_snapshot(monkeypatch):
-    monkeypatch.setattr(sector_flow_service.d1_client, "query", lambda *args, **kwargs: [])
+    monkeypatch.setattr(sector_flow_service.MARKET_D1_CLIENT, "query", lambda *args, **kwargs: [])
 
     with pytest.raises(
         RuntimeError,
@@ -93,9 +149,9 @@ def test_native_taxonomy_load_freezes_exact_membership(monkeypatch):
         captured.setdefault("execute", []).append((sql, params))
         return {"success": True}
 
-    monkeypatch.setattr(sector_flow_service.d1_client, "query", fake_query)
-    monkeypatch.setattr(sector_flow_service.d1_client, "batch_execute", fake_batch)
-    monkeypatch.setattr(sector_flow_service.d1_client, "execute", fake_execute)
+    monkeypatch.setattr(sector_flow_service.MARKET_D1_CLIENT, "query", fake_query)
+    monkeypatch.setattr(sector_flow_service.MARKET_D1_CLIENT, "batch_execute", fake_batch)
+    monkeypatch.setattr(sector_flow_service.MARKET_D1_CLIENT, "execute", fake_execute)
 
     tags = sector_flow_service._load_stock_tags("industry_theme", "2026-07-30")
 
@@ -127,7 +183,7 @@ def test_ready_taxonomy_snapshot_rejects_partial_membership(monkeypatch):
             return [{"tag": "AI_SERVER", "symbol": "2330"}]
         return []
 
-    monkeypatch.setattr(sector_flow_service.d1_client, "query", fake_query)
+    monkeypatch.setattr(sector_flow_service.MARKET_D1_CLIENT, "query", fake_query)
 
     with pytest.raises(
         RuntimeError,
@@ -154,7 +210,7 @@ def test_empty_ready_taxonomy_snapshot_is_valid(monkeypatch):
             return []
         return []
 
-    monkeypatch.setattr(sector_flow_service.d1_client, "query", fake_query)
+    monkeypatch.setattr(sector_flow_service.MARKET_D1_CLIENT, "query", fake_query)
 
     assert sector_flow_service._load_stock_tags(
         "subindustry", "2026-07-30", reconstruction_mode="historical_reconstruction",
@@ -173,8 +229,8 @@ def test_persist_empty_taxonomy_snapshot_marks_ready(monkeypatch):
         captured.append((sql, params))
         return {"success": True}
 
-    monkeypatch.setattr(sector_flow_service.d1_client, "query", fake_query)
-    monkeypatch.setattr(sector_flow_service.d1_client, "execute", fake_execute)
+    monkeypatch.setattr(sector_flow_service.MARKET_D1_CLIENT, "query", fake_query)
+    monkeypatch.setattr(sector_flow_service.MARKET_D1_CLIENT, "execute", fake_execute)
 
     snapshot_id, checksum = sector_flow_service._persist_taxonomy_snapshot(
         "subindustry", "2026-07-30", [], {},
@@ -193,7 +249,7 @@ def test_write_sector_flow_persists_cash_flow_fields(monkeypatch):
         captured["statements"] = statements
         return {"total": len(statements)}
 
-    monkeypatch.setattr(sector_flow_service.d1_client, "batch_execute", fake_batch_execute)
+    monkeypatch.setattr(sector_flow_service.MARKET_D1_CLIENT, "batch_execute", fake_batch_execute)
 
     written = sector_flow_service.write_sector_flow(
         [
@@ -264,7 +320,7 @@ def test_load_rrg_history_builds_per_sector_tail(monkeypatch):
             {"sector": "Bad", "date": "2026-06-19", "rs_ratio": 97.0, "rs_momentum": None, "quadrant": "Leading"},
         ]
 
-    monkeypatch.setattr(sector_flow_service.d1_client, "query", fake_query)
+    monkeypatch.setattr(sector_flow_service.MARKET_D1_CLIENT, "query", fake_query)
 
     history = sector_flow_service._load_rrg_history("industry", "2026-06-20")
 
@@ -285,8 +341,8 @@ def test_write_sector_flow_stock_details_refreshes_current_date(monkeypatch):
         captured["kwargs"] = kwargs
         return {"total": len(statements), "success_count": len(statements)}
 
-    monkeypatch.setattr(sector_flow_service.d1_client, "query", fake_query)
-    monkeypatch.setattr(sector_flow_service.d1_client, "batch_execute", fake_batch_execute)
+    monkeypatch.setattr(sector_flow_service.CORE_D1_CLIENT, "query", fake_query)
+    monkeypatch.setattr(sector_flow_service.MARKET_D1_CLIENT, "batch_execute", fake_batch_execute)
 
     written = sector_flow_service.write_sector_flow_stock_details(
         as_of_date="2026-05-07",
@@ -314,7 +370,7 @@ def test_run_sector_flow_pipeline_includes_industry_theme_path(monkeypatch):
 
     monkeypatch.setattr(sector_flow_service, "_load_symbol_cash_flows_5d", lambda as_of_date: {})
     monkeypatch.setattr(sector_flow_service, "_load_symbol_session_state", lambda as_of_date: {})
-    monkeypatch.setattr(sector_flow_service.d1_client, "execute", lambda *args, **kwargs: {"success": True})
+    monkeypatch.setattr(sector_flow_service.OPS_D1_CLIENT, "execute", lambda *args, **kwargs: {"success": True})
     monkeypatch.setattr(
         sector_flow_service,
         "_load_stock_tags",
@@ -371,7 +427,7 @@ def test_run_sector_flow_pipeline_includes_industry_theme_path(monkeypatch):
 def test_run_sector_flow_pipeline_fails_closed_when_a_required_path_errors(monkeypatch):
     monkeypatch.setattr(sector_flow_service, "_load_symbol_cash_flows_5d", lambda as_of_date: {})
     monkeypatch.setattr(sector_flow_service, "_load_symbol_session_state", lambda as_of_date: {})
-    monkeypatch.setattr(sector_flow_service.d1_client, "execute", lambda *args, **kwargs: {"success": True})
+    monkeypatch.setattr(sector_flow_service.OPS_D1_CLIENT, "execute", lambda *args, **kwargs: {"success": True})
     monkeypatch.setattr(
         sector_flow_service,
         "_load_stock_tags",

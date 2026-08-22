@@ -1311,6 +1311,7 @@ export function buildAdminWorkerDomainTaskMap(c: any, deps: TriggerDeps): Record
             ? legacyBaseline
             : baselineByDomain.get(row.domain) ?? null,
         })
+        const { status: forecastStatus, ...forecast } = estimate
         return {
           domain: row.domain,
           binding: row.binding_name,
@@ -1318,7 +1319,8 @@ export function buildAdminWorkerDomainTaskMap(c: any, deps: TriggerDeps): Record
           max: row.max_bytes,
           utilization_pct: row.utilization_pct,
           status: row.status,
-          ...estimate,
+          forecast_status: forecastStatus,
+          ...forecast,
         }
       })
       return `storage_capacity_report observed_date=${observedDate} lineage_run_date=${lineageRunDate} health=${JSON.stringify(health)} d1=${JSON.stringify(capacities)} classes=${JSON.stringify(results ?? [])}`

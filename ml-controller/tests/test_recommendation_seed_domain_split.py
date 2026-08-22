@@ -30,7 +30,7 @@ def test_existing_seed_ids_reads_ops_and_core_separately(monkeypatch):
     )
     monkeypatch.setattr(
         recommendation_service,
-        "d1_client",
+        "CORE_D1_CLIENT",
         SimpleNamespace(query=core_query),
     )
 
@@ -60,7 +60,7 @@ def test_stale_cleanup_fails_closed_when_latest_run_has_no_selected_seed(monkeyp
     )
     monkeypatch.setattr(
         recommendation_service,
-        "d1_client",
+        "CORE_D1_CLIENT",
         SimpleNamespace(
             query=lambda *args, **kwargs: core_calls.append(("query", args, kwargs)),
             execute=lambda *args, **kwargs: core_calls.append(("execute", args, kwargs)),
@@ -103,7 +103,7 @@ def test_stale_cleanup_deletes_only_core_rows_outside_ops_seed(monkeypatch):
     )
     monkeypatch.setattr(
         recommendation_service,
-        "d1_client",
+        "CORE_D1_CLIENT",
         SimpleNamespace(query=core_query, execute=core_execute),
     )
 

@@ -49,7 +49,7 @@ def test_filtered_recommendations_preserve_screener_seed_rows(monkeypatch):
         captured["statements"] = statements
         return {"success_count": len(statements)}
 
-    monkeypatch.setattr(recommendation_service.d1_client, "batch_execute", _fake_batch_execute)
+    monkeypatch.setattr(recommendation_service.CORE_D1_CLIENT, "batch_execute", _fake_batch_execute)
 
     written = recommendation_service.delete_filtered_recommendations(
         ["2330", "2317"],

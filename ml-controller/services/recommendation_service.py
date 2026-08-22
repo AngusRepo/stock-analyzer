@@ -19,7 +19,7 @@ from numbers import Integral, Real
 from typing import Any, Optional
 
 from services import d1_client
-from services.d1_domain_client import D1DataDomain, client_for_domain
+from services.d1_domain_client import D1DataDomain, client_for_domain, client_proxy_for_domain
 from services._predictions_schema import (
     COL_STOCK_ID,
     COL_MODEL_NAME,
@@ -68,6 +68,7 @@ from services.fusion_market_context import build_runtime_market_context
 from services.price_horizon_projection_contract import PRICE_HORIZONS_CTE
 
 logger = logging.getLogger(__name__)
+CORE_D1_CLIENT = client_proxy_for_domain(D1DataDomain.CORE)
 OPS_D1_CLIENT = client_for_domain(D1DataDomain.OPS)
 PREDICTIONS_D1_CLIENT = client_for_domain(D1DataDomain.LEARNING)
 
@@ -4704,7 +4705,7 @@ def _existing_recommendation_seed_stock_ids(recommendations: list[dict], run_dat
     for i in range(0, len(stock_ids), chunk_size):
         chunk = stock_ids[i:i + chunk_size]
         placeholders = ",".join("?" for _ in chunk)
-        rows = d1_client.query(
+        rows = CORE_D1_CLIENT.query(
             f"""
             SELECT stock_id, symbol
               FROM daily_recommendations
@@ -4776,7 +4777,7 @@ def _delete_stale_recommendation_rows(recommendations: list[dict], run_date: str
             run_date,
         )
         return 0
-    rows = d1_client.query(
+    rows = CORE_D1_CLIENT.query(
         """
         SELECT stock_id, symbol
           FROM daily_recommendations
@@ -4796,7 +4797,7 @@ def _delete_stale_recommendation_rows(recommendations: list[dict], run_date: str
     changes = 0
     for chunk in _chunked(stale_ids):
         placeholders = ",".join("?" for _ in chunk)
-        result = d1_client.execute(
+        result = CORE_D1_CLIENT.execute(
             f"DELETE FROM daily_recommendations WHERE date = ? AND stock_id IN ({placeholders})",
             [run_date, *chunk],
             timeout=60,
@@ -4961,7 +4962,7 @@ def update_recommendations_in_d1(
 
     if not statements:
         return 0
-    result = d1_client.batch_execute(statements)
+    result = CORE_D1_CLIENT.batch_execute(statements)
     changes = int(result if isinstance(result, int) else (result or {}).get("changes_total") or 0)
     if changes < len(statements):
         raise RuntimeError(
@@ -5057,7 +5058,7 @@ def delete_filtered_recommendations(
                 sym,
             ],
         ))
-    d1_client.batch_execute(statements)
+    CORE_D1_CLIENT.batch_execute(statements)
     logger.info(f"[recommendation_service] Preserved {len(filtered_symbols)} ML-filtered screener seed rows")
     return len(filtered_symbols)
 
@@ -5068,7 +5069,7 @@ def re_rank_recommendations(run_date: str) -> None:
     The pipeline writes rows in allocation order. Keep that rank as the primary
     ordering so slate diversification does not need to inflate predictive score.
     """
-    rows = d1_client.query(
+    rows = CORE_D1_CLIENT.query(
         "SELECT symbol FROM daily_recommendations WHERE date = ? "
         "ORDER BY rank ASC, CASE WHEN json_valid(score_components) THEN "
         "COALESCE(CAST(json_extract(score_components, '$.finalScore') AS REAL), "
@@ -5081,7 +5082,7 @@ def re_rank_recommendations(run_date: str) -> None:
         for i, r in enumerate(rows)
     ]
     if statements:
-        d1_client.batch_execute(statements)
+        CORE_D1_CLIENT.batch_execute(statements)
     logger.info(f"[recommendation_service] Re-ranked {len(statements)} rows")
 
 

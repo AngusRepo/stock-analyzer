@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
@@ -230,17 +231,21 @@ def test_daily_recommendation_writer_persists_segment_governance(monkeypatch):
         return len(statements)
 
     def fake_query(sql, params, **_kwargs):
-        if "dr.stock_id IN" in sql:
+        if "daily_recommendations" in sql and "stock_id IN" in sql:
             captured["seed_query"] = (sql, params)
-        return [{"stock_id": 2}]
+        return [{"stock_id": 2, "symbol": "7879"}]
 
     def fake_execute(sql, params, timeout=None):
         captured["delete_stale"] = (sql, params, timeout)
         return {"meta": {"changes": 0}}
 
-    monkeypatch.setattr("services.recommendation_service.d1_client.batch_execute", fake_batch)
-    monkeypatch.setattr("services.recommendation_service.d1_client.query", fake_query)
-    monkeypatch.setattr("services.recommendation_service.d1_client.execute", fake_execute)
+    monkeypatch.setattr(
+        "services.recommendation_service.OPS_D1_CLIENT",
+        SimpleNamespace(query=lambda *_args, **_kwargs: [{"run_id": "run-1", "symbol": "7879"}]),
+    )
+    monkeypatch.setattr("services.recommendation_service.CORE_D1_CLIENT.batch_execute", fake_batch)
+    monkeypatch.setattr("services.recommendation_service.CORE_D1_CLIENT.query", fake_query)
+    monkeypatch.setattr("services.recommendation_service.CORE_D1_CLIENT.execute", fake_execute)
 
     update_recommendations_in_d1(
         [
@@ -286,4 +291,4 @@ def test_daily_recommendation_writer_persists_segment_governance(monkeypatch):
     assert "EMERGING" in params
     assert "emerging_watchlist" in params
     assert 1 in params
-    assert captured["seed_query"][1] == ["2026-04-30", "2026-04-30", 2]
+    assert captured["seed_query"][1] == ["2026-04-30", 2]

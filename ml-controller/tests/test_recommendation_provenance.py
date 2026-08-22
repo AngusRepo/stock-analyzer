@@ -4,6 +4,7 @@ import asyncio
 import json
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -613,12 +614,17 @@ def test_update_recommendations_in_d1_upserts_seed_rows(monkeypatch):
         captured["cleanup_timeout"] = timeout
         return {"meta": {"changes": 2}}
 
-    monkeypatch.setattr(recommendation_service.d1_client, "batch_execute", _fake_batch_execute)
-    monkeypatch.setattr(recommendation_service.d1_client, "execute", _fake_execute)
     monkeypatch.setattr(
-        recommendation_service.d1_client,
+        recommendation_service,
+        "OPS_D1_CLIENT",
+        SimpleNamespace(query=lambda *_args, **_kwargs: [{"run_id": "run-1", "symbol": "2330"}]),
+    )
+    monkeypatch.setattr(recommendation_service.CORE_D1_CLIENT, "batch_execute", _fake_batch_execute)
+    monkeypatch.setattr(recommendation_service.CORE_D1_CLIENT, "execute", _fake_execute)
+    monkeypatch.setattr(
+        recommendation_service.CORE_D1_CLIENT,
         "query",
-        lambda *_args, **_kwargs: [{"stock_id": 1}],
+        lambda *_args, **_kwargs: [{"stock_id": 1, "symbol": "2330"}],
     )
 
     update_recommendations_in_d1([{
@@ -642,9 +648,7 @@ def test_update_recommendations_in_d1_upserts_seed_rows(monkeypatch):
         "score_components": _score_components(),
     }], "2026-04-27")
 
-    assert "DELETE FROM daily_recommendations" in captured["cleanup_sql"]
-    assert "stock_id IN (?)" in captured["cleanup_sql"]
-    assert captured["cleanup_params"] == ["2026-04-27", 1]
+    assert "cleanup_sql" not in captured
 
     sql, params = captured["statements"][0]
     assert "UPDATE daily_recommendations SET" in sql
@@ -664,12 +668,17 @@ def test_update_recommendations_in_d1_skips_partial_ml_only_rows(monkeypatch):
         captured["cleanup_params"] = params
         return {"meta": {"changes": 0}}
 
-    monkeypatch.setattr(recommendation_service.d1_client, "batch_execute", _fake_batch_execute)
-    monkeypatch.setattr(recommendation_service.d1_client, "execute", _fake_execute)
     monkeypatch.setattr(
-        recommendation_service.d1_client,
+        recommendation_service,
+        "OPS_D1_CLIENT",
+        SimpleNamespace(query=lambda *_args, **_kwargs: [{"run_id": "run-1", "symbol": "2330"}]),
+    )
+    monkeypatch.setattr(recommendation_service.CORE_D1_CLIENT, "batch_execute", _fake_batch_execute)
+    monkeypatch.setattr(recommendation_service.CORE_D1_CLIENT, "execute", _fake_execute)
+    monkeypatch.setattr(
+        recommendation_service.CORE_D1_CLIENT,
         "query",
-        lambda *_args, **_kwargs: [{"stock_id": 1}],
+        lambda *_args, **_kwargs: [{"stock_id": 1, "symbol": "2330"}],
     )
 
     updated = update_recommendations_in_d1([
@@ -718,7 +727,7 @@ def test_update_recommendations_in_d1_skips_partial_ml_only_rows(monkeypatch):
     assert updated == 1
     assert len(captured["statements"]) == 1
     assert captured["statements"][0][1][0] == "2330"
-    assert captured["cleanup_params"] == ["2026-04-27", 1]
+    assert "cleanup_params" not in captured
 
 
 def test_update_recommendations_clears_stale_alpha_selected_for_non_buy(monkeypatch):
@@ -728,16 +737,21 @@ def test_update_recommendations_clears_stale_alpha_selected_for_non_buy(monkeypa
         captured["statements"] = statements
         return {"success_count": len(statements), "changes_total": len(statements)}
 
-    monkeypatch.setattr(recommendation_service.d1_client, "batch_execute", _fake_batch_execute)
     monkeypatch.setattr(
-        recommendation_service.d1_client,
+        recommendation_service,
+        "OPS_D1_CLIENT",
+        SimpleNamespace(query=lambda *_args, **_kwargs: [{"run_id": "run-1", "symbol": "2885"}]),
+    )
+    monkeypatch.setattr(recommendation_service.CORE_D1_CLIENT, "batch_execute", _fake_batch_execute)
+    monkeypatch.setattr(
+        recommendation_service.CORE_D1_CLIENT,
         "execute",
         lambda *_args, **_kwargs: {"meta": {"changes": 0}},
     )
     monkeypatch.setattr(
-        recommendation_service.d1_client,
+        recommendation_service.CORE_D1_CLIENT,
         "query",
-        lambda *_args, **_kwargs: [{"stock_id": 1}],
+        lambda *_args, **_kwargs: [{"stock_id": 1, "symbol": "2885"}],
     )
 
     updated = update_recommendations_in_d1([
@@ -775,7 +789,12 @@ def test_update_recommendations_clears_stale_alpha_selected_for_non_buy(monkeypa
 
 
 def test_update_recommendations_in_d1_fails_when_no_seed_rows_exist(monkeypatch):
-    monkeypatch.setattr(recommendation_service.d1_client, "query", lambda *_args, **_kwargs: [])
+    monkeypatch.setattr(
+        recommendation_service,
+        "OPS_D1_CLIENT",
+        SimpleNamespace(query=lambda *_args, **_kwargs: [{"run_id": "run-1", "symbol": "9999"}]),
+    )
+    monkeypatch.setattr(recommendation_service.CORE_D1_CLIENT, "query", lambda *_args, **_kwargs: [])
 
     with pytest.raises(RuntimeError, match="Missing screener-owned daily_recommendations seed rows"):
         update_recommendations_in_d1([{

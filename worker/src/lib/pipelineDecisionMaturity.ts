@@ -1270,11 +1270,20 @@ export async function buildPipelineDecisionMaturityPacket(
       STRATEGY_ROUTE_CHALLENGER_VERSION,
     ).all<{ evidence_date: string; value: number | null; target: number | null }>().then((result) => result.results ?? [])),
     safeQuery(() => learningDb.prepare(`
+      WITH ranked AS (
+        SELECT as_of_date, paired_date_count, graph_json,
+               ROW_NUMBER() OVER (
+                 PARTITION BY as_of_date
+                 ORDER BY created_at DESC, artifact_id DESC
+               ) ordinal
+          FROM strategy_redundancy_artifacts_v1
+         WHERE as_of_date <= ?
+      )
       SELECT as_of_date evidence_date, paired_date_count value,
              json_extract(graph_json, '$.paired_date_requirement') target
-        FROM strategy_redundancy_artifacts_v1
-       WHERE as_of_date <= ?
-       ORDER BY as_of_date DESC, created_at DESC
+        FROM ranked
+       WHERE ordinal=1
+       ORDER BY as_of_date DESC
        LIMIT 7
     `).bind(requestedDate).all<{ evidence_date: string; value: number | null; target: number | null }>().then((result) => result.results ?? [])),
     safeQuery(() => learningDb.prepare(`

@@ -59,6 +59,7 @@ test('pipeline maturity API preserves canonical lineage and explicit evidence fi
   assert.match(source, /incumbent exact-run strategy matrix \(display-only fallback\)/)
   assert.match(source, /strategy_redundancy_artifacts_v1/)
   assert.doesNotMatch(source, /CASE WHEN status='pass' THEN 0 ELSE 1 END/)
+  assert.match(source, /PARTITION BY as_of_date\s+ORDER BY created_at DESC, artifact_id DESC/)
   assert.doesNotMatch(source, /ORDER BY date_count DESC, as_of_date DESC/)
   assert.match(source, /FROM strategy_redundancy_artifacts_v1\s+WHERE as_of_date<=\?\s+ORDER BY as_of_date DESC, created_at DESC/)
   assert.match(source, /FROM strategy_route_calibration_runs_v1\s+WHERE as_of_date<=\? AND sample_count>0 AND date_count>0\s+ORDER BY as_of_date DESC, created_at DESC/)

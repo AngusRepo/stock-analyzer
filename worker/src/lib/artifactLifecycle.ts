@@ -702,6 +702,8 @@ export interface StorageHealthResult {
   d1_utilization: number | null
   capacity_status: StorageCapacityRow['status'] | 'unknown'
   capacity_error: string | null
+  legacy_capacity_role: 'active_source' | 'frozen_rollback_source'
+  blocking_capacity_domains: string[]
   capacity_domains: Array<{ domain: string; binding_name: string; utilization_pct: number; status: string }>
 }
 
@@ -866,11 +868,27 @@ export async function runStorageHealthCheck(
            AND status='ready'
            AND created_at >= datetime('now','-24 hours'))) AS progress_24h
   `).first<any>()
+  const frozenDomainReceipt = await env.DB.prepare(`
+    SELECT COUNT(DISTINCT c.domain) AS frozen_domains
+      FROM data_domain_cutovers c
+      JOIN data_domain_writer_epochs w ON w.domain=c.domain
+     WHERE c.domain IN ('core','market','learning','ops','execution','paper','research')
+       AND c.status='complete'
+       AND w.writer_state='cutover'
+  `).first<{ frozen_domains?: number }>()
+
   const legacyCapacity = capacityRows.find((row) => row.domain === 'legacy' && row.binding_name === 'DB')
   const d1Bytes = legacyCapacity?.used_bytes ?? null
   const utilization = d1Bytes == null ? null : d1Bytes / 10_000_000_000
   const capacityStatus = legacyCapacity?.status ?? 'unknown'
-  const capacityDrain = capacityRows.some((row) => row.status === 'drain' || row.status === 'critical')
+  const legacyFrozenRollbackSource = Number(frozenDomainReceipt?.frozen_domains ?? 0) === 7
+  const blockingCapacityDomains = capacityRows
+    .filter((row) => (
+      (row.status === 'drain' || row.status === 'critical')
+      && !(row.domain === 'legacy' && legacyFrozenRollbackSource)
+    ))
+    .map((row) => row.domain)
+  const capacityDrain = blockingCapacityDomains.length > 0
   const integrityBlocked = Number(counts?.integrity_blocked ?? 0)
   const backlog = Number(counts?.cleanup_backlog_over_24h ?? 0)
   const dlqPending = Number(dlq?.count ?? 0)
@@ -919,6 +937,10 @@ export async function runStorageHealthCheck(
     d1_utilization: utilization,
     capacity_status: capacityStatus,
     capacity_error: capacityError,
+    legacy_capacity_role: legacyFrozenRollbackSource
+      ? 'frozen_rollback_source'
+      : 'active_source',
+    blocking_capacity_domains: blockingCapacityDomains,
     capacity_domains: capacityRows.map((row) => ({
       domain: row.domain,
       binding_name: row.binding_name,

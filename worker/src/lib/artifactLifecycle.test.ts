@@ -291,6 +291,27 @@ async function testStorageHealthCheckUsesD1ResultSizeAndReportsTruthfulScope(): 
   assert.equal(overCapacity.healthy, false)
   assert.equal(overCapacity.d1_utilization, 0.8864489472)
 
+  const frozenLegacyDb = new MockDb()
+  frozenLegacyDb.queryMeta = { size_after: 8_864_489_472 }
+  frozenLegacyDb.firstHandler = (statement) => statement.sql.includes('AS frozen_domains')
+    ? { frozen_domains: 7 }
+    : healthyDb.firstHandler(statement)
+  const frozenLegacy = await runStorageHealthCheck({ DB: frozenLegacyDb as any, ...splitBindings })
+  assert.equal(frozenLegacy.healthy, true)
+  assert.equal(frozenLegacy.legacy_capacity_role, 'frozen_rollback_source')
+  assert.deepEqual(frozenLegacy.blocking_capacity_domains, [])
+
+  const criticalLearningDb = new MockDb()
+  criticalLearningDb.queryMeta = { size_after: 8_864_489_472 }
+  const activeCritical = await runStorageHealthCheck({
+    DB: frozenLegacyDb as any,
+    LEARNING_DB: criticalLearningDb as any,
+    ...splitBindings,
+  })
+  assert.equal(activeCritical.healthy, false)
+  assert.equal(activeCritical.legacy_capacity_role, 'frozen_rollback_source')
+  assert.deepEqual(activeCritical.blocking_capacity_domains, ['learning'])
+
   const missingAllocatorDb = new MockDb()
   missingAllocatorDb.queryMeta = { size_after: 7_000_000_000 }
   missingAllocatorDb.firstHandler = (statement) => {

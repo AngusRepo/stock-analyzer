@@ -1254,84 +1254,74 @@ export function buildAdminWorkerDomainTaskMap(c: any, deps: TriggerDeps): Record
       return `storage_integrity_audit checked=${result.checked} verified=${result.verified}`
     },
     'storage-capacity-report': async () => {
-      const observedDate = requestedRunDate() || twToday()
+      // Capacity is wall-clock telemetry. Historical scheduler replays must not
+      // write today's bytes into an earlier observation date.
+      const observedDate = twToday()
+      const lineageRunDate = requestedRunDate() || observedDate
       const { runStorageHealthCheck } = await import('./artifactLifecycle')
+      const {
+        inspectStorageCapacityTelemetry,
+        buildStorageCapacityGrowthEstimate,
+      } = await import('./storageCapacityTelemetry')
       const health = await runStorageHealthCheck(c.env)
       const opsDb = databaseForDataDomain(c.env, 'ops')
-      const learningDb = databaseForDataDomain(c.env, 'learning')
-      const [{ results }, legacyProbe, learningProbe, previousCapacity] = await Promise.all([
+      const [{ results }, currentRows, capacityHistory, backfillBaselines] = await Promise.all([
         opsDb.prepare(`
-        SELECT retention_class, status, COUNT(*) AS artifacts,
-               COALESCE(SUM(byte_size), 0) AS bytes
-          FROM run_artifacts
-         GROUP BY retention_class, status
-         ORDER BY retention_class, status
+          SELECT retention_class, status, COUNT(*) AS artifacts,
+                 COALESCE(SUM(byte_size), 0) AS bytes
+            FROM run_artifacts
+           GROUP BY retention_class, status
+           ORDER BY retention_class, status
         `).all(),
-        c.env.DB.prepare('SELECT 1 AS capacity_probe').run(),
-        learningDb.prepare('SELECT 1 AS capacity_probe').run(),
+        inspectStorageCapacityTelemetry(c.env),
         opsDb.prepare(`
-          SELECT domain, used_bytes, observed_date
+          SELECT domain, binding_name, used_bytes, observed_date
             FROM storage_capacity_daily
-           WHERE observed_date < ?
-           ORDER BY observed_date DESC
-        `).bind(observedDate).all<Record<string, unknown>>(),
+           WHERE observed_date >= date(?, '-45 days')
+             AND date(observed_at, '+8 hours') = observed_date
+           ORDER BY observed_date ASC, observed_at ASC
+        `).bind(observedDate).all<{
+          domain: string
+          binding_name: string
+          used_bytes: number
+          observed_date: string
+        }>(),
+        c.env.DB.prepare(`
+          SELECT domain, substr(MAX(updated_at), 1, 10) AS baseline_after
+            FROM data_domain_backfill_cursors
+           GROUP BY domain
+        `).all() as Promise<{
+          results: Array<{ domain: string; baseline_after: string }>
+        }>,
       ])
-      const maxBytes = 10_000_000_000
-      const classify = (usedBytes: number) => {
-        const utilization = (usedBytes / maxBytes) * 100
-        return utilization >= 85 ? 'critical' : utilization >= 75 ? 'drain' : utilization >= 65 ? 'warning' : 'healthy'
-      }
-      const previousByDomain = new Map<string, { used: number; date: string }>()
-      for (const row of previousCapacity.results ?? []) {
-        const domain = String(row.domain ?? '')
-        if (!previousByDomain.has(domain)) {
-          previousByDomain.set(domain, {
-            used: Number(row.used_bytes ?? 0),
-            date: String(row.observed_date ?? ''),
-          })
-        }
-      }
-      const capacities = [
-        { domain: 'legacy', binding: 'DB', used: Number((legacyProbe.meta as any)?.size_after ?? 0) },
-        { domain: 'learning', binding: 'LEARNING_DB', used: Number((learningProbe.meta as any)?.size_after ?? 0) },
-      ].map((row) => {
-        const previous = previousByDomain.get(row.domain)
-        const elapsedDays = previous
-          ? Math.max(1, Math.round((Date.parse(observedDate) - Date.parse(previous.date)) / 86_400_000))
-          : null
-        const dailyGrowthBytes = previous && elapsedDays
-          ? Math.round((row.used - previous.used) / elapsedDays)
-          : null
-        const daysToWarning = dailyGrowthBytes != null && dailyGrowthBytes > 0
-          ? Math.max(0, Math.floor(((maxBytes * 0.65) - row.used) / dailyGrowthBytes))
-          : null
+      const baselineByDomain = new Map(
+        backfillBaselines.results.map((row) => [row.domain, row.baseline_after] as const),
+      )
+      const legacyBaseline = [...baselineByDomain.values()].sort().at(-1) ?? null
+      const capacities = currentRows.map((row) => {
+        const history = (capacityHistory.results ?? [])
+          .filter((point) => point.binding_name === row.binding_name)
+          .map((point) => ({ observed_date: point.observed_date, used_bytes: Number(point.used_bytes) }))
+        history.push({ observed_date: observedDate, used_bytes: row.used_bytes })
+        const estimate = buildStorageCapacityGrowthEstimate({
+          currentUsedBytes: row.used_bytes,
+          maxBytes: row.max_bytes,
+          history,
+          baselineAfter: row.domain === 'legacy'
+            ? legacyBaseline
+            : baselineByDomain.get(row.domain) ?? null,
+        })
         return {
-          ...row,
-          max: maxBytes,
-          utilization_pct: Number(((row.used / maxBytes) * 100).toFixed(2)),
-          status: classify(row.used),
-          previous_observed_date: previous?.date ?? null,
-          daily_growth_bytes: dailyGrowthBytes,
-          projected_days_to_warning_65pct: daysToWarning,
+          domain: row.domain,
+          binding: row.binding_name,
+          used: row.used_bytes,
+          max: row.max_bytes,
+          utilization_pct: row.utilization_pct,
+          status: row.status,
+          ...estimate,
         }
       })
-      if (capacities.some((row) => !Number.isFinite(row.used) || row.used <= 0)) {
-        throw new Error('storage_capacity_d1_size_after_missing')
-      }
-      await opsDb.batch(capacities.map((row) => opsDb.prepare(`
-        INSERT INTO storage_capacity_daily(
-          observed_date, domain, binding_name, used_bytes, max_bytes,
-          utilization_pct, status, measurement_source, observed_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, 'd1_result_meta_size_after', CURRENT_TIMESTAMP)
-        ON CONFLICT(observed_date,domain,binding_name) DO UPDATE SET
-          used_bytes=excluded.used_bytes, max_bytes=excluded.max_bytes,
-          utilization_pct=excluded.utilization_pct, status=excluded.status,
-          measurement_source=excluded.measurement_source, observed_at=CURRENT_TIMESTAMP
-      `).bind(
-        observedDate, row.domain, row.binding, row.used, row.max,
-        row.utilization_pct, row.status,
-      )))
-      return `storage_capacity_report health=${JSON.stringify(health)} d1=${JSON.stringify(capacities)} classes=${JSON.stringify(results ?? [])}`
+      return `storage_capacity_report observed_date=${observedDate} lineage_run_date=${lineageRunDate} health=${JSON.stringify(health)} d1=${JSON.stringify(capacities)} classes=${JSON.stringify(results ?? [])}`
     },
     'learning-retention-readiness': async () => {
       const { inspectLearningTenYearRetentionReadiness } = await import('./learningTenYearRetentionReadiness')

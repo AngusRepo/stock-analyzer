@@ -17,6 +17,12 @@ const closedCapacity = buildTenYearCapacityClosureReceipt({
     { policy_id: 'market_history_v1', operational: true },
     { policy_id: 'learning_lineage_v1', operational: true },
   ],
+  growthForecasts: ['legacy', 'core', 'market', 'learning', 'ops', 'execution', 'paper', 'research']
+    .map((domain) => ({
+      domain,
+      status: 'ready' as const,
+      projected_days_to_warning_65pct: 365,
+    })),
 })
 
 const completeDomain = (domain: DataDomain): DataDomainCutoverReadiness => ({
@@ -163,5 +169,39 @@ const missingExecutors = buildDataDomainTenYearClosure({
 })
 assert.equal(missingExecutors.complete, false)
 assert(missingExecutors.blockers.includes('retention_archive_executors_incomplete'))
+
+const pendingForecast = buildDataDomainTenYearClosure({
+  activeDomains: DATA_DOMAINS,
+  strictRequested: true,
+  domains: DATA_DOMAINS.map(completeDomain),
+  unresolvedRouteTables: noUnresolvedRoutes,
+  capacity: {
+    ...closedCapacity,
+    capacity_forecast_ready_domains: closedCapacity.capacity_forecast_ready_domains
+      .filter((domain) => domain !== 'learning'),
+    capacity_forecast_pending_domains: ['learning'],
+  },
+})
+assert.equal(pendingForecast.routing_cutover_complete, true)
+assert.equal(pendingForecast.retention_architecture_complete, true)
+assert.equal(pendingForecast.capacity_forecast_complete, false)
+assert.equal(pendingForecast.complete, false)
+assert(pendingForecast.blockers.includes('ten_year_capacity_stable_baseline_pending'))
+
+const shortRunway = buildDataDomainTenYearClosure({
+  activeDomains: DATA_DOMAINS,
+  strictRequested: true,
+  domains: DATA_DOMAINS.map(completeDomain),
+  unresolvedRouteTables: noUnresolvedRoutes,
+  capacity: {
+    ...closedCapacity,
+    capacity_forecast_at_risk_domains: ['learning'],
+  },
+})
+assert.equal(shortRunway.routing_cutover_complete, true)
+assert.equal(shortRunway.retention_architecture_complete, true)
+assert.equal(shortRunway.capacity_forecast_complete, false)
+assert.equal(shortRunway.complete, false)
+assert(shortRunway.blockers.includes('ten_year_capacity_warning_runway_insufficient'))
 
 console.log('data domain ten-year closure tests passed')

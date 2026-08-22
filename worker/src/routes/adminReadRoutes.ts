@@ -243,23 +243,20 @@ adminReadRoutes.get('/api/admin/storage/capacity', async (c) => {
   const authError = await requireAdminOrServiceToken(c)
   if (authError) return authError
 
-  const { inspectStorageCapacityTelemetry } = await import('../lib/storageCapacityTelemetry')
+  const {
+    inspectStorageCapacityTelemetry,
+    buildStorageCapacityGrowthEstimate,
+  } = await import('../lib/storageCapacityTelemetry')
   const opsDb = databaseForDataDomain(c.env, 'ops')
   const today = twToday()
-  const [d1Rows, previousCapacity, r2Manifest, learningCutover] = await Promise.all([
+  const [d1Rows, capacityHistory, r2Manifest, backfillBaselines] = await Promise.all([
     inspectStorageCapacityTelemetry(c.env),
     opsDb.prepare(`
       SELECT domain, binding_name, used_bytes, observed_date
-        FROM (
-          SELECT domain, binding_name, used_bytes, observed_date,
-                 ROW_NUMBER() OVER (
-                   PARTITION BY domain, binding_name
-                   ORDER BY observed_date DESC, observed_at DESC
-                 ) AS ordinal
-            FROM storage_capacity_daily
-           WHERE observed_date < ?
-        )
-       WHERE ordinal=1
+        FROM storage_capacity_daily
+       WHERE observed_date >= date(?, '-45 days')
+         AND date(observed_at, '+8 hours') = observed_date
+       ORDER BY observed_date ASC, observed_at ASC
     `).bind(today).all<{
       domain: string
       binding_name: string
@@ -272,49 +269,51 @@ adminReadRoutes.get('/api/admin/storage/capacity', async (c) => {
        WHERE r2_key IS NOT NULL
          AND status NOT IN ('deleted', 'purged')
     `).first<{ object_count: number; tracked_bytes: number }>(),
-    // multi-d1-intentional-legacy-source: cutover receipts live in the permanent control plane.
     c.env.DB.prepare(`
-      SELECT status, parity_checked_at, updated_at
-        FROM data_domain_cutovers
-       WHERE domain='learning'
-       LIMIT 1
-    `).first<{ status: string; parity_checked_at: string | null; updated_at: string }>(),
+      SELECT domain, substr(MAX(updated_at), 1, 10) AS baseline_after
+        FROM data_domain_backfill_cursors
+       GROUP BY domain
+    `).all<{ domain: string; baseline_after: string }>(),
   ])
-  const previousByBinding = new Map(
-    (previousCapacity.results ?? []).map((row) => [row.binding_name, row] as const),
+  const baselineByDomain = new Map(
+    (backfillBaselines.results ?? []).map((row) => [row.domain, row.baseline_after] as const),
   )
+  const legacyBaseline = [...baselineByDomain.values()].sort().at(-1) ?? null
   const capacities = d1Rows.map((row) => {
-    const previous = previousByBinding.get(row.binding_name)
-    const learningCutoverDate = String(
-      learningCutover?.parity_checked_at ?? learningCutover?.updated_at ?? '',
-    ).slice(0, 10)
-    const awaitingPostCutoverBaseline = row.domain === 'legacy'
-      && learningCutover?.status === 'complete'
-      && Boolean(learningCutoverDate)
-      && (!previous || previous.observed_date <= learningCutoverDate)
-    const elapsedDays = previous
-      ? Math.max(1, Math.round((Date.parse(today) - Date.parse(previous.observed_date)) / 86_400_000))
-      : null
-    const dailyGrowthBytes = previous && elapsedDays && !awaitingPostCutoverBaseline
-      ? Math.round((row.used_bytes - Number(previous.used_bytes ?? 0)) / elapsedDays)
-      : null
-    const projectedDaysToMax = dailyGrowthBytes != null && dailyGrowthBytes > 0
-      ? Math.max(0, Math.floor((row.max_bytes - row.used_bytes) / dailyGrowthBytes))
-      : null
+    const history = (capacityHistory.results ?? [])
+      .filter((point) => point.binding_name === row.binding_name)
+      .map((point) => ({ observed_date: point.observed_date, used_bytes: Number(point.used_bytes) }))
+    history.push({ observed_date: today, used_bytes: row.used_bytes })
+    const baselineAfter = row.domain === 'legacy'
+      ? legacyBaseline
+      : baselineByDomain.get(row.domain) ?? null
+    const estimate = buildStorageCapacityGrowthEstimate({
+      currentUsedBytes: row.used_bytes,
+      maxBytes: row.max_bytes,
+      history,
+      baselineAfter,
+    })
+    const previous = history
+      .filter((point) => point.observed_date < today)
+      .sort((a, b) => b.observed_date.localeCompare(a.observed_date))[0]
     return {
       ...row,
       previous_observed_date: previous?.observed_date ?? null,
-      growth_baseline_status: awaitingPostCutoverBaseline ? 'awaiting_post_cutover_observation' : 'ready',
-      growth_baseline_after: awaitingPostCutoverBaseline ? learningCutoverDate : null,
-      daily_growth_bytes: dailyGrowthBytes,
-      projected_days_to_max: projectedDaysToMax,
+      growth_baseline_status: estimate.status,
+      growth_baseline_after: estimate.baseline_after,
+      growth_observation_count: estimate.observation_count,
+      required_growth_observations: estimate.required_observations,
+      daily_growth_bytes: estimate.daily_growth_bytes,
+      projected_days_to_warning_65pct: estimate.projected_days_to_warning_65pct,
+      projected_days_to_max: estimate.projected_days_to_max,
     }
   })
   return c.json({
     success: true,
-    schema_version: 'storage-capacity-snapshot-v1',
+    schema_version: 'storage-capacity-snapshot-v2',
     mode: 'read_only',
     generated_at: new Date().toISOString(),
+    forecast_policy: 'median_daily_growth_after_domain_backfill_with_7_observation_minimum',
     d1: {
       count: capacities.length,
       expected_count: 8,
@@ -862,7 +861,7 @@ adminReadRoutes.get('/api/admin/data-domains/cutover-readiness', async (c) => {
   const [
     { inspectDataDomainCutoverReadiness },
     { inspectLatestEveningChainClosure },
-    { inspectStorageCapacityTelemetry },
+    { inspectStorageCapacityTelemetry, buildStorageCapacityGrowthEstimate },
     { buildDataDomainTenYearClosure, buildTenYearCapacityClosureReceipt },
   ] = await Promise.all([
     import('../lib/dataDomainCutoverReadiness'),
@@ -871,20 +870,52 @@ adminReadRoutes.get('/api/admin/data-domains/cutover-readiness', async (c) => {
     import('../lib/dataDomainTenYearClosure'),
   ])
   const opsDb = databaseForDataDomain(c.env, 'ops')
-  const [latestEveningChain, capacityRows, archivePolicyResult] = await Promise.all([
+  const [latestEveningChain, capacityRows, archivePolicyResult, capacityHistory, backfillBaselines] = await Promise.all([
     inspectLatestEveningChainClosure(c.env.KV, c.env.DB),
     inspectStorageCapacityTelemetry(c.env),
     opsDb.prepare(
-      `SELECT p.policy_id,
-              MAX(CASE WHEN r.status='success' THEN 1 ELSE 0 END) AS operational
+      `WITH ranked_runs AS (
+         SELECT policy_id, status, completed_at,
+                ROW_NUMBER() OVER (
+                  PARTITION BY policy_id
+                  ORDER BY COALESCE(completed_at, created_at) DESC, run_id DESC
+                ) AS ordinal
+           FROM data_retention_runs
+       )
+       SELECT p.policy_id,
+              CASE WHEN r.status='success'
+                         AND r.completed_at >= datetime('now', '-7 days')
+                   THEN 1 ELSE 0 END AS operational
          FROM data_retention_policies p
-         LEFT JOIN data_retention_runs r ON r.policy_id=p.policy_id
+         LEFT JOIN ranked_runs r
+           ON r.policy_id=p.policy_id
+          AND r.ordinal=1
         WHERE p.status='active'
           AND p.action IN ('archive_scrub', 'archive_delete')
-        GROUP BY p.policy_id
         ORDER BY p.policy_id`,
     ).all<{ policy_id: string; operational: number }>(),
+    opsDb.prepare(`
+      SELECT domain, binding_name, used_bytes, observed_date
+        FROM storage_capacity_daily
+       WHERE observed_date >= date(?, '-45 days')
+         AND date(observed_at, '+8 hours') = observed_date
+       ORDER BY observed_date ASC, observed_at ASC
+    `).bind(twToday()).all<{
+      domain: string
+      binding_name: string
+      used_bytes: number
+      observed_date: string
+    }>(),
+    c.env.DB.prepare(`
+      SELECT domain, substr(MAX(updated_at), 1, 10) AS baseline_after
+        FROM data_domain_backfill_cursors
+       GROUP BY domain
+    `).all<{ domain: string; baseline_after: string }>(),
   ])
+  const baselineByDomain = new Map(
+    (backfillBaselines.results ?? []).map((row) => [row.domain, row.baseline_after] as const),
+  )
+  const legacyBaseline = [...baselineByDomain.values()].sort().at(-1) ?? null
   const requestedDomain = c.req.query('domain')
   const readinessContext = {
     upstreamTerminalReady: latestEveningChain.terminalSuccess,
@@ -896,12 +927,29 @@ adminReadRoutes.get('/api/admin/data-domains/cutover-readiness', async (c) => {
     ? await inspectDataDomainCutoverReadiness(c.env.DB, null, readinessContext)
     : report
   const activeDomains = [...activeDataDomains(c.env)].sort()
+  const capacityForecasts = capacityRows.map((row) => {
+    const history = (capacityHistory.results ?? [])
+      .filter((point) => point.binding_name === row.binding_name)
+      .map((point) => ({ observed_date: point.observed_date, used_bytes: Number(point.used_bytes) }))
+    history.push({ observed_date: twToday(), used_bytes: row.used_bytes })
+    const baselineAfter = row.domain === 'legacy'
+      ? legacyBaseline
+      : baselineByDomain.get(row.domain) ?? null
+    const estimate = buildStorageCapacityGrowthEstimate({
+      currentUsedBytes: row.used_bytes,
+      maxBytes: row.max_bytes,
+      history,
+      baselineAfter,
+    })
+    return { domain: row.domain, ...estimate }
+  })
   const capacity = buildTenYearCapacityClosureReceipt({
     databases: capacityRows,
     archivePolicies: (archivePolicyResult.results ?? []).map((row) => ({
       policy_id: String(row.policy_id),
       operational: Number(row.operational) === 1,
     })),
+    growthForecasts: capacityForecasts,
   })
   const tenYearClosure = buildDataDomainTenYearClosure({
     activeDomains,
@@ -912,6 +960,7 @@ adminReadRoutes.get('/api/admin/data-domains/cutover-readiness', async (c) => {
   return c.json({
     success: true, latest_evening_chain: latestEveningChain, ...report,
     storage_capacity: capacityRows,
+    storage_capacity_forecasts: capacityForecasts,
     active_domains: activeDomains,
     strict_requested: String(c.env.MULTI_D1_STRICT ?? '').trim().toLowerCase() === 'true',
     ten_year_closure: tenYearClosure,

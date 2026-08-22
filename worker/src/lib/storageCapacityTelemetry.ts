@@ -91,3 +91,84 @@ export function assertCapacityBelowCritical(rows: StorageCapacityRow[]): void {
     throw new Error(`d1_capacity_critical:${critical.map((row) => `${row.domain}=${row.utilization_pct}%`).join(',')}`)
   }
 }
+
+export type StorageCapacityHistoryPoint = {
+  observed_date: string
+  used_bytes: number
+}
+
+export type StorageCapacityGrowthEstimate = {
+  status: 'ready' | 'awaiting_post_cutover_observations'
+  baseline_after: string | null
+  observation_count: number
+  required_observations: number
+  daily_growth_bytes: number | null
+  projected_days_to_warning_65pct: number | null
+  projected_days_to_max: number | null
+}
+
+function median(values: number[]): number | null {
+  if (!values.length) return null
+  const sorted = [...values].sort((a, b) => a - b)
+  const middle = Math.floor(sorted.length / 2)
+  return sorted.length % 2 === 0
+    ? Math.round((sorted[middle - 1] + sorted[middle]) / 2)
+    : Math.round(sorted[middle])
+}
+
+export function buildStorageCapacityGrowthEstimate(input: {
+  currentUsedBytes: number
+  maxBytes?: number
+  history: readonly StorageCapacityHistoryPoint[]
+  baselineAfter?: string | null
+  requiredObservations?: number
+}): StorageCapacityGrowthEstimate {
+  const maxBytes = input.maxBytes ?? D1_MAX_BYTES
+  const requiredObservations = Math.max(3, input.requiredObservations ?? 7)
+  const baselineAfter = String(input.baselineAfter ?? '').slice(0, 10) || null
+  const byDate = new Map<string, number>()
+  for (const point of input.history) {
+    const observedDate = String(point.observed_date ?? '').slice(0, 10)
+    const usedBytes = Number(point.used_bytes)
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(observedDate) || !Number.isFinite(usedBytes)) continue
+    if (baselineAfter && observedDate <= baselineAfter) continue
+    byDate.set(observedDate, usedBytes)
+  }
+  const points = [...byDate.entries()]
+    .map(([observed_date, used_bytes]) => ({ observed_date, used_bytes }))
+    .sort((a, b) => a.observed_date.localeCompare(b.observed_date))
+  if (points.length < requiredObservations) {
+    return {
+      status: 'awaiting_post_cutover_observations',
+      baseline_after: baselineAfter,
+      observation_count: points.length,
+      required_observations: requiredObservations,
+      daily_growth_bytes: null,
+      projected_days_to_warning_65pct: null,
+      projected_days_to_max: null,
+    }
+  }
+  const dailyDeltas: number[] = []
+  for (let index = 1; index < points.length; index += 1) {
+    const previous = points[index - 1]
+    const current = points[index]
+    const elapsedDays = Math.round(
+      (Date.parse(`${current.observed_date}T00:00:00Z`) - Date.parse(`${previous.observed_date}T00:00:00Z`))
+      / 86_400_000,
+    )
+    if (elapsedDays > 0) dailyDeltas.push((current.used_bytes - previous.used_bytes) / elapsedDays)
+  }
+  const dailyGrowthBytes = median(dailyDeltas)
+  const projected = (limitBytes: number) => dailyGrowthBytes != null && dailyGrowthBytes > 0
+    ? Math.max(0, Math.floor((limitBytes - input.currentUsedBytes) / dailyGrowthBytes))
+    : null
+  return {
+    status: 'ready',
+    baseline_after: baselineAfter,
+    observation_count: points.length,
+    required_observations: requiredObservations,
+    daily_growth_bytes: dailyGrowthBytes,
+    projected_days_to_warning_65pct: projected(maxBytes * 0.65),
+    projected_days_to_max: projected(maxBytes),
+  }
+}

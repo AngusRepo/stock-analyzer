@@ -22,9 +22,18 @@ const reportBlock = taskSource.slice(
   taskSource.indexOf("'storage-capacity-report': async () =>"),
   taskSource.indexOf("'learning-retention-readiness': async () =>"),
 )
-if (!reportBlock.includes('const observedDate = requestedRunDate() || twToday()')) {
-  throw new Error('scheduled capacity reports must resolve a concrete TW date before D1 binds')
+if (!reportBlock.includes('const observedDate = twToday()')) {
+  throw new Error('capacity observations must always use the actual TW wall-clock date')
 }
-if (reportBlock.includes('.bind(requestedRunDate())')) {
-  throw new Error('scheduled capacity reports must never bind an undefined optional query date')
+if (!reportBlock.includes('const lineageRunDate = requestedRunDate() || observedDate')) {
+  throw new Error('historical scheduler lineage may be reported without backdating capacity telemetry')
+}
+if (!reportBlock.includes('buildStorageCapacityGrowthEstimate')) {
+  throw new Error('scheduled capacity reports must use the stable post-backfill forecast estimator')
+}
+if (reportBlock.includes('INSERT INTO storage_capacity_daily')) {
+  throw new Error('capacity reports must not duplicate or backdate the health-check telemetry writer')
+}
+if (!reportBlock.includes("date(observed_at, '+8 hours') = observed_date")) {
+  throw new Error('capacity forecasts must reject rows whose TW observation timestamp was backdated')
 }

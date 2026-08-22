@@ -15,14 +15,29 @@ export type TenYearCapacityClosureReceipt = {
   required_archive_policies: number
   operational_archive_policies: number
   missing_archive_policy_executors: readonly string[]
+  capacity_forecast_ready_domains: readonly string[]
+  capacity_forecast_pending_domains: readonly string[]
+  capacity_forecast_at_risk_domains: readonly string[]
+  minimum_warning_runway_days: number
 }
 
 export function buildTenYearCapacityClosureReceipt(input: {
   databases: ReadonlyArray<{ domain: string; status: string }>
   archivePolicies: ReadonlyArray<{ policy_id: string; operational: boolean }>
+  growthForecasts?: ReadonlyArray<{
+    domain: string
+    status: 'ready' | 'awaiting_post_cutover_observations'
+    projected_days_to_warning_65pct: number | null
+  }>
   expectedDatabases?: number
+  minimumWarningRunwayDays?: number
 }): TenYearCapacityClosureReceipt {
   const expectedDatabases = input.expectedDatabases ?? 8
+  const minimumWarningRunwayDays = Math.max(30, input.minimumWarningRunwayDays ?? 90)
+  const activeDomains = input.databases
+    .map((row) => row.domain)
+    .filter((domain) => domain !== 'legacy')
+  const forecastByDomain = new Map((input.growthForecasts ?? []).map((row) => [row.domain, row]))
   const criticalDomains = input.databases
     .filter((row) => row.status === 'critical')
     .map((row) => row.domain)
@@ -35,6 +50,20 @@ export function buildTenYearCapacityClosureReceipt(input: {
     .filter((row) => !row.operational)
     .map((row) => row.policy_id)
     .sort()
+  const forecastReadyDomains = activeDomains
+    .filter((domain) => forecastByDomain.get(domain)?.status === 'ready')
+    .sort()
+  const forecastPendingDomains = activeDomains
+    .filter((domain) => forecastByDomain.get(domain)?.status !== 'ready')
+    .sort()
+  const forecastAtRiskDomains = activeDomains
+    .filter((domain) => {
+      const forecast = forecastByDomain.get(domain)
+      return forecast?.status === 'ready'
+        && forecast.projected_days_to_warning_65pct != null
+        && forecast.projected_days_to_warning_65pct < minimumWarningRunwayDays
+    })
+    .sort()
   return {
     observed_databases: input.databases.length,
     expected_databases: expectedDatabases,
@@ -43,6 +72,10 @@ export function buildTenYearCapacityClosureReceipt(input: {
     required_archive_policies: input.archivePolicies.length,
     operational_archive_policies: input.archivePolicies.length - missing.length,
     missing_archive_policy_executors: missing,
+    capacity_forecast_ready_domains: forecastReadyDomains,
+    capacity_forecast_pending_domains: forecastPendingDomains,
+    capacity_forecast_at_risk_domains: forecastAtRiskDomains,
+    minimum_warning_runway_days: minimumWarningRunwayDays,
   }
 }
 export type TenYearDomainClosureInput = {
@@ -120,15 +153,27 @@ export function buildDataDomainTenYearClosure(input: TenYearDomainClosureInput) 
     globalBlockers.push('retention_archive_executors_incomplete')
   }
   if (domainReceipts.some((item) => !item.complete)) globalBlockers.push('seven_domain_cutover_incomplete')
+  const retentionArchitectureComplete = globalBlockers.length === 0
+  if (capacity?.capacity_forecast_pending_domains.length) {
+    globalBlockers.push('ten_year_capacity_stable_baseline_pending')
+  }
+  if (capacity?.capacity_forecast_at_risk_domains.length) {
+    globalBlockers.push('ten_year_capacity_warning_runway_insufficient')
+  }
   const complete = globalBlockers.length === 0
   return {
-    schema_version: 'data-domain-ten-year-closure-v1' as const,
+    schema_version: 'data-domain-ten-year-closure-v2' as const,
     complete,
     claim_allowed: complete,
     status: complete ? 'complete' as const : 'in_progress' as const,
+    routing_cutover_complete: allActiveDomainsClosed,
+    retention_architecture_complete: retentionArchitectureComplete,
+    capacity_forecast_complete: capacity != null
+      && capacity.capacity_forecast_pending_domains.length === 0
+      && capacity.capacity_forecast_at_risk_domains.length === 0,
     completed_domains: domainReceipts.filter((item) => item.complete).length,
     required_domains: DATA_DOMAINS.length,
-    legacy_role: complete ? 'control_plane_and_time_travel_rollback_source' as const : 'mixed_runtime_source_do_not_delete' as const,
+    legacy_role: allActiveDomainsClosed ? 'control_plane_and_time_travel_rollback_source' as const : 'mixed_runtime_source_do_not_delete' as const,
     blockers: globalBlockers,
     domains: domainReceipts,
     capacity,

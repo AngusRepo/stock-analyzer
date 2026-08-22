@@ -979,19 +979,50 @@ def test_ev_oof_candidates_use_formal_registry_candidate_types():
     assert router.count("register_candidate=False") == 1
 
 def test_daily_oof_materialization_reuses_checksum_verified_gcs_indexes():
+    from routers.walk_forward import _can_reuse_indexed_oof_base
+    from services.active8_oof_cohort_materializer import (
+        OOF_PIT_ELIGIBILITY_POLICY_VERSION,
+    )
+
     router = (ROOT / "ml-controller" / "routers" / "walk_forward.py").read_text(encoding="utf-8")
     materializer = (ROOT / "ml-controller" / "services" / "active8_oof_cohort_materializer.py").read_text(encoding="utf-8")
+    checksum = "a" * 64
+    persisted = [{"status": "ready", "prediction_storage_mode": "gcs_indexed_v1"}]
+    indexes = [
+        {
+            "artifact_kind": artifact_kind,
+            "source_manifest_checksum": checksum,
+            "eligibility_policy_version": OOF_PIT_ELIGIBILITY_POLICY_VERSION,
+        }
+        for artifact_kind in ("allocator_ev_snapshots", "l4_predictions")
+    ]
+
+    assert _can_reuse_indexed_oof_base(
+        persisted,
+        indexes,
+        manifest_checksum=checksum,
+        policy_version=OOF_PIT_ELIGIBILITY_POLICY_VERSION,
+    )
+    assert not _can_reuse_indexed_oof_base(
+        persisted,
+        indexes,
+        manifest_checksum="b" * 64,
+        policy_version=OOF_PIT_ELIGIBILITY_POLICY_VERSION,
+    )
 
     assert "load_indexed_oof_ev_rows" in router
     indexed_call = router[
-        router.index("snapshot_rows, l4_predictions, indexed_loader_evidence = load_indexed_oof_ev_rows("):
-        router.index("snapshot_evidence = {", router.index("snapshot_rows, l4_predictions, indexed_loader_evidence = load_indexed_oof_ev_rows("))
+        router.index("snapshot_rows, indexed_l4_predictions, indexed_loader_evidence = load_indexed_oof_ev_rows("):
+        router.index("snapshot_evidence = {", router.index("snapshot_rows, indexed_l4_predictions, indexed_loader_evidence = load_indexed_oof_ev_rows("))
     ]
     assert "query_fn=learning_client.query" in indexed_call
     assert 'prediction_storage_mode") == "gcs_indexed_v1"' in router
     assert "len(materialized_indexes) == 2" in router
     assert "OOF_PIT_ELIGIBILITY_POLICY_VERSION" in router
     assert '"source": "checksum_verified_indexed_loader"' in router
+    assert "*load_oof_prediction_rows(manifest, bucket=bucket)" in router
+    assert '"base_materialization_rewritten": False' in router
+    assert '"schema_version": "l4-chronological-oof-indexed-base-plus-forward-v1"' in router
     assert "active8_oof_indexed_snapshot_lineage_mismatch" in materializer
     assert '"d1_full_row_tables_required": False' in materializer
 

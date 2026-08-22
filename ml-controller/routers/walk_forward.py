@@ -1323,6 +1323,32 @@ def _without_frozen_forward_rows(
     return [row for row in rows if str(row.get("fold_id") or "") != "frozen_forward"]
 
 
+def _can_reuse_indexed_oof_base(
+    persisted: list[dict[str, Any]],
+    materialized_indexes: list[dict[str, Any]],
+    *,
+    manifest_checksum: str,
+    policy_version: str,
+) -> bool:
+    """Treat the checksum-verified base as immutable, including shadow replays."""
+
+    return bool(
+        persisted
+        and persisted[0].get("status") == "ready"
+        and persisted[0].get("prediction_storage_mode") == "gcs_indexed_v1"
+        and len(materialized_indexes) == 2
+        and {
+            str(row.get("artifact_kind") or "")
+            for row in materialized_indexes
+        } == {"allocator_ev_snapshots", "l4_predictions"}
+        and all(
+            str(row.get("source_manifest_checksum") or "") == manifest_checksum
+            and str(row.get("eligibility_policy_version") or "") == policy_version
+            for row in materialized_indexes
+        )
+    )
+
+
 @router.post("/walk_forward/oof/materialize")
 async def materialize_walk_forward_oof(req: OofMaterializeRequest):
     """Verify one OOF manifest and build the L4/Fusion offline evidence chain."""
@@ -1409,42 +1435,79 @@ async def materialize_walk_forward_oof(req: OofMaterializeRequest):
             """,
             [req.cohort_id],
         )
-        reuse_indexed = bool(
-            not req.forward_extension_manifest_path
-            and persisted
-            and persisted[0].get("status") == "ready"
-            and persisted[0].get("prediction_storage_mode") == "gcs_indexed_v1"
-            and len(materialized_indexes) == 2
-            and {
-                str(row.get("artifact_kind") or "")
-                for row in materialized_indexes
-            } == {"allocator_ev_snapshots", "l4_predictions"}
-            and all(
-                str(row.get("source_manifest_checksum") or "")
-                == str(manifest["manifest_checksum"])
-                and str(row.get("eligibility_policy_version") or "")
-                == OOF_PIT_ELIGIBILITY_POLICY_VERSION
-                for row in materialized_indexes
-            )
+        reuse_indexed = _can_reuse_indexed_oof_base(
+            persisted,
+            materialized_indexes,
+            manifest_checksum=str(manifest["manifest_checksum"]),
+            policy_version=OOF_PIT_ELIGIBILITY_POLICY_VERSION,
         )
         forward_extension = None
         forward_prediction_rows: list[dict[str, Any]] = []
         prediction_rows: list[dict[str, Any]] = []
         native_rows: list[dict[str, Any]] = []
         fundamental_quality_by_key: dict[tuple[str, str], dict[str, Any]] = {}
+        indexed_l4_predictions: list[dict[str, Any]] = []
         if reuse_indexed:
-            snapshot_rows, l4_predictions, indexed_loader_evidence = load_indexed_oof_ev_rows(
+            snapshot_rows, indexed_l4_predictions, indexed_loader_evidence = load_indexed_oof_ev_rows(
                 bucket=bucket,
                 cohort_id=req.cohort_id,
                 source_manifest_checksum=manifest["manifest_checksum"],
                 knowledge_cutoff_date=req.knowledge_cutoff_date,
                 query_fn=learning_client.query,
             )
+            l4_predictions = list(indexed_l4_predictions)
             snapshot_evidence = {
                 **indexed_loader_evidence,
                 "snapshot_dates": len({row["snapshot_date"] for row in snapshot_rows}),
                 "reused_immutable_materialization": True,
             }
+            if req.forward_extension_manifest_path:
+                forward_extension = load_verified_oof_forward_extension(
+                    req.forward_extension_manifest_path,
+                    bucket=bucket,
+                    base_manifest=manifest,
+                )
+                forward_prediction_rows = load_oof_forward_prediction_rows(
+                    forward_extension,
+                    bucket=bucket,
+                    materialized_cohort=req.cohort_id,
+                )
+                prediction_rows = [
+                    *load_oof_prediction_rows(manifest, bucket=bucket),
+                    *forward_prediction_rows,
+                ]
+                native_rows = load_native_pit_component_rows(forward_prediction_rows)
+                forward_dates = sorted({
+                    str(row.get("prediction_date") or "")[:10]
+                    for row in forward_prediction_rows if row.get("prediction_date")
+                })
+                market_context_by_date = load_pit_market_contexts(d1_client.query, forward_dates)
+                fundamental_quality_by_key = load_fundamental_quality_pit_by_key(
+                    forward_prediction_rows
+                )
+                from services.pit_sector_alpha import load_pit_sector_alpha_experts_by_key
+                sector_alpha_by_key = load_pit_sector_alpha_experts_by_key(
+                    d1_client.query, native_rows
+                )
+                forward_snapshot_rows, forward_snapshot_evidence = build_oof_snapshot_rows(
+                    prediction_rows,
+                    native_rows,
+                    cohort_id=req.cohort_id,
+                    source_manifest_checksum=manifest["manifest_checksum"],
+                    fundamental_quality_by_key=fundamental_quality_by_key,
+                    market_context_by_date=market_context_by_date,
+                    sector_alpha_by_key=sector_alpha_by_key,
+                )
+                snapshot_rows.extend(forward_snapshot_rows)
+                snapshot_evidence = {
+                    **forward_snapshot_evidence,
+                    "base_indexed_loader": indexed_loader_evidence,
+                    "base_snapshot_rows": int(
+                        indexed_loader_evidence.get("snapshot_rows_mature") or 0
+                    ),
+                    "forward_snapshot_rows": len(forward_snapshot_rows),
+                    "reused_immutable_materialization": True,
+                }
         else:
             prediction_rows = load_oof_prediction_rows(manifest, bucket=bucket)
             if req.forward_extension_manifest_path:
@@ -1483,7 +1546,7 @@ async def materialize_walk_forward_oof(req: OofMaterializeRequest):
             generation_mode="purged_oof",
             cohort_id=req.cohort_id,
         )
-        if reuse_indexed:
+        if reuse_indexed and not forward_extension:
             l4_prediction_evidence = {
                 "schema_version": "l4-chronological-oof-indexed-reuse-v1",
                 "cohort_id": req.cohort_id,
@@ -1492,10 +1555,32 @@ async def materialize_walk_forward_oof(req: OofMaterializeRequest):
                 "storage_mode": "gcs_indexed_v1",
             }
         else:
-            l4_predictions, l4_prediction_evidence = build_l4_chronological_oof_predictions(
+            rebuilt_l4_predictions, l4_prediction_evidence = build_l4_chronological_oof_predictions(
                 snapshot_rows,
                 cohort_id=req.cohort_id,
             )
+            if reuse_indexed:
+                forward_dates = {
+                    str(value or "")[:10]
+                    for value in (forward_extension or {}).get("dates") or []
+                }
+                forward_l4_predictions = [
+                    row for row in rebuilt_l4_predictions
+                    if str(row.get("prediction_date") or "")[:10] in forward_dates
+                ]
+                l4_predictions = [
+                    *indexed_l4_predictions,
+                    *forward_l4_predictions,
+                ]
+                l4_prediction_evidence = {
+                    **l4_prediction_evidence,
+                    "schema_version": "l4-chronological-oof-indexed-base-plus-forward-v1",
+                    "base_rows_reused": len(indexed_l4_predictions),
+                    "forward_rows_built": len(forward_l4_predictions),
+                    "base_materialization_rewritten": False,
+                }
+            else:
+                l4_predictions = rebuilt_l4_predictions
         fusion_rows = build_fusion_oof_rows(
             snapshot_rows,
             l4_predictions,

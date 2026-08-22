@@ -486,6 +486,38 @@ async function runStrategyCandidateDailyFeatureHydrationTest(): Promise<void> {
   assert(noOrderBlock.technicalIndicators.priceActionStructureAvailable === 1, 'valid daily bars must mark the price-action structure evaluable')
   assert(noOrderBlock.technicalIndicators.orderBlockDetected === 0, 'flat valid bars should record a real no-order-block observation')
   assert(noOrderBlock.technicalIndicators.bestOrderBlockStrength === 0, 'no detected order block must be zero strength rather than unavailable')
+
+  const splitIdentityDb = {
+    prepare(sql: string) {
+      assert(sql.includes('FROM stocks'), 'cross-domain hydration must resolve symbol identity from Core')
+      return {
+        bind() { return this },
+        async all() { return { results: [{ id: 3, symbol: '3333' }] } },
+      }
+    },
+  } as unknown as D1Database
+  const splitMarketRows = priceRows
+    .filter((row) => row.symbol === '3333')
+    .map((row) => ({ ...row, stock_id: 3 }))
+  const splitMarketDb = {
+    prepare(sql: string) {
+      assert(sql.includes('FROM stock_prices'), 'cross-domain hydration must read OHLCV from Market')
+      assert(sql.includes('PARTITION BY stock_id'), 'cross-domain hydration must rank Market rows by stock identity')
+      assert(!sql.includes('JOIN stocks'), 'cross-domain hydration must not issue a cross-D1 join')
+      return {
+        bind() { return this },
+        async all() { return { results: splitMarketRows } },
+      }
+    },
+  } as unknown as D1Database
+  const splitCandidates = [{ symbol: '3333', current_price: 30, raw_signals: { close: 30 } }]
+  const splitTelemetry = await hydrateStrategyCandidateDailyFeatures(
+    splitMarketDb,
+    '2026-07-07',
+    splitCandidates,
+    splitIdentityDb,
+  )
+  assert(splitTelemetry.hydratedSymbols === 1, 'Core identity plus Market OHLCV must hydrate the split-D1 candidate')
 }
 
 runStrategyCandidateDailyFeatureHydrationTest().catch((error) => {

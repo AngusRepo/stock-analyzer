@@ -3601,6 +3601,8 @@ export async function processUpdateBatch(
         limit: STRATEGY_LEARNING_QUEUE_CHUNK_SIZE,
         candidateDb: opsDb,
         candidateReferenceDb: learningDb,
+        recommendationDb: databaseForDataDomain(env, 'core'),
+        marketDb: databaseForDataDomain(env, 'market'),
         canonicalProducerRunId: state.producer_run_id,
         dryRun: false,
         artifactEnv: env,

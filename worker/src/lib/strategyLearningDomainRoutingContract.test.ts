@@ -10,7 +10,7 @@ assert.match(queueBlock, /const opsDb = databaseForDataDomain\(env, 'ops'\)/)
 assert.match(queueBlock, /const runStateDb = opsDb/)
 assert.match(queueBlock, /loadCanonicalScreenerRunIds\(env, triggerTime\)/)
 assert.match(queueBlock, /initializeStrategyLearningRun\(runStateDb,[\s\S]*universeDb: learningDb,[\s\S]*canonicalProducerRunId/)
-assert.match(queueBlock, /materializeStrategyDecisionLogChunk\(learningDb,[\s\S]*candidateDb: opsDb,[\s\S]*candidateReferenceDb: learningDb,[\s\S]*canonicalProducerRunId: state\.producer_run_id/)
+assert.match(queueBlock, /materializeStrategyDecisionLogChunk\(learningDb,[\s\S]*candidateDb: opsDb,[\s\S]*candidateReferenceDb: learningDb,[\s\S]*recommendationDb: databaseForDataDomain\(env, 'core'\),[\s\S]*marketDb: databaseForDataDomain\(env, 'market'\),[\s\S]*canonicalProducerRunId: state\.producer_run_id/)
 
 const domainRoutedFunctions = [
   'loadStrategyLearningRun',
@@ -66,7 +66,9 @@ assert.match(learning, /persistSelectionEvidenceV4\(db,[\s\S]*options\.identityD
 assert.match(learning, /identityDb: options\.identityDb/)
 assert.match(learning, /listStrategyLearningCandidates\(options\.candidateDb \?\? db/)
 assert.match(runState, /inspectCanonicalStrategyUniverse\([\s\S]*input\.universeDb \?\? db, input\.businessDate, input\.canonicalProducerRunId/)
-assert.match(learning, /listStrategyLearningCandidatesAcrossDomains\([\s\S]*FROM selection_reference_snapshots_v1[\s\S]*FROM screener_funnel_items[\s\S]*FROM daily_recommendations/)
+assert.match(learning, /listStrategyLearningCandidatesAcrossDomains\([\s\S]*funnelDb\.prepare\(`[\s\S]*FROM screener_funnel_items[\s\S]*recommendationDb\.prepare\(`[\s\S]*FROM daily_recommendations/)
+assert.match(learning, /hydrateStrategyCandidateDailyFeatures\(marketDb, date, candidates, recommendationDb\)/)
+assert.match(learning, /hydrateS12StrategyEvidence\(referenceDb, date, candidates\)/)
 assert.match(learning, /reconcileSelectionDecisionEvidenceV4\(db, date, \{[\s\S]*identityDb: options\.identityDb,[\s\S]*canonicalProducerRunId: canonicalRunIds\?\.\[date\]/)
 assert.match(selectionReference, /reconcileSelectionDecisionEvidenceV4\([\s\S]*options\.identityDb[\s\S]*canonicalProducerRunId[\s\S]*FROM selection_reference_snapshots_v1[\s\S]*options\.identityDb\.prepare[\s\S]*FROM daily_recommendations/)
 assert.match(learning, /FROM json_each\(\?\) h WHERE h\.key=m\.signal_date AND h\.value=m\.producer_run_id/)

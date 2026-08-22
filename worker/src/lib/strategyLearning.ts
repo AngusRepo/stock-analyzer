@@ -1357,7 +1357,9 @@ type CrossDomainStrategyEnrichmentRow = {
 
 export async function listStrategyLearningCandidatesAcrossDomains(
   referenceDb: D1Database,
-  enrichmentDb: D1Database,
+  funnelDb: D1Database,
+  recommendationDb: D1Database,
+  marketDb: D1Database,
   date: string,
   canonicalProducerRunId: string,
   limit = STRATEGY_LEARNING_DEFAULT_CANDIDATE_LIMIT,
@@ -1386,7 +1388,7 @@ export async function listStrategyLearningCandidatesAcrossDomains(
   for (let offset = 0; offset < symbols.length; offset += 80) {
     const chunk = symbols.slice(offset, offset + 80)
     const placeholders = chunk.map(() => '?').join(', ')
-    const funnelPage = await enrichmentDb.prepare(`
+    const funnelPage = await funnelDb.prepare(`
       WITH ranked AS (
         SELECT i.symbol, i.name, i.evidence, i.score_after, i.rank,
                ROW_NUMBER() OVER (
@@ -1411,7 +1413,7 @@ export async function listStrategyLearningCandidatesAcrossDomains(
     `).bind(canonicalProducerRunId, ...chunk).all<CrossDomainStrategyEnrichmentRow>()
     for (const row of funnelPage.results ?? []) funnelBySymbol.set(cleanToken(row.symbol), row)
 
-    const recommendationPage = await enrichmentDb.prepare(`
+    const recommendationPage = await recommendationDb.prepare(`
       SELECT symbol, name, sector, industry, score_components, current_price
         FROM daily_recommendations
        WHERE date=?
@@ -1444,8 +1446,8 @@ export async function listStrategyLearningCandidatesAcrossDomains(
       raw_signals: rawSignals,
     } satisfies StrategyCandidateInput
   })
-  await hydrateStrategyCandidateDailyFeatures(enrichmentDb, date, candidates)
-  await hydrateS12StrategyEvidence(enrichmentDb, date, candidates)
+  await hydrateStrategyCandidateDailyFeatures(marketDb, date, candidates, recommendationDb)
+  await hydrateS12StrategyEvidence(referenceDb, date, candidates)
   return candidates
 }
 interface StrategyS12EvidenceRow {
@@ -1519,6 +1521,7 @@ export async function hydrateStrategyCandidateDailyFeatures(
   db: D1Database,
   date: string,
   candidates: StrategyCandidateInput[],
+  identityDb: D1Database = db,
 ): Promise<{
   hydratedSymbols: number
   materializedAliases: number
@@ -1553,6 +1556,7 @@ export async function hydrateStrategyCandidateDailyFeatures(
   if (symbolsNeedingOhlcv.length > 0) {
     try {
       const bySymbol = new Map<string, StrategyCandidatePriceRow[]>()
+      if (identityDb === db) {
       for (let offset = 0; offset < symbolsNeedingOhlcv.length; offset += 40) {
         const symbolChunk = symbolsNeedingOhlcv.slice(offset, offset + 40)
         const placeholders = symbolChunk.map(() => '?').join(', ')
@@ -1576,6 +1580,44 @@ export async function hydrateStrategyCandidateDailyFeatures(
           const rows = bySymbol.get(symbol) ?? []
           rows.push(row)
           bySymbol.set(symbol, rows)
+        }
+      }
+      } else {
+        const symbolById = new Map<number, string>()
+        for (let offset = 0; offset < symbolsNeedingOhlcv.length; offset += 40) {
+          const symbolChunk = symbolsNeedingOhlcv.slice(offset, offset + 40)
+          const placeholders = symbolChunk.map(() => '?').join(', ')
+          const { results } = await identityDb.prepare(`
+            SELECT id, symbol
+              FROM stocks
+             WHERE symbol IN (${placeholders})
+          `).bind(...symbolChunk).all<{ id: number; symbol: string }>()
+          for (const row of results ?? []) symbolById.set(Number(row.id), cleanToken(row.symbol))
+        }
+        const stockIds = [...symbolById.keys()]
+        for (let offset = 0; offset < stockIds.length; offset += 40) {
+          const idChunk = stockIds.slice(offset, offset + 40)
+          const placeholders = idChunk.map(() => '?').join(', ')
+          const { results } = await db.prepare(`
+            WITH ranked_prices AS (
+              SELECT stock_id, date, open, high, low, close, volume,
+                     ROW_NUMBER() OVER (PARTITION BY stock_id ORDER BY date DESC) AS price_rank
+                FROM stock_prices
+               WHERE stock_id IN (${placeholders})
+                 AND date <= ?
+            )
+            SELECT stock_id, date, open, high, low, close, volume
+              FROM ranked_prices
+             WHERE price_rank <= 70
+             ORDER BY stock_id ASC, date DESC
+          `).bind(...idChunk, date).all<StrategyCandidatePriceRow & { stock_id: number }>()
+          for (const row of results ?? []) {
+            const symbol = symbolById.get(Number(row.stock_id))
+            if (!symbol) continue
+            const rows = bySymbol.get(symbol) ?? []
+            rows.push({ ...row, symbol })
+            bySymbol.set(symbol, rows)
+          }
         }
       }
       for (const candidate of candidates) {
@@ -2293,6 +2335,8 @@ export async function materializeStrategyDecisionLogChunk(
     producerRunId?: string
     candidateDb?: D1Database
     candidateReferenceDb?: D1Database
+    recommendationDb?: D1Database
+    marketDb?: D1Database
     canonicalProducerRunId?: string | null
   },
 ): Promise<{
@@ -2315,7 +2359,8 @@ export async function materializeStrategyDecisionLogChunk(
   const { specs, source } = await listStrategySpecsForLearning(db, { asOfDate: options.date })
   const candidatePage = options.candidateReferenceDb && options.canonicalProducerRunId
     ? await listStrategyLearningCandidatesAcrossDomains(
-        options.candidateReferenceDb, options.candidateDb ?? db, options.date,
+        options.candidateReferenceDb, options.candidateDb ?? db,
+        options.recommendationDb ?? db, options.marketDb ?? db, options.date,
         options.canonicalProducerRunId, limit + 1, afterSymbol,
       )
     : await listStrategyLearningCandidates(options.candidateDb ?? db, options.date, limit + 1, afterSymbol)

@@ -95,7 +95,7 @@ void (async () => {
   })
   const complete = await inspectDataDomainCutoverReadiness(completeDb, 'ops')
   assert.equal(complete.strict_enable_allowed, false)
-  assert.equal(complete.routing_contract_gates.direct_legacy_db_paths_closed, false)
+  assert.equal(complete.routing_contract_gates.direct_legacy_db_paths_closed, true)
   assert.equal(complete.projection_contract_gates.typed_outbox_producers_wired, false)
   assert.equal(complete.domains[0].owned_tables, owned.length)
   assert.equal(complete.domains[0].completed_tables, owned.length)

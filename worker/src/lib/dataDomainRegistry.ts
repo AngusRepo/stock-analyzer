@@ -157,43 +157,43 @@ const DOMAIN_TABLES: Record<DataDomain, ReadonlySet<string>> = {
   ]),
 }
 
-// These tables were discovered after the base domain manifests were created.
+// These tables were discovered after the base domain manifests were created and now have explicit live owner routes.
 // Ownership is explicit so schema drift cannot remain invisible. shadow_ready
 // means the target schema is safe for legacy-authority copy/parity; route_ready
-// remains the independent live read/write cutover gate.
-const DEFERRED_PRODUCTION_TABLE_OWNERSHIP: readonly TableOwnershipMetadata[] = [
+// records that the live read/write owner has completed cutover.
+const EXTENDED_PRODUCTION_TABLE_OWNERSHIP: readonly TableOwnershipMetadata[] = [
   { table: 'stock_analysis_reports', domain: 'core', disposition: 'compact_projection', route_ready: true, shadow_ready: true },
 
-  { table: 'canonical_broker_flow_daily', domain: 'market', disposition: 'full_scalar', route_ready: false, shadow_ready: true },
-  { table: 'canonical_broker_rank_daily', domain: 'market', disposition: 'full_scalar', route_ready: false, shadow_ready: true },
-  { table: 'canonical_chip_daily', domain: 'market', disposition: 'full_scalar', route_ready: false, shadow_ready: true },
-  { table: 'canonical_futures_daily', domain: 'market', disposition: 'full_scalar', route_ready: false, shadow_ready: true },
-  { table: 'canonical_institutional_amount_daily', domain: 'market', disposition: 'full_scalar', route_ready: false, shadow_ready: true },
-  { table: 'canonical_market_daily', domain: 'market', disposition: 'full_scalar', route_ready: false, shadow_ready: true },
-  { table: 'canonical_market_index_daily', domain: 'market', disposition: 'full_scalar', route_ready: false, shadow_ready: true },
-  { table: 'canonical_market_summary_daily', domain: 'market', disposition: 'full_scalar', route_ready: false, shadow_ready: true },
-  { table: 'canonical_regime_context_daily', domain: 'market', disposition: 'full_scalar', route_ready: false, shadow_ready: true },
-  { table: 'canonical_revenue_monthly', domain: 'market', disposition: 'full_scalar', route_ready: false, shadow_ready: true },
-  { table: 'canonical_trading_restrictions', domain: 'market', disposition: 'full_scalar', route_ready: false, shadow_ready: true },
-  { table: 'concept_buzz', domain: 'market', disposition: 'active_window', route_ready: false, shadow_ready: true },
-  { table: 'external_evidence_items', domain: 'market', disposition: 'compact_projection', route_ready: false, shadow_ready: true },
-  { table: 'finlab_taxonomy_tags', domain: 'market', disposition: 'full_scalar', route_ready: false, shadow_ready: true },
-  { table: 'margin_data', domain: 'market', disposition: 'full_scalar', route_ready: false, shadow_ready: true },
-  { table: 'market_regime_factor_packets', domain: 'market', disposition: 'compact_projection', route_ready: false, shadow_ready: true },
-  { table: 'monthly_revenue', domain: 'market', disposition: 'full_scalar', route_ready: false, shadow_ready: true },
-  { table: 'screener_momentum_snapshots', domain: 'market', disposition: 'active_window', route_ready: false, shadow_ready: true },
-  { table: 'screener_selection_history', domain: 'market', disposition: 'active_window', route_ready: false, shadow_ready: true },
-  { table: 'sector_flow_stocks', domain: 'market', disposition: 'full_scalar', route_ready: false, shadow_ready: true },
-  { table: 'sector_heat', domain: 'market', disposition: 'full_scalar', route_ready: false, shadow_ready: true },
-  { table: 'sector_leaders', domain: 'market', disposition: 'full_scalar', route_ready: false, shadow_ready: true },
-  { table: 'shareholding', domain: 'market', disposition: 'full_scalar', route_ready: false, shadow_ready: true },
-  { table: 'source_quality_metrics', domain: 'market', disposition: 'active_window', route_ready: false, shadow_ready: true },
-  { table: 'stock_profiles', domain: 'market', disposition: 'compact_projection', route_ready: false, shadow_ready: true },
-  { table: 'stock_tags', domain: 'market', disposition: 'full_scalar', route_ready: false, shadow_ready: true },
-  { table: 'stock_theme_features', domain: 'market', disposition: 'full_scalar', route_ready: false, shadow_ready: true },
-  { table: 'stock_trading_restrictions', domain: 'market', disposition: 'full_scalar', route_ready: false, shadow_ready: true },
-  { table: 'theme_signals', domain: 'market', disposition: 'active_window', route_ready: false, shadow_ready: true },
-  { table: 'us_market_signals', domain: 'market', disposition: 'active_window', route_ready: false, shadow_ready: true },
+  { table: 'canonical_broker_flow_daily', domain: 'market', disposition: 'full_scalar', route_ready: true, shadow_ready: true },
+  { table: 'canonical_broker_rank_daily', domain: 'market', disposition: 'full_scalar', route_ready: true, shadow_ready: true },
+  { table: 'canonical_chip_daily', domain: 'market', disposition: 'full_scalar', route_ready: true, shadow_ready: true },
+  { table: 'canonical_futures_daily', domain: 'market', disposition: 'full_scalar', route_ready: true, shadow_ready: true },
+  { table: 'canonical_institutional_amount_daily', domain: 'market', disposition: 'full_scalar', route_ready: true, shadow_ready: true },
+  { table: 'canonical_market_daily', domain: 'market', disposition: 'full_scalar', route_ready: true, shadow_ready: true },
+  { table: 'canonical_market_index_daily', domain: 'market', disposition: 'full_scalar', route_ready: true, shadow_ready: true },
+  { table: 'canonical_market_summary_daily', domain: 'market', disposition: 'full_scalar', route_ready: true, shadow_ready: true },
+  { table: 'canonical_regime_context_daily', domain: 'market', disposition: 'full_scalar', route_ready: true, shadow_ready: true },
+  { table: 'canonical_revenue_monthly', domain: 'market', disposition: 'full_scalar', route_ready: true, shadow_ready: true },
+  { table: 'canonical_trading_restrictions', domain: 'market', disposition: 'full_scalar', route_ready: true, shadow_ready: true },
+  { table: 'concept_buzz', domain: 'market', disposition: 'active_window', route_ready: true, shadow_ready: true },
+  { table: 'external_evidence_items', domain: 'market', disposition: 'compact_projection', route_ready: true, shadow_ready: true },
+  { table: 'finlab_taxonomy_tags', domain: 'market', disposition: 'full_scalar', route_ready: true, shadow_ready: true },
+  { table: 'margin_data', domain: 'market', disposition: 'full_scalar', route_ready: true, shadow_ready: true },
+  { table: 'market_regime_factor_packets', domain: 'market', disposition: 'compact_projection', route_ready: true, shadow_ready: true },
+  { table: 'monthly_revenue', domain: 'market', disposition: 'full_scalar', route_ready: true, shadow_ready: true },
+  { table: 'screener_momentum_snapshots', domain: 'market', disposition: 'active_window', route_ready: true, shadow_ready: true },
+  { table: 'screener_selection_history', domain: 'market', disposition: 'active_window', route_ready: true, shadow_ready: true },
+  { table: 'sector_flow_stocks', domain: 'market', disposition: 'full_scalar', route_ready: true, shadow_ready: true },
+  { table: 'sector_heat', domain: 'market', disposition: 'full_scalar', route_ready: true, shadow_ready: true },
+  { table: 'sector_leaders', domain: 'market', disposition: 'full_scalar', route_ready: true, shadow_ready: true },
+  { table: 'shareholding', domain: 'market', disposition: 'full_scalar', route_ready: true, shadow_ready: true },
+  { table: 'source_quality_metrics', domain: 'market', disposition: 'active_window', route_ready: true, shadow_ready: true },
+  { table: 'stock_profiles', domain: 'market', disposition: 'compact_projection', route_ready: true, shadow_ready: true },
+  { table: 'stock_tags', domain: 'market', disposition: 'full_scalar', route_ready: true, shadow_ready: true },
+  { table: 'stock_theme_features', domain: 'market', disposition: 'full_scalar', route_ready: true, shadow_ready: true },
+  { table: 'stock_trading_restrictions', domain: 'market', disposition: 'full_scalar', route_ready: true, shadow_ready: true },
+  { table: 'theme_signals', domain: 'market', disposition: 'active_window', route_ready: true, shadow_ready: true },
+  { table: 'us_market_signals', domain: 'market', disposition: 'active_window', route_ready: true, shadow_ready: true },
 
   { table: 'config_lifecycle_events', domain: 'learning', disposition: 'active_window', route_ready: true, shadow_ready: true },
   { table: 'config_lifecycle_state', domain: 'learning', disposition: 'full_scalar', route_ready: true, shadow_ready: true },
@@ -278,7 +278,7 @@ const TABLE_OWNERSHIP: readonly TableOwnershipMetadata[] = [
         && !(SHADOW_BACKFILL_EXCLUDED_TABLES[domain] ?? new Set<string>()).has(table),
     }))
   )),
-  ...DEFERRED_PRODUCTION_TABLE_OWNERSHIP,
+  ...EXTENDED_PRODUCTION_TABLE_OWNERSHIP,
 ]
 // Shadow copies must respect the same foreign-key topology as the legacy DB.
 // Keep this map next to the ownership registry so every durable backfill path

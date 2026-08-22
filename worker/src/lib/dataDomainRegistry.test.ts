@@ -107,40 +107,26 @@ for (const table of ['meta_reward_ledger', 'meta_shadow_decisions']) {
     `${table} is active-owner materialization and must not re-enter inactive-only shadow backfill`)
 }
 
-const deferredProductionTables = productionTableNames.filter((table) => (
+const unresolvedProductionTables = productionTableNames.filter((table) => (
   tableOwnershipMetadata(table)?.route_ready === false && !LEGACY_CONTROL_PLANE_TABLES.has(table)
 ))
-assert.equal(deferredProductionTables.length, 30, 'production tables without completed routing closure require explicit review')
 assert.deepEqual(
-  [...new Set(deferredProductionTables.map((table) => tableOwnershipMetadata(table)?.domain))],
-  ['market'],
-  'after Ops closure, every deferred production table must belong to the remaining Market cutover',
+  unresolvedProductionTables,
+  [],
+  'all seven production domains must have completed owner routing closure',
 )
-for (const table of [
-  'active_strategy_backtest_results', 'backtest_results', 'debate_ab_log',
-  'monte_carlo_results', 'pbo_results', 'strategy_backtest_results',
-  'strategy_mining_candidates', 'strategy_mining_runs',
-  'strategy_promotion_ledger', 'strategy_similarity_matrix',
-]) {
-  assert.equal(tableOwnershipMetadata(table)?.route_ready, true, `${table} must route to Research D1`)
-  assert.equal(tableOwnershipMetadata(table)?.shadow_ready, true, `${table} must retain backfill/parity evidence`)
-}
-assert.equal(
-  deferredProductionTables.filter((table) => tableOwnershipMetadata(table)?.disposition === 'legacy_only').length,
-  0,
-  'legacy-only table count changed; retirement evidence must be reviewed',
-)
-for (const table of deferredProductionTables) {
+const marketProductionTables = productionTableNames.filter((table) => dataDomainForTable(table) === 'market')
+assert(marketProductionTables.length >= 43, 'Market production ownership unexpectedly incomplete')
+for (const table of marketProductionTables) {
   const metadata = tableOwnershipMetadata(table)
-  assert(metadata, `missing metadata for deferred production table ${table}`)
-  assert.equal(metadata.route_ready, false, `${table} must not route before target schema closure`)
+  assert(metadata, `missing metadata for Market production table ${table}`)
+  assert.equal(metadata.route_ready, true, `${table} must route to Market D1 after formal runtime closure`)
   assert.equal(
-    tablesForDataDomainShadowBackfill(metadata.domain).includes(table),
+    tablesForDataDomainShadowBackfill('market').includes(table),
     metadata.shadow_ready,
     `${table} shadow registry mismatch`,
   )
 }
-
 for (const domain of DATA_DOMAINS) {
   const targetFiles = [
     path.join('domain-schemas', `${domain}.sql`),

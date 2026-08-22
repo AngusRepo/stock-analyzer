@@ -33,6 +33,7 @@ const multiStrategyPleRouter = fs.readFileSync('src/lib/multiStrategyPleRouter.t
 const runtimeTeacherEvidence = fs.readFileSync('src/lib/runtimeTeacherEvidence.ts', 'utf8')
 const adminReadRoutes = fs.readFileSync('src/routes/adminReadRoutes.ts', 'utf8')
 const dailyPipeline = fs.readFileSync('../ml-controller/graphs/daily_pipeline_v2.py', 'utf8')
+const screenerSeedDomainOwner = fs.readFileSync('../ml-controller/services/screener_seed_domain_shadow.py', 'utf8')
 
 {
   assert(!fs.existsSync('src/lib/screenerPercentile.ts'), 'legacy 40/30/30 percentile screener owner should be removed')
@@ -277,7 +278,8 @@ const dailyPipeline = fs.readFileSync('../ml-controller/graphs/daily_pipeline_v2
   assert(marketScreener.includes('strategy_affinity_vector'), 'screener must persist L1 strategy affinity vectors into funnel evidence')
   assert(marketScreener.includes('strategy_matrix_strategy_count'), 'screener must persist dynamic L1 strategy matrix strategy count into funnel evidence')
   assert(marketScreener.includes('production_seed_allowed: false'), 'strategy_pool_ml_queue must be audit-only and blocked from production seed ownership')
-  assert(dailyPipeline.includes("sfi.stage = 'l1_candidate_seed_after_overlay' AND sfi.decision = 'selected'"), 'daily pipeline production seed must be L1.5 router slate')
+  assert(dailyPipeline.includes('load_screener_seed_domain_rows'), 'daily pipeline must load its production seed through the formal Ops/Core owner merge')
+  assert(screenerSeedDomainOwner.includes("sfi.stage = 'l1_candidate_seed_after_overlay' AND sfi.decision = 'selected'"), 'formal Ops owner loader must keep the L1.5 router slate contract')
   assert(!dailyPipeline.includes('strategy_pool_ml_queue'), 'daily pipeline must not use strategy_pool_ml_queue as production ML seed')
   assert(marketScreener.includes('strategy_family_affinity'), 'screener must persist L1 family affinity vectors into funnel evidence')
   assert(marketScreener.includes('strategy_weak_label_vector'), 'screener must persist L1 weak-label vectors into funnel evidence')
@@ -288,9 +290,9 @@ const dailyPipeline = fs.readFileSync('../ml-controller/graphs/daily_pipeline_v2
       marketScreener.includes('loadRuntimeTeacherEvidence('),
     'daily L1.5 must load optional historical runtime teacher evidence in the bounded parallel evidence stage before routing',
   )
-  assert(marketScreener.includes('loadPreviousCanonicalL15Slate(env.DB, endDate)'), 'daily L1.5 must load the previous canonical slate for non-selecting stickiness telemetry')
+  assert(marketScreener.includes("loadPreviousCanonicalL15Slate(databaseForDataDomain(env, 'ops'), endDate)"), 'daily L1.5 must load the previous canonical slate for non-selecting stickiness telemetry')
   assert(marketScreener.includes('runtimeTeacherEvidence: runtimeTeacherEvidence.labels'), 'daily L1.5 must pass runtimeTeacherEvidence, not deprecated mlTeacherLabels')
-  assert(marketScreener.includes('loadPromotedStrategyRouteCalibration(env.DB)'), 'daily L1.5 must load only the promoted route calibration head')
+  assert(marketScreener.includes("loadPromotedStrategyRouteCalibration(databaseForDataDomain(env, 'learning'))"), 'daily L1.5 must load only the promoted route calibration head')
   assert(marketScreener.includes('promotedRouteCalibration,'), 'daily L1.5 must pass promoted route calibration into the router')
   assert(!marketScreener.includes('mlTeacherLabels:'), 'daily screener must not pass deprecated mlTeacherLabels as the formal router input')
   assert(strategyCandidatePool.includes('runtimeTeacherEvidence?: Record<string, Record<string, number>>'), 'Layer1 breadth plan must accept runtimeTeacherEvidence as optional input')

@@ -258,7 +258,7 @@ stocks.get('/:id/indicators', async (c) => {
   // On-demand: 若無指標資料，自動計算（支援興櫃等非 active 股票）
   if (!results?.length) {
     try {
-      await computeAndStoreIndicators(c.env.DB, id)
+      await computeAndStoreIndicators(databaseForDataDomain(c.env, 'market'), id)
       const retry = await databaseForDataDomain(c.env, 'market').prepare(
         'SELECT * FROM technical_indicators WHERE stock_id=? AND date>=? ORDER BY date'
       ).bind(id, since).all()
@@ -306,7 +306,7 @@ stocks.get('/:id/card-chip-context', async (c) => {
        ORDER BY date DESC
        LIMIT 1
     `).bind(symbol, asOfDate).first<any>().catch(() => null),
-    c.env.DB.prepare(`
+    databaseForDataDomain(c.env, 'market').prepare(`
       SELECT name FROM sqlite_master
        WHERE type = 'table'
          AND name = 'canonical_broker_rank_daily'
@@ -451,7 +451,7 @@ stocks.post('/:id/refresh', authMiddleware, adminMiddleware, async (c) => {
   if (!stock) return c.json({ error: '股票不存在' }, 404)
 
   // Fetch from Yahoo Finance
-  await fetchAndStoreStockData(c.env.DB, c.env.KV, stock, c.env.FINMIND_TOKEN)
+  await fetchAndStoreStockData(databaseForDataDomain(c.env, 'market'), c.env.KV, stock, c.env.FINMIND_TOKEN)
   return c.json({ success: true, message: `已更新 ${stock.symbol}` })
 })
 

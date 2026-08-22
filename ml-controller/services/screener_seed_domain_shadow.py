@@ -4,7 +4,7 @@ from __future__ import annotations
 import os
 from typing import Any, Protocol
 
-from services.d1_domain_client import shadow_client_for_domain
+from services.d1_domain_client import D1DataDomain, client_for_domain, shadow_client_for_domain
 from services.screener_seed_domain_merge import (
     compare_screener_seed_domain_results,
     merge_screener_seed_domains,
@@ -140,6 +140,27 @@ def _core_rows(
             timeout=90,
         ))
     return daily_rows, stock_rows
+
+
+
+def load_screener_seed_domain_rows(
+    *,
+    run_date: str,
+    ops_client: ReadOnlyD1Client | None = None,
+    core_client: ReadOnlyD1Client | None = None,
+) -> list[dict[str, Any]]:
+    """Load the production screener seed from its formal Ops/Core owners."""
+    ops_reader = ops_client or client_for_domain(D1DataDomain.OPS)
+    core_reader = core_client or client_for_domain(D1DataDomain.CORE)
+    ops_rows = _ops_seed_rows(ops_reader, run_date)
+    symbols = sorted({str(row.get("symbol") or "").strip() for row in ops_rows if row.get("symbol")})
+    daily_rows, stock_rows = _core_rows(core_reader, run_date, symbols)
+    return merge_screener_seed_domains(
+        ops_seed_rows=ops_rows,
+        daily_rows=daily_rows,
+        stock_rows=stock_rows,
+        run_date=run_date,
+    )
 
 
 def run_screener_seed_domain_shadow_comparison(

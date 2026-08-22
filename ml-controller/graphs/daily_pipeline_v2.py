@@ -110,10 +110,7 @@ from services.persona_service import (
     compute_retail_opinion,
     write_opinions as write_persona_opinions,
 )
-from services.screener_seed_domain_shadow import (
-    run_screener_seed_domain_shadow_comparison,
-    screener_seed_shadow_compare_enabled,
-)
+from services.screener_seed_domain_shadow import load_screener_seed_domain_rows
 
 logger = logging.getLogger(__name__)
 
@@ -641,168 +638,10 @@ async def node_load_inputs(state: PipelineStateV2) -> dict:
     logger.info("[Pipeline V2] node_load_inputs")
     run_date = state["run_date"]
 
-    screener_recs = d1_client.query(
-        f"""
-        WITH latest_screener_run AS (
-            SELECT run_id, created_at
-              FROM screener_funnel_runs
-             WHERE date = ?
-               AND status = 'success'
-             ORDER BY created_at DESC
-             LIMIT 1
-        ),
-        candidate_seed AS (
-            SELECT
-                sfi.*,
-                ROW_NUMBER() OVER (
-                    PARTITION BY sfi.symbol
-                    ORDER BY
-                        CASE sfi.stage
-                            WHEN 'l1_candidate_seed_after_overlay' THEN 0
-                            WHEN 'final_selection' THEN 1
-                            ELSE 3
-                        END,
-                        COALESCE(sfi.rank, 999999)
-                ) AS stage_preference_rank
-              FROM screener_funnel_items sfi
-             WHERE sfi.run_id = (SELECT run_id FROM latest_screener_run)
-               AND (
-                    sfi.stage = 'l1_candidate_seed_after_overlay' AND sfi.decision = 'selected'
-                 OR sfi.stage = 'final_selection' AND sfi.decision = 'selected'
-               )
-        ),
-        scoring_seed AS (
-            SELECT *
-              FROM (
-                SELECT
-                    sfi.*,
-                    ROW_NUMBER() OVER (
-                        PARTITION BY sfi.symbol
-                        ORDER BY COALESCE(sfi.rank, 999999), sfi.created_at DESC
-                    ) AS scoring_rank
-                  FROM screener_funnel_items sfi
-                 WHERE sfi.run_id = (SELECT run_id FROM latest_screener_run)
-                   AND sfi.stage = 'scoring'
-                   AND sfi.decision = 'pass'
-              )
-             WHERE scoring_rank = 1
-        ),
-        l1_seed AS (
-            SELECT *
-              FROM (
-                SELECT
-                    sfi.*,
-                    ROW_NUMBER() OVER (
-                        PARTITION BY sfi.symbol
-                        ORDER BY COALESCE(sfi.rank, 999999), sfi.created_at DESC
-                    ) AS l1_rank
-                  FROM screener_funnel_items sfi
-                 WHERE sfi.run_id = (SELECT run_id FROM latest_screener_run)
-                   AND sfi.stage = 'l1_candidate_seed_after_overlay'
-                   AND sfi.decision = 'selected'
-              )
-             WHERE l1_rank = 1
-        )
-        SELECT
-            dr.id AS id,
-            sfi.run_id AS screener_run_id,
-            (SELECT created_at FROM latest_screener_run) AS decision_universe_frozen_at,
-            ? AS date,
-            COALESCE(dr.stock_id, st.id) AS stock_id,
-            sfi.symbol AS symbol,
-            COALESCE(dr.name, sfi.name, st.name, sfi.symbol) AS name,
-            COALESCE(dr.sector, st.sector) AS sector,
-            COALESCE(
-                dr.industry,
-                CASE WHEN json_valid(scoring.evidence) THEN json_extract(scoring.evidence, '$.taxonomy.industry') END,
-                CASE WHEN json_valid(l1.evidence) THEN json_extract(l1.evidence, '$.industry') END,
-                st.sector
-            ) AS industry,
-            COALESCE(sfi.rank, dr.rank, 999999) AS rank,
-            COALESCE(sfi.score_after, dr.score, scoring.score_after, 0) AS score,
-            dr.signal AS signal,
-            dr.confidence AS confidence,
-            COALESCE(
-                dr.reason,
-                CASE WHEN json_valid(l1.evidence) THEN json_extract(l1.evidence, '$.strategy_pool_reason') END,
-                sfi.reason_code,
-                'screener candidate seed'
-            ) AS reason,
-            COALESCE(
-                dr.watch_points,
-                json_array('screener_seed:' || sfi.stage, 'screener_run:' || sfi.run_id)
-            ) AS watch_points,
-            COALESCE(dr.has_buy_signal, 0) AS has_buy_signal,
-            dr.current_price AS current_price,
-            dr.foreign_net_5d AS foreign_net_5d,
-            dr.trust_net_5d AS trust_net_5d,
-            dr.rsi14 AS rsi14,
-            dr.macd_hist AS macd_hist,
-            dr.sector_rank AS sector_rank,
-            COALESCE(
-                dr.market_segment,
-                CASE WHEN json_valid(sfi.evidence) THEN json_extract(sfi.evidence, '$.market_segment') END,
-                CASE WHEN json_valid(l1.evidence) THEN json_extract(l1.evidence, '$.market_segment') END,
-                st.market,
-                'LISTED'
-            ) AS market_segment,
-            COALESCE(
-                dr.recommendation_lane,
-                CASE
-                    WHEN upper(COALESCE(st.market, '')) IN ('TWSE', 'TSE', 'LISTED', 'OTC', 'TPEX') THEN 'tradable'
-                    WHEN upper(COALESCE(st.market, '')) IN ('EMERGING', 'ESB', 'ROTC') THEN 'emerging_watchlist'
-                    ELSE 'research_only'
-                END
-            ) AS recommendation_lane,
-            COALESCE(dr.eligible_for_ml, 1) AS eligible_for_ml,
-            COALESCE(dr.eligible_for_pending_buy, 0) AS eligible_for_pending_buy,
-            dr.alpha_context AS alpha_context,
-            dr.alpha_allocation AS alpha_allocation,
-            dr.ml_vote_summary AS ml_vote_summary,
-            COALESCE(
-                CASE WHEN json_valid(scoring.evidence) THEN json_extract(scoring.evidence, '$.score_components') END,
-                dr.score_components
-            ) AS score_components
-          FROM candidate_seed sfi
-          LEFT JOIN daily_recommendations dr
-            ON dr.date = ?
-           AND dr.symbol = sfi.symbol
-          LEFT JOIN stocks st
-            ON st.symbol = sfi.symbol
-          LEFT JOIN scoring_seed scoring
-            ON scoring.symbol = sfi.symbol
-          LEFT JOIN l1_seed l1
-            ON l1.symbol = sfi.symbol
-         WHERE sfi.stage_preference_rank = 1
-           AND COALESCE(dr.stock_id, st.id) IS NOT NULL
-           AND COALESCE(dr.recommendation_lane, '') != 'emerging_watchlist'
-           AND UPPER(COALESCE(
-                dr.market_segment,
-                CASE WHEN json_valid(sfi.evidence) THEN json_extract(sfi.evidence, '$.market_segment') END,
-                CASE WHEN json_valid(l1.evidence) THEN json_extract(l1.evidence, '$.market_segment') END,
-                st.market,
-                ''
-           )) NOT IN ('EMERGING', 'ESB', 'ROTC')
-         ORDER BY COALESCE(sfi.rank, dr.rank, 999999), COALESCE(sfi.score_after, dr.score, scoring.score_after, 0) DESC
-        """,
-        [run_date, run_date, run_date],
+    screener_recs = await asyncio.to_thread(
+        load_screener_seed_domain_rows,
+        run_date=run_date,
     )
-    if screener_seed_shadow_compare_enabled():
-        try:
-            shadow_report = await asyncio.to_thread(
-                run_screener_seed_domain_shadow_comparison,
-                run_date=run_date,
-                legacy_rows=screener_recs,
-            )
-            logger.info(
-                "[Pipeline V2] D1 screener seed shadow equivalence %s",
-                json.dumps(shadow_report, ensure_ascii=False, sort_keys=True),
-            )
-        except Exception:  # noqa: BLE001
-            logger.exception(
-                "[Pipeline V2] D1 screener seed shadow comparator failed; "
-                "legacy output remains authoritative"
-            )
     if not screener_recs:
         raise RuntimeError(
             "screener_recs_missing: daily pipeline requires latest screener "
@@ -813,7 +652,7 @@ async def node_load_inputs(state: PipelineStateV2) -> dict:
 
     logger.info(
         f"[Pipeline V2] Loaded {len(active_stocks)} ML universe stocks "
-        f"(source=latest_screener_candidate_seed), "
+        f"(source=split_domain_ops_core_screener_candidate_seed), "
         f"{len(screener_recs)} existing screener_recs"
     )
     return {

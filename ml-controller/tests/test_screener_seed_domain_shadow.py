@@ -4,6 +4,7 @@ import json
 
 from services.screener_seed_domain_shadow import (
     D1_QUERY_SYMBOL_CHUNK,
+    load_screener_seed_domain_rows,
     run_screener_seed_domain_shadow_comparison,
 )
 
@@ -74,6 +75,33 @@ def test_shadow_comparison_reads_ops_and_core_without_mutating_legacy_output():
     assert report["status"] == "pass"
     assert report["authoritative_output"] == "legacy_unchanged"
     assert legacy == original
+
+
+def test_production_loader_reads_formal_ops_core_owners():
+    ops = FakeClient(lambda _sql, _params: [{
+        "screener_run_id": "run-1",
+        "decision_universe_frozen_at": "2026-08-21T10:00:00Z",
+        "symbol": "2330",
+        "seed_stage": "l1_candidate_seed_after_overlay",
+        "seed_rank": 1,
+        "seed_score": 88,
+    }])
+
+    def core_responder(sql, _params):
+        if "FROM daily_recommendations" in sql:
+            return [{"stock_id": 1, "symbol": "2330", "recommendation_lane": "tradable"}]
+        return [{"stock_id": 1, "symbol": "2330", "name": "TSMC", "market": "TWSE"}]
+
+    rows = load_screener_seed_domain_rows(
+        run_date="2026-08-21",
+        ops_client=ops,
+        core_client=FakeClient(core_responder),
+    )
+
+    assert len(rows) == 1
+    assert rows[0]["symbol"] == "2330"
+    assert rows[0]["screener_run_id"] == "run-1"
+    assert rows[0]["recommendation_lane"] == "tradable"
 
 
 def test_core_reads_chunk_symbols_below_d1_parameter_limit():

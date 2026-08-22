@@ -122,10 +122,10 @@ export async function auditStrategyRouteBackfillEligibility(
     asOfDate,
     STRATEGY_ROUTE_CHALLENGER_VERSION,
     STRATEGY_ROUTE_CHALLENGER_VERSION,
-    JSON.stringify(options.canonicalRunIds ?? {}),
     startDate,
     asOfDate,
     SELECTION_REFERENCE_CONTRACT_VERSION,
+    JSON.stringify(options.canonicalRunIds ?? {}),
   ).all<EligibilityRow>()
 
   const output = (result.results ?? []).map((row): StrategyRouteBackfillEligibility => {

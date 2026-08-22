@@ -160,7 +160,9 @@ def test_dataset_snapshot_exporter_produces_gcs_manifest():
     assert "dataset_export_no_prices" in source
     assert "dataset_export_no_ensemble_signals" in source
     assert 'query_client=client_for_domain("learning")' in source
-    assert 'query_client = client_for_domain("learning") if table == "predictions"' in source
+    assert '"predictions": {"domain": "learning"' in source
+    assert '"stock_prices": {"domain": "market"' in source
+    assert 'query_client = client_for_domain(spec["domain"])' in source
     assert 'client_for_domain("learning").query' in registry_source
     assert 'client_for_domain("learning").execute' in registry_source
     assert "price-history-parquet-v1" in source

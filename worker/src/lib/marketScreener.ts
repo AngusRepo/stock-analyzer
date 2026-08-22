@@ -121,6 +121,11 @@ export interface ScreenerCandidate {
   strategy_watch_points?: string[]
 }
 
+export interface ScreenerPerformanceTelemetry {
+  total_ms: number
+  stages: Record<string, number>
+}
+
 // ??? Internal helpers ????????????????????????????????????????????????????????
 
 function today(): string {
@@ -627,9 +632,9 @@ export async function loadMatureStrategyOofReturns(
   `).bind(
     asOfDate,
     asOfDate,
-    JSON.stringify(canonicalRunIds),
     SELECTION_REFERENCE_CONTRACT_VERSION,
     ...STRATEGY_FORMAL_LABELER_VERSIONS,
+    JSON.stringify(canonicalRunIds),
   ).all<{
     strategy_id: string
     signal_date: string
@@ -3295,8 +3300,17 @@ export async function runBottomUpScreener(env: Bindings, runDate?: string | null
   candidates: ScreenerCandidate[]
   emergingResearchCandidates?: ScreenerCandidate[]
   debugLog?: string[]
+  performance?: ScreenerPerformanceTelemetry
 }> {
   const debugLog: string[] = []
+  const screenerStartedAt = Date.now()
+  let screenerStageStartedAt = screenerStartedAt
+  const screenerStageTimings: Record<string, number> = {}
+  const markScreenerStage = (stage: string) => {
+    const now = Date.now()
+    screenerStageTimings[stage] = now - screenerStageStartedAt
+    screenerStageStartedAt = now
+  }
   const cfg = await getTradingConfig(env.KV)
   const sc = cfg.screener
   const endDate = resolveScreenerRunDate(runDate)
@@ -3321,6 +3335,7 @@ export async function runBottomUpScreener(env: Bindings, runDate?: string | null
   const screenerPolicy = resolveScreenerPolicy(cfg, adaptiveParams)
   const runId = resolveScreenerProducerRunId(endDate, options.producerRunId)
   const funnelItems: ScreenerFunnelItemInput[] = []
+  markScreenerStage('bootstrap_config_and_regime')
 
   // ?? 鞈???嚗像銵???
   const { detectPttBuzz, storePttBuzz, loadBuzzKeywords } = await import('./pttBuzz')
@@ -3386,6 +3401,8 @@ export async function runBottomUpScreener(env: Bindings, runDate?: string | null
     )
   }
 
+  markScreenerStage('market_data_buzz_and_theme')
+
   if (!allPrices.length) {
     throw new Error(`screener_market_data_empty:run_date=${endDate}`)
   }
@@ -3417,6 +3434,7 @@ export async function runBottomUpScreener(env: Bindings, runDate?: string | null
 
   // ?? ?∠巨?迂 mapping ??
   const sectorMap = await getSectorMapping(env)
+  markScreenerStage('restrictions_taxonomy_and_sector')
 
   // ?? 撱箄???瑽???
   const data = buildStockData(allPrices, allChips)
@@ -3704,6 +3722,7 @@ export async function runBottomUpScreener(env: Bindings, runDate?: string | null
   ]
   debugLog.push(`[Step 2] ???: ${ranges.map(r => `${r.label}=${scored.filter(c => c.score >= r.min && (r.min === 0 || c.score < r.min + 10)).length}`).join(' ')}`)
 
+  markScreenerStage('universe_and_base_scoring')
   const coarseQueueSize = screenerPolicy.sizing.coarseMlQueueSize
   const maxCandidates = screenerPolicy.sizing.mlShortlistSize
   let strategySelectionTelemetry: Record<string, unknown> | null = null
@@ -5583,6 +5602,7 @@ export async function runBottomUpScreener(env: Bindings, runDate?: string | null
   }
 
   // Final debug summary
+  markScreenerStage('selection_enrichment_and_side_effects')
   debugLog.push(`[Final] ${finalCandidates.length} 瑼?`)
   for (const c of finalCandidates) {
     debugLog.push(`  ${c.symbol} ${(c as any).name ?? ''} ${(c as any).industry ?? c.sector} score=${c.score.toFixed(1)}`)
@@ -5633,6 +5653,10 @@ export async function runBottomUpScreener(env: Bindings, runDate?: string | null
         restrictedCount: punishedSet.size,
         l0DropReasonConservation: l0DropReasonConservationReceipt,
         buzzConcepts: combinedBuzz.slice(0, 10).map(b => b.concept),
+        performance: {
+          elapsed_before_funnel_ms: Date.now() - screenerStartedAt,
+          stages: { ...screenerStageTimings },
+        },
       },
       debugLog,
       items: funnelItems,
@@ -5643,7 +5667,14 @@ export async function runBottomUpScreener(env: Bindings, runDate?: string | null
     throw e
   }
 
-  return { hotSectors: sectorHeatScores, candidates: finalCandidates, emergingResearchCandidates, debugLog }
+  markScreenerStage('funnel_persistence')
+  const performance: ScreenerPerformanceTelemetry = {
+    total_ms: Date.now() - screenerStartedAt,
+    stages: { ...screenerStageTimings },
+  }
+  debugLog.push('[Performance] total_ms=' + performance.total_ms + ' stages=' + JSON.stringify(performance.stages))
+
+  return { hotSectors: sectorHeatScores, candidates: finalCandidates, emergingResearchCandidates, debugLog, performance }
 }
 
 // ????????????????????????????????????????????????????????????????????????????????

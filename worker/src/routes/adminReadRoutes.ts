@@ -862,11 +862,29 @@ adminReadRoutes.get('/api/admin/data-domains/cutover-readiness', async (c) => {
   const [
     { inspectDataDomainCutoverReadiness },
     { inspectLatestEveningChainClosure },
+    { inspectStorageCapacityTelemetry },
+    { buildDataDomainTenYearClosure, buildTenYearCapacityClosureReceipt },
   ] = await Promise.all([
     import('../lib/dataDomainCutoverReadiness'),
     import('../lib/dataDomainShadowBackfillDrain'),
+    import('../lib/storageCapacityTelemetry'),
+    import('../lib/dataDomainTenYearClosure'),
   ])
-  const latestEveningChain = await inspectLatestEveningChainClosure(c.env.KV, c.env.DB)
+  const opsDb = databaseForDataDomain(c.env, 'ops')
+  const [latestEveningChain, capacityRows, archivePolicyResult] = await Promise.all([
+    inspectLatestEveningChainClosure(c.env.KV, c.env.DB),
+    inspectStorageCapacityTelemetry(c.env),
+    opsDb.prepare(
+      `SELECT p.policy_id,
+              MAX(CASE WHEN r.status='success' THEN 1 ELSE 0 END) AS operational
+         FROM data_retention_policies p
+         LEFT JOIN data_retention_runs r ON r.policy_id=p.policy_id
+        WHERE p.status='active'
+          AND p.action IN ('archive_scrub', 'archive_delete')
+        GROUP BY p.policy_id
+        ORDER BY p.policy_id`,
+    ).all<{ policy_id: string; operational: number }>(),
+  ])
   const requestedDomain = c.req.query('domain')
   const readinessContext = {
     upstreamTerminalReady: latestEveningChain.terminalSuccess,
@@ -878,14 +896,22 @@ adminReadRoutes.get('/api/admin/data-domains/cutover-readiness', async (c) => {
     ? await inspectDataDomainCutoverReadiness(c.env.DB, null, readinessContext)
     : report
   const activeDomains = [...activeDataDomains(c.env)].sort()
-  const { buildDataDomainTenYearClosure } = await import('../lib/dataDomainTenYearClosure')
+  const capacity = buildTenYearCapacityClosureReceipt({
+    databases: capacityRows,
+    archivePolicies: (archivePolicyResult.results ?? []).map((row) => ({
+      policy_id: String(row.policy_id),
+      operational: Number(row.operational) === 1,
+    })),
+  })
   const tenYearClosure = buildDataDomainTenYearClosure({
     activeDomains,
     strictRequested: String(c.env.MULTI_D1_STRICT ?? '').trim().toLowerCase() === 'true',
     domains: closureReport.domains,
+    capacity,
   })
   return c.json({
     success: true, latest_evening_chain: latestEveningChain, ...report,
+    storage_capacity: capacityRows,
     active_domains: activeDomains,
     strict_requested: String(c.env.MULTI_D1_STRICT ?? '').trim().toLowerCase() === 'true',
     ten_year_closure: tenYearClosure,

@@ -136,13 +136,13 @@ class FinLabRawArchiveMetadataRequest:
 
 
 D1_COLD_ARCHIVE_TABLE_SPECS: dict[str, dict[str, str]] = {
-    "stock_prices": {"date_column": "date", "order_by": "date, stock_id"},
-    "technical_indicators": {"date_column": "date", "order_by": "date, stock_id"},
-    "chip_data": {"date_column": "date", "order_by": "date, symbol"},
-    "margin_data": {"date_column": "date", "order_by": "date, stock_id"},
-    "predictions": {"date_column": "prediction_date", "order_by": "prediction_date, stock_id"},
+    "stock_prices": {"domain": "market", "date_column": "date", "order_by": "date, stock_id"},
+    "technical_indicators": {"domain": "market", "date_column": "date", "order_by": "date, stock_id"},
+    "chip_data": {"domain": "market", "date_column": "date", "order_by": "date, symbol"},
+    "margin_data": {"domain": "market", "date_column": "date", "order_by": "date, stock_id"},
+    "predictions": {"domain": "learning", "date_column": "prediction_date", "order_by": "prediction_date, stock_id"},
     "canonical_fundamental_features": {
-        "date_column": "available_date",
+        "domain": "market", "date_column": "available_date",
         "order_by": "available_date, stock_id, period, source",
     },
 }
@@ -153,7 +153,7 @@ def _query_cold_archive_table(table: str, start_date: str, end_date: str, chunk_
     if not spec:
         raise ValueError(f"d1_cold_archive_table_not_allowed:{table}")
     date_column = spec["date_column"]
-    query_client = client_for_domain("learning") if table == "predictions" else d1_client
+    query_client = client_for_domain(spec["domain"])
     return _query_date_range(
         f"""
         SELECT *

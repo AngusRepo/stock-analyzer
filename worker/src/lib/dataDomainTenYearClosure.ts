@@ -7,10 +7,49 @@ import {
 } from './dataDomainRegistry'
 import type { DataDomainCutoverReadiness } from './dataDomainCutoverReadiness'
 
+export type TenYearCapacityClosureReceipt = {
+  observed_databases: number
+  expected_databases: number
+  critical_domains: readonly string[]
+  drain_domains: readonly string[]
+  required_archive_policies: number
+  operational_archive_policies: number
+  missing_archive_policy_executors: readonly string[]
+}
+
+export function buildTenYearCapacityClosureReceipt(input: {
+  databases: ReadonlyArray<{ domain: string; status: string }>
+  archivePolicies: ReadonlyArray<{ policy_id: string; operational: boolean }>
+  expectedDatabases?: number
+}): TenYearCapacityClosureReceipt {
+  const expectedDatabases = input.expectedDatabases ?? 8
+  const criticalDomains = input.databases
+    .filter((row) => row.status === 'critical')
+    .map((row) => row.domain)
+    .sort()
+  const drainDomains = input.databases
+    .filter((row) => row.status === 'drain')
+    .map((row) => row.domain)
+    .sort()
+  const missing = input.archivePolicies
+    .filter((row) => !row.operational)
+    .map((row) => row.policy_id)
+    .sort()
+  return {
+    observed_databases: input.databases.length,
+    expected_databases: expectedDatabases,
+    critical_domains: criticalDomains,
+    drain_domains: drainDomains,
+    required_archive_policies: input.archivePolicies.length,
+    operational_archive_policies: input.archivePolicies.length - missing.length,
+    missing_archive_policy_executors: missing,
+  }
+}
 export type TenYearDomainClosureInput = {
   activeDomains: readonly string[]
   strictRequested: boolean
   domains: readonly DataDomainCutoverReadiness[]
+  capacity?: TenYearCapacityClosureReceipt | null
   unresolvedRouteTables?: Partial<Record<DataDomain, readonly string[]>>
 }
 
@@ -55,6 +94,31 @@ export function buildDataDomainTenYearClosure(input: TenYearDomainClosureInput) 
   if (active.size !== DATA_DOMAINS.length || DATA_DOMAINS.some((domain) => !active.has(domain))) {
     globalBlockers.push('seven_domain_runtime_route_incomplete')
   }
+  const capacity = input.capacity ?? null
+  const allActiveDomainsClosed = input.strictRequested
+    && active.size === DATA_DOMAINS.length
+    && DATA_DOMAINS.every((domain) => active.has(domain))
+    && domainReceipts.every((item) => item.complete)
+  const acceptedFrozenRollbackDomains = capacity?.critical_domains
+    .filter((domain) => domain === 'legacy' && allActiveDomainsClosed) ?? []
+  const blockingCriticalDomains = capacity?.critical_domains
+    .filter((domain) => !acceptedFrozenRollbackDomains.includes(domain)) ?? []
+  if (!capacity) globalBlockers.push('ten_year_capacity_receipt_missing')
+  if (capacity && capacity.observed_databases !== capacity.expected_databases) {
+    globalBlockers.push('d1_capacity_inventory_incomplete')
+  }
+  if (capacity && capacity.required_archive_policies === 0) {
+    globalBlockers.push('retention_archive_policies_missing')
+  }
+  if (blockingCriticalDomains.length) globalBlockers.push('d1_capacity_critical')
+  if (capacity?.drain_domains.length) globalBlockers.push('d1_capacity_drain_required')
+  if (
+    capacity
+    && (capacity.missing_archive_policy_executors.length > 0
+      || capacity.operational_archive_policies !== capacity.required_archive_policies)
+  ) {
+    globalBlockers.push('retention_archive_executors_incomplete')
+  }
   if (domainReceipts.some((item) => !item.complete)) globalBlockers.push('seven_domain_cutover_incomplete')
   const complete = globalBlockers.length === 0
   return {
@@ -67,5 +131,10 @@ export function buildDataDomainTenYearClosure(input: TenYearDomainClosureInput) 
     legacy_role: complete ? 'control_plane_and_time_travel_rollback_source' as const : 'mixed_runtime_source_do_not_delete' as const,
     blockers: globalBlockers,
     domains: domainReceipts,
+    capacity,
+    capacity_classification: {
+      blocking_critical_domains: blockingCriticalDomains,
+      accepted_frozen_rollback_domains: acceptedFrozenRollbackDomains,
+    },
   }
 }

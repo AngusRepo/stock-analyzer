@@ -11,6 +11,7 @@ import {
   loadRetentionCursor,
   type RetentionCursor,
 } from './retentionRunLedger'
+import { databaseForDataDomain, databaseForTable } from './dataDomainRegistry'
 
 export const AUDIT_JSON_ARCHIVE_KIND = 'd1_audit_json_archive'
 const AUDIT_JSON_RETENTION_POLICY_ID = 'audit_json_r2_v1'
@@ -333,7 +334,7 @@ function retentionCursorPredicate(
 }
 
 async function loadCandidateRows(
-  env: Pick<Bindings, 'DB'>,
+  db: D1Database,
   target: AuditJsonTargetConfig,
   cutoffDate: string,
   limit: number,
@@ -341,7 +342,7 @@ async function loadCandidateRows(
   cursor: RetentionCursor | null,
 ): Promise<Record<string, unknown>[]> {
   const keyset = retentionCursorPredicate(target, cursor)
-  const { results } = await env.DB.prepare(`
+  const { results } = await db.prepare(`
     SELECT ${target.selectedColumns.join(', ')},
            (${blobLengthExpr(target)}) AS __blob_bytes
       FROM ${target.table}
@@ -363,7 +364,7 @@ export function auditJsonRowsPerUpdateStatement(blobColumnCount: number): number
 }
 
 async function scrubArchivedRows(
-  env: Pick<Bindings, 'DB'>,
+  db: D1Database,
   target: AuditJsonTargetConfig,
   rows: Record<string, unknown>[],
   pointerFor: (row: Record<string, unknown>, blobColumn: string) => string,
@@ -382,7 +383,7 @@ async function scrubArchivedRows(
     ))
     const keys = chunk.map((row) => rowKey(row, target))
     statements.push(
-      env.DB.prepare(`
+      db.prepare(`
         UPDATE ${target.table}
            SET ${setClause}
          WHERE ${target.keyColumn} IN (${keys.map(() => '?').join(', ')})
@@ -390,13 +391,13 @@ async function scrubArchivedRows(
     )
   }
   for (let i = 0; i < statements.length; i += 50) {
-    await env.DB.batch(statements.slice(i, i + 50))
+    await db.batch(statements.slice(i, i + 50))
   }
   return rows.length
 }
 
 export async function buildAuditJsonRetentionPlan(
-  env: Pick<Bindings, 'DB'>,
+  env: Pick<Bindings, 'DB'> & Partial<Bindings>,
   options: {
     businessDate?: string | null
     retentionDays?: number
@@ -416,7 +417,8 @@ export async function buildAuditJsonRetentionPlan(
   const tables: AuditJsonRetentionPlanTable[] = []
 
   for (const target of selectedTargets(options.targets)) {
-    const row = await env.DB.prepare(`
+    const targetDb = databaseForTable(env, target.table)
+    const row = await targetDb.prepare(`
       SELECT COUNT(*) AS cold_rows,
              SUM(CASE WHEN ${archiveableWhere(target)} THEN 1 ELSE 0 END) AS archiveable_rows,
              MIN(${target.dateColumn}) AS min_date,
@@ -469,7 +471,7 @@ export async function buildAuditJsonRetentionPlan(
 }
 
 export async function runAuditJsonArchiveRetention(
-  env: Pick<Bindings, 'DB' | 'ARTIFACTS'>,
+  env: Pick<Bindings, 'DB' | 'ARTIFACTS'> & Partial<Bindings>,
   options: {
     businessDate?: string | null
     runId?: string | null
@@ -499,6 +501,7 @@ export async function runAuditJsonArchiveRetention(
   const runId = cleanRunPart(String(options.runId || `audit-json-retention-${businessDate}-${Date.now().toString(36)}`))
   const dryRun = options.dryRun !== false || options.confirmPhrase !== AUDIT_JSON_ARCHIVE_CONFIRM_PHRASE
   const archivedAt = new Date().toISOString()
+  const opsDb = databaseForDataDomain(env, 'ops')
 
   const result: AuditJsonArchiveRunResult = {
     dry_run: dryRun,
@@ -518,7 +521,7 @@ export async function runAuditJsonArchiveRetention(
     throw new Error('audit_json_archive_r2_binding_missing')
   }
   if (!dryRun) {
-    await beginRetentionRun(env.DB, {
+    await beginRetentionRun(opsDb, {
       runId,
       policyId: AUDIT_JSON_RETENTION_POLICY_ID,
       businessDate,
@@ -526,15 +529,16 @@ export async function runAuditJsonArchiveRetention(
   }
 
   for (const target of selectedTargets(options.targets)) {
+    const targetDb = databaseForTable(env, target.table)
     const cursor = dryRun
       ? null
-      : await loadRetentionCursor(env.DB, AUDIT_JSON_RETENTION_POLICY_ID, target.id)
-    let rows = await loadCandidateRows(env, target, cutoffDate, limitPerTable, minBlobBytes, cursor)
+      : await loadRetentionCursor(opsDb, AUDIT_JSON_RETENTION_POLICY_ID, target.id)
+    let rows = await loadCandidateRows(targetDb, target, cutoffDate, limitPerTable, minBlobBytes, cursor)
     // Keyset cursors are only a scan accelerator. Rows can become eligible after
     // the cursor passed them (for example after evidence migration or parity
     // protection is lifted), so a tail miss must re-check the head once.
     if (!dryRun && rows.length === 0 && cursor?.backlog_remaining && cursor.cursor_date) {
-      rows = await loadCandidateRows(env, target, cutoffDate, limitPerTable, minBlobBytes, null)
+      rows = await loadCandidateRows(targetDb, target, cutoffDate, limitPerTable, minBlobBytes, null)
     }
     const archivedBlobBytes = rows.reduce((sum, row) => sum + rowBlobBytes(row, target), 0)
     if (dryRun || rows.length === 0) {
@@ -554,7 +558,7 @@ export async function runAuditJsonArchiveRetention(
         backlog_remaining: dryRun ? rows.length >= limitPerTable : false,
       })
       if (!dryRun) {
-        await checkpointRetentionItem(env.DB, {
+        await checkpointRetentionItem(opsDb, {
           runId,
           policyId: AUDIT_JSON_RETENTION_POLICY_ID,
           datasetId: target.id,
@@ -638,7 +642,7 @@ export async function runAuditJsonArchiveRetention(
       }
       await upsertDatasetSnapshotManifest(env, manifest)
 
-      const scrubbed = await scrubArchivedRows(env, target, rows, (row, blobColumn) => buildPointer({
+      const scrubbed = await scrubArchivedRows(targetDb, target, rows, (row, blobColumn) => buildPointer({
         table: target.table,
         keyColumn: target.keyColumn,
         keyValue: rowKey(row, target),
@@ -670,7 +674,7 @@ export async function runAuditJsonArchiveRetention(
       result.total_archived_rows += rows.length
       result.total_scrubbed_rows += scrubbed
       result.total_archived_blob_bytes += archivedBlobBytes
-      await checkpointRetentionItem(env.DB, {
+      await checkpointRetentionItem(opsDb, {
         runId,
         policyId: AUDIT_JSON_RETENTION_POLICY_ID,
         datasetId: target.id,
@@ -703,7 +707,7 @@ export async function runAuditJsonArchiveRetention(
         error: error instanceof Error ? error.message : String(error),
       })
       if (!dryRun) {
-        await checkpointRetentionItem(env.DB, {
+        await checkpointRetentionItem(opsDb, {
           runId,
           policyId: AUDIT_JSON_RETENTION_POLICY_ID,
           datasetId: target.id,
@@ -719,7 +723,7 @@ export async function runAuditJsonArchiveRetention(
 
   if (!dryRun) {
     const failed = result.tables.filter((table) => table.status === 'failed')
-    await finishRetentionRun(env.DB, {
+    await finishRetentionRun(opsDb, {
       runId,
       status: failed.length ? 'error' : 'success',
       scannedRows: result.tables.reduce((sum, table) => sum + table.candidate_rows, 0),

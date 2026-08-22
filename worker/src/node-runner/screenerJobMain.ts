@@ -165,6 +165,7 @@ async function main(): Promise<void> {
       emerging_count: Number(funnel?.emerging_count ?? result.emergingResearchCandidates?.length ?? 0),
       hot_sector_count: result.hotSectors.length,
       debug_log_count: result.debugLog?.length ?? 0,
+      performance: result.performance ?? null,
     },
   }
 

@@ -662,24 +662,33 @@ export async function runPostVerifyCallbackChain(
 
   const projectionTask = await logChainedTask(env, ctx, 'price-horizon-projection', async () => {
     const outcomeAsOfDate = twDateToday()
+    const stageMs: Record<string, number> = {}
+    let stageStartedAt = Date.now()
     const canonical = await materializePriceHorizonLabels(env, {
       endDate: ctx.runDate,
       outcomeAsOfDate,
       maxSignalDates: 60,
       maxProcessDates: 8,
     })
+    stageMs.canonical_labels = Date.now() - stageStartedAt
+    stageStartedAt = Date.now()
     const multiHorizon = await materializeStrategyMultiHorizonPriceLabels(env, {
       endDate: ctx.runDate,
       outcomeAsOfDate,
       maxSignalDates: 60,
       maxProcessDates: 3,
     })
+    stageMs.multi_horizon_labels = Date.now() - stageStartedAt
+    stageStartedAt = Date.now()
     const outcomes = await materializeStrategyMultiHorizonOutcomes(env, {
       asOfDate: outcomeAsOfDate,
       endDate: ctx.runDate,
     })
+    stageMs.multi_horizon_outcomes = Date.now() - stageStartedAt
+    stageStartedAt = Date.now()
     const metrics = await materializeStrategyEvidenceMetrics(env, { outcomeAsOfDate })
-    return `${canonical.summary} | ${multiHorizon.summary} | ${outcomes.summary} | ${metrics.summary}`
+    stageMs.strategy_evidence_metrics = Date.now() - stageStartedAt
+    return `${canonical.summary} | ${multiHorizon.summary} | ${outcomes.summary} | ${metrics.summary} | stage_ms=${JSON.stringify(stageMs)}`
   }, { timeoutMs: 360_000 })
   results.push(projectionTask)
   if (projectionTask.status === 'error') {
@@ -703,7 +712,10 @@ export async function runPostVerifyCallbackChain(
     results.push(await logChainedTask(env, ctx, 'adapt', () => runAdaptiveUpdate(env, { refreshLedger: false })))
     results.push(await logChainedTask(env, ctx, 'daily-report', () => generateDailyReport(env)))
     results.push(await logChainedTask(env, ctx, 'paper-active-postmarket', () => runPaperActivePostmarketPromotion(env, ctx.runDate), { critical: false }))
-    results.push(await logChainedTask(env, ctx, 'obsidian-sync', () => runObsidianDaily(env, ctx.runDate!)))
+    results.push(await logChainedTask(env, ctx, 'obsidian-sync', () => runObsidianDaily(env, ctx.runDate!), {
+      critical: false,
+      timeoutMs: TASK_EXECUTION_TIMEOUT_MS,
+    }))
     results.push(await logChainedTask(env, ctx, 'meta-learning-shadow', () => enqueueMetaLearningShadowClosureTask(env, ctx, productionEligible), {
       critical: false,
       timeoutMs: TASK_EXECUTION_TIMEOUT_MS,

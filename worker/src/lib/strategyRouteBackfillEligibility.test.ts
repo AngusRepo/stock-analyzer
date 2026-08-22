@@ -17,7 +17,11 @@ type Row = {
 
 class FakeStatement {
   constructor(private readonly db: FakeD1, readonly sql: string) {}
-  bind(..._args: unknown[]): FakeStatement { return this }
+  boundArgs: unknown[] = []
+  bind(...args: unknown[]): FakeStatement {
+    this.boundArgs = args
+    return this
+  }
   async all<T>(): Promise<{ results: T[] }> { return { results: this.db.rows as T[] } }
   async run(): Promise<unknown> { return {} }
 }
@@ -25,8 +29,14 @@ class FakeStatement {
 class FakeD1 {
   batches = 0
   sqls: string[] = []
+  statements: FakeStatement[] = []
   constructor(readonly rows: Row[]) {}
-  prepare(sql: string): FakeStatement { this.sqls.push(sql); return new FakeStatement(this, sql) }
+  prepare(sql: string): FakeStatement {
+    this.sqls.push(sql)
+    const statement = new FakeStatement(this, sql)
+    this.statements.push(statement)
+    return statement
+  }
   async batch(statements: FakeStatement[]): Promise<unknown[]> {
     this.batches += 1
     assert(statements.every((statement) => statement.sql.includes('strategy_route_backfill_eligibility_v1')))
@@ -70,6 +80,11 @@ async function main(): Promise<void> {
   })
   assert(db.sqls[0].includes('FROM json_each(?)'))
   assert(!db.sqls[0].includes('canonical_run_heads'))
+  assert.equal(
+    db.statements[0].boundArgs.at(-1),
+    JSON.stringify({ '2026-07-15': 'run-15' }),
+  )
+
 
   assert.equal(rows[0].status, 'eligible')
   assert.deepEqual(rows[0].blockers, [])

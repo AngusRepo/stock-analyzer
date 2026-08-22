@@ -1264,7 +1264,7 @@ export async function syncLegacyMarketDataFromFinLabCanonical(
     chipRows: chipCount,
     marginRows: marginCount,
     sourceRole: 'finlab_primary_canonical_mirror',
-    summary: `FinLab canonical mirrored to legacy serving tables for ${targetDate}: stock_prices=${priceCount} chip_data=${chipCount} margin_data=${marginCount}`,
+    summary: `FinLab canonical projected to Market owner serving tables for ${targetDate}: stock_prices=${priceCount} chip_data=${chipCount} margin_data=${marginCount}`,
   }
 }
 

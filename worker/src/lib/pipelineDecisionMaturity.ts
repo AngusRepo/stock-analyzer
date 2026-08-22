@@ -344,7 +344,7 @@ function candidateStatus(
   dateCount: number | null,
   minDates: number,
 ): PipelineMaturityStatus {
-  if (servingState === 'serving' || servingState === 'safe_abstention') return 'serving'
+  if (servingState === 'serving') return 'serving'
   if (dateCount == null) return 'blocked'
   if (String(decision ?? '').toUpperCase() === 'FAIL' && dateCount >= minDates) return 'failed_quality'
   if (dateCount < minDates) return 'collecting'
@@ -352,7 +352,8 @@ function candidateStatus(
 }
 
 function contributionModeForServing(state: string | undefined): PipelineContributionMode {
-  if (state === 'serving' || state === 'safe_abstention') return 'production'
+  if (state === 'serving') return 'production'
+  if (state === 'safe_abstention') return 'evidence_only'
   return 'shadow'
 }
 function evidenceAvailability(
@@ -473,8 +474,7 @@ export async function buildPipelineDecisionMaturityPacket(
              evidence_artifact_id, created_at
        FROM strategy_redundancy_artifacts_v1
        WHERE as_of_date<=?
-       ORDER BY CASE WHEN status='pass' THEN 0 ELSE 1 END,
-                as_of_date DESC, created_at DESC
+       ORDER BY as_of_date DESC, created_at DESC
        LIMIT 1
     `).bind(requestedDate).first<any>()),
     safeQuery(() => learningDb.prepare(`
@@ -485,7 +485,7 @@ export async function buildPipelineDecisionMaturityPacket(
              brier_score, climatology_brier_score, log_loss, gate_json, created_at
         FROM strategy_route_calibration_runs_v1
        WHERE as_of_date<=? AND sample_count>0 AND date_count>0
-       ORDER BY date_count DESC, as_of_date DESC, created_at DESC
+       ORDER BY as_of_date DESC, created_at DESC
        LIMIT 1
     `).bind(requestedDate).first<any>()),
     safeQuery(() => learningDb.prepare(`
@@ -1273,7 +1273,7 @@ export async function buildPipelineDecisionMaturityPacket(
       SELECT as_of_date evidence_date, paired_date_count value,
              json_extract(graph_json, '$.paired_date_requirement') target
         FROM strategy_redundancy_artifacts_v1
-       WHERE as_of_date <= ? AND status='pass'
+       WHERE as_of_date <= ?
        ORDER BY as_of_date DESC, created_at DESC
        LIMIT 7
     `).bind(requestedDate).all<{ evidence_date: string; value: number | null; target: number | null }>().then((result) => result.results ?? [])),
@@ -1281,7 +1281,7 @@ export async function buildPipelineDecisionMaturityPacket(
       SELECT as_of_date evidence_date, date_count value, ? target
         FROM strategy_route_calibration_runs_v1
        WHERE as_of_date <= ? AND sample_count>0 AND date_count>0
-       ORDER BY date_count DESC, as_of_date DESC, created_at DESC
+       ORDER BY as_of_date DESC, created_at DESC
        LIMIT 7
     `).bind(STRATEGY_ROUTE_MIN_TOTAL_DATES, requestedDate).all<{ evidence_date: string; value: number | null; target: number | null }>().then((result) => result.results ?? [])),
     safeQuery(() => learningDb.prepare(`

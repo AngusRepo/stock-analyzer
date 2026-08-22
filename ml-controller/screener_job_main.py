@@ -111,6 +111,7 @@ async def _run() -> int:
     status = "error"
     summary = ""
     error: str | None = None
+    result: dict = {}
 
     try:
         result = await asyncio.to_thread(_run_node_screener, run_date, run_id)
@@ -134,6 +135,7 @@ async def _run() -> int:
             "chain_run_id": chain_run_id or None,
             "continue_post_screener_pipeline": bool(chain_run_id),
             "runner": "cloud_run_node_worker_screener",
+            "screener_metrics": result.get("metrics"),
         },
     }
     if run_date:

@@ -6,6 +6,7 @@ import {
   shadowDatabaseForDataDomain,
   type DataDomain,
 } from './dataDomainRegistry'
+import { inspectActiveDataDomainOwnerProof } from './dataDomainActiveOwnerProof'
 import { inspectLatestEveningChainClosure } from './dataDomainShadowBackfillDrain'
 
 export function formalDataDomainCutoverConfirmation(domain: DataDomain): string {
@@ -23,11 +24,14 @@ export async function inspectFormalDataDomainCutover(
   domain: DataDomain,
 ) {
   const active = activeDataDomains(env).has(domain)
-  const strict = String(env.MULTI_D1_STRICT ?? '').trim().toLowerCase() === 'true'
   const latestEveningChain = await inspectLatestEveningChainClosure(env.KV, env.DB)
+  const activeOwnerProof = active
+    ? await inspectActiveDataDomainOwnerProof(env, domain, latestEveningChain)
+    : null
+  const strict = String(env.MULTI_D1_STRICT ?? '').trim().toLowerCase() === 'true'
   const readiness = await inspectDataDomainCutoverReadiness(env.DB, domain, {
     upstreamTerminalReady: latestEveningChain.terminalSuccess,
-    parityNotBefore: latestEveningChain.timestamp,
+    parityNotBefore: activeOwnerProof?.ready ? null : latestEveningChain.timestamp,
     learningTargetDb: domain === 'learning'
       ? shadowDatabaseForDataDomain(env, 'learning') ?? undefined
       : undefined,
@@ -37,7 +41,13 @@ export async function inspectFormalDataDomainCutover(
   if (!active) blockers.push(`${domain}_runtime_route_not_active`)
   if (!strict) blockers.push('multi_d1_strict_not_enabled')
   if (!latestEveningChain.terminalSuccess) blockers.push('latest_evening_chain_not_terminal')
-  if (!item?.cutover_ready) blockers.push(...(item?.blockers ?? [`${domain}_cutover_readiness_missing`]))
+  const finalized = item?.cutover_status === 'complete' && item.current_writer_state === 'cutover'
+  if (activeOwnerProof?.required && !activeOwnerProof.ready) {
+    blockers.push(...activeOwnerProof.blockers)
+  }
+  if (!item?.cutover_ready) blockers.push(...(
+    finalized ? item.contract_blockers : item?.blockers ?? [`${domain}_cutover_readiness_missing`]
+  ))
   if (!item || !['shadow', 'read_cutover', 'write_cutover', 'complete'].includes(item.cutover_status)) {
     blockers.push(`${domain}_cutover_state_invalid:${item?.cutover_status ?? 'missing'}`)
   }
@@ -49,6 +59,7 @@ export async function inspectFormalDataDomainCutover(
     active,
     strict,
     latest_evening_chain: latestEveningChain,
+    active_owner_proof: activeOwnerProof,
     readiness,
     item,
   }

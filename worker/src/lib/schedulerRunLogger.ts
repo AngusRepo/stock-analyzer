@@ -68,6 +68,7 @@ const TASK_NAMES: Record<string, string> = {
   'verify-v2': 'Verify (V2 LangGraph)',
   'debate-memory-retention': 'Debate Memory Retention',
   'audit-json-retention': 'Audit JSON Retention',
+  'retention-archive-only': 'Retention Archive Only',
   'artifact-reconcile': 'Artifact Reconcile',
   'legacy-evidence-migration': 'Legacy Evidence Migration',
   'legacy-strategy-evidence-migration': 'Legacy Strategy Evidence Migration',

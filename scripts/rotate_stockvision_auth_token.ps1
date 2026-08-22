@@ -1,6 +1,6 @@
 [CmdletBinding()]
 param(
-  [ValidateSet('Preflight', 'Rotate', 'Finalize')]
+  [ValidateSet('Preflight', 'Sync', 'Rotate', 'Finalize')]
   [string]$Mode = 'Preflight',
   [switch]$Apply,
   [switch]$DryRun,
@@ -27,9 +27,10 @@ param(
     'indicator-queue-watchdog',
     'data-domain-shadow-backfill-ops',
     'learning-retention-readiness',
-    'legacy-learning-deletion-readiness'
+    'legacy-learning-deletion-readiness',
+    'retention-archive-only'
   ),
-  [int]$ExpectedSchedulerCount = 57
+  [int]$ExpectedSchedulerCount = 58
 )
 
 Set-StrictMode -Version Latest
@@ -422,6 +423,20 @@ $schedulerPlan = Invoke-RotationPreflight -GoogleToken $googleToken -Manifest $m
 if ($Mode -eq 'Preflight') { return }
 if (-not $Apply -or $DryRun) {
   Write-RotationLog "dry-run mode=$Mode; no token generated and no mutation performed"
+  return
+}
+
+if ($Mode -eq 'Sync') {
+  $schedulerState = New-SchedulerSyncState
+  try {
+    Sync-SchedulerInventory -Manifest $manifest -Plan $schedulerPlan -State $schedulerState -AccessToken $googleToken -Token $currentSecret.Value
+  } catch {
+    try {
+      Restore-SchedulerInventory -Manifest $manifest -Plan $schedulerPlan -State $schedulerState -AccessToken $googleToken -AppliedToken $currentSecret.Value -OriginalToken $currentSecret.Value
+    } catch { Write-RotationLog 'scheduler-only sync rollback failed; manual recovery required' }
+    throw 'scheduler_only_sync_failed_and_rollback_attempted'
+  }
+  Write-RotationLog 'scheduler-only sync complete; service token unchanged'
   return
 }
 

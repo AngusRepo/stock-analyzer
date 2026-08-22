@@ -19,11 +19,13 @@ def test_rotation_helper_keeps_tokens_out_of_native_argv_and_disk() -> None:
     ).read_text(encoding="utf-8")
     combined_source = source + "\n" + scheduler_source
 
-    assert "[ValidateSet('Preflight', 'Rotate', 'Finalize')]" in source
+    assert "[ValidateSet('Preflight', 'Sync', 'Rotate', 'Finalize')]" in source
+    assert "scheduler-only sync complete; service token unchanged" in source
     assert "[switch]$Apply" in source
     assert "[switch]$DryRun" in source
     assert "[switch]$DrainVerified" in source
-    assert "[int]$ExpectedSchedulerCount = 56" in source
+    assert "[int]$ExpectedSchedulerCount = 58" in source
+    assert "'retention-archive-only'" in source
     assert "'learning-retention-readiness'" in source
     assert "'legacy-learning-deletion-readiness'" in source
     assert "versions', 'secret', 'bulk'" in source

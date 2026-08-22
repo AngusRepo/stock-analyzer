@@ -70,6 +70,7 @@ export const TASK_POLICIES: Record<string, SchedulerTaskPolicy> = {
 
   'debate-memory-retention': { kind: 'maintenance', holidayGated: false, description: 'daily debate memory retention' },
   'audit-json-retention': { kind: 'maintenance', holidayGated: false, description: 'archive old D1 audit JSON blobs to R2 and scrub D1 pointers' },
+  'retention-archive-only': { kind: 'maintenance', holidayGated: false, description: 'bounded checksum-verified archive-only retention; deleted_rows is always zero' },
   'artifact-reconcile': { kind: 'maintenance', holidayGated: false, description: 'reconcile interrupted R2 artifact manifests and checksum verification' },
   'legacy-evidence-migration': { kind: 'maintenance', holidayGated: false, description: 'cursor-safe R2 migration of noncanonical legacy D1 evidence' },
   'legacy-strategy-evidence-migration': { kind: 'maintenance', holidayGated: false, description: 'checksum-verified R2 migration of legacy strategy decision JSON while preserving scalar learning rows' },

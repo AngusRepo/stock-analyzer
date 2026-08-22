@@ -47,7 +47,7 @@ class DummyTempDir:
 def test_export_d1_cold_archive_registers_gcs_archive_manifest(monkeypatch):
     captured: dict[str, object] = {}
 
-    def fake_query_date_range(sql: str, start_date: str, end_date: str, chunk_days: int):
+    def fake_query_date_range(sql: str, start_date: str, end_date: str, chunk_days: int, query_client=None):
         if "FROM stock_prices" in sql:
             return pl.DataFrame([
                 {"stock_id": "2330", "date": "2024-01-02", "close": 100.0},
@@ -73,6 +73,7 @@ def test_export_d1_cold_archive_registers_gcs_archive_manifest(monkeypatch):
         return {"success": True}
 
     monkeypatch.setattr(exporter, "_gcs_client_bucket", lambda: (FakeBucket(), FakeBucket.name))
+    monkeypatch.setattr(exporter, "client_for_domain", lambda domain: domain)
     monkeypatch.setattr(exporter, "_query_date_range", fake_query_date_range)
     monkeypatch.setattr(exporter, "_write_component_to_gcs", fake_write_component)
     monkeypatch.setattr(exporter, "_temporary_directory", lambda prefix: DummyTempDir())
@@ -117,7 +118,7 @@ def test_component_upload_records_parquet_content_checksum(tmp_path):
 def test_cold_archive_supports_point_in_time_fundamentals(monkeypatch):
     captured: dict[str, object] = {}
 
-    def fake_query_date_range(sql: str, start_date: str, end_date: str, chunk_days: int):
+    def fake_query_date_range(sql: str, start_date: str, end_date: str, chunk_days: int, query_client=None):
         captured["sql"] = sql
         return pl.DataFrame([{
             "stock_id": "2330",
@@ -127,6 +128,7 @@ def test_cold_archive_supports_point_in_time_fundamentals(monkeypatch):
         }]), 1
 
     monkeypatch.setattr(exporter, "_query_date_range", fake_query_date_range)
+    monkeypatch.setattr(exporter, "client_for_domain", lambda domain: domain)
     frame, query_count = exporter._query_cold_archive_table(
         "canonical_fundamental_features",
         "2024-01-01",

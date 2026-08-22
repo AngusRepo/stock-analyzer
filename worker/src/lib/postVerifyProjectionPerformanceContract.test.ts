@@ -10,7 +10,12 @@ const strategyOutcomes = fs.readFileSync('src/lib/strategyMultiHorizonOutcomes.t
 assert(
   postMarketChain.includes("'price-horizon-projection'") &&
     postMarketChain.includes('maxProcessDates: 8') &&
-    postMarketChain.includes('timeoutMs: 360_000'),
+    postMarketChain.includes('timeoutMs: 360_000') &&
+    postMarketChain.includes('stageMs.canonical_labels') &&
+    postMarketChain.includes('stageMs.multi_horizon_labels') &&
+    postMarketChain.includes('stageMs.multi_horizon_outcomes') &&
+    postMarketChain.includes('stageMs.strategy_evidence_metrics') &&
+    postMarketChain.includes('stage_ms=${JSON.stringify(stageMs)}'),
   'post-verify projection must keep bounded work and a full-refresh safety budget',
 )
 assert(

@@ -16,3 +16,15 @@ if (!source.includes('meta?.size_after') || source.includes('`PRAGMA ${name}`'))
 if (!source.includes("databaseForDataDomain(env, 'ops')")) {
   throw new Error('capacity observations must be persisted through the ops domain owner')
 }
+
+const taskSource = fs.readFileSync('src/lib/adminTriggerWorkerDomainTasks.ts', 'utf8')
+const reportBlock = taskSource.slice(
+  taskSource.indexOf("'storage-capacity-report': async () =>"),
+  taskSource.indexOf("'learning-retention-readiness': async () =>"),
+)
+if (!reportBlock.includes('const observedDate = requestedRunDate() || twToday()')) {
+  throw new Error('scheduled capacity reports must resolve a concrete TW date before D1 binds')
+}
+if (reportBlock.includes('.bind(requestedRunDate())')) {
+  throw new Error('scheduled capacity reports must never bind an undefined optional query date')
+}

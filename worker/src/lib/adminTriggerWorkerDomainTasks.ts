@@ -22,7 +22,7 @@ const RESCORE_SLOT_TASK_BY_CRON: Record<string, string> = {
 }
 const RESCORE_CRONS = new Set(Object.keys(RESCORE_SLOT_TASK_BY_CRON))
 const D1_HEAVY_MAINTENANCE_TASKS = new Set([
-  'debate-memory-retention', 'audit-json-retention', 'artifact-reconcile',
+  'debate-memory-retention', 'audit-json-retention', 'retention-archive-only', 'artifact-reconcile',
   'legacy-evidence-migration', 'legacy-strategy-evidence-migration',
   'legacy-hot-data-retirement', 'd1-evidence-scrub', 'r2-retention-sweep',
   'orphan-reachability-gc', 'cleanup-dlq-replay', 'weekly-cleanup',
@@ -1254,6 +1254,7 @@ export function buildAdminWorkerDomainTaskMap(c: any, deps: TriggerDeps): Record
       return `storage_integrity_audit checked=${result.checked} verified=${result.verified}`
     },
     'storage-capacity-report': async () => {
+      const observedDate = requestedRunDate() || twToday()
       const { runStorageHealthCheck } = await import('./artifactLifecycle')
       const health = await runStorageHealthCheck(c.env)
       const opsDb = databaseForDataDomain(c.env, 'ops')
@@ -1271,9 +1272,9 @@ export function buildAdminWorkerDomainTaskMap(c: any, deps: TriggerDeps): Record
         opsDb.prepare(`
           SELECT domain, used_bytes, observed_date
             FROM storage_capacity_daily
-           WHERE observed_date < ? AND domain IN ('legacy','learning')
+           WHERE observed_date < ?
            ORDER BY observed_date DESC
-        `).bind(requestedRunDate()).all<Record<string, unknown>>(),
+        `).bind(observedDate).all<Record<string, unknown>>(),
       ])
       const maxBytes = 10_000_000_000
       const classify = (usedBytes: number) => {
@@ -1296,7 +1297,7 @@ export function buildAdminWorkerDomainTaskMap(c: any, deps: TriggerDeps): Record
       ].map((row) => {
         const previous = previousByDomain.get(row.domain)
         const elapsedDays = previous
-          ? Math.max(1, Math.round((Date.parse(requestedRunDate()) - Date.parse(previous.date)) / 86_400_000))
+          ? Math.max(1, Math.round((Date.parse(observedDate) - Date.parse(previous.date)) / 86_400_000))
           : null
         const dailyGrowthBytes = previous && elapsedDays
           ? Math.round((row.used - previous.used) / elapsedDays)
@@ -1327,7 +1328,7 @@ export function buildAdminWorkerDomainTaskMap(c: any, deps: TriggerDeps): Record
           utilization_pct=excluded.utilization_pct, status=excluded.status,
           measurement_source=excluded.measurement_source, observed_at=CURRENT_TIMESTAMP
       `).bind(
-        requestedRunDate(), row.domain, row.binding, row.used, row.max,
+        observedDate, row.domain, row.binding, row.used, row.max,
         row.utilization_pct, row.status,
       )))
       return `storage_capacity_report health=${JSON.stringify(health)} d1=${JSON.stringify(capacities)} classes=${JSON.stringify(results ?? [])}`
@@ -1340,6 +1341,29 @@ export function buildAdminWorkerDomainTaskMap(c: any, deps: TriggerDeps): Record
         requestedRunDate() || twToday(),
       )
       return `learning_retention_readiness ${JSON.stringify(result)}`
+    },
+    'retention-archive-only': async () => {
+      const {
+        RETENTION_ARCHIVE_ONLY_POLICY_IDS,
+        runRetentionArchiveOnly,
+        summarizeRetentionArchiveOnly,
+      } = await import('./retentionArchiveOnly')
+      const requestedPolicies = (c.req.query('policies') ?? '')
+        .split(',')
+        .map((value: string) => value.trim())
+        .filter(Boolean)
+      const allowed = new Set<string>(RETENTION_ARCHIVE_ONLY_POLICY_IDS)
+      const unknown = requestedPolicies.filter((policy: string) => !allowed.has(policy))
+      if (unknown.length) throw new Error(`retention_archive_only_unknown_policy:${unknown.join(',')}`)
+      const result = await runRetentionArchiveOnly(c.env, {
+        businessDate: requestedRunDate() || twToday(),
+        policyIds: requestedPolicies.length ? requestedPolicies as any : undefined,
+        limitPerDataset: parseBoundedPositiveInt(c.req.query('limit_per_dataset'), 100, 250),
+      })
+      if (result.status === 'error') {
+        throw new Error(`retention archive only failed ${JSON.stringify(result)}`)
+      }
+      return summarizeRetentionArchiveOnly(result)
     },
     'legacy-learning-deletion-readiness': async () => {
       const { inspectLegacyLearningDeletionReadiness } = await import('./learningTenYearRetentionReadiness')

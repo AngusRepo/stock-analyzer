@@ -1,11 +1,23 @@
 import assert from 'node:assert/strict'
-import { buildDataDomainTenYearClosure } from './dataDomainTenYearClosure'
+import {
+  buildDataDomainTenYearClosure,
+  buildTenYearCapacityClosureReceipt,
+} from './dataDomainTenYearClosure'
 import { DATA_DOMAINS, type DataDomain } from './dataDomainRegistry'
 import type { DataDomainCutoverReadiness } from './dataDomainCutoverReadiness'
 
 const noUnresolvedRoutes = Object.fromEntries(
   DATA_DOMAINS.map((domain) => [domain, [] as string[]]),
 ) as unknown as Record<DataDomain, readonly string[]>
+
+const closedCapacity = buildTenYearCapacityClosureReceipt({
+  databases: ['legacy', 'core', 'market', 'learning', 'ops', 'execution', 'paper', 'research']
+    .map((domain) => ({ domain, status: 'healthy' })),
+  archivePolicies: [
+    { policy_id: 'market_history_v1', operational: true },
+    { policy_id: 'learning_lineage_v1', operational: true },
+  ],
+})
 
 const completeDomain = (domain: DataDomain): DataDomainCutoverReadiness => ({
   domain,
@@ -38,6 +50,7 @@ const complete = buildDataDomainTenYearClosure({
   strictRequested: true,
   domains: DATA_DOMAINS.map(completeDomain),
   unresolvedRouteTables: noUnresolvedRoutes,
+  capacity: closedCapacity,
 })
 assert.equal(complete.complete, true)
 assert.equal(complete.claim_allowed, true)
@@ -47,6 +60,7 @@ const postCutoverParityDrift = buildDataDomainTenYearClosure({
   activeDomains: DATA_DOMAINS,
   strictRequested: true,
   unresolvedRouteTables: noUnresolvedRoutes,
+  capacity: closedCapacity,
   domains: DATA_DOMAINS.map((domain) => domain === 'learning'
     ? {
         ...completeDomain(domain),
@@ -64,6 +78,7 @@ const finalizedContractFailure = buildDataDomainTenYearClosure({
   activeDomains: DATA_DOMAINS,
   strictRequested: true,
   unresolvedRouteTables: noUnresolvedRoutes,
+  capacity: closedCapacity,
   domains: DATA_DOMAINS.map((domain) => domain === 'learning'
     ? {
         ...completeDomain(domain),
@@ -80,6 +95,7 @@ const learningOnly = buildDataDomainTenYearClosure({
   activeDomains: ['learning'],
   strictRequested: true,
   unresolvedRouteTables: noUnresolvedRoutes,
+  capacity: closedCapacity,
   domains: DATA_DOMAINS.map((domain) => domain === 'learning'
     ? completeDomain(domain)
     : { ...completeDomain(domain), cutover_ready: false, cutover_status: 'legacy', current_writer_state: 'open' }),
@@ -95,6 +111,7 @@ const deferredRoute = buildDataDomainTenYearClosure({
   strictRequested: true,
   domains: DATA_DOMAINS.map(completeDomain),
   unresolvedRouteTables: { ...noUnresolvedRoutes, paper: ['pending_buy_runs'] },
+  capacity: closedCapacity,
 })
 assert.equal(deferredRoute.complete, false)
 assert.equal(deferredRoute.completed_domains, 6)
@@ -102,5 +119,49 @@ assert.deepEqual(
   deferredRoute.domains.find((item) => item.domain === 'paper')?.unresolved_route_tables,
   ['pending_buy_runs'],
 )
+
+const missingCapacity = buildDataDomainTenYearClosure({
+  activeDomains: DATA_DOMAINS,
+  strictRequested: true,
+  domains: DATA_DOMAINS.map(completeDomain),
+  unresolvedRouteTables: noUnresolvedRoutes,
+})
+assert.equal(missingCapacity.complete, false)
+assert(missingCapacity.blockers.includes('ten_year_capacity_receipt_missing'))
+
+const frozenLegacy = buildDataDomainTenYearClosure({
+  activeDomains: DATA_DOMAINS,
+  strictRequested: true,
+  domains: DATA_DOMAINS.map(completeDomain),
+  unresolvedRouteTables: noUnresolvedRoutes,
+  capacity: { ...closedCapacity, critical_domains: ['legacy'] },
+})
+assert.equal(frozenLegacy.complete, true)
+assert.deepEqual(frozenLegacy.capacity_classification.accepted_frozen_rollback_domains, ['legacy'])
+assert.deepEqual(frozenLegacy.capacity_classification.blocking_critical_domains, [])
+
+const activeCritical = buildDataDomainTenYearClosure({
+  activeDomains: DATA_DOMAINS,
+  strictRequested: true,
+  domains: DATA_DOMAINS.map(completeDomain),
+  unresolvedRouteTables: noUnresolvedRoutes,
+  capacity: { ...closedCapacity, critical_domains: ['learning'] },
+})
+assert.equal(activeCritical.complete, false)
+assert(activeCritical.blockers.includes('d1_capacity_critical'))
+
+const missingExecutors = buildDataDomainTenYearClosure({
+  activeDomains: DATA_DOMAINS,
+  strictRequested: true,
+  domains: DATA_DOMAINS.map(completeDomain),
+  unresolvedRouteTables: noUnresolvedRoutes,
+  capacity: {
+    ...closedCapacity,
+    operational_archive_policies: 1,
+    missing_archive_policy_executors: ['learning_lineage_v1'],
+  },
+})
+assert.equal(missingExecutors.complete, false)
+assert(missingExecutors.blockers.includes('retention_archive_executors_incomplete'))
 
 console.log('data domain ten-year closure tests passed')

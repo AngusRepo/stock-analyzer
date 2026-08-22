@@ -225,6 +225,126 @@ export async function runMonthlyOptunaResearch(env: Bindings, runDate?: string) 
   })
 }
 
+type Active8MarketSessionRow = {
+  trading_date?: string | null
+  price_rows?: number | string | null
+}
+
+type Active8ComputeSnapshotRow = {
+  snapshot_id?: string | null
+  business_date?: string | null
+}
+
+export type Active8DailySnapshotPreflight = {
+  ready: boolean
+  reason: 'ready' | 'market_session_calendar_missing' | 'market_session_coverage_incomplete'
+    | 'exact_compute_snapshot_missing' | 'compute_snapshot_behind_market_session'
+  cutoff: string
+  expected_business_date: string | null
+  snapshot_business_date: string | null
+  snapshot_id: string | null
+  market_session_coverage_reference: number | null
+  market_session_coverage_threshold: number | null
+  market_session_price_rows: number | null
+}
+
+function median(values: number[]): number {
+  const ordered = [...values].sort((a, b) => a - b)
+  const middle = Math.floor(ordered.length / 2)
+  return ordered.length % 2 === 0
+    ? (ordered[middle - 1] + ordered[middle]) / 2
+    : ordered[middle]
+}
+
+export function assessActive8DailySnapshotPreflight(
+  cutoff: string,
+  marketRows: Active8MarketSessionRow[],
+  snapshot: Active8ComputeSnapshotRow | null,
+): Active8DailySnapshotPreflight {
+  const normalized = marketRows
+    .map((row) => ({
+      tradingDate: String(row.trading_date ?? '').slice(0, 10),
+      priceRows: Math.max(0, Number(row.price_rows ?? 0)),
+    }))
+    .filter((row) => row.tradingDate && Number.isFinite(row.priceRows))
+  const counts = normalized.map((row) => row.priceRows)
+  if (!counts.length) {
+    return {
+      ready: false,
+      reason: 'market_session_calendar_missing',
+      cutoff,
+      expected_business_date: null,
+      snapshot_business_date: snapshot?.business_date?.slice(0, 10) ?? null,
+      snapshot_id: snapshot?.snapshot_id ?? null,
+      market_session_coverage_reference: null,
+      market_session_coverage_threshold: null,
+      market_session_price_rows: null,
+    }
+  }
+
+  const reference = median(counts)
+  const threshold = Math.max(100, Math.floor(reference * 0.20))
+  const sessions = normalized.filter((row) => row.priceRows >= threshold)
+  if (!sessions.length) {
+    return {
+      ready: false,
+      reason: 'market_session_coverage_incomplete',
+      cutoff,
+      expected_business_date: null,
+      snapshot_business_date: snapshot?.business_date?.slice(0, 10) ?? null,
+      snapshot_id: snapshot?.snapshot_id ?? null,
+      market_session_coverage_reference: reference,
+      market_session_coverage_threshold: threshold,
+      market_session_price_rows: null,
+    }
+  }
+
+  const latestSession = sessions[sessions.length - 1]
+  const snapshotBusinessDate = snapshot?.business_date?.slice(0, 10) ?? null
+  const base = {
+    cutoff,
+    expected_business_date: latestSession.tradingDate,
+    snapshot_business_date: snapshotBusinessDate,
+    snapshot_id: snapshot?.snapshot_id ?? null,
+    market_session_coverage_reference: reference,
+    market_session_coverage_threshold: threshold,
+    market_session_price_rows: latestSession.priceRows,
+  }
+  if (!snapshotBusinessDate) {
+    return { ...base, ready: false, reason: 'exact_compute_snapshot_missing' }
+  }
+  if (snapshotBusinessDate !== latestSession.tradingDate) {
+    return { ...base, ready: false, reason: 'compute_snapshot_behind_market_session' }
+  }
+  return { ...base, ready: true, reason: 'ready' }
+}
+
+async function inspectActive8DailySnapshotPreflight(
+  env: Bindings,
+  cutoff: string,
+): Promise<Active8DailySnapshotPreflight> {
+  const [marketResult, snapshot] = await Promise.all([
+    databaseForDataDomain(env, 'market').prepare(`
+      SELECT substr(date, 1, 10) AS trading_date, COUNT(*) AS price_rows
+        FROM stock_prices
+       WHERE substr(date, 1, 10) BETWEEN date(?, '-45 days') AND date(?)
+       GROUP BY substr(date, 1, 10)
+       ORDER BY trading_date
+    `).bind(cutoff, cutoff).all<Active8MarketSessionRow>(),
+    databaseForDataDomain(env, 'learning').prepare(`
+      SELECT snapshot_id, business_date
+        FROM dataset_snapshots
+       WHERE kind='backtest_dataset'
+         AND access_tier='compute'
+         AND status='ready'
+         AND business_date <= ?
+       ORDER BY business_date DESC, created_at DESC
+       LIMIT 1
+    `).bind(cutoff).first<Active8ComputeSnapshotRow>(),
+  ])
+  return assessActive8DailySnapshotPreflight(cutoff, marketResult.results ?? [], snapshot)
+}
+
 export async function runActive8OofLifecycle(
   env: Bindings,
   runDate?: string,
@@ -236,6 +356,22 @@ export async function runActive8OofLifecycle(
   } = {},
 ) {
   requireController(env)
+
+  if (cadence === 'daily' && options.continuationOnly !== true) {
+    const cutoff = runDate || twToday()
+    const preflight = await inspectActive8DailySnapshotPreflight(env, cutoff).catch(() => null)
+    if (preflight && !preflight.ready) {
+      return [
+        'active8_oof_lifecycle status=skipped',
+        'cadence=daily',
+        `reason=${preflight.reason}`,
+        `expected_business_date=${preflight.expected_business_date ?? 'none'}`,
+        `snapshot_business_date=${preflight.snapshot_business_date ?? 'none'}`,
+        `snapshot_id=${preflight.snapshot_id ?? 'none'}`,
+        'cloud_run_dispatched=false',
+      ].join(' ')
+    }
+  }
 
   const resp = await controllerFetch(env, '/walk_forward/oof/lifecycle', {
     method: 'POST',

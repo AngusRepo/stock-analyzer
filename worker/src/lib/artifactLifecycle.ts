@@ -45,6 +45,7 @@ export const STORAGE_LIFECYCLE_SCHEDULE = [
   { task: 'legacy-hot-data-retirement', cron: '10 1-5 * * *', timezone: 'Asia/Taipei' },
   { task: 'legacy-strategy-evidence-migration', cron: '50 1-5 * * *', timezone: 'Asia/Taipei' },
   { task: 'audit-json-retention', cron: '*/15 1-6 * * *', timezone: 'Asia/Taipei' },
+  { task: 'retention-archive-only', cron: '30 2 * * *', timezone: 'Asia/Taipei' },
   { task: 'artifact-reconcile', cron: '5 2 * * *', timezone: 'Asia/Taipei' },
   { task: 'r2-retention-sweep', cron: '40 2 * * *', timezone: 'Asia/Taipei' },
   { task: 'orphan-reachability-gc', cron: '0 3 * * *', timezone: 'Asia/Taipei' },

@@ -62,6 +62,10 @@ const screenerSeedDomainOwner = fs.readFileSync('../ml-controller/services/scree
   assert(marketScreener.includes('priceActionStructureAvailable: priceAction ? 1 : 0'), 'SMRC must persist price-action evaluability diagnostics')
   assert(marketScreener.includes('loadMatureStrategyOofReturns'), 'daily routing must load mature OOF residual-return evidence')
   assert(marketScreener.includes('outcome_known_date <= ?') && marketScreener.includes('signal_date < ?'), 'OOF redundancy evidence must be point-in-time')
+  assert(
+    /`\)\.bind\(\s*asOfDate,\s*asOfDate,\s*SELECTION_REFERENCE_CONTRACT_VERSION,\s*\.\.\.STRATEGY_FORMAL_LABELER_VERSIONS,\s*JSON\.stringify\(canonicalRunIds\),\s*\)\.all/.test(marketScreener),
+    'OOF redundancy bind order must match reference version, labeler versions, then canonical run-id JSON placeholders',
+  )
   assert(marketScreener.includes("label_schema_version = 'canonical-strategy-selection-label-v4'"), 'OOF redundancy evidence must use canonical selection labels')
   assert(marketScreener.includes('mature_oof_residual_returns_with_same_day_overlap_diagnostic'), 'same-day strategy overlap must remain diagnostic-only')
   assert(marketScreener.includes('strategy_oof_return_load_error'), 'OOF loader failure must be explicit telemetry, not an empty silent fallback')

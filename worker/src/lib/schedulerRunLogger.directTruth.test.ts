@@ -66,6 +66,22 @@ async function main() {
     assert.equal(rows.find((row) => row.task === 'pipeline')?.summary, 'legacy canonical fallback')
   }
 
+  {
+    const waiting = {
+      task: 's12-replay-backfill',
+      status: 'running',
+      summary: 'coverage=517/520 mature_missing=1 pending_maturity=2 waiting_for_replay_maturity=2',
+      duration_ms: 0,
+      timestamp: '2026-08-22T06:02:24.313Z',
+      run_date: date,
+    }
+    const kv = new FakeKv(new Map<string, Stored>([
+      [`scheduler:run:s12-replay-backfill:${date}`, waiting],
+    ]))
+    const rows = await getSchedulerRunLogs(kv as any, date)
+    assert.equal(rows.find((row) => row.task === 's12-replay-backfill')?.status, 'skipped')
+  }
+
   console.log('schedulerRunLogger direct truth tests passed')
 }
 

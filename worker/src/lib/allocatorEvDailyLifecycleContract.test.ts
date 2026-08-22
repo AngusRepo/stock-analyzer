@@ -118,5 +118,6 @@ assert(orchestrator.includes('replayCoverage.replayRows === replayCoverage.total
 assert(orchestrator.includes('replayCoverage.pendingMaturityRows === 0'), 'replay lifecycle must not close while stock-specific sessions are immature')
 assert(orchestrator.includes('waiting_for_replay_maturity='), 'stock-specific replay maturity must remain observable')
 assert(orchestrator.includes('waiting_for_replay_data='), 'incomplete replay data must remain observable and retryable')
+assert(orchestrator.includes("status: hasMore ? 'running' : replayClosed ? 'success' : 'skipped'"), 'only an actually requeued S12 chunk may remain running')
 assert(orchestrator.includes('dynamicCohortStalled'), 'dynamic replay must detect a zero-persistence no-progress loop')
 assert(orchestrator.includes('requeue=0'), 'terminal market-data failures must not self-requeue and exhaust broker quota')

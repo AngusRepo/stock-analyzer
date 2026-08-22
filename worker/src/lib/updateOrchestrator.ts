@@ -4315,7 +4315,7 @@ export async function processUpdateBatch(
             : `waiting_for_replay_data=${remainingReplaySymbols.length}`,
     ].join(' ')
     await logSchedulerResult(env.KV, 's12-replay-backfill', {
-      status: hasMore || !replayClosed ? 'running' : 'success',
+      status: hasMore ? 'running' : replayClosed ? 'success' : 'skipped',
       summary,
       duration_ms: 0,
       run_id: runId,

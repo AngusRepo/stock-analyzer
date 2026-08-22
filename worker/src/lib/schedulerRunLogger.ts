@@ -326,6 +326,17 @@ export async function getSchedulerRunLogs(
 }
 
 function fillMissingSchedulerLogs(tasks: string[], results: SchedulerRunLogEntry[]): SchedulerRunLogEntry[] {
+  results = results.map((entry) => (
+    entry.task === 's12-replay-backfill'
+      && entry.status === 'running'
+      && !entry.summary.includes('queued_next=1')
+      && (
+        entry.summary.includes('waiting_for_replay_maturity=')
+        || entry.summary.includes('waiting_for_replay_data=')
+      )
+      ? { ...entry, status: 'skipped' as const }
+      : entry
+  ))
   const loggedTasks = new Set(results.map((row) => row.task))
   for (const task of tasks) {
     if (loggedTasks.has(task)) continue

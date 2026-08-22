@@ -1,5 +1,5 @@
 import type { Bindings } from '../types'
-import { databaseForDataDomain } from './dataDomainRegistry'
+import { databaseForDataDomain, type DataDomain } from './dataDomainRegistry'
 
 const D1_MAX_BYTES = 10_000_000_000
 const DRAIN_UTILIZATION_PCT = 75
@@ -50,9 +50,6 @@ const CRITICAL_BLOCKED_TASKS = new Set([
 ])
 
 const LEARNING_OWNER_CAPACITY_TASKS = new Set([
-  'weekly-backtest',
-  'monte-carlo',
-  'pbo',
   'allocator-ev-feature-snapshot-backfill',
   'selection-reference-repair',
   'selection-reference-identity-repair',
@@ -82,8 +79,26 @@ const LEARNING_OWNER_CAPACITY_TASKS = new Set([
   'monthly-opb-arm-prior-refresh',
 ])
 
-export function storageAdmissionOwner(task: string): 'legacy' | 'learning' {
-  return LEARNING_OWNER_CAPACITY_TASKS.has(task) ? 'learning' : 'legacy'
+const MARKET_OWNER_CAPACITY_TASKS = new Set([
+  'external-evidence',
+  'finlab-v4-backfill',
+])
+
+const RESEARCH_OWNER_CAPACITY_TASKS = new Set([
+  'weekly-optuna',
+  'weekly-backtest',
+  'monte-carlo',
+  'pbo',
+  'monthly-optuna',
+  'monthly-strategy-mining',
+  'optuna-queue',
+])
+
+export function storageAdmissionOwner(task: string): 'legacy' | DataDomain {
+  if (LEARNING_OWNER_CAPACITY_TASKS.has(task)) return 'learning'
+  if (MARKET_OWNER_CAPACITY_TASKS.has(task)) return 'market'
+  if (RESEARCH_OWNER_CAPACITY_TASKS.has(task)) return 'research'
+  return 'legacy'
 }
 
 export interface StorageAdmissionDecision {
@@ -154,9 +169,8 @@ export async function inspectStorageAdmission(
   task: string,
 ): Promise<StorageAdmissionDecision> {
   try {
-    const db = storageAdmissionOwner(task) === 'learning'
-      ? databaseForDataDomain(env, 'learning')
-      : env.DB
+    const owner = storageAdmissionOwner(task)
+    const db = owner === 'legacy' ? env.DB : databaseForDataDomain(env, owner)
     const probe = await db.prepare('SELECT 1 AS storage_admission_probe').all()
     const usedBytes = Number(probe.meta?.size_after)
     const utilizationPct = Number.isFinite(usedBytes) && usedBytes >= 0

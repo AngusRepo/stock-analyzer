@@ -43,19 +43,33 @@ test('managed tasks fail closed when capacity cannot be measured', async () => {
   assert.equal(decision.reason, 'legacy_d1_capacity_unknown')
 })
 
-test('Learning-owned jobs probe Learning D1 after cutover and legacy before cutover', async () => {
+test('domain-owned jobs probe their D1 after cutover and legacy before cutover', async () => {
   const legacy = capacityDb(9_000_000_000)
-  const learning = capacityDb(2_000_000_000)
+  const learning = capacityDb(3_000_000_000)
+  const research = capacityDb(2_000_000_000)
+  const market = capacityDb(1_000_000_000)
   const active = await inspectStorageAdmission({
     DB: legacy,
     LEARNING_DB: learning,
-    MULTI_D1_ACTIVE_DOMAINS: 'learning',
+    RESEARCH_DB: research,
+    MARKET_DB: market,
+    MULTI_D1_ACTIVE_DOMAINS: 'learning,research,market',
     MULTI_D1_STRICT: 'true',
   }, 'weekly-backtest')
-  assert.equal(storageAdmissionOwner('weekly-backtest'), 'learning')
+  assert.equal(storageAdmissionOwner('weekly-backtest'), 'research')
   assert.equal(storageAdmissionOwner('legacy-strategy-evidence-migration'), 'learning')
   assert.equal(active.allowed, true)
   assert.equal(active.utilizationPct, 20)
+
+  const externalEvidence = await inspectStorageAdmission({
+    DB: legacy,
+    MARKET_DB: market,
+    MULTI_D1_ACTIVE_DOMAINS: 'market',
+    MULTI_D1_STRICT: 'true',
+  }, 'external-evidence')
+  assert.equal(storageAdmissionOwner('external-evidence'), 'market')
+  assert.equal(externalEvidence.allowed, true)
+  assert.equal(externalEvidence.utilizationPct, 10)
 
   const migration = await inspectStorageAdmission({
     DB: legacy,
@@ -64,7 +78,7 @@ test('Learning-owned jobs probe Learning D1 after cutover and legacy before cuto
     MULTI_D1_STRICT: 'true',
   }, 'legacy-strategy-evidence-migration')
   assert.equal(migration.allowed, true)
-  assert.equal(migration.utilizationPct, 20)
+  assert.equal(migration.utilizationPct, 30)
 
   const legacyOwner = await inspectStorageAdmission({ DB: legacy, LEARNING_DB: learning }, 'weekly-backtest')
   assert.equal(legacyOwner.allowed, false)

@@ -1368,7 +1368,7 @@ export function buildAdminWorkerDomainTaskMap(c: any, deps: TriggerDeps): Record
     'legacy-learning-deletion-readiness': async () => {
       const { inspectLegacyLearningDeletionReadiness } = await import('./learningTenYearRetentionReadiness')
       const result = await inspectLegacyLearningDeletionReadiness(
-        databaseForDataDomain(c.env, 'ops'),
+        c.env.DB,
         databaseForDataDomain(c.env, 'learning'),
         requestedRunDate() || twToday(),
       )

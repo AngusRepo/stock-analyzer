@@ -100,40 +100,40 @@ export async function inspectLearningTenYearRetentionReadiness(
 }
 
 export async function inspectLegacyLearningDeletionReadiness(
-  opsDb: D1Database,
+  controlDb: D1Database,
   learningDb: D1Database,
   asOfDate: string,
 ) {
   const [cutover, writer, projections, probe, cursors, parity] = await Promise.all([
-    opsDb.prepare(
+    controlDb.prepare(
       `SELECT status, parity_checked_at, updated_at
          FROM data_domain_cutovers WHERE domain='learning'`,
     ).first<Record<string, unknown>>(),
-    opsDb.prepare(
+    controlDb.prepare(
       `SELECT epoch, writer_state, updated_at
          FROM data_domain_writer_epochs WHERE domain='learning'`,
     ).first<Record<string, unknown>>(),
-    opsDb.prepare(
+    controlDb.prepare(
       `SELECT SUM(CASE WHEN status <> 'published' THEN 1 ELSE 0 END) pending,
               SUM(CASE WHEN status = 'error' THEN 1 ELSE 0 END) errors
          FROM domain_projection_outbox
         WHERE source_domain='learning' OR target_domain='learning'`,
     ).first<Record<string, unknown>>(),
-    opsDb.prepare(
+    controlDb.prepare(
       `SELECT status, source_epoch, parity_checked_at, read_write_readback_passed,
               rollback_restore_passed, checked_at
          FROM data_domain_cutover_probe_receipts
         WHERE domain='learning'
         ORDER BY checked_at DESC LIMIT 1`,
     ).first<Record<string, unknown>>(),
-    opsDb.prepare(
+    controlDb.prepare(
       `SELECT COUNT(*) tracked_tables,
               SUM(CASE WHEN status='complete' THEN 1 ELSE 0 END) completed_tables,
               SUM(CASE WHEN status='failed' THEN 1 ELSE 0 END) failed_tables
          FROM data_domain_backfill_cursors
         WHERE domain='learning'`,
     ).first<Record<string, unknown>>(),
-    opsDb.prepare(
+    controlDb.prepare(
       `SELECT COUNT(*) checked_tables,
               SUM(CASE WHEN status='pass' THEN 1 ELSE 0 END) matched_tables
          FROM (
@@ -144,7 +144,7 @@ export async function inspectLegacyLearningDeletionReadiness(
          ) WHERE rn=1`,
     ).first<Record<string, unknown>>(),
   ])
-  const cutoverReadiness = await inspectDataDomainCutoverReadiness(opsDb, 'learning', {
+  const cutoverReadiness = await inspectDataDomainCutoverReadiness(controlDb, 'learning', {
     upstreamTerminalReady: true,
     learningTargetDb: learningDb,
   })

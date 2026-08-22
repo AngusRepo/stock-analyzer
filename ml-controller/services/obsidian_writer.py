@@ -22,6 +22,7 @@ from jinja2 import Environment, FileSystemLoader
 
 from services.d1_domain_client import D1DataDomain, client_for_domain
 from services.model_pool_health import read_model_pool_health_rows
+from services.obsidian_position_valuation import hydrate_position_valuations
 
 logger = logging.getLogger("obsidian")
 
@@ -190,6 +191,7 @@ async def _d1_query(
     del client
     return await asyncio.to_thread(client_for_domain(domain).query, sql, params, 30.0)
 
+
 async def _push_to_github(
     client: httpx.AsyncClient,
     repo: str,
@@ -296,8 +298,16 @@ class ObsidianWriter:
                 "SELECT * FROM paper_orders WHERE account_id=1 AND DATE(created_at, '+8 hours')=? ORDER BY created_at", [date], domain=D1DataDomain.PAPER)
 
             positions = await _d1_query(client,
-                "SELECT symbol, name, shares, avg_cost, entry_price, current_price, "
-                "unrealized_pnl, unrealized_pnl_pct FROM paper_positions WHERE account_id=1", domain=D1DataDomain.PAPER)
+                "SELECT symbol, name, shares, avg_cost, entry_price "
+                "FROM paper_positions WHERE account_id=1 AND shares>0 ORDER BY symbol", domain=D1DataDomain.PAPER)
+            positions = await hydrate_position_valuations(
+                _d1_query,
+                client,
+                positions,
+                as_of_date=date,
+                core_domain=D1DataDomain.CORE,
+                market_domain=D1DataDomain.MARKET,
+            )
 
             decisions = await _d1_query(client,
                 "SELECT * FROM decision_logs WHERE date=? ORDER BY total_score DESC", [date], domain=D1DataDomain.PAPER)

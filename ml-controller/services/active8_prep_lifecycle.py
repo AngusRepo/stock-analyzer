@@ -16,6 +16,7 @@ SEQUENCE_PREFIX = "universal/sequence_long/runs/"
 FEATURE_PREP_PREFIX = "universal/oof_forward_prep"
 ADJUSTED_PREP_PREFIX = "universal/canonical_adjusted_v5"
 ADJUSTED_PREP_SCHEMA = "active8-canonical-adjusted-prep-v2"
+ACTIVE8_COMPUTE_SNAPSHOT_LOOKBACK_DAYS = 504
 
 
 class Active8PrepDependencyPending(RuntimeError):
@@ -89,6 +90,19 @@ def _latest_immutable_sequence(bucket: Any, cutoff: str) -> tuple[str, dict[str,
 def _receipt_checksum(receipt: dict[str, Any]) -> str:
     unsigned = {key: value for key, value in receipt.items() if key != "receipt_checksum"}
     return _sha256(json.dumps(unsigned, sort_keys=True, separators=(",", ":")).encode("utf-8"))
+
+
+def _snapshot_metadata(snapshot: dict[str, Any]) -> dict[str, Any]:
+    raw = snapshot.get("metadata_json")
+    if isinstance(raw, dict):
+        return raw
+    if isinstance(raw, str) and raw.strip():
+        try:
+            parsed = json.loads(raw)
+            return parsed if isinstance(parsed, dict) else {}
+        except json.JSONDecodeError:
+            return {}
+    return {}
 
 
 def _latest_market_session(
@@ -184,6 +198,23 @@ async def ensure_active8_daily_prep(
             },
         )
 
+    snapshot_start_date = str(_snapshot_metadata(snapshot).get("start_date") or "")[:10]
+    minimum_start_date = (
+        datetime.strptime(business_date, "%Y-%m-%d")
+        - timedelta(days=ACTIVE8_COMPUTE_SNAPSHOT_LOOKBACK_DAYS)
+    ).date().isoformat()
+    if not snapshot_start_date or snapshot_start_date > minimum_start_date:
+        raise Active8PrepDependencyPending(
+            "compute_snapshot_history_insufficient",
+            {
+                "business_date": business_date,
+                "snapshot_id": snapshot.get("snapshot_id"),
+                "snapshot_start_date": snapshot_start_date or None,
+                "minimum_start_date": minimum_start_date,
+                "required_lookback_days": ACTIVE8_COMPUTE_SNAPSHOT_LOOKBACK_DAYS,
+            },
+        )
+
     bucket = _get_bucket()
     if bucket is None:
         raise RuntimeError("GCS unavailable")
@@ -212,6 +243,8 @@ async def ensure_active8_daily_prep(
         **market_session_evidence,
         "snapshot_id": snapshot.get("snapshot_id"),
         "snapshot_checksum": snapshot_checksum,
+        "snapshot_start_date": snapshot_start_date,
+        "snapshot_required_lookback_days": ACTIVE8_COMPUTE_SNAPSHOT_LOOKBACK_DAYS,
         "source_gcs_prefix": source_prefix,
         "sequence_gcs_prefix": sequence_prefix,
         "sequence_manifest_checksum": sequence_checksum,

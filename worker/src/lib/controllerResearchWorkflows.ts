@@ -233,19 +233,43 @@ type Active8MarketSessionRow = {
 type Active8ComputeSnapshotRow = {
   snapshot_id?: string | null
   business_date?: string | null
+  metadata_json?: string | null
 }
 
 export type Active8DailySnapshotPreflight = {
   ready: boolean
   reason: 'ready' | 'market_session_calendar_missing' | 'market_session_coverage_incomplete'
     | 'exact_compute_snapshot_missing' | 'compute_snapshot_behind_market_session'
+    | 'compute_snapshot_history_insufficient'
   cutoff: string
   expected_business_date: string | null
   snapshot_business_date: string | null
   snapshot_id: string | null
+  snapshot_start_date?: string | null
+  snapshot_minimum_start_date?: string | null
   market_session_coverage_reference: number | null
   market_session_coverage_threshold: number | null
   market_session_price_rows: number | null
+}
+
+const ACTIVE8_COMPUTE_SNAPSHOT_LOOKBACK_DAYS = 504
+
+function active8SnapshotStartDate(snapshot: Active8ComputeSnapshotRow | null): string | null {
+  if (!snapshot?.metadata_json) return null
+  try {
+    const metadata = JSON.parse(snapshot.metadata_json) as Record<string, unknown>
+    const value = String(metadata.start_date ?? '').slice(0, 10)
+    return /^\d{4}-\d{2}-\d{2}$/.test(value) ? value : null
+  } catch {
+    return null
+  }
+}
+
+function utcDateMinusDays(date: string, days: number): string | null {
+  const parsed = new Date(date + 'T00:00:00.000Z')
+  if (Number.isNaN(parsed.getTime())) return null
+  parsed.setUTCDate(parsed.getUTCDate() - days)
+  return parsed.toISOString().slice(0, 10)
 }
 
 function median(values: number[]): number {
@@ -301,11 +325,17 @@ export function assessActive8DailySnapshotPreflight(
 
   const latestSession = sessions[sessions.length - 1]
   const snapshotBusinessDate = snapshot?.business_date?.slice(0, 10) ?? null
+  const snapshotStartDate = active8SnapshotStartDate(snapshot)
+  const snapshotMinimumStartDate = snapshotBusinessDate
+    ? utcDateMinusDays(snapshotBusinessDate, ACTIVE8_COMPUTE_SNAPSHOT_LOOKBACK_DAYS)
+    : null
   const base = {
     cutoff,
     expected_business_date: latestSession.tradingDate,
     snapshot_business_date: snapshotBusinessDate,
     snapshot_id: snapshot?.snapshot_id ?? null,
+    snapshot_start_date: snapshotStartDate,
+    snapshot_minimum_start_date: snapshotMinimumStartDate,
     market_session_coverage_reference: reference,
     market_session_coverage_threshold: threshold,
     market_session_price_rows: latestSession.priceRows,
@@ -315,6 +345,9 @@ export function assessActive8DailySnapshotPreflight(
   }
   if (snapshotBusinessDate !== latestSession.tradingDate) {
     return { ...base, ready: false, reason: 'compute_snapshot_behind_market_session' }
+  }
+  if (!snapshotStartDate || !snapshotMinimumStartDate || snapshotStartDate > snapshotMinimumStartDate) {
+    return { ...base, ready: false, reason: 'compute_snapshot_history_insufficient' }
   }
   return { ...base, ready: true, reason: 'ready' }
 }
@@ -332,7 +365,7 @@ async function inspectActive8DailySnapshotPreflight(
        ORDER BY trading_date
     `).bind(cutoff, cutoff).all<Active8MarketSessionRow>(),
     databaseForDataDomain(env, 'learning').prepare(`
-      SELECT snapshot_id, business_date
+      SELECT snapshot_id, business_date, metadata_json
         FROM dataset_snapshots
        WHERE kind='backtest_dataset'
          AND access_tier='compute'

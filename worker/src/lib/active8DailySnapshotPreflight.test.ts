@@ -25,10 +25,22 @@ test('daily Active-8 preflight admits an exact compute snapshot and ignores a th
   const result = assessActive8DailySnapshotPreflight('2026-08-22', marketRows, {
     snapshot_id: 'backtest:2026-08-21',
     business_date: '2026-08-21',
+    metadata_json: JSON.stringify({ start_date: '2025-04-04' }),
   })
   assert.equal(result.ready, true)
   assert.equal(result.reason, 'ready')
   assert.equal(result.expected_business_date, '2026-08-21')
+})
+
+test('daily Active-8 preflight rejects an exact-date snapshot with insufficient history', () => {
+  const result = assessActive8DailySnapshotPreflight('2026-08-22', marketRows, {
+    snapshot_id: 'backtest:2026-08-21:short',
+    business_date: '2026-08-21',
+    metadata_json: JSON.stringify({ start_date: '2026-07-22' }),
+  })
+  assert.equal(result.ready, false)
+  assert.equal(result.reason, 'compute_snapshot_history_insufficient')
+  assert.equal(result.snapshot_minimum_start_date, '2025-04-04')
 })
 
 test('daily Active-8 preflight fails closed when the compute snapshot is missing', () => {

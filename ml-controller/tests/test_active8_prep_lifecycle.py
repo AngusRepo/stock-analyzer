@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+from datetime import datetime, timedelta
 from pathlib import Path
 import sys
 
@@ -70,11 +71,16 @@ def _seal_sequence(bucket: _Bucket, *, date_max: str = "2026-07-24") -> tuple[st
 
 def _snapshot(*, prefixed_checksum: bool = False, business_date: str = "2026-07-24") -> dict:
     checksum = "a" * 64
+    start_date = (
+        datetime.strptime(business_date, "%Y-%m-%d")
+        - timedelta(days=lifecycle.ACTIVE8_COMPUTE_SNAPSHOT_LOOKBACK_DAYS)
+    ).date().isoformat()
     return {
         "snapshot_id": "snapshot-20260724",
         "business_date": business_date,
         "checksum": f"sha256:{checksum}" if prefixed_checksum else checksum,
         "manifest_errors": [],
+        "metadata_json": json.dumps({"start_date": start_date}),
     }
 
 
@@ -162,6 +168,21 @@ def test_daily_prep_rejects_snapshot_behind_latest_market_session(monkeypatch):
     assert exc.value.reason == "compute_snapshot_behind_market_session"
     assert exc.value.evidence["expected_business_date"] == "2026-07-24"
     assert exc.value.evidence["snapshot_business_date"] == "2026-07-23"
+
+
+def test_daily_prep_rejects_short_compute_snapshot_history(monkeypatch):
+    snapshot = _snapshot()
+    snapshot["metadata_json"] = json.dumps({"start_date": "2026-06-24"})
+    monkeypatch.setattr(lifecycle, "latest_dataset_snapshot", lambda **_kwargs: snapshot)
+
+    with pytest.raises(lifecycle.Active8PrepDependencyPending) as exc:
+        asyncio.run(lifecycle.ensure_active8_daily_prep(
+            end_date="2026-07-25", query_fn=_market_query,
+        ))
+
+    assert exc.value.reason == "compute_snapshot_history_insufficient"
+    assert exc.value.evidence["snapshot_start_date"] == "2026-06-24"
+    assert exc.value.evidence["required_lookback_days"] == 504
 
 
 def test_daily_prep_builds_feature_and_adjusted_receipts(monkeypatch):

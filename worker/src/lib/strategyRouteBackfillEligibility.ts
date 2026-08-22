@@ -11,6 +11,7 @@ type EligibilityRow = {
   producer_run_id: string
   reference_rows: number | string
   mature_label_rows: number | string
+  rejected_label_rows: number | string
   matrix_rows: number | string
   expected_matrix_rows: number | string
   evaluable_matrix_rows: number | string
@@ -26,6 +27,7 @@ export type StrategyRouteBackfillEligibility = {
   status: 'eligible' | 'unavailable' | 'pending_maturity'
   referenceRows: number
   matureLabelRows: number
+  rejectedLabelRows: number
   matrixRows: number
   evaluableMatrixRows: number
   matchedMatrixRows: number
@@ -70,6 +72,11 @@ export async function auditStrategyRouteBackfillEligibility(
                 AND l.label_schema_version=? AND l.reference_contract_version=?
                 AND l.outcome_known_date<=?
            ) THEN 1 ELSE 0 END) mature_label_rows,
+           SUM(CASE WHEN EXISTS (
+             SELECT 1 FROM price_horizon_label_rejections_v1 q
+              WHERE q.price_date=r.signal_date
+                AND CAST(q.stock_id AS TEXT)=r.symbol
+           ) THEN 1 ELSE 0 END) rejected_label_rows,
            COALESCE((
              SELECT COUNT(*) FROM strategy_label_matrix_v4 m
               WHERE m.signal_date=r.signal_date AND m.producer_run_id=r.producer_run_id
@@ -131,6 +138,7 @@ export async function auditStrategyRouteBackfillEligibility(
   const output = (result.results ?? []).map((row): StrategyRouteBackfillEligibility => {
     const referenceRows = count(row.reference_rows)
     const matureLabelRows = count(row.mature_label_rows)
+    const rejectedLabelRows = count(row.rejected_label_rows)
     const matrixRows = count(row.matrix_rows)
     const expectedMatrixRows = count(row.expected_matrix_rows)
     const evaluableMatrixRows = count(row.evaluable_matrix_rows)
@@ -140,7 +148,8 @@ export async function auditStrategyRouteBackfillEligibility(
     const challengerRouteRows = count(row.challenger_route_rows)
     const blockers: string[] = []
     if (referenceRows <= 0) blockers.push('canonical_reference_empty')
-    if (matureLabelRows !== referenceRows) blockers.push('outcome_not_mature')
+    if (matureLabelRows + rejectedLabelRows < referenceRows) blockers.push('outcome_not_mature')
+    if (matureLabelRows + rejectedLabelRows > referenceRows) blockers.push('outcome_resolution_overlap')
     if (expectedMatrixRows <= 0 || matrixRows !== expectedMatrixRows) blockers.push('canonical_strategy_matrix_missing')
     if (challengerAffinityRows !== referenceRows) blockers.push('challenger_affinity_version_missing')
     if (evaluableMatrixRows <= 0) blockers.push('strategy_matrix_no_evaluable_cells')
@@ -161,6 +170,7 @@ export async function auditStrategyRouteBackfillEligibility(
       status,
       referenceRows,
       matureLabelRows,
+      rejectedLabelRows,
       matrixRows,
       evaluableMatrixRows,
       matchedMatrixRows,
@@ -176,13 +186,15 @@ export async function auditStrategyRouteBackfillEligibility(
       await db.batch(output.slice(offset, offset + 100).map((row) => db.prepare(`
         INSERT INTO strategy_route_backfill_eligibility_v1 (
           signal_date, producer_run_id, status, reference_rows, mature_label_rows,
+          rejected_label_rows,
           matrix_rows, evaluable_matrix_rows, matched_matrix_rows, challenger_affinity_rows,
           threshold_margin_rows, challenger_route_rows, blocker_json, audited_as_of_date
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(signal_date, producer_run_id) DO UPDATE SET
           status=excluded.status,
           reference_rows=excluded.reference_rows,
           mature_label_rows=excluded.mature_label_rows,
+          rejected_label_rows=excluded.rejected_label_rows,
           matrix_rows=excluded.matrix_rows,
           evaluable_matrix_rows=excluded.evaluable_matrix_rows,
           matched_matrix_rows=excluded.matched_matrix_rows,
@@ -198,6 +210,7 @@ export async function auditStrategyRouteBackfillEligibility(
         row.status,
         row.referenceRows,
         row.matureLabelRows,
+        row.rejectedLabelRows,
         row.matrixRows,
         row.evaluableMatrixRows,
         row.matchedMatrixRows,

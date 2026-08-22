@@ -1607,6 +1607,7 @@ async def materialize_walk_forward_oof(req: OofMaterializeRequest):
                 snapshot_rows=snapshot_rows,
                 snapshot_evidence=snapshot_evidence,
                 l4_predictions=l4_predictions,
+                l4_prediction_evidence=l4_prediction_evidence,
                 batch_fn=learning_client.batch_execute,
             )
         if forward_extension:

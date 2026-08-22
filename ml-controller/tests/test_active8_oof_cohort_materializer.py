@@ -885,6 +885,75 @@ def test_forward_shadow_coverage_is_complete_checksum_bound_and_non_promotable()
         )
 
 
+def test_forward_shadow_coverage_classifies_l4_chronological_warmup_per_artifact():
+    import json
+
+    from services.active8_oof_cohort_materializer import (
+        persist_verified_oof_forward_coverage,
+    )
+
+    dates = ["2026-08-06", "2026-08-07", "2026-08-10", "2026-08-11"]
+    captured = []
+
+    def batch_fn(statements, **_kwargs):
+        captured.extend(statements)
+        return {"error_count": 0}
+
+    result = persist_verified_oof_forward_coverage(
+        cohort_id="cohort-1",
+        base_manifest_checksum="a" * 64,
+        extension_manifest_path="forward/manifest.json",
+        extension_manifest={
+            "manifest_checksum": "b" * 64,
+            "base_cohort_id": "cohort-1",
+            "base_manifest_checksum": "a" * 64,
+            "dates": dates,
+            "promotion_eligible": False,
+            "training_dispatched": False,
+        },
+        knowledge_cutoff_date="2026-08-19",
+        snapshot_rows=[{"snapshot_date": date} for date in dates],
+        snapshot_evidence={
+            "stacker_eligible_by_date": {date: 100 for date in dates},
+            "native_matched_by_date": {date: 90 for date in dates},
+            "snapshot_rows_by_date": {date: 90 for date in dates},
+            "rejected_by_date": {},
+        },
+        l4_predictions=[
+            {"prediction_date": "2026-08-10"},
+            {"prediction_date": "2026-08-11"},
+        ],
+        l4_prediction_evidence={
+            "dates": [
+                {
+                    "prediction_date": date,
+                    "eligible_for_efficacy": index >= 2,
+                    "train_samples": 400 + index * 50,
+                    "train_dates": 3 + index,
+                }
+                for index, date in enumerate(dates)
+            ],
+        },
+        batch_fn=batch_fn,
+    )
+
+    assert result["status"] == "verified"
+    l4_evaluability = result["artifact_date_evaluability"]["l4_predictions"]
+    assert l4_evaluability["evaluable_dates"] == dates[2:]
+    assert [row["date"] for row in l4_evaluability["not_evaluable"]] == dates[:2]
+    assert {
+        row["reason"] for row in l4_evaluability["not_evaluable"]
+    } == {"l4_chronological_history_not_ready"}
+    assert result["artifacts"]["allocator_ev_snapshots"]["dates"] == 4
+    assert result["artifacts"]["l4_predictions"]["dates"] == 2
+    assert len(captured) == 2
+    snapshot_params = captured[0][1]
+    l4_params = captured[1][1]
+    assert snapshot_params[12] == 0
+    assert l4_params[12] == 2
+    assert json.loads(l4_params[13])["evaluable_dates"] == dates[2:]
+
+
 def test_forward_shadow_coverage_classifies_missing_native_pit_without_lookahead():
     import json
 

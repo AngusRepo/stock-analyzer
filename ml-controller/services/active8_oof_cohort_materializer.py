@@ -1408,6 +1408,77 @@ def _classify_forward_evaluability(
     }
 
 
+def _classify_l4_forward_evaluability(
+    expected_dates: list[str],
+    snapshot_evaluability: dict[str, Any],
+    l4_prediction_evidence: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """Separate legitimate L4 warmup from missing forward evidence."""
+
+    if not l4_prediction_evidence:
+        return snapshot_evaluability
+    date_evidence = {
+        str(row.get("prediction_date") or "")[:10]: row
+        for row in list(l4_prediction_evidence.get("dates") or [])
+        if str(row.get("prediction_date") or "")[:10]
+    }
+    snapshot_evaluable = set(snapshot_evaluability.get("evaluable_dates") or [])
+    snapshot_not_evaluable = {
+        str(row.get("date") or "")[:10]: row
+        for row in list(snapshot_evaluability.get("not_evaluable") or [])
+    }
+    evaluable_dates: list[str] = []
+    not_evaluable: list[dict[str, Any]] = []
+    unresolved: list[dict[str, Any]] = []
+    for date in expected_dates:
+        if date not in snapshot_evaluable:
+            upstream = snapshot_not_evaluable.get(date)
+            if upstream is None:
+                unresolved.append({
+                    "date": date,
+                    "reason": "snapshot_evaluability_missing",
+                })
+            else:
+                not_evaluable.append({
+                    **upstream,
+                    "upstream_artifact": "allocator_ev_snapshots",
+                })
+            continue
+        evidence = date_evidence.get(date)
+        if evidence is None:
+            unresolved.append({
+                "date": date,
+                "reason": "l4_date_evidence_missing",
+            })
+            continue
+        if evidence.get("eligible_for_efficacy") is True:
+            evaluable_dates.append(date)
+            continue
+        not_evaluable.append({
+            "date": date,
+            "reason": "l4_chronological_history_not_ready",
+            "train_samples": int(evidence.get("train_samples") or 0),
+            "train_dates": int(evidence.get("train_dates") or 0),
+        })
+
+    if not evaluable_dates or unresolved:
+        raise RuntimeError(
+            "active8_oof_l4_forward_date_evaluability_unresolved:"
+            + json.dumps({
+                "expected_dates": expected_dates,
+                "evaluable_dates": evaluable_dates,
+                "not_evaluable": not_evaluable,
+                "unresolved": unresolved,
+            }, sort_keys=True)
+        )
+    return {
+        "schema_version": "active8-oof-l4-forward-date-evaluability-v1",
+        "expected_dates": expected_dates,
+        "evaluable_dates": evaluable_dates,
+        "not_evaluable": not_evaluable,
+    }
+
+
 def persist_verified_oof_forward_coverage(
     *,
     cohort_id: str,
@@ -1418,6 +1489,7 @@ def persist_verified_oof_forward_coverage(
     snapshot_rows: list[dict[str, Any]],
     snapshot_evidence: dict[str, Any],
     l4_predictions: list[dict[str, Any]],
+    l4_prediction_evidence: dict[str, Any] | None = None,
     batch_fn: Callable[..., dict[str, Any]] = d1_client.batch_execute,
 ) -> dict[str, Any]:
     """Persist monitoring-only coverage after verified frozen-forward evaluation."""
@@ -1440,14 +1512,22 @@ def persist_verified_oof_forward_coverage(
     ):
         raise ValueError("active8_oof_forward_coverage_contract_invalid")
 
-    evaluability = _classify_forward_evaluability(expected_dates, snapshot_evidence)
-    evaluable_dates = list(evaluability["evaluable_dates"])
-    not_evaluable = list(evaluability["not_evaluable"])
-    eligibility_json = json.dumps(evaluability, sort_keys=True, separators=(",", ":"))
+    snapshot_evaluability = _classify_forward_evaluability(
+        expected_dates, snapshot_evidence
+    )
+    l4_evaluability = _classify_l4_forward_evaluability(
+        expected_dates,
+        snapshot_evaluability,
+        l4_prediction_evidence,
+    )
 
     rows_by_kind = {
-        "allocator_ev_snapshots": (snapshot_rows, "snapshot_date"),
-        "l4_predictions": (l4_predictions, "prediction_date"),
+        "allocator_ev_snapshots": (
+            snapshot_rows, "snapshot_date", snapshot_evaluability
+        ),
+        "l4_predictions": (
+            l4_predictions, "prediction_date", l4_evaluability
+        ),
     }
     sql = """
         INSERT INTO active8_oof_forward_extension_coverage (
@@ -1483,7 +1563,12 @@ def persist_verified_oof_forward_coverage(
     statements: list[tuple[str, list[Any]]] = []
     evidence: dict[str, Any] = {}
     all_verified = True
-    for artifact_kind, (rows, date_field) in rows_by_kind.items():
+    for artifact_kind, (rows, date_field, evaluability) in rows_by_kind.items():
+        evaluable_dates = list(evaluability["evaluable_dates"])
+        not_evaluable = list(evaluability["not_evaluable"])
+        eligibility_json = json.dumps(
+            evaluability, sort_keys=True, separators=(",", ":")
+        )
         extension_rows = [
             row for row in rows
             if str(row.get(date_field) or "")[:10] in evaluable_dates
@@ -1531,7 +1616,11 @@ def persist_verified_oof_forward_coverage(
         "promotion_eligible": False,
         "training_dispatched": False,
         "extension_manifest_checksum": extension_checksum,
-        "date_evaluability": evaluability,
+        "date_evaluability": snapshot_evaluability,
+        "artifact_date_evaluability": {
+            "allocator_ev_snapshots": snapshot_evaluability,
+            "l4_predictions": l4_evaluability,
+        },
         "artifacts": evidence,
     }
 

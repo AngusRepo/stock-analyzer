@@ -52,8 +52,11 @@ def load_oof_archive_preflight(
           (SELECT COUNT(*) FROM allocator_ev_oof_snapshots s WHERE s.cohort_id=c.cohort_id) snapshot_rows,
           (SELECT COUNT(*) FROM l4_oof_predictions l WHERE l.cohort_id=c.cohort_id) l4_rows,
           (SELECT COUNT(*) FROM active8_oof_cohorts newer
-             WHERE newer.status='ready' AND newer.created_at>c.created_at) newer_ready_cohorts
+             WHERE newer.status='ready' AND newer.created_at>c.created_at) newer_ready_cohorts,
+          r.status retention_status, r.archive_store, r.archive_path,
+          r.archive_checksum, r.archive_row_count, r.archive_verified_at
         FROM active8_oof_cohorts c
+        LEFT JOIN active8_oof_retention_ledger r ON r.cohort_id=c.cohort_id
         WHERE c.cohort_id=?
         """,
         [cohort_id],
@@ -85,17 +88,33 @@ def load_oof_archive_preflight(
         "allocator_ev_oof_snapshots": int(row.get("snapshot_rows") or 0),
         "l4_oof_predictions": int(row.get("l4_rows") or 0),
     }
+    total_rows = sum(row_counts.values())
+    retained_archive_row_count = int(row.get("archive_row_count") or 0)
+    archive_path = str(row.get("archive_path") or "").strip()
+    archive_checksum = str(row.get("archive_checksum") or "").strip()
+    already_deleted = (
+        str(row.get("retention_status") or "") == "deleted"
+        and str(row.get("archive_store") or "") == "gcs"
+        and bool(archive_path)
+        and len(archive_checksum) == 64
+        and retained_archive_row_count > 0
+        and bool(str(row.get("archive_verified_at") or "").strip())
+    )
     blockers: list[str] = []
     if int(row.get("hard_reference_count") or 0) > 0:
         blockers.append("active_artifact_hard_reference")
     if int(row.get("newer_ready_cohorts") or 0) <= 0:
         blockers.append("newer_ready_cohort_missing")
-    if sum(row_counts.values()) <= 0:
+    if total_rows <= 0 and not already_deleted:
         blockers.append("hot_payload_empty")
+    if total_rows > 0 and str(row.get("retention_status") or "") == "deleted":
+        blockers.append("hot_payload_reappeared_after_verified_delete")
     return {
         **row,
         "row_counts": row_counts,
-        "total_rows": sum(row_counts.values()),
+        "total_rows": total_rows,
+        "retained_archive_row_count": retained_archive_row_count,
+        "already_deleted": already_deleted,
         "blockers": blockers,
         "eligible": not blockers,
     }
@@ -305,6 +324,28 @@ def archive_superseded_oof_cohort(
     manifest_checksum = str(preflight.get("artifact_manifest_checksum") or "")
     if len(manifest_checksum) != 64:
         raise RuntimeError("active8_oof_archive_source_manifest_checksum_missing")
+    if preflight.get("already_deleted"):
+        retained_path = str(preflight.get("archive_path") or "")
+        retained_checksum = str(preflight.get("archive_checksum") or "")
+        retained_payload = bucket.blob(retained_path).download_as_bytes()
+        if hashlib.sha256(retained_payload).hexdigest() != retained_checksum:
+            raise RuntimeError("active8_oof_archive_retained_manifest_checksum_mismatch")
+        return {
+            "status": "already_deleted",
+            "cohort_id": cohort_id,
+            "archive_path": retained_path,
+            "archive_checksum": retained_checksum,
+            "archive_row_count": 0,
+            "retained_archive_row_count": int(preflight.get("retained_archive_row_count") or 0),
+            "components": [],
+            "eligibility": {
+                "status": "retention_ledger_reused",
+                "reason": "hot_payload_already_deleted_after_verified_archive",
+            },
+            "deleted_rows": {table: 0 for table in ARCHIVE_TABLES},
+            "no_op": True,
+            "remote_verified": True,
+        }
     assessed_cutoff = datetime.now(timezone.utc).date().isoformat()
     eligibility = _persist_legacy_date_eligibility(
         cohort_id=cohort_id,

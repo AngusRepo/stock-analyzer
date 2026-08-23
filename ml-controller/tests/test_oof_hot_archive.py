@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import sys
 import inspect
 from pathlib import Path
@@ -79,6 +80,52 @@ def test_archive_preflight_fails_closed_for_hard_reference():
     assert result["eligible"] is False
     assert "active_artifact_hard_reference" in result["blockers"]
 
+
+def test_already_deleted_cohort_reverifies_manifest_and_returns_zero_row_executor():
+    cohort_id = "active8-oof-v4-retained"
+    retained_payload = b'{"retained":true}'
+    retained_checksum = hashlib.sha256(retained_payload).hexdigest()
+    retained_path = f"archives/active8_oof/{cohort_id}/manifest-{retained_checksum}.json"
+
+    def query(sql, params, **kwargs):
+        if "FROM active8_oof_cohorts c" in sql:
+            return [{
+                "cohort_id": cohort_id,
+                "status": "ready",
+                "artifact_manifest_checksum": "a" * 64,
+                "created_at": "2026-07-17 00:00:00",
+                "prediction_rows": 0,
+                "snapshot_rows": 0,
+                "l4_rows": 0,
+                "newer_ready_cohorts": 4,
+                "retention_status": "deleted",
+                "archive_store": "gcs",
+                "archive_path": retained_path,
+                "archive_checksum": retained_checksum,
+                "archive_row_count": 11904,
+                "archive_verified_at": "2026-07-25 14:25:48",
+            }]
+        if "SELECT artifact_id FROM model_artifact_registry" in sql:
+            return []
+        raise AssertionError(sql)
+
+    bucket = _Bucket()
+    bucket.store[retained_path] = retained_payload
+    result = archive_superseded_oof_cohort(
+        cohort_id=cohort_id,
+        bucket=bucket,
+        delete_hot=True,
+        query_fn=query,
+        execute_fn=lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("no mutation expected")),
+        batch_fn=lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("no batch expected")),
+    )
+
+    assert result["status"] == "already_deleted"
+    assert result["no_op"] is True
+    assert result["remote_verified"] is True
+    assert result["archive_row_count"] == 0
+    assert result["retained_archive_row_count"] == 11904
+    assert sum(result["deleted_rows"].values()) == 0
 
 def test_verified_archive_precedes_bounded_hot_delete():
     cohort_id = "active8-oof-v3-legacy"

@@ -59,7 +59,7 @@ def test_purged_oof_payload_is_evidence_eligible_but_never_production_eligible()
     assert production["expected_return"] is None
 
 
-def test_supported_legacy_purged_oof_contract_remains_evidence_eligible():
+def test_retired_legacy_purged_oof_contract_fails_closed():
     from services.l4_alpha_ev_resolver import PURGED_OOF_USAGE_SCOPE, resolve_l4_alpha_ev
 
     payload = _payload()
@@ -70,9 +70,10 @@ def test_supported_legacy_purged_oof_contract_remains_evidence_eligible():
     )
 
     evidence = resolve_l4_alpha_ev(payload, usage_scope=PURGED_OOF_USAGE_SCOPE)
-    assert evidence["status"] == "loaded"
-    assert evidence["purged_oof_evidence_eligible"] is True
-
+    assert evidence["status"] == "rejected"
+    assert evidence["expected_return"] is None
+    assert evidence["purged_oof_evidence_eligible"] is False
+    assert "purged_oof_artifact_label_contract_pair_incompatible" in evidence["blockers"]
 
 def test_purged_oof_payload_fails_closed_on_semantic_checksum_or_time_drift():
     from services.l4_alpha_ev_resolver import PURGED_OOF_USAGE_SCOPE, resolve_l4_alpha_ev

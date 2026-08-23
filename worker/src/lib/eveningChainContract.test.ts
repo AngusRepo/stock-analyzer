@@ -71,6 +71,7 @@ assert(
   'finalizer lease renewal must verify the durable owner before treating D1 zero-change metadata as lease loss',
 )
 const expectedReturnServingState = fs.readFileSync('src/lib/expectedReturnServingState.ts', 'utf8')
+const decisionOwnerContract = fs.readFileSync('src/lib/decisionOwnerContract.ts', 'utf8')
 const controllerDailyWorkflows = fs.readFileSync('src/lib/controllerDailyWorkflows.ts', 'utf8')
 assert(
   updateOrchestrator.includes('refreshMatureStrategyEvidenceBeforeScreener') &&
@@ -91,7 +92,7 @@ assert(
 )
 assert(updateOrchestrator.includes('refreshExpectedReturnServingState'), 'daily readiness must persist canonical expected-return serving state')
 assert(expectedReturnServingState.includes("'retired_incompatible'"), 'stale promoted artifacts must be explicitly retired from serving without rewriting evidence')
-assert(expectedReturnServingState.includes("'fusion_primary_required'"), 'no-owner production behavior must require a primary Fusion artifact and fail closed')
+assert(decisionOwnerContract.includes("'canonical_l4_required'"), 'no-owner production behavior must require a canonical L4 base artifact and fail closed')
 const schedulerLockMigration = fs.readFileSync('migration_scheduler_locks.sql', 'utf8')
 const runBulkFetchStart = updateOrchestrator.indexOf('export async function runBulkFetch')
 const runBulkFetchEnd = updateOrchestrator.indexOf('export async function runQueueUpdate', runBulkFetchStart)
@@ -245,9 +246,9 @@ assert(
   updateOrchestrator.includes('refreshExpectedReturnServingState') &&
     expectedReturnServingState.includes("artifact.promotion_state !== requiredPromotionState") &&
     expectedReturnServingState.includes("String(artifact.validation_packet?.decision ?? '').toUpperCase() !== 'PASS'") &&
-    expectedReturnServingState.includes("action_gate: owner ? 'expected_return_owner' : 'fusion_primary_required'") &&
+    expectedReturnServingState.includes('resolveDecisionOwnerContract(owner)') &&
     expectedReturnServingState.includes('hydrateExpectedReturnConfigFromPointers'),
-  'D1 champion pointers must remain source of truth while only strict Fusion can own expected return',
+  'D1 champion pointers must remain source of truth while canonical L4 owns base expected return and strict Fusion is an optional residual overlay',
 )
 assert(
   updateOrchestrator.includes('Deprecated S12 candidate snapshot message drained without serving side effects') &&

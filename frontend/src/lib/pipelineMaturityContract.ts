@@ -153,8 +153,10 @@ export type PipelineDecisionMaturityPacket = {
   schema_version: 'pipeline-decision-maturity-v2'
   requested_date: string
   generated_at: string
+  current_selection_signal_owner: 'score_v2_formal_ml'
   current_expected_return_owner: 'l4_alpha_ev' | 'allocator_ev_fusion' | null
-  action_gate: 'expected_return_owner' | 'fusion_primary_required'
+  current_execution_owner: 'allocator_opb_policy' | 'none_fail_closed'
+  action_gate: 'expected_return_owner' | 'canonical_l4_required'
   strategy_route_bundle?: StrategyRouteBundleMaturity
   summary: {
     production: number

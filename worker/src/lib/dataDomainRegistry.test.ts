@@ -65,7 +65,7 @@ assert.deepEqual(
   [...migrationTransientTables].sort(),
   'every migration-created table must be explicitly owned or explicitly transient',
 )
-assert.equal(productionTableNames.length, 234, 'production schema table count changed; ownership review is required')
+assert.equal(productionTableNames.length, 236, 'production schema table count changed; ownership review is required')
 assert.equal(dataDomainForTable('canonical_revenue_observations_v2'), 'market', 'append-only revenue revisions require one Market owner')
 const tableNames = [...new Set([
   ...productionTableNames,
@@ -171,11 +171,17 @@ const domainNativeLearningTables = [
   'price_horizon_label_rejections_v2',
   'canonical_selection_outcomes_v1',
   'strategy_evidence_metrics_v1',
+  'expected_return_owner_state_v2',
 ]
 assert(domainNativeLearningTables.every((table) => tablesForDataDomain('learning').includes(table)))
 assert(domainNativeLearningTables.every((table) => tablesForDataDomainRouteReady('learning').includes(table)))
 assert(domainNativeLearningTables.every((table) => !tablesForDataDomainShadowBackfill('learning').includes(table)))
 assert(!tablesForDataDomainShadowBackfill('market').includes('canonical_revenue_observations_v2'))
+assert(tablesForDataDomain('market').includes('market_regime_state_history_v1'))
+assert(tablesForDataDomainRouteReady('market').includes('market_regime_state_history_v1'))
+assert(!tablesForDataDomainShadowBackfill('market').includes('market_regime_state_history_v1'))
+assert.equal(dataDomainForTable('evidence_session_eligibility_v1'), null, 'read-only views must not enter the physical table registry')
+assert.equal(dataDomainForTable('strategy_evidence_observations_v1'), null, 'read-only views must not enter the physical table registry')
 assert(tablesForDataDomain('ops').includes('price_horizon_projection_status_v2'))
 assert(tablesForDataDomainRouteReady('ops').includes('price_horizon_projection_status_v2'))
 assert(!tablesForDataDomainShadowBackfill('ops').includes('price_horizon_projection_status_v2'))

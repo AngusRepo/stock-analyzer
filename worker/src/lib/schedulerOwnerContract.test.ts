@@ -36,6 +36,13 @@ const postMarketChain = fs.readFileSync('src/lib/postMarketChain.ts', 'utf8')
 const adminGcpTasks = fs.readFileSync('src/lib/adminTriggerGcpTasks.ts', 'utf8')
 const adminTriggerRoutes = fs.readFileSync('src/routes/adminTriggerRoutes.ts', 'utf8')
 const schedulerStatus = fs.readFileSync('src/lib/schedulerStatus.ts', 'utf8')
+assert(
+  schedulerStatus.includes("import schedulerManifest from '../../../infra/gcp-scheduler-jobs.json'") &&
+    schedulerStatus.includes('const JOB_DEF_METADATA: JobDef[]') &&
+    schedulerStatus.includes('cron: canonicalCronFor(def)') &&
+    schedulerStatus.includes('job.schedule'),
+  'OBS scheduler cadence must be projected from the canonical GCP scheduler manifest; local definitions are display metadata only',
+)
 const schedulerRunLogger = fs.readFileSync('src/lib/schedulerRunLogger.ts', 'utf8')
 const tradingDayTasks = [
   'intraday-check',

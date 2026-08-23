@@ -60,8 +60,8 @@ class CatchupDb {
   }
 
   first(sql: string, values: readonly unknown[]): unknown {
-    if (/SELECT\s+status\s+FROM\s+data_domain_cutovers/i.test(sql)) {
-      return { status: 'legacy' }
+    if (/FROM\s+data_domain_cutovers/i.test(sql)) {
+      return { status: 'legacy', writer_state: 'open' }
     }
     if (/FROM\s+data_domain_backfill_cursors/i.test(sql)) {
       const table = String(values[0])

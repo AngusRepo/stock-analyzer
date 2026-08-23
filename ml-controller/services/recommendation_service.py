@@ -47,8 +47,13 @@ from services.active_model_policy import ACTIVE_ALPHA_MODELS, gnn_return_history
 from services.ensemble_v2 import ENSEMBLE_V2_SEMANTIC_VERSION, build_formal_model_input_contract
 from services.fundamental_quality import score_fundamental_quality
 from services.market_segment_policy import is_explicitly_enabled, normalize_segment, policy_for_segment
+from services.decision_owner_contract import resolve_decision_owner_contract
 from services.evidence_contracts import (
     ALLOCATOR_EV_ARTIFACT_CONTRACT_VERSION,
+    ALLOCATOR_EV_EXPECTED_RETURN_SEMANTIC,
+    L4_ARTIFACT_CONTRACT_VERSION,
+    L4_EXPECTED_RETURN_SEMANTIC,
+    L4_FEATURE_SEMANTIC_VERSION,
     ALLOCATOR_EV_FEATURE_SEMANTIC_VERSION,
 )
 from services.portfolio_allocation import (
@@ -2799,7 +2804,7 @@ def _canonical_expected_return_from_row(
             "overlay_candidate_artifact_contract_version": fallback_payload.get("artifact_contract_version"),
             "artifact_contract_version": ALLOCATOR_EV_ARTIFACT_CONTRACT_VERSION,
             "feature_semantic_version": ALLOCATOR_EV_FEATURE_SEMANTIC_VERSION,
-            "expected_return_semantic": "l4_base_expected_return_plus_validated_residual_adjustment",
+            "expected_return_semantic": ALLOCATOR_EV_EXPECTED_RETURN_SEMANTIC,
             "expected_return_owner": "risk_abstention",
             "expected_return": None,
             "expected_return_mean": None,
@@ -2819,27 +2824,27 @@ def _canonical_expected_return_from_row(
 
     fallback_payload = dict(fusion_payload) if isinstance(fusion_payload, dict) else {}
     fallback_payload.update({
-        "status": fallback_payload.get("status") or "missing",
+        "status": "loaded",
         "overlay_status": "abstained",
         "overlay_candidate_artifact_contract_version": fallback_payload.get("artifact_contract_version"),
-        "artifact_contract_version": ALLOCATOR_EV_ARTIFACT_CONTRACT_VERSION,
-        "feature_semantic_version": ALLOCATOR_EV_FEATURE_SEMANTIC_VERSION,
-        "expected_return_semantic": "l4_base_expected_return_plus_validated_residual_adjustment",
-        "expected_return_owner": "allocator_ev_fusion",
+        "artifact_contract_version": L4_ARTIFACT_CONTRACT_VERSION,
+        "feature_semantic_version": L4_FEATURE_SEMANTIC_VERSION,
+        "expected_return_semantic": L4_EXPECTED_RETURN_SEMANTIC,
+        "expected_return_owner": "l4_alpha_ev",
         "expected_return": round(alpha_ev_value, 10),
         "expected_return_mean": round(alpha_ev_value, 10),
-        "expected_return_source": "allocator_ev_fusion:l4_base_overlay_abstained",
+        "expected_return_source": "l4_alpha_ev:validated_base_fusion_overlay_abstained",
         "selection_feature_owner": "l4_alpha_ev",
         "base_expected_return_owner": "l4_alpha_ev",
         "base_expected_return": round(alpha_ev_value, 10),
         "fusion_residual_adjustment": 0.0,
         "final_expected_return": round(alpha_ev_value, 10),
-        "primary_expected_return_allowed": False,
+        "primary_expected_return_allowed": True,
         "fusion_adjustment_allowed": False,
         "l4_alpha_ev": alpha_ev_payload,
-        "blockers": artifact_blockers,
+        "blockers": [],
+        "overlay_blockers": artifact_blockers,
     })
-    row["allocator_ev_fusion"] = fallback_payload
     return alpha_ev_value, str(fallback_payload["expected_return_source"]), fallback_payload
 
 
@@ -2946,7 +2951,10 @@ def _allocator_edge_resolver(
 ) -> tuple[float, str, dict[str, Any]]:
     payload_dict = payload if isinstance(payload, dict) else {}
     source = str(expected_return_source or "").strip()
-    expected_return_owner = "allocator_ev_fusion"
+    expected_return_owner = str(payload_dict.get("expected_return_owner") or "").strip()
+    decision_owners = resolve_decision_owner_contract(
+        expected_return_owner if expected_return_owner in {"l4_alpha_ev", "allocator_ev_fusion"} else None
+    )
     target_quality = {
         "target_quality_state": "canonical_five_session_price_horizon_labels",
         "reward_confidence_multiplier": 1.0,
@@ -2962,6 +2970,10 @@ def _allocator_edge_resolver(
     evidence = {
         "schema_version": "allocator-edge-resolver-v1",
         "expected_return_owner": expected_return_owner,
+        "selection_signal_owner": decision_owners["selection_signal_owner"],
+        "formal_expected_return_owner": decision_owners["expected_return_owner"],
+        "execution_owner": decision_owners["execution_owner"],
+        "action_gate": decision_owners["action_gate"],
         "expected_return": round(float(expected_return), 10),
         "expected_return_source": source,
         "payload_status": payload_dict.get("status"),
@@ -2993,7 +3005,11 @@ def _allocator_edge_resolver(
         "conditional_admission_allowed": False,
         "conditional_admission_policy": "retired_s12_serving_path",
     }
-    evidence["candidate_contract"] = "production_allocator_ev_fusion_l4_residual_overlay"
+    evidence["candidate_contract"] = (
+        "production_allocator_ev_fusion_l4_residual_overlay"
+        if expected_return_owner == "allocator_ev_fusion"
+        else "production_l4_alpha_ev_base"
+    )
     row["_allocator_edge_resolver"] = evidence
     return expected_return, source, evidence
 
@@ -3011,8 +3027,13 @@ def _allocator_abstention_resolver(
         l4_payload = payload or {}
     elif rejected_owner == "allocator_ev_fusion":
         fusion_payload = payload or {}
+    decision_owners = resolve_decision_owner_contract(None)
     evidence = {
         "schema_version": "allocator-edge-abstention-v1",
+        "selection_signal_owner": decision_owners["selection_signal_owner"],
+        "formal_expected_return_owner": decision_owners["expected_return_owner"],
+        "execution_owner": decision_owners["execution_owner"],
+        "action_gate": decision_owners["action_gate"],
         "expected_return_owner": "risk_abstention",
         "expected_return": 0.0,
         "expected_return_source": source or "missing_expected_return_no_allocation_edge",
@@ -3035,7 +3056,11 @@ def _allocator_abstention_resolver(
         } if fusion_payload else None,
         "rejected_payload_owner": (payload or {}).get("expected_return_owner") if isinstance(payload, dict) else None,
     }
-    evidence = {key: value for key, value in evidence.items() if value is not None}
+    evidence = {
+        key: value
+        for key, value in evidence.items()
+        if value is not None or key == "formal_expected_return_owner"
+    }
     row["_allocator_edge_resolver"] = evidence
     row["_expected_return_abstention"] = evidence
     return evidence

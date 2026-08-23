@@ -69,6 +69,8 @@ def test_counterfactual_prior_replays_every_arm_and_discount_overlapping_dates(m
 
     artifact = result["artifact"]
     assert artifact["validation"]["decision"] == "PASS"
+    assert artifact["source_expected_return_contract_version"] == "l4-alpha-ev-contract-v5"
+    assert artifact["source_expected_return_semantic"] == "canonical_l4_expected_return_net_of_costs"
     assert artifact["live_reward_ledger_merged"] is False
     assert len(artifact["arm_priors"]) == 5
     assert {row["dates"] for row in artifact["arm_priors"]} == {20}

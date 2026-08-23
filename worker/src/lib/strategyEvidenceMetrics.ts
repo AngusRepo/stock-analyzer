@@ -7,7 +7,7 @@ import {
 } from './strategyEvidenceProfile'
 import { listStrategySpecsForLearning } from './strategyLearning'
 
-export const STRATEGY_EVIDENCE_METRIC_DEFINITION_VERSION = 'strategy-evidence-metrics-v3'
+export const STRATEGY_EVIDENCE_METRIC_DEFINITION_VERSION = 'strategy-evidence-metrics-v4'
 export const STRATEGY_EVIDENCE_MIN_SAMPLES = 20
 export const STRATEGY_EVIDENCE_MIN_MATURE_DATES = 5
 
@@ -26,6 +26,10 @@ export type StrategyEvidenceObservation = {
   strategy_status: string
   alpha_bucket: string
   affinity: number | string | null
+  affinity_version?: string | null
+  affinity_evidence_count?: number | string | null
+  challenger_affinity?: number | string | null
+  challenger_affinity_version?: string | null
   position_weight: number | string | null
   overlap: number | string | null
   horizon_days: number | string
@@ -45,7 +49,9 @@ export type StrategyEvidenceObservation = {
 
 export type StrategyEvidenceMatrixRow = Pick<StrategyEvidenceObservation,
   'signal_date' | 'symbol' | 'producer_run_id' | 'strategy_id' | 'strategy_version'
-  | 'strategy_status' | 'alpha_bucket' | 'affinity' | 'position_weight' | 'overlap'>
+  | 'strategy_status' | 'alpha_bucket' | 'affinity' | 'affinity_version'
+  | 'affinity_evidence_count' | 'challenger_affinity' | 'challenger_affinity_version'
+  | 'position_weight' | 'overlap'>
 
 export type StrategyEvidenceOutcomeRow = Pick<StrategyEvidenceObservation,
   'signal_date' | 'symbol' | 'producer_run_id' | 'horizon_days' | 'outcome_known_date'
@@ -124,6 +130,24 @@ function mean(values: number[]): number | null {
   return values.length ? values.reduce((sum, value) => sum + value, 0) / values.length : null
 }
 
+const FORMAL_CONTINUOUS_AFFINITY_VERSION = 'strategy-threshold-margin-affinity-v2'
+
+function evidenceAffinity(row: StrategyEvidenceObservation): {
+  value: number | null
+  source: 'formal_continuous_affinity' | 'unavailable'
+} {
+  const challenger = finite(row.challenger_affinity)
+  const evidenceCount = finite(row.affinity_evidence_count) ?? 0
+  if (
+    challenger != null
+    && evidenceCount > 0
+    && row.challenger_affinity_version === FORMAL_CONTINUOUS_AFFINITY_VERSION
+  ) {
+    return { value: challenger, source: 'formal_continuous_affinity' }
+  }
+  return { value: null, source: 'unavailable' }
+}
+
 function dateClusteredValues(rows: StrategyEvidenceObservation[], read: (row: StrategyEvidenceObservation) => number | null): number[] {
   const byDate = new Map<string, number[]>()
   for (const row of rows) {
@@ -176,21 +200,30 @@ function regimeConsistency(
     if (!regime || (supported.size && !supported.has(regime))) continue
     byRegime.set(regime, [...(byRegime.get(regime) ?? []), row])
   }
-  const partitions = [...byRegime.entries()].map(([regime, regimeRows]) => {
+  const observedPartitions = [...byRegime.entries()].map(([regime, regimeRows]) => {
     const values = dateClusteredValues(regimeRows, (row) => finite(row.residual_return_net))
     return { regime, samples: regimeRows.length, dates: values.length, lcb90: lcb90(values) }
-  }).filter((item) => item.lcb90 != null)
-  const value = partitions.length >= 2 ? Math.min(...partitions.map((item) => item.lcb90!)) : null
+  }).sort((left, right) => left.regime.localeCompare(right.regime))
+  const eligiblePartitions = observedPartitions.filter((item) => item.lcb90 != null)
+  const value = eligiblePartitions.length >= 2
+    ? Math.min(...eligiblePartitions.map((item) => item.lcb90!))
+    : null
   return {
     value: round6(value),
-    samples: partitions.reduce((sum, item) => sum + item.samples, 0),
-    dates: partitions.length ? Math.min(...partitions.map((item) => item.dates)) : 0,
+    samples: observedPartitions.reduce((sum, item) => sum + item.samples, 0),
+    dates: eligiblePartitions.length >= 2
+      ? Math.min(...eligiblePartitions.map((item) => item.dates))
+      : 0,
     evidence: {
       semantic: 'minimum_supported_regime_date_clustered_residual_return_lcb90',
       required_regime_partitions: 2,
+      required_mature_dates_per_partition: 2,
       supported_regimes: [...supported],
-      partitions,
-      missing_reason: partitions.length >= 2 ? null : 'fewer_than_two_supported_regimes_with_two_mature_dates',
+      observed_partitions: observedPartitions,
+      eligible_partitions: eligiblePartitions,
+      observed_regime_count: observedPartitions.length,
+      eligible_regime_count: eligiblePartitions.length,
+      missing_reason: eligiblePartitions.length >= 2 ? null : 'fewer_than_two_supported_regimes_with_two_mature_dates',
     },
   }
 }
@@ -238,18 +271,62 @@ function pearson(left: number[], right: number[]): number | null {
   return leftSq > 0 && rightSq > 0 ? numerator / Math.sqrt(leftSq * rightSq) : null
 }
 
-function rankIc(rows: StrategyEvidenceObservation[]): { value: number | null; dates: number } {
+function rankIc(rows: StrategyEvidenceObservation[]): {
+  value: number | null
+  dates: number
+  observationDates: number
+  pairEligibleDates: number
+  insufficientPairDates: number
+  constantAffinityDates: number
+  constantRewardDates: number
+  formalContinuousPairs: number
+  excludedLegacyBinaryPairs: number
+} {
   const byDate = new Map<string, StrategyEvidenceObservation[]>()
   for (const row of rows) byDate.set(row.signal_date, [...(byDate.get(row.signal_date) ?? []), row])
   const values: number[] = []
+  let pairEligibleDates = 0
+  let insufficientPairDates = 0
+  let constantAffinityDates = 0
+  let constantRewardDates = 0
+  let formalContinuousPairs = 0
+  let excludedLegacyBinaryPairs = 0
   for (const dateRows of byDate.values()) {
-    const pairs = dateRows.map((row) => ({ affinity: finite(row.affinity), reward: finite(row.residual_return_net) }))
-      .filter((row): row is { affinity: number; reward: number } => row.affinity != null && row.reward != null)
-    if (pairs.length < 3) continue
-    const value = pearson(ranks(pairs.map((row) => row.affinity)), ranks(pairs.map((row) => row.reward)))
+    const resolved = dateRows.map((row) => ({
+      ...evidenceAffinity(row),
+      legacyAffinity: finite(row.affinity),
+      reward: finite(row.residual_return_net),
+    }))
+    excludedLegacyBinaryPairs += resolved.filter((row) => (
+      row.source === 'unavailable' && row.legacyAffinity != null
+    )).length
+    const pairs = resolved.filter((row): row is typeof row & { value: number; source: 'formal_continuous_affinity'; reward: number } => (
+      row.source === 'formal_continuous_affinity' && row.value != null && row.reward != null
+    ))
+    if (pairs.length < 3) {
+      insufficientPairDates += 1
+      continue
+    }
+    pairEligibleDates += 1
+    formalContinuousPairs += pairs.length
+    const affinities = pairs.map((row) => row.value)
+    const rewards = pairs.map((row) => row.reward)
+    if (new Set(affinities).size < 2) constantAffinityDates += 1
+    if (new Set(rewards).size < 2) constantRewardDates += 1
+    const value = pearson(ranks(affinities), ranks(rewards))
     if (value != null) values.push(value)
   }
-  return { value: round6(mean(values)), dates: values.length }
+  return {
+    value: round6(mean(values)),
+    dates: values.length,
+    observationDates: byDate.size,
+    pairEligibleDates,
+    insufficientPairDates,
+    constantAffinityDates,
+    constantRewardDates,
+    formalContinuousPairs,
+    excludedLegacyBinaryPairs,
+  }
 }
 
 function turnoverEfficiency(rows: StrategyEvidenceObservation[]): { value: number | null; turnover: number | null; dates: number } {
@@ -404,7 +481,33 @@ export function computeStrategyEvidenceMetricRows(
       const result = rankIc(primary)
       value = result.value
       matureDates = result.dates
-      evidence = { semantic: 'mean_daily_spearman_affinity_vs_residual_return' }
+      evidence = {
+        semantic: 'mean_daily_spearman_formal_continuous_affinity_vs_residual_return',
+        affinity_owner: 'strategy-threshold-margin-affinity-v2',
+        fallback_owner: null,
+        retired_input: 'strategy-affinity-binary-pit-reconstruction-v1',
+        formal_continuous_pairs: result.formalContinuousPairs,
+        excluded_legacy_binary_pairs: result.excludedLegacyBinaryPairs,
+        observation_dates: result.observationDates,
+        estimable_dates: result.dates,
+        pair_eligible_dates: result.pairEligibleDates,
+        insufficient_pair_dates: result.insufficientPairDates,
+        constant_affinity_dates: result.constantAffinityDates,
+        constant_reward_dates: result.constantRewardDates,
+        missing_reason: result.value == null && result.formalContinuousPairs === 0
+          ? 'formal_continuous_affinity_unavailable'
+          : result.value == null && result.pairEligibleDates >= 2 && result.constantAffinityDates > 0
+            ? 'rank_ic_cross_section_not_identifiable'
+            : null,
+        root_cause_class: result.value == null && result.formalContinuousPairs === 0
+          ? 'projection_lineage'
+          : result.value == null && result.constantAffinityDates > 0
+            ? 'signal_variation'
+            : null,
+        remediation: result.value == null
+          ? 'materialize_current_contract_continuous_affinity_without_backdating_legacy_binary_affinity'
+          : null,
+      }
     } else if (metric === 'max_drawdown') {
       value = maxDrawdown(absoluteByDate)
       matureDates = absoluteByDate.length
@@ -506,7 +609,8 @@ async function loadObservationsAcrossDatabases(
     const page = await matrixDb.prepare(`
       SELECT rowid source_row_id, signal_date, symbol, producer_run_id,
              strategy_id, strategy_version, strategy_status, alpha_bucket,
-             affinity, position_weight, overlap
+             affinity, affinity_version, affinity_evidence_count,
+             challenger_affinity, challenger_affinity_version, position_weight, overlap
         FROM strategy_label_matrix_v4
        WHERE strategy_hit=1 AND evaluable=1 AND rowid>?
        ORDER BY rowid
@@ -529,30 +633,29 @@ async function loadObservations(
   let matrixRowId = 0
   let horizonDays = 0
   const profilePredicate = profile
-    ? 'AND m.strategy_id=? AND m.strategy_version=?'
+    ? 'AND v.strategy_id=? AND v.strategy_version=?'
     : ''
   const profileParams = profile
     ? [profile.strategy_id, profile.strategy_version]
     : []
   for (;;) {
     const page = await db.prepare(`
-      SELECT m.rowid matrix_row_id, m.signal_date, m.symbol, m.producer_run_id,
-             m.strategy_id, m.strategy_version, m.strategy_status, m.alpha_bucket,
-             m.affinity, m.position_weight, m.overlap,
-             o.horizon_days, o.outcome_known_date, o.entry_date, o.exit_date,
-             o.absolute_return_net, o.benchmark_return_net, o.residual_return_net, o.cross_section_rank,
-             (SELECT a.alpha_context FROM allocator_ev_feature_snapshots a
-               WHERE a.snapshot_date=m.signal_date AND a.symbol=m.symbol
-               ORDER BY a.generated_at DESC LIMIT 1) alpha_context
-        FROM strategy_label_matrix_v4 m
-        JOIN canonical_selection_outcomes_v1 o
-          ON o.signal_date=m.signal_date AND o.symbol=m.symbol
-         AND o.producer_run_id=m.producer_run_id
-       WHERE m.strategy_hit=1 AND m.evaluable=1
-         AND o.outcome_known_date<=?
+      SELECT v.matrix_row_id, v.signal_date, v.symbol, v.producer_run_id,
+             v.strategy_id, v.strategy_version, v.strategy_status, v.alpha_bucket,
+             v.legacy_binary_affinity AS affinity,
+             v.legacy_affinity_version AS affinity_version,
+             v.affinity_evidence_count,
+             v.evidence_affinity AS challenger_affinity,
+             v.evidence_affinity_version AS challenger_affinity_version,
+             v.position_weight, v.overlap,
+             v.horizon_days, v.outcome_known_date, v.entry_date, v.exit_date,
+             v.absolute_return_net, v.benchmark_return_net, v.residual_return_net, v.cross_section_rank,
+             v.alpha_context
+        FROM strategy_evidence_observations_v1 v
+       WHERE v.outcome_known_date<=?
          ${profilePredicate}
-         AND (m.rowid>? OR (m.rowid=? AND o.horizon_days>?))
-       ORDER BY m.rowid, o.horizon_days
+         AND (v.matrix_row_id>? OR (v.matrix_row_id=? AND v.horizon_days>?))
+       ORDER BY v.matrix_row_id, v.horizon_days
        LIMIT 5000
     `).bind(
       outcomeAsOfDate,

@@ -200,14 +200,14 @@ function expectedIdentity(model: ExpectedReturnMaturityModel) {
   return model === 'l4_alpha_ev'
     ? {
       contract: L4_ALPHA_EV_CONTRACT,
-      validationSchema: 'l4-alpha-ev-validation-packet-v1',
-      modelVersionPrefix: 'l4-alpha-ev-ridge-v5-sector-',
+      validationSchema: L4_ALPHA_EV_CONTRACT.validationSchemaVersion,
+      modelVersionPrefix: L4_ALPHA_EV_CONTRACT.modelVersionPrefix,
       candidateType: 'l4_alpha_ev_refresh',
     }
     : {
       contract: ALLOCATOR_EV_FUSION_CONTRACT,
-      validationSchema: 'allocator-ev-fusion-validation-packet-v14',
-      modelVersionPrefix: 'allocator-ev-fusion-residual-v14-',
+      validationSchema: ALLOCATOR_EV_FUSION_CONTRACT.validationSchemaVersion,
+      modelVersionPrefix: ALLOCATOR_EV_FUSION_CONTRACT.modelVersionPrefix,
       candidateType: 'allocator_ev_fusion_refresh',
     }
 }

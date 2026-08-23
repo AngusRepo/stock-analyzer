@@ -1,5 +1,6 @@
 import { Hono } from 'hono'
 
+import { d1SafeInChunks } from '../lib/d1BindChunks'
 import { loadLatestStockFinancialSnapshot, toLlmFinancialContext } from '../lib/fundamentalData'
 import { loadCoreStockIdentitiesByIds, loadMarketPriceHistoryBySymbols } from '../lib/stockIdentityMarketBridge'
 import {
@@ -2243,7 +2244,7 @@ watchlist.get('/', async (c) => {
     pricesBySymbol.set(row.symbol, list)
   }
   const tagsBySymbol = new Map<string, string[]>()
-  for (const chunk of Array.from({ length: Math.ceil(symbols.length / 400) }, (_, index) => symbols.slice(index * 400, index * 400 + 400))) {
+  for (const chunk of d1SafeInChunks(symbols)) {
     if (!chunk.length) continue
     const marks = chunk.map(() => '?').join(',')
     const tags = await marketDb.prepare(`
@@ -3854,26 +3855,30 @@ recommendations.get('/daily', async (c) => {
     })
     const priceBySymbol = new Map(prices.map((row) => [row.symbol, row]))
     const brokerBySymbol = new Map<string, any>()
-    for (const chunk of Array.from({ length: Math.ceil(symbolsForHydration.length / 400) }, (_, index) => symbolsForHydration.slice(index * 400, index * 400 + 400))) {
-      const marks = chunk.map(() => '?').join(',')
-      const broker = await marketDb.prepare(`
-        WITH scoped AS (
-          SELECT stock_id, date, estimated_amount, net_shares, broker_count, concentration, source,
-                 ROW_NUMBER() OVER (PARTITION BY stock_id ORDER BY date DESC) AS rn
-            FROM canonical_broker_flow_daily
-           WHERE stock_id IN (${marks}) AND date <= ? AND date >= date(?, '-14 days')
-        )
-        SELECT stock_id,
-               SUM(estimated_amount) AS amount_5d,
-               SUM(net_shares) AS net_shares_5d,
-               MAX(CASE WHEN rn=1 THEN estimated_amount END) AS latest_amount,
-               MAX(CASE WHEN rn=1 THEN broker_count END) AS broker_count_latest,
-               MAX(CASE WHEN rn=1 THEN concentration END) AS concentration_latest,
-               MAX(CASE WHEN rn=1 THEN source END) AS latest_source,
-               MAX(CASE WHEN rn=1 THEN date END) AS latest_date
-          FROM scoped GROUP BY stock_id
-      `).bind(...chunk, date, date).all<any>()
-      for (const row of broker.results ?? []) brokerBySymbol.set(String(row.stock_id), row)
+    try {
+      for (const chunk of d1SafeInChunks(symbolsForHydration)) {
+        const marks = chunk.map(() => '?').join(',')
+        const broker = await marketDb.prepare(`
+          WITH scoped AS (
+            SELECT stock_id, date, estimated_amount, net_shares, broker_count, concentration, source,
+                   ROW_NUMBER() OVER (PARTITION BY stock_id ORDER BY date DESC) AS rn
+              FROM canonical_broker_flow_daily
+             WHERE stock_id IN (${marks}) AND date <= ? AND date >= date(?, '-14 days')
+          )
+          SELECT stock_id,
+                 SUM(estimated_amount) AS amount_5d,
+                 SUM(net_shares) AS net_shares_5d,
+                 MAX(CASE WHEN rn=1 THEN estimated_amount END) AS latest_amount,
+                 MAX(CASE WHEN rn=1 THEN broker_count END) AS broker_count_latest,
+                 MAX(CASE WHEN rn=1 THEN concentration END) AS concentration_latest,
+                 MAX(CASE WHEN rn=1 THEN source END) AS latest_source,
+                 MAX(CASE WHEN rn=1 THEN date END) AS latest_date
+            FROM scoped GROUP BY stock_id
+        `).bind(...chunk, date, date).all<any>()
+        for (const row of broker.results ?? []) brokerBySymbol.set(String(row.stock_id), row)
+      }
+    } catch (error) {
+      console.warn('[recommendations/daily] optional broker aggregate hydration unavailable:', error)
     }
     for (const row of results) {
       const symbol = String(row.symbol ?? '').trim()
@@ -3898,8 +3903,9 @@ recommendations.get('/daily', async (c) => {
   const brokerTopFlowsBySymbol = new Map<string, any>()
   const brokerRankRowsBySymbol = new Map<string, any[]>()
   if (resultSymbols.length > 0) {
-    const placeholders = resultSymbols.map(() => '?').join(',')
-    try {
+    for (const resultSymbolChunk of d1SafeInChunks(resultSymbols)) {
+      const placeholders = resultSymbolChunk.map(() => '?').join(',')
+      try {
       const { results: chipRows } = await databaseForDataDomain(c.env, 'market').prepare(`
         WITH latest_chip AS (
           SELECT symbol, MAX(date) AS date
@@ -3916,7 +3922,7 @@ recommendations.get('/daily', async (c) => {
           JOIN latest_chip l
             ON l.symbol = c.symbol
            AND l.date = c.date
-      `).bind(cardDataAsOfDate, ...resultSymbols).all<any>()
+      `).bind(cardDataAsOfDate, ...resultSymbolChunk).all<any>()
       for (const row of chipRows ?? []) {
         const payload = buildInstitutionalRawToday(row)
         if (payload) institutionalRawBySymbol.set(String(row.symbol ?? '').trim(), payload)
@@ -3948,7 +3954,7 @@ recommendations.get('/daily', async (c) => {
              AND l.date = r.date
            WHERE r.rank_side IN ('buy', 'sell')
            ORDER BY r.stock_id ASC, r.rank_side ASC, r.rank_no ASC
-        `).bind(cardDataAsOfDate, ...resultSymbols).all<any>()
+        `).bind(cardDataAsOfDate, ...resultSymbolChunk).all<any>()
         for (const row of rankRows ?? []) {
           const symbol = String(row.stock_id ?? '').trim()
           const rows = brokerRankRowsBySymbol.get(symbol) ?? []
@@ -3975,7 +3981,7 @@ recommendations.get('/daily', async (c) => {
           JOIN latest_broker_flow l
             ON l.stock_id = f.stock_id
            AND l.date = f.date
-      `).bind(cardDataAsOfDate, ...resultSymbols).all<any>()
+      `).bind(cardDataAsOfDate, ...resultSymbolChunk).all<any>()
       for (const row of brokerRows ?? []) {
         const symbol = String(row.stock_id ?? '').trim()
         brokerTopFlowsBySymbol.set(
@@ -3983,13 +3989,15 @@ recommendations.get('/daily', async (c) => {
           buildBrokerTopFlowsToday(row, String(row.date ?? cardDataAsOfDate), brokerRankRowsBySymbol.get(symbol) ?? []),
         )
       }
-    } catch (e) {
-      console.warn('[recommendations/daily] broker flow card data unavailable:', e)
+      } catch (e) {
+        console.warn('[recommendations/daily] broker flow card data unavailable:', e)
+      }
     }
   }
   if (resultSymbols.length > 0) {
-    try {
-      const placeholders = resultSymbols.map(() => '?').join(',')
+    for (const resultSymbolChunk of d1SafeInChunks(resultSymbols)) {
+      try {
+        const placeholders = resultSymbolChunk.map(() => '?').join(',')
       const { results: funnelRows } = await databaseForDataDomain(c.env, 'ops').prepare(`
         WITH latest_screener_run AS (
           SELECT run_id
@@ -4019,21 +4027,24 @@ recommendations.get('/daily', async (c) => {
              'final_selection'
            )
          ORDER BY symbol ASC, created_at ASC
-      `).bind(date, ...resultSymbols).all<any>()
+      `).bind(date, ...resultSymbolChunk).all<any>()
       for (const [symbol, summary] of summarizeScreenerFunnelRows(funnelRows ?? [])) {
         screenerFunnelBySymbol.set(symbol, summary)
       }
-    } catch (e) {
-      console.warn('[recommendations/daily] screener funnel evidence unavailable:', e)
+      } catch (e) {
+        console.warn('[recommendations/daily] screener funnel evidence unavailable:', e)
+      }
     }
   }
 
   const stockIds = [...new Set((results ?? []).map((r: any) => Number(r.stock_id)).filter((id: number) => Number.isFinite(id)))]
   const perModelByStock = new Map<number, any[]>()
+  const ensembleByStock = new Map<number, any>()
   if (stockIds.length > 0) {
-    const placeholders = stockIds.map(() => '?').join(',')
     const learningDb = databaseForDataDomain(c.env, 'learning')
-    const [ensembleRows, perModelRows] = await Promise.all([
+    for (const stockIdChunk of d1SafeInChunks(stockIds)) {
+      const placeholders = stockIdChunk.map(() => '?').join(',')
+      const [ensembleRows, perModelRows] = await Promise.all([
       learningDb.prepare(`
         SELECT stock_id, forecast_data
           FROM predictions
@@ -4041,7 +4052,7 @@ recommendations.get('/daily', async (c) => {
            AND model_name = 'ensemble'
            AND prediction_date = ?
          ORDER BY stock_id, generated_at DESC, id DESC
-      `).bind(...stockIds, date).all<any>().catch(() => ({ results: [] as any[] })),
+      `).bind(...stockIdChunk, date).all<any>().catch(() => ({ results: [] as any[] })),
       learningDb.prepare(`
         SELECT stock_id, model_name, signal_raw, direction_accuracy, forecast_data
           FROM predictions
@@ -4050,20 +4061,20 @@ recommendations.get('/daily', async (c) => {
            AND model_name NOT LIKE '%::challenger'
            AND prediction_date = ?
          ORDER BY stock_id, model_name
-      `).bind(...stockIds, date).all<any>().catch(() => ({ results: [] as any[] })),
+      `).bind(...stockIdChunk, date).all<any>().catch(() => ({ results: [] as any[] })),
     ])
-    const ensembleByStock = new Map<number, any>()
-    for (const row of ensembleRows.results ?? []) {
+      for (const row of ensembleRows.results ?? []) {
       if (!ensembleByStock.has(Number(row.stock_id))) ensembleByStock.set(Number(row.stock_id), row)
     }
-    for (const row of results ?? []) {
-      row.prediction_forecast_data = ensembleByStock.get(Number(row.stock_id))?.forecast_data ?? null
-    }
-    for (const row of perModelRows.results ?? []) {
+      for (const row of perModelRows.results ?? []) {
       const id = Number(row.stock_id)
       const list = perModelByStock.get(id) ?? []
       list.push(row)
-      perModelByStock.set(id, list)
+        perModelByStock.set(id, list)
+      }
+    }
+    for (const row of results ?? []) {
+      row.prediction_forecast_data = ensembleByStock.get(Number(row.stock_id))?.forecast_data ?? null
     }
   }
 

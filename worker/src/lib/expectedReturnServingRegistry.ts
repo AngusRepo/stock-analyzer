@@ -4,9 +4,14 @@ import { databaseForDataDomain } from './dataDomainRegistry'
 
 type JsonRecord = Record<string, any>
 
-export const EXPECTED_RETURN_BASELINE_VERSIONS: Record<ExpectedReturnOwner, string> = {
-  l4_alpha_ev: 'l4-alpha-ev-ridge-v5-sector-abstention-baseline-v1',
-  allocator_ev_fusion: 'allocator-ev-fusion-residual-v14-abstention-baseline-v1',
+export type ExpectedReturnOwnerState = 'learned_champion' | 'safe_abstention' | 'no_champion'
+
+type OwnerStateRow = {
+  owner: ExpectedReturnOwner
+  owner_state: ExpectedReturnOwnerState
+  champion_artifact_id: string | null
+  reason_code: string
+  updated_at: string
 }
 
 type PointerProjectionRow = {
@@ -26,6 +31,8 @@ type PointerProjectionRow = {
 
 export interface ExpectedReturnPointerProjection {
   owner: ExpectedReturnOwner
+  owner_state: ExpectedReturnOwnerState
+  deprecated_pointer_ignored: boolean
   pointer_present: boolean
   champion_version: string | null
   champion_artifact_id: string | null
@@ -45,6 +52,8 @@ export interface ExpectedReturnConfigHydration {
 function emptyProjection(owner: ExpectedReturnOwner): ExpectedReturnPointerProjection {
   return {
     owner,
+    owner_state: 'no_champion',
+    deprecated_pointer_ignored: false,
     pointer_present: false,
     champion_version: null,
     champion_artifact_id: null,
@@ -85,6 +94,19 @@ export async function loadExpectedReturnPointerProjections(
     l4_alpha_ev: emptyProjection('l4_alpha_ev'),
     allocator_ev_fusion: emptyProjection('allocator_ev_fusion'),
   }
+  let ownerStateRows: OwnerStateRow[] = []
+  try {
+    const states = await db.prepare(`
+      SELECT owner, owner_state, champion_artifact_id, reason_code, updated_at
+        FROM expected_return_owner_state_v2
+       WHERE owner IN ('l4_alpha_ev', 'allocator_ev_fusion')
+    `).all<OwnerStateRow>()
+    ownerStateRows = states.results ?? []
+  } catch (error) {
+    if (!String(error).includes('no such table: expected_return_owner_state_v2')) throw error
+  }
+  const ownerStateByOwner = new Map(ownerStateRows.map((row) => [row.owner, row]))
+
   let rows: PointerProjectionRow[] = []
   try {
     const result = await db.prepare(`
@@ -119,7 +141,33 @@ export async function loadExpectedReturnPointerProjections(
   for (const row of rows) {
     const owner = row.model_name
     if (!(owner in projections)) continue
+    const declaredState = ownerStateByOwner.get(owner)
+    if (row.serving_mode === 'abstention_baseline') {
+      const blockers = declaredState?.owner_state === 'learned_champion'
+        ? ['owner_state_champion_pointer_inconsistent']
+        : []
+      projections[owner] = {
+        owner,
+        owner_state: declaredState?.owner_state ?? 'safe_abstention',
+        deprecated_pointer_ignored: true,
+        pointer_present: false,
+        champion_version: null,
+        champion_artifact_id: null,
+        serving_mode: 'abstention_baseline',
+        artifact: null,
+        valid: blockers.length === 0,
+        blockers,
+        pointer_updated_at: declaredState?.updated_at ?? row.pointer_updated_at,
+      }
+      continue
+    }
     const blockers: string[] = []
+    if (declaredState && declaredState.owner_state !== 'learned_champion') {
+      blockers.push('owner_state_champion_pointer_inconsistent')
+    }
+    if (declaredState && declaredState.champion_artifact_id !== row.champion_artifact_id) {
+      blockers.push('owner_state_champion_artifact_mismatch')
+    }
     if (!row.champion_artifact_id) blockers.push('champion_artifact_id_missing')
     if (row.registry_state !== 'production') blockers.push('champion_registry_state_not_production')
     if (row.registry_model_name !== owner) blockers.push('champion_registry_owner_mismatch')
@@ -155,6 +203,8 @@ export async function loadExpectedReturnPointerProjections(
     }
     projections[owner] = {
       owner,
+      owner_state: 'learned_champion',
+      deprecated_pointer_ignored: false,
       pointer_present: true,
       champion_version: row.champion_version,
       champion_artifact_id: row.champion_artifact_id,
@@ -163,6 +213,22 @@ export async function loadExpectedReturnPointerProjections(
       valid: blockers.length === 0,
       blockers,
       pointer_updated_at: row.pointer_updated_at,
+    }
+  }
+  for (const state of ownerStateRows) {
+    const current = projections[state.owner]
+    if (state.owner_state === 'safe_abstention' && current.owner_state !== 'learned_champion') {
+      projections[state.owner] = {
+        ...emptyProjection(state.owner),
+        owner_state: 'safe_abstention',
+        serving_mode: 'abstention_baseline',
+        valid: true,
+        blockers: [],
+        pointer_updated_at: state.updated_at,
+        deprecated_pointer_ignored: current.deprecated_pointer_ignored,
+      }
+    } else if (state.owner_state === 'learned_champion' && !current.valid) {
+      current.blockers = [...new Set([...current.blockers, 'owner_state_champion_pointer_inconsistent'])]
     }
   }
   return projections
@@ -321,6 +387,19 @@ export async function commitExpectedReturnChampion(
       previous?.champion_version ?? null, previous?.champion_artifact_id ?? null,
       'automatic_expected_return_quality_and_parity_pass', evidence,
     ),
+    db.prepare(`
+      INSERT INTO expected_return_owner_state_v2 (
+        owner, owner_state, champion_artifact_id, reason_code,
+        contract_manifest_version, updated_at
+      ) VALUES (?, 'learned_champion', ?, 'learned_champion_pointer_active',
+                'expected-return-contract-manifest-v1', CURRENT_TIMESTAMP)
+      ON CONFLICT(owner) DO UPDATE SET
+        owner_state='learned_champion',
+        champion_artifact_id=excluded.champion_artifact_id,
+        reason_code=excluded.reason_code,
+        contract_manifest_version=excluded.contract_manifest_version,
+        updated_at=CURRENT_TIMESTAMP
+    `).bind(input.owner, artifactId),
     db.prepare(`
       UPDATE model_champion_history
          SET retired_at = CURRENT_TIMESTAMP

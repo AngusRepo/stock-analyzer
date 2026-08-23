@@ -91,9 +91,11 @@ export function buildAdminGcpTriggerTaskMap(c: any, deps: TriggerDeps): Record<s
     'allocator-ev-fusion-refresh': () => deps.runAllocatorEvFusionRefresh(requestedRunDate(), 'weekly'),
     'opb-arm-prior-refresh': () => deps.runOpbArmPriorRefresh(
       requestedRunDate() || twToday(),
-      c.req.query('expected_return_owner') === 'allocator_ev_fusion'
-        ? 'allocator_ev_fusion'
-        : 'auto',
+      c.req.query('expected_return_owner') === 'l4_alpha_ev'
+        ? 'l4_alpha_ev'
+        : c.req.query('expected_return_owner') === 'allocator_ev_fusion'
+          ? 'allocator_ev_fusion'
+          : 'auto',
     ),
     'allocator-ev-feature-snapshot-backfill': () => deps.runAllocatorEvFeatureSnapshotBackfill({
       startDate: c.req.query('start_date') || requestedRunDate() || twToday(),
@@ -114,9 +116,11 @@ export function buildAdminGcpTriggerTaskMap(c: any, deps: TriggerDeps): Record<s
     'monthly-allocator-ev-fusion-refresh': () => deps.runAllocatorEvFusionRefresh(requestedRunDate(), 'monthly'),
     'monthly-opb-arm-prior-refresh': () => deps.runOpbArmPriorRefresh(
       requestedRunDate() || twToday(),
-      c.req.query('expected_return_owner') === 'allocator_ev_fusion'
-        ? 'allocator_ev_fusion'
-        : 'auto',
+      c.req.query('expected_return_owner') === 'l4_alpha_ev'
+        ? 'l4_alpha_ev'
+        : c.req.query('expected_return_owner') === 'allocator_ev_fusion'
+          ? 'allocator_ev_fusion'
+          : 'auto',
     ),
     'monthly-strategy-mining': () => runMonthlyStrategyMining(c.env, requestedRunDate()),
     'external-evidence': () => runExternalEvidenceMaterialize(c.env, requestedRunDate()),

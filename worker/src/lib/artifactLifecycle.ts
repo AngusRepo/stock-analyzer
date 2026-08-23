@@ -868,7 +868,7 @@ export async function runStorageHealthCheck(
            AND status='ready'
            AND created_at >= datetime('now','-24 hours'))) AS progress_24h
   `).first<any>()
-  const frozenDomainReceipt = await env.DB.prepare(`
+  const frozenDomainReceipt = await opsDb.prepare(`
     SELECT COUNT(DISTINCT c.domain) AS frozen_domains
       FROM data_domain_cutovers c
       JOIN data_domain_writer_epochs w ON w.domain=c.domain

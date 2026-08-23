@@ -60,7 +60,8 @@ def test_daily_pipeline_exposes_fusion_only_serving_preflight():
 
     assert "fusion_serving_preflight = assess_allocator_ev_fusion_policy(alpha_policy)" in source
     assert '"schema_version": "expected-return-serving-preflight-v1"' in source
-    assert 'serving_owner = "allocator_ev_fusion" if l4_serving_preflight.get("ready") is True else None' in source
-    assert '"action_gate": "expected_return_owner" if serving_owner else "canonical_l4_required"' in source
-    assert '"overlay_status": "applied" if serving_owner and fusion_serving_preflight.get("ready") is True else "abstained" if serving_owner else "unavailable"' in source
+    assert 'fusion_ready = l4_ready and fusion_serving_preflight.get("ready") is True' in source
+    assert 'else "l4_alpha_ev"' in source
+    assert 'decision_owners = resolve_decision_owner_contract(serving_owner)' in source
+    assert '"overlay_status": "applied" if fusion_ready else "abstained" if l4_ready else "unavailable"' in source
     assert '"expected_return_serving_preflight": expected_return_serving_preflight' in source

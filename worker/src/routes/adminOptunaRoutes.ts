@@ -1,6 +1,7 @@
 import { Hono } from 'hono'
 import { twToday } from '../lib/dateUtils'
 import { requireAdminOrServiceToken, requireServiceToken } from '../lib/auth'
+import { databaseForDataDomain } from '../lib/dataDomainRegistry'
 import { evaluateGaPromotion, formatGaPromotionNotification } from '../lib/gaPromotion'
 import { sendOperatorNotification } from '../lib/notify'
 import {
@@ -493,7 +494,9 @@ adminOptunaRoutes.post('/api/admin/optuna-push', async (c) => {
         computedAt: typeof meta?.computed_at === 'string' ? meta.computed_at : null,
         params,
       })
-      await persistMarketRegimeState(c.env.KV, state)
+      await persistMarketRegimeState(c.env.KV, state, {
+        historyDb: databaseForDataDomain(c.env, 'market'),
+      })
 
       const auditKey = `audit:optuna-push:regime:${twToday()}`
       await c.env.KV.put(auditKey, JSON.stringify({

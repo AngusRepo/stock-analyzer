@@ -3,6 +3,7 @@ import { databaseForDataDomain } from './dataDomainRegistry'
 import { hydrateExpectedReturnConfigFromPointers } from './expectedReturnServingRegistry'
 import type { ExpectedReturnPointerProjection } from './expectedReturnServingRegistry'
 import { ALLOCATOR_EV_FUSION_CONTRACT, L4_ALPHA_EV_CONTRACT } from './evidenceContracts'
+import { resolveDecisionOwnerContract, type ExpectedReturnActionGate } from './decisionOwnerContract'
 import {
   isExactActiveForwardGuard,
   loadExpectedReturnForwardGuard,
@@ -40,8 +41,10 @@ export interface ExpectedReturnArtifactServingState {
 export interface ExpectedReturnServingState {
   schema_version: 'expected-return-serving-state-v1'
   state: 'production_primary' | 'no_eligible_owner'
+  selection_signal_owner: 'score_v2_formal_ml'
   expected_return_owner: ExpectedReturnOwner | null
-  action_gate: 'expected_return_owner' | 'fusion_primary_required'
+  execution_owner: 'allocator_opb_policy' | 'none_fail_closed'
+  action_gate: ExpectedReturnActionGate
   run_date: string | null
   evaluated_at: string
   source_of_truth: 'candidate_projection' | 'model_champion_pointers+artifact_payloads'
@@ -78,11 +81,14 @@ function evaluateArtifact(
   pointer?: ExpectedReturnPointerProjection,
 ): ExpectedReturnArtifactServingState {
   if (!artifact) {
+    const explicitSafeAbstention = pointer?.valid === true
+      && pointer.serving_mode === 'abstention_baseline'
+      && pointer.owner_state === 'safe_abstention'
     return {
       owner,
-      artifact_state: 'missing',
+      artifact_state: explicitSafeAbstention ? 'safe_abstention' : 'missing',
       eligible: false,
-      artifact_id: pointer?.champion_artifact_id ?? null,
+      artifact_id: explicitSafeAbstention ? null : pointer?.champion_artifact_id ?? null,
       model_fingerprint: null,
       model_version: null,
       artifact_contract_version: null,
@@ -91,8 +97,8 @@ function evaluateArtifact(
       serving_mode: pointer?.serving_mode ?? null,
       promotion_state: null,
       pointer_updated_at: pointer?.pointer_updated_at ?? null,
-      blockers: ['artifact_missing'],
-      serving_available: false,
+      blockers: explicitSafeAbstention ? [] : ['artifact_missing'],
+      serving_available: explicitSafeAbstention,
     }
   }
 
@@ -101,7 +107,12 @@ function evaluateArtifact(
     ?? (artifact.serving_mode === 'alpha' || artifact.serving_mode === 'abstention_baseline'
       ? artifact.serving_mode
       : null)
-  const isAbstention = servingMode === 'abstention_baseline'
+  const isAbstention = pointer?.valid === true
+    && pointer.owner_state === 'safe_abstention'
+    && pointer.serving_mode === 'abstention_baseline'
+  if (servingMode === 'abstention_baseline' && !isAbstention) {
+    blockers.push('abstention_artifact_deprecated')
+  }
   const requiredPromotionState = owner === 'allocator_ev_fusion'
     ? 'production_primary'
     : 'production_approved'
@@ -232,11 +243,14 @@ export function resolveExpectedReturnServingState(
     warnings.push('allocator_ev_fusion:serving_forward_guard_residual_bypass_active')
   }
 
+  const decisionOwners = resolveDecisionOwnerContract(owner)
   return {
     schema_version: 'expected-return-serving-state-v1',
     state: owner ? 'production_primary' : 'no_eligible_owner',
+    selection_signal_owner: decisionOwners.selection_signal_owner,
     expected_return_owner: owner,
-    action_gate: owner ? 'expected_return_owner' : 'fusion_primary_required',
+    execution_owner: decisionOwners.execution_owner,
+    action_gate: decisionOwners.action_gate,
     run_date: options.runDate ?? null,
     evaluated_at: options.evaluatedAt ?? new Date().toISOString(),
     source_of_truth: options.sourceOfTruth ?? 'candidate_projection',

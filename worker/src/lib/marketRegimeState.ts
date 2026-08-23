@@ -161,6 +161,57 @@ async function readJson(kv: KVNamespace, key: string): Promise<unknown | null> {
   return await kv.get(key, 'json').catch(() => null)
 }
 
+async function sha256Hex(value: string): Promise<string> {
+  const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(value))
+  return [...new Uint8Array(digest)].map((byte) => byte.toString(16).padStart(2, '0')).join('')
+}
+
+async function readMarketRegimeStateHistory(
+  db: D1Database,
+  runDate: string,
+): Promise<MarketRegimeState | null> {
+  const row = await db.prepare(`
+    SELECT state_json, state_checksum
+      FROM market_regime_state_history_v1
+     WHERE run_date=?
+     LIMIT 1
+  `).bind(runDate).first<{ state_json: string; state_checksum: string }>()
+  if (!row) return null
+  if (await sha256Hex(row.state_json) !== row.state_checksum) {
+    throw new Error(`market_regime_history_checksum_mismatch:${runDate}`)
+  }
+  const parsed = parseMarketRegimeState(JSON.parse(row.state_json))
+  if (!parsed || parsed.run_date !== runDate) {
+    throw new Error(`market_regime_history_payload_invalid:${runDate}`)
+  }
+  return parsed
+}
+
+async function persistMarketRegimeStateHistory(
+  db: D1Database,
+  payload: MarketRegimeState,
+): Promise<void> {
+  if (!payload.run_date) throw new Error('market_regime_history_run_date_missing')
+  const stateJson = JSON.stringify(payload)
+  const checksum = await sha256Hex(stateJson)
+  await db.prepare(`
+    INSERT OR IGNORE INTO market_regime_state_history_v1 (
+      run_date, schema_version, effective_label, raw_label, family, source,
+      hmm_state, regime_index, state_json, state_checksum, computed_at, persisted_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+  `).bind(
+    payload.run_date, payload.schema_version, payload.label, payload.raw_label,
+    payload.family, payload.source, payload.hmm_state, payload.regime_index,
+    stateJson, checksum, payload.computed_at,
+  ).run()
+  const stored = await db.prepare(`
+    SELECT state_checksum FROM market_regime_state_history_v1 WHERE run_date=?
+  `).bind(payload.run_date).first<{ state_checksum: string }>()
+  if (stored?.state_checksum !== checksum) {
+    throw new Error(`market_regime_history_immutable_conflict:${payload.run_date}`)
+  }
+}
+
 export async function readMarketRegimeState(kv: KVNamespace): Promise<MarketRegimeState | null> {
   const current = parseMarketRegimeState(await readJson(kv, MARKET_REGIME_STATE_KEY))
   if (current) return current
@@ -194,15 +245,34 @@ export function marketRegimeStateArchiveKey(runDate: string): string {
   return `${MARKET_REGIME_STATE_ARCHIVE_PREFIX}${runDate}`
 }
 
-export async function readMarketRegimeStateForDate(kv: KVNamespace, runDate: string): Promise<MarketRegimeState | null> {
+export async function readMarketRegimeStateForDate(
+  kv: KVNamespace,
+  runDate: string,
+  historyDb?: D1Database,
+): Promise<MarketRegimeState | null> {
+  if (historyDb) {
+    const historical = await readMarketRegimeStateHistory(historyDb, runDate)
+    if (historical) return historical
+  }
   const archived = parseMarketRegimeState(await readJson(kv, marketRegimeStateArchiveKey(runDate)))
-  if (archived?.run_date === runDate) return archived
+  if (archived?.run_date === runDate) {
+    if (historyDb) await persistMarketRegimeStateHistory(historyDb, archived)
+    return archived
+  }
   const current = await readMarketRegimeState(kv)
-  return current?.run_date === runDate ? current : null
+  if (current?.run_date === runDate) {
+    if (historyDb) await persistMarketRegimeStateHistory(historyDb, current)
+    return current
+  }
+  return null
 }
 
-export async function readHistoricalHmmRegimeFamily(kv: KVNamespace, runDate: string): Promise<MarketRegimeFamily | null> {
-  const state = await readMarketRegimeStateForDate(kv, runDate)
+export async function readHistoricalHmmRegimeFamily(
+  kv: KVNamespace,
+  runDate: string,
+  historyDb?: D1Database,
+): Promise<MarketRegimeFamily | null> {
+  const state = await readMarketRegimeStateForDate(kv, runDate, historyDb)
   return state?.source === 'hmm' ? state.family : null
 }
 
@@ -217,12 +287,19 @@ export async function readCurrentRegimeFamily(kv: KVNamespace): Promise<MarketRe
 export async function persistMarketRegimeState(
   kv: KVNamespace,
   state: MarketRegimeState,
-  options: { expirationTtl?: number; archiveExpirationTtl?: number } = {},
+  options: {
+    expirationTtl?: number
+    archiveExpirationTtl?: number
+    historyDb?: D1Database
+  } = {},
 ): Promise<void> {
   const ttl = options.expirationTtl ?? 2 * 86400
   const archiveTtl = options.archiveExpirationTtl ?? 400 * 86400
   const pushedAt = new Date().toISOString()
   const payload: MarketRegimeState = { ...state, downstream_contract: contract(), pushed_at: pushedAt }
+  if (options.historyDb && payload.run_date) {
+    await persistMarketRegimeStateHistory(options.historyDb, payload)
+  }
   if (payload.run_date) {
     await kv.put(marketRegimeStateArchiveKey(payload.run_date), JSON.stringify(payload), { expirationTtl: archiveTtl })
   }

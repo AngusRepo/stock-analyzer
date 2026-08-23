@@ -2021,7 +2021,17 @@ export async function materializeStrategyDecisionDailyStats(
              WHEN evaluability_status NOT IN ('EVALUABLE','NOT_APPLICABLE_PHASE','NOT_APPLICABLE_OWNER')
              THEN 1 ELSE 0
            END) AS unavailable_decisions,
-           SUM(CASE WHEN matched = 1 THEN 1 ELSE 0 END) AS matched
+           SUM(CASE WHEN d.evaluable=1 AND (
+             (?='' AND d.matched=1)
+             OR (?<>'' AND EXISTS (
+               SELECT 1 FROM strategy_label_matrix_v4 mm
+                JOIN strategy_label_matrix_runs_v4 mmr
+                  ON mmr.producer_run_id=mm.producer_run_id AND mmr.status='ready'
+               WHERE mm.signal_date=d.date AND mm.symbol=d.symbol
+                 AND mm.strategy_id=d.strategy_id AND mm.strategy_version=d.strategy_version
+                 AND mm.producer_run_id=? AND mm.evaluable=1 AND mm.strategy_hit=1
+             ))
+           ) THEN 1 ELSE 0 END) AS matched
       FROM strategy_decision_log d
      WHERE d.date = ?
        AND d.evaluation_contract_version = 'strategy-evaluation-v2'
@@ -2038,6 +2048,9 @@ export async function materializeStrategyDecisionDailyStats(
        )
      GROUP BY d.strategy_id, d.strategy_version
   `).bind(
+    options.canonicalProducerRunId ?? '',
+    options.canonicalProducerRunId ?? '',
+    options.canonicalProducerRunId ?? '',
     date,
     options.canonicalProducerRunId ?? '',
     options.canonicalProducerRunId ?? '',

@@ -463,7 +463,11 @@ export function buildAdminWorkerDomainTaskMap(c: any, deps: TriggerDeps): Record
             },
             resolveHistoricalRegime: async (signalDate) => {
               const { readHistoricalHmmRegimeFamily } = await import('./marketRegimeState')
-              return readHistoricalHmmRegimeFamily(c.env.KV, signalDate)
+              return readHistoricalHmmRegimeFamily(
+                c.env.KV,
+                signalDate,
+                databaseForDataDomain(c.env, 'market'),
+              )
             },
             resolveHistoricalArtifactEvidence: async (signalDate, producerRunId) => {
               const { loadHistoricalScreenerArtifactEvidence } = await import('./historicalScreenerArtifactEvidence')
@@ -1286,7 +1290,7 @@ export function buildAdminWorkerDomainTaskMap(c: any, deps: TriggerDeps): Record
           used_bytes: number
           observed_date: string
         }>(),
-        c.env.DB.prepare(`
+        opsDb.prepare(`
           SELECT domain, substr(MAX(updated_at), 1, 10) AS baseline_after
             FROM data_domain_backfill_cursors
            GROUP BY domain

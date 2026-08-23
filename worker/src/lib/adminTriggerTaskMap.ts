@@ -30,7 +30,7 @@ export interface TriggerDeps {
   runAllocatorEvFusionRefresh: (runDate?: string, cadence?: 'weekly' | 'monthly') => Promise<any>
   runOpbArmPriorRefresh: (
     runDate: string,
-    expectedReturnOwner: 'auto' | 'allocator_ev_fusion',
+    expectedReturnOwner: 'auto' | 'l4_alpha_ev' | 'allocator_ev_fusion',
   ) => Promise<any>
   runAllocatorEvFeatureSnapshotBackfill: (params: {
     startDate: string

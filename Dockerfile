@@ -23,7 +23,9 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 # Worker screener job runtime. The Cloud Run Job compiles and runs the same
 # TypeScript screener code with D1/KV REST adapters instead of Worker bindings.
-RUN mkdir -p /app/worker
+RUN mkdir -p /app/worker /app/schemas /app/infra
+COPY schemas/expected-return-contracts-v1.json /app/schemas/expected-return-contracts-v1.json
+COPY infra/gcp-scheduler-jobs.json /app/infra/gcp-scheduler-jobs.json
 COPY worker/package.json worker/package-lock.json /app/worker/
 RUN cd /app/worker && npm ci
 COPY worker/ /app/worker/

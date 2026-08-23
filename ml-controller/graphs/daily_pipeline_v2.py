@@ -32,6 +32,7 @@ from services.d1_domain_client import D1DataDomain, client_for_domain
 from services.ensemble_v2 import attach_ensemble_v2
 from services.expected_return_calibration import load_expected_return_calibration_report
 from services.evidence_contracts import LABEL_SCHEMA_VERSION
+from services.decision_owner_contract import resolve_decision_owner_contract
 from services.l4_alpha_ev_producer import assess_l4_policy_cutover
 from services.allocator_ev_fusion import assess_allocator_ev_fusion_policy
 from services.expected_return_serving_forward_guard import (
@@ -2718,12 +2719,20 @@ async def node_recommend(state: PipelineStateV2) -> dict:
         alpha_policy.setdefault("allocatorEvFusion", allocator_ev_fusion_policy)
         alpha_policy.setdefault("allocator_ev_fusion", allocator_ev_fusion_policy)
     fusion_serving_preflight = assess_allocator_ev_fusion_policy(alpha_policy)
-    serving_owner = "allocator_ev_fusion" if l4_serving_preflight.get("ready") is True else None
+    l4_ready = l4_serving_preflight.get("ready") is True
+    fusion_ready = l4_ready and fusion_serving_preflight.get("ready") is True
+    serving_owner = (
+        "allocator_ev_fusion"
+        if fusion_ready
+        else "l4_alpha_ev"
+        if l4_ready
+        else None
+    )
+    decision_owners = resolve_decision_owner_contract(serving_owner)
     expected_return_serving_preflight = {
         "schema_version": "expected-return-serving-preflight-v1",
-        "expected_return_owner": serving_owner,
-        "action_gate": "expected_return_owner" if serving_owner else "canonical_l4_required",
-        "overlay_status": "applied" if serving_owner and fusion_serving_preflight.get("ready") is True else "abstained" if serving_owner else "unavailable",
+        **decision_owners,
+        "overlay_status": "applied" if fusion_ready else "abstained" if l4_ready else "unavailable",
         "artifacts": {
             "l4_alpha_ev": l4_serving_preflight,
             "allocator_ev_fusion": fusion_serving_preflight,

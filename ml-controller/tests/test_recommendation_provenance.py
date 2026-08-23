@@ -12,6 +12,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from services import recommendation_service  # noqa: E402
 from services import trading_config_loader  # noqa: E402
+from services.pit_sector_alpha import SECTOR_ALPHA_FEATURE_NAMES  # noqa: E402
 from services.recommendation_service import (  # noqa: E402
     apply_sparse_tangent_allocation as _apply_sparse_tangent_allocation,
     build_reason,
@@ -198,8 +199,8 @@ def _trade_ev(value: float, source: str = "l4_alpha_ev:test_fixture") -> dict:
 def _l4_alpha_ev(value: float, *, method: str = "stacked_meta_calibrator") -> dict:
     return {
         "schema_version": "l4-alpha-ev-v1",
-        "artifact_contract_version": "l4-alpha-ev-contract-v4",
-        "feature_semantic_version": "l4-directional-score-components-v2-lineage-bound",
+        "artifact_contract_version": "l4-alpha-ev-contract-v5",
+        "feature_semantic_version": "l4-directional-score-sector-components-v3-lineage-bound",
         "label_schema_version": "next-session-canonical-adjusted-open-to-fifth-session-canonical-adjusted-close-net-v4",
         "expected_return_owner": "l4_alpha_ev",
         "expected_return_mean": value,
@@ -207,10 +208,10 @@ def _l4_alpha_ev(value: float, *, method: str = "stacked_meta_calibrator") -> di
         "promotion_state": "production_approved",
         "validation_packet": {"decision": "PASS", "failed_gates": []},
         "resolver_method": method,
-        "model_version": "l4-alpha-ev-20260707",
+        "model_version": "l4-alpha-ev-ridge-v5-sector-20260707",
         "feature_snapshot_version": "l4-alpha-features-v1",
         "trained_until": "2026-07-06",
-        "horizon_days": 3,
+        "horizon_days": 5,
         "cost_model_bps": 18.0,
         "output_is_net_of_costs": True,
         "feature_families": ["fundamental", "formal_ml", "chip", "technical", "regime", "s12_context"],
@@ -220,13 +221,21 @@ def _l4_alpha_ev(value: float, *, method: str = "stacked_meta_calibrator") -> di
             "chip_flow_norm",
             "technical_structure_norm",
             "ensemble_directional_margin",
+            *SECTOR_ALPHA_FEATURE_NAMES,
         ],
         "coefficients": {
+            **{
+                name: 0.0
+                for name in [
+                    "ml_edge_norm",
+                    "fundamental_quality_norm",
+                    "chip_flow_norm",
+                    "technical_structure_norm",
+                    "ensemble_directional_margin",
+                    *SECTOR_ALPHA_FEATURE_NAMES,
+                ]
+            },
             "ml_edge_norm": 0.01,
-            "fundamental_quality_norm": 0.01,
-            "chip_flow_norm": 0.01,
-            "technical_structure_norm": 0.01,
-            "ensemble_directional_margin": 0.01,
         },
     }
 
@@ -878,6 +887,10 @@ def test_sparse_tangent_allocation_rejects_legacy_row_level_expected_return():
     assert promoted[0]["signal"] == "HOLD"
     assert allocation["expected_return"] == 0.0
     assert allocation["expected_return_owner"] == "risk_abstention"
+    assert allocation["allocator_edge_resolver"]["selection_signal_owner"] == "score_v2_formal_ml"
+    assert allocation["allocator_edge_resolver"]["formal_expected_return_owner"] is None
+    assert allocation["allocator_edge_resolver"]["execution_owner"] == "none_fail_closed"
+    assert allocation["allocator_edge_resolver"]["action_gate"] == "canonical_l4_required"
     assert allocation["positive_expected_edge"] is False
 
 
@@ -1794,13 +1807,14 @@ def test_sparse_tangent_allocation_abstains_assistive_fusion_to_valid_l4():
 
     allocation = promoted[0]["alpha_allocation"]
     assert promoted[0]["signal"] == "BUY"
-    assert allocation["expected_return_owner"] == "allocator_ev_fusion"
+    assert allocation["expected_return_owner"] == "l4_alpha_ev"
+    assert allocation["allocator_edge_resolver"]["candidate_contract"] == "production_l4_alpha_ev_base"
     assert allocation["expected_return"] == pytest.approx(0.018)
     assert allocation["allocator_ev_fusion"]["status"] == "rejected"
     assert allocation["allocator_ev_fusion"]["promotion_tier"] == "assistive"
     assert allocation["allocator_ev_fusion"]["primary_expected_return_allowed"] is False
     assert "production_approval_missing" in allocation["allocator_ev_fusion"]["blockers"]
-    assert allocation["allocator_ev_fusion"]["overlay_status"] == "abstained"
+    assert allocation["allocator_ev_fusion"]["overlay_status"] == "rejected"
     assert allocation["allocator_ev_fusion"]["fusion_residual_adjustment"] == 0.0
 
 
@@ -1848,12 +1862,13 @@ def test_legacy_fusion_heads_are_rejected_without_discarding_valid_l4():
 
     allocation = promoted[0]["alpha_allocation"]
     assert promoted[0]["signal"] == "BUY"
-    assert allocation["expected_return_owner"] == "allocator_ev_fusion"
+    assert allocation["expected_return_owner"] == "l4_alpha_ev"
+    assert allocation["allocator_edge_resolver"]["candidate_contract"] == "production_l4_alpha_ev_base"
     assert allocation["expected_return"] == pytest.approx(0.018)
     assert allocation["allocator_ev_fusion"]["status"] == "rejected"
     assert "third_selection_serving_head_forbidden" in allocation["allocator_ev_fusion"]["blockers"]
     assert "legacy_s12_serving_heads_forbidden" in allocation["allocator_ev_fusion"]["blockers"]
-    assert allocation["allocator_ev_fusion"]["overlay_status"] == "abstained"
+    assert allocation["allocator_ev_fusion"]["overlay_status"] == "rejected"
 
 
 def test_sparse_tangent_allocation_abstains_invalid_fusion_to_valid_l4():
@@ -1892,12 +1907,13 @@ def test_sparse_tangent_allocation_abstains_invalid_fusion_to_valid_l4():
 
     allocation = promoted[0]["alpha_allocation"]
     assert promoted[0]["signal"] == "BUY"
-    assert allocation["expected_return_owner"] == "allocator_ev_fusion"
+    assert allocation["expected_return_owner"] == "l4_alpha_ev"
+    assert allocation["allocator_edge_resolver"]["candidate_contract"] == "production_l4_alpha_ev_base"
     assert allocation["expected_return"] == pytest.approx(0.018)
     assert allocation["allocator_ev_fusion"]["status"] == "rejected"
     assert "validation_packet_not_pass" in allocation["allocator_ev_fusion"]["blockers"]
     assert "third_selection_serving_head_forbidden" in allocation["allocator_ev_fusion"]["blockers"]
-    assert allocation["allocator_ev_fusion"]["overlay_status"] == "abstained"
+    assert allocation["allocator_ev_fusion"]["overlay_status"] == "rejected"
 
 
 def test_sparse_tangent_allocation_rejects_legacy_safe_abstention_baseline_without_s12_fallback():

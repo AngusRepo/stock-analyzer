@@ -1,5 +1,5 @@
 import type { Bindings } from '../types'
-import { shadowDatabaseForDataDomain, type DataDomain } from './dataDomainRegistry'
+import { databaseForDataDomain, shadowDatabaseForDataDomain, type DataDomain } from './dataDomainRegistry'
 import type { LatestEveningChainClosure } from './dataDomainShadowBackfillDrain'
 
 type CutoverRow = { status?: string | null; parity_checked_at?: string | null }
@@ -106,18 +106,19 @@ export async function inspectActiveDataDomainOwnerProof(
 ) {
   const targetDb = shadowDatabaseForDataDomain(env, domain)
   if (!targetDb) throw new Error(`data_domain_binding_missing:${domain}`)
+  const opsDb = databaseForDataDomain(env, 'ops')
   const [cutover, writer, probe, projections, anchor] = await Promise.all([
-    env.DB.prepare(`
+    opsDb.prepare(`
       SELECT status, parity_checked_at
         FROM data_domain_cutovers
        WHERE domain=?
     `).bind(domain).first<CutoverRow>(),
-    env.DB.prepare(`
+    opsDb.prepare(`
       SELECT epoch, writer_state
         FROM data_domain_writer_epochs
        WHERE domain=?
     `).bind(domain).first<WriterRow>(),
-    env.DB.prepare(`
+    opsDb.prepare(`
       SELECT source_epoch, parity_checked_at, read_write_readback_passed,
              rollback_restore_passed, status, checked_at
         FROM data_domain_cutover_probe_receipts
@@ -125,7 +126,7 @@ export async function inspectActiveDataDomainOwnerProof(
        ORDER BY checked_at DESC
        LIMIT 1
     `).bind(domain).first<ProbeRow>(),
-    env.DB.prepare(`
+    opsDb.prepare(`
       SELECT SUM(CASE WHEN status <> 'published' THEN 1 ELSE 0 END) pending,
              SUM(CASE WHEN status = 'error' THEN 1 ELSE 0 END) errors
         FROM domain_projection_outbox

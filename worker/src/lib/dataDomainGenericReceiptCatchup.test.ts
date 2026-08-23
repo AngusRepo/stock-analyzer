@@ -52,9 +52,9 @@ class ReceiptDb {
   }
 
   first(sql: string): unknown {
-    if (/SELECT\s+status\s+FROM\s+data_domain_cutovers/i.test(sql)) {
+    if (/FROM\s+data_domain_cutovers/i.test(sql)) {
       if (this.side !== 'source') throw new Error(`unexpected_target_cutover:${sql}`)
-      return { status: 'legacy' }
+      return { status: 'legacy', writer_state: 'open' }
     }
     if (/SELECT\s+COUNT\(\*\)\s+AS\s+row_count\s+FROM\s+"users"/i.test(sql)) {
       return { row_count: 1 }

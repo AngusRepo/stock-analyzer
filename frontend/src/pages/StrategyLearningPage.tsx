@@ -171,8 +171,14 @@ function evidenceMetricAvailabilityReason(metricRow: {
   if (missing === 'no_strategy_hits_in_observation_window') {
     return '目前觀察窗沒有正式命中。候選／研究策略現在不參與正式選股；需先在 Shadow A／B 恢復可驗證命中，再談調整門檻或升級。'
   }
+  if (missing === 'rank_ic_cross_section_not_identifiable') {
+    const observedDates = Number(metricRow.evidence?.observation_dates ?? 0)
+    const constantDates = Number(metricRow.evidence?.constant_affinity_dates ?? 0)
+    return `已有 ${metricRow.sample_count} 筆／${observedDates} 個成熟訊號日，但 ${constantDates} 日的策略 affinity 在日內沒有橫斷面差異，Rank IC 無法識別；需等待採用連續 affinity 的新日期成熟，不能把舊 binary affinity 回填成分數。`
+  }
   if (missing === 'insufficient_mature_dates_for_estimator') {
-    return `已有 ${metricRow.sample_count} 筆，但只涵蓋 ${metricRow.mature_dates} 個成熟交易日；至少需 2 個不同成熟日才能估計穩定性。`
+    const observedDates = Number(metricRow.evidence?.observation_dates ?? metricRow.mature_dates)
+    return `已有 ${metricRow.sample_count} 筆／${observedDates} 個成熟訊號日，其中 ${metricRow.mature_dates} 日可供此估計器使用；至少需 2 個可估計日。`
   }
   if (missing === 'fewer_than_two_supported_regimes_with_two_mature_dates') {
     return '正式 PIT 盤勢已接通，但目前還沒有至少 2 種支援盤勢、且各自累積 2 個成熟交易日。'
@@ -183,14 +189,14 @@ function evidenceMetricAvailabilityReason(metricRow: {
       : '部分命中尚未對到完整的進場日至出場日還原權息價格路徑。'
   }
   if (missing === 'fewer_than_three_distinct_pit_revenue_months') {
-    return '至少需要三個在當時已知的營收月份，才能形成兩段連續變化並判斷改善或惡化是否延續。'
+    return '至少需要三個在訊號當時已進入 append-only ledger 的營收月份。若歷史營收是在訊號日後才匯入，PIT 契約禁止回填成「當時已知」；需等待匯入後的新訊號完成結果窗。'
   }
   if (metricRow.metric === 'turnover_after_cost' && Number(metricRow.evidence?.average_one_way_turnover ?? 0) === 0) {
     return '候選集合在目前成熟日期沒有變動，實測單邊周轉為 0，報酬 ÷ 周轉的分母無法成立。'
   }
   if (metricRow.sample_count === 0) return '策略在目前觀察窗沒有正式命中；這是零訊號，不是資料流中斷。'
   if (metricRow.mature_dates < 2) return `已有 ${metricRow.sample_count} 筆，但只涵蓋 ${metricRow.mature_dates} 個成熟交易日，暫時無法估計穩定性。`
-  return `已取得 ${metricRow.sample_count} 筆／${metricRow.mature_dates} 個成熟交易日，仍未達正式成熟門檻。`
+  return `已取得 ${metricRow.sample_count} 筆／${metricRow.mature_dates} 個可估計成熟日；正式 metric 門檻為至少 20 筆且 5 日。`
 }
 
 function compactStrategyId(value: string): string {

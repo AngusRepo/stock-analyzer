@@ -2142,9 +2142,7 @@ export async function runDailyAllocatorEvReadiness(
   const health = await inspectExpectedReturnLifecycleHealth(env, knowledgeCutoffDate)
   const servingState = await refreshExpectedReturnServingState(env, knowledgeCutoffDate)
   parts.push(`knowledge_cutoff_date=${knowledgeCutoffDate}`)
-  const priorOwner = servingState.expected_return_owner === 'allocator_ev_fusion'
-    ? 'allocator_ev_fusion'
-    : null
+  const priorOwner = servingState.expected_return_owner
   parts.push(`expected_return_serving_state=${servingState.state}`)
   parts.push(`expected_return_action_gate=${servingState.action_gate}`)
   parts.push(`required_oof_max_date=${health.expected_mature_signal_date ?? 'unresolved'}`)
@@ -2214,7 +2212,7 @@ export async function runDailyAllocatorEvReadiness(
     parts.push('opb_prior_not_ready=no_production_expected_return_owner')
     await logSchedulerResult(env.KV, 'opb-arm-prior-refresh', {
       status: 'skipped',
-      summary: 'daily-chain OPB prior retained; no production-primary Fusion expected-return owner',
+      summary: 'daily-chain OPB prior retained; no contract-compatible production expected-return owner',
       duration_ms: 0,
       run_id: schedulerRunId,
       attempt_id: options.attemptId,
@@ -3042,8 +3040,12 @@ export async function processUpdateBatch(
       maxDates: Math.max(1, Math.min(5, Number(msg.strategyEvidenceMaxDates ?? 1))),
       identityDb: databaseForDataDomain(env, 'core'),
       priorityDate: signalDate,
-      priorityOnly: false,
-      resolveHistoricalRegime: (date) => readHistoricalHmmRegimeFamily(env.KV, date),
+      priorityOnly: true,
+      resolveHistoricalRegime: (date) => readHistoricalHmmRegimeFamily(
+        env.KV,
+        date,
+        databaseForDataDomain(env, 'market'),
+      ),
       resolveCanonicalScreenerRunIds: async (asOfDate) => {
         const { loadCanonicalScreenerRunIds } = await import('./historicalScreenerArtifactEvidence')
         return loadCanonicalScreenerRunIds(env, asOfDate)
@@ -3759,7 +3761,11 @@ export async function processUpdateBatch(
           },
           resolveHistoricalRegime: async (signalDate) => {
             const { readHistoricalHmmRegimeFamily } = await import('./marketRegimeState')
-            return readHistoricalHmmRegimeFamily(env.KV, signalDate)
+            return readHistoricalHmmRegimeFamily(
+              env.KV,
+              signalDate,
+              databaseForDataDomain(env, 'market'),
+            )
           },
           resolveHistoricalArtifactEvidence: async (signalDate, producerRunId) => {
             const { loadHistoricalScreenerArtifactEvidence } = await import('./historicalScreenerArtifactEvidence')

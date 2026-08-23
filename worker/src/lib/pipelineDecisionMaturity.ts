@@ -194,8 +194,10 @@ export interface PipelineDecisionMaturityPacket {
   schema_version: 'pipeline-decision-maturity-v2'
   requested_date: string
   generated_at: string
+  current_selection_signal_owner: 'score_v2_formal_ml'
   current_expected_return_owner: 'l4_alpha_ev' | 'allocator_ev_fusion' | null
-  action_gate: 'expected_return_owner' | 'fusion_primary_required'
+  current_execution_owner: 'allocator_opb_policy' | 'none_fail_closed'
+  action_gate: 'expected_return_owner' | 'canonical_l4_required'
   strategy_route_bundle: StrategyRouteBundleMaturity
   summary: {
     production: number
@@ -560,23 +562,27 @@ export async function buildPipelineDecisionMaturityPacket(
     safeQuery(() => readCurrentExpectedReturnServingState({ ...env, DB: learningDb }, requestedDate)),
     safeQuery(() => inspectAllocatorEvMaturityCoverage(learningDb, requestedDate)),
     safeQuery(() => marketDb.prepare(`
-      WITH sessions AS (
-        SELECT date, LAG(date) OVER (ORDER BY date) previous_session
-          FROM market_risk
-         WHERE twii_close IS NOT NULL AND date <= ?
+      WITH session_calendar AS (
+        SELECT DISTINCT date(date) trading_date
+          FROM canonical_market_daily
+         WHERE stock_id='0050' AND source='finlab.price' AND date(date)<=date(?)
+      ), sessions AS (
+        SELECT trading_date,
+               LAG(trading_date) OVER (ORDER BY trading_date) previous_session
+          FROM session_calendar
       ), sector_sources AS (
-        SELECT date, COUNT(DISTINCT classification) layer_count,
+        SELECT date(date) source_date, COUNT(DISTINCT classification) layer_count,
                MAX(COALESCE(updated_at, created_at)) source_available_at
           FROM sector_flow
          WHERE pit_lineage_version='sector-flow-pit-v1'
-         GROUP BY date
+         GROUP BY date(date)
       ), ready_signals AS (
-        SELECT sessions.date signal_date
+        SELECT sessions.trading_date signal_date
           FROM sessions
-          JOIN sector_sources ON sector_sources.date=sessions.previous_session
+          JOIN sector_sources ON sector_sources.source_date=sessions.previous_session
          WHERE sector_sources.layer_count=4
            AND datetime(sector_sources.source_available_at)
-               <= datetime(sessions.date || 'T13:30:00+08:00')
+               <= datetime(sessions.trading_date || 'T13:30:00+08:00')
       )
       SELECT MIN(signal_date) first_signal_date,
              MAX(signal_date) latest_signal_date,
@@ -1430,8 +1436,10 @@ export async function buildPipelineDecisionMaturityPacket(
     schema_version: 'pipeline-decision-maturity-v2',
     requested_date: requestedDate,
     generated_at: new Date().toISOString(),
+    current_selection_signal_owner: servingState?.selection_signal_owner ?? 'score_v2_formal_ml',
     current_expected_return_owner: servingState?.expected_return_owner ?? null,
-    action_gate: servingState?.action_gate ?? 'fusion_primary_required',
+    current_execution_owner: servingState?.execution_owner ?? 'none_fail_closed',
+    action_gate: servingState?.action_gate ?? 'canonical_l4_required',
     summary: {
       production: stages.filter((stage) => stage.contribution_mode === 'production').length,
       shadow: stages.filter((stage) => stage.contribution_mode === 'shadow').length,

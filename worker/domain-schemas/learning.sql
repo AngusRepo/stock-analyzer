@@ -1479,6 +1479,19 @@ CREATE INDEX IF NOT EXISTS idx_expected_return_forward_guard_state_updated
 CREATE INDEX IF NOT EXISTS idx_model_champion_history_semantic_scan
   ON model_champion_history(model_name, effective_at, event_id);
 
+CREATE TABLE IF NOT EXISTS expected_return_owner_state_v2 (
+  owner TEXT PRIMARY KEY CHECK(owner IN ('l4_alpha_ev','allocator_ev_fusion')),
+  owner_state TEXT NOT NULL CHECK(owner_state IN ('learned_champion','safe_abstention','no_champion')),
+  champion_artifact_id TEXT,
+  reason_code TEXT NOT NULL,
+  contract_manifest_version TEXT NOT NULL,
+  updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  CHECK(
+    (owner_state='learned_champion' AND champion_artifact_id IS NOT NULL)
+    OR (owner_state!='learned_champion' AND champion_artifact_id IS NULL)
+  )
+);
+
 CREATE TABLE IF NOT EXISTS model_health_daily (
   id              INTEGER PRIMARY KEY AUTOINCREMENT,
   date            TEXT NOT NULL,

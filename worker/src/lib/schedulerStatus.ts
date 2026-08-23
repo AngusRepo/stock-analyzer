@@ -2,6 +2,7 @@
  * schedulerStatus.ts - Scheduler dashboard status builder
  */
 
+import schedulerManifest from '../../../infra/gcp-scheduler-jobs.json'
 import type { Bindings } from '../types'
 import { getCronLogs, type CronLogEntry } from './schedulerRunLogger'
 import { getNextRunApproxWithPolicy } from './schedulerPolicy'
@@ -32,7 +33,7 @@ export type SchedulerDisplayStatus = {
 }
 type SchedulerDurationConcern = 'expected_short' | 'suspicious_short' | null
 
-const JOB_DEFS: JobDef[] = [
+const JOB_DEF_METADATA: JobDef[] = [
   { id: 'pre-market-warmup', name: 'Pre-market Warmup', schedule: 'Weekdays 08:50', cron: '50 0 * * 1-5', group: 'pipeline_chain', chainIndex: 0 },
   { id: 'market-close-refresh', name: 'Market Close Refresh', schedule: 'Weekdays 18:10', cron: '10 10 * * 1-5', group: 'pipeline_chain', chainIndex: 1 },
   { id: 'evening-chain', name: 'Evening Chain', schedule: 'Weekdays 21:00', cron: '0 13 * * 1-5', group: 'pipeline_chain', chainIndex: 2 },
@@ -114,6 +115,26 @@ const JOB_DEFS: JobDef[] = [
 
   { id: 'optuna-queue', name: 'Optuna Queue Processor', schedule: 'Every 6h', cron: '0 */6 * * *', group: 'daily' },
 ]
+
+type SchedulerManifestJob = { id: string; task: string; schedule: string }
+const SCHEDULER_MANIFEST_JOBS = (schedulerManifest as { jobs: SchedulerManifestJob[] }).jobs
+
+function canonicalCronFor(def: JobDef): string {
+  const exact = SCHEDULER_MANIFEST_JOBS.filter((job) => job.id === def.id)
+  const owned = def.id === 'intraday-check'
+    ? SCHEDULER_MANIFEST_JOBS.filter((job) => job.task === def.id)
+    : exact.length > 0
+      ? exact
+      : SCHEDULER_MANIFEST_JOBS.filter((job) => job.task === def.id)
+  return owned.length > 0
+    ? [...new Set(owned.map((job) => job.schedule))].join(' + ')
+    : def.cron
+}
+
+const JOB_DEFS: JobDef[] = JOB_DEF_METADATA.map((def) => ({
+  ...def,
+  cron: canonicalCronFor(def),
+}))
 
 const CHAIN_STEP_IDS = [
   'market-close-refresh',

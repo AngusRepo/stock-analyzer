@@ -8,6 +8,12 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from services import recommendation_service  # noqa: E402
+from services.evidence_contracts import (  # noqa: E402
+    L4_ARTIFACT_CONTRACT_VERSION,
+    L4_FEATURE_SEMANTIC_VERSION,
+    LABEL_SCHEMA_VERSION,
+)
+from services.pit_sector_alpha import SECTOR_ALPHA_FEATURE_NAMES  # noqa: E402
 from services.l4_alpha_ev_producer import (  # noqa: E402
     assess_l4_artifact_cutover,
     assess_l4_policy_cutover,
@@ -23,25 +29,26 @@ from services.recommendation_service import (  # noqa: E402
 def _artifact(**overrides):
     base = {
         "schema_version": "l4-alpha-ev-artifact-v2",
-        "artifact_contract_version": "l4-alpha-ev-contract-v4",
+        "artifact_contract_version": L4_ARTIFACT_CONTRACT_VERSION,
         "promotion_state": "production_approved",
         "validation_packet": {"decision": "PASS", "failed_gates": []},
         "resolver_method": "regularized_meta_calibrator",
-        "model_version": "l4-alpha-ev-20260707",
-        "feature_snapshot_version": "l4-alpha-feature-snapshot-v4-directional-components",
-        "feature_semantic_version": "l4-directional-score-components-v2-lineage-bound",
-        "label_schema_version": "next-session-canonical-adjusted-open-to-fifth-session-canonical-adjusted-close-net-v4",
+        "model_version": "l4-alpha-ev-ridge-v5-sector-20260823",
+        "feature_snapshot_version": L4_FEATURE_SEMANTIC_VERSION,
+        "feature_semantic_version": L4_FEATURE_SEMANTIC_VERSION,
+        "label_schema_version": LABEL_SCHEMA_VERSION,
         "trained_until": "2026-07-06",
-        "horizon_days": 3,
+        "horizon_days": 5,
         "cost_model_bps": 18.0,
         "output_is_net_of_costs": True,
-        "feature_families": ["score_v2_components", "formal_ml_direction"],
+        "feature_families": ["score_v2_components", "formal_ml_direction", "pit_sector_alpha"],
         "feature_names": [
             "ml_edge_norm",
             "fundamental_quality_norm",
             "chip_flow_norm",
             "technical_structure_norm",
             "ensemble_directional_margin",
+            *SECTOR_ALPHA_FEATURE_NAMES,
         ],
         "intercept": -0.002,
         "coefficients": {
@@ -50,6 +57,7 @@ def _artifact(**overrides):
             "chip_flow_norm": 0.004,
             "technical_structure_norm": 0.004,
             "ensemble_directional_margin": 0.012,
+            **{name: 0.0 for name in SECTOR_ALPHA_FEATURE_NAMES},
         },
         "output_clip": {"min": -0.08, "max": 0.08},
     }
@@ -146,7 +154,7 @@ def test_materialize_l4_alpha_ev_falls_through_rejected_existing_payload_to_vali
     )
 
     assert payload["status"] == "loaded"
-    assert payload["model_version"] == "l4-alpha-ev-20260707"
+    assert payload["model_version"] == "l4-alpha-ev-ridge-v5-sector-20260823"
     assert payload["expected_return"] == pytest.approx(0.01824)
 
 
@@ -171,24 +179,35 @@ def test_materialize_l4_alpha_ev_preserves_rejected_existing_payload_without_art
     assert "expected_return_missing" in payload["blockers"]
 
 
-def test_l4_serving_migration_accepts_only_exact_legacy_contract_pair():
-    legacy = _artifact(
-        artifact_contract_version="l4-alpha-ev-contract-v3",
-        label_schema_version="next-session-raw-open-to-fifth-session-raw-close-canonical-finlab-factor-net-v3",
+def test_retired_l4_serving_contracts_fail_closed():
+    retired = (
+        (
+            "l4-alpha-ev-contract-v3",
+            "l4-directional-score-components-v2-lineage-bound",
+            "next-session-raw-open-to-fifth-session-raw-close-canonical-finlab-factor-net-v3",
+        ),
+        (
+            "l4-alpha-ev-contract-v4",
+            "l4-directional-score-components-v2-lineage-bound",
+            LABEL_SCHEMA_VERSION,
+        ),
     )
-    accepted = materialize_l4_alpha_ev(
-        _row(), prediction=_prediction(), policy={"l4_alpha_ev": legacy}
-    )
-    hybrid = materialize_l4_alpha_ev(
-        _row(),
-        prediction=_prediction(),
-        policy={"l4_alpha_ev": {**legacy, "label_schema_version": _artifact()["label_schema_version"]}},
-    )
-
-    assert accepted["status"] == "loaded"
-    assert hybrid["status"] == "rejected"
-    assert "artifact_label_contract_pair_incompatible" in hybrid["blockers"]
-
+    for contract_version, feature_semantic, label_schema in retired:
+        payload = materialize_l4_alpha_ev(
+            _row(),
+            prediction=_prediction(),
+            policy={
+                "l4_alpha_ev": _artifact(
+                    artifact_contract_version=contract_version,
+                    feature_semantic_version=feature_semantic,
+                    label_schema_version=label_schema,
+                )
+            },
+        )
+        assert payload["status"] == "rejected"
+        assert payload["expected_return"] is None
+        assert "artifact_contract_version_incompatible" in payload["blockers"]
+        assert "feature_semantic_version_incompatible" in payload["blockers"]
 
 def test_l4_cutover_requires_current_producer_contract_before_promotion():
     assert assess_l4_artifact_cutover(_artifact())["ready"] is True
@@ -247,7 +266,7 @@ def test_materialize_l4_alpha_ev_rejects_legacy_unsigned_confidence_artifact():
     assert "artifact_contract_version_incompatible" in payload["blockers"]
     assert "feature_semantic_version_incompatible" in payload["blockers"]
     assert "label_schema_version_incompatible" in payload["blockers"]
-    assert payload["model_version"] == "l4-alpha-ev-20260707"
+    assert payload["model_version"] == "l4-alpha-ev-ridge-v5-sector-20260823"
     assert "coefficients" not in payload
     assert set(payload["validation_packet"]) == {"decision", "failed_gates"}
 
@@ -395,15 +414,18 @@ def test_filter_and_score_keeps_valid_l4_base_when_fusion_residual_abstains(monk
     assert prediction["l4_alpha_ev"]["status"] == "loaded"
     assert prediction["ensemble_v2"]["l4_alpha_ev"]["status"] == "loaded"
     allocation = promoted[0]["alpha_allocation"]
-    assert allocation["expected_return_owner"] == "allocator_ev_fusion"
+    assert allocation["expected_return_owner"] == "l4_alpha_ev"
     assert allocation["expected_return"] == pytest.approx(final[0]["l4_alpha_ev"]["expected_return"])
-    assert allocation["expected_return_source"] == "allocator_ev_fusion:l4_base_overlay_abstained"
+    assert allocation["expected_return_source"] == "l4_alpha_ev:validated_base_fusion_overlay_abstained"
     assert allocation["l4_alpha_ev"]["status"] == "loaded"
     assert allocation["allocator_edge_resolver"]["base_expected_return_owner"] == "l4_alpha_ev"
     assert allocation["allocator_edge_resolver"]["fusion_residual_adjustment"] == 0.0
     assert allocation["allocator_edge_resolver"]["fusion_adjustment_allowed"] is False
-    assert allocation["allocator_ev_fusion"]["primary_expected_return_allowed"] is False
-    assert allocation["allocator_ev_fusion"]["overlay_status"] == "abstained"
+    assert allocation["allocator_ev_fusion"] is None
+    assert allocation["allocator_edge_resolver"]["expected_return_contract_version"] == L4_ARTIFACT_CONTRACT_VERSION
+    assert allocation["allocator_edge_resolver"]["selection_signal_owner"] == "score_v2_formal_ml"
+    assert allocation["allocator_edge_resolver"]["formal_expected_return_owner"] == "l4_alpha_ev"
+    assert allocation["allocator_edge_resolver"]["execution_owner"] == "allocator_opb_policy"
 
 
 def test_materialize_l4_alpha_ev_normalizes_gross_artifact_once_and_marks_net():

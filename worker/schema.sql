@@ -2837,3 +2837,36 @@ CREATE TABLE IF NOT EXISTS canonical_revenue_observations_v2 (
 
 CREATE INDEX IF NOT EXISTS idx_revenue_observations_v2_stock_knowledge
   ON canonical_revenue_observations_v2(stock_id, knowledge_time, revenue_month);
+
+
+-- Expected-return owner state is distinct from learned champion pointers.
+CREATE TABLE IF NOT EXISTS expected_return_owner_state_v2 (
+  owner TEXT PRIMARY KEY CHECK(owner IN ('l4_alpha_ev','allocator_ev_fusion')),
+  owner_state TEXT NOT NULL CHECK(owner_state IN ('learned_champion','safe_abstention','no_champion')),
+  champion_artifact_id TEXT,
+  reason_code TEXT NOT NULL,
+  contract_manifest_version TEXT NOT NULL,
+  updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  CHECK(
+    (owner_state='learned_champion' AND champion_artifact_id IS NOT NULL)
+    OR (owner_state!='learned_champion' AND champion_artifact_id IS NULL)
+  )
+);
+
+-- Immutable Market-D1 regime history; KV is current-state cache only.
+CREATE TABLE IF NOT EXISTS market_regime_state_history_v1 (
+  run_date TEXT PRIMARY KEY,
+  schema_version TEXT NOT NULL CHECK(schema_version='market-regime-state-v1'),
+  effective_label TEXT NOT NULL CHECK(effective_label IN ('bull_market','bear_market','volatile','sideways')),
+  raw_label TEXT NOT NULL CHECK(raw_label IN ('bull_market','bear_market','volatile','sideways')),
+  family TEXT NOT NULL CHECK(family IN ('bull','bear','volatile','sideways')),
+  source TEXT NOT NULL,
+  hmm_state INTEGER NOT NULL,
+  regime_index INTEGER NOT NULL,
+  state_json TEXT NOT NULL,
+  state_checksum TEXT NOT NULL CHECK(length(state_checksum)=64),
+  computed_at TEXT NOT NULL,
+  persisted_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_market_regime_state_history_v1_computed
+  ON market_regime_state_history_v1(computed_at DESC, run_date DESC);

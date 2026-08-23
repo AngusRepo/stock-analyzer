@@ -43,14 +43,17 @@ const stale = resolveExpectedReturnServingState({
   },
 }, { evaluatedAt: '2026-07-16T00:00:00.000Z' })
 assert.equal(stale.expected_return_owner, null)
-assert.equal(stale.action_gate, 'fusion_primary_required')
+assert.equal(stale.action_gate, 'canonical_l4_required')
 assert.equal(stale.artifacts.l4_alpha_ev.artifact_state, 'retired_incompatible')
 assert(stale.artifacts.l4_alpha_ev.blockers.includes('artifact_contract_version_incompatible'))
 
 const l4Primary = resolveExpectedReturnServingState({
   ensemble_v2: { l4_alpha_ev: validL4() },
 })
+assert.equal(l4Primary.selection_signal_owner, 'score_v2_formal_ml')
 assert.equal(l4Primary.expected_return_owner, 'l4_alpha_ev')
+assert.equal(l4Primary.execution_owner, 'allocator_opb_policy')
+assert.equal(l4Primary.action_gate, 'expected_return_owner')
 assert.equal(l4Primary.artifacts.l4_alpha_ev.artifact_state, 'serving')
 
 const l4AbstentionArtifact = {
@@ -62,11 +65,33 @@ const l4Abstention = resolveExpectedReturnServingState({
   ensemble_v2: { l4_alpha_ev: l4AbstentionArtifact },
 })
 assert.equal(l4Abstention.expected_return_owner, null)
-assert.equal(l4Abstention.artifacts.l4_alpha_ev.artifact_state, 'safe_abstention')
+assert.equal(l4Abstention.artifacts.l4_alpha_ev.artifact_state, 'candidate_not_ready')
 assert.equal(l4Abstention.artifacts.l4_alpha_ev.eligible, false)
-assert.equal(l4Abstention.artifacts.l4_alpha_ev.serving_available, true)
-assert.deepEqual(l4Abstention.artifacts.l4_alpha_ev.blockers, [])
-assert(l4Abstention.warnings.includes('l4_alpha_ev:alpha_champion_not_promoted'))
+assert.equal(l4Abstention.artifacts.l4_alpha_ev.serving_available, false)
+assert(l4Abstention.artifacts.l4_alpha_ev.blockers.includes('abstention_artifact_deprecated'))
+assert(!l4Abstention.warnings.includes('l4_alpha_ev:alpha_champion_not_promoted'))
+
+const pointerOnlyAbstention = resolveExpectedReturnServingState(
+  { ensemble_v2: {} },
+  {
+    pointerProjections: {
+      l4_alpha_ev: {
+        owner: 'l4_alpha_ev', owner_state: 'safe_abstention', deprecated_pointer_ignored: true,
+        pointer_present: false, champion_version: null, champion_artifact_id: null,
+        serving_mode: 'abstention_baseline', artifact: null, valid: true, blockers: [], pointer_updated_at: '2026-08-23T00:00:00Z',
+      },
+      allocator_ev_fusion: {
+        owner: 'allocator_ev_fusion', owner_state: 'no_champion', deprecated_pointer_ignored: false,
+        pointer_present: false, champion_version: null, champion_artifact_id: null,
+        serving_mode: null, artifact: null, valid: false, blockers: ['champion_pointer_missing'], pointer_updated_at: null,
+      },
+    },
+  },
+)
+assert.equal(pointerOnlyAbstention.artifacts.l4_alpha_ev.artifact_state, 'safe_abstention')
+assert.equal(pointerOnlyAbstention.artifacts.l4_alpha_ev.artifact_id, null)
+assert.equal(pointerOnlyAbstention.expected_return_owner, null)
+assert.equal(pointerOnlyAbstention.execution_owner, 'none_fail_closed')
 
 const fusionPrimary = resolveExpectedReturnServingState({
   ensemble_v2: {

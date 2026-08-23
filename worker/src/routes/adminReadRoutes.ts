@@ -269,7 +269,7 @@ adminReadRoutes.get('/api/admin/storage/capacity', async (c) => {
        WHERE r2_key IS NOT NULL
          AND status NOT IN ('deleted', 'purged')
     `).first<{ object_count: number; tracked_bytes: number }>(),
-    c.env.DB.prepare(`
+    opsDb.prepare(`
       SELECT domain, substr(MAX(updated_at), 1, 10) AS baseline_after
         FROM data_domain_backfill_cursors
        GROUP BY domain
@@ -395,6 +395,7 @@ adminReadRoutes.get('/api/admin/strategy/evidence-profiles', async (c) => {
            metric_value, metric_status, sample_count, mature_dates,
            outcome_as_of_date, definition_version, evidence_json
       FROM strategy_evidence_metrics_v1
+     WHERE outcome_as_of_date=(SELECT MAX(outcome_as_of_date) FROM strategy_evidence_metrics_v1)
      ORDER BY strategy_id, strategy_version, metric_name
   `).all<StrategyEvidenceMetricApiRow>().catch(() => ({ results: [] }))
   const multiHorizonCoverage = (horizonRows.results ?? [])
@@ -424,7 +425,7 @@ adminReadRoutes.get('/api/admin/strategy/evidence-profiles', async (c) => {
       SELECT run_id, as_of_date, status, date_count, gate_json, created_at
         FROM strategy_route_calibration_runs_v1
        WHERE sample_count>0 AND date_count>0
-       ORDER BY date_count DESC, as_of_date DESC, created_at DESC
+       ORDER BY as_of_date DESC, created_at DESC, run_id DESC
        LIMIT 1
     `).first<{
       run_id: string
@@ -906,7 +907,7 @@ adminReadRoutes.get('/api/admin/data-domains/cutover-readiness', async (c) => {
       used_bytes: number
       observed_date: string
     }>(),
-    c.env.DB.prepare(`
+    opsDb.prepare(`
       SELECT domain, substr(MAX(updated_at), 1, 10) AS baseline_after
         FROM data_domain_backfill_cursors
        GROUP BY domain

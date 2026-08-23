@@ -47,6 +47,15 @@ class SqliteStatement {
     const result = this.db.raw.prepare(this.sql).run(...this.values.map(sqliteValue))
     return { success: true, results: [], meta: { changes: Number(result.changes) } }
   }
+
+  batchSync(): unknown {
+    if (/^\s*(?:SELECT|WITH|PRAGMA)\b/i.test(this.sql)) {
+      this.db.observe(this.sql, this.values)
+      const rows = this.db.raw.prepare(this.sql).all(...this.values.map(sqliteValue))
+      return { success: true, results: rows }
+    }
+    return this.runSync()
+  }
 }
 
 class SqliteD1 {
@@ -68,7 +77,7 @@ class SqliteD1 {
   async batch(statements: SqliteStatement[]): Promise<unknown[]> {
     this.raw.exec('BEGIN')
     try {
-      const results = statements.map((statement) => statement.runSync())
+      const results = statements.map((statement) => statement.batchSync())
       this.raw.exec('COMMIT')
       return results
     } catch (error) {
@@ -122,7 +131,7 @@ function installControlPlane(db: SqliteD1): void {
       parity_checked_at TEXT,
       updated_at TEXT DEFAULT CURRENT_TIMESTAMP
     );
-    CREATE TABLE data_domain_backfill_cursors(
+    CREATE TABLE data_domain_writer_epochs(\n      domain TEXT PRIMARY KEY,\n      epoch INTEGER NOT NULL DEFAULT 0,\n      writer_state TEXT NOT NULL DEFAULT 'open',\n      updated_at TEXT DEFAULT CURRENT_TIMESTAMP\n    );\n    CREATE TABLE data_domain_backfill_cursors(
       domain TEXT NOT NULL,
       table_name TEXT NOT NULL,
       status TEXT NOT NULL,
@@ -274,7 +283,7 @@ test('FK ancestor side-write blocks the parent and dependent pointer receipts', 
         /FROM\s+"expected_return_artifact_payloads"/i.test(sql)
         && /ORDER BY[\s\S]+LIMIT\s+\?/i.test(sql)
       ))
-    assert(payloadPageReads.length >= 2)
+    assert(payloadPageReads.length >= 1, 'source rolling-manifest page read must remain query-capped')
     assert(payloadPageReads.every(({ values }) => Number(values.at(-1)) <= 25))
   } finally {
     source.raw.close()

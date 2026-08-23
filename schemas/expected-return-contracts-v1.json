@@ -1,0 +1,49 @@
+{
+  "schema_version": "expected-return-contract-manifest-v1",
+  "canonical_label_schema_version": "next-session-canonical-adjusted-open-to-fifth-session-canonical-adjusted-close-net-v4",
+  "legacy_label_schema_version": "next-session-raw-open-to-fifth-session-raw-close-canonical-finlab-factor-net-v3",
+  "canonical_roundtrip_cost_bps": 18.0,
+  "owners": {
+    "l4_alpha_ev": {
+      "current": {
+        "artifact_contract_version": "l4-alpha-ev-contract-v5",
+        "feature_semantic_version": "l4-directional-score-sector-components-v3-lineage-bound",
+        "label_schema_version": "next-session-canonical-adjusted-open-to-fifth-session-canonical-adjusted-close-net-v4",
+        "model_version_prefix": "l4-alpha-ev-ridge-v5-sector-",
+        "validation_schema_version": "l4-alpha-ev-validation-packet-v1",
+        "expected_return_semantic": "canonical_l4_expected_return_net_of_costs"
+      },
+      "retired_compatibility": [
+        {
+          "artifact_contract_version": "l4-alpha-ev-contract-v3",
+          "feature_semantic_version": "l4-directional-score-components-v2-lineage-bound",
+          "label_schema_version": "next-session-raw-open-to-fifth-session-raw-close-canonical-finlab-factor-net-v3",
+          "serve_eligible": false,
+          "accept_new_candidates": false,
+          "retired_at": "2026-08-23",
+          "reason": "missing_current_cost_feature_and_pit_lineage_contract"
+        },
+        {
+          "artifact_contract_version": "l4-alpha-ev-contract-v4",
+          "feature_semantic_version": "l4-directional-score-components-v2-lineage-bound",
+          "label_schema_version": "next-session-canonical-adjusted-open-to-fifth-session-canonical-adjusted-close-net-v4",
+          "serve_eligible": false,
+          "accept_new_candidates": false,
+          "retired_at": "2026-08-23",
+          "reason": "missing_current_pit_sector_feature_semantic"
+        }
+      ]
+    },
+    "allocator_ev_fusion": {
+      "current": {
+        "artifact_contract_version": "allocator-ev-fusion-contract-v14",
+        "feature_semantic_version": "allocator-ev-fusion-l4-residual-overlay-day-t-causal-v1-lineage-bound",
+        "label_schema_version": "next-session-canonical-adjusted-open-to-fifth-session-canonical-adjusted-close-net-v4",
+        "model_version_prefix": "allocator-ev-fusion-residual-v14-",
+        "validation_schema_version": "allocator-ev-fusion-validation-packet-v14",
+        "expected_return_semantic": "l4_base_expected_return_plus_validated_residual_adjustment"
+      },
+      "retired_compatibility": []
+    }
+  }
+}

@@ -12,7 +12,10 @@ from typing import Any, Callable
 
 from services.evidence_contracts import (
     ALLOCATOR_EV_ARTIFACT_CONTRACT_VERSION,
+    ALLOCATOR_EV_EXPECTED_RETURN_SEMANTIC,
     ALLOCATOR_EV_FEATURE_SEMANTIC_VERSION,
+    L4_ARTIFACT_CONTRACT_VERSION,
+    L4_EXPECTED_RETURN_SEMANTIC,
 )
 from services import d1_client
 from services.allocator_ev_fusion_artifact_builder import load_allocator_ev_fusion_training_rows
@@ -20,7 +23,14 @@ from services.l4_alpha_ev_resolver import SNAPSHOT_BACKFILL_USAGE_SCOPE, extract
 from services.online_portfolio_bandit import DEFAULT_ARMS, build_online_portfolio_bandit_l2_packet
 
 SCHEMA_VERSION = "opb-arm-prior-artifact-v2"
-EXPECTED_RETURN_SEMANTIC = "l4_base_expected_return_plus_validated_residual_adjustment"
+EXPECTED_RETURN_SEMANTICS = {
+    "l4_alpha_ev": L4_EXPECTED_RETURN_SEMANTIC,
+    "allocator_ev_fusion": ALLOCATOR_EV_EXPECTED_RETURN_SEMANTIC,
+}
+EXPECTED_RETURN_CONTRACTS = {
+    "l4_alpha_ev": L4_ARTIFACT_CONTRACT_VERSION,
+    "allocator_ev_fusion": ALLOCATOR_EV_ARTIFACT_CONTRACT_VERSION,
+}
 LABEL_HORIZON_SESSIONS = 5
 DEFAULT_ROUNDTRIP_COST_BPS = 18.0
 
@@ -59,7 +69,7 @@ def _counterfactual_expected_return(
             return None, None, None
         if str(payload.get("feature_semantic_version") or "").strip() != ALLOCATOR_EV_FEATURE_SEMANTIC_VERSION:
             return None, None, None
-        if str(payload.get("expected_return_semantic") or "").strip() != EXPECTED_RETURN_SEMANTIC:
+        if str(payload.get("expected_return_semantic") or "").strip() != ALLOCATOR_EV_EXPECTED_RETURN_SEMANTIC:
             return None, None, None
         value = _finite(payload.get("expected_return"))
         allowed = payload.get("primary_expected_return_allowed") is True
@@ -70,6 +80,9 @@ def _counterfactual_expected_return(
             str(payload.get("model_version") or "unknown"),
             str(payload.get("trained_until") or "")[:10] or None,
         )
+
+    if owner != "l4_alpha_ev":
+        return None, None, None
 
     extractor_row = dict(row)
     if isinstance(allocation.get("l4_alpha_ev"), dict):
@@ -136,6 +149,9 @@ def build_opb_arm_prior_artifact(
     roundtrip_cost_bps: float = DEFAULT_ROUNDTRIP_COST_BPS,
 ) -> dict[str, Any]:
     """Replay every fixed arm on every as-of date; never mix with live chosen-arm rewards."""
+
+    if expected_return_owner not in EXPECTED_RETURN_CONTRACTS:
+        raise ValueError(f"unsupported_expected_return_owner:{expected_return_owner}")
 
     by_date: dict[str, list[dict[str, Any]]] = defaultdict(list)
     source_versions: set[str] = set()
@@ -246,8 +262,8 @@ def build_opb_arm_prior_artifact(
         "artifact_id": f"opb_arm_prior:{model_version}",
         "model_version": model_version,
         "expected_return_owner": expected_return_owner,
-        "source_expected_return_contract_version": ALLOCATOR_EV_ARTIFACT_CONTRACT_VERSION if expected_return_owner == "allocator_ev_fusion" else None,
-        "source_expected_return_semantic": EXPECTED_RETURN_SEMANTIC if expected_return_owner == "allocator_ev_fusion" else None,
+        "source_expected_return_contract_version": EXPECTED_RETURN_CONTRACTS[expected_return_owner],
+        "source_expected_return_semantic": EXPECTED_RETURN_SEMANTICS[expected_return_owner],
         "source_model_versions": sorted(source_versions),
         "trained_until": trained_until,
         "generated_at": datetime.now(timezone.utc).isoformat(),

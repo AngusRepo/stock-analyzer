@@ -19,7 +19,7 @@ router = APIRouter(prefix="/opb_arm_prior", tags=["opb_arm_prior"])
 
 class OpbArmPriorRefreshReq(BaseModel):
     end_date: str = Field(pattern=r"^\d{4}-\d{2}-\d{2}$")
-    expected_return_owner: Literal["allocator_ev_fusion"] = "allocator_ev_fusion"
+    expected_return_owner: Literal["l4_alpha_ev", "allocator_ev_fusion"] = "allocator_ev_fusion"
     lookback_days: int = Field(default=120, ge=30, le=365)
     min_dates: int = Field(default=20, ge=10, le=252)
     limit: int = Field(default=10000, ge=500, le=20000)

@@ -86,7 +86,8 @@ const DOMAIN_TABLES: Record<DataDomain, ReadonlySet<string>> = {
     's12_tw_calibration_runs', 's12_tw_calibration_artifacts', 'state_space_shadow_results',
     'model_accuracy', 'stock_memories', 'trade_performance', 'dataset_snapshots',
     'model_artifact_registry', 'model_champion_history', 'model_champion_pointers',
-    'expected_return_artifact_payloads', 'allocator_ev_feature_snapshots',
+    'expected_return_artifact_payloads', 'expected_return_owner_state_v2',
+    'allocator_ev_feature_snapshots',
     'allocator_ev_snapshot_runs',
     'allocator_ev_feature_snapshot_staging', 'active8_oof_cohorts',
     'active8_oof_fold_artifacts', 'active8_oof_materialized_artifacts',
@@ -180,6 +181,7 @@ const EXTENDED_PRODUCTION_TABLE_OWNERSHIP: readonly TableOwnershipMetadata[] = [
   { table: 'finlab_taxonomy_tags', domain: 'market', disposition: 'full_scalar', route_ready: true, shadow_ready: true },
   { table: 'margin_data', domain: 'market', disposition: 'full_scalar', route_ready: true, shadow_ready: true },
   { table: 'market_regime_factor_packets', domain: 'market', disposition: 'compact_projection', route_ready: true, shadow_ready: true },
+  { table: 'market_regime_state_history_v1', domain: 'market', disposition: 'compact_projection', route_ready: true, shadow_ready: false },
   { table: 'monthly_revenue', domain: 'market', disposition: 'full_scalar', route_ready: true, shadow_ready: true },
   { table: 'screener_momentum_snapshots', domain: 'market', disposition: 'active_window', route_ready: true, shadow_ready: true },
   { table: 'screener_selection_history', domain: 'market', disposition: 'active_window', route_ready: true, shadow_ready: true },
@@ -249,6 +251,7 @@ const SHADOW_BACKFILL_EXCLUDED_TABLES: Partial<Record<DataDomain, ReadonlySet<st
     'price_horizon_label_rejections_v2',
     'canonical_selection_outcomes_v1',
     'strategy_evidence_metrics_v1',
+    'expected_return_owner_state_v2',
   ]),
   market: new Set([
     // Append-only knowledge-time rows start at domain creation; mutable legacy revenue cannot seed them.

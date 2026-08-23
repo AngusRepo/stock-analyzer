@@ -1,7 +1,7 @@
 import type { Bindings } from '../types'
 import { controllerFetch, controllerJson, controllerPostJson } from './controllerClient'
 import { invalidateModelPoolReadCache } from './modelPoolReadCache'
-import { readCurrentExpectedReturnServingState } from './expectedReturnServingState'
+import { readCurrentExpectedReturnServingState, type ExpectedReturnOwner } from './expectedReturnServingState'
 import { nextTwTradingDate } from './schedulerPolicy'
 import { twToday } from './dateUtils'
 import { strategyMiningDispatchKey } from './strategyMiningGateway'
@@ -498,18 +498,18 @@ export async function runAllocatorEvFusionRefresh(env: Bindings, runDate?: strin
 export async function runOpbArmPriorRefresh(
   env: Bindings,
   runDate: string,
-  expectedReturnOwner: 'auto' | 'allocator_ev_fusion' = 'auto',
+  expectedReturnOwner: 'auto' | ExpectedReturnOwner = 'auto',
 ) {
   requireController(env)
 
-  let resolvedOwner: 'allocator_ev_fusion'
+  let resolvedOwner: ExpectedReturnOwner
   if (expectedReturnOwner === 'auto') {
     const servingState = await readCurrentExpectedReturnServingState(env, runDate)
-    if (servingState.expected_return_owner !== 'allocator_ev_fusion') {
-      const fusionState = servingState.artifacts.allocator_ev_fusion
+    if (!servingState.expected_return_owner) {
       throw new Error(
-        'OPB arm prior refresh requires a contract-compatible production-primary Fusion owner; '
-        + `fusion=${fusionState.artifact_state}[${fusionState.blockers.join(',')}]`,
+        'OPB arm prior refresh requires a contract-compatible expected-return owner; '
+        + `l4=${servingState.artifacts.l4_alpha_ev.artifact_state} `
+        + `fusion=${servingState.artifacts.allocator_ev_fusion.artifact_state}`,
       )
     }
     resolvedOwner = servingState.expected_return_owner

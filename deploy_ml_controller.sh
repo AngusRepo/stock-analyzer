@@ -1114,6 +1114,10 @@ if ! (cd "$SCRIPT_DIR" && gcloud meta list-files-for-upload 2>/dev/null) | sed '
   echo "❌ ERROR: infra/gcp-scheduler-jobs.json is excluded from the gcloud source upload context" >&2
   exit 1
 fi
+if [ ! -f "$SCRIPT_DIR/.dockerignore" ] || ! grep -Fxq '!infra/gcp-scheduler-jobs.json' "$SCRIPT_DIR/.dockerignore"; then
+  echo "❌ ERROR: .dockerignore must explicitly include infra/gcp-scheduler-jobs.json" >&2
+  exit 1
+fi
 
 run_preflight
 GCLOUD_RUNTIME_ENV_VARS="$(gcloud_runtime_env_vars)"

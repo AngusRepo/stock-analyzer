@@ -62,7 +62,8 @@ ml-controller/pytest-cache-files-*/
 _external/
 freqtrade/
 shioaji-proxy/
-infra/
+infra/*
+!infra/gcp-scheduler-jobs.json
 memory/
 docs/
 notebooks/

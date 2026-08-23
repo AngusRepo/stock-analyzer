@@ -265,26 +265,6 @@ def load_indexed_oof_ev_rows(
             str(row.get("market_segment") or ""),
         ) in mature_snapshot_keys
     ]
-    l4_keys = {
-        (
-            str(row.get("cohort_id") or ""),
-            str(row.get("fold_id") or ""),
-            str(row.get("prediction_date") or "")[:10],
-            str(row.get("symbol") or ""),
-            str(row.get("market_segment") or ""),
-        )
-        for row in eligible_l4
-    }
-    mature_snapshots = [
-        row for row in mature_snapshots
-        if (
-            str(row.get("cohort_id") or ""),
-            str(row.get("fold_id") or ""),
-            str(row.get("snapshot_date") or "")[:10],
-            str(row.get("symbol") or ""),
-            str(row.get("market_segment") or ""),
-        ) in l4_keys
-    ]
     return mature_snapshots, eligible_l4, {
         "schema_version": "active8-oof-indexed-loader-evidence-v1",
         "storage_mode": "gcs_indexed_v1",
@@ -292,6 +272,10 @@ def load_indexed_oof_ev_rows(
         "knowledge_cutoff_date": knowledge_cutoff_date,
         "snapshot_rows_loaded": len(snapshots),
         "snapshot_rows_mature": len(mature_snapshots),
+        "snapshot_dates_mature": len({
+            str(row.get("snapshot_date") or "")[:10]
+            for row in mature_snapshots
+        }),
         "l4_rows_loaded": len(l4_predictions),
         "l4_rows_eligible": len(eligible_l4),
         "d1_full_row_tables_required": False,

@@ -528,6 +528,45 @@ def test_completed_oof_registry_owner_repair_requires_exact_bound_identity(monke
     assert len(writes) == 1
 
 
+def test_full_fit_poll_only_never_dispatches_a_replacement_retrain(monkeypatch):
+    from routers import walk_forward
+
+    class Blob:
+        def exists(self):
+            return False
+
+    class Bucket:
+        def blob(self, _path):
+            return Blob()
+
+    plan = {
+        "status": "ready",
+        "eligible_models": ["DLinear"],
+        "tree_models": [],
+        "feature_consensus": {},
+        "train_model_groups": ["sequence"],
+        "artifact_lifecycle_targets": [],
+        "promotion_evidence": {"DLinear": {"decision": "PASS"}},
+    }
+    monkeypatch.setattr(
+        walk_forward,
+        "build_oof_full_fit_dispatch_plan",
+        lambda _manifest: plan,
+    )
+
+    result = asyncio.run(walk_forward.dispatch_oof_full_fit_training(
+        manifest={"cohort_id": "cohort-v3", "manifest_checksum": "a" * 64},
+        knowledge_cutoff_date="2026-07-17",
+        bucket=Bucket(),
+        lifecycle_cadence="weekly",
+        allow_new_dispatch=False,
+    ))
+
+    assert result["status"] == "blocked"
+    assert result["reason"] == "full_fit_poll_only_receipt_missing"
+    assert result["retry_required"] is True
+    assert result["missing_models"] == ["DLinear"]
+
 def test_dispatch_completed_oof_callback_repairs_registry_without_retraining(monkeypatch):
     from routers import walk_forward
     from services import d1_client

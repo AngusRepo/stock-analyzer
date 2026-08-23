@@ -380,6 +380,7 @@ class OofMaterializeRequest(BaseModel):
     confirm: bool = False
     promote: bool = True
     dispatch_full_fit: bool = False
+    full_fit_poll_only: bool = False
     prediction_storage_mode: str = "gcs_indexed_v1"
     lifecycle_cadence: Literal["daily", "weekly", "monthly", "manual"] = "daily"
     forward_extension_manifest_path: str | None = None
@@ -856,6 +857,7 @@ async def dispatch_oof_full_fit_training(
     knowledge_cutoff_date: str,
     bucket: Any,
     lifecycle_cadence: str,
+    allow_new_dispatch: bool = True,
 ) -> dict[str, Any]:
     from services import d1_client
     plan = build_oof_full_fit_dispatch_plan(manifest)
@@ -1234,6 +1236,26 @@ async def dispatch_oof_full_fit_training(
                 content_type="application/json",
             )
             return {**plan, **blocked}
+
+    if not allow_new_dispatch:
+        return {
+            **plan,
+            **receipt,
+            "status": "blocked",
+            "reason": (
+                "full_fit_poll_only_terminal_failure"
+                if receipt.get("run_id")
+                else "full_fit_poll_only_receipt_missing"
+            ),
+            "missing_models": (
+                missing
+                if receipt.get("run_id")
+                else sorted(plan["eligible_models"])
+            ),
+            "failed_models": failed if receipt.get("run_id") else [],
+            "retry_required": True,
+            "receipt_path": receipt_path,
+        }
 
     from routers.retrain_trigger import UniversalRetrainTriggerRequest, trigger_universal_retrain
 
@@ -1865,6 +1887,7 @@ async def materialize_walk_forward_oof(req: OofMaterializeRequest):
                 knowledge_cutoff_date=req.knowledge_cutoff_date,
                 bucket=bucket,
                 lifecycle_cadence=req.lifecycle_cadence,
+                allow_new_dispatch=not req.full_fit_poll_only,
             )
         if not req.dry_run and candidate_artifacts is None:
             candidate_artifacts = archive_ev_candidate_artifacts(
@@ -2851,6 +2874,7 @@ async def run_walk_forward_oof_lifecycle(req: OofLifecycleRequest):
         confirm=materialization_controls["confirm"],
         promote=materialization_controls["promote"],
         dispatch_full_fit=materialization_controls["dispatch_full_fit"],
+        full_fit_poll_only=req.continuation_only,
         lifecycle_cadence=cadence,
         forward_extension_manifest_path=forward_extension_manifest_path,
         persist_forward_shadow_coverage=bool(

@@ -1246,6 +1246,15 @@ def test_indexed_oof_loader_enforces_checksum_lineage_and_point_in_time_cutoff()
             "label_known_date": "2026-07-16",
             "source_manifest_checksum": checksum,
         },
+        {
+            "cohort_id": "cohort-indexed",
+            "fold_id": "w1",
+            "snapshot_date": "2026-07-07",
+            "symbol": "2454",
+            "market_segment": "LISTED",
+            "label_known_date": "2026-07-14",
+            "source_manifest_checksum": checksum,
+        },
     ]
     l4_rows = [
         {
@@ -1293,10 +1302,11 @@ def test_indexed_oof_loader_enforces_checksum_lineage_and_point_in_time_cutoff()
         query_fn=lambda _sql, params: [indexes[params[1]]],
     )
 
-    assert [row["symbol"] for row in loaded_snapshots] == ["2330"]
+    assert [row["symbol"] for row in loaded_snapshots] == ["2454", "2330"]
     assert [row["symbol"] for row in loaded_l4] == ["2330"]
-    assert evidence["snapshot_rows_loaded"] == 2
-    assert evidence["snapshot_rows_mature"] == 1
+    assert evidence["snapshot_rows_loaded"] == 3
+    assert evidence["snapshot_rows_mature"] == 2
+    assert evidence["snapshot_dates_mature"] == 2
     assert evidence["l4_rows_eligible"] == 1
     assert evidence["d1_full_row_tables_required"] is False
 

@@ -413,7 +413,7 @@ export async function runActive8OofLifecycle(
       end_date: runDate,
       dry_run: false,
       promote: options.continuationOnly ? false : true,
-      dispatch_full_fit: options.continuationOnly ? false : cadence !== 'daily',
+      dispatch_full_fit: cadence !== 'daily',
       expected_cohort_id: options.expectedCohortId,
       continuation_attempt: Math.max(0, Math.min(12, Number(options.continuationAttempt ?? 0))),
       continuation_only: options.continuationOnly === true,

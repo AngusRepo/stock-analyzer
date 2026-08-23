@@ -60,7 +60,8 @@ _external/
 freqtrade/
 shioaji-proxy/
 ml-service/benchmark_results/
-infra/
+infra/*
+!infra/gcp-scheduler-jobs.json
 scripts/
 !ml-service/scripts/
 !ml-service/scripts/**

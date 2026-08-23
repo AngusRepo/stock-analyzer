@@ -45,6 +45,8 @@ assert.match(retirement, /writer_state='cutover' AND epoch=\?/)
 assert.match(retirement, /legacy_retirement_exact_delete_failed/)
 assert.match(retirement, /legacy_retirement_writer_restore_failed/)
 assert.match(retirement, /const results = await db\.batch\(statements\)/)
+assert.match(retirement, /return keys\.length/)
+assert.doesNotMatch(retirement, /deleted_row_count_mismatch/)
 assert.ok(
   retirement.indexOf("SET writer_state='open'") < retirement.indexOf('DELETE FROM "${table}"'),
   'cutover source opens only inside the atomic exact-delete batch',

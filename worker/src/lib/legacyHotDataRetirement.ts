@@ -124,11 +124,9 @@ async function deleteLegacyCutoverRows(
        WHERE domain=? AND writer_state='cutover' AND epoch=?
     `).bind(domain, expectedEpoch),
   ]
-  const deleteResultIndexes: number[] = []
   for (let offset = 0; offset < keys.length; offset += 40) {
     const chunk = keys.slice(offset, offset + 40)
     const placeholders = chunk.map(() => '?').join(',')
-    deleteResultIndexes.push(statements.length)
     statements.push(db.prepare(`
       DELETE FROM "${table}" WHERE "${keyColumn}" IN (${placeholders})
     `).bind(...chunk))
@@ -156,14 +154,9 @@ async function deleteLegacyCutoverRows(
     Number(results[1]?.meta?.changes ?? 0) !== 1
     || Number(results[closeResultIndex]?.meta?.changes ?? 0) !== 1
   ) throw new Error(`legacy_retirement_writer_cas_failed:${domain}`)
-  const deleted = deleteResultIndexes.reduce(
-    (sum, index) => sum + Number(results[index]?.meta?.changes ?? 0),
-    0,
-  )
-  if (deleted !== keys.length) {
-    throw new Error(`legacy_retirement_deleted_row_count_mismatch:${deleted}/${keys.length}`)
-  }
-  return deleted
+  // Each exact-delete guard already proved every selected key is absent inside
+  // the atomic batch. D1 meta.changes also includes writer-epoch trigger writes.
+  return keys.length
 }
 
 async function retireObsoleteScreenerItems(

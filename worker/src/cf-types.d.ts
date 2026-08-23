@@ -82,7 +82,7 @@ declare module 'cloudflare:workers' {
 // ─── Queue Types ─────────────────────────────────────────────────────────────
 
 declare interface Queue<T = unknown> {
-  send(message: T, options?: { contentType?: string }): Promise<void>
+  send(message: T, options?: { contentType?: string; delaySeconds?: number }): Promise<void>
   sendBatch(messages: { body: T; contentType?: string }[]): Promise<void>
 }
 

@@ -1,3 +1,16 @@
+export interface MaintenanceLeaseBusy {
+  skipped: true
+  reason: string
+  leaseGroup: string
+  holderTaskName: string
+  holderOwnerId: string
+  leaseExpiresAt: string
+}
+
+export function isMaintenanceLeaseBusy(value: unknown): value is MaintenanceLeaseBusy {
+  return Boolean(value && typeof value === 'object' && 'skipped' in value && (value as any).skipped === true)
+}
+
 export async function runWithMaintenanceLease<T>(
   db: D1Database,
   input: {
@@ -6,7 +19,7 @@ export async function runWithMaintenanceLease<T>(
     leaseGroup?: string
     leaseSeconds?: number
   },
-): Promise<T | { skipped: true; reason: string }> {
+): Promise<T | MaintenanceLeaseBusy> {
   const leaseGroup = input.leaseGroup ?? 'd1_heavy_maintenance'
   const ownerId = `${input.taskName}:${crypto.randomUUID()}`
   const modifier = `+${Math.max(300, Math.floor(input.leaseSeconds ?? 3600))} seconds`
@@ -26,13 +39,20 @@ export async function runWithMaintenanceLease<T>(
   `).bind(leaseGroup, input.taskName, ownerId, modifier).first<{ owner_id: string }>()
   if (!claimed || claimed.owner_id !== ownerId) {
     const holder = await db.prepare(`
-      SELECT task_name, lease_expires_at
+      SELECT task_name, owner_id, lease_expires_at
         FROM maintenance_task_leases
        WHERE lease_group=?
-    `).bind(leaseGroup).first<{ task_name: string; lease_expires_at: string }>()
+    `).bind(leaseGroup).first<{ task_name: string; owner_id: string; lease_expires_at: string }>()
+    const holderTaskName = holder?.task_name ?? 'unknown'
+    const holderOwnerId = holder?.owner_id ?? 'unknown'
+    const leaseExpiresAt = holder?.lease_expires_at ?? 'unknown'
     return {
       skipped: true,
-      reason: `maintenance_lease_busy:${holder?.task_name ?? 'unknown'}:${holder?.lease_expires_at ?? 'unknown'}`,
+      reason: `maintenance_lease_busy:${holderTaskName}:${leaseExpiresAt}`,
+      leaseGroup,
+      holderTaskName,
+      holderOwnerId,
+      leaseExpiresAt,
     }
   }
   try {
@@ -46,7 +66,7 @@ export async function runWithMaintenanceLease<T>(
 }
 
 export function summarizeMaintenanceLeaseResult(result: unknown): string {
-  if (result && typeof result === 'object' && 'skipped' in result && (result as any).skipped === true) {
+  if (isMaintenanceLeaseBusy(result)) {
     return String((result as any).reason ?? 'maintenance_lease_busy')
   }
   return String(result ?? '')

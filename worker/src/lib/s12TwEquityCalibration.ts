@@ -316,12 +316,100 @@ export function applyS12TwCalibrationArtifact(
   })
 }
 
-async function loadEvidence(db: D1Database, startDate: string, endDate: string): Promise<CalibrationEvidence[]> {
-  const { results } = await db.prepare(`
-    SELECT o.symbol, o.trade_date, o.assessment_state,
-           COALESCE(NULLIF(TRIM(o.market), ''), 'UNKNOWN') AS market,
-           o.entry_ms, o.entry_price, o.stop_price, o.pnl_pct,
-           o.max_favorable_pct, o.max_adverse_pct, o.detail_json
+const CALIBRATION_EVIDENCE_PAGE_SIZE = 128
+const CALIBRATION_EVIDENCE_SCAN_LIMIT = 100_000
+
+const CALIBRATION_LIFECYCLE_RECENT_MS = 6 * 60 * 60_000
+
+export interface S12TwCalibrationLifecycleCensoring {
+  completeRows: number
+  completeDates: number
+  pendingMaturityTerminalRows: number
+  pendingMaturityTerminalDates: number
+  recentEnqueuedRows: number
+  recentEnqueuedDates: string[]
+  staleEnqueuedRows: number
+  staleEnqueuedDates: string[]
+  missingOrOtherRows: number
+  missingOrOtherDates: number
+}
+
+function commaDates(value: unknown): string[] {
+  return String(value ?? '')
+    .split(',')
+    .map((item) => item.trim())
+    .filter((item) => /^\d{4}-\d{2}-\d{2}$/.test(item))
+    .sort()
+}
+
+export async function inspectS12TwCalibrationLifecycleCensoring(
+  db: D1Database,
+  runDate: string,
+  cadence: S12TwCalibrationCadence,
+  nowMs = Date.now(),
+): Promise<S12TwCalibrationLifecycleCensoring> {
+  const startDate = daysBefore(runDate, cadence === 'monthly' ? 180 : 90)
+  const recentCutoff = new Date(nowMs - CALIBRATION_LIFECYCLE_RECENT_MS).toISOString()
+  const row = await db.prepare(`
+    SELECT
+      SUM(CASE WHEN l.state='replay_complete' THEN 1 ELSE 0 END) AS complete_rows,
+      COUNT(DISTINCT CASE WHEN l.state='replay_complete' THEN o.signal_date END) AS complete_dates,
+      SUM(CASE WHEN l.state='replay_pending_maturity' THEN 1 ELSE 0 END) AS pending_rows,
+      COUNT(DISTINCT CASE WHEN l.state='replay_pending_maturity' THEN o.signal_date END) AS pending_dates,
+      SUM(CASE WHEN l.state='replay_enqueued'
+                AND datetime(l.updated_at) >= datetime(?) THEN 1 ELSE 0 END) AS recent_enqueued_rows,
+      GROUP_CONCAT(DISTINCT CASE WHEN l.state='replay_enqueued'
+                AND datetime(l.updated_at) >= datetime(?) THEN o.signal_date END) AS recent_enqueued_dates,
+      SUM(CASE WHEN l.state='replay_enqueued'
+                AND datetime(l.updated_at) < datetime(?) THEN 1 ELSE 0 END) AS stale_enqueued_rows,
+      GROUP_CONCAT(DISTINCT CASE WHEN l.state='replay_enqueued'
+                AND datetime(l.updated_at) < datetime(?) THEN o.signal_date END) AS stale_enqueued_dates,
+      SUM(CASE WHEN l.state IS NULL OR l.state NOT IN (
+                'replay_complete', 'replay_pending_maturity', 'replay_enqueued'
+              ) THEN 1 ELSE 0 END) AS missing_or_other_rows,
+      COUNT(DISTINCT CASE WHEN l.state IS NULL OR l.state NOT IN (
+                'replay_complete', 'replay_pending_maturity', 'replay_enqueued'
+              ) THEN o.signal_date END) AS missing_or_other_dates
+      FROM s12_replay_trade_outcomes o
+      LEFT JOIN allocator_ev_daily_lifecycle l
+        ON l.business_date=o.signal_date
+     WHERE o.trade_date >= ?
+       AND o.trade_date <= ?
+       AND o.sample_eligible = 1
+       AND o.pnl_pct IS NOT NULL
+       AND json_extract(o.detail_json, '$.replay_diagnostics.replay_engine_signature') = ?
+       AND json_extract(o.detail_json, '$.replay_diagnostics.replay_cohort_signature') IS NOT NULL
+  `).bind(
+    recentCutoff,
+    recentCutoff,
+    recentCutoff,
+    recentCutoff,
+    startDate,
+    runDate,
+    S12_REPLAY_ENGINE_SIGNATURE,
+  ).first<Record<string, unknown>>()
+  return {
+    completeRows: Math.max(0, Number(row?.complete_rows ?? 0)),
+    completeDates: Math.max(0, Number(row?.complete_dates ?? 0)),
+    pendingMaturityTerminalRows: Math.max(0, Number(row?.pending_rows ?? 0)),
+    pendingMaturityTerminalDates: Math.max(0, Number(row?.pending_dates ?? 0)),
+    recentEnqueuedRows: Math.max(0, Number(row?.recent_enqueued_rows ?? 0)),
+    recentEnqueuedDates: commaDates(row?.recent_enqueued_dates),
+    staleEnqueuedRows: Math.max(0, Number(row?.stale_enqueued_rows ?? 0)),
+    staleEnqueuedDates: commaDates(row?.stale_enqueued_dates),
+    missingOrOtherRows: Math.max(0, Number(row?.missing_or_other_rows ?? 0)),
+    missingOrOtherDates: Math.max(0, Number(row?.missing_or_other_dates ?? 0)),
+  }
+}
+
+export async function loadS12TwCalibrationEvidence(
+  db: D1Database,
+  startDate: string,
+  endDate: string,
+): Promise<CalibrationEvidence[]> {
+  const lifecycleSnapshotAt = new Date().toISOString()
+  const snapshot = await db.prepare(`
+    SELECT COALESCE(MAX(o.id), 0) AS max_id
       FROM s12_replay_trade_outcomes o
      WHERE o.trade_date >= ?
        AND o.trade_date <= ?
@@ -329,42 +417,97 @@ async function loadEvidence(db: D1Database, startDate: string, endDate: string):
        AND o.pnl_pct IS NOT NULL
        AND json_extract(o.detail_json, '$.replay_diagnostics.replay_engine_signature') = ?
        AND json_extract(o.detail_json, '$.replay_diagnostics.replay_cohort_signature') IS NOT NULL
-     ORDER BY o.trade_date ASC, o.symbol ASC
-     LIMIT 100000
-  `).bind(startDate, endDate, S12_REPLAY_ENGINE_SIGNATURE).all<Record<string, unknown>>()
+       AND EXISTS (
+         SELECT 1
+           FROM allocator_ev_daily_lifecycle lifecycle
+          WHERE lifecycle.business_date=o.signal_date
+            AND lifecycle.state IN ('replay_complete', 'replay_pending_maturity')
+            AND datetime(lifecycle.updated_at) <= datetime(?)
+       )
+  `).bind(startDate, endDate, S12_REPLAY_ENGINE_SIGNATURE, lifecycleSnapshotAt).first<{ max_id?: number | string | null }>()
+  const snapshotMaxId = Math.max(0, Number(snapshot?.max_id ?? 0))
+  if (snapshotMaxId <= 0) return []
   const evidence: CalibrationEvidence[] = []
-  for (const row of results ?? []) {
-    const payload = parseJson<Record<string, unknown>>(row.detail_json, {})
-    const assessmentDetail = String(payload.assessment_detail ?? payload.assessmentDetail ?? '')
-    const entry = finite(row.entry_price)
-    const stop = finite(row.stop_price)
-    const atr = finite(detailValue(assessmentDetail, 'atr15m'))
-    const grossPnlPct = finite(row.pnl_pct)
-    const stopRiskPct = entry != null && stop != null && entry > stop ? (entry - stop) / entry : null
-    if (grossPnlPct == null || stopRiskPct == null || stopRiskPct <= 0) continue
-    const netPnlPct = grossPnlPct - CANONICAL_SELECTION_ROUNDTRIP_COST_BPS / 10_000
-    const pnlR = netPnlPct / stopRiskPct
-    const entryCohort = String(row.assessment_state ?? payload.assessment_state ?? '').trim().toLowerCase()
-    if (entryCohort !== 'reaction_ready' && entryCohort !== 'limited_takeover_ready') continue
-    evidence.push({
-      symbol: String(row.symbol ?? ''),
-      tradeDate: String(row.trade_date ?? ''),
-      marketSegment: normalizeScope({ marketSegment: String(payload.market_segment ?? row.market ?? 'UNKNOWN'), entryCohort }).marketSegment,
-      entryCohort,
-      alphaBucket: String(payload.alpha_bucket ?? '').trim() || null,
-      entryTimeBucket: timeBucket(row.entry_ms),
-      pnlR,
-      mfePct: finite(row.max_favorable_pct) ?? 0,
-      maePct: Math.abs(finite(row.max_adverse_pct) ?? 0),
-      mutationScore: finite(detailValue(assessmentDetail, 'equity_mutation_score')),
-      fastVwapSignals: countPipeValues(detailValue(assessmentDetail, 'vwap_fast_reasons')),
-      fastVwapBlockers: countPipeValues(detailValue(assessmentDetail, 'vwap_fast_blockers')),
-      stopRiskPct,
-      stopRiskAtr: entry != null && stop != null && atr != null && atr > 0 && entry > stop ? (entry - stop) / atr : null,
-      sessionMoveAtr: finite(detailValue(assessmentDetail, 'session_60m_move_atr')),
-      sessionClosePosition: finite(detailValue(assessmentDetail, 'session_60m_close_position')),
-    })
+  let lastId = 0
+  let scanned = 0
+  while (scanned < CALIBRATION_EVIDENCE_SCAN_LIMIT) {
+    const limit = Math.min(CALIBRATION_EVIDENCE_PAGE_SIZE, CALIBRATION_EVIDENCE_SCAN_LIMIT - scanned)
+    const { results } = await db.prepare(`
+      SELECT o.id, o.symbol, o.trade_date, o.assessment_state,
+             COALESCE(NULLIF(TRIM(o.market), ''), 'UNKNOWN') AS market,
+             o.entry_ms, o.entry_price, o.stop_price, o.pnl_pct,
+             o.max_favorable_pct, o.max_adverse_pct,
+             COALESCE(
+               json_extract(o.detail_json, '$.assessment_detail'),
+               json_extract(o.detail_json, '$.assessmentDetail'),
+               ''
+             ) AS assessment_detail,
+             json_extract(o.detail_json, '$.assessment_state') AS detail_assessment_state,
+             json_extract(o.detail_json, '$.market_segment') AS market_segment,
+             json_extract(o.detail_json, '$.alpha_bucket') AS alpha_bucket
+        FROM s12_replay_trade_outcomes o
+       WHERE o.id > ?
+         AND o.id <= ?
+         AND o.trade_date >= ?
+         AND o.trade_date <= ?
+         AND o.sample_eligible = 1
+         AND o.pnl_pct IS NOT NULL
+         AND json_extract(o.detail_json, '$.replay_diagnostics.replay_engine_signature') = ?
+         AND json_extract(o.detail_json, '$.replay_diagnostics.replay_cohort_signature') IS NOT NULL
+         AND EXISTS (
+           SELECT 1
+             FROM allocator_ev_daily_lifecycle lifecycle
+            WHERE lifecycle.business_date=o.signal_date
+              AND lifecycle.state IN ('replay_complete', 'replay_pending_maturity')
+              AND datetime(lifecycle.updated_at) <= datetime(?)
+         )
+       ORDER BY o.id ASC
+       LIMIT ?
+    `).bind(lastId, snapshotMaxId, startDate, endDate, S12_REPLAY_ENGINE_SIGNATURE, lifecycleSnapshotAt, limit).all<Record<string, unknown>>()
+    const page = results ?? []
+    if (page.length === 0) break
+    scanned += page.length
+    for (const row of page) {
+      lastId = Math.max(lastId, Number(row.id ?? 0))
+      const assessmentDetail = String(row.assessment_detail ?? '')
+      const entry = finite(row.entry_price)
+      const stop = finite(row.stop_price)
+      const atr = finite(detailValue(assessmentDetail, 'atr15m'))
+      const grossPnlPct = finite(row.pnl_pct)
+      const stopRiskPct = entry != null && stop != null && entry > stop ? (entry - stop) / entry : null
+      if (grossPnlPct == null || stopRiskPct == null || stopRiskPct <= 0) continue
+      const netPnlPct = grossPnlPct - CANONICAL_SELECTION_ROUNDTRIP_COST_BPS / 10_000
+      const pnlR = netPnlPct / stopRiskPct
+      const entryCohort = String(row.assessment_state ?? row.detail_assessment_state ?? '').trim().toLowerCase()
+      if (entryCohort !== 'reaction_ready' && entryCohort !== 'limited_takeover_ready') continue
+      evidence.push({
+        symbol: String(row.symbol ?? ''),
+        tradeDate: String(row.trade_date ?? ''),
+        marketSegment: normalizeScope({
+          marketSegment: String(row.market_segment ?? row.market ?? 'UNKNOWN'),
+          entryCohort,
+        }).marketSegment,
+        entryCohort,
+        alphaBucket: String(row.alpha_bucket ?? '').trim() || null,
+        entryTimeBucket: timeBucket(row.entry_ms),
+        pnlR,
+        mfePct: finite(row.max_favorable_pct) ?? 0,
+        maePct: Math.abs(finite(row.max_adverse_pct) ?? 0),
+        mutationScore: finite(detailValue(assessmentDetail, 'equity_mutation_score')),
+        fastVwapSignals: countPipeValues(detailValue(assessmentDetail, 'vwap_fast_reasons')),
+        fastVwapBlockers: countPipeValues(detailValue(assessmentDetail, 'vwap_fast_blockers')),
+        stopRiskPct,
+        stopRiskAtr: entry != null && stop != null && atr != null && atr > 0 && entry > stop ? (entry - stop) / atr : null,
+        sessionMoveAtr: finite(detailValue(assessmentDetail, 'session_60m_move_atr')),
+        sessionClosePosition: finite(detailValue(assessmentDetail, 'session_60m_close_position')),
+      })
+    }
+    if (page.length < limit) break
   }
+  evidence.sort((left, right) => (
+    left.tradeDate.localeCompare(right.tradeDate)
+    || left.symbol.localeCompare(right.symbol)
+  ))
   return evidence
 }
 
@@ -527,14 +670,125 @@ function daysBefore(date: string, days: number): string {
   return value.toISOString().slice(0, 10)
 }
 
+const S12_TW_CALIBRATION_BATCH_MAX_STATEMENTS = 250
+
+export interface S12TwCalibrationAtomicCommitInput {
+  runId: string
+  runDate: string
+  cadence: S12TwCalibrationCadence
+  artifacts: S12TwCalibrationArtifact[]
+  evidenceCount: number
+  scopesSeen: number
+  failedGateDistribution: Record<string, number>
+  lifecycleCensoring?: S12TwCalibrationLifecycleCensoring
+  replaceExistingRunArtifacts?: boolean
+}
+
+export async function commitS12TwCalibrationAtomically(
+  db: D1Database,
+  input: S12TwCalibrationAtomicCommitInput,
+): Promise<number> {
+  const approved = input.artifacts.filter((artifact) => artifact.status === 'approved')
+  const statements: D1PreparedStatement[] = []
+  if (input.replaceExistingRunArtifacts === true) {
+    statements.push(db.prepare(`
+      DELETE FROM s12_tw_calibration_artifacts
+       WHERE run_id=?
+    `).bind(input.runId))
+  }
+  const supersede = db.prepare(`
+    UPDATE s12_tw_calibration_artifacts
+       SET superseded_at = ?
+     WHERE status = 'approved'
+       AND superseded_at IS NULL
+       AND market_segment = ?
+       AND entry_cohort = ?
+       AND COALESCE(alpha_bucket, '') = COALESCE(?, '')
+       AND COALESCE(entry_time_bucket, '') = COALESCE(?, '')
+  `)
+  const upsertArtifact = db.prepare(`
+    INSERT OR REPLACE INTO s12_tw_calibration_artifacts (
+      artifact_id, run_id, status, cadence, market_segment, entry_cohort, alpha_bucket, entry_time_bucket,
+      policy_json, exit_json, validation_start, validation_end, sample_count, date_count,
+      metrics_json, created_at, approved_at, superseded_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)
+  `)
+  for (const artifact of input.artifacts) {
+    if (artifact.status === 'approved') {
+      statements.push(supersede.bind(
+        artifact.createdAt,
+        artifact.scope.marketSegment,
+        artifact.scope.entryCohort,
+        artifact.scope.alphaBucket,
+        artifact.scope.entryTimeBucket,
+      ))
+    }
+    statements.push(upsertArtifact.bind(
+      artifact.artifactId,
+      artifact.runId,
+      artifact.status,
+      artifact.cadence,
+      artifact.scope.marketSegment,
+      artifact.scope.entryCohort,
+      artifact.scope.alphaBucket,
+      artifact.scope.entryTimeBucket,
+      JSON.stringify(artifact.policy),
+      JSON.stringify(artifact.exit),
+      artifact.validationStart,
+      artifact.validationEnd,
+      artifact.sampleCount,
+      artifact.dateCount,
+      JSON.stringify(artifact.metrics),
+      artifact.createdAt,
+      artifact.approvedAt,
+    ))
+  }
+  statements.push(db.prepare(`
+    INSERT OR REPLACE INTO s12_tw_calibration_runs (
+      run_id, run_date, cadence, status, scopes_seen, artifacts_written, summary_json, created_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+  `).bind(
+    input.runId,
+    input.runDate,
+    input.cadence,
+    approved.length ? 'promoted' : 'frozen',
+    input.scopesSeen,
+    input.artifacts.length,
+    JSON.stringify({
+      evidence: input.evidenceCount,
+      candidates: input.artifacts.length,
+      approved: approved.length,
+      rejected: input.artifacts.length - approved.length,
+      failed_gate_distribution: input.failedGateDistribution,
+      lifecycle_censoring: input.lifecycleCensoring ?? null,
+    }),
+  ))
+  if (statements.length > S12_TW_CALIBRATION_BATCH_MAX_STATEMENTS) {
+    throw new Error(
+      `s12 calibration atomic batch exceeds ${S12_TW_CALIBRATION_BATCH_MAX_STATEMENTS} statements: ${statements.length}`,
+    )
+  }
+  await db.batch(statements)
+  return input.artifacts.length
+}
+
 export async function runS12TwCalibration(
   db: D1Database,
-  options: { runDate: string; cadence?: S12TwCalibrationCadence; dryRun?: boolean },
+  options: {
+    runDate: string
+    cadence?: S12TwCalibrationCadence
+    dryRun?: boolean
+    replaceExistingRunArtifacts?: boolean
+    lifecycleCensoring?: S12TwCalibrationLifecycleCensoring
+    beforeCommit?: () => Promise<void>
+  },
 ): Promise<{ status: string; summary: string; artifacts: S12TwCalibrationArtifact[]; written: number }> {
   await ensureS12TwCalibrationTables(db)
   const cadence = options.cadence ?? 'weekly'
   const startDate = daysBefore(options.runDate, cadence === 'monthly' ? 180 : 90)
-  const evidence = await loadEvidence(db, startDate, options.runDate)
+  const lifecycleCensoring = options.lifecycleCensoring
+    ?? await inspectS12TwCalibrationLifecycleCensoring(db, options.runDate, cadence)
+  const evidence = await loadS12TwCalibrationEvidence(db, startDate, options.runDate)
   const grouped = new Map<string, { scope: S12TwCalibrationScope; rows: CalibrationEvidence[] }>()
   const append = (scope: S12TwCalibrationScope, row: CalibrationEvidence) => {
     const key = scopeKey(scope)
@@ -562,70 +816,24 @@ export async function runS12TwCalibration(
       failedGateDistribution[key] = (failedGateDistribution[key] ?? 0) + 1
     }
   }
-  let written = 0
-  if (options.dryRun !== true) {
-    for (const artifact of artifacts) {
-      if (artifact.status === 'approved') await db.prepare(`
-        UPDATE s12_tw_calibration_artifacts
-           SET superseded_at = ?
-         WHERE status = 'approved'
-           AND superseded_at IS NULL
-           AND market_segment = ?
-           AND entry_cohort = ?
-           AND COALESCE(alpha_bucket, '') = COALESCE(?, '')
-           AND COALESCE(entry_time_bucket, '') = COALESCE(?, '')
-      `).bind(artifact.createdAt, artifact.scope.marketSegment, artifact.scope.entryCohort, artifact.scope.alphaBucket, artifact.scope.entryTimeBucket).run()
-      await db.prepare(`
-        INSERT OR REPLACE INTO s12_tw_calibration_artifacts (
-          artifact_id, run_id, status, cadence, market_segment, entry_cohort, alpha_bucket, entry_time_bucket,
-          policy_json, exit_json, validation_start, validation_end, sample_count, date_count,
-          metrics_json, created_at, approved_at, superseded_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)
-      `).bind(
-        artifact.artifactId,
-        artifact.runId,
-        artifact.status,
-        artifact.cadence,
-        artifact.scope.marketSegment,
-        artifact.scope.entryCohort,
-        artifact.scope.alphaBucket,
-        artifact.scope.entryTimeBucket,
-        JSON.stringify(artifact.policy),
-        JSON.stringify(artifact.exit),
-        artifact.validationStart,
-        artifact.validationEnd,
-        artifact.sampleCount,
-        artifact.dateCount,
-        JSON.stringify(artifact.metrics),
-        artifact.createdAt,
-        artifact.approvedAt,
-      ).run()
-      written += 1
-    }
-    await db.prepare(`
-      INSERT OR REPLACE INTO s12_tw_calibration_runs (
-        run_id, run_date, cadence, status, scopes_seen, artifacts_written, summary_json, created_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
-    `).bind(
-      runId,
-      options.runDate,
-      cadence,
-      approved.length ? 'promoted' : 'frozen',
-      grouped.size,
-      written,
-      JSON.stringify({
-        evidence: evidence.length,
-        candidates: artifacts.length,
-        approved: approved.length,
-        rejected: artifacts.length - approved.length,
-        failed_gate_distribution: failedGateDistribution,
-      }),
-    ).run()
-  }
+  if (options.dryRun !== true && options.beforeCommit) await options.beforeCommit()
+  const written = options.dryRun === true
+    ? 0
+    : await commitS12TwCalibrationAtomically(db, {
+        runId,
+        runDate: options.runDate,
+        cadence,
+        artifacts,
+        evidenceCount: evidence.length,
+        scopesSeen: grouped.size,
+        failedGateDistribution,
+        lifecycleCensoring,
+        replaceExistingRunArtifacts: options.replaceExistingRunArtifacts,
+      })
   const status = approved.length ? (options.dryRun ? 'validated' : 'promoted') : 'frozen'
   return {
     status,
-    summary: `s12_tw_calibration cadence=${cadence} status=${status} evidence=${evidence.length} scopes=${grouped.size} candidates=${artifacts.length} approved=${approved.length} rejected=${artifacts.length - approved.length} written=${written} failed_gates=${JSON.stringify(failedGateDistribution)}`,
+    summary: `s12_tw_calibration cadence=${cadence} status=${status} evidence=${evidence.length} scopes=${grouped.size} candidates=${artifacts.length} approved=${approved.length} rejected=${artifacts.length - approved.length} written=${written} lifecycle_complete=${lifecycleCensoring.completeRows} lifecycle_pending_terminal=${lifecycleCensoring.pendingMaturityTerminalRows} lifecycle_recent_enqueued_excluded=${lifecycleCensoring.recentEnqueuedRows} lifecycle_stale_enqueued_excluded=${lifecycleCensoring.staleEnqueuedRows} lifecycle_missing_or_other_excluded=${lifecycleCensoring.missingOrOtherRows} failed_gates=${JSON.stringify(failedGateDistribution)}`,
     artifacts,
     written,
   }

@@ -66,6 +66,13 @@ const FINLAB_PENDING_WATCHDOG_STALE_MS = 15 * 60_000
 const FINLAB_PENDING_WATCHDOG_MAX_ATTEMPTS = 3
 const STRATEGY_LEARNING_QUEUE_CHUNK_SIZE = 80
 const S12_REPLAY_QUEUE_CHUNK_SIZE = 20
+
+export function s12ReplayLifecycleMutationAllowed(
+  replayScope: string,
+  replayPersist: boolean,
+): boolean {
+  return replayPersist && replayScope === 'fusion_snapshot_missing'
+}
 const S12_REPLAY_LEASE_RETRY_BASE_DELAY_SECONDS = 60
 const S12_REPLAY_LEASE_RETRY_MAX_DELAY_SECONDS = 180
 const S12_REPLAY_LEASE_RETRY_MAX_ATTEMPTS = 60
@@ -4101,6 +4108,8 @@ export async function processUpdateBatch(
     const triggerTime = msg.triggerTime
     const runId = msg.runId || `s12-replay-backfill-${triggerTime}-${Date.now()}`
     const offset = Math.max(0, Number.isFinite(msg.cursor) ? Number(msg.cursor) : 0)
+    const replayEndOffset = Math.max(offset, Number((msg as any).replayEndOffset ?? Number.POSITIVE_INFINITY))
+    const replayPersist = (msg as any).replayPersist !== false
     const requestedScope = (msg as any).replayScope
     const requestedMaturityDate = String((msg as any).maturityAsOfDate ?? '').slice(0, 10)
     const maturityAsOfDate = /^\d{4}-\d{2}-\d{2}$/.test(requestedMaturityDate)
@@ -4180,9 +4189,11 @@ export async function processUpdateBatch(
     let result
     try {
       result = await runS12HistoricalReplayForDate(env, triggerTime, {
-        limit: S12_REPLAY_QUEUE_CHUNK_SIZE,
+        limit: dynamicCohortScope
+          ? S12_REPLAY_QUEUE_CHUNK_SIZE
+          : Math.max(1, Math.min(S12_REPLAY_QUEUE_CHUNK_SIZE, replayEndOffset - offset)),
         offset: dynamicCohortScope ? 0 : offset,
-        persist: true,
+        persist: replayPersist,
         symbols: cohortSymbols,
         maturityAsOfDate,
         signedEligibleRepair: replayScope === 'signed_eligible_repair',
@@ -4250,7 +4261,8 @@ export async function processUpdateBatch(
       ? false
       : dynamicCohortScope
       ? remainingReplaySymbols.length > 0 && Number(result.persisted ?? 0) > 0
-      : nextOffset < Number(result.l0_symbols ?? 0) && Number(result.attempted ?? 0) > 0
+      : nextOffset < Math.min(Number(result.l0_symbols ?? 0), replayEndOffset)
+        && Number(result.attempted ?? 0) > 0
     if (terminalDataSourceReason || dynamicCohortStalled) {
       const failureReason = terminalDataSourceReason
         ? `terminal market-data source error: ${terminalDataSourceReason}`
@@ -4337,7 +4349,13 @@ export async function processUpdateBatch(
         maturityAsOfDate,
         statusRunDate,
         lifecycleRunId,
+        replayEndOffset: Number.isFinite(replayEndOffset) ? replayEndOffset : undefined,
+        replayPersist,
       } as any)
+    } else if (!s12ReplayLifecycleMutationAllowed(replayScope, replayPersist)) {
+      console.log(
+        `[Queue] Non-canonical S12 replay completed without lifecycle mutation date=${triggerTime} scope=${replayScope} run_id=${runId}`,
+      )
     } else if (replayClosed) {
       const { recordAllocatorEvLifecycle } = await import('./allocatorEvDailyLifecycle')
       await recordAllocatorEvLifecycle(databaseForDataDomain(env, 'learning'), {

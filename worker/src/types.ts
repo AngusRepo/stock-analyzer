@@ -356,6 +356,8 @@ export interface UpdateQueueMsg {
   attempt?: number    // finalize watchdog retry count
   continuationAttempt?: number // durable finalizer continuation retry count
   leaseRetryAttempt?: number // bounded deferred retry for serialized S12 research traffic
+  durableTaskRecoveryAttempt?: number // bounded lease-expiry continuation count for durable scheduler tasks
+  durableTaskExpectedLeaseOwner?: string // stale-holder fence for a durable scheduler continuation
   dataDomainErrorAttempt?: number // bounded consecutive error retry for shadow backfill
   policyMutationAllowed?: boolean // live recovery can close lineage without promoting strategy policy
   maintenanceTask?:

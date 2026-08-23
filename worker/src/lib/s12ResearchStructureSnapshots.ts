@@ -19,7 +19,12 @@ import {
   resolveS12TwCalibrationArtifact,
   type S12TwCalibrationArtifact,
 } from './s12TwEquityCalibration'
-import { acquireS12ResearchLease, releaseS12ResearchLease } from './s12ResearchLease'
+import {
+  acquireS12ResearchLease,
+  assertS12ResearchLeaseRenewed,
+  isS12ResearchLeaseLost,
+  releaseS12ResearchLease,
+} from './s12ResearchLease'
 
 const M15_MS = 15 * 60_000
 
@@ -144,6 +149,9 @@ export async function runS12ResearchStructureSnapshots(
   if (!options.loadBars && !leaseAcquired) {
     throw new Error(`s12_research_lease_busy:${tradeDate}`)
   }
+  const assertLeaseOwned = async (): Promise<void> => {
+    if (leaseAcquired) await assertS12ResearchLeaseRenewed(opsDb, leaseRunId)
+  }
   try {
   const limit = Math.min(2000, positiveLimit(options.limit ?? (env as any).S12_RESEARCH_SNAPSHOT_LIMIT, 1000))
   const candidates = options.symbols ?? await loadS12ResearchCohortSymbolsAcrossDomains(env, tradeDate, limit)
@@ -166,8 +174,10 @@ export async function runS12ResearchStructureSnapshots(
   }
 
   for (const row of selected) {
+    await assertLeaseOwned()
     try {
       if (terminalDataSourceReason) {
+        await assertLeaseOwned()
         const ok = await persistS12UnavailableStructureSnapshot(env, {
           tradeDate,
           symbol: row.symbol,
@@ -191,6 +201,7 @@ export async function runS12ResearchStructureSnapshots(
       if (!loaded.bars.length) {
         const reason = loaded.diagnostics.kbars_error ?? loaded.diagnostics.kbars_unusable_reason ?? 'missing_intraday_bars'
         terminalDataSourceReason = s12ResearchTerminalDataSourceReason(loaded.diagnostics)
+        await assertLeaseOwned()
         const ok = await persistS12UnavailableStructureSnapshot(env, {
           tradeDate,
           symbol: row.symbol,
@@ -235,6 +246,7 @@ export async function runS12ResearchStructureSnapshots(
         asOfDate: tradeDate,
       })
       const assessment = calibration ? assess(calibration) : preliminary
+      await assertLeaseOwned()
       const ok = await persistS12StructureSnapshot(env, {
         tradeDate,
         symbol: row.symbol,
@@ -255,6 +267,7 @@ export async function runS12ResearchStructureSnapshots(
         skipped += 1
       }
     } catch (error) {
+      if (isS12ResearchLeaseLost(error)) throw error
       errors += 1
       recordSkipReason(error instanceof Error ? error.message : String(error))
       console.warn(`[S12ResearchStructureSnapshot] ${row.symbol} skipped:`, error instanceof Error ? error.message : String(error))

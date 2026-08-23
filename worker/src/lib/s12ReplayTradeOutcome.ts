@@ -28,7 +28,11 @@ import {
 } from './s12TwEquityCalibration'
 import type { S12TwExitCalibration } from './s12TwEquityCalibration'
 import { normalizeTwEquityTargetPrice } from './twEquityMarketContract'
-import { acquireS12ResearchLease, releaseS12ResearchLease } from './s12ResearchLease'
+import {
+  acquireS12ResearchLease,
+  assertS12ResearchLeaseRenewed,
+  releaseS12ResearchLease,
+} from './s12ResearchLease'
 
 export type S12ReplayOutcomeStatus = 'executed' | 'setup_only' | 'skipped'
 export type S12ReplayObservationKind = 'executed' | 'not_executed' | 'unavailable'
@@ -1225,6 +1229,9 @@ export async function runS12HistoricalReplayForDate(
   if (!options.loadBars && !leaseAcquired) {
     throw new Error(`s12_research_lease_busy:${signalDate}`)
   }
+  const assertLeaseOwned = async (): Promise<void> => {
+    if (leaseAcquired) await assertS12ResearchLeaseRenewed(opsDb, leaseRunId)
+  }
   try {
   const l0 = options.symbols ?? await import('./s12ReplaySplitReadModels')
     .then(({ loadSplitCanonicalSelectionSymbols }) => loadSplitCanonicalSelectionSymbols(env, signalDate))
@@ -1242,6 +1249,7 @@ export async function runS12HistoricalReplayForDate(
   const executionDates = new Set<string>()
   const persistOutcome = async (outcome: S12ReplayOutcome): Promise<void> => {
     if (options.persist === false) return
+    await assertLeaseOwned()
     const accepted = await persistS12ReplayOutcome(learningDb, outcome, {
       expectedLifecycleRunId: options.expectedLifecycleRunId,
     })
@@ -1253,6 +1261,7 @@ export async function runS12HistoricalReplayForDate(
     persisted += 1
   }
   for (const row of selected) {
+    await assertLeaseOwned()
     attempted += 1
     const executionDate = await (
       options.resolveExecutionDate

@@ -129,10 +129,12 @@ assert(
 
 assert(
   durableScheduler.includes("leaseGroup: `s12_smcvwap_calibration:${runDate}`") &&
+    durableScheduler.includes('leaseSeconds: 600') &&
     durableScheduler.includes('FROM s12_tw_calibration_runs') &&
     durableScheduler.includes('idempotent: true') &&
-    durableScheduler.includes('throw new Error(leased.reason)'),
-  'S12 durable calibration must serialize same-date execution and reuse its persistent canonical run row instead of recomputing',
+    durableScheduler.includes('durable_duplicate_ack') &&
+    !durableScheduler.includes('throw new Error(leased.reason)'),
+  'S12 durable calibration must serialize same-date execution, ACK active duplicates, and reuse its persistent canonical run row',
 )
 
 assert(

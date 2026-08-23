@@ -26,6 +26,19 @@ assert(replaySource.includes('symbol, market, signal_date, trade_date'), 'replay
 assert(replaySource.includes('market: row.market ?? null'), 'replay runner must carry the split Core market identity into every outcome')
 assert(source.includes("replay_diagnostics.replay_engine_signature"), 'calibration must reject replay rows from incompatible engines')
 assert(source.includes('S12_REPLAY_ENGINE_SIGNATURE'), 'calibration and replay must share one engine-signature owner')
+assert(source.includes('CALIBRATION_EVIDENCE_PAGE_SIZE = 128'), 'calibration evidence must be loaded in memory-bounded pages')
+assert(source.includes('SELECT COALESCE(MAX(o.id), 0) AS max_id'), 'calibration must capture an immutable upper cursor before page one')
+assert(source.includes('WHERE o.id > ?') && source.includes('AND o.id <= ?'), 'calibration evidence pagination must stay inside its keyset snapshot')
+assert(source.includes("AS assessment_detail"), 'calibration must project only the compact assessment scalar')
+assert(!source.includes('o.max_adverse_pct, o.detail_json'), 'calibration must not materialize the full replay JSON payload')
+const atomicCommit = source.slice(
+  source.indexOf('export async function commitS12TwCalibrationAtomically'),
+  source.indexOf('export async function runS12TwCalibration'),
+)
+assert(atomicCommit.includes('await db.batch(statements)'), 'S12 promotion must commit through one D1 transaction')
+assert(!atomicCommit.includes('.run()'), 'S12 promotion must not fall back to torn direct writes')
+assert(atomicCommit.indexOf('DELETE FROM s12_tw_calibration_artifacts') < atomicCommit.indexOf('UPDATE s12_tw_calibration_artifacts'), 'incomplete-run cleanup must be the first optional batch statement')
+assert(atomicCommit.indexOf('INSERT OR REPLACE INTO s12_tw_calibration_artifacts') < atomicCommit.indexOf('INSERT OR REPLACE INTO s12_tw_calibration_runs'), 'canonical run receipt must be the final batch statement')
 
 function artifact(
   id: string,

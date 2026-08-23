@@ -617,16 +617,7 @@ export function buildAdminWorkerDomainTaskMap(c: any, deps: TriggerDeps): Record
       ].join(' ')
     },
     's12-smcvwap-calibration': async () => {
-      const { runS12TwCalibration } = await import('./s12TwEquityCalibration')
-      const { resolveS12CalibrationCadence } = await import('./s12CalibrationCadence')
-      const runDate = requestedRunDate() ?? twToday()
-      const cadence = resolveS12CalibrationCadence(c.req.query('cadence'), runDate)
-      const result = await runS12TwCalibration(databaseForDataDomain(c.env, 'learning'), {
-        runDate,
-        cadence,
-        dryRun: c.req.query('dry_run') === '1',
-      })
-      return result.summary
+      throw new Error('s12 calibration requires durable queue execution')
     },
     's12-research-recovery': async () => {
       const runDate = assertRunDate(requestedRunDate())
@@ -667,24 +658,20 @@ export function buildAdminWorkerDomainTaskMap(c: any, deps: TriggerDeps): Record
         } as any)
         return `triggered s12 replay backfill date=${runDate} scope=${replayScope} run_id=${runId} callback expected`
       }
-      const { runS12HistoricalReplayForDate } = await import('./s12ReplayTradeOutcome')
-      const result = await runS12HistoricalReplayForDate(c.env, runDate, {
-        limit: parseBoundedPositiveInt(c.req.query('limit'), 500, 5000),
-        offset: Math.max(0, parseBoundedPositiveInt(c.req.query('offset'), 0, 20000)),
-        persist: c.req.query('dry_run') !== '1',
+      const offset = Math.max(0, parseBoundedPositiveInt(c.req.query('offset'), 0, 20000))
+      const limit = parseBoundedPositiveInt(c.req.query('limit'), 500, 5000)
+      const runId = `manual-l0-replay-${runDate}-${Date.now().toString(36)}`
+      await c.env.UPDATE_QUEUE.send({
+        type: 's12_replay_backfill_chunk',
+        cursor: offset,
+        triggerTime: runDate,
+        runId,
+        replayScope: 'l0',
         maturityAsOfDate: c.req.query('as_of') ?? twToday(),
-      })
-      return [
-        `s12_replay_backfill signal_date=${result.signal_date}`,
-        `execution_dates=${result.execution_dates.join(',') || 'none'}`,
-        `unresolved_execution_dates=${result.unresolved_execution_dates}`,
-        `l0=${result.l0_symbols}`,
-        `attempted=${result.attempted}`,
-        `executed=${result.executed}`,
-        `setup_only=${result.setup_only}`,
-        `skipped=${result.skipped}`,
-        `persisted=${result.persisted}`,
-      ].join(' ')
+        replayEndOffset: offset + limit,
+        replayPersist: c.req.query('dry_run') !== '1',
+      } as any)
+      return `scheduled s12 replay backfill date=${runDate} scope=l0 offset=${offset} limit=${limit} run_id=${runId} callback expected`
     },
     'paper-trade': () => deps.runPaperAutoTrade(),
     'morning-setup': async () => {

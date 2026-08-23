@@ -198,6 +198,12 @@ export function createAdminTriggerRoutes(deps: TriggerRouteDeps) {
     }
 
     const syncMode = c.req.query('sync') === '1'
+    if (task === 's12-smcvwap-calibration' && syncMode) {
+      return c.json({
+        success: false,
+        error: 's12 calibration requires durable queue execution; sync bypass is forbidden',
+      }, 409)
+    }
     if (SYNC_REQUIRED_TASKS.has(task) && !syncMode) {
       return c.json({
         success: false,

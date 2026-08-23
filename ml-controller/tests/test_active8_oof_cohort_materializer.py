@@ -818,6 +818,67 @@ def test_forward_extension_manifest_is_shadow_only_and_bound_to_base():
         )
 
 
+def test_verified_forward_coverage_readback_requires_complete_checksum_group():
+    from services.active8_oof_cohort_materializer import (
+        OOF_FORWARD_COVERAGE_POLICY_VERSION,
+        load_verified_oof_forward_coverage,
+    )
+
+    captured = {}
+
+    def row(checksum, kind, *, max_date, cutoff):
+        return {
+            "extension_manifest_checksum": checksum,
+            "artifact_kind": kind,
+            "extension_manifest_path": f"forward/{checksum}.json",
+            "knowledge_cutoff_date": cutoff,
+            "min_date": "2026-08-06",
+            "max_date": max_date,
+            "date_count": 3,
+            "row_count": 100,
+            "expected_date_count": 4,
+            "not_evaluable_date_count": 1,
+            "coverage_status": "verified",
+            "promotion_eligible": 0,
+            "training_dispatched": 0,
+            "policy_version": OOF_FORWARD_COVERAGE_POLICY_VERSION,
+            "verified_at": f"{cutoff}T01:00:00Z",
+            "updated_at": f"{cutoff}T01:00:00Z",
+        }
+
+    def query_fn(sql, params):
+        captured["sql"] = sql
+        captured["params"] = params
+        return [
+            row("c" * 64, "allocator_ev_snapshots", max_date="2026-08-14", cutoff="2026-08-23"),
+            row("b" * 64, "allocator_ev_snapshots", max_date="2026-08-14", cutoff="2026-08-21"),
+            row("b" * 64, "l4_predictions", max_date="2026-08-12", cutoff="2026-08-21"),
+        ]
+
+    result = load_verified_oof_forward_coverage(
+        cohort_id="cohort-1",
+        base_manifest_checksum="a" * 64,
+        knowledge_cutoff_date="2026-08-23",
+        query_fn=query_fn,
+    )
+
+    assert result is not None
+    assert result["extension_manifest_checksum"] == "b" * 64
+    assert result["max_date"] == "2026-08-12"
+    assert set(result["artifacts"]) == {"allocator_ev_snapshots", "l4_predictions"}
+    assert result["promotion_eligible"] is False
+    assert result["training_dispatched"] is False
+    assert "base_manifest_checksum = ?" in captured["sql"]
+    assert "coverage_status = 'verified'" in captured["sql"]
+    assert captured["params"] == [
+        "cohort-1",
+        "a" * 64,
+        OOF_FORWARD_COVERAGE_POLICY_VERSION,
+        "2026-08-23",
+        "2026-08-23",
+    ]
+
+
 def test_forward_shadow_coverage_is_complete_checksum_bound_and_non_promotable():
     from services.active8_oof_cohort_materializer import (
         OOF_FORWARD_COVERAGE_POLICY_VERSION,

@@ -1463,6 +1463,105 @@ def _classify_l4_forward_evaluability(
     }
 
 
+def load_verified_oof_forward_coverage(
+    *,
+    cohort_id: str,
+    base_manifest_checksum: str,
+    knowledge_cutoff_date: str,
+    query_fn: Callable[..., list[dict[str, Any]]] = d1_client.query,
+) -> dict[str, Any] | None:
+    """Read the newest complete checksum-bound monitoring-only coverage group."""
+
+    rows = query_fn(
+        """
+        SELECT extension_manifest_checksum, artifact_kind,
+               extension_manifest_path, knowledge_cutoff_date,
+               min_date, max_date, date_count, row_count,
+               expected_date_count, not_evaluable_date_count,
+               coverage_status, promotion_eligible, training_dispatched,
+               policy_version, verified_at, updated_at
+          FROM active8_oof_forward_extension_coverage
+         WHERE cohort_id = ?
+           AND base_manifest_checksum = ?
+           AND coverage_status = 'verified'
+           AND promotion_eligible = 0
+           AND training_dispatched = 0
+           AND policy_version = ?
+           AND knowledge_cutoff_date <= ?
+           AND max_date <= ?
+         ORDER BY knowledge_cutoff_date DESC, verified_at DESC,
+                  extension_manifest_checksum DESC, artifact_kind
+        """,
+        [
+            cohort_id,
+            base_manifest_checksum,
+            OOF_FORWARD_COVERAGE_POLICY_VERSION,
+            knowledge_cutoff_date,
+            knowledge_cutoff_date,
+        ],
+    )
+    required_kinds = set(OOF_MATERIALIZED_ARTIFACT_KINDS)
+    grouped: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    group_order: list[str] = []
+    for row in rows:
+        checksum = str(row.get("extension_manifest_checksum") or "").lower()
+        if checksum not in grouped:
+            group_order.append(checksum)
+        grouped[checksum].append(row)
+
+    for checksum in group_order:
+        group_rows = grouped[checksum]
+        by_kind = {
+            str(row.get("artifact_kind") or ""): row for row in group_rows
+        }
+        manifest_paths = {
+            str(row.get("extension_manifest_path") or "") for row in group_rows
+        }
+        if (
+            len(checksum) != 64
+            or any(char not in "0123456789abcdef" for char in checksum)
+            or set(by_kind) != required_kinds
+            or len(manifest_paths) != 1
+            or not next(iter(manifest_paths), "")
+            or any(int(row.get("date_count") or 0) <= 0 for row in group_rows)
+            or any(int(row.get("row_count") or 0) <= 0 for row in group_rows)
+        ):
+            continue
+        artifacts = {
+            kind: {
+                "status": "verified",
+                "rows": int(row.get("row_count") or 0),
+                "dates": int(row.get("date_count") or 0),
+                "min_date": str(row.get("min_date") or "")[:10] or None,
+                "max_date": str(row.get("max_date") or "")[:10] or None,
+                "expected_dates": int(row.get("expected_date_count") or 0),
+                "not_evaluable_dates": int(
+                    row.get("not_evaluable_date_count") or 0
+                ),
+            }
+            for kind, row in by_kind.items()
+        }
+        artifact_max_dates = [
+            str(row.get("max_date") or "")[:10] for row in group_rows
+        ]
+        if any(not value for value in artifact_max_dates):
+            continue
+        return {
+            "status": "verified",
+            "source": "persisted_verified_forward_coverage",
+            "promotion_eligible": False,
+            "training_dispatched": False,
+            "extension_manifest_checksum": checksum,
+            "extension_manifest_path": next(iter(manifest_paths)),
+            "knowledge_cutoff_date": str(
+                group_rows[0].get("knowledge_cutoff_date") or ""
+            )[:10],
+            "max_date": min(artifact_max_dates),
+            "artifacts": artifacts,
+        }
+    return None
+
+
 def persist_verified_oof_forward_coverage(
     *,
     cohort_id: str,

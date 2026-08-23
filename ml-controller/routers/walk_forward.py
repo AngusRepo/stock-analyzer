@@ -1411,6 +1411,7 @@ async def materialize_walk_forward_oof(req: OofMaterializeRequest):
         load_indexed_oof_ev_rows,
         load_oof_forward_prediction_rows,
         load_oof_prediction_rows,
+        load_verified_oof_forward_coverage,
         load_verified_oof_forward_extension,
         load_verified_oof_manifest,
         persist_oof_cohort,
@@ -1667,6 +1668,13 @@ async def materialize_walk_forward_oof(req: OofMaterializeRequest):
                 serving_forward_guard = evaluate_serving_forward_guard(
                     as_of_date=req.knowledge_cutoff_date,
                 )
+        elif reuse_indexed:
+            forward_shadow_coverage = load_verified_oof_forward_coverage(
+                cohort_id=req.cohort_id,
+                base_manifest_checksum=str(manifest["manifest_checksum"]),
+                knowledge_cutoff_date=req.knowledge_cutoff_date,
+                query_fn=learning_client.query,
+            )
         durable_shadow_base_materialization = bool(
             forward_extension and req.persist_forward_shadow_coverage
         )
@@ -1911,6 +1919,28 @@ async def materialize_walk_forward_oof(req: OofMaterializeRequest):
             for row in prediction_rows[:len(prediction_rows) - len(forward_prediction_rows)]
             if str(row.get("prediction_date") or "")[:10]
         })
+        persisted_forward_max = str(
+            (forward_shadow_coverage or {}).get("max_date") or ""
+        )[:10]
+        base_prediction_max = (
+            base_prediction_dates[-1]
+            if base_prediction_dates
+            else str(manifest.get("end_date") or "")[:10]
+            if reuse_indexed
+            else ""
+        )
+        effective_prediction_max = max(
+            [
+                value
+                for value in (
+                    physical_prediction_dates[-1] if physical_prediction_dates else "",
+                    base_prediction_max,
+                    persisted_forward_max,
+                )
+                if value
+            ],
+            default="",
+        )
         return {
             "status": "dry_run" if req.dry_run else "materialized",
             "cohort_id": req.cohort_id,
@@ -1923,14 +1953,15 @@ async def materialize_walk_forward_oof(req: OofMaterializeRequest):
             "shadow_evaluation_packets": shadow_evaluation_packets,
             "serving_forward_guard": serving_forward_guard,
             "physical_prediction_coverage": {
-                "date_count": len(physical_prediction_dates),
+                "date_count": len(physical_prediction_dates) or None,
                 "min_date": physical_prediction_dates[0] if physical_prediction_dates else None,
-                "max_date": physical_prediction_dates[-1] if physical_prediction_dates else None,
-                "base_max_date": base_prediction_dates[-1] if base_prediction_dates else None,
+                "max_date": effective_prediction_max or None,
+                "base_max_date": base_prediction_max or None,
+                "forward_max_date": persisted_forward_max or None,
                 "manifest_declared_end_date": str(manifest.get("end_date") or "")[:10],
                 "declared_end_matches_physical": bool(
-                    physical_prediction_dates
-                    and physical_prediction_dates[-1] == str(manifest.get("end_date") or "")[:10]
+                    base_prediction_max
+                    and base_prediction_max == str(manifest.get("end_date") or "")[:10]
                 ),
             },
             "native_pit_rows": len(native_rows),
@@ -2049,6 +2080,22 @@ def _oof_lifecycle_receipt_matches_active_policy(
     full_fit = full_fit if isinstance(full_fit, dict) else {}
     receipt_calendar = receipt.get("calendar")
     receipt_calendar = receipt_calendar if isinstance(receipt_calendar, dict) else {}
+    physical_coverage = receipt.get("physical_prediction_coverage")
+    physical_coverage = (
+        physical_coverage if isinstance(physical_coverage, dict) else {}
+    )
+    expected_mature_max = str(
+        (expected_calendar or {}).get("mature_max_date") or ""
+    )[:10]
+    effective_physical_max = str(physical_coverage.get("max_date") or "")[:10]
+    physical_watermark_current = (
+        expected_calendar is None
+        or bool(
+            expected_mature_max
+            and effective_physical_max
+            and effective_physical_max >= expected_mature_max
+        )
+    )
     calendar_watermark_current = expected_calendar is None or all(
         receipt_calendar.get(key) == expected_calendar.get(key)
         for key in (
@@ -2064,6 +2111,7 @@ def _oof_lifecycle_receipt_matches_active_policy(
         and receipt.get("materialization_policy_version") == _active_oof_materialization_policy_version()
         and receipt.get("cadence") == cadence
         and calendar_watermark_current
+        and physical_watermark_current
     )
     materialized_complete = (
         receipt.get("status") == "materialized"

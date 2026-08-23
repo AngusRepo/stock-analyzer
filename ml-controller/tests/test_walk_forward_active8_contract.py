@@ -1097,6 +1097,10 @@ def test_oof_lifecycle_receipt_is_bound_to_active_materialization_policy():
             "mature_max_date": "2026-07-31",
             "mature_dates": 111,
         },
+        "physical_prediction_coverage": {
+            "base_max_date": "2026-07-22",
+            "max_date": "2026-07-31",
+        },
         "evidence_closure": {
             "materialized": True,
             "candidate_artifacts": True,
@@ -1132,6 +1136,18 @@ def test_oof_lifecycle_receipt_is_bound_to_active_materialization_policy():
         **current,
         "materialization_policy_version": "legacy-v1",
     }, cadence="daily", require_full_fit=False)
+    assert not _oof_lifecycle_receipt_matches_active_policy(
+        {
+            **current,
+            "physical_prediction_coverage": {
+                "base_max_date": "2026-07-22",
+                "max_date": None,
+            },
+        },
+        cadence="daily",
+        require_full_fit=False,
+        expected_calendar=current["calendar"],
+    )
     assert not _oof_lifecycle_receipt_matches_active_policy(
         current,
         cadence="weekly",

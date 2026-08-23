@@ -29,7 +29,7 @@ assert.match(retirement, /destructive_step_requires_verified_artifact: true/)
 assert.match(retirement, /LEGACY_HOT_DATA_RETIREMENT_CONFIRM_PHRASE/)
 assert.match(retirement, /const dryRun = options\.dryRun !== false/)
 assert.ok(
-  retirement.indexOf('await archiveRows') < retirement.indexOf("deleteByKeys(env.DB, input.table"),
+  retirement.indexOf('await archiveRows') < retirement.indexOf("deleteLegacyCutoverRows(env.DB, input.table"),
   'archive/readback must precede generic D1 retirement deletes',
 )
 assert.match(retirement, /prediction_date_inference_forbidden: true/)
@@ -39,6 +39,20 @@ assert.match(retirement, /paper_broker_reconciliation/)
 assert.match(retirement, /s12_intraday_structure/)
 assert.match(retirement, /allocator_snapshot_staging_orphans/)
 assert.match(retirement, /releaseArtifactHardReferencesByOwner/)
+assert.match(retirement, /databaseForDataDomain\(env, 'ops'\)/)
+assert.match(retirement, /deleteLegacyCutoverRows/)
+assert.match(retirement, /writer_state='cutover' AND epoch=\?/)
+assert.match(retirement, /legacy_retirement_exact_delete_failed/)
+assert.match(retirement, /legacy_retirement_writer_restore_failed/)
+assert.match(retirement, /const results = await db\.batch\(statements\)/)
+assert.ok(
+  retirement.indexOf("SET writer_state='open'") < retirement.indexOf('DELETE FROM "${table}"'),
+  'cutover source opens only inside the atomic exact-delete batch',
+)
+assert.ok(
+  retirement.indexOf('DELETE FROM "${table}"') < retirement.indexOf("SET writer_state='cutover'"),
+  'cutover writer fence must be restored after exact deletes',
+)
 assert.doesNotMatch(
   retirement.match(/event_type IN \(([^)]+)\)/)?.[1] ?? '',
   /paper_order|paper_position_update|paper_broker_reconciliation|live_execution_shadow|s12_intraday_structure/,
@@ -51,7 +65,7 @@ assert.match(archive, /target: target\.id/)
 assert.match(archive, /strategy_decision_log\.context_id IS NOT NULL/)
 assert.match(archive, /strategy_decision_log\.evidence_artifact_id IS NOT NULL/)
 assert.match(archive, /cursor\?\.backlog_remaining/)
-assert.match(archive, /loadCandidateRows\(env, target, cutoffDate, limitPerTable, minBlobBytes, null\)/)
+assert.match(archive, /loadCandidateRows\(targetDb, target, cutoffDate, limitPerTable, minBlobBytes, null\)/)
 assert.match(dashboard, /prediction_date IS NOT NULL/)
 assert.doesNotMatch(dashboard, /COALESCE\(prediction_date, substr\(generated_at/)
 assert.match(manifest, /"id": "legacy-strategy-evidence-migration"/)

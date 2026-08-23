@@ -1,5 +1,6 @@
 import type { Bindings } from '../types'
 import { releaseArtifactHardReferencesByOwner, writeEvidenceArtifact } from './artifactLifecycle'
+import { dataDomainForTable, databaseForDataDomain } from './dataDomainRegistry'
 
 export type LegacyHotDataTarget =
   | 'obsolete_screener_items'
@@ -22,6 +23,8 @@ type RetirementResult = {
   dry_run: boolean
 }
 
+type LegacyHotDataEnv = Pick<Bindings, 'DB' | 'ARTIFACTS'> & Partial<Bindings>
+
 const TARGETS: LegacyHotDataTarget[] = [
   'obsolete_screener_items',
   'superseded_pending_items',
@@ -41,7 +44,7 @@ function twBusinessDate(): string {
 }
 
 async function archiveRows(input: {
-  env: Pick<Bindings, 'DB' | 'ARTIFACTS'>
+  env: LegacyHotDataEnv
   target: LegacyHotDataTarget
   businessDate: string
   rows: Record<string, unknown>[]
@@ -86,8 +89,85 @@ async function deleteByKeys(
   return deleted
 }
 
+async function deleteLegacyCutoverRows(
+  db: D1Database,
+  table: string,
+  keyColumn: string,
+  keys: unknown[],
+): Promise<number> {
+  if (!keys.length) return 0
+  if (!/^[a-z][a-z0-9_]*$/.test(table) || !/^[a-z][a-z0-9_]*$/.test(keyColumn)) {
+    throw new Error(`legacy_retirement_identifier_invalid:${table}:${keyColumn}`)
+  }
+  const domain = dataDomainForTable(table)
+  if (!domain) throw new Error(`legacy_retirement_domain_missing:${table}`)
+  const writer = await db.prepare(`
+    SELECT epoch, writer_state FROM data_domain_writer_epochs WHERE domain=?
+  `).bind(domain).first<{ epoch?: number | string; writer_state?: string }>()
+  const writerState = String(writer?.writer_state ?? '')
+  const expectedEpoch = Number(writer?.epoch)
+  if (writerState === 'open') return deleteByKeys(db, table, keyColumn, keys)
+  if (writerState !== 'cutover' || !Number.isSafeInteger(expectedEpoch) || expectedEpoch < 0) {
+    throw new Error(`legacy_retirement_writer_state_invalid:${domain}:${writerState || 'missing'}`)
+  }
+
+  const statements: D1PreparedStatement[] = [
+    db.prepare(`
+      SELECT json(CASE WHEN EXISTS (
+        SELECT 1 FROM data_domain_writer_epochs
+         WHERE domain=? AND writer_state='cutover' AND epoch=?
+      ) THEN '{}' ELSE 'legacy_retirement_writer_guard_failed' END) AS guard
+    `).bind(domain, expectedEpoch),
+    db.prepare(`
+      UPDATE data_domain_writer_epochs
+         SET writer_state='open', updated_at=CURRENT_TIMESTAMP
+       WHERE domain=? AND writer_state='cutover' AND epoch=?
+    `).bind(domain, expectedEpoch),
+  ]
+  const deleteResultIndexes: number[] = []
+  for (let offset = 0; offset < keys.length; offset += 40) {
+    const chunk = keys.slice(offset, offset + 40)
+    const placeholders = chunk.map(() => '?').join(',')
+    deleteResultIndexes.push(statements.length)
+    statements.push(db.prepare(`
+      DELETE FROM "${table}" WHERE "${keyColumn}" IN (${placeholders})
+    `).bind(...chunk))
+    statements.push(db.prepare(`
+      SELECT json(CASE WHEN NOT EXISTS (
+        SELECT 1 FROM "${table}" WHERE "${keyColumn}" IN (${placeholders})
+      ) THEN '{}' ELSE 'legacy_retirement_exact_delete_failed' END) AS guard
+    `).bind(...chunk))
+  }
+  const closeResultIndex = statements.length
+  statements.push(db.prepare(`
+    UPDATE data_domain_writer_epochs
+       SET writer_state='cutover', updated_at=CURRENT_TIMESTAMP
+     WHERE domain=? AND writer_state='open'
+  `).bind(domain))
+  statements.push(db.prepare(`
+    SELECT json(CASE WHEN EXISTS (
+      SELECT 1 FROM data_domain_writer_epochs
+       WHERE domain=? AND writer_state='cutover'
+    ) THEN '{}' ELSE 'legacy_retirement_writer_restore_failed' END) AS guard
+  `).bind(domain))
+
+  const results = await db.batch(statements)
+  if (
+    Number(results[1]?.meta?.changes ?? 0) !== 1
+    || Number(results[closeResultIndex]?.meta?.changes ?? 0) !== 1
+  ) throw new Error(`legacy_retirement_writer_cas_failed:${domain}`)
+  const deleted = deleteResultIndexes.reduce(
+    (sum, index) => sum + Number(results[index]?.meta?.changes ?? 0),
+    0,
+  )
+  if (deleted !== keys.length) {
+    throw new Error(`legacy_retirement_deleted_row_count_mismatch:${deleted}/${keys.length}`)
+  }
+  return deleted
+}
+
 async function retireObsoleteScreenerItems(
-  env: Pick<Bindings, 'DB' | 'ARTIFACTS'>,
+  env: LegacyHotDataEnv,
   limit: number,
   dryRun: boolean,
 ): Promise<RetirementResult> {
@@ -128,7 +208,7 @@ async function retireObsoleteScreenerItems(
       lastKey: rows[rows.length - 1].id,
       metadata: { source_run: run },
     })
-    const deleted = await deleteByKeys(env.DB, 'screener_funnel_items', 'id', rows.map((row) => row.id))
+    const deleted = await deleteLegacyCutoverRows(env.DB, 'screener_funnel_items', 'id', rows.map((row) => row.id))
     return {
       target: 'obsolete_screener_items',
       candidates: rows.length,
@@ -153,11 +233,11 @@ async function retireObsoleteScreenerItems(
     lastKey: 'run-final',
     metadata: { run_manifest_only: true, item_backlog_drained: true },
   })
-  await releaseArtifactHardReferencesByOwner(env.DB, {
+  await releaseArtifactHardReferencesByOwner(databaseForDataDomain(env, 'ops'), {
     ownerType: 'legacy_screener_run',
     ownerId: runId,
   })
-  const deleted = await deleteByKeys(env.DB, 'screener_funnel_runs', 'run_id', [runId])
+  const deleted = await deleteLegacyCutoverRows(env.DB, 'screener_funnel_runs', 'run_id', [runId])
   return {
     target: 'obsolete_screener_items',
     candidates: 1,
@@ -170,7 +250,7 @@ async function retireObsoleteScreenerItems(
 }
 
 async function retireAllocatorSnapshotStagingOrphans(
-  env: Pick<Bindings, 'DB' | 'ARTIFACTS'>,
+  env: LegacyHotDataEnv,
   limit: number,
   dryRun: boolean,
 ): Promise<RetirementResult> {
@@ -207,7 +287,7 @@ async function retireAllocatorSnapshotStagingOrphans(
       lastKey: rows[rows.length - 1].staging_rowid,
       metadata: { source_run: run, staging_only: true },
     })
-    const deleted = await deleteByKeys(
+    const deleted = await deleteLegacyCutoverRows(
       env.DB,
       'allocator_ev_feature_snapshot_staging',
       'rowid',
@@ -235,7 +315,7 @@ async function retireAllocatorSnapshotStagingOrphans(
     lastKey: 'run-final',
     metadata: { run_manifest_only: true, staging_backlog_drained: true },
   })
-  const deleted = await deleteByKeys(env.DB, 'allocator_ev_snapshot_runs', 'run_id', [runId])
+  const deleted = await deleteLegacyCutoverRows(env.DB, 'allocator_ev_snapshot_runs', 'run_id', [runId])
   return {
     target: 'allocator_snapshot_staging_orphans',
     candidates: 1,
@@ -248,7 +328,7 @@ async function retireAllocatorSnapshotStagingOrphans(
 }
 
 async function retireSimpleTarget(
-  env: Pick<Bindings, 'DB' | 'ARTIFACTS'>,
+  env: LegacyHotDataEnv,
   input: {
     target: Exclude<LegacyHotDataTarget, 'obsolete_screener_items'>
     table: string
@@ -278,7 +358,7 @@ async function retireSimpleTarget(
     lastKey: keys[keys.length - 1],
     metadata: input.metadata,
   })
-  const deleted = await deleteByKeys(env.DB, input.table, input.keyColumn, keys)
+  const deleted = await deleteLegacyCutoverRows(env.DB, input.table, input.keyColumn, keys)
   return {
     target: input.target,
     candidates: rows.length,
@@ -291,7 +371,7 @@ async function retireSimpleTarget(
 }
 
 export async function runLegacyHotDataRetirement(
-  env: Pick<Bindings, 'DB' | 'ARTIFACTS'>,
+  env: LegacyHotDataEnv,
   options: { target: LegacyHotDataTarget; limit?: number; businessDate?: string; dryRun?: boolean } ,
 ): Promise<RetirementResult> {
   if (!env.ARTIFACTS) throw new Error('artifact_r2_binding_missing')

@@ -622,7 +622,19 @@ def test_dispatch_completed_oof_callback_repairs_registry_without_retraining(mon
         if "FROM webhook_log" in sql:
             return [{"status": "completed", "payload_summary": "{}"}]
         owner_queries = sum("FROM model_artifact_registry" in query for query in queries)
-        return [] if owner_queries == 1 else [{"model_name": "DLinear", "candidate_type": "weekly_drift", "state": "offline_strong_pass"}]
+        return (
+            [{
+                "model_name": "DLinear",
+                "candidate_type": "oof_full_fit_release",
+                "state": "offline_failed",
+            }]
+            if owner_queries == 1
+            else [{
+                "model_name": "DLinear",
+                "candidate_type": "weekly_drift",
+                "state": "offline_strong_pass",
+            }]
+        )
 
     monkeypatch.setattr(walk_forward, "build_oof_full_fit_dispatch_plan", lambda _manifest: plan)
     monkeypatch.setattr(

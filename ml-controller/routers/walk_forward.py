@@ -1197,7 +1197,11 @@ async def dispatch_oof_full_fit_training(
                     prior_run_id,
                 ],
             )
-        if webhook_status == "completed" and missing:
+        # A stale release alias may have overwritten the canonical weekly owner
+        # row under the registry's model/version uniqueness constraint. Restore
+        # the checksum-bound terminal owner before revalidating the release;
+        # otherwise an old failed alias can permanently poison a newer policy.
+        if webhook_status == "completed" and (missing or failed):
             registry_repair = _repair_completed_oof_registry_owner(
                 payload_summary=webhook_row.get("payload_summary"),
                 expected_run_id=prior_run_id,

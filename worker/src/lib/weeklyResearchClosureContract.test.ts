@@ -71,6 +71,7 @@ assert(
     deployScript.includes('BACKTEST_RESEARCH_JOB_ENV_VALUES=$(BACKTEST_RESEARCH_JOB_JSON=') &&
     deployScript.includes('json.loads(os.environ["BACKTEST_RESEARCH_JOB_JSON"])') &&
     deployScript.includes('if item.get("name") in {"OPTUNA_JOB_MODE", "OPTUNA_CALLBACK_TASK"}') &&
+    deployScript.includes('value="${value%$\'\\r\'}"') &&
     deployScript.includes('MODE) BACKTEST_RESEARCH_JOB_MODE="$value"') &&
     deployScript.includes('CALLBACK) BACKTEST_RESEARCH_CALLBACK_TASK="$value"') &&
     !deployScript.includes("env[?name='OPTUNA_JOB_MODE'].value") &&

@@ -1357,6 +1357,7 @@ PY
 BACKTEST_RESEARCH_JOB_MODE=""
 BACKTEST_RESEARCH_CALLBACK_TASK=""
 while IFS='=' read -r key value; do
+  value="${value%$'\r'}"
   case "$key" in
     MODE) BACKTEST_RESEARCH_JOB_MODE="$value" ;;
     CALLBACK) BACKTEST_RESEARCH_CALLBACK_TASK="$value" ;;

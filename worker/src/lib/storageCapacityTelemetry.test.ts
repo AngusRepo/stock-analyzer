@@ -37,3 +37,19 @@ if (reportBlock.includes('INSERT INTO storage_capacity_daily')) {
 if (!reportBlock.includes("date(observed_at, '+8 hours') = observed_date")) {
   throw new Error('capacity forecasts must reject rows whose TW observation timestamp was backdated')
 }
+
+const readRouteSource = fs.readFileSync('src/routes/adminReadRoutes.ts', 'utf8')
+if (!readRouteSource.includes("schema_version: 'storage-capacity-snapshot-v2'")) {
+  throw new Error('storage capacity API must publish the D1/R2/GCS v2 contract')
+}
+if (!readRouteSource.includes('WITH tracked_components AS (')
+  || !readRouteSource.includes("snapshot.primary_store='gcs'")
+  || !readRouteSource.includes("capacity_basis: 'manifest_distinct_component_uri'")) {
+  throw new Error('storage capacity API must expose deduplicated GCS component manifest telemetry')
+}
+if (!readRouteSource.includes("WHERE primary_store='r2'")
+  || !readRouteSource.includes('Number(r2Snapshots?.tracked_bytes ?? 0)')) {
+  throw new Error('storage capacity API must include R2 dataset snapshot artifacts')
+}
+
+console.log('storage capacity telemetry contract tests passed')

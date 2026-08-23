@@ -1,7 +1,7 @@
 import { inspectDataDomainCutoverReadiness } from './dataDomainCutoverReadiness'
 import { tablesForDataDomainShadowBackfill } from './dataDomainRegistry'
 
-export const LEARNING_HOT_RETENTION_DAYS = 730 as const
+export const LEARNING_HOT_RETENTION_DAYS = 120 as const
 export const LEARNING_COLD_RETENTION_DAYS = 3650 as const
 export const LEGACY_LEARNING_EARLIEST_CLEAR_DATE = '2026-09-17' as const
 export const LEGACY_LEARNING_TABLE_MANIFEST = tablesForDataDomainShadowBackfill('learning')
@@ -95,7 +95,9 @@ export async function inspectLearningTenYearRetentionReadiness(
       last_completed_at: runTotals?.last_completed_at == null ? null : String(runTotals.last_completed_at),
     },
     automatic_delete: false,
-    next_action: 'archive_checksum_hard_reference_dry_run_before_any_delete',
+    delete_executor_available: true,
+    delete_executor: 'retention-hot-window-drain-v1',
+    next_action: 'approve_exact_production_scope_after_daily_dry_run_is_clean',
   }
 }
 

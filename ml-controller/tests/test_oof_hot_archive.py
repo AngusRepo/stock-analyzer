@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 import sys
+import inspect
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from services.oof_hot_archive import (  # noqa: E402
     ARCHIVE_TABLES,
+    LEARNING_D1_CLIENT,
     archive_superseded_oof_cohort,
     load_oof_archive_preflight,
 )
@@ -29,6 +31,15 @@ class _Blob:
     def download_as_bytes(self):
         return self.store[self.name]
 
+
+
+def test_archive_defaults_to_learning_domain_owner():
+    query_default = inspect.signature(load_oof_archive_preflight).parameters["query_fn"].default
+    archive_defaults = inspect.signature(archive_superseded_oof_cohort).parameters
+    assert query_default.__self__ is LEARNING_D1_CLIENT
+    assert archive_defaults["query_fn"].default.__self__ is LEARNING_D1_CLIENT
+    assert archive_defaults["execute_fn"].default.__self__ is LEARNING_D1_CLIENT
+    assert archive_defaults["batch_fn"].default.__self__ is LEARNING_D1_CLIENT
 
 class _Bucket:
     def __init__(self):
@@ -132,3 +143,13 @@ def test_verified_archive_precedes_bounded_hot_delete():
     assert len(eligibility_batches[0]) == 6
     assert result["archive_path"] in bucket.store
     assert all(component["remote_verified"] for component in result["components"])
+
+
+def test_oof_delete_writes_ops_retention_operational_receipt():
+    router = (
+        Path(__file__).resolve().parent.parent / "routers" / "walk_forward.py"
+    ).read_text(encoding="utf-8")
+    assert "oof-hot-data-retirement:oof_lineage_cold_archive_v2" in router
+    assert "INSERT INTO data_retention_runs" in router
+    assert "OPS_D1_CLIENT.execute" in router
+    assert '"retention_run_id": retention_run_id' in router

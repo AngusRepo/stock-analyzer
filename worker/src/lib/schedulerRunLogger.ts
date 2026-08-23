@@ -69,6 +69,7 @@ const TASK_NAMES: Record<string, string> = {
   'debate-memory-retention': 'Debate Memory Retention',
   'audit-json-retention': 'Audit JSON Retention',
   'retention-archive-only': 'Retention Archive Only',
+  'retention-hot-window-drain': 'Retention Hot Window Drain Preflight',
   'artifact-reconcile': 'Artifact Reconcile',
   'legacy-evidence-migration': 'Legacy Evidence Migration',
   'legacy-strategy-evidence-migration': 'Legacy Strategy Evidence Migration',

@@ -38,6 +38,7 @@ const RETENTION_DAYS: Record<RetentionClass, number | null> = {
   request_debug: 30,
   raw_market_unreferenced: 90,
   staging_orphan: 7,
+  ten_year_cold_archive: 10 * 365,
   incident_pinned: null,
 }
 
@@ -46,6 +47,7 @@ export const STORAGE_LIFECYCLE_SCHEDULE = [
   { task: 'legacy-strategy-evidence-migration', cron: '50 1-5 * * *', timezone: 'Asia/Taipei' },
   { task: 'audit-json-retention', cron: '*/15 1-6 * * *', timezone: 'Asia/Taipei' },
   { task: 'retention-archive-only', cron: '30 2 * * *', timezone: 'Asia/Taipei' },
+  { task: 'retention-hot-window-drain', cron: '35 2 * * *', timezone: 'Asia/Taipei' },
   { task: 'artifact-reconcile', cron: '5 2 * * *', timezone: 'Asia/Taipei' },
   { task: 'r2-retention-sweep', cron: '40 2 * * *', timezone: 'Asia/Taipei' },
   { task: 'orphan-reachability-gc', cron: '0 3 * * *', timezone: 'Asia/Taipei' },

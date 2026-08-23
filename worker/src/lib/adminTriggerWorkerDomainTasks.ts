@@ -22,7 +22,7 @@ const RESCORE_SLOT_TASK_BY_CRON: Record<string, string> = {
 }
 const RESCORE_CRONS = new Set(Object.keys(RESCORE_SLOT_TASK_BY_CRON))
 const D1_HEAVY_MAINTENANCE_TASKS = new Set([
-  'debate-memory-retention', 'audit-json-retention', 'retention-archive-only', 'artifact-reconcile',
+  'debate-memory-retention', 'audit-json-retention', 'retention-archive-only', 'retention-hot-window-drain', 'artifact-reconcile',
   'legacy-evidence-migration', 'legacy-strategy-evidence-migration',
   'legacy-hot-data-retirement', 'd1-evidence-scrub', 'r2-retention-sweep',
   'orphan-reachability-gc', 'cleanup-dlq-replay', 'weekly-cleanup',
@@ -981,30 +981,68 @@ export function buildAdminWorkerDomainTaskMap(c: any, deps: TriggerDeps): Record
       const opsShadowBackfillRunId = dryRun
         ? null
         : await activeDataDomainShadowBackfillRunId(c.env.KV, 'ops')
-      for (const target of targets) {
-        if (opsShadowBackfillRunId) {
-          summaries.push(`${target}:skipped=ops_shadow_backfill_active,run_id=${opsShadowBackfillRunId}`)
-          continue
-        }
-        if (paperShadowProtected && target === 'superseded_pending_events') {
-          summaries.push('superseded_pending_events:skipped=paper_shadow_parity_protected')
-          continue
-        }
-        let archived = 0
-        let deleted = 0
-        let artifacts = 0
-        let backlogRemaining = false
-        for (let chunk = 0; chunk < (dryRun ? 1 : maxChunks); chunk += 1) {
-          const result = await runLegacyHotDataRetirement(c.env, { target, limit, dryRun })
-          archived += result.archived
-          deleted += result.deleted
-          artifacts += result.artifacts
-          backlogRemaining = result.backlog_remaining
-          if (!backlogRemaining || result.candidates === 0) break
-        }
-        summaries.push(`${target}:archived=${archived},deleted=${deleted},artifacts=${artifacts},backlog=${backlogRemaining}`)
+      const retentionRunId = `legacy-hot-data-retirement:legacy_hot_r2_v1:`
+        + `${requestedRunDate() || twToday()}:${Date.now().toString(36)}`
+      const totals = { scanned: 0, archived: 0, deleted: 0 }
+      const retentionOpsDb = databaseForDataDomain(c.env, 'ops')
+      const { beginRetentionRun, finishRetentionRun } = await import('./retentionRunLedger')
+      if (!dryRun) {
+        await beginRetentionRun(retentionOpsDb, {
+          runId: retentionRunId,
+          policyId: 'legacy_hot_r2_v1',
+          businessDate: requestedRunDate() || twToday(),
+        })
       }
-      return `legacy_hot_data_retirement dry_run=${dryRun} ${summaries.join(' ')}`
+      try {
+        for (const target of targets) {
+          if (opsShadowBackfillRunId) {
+            summaries.push(`${target}:skipped=ops_shadow_backfill_active,run_id=${opsShadowBackfillRunId}`)
+            continue
+          }
+          if (paperShadowProtected && target === 'superseded_pending_events') {
+            summaries.push('superseded_pending_events:skipped=paper_shadow_parity_protected')
+            continue
+          }
+          let archived = 0
+          let deleted = 0
+          let artifacts = 0
+          let backlogRemaining = false
+          for (let chunk = 0; chunk < (dryRun ? 1 : maxChunks); chunk += 1) {
+            const result = await runLegacyHotDataRetirement(c.env, { target, limit, dryRun })
+            totals.scanned += result.candidates
+            archived += result.archived
+            deleted += result.deleted
+            artifacts += result.artifacts
+            backlogRemaining = result.backlog_remaining
+            if (!backlogRemaining || result.candidates === 0) break
+          }
+          totals.archived += archived
+          totals.deleted += deleted
+          summaries.push(`${target}:archived=${archived},deleted=${deleted},artifacts=${artifacts},backlog=${backlogRemaining}`)
+        }
+        if (!dryRun) {
+          await finishRetentionRun(retentionOpsDb, {
+            runId: retentionRunId,
+            status: 'success',
+            scannedRows: totals.scanned,
+            archivedRows: totals.archived,
+            deletedRows: totals.deleted,
+          })
+        }
+      } catch (error) {
+        if (!dryRun) {
+          await finishRetentionRun(retentionOpsDb, {
+            runId: retentionRunId,
+            status: 'error',
+            scannedRows: totals.scanned,
+            archivedRows: totals.archived,
+            deletedRows: totals.deleted,
+            error: error instanceof Error ? error.message : String(error),
+          })
+        }
+        throw error
+      }
+      return `legacy_hot_data_retirement dry_run=${dryRun} run_id=${dryRun ? 'none' : retentionRunId} ${summaries.join(' ')}`
     },
     'd1-evidence-scrub': async () => {
       if (c.req.query('durable') === '1') {
@@ -1360,6 +1398,28 @@ export function buildAdminWorkerDomainTaskMap(c: any, deps: TriggerDeps): Record
         throw new Error(`retention archive only failed ${JSON.stringify(result)}`)
       }
       return summarizeRetentionArchiveOnly(result)
+    },
+    'retention-hot-window-drain': async () => {
+      const {
+        RETENTION_HOT_WINDOW_DRAIN_POLICY_IDS,
+        runRetentionHotWindowDrain,
+        summarizeRetentionHotWindowDrain,
+      } = await import('./retentionHotWindowDrain')
+      const requestedPolicies = (c.req.query('policies') ?? '')
+        .split(',')
+        .map((value: string) => value.trim())
+        .filter(Boolean)
+      const allowed = new Set<string>(RETENTION_HOT_WINDOW_DRAIN_POLICY_IDS)
+      const unknown = requestedPolicies.filter((policy: string) => !allowed.has(policy))
+      if (unknown.length) throw new Error(`retention_hot_drain_unknown_policy:${unknown.join(',')}`)
+      const result = await runRetentionHotWindowDrain(c.env, {
+        businessDate: requestedRunDate() || twToday(),
+        policyIds: requestedPolicies.length ? requestedPolicies as any : undefined,
+        limitPerDataset: parseBoundedPositiveInt(c.req.query('limit_per_dataset'), 100, 250),
+        confirmPhrase: c.req.query('confirm_drain'),
+      })
+      if (result.status === 'error') throw new Error(`retention hot window drain failed ${JSON.stringify(result)}`)
+      return summarizeRetentionHotWindowDrain(result)
     },
     'legacy-learning-deletion-readiness': async () => {
       const { inspectLegacyLearningDeletionReadiness } = await import('./learningTenYearRetentionReadiness')

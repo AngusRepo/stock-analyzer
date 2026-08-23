@@ -7,6 +7,7 @@ export type RetentionClass =
   | 'request_debug'
   | 'raw_market_unreferenced'
   | 'staging_orphan'
+  | 'ten_year_cold_archive'
   | 'incident_pinned'
 
 export type EvidenceArtifactWriteInput = {

@@ -74,6 +74,7 @@ const JOB_DEF_METADATA: JobDef[] = [
   { id: 'debate-memory-retention', name: 'Debate Memory Retention', schedule: 'Daily 03:00', cron: '0 19 * * *', group: 'daily' },
   { id: 'artifact-reconcile', name: 'Artifact Reconcile', schedule: 'Daily 02:05', cron: '5 18 * * *', group: 'daily' },
   { id: 'retention-archive-only', name: 'Retention Archive Only', schedule: 'Daily 02:30', cron: '30 18 * * *', group: 'daily' },
+  { id: 'retention-hot-window-drain', name: 'Retention Hot Window Drain Preflight', schedule: 'Daily 02:35', cron: '35 18 * * *', group: 'daily' },
   { id: 'data-domain-shadow-backfill-next', name: 'Multi-D1 Sequential Backfill', schedule: 'Daily 00:30', cron: '30 16 * * *', group: 'daily' },
   { id: 'legacy-strategy-evidence-migration', name: 'Legacy Strategy Evidence Migration', schedule: 'Daily 01:50??5:50 hourly', cron: '50 17-21 * * *', group: 'daily' },
   { id: 'legacy-hot-data-retirement', name: 'Legacy Hot Data Retirement', schedule: 'Daily 01:10??5:10 hourly', cron: '10 17-21 * * *', group: 'daily' },

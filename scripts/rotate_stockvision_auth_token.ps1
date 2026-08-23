@@ -28,9 +28,10 @@ param(
     'data-domain-shadow-backfill-ops',
     'learning-retention-readiness',
     'legacy-learning-deletion-readiness',
-    'retention-archive-only'
+    'retention-archive-only',
+    'retention-hot-window-drain'
   ),
-  [int]$ExpectedSchedulerCount = 58
+  [int]$ExpectedSchedulerCount = 59
 )
 
 Set-StrictMode -Version Latest

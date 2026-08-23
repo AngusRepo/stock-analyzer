@@ -10,7 +10,9 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable
 
-from services import d1_client
+from services.d1_domain_client import client_proxy_for_domain
+
+LEARNING_D1_CLIENT = client_proxy_for_domain("learning")
 
 
 ARCHIVE_SCHEMA_VERSION = "active8-oof-hot-archive-v1"
@@ -38,7 +40,7 @@ def _query_one(query_fn: Callable[..., list[dict[str, Any]]], sql: str, params: 
 def load_oof_archive_preflight(
     cohort_id: str,
     *,
-    query_fn: Callable[..., list[dict[str, Any]]] = d1_client.query,
+    query_fn: Callable[..., list[dict[str, Any]]] = LEARNING_D1_CLIENT.query,
 ) -> dict[str, Any]:
     row = _query_one(
         query_fn,
@@ -269,9 +271,9 @@ def archive_superseded_oof_cohort(
     cohort_id: str,
     bucket: Any,
     delete_hot: bool,
-    query_fn: Callable[..., list[dict[str, Any]]] = d1_client.query,
-    execute_fn: Callable[..., dict[str, Any]] = d1_client.execute,
-    batch_fn: Callable[..., dict[str, Any]] = d1_client.batch_execute,
+    query_fn: Callable[..., list[dict[str, Any]]] = LEARNING_D1_CLIENT.query,
+    execute_fn: Callable[..., dict[str, Any]] = LEARNING_D1_CLIENT.execute,
+    batch_fn: Callable[..., dict[str, Any]] = LEARNING_D1_CLIENT.batch_execute,
     chunk_size: int = 2000,
     delete_chunk_size: int = 5000,
 ) -> dict[str, Any]:

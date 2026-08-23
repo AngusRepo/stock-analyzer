@@ -382,6 +382,7 @@ function StorageCapacityPanel({
       || a.binding_name.localeCompare(b.binding_name),
   )
   const r2 = report?.r2
+  const gcs = report?.gcs
 
   return (
     <div className="rounded-2xl border border-[#2b3a49] bg-[radial-gradient(circle_at_18%_0%,rgba(0,210,255,0.13),transparent_32%),linear-gradient(135deg,#10141d,#0b1118_58%,#141109)] p-4 shadow-[inset_0_1px_0_rgba(255,255,255,0.04)]">
@@ -389,14 +390,15 @@ function StorageCapacityPanel({
         <div>
           <div className="flex items-center gap-2 text-sky-200">
             <Database className="h-4 w-4" />
-            <p className="text-sm font-semibold">D1 / R2 Storage Capacity</p>
+            <p className="text-sm font-semibold">D1 / R2 / GCS Storage Capacity</p>
           </div>
           <h3 className="mt-2 font-['Space_Grotesk'] text-xl font-semibold text-[#f8efe0]">資料庫容量</h3>
-          <p className="mt-1 text-xs leading-5 text-[#9badbf]">D1 顯示即時 binding query metadata；R2 顯示可稽核 manifest 容量。</p>
+          <p className="mt-1 text-xs leading-5 text-[#9badbf]">D1 顯示即時 binding query metadata；R2／GCS 顯示可稽核 manifest 容量。</p>
         </div>
         <div className="flex gap-2">
           <WorkstationPill tone={rows.length === report?.d1.expected_count ? 'ok' : 'warn'}>D1 {report?.d1.count ?? 0}/{report?.d1.expected_count ?? 8}</WorkstationPill>
           <WorkstationPill tone={r2?.count ? 'ok' : 'warn'}>R2 {r2?.count ?? 0}</WorkstationPill>
+          <WorkstationPill tone={gcs?.count ? 'ok' : 'warn'}>GCS {gcs?.count ?? 0}</WorkstationPill>
         </div>
       </div>
       {loading && <p className="mt-4 sv-num text-xs normal-case text-sky-200">Loading current storage snapshot...</p>}
@@ -418,7 +420,7 @@ function StorageCapacityPanel({
                     +{formatStorageBytes(row.daily_growth_bytes)}/日 · 預估 {row.projected_days_to_max ?? 'N/A'} 日滿載
                   </p>
                 )}
-                {row.growth_baseline_status === 'awaiting_post_cutover_observation' && (
+                {row.growth_baseline_status === 'awaiting_post_cutover_observations' && (
                   <p className="mt-1 text-xs text-cyan-200">
                     等待 {row.growth_baseline_after ?? 'Learning 切轉'} 後容量基線
                   </p>
@@ -433,6 +435,14 @@ function StorageCapacityPanel({
             </div>
             <p className="mt-2 sv-num text-xs normal-case text-violet-200">{formatStorageBytes(r2?.tracked_bytes)} · {(r2?.tracked_object_count ?? 0).toLocaleString()} objects</p>
             <p className="mt-1 text-xs leading-4 text-slate-400">R2 bucket 無固定容量上限；不偽造百分比，改顯示 manifest 可稽核用量。</p>
+          </div>
+          <div className="rounded-xl border border-emerald-400/20 bg-emerald-400/[0.05] p-2 text-emerald-100">
+            <div className="flex items-center justify-between gap-2">
+              <p className="sv-num text-xs normal-case">GCS · {gcs?.binding_name ?? 'GCS_BUCKET_NAME'}</p>
+              <span className="sv-num text-xs normal-case">容量百分比 N/A</span>
+            </div>
+            <p className="mt-2 sv-num text-xs normal-case text-emerald-200">{formatStorageBytes(gcs?.tracked_bytes)} · {(gcs?.tracked_object_count ?? 0).toLocaleString()} objects</p>
+            <p className="mt-1 text-xs leading-4 text-slate-400">GCS 顯示 snapshot component manifest 去重後的可稽核用量。</p>
           </div>
         </div>
       )}

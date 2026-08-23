@@ -248,8 +248,9 @@ adminReadRoutes.get('/api/admin/storage/capacity', async (c) => {
     buildStorageCapacityGrowthEstimate,
   } = await import('../lib/storageCapacityTelemetry')
   const opsDb = databaseForDataDomain(c.env, 'ops')
+  const learningDb = databaseForDataDomain(c.env, 'learning')
   const today = twToday()
-  const [d1Rows, capacityHistory, r2Manifest, backfillBaselines] = await Promise.all([
+  const [d1Rows, capacityHistory, r2Manifest, r2Snapshots, gcsManifest, backfillBaselines] = await Promise.all([
     inspectStorageCapacityTelemetry(c.env),
     opsDb.prepare(`
       SELECT domain, binding_name, used_bytes, observed_date
@@ -268,6 +269,35 @@ adminReadRoutes.get('/api/admin/storage/capacity', async (c) => {
         FROM run_artifacts
        WHERE r2_key IS NOT NULL
          AND status NOT IN ('deleted', 'purged')
+    `).first<{ object_count: number; tracked_bytes: number }>(),
+    learningDb.prepare(`
+      SELECT COUNT(DISTINCT r2_key) AS object_count,
+             COALESCE(SUM(CAST(json_extract(metadata_json, '$.archived_blob_bytes') AS INTEGER)), 0)
+               AS tracked_bytes
+        FROM dataset_snapshots
+       WHERE primary_store='r2'
+         AND r2_key IS NOT NULL
+         AND status='ready'
+    `).first<{ object_count: number; tracked_bytes: number }>(),
+    learningDb.prepare(`
+      WITH tracked_components AS (
+        SELECT DISTINCT
+               json_extract(component.value, '$.gcs_uri') AS object_uri,
+               CAST(COALESCE(json_extract(component.value, '$.bytes'), 0) AS INTEGER) AS byte_size
+          FROM dataset_snapshots snapshot,
+               json_each(
+                 CASE
+                   WHEN json_valid(snapshot.metadata_json)
+                   THEN COALESCE(json_extract(snapshot.metadata_json, '$.component_meta'), '{}')
+                   ELSE '{}'
+                 END
+               ) component
+         WHERE snapshot.primary_store='gcs'
+           AND snapshot.status='ready'
+           AND json_extract(component.value, '$.gcs_uri') IS NOT NULL
+      )
+      SELECT COUNT(*) AS object_count, COALESCE(SUM(byte_size), 0) AS tracked_bytes
+        FROM tracked_components
     `).first<{ object_count: number; tracked_bytes: number }>(),
     opsDb.prepare(`
       SELECT domain, substr(MAX(updated_at), 1, 10) AS baseline_after
@@ -322,10 +352,18 @@ adminReadRoutes.get('/api/admin/storage/capacity', async (c) => {
     r2: {
       count: c.env.ARTIFACTS ? 1 : 0,
       binding_name: 'ARTIFACTS',
-      tracked_object_count: Number(r2Manifest?.object_count ?? 0),
-      tracked_bytes: Number(r2Manifest?.tracked_bytes ?? 0),
+      tracked_object_count: Number(r2Manifest?.object_count ?? 0) + Number(r2Snapshots?.object_count ?? 0),
+      tracked_bytes: Number(r2Manifest?.tracked_bytes ?? 0) + Number(r2Snapshots?.tracked_bytes ?? 0),
       utilization_pct: null,
       capacity_basis: 'no_fixed_bucket_quota',
+    },
+    gcs: {
+      count: Number(gcsManifest?.object_count ?? 0) > 0 ? 1 : 0,
+      binding_name: 'GCS_BUCKET_NAME',
+      tracked_object_count: Number(gcsManifest?.object_count ?? 0),
+      tracked_bytes: Number(gcsManifest?.tracked_bytes ?? 0),
+      utilization_pct: null,
+      capacity_basis: 'manifest_distinct_component_uri',
     },
   })
 })
@@ -876,16 +914,30 @@ adminReadRoutes.get('/api/admin/data-domains/cutover-readiness', async (c) => {
     inspectStorageCapacityTelemetry(c.env),
     opsDb.prepare(
       `WITH ranked_runs AS (
-         SELECT policy_id, status, completed_at,
+         SELECT r.run_id, r.policy_id, r.status, r.completed_at,
                 ROW_NUMBER() OVER (
-                  PARTITION BY policy_id
-                  ORDER BY COALESCE(completed_at, created_at) DESC, run_id DESC
+                  PARTITION BY r.policy_id
+                  ORDER BY COALESCE(r.completed_at, r.created_at) DESC, r.run_id DESC
                 ) AS ordinal
-           FROM data_retention_runs
+           FROM data_retention_runs r
+           JOIN data_retention_policies executor_policy
+             ON executor_policy.policy_id=r.policy_id
+          WHERE executor_policy.action='archive_scrub'
+             OR r.run_id LIKE 'retention-hot-window-drain:%'
+             OR r.run_id LIKE 'legacy-hot-data-retirement:%'
+             OR r.run_id LIKE 'oof-hot-data-retirement:%'
        )
        SELECT p.policy_id,
               CASE WHEN r.status='success'
                          AND r.completed_at >= datetime('now', '-7 days')
+                          AND (
+                            p.action='archive_scrub'
+                            OR r.run_id LIKE 'retention-hot-window-drain:%'
+                            OR (p.policy_id='legacy_hot_r2_v1'
+                                AND r.run_id LIKE 'legacy-hot-data-retirement:%')
+                            OR (p.policy_id='oof_lineage_cold_archive_v2'
+                                AND r.run_id LIKE 'oof-hot-data-retirement:%')
+                          )
                    THEN 1 ELSE 0 END AS operational
          FROM data_retention_policies p
          LEFT JOIN ranked_runs r

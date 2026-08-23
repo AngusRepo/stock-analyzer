@@ -22,7 +22,7 @@ export const RETENTION_ARCHIVE_ONLY_POLICY_IDS = [
 ] as const
 
 export type RetentionArchiveOnlyPolicyId = typeof RETENTION_ARCHIVE_ONLY_POLICY_IDS[number]
-type ArchiveSourceDomain = DataDomain | 'legacy'
+export type ArchiveSourceDomain = DataDomain | 'legacy'
 
 export type RetentionArchiveSource = {
   datasetId: string
@@ -32,9 +32,11 @@ export type RetentionArchiveSource = {
   dateExpression: string
   keyExpression: string
   eligibilitySql: string
+  deleteTable?: string
+  deleteKeyColumn?: string
 }
 
-type R2PolicyConfig = {
+export type R2PolicyConfig = {
   store: 'r2'
   retentionClass: RetentionClass
   sources: readonly RetentionArchiveSource[]
@@ -64,13 +66,28 @@ function tableSource(
     dateExpression: `${table}.${dateColumn}`,
     keyExpression: `${table}.rowid`,
     eligibilitySql,
+    deleteTable: table,
+    deleteKeyColumn: 'rowid',
   }
 }
 
+
+function archiveOnlyTableSource(
+  sourceDomain: ArchiveSourceDomain,
+  table: string,
+  dateColumn: string,
+  eligibilitySql = '1=1',
+): RetentionArchiveSource {
+  return {
+    ...tableSource(sourceDomain, table, dateColumn, eligibilitySql),
+    deleteTable: undefined,
+    deleteKeyColumn: undefined,
+  }
+}
 const POLICY_CONFIGS: Record<RetentionArchiveOnlyPolicyId, PolicyConfig> = {
   canonical_market_hot_v1: {
     store: 'r2',
-    retentionClass: 'incident_pinned',
+    retentionClass: 'ten_year_cold_archive',
     sources: [
       tableSource('market', 'stock_prices', 'date'),
       tableSource('market', 'technical_indicators', 'date'),
@@ -81,7 +98,7 @@ const POLICY_CONFIGS: Record<RetentionArchiveOnlyPolicyId, PolicyConfig> = {
   },
   execution_ledger_v1: {
     store: 'r2',
-    retentionClass: 'incident_pinned',
+    retentionClass: 'ten_year_cold_archive',
     sources: [
       tableSource('execution', 'broker_execution_intents', 'trade_date'),
       tableSource('execution', 'broker_execution_legs', 'created_at'),
@@ -90,16 +107,19 @@ const POLICY_CONFIGS: Record<RetentionArchiveOnlyPolicyId, PolicyConfig> = {
   },
   learning_lineage_v1: {
     store: 'r2',
-    retentionClass: 'incident_pinned',
+    retentionClass: 'ten_year_cold_archive',
     sources: [
       tableSource('learning', 'predictions', 'prediction_date'),
+      tableSource('learning', 'strategy_decision_log', 'date'),
       tableSource('learning', 's12_replay_trade_outcomes', 'trade_date'),
       tableSource('learning', 's12_structure_snapshots', 'trade_date'),
-      tableSource('learning', 'dataset_snapshots', 'business_date'),
+      archiveOnlyTableSource('learning', 'dataset_snapshots', 'business_date'),
       tableSource('learning', 'selection_reference_snapshots_v1', 'signal_date'),
       tableSource('learning', 'strategy_label_matrix_v4', 'signal_date'),
       tableSource('learning', 'canonical_selection_labels_v4', 'signal_date'),
+      tableSource('learning', 'canonical_selection_outcomes_v1', 'signal_date'),
       tableSource('learning', 'price_horizon_labels_v1', 'price_date'),
+      tableSource('learning', 'price_horizon_labels_v2', 'price_date'),
     ],
   },
   legacy_hot_r2_v1: {
@@ -159,7 +179,7 @@ const POLICY_CONFIGS: Record<RetentionArchiveOnlyPolicyId, PolicyConfig> = {
   },
   market_sessions_hot_v1: {
     store: 'r2',
-    retentionClass: 'incident_pinned',
+    retentionClass: 'ten_year_cold_archive',
     sources: [tableSource('market', 'market_trading_sessions', 'session_date')],
   },
   oof_lineage_cold_archive_v2: {
@@ -197,6 +217,12 @@ export function retentionArchiveOnlyPolicyConfig(policyId: RetentionArchiveOnlyP
   return POLICY_CONFIGS[policyId]
 }
 
+export function retentionR2PolicyConfig(policyId: RetentionArchiveOnlyPolicyId): R2PolicyConfig | null {
+  const config = POLICY_CONFIGS[policyId]
+  return config.store === 'r2' ? config : null
+}
+
+
 function normalizeBusinessDate(value?: string | null): string {
   const trimmed = String(value ?? '').trim()
   if (/^\d{4}-\d{2}-\d{2}$/.test(trimmed)) return trimmed
@@ -214,6 +240,13 @@ function cleanPart(value: unknown): string {
 
 function sourceDatabase(env: Bindings, domain: ArchiveSourceDomain): D1Database {
   return domain === 'legacy' ? env.DB : databaseForDataDomain(env, domain)
+}
+
+export function retentionSourceDatabase(
+  env: Bindings,
+  domain: ArchiveSourceDomain,
+): D1Database {
+  return sourceDatabase(env, domain)
 }
 
 export function buildRetentionArchiveOnlyQuery(

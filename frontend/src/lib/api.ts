@@ -486,7 +486,7 @@ export type ObservabilityDrilldownReport = {
 
 export type StorageCapacitySnapshot = {
   success: true
-  schema_version: 'storage-capacity-snapshot-v1'
+  schema_version: 'storage-capacity-snapshot-v2'
   mode: 'read_only'
   generated_at: string
   d1: {
@@ -500,7 +500,7 @@ export type StorageCapacitySnapshot = {
       utilization_pct: number
       status: 'healthy' | 'warning' | 'drain' | 'critical'
       previous_observed_date: string | null
-      growth_baseline_status: 'ready' | 'awaiting_post_cutover_observation'
+      growth_baseline_status: 'ready' | 'awaiting_post_cutover_observations'
       growth_baseline_after: string | null
       daily_growth_bytes: number | null
       projected_days_to_max: number | null
@@ -513,6 +513,14 @@ export type StorageCapacitySnapshot = {
     tracked_bytes: number
     utilization_pct: null
     capacity_basis: 'no_fixed_bucket_quota'
+  }
+  gcs: {
+    count: number
+    binding_name: string
+    tracked_object_count: number
+    tracked_bytes: number
+    utilization_pct: null
+    capacity_basis: 'manifest_distinct_component_uri'
   }
 }
 

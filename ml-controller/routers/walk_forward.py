@@ -3065,6 +3065,7 @@ async def run_walk_forward_oof_lifecycle(req: OofLifecycleRequest):
 async def archive_walk_forward_oof(req: OofRetentionArchiveRequest):
     """Archive superseded OOF payloads before bounded hot-D1 deletion."""
 
+    from datetime import datetime, timezone
     from services.oof_hot_archive import (
         archive_superseded_oof_cohort,
         load_oof_archive_preflight,
@@ -3088,21 +3089,84 @@ async def archive_walk_forward_oof(req: OofRetentionArchiveRequest):
     if bucket is None:
         raise HTTPException(status_code=500, detail="GCS unavailable")
     results = []
-    for cohort_id in cohort_ids:
-        try:
-            results.append(archive_superseded_oof_cohort(
+    retention_run_id = None
+    business_date = datetime.now(timezone.utc).date().isoformat()
+    if req.delete_hot:
+        retention_run_id = (
+            f"oof-hot-data-retirement:oof_lineage_cold_archive_v2:{business_date}:"
+            f"{datetime.now(timezone.utc).strftime('%Y%m%d%H%M%S%f')}"
+        )
+        OPS_D1_CLIENT.execute(
+            """
+            INSERT INTO data_retention_runs(run_id,policy_id,business_date,status)
+            VALUES (?, 'oof_lineage_cold_archive_v2', ?, 'running')
+            """,
+            [retention_run_id, business_date],
+        )
+    try:
+        for cohort_id in cohort_ids:
+            result = archive_superseded_oof_cohort(
                 cohort_id=cohort_id,
                 bucket=bucket,
                 delete_hot=req.delete_hot,
                 chunk_size=req.chunk_size,
                 delete_chunk_size=req.delete_chunk_size,
-            ))
-        except Exception as exc:
-            raise HTTPException(
-                status_code=409,
-                detail={"cohort_id": cohort_id, "error": str(exc), "completed": results},
-            ) from exc
-    return {"status": "completed", "delete_hot": req.delete_hot, "cohorts": results}
+            )
+            results.append(result)
+    except Exception as exc:
+        if retention_run_id is not None:
+            OPS_D1_CLIENT.execute(
+                """
+                UPDATE data_retention_runs
+                   SET status='error',
+                       scanned_rows=?,
+                       archived_rows=?,
+                       deleted_rows=?,
+                       archived_bytes=?,
+                       last_error=?,
+                       completed_at=CURRENT_TIMESTAMP
+                 WHERE run_id=?
+                """,
+                [
+                    sum(int(item.get("archive_row_count") or 0) for item in results),
+                    sum(int(item.get("archive_row_count") or 0) for item in results),
+                    sum(sum(int(value or 0) for value in (item.get("deleted_rows") or {}).values()) for item in results),
+                    sum(sum(int(component.get("compressed_bytes") or 0) for component in item.get("components") or []) for item in results),
+                    str(exc)[:1000],
+                    retention_run_id,
+                ],
+            )
+        raise HTTPException(
+            status_code=409,
+            detail={"cohort_id": cohort_id, "error": str(exc), "completed": results},
+        ) from exc
+    if retention_run_id is not None:
+        archived_rows = sum(int(item.get("archive_row_count") or 0) for item in results)
+        OPS_D1_CLIENT.execute(
+            """
+            UPDATE data_retention_runs
+               SET status='success',
+                   scanned_rows=?,
+                   archived_rows=?,
+                   deleted_rows=?,
+                   archived_bytes=?,
+                   completed_at=CURRENT_TIMESTAMP
+             WHERE run_id=?
+            """,
+            [
+                archived_rows,
+                archived_rows,
+                sum(sum(int(value or 0) for value in (item.get("deleted_rows") or {}).values()) for item in results),
+                sum(sum(int(component.get("compressed_bytes") or 0) for component in item.get("components") or []) for item in results),
+                retention_run_id,
+            ],
+        )
+    return {
+        "status": "completed",
+        "delete_hot": req.delete_hot,
+        "retention_run_id": retention_run_id,
+        "cohorts": results,
+    }
 
 
 @router.post("/walk_forward/analyze")

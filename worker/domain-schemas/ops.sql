@@ -625,7 +625,7 @@ CREATE TABLE IF NOT EXISTS run_artifacts (
   retention_class TEXT NOT NULL CHECK(retention_class IN (
     'canonical_execution','canonical_model_evidence','paper_shadow',
     'superseded_run','failed_debug','request_debug','raw_market_unreferenced',
-    'staging_orphan','incident_pinned'
+    'staging_orphan','ten_year_cold_archive','incident_pinned'
   )),
   status TEXT NOT NULL CHECK(status IN (
     'writing','validating','ready','integrity_blocked','payload_deleted'

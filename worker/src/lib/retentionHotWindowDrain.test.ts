@@ -60,5 +60,13 @@ for (const migration of [mainMigration, opsMigration]) {
 
 const artifacts = readFileSync('src/lib/artifactLifecycle.ts', 'utf8')
 assert.match(artifacts, /ten_year_cold_archive: 10 \* 365/)
+const opsArtifactSchema = readFileSync('domain-schemas/ops.sql', 'utf8')
+const retentionClassMigration = readFileSync(
+  'domain-migrations/ops/0010_ten_year_retention_class.sql',
+  'utf8',
+)
+assert.match(opsArtifactSchema, /'ten_year_cold_archive'/)
+assert.match(retentionClassMigration, /CREATE TABLE run_artifacts_retention_v2/)
+assert.match(retentionClassMigration, /'ten_year_cold_archive'/)
 
 console.log('retention hot-window drain contract tests passed')

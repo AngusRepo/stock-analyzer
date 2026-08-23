@@ -694,6 +694,46 @@ def _repair_completed_oof_registry_owner(
         "written": int(write_result.get("written") or 0),
     }
 
+def _select_oof_full_fit_source_rows(
+    registry_rows: list[dict[str, Any]],
+    eligible_models: list[str],
+) -> dict[str, dict[str, Any]]:
+    eligible = set(eligible_models)
+    source_by_model: dict[str, dict[str, Any]] = {}
+    source_priority = {"weekly_drift": 0, "oof_full_fit_release": 1}
+    for source_row in registry_rows:
+        model_name = str(source_row.get("model_name") or "")
+        candidate_type = str(source_row.get("candidate_type") or "")
+        if model_name not in eligible or candidate_type not in source_priority:
+            continue
+        current = source_by_model.get(model_name)
+        if current is None or source_priority[candidate_type] < source_priority.get(
+            str(current.get("candidate_type") or ""),
+            99,
+        ):
+            source_by_model[model_name] = source_row
+    return source_by_model
+
+
+def _oof_release_registry_matches_active_policy(
+    release_registry: dict[str, Any] | None,
+) -> bool:
+    from services.active8_oof_release_validation import (
+        ACTIVE8_OOF_RELEASE_VALIDATION_SCHEMA_VERSION,
+        COHORT_SELECTION_METHOD,
+        COHORT_SELECTION_POLICY_VERSION,
+    )
+
+    registry = release_registry if isinstance(release_registry, dict) else {}
+    return bool(
+        registry.get("status") == "materialized"
+        and registry.get("validation_schema_version")
+        == ACTIVE8_OOF_RELEASE_VALIDATION_SCHEMA_VERSION
+        and registry.get("selection_method") == COHORT_SELECTION_METHOD
+        and registry.get("selection_policy_version") == COHORT_SELECTION_POLICY_VERSION
+    )
+
+
 def _materialize_completed_oof_release_aliases(
     *,
     manifest: dict[str, Any],
@@ -708,6 +748,12 @@ def _materialize_completed_oof_release_aliases(
     from services.model_artifact_registry import (
         ACTIVE8_TARGET_SEMANTIC_VERSION,
         upsert_artifact_record,
+    )
+    from services.active8_oof_release_validation import (
+        ACTIVE8_OOF_RELEASE_VALIDATION_SCHEMA_VERSION,
+        COHORT_SELECTION_METHOD,
+        COHORT_SELECTION_POLICY_VERSION,
+        build_active8_oof_release_validation,
     )
 
     windows = manifest.get("windows") if isinstance(manifest.get("windows"), list) else []
@@ -728,7 +774,6 @@ def _materialize_completed_oof_release_aliases(
         if bucket is None:
             raise RuntimeError("oof_release_validation_bucket_missing")
         from services.active8_oof_cohort_materializer import load_oof_prediction_rows
-        from services.active8_oof_release_validation import build_active8_oof_release_validation
 
         release_validation = build_active8_oof_release_validation(
             load_oof_prediction_rows(manifest, bucket=bucket),
@@ -738,19 +783,7 @@ def _materialize_completed_oof_release_aliases(
         )
         release_validation_by_model = release_validation["by_model"]
     eligible = set(eligible_models)
-    source_by_model: dict[str, dict[str, Any]] = {}
-    source_priority = {"weekly_drift": 0, "oof_full_fit_release": 1}
-    for source_row in registry_rows:
-        model_name = str(source_row.get("model_name") or "")
-        candidate_type = str(source_row.get("candidate_type") or "")
-        if model_name not in eligible or candidate_type not in source_priority:
-            continue
-        current = source_by_model.get(model_name)
-        if current is None or source_priority[candidate_type] < source_priority.get(
-            str(current.get("candidate_type") or ""),
-            99,
-        ):
-            source_by_model[model_name] = source_row
+    source_by_model = _select_oof_full_fit_source_rows(registry_rows, eligible_models)
     written: list[str] = []
     passed_models: list[str] = []
     failed_models: list[str] = []
@@ -861,6 +894,9 @@ def _materialize_completed_oof_release_aliases(
         "selection_blocked_models": sorted(selection_blocked_models),
         "cohort_id": cohort_id,
         "manifest_checksum": checksum,
+        "validation_schema_version": ACTIVE8_OOF_RELEASE_VALIDATION_SCHEMA_VERSION,
+        "selection_method": COHORT_SELECTION_METHOD,
+        "selection_policy_version": COHORT_SELECTION_POLICY_VERSION,
     }
 
 
@@ -921,7 +957,7 @@ async def dispatch_oof_full_fit_training(
         and receipt_eligible == set(plan["eligible_models"])
         and not receipt.get("missing_models")
         and not receipt.get("failed_models")
-        and release_registry.get("status") == "materialized"
+        and _oof_release_registry_matches_active_policy(release_registry)
     )
     artifact_states = (
         receipt.get("artifact_states")
@@ -940,7 +976,7 @@ async def dispatch_oof_full_fit_training(
             state in {"offline_passed", "offline_strong_pass"}
             for state in artifact_states.values()
         )
-        and release_registry.get("status") == "materialized"
+        and _oof_release_registry_matches_active_policy(release_registry)
     )
     if recoverable_retry_limit:
         terminal_path = str(receipt.get("terminal_payload_path") or "")
@@ -984,7 +1020,11 @@ async def dispatch_oof_full_fit_training(
             """,
             [prior_run_id],
         )
-        by_model = {str(row.get("model_name") or ""): str(row.get("state") or "") for row in rows}
+        source_rows = _select_oof_full_fit_source_rows(rows, plan["eligible_models"])
+        by_model = {
+            model_name: str(row.get("state") or "")
+            for model_name, row in source_rows.items()
+        }
         missing = sorted(set(plan["eligible_models"]) - set(by_model))
         failed = sorted(
             model_name for model_name, state in by_model.items()
@@ -1175,9 +1215,10 @@ async def dispatch_oof_full_fit_training(
                     """,
                     [prior_run_id],
                 )
+                source_rows = _select_oof_full_fit_source_rows(rows, plan["eligible_models"])
                 by_model = {
-                    str(row.get("model_name") or ""): str(row.get("state") or "")
-                    for row in rows
+                    model_name: str(row.get("state") or "")
+                    for model_name, row in source_rows.items()
                 }
                 missing = sorted(set(plan["eligible_models"]) - set(by_model))
                 failed = sorted(
@@ -2177,6 +2218,7 @@ def _oof_lifecycle_receipt_matches_active_policy(
         return False
     return (
         full_fit.get("status") == "completed"
+        and _oof_release_registry_matches_active_policy(full_fit.get("release_registry"))
         and full_fit.get("retry_required") is False
     )
 

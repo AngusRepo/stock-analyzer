@@ -9,6 +9,14 @@ from typing import Any
 
 COHORT_SELECTION_MAX_PBO = 0.50
 LABEL_HORIZON_SESSIONS = 5
+ACTIVE8_OOF_RELEASE_VALIDATION_SCHEMA_VERSION = (
+    "active8-oof-base-ranker-release-validation-v3"
+)
+ACTIVE8_OOF_RELEASE_VALIDATION_BUNDLE_SCHEMA_VERSION = (
+    "active8-oof-base-ranker-release-validation-bundle-v3"
+)
+COHORT_SELECTION_METHOD = "label_interval_purged_cscv_rank_logit"
+COHORT_SELECTION_POLICY_VERSION = "active8-cohort-selection-pbo-v2"
 
 
 def _rank_percentile(score: float, all_scores: list[float]) -> float:
@@ -143,7 +151,7 @@ def _run_label_aware_selection_pbo(
         and identifiability_ratio >= 0.75
     )
     return {
-        "method": "label_interval_purged_cscv_rank_logit",
+        "method": COHORT_SELECTION_METHOD,
         "n_partitions": partition_count,
         "n_combinations": len(logit_values),
         "n_dates": date_count,
@@ -250,14 +258,14 @@ def build_active8_oof_release_validation(
         "max_pbo": COHORT_SELECTION_MAX_PBO,
         "target_portfolio": "same-market-top-minus-bottom-five-session-oof-spread",
         "effect": "automatic_champion_selection_and_ensemble_weighting_only",
-        "policy_version": "active8-cohort-selection-pbo-v2",
+        "policy_version": COHORT_SELECTION_POLICY_VERSION,
         "policy_owner": "active8_oof_cohort_selection",
     }
     by_model: dict[str, dict[str, Any]] = {}
     for model_name in eligible_models:
         model_spreads = [daily_spreads[model_name][date] for date in common_dates]
         by_model[model_name] = {
-            "schema_version": "active8-oof-base-ranker-release-validation-v3",
+            "schema_version": ACTIVE8_OOF_RELEASE_VALIDATION_SCHEMA_VERSION,
             "validation_role": "base_ranker",
             "decision": "PASS",
             "failed_gates": [],
@@ -287,7 +295,7 @@ def build_active8_oof_release_validation(
             },
         }
     return {
-        "schema_version": "active8-oof-base-ranker-release-validation-bundle-v3",
+        "schema_version": ACTIVE8_OOF_RELEASE_VALIDATION_BUNDLE_SCHEMA_VERSION,
         "cohort_id": cohort_id,
         "source_manifest_checksum": source_manifest_checksum,
         "cohort_selection_validation": cohort_selection,

@@ -622,7 +622,7 @@ def test_dispatch_completed_oof_callback_repairs_registry_without_retraining(mon
         if "FROM webhook_log" in sql:
             return [{"status": "completed", "payload_summary": "{}"}]
         owner_queries = sum("FROM model_artifact_registry" in query for query in queries)
-        return [] if owner_queries == 1 else [{"model_name": "DLinear", "state": "offline_strong_pass"}]
+        return [] if owner_queries == 1 else [{"model_name": "DLinear", "candidate_type": "weekly_drift", "state": "offline_strong_pass"}]
 
     monkeypatch.setattr(walk_forward, "build_oof_full_fit_dispatch_plan", lambda _manifest: plan)
     monkeypatch.setattr(
@@ -666,6 +666,21 @@ def test_dispatch_completed_oof_callback_repairs_registry_without_retraining(mon
 
 
 
+def test_oof_source_selector_prefers_weekly_over_stale_failed_alias():
+    from routers import walk_forward
+
+    selected = walk_forward._select_oof_full_fit_source_rows(
+        [
+            {"model_name": "DLinear", "candidate_type": "oof_full_fit_release", "state": "offline_failed"},
+            {"model_name": "DLinear", "candidate_type": "weekly_drift", "state": "offline_strong_pass"},
+        ],
+        ["DLinear"],
+    )
+
+    assert selected["DLinear"]["candidate_type"] == "weekly_drift"
+    assert selected["DLinear"]["state"] == "offline_strong_pass"
+
+
 def test_dispatch_reuses_completed_full_fit_receipt_across_cadences(monkeypatch):
     import json
     from routers import walk_forward
@@ -686,6 +701,9 @@ def test_dispatch_reuses_completed_full_fit_receipt_across_cadences(monkeypatch)
             "status": "materialized",
             "candidate_type": "oof_full_fit_release",
             "failed_models": ["DLinear"],
+            "validation_schema_version": "active8-oof-base-ranker-release-validation-v3",
+            "selection_method": "label_interval_purged_cscv_rank_logit",
+            "selection_policy_version": "active8-cohort-selection-pbo-v2",
         },
     }
 
@@ -753,7 +771,13 @@ def test_dispatch_recovers_retry_limit_pollution_from_terminal_evidence(monkeypa
         "missing_models": [],
         "failed_models": ["DLinear"],
         "retry_required": True,
-        "release_registry": {"status": "materialized", "failed_models": ["DLinear"]},
+        "release_registry": {
+            "status": "materialized",
+            "failed_models": ["DLinear"],
+            "validation_schema_version": "active8-oof-base-ranker-release-validation-v3",
+            "selection_method": "label_interval_purged_cscv_rank_logit",
+            "selection_policy_version": "active8-cohort-selection-pbo-v2",
+        },
         "terminal_payload_path": "terminal.json",
         "terminal_payload_checksum": hashlib.sha256(terminal.encode("utf-8")).hexdigest(),
     }
@@ -1184,6 +1208,12 @@ def test_oof_lifecycle_receipt_is_bound_to_active_materialization_policy():
         "full_fit_dispatch": {
             "status": "completed",
             "retry_required": False,
+            "release_registry": {
+                "status": "materialized",
+                "validation_schema_version": "active8-oof-base-ranker-release-validation-v3",
+                "selection_method": "label_interval_purged_cscv_rank_logit",
+                "selection_policy_version": "active8-cohort-selection-pbo-v2",
+            },
         },
     }
     assert _oof_lifecycle_receipt_matches_active_policy(
@@ -1191,6 +1221,19 @@ def test_oof_lifecycle_receipt_is_bound_to_active_materialization_policy():
         cadence="weekly",
         require_full_fit=True,
     )
+    assert not _oof_lifecycle_receipt_matches_active_policy(
+        {
+            **weekly,
+            "full_fit_dispatch": {
+                "status": "completed",
+                "retry_required": False,
+                "release_registry": {"status": "materialized"},
+            },
+        },
+        cadence="weekly",
+        require_full_fit=True,
+    )
+
     shadow = {
         **current,
         "status": "shadow_evaluated",

@@ -531,8 +531,12 @@ export default function PipelineMaturityContribution({
     : data.current_expected_return_owner === 'l4_alpha_ev'
       ? 'Canonical L4'
       : '無正式 EV owner'
+  const allocationOwnerLabel = data.current_allocation_utility_owner === 'expected_return_owner'
+    ? ownerLabel
+    : 'Score V2 正式選股效用'
   const summaryItems = [
     { label: '正式預期報酬負責者', value: ownerLabel },
+    { label: '目前配置效用負責者', value: allocationOwnerLabel },
     { label: '正式影響選股的階段', value: String(data.summary.production) },
     { label: '只觀察、不影響正式結果', value: String(data.summary.shadow) },
     { label: '證據仍在累積', value: String(data.summary.collecting) },

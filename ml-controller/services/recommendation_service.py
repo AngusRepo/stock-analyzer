@@ -78,6 +78,10 @@ OPS_D1_CLIENT = client_for_domain(D1DataDomain.OPS)
 PREDICTIONS_D1_CLIENT = client_for_domain(D1DataDomain.LEARNING)
 
 D1_IN_CLAUSE_CHUNK_SIZE = 80
+SCORE_V2_ALLOCATION_UTILITY_CONTRACT_VERSION = "score-v2-selection-allocation-utility-v1"
+SCORE_V2_ALLOCATION_UTILITY_SEMANTIC = (
+    "dimensionless_score_v2_ml_edge_confidence_utility_not_expected_return"
+)
 
 
 def _predictions_query(sql: str, params: list[Any] | None = None, timeout: float = 60.0) -> list[dict]:
@@ -2139,8 +2143,31 @@ def _signal_tier(sig: Optional[str]) -> float:
     return 0.0
 
 
+def _score_v2_allocation_utility(row: dict, *, ml_edge: float) -> tuple[float, dict[str, Any]]:
+    score_v2 = _score_v2_final_score_for_ranking(row)
+    confidence = max(0.0, min(1.0, _float_or_none(row.get("confidence")) or 0.0))
+    score_strength = max(0.0, min(1.0, score_v2 / 100.0))
+    ml_strength = max(0.0, min(1.0, ml_edge / 25.0))
+    utility = round(0.01 * score_strength * ml_strength * confidence, 10)
+    return utility, {
+        "schema_version": SCORE_V2_ALLOCATION_UTILITY_CONTRACT_VERSION,
+        "allocation_utility_owner": "score_v2_formal_ml",
+        "allocation_utility_semantic": SCORE_V2_ALLOCATION_UTILITY_SEMANTIC,
+        "allocation_utility": utility,
+        "score_v2_final_score": round(score_v2, 6),
+        "formal_ml_edge": round(ml_edge, 6),
+        "confidence": round(confidence, 6),
+        "scale": 0.01,
+        "rank_or_topk_gate": False,
+        "expected_return_owner": None,
+        "expected_return_promotion_allowed": False,
+        "can_submit_real_order": False,
+        "policy": "continuity_utility_only_until_current_contract_l4_passes_all_promotion_gates",
+    }
+
+
 def _can_promote_ranking_candidate(row: dict, ranking_config: dict, alpha_policy: dict | None = None) -> bool:
-    """Avoid turning a negative/weak ML expectation into a BUY label."""
+    """Admit a tradable row to the allocator without fabricating expected return."""
     lane = row.get("recommendation_lane") or "tradable"
     if not is_explicitly_enabled(row.get("eligible_for_pending_buy")) or lane != "tradable":
         row["promotion_blocked_reason"] = "research_only_or_not_tradable"
@@ -2148,32 +2175,26 @@ def _can_promote_ranking_candidate(row: dict, ranking_config: dict, alpha_policy
     expected_return, expected_return_source = _row_expected_return_with_source(row, alpha_policy=alpha_policy)
     row["promotion_expected_return"] = expected_return
     row["promotion_expected_return_source"] = expected_return_source
-    forecast_pct = row.get("forecast_return_5bar", row.get("ml_forecast_pct", row.get("forecast_pct")))
-    forecast_pct_source = str(
-        row.get("forecast_return_5bar_source")
-        or row.get("ml_forecast_pct_source")
-        or row.get("forecast_pct_source")
-        or ""
-    ).strip()
     missing_expected_return = _expected_return_source_missing(expected_return_source)
-    if missing_expected_return:
-        row["promotion_blocked_reason"] = "forecast_pct_missing_no_expected_return_input"
-        row["promotion_blocked_forecast_pct"] = forecast_pct
-        row["promotion_blocked_forecast_pct_source"] = forecast_pct_source or expected_return_source
-        row["promotion_blocked_expected_return_source"] = expected_return_source
-        row["promotion_blocked_expected_return_policy"] = (
-            "requires_valid_canonical_l4_base_with_optional_validated_fusion_residual"
-        )
-        return False
-    min_forecast = float(ranking_config.get("promoteMinForecastPct", 0.0))
-    if expected_return < min_forecast:
-        row["promotion_blocked_reason"] = "negative_or_below_min_forecast"
-        row["promotion_blocked_forecast_pct"] = forecast_pct
-        row["promotion_blocked_forecast_pct_source"] = forecast_pct_source or None
-        row["promotion_blocked_expected_return"] = expected_return
-        row["promotion_blocked_expected_return_source"] = expected_return_source
-        row["promotion_blocked_min_expected_return"] = min_forecast
-        return False
+
+    if not missing_expected_return:
+        forecast_pct = row.get("forecast_return_5bar", row.get("ml_forecast_pct", row.get("forecast_pct")))
+        forecast_pct_source = str(
+            row.get("forecast_return_5bar_source")
+            or row.get("ml_forecast_pct_source")
+            or row.get("forecast_pct_source")
+            or ""
+        ).strip()
+        min_forecast = float(ranking_config.get("promoteMinForecastPct", 0.0))
+        if expected_return < min_forecast:
+            row["promotion_blocked_reason"] = "negative_or_below_min_forecast"
+            row["promotion_blocked_forecast_pct"] = forecast_pct
+            row["promotion_blocked_forecast_pct_source"] = forecast_pct_source or None
+            row["promotion_blocked_expected_return"] = expected_return
+            row["promotion_blocked_expected_return_source"] = expected_return_source
+            row["promotion_blocked_min_expected_return"] = min_forecast
+            return False
+
     try:
         ml_edge = float(_score_v2_components_from_row(row).get("mlEdge") or 0.0)
     except (TypeError, ValueError):
@@ -2189,8 +2210,18 @@ def _can_promote_ranking_candidate(row: dict, ranking_config: dict, alpha_policy
         row["promotion_blocked_expected_return"] = expected_return
         row["promotion_blocked_expected_return_source"] = expected_return_source
         return False
-    return True
 
+    if missing_expected_return:
+        utility, evidence = _score_v2_allocation_utility(row, ml_edge=ml_edge)
+        if utility <= 0.0:
+            row["promotion_blocked_reason"] = "nonpositive_score_v2_allocation_utility"
+            return False
+        row["_selection_allocation_utility"] = evidence
+        row["promotion_expected_return_policy"] = (
+            "learned_ev_unavailable_score_v2_allocation_utility_continuity_only"
+        )
+    row.pop("promotion_blocked_reason", None)
+    return True
 
 def build_return_history_from_payloads(payloads: list[dict], *, lookback: int | None = None) -> dict[str, list[float]]:
     """Build split/dividend-adjusted return history for allocator risk estimates."""
@@ -2687,6 +2718,11 @@ def _observational_potential_buy_evidence(
         or active_family_count < 2
     ):
         return None
+    if (
+        allocation_evidence.get("eligible_for_sparse") is True
+        and allocation_evidence.get("allocation_utility_owner") == "score_v2_formal_ml"
+    ):
+        return None
     resolver = allocation_evidence.get("allocator_edge_resolver")
     if not isinstance(resolver, dict) or resolver.get("expected_return_owner") != "risk_abstention":
         return None
@@ -2972,7 +3008,9 @@ def _allocator_edge_resolver(
         "expected_return_owner": expected_return_owner,
         "selection_signal_owner": decision_owners["selection_signal_owner"],
         "formal_expected_return_owner": decision_owners["expected_return_owner"],
+        "allocation_utility_owner": decision_owners["allocation_utility_owner"],
         "execution_owner": decision_owners["execution_owner"],
+        "execution_scope": decision_owners["execution_scope"],
         "action_gate": decision_owners["action_gate"],
         "expected_return": round(float(expected_return), 10),
         "expected_return_source": source,
@@ -3032,7 +3070,9 @@ def _allocator_abstention_resolver(
         "schema_version": "allocator-edge-abstention-v1",
         "selection_signal_owner": decision_owners["selection_signal_owner"],
         "formal_expected_return_owner": decision_owners["expected_return_owner"],
+        "allocation_utility_owner": decision_owners["allocation_utility_owner"],
         "execution_owner": decision_owners["execution_owner"],
+        "execution_scope": decision_owners["execution_scope"],
         "action_gate": decision_owners["action_gate"],
         "expected_return_owner": "risk_abstention",
         "expected_return": 0.0,
@@ -3040,8 +3080,8 @@ def _allocator_abstention_resolver(
         "primary_expected_return_available": False,
         "abstention": True,
         "abstention_reason": source or "missing_expected_return_no_allocation_edge",
-        "candidate_contract": "explicit_no_trade_abstention",
-        "policy": "invalid_or_missing_canonical_l4_means_abstain_without_score_rank_or_s12_fallback",
+        "candidate_contract": "expected_return_abstention_selection_utility_may_remain_available",
+        "policy": "invalid_or_missing_canonical_l4_blocks_expected_return_ownership_not_score_v2_allocation",
         "l4_candidate": {
             "status": l4_payload.get("status"),
             "model_version": l4_payload.get("model_version"),
@@ -3482,7 +3522,7 @@ def _apply_sparse_tangent_buy_selection(
         "allocation_method": "sparse_tangent_inverse_risk_final_allocation",
         "input_scope": "post_l3_5_evidence_fusion_candidates",
         "input_candidate_pool_policy": "full_eligible_pool_no_buy_signal_rank_gate",
-        "selection_policy": "positive_expected_edge_sparse_weights_no_forced_fill",
+        "selection_policy": "positive_allocation_utility_sparse_weights_no_forced_fill",
         "capacity_policy": "endogenous_positive_marginal_utility_no_hard_top_k",
         "max_capacity_not_target": False,
         "hard_minimum_fill": False,
@@ -3538,64 +3578,88 @@ def _apply_sparse_tangent_buy_selection(
                 "potential_buy": False,
             }
 
-    allocation_candidates: list[dict[str, Any]] = []
-    candidate_evidence_by_symbol: dict[str, dict[str, Any]] = {}
+    raw_allocation_candidates: list[dict[str, Any]] = []
+    candidate_rows_by_symbol = {
+        str(row.get("symbol") or "").strip(): row
+        for row in eligible_rows
+        if str(row.get("symbol") or "").strip()
+    }
     for row in eligible_rows:
         symbol = str(row.get("symbol") or "").strip()
         expected_return, expected_return_source = _row_expected_return_with_source(row, alpha_policy=policy)
-        expected_return_owner = str((row.get("_allocator_edge_resolver") or {}).get("expected_return_owner") or "")
+        resolver = row.get("_allocator_edge_resolver") if isinstance(row.get("_allocator_edge_resolver"), dict) else {}
+        expected_return_owner = str(resolver.get("expected_return_owner") or "")
+        formal_expected_return = expected_return_owner in {"l4_alpha_ev", "allocator_ev_fusion"}
+        selection_utility = (
+            row.get("_selection_allocation_utility")
+            if isinstance(row.get("_selection_allocation_utility"), dict)
+            else {}
+        )
+        allocation_utility = (
+            expected_return
+            if formal_expected_return
+            else _float_or_none(selection_utility.get("allocation_utility")) or 0.0
+        )
+        if (formal_expected_return and allocation_utility < 0.0) or (
+            not formal_expected_return and allocation_utility <= 0.0
+        ):
+            row["promotion_blocked_reason"] = (
+                "negative_expected_return"
+                if formal_expected_return
+                else "nonpositive_score_v2_allocation_utility"
+            )
+            continue
+        allocation_utility_owner = (
+            "expected_return_owner"
+            if formal_expected_return
+            else "score_v2_formal_ml"
+        )
+        allocation_utility_semantic = (
+            "expected_return_net_of_costs"
+            if formal_expected_return
+            else SCORE_V2_ALLOCATION_UTILITY_SEMANTIC
+        )
         candidate = {
             "symbol": symbol,
             "score": row.get("score"),
-            "expected_return": expected_return,
+            "expected_return": expected_return if formal_expected_return else 0.0,
             "expected_return_source": expected_return_source,
             "expected_return_owner": expected_return_owner or None,
-            "expected_return_contract_version": (
-                (row.get("_allocator_edge_resolver") or {}).get("expected_return_contract_version")
-                if isinstance(row.get("_allocator_edge_resolver"), dict)
-                else None
+            "expected_return_contract_version": resolver.get("expected_return_contract_version"),
+            "expected_return_semantic": resolver.get("expected_return_semantic"),
+            "allocation_utility": allocation_utility,
+            "allocation_utility_owner": allocation_utility_owner,
+            "allocation_utility_contract_version": (
+                resolver.get("expected_return_contract_version")
+                if formal_expected_return
+                else SCORE_V2_ALLOCATION_UTILITY_CONTRACT_VERSION
             ),
-            "expected_return_semantic": (
-                (row.get("_allocator_edge_resolver") or {}).get("expected_return_semantic")
-                if isinstance(row.get("_allocator_edge_resolver"), dict)
-                else None
-            ),
-            "allocator_edge_quality_score": (
-                (row.get("_allocator_edge_resolver") or {}).get("allocator_edge_quality_score")
-                if isinstance(row.get("_allocator_edge_resolver"), dict)
-                else None
-            ),
-            "conditional_admission_allowed": (
-                (row.get("_allocator_edge_resolver") or {}).get("conditional_admission_allowed")
-                if isinstance(row.get("_allocator_edge_resolver"), dict)
-                else None
-            ),
+            "allocation_utility_semantic": allocation_utility_semantic,
+            "allocator_edge_quality_score": resolver.get("allocator_edge_quality_score"),
+            "conditional_admission_allowed": resolver.get("conditional_admission_allowed"),
             "s12_target_quality_state": (
-                ((row.get("_allocator_edge_resolver") or {}).get("s12_target_quality") or {}).get("target_quality_state")
-                if isinstance(row.get("_allocator_edge_resolver"), dict)
+                (resolver.get("s12_target_quality") or {}).get("target_quality_state")
+                if isinstance(resolver.get("s12_target_quality"), dict)
                 else None
             ),
             "market_heat_score": row.get("market_heat_score"),
             "market_heat_expected_return": row.get("market_heat_expected_return"),
             "turnover_pressure": row.get("turnover_pressure") or row.get("turnover") or row.get("expected_turnover"),
-        }
-        if expected_return_owner == "risk_abstention":
-            row["promotion_blocked_reason"] = "no_validated_expected_return_owner"
-            row["promotion_expected_return"] = 0.0
-            row["promotion_expected_return_source"] = expected_return_source
-            continue
-        allocation_candidates.append(candidate)
-        if symbol:
-            candidate_evidence_by_symbol[symbol] = {
-                "expected_return": expected_return,
+            "_evidence": {
+                "expected_return": expected_return if formal_expected_return else 0.0,
                 "expected_return_source": expected_return_source,
                 "expected_return_payload": row.get("_expected_return_payload"),
-                "allocator_edge_resolver": row.get("_allocator_edge_resolver"),
-                "expected_return_owner": (
-                    row.get("_allocator_edge_resolver", {}).get("expected_return_owner")
-                    if isinstance(row.get("_allocator_edge_resolver"), dict)
-                    else None
+                "allocator_edge_resolver": resolver,
+                "expected_return_owner": expected_return_owner or None,
+                "allocation_utility": allocation_utility,
+                "allocation_utility_owner": allocation_utility_owner,
+                "allocation_utility_contract_version": (
+                    resolver.get("expected_return_contract_version")
+                    if formal_expected_return
+                    else SCORE_V2_ALLOCATION_UTILITY_CONTRACT_VERSION
                 ),
+                "allocation_utility_semantic": allocation_utility_semantic,
+                "selection_allocation_utility": selection_utility or None,
                 "promotion_conditional_admission": row.get("promotion_conditional_admission"),
                 "promotion_conditional_admission_policy": row.get("promotion_conditional_admission_policy"),
                 "promotion_static_min_expected_return": row.get("promotion_static_min_expected_return"),
@@ -3606,7 +3670,54 @@ def _apply_sparse_tangent_buy_selection(
                 "risk_estimate_source": (
                     "return_history_sample_std" if len(risk_history.get(symbol, []) or []) >= 2 else "daily_vol_floor"
                 ),
-            }
+            },
+        }
+        raw_allocation_candidates.append(candidate)
+
+    formal_candidates = [
+        candidate
+        for candidate in raw_allocation_candidates
+        if candidate.get("expected_return_owner") in {"l4_alpha_ev", "allocator_ev_fusion"}
+    ]
+    if formal_candidates:
+        allocation_candidates = formal_candidates
+        dropped_symbols = {
+            str(candidate.get("symbol") or "")
+            for candidate in raw_allocation_candidates
+            if candidate not in formal_candidates
+        }
+        for symbol in dropped_symbols:
+            row = candidate_rows_by_symbol.get(symbol)
+            if row is not None:
+                row["promotion_blocked_reason"] = "partial_expected_return_owner_coverage_fail_closed"
+        allocation_mode = "learned_expected_return_owner"
+        allocation_input_semantic = "expected_return_net_of_costs"
+    else:
+        allocation_candidates = raw_allocation_candidates
+        allocation_mode = "score_v2_formal_ml_continuity"
+        allocation_input_semantic = SCORE_V2_ALLOCATION_UTILITY_SEMANTIC
+
+    candidate_evidence_by_symbol: dict[str, dict[str, Any]] = {}
+    for candidate in allocation_candidates:
+        evidence = candidate.pop("_evidence")
+        symbol = str(candidate.get("symbol") or "").strip()
+        if symbol:
+            candidate_evidence_by_symbol[symbol] = evidence
+    allocation_contract.update({
+        "pre_owner_filter_candidate_pool_size": len(raw_allocation_candidates),
+        "allocation_candidate_pool_size": len(allocation_candidates),
+        "allocation_mode": allocation_mode,
+        "allocation_input_field": "allocation_utility",
+        "allocation_input_semantic": allocation_input_semantic,
+        "allocation_utility_owner": (
+            "expected_return_owner"
+            if allocation_mode == "learned_expected_return_owner"
+            else "score_v2_formal_ml"
+        ),
+        "selection_policy": "positive_allocation_utility_sparse_weights_no_forced_fill",
+        "expected_return_promotion_independent": True,
+        "score_v2_utility_cannot_promote_l4": True,
+    })
     optimizer_candidates = sorted(
         [row for row in allocation_candidates if str(row.get("symbol") or "").strip()],
         key=lambda row: float(row.get("score") or 0.0),
@@ -3619,7 +3730,12 @@ def _apply_sparse_tangent_buy_selection(
     optimizer_symbols = set(allocation_rank_by_symbol)
     positive_edge_count = sum(
         1 for row in optimizer_candidates
-        if max(0.0, float(row.get("expected_return") or 0.0)) > 0.0
+        if row.get("expected_return_owner") in {"l4_alpha_ev", "allocator_ev_fusion"}
+        and max(0.0, float(row.get("expected_return") or 0.0)) > 0.0
+    )
+    positive_utility_count = sum(
+        1 for row in optimizer_candidates
+        if max(0.0, float(row.get("allocation_utility") or 0.0)) > 0.0
     )
     return_history_candidate_symbols = sorted(
         symbol for symbol in optimizer_symbols
@@ -3638,6 +3754,7 @@ def _apply_sparse_tangent_buy_selection(
                 str(row.get("expected_return_owner") or "").strip()
                 for row in allocation_candidates
                 if str(row.get("expected_return_owner") or "").strip()
+                in {"l4_alpha_ev", "allocator_ev_fusion"}
             }
             expected_return_contracts = {
                 str(row.get("expected_return_contract_version") or "").strip()
@@ -3675,6 +3792,8 @@ def _apply_sparse_tangent_buy_selection(
                 turnover_penalty=turnover_penalty,
                 l2_penalty=l2_penalty,
                 utility_iterations=utility_iterations,
+                utility_field="allocation_utility",
+                utility_semantic=allocation_input_semantic,
                 prior_artifact_evidence=prior_artifact_evidence,
             )
             weights = dict(((opb_packet.get("controlled_allocation") or {}).get("weights") or {}))
@@ -3710,6 +3829,8 @@ def _apply_sparse_tangent_buy_selection(
             turnover_penalty=turnover_penalty,
             l2_penalty=l2_penalty,
             utility_iterations=utility_iterations,
+            utility_field="allocation_utility",
+            utility_semantic=allocation_input_semantic,
         )
         weights = dict(allocation_result.get("weights") or {})
     else:
@@ -3808,6 +3929,9 @@ def _apply_sparse_tangent_buy_selection(
         "legacy_top_k_ignored": allocation_result.get("legacy_top_k_ignored", buy_signal_count),
         "allocation_capacity": None,
         "positive_edge_count": positive_edge_count,
+        "positive_utility_count": positive_utility_count,
+        "allocation_mode": allocation_mode,
+        "allocation_input_semantic": allocation_input_semantic,
         "selected_count": len(selected_symbols),
         "zero_selection_allowed": True,
         "capacity_policy": "endogenous_positive_marginal_utility_no_hard_top_k",
@@ -3875,6 +3999,9 @@ def _apply_sparse_tangent_buy_selection(
             else row.get("promotion_expected_return")
         )
         expected_return = _float_or_none(expected_return_raw) or 0.0
+        allocation_utility = _float_or_none((evidence or {}).get("allocation_utility")) or 0.0
+        allocation_utility_owner = str((evidence or {}).get("allocation_utility_owner") or "").strip()
+        allocation_utility_semantic = str((evidence or {}).get("allocation_utility_semantic") or "").strip()
         risk_estimate = float((evidence or {}).get("risk_estimate") or 0.0)
         expected_return_payload = (
             (evidence or {}).get("expected_return_payload")
@@ -3909,25 +4036,33 @@ def _apply_sparse_tangent_buy_selection(
         single_name_weight = round(float(weight or 0.0), 8)
         live_backtest_divergence = _float_from_row(row, ("live_backtest_divergence", "live_vs_backtest_divergence"))
         turnover_pressure = _float_from_row(row, ("turnover_pressure", "turnover", "expected_turnover"))
-        positive_expected_edge = expected_return > 0.0
+        positive_expected_edge = (
+            expected_return_owner in {"l4_alpha_ev", "allocator_ev_fusion"}
+            and expected_return > 0.0
+        )
+        positive_allocation_utility = allocation_utility > 0.0
         utility_diagnostics = (
             allocation_diagnostics_by_symbol.get(symbol)
             if isinstance(allocation_diagnostics_by_symbol, dict)
             else None
         ) or {}
         marginal_utility = _float_or_none(utility_diagnostics.get("marginal_utility"))
-        if selected:
+        if selected and positive_expected_edge:
             selection_reason = "selected_positive_edge_sparse_weight"
+        elif selected:
+            selection_reason = "selected_score_v2_allocation_utility_sparse_weight"
         elif symbol and symbol not in candidate_evidence_by_symbol:
             selection_reason = "not_eligible_for_sparse_input"
-        elif not positive_expected_edge:
-            selection_reason = "no_positive_expected_edge"
+        elif not positive_allocation_utility:
+            selection_reason = "no_positive_allocation_utility"
         elif cluster_penalty_applied:
-            selection_reason = "positive_edge_but_zero_weight_due_to_correlation"
+            selection_reason = "positive_utility_but_zero_weight_due_to_correlation"
         elif marginal_utility is not None and marginal_utility <= 0:
-            selection_reason = "positive_edge_but_nonpositive_marginal_utility"
-        else:
+            selection_reason = "positive_utility_but_nonpositive_marginal_utility"
+        elif positive_expected_edge:
             selection_reason = "positive_edge_but_zero_weight_due_to_better_alternative"
+        else:
+            selection_reason = "positive_score_v2_utility_but_zero_weight_due_to_better_alternative"
         sparse_weight_state = (
             "selected_positive_sparse_weight"
             if selected and single_name_weight > 0
@@ -3947,6 +4082,11 @@ def _apply_sparse_tangent_buy_selection(
             )
             or row.get("promotion_expected_return_source"),
             "expected_return_owner": expected_return_owner or None,
+            "allocation_utility": round(allocation_utility, 10),
+            "allocation_utility_owner": allocation_utility_owner or None,
+            "allocation_utility_contract_version": (evidence or {}).get("allocation_utility_contract_version"),
+            "allocation_utility_semantic": allocation_utility_semantic or None,
+            "selection_allocation_utility": (evidence or {}).get("selection_allocation_utility"),
             "allocator_edge_resolver": resolver,
             "promotion_conditional_admission": bool(
                 (evidence or {}).get("promotion_conditional_admission")
@@ -3977,6 +4117,7 @@ def _apply_sparse_tangent_buy_selection(
                 None if market_heat_expected_return is None else round(market_heat_expected_return, 10)
             ),
             "positive_expected_edge": positive_expected_edge,
+            "positive_allocation_utility": positive_allocation_utility,
             "risk_estimate": round(risk_estimate, 10),
             "risk_estimate_source": (evidence or {}).get("risk_estimate_source"),
             "single_name_weight": single_name_weight,
@@ -5030,7 +5171,7 @@ def delete_filtered_recommendations(
             "engine": "sparse_tangent_inverse_risk",
             "allocation_method": "sparse_tangent_inverse_risk_final_allocation",
             "input_scope": "post_l3_5_evidence_fusion_candidates",
-            "selection_policy": "positive_expected_edge_sparse_weights_no_forced_fill",
+            "selection_policy": "positive_allocation_utility_sparse_weights_no_forced_fill",
             "selected": 0,
             "eligible_for_sparse": 0,
             "expected_return": 0,

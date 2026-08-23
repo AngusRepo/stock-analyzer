@@ -116,6 +116,13 @@ def _expected_return(row: dict[str, Any]) -> float:
     return 0.0
 
 
+def _allocation_utility(row: dict[str, Any], utility_field: str) -> float:
+    field = str(utility_field or "expected_return").strip() or "expected_return"
+    if field == "expected_return":
+        return _expected_return(row)
+    return _to_float(row.get(field), 0.0)
+
+
 def _sample_variance(values: list[float]) -> float:
     if len(values) < 2:
         return 0.0
@@ -276,6 +283,7 @@ def _alpha_utility_raw(
     turnover_penalty: float = 0.0,
     l2_penalty: float = 0.0,
     iterations: int = 180,
+    utility_semantic: str = "expected_return_net_of_costs",
 ) -> tuple[dict[str, float], dict[str, dict[str, Any]], dict[str, Any]]:
     """Mean-variance utility allocator with cash allowed.
 
@@ -288,7 +296,11 @@ def _alpha_utility_raw(
     if n == 0:
         return {}, {}, {
             "objective": "mean_variance_alpha_utility_with_cash",
-            "portfolio_expected_return": 0.0,
+            "portfolio_expected_return": (
+                0.0 if utility_semantic == "expected_return_net_of_costs" else None
+            ),
+            "portfolio_allocation_utility": 0.0,
+            "allocation_input_semantic": utility_semantic,
             "portfolio_variance": 0.0,
             "portfolio_volatility": 0.0,
             "portfolio_utility": 0.0,
@@ -308,6 +320,8 @@ def _alpha_utility_raw(
             symbol: {
                 "optimizer_objective": "mean_variance_alpha_utility_with_cash",
                 "alpha_input": round(expected_returns[idx], 10),
+                "allocation_utility_input": round(expected_returns[idx], 10),
+                "allocation_input_semantic": utility_semantic,
                 "alpha_strength": round(alpha_strength, 6),
                 "net_alpha_after_cost": 0.0,
                 "individual_variance": round(_covariance_diag(covariance, n, var_floor)[idx], 10),
@@ -324,7 +338,11 @@ def _alpha_utility_raw(
         }
         return {}, diagnostics, {
             "objective": "mean_variance_alpha_utility_with_cash",
-            "portfolio_expected_return": 0.0,
+            "portfolio_expected_return": (
+                0.0 if utility_semantic == "expected_return_net_of_costs" else None
+            ),
+            "portfolio_allocation_utility": 0.0,
+            "allocation_input_semantic": utility_semantic,
             "portfolio_variance": 0.0,
             "portfolio_volatility": 0.0,
             "portfolio_utility": 0.0,
@@ -387,6 +405,8 @@ def _alpha_utility_raw(
         diagnostics[symbol] = {
             "optimizer_objective": "mean_variance_alpha_utility_with_cash",
             "alpha_input": round(expected_returns[idx], 10),
+            "allocation_utility_input": round(expected_returns[idx], 10),
+            "allocation_input_semantic": utility_semantic,
             "allocator_edge_quality_score": rows[idx].get("allocator_edge_quality_score"),
             "conditional_admission_allowed": rows[idx].get("conditional_admission_allowed"),
             "s12_target_quality_state": rows[idx].get("s12_target_quality_state"),
@@ -410,7 +430,13 @@ def _alpha_utility_raw(
         "risk_aversion": round(risk_aversion, 6),
         "turnover_penalty": round(turnover_penalty, 8),
         "l2_penalty": round(l2_penalty, 8),
-        "portfolio_expected_return": round(portfolio_expected_return, 10),
+        "portfolio_expected_return": (
+            round(portfolio_expected_return, 10)
+            if utility_semantic == "expected_return_net_of_costs"
+            else None
+        ),
+        "portfolio_allocation_utility": round(portfolio_expected_return, 10),
+        "allocation_input_semantic": utility_semantic,
         "portfolio_variance": round(portfolio_variance, 10),
         "portfolio_volatility": round(math.sqrt(portfolio_variance), 10),
         "portfolio_turnover_cost": round(portfolio_turnover_cost, 10),
@@ -503,22 +529,22 @@ def allocate_sparse_tangent_with_evidence(
     turnover_penalty: float = 0.0,
     l2_penalty: float = 0.0,
     utility_iterations: int = 180,
+    utility_field: str = "expected_return",
+    utility_semantic: str = "expected_return_net_of_costs",
 ) -> dict[str, Any]:
-    """Long-only sparse alpha weights over the current candidate set.
+    """Long-only sparse weights over the current candidate set.
 
-    Expected return comes from candidate expected_return/predicted_return when
-    available. The production objective keeps alpha, LedoitWolf covariance risk,
-    and turnover friction in one utility. If covariance evidence is unavailable
-    but positive edge exists, keep the diagonal variance-floor risk path instead
-    of reverting to rank-topK. If positive edge is missing, return empty weights
-    and keep cash.
+    The optimizer input is explicit. Learned-alpha serving uses expected_return;
+    the continuity path may use a dimensionless formal selection utility under a
+    separate field. A selection utility is never reported as expected return and
+    cannot satisfy expected-return promotion gates.
     """
     # Production sparse allocation evaluates the full eligible candidate pool.
     # `top_k` remains in the public API for backward compatibility only. The
     # production optimizer evaluates and retains the full positive-utility set.
     evaluated = sorted([row for row in candidates if _symbol(row)], key=_score, reverse=True)
     symbols = [_symbol(row) for row in evaluated]
-    expected_returns = [max(0.0, _expected_return(row)) for row in evaluated]
+    expected_returns = [max(0.0, _allocation_utility(row, utility_field)) for row in evaluated]
     empty_evidence = {
         "weights": {},
         "candidate_pool_policy": "full_eligible_pool_before_sparse_selection",
@@ -553,8 +579,11 @@ def allocate_sparse_tangent_with_evidence(
         "max_cluster_weight": max_cluster_weight if max_cluster_weight is not None else max_weight,
         "unallocated_cash_weight": 1.0,
         "allocation_objective": allocation_objective,
+        "allocation_input_field": utility_field,
+        "allocation_input_semantic": utility_semantic,
         "objective_evidence": {
-            "objective": "empty_or_no_positive_edge",
+            "objective": "empty_or_no_positive_utility",
+            "allocation_input_semantic": utility_semantic,
             "cash_allowed": True,
             "budget_used": 0.0,
         },
@@ -583,6 +612,7 @@ def allocate_sparse_tangent_with_evidence(
             turnover_penalty=turnover_penalty,
             l2_penalty=l2_penalty,
             iterations=utility_iterations,
+            utility_semantic=utility_semantic,
         )
     else:
         raw = _long_only_tangent_raw(symbols, expected_returns, covariance)
@@ -670,6 +700,8 @@ def allocate_sparse_tangent_with_evidence(
         "max_cluster_weight": max_cluster_weight if max_cluster_weight is not None else max_weight,
         "unallocated_cash_weight": unallocated_cash_weight,
         "allocation_objective": objective,
+        "allocation_input_field": utility_field,
+        "allocation_input_semantic": utility_semantic,
         "objective_evidence": {
             **objective_evidence,
             "budget_used": round(sum(capped_weights.values()), 10),

@@ -155,8 +155,10 @@ export type PipelineDecisionMaturityPacket = {
   generated_at: string
   current_selection_signal_owner: 'score_v2_formal_ml'
   current_expected_return_owner: 'l4_alpha_ev' | 'allocator_ev_fusion' | null
-  current_execution_owner: 'allocator_opb_policy' | 'none_fail_closed'
-  action_gate: 'expected_return_owner' | 'canonical_l4_required'
+  current_allocation_utility_owner: 'expected_return_owner' | 'score_v2_formal_ml'
+  current_execution_owner: 'allocator_opb_policy'
+  execution_scope: 'recommendation_allocation_only_no_order_submission'
+  action_gate: 'expected_return_owner' | 'selection_signal_owner'
   strategy_route_bundle?: StrategyRouteBundleMaturity
   summary: {
     production: number

@@ -227,11 +227,17 @@ def _candidate_score(row: dict[str, Any]) -> float:
     return _to_float(row.get("score"), 0.0)
 
 
-def _candidate_feature_summary(candidates: list[dict[str, Any]]) -> dict[str, Any]:
+def _candidate_feature_summary(
+    candidates: list[dict[str, Any]],
+    *,
+    utility_field: str = "expected_return",
+    utility_semantic: str = "expected_return_net_of_costs",
+) -> dict[str, Any]:
     qualities: list[float] = []
     target_states: dict[str, int] = {}
     conditional_count = 0
     positive_edge_count = 0
+    positive_utility_count = 0
     for row in candidates or []:
         quality = _to_float(row.get("allocator_edge_quality_score"), float("nan"))
         if math.isfinite(quality):
@@ -242,10 +248,15 @@ def _candidate_feature_summary(candidates: list[dict[str, Any]]) -> dict[str, An
             conditional_count += 1
         if _to_float(row.get("expected_return"), 0.0) > 0:
             positive_edge_count += 1
+        if _to_float(row.get(utility_field), 0.0) > 0:
+            positive_utility_count += 1
     return {
         "schema_version": "opb-candidate-feature-summary-v1",
         "candidate_count": len(candidates or []),
         "positive_edge_count": positive_edge_count,
+        "positive_utility_count": positive_utility_count,
+        "allocation_input_field": utility_field,
+        "allocation_input_semantic": utility_semantic,
         "allocator_edge_quality_avg": round(sum(qualities) / len(qualities), 6) if qualities else None,
         "allocator_edge_quality_max": round(max(qualities), 6) if qualities else None,
         "conditional_admission_count": conditional_count,
@@ -277,6 +288,8 @@ def build_online_portfolio_bandit_l2_packet(
     turnover_penalty: float = 0.0,
     l2_penalty: float = 0.0,
     utility_iterations: int = 180,
+    utility_field: str = "expected_return",
+    utility_semantic: str = "expected_return_net_of_costs",
     prior_artifact_evidence: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Select allocator knobs with warm-start UCB and compute allocation weights."""
@@ -326,7 +339,11 @@ def build_online_portfolio_bandit_l2_packet(
     selected_arm = next((arm for arm in arms if selected and arm.arm_id == selected["arm_id"]), None)
 
     ranked_candidates = sorted(candidates, key=_candidate_score, reverse=True)
-    candidate_feature_summary = _candidate_feature_summary(ranked_candidates)
+    candidate_feature_summary = _candidate_feature_summary(
+        ranked_candidates,
+        utility_field=utility_field,
+        utility_semantic=utility_semantic,
+    )
     raw_weights: dict[str, float] = {}
     final_weights: dict[str, float] = {}
     sparse_evidence: dict[str, Any] = {}
@@ -347,6 +364,8 @@ def build_online_portfolio_bandit_l2_packet(
             turnover_penalty=turnover_penalty,
             l2_penalty=l2_penalty,
             utility_iterations=utility_iterations,
+            utility_field=utility_field,
+            utility_semantic=utility_semantic,
         )
         raw_weights = dict(sparse_evidence.get("weights") or {})
         initial_weight_count = len(raw_weights)
@@ -373,6 +392,8 @@ def build_online_portfolio_bandit_l2_packet(
                 turnover_penalty=turnover_penalty,
                 l2_penalty=l2_penalty,
                 utility_iterations=utility_iterations,
+                utility_field=utility_field,
+                utility_semantic=utility_semantic,
             )
             raw_weights = dict(sparse_evidence.get("weights") or {})
             sparse_evidence = {
@@ -432,6 +453,8 @@ def build_online_portfolio_bandit_l2_packet(
         "controller": "OnlinePortfolioBandit",
         "selection_policy": "warm_start_nonstationary_ucb_risk_knobs",
         "allocator_engine": "sparse_tangent_inverse_risk",
+        "allocation_input_field": utility_field,
+        "allocation_input_semantic": utility_semantic,
         "allocation_role": (
             "production_recommendation_allocation_controller"
             if production_controller

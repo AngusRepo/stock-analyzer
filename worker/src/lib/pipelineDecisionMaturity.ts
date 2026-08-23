@@ -196,8 +196,10 @@ export interface PipelineDecisionMaturityPacket {
   generated_at: string
   current_selection_signal_owner: 'score_v2_formal_ml'
   current_expected_return_owner: 'l4_alpha_ev' | 'allocator_ev_fusion' | null
-  current_execution_owner: 'allocator_opb_policy' | 'none_fail_closed'
-  action_gate: 'expected_return_owner' | 'canonical_l4_required'
+  current_allocation_utility_owner: 'expected_return_owner' | 'score_v2_formal_ml'
+  current_execution_owner: 'allocator_opb_policy'
+  execution_scope: 'recommendation_allocation_only_no_order_submission'
+  action_gate: 'expected_return_owner' | 'selection_signal_owner'
   strategy_route_bundle: StrategyRouteBundleMaturity
   summary: {
     production: number
@@ -1438,8 +1440,10 @@ export async function buildPipelineDecisionMaturityPacket(
     generated_at: new Date().toISOString(),
     current_selection_signal_owner: servingState?.selection_signal_owner ?? 'score_v2_formal_ml',
     current_expected_return_owner: servingState?.expected_return_owner ?? null,
-    current_execution_owner: servingState?.execution_owner ?? 'none_fail_closed',
-    action_gate: servingState?.action_gate ?? 'canonical_l4_required',
+    current_allocation_utility_owner: servingState?.allocation_utility_owner ?? 'score_v2_formal_ml',
+    current_execution_owner: servingState?.execution_owner ?? 'allocator_opb_policy',
+    execution_scope: servingState?.execution_scope ?? 'recommendation_allocation_only_no_order_submission',
+    action_gate: servingState?.action_gate ?? 'selection_signal_owner',
     summary: {
       production: stages.filter((stage) => stage.contribution_mode === 'production').length,
       shadow: stages.filter((stage) => stage.contribution_mode === 'shadow').length,

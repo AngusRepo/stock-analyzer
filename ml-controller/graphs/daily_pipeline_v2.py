@@ -2910,6 +2910,7 @@ async def node_recommend(state: PipelineStateV2) -> dict:
         diagnostic["decision_expected_return_owner"] = "risk_abstention"
 
     allowed_owners = {
+        "l4_alpha_ev",
         "allocator_ev_fusion",
         "risk_abstention",
     }

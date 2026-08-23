@@ -43,7 +43,9 @@ export interface ExpectedReturnServingState {
   state: 'production_primary' | 'no_eligible_owner'
   selection_signal_owner: 'score_v2_formal_ml'
   expected_return_owner: ExpectedReturnOwner | null
-  execution_owner: 'allocator_opb_policy' | 'none_fail_closed'
+  allocation_utility_owner: 'expected_return_owner' | 'score_v2_formal_ml'
+  execution_owner: 'allocator_opb_policy'
+  execution_scope: 'recommendation_allocation_only_no_order_submission'
   action_gate: ExpectedReturnActionGate
   run_date: string | null
   evaluated_at: string
@@ -249,7 +251,9 @@ export function resolveExpectedReturnServingState(
     state: owner ? 'production_primary' : 'no_eligible_owner',
     selection_signal_owner: decisionOwners.selection_signal_owner,
     expected_return_owner: owner,
+    allocation_utility_owner: decisionOwners.allocation_utility_owner,
     execution_owner: decisionOwners.execution_owner,
+    execution_scope: decisionOwners.execution_scope,
     action_gate: decisionOwners.action_gate,
     run_date: options.runDate ?? null,
     evaluated_at: options.evaluatedAt ?? new Date().toISOString(),

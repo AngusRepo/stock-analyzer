@@ -675,7 +675,7 @@ def test_sparse_allocator_marks_positive_zero_weight_as_potential_buy(monkeypatc
     assert ccc["has_buy_signal"] == 0
     assert ccc["alpha_allocation"]["selected"] is False
     assert ccc["alpha_allocation"]["potential_buy"] is False
-    assert ccc["alpha_allocation"]["selection_reason"] == "no_positive_expected_edge"
+    assert ccc["alpha_allocation"]["selection_reason"] == "no_positive_allocation_utility"
 
 
 def _missing_ev_formal_ml_row(symbol: str, *, hard_block: bool = False) -> dict:
@@ -704,11 +704,21 @@ def _missing_ev_formal_ml_row(symbol: str, *, hard_block: bool = False) -> dict:
     return row
 
 
-def test_sparse_allocator_exposes_missing_ev_formal_ml_as_non_executable_potential(monkeypatch):
+def test_sparse_allocator_uses_score_v2_utility_when_expected_return_owner_is_missing(monkeypatch):
     def _fake_sparse_allocator(candidates, return_history, **kwargs):
-        assert candidates == []
+        assert len(candidates) == 1
+        candidate = candidates[0]
+        assert candidate["symbol"] == "OBS"
+        assert candidate["expected_return"] == 0.0
+        assert candidate["expected_return_owner"] == "risk_abstention"
+        assert candidate["allocation_utility"] > 0.0
+        assert candidate["allocation_utility_owner"] == "score_v2_formal_ml"
+        assert kwargs["utility_field"] == "allocation_utility"
+        assert kwargs["utility_semantic"] == (
+            "dimensionless_score_v2_ml_edge_confidence_utility_not_expected_return"
+        )
         return {
-            "weights": {},
+            "weights": {"OBS": 1.0},
             "candidate_diagnostics": {},
             "allocation_objective": "test_sparse_allocator",
             "evaluated_candidate_count": len(candidates),
@@ -719,9 +729,7 @@ def test_sparse_allocator_exposes_missing_ev_formal_ml_as_non_executable_potenti
         "allocate_sparse_tangent_with_evidence",
         _fake_sparse_allocator,
     )
-    rows = [
-        _missing_ev_formal_ml_row("OBS"),
-    ]
+    rows = [_missing_ev_formal_ml_row("OBS")]
 
     allocated = recommendation_service._apply_sparse_tangent_buy_selection(
         rows,
@@ -736,20 +744,17 @@ def test_sparse_allocator_exposes_missing_ev_formal_ml_as_non_executable_potenti
         confidence_floor=0.60,
         return_history={},
     )
-    by_symbol = {row["symbol"]: row for row in allocated}
 
-    observed = by_symbol["OBS"]
-    assert observed["signal"] == "POTENTIAL_BUY"
-    assert observed["has_buy_signal"] == 0
-    assert observed["sparse_tangent_selected"] is False
-    assert observed["alpha_allocation"]["eligible_for_sparse"] is False
-    assert observed["alpha_allocation"]["potential_buy"] is True
-    assert observed["alpha_allocation"]["potential_buy_execution_eligible"] is False
-    assert observed["alpha_allocation"]["potential_buy_policy"] == (
-        "non_executable_formal_ml_observation_missing_expected_return_v1"
-    )
-    assert observed["alpha_allocation"]["potential_buy_active_family_count"] == 3
-
+    observed = allocated[0]
+    allocation = observed["alpha_allocation"]
+    assert observed["signal"] == "BUY"
+    assert observed["has_buy_signal"] == 1
+    assert observed["sparse_tangent_selected"] is True
+    assert allocation["expected_return"] == 0.0
+    assert allocation["positive_expected_edge"] is False
+    assert allocation["positive_allocation_utility"] is True
+    assert allocation["allocation_utility_owner"] == "score_v2_formal_ml"
+    assert allocation["selection_allocation_utility"]["can_submit_real_order"] is False
 
 def test_potential_buy_is_not_a_formal_buy_signal():
     assert recommendation_service._is_formal_buy_signal("BUY") is True

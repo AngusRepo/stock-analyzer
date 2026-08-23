@@ -189,6 +189,31 @@ def _sparse_policy(
     return policy
 
 
+def _assert_score_v2_continuity_selected(row: dict) -> dict:
+    allocation = row["alpha_allocation"]
+    assert row["signal"] == "BUY"
+    assert row["has_buy_signal"] == 1
+    assert row["sparse_tangent_selected"] is True
+    assert allocation["selected"] is True
+    assert allocation["eligible_for_sparse"] is True
+    assert allocation["expected_return"] == 0.0
+    assert allocation["expected_return_owner"] == "risk_abstention"
+    assert allocation["positive_expected_edge"] is False
+    assert allocation["positive_allocation_utility"] is True
+    assert allocation["allocation_utility"] > 0.0
+    assert allocation["allocation_utility_owner"] == "score_v2_formal_ml"
+    assert allocation["allocation_utility_semantic"] == (
+        "dimensionless_score_v2_ml_edge_confidence_utility_not_expected_return"
+    )
+    resolver = allocation["allocator_edge_resolver"]
+    assert resolver["formal_expected_return_owner"] is None
+    assert resolver["allocation_utility_owner"] == "score_v2_formal_ml"
+    assert resolver["execution_owner"] == "allocator_opb_policy"
+    assert resolver["execution_scope"] == "recommendation_allocation_only_no_order_submission"
+    assert resolver["action_gate"] == "selection_signal_owner"
+    assert allocation["selection_allocation_utility"]["can_submit_real_order"] is False
+    return allocation
+
 
 def _trade_ev(value: float, source: str = "l4_alpha_ev:test_fixture") -> dict:
     payload = _l4_alpha_ev(value)
@@ -883,15 +908,8 @@ def test_sparse_tangent_allocation_rejects_legacy_row_level_expected_return():
         alpha_policy=_sparse_policy(buy_signal_count=1),
     )
 
-    allocation = promoted[0]["alpha_allocation"]
-    assert promoted[0]["signal"] == "HOLD"
-    assert allocation["expected_return"] == 0.0
-    assert allocation["expected_return_owner"] == "risk_abstention"
+    allocation = _assert_score_v2_continuity_selected(promoted[0])
     assert allocation["allocator_edge_resolver"]["selection_signal_owner"] == "score_v2_formal_ml"
-    assert allocation["allocator_edge_resolver"]["formal_expected_return_owner"] is None
-    assert allocation["allocator_edge_resolver"]["execution_owner"] == "none_fail_closed"
-    assert allocation["allocator_edge_resolver"]["action_gate"] == "canonical_l4_required"
-    assert allocation["positive_expected_edge"] is False
 
 
 def test_sparse_tangent_allocation_applies_dispersion_uncertainty_haircut():
@@ -1009,19 +1027,12 @@ def test_sparse_tangent_allocation_explains_missing_expected_return_input():
         alpha_policy=_sparse_policy(buy_signal_count=1, include_fusion=False),
     )
 
-    allocation = promoted[0]["alpha_allocation"]
-    assert promoted[0]["signal"] == "HOLD"
-    assert promoted[0].get("sparse_tangent_selected") is not True
-    assert promoted[0]["promotion_blocked_reason"] == "forecast_pct_missing_no_expected_return_input"
-    assert allocation["selected"] is False
-    assert allocation["eligible_for_sparse"] is False
-    assert allocation["selection_reason"] == "not_eligible_for_sparse_input"
-    assert allocation["sparse_input_blocked_reason"] == "forecast_pct_missing_no_expected_return_input"
-    assert allocation["expected_return"] == 0.0
+    allocation = _assert_score_v2_continuity_selected(promoted[0])
     assert allocation["expected_return_source"] == "l4_alpha_ev_missing_no_expected_return"
-    assert allocation["expected_return_owner"] == "risk_abstention"
     assert allocation["allocator_edge_resolver"]["abstention"] is True
-    assert allocation["expected_return_abstention"]["candidate_contract"] == "explicit_no_trade_abstention"
+    assert allocation["expected_return_abstention"]["candidate_contract"] == (
+        "expected_return_abstention_selection_utility_may_remain_available"
+    )
 
 
 def test_sparse_tangent_allocation_reowns_existing_buy_labels():
@@ -1213,8 +1224,8 @@ def test_sparse_tangent_allocation_keeps_cash_when_explicit_forecast_has_no_edge
     assert all(allocation["selected"] is False for allocation in allocations)
     assert all(allocation["allows_empty_portfolio"] is True for allocation in allocations)
     assert all(allocation["hard_minimum_fill"] is False for allocation in allocations)
-    assert all(allocation["selection_policy"] == "positive_expected_edge_sparse_weights_no_forced_fill" for allocation in allocations)
-    assert all(allocation["selection_reason"] == "no_positive_expected_edge" for allocation in allocations)
+    assert all(allocation["selection_policy"] == "positive_allocation_utility_sparse_weights_no_forced_fill" for allocation in allocations)
+    assert all(allocation["selection_reason"] == "no_positive_allocation_utility" for allocation in allocations)
     assert all(allocation["sparse_weight_state"] == "zero_sparse_weight_after_inverse_risk" for allocation in allocations)
     assert all(allocation["expected_return"] == 0.0 for allocation in allocations)
     assert all(allocation["positive_expected_edge"] is False for allocation in allocations)
@@ -1248,14 +1259,9 @@ def test_sparse_tangent_allocation_blocks_score_only_expected_return_fallback():
         alpha_policy=_sparse_policy(buy_signal_count=1, slate_size=1, include_fusion=False),
     )
 
-    allocation = promoted[0]["alpha_allocation"]
-    assert promoted[0]["signal"] == "HOLD"
-    assert promoted[0].get("sparse_tangent_selected") is not True
-    assert allocation["expected_return"] == 0.0
+    allocation = _assert_score_v2_continuity_selected(promoted[0])
     assert allocation["expected_return_source"] == "l4_alpha_ev_missing_no_expected_return"
-    assert allocation["positive_expected_edge"] is False
-    assert allocation["selection_reason"] == "not_eligible_for_sparse_input"
-    assert allocation["sparse_input_blocked_reason"] == "forecast_pct_missing_no_expected_return_input"
+    assert allocation["selection_reason"] == "selected_score_v2_allocation_utility_sparse_weight"
 
 
 def test_sparse_tangent_allocation_does_not_persist_candidate_time_s12_payload():
@@ -1297,14 +1303,12 @@ def test_sparse_tangent_allocation_does_not_persist_candidate_time_s12_payload()
         alpha_policy=_sparse_policy(buy_signal_count=1, slate_size=1),
     )
 
-    allocation = promoted[0]["alpha_allocation"]
-    assert promoted[0]["signal"] == "HOLD"
+    allocation = _assert_score_v2_continuity_selected(promoted[0])
     assert "s12_trade_ev" not in allocation
-    assert allocation["expected_return"] == 0.0
-    assert allocation["expected_return_owner"] == "risk_abstention"
     assert allocation["allocator_edge_resolver"]["abstention"] is True
-    assert allocation["allocator_edge_resolver"]["candidate_contract"] == "explicit_no_trade_abstention"
-    assert allocation["selection_reason"] == "not_eligible_for_sparse_input"
+    assert allocation["allocator_edge_resolver"]["candidate_contract"] == (
+        "expected_return_abstention_selection_utility_may_remain_available"
+    )
 
 
 def test_sparse_tangent_allocation_ignores_s12_setup_ev_in_evening_allocation():
@@ -1336,13 +1340,9 @@ def test_sparse_tangent_allocation_ignores_s12_setup_ev_in_evening_allocation():
         alpha_policy=_sparse_policy(buy_signal_count=1, slate_size=1),
     )
 
-    allocation = promoted[0]["alpha_allocation"]
-    assert promoted[0]["signal"] == "HOLD"
-    assert allocation["expected_return"] == 0.0
-    assert allocation["expected_return_owner"] == "risk_abstention"
+    allocation = _assert_score_v2_continuity_selected(promoted[0])
     assert "s12_trade_ev" not in allocation
     assert allocation["allocator_edge_resolver"]["abstention"] is True
-    assert allocation["allocator_edge_resolver"]["candidate_contract"] == "explicit_no_trade_abstention"
 
 
 def test_sparse_tangent_allocation_records_allocator_edge_resolver_without_heat_override():
@@ -1390,9 +1390,13 @@ def test_sparse_tangent_allocation_records_allocator_edge_resolver_without_heat_
     assert resolver["expected_return_owner"] == "risk_abstention"
     assert resolver["expected_return"] == 0.0
     assert resolver["abstention"] is True
-    assert resolver["candidate_contract"] == "explicit_no_trade_abstention"
+    assert resolver["candidate_contract"] == (
+        "expected_return_abstention_selection_utility_may_remain_available"
+    )
     assert resolver["expected_return_source"] == "l4_alpha_ev_missing_no_expected_return"
-    assert resolver["policy"] == "invalid_or_missing_canonical_l4_means_abstain_without_score_rank_or_s12_fallback"
+    assert resolver["policy"] == (
+        "invalid_or_missing_canonical_l4_blocks_expected_return_ownership_not_score_v2_allocation"
+    )
     assert resolver["primary_expected_return_available"] is False
     assert "s12_trade_ev" not in allocation
 
@@ -1435,11 +1439,8 @@ def test_sparse_tangent_allocation_rejects_positive_candidate_time_s12_as_condit
         alpha_policy=_sparse_policy(buy_signal_count=1, slate_size=1),
     )
 
-    allocation = promoted[0]["alpha_allocation"]
-    assert promoted[0]["signal"] == "HOLD"
-    assert allocation["expected_return"] == 0.0
+    allocation = _assert_score_v2_continuity_selected(promoted[0])
     assert allocation["promotion_conditional_admission"] is False
-    assert allocation["allocator_edge_resolver"]["expected_return_owner"] == "risk_abstention"
     assert allocation["allocator_edge_resolver"]["abstention"] is True
 
 
@@ -1497,12 +1498,7 @@ def test_sparse_tangent_allocation_ignores_negative_candidate_s12_peer_replay():
         alpha_policy=_sparse_policy(buy_signal_count=1, slate_size=1),
     )
 
-    allocation = promoted[0]["alpha_allocation"]
-    assert promoted[0]["signal"] == "HOLD"
-    assert promoted[0]["has_buy_signal"] == 0
-    assert allocation["selected"] is False
-    assert allocation["expected_return"] == 0.0
-    assert allocation["expected_return_owner"] == "risk_abstention"
+    allocation = _assert_score_v2_continuity_selected(promoted[0])
     assert allocation["allocator_edge_resolver"]["abstention"] is True
     assert "s12_trade_ev" not in allocation
 
@@ -1555,12 +1551,9 @@ def test_sparse_tangent_allocation_does_not_use_positive_peer_replay_as_candidat
         alpha_policy=_sparse_policy(buy_signal_count=1, slate_size=1),
     )
 
-    allocation = promoted[0]["alpha_allocation"]
-    assert promoted[0]["signal"] == "HOLD"
-    assert allocation["expected_return"] == 0.0
+    allocation = _assert_score_v2_continuity_selected(promoted[0])
     assert allocation["promotion_conditional_admission"] is False
     assert allocation["allocator_edge_resolver"]["abstention"] is True
-    assert allocation["allocator_edge_resolver"]["expected_return_owner"] == "risk_abstention"
 
 
 def test_sparse_tangent_allocation_does_not_accept_market_heat_as_expected_edge():
@@ -1588,15 +1581,10 @@ def test_sparse_tangent_allocation_does_not_accept_market_heat_as_expected_edge(
         alpha_policy=_sparse_policy(buy_signal_count=1, slate_size=1, include_fusion=False),
     )
 
-    allocation = promoted[0]["alpha_allocation"]
-    assert promoted[0]["signal"] == "HOLD"
-    assert promoted[0].get("sparse_tangent_selected") is not True
-    assert allocation["expected_return"] == 0.0
+    allocation = _assert_score_v2_continuity_selected(promoted[0])
     assert allocation["expected_return_source"] == "l4_alpha_ev_missing_no_expected_return"
     assert allocation["market_heat_score"] == pytest.approx(0.82)
     assert allocation["market_heat_expected_return"] == pytest.approx(0.0042)
-    assert allocation["positive_expected_edge"] is False
-    assert allocation["selection_reason"] == "not_eligible_for_sparse_input"
 
 
 def test_sparse_tangent_allocation_uses_validated_l4_as_fusion_upstream():
@@ -1658,13 +1646,9 @@ def test_sparse_tangent_allocation_does_not_turn_unvalidated_l4_into_fallback_ed
         alpha_policy=_sparse_policy(buy_signal_count=1, slate_size=1),
     )
 
-    allocation = promoted[0]["alpha_allocation"]
-    assert promoted[0]["signal"] == "HOLD"
-    assert allocation["selected"] is False
-    assert allocation["expected_return"] == 0.0
+    allocation = _assert_score_v2_continuity_selected(promoted[0])
     assert allocation["expected_return_source"] == "l4_alpha_ev:stacked_meta_calibrator_validation_failed_no_expected_return"
     assert "validation_packet_not_pass" in allocation["l4_alpha_ev"]["blockers"]
-    assert allocation["expected_return_owner"] == "risk_abstention"
     assert allocation["allocator_edge_resolver"]["abstention"] is True
     assert "empirical_bucket_not_production_alpha_ev_owner" in allocation["l4_alpha_ev"]["blockers"]
 
@@ -1961,11 +1945,7 @@ def test_sparse_tangent_allocation_rejects_legacy_safe_abstention_baseline_witho
         },
     )
 
-    allocation = promoted[0]["alpha_allocation"]
-    assert promoted[0]["signal"] == "HOLD"
-    assert allocation["eligible_for_sparse"] is False
-    assert allocation["expected_return_owner"] == "risk_abstention"
-    assert allocation["expected_return"] == pytest.approx(0.0)
+    allocation = _assert_score_v2_continuity_selected(promoted[0])
     assert allocation["allocator_ev_fusion"]["status"] == "rejected"
 
 

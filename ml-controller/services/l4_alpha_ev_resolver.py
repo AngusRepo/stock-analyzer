@@ -274,7 +274,8 @@ def resolve_l4_alpha_ev(
 
     status = "loaded" if not blockers else "rejected"
     if status != "loaded":
-        source = f"{source}_validation_failed_no_expected_return"
+        if not source.endswith("_validation_failed_no_expected_return"):
+            source = f"{source}_validation_failed_no_expected_return"
         value = None
 
     normalized = {

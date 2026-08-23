@@ -2900,7 +2900,11 @@ def test_oof_full_fit_registry_uses_lifecycle_owner_and_preserves_child_run_id()
     assert evidence["registration"]["artifact_training_run_id"] == "v20260717-xgboost"
 
 
-def _oof_full_fit_release_row(*, decision: str = "PASS") -> dict[str, object]:
+def _oof_full_fit_release_row(
+    *,
+    decision: str = "PASS",
+    selection_decision: str = "PASS",
+) -> dict[str, object]:
     failed_gates = [] if decision == "PASS" else ["oos_ic_lcb"]
     evidence = {
         "schema_version": "model-cpcv-evidence-v1",
@@ -2924,15 +2928,36 @@ def _oof_full_fit_release_row(*, decision: str = "PASS") -> dict[str, object]:
             },
             "oof_promotion_evidence": evidence,
             "oof_release_validation": {
-                "schema_version": "active8-oof-base-ranker-release-validation-v2",
+                "schema_version": "active8-oof-base-ranker-release-validation-v3",
                 "validation_role": "base_ranker",
                 "decision": "PASS",
+                "failed_gates": [],
+                "base_artifact_authority": {
+                    "decision": "PASS",
+                    "owner": "individual_outer_purged_oof",
+                    "effect": "base_artifact_release_only",
+                },
+                "selection_authority": {
+                    "scope": "cohort_model_selection_process",
+                    "method": "label_interval_purged_cscv_rank_logit",
+                    "effect": "automatic_champion_selection_and_ensemble_weighting_only",
+                    "decision": selection_decision,
+                    "failed_gates": (
+                        [] if selection_decision == "PASS"
+                        else ["cohort_model_selection_pbo"]
+                    ),
+                    "go_live_verdict": selection_decision,
+                    "pbo": 0.20 if selection_decision == "PASS" else 0.75,
+                    "max_pbo": 0.50,
+                    "oos_mean_spread": 0.01,
+                    "selection_identifiability_ratio": 1.0,
+                },
                 "pbo": {
                     "scope": "cohort_model_selection_process",
-                    "method": "cscv_rank_logit",
-                    "go_live_verdict": "PASS",
-                    "pbo": 0.20,
-                    "max_pbo": 0.30,
+                    "method": "label_interval_purged_cscv_rank_logit",
+                    "go_live_verdict": selection_decision,
+                    "pbo": 0.20 if selection_decision == "PASS" else 0.75,
+                    "max_pbo": 0.50,
                 },
             },
             "oof_lifecycle_resume": {
@@ -3027,6 +3052,27 @@ def test_oof_full_fit_release_rejects_failed_outer_evidence(monkeypatch):
     )
 
     assert result["count"] == 0
+
+
+def test_oof_full_fit_selection_pbo_failure_keeps_base_but_blocks_promotion(monkeypatch):
+    monkeypatch.setattr(registry, "artifact_promotion_blockers", lambda *args, **kwargs: [])
+    candidate = _oof_full_fit_release_row(selection_decision="FAIL")
+    assert registry._offline_oof_full_fit_base_artifact(candidate) is True
+    assert registry._offline_oof_full_fit_release_candidate(candidate) is False
+
+    result = registry.build_promotion_queue(
+        [
+            _champion_row(target_semantic_version=None),
+            candidate,
+        ],
+        champion_versions={"XGBoost": "vOld"},
+    )
+
+    assert result["count"] == 1
+    assert result["queue"][0]["promotion_decision"] == "blocked_multi_evidence_gate"
+    assert result["queue"][0]["blocker_codes"] == [
+        "cohort_model_selection_pbo_failed",
+    ]
 
 
 

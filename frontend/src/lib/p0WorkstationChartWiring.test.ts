@@ -42,9 +42,10 @@ assert(modelPoolPage.includes('L2 TimesFM sidecar、L3 active-8 ML'), 'ModelPool
 
 const strategyLabPage = fs.readFileSync(strategyLabPagePath, 'utf8')
 const viteConfig = fs.readFileSync(viteConfigPath, 'utf8')
-assert(strategyLabPage.includes('Learning + Reward Ledger'), 'Strategy Lab should be a focused reward-ledger surface')
-assert(strategyLabPage.includes('Active strategies'), 'Strategy Lab should show active strategies separately')
-assert(strategyLabPage.includes('Learning + shadowing strategies'), 'Strategy Lab should group learning and shadowing strategies')
+assert(strategyLabPage.includes('策略學習與報酬帳本'), 'Strategy Lab should be a focused production reward-ledger surface')
+assert(strategyLabPage.includes('StrategyQueue'), 'Strategy Lab should expose an attention-first queue')
+assert(strategyLabPage.includes('rows={[selectedRow]}'), 'Strategy Lab should render one selected strategy workspace')
+assert(strategyLabPage.includes('StrategyLineageInspector'), 'Strategy Lab should preserve production lineage in a compact inspector')
 assert(!strategyLabPage.includes('Action Lanes'), 'Strategy Lab should remove unrelated experiment action lanes')
 assert(!strategyLabPage.includes('Registry / Evidence Inspector'), 'Strategy Lab should remove unrelated registry inspector UI')
 assert(!strategyLabPage.includes('Pre-trade Spec + Dry-run'), 'Strategy Lab should remove pre-trade spec and dry-run duplication')

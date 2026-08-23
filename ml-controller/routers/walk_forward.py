@@ -754,6 +754,7 @@ def _materialize_completed_oof_release_aliases(
     written: list[str] = []
     passed_models: list[str] = []
     failed_models: list[str] = []
+    selection_blocked_models: list[str] = []
     errors: list[str] = []
     for model_name in eligible_models:
         source_row = source_by_model.get(model_name)
@@ -818,23 +819,33 @@ def _materialize_completed_oof_release_aliases(
         offline["registration"] = registration
         offline["pbo"] = model_release_validation["pbo"]
         offline["validation_packet"] = model_release_validation
-        release_passed = model_release_validation.get("decision") == "PASS"
+        base_authority = dict(model_release_validation.get("base_artifact_authority") or {})
+        selection_authority = dict(model_release_validation.get("selection_authority") or {})
+        base_release_passed = (
+            model_release_validation.get("decision") == "PASS"
+            and base_authority.get("decision") == "PASS"
+        )
+        selection_passed = selection_authority.get("decision") == "PASS"
         row["candidate_type"] = "oof_full_fit_release"
-        row["state"] = row.get("state") if release_passed else "offline_failed"
-        row["offline_gate_status"] = "passed" if release_passed else "failed"
+        row["state"] = row.get("state") if base_release_passed else "offline_failed"
+        row["offline_gate_status"] = "passed" if base_release_passed else "failed"
         row["offline_gate_decision"] = (
-            row.get("offline_gate_decision") if release_passed else "FAIL"
+            row.get("offline_gate_decision") if base_release_passed else "FAIL"
         )
         row["offline_gate_failed_gates"] = json.dumps(
-            [] if release_passed else model_release_validation.get("failed_gates") or []
+            [] if base_release_passed else model_release_validation.get("failed_gates") or []
         )
         row["artifact_id"] = f"{model_name}:{row.get('version')}:oof_full_fit_release"
         row["offline_evidence_json"] = json.dumps(offline, sort_keys=True)
-        row["promotion_decision"] = "not_evaluated"
+        row["promotion_decision"] = (
+            "not_evaluated" if selection_passed else "cohort_selection_blocked"
+        )
         row["approval_state"] = "not_required"
         upsert_artifact_record(row)
         written.append(row["artifact_id"])
-        (passed_models if release_passed else failed_models).append(model_name)
+        (passed_models if base_release_passed else failed_models).append(model_name)
+        if base_release_passed and not selection_passed:
+            selection_blocked_models.append(model_name)
     if errors or len(written) != len(eligible):
         raise RuntimeError(
             "oof_release_alias_incomplete:"
@@ -847,6 +858,7 @@ def _materialize_completed_oof_release_aliases(
         "artifact_ids": written,
         "passed_models": sorted(passed_models),
         "failed_models": sorted(failed_models),
+        "selection_blocked_models": sorted(selection_blocked_models),
         "cohort_id": cohort_id,
         "manifest_checksum": checksum,
     }

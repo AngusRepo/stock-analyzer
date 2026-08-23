@@ -871,12 +871,24 @@ def test_completed_oof_release_alias_preserves_immutable_lineage(monkeypatch):
         eligible_models=["XGBoost"],
         release_validation_by_model={
             "XGBoost": {
-                "schema_version": "active8-oof-base-ranker-release-validation-v2",
+                "schema_version": "active8-oof-base-ranker-release-validation-v3",
                 "validation_role": "base_ranker",
                 "decision": "PASS",
+                "failed_gates": [],
+                "base_artifact_authority": {
+                    "decision": "PASS",
+                    "owner": "individual_outer_purged_oof",
+                    "effect": "base_artifact_release_only",
+                },
+                "selection_authority": {
+                    "scope": "cohort_model_selection_process",
+                    "method": "label_interval_purged_cscv_rank_logit",
+                    "effect": "automatic_champion_selection_and_ensemble_weighting_only",
+                    "decision": "PASS",
+                },
                 "pbo": {
                     "scope": "cohort_model_selection_process",
-                    "method": "cscv_rank_logit",
+                    "method": "label_interval_purged_cscv_rank_logit",
                     "go_live_verdict": "PASS",
                     "pbo": 0.2,
                     "max_pbo": 0.3,
@@ -889,6 +901,7 @@ def test_completed_oof_release_alias_preserves_immutable_lineage(monkeypatch):
     assert result["written"] == 1
     assert result["passed_models"] == ["XGBoost"]
     assert result["failed_models"] == []
+    assert result["selection_blocked_models"] == []
     row = written[0]
     assert row["candidate_type"] == "oof_full_fit_release"
     assert row["artifact_id"] == "XGBoost:vOOF:oof_full_fit_release"
@@ -905,7 +918,7 @@ def test_completed_oof_release_alias_preserves_immutable_lineage(monkeypatch):
 
 
 
-def test_completed_oof_release_alias_marks_candidate_pbo_failure(monkeypatch):
+def test_completed_oof_release_alias_keeps_valid_base_when_selection_pbo_fails(monkeypatch):
     import json
     from routers import walk_forward
     from services import model_artifact_registry as registry
@@ -972,14 +985,26 @@ def test_completed_oof_release_alias_marks_candidate_pbo_failure(monkeypatch):
         eligible_models=["DLinear"],
         release_validation_by_model={
             "DLinear": {
-                "schema_version": "active8-oof-base-ranker-release-validation-v2",
+                "schema_version": "active8-oof-base-ranker-release-validation-v3",
                 "validation_role": "base_ranker",
-                "decision": "FAIL",
-                "failed_gates": ["cohort_model_selection_pbo"],
+                "decision": "PASS",
+                "failed_gates": [],
+                "base_artifact_authority": {
+                    "decision": "PASS",
+                    "owner": "individual_outer_purged_oof",
+                    "effect": "base_artifact_release_only",
+                },
+                "selection_authority": {
+                    "scope": "cohort_model_selection_process",
+                    "method": "label_interval_purged_cscv_rank_logit",
+                    "effect": "automatic_champion_selection_and_ensemble_weighting_only",
+                    "decision": "FAIL",
+                    "failed_gates": ["cohort_model_selection_pbo"],
+                },
                 "pbo": {
                     "scope": "cohort_model_selection_process",
-                    "method": "cscv_rank_logit",
-                    "go_live_verdict": "PASS",
+                    "method": "label_interval_purged_cscv_rank_logit",
+                    "go_live_verdict": "FAIL",
                     "pbo": 0.25,
                     "max_pbo": 0.22,
                 },
@@ -988,13 +1013,13 @@ def test_completed_oof_release_alias_marks_candidate_pbo_failure(monkeypatch):
     )
 
     assert result["written"] == 1
-    assert result["passed_models"] == []
-    assert result["failed_models"] == ["DLinear"]
-    assert written[0]["state"] == "offline_failed"
-    assert written[0]["offline_gate_decision"] == "FAIL"
-    assert json.loads(written[0]["offline_gate_failed_gates"]) == [
-        "cohort_model_selection_pbo"
-    ]
+    assert result["passed_models"] == ["DLinear"]
+    assert result["failed_models"] == []
+    assert result["selection_blocked_models"] == ["DLinear"]
+    assert written[0]["state"] == "offline_strong_pass"
+    assert written[0]["offline_gate_decision"] == "PASS"
+    assert json.loads(written[0]["offline_gate_failed_gates"]) == []
+    assert written[0]["promotion_decision"] == "cohort_selection_blocked"
 
 
 def test_oof_lifecycle_uses_latest_prep_instead_of_stale_parent_contract():

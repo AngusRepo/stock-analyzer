@@ -53,6 +53,7 @@ function statusLabel(status: string): string {
 }
 
 type StrategyHealthBucket = 'healthy' | 'evidence_repair' | 'accumulating' | 'performance_cooldown'
+type StrategyViewFilter = 'attention' | 'active' | 'learning' | 'all'
 
 function strategyHealthBucket(row: LearningRow, gate?: StrategyPromotionGate): StrategyHealthBucket {
   if (gate?.allocation_eligible === true) return 'healthy'
@@ -494,6 +495,151 @@ function StrategyLedgerGroup({
     </section>
   )
 }
+
+function StrategyQueue({
+  rows,
+  gateById,
+  policyWeights,
+  selectedKey,
+  filter,
+  onFilterChange,
+  onSelect,
+}: {
+  rows: LearningRow[]
+  gateById: Map<string, StrategyPromotionGate>
+  policyWeights: Record<string, number>
+  selectedKey: string | null
+  filter: StrategyViewFilter
+  onFilterChange: (filter: StrategyViewFilter) => void
+  onSelect: (key: string) => void
+}) {
+  const filters: Array<{ key: StrategyViewFilter; label: string }> = [
+    { key: 'attention', label: '需處理' },
+    { key: 'active', label: '正式' },
+    { key: 'learning', label: '學習中' },
+    { key: 'all', label: '全部' },
+  ]
+  return (
+    <aside className="overflow-hidden rounded-2xl border border-slate-800 bg-slate-950/70">
+      <header className="border-b border-slate-800 p-3">
+        <div className="flex items-center justify-between gap-2">
+          <div>
+            <h2 className="text-sm font-semibold text-slate-100">策略佇列</h2>
+            <p className="mt-0.5 text-[11px] text-slate-500">先找異常，再查看單一策略。</p>
+          </div>
+          <Badge variant="outline" className="border-slate-700 text-slate-300">{rows.length}</Badge>
+        </div>
+        <div className="mt-3 grid grid-cols-2 gap-1">
+          {filters.map((item) => (
+            <button
+              key={item.key}
+              type="button"
+              onClick={() => onFilterChange(item.key)}
+              className={[
+                'rounded-md border px-2 py-1.5 text-[11px] transition',
+                filter === item.key
+                  ? 'border-cyan-400/35 bg-cyan-400/10 text-cyan-100'
+                  : 'border-slate-800 bg-slate-900/40 text-slate-500 hover:text-slate-300',
+              ].join(' ')}
+            >
+              {item.label}
+            </button>
+          ))}
+        </div>
+      </header>
+      <div className="max-h-[760px] divide-y divide-slate-900 overflow-y-auto">
+        {rows.map((row) => {
+          const key = [row.id, row.version].join(':')
+          const gate = gateById.get(key)
+          const health = strategyHealthBucket(row, gate)
+          const weight = Number(policyWeights[row.id] ?? 0)
+          const selected = selectedKey === key
+          return (
+            <button
+              key={key}
+              type="button"
+              onClick={() => onSelect(key)}
+              className={[
+                'w-full px-3 py-3 text-left transition',
+                selected ? 'bg-cyan-400/[0.08]' : 'bg-transparent hover:bg-slate-900/55',
+              ].join(' ')}
+            >
+              <div className="flex items-start justify-between gap-2">
+                <span className={['line-clamp-2 text-xs font-semibold', selected ? 'text-cyan-100' : 'text-slate-200'].join(' ')}>{row.name}</span>
+                <span className="shrink-0 font-mono text-[10px] text-slate-500">{Number.isFinite(weight) && weight > 0 ? pct(weight) : '0%'}</span>
+              </div>
+              <div className="mt-1.5 flex flex-wrap gap-1">
+                <span className={['rounded border px-1.5 py-0.5 text-[10px]', statusClass(row.status)].join(' ')}>{statusLabel(row.status)}</span>
+                <span className={['rounded border px-1.5 py-0.5 text-[10px]', statusClass(health === 'healthy' ? 'active' : health === 'evidence_repair' ? 'reward_join_missing' : 'not_ready')].join(' ')}>{strategyHealthLabel(health)}</span>
+              </div>
+              <div className="mt-2 flex items-center justify-between gap-2 text-[10px] text-slate-600">
+                <span>{row.learning.rolling_reward_dates} mature dates</span>
+                <span>{gate?.missing_evidence.length ?? 0} gaps</span>
+              </div>
+            </button>
+          )
+        })}
+        {!rows.length && <p className="px-3 py-8 text-center text-xs text-slate-500">此篩選沒有策略。</p>}
+      </div>
+    </aside>
+  )
+}
+
+function StrategyLineageInspector({
+  row,
+  gate,
+  profile,
+  snapshotDate,
+  policyWeight,
+  lanes,
+}: {
+  row: LearningRow | null
+  gate: StrategyPromotionGate | undefined
+  profile: StrategyEvidenceProfile | undefined
+  snapshotDate: string | null
+  policyWeight: number | null
+  lanes: StrategyEvidenceProfilesResponse['lanes'] | null
+}) {
+  if (!row) return <aside className="rounded-2xl border border-slate-800 bg-slate-950/70 p-4 text-xs text-slate-500">請先從策略佇列選擇一個策略。</aside>
+  const missing = gate?.missing_evidence ?? []
+  const executionEligible = gate?.allocation_eligible === true && Number(policyWeight) > 0
+  return (
+    <aside className="space-y-3 xl:sticky xl:top-4 xl:self-start">
+      <section className="rounded-2xl border border-slate-800 bg-slate-950/70 p-4">
+        <div className="flex items-center justify-between gap-2">
+          <h2 className="text-sm font-semibold text-slate-100">Lineage inspector</h2>
+          <Badge variant="outline" className={statusClass(executionEligible ? 'active' : 'not_ready')}>{executionEligible ? '可進待買' : '持續學習'}</Badge>
+        </div>
+        <dl className="mt-3 space-y-2 text-xs">
+          <div className="flex justify-between gap-3"><dt className="text-slate-500">Snapshot</dt><dd className="font-mono text-slate-300">{snapshotDate ?? '未取得'}</dd></div>
+          <div className="flex justify-between gap-3"><dt className="text-slate-500">Strategy</dt><dd className="min-w-0 truncate font-mono text-slate-300">{row.id}:{row.version}</dd></div>
+          <div className="flex justify-between gap-3"><dt className="text-slate-500">Reward owner</dt><dd className="min-w-0 truncate font-mono text-slate-300">{row.learning.reward_owner}</dd></div>
+          <div className="flex justify-between gap-3"><dt className="text-slate-500">Latest decision</dt><dd className="font-mono text-slate-300">{row.learning.latest_decision_date ?? '尚無'}</dd></div>
+          <div className="flex justify-between gap-3"><dt className="text-slate-500">Latest reward</dt><dd className="font-mono text-slate-300">{row.learning.latest_reward_date ?? '尚無'}</dd></div>
+          <div className="flex justify-between gap-3"><dt className="text-slate-500">Gate share</dt><dd className="font-mono text-slate-300">{policyWeight == null ? '未取得' : pct(policyWeight)}</dd></div>
+          <div className="flex justify-between gap-3"><dt className="text-slate-500">Evidence authority</dt><dd className="text-right text-slate-300">{profile?.production_authority ?? 'profile missing'}</dd></div>
+        </dl>
+      </section>
+      <section className="rounded-2xl border border-slate-800 bg-slate-950/70 p-4">
+        <h3 className="text-xs font-semibold text-slate-200">正式權責</h3>
+        <dl className="mt-3 space-y-2 text-[11px]">
+          <div className="flex justify-between gap-3"><dt className="text-slate-500">Production firewall</dt><dd className={lanes?.formal.production_effect ? 'text-emerald-300' : 'text-slate-500'}>{lanes?.formal.production_effect ? 'effective' : 'unavailable'}</dd></div>
+          <div className="flex justify-between gap-3"><dt className="text-slate-500">Shadow A</dt><dd className="text-cyan-300">{lanes?.threshold_route_shadow.mature_dates ?? 0} / {lanes?.threshold_route_shadow.required_mature_dates ?? 11} dates</dd></div>
+          <div className="flex justify-between gap-3"><dt className="text-slate-500">Multi-horizon owner</dt><dd className={lanes?.multi_horizon_shadow.production_effect ? 'text-violet-300' : 'text-slate-500'}>{lanes?.multi_horizon_shadow.production_effect ? 'formal owner' : 'pending'}</dd></div>
+        </dl>
+      </section>
+      <section className="rounded-2xl border border-slate-800 bg-slate-950/70 p-4">
+        <h3 className="text-xs font-semibold text-slate-200">目前 gate 結果</h3>
+        <div className="mt-2 flex flex-wrap gap-1.5">
+          {(missing.length ? missing : ['全部待買門檻已通過']).slice(0, 6).map((reason) => (
+            <span key={reason} className={['rounded-md border px-2 py-1 text-[10px]', missing.length ? 'border-amber-400/20 bg-amber-400/[0.06] text-amber-200' : 'border-emerald-400/20 bg-emerald-400/[0.06] text-emerald-200'].join(' ')}>{gateReasonLabel(reason)}</span>
+          ))}
+        </div>
+      </section>
+    </aside>
+  )
+}
+
 export default function StrategyLearningPage() {
   const [learning, setLearning] = useState<StrategyLearningResponse | null>(null)
   const [profiles, setProfiles] = useState<StrategyEvidenceProfile[]>([])
@@ -505,6 +651,8 @@ export default function StrategyLearningPage() {
   const [error, setError] = useState<string | null>(null)
   const [notice, setNotice] = useState<string | null>(null)
   const [result, setResult] = useState<string | null>(null)
+  const [viewFilter, setViewFilter] = useState<StrategyViewFilter>('attention')
+  const [selectedStrategyKey, setSelectedStrategyKey] = useState<string | null>(null)
 
   const load = useCallback(async () => {
     try {
@@ -555,9 +703,37 @@ export default function StrategyLearningPage() {
 
   const visibleRows = useMemo(() => rows.filter((row) => row.status !== 'retired'), [rows])
   const activeRows = useMemo(() => visibleRows.filter((row) => row.status === 'active'), [visibleRows])
-  const learningRows = useMemo(() => visibleRows.filter((row) => row.status === 'research' || row.status === 'shadow' || row.status === 'candidate'), [visibleRows])
   const gateById = useMemo(() => new Map((learning?.promotion_gate ?? []).map((gate) => [`${gate.strategy_id}:${gate.strategy_version}`, gate])), [learning])
   const profileById = useMemo(() => new Map(profiles.map((profile) => [`${profile.strategy_id}:${profile.strategy_version}`, profile])), [profiles])
+  const orderedRows = useMemo(() => {
+    const priority: Record<StrategyHealthBucket, number> = {
+      evidence_repair: 0,
+      performance_cooldown: 1,
+      accumulating: 2,
+      healthy: 3,
+    }
+    return [...visibleRows].sort((left, right) => {
+      const leftGate = gateById.get([left.id, left.version].join(':'))
+      const rightGate = gateById.get([right.id, right.version].join(':'))
+      return priority[strategyHealthBucket(left, leftGate)] - priority[strategyHealthBucket(right, rightGate)]
+        || left.name.localeCompare(right.name, 'zh-Hant')
+    })
+  }, [visibleRows, gateById])
+  const queueRows = useMemo(() => orderedRows.filter((row) => {
+    const gate = gateById.get([row.id, row.version].join(':'))
+    if (viewFilter === 'active') return row.status === 'active'
+    if (viewFilter === 'learning') return row.status !== 'active'
+    if (viewFilter === 'attention') return strategyHealthBucket(row, gate) !== 'healthy'
+    return true
+  }), [orderedRows, gateById, viewFilter])
+  useEffect(() => {
+    if (!queueRows.some((row) => [row.id, row.version].join(':') === selectedStrategyKey)) {
+      setSelectedStrategyKey(queueRows[0] ? [queueRows[0].id, queueRows[0].version].join(':') : null)
+    }
+  }, [queueRows, selectedStrategyKey])
+  const selectedRow = useMemo(() => queueRows.find((row) => [row.id, row.version].join(':') === selectedStrategyKey) ?? null, [queueRows, selectedStrategyKey])
+  const selectedGate = selectedRow ? gateById.get([selectedRow.id, selectedRow.version].join(':')) : undefined
+  const selectedProfile = selectedRow ? profileById.get([selectedRow.id, selectedRow.version].join(':')) : undefined
   const activeHealthCounts = useMemo(() => {
     const counts: Record<StrategyHealthBucket, number> = {
       healthy: 0,
@@ -579,6 +755,7 @@ export default function StrategyLearningPage() {
     )).length
   }, [learning])
   const policy = learning?.policy_state_preview
+  const selectedPolicyWeight = selectedRow && Object.prototype.hasOwnProperty.call(policy?.strategy_weights ?? {}, selectedRow.id) ? Number(policy?.strategy_weights[selectedRow.id]) : null
   const positiveGateWeights = Object.entries(policy?.strategy_weights ?? {})
     .filter(([, weight]) => Number.isFinite(Number(weight)) && Number(weight) > 0)
     .sort((left, right) => Number(right[1]) - Number(left[1]))
@@ -618,14 +795,15 @@ export default function StrategyLearningPage() {
           <div className="flex items-center gap-2 rounded-2xl border border-slate-800 bg-slate-950/70 p-5 text-sm text-slate-400"><Loader2 className="h-4 w-4 animate-spin" /> Loading reward ledger...</div>
         ) : (
           <>
-            <section className="grid gap-2 sm:grid-cols-2 xl:grid-cols-5">
-              <div className="rounded-xl border border-slate-800 bg-slate-950/70 p-4"><div className="text-xs text-slate-500">正式參與選股的策略</div><div className="mt-2 font-mono text-2xl text-emerald-200">{activeRows.length}</div><div className="mt-1 text-xs text-slate-500">代表 registry=active，不代表每個都能進待買</div></div>
+            <section className="grid gap-2 sm:grid-cols-2 xl:grid-cols-4">
+              <div className="rounded-xl border border-slate-800 bg-slate-950/70 p-4"><div className="text-xs text-slate-500">正式參與選股的策略 / 持續評估</div><div className="mt-2 font-mono text-2xl text-emerald-200">{activeRows.length} <span className="text-sm text-slate-600">/ {visibleRows.length}</span></div><div className="mt-1 text-xs text-slate-500">待買權重 0% 仍持續學習、選股與累積證據</div></div>
               <div className="rounded-xl border border-emerald-400/20 bg-emerald-400/[0.06] p-4"><div className="text-xs text-slate-400">目前可讓推薦進待買</div><div className="mt-2 font-mono text-2xl text-emerald-100">{learning ? executionEligibleCount : '-'}</div><div className="mt-1 text-xs text-slate-500">硬風險／資料缺漏維持 0；純績效降溫可進 bounded diversity sleeve</div></div>
-              <div className="rounded-xl border border-slate-800 bg-slate-950/70 p-4"><div className="text-xs text-slate-500">持續接受評估的策略</div><div className="mt-2 font-mono text-2xl text-cyan-200">{visibleRows.length}</div><div className="mt-1 text-xs text-slate-500">共用同一條推薦／評估資料流；待買權重 0% 仍持續學習</div></div>
               <div className="rounded-xl border border-slate-800 bg-slate-950/70 p-4"><div className="text-xs text-slate-500">升級／續留勝率門檻</div><div className="mt-2 font-mono text-xl text-slate-100">52% / 48%</div><div className="mt-1 text-xs text-slate-500">候選策略至少 52%；現任策略至少 48%</div></div>
               <div className="rounded-xl border border-slate-800 bg-slate-950/70 p-4"><div className="text-xs text-slate-500">待買政策預覽</div><div className="mt-2 flex items-center gap-2 font-mono text-lg text-slate-100"><ShieldCheck className="h-4 w-4" /> {statusLabel(policy?.status ?? 'unavailable')}</div><div className="mt-1 text-xs text-slate-500">{policy?.evidence.production_effect ? '會影響待買資格' : '只做影子觀察'}；此頁只讀、不會直接改權重</div></div>
             </section>
 
+            <details className="rounded-2xl border border-slate-800 bg-slate-950/70 p-3">
+              <summary className="cursor-pointer text-sm font-semibold text-slate-200">治理與權責詳情：Production firewall／Shadow A／Multi-horizon／Atomic V7</summary>
             <section className="grid gap-3 lg:grid-cols-3">
               <article className="rounded-2xl border border-emerald-400/25 bg-emerald-400/[0.06] p-4">
                 <div className="flex items-center justify-between gap-2"><h2 className="font-semibold text-emerald-100">正式：Production contribution firewall</h2><Badge variant="outline" className={statusClass(strategyLanes?.formal.status ?? 'unavailable')}>{strategyLanes?.formal.production_effect ? '有 production 權限' : '權限資料未取得'}</Badge></div>
@@ -644,6 +822,7 @@ export default function StrategyLearningPage() {
             </section>
 
             <AtomicReplacementSummary replacementGate={learning?.replacement_gate ?? null} />
+            </details>
 
             <details className="rounded-2xl border border-slate-700/80 bg-slate-950/70 px-4 py-3 text-sm text-slate-300">
               <summary className="cursor-pointer font-semibold text-slate-100">名詞白話說明（點開查看）</summary>
@@ -668,7 +847,8 @@ export default function StrategyLearningPage() {
               </section>
             ) : null}
 
-            <section className="rounded-2xl border border-slate-700/80 bg-slate-950/70 p-4">
+            <details className="rounded-2xl border border-slate-700/80 bg-slate-950/70 p-4">
+              <summary className="cursor-pointer text-sm font-semibold text-slate-200">正式策略健康分流詳情</summary>
               <div className="flex flex-wrap items-start justify-between gap-3">
                 <div>
                   <h2 className="font-semibold text-slate-100">正式策略健康分流</h2>
@@ -686,34 +866,45 @@ export default function StrategyLearningPage() {
                 <p><span className="font-semibold text-cyan-200">證據累積：</span>維持選股與評估，等 T+5、樣本數與成熟交易日自然增加，不用人工放行。</p>
                 <p><span className="font-semibold text-amber-200">績效降溫：</span>勝率、扣成本報酬、回撤或 LCB90 真的不合格；保留研究資料，但待買權重維持 0，交由一進一出替換流程處理。</p>
               </div>
-            </section>
+            </details>
 
             {error && <div className="rounded-xl border border-rose-400/25 bg-rose-400/[0.06] p-4 text-sm text-rose-200">{error}</div>}
             {notice && <div className="rounded-xl border border-amber-400/25 bg-amber-400/[0.06] p-4 text-sm text-amber-100">{notice}</div>}
             {result && <div className="rounded-xl border border-emerald-400/25 bg-emerald-400/[0.06] p-4 text-sm text-emerald-200">{result}</div>}
 
-            <div className="grid gap-4 xl:grid-cols-2 xl:items-start">
-              <StrategyLedgerGroup
-                title="正式選股策略"
-                description="Registry 狀態為 active 的選股參與者。待買相對權重是另一份執行資格政策；0% 不會停止推薦、標籤或報酬證據累積。"
-                rows={activeRows}
+            <section className="grid gap-4 xl:grid-cols-[260px_minmax(0,1fr)_300px] xl:items-start">
+              <StrategyQueue
+                rows={queueRows}
                 gateById={gateById}
-                profileById={profileById}
                 policyWeights={policy?.strategy_weights ?? {}}
-                requestedDate={learning?.date ?? null}
-                empty="目前沒有 active strategy reward rows。"
+                selectedKey={selectedStrategyKey}
+                filter={viewFilter}
+                onFilterChange={setViewFilter}
+                onSelect={setSelectedStrategyKey}
               />
-              <StrategyLedgerGroup
-                title="研究、影子與候選策略"
-                description="研究、影子與候選策略跟正式策略共用同一條推薦／評估資料流；52% 勝率只管候選升級，不阻斷證據累積。"
-                rows={learningRows}
-                gateById={gateById}
-                profileById={profileById}
-                policyWeights={policy?.strategy_weights ?? {}}
-                requestedDate={learning?.date ?? null}
-                empty="目前沒有 learning、shadow 或 candidate strategy rows。"
+              <div className="min-w-0">
+                {selectedRow ? (
+                  <StrategyLedgerGroup
+                    title="策略工作區"
+                    description={selectedRow.status === 'active' ? '正式策略：查看此策略自己的續留門檻、multi-horizon evidence 與待買資格。' : '學習策略：查看此策略自己的升級門檻與 comparison-only evidence。'}
+                    rows={[selectedRow]}
+                    gateById={gateById}
+                    profileById={profileById}
+                    policyWeights={policy?.strategy_weights ?? {}}
+                    requestedDate={learning?.date ?? null}
+                    empty="目前篩選沒有可顯示的策略。"
+                  />
+                ) : <div className="rounded-2xl border border-slate-800 bg-slate-950/70 p-6 text-sm text-slate-500">目前篩選沒有可顯示的策略。</div>}
+              </div>
+              <StrategyLineageInspector
+                row={selectedRow}
+                gate={selectedGate}
+                profile={selectedProfile}
+                snapshotDate={learning?.date ?? null}
+                policyWeight={selectedPolicyWeight}
+                lanes={strategyLanes}
               />
-            </div>
+            </section>
 
             <footer className="flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-slate-800 bg-slate-950/70 p-4">
               <p className="max-w-2xl text-xs leading-5 text-slate-500">Decision log → verify/paper outcome → reward ledger → allocation policy。選股與 evaluation 不受 allocation=0 影響；所有 pending-buy 入口都必須取得明確 execution eligibility。</p>

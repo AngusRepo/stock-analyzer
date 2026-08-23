@@ -13,6 +13,7 @@ from typing import Any, Callable
 from services.d1_domain_client import client_proxy_for_domain
 
 LEARNING_D1_CLIENT = client_proxy_for_domain("learning")
+OPS_D1_CLIENT = client_proxy_for_domain("ops")
 
 
 ARCHIVE_SCHEMA_VERSION = "active8-oof-hot-archive-v1"
@@ -41,6 +42,7 @@ def load_oof_archive_preflight(
     cohort_id: str,
     *,
     query_fn: Callable[..., list[dict[str, Any]]] = LEARNING_D1_CLIENT.query,
+    reference_query_fn: Callable[..., list[dict[str, Any]]] = OPS_D1_CLIENT.query,
 ) -> dict[str, Any]:
     row = _query_one(
         query_fn,
@@ -50,12 +52,7 @@ def load_oof_archive_preflight(
           (SELECT COUNT(*) FROM allocator_ev_oof_snapshots s WHERE s.cohort_id=c.cohort_id) snapshot_rows,
           (SELECT COUNT(*) FROM l4_oof_predictions l WHERE l.cohort_id=c.cohort_id) l4_rows,
           (SELECT COUNT(*) FROM active8_oof_cohorts newer
-             WHERE newer.status='ready' AND newer.created_at>c.created_at) newer_ready_cohorts,
-          (SELECT COUNT(*)
-             FROM model_artifact_registry mar
-             JOIN artifact_hard_references ref
-               ON ref.artifact_id=mar.artifact_id AND ref.active=1
-            WHERE mar.training_run_id='active8_oof:' || c.cohort_id) hard_reference_count
+             WHERE newer.status='ready' AND newer.created_at>c.created_at) newer_ready_cohorts
         FROM active8_oof_cohorts c
         WHERE c.cohort_id=?
         """,
@@ -63,6 +60,26 @@ def load_oof_archive_preflight(
     )
     if not row:
         raise ValueError("active8_oof_archive_cohort_missing")
+    artifacts = query_fn(
+        "SELECT artifact_id FROM model_artifact_registry "
+        "WHERE training_run_id='active8_oof:' || ? ORDER BY artifact_id",
+        [cohort_id],
+    )
+    artifact_ids = sorted({
+        str(item.get("artifact_id") or "").strip()
+        for item in artifacts
+        if str(item.get("artifact_id") or "").strip()
+    })
+    hard_reference_count = 0
+    if artifact_ids:
+        reference_row = _query_one(
+            reference_query_fn,
+            "SELECT COUNT(*) hard_reference_count FROM artifact_hard_references "
+            "WHERE active=1 AND artifact_id IN (SELECT value FROM json_each(?))",
+            [json.dumps(artifact_ids, separators=(",", ":"))],
+        )
+        hard_reference_count = int(reference_row.get("hard_reference_count") or 0)
+    row["hard_reference_count"] = hard_reference_count
     row_counts = {
         "active8_oof_predictions": int(row.get("prediction_rows") or 0),
         "allocator_ev_oof_snapshots": int(row.get("snapshot_rows") or 0),
@@ -273,11 +290,16 @@ def archive_superseded_oof_cohort(
     delete_hot: bool,
     query_fn: Callable[..., list[dict[str, Any]]] = LEARNING_D1_CLIENT.query,
     execute_fn: Callable[..., dict[str, Any]] = LEARNING_D1_CLIENT.execute,
+    reference_query_fn: Callable[..., list[dict[str, Any]]] = OPS_D1_CLIENT.query,
     batch_fn: Callable[..., dict[str, Any]] = LEARNING_D1_CLIENT.batch_execute,
     chunk_size: int = 2000,
     delete_chunk_size: int = 5000,
 ) -> dict[str, Any]:
-    preflight = load_oof_archive_preflight(cohort_id, query_fn=query_fn)
+    preflight = load_oof_archive_preflight(
+        cohort_id,
+        query_fn=query_fn,
+        reference_query_fn=reference_query_fn,
+    )
     if not preflight["eligible"]:
         raise RuntimeError(f"active8_oof_archive_blocked:{','.join(preflight['blockers'])}")
     manifest_checksum = str(preflight.get("artifact_manifest_checksum") or "")
@@ -337,7 +359,11 @@ def archive_superseded_oof_cohort(
     )
     deleted_rows: dict[str, int] = {}
     if delete_hot:
-        recheck = load_oof_archive_preflight(cohort_id, query_fn=query_fn)
+        recheck = load_oof_archive_preflight(
+            cohort_id,
+            query_fn=query_fn,
+            reference_query_fn=reference_query_fn,
+        )
         if int(recheck.get("hard_reference_count") or 0) != 0:
             raise RuntimeError("active8_oof_archive_hard_reference_changed")
         for table in ARCHIVE_TABLES:

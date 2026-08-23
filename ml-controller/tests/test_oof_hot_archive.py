@@ -9,6 +9,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from services.oof_hot_archive import (  # noqa: E402
     ARCHIVE_TABLES,
     LEARNING_D1_CLIENT,
+    OPS_D1_CLIENT,
     archive_superseded_oof_cohort,
     load_oof_archive_preflight,
 )
@@ -37,8 +38,10 @@ def test_archive_defaults_to_learning_domain_owner():
     query_default = inspect.signature(load_oof_archive_preflight).parameters["query_fn"].default
     archive_defaults = inspect.signature(archive_superseded_oof_cohort).parameters
     assert query_default.__self__ is LEARNING_D1_CLIENT
+    assert inspect.signature(load_oof_archive_preflight).parameters["reference_query_fn"].default.__self__ is OPS_D1_CLIENT
     assert archive_defaults["query_fn"].default.__self__ is LEARNING_D1_CLIENT
     assert archive_defaults["execute_fn"].default.__self__ is LEARNING_D1_CLIENT
+    assert archive_defaults["reference_query_fn"].default.__self__ is OPS_D1_CLIENT
     assert archive_defaults["batch_fn"].default.__self__ is LEARNING_D1_CLIENT
 
 class _Bucket:
@@ -51,16 +54,28 @@ class _Bucket:
 
 def test_archive_preflight_fails_closed_for_hard_reference():
     def query(sql, params, **kwargs):
-        return [{
-            "cohort_id": params[0],
-            "prediction_rows": 10,
-            "snapshot_rows": 2,
-            "l4_rows": 2,
-            "newer_ready_cohorts": 1,
-            "hard_reference_count": 1,
-        }]
+        if "FROM active8_oof_cohorts c" in sql:
+            return [{
+                "cohort_id": params[0],
+                "prediction_rows": 10,
+                "snapshot_rows": 2,
+                "l4_rows": 2,
+                "newer_ready_cohorts": 1,
+            }]
+        if "SELECT artifact_id FROM model_artifact_registry" in sql:
+            return [{"artifact_id": "artifact-1"}]
+        raise AssertionError(sql)
 
-    result = load_oof_archive_preflight("legacy", query_fn=query)
+    def query_references(sql, params, **kwargs):
+        assert "FROM artifact_hard_references" in sql
+        assert params == ['["artifact-1"]']
+        return [{"hard_reference_count": 1}]
+
+    result = load_oof_archive_preflight(
+        "legacy",
+        query_fn=query,
+        reference_query_fn=query_references,
+    )
     assert result["eligible"] is False
     assert "active_artifact_hard_reference" in result["blockers"]
 
@@ -95,6 +110,8 @@ def test_verified_archive_precedes_bounded_hot_delete():
                 "newer_ready_cohorts": 1,
                 "hard_reference_count": 0,
             }]
+        if "SELECT artifact_id FROM model_artifact_registry" in sql:
+            return []
         if "SELECT prediction_date FROM active8_oof_predictions" in sql:
             return [{"prediction_date": "2026-07-01"}, {"prediction_date": "2026-07-02"}]
         for table in ARCHIVE_TABLES:

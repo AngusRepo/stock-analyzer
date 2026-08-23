@@ -86,19 +86,27 @@ async function main(): Promise<void> {
       evaluable_matrix_rows: 20, matched_matrix_rows: 8, challenger_affinity_rows: 10,
       threshold_margin_rows: 8, challenger_route_rows: 10,
     },
+    {
+      signal_date: '2026-07-20', producer_run_id: 'run-20', reference_rows: 0,
+      mature_label_rows: 0, rejected_label_rows: 0,
+      matrix_rows: 0, expected_matrix_rows: 0,
+      evaluable_matrix_rows: 0, matched_matrix_rows: 0, challenger_affinity_rows: 0,
+      threshold_margin_rows: 0, challenger_route_rows: 0,
+    },
   ])
-
-  const rows = await auditStrategyRouteBackfillEligibility(db as unknown as D1Database, '2026-07-30', {
-    canonicalRunIds: { '2026-07-15': 'run-15' },
-  })
-  assert(db.sqls[0].includes('FROM json_each(?)'))
-  assert(db.sqls[0].includes('canonical_selection_label_rejections_v4'))
-  assert(!db.sqls[0].includes('canonical_run_heads'))
-  assert.equal(
-    db.statements[0].boundArgs.at(-1),
-    JSON.stringify({ '2026-07-15': 'run-15' }),
+  const canonicalRunIds = Object.fromEntries(
+    ['15', '16', '17', '18', '19', '20'].map((day) => [`2026-07-${day}`, `run-${day}`]),
   )
 
+  const rows = await auditStrategyRouteBackfillEligibility(db as unknown as D1Database, '2026-07-30', {
+    canonicalRunIds,
+  })
+  assert(db.sqls[0].includes('WITH canonical_heads AS'))
+  assert(db.sqls[0].includes('FROM json_each(?) h'))
+  assert(db.sqls[0].includes('LEFT JOIN selection_reference_snapshots_v1 r'))
+  assert(db.sqls[0].includes('canonical_selection_label_rejections_v4'))
+  assert(!db.sqls[0].includes('canonical_run_heads'))
+  assert.equal(db.statements[0].boundArgs[0], JSON.stringify(canonicalRunIds))
 
   assert.equal(rows[0].status, 'eligible')
   assert.deepEqual(rows[0].blockers, [])
@@ -113,7 +121,22 @@ async function main(): Promise<void> {
   assert(rows[3].blockers.includes('challenger_route_score_missing'))
   assert.equal(rows[4].status, 'eligible')
   assert.equal(rows[4].rejectedLabelRows, 1)
+  assert.equal(rows[5].status, 'unavailable')
+  assert.equal(rows[5].referenceRows, 0)
+  assert(rows[5].blockers.includes('canonical_reference_carrier_missing'))
+  assert(rows[5].blockers.includes('canonical_strategy_matrix_missing'))
+  assert(rows[5].blockers.includes('full_route_pit_inputs_not_persisted'))
+  const tombstoneSql = db.sqls.find((sql) => sql.includes('superseded_noncanonical_run')) ?? ''
+  assert(tombstoneSql.includes('AND NOT EXISTS ('))
+  assert(tombstoneSql.includes('CAST(h.value AS TEXT)=strategy_route_backfill_eligibility_v1.producer_run_id'))
   assert.equal(db.batches, 1)
+
+  const noAuthority = await auditStrategyRouteBackfillEligibility(
+    db as unknown as D1Database,
+    '2026-07-30',
+    { canonicalRunIds: {} },
+  )
+  assert.deepEqual(noAuthority, [], 'missing Ops authority must fail closed')
 
   const routeSource = readFileSync(new URL('../routes/adminWriteRoutes.ts', import.meta.url), 'utf8')
   assert.match(routeSource, /\/api\/admin\/strategy\/route-backfill\/eligibility/)

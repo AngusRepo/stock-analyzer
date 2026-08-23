@@ -5,7 +5,8 @@
  * 讓使用者看到每個階段選了哪些股票、為什麼選
  */
 import { useQuery } from '@tanstack/react-query'
-import { dashboardV4Api, recommendationsApi, paperApi } from '@/lib/api'
+import { dashboardV4Api, recommendationsApi, paperApi, type DailyPipelineView } from '@/lib/api'
+import { queryTtl } from '@/lib/queryPolicy'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
 import AppShell from '@/components/AppShell'
@@ -561,6 +562,48 @@ function PipelineColumn({
   )
 }
 
+function PipelineColumnLoading({ title, subtitle, className = '' }: { title: string; subtitle: string; className?: string }) {
+  return (
+    <PipelineColumn title={title} subtitle={subtitle} className={className}>
+      <div role="status" aria-label={`${title}載入中`} className="space-y-3">
+        {[1, 2, 3, 4].map((item) => (
+          <div key={item} className="h-20 animate-pulse rounded-xl border border-white/[0.06] bg-muted/30" />
+        ))}
+      </div>
+    </PipelineColumn>
+  )
+}
+
+function PipelineColumnError({
+  title,
+  message,
+  onRetry,
+  className = '',
+}: {
+  title: string
+  message: string
+  onRetry: () => void
+  className?: string
+}) {
+  return (
+    <PipelineColumn title={title} subtitle="資料讀取失敗；其他流程欄位仍可獨立顯示。" className={className}>
+      <div role="alert" className="rounded-xl border border-amber-400/25 bg-amber-400/[0.07] p-4 text-amber-100">
+        <div className="flex min-w-0 items-start gap-3">
+          <AlertTriangle className="mt-0.5 h-5 w-5 shrink-0 text-amber-300" />
+          <p className="min-w-0 break-words text-xs leading-5 text-amber-100/75">{message}</p>
+        </div>
+        <button
+          type="button"
+          onClick={onRetry}
+          className="mt-3 inline-flex items-center justify-center gap-2 rounded-md border border-amber-300/25 bg-amber-300/10 px-3 py-2 text-xs font-semibold text-amber-100 hover:bg-amber-300/15"
+        >
+          <RefreshCw className="h-4 w-4" />
+          重新載入
+        </button>
+      </div>
+    </PipelineColumn>
+  )
+}
 function FunnelSummaryColumn({ summary, fallbackCount }: { summary: any; fallbackCount: number }) {
   const layers = Array.isArray(summary?.layers) ? summary.layers : [
     {
@@ -608,7 +651,7 @@ function FunnelSummaryColumn({ summary, fallbackCount }: { summary: any; fallbac
   )
 }
 
-function StrategySummaryColumn({ summary, sectors }: { summary: any; sectors: ReturnType<typeof buildScreenerSectorSummary> }) {
+function StrategySummaryColumn({ summary, sectors }: { summary: any; sectors: Array<{ sector: string; count: number; symbols: string[]; themeText: string; rotationText: string }> }) {
   const strategies = Array.isArray(summary?.strategies) ? summary.strategies : []
   const canonicalMatrixReady = summary?.raw_matrix_status === 'canonical_v4'
   const pairwise = Array.isArray(summary?.pairwise) ? summary.pairwise : []
@@ -732,12 +775,16 @@ function ExecutionFlowColumn({
   sourceRecoDate,
   qfList,
   candidateCount,
+  qfError,
+  onRetryQuadrant,
 }: {
   pendingBuys: any[]
   pbDate: string
   sourceRecoDate?: string
   qfList: any[]
-  candidateCount: number
+  candidateCount: number | null
+  qfError?: Error | null
+  onRetryQuadrant?: () => void
 }) {
   const steps = [
     { label: '候選', value: countValue(candidateCount), detail: 'BUY signal allocation' },
@@ -775,6 +822,17 @@ function ExecutionFlowColumn({
         </div>
       )}
 
+      {qfError ? (
+        <div role="alert" className="rounded-lg border border-amber-400/20 bg-amber-400/[0.06] p-3 text-xs text-amber-100/80">
+          <p>RRG 象限資料暫時無法讀取：{qfError.message}</p>
+          {onRetryQuadrant ? (
+            <button type="button" onClick={onRetryQuadrant} className="mt-2 inline-flex items-center gap-1 font-semibold text-amber-200 hover:text-amber-100">
+              <RefreshCw className="h-3.5 w-3.5" />重新載入
+            </button>
+          ) : null}
+        </div>
+      ) : null}
+
       {qfList.length > 0 && (
         <div className="border-t border-border pt-3">
           <p className="mb-2 text-xs text-muted-foreground">RRG 象限過濾結果</p>
@@ -810,31 +868,45 @@ export default function PipelinePage() {
     isError: recIsError,
     error: recError,
     refetch: refetchRecommendations,
-  } = useQuery({
-    queryKey: ['recommendations', 'daily', today],
-    queryFn: () => recommendationsApi.daily(),
-    staleTime: 30_000,
-    refetchInterval: 60_000,
-    refetchOnWindowFocus: true,
+  } = useQuery<DailyPipelineView>({
+    queryKey: ['recommendations', 'daily', today, 'pipeline-view-v1'],
+    queryFn: ({ signal }) => recommendationsApi.daily<DailyPipelineView>(undefined, { view: 'pipeline', signal, timeoutMs: 15_000 }),
+    staleTime: queryTtl.dailyDecision,
+    refetchInterval: queryTtl.dailyDecision,
+    retry: 1,
   })
 
   // Stage 4: T2 Debate filtered pending buys
-  const { data: pbData, isLoading: pbLoading } = useQuery({
+  const {
+    data: pbData,
+    isLoading: pbLoading,
+    isError: pbIsError,
+    error: pbError,
+    refetch: refetchPendingBuys,
+  } = useQuery({
     queryKey: ['paper', 'pending-buys'],
-    queryFn: () => paperApi.pendingBuys(),
-    staleTime: 10 * 60_000,
+    queryFn: ({ signal }) => paperApi.pendingBuys({ signal, timeoutMs: 10_000 }),
+    staleTime: queryTtl.dashboard,
+    refetchInterval: queryTtl.dashboard,
+    retry: 1,
   })
 
   // Quadrant filter
-  const { data: qfData } = useQuery({
+  const {
+    data: qfData,
+    isError: qfIsError,
+    error: qfError,
+    refetch: refetchQuadrant,
+  } = useQuery({
     queryKey: ['paper', 'quadrant-filter'],
-    queryFn: () => paperApi.quadrantFilter(),
-    staleTime: 10 * 60_000,
+    queryFn: ({ signal }) => paperApi.quadrantFilter(undefined, { signal, timeoutMs: 8_000 }),
+    staleTime: queryTtl.dashboard,
+    refetchInterval: queryTtl.dashboard,
+    retry: 1,
   })
 
-  const allRecs = recommendationRowsFromPayload(recData)
   const recDate = recData?.date ?? today
-  const pendingBuys = pbData?.pendingBuys ?? []
+  const pendingBuys = Array.isArray(pbData?.pendingBuys) ? pbData.pendingBuys : []
 
   const {
     data: maturityData,
@@ -858,22 +930,20 @@ export default function PipelinePage() {
       : undefined
   const qfList = Array.isArray(qfData?.filters) ? qfData.filters : Array.isArray(qfData) ? qfData : []
 
-  // Stage breakdown
-  const screenerPassed = allRecs
-  const mlBuy = allRecs.filter(isBuySignalRecommendation)
-  const mlHold = allRecs.filter((r: any) => signalText(r) === 'HOLD')
-  const screenerSectorSummary = buildScreenerSectorSummary(screenerPassed)
-  const recommendationRows = [...mlBuy, ...mlHold]
-    .sort((a: any, b: any) => scoreFinalValue(b) - scoreFinalValue(a))
-  const funnelSummary = recData?.funnel_summary ?? {}
-  const l4BuyCount = Number.isFinite(Number(funnelSummary.buy_signal_count))
-    ? Number(funnelSummary.buy_signal_count)
-    : mlBuy.length
-  const publishedCount = Number.isFinite(Number(funnelSummary.recommendation_count ?? funnelSummary.final_count))
-    ? Number(funnelSummary.recommendation_count ?? funnelSummary.final_count)
-    : recommendationRows.length
-
-  const isLoading = recLoading || pbLoading
+  // Stage breakdown comes from the dedicated aggregate view; no recommendation-row payload is required.
+  const funnelSummary = recData?.funnel_summary ?? null
+  const pipelineCounts = recData?.counts ?? funnelSummary ?? {}
+  const screenerSectorSummary = Array.isArray(recData?.sector_summary) ? recData.sector_summary : []
+  const l4BuyCount = Number.isFinite(Number(pipelineCounts.buy_signal_count))
+    ? Number(pipelineCounts.buy_signal_count)
+    : null
+  const publishedCount = Number.isFinite(Number(pipelineCounts.recommendation_count ?? funnelSummary?.final_count))
+    ? Number(pipelineCounts.recommendation_count ?? funnelSummary?.final_count)
+    : null
+  const holdCount = Number.isFinite(Number(pipelineCounts.hold_count))
+    ? Number(pipelineCounts.hold_count)
+    : null
+  const pendingCount = pbLoading || pbIsError ? null : pendingBuys.length
 
   if (!isAuthenticated) {
     return (
@@ -904,50 +974,51 @@ export default function PipelinePage() {
           </div>
           <div className="hidden items-center gap-2 rounded-full border border-[#3a3125] bg-[#171714] px-3 py-2 text-xs text-[#b9b1a1] md:flex">
             <span className="sv-num">
-              L4 BUY {countValue(l4BuyCount)} · 推薦 {countValue(publishedCount)} · HOLD {mlHold.length} · 掛單 {pendingBuys.length}
+              L4 BUY {countValue(l4BuyCount)} · 推薦 {countValue(publishedCount)} · HOLD {countValue(holdCount)} · 掛單 {countValue(pendingCount)}
             </span>
           </div>
         </div>
 
-        {recIsError ? (
-          <div role="alert" className="rounded-xl border border-amber-400/25 bg-amber-400/[0.07] p-4 text-amber-100">
-            <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-              <div className="flex min-w-0 items-start gap-3">
-                <AlertTriangle className="mt-0.5 h-5 w-5 shrink-0 text-amber-300" />
-                <div className="min-w-0">
-                  <p className="font-semibold">選股推薦資料讀取失敗</p>
-                  <p className="mt-1 break-words text-xs leading-5 text-amber-100/70">
-                    {String((recError as Error | null)?.message ?? 'recommendations/daily API error')}
-                  </p>
-                </div>
-              </div>
-              <button
-                type="button"
-                onClick={() => refetchRecommendations()}
-                className="inline-flex shrink-0 items-center justify-center gap-2 rounded-md border border-amber-300/25 bg-amber-300/10 px-3 py-2 text-xs font-semibold text-amber-100 hover:bg-amber-300/15"
-              >
-                <RefreshCw className="h-4 w-4" />
-                重新載入
-              </button>
-            </div>
-          </div>
-        ) : isLoading ? (
-          <div className="space-y-3">
-            {[1, 2, 3, 4].map(i => <div key={i} className="h-24 rounded-xl bg-muted/40 animate-pulse" />)}
-          </div>
-        ) : (
-          <div className="grid gap-4 xl:grid-cols-4">
-            <FunnelSummaryColumn summary={recData?.funnel_summary} fallbackCount={recommendationRows.length} />
-            <StrategySummaryColumn summary={recData?.strategy_summary} sectors={screenerSectorSummary} />
+        <div className="grid gap-4 xl:grid-cols-4">
+          {recIsError ? (
+            <PipelineColumnError
+              title="每日推薦與策略彙總讀取失敗"
+              message={String((recError as Error | null)?.message ?? 'recommendations/daily?view=pipeline API error')}
+              onRetry={() => { void refetchRecommendations() }}
+              className="xl:col-span-3"
+            />
+          ) : recLoading ? (
+            <>
+              <PipelineColumnLoading title="L0-L4 通過 / 淘汰" subtitle="讀取正式 funnel aggregate" />
+              <PipelineColumnLoading title="Active strategy" subtitle="讀取正式策略與產業 aggregate" className="xl:col-span-2" />
+            </>
+          ) : (
+            <>
+              <FunnelSummaryColumn summary={funnelSummary} fallbackCount={publishedCount ?? 0} />
+              <StrategySummaryColumn summary={recData?.strategy_summary} sectors={screenerSectorSummary} />
+            </>
+          )}
+
+          {pbIsError ? (
+            <PipelineColumnError
+              title="辯論與模擬掛單讀取失敗"
+              message={String((pbError as Error | null)?.message ?? 'paper/pending-buys API error')}
+              onRetry={() => { void refetchPendingBuys() }}
+            />
+          ) : pbLoading ? (
+            <PipelineColumnLoading title="辯論與模擬掛單" subtitle="讀取 pending-buy execution audit" />
+          ) : (
             <ExecutionFlowColumn
               pendingBuys={pendingBuys}
               pbDate={pbDate}
               sourceRecoDate={pendingSourceRecoDate}
               qfList={qfList}
               candidateCount={l4BuyCount}
+              qfError={qfIsError ? qfError as Error : null}
+              onRetryQuadrant={() => { void refetchQuadrant() }}
             />
-          </div>
-        )}
+          )}
+        </div>
 
         <PipelineMaturityContribution
           data={maturityData}

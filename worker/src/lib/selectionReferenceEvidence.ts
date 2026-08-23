@@ -8,6 +8,7 @@ import {
   classifyStrategyEvaluability,
   type StrategyEvaluabilityStatus,
 } from './strategyEvaluability'
+import { sha256Text } from './datasetSnapshots'
 
 export const SELECTION_REFERENCE_CONTRACT_VERSION = 'selection-reference-snapshot-v3'
 export const STRATEGY_LABEL_MATRIX_VERSION = 'strategy-label-matrix-v4'
@@ -95,34 +96,6 @@ async function resolveReferenceStockIds(
     )
   }
   return stockIds
-}
-
-async function reconcileReferenceStockIds(
-  db: D1Database,
-  producerRunId: string,
-  references: SelectionReferenceRowV1[],
-  stockIds: Map<string, number>,
-): Promise<void> {
-  const existing = await db.prepare(`
-    SELECT symbol, stock_id
-      FROM selection_reference_snapshots_v1
-     WHERE producer_run_id=?
-  `).bind(producerRunId).all<{ symbol: string; stock_id: number | null }>()
-  for (const row of existing.results ?? []) {
-    const expected = stockIds.get(clean(row.symbol))
-    const actual = Number(row.stock_id)
-    if (expected && Number.isInteger(actual) && actual > 0 && actual !== expected) {
-      throw new Error(`selection_reference_stock_identity_conflict:${row.symbol}:${actual}/${expected}`)
-    }
-  }
-  const statements = references.map((row) => db.prepare(`
-    UPDATE selection_reference_snapshots_v1
-       SET stock_id=?
-     WHERE signal_date=? AND symbol=? AND producer_run_id=? AND stock_id IS NULL
-  `).bind(stockIds.get(clean(row.symbol)), row.signal_date, row.symbol, producerRunId))
-  for (let offset = 0; offset < statements.length; offset += 200) {
-    await db.batch(statements.slice(offset, offset + 200))
-  }
 }
 
 export interface StrategyLabelMatrixRowV4 {
@@ -471,6 +444,9 @@ export async function persistSelectionEvidenceV4(
   if (!STRATEGY_FORMAL_LABELER_VERSIONS.some((version) => version === input.labelerVersion)) {
     throw new Error(`strategy_label_matrix_nonformal_labeler:${input.labelerVersion || 'missing'}`)
   }
+  if (!clean(input.evidenceArtifactId)) {
+    throw new Error('selection_evidence_artifact_missing')
+  }
   const referenceKeys = new Set<string>()
   for (const row of input.references) {
     const symbol = clean(row.symbol)
@@ -513,71 +489,6 @@ export async function persistSelectionEvidenceV4(
     )
   }
   const stockIds = await resolveReferenceStockIds(identityDb, input.references)
-  const existing = await db.prepare(`
-    SELECT status, reference_candidate_count, strategy_count, expected_cell_count,
-           persisted_cell_count, strategy_registry_checksum, labeler_version, reference_contract_version
-      FROM strategy_label_matrix_runs_v4
-     WHERE producer_run_id = ?
-  `).bind(input.producerRunId).first<any>()
-  if (existing?.status === 'ready') {
-    const same = Number(existing.reference_candidate_count) === input.references.length
-      && Number(existing.strategy_count) === input.strategyCount
-      && Number(existing.expected_cell_count) === expectedCells
-      && Number(existing.persisted_cell_count) === expectedCells
-      && clean(existing.strategy_registry_checksum) === input.strategyRegistryChecksum
-      && clean(existing.labeler_version) === input.labelerVersion
-      && clean(existing.reference_contract_version) === SELECTION_REFERENCE_CONTRACT_VERSION
-    if (!same) throw new Error('strategy_label_matrix_immutable_run_conflict')
-    await reconcileReferenceStockIds(db, input.producerRunId, input.references, stockIds)
-    const [identityCoverage, matrixCoverage] = await Promise.all([
-      db.prepare(`
-        SELECT COUNT(*) row_count,
-               SUM(CASE WHEN stock_id IS NOT NULL THEN 1 ELSE 0 END) identity_count,
-               SUM(CASE
-                 WHEN signal_date=?
-                  AND strategy_labeler_version=?
-                  AND strategy_registry_checksum=?
-                  AND feature_contract_version=?
-                 THEN 1 ELSE 0 END) contract_count
-          FROM selection_reference_snapshots_v1
-         WHERE producer_run_id=?
-      `).bind(
-        input.signalDate,
-        input.labelerVersion,
-        input.strategyRegistryChecksum,
-        SELECTION_REFERENCE_CONTRACT_VERSION,
-        input.producerRunId,
-      ).first<{ row_count: number; identity_count: number; contract_count: number }>(),
-      db.prepare(`
-        SELECT COUNT(*) row_count,
-               SUM(CASE
-                 WHEN signal_date=? AND labeler_version=?
-                  AND strategy_registry_checksum=? AND reference_contract_version=?
-                 THEN 1 ELSE 0 END) contract_count
-          FROM strategy_label_matrix_v4
-         WHERE producer_run_id=?
-      `).bind(
-        input.signalDate,
-        input.labelerVersion,
-        input.strategyRegistryChecksum,
-        SELECTION_REFERENCE_CONTRACT_VERSION,
-        input.producerRunId,
-      ).first<{ row_count: number; contract_count: number }>(),
-    ])
-    if (
-      Number(identityCoverage?.row_count ?? 0) !== input.references.length
-      || Number(identityCoverage?.identity_count ?? 0) !== input.references.length
-      || Number(identityCoverage?.contract_count ?? 0) !== input.references.length
-      || Number(matrixCoverage?.row_count ?? 0) !== expectedCells
-      || Number(matrixCoverage?.contract_count ?? 0) !== expectedCells
-    ) {
-      throw new Error(
-        `selection_reference_ready_contract_mismatch:${identityCoverage?.contract_count ?? 0}/${input.references.length}:${matrixCoverage?.contract_count ?? 0}/${expectedCells}`,
-      )
-    }
-    return { referenceRows: input.references.length, matrixRows: expectedCells }
-  }
-
   const previousRoutingRows = await db.prepare(`
     SELECT symbol, strategy_router_version, strategy_router_score,
            strategy_challenger_route_version, strategy_challenger_route_score
@@ -591,107 +502,307 @@ export async function persistSelectionEvidenceV4(
   const previousRoutingBySymbol = new Map(
     (previousRoutingRows.results ?? []).map((row) => [clean(row.symbol), row]),
   )
-  await db.prepare(`
-    INSERT INTO strategy_label_matrix_runs_v4 (
-      producer_run_id, signal_date, status, reference_candidate_count,
-      strategy_count, expected_cell_count, persisted_cell_count,
-      strategy_registry_checksum, labeler_version, reference_contract_version
-    ) VALUES (?, ?, 'writing', ?, ?, ?, 0, ?, ?, ?)
+  const effectiveReferences = input.references.map((row) => {
+    const previousRouting = previousRoutingBySymbol.get(clean(row.symbol))
+    return {
+      ...row,
+      strategy_router_version: row.strategy_router_version ?? previousRouting?.strategy_router_version ?? null,
+      strategy_router_score: row.strategy_router_score ?? previousRouting?.strategy_router_score ?? null,
+      strategy_challenger_route_version:
+        row.strategy_challenger_route_version ?? previousRouting?.strategy_challenger_route_version ?? null,
+      strategy_challenger_route_score:
+        row.strategy_challenger_route_score ?? previousRouting?.strategy_challenger_route_score ?? null,
+    }
+  })
+  const referencePayload = [...effectiveReferences]
+    .sort((left, right) => clean(left.symbol).localeCompare(clean(right.symbol)))
+    .map((row) => [
+      row.signal_date, clean(row.symbol), row.producer_run_id, stockIds.get(clean(row.symbol)) ?? null,
+      row.name ?? null, row.market_segment ?? null, row.sector ?? null,
+      row.feature_available, row.feature_rejection_reason ?? null, row.strategy_selected,
+      row.selection_stage, row.rejection_reason ?? null, row.score_v2 ?? null, row.score_components ?? null,
+      row.strategy_labeler_version ?? null, row.strategy_affinity_version ?? null,
+      row.strategy_router_version ?? null, row.strategy_router_score ?? null,
+      row.strategy_challenger_affinity_version ?? null,
+      row.strategy_challenger_route_version ?? null, row.strategy_challenger_route_score ?? null,
+      row.strategy_registry_checksum,
+    ])
+  const matrixPayload = [...input.matrix]
+    .sort((left, right) => (
+      `${left.signal_date}|${clean(left.symbol)}|${left.strategy_id}|${left.strategy_version}`
+        .localeCompare(`${right.signal_date}|${clean(right.symbol)}|${right.strategy_id}|${right.strategy_version}`)
+    ))
+    .map((row) => [
+      row.signal_date, clean(row.symbol), row.producer_run_id, row.strategy_id, row.strategy_version,
+      row.strategy_status, row.alpha_bucket, row.family_id, row.production_owner, row.strategy_hit,
+      row.weak_label, row.affinity, row.affinity_version ?? null, row.match_strength, row.threshold_margin,
+      row.affinity_evidence_count, row.position_weight, row.challenger_affinity,
+      row.challenger_affinity_version ?? null, row.challenger_position_weight, row.overlap,
+      row.evaluable, row.evaluability_status, row.unavailable_reason ?? null,
+      row.labeler_version, row.strategy_registry_checksum,
+    ])
+  const payloadChecksum = await sha256Text(JSON.stringify({
+    schema: 'selection-evidence-canonical-payload-v1',
+    signalDate: input.signalDate,
+    producerRunId: input.producerRunId,
+    strategyCount: input.strategyCount,
+    strategyRegistryChecksum: input.strategyRegistryChecksum,
+    labelerVersion: input.labelerVersion,
+    referenceContractVersion: SELECTION_REFERENCE_CONTRACT_VERSION,
+    matrixVersion: STRATEGY_LABEL_MATRIX_VERSION,
+    evidenceArtifactId: input.evidenceArtifactId,
+    references: referencePayload,
+    matrix: matrixPayload,
+  }))
+  type ReadyRun = {
+    status: string
+    signal_date: string
+    reference_candidate_count: number | string
+    strategy_count: number | string
+    expected_cell_count: number | string
+    persisted_cell_count: number | string
+    strategy_registry_checksum: string
+    labeler_version: string
+    reference_contract_version: string
+    evidence_artifact_id: string | null
+    payload_checksum: string | null
+    promotion_attempt_id: string | null
+  }
+  const readRun = () => db.prepare(`
+    SELECT status, signal_date, reference_candidate_count, strategy_count, expected_cell_count,
+           persisted_cell_count, strategy_registry_checksum, labeler_version, reference_contract_version,
+           evidence_artifact_id, payload_checksum, promotion_attempt_id
+      FROM strategy_label_matrix_runs_v4
+     WHERE producer_run_id = ?
+  `).bind(input.producerRunId).first<ReadyRun>()
+  const verifyReadyCanonical = async (existing: ReadyRun | null): Promise<boolean> => {
+    if (existing?.status !== 'ready') return false
+    const same = clean(existing.signal_date) === input.signalDate
+      && Number(existing.reference_candidate_count) === effectiveReferences.length
+      && Number(existing.strategy_count) === input.strategyCount
+      && Number(existing.expected_cell_count) === expectedCells
+      && Number(existing.persisted_cell_count) === expectedCells
+      && clean(existing.strategy_registry_checksum) === input.strategyRegistryChecksum
+      && clean(existing.labeler_version) === input.labelerVersion
+      && clean(existing.reference_contract_version) === SELECTION_REFERENCE_CONTRACT_VERSION
+      && clean(existing.evidence_artifact_id) === input.evidenceArtifactId
+      && clean(existing.payload_checksum) === payloadChecksum
+      && clean(existing.promotion_attempt_id).length > 0
+    if (!same) throw new Error('strategy_label_matrix_immutable_run_conflict')
+
+    const expectedReferenceIdentity = JSON.stringify(effectiveReferences.map((row) => ({
+      symbol: clean(row.symbol),
+      stock_id: stockIds.get(clean(row.symbol)) ?? null,
+    })))
+    const expectedReferenceSymbols = JSON.stringify(effectiveReferences.map((row) => clean(row.symbol)))
+    const expectedStrategies = JSON.stringify([...new Map(input.matrix.map((row) => [
+      `${row.strategy_id}|${row.strategy_version}`,
+      { strategy_id: row.strategy_id, strategy_version: row.strategy_version },
+    ])).values()])
+    const [referenceCoverage, matrixCoverage] = await Promise.all([
+      db.prepare(`
+        SELECT COUNT(*) row_count,
+               SUM(CASE WHEN EXISTS (
+                 SELECT 1 FROM json_each(?) j
+                  WHERE json_extract(j.value, '$.symbol')=r.symbol
+                    AND CAST(json_extract(j.value, '$.stock_id') AS INTEGER)=r.stock_id
+               ) THEN 1 ELSE 0 END) identity_count,
+               SUM(CASE
+                 WHEN r.signal_date=? AND r.hard_gate_passed=1
+                  AND r.strategy_labeler_version=? AND r.strategy_registry_checksum=?
+                  AND r.feature_contract_version=? AND r.evidence_artifact_id=?
+                 THEN 1 ELSE 0 END) contract_count
+          FROM selection_reference_snapshots_v1 r
+         WHERE r.producer_run_id=?
+      `).bind(
+        expectedReferenceIdentity,
+        input.signalDate,
+        input.labelerVersion,
+        input.strategyRegistryChecksum,
+        SELECTION_REFERENCE_CONTRACT_VERSION,
+        input.evidenceArtifactId,
+        input.producerRunId,
+      ).first<{ row_count: number; identity_count: number; contract_count: number }>(),
+      db.prepare(`
+        SELECT COUNT(*) row_count,
+               SUM(CASE WHEN EXISTS (
+                 SELECT 1 FROM json_each(?) refs WHERE refs.value=m.symbol
+               ) THEN 1 ELSE 0 END) reference_identity_count,
+               SUM(CASE WHEN EXISTS (
+                 SELECT 1 FROM json_each(?) strategies
+                  WHERE json_extract(strategies.value, '$.strategy_id')=m.strategy_id
+                    AND json_extract(strategies.value, '$.strategy_version')=m.strategy_version
+               ) THEN 1 ELSE 0 END) strategy_identity_count,
+               SUM(CASE
+                 WHEN m.signal_date=? AND m.labeler_version=?
+                  AND m.strategy_registry_checksum=? AND m.reference_contract_version=?
+                 THEN 1 ELSE 0 END) contract_count
+          FROM strategy_label_matrix_v4 m
+         WHERE m.producer_run_id=?
+      `).bind(
+        expectedReferenceSymbols,
+        expectedStrategies,
+        input.signalDate,
+        input.labelerVersion,
+        input.strategyRegistryChecksum,
+        SELECTION_REFERENCE_CONTRACT_VERSION,
+        input.producerRunId,
+      ).first<{
+        row_count: number
+        reference_identity_count: number
+        strategy_identity_count: number
+        contract_count: number
+      }>(),
+    ])
+    if (
+      Number(referenceCoverage?.row_count ?? 0) !== effectiveReferences.length
+      || Number(referenceCoverage?.identity_count ?? 0) !== effectiveReferences.length
+      || Number(referenceCoverage?.contract_count ?? 0) !== effectiveReferences.length
+      || Number(matrixCoverage?.row_count ?? 0) !== expectedCells
+      || Number(matrixCoverage?.reference_identity_count ?? 0) !== expectedCells
+      || Number(matrixCoverage?.strategy_identity_count ?? 0) !== expectedCells
+      || Number(matrixCoverage?.contract_count ?? 0) !== expectedCells
+    ) {
+      throw new Error(
+        `selection_reference_ready_contract_mismatch:${referenceCoverage?.contract_count ?? 0}/${effectiveReferences.length}`
+        + `:${matrixCoverage?.contract_count ?? 0}/${expectedCells}:payload=${payloadChecksum}`,
+      )
+    }
+    return true
+  }
+
+  if (await verifyReadyCanonical(await readRun())) {
+    return { referenceRows: effectiveReferences.length, matrixRows: expectedCells }
+  }
+
+  const attemptId = crypto.randomUUID()
+  const acquisition = await db.prepare(`
+    INSERT INTO selection_evidence_staging_runs_v1 (
+      producer_run_id, attempt_id, signal_date, status,
+      expected_reference_count, expected_strategy_count, expected_cell_count,
+      staged_reference_count, staged_cell_count, strategy_registry_checksum,
+      labeler_version, reference_contract_version, evidence_artifact_id, payload_checksum
+    )
+    SELECT ?, ?, ?, 'writing', ?, ?, ?, 0, 0, ?, ?, ?, ?, ?
+     WHERE NOT EXISTS (
+       SELECT 1 FROM strategy_label_matrix_runs_v4 ready
+        WHERE ready.producer_run_id=? AND ready.status='ready'
+     )
     ON CONFLICT(producer_run_id) DO UPDATE SET
+      attempt_id=excluded.attempt_id,
       signal_date=excluded.signal_date,
       status='writing',
-      reference_candidate_count=excluded.reference_candidate_count,
-      strategy_count=excluded.strategy_count,
+      expected_reference_count=excluded.expected_reference_count,
+      expected_strategy_count=excluded.expected_strategy_count,
       expected_cell_count=excluded.expected_cell_count,
-      persisted_cell_count=0,
+      staged_reference_count=0,
+      staged_cell_count=0,
       strategy_registry_checksum=excluded.strategy_registry_checksum,
       labeler_version=excluded.labeler_version,
       reference_contract_version=excluded.reference_contract_version,
+      evidence_artifact_id=excluded.evidence_artifact_id,
+      payload_checksum=excluded.payload_checksum,
       error_code=NULL,
+      created_at=CURRENT_TIMESTAMP,
       updated_at=CURRENT_TIMESTAMP
+    WHERE NOT EXISTS (
+      SELECT 1 FROM strategy_label_matrix_runs_v4 ready
+       WHERE ready.producer_run_id=excluded.producer_run_id AND ready.status='ready'
+    ) AND (
+      selection_evidence_staging_runs_v1.status IN ('failed', 'promoted')
+      OR (
+        selection_evidence_staging_runs_v1.status IN ('writing', 'validated')
+        AND selection_evidence_staging_runs_v1.updated_at < datetime('now', '-30 minutes')
+      )
+    )
   `).bind(
     input.producerRunId,
+    attemptId,
     input.signalDate,
-    input.references.length,
+    effectiveReferences.length,
     input.strategyCount,
     expectedCells,
     input.strategyRegistryChecksum,
     input.labelerVersion,
     SELECTION_REFERENCE_CONTRACT_VERSION,
+    input.evidenceArtifactId,
+    payloadChecksum,
+    input.producerRunId,
   ).run()
+  if (Number(acquisition.meta?.changes ?? 0) !== 1) {
+    if (await verifyReadyCanonical(await readRun())) {
+      return { referenceRows: effectiveReferences.length, matrixRows: expectedCells }
+    }
+    throw new Error(`selection_evidence_writer_busy:${input.producerRunId}`)
+  }
+  await db.batch([
+    db.prepare(`
+      DELETE FROM selection_reference_snapshots_staging_v1
+       WHERE producer_run_id=? AND attempt_id<>?
+         AND EXISTS (
+           SELECT 1 FROM selection_evidence_staging_runs_v1 owner
+            WHERE owner.producer_run_id=? AND owner.attempt_id=? AND owner.status='writing'
+         )
+    `).bind(input.producerRunId, attemptId, input.producerRunId, attemptId),
+    db.prepare(`
+      DELETE FROM strategy_label_matrix_staging_v4
+       WHERE producer_run_id=? AND attempt_id<>?
+         AND EXISTS (
+           SELECT 1 FROM selection_evidence_staging_runs_v1 owner
+            WHERE owner.producer_run_id=? AND owner.attempt_id=? AND owner.status='writing'
+         )
+    `).bind(input.producerRunId, attemptId, input.producerRunId, attemptId),
+  ])
+
+  const heartbeatWriter = async (): Promise<void> => {
+    const heartbeat = await db.prepare(`
+      UPDATE selection_evidence_staging_runs_v1
+         SET updated_at=CURRENT_TIMESTAMP
+       WHERE producer_run_id=? AND attempt_id=? AND status='writing'
+    `).bind(input.producerRunId, attemptId).run()
+    if (Number(heartbeat.meta?.changes ?? 0) !== 1) {
+      throw new Error(`selection_evidence_writer_fenced:${input.producerRunId}:${attemptId}`)
+    }
+  }
 
   try {
-    await db.batch([
-      db.prepare('DELETE FROM strategy_label_matrix_v4 WHERE producer_run_id=?').bind(input.producerRunId),
-      db.prepare('DELETE FROM selection_reference_snapshots_v1 WHERE producer_run_id=?').bind(input.producerRunId),
-    ])
-    const referenceStatements = input.references.map((row) => {
-      const previousRouting = previousRoutingBySymbol.get(clean(row.symbol))
+    const referenceStatements = effectiveReferences.map((row) => {
       return db.prepare(`
-      INSERT INTO selection_reference_snapshots_v1 (
-        signal_date, symbol, producer_run_id, stock_id, name, market_segment, sector,
-        hard_gate_passed, hard_gate_reason, feature_available, feature_rejection_reason, strategy_labeled,
-        strategy_selected, ml_selected, l4_selected, ev_owner_available, final_signal,
-        selection_stage, rejection_reason, selection_propensity, score_v2, score_components,
-        allocation_selected, decision_evidence_reconciled_at,
-        strategy_labeler_version, strategy_affinity_version, strategy_router_version, strategy_router_score,
-        strategy_challenger_affinity_version, strategy_challenger_route_version, strategy_challenger_route_score,
-        strategy_registry_checksum, feature_contract_version, evidence_artifact_id
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, 1, 'hard_filters_passed', ?, ?, 1, ?, 0, 0, 0, NULL,
-                ?, ?, 1.0, ?, ?, 0, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-      ON CONFLICT(signal_date, symbol, producer_run_id) DO UPDATE SET
-        stock_id=CASE
-          WHEN selection_reference_snapshots_v1.stock_id IS NULL THEN excluded.stock_id
-          ELSE selection_reference_snapshots_v1.stock_id
-        END,
-        strategy_labeled=1,
-        strategy_selected=excluded.strategy_selected,
-        strategy_labeler_version=excluded.strategy_labeler_version,
-        strategy_affinity_version=excluded.strategy_affinity_version,
-        strategy_challenger_affinity_version=excluded.strategy_challenger_affinity_version,
-        strategy_router_version=COALESCE(
-          excluded.strategy_router_version,
-          selection_reference_snapshots_v1.strategy_router_version
-        ),
-        strategy_router_score=COALESCE(
-          excluded.strategy_router_score,
-          selection_reference_snapshots_v1.strategy_router_score
-        ),
-        strategy_challenger_route_version=COALESCE(
-          excluded.strategy_challenger_route_version,
-          selection_reference_snapshots_v1.strategy_challenger_route_version
-        ),
-        strategy_challenger_route_score=COALESCE(
-          excluded.strategy_challenger_route_score,
-          selection_reference_snapshots_v1.strategy_challenger_route_score
-        ),
-        strategy_registry_checksum=excluded.strategy_registry_checksum,
-        feature_contract_version=excluded.feature_contract_version,
-        evidence_artifact_id=excluded.evidence_artifact_id
-    `).bind(
-      row.signal_date, row.symbol, row.producer_run_id, stockIds.get(clean(row.symbol)), row.name,
-      row.market_segment, row.sector, row.feature_available, row.feature_rejection_reason,
-      row.strategy_selected, row.selection_stage, row.rejection_reason, row.score_v2,
-      row.score_components, row.strategy_labeler_version, row.strategy_affinity_version,
-      row.strategy_router_version ?? previousRouting?.strategy_router_version ?? null,
-      row.strategy_router_score ?? previousRouting?.strategy_router_score ?? null,
-      row.strategy_challenger_affinity_version,
-      row.strategy_challenger_route_version ?? previousRouting?.strategy_challenger_route_version ?? null,
-      row.strategy_challenger_route_score ?? previousRouting?.strategy_challenger_route_score ?? null,
-      row.strategy_registry_checksum, SELECTION_REFERENCE_CONTRACT_VERSION,
-      input.evidenceArtifactId,
+        INSERT INTO selection_reference_snapshots_staging_v1 (
+          attempt_id, signal_date, symbol, producer_run_id, stock_id, name, market_segment, sector,
+          hard_gate_passed, hard_gate_reason, feature_available, feature_rejection_reason, strategy_labeled,
+          strategy_selected, ml_selected, l4_selected, ev_owner_available, final_signal,
+          selection_stage, rejection_reason, selection_propensity, score_v2, score_components,
+          allocation_selected, decision_evidence_reconciled_at,
+          strategy_labeler_version, strategy_affinity_version, strategy_router_version, strategy_router_score,
+          strategy_challenger_affinity_version, strategy_challenger_route_version, strategy_challenger_route_score,
+          strategy_registry_checksum, feature_contract_version, evidence_artifact_id
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, 'hard_filters_passed', ?, ?, 1, ?, 0, 0, 0, NULL,
+                  ?, ?, 1.0, ?, ?, 0, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `).bind(
+        attemptId, row.signal_date, row.symbol, row.producer_run_id,
+        stockIds.get(clean(row.symbol)), row.name, row.market_segment, row.sector,
+        row.feature_available, row.feature_rejection_reason, row.strategy_selected,
+        row.selection_stage, row.rejection_reason, row.score_v2, row.score_components,
+        row.strategy_labeler_version, row.strategy_affinity_version,
+        row.strategy_router_version, row.strategy_router_score,
+        row.strategy_challenger_affinity_version,
+        row.strategy_challenger_route_version, row.strategy_challenger_route_score,
+        row.strategy_registry_checksum, SELECTION_REFERENCE_CONTRACT_VERSION,
+        input.evidenceArtifactId,
       )
     })
-    for (let offset = 0; offset < referenceStatements.length; offset += 200) {
-      await db.batch(referenceStatements.slice(offset, offset + 200))
+    for (let offset = 0; offset < referenceStatements.length; offset += 100) {
+      await db.batch(referenceStatements.slice(offset, offset + 100))
+      await heartbeatWriter()
     }
 
     const matrixJsonChunkSize = 1000
     for (let offset = 0; offset < input.matrix.length; offset += matrixJsonChunkSize) {
       const payload = JSON.stringify(input.matrix.slice(offset, offset + matrixJsonChunkSize))
       await db.prepare(`
-        INSERT INTO strategy_label_matrix_v4 (
-          signal_date, symbol, producer_run_id, strategy_id, strategy_version,
+        INSERT INTO strategy_label_matrix_staging_v4 (
+          attempt_id, signal_date, symbol, producer_run_id, strategy_id, strategy_version,
           strategy_status, alpha_bucket, family_id, production_owner,
           strategy_hit, weak_label, affinity, affinity_version, match_strength,
           threshold_margin, affinity_evidence_count, position_weight,
@@ -700,7 +811,7 @@ export async function persistSelectionEvidenceV4(
           strategy_registry_checksum, reference_contract_version
         )
         SELECT
-          json_extract(value, '$.signal_date'), json_extract(value, '$.symbol'),
+          ?, json_extract(value, '$.signal_date'), json_extract(value, '$.symbol'),
           json_extract(value, '$.producer_run_id'), json_extract(value, '$.strategy_id'),
           json_extract(value, '$.strategy_version'), json_extract(value, '$.strategy_status'),
           json_extract(value, '$.alpha_bucket'), json_extract(value, '$.family_id'),
@@ -715,35 +826,252 @@ export async function persistSelectionEvidenceV4(
           NULL, json_extract(value, '$.labeler_version'),
           json_extract(value, '$.strategy_registry_checksum'), ?
           FROM json_each(?)
-      `).bind(SELECTION_REFERENCE_CONTRACT_VERSION, payload).run()
+      `).bind(attemptId, SELECTION_REFERENCE_CONTRACT_VERSION, payload).run()
+      await heartbeatWriter()
     }
 
-    const counts = await db.prepare(`
+    const staged = await db.prepare(`
       SELECT
-        (SELECT COUNT(*) FROM selection_reference_snapshots_v1 WHERE producer_run_id = ? AND hard_gate_passed = 1) reference_rows,
-        (SELECT COUNT(*) FROM selection_reference_snapshots_v1 WHERE producer_run_id = ? AND hard_gate_passed = 1 AND stock_id IS NOT NULL) identity_rows,
-        (SELECT COUNT(*) FROM strategy_label_matrix_v4 WHERE producer_run_id = ?) matrix_rows
-    `).bind(input.producerRunId, input.producerRunId, input.producerRunId).first<any>()
-    const referenceRows = Number(counts?.reference_rows ?? 0)
-    const identityRows = Number(counts?.identity_rows ?? 0)
-    const matrixRows = Number(counts?.matrix_rows ?? 0)
-    if (referenceRows !== input.references.length || identityRows !== referenceRows || matrixRows !== expectedCells) {
+        (SELECT COUNT(*) FROM selection_reference_snapshots_staging_v1
+          WHERE attempt_id=?) reference_rows,
+        (SELECT COUNT(*) FROM selection_reference_snapshots_staging_v1
+          WHERE attempt_id=? AND stock_id IS NOT NULL) identity_rows,
+        (SELECT COUNT(*) FROM selection_reference_snapshots_staging_v1
+          WHERE attempt_id=? AND signal_date=? AND producer_run_id=?
+            AND strategy_labeler_version=? AND strategy_registry_checksum=?
+            AND feature_contract_version=? AND evidence_artifact_id=?) reference_contract_rows,
+        (SELECT COUNT(*) FROM strategy_label_matrix_staging_v4
+          WHERE attempt_id=?) matrix_rows,
+        (SELECT COUNT(*) FROM strategy_label_matrix_staging_v4
+          WHERE attempt_id=? AND signal_date=? AND producer_run_id=?
+            AND labeler_version=? AND strategy_registry_checksum=?
+            AND reference_contract_version=?) matrix_contract_rows
+    `).bind(
+      attemptId,
+      attemptId,
+      attemptId, input.signalDate, input.producerRunId, input.labelerVersion,
+      input.strategyRegistryChecksum, SELECTION_REFERENCE_CONTRACT_VERSION, input.evidenceArtifactId,
+      attemptId,
+      attemptId, input.signalDate, input.producerRunId, input.labelerVersion,
+      input.strategyRegistryChecksum, SELECTION_REFERENCE_CONTRACT_VERSION,
+    ).first<{
+      reference_rows: number | string
+      identity_rows: number | string
+      reference_contract_rows: number | string
+      matrix_rows: number | string
+      matrix_contract_rows: number | string
+    }>()
+    const referenceRows = Number(staged?.reference_rows ?? 0)
+    const identityRows = Number(staged?.identity_rows ?? 0)
+    const referenceContractRows = Number(staged?.reference_contract_rows ?? 0)
+    const matrixRows = Number(staged?.matrix_rows ?? 0)
+    const matrixContractRows = Number(staged?.matrix_contract_rows ?? 0)
+    if (
+      referenceRows !== input.references.length
+      || identityRows !== referenceRows
+      || referenceContractRows !== referenceRows
+      || matrixRows !== expectedCells
+      || matrixContractRows !== expectedCells
+    ) {
       throw new Error(
-        `strategy_label_matrix_persisted_coverage_mismatch:${referenceRows}/${input.references.length}:identity=${identityRows}/${referenceRows}:${matrixRows}/${expectedCells}`,
+        `selection_evidence_staging_coverage_mismatch:${referenceRows}/${input.references.length}`
+        + `:identity=${identityRows}/${referenceRows}:reference_contract=${referenceContractRows}/${referenceRows}`
+        + `:matrix=${matrixRows}/${expectedCells}:matrix_contract=${matrixContractRows}/${expectedCells}`,
       )
     }
+
     await db.prepare(`
-      UPDATE strategy_label_matrix_runs_v4
-         SET status='ready', persisted_cell_count=?, updated_at=CURRENT_TIMESTAMP
-       WHERE producer_run_id=? AND status='writing'
-    `).bind(matrixRows, input.producerRunId).run()
+      UPDATE selection_evidence_staging_runs_v1
+         SET status='validated', staged_reference_count=?, staged_cell_count=?,
+             error_code=NULL, updated_at=CURRENT_TIMESTAMP
+       WHERE producer_run_id=? AND attempt_id=? AND status='writing' AND payload_checksum=?
+    `).bind(referenceRows, matrixRows, input.producerRunId, attemptId, payloadChecksum).run()
+    const validationReceipt = await db.prepare(`
+      SELECT status, payload_checksum
+        FROM selection_evidence_staging_runs_v1
+       WHERE producer_run_id=? AND attempt_id=?
+    `).bind(input.producerRunId, attemptId).first<{ status: string; payload_checksum: string | null }>()
+    if (validationReceipt?.status !== 'validated' || clean(validationReceipt.payload_checksum) !== payloadChecksum) {
+      throw new Error(`selection_evidence_writer_fenced:${input.producerRunId}:${attemptId}`)
+    }
+
+    const validatedAttempt = `
+      SELECT 1
+        FROM selection_evidence_staging_runs_v1 s
+       WHERE s.producer_run_id=? AND s.attempt_id=? AND s.status='validated'
+         AND s.payload_checksum=?
+         AND s.staged_reference_count=s.expected_reference_count
+         AND s.staged_cell_count=s.expected_cell_count
+         AND NOT EXISTS (
+           SELECT 1 FROM strategy_label_matrix_runs_v4 ready
+            WHERE ready.producer_run_id=s.producer_run_id AND ready.status='ready'
+         )
+    `
+    await db.batch([
+      db.prepare(`
+        DELETE FROM strategy_label_matrix_v4
+         WHERE producer_run_id=? AND EXISTS (${validatedAttempt})
+      `).bind(input.producerRunId, input.producerRunId, attemptId, payloadChecksum),
+      db.prepare(`
+        DELETE FROM selection_reference_snapshots_v1
+         WHERE producer_run_id=? AND EXISTS (${validatedAttempt})
+      `).bind(input.producerRunId, input.producerRunId, attemptId, payloadChecksum),
+      db.prepare(`
+        INSERT INTO selection_reference_snapshots_v1 (
+          signal_date, symbol, producer_run_id, stock_id, name, market_segment, sector,
+          hard_gate_passed, hard_gate_reason, feature_available, feature_rejection_reason, strategy_labeled,
+          strategy_selected, ml_selected, l4_selected, ev_owner_available, final_signal,
+          selection_stage, rejection_reason, selection_propensity, score_v2, score_components,
+          allocation_selected, decision_evidence_reconciled_at,
+          strategy_labeler_version, strategy_affinity_version, strategy_router_version, strategy_router_score,
+          strategy_challenger_affinity_version, strategy_challenger_route_version, strategy_challenger_route_score,
+          strategy_registry_checksum, feature_contract_version, evidence_artifact_id
+        )
+        SELECT
+          st.signal_date, st.symbol, st.producer_run_id, st.stock_id, st.name, st.market_segment, st.sector,
+          st.hard_gate_passed, st.hard_gate_reason, st.feature_available, st.feature_rejection_reason, st.strategy_labeled,
+          st.strategy_selected, st.ml_selected, st.l4_selected, st.ev_owner_available, st.final_signal,
+          st.selection_stage, st.rejection_reason, st.selection_propensity, st.score_v2, st.score_components,
+          st.allocation_selected, st.decision_evidence_reconciled_at,
+          st.strategy_labeler_version, st.strategy_affinity_version, st.strategy_router_version, st.strategy_router_score,
+          st.strategy_challenger_affinity_version, st.strategy_challenger_route_version, st.strategy_challenger_route_score,
+          st.strategy_registry_checksum, st.feature_contract_version, st.evidence_artifact_id
+          FROM selection_reference_snapshots_staging_v1 st
+          JOIN selection_evidence_staging_runs_v1 s
+            ON s.producer_run_id=st.producer_run_id AND s.attempt_id=st.attempt_id
+         WHERE st.attempt_id=? AND s.status='validated' AND s.payload_checksum=?
+           AND s.staged_reference_count=s.expected_reference_count
+           AND s.staged_cell_count=s.expected_cell_count
+           AND NOT EXISTS (
+             SELECT 1 FROM strategy_label_matrix_runs_v4 ready
+              WHERE ready.producer_run_id=s.producer_run_id AND ready.status='ready'
+           )
+      `).bind(attemptId, payloadChecksum),
+      db.prepare(`
+        INSERT INTO strategy_label_matrix_v4 (
+          signal_date, symbol, producer_run_id, strategy_id, strategy_version,
+          strategy_status, alpha_bucket, family_id, production_owner,
+          strategy_hit, weak_label, affinity, affinity_version, match_strength,
+          threshold_margin, affinity_evidence_count, position_weight,
+          challenger_affinity, challenger_affinity_version, challenger_position_weight, overlap,
+          evaluable, evaluability_status, unavailable_reason, label_reason, labeler_version,
+          strategy_registry_checksum, reference_contract_version
+        )
+        SELECT
+          st.signal_date, st.symbol, st.producer_run_id, st.strategy_id, st.strategy_version,
+          st.strategy_status, st.alpha_bucket, st.family_id, st.production_owner,
+          st.strategy_hit, st.weak_label, st.affinity, st.affinity_version, st.match_strength,
+          st.threshold_margin, st.affinity_evidence_count, st.position_weight,
+          st.challenger_affinity, st.challenger_affinity_version, st.challenger_position_weight, st.overlap,
+          st.evaluable, st.evaluability_status, st.unavailable_reason, st.label_reason, st.labeler_version,
+          st.strategy_registry_checksum, st.reference_contract_version
+          FROM strategy_label_matrix_staging_v4 st
+          JOIN selection_evidence_staging_runs_v1 s
+            ON s.producer_run_id=st.producer_run_id AND s.attempt_id=st.attempt_id
+         WHERE st.attempt_id=? AND s.status='validated' AND s.payload_checksum=?
+           AND s.staged_reference_count=s.expected_reference_count
+           AND s.staged_cell_count=s.expected_cell_count
+           AND NOT EXISTS (
+             SELECT 1 FROM strategy_label_matrix_runs_v4 ready
+              WHERE ready.producer_run_id=s.producer_run_id AND ready.status='ready'
+           )
+      `).bind(attemptId, payloadChecksum),
+      db.prepare(`
+        INSERT INTO strategy_label_matrix_runs_v4 (
+          producer_run_id, signal_date, status, reference_candidate_count,
+          strategy_count, expected_cell_count, persisted_cell_count,
+          strategy_registry_checksum, labeler_version, reference_contract_version,
+          evidence_artifact_id, payload_checksum, promotion_attempt_id, error_code
+        )
+        SELECT producer_run_id, signal_date, 'ready', expected_reference_count,
+               expected_strategy_count, expected_cell_count, staged_cell_count,
+               strategy_registry_checksum, labeler_version, reference_contract_version,
+               evidence_artifact_id, payload_checksum, ?, NULL
+          FROM selection_evidence_staging_runs_v1
+         WHERE producer_run_id=? AND attempt_id=? AND status='validated' AND payload_checksum=?
+           AND staged_reference_count=expected_reference_count
+           AND staged_cell_count=expected_cell_count
+        ON CONFLICT(producer_run_id) DO UPDATE SET
+          signal_date=excluded.signal_date,
+          status='ready',
+          reference_candidate_count=excluded.reference_candidate_count,
+          strategy_count=excluded.strategy_count,
+          expected_cell_count=excluded.expected_cell_count,
+          persisted_cell_count=excluded.persisted_cell_count,
+          strategy_registry_checksum=excluded.strategy_registry_checksum,
+          labeler_version=excluded.labeler_version,
+          reference_contract_version=excluded.reference_contract_version,
+          evidence_artifact_id=excluded.evidence_artifact_id,
+          payload_checksum=excluded.payload_checksum,
+          promotion_attempt_id=excluded.promotion_attempt_id,
+          error_code=NULL,
+          updated_at=CURRENT_TIMESTAMP
+        WHERE strategy_label_matrix_runs_v4.status <> 'ready'
+      `).bind(attemptId, input.producerRunId, attemptId, payloadChecksum),
+      db.prepare(`
+        UPDATE selection_evidence_staging_runs_v1 AS s
+           SET status='promoted', updated_at=CURRENT_TIMESTAMP
+         WHERE producer_run_id=? AND attempt_id=? AND status='validated' AND payload_checksum=?
+           AND EXISTS (
+             SELECT 1 FROM strategy_label_matrix_runs_v4 ready
+              WHERE ready.producer_run_id=s.producer_run_id AND ready.status='ready'
+                AND ready.promotion_attempt_id=? AND ready.payload_checksum=?
+                AND ready.evidence_artifact_id=s.evidence_artifact_id
+           )
+      `).bind(input.producerRunId, attemptId, payloadChecksum, attemptId, payloadChecksum),
+      db.prepare(`
+        DELETE FROM strategy_label_matrix_staging_v4
+         WHERE attempt_id=? AND EXISTS (
+           SELECT 1 FROM selection_evidence_staging_runs_v1 owner
+            WHERE owner.producer_run_id=? AND owner.attempt_id=? AND owner.status='promoted'
+         )
+      `).bind(attemptId, input.producerRunId, attemptId),
+      db.prepare(`
+        DELETE FROM selection_reference_snapshots_staging_v1
+         WHERE attempt_id=? AND EXISTS (
+           SELECT 1 FROM selection_evidence_staging_runs_v1 owner
+            WHERE owner.producer_run_id=? AND owner.attempt_id=? AND owner.status='promoted'
+         )
+      `).bind(attemptId, input.producerRunId, attemptId),
+    ])
+
+    const cutoverReceipt = await db.prepare(`
+      SELECT status, payload_checksum
+        FROM selection_evidence_staging_runs_v1
+       WHERE producer_run_id=? AND attempt_id=?
+    `).bind(input.producerRunId, attemptId).first<{ status: string; payload_checksum: string | null }>()
+    if (
+      cutoverReceipt?.status !== 'promoted'
+      || clean(cutoverReceipt.payload_checksum) !== payloadChecksum
+    ) {
+      if (await verifyReadyCanonical(await readRun())) {
+        await db.batch([
+          db.prepare(`
+            UPDATE selection_evidence_staging_runs_v1
+               SET status='failed', error_code='concurrent_idempotent_ready', updated_at=CURRENT_TIMESTAMP
+             WHERE producer_run_id=? AND attempt_id=? AND status='validated'
+          `).bind(input.producerRunId, attemptId),
+          db.prepare(`DELETE FROM strategy_label_matrix_staging_v4 WHERE attempt_id=?`).bind(attemptId),
+          db.prepare(`DELETE FROM selection_reference_snapshots_staging_v1 WHERE attempt_id=?`).bind(attemptId),
+        ])
+        return { referenceRows, matrixRows }
+      }
+      throw new Error(`selection_evidence_writer_fenced:${input.producerRunId}:${attemptId}`)
+    }
+    if (!await verifyReadyCanonical(await readRun())) {
+      throw new Error(`selection_evidence_atomic_cutover_readback_mismatch:${input.producerRunId}`)
+    }
     return { referenceRows, matrixRows }
   } catch (error) {
     await db.prepare(`
-      UPDATE strategy_label_matrix_runs_v4
+      UPDATE selection_evidence_staging_runs_v1
          SET status='failed', error_code=?, updated_at=CURRENT_TIMESTAMP
-       WHERE producer_run_id=?
-    `).bind(error instanceof Error ? error.message.slice(0, 500) : String(error).slice(0, 500), input.producerRunId).run().catch(() => {})
+       WHERE producer_run_id=? AND attempt_id=? AND status IN ('writing', 'validated')
+    `).bind(
+      error instanceof Error ? error.message.slice(0, 500) : String(error).slice(0, 500),
+      input.producerRunId,
+      attemptId,
+    ).run().catch(() => {})
     throw error
   }
 }

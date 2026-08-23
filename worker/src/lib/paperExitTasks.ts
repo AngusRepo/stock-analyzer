@@ -866,7 +866,7 @@ async function evaluateS12HoldingDefense(
          LIMIT 1
       `).bind(ACCOUNT_ID, pos.symbol, tradeDate).first<any>(),
       databaseForDataDomain(env, 'core').prepare('SELECT market FROM stocks WHERE symbol = ? LIMIT 1').bind(pos.symbol).first<{ market?: string | null }>(),
-      listApprovedS12TwCalibrationArtifacts(env.DB).catch(() => []),
+      listApprovedS12TwCalibrationArtifacts(databaseForDataDomain(env, 'learning')).catch(() => []),
     ])
     const calibration = resolveS12TwCalibrationArtifact(calibrationArtifacts, {
       entryCohort: s12TwEntryCohortFromState(lifecycleS12EntryState(pos)),

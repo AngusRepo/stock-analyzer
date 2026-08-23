@@ -13,10 +13,15 @@ assert.match(
   /STRATEGY_FORMAL_LABELER_VERSIONS\.some\(\(version\) => version === cleanToken\(existingMatrix\.labeler_version\)\)/,
   'historical repair must reuse a complete native matrix instead of deleting Route V2 evidence',
 )
+assert.doesNotMatch(
+  source,
+  /DELETE FROM strategy_label_matrix_v4 WHERE producer_run_id/,
+  'historical repair must never delete canonical matrix before the atomic staging cutover',
+)
 assert.match(
   source,
-  /if \(reusableExistingMatrix\) \{\s*matrixRows = expectedMatrixRows\s*\} else \{[\s\S]*if \(existingMatrix\)[\s\S]*DELETE FROM strategy_label_matrix_v4/,
-  'matrix deletion must remain inside the incomplete/non-native repair branch',
+  /const persisted = await persistSelectionEvidenceV4\(db,/,
+  'incomplete historical matrix replacement must use the durable atomic evidence writer',
 )
 assert.match(
   source,

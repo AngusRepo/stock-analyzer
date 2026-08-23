@@ -3301,22 +3301,6 @@ function buildBrokerTopFlowsToday(
   }
 }
 
-function parseJsonObject(value: unknown): Record<string, any> {
-  if (!value) return {}
-  if (typeof value === 'object' && !Array.isArray(value)) return value as Record<string, any>
-  if (typeof value !== 'string') return {}
-  try {
-    const parsed = JSON.parse(value)
-    return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : {}
-  } catch {
-    return {}
-  }
-}
-
-function uniqueStringList(value: unknown): string[] {
-  if (!Array.isArray(value)) return []
-  return [...new Set(value.map((item) => String(item ?? '').trim()).filter(Boolean))]
-}
 
 function stageEffectivePass(row: Record<string, any> | null | undefined): number | null {
   if (!row) return null
@@ -3491,27 +3475,36 @@ async function buildDailyPipelineSummaries(
     STRATEGY_FORMAL_RECONSTRUCTION_LABELER_VERSION,
   ).first<any>().catch(() => null)
   const loadStageStrategyRows = async (stage: string) => opsDb.prepare(`
-    SELECT symbol, evidence
-      FROM screener_funnel_items
-     WHERE run_id = ?
-       AND stage = ?
-       AND decision IN ('selected', 'pass', 'observe')
+    SELECT DISTINCT i.symbol, CAST(strategy.value AS TEXT) AS strategy_id
+      FROM screener_funnel_items i
+      JOIN json_each(
+        CASE
+          WHEN json_valid(i.evidence) THEN COALESCE(
+            json_extract(i.evidence, '$.strategy_pool_ids'),
+            json_extract(i.evidence, '$.strategy_ids'),
+            json('[]')
+          )
+          ELSE json('[]')
+        END
+      ) AS strategy
+     WHERE i.run_id = ?
+       AND i.stage = ?
+       AND i.decision IN ('selected', 'pass', 'observe')
+       AND strategy.value IS NOT NULL
   `).bind(latestRun.run_id, stage).all<any>().catch(() => ({ results: [] as any[] }))
   const [{ results: routerRows }, { results: finalRows }] = await Promise.all([
     loadStageStrategyRows('l1_candidate_seed_after_overlay'),
     loadStageStrategyRows('final_selection'),
   ])
-  const setsFromEvidence = (rows: any[]): Map<string, Set<string>> => {
+  const setsFromStrategyRows = (rows: any[]): Map<string, Set<string>> => {
     const out = new Map<string, Set<string>>()
     for (const row of rows ?? []) {
       const symbol = String(row.symbol ?? '').trim()
-      if (!symbol) continue
-      const evidence = parseJsonObject(row.evidence)
-      for (const strategyId of uniqueStringList(evidence.strategy_pool_ids ?? evidence.strategy_ids)) {
-        const symbols = out.get(strategyId) ?? new Set<string>()
-        symbols.add(symbol)
-        out.set(strategyId, symbols)
-      }
+      const strategyId = String(row.strategy_id ?? '').trim()
+      if (!symbol || !strategyId) continue
+      const symbols = out.get(strategyId) ?? new Set<string>()
+      symbols.add(symbol)
+      out.set(strategyId, symbols)
     }
     return out
   }
@@ -3524,8 +3517,8 @@ async function buildDailyPipelineSummaries(
     symbols.add(symbol)
     rawStrategySymbols.set(strategyId, symbols)
   }
-  const routerStrategySymbols = setsFromEvidence(routerRows ?? [])
-  const finalStrategySymbols = setsFromEvidence(finalRows ?? [])
+  const routerStrategySymbols = setsFromStrategyRows(routerRows ?? [])
+  const finalStrategySymbols = setsFromStrategyRows(finalRows ?? [])
   const hasCanonicalRawMatrix = matrixRun?.status === 'ready'
     && Number(matrixRun.reference_candidate_count ?? -1) === Number(referenceCount?.candidate_count ?? -2)
     && Number(matrixRun.expected_cell_count ?? -1) === Number(matrixRun.persisted_cell_count ?? -2)
@@ -3586,9 +3579,12 @@ async function buildDailyPipelineSummaries(
     }
     return rows
   }
+  const projectedStrategyUniverseSize = (rows: any[]) => new Set(
+    rows.map((row) => String(row.symbol ?? '').trim()).filter(Boolean),
+  ).size
   const pairwise = buildPairwise(strategySymbols, strategyUniverseSize)
-  const routerPairwise = buildPairwise(routerStrategySymbols, Math.max(1, (routerRows ?? []).length))
-  const finalPairwise = buildPairwise(finalStrategySymbols, Math.max(1, (finalRows ?? []).length))
+  const routerPairwise = buildPairwise(routerStrategySymbols, Math.max(1, projectedStrategyUniverseSize(routerRows ?? [])))
+  const finalPairwise = buildPairwise(finalStrategySymbols, Math.max(1, projectedStrategyUniverseSize(finalRows ?? [])))
   const avg = (values: Array<number | null | undefined>) => {
     const clean = values.filter((value): value is number => value != null && Number.isFinite(value))
     return clean.length ? roundMetric(clean.reduce((sum, value) => sum + value, 0) / clean.length) : null
@@ -3654,6 +3650,182 @@ async function buildDailyPipelineSummaries(
       },
     },
   }
+}
+
+type DailyPipelineSectorAggregateRow = {
+  sector: string
+  count: number
+  avg_score: number | null
+  avg_chip: number | null
+  avg_tech: number | null
+  symbols: string | null
+  buy_signal_count: number
+  hold_count: number
+  generated_at: string | null
+}
+
+const DAILY_PIPELINE_VIEW_MAX_BYTES = 512_000
+const DAILY_PIPELINE_STRATEGY_LIMIT = 64
+const DAILY_PIPELINE_PAIRWISE_LIMIT = 120
+
+function compactDailyPipelineStrategySummary(summary: Record<string, any> | null | undefined): Record<string, any> | null {
+  if (!summary) return null
+  const rawStrategies = Array.isArray(summary.strategies) ? summary.strategies : []
+  const strategies = rawStrategies
+    .map((row: Record<string, any>) => ({
+      strategy_id: row.strategy_id,
+      selected_count: row.selected_count,
+      status: row.status,
+      source: row.source,
+    }))
+    .sort((left: Record<string, any>, right: Record<string, any>) => (
+      Number(right.selected_count ?? 0) - Number(left.selected_count ?? 0)
+      || String(left.strategy_id ?? '').localeCompare(String(right.strategy_id ?? ''))
+    ))
+    .slice(0, DAILY_PIPELINE_STRATEGY_LIMIT)
+  const rawPairwise = Array.isArray(summary.pairwise) ? summary.pairwise : []
+  const pairwise = rawPairwise
+    .map((row: Record<string, any>) => ({
+      left: row.left,
+      right: row.right,
+      overlap: row.overlap,
+      jaccard: row.jaccard,
+      corr: row.corr,
+    }))
+    .sort((left: Record<string, any>, right: Record<string, any>) => (
+      Number(right.overlap ?? 0) - Number(left.overlap ?? 0)
+      || Math.abs(Number(right.corr ?? 0)) - Math.abs(Number(left.corr ?? 0))
+      || String(left.left ?? '').localeCompare(String(right.left ?? ''))
+      || String(left.right ?? '').localeCompare(String(right.right ?? ''))
+    ))
+    .slice(0, DAILY_PIPELINE_PAIRWISE_LIMIT)
+  return {
+    schema_version: summary.schema_version,
+    source_of_truth: summary.source_of_truth,
+    raw_matrix_status: summary.raw_matrix_status,
+    raw_matrix_coverage: summary.raw_matrix_coverage,
+    run_id: summary.run_id,
+    candidate_count: summary.candidate_count,
+    active_strategy_count: summary.active_strategy_count,
+    observed_strategy_count: summary.observed_strategy_count,
+    strategies_total_count: rawStrategies.length,
+    strategies_truncated: rawStrategies.length > strategies.length,
+    strategies,
+    pairwise_total_count: rawPairwise.length,
+    pairwise_truncated: rawPairwise.length > pairwise.length,
+    pairwise,
+    avg_jaccard: summary.avg_jaccard,
+    avg_corr: summary.avg_corr,
+  }
+}
+async function buildDailyPipelineViewPayload(
+  opsDb: Bindings['DB'],
+  coreDb: Bindings['DB'],
+  learningDb: Bindings['DB'],
+  date: string,
+): Promise<Record<string, any>> {
+  const [pipelineSummaries, sectorResult] = await Promise.all([
+    buildDailyPipelineSummaries(opsDb, coreDb, learningDb, date),
+    coreDb.prepare(`
+      WITH eligible AS (
+        SELECT COALESCE(
+                 NULLIF(TRIM(r.industry), ''),
+                 NULLIF(TRIM(r.sector), ''),
+                 NULLIF(TRIM(r.market_segment), ''),
+                 '未分類'
+               ) AS sector,
+               r.symbol, r.score, r.chip_score, r.tech_score,
+               r.signal, r.has_buy_signal, r.created_at
+          FROM daily_recommendations r
+          LEFT JOIN stocks s ON s.id = r.stock_id
+         WHERE r.date = ?
+           AND ${FINAL_RECOMMENDATION_ROW_WHERE}
+           AND COALESCE(r.recommendation_lane, '') != 'emerging_watchlist'
+           AND UPPER(COALESCE(r.market_segment, s.market, '')) NOT IN ('EMERGING', 'ESB', 'ROTC')
+      )
+      SELECT sector,
+             COUNT(*) AS count,
+             ROUND(AVG(COALESCE(score, 0)), 3) AS avg_score,
+             ROUND(AVG(COALESCE(chip_score, 0)), 3) AS avg_chip,
+             ROUND(AVG(COALESCE(tech_score, 0)), 3) AS avg_tech,
+             GROUP_CONCAT(symbol) AS symbols,
+             SUM(CASE WHEN signal IN ('BUY', 'STRONG_BUY') OR has_buy_signal = 1 THEN 1 ELSE 0 END) AS buy_signal_count,
+             SUM(CASE WHEN signal = 'HOLD' THEN 1 ELSE 0 END) AS hold_count,
+             MAX(created_at) AS generated_at
+        FROM eligible
+       GROUP BY sector
+       ORDER BY count DESC, avg_score DESC, sector ASC
+    `).bind(date).all<DailyPipelineSectorAggregateRow>(),
+  ])
+
+  const rows = sectorResult.results ?? []
+  const counts = rows.reduce(
+    (total, row) => ({
+      recommendation_count: total.recommendation_count + Number(row.count ?? 0),
+      buy_signal_count: total.buy_signal_count + Number(row.buy_signal_count ?? 0),
+      hold_count: total.hold_count + Number(row.hold_count ?? 0),
+    }),
+    { recommendation_count: 0, buy_signal_count: 0, hold_count: 0 },
+  )
+  const generatedAt = rows
+    .map((row) => String(row.generated_at ?? '').trim())
+    .filter(Boolean)
+    .sort()
+    .pop() ?? null
+  const sectorSummary = rows.slice(0, 8).map((row) => {
+    const symbols = String(row.symbols ?? '')
+      .split(',')
+      .map((symbol) => symbol.trim())
+      .filter(Boolean)
+      .slice(0, 4)
+    return {
+      sector: row.sector,
+      count: Number(row.count ?? 0),
+      avgScore: Number(row.avg_score ?? 0),
+      avgChip: Number(row.avg_chip ?? 0),
+      avgTech: Number(row.avg_tech ?? 0),
+      symbols,
+      themeText: `${Number(row.count ?? 0)} 檔正式推薦`,
+      rotationText: `BUY ${Number(row.buy_signal_count ?? 0)} / HOLD ${Number(row.hold_count ?? 0)}`,
+      strategyText: '策略命中彙總見 Active strategy',
+      reasonText: 'daily_recommendations pipeline aggregate',
+    }
+  })
+  const fallbackFunnelSummary = {
+    schema_version: 'daily_pipeline_funnel_summary_v1',
+    source_of_truth: 'daily_recommendations.pipeline_aggregate',
+    run_id: null,
+    status: 'materialized',
+    date,
+    ...counts,
+    layers: [
+      {
+        layer: 'L4',
+        label: 'BUY signal allocation',
+        stage: 'daily_recommendations.signal BUY',
+        passed: counts.buy_signal_count,
+        eliminated: Math.max(0, counts.recommendation_count - counts.buy_signal_count),
+      },
+    ],
+    stage_counts: [],
+  }
+  const funnelSummary = pipelineSummaries.funnel_summary
+    ? { ...pipelineSummaries.funnel_summary, ...counts }
+    : fallbackFunnelSummary
+
+  const payload = {
+    schema_version: 'daily_pipeline_view_v1',
+    counts,
+    funnel_summary: funnelSummary,
+    strategy_summary: compactDailyPipelineStrategySummary(pipelineSummaries.strategy_summary),
+    sector_summary: sectorSummary,
+    generated_at: generatedAt,
+  }
+  const payloadBytes = new TextEncoder().encode(JSON.stringify(payload)).byteLength
+  if (payloadBytes > DAILY_PIPELINE_VIEW_MAX_BYTES) {
+    throw new Error(`daily_pipeline_view_payload_too_large:${payloadBytes}/${DAILY_PIPELINE_VIEW_MAX_BYTES}`)
+  }
+  return payload
 }
 
 function formatAbsTwdAmountFromBillion(value: number): string {
@@ -3800,7 +3972,8 @@ function mergeEmergingBrokerWatchPoints(points: unknown, evidence: Record<string
 // GET /api/recommendations/daily?date=YYYY-MM-DD
 // 不帶 date → 先查今天，沒資料則查上一個交易日（D1 最新有推薦的日期）
 recommendations.get('/daily', async (c) => {
-  const view = c.req.query('view') === 'card' ? 'card' : 'full'
+  const requestedView = c.req.query('view')
+  const view = requestedView === 'card' || requestedView === 'pipeline' ? requestedView : 'full'
   let date = c.req.query('date')
   const requestedDate = date
   let resolvedFrom: 'requested' | 'today' | 'fallback_prev' = date ? 'requested' : 'today'
@@ -3822,6 +3995,22 @@ recommendations.get('/daily', async (c) => {
     }
   }
   const requestedOrToday = requestedDate ?? new Date(Date.now() + 8 * 3600_000).toISOString().slice(0, 10)
+  if (view === 'pipeline') {
+    const pipelinePayload = await buildDailyPipelineViewPayload(
+      databaseForDataDomain(c.env, 'ops'),
+      databaseForDataDomain(c.env, 'core'),
+      databaseForDataDomain(c.env, 'learning'),
+      String(date),
+    )
+    return c.json({
+      requested_date: requestedOrToday,
+      date,
+      is_stale: date !== requestedOrToday,
+      resolved_from: resolvedFrom,
+      view,
+      ...pipelinePayload,
+    })
+  }
   const cardDataAsOfDate = String(requestedOrToday)
   const coreResult = await databaseForDataDomain(c.env, 'core').prepare(`
     SELECT r.*, s.market, NULL AS prediction_forecast_data,

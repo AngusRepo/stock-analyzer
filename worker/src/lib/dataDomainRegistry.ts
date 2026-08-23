@@ -96,6 +96,8 @@ const DOMAIN_TABLES: Record<DataDomain, ReadonlySet<string>> = {
     'active8_oof_retention_ledger', 's12_formal_ev_decisions',
     'strategy_spec_registry', 'strategy_decision_log', 'selection_reference_snapshots_v1',
     'strategy_label_matrix_v4', 'strategy_label_matrix_runs_v4', 'selection_reference_repair_runs_v1',
+    'selection_evidence_staging_runs_v1', 'selection_reference_snapshots_staging_v1',
+    'strategy_label_matrix_staging_v4',
     'active8_oof_forward_extension_coverage',
     'selection_reference_identity_repair_runs_v1',
     'strategy_route_calibration_runs_v1', 'strategy_route_calibration_head_v1',
@@ -235,6 +237,7 @@ const EXTENDED_PRODUCTION_TABLE_OWNERSHIP: readonly TableOwnershipMetadata[] = [
   { table: 'debate_ab_log', domain: 'research', disposition: 'active_window', route_ready: true, shadow_ready: true },
   { table: 'monte_carlo_results', domain: 'research', disposition: 'compact_projection', route_ready: true, shadow_ready: true },
   { table: 'pbo_results', domain: 'research', disposition: 'compact_projection', route_ready: true, shadow_ready: true },
+  { table: 'pbo_attempt_receipts', domain: 'research', disposition: 'compact_projection', route_ready: true, shadow_ready: false },
   { table: 'strategy_backtest_results', domain: 'research', disposition: 'compact_projection', route_ready: true, shadow_ready: true },
   { table: 'strategy_mining_candidates', domain: 'research', disposition: 'compact_projection', route_ready: true, shadow_ready: true },
   { table: 'strategy_mining_runs', domain: 'research', disposition: 'active_window', route_ready: true, shadow_ready: true },
@@ -252,6 +255,9 @@ const SHADOW_BACKFILL_EXCLUDED_TABLES: Partial<Record<DataDomain, ReadonlySet<st
     'canonical_selection_outcomes_v1',
     'strategy_evidence_metrics_v1',
     'expected_return_owner_state_v2',
+    'selection_evidence_staging_runs_v1',
+    'selection_reference_snapshots_staging_v1',
+    'strategy_label_matrix_staging_v4',
   ]),
   market: new Set([
     // Append-only knowledge-time rows start at domain creation; mutable legacy revenue cannot seed them.

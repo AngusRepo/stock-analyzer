@@ -769,9 +769,10 @@ export function weeklyBacktestResearchBundleEnabled(env: Bindings): boolean {
     truthyFlag((env as any).WEEKLY_BACKTEST_RESEARCH_BUNDLE_ENABLED)
 }
 
-function buildBacktestResearchBundleRequestBody(runDate?: string): Record<string, unknown> {
+function buildBacktestResearchBundleRequestBody(runDate: string, runId: string): Record<string, unknown> {
   return {
     run_date: runDate,
+    run_id: runId,
     monte_carlo_n: 1000,
     pbo_partitions: 10,
     pbo_source: 'backtest',
@@ -783,33 +784,112 @@ function buildBacktestResearchBundleRequestBody(runDate?: string): Record<string
 
 export async function runWeeklyBacktestResearchBundle(env: Bindings, runDate?: string) {
   requireController(env)
+  if (runDate && !/^\d{4}-\d{2}-\d{2}$/.test(runDate)) {
+    return 'failed: weekly backtest dispatcher requires YYYY-MM-DD run_date'
+  }
 
-  const resp = await controllerFetch(env, '/backtest/research-bundle/run', {
-    method: 'POST',
-    jsonBody: buildBacktestResearchBundleRequestBody(runDate),
-    timeoutMs: 60_000,
+  const resolvedRunDate = runDate ?? twToday()
+  const {
+    buildWeeklyBacktestRunId,
+    markWeeklyBacktestDispatchFailed,
+    markWeeklyBacktestDispatchRunning,
+    reserveWeeklyBacktestDispatch,
+  } = await import('./weeklyResearchRunFence')
+  const opsDb = databaseForDataDomain(env, 'ops')
+  const runId = buildWeeklyBacktestRunId(resolvedRunDate)
+  const reservation = await reserveWeeklyBacktestDispatch(opsDb, {
+    runDate: resolvedRunDate,
+    runId,
   })
+  if (!reservation.acquired) {
+    return `failed: weekly backtest dispatch already active run_id=${reservation.activeRunId ?? 'missing'} owner=${reservation.owner ?? 'missing'}`
+  }
+
+  const failDispatch = async (reason: string): Promise<string> => {
+    await markWeeklyBacktestDispatchFailed(opsDb, { runDate: resolvedRunDate, runId })
+    return `failed: ${reason}`
+  }
+
+  let resp: Response
+  try {
+    resp = await controllerFetch(env, '/backtest/research-bundle/run', {
+      method: 'POST',
+      jsonBody: buildBacktestResearchBundleRequestBody(resolvedRunDate, runId),
+      timeoutMs: 60_000,
+    })
+  } catch (error) {
+    return failDispatch(`weekly backtest controller dispatch error: ${error instanceof Error ? error.message : String(error)}`)
+  }
+
   const text = await resp.text().catch(() => '')
   if (!resp.ok) {
-    return `failed (${resp.status}): ${text.slice(0, 200)}`
+    return failDispatch(`weekly backtest controller dispatch HTTP ${resp.status}: ${text.slice(0, 200)}`)
   }
 
   let result: Record<string, any> = {}
   if (text) {
     try {
       result = JSON.parse(text) as Record<string, any>
-    } catch (error) {
-      return `failed: controller returned non-json for finlab backfill (${text.slice(0, 300)})`
+    } catch {
+      return failDispatch(`controller returned non-json for weekly backtest research bundle (${text.slice(0, 300)})`)
     }
   }
-  if (result.status === 'failed' || result.status === 'error') return `failed: ${result.error ?? result.status}`
-  if (result.status === 'not_triggered') return `failed: ${result.reason ?? 'backtest research bundle not triggered'}`
+  if (result.status === 'failed' || result.status === 'error') {
+    return failDispatch(String(result.error ?? result.status))
+  }
+  if (result.status === 'not_triggered') {
+    return failDispatch(String(result.reason ?? 'backtest research bundle not triggered'))
+  }
 
-  const runId = String(result.run_id ?? '')
-  const functionCallId = String(result.function_call_id ?? '')
+  const returnedRunId = String(result.run_id ?? '')
   const executionId = String(result.execution_id ?? '')
-  const remoteRun = functionCallId || executionId || runId || 'unknown'
-  return `triggered backtest research bundle run_id=${runId || 'unknown'} remote=${remoteRun} callback expected`
+  const functionCallId = String(result.function_call_id ?? '')
+  const returnedRunDate = String(result.run_date ?? '').slice(0, 10)
+  if (returnedRunId !== runId || returnedRunDate !== resolvedRunDate || !executionId) {
+    return failDispatch(
+      `weekly backtest dispatcher identity mismatch expected_run_id=${runId} returned_run_id=${returnedRunId || 'missing'} expected_date=${resolvedRunDate} returned_date=${returnedRunDate || 'missing'} execution_id=${executionId || 'missing'}`,
+    )
+  }
+
+  const running = await markWeeklyBacktestDispatchRunning(opsDb, {
+    runDate: resolvedRunDate,
+    runId,
+    executionId,
+  })
+  if (!running.transitioned && !String(running.owner ?? '').startsWith('weekly_backtest_terminal:')) {
+    return `failed: weekly backtest dispatch fence CAS lost run_id=${runId} owner=${running.owner ?? 'missing'}`
+  }
+
+  const remoteRun = functionCallId || executionId
+  const fenceState = running.transitioned ? 'running' : String(running.owner)
+  return `triggered backtest research bundle run_id=${runId} remote=${remoteRun} fence=${fenceState} callback expected`
+}
+
+export async function runWeeklyBacktestEvidenceReconciliation(env: Bindings, runDate?: string) {
+  requireController(env)
+  if (!runDate) return 'failed: weekly backtest evidence reconciliation requires explicit run_date'
+
+  const resp = await controllerFetch(env, '/backtest/research-bundle/reconcile', {
+    method: 'POST',
+    jsonBody: {
+      run_date: runDate,
+      pbo_partitions: 10,
+    },
+    timeoutMs: 60_000,
+  })
+  const responseText = await resp.text().catch(() => '')
+  if (!resp.ok) return `failed (${resp.status}): ${responseText.slice(0, 200)}`
+
+  let result: Record<string, any> = {}
+  try {
+    result = responseText ? JSON.parse(responseText) as Record<string, any> : {}
+  } catch {
+    return `failed: controller returned non-json for weekly backtest evidence reconciliation (${responseText.slice(0, 300)})`
+  }
+  if (result.status !== 'completed' || result.execution_status !== 'success') {
+    return `failed: ${result.error ?? result.status ?? 'weekly backtest evidence reconciliation incomplete'}`
+  }
+  return String(result.summary ?? `weekly_backtest_reconciled run_date=${runDate} evidence_read_only=true`)
 }
 
 export async function runWeeklyValidationChain(env: Bindings, runDate?: string) {
@@ -1319,6 +1399,9 @@ export async function runWeeklyPBO(env: Bindings, runDate = twToday()) {
 
   const result = await resp.json() as Record<string, any>
   if (result.status === 'failed' || result.status === 'error') return `failed: ${result.error ?? result.status}`
+  if (result.status === 'insufficient_evidence') {
+    return `blocked:insufficient_evidence(observed=${result.observed_trades ?? 'n/a'};required=${result.required_trades ?? 'n/a'};promotion_eligible=false)`
+  }
   return `PBO=${result.pbo}(${result.go_live_verdict}), OOS=${result.oos_mean_return}`
 }
 

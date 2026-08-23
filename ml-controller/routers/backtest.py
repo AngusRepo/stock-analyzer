@@ -6,13 +6,16 @@ POST /backtest/monte-carlo → Monte Carlo MDD simulation
 POST /backtest/pbo         → Probability of Backtest Overfitting (CPCV)
 POST /backtest/replay      → Sprint 6 parameterized Mode A replay (Optuna objective)
 """
+import json
+import hashlib
 import logging
-from fastapi import APIRouter, Body, Query
+import os
+from fastapi import APIRouter, Body, HTTPException, Query
 from pydantic import BaseModel, Field
 from typing import Optional
 
 from services.monte_carlo_service import run_monte_carlo_mdd
-from services.pbo_service import run_pbo_analysis
+from services.pbo_service import run_pbo_analysis, persist_pbo_attempt_receipt
 from services.weekly_evidence_service import (
     run_canonical_weekly_backtest,
     run_historical_weekly_comparison,
@@ -43,6 +46,317 @@ from services.backtest_engine import (
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/backtest", tags=["backtest"])
+BACKTEST_RESEARCH_JOB_NAME = (
+    os.environ.get("BACKTEST_RESEARCH_JOB_NAME")
+    or os.environ.get("OPTUNA_JOB_NAME")
+    or "weekly-backtest-research"
+).strip()
+
+
+class WeeklyBacktestResearchBundleRequest(BaseModel):
+    run_date: str | None = Field(default=None, pattern=r"^\d{4}-\d{2}-\d{2}$")
+    run_id: str = Field(
+        min_length=48,
+        max_length=96,
+        pattern=r"^weekly-backtest-\d{4}-\d{2}-\d{2}-\d{10,16}-[a-f0-9]{8,32}$",
+    )
+    monte_carlo_n: int = Field(default=1000, ge=100, le=10000)
+    pbo_partitions: int = Field(default=10, ge=4, le=20)
+    pbo_source: str = Field(default="backtest", pattern="^(paper|backtest)$")
+    callback_task: str = Field(default="weekly-backtest", pattern="^weekly-backtest$")
+    trigger_source: str = Field(default="worker_weekly_backtest")
+    dry_run: bool = Field(default=False)
+
+
+@router.post("/research-bundle/run")
+async def trigger_weekly_backtest_research_bundle(
+    req: WeeklyBacktestResearchBundleRequest = Body(...),
+):
+    """Hand the long-running weekly evidence bundle to a Cloud Run Job."""
+    run_date = req.run_date or taiwan_today()
+    if not req.run_id.startswith(f"weekly-backtest-{run_date}-"):
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "error": "weekly_backtest_run_id_date_mismatch",
+                "run_date": run_date,
+            },
+        )
+    if req.dry_run:
+        return {
+            "status": "not_triggered",
+            "reason": "dry_run",
+            "task": req.callback_task,
+            "run_date": run_date,
+            "run_id": req.run_id,
+        }
+
+    run_id = req.run_id
+    env_overrides = {
+        "OPTUNA_JOB_MODE": "weekly_backtest",
+        "OPTUNA_RUN_DATE": run_date,
+        "OPTUNA_RUN_ID": run_id,
+        "OPTUNA_CALLBACK_TASK": req.callback_task,
+        "OPTUNA_TRIGGER_SOURCE": req.trigger_source,
+        "WEEKLY_BACKTEST_MONTE_CARLO_N": str(req.monte_carlo_n),
+        "WEEKLY_BACKTEST_PBO_PARTITIONS": str(req.pbo_partitions),
+        "WEEKLY_BACKTEST_PBO_SOURCE": req.pbo_source,
+    }
+    from services.cloud_run_jobs_client import CloudRunJobsClient, JobAlreadyRunningError
+    try:
+        execution = CloudRunJobsClient(job_name=BACKTEST_RESEARCH_JOB_NAME).run_job(
+            env_overrides=env_overrides,
+            reject_if_running=True,
+        )
+    except JobAlreadyRunningError as exc:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "error": "weekly_backtest_research_execution_already_running",
+                "execution_id": exc.execution.execution_id,
+            },
+        ) from exc
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("[BacktestResearchBundle] Job dispatch failed")
+        raise HTTPException(
+            status_code=502,
+            detail=f"Cloud Run weekly backtest Job dispatch failed: {type(exc).__name__}: {exc}",
+        ) from exc
+
+    return {
+        "status": "triggered",
+        "triggered": True,
+        "task": req.callback_task,
+        "run_date": run_date,
+        "run_id": run_id,
+        "execution_id": execution.execution_id,
+        "execution_name": execution.execution_name,
+        "backend": "cloud_run_job",
+        "message": "weekly backtest research bundle triggered; callback expected",
+    }
+
+
+class WeeklyBacktestEvidenceReconciliationRequest(BaseModel):
+    run_date: str = Field(..., pattern=r"^\d{4}-\d{2}-\d{2}$")
+    pbo_partitions: int = Field(default=10, ge=4, le=20)
+
+
+@router.post("/research-bundle/reconcile")
+async def reconcile_weekly_backtest_research_bundle(
+    req: WeeklyBacktestEvidenceReconciliationRequest = Body(...),
+):
+    """Keep source evidence read-only; append only a production-effect-free reconciliation receipt."""
+    from services.backtest_trade_evidence import canonical_weekly_evidence_error
+    from services.d1_domain_client import D1DataDomain
+    from services.monte_carlo_service import _d1_query, httpx
+
+    if httpx is None:
+        return {"status": "error", "error": "httpx not installed"}
+
+    async with httpx.AsyncClient() as client:
+        backtest_rows = await _d1_query(
+            client,
+            """SELECT id, total_trades, raw_results, created_at
+                 FROM backtest_results
+                WHERE run_date = ? AND strategy = 'replay_mode_b'
+                ORDER BY created_at DESC LIMIT 1""",
+            [req.run_date],
+            domain=D1DataDomain.RESEARCH,
+        )
+        mc_rows = await _d1_query(
+            client,
+            """SELECT id, source, n_trades, go_live_verdict, raw_distribution, created_at
+                 FROM monte_carlo_results
+                WHERE run_date = ? AND source IN ('paper', 'backtest')
+                ORDER BY created_at DESC""",
+            [req.run_date],
+            domain=D1DataDomain.RESEARCH,
+        )
+        pbo_rows = await _d1_query(
+            client,
+            """SELECT id, source, n_trades, pbo, go_live_verdict, raw_details, created_at
+                 FROM pbo_results
+                WHERE run_date = ? AND source = 'backtest'
+                ORDER BY created_at DESC LIMIT 1""",
+            [req.run_date],
+            domain=D1DataDomain.RESEARCH,
+        )
+
+    if not backtest_rows:
+        return {
+            "status": "error",
+            "error": "immutable_backtest_evidence_missing",
+            "run_date": req.run_date,
+        }
+    raw_text = str(backtest_rows[0].get("raw_results") or "")
+    try:
+        raw = json.loads(raw_text)
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return {
+            "status": "error",
+            "error": "immutable_backtest_evidence_invalid_json",
+            "run_date": req.run_date,
+        }
+    if not isinstance(raw, dict):
+        return {
+            "status": "error",
+            "error": "immutable_backtest_evidence_invalid_shape",
+            "run_date": req.run_date,
+        }
+    clock_error = canonical_weekly_evidence_error(raw, req.run_date)
+    if clock_error:
+        return {"status": "error", "error": clock_error, "run_date": req.run_date}
+
+    mc_by_source: dict[str, dict] = {}
+    for row in mc_rows:
+        source = str(row.get("source") or "")
+        if source and source not in mc_by_source:
+            mc_by_source[source] = row
+    missing_mc = sorted({"paper", "backtest"} - set(mc_by_source))
+    if missing_mc:
+        return {
+            "status": "error",
+            "error": f"immutable_monte_carlo_evidence_missing:{','.join(missing_mc)}",
+            "run_date": req.run_date,
+        }
+
+    validation_blockers: list[str] = []
+    for source in ("paper", "backtest"):
+        row = mc_by_source[source]
+        verdict = str(row.get("go_live_verdict") or "UNKNOWN").upper()
+        try:
+            distribution = json.loads(str(row.get("raw_distribution") or "{}"))
+        except (TypeError, ValueError, json.JSONDecodeError):
+            return {
+                "status": "error",
+                "error": f"immutable_monte_carlo_evidence_invalid_json:{source}",
+                "run_date": req.run_date,
+            }
+        if not isinstance(distribution, dict):
+            return {
+                "status": "error",
+                "error": f"immutable_monte_carlo_evidence_invalid_shape:{source}",
+                "run_date": req.run_date,
+            }
+        if source == "backtest":
+            provenance = distribution.get("source_provenance")
+            expected_backtest_id = str(backtest_rows[0].get("id") or "")
+            if (
+                not isinstance(provenance, dict)
+                or str(provenance.get("source_row_id") or "") != expected_backtest_id
+                or str(provenance.get("source_run_date") or "")[:10] != req.run_date
+            ):
+                return {
+                    "status": "error",
+                    "error": "immutable_monte_carlo_backtest_lineage_mismatch",
+                    "run_date": req.run_date,
+                }
+        tail_risk = str(distribution.get("tail_risk_status") or "UNKNOWN").upper()
+        if verdict != "PASS":
+            validation_blockers.append(f"monte_carlo:{source}:verdict={verdict}")
+        if tail_risk != "FULL_SAMPLE_TAIL_RISK":
+            validation_blockers.append(f"monte_carlo:{source}:tail_risk={tail_risk}")
+
+    total_trades = int(backtest_rows[0].get("total_trades") or 0)
+    has_partition_returns = bool(
+        raw.get("strategy_returns_by_partition")
+        or raw.get("candidate_partition_returns")
+    )
+    required_trades = req.pbo_partitions * 3
+    pbo_evidence = pbo_rows[0] if pbo_rows else None
+    pbo_attempt_id: str | None = None
+    if pbo_evidence:
+        try:
+            pbo_details = json.loads(str(pbo_evidence.get("raw_details") or "{}"))
+        except (TypeError, ValueError, json.JSONDecodeError):
+            return {
+                "status": "error",
+                "error": "immutable_pbo_evidence_invalid_json",
+                "run_date": req.run_date,
+            }
+        pbo_provenance = pbo_details.get("source_provenance") if isinstance(pbo_details, dict) else None
+        expected_backtest_id = str(backtest_rows[0].get("id") or "")
+        if (
+            not isinstance(pbo_provenance, dict)
+            or str(pbo_provenance.get("source_row_id") or "") != expected_backtest_id
+            or str(pbo_provenance.get("source_run_date") or "")[:10] != req.run_date
+        ):
+            return {
+                "status": "error",
+                "error": "immutable_pbo_backtest_lineage_mismatch",
+                "run_date": req.run_date,
+            }
+        pbo_verdict = str(pbo_evidence.get("go_live_verdict") or "UNKNOWN").upper()
+        if pbo_verdict != "PASS":
+            validation_blockers.append(f"pbo:verdict={pbo_verdict}")
+    elif not has_partition_returns and total_trades < required_trades:
+        validation_blockers.append(
+            f"pbo:insufficient_evidence:observed={total_trades}:required={required_trades}"
+        )
+        async with httpx.AsyncClient() as receipt_client:
+            pbo_attempt_id = await persist_pbo_attempt_receipt(
+                receipt_client,
+                run_date=req.run_date,
+                source="backtest",
+                status="insufficient_evidence",
+                n_partitions=req.pbo_partitions,
+                observed_trades=total_trades,
+                required_trades=required_trades,
+                source_provenance={
+                    "source_table": "backtest_results",
+                    "source_row_id": backtest_rows[0].get("id"),
+                    "source_run_date": req.run_date,
+                    "source_created_at": backtest_rows[0].get("created_at"),
+                    "source_payload_sha256": hashlib.sha256(raw_text.encode("utf-8")).hexdigest(),
+                    "receipt_origin": "read_only_source_reconciliation",
+                },
+                pbo_result_id=None,
+            )
+        if not pbo_attempt_id:
+            return {
+                "status": "error",
+                "error": "pbo_attempt_receipt_write_failed",
+                "run_date": req.run_date,
+                "production_effect": False,
+            }
+    else:
+        return {
+            "status": "error",
+            "error": "immutable_pbo_evidence_missing",
+            "run_date": req.run_date,
+            "observed_trades": total_trades,
+            "required_trades": required_trades,
+        }
+
+    validation_status = "blocked" if validation_blockers else "passed"
+    return {
+        "status": "completed",
+        "run_date": req.run_date,
+        "execution_status": "success",
+        "validation_status": validation_status,
+        "promotion_gate_eligible": not validation_blockers,
+        "production_effect": False,
+        "evidence_read_only": True,
+        "source_evidence_read_only": True,
+        "attempt_receipt_append_only": bool(pbo_attempt_id),
+        "reconciled": True,
+        "blockers": validation_blockers,
+        "observed_trades": total_trades,
+        "required_trades": required_trades,
+        "evidence_ids": {
+            "backtest": backtest_rows[0].get("id"),
+            "monte_carlo": {source: mc_by_source[source].get("id") for source in ("paper", "backtest")},
+            "pbo": pbo_evidence.get("id") if pbo_evidence else None,
+            "pbo_attempt": pbo_attempt_id,
+        },
+        "attempt_receipt_materialized": bool(pbo_attempt_id),
+        "summary": (
+            f"weekly_backtest_reconciled validation={validation_status} "
+            f"run_date={req.run_date} trades={total_trades} "
+            f"blockers={','.join(validation_blockers) if validation_blockers else 'none'} "
+            "evidence_read_only=true"
+        )[:1200],
+    }
 
 
 @router.post("/run")

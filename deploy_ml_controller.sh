@@ -38,9 +38,11 @@ VERIFY_JOB_NAME="${VERIFY_JOB_NAME:-verify-v2}"
 SCREENER_JOB_NAME="${SCREENER_JOB_NAME:-screener-v2}"
 S12_STRUCTURE_JOB_NAME="${S12_STRUCTURE_JOB_NAME:-s12-structure-batch}"
 OPTUNA_JOB_NAME="${OPTUNA_JOB_NAME:-optuna-research-sweep}"
+BACKTEST_RESEARCH_JOB_NAME="${BACKTEST_RESEARCH_JOB_NAME:-weekly-backtest-research}"
 OOF_MATERIALIZE_JOB_NAME="${OOF_MATERIALIZE_JOB_NAME:-active8-oof-materialize}"
 DATASET_SNAPSHOT_JOB_NAME="${DATASET_SNAPSHOT_JOB_NAME:-dataset-snapshot-export}"
 OPTUNA_JOB_TIMEOUT="${OPTUNA_JOB_TIMEOUT:-10800s}"
+BACKTEST_RESEARCH_JOB_TIMEOUT="${BACKTEST_RESEARCH_JOB_TIMEOUT:-3600s}"
 OOF_MATERIALIZE_JOB_TIMEOUT="${OOF_MATERIALIZE_JOB_TIMEOUT:-3600s}"
 DATASET_SNAPSHOT_JOB_TIMEOUT="${DATASET_SNAPSHOT_JOB_TIMEOUT:-3600s}"
 SCREENER_JOB_TIMEOUT="${SCREENER_JOB_TIMEOUT:-7200s}"
@@ -104,6 +106,7 @@ SHIOAJI_SECRET_BINDINGS="SHIOAJI_API_KEY=${SHIOAJI_API_KEY_SECRET},SHIOAJI_SECRE
 RUN_SECRET_BINDINGS="${BASE_SECRET_BINDINGS},${SHIOAJI_SECRET_BINDINGS}"
 SERVICE_SECRET_BINDINGS="${RUN_SECRET_BINDINGS},RETRAIN_CALLBACK_TOKEN=${RETRAIN_CALLBACK_TOKEN_SECRET}"
 S12_STRUCTURE_SECRET_BINDINGS="CF_API_TOKEN=${CF_API_TOKEN_SECRET},STOCKVISION_AUTH_TOKEN=${STOCKVISION_AUTH_TOKEN_SECRET},PROXY_SERVICE_TOKEN=${PROXY_SERVICE_TOKEN_SECRET}"
+BACKTEST_RESEARCH_SECRET_BINDINGS="CF_API_TOKEN=${CF_API_TOKEN_SECRET},STOCKVISION_AUTH_TOKEN=${STOCKVISION_AUTH_TOKEN_SECRET}"
 PIPELINE_STATE_SPACE_OVERLAY_MODE="${PIPELINE_STATE_SPACE_OVERLAY_MODE:-disabled}"
 PIPELINE_STATE_SPACE_OVERLAY_SOFT_DEADLINE_SECONDS="${PIPELINE_STATE_SPACE_OVERLAY_SOFT_DEADLINE_SECONDS:-120}"
 MODAL_PREDICT_BATCH_SIZE_CANDIDATES="${MODAL_PREDICT_BATCH_SIZE_CANDIDATES:-80|120|160}"
@@ -114,7 +117,7 @@ FINLAB_BACKFILL_EXECUTOR="${FINLAB_BACKFILL_EXECUTOR:-modal}"
 STRATEGY_MINING_JOB_NAME="${STRATEGY_MINING_JOB_NAME:-strategy-mining-research}"
 STRATEGY_MINING_EXECUTION_ENABLED="${STRATEGY_MINING_EXECUTION_ENABLED:-true}"
 STRATEGY_MINING_BACKEND="${STRATEGY_MINING_BACKEND:-modal}"
-RUNTIME_ENV_VARS="GCS_BUCKET_NAME=${GCS_BUCKET_NAME},RETRAIN_LOCK_BUCKET=${RETRAIN_LOCK_BUCKET},GCP_PROJECT_ID=${GCP_PROJECT_ID},GCP_REGION=${GCP_REGION},PIPELINE_JOB_NAME=${PIPELINE_JOB_NAME},VERIFY_JOB_NAME=${VERIFY_JOB_NAME},SCREENER_JOB_NAME=${SCREENER_JOB_NAME},S12_STRUCTURE_JOB_NAME=${S12_STRUCTURE_JOB_NAME},OPTUNA_JOB_NAME=${OPTUNA_JOB_NAME},OOF_MATERIALIZE_JOB_NAME=${OOF_MATERIALIZE_JOB_NAME},STOCKVISION_WORKER_URL=${STOCKVISION_WORKER_URL},ML_CONTROLLER_PUBLIC_URL=${ML_CONTROLLER_PUBLIC_URL},CF_D1_DB_ID=${CF_D1_DB_ID},CF_KV_NAMESPACE_ID=${CF_KV_NAMESPACE_ID},S12_RESEARCH_KBARS_URL=https://shioaji-research-530028717113.asia-east1.run.app,SHIOAJI_CERT_PATH=${SHIOAJI_CERT_MOUNT_PATH},PIPELINE_STATE_SPACE_OVERLAY_MODE=${PIPELINE_STATE_SPACE_OVERLAY_MODE},PIPELINE_STATE_SPACE_OVERLAY_SOFT_DEADLINE_SECONDS=${PIPELINE_STATE_SPACE_OVERLAY_SOFT_DEADLINE_SECONDS},MODAL_PREDICT_BATCH_SIZE_CANDIDATES=${MODAL_PREDICT_BATCH_SIZE_CANDIDATES},MODAL_PREDICT_BATCH_SIZE_OBSERVATION_SOURCE=${MODAL_PREDICT_BATCH_SIZE_OBSERVATION_SOURCE},TIMESFM_MIN_SEQUENCE_COVERAGE=${TIMESFM_MIN_SEQUENCE_COVERAGE},TIMESFM_MIN_SEQUENCE_POINTS=${TIMESFM_MIN_SEQUENCE_POINTS},FINLAB_BACKFILL_EXECUTOR=${FINLAB_BACKFILL_EXECUTOR},STRATEGY_MINING_JOB_NAME=${STRATEGY_MINING_JOB_NAME},STRATEGY_MINING_EXECUTION_ENABLED=${STRATEGY_MINING_EXECUTION_ENABLED},STRATEGY_MINING_BACKEND=${STRATEGY_MINING_BACKEND}"
+RUNTIME_ENV_VARS="GCS_BUCKET_NAME=${GCS_BUCKET_NAME},RETRAIN_LOCK_BUCKET=${RETRAIN_LOCK_BUCKET},GCP_PROJECT_ID=${GCP_PROJECT_ID},GCP_REGION=${GCP_REGION},PIPELINE_JOB_NAME=${PIPELINE_JOB_NAME},VERIFY_JOB_NAME=${VERIFY_JOB_NAME},SCREENER_JOB_NAME=${SCREENER_JOB_NAME},S12_STRUCTURE_JOB_NAME=${S12_STRUCTURE_JOB_NAME},OPTUNA_JOB_NAME=${OPTUNA_JOB_NAME},BACKTEST_RESEARCH_JOB_NAME=${BACKTEST_RESEARCH_JOB_NAME},OOF_MATERIALIZE_JOB_NAME=${OOF_MATERIALIZE_JOB_NAME},STOCKVISION_WORKER_URL=${STOCKVISION_WORKER_URL},ML_CONTROLLER_PUBLIC_URL=${ML_CONTROLLER_PUBLIC_URL},CF_D1_DB_ID=${CF_D1_DB_ID},CF_KV_NAMESPACE_ID=${CF_KV_NAMESPACE_ID},S12_RESEARCH_KBARS_URL=https://shioaji-research-530028717113.asia-east1.run.app,SHIOAJI_CERT_PATH=${SHIOAJI_CERT_MOUNT_PATH},PIPELINE_STATE_SPACE_OVERLAY_MODE=${PIPELINE_STATE_SPACE_OVERLAY_MODE},PIPELINE_STATE_SPACE_OVERLAY_SOFT_DEADLINE_SECONDS=${PIPELINE_STATE_SPACE_OVERLAY_SOFT_DEADLINE_SECONDS},MODAL_PREDICT_BATCH_SIZE_CANDIDATES=${MODAL_PREDICT_BATCH_SIZE_CANDIDATES},MODAL_PREDICT_BATCH_SIZE_OBSERVATION_SOURCE=${MODAL_PREDICT_BATCH_SIZE_OBSERVATION_SOURCE},TIMESFM_MIN_SEQUENCE_COVERAGE=${TIMESFM_MIN_SEQUENCE_COVERAGE},TIMESFM_MIN_SEQUENCE_POINTS=${TIMESFM_MIN_SEQUENCE_POINTS},FINLAB_BACKFILL_EXECUTOR=${FINLAB_BACKFILL_EXECUTOR},STRATEGY_MINING_JOB_NAME=${STRATEGY_MINING_JOB_NAME},STRATEGY_MINING_EXECUTION_ENABLED=${STRATEGY_MINING_EXECUTION_ENABLED},STRATEGY_MINING_BACKEND=${STRATEGY_MINING_BACKEND}"
 RUNTIME_ENV_VARS="${RUNTIME_ENV_VARS},DATASET_SNAPSHOT_JOB_NAME=${DATASET_SNAPSHOT_JOB_NAME}"
 RUNTIME_ENV_VARS="${RUNTIME_ENV_VARS},CF_D1_LEARNING_DB_ID=${CF_D1_LEARNING_DB_ID}"
 RUNTIME_ENV_VARS="${RUNTIME_ENV_VARS},CF_D1_OPS_DB_ID=${CF_D1_OPS_DB_ID}"
@@ -193,6 +196,7 @@ REQUIRED_ENV_VARS=(
   SCREENER_JOB_NAME
   S12_STRUCTURE_JOB_NAME
   OPTUNA_JOB_NAME
+  BACKTEST_RESEARCH_JOB_NAME
   OOF_MATERIALIZE_JOB_NAME
   DATASET_SNAPSHOT_JOB_NAME
   STRATEGY_MINING_JOB_NAME
@@ -500,6 +504,12 @@ load_live_image_state() {
   LIVE_OPTUNA_JOB_ENTRYPOINT=$(gcloud run jobs describe "$OPTUNA_JOB_NAME" \
     --region="$REGION" \
     --format="value(spec.template.spec.template.spec.containers[0].command[0],spec.template.spec.template.spec.containers[0].args)" 2>/dev/null || true)
+  LIVE_BACKTEST_RESEARCH_JOB_IMG=$(gcloud run jobs describe "$BACKTEST_RESEARCH_JOB_NAME" \
+    --region="$REGION" \
+    --format="value(spec.template.spec.template.spec.containers[0].image)" 2>/dev/null || true)
+  LIVE_BACKTEST_RESEARCH_JOB_ENTRYPOINT=$(gcloud run jobs describe "$BACKTEST_RESEARCH_JOB_NAME" \
+    --region="$REGION" \
+    --format="value(spec.template.spec.template.spec.containers[0].command[0],spec.template.spec.template.spec.containers[0].args)" 2>/dev/null || true)
   LIVE_OOF_MATERIALIZE_JOB_IMG=$(gcloud run jobs describe "$OOF_MATERIALIZE_JOB_NAME" \
     --region="$REGION" \
     --format="value(spec.template.spec.template.spec.containers[0].image)" 2>/dev/null || true)
@@ -530,6 +540,7 @@ build_verify_job_env_file() {
   SERVICE_JSON="$service_json" \
   VERIFY_JOB_NAME="$VERIFY_JOB_NAME" \
   SCREENER_JOB_NAME="$SCREENER_JOB_NAME" \
+  BACKTEST_RESEARCH_JOB_NAME="$BACKTEST_RESEARCH_JOB_NAME" \
   STRATEGY_MINING_JOB_NAME="$STRATEGY_MINING_JOB_NAME" \
   STRATEGY_MINING_EXECUTION_ENABLED="$STRATEGY_MINING_EXECUTION_ENABLED" \
   STRATEGY_MINING_BACKEND="$STRATEGY_MINING_BACKEND" \
@@ -574,6 +585,7 @@ for item in service_container.get("env", []):
 envs["VERIFY_JOB_NAME"] = os.environ["VERIFY_JOB_NAME"]
 envs["SCREENER_JOB_NAME"] = os.environ["SCREENER_JOB_NAME"]
 envs["OPTUNA_JOB_NAME"] = os.environ.get("OPTUNA_JOB_NAME", "optuna-research-sweep")
+envs["BACKTEST_RESEARCH_JOB_NAME"] = os.environ["BACKTEST_RESEARCH_JOB_NAME"]
 envs["STRATEGY_MINING_JOB_NAME"] = os.environ["STRATEGY_MINING_JOB_NAME"]
 envs["STRATEGY_MINING_EXECUTION_ENABLED"] = os.environ["STRATEGY_MINING_EXECUTION_ENABLED"]
 envs["STRATEGY_MINING_BACKEND"] = os.environ["STRATEGY_MINING_BACKEND"]
@@ -831,6 +843,69 @@ sync_optuna_job() {
   echo ""
 }
 
+sync_backtest_research_job() {
+  local env_file="$1"
+  local service_account_args=()
+  if [ -n "${VERIFY_JOB_SERVICE_ACCOUNT:-}" ]; then
+    service_account_args=(--service-account="$VERIFY_JOB_SERVICE_ACCOUNT")
+  fi
+
+  if gcloud run jobs describe "$BACKTEST_RESEARCH_JOB_NAME" \
+      --region="$REGION" \
+      --format="value(metadata.name)" >/dev/null 2>&1; then
+    echo "=== Update Job $BACKTEST_RESEARCH_JOB_NAME image + entrypoint ==="
+    if ! gcloud run jobs update "$BACKTEST_RESEARCH_JOB_NAME" \
+        --region="$REGION" \
+        --image="$NEW_IMAGE" \
+        --command=python \
+        --args=-m \
+        --args=optuna_job_main \
+        --cpu="$VERIFY_JOB_CPU" \
+        --memory="$VERIFY_JOB_MEMORY" \
+        --task-timeout="$BACKTEST_RESEARCH_JOB_TIMEOUT" \
+        --max-retries=0 \
+        "${service_account_args[@]}" \
+        --update-labels="$PROVENANCE_LABELS" \
+        --set-secrets="$BACKTEST_RESEARCH_SECRET_BINDINGS" \
+        --env-vars-file="$env_file"; then
+      echo "Weekly backtest research job update failed" >&2
+      exit 4
+    fi
+  else
+    echo "=== Create Job $BACKTEST_RESEARCH_JOB_NAME ==="
+    if ! gcloud run jobs create "$BACKTEST_RESEARCH_JOB_NAME" \
+        --region="$REGION" \
+        --image="$NEW_IMAGE" \
+        --command=python \
+        --args=-m \
+        --args=optuna_job_main \
+        --cpu="$VERIFY_JOB_CPU" \
+        --memory="$VERIFY_JOB_MEMORY" \
+        --task-timeout="$BACKTEST_RESEARCH_JOB_TIMEOUT" \
+        --max-retries=0 \
+        "${service_account_args[@]}" \
+        --labels="$PROVENANCE_LABELS" \
+        --set-secrets="$BACKTEST_RESEARCH_SECRET_BINDINGS" \
+        --env-vars-file="$env_file"; then
+      echo "Weekly backtest research job create failed" >&2
+      exit 4
+    fi
+  fi
+
+  local controller_member="serviceAccount:${SERVICE_RUNTIME_SERVICE_ACCOUNT}"
+  for role in \
+    "roles/run.jobsExecutorWithOverrides" \
+    "roles/run.viewer"; do
+    gcloud run jobs add-iam-policy-binding "$BACKTEST_RESEARCH_JOB_NAME" \
+      --region="$REGION" \
+      --member="$controller_member" \
+      --role="$role" \
+      --quiet >/dev/null
+  done
+  echo "Weekly backtest research job sync + controller IAM succeeded"
+  echo ""
+}
+
 sync_strategy_mining_job() {
   local env_file="$1"
   local service_account_args=()
@@ -999,6 +1074,7 @@ run_preflight() {
   require_nonempty "VERIFY_JOB_NAME" "Required by ml-controller /verify/run Cloud Run Job trigger"
   require_nonempty "SCREENER_JOB_NAME" "Required by ml-controller /screener/v2/run Cloud Run Job trigger"
   require_nonempty "OPTUNA_JOB_NAME" "Required by ml-controller /optuna/research_sweep/run Cloud Run Job trigger"
+  require_nonempty "BACKTEST_RESEARCH_JOB_NAME" "Required by ml-controller /backtest/research-bundle/run Cloud Run Job trigger"
   require_nonempty "OOF_MATERIALIZE_JOB_NAME" "Required by Active-8 OOF durable materialization"
   require_nonempty "DATASET_SNAPSHOT_JOB_NAME" "Required by deferred research snapshot export"
   require_nonempty "CF_API_TOKEN_SECRET" "Secret Manager reference for Cloudflare API token, e.g. stockvision-cf-api-token:latest"
@@ -1027,6 +1103,7 @@ run_preflight() {
   print_preflight_value "MODAL_TOKEN_SECRET_SECRET"
   print_preflight_value "SCREENER_JOB_TIMEOUT"
   print_preflight_value "OPTUNA_JOB_TIMEOUT"
+  print_preflight_value "BACKTEST_RESEARCH_JOB_TIMEOUT"
   echo ""
 
   echo "=== Preflight: current live service env drift ==="
@@ -1071,6 +1148,10 @@ run_preflight() {
     echo "  Live optuna image     : ${LIVE_OPTUNA_JOB_IMG}"
     echo "  Live optuna entrypoint: ${LIVE_OPTUNA_JOB_ENTRYPOINT:-unknown}"
   fi
+  if [ -n "${LIVE_BACKTEST_RESEARCH_JOB_IMG:-}" ]; then
+    echo "  Live weekly backtest  : ${LIVE_BACKTEST_RESEARCH_JOB_IMG}"
+    echo "  Live backtest entrypt : ${LIVE_BACKTEST_RESEARCH_JOB_ENTRYPOINT:-unknown}"
+  fi
   if [ -n "${LIVE_OOF_MATERIALIZE_JOB_IMG:-}" ]; then
     echo "  Live OOF materialize  : ${LIVE_OOF_MATERIALIZE_JOB_IMG}"
     echo "  Live OOF entrypoint   : ${LIVE_OOF_MATERIALIZE_JOB_ENTRYPOINT:-unknown}"
@@ -1080,9 +1161,9 @@ run_preflight() {
     echo "  Live snapshot entrypt : ${LIVE_DATASET_SNAPSHOT_JOB_ENTRYPOINT:-unknown}"
   fi
 
-  if [ -z "${LIVE_SERVICE_IMG:-}" ] || [ -z "${LIVE_JOB_IMG:-}" ] || [ -z "${LIVE_VERIFY_JOB_IMG:-}" ] || [ -z "${LIVE_SCREENER_JOB_IMG:-}" ] || [ -z "${LIVE_OPTUNA_JOB_IMG:-}" ] || [ -z "${LIVE_OOF_MATERIALIZE_JOB_IMG:-}" ] || [ -z "${LIVE_DATASET_SNAPSHOT_JOB_IMG:-}" ]; then
+  if [ -z "${LIVE_SERVICE_IMG:-}" ] || [ -z "${LIVE_JOB_IMG:-}" ] || [ -z "${LIVE_VERIFY_JOB_IMG:-}" ] || [ -z "${LIVE_SCREENER_JOB_IMG:-}" ] || [ -z "${LIVE_OPTUNA_JOB_IMG:-}" ] || [ -z "${LIVE_BACKTEST_RESEARCH_JOB_IMG:-}" ] || [ -z "${LIVE_OOF_MATERIALIZE_JOB_IMG:-}" ] || [ -z "${LIVE_DATASET_SNAPSHOT_JOB_IMG:-}" ]; then
     echo "  Unable to fully verify Service / Job image drift from current environment."
-  elif [ "$LIVE_SERVICE_IMG" = "$LIVE_JOB_IMG" ] && [ "$LIVE_SERVICE_IMG" = "$LIVE_VERIFY_JOB_IMG" ] && [ "$LIVE_SERVICE_IMG" = "$LIVE_SCREENER_JOB_IMG" ] && [ "$LIVE_SERVICE_IMG" = "$LIVE_OPTUNA_JOB_IMG" ] && [ "$LIVE_SERVICE_IMG" = "$LIVE_OOF_MATERIALIZE_JOB_IMG" ] && [ "$LIVE_SERVICE_IMG" = "$LIVE_DATASET_SNAPSHOT_JOB_IMG" ]; then
+  elif [ "$LIVE_SERVICE_IMG" = "$LIVE_JOB_IMG" ] && [ "$LIVE_SERVICE_IMG" = "$LIVE_VERIFY_JOB_IMG" ] && [ "$LIVE_SERVICE_IMG" = "$LIVE_SCREENER_JOB_IMG" ] && [ "$LIVE_SERVICE_IMG" = "$LIVE_OPTUNA_JOB_IMG" ] && [ "$LIVE_SERVICE_IMG" = "$LIVE_BACKTEST_RESEARCH_JOB_IMG" ] && [ "$LIVE_SERVICE_IMG" = "$LIVE_OOF_MATERIALIZE_JOB_IMG" ] && [ "$LIVE_SERVICE_IMG" = "$LIVE_DATASET_SNAPSHOT_JOB_IMG" ]; then
     echo "  Service / Job image sync: OK"
   else
     echo "  Service / Job image sync: DRIFT DETECTED"
@@ -1158,12 +1239,28 @@ echo "New Service image: $NEW_IMAGE"
 echo ""
 VERIFY_JOB_ENV_FILE=$(mktemp -t verify_job_env.XXXXXX.yaml 2>/dev/null || echo "/tmp/verify_job_env.$$.yaml")
 VERIFY_JOB_META_FILE=$(mktemp -t verify_job_meta.XXXXXX.txt 2>/dev/null || echo "/tmp/verify_job_meta.$$.txt")
+BACKTEST_RESEARCH_JOB_ENV_FILE=$(mktemp -t backtest_research_job_env.XXXXXX.yaml 2>/dev/null || echo "/tmp/backtest_research_job_env.$$.yaml")
 OOF_MATERIALIZE_JOB_ENV_FILE=$(mktemp -t oof_materialize_job_env.XXXXXX.yaml 2>/dev/null || echo "/tmp/oof_materialize_job_env.$$.yaml")
 STRATEGY_MINING_JOB_ENV_FILE=$(mktemp -t strategy_mining_job_env.XXXXXX.yaml 2>/dev/null || echo "/tmp/strategy_mining_job_env.$$.yaml")
-trap 'rm -f "$VERIFY_JOB_ENV_FILE" "$VERIFY_JOB_META_FILE" "$OOF_MATERIALIZE_JOB_ENV_FILE" "$STRATEGY_MINING_JOB_ENV_FILE"' EXIT
+trap 'rm -f "$VERIFY_JOB_ENV_FILE" "$VERIFY_JOB_META_FILE" "$BACKTEST_RESEARCH_JOB_ENV_FILE" "$OOF_MATERIALIZE_JOB_ENV_FILE" "$STRATEGY_MINING_JOB_ENV_FILE"' EXIT
 build_verify_job_env_file "$VERIFY_JOB_ENV_FILE" "$VERIFY_JOB_META_FILE"
+cp "$VERIFY_JOB_ENV_FILE" "$BACKTEST_RESEARCH_JOB_ENV_FILE"
 cp "$VERIFY_JOB_ENV_FILE" "$OOF_MATERIALIZE_JOB_ENV_FILE"
 cp "$VERIFY_JOB_ENV_FILE" "$STRATEGY_MINING_JOB_ENV_FILE"
+BACKTEST_RESEARCH_ENV_FILE="$BACKTEST_RESEARCH_JOB_ENV_FILE" "$PYTHON_BIN" - <<'PY'
+import os
+from pathlib import Path
+
+path = Path(os.environ["BACKTEST_RESEARCH_ENV_FILE"])
+overrides = {
+    "OPTUNA_JOB_MODE": "weekly_backtest",
+    "OPTUNA_CALLBACK_TASK": "weekly-backtest",
+}
+lines = path.read_text(encoding="utf-8").splitlines()
+lines = [line for line in lines if line.split(":", 1)[0].strip() not in overrides]
+lines.extend(f'{key}: "{value}"' for key, value in overrides.items())
+path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+PY
 printf 'STRATEGY_MINING_D1_WORKER_ONLY: "1"\n' >> "$STRATEGY_MINING_JOB_ENV_FILE"
 printf 'OOF_MATERIALIZE_JOB_EXECUTION: "1"\n' >> "$OOF_MATERIALIZE_JOB_ENV_FILE"
 load_verify_job_template "$VERIFY_JOB_META_FILE"
@@ -1188,6 +1285,7 @@ sync_verify_job "$VERIFY_JOB_ENV_FILE"
 sync_screener_job "$VERIFY_JOB_ENV_FILE"
 sync_s12_structure_job "$VERIFY_JOB_ENV_FILE"
 sync_optuna_job "$VERIFY_JOB_ENV_FILE"
+sync_backtest_research_job "$BACKTEST_RESEARCH_JOB_ENV_FILE"
 sync_strategy_mining_job "$STRATEGY_MINING_JOB_ENV_FILE"
 sync_oof_materialize_job "$OOF_MATERIALIZE_JOB_ENV_FILE"
 sync_dataset_snapshot_job "$VERIFY_JOB_ENV_FILE"
@@ -1204,6 +1302,8 @@ SCREENER_JOB_IMG=$(gcloud run jobs describe "$SCREENER_JOB_NAME" --region="$REGI
 S12_STRUCTURE_JOB_IMG=$(gcloud run jobs describe "$S12_STRUCTURE_JOB_NAME" --region="$REGION" \
   --format="value(spec.template.spec.template.spec.containers[0].image)")
 OPTUNA_JOB_IMG=$(gcloud run jobs describe "$OPTUNA_JOB_NAME" --region="$REGION" \
+  --format="value(spec.template.spec.template.spec.containers[0].image)")
+BACKTEST_RESEARCH_JOB_IMG=$(gcloud run jobs describe "$BACKTEST_RESEARCH_JOB_NAME" --region="$REGION" \
   --format="value(spec.template.spec.template.spec.containers[0].image)")
 STRATEGY_MINING_JOB_IMG=$(gcloud run jobs describe "$STRATEGY_MINING_JOB_NAME" --region="$REGION" \
   --format="value(spec.template.spec.template.spec.containers[0].image)")
@@ -1227,6 +1327,14 @@ OPTUNA_JOB_COMMAND=$(gcloud run jobs describe "$OPTUNA_JOB_NAME" --region="$REGI
   --format="value(spec.template.spec.template.spec.containers[0].command[0])")
 OPTUNA_JOB_ARGS=$(gcloud run jobs describe "$OPTUNA_JOB_NAME" --region="$REGION" \
   --format="value(spec.template.spec.template.spec.containers[0].args)")
+BACKTEST_RESEARCH_JOB_COMMAND=$(gcloud run jobs describe "$BACKTEST_RESEARCH_JOB_NAME" --region="$REGION" \
+  --format="value(spec.template.spec.template.spec.containers[0].command[0])")
+BACKTEST_RESEARCH_JOB_ARGS=$(gcloud run jobs describe "$BACKTEST_RESEARCH_JOB_NAME" --region="$REGION" \
+  --format="value(spec.template.spec.template.spec.containers[0].args)")
+BACKTEST_RESEARCH_JOB_MODE=$(gcloud run jobs describe "$BACKTEST_RESEARCH_JOB_NAME" --region="$REGION" \
+  --format="value(spec.template.spec.template.spec.containers[0].env[?name='OPTUNA_JOB_MODE'].value)")
+BACKTEST_RESEARCH_CALLBACK_TASK=$(gcloud run jobs describe "$BACKTEST_RESEARCH_JOB_NAME" --region="$REGION" \
+  --format="value(spec.template.spec.template.spec.containers[0].env[?name='OPTUNA_CALLBACK_TASK'].value)")
 STRATEGY_MINING_JOB_COMMAND=$(gcloud run jobs describe "$STRATEGY_MINING_JOB_NAME" --region="$REGION" \
   --format="value(spec.template.spec.template.spec.containers[0].command[0])")
 STRATEGY_MINING_JOB_ARGS=$(gcloud run jobs describe "$STRATEGY_MINING_JOB_NAME" --region="$REGION" \
@@ -1240,7 +1348,7 @@ DATASET_SNAPSHOT_JOB_COMMAND=$(gcloud run jobs describe "$DATASET_SNAPSHOT_JOB_N
 DATASET_SNAPSHOT_JOB_ARGS=$(gcloud run jobs describe "$DATASET_SNAPSHOT_JOB_NAME" --region="$REGION" \
   --format="value(spec.template.spec.template.spec.containers[0].args)")
 
-if [ "$SERVICE_IMG" != "$JOB_IMG" ] || [ "$SERVICE_IMG" != "$VERIFY_JOB_IMG" ] || [ "$SERVICE_IMG" != "$SCREENER_JOB_IMG" ] || [ "$SERVICE_IMG" != "$S12_STRUCTURE_JOB_IMG" ] || [ "$SERVICE_IMG" != "$OPTUNA_JOB_IMG" ] || [ "$SERVICE_IMG" != "$STRATEGY_MINING_JOB_IMG" ] || [ "$SERVICE_IMG" != "$OOF_MATERIALIZE_JOB_IMG" ]; then
+if [ "$SERVICE_IMG" != "$JOB_IMG" ] || [ "$SERVICE_IMG" != "$VERIFY_JOB_IMG" ] || [ "$SERVICE_IMG" != "$SCREENER_JOB_IMG" ] || [ "$SERVICE_IMG" != "$S12_STRUCTURE_JOB_IMG" ] || [ "$SERVICE_IMG" != "$OPTUNA_JOB_IMG" ] || [ "$SERVICE_IMG" != "$BACKTEST_RESEARCH_JOB_IMG" ] || [ "$SERVICE_IMG" != "$STRATEGY_MINING_JOB_IMG" ] || [ "$SERVICE_IMG" != "$OOF_MATERIALIZE_JOB_IMG" ]; then
   echo "❌ VERIFICATION FAILED — images differ:" >&2
   echo "  Service: $SERVICE_IMG" >&2
   echo "  Job    : $JOB_IMG" >&2
@@ -1248,6 +1356,7 @@ if [ "$SERVICE_IMG" != "$JOB_IMG" ] || [ "$SERVICE_IMG" != "$VERIFY_JOB_IMG" ] |
   echo "  Screener: $SCREENER_JOB_IMG" >&2
   echo "  S12 structure: $S12_STRUCTURE_JOB_IMG" >&2
   echo "  Optuna : $OPTUNA_JOB_IMG" >&2
+  echo "  Weekly backtest: $BACKTEST_RESEARCH_JOB_IMG" >&2
   echo "  Mining : $STRATEGY_MINING_JOB_IMG" >&2
   echo "  OOF    : $OOF_MATERIALIZE_JOB_IMG" >&2
   exit 5
@@ -1283,6 +1392,20 @@ if [ "$OPTUNA_JOB_COMMAND" != "python" ] || [ "$OPTUNA_JOB_ARGS" != "-m;optuna_j
   echo "??VERIFICATION FAILED ??optuna job entrypoint drift:" >&2
   echo "  command : $OPTUNA_JOB_COMMAND" >&2
   echo "  args    : $OPTUNA_JOB_ARGS" >&2
+  exit 5
+fi
+
+if [ "$BACKTEST_RESEARCH_JOB_COMMAND" != "python" ] || [ "$BACKTEST_RESEARCH_JOB_ARGS" != "-m;optuna_job_main" ]; then
+  echo "VERIFICATION FAILED - weekly backtest research job entrypoint drift:" >&2
+  echo "  command : $BACKTEST_RESEARCH_JOB_COMMAND" >&2
+  echo "  args    : $BACKTEST_RESEARCH_JOB_ARGS" >&2
+  exit 5
+fi
+
+if [ "$BACKTEST_RESEARCH_JOB_MODE" != "weekly_backtest" ] || [ "$BACKTEST_RESEARCH_CALLBACK_TASK" != "weekly-backtest" ]; then
+  echo "VERIFICATION FAILED - weekly backtest research job default mode drift:" >&2
+  echo "  mode     : $BACKTEST_RESEARCH_JOB_MODE" >&2
+  echo "  callback : $BACKTEST_RESEARCH_CALLBACK_TASK" >&2
   exit 5
 fi
 
@@ -1347,6 +1470,7 @@ echo "  Image            : $SERVICE_IMG"
 echo "  Pipeline job     : synced"
 echo "  Verify job       : synced"
 echo "  Optuna job       : synced"
+echo "  Weekly backtest  : synced"
 echo "  Strategy mining  : synced"
 [ -n "$MODAL_RESULT" ] && echo "  $MODAL_RESULT"
 echo ""

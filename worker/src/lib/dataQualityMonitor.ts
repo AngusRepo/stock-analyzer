@@ -1112,9 +1112,272 @@ async function latestTableStats(db: D1Database, table: string, dateColumn = 'dat
   return { latest_date: latest.latest_date, rows_on_latest: Number(count.count ?? 0) }
 }
 
+interface RecommendationClassificationRow {
+  symbol: string
+  recommendation_lane?: string | null
+}
+
+interface PendingBuyAuditRunRow {
+  id: number
+  trade_date: string
+  source_reco_date?: string | null
+  candidate_count?: number | null
+}
+
+interface PendingBuyAuditItemRow {
+  symbol: string
+  signal?: string | null
+  source?: string | null
+}
+
+interface PendingBuyAuditRecommendationRow {
+  symbol: string
+  has_buy_signal?: number | null
+  alpha_allocation?: string | null
+}
+
+interface BoardRecommendationRow {
+  stock_id?: number | null
+  symbol: string
+}
+
+interface CoreStockMarketRow {
+  id: number
+  symbol: string
+  market?: string | null
+}
+
+interface PendingBuyBoardRow {
+  symbol: string
+  source_reco_date?: string | null
+  trade_date: string
+}
+
+interface PriceShapeRow {
+  stock_id: number
+  open?: number | null
+  avg_price?: number | null
+}
+
+async function loadClassificationStats(
+  coreDb: D1Database,
+  marketDb: D1Database,
+  targetDate: string,
+): Promise<CountRow> {
+  const [recommendationResult, industryTagResult] = await Promise.all([
+    coreDb.prepare(`
+      SELECT symbol, recommendation_lane
+        FROM daily_recommendations
+       WHERE date = ?
+    `).bind(targetDate).all<RecommendationClassificationRow>(),
+    marketDb.prepare(`
+      SELECT DISTINCT symbol
+        FROM stock_tags
+       WHERE tag_type = 'industry'
+    `).all<{ symbol: string }>(),
+  ])
+  const recommendations = recommendationResult.results ?? []
+  const taggedSymbols = new Set((industryTagResult.results ?? []).map((row) => row.symbol))
+  let missingIndustryTags = 0
+  let tradableTotal = 0
+  let tradableMissingIndustryTags = 0
+  let researchTotal = 0
+  let researchMissingIndustryTags = 0
+  for (const row of recommendations) {
+    const missing = !taggedSymbols.has(row.symbol)
+    if (missing) missingIndustryTags += 1
+    if (row.recommendation_lane === 'tradable') {
+      tradableTotal += 1
+      if (missing) tradableMissingIndustryTags += 1
+    } else if (row.recommendation_lane != null) {
+      researchTotal += 1
+      if (missing) researchMissingIndustryTags += 1
+    }
+  }
+  return {
+    total: recommendations.length,
+    missing_industry_tags: missingIndustryTags,
+    tradable_total: tradableTotal,
+    tradable_missing_industry_tags: tradableMissingIndustryTags,
+    research_total: researchTotal,
+    research_missing_industry_tags: researchMissingIndustryTags,
+  }
+}
+
+function parseJsonRecord(value: unknown): Record<string, unknown> | null {
+  if (value && typeof value === 'object' && !Array.isArray(value)) return value as Record<string, unknown>
+  if (typeof value !== 'string' || !value.trim()) return null
+  try {
+    const parsed = JSON.parse(value)
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed)
+      ? parsed as Record<string, unknown>
+      : null
+  } catch {
+    return null
+  }
+}
+
+async function loadPendingBuyStats(
+  coreDb: D1Database,
+  paperDb: D1Database,
+  targetDate: string,
+): Promise<CountRow> {
+  const run = await paperDb.prepare(`
+    SELECT id, trade_date, source_reco_date, candidate_count
+      FROM pending_buy_runs
+     WHERE trade_date = ?
+       AND COALESCE(status, '') <> 'superseded'
+     ORDER BY id DESC
+     LIMIT 1
+  `).bind(targetDate).first<PendingBuyAuditRunRow>()
+  if (!run) return {}
+
+  const sourceRecoDate = run.source_reco_date ?? run.trade_date
+  const [itemResult, recommendationResult] = await Promise.all([
+    paperDb.prepare(`
+      SELECT symbol, signal, source
+        FROM pending_buy_items
+       WHERE run_id = ?
+         AND COALESCE(execution_status, 'pending') NOT IN ('filled', 'skipped', 'cancelled', 'expired')
+    `).bind(run.id).all<PendingBuyAuditItemRow>(),
+    coreDb.prepare(`
+      SELECT symbol, has_buy_signal, alpha_allocation
+        FROM daily_recommendations
+       WHERE date = ?
+    `).bind(sourceRecoDate).all<PendingBuyAuditRecommendationRow>(),
+  ])
+  const items = itemResult.results ?? []
+  const recommendationBySymbol = new Map(
+    (recommendationResult.results ?? []).map((row) => [row.symbol, row]),
+  )
+  let l4SparseFinalBuyCount = 0
+  let invalidAllocatorCount = 0
+  let watchSourceCount = 0
+  let missingRecommendationCount = 0
+  for (const item of items) {
+    const recommendation = recommendationBySymbol.get(item.symbol)
+    const allocation = parseJsonRecord(recommendation?.alpha_allocation)
+    const validAllocator = recommendation != null
+      && Number(recommendation.has_buy_signal ?? 0) === 1
+      && Number(allocation?.selected ?? 0) === 1
+      && String(allocation?.engine ?? '') === 'sparse_tangent_inverse_risk'
+    if (validAllocator) l4SparseFinalBuyCount += 1
+    else invalidAllocatorCount += 1
+    if (
+      String(item.signal ?? '').toUpperCase() === 'WATCH_BUY'
+      || String(item.source ?? '').toLowerCase().includes('watch')
+    ) watchSourceCount += 1
+    if (!recommendation) missingRecommendationCount += 1
+  }
+  return {
+    run_trade_date: run.trade_date,
+    source_reco_date: run.source_reco_date ?? null,
+    candidate_count: Number(run.candidate_count ?? 0),
+    active_count: items.length,
+    l4_sparse_final_buy_count: l4SparseFinalBuyCount,
+    pending_buy_invalid_allocator_count: invalidAllocatorCount,
+    pending_buy_watch_source_count: watchSourceCount,
+    pending_buy_missing_recommendation_count: missingRecommendationCount,
+  }
+}
+
+async function loadLatestPriceShapes(
+  marketDb: D1Database,
+  cutoffDate: string,
+  stockIds: number[],
+): Promise<Map<number, PriceShapeRow>> {
+  const uniqueIds = [...new Set(stockIds.filter((value) => Number.isFinite(value) && value > 0))]
+  const output = new Map<number, PriceShapeRow>()
+  for (let offset = 0; offset < uniqueIds.length; offset += 90) {
+    const chunk = uniqueIds.slice(offset, offset + 90)
+    const placeholders = chunk.map(() => '?').join(',')
+    const result = await marketDb.prepare(`
+      WITH ranked AS (
+        SELECT stock_id, open, avg_price,
+               ROW_NUMBER() OVER (PARTITION BY stock_id ORDER BY date DESC) AS rn
+          FROM stock_prices
+         WHERE date <= ?
+           AND stock_id IN (${placeholders})
+      )
+      SELECT stock_id, open, avg_price
+        FROM ranked
+       WHERE rn = 1
+    `).bind(cutoffDate, ...chunk).all<PriceShapeRow>()
+    for (const row of result.results ?? []) output.set(Number(row.stock_id), row)
+  }
+  return output
+}
+
+async function loadBoardLaneStats(
+  coreDb: D1Database,
+  marketDb: D1Database,
+  paperDb: D1Database,
+  targetDate: string,
+): Promise<CountRow> {
+  const [recommendationResult, stockResult, pendingBuyResult] = await Promise.all([
+    coreDb.prepare(`
+      SELECT stock_id, symbol
+        FROM daily_recommendations
+       WHERE date = ?
+    `).bind(targetDate).all<BoardRecommendationRow>(),
+    coreDb.prepare('SELECT id, symbol, market FROM stocks').all<CoreStockMarketRow>(),
+    paperDb.prepare(`
+      SELECT i.symbol, r.source_reco_date, r.trade_date
+        FROM pending_buy_runs r
+        JOIN pending_buy_items i ON i.run_id = r.id
+       WHERE r.trade_date = ?
+         AND COALESCE(r.status, '') <> 'superseded'
+    `).bind(targetDate).all<PendingBuyBoardRow>(),
+  ])
+  const recommendations = recommendationResult.results ?? []
+  const pendingBuys = pendingBuyResult.results ?? []
+  const stocks = stockResult.results ?? []
+  const stockById = new Map(stocks.map((row) => [Number(row.id), row]))
+  const stockBySymbol = new Map(stocks.map((row) => [row.symbol, row]))
+  const stockIdsByDate = new Map<string, Set<number>>()
+  const addStockId = (date: string, stockId: number | null | undefined) => {
+    if (!stockId || !Number.isFinite(stockId)) return
+    const ids = stockIdsByDate.get(date) ?? new Set<number>()
+    ids.add(Number(stockId))
+    stockIdsByDate.set(date, ids)
+  }
+  for (const row of recommendations) addStockId(targetDate, row.stock_id ?? stockBySymbol.get(row.symbol)?.id)
+  for (const row of pendingBuys) {
+    addStockId(row.source_reco_date ?? row.trade_date, stockBySymbol.get(row.symbol)?.id)
+  }
+  const pricesByDate = new Map<string, Map<number, PriceShapeRow>>()
+  await Promise.all([...stockIdsByDate.entries()].map(async ([date, ids]) => {
+    pricesByDate.set(date, await loadLatestPriceShapes(marketDb, date, [...ids]))
+  }))
+  const isEmergingLike = (stock: CoreStockMarketRow | undefined, date: string): boolean => {
+    if (!stock) return false
+    const market = String(stock.market ?? '').toUpperCase()
+    if (market === 'EMERGING' || market === 'ESB') return true
+    const price = pricesByDate.get(date)?.get(Number(stock.id))
+    return Boolean(price && price.open == null && price.avg_price != null)
+  }
+  const emergingRecommendations = recommendations.reduce((count, row) => {
+    const stock = row.stock_id ? stockById.get(Number(row.stock_id)) : stockBySymbol.get(row.symbol)
+    return count + (isEmergingLike(stock, targetDate) ? 1 : 0)
+  }, 0)
+  const pendingBuyEmergingLike = pendingBuys.reduce((count, row) => {
+    const date = row.source_reco_date ?? row.trade_date
+    return count + (isEmergingLike(stockBySymbol.get(row.symbol), date) ? 1 : 0)
+  }, 0)
+  return {
+    emerging_recommendations: emergingRecommendations,
+    pending_buy_emerging_like: pendingBuyEmergingLike,
+  }
+}
+
 export async function buildDataQualityReport(env: Bindings, options: { date?: string } = {}) {
   const targetDate = options.date ?? await resolveExpectedCompletedDataDate(env.KV, twToday())
   const expectedModelPlaceholders = EXPECTED_V2_MODELS.map(() => '?').join(',')
+  const coreDb = databaseForDataDomain(env, 'core')
+  const marketDb = databaseForDataDomain(env, 'market')
+  const learningDb = databaseForDataDomain(env, 'learning')
+  const opsDb = databaseForDataDomain(env, 'ops')
+  const paperDb = databaseForDataDomain(env, 'paper')
 
   const [
     priceStats,
@@ -1147,11 +1410,11 @@ export async function buildDataQualityReport(env: Bindings, options: { date?: st
     gdeltStats,
     gdeltQualityStats,
   ] = await Promise.all([
-    latestTableStats(env.DB, 'stock_prices'),
-    latestTableStats(env.DB, 'chip_data'),
-    latestTableStats(env.DB, 'technical_indicators'),
+    latestTableStats(marketDb, 'stock_prices'),
+    latestTableStats(marketDb, 'chip_data'),
+    latestTableStats(marketDb, 'technical_indicators'),
     firstCount(
-      env.DB,
+      coreDb,
       `SELECT COUNT(*) AS total,
               SUM(CASE WHEN score_components LIKE '%score_v2%' THEN 1 ELSE 0 END) AS score_v2_count,
               SUM(CASE WHEN signal IS NOT NULL AND signal <> '' THEN 1 ELSE 0 END) AS signal_count,
@@ -1160,7 +1423,7 @@ export async function buildDataQualityReport(env: Bindings, options: { date?: st
       targetDate,
     ),
     firstCount(
-      env.DB,
+      coreDb,
       `SELECT COUNT(*) AS total,
               SUM(CASE WHEN sector IS NULL OR TRIM(sector) = '' OR sector IN (?, ?) OR industry IS NULL OR TRIM(industry) = '' OR industry IN (?, ?) THEN 1 ELSE 0 END) AS unclassified,
               SUM(CASE WHEN score IS NULL OR score < 0 OR score > 100 THEN 1 ELSE 0 END) AS invalid_scores,
@@ -1183,22 +1446,9 @@ export async function buildDataQualityReport(env: Bindings, options: { date?: st
       UNCLASSIFIED_EN_LABEL,
       targetDate,
     ),
+    loadClassificationStats(coreDb, marketDb, targetDate).catch((): CountRow => ({})),
     firstCount(
-      env.DB,
-      `SELECT COUNT(*) AS total,
-              SUM(CASE WHEN st.symbol IS NULL THEN 1 ELSE 0 END) AS missing_industry_tags,
-              SUM(CASE WHEN dr.recommendation_lane = 'tradable' THEN 1 ELSE 0 END) AS tradable_total,
-              SUM(CASE WHEN dr.recommendation_lane = 'tradable' AND st.symbol IS NULL THEN 1 ELSE 0 END) AS tradable_missing_industry_tags,
-              SUM(CASE WHEN dr.recommendation_lane <> 'tradable' THEN 1 ELSE 0 END) AS research_total,
-              SUM(CASE WHEN dr.recommendation_lane <> 'tradable' AND st.symbol IS NULL THEN 1 ELSE 0 END) AS research_missing_industry_tags
-       FROM daily_recommendations dr
-       LEFT JOIN stock_tags st
-         ON st.symbol = dr.symbol AND st.tag_type = 'industry'
-       WHERE dr.date = ?`,
-      targetDate,
-    ),
-    firstCount(
-      env.DB,
+      marketDb,
       `WITH latest_theme_date AS (
          SELECT MAX(date) AS latest_theme_date
            FROM sector_flow
@@ -1236,7 +1486,7 @@ export async function buildDataQualityReport(env: Bindings, options: { date?: st
        WHERE rc.rn = 1`,
     ).catch((): CountRow => ({})),
     firstCount(
-      env.DB,
+      opsDb,
       `SELECT run_id AS funnel_run_id,
               status AS funnel_status,
               final_count AS funnel_final_count,
@@ -1250,126 +1500,16 @@ export async function buildDataQualityReport(env: Bindings, options: { date?: st
         LIMIT 1`,
       targetDate,
     ).catch((): CountRow => ({})),
-    firstCount(
-      env.DB,
-      `WITH latest_run AS (
-         SELECT *
-           FROM pending_buy_runs
-          WHERE trade_date = ? AND COALESCE(status, '') <> 'superseded'
-          ORDER BY id DESC
-          LIMIT 1
-       )
-       SELECT r.trade_date AS run_trade_date,
-              r.source_reco_date AS source_reco_date,
-              r.candidate_count AS candidate_count,
-              SUM(CASE WHEN i.id IS NOT NULL AND COALESCE(i.execution_status, 'pending') NOT IN ('filled', 'skipped', 'cancelled', 'expired') THEN 1 ELSE 0 END) AS active_count,
-              SUM(CASE WHEN i.id IS NOT NULL
-                         AND COALESCE(i.execution_status, 'pending') NOT IN ('filled', 'skipped', 'cancelled', 'expired')
-                         AND COALESCE(dr.has_buy_signal, 0) = 1
-                         AND json_valid(dr.alpha_allocation)
-                         AND COALESCE(CASE WHEN json_valid(dr.alpha_allocation) THEN json_extract(dr.alpha_allocation, '$.selected') ELSE 0 END, 0) = 1
-                         AND COALESCE(CASE WHEN json_valid(dr.alpha_allocation) THEN json_extract(dr.alpha_allocation, '$.engine') ELSE '' END, '') = 'sparse_tangent_inverse_risk'
-                       THEN 1 ELSE 0 END) AS l4_sparse_final_buy_count,
-              SUM(CASE WHEN i.id IS NOT NULL
-                         AND COALESCE(i.execution_status, 'pending') NOT IN ('filled', 'skipped', 'cancelled', 'expired')
-                         AND (
-                           dr.symbol IS NULL
-                           OR COALESCE(dr.has_buy_signal, 0) <> 1
-                           OR NOT json_valid(dr.alpha_allocation)
-                           OR COALESCE(CASE WHEN json_valid(dr.alpha_allocation) THEN json_extract(dr.alpha_allocation, '$.selected') ELSE 0 END, 0) <> 1
-                           OR COALESCE(CASE WHEN json_valid(dr.alpha_allocation) THEN json_extract(dr.alpha_allocation, '$.engine') ELSE '' END, '') <> 'sparse_tangent_inverse_risk'
-                         )
-                       THEN 1 ELSE 0 END) AS pending_buy_invalid_allocator_count,
-              SUM(CASE WHEN i.id IS NOT NULL
-                         AND COALESCE(i.execution_status, 'pending') NOT IN ('filled', 'skipped', 'cancelled', 'expired')
-                         AND (
-                           UPPER(COALESCE(i.signal, '')) = 'WATCH_BUY'
-                           OR LOWER(COALESCE(i.source, '')) LIKE '%watch%'
-                         )
-                       THEN 1 ELSE 0 END) AS pending_buy_watch_source_count,
-              SUM(CASE WHEN i.id IS NOT NULL
-                         AND COALESCE(i.execution_status, 'pending') NOT IN ('filled', 'skipped', 'cancelled', 'expired')
-                         AND dr.symbol IS NULL
-                       THEN 1 ELSE 0 END) AS pending_buy_missing_recommendation_count
-       FROM latest_run r
-       LEFT JOIN pending_buy_items i ON i.run_id = r.id
-       LEFT JOIN daily_recommendations dr
-         ON dr.date = COALESCE(r.source_reco_date, r.trade_date)
-        AND dr.symbol = i.symbol
-       GROUP BY r.id
-       LIMIT 1`,
-      targetDate,
-    ).catch((): CountRow => ({})),
-    firstCount(
-      env.DB,
-      `SELECT
-          (
-            SELECT COUNT(*)
-              FROM daily_recommendations dr
-              LEFT JOIN stocks s ON s.id = dr.stock_id
-             WHERE dr.date = ?
-               AND (
-                 COALESCE(UPPER(s.market), '') IN ('EMERGING', 'ESB')
-                 OR (
-                   (
-                     SELECT sp.open
-                       FROM stock_prices sp
-                      WHERE sp.stock_id = dr.stock_id
-                        AND sp.date <= dr.date
-                      ORDER BY sp.date DESC
-                      LIMIT 1
-                   ) IS NULL
-                   AND (
-                     SELECT sp.avg_price
-                       FROM stock_prices sp
-                      WHERE sp.stock_id = dr.stock_id
-                        AND sp.date <= dr.date
-                      ORDER BY sp.date DESC
-                      LIMIT 1
-                   ) IS NOT NULL
-                 )
-               )
-          ) AS emerging_recommendations,
-          (
-            SELECT COUNT(*)
-              FROM pending_buy_runs r
-              JOIN pending_buy_items i ON i.run_id = r.id
-              LEFT JOIN stocks s ON s.symbol = i.symbol
-             WHERE r.trade_date = ?
-               AND COALESCE(r.status, '') <> 'superseded'
-               AND (
-                 COALESCE(UPPER(s.market), '') IN ('EMERGING', 'ESB')
-                 OR (
-                   (
-                     SELECT sp.open
-                       FROM stock_prices sp
-                      WHERE sp.stock_id = s.id
-                        AND sp.date <= COALESCE(r.source_reco_date, r.trade_date)
-                      ORDER BY sp.date DESC
-                      LIMIT 1
-                   ) IS NULL
-                   AND (
-                     SELECT sp.avg_price
-                       FROM stock_prices sp
-                      WHERE sp.stock_id = s.id
-                        AND sp.date <= COALESCE(r.source_reco_date, r.trade_date)
-                      ORDER BY sp.date DESC
-                      LIMIT 1
-                   ) IS NOT NULL
-                 )
-               )
-          ) AS pending_buy_emerging_like`,
-      targetDate,
-      targetDate,
-    ).catch((): CountRow => ({})),
-    databaseForDataDomain(env, 'learning').prepare(
+    loadPendingBuyStats(coreDb, paperDb, targetDate).catch((): CountRow => ({})),
+    loadBoardLaneStats(coreDb, marketDb, paperDb, targetDate).catch((): CountRow => ({})),
+    learningDb.prepare(
       `SELECT model_name, COUNT(*) AS count, COUNT(DISTINCT stock_id) AS stocks
        FROM predictions
        WHERE prediction_date = ?
        GROUP BY model_name ORDER BY model_name`,
     ).bind(targetDate).all<PredictionCoverageRow>(),
     firstCount(
-      databaseForDataDomain(env, 'learning'),
+      learningDb,
       `SELECT COUNT(*) AS total,
               SUM(CASE WHEN feature_version IS NULL OR TRIM(feature_version) = '' THEN 1 ELSE 0 END) AS missing_feature_version,
               COUNT(DISTINCT CASE WHEN feature_version IS NOT NULL AND TRIM(feature_version) <> '' THEN feature_version END) AS distinct_feature_versions
@@ -1377,7 +1517,7 @@ export async function buildDataQualityReport(env: Bindings, options: { date?: st
        WHERE prediction_date = ?`,
       targetDate,
     ).catch((): CountRow => ({})),
-    databaseForDataDomain(env, 'learning').prepare(
+    learningDb.prepare(
       `SELECT model_name,
               COUNT(*) AS count,
               COUNT(DISTINCT stock_id) AS stocks,
@@ -1390,9 +1530,9 @@ export async function buildDataQualityReport(env: Bindings, options: { date?: st
        GROUP BY model_name
        ORDER BY model_name`,
     ).bind(...EXPECTED_V2_MODELS).all<ModelIcEvidenceRow>(),
-    env.DB.prepare('PRAGMA table_info(daily_recommendations)').all<{ name: string }>(),
+    coreDb.prepare('PRAGMA table_info(daily_recommendations)').all<{ name: string }>(),
     firstCount(
-      databaseForDataDomain(env, 'learning'),
+      learningDb,
       `SELECT COUNT(*) AS manifest_total,
               SUM(CASE WHEN kind = 'price_hot_window' AND access_tier = 'serving' AND status = 'ready' THEN 1 ELSE 0 END) AS price_hot_window_manifest,
               SUM(CASE WHEN kind = 'technical_indicator_hot_window' AND access_tier = 'serving' AND status = 'ready' THEN 1 ELSE 0 END) AS technical_indicator_hot_window_manifest,
@@ -1409,7 +1549,7 @@ export async function buildDataQualityReport(env: Bindings, options: { date?: st
       targetDate,
     ).catch((): CountRow => ({})),
     firstCount(
-      env.DB,
+      marketDb,
       `SELECT COUNT(*) AS theme_signal_total,
               COUNT(DISTINCT source) AS theme_signal_sources,
               MAX(generated_at) AS theme_signal_latest_generated_at
@@ -1418,7 +1558,7 @@ export async function buildDataQualityReport(env: Bindings, options: { date?: st
       targetDate,
     ).catch((): CountRow => ({})),
     firstCount(
-      env.DB,
+      marketDb,
       `SELECT COUNT(*) AS stock_theme_feature_total,
               COUNT(DISTINCT symbol) AS stock_theme_feature_symbols,
               MAX(generated_at) AS stock_theme_feature_latest_generated_at
@@ -1427,7 +1567,7 @@ export async function buildDataQualityReport(env: Bindings, options: { date?: st
       targetDate,
     ).catch((): CountRow => ({})),
     firstCount(
-      databaseForDataDomain(env, 'ops'),
+      opsDb,
       `SELECT COUNT(*) AS awaiting_retrain_followup,
               SUM(CASE WHEN julianday(received_at) < julianday('now') - (4.0 / 24.0) THEN 1 ELSE 0 END) AS stale_retrain_followup,
               MIN(received_at) AS oldest_retrain_followup_at,
@@ -1438,7 +1578,7 @@ export async function buildDataQualityReport(env: Bindings, options: { date?: st
           AND downstream_notes = 'await_modal_followup'`,
     ).catch((): CountRow => ({})),
     firstCount(
-      env.DB,
+      marketDb,
       `WITH latest AS (
          SELECT MAX(date) AS latest_date
            FROM canonical_market_index_daily
@@ -1451,7 +1591,7 @@ export async function buildDataQualityReport(env: Bindings, options: { date?: st
           AND date = (SELECT latest_date FROM latest)`,
     ).catch((): CountRow => ({})),
     firstCount(
-      env.DB,
+      marketDb,
       `WITH latest AS (
          SELECT MAX(date) AS latest_date
            FROM canonical_market_index_daily
@@ -1464,7 +1604,7 @@ export async function buildDataQualityReport(env: Bindings, options: { date?: st
           AND date = (SELECT latest_date FROM latest)`,
     ).catch((): CountRow => ({})),
     firstCount(
-      env.DB,
+      marketDb,
       `WITH latest AS (
          SELECT MAX(date) AS latest_date
            FROM canonical_futures_daily
@@ -1479,7 +1619,7 @@ export async function buildDataQualityReport(env: Bindings, options: { date?: st
           AND date = (SELECT latest_date FROM latest)`,
     ).catch((): CountRow => ({})),
     firstCount(
-      env.DB,
+      marketDb,
       `WITH ordered_dates AS (
          SELECT date
            FROM canonical_market_daily
@@ -1517,7 +1657,7 @@ export async function buildDataQualityReport(env: Bindings, options: { date?: st
          FROM joined_rows`,
     ).catch((): CountRow => ({})),
     firstCount(
-      env.DB,
+      marketDb,
       `WITH latest AS (
          SELECT MAX(date) AS latest_date
            FROM canonical_market_summary_daily
@@ -1532,7 +1672,7 @@ export async function buildDataQualityReport(env: Bindings, options: { date?: st
         WHERE date = (SELECT latest_date FROM latest)`,
     ).catch((): CountRow => ({})),
     firstCount(
-      env.DB,
+      marketDb,
       `WITH latest AS (
          SELECT MAX(date) AS latest_date
            FROM canonical_institutional_amount_daily
@@ -1543,7 +1683,7 @@ export async function buildDataQualityReport(env: Bindings, options: { date?: st
         WHERE date = (SELECT latest_date FROM latest)`,
     ).catch((): CountRow => ({})),
     firstCount(
-      env.DB,
+      marketDb,
       `WITH latest AS (
          SELECT MAX(date) AS latest_date
            FROM canonical_regime_context_daily
@@ -1556,7 +1696,7 @@ export async function buildDataQualityReport(env: Bindings, options: { date?: st
           AND date = (SELECT latest_date FROM latest)`,
     ).catch((): CountRow => ({})),
     firstCount(
-      env.DB,
+      marketDb,
       `WITH latest AS (
          SELECT MAX(date) AS latest_date
            FROM canonical_regime_context_daily
@@ -1569,7 +1709,7 @@ export async function buildDataQualityReport(env: Bindings, options: { date?: st
           AND date = (SELECT latest_date FROM latest)`,
     ).catch((): CountRow => ({})),
     firstCount(
-      env.DB,
+      marketDb,
       `WITH latest AS (
          SELECT MAX(date) AS latest_date
            FROM canonical_regime_context_daily
@@ -1582,7 +1722,7 @@ export async function buildDataQualityReport(env: Bindings, options: { date?: st
           AND date = (SELECT latest_date FROM latest)`,
     ).catch((): CountRow => ({})),
     firstCount(
-      env.DB,
+      marketDb,
       `SELECT SUM(CASE WHEN date(published_at) >= date(?, '-14 days') THEN 1 ELSE 0 END) AS rows_on_latest,
               MAX(published_at) AS latest_date
          FROM external_evidence_items
@@ -1591,7 +1731,7 @@ export async function buildDataQualityReport(env: Bindings, options: { date?: st
       targetDate,
     ).catch((): CountRow => ({})),
     firstCount(
-      env.DB,
+      marketDb,
       `SELECT freshness_status,
               latest_materialization,
               CASE WHEN json_valid(metrics_json) THEN json_extract(metrics_json, '$.root_cause') ELSE NULL END AS root_cause
@@ -1603,7 +1743,7 @@ export async function buildDataQualityReport(env: Bindings, options: { date?: st
   ])
 
   const recommendationDecisionAvailabilityStats = await firstCount(
-    env.DB,
+    coreDb,
     `WITH latest_days AS (
        SELECT date
          FROM daily_recommendations

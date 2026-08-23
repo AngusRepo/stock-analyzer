@@ -1283,7 +1283,7 @@ async function runIntradayCheckUnlocked(env: Bindings, leaseRunId: string): Prom
   const s12Mode = s12GateMode((env as any).S12_INTRADAY_GATE_MODE)
   const s12Enabled = enabledFlag((env as any).S12_INTRADAY_ASSIST_ENABLED, true)
   const s12CalibrationArtifactsPromise = s12Enabled
-    ? listApprovedS12TwCalibrationArtifacts(env.DB).catch(() => [])
+    ? listApprovedS12TwCalibrationArtifacts(databaseForDataDomain(env, 'learning')).catch(() => [])
     : Promise.resolve([])
   const s12Sidecars = new Map<string, S12RuntimeSidecar>()
   const runS12Sidecar = async (

@@ -53,7 +53,43 @@ function statusLabel(status: string): string {
 }
 
 type StrategyHealthBucket = 'healthy' | 'evidence_repair' | 'accumulating' | 'performance_cooldown'
-type StrategyViewFilter = 'attention' | 'active' | 'learning' | 'all'
+
+const STRATEGY_HEALTH_SECTIONS: Array<{
+  key: StrategyHealthBucket
+  label: string
+  description: string
+  className: string
+  countClassName: string
+}> = [
+  {
+    key: 'healthy',
+    label: '可進待買',
+    description: '正式門檻與待買資格皆通過。',
+    className: 'border-emerald-400/20 bg-emerald-400/[0.04]',
+    countClassName: 'border-emerald-400/25 bg-emerald-400/[0.08] text-emerald-200',
+  },
+  {
+    key: 'accumulating',
+    label: '證據累積',
+    description: '持續選股與評估，等待 T+5、樣本數或成熟交易日。',
+    className: 'border-cyan-400/20 bg-cyan-400/[0.04]',
+    countClassName: 'border-cyan-400/25 bg-cyan-400/[0.08] text-cyan-200',
+  },
+  {
+    key: 'evidence_repair',
+    label: '資料待修',
+    description: '需重建 decision、PIT reference 或 reward join。',
+    className: 'border-rose-400/20 bg-rose-400/[0.04]',
+    countClassName: 'border-rose-400/25 bg-rose-400/[0.08] text-rose-200',
+  },
+  {
+    key: 'performance_cooldown',
+    label: '績效降溫',
+    description: '勝率、扣成本報酬、回撤或 LCB90 尚未通過。',
+    className: 'border-amber-400/20 bg-amber-400/[0.04]',
+    countClassName: 'border-amber-400/25 bg-amber-400/[0.08] text-amber-200',
+  },
+]
 
 function strategyHealthBucket(row: LearningRow, gate?: StrategyPromotionGate): StrategyHealthBucket {
   if (gate?.allocation_eligible === true) return 'healthy'
@@ -349,7 +385,7 @@ function StrategyLedgerGroup({
         <Badge variant="outline" className="border-slate-700 bg-slate-900 text-slate-300">{rows.length} strategies</Badge>
       </header>
 
-      <div className="grid grid-cols-1 gap-px bg-slate-900 xl:grid-cols-2">
+      <div className="grid grid-cols-1 gap-px bg-slate-900">
         {rows.map((row) => {
           const gate = gateById.get(`${row.id}:${row.version}`)
           const profile = profileById.get(`${row.id}:${row.version}`)
@@ -428,23 +464,23 @@ function StrategyLedgerGroup({
                     </p>
                     <p className="mt-1 text-[11px] text-cyan-100/70">指標已算出 {profile.metric_completion?.materialized ?? 0} / {profile.metric_completion?.total ?? profile.required_metrics.length}；樣本與成熟交易日都達標 {profile.metric_completion?.ready ?? 0} / {profile.metric_completion?.total ?? profile.required_metrics.length}。</p>
                     <p className="mt-1 text-[11px] text-slate-500">「已成熟」只代表資料量足以判讀，不代表績效通過；請依各指標下方的好壞方向解讀。</p>
-                    <div className="mt-2 flex flex-wrap gap-1.5">
+                    <div className="mt-2 grid gap-2 md:grid-cols-2 2xl:grid-cols-3">
                       {profile.required_metrics.map((metric) => {
                         const metricRow = profile.metric_evidence?.find((item) => item.metric === metric)
                         const ready = metricRow?.status === 'ready'
                         const pendingDependency = metricRow?.status === 'dependency_pending'
                         const availabilityReason = evidenceMetricAvailabilityReason(metricRow)
                         return (
-                          <span key={metric} className={`rounded-md border px-2 py-1 text-[11px] ${ready ? 'border-emerald-400/25 bg-emerald-400/[0.06] text-emerald-200' : pendingDependency ? 'border-amber-400/25 bg-amber-400/[0.06] text-amber-200' : 'border-cyan-400/20 bg-cyan-400/[0.04] text-cyan-200'}`}>
+                          <div key={metric} className={`rounded-md border px-2 py-1 text-[11px] ${ready ? 'border-emerald-400/25 bg-emerald-400/[0.06] text-emerald-200' : pendingDependency ? 'border-amber-400/25 bg-amber-400/[0.06] text-amber-200' : 'border-cyan-400/20 bg-cyan-400/[0.04] text-cyan-200'}`}>
                             <span className="block">{evidenceMetricLabels[metric] ?? metric}</span>
                             <span className="mt-0.5 block font-mono text-[10px]">
                               <span className="opacity-75">{evidenceMetricStatusLabel(metricRow?.status)} · </span>
                               <span className={signedClass(metricRow?.value)}>{evidenceMetricValue(metric, metricRow?.value)}</span>
                               <span className="opacity-75"> · n={metricRow?.sample_count ?? 0} / {metricRow?.mature_dates ?? 0} 日</span>
                             </span>
-                            <span className="mt-1 block max-w-sm text-[10px] leading-4 text-slate-400">{evidenceMetricDescriptions[metric] ?? '此指標尚未提供白話定義。'}</span>
-                            {availabilityReason && <span className="mt-1 block max-w-sm text-[10px] leading-4 text-amber-200/80">原因：{availabilityReason}</span>}
-                          </span>
+                            <span className="mt-1 block text-[10px] leading-4 text-slate-400">{evidenceMetricDescriptions[metric] ?? '此指標尚未提供白話定義。'}</span>
+                            {availabilityReason && <span className="mt-1 block text-[10px] leading-4 text-amber-200/80">原因：{availabilityReason}</span>}
+                          </div>
                         )
                       })}
                     </div>
@@ -459,7 +495,7 @@ function StrategyLedgerGroup({
                 ) : <p className="mt-2 text-xs text-amber-200">Evidence profile API 未回傳此策略；這是資料缺漏，不代表策略績效失敗。</p>}
               </div>
 
-              <div className="grid gap-3">
+              <div className="grid gap-3 lg:grid-cols-2">
                 <div className="rounded-xl border border-slate-800 bg-slate-900/35 p-3">
                   <div className="flex flex-wrap items-center justify-between gap-2 text-xs text-slate-500">
                     <span>待買資格相對權重（Pending-buy gate share）</span>
@@ -490,98 +526,92 @@ function StrategyLedgerGroup({
             </article>
           )
         })}
-        {!rows.length && <div className="px-5 py-8 text-sm text-slate-500 xl:col-span-2">{empty}</div>}
+        {!rows.length && <div className="px-5 py-8 text-sm text-slate-500">{empty}</div>}
       </div>
     </section>
   )
 }
 
-function StrategyQueue({
+function StrategyHealthBoard({
   rows,
   gateById,
   policyWeights,
   selectedKey,
-  filter,
-  onFilterChange,
   onSelect,
 }: {
   rows: LearningRow[]
   gateById: Map<string, StrategyPromotionGate>
   policyWeights: Record<string, number>
   selectedKey: string | null
-  filter: StrategyViewFilter
-  onFilterChange: (filter: StrategyViewFilter) => void
   onSelect: (key: string) => void
 }) {
-  const filters: Array<{ key: StrategyViewFilter; label: string }> = [
-    { key: 'attention', label: '需處理' },
-    { key: 'active', label: '正式' },
-    { key: 'learning', label: '學習中' },
-    { key: 'all', label: '全部' },
-  ]
+  const groups = STRATEGY_HEALTH_SECTIONS.map((section) => ({
+    ...section,
+    rows: rows.filter((row) => {
+      const key = `${row.id}:${row.version}`
+      return strategyHealthBucket(row, gateById.get(key)) === section.key
+    }),
+  }))
+
   return (
-    <aside className="overflow-hidden rounded-2xl border border-slate-800 bg-slate-950/70">
-      <header className="border-b border-slate-800 p-3">
-        <div className="flex items-center justify-between gap-2">
-          <div>
-            <h2 className="text-sm font-semibold text-slate-100">策略佇列</h2>
-            <p className="mt-0.5 text-[11px] text-slate-500">先找異常，再查看單一策略。</p>
-          </div>
-          <Badge variant="outline" className="border-slate-700 text-slate-300">{rows.length}</Badge>
+    <section className="rounded-2xl border border-slate-700/80 bg-slate-950/70 p-4">
+      <header className="flex flex-wrap items-start justify-between gap-3">
+        <div>
+          <h2 className="font-semibold text-slate-100">正式策略健康分流</h2>
+          <p className="mt-1 max-w-3xl text-xs leading-5 text-slate-500">所有非退役策略直接依資料與績效狀態分流；點選策略後，下方工作區會顯示同一個 id:version 的完整證據。</p>
         </div>
-        <div className="mt-3 grid grid-cols-2 gap-1">
-          {filters.map((item) => (
-            <button
-              key={item.key}
-              type="button"
-              onClick={() => onFilterChange(item.key)}
-              className={[
-                'rounded-md border px-2 py-1.5 text-[11px] transition',
-                filter === item.key
-                  ? 'border-cyan-400/35 bg-cyan-400/10 text-cyan-100'
-                  : 'border-slate-800 bg-slate-900/40 text-slate-500 hover:text-slate-300',
-              ].join(' ')}
-            >
-              {item.label}
-            </button>
-          ))}
-        </div>
+        <Badge variant="outline" className="border-slate-700 bg-slate-900 text-slate-300">共 {rows.length} 個策略</Badge>
       </header>
-      <div className="max-h-[760px] divide-y divide-slate-900 overflow-y-auto">
-        {rows.map((row) => {
-          const key = [row.id, row.version].join(':')
-          const gate = gateById.get(key)
-          const health = strategyHealthBucket(row, gate)
-          const weight = Number(policyWeights[row.id] ?? 0)
-          const selected = selectedKey === key
-          return (
-            <button
-              key={key}
-              type="button"
-              onClick={() => onSelect(key)}
-              className={[
-                'w-full px-3 py-3 text-left transition',
-                selected ? 'bg-cyan-400/[0.08]' : 'bg-transparent hover:bg-slate-900/55',
-              ].join(' ')}
-            >
-              <div className="flex items-start justify-between gap-2">
-                <span className={['line-clamp-2 text-xs font-semibold', selected ? 'text-cyan-100' : 'text-slate-200'].join(' ')}>{row.name}</span>
-                <span className="shrink-0 font-mono text-[10px] text-slate-500">{Number.isFinite(weight) && weight > 0 ? pct(weight) : '0%'}</span>
+
+      <div className="mt-4 grid gap-3 md:grid-cols-2 2xl:grid-cols-4">
+        {groups.map((group) => (
+          <section key={group.key} className={`min-w-0 rounded-xl border p-3 ${group.className}`}>
+            <header className="flex items-start justify-between gap-2">
+              <div>
+                <h3 className="text-sm font-semibold text-slate-100">{group.label}</h3>
+                <p className="mt-1 text-[11px] leading-4 text-slate-500">{group.description}</p>
               </div>
-              <div className="mt-1.5 flex flex-wrap gap-1">
-                <span className={['rounded border px-1.5 py-0.5 text-[10px]', statusClass(row.status)].join(' ')}>{statusLabel(row.status)}</span>
-                <span className={['rounded border px-1.5 py-0.5 text-[10px]', statusClass(health === 'healthy' ? 'active' : health === 'evidence_repair' ? 'reward_join_missing' : 'not_ready')].join(' ')}>{strategyHealthLabel(health)}</span>
-              </div>
-              <div className="mt-2 flex items-center justify-between gap-2 text-[10px] text-slate-600">
-                <span>{row.learning.rolling_reward_dates} mature dates</span>
-                <span>{gate?.missing_evidence.length ?? 0} gaps</span>
-              </div>
-            </button>
-          )
-        })}
-        {!rows.length && <p className="px-3 py-8 text-center text-xs text-slate-500">此篩選沒有策略。</p>}
+              <Badge variant="outline" className={`sv-num shrink-0 ${group.countClassName}`}>{group.rows.length}</Badge>
+            </header>
+
+            <div className="mt-3 space-y-2">
+              {group.rows.map((row) => {
+                const key = `${row.id}:${row.version}`
+                const gate = gateById.get(key)
+                const weight = Number(policyWeights[row.id] ?? 0)
+                const selected = selectedKey === key
+                return (
+                  <button
+                    key={key}
+                    type="button"
+                    aria-pressed={selected}
+                    aria-label={`查看策略 ${row.name}`}
+                    onClick={() => onSelect(key)}
+                    className={[
+                      'w-full rounded-lg border px-3 py-2.5 text-left transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-cyan-300/70',
+                      selected ? 'border-cyan-300/40 bg-cyan-300/[0.09]' : 'border-slate-800/90 bg-slate-950/65 hover:border-slate-700 hover:bg-slate-900/75',
+                    ].join(' ')}
+                  >
+                    <span className="flex min-w-0 items-start justify-between gap-2">
+                      <span className={['min-w-0 line-clamp-2 text-xs font-semibold', selected ? 'text-cyan-100' : 'text-slate-200'].join(' ')}>{row.name}</span>
+                      <span className="sv-num shrink-0 text-[10px] text-slate-400">{Number.isFinite(weight) && weight > 0 ? pct(weight) : '0%'}</span>
+                    </span>
+                    <span className="mt-1.5 flex flex-wrap items-center gap-1">
+                      <span className={['rounded border px-1.5 py-0.5 text-[10px]', statusClass(row.status)].join(' ')}>{row.status === 'active' ? '正式' : '學習'} · {statusLabel(row.status)}</span>
+                    </span>
+                    <span className="mt-2 flex items-center justify-between gap-2 text-[10px] text-slate-500">
+                      <span className="sv-num">{row.learning.rolling_reward_dates} mature dates</span>
+                      <span className="sv-num">{gate?.missing_evidence.length ?? 0} gaps</span>
+                    </span>
+                  </button>
+                )
+              })}
+              {!group.rows.length && <p className="rounded-lg border border-dashed border-slate-800 px-3 py-4 text-center text-[11px] text-slate-600">此分類目前沒有策略。</p>}
+            </div>
+          </section>
+        ))}
       </div>
-    </aside>
+    </section>
   )
 }
 
@@ -651,7 +681,6 @@ export default function StrategyLearningPage() {
   const [error, setError] = useState<string | null>(null)
   const [notice, setNotice] = useState<string | null>(null)
   const [result, setResult] = useState<string | null>(null)
-  const [viewFilter, setViewFilter] = useState<StrategyViewFilter>('attention')
   const [selectedStrategyKey, setSelectedStrategyKey] = useState<string | null>(null)
 
   const load = useCallback(async () => {
@@ -719,33 +748,14 @@ export default function StrategyLearningPage() {
         || left.name.localeCompare(right.name, 'zh-Hant')
     })
   }, [visibleRows, gateById])
-  const queueRows = useMemo(() => orderedRows.filter((row) => {
-    const gate = gateById.get([row.id, row.version].join(':'))
-    if (viewFilter === 'active') return row.status === 'active'
-    if (viewFilter === 'learning') return row.status !== 'active'
-    if (viewFilter === 'attention') return strategyHealthBucket(row, gate) !== 'healthy'
-    return true
-  }), [orderedRows, gateById, viewFilter])
   useEffect(() => {
-    if (!queueRows.some((row) => [row.id, row.version].join(':') === selectedStrategyKey)) {
-      setSelectedStrategyKey(queueRows[0] ? [queueRows[0].id, queueRows[0].version].join(':') : null)
+    if (!orderedRows.some((row) => [row.id, row.version].join(':') === selectedStrategyKey)) {
+      setSelectedStrategyKey(orderedRows[0] ? [orderedRows[0].id, orderedRows[0].version].join(':') : null)
     }
-  }, [queueRows, selectedStrategyKey])
-  const selectedRow = useMemo(() => queueRows.find((row) => [row.id, row.version].join(':') === selectedStrategyKey) ?? null, [queueRows, selectedStrategyKey])
+  }, [orderedRows, selectedStrategyKey])
+  const selectedRow = useMemo(() => orderedRows.find((row) => [row.id, row.version].join(':') === selectedStrategyKey) ?? null, [orderedRows, selectedStrategyKey])
   const selectedGate = selectedRow ? gateById.get([selectedRow.id, selectedRow.version].join(':')) : undefined
   const selectedProfile = selectedRow ? profileById.get([selectedRow.id, selectedRow.version].join(':')) : undefined
-  const activeHealthCounts = useMemo(() => {
-    const counts: Record<StrategyHealthBucket, number> = {
-      healthy: 0,
-      evidence_repair: 0,
-      accumulating: 0,
-      performance_cooldown: 0,
-    }
-    for (const row of activeRows) {
-      counts[strategyHealthBucket(row, gateById.get(`${row.id}:${row.version}`))] += 1
-    }
-    return counts
-  }, [activeRows, gateById])
   const executionEligibleCount = useMemo(() => {
     const weights = learning?.policy_state_preview?.strategy_weights ?? {}
     return (learning?.promotion_gate ?? []).filter((gate) => (
@@ -847,41 +857,19 @@ export default function StrategyLearningPage() {
               </section>
             ) : null}
 
-            <details className="rounded-2xl border border-slate-700/80 bg-slate-950/70 p-4">
-              <summary className="cursor-pointer text-sm font-semibold text-slate-200">正式策略健康分流詳情</summary>
-              <div className="flex flex-wrap items-start justify-between gap-3">
-                <div>
-                  <h2 className="font-semibold text-slate-100">正式策略健康分流</h2>
-                  <p className="mt-1 text-xs leading-5 text-slate-500">不把所有未通過都叫 Blocked：先分辨是能自動補資料、只需等待成熟，還是真實績效不合格。</p>
-                </div>
-                <div className="grid grid-cols-2 gap-2 text-center sm:grid-cols-4">
-                  <div className="rounded-lg border border-emerald-400/20 bg-emerald-400/[0.06] px-3 py-2"><div className="font-mono text-lg text-emerald-200">{activeHealthCounts.healthy}</div><div className="text-[11px] text-slate-500">可進待買</div></div>
-                  <div className="rounded-lg border border-cyan-400/20 bg-cyan-400/[0.06] px-3 py-2"><div className="font-mono text-lg text-cyan-200">{activeHealthCounts.accumulating}</div><div className="text-[11px] text-slate-500">證據累積</div></div>
-                  <div className="rounded-lg border border-rose-400/20 bg-rose-400/[0.06] px-3 py-2"><div className="font-mono text-lg text-rose-200">{activeHealthCounts.evidence_repair}</div><div className="text-[11px] text-slate-500">資料待修</div></div>
-                  <div className="rounded-lg border border-amber-400/20 bg-amber-400/[0.06] px-3 py-2"><div className="font-mono text-lg text-amber-200">{activeHealthCounts.performance_cooldown}</div><div className="text-[11px] text-slate-500">績效降溫</div></div>
-                </div>
-              </div>
-              <div className="mt-3 grid gap-2 text-xs leading-5 text-slate-400 md:grid-cols-3">
-                <p><span className="font-semibold text-rose-200">資料待修：</span>重建 decision／PIT reference／reward join；這類才應進自動修復 queue。</p>
-                <p><span className="font-semibold text-cyan-200">證據累積：</span>維持選股與評估，等 T+5、樣本數與成熟交易日自然增加，不用人工放行。</p>
-                <p><span className="font-semibold text-amber-200">績效降溫：</span>勝率、扣成本報酬、回撤或 LCB90 真的不合格；保留研究資料，但待買權重維持 0，交由一進一出替換流程處理。</p>
-              </div>
-            </details>
+            <StrategyHealthBoard
+              rows={orderedRows}
+              gateById={gateById}
+              policyWeights={policy?.strategy_weights ?? {}}
+              selectedKey={selectedStrategyKey}
+              onSelect={setSelectedStrategyKey}
+            />
 
             {error && <div className="rounded-xl border border-rose-400/25 bg-rose-400/[0.06] p-4 text-sm text-rose-200">{error}</div>}
             {notice && <div className="rounded-xl border border-amber-400/25 bg-amber-400/[0.06] p-4 text-sm text-amber-100">{notice}</div>}
             {result && <div className="rounded-xl border border-emerald-400/25 bg-emerald-400/[0.06] p-4 text-sm text-emerald-200">{result}</div>}
 
-            <section className="grid gap-4 xl:grid-cols-[260px_minmax(0,1fr)_300px] xl:items-start">
-              <StrategyQueue
-                rows={queueRows}
-                gateById={gateById}
-                policyWeights={policy?.strategy_weights ?? {}}
-                selectedKey={selectedStrategyKey}
-                filter={viewFilter}
-                onFilterChange={setViewFilter}
-                onSelect={setSelectedStrategyKey}
-              />
+            <section className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_300px] xl:items-start">
               <div className="min-w-0">
                 {selectedRow ? (
                   <StrategyLedgerGroup

@@ -1408,10 +1408,15 @@ function BacktestCard() {
     : mcVerdict === 'CAUTION' ? 'bg-yellow-500/20 text-yellow-400'
     : mcVerdict === 'FAIL' ? 'bg-red-500/20 text-red-400' : ''
 
-  // PBO verdict badge
-  const pboVerdict = pboData?.go_live_verdict
+  // PBO uses the latest immutable attempt receipt. Historical numeric rows never masquerade as this week's attempt.
+  const pboAttempt = pboData?.latest_attempt
+  const pboNumeric = pboAttempt?.numeric_result
+  const pboVerdict = pboAttempt?.status === 'insufficient_evidence'
+    ? 'INSUFFICIENT_EVIDENCE'
+    : pboNumeric?.go_live_verdict
   const pboBadge = pboVerdict === 'PASS' ? 'bg-emerald-500/20 text-emerald-400'
-    : pboVerdict === 'FAIL' ? 'bg-red-500/20 text-red-400' : ''
+    : pboVerdict === 'FAIL' ? 'bg-red-500/20 text-red-400'
+      : pboVerdict === 'INSUFFICIENT_EVIDENCE' ? 'bg-amber-500/20 text-amber-300' : ''
 
   return (
     <Card className="bg-card border-border backdrop-blur-sm">
@@ -1442,8 +1447,17 @@ function BacktestCard() {
             <div className="rounded-md border border-white/[0.06] bg-white/[0.03] p-2">
               <div className="text-[10px] normal-case text-muted-foreground">PBO alpha credibility</div>
               <div className={`mt-1 inline-flex px-2 py-0.5 text-[10px] sv-num ${pboBadge || 'bg-white/5 text-muted-foreground'}`}>
-                PBO {pboData?.pbo != null ? `${(pboData.pbo * 100).toFixed(0)}%` : '-'} {pboVerdict ?? 'N/A'}
+                PBO {pboNumeric?.pbo != null ? `${(pboNumeric.pbo * 100).toFixed(0)}%` : '-'} {pboVerdict ?? '尚無 attempt'}
               </div>
+              {pboAttempt ? (
+                <div className="mt-1 text-[10px] text-muted-foreground/75">
+                  {pboAttempt.run_date} · 樣本 {pboAttempt.observed_trades}/{pboAttempt.required_trades} · production effect: none
+                </div>
+              ) : (
+                <div className="mt-1 text-[10px] text-amber-300/90">
+                  尚無新契約 PBO attempt receipt；不沿用舊 numeric result 作為本週狀態。
+                </div>
+              )}
             </div>
             <div className="rounded-md border border-white/[0.06] bg-white/[0.03] p-2">
               <div className="text-[10px] normal-case text-muted-foreground">MC tail risk</div>

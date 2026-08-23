@@ -123,7 +123,7 @@ assert(cronGcpDomainTasks.includes("runWithLog('model-ic-full-check'") && !cronG
 const weeklyS12Calibration = manifest.jobs.find((job: any) => job.id === 'weekly-s12-smcvwap-calibration')
 assert(weeklyS12Calibration?.task === 's12-smcvwap-calibration', 'weekly S12 calibration must have a first-class GCP Scheduler owner')
 assert(weeklyS12Calibration?.schedule === '45 22 * * 6', 'weekly S12 calibration must run Sunday TW 06:45')
-assert(weeklyS12Calibration?.query === 'sync=1&cadence=auto', 'weekly S12 owner must select monthly cadence after the first Saturday')
+assert(weeklyS12Calibration?.query === 'cadence=auto', 'weekly S12 owner must select monthly cadence after the first Saturday without a request-scoped sync timeout')
 assert(!manifest.jobs.some((job: any) => job.id === 'monthly-s12-smcvwap-calibration'), 'duplicated monthly S12 scheduler must stay retired')
 for (const retired of ['legacy-evidence-migration', 'd1-evidence-scrub', 'cleanup-dlq-replay', 'monthly-s12-smcvwap-calibration']) {
   assert(manifest.deleteJobIds?.includes(retired), `${retired} must be explicitly allowlisted for deletion`)

@@ -1,13 +1,16 @@
 import { databaseForDataDomain } from './dataDomainRegistry'
 import { twToday } from './dateUtils'
 import type { Bindings } from '../types'
+
+const D1_SAFE_IN_BIND_LIMIT = 90
+
 async function selectTopStockByMarketHistory(env: Bindings): Promise<{ id: number; symbol: string } | null> {
   const { results: identities } = await databaseForDataDomain(env, 'core').prepare(`
     SELECT id, symbol FROM stocks WHERE in_current_watchlist=1
   `).all<{ id: number; symbol: string }>()
   let selected: { id: number; symbol: string; rows: number } | null = null
-  for (let offset = 0; offset < (identities ?? []).length; offset += 400) {
-    const chunk = (identities ?? []).slice(offset, offset + 400)
+  for (let offset = 0; offset < (identities ?? []).length; offset += D1_SAFE_IN_BIND_LIMIT) {
+    const chunk = (identities ?? []).slice(offset, offset + D1_SAFE_IN_BIND_LIMIT)
     const marks = chunk.map(() => '?').join(',')
     const { results } = await databaseForDataDomain(env, 'market').prepare(`
       SELECT stock_id, COUNT(*) AS rows
@@ -163,9 +166,9 @@ export type MaintenanceRunResult = {
 export async function runWeeklyCleanup(env: Bindings): Promise<MaintenanceRunResult> {
   console.log('[CleanupV2] Starting ownership-safe weekly cleanup...')
   const tasks: MaintenanceTaskResult[] = []
-  const run = async (task: string, sql: string): Promise<void> => {
+  const run = async (task: string, db: D1Database, sql: string): Promise<void> => {
     try {
-      const result = await env.DB.prepare(sql).run()
+      const result = await db.prepare(sql).run()
       tasks.push({ task, ok: true, changed: Number(result.meta?.changes ?? 0) })
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error)
@@ -178,10 +181,12 @@ export async function runWeeklyCleanup(env: Bindings): Promise<MaintenanceRunRes
   // excluded. Producers must archive and verify R2 before enqueueing a scrub.
   await run(
     'alert_notifications_ephemeral',
+    databaseForDataDomain(env, 'core'),
     "DELETE FROM alert_notifications WHERE created_at < datetime('now', '-1 year')",
   )
   await run(
     'intraday_minute_bar_continuity_90d',
+    databaseForDataDomain(env, 'market'),
     "DELETE FROM intraday_minute_bars WHERE trade_date < date('now', '-90 days')",
   )
 
@@ -336,8 +341,9 @@ async function backupD1Snapshot(env: Bindings) {
   try {
     const tables = ['paper_accounts', 'paper_positions', 'paper_orders'] as const
     const date = new Date(Date.now() + 8 * 3600_000).toISOString().slice(0, 10)
+    const paperDb = databaseForDataDomain(env, 'paper')
     for (const table of tables) {
-      const { results } = await env.DB.prepare(`SELECT * FROM ${table}`).all()
+      const { results } = await paperDb.prepare(`SELECT * FROM ${table}`).all()
       await env.KV.put(`backup:${table}:${date}`, JSON.stringify(results ?? []), { expirationTtl: 604800 })
     }
     console.log(`[Backup] D1 snapshot saved to KV (${tables.length} tables)`)

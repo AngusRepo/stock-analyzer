@@ -15,6 +15,138 @@ const durableScheduler = fs.readFileSync('src/lib/durableSchedulerTask.ts', 'utf
 const dailyWorkflows = fs.readFileSync('src/lib/controllerDailyWorkflows.ts', 'utf8')
 const triggerRoutes = fs.readFileSync('src/routes/adminTriggerRoutes.ts', 'utf8')
 const index = fs.readFileSync('src/index.ts', 'utf8')
+const backtestRouter = fs.readFileSync('../ml-controller/routers/backtest.py', 'utf8')
+const optunaJob = fs.readFileSync('../ml-controller/optuna_job_main.py', 'utf8')
+const wrangler = fs.readFileSync('wrangler.toml', 'utf8')
+const localMaintenance = fs.readFileSync('src/lib/localMaintenance.ts', 'utf8')
+const deployScript = fs.readFileSync('../deploy_ml_controller.sh', 'utf8')
+const adminControl = fs.readFileSync('src/routes/adminControlRoutes.ts', 'utf8')
+const weeklyFence = fs.readFileSync('src/lib/weeklyResearchRunFence.ts', 'utf8')
+
+assert(
+  localMaintenance.includes('const D1_SAFE_IN_BIND_LIMIT = 90') &&
+    localMaintenance.includes('offset += D1_SAFE_IN_BIND_LIMIT') &&
+    localMaintenance.includes('slice(offset, offset + D1_SAFE_IN_BIND_LIMIT)'),
+  'weekly cleanup IC/drift sampling must stay below the D1 100-bound-variable ceiling',
+)
+
+assert(
+  /'alert_notifications_ephemeral',\s*databaseForDataDomain\(env, 'core'\)/.test(localMaintenance) &&
+    /'intraday_minute_bar_continuity_90d',\s*databaseForDataDomain\(env, 'market'\)/.test(localMaintenance),
+  'weekly cleanup deletes must target the canonical Core and Market D1 owners',
+)
+
+assert(
+  localMaintenance.includes("const paperDb = databaseForDataDomain(env, 'paper')") &&
+    localMaintenance.includes('await paperDb.prepare(`SELECT * FROM ${table}`).all()'),
+  'weekly paper snapshot backup must read the canonical Paper D1 owner',
+)
+
+assert(
+  workflows.includes("'/backtest/research-bundle/run'") &&
+    adminGcp.includes('runWeeklyValidationChain(c.env') &&
+    gcpCron.includes('runWeeklyValidationChain(env') &&
+    wrangler.includes('WEEKLY_BACKTEST_RESEARCH_BUNDLE_ENABLED = "1"'),
+  'weekly backtest must hand off to a long-running research Job from both scheduler entry paths',
+)
+
+assert(
+  deployScript.includes('BACKTEST_RESEARCH_JOB_NAME="${BACKTEST_RESEARCH_JOB_NAME:-weekly-backtest-research}"') &&
+    deployScript.includes('sync_backtest_research_job') &&
+    deployScript.includes('BACKTEST_RESEARCH_JOB_IMG') &&
+    deployScript.includes('BACKTEST_RESEARCH_JOB_COMMAND') &&
+    deployScript.includes('add-iam-policy-binding "$BACKTEST_RESEARCH_JOB_NAME"') &&
+    deployScript.includes('"roles/run.jobsExecutorWithOverrides"') &&
+    deployScript.includes('"roles/run.viewer"'),
+  'weekly backtest must have resource-scoped run-with-overrides and execution-list permissions plus image/entrypoint parity checks',
+)
+
+assert(
+  deployScript.includes('BACKTEST_RESEARCH_JOB_ENV_FILE=') &&
+    deployScript.includes('"OPTUNA_JOB_MODE": "weekly_backtest"') &&
+    deployScript.includes('"OPTUNA_CALLBACK_TASK": "weekly-backtest"') &&
+    deployScript.includes('line.split(":", 1)[0].strip() not in overrides') &&
+    deployScript.includes('sync_backtest_research_job "$BACKTEST_RESEARCH_JOB_ENV_FILE"') &&
+    deployScript.includes('BACKTEST_RESEARCH_JOB_MODE=$(gcloud run jobs describe') &&
+    deployScript.includes('BACKTEST_RESEARCH_CALLBACK_TASK=$(gcloud run jobs describe'),
+  'dedicated weekly backtest Job must fail closed to weekly_backtest mode even without execution overrides',
+)
+
+
+assert(
+  deployScript.includes('BACKTEST_RESEARCH_SECRET_BINDINGS="CF_API_TOKEN=') &&
+    deployScript.includes('STOCKVISION_AUTH_TOKEN=${STOCKVISION_AUTH_TOKEN_SECRET}"') &&
+    /sync_backtest_research_job[\s\S]+--set-secrets="\$BACKTEST_RESEARCH_SECRET_BINDINGS"/.test(deployScript) &&
+    !/sync_backtest_research_job[\s\S]+--update-secrets="\$RUN_SECRET_BINDINGS"[\s\S]+Weekly backtest research job update failed/.test(deployScript),
+  'weekly backtest Job update must authoritatively replace broad historical secret bindings with CF_API_TOKEN and STOCKVISION_AUTH_TOKEN only',
+)
+
+assert(
+  backtestRouter.includes('reject_if_running=True') &&
+    backtestRouter.includes('weekly_backtest_research_execution_already_running') &&
+    backtestRouter.includes('run_id: str = Field(') &&
+    backtestRouter.includes('run_id = req.run_id') &&
+    backtestRouter.includes('weekly_backtest_run_id_date_mismatch') &&
+    !backtestRouter.includes('run_id = f"weekly-backtest-{run_date}-'),
+  'weekly backtest dispatcher must use the Worker-supplied canonical run_id and reject duplicate Job executions',
+)
+
+assert(
+  backtestRouter.includes('go_live_verdict, raw_details, created_at') &&
+    backtestRouter.includes('immutable_pbo_backtest_lineage_mismatch') &&
+    backtestRouter.includes('pbo_provenance.get("source_row_id")') &&
+    backtestRouter.includes('pbo_provenance.get("source_run_date")'),
+  'weekly read-only reconciliation must bind PBO raw_details provenance to the same backtest id and run_date',
+)
+
+assert(
+  workflows.includes('reserveWeeklyBacktestDispatch') &&
+    workflows.includes('markWeeklyBacktestDispatchRunning') &&
+    workflows.includes('markWeeklyBacktestDispatchFailed') &&
+    workflows.indexOf('reserveWeeklyBacktestDispatch(opsDb') < workflows.indexOf("controllerFetch(env, '/backtest/research-bundle/run'") &&
+    workflows.includes('run_id: runId') &&
+    adminControl.includes('acceptWeeklyBacktestCallback') &&
+    weeklyFence.includes('weekly_backtest_dispatching') &&
+    weeklyFence.includes('stale_weekly_backtest_callback') &&
+    weeklyFence.includes('INSERT INTO scheduler_locks') &&
+    weeklyFence.includes('AND run_id=?'),
+  'weekly dispatcher must reserve a canonical run_id fence before dispatch and CAS running/failed before accepting same-run callbacks',
+)
+
+assert(
+  optunaJob.includes('_callback_weekly_with_bounded_retry') &&
+    optunaJob.includes('WEEKLY_BACKTEST_CALLBACK_MAX_ATTEMPTS') &&
+    optunaJob.includes('if attempt >= max_attempts or "HTTP 4" in message'),
+  'weekly terminal callback must retry transient delivery with a bounded attempt count and not retry stale 4xx callbacks',
+)
+
+assert(
+  durableScheduler.includes("leaseGroup: `s12_smcvwap_calibration:${runDate}`") &&
+    durableScheduler.includes('FROM s12_tw_calibration_runs') &&
+    durableScheduler.includes('idempotent: true') &&
+    durableScheduler.includes('throw new Error(leased.reason)'),
+  'S12 durable calibration must serialize same-date execution and reuse its persistent canonical run row instead of recomputing',
+)
+
+assert(
+  backtestRouter.includes('@router.post("/research-bundle/run")') &&
+    backtestRouter.includes('OPTUNA_JOB_MODE": "weekly_backtest"') &&
+    optunaJob.includes('async def _run_weekly_backtest_bundle') &&
+    optunaJob.includes('validation_status') &&
+    optunaJob.includes('promotion_gate_eligible'),
+  'weekly research Job must callback terminal execution separately from risk-gate blockers',
+)
+
+assert(
+  backtestRouter.includes('@router.post("/research-bundle/reconcile")') &&
+    backtestRouter.includes('canonical_weekly_evidence_error') &&
+    backtestRouter.includes('"evidence_read_only": True') &&
+    workflows.includes('runWeeklyBacktestEvidenceReconciliation') &&
+    workflows.includes("'/backtest/research-bundle/reconcile'") &&
+    adminGcp.includes("c.req.query('reconcile') === '1'") &&
+    adminGcp.includes('runWeeklyBacktestEvidenceReconciliation'),
+  'ended weekly cycles must reconcile immutable evidence read-only rather than recompute historical production evidence',
+)
 
 assert(
   workflows.includes("'ga_optimizer'"),

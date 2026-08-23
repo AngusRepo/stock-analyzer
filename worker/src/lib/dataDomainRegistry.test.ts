@@ -42,6 +42,9 @@ const migrationTransientTables = new Set([
   'pending_buy_debate_turns',
   'sector_flow_new',
 ])
+const domainMigrationTransientTables = new Set([
+  'run_artifacts_retention_v2',
+])
 const productionSqlFiles = [
   'schema.sql',
   productionSnapshot,
@@ -70,7 +73,7 @@ assert.equal(dataDomainForTable('canonical_revenue_observations_v2'), 'market', 
 const tableNames = [...new Set([
   ...productionTableNames,
   ...domainSqlFiles.flatMap(tableNamesFromSql)
-    .filter((table) => !migrationTransientTables.has(table)),
+    .filter((table) => !migrationTransientTables.has(table) && !domainMigrationTransientTables.has(table)),
 ])]
 assertSingleDomainOwnership(tableNames)
 

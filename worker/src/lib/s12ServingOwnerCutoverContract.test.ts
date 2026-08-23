@@ -11,6 +11,8 @@ const lifecycle = fs.readFileSync('src/lib/allocatorEvDailyLifecycle.ts', 'utf8'
 const recommendationRoute = fs.readFileSync('src/routes/other.ts', 'utf8')
 const adminRoutes = fs.readFileSync('src/routes/adminControlRoutes.ts', 'utf8')
 const paperEntryTasks = fs.readFileSync('src/lib/paperEntryTasks.ts', 'utf8')
+const paperExitTasks = fs.readFileSync('src/lib/paperExitTasks.ts', 'utf8')
+const paperRoutes = fs.readFileSync('src/routes/paper.ts', 'utf8')
 const researchRunner = fs.readFileSync('src/node-runner/s12StructureBatchJobMain.ts', 'utf8')
 const controllerMain = fs.readFileSync('../ml-controller/main.py', 'utf8')
 const controllerRouter = fs.readFileSync('../ml-controller/routers/s12_structure.py', 'utf8')
@@ -53,6 +55,12 @@ assert(adminRoutes.includes('retired S12 serving callback drained without pipeli
 assert(paperEntryTasks.includes('loadS12IntradayBaseBars'), 'Pending Buy and holding execution must retain realtime SMCVWAP bars')
 assert(paperEntryTasks.includes('assessS12IntradayStructureFromBaseBars'), 'Pending Buy and holding execution must retain realtime SMCVWAP assessment')
 assert(paperEntryTasks.includes('persistS12StructureSnapshot'), 'realtime execution decisions must retain audit evidence')
+assert(paperEntryTasks.includes("listApprovedS12TwCalibrationArtifacts(databaseForDataDomain(env, 'learning'))"), 'paper entry must read S12 formal-owner artifacts from Learning D1')
+assert(!paperEntryTasks.includes('listApprovedS12TwCalibrationArtifacts(env.DB)'), 'paper entry must not read S12 formal-owner artifacts from legacy D1')
+assert(paperExitTasks.includes("listApprovedS12TwCalibrationArtifacts(databaseForDataDomain(env, 'learning'))"), 'paper exit must read S12 formal-owner artifacts from Learning D1')
+assert(!paperExitTasks.includes('listApprovedS12TwCalibrationArtifacts(env.DB)'), 'paper exit must not read S12 formal-owner artifacts from legacy D1')
+assert(paperRoutes.includes("listApprovedS12TwCalibrationArtifacts(databaseForDataDomain(c.env, 'learning'))"), 'paper route must read S12 formal-owner artifacts from Learning D1')
+assert(!paperRoutes.includes('listApprovedS12TwCalibrationArtifacts(c.env.DB)'), 'paper route must not read S12 formal-owner artifacts from legacy D1')
 
 const retiredServingImports = [
   's12DurableStructureBatch',

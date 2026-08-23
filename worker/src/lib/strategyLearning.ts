@@ -3538,6 +3538,10 @@ export async function listHistoricalStrategyEvidenceV5Dates(
     priorityDate?: string | null
     priorityOnly?: boolean
     resolveCanonicalScreenerRunIds?: (asOfDate: string) => Promise<Record<string, string>>
+    resolveHistoricalArtifactEvidence?: (
+      signalDate: string,
+      producerRunId: string,
+    ) => Promise<HistoricalScreenerArtifactEvidence | null>
   },
 ): Promise<string[]> {
   const maxDates = Math.max(1, Math.min(5, Math.floor(options.maxDates ?? 2)))
@@ -3564,8 +3568,37 @@ export async function listHistoricalStrategyEvidenceV5Dates(
       && String(ledger?.blocker_reason ?? '').startsWith(
         `strategy_matrix_source_labeler_unsupported:${priorityDate}:strategy-decision-log-pit-reconstruction-v6`,
       )
+    const referenceLineageBlocked = ledgerStatus === 'blocked'
+      && String(ledger?.blocker_reason ?? '').startsWith('reference_lineage_incomplete')
+    let verifiedReferenceLineageRetry = false
+    if (referenceLineageBlocked) {
+      const canonicalRunIds = await options.resolveCanonicalScreenerRunIds?.(options.asOfDate) ?? {}
+      const producerRunId = canonicalRunIds[priorityDate]
+      const artifactEvidence = producerRunId
+        ? await options.resolveHistoricalArtifactEvidence?.(priorityDate, producerRunId) ?? null
+        : null
+      if (producerRunId) {
+        const {
+          auditHistoricalSelectionEvidenceRecoveryPreflight,
+          referenceLineageRecoveryRetryAllowed,
+        } = await import('./historicalSelectionEvidenceRecoveryPreflight')
+        const preflight = await auditHistoricalSelectionEvidenceRecoveryPreflight(db, {
+          signalDate: priorityDate,
+          producerRunId,
+          asOfDate: options.asOfDate,
+          artifactEvidence,
+        })
+        verifiedReferenceLineageRetry = referenceLineageRecoveryRetryAllowed(
+          ledger?.blocker_reason,
+          preflight,
+        )
+      }
+    }
     if (evaluationCurrent && (
-      (ledgerStatus === 'blocked' && !immutableV1CarrierRetry && !historicalSpecLineageRetry)
+      (ledgerStatus === 'blocked'
+        && !immutableV1CarrierRetry
+        && !historicalSpecLineageRetry
+        && !verifiedReferenceLineageRetry)
       || (ledgerStatus === 'success' && labelerCurrent)
     )) return []
     const decisionDate = await db.prepare(`
@@ -4129,14 +4162,6 @@ export async function rebuildHistoricalStrategyEvidenceV5(
         const regime = await options.resolveHistoricalRegime?.(date) ?? artifactEvidence?.regime ?? null
         if (!regime) throw new Error(`strategy_regime_pit_missing:${date}`)
 
-        if (existingMatrix) {
-          await db.prepare(`
-            UPDATE strategy_label_matrix_runs_v4
-               SET status='writing', error_code='superseded_by_strategy_decision_log_pit_reconstruction_v5', updated_at=CURRENT_TIMESTAMP
-             WHERE producer_run_id=?
-          `).bind(producerRunId).run()
-          await db.prepare('DELETE FROM strategy_label_matrix_v4 WHERE producer_run_id=?').bind(producerRunId).run()
-        }
         const matrix = rebuilt.map(({ row, spec, candidate }) => {
           if (!spec) throw new Error('matrix_strategy_spec_version_missing:' + row.strategy_id + '|' + row.strategy_version)
           const thresholdAffinity = assessStrategyThresholdMarginAffinity(candidate, spec, { regime, strategyWeights })

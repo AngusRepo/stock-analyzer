@@ -19,7 +19,7 @@ from routers.optuna import (
     execute_research_sweep,
     run_per_regime,
 )
-from routers.pipeline import _callback_worker
+from routers.pipeline import CallbackWorkerError, _callback_worker
 
 logging.basicConfig(
     level=logging.INFO,
@@ -171,16 +171,139 @@ def _build_parameter_validation_metadata(
         ],
     }
 
+async def _run_weekly_backtest_bundle(run_date: str) -> dict[str, Any]:
+    """Run canonical backtest/MC/PBO to completion and separate job health from risk gates."""
+    from services.monte_carlo_service import run_monte_carlo_mdd
+    from services.pbo_service import run_pbo_analysis
+    from services.weekly_evidence_service import run_canonical_weekly_backtest, taiwan_today
+
+    resolved_date = run_date or taiwan_today()
+    backtest = await asyncio.to_thread(run_canonical_weekly_backtest, run_date=resolved_date)
+    if not isinstance(backtest, dict) or backtest.get("status") != "success":
+        return {
+            "status": "error",
+            "run_date": resolved_date,
+            "failures": [f"backtest:{(backtest or {}).get('error', 'unexpected_result')}"],
+            "backtest": backtest,
+        }
+
+    monte_carlo: dict[str, Any] = {}
+    operational_failures: list[str] = []
+    validation_blockers: list[str] = []
+    simulations = _env_int("WEEKLY_BACKTEST_MONTE_CARLO_N", 1000)
+    for source in ("paper", "backtest"):
+        result = await run_monte_carlo_mdd(
+            n_simulations=simulations,
+            source=source,
+            method="block_bootstrap",
+            expected_run_date=resolved_date,
+            persist=True,
+            evidence_scope="canonical_current",
+        )
+        monte_carlo[source] = result
+        result_status = str(result.get("status") or "").lower() if isinstance(result, dict) else "invalid"
+        if result_status != "success":
+            operational_failures.append(
+                f"monte_carlo:{source}:{result.get('error', result_status) if isinstance(result, dict) else result_status}"
+            )
+            continue
+        verdict = str(result.get("go_live_verdict") or "UNKNOWN").upper()
+        tail_risk = str(result.get("tail_risk_status") or "UNKNOWN").upper()
+        if verdict != "PASS":
+            validation_blockers.append(f"monte_carlo:{source}:verdict={verdict}")
+        if tail_risk != "FULL_SAMPLE_TAIL_RISK":
+            validation_blockers.append(f"monte_carlo:{source}:tail_risk={tail_risk}")
+
+    pbo = await run_pbo_analysis(
+        n_partitions=_env_int("WEEKLY_BACKTEST_PBO_PARTITIONS", 10),
+        source=os.environ.get("WEEKLY_BACKTEST_PBO_SOURCE", "backtest"),
+        expected_run_date=resolved_date,
+        persist=True,
+        evidence_scope="canonical_current",
+    )
+    pbo_status = str(pbo.get("status") or "").lower() if isinstance(pbo, dict) else "invalid"
+    if pbo_status == "insufficient_evidence":
+        validation_blockers.append(
+            "pbo:insufficient_evidence:"
+            f"observed={pbo.get('observed_trades', 'unknown')}:"
+            f"required={pbo.get('required_trades', 'unknown')}"
+        )
+    elif pbo_status != "success":
+        operational_failures.append(
+            f"pbo:{pbo.get('error', pbo_status) if isinstance(pbo, dict) else pbo_status}"
+        )
+    elif str(pbo.get("go_live_verdict") or "UNKNOWN").upper() != "PASS":
+        validation_blockers.append(
+            f"pbo:verdict={str(pbo.get('go_live_verdict') or 'UNKNOWN').upper()}"
+        )
+
+    if operational_failures:
+        return {
+            "status": "error",
+            "run_date": resolved_date,
+            "validation_status": "not_evaluated",
+            "failures": operational_failures,
+            "blockers": validation_blockers,
+            "backtest": backtest,
+            "monte_carlo": monte_carlo,
+            "pbo": pbo,
+        }
+
+    validation_status = "blocked" if validation_blockers else "passed"
+    return {
+        "status": "completed",
+        "run_date": resolved_date,
+        "validation_status": validation_status,
+        "promotion_gate_eligible": not validation_blockers,
+        "failures": [],
+        "blockers": validation_blockers,
+        "summary": (
+            f"weekly_backtest completed validation={validation_status} "
+            f"trades={backtest.get('total_trades', 0)} "
+            f"blockers={','.join(validation_blockers) if validation_blockers else 'none'}"
+        )[:1200],
+        "backtest": backtest,
+        "monte_carlo": monte_carlo,
+        "pbo": pbo,
+    }
+
+
+async def _callback_weekly_with_bounded_retry(payload: dict[str, Any]) -> None:
+    max_attempts = max(1, min(5, _env_int("WEEKLY_BACKTEST_CALLBACK_MAX_ATTEMPTS", 3)))
+    for attempt in range(1, max_attempts + 1):
+        try:
+            await _callback_worker(payload)
+            return
+        except CallbackWorkerError as exc:
+            message = str(exc)
+            if attempt >= max_attempts or "HTTP 4" in message:
+                raise
+            delay_seconds = min(8, 2 ** (attempt - 1))
+            logger.warning(
+                "[OptunaJob] weekly callback retry attempt=%s/%s delay_seconds=%s error=%s",
+                attempt,
+                max_attempts,
+                delay_seconds,
+                message,
+            )
+            await asyncio.sleep(delay_seconds)
+
+
 async def _run() -> int:
     mode = os.environ.get("OPTUNA_JOB_MODE", "research_sweep").strip().lower()
-    if mode not in {"research_sweep", "per_regime", "parameter_validation"}:
+    if mode not in {"research_sweep", "per_regime", "parameter_validation", "weekly_backtest"}:
         raise RuntimeError(f"unsupported OPTUNA_JOB_MODE={mode}")
 
     run_date = os.environ.get("OPTUNA_RUN_DATE", "") or ""
     queue_entry_id = os.environ.get("OPTUNA_QUEUE_ENTRY_ID", "") or ""
     trigger_source = os.environ.get("OPTUNA_TRIGGER_SOURCE", "") or ""
-    if mode == "per_regime":
-        req: Any = _build_per_regime_request()
+    if mode == "weekly_backtest":
+        req: Any = None
+        cadence = "weekly"
+        task = os.environ.get("OPTUNA_CALLBACK_TASK", "weekly-backtest") or "weekly-backtest"
+        log_parallel = 1
+    elif mode == "per_regime":
+        req = _build_per_regime_request()
         cadence = str(req.cadence or "queue")
         task = "optuna-per-regime"
         log_parallel = 1
@@ -194,9 +317,14 @@ async def _run() -> int:
         cadence = req.cadence
         task = f"{cadence}-optuna"
         log_parallel = req.max_parallel_sources
-    run_id = os.environ.get(
+    execution_run_id = os.environ.get(
         "CLOUD_RUN_EXECUTION",
         f"optuna-{cadence}-{int(time.time())}-{uuid.uuid4().hex[:8]}",
+    )
+    run_id = (
+        (os.environ.get("OPTUNA_RUN_ID") or execution_run_id)
+        if mode == "weekly_backtest"
+        else execution_run_id
     )
     if mode == "parameter_validation":
         run_id = req.run_id or run_id
@@ -219,7 +347,15 @@ async def _run() -> int:
     result: dict[str, Any] | None = None
 
     try:
-        if mode == "per_regime":
+        if mode == "weekly_backtest":
+            result = await _run_weekly_backtest_bundle(run_date)
+            if isinstance(result, dict) and result.get("status") == "completed":
+                status = "success"
+            else:
+                failures = result.get("failures") if isinstance(result, dict) else None
+                error = "; ".join(str(item) for item in (failures or [])) or str(result)
+            summary = _summarize_result(result if isinstance(result, dict) else {})
+        elif mode == "per_regime":
             result = await asyncio.to_thread(run_per_regime, req)
             result_status = result.get("status") if isinstance(result, dict) else None
             if result_status in {"completed", "ok"}:
@@ -273,7 +409,20 @@ async def _run() -> int:
         payload["run_date"] = run_date
     if error:
         payload["error"] = error[:1200]
-    if mode == "per_regime":
+    if mode == "weekly_backtest":
+        pbo = result.get("pbo") if isinstance(result, dict) and isinstance(result.get("pbo"), dict) else {}
+        payload["metadata"] = {
+            "source": "weekly_backtest_research_bundle",
+            "executor": "cloud_run_job",
+            "mode": mode,
+            "validation_status": result.get("validation_status") if isinstance(result, dict) else None,
+            "promotion_gate_eligible": result.get("promotion_gate_eligible") if isinstance(result, dict) else False,
+            "blockers": result.get("blockers") if isinstance(result, dict) else [],
+            "observed_trades": pbo.get("observed_trades"),
+            "required_trades": pbo.get("required_trades"),
+        }
+        payload["result"] = result
+    elif mode == "per_regime":
         push = result.get("push") if isinstance(result, dict) and isinstance(result.get("push"), dict) else {}
         payload.update({
             "queue_entry_id": queue_entry_id or None,
@@ -322,7 +471,10 @@ async def _run() -> int:
             },
         })
 
-    await _callback_worker(payload)
+    if mode == "weekly_backtest":
+        await _callback_weekly_with_bounded_retry(payload)
+    else:
+        await _callback_worker(payload)
     logger.info("[OptunaJob] finished task=%s status=%s", task, status)
     return 0 if status in {"success", "skipped"} else 1
 

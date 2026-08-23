@@ -38,7 +38,6 @@ const SYNC_REQUIRED_TASKS = new Set([
   'active8-oof-lifecycle', 'active8-oof-daily', 'active8-oof-weekly', 'active8-oof-monthly',
   'strategy-learning', 'strategy-learning-finalize',
   'selection-reference-repair', 'selection-reference-identity-repair',
-  's12-smcvwap-calibration',
   's12-research-recovery',
   's12-replay-backfill',
   'audit-json-retention',
@@ -57,8 +56,8 @@ const SYNC_REQUIRED_TASKS = new Set([
   'monthly-retrain',
 ])
 
-function isDurableQueueTask(task: string): task is 'external-evidence' | 'weekly-cleanup' {
-  return task === 'external-evidence' || task === 'weekly-cleanup'
+function isDurableQueueTask(task: string): task is 'external-evidence' | 'weekly-cleanup' | 's12-smcvwap-calibration' {
+  return task === 'external-evidence' || task === 'weekly-cleanup' || task === 's12-smcvwap-calibration'
 }
 
 function buildRunId(task: string): string {

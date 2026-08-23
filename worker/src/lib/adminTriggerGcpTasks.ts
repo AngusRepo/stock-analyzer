@@ -11,7 +11,8 @@ import {
   runWeeklyDriftRetrain,
   runMonthlyStrategyMining,
   runExternalEvidenceMaterialize,
-  summarizeWeeklyValidationChain,
+  runWeeklyBacktestEvidenceReconciliation,
+  runWeeklyValidationChain,
   triggerRetrain,
 } from './controllerWorkflows'
 import type { TaskHandler, TriggerDeps } from './adminTriggerTaskMap'
@@ -76,12 +77,9 @@ export function buildAdminGcpTriggerTaskMap(c: any, deps: TriggerDeps): Record<s
     'weekly-audit': () => deps.runWeeklyAudit(),
     'verify-v2': async () => runVerifyV2(c.env, requestedRunDate()),
     backtest: () => deps.runWeeklyBacktest(requestedRunDate()),
-    'weekly-backtest': async () => {
-      const bt = await deps.runWeeklyBacktest(requestedRunDate())
-      const mc = await deps.runWeeklyMonteCarlo(requestedRunDate())
-      const pbo = await deps.runWeeklyPBO(requestedRunDate())
-      return summarizeWeeklyValidationChain({ backtest: bt, monteCarlo: mc, pbo })
-    },
+    'weekly-backtest': () => c.req.query('reconcile') === '1'
+      ? runWeeklyBacktestEvidenceReconciliation(c.env, requestedRunDate())
+      : runWeeklyValidationChain(c.env, requestedRunDate()),
     'monte-carlo': () => deps.runWeeklyMonteCarlo(requestedRunDate()),
     pbo: () => deps.runWeeklyPBO(requestedRunDate()),
     'alpha-quality': () => deps.runWeeklyAlphaQuality(),

@@ -7,6 +7,15 @@ function assert(condition: unknown, message: string): void {
 const monitor = readFileSync('src/lib/dataQualityMonitor.ts', 'utf8')
 
 assert(
+  monitor.includes("const marketDb = databaseForDataDomain(env, 'market')"),
+  'all formal market source gates must read the Market D1 owner after strict cutover',
+)
+assert(
+  /firstCount\(\s*marketDb,\s*`WITH ordered_dates AS/.test(monitor),
+  'market turnover must be evaluated from formal Market D1 rather than legacy DB',
+)
+
+assert(
   monitor.includes('buildMarketDashboardMaterializationCheck'),
   'data quality monitor should build a dedicated homepage market materialization check',
 )

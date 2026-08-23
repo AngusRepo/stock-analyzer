@@ -515,6 +515,30 @@ async function handleSchedulerCallback(c: any) {
   let screenerShouldContinue = false
   let screenerCallbackLineageAccepted = false
 
+  if (
+    body.task === 'weekly-backtest'
+    && ['success', 'error', 'skipped'].includes(String(body.status))
+  ) {
+    if (!callbackRunDate || !callbackRunId) {
+      return c.json({ error: 'weekly backtest callback missing run_date or run_id' }, 400)
+    }
+    const { acceptWeeklyBacktestCallback } = await import('../lib/weeklyResearchRunFence')
+    const fence = await acceptWeeklyBacktestCallback(databaseForDataDomain(c.env, 'ops'), {
+      runDate: callbackRunDate,
+      runId: callbackRunId,
+      callbackStatus: String(body.status),
+    })
+    if (!fence.accepted) {
+      return c.json({
+        success: false,
+        ignored: true,
+        reason: fence.reason,
+        incoming_run_id: callbackRunId,
+        active_run_id: fence.activeRunId,
+      }, 409)
+    }
+  }
+
   if (['active8-oof-daily', 'active8-oof-weekly', 'active8-oof-monthly'].includes(body.task)) {
     const { persistActive8OofFreshnessAudit } = await import('../lib/active8OofFreshness')
     const freshnessEvidence = callbackMetadata?.oof_freshness

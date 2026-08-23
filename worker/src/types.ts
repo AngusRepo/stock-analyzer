@@ -375,7 +375,7 @@ export interface UpdateQueueMsg {
   dataDomainGlobalSweep?: boolean // continue across domains under the same parity freshness fence
   maintenanceCycle?: number
   maxMaintenanceCycles?: number
-  scheduledTask?: 'external-evidence' | 'weekly-cleanup'
+  scheduledTask?: 'external-evidence' | 'weekly-cleanup' | 's12-smcvwap-calibration'
   force?: boolean
   strategyEvidenceMaxDates?: number
   oofCadence?: 'weekly' | 'monthly'

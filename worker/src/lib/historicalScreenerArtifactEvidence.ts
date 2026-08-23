@@ -14,6 +14,12 @@ export type HistoricalScreenerArtifactEvidence = {
   expected_cell_count: number
   matrix_coverage_ratio: number
   regime: 'bull' | 'bear' | 'volatile' | 'sideways' | null
+  route_recovery_packet_schema: string | null
+  route_recovery_packet_checksum: string | null
+  route_recovery_parity_checksum: string | null
+  route_recovery_candidate_count: number
+  route_recovery_score_count: number
+  route_recovery_packet_ready: boolean
 }
 
 type ArtifactIndexRow = {
@@ -109,6 +115,18 @@ export async function loadHistoricalScreenerArtifactEvidence(
   const coverageRatio = Number(
     strategyPool?.strategy_matrix_coverage_ratio ?? telemetry?.strategy_matrix_coverage_ratio,
   )
+  const routePacket = strategyPool?.route_recovery_packet ?? telemetry?.route_recovery_packet
+  const routePacketSchema = String(routePacket?.schema_version ?? '').trim() || null
+  const routePacketChecksum = String(routePacket?.input_packet_checksum ?? '').trim() || null
+  const routeParityChecksum = String(routePacket?.route_score_parity_checksum ?? '').trim() || null
+  const routeCandidateCount = finiteInteger(routePacket?.candidate_count) ?? 0
+  const routeScoreCount = finiteInteger(routePacket?.route_score_count) ?? 0
+  const checksumPattern = /^sha256:[a-f0-9]{64}$/i
+  const routePacketReady = routePacketSchema === 'strategy-route-recovery-packet-v1'
+    && routeCandidateCount === candidateCount
+    && routeScoreCount === candidateCount
+    && checksumPattern.test(routePacketChecksum ?? '')
+    && checksumPattern.test(routeParityChecksum ?? '')
   if (
     manifest?.schema_version !== 'screener-funnel-evidence-index-v1'
     || manifest?.business_date !== signalDate
@@ -132,5 +150,11 @@ export async function loadHistoricalScreenerArtifactEvidence(
     expected_cell_count: expectedCellCount,
     matrix_coverage_ratio: coverageRatio,
     regime: normalizeRegime(strategyPool?.strategy_portfolio_metrics?.regime),
+    route_recovery_packet_schema: routePacketSchema,
+    route_recovery_packet_checksum: routePacketChecksum,
+    route_recovery_parity_checksum: routeParityChecksum,
+    route_recovery_candidate_count: routeCandidateCount,
+    route_recovery_score_count: routeScoreCount,
+    route_recovery_packet_ready: routePacketReady,
   }
 }

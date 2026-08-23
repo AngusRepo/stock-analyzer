@@ -804,6 +804,58 @@ adminWriteRoutes.post('/api/admin/strategy/evidence-v5/rebuild', async (c) => {
   }, 202)
 })
 
+adminWriteRoutes.post('/api/admin/strategy/evidence-recovery/preflight', async (c) => {
+  const authError = await requireAdminOrServiceToken(c)
+  if (authError) return authError
+
+  type Body = { signal_date?: string; as_of_date?: string }
+  const body = await c.req.json<Body>().catch(() => ({} as Body))
+  const signalDate = body.signal_date ?? c.req.query('signal_date') ?? ''
+  const asOfDate = body.as_of_date ?? c.req.query('as_of_date') ?? twToday()
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(signalDate) || !/^\d{4}-\d{2}-\d{2}$/.test(asOfDate)) {
+    return c.json({ success: false, error: 'valid signal_date and as_of_date are required' }, 400)
+  }
+  if (asOfDate < signalDate) {
+    return c.json({ success: false, error: 'as_of_date must not precede signal_date' }, 400)
+  }
+
+  const [
+    { loadCanonicalScreenerRunIds, loadHistoricalScreenerArtifactEvidence },
+    { auditHistoricalSelectionEvidenceRecoveryPreflight },
+  ] = await Promise.all([
+    import('../lib/historicalScreenerArtifactEvidence'),
+    import('../lib/historicalSelectionEvidenceRecoveryPreflight'),
+  ])
+  const canonicalRunIds = await loadCanonicalScreenerRunIds(c.env, asOfDate)
+  const producerRunId = canonicalRunIds[signalDate]
+  if (!producerRunId) {
+    return c.json({
+      success: false,
+      signal_date: signalDate,
+      as_of_date: asOfDate,
+      status: 'unavailable',
+      write_canonical: false,
+      error: 'canonical_screener_run_missing',
+    }, 409)
+  }
+  const artifactEvidence = await loadHistoricalScreenerArtifactEvidence(
+    c.env,
+    signalDate,
+    producerRunId,
+  )
+  const preflight = await auditHistoricalSelectionEvidenceRecoveryPreflight(
+    databaseForDataDomain(c.env, 'learning'),
+    { signalDate, producerRunId, asOfDate, artifactEvidence },
+  )
+  return c.json({
+    success: true,
+    mode: 'read_only_preflight',
+    signal_date: signalDate,
+    as_of_date: asOfDate,
+    ...preflight,
+  })
+})
+
 adminWriteRoutes.post('/api/admin/strategy/route-backfill/eligibility', async (c) => {
   const authError = await requireAdminOrServiceToken(c)
   if (authError) return authError

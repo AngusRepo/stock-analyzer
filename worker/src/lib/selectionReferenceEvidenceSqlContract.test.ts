@@ -21,11 +21,11 @@ function csvArity(value: string): number {
   return count
 }
 
-function assertInsertArity(table: string, expectedPlaceholders: number): void {
+function assertValuesInsertArity(table: string, expectedPlaceholders: number): void {
   const match = source.match(new RegExp(
     `INSERT(?: OR IGNORE)? INTO ${table}\\s*\\(([\\s\\S]*?)\\)\\s*VALUES\\s*\\(([\\s\\S]*?)\\)`,
   ))
-  assert.ok(match, `${table} INSERT must exist`)
+  assert.ok(match, `${table} VALUES INSERT must exist`)
   const columns = csvArity(match[1])
   const values = csvArity(match[2])
   const placeholders = (match[2].match(/\?/g) ?? []).length
@@ -33,5 +33,17 @@ function assertInsertArity(table: string, expectedPlaceholders: number): void {
   assert.equal(placeholders, expectedPlaceholders, `${table} INSERT bind arity changed unexpectedly`)
 }
 
-assertInsertArity('selection_reference_snapshots_v1', 24)
-assertInsertArity('strategy_label_matrix_v4', 27)
+assertValuesInsertArity('selection_reference_snapshots_staging_v1', 25)
+
+for (const table of [
+  'strategy_label_matrix_staging_v4',
+  'selection_reference_snapshots_v1',
+  'strategy_label_matrix_v4',
+]) {
+  assert.match(source, new RegExp(`INSERT INTO ${table}\\s*\\([\\s\\S]*?\\)\\s*SELECT`),
+    `${table} must be populated through INSERT SELECT`)
+}
+
+assert.match(source, /FROM json_each\(\?\)/, 'matrix staging must retain bounded JSON chunk ingestion')
+assert.match(source, /FROM selection_reference_snapshots_staging_v1 st/)
+assert.match(source, /FROM strategy_label_matrix_staging_v4 st/)

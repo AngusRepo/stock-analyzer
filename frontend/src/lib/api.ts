@@ -35,24 +35,60 @@ export function clearToken() {
 }
 export function getToken() { return _token }
 
-async function req<T>(method: string, path: string, body?: unknown, extraHeaders?: Record<string, string>): Promise<T> {
+export type ApiRequestOptions = {
+  signal?: AbortSignal
+  timeoutMs?: number
+}
+
+async function req<T>(
+  method: string,
+  path: string,
+  body?: unknown,
+  extraHeaders?: Record<string, string>,
+  requestOptions: ApiRequestOptions = {},
+): Promise<T> {
   const headers: Record<string,string> = { 'Content-Type': 'application/json' }
   if (_token) headers['Authorization'] = `Bearer ${_token}`
   Object.assign(headers, extraHeaders)
-  const res = await fetch(`${BASE}${path}`, {
-    method,
-    headers,
-    body: body ? JSON.stringify(body) : undefined,
-    cache: method === 'GET' ? 'no-store' : undefined,
-  })
-  if (res.status === 401) { clearToken(); throw new Error('Unauthorized') }
-  if (!res.ok) {
-    const e = await res.json().catch(() => ({})) as any
-    throw new Error(formatApiError(path, res.status, res.statusText, e))
+  const timeoutMs = Number(requestOptions.timeoutMs)
+  const timeoutEnabled = Number.isFinite(timeoutMs) && timeoutMs > 0
+  const controller = timeoutEnabled ? new AbortController() : null
+  let timeoutTriggered = false
+  let timeoutId: ReturnType<typeof setTimeout> | undefined
+  const abortFromCaller = () => controller?.abort(requestOptions.signal?.reason)
+  if (controller && requestOptions.signal) {
+    if (requestOptions.signal.aborted) abortFromCaller()
+    else requestOptions.signal.addEventListener('abort', abortFromCaller, { once: true })
   }
-  return res.json()
+  if (controller) {
+    timeoutId = setTimeout(() => {
+      timeoutTriggered = true
+      controller.abort(new DOMException('Request timed out', 'TimeoutError'))
+    }, timeoutMs)
+  }
+  try {
+    const res = await fetch(`${BASE}${path}`, {
+      method,
+      headers,
+      body: body ? JSON.stringify(body) : undefined,
+      cache: method === 'GET' ? 'no-store' : undefined,
+      signal: controller?.signal ?? requestOptions.signal,
+    })
+    if (res.status === 401) { clearToken(); throw new Error('Unauthorized') }
+    if (!res.ok) {
+      const e = await res.json().catch(() => ({})) as any
+      throw new Error(formatApiError(path, res.status, res.statusText, e))
+    }
+    return res.json()
+  } catch (error) {
+    if (timeoutTriggered) throw new Error('Request timeout after ' + timeoutMs + 'ms (' + path + ').')
+    throw error
+  } finally {
+    if (timeoutId) clearTimeout(timeoutId)
+    requestOptions.signal?.removeEventListener('abort', abortFromCaller)
+  }
 }
-const get  = <T>(p: string)            => req<T>('GET',    p)
+const get  = <T>(p: string, options?: ApiRequestOptions) => req<T>('GET', p, undefined, undefined, options)
 const post = <T>(p: string, b?: unknown) => req<T>('POST',   p, b)
 const put  = <T>(p: string, b?: unknown) => req<T>('PUT',    p, b)
 const del  = <T>(p: string)            => req<T>('DELETE', p)
@@ -166,13 +202,41 @@ export const chatApi = {
     del<any>(`/chat/sessions/${sessionId}`),
 }
 
+export type DailyPipelineView = {
+  schema_version: 'daily_pipeline_view_v1'
+  requested_date: string
+  date: string
+  is_stale: boolean
+  resolved_from: 'requested' | 'today' | 'fallback_prev'
+  view: 'pipeline'
+  counts: {
+    recommendation_count: number
+    buy_signal_count: number
+    hold_count: number
+  }
+  funnel_summary: Record<string, any> | null
+  strategy_summary: Record<string, any> | null
+  sector_summary: Array<{
+    sector: string
+    count: number
+    avgScore: number
+    avgChip: number
+    avgTech: number
+    symbols: string[]
+    themeText: string
+    rotationText: string
+    strategyText: string
+    reasonText: string
+  }>
+  generated_at: string | null
+}
 export const recommendationsApi = {
-  daily:       (date?: string, opts?: { view?: 'full' | 'card' }) => {
+  daily:       <T = any>(date?: string, opts?: ApiRequestOptions & { view?: 'full' | 'card' | 'pipeline' }) => {
     const params = new URLSearchParams()
     if (date) params.set('date', date)
     if (opts?.view) params.set('view', opts.view)
     const query = params.toString()
-    return get<any>(`/recommendations/daily${query ? `?${query}` : ''}`)
+    return get<T>(`/recommendations/daily${query ? `?${query}` : ''}`, opts)
   },
   history:     (days = 7) =>
     get<any[]>(`/recommendations/history?days=${days}`),
@@ -199,10 +263,43 @@ export const recommendationsApi = {
     get<any>(`/recommendations/daily-report${date ? `?date=${date}` : ''}`),
 }
 
+export type PboNumericResult = {
+  id: number
+  pbo: number
+  n_combinations: number
+  n_oos_negative: number
+  oos_mean_return: number | null
+  is_mean_return: number | null
+  degradation: number | null
+  go_live_verdict: 'PASS' | 'FAIL' | string | null
+  verdict_reason: string | null
+}
+
+export type PboAttemptReceipt = {
+  attempt_id: string
+  run_date: string
+  source: string
+  status: 'computed' | 'insufficient_evidence'
+  n_partitions: number
+  observed_trades: number
+  required_trades: number
+  source_provenance: Record<string, unknown> | null
+  pbo_result_id: number | null
+  production_effect: false
+  created_at: string
+  numeric_result: PboNumericResult | null
+}
+
+export type PboDashboardResponse = {
+  status: 'ok'
+  latest_attempt: PboAttemptReceipt | null
+  latest_numeric_result: Record<string, unknown> | null
+}
+
 export const backtestApi = {
   latest: () => get<any>('/backtest/latest'),
   monteCarlo: () => get<any>('/backtest/monte-carlo'),
-  pbo: () => get<any>('/backtest/pbo'),
+  pbo: () => get<PboDashboardResponse>('/backtest/pbo'),
 }
 
 export const cronApi = {
@@ -1674,8 +1771,8 @@ export const paperApi = {
   realized:        () => get<any>('/paper/realized'),
   journal:         () => get<any>('/paper/journal'),
   cronLogs:        (date?: string) => get<any>(`/admin/cron-logs${date ? `?date=${date}` : ''}`),
-  quadrantFilter:  (date?: string) => get<any>(`/paper/quadrant-filter${date ? `?date=${date}` : ''}`),
-  pendingBuys:     () => get<any>('/paper/pending-buys'),
+  quadrantFilter:  (date?: string, options?: ApiRequestOptions) => get<any>(`/paper/quadrant-filter${date ? `?date=${date}` : ''}`, options),
+  pendingBuys:     (options?: ApiRequestOptions) => get<any>('/paper/pending-buys', options),
   gateCalibration: (days = 7) => get<any>(`/paper/gate-calibration?days=${days}`),
 }
 

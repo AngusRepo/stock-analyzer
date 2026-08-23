@@ -48,6 +48,7 @@ export {
   runWeeklyAudit,
   runWeeklyAlphaQuality,
   runWeeklyBacktest,
+  runWeeklyBacktestEvidenceReconciliation,
   runWeeklyBacktestResearchBundle,
   runWeeklyLifecycleCheck,
   runActive8OofLifecycle,

@@ -207,6 +207,7 @@ const POLICY_CONFIGS: Record<RetentionArchiveOnlyPolicyId, PolicyConfig> = {
       tableSource('research', 'backtest_results', 'run_date'),
       tableSource('research', 'monte_carlo_results', 'run_date'),
       tableSource('research', 'pbo_results', 'run_date'),
+      tableSource('research', 'pbo_attempt_receipts', 'run_date'),
       tableSource('research', 'strategy_mining_runs', 'run_date'),
       tableSource('research', 'analysis_runs', 'created_at'),
     ],

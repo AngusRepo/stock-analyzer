@@ -132,6 +132,7 @@ def health():
     verify_job_name = os.environ.get("VERIFY_JOB_NAME", "").strip()
     screener_job_name = os.environ.get("SCREENER_JOB_NAME", "").strip()
     optuna_job_name = os.environ.get("OPTUNA_JOB_NAME", "").strip()
+    backtest_research_job_name = os.environ.get("BACKTEST_RESEARCH_JOB_NAME", "").strip()
     gcp_project_id = os.environ.get("GCP_PROJECT_ID", "").strip()
     gcp_region = os.environ.get("GCP_REGION", "").strip()
     return {
@@ -152,6 +153,7 @@ def health():
         "verifyJobConfigured": all([verify_job_name, gcp_project_id, gcp_region]),
         "screenerJobConfigured": all([screener_job_name, gcp_project_id, gcp_region]),
         "optunaJobConfigured": all([optuna_job_name, gcp_project_id, gcp_region]),
+        "backtestResearchJobConfigured": all([backtest_research_job_name, gcp_project_id, gcp_region]),
         "batchPredictContract": batch_predict_contract(),
     }
 

@@ -715,7 +715,7 @@ paper.get('/positions', async (c) => {
   const canonicalLifecycleMap = new Map<string, any>()
   const buyOrderNoteMap = new Map<string, unknown>()
   const marketBySymbol = new Map<string, string>()
-  const s12CalibrationArtifacts = await listApprovedS12TwCalibrationArtifacts(c.env.DB).catch(() => [])
+  const s12CalibrationArtifacts = await listApprovedS12TwCalibrationArtifacts(databaseForDataDomain(c.env, 'learning')).catch(() => [])
   if (positions?.length) {
     const symbols = positionSymbols
     if (symbols.length > 0) {

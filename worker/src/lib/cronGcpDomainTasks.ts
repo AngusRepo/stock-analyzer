@@ -5,17 +5,13 @@ import {
   runRegimeCompute,
   runVerifyV2,
   runWeeklyAudit,
-  runWeeklyBacktest,
   runWeeklyAlphaQuality,
-  runWeeklyMonteCarlo,
-  runWeeklyPBO,
   runWeeklyOptunaResearch,
+  runWeeklyValidationChain,
   runOptunaQueueProcessor,
   runExternalEvidenceMaterialize,
-  summarizeWeeklyValidationChain,
 } from './controllerWorkflows'
 import { twToday } from './dateUtils'
-import { databaseForDataDomain } from './dataDomainRegistry'
 
 interface GcpCronDeps {
   cron: string
@@ -58,13 +54,7 @@ export async function handleGcpDomainCron(deps: GcpCronDeps): Promise<boolean> {
   }
 
   if (cron === '0 22 * * 6') {
-    runWithLog('weekly-backtest', async () => {
-      const runDate = twToday()
-      const bt = await runWeeklyBacktest(env, runDate)
-      const mc = await runWeeklyMonteCarlo(env, runDate)
-      const pbo = await runWeeklyPBO(env, runDate)
-      return summarizeWeeklyValidationChain({ backtest: bt, monteCarlo: mc, pbo })
-    })
+    runWithLog('weekly-backtest', async () => runWeeklyValidationChain(env, twToday()))
     runWithLog('alpha-quality', async () => runWeeklyAlphaQuality(env))
     return true
   }
@@ -76,13 +66,16 @@ export async function handleGcpDomainCron(deps: GcpCronDeps): Promise<boolean> {
 
   if (cron === '45 22 * * 6') {
     runWithLog('s12-smcvwap-calibration', async () => {
-      const { runS12TwCalibration } = await import('./s12TwEquityCalibration')
-      const result = await runS12TwCalibration(databaseForDataDomain(env, 'learning'), {
-        runDate: twToday(),
-        cadence: 'weekly',
-        dryRun: false,
+      const runDate = twToday()
+      const runId = 's12-smcvwap-calibration-' + runDate + '-' + Date.now()
+      await env.UPDATE_QUEUE.send({
+        type: 'scheduled_admin_task',
+        scheduledTask: 's12-smcvwap-calibration',
+        cursor: 0,
+        triggerTime: runDate,
+        runId,
       })
-      return result.summary
+      return 'triggered s12-smcvwap-calibration run_date=' + runDate + ' run_id=' + runId + ' callback expected'
     })
     return true
   }

@@ -1046,7 +1046,10 @@ def _run_optuna_sweep_source_inner(source: str, runner) -> dict[str, Any]:
         }
     except HTTPException as exc:
         detail = str(exc.detail)
-        if exc.status_code == 400 and any(token in detail.lower() for token in ("insufficient", "no top stocks", "benchmark")):
+        if exc.status_code == 400 and any(
+            token in detail.lower()
+            for token in ("insufficient", "no top stocks", "benchmark", "no feasible pareto")
+        ):
             return {
                 "source": source,
                 "status": "skipped",

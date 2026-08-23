@@ -56,43 +56,59 @@ export async function auditStrategyRouteBackfillEligibility(
   const startDate = /^\d{4}-\d{2}-\d{2}$/.test(String(options.startDate ?? ''))
     ? String(options.startDate)
     : shiftUtcDate(asOfDate, -540)
+  const canonicalRunIds = Object.fromEntries(Object.entries(options.canonicalRunIds ?? {})
+    .filter(([date, runId]) => (
+      /^\d{4}-\d{2}-\d{2}$/.test(date)
+      && date >= startDate
+      && date <= asOfDate
+      && String(runId ?? '').trim().length > 0
+    ))
+    .sort(([left], [right]) => left.localeCompare(right)))
+  if (Object.keys(canonicalRunIds).length === 0) return []
+
+  const canonicalRunIdsJson = JSON.stringify(canonicalRunIds)
   const result = await db.prepare(`
-    WITH formal_runs AS (
+    WITH canonical_heads AS (
+      SELECT h.key signal_date, CAST(h.value AS TEXT) producer_run_id
+        FROM json_each(?) h
+       WHERE h.key BETWEEN ? AND ?
+    ),
+    formal_runs AS (
       SELECT producer_run_id, signal_date, expected_cell_count, labeler_version
         FROM strategy_label_matrix_runs_v4
        WHERE status='ready' AND reference_contract_version=?
          AND labeler_version IN (?, ?)
     )
-    SELECT r.signal_date, r.producer_run_id,
-           COUNT(*) reference_rows,
-           SUM(CASE WHEN EXISTS (
+    SELECT h.signal_date, h.producer_run_id,
+           COUNT(r.symbol) reference_rows,
+           SUM(CASE WHEN r.symbol IS NOT NULL AND EXISTS (
              SELECT 1 FROM canonical_selection_labels_v4 l
-              WHERE l.signal_date=r.signal_date AND l.symbol=r.symbol
-                AND l.producer_run_id=r.producer_run_id
+              WHERE l.signal_date=h.signal_date AND l.symbol=r.symbol
+                AND l.producer_run_id=h.producer_run_id
                 AND l.label_schema_version=? AND l.reference_contract_version=?
                 AND l.outcome_known_date<=?
            ) THEN 1 ELSE 0 END) mature_label_rows,
-           SUM(CASE WHEN EXISTS (
+           SUM(CASE WHEN r.symbol IS NOT NULL AND EXISTS (
              SELECT 1 FROM canonical_selection_label_rejections_v4 q
-              WHERE q.signal_date=r.signal_date
+              WHERE q.signal_date=h.signal_date
                 AND q.symbol=r.symbol
-                AND q.producer_run_id=r.producer_run_id
+                AND q.producer_run_id=h.producer_run_id
            ) THEN 1 ELSE 0 END) rejected_label_rows,
            COALESCE((
              SELECT COUNT(*) FROM strategy_label_matrix_v4 m
-              WHERE m.signal_date=r.signal_date AND m.producer_run_id=r.producer_run_id
+              WHERE m.signal_date=h.signal_date AND m.producer_run_id=h.producer_run_id
                 AND m.labeler_version=mr.labeler_version
            ), 0) matrix_rows,
            COALESCE(mr.expected_cell_count, 0) expected_matrix_rows,
            COALESCE((
              SELECT COUNT(*) FROM strategy_label_matrix_v4 m
-              WHERE m.signal_date=r.signal_date AND m.producer_run_id=r.producer_run_id
+              WHERE m.signal_date=h.signal_date AND m.producer_run_id=h.producer_run_id
                 AND m.labeler_version=mr.labeler_version
                 AND m.evaluable=1
            ), 0) evaluable_matrix_rows,
            COALESCE((
              SELECT COUNT(*) FROM strategy_label_matrix_v4 m
-              WHERE m.signal_date=r.signal_date AND m.producer_run_id=r.producer_run_id
+              WHERE m.signal_date=h.signal_date AND m.producer_run_id=h.producer_run_id
                 AND m.labeler_version=mr.labeler_version
                 AND m.evaluable=1 AND m.strategy_hit=1
            ), 0) matched_matrix_rows,
@@ -100,28 +116,28 @@ export async function auditStrategyRouteBackfillEligibility(
                     THEN 1 ELSE 0 END) challenger_affinity_rows,
            COALESCE((
              SELECT COUNT(*) FROM strategy_label_matrix_v4 m
-              WHERE m.signal_date=r.signal_date AND m.producer_run_id=r.producer_run_id
+              WHERE m.signal_date=h.signal_date AND m.producer_run_id=h.producer_run_id
                 AND m.labeler_version=mr.labeler_version
                 AND m.evaluable=1 AND m.strategy_hit=1 AND m.affinity_evidence_count>0
            ), 0) threshold_margin_rows,
            SUM(CASE WHEN r.strategy_challenger_route_version=?
                      AND r.strategy_challenger_route_score IS NOT NULL
                     THEN 1 ELSE 0 END) challenger_route_rows
-      FROM selection_reference_snapshots_v1 r
-      JOIN formal_runs mr
-        ON mr.signal_date=r.signal_date
-       AND mr.producer_run_id=r.producer_run_id
-       AND mr.labeler_version=r.strategy_labeler_version
-     WHERE r.signal_date BETWEEN ? AND ?
+      FROM canonical_heads h
+      LEFT JOIN formal_runs mr
+        ON mr.signal_date=h.signal_date AND mr.producer_run_id=h.producer_run_id
+      LEFT JOIN selection_reference_snapshots_v1 r
+        ON r.signal_date=h.signal_date
+       AND r.producer_run_id=h.producer_run_id
        AND r.hard_gate_passed=1
        AND r.feature_contract_version=?
-       AND EXISTS (
-         SELECT 1 FROM json_each(?) h
-          WHERE h.key=r.signal_date AND h.value=r.producer_run_id
-       )
-     GROUP BY r.signal_date, r.producer_run_id
-     ORDER BY r.signal_date
+       AND mr.labeler_version=r.strategy_labeler_version
+     GROUP BY h.signal_date, h.producer_run_id
+     ORDER BY h.signal_date
   `).bind(
+    canonicalRunIdsJson,
+    startDate,
+    asOfDate,
     SELECTION_REFERENCE_CONTRACT_VERSION,
     STRATEGY_FORMAL_LABELER_VERSION,
     STRATEGY_FORMAL_RECONSTRUCTION_LABELER_VERSION,
@@ -130,10 +146,7 @@ export async function auditStrategyRouteBackfillEligibility(
     asOfDate,
     STRATEGY_ROUTE_CHALLENGER_VERSION,
     STRATEGY_ROUTE_CHALLENGER_VERSION,
-    startDate,
-    asOfDate,
     SELECTION_REFERENCE_CONTRACT_VERSION,
-    JSON.stringify(options.canonicalRunIds ?? {}),
   ).all<EligibilityRow>()
 
   const output = (result.results ?? []).map((row): StrategyRouteBackfillEligibility => {
@@ -148,18 +161,23 @@ export async function auditStrategyRouteBackfillEligibility(
     const thresholdMarginRows = count(row.threshold_margin_rows)
     const challengerRouteRows = count(row.challenger_route_rows)
     const blockers: string[] = []
-    if (referenceRows <= 0) blockers.push('canonical_reference_empty')
-    if (matureLabelRows + rejectedLabelRows < referenceRows) blockers.push('outcome_not_mature')
-    if (matureLabelRows + rejectedLabelRows > referenceRows) blockers.push('outcome_resolution_overlap')
-    if (expectedMatrixRows <= 0 || matrixRows !== expectedMatrixRows) blockers.push('canonical_strategy_matrix_missing')
-    if (challengerAffinityRows !== referenceRows) blockers.push('challenger_affinity_version_missing')
-    if (evaluableMatrixRows <= 0) blockers.push('strategy_matrix_no_evaluable_cells')
-    if (matchedMatrixRows <= 0) blockers.push('strategy_matrix_no_strategy_hits')
-    if (thresholdMarginRows !== matchedMatrixRows) blockers.push('threshold_margin_evidence_incomplete')
-    if (challengerRouteRows !== referenceRows) {
+    if (referenceRows <= 0) {
+      blockers.push('canonical_reference_empty')
+      blockers.push('canonical_reference_carrier_missing')
       blockers.push('full_route_pit_inputs_not_persisted')
-      blockers.push('challenger_route_score_missing')
+    } else {
+      if (matureLabelRows + rejectedLabelRows < referenceRows) blockers.push('outcome_not_mature')
+      if (matureLabelRows + rejectedLabelRows > referenceRows) blockers.push('outcome_resolution_overlap')
+      if (challengerAffinityRows !== referenceRows) blockers.push('challenger_affinity_version_missing')
+      if (evaluableMatrixRows <= 0) blockers.push('strategy_matrix_no_evaluable_cells')
+      if (matchedMatrixRows <= 0) blockers.push('strategy_matrix_no_strategy_hits')
+      if (thresholdMarginRows !== matchedMatrixRows) blockers.push('threshold_margin_evidence_incomplete')
+      if (challengerRouteRows !== referenceRows) {
+        blockers.push('full_route_pit_inputs_not_persisted')
+        blockers.push('challenger_route_score_missing')
+      }
     }
+    if (expectedMatrixRows <= 0 || matrixRows !== expectedMatrixRows) blockers.push('canonical_strategy_matrix_missing')
     const status = blockers.length === 1 && blockers[0] === 'outcome_not_mature'
       ? 'pending_maturity'
       : blockers.length
@@ -183,6 +201,19 @@ export async function auditStrategyRouteBackfillEligibility(
   })
 
   if (options.persist !== false) {
+    await db.prepare(`
+      UPDATE strategy_route_backfill_eligibility_v1
+         SET status='unavailable',
+             blocker_json='["superseded_noncanonical_run"]',
+             audited_as_of_date=?,
+             updated_at=CURRENT_TIMESTAMP
+       WHERE signal_date BETWEEN ? AND ?
+         AND NOT EXISTS (
+           SELECT 1 FROM json_each(?) h
+            WHERE h.key=strategy_route_backfill_eligibility_v1.signal_date
+              AND CAST(h.value AS TEXT)=strategy_route_backfill_eligibility_v1.producer_run_id
+         )
+    `).bind(asOfDate, startDate, asOfDate, canonicalRunIdsJson).run()
     for (let offset = 0; offset < output.length; offset += 100) {
       await db.batch(output.slice(offset, offset + 100).map((row) => db.prepare(`
         INSERT INTO strategy_route_backfill_eligibility_v1 (

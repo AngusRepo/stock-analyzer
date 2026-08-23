@@ -355,8 +355,85 @@ dashboardReadRoutes.get('/api/backtest/pbo', async (c) => {
   const authError = await requireValidToken(c)
   if (authError) return authError
 
-  const row = await databaseForDataDomain(c.env, 'research').prepare(
-    'SELECT * FROM pbo_results ORDER BY run_date DESC, created_at DESC LIMIT 1'
-  ).first()
-  return c.json(row ?? null)
+  const db = databaseForDataDomain(c.env, 'research')
+  const [attemptRow, latestNumericResult] = await Promise.all([
+    db.prepare(`
+      SELECT
+        a.attempt_id,
+        a.run_date,
+        a.source,
+        a.status,
+        a.n_partitions,
+        a.observed_trades,
+        a.required_trades,
+        a.source_provenance_json,
+        a.pbo_result_id,
+        a.production_effect,
+        a.created_at,
+        p.pbo AS numeric_pbo,
+        p.n_combinations AS numeric_n_combinations,
+        p.n_oos_negative AS numeric_n_oos_negative,
+        p.oos_mean_return AS numeric_oos_mean_return,
+        p.is_mean_return AS numeric_is_mean_return,
+        p.degradation AS numeric_degradation,
+        p.go_live_verdict AS numeric_go_live_verdict,
+        p.verdict_reason AS numeric_verdict_reason
+      FROM pbo_attempt_receipts a
+      LEFT JOIN pbo_results p ON p.id = a.pbo_result_id
+      ORDER BY a.run_date DESC, a.created_at DESC, a.attempt_id DESC
+      LIMIT 1
+    `).first<Record<string, any>>(),
+    db.prepare(
+      `SELECT id, run_date, source, n_partitions, n_combinations, n_trades, pbo,
+              n_oos_negative, oos_mean_return, is_mean_return, degradation,
+              go_live_verdict, verdict_reason, created_at
+         FROM pbo_results
+        ORDER BY run_date DESC, created_at DESC
+        LIMIT 1`
+    ).first<Record<string, any>>(),
+  ])
+
+  let latestAttempt: Record<string, any> | null = null
+  if (attemptRow) {
+    let sourceProvenance: Record<string, any> | null = null
+    try {
+      const parsed = JSON.parse(String(attemptRow.source_provenance_json || '{}'))
+      sourceProvenance = parsed && typeof parsed === 'object' ? parsed : null
+    } catch {
+      sourceProvenance = null
+    }
+    const numericResult = attemptRow.pbo_result_id == null
+      ? null
+      : {
+          id: attemptRow.pbo_result_id,
+          pbo: attemptRow.numeric_pbo,
+          n_combinations: attemptRow.numeric_n_combinations,
+          n_oos_negative: attemptRow.numeric_n_oos_negative,
+          oos_mean_return: attemptRow.numeric_oos_mean_return,
+          is_mean_return: attemptRow.numeric_is_mean_return,
+          degradation: attemptRow.numeric_degradation,
+          go_live_verdict: attemptRow.numeric_go_live_verdict,
+          verdict_reason: attemptRow.numeric_verdict_reason,
+        }
+    latestAttempt = {
+      attempt_id: attemptRow.attempt_id,
+      run_date: attemptRow.run_date,
+      source: attemptRow.source,
+      status: attemptRow.status,
+      n_partitions: attemptRow.n_partitions,
+      observed_trades: attemptRow.observed_trades,
+      required_trades: attemptRow.required_trades,
+      source_provenance: sourceProvenance,
+      pbo_result_id: attemptRow.pbo_result_id,
+      production_effect: Boolean(attemptRow.production_effect),
+      created_at: attemptRow.created_at,
+      numeric_result: numericResult,
+    }
+  }
+
+  return c.json({
+    status: 'ok',
+    latest_attempt: latestAttempt,
+    latest_numeric_result: latestNumericResult ?? null,
+  })
 })

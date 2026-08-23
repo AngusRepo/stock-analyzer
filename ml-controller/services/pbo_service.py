@@ -15,6 +15,7 @@ Data source: backtest trades (from backtest_results) or paper_orders
 from __future__ import annotations
 
 import json
+import hashlib
 import logging
 import math
 import os
@@ -129,6 +130,102 @@ async def _d1_exec(client: httpx.AsyncClient, sql: str, params: list = None, *, 
         timeout=30.0,
     )
     return resp.status_code == 200 and resp.json().get("success", False)
+
+
+def _pbo_attempt_identity(payload: dict) -> tuple[str, str]:
+    """Return a deterministic ID and canonical provenance JSON for one evidence packet."""
+    provenance_json = json.dumps(
+        payload["source_provenance"],
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    identity = {
+        "contract_version": "pbo-attempt-receipt-v1",
+        "run_date": payload["run_date"],
+        "source": payload["source"],
+        "status": payload["status"],
+        "n_partitions": payload["n_partitions"],
+        "observed_trades": payload["observed_trades"],
+        "required_trades": payload["required_trades"],
+        "source_provenance": payload["source_provenance"],
+        "pbo_result_id": payload.get("pbo_result_id"),
+        "production_effect": False,
+    }
+    digest = hashlib.sha256(
+        json.dumps(identity, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    ).hexdigest()
+    return f"pbo-attempt-v1-{digest}", provenance_json
+
+
+async def persist_pbo_attempt_receipt(
+    client: httpx.AsyncClient,
+    *,
+    run_date: str,
+    source: str,
+    status: str,
+    n_partitions: int,
+    observed_trades: int,
+    required_trades: int,
+    source_provenance: dict,
+    pbo_result_id: int | None = None,
+) -> str | None:
+    """Append an immutable receipt without inventing a numeric PBO result."""
+    payload = {
+        "run_date": run_date,
+        "source": source,
+        "status": status,
+        "n_partitions": int(n_partitions),
+        "observed_trades": max(0, int(observed_trades)),
+        "required_trades": max(1, int(required_trades)),
+        "source_provenance": source_provenance,
+        "pbo_result_id": int(pbo_result_id) if pbo_result_id is not None else None,
+    }
+    attempt_id, provenance_json = _pbo_attempt_identity(payload)
+    inserted = await _d1_exec(
+        client,
+        """INSERT OR IGNORE INTO pbo_attempt_receipts
+           (attempt_id, run_date, source, status, n_partitions, observed_trades,
+            required_trades, source_provenance_json, pbo_result_id, production_effect)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0)""",
+        [
+            attempt_id,
+            run_date,
+            source,
+            status,
+            payload["n_partitions"],
+            payload["observed_trades"],
+            payload["required_trades"],
+            provenance_json,
+            payload["pbo_result_id"],
+        ],
+        domain=D1DataDomain.RESEARCH,
+    )
+    if not inserted:
+        return None
+    rows = await _d1_query(
+        client,
+        """SELECT attempt_id, run_date, source, status, n_partitions, observed_trades,
+                  required_trades, source_provenance_json, pbo_result_id, production_effect
+             FROM pbo_attempt_receipts WHERE attempt_id = ? LIMIT 1""",
+        [attempt_id],
+        domain=D1DataDomain.RESEARCH,
+    )
+    if not rows:
+        return None
+    row = rows[0]
+    exact = (
+        str(row.get("run_date") or "") == run_date
+        and str(row.get("source") or "") == source
+        and str(row.get("status") or "") == status
+        and int(row.get("n_partitions") or 0) == payload["n_partitions"]
+        and int(row.get("observed_trades") or 0) == payload["observed_trades"]
+        and int(row.get("required_trades") or 0) == payload["required_trades"]
+        and str(row.get("source_provenance_json") or "") == provenance_json
+        and (int(row["pbo_result_id"]) if row.get("pbo_result_id") is not None else None) == payload["pbo_result_id"]
+        and int(row.get("production_effect") or 0) == 0
+    )
+    return attempt_id if exact else None
 
 
 def _date_diff_days(date1: str, date2: str) -> int:
@@ -571,7 +668,8 @@ async def run_pbo_analysis(
             if not row or not row[0].get("raw_results"):
                 return {"error": f"No backtest results found for run_date={expected_run_date}", "status": "failed"}
 
-            raw = json.loads(row[0]["raw_results"])
+            raw_text = str(row[0]["raw_results"])
+            raw = json.loads(raw_text)
             clock_error = canonical_weekly_evidence_error(raw, expected_run_date)
             if clock_error:
                 return {
@@ -601,6 +699,7 @@ async def run_pbo_analysis(
                 "source_row_id": row[0].get("id"),
                 "source_run_date": row[0].get("run_date"),
                 "source_created_at": row[0].get("created_at"),
+                "source_payload_sha256": hashlib.sha256(raw_text.encode("utf-8")).hexdigest(),
             }
             strategy_partition_returns = _extract_strategy_partition_returns(raw)
             try:
@@ -652,19 +751,63 @@ async def run_pbo_analysis(
                     "data_quality": pairing.data_quality,
                 }
             trades = pairing.trades
+            source_provenance = {
+                "source_table": "paper_orders",
+                "account_id": 1,
+                "source_run_date": expected_run_date,
+                "paired_trade_count": len(trades),
+                "source_payload_sha256": hashlib.sha256(
+                    json.dumps(orders, ensure_ascii=False, sort_keys=True, separators=(",", ":"), default=str).encode("utf-8")
+                ).hexdigest(),
+            }
 
         else:
             return {"error": f"Unknown source: {source}", "status": "failed"}
 
+        evidence_run_date = resolve_backtest_evidence_run_date(source, expected_run_date, today)
+        required_trades = n_partitions * 3
         if strategy_partition_returns:
             logger.info(
                 f"[PBO] Running CSCV rank-logit on {len(strategy_partition_returns)} candidates..."
             )
             pbo = _run_cscv_rank_logit_pbo(strategy_partition_returns)
-        elif len(trades) < n_partitions * 3:
+        elif len(trades) < required_trades:
+            attempt_id = None
+            if persist:
+                attempt_id = await persist_pbo_attempt_receipt(
+                    client,
+                    run_date=evidence_run_date,
+                    source=source,
+                    status="insufficient_evidence",
+                    n_partitions=n_partitions,
+                    observed_trades=len(trades),
+                    required_trades=required_trades,
+                    source_provenance=source_provenance,
+                )
+                if not attempt_id:
+                    return {
+                        "error": "pbo_attempt_receipt_write_failed",
+                        "status": "failed",
+                        "run_date": evidence_run_date,
+                        "source": source,
+                        "promotion_gate_eligible": False,
+                        "production_effect": False,
+                    }
             return {
-                "error": f"Only {len(trades)} trades, need >= {n_partitions * 3} for {n_partitions} partitions",
-                "status": "failed",
+                "error": f"Only {len(trades)} trades, need >= {required_trades} for {n_partitions} partitions",
+                "status": "insufficient_evidence",
+                "run_date": evidence_run_date,
+                "source": source,
+                "n_partitions": n_partitions,
+                "observed_trades": len(trades),
+                "required_trades": required_trades,
+                "promotion_gate_eligible": False,
+                "go_live_verdict": "INSUFFICIENT_EVIDENCE",
+                "pbo": None,
+                "pbo_result_id": None,
+                "attempt_id": attempt_id,
+                "attempt_receipt_persisted": bool(attempt_id),
+                "production_effect": False,
             }
 
         # ── Step 2: Run CPCV ──
@@ -673,8 +816,6 @@ async def run_pbo_analysis(
             pbo = _run_cpcv(trades, n_partitions)
 
         # ── Step 3: Write to D1 ──
-        evidence_run_date = resolve_backtest_evidence_run_date(source, expected_run_date, today)
-
         raw_json = bounded_json_dumps({
             "method": pbo.method,
             "partition_details": pbo.partition_details,
@@ -707,6 +848,8 @@ async def run_pbo_analysis(
 
         success = True
         idempotent = False
+        pbo_result_id: int | None = None
+        attempt_id: str | None = None
         if persist:
             existing = await _d1_query(
                 client,
@@ -726,6 +869,7 @@ async def run_pbo_analysis(
                         "source": source,
                         "promotion_gate_eligible": False,
                     }
+                pbo_result_id = int(existing[0]["id"])
                 idempotent = True
             else:
                 success = await _d1_exec(
@@ -743,6 +887,35 @@ async def run_pbo_analysis(
                     ],
                     domain=D1DataDomain.RESEARCH,
                 )
+                if success:
+                    inserted = await _d1_query(
+                        client,
+                        """SELECT id, raw_details
+                           FROM pbo_results
+                           WHERE run_date = ? AND source = ?
+                           LIMIT 1""",
+                        [evidence_run_date, source],
+                        domain=D1DataDomain.RESEARCH,
+                    )
+                    if inserted and str(inserted[0].get("raw_details") or "") == raw_json:
+                        pbo_result_id = int(inserted[0]["id"])
+                    else:
+                        success = False
+
+            if success and pbo_result_id is not None:
+                attempt_id = await persist_pbo_attempt_receipt(
+                    client,
+                    run_date=evidence_run_date,
+                    source=source,
+                    status="computed",
+                    n_partitions=n_partitions,
+                    observed_trades=pbo.n_trades,
+                    required_trades=required_trades,
+                    source_provenance=source_provenance,
+                    pbo_result_id=pbo_result_id,
+                )
+                if not attempt_id:
+                    success = False
 
         summary = {
             "status": ("success" if persist else "comparison_only") if success else "d1_write_failed",
@@ -764,7 +937,10 @@ async def run_pbo_analysis(
             "embargo_days": pbo.embargo_days,
             "embargo_source": pbo.embargo_source,
             "source_provenance": source_provenance or None,
-            "promotion_gate_eligible": bool(persist),
+            "pbo_result_id": pbo_result_id,
+            "attempt_id": attempt_id,
+            "attempt_receipt_persisted": bool(attempt_id),
+            "promotion_gate_eligible": bool(persist) and success,
             "production_effect": bool(persist),
             "persisted": bool(persist),
             "idempotent": idempotent,

@@ -23,6 +23,7 @@ from services.d1_domain_client import D1DataDomain, client_proxy_for_domain
 
 logger = logging.getLogger("walk_forward")
 OPS_D1_CLIENT = client_proxy_for_domain(D1DataDomain.OPS)
+LEARNING_D1_CLIENT = client_proxy_for_domain(D1DataDomain.LEARNING)
 router = APIRouter()
 
 
@@ -859,7 +860,6 @@ async def dispatch_oof_full_fit_training(
     lifecycle_cadence: str,
     allow_new_dispatch: bool = True,
 ) -> dict[str, Any]:
-    from services import d1_client
     plan = build_oof_full_fit_dispatch_plan(manifest)
     if plan["status"] != "ready":
         return plan
@@ -964,7 +964,7 @@ async def dispatch_oof_full_fit_training(
     attempt = int(receipt.get("attempt") or 0)
     prior_run_id = str(receipt.get("run_id") or "")
     if prior_run_id:
-        rows = d1_client.query(
+        rows = LEARNING_D1_CLIENT.query(
             """
             SELECT *
             FROM model_artifact_registry
@@ -1155,7 +1155,7 @@ async def dispatch_oof_full_fit_training(
                 expected_models=plan["eligible_models"],
             )
             if registry_repair["status"] == "repaired":
-                rows = d1_client.query(
+                rows = LEARNING_D1_CLIENT.query(
                     """
                     SELECT *
                     FROM model_artifact_registry

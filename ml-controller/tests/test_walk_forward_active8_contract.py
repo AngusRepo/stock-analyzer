@@ -528,6 +528,18 @@ def test_completed_oof_registry_owner_repair_requires_exact_bound_identity(monke
     assert len(writes) == 1
 
 
+def test_full_fit_registry_reads_are_learning_domain_owned():
+    source = (
+        ROOT / "ml-controller" / "routers" / "walk_forward.py"
+    ).read_text(encoding="utf-8")
+    dispatcher = source[
+        source.index("async def dispatch_oof_full_fit_training("):
+        source.index("def _without_frozen_forward_rows(")
+    ]
+
+    assert "LEARNING_D1_CLIENT.query(" in dispatcher
+    assert "d1_client.query(" not in dispatcher
+
 def test_full_fit_poll_only_never_dispatches_a_replacement_retrain(monkeypatch):
     from routers import walk_forward
 
@@ -569,7 +581,6 @@ def test_full_fit_poll_only_never_dispatches_a_replacement_retrain(monkeypatch):
 
 def test_dispatch_completed_oof_callback_repairs_registry_without_retraining(monkeypatch):
     from routers import walk_forward
-    from services import d1_client
 
     receipt = {
         "status": "blocked",
@@ -624,7 +635,7 @@ def test_dispatch_completed_oof_callback_repairs_registry_without_retraining(mon
             "written": 1,
         },
     )
-    monkeypatch.setattr(d1_client, "query", fake_query)
+    monkeypatch.setattr(walk_forward.LEARNING_D1_CLIENT, "query", fake_query)
     monkeypatch.setattr(walk_forward.OPS_D1_CLIENT, "query", fake_query)
     monkeypatch.setattr(
         walk_forward,
@@ -658,7 +669,6 @@ def test_dispatch_completed_oof_callback_repairs_registry_without_retraining(mon
 def test_dispatch_reuses_completed_full_fit_receipt_across_cadences(monkeypatch):
     import json
     from routers import walk_forward
-    from services import d1_client
 
     receipt = {
         "schema_version": "active8-oof-full-fit-receipt-v1",
@@ -705,7 +715,7 @@ def test_dispatch_reuses_completed_full_fit_receipt_across_cadences(monkeypatch)
     }
     monkeypatch.setattr(walk_forward, "build_oof_full_fit_dispatch_plan", lambda _manifest: plan)
     monkeypatch.setattr(
-        d1_client,
+        walk_forward.LEARNING_D1_CLIENT,
         "query",
         lambda *_args, **_kwargs: (_ for _ in ()).throw(
             AssertionError("completed immutable receipt must not query mutable registry state")
@@ -728,7 +738,6 @@ def test_dispatch_recovers_retry_limit_pollution_from_terminal_evidence(monkeypa
     import hashlib
     import json
     from routers import walk_forward
-    from services import d1_client
 
     terminal = json.dumps({"status": "completed", "run_id": "universal-oof-owner"}, sort_keys=True)
     receipt = {
@@ -781,7 +790,7 @@ def test_dispatch_recovers_retry_limit_pollution_from_terminal_evidence(monkeypa
     }
     monkeypatch.setattr(walk_forward, "build_oof_full_fit_dispatch_plan", lambda _manifest: plan)
     monkeypatch.setattr(
-        d1_client,
+        walk_forward.LEARNING_D1_CLIENT,
         "query",
         lambda *_args, **_kwargs: (_ for _ in ()).throw(
             AssertionError("terminal-evidence recovery must not query mutable registry state")

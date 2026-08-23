@@ -67,8 +67,14 @@ assert(
     deployScript.includes('"OPTUNA_CALLBACK_TASK": "weekly-backtest"') &&
     deployScript.includes('line.split(":", 1)[0].strip() not in overrides') &&
     deployScript.includes('sync_backtest_research_job "$BACKTEST_RESEARCH_JOB_ENV_FILE"') &&
-    deployScript.includes('BACKTEST_RESEARCH_JOB_MODE=$(gcloud run jobs describe') &&
-    deployScript.includes('BACKTEST_RESEARCH_CALLBACK_TASK=$(gcloud run jobs describe'),
+    deployScript.includes('BACKTEST_RESEARCH_JOB_JSON=$(gcloud run jobs describe') &&
+    deployScript.includes('BACKTEST_RESEARCH_JOB_ENV_VALUES=$(BACKTEST_RESEARCH_JOB_JSON=') &&
+    deployScript.includes('json.loads(os.environ["BACKTEST_RESEARCH_JOB_JSON"])') &&
+    deployScript.includes('if item.get("name") in {"OPTUNA_JOB_MODE", "OPTUNA_CALLBACK_TASK"}') &&
+    deployScript.includes('MODE) BACKTEST_RESEARCH_JOB_MODE="$value"') &&
+    deployScript.includes('CALLBACK) BACKTEST_RESEARCH_CALLBACK_TASK="$value"') &&
+    !deployScript.includes("env[?name='OPTUNA_JOB_MODE'].value") &&
+    !deployScript.includes("env[?name='OPTUNA_CALLBACK_TASK'].value"),
   'dedicated weekly backtest Job must fail closed to weekly_backtest mode even without execution overrides',
 )
 

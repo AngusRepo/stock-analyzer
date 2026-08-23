@@ -1331,10 +1331,37 @@ BACKTEST_RESEARCH_JOB_COMMAND=$(gcloud run jobs describe "$BACKTEST_RESEARCH_JOB
   --format="value(spec.template.spec.template.spec.containers[0].command[0])")
 BACKTEST_RESEARCH_JOB_ARGS=$(gcloud run jobs describe "$BACKTEST_RESEARCH_JOB_NAME" --region="$REGION" \
   --format="value(spec.template.spec.template.spec.containers[0].args)")
-BACKTEST_RESEARCH_JOB_MODE=$(gcloud run jobs describe "$BACKTEST_RESEARCH_JOB_NAME" --region="$REGION" \
-  --format="value(spec.template.spec.template.spec.containers[0].env[?name='OPTUNA_JOB_MODE'].value)")
-BACKTEST_RESEARCH_CALLBACK_TASK=$(gcloud run jobs describe "$BACKTEST_RESEARCH_JOB_NAME" --region="$REGION" \
-  --format="value(spec.template.spec.template.spec.containers[0].env[?name='OPTUNA_CALLBACK_TASK'].value)")
+BACKTEST_RESEARCH_JOB_JSON=$(gcloud run jobs describe "$BACKTEST_RESEARCH_JOB_NAME" --region="$REGION" --format=json)
+BACKTEST_RESEARCH_JOB_ENV_VALUES=$(BACKTEST_RESEARCH_JOB_JSON="$BACKTEST_RESEARCH_JOB_JSON" "$PYTHON_BIN" - <<'PY'
+import json
+import os
+
+doc = json.loads(os.environ["BACKTEST_RESEARCH_JOB_JSON"])
+containers = (
+    doc.get("spec", {})
+    .get("template", {})
+    .get("spec", {})
+    .get("template", {})
+    .get("spec", {})
+    .get("containers", [])
+)
+envs = {
+    str(item.get("name") or ""): str(item.get("value") or "")
+    for item in (containers[0].get("env", []) if containers else [])
+    if item.get("name") in {"OPTUNA_JOB_MODE", "OPTUNA_CALLBACK_TASK"}
+}
+print(f'MODE={envs.get("OPTUNA_JOB_MODE", "")}')
+print(f'CALLBACK={envs.get("OPTUNA_CALLBACK_TASK", "")}')
+PY
+)
+BACKTEST_RESEARCH_JOB_MODE=""
+BACKTEST_RESEARCH_CALLBACK_TASK=""
+while IFS='=' read -r key value; do
+  case "$key" in
+    MODE) BACKTEST_RESEARCH_JOB_MODE="$value" ;;
+    CALLBACK) BACKTEST_RESEARCH_CALLBACK_TASK="$value" ;;
+  esac
+done <<< "$BACKTEST_RESEARCH_JOB_ENV_VALUES"
 STRATEGY_MINING_JOB_COMMAND=$(gcloud run jobs describe "$STRATEGY_MINING_JOB_NAME" --region="$REGION" \
   --format="value(spec.template.spec.template.spec.containers[0].command[0])")
 STRATEGY_MINING_JOB_ARGS=$(gcloud run jobs describe "$STRATEGY_MINING_JOB_NAME" --region="$REGION" \

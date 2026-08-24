@@ -401,33 +401,40 @@ def write_opinions(
     """
     if not opinions:
         return 0
-    written = 0
-    for op in opinions:
-        try:
-            d1_client.execute(
-                """
-                INSERT INTO persona_opinions
-                  (date, symbol,
-                   trust_signal, trust_strength, trust_reason, trust_is_window_dress,
-                   retail_signal, retail_strength, retail_reason)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-                ON CONFLICT(date, symbol) DO UPDATE SET
-                  trust_signal           = excluded.trust_signal,
-                  trust_strength         = excluded.trust_strength,
-                  trust_reason           = excluded.trust_reason,
-                  trust_is_window_dress  = excluded.trust_is_window_dress,
-                  retail_signal          = excluded.retail_signal,
-                  retail_strength        = excluded.retail_strength,
-                  retail_reason          = excluded.retail_reason
-                """,
-                [
-                    op.date, op.symbol,
-                    op.trust.signal, op.trust.strength, op.trust.reason,
-                    1 if op.trust.is_window_dress else 0,
-                    op.retail.signal, op.retail.strength, op.retail.reason,
-                ],
-            )
-            written += 1
-        except Exception as e:
-            logger.warning(f"[persona] write failed for {op.symbol}@{op.date}: {e}")
-    return written
+    sql = """
+        INSERT INTO persona_opinions
+          (date, symbol,
+           trust_signal, trust_strength, trust_reason, trust_is_window_dress,
+           retail_signal, retail_strength, retail_reason)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(date, symbol) DO UPDATE SET
+          trust_signal           = excluded.trust_signal,
+          trust_strength         = excluded.trust_strength,
+          trust_reason           = excluded.trust_reason,
+          trust_is_window_dress  = excluded.trust_is_window_dress,
+          retail_signal          = excluded.retail_signal,
+          retail_strength        = excluded.retail_strength,
+          retail_reason          = excluded.retail_reason
+    """
+    statements = [
+        (
+            sql,
+            [
+                op.date, op.symbol,
+                op.trust.signal, op.trust.strength, op.trust.reason,
+                1 if op.trust.is_window_dress else 0,
+                op.retail.signal, op.retail.strength, op.retail.reason,
+            ],
+        )
+        for op in opinions
+    ]
+    result = d1_client.batch_execute(statements, chunk_size=250)
+    success_count = int((result or {}).get("success_count") or 0)
+    error_count = int((result or {}).get("error_count") or 0)
+    if success_count != len(statements) or error_count:
+        raise RuntimeError(
+            "persona opinion batch incomplete: "
+            f"success={success_count}/{len(statements)} errors={error_count} "
+            f"first_error={(result or {}).get('first_error')}"
+        )
+    return success_count

@@ -217,6 +217,18 @@ function recordedMarketRegime(alphaContext: string | null | undefined): string |
   }
 }
 
+export function strategyEvidenceRegimeProjectionSql(alphaContextExpression: string): string {
+  return `json_object(
+    'market_regime_context', json_object(
+      'point_in_time', json_extract(${alphaContextExpression}, '$.market_regime_context.point_in_time'),
+      'regime_bucket', json_extract(${alphaContextExpression}, '$.market_regime_context.regime_bucket'),
+      'regime_surface', json_extract(${alphaContextExpression}, '$.market_regime_context.regime_surface')
+    ),
+    'regime', json_extract(${alphaContextExpression}, '$.regime'),
+    'regime_surface', json_extract(${alphaContextExpression}, '$.regime_surface')
+  )`
+}
+
 function regimeConsistency(
   rows: StrategyEvidenceObservation[],
   supportedRegimes: string[],
@@ -611,7 +623,7 @@ async function loadObservationsAcrossDatabases(
       SELECT rowid source_row_id, signal_date, symbol, producer_run_id,
              horizon_days, outcome_known_date, entry_date, exit_date,
              absolute_return_net, benchmark_return_net, residual_return_net, cross_section_rank,
-             (SELECT a.alpha_context FROM allocator_ev_feature_snapshots a
+             (SELECT ${strategyEvidenceRegimeProjectionSql('a.alpha_context')} FROM allocator_ev_feature_snapshots a
                WHERE a.snapshot_date=canonical_selection_outcomes_v1.signal_date
                  AND a.symbol=canonical_selection_outcomes_v1.symbol
                ORDER BY a.generated_at DESC LIMIT 1) alpha_context
@@ -706,7 +718,7 @@ async function loadObservations(
              v.position_weight, v.overlap,
              v.horizon_days, v.outcome_known_date, v.entry_date, v.exit_date,
              v.absolute_return_net, v.benchmark_return_net, v.residual_return_net, v.cross_section_rank,
-             v.alpha_context
+             ${strategyEvidenceRegimeProjectionSql('v.alpha_context')} AS alpha_context
         FROM strategy_evidence_observations_v1 v
        WHERE v.outcome_known_date<=?
          ${profilePredicate}

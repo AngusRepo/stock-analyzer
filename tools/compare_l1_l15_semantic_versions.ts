@@ -388,6 +388,7 @@ const registryRows = query(LEARNING_DB, [
 const incumbentSpecs = registryRows.map(strategyRow)
 void semanticSpec
 const rows: Array<Record<string, any>> = []
+const versionedEvidenceRows: Array<Record<string, any>> = []
 const replayDiagnostics: Array<Record<string, any>> = []
 
 for (const signalDate of routeDates) {
@@ -399,7 +400,8 @@ for (const signalDate of routeDates) {
     "WHERE date='" + sqlText(signalDate) + "'",
     'GROUP BY symbol',
     ')',
-    'SELECT d.symbol,c.raw_signals_json,c.current_price,c.industry,r.market_segment',
+    'SELECT d.symbol,c.raw_signals_json,c.current_price,c.industry,r.market_segment,',
+    'r.strategy_router_score,r.strategy_challenger_route_score',
     'FROM latest_context d',
     'JOIN strategy_candidate_contexts c ON c.context_id=d.context_id',
     'JOIN selection_reference_snapshots_v1 r ON r.signal_date=' + "'" + sqlText(signalDate) + "'",
@@ -424,6 +426,32 @@ for (const signalDate of routeDates) {
   const repairedReplay = incumbentReplay
   const incumbentBySymbol = bySymbol(incumbentReplay.l0Annotated)
   const repairedBySymbol = incumbentBySymbol
+  const routeEvidenceBySymbol = new Map<string, { v1Route: number; v2Route: number; repairedScore: number }>()
+  for (const context of contexts) {
+    const symbol = String(context.symbol).toUpperCase()
+    const replay = incumbentBySymbol.get(symbol)
+    const v1Route = finite(replay?.strategy_incumbent_route_score)
+    const v2Route = finite(replay?.strategy_challenger_route_score)
+    const productionIncumbent = finite(context.strategy_router_score)
+    const accumulatedChallenger = finite(context.strategy_challenger_route_score)
+    if (v1Route == null || v2Route == null || productionIncumbent == null || accumulatedChallenger == null) {
+      throw new Error('full_reference_route_missing:' + signalDate + ':' + symbol)
+    }
+    const repairedScore = clamp(accumulatedChallenger + (v2Route - v1Route), 0, 100)
+    routeEvidenceBySymbol.set(symbol, { v1Route, v2Route, repairedScore })
+    versionedEvidenceRows.push({
+      route_version: 'strategy-semantic-continuous-affinity-v4',
+      signal_date: signalDate,
+      symbol,
+      producer_run_id: runId,
+      route_score: repairedScore,
+      incumbent_route_version: 'multi-strategy-ple-router-v1',
+      incumbent_route_score: productionIncumbent,
+      strategy_spec_version: 'strategy-spec-v2',
+      evidence_method: 'deterministic_paired_pit_replay',
+      source_reference_contract: REFERENCE_CONTRACT,
+    })
+  }
   const labels = query(LEARNING_DB, [
     'SELECT r.signal_date,r.symbol,r.producer_run_id,r.strategy_selected,',
     'r.strategy_router_score incumbent_score,',
@@ -448,17 +476,11 @@ for (const signalDate of routeDates) {
     const symbol = String(label.symbol).toUpperCase()
     const v1 = incumbentBySymbol.get(symbol)
     const v2 = repairedBySymbol.get(symbol)
-    if (!v1 || !v2) throw new Error('replay_symbol_missing:' + signalDate + ':' + symbol)
-    const v1Route = finite(v1.strategy_incumbent_route_score)
-    const v2Route = finite(v2.strategy_challenger_route_score)
-    if (v1Route == null || v2Route == null) throw new Error('replay_route_missing:' + signalDate + ':' + symbol)
+    const routeEvidence = routeEvidenceBySymbol.get(symbol)
+    if (!v1 || !v2 || !routeEvidence) throw new Error('replay_symbol_missing:' + signalDate + ':' + symbol)
+    const { v1Route, v2Route, repairedScore } = routeEvidence
     const pairedDelta = v2Route - v1Route
     const contextRankNeutralizationDelta = pairedDelta
-    const repairedScore = clamp(
-      Number(label.accumulated_challenger_score) + pairedDelta,
-      0,
-      100,
-    )
     const v1Evaluable = [...ALPHA_IDS].filter((id) => v1.strategy_evaluable_vector?.[id] === 1).length
     const v2Evaluable = [...ALPHA_IDS].filter((id) => v2.strategy_challenger_evaluable_vector?.[id] === 1).length
     alphaV1Evaluable += v1Evaluable
@@ -605,18 +627,6 @@ const report = {
     diagnostics: replayDiagnostics,
   },
 }
-const versionedEvidenceRows = rows.map((row) => ({
-  route_version: 'strategy-semantic-continuous-affinity-v4',
-  signal_date: String(row.signal_date),
-  symbol: String(row.symbol),
-  producer_run_id: String(row.producer_run_id),
-  route_score: Number(row.repaired_semantic_v2_score),
-  incumbent_route_version: 'multi-strategy-ple-router-v1',
-  incumbent_route_score: finite(row.incumbent_score),
-  strategy_spec_version: 'strategy-spec-v2',
-  evidence_method: 'deterministic_paired_pit_replay',
-  source_reference_contract: REFERENCE_CONTRACT,
-}))
 mkdirSync(OUT_DIR, { recursive: true })
 const outputPath = join(OUT_DIR, 'semantic_v2_comparison.json')
 const evidencePath = join(OUT_DIR, 'semantic_v4_evidence_rows.json')
@@ -627,6 +637,7 @@ console.log(JSON.stringify({
   evidencePath,
   compared_samples: rows.length,
   compared_dates: routeDates.length,
+  evidence_rows: versionedEvidenceRows.length,
   versions: report.versions,
   improvement_vs_accumulated: report.improvement_vs_accumulated,
   replay_diagnostics: replayDiagnostics,

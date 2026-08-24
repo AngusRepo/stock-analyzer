@@ -95,9 +95,81 @@ const coreRows = inputRows.map((input) => {
 
 const dates = [...new Set(coreRows.map((row) => row.signal_date))].sort()
 if (dates.length !== expectedDates) throw new Error('expected_date_count_mismatch:' + dates.length + ':' + expectedDates)
-const artifactChecksum = sha256(JSON.stringify(coreRows))
-const evidenceArtifactId = 'strategy-route-evidence-v4-' + artifactChecksum.slice(0, 24)
-const rows = coreRows.map((row) => ({
+const storedSelect = 'SELECT route_version,signal_date,symbol,producer_run_id,route_score,incumbent_route_version,'
+  + 'incumbent_route_score,strategy_spec_version,evidence_method,source_reference_contract,'
+  + 'evidence_artifact_id,source_sha,row_checksum,artifact_checksum,production_effect '
+const existing = execute(
+  storedSelect
+  + 'FROM strategy_route_versioned_evidence_v1 WHERE route_version=' + sqlText(ROUTE_VERSION)
+  + ' AND signal_date IN (' + dates.map(sqlText).join(',') + ') ORDER BY signal_date,symbol,producer_run_id',
+).results ?? []
+const expectedCoreByKey = new Map(coreRows.map((row) => [
+  [row.route_version, row.signal_date, row.symbol, row.producer_run_id].join('|'), row,
+]))
+
+function storedCore(row) {
+  return {
+    route_version: String(row.route_version),
+    signal_date: String(row.signal_date),
+    symbol: String(row.symbol).trim().toUpperCase(),
+    producer_run_id: String(row.producer_run_id),
+    route_score: Number(row.route_score),
+    incumbent_route_version: String(row.incumbent_route_version),
+    incumbent_route_score: row.incumbent_route_score == null ? null : Number(row.incumbent_route_score),
+    strategy_spec_version: String(row.strategy_spec_version),
+    evidence_method: String(row.evidence_method),
+    source_reference_contract: String(row.source_reference_contract),
+  }
+}
+
+function validateStoredRows(storedRows, phase) {
+  const artifactGroups = new Map()
+  for (const stored of storedRows) {
+    const core = storedCore(stored)
+    const key = [core.route_version, core.signal_date, core.symbol, core.producer_run_id].join('|')
+    const expected = expectedCoreByKey.get(key)
+    if (!expected || JSON.stringify(core) !== JSON.stringify(expected) || Number(stored.production_effect) !== 0) {
+      throw new Error('immutable_v4_evidence_conflict:' + phase + ':' + key)
+    }
+    const rowAttestation = sha256(JSON.stringify({
+      ...core,
+      evidence_artifact_id: String(stored.evidence_artifact_id),
+      source_sha: String(stored.source_sha),
+    }))
+    if (String(stored.row_checksum) !== rowAttestation) {
+      throw new Error('immutable_v4_row_checksum_mismatch:' + phase + ':' + key)
+    }
+    const artifactId = String(stored.evidence_artifact_id)
+    const artifactChecksum = String(stored.artifact_checksum)
+    const group = artifactGroups.get(artifactId) ?? { checksum: artifactChecksum, rows: [] }
+    if (group.checksum !== artifactChecksum) throw new Error('immutable_v4_artifact_checksum_split:' + artifactId)
+    group.rows.push(core)
+    artifactGroups.set(artifactId, group)
+  }
+  for (const [artifactId, group] of artifactGroups) {
+    group.rows.sort((left, right) =>
+      left.signal_date.localeCompare(right.signal_date)
+      || left.symbol.localeCompare(right.symbol)
+      || left.producer_run_id.localeCompare(right.producer_run_id)
+    )
+    if (sha256(JSON.stringify(group.rows)) !== group.checksum) {
+      throw new Error('immutable_v4_artifact_checksum_mismatch:' + phase + ':' + artifactId)
+    }
+  }
+}
+
+validateStoredRows(existing, 'existing')
+const existingKeys = new Set(existing.map((row) =>
+  [row.route_version, row.signal_date, String(row.symbol).toUpperCase(), row.producer_run_id].join('|'),
+))
+const missingCoreRows = coreRows.filter((row) =>
+  !existingKeys.has([row.route_version, row.signal_date, row.symbol, row.producer_run_id].join('|')),
+)
+const artifactChecksum = missingCoreRows.length ? sha256(JSON.stringify(missingCoreRows)) : null
+const evidenceArtifactId = artifactChecksum
+  ? 'strategy-route-evidence-v4-extension-' + artifactChecksum.slice(0, 24)
+  : null
+const insertRows = missingCoreRows.map((row) => ({
   ...row,
   evidence_artifact_id: evidenceArtifactId,
   source_sha: sourceSha,
@@ -105,21 +177,6 @@ const rows = coreRows.map((row) => ({
   artifact_checksum: artifactChecksum,
   production_effect: 0,
 }))
-
-const existing = execute(
-  'SELECT route_version,signal_date,symbol,producer_run_id,row_checksum,artifact_checksum,production_effect '
-  + 'FROM strategy_route_versioned_evidence_v1 WHERE route_version=' + sqlText(ROUTE_VERSION)
-  + ' AND signal_date IN (' + dates.map(sqlText).join(',') + ') ORDER BY signal_date,symbol,producer_run_id',
-).results ?? []
-const expectedByKey = new Map(rows.map((row) => [[row.route_version, row.signal_date, row.symbol, row.producer_run_id].join('|'), row]))
-for (const row of existing) {
-  const key = [row.route_version, row.signal_date, String(row.symbol).toUpperCase(), row.producer_run_id].join('|')
-  const expected = expectedByKey.get(key)
-  if (!expected || row.row_checksum !== expected.row_checksum || row.artifact_checksum !== artifactChecksum || Number(row.production_effect) !== 0) {
-    throw new Error('immutable_v4_evidence_conflict:' + key)
-  }
-}
-
 if (!CONFIRM) {
   console.log(JSON.stringify({
     status: 'dry_run',
@@ -128,21 +185,15 @@ if (!CONFIRM) {
     evidence_artifact_id: evidenceArtifactId,
     artifact_checksum: artifactChecksum,
     dates,
-    rows: rows.length,
+    rows: coreRows.length,
     existing_rows: existing.length,
-    missing_rows: rows.length - existing.length,
+    missing_rows: insertRows.length,
   }, null, 2))
   process.exit(0)
 }
 
-const existingKeys = new Set(existing.map((row) =>
-  [row.route_version, row.signal_date, String(row.symbol).toUpperCase(), row.producer_run_id].join('|'),
-))
-const missing = rows.filter((row) =>
-  !existingKeys.has([row.route_version, row.signal_date, row.symbol, row.producer_run_id].join('|')),
-)
-for (let offset = 0; offset < missing.length; offset += 60) {
-  const values = missing.slice(offset, offset + 60).map((row) => '(' + [
+for (let offset = 0; offset < insertRows.length; offset += 60) {
+  const values = insertRows.slice(offset, offset + 60).map((row) => '(' + [
     sqlText(row.route_version),
     sqlText(row.signal_date),
     sqlText(row.symbol),
@@ -167,20 +218,13 @@ for (let offset = 0; offset < missing.length; offset += 60) {
     + ') VALUES ' + values,
   )
 }
-
 const readback = execute(
-  'SELECT route_version,signal_date,symbol,producer_run_id,row_checksum,artifact_checksum,production_effect '
+  storedSelect
   + 'FROM strategy_route_versioned_evidence_v1 WHERE route_version=' + sqlText(ROUTE_VERSION)
   + ' AND signal_date IN (' + dates.map(sqlText).join(',') + ') ORDER BY signal_date,symbol,producer_run_id',
 ).results ?? []
-if (readback.length !== rows.length) throw new Error('v4_evidence_readback_count_mismatch:' + readback.length + ':' + rows.length)
-for (const row of readback) {
-  const key = [row.route_version, row.signal_date, String(row.symbol).toUpperCase(), row.producer_run_id].join('|')
-  const expected = expectedByKey.get(key)
-  if (!expected || row.row_checksum !== expected.row_checksum || row.artifact_checksum !== artifactChecksum || Number(row.production_effect) !== 0) {
-    throw new Error('v4_evidence_readback_mismatch:' + key)
-  }
-}
+if (readback.length !== coreRows.length) throw new Error('v4_evidence_readback_count_mismatch:' + readback.length + ':' + coreRows.length)
+validateStoredRows(readback, 'readback')
 console.log(JSON.stringify({
   status: 'materialized',
   production_effect: false,
@@ -188,7 +232,7 @@ console.log(JSON.stringify({
   evidence_artifact_id: evidenceArtifactId,
   artifact_checksum: artifactChecksum,
   dates,
-  rows: rows.length,
-  inserted_rows: missing.length,
+  rows: coreRows.length,
+  inserted_rows: insertRows.length,
   readback_rows: readback.length,
 }, null, 2))

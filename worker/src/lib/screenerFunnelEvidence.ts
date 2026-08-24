@@ -848,6 +848,11 @@ function buildLayer15MultiStrategyRouterSummary(
   const slateSelectionPolicy = evidence.l15_router_slate_selection_policy
     ?? evidence.slate_selection_policy
     ?? null
+  const routeGateAuthority = evidence.route_gate_authority
+    ?? 'continuous_weight_unvalidated'
+  const routeVetoApplied = evidence.route_veto_applied === true
+    || Number(evidence.route_veto_applied ?? components.route_veto_authoritative ?? 0) === 1
+  const routeBelowDiagnosticFloor = Number(components.route_below_diagnostic_floor ?? 0) === 1
   const hasRouterEvidence = evidence.strategy_router_version
     || routeScore != null
     || eligibility != null
@@ -862,10 +867,10 @@ function buildLayer15MultiStrategyRouterSummary(
     router_method: 'multi_strategy_ple_listwise_distillation_router',
     router_scope: 'full_candidate_slate_to_diversified_ml_slate',
     decision_policy: 'diversified_ml_slate_not_topk',
-    selection_policy: 'quality_floor_max_capacity_no_forced_fill',
+    selection_policy: 'continuous_weight_full_universe_no_candidate_veto',
     slate_selection_policy: slateSelectionPolicy,
     adaptive_slate_builder: slateSelectionPolicy,
-    self_learning_loop: 'strategy_decision_log_to_strategy_reward_ledger_to_strategy_portfolio_metrics_to_l15_marginal_utility',
+    self_learning_loop: 'strategy_decision_log_to_strategy_reward_ledger_to_strategy_portfolio_metrics_to_l15_continuous_affinity',
     reward_feedback_source: evidence.strategy_portfolio_metric_source ?? null,
     capacity_policy: evidence.adaptive_capacity_policy ?? 'max_only_no_minimum_no_topup',
     adaptive_capacity_policy: evidence.adaptive_capacity_policy ?? null,
@@ -896,6 +901,11 @@ function buildLayer15MultiStrategyRouterSummary(
     strategy_router_reason: evidence.strategy_router_reason ?? evidence.strategy_pool_reason ?? source.reason_code,
     route_score: routeScore,
     ml_slate_eligibility: eligibility,
+    route_gate_authority: routeGateAuthority,
+    route_veto_applied: routeVetoApplied,
+    route_below_diagnostic_floor: routeBelowDiagnosticFloor,
+    route_veto_candidate_count: toNullableNumber(evidence.route_veto_candidate_count),
+    route_priority_only_candidate_count: toNullableNumber(evidence.route_priority_only_candidate_count),
     strategy_count: strategyIds.length,
     family_count: familyIds.length,
     research_strategy_count: researchStrategyIds.length,
@@ -909,6 +919,9 @@ function buildLayer15MultiStrategyRouterSummary(
     strategy_prior_weight: toNullableNumber(components.strategy_prior_weight),
     family_prior_weight: toNullableNumber(components.family_prior_weight),
     strategy_reliability: normalizeScore01(components.strategy_reliability),
+    evidence_alignment: toNullableNumber(components.evidence_alignment),
+    evidence_coverage: normalizeScore01(components.evidence_coverage),
+    continuous_weight_multiplier: toNullableNumber(components.continuous_weight_multiplier),
     strategy_crowding_score: normalizeScore01(components.strategy_crowding_score),
     strategy_diversification_value: normalizeScore01(components.strategy_diversification_value),
     marginal_utility_score: toNullableNumber(components.marginal_utility_score),

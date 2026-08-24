@@ -12,6 +12,7 @@ import {
 import { readCurrentExpectedReturnServingState } from './expectedReturnServingState'
 import { SELECTION_REFERENCE_CONTRACT_VERSION } from './selectionReferenceEvidence'
 import {
+  STRATEGY_ROUTE_AFFINITY_VERSION,
   STRATEGY_ROUTE_CHALLENGER_VERSION,
   STRATEGY_ROUTE_MIN_OOS_DATES,
   STRATEGY_ROUTE_MIN_TOTAL_DATES,
@@ -414,24 +415,37 @@ export async function buildPipelineDecisionMaturityPacket(
   const [reference, matrix, redundancy, routeRun, routeHead, evRows, evShadowRows, serving, l4Maturity, sectorPit] = await Promise.all([
     safeQuery(() => head ? learningDb.prepare(`
       SELECT COUNT(*) reference_rows,
-             SUM(CASE WHEN strategy_challenger_affinity_version=? THEN 1 ELSE 0 END) affinity_v2_rows,
-             SUM(CASE WHEN strategy_challenger_route_version=? AND strategy_challenger_route_score IS NOT NULL THEN 1 ELSE 0 END) challenger_route_rows,
-             AVG(strategy_router_score) incumbent_route_avg,
-             AVG(strategy_challenger_route_score) challenger_route_avg,
-             SUM(CASE WHEN strategy_selected=1 THEN 1 ELSE 0 END) strategy_selected_rows,
-             SUM(CASE WHEN allocation_selected=1 THEN 1 ELSE 0 END) allocation_selected_rows
-        FROM selection_reference_snapshots_v1
-       WHERE signal_date=? AND producer_run_id=? AND hard_gate_passed=1
+             SUM(CASE WHEN r.strategy_challenger_affinity_version=? THEN 1 ELSE 0 END) affinity_v2_rows,
+             SUM(CASE WHEN COALESCE(
+                       e.route_score,
+                       CASE WHEN r.strategy_challenger_route_version=?
+                            THEN r.strategy_challenger_route_score END
+                     ) IS NOT NULL THEN 1 ELSE 0 END) challenger_route_rows,
+             AVG(r.strategy_router_score) incumbent_route_avg,
+             AVG(COALESCE(
+               e.route_score,
+               CASE WHEN r.strategy_challenger_route_version=?
+                    THEN r.strategy_challenger_route_score END
+             )) challenger_route_avg,
+             SUM(CASE WHEN r.strategy_selected=1 THEN 1 ELSE 0 END) strategy_selected_rows,
+             SUM(CASE WHEN r.allocation_selected=1 THEN 1 ELSE 0 END) allocation_selected_rows
+        FROM selection_reference_snapshots_v1 r
+        LEFT JOIN strategy_route_versioned_evidence_v1 e
+          ON e.signal_date=r.signal_date AND e.symbol=r.symbol
+         AND e.producer_run_id=r.producer_run_id AND e.route_version=?
+       WHERE r.signal_date=? AND r.producer_run_id=? AND r.hard_gate_passed=1
          AND EXISTS (
            SELECT 1 FROM strategy_label_matrix_runs_v4 mr
-            WHERE mr.signal_date=selection_reference_snapshots_v1.signal_date
-              AND mr.producer_run_id=selection_reference_snapshots_v1.producer_run_id
+            WHERE mr.signal_date=r.signal_date
+              AND mr.producer_run_id=r.producer_run_id
               AND mr.status='ready'
               AND mr.reference_contract_version=?
               AND mr.labeler_version IN (?, ?)
-              AND mr.labeler_version=selection_reference_snapshots_v1.strategy_labeler_version
+              AND mr.labeler_version=r.strategy_labeler_version
          )
     `).bind(
+      STRATEGY_ROUTE_AFFINITY_VERSION,
+      STRATEGY_ROUTE_CHALLENGER_VERSION,
       STRATEGY_ROUTE_CHALLENGER_VERSION,
       STRATEGY_ROUTE_CHALLENGER_VERSION,
       head.signal_date,
@@ -461,8 +475,8 @@ export async function buildPipelineDecisionMaturityPacket(
          AND r.labeler_version IN (?, ?)
        LIMIT 1
     `).bind(
-      STRATEGY_ROUTE_CHALLENGER_VERSION,
-      STRATEGY_ROUTE_CHALLENGER_VERSION,
+      STRATEGY_ROUTE_AFFINITY_VERSION,
+      STRATEGY_ROUTE_AFFINITY_VERSION,
       head.signal_date,
       head.run_id,
       SELECTION_REFERENCE_CONTRACT_VERSION,
@@ -485,7 +499,10 @@ export async function buildPipelineDecisionMaturityPacket(
       SELECT run_id, artifact_version, as_of_date, status, candidate_route_version,
              route_floor, sample_count, date_count, train_start_date, train_end_date,
              oos_start_date, oos_end_date, top_bucket_net_return,
-             top_bucket_net_return_lcb90, residual_spread, residual_spread_lcb90,
+             top_bucket_net_return_lcb90, absolute_spread, absolute_spread_lcb90,
+             residual_spread, residual_spread_lcb90, incumbent_sample_count,
+             paired_sample_count, paired_date_count, challenger_incumbent_delta,
+             challenger_incumbent_delta_lcb90,
              brier_score, climatology_brier_score, log_loss, gate_json, created_at
         FROM strategy_route_calibration_runs_v1
        WHERE as_of_date<=? AND sample_count>0 AND date_count>0
@@ -619,8 +636,8 @@ export async function buildPipelineDecisionMaturityPacket(
        ORDER BY r.updated_at DESC
        LIMIT 1
     `).bind(
-      STRATEGY_ROUTE_CHALLENGER_VERSION,
-      STRATEGY_ROUTE_CHALLENGER_VERSION,
+      STRATEGY_ROUTE_AFFINITY_VERSION,
+      STRATEGY_ROUTE_AFFINITY_VERSION,
       head.signal_date,
       head.run_id,
       SELECTION_REFERENCE_CONTRACT_VERSION,
@@ -631,24 +648,37 @@ export async function buildPipelineDecisionMaturityPacket(
     if (incumbentMatrixRow) {
       const incumbentReference = await safeQuery(() => learningDb.prepare(`
         SELECT COUNT(*) reference_rows,
-               SUM(CASE WHEN strategy_challenger_affinity_version=? THEN 1 ELSE 0 END) affinity_v2_rows,
-               SUM(CASE WHEN strategy_challenger_route_version=? AND strategy_challenger_route_score IS NOT NULL THEN 1 ELSE 0 END) challenger_route_rows,
-               AVG(strategy_router_score) incumbent_route_avg,
-               AVG(strategy_challenger_route_score) challenger_route_avg,
-               SUM(CASE WHEN strategy_selected=1 THEN 1 ELSE 0 END) strategy_selected_rows,
-               SUM(CASE WHEN allocation_selected=1 THEN 1 ELSE 0 END) allocation_selected_rows
-          FROM selection_reference_snapshots_v1
-         WHERE signal_date=? AND producer_run_id=? AND hard_gate_passed=1
-           AND strategy_labeler_version=?
+               SUM(CASE WHEN r.strategy_challenger_affinity_version=? THEN 1 ELSE 0 END) affinity_v2_rows,
+               SUM(CASE WHEN COALESCE(
+                         e.route_score,
+                         CASE WHEN r.strategy_challenger_route_version=?
+                              THEN r.strategy_challenger_route_score END
+                       ) IS NOT NULL THEN 1 ELSE 0 END) challenger_route_rows,
+               AVG(r.strategy_router_score) incumbent_route_avg,
+               AVG(COALESCE(
+                 e.route_score,
+                 CASE WHEN r.strategy_challenger_route_version=?
+                      THEN r.strategy_challenger_route_score END
+               )) challenger_route_avg,
+               SUM(CASE WHEN r.strategy_selected=1 THEN 1 ELSE 0 END) strategy_selected_rows,
+               SUM(CASE WHEN r.allocation_selected=1 THEN 1 ELSE 0 END) allocation_selected_rows
+          FROM selection_reference_snapshots_v1 r
+          LEFT JOIN strategy_route_versioned_evidence_v1 e
+            ON e.signal_date=r.signal_date AND e.symbol=r.symbol
+           AND e.producer_run_id=r.producer_run_id AND e.route_version=?
+         WHERE r.signal_date=? AND r.producer_run_id=? AND r.hard_gate_passed=1
+           AND r.strategy_labeler_version=?
            AND EXISTS (
              SELECT 1 FROM strategy_label_matrix_runs_v4 mr
-              WHERE mr.signal_date=selection_reference_snapshots_v1.signal_date
-                AND mr.producer_run_id=selection_reference_snapshots_v1.producer_run_id
+              WHERE mr.signal_date=r.signal_date
+                AND mr.producer_run_id=r.producer_run_id
                 AND mr.status='ready'
                 AND mr.reference_contract_version=?
-                AND mr.labeler_version=selection_reference_snapshots_v1.strategy_labeler_version
+                AND mr.labeler_version=r.strategy_labeler_version
            )
       `).bind(
+        STRATEGY_ROUTE_AFFINITY_VERSION,
+        STRATEGY_ROUTE_CHALLENGER_VERSION,
         STRATEGY_ROUTE_CHALLENGER_VERSION,
         STRATEGY_ROUTE_CHALLENGER_VERSION,
         head.signal_date,
@@ -690,7 +720,7 @@ export async function buildPipelineDecisionMaturityPacket(
       id: 'threshold_margin_affinity_v2',
       layer: 'L1',
       title: 'Threshold-margin affinity V2',
-      version: STRATEGY_ROUTE_CHALLENGER_VERSION,
+      version: STRATEGY_ROUTE_AFFINITY_VERSION,
       status: formalLabeler ? (complete ? 'ready' : 'blocked') : 'collecting',
       contribution_mode: formalLabeler ? 'shadow' : 'evidence_only',
       maturity_kind: 'daily_coverage',
@@ -818,11 +848,15 @@ export async function buildPipelineDecisionMaturityPacket(
         gateMetric('purge_dates', 'Purged date groups', STRATEGY_ROUTE_PURGE_DATES, STRATEGY_ROUTE_PURGE_DATES, 'dates'),
         gateMetric('oos_dates', 'Required OOS dates', STRATEGY_ROUTE_MIN_OOS_DATES, STRATEGY_ROUTE_MIN_OOS_DATES, 'dates'),
         metric('sample_count', 'Labeled route observations', route.sample_count, { unit: 'rows' }),
+        metric('incumbent_sample_count', 'Paired incumbent observations', route.incumbent_sample_count, { unit: 'rows' }),
+        metric('paired_date_count', 'Paired incumbent dates', route.paired_date_count, { unit: 'dates' }),
         metric('incumbent_route_avg', 'Incumbent route avg', referenceRow?.incumbent_route_avg ?? null, { unit: 'score' }),
         metric('challenger_route_avg', 'Challenger route avg', referenceRow?.challenger_route_avg ?? null, { unit: 'score' }),
         metric('route_floor', 'Train-selected route floor', route.route_floor, { unit: 'score', passed: route.route_floor == null ? null : true }),
         gateMetric('top_bucket_lcb90', 'Top bucket net return LCB90', route.top_bucket_net_return_lcb90, 0, 'return', 'gt'),
+        gateMetric('absolute_spread_lcb90', 'Challenger absolute spread LCB90', route.absolute_spread_lcb90, 0, 'return', 'gt'),
         gateMetric('residual_spread_lcb90', 'Residual spread LCB90', route.residual_spread_lcb90, 0, 'return', 'gt'),
+        gateMetric('challenger_incumbent_delta_lcb90', 'Challenger vs incumbent same-capacity LCB90', route.challenger_incumbent_delta_lcb90, 0, 'return', 'gt'),
         metric('brier', 'Brier vs climatology', route.brier_score, { target: route.climatology_brier_score, comparator: 'lt', unit: 'ratio', passed: optionalFinite(route.brier_score) != null && optionalFinite(route.climatology_brier_score) != null ? finite(route.brier_score) < finite(route.climatology_brier_score) : null }),
       ],
       lineage: {
@@ -1275,7 +1309,7 @@ export async function buildPipelineDecisionMaturityPacket(
       STRATEGY_FORMAL_RECONSTRUCTION_LABELER_VERSION,
       STRATEGY_FORMAL_LABELER_VERSION,
       STRATEGY_FORMAL_RECONSTRUCTION_LABELER_VERSION,
-      STRATEGY_ROUTE_CHALLENGER_VERSION,
+      STRATEGY_ROUTE_AFFINITY_VERSION,
     ).all<{ evidence_date: string; value: number | null; target: number | null }>().then((result) => result.results ?? [])),
     safeQuery(() => learningDb.prepare(`
       WITH ranked AS (

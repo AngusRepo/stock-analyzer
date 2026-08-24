@@ -2122,6 +2122,7 @@ function deriveStrategyRawSignals(
 
 type FinLabNormalizationField = {
   rawField: keyof StrategyRawSignals
+  normalizer?: keyof StrategyRawSignals
   signalKey: string
   direction: 'higher_is_better' | 'lower_is_better'
   sectorRank: boolean
@@ -2145,7 +2146,9 @@ const FINLAB_STYLE_NORMALIZATION_FIELDS: FinLabNormalizationField[] = [
   { rawField: 'VSTD_10', signalKey: 'Vstd10', direction: 'higher_is_better', sectorRank: false },
   { rawField: 'techEmv14', signalKey: 'TechEmv14', direction: 'higher_is_better', sectorRank: false },
   { rawField: 'techRoc10', signalKey: 'TechRoc10', direction: 'higher_is_better', sectorRank: false },
+  // Keep the legacy key immutable for historical parity. Semantic-v2 uses a new, correctly directed key.
   { rawField: 'techGapDown', signalKey: 'TechGapDown', direction: 'higher_is_better', sectorRank: false },
+  { rawField: 'techGapDown', signalKey: 'V2TechGapDownNoGap', direction: 'lower_is_better', sectorRank: false },
   { rawField: 'volaCv90d', signalKey: 'VolaCv90dLow', direction: 'lower_is_better', sectorRank: false },
   { rawField: 'vwapBias', signalKey: 'VwapBias', direction: 'higher_is_better', sectorRank: false },
   { rawField: 'vwapBias5d', signalKey: 'VwapBias5d', direction: 'higher_is_better', sectorRank: false },
@@ -2172,7 +2175,30 @@ const FINLAB_STYLE_NORMALIZATION_FIELDS: FinLabNormalizationField[] = [
   { rawField: 'cashAndCashEquivalentsIncreaseDecrease', signalKey: 'CashAndCashEquivalentsIncreaseDecrease', direction: 'higher_is_better', sectorRank: false },
   { rawField: 'otherPayables', signalKey: 'OtherPayables', direction: 'higher_is_better', sectorRank: false },
   { rawField: 'volShareTurnover21d', signalKey: 'VolShareTurnover21d', direction: 'higher_is_better', sectorRank: false },
+  { rawField: 'ebitda', normalizer: 'capitalAmount', signalKey: 'V2EbitdaCapital', direction: 'higher_is_better', sectorRank: true },
+  { rawField: 'nonCurrentAssets', normalizer: 'capitalAmount', signalKey: 'V2NonCurrentAssetsCapital', direction: 'higher_is_better', sectorRank: true },
+  { rawField: 'cashAndCashEquivalentsIncreaseDecrease', normalizer: 'capitalAmount', signalKey: 'V2CashAndCashEquivalentsIncreaseDecreaseCapital', direction: 'higher_is_better', sectorRank: true },
+  { rawField: 'otherPayables', normalizer: 'capitalAmount', signalKey: 'V2OtherPayablesCapital', direction: 'lower_is_better', sectorRank: true },
+  { rawField: 'currentLiabilities', normalizer: 'capitalAmount', signalKey: 'V2CurrentLiabilitiesCapital', direction: 'lower_is_better', sectorRank: true },
+  { rawField: 'propertyPlantEquipment', normalizer: 'capitalAmount', signalKey: 'V2PropertyPlantEquipmentCapital', direction: 'higher_is_better', sectorRank: true },
+  { rawField: 'operatingExpenses', normalizer: 'capitalAmount', signalKey: 'V2OperatingExpensesCapital', direction: 'lower_is_better', sectorRank: true },
+  { rawField: 'operatingCashFlowStatement', normalizer: 'capitalAmount', signalKey: 'V2OperatingCashFlowStatementCapital', direction: 'higher_is_better', sectorRank: true },
+  { rawField: 'workingCapital', normalizer: 'capitalAmount', signalKey: 'V2WorkingCapitalCapital', direction: 'higher_is_better', sectorRank: true },
+  { rawField: 'freeCashFlow', normalizer: 'capitalAmount', signalKey: 'V2FreeCashFlowCapital', direction: 'higher_is_better', sectorRank: true },
+  { rawField: 'financialCost', normalizer: 'capitalAmount', signalKey: 'V2FinancialCostCapital', direction: 'lower_is_better', sectorRank: true },
 ]
+
+function finLabNormalizationValue(
+  raw: StrategyRawSignals | undefined,
+  field: FinLabNormalizationField,
+): number | null {
+  const value = finiteOrNull(raw?.[field.rawField] ?? raw?.factorSignals?.[String(field.rawField)])
+  if (value == null) return null
+  if (!field.normalizer) return value
+  const denominator = finiteOrNull(raw?.[field.normalizer] ?? raw?.factorSignals?.[String(field.normalizer)])
+  if (denominator == null || Math.abs(denominator) < 1e-9) return null
+  return value / Math.abs(denominator)
+}
 
 function percentileRank(value: number, sortedAsc: number[]): number | null {
   if (!Number.isFinite(value) || !sortedAsc.length) return null
@@ -2224,7 +2250,7 @@ function winsorizedValue(value: number, sortedAsc: number[]): number | null {
   return Math.round(clamp(value, lower, upper) * 10000) / 10000
 }
 
-function applyFinLabStyleFactorNormalization<T extends { raw_signals?: StrategyRawSignals; industry?: string | null }>(
+export function applyFinLabStyleFactorNormalization<T extends { raw_signals?: StrategyRawSignals; industry?: string | null }>(
   candidates: T[],
 ): FinLabStyleFactorNormalizationTelemetry {
   const telemetry: FinLabStyleFactorNormalizationTelemetry = {
@@ -2254,13 +2280,13 @@ function applyFinLabStyleFactorNormalization<T extends { raw_signals?: StrategyR
       },
     },
   }
-  const sortedByField = new Map<keyof StrategyRawSignals, number[]>()
+  const sortedByField = new Map<string, number[]>()
   for (const field of FINLAB_STYLE_NORMALIZATION_FIELDS) {
     const values = candidates
-      .map((candidate) => finiteOrNull(candidate.raw_signals?.[field.rawField]))
+      .map((candidate) => finLabNormalizationValue(candidate.raw_signals, field))
       .filter((value): value is number => value != null)
       .sort((a, b) => a - b)
-    sortedByField.set(field.rawField, values)
+    sortedByField.set(field.signalKey, values)
   }
 
   const bySector = new Map<string, T[]>()
@@ -2272,16 +2298,16 @@ function applyFinLabStyleFactorNormalization<T extends { raw_signals?: StrategyR
   }
   telemetry.sectorCount = bySector.size
 
-  const sortedBySectorField = new Map<string, Map<keyof StrategyRawSignals, number[]>>()
+  const sortedBySectorField = new Map<string, Map<string, number[]>>()
   for (const [sector, sectorCandidates] of bySector.entries()) {
-    const fieldMap = new Map<keyof StrategyRawSignals, number[]>()
+    const fieldMap = new Map<string, number[]>()
     for (const field of FINLAB_STYLE_NORMALIZATION_FIELDS) {
       if (!field.sectorRank) continue
       const values = sectorCandidates
-        .map((candidate) => finiteOrNull(candidate.raw_signals?.[field.rawField]))
+        .map((candidate) => finLabNormalizationValue(candidate.raw_signals, field))
         .filter((value): value is number => value != null)
         .sort((a, b) => a - b)
-      fieldMap.set(field.rawField, values)
+      fieldMap.set(field.signalKey, values)
     }
     sortedBySectorField.set(sector, fieldMap)
   }
@@ -2292,9 +2318,9 @@ function applyFinLabStyleFactorNormalization<T extends { raw_signals?: StrategyR
     raw.factorSignals = { ...(raw.factorSignals ?? {}) }
     const sector = String(candidate.industry ?? '').trim() || 'unknown'
     for (const field of FINLAB_STYLE_NORMALIZATION_FIELDS) {
-      const value = finiteOrNull(raw[field.rawField])
+      const value = finLabNormalizationValue(raw, field)
       if (value == null) continue
-      const csRankRaw = percentileRank(value, sortedByField.get(field.rawField) ?? [])
+      const csRankRaw = percentileRank(value, sortedByField.get(field.signalKey) ?? [])
       if (csRankRaw != null) {
         const rank = field.direction === 'lower_is_better' ? 1 - csRankRaw : csRankRaw
         const key = rankKey('finlabCs', field.signalKey)
@@ -2313,20 +2339,20 @@ function applyFinLabStyleFactorNormalization<T extends { raw_signals?: StrategyR
           }
         }
       }
-      const csZScore = directedZScore(value, sortedByField.get(field.rawField) ?? [], field.direction)
+      const csZScore = directedZScore(value, sortedByField.get(field.signalKey) ?? [], field.direction)
       if (csZScore != null) {
         const key = zScoreKey('finlabCs', field.signalKey)
         raw.factorSignals[key] = csZScore
         telemetry.fieldCoverage[key] = (telemetry.fieldCoverage[key] ?? 0) + 1
       }
-      const csWinsorized = winsorizedValue(value, sortedByField.get(field.rawField) ?? [])
+      const csWinsorized = winsorizedValue(value, sortedByField.get(field.signalKey) ?? [])
       if (csWinsorized != null) {
         const key = winsorizedKey('finlabCs', field.signalKey)
         raw.factorSignals[key] = csWinsorized
         telemetry.fieldCoverage[key] = (telemetry.fieldCoverage[key] ?? 0) + 1
       }
       if (field.sectorRank) {
-        const sectorValues = sortedBySectorField.get(sector)?.get(field.rawField) ?? []
+        const sectorValues = sortedBySectorField.get(sector)?.get(field.signalKey) ?? []
         if (sectorValues.length >= 3) {
           const sectorRankRaw = percentileRank(value, sectorValues)
           if (sectorRankRaw != null) {
@@ -3801,6 +3827,7 @@ export async function runBottomUpScreener(env: Bindings, runDate?: string | null
         regime: currentRegime,
         marketSegment: 'all',
         asOfDate: endDate,
+        evidenceMode: monthlyRevenue.evidenceMode,
         minSamples: 5,
         knownStrategyIds: specs.map((spec: any) => String(spec.id || '').trim()).filter(Boolean),
       }),
@@ -3916,6 +3943,10 @@ export async function runBottomUpScreener(env: Bindings, runDate?: string | null
       route_score_distribution: layer1BreadthPlan.telemetry.route_score_distribution ?? null,
       route_score_above_floor_count: layer1BreadthPlan.telemetry.route_score_above_floor_count ?? null,
       route_score_below_floor_count: layer1BreadthPlan.telemetry.route_score_below_floor_count ?? null,
+      route_gate_authority: layer1BreadthPlan.telemetry.route_gate_authority ?? null,
+      route_veto_applied: layer1BreadthPlan.telemetry.route_veto_applied ?? null,
+      route_veto_candidate_count: layer1BreadthPlan.telemetry.route_veto_candidate_count ?? null,
+      route_priority_only_candidate_count: layer1BreadthPlan.telemetry.route_priority_only_candidate_count ?? null,
       previous_l15_slate_date: previousL15Slate.date,
       previous_l15_slate_run_id: previousL15Slate.runId,
       previous_l15_slate_load_error: previousL15SlateLoad.error,
@@ -4027,6 +4058,10 @@ export async function runBottomUpScreener(env: Bindings, runDate?: string | null
           route_score_distribution: layer1BreadthPlan.telemetry.route_score_distribution ?? null,
           route_score_above_floor_count: layer1BreadthPlan.telemetry.route_score_above_floor_count ?? null,
           route_score_below_floor_count: layer1BreadthPlan.telemetry.route_score_below_floor_count ?? null,
+          route_gate_authority: layer1BreadthPlan.telemetry.route_gate_authority ?? null,
+          route_veto_applied: layer1BreadthPlan.telemetry.route_veto_applied ?? null,
+          route_veto_candidate_count: layer1BreadthPlan.telemetry.route_veto_candidate_count ?? null,
+          route_priority_only_candidate_count: layer1BreadthPlan.telemetry.route_priority_only_candidate_count ?? null,
           teacher_label_available_count: layer1BreadthPlan.telemetry.teacher_label_available_count ?? null,
           teacher_label_missing_count: layer1BreadthPlan.telemetry.teacher_label_missing_count ?? null,
           strategy_metric_status_counts: layer1BreadthPlan.telemetry.strategy_metric_status_counts ?? null,
@@ -4130,6 +4165,10 @@ export async function runBottomUpScreener(env: Bindings, runDate?: string | null
           route_score_distribution: layer1BreadthPlan.telemetry.route_score_distribution ?? null,
           route_score_above_floor_count: layer1BreadthPlan.telemetry.route_score_above_floor_count ?? null,
           route_score_below_floor_count: layer1BreadthPlan.telemetry.route_score_below_floor_count ?? null,
+          route_gate_authority: layer1BreadthPlan.telemetry.route_gate_authority ?? null,
+          route_veto_applied: layer1BreadthPlan.telemetry.route_veto_applied ?? null,
+          route_veto_candidate_count: layer1BreadthPlan.telemetry.route_veto_candidate_count ?? null,
+          route_priority_only_candidate_count: layer1BreadthPlan.telemetry.route_priority_only_candidate_count ?? null,
           teacher_label_available_count: layer1BreadthPlan.telemetry.teacher_label_available_count ?? null,
           teacher_label_missing_count: layer1BreadthPlan.telemetry.teacher_label_missing_count ?? null,
           strategy_metric_status_counts: layer1BreadthPlan.telemetry.strategy_metric_status_counts ?? null,
@@ -4203,6 +4242,10 @@ export async function runBottomUpScreener(env: Bindings, runDate?: string | null
           route_score_distribution: layer1BreadthPlan.telemetry.route_score_distribution ?? null,
           route_score_above_floor_count: layer1BreadthPlan.telemetry.route_score_above_floor_count ?? null,
           route_score_below_floor_count: layer1BreadthPlan.telemetry.route_score_below_floor_count ?? null,
+          route_gate_authority: layer1BreadthPlan.telemetry.route_gate_authority ?? null,
+          route_veto_applied: layer1BreadthPlan.telemetry.route_veto_applied ?? null,
+          route_veto_candidate_count: layer1BreadthPlan.telemetry.route_veto_candidate_count ?? null,
+          route_priority_only_candidate_count: layer1BreadthPlan.telemetry.route_priority_only_candidate_count ?? null,
           teacher_label_available_count: layer1BreadthPlan.telemetry.teacher_label_available_count ?? null,
           teacher_label_missing_count: layer1BreadthPlan.telemetry.teacher_label_missing_count ?? null,
           strategy_metric_status_counts: layer1BreadthPlan.telemetry.strategy_metric_status_counts ?? null,

@@ -38,7 +38,14 @@ assert(metricSource.includes('const outcomesBySelection = indexStrategyEvidenceO
 assert(!metricSource.includes('joinStrategyEvidenceObservations(rows, outcomeRows)'))
 assert(metricSource.includes("profile?: Pick<StrategyEvidenceProfile, 'strategy_id' | 'strategy_version'>"))
 assert(metricSource.includes('for (const profile of profiles)'))
-assert(metricSource.includes('loadObservations(db, options.outcomeAsOfDate, profile)'))
+assert(metricSource.includes('loadObservations(db, options.outcomeAsOfDate, canonicalRunIds, profile)'))
+assert(metricSource.includes('strategy_evidence_canonical_screener_heads_missing'))
+assert(metricSource.includes("r.strategy_matrix_status='ready'"))
+assert(metricSource.includes("mr.status='ready'"))
+assert(metricSource.includes('mr.persisted_cell_count=mr.expected_cell_count'))
+assert(metricSource.includes('FROM json_each(?) h'))
+assert(metricSource.includes('STRATEGY_FORMAL_LABELER_VERSIONS'))
+assert(!metricSource.includes('FROM strategy_label_matrix_v4\n       WHERE strategy_hit=1 AND evaluable=1'))
 
 function observations(strategyId: string, strategyVersion: string, strategyStatus: string, alphaBucket: string): StrategyEvidenceObservation[] {
   const rows: StrategyEvidenceObservation[] = []

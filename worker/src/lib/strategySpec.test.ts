@@ -7,6 +7,9 @@ import {
   deriveStrategyThresholdScores,
   resolveLegacyMonthlyRevenueEvidence,
   validateStrategySpec,
+  STRATEGY_FEATURE_SEMANTIC_VERSION,
+  STRATEGY_SPEC_SEMANTIC_VERSION,
+  strategySpecForSemanticV2Challenger,
 } from './strategySpec'
 import type { StrategySpec } from './strategySpec'
 import { assertOwnerCanOwn, ownerOwns } from './strategyOwnerFreeze'
@@ -620,6 +623,46 @@ const legacyScoreThresholdKeys = ['minSeedScore', 'minChipScore', 'minTechScore'
 }
 
 {
+  const v2BaseSpec = DEFAULT_STRATEGY_SPECS.find((spec) => (
+    (spec.thresholds.featureRefs?.weightedScore?.terms?.length ?? 0) > 0
+  ))
+  assert(v2BaseSpec, 'test fixture requires one strategy with weighted feature refs')
+  const v2WithoutSemantics = validateStrategySpec({
+    ...v2BaseSpec,
+    version: STRATEGY_SPEC_SEMANTIC_VERSION,
+  })
+  assert(!v2WithoutSemantics.ok, 'v2 strategy specs must fail closed without complete feature semantics')
+  assert(v2WithoutSemantics.errors.some((error) => error.startsWith('v2_feature_semantic_missing:')), 'v2 validation must identify the missing semantic term')
+
+  const baseTerm = v2BaseSpec.thresholds.featureRefs?.weightedScore?.terms?.[0]
+  assert(baseTerm, 'test fixture requires one weighted feature term')
+  const validV2 = validateStrategySpec({
+    ...v2BaseSpec,
+    version: STRATEGY_SPEC_SEMANTIC_VERSION,
+    thresholds: {
+      ...v2BaseSpec.thresholds,
+      featureRefs: {
+        weightedScore: {
+          min: 0.5,
+          terms: [{
+            ...baseTerm,
+            semantic: {
+              schemaVersion: STRATEGY_FEATURE_SEMANTIC_VERSION,
+              rawSource: baseTerm.featureRef,
+              direction: 'higher_is_better',
+              transform: 'cross_sectional_percentile',
+              denominator: 'none',
+              neutralization: 'sector',
+              pitOwner: 'market',
+              missingPolicy: 'fail_closed',
+            },
+          }],
+        },
+      },
+    },
+  })
+  assert(validV2.ok, `complete v2 semantic contract should validate: ${validV2.errors.join(',')}`)
+
   const validation = validateStrategySpec({
     ...DEFAULT_STRATEGY_SPECS[0],
     thresholds: {
@@ -829,4 +872,47 @@ const legacyScoreThresholdKeys = ['minSeedScore', 'minChipScore', 'minTechScore'
     !liveEvaluation.unavailableReasons.includes(MONTHLY_REVENUE_PIT_UNAVAILABLE_REASON),
     'explicit same-day live evidence must clear the monthly revenue PIT blocker',
   )
+}
+
+{
+  const incumbent: StrategySpec = {
+    id: 'alpha223_0009',
+    version: 'strategy-spec-v1',
+    name: 'alpha incumbent',
+    status: 'active',
+    owner: 'strategy',
+    familyId: 'ALPHA223_CASH_GAP_BROKER_FLOW',
+    variantId: 'alpha223_0009_cash_gap_broker_flow_v1',
+    ownerType: 'strategy',
+    promotionStatus: 'production',
+    alphaBucket: 'breakout_vol_expansion',
+    supportedRegimes: ['bull', 'sideways', 'volatile'],
+    thesis: 'test',
+    thresholds: {
+      featureRefs: {
+        weightedScore: {
+          min: 0.58,
+          terms: [
+            { featureRef: 'tech_gap_down', signal: 'factorSignals.techGapDown', weight: 0.5 },
+            { featureRef: 'finlab701_fundamental_features_EBITDA', signal: 'factorSignals.ebitda', weight: 0.5 },
+          ],
+        },
+      },
+    },
+    candidatePolicy: { poolQuota: 10, costBudget: 10, evidenceRequirements: [], maxMlShare: 0.2 },
+    riskNotes: [],
+    createdBy: 'p5_strategy_governance',
+  }
+  const challenger = strategySpecForSemanticV2Challenger(incumbent)
+  assert(challenger !== incumbent, 'semantic challenger must be a distinct immutable spec object')
+  assert(incumbent.version === 'strategy-spec-v1', 'incumbent spec version must remain unchanged')
+  assert(challenger.version === STRATEGY_SPEC_SEMANTIC_VERSION, 'challenger must use Strategy Spec v2')
+  const terms = challenger.thresholds.featureRefs?.weightedScore?.terms ?? []
+  const gap = terms.find((term) => term.featureRef === 'tech_gap_down')
+  const ebitda = terms.find((term) => term.featureRef === 'finlab701_fundamental_features_EBITDA')
+  assert(gap?.semantic?.direction === 'lower_is_better', 'gap-down semantic direction must be corrected')
+  assert(gap?.signal === 'factorSignals.finlabCsV2TechGapDownNoGapRank', 'gap-down must use a versioned directed signal')
+  assert(ebitda?.semantic?.denominator === 'capital_amount', 'EBITDA must be capital normalized')
+  assert(ebitda?.semantic?.neutralization === 'sector', 'EBITDA must be sector neutralized')
+  assert(validateStrategySpec(challenger).ok, 'derived semantic-v2 challenger must satisfy the immutable spec contract')
 }

@@ -3,9 +3,9 @@ import { readFileSync } from 'node:fs'
 
 const source = readFileSync(new URL('./selectionReferenceEvidence.ts', import.meta.url), 'utf8')
 
-assert.match(source, /reference_contract_version=excluded\.reference_contract_version/)
-assert.match(source, /strategy_labeler_version=excluded\.strategy_labeler_version/)
-assert.match(source, /strategy_affinity_version=excluded\.strategy_affinity_version/)
-assert.match(source, /strategy_registry_checksum=excluded\.strategy_registry_checksum/)
-assert.match(source, /feature_contract_version=excluded\.feature_contract_version/)
-assert.match(source, /evidence_artifact_id=excluded\.evidence_artifact_id/)
+assert.match(source, /strategy_label_matrix_immutable_run_conflict/)
+assert.match(source, /clean\(existing\.reference_contract_version\) === SELECTION_REFERENCE_CONTRACT_VERSION/)
+assert.match(source, /clean\(existing\.evidence_artifact_id\) === input\.evidenceArtifactId/)
+assert.match(source, /clean\(existing\.payload_checksum\) === payloadChecksum/)
+assert.match(source, /selection_reference_ready_contract_mismatch/)
+assert.match(source, /reference_identity_count/)

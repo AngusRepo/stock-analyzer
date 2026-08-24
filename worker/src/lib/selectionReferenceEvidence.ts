@@ -282,6 +282,140 @@ export function buildSelectionEvidenceV4(input: {
   return { references, matrix, strategyCount: specs.length }
 }
 
+export const SELECTION_CHAIN_RECEIPT_VERSION = 'selection-chain-receipt-v1' as const
+
+export interface SelectionChainReceiptV1 {
+  version: typeof SELECTION_CHAIN_RECEIPT_VERSION
+  stages: {
+    l15_router_selected: boolean
+    ml_eligible: boolean
+    ml_evaluated: boolean
+    l4_feature_available: boolean
+    l4_production_eligible: boolean
+    fusion_feature_available: boolean
+    primary_expected_return_available: boolean
+    allocator_selected: boolean
+    has_buy_signal: boolean
+    pending_buy_eligible: boolean
+    pending_buy_candidate: boolean
+  }
+  owners: {
+    expected_return_owner: string | null
+    l4_status: string | null
+    fusion_status: string | null
+  }
+  terminal: {
+    selection_stage: string
+    rejection_reason: string | null
+  }
+}
+
+export interface SelectionDecisionEvidenceInputV1 {
+  strategySelected?: unknown
+  priorRejectionReason?: unknown
+  mlScore?: unknown
+  mlVoteSummary?: unknown
+  alphaAllocation?: unknown
+  signal?: unknown
+  hasBuySignal?: unknown
+  eligibleForMl?: unknown
+  eligibleForPendingBuy?: unknown
+}
+
+function evidenceFlag(value: unknown): boolean {
+  return value === true || Number(value) === 1
+}
+
+export function buildSelectionChainReceiptV1(input: SelectionDecisionEvidenceInputV1): SelectionChainReceiptV1 {
+  const allocation = parseObject(input.alphaAllocation)
+  const finalSignal = clean(input.signal).toUpperCase() || null
+  const mlEvidence = parseObject(input.mlVoteSummary)
+  const routeSelected = evidenceFlag(input.strategySelected)
+  const mlEligible = evidenceFlag(input.eligibleForMl)
+  const mlEvaluated = Boolean(finalSignal && mlEvidence && Number.isFinite(Number(input.mlScore)))
+  const expectedReturnOwner = clean(allocation?.expected_return_owner) || null
+  const evOwnerAvailable = expectedReturnOwner === 'allocator_ev_fusion'
+  const fusionEvidence = parseObject(allocation?.allocator_ev_fusion)
+  const l4Evidence = parseObject(allocation?.l4_alpha_ev)
+    ?? parseObject(fusionEvidence?.l4_alpha_ev)
+  const l4Status = clean(l4Evidence?.status).toLowerCase() || null
+  const fusionStatus = clean(fusionEvidence?.status).toLowerCase() || null
+  const l4FeatureAvailable = Boolean(l4Evidence && ['loaded', 'verified'].includes(l4Status ?? ''))
+  const l4ProductionEligible = Boolean(
+    l4Evidence
+    && (l4Evidence.production_eligible === true || Number(l4Evidence.production_eligible) === 1),
+  )
+  const fusionFeatureAvailable = Boolean(
+    fusionEvidence
+    && !['unavailable', 'missing', 'blocked', 'error'].includes(fusionStatus ?? ''),
+  )
+  const primaryExpectedReturnAvailable = Boolean(
+    evOwnerAvailable
+    && (
+      fusionEvidence?.primary_expected_return_allowed === true
+      || Number(fusionEvidence?.primary_expected_return_allowed) === 1
+      || (allocation?.expected_return != null && Number.isFinite(Number(allocation.expected_return)))
+    ),
+  )
+  const allocationSelected = evidenceFlag(allocation?.selected)
+  const hasBuySignal = evidenceFlag(input.hasBuySignal)
+  const pendingBuyEligible = evidenceFlag(input.eligibleForPendingBuy)
+  const pendingBuyCandidate = pendingBuyEligible && allocationSelected && hasBuySignal
+  const selectionStage = pendingBuyCandidate
+    ? 'pending_buy_candidate'
+    : hasBuySignal
+      ? 'buy_signal_blocked_before_pending_buy'
+      : allocationSelected
+        ? 'allocator_selected_no_buy_signal'
+        : evOwnerAvailable
+          ? 'allocator_not_selected'
+          : mlEvaluated
+            ? 'ml_evaluated_waiting_expected_return'
+            : routeSelected
+              ? 'l15_router_selected'
+              : 'l1_labeled_observe'
+  const rejectionReason = pendingBuyCandidate
+    ? null
+    : hasBuySignal && !pendingBuyEligible
+      ? 'pending_buy_ineligible'
+      : hasBuySignal && !allocationSelected
+        ? 'buy_signal_without_allocator_selection'
+        : allocationSelected
+          ? (finalSignal === 'HOLD' ? 'final_signal_hold' : 'allocator_selected_without_buy_signal')
+          : evOwnerAvailable
+            ? 'allocator_not_selected'
+            : mlEvaluated
+              ? 'expected_return_owner_unavailable'
+              : routeSelected
+                ? 'route_selected_without_ml_evaluation'
+                : clean(input.priorRejectionReason) || 'not_selected_by_l15_router'
+  return {
+    version: SELECTION_CHAIN_RECEIPT_VERSION,
+    stages: {
+      l15_router_selected: routeSelected,
+      ml_eligible: mlEligible,
+      ml_evaluated: mlEvaluated,
+      l4_feature_available: l4FeatureAvailable,
+      l4_production_eligible: l4ProductionEligible,
+      fusion_feature_available: fusionFeatureAvailable,
+      primary_expected_return_available: primaryExpectedReturnAvailable,
+      allocator_selected: allocationSelected,
+      has_buy_signal: hasBuySignal,
+      pending_buy_eligible: pendingBuyEligible,
+      pending_buy_candidate: pendingBuyCandidate,
+    },
+    owners: {
+      expected_return_owner: expectedReturnOwner,
+      l4_status: l4Status,
+      fusion_status: fusionStatus,
+    },
+    terminal: {
+      selection_stage: selectionStage,
+      rejection_reason: rejectionReason,
+    },
+  }
+}
+
 export async function reconcileSelectionDecisionEvidenceV4(
   db: D1Database,
   signalDate: string,
@@ -289,22 +423,33 @@ export async function reconcileSelectionDecisionEvidenceV4(
     identityDb?: D1Database
     canonicalProducerRunId?: string | null
   } = {},
-): Promise<{ referenceRows: number; mlEvaluatedRows: number; evOwnerRows: number; allocationSelectedRows: number; finalSignalRows: number }> {
+): Promise<{
+  referenceRows: number
+  mlEvaluatedRows: number
+  evOwnerRows: number
+  allocationSelectedRows: number
+  finalSignalRows: number
+  pendingBuyCandidateRows: number
+}> {
   type DecisionEvidenceRow = {
     symbol: string
     producer_run_id: string
+    strategy_selected?: number | boolean | null
     rejection_reason?: string | null
     ml_score?: number | string | null
     ml_vote_summary?: string | null
     alpha_allocation?: string | null
     signal?: string | null
+    has_buy_signal?: number | boolean | null
+    eligible_for_ml?: number | boolean | null
+    eligible_for_pending_buy?: number | boolean | null
     score_components?: string | null
   }
 
   let rows: DecisionEvidenceRow[]
   if (options.identityDb && options.canonicalProducerRunId) {
     const referenceResult = await db.prepare(`
-      SELECT symbol, producer_run_id, rejection_reason
+      SELECT symbol, producer_run_id, strategy_selected, rejection_reason
         FROM selection_reference_snapshots_v1
        WHERE signal_date=?
          AND producer_run_id=?
@@ -319,7 +464,8 @@ export async function reconcileSelectionDecisionEvidenceV4(
       const chunk = symbols.slice(offset, offset + 80)
       const placeholders = chunk.map(() => '?').join(', ')
       const recommendationResult = await options.identityDb.prepare(`
-        SELECT symbol, ml_score, ml_vote_summary, alpha_allocation, signal, score_components
+        SELECT symbol, ml_score, ml_vote_summary, alpha_allocation, signal,
+               has_buy_signal, eligible_for_ml, eligible_for_pending_buy, score_components
           FROM daily_recommendations
          WHERE date=?
            AND symbol IN (${placeholders})
@@ -333,13 +479,15 @@ export async function reconcileSelectionDecisionEvidenceV4(
       ...recommendationBySymbol.get(clean(reference.symbol)),
       symbol: reference.symbol,
       producer_run_id: reference.producer_run_id,
+      strategy_selected: reference.strategy_selected,
       rejection_reason: reference.rejection_reason,
     }))
   } else {
     const result = await db.prepare(`
-      SELECT r.symbol, r.producer_run_id, r.rejection_reason,
+      SELECT r.symbol, r.producer_run_id, r.strategy_selected, r.rejection_reason,
              dr.ml_score, dr.ml_vote_summary, dr.alpha_allocation,
-             dr.signal, dr.score_components
+             dr.signal, dr.has_buy_signal, dr.eligible_for_ml,
+             dr.eligible_for_pending_buy, dr.score_components
         FROM selection_reference_snapshots_v1 r
         LEFT JOIN daily_recommendations dr
           ON dr.date=r.signal_date AND dr.symbol=r.symbol
@@ -359,52 +507,50 @@ export async function reconcileSelectionDecisionEvidenceV4(
   let evOwnerRows = 0
   let allocationSelectedRows = 0
   let finalSignalRows = 0
+  let pendingBuyCandidateRows = 0
   const statements = rows.map((row) => {
-    const allocation = parseObject(row.alpha_allocation)
-    const finalSignal = clean(row.signal).toUpperCase() || null
-    const mlEvidence = parseObject(row.ml_vote_summary)
-    const mlEvaluated = Boolean(finalSignal && mlEvidence && Number.isFinite(Number(row.ml_score)))
-    const expectedReturnOwner = clean(allocation?.expected_return_owner)
-    const evOwnerAvailable = expectedReturnOwner === 'allocator_ev_fusion'
-    const fusionEvidence = parseObject(allocation?.allocator_ev_fusion)
-    const l4Evidence = parseObject(allocation?.l4_alpha_ev)
-      ?? parseObject(fusionEvidence?.l4_alpha_ev)
-    const l4FeatureAvailable = Boolean(
-      l4Evidence && ['loaded', 'verified'].includes(clean(l4Evidence.status).toLowerCase()))
-    const allocationSelected = allocation?.selected === true || Number(allocation?.selected) === 1
-    if (mlEvaluated) mlEvaluatedRows++
-    if (evOwnerAvailable) evOwnerRows++
-    if (allocationSelected) allocationSelectedRows++
-    if (finalSignal) finalSignalRows++
-    const selectionStage = allocationSelected
-      ? 'allocator_selected'
-      : evOwnerAvailable
-        ? 'allocator_not_selected'
-        : mlEvaluated
-          ? 'ml_evaluated_waiting_expected_return'
-          : 'l1_labeled_observe'
-    const rejectionReason = allocationSelected
-      ? null
-      : evOwnerAvailable
-        ? (finalSignal === 'HOLD' ? 'final_signal_hold' : 'allocator_not_selected')
-        : mlEvaluated
-          ? 'expected_return_owner_unavailable'
-          : clean(row.rejection_reason) || 'not_selected_for_ml_evaluation'
+    const receipt = buildSelectionChainReceiptV1({
+      strategySelected: row.strategy_selected,
+      priorRejectionReason: row.rejection_reason,
+      mlScore: row.ml_score,
+      mlVoteSummary: row.ml_vote_summary,
+      alphaAllocation: row.alpha_allocation,
+      signal: row.signal,
+      hasBuySignal: row.has_buy_signal,
+      eligibleForMl: row.eligible_for_ml,
+      eligibleForPendingBuy: row.eligible_for_pending_buy,
+    })
+    if (receipt.stages.ml_evaluated) mlEvaluatedRows++
+    if (receipt.owners.expected_return_owner === 'allocator_ev_fusion') evOwnerRows++
+    if (receipt.stages.allocator_selected) allocationSelectedRows++
+    if (clean(row.signal)) finalSignalRows++
+    if (receipt.stages.pending_buy_candidate) pendingBuyCandidateRows++
     return db.prepare(`
       UPDATE selection_reference_snapshots_v1
-         SET ml_selected=?, l4_selected=?, ev_owner_available=?, allocation_selected=?, final_signal=?,
+         SET ml_evaluated=?, l4_feature_available=?, l4_production_eligible=?,
+             fusion_feature_available=?, primary_expected_return_available=?,
+             ev_owner_available=?, allocation_selected=?, final_signal=?,
+             pending_buy_eligible=?, pending_buy_candidate=?,
              selection_stage=?, rejection_reason=?,
+             selection_chain_contract_version=?, selection_chain_receipt_json=?,
              score_components=COALESCE(score_components, ?),
              decision_evidence_reconciled_at=CURRENT_TIMESTAMP
        WHERE signal_date=? AND symbol=? AND producer_run_id=?
     `).bind(
-      mlEvaluated ? 1 : 0,
-      l4FeatureAvailable ? 1 : 0,
-      evOwnerAvailable ? 1 : 0,
-      allocationSelected ? 1 : 0,
-      finalSignal,
-      selectionStage,
-      rejectionReason,
+      receipt.stages.ml_evaluated ? 1 : 0,
+      receipt.stages.l4_feature_available ? 1 : 0,
+      receipt.stages.l4_production_eligible ? 1 : 0,
+      receipt.stages.fusion_feature_available ? 1 : 0,
+      receipt.stages.primary_expected_return_available ? 1 : 0,
+      receipt.owners.expected_return_owner === 'allocator_ev_fusion' ? 1 : 0,
+      receipt.stages.allocator_selected ? 1 : 0,
+      clean(row.signal).toUpperCase() || null,
+      receipt.stages.pending_buy_eligible ? 1 : 0,
+      receipt.stages.pending_buy_candidate ? 1 : 0,
+      receipt.terminal.selection_stage,
+      receipt.terminal.rejection_reason,
+      receipt.version,
+      JSON.stringify(receipt),
       canonicalScoreV2Json(row.score_components),
       signalDate,
       row.symbol,
@@ -420,6 +566,7 @@ export async function reconcileSelectionDecisionEvidenceV4(
     evOwnerRows,
     allocationSelectedRows,
     finalSignalRows,
+    pendingBuyCandidateRows,
   }
 }
 

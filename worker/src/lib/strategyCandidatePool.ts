@@ -285,6 +285,10 @@ export interface Layer1StrategyBreadthPlan<T extends StrategyCandidatePoolCandid
     route_score_distribution?: Record<string, number | null>
     route_score_above_floor_count?: number
     route_score_below_floor_count?: number
+    route_gate_authority?: 'continuous_weight_promoted' | 'continuous_weight_unvalidated'
+    route_veto_applied?: boolean
+    route_veto_candidate_count?: number
+    route_priority_only_candidate_count?: number
     teacher_label_available_count?: number
     teacher_label_missing_count?: number
     teacher_label_contract?: string
@@ -1434,6 +1438,7 @@ export function buildLayer1StrategyBreadthPlan<T extends StrategyCandidatePoolCa
     routeScoreAboveFloorCount: provisionalRouterPlan.telemetry.route_score_above_floor_count,
     activeLabeledCandidateCount: provisionalRouterPlan.telemetry.active_labeled_candidates,
     matchedCandidateCount: provisionalRouterPlan.telemetry.matched_candidates,
+    routeVetoAuthoritative: provisionalRouterPlan.telemetry.route_veto_applied,
   })
   const adaptiveTargetSizeBeforeDynamicQuota = adaptiveCapacity.target
   const selection = planStrategyFirstCandidateSelection(featureEnrichedUniverse, specs, {
@@ -1466,8 +1471,9 @@ export function buildLayer1StrategyBreadthPlan<T extends StrategyCandidatePoolCa
   const breadthEvidenceTargetSize = strategySelected.length
   const topUp: T[] = []
 
-  // The adaptive capacity is an operational planning reference only. Every
-  // candidate above the route floor remains in the formal L1 decision universe.
+  // Adaptive capacity and route floors are operational diagnostics only.
+  // Promotion may own continuous weights, never candidate admission: every
+  // active-strategy hit remains available to allocator/OPB.
   const breadthPool = [...strategySelected, ...topUp]
   const formalCoarseQueue = strategySelected
   const adaptivePolicyTelemetry = resolveAdaptivePolicyTelemetry(selection.pools)
@@ -1529,6 +1535,10 @@ export function buildLayer1StrategyBreadthPlan<T extends StrategyCandidatePoolCa
       route_score_distribution: routerPlan.telemetry.route_score_distribution,
       route_score_above_floor_count: routerPlan.telemetry.route_score_above_floor_count,
       route_score_below_floor_count: routerPlan.telemetry.route_score_below_floor_count,
+      route_gate_authority: routerPlan.telemetry.route_gate_authority,
+      route_veto_applied: routerPlan.telemetry.route_veto_applied,
+      route_veto_candidate_count: routerPlan.telemetry.route_veto_candidate_count,
+      route_priority_only_candidate_count: routerPlan.telemetry.route_priority_only_candidate_count,
       teacher_label_available_count: routerPlan.telemetry.teacher_label_available_count,
       teacher_label_missing_count: routerPlan.telemetry.teacher_label_missing_count,
       teacher_label_contract: routerPlan.telemetry.teacher_label_contract,
@@ -1554,7 +1564,7 @@ export function buildLayer1StrategyBreadthPlan<T extends StrategyCandidatePoolCa
 }
 
 interface Layer15SoftCapacityDecision {
-  policy: 'route_floor_decision_universe_no_capacity_admission'
+  policy: 'authority_aware_decision_universe_no_capacity_admission'
   baseline: number
   minReference: number
   max: number
@@ -1572,6 +1582,7 @@ function resolveLayer15SoftCapacity(input: {
   routeScoreAboveFloorCount?: number | null
   activeLabeledCandidateCount?: number | null
   matchedCandidateCount?: number | null
+  routeVetoAuthoritative?: boolean
 }): Layer15SoftCapacityDecision {
   const baseline = Math.max(1, Math.round(input.baseline))
   const sourceUniverseCount = Math.max(0, Math.round(input.sourceUniverseCount))
@@ -1579,16 +1590,22 @@ function resolveLayer15SoftCapacity(input: {
   const activeLabeled = finiteNumber(input.activeLabeledCandidateCount)
   const matched = finiteNumber(input.matchedCandidateCount)
   const eligibleAboveFloor = Math.max(0, Math.round(
-    qualityFloorEligible ?? activeLabeled ?? matched ?? sourceUniverseCount,
+    input.routeVetoAuthoritative
+      ? (qualityFloorEligible ?? 0)
+      : (activeLabeled ?? matched ?? sourceUniverseCount),
   ))
   const boundedEligible = Math.min(sourceUniverseCount || eligibleAboveFloor, eligibleAboveFloor)
   const target = boundedEligible
   const reason = boundedEligible > 0
-    ? 'all_route_floor_candidates_preserved_for_downstream_learning'
-    : 'no_quality_floor_pass_no_forced_fill'
+    ? input.routeVetoAuthoritative
+      ? 'all_promoted_route_floor_candidates_preserved_for_downstream_learning'
+      : 'all_active_strategy_candidates_preserved_unvalidated_route_priority_only'
+    : input.routeVetoAuthoritative
+      ? 'no_promoted_route_floor_pass_no_forced_fill'
+      : 'no_active_strategy_candidate_no_forced_fill'
 
   return {
-    policy: 'route_floor_decision_universe_no_capacity_admission',
+    policy: 'authority_aware_decision_universe_no_capacity_admission',
     baseline,
     minReference: Math.max(1, Math.min(baseline, Math.round(input.coarseMlQueueSize))),
     max: sourceUniverseCount,

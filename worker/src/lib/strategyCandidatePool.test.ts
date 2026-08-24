@@ -9,7 +9,7 @@ import {
   resolveStrategyCapacityBudget,
   type StrategyCandidatePoolCandidate,
 } from './strategyCandidatePool'
-import { ACTIVE_8_ML_TEACHERS, assessStrategyThresholdMarginAffinity, buildMultiStrategyPleRoutingPlan, buildStrategySimilarityEvidencePayload } from './multiStrategyPleRouter'
+import { ACTIVE_8_ML_TEACHERS, STRATEGY_AFFINITY_CHALLENGER_VERSION, STRATEGY_EVIDENCE_ALIGNED_ROUTE_VERSION, assessStrategyThresholdMarginAffinity, buildMultiStrategyPleRoutingPlan, buildStrategySimilarityEvidencePayload } from './multiStrategyPleRouter'
 import { coerceModalStrategySimilarityGraphEvidence } from './strategyPortfolioMetrics'
 
 function assert(condition: unknown, message: string): void {
@@ -275,7 +275,7 @@ const candidates: StrategyCandidatePoolCandidate[] = Array.from({ length: 90 }, 
   })
 
   assert((plan.telemetry as any).soft_capacity_baseline === 12, 'L1.5 targetSize should be a soft baseline, not a hard top-k cap')
-  assert((plan.telemetry as any).adaptive_capacity_policy === 'route_floor_decision_universe_no_capacity_admission', 'L1.5 capacity policy must document route-floor admission without a capacity owner')
+  assert((plan.telemetry as any).adaptive_capacity_policy === 'authority_aware_decision_universe_no_capacity_admission', 'L1.5 capacity policy must follow formal route authority')
   assert(Number((plan.telemetry as any).adaptive_target_size) > 12, 'L1.5 should expand above soft baseline when broad quality-floor evidence exists')
   assert(Number((plan.telemetry as any).adaptive_target_size_before_dynamic_quota) > 12, 'L1.5 should preserve the pre-dynamic adaptive target for audit')
   assert((plan.telemetry as any).dynamic_effective_quota_policy === 'telemetry_only_not_candidate_admission', 'dynamic strategy quotas must be telemetry only and cannot remove candidates')
@@ -284,7 +284,10 @@ const candidates: StrategyCandidatePoolCandidate[] = Array.from({ length: 90 }, 
   assert(Number((plan.telemetry as any).soft_capacity_reference_target) > 12, 'soft capacity reference remains telemetry only')
   assert((plan.telemetry as any).strategy_matrix_candidate_count === broadCandidates.length, 'soft capacity must not reduce full-universe strategy labeling scope')
   assert((plan.telemetry as any).strategy_matrix_cell_count === broadCandidates.length, 'single-strategy matrix should still evaluate every candidate')
-  assert(plan.coarseQueue.every((candidate: any) => candidate.strategy_router_decision === 'ml_slate'), 'route-floor candidates should remain formal strategy evidence without raw-score top-up')
+  assert((plan.telemetry as any).route_gate_authority === 'continuous_weight_unvalidated', 'breadth telemetry must carry the continuous-weight authority receipt')
+  assert((plan.telemetry as any).route_veto_applied === false, 'unvalidated route must remain non-vetoing through the outer capacity layer')
+  assert(Number((plan.telemetry as any).adaptive_capacity_eligible_count) === Number((plan.telemetry as any).strategy_matrix_active_labeled_candidate_count), 'unvalidated capacity must use the active-strategy universe, not diagnostic floor-pass count')
+  assert(plan.coarseQueue.every((candidate: any) => candidate.strategy_router_decision === 'ml_slate'), 'all active-strategy candidates should remain formal evidence before route promotion')
 }
 
 {
@@ -339,9 +342,12 @@ const candidates: StrategyCandidatePoolCandidate[] = Array.from({ length: 90 }, 
     maxSlateSize: 3,
     regime: 'bull',
   })
-  assert(plan.mlSlate.length === plan.telemetry.route_score_above_floor_count, 'L1.5 must retain every route-floor eligible candidate regardless of dispatch capacity')
-  assert(plan.telemetry.capacity_policy === 'route_floor_full_decision_universe', 'L1.5 router must document full route-floor decision-universe policy')
-  assert(plan.telemetry.slate_selection_policy === 'l15-route-floor-full-decision-universe-v2', 'L1.5 router must use rank only for dispatch priority, not top-k admission')
+  assert(plan.mlSlate.length === plan.telemetry.active_labeled_candidates, 'unvalidated L1.5 route score must not censor active strategy candidates')
+  assert(plan.telemetry.capacity_policy === 'continuous_weight_full_active_strategy_universe', 'L1.5 must preserve the full active-strategy universe')
+  assert(plan.telemetry.route_gate_authority === 'continuous_weight_unvalidated', 'unvalidated route must expose continuous-weight-only authority')
+  assert(plan.telemetry.route_veto_applied === false && plan.telemetry.route_veto_candidate_count === 0, 'unvalidated route must never veto a candidate')
+  assert(plan.telemetry.route_priority_only_candidate_count === plan.telemetry.route_score_below_floor_count, 'below-floor rows must remain priority diagnostics before promotion')
+  assert(plan.telemetry.slate_selection_policy === 'l15-continuous-full-universe-priority-v3', 'L1.5 router must use rank only for dispatch priority, not top-k admission')
   assert(plan.telemetry.strategy_matrix_candidate_count === broadCandidates.length, 'L1 label matrix candidate count must follow runtime L0 universe size')
   assert(plan.telemetry.strategy_matrix_strategy_count === [broadSpec, nicheSpec].length, 'L1 label matrix strategy dimension must follow current strategy count')
   assert(plan.telemetry.strategy_matrix_cell_count === broadCandidates.length * [broadSpec, nicheSpec].length, 'L1 label matrix must cover runtime candidates x current strategies')
@@ -353,7 +359,7 @@ const candidates: StrategyCandidatePoolCandidate[] = Array.from({ length: 90 }, 
   assert(niche.strategy_router_version === 'multi-strategy-ple-router-v1', 'routed candidate should expose L1.5 router provenance')
   assert(niche.strategy_affinity_version === 'strategy-raw-quality-affinity-v1', 'incumbent production affinity semantics must remain explicit')
   assert(niche.strategy_challenger_affinity_version === 'strategy-threshold-margin-affinity-v2', 'challenger must expose strategy-specific threshold-margin semantics')
-  assert(niche.strategy_router_reason === 'l15_route_floor_eligible_dispatch_priority_rank', 'routed candidate should expose route-floor eligibility and dispatch-only rank semantics')
+  assert(niche.strategy_router_reason === 'l15_unvalidated_continuous_weight_dispatch_priority', 'unvalidated route must expose continuous priority semantics')
   assert(niche.marginal_utility_score != null, 'L1.5 selected candidate should expose marginal utility score')
   assert(niche.strategy_router_components?.marginal_utility_score != null, 'L1.5 selected candidate should persist marginal utility components')
   assert((niche.strategy_family_ids ?? []).length === 2, 'niche candidate should retain cross-family strategy evidence')
@@ -372,6 +378,21 @@ const candidates: StrategyCandidatePoolCandidate[] = Array.from({ length: 90 }, 
   assert(plan.telemetry.strategy_similarity_blocked_reason === 'modal_python_strategy_similarity_evidence_missing', 'missing Modal L1.25 evidence must be explicit')
   assert(niche.strategy_portfolio_prior?.strategy_similarity_graph?.evidence_only === true, 'strategy similarity graph must remain evidence-only')
   assert(!('selected' in (niche.strategy_portfolio_prior?.strategy_similarity_graph ?? {})), 'strategy similarity graph must not become a selector')
+
+  const promotedPlan = buildMultiStrategyPleRoutingPlan(broadCandidates, [broadSpec, nicheSpec], {
+    maxSlateSize: 3,
+    regime: 'bull',
+    promotedRouteCalibration: {
+      runId: 'route-calibration-test',
+      routeVersion: STRATEGY_EVIDENCE_ALIGNED_ROUTE_VERSION,
+      routeFloor: 100,
+    },
+  })
+  assert(promotedPlan.telemetry.route_gate_authority === 'continuous_weight_promoted', 'a promoted v3 route may own continuous weights but not admission')
+  assert(promotedPlan.telemetry.route_veto_applied === false, 'route calibration must never become candidate admission')
+  assert(promotedPlan.mlSlate.length === promotedPlan.telemetry.active_labeled_candidates, 'all active-strategy candidates must survive route scoring')
+  assert(promotedPlan.telemetry.route_veto_candidate_count === 0, 'no route score may veto a candidate')
+  assert(promotedPlan.telemetry.route_priority_only_candidate_count === promotedPlan.telemetry.route_score_below_floor_count, 'floor remains diagnostic only')
 }
 
 {
@@ -625,11 +646,12 @@ const candidates: StrategyCandidatePoolCandidate[] = Array.from({ length: 90 }, 
   const quiet = annotated.find((candidate) => candidate.symbol === '8802') as any
 
   assert(plan.mlSlate.length === 2, 'market heat must not turn max dispatch size into candidate admission')
-  assert(plan.telemetry.capacity_policy === 'route_floor_full_decision_universe', 'market heat must remain evidence and must not become a candidate-removal quota')
+  assert(plan.telemetry.capacity_policy === 'continuous_weight_full_active_strategy_universe', 'market heat must remain evidence and must not become a candidate-removal quota')
   assert(hot.strategy_router_components.market_heat_score > quiet.strategy_router_components.market_heat_score, 'hot candidate should expose stronger market heat evidence')
-  assert(hot.strategy_router_components.market_heat_contribution > quiet.strategy_router_components.market_heat_contribution, 'market heat should feed route score')
-  assert(hot.strategy_router_components.market_heat_alpha > 0, 'market heat should feed marginal utility')
-  assert(plan.mlSlate[0].symbol === '8801', 'market heat should let high relative-strength candidate compete for the formal slate')
+  assert(hot.strategy_router_components.market_heat_contribution > quiet.strategy_router_components.market_heat_contribution, 'market heat must remain observable as diagnostic evidence')
+  assert(hot.strategy_router_components.market_heat_alpha === 0, 'market heat must not own expected-return rank')
+  assert(hot.strategy_router_components.context_rank_neutralized === 1, 'L1 context must be cross-sectionally rank-neutral in the challenger')
+  assert(plan.mlSlate.every((candidate) => (candidate.strategy_router_components?.continuous_weight_multiplier ?? 0) > 0), 'all eligible candidates must retain a positive continuous weight')
   const largeUniverse = Array.from({ length: 291 }, (_, index) => ({
     ...quietCandidate,
     symbol: `9${String(index).padStart(3, '0')}`,

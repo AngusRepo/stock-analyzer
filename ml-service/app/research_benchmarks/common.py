@@ -8,6 +8,8 @@ from typing import Any
 
 import numpy as np
 
+from app.target_rank_scope import recompute_global_cross_sectional_rank
+
 
 @dataclass
 class TabularBenchmarkDataset:
@@ -138,12 +140,13 @@ def load_tabular_dataset(payload: dict[str, Any]) -> TabularBenchmarkDataset:
     data = payload.get("tabular_dataset")
     if isinstance(data, dict) and "X" in data and "y" in data:
         X = np.asarray(data["X"], dtype=np.float32)
-        y = np.asarray(data["y"], dtype=np.float32).reshape(-1)
+        batch_local_y = np.asarray(data["y"], dtype=np.float32).reshape(-1)
         target_returns = np.asarray(data.get("target_returns", data["y"]), dtype=np.float32).reshape(-1)
-        dates = np.asarray(data.get("dates", np.arange(len(y))), dtype=object)
-        sectors = np.asarray(data.get("sectors", ["unknown"] * len(y)), dtype=object)
-        symbols = np.asarray(data.get("symbols", [""] * len(y)), dtype=object)
-        markets = np.asarray(data.get("markets", ["TW"] * len(y)), dtype=object)
+        dates = np.asarray(data.get("dates", np.arange(len(batch_local_y))), dtype=object)
+        sectors = np.asarray(data.get("sectors", ["unknown"] * len(batch_local_y)), dtype=object)
+        symbols = np.asarray(data.get("symbols", [""] * len(batch_local_y)), dtype=object)
+        markets = np.asarray(data.get("markets", ["TW"] * len(batch_local_y)), dtype=object)
+        y = recompute_global_cross_sectional_rank(target_returns, dates, markets)
         label_known_dates = np.asarray(data.get("label_known_dates", [""] * len(y)), dtype=object)
         names = [str(v) for v in data.get("feature_names", [])] or [f"f{i}" for i in range(X.shape[1])]
         return TabularBenchmarkDataset(
@@ -191,13 +194,16 @@ def load_tabular_dataset(payload: dict[str, Any]) -> TabularBenchmarkDataset:
         raise RuntimeError(f"no tabular prep batches found under {gcs_prefix}/prep")
 
     X = np.vstack(all_X)
-    y = np.concatenate(all_y)
+    batch_local_y = np.concatenate(all_y)
     target_returns = np.concatenate(all_target_returns)
     dates = np.concatenate(all_dates)
     sectors = np.concatenate(all_sectors)
     symbols = np.concatenate(all_symbols)
     markets = np.concatenate(all_markets)
     label_known_dates = np.concatenate(all_label_known_dates)
+    if len(batch_local_y) != len(target_returns):
+        raise ValueError("prep_batch_rank_alignment_incomplete")
+    y = recompute_global_cross_sectional_rank(target_returns, dates, markets)
     feature_blob = bucket.blob(f"{gcs_prefix}/prep/feature_names.json")
     if feature_blob.exists():
         import json

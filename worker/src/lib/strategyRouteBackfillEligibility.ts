@@ -1,6 +1,6 @@
 import { CANONICAL_SELECTION_LABEL_SCHEMA_VERSION } from './canonicalSelectionLabels'
 import { SELECTION_REFERENCE_CONTRACT_VERSION } from './selectionReferenceEvidence'
-import { STRATEGY_ROUTE_CHALLENGER_VERSION } from './strategyRouteCalibration'
+import { STRATEGY_ROUTE_AFFINITY_VERSION, STRATEGY_ROUTE_CHALLENGER_VERSION } from './strategyRouteCalibration'
 import {
   STRATEGY_FORMAL_LABELER_VERSION,
   STRATEGY_FORMAL_RECONSTRUCTION_LABELER_VERSION,
@@ -120,9 +120,11 @@ export async function auditStrategyRouteBackfillEligibility(
                 AND m.labeler_version=mr.labeler_version
                 AND m.evaluable=1 AND m.strategy_hit=1 AND m.affinity_evidence_count>0
            ), 0) threshold_margin_rows,
-           SUM(CASE WHEN r.strategy_challenger_route_version=?
-                     AND r.strategy_challenger_route_score IS NOT NULL
-                    THEN 1 ELSE 0 END) challenger_route_rows
+           SUM(CASE WHEN COALESCE(
+                     e.route_score,
+                     CASE WHEN r.strategy_challenger_route_version=?
+                          THEN r.strategy_challenger_route_score END
+                   ) IS NOT NULL THEN 1 ELSE 0 END) challenger_route_rows
       FROM canonical_heads h
       LEFT JOIN formal_runs mr
         ON mr.signal_date=h.signal_date AND mr.producer_run_id=h.producer_run_id
@@ -132,6 +134,9 @@ export async function auditStrategyRouteBackfillEligibility(
        AND r.hard_gate_passed=1
        AND r.feature_contract_version=?
        AND mr.labeler_version=r.strategy_labeler_version
+      LEFT JOIN strategy_route_versioned_evidence_v1 e
+        ON e.signal_date=r.signal_date AND e.symbol=r.symbol
+       AND e.producer_run_id=r.producer_run_id AND e.route_version=?
      GROUP BY h.signal_date, h.producer_run_id
      ORDER BY h.signal_date
   `).bind(
@@ -144,9 +149,10 @@ export async function auditStrategyRouteBackfillEligibility(
     CANONICAL_SELECTION_LABEL_SCHEMA_VERSION,
     SELECTION_REFERENCE_CONTRACT_VERSION,
     asOfDate,
-    STRATEGY_ROUTE_CHALLENGER_VERSION,
+    STRATEGY_ROUTE_AFFINITY_VERSION,
     STRATEGY_ROUTE_CHALLENGER_VERSION,
     SELECTION_REFERENCE_CONTRACT_VERSION,
+    STRATEGY_ROUTE_CHALLENGER_VERSION,
   ).all<EligibilityRow>()
 
   const output = (result.results ?? []).map((row): StrategyRouteBackfillEligibility => {

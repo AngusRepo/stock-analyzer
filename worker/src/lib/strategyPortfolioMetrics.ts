@@ -1,4 +1,5 @@
 import type { StrategyPortfolioMetrics } from './multiStrategyPleRouter'
+import type { StrategyEvidenceMode } from './strategySpec'
 
 export const STRATEGY_PORTFOLIO_METRICS_SOURCE_VERSION = 'strategy-portfolio-metrics-v1'
 
@@ -106,6 +107,7 @@ export interface StrategyPortfolioMetricLoadResult {
     backtest_metric_count: number
     regime: string | null
     market_segment: string
+    evidence_mode: StrategyEvidenceMode
     error?: string
   }
 }
@@ -120,6 +122,7 @@ export interface LoadStrategyPortfolioMetricOptions {
   asOfDate?: string
   backtestLimit?: number
   knownStrategyIds?: string[]
+  evidenceMode?: StrategyEvidenceMode
 }
 
 function cleanText(value: unknown): string {
@@ -399,6 +402,7 @@ function emptyResult(
       backtest_metric_count: 0,
       regime,
       market_segment: marketSegment,
+      evidence_mode: options.evidenceMode ?? 'historical_replay',
       ...(error ? { error: error.slice(0, 180) } : {}),
     },
   }
@@ -941,6 +945,7 @@ export async function loadStrategyPortfolioMetricOverrides(
   const decisionRowsPerStrategy = Math.max(1, Math.min(Math.floor(options.decisionLimit ?? 500), 1000))
   const asOfDate = cleanText(options.asOfDate) || new Date().toISOString().slice(0, 10)
   const backtestLimit = Math.max(1, Math.min(Math.floor(options.backtestLimit ?? 200), 1000))
+  const evidenceMode = options.evidenceMode ?? 'historical_replay'
   let ledgerRows: StrategyRewardLedgerMetricRow[] = []
   let decisionRows: StrategyDecisionLogMetricRow[] = []
   let backtestRows: StrategyBacktestResultMetricRow[] = []
@@ -955,11 +960,12 @@ export async function loadStrategyPortfolioMetricOverrides(
         FROM strategy_reward_ledger
        WHERE samples > 0
          AND selection_contract_version = 'selection-reference-snapshot-v3'
+         AND date_end < ?
          AND (? = 'all' OR market_segment = ? OR market_segment = 'all' OR market_segment IS NULL)
          AND (? IS NULL OR regime = ? OR regime = 'all' OR regime IS NULL)
        ORDER BY updated_at DESC, samples DESC
        LIMIT ?
-    `).bind(marketSegment, marketSegment, regime, regime, limit).all<StrategyRewardLedgerMetricRow>()
+    `).bind(asOfDate, marketSegment, marketSegment, regime, regime, limit).all<StrategyRewardLedgerMetricRow>()
     ledgerRows = results ?? []
   } catch (error) {
     errors.push(error instanceof Error ? error.message : String(error))
@@ -990,21 +996,23 @@ export async function loadStrategyPortfolioMetricOverrides(
     errors.push(error instanceof Error ? error.message : String(error))
   }
 
-  try {
-    const { results } = await db.prepare(`
-      SELECT run_date, strategy, timerange, total_trades, win_rate,
-             sharpe, sortino, calmar, max_drawdown, cagr,
-             profit_factor, expectancy, raw_results, created_at
-        FROM backtest_results
-       WHERE total_trades > 0
-       ORDER BY run_date DESC, created_at DESC
-       LIMIT ?
-    `).bind(backtestLimit).all<StrategyBacktestResultMetricRow>()
-    backtestRows = results ?? []
-  } catch (error) {
-    errors.push(error instanceof Error ? error.message : String(error))
+  if (evidenceMode === 'live_current') {
+    try {
+      const { results } = await db.prepare(`
+        SELECT run_date, strategy, timerange, total_trades, win_rate,
+               sharpe, sortino, calmar, max_drawdown, cagr,
+               profit_factor, expectancy, raw_results, created_at
+          FROM backtest_results
+         WHERE total_trades > 0
+           AND run_date <= ?
+         ORDER BY run_date DESC, created_at DESC
+         LIMIT ?
+      `).bind(asOfDate, backtestLimit).all<StrategyBacktestResultMetricRow>()
+      backtestRows = results ?? []
+    } catch (error) {
+      errors.push(error instanceof Error ? error.message : String(error))
+    }
   }
-
   if (!ledgerRows.length && !decisionRows.length && !backtestRows.length && errors.length) {
     return emptyResult('unavailable', options, errors.join(' | '))
   }
@@ -1044,6 +1052,7 @@ export async function loadStrategyPortfolioMetricOverrides(
       backtest_metric_count: Object.keys(backtestMetrics).length,
       regime,
       market_segment: marketSegment,
+      evidence_mode: options.evidenceMode ?? 'historical_replay',
       ...(errors.length ? { error: errors.join(' | ').slice(0, 180) } : {}),
     },
   }

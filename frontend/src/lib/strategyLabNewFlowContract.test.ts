@@ -29,6 +29,8 @@ assert(page.includes('row.learning.today_matched'), 'strategy cards must expose 
 assert(page.includes('strategyLabApi.learning()'), 'The focused page should load the canonical reward ledger response')
 assert(page.includes('Promise.allSettled') && page.includes('strategyLabApi.specs()') && page.includes('strategyLabApi.evidenceProfiles()'), 'Strategy Lab must load all three production read models without making one failure erase the others')
 assert(page.includes('registryLearningRow'), 'Strategy Lab must keep registry rows visible when the reward-ledger endpoint is unavailable')
+assert(!page.includes("reason.includes('missing')"), 'Strategy health routing must not treat every metric name containing missing as a broken data pipeline')
+assert(page.includes("row.learning.reward_state === 'no_matches'") && page.includes("row.learning.reward_state === 'reward_join_missing'"), 'No-match accumulation and true reward-join repair must remain distinct')
 assert(page.includes('gate.strategy_id') && page.includes('profile.strategy_id') && page.includes('strategy_version'), 'All joins must preserve exact id:version identity')
 assert(!page.includes('StrategyLifecycleSwimlane'), 'The focused page should not repeat lifecycle experiment navigation')
 assert(!page.includes('MetaLearningDecisionDesk'), 'The focused page should not repeat meta-learning experiment controls')

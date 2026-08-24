@@ -276,7 +276,7 @@ export interface StrategyAdaptiveLifecycleRecommendation {
   recommended_status: 'shadow' | 'candidate' | 'active'
   decision: StrategyPromotionDecision
   production_weight: number
-  automatic_effect: 'weight_and_threshold_only'
+  automatic_effect: 'weight_only' | 'weight_and_threshold_only'
   reasons: string[]
 }
 
@@ -293,7 +293,7 @@ export interface StrategyAdaptivePolicyState {
     source: 'strategy_reward_ledger'
     production_effect: boolean
     requires_approval_to_activate: boolean
-    threshold_owner: 'adaptive_strategy_policy'
+    threshold_owner: 'versioned_strategy_spec' | 'adaptive_strategy_policy'
     pit_rule: 'knowledge_cutoff_lt_signal_date'
     weight_semantics: 'relative_pending_buy_gate_share_not_capital_allocation'
     selection_participation_semantics: 'all_non_retired_strategies_single_evaluation_stream'
@@ -1097,9 +1097,12 @@ export async function listStrategySpecsForLearning(
   if (registrySpecs.length === 0) {
     throw new Error('strategy_spec_registry_empty_seed_required')
   }
-  const adaptiveState = options.applyAdaptivePolicy === false || !options.asOfDate
-    ? null
-    : await getStrategyPolicyStateBeforeDate(db, options.asOfDate)
+  // Strategy label semantics are immutable by default. Historical adaptive
+  // threshold states remain readable, but may only be applied by an explicit
+  // research/replay caller; daily production reads never rewrite a versioned spec.
+  const adaptiveState = options.applyAdaptivePolicy === true && options.asOfDate
+    ? await getStrategyPolicyStateBeforeDate(db, options.asOfDate)
+    : null
   const policyAdjustedSpecs = applyStrategyAdaptivePolicyThresholds(registrySpecs, adaptiveState)
   const specs = options.includeRetired
     ? policyAdjustedSpecs
@@ -2782,7 +2785,8 @@ export function buildStrategyAdaptivePolicyState(
     const active = activeScores.find((row) => row.spec.id === spec.id)
     const weight = active && total > 0 ? round6(active.score / total) ?? 0 : 0
     strategyWeights[spec.id] = weight
-    if (spec.status === 'active' && gate) thresholdDeltas[spec.id] = adaptiveThresholdDelta(spec, gate)
+    // Thresholds define the label and therefore stay owned by the immutable,
+    // versioned Strategy Spec. Performance evidence only changes contribution.
     const decision = gate?.decision ?? 'not_ready'
     const recommendedStatus = decision === 'candidate_ready'
       ? 'active'
@@ -2798,7 +2802,7 @@ export function buildStrategyAdaptivePolicyState(
       recommended_status: recommendedStatus,
       decision,
       production_weight: weight,
-      automatic_effect: 'weight_and_threshold_only',
+      automatic_effect: 'weight_only',
       reasons: gate?.missing_evidence ?? ['promotion_gate_missing'],
     }
   }
@@ -2816,7 +2820,7 @@ export function buildStrategyAdaptivePolicyState(
       source: 'strategy_reward_ledger',
       production_effect: true,
       requires_approval_to_activate: false,
-      threshold_owner: 'adaptive_strategy_policy',
+      threshold_owner: 'versioned_strategy_spec',
       pit_rule: 'knowledge_cutoff_lt_signal_date',
       weight_semantics: 'relative_pending_buy_gate_share_not_capital_allocation',
       selection_participation_semantics: 'all_non_retired_strategies_single_evaluation_stream',
@@ -2857,7 +2861,9 @@ function parseStrategyPolicyStateRow(row: StrategyPolicyStateRow): StrategyAdapt
       source: 'strategy_reward_ledger',
       production_effect: evidence.production_effect === true,
       requires_approval_to_activate: evidence.requires_approval_to_activate !== false,
-      threshold_owner: 'adaptive_strategy_policy',
+      threshold_owner: evidence.threshold_owner === 'adaptive_strategy_policy'
+        ? 'adaptive_strategy_policy'
+        : 'versioned_strategy_spec',
       pit_rule: 'knowledge_cutoff_lt_signal_date',
       weight_semantics: 'relative_pending_buy_gate_share_not_capital_allocation',
       selection_participation_semantics: 'all_non_retired_strategies_single_evaluation_stream',

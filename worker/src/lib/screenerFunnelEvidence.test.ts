@@ -66,6 +66,8 @@ function assert(condition: unknown, message: string): void {
           market_heat_score: 82,
           market_heat_contribution: 6.56,
           market_heat_alpha: 5.74,
+          route_veto_authoritative: 0,
+          route_below_diagnostic_floor: 1,
           strategy_uniqueness_bonus: 7.4,
           family_diversification_bonus: 5.2,
           exploration_bonus: 0.8,
@@ -89,6 +91,10 @@ function assert(condition: unknown, message: string): void {
         strategy_similarity_blocked_reason: null,
         candidate_route_score: 79,
         ml_slate_eligibility: 0.79,
+        route_gate_authority: 'continuous_weight_unvalidated',
+        route_veto_applied: false,
+        route_veto_candidate_count: 0,
+        route_priority_only_candidate_count: 97,
         source_universe_count: 486,
         soft_capacity_baseline: 120,
         adaptive_target_size: 148,
@@ -234,9 +240,13 @@ function assert(condition: unknown, message: string): void {
   assert((summary?.evidence.layer15_multi_strategy_router as any)?.router_method === 'multi_strategy_ple_listwise_distillation_router', 'Layer1.5 router must expose PLE/Listwise method')
   assert((summary?.evidence.layer15_multi_strategy_router as any)?.router_scope === 'full_candidate_slate_to_diversified_ml_slate', 'Layer1.5 router must route the full slate into diversified ML slate')
   assert((summary?.evidence.layer15_multi_strategy_router as any)?.decision_policy === 'diversified_ml_slate_not_topk', 'Layer1.5 router must not be summarized as top-k ranking')
-  assert((summary?.evidence.layer15_multi_strategy_router as any)?.selection_policy === 'quality_floor_max_capacity_no_forced_fill', 'Layer1.5 router must expose quality-floor max-capacity selection policy')
+  assert((summary?.evidence.layer15_multi_strategy_router as any)?.selection_policy === 'continuous_weight_full_universe_no_candidate_veto', 'Layer1.5 route must expose continuous full-universe authority')
+  assert((summary?.evidence.layer15_multi_strategy_router as any)?.route_gate_authority === 'continuous_weight_unvalidated', 'funnel must carry continuous route authority')
+  assert((summary?.evidence.layer15_multi_strategy_router as any)?.route_veto_applied === false, 'unvalidated route must not claim veto effect')
+  assert((summary?.evidence.layer15_multi_strategy_router as any)?.route_below_diagnostic_floor === true, 'below-floor state must remain diagnostic when route is unvalidated')
+  assert((summary?.evidence.layer15_multi_strategy_router as any)?.route_priority_only_candidate_count === 97, 'funnel must expose rows retained despite diagnostic floor')
   assert((summary?.evidence.layer15_multi_strategy_router as any)?.slate_selection_policy === 'l15-adaptive-marginal-slate-builder-v1', 'Layer1.5 router must expose adaptive marginal slate selection policy')
-  assert((summary?.evidence.layer15_multi_strategy_router as any)?.self_learning_loop === 'strategy_decision_log_to_strategy_reward_ledger_to_strategy_portfolio_metrics_to_l15_marginal_utility', 'Layer1.5 router must expose reward-ledger feedback loop')
+  assert((summary?.evidence.layer15_multi_strategy_router as any)?.self_learning_loop === 'strategy_decision_log_to_strategy_reward_ledger_to_strategy_portfolio_metrics_to_l15_continuous_affinity', 'Layer1.5 router must expose reward-ledger feedback loop')
   assert((summary?.evidence.layer15_multi_strategy_router as any)?.capacity_policy === 'soft_baseline_adaptive_ceiling_no_forced_fill', 'Layer1.5 router must expose soft baseline adaptive capacity policy')
   assert((summary?.evidence.layer15_multi_strategy_router as any)?.soft_capacity_baseline === 120, 'Layer1.5 summary should expose soft capacity baseline')
   assert((summary?.evidence.layer15_multi_strategy_router as any)?.adaptive_target_size === 148, 'Layer1.5 summary should expose adaptive target size')

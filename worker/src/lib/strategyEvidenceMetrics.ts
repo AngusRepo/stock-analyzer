@@ -6,10 +6,38 @@ import {
   type StrategyEvidenceProfile,
 } from './strategyEvidenceProfile'
 import { listStrategySpecsForLearning } from './strategyLearning'
+import { STRATEGY_FORMAL_LABELER_VERSIONS } from './strategySpec'
 
 export const STRATEGY_EVIDENCE_METRIC_DEFINITION_VERSION = 'strategy-evidence-metrics-v4'
 export const STRATEGY_EVIDENCE_MIN_SAMPLES = 20
 export const STRATEGY_EVIDENCE_MIN_MATURE_DATES = 5
+const STRATEGY_EVIDENCE_REFERENCE_CONTRACT = 'selection-reference-snapshot-v3'
+
+type CanonicalScreenerRunIds = Record<string, string>
+
+async function loadCanonicalScreenerRunIds(
+  opsDb: D1Database,
+  outcomeAsOfDate: string,
+): Promise<CanonicalScreenerRunIds> {
+  const result = await opsDb.prepare(`
+    SELECT logical_run_key, run_id
+      FROM canonical_run_heads
+     WHERE logical_run_key GLOB 'screener:????-??-??:TW:production:market_screener'
+       AND substr(logical_run_key, 10, 10) <= ?
+     ORDER BY logical_run_key
+  `).bind(outcomeAsOfDate).all<{ logical_run_key: string; run_id: string }>()
+  const canonicalRunIds: CanonicalScreenerRunIds = {}
+  for (const row of result.results ?? []) {
+    const signalDate = String(row.logical_run_key).slice('screener:'.length, 'screener:'.length + 10)
+    if (/^\d{4}-\d{2}-\d{2}$/.test(signalDate) && String(row.run_id).trim()) {
+      canonicalRunIds[signalDate] = String(row.run_id).trim()
+    }
+  }
+  if (Object.keys(canonicalRunIds).length === 0) {
+    throw new Error(`strategy_evidence_canonical_screener_heads_missing:${outcomeAsOfDate}`)
+  }
+  return canonicalRunIds
+}
 
 export type StrategyEvidenceMetricStatus =
   | 'ready'
@@ -574,6 +602,7 @@ async function loadObservationsAcrossDatabases(
   matrixDb: D1Database,
   outcomeDb: D1Database,
   outcomeAsOfDate: string,
+  canonicalRunIds: CanonicalScreenerRunIds,
 ): Promise<StrategyEvidenceObservation[]> {
   const outcomeRows: StrategyEvidenceOutcomeRow[] = []
   let outcomeRowId = 0
@@ -592,10 +621,12 @@ async function loadObservationsAcrossDatabases(
        LIMIT 2000
     `).bind(outcomeAsOfDate, outcomeRowId).all<StrategyEvidenceOutcomeRow & { source_row_id: number }>()
     const rows = page.results ?? []
-    outcomeRows.push(...rows.map((row) => ({
-      ...row,
-      market_regime: recordedMarketRegime(row.alpha_context),
-    })))
+    outcomeRows.push(...rows
+      .filter((row) => canonicalRunIds[row.signal_date] === row.producer_run_id)
+      .map((row) => ({
+        ...row,
+        market_regime: recordedMarketRegime(row.alpha_context),
+      })))
     if (rows.length < 2000) break
     outcomeRowId = Number(rows.at(-1)!.source_row_id)
   }
@@ -607,15 +638,39 @@ async function loadObservationsAcrossDatabases(
   let matrixRowId = 0
   for (;;) {
     const page = await matrixDb.prepare(`
-      SELECT rowid source_row_id, signal_date, symbol, producer_run_id,
-             strategy_id, strategy_version, strategy_status, alpha_bucket,
-             affinity, affinity_version, affinity_evidence_count,
-             challenger_affinity, challenger_affinity_version, position_weight, overlap
-        FROM strategy_label_matrix_v4
-       WHERE strategy_hit=1 AND evaluable=1 AND rowid>?
-       ORDER BY rowid
+      SELECT m.rowid source_row_id, m.signal_date, m.symbol, m.producer_run_id,
+             m.strategy_id, m.strategy_version, m.strategy_status, m.alpha_bucket,
+             m.affinity, m.affinity_version, m.affinity_evidence_count,
+             m.challenger_affinity, m.challenger_affinity_version, m.position_weight, m.overlap
+        FROM strategy_label_matrix_v4 m
+        JOIN selection_reference_snapshots_v1 r
+          ON r.signal_date=m.signal_date AND r.symbol=m.symbol AND r.producer_run_id=m.producer_run_id
+        JOIN strategy_label_matrix_runs_v4 mr
+          ON mr.producer_run_id=m.producer_run_id
+       WHERE m.strategy_hit=1 AND m.evaluable=1 AND m.rowid>?
+         AND m.reference_contract_version=?
+         AND m.labeler_version IN (${STRATEGY_FORMAL_LABELER_VERSIONS.map(() => '?').join(',')})
+         AND r.strategy_matrix_status='ready'
+         AND r.strategy_labeler_version=m.labeler_version
+         AND r.strategy_registry_checksum=m.strategy_registry_checksum
+         AND mr.status='ready'
+         AND mr.expected_cell_count>0
+         AND mr.persisted_cell_count=mr.expected_cell_count
+         AND mr.labeler_version=m.labeler_version
+         AND mr.strategy_registry_checksum=m.strategy_registry_checksum
+         AND mr.reference_contract_version=m.reference_contract_version
+         AND EXISTS (
+           SELECT 1 FROM json_each(?) h
+            WHERE h.key=m.signal_date AND h.value=m.producer_run_id
+         )
+       ORDER BY m.rowid
        LIMIT 2000
-    `).bind(matrixRowId).all<StrategyEvidenceMatrixRow & { source_row_id: number }>()
+    `).bind(
+      matrixRowId,
+      STRATEGY_EVIDENCE_REFERENCE_CONTRACT,
+      ...STRATEGY_FORMAL_LABELER_VERSIONS,
+      JSON.stringify(canonicalRunIds),
+    ).all<StrategyEvidenceMatrixRow & { source_row_id: number }>()
     const rows = page.results ?? []
     observations.push(...joinStrategyEvidenceObservationsFromIndex(rows, outcomesBySelection))
     if (rows.length < 2000) break
@@ -627,6 +682,7 @@ async function loadObservationsAcrossDatabases(
 async function loadObservations(
   db: D1Database,
   outcomeAsOfDate: string,
+  canonicalRunIds: CanonicalScreenerRunIds,
   profile?: Pick<StrategyEvidenceProfile, 'strategy_id' | 'strategy_version'>,
 ): Promise<StrategyEvidenceObservation[]> {
   const output: StrategyEvidenceObservation[] = []
@@ -654,12 +710,37 @@ async function loadObservations(
         FROM strategy_evidence_observations_v1 v
        WHERE v.outcome_known_date<=?
          ${profilePredicate}
+         AND EXISTS (
+           SELECT 1
+             FROM selection_reference_snapshots_v1 r
+            WHERE r.signal_date=v.signal_date AND r.symbol=v.symbol AND r.producer_run_id=v.producer_run_id
+              AND r.strategy_matrix_status='ready'
+              AND r.feature_contract_version=?
+              AND r.strategy_labeler_version IN (${STRATEGY_FORMAL_LABELER_VERSIONS.map(() => '?').join(',')})
+              AND EXISTS (
+                SELECT 1 FROM strategy_label_matrix_runs_v4 mr
+                 WHERE mr.producer_run_id=v.producer_run_id
+                   AND mr.status='ready'
+                   AND mr.expected_cell_count>0
+                   AND mr.persisted_cell_count=mr.expected_cell_count
+                   AND mr.labeler_version=r.strategy_labeler_version
+                   AND mr.strategy_registry_checksum=r.strategy_registry_checksum
+                   AND mr.reference_contract_version=r.feature_contract_version
+              )
+         )
+         AND EXISTS (
+           SELECT 1 FROM json_each(?) h
+            WHERE h.key=v.signal_date AND h.value=v.producer_run_id
+         )
          AND (v.matrix_row_id>? OR (v.matrix_row_id=? AND v.horizon_days>?))
        ORDER BY v.matrix_row_id, v.horizon_days
        LIMIT 5000
     `).bind(
       outcomeAsOfDate,
       ...profileParams,
+      STRATEGY_EVIDENCE_REFERENCE_CONTRACT,
+      ...STRATEGY_FORMAL_LABELER_VERSIONS,
+      JSON.stringify(canonicalRunIds),
       matrixRowId,
       matrixRowId,
       horizonDays,
@@ -917,6 +998,10 @@ export async function materializeStrategyEvidenceMetrics(
   const coreDb = databaseForDataDomain(env, 'core')
   const marketDb = databaseForDataDomain(env, 'market')
   const revisionMarketDb = shadowDatabaseForDataDomain(env, 'market') ?? marketDb
+  const canonicalRunIds = await loadCanonicalScreenerRunIds(
+    databaseForDataDomain(env, 'ops'),
+    options.outcomeAsOfDate,
+  )
   let observationCount = 0
   let metricRowCount = 0
   let readyRows = 0
@@ -925,7 +1010,7 @@ export async function materializeStrategyEvidenceMetrics(
     // Bound the in-memory observation graph by one runtime profile. The full
     // joined cohort can exceed a Worker isolate's resource limit as history grows.
     for (const profile of profiles) {
-      const observations = await loadObservations(db, options.outcomeAsOfDate, profile)
+      const observations = await loadObservations(db, options.outcomeAsOfDate, canonicalRunIds, profile)
       const profileKey = new Set([`${profile.strategy_id}|${profile.strategy_version}`])
       await attachMaximumAdverseExcursions(
         observations,
@@ -960,6 +1045,7 @@ export async function materializeStrategyEvidenceMetrics(
       observationDb,
       db,
       options.outcomeAsOfDate,
+      canonicalRunIds,
     )
     await attachMaximumAdverseExcursions(
       observations,

@@ -17,6 +17,7 @@ for (let day = 0; day < 20; day += 1) {
       signal_date: date(day),
       symbol: String(1000 + symbol),
       route_score: high ? 80 + symbol / 10 : 10 + symbol,
+      incumbent_route_score: 100 - symbol,
       absolute_return_net: high ? 0.025 + day * 0.0001 : -0.01,
       residual_return_net: high ? 0.02 + day * 0.0001 : -0.008,
     })
@@ -26,7 +27,10 @@ const pass = evaluateStrategyRouteCalibration(informative)
 assert.equal(pass.status, 'pass', 'stable cost-net OOS edge should pass route calibration')
 assert((pass.routeFloor ?? 0) > 0, 'route floor must be learned from train dates')
 assert((pass.topBucketNetReturnLcb90 ?? 0) > 0, 'top bucket OOS net-return LCB must be positive')
+assert((pass.absoluteSpreadLcb90 ?? 0) > 0, 'challenger directionality LCB must be positive')
 assert((pass.residualSpreadLcb90 ?? 0) > 0, 'OOS residual spread LCB must be positive')
+assert((pass.challengerIncumbentDeltaLcb90 ?? 0) > 0, 'challenger must beat incumbent at the same capacity')
+assert.equal(pass.gates.incumbent_route_lineage_complete, true, 'paired incumbent lineage must be complete')
 assert(pass.trainDates.at(-1)! < pass.oosDates[0], 'OOF split must be chronological')
 assert.equal(pass.purgeDates.length, 5, 'five signal dates must be purged between train and OOS')
 

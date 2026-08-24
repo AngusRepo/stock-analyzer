@@ -79,6 +79,17 @@ function isBuySignalRecommendation(rec: any): boolean {
   return ['BUY', 'STRONG_BUY'].includes(recommendationSignalText(rec))
 }
 
+function isL4ExecutableRecommendation(rec: any): boolean {
+  const allocation = parseRecommendationRecord(rec?.alpha_allocation)
+  const sparse = parseRecommendationRecord(rec?.l4_sparse_allocation)
+  const selected = [allocation, sparse].some((payload) => (
+    payload?.selected === true || Number(payload?.selected) === 1
+  ))
+  const engine = String(sparse?.engine ?? allocation?.engine ?? '').trim()
+  const hasBuySignal = rec?.has_buy_signal === 1 || rec?.has_buy_signal === true
+  return hasBuySignal && selected && engine === 'sparse_tangent_inverse_risk'
+}
+
 function recommendationRowsFromPayload(payload: any): any[] {
   const explicitAll = Array.isArray(payload?.all_recommendations) ? payload.all_recommendations : []
   const direct = Array.isArray(payload?.recommendations)
@@ -669,6 +680,7 @@ function CandidateRecommendationColumn({
   subtitle,
   tone,
   rows,
+  emptyText,
   selectedSymbol,
   onSelectSymbol,
 }: {
@@ -676,6 +688,7 @@ function CandidateRecommendationColumn({
   subtitle: string
   tone: 'buy' | 'potential'
   rows: any[]
+  emptyText?: string
   selectedSymbol?: string | null
   onSelectSymbol?: (s: string) => void
 }) {
@@ -720,7 +733,7 @@ function CandidateRecommendationColumn({
       </div>
       {!rows.length && (
         <div className="rounded-lg border border-muted/30 bg-background/35 p-3 text-xs text-muted-foreground">
-          今日沒有{title}候選。
+          {emptyText ?? `今日沒有${title}候選。`}
         </div>
       )}
     </div>
@@ -728,48 +741,63 @@ function CandidateRecommendationColumn({
 }
 
 function FallbackRecommendations({ date, onSelectSymbol, selectedSymbol }: { date?: string; onSelectSymbol?: (s: string) => void; selectedSymbol?: string | null }) {
-  const { data: recData, isLoading } = useQuery({
+  const { data: recData, isLoading, isError, error, isFetching, refetch } = useQuery({
     queryKey: recommendationDailyKey(date),
-    queryFn: () => recommendationsApi.daily(date),
+    queryFn: ({ signal }) => recommendationsApi.daily(date, { view: 'card', signal, timeoutMs: 15_000 }),
     staleTime: queryTtl.dailyDecision,
   })
   const rows = recommendationRowsFromPayload(recData)
-  const buyRecs = rows.filter(isBuySignalRecommendation)
-  const strategyPortfolioHealth = recData?.strategy_portfolio_intelligence_health
+  const buyObservations = rows.filter(isBuySignalRecommendation)
+  const executableRecs = buyObservations.filter(isL4ExecutableRecommendation)
+  const scoreOnlyRecs = buyObservations.filter((row) => !isL4ExecutableRecommendation(row))
   if (isLoading) return <div className="text-muted-foreground text-sm p-4 sv-num">Loading...</div>
+  if (isError) {
+    return (
+      <div className="rounded-xl border border-red-500/25 bg-red-500/[0.06] p-4 text-sm text-red-100">
+        <div>推薦候選讀取失敗：{error instanceof Error ? error.message : 'unknown error'}</div>
+        <button
+          type="button"
+          className="mt-3 rounded-lg border border-red-300/35 px-3 py-1.5 text-xs hover:bg-red-500/10"
+          disabled={isFetching}
+          onClick={() => void refetch()}
+        >
+          {isFetching ? '重新讀取中...' : '重新讀取'}
+        </button>
+      </div>
+    )
+  }
   return (
     <div className="bot-fallback-recommendations space-y-3">
-      <div className="px-1 text-[11px] font-semibold text-red-200/80 sv-num">{recData?.date} · evening chain 正式 BUY / STRONG BUY</div>
+      <div className="px-1 text-[11px] font-semibold text-red-200/80 sv-num">{recData?.date ?? date ?? 'latest'} · evening chain 推薦與 L4 執行資格</div>
       <div className="px-1 flex items-center gap-2 flex-wrap text-[11px] sv-num">
         <Badge variant="outline" className="h-6 px-2 text-[11px] border-red-300/40 bg-red-500/12 text-red-100">
-          BUY {buyRecs.length}
+          L4 final {executableRecs.length}
+        </Badge>
+        <Badge variant="outline" className="h-6 px-2 text-[11px] border-amber-300/40 bg-amber-500/10 text-amber-100">
+          BUY label only {scoreOnlyRecs.length}
         </Badge>
         <Badge variant="outline" className="h-6 px-2 text-[11px] border-sky-500/30 text-sky-300">
           source: daily recommendations
         </Badge>
-        {strategyPortfolioHealth && (
-          <Badge
-            variant="outline"
-            title={strategyPortfolioHealth.degraded_reason ?? strategyPortfolioHealth.source ?? 'L1.25 strategy portfolio intelligence'}
-            className={[
-              'h-6 px-2 text-[11px]',
-              strategyPortfolioHealth.used_live_strategy_asset_metrics
-                ? 'border-teal-500/30 bg-teal-500/10 text-teal-300'
-                : 'border-amber-500/30 bg-amber-500/10 text-amber-300',
-            ].join(' ')}
-          >
-            L1.25 {strategyPortfolioHealth.portfolio_metric_status ?? 'unknown'} metrics {strategyPortfolioHealth.metric_count_max ?? 0}
-          </Badge>
-        )}
-        <span className="text-muted-foreground/70">此區只顯示 evening chain 的正式買進訊號；potential BUY 留在首頁觀察區。</span>
+        <span className="text-muted-foreground/70">只有 has_buy_signal=1、L4 selected=1 且 sparse engine 正確的推薦能進 pending BUY；單純 BUY／STRONG_BUY 標籤只有觀察權。</span>
       </div>
 
-      <div className="grid gap-3">
+      <div className="grid gap-3 xl:grid-cols-2">
         <CandidateRecommendationColumn
-          title="BUY / STRONG BUY"
-          subtitle="evening chain 正式買進訊號；是否成為 pending BUY 由下一交易日 debate 決定。"
+          title="L4 可執行 BUY"
+          subtitle="已通過 sparse allocator；下一交易日仍須通過 P1–P8、debate 與盤中 S12 gate。"
           tone="buy"
-          rows={buyRecs}
+          rows={executableRecs}
+          emptyText="本批沒有同時通過 has_buy_signal、L4 selected 與 sparse engine 的可執行候選。"
+          selectedSymbol={selectedSymbol}
+          onSelectSymbol={onSelectSymbol}
+        />
+        <CandidateRecommendationColumn
+          title="BUY / STRONG BUY 分數觀察"
+          subtitle="推薦標籤為買進，但 L4 未選中；保留觀察與學習，不會進 pending BUY。"
+          tone="potential"
+          rows={scoreOnlyRecs}
+          emptyText="本批沒有僅具 BUY／STRONG_BUY 標籤的觀察候選。"
           selectedSymbol={selectedSymbol}
           onSelectSymbol={onSelectSymbol}
         />

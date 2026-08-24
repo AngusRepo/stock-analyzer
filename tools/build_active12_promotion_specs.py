@@ -23,6 +23,58 @@ FUSED_ID = "trend_quality_breakout_fused_v1"
 S11_ID = "stock_tech_s11_gap_breakout_continuation_v1"
 RETIRE_IDS = [*FUSED_SOURCE_IDS, BROKER_RECLAIM_ID, S11_ID]
 
+CAPITAL_NORMALIZED_SIGNALS = {
+    "finlab701_fundamental_features_EBITDA": ("ebitda", "factorSignals.finlabSectorNeutralV2EbitdaCapitalRank"),
+    "finlab701_financial_statement_非流動資產": ("nonCurrentAssets", "factorSignals.finlabSectorNeutralV2NonCurrentAssetsCapitalRank"),
+    "finlab701_financial_statement_本期現金及約當現金增加_減少_數": ("cashAndCashEquivalentsIncreaseDecrease", "factorSignals.finlabSectorNeutralV2CashAndCashEquivalentsIncreaseDecreaseCapitalRank"),
+    "finlab701_financial_statement_其他應付款": ("otherPayables", "factorSignals.finlabSectorNeutralV2OtherPayablesCapitalRank"),
+    "finlab701_financial_statement_流動負債": ("currentLiabilities", "factorSignals.finlabSectorNeutralV2CurrentLiabilitiesCapitalRank"),
+    "finlab701_financial_statement_不動產廠房及設備": ("propertyPlantEquipment", "factorSignals.finlabSectorNeutralV2PropertyPlantEquipmentCapitalRank"),
+    "finlab701_financial_statement_營業費用": ("operatingExpenses", "factorSignals.finlabSectorNeutralV2OperatingExpensesCapitalRank"),
+    "finlab701_financial_statement_營業活動之淨現金流入_流出": ("operatingCashFlowStatement", "factorSignals.finlabSectorNeutralV2OperatingCashFlowStatementCapitalRank"),
+    "finlab701_fundamental_features_營運資金": ("workingCapital", "factorSignals.finlabSectorNeutralV2WorkingCapitalCapitalRank"),
+    "finlab701_fundamental_features_自由現金流量": ("freeCashFlow", "factorSignals.finlabSectorNeutralV2FreeCashFlowCapitalRank"),
+    "finlab701_financial_statement_財務成本": ("financialCost", "factorSignals.finlabSectorNeutralV2FinancialCostCapitalRank"),
+}
+DIRECTIONAL_SIGNAL_OVERRIDES = {
+    "tech_gap_down": ("techGapDown", "factorSignals.finlabCsV2TechGapDownNoGapRank"),
+}
+
+LOWER_IS_BETTER_FACTORS = {
+    "KLOW2",
+    "KSFT",
+    "vola_cv_90d",
+    "tech_gap_down",
+    "finlab701_financial_statement_其他應付款",
+    "finlab701_financial_statement_流動負債",
+    "finlab701_financial_statement_營業費用",
+    "finlab701_financial_statement_財務成本",
+}
+
+
+def _feature_semantic(factor_id: str, default_signal: str) -> tuple[str, dict[str, str]]:
+    capital = CAPITAL_NORMALIZED_SIGNALS.get(factor_id)
+    directional = DIRECTIONAL_SIGNAL_OVERRIDES.get(factor_id)
+    signal = capital[1] if capital else directional[1] if directional else default_signal
+    raw_source = capital[0] if capital else directional[0] if directional else factor_id
+    transform = (
+        "capital_normalized_cross_sectional_percentile"
+        if capital
+        else "cross_sectional_percentile"
+        if directional or "finlabCs" in signal or "finlabSector" in signal
+        else "identity"
+    )
+    return signal, {
+        "schemaVersion": "strategy-feature-semantic-v2",
+        "rawSource": raw_source,
+        "direction": "lower_is_better" if factor_id in LOWER_IS_BETTER_FACTORS else "higher_is_better",
+        "transform": transform,
+        "denominator": "capital_amount" if capital else "none",
+        "neutralization": "sector" if capital or "finlabSector" in signal else "none",
+        "pitOwner": "market",
+        "missingPolicy": "fail_closed",
+    }
+
 ALPHA_META = {
     "alpha223_0248": {
         "name": "Alpha223 0248 squeeze cash-flow breakout",
@@ -134,24 +186,26 @@ def _alpha_spec(alpha_id: str, row: dict[str, Any], confirm: dict[str, str]) -> 
         signal = RUNTIME_SIGNAL_PATHS.get(factor_id)
         if not signal:
             raise RuntimeError(f"runtime_signal_missing:{alpha_id}:{factor_id}")
+        semantic_signal, semantic = _feature_semantic(factor_id, signal)
         terms.append({
             "featureRef": factor_id,
-            "signal": signal,
+            "signal": semantic_signal,
             "weight": round(float(weight), 6),
+            "semantic": semantic,
         })
     cagr = _safe_float(confirm, "cagr")
     sharpe = _safe_float(confirm, "monthly_sharpe")
     mdd = _safe_float(confirm, "max_drawdown")
     return {
         "id": alpha_id,
-        "version": "strategy-spec-v1",
-        "name": meta["name"],
-        "status": "active",
+        "version": "strategy-spec-v2",
+        "name": meta["name"] + " semantic v2 shadow",
+        "status": "shadow",
         "owner": "strategy",
         "familyId": meta["familyId"],
-        "variantId": meta["variantId"],
-        "ownerType": "strategy",
-        "promotionStatus": "production",
+        "variantId": meta["variantId"] + "_semantic_v2",
+        "ownerType": "observe",
+        "promotionStatus": "candidate",
         "alphaBucket": meta["alphaBucket"],
         "supportedRegimes": ["bull", "sideways", "volatile"],
         "thesis": f"Promoted Alpha223 candidate {_candidate_suffix(alpha_id)} from fixed-contract recursive mining and FinLab confirmation.",
@@ -175,7 +229,7 @@ def _alpha_spec(alpha_id: str, row: dict[str, Any], confirm: dict[str, str]) -> 
             "maxMlShare": 0.22,
         },
         "riskNotes": [
-            "Direct active draft only after promotion preflight factor/runtime mapping passes; not applied to remote D1 by this builder.",
+            "Semantic-v2 shadow only: direction, transform, denominator, neutralization, PIT owner, and missing policy are immutable; no automatic production promotion.",
             f"FinLab confirm: CAGR {cagr:.1%}, monthly Sharpe {sharpe:.2f}, max drawdown {mdd:.1%}." if cagr is not None and sharpe is not None and mdd is not None else "FinLab confirm metrics unavailable.",
         ],
         "createdBy": "codex_active12_promotion_preflight",

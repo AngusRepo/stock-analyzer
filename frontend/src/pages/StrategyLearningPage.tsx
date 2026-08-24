@@ -97,7 +97,10 @@ function strategyHealthBucket(row: LearningRow, gate?: StrategyPromotionGate): S
     !gate
     || row.learning.reward_state === 'reward_join_missing'
     || row.learning.reward_state === 'unavailable'
-    || gate.missing_evidence.some((reason) => reason.includes('missing'))
+    || (
+      row.learning.reward_state === 'ready'
+      && gate.missing_evidence.some((reason) => reason.endsWith('_missing'))
+    )
   ) return 'evidence_repair'
   if (
     row.learning.reward_state === 'pending_maturity'

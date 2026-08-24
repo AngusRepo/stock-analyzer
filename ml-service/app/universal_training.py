@@ -49,6 +49,12 @@ from .gcs_batch_io import download_existing_blobs
 from .sequence_training import SEQUENCE_RETURN_SEMANTIC_VERSION
 
 
+from .target_rank_scope import (
+    GLOBAL_CROSS_SECTIONAL_RANK_VERSION,
+    recompute_global_cross_sectional_rank,
+)
+
+
 class UniversalPrepRequest(BaseModel):
     """Universal batch prep request."""
 
@@ -795,7 +801,7 @@ def train_universal_from_gcs(req: UniversalTrainRequest) -> dict:
         raise ValueError("No prep batches found in GCS")
 
     X = np.concatenate(all_X, axis=0)
-    y = np.concatenate(all_y, axis=0)
+    batch_local_y = np.concatenate(all_y, axis=0)
     target_returns_arr = (
         np.concatenate(all_target_returns, axis=0)
         if len(all_target_returns) == len(all_X)
@@ -816,6 +822,19 @@ def train_universal_from_gcs(req: UniversalTrainRequest) -> dict:
         np.concatenate(all_label_known_dates, axis=0)
         if len(all_label_known_dates) == len(all_X)
         else np.asarray([], dtype=object)
+    )
+    if len(batch_local_y) != len(X):
+        raise ValueError("prep_batch_rank_alignment_incomplete")
+    if len(target_returns_arr) != len(X):
+        raise ValueError("global_cross_sectional_rank_requires_raw_target_returns")
+    y = recompute_global_cross_sectional_rank(
+        target_returns_arr,
+        dates_arr,
+        markets_arr if len(markets_arr) == len(X) else None,
+    )
+    print(
+        f"[TrainUniversal] target rank rebuilt after concat: "
+        f"version={GLOBAL_CROSS_SECTIONAL_RANK_VERSION} rows={len(y)}"
     )
 
     fn_blob = bucket.blob(f"{gcs_prefix}/prep/feature_names.json")
@@ -1466,6 +1485,8 @@ def train_universal_from_gcs(req: UniversalTrainRequest) -> dict:
             "validation_split": validation_split_metadata,
             "prep_lineage": prep_lineage,
             "prep_freshness": prep_freshness,
+            "target_rank_scope": GLOBAL_CROSS_SECTIONAL_RANK_VERSION,
+            "batch_local_target_rank_used_for_training": False,
         },
         params=req_params,
         code_version=os.environ.get("GIT_SHA") or os.environ.get("SOURCE_VERSION") or "unknown",
@@ -1479,6 +1500,8 @@ def train_universal_from_gcs(req: UniversalTrainRequest) -> dict:
         "training_run_id": training_run_id,
         "training_manifest_path": manifest_path,
         "target_semantic_version": SEQUENCE_RETURN_SEMANTIC_VERSION,
+        "target_rank_scope": GLOBAL_CROSS_SECTIONAL_RANK_VERSION,
+        "batch_local_target_rank_used_for_training": False,
         "validation_split": validation_split_metadata,
         "model_cpcv_enabled": bool(req.enable_model_cpcv),
         "prep_freshness": prep_freshness,
@@ -1655,6 +1678,8 @@ def train_universal_from_gcs(req: UniversalTrainRequest) -> dict:
         "trained_at": trained_at_iso,
         "training_run_id": training_run_id,
         "training_manifest_path": manifest_path,
+        "target_rank_scope": GLOBAL_CROSS_SECTIONAL_RANK_VERSION,
+        "batch_local_target_rank_used_for_training": False,
     }
 
 

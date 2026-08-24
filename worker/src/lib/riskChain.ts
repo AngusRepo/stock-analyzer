@@ -70,7 +70,7 @@ export async function runPortfolioChecks(
     checkP3MarketRisk(databases.core, cfg, deps),
     checkP4Breadth(databases.market, cfg, deps),
     checkP5Losses(databases.paper, deps),
-    checkP6Momentum(databases.core, deps),
+    checkP6Momentum(databases.market, deps),
     checkP7Streak(databases.learning, cfg, deps),
     checkP8DailyPnl(databases.paper, riskCfg, deps),
   ])

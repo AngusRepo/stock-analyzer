@@ -101,7 +101,7 @@ const DOMAIN_TABLES: Record<DataDomain, ReadonlySet<string>> = {
     'active8_oof_forward_extension_coverage',
     'selection_reference_identity_repair_runs_v1',
     'strategy_route_calibration_runs_v1', 'strategy_route_calibration_head_v1',
-    'strategy_route_backfill_eligibility_v1',
+    'strategy_route_backfill_eligibility_v1', 'strategy_route_versioned_evidence_v1',
     'strategy_redundancy_artifacts_v1',
     'strategy_reward_ledger', 'strategy_learning_daily_stats', 'strategy_learning_head',
     'strategy_policy_state', 'strategy_evidence_rebuild_runs_v5',
@@ -259,6 +259,7 @@ const SHADOW_BACKFILL_EXCLUDED_TABLES: Partial<Record<DataDomain, ReadonlySet<st
     'selection_evidence_staging_runs_v1',
     'selection_reference_snapshots_staging_v1',
     'strategy_label_matrix_staging_v4',
+    'strategy_route_versioned_evidence_v1',
   ]),
   market: new Set([
     // Append-only knowledge-time rows start at domain creation; mutable legacy revenue cannot seed them.

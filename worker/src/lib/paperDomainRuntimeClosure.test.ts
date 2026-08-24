@@ -17,9 +17,15 @@ for (const required of [
   'checkP3MarketRisk(databases.core',
   'checkP4Breadth(databases.market',
   'checkP5Losses(databases.paper',
+  'checkP6Momentum(databases.market',
   'checkP7Streak(databases.learning',
   'checkP8DailyPnl(databases.paper',
 ]) assert(riskChain.includes(required), `missing domain-aware risk mapping: ${required}`)
+
+assert(
+  pending.includes('checkP6Momentum(databases.market'),
+  'Pending-buy sequential fallback must read P6 momentum from Market D1',
+)
 
 for (const domain of ['paper', 'core', 'market', 'learning']) {
   assert(

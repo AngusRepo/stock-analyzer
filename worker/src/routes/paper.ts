@@ -412,7 +412,8 @@ async function resolveManualExecutablePrice(
 }
 
 async function enrichPendingBuyContext(
-  db: D1Database,
+  coreDb: D1Database,
+  marketDb: D1Database,
   pendingBuys: any[],
   sourceRecoDate: string,
 ): Promise<any[]> {
@@ -421,14 +422,14 @@ async function enrichPendingBuyContext(
   if (symbols.length === 0) return pendingBuys
   const cardDataAsOfDate = new Date(Date.now() + 8 * 3600_000).toISOString().slice(0, 10)
   const { institutionalRawBySymbol, brokerTopFlowsBySymbol } = await loadPendingBuyCardChipContext(
-    db,
+    marketDb,
     symbols,
     sourceRecoDate,
     cardDataAsOfDate,
   )
 
   const placeholders = symbols.map(() => '?').join(',')
-  const { results } = await db.prepare(`
+  const { results } = await coreDb.prepare(`
     WITH ranked AS (
       SELECT dr.symbol,
              dr.date AS recommendation_date,
@@ -469,7 +470,7 @@ async function enrichPendingBuyContext(
   const perModelByStock = new Map<number, any[]>()
   if (stockIds.length > 0) {
     const stockPlaceholders = stockIds.map(() => '?').join(',')
-    const { results: perModelRows } = await db.prepare(`
+    const { results: perModelRows } = await coreDb.prepare(`
       WITH ranked AS (
         SELECT stock_id, model_name, signal_raw, direction_accuracy, forecast_data,
                ROW_NUMBER() OVER (
@@ -603,6 +604,29 @@ function stripLegacyPendingBuyRunHistory(runHistory: any): any {
         : [],
     })),
   }
+}
+
+async function resolvePendingBuySourceRecoDate(
+  env: Bindings,
+  pendingDate: string,
+  meta: Record<string, any> | null | undefined,
+): Promise<string> {
+  const persisted = typeof meta?.source_reco_date === 'string'
+    ? meta.source_reco_date.trim()
+    : ''
+  if (persisted && persisted < pendingDate) return persisted
+
+  const row = await databaseForDataDomain(env, 'core').prepare(`
+    SELECT date
+      FROM daily_recommendations
+     WHERE date < ?
+       AND signal IS NOT NULL
+       AND confidence IS NOT NULL
+       AND score_components LIKE '%score_v2%'
+     ORDER BY date DESC
+     LIMIT 1
+  `).bind(pendingDate).first<{ date: string }>()
+  return row?.date ?? pendingDate
 }
 
 function buildPendingBuyExecutionPolicy(meta: Record<string, any> | null | undefined, sourceRecoDate: string): Record<string, any> {
@@ -1107,11 +1131,18 @@ paper.get('/pending-buys', async (c) => {
   const twToday = new Date(Date.now() + 8 * 3600_000).toISOString().slice(0, 10)
   const snapshot = await loadPendingBuySnapshot(c.env, twToday, { allowFallbackRecent: false })
   const state = buildPendingBuyStateSummary(snapshot.pendingBuys, snapshot.meta)
-  const sourceRecoDate = typeof snapshot.meta?.source_reco_date === 'string'
-    ? snapshot.meta.source_reco_date
-    : snapshot.date
+  const sourceRecoDate = await resolvePendingBuySourceRecoDate(
+    c.env,
+    snapshot.date,
+    snapshot.meta as Record<string, any> | null,
+  )
   const executionPolicy = buildPendingBuyExecutionPolicy(snapshot.meta as Record<string, any> | null, sourceRecoDate)
-  const pendingBuys = await enrichPendingBuyContext(c.env.DB, snapshot.pendingBuys, sourceRecoDate)
+  const pendingBuys = await enrichPendingBuyContext(
+    databaseForDataDomain(c.env, 'core'),
+    databaseForDataDomain(c.env, 'market'),
+    snapshot.pendingBuys,
+    sourceRecoDate,
+  )
   const runHistory = await loadPendingBuyRunHistory(c.env, twToday, { limit: 5 })
   const pendingBuysForResponse = pendingBuys.map((item) => removeLegacyPendingBuyScoreFields(item))
   return c.json({

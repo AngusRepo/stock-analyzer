@@ -766,7 +766,7 @@ export async function checkCircuitBreakers(
     () => checkP2Accuracy(databases.learning, kv, cfg, deps),
     () => checkP3MarketRisk(databases.core, cfg, deps),
     () => checkP4Breadth(databases.market, cfg, deps),
-    () => checkP6Momentum(databases.core, deps),
+    () => checkP6Momentum(databases.market, deps),
     () => checkP7Streak(databases.learning, cfg, deps),
     () => checkP5Losses(databases.paper, deps),
   ]

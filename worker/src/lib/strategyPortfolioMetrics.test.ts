@@ -276,6 +276,8 @@ async function main(): Promise<void> {
       regime: 'bull',
       marketSegment: 'all',
       minSamples: 5,
+      evidenceMode: 'live_current',
+      asOfDate: '2026-08-24',
       knownStrategyIds: ['ledger_strategy_v1', 'backtest_only_strategy_v1', 'missing_strategy_v1'],
     })
     assert(result.status === 'loaded', 'D1 loader should report loaded when ledger rows produce metrics')
@@ -293,9 +295,27 @@ async function main(): Promise<void> {
     assert((result.metrics.missing_strategy_v1.reliability ?? 1) < 0.5, 'missing known strategy should receive conservative reliability shrinkage')
     const executedSql = ((fakeDb as any).sqls ?? []).join('\n')
     assert(executedSql.includes("selection_contract_version = 'selection-reference-snapshot-v3'"), 'reward reader must reject legacy selection contracts')
+    assert(executedSql.includes('date_end < ?'), 'reward reader must fence labels strictly before the scored date')
+    assert(executedSql.includes('run_date <= ?'), 'live-current backtest evidence must be known by the scored date')
     assert(executedSql.includes("? = 'all' OR market_segment = ?"), 'all-market reward reader must use a true wildcard before sample-weighted aggregation')
     assert(executedSql.includes("evaluation_contract_version = 'strategy-evaluation-v2'"), 'decision reader must reject legacy evaluation contracts')
     assert(executedSql.includes('ROW_NUMBER() OVER') && executedSql.includes('PARTITION BY strategy_id'), 'decision evidence must use per-strategy balance instead of a global LIMIT')
+  }
+
+  {
+    ;(fakeDb as any).sqls = []
+    const historicalDb = fakeDb({
+      ledgerRows: [row({ strategy_id: 'pit_strategy_v1', hit_rate: 0.55, samples: 20 })],
+      backtestRows: [backtestRow({ strategy: 'future_backtest_v1', run_date: '2026-08-24' })],
+    })
+    await loadStrategyPortfolioMetricOverrides(historicalDb, {
+      regime: 'bull',
+      evidenceMode: 'historical_replay',
+      asOfDate: '2026-08-04',
+      knownStrategyIds: ['pit_strategy_v1'],
+    })
+    const historicalSql = ((fakeDb as any).sqls ?? []).join('\n')
+    assert(!historicalSql.includes('FROM backtest_results'), 'historical replay must never read current backtest evidence')
   }
 
   {

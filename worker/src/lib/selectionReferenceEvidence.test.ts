@@ -2,6 +2,7 @@ import assert from 'node:assert/strict'
 import {
   buildSelectionEvidenceV4,
   persistSelectionEvidenceV4,
+  SELECTION_CHAIN_RECEIPT_VERSION,
   reconcileSelectionDecisionEvidenceV4,
 } from './selectionReferenceEvidence'
 import { DEFAULT_STRATEGY_SPECS, STRATEGY_FORMAL_LABELER_VERSION, STRATEGY_FORMAL_RECONSTRUCTION_LABELER_VERSION } from './strategySpec'
@@ -129,16 +130,16 @@ const fakeDb = {
               return {
                 results: [
                   {
-                    symbol: '2330', producer_run_id: 'run', ml_score: 0.72,
+                    symbol: '2330', producer_run_id: 'run', strategy_selected: 1, ml_score: 0.72,
                     ml_vote_summary: '{"models":8}',
-                    alpha_allocation: '{"expected_return_owner":"allocator_ev_fusion","selected":true,"l4_alpha_ev":{"status":"loaded"}}',
-                    signal: 'BUY', score_components: null,
+                    alpha_allocation: '{"expected_return_owner":"allocator_ev_fusion","expected_return":0.02,"selected":true,"l4_alpha_ev":{"status":"verified","production_eligible":true},"allocator_ev_fusion":{"status":"verified","primary_expected_return_allowed":true}}',
+                    signal: 'BUY', has_buy_signal: 1, eligible_for_ml: 1, eligible_for_pending_buy: 1, score_components: null,
                   },
                   {
-                    symbol: '2317', producer_run_id: 'run', ml_score: 0.64,
+                    symbol: '2317', producer_run_id: 'run', strategy_selected: 1, ml_score: 0.64,
                     ml_vote_summary: '{"models":8}',
                     alpha_allocation: '{"expected_return_owner":"risk_abstention","selected":false,"l4_alpha_ev":{"status":"loaded"}}',
-                    signal: 'HOLD', score_components: null,
+                    signal: 'HOLD', has_buy_signal: 0, eligible_for_ml: 1, eligible_for_pending_buy: 1, score_components: null,
                   },
                 ],
               }
@@ -165,6 +166,7 @@ async function runBehaviorTest(): Promise<void> {
     evOwnerRows: 1,
     allocationSelectedRows: 1,
     finalSignalRows: 2,
+    pendingBuyCandidateRows: 1,
   })
   await assert.rejects(
     persistSelectionEvidenceV4(noAccessDb, {
@@ -179,8 +181,9 @@ async function runBehaviorTest(): Promise<void> {
     persistSelectionEvidenceV4(noAccessDb, { ...persistInput, labelerVersion: 'strategy-labeler-v1' }),
     /strategy_label_matrix_nonformal_labeler/,
   )
-  assert.deepEqual(updates[0].binds.slice(0, 5), [1, 1, 1, 1, 'BUY'])
-  assert.deepEqual(updates[1].binds.slice(0, 5), [1, 1, 0, 0, 'HOLD'])
+  assert.deepEqual(updates[0].binds.slice(0, 10), [1, 1, 1, 1, 1, 1, 1, 'BUY', 1, 1])
+  assert.deepEqual(updates[1].binds.slice(0, 10), [1, 1, 0, 0, 0, 0, 0, 'HOLD', 1, 0])
+  assert.equal(updates[0].binds[12], SELECTION_CHAIN_RECEIPT_VERSION)
 
   console.log('selectionReferenceEvidence tests passed')
 

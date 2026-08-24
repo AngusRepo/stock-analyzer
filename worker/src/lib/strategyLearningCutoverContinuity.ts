@@ -7,16 +7,35 @@ import {
 } from './strategyLearning'
 import {
   refreshStrategyRouteCalibration,
-  STRATEGY_ROUTE_CHALLENGER_VERSION,
 } from './strategyRouteCalibration'
+
+const LEGACY_STRATEGY_ROUTE_VERSION = 'strategy-threshold-margin-affinity-v2'
 
 type CanonicalHead = { signal_date: string; run_id: string }
 type LegacyRouteRow = {
   signal_date: string
   symbol: string
   producer_run_id: string
-  route_version: string
-  route_score: number
+  incumbent_route_version: string
+  incumbent_route_score: number
+  challenger_route_version: string
+  challenger_route_score: number
+}
+
+type TargetRouteRow = {
+  signal_date: string
+  symbol: string
+  producer_run_id: string
+  incumbent_route_version: string | null
+  incumbent_route_score: number | null
+  challenger_route_version: string | null
+  challenger_route_score: number | null
+}
+
+type RouteCoverage = {
+  referenceRows: number
+  incumbentRows: number
+  challengerRows: number
 }
 
 export type StrategyLearningCutoverContinuityReport = {
@@ -26,8 +45,11 @@ export type StrategyLearningCutoverContinuityReport = {
   as_of_date: string
   canonical_dates: number
   legacy_route_rows: number
+  legacy_paired_route_rows: number
   target_route_rows_before: number
   target_route_rows_after: number
+  target_incumbent_rows_before: number
+  target_incumbent_rows_after: number
   route_rows_repaired: number
   daily_stats_dates_reconciled: number
   head_rows_refreshed: number
@@ -72,10 +94,14 @@ async function loadLegacyRouteRows(
   for (;;) {
     const page = await legacyDb.prepare(`
       SELECT r.signal_date, r.symbol, r.producer_run_id,
-             r.strategy_challenger_route_version route_version,
-             r.strategy_challenger_route_score route_score
+             r.strategy_router_version incumbent_route_version,
+             r.strategy_router_score incumbent_route_score,
+             r.strategy_challenger_route_version challenger_route_version,
+             r.strategy_challenger_route_score challenger_route_score
         FROM selection_reference_snapshots_v1 r
        WHERE r.signal_date BETWEEN ? AND ?
+         AND r.strategy_router_version IS NOT NULL
+         AND r.strategy_router_score IS NOT NULL
          AND r.strategy_challenger_route_version=?
          AND r.strategy_challenger_route_score IS NOT NULL
          AND EXISTS (
@@ -90,7 +116,7 @@ async function loadLegacyRouteRows(
        ORDER BY r.signal_date, r.symbol, r.producer_run_id
        LIMIT 400
     `).bind(
-      startDate, asOfDate, STRATEGY_ROUTE_CHALLENGER_VERSION,
+      startDate, asOfDate, LEGACY_STRATEGY_ROUTE_VERSION,
       JSON.stringify(canonicalRunIds),
       cursorDate, cursorDate, cursorSymbol,
       cursorDate, cursorSymbol, cursorRunId,
@@ -106,27 +132,100 @@ async function loadLegacyRouteRows(
   return rows
 }
 
-async function countTargetRouteRows(
+async function loadTargetRouteRows(
   learningDb: D1Database,
   startDate: string,
   asOfDate: string,
   canonicalRunIds: Record<string, string>,
-): Promise<number> {
-  const row = await learningDb.prepare(`
-    SELECT COUNT(*) row_count
-      FROM selection_reference_snapshots_v1 r
-     WHERE r.signal_date BETWEEN ? AND ?
-       AND r.strategy_challenger_route_version=?
-       AND r.strategy_challenger_route_score IS NOT NULL
-       AND EXISTS (
-         SELECT 1 FROM json_each(?) h
-          WHERE h.key=r.signal_date AND h.value=r.producer_run_id
-       )
-  `).bind(
-    startDate, asOfDate, STRATEGY_ROUTE_CHALLENGER_VERSION,
-    JSON.stringify(canonicalRunIds),
-  ).first<{ row_count: number | string }>()
-  return Number(row?.row_count ?? 0)
+): Promise<TargetRouteRow[]> {
+  const rows: TargetRouteRow[] = []
+  let cursorDate = ''
+  let cursorSymbol = ''
+  let cursorRunId = ''
+  for (;;) {
+    const page = await learningDb.prepare(`
+      SELECT r.signal_date, r.symbol, r.producer_run_id,
+             r.strategy_router_version incumbent_route_version,
+             r.strategy_router_score incumbent_route_score,
+             r.strategy_challenger_route_version challenger_route_version,
+             r.strategy_challenger_route_score challenger_route_score
+        FROM selection_reference_snapshots_v1 r
+       WHERE r.signal_date BETWEEN ? AND ?
+         AND EXISTS (
+           SELECT 1 FROM json_each(?) h
+            WHERE h.key=r.signal_date AND h.value=r.producer_run_id
+         )
+         AND (
+           r.signal_date > ?
+           OR (r.signal_date=? AND r.symbol>?)
+           OR (r.signal_date=? AND r.symbol=? AND r.producer_run_id>?)
+         )
+       ORDER BY r.signal_date, r.symbol, r.producer_run_id
+       LIMIT 400
+    `).bind(
+      startDate, asOfDate, JSON.stringify(canonicalRunIds),
+      cursorDate, cursorDate, cursorSymbol,
+      cursorDate, cursorSymbol, cursorRunId,
+    ).all<TargetRouteRow>()
+    const pageRows = page.results ?? []
+    rows.push(...pageRows)
+    if (pageRows.length < 400) break
+    const last = pageRows.at(-1)!
+    cursorDate = last.signal_date
+    cursorSymbol = last.symbol
+    cursorRunId = last.producer_run_id
+  }
+  return rows
+}
+
+function routeKey(row: Pick<TargetRouteRow, 'signal_date' | 'symbol' | 'producer_run_id'>): string {
+  return `${row.signal_date}\u0000${row.symbol}\u0000${row.producer_run_id}`
+}
+
+function sameScore(left: number | null, right: number): boolean {
+  return left != null && Number.isFinite(Number(left)) && Number(left) === Number(right)
+}
+
+function assertLegacyTargetParity(
+  legacyRows: LegacyRouteRow[],
+  targetRows: TargetRouteRow[],
+  requireComplete: boolean,
+): void {
+  const targetByKey = new Map(targetRows.map((row) => [routeKey(row), row]))
+  for (const source of legacyRows) {
+    const target = targetByKey.get(routeKey(source))
+    if (!target) throw new Error(`strategy_learning_cutover_continuity_target_key_missing:${source.signal_date}/${source.symbol}`)
+    const incumbentConflict = target.incumbent_route_version != null
+      && target.incumbent_route_version !== source.incumbent_route_version
+      || target.incumbent_route_score != null
+      && !sameScore(target.incumbent_route_score, source.incumbent_route_score)
+    const challengerConflict = target.challenger_route_version != null
+      && target.challenger_route_version !== source.challenger_route_version
+      || target.challenger_route_score != null
+      && !sameScore(target.challenger_route_score, source.challenger_route_score)
+    if (incumbentConflict || challengerConflict) {
+      throw new Error(`strategy_learning_cutover_continuity_route_conflict:${source.signal_date}/${source.symbol}`)
+    }
+    if (requireComplete && (
+      target.incumbent_route_version !== source.incumbent_route_version
+      || !sameScore(target.incumbent_route_score, source.incumbent_route_score)
+      || target.challenger_route_version !== source.challenger_route_version
+      || !sameScore(target.challenger_route_score, source.challenger_route_score)
+    )) {
+      throw new Error(`strategy_learning_cutover_continuity_route_parity_failed:${source.signal_date}/${source.symbol}`)
+    }
+  }
+}
+
+function inspectTargetRouteCoverage(rows: TargetRouteRow[]): RouteCoverage {
+  return {
+    referenceRows: rows.length,
+    incumbentRows: rows.filter((row) => row.incumbent_route_version != null && row.incumbent_route_score != null).length,
+    challengerRows: rows.filter((row) => (
+      row.challenger_route_version === LEGACY_STRATEGY_ROUTE_VERSION
+      && row.challenger_route_score != null
+    )).length,
+  }
 }
 
 export async function repairStrategyLearningCutoverContinuity(
@@ -149,9 +248,11 @@ export async function repairStrategyLearningCutoverContinuity(
   const legacyRouteRows = await loadLegacyRouteRows(
     legacyDb, input.startDate, input.asOfDate, canonicalRunIds,
   )
-  const targetBefore = await countTargetRouteRows(
+  const targetRowsBefore = await loadTargetRouteRows(
     learningDb, input.startDate, input.asOfDate, canonicalRunIds,
   )
+  assertLegacyTargetParity(legacyRouteRows, targetRowsBefore, false)
+  const targetBefore = inspectTargetRouteCoverage(targetRowsBefore)
   if (input.dryRun) {
     return {
       schema_version: 'strategy-learning-cutover-continuity-repair-v1',
@@ -160,8 +261,11 @@ export async function repairStrategyLearningCutoverContinuity(
       as_of_date: input.asOfDate,
       canonical_dates: heads.length,
       legacy_route_rows: legacyRouteRows.length,
-      target_route_rows_before: targetBefore,
-      target_route_rows_after: targetBefore,
+      legacy_paired_route_rows: legacyRouteRows.length,
+      target_route_rows_before: targetBefore.challengerRows,
+      target_route_rows_after: targetBefore.challengerRows,
+      target_incumbent_rows_before: targetBefore.incumbentRows,
+      target_incumbent_rows_after: targetBefore.incumbentRows,
       route_rows_repaired: 0,
       daily_stats_dates_reconciled: 0,
       head_rows_refreshed: 0,
@@ -174,12 +278,18 @@ export async function repairStrategyLearningCutoverContinuity(
   for (let offset = 0; offset < legacyRouteRows.length; offset += 100) {
     const results = await learningDb.batch(legacyRouteRows.slice(offset, offset + 100).map((row) => learningDb.prepare(`
       UPDATE selection_reference_snapshots_v1
-         SET strategy_challenger_route_version=?,
-             strategy_challenger_route_score=?
+         SET strategy_router_version=COALESCE(strategy_router_version, ?),
+             strategy_router_score=COALESCE(strategy_router_score, ?),
+             strategy_challenger_route_version=COALESCE(strategy_challenger_route_version, ?),
+             strategy_challenger_route_score=COALESCE(strategy_challenger_route_score, ?)
        WHERE signal_date=? AND symbol=? AND producer_run_id=?
-         AND (strategy_challenger_route_version IS NULL OR strategy_challenger_route_score IS NULL)
+         AND (
+           strategy_router_version IS NULL OR strategy_router_score IS NULL
+           OR strategy_challenger_route_version IS NULL OR strategy_challenger_route_score IS NULL
+         )
     `).bind(
-      row.route_version, row.route_score,
+      row.incumbent_route_version, row.incumbent_route_score,
+      row.challenger_route_version, row.challenger_route_score,
       row.signal_date, row.symbol, row.producer_run_id,
     )))
     repaired += results.reduce((sum, result) => sum + Number(result.meta?.changes ?? 0), 0)
@@ -199,11 +309,22 @@ export async function repairStrategyLearningCutoverContinuity(
     allowPromotion: false,
     canonicalRunIds,
   })
-  const targetAfter = await countTargetRouteRows(
+  const targetRowsAfter = await loadTargetRouteRows(
     learningDb, input.startDate, input.asOfDate, canonicalRunIds,
   )
-  if (targetAfter < targetBefore || targetAfter < legacyRouteRows.length) {
-    throw new Error(`strategy_learning_cutover_continuity_route_readback_failed:${targetBefore}/${targetAfter}/${legacyRouteRows.length}`)
+  assertLegacyTargetParity(legacyRouteRows, targetRowsAfter, true)
+  const targetAfter = inspectTargetRouteCoverage(targetRowsAfter)
+  if (
+    targetAfter.incumbentRows < targetBefore.incumbentRows
+    || targetAfter.challengerRows < targetBefore.challengerRows
+    || targetAfter.incumbentRows < legacyRouteRows.length
+    || targetAfter.challengerRows < legacyRouteRows.length
+  ) {
+    throw new Error(
+      `strategy_learning_cutover_continuity_route_readback_failed:`
+      + `${targetBefore.incumbentRows}/${targetAfter.incumbentRows}/`
+      + `${targetBefore.challengerRows}/${targetAfter.challengerRows}/${legacyRouteRows.length}`,
+    )
   }
 
   return {
@@ -213,8 +334,11 @@ export async function repairStrategyLearningCutoverContinuity(
     as_of_date: input.asOfDate,
     canonical_dates: heads.length,
     legacy_route_rows: legacyRouteRows.length,
-    target_route_rows_before: targetBefore,
-    target_route_rows_after: targetAfter,
+    legacy_paired_route_rows: legacyRouteRows.length,
+    target_route_rows_before: targetBefore.challengerRows,
+    target_route_rows_after: targetAfter.challengerRows,
+    target_incumbent_rows_before: targetBefore.incumbentRows,
+    target_incumbent_rows_after: targetAfter.incumbentRows,
     route_rows_repaired: repaired,
     daily_stats_dates_reconciled: reconciledDates,
     head_rows_refreshed: headRows,

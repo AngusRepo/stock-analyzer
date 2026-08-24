@@ -832,7 +832,7 @@ runStrategyCandidateDailyFeatureHydrationTest().catch((error) => {
   assert(policy.evidence.requires_approval_to_activate === false, 'daily policy refresh must not depend on a manual activation toggle')
   assert(policy.strategy_weights[spec.id] === 0, 'candidate-ready shadow strategy must remain full-universe observable without production weight')
   assert(policy.lifecycle_recommendations[spec.id].recommended_status === 'active', 'candidate-ready shadow strategy must surface an active lifecycle recommendation')
-  assert(policy.evidence.threshold_owner === 'adaptive_strategy_policy', 'threshold ownership must be unambiguous')
+  assert(policy.evidence.threshold_owner === 'versioned_strategy_spec', 'versioned specs must remain the only production threshold owner')
 }
 
 {
@@ -937,10 +937,11 @@ runStrategyCandidateDailyFeatureHydrationTest().catch((error) => {
 
   const policy = buildStrategyAdaptivePolicyState({ ...summary, promotion_gate: gate })
   assert(policy.strategy_weights[spec.id] === 0, 'negative-edge cooldown strategies must have zero production contribution')
-  assert(policy.threshold_deltas[spec.id].minVolumeExpansion20 === 0.08, 'cooldown should tighten raw-signal thresholds within the bounded policy')
+  assert(policy.threshold_deltas[spec.id] == null, 'performance evidence must not rewrite immutable strategy label thresholds')
+  assert(policy.lifecycle_recommendations[spec.id].automatic_effect === 'weight_only', 'adaptive policy may only change contribution weight')
   assert(policy.lifecycle_recommendations[spec.id].recommended_status === 'candidate', 'cooldown lifecycle recommendation should return the strategy to paper-active candidate review')
   const applied = applyStrategyAdaptivePolicyThresholds([spec], policy)
-  assert(applied[0].thresholds.minVolumeExpansion20 === 0.98, 'active policy must apply the bounded volume threshold delta')
+  assert(applied[0].thresholds.minVolumeExpansion20 === spec.thresholds.minVolumeExpansion20, 'immutable strategy thresholds must remain unchanged')
 }
 
 {

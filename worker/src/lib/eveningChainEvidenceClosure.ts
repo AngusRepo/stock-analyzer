@@ -3,7 +3,7 @@ import { databaseForDataDomain } from './dataDomainRegistry'
 import { SELECTION_REFERENCE_CONTRACT_VERSION } from './selectionReferenceEvidence'
 import { CANONICAL_SELECTION_LABEL_SCHEMA_VERSION } from './canonicalSelectionLabels'
 import { PRICE_HORIZON_PROJECTION_VERSION } from './priceHorizonProjection'
-import { STRATEGY_ROUTE_CHALLENGER_VERSION } from './strategyRouteCalibration'
+import { STRATEGY_ROUTE_AFFINITY_VERSION } from './strategyRouteCalibration'
 import {
   STRATEGY_FORMAL_LABELER_VERSION,
   STRATEGY_FORMAL_RECONSTRUCTION_LABELER_VERSION,
@@ -81,7 +81,7 @@ export async function auditEveningChainEvidenceClosure(
             AND mr.labeler_version=r.strategy_labeler_version
        )
   `).bind(
-    STRATEGY_ROUTE_CHALLENGER_VERSION,
+    STRATEGY_ROUTE_AFFINITY_VERSION,
     businessDate,
     SELECTION_REFERENCE_CONTRACT_VERSION,
     producerRunId,
@@ -118,8 +118,8 @@ export async function auditEveningChainEvidenceClosure(
        AND r.labeler_version IN (?, ?)
      LIMIT 1
   `).bind(
-    STRATEGY_ROUTE_CHALLENGER_VERSION,
-    STRATEGY_ROUTE_CHALLENGER_VERSION,
+    STRATEGY_ROUTE_AFFINITY_VERSION,
+    STRATEGY_ROUTE_AFFINITY_VERSION,
     businessDate,
     producerRunId,
     SELECTION_REFERENCE_CONTRACT_VERSION,

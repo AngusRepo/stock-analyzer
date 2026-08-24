@@ -2,6 +2,15 @@ import type { AlphaFrameworkBucket, AlphaFrameworkRegime } from './tradingConfig
 import { readScoreV2Snapshot, type ScoreV2StorageRow } from './scoreV2Taxonomy'
 
 export const STRATEGY_SPEC_VERSION = 'strategy-spec-v1'
+export const STRATEGY_SPEC_SEMANTIC_VERSION = 'strategy-spec-v2'
+export const STRATEGY_FEATURE_SEMANTIC_VERSION = 'strategy-feature-semantic-v2'
+export const STRATEGY_SEMANTIC_V2_ALPHA_IDS = new Set([
+  'alpha223_0009',
+  'alpha223_0109',
+  'alpha223_0166',
+  'alpha223_0248',
+  'alpha223_0283',
+])
 export const STRATEGY_FORMAL_LABELER_VERSION = 'strategy-labeler-v2-revenue-pit-fuse-v1'
 export const STRATEGY_FORMAL_RECONSTRUCTION_LABELER_VERSION =
   'strategy-decision-log-pit-reconstruction-v7-revenue-pit-fuse-v1'
@@ -139,10 +148,22 @@ export interface StrategySignalDsl {
   not?: StrategySignalCondition[]
 }
 
+export interface StrategyFeatureSemantic {
+  schemaVersion: typeof STRATEGY_FEATURE_SEMANTIC_VERSION
+  rawSource: string
+  direction: 'higher_is_better' | 'lower_is_better'
+  transform: 'identity' | 'cross_sectional_percentile' | 'capital_normalized_cross_sectional_percentile'
+  denominator: 'none' | 'capital_amount'
+  neutralization: 'none' | 'sector'
+  pitOwner: 'market'
+  missingPolicy: 'fail_closed'
+}
+
 export interface StrategyFeatureRefTerm {
   featureRef: string
   signal?: string
   weight?: number
+  semantic?: StrategyFeatureSemantic
 }
 
 export interface StrategyFeatureRefWeightedScore {
@@ -233,6 +254,19 @@ export interface StrategyRawSignals {
   pe?: number | null
   pb?: number | null
   dividendYield?: number | null
+  operatingCashFlow?: number | null
+  roa?: number | null
+  ebitda?: number | null
+  freeCashFlow?: number | null
+  financialCost?: number | null
+  operatingExpenses?: number | null
+  cashFlowPerShare?: number | null
+  pretaxIncomePerShare?: number | null
+  propertyPlantEquipment?: number | null
+  workingCapital?: number | null
+  currentLiabilities?: number | null
+  operatingCashFlowStatement?: number | null
+  capitalAmount?: number | null
   nonCurrentAssets?: number | null
   cashAndCashEquivalentsIncreaseDecrease?: number | null
   otherPayables?: number | null
@@ -496,7 +530,124 @@ function numberMap(value: unknown): Record<string, number | null> {
   return out
 }
 
+const SEMANTIC_V2_CAPITAL_SIGNALS: Readonly<Record<string, { rawSource: string; signal: string }>> = {
+  'finlab701_fundamental_features_EBITDA': {
+    rawSource: 'ebitda',
+    signal: 'factorSignals.finlabSectorNeutralV2EbitdaCapitalRank',
+  },
+  'finlab701_financial_statement_非流動資產': {
+    rawSource: 'nonCurrentAssets',
+    signal: 'factorSignals.finlabSectorNeutralV2NonCurrentAssetsCapitalRank',
+  },
+  'finlab701_financial_statement_本期現金及約當現金增加_減少_數': {
+    rawSource: 'cashAndCashEquivalentsIncreaseDecrease',
+    signal: 'factorSignals.finlabSectorNeutralV2CashAndCashEquivalentsIncreaseDecreaseCapitalRank',
+  },
+  'finlab701_financial_statement_其他應付款': {
+    rawSource: 'otherPayables',
+    signal: 'factorSignals.finlabSectorNeutralV2OtherPayablesCapitalRank',
+  },
+  'finlab701_financial_statement_流動負債': {
+    rawSource: 'currentLiabilities',
+    signal: 'factorSignals.finlabSectorNeutralV2CurrentLiabilitiesCapitalRank',
+  },
+  'finlab701_financial_statement_不動產廠房及設備': {
+    rawSource: 'propertyPlantEquipment',
+    signal: 'factorSignals.finlabSectorNeutralV2PropertyPlantEquipmentCapitalRank',
+  },
+  'finlab701_financial_statement_營業費用': {
+    rawSource: 'operatingExpenses',
+    signal: 'factorSignals.finlabSectorNeutralV2OperatingExpensesCapitalRank',
+  },
+  'finlab701_financial_statement_營業活動之淨現金流入_流出': {
+    rawSource: 'operatingCashFlowStatement',
+    signal: 'factorSignals.finlabSectorNeutralV2OperatingCashFlowStatementCapitalRank',
+  },
+  'finlab701_fundamental_features_營運資金': {
+    rawSource: 'workingCapital',
+    signal: 'factorSignals.finlabSectorNeutralV2WorkingCapitalCapitalRank',
+  },
+  'finlab701_fundamental_features_自由現金流量': {
+    rawSource: 'freeCashFlow',
+    signal: 'factorSignals.finlabSectorNeutralV2FreeCashFlowCapitalRank',
+  },
+  'finlab701_financial_statement_財務成本': {
+    rawSource: 'financialCost',
+    signal: 'factorSignals.finlabSectorNeutralV2FinancialCostCapitalRank',
+  },
+}
+
+const SEMANTIC_V2_LOWER_IS_BETTER = new Set([
+  'KLOW2',
+  'KSFT',
+  'vola_cv_90d',
+  'tech_gap_down',
+  'finlab701_financial_statement_其他應付款',
+  'finlab701_financial_statement_流動負債',
+  'finlab701_financial_statement_營業費用',
+  'finlab701_financial_statement_財務成本',
+])
+
+export function strategySpecForSemanticV2Challenger(spec: StrategySpec): StrategySpec {
+  if (!STRATEGY_SEMANTIC_V2_ALPHA_IDS.has(spec.id) || spec.version === STRATEGY_SPEC_SEMANTIC_VERSION) {
+    return spec
+  }
+  const weighted = spec.thresholds.featureRefs?.weightedScore
+  if (!weighted?.terms.length) throw new Error('strategy_semantic_v2_weighted_score_missing:' + spec.id)
+  const terms = weighted.terms.map((term) => {
+    const capital = SEMANTIC_V2_CAPITAL_SIGNALS[term.featureRef]
+    const directional = term.featureRef === 'tech_gap_down'
+      ? { rawSource: 'techGapDown', signal: 'factorSignals.finlabCsV2TechGapDownNoGapRank' }
+      : null
+    const signal = capital?.signal ?? directional?.signal ?? term.signal ?? term.featureRef
+    const crossSectional = Boolean(directional)
+      || signal.includes('finlabCs')
+      || signal.includes('finlabSector')
+    return {
+      ...term,
+      signal,
+      semantic: {
+        schemaVersion: STRATEGY_FEATURE_SEMANTIC_VERSION,
+        rawSource: capital?.rawSource ?? directional?.rawSource ?? term.featureRef,
+        direction: SEMANTIC_V2_LOWER_IS_BETTER.has(term.featureRef)
+          ? 'lower_is_better' as const
+          : 'higher_is_better' as const,
+        transform: capital
+          ? 'capital_normalized_cross_sectional_percentile' as const
+          : crossSectional
+            ? 'cross_sectional_percentile' as const
+            : 'identity' as const,
+        denominator: capital ? 'capital_amount' as const : 'none' as const,
+        neutralization: capital || signal.includes('finlabSector') ? 'sector' as const : 'none' as const,
+        pitOwner: 'market' as const,
+        missingPolicy: 'fail_closed' as const,
+      } satisfies StrategyFeatureSemantic,
+    }
+  })
+  return {
+    ...spec,
+    version: STRATEGY_SPEC_SEMANTIC_VERSION,
+    thresholds: {
+      ...spec.thresholds,
+      featureRefs: {
+        ...spec.thresholds.featureRefs,
+        weightedScore: {
+          ...weighted,
+          adaptivePolicy: undefined,
+          calibration: undefined,
+          terms,
+        },
+      },
+    },
+    riskNotes: [
+      ...spec.riskNotes,
+      'Semantic-v2 challenger only; incumbent Strategy Spec remains immutable until paired OOS promotion.',
+    ],
+  }
+}
+
 function walkKeys(value: unknown, prefix = ''): string[] {
+
   if (!value || typeof value !== 'object') return []
   const out: string[] = []
   for (const [key, child] of Object.entries(value as Record<string, unknown>)) {
@@ -509,7 +660,7 @@ function walkKeys(value: unknown, prefix = ''): string[] {
 
 export function validateStrategySpec(spec: StrategySpec): StrategySpecValidation {
   const errors: string[] = []
-  if (spec.version !== STRATEGY_SPEC_VERSION) errors.push('version_mismatch')
+  if (![STRATEGY_SPEC_VERSION, STRATEGY_SPEC_SEMANTIC_VERSION].includes(spec.version)) errors.push('version_mismatch')
   if (spec.owner !== 'strategy') errors.push('owner_must_be_strategy')
   if (!cleanText(spec.id)) errors.push('id_missing')
   if (!cleanText(spec.name)) errors.push('name_missing')
@@ -522,6 +673,35 @@ export function validateStrategySpec(spec: StrategySpec): StrategySpecValidation
   for (const keyPath of walkKeys(spec)) {
     const leaf = keyPath.split('.').pop() ?? keyPath
     if (FORBIDDEN_SPEC_KEYS.includes(leaf)) errors.push(`forbidden_key:${keyPath}`)
+  }
+  if (spec.version === STRATEGY_SPEC_SEMANTIC_VERSION) {
+    const featureRefs = spec.thresholds.featureRefs
+    const terms = [
+      ...(featureRefs?.weightedScore?.terms ?? []),
+      ...(featureRefs?.all ?? []),
+      ...(featureRefs?.any ?? []),
+      ...(featureRefs?.not ?? []),
+    ]
+    if (terms.length === 0) errors.push('v2_feature_semantics_missing')
+    for (const term of terms) {
+      const semantic = term.semantic
+      const featureRef = cleanText(term.featureRef) || 'unknown'
+      if (!semantic) {
+        errors.push(`v2_feature_semantic_missing:${featureRef}`)
+        continue
+      }
+      if (semantic.schemaVersion !== STRATEGY_FEATURE_SEMANTIC_VERSION) {
+        errors.push(`v2_feature_semantic_version_mismatch:${featureRef}`)
+      }
+      if (!cleanText(semantic.rawSource)) errors.push(`v2_feature_raw_source_missing:${featureRef}`)
+      if (semantic.missingPolicy !== 'fail_closed') errors.push(`v2_feature_missing_policy_invalid:${featureRef}`)
+      if (
+        semantic.transform === 'capital_normalized_cross_sectional_percentile'
+        && semantic.denominator !== 'capital_amount'
+      ) {
+        errors.push(`v2_feature_denominator_mismatch:${featureRef}`)
+      }
+    }
   }
   return { ok: errors.length === 0, errors }
 }
@@ -958,6 +1138,7 @@ export function explainFeatureRefDsl(raw: StrategyRawSignals, dsl?: StrategyFeat
       weight,
       value,
       present: value != null,
+      semantic: term.semantic ?? null,
     })
   }
   const effective = effectiveWeightedScoreMin(weighted)

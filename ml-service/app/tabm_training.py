@@ -21,6 +21,7 @@ from .prep_lineage import (
 from .model_validation import build_model_cpcv_evidence
 from .research_benchmarks.common import direction_accuracy, load_tabular_dataset, rank_ic
 from .training_promotion_policy import resolve_training_promotion_intent
+from .target_rank_scope import GLOBAL_CROSS_SECTIONAL_RANK_VERSION, recompute_global_cross_sectional_rank
 from .training_policy import build_model_feature_policy_metadata
 from .sequence_training import SEQUENCE_RETURN_SEMANTIC_VERSION
 
@@ -292,6 +293,11 @@ def train_tabm_universal(payload: dict | None = None) -> dict[str, Any]:
     payload.setdefault("batch_count", int(payload.get("batch_count") or DEFAULT_BATCH_COUNT))
 
     dataset = load_tabular_dataset(payload)
+    dataset.y = recompute_global_cross_sectional_rank(
+        dataset.target_returns,
+        dataset.dates,
+        dataset.markets,
+    )
     finite_mask = np.isfinite(dataset.y) & np.isfinite(dataset.target_returns) & np.isfinite(dataset.X).all(axis=1)
     x_raw = np.asarray(dataset.X[finite_mask], dtype=np.float32)
     y = np.clip(np.asarray(dataset.y[finite_mask], dtype=np.float32).reshape(-1), 0.0, 1.0)
@@ -415,6 +421,8 @@ def train_tabm_universal(payload: dict | None = None) -> dict[str, Any]:
         "model_type": "tabular_neural_tabm",
         "family": "tabular_neural",
         "target_semantic_version": SEQUENCE_RETURN_SEMANTIC_VERSION,
+        "target_rank_scope": GLOBAL_CROSS_SECTIONAL_RANK_VERSION,
+        "batch_local_target_rank_used_for_training": False,
         "trained_at": trained_at,
         "feature_names": dataset.feature_names,
         "feature_count": len(dataset.feature_names),

@@ -1,5 +1,6 @@
 export const STRATEGY_ROUTE_CALIBRATION_ARTIFACT_VERSION = 'strategy-route-calibration-v1'
-export const STRATEGY_ROUTE_CHALLENGER_VERSION = 'strategy-threshold-margin-affinity-v2'
+export const STRATEGY_ROUTE_CHALLENGER_VERSION = 'strategy-semantic-continuous-affinity-v4'
+export const STRATEGY_ROUTE_AFFINITY_VERSION = 'strategy-threshold-margin-affinity-v2'
 
 const MIN_TRAIN_DATES = 3
 const MIN_OOS_DATES = 3
@@ -16,6 +17,7 @@ export interface StrategyRouteObservation {
   signal_date: string
   symbol: string
   route_score: number | string
+  incumbent_route_score: number | string | null
   absolute_return_net: number | string
   residual_return_net: number | string
 }
@@ -23,9 +25,12 @@ export interface StrategyRouteObservation {
 interface DateSummary {
   date: string
   absolute: number
+  absoluteSpread: number
   spread: number
+  incumbentDelta: number | null
   selected: number
   total: number
+  paired: number
 }
 
 export interface StrategyRouteCalibrationResult {
@@ -38,8 +43,15 @@ export interface StrategyRouteCalibrationResult {
   oosDates: string[]
   topBucketNetReturn: number | null
   topBucketNetReturnLcb90: number | null
+  absoluteSpread: number | null
+  absoluteSpreadLcb90: number | null
   residualSpread: number | null
   residualSpreadLcb90: number | null
+  incumbentSampleCount: number
+  pairedSampleCount: number
+  pairedDateCount: number
+  challengerIncumbentDelta: number | null
+  challengerIncumbentDeltaLcb90: number | null
   brierScore: number | null
   climatologyBrierScore: number | null
   logLoss: number | null
@@ -50,8 +62,10 @@ export interface StrategyRouteCurrentCoverage {
   referenceRows: number
   thresholdAffinityRows: number
   challengerRouteRows: number
+  incumbentRouteRows: number
   thresholdAffinityComplete: boolean
   challengerRouteComplete: boolean
+  incumbentRouteComplete: boolean
 }
 
 function finite(value: unknown): number | null {
@@ -96,21 +110,33 @@ function summarizeDates(rows: StrategyRouteObservation[], dates: Set<string>, fl
     const valid = dateRows
       .map((row) => ({
         score: finite(row.route_score),
+        incumbentScore: finite(row.incumbent_route_score),
         absolute: finite(row.absolute_return_net),
         residual: finite(row.residual_return_net),
       }))
-      .filter((row): row is { score: number; absolute: number; residual: number } => (
+      .filter((row): row is { score: number; incumbentScore: number | null; absolute: number; residual: number } => (
         row.score != null && row.absolute != null && row.residual != null
       ))
     const selected = valid.filter((row) => row.score >= floor)
     const rejected = valid.filter((row) => row.score < floor)
     if (!selected.length || !rejected.length) continue
+    const paired = valid.filter((row): row is typeof row & { incumbentScore: number } => row.incumbentScore != null)
+    const challengerPaired = paired.filter((row) => row.score >= floor)
+    const incumbentTopK = [...paired]
+      .sort((left, right) => right.incumbentScore - left.incumbentScore)
+      .slice(0, challengerPaired.length)
+    const incumbentDelta = challengerPaired.length > 0 && incumbentTopK.length === challengerPaired.length
+      ? mean(challengerPaired.map((row) => row.absolute))! - mean(incumbentTopK.map((row) => row.absolute))!
+      : null
     output.push({
       date,
       absolute: mean(selected.map((row) => row.absolute))!,
+      absoluteSpread: mean(selected.map((row) => row.absolute))! - mean(rejected.map((row) => row.absolute))!,
       spread: mean(selected.map((row) => row.residual))! - mean(rejected.map((row) => row.residual))!,
+      incumbentDelta,
       selected: selected.length,
       total: valid.length,
+      paired: paired.length,
     })
   }
   return output.sort((left, right) => left.date.localeCompare(right.date))
@@ -195,15 +221,28 @@ export function evaluateStrategyRouteCalibration(
   }
   const oos = routeFloor == null ? [] : summarizeDates(valid, oosSet, routeFloor)
   const topBucket = oos.map((row) => row.absolute)
+  const absoluteSpreads = oos.map((row) => row.absoluteSpread)
   const spreads = oos.map((row) => row.spread)
+  const incumbentDeltas = oos
+    .map((row) => row.incumbentDelta)
+    .filter((value): value is number => value != null)
+  const incumbentSampleCount = valid.filter((row) => finite(row.incumbent_route_score) != null).length
+  const pairedDates = new Set(
+    valid.filter((row) => finite(row.incumbent_route_score) != null).map((row) => row.signal_date),
+  )
   const calibration = calibrationMetrics(valid, trainSet, oosSet)
   const gates = {
     enough_total_dates: dates.length >= STRATEGY_ROUTE_MIN_TOTAL_DATES,
     enough_train_dates: trainDates.length >= STRATEGY_ROUTE_MIN_TRAIN_DATES,
     enough_oos_dates: oos.length >= STRATEGY_ROUTE_MIN_OOS_DATES,
     route_floor_selected_on_train_only: routeFloor != null,
+    incumbent_route_lineage_complete: valid.length > 0 && incumbentSampleCount === valid.length
+      && pairedDates.size === dates.length,
     top_bucket_cost_net_return_lcb90_positive: (lcb90(topBucket) ?? Number.NEGATIVE_INFINITY) > 0,
+    absolute_spread_lcb90_positive: (lcb90(absoluteSpreads) ?? Number.NEGATIVE_INFINITY) > 0,
     residual_spread_lcb90_positive: (lcb90(spreads) ?? Number.NEGATIVE_INFINITY) > 0,
+    challenger_beats_incumbent_same_capacity_lcb90_positive: incumbentDeltas.length === oos.length
+      && (lcb90(incumbentDeltas) ?? Number.NEGATIVE_INFINITY) > 0,
     calibrated_probability_beats_climatology: calibration.brier != null
       && calibration.climatologyBrier != null
       && calibration.brier < calibration.climatologyBrier,
@@ -220,8 +259,15 @@ export function evaluateStrategyRouteCalibration(
     oosDates,
     topBucketNetReturn: mean(topBucket),
     topBucketNetReturnLcb90: lcb90(topBucket),
+    absoluteSpread: mean(absoluteSpreads),
+    absoluteSpreadLcb90: lcb90(absoluteSpreads),
     residualSpread: mean(spreads),
     residualSpreadLcb90: lcb90(spreads),
+    incumbentSampleCount,
+    pairedSampleCount: incumbentSampleCount,
+    pairedDateCount: pairedDates.size,
+    challengerIncumbentDelta: mean(incumbentDeltas),
+    challengerIncumbentDeltaLcb90: lcb90(incumbentDeltas),
     brierScore: calibration.brier,
     climatologyBrierScore: calibration.climatologyBrier,
     logLoss: calibration.logLoss,
@@ -232,6 +278,7 @@ export function evaluateStrategyRouteCalibration(
 async function fingerprint(rows: StrategyRouteObservation[]): Promise<string> {
   const payload = JSON.stringify(rows.map((row) => [
     row.signal_date, row.symbol, Number(row.route_score),
+    finite(row.incumbent_route_score),
     Number(row.absolute_return_net), Number(row.residual_return_net),
   ]))
   const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(payload))
@@ -247,13 +294,22 @@ export async function inspectStrategyRouteCurrentCoverage(
   const row = await db.prepare(`
     SELECT COUNT(*) reference_rows,
            SUM(CASE WHEN r.strategy_challenger_affinity_version=? THEN 1 ELSE 0 END) threshold_affinity_rows,
-           SUM(CASE WHEN r.strategy_challenger_route_version=?
-                     AND r.strategy_challenger_route_score IS NOT NULL THEN 1 ELSE 0 END) challenger_route_rows
+           SUM(CASE WHEN COALESCE(
+                     e.route_score,
+                     CASE WHEN r.strategy_challenger_route_version=?
+                          THEN r.strategy_challenger_route_score END
+                   ) IS NOT NULL THEN 1 ELSE 0 END) challenger_route_rows,
+           SUM(CASE WHEN COALESCE(e.incumbent_route_score, r.strategy_router_score) IS NOT NULL
+                     AND r.strategy_router_version IS NOT NULL THEN 1 ELSE 0 END) incumbent_route_rows
       FROM selection_reference_snapshots_v1 r
+      LEFT JOIN strategy_route_versioned_evidence_v1 e
+        ON e.signal_date=r.signal_date AND e.symbol=r.symbol
+       AND e.producer_run_id=r.producer_run_id AND e.route_version=?
      WHERE r.signal_date=?
        AND r.hard_gate_passed=1
        AND ${canonicalOwnerClause}
   `).bind(
+    STRATEGY_ROUTE_AFFINITY_VERSION,
     STRATEGY_ROUTE_CHALLENGER_VERSION,
     STRATEGY_ROUTE_CHALLENGER_VERSION,
     asOfDate,
@@ -262,16 +318,20 @@ export async function inspectStrategyRouteCurrentCoverage(
     reference_rows?: number | string
     threshold_affinity_rows?: number | string
     challenger_route_rows?: number | string
+    incumbent_route_rows?: number | string
   }>()
   const referenceRows = Math.max(0, Number(row?.reference_rows ?? 0))
   const thresholdAffinityRows = Math.max(0, Number(row?.threshold_affinity_rows ?? 0))
   const challengerRouteRows = Math.max(0, Number(row?.challenger_route_rows ?? 0))
+  const incumbentRouteRows = Math.max(0, Number(row?.incumbent_route_rows ?? 0))
   return {
     referenceRows,
     thresholdAffinityRows,
     challengerRouteRows,
+    incumbentRouteRows,
     thresholdAffinityComplete: referenceRows > 0 && thresholdAffinityRows === referenceRows,
     challengerRouteComplete: referenceRows > 0 && challengerRouteRows === referenceRows,
+    incumbentRouteComplete: referenceRows > 0 && incumbentRouteRows === referenceRows,
   }
 }
 
@@ -284,27 +344,49 @@ export async function refreshStrategyRouteCalibration(
   if (!Number.isFinite(endMs)) throw new Error('invalid_strategy_route_calibration_date:' + asOfDate)
   const startDate = new Date(endMs - LOOKBACK_CALENDAR_DAYS * 86_400_000).toISOString().slice(0, 10)
   const rows: StrategyRouteObservation[] = []
-  const canonicalOwnerClause = 'EXISTS (SELECT 1 FROM json_each(?) h WHERE h.key=r.signal_date AND h.value=r.producer_run_id)'
+  const canonicalOwnerClause = 'EXISTS (SELECT 1 FROM json_each(?) h WHERE h.key=c.signal_date AND h.value=c.producer_run_id)'
   let cursorDate = ''
   let cursorSymbol = ''
   for (;;) {
     const page = await db.prepare(`
-      SELECT r.signal_date, r.symbol, r.strategy_challenger_route_score route_score,
+      WITH candidate_routes AS (
+        SELECT r.signal_date, r.symbol, r.producer_run_id,
+               r.strategy_challenger_route_score route_score,
+               r.strategy_router_score incumbent_route_score
+          FROM selection_reference_snapshots_v1 r
+         WHERE r.strategy_challenger_route_version=?
+           AND r.strategy_challenger_route_score IS NOT NULL
+        UNION ALL
+        SELECT e.signal_date, e.symbol, e.producer_run_id,
+               e.route_score, e.incumbent_route_score
+          FROM strategy_route_versioned_evidence_v1 e
+         WHERE e.route_version=?
+           AND NOT EXISTS (
+             SELECT 1
+               FROM selection_reference_snapshots_v1 r
+              WHERE r.signal_date=e.signal_date AND r.symbol=e.symbol
+                AND r.producer_run_id=e.producer_run_id
+                AND r.strategy_challenger_route_version=?
+                AND r.strategy_challenger_route_score IS NOT NULL
+           )
+      )
+      SELECT c.signal_date, c.symbol, c.route_score, c.incumbent_route_score,
              l.absolute_return_net, l.residual_return_net
-        FROM selection_reference_snapshots_v1 r
+        FROM candidate_routes c
         JOIN canonical_selection_labels_v4 l
-          ON l.signal_date=r.signal_date AND l.symbol=r.symbol AND l.producer_run_id=r.producer_run_id
-       WHERE r.signal_date BETWEEN ? AND ?
-         AND r.strategy_challenger_route_version=?
-         AND r.strategy_challenger_route_score IS NOT NULL
+          ON l.signal_date=c.signal_date AND l.symbol=c.symbol AND l.producer_run_id=c.producer_run_id
+       WHERE c.signal_date BETWEEN ? AND ?
          AND l.label_schema_version='canonical-strategy-selection-label-v4'
          AND l.outcome_known_date <= ?
          AND ${canonicalOwnerClause}
-         AND (r.signal_date > ? OR (r.signal_date=? AND r.symbol > ?))
-       ORDER BY r.signal_date, r.symbol
+         AND (c.signal_date > ? OR (c.signal_date=? AND c.symbol > ?))
+       ORDER BY c.signal_date, c.symbol
        LIMIT ?
     `).bind(
-      startDate, asOfDate, STRATEGY_ROUTE_CHALLENGER_VERSION, asOfDate,
+      STRATEGY_ROUTE_CHALLENGER_VERSION,
+      STRATEGY_ROUTE_CHALLENGER_VERSION,
+      STRATEGY_ROUTE_CHALLENGER_VERSION,
+      startDate, asOfDate, asOfDate,
       JSON.stringify(options.canonicalRunIds ?? {}),
       cursorDate, cursorDate, cursorSymbol, PAGE_SIZE,
     ).all<StrategyRouteObservation>()
@@ -318,12 +400,14 @@ export async function refreshStrategyRouteCalibration(
   const currentCoverage = await inspectStrategyRouteCurrentCoverage(db, asOfDate, options.canonicalRunIds)
   const currentCoverageReady = currentCoverage.thresholdAffinityComplete
     && currentCoverage.challengerRouteComplete
+    && currentCoverage.incumbentRouteComplete
   const result: StrategyRouteCalibrationResult = {
     ...evaluated,
     gates: {
       ...evaluated.gates,
       current_day_threshold_affinity_complete: currentCoverage.thresholdAffinityComplete,
       current_day_challenger_route_complete: currentCoverage.challengerRouteComplete,
+      current_day_incumbent_route_complete: currentCoverage.incumbentRouteComplete,
     },
   }
   const runId = `${STRATEGY_ROUTE_CALIBRATION_ARTIFACT_VERSION}-${asOfDate}-${await fingerprint(rows)}`
@@ -333,14 +417,21 @@ export async function refreshStrategyRouteCalibration(
     INSERT INTO strategy_route_calibration_runs_v1 (
       run_id, artifact_version, as_of_date, status, candidate_route_version, route_floor,
       sample_count, date_count, train_start_date, train_end_date, oos_start_date, oos_end_date,
-      top_bucket_net_return, top_bucket_net_return_lcb90, residual_spread, residual_spread_lcb90,
+      top_bucket_net_return, top_bucket_net_return_lcb90, absolute_spread, absolute_spread_lcb90,
+      residual_spread, residual_spread_lcb90, incumbent_sample_count, paired_sample_count,
+      paired_date_count, challenger_incumbent_delta, challenger_incumbent_delta_lcb90,
       brier_score, climatology_brier_score, log_loss, gate_json
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT(run_id) DO UPDATE SET
       status=excluded.status, route_floor=excluded.route_floor, sample_count=excluded.sample_count,
       date_count=excluded.date_count, top_bucket_net_return=excluded.top_bucket_net_return,
       top_bucket_net_return_lcb90=excluded.top_bucket_net_return_lcb90,
+      absolute_spread=excluded.absolute_spread, absolute_spread_lcb90=excluded.absolute_spread_lcb90,
       residual_spread=excluded.residual_spread, residual_spread_lcb90=excluded.residual_spread_lcb90,
+      incumbent_sample_count=excluded.incumbent_sample_count, paired_sample_count=excluded.paired_sample_count,
+      paired_date_count=excluded.paired_date_count,
+      challenger_incumbent_delta=excluded.challenger_incumbent_delta,
+      challenger_incumbent_delta_lcb90=excluded.challenger_incumbent_delta_lcb90,
       brier_score=excluded.brier_score, climatology_brier_score=excluded.climatology_brier_score,
       log_loss=excluded.log_loss, gate_json=excluded.gate_json
   `).bind(
@@ -349,7 +440,10 @@ export async function refreshStrategyRouteCalibration(
     result.trainDates[0] ?? null, result.trainDates.at(-1) ?? null,
     result.oosDates[0] ?? null, result.oosDates.at(-1) ?? null,
     result.topBucketNetReturn, result.topBucketNetReturnLcb90,
+    result.absoluteSpread, result.absoluteSpreadLcb90,
     result.residualSpread, result.residualSpreadLcb90,
+    result.incumbentSampleCount, result.pairedSampleCount, result.pairedDateCount,
+    result.challengerIncumbentDelta, result.challengerIncumbentDeltaLcb90,
     result.brierScore, result.climatologyBrierScore, result.logLoss,
     JSON.stringify({
       ...result.gates,
@@ -360,6 +454,7 @@ export async function refreshStrategyRouteCalibration(
         current_day_reference_rows: currentCoverage.referenceRows,
         current_day_threshold_affinity_rows: currentCoverage.thresholdAffinityRows,
         current_day_challenger_route_rows: currentCoverage.challengerRouteRows,
+        current_day_incumbent_route_rows: currentCoverage.incumbentRouteRows,
       },
     }),
   ).run()

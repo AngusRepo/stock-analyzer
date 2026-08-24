@@ -26,6 +26,7 @@ from .prep_lineage import (
 )
 from .model_validation import build_model_cpcv_evidence
 from .training_promotion_policy import resolve_training_promotion_intent
+from .target_rank_scope import GLOBAL_CROSS_SECTIONAL_RANK_VERSION, recompute_global_cross_sectional_rank
 from .training_policy import build_model_feature_policy_metadata
 from .sequence_training import SEQUENCE_RETURN_SEMANTIC_VERSION
 
@@ -434,11 +435,14 @@ def train_graphsage_universal(payload: dict | None = None) -> dict[str, Any]:
 
     stage_timings: dict[str, float] = {}
     stage_t0 = time.time()
-    x_raw, y, target_returns, dates, sectors, symbols, markets, label_known_dates, io_report = _load_npz_batches(
+    x_raw, batch_local_y, target_returns, dates, sectors, symbols, markets, label_known_dates, io_report = _load_npz_batches(
         bucket,
         gcs_prefix=gcs_prefix,
         batch_count=batch_count,
     )
+    if len(batch_local_y) != len(target_returns):
+        raise ValueError("prep_batch_rank_alignment_incomplete")
+    y = recompute_global_cross_sectional_rank(target_returns, dates, markets)
     stage_timings["load_batches_s"] = round(time.time() - stage_t0, 3)
     print(
         f"[GNNTrain] loaded rows={len(y)} features={x_raw.shape[1]} "
@@ -627,6 +631,8 @@ def train_graphsage_universal(payload: dict | None = None) -> dict[str, Any]:
         "model_type": "graphsage",
         "family": "cross_stock_graph",
         "target_semantic_version": SEQUENCE_RETURN_SEMANTIC_VERSION,
+        "target_rank_scope": GLOBAL_CROSS_SECTIONAL_RANK_VERSION,
+        "batch_local_target_rank_used_for_training": False,
         "trained_at": trained_at,
         "feature_names": feature_names,
         "feature_count": len(feature_names),

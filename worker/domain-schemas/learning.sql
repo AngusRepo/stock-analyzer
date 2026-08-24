@@ -833,6 +833,15 @@ CREATE TABLE IF NOT EXISTS selection_reference_snapshots_v1 (
   score_v2 REAL,
   score_components TEXT,
   allocation_selected INTEGER NOT NULL DEFAULT 0 CHECK(allocation_selected IN (0, 1)),
+  ml_evaluated INTEGER NOT NULL DEFAULT 0 CHECK(ml_evaluated IN (0, 1)),
+  l4_feature_available INTEGER NOT NULL DEFAULT 0 CHECK(l4_feature_available IN (0, 1)),
+  l4_production_eligible INTEGER NOT NULL DEFAULT 0 CHECK(l4_production_eligible IN (0, 1)),
+  fusion_feature_available INTEGER NOT NULL DEFAULT 0 CHECK(fusion_feature_available IN (0, 1)),
+  primary_expected_return_available INTEGER NOT NULL DEFAULT 0 CHECK(primary_expected_return_available IN (0, 1)),
+  pending_buy_eligible INTEGER NOT NULL DEFAULT 0 CHECK(pending_buy_eligible IN (0, 1)),
+  pending_buy_candidate INTEGER NOT NULL DEFAULT 0 CHECK(pending_buy_candidate IN (0, 1)),
+  selection_chain_contract_version TEXT,
+  selection_chain_receipt_json TEXT,
   decision_evidence_reconciled_at TEXT,
   strategy_labeler_version TEXT,
   strategy_affinity_version TEXT,
@@ -854,6 +863,9 @@ CREATE TABLE IF NOT EXISTS selection_reference_snapshots_v1 (
 
 CREATE INDEX IF NOT EXISTS idx_selection_reference_v1_date
   ON selection_reference_snapshots_v1(signal_date, hard_gate_passed, strategy_selected);
+
+CREATE INDEX IF NOT EXISTS idx_selection_reference_v1_chain_stage
+  ON selection_reference_snapshots_v1(signal_date, selection_stage, pending_buy_candidate);
 
 CREATE INDEX IF NOT EXISTS idx_selection_reference_v1_contract_date
   ON selection_reference_snapshots_v1(feature_contract_version, signal_date, symbol, producer_run_id);
@@ -1505,8 +1517,15 @@ CREATE TABLE IF NOT EXISTS strategy_route_calibration_runs_v1 (
   oos_end_date TEXT,
   top_bucket_net_return REAL,
   top_bucket_net_return_lcb90 REAL,
+  absolute_spread REAL,
+  absolute_spread_lcb90 REAL,
   residual_spread REAL,
   residual_spread_lcb90 REAL,
+  incumbent_sample_count INTEGER NOT NULL DEFAULT 0,
+  paired_sample_count INTEGER NOT NULL DEFAULT 0,
+  paired_date_count INTEGER NOT NULL DEFAULT 0,
+  challenger_incumbent_delta REAL,
+  challenger_incumbent_delta_lcb90 REAL,
   brier_score REAL,
   climatology_brier_score REAL,
   log_loss REAL,
@@ -1858,3 +1877,34 @@ CREATE INDEX IF NOT EXISTS idx_s12_formal_ev_decisions_symbol
   ON s12_formal_ev_decisions(symbol, observation_date DESC, created_at DESC);
 
 CREATE INDEX IF NOT EXISTS idx_strategy_decision_log_evaluability ON strategy_decision_log(date DESC, strategy_id, evaluable, matched);
+
+-- Append-only, versioned L1.5 route evidence. Historical PIT replay is
+-- materialized here without mutating immutable v1/v2 selection references.
+CREATE TABLE IF NOT EXISTS strategy_route_versioned_evidence_v1 (
+  route_version TEXT NOT NULL,
+  signal_date TEXT NOT NULL,
+  symbol TEXT NOT NULL,
+  producer_run_id TEXT NOT NULL,
+  route_score REAL NOT NULL CHECK(route_score >= 0 AND route_score <= 100),
+  incumbent_route_version TEXT NOT NULL,
+  incumbent_route_score REAL,
+  strategy_spec_version TEXT NOT NULL,
+  evidence_method TEXT NOT NULL CHECK(evidence_method IN (
+    'deterministic_paired_pit_replay',
+    'production_forward'
+  )),
+  source_reference_contract TEXT NOT NULL,
+  evidence_artifact_id TEXT NOT NULL,
+  source_sha TEXT NOT NULL,
+  row_checksum TEXT NOT NULL,
+  artifact_checksum TEXT NOT NULL,
+  production_effect INTEGER NOT NULL DEFAULT 0 CHECK(production_effect = 0),
+  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY(route_version, signal_date, symbol, producer_run_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_strategy_route_versioned_evidence_v1_date
+  ON strategy_route_versioned_evidence_v1(route_version, signal_date, producer_run_id);
+
+CREATE INDEX IF NOT EXISTS idx_strategy_route_versioned_evidence_v1_artifact
+  ON strategy_route_versioned_evidence_v1(evidence_artifact_id, artifact_checksum);

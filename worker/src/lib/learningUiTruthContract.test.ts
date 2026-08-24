@@ -15,7 +15,9 @@ assert.match(sectorSql, /FROM canonical_market_daily/)
 assert.match(sectorSql, /stock_id='0050'/)
 assert.doesNotMatch(sectorSql, /FROM market_risk/)
 
-assert.match(adminRead, /WHERE outcome_as_of_date=\(SELECT MAX\(outcome_as_of_date\) FROM strategy_evidence_metrics_v1\)/)
+assert.match(adminRead, /STRATEGY_EVIDENCE_METRIC_DEFINITION_VERSION/)
+assert.match(adminRead, /WHERE definition_version=\?[\s\S]*SELECT MAX\(outcome_as_of_date\)[\s\S]*WHERE definition_version=\?/)
+assert.match(adminRead, /\.bind\([\s\S]*STRATEGY_EVIDENCE_METRIC_DEFINITION_VERSION,[\s\S]*STRATEGY_EVIDENCE_METRIC_DEFINITION_VERSION,[\s\S]*\)\.all<StrategyEvidenceMetricApiRow>/)
 assert.match(adminRead, /ORDER BY as_of_date DESC, created_at DESC, run_id DESC/)
 assert.doesNotMatch(adminRead, /ORDER BY date_count DESC, as_of_date DESC/)
 

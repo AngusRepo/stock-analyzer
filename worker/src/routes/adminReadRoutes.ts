@@ -399,11 +399,13 @@ adminReadRoutes.get('/api/admin/strategy/evidence-profiles', async (c) => {
     },
     { shadowDatabaseForDataDomain },
     { STRATEGY_ROUTE_MIN_TOTAL_DATES },
+    { STRATEGY_EVIDENCE_METRIC_DEFINITION_VERSION },
   ] = await Promise.all([
     import('../lib/strategyLearning'),
     import('../lib/strategyEvidenceProfile'),
     import('../lib/dataDomainRegistry'),
     import('../lib/strategyRouteCalibration'),
+    import('../lib/strategyEvidenceMetrics'),
   ])
   const learningDb = databaseForDataDomain(c.env, 'learning')
   const { specs, source } = await listStrategySpecsForLearning(learningDb)
@@ -433,9 +435,17 @@ adminReadRoutes.get('/api/admin/strategy/evidence-profiles', async (c) => {
            metric_value, metric_status, sample_count, mature_dates,
            outcome_as_of_date, definition_version, evidence_json
       FROM strategy_evidence_metrics_v1
-     WHERE outcome_as_of_date=(SELECT MAX(outcome_as_of_date) FROM strategy_evidence_metrics_v1)
+     WHERE definition_version=?
+       AND outcome_as_of_date=(
+         SELECT MAX(outcome_as_of_date)
+           FROM strategy_evidence_metrics_v1
+          WHERE definition_version=?
+       )
      ORDER BY strategy_id, strategy_version, metric_name
-  `).all<StrategyEvidenceMetricApiRow>().catch(() => ({ results: [] }))
+  `).bind(
+    STRATEGY_EVIDENCE_METRIC_DEFINITION_VERSION,
+    STRATEGY_EVIDENCE_METRIC_DEFINITION_VERSION,
+  ).all<StrategyEvidenceMetricApiRow>().catch(() => ({ results: [] }))
   const multiHorizonCoverage = (horizonRows.results ?? [])
     .map((row) => ({ horizon_days: Number(row.horizon_days), outcome_rows: Number(row.outcome_rows) }))
     .filter((row) => [3, 5, 10].includes(row.horizon_days) && row.outcome_rows > 0)

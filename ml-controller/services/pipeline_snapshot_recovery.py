@@ -12,6 +12,10 @@ from typing import Any, Awaitable, Callable
 
 import httpx
 from services.state_space_series import long_history_sequence_artifact_evidence
+from services.pipeline_async_state_transport import (
+    decode_pipeline_state_envelope,
+    validate_pipeline_payload_identity,
+)
 
 
 RECOVERY_SCHEMA_VERSION = "pipeline-snapshot-recovery-lineage-v1"
@@ -68,12 +72,12 @@ def load_pipeline_state_envelope(
     blob = client.bucket(bucket_name).blob(blob_name)
     raw = blob.download_as_bytes()
     blob.reload()
-    payload = json.loads(raw.lstrip(b"\xef\xbb\xbf"))
-    if payload.get("schema_version") != "pipeline-async-state-v1":
-        raise ValueError("pipeline_snapshot_recovery_source_schema_invalid")
+    try:
+        payload = decode_pipeline_state_envelope(raw)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("pipeline_snapshot_recovery_source_schema_invalid") from exc
     state = payload.get("state")
-    if not isinstance(state, dict):
-        raise ValueError("pipeline_snapshot_recovery_source_state_missing")
+    validate_pipeline_payload_identity(state)
     return {
         "payload": payload,
         "state": state,
@@ -106,7 +110,7 @@ def validate_snapshot_recovery_source(
     if str(artifact.get("gcs_uri") or "") != source_gcs_uri:
         raise ValueError("pipeline_snapshot_recovery_artifact_uri_mismatch")
     expected_path = f"/{run_date}/"
-    if expected_path not in source_gcs_uri or not source_gcs_uri.endswith("/partial_state.json"):
+    if expected_path not in source_gcs_uri or not source_gcs_uri.endswith(("/partial_state.json", "/partial_state.json.gz")):
         raise ValueError("pipeline_snapshot_recovery_source_path_mismatch")
 
     source_created_at = _utc_datetime(payload.get("created_at"))
@@ -116,14 +120,10 @@ def validate_snapshot_recovery_source(
     if source_created_at >= next_session_open:
         raise ValueError("pipeline_snapshot_recovery_source_not_preopen")
 
-    payloads = state.get("payloads") if isinstance(state.get("payloads"), list) else []
-    l3_payloads = state.get("l3_payloads") if isinstance(state.get("l3_payloads"), list) else []
-    if not payloads or not l3_payloads or len(payloads) != len(l3_payloads):
-        raise ValueError("pipeline_snapshot_recovery_payloads_incomplete")
-    payload_symbols = [str(row.get("symbol") or "") for row in payloads if isinstance(row, dict)]
-    l3_symbols = [str(row.get("symbol") or "") for row in l3_payloads if isinstance(row, dict)]
-    if payload_symbols != l3_symbols or any(not symbol for symbol in payload_symbols):
-        raise ValueError("pipeline_snapshot_recovery_payload_identity_mismatch")
+    try:
+        payloads = validate_pipeline_payload_identity(state)
+    except ValueError as exc:
+        raise ValueError("pipeline_snapshot_recovery_payload_identity_mismatch") from exc
     if state.get("modal_prediction_bundle") or state.get("modal_prediction_state_gcs_uri"):
         raise ValueError("pipeline_snapshot_recovery_source_already_continued")
 

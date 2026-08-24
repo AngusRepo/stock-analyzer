@@ -1314,6 +1314,8 @@ def _post_pipeline_prediction_callback(input_payload: dict, bundle: dict, elapse
         "result_summary": {
             "n_input": bundle.get("n_input"),
             "stage_timings": bundle.get("stage_timings") or {},
+            "capacity_contract": bundle.get("capacity_contract") or {},
+            "request_transport": bundle.get("request_transport") or {},
         },
     }
     req = urllib.request.Request(
@@ -1401,6 +1403,109 @@ def _post_pipeline_prediction_error_callback(input_payload: dict, error: Excepti
             }
         time.sleep(min(attempt * 2, 5))
     return last_error or {"status": "error", "error": "unknown_callback_failure"}
+
+
+def _hydrate_pipeline_prediction_request_reference(payload: dict) -> dict:
+    if payload.get("schema_version") == "pipeline-modal-prediction-request-v1":
+        return payload
+    if payload.get("schema_version") != "pipeline-modal-prediction-request-ref-v1":
+        raise ValueError("pipeline_modal_request_reference_schema_invalid")
+
+    import gzip
+    import hashlib
+    import json
+    from google.cloud import storage
+
+    run_date = str(payload.get("run_date") or "")[:10]
+    run_id = str(payload.get("run_id") or "").strip()
+    state_gcs_uri = str(payload.get("state_gcs_uri") or "").strip()
+    expected_source_sha = str(payload.get("expected_source_sha") or "").strip().lower()
+    request_gcs_uri = str(payload.get("request_gcs_uri") or "").strip()
+    request_sha = str(payload.get("request_sha256") or "").strip().lower()
+    compressed_sha = str(payload.get("request_compressed_sha256") or "").strip().lower()
+    callback_url = str(payload.get("callback_url") or "").strip()
+    callback_token = str(payload.get("callback_token") or "").strip()
+    try:
+        generation = int(payload.get("request_generation"))
+        compressed_bytes = int(payload.get("request_compressed_bytes"))
+        uncompressed_bytes = int(payload.get("request_uncompressed_bytes"))
+        n_input = int(payload.get("n_input"))
+        max_symbols = int(payload.get("max_symbols"))
+    except (TypeError, ValueError) as exc:
+        raise ValueError("pipeline_modal_request_reference_numeric_invalid") from exc
+    if (
+        len(run_date) != 10
+        or not run_id
+        or not state_gcs_uri.startswith("gs://")
+        or len(expected_source_sha) != 40
+        or any(character not in "0123456789abcdef" for character in expected_source_sha)
+        or len(request_sha) != 64
+        or len(compressed_sha) != 64
+        or any(character not in "0123456789abcdef" for character in request_sha + compressed_sha)
+        or not callback_url
+        or not callback_token
+        or generation <= 0
+        or compressed_bytes <= 0
+        or compressed_bytes > 96 * 1024 * 1024
+        or uncompressed_bytes <= 0
+        or uncompressed_bytes > 512 * 1024 * 1024
+        or n_input <= 0
+        or max_symbols <= 0
+        or max_symbols > 2000
+        or n_input > max_symbols
+    ):
+        raise ValueError("pipeline_modal_request_reference_identity_invalid")
+
+    bucket_name = get_gcs_bucket_name()
+    prefix = f"gs://{bucket_name}/"
+    safe_run_id = "".join(
+        character if character.isalnum() or character in {"-", "_", "."} else "_"
+        for character in run_id
+    )
+    expected_path_fragment = f"/{run_date}/{safe_run_id}/modal_request/{request_sha}.json.gz"
+    if not request_gcs_uri.startswith(prefix) or expected_path_fragment not in request_gcs_uri:
+        raise ValueError("pipeline_modal_request_reference_uri_invalid")
+    blob_name = request_gcs_uri.removeprefix(prefix)
+    compressed = storage.Client().bucket(bucket_name).blob(blob_name).download_as_bytes(
+        if_generation_match=generation,
+    )
+    if len(compressed) != compressed_bytes:
+        raise ValueError("pipeline_modal_request_reference_compressed_size_mismatch")
+    if hashlib.sha256(compressed).hexdigest() != compressed_sha:
+        raise ValueError("pipeline_modal_request_reference_compressed_checksum_mismatch")
+    raw = gzip.decompress(compressed)
+    if len(raw) != uncompressed_bytes:
+        raise ValueError("pipeline_modal_request_reference_size_mismatch")
+    if hashlib.sha256(raw).hexdigest() != request_sha:
+        raise ValueError("pipeline_modal_request_reference_checksum_mismatch")
+    durable = json.loads(raw)
+    if (
+        durable.get("schema_version") != "pipeline-modal-prediction-request-v1"
+        or durable.get("callback_url") is not None
+        or durable.get("callback_token") is not None
+        or str(durable.get("run_date") or "")[:10] != run_date
+        or str(durable.get("run_id") or "").strip() != run_id
+        or str(durable.get("state_gcs_uri") or "").strip() != state_gcs_uri
+        or str(durable.get("expected_source_sha") or "").strip().lower() != expected_source_sha
+        or len(durable.get("payloads") or []) != n_input
+    ):
+        raise ValueError("pipeline_modal_request_reference_payload_mismatch")
+    return {
+        **durable,
+        "callback_url": callback_url,
+        "callback_token": callback_token,
+        "request_transport": {
+            "schema_version": "pipeline-modal-prediction-request-ref-v1",
+            "request_gcs_uri": request_gcs_uri,
+            "request_generation": str(generation),
+            "request_sha256": request_sha,
+            "request_compressed_sha256": compressed_sha,
+            "request_uncompressed_bytes": uncompressed_bytes,
+            "request_compressed_bytes": compressed_bytes,
+            "n_input": n_input,
+            "max_symbols": max_symbols,
+        },
+    }
 
 
 def _pipeline_prediction_bundle_impl(payload: dict) -> dict:
@@ -1721,6 +1826,27 @@ def _pipeline_prediction_bundle_impl(payload: dict) -> dict:
         _assert_exact_rows(model_name, rows, expected=model_symbols)
 
     elapsed_s = round(time.time() - started, 3)
+    feature_wall_sec = float((timings.get("predict_batch_v2") or {}).get("wall_sec") or 0.0)
+    try:
+        feature_chunk_size = max(1, int(payload.get("predict_batch_v2_chunk_size") or len(payloads) or 1))
+    except (TypeError, ValueError):
+        feature_chunk_size = len(payloads) or 1
+    capacity_status = "healthy" if elapsed_s <= 900 else ("watch" if elapsed_s <= 1800 else "breached")
+    capacity_contract = {
+        "schema_version": "pipeline-modal-capacity-v1",
+        "status": capacity_status,
+        "input_count": len(payloads),
+        "max_symbols": 2000,
+        "feature_chunk_size": feature_chunk_size,
+        "feature_chunk_count": math.ceil(len(payloads) / feature_chunk_size) if payloads else 0,
+        "feature_symbols_per_sec": round(len(payloads) / feature_wall_sec, 3) if feature_wall_sec > 0 else None,
+        "bundle_timeout_sec": 3600,
+        "bundle_elapsed_sec": elapsed_s,
+        "timeout_headroom_ratio": round(3600 / elapsed_s, 3) if elapsed_s > 0 else None,
+        "request_transport": payload.get("request_transport") or {
+            "schema_version": "pipeline-modal-inline-request-v1"
+        },
+    }
     bundle = {
         "schema_version": "pipeline-modal-prediction-bundle-v1",
         "run_date": payload.get("run_date"),
@@ -1744,6 +1870,8 @@ def _pipeline_prediction_bundle_impl(payload: dict) -> dict:
         "sequence_dataset": payload.get("sequence_dataset_meta") or {},
         "sequence_input_contract": payload.get("sequence_input_contract") or {},
         "n_input": len(payloads),
+        "capacity_contract": capacity_contract,
+        "request_transport": payload.get("request_transport") or {},
     }
     bundle["durable_handoff"] = _persist_pipeline_prediction_bundle(payload, bundle)
     callback_status = _post_pipeline_prediction_callback(payload, bundle, elapsed_s)
@@ -1757,18 +1885,21 @@ def _pipeline_prediction_bundle_impl(payload: dict) -> dict:
     timeout=3600,
     min_containers=0,
     scaledown_window=900,
-    max_containers=1,
+    max_containers=2,
 )
 def pipeline_prediction_bundle(payload: dict) -> dict:
     """Run Modal predictions and always close the parent pipeline on terminal failure."""
     import time
 
     started = time.time()
+    callback_payload = payload or {}
     try:
-        return _pipeline_prediction_bundle_impl(payload)
+        hydrated_payload = _hydrate_pipeline_prediction_request_reference(callback_payload)
+        callback_payload = hydrated_payload
+        return _pipeline_prediction_bundle_impl(hydrated_payload)
     except Exception as exc:
         callback = _post_pipeline_prediction_error_callback(
-            payload or {},
+            callback_payload,
             exc,
             round(time.time() - started, 3),
         )

@@ -1009,7 +1009,7 @@ def spawn_pipeline_prediction_bundle(payload: dict) -> dict:
         "function_call_id": call_id,
         "run_id": payload.get("run_id"),
         "run_date": payload.get("run_date"),
-        "n_input": len(payload.get("payloads") or []),
+        "n_input": int(payload.get("n_input") or len(payload.get("payloads") or [])),
         "state_gcs_uri": payload.get("state_gcs_uri"),
         "callback_configured": bool(payload.get("callback_url") and payload.get("callback_token")),
     }

@@ -136,7 +136,9 @@ export function parseScreenerArtifactInput(body: any): EvidenceArtifactWriteInpu
     throw new Error('payload must be an object')
   }
   const rowCount = Number(body.rowCount)
-  if (!Number.isInteger(rowCount) || rowCount < 0 || rowCount > 5000) {
+  const isScreenerLogicalIndex = body.domain === 'screener_funnel'
+    && body.schemaVersion === 'screener-funnel-evidence-index-v1'
+  if (!Number.isSafeInteger(rowCount) || rowCount < 0 || (!isScreenerLogicalIndex && rowCount > 5000)) {
     throw new Error('rowCount must be an integer between 0 and 5000')
   }
   if (body.metadata != null && (typeof body.metadata !== 'object' || Array.isArray(body.metadata))) {
@@ -242,6 +244,7 @@ export function parseScreenerArtifactInput(body: any): EvidenceArtifactWriteInpu
         || !Number.isInteger(rowEnd)
         || rowEnd < rowStart
         || Number(chunk.row_count) !== rowEnd - rowStart
+        || Number(chunk.row_count) > 5000
         || typeof chunk.artifact_id !== 'string'
         || !chunk.artifact_id.startsWith('artifact:screener_funnel_chunk:')
         || typeof chunk.r2_key !== 'string'

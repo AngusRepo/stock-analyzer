@@ -54,6 +54,14 @@ from services.active_model_policy import (
     daily_sequence_target_points,
 )
 from services.modal_client import batch_predict, batch_predict_contract
+from services.pipeline_async_state_transport import (
+    STATE_SCHEMA_V2,
+    build_pipeline_payload_identity,
+    decode_pipeline_state_envelope,
+    encode_pipeline_state_envelope,
+    validate_pipeline_payload_identity,
+)
+from services.pipeline_modal_request_transport import write_pipeline_modal_request_artifact
 from services.model_lifecycle_policy import (
     DEFAULT_DEGRADED_DAMPENING,
     resolve_degraded_dampening,
@@ -3326,7 +3334,7 @@ def _pipeline_async_bucket_and_blob(*, run_date: str, producer_run_id: str) -> t
         raise RuntimeError("GCS_BUCKET_NAME is required for async pipeline state artifact")
     safe_run_id = "".join(ch if ch.isalnum() or ch in {"-", "_", "."} else "_" for ch in producer_run_id)
     prefix = os.environ.get("PIPELINE_ASYNC_STATE_GCS_PREFIX", "pipeline-v2/async-modal-prediction").strip().strip("/")
-    return bucket, f"{prefix}/{run_date}/{safe_run_id}/partial_state.json"
+    return bucket, f"{prefix}/{run_date}/{safe_run_id}/partial_state.json.gz"
 
 
 def _write_pipeline_async_state_artifact(state: PipelineStateV2) -> str:
@@ -3335,17 +3343,21 @@ def _write_pipeline_async_state_artifact(state: PipelineStateV2) -> str:
     run_date = state["run_date"]
     producer_run_id = state.get("producer_run_id") or f"pipeline-v2:{run_date}"
     bucket_name, blob_name = _pipeline_async_bucket_and_blob(run_date=run_date, producer_run_id=producer_run_id)
+    persisted_state = _json_safe(dict(state))
+    payloads = persisted_state.get("payloads") if isinstance(persisted_state.get("payloads"), list) else []
+    persisted_state.pop("l3_payloads", None)
+    persisted_state["pipeline_payload_identity"] = build_pipeline_payload_identity(payloads)
     payload = {
-        "schema_version": "pipeline-async-state-v1",
+        "schema_version": STATE_SCHEMA_V2,
         "run_date": run_date,
         "producer_run_id": producer_run_id,
         "created_at": datetime.now(timezone.utc).isoformat(),
-        "state": _json_safe(dict(state)),
+        "state": persisted_state,
     }
     blob = storage.Client().bucket(bucket_name).blob(blob_name)
     blob.upload_from_string(
-        json.dumps(payload, ensure_ascii=False, default=str),
-        content_type="application/json",
+        encode_pipeline_state_envelope(payload),
+        content_type="application/gzip",
     )
     return f"gs://{bucket_name}/{blob_name}"
 
@@ -3356,13 +3368,10 @@ def _read_pipeline_async_state_artifact(gcs_uri: str) -> PipelineStateV2:
     if not gcs_uri.startswith("gs://"):
         raise ValueError(f"invalid pipeline async state uri: {gcs_uri}")
     bucket_name, blob_name = gcs_uri.removeprefix("gs://").split("/", 1)
-    raw = storage.Client().bucket(bucket_name).blob(blob_name).download_as_text()
-    payload = json.loads(raw.lstrip("\ufeff"))
-    if payload.get("schema_version") != "pipeline-async-state-v1":
-        raise RuntimeError(f"invalid pipeline async state schema: {payload.get('schema_version')}")
+    raw = storage.Client().bucket(bucket_name).blob(blob_name).download_as_bytes()
+    payload = decode_pipeline_state_envelope(raw)
     state = payload.get("state")
-    if not isinstance(state, dict):
-        raise RuntimeError("pipeline async state artifact missing state object")
+    validate_pipeline_payload_identity(state)
     return state
 
 
@@ -4579,6 +4588,21 @@ def get_graph():
 
 
 # ??????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????
+def _spawn_pipeline_prediction_bundle_from_artifact(modal_payload: dict[str, Any]) -> dict[str, Any]:
+    from services import modal_client
+
+    request_ref = write_pipeline_modal_request_artifact(modal_payload)
+    spawn_info = modal_client.spawn_pipeline_prediction_bundle(request_ref)
+    return {
+        **spawn_info,
+        "request_gcs_uri": request_ref["request_gcs_uri"],
+        "request_generation": request_ref["request_generation"],
+        "request_sha256": request_ref["request_sha256"],
+        "request_uncompressed_bytes": request_ref["request_uncompressed_bytes"],
+        "request_compressed_bytes": request_ref["request_compressed_bytes"],
+    }
+
+
 # Public runner
 # ??????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????
 
@@ -4645,15 +4669,13 @@ async def run_pipeline_v2_until_modal_prediction_spawn(run_date: str = "", produ
             node_build_payloads,
             node_l2_timesfm_enrich,
         ])
-        state["l3_payloads"] = list(state.get("payloads") or [])
+        state["pipeline_payload_identity"] = build_pipeline_payload_identity(state.get("payloads") or [])
         await _attach_pipeline_modal_serving_context(state)
         modal_payload = await _build_pipeline_modal_prediction_payload(state, state_gcs_uri="")
         state_gcs_uri = _write_pipeline_async_state_artifact(state)
         modal_payload["state_gcs_uri"] = state_gcs_uri
 
-        from services import modal_client
-
-        spawn_info = await asyncio.to_thread(modal_client.spawn_pipeline_prediction_bundle, modal_payload)
+        spawn_info = await asyncio.to_thread(_spawn_pipeline_prediction_bundle_from_artifact, modal_payload)
         elapsed = asyncio.get_event_loop().time() - t0
         return {
             "status": "deferred",
@@ -4668,6 +4690,11 @@ async def run_pipeline_v2_until_modal_prediction_spawn(run_date: str = "", produ
                     "function_name": spawn_info.get("function_name"),
                     "n_input": spawn_info.get("n_input"),
                     "callback_configured": spawn_info.get("callback_configured"),
+                    "request_gcs_uri": spawn_info.get("request_gcs_uri"),
+                    "request_generation": spawn_info.get("request_generation"),
+                    "request_sha256": spawn_info.get("request_sha256"),
+                    "request_uncompressed_bytes": spawn_info.get("request_uncompressed_bytes"),
+                    "request_compressed_bytes": spawn_info.get("request_compressed_bytes"),
                 },
                 "timesfm_l2_summary": state.get("timesfm_l2_summary") or state.get("timesfm_l175_summary") or {},
             },
@@ -4704,7 +4731,7 @@ async def run_pipeline_v2_from_snapshot_recovery(
             attach_serving_context=_attach_pipeline_modal_serving_context,
             write_state_artifact=_write_pipeline_async_state_artifact,
             build_modal_payload=_build_pipeline_modal_prediction_payload,
-            spawn_prediction_bundle=modal_client.spawn_pipeline_prediction_bundle,
+            spawn_prediction_bundle=_spawn_pipeline_prediction_bundle_from_artifact,
         )
         result["elapsed_s"] = round(asyncio.get_event_loop().time() - t0, 1)
         return result

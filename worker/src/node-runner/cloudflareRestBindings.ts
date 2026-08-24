@@ -41,6 +41,7 @@ type EvidenceArtifactWriterConfig = {
 const RETRYABLE_STATUS = new Set([429, 500, 502, 503, 504])
 const SCREENER_ARTIFACT_DIRECT_WRITE_MAX_BYTES = 2 * 1024 * 1024
 const SCREENER_ARTIFACT_CHUNK_TARGET_BYTES = 1536 * 1024
+const SCREENER_ARTIFACT_CHUNK_MAX_ROWS = 5000
 const SCREENER_ARTIFACT_CHUNK_SCHEMA = 'screener-funnel-evidence-chunk-v1'
 const SCREENER_ARTIFACT_INDEX_SCHEMA = 'screener-funnel-evidence-index-v1'
 const SCREENER_ARTIFACT_CHUNK_DOMAIN = 'screener_funnel_chunk'
@@ -183,7 +184,13 @@ export class RestEvidenceArtifactWriter implements EvidenceArtifactWriter {
       if (itemBytes > SCREENER_ARTIFACT_CHUNK_TARGET_BYTES) {
         throw new Error(`screener_funnel_item_exceeds_transport_limit:${itemBytes}`)
       }
-      if (current.length && currentBytes + itemBytes > SCREENER_ARTIFACT_CHUNK_TARGET_BYTES) {
+      if (
+        current.length
+        && (
+          current.length >= SCREENER_ARTIFACT_CHUNK_MAX_ROWS
+          || currentBytes + itemBytes > SCREENER_ARTIFACT_CHUNK_TARGET_BYTES
+        )
+      ) {
         chunks.push(current)
         current = []
         currentBytes = 0
@@ -282,7 +289,13 @@ export class RestEvidenceArtifactWriter implements EvidenceArtifactWriter {
       throw new Error(`screener_funnel_row_count_mismatch:${input.rowCount}:${items.length}`)
     }
     const serializedBytes = utf8ByteLength(JSON.stringify(input))
-    if (items && serializedBytes > SCREENER_ARTIFACT_DIRECT_WRITE_MAX_BYTES) {
+    if (
+      items
+      && (
+        items.length > SCREENER_ARTIFACT_CHUNK_MAX_ROWS
+        || serializedBytes > SCREENER_ARTIFACT_DIRECT_WRITE_MAX_BYTES
+      )
+    ) {
       return this.writeChunkedScreener(input, items)
     }
     return this.post(input)

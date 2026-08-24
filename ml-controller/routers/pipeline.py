@@ -252,6 +252,8 @@ async def _record_pipeline_modal_bundle_telemetry(payload: dict[str, Any]) -> No
                 "run_date": payload.get("run_date") or bundle.get("run_date"),
                 "input_count": bundle.get("n_input"),
                 "stage_timings": bundle.get("stage_timings") or {},
+                "capacity_contract": bundle.get("capacity_contract") or {},
+                "request_transport": bundle.get("request_transport") or {},
                 "callback_status": bundle.get("callback_status") or {},
                 "state_gcs_uri": payload.get("state_gcs_uri") or bundle.get("state_gcs_uri"),
             },

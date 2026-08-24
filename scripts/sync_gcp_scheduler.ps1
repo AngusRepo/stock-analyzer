@@ -32,6 +32,10 @@ script dry-run only until its full schedule-sync path uses HTTPS request bodies.
 }
 
 $manifest = Get-Content -LiteralPath $ManifestPath -Raw | ConvertFrom-Json
+if ([string]$manifest.governance.schemaVersion -ne 'stockvision-scheduler-governance-v1') {
+  throw 'Scheduler manifest governance schema missing or invalid.'
+}
+$governanceDefaults = $manifest.governance.defaults
 if (-not $DryRun -and $null -ne $manifest.mutationAllowed -and -not [bool]$manifest.mutationAllowed) {
   throw "Manifest blocks production mutation: $ManifestPath"
 }
@@ -86,6 +90,15 @@ foreach ($job in $manifest.jobs) {
   $description = [string]$job.description
   $timeZone = if ($job.timeZone) { [string]$job.timeZone } else { [string]$manifest.timeZone }
   $headers = New-SchedulerHeaderArg -Job $job
+  $attemptDeadline = if ($job.attemptDeadline) { [string]$job.attemptDeadline } else { [string]$governanceDefaults.attemptDeadline }
+  $desiredState = if ($job.desiredState) { [string]$job.desiredState } else { [string]$governanceDefaults.desiredState }
+  if ($desiredState -notin @('ENABLED', 'PAUSED')) { throw "Invalid desired state for job $($job.id): $desiredState" }
+  $retryDefaults = $governanceDefaults.retryConfig
+  $maxRetryAttempts = if ($null -ne $job.maxRetryAttempts) { [string]$job.maxRetryAttempts } else { [string]$retryDefaults.retryCount }
+  $minBackoff = if ($job.minBackoff) { [string]$job.minBackoff } else { [string]$retryDefaults.minBackoffDuration }
+  $maxBackoff = if ($job.maxBackoff) { [string]$job.maxBackoff } else { [string]$retryDefaults.maxBackoffDuration }
+  $maxRetryDuration = if ($job.maxRetryDuration) { [string]$job.maxRetryDuration } else { [string]$retryDefaults.maxRetryDuration }
+  $maxDoublings = if ($null -ne $job.maxDoublings) { [string]$job.maxDoublings } else { [string]$retryDefaults.maxDoublings }
   $exists = $currentIds.Contains([string]$job.id)
 
   if ($exists) {
@@ -98,7 +111,7 @@ foreach ($job in $manifest.jobs) {
       '--uri', $uri,
       '--http-method', 'POST',
       '--update-headers', $headers,
-      '--attempt-deadline', '300s',
+      '--attempt-deadline', $attemptDeadline,
       '--description', $description,
       '--format', 'none'
     )
@@ -112,27 +125,22 @@ foreach ($job in $manifest.jobs) {
       '--uri', $uri,
       '--http-method', 'POST',
       '--headers', $headers,
-      '--attempt-deadline', '300s',
+      '--attempt-deadline', $attemptDeadline,
       '--description', $description,
       '--format', 'none'
     )
   }
 
-  if ($null -ne $job.maxRetryAttempts) {
-    $args += @('--max-retry-attempts', [string]$job.maxRetryAttempts)
-  }
-  if ($job.minBackoff) {
-    $args += @('--min-backoff', [string]$job.minBackoff)
-  }
-  if ($job.maxBackoff) {
-    $args += @('--max-backoff', [string]$job.maxBackoff)
-  }
-  if ($job.maxRetryDuration) {
-    $args += @('--max-retry-duration', [string]$job.maxRetryDuration)
-  }
+  $args += @(
+    '--max-retry-attempts', $maxRetryAttempts,
+    '--min-backoff', $minBackoff,
+    '--max-backoff', $maxBackoff,
+    '--max-retry-duration', $maxRetryDuration,
+    '--max-doublings', $maxDoublings
+  )
 
   $action = if ($exists) { 'update' } else { 'create' }
-  Write-Host "[scheduler-sync] $action $($job.id) -> $uri @ $($job.schedule) tz=$timeZone"
+  Write-Host "[scheduler-sync] $action $($job.id) -> $uri @ $($job.schedule) tz=$timeZone state=$desiredState retry=$maxRetryAttempts deadline=$attemptDeadline"
   if (-not $DryRun) {
     & gcloud @args *> $null
     if ($LASTEXITCODE -ne 0) { throw "gcloud scheduler sync failed for $($job.id)" }

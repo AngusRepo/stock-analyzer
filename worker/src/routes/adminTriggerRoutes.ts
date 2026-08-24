@@ -4,6 +4,16 @@ import { requireServiceToken } from '../lib/auth'
 import type { Bindings, Variables } from '../types'
 import type { TaskHandler } from '../lib/adminTriggerTaskMap'
 import { shouldRunScheduledTask } from '../lib/schedulerPolicy'
+import { databaseForDataDomain } from '../lib/dataDomainRegistry'
+import {
+  admitSchedulerExecutionTicket,
+  schedulerDeliveryIdentity,
+  schedulerTicketStatusForRunLog,
+  updateSchedulerExecutionTicket,
+  type SchedulerExecutionTicketAuthority,
+  type SchedulerTicketAdmission,
+  type SchedulerExecutionTicketStatus,
+} from '../lib/schedulerExecutionTickets'
 
 interface TriggerRouteDeps {
   buildTaskMap: (c: any) => Record<string, TaskHandler>
@@ -123,21 +133,73 @@ export function createAdminTriggerRoutes(deps: TriggerRouteDeps) {
       : 'admin'
     const rateLimit = maintenanceBackfill ? 500 : 100
     const rlKey = `ratelimit:${rateLimitNamespace}:${new Date(Date.now() + 8 * 3600_000).toISOString().slice(0, 13)}`
-    const rlCount = parseInt((await c.env.KV.get(rlKey)) ?? '0', 10)
-    if (rlCount >= rateLimit) return c.json({ error: `Rate limit exceeded (${rateLimit}/hr)` }, 429)
-    await c.env.KV.put(rlKey, String(rlCount + 1), { expirationTtl: 3600 })
     const requestedRunDate = c.req.query('date') || undefined
     const taskMap = deps.buildTaskMap(c)
     const fn = taskMap[task]
     if (!fn) return c.json({ error: `Unknown task: ${task}`, available: Object.keys(taskMap) }, 400)
 
-    if (requestedRunDate) {
-      const {
+    const ticketDb = databaseForDataDomain(c.env, 'ops')
+    let ticketAdmission: SchedulerTicketAdmission
+    try {
+      ticketAdmission = await admitSchedulerExecutionTicket(ticketDb, {
+        identity: schedulerDeliveryIdentity(c.req.raw.headers),
+        task,
+        requestedRunDate,
+        proposedRunId: buildRunId(task),
+        metadata: { requested_task: requestedTask },
+      })
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
+      const identityConflict = message.includes('Cloud Scheduler') || message.includes('unmanaged Cloud Scheduler')
+      return c.json(
+        { success: false, error: `scheduler ticket admission failed: ${message}` },
+        identityConflict ? 409 : 503,
+      )
+    }
+    const executionRunId = ticketAdmission.ticket.run_id
+    const schedulerTicketId = ticketAdmission.ticket.ticket_id
+    const updateTicket = (
+      status: SchedulerExecutionTicketStatus,
+      authority: SchedulerExecutionTicketAuthority,
+      summary?: string,
+      error?: string,
+    ) => updateSchedulerExecutionTicket(ticketDb, {
+      ticketId: schedulerTicketId,
+      runId: executionRunId,
+      status,
+      authority,
+      summary,
+      error,
+    })
+    if (!ticketAdmission.shouldExecute) {
+      const terminal = ['success', 'error', 'skipped', 'blocked'].includes(ticketAdmission.ticket.status)
+      const response = {
+        success: ticketAdmission.ticket.status === 'success' || ticketAdmission.ticket.status === 'skipped',
+        duplicate: true,
+        reason: ticketAdmission.reason,
+        task,
+        run_id: executionRunId,
+        ticket_id: schedulerTicketId,
+        ticket_status: ticketAdmission.ticket.status,
+      }
+      return terminal ? c.json(response, 200) : c.json(response, 202)
+    }
+
+    const rlCount = parseInt((await c.env.KV.get(rlKey)) ?? '0', 10)
+    if (rlCount >= rateLimit) {
+      const summary = `rate limit exceeded (${rateLimit}/hr)`
+      await updateTicket('blocked', 'scheduler_http', summary, summary)
+      return c.json({ success: false, error: summary, ticket_id: schedulerTicketId }, 429)
+    }
+    await c.env.KV.put(rlKey, String(rlCount + 1), { expirationTtl: 3600 })
+
+    if (requestedRunDate) {      const {
         historicalLearningLineageBlockedMessage,
         historicalLearningLineageDecision,
       } = await import('../lib/historicalLearningLineageGuard')
       const lineageBoundary = await historicalLearningLineageDecision(c.env.DB, c.env.KV, task, requestedRunDate)
       if (!lineageBoundary.allowed) {
+        await updateTicket('blocked', 'scheduler_http', 'historical learning lineage boundary blocked')
         return c.json({
           success: false,
           error: historicalLearningLineageBlockedMessage(lineageBoundary),
@@ -151,6 +213,7 @@ export function createAdminTriggerRoutes(deps: TriggerRouteDeps) {
       const decision = await shouldRunScheduledTask({ task, kv: c.env.KV })
       if (!decision.shouldRun) {
         const summary = `skipped by scheduler policy: ${decision.reason}`
+        await updateTicket('skipped', 'scheduler_http', summary)
         await logSchedulerResult(c.env.KV, task, { status: 'skipped', summary, duration_ms: 0, run_date: requestedRunDate })
         return c.json({
           success: true,
@@ -169,6 +232,7 @@ export function createAdminTriggerRoutes(deps: TriggerRouteDeps) {
     if (!storageAdmission.allowed) {
       const summary = `blocked by storage admission: ${storageAdmission.reason} utilization=${storageAdmission.utilizationPct ?? 'unknown'}%`
       if (task === 'optuna-queue') {
+        await updateTicket('skipped', 'scheduler_http', summary)
         await logSchedulerResult(c.env.KV, task, {
           status: 'skipped',
           summary,
@@ -183,6 +247,7 @@ export function createAdminTriggerRoutes(deps: TriggerRouteDeps) {
           storage_admission: storageAdmission,
         })
       }
+      await updateTicket('blocked', 'scheduler_http', summary, summary)
       await logSchedulerResult(c.env.KV, task, {
         status: 'error',
         summary,
@@ -199,12 +264,14 @@ export function createAdminTriggerRoutes(deps: TriggerRouteDeps) {
 
     const syncMode = c.req.query('sync') === '1'
     if (task === 's12-smcvwap-calibration' && syncMode) {
+      await updateTicket('blocked', 'scheduler_http', 's12 calibration sync bypass is forbidden')
       return c.json({
         success: false,
         error: 's12 calibration requires durable queue execution; sync bypass is forbidden',
       }, 409)
     }
     if (SYNC_REQUIRED_TASKS.has(task) && !syncMode) {
+      await updateTicket('blocked', 'scheduler_http', `${task} requires sync=1`)
       return c.json({
         success: false,
         error: `${task} requires sync=1 so Scheduler can observe data-readiness failures`,
@@ -284,7 +351,13 @@ export function createAdminTriggerRoutes(deps: TriggerRouteDeps) {
 
     if (longRunning.has(task) && !syncMode) {
       const t0 = Date.now()
-      const runId = buildRunId(task)
+      const runId = executionRunId
+      const durableQueue = isDurableQueueTask(task)
+      await updateTicket(
+        durableQueue ? 'queued' : 'running',
+        durableQueue ? 'durable_queue' : 'scheduler_http',
+        'accepted by admin trigger',
+      )
       await logSchedulerResult(c.env.KV, task, {
         status: 'running',
         summary: `started (background) run_id=${runId}`,
@@ -300,7 +373,7 @@ export function createAdminTriggerRoutes(deps: TriggerRouteDeps) {
         run_date: requestedRunDate,
       })
       // HTTP waitUntil is capped after response; these 100s+ tasks require the 15-minute Queue consumer owner.
-      if (isDurableQueueTask(task)) {
+      if (durableQueue) {
         const runDate = requestedRunDate ?? twToday()
         try {
           await c.env.UPDATE_QUEUE.send({
@@ -309,9 +382,11 @@ export function createAdminTriggerRoutes(deps: TriggerRouteDeps) {
             cursor: 0,
             triggerTime: runDate,
             runId,
+            schedulerTicketId,
           })
         } catch (error) {
           const summary = error instanceof Error ? error.message : String(error)
+          await updateTicket('error', 'durable_queue', `durable queue enqueue failed: ${summary}`, summary)
           await logSchedulerResult(c.env.KV, task, {
             status: 'error',
             summary: `durable queue enqueue failed: ${summary}`,
@@ -331,6 +406,7 @@ export function createAdminTriggerRoutes(deps: TriggerRouteDeps) {
             error: `durable queue enqueue failed: ${summary}`,
             task,
             run_id: runId,
+            ticket_id: schedulerTicketId,
           }, 503)
         }
         return c.json({
@@ -340,6 +416,7 @@ export function createAdminTriggerRoutes(deps: TriggerRouteDeps) {
           mode: 'durable_queue',
           run_id: runId,
           run_date: runDate,
+          ticket_id: schedulerTicketId,
         }, 202)
       }
 
@@ -347,20 +424,23 @@ export function createAdminTriggerRoutes(deps: TriggerRouteDeps) {
         try {
           const result = await fn()
           const summary = typeof result === 'string' ? result : JSON.stringify(result)?.slice(0, 200) ?? ''
+          const status = classifySchedulerSummary(summary)
+          await updateTicket(schedulerTicketStatusForRunLog(status), 'scheduler_http', summary)
           await logSchedulerResult(c.env.KV, task, {
-            status: classifySchedulerSummary(summary),
+            status,
             summary,
             duration_ms: Date.now() - t0,
             run_id: runId,
             run_date: requestedRunDate,
           })
           await putRunLog(c.env.KV, task, runId, {
-            status: classifySchedulerSummary(summary),
+            status,
             summary,
             duration_ms: Date.now() - t0,
             run_date: requestedRunDate,
           })
         } catch (e: any) {
+          await updateTicket('error', 'scheduler_http', e?.message ?? 'Unknown error', String(e))
           await logSchedulerResult(
             c.env.KV,
             task,
@@ -389,23 +469,35 @@ export function createAdminTriggerRoutes(deps: TriggerRouteDeps) {
         triggered_at: new Date().toISOString(),
         mode: 'async',
         run_id: runId,
+        ticket_id: schedulerTicketId,
       }, 202)
     }
 
     const t0 = Date.now()
-    const syncRunId = buildRunId(task)
+    const syncRunId = executionRunId
+    await updateTicket('running', 'scheduler_http', 'sync execution started')
     try {
       const result = await fn()
       const summary = typeof result === 'string' ? result : JSON.stringify(result)?.slice(0, 200) ?? ''
+      const status = classifySchedulerSummary(summary)
+      await updateTicket(schedulerTicketStatusForRunLog(status), 'scheduler_http', summary)
       await logSchedulerResult(c.env.KV, task, {
-        status: classifySchedulerSummary(summary),
+        status,
         summary,
         duration_ms: Date.now() - t0,
         run_id: syncRunId,
         run_date: requestedRunDate,
       })
-      return c.json({ success: true, message: `${task} 執行成功`, triggered_at: new Date().toISOString(), result })
+      return c.json({
+        success: true,
+        message: `${task} 執行成功`,
+        triggered_at: new Date().toISOString(),
+        result,
+        run_id: syncRunId,
+        ticket_id: schedulerTicketId,
+      })
     } catch (e: any) {
+      await updateTicket('error', 'scheduler_http', e?.message ?? 'Unknown error', String(e))
       await logSchedulerResult(
         c.env.KV,
         task,
@@ -419,7 +511,7 @@ export function createAdminTriggerRoutes(deps: TriggerRouteDeps) {
         },
         c.env as any,
       )
-      return c.json({ success: false, message: `${task} 執行失敗`, error: e.message }, 500)
+      return c.json({ success: false, message: `${task} 執行失敗`, error: e.message, run_id: syncRunId, ticket_id: schedulerTicketId }, 500)
     }
   })
 

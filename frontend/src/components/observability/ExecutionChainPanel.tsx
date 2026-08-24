@@ -31,7 +31,7 @@ import {
   X,
   Zap,
 } from 'lucide-react'
-import type { SchedulerJob } from '@/lib/api'
+import type { SchedulerJob, SchedulerStatus } from '@/lib/api'
 import { buildAttemptAwareJobMap } from './executionChainAttemptState'
 import StandaloneJobRegistry from './StandaloneJobRegistry'
 import './ExecutionChainPanel.css'
@@ -434,11 +434,13 @@ export default function ExecutionChainPanel({
   isFetching,
   dataUpdatedAt,
   apiError,
+  governance,
 }: {
   jobs: SchedulerJob[]
   isFetching: boolean
   dataUpdatedAt: number
   apiError?: string | null
+  governance?: SchedulerStatus['governance']
 }) {
   const [scopeId, setScopeId] = useState<ChainScope['id']>('daily_readiness')
   const [selectedId, setSelectedId] = useState<string | null>(null)
@@ -774,7 +776,7 @@ export default function ExecutionChainPanel({
         </article>
 
       </div>
-      <StandaloneJobRegistry jobs={jobs} mappedJobIds={MAPPED_JOB_IDS} />
+      <StandaloneJobRegistry jobs={jobs} mappedJobIds={MAPPED_JOB_IDS} governance={governance} />
     </section>
   )
 }

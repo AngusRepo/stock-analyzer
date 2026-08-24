@@ -351,6 +351,7 @@ export interface UpdateQueueMsg {
   cursorKey?: string  // durable keyset cursor for symbol/date ordered workflows
   triggerTime: string // 原始觸發時間，防止跨天的 cursor 汙染
   runId?: string      // 同一次 queue fan-out 的識別碼
+  schedulerTicketId?: string // Ops D1 durable execution ticket propagated across queue ownership
   shardIndex?: number // 多 shard 平行更新時的 shard index
   shardCount?: number // 多 shard 平行更新時的總 shard 數
   attempt?: number    // finalize watchdog retry count

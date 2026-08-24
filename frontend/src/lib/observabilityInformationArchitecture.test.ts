@@ -69,8 +69,9 @@ assert(chain.includes('function statusLabel') && chain.includes('Historical repl
 assert(fs.existsSync(standalonePath) && fs.existsSync(standaloneCssPath), 'standalone job registry and isolated CSS should exist')
 assert(chain.includes('StandaloneJobRegistry') && chain.includes('MAPPED_JOB_IDS'), 'execution chain must account for jobs outside visual topology')
 assert(standalone.includes('.filter((job) => !mappedJobIds.has(job.id))'), 'every unmapped API job must enter the runtime registry')
-assert(standalone.includes('Standalone root') && standalone.includes('Topology missing') && standalone.includes('Consolidation tracked') && standalone.includes('Retirement candidate'), 'registry must distinguish true topology gaps from governed consolidation states')
-assert(standalone.includes('{jobs.length} / {jobs.length} accounted'), 'registry must expose full scheduler coverage')
+assert(standalone.includes('Standalone root') && standalone.includes('Unmapped dependency') && standalone.includes('Dependency reviewed') && standalone.includes('Internal logical ticket'), 'registry must distinguish reviewed, standalone, unmapped, and internal task accounting')
+assert(standalone.includes('logical accounted') && standalone.includes('ticket contract') && standalone.includes('observed') && standalone.includes('terminal'), 'registry must expose 52/52 logical accounting and contract/observed/terminal ticket coverage')
+assert(standalone.includes("job.accounting?.physicalRoot") && standalone.includes("job.ticket?.ticketId"), 'registry cards must identify physical roots and runtime ticket presence')
 assert(standaloneCss.includes('.obs-standalone__group-card') && standaloneCss.includes('.obs-standalone__job-grid') && !standaloneCss.includes('.obs-standalone__rows'), 'standalone jobs must use the previous grouped-card presentation')
 assert(standalone.includes("['weekly', 'pipeline_chain', 'daily', 'intraday', 'monthly']") && standaloneCss.includes("[aria-label='Weekly operations'] { grid-column: span 4;") && standaloneCss.includes("[aria-label='Pipeline support'] { grid-column: span 2;") && standaloneCss.includes("[aria-label='Daily operations'] { grid-column: span 4;"), 'standalone desktop top row must stay Weekly 4 / Pipeline 2 / Daily 4')
 

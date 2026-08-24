@@ -23,7 +23,7 @@
 .obs-standalone__heading h4 { margin: 0; color: #e8edf3; font-size: 15px; font-weight: 700; letter-spacing: -.015em; }
 .obs-standalone__heading > div > span { display: block; margin-top: 4px; max-width: 72ch; color: #8494a6; font-size: 12px; line-height: 1.5; }
 
-.obs-standalone__coverage { display: grid; grid-template-columns: auto 14px auto; align-items: center; gap: 7px; color: #7f90a4; font-size: 12px; text-align: right; }
+.obs-standalone__coverage { display: grid; grid-template-columns: auto 14px auto auto; align-items: center; gap: 7px; color: #7f90a4; font-size: 12px; text-align: right; }
 .obs-standalone__coverage > span { display: flex; align-items: baseline; gap: 4px; white-space: nowrap; }
 .obs-standalone__coverage strong { color: #d8e1e9; font-size: 14px; }
 .obs-standalone__coverage svg { width: 13px; height: 13px; color: #55718c; }
@@ -68,7 +68,7 @@
 .obs-standalone__relation span { display: block; margin-top: 1px; overflow: hidden; font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }
 .obs-standalone__relation.is-unmapped { color: #d4a755; }
 .obs-standalone__relation.is-unmapped strong { color: #e1b865; }
-.obs-standalone__timing { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); margin: 9px 0 0; }
+.obs-standalone__timing { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); margin: 9px 0 0; }
 .obs-standalone__timing > div { min-width: 0; }
 .obs-standalone__timing > div + div { border-left: 1px solid #26384a; padding-left: 9px; }
 .obs-standalone__timing dt { color: #8992a3; font-size: 12px; text-transform: uppercase; }
@@ -96,8 +96,8 @@
 
 @media (max-width: 720px) {
   .obs-standalone__header { flex-direction: column; padding: 14px; }
-  .obs-standalone__coverage { width: 100%; grid-template-columns: auto 14px auto 1fr; text-align: left; }
-  .obs-standalone__coverage em { grid-column: auto; text-align: right; }
+  .obs-standalone__coverage { width: 100%; grid-template-columns: auto 14px auto auto; text-align: left; }
+  .obs-standalone__coverage em { grid-column: 1 / -1; text-align: left; }
   .obs-standalone__job-grid { grid-template-columns: 1fr; }
 }
 

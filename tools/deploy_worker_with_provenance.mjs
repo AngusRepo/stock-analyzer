@@ -54,6 +54,19 @@ if (!existsSync(manifestPath)) throw new Error(`missing scheduler manifest: ${ma
 if (!existsSync(wranglerCli)) throw new Error('locked Worker Wrangler is missing; run npm ci in worker')
 
 const schedulerSha256 = createHash('sha256').update(readFileSync(manifestPath)).digest('hex')
+
+// Code admission depends on the domain-native ticket authority. Remote D1
+// migrations remain explicit, so deploy must fail closed until Ops 0011 has
+// already been applied and read back.
+run(process.execPath, [
+  wranglerCli,
+  'd1',
+  'execute',
+  'stockvision-ops-db',
+  '--remote',
+  '--command',
+  'SELECT ticket_id FROM scheduler_execution_tickets_v1 LIMIT 0;',
+], { cwd: workerDir })
 run(process.execPath, [
   wranglerCli, 'deploy', '--strict',
   '--tag', sourceSha,

@@ -7,6 +7,13 @@ import type { Bindings } from '../types'
 import { getCronLogs, type CronLogEntry } from './schedulerRunLogger'
 import { getNextRunApproxWithPolicy } from './schedulerPolicy'
 import { getSchedulerDependencySpec } from './schedulerDependencyMap'
+import { schedulerGovernanceSummary, schedulerJobAccounting } from './schedulerManifestGovernance'
+import { databaseForDataDomain } from './dataDomainRegistry'
+import {
+  loadLatestSchedulerRootTickets,
+  SCHEDULER_TICKET_CONTRACT_ROOTS,
+  type SchedulerExecutionTicketRow,
+} from './schedulerExecutionTickets'
 
 interface JobDef {
   id: string
@@ -383,6 +390,47 @@ export function reconcileDurablePipelineStageStatus(input: {
   }
 }
 
+export function reconcileSchedulerExecutionTicketStatus(input: {
+  baseStatus: SchedulerLastStatus
+  baseTimestamp?: string | null
+  ticket?: SchedulerExecutionTicketRow
+}): {
+  lastStatus: SchedulerLastStatus
+  lastRunAt: string
+  summary: string
+  lastError?: string
+  statusAuthority: 'scheduler_execution_ticket'
+  runId: string
+  attemptId: string
+  attemptCount: number
+  ticketId: string
+} | null {
+  const { ticket } = input
+  if (!ticket) return null
+  const ticketTimestamp = sqliteUtcTimestamp(ticket.updated_at)
+  const ticketMs = Date.parse(ticketTimestamp)
+  const baseMs = input.baseTimestamp ? Date.parse(input.baseTimestamp) : Number.NEGATIVE_INFINITY
+  if (!Number.isFinite(ticketMs) || (Number.isFinite(baseMs) && ticketMs < baseMs)) return null
+  const lastStatus: SchedulerLastStatus = ticket.status === 'success'
+    ? 'success'
+    : ticket.status === 'error' || ticket.status === 'blocked'
+      ? 'failed'
+      : ticket.status === 'skipped'
+        ? 'skip'
+        : 'running'
+  return {
+    lastStatus,
+    lastRunAt: ticketTimestamp,
+    summary: ticket.last_summary || `${ticket.status}; durable scheduler execution ticket`,
+    lastError: lastStatus === 'failed' ? (ticket.last_error || ticket.last_summary || undefined) : undefined,
+    statusAuthority: 'scheduler_execution_ticket',
+    runId: ticket.run_id,
+    attemptId: ticket.attempt_id,
+    attemptCount: ticket.attempt_count,
+    ticketId: ticket.ticket_id,
+  }
+}
+
 async function loadDurablePipelineStageStates(
   db: D1Database,
   dates: string[],
@@ -726,7 +774,8 @@ export async function getSchedulerStatus(env: Bindings, anchorDate?: string) {
   const today = dates[0]
 
   const allLogs: Record<string, CronLogEntry[]> = {}
-  const durableStageStatesPromise = loadDurablePipelineStageStates(env.DB, dates).catch((error) => {
+  const opsDb = databaseForDataDomain(env, 'ops')
+  const durableStageStatesPromise = loadDurablePipelineStageStates(opsDb, dates).catch((error) => {
     console.warn('[schedulerStatus] durable pipeline stage read failed:', error)
     return new Map<string, DurablePipelineStageDisplayRow>()
   })
@@ -757,7 +806,19 @@ export async function getSchedulerStatus(env: Bindings, anchorDate?: string) {
     allLogs[date] = mergeDirectSchedulerLog(allLogs[date] ?? [], log)
   }
 
-  const durableStageStates = await durableStageStatesPromise
+  const [durableStageStates, schedulerExecutionTickets] = await Promise.all([
+    durableStageStatesPromise,
+    loadLatestSchedulerRootTickets(opsDb, dates).catch((error) => {
+      console.warn('[schedulerStatus] scheduler execution ticket read failed:', error)
+      return [] as SchedulerExecutionTicketRow[]
+    }),
+  ])
+  const executionTicketsByJobDate = new Map<string, SchedulerExecutionTicketRow>()
+  for (const ticket of schedulerExecutionTickets) {
+    if (!ticket.scheduler_job_id) continue
+    const key = `${ticket.business_date}:${ticket.scheduler_job_id}`
+    if (!executionTicketsByJobDate.has(key)) executionTicketsByJobDate.set(key, ticket)
+  }
   const { activeChainDate, chainStatusDate } = selectSchedulerChainDates(dates, allLogs)
   if (chainStatusDate) {
     const activeTaskIds = CHAIN_STEP_IDS.filter((task) => task !== 'evening-chain')
@@ -792,6 +853,7 @@ export async function getSchedulerStatus(env: Bindings, anchorDate?: string) {
       ? getJobDisplayLog(allLogs[chainStatusDate], def)
       : undefined
     const nextRun = await getNextRunApproxWithPolicy({ task: def.id, cron: def.cron, kv: env.KV, skipKvPolicy: true })
+    const accounting = schedulerJobAccounting(def.id, def.chainIndex)
 
     const displayLogs = dates.map((date) => ({
       date,
@@ -838,13 +900,40 @@ export async function getSchedulerStatus(env: Bindings, anchorDate?: string) {
       baseTimestamp: displayLog?.timestamp,
       durable: durableState,
     })
-    const lastStatus = durableOverride?.lastStatus ?? resolvedDisplay.status
-    const displayTime = resolveSchedulerRunDisplayTime({
-      jobId: def.id,
-      displayTimestamp: durableOverride?.lastRunAt ?? displayLog?.timestamp ?? null,
-      durable: durableState,
+    const baseLastStatus = durableOverride?.lastStatus ?? resolvedDisplay.status
+    const baseTimestamp = durableOverride?.lastRunAt ?? displayLog?.timestamp ?? null
+    const executionTicketDate = resolvedDisplay.statusRunDate ?? today
+    const executionTicket = accounting.schedulerJobId
+      ? executionTicketsByJobDate.get(`${executionTicketDate}:${accounting.schedulerJobId}`)
+      : undefined
+    const executionTicketOverride = reconcileSchedulerExecutionTicketStatus({
+      baseStatus: baseLastStatus,
+      baseTimestamp,
+      ticket: executionTicket,
     })
+    const lastStatus = executionTicketOverride?.lastStatus ?? baseLastStatus
+    const displayTime = executionTicketOverride
+      ? { timestamp: executionTicketOverride.lastRunAt, basis: 'updated' as const }
+      : resolveSchedulerRunDisplayTime({
+          jobId: def.id,
+          displayTimestamp: baseTimestamp,
+          durable: durableState,
+        })
 
+    const ticketRunId = executionTicketOverride?.runId ?? durableOverride?.runId ?? displayLog?.run_id ?? null
+    const ticketId = executionTicketOverride?.ticketId ?? ticketRunId
+    const ticketAuthority = executionTicketOverride?.statusAuthority ?? durableOverride?.statusAuthority ?? 'scheduler_kv'
+    const ticketRunDate = executionTicket?.business_date ?? resolvedDisplay.statusRunDate
+    const ticket = {
+      ticketId,
+      physicalRootId: accounting.schedulerJobId,
+      logicalTask: accounting.task,
+      status: lastStatus,
+      runDate: ticketRunDate,
+      authority: ticketAuthority,
+      durable: ticketAuthority !== 'scheduler_kv',
+      missing: accounting.ticketRequired && !ticketId,
+    }
     const lastDuration = formatDuration(displayLog?.duration_ms)
     const shortRun = inferShortRunConcern(def, displayLog)
 
@@ -873,20 +962,24 @@ export async function getSchedulerStatus(env: Bindings, anchorDate?: string) {
       lastDuration,
       durationConcern: shortRun.durationConcern,
       durationConcernReason: shortRun.durationConcernReason,
-      lastError: durableOverride
-        ? durableOverride.lastError
-        : resolvedDisplay.staleReason ?? displayLog?.error,
+      lastError: executionTicketOverride
+        ? executionTicketOverride.lastError
+        : durableOverride
+          ? durableOverride.lastError
+          : resolvedDisplay.staleReason ?? displayLog?.error,
       nextRun,
       history7d,
       rate7d: totalCount > 0 ? `${successCount}/${totalCount}` : 'N/A',
-      summary: durableOverride?.summary ?? displayLog?.summary ?? '',
+      summary: executionTicketOverride?.summary ?? durableOverride?.summary ?? displayLog?.summary ?? '',
       details: displayLog?.details ?? [],
-      runId: durableOverride?.runId ?? displayLog?.run_id ?? null,
-      attemptId: displayLog?.attempt_id ?? null,
-      attemptCount: durableOverride?.attemptCount ?? null,
+      runId: ticketRunId,
+      attemptId: executionTicketOverride?.attemptId ?? displayLog?.attempt_id ?? null,
+      attemptCount: executionTicketOverride?.attemptCount ?? durableOverride?.attemptCount ?? null,
       recoveredFromStatus: durableOverride?.recoveredFromStatus ?? null,
-      statusAuthority: durableOverride?.statusAuthority ?? 'scheduler_kv',
-      consolidation: getSchedulerDependencySpec(def.id) ?? null,
+      statusAuthority: ticketAuthority,
+      consolidation: getSchedulerDependencySpec(accounting.task) ?? null,
+      accounting,
+      ticket,
     }
   }))
 
@@ -940,6 +1033,22 @@ export async function getSchedulerStatus(env: Bindings, anchorDate?: string) {
       nextIn: nextJob?.nextRun || 'N/A',
     },
     jobs,
+    governance: {
+      ...schedulerGovernanceSummary(jobs.filter((job) => !job.accounting.physicalRoot).length),
+      ticketContractRoots: SCHEDULER_TICKET_CONTRACT_ROOTS,
+      observedTicketRoots: new Set(
+        schedulerExecutionTickets.map((ticket) => ticket.scheduler_job_id).filter(Boolean),
+      ).size,
+      terminalTicketRoots: new Set(
+        schedulerExecutionTickets
+          .filter((ticket) => ['success', 'error', 'skipped', 'blocked'].includes(ticket.status))
+          .map((ticket) => ticket.scheduler_job_id)
+          .filter(Boolean),
+      ).size,
+      runtimeTicketedJobs: jobs.filter((job) => Boolean(job.ticket.ticketId)).length,
+      runtimeTicketMissingJobs: jobs.filter((job) => job.ticket.missing).length,
+      durableTicketedJobs: jobs.filter((job) => job.ticket.durable).length,
+    },
     dag: {
       lastRun: allLogs[today]?.find((entry) => entry.task === 'pipeline')?.timestamp || 'N/A',
       totalDuration: allLogs[today]?.find((entry) => entry.task === 'pipeline')?.duration_ms || 0,

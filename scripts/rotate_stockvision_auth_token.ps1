@@ -338,12 +338,31 @@ function Assert-WorkerTokenEventually([string]$Token, [string]$Label) {
 
 function Get-SchedulerManifest {
   $manifest = Get-Content -LiteralPath $ManifestPath -Raw | ConvertFrom-Json
+  if ([string]$manifest.governance.schemaVersion -ne 'stockvision-scheduler-governance-v1') {
+    throw 'rotation_scheduler_manifest_governance_missing_or_invalid'
+  }
+  $defaults = $manifest.governance.defaults
+  if ([string]$defaults.desiredState -ne 'ENABLED' -or [string]$defaults.attemptDeadline -eq '') {
+    throw 'rotation_scheduler_manifest_governance_defaults_invalid'
+  }
+  foreach ($field in @('retryCount', 'maxRetryDuration', 'minBackoffDuration', 'maxBackoffDuration', 'maxDoublings')) {
+    if ($null -eq $defaults.retryConfig.PSObject.Properties[$field]) {
+      throw "rotation_scheduler_manifest_retry_default_missing:$field"
+    }
+  }
+  foreach ($field in @('state', 'schedule', 'timeZone', 'description', 'attemptDeadline', 'retryConfig', 'httpTarget')) {
+    if (@($manifest.governance.parityFields) -notcontains $field) {
+      throw "rotation_scheduler_manifest_parity_field_missing:$field"
+    }
+  }
   $jobs = @($manifest.jobs)
   if ($jobs.Count -ne $ExpectedSchedulerCount) { throw "rotation_scheduler_manifest_count_mismatch:expected=$ExpectedSchedulerCount`:actual=$($jobs.Count)" }
   $seen = [System.Collections.Generic.HashSet[string]]::new()
   foreach ($job in $jobs) {
     $id = [string]$job.id
     if ($id -notmatch '^[a-z][a-z0-9-]{0,499}$' -or -not $seen.Add($id)) { throw 'rotation_scheduler_manifest_invalid_or_duplicate_id' }
+    $desiredState = if ($job.desiredState) { [string]$job.desiredState } else { [string]$defaults.desiredState }
+    if ($desiredState -notin @('ENABLED', 'PAUSED')) { throw "rotation_scheduler_manifest_invalid_desired_state:$id" }
   }
   return $manifest
 }

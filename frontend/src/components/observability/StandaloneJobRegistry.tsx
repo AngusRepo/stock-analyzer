@@ -1,5 +1,5 @@
 import { AlertTriangle, ArrowRight, CalendarClock, CircleDot, ListTree } from 'lucide-react'
-import type { SchedulerJob } from '@/lib/api'
+import type { SchedulerJob, SchedulerStatus } from '@/lib/api'
 import './StandaloneJobRegistry.css'
 
 const GROUP_LABEL: Record<SchedulerJob['group'], string> = {
@@ -34,26 +34,17 @@ function dependencyEvidence(job: SchedulerJob) {
   const upstream = job.consolidation?.upstream?.filter(Boolean) ?? []
   const downstream = job.consolidation?.downstream?.filter(Boolean) ?? []
   const hasDependency = upstream.length > 0 || downstream.length > 0 || typeof job.chainIndex === 'number'
-  const consolidationClass = job.consolidation?.consolidationClass
-  if (!hasDependency) {
-    return { upstream, downstream, hasDependency, isTopologyGap: false, label: 'Standalone root' }
+  const accountingClass = job.accounting?.accountingClass ?? 'unmapped_dependency'
+  if (accountingClass === 'unmapped_dependency') {
+    return { upstream, downstream, hasDependency, isTopologyGap: true, label: 'Unmapped dependency' }
   }
-  if (consolidationClass === 'merge_into_chain' || consolidationClass === 'downstream_evidence') {
-    return { upstream, downstream, hasDependency, isTopologyGap: false, label: 'Consolidation tracked' }
+  if (accountingClass === 'standalone_root') {
+    return { upstream, downstream, hasDependency: false, isTopologyGap: false, label: 'Standalone root' }
   }
-  if (consolidationClass === 'manual_maintenance_candidate') {
-    return { upstream, downstream, hasDependency, isTopologyGap: false, label: 'Maintenance candidate' }
+  if (accountingClass === 'internal_chain') {
+    return { upstream, downstream, hasDependency: true, isTopologyGap: false, label: 'Internal logical ticket' }
   }
-  if (consolidationClass === 'disable_candidate') {
-    return { upstream, downstream, hasDependency, isTopologyGap: false, label: 'Retirement candidate' }
-  }
-  return {
-    upstream,
-    downstream,
-    hasDependency,
-    isTopologyGap: consolidationClass === 'keep_scheduler',
-    label: consolidationClass === 'keep_scheduler' ? 'Topology missing' : 'Dependency unclassified',
-  }
+  return { upstream, downstream, hasDependency: true, isTopologyGap: false, label: 'Dependency reviewed' }
 }
 
 function statusCount(jobs: SchedulerJob[], status: SchedulerJob['lastStatus']) {
@@ -63,9 +54,11 @@ function statusCount(jobs: SchedulerJob[], status: SchedulerJob['lastStatus']) {
 export default function StandaloneJobRegistry({
   jobs,
   mappedJobIds,
+  governance,
 }: {
   jobs: SchedulerJob[]
   mappedJobIds: ReadonlySet<string>
+  governance?: SchedulerStatus['governance']
 }) {
   const registryJobs = jobs
     .filter((job) => !mappedJobIds.has(job.id))
@@ -78,16 +71,17 @@ export default function StandaloneJobRegistry({
         <div className="obs-standalone__heading">
           <span className="obs-standalone__icon"><ListTree aria-hidden="true" /></span>
           <div>
-            <p>Non-chain inventory</p>
-            <h4 id="obs-standalone-title">Standalone &amp; unmapped jobs</h4>
-            <span>沒有相依關係的 job 依執行週期分區；只有具 dependency evidence 但尚未納入 topology 的 job 會標記為 unmapped。</span>
+            <p>Scheduler governance</p>
+            <h4 id="obs-standalone-title">Physical roots &amp; logical task accounting</h4>
+            <span>每個實體 Scheduler 與邏輯 task 都必須被 accounting；unmapped 代表尚未完成 dependency review，不會被誤畫成 DAG。</span>
           </div>
         </div>
-        <div className="obs-standalone__coverage sv-num" aria-label={`${jobs.length} scheduler jobs accounted for`}>
-          <span><strong>{mappedCount}</strong> chain</span>
+        <div className="obs-standalone__coverage sv-num" aria-label={`${governance?.accountedLogicalTasks ?? jobs.length} of ${governance?.uniqueLogicalTasks ?? jobs.length} logical tasks accounted for`}>
+          <span><strong>{governance?.physicalRoots ?? jobs.filter((job) => job.accounting?.physicalRoot).length}</strong> physical</span>
           <ArrowRight aria-hidden="true" />
-          <span><strong>{registryJobs.length}</strong> standalone</span>
-          <em>{jobs.length} / {jobs.length} accounted</em>
+          <span><strong>{governance?.reviewedDependencies ?? mappedCount}</strong> reviewed</span>
+          <span><strong>{governance?.unmappedDependencies ?? registryJobs.filter((job) => job.accounting?.accountingClass === 'unmapped_dependency').length}</strong> unmapped</span>
+          <em>{governance?.accountedLogicalTasks ?? jobs.length} / {governance?.uniqueLogicalTasks ?? jobs.length} logical accounted · paused {governance?.pausedPhysicalRoots ?? 0} · bounded retry {governance?.retryEnabledPhysicalRoots ?? 0} · ticket contract {governance?.ticketContractRoots ?? 0}/{governance?.physicalRoots ?? 0} · observed {governance?.observedTicketRoots ?? 0} · terminal {governance?.terminalTicketRoots ?? 0}</em>
         </div>
       </header>
 
@@ -121,7 +115,7 @@ export default function StandaloneJobRegistry({
                         <div className="obs-standalone__job-head">
                           <div className="obs-standalone__identity">
                             <strong>{job.name}</strong>
-                            <span className="sv-num">{job.id}</span>
+                            <span className="sv-num">{job.id} · {job.accounting?.physicalRoot ? `physical ${job.accounting.desiredState ?? ""}` : "logical"}</span>
                           </div>
                           <div className="obs-standalone__status">
                             <CircleDot aria-hidden="true" />
@@ -148,6 +142,7 @@ export default function StandaloneJobRegistry({
                         <dl className="obs-standalone__timing sv-num">
                           <div><dt>Last</dt><dd>{job.lastRun || '—'}</dd></div>
                           <div><dt>Next</dt><dd>{job.nextRun || job.schedule || '—'}</dd></div>
+                          <div><dt>Ticket</dt><dd>{job.ticket?.ticketId ? job.ticket.ticketId.slice(0, 18) : 'missing'}</dd></div>
                         </dl>
                       </article>
                     )

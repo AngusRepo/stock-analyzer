@@ -332,13 +332,32 @@ export type SchedulerJob = {
   attemptId?: string | null
   attemptCount?: number | null
   recoveredFromStatus?: 'success' | 'failed' | 'running' | 'skip' | 'waiting' | 'sleep' | null
-  statusAuthority?: 'scheduler_kv' | 'durable_pipeline_stage'
+  statusAuthority?: 'scheduler_kv' | 'durable_pipeline_stage' | 'scheduler_execution_ticket'
   displayNote?: string | null
   nextRun: string
   history7d: Array<'success' | 'failed' | 'skip'>
   rate7d: string
   summary: string
   details?: string[]
+  accounting: {
+    schedulerJobId: string | null
+    task: string
+    physicalRoot: boolean
+    desiredState: 'ENABLED' | 'PAUSED' | null
+    accountingClass: 'mapped_dependency' | 'standalone_root' | 'unmapped_dependency' | 'internal_chain'
+    dependencyReviewed: boolean
+    ticketRequired: boolean
+  }
+  ticket: {
+    ticketId: string | null
+    physicalRootId: string | null
+    logicalTask: string
+    status: SchedulerJob['lastStatus']
+    runDate: string | null
+    authority: 'scheduler_kv' | 'durable_pipeline_stage' | 'scheduler_execution_ticket'
+    durable: boolean
+    missing: boolean
+  }
   consolidation?: {
     task: string
     owner: 'gcp_scheduler' | 'worker_chain' | 'controller_chain' | 'manual_only'
@@ -368,6 +387,25 @@ export type SchedulerStatus = {
     nextIn: string
   }
   jobs: SchedulerJob[]
+  governance: {
+    schemaVersion: string
+    physicalRoots: number
+    pausedPhysicalRoots: number
+    retryEnabledPhysicalRoots: number
+    uniqueLogicalTasks: number
+    accountedLogicalTasks: number
+    reviewedDependencies: number
+    standaloneRoots: number
+    unmappedDependencies: number
+    internalLogicalSteps: number
+    ticketContractRoots: number
+    observedTicketRoots: number
+    terminalTicketRoots: number
+    runtimeTicketedJobs: number
+    runtimeTicketMissingJobs: number
+    durableTicketedJobs: number
+    unmappedTasks: string[]
+  }
   dag?: {
     lastRun: string
     totalDuration: number

@@ -189,6 +189,13 @@ export async function runWeeklyCleanup(env: Bindings): Promise<MaintenanceRunRes
     databaseForDataDomain(env, 'market'),
     "DELETE FROM intraday_minute_bars WHERE trade_date < date('now', '-90 days')",
   )
+  await run(
+    'scheduler_execution_ticket_terminal_400d',
+    databaseForDataDomain(env, 'ops'),
+    `DELETE FROM scheduler_execution_tickets_v1
+      WHERE expires_at < CURRENT_TIMESTAMP
+        AND status IN ('success','error','skipped','blocked')`,
+  )
 
   const result = { ok: tasks.every((task) => task.ok), tasks }
   console.log(`[CleanupV2] completed ok=${result.ok} tasks=${tasks.length}`)

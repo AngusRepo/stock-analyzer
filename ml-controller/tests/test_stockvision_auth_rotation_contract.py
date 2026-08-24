@@ -193,6 +193,54 @@ def test_scheduler_inventory_create_patch_parity_and_rollback_contract() -> None
         assert forbidden_native_or_disk_path not in scheduler_source
 
 
+def test_scheduler_semantic_state_retry_parity_contract() -> None:
+    env = os.environ.copy()
+    env["SCHEDULER_HELPER_PATH"] = str(ROOT / "scripts" / "auth_rotation_scheduler_rest.ps1")
+    env["SCHEDULER_MANIFEST_PATH"] = str(ROOT / "infra" / "gcp-scheduler-jobs.json")
+    command = textwrap.dedent(
+        r"""
+        $Project = 'test-project'
+        $Location = 'asia-east1'
+        $WorkerBaseUrl = 'https://worker.example.test'
+        . $env:SCHEDULER_HELPER_PATH
+        $manifest = Get-Content -LiteralPath $env:SCHEDULER_MANIFEST_PATH -Raw | ConvertFrom-Json
+        $definition = @($manifest.jobs | Where-Object { $_.id -eq 'intraday-check' })[0]
+        $desired = New-SchedulerDesiredJob -Manifest $manifest -Definition $definition -Token 'test-token'
+        $actual = [pscustomobject]@{
+          name = $desired.name
+          state = 'ENABLED'
+          schedule = $desired.schedule
+          timeZone = $desired.timeZone
+          description = $desired.description
+          attemptDeadline = $desired.attemptDeadline
+          retryConfig = $null
+          httpTarget = [pscustomobject]@{
+            uri = $desired.httpTarget.uri
+            httpMethod = 'POST'
+            headers = $desired.httpTarget.headers
+          }
+        }
+        Assert-SchedulerJobParity -Id 'intraday-check' -Actual $actual -Desired $desired
+        $apiBody = ConvertTo-SchedulerApiBody -Body $desired
+        if ($apiBody.Contains('_desiredState')) { exit 11 }
+        $actual.state = 'PAUSED'
+        if (Test-SchedulerJobParity -Id 'intraday-check' -Actual $actual -Desired $desired) { exit 12 }
+        $actual.state = 'ENABLED'
+        $actual.retryConfig = [pscustomobject]@{ retryCount = 1 }
+        if (Test-SchedulerJobParity -Id 'intraday-check' -Actual $actual -Desired $desired) { exit 13 }
+        Write-Output 'scheduler_semantic_parity_ok'
+        """
+    )
+    result = subprocess.run(
+        [_powershell_executable(), "-NoProfile", "-NonInteractive", "-Command", command],
+        text=True,
+        capture_output=True,
+        check=False,
+        env=env,
+    )
+    assert result.returncode == 0, result.stderr
+    assert "scheduler_semantic_parity_ok" in result.stdout
+
 def _powershell_executable() -> str:
     executable = shutil.which("pwsh") or shutil.which("powershell")
     if executable is None:

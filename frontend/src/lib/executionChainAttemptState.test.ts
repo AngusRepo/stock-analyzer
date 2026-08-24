@@ -26,6 +26,25 @@ function job(
     history7d: [],
     rate7d: 'N/A',
     summary: '',
+    accounting: {
+      schedulerJobId: null,
+      task: id,
+      physicalRoot: false,
+      desiredState: null,
+      accountingClass: 'internal_chain',
+      dependencyReviewed: true,
+      ticketRequired: true,
+    },
+    ticket: {
+      ticketId: null,
+      physicalRootId: null,
+      logicalTask: id,
+      status: lastStatus,
+      runDate: null,
+      authority: 'scheduler_kv',
+      durable: false,
+      missing: true,
+    },
     ...overrides,
   }
 }

@@ -34,6 +34,7 @@ import {
   type ObservabilityEvent,
   type ObservabilitySeverity,
   type SchedulerJob,
+  type SchedulerStatus,
   type StorageCapacitySnapshot,
 } from '@/lib/api'
 
@@ -999,6 +1000,7 @@ function OperationalReadinessDeck({
   schedulerApiError,
   schedulerFetching,
   schedulerDataUpdatedAt,
+  schedulerGovernance,
   capacityReport,
   capacityLoading,
   capacityError,
@@ -1008,6 +1010,7 @@ function OperationalReadinessDeck({
   schedulerApiError?: string | null
   schedulerFetching: boolean
   schedulerDataUpdatedAt: number
+  schedulerGovernance?: SchedulerStatus['governance']
   capacityReport?: StorageCapacitySnapshot
   capacityLoading: boolean
   capacityError?: string | null
@@ -1039,6 +1042,7 @@ function OperationalReadinessDeck({
           isFetching={schedulerFetching}
           dataUpdatedAt={schedulerDataUpdatedAt}
           apiError={schedulerApiError}
+          governance={schedulerGovernance}
         />
       </div>
 
@@ -1537,6 +1541,7 @@ export default function ObservabilityPage() {
             schedulerApiError={schedulerApiError}
             schedulerFetching={scheduler.isFetching}
             schedulerDataUpdatedAt={scheduler.dataUpdatedAt}
+            schedulerGovernance={scheduler.data?.governance}
             capacityReport={capacity.data}
             capacityLoading={capacity.isLoading}
             capacityError={errorMessage(capacity.error)}

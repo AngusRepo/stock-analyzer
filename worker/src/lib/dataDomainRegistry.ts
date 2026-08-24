@@ -211,6 +211,7 @@ const EXTENDED_PRODUCTION_TABLE_OWNERSHIP: readonly TableOwnershipMetadata[] = [
   { table: 'strategy_threshold_calibration_artifacts', domain: 'learning', disposition: 'compact_projection', route_ready: true, shadow_ready: true },
   { table: 'strategy_threshold_calibration_runs', domain: 'learning', disposition: 'active_window', route_ready: true, shadow_ready: true },
 
+  { table: 'scheduler_execution_tickets_v1', domain: 'ops', disposition: 'active_window', route_ready: true, shadow_ready: false },
   { table: 'artifact_d1_scrub_queue', domain: 'ops', disposition: 'active_window', route_ready: true, shadow_ready: true },
   { table: 'data_source_inventory', domain: 'ops', disposition: 'full_scalar', route_ready: true, shadow_ready: true },
   { table: 'finlab_backfill_runs', domain: 'ops', disposition: 'active_window', route_ready: true, shadow_ready: true },

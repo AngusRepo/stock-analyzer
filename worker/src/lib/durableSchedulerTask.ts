@@ -9,6 +9,11 @@ import {
   type MaintenanceLeaseBusy,
 } from './maintenanceLease'
 import { classifySchedulerSummary, logSchedulerResult } from './schedulerRunLogger'
+import {
+  schedulerTicketStatusForRunLog,
+  updateSchedulerExecutionTicket,
+  type SchedulerExecutionTicketStatus,
+} from './schedulerExecutionTickets'
 
 type WeeklyLifecycleRunner = () => Promise<unknown>
 
@@ -425,8 +430,25 @@ export async function processDurableSchedulerTask(
   const runDate = msg.triggerTime
   const runId = msg.runId || `${task}-${Date.now()}`
   const startedAt = Date.now()
+  const ticketDb = databaseForDataDomain(env, 'ops')
+  const updateTicket = async (
+    status: SchedulerExecutionTicketStatus,
+    summary: string,
+    error?: string,
+  ): Promise<void> => {
+    if (!msg.schedulerTicketId) return
+    await updateSchedulerExecutionTicket(ticketDb, {
+      ticketId: msg.schedulerTicketId,
+      runId,
+      status,
+      authority: 'durable_queue',
+      summary,
+      error,
+    })
+  }
 
   try {
+    await updateTicket('running', 'durable queue consumer started')
     const taskResult = await (options.runTask ?? runDurableTask)(task, env, runDate)
     if (isMaintenanceLeaseBusy(taskResult)) {
       const opsDb = databaseForDataDomain(env, 'ops')
@@ -450,6 +472,7 @@ export async function processDurableSchedulerTask(
           run_date: runDate,
           error: 'bounded durable lease recovery exhausted',
         }
+        await updateTicket('error', result.summary, result.error)
         await logSchedulerResult(env.KV, task, result, env)
         await putManualRunLog(env.KV, task, runId, result)
         await releaseDurableTaskRecoveryFence(opsDb, msg, runId)
@@ -469,6 +492,7 @@ export async function processDurableSchedulerTask(
         run_id: runId,
         run_date: runDate,
       }
+      await updateTicket('running', result.summary)
       await logSchedulerResult(env.KV, task, result, env)
       await putManualRunLog(env.KV, task, runId, result)
       if (recovery.reason !== 'deduplicated') {
@@ -487,6 +511,7 @@ export async function processDurableSchedulerTask(
       run_id: runId,
       run_date: runDate,
     } as const
+    await updateTicket(schedulerTicketStatusForRunLog(status), result.summary)
     await logSchedulerResult(env.KV, task, result, env)
     await putManualRunLog(env.KV, task, runId, { ...result, ...taskResult })
     if (status === 'success') {
@@ -504,6 +529,7 @@ export async function processDurableSchedulerTask(
       run_date: runDate,
       error: String(error),
     }
+    await updateTicket(recoveryEnqueueRetry ? 'running' : 'error', result.summary, recoveryEnqueueRetry ? undefined : result.error)
     await logSchedulerResult(env.KV, task, result, env)
     await putManualRunLog(env.KV, task, runId, result)
     throw error

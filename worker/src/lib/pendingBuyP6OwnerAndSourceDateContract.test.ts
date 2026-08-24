@@ -15,5 +15,11 @@ assert.match(paper, /FROM daily_recommendations[\s\S]*WHERE date < \?[\s\S]*scor
 assert.match(paper, /resolvePendingBuySourceRecoDate\([\s\S]*snapshot\.date,[\s\S]*snapshot\.meta/)
 assert.match(paper, /enrichPendingBuyContext\([\s\S]*databaseForDataDomain\(c\.env, 'core'\),[\s\S]*databaseForDataDomain\(c\.env, 'market'\)/)
 assert(!paper.includes('enrichPendingBuyContext(c.env.DB'))
+assert(paper.includes('reconcileLegacyP6DisplayMeta('))
+assert.match(paper, /readCurrentZone\(databaseForDataDomain\(env, 'market'\)\)/)
+assert.match(paper, /owner_repaired_historical_run_not_replayed/)
+assert.match(paper, /historical_run_replayed: false/)
+assert.match(paper, /displayMeta = await reconcileLegacyP6DisplayMeta/)
+assert.match(paper, /buildPendingBuyStateSummary\(snapshot\.pendingBuys, displayMeta\)/)
 
 console.log('pending-buy P6 owner and source-date contracts passed')

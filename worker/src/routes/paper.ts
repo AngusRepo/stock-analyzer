@@ -629,6 +629,37 @@ async function resolvePendingBuySourceRecoDate(
   return row?.date ?? pendingDate
 }
 
+async function reconcileLegacyP6DisplayMeta(
+  env: Bindings,
+  snapshotDate: string,
+  meta: Record<string, any> | null | undefined,
+): Promise<Record<string, any> | null | undefined> {
+  const legacyError = String(meta?.error_message ?? '')
+  if (!legacyError.includes('[P6]') || !/no such table:\s*screener_momentum_snapshots/i.test(legacyError)) {
+    return meta
+  }
+  try {
+    const { readCurrentZone } = await import('../lib/momentumZone')
+    const current = await readCurrentZone(databaseForDataDomain(env, 'market'))
+    const rank = current.percentile_rank == null ? 'n/a' : current.percentile_rank.toFixed(4)
+    return {
+      ...(meta ?? {}),
+      error_message: `P6 owner ��Market D1 ${current.date ?? 'latest'} zone=${current.zone} rank=${rank}${snapshotDate} w� setup �Y halted ��M� look-ahead`,
+      p6_runtime_reconciliation: {
+        status: 'owner_repaired_historical_run_not_replayed',
+        production_effect: false,
+        database_owner: 'market',
+        evidence_date: current.date,
+        zone: current.zone,
+        percentile_rank: current.percentile_rank,
+        original_error_code: 'legacy_core_d1_table_owner_mismatch',
+        historical_run_replayed: false,
+      },
+    }
+  } catch {
+    return meta
+  }
+}
 function buildPendingBuyExecutionPolicy(meta: Record<string, any> | null | undefined, sourceRecoDate: string): Record<string, any> {
   const rawFinalBuyLimit = meta?.final_buy_limit ?? meta?.execution_pool_limit
   const finalBuyLimit = Number(rawFinalBuyLimit)
@@ -1130,13 +1161,14 @@ paper.get('/quadrant-filter', async (c) => {
 paper.get('/pending-buys', async (c) => {
   const twToday = new Date(Date.now() + 8 * 3600_000).toISOString().slice(0, 10)
   const snapshot = await loadPendingBuySnapshot(c.env, twToday, { allowFallbackRecent: false })
-  const state = buildPendingBuyStateSummary(snapshot.pendingBuys, snapshot.meta)
+  const displayMeta = await reconcileLegacyP6DisplayMeta(c.env, snapshot.date, snapshot.meta as Record<string, any> | null)
+  const state = buildPendingBuyStateSummary(snapshot.pendingBuys, displayMeta)
   const sourceRecoDate = await resolvePendingBuySourceRecoDate(
     c.env,
     snapshot.date,
     snapshot.meta as Record<string, any> | null,
   )
-  const executionPolicy = buildPendingBuyExecutionPolicy(snapshot.meta as Record<string, any> | null, sourceRecoDate)
+  const executionPolicy = buildPendingBuyExecutionPolicy(displayMeta, sourceRecoDate)
   const pendingBuys = await enrichPendingBuyContext(
     databaseForDataDomain(c.env, 'core'),
     databaseForDataDomain(c.env, 'market'),
@@ -1151,7 +1183,7 @@ paper.get('/pending-buys', async (c) => {
     is_stale: snapshot.is_stale,
     resolved_from: snapshot.resolved_from,
     source: snapshot.source,
-    meta: snapshot.meta ?? null,
+    meta: displayMeta ?? null,
     execution_policy: executionPolicy,
     state,
     pendingBuys: pendingBuysForResponse,

@@ -4044,7 +4044,7 @@ recommendations.get('/daily', async (c) => {
   `).bind(date).all<any>()
   const results = coreResult.results ?? []
   const symbolsForHydration = [...new Set(results.map((row: any) => String(row.symbol ?? '').trim()).filter(Boolean))]
-  if (symbolsForHydration.length) {
+  if (symbolsForHydration.length && view !== 'card') {
     const marketDb = databaseForDataDomain(c.env, 'market')
     const prices = await loadMarketPriceHistoryBySymbols(c.env, symbolsForHydration, {
       onOrBeforeDate: String(date),
@@ -4099,7 +4099,7 @@ recommendations.get('/daily', async (c) => {
   const institutionalRawBySymbol = new Map<string, any>()
   const brokerTopFlowsBySymbol = new Map<string, any>()
   const brokerRankRowsBySymbol = new Map<string, any[]>()
-  if (resultSymbols.length > 0) {
+  if (resultSymbols.length > 0 && view !== 'card') {
     for (const resultSymbolChunk of d1SafeInChunks(resultSymbols)) {
       const placeholders = resultSymbolChunk.map(() => '?').join(',')
       try {
@@ -4191,7 +4191,7 @@ recommendations.get('/daily', async (c) => {
       }
     }
   }
-  if (resultSymbols.length > 0) {
+  if (resultSymbols.length > 0 && view !== 'card') {
     for (const resultSymbolChunk of d1SafeInChunks(resultSymbols)) {
       try {
         const placeholders = resultSymbolChunk.map(() => '?').join(',')
@@ -4366,7 +4366,9 @@ recommendations.get('/daily', async (c) => {
       watch_points: watchPoints,
     }
   })
-  const evidenceLinksBySymbol = await loadRecommendationEvidenceLinks(
+  const evidenceLinksBySymbol = view === 'card'
+    ? new Map<string, any[]>()
+    : await loadRecommendationEvidenceLinks(
     c.env,
     String(date),
     recs.map((r: any) => ({ symbol: String(r.symbol ?? ''), name: String(r.name ?? '') })),
@@ -4391,15 +4393,17 @@ recommendations.get('/daily', async (c) => {
     recs.length,
   )
   let pipelineSummaries: Record<string, any> = { funnel_summary: null, strategy_summary: null }
-  try {
+  if (view !== 'card') {
+    try {
     pipelineSummaries = await buildDailyPipelineSummaries(
       databaseForDataDomain(c.env, 'ops'),
       databaseForDataDomain(c.env, 'core'),
       databaseForDataDomain(c.env, 'learning'),
       String(date),
     )
-  } catch (e) {
-    console.warn('[recommendations/daily] daily pipeline summaries unavailable:', e)
+    } catch (e) {
+      console.warn('[recommendations/daily] daily pipeline summaries unavailable:', e)
+    }
   }
 
   return c.json({

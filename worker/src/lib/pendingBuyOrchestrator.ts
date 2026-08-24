@@ -459,7 +459,7 @@ async function loadMacroContext(env: Bindings, tradeDate: string): Promise<{
   }
 
   const { fetchTaifexNightClose } = await import('./twseApi')
-  const taifex = await fetchTaifexNightClose().catch((error) => {
+  const taifex = await fetchTaifexNightClose(env.ML_CONTROLLER_URL, env.ML_CONTROLLER_SECRET).catch((error) => {
     console.warn('[PendingBuyOrchestrator] TAIFEX fetch failed:', error)
     return null
   })

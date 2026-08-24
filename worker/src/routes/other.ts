@@ -1889,7 +1889,7 @@ async function loadCanonicalRegimeRiskDetail(db: D1Database) {
 }
 
 market.get('/indices', async (c) => {
-  const data = await withCache(c.env.KV, 'market:indices:finlab-clean:v16-twii-canonical-date-fallback', async () => {
+  const data = await withCache(c.env.KV, 'market:indices:finlab-clean:v17-taifex-controller-live-night', async () => {
     const [canonicalTwii, finlabTwoii, finlabTxfDay, finlabTxfNight, taifexDay, taifexNight, twseOfficialTwii] = await Promise.all([
       loadCanonicalTwiiSeries(databaseForDataDomain(c.env, 'market')),
       loadFinlabSeries(databaseForDataDomain(c.env, 'market'), 'TWOII', '櫃買指數', [
@@ -1939,7 +1939,7 @@ market.get('/indices', async (c) => {
         },
       ]),
       fetchTaifexDayClose().catch(() => null),
-      fetchTaifexNightClose().catch(() => null),
+      fetchTaifexNightClose(c.env.ML_CONTROLLER_URL, c.env.ML_CONTROLLER_SECRET).catch(() => null),
       fetchTwseTaiexOfficialSeries(),
     ])
     const taifexDaySnapshot = taifexDay ? {
@@ -3179,6 +3179,13 @@ recommendations.use('/*', authMiddleware)
 
 const FINAL_RECOMMENDATION_WHERE = "signal IS NOT NULL AND confidence IS NOT NULL AND score_components LIKE '%score_v2%'"
 const FINAL_RECOMMENDATION_ROW_WHERE = "r.signal IS NOT NULL AND r.confidence IS NOT NULL AND r.score_components LIKE '%score_v2%'"
+const CARD_RECOMMENDATION_ROW_WHERE = `(
+  COALESCE(r.has_buy_signal, 0) = 1
+  OR UPPER(COALESCE(r.signal, '')) IN ('BUY', 'STRONG_BUY', 'POTENTIAL_BUY')
+  OR COALESCE(CASE WHEN json_valid(r.alpha_allocation) THEN json_extract(r.alpha_allocation, '$.potential_buy') END, 0) IN (1, 'true')
+  OR COALESCE(CASE WHEN json_valid(r.alpha_allocation) THEN json_extract(r.alpha_allocation, '$.selected') END, 0) IN (1, 'true')
+  OR COALESCE(r.watch_points, '') LIKE '%allocation:potential_buy%'
+)`
 
 function isEmergingRecommendation(row: Record<string, any>): boolean {
   return String(row.recommendation_lane ?? '').toLowerCase() === 'emerging_watchlist'
@@ -4030,6 +4037,7 @@ recommendations.get('/daily', async (c) => {
       FROM daily_recommendations r
       LEFT JOIN stocks s ON s.id=r.stock_id
      WHERE r.date=? AND ${FINAL_RECOMMENDATION_ROW_WHERE}
+       AND ${view === 'card' ? CARD_RECOMMENDATION_ROW_WHERE : '1=1'}
        AND COALESCE(r.recommendation_lane, '') != 'emerging_watchlist'
        AND UPPER(COALESCE(r.market_segment, s.market, '')) NOT IN ('EMERGING', 'ESB', 'ROTC')
      ORDER BY r.rank ASC
@@ -4229,7 +4237,7 @@ recommendations.get('/daily', async (c) => {
   const stockIds = [...new Set((results ?? []).map((r: any) => Number(r.stock_id)).filter((id: number) => Number.isFinite(id)))]
   const perModelByStock = new Map<number, any[]>()
   const ensembleByStock = new Map<number, any>()
-  if (stockIds.length > 0) {
+  if (stockIds.length > 0 && view !== 'card') {
     const learningDb = databaseForDataDomain(c.env, 'learning')
     for (const stockIdChunk of d1SafeInChunks(stockIds)) {
       const placeholders = stockIdChunk.map(() => '?').join(',')

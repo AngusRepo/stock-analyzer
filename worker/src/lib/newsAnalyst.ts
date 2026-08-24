@@ -47,6 +47,8 @@ export interface NewsAnalystReport {
 export interface NewsAnalystEnv extends LLMEnv {
   DB: D1Database
   KV: KVNamespace
+  ML_CONTROLLER_URL?: string
+  ML_CONTROLLER_SECRET?: string
 }
 
 // ── Data gathering ───────────────────────────────────────────────────────────
@@ -70,7 +72,7 @@ async function gatherContext(env: NewsAnalystEnv, today: string): Promise<Gather
   // TAIFEX night session — lazy import to avoid heavy deps
   try {
     const { fetchTaifexNightClose } = await import('./twseApi')
-    const tf = await fetchTaifexNightClose()
+    const tf = await fetchTaifexNightClose(env.ML_CONTROLLER_URL, env.ML_CONTROLLER_SECRET)
     if (tf) out.taifex_night = {
       lastPrice: tf.lastPrice,
       changePct: tf.changePct,

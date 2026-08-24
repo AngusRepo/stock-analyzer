@@ -182,7 +182,8 @@ assert(
   'post-verify chain must enqueue S12 replay backfill after daily recommendations are available',
 )
 assert(
-  strategyLearning.includes('listStrategyLearningCandidates(db, options.date, limit + 1, afterSymbol)') &&
+  strategyLearning.includes('limit + 1, afterSymbol') &&
+    strategyLearning.includes('listStrategyLearningCandidates(options.candidateDb ?? db, options.date, limit + 1, afterSymbol)') &&
     strategyLearning.includes('const hasMore = candidatePage.length > limit') &&
     strategyLearning.includes('const candidates = candidatePage.slice(0, limit)') &&
     strategyLearning.includes('next_cursor_symbol: nextCursorSymbol') &&

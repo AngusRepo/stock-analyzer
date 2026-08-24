@@ -870,7 +870,7 @@ export async function runStorageHealthCheck(
            AND status='ready'
            AND created_at >= datetime('now','-24 hours'))) AS progress_24h
   `).first<any>()
-  const frozenDomainReceipt = await opsDb.prepare(`
+  const frozenDomainReceipt = await env.DB.prepare(`
     SELECT COUNT(DISTINCT c.domain) AS frozen_domains
       FROM data_domain_cutovers c
       JOIN data_domain_writer_epochs w ON w.domain=c.domain
@@ -915,7 +915,7 @@ export async function runStorageHealthCheck(
       allocatorSnapshotIncompleteRuns === 0 && allocatorSnapshotStagingOrphans === 0 &&
       artifactHardRefDrift === 0 && artifactTrueOrphanReferences === 0 && domainSchemaReady &&
       (expectedLineageDate == null || (executionLineageReady && paperLineageReady)) &&
-      !legacyRetentionStalled &&
+      (!legacyRetentionStalled || legacyFrozenRollbackSource) &&
       capacityError == null && capacityRows.length > 0 && !capacityDrain,
     integrity_blocked: integrityBlocked,
     cleanup_backlog_over_24h: backlog,

@@ -1554,7 +1554,13 @@ export async function runBulkFetch(env: Bindings, force = false, runDate?: strin
     const controllerUrl = env.ML_CONTROLLER_URL ?? env.SHIOAJI_PROXY_URL
     const [{ chipCount, marginCount }, priceCount] = await Promise.all([
       bulkFetchAndStoreChipData(databaseForDataDomain(env, 'market'), twDate, controllerUrl, env.ML_CONTROLLER_SECRET),
-      bulkFetchAndStorePrices(databaseForDataDomain(env, 'market'), twDate, controllerUrl, env.ML_CONTROLLER_SECRET),
+      bulkFetchAndStorePrices(
+        databaseForDataDomain(env, 'market'),
+        databaseForDataDomain(env, 'core'),
+        twDate,
+        controllerUrl,
+        env.ML_CONTROLLER_SECRET,
+      ),
     ])
     console.log(`[Cron] TWSE/TPEX supplemental: ${priceCount} prices + ${chipCount} chips + ${marginCount} margins`)
     const ready = await assertMarketDataReady(env, twDate, { requireIndicators: false })
@@ -2429,7 +2435,13 @@ export async function runMarketCloseRefresh(env: Bindings, force = false, runDat
     try {
       const { bulkFetchAndStorePrices } = await import('./twseApi')
       const controllerUrl = env.ML_CONTROLLER_URL ?? env.SHIOAJI_PROXY_URL
-      const priceCount = await bulkFetchAndStorePrices(databaseForDataDomain(env, 'market'), twDate, controllerUrl, env.ML_CONTROLLER_SECRET)
+      const priceCount = await bulkFetchAndStorePrices(
+        databaseForDataDomain(env, 'market'),
+        databaseForDataDomain(env, 'core'),
+        twDate,
+        controllerUrl,
+        env.ML_CONTROLLER_SECRET,
+      )
       parts.push(`official_prices=${priceCount}`)
     } catch (e) {
       sourceWaiting = true
@@ -2451,7 +2463,7 @@ export async function runMarketCloseRefresh(env: Bindings, force = false, runDat
     const { fetchTaifexDayClose, fetchTaifexNightClose } = await import('./twseApi')
     const [dayClose, nightClose] = await Promise.all([
       fetchTaifexDayClose(),
-      fetchTaifexNightClose(),
+      fetchTaifexNightClose(env.ML_CONTROLLER_URL, env.ML_CONTROLLER_SECRET),
     ])
     if (dayClose) {
       await env.KV.put(`market:taifex_day_close:${twDate}`, JSON.stringify(dayClose), { expirationTtl: 2 * 86400 })

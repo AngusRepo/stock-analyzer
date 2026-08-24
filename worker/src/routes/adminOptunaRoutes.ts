@@ -33,6 +33,25 @@ adminOptunaRoutes.post('/api/admin/ga-promotion/review', async (c) => {
   const previousRaw = await c.env.KV.get(latestKey, 'json').catch(() => null) as any
   if (!previousRaw) return c.json({ error: 'optimizer:ga:latest missing' }, 404)
 
+  const currentPromotion = evaluateGaPromotion(previousRaw as Record<string, any>)
+  if (action === 'request' && (!currentPromotion.canRequestNextLevel || currentPromotion.nextLevel !== level)) {
+    return c.json({
+      error: 'ga_promotion_evidence_not_ready',
+      requested_level: level,
+      current_level: currentPromotion.level,
+      next_level: currentPromotion.nextLevel,
+      missing_evidence: currentPromotion.missingEvidence,
+    }, 409)
+  }
+  if (action === 'approve' && currentPromotion.pendingApprovalLevel !== level) {
+    return c.json({
+      error: 'ga_promotion_request_not_pending',
+      requested_level: level,
+      pending_level: currentPromotion.pendingApprovalLevel,
+      missing_evidence: currentPromotion.missingEvidence,
+    }, 409)
+  }
+
   const now = new Date().toISOString()
   const promotionPatch: Record<string, unknown> = {
     ...((previousRaw as any).promotion ?? {}),

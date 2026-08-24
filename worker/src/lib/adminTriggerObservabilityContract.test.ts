@@ -30,5 +30,5 @@ assert(route.includes('}, 202)'), 'async background trigger should return HTTP 2
 assert(logger.includes('console.warn'), 'schedulerRunLogger must not silently swallow KV write failures')
 assert(logger.includes('if (result.strict) throw error'), 'schedulerRunLogger must support strict observable writes for manual async triggers')
 assert(route.includes("../lib/schedulerRunLogger"), 'admin trigger must use schedulerRunLogger naming')
-assert(route.includes('const syncRunId = buildRunId(task)'), 'every sync retry must get a distinct scheduler run identity')
-assert((route.match(/run_id: syncRunId/g) ?? []).length === 2, 'sync success and failure logs must both carry the retry identity')
+assert(route.includes('proposedRunId: buildRunId(task)') && route.includes('const syncRunId = executionRunId'), 'every sync retry must use its admitted unique scheduler ticket identity')
+assert((route.match(/run_id: syncRunId/g) ?? []).length >= 2, 'sync success and failure logs must both carry the retry identity')

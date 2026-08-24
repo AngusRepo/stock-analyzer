@@ -79,13 +79,13 @@
   .obs-standalone__groups { grid-template-columns: repeat(10, minmax(0, 1fr)); align-items: start; }
   .obs-standalone__group-card[aria-label='Weekly operations'] { grid-column: span 4; }
   .obs-standalone__group-card[aria-label='Pipeline support'] { grid-column: span 2; }
-  .obs-standalone__group-card[aria-label='Daily operations'] { grid-column: span 4; }
+  .obs-standalone__group-card[aria-label='Daily operations'] { grid-column: 1 / -1; }
   .obs-standalone__group-card[aria-label='Intraday roots'],
   .obs-standalone__group-card[aria-label='Monthly operations'] { grid-column: span 5; }
   .obs-standalone__group-card[aria-label='Pipeline support'] .obs-standalone__group-header { align-items: flex-start; flex-direction: column; }
   .obs-standalone__group-card[aria-label='Pipeline support'] .obs-standalone__group-stats { justify-content: flex-start; }
   .obs-standalone__group-card[aria-label='Pipeline support'] .obs-standalone__job-grid { grid-template-columns: 1fr; }
-  .obs-standalone__group-card:first-child:last-child[aria-label='Daily operations'] .obs-standalone__job-grid {
+  .obs-standalone__group-card[aria-label='Daily operations'] .obs-standalone__job-grid {
     grid-template-columns: repeat(4, minmax(0, 1fr));
   }
 }

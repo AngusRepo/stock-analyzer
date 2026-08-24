@@ -125,9 +125,16 @@ export function evaluateGaPromotion(
   if (level === 'L1' && !governanceEvidence) missingEvidence.push('pbo_mc_cost_governance')
 
   const requestedLevel = normalizeLevel(state?.promotion?.requested_level ?? state?.meta?.promotion_requested_level)
-  const targetApprovalLevel = requestedLevel && levelIndex(requestedLevel) > levelIndex(level) ? requestedLevel : null
+  const manualPromotionEvidenceReady = levelIndex(level) >= levelIndex('L2') && missingEvidence.length === 0
+  const targetApprovalLevel = manualPromotionEvidenceReady
+    && requestedLevel
+    && levelIndex(requestedLevel) > levelIndex(level)
+    ? requestedLevel
+    : null
   let pendingApprovalLevel: GAPromotionLevel | null = null
-  if (targetApprovalLevel && levelIndex(targetApprovalLevel) >= levelIndex('L3')) {
+  if (requestedLevel && levelIndex(requestedLevel) >= levelIndex('L3') && !manualPromotionEvidenceReady) {
+    reasons.push(`${requestedLevel} approval ignored until all GA evidence gates pass`)
+  } else if (targetApprovalLevel && levelIndex(targetApprovalLevel) >= levelIndex('L3')) {
     if (approvedLevel && levelIndex(approvedLevel) >= levelIndex(targetApprovalLevel)) {
       level = targetApprovalLevel
       reasons.push(`Wei approval accepted for ${targetApprovalLevel}`)

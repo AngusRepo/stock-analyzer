@@ -793,8 +793,6 @@ export function buildEventsFromGaOptimizer(input: {
   const promotion = {
     ...(storedPromotion ?? {}),
     ...evaluatedPromotion,
-    level: storedPromotion?.level ?? evaluatedPromotion.level,
-    status: storedPromotion?.status ?? evaluatedPromotion.status,
   } as Record<string, unknown>
   const level = String(promotion?.level ?? 'L0')
   const status = String(promotion?.status ?? state.status ?? 'learning')

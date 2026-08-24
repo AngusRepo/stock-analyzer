@@ -273,6 +273,11 @@ export function buildRetentionArchiveOnlyQuery(
   `
 }
 
+export function isRetryableRetentionArchiveD1Error(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error ?? '')
+  return /D1 DB is overloaded|Requests queued for too long|SQLITE_BUSY|database is locked/i.test(message)
+}
+
 async function loadRows(
   db: D1Database,
   source: RetentionArchiveSource,
@@ -283,10 +288,21 @@ async function loadRows(
   const cursorBinds = cursor?.cursor_date && cursor.cursor_key != null
     ? [cursor.cursor_date, cursor.cursor_date, cursor.cursor_key]
     : []
-  const result = await db.prepare(buildRetentionArchiveOnlyQuery(source, cursor))
-    .bind(cutoffDate, ...cursorBinds, limit)
-    .all<Record<string, unknown>>()
-  return result.results ?? []
+  const maxAttempts = 4
+  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+    try {
+      const result = await db.prepare(buildRetentionArchiveOnlyQuery(source, cursor))
+        .bind(cutoffDate, ...cursorBinds, limit)
+        .all<Record<string, unknown>>()
+      return result.results ?? []
+    } catch (error) {
+      if (!isRetryableRetentionArchiveD1Error(error) || attempt === maxAttempts) throw error
+      const delayMs = 250 * (2 ** (attempt - 1))
+      console.warn(`[RetentionArchiveOnly] transient D1 load failure dataset=${source.datasetId} attempt=${attempt}/${maxAttempts}; retry_ms=${delayMs}`)
+      await new Promise((resolve) => setTimeout(resolve, delayMs))
+    }
+  }
+  return []
 }
 
 type PolicyRow = {

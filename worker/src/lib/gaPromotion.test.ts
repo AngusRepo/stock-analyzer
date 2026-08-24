@@ -1,3 +1,4 @@
+import fs from 'node:fs'
 import { evaluateGaPromotion, formatGaPromotionNotification } from './gaPromotion'
 
 function assert(condition: unknown, message: string): void {
@@ -9,6 +10,19 @@ function assert(condition: unknown, message: string): void {
   assert(learning.level === 'L0', 'missing GA candidate should stay at L0')
   assert(learning.status === 'learning', 'L0 status should be learning')
   assert(learning.missingEvidence.includes('policy_candidate'), 'L0 should explain missing policy candidate')
+}
+
+{
+  const invalidApproval = evaluateGaPromotion({
+    best_alphaFramework: { allocation: { weights: {} } },
+    best: { gate: { passed: false }, score: 0.9 },
+    history: [{ generation: 0, best_score: 0.9 }],
+    promotion: { requested_level: 'L4', approved_level: 'L4', level: 'L4', status: 'approved' },
+  })
+  assert(invalidApproval.level === 'L0', 'manual approval must not bypass a failed primary gate')
+  assert(invalidApproval.status === 'learning', 'invalid stale approval must fall back to evidence-derived learning state')
+  assert(invalidApproval.missingEvidence.includes('primary_gate'), 'invalid approval should expose the missing primary gate')
+  assert(invalidApproval.reasons.some((reason) => reason.includes('approval ignored')), 'invalid approval should explain the fail-closed decision')
 }
 
 {
@@ -102,3 +116,12 @@ function assert(condition: unknown, message: string): void {
   assert(full.status === 'approved', 'approved L4 should be explicit')
   assert(full.nextLevel === null, 'L4 should complete the GA promotion ladder')
 }
+
+const reviewRoute = fs.readFileSync('src/routes/adminOptunaRoutes.ts', 'utf8')
+assert(reviewRoute.includes("error: 'ga_promotion_evidence_not_ready'"), 'review route must block requests without complete evidence')
+assert(reviewRoute.includes("error: 'ga_promotion_request_not_pending'"), 'review route must block approvals without a pending request')
+const observability = fs.readFileSync('src/lib/observabilityEvents.ts', 'utf8')
+assert(!observability.includes('level: storedPromotion?.level ?? evaluatedPromotion.level'), 'OBS must not revive a stale stored GA level')
+assert(!observability.includes('status: storedPromotion?.status ?? evaluatedPromotion.status'), 'OBS must not revive a stale stored GA status')
+
+console.log('ga promotion tests passed')

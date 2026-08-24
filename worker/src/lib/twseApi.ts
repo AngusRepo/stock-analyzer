@@ -1296,7 +1296,8 @@ export async function fetchEmergingStockDayAll(): Promise<StockDayAllRow[]> {
  * 在 runDailyUpdate 與 bulkFetchAndStoreChipData 同步呼叫。
  */
 export async function bulkFetchAndStorePrices(
-  db: D1Database,
+  marketDb: D1Database,
+  identityDb: D1Database,
   date: string,
   controllerUrl?: string,
   controllerSecret?: string,
@@ -1380,7 +1381,7 @@ export async function bulkFetchAndStorePrices(
   if (!validRows.length) { console.warn('[BulkPrice] No valid price rows'); return 0 }
 
   // symbol → stocks.id
-  const { results: allStocks } = await db.prepare('SELECT id, symbol FROM stocks').all<{ id: number; symbol: string }>()
+  const { results: allStocks } = await identityDb.prepare('SELECT id, symbol FROM stocks').all<{ id: number; symbol: string }>()
   const idMap = new Map<string, number>()
   for (const s of allStocks ?? []) idMap.set(s.symbol, s.id)
 
@@ -1389,7 +1390,7 @@ export async function bulkFetchAndStorePrices(
   for (let i = 0; i < validRows.length; i += BATCH) {
     const stmts = validRows.slice(i, i + BATCH)
       .filter(r => idMap.has(r.symbol))
-      .map(r => db.prepare(
+      .map(r => marketDb.prepare(
         `INSERT INTO stock_prices (stock_id, date, open, high, low, close, adj_close, volume, avg_price)
          VALUES (?,?,?,?,?,?,?,?,?)
          ON CONFLICT(stock_id, date) DO UPDATE SET
@@ -1398,7 +1399,7 @@ export async function bulkFetchAndStorePrices(
            volume=excluded.volume, avg_price=excluded.avg_price`
       ).bind(idMap.get(r.symbol)!, effectiveDate, r.open, r.high, r.low, r.close, r.close, r.volume, r.avg_price ?? null))
     if (stmts.length) {
-      await db.batch(stmts)
+      await marketDb.batch(stmts)
       count += stmts.length
     }
   }
@@ -1650,48 +1651,80 @@ export async function fetchTaifexDayClose(): Promise<TaifexNightSession | null> 
   }
 }
 
-export async function fetchTaifexNightClose(): Promise<TaifexNightSession | null> {
+export function parseTaifexQuoteBody(
+  body: any,
+  marketType: '0' | '1',
+): TaifexNightSession | null {
+  const quotes = body?.RtData?.QuoteList as any[] | undefined
+  if (!quotes?.length) return null
+  const suffix = marketType === '1' ? '-M' : '-F'
+  const txf = quotes.find((quote) => {
+    const symbol = String(quote?.SymbolID ?? '')
+    return symbol.startsWith('TXF')
+      && symbol.endsWith(suffix)
+      && quote?.CLastPrice != null
+      && String(quote.CLastPrice).trim() !== ''
+  })
+  if (!txf) return null
+  const lastPrice = Number.parseFloat(String(txf.CLastPrice))
+  const refPrice = Number.parseFloat(String(txf.CRefPrice))
+  if (!Number.isFinite(lastPrice) || !Number.isFinite(refPrice) || refPrice === 0) return null
+  const changePoints = lastPrice - refPrice
+  return {
+    lastPrice,
+    refPrice,
+    changePoints,
+    changePct: (changePoints / refPrice) * 100,
+    date: String(txf.CDate ?? ''),
+    time: String(txf.CTime ?? ''),
+  }
+}
+
+async function fetchTaifexNightViaController(
+  controllerUrl?: string,
+  controllerSecret?: string,
+): Promise<TaifexNightSession | null> {
+  if (!controllerUrl) return null
+  const headers: Record<string, string> = { 'Content-Type': 'application/json' }
+  if (controllerSecret) headers['X-Controller-Token'] = controllerSecret
+  const response = await fetch(`${controllerUrl.replace(/\/$/, '')}/taifex-quote`, {
+    method: 'POST',
+    headers,
+    body: JSON.stringify({ market_type: '1' }),
+    signal: AbortSignal.timeout(20_000),
+  })
+  if (!response.ok) throw new Error(`Controller /taifex-quote HTTP ${response.status}`)
+  const payload = await response.json() as any
+  return payload?.quote ?? null
+}
+
+export async function fetchTaifexNightClose(
+  controllerUrl?: string,
+  controllerSecret?: string,
+): Promise<TaifexNightSession | null> {
   try {
-    // TAIFEX MIS API — 不需 auth，POST 取台指期報價
-    // SymbolID 格式：TXF{月份}{年份}-F（近月合約），用空 SymbolID 取全部
-    const res = await fetch('https://mis.taifex.com.tw/futures/api/getQuoteList', {
+    const response = await fetch('https://mis.taifex.com.tw/futures/api/getQuoteList', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36' },
       body: JSON.stringify({ CID: '', SymbolID: '', MarketType: '1' }),
-      signal: AbortSignal.timeout(15000),
+      signal: AbortSignal.timeout(15_000),
     })
-    if (!res.ok) return null
-    const body = await res.json() as any
-    const quotes = body?.RtData?.QuoteList as any[] | undefined
-    if (!quotes?.length) return null
-
-    // 找台指期近月合約（DispCName 包含「臺指期」且為最近月份）
-    // 第一筆 TXF-S 是現貨，跳過；找第一個 -F 結尾的才是期貨
-    const txf = quotes.find(q =>
-      /^TXF[A-Z0-9]+-M$/.test(String(q.SymbolID ?? '')) &&
-      q.CLastPrice && q.CLastPrice !== ''
-    )
-    if (!txf) return null
-
-    const lastPrice = parseFloat(txf.CLastPrice)
-    const refPrice = parseFloat(txf.CRefPrice)
-    if (isNaN(lastPrice) || isNaN(refPrice) || refPrice === 0) return null
-
-    const changePoints = lastPrice - refPrice
-    const changePct = (changePoints / refPrice) * 100
-
-    console.log(`[TAIFEX] ${txf.DispCName}: ${lastPrice} (${changePct >= 0 ? '+' : ''}${changePct.toFixed(2)}%) ref=${refPrice}`)
-
-    return {
-      lastPrice,
-      refPrice,
-      changePoints,
-      changePct,
-      date: txf.CDate ?? '',
-      time: txf.CTime ?? '',
+    if (response.ok) {
+      const parsed = parseTaifexQuoteBody(await response.json(), '1')
+      if (parsed) return parsed
     }
-  } catch (e) {
-    console.warn('[TAIFEX] fetchTaifexNightClose failed:', e)
+  } catch (error) {
+    console.warn('[TAIFEX] direct night quote unavailable; trying controller proxy:', error)
+  }
+
+  try {
+    const proxied = await fetchTaifexNightViaController(controllerUrl, controllerSecret)
+    if (proxied) {
+      console.log(`[TAIFEX] controller night quote: ${proxied.lastPrice} (${proxied.changePct >= 0 ? '+' : ''}${proxied.changePct.toFixed(2)}%) ref=${proxied.refPrice}`)
+    }
+    return proxied
+  } catch (error) {
+    console.warn('[TAIFEX] controller night quote unavailable:', error)
     return null
   }
 }

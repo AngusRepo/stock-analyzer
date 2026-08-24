@@ -12,7 +12,7 @@ assert(
   'TAIEX fallback should use TWSE official MI_5MINS_HIST',
 )
 assert(
-  source.includes('market:indices:finlab-clean:v16-twii-canonical-date-fallback'),
+  source.includes('market:indices:finlab-clean:v17-taifex-controller-live-night'),
   'market indices cache key should be bumped for TWII canonical date fallback',
 )
 assert(

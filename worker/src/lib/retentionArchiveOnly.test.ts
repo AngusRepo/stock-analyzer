@@ -3,6 +3,7 @@ import fs from 'node:fs'
 import {
   RETENTION_ARCHIVE_ONLY_POLICY_IDS,
   buildRetentionArchiveOnlyQuery,
+  isRetryableRetentionArchiveD1Error,
   retentionArchiveOnlyPolicyConfig,
 } from './retentionArchiveOnly'
 
@@ -44,6 +45,11 @@ assert.doesNotMatch(implementation, /\bDELETE\s+FROM\b/i)
 assert.match(implementation, /deletedRows: 0/)
 assert.match(implementation, /checksum_verified_at/)
 assert.match(implementation, /gcs_archive_payload_approval_required/)
+assert.equal(isRetryableRetentionArchiveD1Error(new Error('D1 DB is overloaded. Requests queued for too long.')), true)
+assert.equal(isRetryableRetentionArchiveD1Error(new Error('SQLITE_BUSY: database is locked')), true)
+assert.equal(isRetryableRetentionArchiveD1Error(new Error('no such table: stocks')), false)
+assert.match(implementation, /const maxAttempts = 4/)
+assert.match(implementation, /250 \* \(2 \*\* \(attempt - 1\)\)/)
 
 const manifest = JSON.parse(fs.readFileSync('../infra/gcp-scheduler-jobs.json', 'utf8'))
 const scheduled = manifest.jobs.find((job: any) => job.id === 'retention-archive-only')

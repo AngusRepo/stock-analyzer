@@ -12,9 +12,10 @@ import logging
 import httpx
 from datetime import datetime, timedelta
 from typing import Literal
-from fastapi import APIRouter
+from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
+from services.taifex_quote import parse_taifex_quote
 from services.sector_service import (
     fetch_twse_t86, fetch_twse_chips, fetch_twse_margin, fetch_tpex_chips, fetch_tpex_margin,
     fetch_twse_prices, fetch_tpex_prices,
@@ -124,6 +125,11 @@ class SectorFlowResponse(BaseModel):
 
 class TpexProxyRequest(BaseModel):
     date: str | None = None
+
+
+class TaifexQuoteRequest(BaseModel):
+    market_type: Literal["0", "1"] = "1"
+
 
 
 class RrgBackfillRequest(BaseModel):
@@ -365,6 +371,36 @@ async def backfill_rrg(req: RrgBackfillRequest):
 
 
 # ─── TPEX Proxy: Worker 無法直接呼叫 TPEX（被擋），透過 Controller 代理 ────────
+
+@router.post("/taifex-quote")
+async def proxy_taifex_quote(req: TaifexQuoteRequest):
+    """TAIFEX MIS quote proxy for Worker egress fallback."""
+    async with httpx.AsyncClient(
+        headers={
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+            "Content-Type": "application/json",
+        },
+        follow_redirects=True,
+    ) as client:
+        response = await client.post(
+            "https://mis.taifex.com.tw/futures/api/getQuoteList",
+            json={"CID": "", "SymbolID": "", "MarketType": req.market_type},
+            timeout=20.0,
+        )
+        response.raise_for_status()
+        quote = parse_taifex_quote(response.json(), req.market_type)
+    if quote is None:
+        raise HTTPException(status_code=503, detail="taifex_quote_unavailable")
+    logger.info(
+        "TAIFEX proxy market_type=%s symbol=%s price=%s change=%s",
+        req.market_type,
+        quote["symbol"],
+        quote["lastPrice"],
+        quote["changePoints"],
+    )
+    return {"market_type": req.market_type, "quote": quote}
+
+
 
 @router.post("/twse-chips")
 async def proxy_twse_chips(req: TpexProxyRequest):

@@ -1242,7 +1242,7 @@ function AdaptiveMetaPanel({
     <>
       <div>level: {String(promotion.level ?? 'L0')} / status: {String(promotion.status ?? ga?.status ?? '-')}</div>
       <div>runtime: {String(gaRuntime.runtime_role ?? 'no approved runtime effect')}</div>
-      <div>last learned: {gaLearningUpdatedAt}</div>
+      <div>last candidate generated: {gaLearningUpdatedAt}</div>
     </>
   )
   const gaActions = (

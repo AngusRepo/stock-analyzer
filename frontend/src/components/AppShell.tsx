@@ -12,7 +12,6 @@ import {
   LogIn,
   LogOut,
   Menu,
-  ScanSearch,
   type LucideIcon,
 } from 'lucide-react'
 import { Sheet, SheetContent } from '@/components/ui/sheet'
@@ -31,7 +30,6 @@ const NAV_ITEMS: NavItem[] = [
   { label: '首頁', icon: LayoutDashboard, href: '/' },
   { label: '模擬交易室', icon: Bot, href: '/bot', adminOnly: true },
   { label: '策略實驗室', icon: FlaskConical, href: '/strategy-lab', adminOnly: true },
-  { label: '策略審判室', icon: ScanSearch, href: '/strategy-discovery', adminOnly: true },
   { label: 'OBS', icon: Activity, href: '/obs', adminOnly: true },
   { label: '流程追蹤', icon: GitBranch, href: '/pipeline', adminOnly: true },
   { label: '模型池', icon: Boxes, href: '/model-pool', adminOnly: true },

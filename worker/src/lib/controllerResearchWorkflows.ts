@@ -1198,11 +1198,12 @@ export async function runOptunaQueueProcessor(env: Bindings) {
     requeueStaleInProgress,
   } = await import('./optunaQueue')
   const lockRunId = `optuna-queue:${Date.now()}:${Math.random().toString(36).slice(2, 8)}`
-  const d1Lock = await acquireOptunaQueueProcessorD1Lock(env.DB, lockRunId, 3600)
+  const opsDb = databaseForDataDomain(env, 'ops')
+  const d1Lock = await acquireOptunaQueueProcessorD1Lock(opsDb, lockRunId, 3600)
   if (!d1Lock.acquired) return 'locked: optuna queue processor already running (d1)'
   const locked = await acquireOptunaQueueProcessorLock(env.KV, lockRunId, 3600)
   if (!locked) {
-    await releaseOptunaQueueProcessorD1Lock(env.DB, lockRunId)
+    await releaseOptunaQueueProcessorD1Lock(opsDb, lockRunId)
     return 'locked: optuna queue processor already running'
   }
 
@@ -1246,7 +1247,7 @@ export async function runOptunaQueueProcessor(env: Bindings) {
     })
     if (!resp.ok) {
       const responseText = await resp.text().catch(() => '')
-      if (runLock?.acquired) await closeOptunaRunD1Lock(env.DB, entry.id, `dispatch_http_${resp.status}`)
+      if (runLock?.acquired) await closeOptunaRunD1Lock(opsDb, entry.id, `dispatch_http_${resp.status}`)
       const message = `HTTP ${resp.status}: ${responseText.slice(0, 300)}`
       if ([409, 429, 502, 503, 504].includes(resp.status)) {
         const retryStatus = await markRetryable(env.KV, entry.id, message)
@@ -1269,7 +1270,7 @@ export async function runOptunaQueueProcessor(env: Bindings) {
 
     if (isPerRegime) {
       if (!asyncRunId) {
-        if (runLock?.acquired) await closeOptunaRunD1Lock(env.DB, entry.id, 'dispatch_missing_run_id')
+        if (runLock?.acquired) await closeOptunaRunD1Lock(opsDb, entry.id, 'dispatch_missing_run_id')
         const retryStatus = await markRetryable(env.KV, entry.id, 'per_regime_dispatch_missing_async_run_id')
         return `${retryStatus}: ${entry.id} missing_async_run_id`
       }
@@ -1288,14 +1289,14 @@ export async function runOptunaQueueProcessor(env: Bindings) {
   } catch (e: any) {
     const msg = e?.message ?? String(e)
     if (entry) {
-      if (runLock?.acquired) await closeOptunaRunD1Lock(env.DB, entry.id, 'dispatch_exception')
+      if (runLock?.acquired) await closeOptunaRunD1Lock(opsDb, entry.id, 'dispatch_exception')
       const retryStatus = await markRetryable(env.KV, entry.id, msg)
       return `${retryStatus}: ${entry.id} ${msg.slice(0, 100)}`
     }
     return `failed: optuna queue claim ${msg.slice(0, 100)}`
   } finally {
     await releaseOptunaQueueProcessorLock(env.KV, lockRunId)
-    await releaseOptunaQueueProcessorD1Lock(env.DB, lockRunId)
+    await releaseOptunaQueueProcessorD1Lock(opsDb, lockRunId)
   }
 }
 export async function runWeeklyLifecycleCheck(env: Bindings) {

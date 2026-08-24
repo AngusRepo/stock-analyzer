@@ -92,11 +92,13 @@ void (async () => {
       level: 'L3',
       status: 'approved',
       approved_level: 'L3',
+      requested_level: 'L3',
       nextLevel: 'L4',
       canRequestNextLevel: true,
       approvalRequiredForNextLevel: true,
       evaluated_at: '2026-06-22T08:00:00.000Z',
     },
+    history: [{ best_score: 1.1 }, { best_score: 1.2 }],
     best: {
       score: 1.25,
       metrics: { pbo: 0.2, mdd_95th: 0.16, sharpe: 1.1, trade_count: 120 },

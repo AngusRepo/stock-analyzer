@@ -21,6 +21,7 @@ assert.match(research, /acquireOptunaQueueProcessorD1Lock\(opsDb/)
 assert.doesNotMatch(research, /OptunaQueueProcessorD1Lock\(env\.DB/)
 assert.match(research, /acquireOptunaRunD1Lock\(opsDb/)
 assert.doesNotMatch(research, /acquireOptunaRunD1Lock\(env\.DB/)
+assert.match(fs.readFileSync('src/lib/adaptiveEngine.ts', 'utf8'), /evaluateGaPromotion\(latest\)/)
 
 const lifecycle = fs.readFileSync('src/lib/artifactLifecycle.ts', 'utf8')
 assert.match(lifecycle, /frozenDomainReceipt = await env\.DB\.prepare/)

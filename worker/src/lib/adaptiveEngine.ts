@@ -7,6 +7,7 @@ import {
 import { getTradingConfig } from './tradingConfig'
 import { databaseForDataDomain } from './dataDomainRegistry'
 import { paperDomainDatabase } from './paperDomainDatabase'
+import { evaluateGaPromotion } from './gaPromotion'
 
 interface AdaptiveEngineEnv {
   DB: D1Database
@@ -72,6 +73,7 @@ async function loadGaOptimizerAdaptiveContext(kv: KVNamespace): Promise<Record<s
   }
 
   const promotion = objectValue(latest.promotion) ?? {}
+  const evaluatedPromotion = evaluateGaPromotion(latest)
   const best = objectValue(latest.best) ?? {}
   const metrics = objectValue(best.metrics) ?? {}
   const gate = objectValue(best.gate) ?? {}
@@ -80,15 +82,15 @@ async function loadGaOptimizerAdaptiveContext(kv: KVNamespace): Promise<Record<s
   const learnedAlphaFramework = objectValue(latest.best_alphaFramework)
     ?? objectValue(latest.bestAlphaFramework)
     ?? objectValue(candidateParams.alphaFramework)
-  const level = stringOrNull(promotion.level) ?? 'L0'
-  const promotionStatus = stringOrNull(promotion.status) ?? stringOrNull(latest.status) ?? 'learning'
-  const approvedLevel = stringOrNull(promotion.approved_level)
+  const level = evaluatedPromotion.level
+  const promotionStatus = evaluatedPromotion.status
+  const approvedLevel = promotionStatus === 'approved' ? stringOrNull(promotion.approved_level) : null
   const runtimeRole =
     promotionStatus === 'approved' && level === 'L4'
       ? 'approved_full_production_meta_policy_context'
       : promotionStatus === 'approved' && level === 'L3'
         ? 'approved_limited_production_meta_policy_context'
-        : promotion.approvalRequiredForNextLevel === true || promotion.canRequestNextLevel === true
+        : evaluatedPromotion.approvalRequiredForNextLevel || evaluatedPromotion.canRequestNextLevel
           ? 'promotion_review_candidate_context'
           : 'shadow_learning_context'
   const approvedProductionContext = promotionStatus === 'approved' && (level === 'L3' || level === 'L4')
@@ -101,7 +103,7 @@ async function loadGaOptimizerAdaptiveContext(kv: KVNamespace): Promise<Record<s
         : 'shadow_or_review_context_only',
     max_bandit_max_mult: level === 'L3' && promotionStatus === 'approved' ? 1.25 : null,
     mutates_trading_config: false,
-    requires_wei_approval: !(promotionStatus === 'approved' && (level === 'L3' || level === 'L4')),
+    requires_wei_approval: evaluatedPromotion.approvalRequiredForNextLevel,
   }
 
   return {
@@ -115,10 +117,10 @@ async function loadGaOptimizerAdaptiveContext(kv: KVNamespace): Promise<Record<s
       level,
       approved_level: approvedLevel,
       requested_level: stringOrNull(promotion.requested_level),
-      next_level: stringOrNull(promotion.nextLevel),
-      pending_approval_level: stringOrNull(promotion.pendingApprovalLevel),
-      approval_required_for_next_level: promotion.approvalRequiredForNextLevel === true,
-      can_request_next_level: promotion.canRequestNextLevel === true,
+      next_level: evaluatedPromotion.nextLevel,
+      pending_approval_level: evaluatedPromotion.pendingApprovalLevel,
+      approval_required_for_next_level: evaluatedPromotion.approvalRequiredForNextLevel,
+      can_request_next_level: evaluatedPromotion.canRequestNextLevel,
       evaluated_at: stringOrNull(promotion.evaluated_at),
     },
     best: {

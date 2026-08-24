@@ -19,6 +19,8 @@ const research = fs.readFileSync('src/lib/controllerResearchWorkflows.ts', 'utf8
 assert.match(research, /const opsDb = databaseForDataDomain\(env, 'ops'\)/)
 assert.match(research, /acquireOptunaQueueProcessorD1Lock\(opsDb/)
 assert.doesNotMatch(research, /OptunaQueueProcessorD1Lock\(env\.DB/)
+assert.match(research, /acquireOptunaRunD1Lock\(opsDb/)
+assert.doesNotMatch(research, /acquireOptunaRunD1Lock\(env\.DB/)
 
 const lifecycle = fs.readFileSync('src/lib/artifactLifecycle.ts', 'utf8')
 assert.match(lifecycle, /frozenDomainReceipt = await env\.DB\.prepare/)

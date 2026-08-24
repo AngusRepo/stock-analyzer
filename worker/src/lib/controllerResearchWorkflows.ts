@@ -1217,7 +1217,7 @@ export async function runOptunaQueueProcessor(env: Bindings) {
     const isPerRegime = entry.target === 'per_regime'
     const runLockRunId = `optuna-per-regime:${entry.id}:${Date.now()}`
     runLock = isPerRegime
-      ? await acquireOptunaRunD1Lock(env.DB, entry, runLockRunId, 6 * 3600)
+      ? await acquireOptunaRunD1Lock(opsDb, entry, runLockRunId, 6 * 3600)
       : null
     if (runLock && !runLock.acquired) {
       const retryStatus = await markRetryable(env.KV, entry.id, `d1_run_lock_busy:${runLock.lock_key}`)

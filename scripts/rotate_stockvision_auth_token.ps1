@@ -361,7 +361,7 @@ function Get-SchedulerManifest {
   foreach ($job in $jobs) {
     $id = [string]$job.id
     if ($id -notmatch '^[a-z][a-z0-9-]{0,499}$' -or -not $seen.Add($id)) { throw 'rotation_scheduler_manifest_invalid_or_duplicate_id' }
-    $desiredState = if ($job.desiredState) { [string]$job.desiredState } else { [string]$defaults.desiredState }
+    $desiredState = [string](Get-SchedulerOptionalValue -Object $job -Name 'desiredState' -Default ([string]$defaults.desiredState))
     if ($desiredState -notin @('ENABLED', 'PAUSED')) { throw "rotation_scheduler_manifest_invalid_desired_state:$id" }
   }
   return $manifest

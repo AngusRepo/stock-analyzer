@@ -219,7 +219,7 @@ function Assert-SchedulerJobParity {
   if ([string]$Actual.timeZone -ne [string]$Desired.timeZone) { throw "rotation_scheduler_time_zone_mismatch:$Id" }
   if ([string]$Actual.description -ne [string]$Desired.description) { throw "rotation_scheduler_description_mismatch:$Id" }
   if ([string]$Actual.attemptDeadline -ne [string]$Desired.attemptDeadline) { throw "rotation_scheduler_attempt_deadline_mismatch:$Id" }
-  $actualRetry = ConvertTo-SchedulerNormalizedRetryConfig -Config $Actual.retryConfig
+  $actualRetry = ConvertTo-SchedulerNormalizedRetryConfig -Config (Get-SchedulerOptionalValue -Object $Actual -Name 'retryConfig')
   $desiredRetry = ConvertTo-SchedulerNormalizedRetryConfig -Config $Desired.retryConfig
   foreach ($field in @('retryCount', 'maxRetryDuration', 'minBackoffDuration', 'maxBackoffDuration', 'maxDoublings')) {
     if ([string]$actualRetry[$field] -ne [string]$desiredRetry[$field]) {
@@ -277,7 +277,7 @@ function ConvertTo-SchedulerRollbackJob([object]$Job) {
     schedule = [string]$Job.schedule
     timeZone = [string]$Job.timeZone
     attemptDeadline = [string]$Job.attemptDeadline
-    retryConfig = ConvertTo-SchedulerNormalizedRetryConfig -Config $Job.retryConfig
+    retryConfig = ConvertTo-SchedulerNormalizedRetryConfig -Config (Get-SchedulerOptionalValue -Object $Job -Name 'retryConfig')
     httpTarget = $httpTarget
   }
 }

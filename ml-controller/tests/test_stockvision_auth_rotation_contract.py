@@ -25,6 +25,8 @@ def test_rotation_helper_keeps_tokens_out_of_native_argv_and_disk() -> None:
     assert "[switch]$DryRun" in source
     assert "[switch]$DrainVerified" in source
     assert "[int]$ExpectedSchedulerCount = 59" in source
+    assert "Get-SchedulerOptionalValue -Object $job -Name 'desiredState'" in source
+    assert "if ($job.desiredState)" not in source
     assert "'retention-hot-window-drain'" in source
     assert "'retention-archive-only'" in source
     assert "'learning-retention-readiness'" in source
@@ -36,6 +38,10 @@ def test_rotation_helper_keeps_tokens_out_of_native_argv_and_disk() -> None:
     assert "cloudscheduler.googleapis.com" in scheduler_source
     assert "Invoke-SchedulerCreateBody" in scheduler_source
     assert "Invoke-SchedulerPatchBody" in scheduler_source
+    assert "Get-SchedulerOptionalValue -Object $Actual -Name 'retryConfig'" in scheduler_source
+    assert "Get-SchedulerOptionalValue -Object $Job -Name 'retryConfig'" in scheduler_source
+    assert "$Actual.retryConfig" not in scheduler_source
+    assert "$Job.retryConfig" not in scheduler_source
     assert "Invoke-SchedulerDeleteJob" in scheduler_source
     assert "updateMask=$mask" in scheduler_source
     assert "Invoke-GoogleJson -Method PATCH" in scheduler_source

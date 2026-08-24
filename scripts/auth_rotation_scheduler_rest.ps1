@@ -77,6 +77,14 @@ function ConvertTo-SchedulerNormalizedRetryConfig([AllowNull()][object]$Config) 
     maxDoublings = 5
   }
   if ($null -eq $Config) { return $normalized }
+  if ($Config -is [System.Collections.IDictionary]) {
+    foreach ($field in @('retryCount', 'maxRetryDuration', 'minBackoffDuration', 'maxBackoffDuration', 'maxDoublings')) {
+      if ($Config.Contains($field) -and $null -ne $Config[$field] -and [string]$Config[$field] -ne '') {
+        $normalized[$field] = $Config[$field]
+      }
+    }
+    return $normalized
+  }
   foreach ($field in @('retryCount', 'maxRetryDuration', 'minBackoffDuration', 'maxBackoffDuration', 'maxDoublings')) {
     $property = $Config.PSObject.Properties[$field]
     if ($null -ne $property -and $null -ne $property.Value -and [string]$property.Value -ne '') {
@@ -138,6 +146,13 @@ function New-SchedulerDesiredJob {
   $retry = [ordered]@{}
   foreach ($field in @('retryCount', 'maxRetryDuration', 'minBackoffDuration', 'maxBackoffDuration', 'maxDoublings')) {
     $retry[$field] = $retryDefaults[$field]
+  }
+  $explicitRetryConfig = Get-SchedulerOptionalValue -Object $Definition -Name 'retryConfig'
+  if ($null -ne $explicitRetryConfig) {
+    $normalizedExplicitRetry = ConvertTo-SchedulerNormalizedRetryConfig -Config $explicitRetryConfig
+    foreach ($field in @('retryCount', 'maxRetryDuration', 'minBackoffDuration', 'maxBackoffDuration', 'maxDoublings')) {
+      $retry[$field] = $normalizedExplicitRetry[$field]
+    }
   }
   $legacyRetryCount = Get-SchedulerOptionalValue -Object $Definition -Name 'maxRetryAttempts'
   if ($null -ne $legacyRetryCount -and [string]$legacyRetryCount -ne '') { $retry.retryCount = $legacyRetryCount }

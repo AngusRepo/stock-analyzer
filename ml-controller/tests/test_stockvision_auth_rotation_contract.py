@@ -40,6 +40,10 @@ def test_rotation_helper_keeps_tokens_out_of_native_argv_and_disk() -> None:
     assert "Invoke-SchedulerPatchBody" in scheduler_source
     assert "Get-SchedulerOptionalValue -Object $Actual -Name 'retryConfig'" in scheduler_source
     assert "Get-SchedulerOptionalValue -Object $Job -Name 'retryConfig'" in scheduler_source
+    assert "Get-SchedulerOptionalValue -Object $Definition -Name 'retryConfig'" in scheduler_source
+    assert "$normalizedExplicitRetry[$field]" in scheduler_source
+    assert "$Config -is [System.Collections.IDictionary]" in scheduler_source
+    assert "$normalized[$field] = $Config[$field]" in scheduler_source
     assert "$Actual.retryConfig" not in scheduler_source
     assert "$Job.retryConfig" not in scheduler_source
     assert "Invoke-SchedulerDeleteJob" in scheduler_source

@@ -1894,6 +1894,9 @@ def pipeline_prediction_bundle(payload: dict) -> dict:
     started = time.time()
     callback_payload = payload or {}
     try:
+        # Hydration reads the generation-bound request artifact from GCS, so
+        # initialize the Modal GCS credential contract before that first read.
+        _setup_env()
         hydrated_payload = _hydrate_pipeline_prediction_request_reference(callback_payload)
         callback_payload = hydrated_payload
         return _pipeline_prediction_bundle_impl(hydrated_payload)

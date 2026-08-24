@@ -167,6 +167,10 @@ def test_modal_reference_hydration_round_trip_and_tamper(monkeypatch: pytest.Mon
 def test_modal_runtime_contract_hydrates_generation_fenced_reference() -> None:
     source = (ROOT / "ml-service" / "modal_app.py").read_text(encoding="utf-8")
     assert "_hydrate_pipeline_prediction_request_reference" in source
+    bundle_start = source.index("def pipeline_prediction_bundle(payload: dict) -> dict:")
+    bundle_end = source.index("@app.function(", bundle_start + 1)
+    bundle_body = source[bundle_start:bundle_end]
+    assert bundle_body.index("_setup_env()") < bundle_body.index("_hydrate_pipeline_prediction_request_reference")
     assert "if_generation_match=generation" in source
     assert "pipeline_modal_request_reference_compressed_checksum_mismatch" in source
     assert "pipeline_modal_request_reference_checksum_mismatch" in source

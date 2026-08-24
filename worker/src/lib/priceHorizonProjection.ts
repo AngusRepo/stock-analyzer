@@ -464,6 +464,17 @@ async function deleteResolvedRejections(db: D1Database, priceDate: string, stock
   await executeStatementBatches(db, statements)
 }
 
+async function deleteRejectedLabels(db: D1Database, priceDate: string, stockIds: number[]): Promise<void> {
+  const statements = chunks(stockIds, 80).map((group) => {
+    const placeholders = group.map(() => '?').join(',')
+    return db.prepare(`
+      DELETE FROM price_horizon_labels_v1
+       WHERE price_date = ? AND stock_id IN (${placeholders})
+    `).bind(priceDate, ...group)
+  })
+  await executeStatementBatches(db, statements)
+}
+
 export async function materializePriceHorizonLabels(
   env: Bindings,
   options: {
@@ -593,6 +604,11 @@ export async function materializePriceHorizonLabels(
         learningDb,
         horizon.signal_date,
         observations.labels.map((row) => row.stockId),
+      )
+      await deleteRejectedLabels(
+        learningDb,
+        horizon.signal_date,
+        observations.rejections.map((row) => row.stockId),
       )
       // Explicit rejections are terminal unavailable outcomes, not missing projection work.
       const status = 'success'

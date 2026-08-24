@@ -15,6 +15,11 @@ assert.equal(quote.lastPrice, 44520)
 assert.equal(quote.changePoints, -220)
 assert(Math.abs(quote.changePct - (-220 / 44740 * 100)) < 1e-12)
 
+const workerIndex = fs.readFileSync('src/index.ts', 'utf8')
+const wrangler = fs.readFileSync('wrangler.toml', 'utf8')
+assert.doesNotMatch(workerIndex, /strategyDiscoveryRoutes|StrategyDiscoveryWorkflow/)
+assert.doesNotMatch(wrangler, /strategy-discovery-analysis|STRATEGY_DISCOVERY_WORKFLOW/)
+
 const research = fs.readFileSync('src/lib/controllerResearchWorkflows.ts', 'utf8')
 assert.match(research, /const opsDb = databaseForDataDomain\(env, 'ops'\)/)
 assert.match(research, /acquireOptunaQueueProcessorD1Lock\(opsDb/)

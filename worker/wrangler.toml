@@ -97,11 +97,6 @@ dead_letter_queue = "stockvision-news-queue-dlq"
 binding = "AI"
 remote = true
 
-[[workflows]]
-name = "strategy-discovery-analysis"
-binding = "STRATEGY_DISCOVERY_WORKFLOW"
-class_name = "StrategyDiscoveryWorkflow"
-
 [vars]
 ENVIRONMENT = "production"
 MULTI_D1_ACTIVE_DOMAINS = "learning,ops,core,market,execution,paper,research"

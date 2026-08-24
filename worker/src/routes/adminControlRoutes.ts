@@ -776,7 +776,7 @@ async function handleSchedulerCallback(c: any) {
         max_retries: 3,
       })
       if (settled.applied) {
-        await closeOptunaRunD1Lock(c.env.DB, queueEntryId, String(body.status))
+        await closeOptunaRunD1Lock(databaseForDataDomain(c.env, 'ops'), queueEntryId, String(body.status))
       } else {
         console.warn(
           `[scheduler-callback] ignored optuna-per-regime callback queue_entry_id=${queueEntryId} ` +

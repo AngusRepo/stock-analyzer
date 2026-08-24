@@ -1278,7 +1278,7 @@ export async function runOptunaQueueProcessor(env: Bindings) {
         run_id: asyncRunId,
         note: `triggered_${executor}=${asyncRunId} trigger_source=${data.trigger_source ?? optunaTriggerSource(entry.reason)} d1_run_lock=${runLock?.lock_key ?? 'none'} callback_expected`,
       })
-      return `triggered: ${entry.id} ${executor}=${asyncRunId} callback expected`
+      return `success: dispatched ${entry.id} ${executor}=${asyncRunId} child_receipt_owner=optuna-per-regime`
     }
 
     await markProcessed(env.KV, entry.id, {

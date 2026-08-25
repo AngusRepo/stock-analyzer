@@ -885,9 +885,13 @@ def _load_training_maps_from_snapshot(
     )
     return prices_map, indicators_map, chips_map, sentiment_map, per_stock_ts_map, {
         "snapshot_id": snapshot.get("snapshot_id"),
+        "kind": snapshot.get("kind"),
         "business_date": snapshot.get("business_date"),
+        "schema_version": snapshot.get("schema_version"),
         "row_count": snapshot.get("row_count"),
+        "checksum": snapshot.get("checksum"),
         "gcs_uri": snapshot.get("gcs_uri"),
+        "producer_run_id": snapshot.get("producer_run_id"),
         "components": sorted(component_uris),
     }
 

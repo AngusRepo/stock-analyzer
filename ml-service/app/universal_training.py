@@ -226,6 +226,96 @@ def validate_immutable_oof_snapshot_for_registration(
     if errors:
         raise RuntimeError(f"immutable OOF snapshot blocks artifact registration: {errors}")
     return report
+
+
+def validate_monthly_dataset_snapshot_for_registration(
+    snapshot: dict,
+    *,
+    prep_lineage: dict,
+    rows: int,
+    dates: np.ndarray,
+    label_known_dates: np.ndarray,
+    run_date: str | None,
+) -> dict:
+    """Validate native monthly artifacts against their immutable PIT compute snapshot."""
+
+    errors: list[str] = []
+    if snapshot.get("kind") != "backtest_dataset":
+        errors.append("monthly_dataset_snapshot_kind_invalid")
+    if snapshot.get("schema_version") != "backtest-dataset-parquet-v2":
+        errors.append("monthly_dataset_snapshot_schema_invalid")
+    if not str(snapshot.get("snapshot_id") or "").startswith("backtest_dataset:"):
+        errors.append("monthly_dataset_snapshot_id_invalid")
+    checksum = str(snapshot.get("checksum") or "")
+    if not checksum.startswith("sha256:") or len(checksum) != 71:
+        errors.append("monthly_dataset_snapshot_checksum_invalid")
+    if int(snapshot.get("row_count") or 0) <= 0:
+        errors.append("monthly_dataset_snapshot_rows_missing")
+    if not str(snapshot.get("gcs_uri") or "").startswith("gs://"):
+        errors.append("monthly_dataset_snapshot_gcs_uri_invalid")
+    if not str(snapshot.get("producer_run_id") or "").strip():
+        errors.append("monthly_dataset_snapshot_producer_missing")
+    required_components = {"prices", "indicators", "chips", "canonical_fundamentals"}
+    components = {str(value) for value in (snapshot.get("components") or [])}
+    missing_components = sorted(required_components - components)
+    if missing_components:
+        errors.append(
+            "monthly_dataset_snapshot_components_missing:" + ",".join(missing_components)
+        )
+
+    cutoff = str(run_date or "").strip()
+    business_date = str(snapshot.get("business_date") or "").strip()
+    try:
+        datetime.strptime(cutoff, "%Y-%m-%d")
+    except ValueError:
+        errors.append("monthly_dataset_snapshot_run_date_invalid")
+    if business_date != cutoff:
+        errors.append("monthly_dataset_snapshot_business_date_mismatch")
+
+    date_values = [str(value) for value in np.asarray(dates).reshape(-1).tolist()]
+    label_values = [str(value) for value in np.asarray(label_known_dates).reshape(-1).tolist()]
+    if len(date_values) != int(rows) or len(label_values) != int(rows):
+        errors.append("monthly_dataset_snapshot_row_lineage_incomplete")
+    else:
+        try:
+            for value in set(date_values) | set(label_values):
+                datetime.strptime(value, "%Y-%m-%d")
+        except ValueError:
+            errors.append("monthly_dataset_snapshot_signal_or_label_date_invalid")
+        if any(signal_date > label_known_date for signal_date, label_known_date in zip(date_values, label_values)):
+            errors.append("monthly_dataset_snapshot_signal_after_label_known_date")
+        if cutoff and any(label_known_date > cutoff for label_known_date in label_values):
+            errors.append("monthly_dataset_snapshot_future_label_detected")
+
+    if int(prep_lineage.get("rows") or 0) != int(rows):
+        errors.append("monthly_dataset_snapshot_prep_row_count_mismatch")
+    if int(prep_lineage.get("feature_count") or 0) <= 0:
+        errors.append("monthly_dataset_snapshot_prep_feature_count_missing")
+    if int(prep_lineage.get("prep_objects") or 0) <= 0:
+        errors.append("monthly_dataset_snapshot_prep_objects_missing")
+    if not str(prep_lineage.get("feature_hash") or "").strip():
+        errors.append("monthly_dataset_snapshot_prep_feature_hash_missing")
+
+    date_max = max(date_values) if date_values else None
+    label_known_date_max = max(label_values) if label_values else None
+    report = {
+        "status": "ok" if not errors else "error",
+        "mode": "monthly_dataset_snapshot_point_in_time_v1",
+        "snapshot_id": snapshot.get("snapshot_id"),
+        "snapshot_checksum": checksum or None,
+        "snapshot_producer_run_id": snapshot.get("producer_run_id"),
+        "knowledge_cutoff_date": cutoff or None,
+        "date_max": date_max,
+        "label_known_date_max": label_known_date_max,
+        "rows": int(rows),
+        "verification": "immutable_compute_snapshot_and_per_row_label_known_cutoff_v1",
+        "errors": errors,
+    }
+    if errors:
+        raise RuntimeError(f"monthly dataset snapshot blocks artifact registration: {errors}")
+    return report
+
+
 def normalize_universal_lifecycle_request(
     req: UniversalTrainRequest,
     *,
@@ -1456,6 +1546,15 @@ def train_universal_from_gcs(req: UniversalTrainRequest) -> dict:
         prep_freshness = validate_immutable_oof_snapshot_for_registration(
             req.dataset_snapshot,
             gcs_prefix=gcs_prefix,
+            rows=len(X),
+            dates=dates_arr,
+            label_known_dates=label_known_dates_arr,
+            run_date=req.run_date,
+        )
+    elif not walk_forward_mode and req.dataset_snapshot:
+        prep_freshness = validate_monthly_dataset_snapshot_for_registration(
+            req.dataset_snapshot,
+            prep_lineage=prep_lineage,
             rows=len(X),
             dates=dates_arr,
             label_known_dates=label_known_dates_arr,

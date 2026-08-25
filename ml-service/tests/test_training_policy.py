@@ -632,6 +632,85 @@ def test_native_monthly_compute_snapshot_does_not_claim_immutable_oof_lineage():
     assert universal_training.requires_immutable_oof_snapshot(req) is False
 
 
+def _monthly_snapshot(**overrides):
+    snapshot = {
+        "snapshot_id": "backtest_dataset:2026-08-24:producer",
+        "kind": "backtest_dataset",
+        "business_date": "2026-08-24",
+        "schema_version": "backtest-dataset-parquet-v2",
+        "row_count": 2533689,
+        "checksum": "sha256:" + "a" * 64,
+        "gcs_uri": "gs://stockvision-models/dataset-snapshots/backtest_dataset/2026-08-24",
+        "producer_run_id": "dataset-snapshot-recovery-2026-08-24:snapshot",
+        "components": ["prices", "indicators", "chips", "canonical_fundamentals"],
+    }
+    snapshot.update(overrides)
+    return snapshot
+
+
+def _monthly_prep_lineage(rows=2):
+    return {
+        "rows": rows,
+        "feature_count": 137,
+        "feature_hash": "b" * 64,
+        "prep_objects": 5,
+    }
+
+
+def test_monthly_snapshot_accepts_mature_t_plus_five_signal_dates():
+    report = universal_training.validate_monthly_dataset_snapshot_for_registration(
+        _monthly_snapshot(),
+        prep_lineage=_monthly_prep_lineage(),
+        rows=2,
+        dates=np.array(["2026-08-13", "2026-08-14"]),
+        label_known_dates=np.array(["2026-08-21", "2026-08-24"]),
+        run_date="2026-08-24",
+    )
+
+    assert report["status"] == "ok"
+    assert report["mode"] == "monthly_dataset_snapshot_point_in_time_v1"
+    assert report["date_max"] == "2026-08-14"
+    assert report["label_known_date_max"] == "2026-08-24"
+
+
+def test_monthly_snapshot_rejects_future_label_or_business_date_mismatch():
+    import pytest
+
+    with pytest.raises(RuntimeError, match="future_label_detected"):
+        universal_training.validate_monthly_dataset_snapshot_for_registration(
+            _monthly_snapshot(),
+            prep_lineage=_monthly_prep_lineage(),
+            rows=2,
+            dates=np.array(["2026-08-13", "2026-08-14"]),
+            label_known_dates=np.array(["2026-08-21", "2026-08-25"]),
+            run_date="2026-08-24",
+        )
+
+    with pytest.raises(RuntimeError, match="business_date_mismatch"):
+        universal_training.validate_monthly_dataset_snapshot_for_registration(
+            _monthly_snapshot(business_date="2026-08-21"),
+            prep_lineage=_monthly_prep_lineage(),
+            rows=2,
+            dates=np.array(["2026-08-13", "2026-08-14"]),
+            label_known_dates=np.array(["2026-08-21", "2026-08-24"]),
+            run_date="2026-08-24",
+        )
+
+
+def test_monthly_snapshot_rejects_missing_components_or_prep_inventory():
+    import pytest
+
+    with pytest.raises(RuntimeError, match="components_missing|prep_objects_missing"):
+        universal_training.validate_monthly_dataset_snapshot_for_registration(
+            _monthly_snapshot(components=["prices", "indicators"]),
+            prep_lineage={**_monthly_prep_lineage(), "prep_objects": 0},
+            rows=2,
+            dates=np.array(["2026-08-13", "2026-08-14"]),
+            label_known_dates=np.array(["2026-08-21", "2026-08-24"]),
+            run_date="2026-08-24",
+        )
+
+
 def test_purged_oof_full_fit_requires_immutable_oof_lineage():
     req = universal_training.UniversalTrainRequest(generation_mode="purged_oof")
 

@@ -1061,7 +1061,18 @@ sync_dataset_snapshot_job() {
       exit 4
     fi
   fi
-  echo "Dataset snapshot job sync succeeded"
+  local snapshot_dispatch_account="${VERIFY_JOB_SERVICE_ACCOUNT:-${JOB_RUNTIME_SERVICE_ACCOUNT}}"
+  local snapshot_dispatch_member="serviceAccount:${snapshot_dispatch_account}"
+  for role in \
+    "roles/run.jobsExecutorWithOverrides" \
+    "roles/run.viewer"; do
+    gcloud run jobs add-iam-policy-binding "$DATASET_SNAPSHOT_JOB_NAME" \
+      --region="$REGION" \
+      --member="$snapshot_dispatch_member" \
+      --role="$role" \
+      --quiet >/dev/null
+  done
+  echo "Dataset snapshot job sync + pipeline IAM succeeded"
   echo ""
 }
 run_preflight() {

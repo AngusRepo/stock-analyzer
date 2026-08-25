@@ -1497,6 +1497,22 @@ export async function runWeeklyRetrain(env: Bindings) {
   )
 }
 
+export function classifyUniversalRetrainDispatchResult(
+  result: Record<string, any>,
+  taskId: string,
+): string {
+  const status = String(result.status ?? '').trim().toLowerCase()
+  if (status === 'skipped') {
+    return `${taskId} skipped: ${result.reason ?? 'locked'}`
+  }
+  if (['failed', 'error', 'rejected'].includes(status)) {
+    return `${taskId} failed: ${result.error ?? result.reason ?? status}`
+  }
+  const runId = String(result.run_id ?? 'unknown')
+  const functionCallId = String(result.function_call_id ?? result.execution_id ?? 'unknown')
+  return `${taskId} triggered via Modal prep run_id=${runId} function_call_id=${functionCallId} callback expected`
+}
+
 async function triggerUniversalRetrainModal(
   env: Bindings,
   body: Record<string, unknown>,
@@ -1514,15 +1530,7 @@ async function triggerUniversalRetrainModal(
     throw new Error(`Controller /retrain/universal/run HTTP ${resp.status}: ${text.slice(0, 200)}`)
   }
   const result = text ? JSON.parse(text) as Record<string, any> : {}
-  if (result.status === 'skipped') {
-    return `${taskId} skipped: ${result.reason ?? 'locked'}`
-  }
-  if (result.status === 'failed' || result.status === 'error') {
-    return `${taskId} failed: ${result.error ?? result.status}`
-  }
-  const runId = String(result.run_id ?? 'unknown')
-  const functionCallId = String(result.function_call_id ?? result.execution_id ?? 'unknown')
-  return `${taskId} triggered via Modal prep run_id=${runId} function_call_id=${functionCallId} callback expected`
+  return classifyUniversalRetrainDispatchResult(result, taskId)
 }
 
 const ACTIVE_WEEKLY_DRIFT_MODEL_NAMES = new Set([

@@ -148,3 +148,7 @@ def test_deploy_provisions_detached_dataset_snapshot_job():
     assert 'sync_dataset_snapshot_job "$VERIFY_JOB_ENV_FILE"' in deploy
     assert "DATASET_SNAPSHOT_JOB_IMG=$(gcloud run jobs describe" in deploy
     assert '"-m;dataset_snapshot_job_main"' in deploy
+    assert 'local snapshot_dispatch_account="${VERIFY_JOB_SERVICE_ACCOUNT:-${JOB_RUNTIME_SERVICE_ACCOUNT}}"' in deploy
+    assert 'gcloud run jobs add-iam-policy-binding "$DATASET_SNAPSHOT_JOB_NAME"' in deploy
+    assert '"roles/run.jobsExecutorWithOverrides"' in deploy
+    assert '"roles/run.viewer"' in deploy

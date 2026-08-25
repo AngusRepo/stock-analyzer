@@ -23,9 +23,9 @@ import {
 export const STRATEGY_LABELER_VERSION = STRATEGY_FORMAL_LABELER_VERSION
 export const STRATEGY_AFFINITY_VERSION = 'strategy-raw-quality-affinity-v1'
 export const STRATEGY_AFFINITY_CHALLENGER_VERSION = 'strategy-threshold-margin-affinity-v2'
-export const STRATEGY_EVIDENCE_ALIGNED_ROUTE_VERSION = 'strategy-semantic-continuous-affinity-v4'
-export const FINLAB_PORTFOLIO_INTELLIGENCE_VERSION = 'finlab-portfolio-intelligence-v1'
-export const MULTI_STRATEGY_PLE_ROUTER_VERSION = 'multi-strategy-ple-router-v1'
+export const STRATEGY_EVIDENCE_ALIGNED_ROUTE_VERSION = 'strategy-semantic-continuous-affinity-v5'
+export const FINLAB_PORTFOLIO_INTELLIGENCE_VERSION = 'strategy-portfolio-evidence-v2'
+export const MULTI_STRATEGY_PLE_ROUTER_VERSION = 'multi-strategy-policy-router-v2'
 export const L15_MARGINAL_SLATE_BUILDER_VERSION = 'l15-continuous-full-universe-priority-v3'
 export const ACTIVE_8_ML_TEACHERS = [
   'LightGBM',
@@ -773,71 +773,102 @@ function portfolioPriorForLabels(
     const universeCount = Math.max(1, states.length)
     const supportRatio = count / universeCount
     const familySupportRatio = familyCount / universeCount
-    const avgAffinity = average(positiveLabels.map((label) => label.affinity), 0) / 100
-    const poolQuota = finiteNumber(spec?.candidatePolicy?.poolQuota) ?? 12
-    const rawTurnover = clamp(0.12 + supportRatio * 0.52 + (poolQuota / 20) * 0.18, 0, 1)
     const graphCrowding = strategySimilarityGraph.strategy_cluster_crowding_score[strategyId] ?? 0
     const graphUniqueness = strategySimilarityGraph.strategy_cluster_uniqueness_score[strategyId] ?? 1
+    // Daily affinity/support is candidate-fit evidence, not a Sharpe/IC/Shapley
+    // estimator.  Missing immutable performance evidence stays neutral.
     const derived = {
-      rolling_sharpe: round3(clamp((avgAffinity - 0.5) * 4, -1.2, 2.2)),
-      max_drawdown: round3(clamp(0.08 + supportRatio * 0.38 + maxOverlap * 0.2, 0.03, 0.75)),
-      recent_alpha: round3(clamp((avgAffinity - 0.5) * 0.18, -0.12, 0.18)),
-      return_correlation: round3(clamp(maxOverlap * 0.72 + familySupportRatio * 0.28, 0, 1)),
+      rolling_sharpe: 0,
+      max_drawdown: 0,
+      recent_alpha: 0,
+      return_correlation: 0,
       holding_overlap: round3(clamp(maxOverlap, 0, 1)),
-      turnover: round3(rawTurnover),
-      factor_return: round3(clamp((avgAffinity - 0.5) * 0.16, -0.12, 0.18)),
+      turnover: 0,
+      factor_return: 0,
       factor_crowding: round3(clamp(familySupportRatio * 0.52 + supportRatio * 0.18 + graphCrowding * 0.3, 0, 1)),
       centrality: round3(clamp(graphCrowding * 0.65 + maxOverlap * 0.35, 0, 1)),
-      ic: round3(clamp((avgAffinity - 0.5) * 0.42, -0.25, 0.3)),
-      rank_ic: round3(clamp((avgAffinity - 0.5) * 0.48, -0.28, 0.35)),
-      shapley_contribution: round3(clamp((avgAffinity / Math.sqrt(Math.max(1, familyCount))) * (0.75 + graphUniqueness * 0.25), 0, 1)),
-      regime_performance: round3(clamp((avgAffinity - 0.5) * 0.24, -0.2, 0.24)),
-      live_backtest_divergence: round3(clamp(maxOverlap * 0.22 + supportRatio * 0.18, 0, 0.85)),
+      ic: 0,
+      rank_ic: 0,
+      shapley_contribution: 0,
+      regime_performance: 0,
+      live_backtest_divergence: 0,
     }
     const rawOverride = overrides[strategyId]
-    const metricStatus = cleanText((rawOverride as Record<string, unknown> | undefined)?.strategy_metric_status) || (rawOverride ? 'ready' : 'derived_from_daily_strategy_matrix')
-    const metricReason = cleanText((rawOverride as Record<string, unknown> | undefined)?.metric_reason) || (rawOverride ? 'live_strategy_asset_metrics_loaded' : 'no_live_l125_metric_override')
-    const metricSampleCount = finiteNumber((rawOverride as Record<string, unknown> | undefined)?.metric_sample_count) ?? 0
+    const declaredStatus = cleanText((rawOverride as Record<string, unknown> | undefined)?.strategy_metric_status)
+    const exactMetricPresent = [
+      'rolling_sharpe',
+      'recent_alpha',
+      'factor_return',
+      'ic',
+      'rank_ic',
+      'shapley_contribution',
+      'regime_performance',
+    ].some((key) => finiteNumber((rawOverride as Record<string, unknown> | undefined)?.[key]) != null)
+    const metricSources = Array.isArray((rawOverride as Record<string, unknown> | undefined)?.metric_sources)
+      ? ((rawOverride as Record<string, unknown>).metric_sources as unknown[]).map(cleanText).filter(Boolean)
+      : []
+    const performanceEvidenceReady = Boolean(
+      rawOverride
+      && exactMetricPresent
+      && ['ready', 'reward_only', 'backtest_only'].includes(declaredStatus)
+      && metricSources.length > 0,
+    )
+    const performanceOverride = performanceEvidenceReady ? rawOverride : undefined
+    const metricStatus = performanceEvidenceReady ? (declaredStatus || 'ready') : 'no_evidence'
+    const metricReason = performanceEvidenceReady
+      ? (cleanText((rawOverride as Record<string, unknown>).metric_reason) || 'immutable_strategy_performance_metrics_loaded')
+      : 'candidate_affinity_is_not_strategy_performance_evidence'
+    const metricSampleCount = performanceEvidenceReady
+      ? finiteNumber((rawOverride as Record<string, unknown> | undefined)?.metric_sample_count) ?? 0
+      : 0
     const baseMetrics = {
-      rolling_sharpe: overrideNumber(rawOverride, 'rolling_sharpe', derived.rolling_sharpe),
-      max_drawdown: overrideNumber(rawOverride, 'max_drawdown', derived.max_drawdown),
-      recent_alpha: overrideNumber(rawOverride, 'recent_alpha', derived.recent_alpha),
-      return_correlation: overrideNumber(rawOverride, 'return_correlation', derived.return_correlation),
-      holding_overlap: overrideNumber(rawOverride, 'holding_overlap', derived.holding_overlap),
-      turnover: overrideNumber(rawOverride, 'turnover', derived.turnover),
-      factor_return: overrideNumber(rawOverride, 'factor_return', derived.factor_return),
-      factor_crowding: overrideNumber(rawOverride, 'factor_crowding', derived.factor_crowding),
-      centrality: overrideNumber(rawOverride, 'centrality', derived.centrality),
-      ic: overrideNumber(rawOverride, 'ic', derived.ic),
-      rank_ic: overrideNumber(rawOverride, 'rank_ic', derived.rank_ic),
-      shapley_contribution: overrideNumber(rawOverride, 'shapley_contribution', derived.shapley_contribution),
-      regime_performance: overrideNumber(rawOverride, 'regime_performance', derived.regime_performance),
-      live_backtest_divergence: overrideNumber(rawOverride, 'live_backtest_divergence', derived.live_backtest_divergence),
+      rolling_sharpe: overrideNumber(performanceOverride, 'rolling_sharpe', derived.rolling_sharpe),
+      max_drawdown: overrideNumber(performanceOverride, 'max_drawdown', derived.max_drawdown),
+      recent_alpha: overrideNumber(performanceOverride, 'recent_alpha', derived.recent_alpha),
+      return_correlation: overrideNumber(performanceOverride, 'return_correlation', derived.return_correlation),
+      holding_overlap: overrideNumber(performanceOverride, 'holding_overlap', derived.holding_overlap),
+      turnover: overrideNumber(performanceOverride, 'turnover', derived.turnover),
+      factor_return: overrideNumber(performanceOverride, 'factor_return', derived.factor_return),
+      factor_crowding: overrideNumber(performanceOverride, 'factor_crowding', derived.factor_crowding),
+      centrality: overrideNumber(performanceOverride, 'centrality', derived.centrality),
+      ic: overrideNumber(performanceOverride, 'ic', derived.ic),
+      rank_ic: overrideNumber(performanceOverride, 'rank_ic', derived.rank_ic),
+      shapley_contribution: overrideNumber(performanceOverride, 'shapley_contribution', derived.shapley_contribution),
+      regime_performance: overrideNumber(performanceOverride, 'regime_performance', derived.regime_performance),
+      live_backtest_divergence: overrideNumber(performanceOverride, 'live_backtest_divergence', derived.live_backtest_divergence),
     }
-    const reliability = overrideNumber(rawOverride, 'reliability', computeReliability(baseMetrics))
-    const crowdingScore = overrideNumber(
-      rawOverride,
-      'crowding_score',
-      round3(clamp(computeCrowdingScore(baseMetrics) * 0.78 + graphCrowding * 0.22, 0, 1)),
-    )
-    const diversificationValue = overrideNumber(
-      rawOverride,
-      'diversification_value',
-      round3(clamp(computeDiversificationValue(baseMetrics) * 0.78 + graphUniqueness * 0.22, 0, 1)),
-    )
-    const priorWeight = overrideNumber(rawOverride, 'prior_weight', computePriorWeight({
-      ...baseMetrics,
-      reliability,
-      crowding_score: crowdingScore,
-      diversification_value: diversificationValue,
-    }))
+    const reliability = performanceEvidenceReady
+      ? overrideNumber(rawOverride, 'reliability', computeReliability(baseMetrics))
+      : 0.5
+    const structuralCrowding = round3(clamp(
+      baseMetrics.holding_overlap * 0.45 + baseMetrics.factor_crowding * 0.35 + graphCrowding * 0.2,
+      0,
+      1,
+    ))
+    const crowdingScore = performanceEvidenceReady
+      ? overrideNumber(rawOverride, 'crowding_score', structuralCrowding)
+      : structuralCrowding
+    const structuralDiversification = round3(clamp(
+      1 - (baseMetrics.holding_overlap * 0.55 + baseMetrics.factor_crowding * 0.25 + graphCrowding * 0.2),
+      0,
+      1,
+    ))
+    const diversificationValue = performanceEvidenceReady
+      ? overrideNumber(rawOverride, 'diversification_value', structuralDiversification)
+      : structuralDiversification
+    const priorWeight = performanceEvidenceReady
+      ? overrideNumber(rawOverride, 'prior_weight', computePriorWeight({
+        ...baseMetrics,
+        reliability,
+        crowding_score: crowdingScore,
+        diversification_value: diversificationValue,
+      }))
+      : 1
     const metrics: StrategyPortfolioMetrics = {
       strategy_metric_status: metricStatus as StrategyPortfolioMetrics['strategy_metric_status'],
       metric_reason: metricReason,
       metric_sample_count: Math.max(0, Math.round(metricSampleCount)),
-      metric_sources: Array.isArray((rawOverride as Record<string, unknown> | undefined)?.metric_sources)
-        ? ((rawOverride as Record<string, unknown>).metric_sources as unknown[]).map(cleanText).filter(Boolean)
-        : [],
+      metric_sources: performanceEvidenceReady ? metricSources : [],
       ...baseMetrics,
       reliability: round3(clamp(reliability, 0, 1)),
       crowding_score: round3(clamp(crowdingScore, 0, 1)),
@@ -1289,7 +1320,7 @@ function annotateCandidate<T extends StrategyCandidatePoolCandidate>(
     runtime_teacher_evidence: teacherLabels,
     runtime_teacher_evidence_source: teacherEvidence.source,
     // Legacy funnel alias. Daily L1.5 treats this as runtime teacher evidence;
-    // offline PLE/Listwise training owns true training_teacher_labels.
+    // offline learned-router research owns true training_teacher_labels; this runtime router is deterministic.
     ml_teacher_labels: teacherLabels,
     market_heat_score: heatScore,
     market_heat_contribution: marketHeatContribution,
@@ -1493,7 +1524,7 @@ export function buildMultiStrategyPleRoutingPlan<T extends StrategyCandidatePool
         .filter(([, status]) => status === 'ready' || status === 'reward_only' || status === 'backtest_only' || status === 'decision_log_only')
         .length,
       strategy_metric_no_evidence_count: Object.entries(prior.strategy_metric_status)
-        .filter(([, status]) => status === 'no_evidence' || status === 'derived_from_daily_strategy_matrix')
+        .filter(([, status]) => status === 'no_evidence')
         .length,
       ml_slate_count: mlSlate.length,
       observe_only_count: observeOnly.length,

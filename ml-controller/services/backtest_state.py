@@ -23,7 +23,11 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from typing import Optional, Iterable, Any
 
-from services.d1_client import query as d1_query
+from services.d1_domain_client import D1DataDomain, client_proxy_for_domain
+
+CORE_D1_CLIENT = client_proxy_for_domain(D1DataDomain.CORE)
+MARKET_D1_CLIENT = client_proxy_for_domain(D1DataDomain.MARKET)
+LEARNING_D1_CLIENT = client_proxy_for_domain(D1DataDomain.LEARNING)
 
 logger = logging.getLogger(__name__)
 
@@ -93,7 +97,7 @@ class BacktestMarketState:
 
     @staticmethod
     def _load_risk(start: str, end: str) -> dict[str, MarketRiskRow]:
-        rows = d1_query(
+        rows = CORE_D1_CLIENT.query(
             "SELECT date, risk_level, risk_score, vix, foreign_consecutive_sell, "
             "       twii_vol20, bull_alignment_pct "
             "FROM market_risk WHERE date BETWEEN ? AND ? ORDER BY date",
@@ -114,7 +118,7 @@ class BacktestMarketState:
 
     @staticmethod
     def _load_breadth(start: str, end: str) -> dict[str, MarketBreadthRow]:
-        rows = d1_query(
+        rows = MARKET_D1_CLIENT.query(
             "SELECT date, bull_alignment_pct, advance_ratio, new_high_count, new_low_count "
             "FROM market_breadth WHERE date BETWEEN ? AND ? ORDER BY date",
             [start, end],
@@ -132,7 +136,7 @@ class BacktestMarketState:
 
     @staticmethod
     def _load_us(start: str, end: str) -> dict[str, USMarketRow]:
-        rows = d1_query(
+        rows = MARKET_D1_CLIENT.query(
             "SELECT date, gspc_return, sox_return, sentiment "
             "FROM us_market_signals WHERE date BETWEEN ? AND ? ORDER BY date",
             [start, end],
@@ -176,7 +180,7 @@ def load_verified_predictions(start_date: str, end_date: str) -> list[dict]:
     NULL `direction_correct` rows (未驗證) are excluded — accuracy only counts
     already-resolved predictions.
     """
-    rows = d1_query(
+    rows = LEARNING_D1_CLIENT.query(
         "SELECT generated_at, direction_correct "
         "FROM predictions "
         "WHERE generated_at BETWEEN ? AND ? "

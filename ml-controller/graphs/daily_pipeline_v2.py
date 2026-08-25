@@ -27,8 +27,8 @@ from typing import Annotated, Any, TypedDict
 from langgraph.graph import StateGraph, END
 from langgraph.types import RetryPolicy
 
-from services import d1_client, kv_client
-from services.d1_domain_client import D1DataDomain, client_for_domain
+from services import kv_client
+from services.d1_domain_client import D1DataDomain, client_for_domain, client_proxy_for_domain
 from services.ensemble_v2 import attach_ensemble_v2
 from services.expected_return_calibration import load_expected_return_calibration_report
 from services.evidence_contracts import LABEL_SCHEMA_VERSION
@@ -122,6 +122,9 @@ from services.persona_service import (
 from services.screener_seed_domain_shadow import load_screener_seed_domain_rows
 
 logger = logging.getLogger(__name__)
+MARKET_D1_CLIENT = client_proxy_for_domain(D1DataDomain.MARKET)
+LEARNING_D1_CLIENT = client_proxy_for_domain(D1DataDomain.LEARNING)
+
 
 DEFAULT_TIMESFM_SEQUENCE_CONTRACT_POINTS = daily_sequence_target_points()
 ACTIVE_ALPHA_MODEL_SET = set(ACTIVE_ALPHA_MODELS)
@@ -527,7 +530,12 @@ def _timesfm_sync_gate(
 ) -> tuple[bool, dict[str, Any]]:
     status = model_status.get("TimesFM", "retired")
     if status not in {"active", "degraded"}:
-        return False, {"allowed": False, "reason": "timesfm_l2_sidecar_retired_by_model_pool", "status": status}
+        return False, {
+            "allowed": False,
+            "reason": "timesfm_l2_sidecar_not_serving_eligible",
+            "status": status,
+            "role": "l2_feature_sidecar",
+        }
 
     sequence_contract_points = _timesfm_sequence_contract_points(pool)
     coverage = _sequence_coverage(sequence_series, min_points=sequence_contract_points)
@@ -1474,7 +1482,7 @@ async def node_ml_predict(state: PipelineStateV2) -> dict:
 
 def _timesfm_l175_registry_release_policy() -> dict[str, Any]:
     try:
-        rows = d1_client.query(
+        rows = LEARNING_D1_CLIENT.query(
             """
             SELECT artifact_id, model_name, version, state, feature_policy_version, source_run_date, updated_at
             FROM model_artifact_registry
@@ -2466,7 +2474,7 @@ def _load_expected_return_calibration_report(
 ) -> dict[str, Any]:
     """Build empirical avg_rank -> realized return calibration with explicit diagnostics."""
     return load_expected_return_calibration_report(
-        d1_client.query,
+        LEARNING_D1_CLIENT.query,
         lookback_days=lookback_days,
         min_samples=min_samples,
         min_bin_samples=min_bin_samples,
@@ -2552,7 +2560,7 @@ async def node_compute_personas(state: PipelineStateV2) -> dict:
         tag_rows: list[dict[str, Any]] = []
         for chunk in _d1_bind_chunks(list(symbols)):
             placeholders = ",".join("?" * len(chunk))
-            tag_rows.extend(d1_client.query(
+            tag_rows.extend(MARKET_D1_CLIENT.query(
                 f"SELECT symbol, tag FROM stock_tags WHERE tag_type = 'concept' AND symbol IN ({placeholders}) "
                 f"ORDER BY symbol, weight DESC",
                 chunk,
@@ -2569,7 +2577,7 @@ async def node_compute_personas(state: PipelineStateV2) -> dict:
             buzz_rows: list[dict[str, Any]] = []
             for chunk in _d1_bind_chunks(concepts):
                 cp_placeholders = ",".join("?" * len(chunk))
-                buzz_rows.extend(d1_client.query(
+                buzz_rows.extend(MARKET_D1_CLIENT.query(
                     f"SELECT concept, sentiment_avg FROM concept_buzz "
                     f"WHERE date = ? AND concept IN ({cp_placeholders})",
                     [run_date, *chunk],
@@ -2762,7 +2770,7 @@ async def node_recommend(state: PipelineStateV2) -> dict:
     try:
         sector_experts = await asyncio.to_thread(
             load_pit_sector_alpha_experts,
-            d1_client.query,
+            MARKET_D1_CLIENT.query,
             signal_date=state["run_date"],
             symbols=[str(rec.get("symbol") or "") for rec in screener_recs],
             fallback_industry_by_symbol=fallback_industries,
@@ -3716,7 +3724,7 @@ def _pipeline_modal_registry_identity_rows(serving_pool: dict[str, Any]) -> list
             + ",".join(missing)
         )
     placeholders = ", ".join("?" for _ in artifact_ids)
-    return d1_client.query(
+    return LEARNING_D1_CLIENT.query(
         f"""
         SELECT artifact_id, model_name, version, artifact_path, metadata_path,
                checksum, state, offline_gate_decision, live_gate_status,
@@ -3727,7 +3735,15 @@ def _pipeline_modal_registry_identity_rows(serving_pool: dict[str, Any]) -> list
                json_extract(
                    offline_evidence_json,
                    '$.registration.metadata.target_semantic_version'
-               ) AS registry_target_semantic_version
+               ) AS registry_target_semantic_version,
+               json_extract(
+                   offline_evidence_json,
+                   '$.registration.metadata.feature_semantic_version'
+               ) AS registry_feature_semantic_version,
+               json_extract(
+                   offline_evidence_json,
+                   '$.registration.metadata.graph.semantic_version'
+               ) AS registry_gnn_graph_semantic_version
           FROM model_artifact_registry
          WHERE artifact_id IN ({placeholders})
         """,
@@ -3828,6 +3844,33 @@ def _build_pipeline_modal_serving_manifest(
                 f"expected={LABEL_SCHEMA_VERSION}"
             )
 
+        feature_semantic_version = str(
+            registry.get("registry_feature_semantic_version")
+            or entry.get("feature_semantic_version")
+            or ""
+        ).strip()
+        if (
+            serving_eligible
+            and model_name in {"LightGBM", "XGBoost", "ExtraTrees", "TabM", "GNN"}
+            and feature_semantic_version != "formal137-pit-rolling-rank-and-imputation-v2"
+        ):
+            raise RuntimeError(
+                "pipeline_modal_serving_manifest:feature_semantic_mismatch:"
+                f"{model_name}:{feature_semantic_version or '<missing>'}:"
+                "expected=formal137-pit-rolling-rank-and-imputation-v2"
+            )
+        gnn_graph_semantic_version = str(
+            registry.get("registry_gnn_graph_semantic_version")
+            or entry.get("gnn_graph_semantic_version")
+            or ""
+        ).strip()
+        if serving_eligible and model_name == "GNN" and gnn_graph_semantic_version != "gnn-feature-sector-graph-v1":
+            raise RuntimeError(
+                "pipeline_modal_serving_manifest:gnn_graph_semantic_mismatch:"
+                f"{gnn_graph_semantic_version or '<missing>'}:"
+                "expected=gnn-feature-sector-graph-v1"
+            )
+
         checksum = _pipeline_modal_registry_checksum(
             registry.get("checksum"),
             model_name=model_name,
@@ -3851,6 +3894,8 @@ def _build_pipeline_modal_serving_manifest(
             "schema": {
                 "metadata_schema_version": str(registry.get("metadata_schema_version") or "").strip() or None,
                 "target_semantic_version": target_semantic_version or None,
+                "feature_semantic_version": feature_semantic_version or None,
+                "gnn_graph_semantic_version": gnn_graph_semantic_version or None if model_name == "GNN" else None,
                 "sequence_contract": _json_safe(entry.get("sequence_contract"))
                 if isinstance(entry.get("sequence_contract"), dict)
                 else None,
@@ -4727,7 +4772,7 @@ async def run_pipeline_v2_from_snapshot_recovery(
             source_gcs_uri=source_gcs_uri,
             run_date=run_date,
             producer_run_id=producer_run_id,
-            query_fn=d1_client.query,
+            query_fn=MARKET_D1_CLIENT.query,
             attach_serving_context=_attach_pipeline_modal_serving_context,
             write_state_artifact=_write_pipeline_async_state_artifact,
             build_modal_payload=_build_pipeline_modal_prediction_payload,

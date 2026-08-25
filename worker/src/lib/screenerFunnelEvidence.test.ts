@@ -49,8 +49,8 @@ function assert(condition: unknown, message: string): void {
         strategy_overlap_vector: { trend_breakout: 0.21, research_shadow_only: 0.05 },
         selection_order: 'full_feature_enriched_universe_strategy_only_with_raw_signal_observe',
         strategy_labeler_version: 'strategy-labeler-v1',
-        finlab_portfolio_intelligence_version: 'finlab-portfolio-intelligence-v1',
-        strategy_router_version: 'multi-strategy-ple-router-v1',
+        finlab_portfolio_intelligence_version: 'strategy-portfolio-evidence-v2',
+        strategy_router_version: 'multi-strategy-policy-router-v2',
         l15_router_slate_selection_policy: 'l15-adaptive-marginal-slate-builder-v1',
         strategy_router_decision: 'ml_slate',
         strategy_router_reason: 'l15_ple_router_selected_by_strategy_portfolio_evidence',
@@ -219,7 +219,7 @@ function assert(condition: unknown, message: string): void {
   assert((summary?.evidence.layer125_finlab_portfolio_intelligence as any)?.selection_policy === 'no_stock_shrink_no_topk_no_minimum_fill', 'Layer1.25 FinLab portfolio intelligence must not shrink/fill the stock slate')
   assert((summary?.evidence.layer125_finlab_portfolio_intelligence as any)?.output_scope === 'strategy_prior_family_prior_reliability_crowding_diversification', 'Layer1.25 summary should expose strategy-as-asset output scope')
   assert((summary?.evidence.layer125_finlab_portfolio_intelligence as any)?.consumed_by === 'layer15_multi_strategy_ple_router', 'Layer1.25 should be consumed by L1.5 router')
-  assert((summary?.evidence.layer125_finlab_portfolio_intelligence as any)?.finlab_portfolio_intelligence_version === 'finlab-portfolio-intelligence-v1', 'Layer1.25 version must remain visible')
+  assert((summary?.evidence.layer125_finlab_portfolio_intelligence as any)?.finlab_portfolio_intelligence_version === 'strategy-portfolio-evidence-v2', 'Layer1.25 version must remain visible')
   assert((summary?.evidence.layer125_finlab_portfolio_intelligence as any)?.portfolio_metric_source === 'strategy_reward_ledger+strategy_decision_log+backtest_results', 'Layer1.25 metric source must remain visible')
   assert((summary?.evidence.layer125_finlab_portfolio_intelligence as any)?.portfolio_metric_status === 'ready', 'Layer1.25 metric readiness must remain visible')
   assert((summary?.evidence.layer125_finlab_portfolio_intelligence as any)?.portfolio_metric_count === 11, 'Layer1.25 metric count must remain visible')
@@ -237,7 +237,7 @@ function assert(condition: unknown, message: string): void {
   assert((summary?.evidence.layer125_finlab_portfolio_intelligence as any)?.crowding_action === 'allow_strategy_support', 'Layer1.25 low crowding should allow strategy support')
   assert((summary?.evidence.layer125_finlab_portfolio_intelligence as any)?.reliability_action === 'increase_prior_weight', 'Layer1.25 high reliability should increase prior weight')
   assert((summary?.evidence.layer15_multi_strategy_router as any)?.schema_version === 'layer15_multi_strategy_router_summary_v1', 'Layer1.5 router evidence must be summarized')
-  assert((summary?.evidence.layer15_multi_strategy_router as any)?.router_method === 'multi_strategy_ple_listwise_distillation_router', 'Layer1.5 router must expose PLE/Listwise method')
+  assert((summary?.evidence.layer15_multi_strategy_router as any)?.router_method === 'deterministic_continuous_strategy_policy_router_v2', 'Layer1.5 router must expose deterministic continuous policy method')
   assert((summary?.evidence.layer15_multi_strategy_router as any)?.router_scope === 'full_candidate_slate_to_diversified_ml_slate', 'Layer1.5 router must route the full slate into diversified ML slate')
   assert((summary?.evidence.layer15_multi_strategy_router as any)?.decision_policy === 'diversified_ml_slate_not_topk', 'Layer1.5 router must not be summarized as top-k ranking')
   assert((summary?.evidence.layer15_multi_strategy_router as any)?.selection_policy === 'continuous_weight_full_universe_no_candidate_veto', 'Layer1.5 route must expose continuous full-universe authority')
@@ -319,7 +319,7 @@ function assert(condition: unknown, message: string): void {
       decision: 'pass',
       reason_code: 'l15_ple_router_selected_by_strategy_portfolio_evidence',
       evidence: JSON.stringify({
-        finlab_portfolio_intelligence_version: 'finlab-portfolio-intelligence-v1',
+        finlab_portfolio_intelligence_version: 'strategy-portfolio-evidence-v2',
         strategy_portfolio_metric_source: 'strategy_reward_ledger+strategy_decision_log+backtest_results',
         strategy_portfolio_metric_status: 'ready',
         strategy_portfolio_metric_count: 11,
@@ -344,7 +344,7 @@ function assert(condition: unknown, message: string): void {
       decision: 'pass',
       reason_code: 'l15_ple_router_selected_by_strategy_portfolio_evidence',
       evidence: JSON.stringify({
-        finlab_portfolio_intelligence_version: 'finlab-portfolio-intelligence-v1',
+        finlab_portfolio_intelligence_version: 'strategy-portfolio-evidence-v2',
         strategy_portfolio_metric_source: 'strategy_reward_ledger+strategy_decision_log+backtest_results',
         strategy_portfolio_metric_status: 'ready',
         strategy_portfolio_metric_count: 9,

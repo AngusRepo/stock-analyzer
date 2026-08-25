@@ -24,15 +24,15 @@ VALIDATION_SCOPE = {
     "dynamic_embargo": "required",
     "cpcv_cscv": "required",
     "pbo_method": "cscv_rank_logit",
-    "deflated_sharpe": "proxy_until_exact_inputs_available",
+    "deflated_sharpe": "exact_trial_distribution_lineage_required",
     "monte_carlo": "block_or_regime_bootstrap_required",
     "walk_forward": "required_before_final_promotion",
     "train_serve_parity": "required",
     "slippage_fee_liquidity": "required",
-    "data_snooping": "white_reality_check_or_hansen_spa",
+    "data_snooping": "promotion_grade_stationary_bootstrap_white_or_studentized_spa_required",
     "model_family_validation_owners_are_declared_in_training_metadata": "required",
     "known_gaps": [
-        "exact_deflated_sharpe_requires_skew_kurtosis_and_trial_metadata",
+        "promotion_grade_stationary_bootstrap_white_and_studentized_spa_require_external_exact_evidence",
     ],
 }
 
@@ -193,69 +193,108 @@ def deflated_sharpe_proxy(
     }
 
 
+def _trial_distribution_checksum(values: list[float]) -> str:
+    import hashlib
+    import json
+
+    payload = json.dumps(
+        [round(float(value), 12) for value in values],
+        separators=(",", ":"),
+        allow_nan=False,
+    )
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
 def deflated_sharpe_exact(
     return_series: Any,
     *,
-    trials: int = 20,
+    trial_sharpe_distribution: Any = None,
+    effective_trials: Any = None,
+    trial_distribution_lineage: Any = None,
     min_probability: float = 0.70,
 ) -> dict[str, Any]:
-    """Bailey/Lopez de Prado style DSR when raw returns are available."""
+    """Promotion-grade DSR with immutable cross-trial Sharpe lineage."""
 
     returns = _float_series(return_series)
+    trial_sharpes = _float_series(trial_sharpe_distribution)
+    lineage = trial_distribution_lineage if isinstance(trial_distribution_lineage, dict) else {}
+    lineage_checksum = str(lineage.get("payload_checksum") or "").strip().lower()
+    computed_checksum = _trial_distribution_checksum(trial_sharpes) if trial_sharpes else ""
+    artifact_id = str(lineage.get("artifact_id") or "").strip()
+    as_of_date = str(lineage.get("as_of_date") or "").strip()
+    pit_fenced = lineage.get("pit_fenced") is True
+    lineage_valid = bool(
+        artifact_id
+        and as_of_date
+        and pit_fenced
+        and len(lineage_checksum) == 64
+        and lineage_checksum == computed_checksum
+    )
     n = len(returns)
-    t = max(1, _as_int(trials, 20))
+    effective = _as_int(effective_trials, 0)
+    common = {
+        "method": "deflated_sharpe_bailey_lopez_de_prado_v2",
+        "exact_formula": True,
+        "trial_distribution_lineage_valid": lineage_valid,
+        "trial_distribution_artifact_id": artifact_id or None,
+        "trial_distribution_checksum": computed_checksum or None,
+        "trial_distribution_count": len(trial_sharpes),
+        "effective_trials": effective,
+        "sample_count": n,
+    }
     if n < 5:
+        return {**common, "status": "FAIL", "passed": False, "reason": "return_series_lt_5", "probability": 0.0}
+    if len(trial_sharpes) < 2 or effective < 2 or effective > len(trial_sharpes):
         return {
-            "method": "deflated_sharpe_bailey_lopez_de_prado",
-            "exact_formula": True,
+            **common,
             "status": "FAIL",
             "passed": False,
-            "reason": "return_series_lt_5",
-            "sample_count": n,
-            "trials": t,
-            "skew": None,
-            "kurtosis": None,
+            "reason": "immutable_trial_sharpe_distribution_missing_or_invalid",
+            "probability": 0.0,
+        }
+    if not lineage_valid:
+        return {
+            **common,
+            "status": "FAIL",
+            "passed": False,
+            "reason": "trial_distribution_lineage_missing_or_checksum_mismatch",
             "probability": 0.0,
         }
 
     mean, skew, kurtosis = _sample_moments(returns)
-    variance = sum((v - mean) ** 2 for v in returns) / max(n - 1, 1)
+    variance = sum((value - mean) ** 2 for value in returns) / max(n - 1, 1)
     std = math.sqrt(variance)
-    if std <= 0:
+    trial_mean = sum(trial_sharpes) / len(trial_sharpes)
+    trial_variance = sum((value - trial_mean) ** 2 for value in trial_sharpes) / max(len(trial_sharpes) - 1, 1)
+    if std <= 0 or trial_variance <= 0:
         return {
-            "method": "deflated_sharpe_bailey_lopez_de_prado",
-            "exact_formula": True,
+            **common,
             "status": "FAIL",
             "passed": False,
-            "reason": "zero_return_variance",
-            "sample_count": n,
-            "trials": t,
-            "skew": round(skew, 6),
-            "kurtosis": round(kurtosis, 6),
+            "reason": "zero_return_or_trial_sharpe_variance",
             "probability": 0.0,
         }
 
     sharpe = mean / std
     normal = NormalDist()
     gamma = 0.5772156649015329
-    # Expected maximum Sharpe under multiple trials, from Bailey/Lopez de Prado
-    # approximation. Clamp quantile inputs to avoid numerical extremes.
-    p1 = min(max(1.0 - 1.0 / t, 1e-6), 1 - 1e-6)
-    p2 = min(max(1.0 - 1.0 / (t * math.e), 1e-6), 1 - 1e-6)
-    variance_sr = max(1e-12, (1.0 - skew * sharpe + ((kurtosis - 1.0) / 4.0) * sharpe * sharpe) / max(n - 1, 1))
-    benchmark_sr = math.sqrt(variance_sr) * ((1.0 - gamma) * normal.inv_cdf(p1) + gamma * normal.inv_cdf(p2))
-    denominator = math.sqrt(max(1e-12, 1.0 - skew * sharpe + ((kurtosis - 1.0) / 4.0) * sharpe * sharpe))
+    p1 = min(max(1.0 - 1.0 / effective, 1e-6), 1 - 1e-6)
+    p2 = min(max(1.0 - 1.0 / (effective * math.e), 1e-6), 1 - 1e-6)
+    benchmark_sr = trial_mean + math.sqrt(trial_variance) * (
+        (1.0 - gamma) * normal.inv_cdf(p1) + gamma * normal.inv_cdf(p2)
+    )
+    denominator = math.sqrt(max(
+        1e-12,
+        1.0 - skew * sharpe + ((kurtosis - 1.0) / 4.0) * sharpe * sharpe,
+    ))
     z_score = ((sharpe - benchmark_sr) * math.sqrt(n - 1)) / denominator
     probability = normal.cdf(z_score)
     passed = probability >= min_probability and sharpe > benchmark_sr
     return {
-        "method": "deflated_sharpe_bailey_lopez_de_prado",
-        "exact_formula": True,
+        **common,
         "status": "PASS" if passed else "FAIL",
         "passed": passed,
         "reason": "ok" if passed else "deflated_sharpe_probability_below_threshold",
-        "sample_count": n,
-        "trials": t,
         "raw_sharpe": round(sharpe, 6),
         "benchmark_sharpe": round(benchmark_sr, 6),
         "probability": round(probability, 6),
@@ -276,15 +315,23 @@ def deflated_sharpe_evidence(
     if return_series:
         return deflated_sharpe_exact(
             return_series,
-            trials=trials,
+            trial_sharpe_distribution=backtest.get("trial_sharpe_distribution"),
+            effective_trials=backtest.get("effective_trials"),
+            trial_distribution_lineage=backtest.get("trial_distribution_lineage"),
             min_probability=min_probability,
         )
-    return deflated_sharpe_proxy(
+    diagnostic = deflated_sharpe_proxy(
         backtest.get("sharpe"),
         backtest.get("total_trades"),
         trials=trials,
         min_adjusted_sharpe=min_adjusted_sharpe,
     )
+    return {
+        **diagnostic,
+        "passed": False,
+        "status": "FAIL",
+        "reason": "proxy_diagnostic_not_promotion_evidence",
+    }
 
 
 def data_snooping_reality_check(
@@ -294,12 +341,7 @@ def data_snooping_reality_check(
     seed: int = 42,
     alpha: float = 0.20,
 ) -> dict[str, Any]:
-    """White Reality Check style max-stat bootstrap across candidates.
-
-    This guards against picking the best-looking candidate from many Optuna/GA
-    trials or model variants. It uses centered returns and a deterministic
-    bootstrap seed so gate results are reproducible.
-    """
+    """Deterministic iid max-mean diagnostic; not a promotion-grade White RC."""
 
     cleaned = {
         str(name): _float_series(values)
@@ -309,7 +351,9 @@ def data_snooping_reality_check(
     cleaned = {name: values for name, values in cleaned.items() if len(values) >= 4}
     if len(cleaned) < 2:
         return {
-            "method": "white_reality_check",
+            "method": "white_iid_max_mean_diagnostic_v1",
+            "exact_formula": False,
+            "promotion_eligible": False,
             "status": "FAIL",
             "passed": False,
             "go_live_verdict": "FAIL",
@@ -342,7 +386,9 @@ def data_snooping_reality_check(
     p_value = (exceed + 1) / (sims + 1)
     passed = p_value <= alpha and best_mean > 0.0
     return {
-        "method": "white_reality_check",
+        "method": "white_iid_max_mean_diagnostic_v1",
+            "exact_formula": False,
+            "promotion_eligible": False,
         "status": "PASS" if passed else "FAIL",
         "passed": passed,
         "go_live_verdict": "PASS" if passed else "FAIL",
@@ -366,11 +412,7 @@ def hansen_spa_reality_check(
     seed: int = 42,
     alpha: float = 0.20,
 ) -> dict[str, Any]:
-    """Hansen SPA-style bootstrap versus a benchmark return series.
-
-    This is intentionally conservative: candidates must beat the benchmark
-    on mean excess return and pass a max-stat bootstrap across candidates.
-    """
+    """Deterministic iid benchmark-relative diagnostic; not full Hansen SPA."""
 
     cleaned = {
         str(name): _float_series(values)
@@ -380,7 +422,9 @@ def hansen_spa_reality_check(
     cleaned = {name: values for name, values in cleaned.items() if len(values) >= 4}
     if benchmark not in cleaned or len(cleaned) < 2:
         return {
-            "method": "hansen_spa",
+            "method": "hansen_iid_max_mean_diagnostic_v1",
+            "exact_formula": False,
+            "promotion_eligible": False,
             "status": "FAIL",
             "passed": False,
             "go_live_verdict": "FAIL",
@@ -403,7 +447,9 @@ def hansen_spa_reality_check(
     }
     if not excess_by_candidate:
         return {
-            "method": "hansen_spa",
+            "method": "hansen_iid_max_mean_diagnostic_v1",
+            "exact_formula": False,
+            "promotion_eligible": False,
             "status": "FAIL",
             "passed": False,
             "go_live_verdict": "FAIL",
@@ -435,7 +481,9 @@ def hansen_spa_reality_check(
     p_value = (exceed + 1) / (sims + 1)
     passed = best_mean > 0.0 and p_value <= alpha
     return {
-        "method": "hansen_spa",
+        "method": "hansen_iid_max_mean_diagnostic_v1",
+            "exact_formula": False,
+            "promotion_eligible": False,
         "status": "PASS" if passed else "FAIL",
         "passed": passed,
         "go_live_verdict": "PASS" if passed else "FAIL",
@@ -800,7 +848,24 @@ def build_validation_packet(
         min_adjusted_sharpe=_as_float(p.get("min_deflated_sharpe"), 0.25),
         min_probability=_as_float(p.get("min_deflated_sharpe_probability"), 0.70),
     )
-    gates.append(_gate("deflated_sharpe", bool(dsr["passed"]), reason=dsr["reason"], evidence=dsr))
+    dsr_promotion_ready = (
+        bool(dsr.get("passed"))
+        and dsr.get("exact_formula") is True
+        and dsr.get("trial_distribution_lineage_valid") is True
+        and dsr.get("method") == "deflated_sharpe_bailey_lopez_de_prado_v2"
+    )
+    gates.append(_gate(
+        "deflated_sharpe",
+        dsr_promotion_ready or not promotion_required,
+        status=(
+            None
+            if dsr_promotion_ready
+            else ("FAIL" if promotion_required else "WARN")
+        ),
+        severity="blocking" if promotion_required else "advisory",
+        reason=str(dsr.get("reason") or "exact_dsr_evidence_required"),
+        evidence=dsr,
+    ))
 
     if monte_carlo:
         mc_method = str(monte_carlo.get("simulation_method") or "").lower()
@@ -859,30 +924,43 @@ def build_validation_packet(
         )
 
     if data_snooping:
+        data_snooping_method = str(data_snooping.get("method") or "").lower()
+        data_snooping_promotion_ready = (
+            str(data_snooping.get("go_live_verdict") or "").upper() == "PASS"
+            and data_snooping.get("exact_formula") is True
+            and data_snooping.get("promotion_eligible") is True
+            and data_snooping_method in {
+                "white_reality_check_stationary_bootstrap_v2",
+                "hansen_spa_studentized_stationary_bootstrap_v2",
+            }
+            and _as_float(data_snooping.get("p_value"), 1.0) <= max_data_snooping_p
+        )
         gates.append(
             _gate(
                 "data_snooping_overfit_guard",
-                str(data_snooping.get("go_live_verdict") or "").upper() == "PASS"
-                and str(data_snooping.get("method") or "").lower() in {"white_reality_check", "hansen_spa"}
-                and _as_float(data_snooping.get("p_value"), 1.0) <= max_data_snooping_p,
-                reason="White Reality Check / Hansen SPA guard must reject data-snooped winners",
-                evidence={
-                    "method": data_snooping.get("method"),
-                    "p_value": _as_float(data_snooping.get("p_value"), 1.0),
-                    "max_p_value": max_data_snooping_p,
-                    "candidate_count": _as_int(data_snooping.get("candidate_count"), 0),
-                    "verdict": data_snooping.get("go_live_verdict"),
-                },
+                data_snooping_promotion_ready or not promotion_required,
+                status=(
+                    None
+                    if data_snooping_promotion_ready
+                    else ("FAIL" if promotion_required else "WARN")
+                ),
+                severity="blocking" if promotion_required else "advisory",
+                reason=(
+                    "promotion_grade_data_snooping_evidence_ready"
+                    if data_snooping_promotion_ready
+                    else "diagnostic_or_non_exact_data_snooping_evidence"
+                ),
+                evidence=data_snooping,
             )
         )
     else:
         gates.append(
             _gate(
                 "data_snooping_overfit_guard",
-                True,
-                status="WARN",
-                severity="advisory",
-                reason="missing_white_reality_check_or_hansen_spa_evidence",
+                not promotion_required,
+                status="FAIL" if promotion_required else "WARN",
+                severity="blocking" if promotion_required else "advisory",
+                reason="missing_promotion_grade_white_reality_check_or_hansen_spa_evidence",
             )
         )
 

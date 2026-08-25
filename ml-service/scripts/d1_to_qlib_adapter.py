@@ -43,21 +43,23 @@ D1_QUERY_URL_FMT = (
 )
 
 
-def d1_query(sql: str, params: List | None = None) -> list[dict]:
-    """Execute D1 SQL via Cloudflare REST API and return rows."""
+def query_domain(domain: str, sql: str, params: List | None = None) -> list[dict]:
+    """Execute SQL against an explicit canonical D1 owner."""
     account = os.environ["CF_ACCOUNT_ID"]
-    db = os.environ["CF_D1_DB_ID"]
+    env_name = {"core": "CF_D1_CORE_DB_ID", "market": "CF_D1_MARKET_DB_ID"}.get(domain)
+    if not env_name or not os.environ.get(env_name, "").strip():
+        raise RuntimeError(f"D1 domain database id missing: {domain}")
     token = os.environ["CF_API_TOKEN"]
-    url = D1_QUERY_URL_FMT.format(account=account, db=db)
+    url = D1_QUERY_URL_FMT.format(account=account, db=os.environ[env_name])
     payload = {"sql": sql, "params": params or []}
-    r = requests.post(
+    response = requests.post(
         url,
         headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
         json=payload,
         timeout=120,
     )
-    r.raise_for_status()
-    data = r.json()
+    response.raise_for_status()
+    data = response.json()
     if not data.get("success"):
         raise RuntimeError(f"D1 query failed: {data}")
     return data["result"][0].get("results", [])
@@ -65,7 +67,7 @@ def d1_query(sql: str, params: List | None = None) -> list[dict]:
 
 def fetch_universe() -> list[str]:
     """Screener universe: in_current_watchlist=1."""
-    rows = d1_query(
+    rows = query_domain("core",
         "SELECT symbol FROM stocks WHERE in_current_watchlist = 1 AND market IN ('TWSE','OTC') ORDER BY symbol"
     )
     return [r["symbol"] for r in rows]
@@ -73,14 +75,17 @@ def fetch_universe() -> list[str]:
 
 def fetch_stock_prices(symbol: str, start_date: str) -> list[dict]:
     """Fetch OHLCV for one symbol since start_date."""
-    return d1_query(
-        """SELECT sp.date, sp.open, sp.high, sp.low, sp.close, sp.volume, sp.adj_close
-           FROM stock_prices sp
-           JOIN stocks s ON sp.stock_id = s.id
-           WHERE s.symbol = ? AND sp.date >= ?
-             AND sp.close IS NOT NULL AND sp.volume IS NOT NULL
-           ORDER BY sp.date""",
-        params=[symbol, start_date],
+    identity = query_domain("core", "SELECT id FROM stocks WHERE symbol=? LIMIT 1", [symbol])
+    if not identity:
+        return []
+    return query_domain(
+        "market",
+        """SELECT date, open, high, low, close, volume, adj_close
+           FROM stock_prices
+           WHERE stock_id=? AND date>=?
+             AND close IS NOT NULL AND volume IS NOT NULL
+           ORDER BY date""",
+        params=[identity[0]["id"], start_date],
     )
 
 

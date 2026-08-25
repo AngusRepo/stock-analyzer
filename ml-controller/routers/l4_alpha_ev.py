@@ -8,7 +8,7 @@ from typing import Any, Literal
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 
-from services import d1_client
+from services.d1_domain_client import D1DataDomain, client_proxy_for_domain
 from services.l4_alpha_ev_artifact_builder import (
     build_l4_alpha_ev_artifact_from_rows,
     load_l4_alpha_ev_training_rows,
@@ -19,9 +19,12 @@ from services.ev_lineage_contract import (
     reconstruct_rows_with_point_in_time_lineage,
 )
 from services.model_artifact_registry import upsert_artifact_record
+from services.trading_session_maturity import fifth_session_maturity_cutoff
 
 
 router = APIRouter(prefix="/l4_alpha_ev", tags=["l4_alpha_ev"])
+LEARNING_D1_CLIENT = client_proxy_for_domain(D1DataDomain.LEARNING)
+CORE_D1_CLIENT = client_proxy_for_domain(D1DataDomain.CORE)
 
 
 DIRECT_REFRESH_PROMOTION_OWNER = "active8_oof_lifecycle"
@@ -43,33 +46,18 @@ class L4AlphaEvRefreshReq(BaseModel):
 
 def _latest_mature_prediction_date(max_date: str | None) -> str:
     cutoff = max_date or "now"
-    rows = d1_client.query(
+    mature_cutoff = fifth_session_maturity_cutoff(cutoff)
+    if not mature_cutoff:
+        raise HTTPException(status_code=409, detail="l4_alpha_ev_market_calendar_insufficient")
+    rows = LEARNING_D1_CLIENT.query(
         """
-        WITH price_horizons AS (
-            SELECT
-                stock_id,
-                date(date) AS price_date,
-                LEAD(date(date), 5) OVER (
-                    PARTITION BY stock_id ORDER BY date(date)
-                ) AS exit_date
-            FROM stock_prices
-            WHERE date(date) <= date(?)
-        )
         SELECT MAX(date(p.prediction_date)) AS end_date
         FROM predictions p
-        JOIN daily_recommendations dr
-          ON dr.stock_id = p.stock_id
-         AND dr.date = p.prediction_date
-        JOIN price_horizons ph
-          ON ph.stock_id = p.stock_id
-         AND ph.price_date = date(p.prediction_date)
         WHERE p.model_name = 'ensemble'
           AND p.forecast_data IS NOT NULL
-          AND dr.score_components IS NOT NULL
           AND date(p.prediction_date) <= date(?)
-          AND date(ph.exit_date) <= date(?)
         """,
-        [cutoff, cutoff, cutoff],
+        [mature_cutoff],
     )
     end_date = str((rows[0] if rows else {}).get("end_date") or "").strip()
     if not end_date:
@@ -174,7 +162,8 @@ async def refresh_l4_alpha_ev_artifact(req: L4AlphaEvRefreshReq) -> dict[str, An
     min_dates = req.min_dates or defaults["min_dates"]
 
     rows = load_l4_alpha_ev_training_rows(
-        d1_client.query,
+        LEARNING_D1_CLIENT.query,
+        core_query_fn=CORE_D1_CLIENT.query,
         end_date=end_date,
         knowledge_cutoff_date=knowledge_cutoff_date,
         lookback_days=lookback_days,
@@ -188,7 +177,7 @@ async def refresh_l4_alpha_ev_artifact(req: L4AlphaEvRefreshReq) -> dict[str, An
     history_start = generated_values[0] if generated_values else f"{end_date}T00:00:00Z"
     history_end = generated_values[-1] if generated_values else f"{end_date}T23:59:59Z"
     champion_events, champion_history_load = load_model_champion_history(
-        d1_client.query,
+        LEARNING_D1_CLIENT.query,
         start_at=history_start,
         end_at=history_end,
     )

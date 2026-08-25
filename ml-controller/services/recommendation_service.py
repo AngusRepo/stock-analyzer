@@ -60,6 +60,11 @@ from services.portfolio_allocation import (
     allocate_sparse_tangent_with_evidence,
     apply_categorical_exposure_cap,
 )
+from services.rfs_implementable_frontier_shadow import build_rfs_implementable_frontier_shadow
+from services.portfolio_ml_shadow_inputs import (
+    build_portfolio_ml_shadow_inputs,
+    load_inherited_paper_weights,
+)
 from services.similarity_evidence import (
     apply_cluster_exposure_cap,
     similarity_components,
@@ -70,18 +75,23 @@ from services.l4_alpha_ev_resolver import extract_l4_alpha_ev
 from services.allocator_ev_fusion import materialize_allocator_ev_fusion
 from services.timesfm_l175_sidecar import build_timesfm_l175_sidecar
 from services.fusion_market_context import build_runtime_market_context
-from services.price_horizon_projection_contract import PRICE_HORIZONS_CTE
+from services.price_horizon_projection_contract import (
+    PRICE_HORIZONS_CTE,
+    PRICE_HORIZON_PROJECTION_VERSION,
+)
 
 logger = logging.getLogger(__name__)
 CORE_D1_CLIENT = client_proxy_for_domain(D1DataDomain.CORE)
 OPS_D1_CLIENT = client_for_domain(D1DataDomain.OPS)
 PREDICTIONS_D1_CLIENT = client_for_domain(D1DataDomain.LEARNING)
+MARKET_D1_CLIENT = client_for_domain(D1DataDomain.MARKET)
 
 D1_IN_CLAUSE_CHUNK_SIZE = 80
-SCORE_V2_ALLOCATION_UTILITY_CONTRACT_VERSION = "score-v2-selection-allocation-utility-v1"
-SCORE_V2_ALLOCATION_UTILITY_SEMANTIC = (
-    "dimensionless_score_v2_ml_edge_confidence_utility_not_expected_return"
+FORMAL_ML_CONTINUITY_ADMISSION_CONTRACT_VERSION = "formal-ml-buy-continuity-admission-v2"
+FORMAL_ML_CONTINUITY_ADMISSION_SEMANTIC = (
+    "binary_formal_ml_buy_eligibility_not_expected_return_not_weight_magnitude"
 )
+CONTINUITY_RISK_BUDGET_OBJECTIVE = "full_pool_inverse_volatility_risk_budget"
 
 
 def _predictions_query(sql: str, params: list[Any] | None = None, timeout: float = 60.0) -> list[dict]:
@@ -1013,7 +1023,7 @@ def load_fundamental_quality_by_symbol(screener_recs: list[dict], decision_date:
         try:
             for chunk in _chunked(symbols):
                 placeholders = ",".join("?" for _ in chunk)
-                rows = d1_client.query(
+                rows = MARKET_D1_CLIENT.query(
                     f"""
                     SELECT stock_id, revenue_month, market_segment, revenue, mom, yoy, source, as_of_date
                     FROM canonical_revenue_monthly
@@ -1033,7 +1043,7 @@ def load_fundamental_quality_by_symbol(screener_recs: list[dict], decision_date:
         try:
             for chunk in _chunked(symbols):
                 placeholders = ",".join("?" for _ in chunk)
-                rows = d1_client.query(
+                rows = MARKET_D1_CLIENT.query(
                     f"""
                     SELECT stock_id, period, market_segment, report_date, available_date,
                            revenue_growth_yoy, gross_margin, operating_margin, roe, eps,
@@ -2143,27 +2153,79 @@ def _signal_tier(sig: Optional[str]) -> float:
     return 0.0
 
 
-def _score_v2_allocation_utility(row: dict, *, ml_edge: float) -> tuple[float, dict[str, Any]]:
+def _formal_ml_continuity_admission(
+    row: dict,
+    *,
+    ml_edge: float,
+    formal_ml_evidence: dict[str, Any],
+) -> tuple[float, dict[str, Any]]:
     score_v2 = _score_v2_final_score_for_ranking(row)
-    confidence = max(0.0, min(1.0, _float_or_none(row.get("confidence")) or 0.0))
-    score_strength = max(0.0, min(1.0, score_v2 / 100.0))
-    ml_strength = max(0.0, min(1.0, ml_edge / 25.0))
-    utility = round(0.01 * score_strength * ml_strength * confidence, 10)
-    return utility, {
-        "schema_version": SCORE_V2_ALLOCATION_UTILITY_CONTRACT_VERSION,
-        "allocation_utility_owner": "score_v2_formal_ml",
-        "allocation_utility_semantic": SCORE_V2_ALLOCATION_UTILITY_SEMANTIC,
-        "allocation_utility": utility,
+    admission_value = 1.0
+    return admission_value, {
+        "schema_version": FORMAL_ML_CONTINUITY_ADMISSION_CONTRACT_VERSION,
+        "allocation_utility_owner": "formal_ml_buy_admission",
+        "allocation_utility_semantic": FORMAL_ML_CONTINUITY_ADMISSION_SEMANTIC,
+        "allocation_utility": admission_value,
         "score_v2_final_score": round(score_v2, 6),
         "formal_ml_edge": round(ml_edge, 6),
-        "confidence": round(confidence, 6),
-        "scale": 0.01,
+        "formal_ml_signal": formal_ml_evidence.get("formal_ml_signal"),
+        "active_family_count": formal_ml_evidence.get("active_family_count"),
+        "admission_only_not_weight_magnitude": True,
+        "handwritten_score_formula_used_for_weighting": False,
         "rank_or_topk_gate": False,
         "expected_return_owner": None,
         "expected_return_promotion_allowed": False,
         "can_submit_real_order": False,
-        "policy": "continuity_utility_only_until_current_contract_l4_passes_all_promotion_gates",
+        "policy": "formal_ml_direction_plus_risk_only_weighting_until_current_contract_l4_passes",
     }
+
+
+def _formal_ml_buy_admission(row: dict[str, Any]) -> tuple[bool, dict[str, Any]]:
+    score_components = row.get("score_components")
+    if isinstance(score_components, str):
+        try:
+            score_components = json.loads(score_components)
+        except (TypeError, json.JSONDecodeError):
+            score_components = {}
+    if not isinstance(score_components, dict):
+        score_components = {}
+    ml_policy = score_components.get("mlEdgePolicy")
+    if not isinstance(ml_policy, dict):
+        ml_policy = row.get("ml_edge_policy") if isinstance(row.get("ml_edge_policy"), dict) else {}
+    formal_signal = _normalized_signal(ml_policy.get("signal") or row.get("signal_raw") or row.get("signal"))
+    family_evidence = score_components.get("coreFamilyEvidence")
+    if not isinstance(family_evidence, dict):
+        family_evidence = row.get("core_family_evidence") if isinstance(row.get("core_family_evidence"), dict) else {}
+    try:
+        active_family_count = int(family_evidence.get("active_family_count") or 0)
+    except (TypeError, ValueError):
+        active_family_count = 0
+    family_contract_passed = (
+        family_evidence.get("formal_model_contract_passed") is True
+        and family_evidence.get("evidence_status") == "sufficient_family_breadth"
+        and active_family_count >= 2
+    )
+    allowed = _is_formal_buy_signal(formal_signal) and family_contract_passed
+    return allowed, {
+        "schema_version": "formal-ml-continuity-admission-v1",
+        "direction_owner": "formal_ml_signal",
+        "formal_signal": formal_signal or None,
+        "formal_buy_signal": _is_formal_buy_signal(formal_signal),
+        "formal_model_contract_passed": family_evidence.get("formal_model_contract_passed") is True,
+        "family_evidence_status": family_evidence.get("evidence_status"),
+        "active_family_count": active_family_count,
+        "minimum_active_family_count": 2,
+        "admission_allowed": allowed,
+        "allocator_role": "weight_only_not_direction_owner",
+    }
+
+
+def _risk_overlay_blocks_allocation(row: dict[str, Any]) -> bool:
+    context = row.get("alpha_context")
+    if not isinstance(context, dict):
+        return False
+    overlay = context.get("risk_overlay")
+    return isinstance(overlay, dict) and overlay.get("skip") is True
 
 
 def _can_promote_ranking_candidate(row: dict, ranking_config: dict, alpha_policy: dict | None = None) -> bool:
@@ -2171,6 +2233,9 @@ def _can_promote_ranking_candidate(row: dict, ranking_config: dict, alpha_policy
     lane = row.get("recommendation_lane") or "tradable"
     if not is_explicitly_enabled(row.get("eligible_for_pending_buy")) or lane != "tradable":
         row["promotion_blocked_reason"] = "research_only_or_not_tradable"
+        return False
+    if _risk_overlay_blocks_allocation(row):
+        row["promotion_blocked_reason"] = "risk_overlay_skip"
         return False
     expected_return, expected_return_source = _row_expected_return_with_source(row, alpha_policy=alpha_policy)
     row["promotion_expected_return"] = expected_return
@@ -2212,13 +2277,19 @@ def _can_promote_ranking_candidate(row: dict, ranking_config: dict, alpha_policy
         return False
 
     if missing_expected_return:
-        utility, evidence = _score_v2_allocation_utility(row, ml_edge=ml_edge)
-        if utility <= 0.0:
-            row["promotion_blocked_reason"] = "nonpositive_score_v2_allocation_utility"
+        formal_ml_allowed, formal_ml_evidence = _formal_ml_buy_admission(row)
+        row["formal_ml_continuity_admission"] = formal_ml_evidence
+        if not formal_ml_allowed:
+            row["promotion_blocked_reason"] = "formal_ml_buy_admission_failed"
             return False
+        _admission_value, evidence = _formal_ml_continuity_admission(
+            row,
+            ml_edge=ml_edge,
+            formal_ml_evidence=formal_ml_evidence,
+        )
         row["_selection_allocation_utility"] = evidence
         row["promotion_expected_return_policy"] = (
-            "learned_ev_unavailable_score_v2_allocation_utility_continuity_only"
+            "learned_ev_unavailable_formal_ml_direction_risk_budget_continuity_only"
         )
     row.pop("promotion_blocked_reason", None)
     return True
@@ -2691,36 +2762,14 @@ def _observational_potential_buy_evidence(
     lane = str(row.get("recommendation_lane") or "tradable").strip().lower()
     if lane != "tradable" or not is_explicitly_enabled(row.get("eligible_for_pending_buy")):
         return None
-    score_components = row.get("score_components")
-    if isinstance(score_components, str):
-        try:
-            score_components = json.loads(score_components)
-        except (TypeError, json.JSONDecodeError):
-            score_components = {}
-    if not isinstance(score_components, dict):
-        score_components = {}
-    ml_policy = score_components.get("mlEdgePolicy")
-    if not isinstance(ml_policy, dict):
-        ml_policy = row.get("ml_edge_policy") if isinstance(row.get("ml_edge_policy"), dict) else {}
-    formal_signal = _normalized_signal(ml_policy.get("signal") or row.get("signal_raw"))
-    if not _is_formal_buy_signal(formal_signal):
+    formal_ml_allowed, formal_ml_evidence = _formal_ml_buy_admission(row)
+    if not formal_ml_allowed:
         return None
-    family_evidence = score_components.get("coreFamilyEvidence")
-    if not isinstance(family_evidence, dict):
-        family_evidence = row.get("core_family_evidence") if isinstance(row.get("core_family_evidence"), dict) else {}
-    try:
-        active_family_count = int(family_evidence.get("active_family_count") or 0)
-    except (TypeError, ValueError):
-        return None
-    if (
-        family_evidence.get("formal_model_contract_passed") is not True
-        or family_evidence.get("evidence_status") != "sufficient_family_breadth"
-        or active_family_count < 2
-    ):
-        return None
+    formal_signal = str(formal_ml_evidence.get("formal_signal") or "")
+    active_family_count = int(formal_ml_evidence.get("active_family_count") or 0)
     if (
         allocation_evidence.get("eligible_for_sparse") is True
-        and allocation_evidence.get("allocation_utility_owner") == "score_v2_formal_ml"
+        and allocation_evidence.get("allocation_utility_owner") == "formal_ml_buy_admission"
     ):
         return None
     resolver = allocation_evidence.get("allocator_edge_resolver")
@@ -3223,6 +3272,170 @@ def _row_daily_risk_estimate(symbol: str, risk_history: dict[str, list[float]], 
     return max(daily_vol_floor, math.sqrt(max(0.0, variance)))
 
 
+def _load_canonical_opb_reward_rows(
+    *,
+    cutoff: str,
+    knowledge_date: str,
+    max_rows: int,
+) -> list[dict[str, Any]]:
+    recommendation_rows = CORE_D1_CLIENT.query(
+        """
+        SELECT date, stock_id, symbol, rank, alpha_allocation
+        FROM daily_recommendations
+        WHERE date >= ?
+          AND date < ?
+          AND alpha_allocation IS NOT NULL
+          AND json_valid(alpha_allocation)
+          AND json_extract(alpha_allocation, '$.selected') = 1
+          AND json_extract(alpha_allocation, '$.opb_controller.enabled') = 1
+        ORDER BY date DESC, rank ASC
+        LIMIT ?
+        """,
+        [cutoff, knowledge_date, max_rows],
+        timeout=30.0,
+    )
+    if not recommendation_rows:
+        return []
+
+    requested_pairs = _dedupe_preserve_order([
+        (row.get("stock_id"), str(row.get("date") or "").strip())
+        for row in recommendation_rows
+        if row.get("stock_id") is not None and str(row.get("date") or "").strip()
+    ])
+    horizon_by_pair: dict[tuple[str, str], dict[str, Any]] = {}
+    for chunk in _chunked(requested_pairs, 40):
+        values_sql = ",".join("(?, ?)" for _ in chunk)
+        params = [value for pair in chunk for value in pair]
+        rows = MARKET_D1_CLIENT.query(
+            f"""
+            WITH requested(stock_id, price_date) AS (VALUES {values_sql})
+            SELECT ph.stock_id,
+                   ph.price_date,
+                   ph.entry_date,
+                   ph.entry_raw_open,
+                   ph.entry_adjustment_factor,
+                   ph.exit_date,
+                   ph.exit_raw_close,
+                   ph.exit_adjustment_factor,
+                   ph.outcome_known_date
+            FROM requested requested
+            JOIN price_horizon_labels_v1 ph
+              ON ph.stock_id = requested.stock_id
+             AND ph.price_date = requested.price_date
+            WHERE ph.projection_version = ?
+            """,
+            [*params, PRICE_HORIZON_PROJECTION_VERSION],
+            timeout=30.0,
+        )
+        for row in rows or []:
+            key = (str(row.get("stock_id")), str(row.get("price_date") or "").strip())
+            horizon_by_pair[key] = dict(row)
+
+    prediction_requests = []
+    for stock_id, prediction_date in requested_pairs:
+        horizon = horizon_by_pair.get((str(stock_id), prediction_date)) or {}
+        entry_date = str(horizon.get("entry_date") or "").strip()
+        if entry_date:
+            prediction_requests.append((stock_id, prediction_date, entry_date))
+
+    prediction_by_pair: dict[tuple[str, str], dict[str, Any]] = {}
+    for chunk in _chunked(prediction_requests, 30):
+        values_sql = ",".join("(?, ?, ?)" for _ in chunk)
+        params = [value for item in chunk for value in item]
+        rows = PREDICTIONS_D1_CLIENT.query(
+            f"""
+            WITH requested(stock_id, prediction_date, entry_date) AS (VALUES {values_sql})
+            SELECT stock_id,
+                   prediction_date,
+                   trade_pnl_pct,
+                   trade_pnl_r,
+                   verified_at,
+                   verification_label_known_date
+            FROM (
+                SELECT p.stock_id,
+                       date(p.prediction_date) AS prediction_date,
+                       p.trade_pnl_pct,
+                       p.trade_pnl_r,
+                       p.verified_at,
+                       p.verification_label_known_date,
+                       ROW_NUMBER() OVER (
+                           PARTITION BY p.stock_id, date(p.prediction_date)
+                           ORDER BY datetime(p.generated_at) DESC, p.id DESC
+                       ) AS row_number
+                FROM predictions p
+                JOIN requested requested
+                  ON requested.stock_id = p.stock_id
+                 AND requested.prediction_date = date(p.prediction_date)
+                WHERE p.model_name = 'ensemble'
+                  AND datetime(p.generated_at) < datetime(requested.entry_date || ' 01:00:00')
+            ) ranked
+            WHERE row_number = 1
+            """,
+            params,
+            timeout=30.0,
+        )
+        for row in rows or []:
+            key = (str(row.get("stock_id")), str(row.get("prediction_date") or "").strip())
+            prediction_by_pair[key] = dict(row)
+
+    merged: list[dict[str, Any]] = []
+    for source_row in recommendation_rows:
+        business_date = str(source_row.get("date") or "").strip()
+        key = (str(source_row.get("stock_id")), business_date)
+        prediction = prediction_by_pair.get(key)
+        if not prediction:
+            continue
+        horizon = horizon_by_pair.get(key) or {}
+        known_date = str(
+            prediction.get("verification_label_known_date")
+            or prediction.get("verified_at")
+            or ""
+        ).strip()[:10]
+        verified_ready = (
+            (prediction.get("trade_pnl_pct") is not None or prediction.get("trade_pnl_r") is not None)
+            and bool(prediction.get("verified_at"))
+            and bool(known_date)
+            and known_date <= knowledge_date
+        )
+        exit_date = str(horizon.get("exit_date") or "").strip()[:10]
+        try:
+            entry_value = float(horizon.get("entry_raw_open")) * float(horizon.get("entry_adjustment_factor"))
+            exit_value = float(horizon.get("exit_raw_close")) * float(horizon.get("exit_adjustment_factor"))
+        except (TypeError, ValueError):
+            entry_value = 0.0
+            exit_value = 0.0
+        canonical_ready = bool(exit_date) and exit_date <= knowledge_date and entry_value > 0 and exit_value > 0
+        if not verified_ready and not canonical_ready:
+            continue
+        merged.append({
+            **dict(source_row),
+            "trade_pnl_pct": prediction.get("trade_pnl_pct"),
+            "trade_pnl_r": prediction.get("trade_pnl_r"),
+            "verified_at": prediction.get("verified_at"),
+            "verification_label_known_date": prediction.get("verification_label_known_date"),
+            "canonical_selection_outcome_known_date": exit_date or None,
+            "canonical_selection_return_pct": (
+                (exit_value / entry_value) - 1.0
+                if canonical_ready
+                else None
+            ),
+        })
+    return merged
+
+
+def _canonical_opb_query_adapter(
+    _sql: str,
+    params: list[Any],
+    timeout: float = 30.0,
+) -> list[dict[str, Any]]:
+    del timeout
+    return _load_canonical_opb_reward_rows(
+        cutoff=str(params[0]),
+        knowledge_date=str(params[1]),
+        max_rows=int(params[-1]),
+    )
+
+
 def load_online_portfolio_bandit_reward_ledger(
     *,
     lookback_days: int = 180,
@@ -3239,7 +3452,7 @@ def load_online_portfolio_bandit_reward_ledger(
     )
     cutoff = (knowledge_date - timedelta(days=max(1, int(lookback_days)))).isoformat()
     max_rows = max(1, min(int(limit), 20000))
-    query = query_fn or d1_client.query
+    query = query_fn or _canonical_opb_query_adapter
     try:
         rows = query(
             f"""
@@ -3524,7 +3737,7 @@ def _apply_sparse_tangent_buy_selection(
         "input_candidate_pool_policy": "full_eligible_pool_no_buy_signal_rank_gate",
         "selection_policy": "positive_allocation_utility_sparse_weights_no_forced_fill",
         "capacity_policy": "endogenous_positive_marginal_utility_no_hard_top_k",
-        "max_capacity_not_target": False,
+        "max_capacity_not_target": True,
         "hard_minimum_fill": False,
         "allows_empty_portfolio": True,
         "legacy_rank_topk_fallback_allowed": False,
@@ -3606,18 +3819,18 @@ def _apply_sparse_tangent_buy_selection(
             row["promotion_blocked_reason"] = (
                 "negative_expected_return"
                 if formal_expected_return
-                else "nonpositive_score_v2_allocation_utility"
+                else "formal_ml_buy_admission_failed"
             )
             continue
         allocation_utility_owner = (
             "expected_return_owner"
             if formal_expected_return
-            else "score_v2_formal_ml"
+            else "formal_ml_buy_admission"
         )
         allocation_utility_semantic = (
             "expected_return_net_of_costs"
             if formal_expected_return
-            else SCORE_V2_ALLOCATION_UTILITY_SEMANTIC
+            else FORMAL_ML_CONTINUITY_ADMISSION_SEMANTIC
         )
         candidate = {
             "symbol": symbol,
@@ -3632,7 +3845,7 @@ def _apply_sparse_tangent_buy_selection(
             "allocation_utility_contract_version": (
                 resolver.get("expected_return_contract_version")
                 if formal_expected_return
-                else SCORE_V2_ALLOCATION_UTILITY_CONTRACT_VERSION
+                else FORMAL_ML_CONTINUITY_ADMISSION_CONTRACT_VERSION
             ),
             "allocation_utility_semantic": allocation_utility_semantic,
             "allocator_edge_quality_score": resolver.get("allocator_edge_quality_score"),
@@ -3645,6 +3858,9 @@ def _apply_sparse_tangent_buy_selection(
             "market_heat_score": row.get("market_heat_score"),
             "market_heat_expected_return": row.get("market_heat_expected_return"),
             "turnover_pressure": row.get("turnover_pressure") or row.get("turnover") or row.get("expected_turnover"),
+            "current_price": row.get("current_price"),
+            "avg_volume_20": row.get("avg_volume_20") or row.get("average_volume_20"),
+            "avg_daily_turnover_twd": row.get("avg_daily_turnover_twd") or row.get("adv_twd"),
             "_evidence": {
                 "expected_return": expected_return if formal_expected_return else 0.0,
                 "expected_return_source": expected_return_source,
@@ -3656,7 +3872,7 @@ def _apply_sparse_tangent_buy_selection(
                 "allocation_utility_contract_version": (
                     resolver.get("expected_return_contract_version")
                     if formal_expected_return
-                    else SCORE_V2_ALLOCATION_UTILITY_CONTRACT_VERSION
+                    else FORMAL_ML_CONTINUITY_ADMISSION_CONTRACT_VERSION
                 ),
                 "allocation_utility_semantic": allocation_utility_semantic,
                 "selection_allocation_utility": selection_utility or None,
@@ -3694,8 +3910,12 @@ def _apply_sparse_tangent_buy_selection(
         allocation_input_semantic = "expected_return_net_of_costs"
     else:
         allocation_candidates = raw_allocation_candidates
-        allocation_mode = "score_v2_formal_ml_continuity"
-        allocation_input_semantic = SCORE_V2_ALLOCATION_UTILITY_SEMANTIC
+        allocation_mode = "formal_ml_buy_risk_budget_continuity"
+        allocation_input_semantic = FORMAL_ML_CONTINUITY_ADMISSION_SEMANTIC
+    effective_allocation_objective = (
+        allocation_objective if allocation_mode == "learned_expected_return_owner"
+        else CONTINUITY_RISK_BUDGET_OBJECTIVE
+    )
 
     candidate_evidence_by_symbol: dict[str, dict[str, Any]] = {}
     for candidate in allocation_candidates:
@@ -3712,11 +3932,18 @@ def _apply_sparse_tangent_buy_selection(
         "allocation_utility_owner": (
             "expected_return_owner"
             if allocation_mode == "learned_expected_return_owner"
-            else "score_v2_formal_ml"
+            else "formal_ml_buy_admission"
         ),
-        "selection_policy": "positive_allocation_utility_sparse_weights_no_forced_fill",
+        "selection_policy": (
+            "positive_expected_return_sparse_weights_no_forced_fill"
+            if allocation_mode == "learned_expected_return_owner"
+            else "formal_ml_buy_admission_full_pool_inverse_volatility_no_topk"
+        ),
+        "allocation_objective": effective_allocation_objective,
+        "admission_signal_used_for_weight_magnitude": False,
+        "expected_return_used_for_weight_magnitude": allocation_mode == "learned_expected_return_owner",
         "expected_return_promotion_independent": True,
-        "score_v2_utility_cannot_promote_l4": True,
+        "continuity_admission_cannot_promote_l4": True,
     })
     optimizer_candidates = sorted(
         [row for row in allocation_candidates if str(row.get("symbol") or "").strip()],
@@ -3743,6 +3970,7 @@ def _apply_sparse_tangent_buy_selection(
     )
     opb_packet: dict[str, Any] | None = None
     allocation_result: dict[str, Any] = {}
+    opb_empty_is_authoritative = False
     if controller == "OnlinePortfolioBandit":
         try:
             from services.online_portfolio_bandit import (
@@ -3775,29 +4003,47 @@ def _apply_sparse_tangent_buy_selection(
                 expected_return_contract_version=runtime_contract,
                 expected_return_semantic=runtime_semantic,
             )
-
-            opb_packet = build_online_portfolio_bandit_l2_packet(
-                candidates=allocation_candidates,
-                return_history=risk_history,
-                reward_ledger=opb_reward_ledger or [],
-                arms=resolved_arms,
-                stage="L3_production_allocation_controller",
-                candidate_cap_limit=None,
-                max_cluster_weight=max_cluster_weight,
-                cluster_edge_threshold=cluster_edge_threshold,
-                cluster_threshold_quantile=cluster_threshold_quantile,
-                allocation_objective=allocation_objective,
-                alpha_strength=alpha_strength,
-                risk_aversion=risk_aversion,
-                turnover_penalty=turnover_penalty,
-                l2_penalty=l2_penalty,
-                utility_iterations=utility_iterations,
-                utility_field="allocation_utility",
-                utility_semantic=allocation_input_semantic,
-                prior_artifact_evidence=prior_artifact_evidence,
+            opb_control_allowed = (
+                allocation_mode == "learned_expected_return_owner"
+                and runtime_owner in {"l4_alpha_ev", "allocator_ev_fusion"}
+                and prior_artifact_evidence.get("status") == "artifact_loaded"
+                and prior_artifact_evidence.get("production_control_ready") is True
             )
-            weights = dict(((opb_packet.get("controlled_allocation") or {}).get("weights") or {}))
-            weights = _sanitize_final_weights(weights, preserve_total_exposure=True)
+            if opb_control_allowed:
+                opb_packet = build_online_portfolio_bandit_l2_packet(
+                    candidates=allocation_candidates,
+                    return_history=risk_history,
+                    reward_ledger=opb_reward_ledger or [],
+                    arms=resolved_arms,
+                    stage="L3_production_allocation_controller",
+                    candidate_cap_limit=None,
+                    max_cluster_weight=max_cluster_weight,
+                    cluster_edge_threshold=cluster_edge_threshold,
+                    cluster_threshold_quantile=cluster_threshold_quantile,
+                    allocation_objective=effective_allocation_objective,
+                    alpha_strength=alpha_strength,
+                    risk_aversion=risk_aversion,
+                    turnover_penalty=turnover_penalty,
+                    l2_penalty=l2_penalty,
+                    utility_iterations=utility_iterations,
+                    utility_field="allocation_utility",
+                    utility_semantic=allocation_input_semantic,
+                    prior_artifact_evidence=prior_artifact_evidence,
+                )
+                weights = dict(((opb_packet.get("controlled_allocation") or {}).get("weights") or {}))
+                weights = _sanitize_final_weights(weights, preserve_total_exposure=True)
+                opb_empty_is_authoritative = opb_packet.get("status") == "ok" and not weights
+            else:
+                opb_packet = {
+                    "status": "shadow_only",
+                    "stage": "L3_5_policy_observation",
+                    "allocation_role": "evidence_only_not_weight_controller",
+                    "selection_policy": "requires_formal_expected_return_owner_and_evidence_ready_owner_compatible_prior",
+                    "selected_arm": None,
+                    "prior_artifact": prior_artifact_evidence,
+                    "fallback_engine": "sparse_tangent_inverse_risk",
+                }
+                weights = {}
         except Exception as exc:  # noqa: BLE001 - allocator must fall back deterministically.
             logger.warning("[Ranking] OnlinePortfolioBandit controller failed; fallback sparse tangent: %s", exc)
             opb_packet = {
@@ -3813,7 +4059,7 @@ def _apply_sparse_tangent_buy_selection(
     else:
         weights = {}
 
-    if not weights:
+    if not weights and not opb_empty_is_authoritative:
         # Legacy buy_signal_count cannot truncate the utility optimizer.
         allocation_result = allocate_sparse_tangent_with_evidence(
             allocation_candidates,
@@ -3823,7 +4069,7 @@ def _apply_sparse_tangent_buy_selection(
             max_cluster_weight=max_cluster_weight,
             cluster_edge_threshold=cluster_edge_threshold,
             cluster_threshold_quantile=cluster_threshold_quantile,
-            allocation_objective=allocation_objective,
+            allocation_objective=effective_allocation_objective,
             alpha_strength=alpha_strength,
             risk_aversion=risk_aversion,
             turnover_penalty=turnover_penalty,
@@ -3840,24 +4086,11 @@ def _apply_sparse_tangent_buy_selection(
             if isinstance(opb_allocation.get("sparse_evidence"), dict)
             else {}
         )
-        opb_similarity_symbols = sorted({
-            *[str(row.get("symbol") or "").strip() for row in optimizer_candidates],
-            *[str(symbol or "").strip() for symbol in weights],
-        })
-        opb_similarity = similarity_components(
-            opb_similarity_symbols,
-            risk_history,
-            weights=weights,
-            edge_threshold=cluster_edge_threshold,
-            threshold_quantile=cluster_threshold_quantile,
-        )
-        weights, cluster_penalty_applied = apply_cluster_exposure_cap(
-            weights,
-            opb_similarity,
-            max_cluster_weight=max_cluster_weight,
-            preserve_total_weight=True,
-        )
-        if cluster_penalty_applied:
+        if weights:
+            opb_similarity_symbols = sorted({
+                *[str(row.get("symbol") or "").strip() for row in optimizer_candidates],
+                *[str(symbol or "").strip() for symbol in weights],
+            })
             opb_similarity = similarity_components(
                 opb_similarity_symbols,
                 risk_history,
@@ -3865,6 +4098,28 @@ def _apply_sparse_tangent_buy_selection(
                 edge_threshold=cluster_edge_threshold,
                 threshold_quantile=cluster_threshold_quantile,
             )
+            weights, cluster_penalty_applied = apply_cluster_exposure_cap(
+                weights,
+                opb_similarity,
+                max_cluster_weight=max_cluster_weight,
+                preserve_total_weight=True,
+            )
+            if cluster_penalty_applied:
+                opb_similarity = similarity_components(
+                    opb_similarity_symbols,
+                    risk_history,
+                    weights=weights,
+                    edge_threshold=cluster_edge_threshold,
+                    threshold_quantile=cluster_threshold_quantile,
+                )
+        else:
+            opb_similarity = {
+                "schema_version": "similarity-evidence-v1",
+                "method": "not_evaluated_empty_allocation",
+                "components": [],
+                "component_count": 0,
+            }
+            cluster_penalty_applied = False
         opb_candidate_diagnostics = dict(opb_sparse_evidence.get("candidate_diagnostics") or {})
         if opb_candidate_diagnostics:
             opb_candidate_diagnostics = {
@@ -3884,6 +4139,34 @@ def _apply_sparse_tangent_buy_selection(
             "unallocated_cash_weight": round(max(0.0, 1.0 - sum(float(value or 0.0) for value in weights.values())), 10),
             "candidate_diagnostics": opb_candidate_diagnostics,
         }
+    controller_effective = (
+        "OnlinePortfolioBandit"
+        if opb_packet and opb_packet.get("status") == "ok"
+        else "SparseTangent" if controller == "OnlinePortfolioBandit" else controller
+    )
+    allocation_contract.update({
+        "controller_requested": controller,
+        "controller_effective": controller_effective,
+        "opb_production_control_allowed": controller_effective == "OnlinePortfolioBandit",
+    })
+    selected_by_symbol = {
+        str(row.get("symbol") or "").strip(): row
+        for row in eligible_rows
+        if str(row.get("symbol") or "").strip()
+    }
+    authority_filtered_weights: dict[str, float] = {}
+    for symbol, weight in weights.items():
+        row = selected_by_symbol.get(str(symbol or "").strip())
+        if not row:
+            continue
+        if _risk_overlay_blocks_allocation(row):
+            row["promotion_blocked_reason"] = "risk_overlay_skip_post_optimizer"
+            continue
+        if allocation_mode == "formal_ml_buy_risk_budget_continuity" and not _formal_ml_buy_admission(row)[0]:
+            row["promotion_blocked_reason"] = "formal_ml_buy_admission_failed_post_optimizer"
+            continue
+        authority_filtered_weights[str(symbol)] = float(weight)
+    weights = authority_filtered_weights
     sector_by_symbol = {
         str(row.get("symbol") or "").strip(): str(row.get("sector") or "").strip()
         for row in scored
@@ -3904,8 +4187,77 @@ def _apply_sparse_tangent_buy_selection(
             10,
         ),
     }
+    shadow_dates = sorted({
+        str(row.get("date") or row.get("prediction_date") or row.get("recommendation_date") or "")[:10]
+        for row in allocation_candidates
+        if str(row.get("date") or row.get("prediction_date") or row.get("recommendation_date") or "")[:10]
+    })
+    shadow_as_of_date = shadow_dates[-1] if shadow_dates else datetime.now(timezone.utc).date().isoformat()
+    try:
+        inherited_state = load_inherited_paper_weights(
+            allocation_candidates, as_of_date=shadow_as_of_date
+        )
+        portfolio_ml_inputs = build_portfolio_ml_shadow_inputs(
+            allocation_candidates,
+            as_of_date=shadow_as_of_date,
+            inherited_state=inherited_state,
+        )
+    except Exception as exc:  # noqa: BLE001 - unavailable shadow inputs never block serving.
+        inherited_state = {
+            "status": "unavailable",
+            "weights": {},
+            "portfolio_value_twd": 1_000_000.0,
+            "source": "portfolio_ml_shadow_input_error",
+        }
+        portfolio_ml_inputs = {
+            "schema_version": "portfolio-ml-shadow-inputs-v1",
+            "status": "shadow_observation_only",
+            "production_effect": False,
+            "promotion_eligible": False,
+            "validation_blockers": ["portfolio_ml_input_load_error"],
+            "error": str(exc),
+        }
+    try:
+        rfs_shadow_packet = build_rfs_implementable_frontier_shadow(
+            allocation_candidates,
+            risk_history,
+            incumbent_weights=weights,
+            inherited_weights=inherited_state.get("weights") or {},
+            portfolio_value_twd=float(inherited_state.get("portfolio_value_twd") or 1_000_000.0),
+            portfolio_ml_inputs=portfolio_ml_inputs,
+            max_weight=max_weight,
+            risk_aversion=risk_aversion,
+            l2_penalty=l2_penalty,
+        )
+    except Exception as exc:  # noqa: BLE001 - shadow failure must not affect incumbent.
+        rfs_shadow_packet = {
+            "schema_version": "portfolio-ml-implementable-frontier-shadow-v2",
+            "method": "portfolio_ml_inspired_direct_weight_cost_aware_shadow",
+            "status": "shadow_error",
+            "production_effect": False,
+            "promotion_eligible": False,
+            "validation_blockers": ["shadow_builder_error"],
+            "error": str(exc),
+            "weights": {},
+            "metrics": {},
+            "cost_by_symbol": {},
+        }
+    allocation_contract["rfs_shadow_challenger"] = {
+        "schema_version": rfs_shadow_packet.get("schema_version"),
+        "method": rfs_shadow_packet.get("method"),
+        "status": rfs_shadow_packet.get("status"),
+        "production_effect": False,
+        "promotion_eligible": False,
+        "packet_checksum": rfs_shadow_packet.get("packet_checksum"),
+        "validation_blockers": rfs_shadow_packet.get("validation_blockers") or [],
+        "metrics": rfs_shadow_packet.get("metrics") or {},
+        "portfolio_ml_inputs": rfs_shadow_packet.get("portfolio_ml_inputs") or {},
+        "research_components_not_yet_implemented": (
+            rfs_shadow_packet.get("research_components_not_yet_implemented") or []
+        ),
+        "decision_role": "comparison_only",
+    }
     selected_symbols = set(weights)
-    selected_by_symbol = {row.get("symbol"): row for row in eligible_rows}
     history_coverage = sum(1 for symbol in selected_symbols if risk_history.get(symbol))
     similarity_evidence = allocation_result.get("similarity_evidence") or {}
     objective_evidence = allocation_result.get("objective_evidence") or {}
@@ -3934,7 +4286,11 @@ def _apply_sparse_tangent_buy_selection(
         "allocation_input_semantic": allocation_input_semantic,
         "selected_count": len(selected_symbols),
         "zero_selection_allowed": True,
-        "capacity_policy": "endogenous_positive_marginal_utility_no_hard_top_k",
+        "capacity_policy": (
+            "endogenous_positive_marginal_utility_no_hard_top_k"
+            if allocation_mode == "learned_expected_return_owner"
+            else "full_formal_ml_buy_pool_inverse_volatility_no_hard_top_k"
+        ),
         "return_history_candidate_count": len(return_history_candidate_symbols),
         "return_history_candidate_symbols": return_history_candidate_symbols,
         "controller": controller,
@@ -4050,11 +4406,15 @@ def _apply_sparse_tangent_buy_selection(
         if selected and positive_expected_edge:
             selection_reason = "selected_positive_edge_sparse_weight"
         elif selected:
-            selection_reason = "selected_score_v2_allocation_utility_sparse_weight"
+            selection_reason = "selected_formal_ml_buy_inverse_volatility_weight"
         elif symbol and symbol not in candidate_evidence_by_symbol:
             selection_reason = "not_eligible_for_sparse_input"
         elif not positive_allocation_utility:
-            selection_reason = "no_positive_allocation_utility"
+            selection_reason = (
+                "no_positive_expected_return"
+                if allocation_mode == "learned_expected_return_owner"
+                else "formal_ml_buy_admission_failed"
+            )
         elif cluster_penalty_applied:
             selection_reason = "positive_utility_but_zero_weight_due_to_correlation"
         elif marginal_utility is not None and marginal_utility <= 0:
@@ -4062,13 +4422,18 @@ def _apply_sparse_tangent_buy_selection(
         elif positive_expected_edge:
             selection_reason = "positive_edge_but_zero_weight_due_to_better_alternative"
         else:
-            selection_reason = "positive_score_v2_utility_but_zero_weight_due_to_better_alternative"
+            selection_reason = "formal_ml_buy_admitted_but_zero_weight_after_risk_constraints"
         sparse_weight_state = (
             "selected_positive_sparse_weight"
             if selected and single_name_weight > 0
             else "zero_sparse_weight_after_inverse_risk"
         )
         cluster_evidence = cluster_evidence_by_symbol.get(symbol) or {}
+        rfs_weights = rfs_shadow_packet.get("weights") if isinstance(rfs_shadow_packet.get("weights"), dict) else {}
+        rfs_costs = rfs_shadow_packet.get("cost_by_symbol") if isinstance(rfs_shadow_packet.get("cost_by_symbol"), dict) else {}
+        rfs_weight = _float_or_none(rfs_weights.get(symbol)) or 0.0
+        rfs_cost = rfs_costs.get(symbol) if isinstance(rfs_costs.get(symbol), dict) else {}
+
         return {
             "eligible_for_sparse": symbol in candidate_evidence_by_symbol,
             "allocation_rank": rank,
@@ -4148,6 +4513,17 @@ def _apply_sparse_tangent_buy_selection(
             "covariance_method": similarity_evidence.get("covariance_method"),
             "covariance_shrinkage": similarity_evidence.get("covariance_shrinkage"),
             "cluster_penalty_applied": cluster_penalty_applied,
+            "rfs_shadow_challenger": {
+                "status": rfs_shadow_packet.get("status"),
+                "production_effect": False,
+                "promotion_eligible": False,
+                "incumbent_sparse_weight": single_name_weight,
+                "challenger_aim_weight": round(rfs_weight, 10),
+                "delta_weight": rfs_cost.get("delta_weight"),
+                "estimated_incremental_cost": rfs_cost.get("estimated_cost"),
+                "adv_twd": rfs_cost.get("adv_twd"),
+                "packet_checksum": rfs_shadow_packet.get("packet_checksum"),
+            },
             "sparse_diagnostics": {
                 **sparse_diagnostics_base,
                 "allocation_weight": single_name_weight,
@@ -4171,7 +4547,7 @@ def _apply_sparse_tangent_buy_selection(
             **alpha_allocation,
             **allocation_contract,
             "selected": True,
-            "controller": controller,
+            "controller": controller_effective,
             "allocation_weight": round(float(weight), 8),
             "return_history_coverage": history_coverage,
             "return_history_symbols": sorted(symbol for symbol in selected_symbols if risk_history.get(symbol)),
@@ -4216,7 +4592,7 @@ def _apply_sparse_tangent_buy_selection(
                 **(alpha_allocation if isinstance(alpha_allocation, dict) else {}),
                 **allocation_contract,
                 "selected": False,
-                "controller": controller,
+                "controller": controller_effective,
                 **allocation_evidence,
                 "potential_buy": is_potential_buy,
                 **(observation_evidence or {}),

@@ -31,7 +31,7 @@ _DOMAIN_ENV = {
     D1DataDomain.RESEARCH: "CF_D1_RESEARCH_DB_ID",
 }
 
-MULTI_D1_STRICT_ROUTING_READY = False
+MULTI_D1_STRICT_ROUTING_READY = True
 
 _SHADOW_READ_MUTATION = re.compile(
     r"\b(alter|attach|create|delete|detach|drop|insert|replace|truncate|update|vacuum)\b",
@@ -255,6 +255,9 @@ class DomainD1ClientProxy:
 
     def batch_execute(self, *args: Any, **kwargs: Any) -> dict:
         return client_for_domain(self.domain).batch_execute(*args, **kwargs)
+
+    def atomic_batch_execute(self, *args: Any, **kwargs: Any) -> dict:
+        return client_for_domain(self.domain).atomic_batch_execute(*args, **kwargs)
 
 
 def client_proxy_for_domain(domain: D1DataDomain | str) -> DomainD1ClientProxy:

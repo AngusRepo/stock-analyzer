@@ -49,6 +49,24 @@ async function main(): Promise<void> {
 
   assert.deepEqual(loaded.state.strategy_weights, { 'active-a': 1, 'active-b': 0 })
   assert.equal(loaded.checksum, checksum)
+  assert.throws(() => deserializeStrategyProductionPolicyRow({
+    policy_id: state.policy_id,
+    knowledge_cutoff_date: state.knowledge_cutoff_date,
+    version: state.version,
+    status: state.status,
+    strategy_weights_json: JSON.stringify(state.strategy_weights),
+    quarantined_strategy_ids_json: JSON.stringify(state.quarantined_strategy_ids),
+    candidate_ready_strategy_ids_json: JSON.stringify(state.candidate_ready_strategy_ids),
+    base_weight_source: 'adaptive_strategy_policy_v2',
+    base_weight_run_id: 'adaptive|strategy-evidence-owner-fusion-v2:stale',
+    evidence_json: JSON.stringify({
+      ...state.evidence,
+      evidence_owner: { version: 'strategy-evidence-owner-fusion-v2', checksum: 'stale', weight_effect: 'mature_ready_only_bounded_bidirectional', ready_profile_count: 1 },
+    }),
+    canonical_payload: state.canonical_payload,
+    checksum,
+    created_at: '2026-08-02T18:00:00.000Z',
+  }, ['active-a', 'active-b']), /invalid_strategy_production_policy_evidence_owner/)
   const previous = deserializePreviousStrategyProductionPolicyRow({
     policy_id: 'strategy-production-contribution-firewall-v2',
     knowledge_cutoff_date: '2026-08-18',

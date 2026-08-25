@@ -112,7 +112,7 @@ def test_timesfm_sample_complete_cpcv_keeps_dataset_coverage_informational():
     )
 
     assert evidence["decision"] == "PASS"
-    assert evidence["family"] == "foundation_sequence"
+    assert evidence["family"] == "l2_feature_sidecar"
     assert evidence["policy"]["coverage_mode"] == "sample_complete"
     assert "cpcv_coverage" not in evidence["failed_gates"]
     assert evidence["fold_metrics"][0]["dataset_coverage"] == 0.125

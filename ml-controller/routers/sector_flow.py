@@ -243,7 +243,7 @@ async def refresh_tags(req: TagRefreshRequest):
       "archive_old_source": "goodinfo"
     }
     """
-    from services import d1_client
+    from services.d1_domain_client import D1DataDomain, client_proxy_for_domain
 
     if not req.tags:
         return {"error": "tags dict is empty"}
@@ -303,7 +303,9 @@ async def refresh_tags(req: TagRefreshRequest):
     for i in range(0, len(statements), BATCH):
         chunk = statements[i:i + BATCH]
         try:
-            result = await asyncio.to_thread(d1_client.batch_execute, chunk)
+            result = await asyncio.to_thread(
+                client_proxy_for_domain(D1DataDomain.MARKET).batch_execute, chunk
+            )
             total_executed += result.get("total", 0)
         except Exception as e:
             logger.error(f"refresh_tags batch {i//BATCH} failed: {e}")

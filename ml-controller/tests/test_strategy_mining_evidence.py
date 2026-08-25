@@ -1,15 +1,52 @@
 from __future__ import annotations
 
+import hashlib
+import json
+from datetime import date, timedelta
+
 from services.strategy_mining_evidence import build_strategy_mining_evidence
 
 
+def _purge_attestation(dates: list[str], *, n_partitions: int = 8, embargo: int = 1) -> dict:
+    chunk_size = len(dates) // n_partitions
+    assert chunk_size * n_partitions == len(dates)
+    partitions = []
+    for partition_id in range(n_partitions):
+        start = partition_id * chunk_size
+        end = start + chunk_size
+        chunk = dates[start:end]
+        partitions.append({
+            "partition_id": partition_id,
+            "raw_start": chunk[0],
+            "raw_end": chunk[-1],
+            "test_start": chunk[embargo],
+            "test_end": chunk[-1],
+            "purged_sessions": embargo,
+        })
+    payload = {
+        "schema_version": "strategy-mining-purge-attestation-v1",
+        "method": "ordered_partition_front_embargo",
+        "embargo_sessions": embargo,
+        "partition_count": n_partitions,
+        "holdout_dates": dates,
+        "partitions": partitions,
+    }
+    payload["payload_checksum"] = hashlib.sha256(
+        json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    ).hexdigest()
+    return payload
+
+
 def _row(candidate_id: str, partitions: list[float], daily: list[float]):
+    dates = [(date(2026, 1, 1) + timedelta(days=index)).isoformat() for index in range(len(daily))]
     return {
         "candidate_id": candidate_id,
         "status": "ok",
         "holdout_partition_returns": partitions,
         "holdout_daily_returns": daily,
         "holdout_regimes": ["bull"] * len(daily),
+        "holdout_dates": dates,
+        "pbo_purge_attestation": _purge_attestation(dates),
     }
 
 
@@ -31,7 +68,8 @@ def test_strategy_evidence_computes_all_required_evidence():
     ]
     out = build_strategy_mining_evidence(rows, n_partitions=8, n_simulations=20)
     assert out["pbo"]["method"] == "cscv_rank_logit"
-    assert out["walk_forward"]["method"] == "purged_expanding_candidate_selection"
+    assert out["walk_forward"]["method"] == "attested_front_embargo_expanding_selection_v3"
+    assert out["walk_forward"]["purge_attestation"]["payload_checksum"]
     assert out["multiple_testing"]["method"] == "holm_bonferroni"
     assert out["multiple_testing"]["family_size"] == 3
     assert out["candidate_evidence"]["steady"]["monte_carlo"]["method"] == "regime_block_bootstrap"
@@ -49,6 +87,22 @@ def test_strategy_evidence_rejects_misaligned_regimes_without_bypass():
     )
     assert out["status"] == "pending"
     assert out["common_candidate_matrix"]["rejected"]["bad"] == "holdout_regime_alignment_unmet"
+
+
+def test_strategy_evidence_rejects_missing_or_tampered_purge_lineage():
+    missing = _row("missing", [0.01] * 8, [0.001] * 40)
+    missing.pop("pbo_purge_attestation")
+    tampered = _row("tampered", [0.02] * 8, [0.001] * 40)
+    tampered["pbo_purge_attestation"]["embargo_sessions"] = 0
+    out = build_strategy_mining_evidence(
+        [missing, tampered, _row("good", [0.03] * 8, [0.001] * 40)],
+        n_partitions=8,
+        n_simulations=10,
+    )
+    assert out["status"] == "pending"
+    rejected = out["common_candidate_matrix"]["rejected"]
+    assert rejected["missing"] == "purge_attestation_missing_or_invalid"
+    assert rejected["tampered"] == "purge_attestation_missing_or_invalid"
 
 
 def test_strategy_evidence_fails_null_candidate_after_family_wise_adjustment():

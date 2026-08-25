@@ -32,7 +32,13 @@ from fastapi import APIRouter, HTTPException, Body
 from pydantic import BaseModel, Field
 
 from services.cloud_run_jobs_client import CloudRunJobsClient, JobAlreadyRunningError
-from services.d1_client import query as d1_query
+from services.d1_domain_client import D1DataDomain, client_proxy_for_domain
+from services.domain_stock_read_models import load_top_active_stocks_with_prices as load_domain_top_active_stocks_with_prices
+
+CORE_D1_CLIENT = client_proxy_for_domain(D1DataDomain.CORE)
+MARKET_D1_CLIENT = client_proxy_for_domain(D1DataDomain.MARKET)
+LEARNING_D1_CLIENT = client_proxy_for_domain(D1DataDomain.LEARNING)
+PAPER_D1_CLIENT = client_proxy_for_domain(D1DataDomain.PAPER)
 from services.alpha_quality_policy import alpha_quality_policy
 from services.alpha_policy_search import build_alpha_policy_candidate, load_alpha_outcome_rows
 from services.ga_optimizer_service import GAOptimizerRequest, run_ga_optimizer as run_ga_optimizer_service
@@ -181,22 +187,10 @@ def _load_top_active_stocks_with_prices(
             min_rows=min_rows,
             top_n=top_n,
         )
-    stocks = d1_query("""
-        SELECT s.id, s.symbol, COUNT(*) as cnt
-        FROM stocks s JOIN stock_prices sp ON sp.stock_id = s.id
-        WHERE s.delisted_date IS NULL
-        GROUP BY s.id HAVING cnt >= ?
-        ORDER BY cnt DESC LIMIT ?
-    """, [min_rows, top_n])
-    if not stocks:
-        return []
-    price_rows = _load_price_rows_by_stock_ids([int(s["id"]) for s in stocks])
-    out = []
-    for s in stocks:
-        rows = price_rows.get(int(s["id"]), [])
-        if len(rows) >= min_rows:
-            out.append({"symbol": s["symbol"], "rows": rows})
-    return out
+    return [
+        {"symbol": row["symbol"], "rows": row["rows"]}
+        for row in load_domain_top_active_stocks_with_prices(min_rows=min_rows, top_n=top_n)
+    ]
 
 
 def _prices_with_symbol_from_snapshot(manifest: dict[str, Any]) -> pl.DataFrame:
@@ -274,7 +268,7 @@ def _load_price_rows_by_stock_ids(stock_ids: list[int], limit_per_stock: int | N
             # SQLite window function keeps one query per chunk while preserving per-stock caps.
             limit_clause = "WHERE rn <= ?"
             params.append(int(limit_per_stock))
-        rows = d1_query(
+        rows = MARKET_D1_CLIENT.query(
             f"""
             SELECT stock_id, date, open, high, low, close, volume
             FROM (
@@ -352,7 +346,7 @@ def _load_paper_orders(limit: int = 500) -> list[dict]:
     它們內部會自己計算 pnl proxy。
     Phase 後續：應該 JOIN buy/sell pairs 算精確 per-trade pnl_pct。
     """
-    return d1_query(
+    return PAPER_D1_CLIENT.query(
         "SELECT * FROM paper_orders WHERE side='sell' ORDER BY created_at DESC LIMIT ?",
         [limit],
     )
@@ -360,7 +354,7 @@ def _load_paper_orders(limit: int = 500) -> list[dict]:
 
 def _load_predictions(limit: int = 2000) -> list[dict]:
     """For signal search."""
-    return d1_query(
+    return LEARNING_D1_CLIENT.query(
         """SELECT stock_id, generated_at, direction_accuracy as confidence,
            signal_raw, forecast_data FROM predictions
            WHERE model_name='ensemble' ORDER BY generated_at DESC LIMIT ?""",
@@ -370,7 +364,7 @@ def _load_predictions(limit: int = 2000) -> list[dict]:
 
 def _load_daily_pnl(limit: int = 200) -> list[dict]:
     """For risk_params search: paper_daily_snapshots 的 pnl_pct 序列"""
-    return d1_query(
+    return PAPER_D1_CLIENT.query(
         "SELECT date, pnl_pct, total_value, max_drawdown_to_date FROM paper_daily_snapshots WHERE pnl_pct IS NOT NULL ORDER BY date DESC LIMIT ?",
         [limit],
     )
@@ -378,7 +372,7 @@ def _load_daily_pnl(limit: int = 200) -> list[dict]:
 
 def _load_twii_history(limit: int = 500) -> list[dict]:
     """For rrg/feature_window: TWII benchmark from market_risk (not stocks table)"""
-    return d1_query(
+    return CORE_D1_CLIENT.query(
         "SELECT date, twii_close FROM market_risk WHERE twii_close IS NOT NULL ORDER BY date ASC LIMIT ?",
         [limit],
     )
@@ -711,7 +705,7 @@ def run_conformal(req: OptunaReq = Body(default=OptunaReq())):
         raise HTTPException(500, f"optuna_conformal import failed: {e}")
 
     policy = OptunaRoutePolicy.from_env()
-    rows = d1_query("""
+    rows = LEARNING_D1_CLIENT.query("""
         SELECT direction_accuracy as confidence, direction_correct
         FROM predictions
         WHERE direction_correct IN (0, 1) AND direction_accuracy IS NOT NULL
@@ -789,7 +783,7 @@ def run_s12_smcvwap_tw(req: OptunaReq = Body(default=OptunaReq())):
     where.append(f"trade_date >= '{start_date}'" if start_date else "trade_date >= date('now', '-180 days')")
     if end_date:
         where.append(f"trade_date <= '{end_date}'")
-    rows = d1_query(
+    rows = LEARNING_D1_CLIENT.query(
         f"""
         SELECT symbol, trade_date, market, entry_ms, entry_price, stop_price,
                trade_pnl_r, max_favorable_pct, max_adverse_pct, detail_json
@@ -841,22 +835,16 @@ def run_rrg(req: OptunaReq = Body(default=OptunaReq())):
         closes = [float(r["twii_close"]) for r in twii_rows]
         benchmark_returns = [(closes[i] - closes[i - 1]) / closes[i - 1] for i in range(1, len(closes))]
 
-        top_stocks = d1_query("""
-            SELECT s.id, s.symbol, COUNT(*) as cnt
-            FROM stocks s JOIN stock_prices sp ON sp.stock_id = s.id
-            WHERE s.delisted_date IS NULL
-            GROUP BY s.id HAVING cnt >= ?
-            ORDER BY cnt DESC LIMIT ?
-        """, [policy.rrg_top_stock_min_rows, policy.rrg_top_stock_count])
-        prices_by_stock = {}
-        stock_price_rows = _load_price_rows_by_stock_ids(
-            [int(s["id"]) for s in top_stocks],
+        top_stocks = load_domain_top_active_stocks_with_prices(
+            min_rows=policy.rrg_top_stock_min_rows,
+            top_n=policy.rrg_top_stock_count,
             limit_per_stock=policy.rrg_stock_price_limit,
         )
-        for s in top_stocks:
-            rows = stock_price_rows.get(int(s["id"]), [])
-            if len(rows) >= policy.rrg_top_stock_min_rows:
-                prices_by_stock[s["symbol"]] = [float(r["close"]) for r in rows]
+        prices_by_stock = {
+            str(stock["symbol"]): [float(row["close"]) for row in stock["rows"]]
+            for stock in top_stocks
+            if len(stock["rows"]) >= policy.rrg_top_stock_min_rows
+        }
 
     if not prices_by_stock:
         raise HTTPException(400, "No top stocks with sufficient prices")

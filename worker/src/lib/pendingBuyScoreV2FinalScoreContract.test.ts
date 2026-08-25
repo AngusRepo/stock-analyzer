@@ -20,7 +20,7 @@ const paperRoute = readFileSync('src/routes/paper.ts', 'utf8')
   )
   assert(
     paperRoute.includes('execution_policy: executionPolicy') &&
-      paperRoute.includes('buildPendingBuyExecutionPolicy(snapshot.meta'),
+      paperRoute.includes('buildPendingBuyExecutionPolicy(displayMeta'),
     '/paper/pending-buys response must include the execution policy beside state and pendingBuys',
   )
   assert(

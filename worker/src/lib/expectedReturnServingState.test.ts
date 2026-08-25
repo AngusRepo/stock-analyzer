@@ -43,7 +43,7 @@ const stale = resolveExpectedReturnServingState({
   },
 }, { evaluatedAt: '2026-07-16T00:00:00.000Z' })
 assert.equal(stale.expected_return_owner, null)
-assert.equal(stale.allocation_utility_owner, 'score_v2_formal_ml')
+assert.equal(stale.allocation_utility_owner, 'formal_ml_buy_admission')
 assert.equal(stale.execution_owner, 'allocator_opb_policy')
 assert.equal(stale.execution_scope, 'recommendation_allocation_only_no_order_submission')
 assert.equal(stale.action_gate, 'selection_signal_owner')
@@ -95,7 +95,7 @@ const pointerOnlyAbstention = resolveExpectedReturnServingState(
 assert.equal(pointerOnlyAbstention.artifacts.l4_alpha_ev.artifact_state, 'safe_abstention')
 assert.equal(pointerOnlyAbstention.artifacts.l4_alpha_ev.artifact_id, null)
 assert.equal(pointerOnlyAbstention.expected_return_owner, null)
-assert.equal(pointerOnlyAbstention.allocation_utility_owner, 'score_v2_formal_ml')
+assert.equal(pointerOnlyAbstention.allocation_utility_owner, 'formal_ml_buy_admission')
 assert.equal(pointerOnlyAbstention.execution_owner, 'allocator_opb_policy')
 assert.equal(pointerOnlyAbstention.action_gate, 'selection_signal_owner')
 

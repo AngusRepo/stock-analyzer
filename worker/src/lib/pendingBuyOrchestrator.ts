@@ -980,7 +980,8 @@ export async function setupMorningPendingBuys(env: Bindings): Promise<void> {
       }
     }
 
-    const restrictionPolicy = await loadPendingBuyRestrictionPolicy(env.DB, env.KV, pendingDate)
+    const marketDb = databaseForDataDomain(env, 'market')
+    const restrictionPolicy = await loadPendingBuyRestrictionPolicy(marketDb, env.KV, pendingDate)
     const { cooldownSet, stopDayFrozen } = await collectCooldownSet(env.KV, pendingDate, buyRecs)
     if (stopDayFrozen) {
       await persistPendingBuys(env, pendingDate, [], {
@@ -991,7 +992,7 @@ export async function setupMorningPendingBuys(env: Bindings): Promise<void> {
       return
     }
 
-    const quadrantMap = await loadQuadrantMap(env.DB, buyRecs.map((rec) => rec.symbol))
+    const quadrantMap = await loadQuadrantMap(marketDb, buyRecs.map((rec) => rec.symbol))
     const quadrantFilterLog: QuadrantFilterLogEntry[] = []
     const pendingBuys: PendingBuy[] = []
     const downgradeMultiplier = cfg.position.downgradeRiskMultiplier ?? 0.5
@@ -1393,7 +1394,10 @@ export async function reconcilePendingBuyDebates(
 
   const cfg = await getTradingConfig(env.KV)
   const { usContextStr, newsContextStr, taifexContextStr } = await loadMacroContext(env, tradeDate)
-  const profileMap = await loadStockProfiles(env.DB, pendingItems.map((item) => item.symbol))
+  const profileMap = await loadStockProfiles(
+    databaseForDataDomain(env, 'market'),
+    pendingItems.map((item) => item.symbol),
+  )
   const mergedUsContext = [newsContextStr, usContextStr].filter(Boolean).join(' || ')
   const breeze2Context = await enrichMorningDebateCandidatesWithBreeze2(
     env,
@@ -1462,6 +1466,17 @@ export async function reconcilePendingBuyDebates(
         symbol: item.symbol,
         status: 'pending',
         reason: 'debate_retry:debate_missing',
+      }])
+      nextPendingBuys.push(transition.allItems[0] as PendingBuy)
+      continue
+    }
+    if (debate.terminalStatus !== 'completed' || debate.retryable) {
+      failedCount += 1
+      const reason = debate.errorCode ?? 'debate_retryable_error'
+      const transition = applyPendingBuyExecutionStatusUpdates([item], [{
+        symbol: item.symbol,
+        status: 'pending',
+        reason: `debate_retry:${reason}`,
       }])
       nextPendingBuys.push(transition.allItems[0] as PendingBuy)
       continue

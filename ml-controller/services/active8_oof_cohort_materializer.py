@@ -13,7 +13,7 @@ from typing import Any, Callable
 
 import numpy as np
 
-from services import d1_client
+from services.d1_domain_client import D1DataDomain, client_proxy_for_domain
 from services.active8_oof_stacker import (
     ACTIVE8_MODELS,
     CORE_CROSS_SECTIONAL_MODELS,
@@ -52,6 +52,92 @@ EXPECTED_RETURN_SHADOW_EVALUATION_IDENTITY_VERSION = (
     "expected-return-shadow-evaluation-identity-v2"
 )
 EXPECTED_RETURN_SHADOW_EVALUATOR_VERSION = "expected-return-frozen-forward-evaluator-v2"
+
+CORE_D1_CLIENT = client_proxy_for_domain(D1DataDomain.CORE)
+MARKET_D1_CLIENT = client_proxy_for_domain(D1DataDomain.MARKET)
+LEARNING_D1_CLIENT = client_proxy_for_domain(D1DataDomain.LEARNING)
+OPS_D1_CLIENT = client_proxy_for_domain(D1DataDomain.OPS)
+
+
+def _query_native_pit_component_domain_split(
+    sql: str,
+    params: list[Any] | None = None,
+) -> list[dict[str, Any]]:
+    """Route the legacy-shaped Active8 loader without executing cross-D1 joins."""
+
+    values = list(params or [])
+    if "FROM daily_recommendations dr" in sql:
+        dates = [str(value)[:10] for value in values[:-1]]
+        semantic_version = values[-1] if values else SCORE_SEMANTIC_VERSION
+        placeholders = ",".join("?" for _ in dates)
+        rows = CORE_D1_CLIENT.query(
+            f"""
+            SELECT dr.stock_id, s.symbol, dr.date prediction_date, dr.score,
+                   dr.score_components, dr.alpha_context, dr.alpha_allocation,
+                   dr.market_segment, dr.recommendation_lane,
+                   NULL forecast_data,
+                   json_extract(dr.alpha_context, '$.market_heat_expected_return') market_heat_expected_return,
+                   'daily_recommendations_score_v2_v3' native_component_source,
+                   NULL native_run_id, dr.created_at native_created_at
+              FROM daily_recommendations dr
+              JOIN stocks s ON s.id = dr.stock_id
+             WHERE dr.date IN ({placeholders})
+               AND json_extract(dr.score_components, '$.version') = 'score_v2'
+               AND json_extract(dr.score_components, '$.semanticVersion') = ?
+            """,
+            [*dates, semantic_version],
+        )
+        latest_forecast: dict[tuple[str, str], Any] = {}
+        if dates:
+            prediction_rows = LEARNING_D1_CLIENT.query(
+                f"""
+                SELECT stock_id, substr(prediction_date, 1, 10) prediction_date,
+                       forecast_data, generated_at, id
+                  FROM predictions
+                 WHERE substr(prediction_date, 1, 10) IN ({placeholders})
+                   AND model_name = 'ensemble'
+                 ORDER BY stock_id, prediction_date, datetime(generated_at) DESC, id DESC
+                """,
+                dates,
+            )
+            for prediction in prediction_rows:
+                key = (
+                    str(prediction.get("stock_id") or ""),
+                    str(prediction.get("prediction_date") or "")[:10],
+                )
+                if key not in latest_forecast:
+                    latest_forecast[key] = prediction.get("forecast_data")
+        for row in rows:
+            row["forecast_data"] = latest_forecast.get((
+                str(row.get("stock_id") or ""),
+                str(row.get("prediction_date") or "")[:10],
+            ))
+        return rows
+    if "FROM stock_prices" in sql:
+        return MARKET_D1_CLIENT.query(sql, values)
+    if "COUNT(i.id) component_rows" in sql:
+        return OPS_D1_CLIENT.query(sql, values)
+    if "FROM screener_funnel_items i" in sql:
+        ops_sql = sql.replace("s.id stock_id,", "NULL stock_id,")
+        ops_sql = ops_sql.replace("s.market market_segment,", "NULL market_segment,")
+        ops_sql = ops_sql.replace("JOIN stocks s ON s.symbol = i.symbol", "")
+        rows = OPS_D1_CLIENT.query(ops_sql, values)
+        symbols = sorted({str(row.get("symbol") or "") for row in rows if row.get("symbol")})
+        identities: dict[str, dict[str, Any]] = {}
+        for offset in range(0, len(symbols), D1_IN_CLAUSE_CHUNK_SIZE):
+            chunk = symbols[offset:offset + D1_IN_CLAUSE_CHUNK_SIZE]
+            placeholders = ",".join("?" for _ in chunk)
+            for identity in CORE_D1_CLIENT.query(
+                f"SELECT id, symbol, market FROM stocks WHERE symbol IN ({placeholders})",
+                chunk,
+            ):
+                identities[str(identity.get("symbol") or "")] = identity
+        for row in rows:
+            identity = identities.get(str(row.get("symbol") or ""), {})
+            row["stock_id"] = identity.get("id")
+            row["market_segment"] = identity.get("market")
+        return rows
+    return LEARNING_D1_CLIENT.query(sql, values)
 
 
 def _loads(value: Any) -> dict[str, Any]:
@@ -151,7 +237,7 @@ def load_oof_materialized_rows(
     bucket: Any,
     cohort_id: str,
     artifact_kind: str,
-    query_fn: Callable[..., list[dict[str, Any]]] = d1_client.query,
+    query_fn: Callable[..., list[dict[str, Any]]] = LEARNING_D1_CLIENT.query,
 ) -> list[dict[str, Any]]:
     """Resolve and verify one compact-indexed OOF evidence artifact."""
 
@@ -214,7 +300,7 @@ def load_indexed_oof_ev_rows(
     cohort_id: str,
     source_manifest_checksum: str,
     knowledge_cutoff_date: str,
-    query_fn: Callable[..., list[dict[str, Any]]] = d1_client.query,
+    query_fn: Callable[..., list[dict[str, Any]]] = LEARNING_D1_CLIENT.query,
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]], dict[str, Any]]:
     """Load checksum-verified compact OOF evidence without D1 full-row tables."""
 
@@ -286,8 +372,8 @@ def persist_oof_materialized_artifact_indexes(
     artifacts: list[dict[str, Any]],
     *,
     eligibility_rows: list[dict[str, Any]] | None = None,
-    query_fn: Callable[..., list[dict[str, Any]]] = d1_client.query,
-    batch_fn: Callable[..., dict[str, Any]] = d1_client.batch_execute,
+    query_fn: Callable[..., list[dict[str, Any]]] = LEARNING_D1_CLIENT.query,
+    batch_fn: Callable[..., dict[str, Any]] = LEARNING_D1_CLIENT.batch_execute,
 ) -> dict[str, Any]:
     eligibility_rows = eligibility_rows or []
     legal_by_scope: dict[str, set[str]] = defaultdict(set)
@@ -945,7 +1031,7 @@ def build_oof_snapshot_rows(
 def load_fundamental_quality_pit_by_key(
     prediction_rows: list[dict[str, Any]],
     *,
-    query_fn: Callable[..., list[dict[str, Any]]] = d1_client.query,
+    query_fn: Callable[..., list[dict[str, Any]]] = MARKET_D1_CLIENT.query,
 ) -> dict[tuple[str, str], dict[str, Any]]:
     """Resolve formal fundamental scores using only immutable rows available by prediction date.
 
@@ -1021,12 +1107,14 @@ def load_fundamental_quality_pit_by_key(
 def load_native_pit_component_rows(
     prediction_rows: list[dict[str, Any]],
     *,
-    query_fn: Callable[..., list[dict[str, Any]]] = d1_client.query,
+    query_fn: Callable[..., list[dict[str, Any]]] | None = None,
     archive_resolver: Callable[
         [list[dict[str, Any]]], dict[int, dict[str, Any]]
     ] = resolve_legacy_screener_evidence,
 ) -> list[dict[str, Any]]:
     """Load same-day non-ML ScoreV2 inputs without reconstructing future data."""
+
+    query_fn = query_fn or _query_native_pit_component_domain_split
 
     dates = sorted({row["prediction_date"] for row in prediction_rows})
     if not dates:
@@ -1290,7 +1378,7 @@ def persist_l4_oof_predictions(
     predictions: list[dict[str, Any]],
     *,
     dry_run: bool = True,
-    batch_fn: Callable[..., dict[str, Any]] = d1_client.batch_execute,
+    batch_fn: Callable[..., dict[str, Any]] = LEARNING_D1_CLIENT.batch_execute,
 ) -> dict[str, Any]:
     if dry_run:
         return {"status": "dry_run", "rows": len(predictions)}
@@ -1468,7 +1556,7 @@ def load_verified_oof_forward_coverage(
     cohort_id: str,
     base_manifest_checksum: str,
     knowledge_cutoff_date: str,
-    query_fn: Callable[..., list[dict[str, Any]]] = d1_client.query,
+    query_fn: Callable[..., list[dict[str, Any]]] = LEARNING_D1_CLIENT.query,
 ) -> dict[str, Any] | None:
     """Read the newest complete checksum-bound monitoring-only coverage group."""
 
@@ -1573,7 +1661,7 @@ def persist_verified_oof_forward_coverage(
     snapshot_evidence: dict[str, Any],
     l4_predictions: list[dict[str, Any]],
     l4_prediction_evidence: dict[str, Any] | None = None,
-    batch_fn: Callable[..., dict[str, Any]] = d1_client.batch_execute,
+    batch_fn: Callable[..., dict[str, Any]] = LEARNING_D1_CLIENT.batch_execute,
 ) -> dict[str, Any]:
     """Persist monitoring-only coverage after verified frozen-forward evaluation."""
 
@@ -1713,7 +1801,7 @@ def build_fusion_oof_rows(
     l4_predictions: list[dict[str, Any]],
     *,
     knowledge_cutoff_date: str,
-    query_fn: Callable[..., list[dict[str, Any]]] = d1_client.query,
+    query_fn: Callable[..., list[dict[str, Any]]] = LEARNING_D1_CLIENT.query,
 ) -> list[dict[str, Any]]:
     """Attach cross-fitted L4 and mature S12 replay labels without D1 round-trip."""
 
@@ -1781,7 +1869,7 @@ def archive_ev_shadow_evaluation_packets(
     l4_result: dict[str, Any],
     fusion_result: dict[str, Any],
     forward_row_count: int,
-    execute_fn: Callable[..., dict[str, Any]] = d1_client.execute,
+    execute_fn: Callable[..., dict[str, Any]] = LEARNING_D1_CLIENT.execute,
 ) -> dict[str, Any]:
     """Persist daily evaluation evidence without creating a promotion candidate."""
 
@@ -2034,9 +2122,9 @@ def persist_oof_cohort(
     knowledge_cutoff_date: str | None = None,
     dry_run: bool = True,
     prediction_storage_mode: str = "gcs_indexed_v1",
-    query_fn: Callable[..., list[dict[str, Any]]] = d1_client.query,
-    batch_fn: Callable[..., dict[str, Any]] = d1_client.batch_execute,
-    execute_fn: Callable[..., dict[str, Any]] = d1_client.execute,
+    query_fn: Callable[..., list[dict[str, Any]]] = LEARNING_D1_CLIENT.query,
+    batch_fn: Callable[..., dict[str, Any]] = LEARNING_D1_CLIENT.batch_execute,
+    execute_fn: Callable[..., dict[str, Any]] = LEARNING_D1_CLIENT.execute,
 ) -> dict[str, Any]:
     cohort_id = str(manifest["cohort_id"])
     if prediction_storage_mode not in {"gcs_indexed_v1", "d1_full_v1"}:

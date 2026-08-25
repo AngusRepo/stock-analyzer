@@ -40,9 +40,12 @@ from services.alpha_policy_search import load_alpha_outcome_rows
 from services.alpha_quality import evaluate_alpha_quality
 from services.alpha_quality_policy import resolve_alpha_quality_inputs
 from services.config_pool_policy import DEFAULT_CONFIG_POOL_POLICY, ConfigPoolPolicy
+from services.d1_domain_client import D1DataDomain, client_proxy_for_domain
 from services.market_structure_validation import load_market_structure_rows, validate_market_structure
 from services.promotion_service import evaluate_alpha_policy_evidence_gate, evaluate_latest_alpha_policy_gate
 from services.worker_config_client import WorkerConfigClientError, worker_fetch
+
+LEARNING_D1_CLIENT = client_proxy_for_domain(D1DataDomain.LEARNING)
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/config_pool", tags=["config_pool"])
@@ -287,12 +290,10 @@ def _candidate_id_from_sandbox(source: str, sandbox_id: str) -> str:
 
 
 def _load_parameter_candidate_rows(candidate_ids: list[str], limit: int) -> list[dict[str, Any]]:
-    from services.d1_client import query as d1_query
-
     try:
         if candidate_ids:
             placeholders = ",".join("?" for _ in candidate_ids)
-            return d1_query(
+            return LEARNING_D1_CLIENT.query(
                 f"""
                 SELECT candidate_id, source, config_hash, sandbox_id, cadence, run_id, status,
                        metadata_json, latest_evidence_json, promotion_packet_id, created_at, updated_at
@@ -303,7 +304,7 @@ def _load_parameter_candidate_rows(candidate_ids: list[str], limit: int) -> list
                 """,
                 [*candidate_ids, limit],
             )
-        return d1_query(
+        return LEARNING_D1_CLIENT.query(
             """
             SELECT candidate_id, source, config_hash, sandbox_id, cadence, run_id, status,
                    metadata_json, latest_evidence_json, promotion_packet_id, created_at, updated_at

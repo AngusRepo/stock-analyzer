@@ -13,6 +13,7 @@ conformal.py — Split Conformal Prediction 校準器
 
 冷啟動：residuals 不足 MIN_CALIBRATION_SIZE 時，不套用校準（透明通過）
 """
+import math
 import numpy as np
 import json
 import logging
@@ -72,10 +73,14 @@ class ConformalCalibrator:
                 "n_residuals": len(self.residuals),
             }
 
-        # Split Conformal: quantile of historical residuals
-        q = min(cov, (1.0 + cov) / 2.0)  # finite-sample correction
+        # Split conformal finite-sample order statistic:
+        # k = ceil((n + 1) * coverage), capped at n.  "higher" avoids
+        # interpolation that would under-cover small calibration sets.
+        cov = min(1.0, max(0.0, cov))
         residuals_arr = np.array(self.residuals[-MAX_RESIDUALS:])
-        interval_width = float(np.quantile(residuals_arr, q))
+        n_residuals = len(residuals_arr)
+        rank = min(n_residuals, max(1, int(math.ceil((n_residuals + 1) * cov))))
+        interval_width = float(np.partition(residuals_arr, rank - 1)[rank - 1])
 
         # ── Uncertainty penalty 計算 ──────────────────────────────────────────
         # interval_width 越大 → uncertainty 越高 → penalty 越重

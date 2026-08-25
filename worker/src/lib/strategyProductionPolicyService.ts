@@ -134,6 +134,8 @@ export async function refreshStrategyProductionContributionPolicy(
         checksum: evidenceFusion.checksum,
         weight_effect: evidenceFusion.weight_effect,
         ready_profile_count: evidenceFusion.active_ready_profile_count,
+        calibration_run_id: evidenceFusion.calibration_run_id,
+        calibration_artifact_checksum: evidenceFusion.calibration_artifact_checksum,
       },
     },
   })

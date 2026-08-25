@@ -1125,7 +1125,7 @@ def test_forward_shadow_evaluation_packets_are_separate_from_candidates(monkeypa
         writes.append((sql, params))
         return {"changes": 1}
 
-    monkeypatch.setattr(materializer.d1_client, "execute", execute)
+    monkeypatch.setattr(materializer.LEARNING_D1_CLIENT, "execute", execute)
     extension = {
         "manifest_checksum": "b" * 64,
         "base_cohort_id": "cohort-1",
@@ -1388,4 +1388,4 @@ def test_active8_owned_state_routes_to_learning_domain_client():
     ):
         assert call in route
     assert "d1_client.execute(" not in materializer
-    assert "execute_fn: Callable[..., dict[str, Any]] = d1_client.execute" in materializer
+    assert "execute_fn: Callable[..., dict[str, Any]] = LEARNING_D1_CLIENT.execute" in materializer

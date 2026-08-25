@@ -4,6 +4,8 @@ import json
 from statistics import mean
 from typing import Any
 
+from services.domain_stock_read_models import load_learning_rows_with_symbol
+
 
 def _to_float(value: Any, default: float | None = None) -> float | None:
     try:
@@ -173,29 +175,20 @@ def validate_market_structure(rows: list[dict[str, Any]], *, min_samples: int = 
 
 
 def load_market_structure_rows(limit: int = 1000) -> list[dict[str, Any]]:
-    """Load verified ensemble rows with market-structure evidence."""
-    from services.d1_client import query as d1_query
-
+    """Load Learning predictions and bridge Core symbols in memory."""
     safe_limit = max(1, min(int(limit or 1000), 5000))
-    return d1_query(
-        """SELECT p.generated_at,
-                  s.symbol,
-                  p.forecast_data,
-                  p.entry_price,
-                  p.actual_return_pct,
-                  p.trade_pnl_pct,
-                  p.trade_pnl_r,
-                  p.direction_correct
-           FROM predictions p
-           LEFT JOIN stocks s ON s.id = p.stock_id
-           WHERE p.model_name='ensemble'
-             AND p.forecast_data IS NOT NULL
-             AND p.forecast_data LIKE '%structure_detail%'
+    return load_learning_rows_with_symbol(
+        """SELECT stock_id, generated_at, forecast_data, entry_price,
+                  actual_return_pct, trade_pnl_pct, trade_pnl_r, direction_correct
+           FROM predictions
+           WHERE model_name='ensemble'
+             AND forecast_data IS NOT NULL
+             AND forecast_data LIKE '%structure_detail%'
              AND (
-               p.actual_return_pct IS NOT NULL OR p.trade_pnl_pct IS NOT NULL
-               OR p.trade_pnl_r IS NOT NULL OR p.direction_correct IN (0, 1)
+               actual_return_pct IS NOT NULL OR trade_pnl_pct IS NOT NULL
+               OR trade_pnl_r IS NOT NULL OR direction_correct IN (0, 1)
              )
-           ORDER BY p.generated_at DESC
+           ORDER BY generated_at DESC
            LIMIT ?""",
         [safe_limit],
     )

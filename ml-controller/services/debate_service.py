@@ -67,29 +67,22 @@ def _check_injection(raw_text: str) -> dict:
     }
 
 
-def _parse_verdict(response: str) -> str:
-    upper = response.upper()
-    first_line = upper.split("\n", 1)[0] if upper else ""
-    if "REJECT" in first_line:
-        return "REJECT"
-    if "DOWNGRADE" in first_line:
-        return "DOWNGRADE"
-    if "APPROVE" in first_line:
-        return "APPROVE"
-    if "REJECT" in upper:
-        return "REJECT"
-    if "DOWNGRADE" in upper:
-        return "DOWNGRADE"
-    return "APPROVE"
+DEBATE_RESULT_CONTRACT_VERSION = "debate-result-v2"
 
 
-def _parse_conviction(response: str) -> int:
-    m = re.search(r"CONVICTION:\s*(\d+)", response, re.IGNORECASE)
-    if m:
-        val = int(m.group(1))
-        return max(0, min(100, val))
-    v = _parse_verdict(response)
-    return {"APPROVE": 75, "DOWNGRADE": 50, "REJECT": 25}[v]
+def _parse_verdict(response: str) -> str | None:
+    first_line = response.splitlines()[0].strip() if response else ""
+    match = re.match(r"^VERDICT:\s*(APPROVE|DOWNGRADE|REJECT)\b", first_line, re.IGNORECASE)
+    return match.group(1).upper() if match else None
+
+
+def _parse_conviction(response: str) -> int | None:
+    first_line = response.splitlines()[0].strip() if response else ""
+    match = re.search(r"\bCONVICTION:\s*(\d{1,3})\b", first_line, re.IGNORECASE)
+    if not match:
+        return None
+    value = int(match.group(1))
+    return value if 0 <= value <= 100 else None
 
 
 def _parse_json_array_from_str(raw: Optional[str], max_items: int = 3) -> str:
@@ -185,6 +178,10 @@ class DebateResult:
     summary: str             # <=500 chars, goes into paper_orders.note
     llm_source: str          # gemini_api | unknown/cached local degradation
     conviction_score: int    # 0-100
+    terminal_status: str      # completed | retryable_error
+    retryable: bool
+    error_code: str | None = None
+    contract_version: str = DEBATE_RESULT_CONTRACT_VERSION
     agent_turns: list[dict[str, Any]] = field(default_factory=list)
 
 
@@ -438,11 +435,14 @@ async def run_buy_debate(
                 logger.warning(f"[Debate] {symbol} Reaper R{r} failed: {e}")
                 if is_initial:
                     return DebateResult(
-                        verdict="APPROVE",
+                        verdict="REJECT",
                         rounds=1,
-                        summary=(f"Zealot only (Reaper LLM error R1): {zealot_cases[0] if zealot_cases else ''}")[:500],
+                        summary=f"[DEBATE_FAIL_CLOSED:reaper_unavailable] {e}"[:500],
                         llm_source=llm_source,
-                        conviction_score=60,
+                        conviction_score=0,
+                        terminal_status="retryable_error",
+                        retryable=True,
+                        error_code="reaper_unavailable",
                         agent_turns=_build_agent_turns(ml_context, zealot_cases, reaper_cases, "", llm_source),
                     )
                 break
@@ -474,12 +474,14 @@ async def run_buy_debate(
         except Exception as e:
             logger.warning(f"[Debate] Fulcrum round failed for {symbol}: {e}")
             return DebateResult(
-                verdict="APPROVE",
+                verdict="REJECT",
                 rounds=total_rounds - 1,
-                summary=(f"Zealot+Reaper done (Fulcrum error). "
-                         f"Zealot: {zealot_case[:200]} | Reaper: {reaper_case[:200]}")[:500],
+                summary=f"[DEBATE_FAIL_CLOSED:fulcrum_unavailable] {e}"[:500],
                 llm_source=llm_source,
-                conviction_score=60,
+                conviction_score=0,
+                terminal_status="retryable_error",
+                retryable=True,
+                error_code="fulcrum_unavailable",
                 agent_turns=_build_agent_turns(ml_context, zealot_cases, reaper_cases, "", llm_source),
             )
 
@@ -493,11 +495,26 @@ async def run_buy_debate(
                 summary=f"[INJECTION_BLOCKED] {','.join(m['pattern'] for m in injection['matches'])}"[:500],
                 llm_source=llm_source,
                 conviction_score=0,
+                terminal_status="completed",
+                retryable=False,
+                error_code="prompt_injection_blocked",
                 agent_turns=_build_agent_turns(ml_context, zealot_cases, reaper_cases, fulcrum_response, llm_source),
             )
 
         verdict = _parse_verdict(fulcrum_response)
         conviction = _parse_conviction(fulcrum_response)
+        if verdict is None or conviction is None:
+            return DebateResult(
+                verdict="REJECT",
+                rounds=total_rounds,
+                summary="[DEBATE_FAIL_CLOSED:verdict_unparseable]",
+                llm_source=llm_source,
+                conviction_score=0,
+                terminal_status="retryable_error",
+                retryable=True,
+                error_code="verdict_unparseable",
+                agent_turns=_build_agent_turns(ml_context, zealot_cases, reaper_cases, fulcrum_response, llm_source),
+            )
 
         if injection["action"] == "downgrade" and verdict == "APPROVE":
             logger.warning(f"[Debate] Injection downgrade for {symbol}: {[m['pattern'] for m in injection['matches']]}")
@@ -518,6 +535,8 @@ async def run_buy_debate(
             summary=summary,
             llm_source=llm_source,
             conviction_score=conviction,
+            terminal_status="completed",
+            retryable=False,
             agent_turns=_build_agent_turns(ml_context, zealot_cases, reaper_cases, fulcrum_response, llm_source),
         )
         # #44 fire-and-forget A/B log (only when ab_model assigned)
@@ -574,15 +593,23 @@ async def run_buy_debate_cached(
         if cached:
             try:
                 payload = _json.loads(cached)
-                logger.info(f"[Debate] {symbol} cached → {payload.get('verdict')}")
-                return DebateResult(
-                    verdict=payload.get("verdict", "APPROVE"),
-                    rounds=payload.get("rounds", 0),
-                    summary=payload.get("summary", ""),
-                    llm_source=payload.get("llm_source", "cached"),
-                    conviction_score=payload.get("conviction_score", 60),
-                    agent_turns=payload.get("agent_turns", []),
-                )
+                if (
+                    payload.get("contract_version") == DEBATE_RESULT_CONTRACT_VERSION
+                    and payload.get("terminal_status") == "completed"
+                    and payload.get("verdict") in {"APPROVE", "DOWNGRADE", "REJECT"}
+                ):
+                    logger.info(f"[Debate] {symbol} cached → {payload.get('verdict')}")
+                    return DebateResult(
+                        verdict=payload["verdict"],
+                        rounds=int(payload.get("rounds", 0)),
+                        summary=str(payload.get("summary", "")),
+                        llm_source=str(payload.get("llm_source", "cached")),
+                        conviction_score=int(payload.get("conviction_score", 0)),
+                        terminal_status="completed",
+                        retryable=False,
+                        error_code=payload.get("error_code"),
+                        agent_turns=payload.get("agent_turns", []),
+                    )
             except Exception:
                 pass
 
@@ -594,19 +621,24 @@ async def run_buy_debate_cached(
             client=client,
         )
 
-        # Persist to KV for 24h dedup
-        await _kv_write(
-            client, cache_key,
-            _json.dumps({
-                "verdict": result.verdict,
-                "rounds": result.rounds,
-                "summary": result.summary,
-                "llm_source": result.llm_source,
-                "conviction_score": result.conviction_score,
-                "agent_turns": result.agent_turns,
-            }),
-            ttl_seconds=86400,
-        )
+        # Cache only genuine completed verdicts; retryable failures must remain retryable.
+        if result.terminal_status == "completed":
+            await _kv_write(
+                client, cache_key,
+                _json.dumps({
+                    "verdict": result.verdict,
+                    "rounds": result.rounds,
+                    "summary": result.summary,
+                    "llm_source": result.llm_source,
+                    "conviction_score": result.conviction_score,
+                    "terminal_status": result.terminal_status,
+                    "retryable": result.retryable,
+                    "error_code": result.error_code,
+                    "contract_version": result.contract_version,
+                    "agent_turns": result.agent_turns,
+                }),
+                ttl_seconds=86400,
+            )
         return result
     finally:
         if close_client:
@@ -664,6 +696,10 @@ async def run_buy_debate_batch(
                         "summary": result.summary,
                         "llm_source": result.llm_source,
                         "conviction_score": result.conviction_score,
+                        "terminal_status": result.terminal_status,
+                        "retryable": result.retryable,
+                        "error_code": result.error_code,
+                        "contract_version": result.contract_version,
                         "agent_turns": result.agent_turns,
                     }
                 except Exception as e:

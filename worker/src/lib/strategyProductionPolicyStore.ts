@@ -226,6 +226,24 @@ export function deserializeStrategyProductionPolicyRow(
   }
 
   const evidence = parseJsonRecord(row.evidence_json)
+  const evidenceOwner = evidence.evidence_owner && typeof evidence.evidence_owner === 'object' && !Array.isArray(evidence.evidence_owner)
+    ? evidence.evidence_owner as Record<string, unknown>
+    : {}
+  const evidenceWeightEffectValid = evidenceOwner.weight_effect === 'neutral_until_immutable_calibration'
+    || evidenceOwner.weight_effect === 'immutable_oos_calibrated_bounded_bidirectional'
+  const calibratedEvidenceValid = evidenceOwner.weight_effect !== 'immutable_oos_calibrated_bounded_bidirectional'
+    || (Boolean(evidenceOwner.calibration_run_id)
+      && /^[a-f0-9]{64}$/.test(String(evidenceOwner.calibration_artifact_checksum ?? '')))
+  if (
+    (row.base_weight_source === 'adaptive_strategy_policy_v2' || Object.keys(evidenceOwner).length > 0)
+    && (
+      evidenceOwner.version !== 'strategy-evidence-owner-fusion-v3'
+      || !evidenceWeightEffectValid
+      || !calibratedEvidenceValid
+    )
+  ) {
+    throw new Error('invalid_strategy_production_policy_evidence_owner')
+  }
   if (
     evidence.production_effect !== true
     || evidence.safety_reducing_only !== false

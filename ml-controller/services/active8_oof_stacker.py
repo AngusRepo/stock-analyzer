@@ -35,12 +35,28 @@ STACKER_FEATURE_NAMES = tuple(
 def _spearman(left: np.ndarray, right: np.ndarray) -> float:
     if len(left) < 3 or len(left) != len(right):
         return 0.0
-    left_rank = np.argsort(np.argsort(left, kind="mergesort"), kind="mergesort")
-    right_rank = np.argsort(np.argsort(right, kind="mergesort"), kind="mergesort")
+    left_rank = _average_rank(left)
+    right_rank = _average_rank(right)
     if np.std(left_rank) <= 1e-12 or np.std(right_rank) <= 1e-12:
         return 0.0
     value = float(np.corrcoef(left_rank, right_rank)[0, 1])
     return value if math.isfinite(value) else 0.0
+
+
+def _average_rank(values: np.ndarray) -> np.ndarray:
+    """Stable average ranks; equal scores must remain equal."""
+
+    array = np.asarray(values, dtype=float)
+    order = np.argsort(array, kind="mergesort")
+    ranks = np.empty(len(array), dtype=float)
+    start = 0
+    while start < len(array):
+        end = start + 1
+        while end < len(array) and array[order[end]] == array[order[start]]:
+            end += 1
+        ranks[order[start:end]] = (start + end - 1) / 2.0
+        start = end
+    return ranks
 
 
 def _fit_ridge(x: np.ndarray, y: np.ndarray, regularization: float) -> tuple[np.ndarray, float]:
@@ -83,10 +99,13 @@ def _rank_by_date_market(rows: list[dict[str, Any]]) -> None:
     for idx, row in enumerate(rows):
         groups[(row["prediction_date"], row["market_segment"])].append(idx)
     for indices in groups.values():
-        ordered = sorted(indices, key=lambda idx: (rows[idx]["ensemble_raw"], rows[idx]["symbol"]))
-        denominator = max(1, len(ordered) - 1)
-        for rank, idx in enumerate(ordered):
-            rows[idx]["ensemble_rank"] = 0.5 if len(ordered) == 1 else rank / denominator
+        if len(indices) == 1:
+            rows[indices[0]]["ensemble_rank"] = 0.5
+            continue
+        values = np.asarray([rows[idx]["ensemble_raw"] for idx in indices], dtype=float)
+        ranks = _average_rank(values)
+        for idx, rank in zip(indices, ranks):
+            rows[idx]["ensemble_rank"] = float(rank / (len(indices) - 1))
 
 
 def _rerank_models_on_available_universe(rows: list[dict[str, Any]]) -> None:
@@ -96,13 +115,16 @@ def _rerank_models_on_available_universe(rows: list[dict[str, Any]]) -> None:
     for indices in groups.values():
         for model_idx, model_name in enumerate(ACTIVE8_MODELS):
             available = [idx for idx in indices if row_model_available(rows[idx], model_name)]
-            denominator = max(1, len(available) - 1)
-            ordered = sorted(
-                available,
-                key=lambda idx: (rows[idx]["raw_by_model"][model_name], rows[idx]["symbol"]),
+            if len(available) == 1:
+                rows[available[0]]["x"][model_idx] = 0.5
+                continue
+            values = np.asarray(
+                [rows[idx]["raw_by_model"][model_name] for idx in available],
+                dtype=float,
             )
-            for rank, idx in enumerate(ordered):
-                rows[idx]["x"][model_idx] = 0.5 if len(ordered) == 1 else rank / denominator
+            ranks = _average_rank(values)
+            for idx, rank in zip(available, ranks):
+                rows[idx]["x"][model_idx] = float(rank / (len(available) - 1))
 
 
 def row_model_available(row: dict[str, Any], model_name: str) -> bool:

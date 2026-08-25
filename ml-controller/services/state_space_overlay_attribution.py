@@ -5,6 +5,8 @@ import math
 from statistics import mean
 from typing import Any
 
+from services.domain_stock_read_models import load_learning_rows_with_symbol
+
 
 def _loads_json(value: Any) -> dict[str, Any]:
     if isinstance(value, dict):
@@ -268,31 +270,21 @@ def evaluate_markov_switching_overlay(
 
 
 def load_markov_switching_overlay_rows(limit: int = 1000) -> list[dict[str, Any]]:
-    """Load verified ensemble rows with persisted MarkovSwitching overlay data."""
-    from services.d1_client import query as d1_query
-
+    """Load Learning overlay evidence and bridge Core symbols in memory."""
     safe_limit = max(1, min(int(limit or 1000), 5000))
-    return d1_query(
-        """SELECT p.generated_at,
-                  p.prediction_date,
-                  s.symbol,
-                  p.trade_signal,
-                  p.signal_raw,
-                  p.forecast_data,
-                  p.actual_return_pct,
-                  p.trade_pnl_pct,
-                  p.trade_pnl_r,
-                  p.direction_correct
-           FROM predictions p
-           LEFT JOIN stocks s ON s.id = p.stock_id
-           WHERE p.model_name='ensemble'
-             AND p.forecast_data IS NOT NULL
-             AND p.forecast_data LIKE '%markov_switching%'
+    return load_learning_rows_with_symbol(
+        """SELECT stock_id, generated_at, prediction_date, trade_signal, signal_raw,
+                  forecast_data, actual_return_pct, trade_pnl_pct, trade_pnl_r,
+                  direction_correct
+           FROM predictions
+           WHERE model_name='ensemble'
+             AND forecast_data IS NOT NULL
+             AND forecast_data LIKE '%markov_switching%'
              AND (
-               p.trade_pnl_r IS NOT NULL OR p.trade_pnl_pct IS NOT NULL
-               OR p.actual_return_pct IS NOT NULL OR p.direction_correct IN (0, 1)
+               trade_pnl_r IS NOT NULL OR trade_pnl_pct IS NOT NULL
+               OR actual_return_pct IS NOT NULL OR direction_correct IN (0, 1)
              )
-           ORDER BY p.generated_at DESC
+           ORDER BY generated_at DESC
            LIMIT ?""",
         [safe_limit],
     )

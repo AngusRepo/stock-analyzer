@@ -3,8 +3,10 @@ from __future__ import annotations
 import json
 
 import numpy as np
+import pytest
 
-from app import gnn_training
+from app import gnn_batch_runtime, gnn_training
+from app.gnn_graph_contract import GNN_GRAPH_SEMANTIC_VERSION, _normalized_sector_labels, build_feature_sector_edge_index
 
 
 class _FakeBlob:
@@ -123,7 +125,7 @@ def test_build_graph_snapshots_builds_each_date_once(monkeypatch):
 
 
 def test_cached_graph_evaluation_does_not_rebuild_edges(monkeypatch):
-    torch = __import__("torch")
+    torch = pytest.importorskip("torch")
 
     class _Model(torch.nn.Module):
         def forward(self, x, edge_index):
@@ -159,3 +161,35 @@ def test_cached_graph_evaluation_does_not_rebuild_edges(monkeypatch):
 
     assert result["samples"] == 4
     assert result["daily_ic_count"] == 2
+
+
+def test_training_wrapper_matches_canonical_serving_graph_builder():
+    x = np.asarray([[1.0, 0.0], [0.9, 0.1], [0.0, 1.0]], dtype=np.float32)
+    sectors = np.asarray(["semiconductor", "semiconductor", "financial"], dtype=object)
+    expected, report = build_feature_sector_edge_index(x, sectors, top_k=2, threshold=0.75)
+    actual = gnn_training._feature_edge_index(x, sectors, top_k=2, threshold=0.75)
+    np.testing.assert_array_equal(actual, expected)
+    assert report["semantic_version"] == GNN_GRAPH_SEMANTIC_VERSION
+
+
+def test_unknown_sector_values_never_create_false_same_sector_identity():
+    labels = _normalized_sector_labels(np.asarray(["0", "0.0", "unknown", None], dtype=object))
+    assert labels.tolist() == ["", "", "", ""]
+
+
+def test_serving_rejects_pre_parity_gnn_graph_artifact_before_inference():
+    artifact = gnn_batch_runtime.GraphSAGEArtifact(
+        model=object(),
+        metadata={"graph_context": {"semantic_version": "multi-similarity-legacy-v1"}},
+        source_path="universal/gnn/legacy.pt",
+        version="legacy",
+    )
+    with pytest.raises(Exception, match="gnn_graph_semantic_mismatch"):
+        gnn_batch_runtime.predict_graphsage_scores(
+            artifact,
+            node_features=np.asarray([[1.0], [2.0]], dtype=np.float32),
+            price_series=[[1.0], [2.0]],
+            context_records=[{}, {}],
+        )
+def test_gnn_spearman_constant_prediction_is_neutral():
+    assert gnn_training._spearman(np.ones(8), np.arange(8, dtype=float)) == 0.0

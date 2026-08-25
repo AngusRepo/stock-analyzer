@@ -17,7 +17,7 @@ from services.evidence_contracts import (
     L4_ARTIFACT_CONTRACT_VERSION,
     L4_EXPECTED_RETURN_SEMANTIC,
 )
-from services import d1_client
+from services.d1_domain_client import D1DataDomain, client_proxy_for_domain
 from services.allocator_ev_fusion_artifact_builder import load_allocator_ev_fusion_training_rows
 from services.l4_alpha_ev_resolver import SNAPSHOT_BACKFILL_USAGE_SCOPE, extract_l4_alpha_ev
 from services.online_portfolio_bandit import DEFAULT_ARMS, build_online_portfolio_bandit_l2_packet
@@ -33,6 +33,10 @@ EXPECTED_RETURN_CONTRACTS = {
 }
 LABEL_HORIZON_SESSIONS = 5
 DEFAULT_ROUNDTRIP_COST_BPS = 18.0
+LEARNING_D1_CLIENT = client_proxy_for_domain(D1DataDomain.LEARNING)
+MARKET_D1_CLIENT = client_proxy_for_domain(D1DataDomain.MARKET)
+CORE_D1_CLIENT = client_proxy_for_domain(D1DataDomain.CORE)
+
 
 
 def _loads(value: Any) -> dict[str, Any]:
@@ -284,10 +288,19 @@ def load_opb_counterfactual_inputs(
     end_date: str,
     lookback_days: int = 120,
     limit: int = 10000,
-    query_fn: Callable[[str, list[Any]], list[dict[str, Any]]] = d1_client.query,
+    query_fn: Callable[[str, list[Any]], list[dict[str, Any]]] | None = None,
+    learning_query_fn: Callable[[str, list[Any]], list[dict[str, Any]]] | None = None,
+    market_query_fn: Callable[[str, list[Any]], list[dict[str, Any]]] | None = None,
+    core_query_fn: Callable[[str, list[Any]], list[dict[str, Any]]] | None = None,
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    # query_fn remains a backward-compatible test seam; production always splits owners.
+    learning_query = query_fn or learning_query_fn or LEARNING_D1_CLIENT.query
+    market_query = query_fn or market_query_fn or MARKET_D1_CLIENT.query
+    core_query = query_fn or core_query_fn or CORE_D1_CLIENT.query
+
     rows = load_allocator_ev_fusion_training_rows(
-        query_fn,
+        learning_query,
+        core_query_fn=core_query,
         end_date=end_date,
         lookback_days=lookback_days,
         limit=limit,
@@ -304,21 +317,32 @@ def load_opb_counterfactual_inputs(
         }
         for row in rows
     ]
-    price_rows = query_fn(
-        """
-        SELECT s.symbol, date(sp.date) AS price_date, sp.close
-        FROM stock_prices sp
-        JOIN stocks s ON s.id = sp.stock_id
-        WHERE date(sp.date) <= date(?)
-          AND date(sp.date) >= date(?, ?)
-          AND sp.stock_id IN (
-              SELECT DISTINCT stock_id
-              FROM allocator_ev_feature_snapshots
-              WHERE date(snapshot_date) <= date(?)
-                AND date(snapshot_date) >= date(?, ?)
-          )
-        ORDER BY s.symbol ASC, date(sp.date) ASC
-        """,
-        [end_date, end_date, f"-{max(lookback_days + 100, 220)} days", end_date, end_date, f"-{lookback_days} days"],
-    )
+    symbol_by_stock_id: dict[int, str] = {}
+    for row in normalized_rows:
+        try:
+            stock_id = int(row.get("stock_id"))
+        except (TypeError, ValueError):
+            continue
+        symbol = str(row.get("symbol") or "").strip()
+        if symbol:
+            symbol_by_stock_id[stock_id] = symbol
+
+    price_rows: list[dict[str, Any]] = []
+    stock_ids = sorted(symbol_by_stock_id)
+    for offset in range(0, len(stock_ids), 80):
+        chunk = stock_ids[offset : offset + 80]
+        placeholders = ",".join("?" * len(chunk))
+        loaded = market_query(
+            f"SELECT stock_id, date(date) AS price_date, close FROM stock_prices "
+            f"WHERE stock_id IN ({placeholders}) "
+            f"AND date(date) <= date(?) AND date(date) >= date(?, ?) "
+            f"ORDER BY stock_id ASC, date(date) ASC",
+            [*chunk, end_date, end_date, f"-{max(lookback_days + 100, 220)} days"],
+        )
+        for row in loaded:
+            symbol = symbol_by_stock_id.get(int(row.get("stock_id") or -1))
+            if not symbol:
+                continue
+            price_rows.append({**row, "symbol": symbol})
+    price_rows.sort(key=lambda row: (str(row.get("symbol") or ""), str(row.get("price_date") or "")))
     return normalized_rows, price_rows

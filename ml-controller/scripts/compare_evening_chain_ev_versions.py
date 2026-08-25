@@ -15,7 +15,11 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from services import d1_client  # noqa: E402
+from services.d1_domain_client import D1DataDomain, client_proxy_for_domain  # noqa: E402
+from services.domain_stock_read_models import load_learning_rows_with_symbol, load_market_price_rows_with_identity  # noqa: E402
+
+CORE_D1_CLIENT = client_proxy_for_domain(D1DataDomain.CORE)
+LEARNING_D1_CLIENT = client_proxy_for_domain(D1DataDomain.LEARNING)
 from services.active_model_policy import ACTIVE_ALPHA_MODELS  # noqa: E402
 from services.active8_score_semantics import normalize_active8_cross_sectional_scores  # noqa: E402
 from services.allocator_ev_fusion_artifact_builder import (  # noqa: E402
@@ -172,21 +176,30 @@ def _apply_s12_structure_overlay(
 
 
 def _load_candidate_rows(run_date: str, *, next_session_date: str | None = None) -> tuple[list[dict[str, Any]], dict[str, Any]]:
-    rows = d1_client.query(
-        """
-        SELECT dr.*, s.symbol, s.name, p.forecast_data,
-               p.generated_at AS prediction_generated_at
-        FROM daily_recommendations dr
-        JOIN stocks s ON s.id = dr.stock_id
-        JOIN predictions p
-          ON p.stock_id = dr.stock_id
-         AND p.prediction_date = dr.date
-         AND p.model_name = 'ensemble'
-        WHERE date(dr.date) = date(?)
-        ORDER BY dr.score DESC, s.symbol ASC
-        """,
+    core_rows = CORE_D1_CLIENT.query(
+        """SELECT dr.*, s.symbol, s.name
+             FROM daily_recommendations dr
+             JOIN stocks s ON s.id=dr.stock_id
+            WHERE date(dr.date)=date(?)
+            ORDER BY dr.score DESC, s.symbol ASC""",
         [run_date],
     )
+    prediction_rows = LEARNING_D1_CLIENT.query(
+        """SELECT stock_id, forecast_data, generated_at prediction_generated_at
+             FROM predictions
+            WHERE date(prediction_date)=date(?) AND model_name='ensemble'
+            ORDER BY stock_id, datetime(generated_at) DESC, id DESC""",
+        [run_date],
+    )
+    latest_prediction: dict[int, dict[str, Any]] = {}
+    for prediction in prediction_rows:
+        if prediction.get("stock_id") is not None:
+            latest_prediction.setdefault(int(prediction["stock_id"]), prediction)
+    rows = [
+        {**row, **latest_prediction[int(row["stock_id"])]}
+        for row in core_rows
+        if row.get("stock_id") is not None and int(row["stock_id"]) in latest_prediction
+    ]
     normalized: list[dict[str, Any]] = []
     rejected: list[dict[str, Any]] = []
     for raw in rows:
@@ -256,15 +269,11 @@ def _load_candidate_rows(run_date: str, *, next_session_date: str | None = None)
 
 def _load_active_model_outputs(run_date: str) -> dict[str, dict[str, Any]]:
     placeholders = ",".join("?" for _ in ACTIVE_ALPHA_MODELS)
-    rows = d1_client.query(
-        f"""
-        SELECT s.symbol, p.model_name, p.forecast_data
-        FROM predictions p
-        JOIN stocks s ON s.id = p.stock_id
-        WHERE date(p.prediction_date) = date(?)
-          AND p.model_name IN ({placeholders})
-        ORDER BY s.symbol ASC, p.model_name ASC
-        """,
+    rows = load_learning_rows_with_symbol(
+        f"""SELECT stock_id, model_name, forecast_data
+              FROM predictions
+             WHERE date(prediction_date)=date(?) AND model_name IN ({placeholders})
+             ORDER BY stock_id, model_name""",
         [run_date, *ACTIVE_ALPHA_MODELS],
     )
     outputs: dict[str, dict[str, Any]] = {}
@@ -388,7 +397,7 @@ def _attach_current_active8_ensemble(
     start_date = (date.fromisoformat(run_date) - timedelta(days=35)).isoformat()
     ic_rows: list[dict[str, Any]] = []
     for model_name in ACTIVE_ALPHA_MODELS:
-        ic_rows.extend(d1_client.query(
+        ic_rows.extend(LEARNING_D1_CLIENT.query(
             """
             SELECT id, stock_id, model_name, forecast_data,
                    CASE WHEN date(verified_at) <= date(?) THEN actual_return_pct ELSE NULL END AS actual_return_pct,
@@ -511,16 +520,10 @@ def _ensemble_rank_comparison(rows: list[dict[str, Any]]) -> dict[str, Any]:
 def _load_return_history(run_date: str, symbols: list[str]) -> dict[str, list[float]]:
     if not symbols:
         return {}
-    rows = d1_client.query(
-        """
-        SELECT s.symbol, date(sp.date) AS price_date, sp.adj_close
-        FROM stock_prices sp
-        JOIN stocks s ON s.id = sp.stock_id
-        WHERE date(sp.date) <= date(?)
-          AND date(sp.date) >= date(?, '-120 days')
-        ORDER BY s.symbol ASC, date(sp.date) ASC
-        """,
-        [run_date, run_date],
+    rows = load_market_price_rows_with_identity(
+        start_date=(date.fromisoformat(run_date) - timedelta(days=120)).isoformat(),
+        end_date=run_date,
+        fields=("date", "adj_close"),
     )
     wanted = set(symbols)
     closes: dict[str, list[float]] = defaultdict(list)

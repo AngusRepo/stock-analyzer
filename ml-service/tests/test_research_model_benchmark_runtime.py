@@ -1,4 +1,11 @@
+import numpy as np
+
+from app.research_benchmarks.common import rank_ic
 from app.research_model_benchmark_runtime import run_research_model_benchmark
+
+
+def test_research_benchmark_rank_ic_treats_constant_predictions_as_zero():
+    assert rank_ic(np.ones(6), np.arange(6, dtype=float)) == 0.0
 
 
 def test_research_model_benchmark_runtime_supports_sequence_upgrade_candidates_with_executor_result():

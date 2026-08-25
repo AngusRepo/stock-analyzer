@@ -24,7 +24,7 @@ import httpx
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
-from services import d1_client
+from services.d1_domain_client import D1DataDomain, client_proxy_for_domain
 from services.kv_pusher import push_optuna_result
 from services.market_regime_evidence import build_regime_evidence_pack
 from services.payload_builder import load_market_env
@@ -32,6 +32,7 @@ from dataclasses import asdict
 
 logger = logging.getLogger("regime")
 router = APIRouter()
+MARKET_D1_CLIENT = client_proxy_for_domain(D1DataDomain.MARKET)
 
 TW_TZ = timezone(timedelta(hours=8))
 
@@ -136,7 +137,7 @@ def _business_score_for_macro(signal: float | None) -> float | None:
 
 def _latest_finlab_macro_quality_rows(run_date: str) -> dict[str, dict[str, Any]]:
     placeholders = ",".join("?" for _ in FINLAB_MACRO_CONTEXT_DATASETS)
-    rows = d1_client.query(
+    rows = MARKET_D1_CLIENT.query(
         f"""
         SELECT source, dataset, as_of_date, freshness_status, missing_rate,
                latest_materialization, metrics_json, created_at

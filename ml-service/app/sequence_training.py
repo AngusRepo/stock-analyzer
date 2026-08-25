@@ -17,6 +17,7 @@ import numpy as np
 SEQUENCE_RETURN_SEMANTIC_VERSION = (
     "next-session-canonical-adjusted-open-to-fifth-session-canonical-adjusted-close-net-v4"
 )
+RANK_IC_SEMANTIC_VERSION = "same-date-average-rank-tie-neutral-spearman-v2"
 CANONICAL_ROUNDTRIP_COST_BPS = 18.0
 
 
@@ -86,13 +87,27 @@ def build_sequence_record(
     }
 
 
+def _average_rank(values: np.ndarray) -> np.ndarray:
+    array = np.asarray(values, dtype=float)
+    order = np.argsort(array, kind="mergesort")
+    ranks = np.empty(len(array), dtype=float)
+    start = 0
+    while start < len(array):
+        end = start + 1
+        while end < len(array) and array[order[end]] == array[order[start]]:
+            end += 1
+        ranks[order[start:end]] = (start + end - 1) / 2.0
+        start = end
+    return ranks
+
+
 def _spearman_corr(a: np.ndarray, b: np.ndarray) -> float:
     if len(a) < 3 or len(b) < 3:
         return float("nan")
-    ra = np.argsort(np.argsort(a)).astype(float)
-    rb = np.argsort(np.argsort(b)).astype(float)
+    ra = _average_rank(a)
+    rb = _average_rank(b)
     if np.std(ra) == 0 or np.std(rb) == 0:
-        return float("nan")
+        return 0.0
     return float(np.corrcoef(ra, rb)[0, 1])
 
 
@@ -121,6 +136,7 @@ def mean_daily_spearman_ic(
     return {
         "oos_ic": round(mean_ic, 4),
         "daily_ic_count": len(daily_ics),
+        "rank_ic_semantic_version": RANK_IC_SEMANTIC_VERSION,
         "passed": mean_ic > 0,
     }
 
@@ -327,6 +343,7 @@ def build_sequence_oos_fold_evidence(
         "date_field": "target_date",
         "input_contract": "SequenceWindowDataset(symbol,target_date,entry_open,forward_return)",
         "target_semantic_version": SEQUENCE_RETURN_SEMANTIC_VERSION,
+        "rank_ic_semantic_version": RANK_IC_SEMANTIC_VERSION,
         "oos_dates": ic.get("oos_dates", 0),
         "daily_ic_count": ic.get("daily_ic_count", 0),
         "validation_design": {
@@ -422,4 +439,5 @@ def build_sequence_cpcv_evidence(
     evidence["family"] = "sequence_model"
     evidence["date_field"] = "target_date"
     evidence["input_contract"] = "SequenceWindowDataset(symbol,target_date,last_close,forward_return)"
+    evidence["rank_ic_semantic_version"] = RANK_IC_SEMANTIC_VERSION
     return evidence

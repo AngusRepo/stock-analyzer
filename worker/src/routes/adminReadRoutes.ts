@@ -560,7 +560,7 @@ adminReadRoutes.get('/api/admin/strategy/evidence-profiles', async (c) => {
   const storedOwnerVersion = String(storedEvidenceOwner.version ?? '')
   const storedOwnerChecksum = String(storedEvidenceOwner.checksum ?? '')
   const storedOwnerLineageValid = productionEvidence.production_effect === true
-    && storedOwnerVersion === 'strategy-evidence-owner-fusion-v2'
+    && storedOwnerVersion === 'strategy-evidence-owner-fusion-v3'
     && storedOwnerChecksum.length === 64
     && String(productionPolicy?.base_weight_run_id ?? '').includes(`${storedOwnerVersion}:${storedOwnerChecksum}`)
   const routeDates = Number(routeCalibration?.date_count ?? 0)

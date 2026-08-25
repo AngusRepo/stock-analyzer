@@ -4,10 +4,15 @@ import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 
 const DB = 'stockvision-learning-db'
-const ROUTE_VERSION = 'strategy-semantic-continuous-affinity-v4'
-const INPUT = join('output', 'l1_l15_route_repair_comparison', 'semantic_v4_evidence_rows.json')
+const ROUTE_VERSION = flag('--route-version', 'strategy-semantic-continuous-affinity-v4')
+const INPUT = flag('--input', join('output', 'l1_l15_route_repair_comparison', 'semantic_v4_evidence_rows.json'))
 const WRANGLER = join('worker', 'node_modules', 'wrangler', 'bin', 'wrangler.js')
 const CONFIRM = process.argv.includes('--confirm-production-effect-none')
+
+if (!new Set([
+  'strategy-semantic-continuous-affinity-v4',
+  'strategy-semantic-continuous-affinity-v5',
+]).has(ROUTE_VERSION)) throw new Error('unsupported_route_version:' + ROUTE_VERSION)
 
 function flag(name, fallback = '') {
   const index = process.argv.indexOf(name)
@@ -53,7 +58,7 @@ if (expectedSourceSha && expectedSourceSha !== sourceSha) {
 }
 
 const inputRows = JSON.parse(readFileSync(INPUT, 'utf8'))
-if (!Array.isArray(inputRows) || inputRows.length === 0) throw new Error('v4_evidence_rows_empty')
+if (!Array.isArray(inputRows) || inputRows.length === 0) throw new Error('route_evidence_rows_empty')
 const expectedRows = Number(flag('--expected-rows', String(inputRows.length)))
 const expectedDates = Number(flag('--expected-dates', String(new Set(inputRows.map((row) => row.signal_date)).size)))
 if (inputRows.length !== expectedRows) throw new Error('expected_row_count_mismatch:' + inputRows.length + ':' + expectedRows)
@@ -129,7 +134,7 @@ function validateStoredRows(storedRows, phase) {
     const key = [core.route_version, core.signal_date, core.symbol, core.producer_run_id].join('|')
     const expected = expectedCoreByKey.get(key)
     if (!expected || JSON.stringify(core) !== JSON.stringify(expected) || Number(stored.production_effect) !== 0) {
-      throw new Error('immutable_v4_evidence_conflict:' + phase + ':' + key)
+      throw new Error('immutable_route_evidence_conflict:' + phase + ':' + key)
     }
     const rowAttestation = sha256(JSON.stringify({
       ...core,
@@ -137,12 +142,12 @@ function validateStoredRows(storedRows, phase) {
       source_sha: String(stored.source_sha),
     }))
     if (String(stored.row_checksum) !== rowAttestation) {
-      throw new Error('immutable_v4_row_checksum_mismatch:' + phase + ':' + key)
+      throw new Error('immutable_route_row_checksum_mismatch:' + phase + ':' + key)
     }
     const artifactId = String(stored.evidence_artifact_id)
     const artifactChecksum = String(stored.artifact_checksum)
     const group = artifactGroups.get(artifactId) ?? { checksum: artifactChecksum, rows: [] }
-    if (group.checksum !== artifactChecksum) throw new Error('immutable_v4_artifact_checksum_split:' + artifactId)
+    if (group.checksum !== artifactChecksum) throw new Error('immutable_route_artifact_checksum_split:' + artifactId)
     group.rows.push(core)
     artifactGroups.set(artifactId, group)
   }
@@ -153,7 +158,7 @@ function validateStoredRows(storedRows, phase) {
       || left.producer_run_id.localeCompare(right.producer_run_id)
     )
     if (sha256(JSON.stringify(group.rows)) !== group.checksum) {
-      throw new Error('immutable_v4_artifact_checksum_mismatch:' + phase + ':' + artifactId)
+      throw new Error('immutable_route_artifact_checksum_mismatch:' + phase + ':' + artifactId)
     }
   }
 }
@@ -167,7 +172,7 @@ const missingCoreRows = coreRows.filter((row) =>
 )
 const artifactChecksum = missingCoreRows.length ? sha256(JSON.stringify(missingCoreRows)) : null
 const evidenceArtifactId = artifactChecksum
-  ? 'strategy-route-evidence-v4-extension-' + artifactChecksum.slice(0, 24)
+  ? 'strategy-route-evidence-' + ROUTE_VERSION.split('-').at(-1) + '-extension-' + artifactChecksum.slice(0, 24)
   : null
 const insertRows = missingCoreRows.map((row) => ({
   ...row,
@@ -223,7 +228,7 @@ const readback = execute(
   + 'FROM strategy_route_versioned_evidence_v1 WHERE route_version=' + sqlText(ROUTE_VERSION)
   + ' AND signal_date IN (' + dates.map(sqlText).join(',') + ') ORDER BY signal_date,symbol,producer_run_id',
 ).results ?? []
-if (readback.length !== coreRows.length) throw new Error('v4_evidence_readback_count_mismatch:' + readback.length + ':' + coreRows.length)
+if (readback.length !== coreRows.length) throw new Error('route_evidence_readback_count_mismatch:' + readback.length + ':' + coreRows.length)
 validateStoredRows(readback, 'readback')
 console.log(JSON.stringify({
   status: 'materialized',

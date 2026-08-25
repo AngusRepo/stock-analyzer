@@ -24,6 +24,8 @@ from services.d1_domain_client import D1DataDomain, client_proxy_for_domain
 logger = logging.getLogger("walk_forward")
 OPS_D1_CLIENT = client_proxy_for_domain(D1DataDomain.OPS)
 LEARNING_D1_CLIENT = client_proxy_for_domain(D1DataDomain.LEARNING)
+MARKET_D1_CLIENT = client_proxy_for_domain(D1DataDomain.MARKET)
+CORE_D1_CLIENT = client_proxy_for_domain(D1DataDomain.CORE)
 router = APIRouter()
 
 
@@ -115,7 +117,7 @@ def _load_trading_calendar(start_date: str, end_date: str) -> tuple[list[str], d
     """Load only observed market dates; OOF training data stays in immutable GCS prep."""
     from services import d1_client
 
-    rows = d1_client.query(
+    rows = MARKET_D1_CLIENT.query(
         """
         SELECT substr(date, 1, 10) AS trading_date, COUNT(*) AS price_rows
         FROM stock_prices
@@ -1561,13 +1563,15 @@ async def materialize_walk_forward_oof(req: OofMaterializeRequest):
                     str(row.get("prediction_date") or "")[:10]
                     for row in forward_prediction_rows if row.get("prediction_date")
                 })
-                market_context_by_date = load_pit_market_contexts(d1_client.query, forward_dates)
+                market_context_by_date = load_pit_market_contexts(
+                    MARKET_D1_CLIENT.query, forward_dates, core_query_fn=CORE_D1_CLIENT.query
+                )
                 fundamental_quality_by_key = load_fundamental_quality_pit_by_key(
                     forward_prediction_rows
                 )
                 from services.pit_sector_alpha import load_pit_sector_alpha_experts_by_key
                 sector_alpha_by_key = load_pit_sector_alpha_experts_by_key(
-                    d1_client.query, native_rows
+                    MARKET_D1_CLIENT.query, native_rows
                 )
                 forward_snapshot_rows, forward_snapshot_evidence = build_oof_snapshot_rows(
                     prediction_rows,
@@ -1607,10 +1611,12 @@ async def materialize_walk_forward_oof(req: OofMaterializeRequest):
                 str(row.get("prediction_date") or "")[:10]
                 for row in prediction_rows if row.get("prediction_date")
             })
-            market_context_by_date = load_pit_market_contexts(d1_client.query, prediction_dates)
+            market_context_by_date = load_pit_market_contexts(
+                MARKET_D1_CLIENT.query, prediction_dates, core_query_fn=CORE_D1_CLIENT.query
+            )
             fundamental_quality_by_key = load_fundamental_quality_pit_by_key(prediction_rows)
             from services.pit_sector_alpha import load_pit_sector_alpha_experts_by_key
-            sector_alpha_by_key = load_pit_sector_alpha_experts_by_key(d1_client.query, native_rows)
+            sector_alpha_by_key = load_pit_sector_alpha_experts_by_key(MARKET_D1_CLIENT.query, native_rows)
             snapshot_rows, snapshot_evidence = build_oof_snapshot_rows(
                 prediction_rows,
                 native_rows,
@@ -1799,7 +1805,7 @@ async def materialize_walk_forward_oof(req: OofMaterializeRequest):
             from services.ev_operational_parity import assess_ev_operational_parity
             from services.worker_config_client import worker_fetch
 
-            latest = d1_client.query(
+            latest = CORE_D1_CLIENT.query(
                 """
                 SELECT MAX(date) prediction_date
                 FROM daily_recommendations

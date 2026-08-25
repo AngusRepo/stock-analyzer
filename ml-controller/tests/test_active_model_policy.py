@@ -46,12 +46,13 @@ def test_payload_builder_uses_policy_lookback_and_truncates_explicit_limit(monke
         ]
 
     monkeypatch.delenv("STOCKVISION_DAILY_PRICE_LOOKBACK_YEARS", raising=False)
-    monkeypatch.setattr(payload_builder.d1_client, "query", fake_query)
+    monkeypatch.setattr(payload_builder.MARKET_D1_CLIENT, "query", fake_query)
 
-    rows = payload_builder._bulk_load_prices([1], limit=3)
+    rows = payload_builder._bulk_load_prices([1], limit=3, as_of_date="2026-08-24")
 
-    assert "date('now','-5 years')" in captured["sql"]
-    assert captured["params"] == [1]
+    assert "date(?,'-5 years')" in captured["sql"]
+    assert "date <= date(?)" in captured["sql"]
+    assert captured["params"] == [1, "2026-08-24", "2026-08-24"]
     assert [row["close"] for row in rows[1]] == [5, 6, 7]
 
 
@@ -61,7 +62,7 @@ def test_payload_builder_chunks_d1_in_clause_loads(monkeypatch):
     def fake_query(sql, params, timeout=120.0):
         calls.append(list(params))
         assert sql.count("?") == len(params)
-        assert len(params) <= payload_builder.D1_IN_CLAUSE_CHUNK_SIZE
+        assert len(params) <= payload_builder.D1_IN_CLAUSE_CHUNK_SIZE + 2
         return [
             {
                 "stock_id": sid,
@@ -74,13 +75,14 @@ def test_payload_builder_chunks_d1_in_clause_loads(monkeypatch):
                 "adj_close": sid,
                 "avg_price": sid,
             }
-            for sid in params
+            for sid in params[:-2]
         ]
 
-    monkeypatch.setattr(payload_builder.d1_client, "query", fake_query)
+    monkeypatch.setattr(payload_builder.MARKET_D1_CLIENT, "query", fake_query)
 
-    rows = payload_builder._bulk_load_prices(list(range(1, 166)), limit=3)
+    rows = payload_builder._bulk_load_prices(list(range(1, 166)), limit=3, as_of_date="2026-08-24")
 
-    assert [len(call) for call in calls] == [80, 80, 5]
+    assert [len(call) for call in calls] == [82, 82, 7]
+    assert all(call[-2:] == ["2026-08-24", "2026-08-24"] for call in calls)
     assert len(rows) == 165
     assert rows[165][0]["close"] == 165

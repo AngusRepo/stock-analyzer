@@ -1,7 +1,7 @@
 import type { StrategyPortfolioMetrics } from './multiStrategyPleRouter'
 import type { StrategyEvidenceMode } from './strategySpec'
 
-export const STRATEGY_PORTFOLIO_METRICS_SOURCE_VERSION = 'strategy-portfolio-metrics-v1'
+export const STRATEGY_PORTFOLIO_METRICS_SOURCE_VERSION = 'strategy-portfolio-metrics-v2'
 
 export type StrategyPortfolioMetricOverrides = Record<string, Partial<StrategyPortfolioMetrics>>
 
@@ -163,6 +163,20 @@ function firstNumber(record: Record<string, unknown>, keys: string[]): number | 
     if (value != null) return value
   }
   return null
+}
+
+function immutableStrategyMetricLineage(record: Record<string, unknown>): Record<string, unknown> | null {
+  const lineage = nestedRecord(record, 'strategy_performance_metric_lineage')
+  const artifactId = cleanText(lineage.artifact_id)
+  const asOfDate = cleanText(lineage.as_of_date)
+  const checksum = cleanText(lineage.payload_checksum).toLowerCase()
+  return lineage.metric_contract_version === 'strategy-performance-metrics-v2'
+    && lineage.pit_fenced === true
+    && Boolean(artifactId)
+    && /^\d{4}-\d{2}-\d{2}$/.test(asOfDate)
+    && /^[a-f0-9]{64}$/.test(checksum)
+    ? lineage
+    : null
 }
 
 function numberRecord(raw: unknown, defaultValue = 0): Record<string, number> {
@@ -566,54 +580,47 @@ export function rewardLedgerRowToStrategyPortfolioMetrics(
 ): Partial<StrategyPortfolioMetrics> {
   const evidence = parseRecord(row.evidence_json)
   const samples = Math.max(0, Math.floor(Number(row.samples ?? 0)))
-  const coverage = clamp(finiteNumber(row.coverage) ?? 1, 0, 1)
-  const hitRate = clamp(finiteNumber(row.hit_rate) ?? 0.5, 0, 1)
-  const avgReturn = finiteNumber(row.avg_return_pct) ?? 0
-  const rewardSum = finiteNumber(row.reward_sum) ?? avgReturn * samples
-  const drawdown = Math.abs(finiteNumber(row.max_drawdown_pct) ?? 0)
-  const sampleConfidence = clamp((samples / 30) * coverage, 0, 1)
-
-  const rollingSharpe = firstNumber(evidence, ['rolling_sharpe', 'sharpe', 'strategy_sharpe'])
-    ?? clamp((hitRate - 0.5) * 3 + avgReturn * 35, -1.5, 2.5)
-  const recentAlpha = firstNumber(evidence, ['recent_alpha', 'alpha', 'avg_alpha'])
-    ?? clamp(avgReturn, -0.2, 0.2)
-  const ic = firstNumber(evidence, ['ic', 'information_coefficient'])
-    ?? clamp((hitRate - 0.5) * 0.35 + avgReturn * 2.5, -0.3, 0.35)
-  const rankIc = firstNumber(evidence, ['rank_ic', 'rankIC'])
-    ?? clamp((hitRate - 0.5) * 0.42 + avgReturn * 2, -0.3, 0.35)
-  const factorReturn = firstNumber(evidence, ['factor_return', 'factorReturn', 'factor_alpha', 'factor_return_pct'])
-    ?? clamp(avgReturn, -0.2, 0.2)
+  const lineage = immutableStrategyMetricLineage(evidence)
+  const drawdown = lineage ? Math.abs(finiteNumber(row.max_drawdown_pct) ?? 0) : null
+  const exactEvidence = lineage ? evidence : {}
+  const rollingSharpe = firstNumber(exactEvidence, ['rolling_sharpe', 'sharpe', 'strategy_sharpe'])
+  const recentAlpha = firstNumber(exactEvidence, ['recent_alpha', 'alpha', 'avg_alpha'])
+  const ic = firstNumber(exactEvidence, ['ic', 'information_coefficient'])
+  const rankIc = firstNumber(exactEvidence, ['rank_ic', 'rankIC'])
+  const factorReturn = firstNumber(exactEvidence, ['factor_return', 'factorReturn', 'factor_alpha', 'factor_return_pct'])
   const centrality = firstNumber(evidence, ['centrality', 'factor_centrality', 'graph_centrality'])
-  const regimePerformance = firstNumber(evidence, ['regime_performance', 'regime_alpha'])
-    ?? clamp((hitRate - 0.5) * 0.28 + avgReturn * 2.2, -0.25, 0.3)
-  const baseReliability = clamp(
-    0.5
-    + (hitRate - 0.5) * 0.42
-    + avgReturn * 4
-    + Math.max(0, ic) * 0.35
-    - drawdown * 0.6,
-    0,
-    1,
-  )
-  const reliability = clamp(0.5 * (1 - sampleConfidence) + baseReliability * sampleConfidence, 0, 1)
+  const regimePerformance = firstNumber(exactEvidence, ['regime_performance', 'regime_alpha'])
+  const shapley = firstNumber(exactEvidence, ['shapley_contribution', 'shapley'])
+  const reliability = firstNumber(exactEvidence, ['reliability', 'metric_reliability'])
+  const exactPerformanceReady = [rollingSharpe, recentAlpha, ic, rankIc, factorReturn, regimePerformance, shapley]
+    .some((value) => value != null)
 
   return {
+    strategy_metric_status: exactPerformanceReady ? 'reward_only' : 'no_evidence',
+    metric_reason: exactPerformanceReady
+      ? 'immutable_reward_evidence_exact_metrics_only'
+      : lineage
+        ? 'immutable_metric_packet_contains_no_formal_performance_statistics'
+        : 'immutable_strategy_performance_metric_lineage_missing',
     metric_sample_count: samples,
-    rolling_sharpe: round4(rollingSharpe),
-    max_drawdown: round4(drawdown),
-    recent_alpha: round4(recentAlpha),
+    metric_sources: exactPerformanceReady
+      ? [`strategy_reward_ledger.evidence_json:${cleanText(lineage?.artifact_id)}`]
+      : [],
+    rolling_sharpe: rollingSharpe == null ? undefined : round4(rollingSharpe),
+    max_drawdown: drawdown == null ? undefined : round4(drawdown),
+    recent_alpha: recentAlpha == null ? undefined : round4(recentAlpha),
     return_correlation: firstNumber(evidence, ['return_correlation', 'correlation']) ?? undefined,
     holding_overlap: firstNumber(evidence, ['holding_overlap', 'overlap']) ?? undefined,
     turnover: firstNumber(evidence, ['turnover', 'strategy_turnover']) ?? undefined,
-    factor_return: round4(factorReturn),
+    factor_return: factorReturn == null ? undefined : round4(factorReturn),
     factor_crowding: firstNumber(evidence, ['factor_crowding', 'crowding']) ?? undefined,
     centrality: centrality == null ? undefined : round4(clamp(centrality, 0, 1)),
-    ic: round4(ic),
-    rank_ic: round4(rankIc),
-    shapley_contribution: round4(firstNumber(evidence, ['shapley_contribution', 'shapley']) ?? clamp(rewardSum / Math.max(1, samples), -0.2, 0.4)),
-    regime_performance: round4(regimePerformance),
+    ic: ic == null ? undefined : round4(ic),
+    rank_ic: rankIc == null ? undefined : round4(rankIc),
+    shapley_contribution: shapley == null ? undefined : round4(shapley),
+    regime_performance: regimePerformance == null ? undefined : round4(regimePerformance),
     live_backtest_divergence: firstNumber(evidence, ['live_backtest_divergence', 'live_vs_backtest_divergence']) ?? undefined,
-    reliability: round4(reliability),
+    reliability: reliability == null ? undefined : round4(clamp(reliability, 0, 1)),
   }
 }
 
@@ -755,10 +762,7 @@ function regimePerformanceFromRaw(raw: Record<string, unknown>, regime?: string 
   if (!candidate || typeof candidate !== 'object' || Array.isArray(candidate)) return null
   const record = candidate as Record<string, unknown>
   const ret = firstNumber(record, ['return', 'total_return', 'avg_return', 'mean_return'])
-  if (ret != null) return clamp(ret, -0.35, 0.45)
-  const sharpe = firstNumber(record, ['sharpe', 'rolling_sharpe'])
-  if (sharpe != null) return clamp(sharpe * 0.08, -0.35, 0.45)
-  return null
+  return ret == null ? null : clamp(ret, -0.35, 0.45)
 }
 
 function walkForwardScore(raw: Record<string, unknown>): number {
@@ -779,17 +783,18 @@ export function buildStrategyPortfolioBacktestMetricOverrides(
 
   for (const row of rows) {
     const raw = parseRecord(row.raw_results)
+    const lineage = immutableStrategyMetricLineage(raw)
+    if (!lineage) continue
     const strategyIds = resolveBacktestStrategyIds(row, raw, knownStrategyIds)
     if (!strategyIds.length) continue
 
-    const totalTrades = Math.max(0, Math.floor(finiteNumber(row.total_trades) ?? firstNumber(nestedRecord(raw, 'summary'), ['total_trades']) ?? 0))
+    const totalTrades = Math.max(0, Math.floor(finiteNumber(row.total_trades) ?? 0))
     const sharpe = finiteNumber(row.sharpe) ?? firstNumber(nestedRecord(raw, 'summary'), ['sharpe'])
     const maxDrawdown = Math.abs(finiteNumber(row.max_drawdown) ?? firstNumber(nestedRecord(raw, 'summary'), ['max_drawdown']) ?? 0)
-    const cagr = finiteNumber(row.cagr) ?? firstNumber(nestedRecord(raw, 'summary'), ['cagr'])
-    const expectancy = finiteNumber(row.expectancy) ?? firstNumber(nestedRecord(raw, 'summary'), ['expectancy'])
-    const winRate = finiteNumber(row.win_rate) ?? firstNumber(nestedRecord(raw, 'summary'), ['win_rate'])
     const partitionReturns = extractStrategyPartitionReturns(raw)
-    const score = totalTrades + Math.max(0, sharpe ?? 0) * 20 + (row.run_date ? Date.parse(row.run_date) / 8.64e7 / 100000 : 0)
+    const explicitShapley = firstNumber(raw, ['shapley_contribution', 'shapley'])
+    const explicitReliability = firstNumber(raw, ['reliability', 'metric_reliability'])
+    const score = totalTrades + (row.run_date ? Date.parse(row.run_date) / 8.64e7 / 100000 : 0)
 
     for (const strategyId of strategyIds) {
       const ownReturns = partitionReturns[strategyId] ?? []
@@ -800,33 +805,18 @@ export function buildStrategyPortfolioBacktestMetricOverrides(
       const returnCorrelation = otherCorrelations.length
         ? round4(clamp(Math.max(...otherCorrelations), 0, 1))
         : undefined
-      const strategyMeanReturn = ownReturns.length
-        ? ownReturns.reduce((sum, value) => sum + value, 0) / ownReturns.length
-        : null
-      const tradeConfidence = clamp(totalTrades / 60, 0, 1)
-      const wfScore = walkForwardScore(raw)
-      const reliability = clamp(
-        0.5 * (1 - tradeConfidence)
-        + (
-          0.5
-          + clamp(sharpe ?? 0, -1.5, 2.5) * 0.16
-          + (winRate != null ? (winRate - 0.5) * 0.28 : 0)
-          + wfScore * 0.18
-          - maxDrawdown * 0.45
-        ) * tradeConfidence,
-        0,
-        1,
-      )
+      const exactRegimePerformance = regimePerformanceFromRaw(raw, options.regime)
       const metrics: Partial<StrategyPortfolioMetrics> = {
+        strategy_metric_status: 'backtest_only',
+        metric_reason: 'immutable_backtest_exact_metrics_only',
         metric_sample_count: totalTrades,
+        metric_sources: [`backtest_results:${cleanText(lineage.artifact_id)}`],
         rolling_sharpe: sharpe == null ? undefined : round4(sharpe),
         max_drawdown: round4(maxDrawdown),
         return_correlation: returnCorrelation,
-        shapley_contribution: strategyMeanReturn == null
-          ? (expectancy == null ? undefined : round4(clamp(expectancy, -0.2, 0.4)))
-          : round4(clamp(strategyMeanReturn, -0.2, 0.4)),
-        regime_performance: round4(regimePerformanceFromRaw(raw, options.regime) ?? clamp(cagr ?? strategyMeanReturn ?? 0, -0.35, 0.45)),
-        reliability: round4(reliability),
+        shapley_contribution: explicitShapley == null ? undefined : round4(explicitShapley),
+        regime_performance: exactRegimePerformance == null ? undefined : round4(exactRegimePerformance),
+        reliability: explicitReliability == null ? undefined : round4(clamp(explicitReliability, 0, 1)),
       }
       const existing = best.get(strategyId)
       if (!existing || score > existing.score) best.set(strategyId, { metrics, score })
@@ -881,9 +871,22 @@ function annotateStrategyMetricStatuses(
   let structuralMetricCount = 0
 
   for (const strategyId of strategyIds) {
-    const hasLedger = Boolean(sources.ledger[strategyId])
+    const ledgerMetric = sources.ledger[strategyId]
+    const backtestMetric = sources.backtest[strategyId]
+    const formalFields: Array<keyof StrategyPortfolioMetrics> = [
+      'rolling_sharpe', 'recent_alpha', 'factor_return', 'ic', 'rank_ic',
+      'shapley_contribution', 'regime_performance',
+    ]
+    const hasLedger = Boolean(
+      ledgerMetric
+      && ledgerMetric.strategy_metric_status !== 'no_evidence'
+      && formalFields.some((key) => finiteNumber(ledgerMetric[key]) != null),
+    )
     const hasDecision = Boolean(sources.decision[strategyId])
-    const hasBacktest = Boolean(sources.backtest[strategyId])
+    const hasBacktest = Boolean(
+      backtestMetric
+      && formalFields.some((key) => finiteNumber(backtestMetric[key]) != null),
+    )
     const sourceList = [
       ...(hasLedger ? ['strategy_reward_ledger'] : []),
       ...(hasDecision ? ['strategy_decision_log'] : []),

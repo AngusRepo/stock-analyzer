@@ -22,7 +22,7 @@ import polars as pl
 from fastapi import APIRouter, HTTPException, Body
 from pydantic import BaseModel
 
-from app.d1_client import query as d1_query
+from app.d1_client import query_domain
 from app.kv_pusher import push_optuna_result
 
 
@@ -43,6 +43,34 @@ _ensure_scripts_in_path()
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/optuna", tags=["optuna"])
 
+def _core_query(sql: str, params: list[Any] | None = None) -> list[dict]:
+    return query_domain("core", sql, params)
+
+
+def _market_query(sql: str, params: list[Any] | None = None) -> list[dict]:
+    return query_domain("market", sql, params)
+
+
+def _learning_query(sql: str, params: list[Any] | None = None) -> list[dict]:
+    return query_domain("learning", sql, params)
+
+
+def _paper_query(sql: str, params: list[Any] | None = None) -> list[dict]:
+    return query_domain("paper", sql, params)
+
+
+def _active_stock_identities() -> dict[int, str]:
+    return {
+        int(row["id"]): str(row["symbol"])
+        for row in _core_query("SELECT id, symbol FROM stocks WHERE delisted_date IS NULL")
+        if row.get("id") is not None and str(row.get("symbol") or "").strip()
+    }
+
+
+def _benchmark_stock_id() -> int | None:
+    rows = _core_query("SELECT id FROM stocks WHERE symbol IN ('TAIEX','^TWII') ORDER BY id LIMIT 1")
+    return int(rows[0]["id"]) if rows and rows[0].get("id") is not None else None
+
 
 class OptunaReq(BaseModel):
     n_trials: int = 200
@@ -53,34 +81,32 @@ class OptunaReq(BaseModel):
 # ─── Helper: 從 D1 載入資料 ───────────────────────────────────────────────────
 
 def _load_top_active_stocks_with_prices(min_rows: int = 200, top_n: int = 10) -> list[dict]:
-    """For barrier search: 找資料最多的 tradable 股票，回傳 [{symbol, prices: [...]}, ...]"""
-    stocks = d1_query("""
-        SELECT s.id, s.symbol, COUNT(*) as cnt
-        FROM stocks s JOIN stock_prices sp ON sp.stock_id = s.id
-        WHERE s.delisted_date IS NULL
-        GROUP BY s.id HAVING cnt >= ?
-        ORDER BY cnt DESC LIMIT ?
-    """, [min_rows, top_n])
-    if not stocks:
-        return []
-
+    """Join Core tradability with Market price coverage in memory."""
+    identities = _active_stock_identities()
+    counts = _market_query(
+        "SELECT stock_id, COUNT(*) cnt FROM stock_prices GROUP BY stock_id "
+        "HAVING COUNT(*) >= ? ORDER BY cnt DESC",
+        [min_rows],
+    )
+    selected = [row for row in counts if int(row.get("stock_id") or -1) in identities][:top_n]
     out = []
-    for s in stocks:
-        rows = d1_query(
-            "SELECT date, open, high, low, close, volume FROM stock_prices WHERE stock_id = ? ORDER BY date ASC",
-            [s["id"]],
+    for stock in selected:
+        stock_id = int(stock["stock_id"])
+        rows = _market_query(
+            "SELECT date, open, high, low, close, volume FROM stock_prices "
+            "WHERE stock_id=? ORDER BY date ASC",
+            [stock_id],
         )
         if len(rows) >= min_rows:
-            out.append({"symbol": s["symbol"], "rows": rows})
+            out.append({"symbol": identities[stock_id], "rows": rows})
     return out
-
 
 def _load_paper_orders(limit: int = 500) -> list[dict]:
     """For sltp / signal search.
     paper_orders 沒 realized_pnl 欄位，改抓所有 sell orders + 用 paper_daily_snapshots 的 pnl_pct 作 proxy。
     Phase 1.5+ refinement: 應該 JOIN buy/sell pairs 算 per-trade pnl_pct。
     """
-    return d1_query(
+    return _paper_query(
         "SELECT * FROM paper_orders WHERE side='sell' ORDER BY created_at DESC LIMIT ?",
         [limit],
     )
@@ -88,7 +114,7 @@ def _load_paper_orders(limit: int = 500) -> list[dict]:
 
 def _load_daily_pnl(limit: int = 200) -> list[dict]:
     """For risk_params search: 從 paper_daily_snapshots 抓日收益率序列"""
-    return d1_query(
+    return _paper_query(
         "SELECT date, pnl_pct, total_value, max_drawdown_to_date FROM paper_daily_snapshots WHERE pnl_pct IS NOT NULL ORDER BY date DESC LIMIT ?",
         [limit],
     )
@@ -96,7 +122,7 @@ def _load_daily_pnl(limit: int = 200) -> list[dict]:
 
 def _load_twii_history(limit: int = 500) -> list[dict]:
     """For rrg/feature_window: TWII benchmark from market_risk (not stocks table)"""
-    return d1_query(
+    return _core_query(
         "SELECT date, twii_close FROM market_risk WHERE twii_close IS NOT NULL ORDER BY date ASC LIMIT ?",
         [limit],
     )
@@ -104,7 +130,7 @@ def _load_twii_history(limit: int = 500) -> list[dict]:
 
 def _load_predictions(limit: int = 2000) -> list[dict]:
     """For signal search."""
-    return d1_query(
+    return _learning_query(
         """SELECT stock_id, generated_at, direction_accuracy as confidence,
            signal_raw, forecast_data FROM predictions
            WHERE model_name='ensemble' ORDER BY generated_at DESC LIMIT ?""",
@@ -255,7 +281,7 @@ def run_conformal_search(req: OptunaReq = Body(default=OptunaReq())):
         raise HTTPException(500, f"optuna_conformal import failed: {e}")
 
     # Load (confidence, direction_correct) pairs from predictions
-    rows = d1_query("""
+    rows = _learning_query("""
         SELECT direction_accuracy as confidence, direction_correct
         FROM predictions
         WHERE direction_correct IN (0, 1) AND direction_accuracy IS NOT NULL
@@ -339,11 +365,11 @@ def run_rrg_search(req: OptunaReq = Body(default=OptunaReq())):
         raise HTTPException(500, f"optuna_rrg import failed: {e}")
 
     # Load benchmark (TAIEX) prices + top stock prices
-    bench_rows = d1_query("""
-        SELECT date, close FROM stock_prices
-        WHERE stock_id = (SELECT id FROM stocks WHERE symbol IN ('TAIEX','^TWII') LIMIT 1)
-        ORDER BY date ASC LIMIT 500
-    """)
+    benchmark_id = _benchmark_stock_id()
+    bench_rows = _market_query(
+        "SELECT date, close FROM stock_prices WHERE stock_id=? ORDER BY date ASC LIMIT 500",
+        [benchmark_id],
+    ) if benchmark_id is not None else []
     if len(bench_rows) < 60:
         raise HTTPException(400, f"Insufficient benchmark data: {len(bench_rows)}")
 
@@ -351,21 +377,12 @@ def run_rrg_search(req: OptunaReq = Body(default=OptunaReq())):
     benchmark_returns = [(closes[i] - closes[i - 1]) / closes[i - 1] for i in range(1, len(closes))]
 
     # Top 10 stocks by price count
-    top_stocks = d1_query("""
-        SELECT s.id, s.symbol, COUNT(*) as cnt
-        FROM stocks s JOIN stock_prices sp ON sp.stock_id = s.id
-        WHERE s.delisted_date IS NULL
-        GROUP BY s.id HAVING cnt >= 100
-        ORDER BY cnt DESC LIMIT 10
-    """)
-    prices_by_stock: dict[str, list[float]] = {}
-    for s in top_stocks:
-        rows = d1_query(
-            "SELECT close FROM stock_prices WHERE stock_id = ? ORDER BY date ASC LIMIT 500",
-            [s["id"]],
-        )
-        if len(rows) >= 100:
-            prices_by_stock[s["symbol"]] = [float(r["close"]) for r in rows]
+    top_stocks = _load_top_active_stocks_with_prices(min_rows=100, top_n=10)
+    prices_by_stock = {
+        str(stock["symbol"]): [float(row["close"]) for row in stock["rows"][:500]]
+        for stock in top_stocks
+        if len(stock["rows"]) >= 100
+    }
 
     if not prices_by_stock:
         raise HTTPException(400, "No top stocks with sufficient prices")
@@ -401,11 +418,11 @@ def run_feature_window_search(req: OptunaReq = Body(default=OptunaReq())):
         raise HTTPException(500, f"optuna_feature_window import failed: {e}")
 
     # Use TAIEX prices for window search
-    rows = d1_query("""
-        SELECT close, volume FROM stock_prices
-        WHERE stock_id = (SELECT id FROM stocks WHERE symbol IN ('TAIEX','^TWII') LIMIT 1)
-        ORDER BY date ASC LIMIT 1000
-    """)
+    benchmark_id = _benchmark_stock_id()
+    rows = _market_query(
+        "SELECT close, volume FROM stock_prices WHERE stock_id=? ORDER BY date ASC LIMIT 1000",
+        [benchmark_id],
+    ) if benchmark_id is not None else []
     if len(rows) < 100:
         raise HTTPException(400, f"Insufficient benchmark data: {len(rows)}")
 

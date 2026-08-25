@@ -9,11 +9,12 @@ const maturity = readFileSync('src/lib/pipelineDecisionMaturity.ts', 'utf8')
 const schema = readFileSync('domain-schemas/learning.sql', 'utf8')
 const migration = readFileSync('domain-migrations/learning/0023_strategy_route_paired_incumbent_evidence.sql', 'utf8')
 
-test('route promotion requires paired incumbent evidence and same-capacity improvement', () => {
+test('route promotion requires paired incumbent evidence and continuous-weight improvement', () => {
   assert.match(calibration, /incumbent_route_lineage_complete/)
   assert.match(calibration, /absolute_spread_lcb90_positive/)
-  assert.match(calibration, /challenger_beats_incumbent_same_capacity_lcb90_positive/)
-  assert.match(calibration, /\.slice\(0, challengerPaired\.length\)/)
+  assert.match(calibration, /challenger_continuous_weight_beats_incumbent_lcb90_positive/)
+  assert.match(calibration, /continuousRouteWeight/)
+  assert.doesNotMatch(calibration, /incumbentTopK|challengerPaired|\.slice\(0, challengerPaired\.length\)/)
   assert.match(calibration, /current_day_incumbent_route_complete/)
 })
 

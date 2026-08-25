@@ -4,6 +4,12 @@ export const STRATEGY_PRODUCTION_FIREWALL_POLICY_ID =
 export const STRATEGY_PRODUCTION_FIREWALL_VERSION = 3 as const
 export const STRATEGY_ALLOCATION_ELIGIBILITY_CONTRACT_VERSION =
   'strategy-allocation-eligibility-v3' as const
+export const FORMAL_STRATEGY_EVIDENCE_OWNER_VERSION =
+  'strategy-evidence-owner-fusion-v3' as const
+export const FORMAL_STRATEGY_EVIDENCE_WEIGHT_EFFECT =
+  'neutral_until_immutable_calibration' as const
+export const FORMAL_STRATEGY_EVIDENCE_CALIBRATED_WEIGHT_EFFECT =
+  'immutable_oos_calibrated_bounded_bidirectional' as const
 
 export type StrategyLifecycleStatus =
   | 'research'
@@ -44,6 +50,8 @@ export interface StrategyProductionFirewallBaseWeights {
     checksum: string
     weight_effect: string
     ready_profile_count: number
+    calibration_run_id?: string | null
+    calibration_artifact_checksum?: string | null
   } | null
 }
 
@@ -157,6 +165,23 @@ export function buildStrategyProductionContributionFirewall(input: {
       .filter((gate) => gate.decision === 'candidate_ready' && statusById.has(gate.strategy_id))
       .map((gate) => gate.strategy_id),
   )
+
+  const evidenceOwner = input.base.evidence_owner
+  const evidenceWeightEffectValid = evidenceOwner?.weight_effect === FORMAL_STRATEGY_EVIDENCE_WEIGHT_EFFECT
+    || evidenceOwner?.weight_effect === FORMAL_STRATEGY_EVIDENCE_CALIBRATED_WEIGHT_EFFECT
+  const calibratedEvidenceValid = evidenceOwner?.weight_effect !== FORMAL_STRATEGY_EVIDENCE_CALIBRATED_WEIGHT_EFFECT
+    || (Boolean(evidenceOwner.calibration_run_id)
+      && /^[a-f0-9]{64}$/.test(String(evidenceOwner.calibration_artifact_checksum ?? '')))
+  if (
+    (input.base.source === 'adaptive_strategy_policy_v2' || evidenceOwner != null)
+    && (
+      evidenceOwner?.version !== FORMAL_STRATEGY_EVIDENCE_OWNER_VERSION
+      || !evidenceWeightEffectValid
+      || !calibratedEvidenceValid
+    )
+  ) {
+    throw new Error('invalid_strategy_evidence_owner_contract')
+  }
 
   const suppliedWeights = input.base.weights ?? undefined
   const strategyWeights = Object.fromEntries(

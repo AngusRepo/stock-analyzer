@@ -74,6 +74,12 @@ def _score_components(
         },
         "total": final_score,
         "finalScore": final_score,
+        "mlEdgePolicy": {"signal": "BUY"},
+        "coreFamilyEvidence": {
+            "formal_model_contract_passed": True,
+            "evidence_status": "sufficient_family_breadth",
+            "active_family_count": 3,
+        },
         "seedComponents": {
             "chipFlowSeed40": 16.0,
             "technicalSeed30": 18.0,
@@ -201,13 +207,13 @@ def _assert_score_v2_continuity_selected(row: dict) -> dict:
     assert allocation["positive_expected_edge"] is False
     assert allocation["positive_allocation_utility"] is True
     assert allocation["allocation_utility"] > 0.0
-    assert allocation["allocation_utility_owner"] == "score_v2_formal_ml"
+    assert allocation["allocation_utility_owner"] == "formal_ml_buy_admission"
     assert allocation["allocation_utility_semantic"] == (
-        "dimensionless_score_v2_ml_edge_confidence_utility_not_expected_return"
+        "binary_formal_ml_buy_eligibility_not_expected_return_not_weight_magnitude"
     )
     resolver = allocation["allocator_edge_resolver"]
     assert resolver["formal_expected_return_owner"] is None
-    assert resolver["allocation_utility_owner"] == "score_v2_formal_ml"
+    assert resolver["allocation_utility_owner"] == "formal_ml_buy_admission"
     assert resolver["execution_owner"] == "allocator_opb_policy"
     assert resolver["execution_scope"] == "recommendation_allocation_only_no_order_submission"
     assert resolver["action_gate"] == "selection_signal_owner"
@@ -1224,8 +1230,8 @@ def test_sparse_tangent_allocation_keeps_cash_when_explicit_forecast_has_no_edge
     assert all(allocation["selected"] is False for allocation in allocations)
     assert all(allocation["allows_empty_portfolio"] is True for allocation in allocations)
     assert all(allocation["hard_minimum_fill"] is False for allocation in allocations)
-    assert all(allocation["selection_policy"] == "positive_allocation_utility_sparse_weights_no_forced_fill" for allocation in allocations)
-    assert all(allocation["selection_reason"] == "no_positive_allocation_utility" for allocation in allocations)
+    assert all(allocation["selection_policy"] == "positive_expected_return_sparse_weights_no_forced_fill" for allocation in allocations)
+    assert all(allocation["selection_reason"] == "no_positive_expected_return" for allocation in allocations)
     assert all(allocation["sparse_weight_state"] == "zero_sparse_weight_after_inverse_risk" for allocation in allocations)
     assert all(allocation["expected_return"] == 0.0 for allocation in allocations)
     assert all(allocation["positive_expected_edge"] is False for allocation in allocations)
@@ -1261,7 +1267,7 @@ def test_sparse_tangent_allocation_blocks_score_only_expected_return_fallback():
 
     allocation = _assert_score_v2_continuity_selected(promoted[0])
     assert allocation["expected_return_source"] == "l4_alpha_ev_missing_no_expected_return"
-    assert allocation["selection_reason"] == "selected_score_v2_allocation_utility_sparse_weight"
+    assert allocation["selection_reason"] == "selected_formal_ml_buy_inverse_volatility_weight"
 
 
 def test_sparse_tangent_allocation_does_not_persist_candidate_time_s12_payload():

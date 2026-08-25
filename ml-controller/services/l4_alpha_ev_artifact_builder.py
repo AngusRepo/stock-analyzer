@@ -853,12 +853,104 @@ def load_l4_alpha_ev_oof_training_rows(
 def load_l4_alpha_ev_training_rows(
     query_fn: Callable[[str, list[Any]], list[dict[str, Any]]],
     *,
+    core_query_fn: Callable[[str, list[Any]], list[dict[str, Any]]] | None = None,
     end_date: str,
     knowledge_cutoff_date: str | None = None,
     lookback_days: int = 90,
     limit: int = 6000,
 ) -> list[dict[str, Any]]:
     outcome_cutoff = knowledge_cutoff_date or end_date
+    if core_query_fn is not None:
+        learning_rows = query_fn(
+            f"""
+            WITH {PRICE_HORIZONS_CTE}
+            SELECT
+                p.stock_id,
+                date(p.prediction_date) AS prediction_date,
+                p.generated_at AS prediction_generated_at,
+                datetime(ph.entry_date, '+1 hour') AS next_session_open_at,
+                p.forecast_data,
+                ph.source AS label_adjustment_source,
+                ((ph.exit_raw_close * ph.exit_adjustment_factor)
+                  / (ph.entry_raw_open * ph.entry_adjustment_factor)) - 1.0 AS l4_executable_return_pct,
+                ph.entry_date AS l4_entry_date,
+                ph.exit_date AS l4_exit_date,
+                ph.entry_raw_open AS l4_entry_raw_open,
+                ph.exit_raw_close AS l4_exit_raw_close,
+                ph.entry_adjustment_factor AS l4_entry_adjustment_factor,
+                ph.exit_adjustment_factor AS l4_exit_adjustment_factor
+            FROM predictions p INDEXED BY idx_pred_date_model_stock
+            JOIN price_horizons ph
+              ON ph.stock_id = p.stock_id
+             AND ph.price_date = p.prediction_date
+            WHERE p.model_name = 'ensemble'
+              AND p.prediction_date >= date(?, ?)
+              AND p.prediction_date < date(?, '+1 day')
+              AND ph.entry_raw_open > 0
+              AND ph.exit_raw_close > 0
+              AND ph.entry_adjustment_factor > 0
+              AND ph.exit_adjustment_factor > 0
+              AND ph.exit_date < date(?, '+1 day')
+              AND (
+                date(datetime(p.generated_at, '+8 hours')) <= p.prediction_date
+                OR datetime(p.generated_at) < datetime(ph.entry_date || ' 01:00:00')
+              )
+              AND p.forecast_data IS NOT NULL
+            ORDER BY p.prediction_date ASC, p.stock_id ASC
+            LIMIT ?
+            """,
+            [
+                end_date,
+                f"-{max(1, int(lookback_days))} days",
+                end_date,
+                outcome_cutoff,
+                int(limit),
+            ],
+        )
+        stock_ids = sorted({int(row["stock_id"]) for row in learning_rows if row.get("stock_id") is not None})
+        symbols_by_id: dict[int, str] = {}
+        for offset in range(0, len(stock_ids), 90):
+            chunk = stock_ids[offset:offset + 90]
+            placeholders = ",".join("?" for _ in chunk)
+            for row in core_query_fn(f"SELECT id, symbol FROM stocks WHERE id IN ({placeholders})", chunk):
+                symbols_by_id[int(row["id"])] = str(row.get("symbol") or "")
+        signal_dates = sorted({str(row.get("prediction_date") or "")[:10] for row in learning_rows})
+        recommendations: dict[tuple[int, str], dict[str, Any]] = {}
+        for offset in range(0, len(signal_dates), 90):
+            chunk = signal_dates[offset:offset + 90]
+            placeholders = ",".join("?" for _ in chunk)
+            core_rows = core_query_fn(
+                f"""
+                SELECT stock_id, date, score, score_components, alpha_context,
+                       market_segment, recommendation_lane
+                FROM daily_recommendations
+                WHERE date IN ({placeholders})
+                  AND score_components IS NOT NULL
+                """,
+                chunk,
+            )
+            for row in core_rows:
+                recommendations[(int(row["stock_id"]), str(row.get("date") or "")[:10])] = row
+        rows = []
+        for learning_row in learning_rows:
+            stock_id = int(learning_row["stock_id"])
+            signal_date = str(learning_row.get("prediction_date") or "")[:10]
+            recommendation = recommendations.get((stock_id, signal_date))
+            symbol = symbols_by_id.get(stock_id)
+            if recommendation is None or not symbol:
+                continue
+            rows.append({
+                **learning_row,
+                "symbol": symbol,
+                "score": recommendation.get("score"),
+                "score_components": recommendation.get("score_components"),
+                "alpha_context": recommendation.get("alpha_context"),
+                "market_segment": recommendation.get("market_segment"),
+                "recommendation_lane": recommendation.get("recommendation_lane"),
+            })
+        enriched, _ = attach_same_run_model_version_evidence(query_fn, rows)
+        return enriched
+
     rows = query_fn(
         f"""
         WITH {PRICE_HORIZONS_CTE}

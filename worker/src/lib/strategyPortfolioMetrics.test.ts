@@ -35,6 +35,16 @@ function row(input: Partial<StrategyRewardLedgerMetricRow> & { strategy_id: stri
   }
 }
 
+function metricLineage(): Record<string, unknown> {
+  return {
+    metric_contract_version: 'strategy-performance-metrics-v2',
+    artifact_id: 'strategy-metrics-test-artifact',
+    as_of_date: '2026-06-14',
+    pit_fenced: true,
+    payload_checksum: 'a'.repeat(64),
+  }
+}
+
 function decisionRow(input: StrategyDecisionLogMetricRow): StrategyDecisionLogMetricRow {
   return input
 }
@@ -95,6 +105,9 @@ function fakeDb(input: {
     max_drawdown_pct: -0.035,
     coverage: 0.9,
     evidence_json: JSON.stringify({
+      strategy_performance_metric_lineage: metricLineage(),
+      rolling_sharpe: 1.1,
+      reliability: 0.82,
       return_correlation: 0.12,
       holding_overlap: 0.08,
       factor_return: 0.021,
@@ -103,9 +116,9 @@ function fakeDb(input: {
       live_backtest_divergence: 0.04,
     }),
   }))
-  assert((metrics.rolling_sharpe ?? 0) > 0, 'positive reward ledger should map to positive rolling sharpe')
+  assert(metrics.rolling_sharpe === 1.1, 'only immutable exact Sharpe may enter the strategy route')
   assert(metrics.max_drawdown === 0.035, 'drawdown should be normalized to positive risk magnitude')
-  assert((metrics.reliability ?? 0) > 0.5, 'sample-backed positive ledger should raise reliability')
+  assert(metrics.reliability === 0.82, 'only immutable exact reliability may enter the strategy route')
   assert(metrics.return_correlation === 0.12, 'evidence_json should pass through return correlation')
   assert(metrics.holding_overlap === 0.08, 'evidence_json should pass through holding overlap')
   assert(metrics.factor_return === 0.021, 'evidence_json should pass through FinLab factor return')
@@ -121,7 +134,8 @@ function fakeDb(input: {
     max_drawdown_pct: 0,
     coverage: 1,
   }))
-  assert((metrics.reliability ?? 1) < 0.6, 'thin samples should shrink reliability toward neutral')
+  assert(metrics.strategy_metric_status === 'no_evidence', 'summary-only thin evidence must be unavailable')
+  assert(metrics.rolling_sharpe == null && metrics.ic == null && metrics.shapley_contribution == null, 'hit rate and mean return must never manufacture formal statistics')
 }
 
 {
@@ -131,7 +145,7 @@ function fakeDb(input: {
     row({ strategy_id: 'too_thin_v1', samples: 2, hit_rate: 0.9 }),
   ], { regime: 'bull', minSamples: 5 })
   assert(overrides.regime_sensitive_v1 != null, 'loader should build an override for eligible strategy rows')
-  assert((overrides.regime_sensitive_v1.reliability ?? 0) > 0.5, 'regime-specific positive row should be preferred over generic row')
+  assert(overrides.regime_sensitive_v1.strategy_metric_status === 'no_evidence', 'reward summary without immutable metric lineage must stay unavailable')
   assert(overrides.too_thin_v1 == null, 'rows below minSamples must not feed L1.25 priors')
 }
 
@@ -141,7 +155,7 @@ function fakeDb(input: {
     row({ strategy_id: 'segmented_v1', market_segment: 'OTC', samples: 7, hit_rate: 3 / 7, avg_return_pct: -0.01, reward_sum: -0.07 }),
   ], { marketSegment: 'all', minSamples: 5 })
   assert(overrides.segmented_v1.metric_sample_count === 10, 'all-market loader must aggregate TWSE/OTC samples before applying minSamples')
-  assert(overrides.segmented_v1.recent_alpha === -0.001, 'all-market return must be sample-weighted across market segments')
+  assert(overrides.segmented_v1.recent_alpha == null, 'sample-weighted average return must not be relabeled as alpha')
 }
 
 {
@@ -150,7 +164,7 @@ function fakeDb(input: {
     row({ strategy_id: 'canonical_all_v1', market_segment: 'TWSE', samples: 100, avg_return_pct: -0.02 }),
   ], { marketSegment: 'all', minSamples: 5 })
   assert(overrides.canonical_all_v1.metric_sample_count === 20, 'canonical all-market row must win over segment rows to prevent double counting')
-  assert(overrides.canonical_all_v1.recent_alpha === 0.03, 'canonical all-market evidence must retain its own return')
+  assert(overrides.canonical_all_v1.recent_alpha == null, 'canonical average return is not formal alpha without immutable lineage')
 }
 
 {
@@ -159,12 +173,14 @@ function fakeDb(input: {
     row({ strategy_id: 'latest_materialization_v1', market_segment: 'TWSE', samples: 20, avg_return_pct: 0.015, updated_at: '2026-07-28T00:00:00.000Z' }),
   ], { marketSegment: 'all', minSamples: 5 })
   assert(overrides.latest_materialization_v1.metric_sample_count === 20, 'latest legal segment materialization must win over an older larger row')
-  assert(overrides.latest_materialization_v1.recent_alpha === 0.015, 'older sample volume must not override the newest PIT materialization')
+  assert(overrides.latest_materialization_v1.recent_alpha == null, 'latest average return is still not formal alpha')
 }
 
 {
   const raw = {
     strategy_id: 'reliable_low_corr_v1',
+    strategy_performance_metric_lineage: metricLineage(),
+    reliability: 0.8,
     strategy_returns_by_partition: {
       reliable_low_corr_v1: [0.02, 0.01, 0.03, 0.025],
       crowded_low_sharpe_v1: [0.02, -0.01, 0.04, -0.005],
@@ -269,7 +285,7 @@ async function main(): Promise<void> {
       ledgerRows: [row({ strategy_id: 'ledger_strategy_v1', hit_rate: 0.62, samples: 40 })],
       backtestRows: [backtestRow({
         strategy: 'backtest_only_strategy_v1',
-        raw_results: JSON.stringify({ strategy_id: 'backtest_only_strategy_v1', walk_forward: { passed: true, windows: 5 } }),
+        raw_results: JSON.stringify({ strategy_id: 'backtest_only_strategy_v1', strategy_performance_metric_lineage: metricLineage(), reliability: 0.8, walk_forward: { passed: true, windows: 5 } }),
       })],
     })
     const result = await loadStrategyPortfolioMetricOverrides(db, {
@@ -285,10 +301,10 @@ async function main(): Promise<void> {
     assert(result.telemetry.backtest_result_row_count === 1, 'loader telemetry should count backtest rows')
     assert(result.telemetry.backtest_metric_count === 1, 'loader telemetry should count mapped backtest strategy metrics')
     assert(result.telemetry.metric_count === 3, 'loader telemetry should cover every known strategy, not only strategies with live evidence')
-    assert(result.telemetry.live_metric_count === 2, 'loader telemetry should separately count strategies with live metric evidence')
+    assert(result.telemetry.live_metric_count === 1, 'summary-only ledger rows must not count as formal performance evidence')
     assert(result.telemetry.known_strategy_count === 3, 'loader telemetry should expose known strategy coverage denominator')
-    assert(result.telemetry.missing_metric_count === 1, 'loader telemetry should expose missing L1.25 metric coverage')
-    assert(result.telemetry.metric_status_counts.no_evidence === 1, 'known strategy without metric evidence should be explicit no_evidence')
+    assert(result.telemetry.missing_metric_count === 2, 'missing immutable lineage must count as missing performance evidence')
+    assert(result.telemetry.metric_status_counts.no_evidence === 2, 'known strategy and summary-only ledger must be explicit no_evidence')
     assert(result.metrics.ledger_strategy_v1 != null, 'loader should return metric override keyed by strategy id')
     assert(result.metrics.backtest_only_strategy_v1 != null, 'loader should include explicitly mapped backtest-only strategy metrics')
     assert(result.metrics.missing_strategy_v1.strategy_metric_status === 'no_evidence', 'missing known strategy should be shrunk, not omitted from L1.25')

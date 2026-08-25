@@ -98,6 +98,28 @@ def resolve_portfolio_bandit_arms(
         )
         for arm in DEFAULT_ARMS
     )
+    evaluation_method = str(validation.get("evaluation_method") or "").strip().lower()
+    accepted_evaluation_methods = {
+        "full_information_deterministic_arm_replay",
+        "ips",
+        "snips",
+        "doubly_robust",
+        "offcem",
+    }
+    production_control_checks = {
+        "production_control_approved": validation.get("production_control_approved") is True,
+        "evaluation_method_supported": evaluation_method in accepted_evaluation_methods,
+        "incumbent_net_reward_non_degradation_passed": validation.get(
+            "incumbent_net_reward_non_degradation_passed"
+        ) is True,
+        "diversity_non_degradation_passed": validation.get("diversity_non_degradation_passed") is True,
+        "turnover_cost_non_degradation_passed": validation.get(
+            "turnover_cost_non_degradation_passed"
+        ) is True,
+    }
+    production_control_blockers = sorted(
+        name for name, passed in production_control_checks.items() if not passed
+    )
     return resolved, {
         "status": "artifact_loaded",
         "artifact_id": artifact.get("artifact_id"),
@@ -105,6 +127,10 @@ def resolve_portfolio_bandit_arms(
         "expected_return_owner": artifact_owner,
         "source_expected_return_contract_version": artifact_contract,
         "source_expected_return_semantic": artifact_semantic,
+        "production_control_ready": not production_control_blockers,
+        "production_control_checks": production_control_checks,
+        "production_control_blockers": production_control_blockers,
+        "evaluation_method": evaluation_method or None,
     }
 
 

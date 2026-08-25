@@ -17,6 +17,7 @@ from typing import Any, Iterable
 import numpy as np
 
 from .artifact_contract import ArtifactValidationError, verify_artifact_bytes
+from .gnn_graph_contract import GNN_GRAPH_SEMANTIC_VERSION, build_feature_sector_edge_index
 
 logger = logging.getLogger(__name__)
 
@@ -689,26 +690,32 @@ def predict_graphsage_scores(
 
     metadata = artifact.metadata or {}
     graph_cfg = metadata.get("graph_context") if isinstance(metadata.get("graph_context"), dict) else {}
-    lookback = int(graph_cfg.get("correlation_lookback") or DEFAULT_CORRELATION_LOOKBACK)
-    threshold_quantile = float(
-        graph_cfg.get("multi_similarity_threshold_quantile")
-        or graph_cfg.get("threshold_quantile")
-        or DEFAULT_MULTI_SIMILARITY_THRESHOLD_QUANTILE
+    graph_semantic = str(graph_cfg.get("semantic_version") or "").strip()
+    if graph_semantic != GNN_GRAPH_SEMANTIC_VERSION:
+        raise ArtifactValidationError(
+            "gnn_graph_semantic_mismatch:"
+            f"{graph_semantic or 'missing'}:expected={GNN_GRAPH_SEMANTIC_VERSION}"
+        )
+    top_k = int(graph_cfg.get("top_k") or graph_cfg.get("training_edge_top_k") or DEFAULT_TOP_K)
+    threshold = float(
+        graph_cfg.get("threshold")
+        or graph_cfg.get("training_edge_threshold")
+        or DEFAULT_CORRELATION_THRESHOLD
     )
-    source_weights = graph_cfg.get("source_weights") if isinstance(graph_cfg.get("source_weights"), dict) else None
-
-    returns = [_returns_from_prices(series, lookback) for series in price_series]
-    returns_matrix = _pad_returns(returns)
 
     import torch
 
     standardized = _standardize_node_features(node_features, metadata)
-    edge_index_np, graph_report = build_multi_similarity_edge_index(
-        returns_matrix,
+    records = context_records or []
+    sectors = np.asarray([
+        str(((records[index] if index < len(records) else {}).get("sector_factor") or {}).get("sector_key") or "")
+        for index in range(len(standardized))
+    ], dtype=object)
+    edge_index_np, graph_report = build_feature_sector_edge_index(
         standardized,
-        threshold_quantile=threshold_quantile,
-        context_records=context_records,
-        source_weights=source_weights,
+        sectors,
+        top_k=top_k,
+        threshold=threshold,
     )
     x = torch.tensor(standardized, dtype=torch.float32)
     edge_index = torch.tensor(edge_index_np, dtype=torch.long)
@@ -720,5 +727,6 @@ def predict_graphsage_scores(
         "artifact_path": artifact.source_path,
         "version": artifact.version,
         "runtime": "graphsage_batch_context",
-        "edge_source": "multi_similarity_graph_v1",
+        "edge_source": "same_date_feature_cosine_plus_sector",
+        "graph_semantic_version": GNN_GRAPH_SEMANTIC_VERSION,
     }

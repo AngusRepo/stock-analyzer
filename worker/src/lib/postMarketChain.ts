@@ -28,6 +28,7 @@ import {
 } from './priceHorizonProjection'
 import { materializeStrategyMultiHorizonOutcomes } from './strategyMultiHorizonOutcomes'
 import { materializeStrategyEvidenceMetrics } from './strategyEvidenceMetrics'
+import { refreshStrategyEvidenceOwnerCalibration } from './strategyEvidenceOwnerCalibration'
 import { resolveEveningChainRunAuthority } from './eveningChainRunAuthority'
 
 export type ChainContext = {
@@ -688,7 +689,13 @@ export async function runPostVerifyCallbackChain(
     stageStartedAt = Date.now()
     const metrics = await materializeStrategyEvidenceMetrics(env, { outcomeAsOfDate })
     stageMs.strategy_evidence_metrics = Date.now() - stageStartedAt
-    return `${canonical.summary} | ${multiHorizon.summary} | ${outcomes.summary} | ${metrics.summary} | stage_ms=${JSON.stringify(stageMs)}`
+    stageStartedAt = Date.now()
+    const calibration = await refreshStrategyEvidenceOwnerCalibration(env, {
+      knowledgeCutoffDate: ctx.runDate!,
+      allowPromotion: productionEligible,
+    })
+    stageMs.strategy_evidence_owner_calibration = Date.now() - stageStartedAt
+    return `${canonical.summary} | ${multiHorizon.summary} | ${outcomes.summary} | ${metrics.summary} | strategy_evidence_owner_calibration=${calibration.result.status}:${calibration.runId} | stage_ms=${JSON.stringify(stageMs)}`
   }, { timeoutMs: 360_000 })
   results.push(projectionTask)
   if (projectionTask.status === 'error') {

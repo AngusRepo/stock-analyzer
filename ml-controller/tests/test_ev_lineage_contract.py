@@ -106,7 +106,7 @@ def test_ensemble_semantic_isolated_by_generation_mode():
     assert not ensemble_lineage_blockers({
         **common,
         "generation_mode": "purged_oof",
-        "semantic_version": "active8-purged-oof-chronological-ridge-v3",
+        "semantic_version": "active8-purged-oof-chronological-ridge-v4",
     })
     assert "ensemble_semantic_version_incompatible" in ensemble_lineage_blockers({
         **common,

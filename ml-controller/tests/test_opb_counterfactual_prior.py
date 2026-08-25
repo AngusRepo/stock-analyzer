@@ -84,13 +84,14 @@ def test_counterfactual_input_loader_maps_canonical_executable_return(monkeypatc
         lambda *_, **__: [{
             "prediction_date": "2026-06-24",
             "symbol": "AAA",
+            "stock_id": 1,
             "l4_executable_return_pct": 0.025,
         }],
     )
 
     rows, price_rows = load_opb_counterfactual_inputs(
         end_date="2026-06-30",
-        query_fn=lambda *_args, **_kwargs: [{"symbol": "AAA", "price_date": "2026-06-24", "close": 100.0}],
+        query_fn=lambda *_args, **_kwargs: [{"stock_id": 1, "price_date": "2026-06-24", "close": 100.0}],
     )
 
     assert rows[0]["snapshot_date"] == "2026-06-24"
@@ -153,6 +154,9 @@ def test_prior_resolver_requires_owner_match_and_preserves_arm_knobs():
         expected_return_semantic="canonical_l4_test_semantic",
     )
     assert evidence["status"] == "artifact_loaded"
+    assert evidence["production_control_ready"] is False
+    assert "production_control_approved" in evidence["production_control_blockers"]
+    assert "diversity_non_degradation_passed" in evidence["production_control_blockers"]
     assert all(arm.prior_reward_mean == pytest.approx(0.012) for arm in resolved)
     assert all(arm.prior_samples == 6 for arm in resolved)
     assert [arm.max_weight for arm in resolved] == [arm.max_weight for arm in online_portfolio_bandit.DEFAULT_ARMS]

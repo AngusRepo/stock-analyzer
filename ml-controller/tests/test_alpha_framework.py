@@ -675,7 +675,7 @@ def test_sparse_allocator_marks_positive_zero_weight_as_potential_buy(monkeypatc
     assert ccc["has_buy_signal"] == 0
     assert ccc["alpha_allocation"]["selected"] is False
     assert ccc["alpha_allocation"]["potential_buy"] is False
-    assert ccc["alpha_allocation"]["selection_reason"] == "no_positive_allocation_utility"
+    assert ccc["alpha_allocation"]["selection_reason"] == "no_positive_expected_return"
 
 
 def _missing_ev_formal_ml_row(symbol: str, *, hard_block: bool = False) -> dict:
@@ -704,7 +704,7 @@ def _missing_ev_formal_ml_row(symbol: str, *, hard_block: bool = False) -> dict:
     return row
 
 
-def test_sparse_allocator_uses_score_v2_utility_when_expected_return_owner_is_missing(monkeypatch):
+def test_sparse_allocator_uses_formal_ml_admission_and_risk_budget_when_expected_return_owner_is_missing(monkeypatch):
     def _fake_sparse_allocator(candidates, return_history, **kwargs):
         assert len(candidates) == 1
         candidate = candidates[0]
@@ -712,11 +712,10 @@ def test_sparse_allocator_uses_score_v2_utility_when_expected_return_owner_is_mi
         assert candidate["expected_return"] == 0.0
         assert candidate["expected_return_owner"] == "risk_abstention"
         assert candidate["allocation_utility"] > 0.0
-        assert candidate["allocation_utility_owner"] == "score_v2_formal_ml"
+        assert candidate["allocation_utility_owner"] == "formal_ml_buy_admission"
         assert kwargs["utility_field"] == "allocation_utility"
-        assert kwargs["utility_semantic"] == (
-            "dimensionless_score_v2_ml_edge_confidence_utility_not_expected_return"
-        )
+        assert kwargs["utility_semantic"] == "binary_formal_ml_buy_eligibility_not_expected_return_not_weight_magnitude"
+        assert kwargs["allocation_objective"] == "full_pool_inverse_volatility_risk_budget"
         return {
             "weights": {"OBS": 1.0},
             "candidate_diagnostics": {},
@@ -753,8 +752,9 @@ def test_sparse_allocator_uses_score_v2_utility_when_expected_return_owner_is_mi
     assert allocation["expected_return"] == 0.0
     assert allocation["positive_expected_edge"] is False
     assert allocation["positive_allocation_utility"] is True
-    assert allocation["allocation_utility_owner"] == "score_v2_formal_ml"
+    assert allocation["allocation_utility_owner"] == "formal_ml_buy_admission"
     assert allocation["selection_allocation_utility"]["can_submit_real_order"] is False
+    assert allocation["selection_allocation_utility"]["handwritten_score_formula_used_for_weighting"] is False
 
 def test_potential_buy_is_not_a_formal_buy_signal():
     assert recommendation_service._is_formal_buy_signal("BUY") is True

@@ -8,7 +8,7 @@ import statistics
 from datetime import datetime, timedelta, timezone
 from typing import Any, Callable
 
-from services import d1_client
+from services.d1_domain_client import D1DataDomain, client_proxy_for_domain
 from services.dataset_snapshots import latest_dataset_snapshot
 
 
@@ -158,7 +158,7 @@ async def ensure_active8_daily_prep(
     *,
     end_date: str | None,
     dry_run: bool = False,
-    query_fn: Callable[..., list[dict[str, Any]]] = d1_client.query,
+    query_fn: Callable[..., list[dict[str, Any]]] = client_proxy_for_domain(D1DataDomain.MARKET).query,
 ) -> dict[str, Any]:
     from routers.retrain_trigger import UniversalRetrainTriggerRequest, trigger_universal_retrain
     from services import modal_client

@@ -37,7 +37,7 @@ assert.equal(strategyEvidenceOwnerLineageMatches(snapshot, null), false)
 
 assert.equal(snapshot.active_ready_profile_count, 0)
 assert.equal(snapshot.profiles[0]?.integration_status, 'materialized_learning')
-assert.equal(snapshot.weight_effect, 'mature_ready_only_bounded_bidirectional')
+assert.equal(snapshot.weight_effect, 'neutral_until_immutable_calibration')
 assert.equal(snapshot.profiles[0]?.weight_multiplier, 1, 'not-fully-ready evidence must remain neutral')
 assert.equal(snapshot.profiles[0]?.multi_horizon_score, null)
 assert.equal(snapshot.checksum.length, 64)
@@ -48,8 +48,9 @@ const fullyReady = await buildStrategyEvidenceOwnerSnapshot({
   knowledgeCutoffDate: '2026-08-17',
 })
 assert.equal(fullyReady.active_ready_profile_count, 1)
-assert.equal(fullyReady.profiles[0]?.weight_effect, 'bounded_bidirectional')
-assert.notEqual(fullyReady.profiles[0]?.weight_multiplier, 1)
+assert.equal(fullyReady.profiles[0]?.weight_effect, 'neutral_unvalidated_calibration')
+assert.equal(fullyReady.profiles[0]?.weight_multiplier, 1, 'ready raw evidence cannot change weights without immutable calibration')
+assert.equal(fullyReady.profiles[0]?.multi_horizon_score, null)
 const materializedButUnavailable = await buildStrategyEvidenceOwnerSnapshot({
   strategies: [active],
   rows: profileRows.map((row, index) => index === 0
@@ -63,7 +64,6 @@ assert.equal(materializedButUnavailable.active_ready_profile_count, 0)
 assert.equal(materializedButUnavailable.profiles[0]?.integration_status, 'materialized_learning')
 assert.equal(materializedButUnavailable.profiles[0]?.weight_multiplier, 1, 'unavailable estimator stays neutral without becoming missing evidence')
 
-assert(fullyReady.profiles[0]!.weight_multiplier >= 0.75 && fullyReady.profiles[0]!.weight_multiplier <= 1.25)
 
 const futureOnly = await buildStrategyEvidenceOwnerSnapshot({
   strategies: [active],

@@ -31,7 +31,7 @@ import logging
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 
-from services.d1_client import query as d1_query
+from services.domain_stock_read_models import load_market_price_rows_with_identity
 
 logger = logging.getLogger(__name__)
 
@@ -60,21 +60,30 @@ def select_stratified_subset(
         datetime.fromisoformat(end_date) - timedelta(days=lookback_days)
     ).date().isoformat()
 
-    # ── Step 1: candidate rows + avg_volume (單一 JOIN query) ──────────────
-    # F1 fix (2026-04-09): 移除 in_current_watchlist=1 — 見檔頭 NOTE。
-    # 只保留真正的 tradability filter: delisted_date IS NULL + sector + liquidity。
-    sql = """
-        SELECT s.symbol, s.sector, AVG(sp.volume) AS avg_vol
-        FROM stocks s
-        JOIN stock_prices sp ON sp.stock_id = s.id
-        WHERE s.delisted_date IS NULL
-          AND s.sector IS NOT NULL AND s.sector != ''
-          AND sp.date >= ? AND sp.date <= ?
-        GROUP BY s.symbol, s.sector
-        HAVING COUNT(sp.date) >= ? AND AVG(sp.volume) >= ?
-    """
-    min_days = max(5, lookback_days // 3)  # 至少 1/3 的 lookback 要有資料
-    rows = d1_query(sql, [start_date, end_date, min_days, min_avg_volume])
+    # ── Step 1: Core identities + Market volume, joined in memory ───────────
+    price_rows = load_market_price_rows_with_identity(
+        start_date=start_date,
+        end_date=end_date,
+        fields=("date", "volume"),
+        require_sector=True,
+    )
+    min_days = max(5, lookback_days // 3)
+    aggregates: dict[str, dict[str, object]] = {}
+    for price_row in price_rows:
+        symbol = str(price_row.get("symbol") or "")
+        sector = str(price_row.get("sector") or "")
+        volume = price_row.get("volume")
+        if not symbol or not sector or volume is None:
+            continue
+        packet = aggregates.setdefault(symbol, {"symbol": symbol, "sector": sector, "count": 0, "sum": 0.0})
+        packet["count"] = int(packet["count"]) + 1
+        packet["sum"] = float(packet["sum"]) + float(volume)
+    rows = [
+        {"symbol": packet["symbol"], "sector": packet["sector"], "avg_vol": float(packet["sum"]) / int(packet["count"])}
+        for packet in aggregates.values()
+        if int(packet["count"]) >= min_days
+        and float(packet["sum"]) / int(packet["count"]) >= min_avg_volume
+    ]
     if not rows:
         logger.warning(
             f"[stratified_subset] 0 candidates in {start_date}~{end_date} "

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import hashlib
 import gc
 import importlib.util
 import itertools
@@ -380,6 +381,41 @@ def _slice_metrics(returns: pd.Series) -> dict[str, float]:
         "positive_day_ratio": float((returns > 0).mean()) if len(returns) else 0.0,
     }
 
+
+
+def _purged_partition_attestation(
+    index: pd.Index,
+    n_folds: int,
+    *,
+    embargo_sessions: int,
+) -> dict[str, Any]:
+    dates = [str(pd.Timestamp(value).date()) for value in index]
+    chunks = np.array_split(np.arange(len(dates)), n_folds)
+    partitions: list[dict[str, Any]] = []
+    for partition_id, chunk in enumerate(chunks):
+        usable = chunk[min(max(0, embargo_sessions), len(chunk)) :]
+        if not len(chunk) or not len(usable):
+            return {}
+        partitions.append({
+            "partition_id": partition_id,
+            "raw_start": dates[int(chunk[0])],
+            "raw_end": dates[int(chunk[-1])],
+            "test_start": dates[int(usable[0])],
+            "test_end": dates[int(usable[-1])],
+            "purged_sessions": min(max(0, embargo_sessions), len(chunk)),
+        })
+    payload = {
+        "schema_version": "strategy-mining-purge-attestation-v1",
+        "method": "ordered_partition_front_embargo",
+        "embargo_sessions": int(embargo_sessions),
+        "partition_count": int(n_folds),
+        "holdout_dates": dates,
+        "partitions": partitions,
+    }
+    payload["payload_checksum"] = hashlib.sha256(
+        json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    ).hexdigest()
+    return payload
 
 def _fold_sharpes(returns: pd.Series, n_folds: int) -> list[float]:
     clean = returns.replace([np.inf, -np.inf], np.nan).dropna()
@@ -1315,6 +1351,11 @@ def _evaluate_candidate(
         embargo_sessions=args.pbo_embargo_sessions,
     )
     holdout_clean = holdout.replace([np.inf, -np.inf], np.nan).dropna()
+    purge_attestation = _purged_partition_attestation(
+        holdout_clean.index,
+        args.pbo_folds,
+        embargo_sessions=args.pbo_embargo_sessions,
+    )
     holdout_market_regimes = market_regimes.reindex(holdout_clean.index).fillna("unknown")
     fitness = (
         validation_metrics["sharpe"] * 0.60
@@ -1361,7 +1402,9 @@ def _evaluate_candidate(
         "holdout_partition_returns": holdout_partition_returns,
         "holdout_daily_returns": [round(float(value), 10) for value in holdout_clean.tolist()],
         "holdout_regimes": [str(value) for value in holdout_market_regimes.tolist()],
+        "holdout_dates": [str(pd.Timestamp(value).date()) for value in holdout_clean.index],
         "pbo_embargo_sessions": args.pbo_embargo_sessions,
+        "pbo_purge_attestation": purge_attestation,
         "train": train_metrics,
         "validation": validation_metrics,
         "holdout": holdout_metrics,

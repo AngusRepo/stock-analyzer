@@ -353,10 +353,10 @@ const candidates: StrategyCandidatePoolCandidate[] = Array.from({ length: 90 }, 
   assert(plan.telemetry.strategy_matrix_cell_count === broadCandidates.length * [broadSpec, nicheSpec].length, 'L1 label matrix must cover runtime candidates x current strategies')
   assert(plan.telemetry.strategy_matrix_coverage_ratio === 1, 'L1 label matrix coverage must be complete')
   assert(plan.telemetry.min_route_score_source === 'adaptive_route_score_distribution', 'L1.5 route floor should be adaptive by score distribution when config does not override it')
-  assert(plan.telemetry.strategy_metric_status_counts.derived_from_daily_strategy_matrix === 2, 'L1.25 must expose missing live strategy metrics as derived matrix evidence, not omit them')
+  assert(plan.telemetry.strategy_metric_status_counts.no_evidence === 2, 'L1.25 must expose missing immutable performance evidence without manufacturing matrix-derived statistics')
   assert(plan.mlSlate.some((candidate) => candidate.symbol === '6115'), 'FinLab-style portfolio intelligence should let niche multi-family support survive broad crowded labels')
   const niche = plan.mlSlate.find((candidate) => candidate.symbol === '6115') as any
-  assert(niche.strategy_router_version === 'multi-strategy-ple-router-v1', 'routed candidate should expose L1.5 router provenance')
+  assert(niche.strategy_router_version === 'multi-strategy-policy-router-v2', 'routed candidate should expose L1.5 router provenance')
   assert(niche.strategy_affinity_version === 'strategy-raw-quality-affinity-v1', 'incumbent production affinity semantics must remain explicit')
   assert(niche.strategy_challenger_affinity_version === 'strategy-threshold-margin-affinity-v2', 'challenger must expose strategy-specific threshold-margin semantics')
   assert(niche.strategy_router_reason === 'l15_unvalidated_continuous_weight_dispatch_priority', 'unvalidated route must expose continuous priority semantics')
@@ -721,6 +721,8 @@ const candidates: StrategyCandidatePoolCandidate[] = Array.from({ length: 90 }, 
     },
     strategyPortfolioMetrics: {
       reliable_low_corr_v1: {
+        strategy_metric_status: 'ready',
+        metric_sources: ['immutable-test-artifact'],
         rolling_sharpe: 1.4,
         max_drawdown: 0.08,
         recent_alpha: 0.08,
@@ -732,6 +734,8 @@ const candidates: StrategyCandidatePoolCandidate[] = Array.from({ length: 90 }, 
         live_backtest_divergence: 0.05,
       },
       crowded_low_sharpe_v1: {
+        strategy_metric_status: 'ready',
+        metric_sources: ['immutable-test-artifact'],
         rolling_sharpe: -0.4,
         max_drawdown: 0.34,
         recent_alpha: -0.04,
@@ -768,6 +772,31 @@ const candidates: StrategyCandidatePoolCandidate[] = Array.from({ length: 90 }, 
   assert(reliable.strategy_portfolio_prior.strategy_reliability.reliable_low_corr_v1 > reliable.strategy_portfolio_prior.strategy_reliability.crowded_low_sharpe_v1, 'FinLab-style prior must expose strategy reliability spread')
   assert(Object.keys(reliable.strategy_portfolio_prior.strategy_cluster_crowding_score ?? {}).length === 0, 'missing Modal L1.25 evidence must not expose synthetic graph cluster crowding')
   assert(reliable.strategy_portfolio_prior.effective_strategy_count === 0, 'missing Modal L1.25 evidence must not expose synthetic graph effective strategy count')
+
+  const neutralPlan = buildMultiStrategyPleRoutingPlan([weakCandidate, strongCandidate], [crowdedSpec, reliableSpec], {
+    maxSlateSize: 2,
+    regime: 'bull',
+  })
+  const forgedPlan = buildMultiStrategyPleRoutingPlan([weakCandidate, strongCandidate], [crowdedSpec, reliableSpec], {
+    maxSlateSize: 2,
+    regime: 'bull',
+    strategyPortfolioMetrics: {
+      reliable_low_corr_v1: {
+        rolling_sharpe: 99,
+        recent_alpha: 1,
+        ic: 1,
+        rank_ic: 1,
+        shapley_contribution: 1,
+        reliability: 1,
+        prior_weight: 1.8,
+      },
+    },
+  })
+  const neutralCandidate = [...neutralPlan.mlSlate, ...neutralPlan.observeOnly].find((candidate) => candidate.symbol === '7701') as any
+  const forgedCandidate = [...forgedPlan.mlSlate, ...forgedPlan.observeOnly].find((candidate) => candidate.symbol === '7701') as any
+  assert(forgedCandidate.strategy_portfolio_prior.strategy_metric_status.reliable_low_corr_v1 === 'no_evidence', 'unattested formal metrics must be unavailable')
+  assert(forgedCandidate.candidate_route_score === neutralCandidate.candidate_route_score, 'unattested Sharpe/IC/Shapley must not change route score')
+  assert(forgedCandidate.strategy_router_components.strategy_reliability === neutralCandidate.strategy_router_components.strategy_reliability, 'unattested metrics must stay neutral downstream')
 }
 
 {
@@ -829,6 +858,8 @@ const candidates: StrategyCandidatePoolCandidate[] = Array.from({ length: 90 }, 
         crowding_score: 0.04,
         rank_ic: 0.16,
         recent_alpha: 0.08,
+        strategy_metric_status: 'ready',
+        metric_sources: ['immutable-test-artifact'],
         rolling_sharpe: 1.4,
         max_drawdown: 0.05,
       },
@@ -839,6 +870,8 @@ const candidates: StrategyCandidatePoolCandidate[] = Array.from({ length: 90 }, 
         crowding_score: 0.91,
         rank_ic: -0.05,
         recent_alpha: -0.05,
+        strategy_metric_status: 'ready',
+        metric_sources: ['immutable-test-artifact'],
         rolling_sharpe: -0.4,
         max_drawdown: 0.32,
       },

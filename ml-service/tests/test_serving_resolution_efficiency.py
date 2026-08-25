@@ -73,11 +73,39 @@ def _joined_xgboost_row() -> dict:
         "offline_evidence_json": (
             '{"registration":{"metadata":{"target_semantic_version":"'
             + resolver.LABEL_SCHEMA_VERSION
+            + '","feature_semantic_version":"'
+            + resolver.FORMAL_FEATURE_SEMANTIC_VERSION
             + '"}}}'
         ),
         "artifact_updated_at": "2026-08-14T00:00:00Z",
         "artifact_created_at": "2026-08-14T00:00:00Z",
     }
+
+
+def test_modal_serving_reads_learning_owner_and_never_legacy(monkeypatch):
+    calls: list[tuple[str, str, list, float]] = []
+
+    def fake_query(database_id, sql, params, *, timeout):
+        calls.append((database_id, sql, params, timeout))
+        return [{"ok": 1}]
+
+    monkeypatch.setenv("CF_D1_LEARNING_DB_ID", "learning-canonical")
+    monkeypatch.setenv("CF_D1_DB_ID", "legacy-must-not-be-used")
+    fake_client = SimpleNamespace(query_database=fake_query)
+    monkeypatch.setitem(sys.modules, "app.d1_client", fake_client)
+    monkeypatch.setattr(sys.modules["app"], "d1_client", fake_client, raising=False)
+
+    rows = resolver._query_rows_once("SELECT 1", ["x"], timeout=4.0)
+
+    assert rows == [{"ok": 1}]
+    assert calls == [("learning-canonical", "SELECT 1", ["x"], 4.0)]
+
+    monkeypatch.delenv("CF_D1_LEARNING_DB_ID")
+    with pytest.raises(
+        resolver.ServingPoolResolutionError,
+        match="learning_d1_database_id_missing",
+    ):
+        resolver._query_rows_once("SELECT 1", [], timeout=4.0)
 
 
 def test_d1_loader_uses_pointer_bounded_join_and_retries_timeout(monkeypatch):
@@ -144,7 +172,7 @@ def test_resolved_pool_cache_is_single_entry_and_returns_defensive_copy(monkeypa
     resolver.clear_serving_pool_cache()
     monkeypatch.setenv("CF_API_TOKEN", "test")
     monkeypatch.setenv("CF_ACCOUNT_ID", "test")
-    monkeypatch.setenv("CF_D1_DB_ID", "test")
+    monkeypatch.setenv("CF_D1_LEARNING_DB_ID", "learning-test")
     monkeypatch.setenv("MODEL_SERVING_RESOLVED_POOL_CACHE_TTL_SECONDS", "60")
     monkeypatch.setattr(resolver.time, "monotonic", lambda: now["value"])
     monkeypatch.setattr(resolver, "load_d1_champion_pool", fake_load)
@@ -269,6 +297,8 @@ def test_pointer_artifact_identity_mismatch_fails_closed(field, value, reason):
         "offline_evidence_json": (
             '{"registration":{"metadata":{"target_semantic_version":"'
             + resolver.LABEL_SCHEMA_VERSION
+            + '","feature_semantic_version":"'
+            + resolver.FORMAL_FEATURE_SEMANTIC_VERSION
             + '"}}}'
         ),
     }

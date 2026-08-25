@@ -71,6 +71,10 @@ async def debate_buy_single(req: BuyDebateRequest):
             "summary": result.summary,
             "llm_source": result.llm_source,
             "conviction_score": result.conviction_score,
+            "terminal_status": result.terminal_status,
+            "retryable": result.retryable,
+            "error_code": result.error_code,
+            "contract_version": result.contract_version,
             "agent_turns": result.agent_turns,
         }
     except Exception as e:

@@ -7,13 +7,16 @@ from dataclasses import dataclass
 from datetime import date, timedelta
 from typing import Any, Callable
 
-from services import d1_client
+from services.d1_domain_client import D1DataDomain, client_proxy_for_domain
 from services.market_segment_policy import normalize_segment
 from services.s12_replay_trade_outcomes import s12_replay_outcome_to_bootstrap_row
 from services.s12_trade_ev import build_s12_trade_ev_from_replay, build_s12_trade_ev_from_structure
 
 
 QueryFn = Callable[[str, list[Any] | None], list[dict[str, Any]]]
+
+CORE_D1_CLIENT = client_proxy_for_domain(D1DataDomain.CORE)
+LEARNING_D1_CLIENT = client_proxy_for_domain(D1DataDomain.LEARNING)
 
 S12_TRADE_EV_BOOTSTRAP_DEFAULT_LOOKBACK_DAYS = 120
 S12_TRADE_EV_BOOTSTRAP_MAX_LOOKBACK_DAYS = 120
@@ -999,13 +1002,14 @@ def load_s12_replay_trade_rows(
     lookback_days: int = S12_TRADE_EV_BOOTSTRAP_DEFAULT_LOOKBACK_DAYS,
     limit: int = 5000,
     query_fn: QueryFn | None = None,
+    core_query_fn: QueryFn | None = None,
 ) -> list[dict[str, Any]]:
     """Load historical verified S12-style trade outcomes strictly before run_date."""
 
     safe_limit = max(1, min(int(limit or 5000), 20000))
     bounded_lookback = _bounded_lookback_days(lookback_days, os.getenv("S12_TRADE_EV_BOOTSTRAP_MAX_LOOKBACK_DAYS"))
     start_date = _fallback_start_date(run_date, bounded_lookback)
-    query = query_fn or d1_client.query
+    query = query_fn or LEARNING_D1_CLIENT.query
     dedicated_rows = _load_dedicated_s12_replay_trade_rows(
         run_date=run_date,
         start_date=start_date,
@@ -1015,8 +1019,8 @@ def load_s12_replay_trade_rows(
     rows = query(
         """
         SELECT p.stock_id,
-               s.symbol,
-               s.market,
+               NULL symbol,
+               NULL market,
                p.prediction_date,
                p.trade_signal,
                p.trade_outcome,
@@ -1028,7 +1032,7 @@ def load_s12_replay_trade_rows(
                p.stop_loss,
                p.forecast_data
           FROM predictions p
-          LEFT JOIN stocks s ON s.id = p.stock_id
+
          WHERE p.model_name = 'ensemble'
            AND p.prediction_date IS NOT NULL
            AND date(p.prediction_date) < date(?)
@@ -1046,6 +1050,25 @@ def load_s12_replay_trade_rows(
         for row in rows or []
         if _has_verified_s12_trade_ev_provenance(dict(row))
     ]
+    identity_query = core_query_fn or (query_fn if query_fn is not None else CORE_D1_CLIENT.query)
+    unresolved_ids = sorted({
+        str(row.get("stock_id") or "")
+        for row in prediction_rows
+        if row.get("stock_id") is not None and not row.get("symbol")
+    })
+    identities: dict[str, dict[str, Any]] = {}
+    for offset in range(0, len(unresolved_ids), 80):
+        chunk = unresolved_ids[offset:offset + 80]
+        placeholders = ",".join("?" for _ in chunk)
+        for identity in identity_query(
+            f"SELECT id, symbol, market FROM stocks WHERE CAST(id AS TEXT) IN ({placeholders})",
+            chunk,
+        ):
+            identities[str(identity.get("id") or "")] = identity
+    for row in prediction_rows:
+        identity = identities.get(str(row.get("stock_id") or ""), {})
+        row["symbol"] = row.get("symbol") or identity.get("symbol")
+        row["market"] = row.get("market") or identity.get("market")
     return dedicated_rows + prediction_rows
 
 
@@ -1062,7 +1085,7 @@ def _load_dedicated_s12_replay_trade_rows(
         rows = query_fn(
             """
             SELECT r.symbol,
-                   COALESCE(r.market, st.market) AS market,
+                   r.market AS market,
                    r.signal_date,
                    r.trade_date,
                    json_extract(r.detail_json, '$.replay_diagnostics.outcome_known_date') AS outcome_known_date,
@@ -1084,7 +1107,7 @@ def _load_dedicated_s12_replay_trade_rows(
                    r.source,
                    r.detail_json
               FROM s12_replay_trade_outcomes r
-              LEFT JOIN stocks st ON st.symbol = r.symbol
+
              WHERE r.signal_date IS NOT NULL
                AND r.source = 's12_multisession_structure_replay_v3'
                AND json_extract(r.detail_json, '$.replay_diagnostics.outcome_known_date') IS NOT NULL
@@ -1150,7 +1173,7 @@ def load_s12_structure_snapshots(
 ) -> dict[str, dict[str, Any]]:
     """Load same-day Worker S12 structure snapshots for recommendation cold EV."""
 
-    query = query_fn or d1_client.query
+    query = query_fn or LEARNING_D1_CLIENT.query
     try:
         rows = query(
             """
@@ -1294,6 +1317,7 @@ class S12TradeEvBootstrapProvider:
         run_date: str,
         *,
         query_fn: QueryFn | None = None,
+        core_query_fn: QueryFn | None = None,
         lookback_days: int | None = None,
         limit: int | None = None,
         min_samples: int | None = None,
@@ -1311,6 +1335,7 @@ class S12TradeEvBootstrapProvider:
             ),
             limit=int(limit or os.getenv("S12_TRADE_EV_BOOTSTRAP_LIMIT", "5000")),
             query_fn=query_fn,
+            core_query_fn=core_query_fn,
         )
         snapshots = load_s12_structure_snapshots(run_date=run_date, query_fn=query_fn)
         return cls(

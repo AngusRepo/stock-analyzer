@@ -20,6 +20,8 @@ import {
   insertDebateMemory, getHistoricalThesis, renderHistoricalThesisBlock,
   verdictToDirection,
 } from './debateMemory'
+import { databaseForDataDomain } from './dataDomainRegistry'
+import type { Bindings } from '../types'
 
 const GEMINI_FLASH_MODEL = 'gemini-3.5-flash'
 
@@ -55,6 +57,8 @@ function checkInjection(rawText: string): { action: string; severity: string; ma
 }
 
 export type DebateVerdict = 'APPROVE' | 'DOWNGRADE' | 'REJECT'
+export type DebateTerminalStatus = 'completed' | 'retryable_error'
+export const DEBATE_RESULT_CONTRACT_VERSION = 'debate-result-v2' as const
 
 export interface DebateAgentTurn {
   agent: 'theme' | 'bull' | 'bear' | 'risk' | 'judge'
@@ -70,6 +74,10 @@ export interface DebateResult {
   summary: string  // stored in paper_orders.note
   llmSource: string // 'tunnel' | 'gemini_api' | 'anthropic_api'
   convictionScore: number // 0-100, judge 的信念度評分
+  terminalStatus: DebateTerminalStatus
+  retryable: boolean
+  errorCode?: string
+  contractVersion: typeof DEBATE_RESULT_CONTRACT_VERSION
   agentTurns?: DebateAgentTurn[]
 }
 
@@ -85,7 +93,10 @@ export interface LLMEnv {
   GEMINI_API_KEY?: string     // Gemini 3.5 Flash (stable primary)
   ANTHROPIC_API_KEY?: string  // Anthropic API key (last resort fallback)
   KV?: KVNamespace            // 讀 ml:config.debate_model（可 runtime 換模型）
-  DB?: any                    // D1 for FinMem historical thesis (optional, graceful degrade)
+  DB?: D1Database             // Legacy/control-plane binding; formal FinMem resolves Paper owner.
+  PAPER_DB?: D1Database
+  MULTI_D1_ACTIVE_DOMAINS?: string
+  MULTI_D1_STRICT?: string
 }
 
 // KV 型別（簡化，與 Cloudflare 相容）
@@ -332,11 +343,17 @@ export async function runBuyDebateBatchViaController(
         continue
       }
       map.set(r.symbol, {
-        verdict: r.verdict as DebateVerdict,
+        verdict: ['APPROVE', 'DOWNGRADE', 'REJECT'].includes(r.verdict) ? r.verdict as DebateVerdict : 'REJECT',
         rounds: r.rounds ?? 0,
         summary: r.summary ?? '',
         llmSource: r.llm_source ?? 'ml-controller',
-        convictionScore: r.conviction_score ?? 60,
+        convictionScore: Number.isFinite(Number(r.conviction_score)) ? Number(r.conviction_score) : 0,
+        terminalStatus: r.terminal_status === 'completed' && r.contract_version === DEBATE_RESULT_CONTRACT_VERSION
+          ? 'completed'
+          : 'retryable_error',
+        retryable: r.terminal_status !== 'completed' || r.contract_version !== DEBATE_RESULT_CONTRACT_VERSION || r.retryable === true,
+        errorCode: typeof r.error_code === 'string' ? r.error_code : undefined,
+        contractVersion: DEBATE_RESULT_CONTRACT_VERSION,
         agentTurns: Array.isArray(r.agent_turns) ? r.agent_turns : [],
       })
     }
@@ -373,7 +390,10 @@ export async function runBuyDebate(
   }
 
   // 2026-04-20 #18 FinMem: 讀歷史 thesis（graceful degrade when DB 缺或 table 空）
-  const historicalBundle = await getHistoricalThesis(env.DB, symbol)
+  const debateDb = env.DB
+    ? databaseForDataDomain(env as Pick<Bindings, 'DB'> & Partial<Bindings>, 'paper')
+    : env.DB
+  const historicalBundle = await getHistoricalThesis(debateDb, symbol)
   const historicalBlock = renderHistoricalThesisBlock(historicalBundle)
 
   const mlContext = [
@@ -502,11 +522,12 @@ export async function runBuyDebate(
       if (isInitial) {
         // Initial Reaper fail blocks meaningful judgement → short-circuit
         return {
-          verdict: 'APPROVE',
+          verdict: 'REJECT',
           rounds: 1,
-          summary: `Zealot only (Reaper LLM error R1): ${zealotCases[0] ?? ''}`.slice(0, 500),
+          summary: `[DEBATE_FAIL_CLOSED:reaper_unavailable] ${String(e)}`.slice(0, 500),
           llmSource,
-          convictionScore: 60,
+          convictionScore: 0, terminalStatus: 'retryable_error', retryable: true,
+          errorCode: 'reaper_unavailable', contractVersion: DEBATE_RESULT_CONTRACT_VERSION,
           agentTurns: buildAgentTurns(mlContext, zealotCases, reaperCases, '', llmSource),
         }
       } else {
@@ -559,9 +580,10 @@ export async function runBuyDebate(
   } catch (e) {
     console.warn(`[Debate] Fulcrum round failed for ${symbol}: ${e}`)
     return {
-      verdict: 'APPROVE', rounds: totalRounds - 1,
-      summary: `Zealot+Reaper done (Fulcrum error). Zealot: ${zealotCase.slice(0, 200)} | Reaper: ${reaperCase.slice(0, 200)}`.slice(0, 500),
-      llmSource, convictionScore: 60,
+      verdict: 'REJECT', rounds: totalRounds - 1,
+      summary: `[DEBATE_FAIL_CLOSED:fulcrum_unavailable] ${String(e)}`.slice(0, 500),
+      llmSource, convictionScore: 0, terminalStatus: 'retryable_error', retryable: true,
+      errorCode: 'fulcrum_unavailable', contractVersion: DEBATE_RESULT_CONTRACT_VERSION,
       agentTurns: buildAgentTurns(mlContext, zealotCases, reaperCases, '', llmSource),
     }
   }
@@ -573,13 +595,23 @@ export async function runBuyDebate(
     return {
       verdict: 'REJECT' as DebateVerdict, rounds: totalRounds,
       summary: `[INJECTION_BLOCKED] ${injectionCheck.matches.map((m: any) => m.pattern).join(', ')}`.slice(0, 500),
-      llmSource, convictionScore: 0,
+      llmSource, convictionScore: 0, terminalStatus: 'completed', retryable: false,
+      errorCode: 'prompt_injection_blocked', contractVersion: DEBATE_RESULT_CONTRACT_VERSION,
       agentTurns: buildAgentTurns(mlContext, zealotCases, reaperCases, fulcrumResponse, llmSource),
     }
   }
 
-  let verdict = parseVerdict(fulcrumResponse)
-  const convictionScore = parseConviction(fulcrumResponse)
+  let verdict = parseDebateVerdict(fulcrumResponse)
+  const convictionScore = parseDebateConviction(fulcrumResponse)
+  if (verdict == null || convictionScore == null) {
+    return {
+      verdict: 'REJECT', rounds: totalRounds,
+      summary: '[DEBATE_FAIL_CLOSED:verdict_unparseable]',
+      llmSource, convictionScore: 0, terminalStatus: 'retryable_error', retryable: true,
+      errorCode: 'verdict_unparseable', contractVersion: DEBATE_RESULT_CONTRACT_VERSION,
+      agentTurns: buildAgentTurns(mlContext, zealotCases, reaperCases, fulcrumResponse, llmSource),
+    }
+  }
 
   // P1#14: Downgrade if medium/high injection detected
   if (injectionCheck.action === 'downgrade' && verdict === 'APPROVE') {
@@ -598,7 +630,7 @@ export async function runBuyDebate(
   // thesis_summary = Fulcrum 判決理由（裁掉 prompt-side 元信息），最能代表當日 thesis。
   const thesisForMemory = fulcrumResponse.replace(/VERDICT:.*\n?/i, '').trim().slice(0, 200)
   const twToday = new Date(Date.now() + 8 * 3600_000).toISOString().slice(0, 10)
-  await insertDebateMemory(env.DB, {
+  await insertDebateMemory(debateDb, {
     symbol,
     debate_date: twToday,
     thesis_summary: thesisForMemory || summary.slice(0, 200),
@@ -613,35 +645,24 @@ export async function runBuyDebate(
     rounds: totalRounds,
     summary,
     llmSource,
-    convictionScore,
+    convictionScore, terminalStatus: 'completed', retryable: false,
+    contractVersion: DEBATE_RESULT_CONTRACT_VERSION,
     agentTurns: buildAgentTurns(mlContext, zealotCases, reaperCases, fulcrumResponse, llmSource),
   }
 }
 
 // ─── Verdict Parser ───────────────────────────────────────────────────────────
 
-function parseVerdict(response: string): DebateVerdict {
-  const upper = response.toUpperCase()
-  const firstLine = upper.split('\n')[0] ?? ''
-
-  if (firstLine.includes('REJECT'))    return 'REJECT'
-  if (firstLine.includes('DOWNGRADE')) return 'DOWNGRADE'
-  if (firstLine.includes('APPROVE'))   return 'APPROVE'
-
-  if (upper.includes('REJECT'))    return 'REJECT'
-  if (upper.includes('DOWNGRADE')) return 'DOWNGRADE'
-
-  // Default: don't block trades on parse error
-  return 'APPROVE'
+export function parseDebateVerdict(response: string): DebateVerdict | null {
+  const firstLine = (response.split(/\r?\n/, 1)[0] ?? '').trim()
+  const match = firstLine.match(/^VERDICT:\s*(APPROVE|DOWNGRADE|REJECT)\b/i)
+  return match ? match[1].toUpperCase() as DebateVerdict : null
 }
 
-function parseConviction(response: string): number {
-  // 解析 "CONVICTION: 75" 格式
-  const match = response.match(/CONVICTION:\s*(\d+)/i)
-  if (match) return Math.min(100, Math.max(0, parseInt(match[1])))
-  // fallback: 根據 verdict 給預設值
-  const v = parseVerdict(response)
-  if (v === 'APPROVE') return 75
-  if (v === 'DOWNGRADE') return 50
-  return 25
+export function parseDebateConviction(response: string): number | null {
+  const firstLine = (response.split(/\r?\n/, 1)[0] ?? '').trim()
+  const match = firstLine.match(/\bCONVICTION:\s*(\d{1,3})\b/i)
+  if (!match) return null
+  const value = Number.parseInt(match[1], 10)
+  return Number.isFinite(value) && value >= 0 && value <= 100 ? value : null
 }

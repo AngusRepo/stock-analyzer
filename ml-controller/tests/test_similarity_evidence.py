@@ -124,6 +124,8 @@ def test_alpha_utility_allocator_lets_strong_alpha_compete_with_low_volatility()
 
 
 def test_sparse_tangent_allocation_does_not_convert_score_to_expected_return():
+    _require_similarity_deps()
+
     result = allocate_sparse_tangent_with_evidence(
         [
             {"symbol": "AAA", "score": 99},
@@ -138,6 +140,65 @@ def test_sparse_tangent_allocation_does_not_convert_score_to_expected_return():
     assert result["candidate_pool_policy"] == "full_eligible_pool_before_sparse_selection"
     assert result["evaluated_candidate_count"] == 2
     assert result["unallocated_cash_weight"] == 1.0
+
+
+def test_continuity_risk_budget_does_not_use_score_or_admission_magnitude_for_weighting():
+    _require_similarity_deps()
+
+    result = allocate_sparse_tangent_with_evidence(
+        [
+            {"symbol": "AAA", "score": 99, "allocation_utility": 0.001},
+            {"symbol": "BBB", "score": 1, "allocation_utility": 999.0},
+        ],
+        {
+            "AAA": [0.01, -0.01, 0.012, -0.012, 0.008, -0.008],
+            "BBB": [0.01, -0.01, 0.012, -0.012, 0.008, -0.008],
+        },
+        top_k=1,
+        max_weight=0.8,
+        daily_vol_floor=0.0001,
+        allocation_objective="full_pool_inverse_volatility_risk_budget",
+        utility_field="allocation_utility",
+        utility_semantic="binary_formal_ml_buy_eligibility_not_expected_return_not_weight_magnitude",
+    )
+
+    assert set(result["weights"]) == {"AAA", "BBB"}
+    assert result["weights"]["AAA"] == pytest.approx(result["weights"]["BBB"])
+    assert result["legacy_top_k_ignored"] == 1
+    assert result["objective_evidence"]["expected_return_used"] is False
+    assert result["objective_evidence"]["admission_signal_used_for_weight_magnitude"] is False
+    assert result["candidate_diagnostics"]["AAA"]["alpha_input"] is None
+    assert result["candidate_diagnostics"]["BBB"]["alpha_input"] is None
+
+
+def test_continuity_risk_budget_assigns_less_weight_to_higher_volatility_without_topk():
+    _require_similarity_deps()
+
+    result = allocate_sparse_tangent_with_evidence(
+        [
+            {"symbol": "LOW", "score": 1, "allocation_utility": 1.0},
+            {"symbol": "MID", "score": 50, "allocation_utility": 1.0},
+            {"symbol": "HIGH", "score": 100, "allocation_utility": 1.0},
+        ],
+        {
+            "LOW": [0.001, -0.001, 0.0012, -0.0012, 0.0008, -0.0008],
+            "MID": [0.01, -0.01, 0.012, -0.012, 0.008, -0.008],
+            "HIGH": [0.05, -0.05, 0.06, -0.06, 0.04, -0.04],
+        },
+        top_k=1,
+        max_weight=0.8,
+        daily_vol_floor=0.0001,
+        allocation_objective="full_pool_inverse_volatility_risk_budget",
+        utility_field="allocation_utility",
+        utility_semantic="binary_formal_ml_buy_eligibility_not_expected_return_not_weight_magnitude",
+    )
+
+    assert set(result["weights"]) == {"LOW", "MID", "HIGH"}
+    assert result["weights"]["LOW"] > result["weights"]["MID"] > result["weights"]["HIGH"]
+    assert result["holding_count_policy"] == "full_admitted_pool_risk_budget_no_hard_top_k"
+    assert result["objective_evidence"]["risk_estimator"] == (
+        "ledoit_wolf_covariance_diagonal_with_daily_vol_floor"
+    )
 
 
 def test_hdbscan_research_audit_is_shadow_only_and_not_a_selector():

@@ -43,6 +43,9 @@ from services.modal_client import batch_retrain, prep_universal_batch, train_uni
 
 logger = logging.getLogger(__name__)
 OPS_D1_CLIENT = client_proxy_for_domain(D1DataDomain.OPS)
+CORE_D1_CLIENT = client_proxy_for_domain(D1DataDomain.CORE)
+MARKET_D1_CLIENT = client_proxy_for_domain(D1DataDomain.MARKET)
+LEARNING_D1_CLIENT = client_proxy_for_domain(D1DataDomain.LEARNING)
 router = APIRouter(prefix="/retrain", tags=["retrain"])
 
 # ?? Idempotency lock (P0-4 + persistent GCS layer) ??????????????????????????
@@ -206,7 +209,7 @@ def _resolve_monthly_retrain_business_date(
 
     expected_business_date, market_session_evidence = _latest_market_session(
         cutoff_date,
-        query_fn=d1_client.query,
+        query_fn=MARKET_D1_CLIENT.query,
     )
     snapshot = latest_dataset_snapshot(
         kind="backtest_dataset",
@@ -713,7 +716,7 @@ def _load_timesfm_l175_history(
     for ci in range(0, len(stock_ids), 80):
         chunk_ids = stock_ids[ci:ci + 80]
         placeholders = ",".join("?" * len(chunk_ids))
-        rows = d1_client.query(
+        rows = LEARNING_D1_CLIENT.query(
             f"""
             SELECT stock_id, prediction_date, forecast_data
             FROM predictions
@@ -977,7 +980,7 @@ async def trigger_retrain(req: RetrainTriggerRequest = Body(default=RetrainTrigg
     run_date = req.run_date or tw_now.date().isoformat()
 
     # ?? 1. Active stocks ????????????????????????????????????????????????????
-    stock_rows = d1_client.query(
+    stock_rows = CORE_D1_CLIENT.query(
         "SELECT id, symbol, market FROM stocks "
         "WHERE market IN ('TW','TWO','TWSE','OTC') AND in_current_watchlist=1 "
         "ORDER BY id LIMIT ?",
@@ -996,10 +999,10 @@ async def trigger_retrain(req: RetrainTriggerRequest = Body(default=RetrainTrigg
     market_env, _adaptive, barrier_params, _lifecycle, _tc = load_market_env(run_date)
 
     # ?? 3. Bulk load per-stock data ?????????????????????????????????????????
-    prices_map = _bulk_load_prices(stock_ids, limit=500)
-    indicators_map = _bulk_load_indicators(stock_ids, limit=500)
-    chips_map = _bulk_load_chips(symbols, limit=300)
-    sentiment_map = _bulk_load_sentiment(stock_ids, limit=90)
+    prices_map = _bulk_load_prices(stock_ids, limit=500, as_of_date=run_date)
+    indicators_map = _bulk_load_indicators(stock_ids, limit=500, as_of_date=run_date)
+    chips_map = _bulk_load_chips(symbols, limit=300, as_of_date=run_date)
+    sentiment_map = _bulk_load_sentiment(stock_ids, limit=90, as_of_date=run_date)
 
     # ?? 4. Build payloads ???????????????????????????????????????????????????
     payloads = []
@@ -1061,7 +1064,7 @@ def _build_sector_encoding() -> dict[str, int]:
     global _SECTOR_ENCODING
     if _SECTOR_ENCODING:
         return _SECTOR_ENCODING
-    rows = d1_client.query(
+    rows = MARKET_D1_CLIENT.query(
         "SELECT DISTINCT tag FROM stock_tags WHERE tag_type='industry' ORDER BY tag"
     )
     _SECTOR_ENCODING = {r["tag"]: i for i, r in enumerate(rows)}
@@ -1398,7 +1401,7 @@ async def trigger_universal_retrain(
                 "run_id": run_id,
                 "lock_key": lock_key,
             }
-    stock_rows = d1_client.query(
+    stock_rows = CORE_D1_CLIENT.query(
         "SELECT id, symbol, market FROM stocks "
         "WHERE market IN ('TW','TWO','TWSE','OTC') "
         "ORDER BY id LIMIT ?",
@@ -1514,11 +1517,11 @@ async def trigger_universal_retrain(
         chunk_ids = stock_ids[ci:ci + D1_CHUNK]
         chunk_syms = [id_to_sym[sid] for sid in chunk_ids]
         if not dataset_snapshot_info:
-            prices_map.update(_bulk_load_prices(chunk_ids, limit=prices_lookback))
-            indicators_map.update(_bulk_load_indicators(chunk_ids, limit=prices_lookback))
-            chips_map.update(_bulk_load_chips(chunk_syms, limit=252))
+            prices_map.update(_bulk_load_prices(chunk_ids, limit=prices_lookback, as_of_date=run_date))
+            indicators_map.update(_bulk_load_indicators(chunk_ids, limit=prices_lookback, as_of_date=run_date))
+            chips_map.update(_bulk_load_chips(chunk_syms, limit=252, as_of_date=run_date))
         if "sentiment" not in snapshot_components:
-            sentiment_map.update(_bulk_load_sentiment(chunk_ids, limit=45))
+            sentiment_map.update(_bulk_load_sentiment(chunk_ids, limit=45, as_of_date=run_date))
     source = "gcs_snapshot" if dataset_snapshot_info else "d1"
     if dataset_snapshot_info and "sentiment" not in snapshot_components:
         source += "+d1_sentiment"
@@ -1532,7 +1535,7 @@ async def trigger_universal_retrain(
     # monthly_revenue: all stocks ? all months
     rev_rows = []
     if "monthly_revenue" not in snapshot_components:
-        rev_rows = d1_client.query(
+        rev_rows = MARKET_D1_CLIENT.query(
             "SELECT stock_id, date, revenue_yoy FROM monthly_revenue "
             "WHERE revenue_yoy IS NOT NULL ORDER BY stock_id, date ASC",
             timeout=120.0,
@@ -1552,7 +1555,7 @@ async def trigger_universal_retrain(
         chunk_ids = stock_ids[ci:ci + D1_CHUNK]
         placeholders = ",".join("?" * len(chunk_ids))
         if "margin_data" not in snapshot_components:
-            margin_rows = d1_client.query(
+            margin_rows = MARKET_D1_CLIENT.query(
                 f"SELECT stock_id, date, margin_balance, short_ratio "
                 f"FROM margin_data WHERE stock_id IN ({placeholders}) "
                 f"ORDER BY stock_id, date ASC",
@@ -1573,7 +1576,7 @@ async def trigger_universal_retrain(
 
         # shareholding: retail_pct (same chunk)
         if "shareholding" not in snapshot_components:
-            sh_rows = d1_client.query(
+            sh_rows = MARKET_D1_CLIENT.query(
                 f"SELECT stock_id, date, retail_pct "
                 f"FROM shareholding WHERE stock_id IN ({placeholders}) "
                 f"ORDER BY stock_id, date ASC",
@@ -1629,7 +1632,7 @@ async def trigger_universal_retrain(
 
     sector_enc = _build_sector_encoding()
     # Load per-symbol industry tag
-    tag_rows = d1_client.query(
+    tag_rows = MARKET_D1_CLIENT.query(
         "SELECT symbol, tag FROM stock_tags WHERE tag_type='industry'"
     )
     sym_to_sector: dict[str, str] = {}

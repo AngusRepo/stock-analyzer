@@ -339,10 +339,10 @@ def load_daily_state_space_series_export(
     limit: int | None = None,
 ) -> dict[str, Any]:
     """Build a read-only daily state-space series export from D1 inputs."""
-    from services import d1_client
+    from services.d1_domain_client import D1DataDomain, client_for_domain
     from services.payload_builder import build_ml_universe, build_payloads, load_market_env
 
-    screener_recs = d1_client.query(
+    screener_recs = client_for_domain(D1DataDomain.CORE).query(
         "SELECT * FROM daily_recommendations WHERE date = ? ORDER BY rank",
         [run_date],
     )

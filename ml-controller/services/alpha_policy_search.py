@@ -7,6 +7,9 @@ from statistics import mean
 from typing import Any
 
 from services.alpha_framework import DEFAULT_ALPHA_POLICY, AlphaBucket, normalize_regime
+from services.d1_domain_client import D1DataDomain, client_proxy_for_domain
+
+LEARNING_D1_CLIENT = client_proxy_for_domain(D1DataDomain.LEARNING)
 
 
 REGIMES = ("bull", "bear", "volatile", "sideways")
@@ -117,10 +120,8 @@ def _optional_positive_float(value: Any) -> float | None:
 
 def load_alpha_outcome_rows(limit: int = 1000) -> list[dict]:
     """Load verified prediction outcomes that contain alpha allocation context."""
-    from services.d1_client import query as d1_query
-
     safe_limit = max(1, min(int(limit or 1000), 5000))
-    return d1_query(
+    return LEARNING_D1_CLIENT.query(
         """SELECT generated_at, forecast_data, actual_return_pct, trade_pnl_pct,
                   trade_pnl_r, direction_correct
            FROM predictions

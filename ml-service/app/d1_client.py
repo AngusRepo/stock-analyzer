@@ -26,13 +26,22 @@ logger = logging.getLogger(__name__)
 CF_API_TOKEN  = os.environ.get("CF_API_TOKEN", "")
 CF_ACCOUNT_ID = os.environ.get("CF_ACCOUNT_ID", "")
 CF_D1_DB_ID   = os.environ.get("CF_D1_DB_ID", "")
+DOMAIN_DATABASE_ENV = {
+    "core": "CF_D1_CORE_DB_ID",
+    "market": "CF_D1_MARKET_DB_ID",
+    "learning": "CF_D1_LEARNING_DB_ID",
+    "ops": "CF_D1_OPS_DB_ID",
+    "execution": "CF_D1_EXECUTION_DB_ID",
+    "paper": "CF_D1_PAPER_DB_ID",
+    "research": "CF_D1_RESEARCH_DB_ID",
+}
 
 
-def _check_env():
+def _check_env(database_id: str):
     missing = [k for k, v in [
         ("CF_API_TOKEN", CF_API_TOKEN),
         ("CF_ACCOUNT_ID", CF_ACCOUNT_ID),
-        ("CF_D1_DB_ID", CF_D1_DB_ID),
+        ("database_id", database_id),
     ] if not v]
     if missing:
         raise RuntimeError(
@@ -41,7 +50,7 @@ def _check_env():
         )
 
 
-def query(sql: str, params: list[Any] | None = None, timeout: float = 60.0) -> list[dict]:
+def query_database(database_id: str, sql: str, params: list[Any] | None = None, timeout: float = 60.0) -> list[dict]:
     """
     Execute SQL on D1 and return results as list of dict (rows).
 
@@ -56,11 +65,11 @@ def query(sql: str, params: list[Any] | None = None, timeout: float = 60.0) -> l
     Raises:
         RuntimeError: on API error or non-2xx response
     """
-    _check_env()
+    _check_env(database_id)
 
     url = (
         f"https://api.cloudflare.com/client/v4/accounts/{CF_ACCOUNT_ID}"
-        f"/d1/database/{CF_D1_DB_ID}/query"
+        f"/d1/database/{database_id}/query"
     )
     headers = {
         "Authorization": f"Bearer {CF_API_TOKEN}",
@@ -88,6 +97,26 @@ def query(sql: str, params: list[Any] | None = None, timeout: float = 60.0) -> l
         return []
     return result_list[0].get("results", []) or []
 
+
+def query(sql: str, params: list[Any] | None = None, timeout: float = 60.0) -> list[dict]:
+    """Backward-compatible legacy query; formal consumers must call query_database."""
+    return query_database(CF_D1_DB_ID, sql, params=params, timeout=timeout)
+
+
+def query_domain(
+    domain: str,
+    sql: str,
+    params: list[Any] | None = None,
+    timeout: float = 60.0,
+) -> list[dict]:
+    """Query an explicit canonical D1 owner; legacy fallback is forbidden."""
+    env_name = DOMAIN_DATABASE_ENV.get(str(domain).strip().lower())
+    if not env_name:
+        raise RuntimeError(f"Unknown D1 data domain: {domain}")
+    database_id = os.environ.get(env_name, "").strip()
+    if not database_id:
+        raise RuntimeError(f"D1 domain database id missing: {domain}")
+    return query_database(database_id, sql, params=params, timeout=timeout)
 
 def query_one(sql: str, params: list[Any] | None = None) -> dict | None:
     """Query and return first row (or None)."""

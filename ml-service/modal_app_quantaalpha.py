@@ -190,29 +190,29 @@ def build_qlib_binary(universe_name: str = "sv_screener_350", years: int = 5) ->
 
     t0 = time.time()
     account = os.environ.get("CF_ACCOUNT_ID", "")
-    db = os.environ.get("CF_D1_DB_ID", "")
+    core_db = os.environ.get("CF_D1_CORE_DB_ID", "")
+    market_db = os.environ.get("CF_D1_MARKET_DB_ID", "")
     token = os.environ.get("CF_API_TOKEN", "")
-    if not all([account, db, token]):
-        return {"status": "error", "reason": "CF env vars missing (need CF_ACCOUNT_ID/CF_D1_DB_ID/CF_API_TOKEN)"}
+    if not all([account, core_db, market_db, token]):
+        return {"status": "error", "reason": "CF domain env vars missing (Core/Market/API token)"}
 
-    url = f"https://api.cloudflare.com/client/v4/accounts/{account}/d1/database/{db}/query"
-
-    def d1_query(sql: str, params=None):
-        r = requests.post(
+    def query_domain(database_id: str, sql: str, params=None):
+        url = f"https://api.cloudflare.com/client/v4/accounts/{account}/d1/database/{database_id}/query"
+        response = requests.post(
             url,
             headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
             json={"sql": sql, "params": params or []},
             timeout=120,
         )
-        r.raise_for_status()
-        data = r.json()
+        response.raise_for_status()
+        data = response.json()
         if not data.get("success"):
             raise RuntimeError(f"D1 query failed: {data}")
         return data["result"][0].get("results", [])
 
     # Universe = 近 30 天曾進 screener candidate 的股票（350 檔浮動池）+ 現 watchlist
     # in_current_watchlist=1 只有 ~32，太小 → 改 union screener history 近 30 天
-    universe_rows = d1_query(
+    universe_rows = query_domain(core_db,
         """SELECT DISTINCT symbol FROM (
              SELECT symbol FROM daily_recommendations WHERE date >= date('now', '-30 days')
              UNION
@@ -233,14 +233,17 @@ def build_qlib_binary(universe_name: str = "sv_screener_350", years: int = 5) ->
     written = 0
     for i, sym in enumerate(universe):
         try:
-            rows = d1_query(
-                """SELECT sp.date, sp.open, sp.high, sp.low, sp.close, sp.volume, sp.adj_close
-                   FROM stock_prices sp
-                   JOIN stocks s ON sp.stock_id = s.id
-                   WHERE s.symbol = ? AND sp.date >= ?
-                     AND sp.close IS NOT NULL AND sp.volume IS NOT NULL
-                   ORDER BY sp.date""",
-                params=[sym, start_date],
+            identity = query_domain(core_db, "SELECT id FROM stocks WHERE symbol=? LIMIT 1", [sym])
+            if not identity:
+                continue
+            rows = query_domain(
+                market_db,
+                """SELECT date, open, high, low, close, volume, adj_close
+                   FROM stock_prices
+                   WHERE stock_id=? AND date>=?
+                     AND close IS NOT NULL AND volume IS NOT NULL
+                   ORDER BY date""",
+                params=[identity[0]["id"], start_date],
             )
         except Exception as e:
             print(f"[{i+1}/{len(universe)}] {sym} fetch failed: {e}")

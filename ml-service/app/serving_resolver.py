@@ -24,6 +24,10 @@ DIRECT_ALPHA_MODELS = (
     "iTransformer",
 )
 SEQUENCE_ALPHA_MODELS = ("DLinear", "PatchTST", "iTransformer")
+FORMAL_FEATURE_MODELS = ("LightGBM", "XGBoost", "ExtraTrees", "TabM", "GNN")
+FORMAL_FEATURE_SEMANTIC_VERSION = "formal137-pit-rolling-rank-and-imputation-v2"
+FORMAL_GNN_GRAPH_SEMANTIC_VERSION = "gnn-feature-sector-graph-v1"
+FORMAL_RANK_IC_SEMANTIC_VERSION = "same-date-average-rank-tie-neutral-spearman-v2"
 SEQUENCE_CONTRACT_FIELDS = ("seq_len", "pred_len", "sequence_contract")
 SEQUENCE_CONTRACT_SCHEMA_VERSION = "model-serving-sequence-contract-v1"
 L2_SIDECARS = ("TimesFM",)
@@ -103,7 +107,7 @@ def d1_champion_serving_enabled() -> bool:
 
 
 def _d1_env_configured() -> bool:
-    return all(str(os.environ.get(key) or "").strip() for key in ("CF_API_TOKEN", "CF_ACCOUNT_ID", "CF_D1_DB_ID"))
+    return all(str(os.environ.get(key) or "").strip() for key in ("CF_API_TOKEN", "CF_ACCOUNT_ID", "CF_D1_LEARNING_DB_ID"))
 
 
 def clear_serving_pool_cache() -> None:
@@ -435,6 +439,28 @@ def build_pool_from_frozen_manifest(
                 f"{model_name}:{target_semantic_version or '<missing>'}:"
                 f"expected={LABEL_SCHEMA_VERSION}"
             )
+        feature_semantic_version = str(schema.get("feature_semantic_version") or "").strip()
+        if (
+            serving_eligible
+            and model_name in FORMAL_FEATURE_MODELS
+            and feature_semantic_version != FORMAL_FEATURE_SEMANTIC_VERSION
+        ):
+            raise ServingPoolResolutionError(
+                "frozen_serving_manifest_feature_semantic_mismatch:"
+                f"{model_name}:{feature_semantic_version or '<missing>'}:"
+                f"expected={FORMAL_FEATURE_SEMANTIC_VERSION}"
+            )
+        graph_semantic_version = str(schema.get("gnn_graph_semantic_version") or "").strip()
+        if (
+            serving_eligible
+            and model_name == "GNN"
+            and graph_semantic_version != FORMAL_GNN_GRAPH_SEMANTIC_VERSION
+        ):
+            raise ServingPoolResolutionError(
+                "frozen_serving_manifest_gnn_graph_semantic_mismatch:"
+                f"{graph_semantic_version or '<missing>'}:"
+                f"expected={FORMAL_GNN_GRAPH_SEMANTIC_VERSION}"
+            )
 
         ensemble = _require_compact_mapping(
             row.get("ensemble"),
@@ -457,6 +483,8 @@ def build_pool_from_frozen_manifest(
             "offline_gate_decision": health.get("offline_gate_decision"),
             "live_gate_status": health.get("live_gate_status"),
             "target_semantic_version": schema.get("target_semantic_version"),
+            "feature_semantic_version": schema.get("feature_semantic_version"),
+            "gnn_graph_semantic_version": schema.get("gnn_graph_semantic_version"),
         }
         entry.update(ensemble)
         if isinstance(schema.get("sequence_contract"), dict):
@@ -603,9 +631,16 @@ def _sequence_artifact_contract(
     metadata = _artifact_metadata(artifact)
     seq_len = _positive_int(metadata.get("seq_len"))
     pred_len = _positive_int(metadata.get("pred_len"))
+    rank_ic_semantic = str(metadata.get("rank_ic_semantic_version") or "").strip()
     version = str(artifact.get("version") or metadata.get("version") or "").strip()
     artifact_id = str(artifact.get("artifact_id") or "").strip()
-    if seq_len is None or pred_len is None or not version or not artifact_id:
+    if (
+        seq_len is None
+        or pred_len is None
+        or rank_ic_semantic != FORMAL_RANK_IC_SEMANTIC_VERSION
+        or not version
+        or not artifact_id
+    ):
         return None
     return {
         "schema_version": SEQUENCE_CONTRACT_SCHEMA_VERSION,
@@ -615,6 +650,7 @@ def _sequence_artifact_contract(
         "version": version,
         "seq_len": seq_len,
         "pred_len": pred_len,
+        "rank_ic_semantic_version": rank_ic_semantic,
     }
 
 
@@ -656,9 +692,25 @@ def _artifact_block_reason(artifact: dict[str, Any] | None, *, model_name: str) 
     if expected_ext and actual_ext != expected_ext:
         return f"artifact_extension_{actual_ext or 'missing'}_expected_{expected_ext}"
     if model_name in DIRECT_ALPHA_MODELS:
-        target_semantic = str(_artifact_metadata(artifact).get("target_semantic_version") or "").strip()
+        metadata = _artifact_metadata(artifact)
+        target_semantic = str(metadata.get("target_semantic_version") or "").strip()
         if target_semantic != LABEL_SCHEMA_VERSION:
             return f"artifact_target_semantic_{target_semantic or 'missing'}_expected_{LABEL_SCHEMA_VERSION}"
+        if model_name in FORMAL_FEATURE_MODELS:
+            feature_semantic = str(metadata.get("feature_semantic_version") or "").strip()
+            if feature_semantic != FORMAL_FEATURE_SEMANTIC_VERSION:
+                return (
+                    f"artifact_feature_semantic_{feature_semantic or 'missing'}_"
+                    f"expected_{FORMAL_FEATURE_SEMANTIC_VERSION}"
+                )
+        if model_name == "GNN":
+            graph = metadata.get("graph") if isinstance(metadata.get("graph"), dict) else {}
+            graph_semantic = str(graph.get("semantic_version") or "").strip()
+            if graph_semantic != FORMAL_GNN_GRAPH_SEMANTIC_VERSION:
+                return (
+                    f"artifact_gnn_graph_semantic_{graph_semantic or 'missing'}_"
+                    f"expected_{FORMAL_GNN_GRAPH_SEMANTIC_VERSION}"
+                )
     if model_name in SEQUENCE_ALPHA_MODELS and _sequence_artifact_contract(model_name, artifact) is None:
         return "artifact_sequence_contract_missing_or_invalid"
     return None
@@ -861,6 +913,9 @@ def build_pool_from_champion_pointers(
             entry["offline_gate_decision"] = artifact.get("offline_gate_decision")
             entry["live_gate_status"] = artifact.get("live_gate_status")
             entry["target_semantic_version"] = artifact_metadata.get("target_semantic_version")
+            entry["feature_semantic_version"] = artifact_metadata.get("feature_semantic_version")
+            graph = artifact_metadata.get("graph") if isinstance(artifact_metadata.get("graph"), dict) else {}
+            entry["gnn_graph_semantic_version"] = graph.get("semantic_version") if model_name == "GNN" else None
             sequence_contract = _sequence_artifact_contract(model_name, artifact)
             if sequence_contract:
                 entry["seq_len"] = sequence_contract["seq_len"]
@@ -892,7 +947,12 @@ def _query_rows_once(
 ) -> list[dict[str, Any]]:
     from . import d1_client
 
-    return d1_client.query(sql, params=params or [], timeout=timeout)
+    learning_db_id = str(os.environ.get("CF_D1_LEARNING_DB_ID") or "").strip()
+    if not learning_db_id:
+        raise ServingPoolResolutionError("learning_d1_database_id_missing")
+    return d1_client.query_database(
+        learning_db_id, sql, params=params or [], timeout=timeout
+    )
 
 
 def _classify_d1_error(exc: Exception) -> str:

@@ -208,6 +208,9 @@ const EXTENDED_PRODUCTION_TABLE_OWNERSHIP: readonly TableOwnershipMetadata[] = [
   { table: 'model_lifecycle_state', domain: 'learning', disposition: 'full_scalar', route_ready: true, shadow_ready: true },
   { table: 'persona_opinions', domain: 'learning', disposition: 'compact_projection', route_ready: true, shadow_ready: true },
   { table: 'strategy_candidate_contexts', domain: 'learning', disposition: 'compact_projection', route_ready: true, shadow_ready: false },
+  { table: 'strategy_evidence_owner_calibration_artifacts_v1', domain: 'learning', disposition: 'compact_projection', route_ready: true, shadow_ready: false },
+  { table: 'strategy_evidence_owner_calibration_head_v1', domain: 'learning', disposition: 'full_scalar', route_ready: true, shadow_ready: false },
+  { table: 'strategy_evidence_owner_calibration_runs_v1', domain: 'learning', disposition: 'active_window', route_ready: true, shadow_ready: false },
   { table: 'strategy_threshold_calibration_artifacts', domain: 'learning', disposition: 'compact_projection', route_ready: true, shadow_ready: true },
   { table: 'strategy_threshold_calibration_runs', domain: 'learning', disposition: 'active_window', route_ready: true, shadow_ready: true },
 

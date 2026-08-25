@@ -198,6 +198,7 @@ def build_feature_matrix(
     market_env: dict | None = None,
     barrier_params: dict | None = None,
     stock_meta: dict | None = None,
+    historical_training: bool = False,
 ) -> pl.DataFrame:
     """
     整合所有資料來源，建立特徵矩陣。
@@ -554,9 +555,18 @@ def build_feature_matrix(
         vol_avg = pl.col("volume").rolling_mean(60)
         raw_intent = _safe_div(ret_60d, abs_ret_sum) / vol_avg.clip(1.0, None)
         # Rolling rank: only use past data (no lookahead). Per-stock time-sorted → Polars rank() is positional.
+        pit_intent = raw_intent.fill_nan(None)
+        valid_window_count = (
+            pit_intent.is_not_null()
+            .cast(pl.Float64)
+            .rolling_sum(window_size=252, min_samples=1)
+        )
         df = df.with_columns(
-            (raw_intent.fill_null(0.0).fill_nan(0.0).rank() / pl.lit(float(len(df))))
-            .fill_null(0.5).alias("linear_factor")
+            pit_intent
+            .rolling_rank(window_size=252, method="average", min_samples=20)
+            .truediv(valid_window_count)
+            .clip(0.0, 1.0)
+            .alias("linear_factor")
         )
     else:
         df = df.with_columns(pl.lit(0.5).alias("linear_factor"))
@@ -731,7 +741,7 @@ def build_feature_matrix(
             isinstance(values, dict) and values.get(name) is not None
             for values in per_stock_ts.values()
         )
-        if has_history:
+        if has_history or historical_training:
             return default
         return safe_float((market_env or {}).get(name), default)
 
@@ -809,7 +819,7 @@ def build_feature_matrix(
             df = df.with_columns(pl.col(tier_c_col).shift(1).alias(f"{tier_c_col}_lag1"))
 
     # ── 12. Stock-level features ─────────────────────────────────────────────
-    if stock_meta:
+    if stock_meta and not historical_training:
         df = df.with_columns([
             pl.lit(_meta_float(stock_meta, "sector_encoded", 0.0)).alias("sector_encoded"),
             pl.lit(_meta_float(stock_meta, "market_cap_bucket", 2.0)).alias("market_cap_bucket"),
@@ -834,6 +844,8 @@ def build_feature_matrix(
         return safe_float((market_env or {}).get(name), default)
 
     def _meta_scalar(name: str, default: float = 0.0) -> float:
+        if historical_training:
+            return default
         return _meta_float(stock_meta or {}, name, default)
 
     def _feature_col(name: str, default: float | pl.Expr = 0.0) -> pl.Expr:
@@ -844,6 +856,8 @@ def build_feature_matrix(
     def _point_in_time_feature(name: str, default: float = 0.0) -> pl.Expr:
         if name in df.columns:
             return pl.col(name).cast(pl.Float64, strict=False)
+        if historical_training:
+            return pl.lit(default)
         return pl.lit(_series_scalar(name, default))
 
     def _add_missing(exprs: list[tuple[str, pl.Expr]]) -> None:
@@ -996,7 +1010,11 @@ def build_feature_matrix(
         ("vola_realized_1m", ret1_raw.rolling_std(21)),
     ])
 
-    timesfm_l175_features = _timesfm_l175_feature_map(stock_meta) or _timesfm_l175_history(stock_meta)
+    timesfm_l175_features = (
+        _timesfm_l175_history(stock_meta)
+        if historical_training
+        else (_timesfm_l175_feature_map(stock_meta) or _timesfm_l175_history(stock_meta))
+    )
     if timesfm_l175_features:
         df = df.with_columns([
             pl.Series(
@@ -1049,14 +1067,9 @@ def build_feature_matrix(
         print(f"[Features] Z-score: {len(_zscore_const_cols)} constant-variance cols "
               f"(neutralized to 0.0): {_zscore_const_cols[:5]}")
 
-    # ── 14. NaN handling (features only, not targets) ────────────────────────
-    # forward_fill: carry last known value forward (stale but not fictional).
-    # fill_null: remaining NaN (start of series) → per-column median, NOT 0.0.
-    #   Zero is a false signal for any real feature (e.g. MA5=0 is impossible
-    #   for a stock with price > 0). Median is neutral and doesn't create
-    #   artificial split patterns in tree models.
-    #   Reference: Qlib (Microsoft) CSZFillna uses cross-sectional mean;
-    #   we use per-column median (more robust to outliers).
+    # ── 14. PIT NaN handling (features only, not targets) ────────────────────
+    # Carry prior known values forward, then impute only from the prior 252-row
+    # window. A full-frame median rewrites early features when future rows arrive.
     target_cols = ["target_5d", "target_dir"]
     feature_cols = [
         c for c in df.columns
@@ -1065,14 +1078,17 @@ def build_feature_matrix(
         and df.schema[c].is_numeric()
     ]
     df = df.with_columns(pl.exclude(target_cols + ["date"]).forward_fill())
-    median_fills = []
+    pit_fills = []
     for col in feature_cols:
         if col in df.columns:
-            col_median = df[col].drop_nulls().drop_nans().median()
-            fill_val = float(col_median) if col_median is not None else 0.0
-            median_fills.append(pl.col(col).fill_null(fill_val).fill_nan(fill_val))
-    if median_fills:
-        df = df.with_columns(median_fills)
+            cast_expr = pl.col(col).cast(pl.Float64, strict=False)
+            finite_expr = pl.when(cast_expr.is_finite()).then(cast_expr).otherwise(None)
+            prior_median = finite_expr.shift(1).rolling_median(window_size=252, min_samples=1)
+            pit_fills.append(
+                finite_expr.fill_null(prior_median).fill_null(0.0).alias(col)
+            )
+    if pit_fills:
+        df = df.with_columns(pit_fills)
 
     # ── 15. Target variables ─────────────────────────────────────────────────
     # Production verification enters at the next observable session open and
@@ -1150,6 +1166,7 @@ TIMESFM_L175_FEATURE_COLS = [
 ]
 
 FEATURE_SCHEMA = "formal137"
+FEATURE_SEMANTIC_VERSION = "formal137-pit-rolling-rank-and-imputation-v2"
 
 
 def _registry_search_paths() -> list[Path]:
@@ -1223,20 +1240,22 @@ def sanitize_feature_frame(
         arr = cleaned.select(pl.col(col).cast(pl.Float64, strict=False)).to_series().to_numpy()
         arr = np.asarray(arr, dtype=float)
         finite_mask = np.isfinite(arr)
-        finite_vals = arr[finite_mask]
-        fill_val = float(np.median(finite_vals)) if len(finite_vals) else 0.0
         imputed = int(input_rows - int(finite_mask.sum()))
         if imputed:
             report["features"][col] = {
                 "imputed_values": imputed,
-                "fill_value": fill_val,
+                "fill_method": "prior_252_row_median_then_zero",
+                "pit_fenced": True,
             }
-        finite_expr = pl.col(col).cast(pl.Float64, strict=False)
+        cast_expr = pl.col(col).cast(pl.Float64, strict=False)
+        finite_expr = pl.when(cast_expr.is_finite()).then(cast_expr).otherwise(None)
+        prior_median = finite_expr.shift(1).rolling_median(window_size=252, min_samples=1)
+        if "_symbol" in cleaned.columns and "_date" in cleaned.columns:
+            prior_median = prior_median.over("_symbol", order_by="_date")
         feature_exprs.append(
-            pl.when(finite_expr.is_finite())
-            .then(finite_expr)
-            .otherwise(None)
-            .fill_null(fill_val)
+            finite_expr
+            .fill_null(prior_median)
+            .fill_null(0.0)
             .alias(col)
         )
     if feature_exprs:

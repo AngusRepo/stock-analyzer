@@ -342,44 +342,62 @@ async function loadPendingBuyCardChipContext(
   return { institutionalRawBySymbol, brokerTopFlowsBySymbol }
 }
 
-async function loadPaperEtfBenchmarks(db: D1Database, dates: string[]): Promise<BenchmarkPriceMap> {
+async function loadPaperEtfBenchmarks(
+  coreDb: D1Database,
+  marketDb: D1Database,
+  dates: string[],
+): Promise<BenchmarkPriceMap> {
   const cleanDates = Array.from(new Set(dates.filter((date) => /^\d{4}-\d{2}-\d{2}$/.test(date)))).sort()
   const out: BenchmarkPriceMap = {}
   if (!cleanDates.length) return out
 
-  for (const dateChunk of chunkArray(cleanDates, 120)) {
+  const symbolValues = PAPER_EXTRA_BENCHMARK_SYMBOLS.map(() => '?').join(',')
+  const identities = await coreDb.prepare(`
+    SELECT id, symbol
+      FROM stocks
+     WHERE symbol IN (${symbolValues})
+  `).bind(...PAPER_EXTRA_BENCHMARK_SYMBOLS).all<{ id: number; symbol: string }>()
+  const symbolByStockId = new Map<number, string>()
+  for (const row of identities.results ?? []) {
+    const stockId = Number(row.id)
+    if (Number.isInteger(stockId) && stockId > 0) symbolByStockId.set(stockId, String(row.symbol))
+  }
+  const stockIds = Array.from(symbolByStockId.keys())
+  if (!stockIds.length) return out
+
+  // D1 permits at most 100 bound parameters. 90 dates + 3 benchmark ids stays below it.
+  for (const dateChunk of chunkArray(cleanDates, 90)) {
     const dateValues = dateChunk.map(() => '(?)').join(',')
-    const symbolValues = PAPER_EXTRA_BENCHMARK_SYMBOLS.map(() => '?').join(',')
-    const rows = await db.prepare(`
+    const stockIdValues = stockIds.map(() => '?').join(',')
+    const rows = await marketDb.prepare(`
       WITH target_dates(date) AS (VALUES ${dateValues})
       SELECT d.date AS snapshot_date,
-             s.symbol,
+             sp.stock_id,
              sp.close
         FROM target_dates d
-        JOIN stocks s
-          ON s.symbol IN (${symbolValues})
-        LEFT JOIN stock_prices sp
-          ON sp.stock_id = s.id
+        JOIN stock_prices sp
+          ON sp.stock_id IN (${stockIdValues})
          AND sp.date = (
            SELECT MAX(sp2.date)
              FROM stock_prices sp2
-            WHERE sp2.stock_id = s.id
+            WHERE sp2.stock_id = sp.stock_id
               AND sp2.date <= d.date
               AND sp2.close IS NOT NULL
          )
        WHERE sp.close IS NOT NULL
-       ORDER BY d.date ASC, s.symbol ASC
-    `).bind(...dateChunk, ...PAPER_EXTRA_BENCHMARK_SYMBOLS).all<{
+       ORDER BY d.date ASC, sp.stock_id ASC
+    `).bind(...dateChunk, ...stockIds).all<{
       snapshot_date: string
-      symbol: string
+      stock_id: number
       close: number | null
     }>()
 
     for (const row of rows.results ?? []) {
       const close = Number(row.close)
-      if (!Number.isFinite(close) || close <= 0) continue
+      const symbol = symbolByStockId.get(Number(row.stock_id))
+      if (!symbol || !Number.isFinite(close) || close <= 0) continue
       out[row.snapshot_date] = out[row.snapshot_date] ?? {}
-      out[row.snapshot_date][row.symbol] = close
+      out[row.snapshot_date][symbol] = close
     }
   }
 
@@ -986,7 +1004,11 @@ paper.get('/pnl', async (c) => {
     'SELECT date, total_value, pnl, pnl_pct, benchmark_value, twii_value, max_drawdown_to_date, sharpe_30d, sortino_30d, calmar, cagr FROM paper_daily_snapshots WHERE account_id=? ORDER BY date ASC'
   ).bind(ACCOUNT_ID).all<any>()
   const snapshotRows = snapshots ?? []
-  const etfBenchmarks = await loadPaperEtfBenchmarks(c.env.DB, snapshotRows.map((row) => String(row.date ?? '').slice(0, 10)))
+  const etfBenchmarks = await loadPaperEtfBenchmarks(
+    databaseForDataDomain(c.env, 'core'),
+    databaseForDataDomain(c.env, 'market'),
+    snapshotRows.map((row) => String(row.date ?? '').slice(0, 10)),
+  )
 
   return c.json({
     status: 'success',

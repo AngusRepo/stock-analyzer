@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import hashlib
+import json
 import sys
 from pathlib import Path
 
@@ -33,6 +35,21 @@ def _mode_b_backtest() -> dict:
     }
 
 
+def _exact_dsr_fields() -> dict:
+    distribution = [-0.08, -0.03, 0.0, 0.02, 0.04, 0.06, 0.09, 0.12]
+    payload = json.dumps([round(value, 12) for value in distribution], separators=(",", ":"))
+    return {
+        "trial_sharpe_distribution": distribution,
+        "effective_trials": 8,
+        "trial_distribution_lineage": {
+            "artifact_id": "trial-sharpe-distribution-2026-08-24",
+            "as_of_date": "2026-08-24",
+            "pit_fenced": True,
+            "payload_checksum": hashlib.sha256(payload.encode("utf-8")).hexdigest(),
+        },
+    }
+
+
 def _mode_b_backtest_with_returns() -> dict:
     returns = [
         0.018,
@@ -46,12 +63,12 @@ def _mode_b_backtest_with_returns() -> dict:
         -0.005,
         0.013,
     ] * 12
-    return {**_mode_b_backtest(), "return_series": returns}
+    return {**_mode_b_backtest(), "return_series": returns, **_exact_dsr_fields()}
 
 
 def _promotion_grade_backtest() -> dict:
     return {
-        **_mode_b_backtest(),
+        **_mode_b_backtest_with_returns(),
         "per_regime": {
             "bull": {"trades": 40, "return": 0.08},
             "bear": {"trades": 20, "return": 0.01},
@@ -82,10 +99,12 @@ def _pbo() -> dict:
 
 def _data_snooping_pass() -> dict:
     return {
-        "method": "white_reality_check",
+        "method": "white_reality_check_stationary_bootstrap_v2",
         "p_value": 0.12,
         "go_live_verdict": "PASS",
         "candidate_count": 4,
+        "exact_formula": True,
+        "promotion_eligible": True,
     }
 
 
@@ -111,6 +130,21 @@ def test_deflated_sharpe_proxy_is_fail_closed_for_low_samples():
     assert "skew" in out["missing_inputs"]
 
 
+def test_high_sharpe_proxy_cannot_control_formal_promotion():
+    packet = build_validation_packet(
+        source="promotion_gate",
+        backtest={**_promotion_grade_backtest(), "return_series": None},
+        monte_carlo=_monte_carlo(),
+        pbo=_pbo(),
+        data_snooping=_data_snooping_pass(),
+        walk_forward={"passed": True, "windows": 6},
+    )
+    gate = next(g for g in packet["gates"] if g["name"] == "deflated_sharpe")
+    assert gate["status"] == "FAIL"
+    assert gate["evidence"]["exact_formula"] is False
+    assert gate["evidence"]["reason"] == "proxy_diagnostic_not_promotion_evidence"
+
+
 def test_validation_packet_declares_cpcv_cscv_governance_scope():
     packet = build_validation_packet(
         source="promotion_gate",
@@ -122,9 +156,9 @@ def test_validation_packet_declares_cpcv_cscv_governance_scope():
     assert packet["validation_scope"]["purged_cv"] == "required"
     assert packet["validation_scope"]["cpcv_cscv"] == "required"
     assert packet["validation_scope"]["pbo_method"] == "cscv_rank_logit"
-    assert packet["validation_scope"]["deflated_sharpe"] == "proxy_until_exact_inputs_available"
+    assert packet["validation_scope"]["deflated_sharpe"] == "exact_trial_distribution_lineage_required"
     assert packet["validation_scope"]["train_serve_parity"] == "required"
-    assert packet["validation_scope"]["data_snooping"] == "white_reality_check_or_hansen_spa"
+    assert packet["validation_scope"]["data_snooping"] == "promotion_grade_stationary_bootstrap_white_or_studentized_spa_required"
     assert "model_family_validation_owners_are_declared_in_training_metadata" in packet["validation_scope"]
     assert "non_tree_model_cpcv_requires_family_specific_fit_predict_adapters" not in packet["validation_scope"]["known_gaps"]
 
@@ -140,7 +174,9 @@ def test_data_snooping_reality_check_passes_clear_robust_edge():
         seed=7,
     )
 
-    assert out["method"] == "white_reality_check"
+    assert out["method"] == "white_iid_max_mean_diagnostic_v1"
+    assert out["promotion_eligible"] is False
+    assert out["exact_formula"] is False
     assert out["go_live_verdict"] == "PASS"
     assert out["best_candidate"] == "robust_alpha"
     assert out["p_value"] <= 0.20
@@ -157,7 +193,9 @@ def test_data_snooping_reality_check_fails_when_edge_is_not_distinct():
         seed=11,
     )
 
-    assert out["method"] == "white_reality_check"
+    assert out["method"] == "white_iid_max_mean_diagnostic_v1"
+    assert out["promotion_eligible"] is False
+    assert out["exact_formula"] is False
     assert out["go_live_verdict"] == "FAIL"
     assert out["p_value"] > 0.20
 
@@ -174,7 +212,9 @@ def test_hansen_spa_reality_check_passes_clear_candidate_edge():
         seed=17,
     )
 
-    assert out["method"] == "hansen_spa"
+    assert out["method"] == "hansen_iid_max_mean_diagnostic_v1"
+    assert out["promotion_eligible"] is False
+    assert out["exact_formula"] is False
     assert out["go_live_verdict"] == "PASS"
     assert out["best_candidate"] == "candidate"
     assert out["p_value"] <= 0.20
@@ -191,7 +231,9 @@ def test_hansen_spa_reality_check_fails_when_candidate_does_not_beat_benchmark()
         seed=19,
     )
 
-    assert out["method"] == "hansen_spa"
+    assert out["method"] == "hansen_iid_max_mean_diagnostic_v1"
+    assert out["promotion_eligible"] is False
+    assert out["exact_formula"] is False
     assert out["go_live_verdict"] == "FAIL"
     assert out["best_mean_excess_return"] <= 0
 
@@ -203,17 +245,19 @@ def test_validation_packet_accepts_hansen_spa_data_snooping_guard():
         monte_carlo=_monte_carlo(),
         pbo=_pbo(),
         data_snooping={
-            "method": "hansen_spa",
+            "method": "hansen_spa_studentized_stationary_bootstrap_v2",
             "p_value": 0.11,
             "go_live_verdict": "PASS",
             "candidate_count": 3,
+            "exact_formula": True,
+            "promotion_eligible": True,
         },
         walk_forward={"passed": True, "windows": 6},
     )
     gate = next(g for g in packet["gates"] if g["name"] == "data_snooping_overfit_guard")
 
     assert packet["decision"] == "PASS"
-    assert gate["evidence"]["method"] == "hansen_spa"
+    assert gate["evidence"]["method"] == "hansen_spa_studentized_stationary_bootstrap_v2"
 
 
 def test_validation_packet_uses_exact_dsr_when_return_series_exists():
@@ -225,8 +269,9 @@ def test_validation_packet_uses_exact_dsr_when_return_series_exists():
     )
     dsr_gate = next(g for g in packet["gates"] if g["name"] == "deflated_sharpe")
 
-    assert dsr_gate["evidence"]["method"] == "deflated_sharpe_bailey_lopez_de_prado"
+    assert dsr_gate["evidence"]["method"] == "deflated_sharpe_bailey_lopez_de_prado_v2"
     assert dsr_gate["evidence"]["exact_formula"] is True
+    assert dsr_gate["evidence"]["trial_distribution_lineage_valid"] is True
     assert dsr_gate["evidence"]["skew"] is not None
     assert dsr_gate["evidence"]["kurtosis"] is not None
 

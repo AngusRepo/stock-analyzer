@@ -345,7 +345,7 @@ def test_fusion_purged_oof_uses_snapshot_date_and_recorded_market_lineage():
         forecast = json.loads(row["forecast_data"])
         forecast["ensemble_v2"].update({
             "generation_mode": "purged_oof",
-            "semantic_version": "active8-purged-oof-chronological-ridge-v3",
+            "semantic_version": "active8-purged-oof-chronological-ridge-v4",
         })
         row["forecast_data"] = json.dumps(forecast)
         rows.append(row)

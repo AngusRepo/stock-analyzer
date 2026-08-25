@@ -95,11 +95,21 @@ def _holm_bonferroni(
     }
 
 
-def _walk_forward(matrix: dict[str, list[float]]) -> dict[str, Any]:
+def _walk_forward(
+    matrix: dict[str, list[float]],
+    purge_attestation: dict[str, Any] | None,
+) -> dict[str, Any]:
+    if purge_attestation is None:
+        return {
+            "status": "pending",
+            "method": "attested_front_embargo_expanding_selection_v3",
+            "reason": "purge_attestation_missing_or_invalid",
+            "windows": 0,
+        }
     if len(matrix) < 2:
         return {
             "status": "pending",
-            "method": "purged_expanding_candidate_selection",
+            "method": "attested_front_embargo_expanding_selection_v3",
             "reason": "insufficient_candidates",
             "windows": 0,
         }
@@ -107,7 +117,7 @@ def _walk_forward(matrix: dict[str, list[float]]) -> dict[str, Any]:
     if n_partitions < 4 or any(len(values) != n_partitions for values in matrix.values()):
         return {
             "status": "pending",
-            "method": "purged_expanding_candidate_selection",
+            "method": "attested_front_embargo_expanding_selection_v3",
             "reason": "insufficient_or_misaligned_partitions",
             "windows": 0,
         }
@@ -129,13 +139,67 @@ def _walk_forward(matrix: dict[str, list[float]]) -> dict[str, Any]:
     status = "pass" if mean_return > 0.0 and positive_ratio >= 0.5 else "failed"
     return {
         "status": status,
-        "method": "purged_expanding_candidate_selection",
+        "method": "attested_front_embargo_expanding_selection_v3",
+        "purge_attestation": purge_attestation,
         "windows": len(observations),
         "oos_mean_return": round(mean_return, 8),
         "positive_window_ratio": round(positive_ratio, 6),
         "observations": observations,
     }
 
+
+
+def _validated_purge_attestation(
+    row: dict[str, Any],
+    *,
+    n_partitions: int,
+    daily_return_count: int,
+) -> dict[str, Any] | None:
+    import hashlib
+    import json
+
+    attestation = row.get("pbo_purge_attestation")
+    if not isinstance(attestation, dict):
+        return None
+    checksum = str(attestation.get("payload_checksum") or "").strip().lower()
+    payload = {key: value for key, value in attestation.items() if key != "payload_checksum"}
+    computed = hashlib.sha256(
+        json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    ).hexdigest()
+    dates = payload.get("holdout_dates")
+    row_dates = row.get("holdout_dates")
+    partitions = payload.get("partitions")
+    embargo = int(payload.get("embargo_sessions") or 0)
+    if (
+        payload.get("schema_version") != "strategy-mining-purge-attestation-v1"
+        or payload.get("method") != "ordered_partition_front_embargo"
+        or checksum != computed
+        or embargo < 1
+        or int(payload.get("partition_count") or 0) != int(n_partitions)
+        or not isinstance(dates, list)
+        or dates != row_dates
+        or len(dates) != daily_return_count
+        or dates != sorted(dates)
+        or len(set(dates)) != len(dates)
+        or not isinstance(partitions, list)
+        or len(partitions) != int(n_partitions)
+    ):
+        return None
+    for partition_id, partition in enumerate(partitions):
+        if (
+            not isinstance(partition, dict)
+            or int(partition.get("partition_id", -1)) != partition_id
+            or int(partition.get("purged_sessions") or 0) != embargo
+            or not str(partition.get("raw_start") or "")
+            or not str(partition.get("raw_end") or "")
+            or not str(partition.get("test_start") or "")
+            or not str(partition.get("test_end") or "")
+            or str(partition["raw_start"]) > str(partition["test_start"])
+            or str(partition["test_start"]) > str(partition["test_end"])
+            or str(partition["test_end"]) > str(partition["raw_end"])
+        ):
+            return None
+    return {**payload, "payload_checksum": checksum}
 
 def build_strategy_mining_evidence(
     rows: list[dict[str, Any]],
@@ -163,16 +227,34 @@ def build_strategy_mining_evidence(
         if not isinstance(regimes, list) or len(regimes) != len(daily_returns):
             rejected[candidate_id] = "holdout_regime_alignment_unmet"
             continue
+        purge_attestation = _validated_purge_attestation(
+            row,
+            n_partitions=int(n_partitions),
+            daily_return_count=len(daily_returns),
+        )
+        if purge_attestation is None:
+            rejected[candidate_id] = "purge_attestation_missing_or_invalid"
+            continue
         usable[candidate_id] = {
             "partitions": partitions,
             "daily_returns": daily_returns,
             "regimes": [str(value or "unknown") for value in regimes],
+            "purge_attestation": purge_attestation,
         }
 
     matrix = {candidate_id: item["partitions"] for candidate_id, item in usable.items()}
+    purge_checksums = {
+        str(item["purge_attestation"]["payload_checksum"])
+        for item in usable.values()
+    }
+    common_purge_attestation = (
+        next(iter(usable.values()))["purge_attestation"]
+        if len(purge_checksums) == 1 and usable
+        else None
+    )
     if len(matrix) < 2 or int(n_partitions) < 4:
         return {
-            "schema_version": "strategy-mining-research-evidence-v2",
+            "schema_version": "strategy-mining-research-evidence-v3",
             "status": "pending",
             "reason": "common_candidate_return_matrix_insufficient",
             "common_candidate_matrix": {
@@ -182,7 +264,7 @@ def build_strategy_mining_evidence(
                 "rejected": rejected,
             },
             "pbo": {"status": "pending", "reason": "matrix_insufficient"},
-            "walk_forward": _walk_forward(matrix),
+            "walk_forward": _walk_forward(matrix, common_purge_attestation),
             "candidate_evidence": {},
         }
 
@@ -199,7 +281,7 @@ def build_strategy_mining_evidence(
         "verdict": pbo_result.go_live_verdict,
         "reason": pbo_result.verdict_reason,
     }
-    walk_forward = _walk_forward(matrix)
+    walk_forward = _walk_forward(matrix, common_purge_attestation)
     hac_tests = {
         candidate_id: _newey_west_positive_mean_p_value(item["daily_returns"])
         for candidate_id, item in usable.items()
@@ -220,7 +302,7 @@ def build_strategy_mining_evidence(
         if pbo_status != "pass":
             failed_gates.append("common_cscv_rank_logit_pbo")
         if walk_forward.get("status") != "pass":
-            failed_gates.append("purged_walk_forward")
+            failed_gates.append("attested_front_embargo_walk_forward")
         if candidate_mean <= 0.0 or candidate_positive_ratio < 0.5:
             failed_gates.append("candidate_holdout_partition_return")
         adjusted_p_value = multiple_testing["adjusted_p_values"].get(candidate_id)
@@ -265,7 +347,7 @@ def build_strategy_mining_evidence(
         else "failed"
     )
     return {
-        "schema_version": "strategy-mining-research-evidence-v2",
+        "schema_version": "strategy-mining-research-evidence-v3",
         "status": overall_status,
         "common_candidate_matrix": {
             "candidate_count": len(matrix),
@@ -275,6 +357,7 @@ def build_strategy_mining_evidence(
         },
         "pbo": pbo,
         "walk_forward": walk_forward,
+        "purge_attestation": common_purge_attestation,
         "multiple_testing": {
             **multiple_testing,
             "candidate_tests": hac_tests,

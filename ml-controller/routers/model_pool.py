@@ -22,7 +22,8 @@ from pydantic import BaseModel
 
 from services import modal_client
 from services.active_model_policy import ACTIVE_ALPHA_MODELS, MODEL_POOL_REQUIRED_MODELS, RETIRED_ALPHA_MODELS
-from services.d1_client import query as d1_query
+from services.d1_domain_client import D1DataDomain, client_for_domain
+from services.domain_stock_read_models import load_market_price_rows_with_identity
 from services import discord_alert  # 2026-04-19 Stage 5
 from services.lifecycle_promotion_gate import apply_promotion_gate_to_actions
 from services.model_artifact_registry import (
@@ -44,6 +45,7 @@ from services.model_serving_resolver import (
 )
 from services.model_upgrade_research_track import build_research_benchmark_manifest
 
+LEARNING_D1_CLIENT = client_for_domain(D1DataDomain.LEARNING)
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/model_pool", tags=["model_pool"])
@@ -330,17 +332,12 @@ async def train_dlinear(req: TrainDLinearRequest):
     # 1. Pull close per stock (single GROUP_CONCAT-free query, in-Python group)
     # Query all (symbol, date, close) within lookback for tradable stocks,
     # group in Python to avoid SQLite GROUP_CONCAT row limits.
-    sql = """
-        SELECT s.symbol, sp.date, sp.close
-        FROM stocks s
-        JOIN stock_prices sp ON sp.stock_id = s.id
-        WHERE s.delisted_date IS NULL
-          AND s.sector IS NOT NULL AND s.sector != ''
-          AND sp.date >= ? AND sp.date <= ?
-          AND sp.close IS NOT NULL
-        ORDER BY s.symbol, sp.date
-    """
-    rows = d1_query(sql, [start_date, end_date])
+    rows = load_market_price_rows_with_identity(
+        start_date=start_date,
+        end_date=end_date,
+        fields=("date", "close"),
+        require_sector=True,
+    )
     if not rows:
         raise HTTPException(status_code=400, detail=f"No close rows in {start_date}~{end_date}")
 
@@ -486,17 +483,12 @@ async def train_patchtst(req: TrainPatchTSTRequest):
         datetime.fromisoformat(end_date) - timedelta(days=req.lookback_days)
     ).date().isoformat()
 
-    sql = """
-        SELECT s.symbol, sp.date, sp.close
-        FROM stocks s
-        JOIN stock_prices sp ON sp.stock_id = s.id
-        WHERE s.delisted_date IS NULL
-          AND s.sector IS NOT NULL AND s.sector != ''
-          AND sp.date >= ? AND sp.date <= ?
-          AND sp.close IS NOT NULL
-        ORDER BY s.symbol, sp.date
-    """
-    rows = d1_query(sql, [start_date, end_date])
+    rows = load_market_price_rows_with_identity(
+        start_date=start_date,
+        end_date=end_date,
+        fields=("date", "close"),
+        require_sector=True,
+    )
     if not rows:
         raise HTTPException(status_code=400, detail=f"No close rows in {start_date}~{end_date}")
 
@@ -787,7 +779,7 @@ async def compute_weekly_ic(req: ComputeWeeklyICRequest):
               AND date(verification_label_known_date) <= date(?)
               AND date(prediction_date) >= date(?, ?)
         """
-        rows = d1_query(
+        rows = LEARNING_D1_CLIENT.query(
             sql,
             [*all_tracked, req.run_date, req.run_date, req.run_date, f"-{req.lookback_days} days"],
         )
@@ -804,7 +796,7 @@ async def compute_weekly_ic(req: ComputeWeeklyICRequest):
               AND date(verification_label_known_date) <= date('now')
               AND date(prediction_date) >= date('now', ?)
         """
-        rows = d1_query(sql, [*all_tracked, f"-{req.lookback_days} days"])
+        rows = LEARNING_D1_CLIENT.query(sql, [*all_tracked, f"-{req.lookback_days} days"])
     per_model_ic = compute_weekly_ic_from_rows(
         rows,
         min_samples=req.min_samples,

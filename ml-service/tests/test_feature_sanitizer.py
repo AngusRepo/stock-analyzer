@@ -203,3 +203,43 @@ def test_close_or_adjusted_falls_back_when_adj_close_key_is_null():
 def test_close_price_falls_back_when_close_key_is_null():
     assert close_price({"close": None, "adj_close": 57.9}) == 57.9
     assert close_price({"close": 58.6, "adj_close": 57.9}) == 58.6
+
+
+def _price_rows(count: int) -> list[dict]:
+    start = date(2025, 1, 1)
+    return [{
+        "date": (start + timedelta(days=index)).isoformat(),
+        "open": 100.0 + index * 0.1,
+        "high": 101.0 + index * 0.1,
+        "low": 99.0 + index * 0.1,
+        "close": 100.2 + index * 0.1,
+        "adj_close": 100.2 + index * 0.1,
+        "volume": 1_000_000 + (index % 17) * 10_000,
+    } for index in range(count)]
+
+
+def test_linear_factor_is_prefix_invariant_when_future_rows_are_appended():
+    prefix = build_feature_matrix(_price_rows(320), [], [], [], historical_training=True)
+    extended = build_feature_matrix(_price_rows(420), [], [], [], historical_training=True)
+    np.testing.assert_allclose(
+        prefix["linear_factor"].to_numpy(),
+        extended["linear_factor"].head(320).to_numpy(),
+        equal_nan=True,
+    )
+
+
+def test_historical_training_neutralizes_latest_scalar_snapshot_without_pit_history():
+    df = build_feature_matrix(
+        _price_rows(320),
+        [],
+        [],
+        [],
+        market_env={"eps": 99.0, "roe": 88.0, "revenue_yoy": 77.0},
+        stock_meta={"sector_encoded": 7.0, "stock_vs_sector": 0.8},
+        historical_training=True,
+    )
+    assert df["l1_eps"].max() == 0.0
+    assert df["l1_roe"].max() == 0.0
+    assert df["l1_monthlyRevenueYoY"].max() == 0.0
+    assert df["sector_encoded"].max() == 0.0
+    assert df["stock_vs_sector"].max() == 0.0

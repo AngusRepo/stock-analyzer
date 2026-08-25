@@ -1,8 +1,9 @@
 """Portfolio allocation utilities.
 
 The rank-topK equal-weight path is kept only as an offline benchmark baseline.
-Production BUY selection is owned by sparse_tangent_inverse_risk, which returns
-cash/empty weights when no candidate has a positive expected edge.
+Production BUY selection is owned by sparse_tangent_inverse_risk. Learned-alpha
+serving optimizes explicit expected return; the continuity lane uses a separate
+inverse-volatility risk budget and never manufactures expected return from ranks.
 """
 
 from __future__ import annotations
@@ -534,10 +535,10 @@ def allocate_sparse_tangent_with_evidence(
 ) -> dict[str, Any]:
     """Long-only sparse weights over the current candidate set.
 
-    The optimizer input is explicit. Learned-alpha serving uses expected_return;
-    the continuity path may use a dimensionless formal selection utility under a
-    separate field. A selection utility is never reported as expected return and
-    cannot satisfy expected-return promotion gates.
+    The optimizer input is explicit. Learned-alpha serving uses expected_return.
+    The continuity path may admit formal ML BUY rows into a risk-only allocation,
+    but its binary admission evidence is never used as return magnitude and cannot
+    satisfy expected-return promotion gates.
     """
     # Production sparse allocation evaluates the full eligible candidate pool.
     # `top_k` remains in the public API for backward compatibility only. The
@@ -545,12 +546,18 @@ def allocate_sparse_tangent_with_evidence(
     evaluated = sorted([row for row in candidates if _symbol(row)], key=_score, reverse=True)
     symbols = [_symbol(row) for row in evaluated]
     expected_returns = [max(0.0, _allocation_utility(row, utility_field)) for row in evaluated]
+    objective = str(allocation_objective or "mean_variance_alpha_utility").strip()
+    holding_count_policy = (
+        "full_admitted_pool_risk_budget_no_hard_top_k"
+        if objective == "full_pool_inverse_volatility_risk_budget"
+        else "endogenous_positive_marginal_utility_no_hard_top_k"
+    )
     empty_evidence = {
         "weights": {},
         "candidate_pool_policy": "full_eligible_pool_before_sparse_selection",
         "evaluated_candidate_count": len(evaluated),
         "legacy_top_k_ignored": max(1, int(top_k)),
-        "holding_count_policy": "endogenous_positive_marginal_utility_no_hard_top_k",
+        "holding_count_policy": holding_count_policy,
         "similarity_evidence": similarity_components(
             symbols,
             return_history,
@@ -578,7 +585,7 @@ def allocate_sparse_tangent_with_evidence(
         "cluster_penalty_applied": False,
         "max_cluster_weight": max_cluster_weight if max_cluster_weight is not None else max_weight,
         "unallocated_cash_weight": 1.0,
-        "allocation_objective": allocation_objective,
+        "allocation_objective": objective,
         "allocation_input_field": utility_field,
         "allocation_input_semantic": utility_semantic,
         "objective_evidence": {
@@ -589,7 +596,10 @@ def allocate_sparse_tangent_with_evidence(
         },
         "candidate_diagnostics": {},
     }
-    if not any(value > 0 for value in expected_returns):
+    if (
+        objective != "full_pool_inverse_volatility_risk_budget"
+        and not any(value > 0 for value in expected_returns)
+    ):
         return empty_evidence
     var_floor = max(1e-8, daily_vol_floor * daily_vol_floor)
     covariance_packet = ledoit_wolf_covariance(
@@ -598,7 +608,6 @@ def allocate_sparse_tangent_with_evidence(
         daily_vol_floor=daily_vol_floor,
     )
     covariance = covariance_packet.get("covariance") or _diagonal_covariance_matrix(len(symbols), var_floor)
-    objective = str(allocation_objective or "mean_variance_alpha_utility").strip()
     if objective in {"mean_variance_alpha_utility", "alpha_utility_sparse"}:
         raw, candidate_diagnostics, objective_evidence = _alpha_utility_raw(
             symbols,
@@ -614,6 +623,35 @@ def allocate_sparse_tangent_with_evidence(
             iterations=utility_iterations,
             utility_semantic=utility_semantic,
         )
+    elif objective == "full_pool_inverse_volatility_risk_budget":
+        diag = _covariance_diag(covariance, len(symbols), var_floor)
+        inverse_volatility = {
+            symbol: 1.0 / math.sqrt(diag[idx])
+            for idx, symbol in enumerate(symbols)
+        }
+        raw = _normalize(inverse_volatility)
+        candidate_diagnostics = {
+            symbol: {
+                "optimizer_objective": objective,
+                "alpha_input": None,
+                "allocation_utility_input": None,
+                "allocation_input_semantic": utility_semantic,
+                "admission_only_not_weight_magnitude": True,
+                "individual_variance": round(diag[idx], 10),
+                "individual_volatility": round(math.sqrt(diag[idx]), 10),
+                "inverse_volatility_score": round(inverse_volatility[symbol], 10),
+                "final_weight": 0.0,
+            }
+            for idx, symbol in enumerate(symbols)
+        }
+        objective_evidence = {
+            "objective": objective,
+            "expected_return_used": False,
+            "admission_signal_used_for_weight_magnitude": False,
+            "risk_estimator": "ledoit_wolf_covariance_diagonal_with_daily_vol_floor",
+            "cash_allowed": True,
+            "budget_used": 1.0 if raw else 0.0,
+        }
     else:
         raw = _long_only_tangent_raw(symbols, expected_returns, covariance)
         diag = _covariance_diag(covariance, len(symbols), var_floor)
@@ -656,6 +694,14 @@ def allocate_sparse_tangent_with_evidence(
             for symbol, weight in raw.items()
             if float(weight) > 1e-8
         }
+    elif objective == "full_pool_inverse_volatility_risk_budget":
+        # Do not force excess exposure into other names when a cap binds. The
+        # remainder stays in cash, preserving both the cap and no-forced-fill.
+        weights = {
+            symbol: min(max_weight, max(0.0, float(weight)))
+            for symbol, weight in raw.items()
+            if float(weight) > 1e-8
+        }
     else:
         weights = _cap_and_renormalize(raw, max_weight=max_weight)
     similarity = similarity_components(
@@ -689,7 +735,7 @@ def allocate_sparse_tangent_with_evidence(
         "candidate_pool_policy": "full_eligible_pool_before_sparse_selection",
         "evaluated_candidate_count": len(evaluated),
         "legacy_top_k_ignored": max(1, int(top_k)),
-        "holding_count_policy": "endogenous_positive_marginal_utility_no_hard_top_k",
+        "holding_count_policy": holding_count_policy,
         "similarity_evidence": {
             **similarity,
             "covariance_method": covariance_packet.get("covariance_method") or similarity.get("covariance_method"),

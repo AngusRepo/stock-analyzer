@@ -108,3 +108,21 @@ def test_stacker_rejects_candidate_missing_core_cross_sectional_model():
     assert len(output) == 1039
     assert evidence["rejected_core_model_rows"] == 1
     assert all(row["symbol"] != "S0519" for row in output if row["fold_id"] == "w2")
+
+
+def test_spearman_and_rank_paths_preserve_ties_and_match_serving_semantics():
+    import numpy as np
+
+    from services.active8_oof_stacker import _rank_by_date_market, _spearman
+    from services.active8_score_semantics import _percentile_by_average_rank
+
+    assert _spearman(np.ones(6), np.arange(6, dtype=float)) == 0.0
+    rows = [
+        {"prediction_date": "2026-08-24", "market_segment": "TW", "symbol": symbol, "ensemble_raw": 0.3}
+        for symbol in ["C", "A", "B"]
+    ]
+    _rank_by_date_market(rows)
+    assert {row["ensemble_rank"] for row in rows} == {0.5}
+    serving = _percentile_by_average_rank([(row["symbol"], row["ensemble_raw"]) for row in rows])
+    assert {value for value in serving.values()} == {0.5}
+    assert {row["symbol"]: row["ensemble_rank"] for row in rows} == serving

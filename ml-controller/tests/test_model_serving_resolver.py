@@ -125,6 +125,7 @@ def test_build_pool_from_d1_champion_pointer_serves_production_artifact():
                         "target_semantic_version": resolver.LABEL_SCHEMA_VERSION,
                         "seq_len": 512,
                         "pred_len": 5,
+                        "rank_ic_semantic_version": resolver.FORMAL_RANK_IC_SEMANTIC_VERSION,
                     }
                 }
             },
@@ -151,7 +152,93 @@ def test_build_pool_from_d1_champion_pointer_serves_production_artifact():
         "version": "vGood",
         "seq_len": 512,
         "pred_len": 5,
+        "rank_ic_semantic_version": resolver.FORMAL_RANK_IC_SEMANTIC_VERSION,
     }
+
+
+def test_gnn_graph_semantic_is_required_by_champion_resolver():
+    base_artifact = {
+        "artifact_id": "GNN:v2:oof_full_fit_release",
+        "model_name": "GNN",
+        "version": "v2",
+        "candidate_type": "oof_full_fit_release",
+        "state": "production",
+        "artifact_path": "universal/gnn/v2.pt",
+        "metadata_path": "universal/gnn/metadata_v2.json",
+        "offline_gate_decision": "PASS",
+        "live_gate_status": "promoted",
+        "offline_evidence_json": {
+            "registration": {
+                "metadata": {
+                    "target_semantic_version": resolver.LABEL_SCHEMA_VERSION,
+                    "feature_semantic_version": resolver.FORMAL_FEATURE_SEMANTIC_VERSION,
+                }
+            }
+        },
+    }
+    pointer = {"model_name": "GNN", "champion_version": "v2", "champion_artifact_id": base_artifact["artifact_id"]}
+    blocked = resolver.build_pool_from_champion_pointers(
+        pointers=[pointer], artifacts=[base_artifact], fallback_pool=_fallback_pool(), required_models=("GNN",), sidecar_models=(),
+    )["models"]["GNN"]
+    assert blocked["serving_eligible"] is False
+    assert blocked["serving_block_reason"].startswith("artifact_gnn_graph_semantic_missing_")
+
+    valid_artifact = dict(base_artifact)
+    valid_artifact["offline_evidence_json"] = {
+        "registration": {"metadata": {
+            "target_semantic_version": resolver.LABEL_SCHEMA_VERSION,
+            "feature_semantic_version": resolver.FORMAL_FEATURE_SEMANTIC_VERSION,
+            "graph": {"semantic_version": resolver.FORMAL_GNN_GRAPH_SEMANTIC_VERSION},
+        }}
+    }
+    ready = resolver.build_pool_from_champion_pointers(
+        pointers=[pointer], artifacts=[valid_artifact], fallback_pool=_fallback_pool(), required_models=("GNN",), sidecar_models=(),
+    )["models"]["GNN"]
+    assert ready["serving_eligible"] is True
+    assert ready["gnn_graph_semantic_version"] == resolver.FORMAL_GNN_GRAPH_SEMANTIC_VERSION
+
+
+def test_timesfm_production_backfill_is_eligible_only_as_l2_sidecar():
+    artifact = {
+        "artifact_id": "TimesFM:v1:l2_release",
+        "model_name": "TimesFM",
+        "version": "v1",
+        "candidate_type": "timesfm_l175_l2_feature_release",
+        "state": "production",
+        "artifact_path": "universal/timesfm/v1.json",
+        "offline_gate_decision": "PRODUCTION_BACKFILL",
+        "live_gate_status": "passed",
+    }
+    pointer = {
+        "model_name": "TimesFM",
+        "champion_version": "v1",
+        "champion_artifact_id": artifact["artifact_id"],
+    }
+
+    sidecar_pool = resolver.build_pool_from_champion_pointers(
+        pointers=[pointer],
+        artifacts=[artifact],
+        fallback_pool=_fallback_pool(),
+        required_models=(),
+        sidecar_models=("TimesFM",),
+    )
+    sidecar = sidecar_pool["l2_feature_sidecars"]["TimesFM"]
+    assert sidecar["role"] == "l2_feature_sidecar"
+    assert sidecar["direct_prediction"] is False
+    assert sidecar["status"] == "active"
+    assert sidecar["serving_eligible"] is True
+    assert sidecar["serving_block_reason"] is None
+
+    direct_pool = resolver.build_pool_from_champion_pointers(
+        pointers=[pointer],
+        artifacts=[artifact],
+        fallback_pool={"models": {"TimesFM": {}}},
+        required_models=("TimesFM",),
+        sidecar_models=(),
+    )
+    direct = direct_pool["models"]["TimesFM"]
+    assert direct["serving_eligible"] is False
+    assert direct["serving_block_reason"] == "offline_gate_production_backfill"
 
 
 def test_d1_champion_blocks_legacy_target_without_retiring_active8_slot():
@@ -421,6 +508,7 @@ def test_oof_prior_quarantines_stale_fallback_ic_and_reconcile_repairs_pool():
             "registration": {
                 "metadata": {
                     "target_semantic_version": resolver.LABEL_SCHEMA_VERSION,
+                    "feature_semantic_version": resolver.FORMAL_FEATURE_SEMANTIC_VERSION,
                     "sample_count": 1000,
                     "model_cpcv": {
                         "method": "outer_purged_walk_forward_rank_ic",

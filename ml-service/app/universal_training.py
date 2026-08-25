@@ -46,7 +46,7 @@ from .training_policy import (
 )
 from .training_finalizer import build_oos_artifact_path, derive_oos_artifact_group
 from .gcs_batch_io import download_existing_blobs
-from .sequence_training import SEQUENCE_RETURN_SEMANTIC_VERSION
+from .sequence_training import RANK_IC_SEMANTIC_VERSION, SEQUENCE_RETURN_SEMANTIC_VERSION
 
 
 from .target_rank_scope import (
@@ -559,6 +559,7 @@ def prep_universal_batch(req: UniversalPrepRequest) -> dict:
         build_feature_matrix,
         compute_cross_sectional_rank,
         sanitize_feature_frame,
+        FEATURE_SEMANTIC_VERSION,
     )
     from .sequence_training import build_sequence_record
 
@@ -595,6 +596,7 @@ def prep_universal_batch(req: UniversalPrepRequest) -> dict:
                 me,
                 req.barrier_params or None,
                 payload.get("stock_meta"),
+                historical_training=True,
             )
             if "date" not in df.columns and len(prices_data) > 0:
                 dates = [p.get("date", "") for p in prices_data]
@@ -1500,6 +1502,9 @@ def train_universal_from_gcs(req: UniversalTrainRequest) -> dict:
         "training_run_id": training_run_id,
         "training_manifest_path": manifest_path,
         "target_semantic_version": SEQUENCE_RETURN_SEMANTIC_VERSION,
+        "rank_ic_semantic_version": RANK_IC_SEMANTIC_VERSION,
+        "feature_semantic_version": FEATURE_SEMANTIC_VERSION,
+        "feature_imputation_semantic": "prior_252_row_median_then_zero_v2",
         "target_rank_scope": GLOBAL_CROSS_SECTIONAL_RANK_VERSION,
         "batch_local_target_rank_used_for_training": False,
         "validation_split": validation_split_metadata,

@@ -27,6 +27,7 @@ const D1_HEAVY_MAINTENANCE_TASKS = new Set([
   'legacy-hot-data-retirement', 'd1-evidence-scrub', 'r2-retention-sweep',
   'orphan-reachability-gc', 'cleanup-dlq-replay', 'weekly-cleanup',
   'price-horizon-projection',
+  'strategy-evidence-owner-calibration',
   'strategy-learning-finalize',
   'selection-reference-repair', 'selection-reference-identity-repair',
   'data-domain-shadow-backfill',
@@ -1123,6 +1124,19 @@ export function buildAdminWorkerDomainTaskMap(c: any, deps: TriggerDeps): Record
         throw new Error('strategy_evidence_metrics_refresh_empty')
       }
       return metrics.summary
+    },
+    'strategy-evidence-owner-calibration': async () => {
+      const { refreshStrategyEvidenceOwnerCalibration } = await import('./strategyEvidenceOwnerCalibration')
+      const knowledgeCutoffDate = c.req.query('knowledge_cutoff_date') || requestedRunDate() || twToday()
+      const allowPromotion = c.req.query('allow_promotion') === '1'
+      if (allowPromotion && c.req.header('X-Confirm-Strategy-Evidence-Owner-Calibration') !== 'true') {
+        throw new Error('strategy_evidence_owner_calibration_promotion_requires_confirmation')
+      }
+      const calibration = await refreshStrategyEvidenceOwnerCalibration(c.env, {
+        knowledgeCutoffDate,
+        allowPromotion,
+      })
+      return `strategy_evidence_owner_calibration status=${calibration.result.status} run_id=${calibration.runId} dates=${calibration.result.dateCount} oos=${calibration.result.oosDates.length} delta_lcb90=${calibration.result.challengerDeltaLcb90 ?? 'null'}`
     },
     'data-domain-shadow-backfill': async () => {
       const domain = String(c.req.query('domain') ?? '').trim().toLowerCase()

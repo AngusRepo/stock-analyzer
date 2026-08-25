@@ -1,5 +1,5 @@
-export const STRATEGY_ROUTE_CALIBRATION_ARTIFACT_VERSION = 'strategy-route-calibration-v1'
-export const STRATEGY_ROUTE_CHALLENGER_VERSION = 'strategy-semantic-continuous-affinity-v4'
+export const STRATEGY_ROUTE_CALIBRATION_ARTIFACT_VERSION = 'strategy-route-calibration-v2'
+export const STRATEGY_ROUTE_CHALLENGER_VERSION = 'strategy-semantic-continuous-affinity-v5'
 export const STRATEGY_ROUTE_AFFINITY_VERSION = 'strategy-threshold-margin-affinity-v2'
 
 const MIN_TRAIN_DATES = 3
@@ -77,6 +77,10 @@ function mean(values: number[]): number | null {
   return values.length ? values.reduce((sum, value) => sum + value, 0) / values.length : null
 }
 
+function continuousRouteWeight(score: number): number {
+  return Math.min(1.25, Math.max(0.75, 0.75 + score / 200))
+}
+
 function lcb90(values: number[]): number | null {
   const average = mean(values)
   if (average == null || values.length < 2) return null
@@ -121,12 +125,16 @@ function summarizeDates(rows: StrategyRouteObservation[], dates: Set<string>, fl
     const rejected = valid.filter((row) => row.score < floor)
     if (!selected.length || !rejected.length) continue
     const paired = valid.filter((row): row is typeof row & { incumbentScore: number } => row.incumbentScore != null)
-    const challengerPaired = paired.filter((row) => row.score >= floor)
-    const incumbentTopK = [...paired]
-      .sort((left, right) => right.incumbentScore - left.incumbentScore)
-      .slice(0, challengerPaired.length)
-    const incumbentDelta = challengerPaired.length > 0 && incumbentTopK.length === challengerPaired.length
-      ? mean(challengerPaired.map((row) => row.absolute))! - mean(incumbentTopK.map((row) => row.absolute))!
+    const challengerWeightTotal = paired.reduce((sum, row) => sum + continuousRouteWeight(row.score), 0)
+    const incumbentWeightTotal = paired.reduce((sum, row) => sum + continuousRouteWeight(row.incumbentScore), 0)
+    const challengerWeightedReturn = challengerWeightTotal > 0
+      ? paired.reduce((sum, row) => sum + row.absolute * continuousRouteWeight(row.score), 0) / challengerWeightTotal
+      : null
+    const incumbentWeightedReturn = incumbentWeightTotal > 0
+      ? paired.reduce((sum, row) => sum + row.absolute * continuousRouteWeight(row.incumbentScore), 0) / incumbentWeightTotal
+      : null
+    const incumbentDelta = paired.length === valid.length && challengerWeightedReturn != null && incumbentWeightedReturn != null
+      ? challengerWeightedReturn - incumbentWeightedReturn
       : null
     output.push({
       date,
@@ -241,7 +249,7 @@ export function evaluateStrategyRouteCalibration(
     top_bucket_cost_net_return_lcb90_positive: (lcb90(topBucket) ?? Number.NEGATIVE_INFINITY) > 0,
     absolute_spread_lcb90_positive: (lcb90(absoluteSpreads) ?? Number.NEGATIVE_INFINITY) > 0,
     residual_spread_lcb90_positive: (lcb90(spreads) ?? Number.NEGATIVE_INFINITY) > 0,
-    challenger_beats_incumbent_same_capacity_lcb90_positive: incumbentDeltas.length === oos.length
+    challenger_continuous_weight_beats_incumbent_lcb90_positive: incumbentDeltas.length === oos.length
       && (lcb90(incumbentDeltas) ?? Number.NEGATIVE_INFINITY) > 0,
     calibrated_probability_beats_climatology: calibration.brier != null
       && calibration.climatologyBrier != null
@@ -450,6 +458,7 @@ export async function refreshStrategyRouteCalibration(
       _metadata: {
         purge_dates: result.purgeDates,
         no_top_k: true,
+        incumbent_comparison: 'full_universe_continuous_positive_weight_0_75_to_1_25',
         point_in_time: true,
         current_day_reference_rows: currentCoverage.referenceRows,
         current_day_threshold_affinity_rows: currentCoverage.thresholdAffinityRows,

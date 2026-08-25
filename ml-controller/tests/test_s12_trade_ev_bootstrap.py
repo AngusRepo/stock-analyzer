@@ -163,7 +163,7 @@ def test_load_s12_replay_trade_rows_accepts_dedicated_replay_outcomes():
     rows = load_s12_replay_trade_rows(run_date="2026-07-03", query_fn=fake_query)
 
     assert any("FROM s12_replay_trade_outcomes" in sql for sql in calls)
-    assert any("LEFT JOIN stocks st ON st.symbol = r.symbol" in sql for sql in calls)
+    assert all("JOIN stocks" not in sql for sql in calls)
     assert rows[0]["symbol"] == "8091"
     assert rows[0]["prediction_date"] == "2026-07-02"
     assert rows[0]["market_segment"] == "TWSE"

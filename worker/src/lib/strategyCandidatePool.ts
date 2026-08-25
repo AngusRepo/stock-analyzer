@@ -388,6 +388,13 @@ function edgeScoreFromMetrics(metrics: Partial<StrategyPortfolioMetrics> | undef
   return scores.length ? round3(scores.reduce((sum, score) => sum + score, 0) / scores.length) : 0.5
 }
 
+function hasImmutablePerformancePacket(metrics: Partial<StrategyPortfolioMetrics> | undefined): boolean {
+  if (!metrics || !['ready', 'reward_only', 'backtest_only'].includes(String(metrics.strategy_metric_status ?? ''))) return false
+  if (!Array.isArray(metrics.metric_sources) || metrics.metric_sources.length === 0) return false
+  return ['rolling_sharpe', 'recent_alpha', 'factor_return', 'ic', 'rank_ic', 'shapley_contribution', 'regime_performance']
+    .some((key) => metricValue(metrics, key as keyof StrategyPortfolioMetrics) != null)
+}
+
 function adaptiveDemandScore(strictMatchCount: number, sourceUniverseCount: number, policy: StrategyCandidatePoolPolicy): number {
   if (strictMatchCount <= 0 || sourceUniverseCount <= 0) return 0
   const breadth = Math.log1p(strictMatchCount) / Math.log1p(Math.max(policy.maxPoolQuota * 2, 1))
@@ -416,14 +423,15 @@ function resolveAdaptiveRuntimePolicy(input: {
     promotion_status: input.spec.promotionStatus!,
   })
   const metrics = input.strategyPortfolioMetrics?.[input.spec.id]
+  const performanceMetrics = hasImmutablePerformancePacket(metrics) ? metrics : undefined
   const graphCrowding = finiteNumber(input.strategySimilarityGraphEvidence?.strategy_cluster_crowding_score?.[input.spec.id])
   const graphUniqueness = finiteNumber(input.strategySimilarityGraphEvidence?.strategy_cluster_uniqueness_score?.[input.spec.id])
   const priorWeight = round3(clamp(
-    metricValue(metrics, 'prior_weight') ?? input.strategyWeight ?? 1,
+    metricValue(performanceMetrics, 'prior_weight') ?? input.strategyWeight ?? 1,
     0.15,
     1.8,
   ))
-  const reliability = round3(clamp(metricValue(metrics, 'reliability') ?? 0.55, 0, 1))
+  const reliability = round3(clamp(metricValue(performanceMetrics, 'reliability') ?? 0.5, 0, 1))
   const crowdingScore = round3(clamp(
     metricValue(metrics, 'crowding_score')
       ?? graphCrowding
@@ -441,9 +449,9 @@ function resolveAdaptiveRuntimePolicy(input: {
     1,
   ))
   const uniquenessScore = round3(clamp(graphUniqueness ?? diversificationValue, 0, 1))
-  const maxDrawdown = metricValue(metrics, 'max_drawdown')
+  const maxDrawdown = metricValue(performanceMetrics, 'max_drawdown')
   const drawdownPenalty = round3(clamp(((maxDrawdown ?? 0.12) - 0.08) / 0.42, 0, 1))
-  const edgeScore = edgeScoreFromMetrics(metrics)
+  const edgeScore = edgeScoreFromMetrics(performanceMetrics)
   const demandScore = adaptiveDemandScore(input.strictMatchCount, input.sourceUniverseCount, input.policy)
   const supportRatio = round3(input.sourceUniverseCount > 0 ? input.strictMatchCount / input.sourceUniverseCount : 0)
   const qualityScore = round3(clamp(

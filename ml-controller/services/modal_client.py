@@ -192,9 +192,9 @@ def _fetch_chunk_observations_from_d1(function_name: str) -> list[dict]:
     days = max(1, _int(os.environ.get("MODAL_PREDICT_BATCH_SIZE_OBSERVATION_DAYS"), 14))
     limit = max(1, min(_int(os.environ.get("MODAL_PREDICT_BATCH_SIZE_OBSERVATION_LIMIT"), 80), 500))
     try:
-        from services import d1_client
+        from services.d1_domain_client import D1DataDomain, client_for_domain
 
-        rows = d1_client.query(
+        rows = client_for_domain(D1DataDomain.OPS).query(
             """
             SELECT wall_sec, symbols, profile_json
             FROM compute_profile_events

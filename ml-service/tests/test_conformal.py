@@ -52,6 +52,13 @@ class TestConformalCalibrator:
         result = cal.calibrate(forecast_pct=0.01, confidence=0.60, anomaly_score=0.0)
         assert result["interval_width"] >= 0
 
+    def test_finite_sample_quantile_uses_higher_order_statistic(self):
+        Cal = _import_calibrator()
+        cal = Cal()
+        cal.residuals = [index / 100 for index in range(1, 21)]
+        result = cal.calibrate(forecast_pct=0.0, confidence=0.8, coverage=0.9)
+        assert result["interval_width"] == pytest.approx(0.19)
+
     def test_anomaly_context_penalty(self):
         """High anomaly score → extra penalty."""
         Cal = _import_calibrator()

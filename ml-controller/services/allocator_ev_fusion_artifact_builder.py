@@ -2293,6 +2293,7 @@ def load_allocator_ev_fusion_oof_training_rows(
 def load_allocator_ev_fusion_training_rows(
     query_fn: Callable[[str, list[Any]], list[dict[str, Any]]],
     *,
+    core_query_fn: Callable[[str, list[Any]], list[dict[str, Any]]] | None = None,
     end_date: str,
     lookback_days: int = 90,
     limit: int = 6000,
@@ -2301,6 +2302,8 @@ def load_allocator_ev_fusion_training_rows(
     outcome_cutoff = knowledge_cutoff_date or end_date
     snapshot_rows: list[dict[str, Any]] = []
     snapshot_available = False
+    sector_select = "NULL AS sector" if core_query_fn is not None else "st.sector"
+    stocks_join = "" if core_query_fn is not None else "JOIN stocks st ON st.id = fs.stock_id"
     try:
         snapshot_rows = query_fn(
             f"""
@@ -2352,7 +2355,7 @@ def load_allocator_ev_fusion_training_rows(
                 fs.alpha_allocation,
                 fs.market_heat_expected_return,
                 fs.market_segment,
-                st.sector,
+                {sector_select},
                 fs.recommendation_lane,
                 fs.snapshot_source AS allocator_ev_feature_snapshot_source,
                 fs.as_of_guard AS allocator_ev_feature_snapshot_guard,
@@ -2384,8 +2387,7 @@ def load_allocator_ev_fusion_training_rows(
               ON p.stock_id = fs.stock_id
              AND p.prediction_date = fs.snapshot_date
              AND p.model_name = 'ensemble'
-            JOIN stocks st
-              ON st.id = fs.stock_id
+            {stocks_join}
             JOIN price_horizons ph
               ON ph.stock_id = fs.stock_id
              AND ph.price_date = date(fs.snapshot_date)
@@ -2422,7 +2424,23 @@ def load_allocator_ev_fusion_training_rows(
             raise
 
     if snapshot_available:
-        return snapshot_rows
+        if core_query_fn is None or not snapshot_rows:
+            return snapshot_rows
+        stock_ids = sorted({int(row["stock_id"]) for row in snapshot_rows if row.get("stock_id") is not None})
+        sectors_by_id: dict[int, str | None] = {}
+        for offset in range(0, len(stock_ids), 90):
+            chunk = stock_ids[offset:offset + 90]
+            placeholders = ",".join("?" for _ in chunk)
+            for row in core_query_fn(f"SELECT id, sector FROM stocks WHERE id IN ({placeholders})", chunk):
+                sectors_by_id[int(row["id"])] = row.get("sector")
+        return [
+            {**row, "sector": sectors_by_id.get(int(row["stock_id"]))}
+            for row in snapshot_rows
+            if int(row["stock_id"]) in sectors_by_id
+        ]
+
+    if core_query_fn is not None:
+        return []
 
     return query_fn(
         f"""

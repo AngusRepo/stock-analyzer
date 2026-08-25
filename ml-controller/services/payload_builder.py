@@ -15,12 +15,17 @@ from dataclasses import dataclass, field, asdict
 from datetime import date, timedelta
 from typing import Any, Optional
 
-from services import d1_client, kv_client
+from services import kv_client
+from services.d1_domain_client import D1DataDomain, client_proxy_for_domain
 from services.adaptive import resolve_adaptive_params_for_regime
 from services.active_model_policy import daily_price_history_limit, daily_price_lookback_years
 from services.market_regime_state import resolve_market_regime_contract
 from services.market_segment_policy import is_explicitly_enabled, policy_for_segment
 from services.model_lifecycle_policy import resolve_degraded_dampening
+
+CORE_D1_CLIENT = client_proxy_for_domain(D1DataDomain.CORE)
+MARKET_D1_CLIENT = client_proxy_for_domain(D1DataDomain.MARKET)
+LEARNING_D1_CLIENT = client_proxy_for_domain(D1DataDomain.LEARNING)
 
 logger = logging.getLogger(__name__)
 
@@ -187,6 +192,50 @@ class PredictPayload:
 # Shared market env loader (one-shot, all stocks share)
 # ?????????????????????????????????????????????????????????????????????????????
 
+def _load_market_symbol_price_rows(
+    symbols: list[str],
+    run_date: str,
+    *,
+    limit: int,
+) -> list[dict]:
+    """Resolve Core identities, then read PIT prices from Market without a cross-D1 JOIN."""
+    clean_symbols = _dedupe_preserve_order(
+        [str(symbol).strip() for symbol in symbols if str(symbol).strip()]
+    )
+    if not clean_symbols:
+        return []
+    placeholders = ",".join("?" * len(clean_symbols))
+    identities = CORE_D1_CLIENT.query(
+        f"SELECT id, symbol FROM stocks WHERE symbol IN ({placeholders})",
+        clean_symbols,
+    )
+    symbol_by_id = {
+        int(row["id"]): str(row["symbol"])
+        for row in identities
+        if row.get("id") is not None and row.get("symbol")
+    }
+    if not symbol_by_id:
+        return []
+    stock_ids = list(symbol_by_id)
+    id_placeholders = ",".join("?" * len(stock_ids))
+    rows = MARKET_D1_CLIENT.query(
+        f"SELECT stock_id, date, close FROM stock_prices "
+        f"WHERE stock_id IN ({id_placeholders}) AND date <= ? "
+        f"ORDER BY date DESC, stock_id ASC LIMIT ?",
+        [*stock_ids, run_date, max(1, int(limit))],
+    )
+    resolved = [
+        {**row, "symbol": symbol_by_id.get(int(row["stock_id"]))}
+        for row in rows
+        if row.get("stock_id") is not None and int(row["stock_id"]) in symbol_by_id
+    ]
+    return sorted(
+        resolved,
+        key=lambda row: (str(row.get("date") or ""), str(row.get("symbol") or "") == "TAIEX"),
+        reverse=True,
+    )
+
+
 def load_market_env(run_date: str) -> tuple[MarketEnv, dict, dict, dict[str, float], dict]:
     """
     Load shared market data + adaptive_params + barrier_params + lifecycle_weights + trading_config.
@@ -197,7 +246,7 @@ def load_market_env(run_date: str) -> tuple[MarketEnv, dict, dict, dict[str, flo
     Maps to worker/src/index.ts:1013-1075.
     """
     # ?? 1. Latest market_risk row ???????????????????????????????????????????
-    risk_rows = d1_client.query(
+    risk_rows = CORE_D1_CLIENT.query(
         "SELECT date, risk_level, risk_score, risk_summary "
         "FROM market_risk WHERE date <= ? ORDER BY date DESC LIMIT 1",
         [run_date],
@@ -207,12 +256,10 @@ def load_market_env(run_date: str) -> tuple[MarketEnv, dict, dict, dict[str, flo
     # ?? 2. TAIEX 25 days for twii returns ???????????????????????????????????
     # Resolve one point-in-time market proxy. TAIEX is canonical when it is
     # sufficiently populated and as fresh as 0050; otherwise use 0050 explicitly.
-    raw_twii_rows = d1_client.query(
-        "SELECT sp.date, sp.close, s.symbol FROM stock_prices sp "
-        "JOIN stocks s ON s.id = sp.stock_id "
-        "WHERE s.symbol IN ('TAIEX','^TWII') AND sp.date <= ? "
-        "ORDER BY sp.date DESC, CASE WHEN s.symbol = 'TAIEX' THEN 0 ELSE 1 END LIMIT 520",
-        [run_date],
+    raw_twii_rows = _load_market_symbol_price_rows(
+        ["TAIEX", "^TWII"],
+        run_date,
+        limit=520,
     )
     twii_by_date: dict[str, dict] = {}
     for row in raw_twii_rows or []:
@@ -224,11 +271,10 @@ def load_market_env(run_date: str) -> tuple[MarketEnv, dict, dict, dict[str, flo
             twii_by_date[date_key] = row
     twii_rows = [twii_by_date[key] for key in sorted(twii_by_date)][-260:]
 
-    raw_etf_rows = d1_client.query(
-        "SELECT sp.date, sp.close, s.symbol FROM stock_prices sp "
-        "JOIN stocks s ON s.id = sp.stock_id "
-        "WHERE s.symbol = '0050' AND sp.date <= ? ORDER BY sp.date DESC LIMIT 800",
-        [run_date],
+    raw_etf_rows = _load_market_symbol_price_rows(
+        ["0050"],
+        run_date,
+        limit=800,
     )
     etf_rows = list(reversed(raw_etf_rows or []))
 
@@ -259,7 +305,7 @@ def load_market_env(run_date: str) -> tuple[MarketEnv, dict, dict, dict[str, flo
     history_map: dict[str, dict] = {}
 
     # 3a. market_risk ?潘????交??券?
-    history_rows = d1_client.query(
+    history_rows = CORE_D1_CLIENT.query(
         "SELECT * FROM ("
         "  SELECT date, risk_score, risk_level, twii_bias AS market_bias_20d, twii_close, "
         "         foreign_consecutive_sell, foreign_net_5d, limit_down_count, limit_down_pct, "
@@ -294,7 +340,7 @@ def load_market_env(run_date: str) -> tuple[MarketEnv, dict, dict, dict[str, flo
         }
         valid_twii_closes.append(close)
     us_history_by_date: dict[str, dict] = {}
-    us_rows = d1_client.query(
+    us_rows = MARKET_D1_CLIENT.query(
         "SELECT date, vix_close, hy_spread, hy_spread_chg, sox_return, gspc_return, dxy_return, sentiment "
         "FROM us_market_signals WHERE date <= ? ORDER BY date ASC",
         [run_date],
@@ -313,7 +359,7 @@ def load_market_env(run_date: str) -> tuple[MarketEnv, dict, dict, dict[str, flo
     # 3b. 0050 ETF fallback + ADL from full market prices
     # 3c. ADL (Advance/Decline Line) ??瘥銝撞摰嗆 - 銝?摰嗆?敞蝛?
     # 敺撣 stock_prices 蝞?銝?鞈?market_risk 銵?
-    adl_rows = d1_client.query(
+    adl_rows = MARKET_D1_CLIENT.query(
         "SELECT date, advance_count AS advances, decline_count AS declines "
         "FROM market_breadth WHERE date <= ? ORDER BY date ASC",
         [run_date],
@@ -345,7 +391,7 @@ def load_market_env(run_date: str) -> tuple[MarketEnv, dict, dict, dict[str, flo
     # 3d. Bull alignment + Limit down from stock_prices
     # bull_alignment = % of stocks where MA5 > MA20 (proxy for MA5>10>20>60 requires more data)
     # limit_down = stocks hitting -10% daily limit
-    breadth_rows = d1_client.query(
+    breadth_rows = MARKET_D1_CLIENT.query(
         "SELECT date, "
         "  COALESCE(sample_size, advance_count + decline_count + unchanged_count) AS total, "
         "  COALESCE(limit_down_count, 0) AS limit_down_count "
@@ -472,7 +518,7 @@ def load_market_env(run_date: str) -> tuple[MarketEnv, dict, dict, dict[str, flo
 
     # ?? 5. Latest market_breadth ????????????????????????????????????????????
     try:
-        breadth_rows = d1_client.query(
+        breadth_rows = MARKET_D1_CLIENT.query(
             "SELECT date, advance_ratio, bull_alignment_pct "
             "FROM market_breadth WHERE date <= ? ORDER BY date DESC LIMIT 5",
             [run_date],
@@ -551,7 +597,12 @@ def _d1_bind_chunks(values: list, size: int = D1_IN_CLAUSE_CHUNK_SIZE) -> list[l
     return [items[i:i + size] for i in range(0, len(items), size)]
 
 
-def _bulk_load_prices(stock_ids: list[int], limit: int | None = None) -> dict[int, list[dict]]:
+def _bulk_load_prices(
+    stock_ids: list[int],
+    limit: int | None = None,
+    *,
+    as_of_date: str,
+) -> dict[int, list[dict]]:
     """
     Load last `limit` rows of stock_prices for each stock_id.
     Returns: {stock_id: [{date, close, high, low, open, volume}, ...]} (oldest?ewest).
@@ -567,12 +618,13 @@ def _bulk_load_prices(stock_ids: list[int], limit: int | None = None) -> dict[in
     rows: list[dict] = []
     for chunk in _d1_bind_chunks(stock_ids):
         placeholders = ",".join("?" * len(chunk))
-        rows.extend(d1_client.query(
+        rows.extend(MARKET_D1_CLIENT.query(
             f"SELECT stock_id, date, open, high, low, close, volume, adj_close, avg_price "
             f"FROM stock_prices "
-            f"WHERE stock_id IN ({placeholders}) AND date >= date('now','-{years} years') "
+            f"WHERE stock_id IN ({placeholders}) "
+            f"AND date >= date(?,'-{years} years') AND date <= date(?) "
             f"ORDER BY stock_id ASC, date ASC",
-            list(chunk),
+            [*chunk, as_of_date, as_of_date],
             timeout=120.0,
         ))
     grouped: dict[int, list[dict]] = {sid: [] for sid in stock_ids}
@@ -592,7 +644,12 @@ def _bulk_load_prices(stock_ids: list[int], limit: int | None = None) -> dict[in
     return grouped
 
 
-def _bulk_load_indicators(stock_ids: list[int], limit: int | None = None) -> dict[int, list[dict]]:
+def _bulk_load_indicators(
+    stock_ids: list[int],
+    limit: int | None = None,
+    *,
+    as_of_date: str,
+) -> dict[int, list[dict]]:
     if not stock_ids:
         return {}
     row_limit = daily_price_history_limit() if limit is None else max(1, int(limit))
@@ -600,15 +657,16 @@ def _bulk_load_indicators(stock_ids: list[int], limit: int | None = None) -> dic
     rows: list[dict] = []
     for chunk in _d1_bind_chunks(stock_ids):
         placeholders = ",".join("?" * len(chunk))
-        rows.extend(d1_client.query(
+        rows.extend(MARKET_D1_CLIENT.query(
             f"SELECT stock_id, date, ma5, ma10, ma20, ma60, rsi14, "
             f"       macd_hist as macdHist, bb_upper, bb_lower, atr14, "
             f"       plus_di14, minus_di14, adx14, parabolic_sar, cci20, "
             f"       volume_weighted_rsi14, volume_momentum_divergence_13_27_10 "
             f"FROM technical_indicators "
-            f"WHERE stock_id IN ({placeholders}) AND date >= date('now','-{years} years') "
+            f"WHERE stock_id IN ({placeholders}) "
+            f"AND date >= date(?,'-{years} years') AND date <= date(?) "
             f"ORDER BY stock_id ASC, date ASC",
-            list(chunk),
+            [*chunk, as_of_date, as_of_date],
             timeout=120.0,
         ))
     grouped: dict[int, list[dict]] = {sid: [] for sid in stock_ids}
@@ -636,8 +694,13 @@ def _bulk_load_indicators(stock_ids: list[int], limit: int | None = None) -> dic
     return grouped
 
 
-def _bulk_load_chips(symbols: list[str], limit: int = 200) -> dict[str, list[dict]]:
-    """Load chip rows with FinLab canonical data first and legacy chip_data fallback.
+def _bulk_load_chips(
+    symbols: list[str],
+    limit: int = 200,
+    *,
+    as_of_date: str,
+) -> dict[str, list[dict]]:
+    """Load Market-domain chip rows with FinLab canonical data preferred.
 
     `chip_data` stores TWSE/TPEX institution flow by symbol. FinLab V4.1 adds
     canonical tables where listed/OTC keeps institution nets and emerging stocks
@@ -651,13 +714,14 @@ def _bulk_load_chips(symbols: list[str], limit: int = 200) -> dict[str, list[dic
     rows: list[dict] = []
     for chunk in _d1_bind_chunks(symbols):
         placeholders = ",".join("?" * len(chunk))
-        rows.extend(d1_client.query(
+        rows.extend(MARKET_D1_CLIENT.query(
             f"SELECT symbol, date, foreign_net, trust_net, dealer_net, "
             f"       margin_balance, short_balance "
             f"FROM chip_data "
-            f"WHERE symbol IN ({placeholders}) AND date >= date('now','-1 year') "
+            f"WHERE symbol IN ({placeholders}) "
+            f"AND date >= date(?,'-1 year') AND date <= date(?) "
             f"ORDER BY symbol ASC, date ASC",
-            list(chunk),
+            [*chunk, as_of_date, as_of_date],
             timeout=60.0,
         ))
     for r in rows:
@@ -670,20 +734,21 @@ def _bulk_load_chips(symbols: list[str], limit: int = 200) -> dict[str, list[dic
                 "dealer_net": r.get("dealer_net"),
                 "margin_balance": r.get("margin_balance"),
                 "short_balance": r.get("short_balance"),
-                "chip_source": "legacy.chip_data",
+                "chip_source": "market.chip_data",
             }
 
     try:
         canonical_rows: list[dict] = []
         for chunk in _d1_bind_chunks(symbols):
             placeholders = ",".join("?" * len(chunk))
-            canonical_rows.extend(d1_client.query(
+            canonical_rows.extend(MARKET_D1_CLIENT.query(
                 f"SELECT stock_id AS symbol, date, market_segment, foreign_net, trust_net, dealer_net, "
                 f"       margin_balance, short_balance, source, as_of_date "
                 f"FROM canonical_chip_daily "
-                f"WHERE stock_id IN ({placeholders}) AND date >= date('now','-1 year') "
+                f"WHERE stock_id IN ({placeholders}) "
+                f"AND date >= date(?,'-1 year') AND date <= date(?) AND date(as_of_date) <= date(?) "
                 f"ORDER BY stock_id ASC, date ASC",
-                list(chunk),
+                [*chunk, as_of_date, as_of_date, as_of_date],
                 timeout=60.0,
             ))
         for r in canonical_rows:
@@ -703,19 +768,20 @@ def _bulk_load_chips(symbols: list[str], limit: int = 200) -> dict[str, list[dic
             })
             grouped_by_date[sym][r["date"]] = current
     except Exception as exc:
-        logger.debug("[payload_builder] canonical_chip_daily unavailable, using legacy chip_data fallback: %s", exc)
+        logger.debug("[payload_builder] canonical_chip_daily unavailable, using Market chip_data fallback: %s", exc)
 
     try:
         broker_rows: list[dict] = []
         for chunk in _d1_bind_chunks(symbols):
             placeholders = ",".join("?" * len(chunk))
-            broker_rows.extend(d1_client.query(
+            broker_rows.extend(MARKET_D1_CLIENT.query(
                 f"SELECT stock_id AS symbol, date, market_segment, net_shares, estimated_amount, "
                 f"       broker_count, concentration, source, as_of_date "
                 f"FROM canonical_broker_flow_daily "
-                f"WHERE stock_id IN ({placeholders}) AND date >= date('now','-1 year') "
+                f"WHERE stock_id IN ({placeholders}) "
+                f"AND date >= date(?,'-1 year') AND date <= date(?) AND date(as_of_date) <= date(?) "
                 f"ORDER BY stock_id ASC, date ASC",
-                list(chunk),
+                [*chunk, as_of_date, as_of_date, as_of_date],
                 timeout=60.0,
             ))
         for r in broker_rows:
@@ -746,20 +812,26 @@ def _bulk_load_chips(symbols: list[str], limit: int = 200) -> dict[str, list[dic
     return grouped
 
 
-def _bulk_load_sentiment(stock_ids: list[int], limit: int = 90) -> dict[int, list[dict]]:
+def _bulk_load_sentiment(
+    stock_ids: list[int],
+    limit: int = 90,
+    *,
+    as_of_date: str,
+) -> dict[int, list[dict]]:
     if not stock_ids:
         return {}
     rows: list[dict] = []
     for chunk in _d1_bind_chunks(stock_ids):
         placeholders = ",".join("?" * len(chunk))
-        rows.extend(d1_client.query(
+        rows.extend(MARKET_D1_CLIENT.query(
             f"SELECT stock_id, date(published_at) as date, "
             f"       AVG(CASE sentiment WHEN 'positive' THEN 1 WHEN 'negative' THEN -1 ELSE 0 END) as score "
             f"FROM news WHERE stock_id IN ({placeholders}) "
-            f"AND published_at >= date('now','-180 days') "
+            f"AND published_at >= date(?,'-180 days') "
+            f"AND published_at < datetime(?,'+1 day') "
             f"GROUP BY stock_id, date(published_at) "
             f"ORDER BY stock_id ASC, date ASC",
-            list(chunk),
+            [*chunk, as_of_date, as_of_date],
             timeout=60.0,
         ))
     grouped: dict[int, list[dict]] = {sid: [] for sid in stock_ids}
@@ -785,7 +857,7 @@ def _bulk_load_accuracies(
     rows: list[dict] = []
     for chunk in _d1_bind_chunks(stock_ids):
         placeholders = ",".join("?" * len(chunk))
-        rows.extend(d1_client.query(
+        rows.extend(LEARNING_D1_CLIENT.query(
             f"SELECT stock_id, model_name, accuracy, profit_factor, expectancy, "
             f"       avg_win_pct, avg_loss_pct, avg_trade_pnl_r, "
             f"       hit_target_rate, hit_stop_rate "
@@ -835,7 +907,7 @@ def _bulk_load_per_stock_misc(
     margin_rows: list[dict] = []
     for chunk in _d1_bind_chunks(stock_ids):
         placeholders = ",".join("?" * len(chunk))
-        margin_rows.extend(d1_client.query(
+        margin_rows.extend(MARKET_D1_CLIENT.query(
             f"SELECT m1.stock_id, m1.margin_balance, m1.short_ratio "
             f"FROM margin_data m1 "
             f"INNER JOIN ("
@@ -858,7 +930,7 @@ def _bulk_load_per_stock_misc(
     sh_rows: list[dict] = []
     for chunk in _d1_bind_chunks(stock_ids):
         placeholders = ",".join("?" * len(chunk))
-        sh_rows.extend(d1_client.query(
+        sh_rows.extend(MARKET_D1_CLIENT.query(
             f"SELECT s1.stock_id, s1.retail_pct "
             f"FROM shareholding s1 "
             f"INNER JOIN ("
@@ -878,7 +950,7 @@ def _bulk_load_per_stock_misc(
     symbols = [symbol_by_id.get(sid) for sid in stock_ids if symbol_by_id.get(sid)]
     for chunk in _d1_bind_chunks(symbols):
         placeholders = ",".join("?" * len(chunk))
-        rev_rows.extend(d1_client.query(
+        rev_rows.extend(MARKET_D1_CLIENT.query(
             f"SELECT stock_id AS symbol, yoy AS revenue_yoy, mom AS revenue_mom, revenue "
             f"FROM ("
             f"  SELECT r.*, ROW_NUMBER() OVER ("
@@ -904,7 +976,7 @@ def _bulk_load_per_stock_misc(
     try:
         for chunk in _d1_bind_chunks(symbols):
             placeholders = ",".join("?" * len(chunk))
-            fin_rows.extend(d1_client.query(
+            fin_rows.extend(MARKET_D1_CLIENT.query(
                 f"SELECT f.stock_id AS symbol, f.eps, f.roe, f.pe, f.pb, f.dividend_yield "
                 f"FROM canonical_fundamental_features f "
                 f"WHERE f.stock_id IN ({placeholders}) "
@@ -1158,10 +1230,10 @@ def build_payloads(
     logger.info(f"[payload_builder] Building payloads for {len(stock_ids)} active stocks")
 
     # ?? Bulk load all per-stock data ????????????????????????????????????????
-    prices_by_id = _bulk_load_prices(stock_ids)
-    indicators_by_id = _bulk_load_indicators(stock_ids)
-    chips_by_sym = _bulk_load_chips(symbols)
-    sentiment_by_id = _bulk_load_sentiment(stock_ids)
+    prices_by_id = _bulk_load_prices(stock_ids, as_of_date=decision_date)
+    indicators_by_id = _bulk_load_indicators(stock_ids, as_of_date=decision_date)
+    chips_by_sym = _bulk_load_chips(symbols, as_of_date=decision_date)
+    sentiment_by_id = _bulk_load_sentiment(stock_ids, as_of_date=decision_date)
     real_acc_by_id, model_stats_by_id = _bulk_load_accuracies(stock_ids)
     misc_by_id = _bulk_load_per_stock_misc(
         stock_ids,
@@ -1171,7 +1243,7 @@ def build_payloads(
 
     # ?? Stock meta: sector encoding + cross-sectional features ??????????????
     # Sector tags
-    tag_rows = d1_client.query(
+    tag_rows = MARKET_D1_CLIENT.query(
         "SELECT symbol, tag FROM stock_tags WHERE tag_type='industry'"
     )
     sym_to_sector: dict[str, str] = {}

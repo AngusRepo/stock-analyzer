@@ -174,3 +174,6 @@ def test_sequence_cpcv_policy_requires_explicit_enable():
 def test_sequence_model_default_context_fits_finlab_three_year_artifact():
     assert default_seq_len_for_model("PatchTST") == 512
     assert default_seq_len_for_model("iTransformer") == 512
+def test_sequence_spearman_constant_prediction_is_neutral():
+    from app.sequence_training import _spearman_corr
+    assert _spearman_corr(np.ones(8), np.arange(8, dtype=float)) == 0.0

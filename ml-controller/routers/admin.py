@@ -14,6 +14,9 @@ from fastapi import APIRouter, Body, HTTPException
 from pydantic import BaseModel, Field
 
 from services.design_review_client import call_gemini_design_review
+from services.d1_domain_client import D1DataDomain, client_proxy_for_domain
+
+LEARNING_D1_CLIENT = client_proxy_for_domain(D1DataDomain.LEARNING)
 
 router = APIRouter(prefix="/admin", tags=["admin"])
 logger = logging.getLogger(__name__)
@@ -134,11 +137,6 @@ def migration_safety_check(req: MigrationSafetyCheckReq = Body(default=None)):
     if req is None:
         raise HTTPException(400, "Request body required.")
 
-    try:
-        from services.d1_client import query as d1_query
-    except ImportError as e:
-        raise HTTPException(500, f"d1_client import failed: {e}")
-
     end_date = req.end_date or _tw_today()
     start_date = (datetime.fromisoformat(end_date) - timedelta(days=req.window_days)).strftime("%Y-%m-%d")
 
@@ -149,7 +147,7 @@ def migration_safety_check(req: MigrationSafetyCheckReq = Body(default=None)):
     )
 
     # ── Fetch: predictions.model_name='ensemble' only (forecast_data lives there) ─
-    rows = d1_query(
+    rows = LEARNING_D1_CLIENT.query(
         "SELECT stock_id, generated_at, prediction_date, forecast_data FROM predictions "
         "WHERE model_name='ensemble' "
         "AND prediction_date >= ? "

@@ -23,6 +23,7 @@ const promotedState = buildStrategyProductionContributionFirewall({
   base: {
     source: 'adaptive_strategy_policy_v2',
     run_id: 'adaptive-v2-2026-08-02',
+    evidence_owner: { version: 'strategy-evidence-owner-fusion-v3', checksum: 'neutral', weight_effect: 'neutral_until_immutable_calibration', ready_profile_count: 0 },
     weights: {
       'active-a': 0.6,
       'active-b': 0.3,
@@ -55,12 +56,12 @@ const diversityState = buildStrategyProductionContributionFirewall({
   ],
   base: {
     source: 'adaptive_strategy_policy_v2',
-    run_id: 'adaptive-v2|strategy-evidence-owner-fusion-v2:checksum',
+    run_id: 'adaptive-v2|strategy-evidence-owner-fusion-v3:checksum',
     weights: { 'active-a': 1, 'active-b': 0.15 },
     evidence_owner: {
-      version: 'strategy-evidence-owner-fusion-v2',
+      version: 'strategy-evidence-owner-fusion-v3',
       checksum: 'checksum',
-      weight_effect: 'mature_ready_only_bounded_bidirectional',
+      weight_effect: 'neutral_until_immutable_calibration',
       ready_profile_count: 2,
     },
   },
@@ -72,6 +73,56 @@ assert.equal(diversityState.evidence.diversity_retained_strategy_count, 1)
 assert.equal(diversityState.evidence.bounded_bidirectional_adjustment, true)
 assert.equal(diversityState.evidence.safety_reducing_only, false)
 assert.equal(diversityState.evidence.evidence_owner?.checksum, 'checksum')
+assert.throws(() => buildStrategyProductionContributionFirewall({
+  knowledgeCutoffDate: '2026-08-02',
+  strategies,
+  gates: [{ strategy_id: 'active-a', decision: 'active_monitor', allocation_eligible: true }],
+  base: {
+    source: 'adaptive_strategy_policy_v2',
+    weights: { 'active-a': 1 },
+    evidence_owner: { version: 'strategy-evidence-owner-fusion-v2', checksum: 'stale', weight_effect: 'mature_ready_only_bounded_bidirectional', ready_profile_count: 1 },
+  },
+}), /invalid_strategy_evidence_owner_contract/)
+
+const calibratedState = buildStrategyProductionContributionFirewall({
+  knowledgeCutoffDate: '2026-08-02',
+  strategies,
+  gates: [
+    { strategy_id: 'active-a', decision: 'active_monitor', allocation_eligible: true },
+    { strategy_id: 'active-b', decision: 'active_monitor', allocation_eligible: true },
+  ],
+  base: {
+    source: 'adaptive_strategy_policy_v2',
+    weights: { 'active-a': 1.1, 'active-b': 0.9 },
+    evidence_owner: {
+      version: 'strategy-evidence-owner-fusion-v3',
+      checksum: 'owner-checksum',
+      weight_effect: 'immutable_oos_calibrated_bounded_bidirectional',
+      ready_profile_count: 2,
+      calibration_run_id: 'calibration-run',
+      calibration_artifact_checksum: 'a'.repeat(64),
+    },
+  },
+})
+assert.equal(calibratedState.evidence.evidence_owner?.calibration_run_id, 'calibration-run')
+assert.equal(calibratedState.strategy_weights['active-a'] > calibratedState.strategy_weights['active-b'], true)
+assert.throws(() => buildStrategyProductionContributionFirewall({
+  knowledgeCutoffDate: '2026-08-02',
+  strategies,
+  gates: [{ strategy_id: 'active-a', decision: 'active_monitor', allocation_eligible: true }],
+  base: {
+    source: 'adaptive_strategy_policy_v2',
+    weights: { 'active-a': 1 },
+    evidence_owner: {
+      version: 'strategy-evidence-owner-fusion-v3',
+      checksum: 'owner-checksum',
+      weight_effect: 'immutable_oos_calibrated_bounded_bidirectional',
+      ready_profile_count: 1,
+      calibration_run_id: 'calibration-run',
+      calibration_artifact_checksum: null,
+    },
+  },
+}), /invalid_strategy_evidence_owner_contract/)
 
 const unitWeightState = buildStrategyProductionContributionFirewall({
   knowledgeCutoffDate: '2026-08-02',
@@ -102,6 +153,7 @@ const reorderedState = buildStrategyProductionContributionFirewall({
   base: {
     source: 'adaptive_strategy_policy_v2',
     run_id: 'adaptive-v2-2026-08-02',
+    evidence_owner: { version: 'strategy-evidence-owner-fusion-v3', checksum: 'neutral', weight_effect: 'neutral_until_immutable_calibration', ready_profile_count: 0 },
     weights: {
       'candidate-c': 0.1,
       'active-b': 0.3,

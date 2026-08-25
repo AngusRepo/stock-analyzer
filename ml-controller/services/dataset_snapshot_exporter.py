@@ -12,9 +12,12 @@ from typing import Any
 
 import polars as pl
 
-from services import d1_client
-from services.d1_domain_client import client_for_domain
+from services.d1_domain_client import D1DataDomain, client_for_domain, client_proxy_for_domain
 from services.dataset_snapshots import build_dataset_snapshot_manifest, upsert_dataset_snapshot_manifest
+
+CORE_D1_CLIENT = client_proxy_for_domain(D1DataDomain.CORE)
+MARKET_D1_CLIENT = client_proxy_for_domain(D1DataDomain.MARKET)
+LEARNING_D1_CLIENT = client_proxy_for_domain(D1DataDomain.LEARNING)
 
 
 def _date_add(date_s: str, days: int) -> str:
@@ -47,7 +50,7 @@ def _query_date_range(
     end_date: str,
     chunk_days: int,
     *,
-    query_client: Any = d1_client,
+    query_client: Any,
 ) -> tuple[pl.DataFrame, int]:
     frames: list[pl.DataFrame] = []
     query_count = 0
@@ -292,7 +295,7 @@ def build_finlab_5y_raw_archive_metadata(req: FinLabRawArchiveMetadataRequest) -
 
 
 def _query_active_stocks(start_date: str, end_date: str) -> pl.DataFrame:
-    return _frame(d1_client.query(
+    return _frame(CORE_D1_CLIENT.query(
         """
         SELECT id, symbol, name, market, sector, in_current_watchlist,
                listed_date, delisted_date
@@ -316,11 +319,12 @@ def _query_prices(start_date: str, end_date: str, chunk_days: int) -> tuple[pl.D
         start_date,
         end_date,
         chunk_days,
+        query_client=MARKET_D1_CLIENT,
     )
 
 
 def _query_market_risk(start_date: str, end_date: str) -> pl.DataFrame:
-    return _frame(d1_client.query(
+    return _frame(CORE_D1_CLIENT.query(
         """
         SELECT *
         FROM market_risk
@@ -345,11 +349,12 @@ def _query_sentiment_scores(start_date: str, end_date: str, chunk_days: int) -> 
         start_date,
         end_date,
         chunk_days,
+        query_client=MARKET_D1_CLIENT,
     )
 
 
 def _query_monthly_revenue(start_date: str, end_date: str) -> pl.DataFrame:
-    return _frame(d1_client.query(
+    return _frame(MARKET_D1_CLIENT.query(
         """
         SELECT stock_id, date, revenue, revenue_yoy, revenue_mom
         FROM monthly_revenue
@@ -362,7 +367,7 @@ def _query_monthly_revenue(start_date: str, end_date: str) -> pl.DataFrame:
 
 
 def _query_canonical_fundamentals(end_date: str) -> pl.DataFrame:
-    return _frame(d1_client.query(
+    return _frame(MARKET_D1_CLIENT.query(
         """
         SELECT stock_id, period, available_date, eps, roe, pe, pb,
                dividend_yield, revenue_growth_yoy, source
@@ -389,6 +394,7 @@ def _query_margin_data(start_date: str, end_date: str, chunk_days: int) -> tuple
         start_date,
         end_date,
         chunk_days,
+        query_client=MARKET_D1_CLIENT,
     )
 
 
@@ -404,6 +410,7 @@ def _query_shareholding(start_date: str, end_date: str, chunk_days: int) -> tupl
         start_date,
         end_date,
         chunk_days,
+        query_client=MARKET_D1_CLIENT,
     )
 
 
@@ -522,6 +529,7 @@ def export_backtest_dataset_snapshot(req: DatasetSnapshotExportRequest) -> dict[
         req.start_date,
         req.end_date,
         chunk_days,
+        query_client=MARKET_D1_CLIENT,
     )
     chips, chip_queries = _query_date_range(
         """
@@ -535,6 +543,7 @@ def export_backtest_dataset_snapshot(req: DatasetSnapshotExportRequest) -> dict[
         req.start_date,
         req.end_date,
         chunk_days,
+        query_client=MARKET_D1_CLIENT,
     )
     market_risk = _query_market_risk(req.start_date, req.end_date)
     sentiment, sentiment_queries = _query_sentiment_scores(req.start_date, req.end_date, chunk_days)
@@ -592,7 +601,7 @@ def export_backtest_dataset_snapshot(req: DatasetSnapshotExportRequest) -> dict[
             req.start_date,
             req.end_date,
             chunk_days,
-            query_client=client_for_domain("learning"),
+            query_client=LEARNING_D1_CLIENT,
         )
         if signals.is_empty():
             raise RuntimeError("dataset_export_no_ensemble_signals")

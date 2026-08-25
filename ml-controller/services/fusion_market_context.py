@@ -283,6 +283,8 @@ def _index_features(rows: list[dict[str, Any]], signal_date: str) -> dict[str, A
 def load_pit_market_contexts(
     query_fn: Callable[[str, list[Any]], list[dict[str, Any]]],
     signal_dates: list[str],
+    *,
+    core_query_fn: Callable[[str, list[Any]], list[dict[str, Any]]] | None = None,
 ) -> dict[tuple[str, str], dict[str, Any]]:
     dates = sorted({str(value)[:10] for value in signal_dates if str(value)[:10]})
     if not dates:
@@ -300,7 +302,7 @@ def load_pit_market_contexts(
         """,
         [start, end],
     )
-    risk_rows = query_fn(
+    risk_rows = (core_query_fn or query_fn)(
         """
         SELECT date, risk_score, twii_bias, twii_vol20
         FROM market_risk WHERE date BETWEEN ? AND ? ORDER BY date

@@ -6,7 +6,10 @@ import json
 import math
 from typing import Any
 
-from services import d1_client
+from services.d1_domain_client import D1DataDomain, client_proxy_for_domain
+
+CORE_D1_CLIENT = client_proxy_for_domain(D1DataDomain.CORE)
+LEARNING_D1_CLIENT = client_proxy_for_domain(D1DataDomain.LEARNING)
 from services.model_cpcv_evidence import build_foundation_forecast_validation_evidence
 
 
@@ -109,19 +112,17 @@ def fetch_verified_foundation_prediction_rows(
         params.append(f"-{int(lookback_days)} days")
     params.append(int(limit))
 
-    return d1_client.query(
+    prediction_rows = LEARNING_D1_CLIENT.query(
         f"""
         SELECT
           p.id,
           p.stock_id,
-          s.symbol,
           p.prediction_date,
           p.generated_at,
           p.verified_at,
           p.actual_return_pct,
           p.forecast_data
         FROM predictions p
-        JOIN stocks s ON p.stock_id = s.id
         WHERE p.model_name = ?
           AND p.verified_at IS NOT NULL
           AND p.actual_return_pct IS NOT NULL
@@ -132,6 +133,23 @@ def fetch_verified_foundation_prediction_rows(
         params,
         timeout=60.0,
     )
+    stock_ids = sorted({int(row["stock_id"]) for row in prediction_rows if row.get("stock_id") is not None})
+    symbol_by_id: dict[int, str] = {}
+    for offset in range(0, len(stock_ids), 80):
+        chunk = stock_ids[offset : offset + 80]
+        placeholders = ",".join("?" for _ in chunk)
+        for identity in CORE_D1_CLIENT.query(
+            f"SELECT id, symbol FROM stocks WHERE id IN ({placeholders})",
+            chunk,
+            timeout=30.0,
+        ):
+            if identity.get("id") is not None and identity.get("symbol"):
+                symbol_by_id[int(identity["id"])] = str(identity["symbol"])
+    return [
+        {**row, "symbol": symbol_by_id[int(row["stock_id"])]}
+        for row in prediction_rows
+        if row.get("stock_id") is not None and int(row["stock_id"]) in symbol_by_id
+    ]
 
 
 def build_foundation_evidence_from_d1(

@@ -64,12 +64,14 @@ from typing import Any, Optional
 import numpy as np
 import polars as pl
 
-from services import d1_client
+from services.d1_domain_client import D1DataDomain, client_proxy_for_domain
 from services.dataset_snapshots import latest_dataset_snapshot
 from services.research_data_access import ResearchDataMode, resolve_research_data_access
 from services.similarity_evidence import similarity_components, symbol_cluster_evidence
 
 logger = logging.getLogger(__name__)
+CORE_D1_CLIENT = client_proxy_for_domain(D1DataDomain.CORE)
+MARKET_D1_CLIENT = client_proxy_for_domain(D1DataDomain.MARKET)
 
 BACKTEST_SNAPSHOT_COMPONENTS = ("stocks", "prices", "indicators", "chips", "market_risk")
 
@@ -584,7 +586,7 @@ class BacktestDataset:
             FROM stocks
             WHERE {' AND '.join(base_where)}
         """
-        rows = d1_client.query(sql, base_params)
+        rows = CORE_D1_CLIENT.query(sql, base_params)
         # 2026-04-18 #32 dry-run fix: delisted_date is sparse (mostly null with
         # occasional date strings) → default schema infer crashes with
         # "could not append value '2026-01-22' of type str". Set infer_schema_length=None
@@ -623,7 +625,7 @@ class BacktestDataset:
                 FROM stock_prices
                 WHERE date >= ? AND date <= ?
             """
-            rows = d1_client.query(sql, [chunk_start, chunk_end])
+            rows = MARKET_D1_CLIENT.query(sql, [chunk_start, chunk_end])
             if rows:
                 df = pl.DataFrame(rows, infer_schema_length=None)
                 # Map stock_id → symbol via join
@@ -665,7 +667,7 @@ class BacktestDataset:
                 FROM technical_indicators
                 WHERE date >= ? AND date <= ?
             """
-            rows = d1_client.query(sql, [chunk_start, chunk_end])
+            rows = MARKET_D1_CLIENT.query(sql, [chunk_start, chunk_end])
             if rows:
                 df = pl.DataFrame(rows, infer_schema_length=None)
                 map_df = pl.DataFrame({"stock_id": list(symbol_map.keys()), "symbol": list(symbol_map.values())})
@@ -710,12 +712,12 @@ class BacktestDataset:
                 FROM chip_data
                 WHERE date >= ? AND date <= ?
             """
-            rows = d1_client.query(sql, [chunk_start, chunk_end])
+            rows = MARKET_D1_CLIENT.query(sql, [chunk_start, chunk_end])
             if rows:
                 chunks.append(pl.DataFrame(rows, infer_schema_length=None))
 
             try:
-                canonical_rows = d1_client.query(
+                canonical_rows = MARKET_D1_CLIENT.query(
                     """
                     SELECT stock_id AS symbol, date,
                            margin_usage_ratio,
@@ -733,7 +735,7 @@ class BacktestDataset:
                 pass
 
             try:
-                broker_rows = d1_client.query(
+                broker_rows = MARKET_D1_CLIENT.query(
                     """
                     SELECT stock_id AS symbol, date,
                            net_shares AS broker_net_shares,
@@ -781,7 +783,7 @@ class BacktestDataset:
             WHERE date >= ? AND date <= ?
             ORDER BY date
         """
-        rows = d1_client.query(sql, [start_date, end_date])
+        rows = CORE_D1_CLIENT.query(sql, [start_date, end_date])
         if not rows:
             return pl.DataFrame()
         df = pl.DataFrame(rows, infer_schema_length=None)
@@ -1069,17 +1071,16 @@ class MLPredictionsCache:
         Cross-references stocks.id → symbol so the dict is keyed by symbol
         (matching Candidate.symbol). Returns empty cache if no D1 rows.
         """
-        from services.d1_client import query as d1_query
-        sql = """
-            SELECT s.symbol, p.prediction_date AS d, p.direction_accuracy AS conf
-            FROM predictions p
-            JOIN stocks s ON s.id = p.stock_id
-            WHERE p.model_name = 'ensemble'
-              AND p.prediction_date >= ?
-              AND p.prediction_date <= ?
-              AND p.direction_accuracy IS NOT NULL
-        """
-        rows = d1_query(sql, [start_date, end_date])
+        from services.domain_stock_read_models import load_learning_rows_with_symbol
+        rows = load_learning_rows_with_symbol(
+            """SELECT stock_id, prediction_date AS d, direction_accuracy AS conf
+                 FROM predictions
+                WHERE model_name='ensemble'
+                  AND prediction_date >= ?
+                  AND prediction_date <= ?
+                  AND direction_accuracy IS NOT NULL""",
+            [start_date, end_date],
+        )
         out: dict[tuple[str, str], float] = {}
         for r in rows:
             try:

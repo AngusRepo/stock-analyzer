@@ -11,13 +11,6 @@ def test_domain_database_id_prefers_specific_then_legacy(monkeypatch):
     assert d1_domain_client.database_id_for_domain("market") == "legacy"
 
     monkeypatch.setenv("MULTI_D1_ACTIVE_DOMAINS", "market")
-    try:
-        d1_domain_client.database_id_for_domain("market")
-    except RuntimeError as exc:
-        assert str(exc) == "multi_d1_strict_routing_not_closed:market"
-    else:
-        raise AssertionError("active domains must remain closed while the routing contract is incomplete")
-    monkeypatch.setattr(d1_domain_client, "MULTI_D1_STRICT_ROUTING_READY", True)
     assert d1_domain_client.database_id_for_domain("market") == "market-db"
 
 

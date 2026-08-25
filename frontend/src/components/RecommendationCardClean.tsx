@@ -1578,7 +1578,7 @@ function StrategyRouterEvidenceBlock({ router }: { router: StrategyRouterSummary
   return (
     <div className="rounded-lg border border-emerald-500/20 bg-emerald-500/[0.05] p-3 text-xs">
       <div className="mb-2 flex items-center justify-between gap-3">
-        <span className="font-medium text-emerald-700 dark:text-emerald-300">L1.5 PLE/Listwise Router</span>
+        <span className="font-medium text-emerald-700 dark:text-emerald-300">L1.5 連續策略路由</span>
         <span className="sv-num text-[11px] text-muted-foreground">diversified ML slate, no forced fill</span>
       </div>
       <div className="grid gap-2 sm:grid-cols-3">
@@ -1598,7 +1598,7 @@ function StrategyRouterEvidenceBlock({ router }: { router: StrategyRouterSummary
         <MetricPill label="top-up scope" value={router.no_topup_policy_scope ?? 'formal_ml_slate_no_minimum_fill'} />
       </div>
       <div className="mt-2 flex flex-wrap gap-1.5 text-[11px] text-muted-foreground">
-        <span className="rounded-full border border-border/40 bg-background/50 px-2 py-0.5">{router.router_method ?? 'multi_strategy_ple_listwise_distillation_router'}</span>
+        <span className="rounded-full border border-border/40 bg-background/50 px-2 py-0.5">{router.router_method ?? 'deterministic_continuous_strategy_policy_router_v2'}</span>
         <span className="rounded-full border border-border/40 bg-background/50 px-2 py-0.5">{router.router_scope ?? 'full_candidate_slate_to_diversified_ml_slate'}</span>
         <span className="rounded-full border border-border/40 bg-background/50 px-2 py-0.5">{router.decision_policy ?? 'diversified_ml_slate_not_topk'}</span>
         <span className="rounded-full border border-border/40 bg-background/50 px-2 py-0.5">{router.selection_policy ?? 'quality_floor_max_capacity_no_forced_fill'}</span>
@@ -1791,7 +1791,7 @@ function StrategyPortfolioIntelligenceBlock({ portfolio }: { portfolio: Strategy
         <span className="rounded-full border border-border/40 bg-background/50 px-2 py-0.5">{portfolio.decision_policy ?? 'strategy_asset_weighting_not_stock_selector'}</span>
         <span className="rounded-full border border-border/40 bg-background/50 px-2 py-0.5">{portfolio.selection_policy ?? 'no_stock_shrink_no_topk_no_minimum_fill'}</span>
         <span className="rounded-full border border-border/40 bg-background/50 px-2 py-0.5">{portfolio.output_scope ?? 'strategy_prior_family_prior_reliability_crowding_diversification'}</span>
-        <span className="rounded-full border border-border/40 bg-background/50 px-2 py-0.5">{portfolio.method ?? 'finlab_style_strategy_as_asset_portfolio_metrics'}</span>
+        <span className="rounded-full border border-border/40 bg-background/50 px-2 py-0.5">{portfolio.method ?? 'strategy_portfolio_exact_metrics_with_structural_diversity_v2'}</span>
         <span className="rounded-full border border-border/40 bg-background/50 px-2 py-0.5">source {portfolio.portfolio_metric_status ?? 'unknown'} / {portfolio.portfolio_metric_source ?? 'metric source unavailable'}</span>
         <span className="rounded-full border border-border/40 bg-background/50 px-2 py-0.5">dims {dimensions}{moreDimensions ? ` +${moreDimensions}` : ''}</span>
         <span className="rounded-full border border-border/40 bg-background/50 px-2 py-0.5">{familyIds}</span>

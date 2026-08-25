@@ -10,11 +10,10 @@
 
 import { resolveReportDeliveryChannel } from './reportDeliveryChannel'
 import { readScoreV2Snapshot, type ScoreV2StorageRow } from './scoreV2Taxonomy'
+import { databaseForDataDomain } from './dataDomainRegistry'
+import type { Bindings } from '../types'
 
-interface Env {
-  DB: any
-  KV: any
-}
+type Env = Pick<Bindings, 'DB' | 'KV'> & Partial<Bindings>
 
 export type LogLevel = 'info' | 'warn' | 'error'
 
@@ -45,7 +44,7 @@ export async function notifyCronFailure(
   const fullMeta = { ...meta, error: msg, timestamp: new Date().toISOString() }
 
   console.error(`[CronFail] ${cronName}: ${msg}`, meta)
-  await writeSystemLog(env.DB, 'error', cronName, `Cron 失敗: ${msg}`, fullMeta)
+  await writeSystemLog(databaseForDataDomain(env, 'ops'), 'error', cronName, `Cron 失敗: ${msg}`, fullMeta)
 }
 
 export async function notifyCronSuccess(
@@ -54,7 +53,7 @@ export async function notifyCronSuccess(
   meta?: Record<string, any>,
 ): Promise<void> {
   const summary = meta ? JSON.stringify(meta) : 'OK'
-  await writeSystemLog(env.DB, 'info', cronName, `Cron 完成: ${summary}`, meta)
+  await writeSystemLog(databaseForDataDomain(env, 'ops'), 'info', cronName, `Cron 完成: ${summary}`, meta)
 }
 
 

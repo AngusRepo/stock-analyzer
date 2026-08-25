@@ -9,7 +9,7 @@ from typing import Any, Literal
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 
-from services import d1_client
+from services.d1_domain_client import D1DataDomain, client_proxy_for_domain
 from services.allocator_ev_fusion_artifact_builder import (
     build_allocator_ev_fusion_artifact_from_rows,
     load_allocator_ev_fusion_oof_training_rows,
@@ -21,9 +21,12 @@ from services.l4_alpha_ev_resolver import (
     SNAPSHOT_BACKFILL_SOURCE,
 )
 from services.model_artifact_registry import upsert_artifact_record
+from services.trading_session_maturity import fifth_session_maturity_cutoff
 
 
 router = APIRouter(prefix="/allocator_ev_fusion", tags=["allocator_ev_fusion"])
+LEARNING_D1_CLIENT = client_proxy_for_domain(D1DataDomain.LEARNING)
+CORE_D1_CLIENT = client_proxy_for_domain(D1DataDomain.CORE)
 
 
 DIRECT_REFRESH_PROMOTION_OWNER = "active8_oof_lifecycle"
@@ -64,34 +67,21 @@ class AllocatorEvFeatureSnapshotBackfillReq(BaseModel):
 
 def _latest_mature_feature_date(max_date: str | None) -> str:
     cutoff = max_date or "now"
-    rows = d1_client.query(
+    mature_cutoff = fifth_session_maturity_cutoff(cutoff)
+    if not mature_cutoff:
+        raise HTTPException(status_code=409, detail="allocator_ev_fusion_market_calendar_insufficient")
+    rows = LEARNING_D1_CLIENT.query(
         """
-        WITH price_horizons AS (
-            SELECT
-                stock_id,
-                date(date) AS price_date,
-                LEAD(date(date), 5) OVER (
-                    PARTITION BY stock_id ORDER BY date(date)
-                ) AS exit_date
-            FROM stock_prices
-            WHERE date(date) <= date(?)
-        )
         SELECT MAX(date(fs.snapshot_date)) AS end_date
         FROM allocator_ev_feature_snapshots fs
-        JOIN price_horizons ph
-          ON ph.stock_id = fs.stock_id
-         AND ph.price_date = date(fs.snapshot_date)
         WHERE fs.snapshot_source = ?
           AND fs.as_of_guard = ?
           AND date(fs.snapshot_date) <= date(?)
-          AND date(ph.exit_date) <= date(?)
         """,
         [
-            cutoff,
             SNAPSHOT_BACKFILL_SOURCE,
             SNAPSHOT_BACKFILL_AS_OF_GUARD,
-            cutoff,
-            cutoff,
+            mature_cutoff,
         ],
     )
     end_date = str((rows[0] if rows else {}).get("end_date") or "").strip()
@@ -107,7 +97,7 @@ def _defaults_for_cadence(cadence: str) -> dict[str, int]:
 
 
 def _latest_ready_oof_cohort() -> str:
-    rows = d1_client.query(
+    rows = LEARNING_D1_CLIENT.query(
         """
         SELECT c.cohort_id
         FROM active8_oof_cohorts c
@@ -243,7 +233,7 @@ async def refresh_allocator_ev_fusion_artifact(req: AllocatorEvFusionRefreshReq)
             )
         try:
             rows = load_allocator_ev_fusion_oof_training_rows(
-                d1_client.query,
+                LEARNING_D1_CLIENT.query,
                 cohort_id=cohort_id,
                 knowledge_cutoff_date=req.end_date,
                 limit=row_limit,
@@ -261,7 +251,8 @@ async def refresh_allocator_ev_fusion_artifact(req: AllocatorEvFusionRefreshReq)
         end_date = _latest_mature_feature_date(req.end_date)
         knowledge_cutoff_date = req.end_date or end_date
         rows = load_allocator_ev_fusion_training_rows(
-            d1_client.query,
+            LEARNING_D1_CLIENT.query,
+            core_query_fn=CORE_D1_CLIENT.query,
             end_date=end_date,
             lookback_days=lookback_days,
             limit=row_limit,

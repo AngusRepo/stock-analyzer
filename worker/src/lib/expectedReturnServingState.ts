@@ -43,7 +43,7 @@ export interface ExpectedReturnServingState {
   state: 'production_primary' | 'no_eligible_owner'
   selection_signal_owner: 'score_v2_formal_ml'
   expected_return_owner: ExpectedReturnOwner | null
-  allocation_utility_owner: 'expected_return_owner' | 'score_v2_formal_ml'
+  allocation_utility_owner: 'expected_return_owner' | 'formal_ml_buy_admission'
   execution_owner: 'allocator_opb_policy'
   execution_scope: 'recommendation_allocation_only_no_order_submission'
   action_gate: ExpectedReturnActionGate

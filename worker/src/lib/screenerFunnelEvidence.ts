@@ -82,7 +82,7 @@ export interface StrategyPortfolioIntelligenceHealth {
   schema_version: 'daily_strategy_portfolio_intelligence_health_v1'
   layer: 'L1.25'
   source: 'screener_funnel_items.layer125_finlab_portfolio_intelligence'
-  method: 'finlab_style_strategy_as_asset_portfolio_metrics'
+  method: 'strategy_portfolio_exact_metrics_with_structural_diversity_v2'
   decision_policy: 'strategy_asset_weighting_not_stock_selector'
   selection_policy: 'no_stock_shrink_no_topk_no_minimum_fill'
   output_scope: 'strategy_prior_family_prior_reliability_crowding_diversification'
@@ -613,7 +613,7 @@ function buildLayer125FinLabPortfolioIntelligenceSummary(
     schema_version: 'layer125_finlab_portfolio_intelligence_summary_v1',
     source: 'screener_funnel_items',
     owner: 'worker_strategy_portfolio_intelligence',
-    method: 'finlab_style_strategy_as_asset_portfolio_metrics',
+    method: 'strategy_portfolio_exact_metrics_with_structural_diversity_v2',
     decision_policy: 'strategy_asset_weighting_not_stock_selector',
     selection_policy: 'no_stock_shrink_no_topk_no_minimum_fill',
     output_scope: 'strategy_prior_family_prior_reliability_crowding_diversification',
@@ -863,8 +863,8 @@ function buildLayer15MultiStrategyRouterSummary(
   return {
     schema_version: 'layer15_multi_strategy_router_summary_v1',
     source: 'screener_funnel_items',
-    owner: 'worker_multi_strategy_ple_router',
-    router_method: 'multi_strategy_ple_listwise_distillation_router',
+    owner: 'worker_multi_strategy_policy_router',
+    router_method: 'deterministic_continuous_strategy_policy_router_v2',
     router_scope: 'full_candidate_slate_to_diversified_ml_slate',
     decision_policy: 'diversified_ml_slate_not_topk',
     selection_policy: 'continuous_weight_full_universe_no_candidate_veto',
@@ -1172,7 +1172,7 @@ export function summarizeStrategyPortfolioIntelligenceHealth(
     schema_version: 'daily_strategy_portfolio_intelligence_health_v1',
     layer: 'L1.25',
     source: 'screener_funnel_items.layer125_finlab_portfolio_intelligence',
-    method: 'finlab_style_strategy_as_asset_portfolio_metrics',
+    method: 'strategy_portfolio_exact_metrics_with_structural_diversity_v2',
     decision_policy: 'strategy_asset_weighting_not_stock_selector',
     selection_policy: 'no_stock_shrink_no_topk_no_minimum_fill',
     output_scope: 'strategy_prior_family_prior_reliability_crowding_diversification',

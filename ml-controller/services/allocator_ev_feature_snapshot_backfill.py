@@ -6,7 +6,7 @@ import json
 from datetime import date, datetime, timedelta, timezone
 from typing import Any, Callable
 
-from services import d1_client
+
 from services.active8_score_semantics import MODEL_TARGET_SEMANTIC_VERSION
 from services.d1_domain_client import D1DataDomain, client_for_domain
 from services.ev_lineage_contract import (
@@ -786,7 +786,7 @@ def build_allocator_ev_feature_snapshots_for_date(
     *,
     snapshot_date: str,
     next_session_date: str | None = None,
-    query_fn: QueryFn = d1_client.query,
+    query_fn: QueryFn | None = None,
     write_fn: Callable[[list[tuple[str, list[Any]]]], dict[str, Any]] | None = None,
     dry_run: bool = True,
     candidate_limit: int = 1000,
@@ -801,7 +801,7 @@ def build_allocator_ev_feature_snapshots_for_date(
     resolved_lineage_cohort_id = str(lineage_cohort_id or run_id).strip()
     if not resolved_lineage_cohort_id:
         raise ValueError("allocator_snapshot_lineage_cohort_id_missing")
-    production_domain_routing = query_fn is d1_client.query
+    production_domain_routing = query_fn is None
     if production_domain_routing:
         learning_client = client_for_domain(D1DataDomain.LEARNING)
         learning_query = learning_client.query
@@ -816,19 +816,21 @@ def build_allocator_ev_feature_snapshots_for_date(
             )
         )
     else:
+        if query_fn is None:
+            raise ValueError("allocator_snapshot_query_fn_missing")
         learning_query = query_fn
         ops_query = query_fn
         core_query = query_fn
         market_query = query_fn
         learning_writer = write_fn or (
-            lambda items: d1_client.batch_execute(
+            lambda items: client_for_domain(D1DataDomain.LEARNING).batch_execute(
                 items,
                 timeout=60.0,
                 chunk_size=100,
             )
         )
     l4_result = _build_l4_asof_artifact(
-        query_fn,
+        learning_query,
         snapshot_date=snapshot_date,
         lookback_days=l4_lookback_days,
         min_samples=l4_min_samples,
@@ -842,7 +844,7 @@ def build_allocator_ev_feature_snapshots_for_date(
     )
 
     raw_candidates = load_allocator_ev_snapshot_candidate_rows(
-        query_fn,
+        learning_query,
         snapshot_date=snapshot_date,
         next_session_date=next_session_date,
         limit=candidate_limit,
@@ -853,7 +855,11 @@ def build_allocator_ev_feature_snapshots_for_date(
     )
     market_context_load_error: str | None = None
     try:
-        market_contexts = load_pit_market_contexts(query_fn, [snapshot_date])
+        market_contexts = load_pit_market_contexts(
+            market_query if production_domain_routing else query_fn,
+            [snapshot_date],
+            core_query_fn=core_query if production_domain_routing else None,
+        )
     except Exception as exc:  # noqa: BLE001 - missing context is explicit and blocks V12 promotion coverage.
         market_contexts = {}
         market_context_load_error = f"{type(exc).__name__}:{exc}"
@@ -1185,7 +1191,7 @@ def backfill_allocator_ev_feature_snapshots(
     start_date: str,
     end_date: str,
     next_session_date: str | None = None,
-    query_fn: QueryFn = d1_client.query,
+    query_fn: QueryFn | None = None,
     dry_run: bool = True,
     candidate_limit: int = 1000,
     l4_lookback_days: int = 90,

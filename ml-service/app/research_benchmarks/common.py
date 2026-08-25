@@ -37,7 +37,7 @@ def rank_ic(pred: np.ndarray, actual: np.ndarray) -> float:
     mask = np.isfinite(pred) & np.isfinite(actual)
     pred = pred[mask]
     actual = actual[mask]
-    if len(pred) < 2:
+    if len(pred) < 2 or np.std(pred) == 0 or np.std(actual) == 0:
         return 0.0
     try:
         from scipy.stats import spearmanr
@@ -45,8 +45,20 @@ def rank_ic(pred: np.ndarray, actual: np.ndarray) -> float:
         value = spearmanr(pred, actual).correlation
         return float(value) if math.isfinite(float(value)) else 0.0
     except Exception:
-        pred_rank = np.argsort(np.argsort(pred))
-        actual_rank = np.argsort(np.argsort(actual))
+        def average_rank(values: np.ndarray) -> np.ndarray:
+            order = np.argsort(values, kind='mergesort')
+            ranks = np.empty(len(values), dtype=float)
+            start = 0
+            while start < len(values):
+                end = start + 1
+                while end < len(values) and values[order[end]] == values[order[start]]:
+                    end += 1
+                ranks[order[start:end]] = (start + end - 1) / 2.0
+                start = end
+            return ranks
+
+        pred_rank = average_rank(pred)
+        actual_rank = average_rank(actual)
         if np.std(pred_rank) == 0 or np.std(actual_rank) == 0:
             return 0.0
         return float(np.corrcoef(pred_rank, actual_rank)[0, 1])

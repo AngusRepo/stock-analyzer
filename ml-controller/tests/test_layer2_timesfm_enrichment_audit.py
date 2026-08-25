@@ -50,7 +50,7 @@ def test_write_layer2_timesfm_enrichment_audit_persists_feature_sidecar_evidence
             "status": "blocked",
             "gate": {
                 "allowed": False,
-                "reason": "timesfm_l2_sidecar_retired_by_model_pool",
+                "reason": "timesfm_l2_sidecar_not_serving_eligible",
                 "status": "retired",
             },
         },
@@ -68,7 +68,7 @@ def test_write_layer2_timesfm_enrichment_audit_persists_feature_sidecar_evidence
     assert active_params[6] == "timesfm_l2_feature_input_active"
     assert missing_params[2] == "2317"
     assert missing_params[4] == "layer2_timesfm_enrichment"
-    assert missing_params[6] == "timesfm_l2_sidecar_missing:timesfm_l2_sidecar_retired_by_model_pool"
+    assert missing_params[6] == "timesfm_l2_sidecar_missing:timesfm_l2_sidecar_not_serving_eligible"
 
     evidence = json.loads(active_params[10])
     assert evidence["schema_version"] == "l2_timesfm_enrichment_evidence_v1"
@@ -85,5 +85,5 @@ def test_write_layer2_timesfm_enrichment_audit_persists_feature_sidecar_evidence
 
     missing_evidence = json.loads(missing_params[10])
     assert missing_evidence["evidence_status"] == "missing_sidecar"
-    assert missing_evidence["l2_gate_reason"] == "timesfm_l2_sidecar_retired_by_model_pool"
+    assert missing_evidence["l2_gate_reason"] == "timesfm_l2_sidecar_not_serving_eligible"
     assert missing_evidence["l2_gate_status"] == "retired"

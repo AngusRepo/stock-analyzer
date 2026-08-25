@@ -112,6 +112,7 @@ finlab_secret = modal.Secret.from_name("stockvision-finlab")
 #     CF_API_TOKEN=<cloudflare-api-token> \
 #     CF_ACCOUNT_ID=<cloudflare-account-id> \
 #     CF_D1_DB_ID=<cloudflare-d1-db-id> \
+#     CF_D1_LEARNING_DB_ID=<cloudflare-learning-d1-db-id> \
 #     STOCKVISION_AUTH_TOKEN=<stockvision-auth-token> \
 #     STOCKVISION_WORKER_URL=<stockvision-worker-url>
 # If the secret is missing, keep deploy importable but Optuna routes will fail.

@@ -318,6 +318,18 @@ def test_recommendation_service_uses_opb_packet_without_full_exposure_renormaliz
             "objective_evidence": {"objective": "mean_variance_alpha_utility_with_cash"},
         },
     )
+    monkeypatch.setattr(
+        recommendation_service,
+        "similarity_components",
+        lambda symbols, return_history, **kwargs: {
+            "schema_version": "similarity-evidence-v1",
+            "method": "test",
+            "components": [[symbol] for symbol in symbols],
+            "component_count": len(symbols),
+            "symbol_to_component": {symbol: index for index, symbol in enumerate(symbols)},
+            "pairwise_correlations": {},
+        },
+    )
 
     rows = [
         _recommendation_row("AAA", 90.0, 0.05),
@@ -332,6 +344,30 @@ def test_recommendation_service_uses_opb_packet_without_full_exposure_renormaliz
                 "engine": "sparse_tangent_inverse_risk",
                 "controller": "OnlinePortfolioBandit",
                 "buy_signal_count": 3,
+                "opb_arm_prior": {
+                    "artifact_id": "opb_arm_prior:test",
+                    "model_version": "opb-prior-test",
+                    "expected_return_owner": "allocator_ev_fusion",
+                    "source_expected_return_contract_version": recommendation_service.ALLOCATOR_EV_ARTIFACT_CONTRACT_VERSION,
+                    "source_expected_return_semantic": recommendation_service.ALLOCATOR_EV_EXPECTED_RETURN_SEMANTIC,
+                    "validation": {
+                        "decision": "PASS",
+                        "failed_checks": [],
+                        "production_control_approved": True,
+                        "evaluation_method": "full_information_deterministic_arm_replay",
+                        "incumbent_net_reward_non_degradation_passed": True,
+                        "diversity_non_degradation_passed": True,
+                        "turnover_cost_non_degradation_passed": True,
+                    },
+                    "arm_priors": [
+                        {
+                            "arm_id": arm.arm_id,
+                            "prior_reward_mean": arm.prior_reward_mean,
+                            "prior_samples": arm.prior_samples,
+                        }
+                        for arm in online_portfolio_bandit.DEFAULT_ARMS
+                    ],
+                },
             },
             "allocator_ev_fusion": _fusion_policy_value_artifact(),
         },

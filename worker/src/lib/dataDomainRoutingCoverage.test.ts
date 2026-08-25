@@ -69,12 +69,85 @@ const uniqueFindings = [...new Map(
     finding,
   ]),
 ).values()]
-const directLegacyClosed = uniqueFindings.length === 0
+const pythonLegacyBudgets = new Map<string, number>()
+const pythonDomainProxyContracts = new Map<string, {
+  classMarker: string
+  factoryMarker: string
+  bindingMarker: string
+  expectedQueryCalls: number
+}>([
+  ['ml-controller/services/model_artifact_registry.py', {
+    classMarker: 'class _LearningArtifactRegistryD1Client:',
+    factoryMarker: 'return client_for_domain(D1DataDomain.LEARNING)',
+    bindingMarker: 'd1_client = _LearningArtifactRegistryD1Client()',
+    expectedQueryCalls: 4,
+  }],
+  ['ml-controller/strategy_mining_job_main.py', {
+    classMarker: 'class _ResearchD1ClientProxy:',
+    factoryMarker: 'return client_for_domain(D1DataDomain.RESEARCH).query(*args, **kwargs)',
+    bindingMarker: 'd1_client = _ResearchD1ClientProxy()',
+    expectedQueryCalls: 1,
+  }],
+])
+
+function pythonSourceFiles(root: string): string[] {
+  if (!fs.existsSync(root)) return []
+  return fs.readdirSync(root, { withFileTypes: true }).flatMap((entry) => {
+    const fullPath = path.join(root, entry.name)
+    if (entry.isDirectory()) {
+      if (['.venv', '__pycache__', 'tests'].includes(entry.name)) return []
+      return pythonSourceFiles(fullPath)
+    }
+    return entry.isFile() && entry.name.endsWith('.py') ? [fullPath] : []
+  })
+}
+
+const repoRoot = path.resolve(process.cwd(), '..')
+const pythonRoots = [
+  path.join(repoRoot, 'ml-controller'),
+  path.join(repoRoot, 'ml-service'),
+]
+const pythonFiles = pythonRoots.flatMap((root) => (
+  fs.existsSync(root) && fs.statSync(root).isFile() ? [root] : pythonSourceFiles(root)
+))
+const pythonLegacyCounts = new Map<string, number>()
+for (const file of pythonFiles) {
+  const source = fs.readFileSync(file, 'utf8')
+  const relativeFile = path.relative(repoRoot, file).replaceAll('\\', '/')
+  const rawDirectCalls = [...source.matchAll(/\bd1_client\.query\s*\(/g)].length
+  const proxyContract = pythonDomainProxyContracts.get(relativeFile)
+  if (proxyContract) {
+    assert(source.includes(proxyContract.classMarker), `${relativeFile}: domain proxy class missing`)
+    assert(source.includes(proxyContract.factoryMarker), `${relativeFile}: canonical domain factory missing`)
+    assert(source.includes(proxyContract.bindingMarker), `${relativeFile}: domain proxy binding missing`)
+    assert(!source.includes('from services import d1_client'), `${relativeFile}: legacy module import forbidden`)
+    assert(!source.includes('from services.d1_client import'), `${relativeFile}: legacy client import forbidden`)
+    assert.equal(rawDirectCalls, proxyContract.expectedQueryCalls, `${relativeFile}: domain proxy query surface drift`)
+  }
+  const directCalls = proxyContract ? 0 : rawDirectCalls
+  const aliasCalls = [...source.matchAll(/\bd1_query\s*\(/g)].filter((match) => (
+    source.slice(Math.max(0, Number(match.index ?? 0) - 4), Number(match.index ?? 0)) !== 'def '
+  )).length
+  const count = directCalls + aliasCalls
+  if (count > 0) {
+    pythonLegacyCounts.set(relativeFile, count)
+  }
+}
+const unbudgetedPythonLegacy = [...pythonLegacyCounts].filter(([file]) => !pythonLegacyBudgets.has(file))
+assert.deepEqual(unbudgetedPythonLegacy, [], 'new unbudgeted Python legacy D1 consumer detected')
+for (const [file, count] of pythonLegacyCounts) {
+  assert(
+    count <= Number(pythonLegacyBudgets.get(file) ?? -1),
+    `Python legacy D1 debt increased: ${file} count=${count} budget=${pythonLegacyBudgets.get(file)}`,
+  )
+}
+const pythonLegacyReferenceCount = [...pythonLegacyCounts.values()].reduce((sum, count) => sum + count, 0)
+const directLegacyClosed = uniqueFindings.length === 0 && pythonLegacyReferenceCount === 0
 assert.equal(
   MULTI_D1_ROUTING_CONTRACT_GATES.direct_legacy_db_paths_closed,
   directLegacyClosed,
   [
-    `direct_legacy_db_paths_closed gate mismatch findings=${uniqueFindings.length}`,
+    `direct_legacy_db_paths_closed gate mismatch worker=${uniqueFindings.length} python=${pythonLegacyReferenceCount}`,
     ...uniqueFindings.slice(0, 20).map((finding) => (
       `${finding.file}:${finding.domain}:${finding.table}`
     )),
@@ -98,6 +171,8 @@ assert.equal(
 console.log(JSON.stringify({
   direct_legacy_module_count: new Set(uniqueFindings.map((finding) => finding.file)).size,
   direct_legacy_reference_count: uniqueFindings.length,
+  python_direct_legacy_module_count: pythonLegacyCounts.size,
+  python_direct_legacy_reference_count: pythonLegacyReferenceCount,
   by_domain: Object.fromEntries(DATA_DOMAINS.map((domain) => [
     domain,
     uniqueFindings.filter((finding) => finding.domain === domain).length,

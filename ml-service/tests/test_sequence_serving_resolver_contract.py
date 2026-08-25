@@ -33,6 +33,7 @@ def test_sequence_contract_is_projected_from_exact_registry_artifact():
                         "target_semantic_version": resolver.LABEL_SCHEMA_VERSION,
                         "seq_len": 512,
                         "pred_len": 5,
+                        "rank_ic_semantic_version": resolver.FORMAL_RANK_IC_SEMANTIC_VERSION,
                     }
                 }
             },
@@ -56,6 +57,7 @@ def test_sequence_contract_is_projected_from_exact_registry_artifact():
     assert entry["pred_len"] == 5
     assert entry["sequence_contract"]["artifact_id"] == artifact_id
     assert entry["sequence_contract"]["version"] == "vNew"
+    assert entry["sequence_contract"]["rank_ic_semantic_version"] == resolver.FORMAL_RANK_IC_SEMANTIC_VERSION
 
 
 def test_sequence_artifact_without_exact_contract_is_not_served():

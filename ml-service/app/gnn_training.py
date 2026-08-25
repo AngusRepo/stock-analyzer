@@ -19,6 +19,8 @@ from typing import Any
 import numpy as np
 
 from .model_store import _get_bucket
+from .features import FEATURE_SEMANTIC_VERSION
+from .gnn_graph_contract import GNN_GRAPH_SEMANTIC_VERSION, build_feature_sector_edge_index
 from .prep_lineage import (
     attach_prep_lineage_aliases,
     collect_prep_lineage,
@@ -55,11 +57,25 @@ def _version() -> str:
     return "v" + datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S")
 
 
+def _average_rank(values: np.ndarray) -> np.ndarray:
+    array = np.asarray(values, dtype=float)
+    order = np.argsort(array, kind="mergesort")
+    ranks = np.empty(len(array), dtype=float)
+    start = 0
+    while start < len(array):
+        end = start + 1
+        while end < len(array) and array[order[end]] == array[order[start]]:
+            end += 1
+        ranks[order[start:end]] = (start + end - 1) / 2.0
+        start = end
+    return ranks
+
+
 def _spearman(x: np.ndarray, y: np.ndarray) -> float:
     if len(x) < 10:
         return 0.0
-    xr = np.argsort(np.argsort(np.asarray(x, dtype=float)))
-    yr = np.argsort(np.argsort(np.asarray(y, dtype=float)))
+    xr = _average_rank(x)
+    yr = _average_rank(y)
     if np.std(xr) < 1e-10 or np.std(yr) < 1e-10:
         return 0.0
     value = float(np.corrcoef(xr, yr)[0, 1])
@@ -171,33 +187,13 @@ def _group_by_date(indices: np.ndarray, dates: np.ndarray) -> list[np.ndarray]:
 
 
 def _feature_edge_index(x_date: np.ndarray, sectors: np.ndarray, *, top_k: int, threshold: float) -> np.ndarray:
-    n = int(x_date.shape[0])
-    if n <= 1:
-        return np.zeros((2, 0), dtype=np.int64)
-    x = np.asarray(x_date, dtype=np.float32)
-    norms = np.linalg.norm(x, axis=1, keepdims=True)
-    norms = np.where(norms > 1e-9, norms, 1.0)
-    sim = (x / norms) @ (x / norms).T
-    sim = np.nan_to_num(sim, nan=0.0, posinf=0.0, neginf=0.0)
-    np.fill_diagonal(sim, 0.0)
-    edges: set[tuple[int, int]] = set()
-    abs_sim = np.abs(sim)
-    k = max(1, min(int(top_k), n - 1))
-    for i in range(n):
-        ranked = np.argsort(abs_sim[i])[::-1][:k]
-        for j_raw in ranked:
-            j = int(j_raw)
-            if i == j:
-                continue
-            same_sector = str(sectors[i]) == str(sectors[j])
-            if abs_sim[i, j] >= float(threshold) or same_sector:
-                edges.add((i, j))
-                edges.add((j, i))
-    if not edges:
-        for i in range(n - 1):
-            edges.add((i, i + 1))
-            edges.add((i + 1, i))
-    return np.asarray(sorted(edges), dtype=np.int64).T
+    edge_index, _report = build_feature_sector_edge_index(
+        x_date,
+        sectors,
+        top_k=top_k,
+        threshold=threshold,
+    )
+    return edge_index
 
 
 def _build_graph_snapshots(
@@ -631,6 +627,7 @@ def train_graphsage_universal(payload: dict | None = None) -> dict[str, Any]:
         "model_type": "graphsage",
         "family": "cross_stock_graph",
         "target_semantic_version": SEQUENCE_RETURN_SEMANTIC_VERSION,
+        "feature_semantic_version": FEATURE_SEMANTIC_VERSION,
         "target_rank_scope": GLOBAL_CROSS_SECTIONAL_RANK_VERSION,
         "batch_local_target_rank_used_for_training": False,
         "trained_at": trained_at,
@@ -645,11 +642,11 @@ def train_graphsage_universal(payload: dict | None = None) -> dict[str, Any]:
         },
         "architecture": architecture,
         "graph_context": {
-            "training_edge_source": "same_date_feature_similarity",
-            "serving_edge_source": "price_correlation_full_universe",
-            "correlation_lookback": int(payload.get("correlation_lookback") or 60),
-            "correlation_threshold": float(payload.get("correlation_threshold") or 0.35),
-            "top_k": int(payload.get("serving_top_k") or 8),
+            "semantic_version": GNN_GRAPH_SEMANTIC_VERSION,
+            "training_edge_source": "same_date_feature_cosine_plus_sector",
+            "serving_edge_source": "same_date_feature_cosine_plus_sector",
+            "top_k": edge_top_k,
+            "threshold": edge_threshold,
             "training_edge_top_k": edge_top_k,
             "training_edge_threshold": edge_threshold,
             "graph_cache": {

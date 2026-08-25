@@ -197,7 +197,7 @@ export interface PipelineDecisionMaturityPacket {
   generated_at: string
   current_selection_signal_owner: 'score_v2_formal_ml'
   current_expected_return_owner: 'l4_alpha_ev' | 'allocator_ev_fusion' | null
-  current_allocation_utility_owner: 'expected_return_owner' | 'score_v2_formal_ml'
+  current_allocation_utility_owner: 'expected_return_owner' | 'formal_ml_buy_admission'
   current_execution_owner: 'allocator_opb_policy'
   execution_scope: 'recommendation_allocation_only_no_order_submission'
   action_gate: 'expected_return_owner' | 'selection_signal_owner'
@@ -856,7 +856,7 @@ export async function buildPipelineDecisionMaturityPacket(
         gateMetric('top_bucket_lcb90', 'Top bucket net return LCB90', route.top_bucket_net_return_lcb90, 0, 'return', 'gt'),
         gateMetric('absolute_spread_lcb90', 'Challenger absolute spread LCB90', route.absolute_spread_lcb90, 0, 'return', 'gt'),
         gateMetric('residual_spread_lcb90', 'Residual spread LCB90', route.residual_spread_lcb90, 0, 'return', 'gt'),
-        gateMetric('challenger_incumbent_delta_lcb90', 'Challenger vs incumbent same-capacity LCB90', route.challenger_incumbent_delta_lcb90, 0, 'return', 'gt'),
+        gateMetric('challenger_incumbent_delta_lcb90', 'Challenger vs incumbent continuous-weight LCB90', route.challenger_incumbent_delta_lcb90, 0, 'return', 'gt'),
         metric('brier', 'Brier vs climatology', route.brier_score, { target: route.climatology_brier_score, comparator: 'lt', unit: 'ratio', passed: optionalFinite(route.brier_score) != null && optionalFinite(route.climatology_brier_score) != null ? finite(route.brier_score) < finite(route.climatology_brier_score) : null }),
       ],
       lineage: {
@@ -1474,7 +1474,7 @@ export async function buildPipelineDecisionMaturityPacket(
     generated_at: new Date().toISOString(),
     current_selection_signal_owner: servingState?.selection_signal_owner ?? 'score_v2_formal_ml',
     current_expected_return_owner: servingState?.expected_return_owner ?? null,
-    current_allocation_utility_owner: servingState?.allocation_utility_owner ?? 'score_v2_formal_ml',
+    current_allocation_utility_owner: servingState?.allocation_utility_owner ?? 'formal_ml_buy_admission',
     current_execution_owner: servingState?.execution_owner ?? 'allocator_opb_policy',
     execution_scope: servingState?.execution_scope ?? 'recommendation_allocation_only_no_order_submission',
     action_gate: servingState?.action_gate ?? 'selection_signal_owner',

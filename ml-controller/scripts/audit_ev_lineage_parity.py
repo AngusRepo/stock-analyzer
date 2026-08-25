@@ -10,7 +10,10 @@ from typing import Any
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from services import d1_client  # noqa: E402
+from services.d1_domain_client import D1DataDomain, client_proxy_for_domain  # noqa: E402
+
+CORE_D1_CLIENT = client_proxy_for_domain(D1DataDomain.CORE)
+LEARNING_D1_CLIENT = client_proxy_for_domain(D1DataDomain.LEARNING)
 from services.ev_lineage_contract import (  # noqa: E402
     canonical_ev_feature_values,
     ev_feature_lineage_blockers,
@@ -44,38 +47,49 @@ def _legacy_projection(row: dict[str, Any]) -> dict[str, Any]:
 
 
 def _rows(start_date: str, end_date: str) -> list[dict[str, Any]]:
-    return d1_client.query(
-        """
-        WITH latest AS (
-          SELECT p.*,
-                 ROW_NUMBER() OVER (
-                   PARTITION BY p.stock_id, date(p.prediction_date)
-                   ORDER BY datetime(p.generated_at) DESC, p.id DESC
-                 ) AS rn
-          FROM predictions p
-          WHERE p.model_name = 'ensemble'
-            AND date(p.prediction_date) BETWEEN date(?) AND date(?)
-        )
-        SELECT p.stock_id, s.symbol, date(p.prediction_date) AS prediction_date,
-               p.generated_at AS prediction_generated_at, p.forecast_data,
-               dr.score, dr.score_components
-        FROM latest p
-        JOIN daily_recommendations dr
-          ON dr.stock_id = p.stock_id AND date(dr.date) = date(p.prediction_date)
-        JOIN stocks s ON s.id = p.stock_id
-        WHERE p.rn = 1
-        ORDER BY date(p.prediction_date), s.symbol
-        """,
+    predictions = LEARNING_D1_CLIENT.query(
+        """WITH latest AS (
+             SELECT p.*, ROW_NUMBER() OVER (
+               PARTITION BY p.stock_id, date(p.prediction_date)
+               ORDER BY datetime(p.generated_at) DESC, p.id DESC
+             ) rn
+             FROM predictions p
+             WHERE p.model_name='ensemble'
+               AND date(p.prediction_date) BETWEEN date(?) AND date(?)
+           )
+           SELECT stock_id, date(prediction_date) prediction_date,
+                  generated_at prediction_generated_at, forecast_data
+           FROM latest WHERE rn=1
+           ORDER BY date(prediction_date), stock_id""",
         [start_date, end_date],
         timeout=120,
     )
-
+    recommendation_rows = CORE_D1_CLIENT.query(
+        """SELECT dr.stock_id, date(dr.date) prediction_date, dr.score,
+                  dr.score_components, s.symbol
+             FROM daily_recommendations dr
+             JOIN stocks s ON s.id=dr.stock_id
+            WHERE date(dr.date) BETWEEN date(?) AND date(?)""",
+        [start_date, end_date],
+        timeout=120,
+    )
+    recommendations = {
+        (int(row["stock_id"]), str(row["prediction_date"])[:10]): row
+        for row in recommendation_rows
+        if row.get("stock_id") is not None
+    }
+    return [
+        {**prediction, **recommendations[key]}
+        for prediction in predictions
+        if prediction.get("stock_id") is not None
+        and (key := (int(prediction["stock_id"]), str(prediction.get("prediction_date") or "")[:10])) in recommendations
+    ]
 
 def audit(start_date: str, end_date: str) -> dict[str, Any]:
     rows = _rows(start_date, end_date)
     generated = sorted(str(row.get("prediction_generated_at") or "") for row in rows if row.get("prediction_generated_at"))
     events, history_load = load_model_champion_history(
-        d1_client.query,
+        LEARNING_D1_CLIENT.query,
         start_at=generated[0] if generated else f"{start_date}T00:00:00Z",
         end_at=generated[-1] if generated else f"{end_date}T23:59:59Z",
     )

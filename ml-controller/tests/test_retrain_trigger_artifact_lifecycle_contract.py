@@ -34,6 +34,8 @@ def test_universal_retrain_request_forwards_artifact_lifecycle_fields():
     assert '"sequence_gcs_prefix"] = sequence_gcs_prefix' in source
     assert "**sequence_contract" in source
     assert '@router.post("/universal/run")' in source
+    assert 'prep_output_gcs_prefix.startswith("universal/oof_forward_prep_v2/")' in source
+    assert 'prep_output_gcs_prefix.startswith("universal/oof_forward_prep/")' not in source
 
 
 def test_sequence_batch_count_from_long_history_manifest():

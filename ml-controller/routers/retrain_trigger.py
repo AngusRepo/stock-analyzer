@@ -1322,12 +1322,12 @@ async def trigger_universal_retrain(
     prep_output_gcs_prefix = str(req.prep_output_gcs_prefix or "").strip().rstrip("/")
     if req.prep_only and (
         not prep_output_gcs_prefix
-        or not prep_output_gcs_prefix.startswith("universal/oof_forward_prep/")
+        or not prep_output_gcs_prefix.startswith("universal/oof_forward_prep_v2/")
     ):
         return {
             "status": "rejected",
             "error": "prep_only_immutable_output_prefix_required",
-            "required_prefix": "universal/oof_forward_prep/<run-id>",
+            "required_prefix": "universal/oof_forward_prep_v2/<run-id>",
         }
     prep_bucket = None
     if req.prep_only:

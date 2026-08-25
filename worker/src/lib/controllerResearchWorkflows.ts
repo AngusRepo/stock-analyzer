@@ -1659,12 +1659,18 @@ export async function runWeeklyDriftRetrain(env: Bindings, runDate?: string) {
   return `weekly_drift retrain triggered; candidate_type=weekly_drift; groups=${trainModelGroups.join(',')}; targets=${targets.map((target) => target.name).join(',')}; callback expected`
 }
 
-export async function triggerRetrain(env: Bindings, forceMonthly: boolean, taskId = forceMonthly ? 'monthly-retrain' : 'retrain') {
+export async function triggerRetrain(
+  env: Bindings,
+  forceMonthly: boolean,
+  taskId = forceMonthly ? 'monthly-retrain' : 'retrain',
+  runDate?: string,
+) {
   requireController(env)
 
   const body = {
     limit: 2500,
     force_monthly: forceMonthly,
+    run_date: runDate,
     train_model_groups: ['tree', 'dlinear', 'patchtst'],
     artifact_lifecycle_targets: ['GNN', 'TabM', 'PatchTST', 'iTransformer'],
     artifact_lifecycle_contracts: {

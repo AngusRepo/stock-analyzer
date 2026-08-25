@@ -123,10 +123,10 @@ export function buildAdminGcpTriggerTaskMap(c: any, deps: TriggerDeps): Record<s
     'monthly-strategy-mining': () => runMonthlyStrategyMining(c.env, requestedRunDate()),
     'external-evidence': () => runExternalEvidenceMaterialize(c.env, requestedRunDate()),
     'optuna-queue': () => deps.runOptunaQueueProcessor(),
-    'monthly-retrain': async () => triggerRetrain(c.env, true, 'monthly-retrain'),
+    'monthly-retrain': async () => triggerRetrain(c.env, true, 'monthly-retrain', requestedRunDate()),
     retrain: async () => {
       const force = c.req.query('monthly') === '1'
-      return triggerRetrain(c.env, force, force ? 'monthly-retrain' : 'retrain')
+      return triggerRetrain(c.env, force, force ? 'monthly-retrain' : 'retrain', requestedRunDate())
     },
   }
 }

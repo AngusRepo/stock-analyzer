@@ -74,6 +74,7 @@ def _manifest() -> tuple[dict, set[str]]:
             "next-session-canonical-adjusted-open-to-fifth-session-"
             "canonical-adjusted-close-net-v4"
         ),
+        "score_semantic_version": "same-market-same-date-average-tie-percentile-rank-v2",
         "windows": [window],
     }
     manifest["manifest_checksum"] = hashlib.sha256(
@@ -105,3 +106,18 @@ def test_oof_parent_contract_rejects_legacy_fold_without_exact_tree_sources():
     assert result["ready"] is False
     assert "manifest_schema_not_exact_artifact_capable" in result["reasons"]
     assert "exact_tree_source_state_invalid:LightGBM" in result["reasons"]
+
+
+def test_oof_parent_contract_rejects_legacy_tie_unsafe_score_semantic():
+    manifest, paths = _manifest()
+    manifest["score_semantic_version"] = "same-market-same-date-percentile-rank-v1"
+    manifest["manifest_checksum"] = hashlib.sha256(
+        json.dumps(
+            {key: value for key, value in manifest.items() if key != "manifest_checksum"},
+            sort_keys=True,
+            default=str,
+        ).encode("utf-8")
+    ).hexdigest()
+    result = _oof_forward_parent_contract(_Bucket(paths), manifest)
+    assert result["ready"] is False
+    assert "score_semantic_mismatch" in result["reasons"]

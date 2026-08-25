@@ -1149,6 +1149,7 @@ def test_oof_lifecycle_receipt_is_bound_to_active_materialization_policy():
 
     current = {
         "schema_version": OOF_LIFECYCLE_RECEIPT_SCHEMA_VERSION,
+        "score_semantic_version": "same-market-same-date-average-tie-percentile-rank-v2",
         "materialization_policy_version": OOF_PIT_ELIGIBILITY_POLICY_VERSION,
         "status": "materialized",
         "cadence": "daily",
@@ -1196,6 +1197,10 @@ def test_oof_lifecycle_receipt_is_bound_to_active_materialization_policy():
     assert not _oof_lifecycle_receipt_matches_active_policy({
         **current,
         "materialization_policy_version": "legacy-v1",
+    }, cadence="daily", require_full_fit=False)
+    assert not _oof_lifecycle_receipt_matches_active_policy({
+        **current,
+        "score_semantic_version": "same-market-same-date-percentile-rank-v1",
     }, cadence="daily", require_full_fit=False)
     assert not _oof_lifecycle_receipt_matches_active_policy(
         {
@@ -1373,7 +1378,7 @@ def test_oof_dispatch_fence_probes_modal_terminal_state_before_holding_lock():
 def test_oof_cohort_version_owns_immutable_fold_evidence_contract():
     from routers.walk_forward import OOF_COHORT_ID_VERSION
 
-    assert OOF_COHORT_ID_VERSION == "v7-immutable-fold-evidence"
+    assert OOF_COHORT_ID_VERSION == "v8-tie-safe-immutable-fold-evidence"
 
 
 def test_oof_materialize_request_rejects_unknown_cadence():

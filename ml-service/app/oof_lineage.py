@@ -57,12 +57,20 @@ def percentile_rank_by_date_market(
         finite_idx = idx[np.isfinite(scores[idx])]
         if not len(finite_idx):
             continue
-        order = np.argsort(scores[finite_idx], kind="mergesort")
+        cohort_scores = scores[finite_idx]
+        order = np.argsort(cohort_scores, kind="mergesort")
         sorted_idx = finite_idx[order]
         if len(sorted_idx) == 1:
             ranks[sorted_idx] = 0.5
-        else:
-            ranks[sorted_idx] = np.arange(len(sorted_idx), dtype=float) / (len(sorted_idx) - 1)
+            continue
+        start = 0
+        while start < len(sorted_idx):
+            end = start + 1
+            while end < len(sorted_idx) and cohort_scores[order[end]] == cohort_scores[order[start]]:
+                end += 1
+            average_zero_based_rank = (start + end - 1) / 2.0
+            ranks[sorted_idx[start:end]] = average_zero_based_rank / (len(sorted_idx) - 1)
+            start = end
     return ranks
 
 

@@ -278,6 +278,12 @@ def test_retired_ft_model_cpcv_adapter_is_not_enabled():
     ) is False
 
 
+def test_universal_training_exports_formal_feature_semantic_for_train_metadata():
+    from app.features import FEATURE_SEMANTIC_VERSION
+
+    assert universal_training.FEATURE_SEMANTIC_VERSION == FEATURE_SEMANTIC_VERSION
+
+
 def test_universal_training_policy_keeps_current_defaults():
     policy = UniversalTrainingPolicy.from_env()
 

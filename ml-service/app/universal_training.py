@@ -47,6 +47,7 @@ from .training_policy import (
 from .training_finalizer import build_oos_artifact_path, derive_oos_artifact_group
 from .gcs_batch_io import download_existing_blobs
 from .sequence_training import RANK_IC_SEMANTIC_VERSION, SEQUENCE_RETURN_SEMANTIC_VERSION
+from .features import FEATURE_SEMANTIC_VERSION
 
 
 from .target_rank_scope import (

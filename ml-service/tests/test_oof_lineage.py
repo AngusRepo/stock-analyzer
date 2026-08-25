@@ -82,6 +82,18 @@ def test_oof_rank_is_same_date_same_market_and_artifact_is_immutable_payload():
     assert bucket.objects[result["path"]].payload
 
 
+def test_oof_percentile_rank_uses_average_ties_and_constant_neutral():
+    from app.oof_lineage import percentile_rank_by_date_market
+
+    dates = np.asarray(["2026-06-01"] * 3)
+    markets = np.asarray(["TWSE"] * 3)
+    tied = percentile_rank_by_date_market(np.asarray([1.0, 1.0, 3.0]), dates, markets)
+    constant = percentile_rank_by_date_market(np.asarray([7.0, 7.0, 7.0]), dates, markets)
+
+    assert tied.tolist() == pytest.approx([0.25, 0.25, 1.0])
+    assert constant.tolist() == pytest.approx([0.5, 0.5, 0.5])
+
+
 def test_purged_indices_use_actual_per_symbol_label_known_date():
     from app.purged_cv import purged_explicit_walk_forward_indices
 

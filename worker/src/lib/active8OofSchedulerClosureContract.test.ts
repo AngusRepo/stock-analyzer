@@ -73,7 +73,7 @@ assert(
   'continuation must stop before training dispatch while the existing cohort manifest is not ready',
 )
 assert(
-  walkForward.includes('active8-oof-lifecycle-receipt-v10-durable-shadow-base') &&
+  walkForward.includes('active8-oof-lifecycle-receipt-v11-tie-safe') &&
     walkForward.includes('_oof_lifecycle_receipt_matches_active_policy'),
   'materialization/promotion must invalidate stale receipts when the active PIT policy changes',
 )

@@ -2082,8 +2082,9 @@ OOF_LABEL_PURGE_SESSIONS = 5
 OOF_MIN_MATURE_SESSIONS = (
     OOF_TRAIN_SESSIONS + OOF_TEST_SESSIONS * OOF_PROMOTION_MIN_FOLDS
 )
-OOF_COHORT_ID_VERSION = "v7-immutable-fold-evidence"
-OOF_LIFECYCLE_RECEIPT_SCHEMA_VERSION = "active8-oof-lifecycle-receipt-v10-durable-shadow-base"
+OOF_SCORE_SEMANTIC_VERSION = "same-market-same-date-average-tie-percentile-rank-v2"
+OOF_COHORT_ID_VERSION = "v8-tie-safe-immutable-fold-evidence"
+OOF_LIFECYCLE_RECEIPT_SCHEMA_VERSION = "active8-oof-lifecycle-receipt-v11-tie-safe"
 
 
 def _oof_lifecycle_materialization_controls(
@@ -2171,6 +2172,7 @@ def _oof_lifecycle_receipt_matches_active_policy(
 
     contract_current = (
         receipt.get("schema_version") == OOF_LIFECYCLE_RECEIPT_SCHEMA_VERSION
+        and receipt.get("score_semantic_version") == OOF_SCORE_SEMANTIC_VERSION
         and receipt.get("materialization_policy_version") == _active_oof_materialization_policy_version()
         and receipt.get("cadence") == cadence
         and calendar_watermark_current
@@ -2430,6 +2432,8 @@ def _oof_forward_parent_contract(bucket: object, manifest: dict[str, Any]) -> di
         reasons.append("manifest_checksum_mismatch")
     if manifest.get("target_semantic_version") != _OOF_TARGET_SEMANTIC_VERSION:
         reasons.append("target_semantic_mismatch")
+    if manifest.get("score_semantic_version") != OOF_SCORE_SEMANTIC_VERSION:
+        reasons.append("score_semantic_mismatch")
 
     windows = [row for row in (manifest.get("windows") or []) if isinstance(row, dict)]
     if not windows:
@@ -2700,6 +2704,8 @@ async def run_walk_forward_oof_lifecycle(req: OofLifecycleRequest):
                 and int(parent_manifest.get("test_window_days") or 0) == 10
                 and parent_manifest.get("target_semantic_version")
                 == "next-session-canonical-adjusted-open-to-fifth-session-canonical-adjusted-close-net-v4"
+                and parent_manifest.get("score_semantic_version")
+                == OOF_SCORE_SEMANTIC_VERSION
             )
         else:
             parent_path, parent_manifest, parent_start, compatible_parent = None, {}, "", False
@@ -3015,6 +3021,7 @@ async def run_walk_forward_oof_lifecycle(req: OofLifecycleRequest):
                 "materialization_policy_version": _active_oof_materialization_policy_version(),
                 "status": result.get("status"),
                 "cohort_id": cohort_id,
+                "score_semantic_version": OOF_SCORE_SEMANTIC_VERSION,
                 "cadence": cadence,
                 "knowledge_cutoff_date": knowledge_cutoff_date,
                 "calendar": calendar_evidence,

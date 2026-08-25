@@ -1,5 +1,6 @@
 from pathlib import Path
 import json
+import os
 import sqlite3
 import sys
 
@@ -8,6 +9,9 @@ import pytest
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "ml-controller"))
+
+TEST_SOURCE_SHA = "0123456789abcdef0123456789abcdef01234567"
+os.environ.setdefault("STOCKVISION_SOURCE_SHA", TEST_SOURCE_SHA)
 
 
 def test_counterfactual_score_v2_replaces_only_ml_and_excludes_native_alpha():
@@ -766,6 +770,61 @@ def test_materialized_index_rejects_policy_upgrade_without_legal_dates():
             batch_fn=lambda *_args, **_kwargs: {"error_count": 0},
         )
 
+def test_v5_formal_manifest_requires_feature_semantic_and_exact_source_sha():
+    from services.active8_oof_cohort_materializer import (
+        ACTIVE8_MODELS, FEATURE_IMPUTATION_SEMANTIC_VERSION, FEATURE_SEMANTIC_VERSION,
+        TARGET_SEMANTIC_VERSION, _manifest_checksum, load_verified_oof_manifest,
+    )
+
+    manifest = {
+        "schema_version": "active8-oof-cohort-manifest-v5",
+        "cohort_id": "formal-v9",
+        "generation_mode": "purged_oof",
+        "status": "ready",
+        "model_set": list(ACTIVE8_MODELS),
+        "parent_manifest": {},
+        "prep_manifest": {
+            "schema_version": "active8-canonical-adjusted-prep-v3",
+            "manifest_checksum": "a" * 64,
+            "target_semantic_version": TARGET_SEMANTIC_VERSION,
+            "roundtrip_cost_bps": 18.0,
+            "batch_count": 1,
+            "feature_semantic_version": FEATURE_SEMANTIC_VERSION,
+            "feature_imputation_semantic": FEATURE_IMPUTATION_SEMANTIC_VERSION,
+            "producer_source_sha": TEST_SOURCE_SHA,
+        },
+        "sequence_manifest": {
+            "artifact_checksum": "b" * 64,
+            "contract": "sequence_records_v3",
+            "target_semantic_version": TARGET_SEMANTIC_VERSION,
+            "batch_count": 1,
+            "batch_checksums": {"batch_0.npz": "c" * 64},
+        },
+        "windows": [],
+    }
+    manifest["manifest_checksum"] = _manifest_checksum(manifest)
+
+    class Blob:
+        def __init__(self, value): self.value = value
+        def download_as_bytes(self): return self.value
+    class Bucket:
+        def __init__(self, value): self.value = value
+        def blob(self, _path): return Blob(json.dumps(self.value).encode())
+
+    loaded, _ = load_verified_oof_manifest(
+        "manifest.json", bucket=Bucket(manifest), require_formal_lineage=True,
+    )
+    assert loaded["prep_manifest"]["producer_source_sha"] == TEST_SOURCE_SHA
+
+    tampered = json.loads(json.dumps(manifest))
+    tampered["prep_manifest"]["feature_semantic_version"] = "legacy-full-history-rank"
+    tampered["manifest_checksum"] = _manifest_checksum(tampered)
+    with pytest.raises(ValueError, match="formal_feature_lineage_invalid"):
+        load_verified_oof_manifest(
+            "manifest.json", bucket=Bucket(tampered), require_formal_lineage=True,
+        )
+
+
 def test_forward_extension_manifest_is_shadow_only_and_bound_to_base():
     import hashlib
     import json
@@ -776,9 +835,13 @@ def test_forward_extension_manifest_is_shadow_only_and_bound_to_base():
     )
     from services.active8_oof_stacker import CORE_CROSS_SECTIONAL_MODELS
 
-    base = {"cohort_id": "base", "manifest_checksum": "a" * 64}
+    base = {
+        "cohort_id": "base",
+        "manifest_checksum": "a" * 64,
+        "prep_manifest": {"producer_source_sha": "0" * 40},
+    }
     manifest = {
-        "schema_version": "active8-oof-forward-extension-v1",
+        "schema_version": "active8-oof-forward-extension-v2",
         "status": "ready",
         "generation_mode": "frozen_forward_oos",
         "extension_id": "ext",
@@ -788,6 +851,9 @@ def test_forward_extension_manifest_is_shadow_only_and_bound_to_base():
         "training_dispatched": False,
         "counterfactual_reconstruction": True,
         "target_semantic_version": "next-session-canonical-adjusted-open-to-fifth-session-canonical-adjusted-close-net-v4",
+        "feature_semantic_version": "formal137-pit-rolling-rank-and-imputation-v2",
+        "feature_imputation_semantic": "prior_252_row_median_then_zero_v2",
+        "producer_source_sha": "0" * 40,
         "extension_range": ["2026-07-08", "2026-07-16"],
         "knowledge_cutoff_date": "2026-07-23",
         "dates": ["2026-07-08", "2026-07-09"],

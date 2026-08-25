@@ -79,7 +79,7 @@ def _load_resume_plan(
     if bucket is None:
         raise HTTPException(status_code=500, detail="GCS unavailable for OOF resume planning")
     try:
-        manifest, _raw = load_verified_oof_manifest(manifest_path, bucket=bucket)
+        manifest, _raw = load_verified_oof_manifest(manifest_path, bucket=bucket, require_formal_lineage=True)
     except Exception as exc:
         raise HTTPException(status_code=400, detail=f"invalid OOF resume manifest: {exc}") from exc
     if list(manifest.get("model_set") or []) != list(models):
@@ -541,8 +541,12 @@ def build_oof_full_fit_dispatch_plan(manifest: dict[str, Any]) -> dict[str, Any]
     feature_lineage_ready = not tree_models or feature_consensus.get("status") == "ready"
     prep = manifest.get("prep_manifest") if isinstance(manifest.get("prep_manifest"), dict) else {}
     prep_lineage_ready = (
-        manifest.get("schema_version") in {"active8-oof-cohort-manifest-v3", "active8-oof-cohort-manifest-v4"}
+        manifest.get("schema_version") == "active8-oof-cohort-manifest-v5"
+        and prep.get("schema_version") == "active8-canonical-adjusted-prep-v3"
         and len(str(prep.get("manifest_checksum") or "")) == 64
+        and prep.get("feature_semantic_version") == OOF_FEATURE_SEMANTIC_VERSION
+        and prep.get("feature_imputation_semantic") == OOF_FEATURE_IMPUTATION_SEMANTIC_VERSION
+        and prep.get("producer_source_sha") == _runtime_source_sha()
         and prep.get("target_semantic_version") == manifest.get("target_semantic_version")
         and float(prep.get("roundtrip_cost_bps") or 0.0) == 18.0
         and int(prep.get("batch_count") or 0) > 0
@@ -763,10 +767,13 @@ def _materialize_completed_oof_release_aliases(
     cohort_id = str(manifest.get("cohort_id") or "")
     target_semantic = str(manifest.get("target_semantic_version") or "")
     chronological = (
-        manifest.get("schema_version") in {"active8-oof-cohort-manifest-v3", "active8-oof-cohort-manifest-v4"}
+        manifest.get("schema_version") == "active8-oof-cohort-manifest-v5"
         and len(checksum) == 64
         and bool(cohort_id)
         and target_semantic == ACTIVE8_TARGET_SEMANTIC_VERSION
+        and (manifest.get("prep_manifest") or {}).get("feature_semantic_version") == OOF_FEATURE_SEMANTIC_VERSION
+        and (manifest.get("prep_manifest") or {}).get("feature_imputation_semantic") == OOF_FEATURE_IMPUTATION_SEMANTIC_VERSION
+        and (manifest.get("prep_manifest") or {}).get("producer_source_sha") == _runtime_source_sha()
         and _chronological_oof_windows(windows)
     )
     if not chronological:
@@ -1496,7 +1503,7 @@ async def materialize_walk_forward_oof(req: OofMaterializeRequest):
         raise HTTPException(status_code=500, detail="GCS unavailable")
     path = req.manifest_path or f"walk_forward/oof_cohorts/{req.cohort_id}/manifest.json"
     try:
-        manifest, _raw = load_verified_oof_manifest(path, bucket=bucket)
+        manifest, _raw = load_verified_oof_manifest(path, bucket=bucket, require_formal_lineage=True)
         if manifest["cohort_id"] != req.cohort_id:
             raise ValueError("requested_cohort_manifest_mismatch")
         persisted = learning_client.query(
@@ -2083,8 +2090,17 @@ OOF_MIN_MATURE_SESSIONS = (
     OOF_TRAIN_SESSIONS + OOF_TEST_SESSIONS * OOF_PROMOTION_MIN_FOLDS
 )
 OOF_SCORE_SEMANTIC_VERSION = "same-market-same-date-average-tie-percentile-rank-v2"
-OOF_COHORT_ID_VERSION = "v8-tie-safe-immutable-fold-evidence"
-OOF_LIFECYCLE_RECEIPT_SCHEMA_VERSION = "active8-oof-lifecycle-receipt-v11-tie-safe"
+OOF_FEATURE_SEMANTIC_VERSION = "formal137-pit-rolling-rank-and-imputation-v2"
+OOF_FEATURE_IMPUTATION_SEMANTIC_VERSION = "prior_252_row_median_then_zero_v2"
+OOF_COHORT_ID_VERSION = "v9-feature-semantic-source-attested"
+OOF_LIFECYCLE_RECEIPT_SCHEMA_VERSION = "active8-oof-lifecycle-receipt-v12-feature-source-attested"
+
+
+def _runtime_source_sha() -> str:
+    source_sha = str(os.environ.get("STOCKVISION_SOURCE_SHA") or "").strip().lower()
+    if len(source_sha) != 40 or any(char not in "0123456789abcdef" for char in source_sha):
+        raise RuntimeError("stockvision_source_sha_missing_or_invalid")
+    return source_sha
 
 
 def _oof_lifecycle_materialization_controls(
@@ -2239,10 +2255,7 @@ OOF_LIFECYCLE_MIN_SESSIONS = OOF_MIN_MATURE_SESSIONS
 _OOF_TARGET_SEMANTIC_VERSION = (
     "next-session-canonical-adjusted-open-to-fifth-session-canonical-adjusted-close-net-v4"
 )
-_OOF_PREP_SCHEMAS = {
-    "active8-canonical-adjusted-prep-v1",
-    "active8-canonical-adjusted-prep-v2",
-}
+_OOF_PREP_SCHEMAS = {"active8-canonical-adjusted-prep-v3"}
 
 
 def _latest_canonical_prep_prefix(bucket: object) -> str | None:
@@ -2258,6 +2271,9 @@ def _latest_canonical_prep_prefix(bucket: object) -> str | None:
             manifest.get("schema_version") in _OOF_PREP_SCHEMAS
             and manifest.get("status") == "ready"
             and manifest.get("target_semantic_version") == _OOF_TARGET_SEMANTIC_VERSION
+            and manifest.get("feature_semantic_version") == OOF_FEATURE_SEMANTIC_VERSION
+            and manifest.get("feature_imputation_semantic") == OOF_FEATURE_IMPUTATION_SEMANTIC_VERSION
+            and manifest.get("producer_source_sha") == _runtime_source_sha()
             and float(manifest.get("roundtrip_cost_bps") or 0.0) == 18.0
             and str(manifest.get("signal_date_max") or "")[:10]
         ):
@@ -2302,6 +2318,9 @@ def _oof_lifecycle_calendar(
         or manifest.get("status") != "ready"
         or str(manifest.get("output_gcs_prefix") or "").rstrip("/") != prefix
         or manifest.get("target_semantic_version") != _OOF_TARGET_SEMANTIC_VERSION
+        or manifest.get("feature_semantic_version") != OOF_FEATURE_SEMANTIC_VERSION
+        or manifest.get("feature_imputation_semantic") != OOF_FEATURE_IMPUTATION_SEMANTIC_VERSION
+        or manifest.get("producer_source_sha") != _runtime_source_sha()
         or float(manifest.get("roundtrip_cost_bps") or 0.0) != 18.0
         or manifest.get("manifest_checksum") != actual_manifest_checksum
     ):
@@ -2426,7 +2445,7 @@ def _oof_forward_parent_contract(bucket: object, manifest: dict[str, Any]) -> di
     actual_checksum = hashlib.sha256(
         json.dumps(unsigned, sort_keys=True, default=str).encode("utf-8")
     ).hexdigest()
-    if manifest.get("schema_version") != "active8-oof-cohort-manifest-v4":
+    if manifest.get("schema_version") != "active8-oof-cohort-manifest-v5":
         reasons.append("manifest_schema_not_exact_artifact_capable")
     if str(manifest.get("manifest_checksum") or "") != actual_checksum:
         reasons.append("manifest_checksum_mismatch")
@@ -2434,6 +2453,13 @@ def _oof_forward_parent_contract(bucket: object, manifest: dict[str, Any]) -> di
         reasons.append("target_semantic_mismatch")
     if manifest.get("score_semantic_version") != OOF_SCORE_SEMANTIC_VERSION:
         reasons.append("score_semantic_mismatch")
+    prep_lineage = manifest.get("prep_manifest") or {}
+    if prep_lineage.get("feature_semantic_version") != OOF_FEATURE_SEMANTIC_VERSION:
+        reasons.append("feature_semantic_mismatch")
+    if prep_lineage.get("feature_imputation_semantic") != OOF_FEATURE_IMPUTATION_SEMANTIC_VERSION:
+        reasons.append("feature_imputation_semantic_mismatch")
+    if prep_lineage.get("producer_source_sha") != _runtime_source_sha():
+        reasons.append("producer_source_sha_mismatch")
 
     windows = [row for row in (manifest.get("windows") or []) if isinstance(row, dict)]
     if not windows:

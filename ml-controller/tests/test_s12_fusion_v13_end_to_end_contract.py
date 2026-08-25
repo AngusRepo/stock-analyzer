@@ -20,7 +20,7 @@ def test_l0_to_l4_layers_remain_and_no_topk_is_added_by_fusion_v13_cutover():
     assert "layer1_strategy_breadth_gate" in screener
     assert "finlab_portfolio_intelligence_version" in screener
     assert "stage: 'l15_ml_slate_queue'" in screener
-    assert "route_floor_decision_universe_no_capacity_admission" in strategy_pool
+    assert "authority_aware_decision_universe_no_capacity_admission" in strategy_pool
     assert "researchOnlyQueue" in strategy_pool
     assert 'g.add_node("l2_timesfm_enrich"' in pipeline
     assert 'g.add_node("l3_formal_predict"' in pipeline
@@ -47,9 +47,11 @@ def test_fusion_v14_is_l4_base_plus_one_residual_head_with_s12_shadow_only():
     materializer = _read("ml-controller/services/allocator_ev_fusion.py")
     builder = _read("ml-controller/services/allocator_ev_fusion_artifact_builder.py")
     contracts = _read("ml-controller/services/evidence_contracts.py")
+    contract_manifest = _read("schemas/expected-return-contracts-v1.json")
     router = _read("ml-controller/routers/allocator_ev_fusion.py")
 
-    assert "allocator-ev-fusion-contract-v14" in contracts
+    assert "ALLOCATOR_EV_ARTIFACT_CONTRACT_VERSION" in contracts
+    assert '"artifact_contract_version": "allocator-ev-fusion-contract-v14"' in contract_manifest
     assert '"policy_value_head_count": 1' in builder
     assert '"policy_value_heads": ["residual_adjustment_model"]' in builder
     assert '"base_expected_return_owner": "l4_alpha_ev"' in builder

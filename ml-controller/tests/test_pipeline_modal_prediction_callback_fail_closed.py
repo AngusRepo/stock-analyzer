@@ -10,6 +10,10 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from graphs import daily_pipeline_v2 as pipeline  # noqa: E402
+from services.model_serving_resolver import (  # noqa: E402
+    FORMAL_FEATURE_SEMANTIC_VERSION,
+    FORMAL_GNN_GRAPH_SEMANTIC_VERSION,
+)
 
 
 RUN_DATE = "2026-08-14"
@@ -280,6 +284,10 @@ def _pool_and_registry_rows(*, serving_eligible: bool = True) -> tuple[dict, lis
                 "test_block" if model_name == "XGBoost" and not serving_eligible else None
             ),
             "target_semantic_version": pipeline.LABEL_SCHEMA_VERSION,
+            "feature_semantic_version": FORMAL_FEATURE_SEMANTIC_VERSION,
+            "gnn_graph_semantic_version": (
+                FORMAL_GNN_GRAPH_SEMANTIC_VERSION if model_name == "GNN" else None
+            ),
         }
         rows.append({
             "artifact_id": artifact_id,
@@ -293,6 +301,10 @@ def _pool_and_registry_rows(*, serving_eligible: bool = True) -> tuple[dict, lis
             "live_gate_status": "not_started",
             "metadata_schema_version": "model-artifact-v2",
             "registry_target_semantic_version": pipeline.LABEL_SCHEMA_VERSION,
+            "registry_feature_semantic_version": FORMAL_FEATURE_SEMANTIC_VERSION,
+            "registry_gnn_graph_semantic_version": (
+                FORMAL_GNN_GRAPH_SEMANTIC_VERSION if model_name == "GNN" else None
+            ),
         })
     return {"models": models}, rows
 

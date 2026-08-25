@@ -3,28 +3,12 @@ from __future__ import annotations
 import asyncio
 import json
 import sys
-import types
 from pathlib import Path
 from types import SimpleNamespace
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "ml-controller"))
 
-
-class _ImportCloudRunJobsClient:
-    pass
-
-
-class _ImportJobAlreadyRunningError(RuntimeError):
-    def __init__(self, execution=None):
-        super().__init__("already running")
-        self.execution = execution
-
-
-cloud_run_stub = types.ModuleType("services.cloud_run_jobs_client")
-cloud_run_stub.CloudRunJobsClient = _ImportCloudRunJobsClient
-cloud_run_stub.JobAlreadyRunningError = _ImportJobAlreadyRunningError
-sys.modules["services.cloud_run_jobs_client"] = cloud_run_stub
 
 from routers import pipeline  # noqa: E402
 

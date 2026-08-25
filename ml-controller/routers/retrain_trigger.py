@@ -48,6 +48,24 @@ MARKET_D1_CLIENT = client_proxy_for_domain(D1DataDomain.MARKET)
 LEARNING_D1_CLIENT = client_proxy_for_domain(D1DataDomain.LEARNING)
 router = APIRouter(prefix="/retrain", tags=["retrain"])
 
+ACTIVE8_FEATURE_SEMANTIC_VERSION = "formal137-pit-rolling-rank-and-imputation-v2"
+ACTIVE8_FEATURE_IMPUTATION_SEMANTIC_VERSION = "prior_252_row_median_then_zero_v2"
+ACTIVE8_PREP_RECEIPT_SCHEMA_VERSION = "active8-immutable-feature-prep-receipt-v2"
+ACTIVE8_ADJUSTED_PREP_SCHEMA_VERSION = "active8-canonical-adjusted-prep-v3"
+
+def _runtime_source_sha() -> str:
+    source_sha = str(os.environ.get("STOCKVISION_SOURCE_SHA") or "").strip().lower()
+    if len(source_sha) != 40 or any(char not in "0123456789abcdef" for char in source_sha):
+        raise RuntimeError("stockvision_source_sha_missing_or_invalid")
+    return source_sha
+
+def _prep_receipt_lineage_current(receipt: dict[str, Any]) -> bool:
+    return (
+        receipt.get("feature_semantic_version") == ACTIVE8_FEATURE_SEMANTIC_VERSION
+        and receipt.get("feature_imputation_semantic") == ACTIVE8_FEATURE_IMPUTATION_SEMANTIC_VERSION
+        and receipt.get("producer_source_sha") == _runtime_source_sha()
+    )
+
 # ?? Idempotency lock (P0-4 + persistent GCS layer) ??????????????????????????
 # Protects against duplicate cron triggers (e.g. 13:37 + 13:47) AND against
 # cross-instance races that the old in-memory dict missed. See
@@ -135,7 +153,8 @@ def _verified_prep_only_receipt(bucket: object, prefix: str, run_date: str) -> d
     unsigned = {key: value for key, value in receipt.items() if key != "receipt_checksum"}
     actual_checksum = hashlib.sha256(json.dumps(unsigned, sort_keys=True).encode("utf-8")).hexdigest()
     if (
-        receipt.get("schema_version") != "active8-immutable-feature-prep-receipt-v1"
+        receipt.get("schema_version") != ACTIVE8_PREP_RECEIPT_SCHEMA_VERSION
+        or not _prep_receipt_lineage_current(receipt)
         or receipt.get("status") != "ready"
         or receipt.get("business_date") != run_date
         or str(receipt.get("output_gcs_prefix") or "").rstrip("/") != prefix
@@ -331,8 +350,7 @@ def _verify_prebuilt_canonical_prep(
     ).hexdigest()
     schema_version = str(manifest.get("schema_version") or "")
     if schema_version not in {
-        "active8-canonical-adjusted-prep-v1",
-        "active8-canonical-adjusted-prep-v2",
+        ACTIVE8_ADJUSTED_PREP_SCHEMA_VERSION,
     }:
         raise ValueError("prebuilt_canonical_prep_manifest_mismatch:schema_version")
     required = {
@@ -340,6 +358,9 @@ def _verify_prebuilt_canonical_prep(
         "output_gcs_prefix": normalized_prefix,
         "target_semantic_version": expected_target_semantic_version,
         "roundtrip_cost_bps": 18.0,
+        "feature_semantic_version": ACTIVE8_FEATURE_SEMANTIC_VERSION,
+        "feature_imputation_semantic": ACTIVE8_FEATURE_IMPUTATION_SEMANTIC_VERSION,
+        "producer_source_sha": _runtime_source_sha(),
     }
     for key, value in required.items():
         if manifest.get(key) != value:
@@ -370,7 +391,7 @@ def _verify_prebuilt_canonical_prep(
 
     source_receipt_checksum = ""
     sequence_manifest_checksum = ""
-    if schema_version == "active8-canonical-adjusted-prep-v2":
+    if schema_version == ACTIVE8_ADJUSTED_PREP_SCHEMA_VERSION:
         if manifest.get("rank_semantic_version") != "same-market-same-date-global-percentile-v2":
             raise ValueError("prebuilt_canonical_prep_rank_semantic_invalid")
         source_prefix = str(manifest.get("source_gcs_prefix") or "").strip().rstrip("/")
@@ -392,7 +413,8 @@ def _verify_prebuilt_canonical_prep(
             json.dumps(unsigned_receipt, sort_keys=True).encode("utf-8")
         ).hexdigest()
         if (
-            receipt.get("schema_version") != "active8-immutable-feature-prep-receipt-v1"
+            receipt.get("schema_version") != ACTIVE8_PREP_RECEIPT_SCHEMA_VERSION
+            or not _prep_receipt_lineage_current(receipt)
             or receipt.get("status") != "ready"
             or str(receipt.get("output_gcs_prefix") or "").rstrip("/") != source_prefix
             or receipt.get("receipt_checksum") != actual_receipt_checksum
@@ -429,6 +451,9 @@ def _verify_prebuilt_canonical_prep(
         "sequence_gcs_prefix": sequence_prefix,
         "source_receipt_checksum": source_receipt_checksum,
         "sequence_manifest_checksum": sequence_manifest_checksum,
+        "feature_semantic_version": manifest.get("feature_semantic_version"),
+        "feature_imputation_semantic": manifest.get("feature_imputation_semantic"),
+        "producer_source_sha": manifest.get("producer_source_sha"),
         "target_semantic_version": expected_target_semantic_version,
         "roundtrip_cost_bps": 18.0,
     }
@@ -925,7 +950,7 @@ def _build_prebuilt_oof_dataset_snapshot(
     return {
         **verified_prep,
         "prep_schema_version": verified_prep.get("schema_version"),
-        "schema_version": "active8-oof-full-fit-prep-lineage-v1",
+        "schema_version": "active8-oof-full-fit-prep-lineage-v2",
         "source_cohort_id": source_cohort_id,
         "source_manifest_checksum": source_manifest_checksum,
         "feature_pool": verified_feature_pool,
@@ -1147,7 +1172,7 @@ async def _dispatch_prebuilt_oof_full_fit(
     ):
         raise ValueError("prebuilt_canonical_prep_sequence_prefix_mismatch")
     if (
-        verified.get("schema_version") == "active8-canonical-adjusted-prep-v2"
+        verified.get("schema_version") == ACTIVE8_ADJUSTED_PREP_SCHEMA_VERSION
         and verified.get("sequence_manifest_checksum")
         != sequence_verified.get("lineage_manifest_checksum")
     ):
@@ -1901,7 +1926,7 @@ async def trigger_universal_retrain(
             for path in expected_paths
         }
         receipt = {
-            "schema_version": "active8-immutable-feature-prep-receipt-v1",
+            "schema_version": ACTIVE8_PREP_RECEIPT_SCHEMA_VERSION,
             "status": "ready",
             "created_at": datetime.now(timezone.utc).isoformat(),
             "run_id": run_id,
@@ -1912,6 +1937,9 @@ async def trigger_universal_retrain(
             "output_rows": total_rows,
             "output_checksums": prep_checksums,
             "feature_names_path": feature_names_path,
+            "feature_semantic_version": ACTIVE8_FEATURE_SEMANTIC_VERSION,
+            "feature_imputation_semantic": ACTIVE8_FEATURE_IMPUTATION_SEMANTIC_VERSION,
+            "producer_source_sha": _runtime_source_sha(),
             "training_dispatched": False,
         }
         unsigned = json.dumps(receipt, sort_keys=True).encode("utf-8")

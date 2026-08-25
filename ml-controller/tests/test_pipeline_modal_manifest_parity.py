@@ -60,6 +60,12 @@ def test_controller_manifest_is_accepted_by_modal_without_contract_drift() -> No
                 else None
             ),
             "target_semantic_version": target_semantic,
+            "feature_semantic_version": modal_resolver.FORMAL_FEATURE_SEMANTIC_VERSION,
+            "gnn_graph_semantic_version": (
+                modal_resolver.FORMAL_GNN_GRAPH_SEMANTIC_VERSION
+                if model_name == "GNN"
+                else None
+            ),
             "sequence_contract": sequence_contract,
         }
         registry_rows.append({
@@ -76,6 +82,12 @@ def test_controller_manifest_is_accepted_by_modal_without_contract_drift() -> No
             "live_gate_status": "not_started",
             "metadata_schema_version": "model-artifact-v2",
             "registry_target_semantic_version": target_semantic,
+            "registry_feature_semantic_version": modal_resolver.FORMAL_FEATURE_SEMANTIC_VERSION,
+            "registry_gnn_graph_semantic_version": (
+                modal_resolver.FORMAL_GNN_GRAPH_SEMANTIC_VERSION
+                if model_name == "GNN"
+                else None
+            ),
         })
 
     controller_pool = {

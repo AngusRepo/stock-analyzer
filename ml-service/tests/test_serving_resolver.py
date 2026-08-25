@@ -34,7 +34,10 @@ def test_d1_champion_pool_serves_only_valid_production_artifact():
             "checksum": "sha256:" + "a" * 64,
             "offline_gate_decision": "STRONG_PASS",
             "live_gate_status": "passed",
-            "metadata": {"target_semantic_version": resolver.LABEL_SCHEMA_VERSION},
+            "metadata": {
+                "target_semantic_version": resolver.LABEL_SCHEMA_VERSION,
+                "feature_semantic_version": resolver.FORMAL_FEATURE_SEMANTIC_VERSION,
+            },
         }],
         fallback_pool={"models": {"TabM": {"status": "active", "version": "old"}}},
         required_models=("TabM",),
@@ -142,6 +145,7 @@ def test_oof_champion_projects_version_bound_ic_prior_and_quarantines_stale_live
         "live_gate_status": "not_started",
         "metadata": {
             "target_semantic_version": resolver.LABEL_SCHEMA_VERSION,
+            "feature_semantic_version": resolver.FORMAL_FEATURE_SEMANTIC_VERSION,
             "sample_count": 1200,
             "model_cpcv": {
                 "method": "outer_purged_walk_forward_rank_ic",

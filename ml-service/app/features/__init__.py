@@ -1167,6 +1167,7 @@ TIMESFM_L175_FEATURE_COLS = [
 
 FEATURE_SCHEMA = "formal137"
 FEATURE_SEMANTIC_VERSION = "formal137-pit-rolling-rank-and-imputation-v2"
+FEATURE_IMPUTATION_SEMANTIC_VERSION = "prior_252_row_median_then_zero_v2"
 
 
 def _registry_search_paths() -> list[Path]:

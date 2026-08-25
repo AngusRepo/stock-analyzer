@@ -1,6 +1,7 @@
 from pathlib import Path
 import hashlib
 import json
+import os
 import sys
 
 import pytest
@@ -8,6 +9,9 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from routers import retrain_trigger  # noqa: E402
+
+TEST_SOURCE_SHA = "0123456789abcdef0123456789abcdef01234567"
+os.environ.setdefault("STOCKVISION_SOURCE_SHA", TEST_SOURCE_SHA)
 
 
 def test_universal_retrain_request_forwards_artifact_lifecycle_fields():
@@ -95,9 +99,9 @@ def test_exact_snapshot_rejects_missing_snapshot_component_or_wrong_date():
 def test_prebuilt_oof_dataset_snapshot_preserves_immutable_owner_schema():
     snapshot = retrain_trigger._build_prebuilt_oof_dataset_snapshot(
         verified_prep={
-            "schema_version": "active8-canonical-adjusted-prep-v2",
+            "schema_version": "active8-canonical-adjusted-prep-v3",
             "manifest_checksum": "a" * 64,
-            "gcs_prefix": "universal/canonical_adjusted_v5/test",
+            "gcs_prefix": "universal/canonical_adjusted_v6/test",
         },
         verified_feature_pool={
             "schema_version": "active8-oof-full-fit-feature-consensus-v1",
@@ -111,8 +115,8 @@ def test_prebuilt_oof_dataset_snapshot_preserves_immutable_owner_schema():
         source_manifest_checksum="d" * 64,
     )
 
-    assert snapshot["schema_version"] == "active8-oof-full-fit-prep-lineage-v1"
-    assert snapshot["prep_schema_version"] == "active8-canonical-adjusted-prep-v2"
+    assert snapshot["schema_version"] == "active8-oof-full-fit-prep-lineage-v2"
+    assert snapshot["prep_schema_version"] == "active8-canonical-adjusted-prep-v3"
     assert snapshot["source_cohort_id"] == "cohort-v7"
     assert snapshot["source_manifest_checksum"] == "d" * 64
     assert snapshot["feature_pool"]["artifact_checksum"] == "b" * 64
@@ -120,18 +124,21 @@ def test_prebuilt_oof_dataset_snapshot_preserves_immutable_owner_schema():
 
 def test_prebuilt_canonical_prep_requires_verified_manifest_and_batches():
 
-    prefix = "universal/canonical_adjusted_v5/test"
+    prefix = "universal/canonical_adjusted_v6/test"
     batches = {
         f"{prefix}/prep/batch_0.npz": b"batch-zero",
         f"{prefix}/prep/batch_1.npz": b"batch-one",
     }
-    source_prefix = "universal/oof_forward_prep/test"
+    source_prefix = "universal/oof_forward_prep_v2/test"
     source_checksums = {
         f"{source_prefix}/prep/batch_0.npz": "a" * 64,
         f"{source_prefix}/prep/batch_1.npz": "b" * 64,
     }
     receipt = {
-        "schema_version": "active8-immutable-feature-prep-receipt-v1",
+        "schema_version": "active8-immutable-feature-prep-receipt-v2",
+        "feature_semantic_version": retrain_trigger.ACTIVE8_FEATURE_SEMANTIC_VERSION,
+        "feature_imputation_semantic": retrain_trigger.ACTIVE8_FEATURE_IMPUTATION_SEMANTIC_VERSION,
+        "producer_source_sha": TEST_SOURCE_SHA,
         "status": "ready",
         "output_gcs_prefix": source_prefix,
         "output_checksums": source_checksums,
@@ -140,7 +147,7 @@ def test_prebuilt_canonical_prep_requires_verified_manifest_and_batches():
         json.dumps(receipt, sort_keys=True).encode("utf-8")
     ).hexdigest()
     manifest = {
-        "schema_version": "active8-canonical-adjusted-prep-v2",
+        "schema_version": "active8-canonical-adjusted-prep-v3",
         "status": "ready",
         "output_gcs_prefix": prefix,
         "source_gcs_prefix": source_prefix,
@@ -153,6 +160,9 @@ def test_prebuilt_canonical_prep_requires_verified_manifest_and_batches():
         "source_receipt_checksum": receipt["receipt_checksum"],
         "sequence_manifest_checksum": "c" * 64,
         "rank_semantic_version": "same-market-same-date-global-percentile-v2",
+        "feature_semantic_version": retrain_trigger.ACTIVE8_FEATURE_SEMANTIC_VERSION,
+        "feature_imputation_semantic": retrain_trigger.ACTIVE8_FEATURE_IMPUTATION_SEMANTIC_VERSION,
+        "producer_source_sha": TEST_SOURCE_SHA,
         "source_checksums": source_checksums,
         "target_semantic_version": "next-session-canonical-adjusted-open-to-fifth-session-canonical-adjusted-close-net-v4",
         "roundtrip_cost_bps": 18.0,
@@ -190,7 +200,7 @@ def test_prebuilt_canonical_prep_requires_verified_manifest_and_batches():
         expected_manifest_checksum=checksum,
         expected_target_semantic_version=manifest["target_semantic_version"],
     )
-    assert verified["schema_version"] == "active8-canonical-adjusted-prep-v2"
+    assert verified["schema_version"] == "active8-canonical-adjusted-prep-v3"
     assert verified["batch_count"] == 2
     assert verified["total_rows"] == 11000
     assert verified["manifest_checksum"] == checksum

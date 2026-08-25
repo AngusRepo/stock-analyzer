@@ -26,7 +26,8 @@ def test_optuna_sandbox_price_loaders_are_chunked_not_per_stock_n_plus_one():
     assert "OPTUNA_D1_READ_CHUNK_SIZE" in source
     assert "_load_price_rows_by_stock_ids" in source
     assert "ROW_NUMBER() OVER (PARTITION BY stock_id" in source
-    assert "stock_price_rows = _load_price_rows_by_stock_ids" in source
+    assert "load_domain_top_active_stocks_with_prices" in source
+    assert "MARKET_D1_CLIENT.query" in source
     assert "_load_top_active_stocks_with_prices_from_snapshot" in source
     assert "_load_rrg_inputs_from_snapshot" in source
     assert "snapshot_reader_not_implemented" not in source
@@ -159,7 +160,7 @@ def test_dataset_snapshot_exporter_produces_gcs_manifest():
     assert '"shareholding": shareholding' in source
     assert "dataset_export_no_prices" in source
     assert "dataset_export_no_ensemble_signals" in source
-    assert 'query_client=client_for_domain("learning")' in source
+    assert "query_client=LEARNING_D1_CLIENT" in source
     assert '"predictions": {"domain": "learning"' in source
     assert '"stock_prices": {"domain": "market"' in source
     assert 'query_client = client_for_domain(spec["domain"])' in source

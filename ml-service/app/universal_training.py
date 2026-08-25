@@ -47,7 +47,7 @@ from .training_policy import (
 from .training_finalizer import build_oos_artifact_path, derive_oos_artifact_group
 from .gcs_batch_io import download_existing_blobs
 from .sequence_training import RANK_IC_SEMANTIC_VERSION, SEQUENCE_RETURN_SEMANTIC_VERSION
-from .features import FEATURE_SEMANTIC_VERSION
+from .features import FEATURE_IMPUTATION_SEMANTIC_VERSION, FEATURE_SEMANTIC_VERSION
 
 
 from .target_rank_scope import (
@@ -163,12 +163,23 @@ def validate_immutable_oof_snapshot_for_registration(
     """Verify exact point-in-time OOF lineage instead of applying native-prep freshness."""
 
     errors: list[str] = []
-    if snapshot.get("schema_version") != "active8-oof-full-fit-prep-lineage-v1":
+    if snapshot.get("schema_version") != "active8-oof-full-fit-prep-lineage-v2":
         errors.append("immutable_oof_snapshot_schema_invalid")
     if str(snapshot.get("gcs_prefix") or "").rstrip("/") != str(gcs_prefix or "").rstrip("/"):
         errors.append("immutable_oof_snapshot_prefix_mismatch")
     if snapshot.get("target_semantic_version") != SEQUENCE_RETURN_SEMANTIC_VERSION:
         errors.append("immutable_oof_snapshot_target_semantic_mismatch")
+    if snapshot.get("feature_semantic_version") != FEATURE_SEMANTIC_VERSION:
+        errors.append("immutable_oof_snapshot_feature_semantic_mismatch")
+    if snapshot.get("feature_imputation_semantic") != FEATURE_IMPUTATION_SEMANTIC_VERSION:
+        errors.append("immutable_oof_snapshot_imputation_semantic_mismatch")
+    runtime_source_sha = str(os.environ.get("STOCKVISION_SOURCE_SHA") or "").strip().lower()
+    if (
+        len(runtime_source_sha) != 40
+        or any(char not in "0123456789abcdef" for char in runtime_source_sha)
+        or snapshot.get("producer_source_sha") != runtime_source_sha
+    ):
+        errors.append("immutable_oof_snapshot_source_sha_mismatch")
     if len(str(snapshot.get("manifest_checksum") or "")) != 64:
         errors.append("immutable_oof_snapshot_prep_checksum_missing")
     if len(str(snapshot.get("source_manifest_checksum") or "")) != 64:
@@ -1591,7 +1602,12 @@ def train_universal_from_gcs(req: UniversalTrainRequest) -> dict:
             "batch_local_target_rank_used_for_training": False,
         },
         params=req_params,
-        code_version=os.environ.get("GIT_SHA") or os.environ.get("SOURCE_VERSION") or "unknown",
+        code_version=(
+            os.environ.get("STOCKVISION_SOURCE_SHA")
+            or os.environ.get("GIT_SHA")
+            or os.environ.get("SOURCE_VERSION")
+            or "unknown"
+        ),
     )
     bucket.blob(manifest_path).upload_from_string(
         json.dumps(manifest, ensure_ascii=False, sort_keys=True),
@@ -1604,7 +1620,7 @@ def train_universal_from_gcs(req: UniversalTrainRequest) -> dict:
         "target_semantic_version": SEQUENCE_RETURN_SEMANTIC_VERSION,
         "rank_ic_semantic_version": RANK_IC_SEMANTIC_VERSION,
         "feature_semantic_version": FEATURE_SEMANTIC_VERSION,
-        "feature_imputation_semantic": "prior_252_row_median_then_zero_v2",
+        "feature_imputation_semantic": FEATURE_IMPUTATION_SEMANTIC_VERSION,
         "target_rank_scope": GLOBAL_CROSS_SECTIONAL_RANK_VERSION,
         "batch_local_target_rank_used_for_training": False,
         "validation_split": validation_split_metadata,

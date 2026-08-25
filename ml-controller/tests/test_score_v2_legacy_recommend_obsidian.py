@@ -39,6 +39,24 @@ def _score_v2_payload(final_score: float = 88.0) -> str:
     )
 
 
+def _score_seed_inputs(*, high: bool = True) -> dict[str, float]:
+    if high:
+        return {
+            "chipFlowSeed40": 32.0,
+            "technicalSeed30": 24.0,
+            "screenerMomentumSeed20": 16.0,
+            "mlEdgeSeed30": 27.0,
+            "personaAlphaSeed": 0.0,
+        }
+    return {
+        "chipFlowSeed40": 0.0,
+        "technicalSeed30": 10.0,
+        "screenerMomentumSeed20": 0.0,
+        "mlEdgeSeed30": 18.0,
+        "personaAlphaSeed": 0.0,
+    }
+
+
 def test_legacy_recommend_route_returns_score_v2_payload(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setattr(recommend_router, "_ANTHROPIC_KEY", "")
 
@@ -65,6 +83,7 @@ def test_legacy_recommend_route_returns_score_v2_payload(monkeypatch: pytest.Mon
                 "ml_confidence": 0.9,
                 "hist_accuracy": 0.62,
                 "hist_count": 30,
+                "score_seed_inputs": _score_seed_inputs(),
             }
         ],
     )
@@ -112,6 +131,7 @@ def test_legacy_recommend_passes_score_v2_payload_to_llm(monkeypatch: pytest.Mon
                 "ml_confidence": 0.9,
                 "hist_accuracy": 0.62,
                 "hist_count": 30,
+                "score_seed_inputs": _score_seed_inputs(),
             }
         ],
     )
@@ -159,6 +179,7 @@ def test_llm_reason_prompt_uses_score_v2_vocabulary(monkeypatch: pytest.MonkeyPa
             "ml_forecast_pct": 0.03,
             "hist_accuracy": 0.62,
             "hist_count": 30,
+            "score_seed_inputs": _score_seed_inputs(),
         }
     )
 
@@ -196,6 +217,7 @@ def test_recommend_route_projection_ranks_by_score_v2_final_score():
                 "ml_signal": "BUY",
                 "ml_confidence": 0.8,
                 "hist_count": 0,
+                "score_seed_inputs": _score_seed_inputs(high=False),
             },
             {
                 "stock_id": 2,
@@ -215,6 +237,7 @@ def test_recommend_route_projection_ranks_by_score_v2_final_score():
                 "ml_confidence": 0.9,
                 "hist_accuracy": 0.62,
                 "hist_count": 30,
+                "score_seed_inputs": _score_seed_inputs(),
             },
         ],
         min_final_score=0,

@@ -418,7 +418,7 @@ def test_daily_pipeline_builds_expected_return_calibration_from_verified_outcome
             "prediction_date": "2026-07-01",
         })
 
-    monkeypatch.setattr(daily_pipeline_v2.d1_client, "query", lambda *_args, **_kwargs: rows)
+    monkeypatch.setattr(daily_pipeline_v2.LEARNING_D1_CLIENT, "query", lambda *_args, **_kwargs: rows)
 
     calibration = daily_pipeline_v2._load_expected_return_calibration(
         min_samples=30,

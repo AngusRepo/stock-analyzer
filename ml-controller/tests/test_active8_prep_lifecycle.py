@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import os
 from datetime import datetime, timedelta
 from pathlib import Path
 import sys
@@ -17,6 +18,9 @@ from services import active8_prep_lifecycle as lifecycle
 from services import modal_client, walk_forward_retrain
 from routers import retrain_trigger
 from app.long_history_sequence_prep import _manifest_checksum as producer_manifest_checksum
+
+TEST_SOURCE_SHA = "0123456789abcdef0123456789abcdef01234567"
+os.environ.setdefault("STOCKVISION_SOURCE_SHA", TEST_SOURCE_SHA)
 
 
 class _Blob:
@@ -119,7 +123,7 @@ def test_daily_prep_dry_run_resolves_latest_legal_business_date(monkeypatch):
     assert result["business_date"] == "2026-07-24"
     assert result["sequence_gcs_prefix"] == prefix
     assert result["sequence_manifest_checksum"] == manifest["manifest_checksum"]
-    assert result["source_gcs_prefix"].startswith("universal/oof_forward_prep/2026-07-24-")
+    assert result["source_gcs_prefix"].startswith("universal/oof_forward_prep_v2/2026-07-24-")
 
 def test_daily_prep_accepts_canonical_prefixed_snapshot_checksum(monkeypatch):
     bucket = _Bucket()
@@ -136,7 +140,7 @@ def test_daily_prep_accepts_canonical_prefixed_snapshot_checksum(monkeypatch):
     ))
 
     assert result["snapshot_checksum"] == "a" * 64
-    assert result["source_gcs_prefix"].endswith("-aaaaaaaaaaaa")
+    assert result["source_gcs_prefix"].endswith(f"-aaaaaaaaaaaa-{TEST_SOURCE_SHA[:12]}")
 
 
 def test_daily_prep_rejects_sequence_behind_snapshot(monkeypatch):
@@ -202,11 +206,14 @@ def test_daily_prep_builds_feature_and_adjusted_receipts(monkeypatch):
         }
 
     async def fake_adjusted(payload):
-        assert payload["source_gcs_prefix"].startswith("universal/oof_forward_prep/2026-07-24-")
+        assert payload["source_gcs_prefix"].startswith("universal/oof_forward_prep_v2/2026-07-24-")
         assert payload["sequence_gcs_prefix"] == _prefix
         assert payload["sequence_batch_count"] == 1
         return {
             "schema_version": lifecycle.ADJUSTED_PREP_SCHEMA,
+            "feature_semantic_version": lifecycle.FEATURE_SEMANTIC_VERSION,
+            "feature_imputation_semantic": lifecycle.FEATURE_IMPUTATION_SEMANTIC_VERSION,
+            "producer_source_sha": TEST_SOURCE_SHA,
             "manifest_checksum": "c" * 64,
             "source_feature_date_max": "2026-07-24",
             "signal_date_max": "2026-07-17",

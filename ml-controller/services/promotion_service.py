@@ -87,6 +87,19 @@ def normalize_latest_backtest_row(row: dict[str, Any] | None) -> dict[str, Any]:
         "per_regime": raw.get("per_regime") if isinstance(raw.get("per_regime"), dict) else {},
         "parity_audit": raw.get("parity_audit") if isinstance(raw.get("parity_audit"), dict) else {},
         "walk_forward": raw.get("walk_forward") if isinstance(raw.get("walk_forward"), dict) else {},
+        "return_series": raw.get("return_series") if isinstance(raw.get("return_series"), list) else [],
+        "trial_sharpe_distribution": (
+            raw.get("trial_sharpe_distribution")
+            if isinstance(raw.get("trial_sharpe_distribution"), list)
+            else []
+        ),
+        "effective_trials": _as_int(raw.get("effective_trials"), 0),
+        "trial_distribution_lineage": (
+            raw.get("trial_distribution_lineage")
+            if isinstance(raw.get("trial_distribution_lineage"), dict)
+            else {}
+        ),
+        "data_snooping": raw.get("data_snooping") if isinstance(raw.get("data_snooping"), dict) else {},
     }
 
 
@@ -148,6 +161,7 @@ def load_latest_gate_inputs(source: str = "backtest", pbo_source: str | None = N
         [resolved_pbo_source],
     ))
 
+    backtest = normalize_latest_backtest_row(backtest_row)
     return {
         "source": source,
         "pbo_source": resolved_pbo_source,
@@ -156,9 +170,10 @@ def load_latest_gate_inputs(source: str = "backtest", pbo_source: str | None = N
             "monte_carlo_results": monte_carlo_row is not None,
             "pbo_results": pbo_row is not None,
         },
-        "backtest": normalize_latest_backtest_row(backtest_row),
+        "backtest": backtest,
         "monte_carlo": normalize_latest_monte_carlo_row(monte_carlo_row),
         "pbo": normalize_latest_pbo_row(pbo_row),
+        "data_snooping": backtest.get("data_snooping") or {},
     }
 
 
@@ -179,6 +194,7 @@ def evaluate_latest_promotion_gate(
             backtest=inputs["backtest"],
             monte_carlo=inputs["monte_carlo"] if present.get("monte_carlo_results") else None,
             pbo=inputs["pbo"] if present.get("pbo_results") else None,
+            data_snooping=inputs["data_snooping"] or None,
             walk_forward=inputs["backtest"].get("walk_forward") or None,
             policy=policy,
         )
@@ -211,6 +227,7 @@ def evaluate_latest_promotion_gate(
         backtest=inputs["backtest"],
         monte_carlo=inputs["monte_carlo"],
         pbo=inputs["pbo"],
+        data_snooping=inputs["data_snooping"] or None,
         walk_forward=inputs["backtest"].get("walk_forward") or None,
         policy=policy,
     )
@@ -244,6 +261,7 @@ def evaluate_latest_alpha_policy_gate(
             backtest=inputs["backtest"],
             monte_carlo=inputs["monte_carlo"] if present.get("monte_carlo_results") else None,
             pbo=inputs["pbo"] if present.get("pbo_results") else None,
+            data_snooping=inputs["data_snooping"] or None,
             walk_forward=inputs["backtest"].get("walk_forward") or None,
             policy=policy,
         )
@@ -284,6 +302,7 @@ def evaluate_latest_alpha_policy_gate(
         backtest=inputs["backtest"],
         monte_carlo=inputs["monte_carlo"],
         pbo=inputs["pbo"],
+        data_snooping=inputs["data_snooping"] or None,
         walk_forward=inputs["backtest"].get("walk_forward") or None,
         policy=policy,
     )

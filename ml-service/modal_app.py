@@ -2285,12 +2285,7 @@ def _load_verified_oof_resume_windows(
     expected_manifest_checksum = hashlib.sha256(
         json.dumps(unsigned, sort_keys=True, default=str).encode("utf-8")
     ).hexdigest()
-    if parent.get("schema_version") not in {
-        "active8-oof-cohort-manifest-v1",
-        "active8-oof-cohort-manifest-v2",
-        "active8-oof-cohort-manifest-v3",
-        "active8-oof-cohort-manifest-v4",
-    }:
+    if parent.get("schema_version") != "active8-oof-cohort-manifest-v5":
         raise ValueError("active8_oof_resume_manifest_schema_invalid")
     if parent.get("manifest_checksum") != expected_manifest_checksum:
         raise ValueError("active8_oof_resume_manifest_checksum_mismatch")
@@ -2299,6 +2294,18 @@ def _load_verified_oof_resume_windows(
     if list(parent.get("model_set") or []) != list(models):
         raise ValueError("active8_oof_resume_model_set_mismatch")
     expected_target = "next-session-canonical-adjusted-open-to-fifth-session-canonical-adjusted-close-net-v4"
+    expected_feature_semantic = "formal137-pit-rolling-rank-and-imputation-v2"
+    expected_imputation_semantic = "prior_252_row_median_then_zero_v2"
+    producer_source_sha = str(os.environ.get("STOCKVISION_SOURCE_SHA") or "").strip().lower()
+    if len(producer_source_sha) != 40 or any(char not in "0123456789abcdef" for char in producer_source_sha):
+        raise ValueError("active8_oof_resume_source_sha_missing")
+    prep_lineage = parent.get("prep_manifest") or {}
+    if (
+        prep_lineage.get("feature_semantic_version") != expected_feature_semantic
+        or prep_lineage.get("feature_imputation_semantic") != expected_imputation_semantic
+        or prep_lineage.get("producer_source_sha") != producer_source_sha
+    ):
+        raise ValueError("active8_oof_resume_feature_lineage_mismatch")
     if parent.get("target_semantic_version") != expected_target:
         raise ValueError("active8_oof_resume_target_semantic_mismatch")
     if parent.get("score_semantic_version") != "same-market-same-date-average-tie-percentile-rank-v2":
@@ -2376,8 +2383,11 @@ def _load_verified_oof_resume_windows(
             artifact = np.load(io.BytesIO(artifact_raw), allow_pickle=True)
             metadata = json.loads(str(artifact["metadata"].item()))
             expected_metadata = {
-                "schema_version": "active8-oof-predictions-v1",
+                "schema_version": "active8-oof-predictions-v2",
                 "generation_mode": "purged_oof",
+                "feature_semantic_version": expected_feature_semantic,
+                "feature_imputation_semantic": expected_imputation_semantic,
+                "producer_source_sha": producer_source_sha,
                 "cohort_id": source_cohort_id,
                 "fold_id": source_fold_id,
                 "model_name": model_name,
@@ -2516,6 +2526,11 @@ def walk_forward_orchestrator(payload: dict) -> dict:
         prep_prefix = str(payload.get("prep_gcs_prefix") or "universal").strip().rstrip("/")
         prep_bucket = _storage.Client().bucket(_get_gcs_bucket_name())
         import hashlib as _hashlib
+        from app.features import FEATURE_IMPUTATION_SEMANTIC_VERSION, FEATURE_SEMANTIC_VERSION
+
+        producer_source_sha = str(os.environ.get("STOCKVISION_SOURCE_SHA") or "").strip().lower()
+        if len(producer_source_sha) != 40 or any(char not in "0123456789abcdef" for char in producer_source_sha):
+            raise ValueError("active8_oof_source_sha_missing")
 
         prep_manifest_path = f"{prep_prefix}/prep/manifest.json"
         prep_manifest = json.loads(
@@ -2528,11 +2543,11 @@ def walk_forward_orchestrator(payload: dict) -> dict:
             json.dumps(prep_unsigned, sort_keys=True).encode("utf-8")
         ).hexdigest()
         if (
-            prep_manifest.get("schema_version") not in {
-                "active8-canonical-adjusted-prep-v1",
-                "active8-canonical-adjusted-prep-v2",
-            }
+            prep_manifest.get("schema_version") != "active8-canonical-adjusted-prep-v3"
             or prep_manifest.get("status") != "ready"
+            or prep_manifest.get("feature_semantic_version") != FEATURE_SEMANTIC_VERSION
+            or prep_manifest.get("feature_imputation_semantic") != FEATURE_IMPUTATION_SEMANTIC_VERSION
+            or prep_manifest.get("producer_source_sha") != producer_source_sha
             or prep_manifest.get("output_gcs_prefix") != prep_prefix
             or prep_manifest.get("manifest_checksum") != prep_manifest_checksum
             or prep_manifest.get("target_semantic_version")
@@ -2561,6 +2576,9 @@ def walk_forward_orchestrator(payload: dict) -> dict:
             "output_rows": int(prep_manifest.get("output_rows") or 0),
             "batch_count": len(batch_rows),
             "target_semantic_version": prep_manifest["target_semantic_version"],
+            "feature_semantic_version": prep_manifest["feature_semantic_version"],
+            "feature_imputation_semantic": prep_manifest["feature_imputation_semantic"],
+            "producer_source_sha": prep_manifest["producer_source_sha"],
             "roundtrip_cost_bps": float(prep_manifest["roundtrip_cost_bps"]),
             "verification": "manifest_and_all_batch_sha256_v1",
         }
@@ -3048,7 +3066,7 @@ def walk_forward_orchestrator(payload: dict) -> dict:
         from app.oof_manifest_publisher import publish_oof_manifest
 
         manifest = {
-            "schema_version": "active8-oof-cohort-manifest-v4",
+            "schema_version": "active8-oof-cohort-manifest-v5",
 
             "cohort_id": cohort_id,
             "start_date": start_date,

@@ -1,5 +1,8 @@
 import hashlib
 import json
+import os
+
+os.environ.setdefault("STOCKVISION_SOURCE_SHA", "0123456789abcdef0123456789abcdef01234567")
 
 import numpy as np
 import pytest

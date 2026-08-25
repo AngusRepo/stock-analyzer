@@ -5,16 +5,24 @@ from __future__ import annotations
 import hashlib
 import io
 import json
+import os
 from typing import Any
 
 import numpy as np
 from scipy.stats import spearmanr
 
+from .features import FEATURE_IMPUTATION_SEMANTIC_VERSION, FEATURE_SEMANTIC_VERSION
 from .sequence_training import SEQUENCE_RETURN_SEMANTIC_VERSION
 
-OOF_PREDICTION_SCHEMA_VERSION = "active8-oof-predictions-v1"
+OOF_PREDICTION_SCHEMA_VERSION = "active8-oof-predictions-v2"
 OOF_TARGET_SEMANTIC_VERSION = SEQUENCE_RETURN_SEMANTIC_VERSION
 
+
+def _runtime_source_sha() -> str:
+    source_sha = str(os.environ.get("STOCKVISION_SOURCE_SHA") or "").strip().lower()
+    if len(source_sha) != 40 or any(char not in "0123456789abcdef" for char in source_sha):
+        raise RuntimeError("stockvision_source_sha_missing_or_invalid")
+    return source_sha
 
 def canonical_market_segment(value: Any) -> str:
     text = str(value or "").strip().upper()
@@ -212,6 +220,9 @@ def save_oof_prediction_artifact(
         "model_name": model_name,
         "artifact_version": artifact_version,
         "target_semantic_version": target_semantic_version,
+        "feature_semantic_version": FEATURE_SEMANTIC_VERSION,
+        "feature_imputation_semantic": FEATURE_IMPUTATION_SEMANTIC_VERSION,
+        "producer_source_sha": _runtime_source_sha(),
         "score_semantic": "same-market-same-date-average-tie-percentile-rank-v2",
         "rows": int(len(raw)),
         "dates": int(len(set(date_values.tolist()))),

@@ -60,7 +60,7 @@ def _metrics(returns: list[float], partitions: list[float]) -> FakeMetrics:
     )
 
 
-def test_run_alpha_candidate_evidence_replays_champion_and_candidate_for_cscv_pbo():
+def test_run_alpha_candidate_evidence_keeps_iid_spa_diagnostic_out_of_promotion():
     calls: list[dict] = []
     champion = _metrics([0.01] * 72, [0.01, 0.01, 0.01, 0.01, 0.01, 0.01])
     candidate_metrics = _metrics([0.02] * 72, [0.03, 0.025, 0.028, 0.026, 0.031, 0.027])
@@ -104,11 +104,12 @@ def test_run_alpha_candidate_evidence_replays_champion_and_candidate_for_cscv_pb
     assert out["monte_carlo"]["simulation_method"] == "regime_block_bootstrap"
     assert out["pbo"]["method"] == "cscv_rank_logit"
     assert out["pbo"]["n_trades"] == 72
-    assert out["data_snooping"]["method"] == "hansen_spa"
+    assert out["data_snooping"]["method"] == "hansen_iid_max_mean_diagnostic_v1"
     assert out["data_snooping"]["benchmark"] == "champion"
     assert out["data_snooping"]["candidate_count"] == 1
-    assert out["validation_packet"]["validation_scope"]["data_snooping"] == "white_reality_check_or_hansen_spa"
-    assert out["gate"]["decision"] == "PASS"
+    assert out["validation_packet"]["validation_scope"]["data_snooping"] == "promotion_grade_stationary_bootstrap_white_or_studentized_spa_required"
+    assert out["gate"]["decision"] == "FAIL"
+    assert "validation_packet:data_snooping_overfit_guard" in out["gate"]["failed_gates"]
     assert calls[0]["params"]["alphaFramework"]["allocation"]["slateSize"] == 10
     assert calls[1]["params"]["alphaFramework"]["allocation"]["slateSize"] == 8
     assert calls[1]["mode"] == "B"

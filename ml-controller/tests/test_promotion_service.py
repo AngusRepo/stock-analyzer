@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import sys
 from pathlib import Path
@@ -17,6 +18,36 @@ from services.promotion_service import (  # noqa: E402
     normalize_latest_monte_carlo_row,
     normalize_latest_pbo_row,
 )
+
+
+def _exact_dsr_inputs() -> dict:
+    trial_distribution = [0.05, 0.08, 0.1, 0.12, 0.15]
+    canonical = json.dumps(
+        [round(float(value), 12) for value in trial_distribution],
+        separators=(",", ":"),
+        allow_nan=False,
+    )
+    return {
+        "return_series": [0.01 + (index % 5) * 0.001 for index in range(120)],
+        "trial_sharpe_distribution": trial_distribution,
+        "effective_trials": len(trial_distribution),
+        "trial_distribution_lineage": {
+            "artifact_id": "trial-distribution-test-v1",
+            "as_of_date": "2026-04-25",
+            "pit_fenced": True,
+            "payload_checksum": hashlib.sha256(canonical.encode("utf-8")).hexdigest(),
+        },
+    }
+
+
+def _promotion_grade_data_snooping() -> dict:
+    return {
+        "method": "hansen_spa_studentized_stationary_bootstrap_v2",
+        "exact_formula": True,
+        "promotion_eligible": True,
+        "go_live_verdict": "PASS",
+        "p_value": 0.05,
+    }
 
 
 def test_normalize_latest_backtest_row_prefers_raw_summary_and_preserves_mode_b():
@@ -128,6 +159,8 @@ def test_evaluate_latest_promotion_gate_joins_latest_mode_b_risk_checks(monkeypa
             "sanity_flags": [],
             "absolute_confidence": "moderate",
             "walk_forward": {"passed": True, "windows": 8},
+            **_exact_dsr_inputs(),
+            "data_snooping": _promotion_grade_data_snooping(),
         }),
         }],
         "monte_carlo_results": [{
@@ -188,6 +221,8 @@ def test_evaluate_latest_promotion_gate_can_use_separate_pbo_source(monkeypatch)
             "sanity_flags": [],
             "absolute_confidence": "moderate",
             "walk_forward": {"passed": True, "windows": 6},
+            **_exact_dsr_inputs(),
+            "data_snooping": _promotion_grade_data_snooping(),
         }),
         }],
         "monte_carlo_results": [{
@@ -330,6 +365,8 @@ def test_evaluate_latest_alpha_policy_gate_combines_candidate_and_latest_risk_ga
                 "sanity_flags": [],
                 "absolute_confidence": "moderate",
                 "walk_forward": {"passed": True, "windows": 6},
+            **_exact_dsr_inputs(),
+            "data_snooping": _promotion_grade_data_snooping(),
             }),
         }],
         "monte_carlo_results": [{
@@ -405,6 +442,7 @@ def _evidence_bundle(candidate_id: str | None = "trading:config:sandbox:alpha_fr
             "absolute_confidence": "moderate",
             "sanity_flags": [],
             "parity_audit": {"worker_parity": {"decision": "PASS", "drift_rate": 0.0}},
+            **_exact_dsr_inputs(),
         },
         "monte_carlo": {
             "source": "backtest",
@@ -421,6 +459,7 @@ def _evidence_bundle(candidate_id: str | None = "trading:config:sandbox:alpha_fr
             "oos_mean_return": 0.03,
             "go_live_verdict": "PASS",
         },
+        "data_snooping": _promotion_grade_data_snooping(),
         "walk_forward": {"passed": True, "windows": 5},
     }
 
@@ -456,6 +495,7 @@ def test_build_alpha_policy_evidence_bundle_normalizes_artifact_shapes():
                 "parity_audit": {"worker_parity": {"decision": "PASS"}},
                 "sanity_flags": [],
                 "absolute_confidence": "moderate",
+                **_exact_dsr_inputs(),
             })
         },
         monte_carlo={
@@ -473,6 +513,7 @@ def test_build_alpha_policy_evidence_bundle_normalizes_artifact_shapes():
             "go_live_verdict": "PASS",
             "raw_details": json.dumps({"method": "cscv_rank_logit"}),
         },
+        data_snooping=_promotion_grade_data_snooping(),
         walk_forward={"passed": True, "windows": 6},
     )
 
@@ -500,6 +541,7 @@ def test_parameter_candidate_evidence_bundle_and_gate_are_available():
                 "parity_audit": {"worker_parity": {"decision": "PASS"}},
                 "sanity_flags": [],
                 "absolute_confidence": "moderate",
+                **_exact_dsr_inputs(),
             })
         },
         monte_carlo={
@@ -517,6 +559,7 @@ def test_parameter_candidate_evidence_bundle_and_gate_are_available():
             "go_live_verdict": "PASS",
             "raw_details": json.dumps({"method": "cscv_rank_logit"}),
         },
+        data_snooping=_promotion_grade_data_snooping(),
         walk_forward={"passed": True, "windows": 6},
     )
 

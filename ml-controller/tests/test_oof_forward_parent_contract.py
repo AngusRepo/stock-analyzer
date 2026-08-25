@@ -2,8 +2,12 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 
 from routers.walk_forward import _oof_forward_parent_contract
+
+TEST_SOURCE_SHA = "0123456789abcdef0123456789abcdef01234567"
+os.environ.setdefault("STOCKVISION_SOURCE_SHA", TEST_SOURCE_SHA)
 
 
 class _Blob:
@@ -66,7 +70,7 @@ def _manifest() -> tuple[dict, set[str]]:
             "checksum": "sha256:" + "c" * 64,
         }
     manifest = {
-        "schema_version": "active8-oof-cohort-manifest-v4",
+        "schema_version": "active8-oof-cohort-manifest-v5",
         "status": "ready",
         "generation_mode": "purged_oof",
         "cohort_id": cohort_id,
@@ -75,6 +79,11 @@ def _manifest() -> tuple[dict, set[str]]:
             "canonical-adjusted-close-net-v4"
         ),
         "score_semantic_version": "same-market-same-date-average-tie-percentile-rank-v2",
+        "prep_manifest": {
+            "feature_semantic_version": "formal137-pit-rolling-rank-and-imputation-v2",
+            "feature_imputation_semantic": "prior_252_row_median_then_zero_v2",
+            "producer_source_sha": TEST_SOURCE_SHA,
+        },
         "windows": [window],
     }
     manifest["manifest_checksum"] = hashlib.sha256(

@@ -61,6 +61,12 @@ def _manifest(*, excluded: tuple[str, ...] = ("GNN", "PatchTST")) -> dict:
                 "schema": {
                     "metadata_schema_version": "test-v1",
                     "target_semantic_version": serving_resolver.LABEL_SCHEMA_VERSION,
+                    "feature_semantic_version": serving_resolver.FORMAL_FEATURE_SEMANTIC_VERSION,
+                    "gnn_graph_semantic_version": (
+                        serving_resolver.FORMAL_GNN_GRAPH_SEMANTIC_VERSION
+                        if model_name == "GNN"
+                        else None
+                    ),
                     "sequence_contract": None,
                 },
                 "ensemble": {

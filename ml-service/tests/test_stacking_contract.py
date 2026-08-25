@@ -82,7 +82,7 @@ def test_build_rank_meta_features_uses_one_rank_per_model():
     )
 
     assert features.shape == (4,)
-    assert list(features) == [0.82, 0.74, 0.63, 0.5]
+    np.testing.assert_allclose(features, [0.82, 0.74, 0.63, 0.5])
 
 
 def test_train_rank_stacker_oof_returns_rank_regression_bundle():

@@ -5,12 +5,14 @@ from __future__ import annotations
 import hashlib
 import io
 import json
+import os
 from collections import Counter, defaultdict
 from datetime import datetime, timezone
 from typing import Any
 
 import numpy as np
 
+from .features import FEATURE_IMPUTATION_SEMANTIC_VERSION, FEATURE_SEMANTIC_VERSION
 from .model_store import _get_bucket
 from .oof_lineage import canonical_market_segment, percentile_rank_by_date_market
 from .research_benchmarks.common import load_sequence_dataset
@@ -21,8 +23,15 @@ from .sequence_training import (
 )
 
 
-SCHEMA_VERSION = "active8-canonical-adjusted-prep-v2"
+SCHEMA_VERSION = "active8-canonical-adjusted-prep-v3"
+SOURCE_RECEIPT_SCHEMA_VERSION = "active8-immutable-feature-prep-receipt-v2"
 
+
+def _runtime_source_sha() -> str:
+    source_sha = str(os.environ.get("STOCKVISION_SOURCE_SHA") or "").strip().lower()
+    if len(source_sha) != 40 or any(char not in "0123456789abcdef" for char in source_sha):
+        raise RuntimeError("stockvision_source_sha_missing_or_invalid")
+    return source_sha
 
 def _manifest_checksum(manifest: dict[str, Any]) -> str:
     unsigned = {key: value for key, value in manifest.items() if key != "manifest_checksum"}
@@ -43,7 +52,10 @@ def _verified_source_receipt(bucket: Any, prefix: str, batch_count: int) -> dict
     receipt = json.loads(blob.download_as_text().lstrip("\ufeff"))
     unsigned = {key: value for key, value in receipt.items() if key != "receipt_checksum"}
     if (
-        receipt.get("schema_version") != "active8-immutable-feature-prep-receipt-v1"
+        receipt.get("schema_version") != SOURCE_RECEIPT_SCHEMA_VERSION
+        or receipt.get("feature_semantic_version") != FEATURE_SEMANTIC_VERSION
+        or receipt.get("feature_imputation_semantic") != FEATURE_IMPUTATION_SEMANTIC_VERSION
+        or receipt.get("producer_source_sha") != _runtime_source_sha()
         or receipt.get("status") != "ready"
         or str(receipt.get("output_gcs_prefix") or "").rstrip("/") != prefix
         or int(receipt.get("batch_count") or 0) != batch_count
@@ -170,6 +182,9 @@ def rebuild_canonical_adjusted_prep(payload: dict[str, Any]) -> dict[str, Any]:
             and manifest.get("sequence_gcs_prefix") == sequence_prefix
             and manifest.get("source_receipt_checksum") == source_receipt_checksum
             and manifest.get("sequence_manifest_checksum") == sequence_manifest_checksum
+            and manifest.get("feature_semantic_version") == FEATURE_SEMANTIC_VERSION
+            and manifest.get("feature_imputation_semantic") == FEATURE_IMPUTATION_SEMANTIC_VERSION
+            and manifest.get("producer_source_sha") == _runtime_source_sha()
             and manifest.get("manifest_checksum") == _manifest_checksum(manifest)
             and valid_outputs
         ):
@@ -273,6 +288,9 @@ def rebuild_canonical_adjusted_prep(payload: dict[str, Any]) -> dict[str, Any]:
         "output_gcs_prefix": output_prefix,
         "source_business_date": source_receipt.get("business_date"),
         "source_receipt_checksum": source_receipt_checksum,
+        "feature_semantic_version": source_receipt["feature_semantic_version"],
+        "feature_imputation_semantic": source_receipt["feature_imputation_semantic"],
+        "producer_source_sha": source_receipt["producer_source_sha"],
         "sequence_manifest_checksum": sequence_manifest_checksum,
         "source_feature_date_min": min(
             str(value)[:10] for batch in source_batches for value in batch["dates"]

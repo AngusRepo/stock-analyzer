@@ -151,12 +151,16 @@ def test_load_state_space_series_export_from_payload_file_supports_list_payload(
 
 
 def test_load_daily_state_space_series_export_uses_read_only_pipeline_inputs(monkeypatch):
-    from services import d1_client, payload_builder
+    from services import d1_domain_client, payload_builder
+
+    class FakeCoreClient:
+        def query(self, sql, params=None, timeout=60.0):
+            return [{"id": 1, "symbol": "2330", "rank": 1}]
 
     monkeypatch.setattr(
-        d1_client,
-        "query",
-        lambda sql, params=None: [{"id": 1, "symbol": "2330", "rank": 1}],
+        d1_domain_client,
+        "client_for_domain",
+        lambda _domain: FakeCoreClient(),
     )
     monkeypatch.setattr(
         payload_builder,

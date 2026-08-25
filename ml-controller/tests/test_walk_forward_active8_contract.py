@@ -1,10 +1,14 @@
 from pathlib import Path
 import asyncio
+import os
 import sys
 
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "ml-controller"))
+
+TEST_SOURCE_SHA = "0123456789abcdef0123456789abcdef01234567"
+os.environ.setdefault("STOCKVISION_SOURCE_SHA", TEST_SOURCE_SHA)
 
 
 def test_walk_forward_defaults_to_active8_contract():
@@ -33,13 +37,17 @@ def test_oof_full_fit_plan_only_dispatches_models_with_pass_evidence():
     from routers.walk_forward import build_oof_full_fit_dispatch_plan
 
     manifest = {
-        "schema_version": "active8-oof-cohort-manifest-v3",
+        "schema_version": "active8-oof-cohort-manifest-v5",
         "target_semantic_version": "next-session-canonical-adjusted-open-to-fifth-session-canonical-adjusted-close-net-v4",
         "prep_manifest": {
             "manifest_checksum": "a" * 64,
             "target_semantic_version": "next-session-canonical-adjusted-open-to-fifth-session-canonical-adjusted-close-net-v4",
             "roundtrip_cost_bps": 18.0,
             "batch_count": 5,
+            "schema_version": "active8-canonical-adjusted-prep-v3",
+            "feature_semantic_version": "formal137-pit-rolling-rank-and-imputation-v2",
+            "feature_imputation_semantic": "prior_252_row_median_then_zero_v2",
+            "producer_source_sha": TEST_SOURCE_SHA,
         },
         "sequence_manifest": {
             "artifact_checksum": "b" * 64,
@@ -153,10 +161,12 @@ def test_walk_forward_routes_long_sequence_v3_prep_into_every_oof_fold():
     assert "active8_oof_sequence_manifest_contract_invalid" in modal_source
     assert "active8_oof_sequence_v3_records_missing" in modal_source
     assert '"verification": "manifest_bytes_and_all_batch_sha256_v1"' in modal_source
-    assert '"schema_version": "active8-oof-cohort-manifest-v4"' in modal_source
+    assert '"schema_version": "active8-oof-cohort-manifest-v5"' in modal_source
     assert '"source_prep_manifest_checksum": prep_manifest_checksum' in modal_source
     assert '"source_sequence_manifest_checksum": sequence_manifest_evidence["artifact_checksum"]' in modal_source
     assert "canonical-adjusted-close-net-v4" in modal_source
+    assert "feature_semantic_version" in modal_source
+    assert "producer_source_sha" in modal_source
     assert '"version": f"{cohort_id}-w{wid}"' in modal_source
     assert 'version = payload.get("output_model_version") or payload.get("version", "v1")' in modal_source
     assert 'generation_mode=payload.get("generation_mode")' in modal_source
@@ -179,7 +189,7 @@ def test_walk_forward_calendar_reader_does_not_hydrate_backtest_dataset(monkeypa
             {"trading_date": "2026-07-07", "price_rows": 2310},
         ]
 
-    monkeypatch.setattr(d1_client, "query", fake_query)
+    monkeypatch.setattr(walk_forward.MARKET_D1_CLIENT, "query", fake_query)
 
     days, access = walk_forward._load_trading_calendar("2026-07-01", "2026-07-07")
 
@@ -247,7 +257,7 @@ def test_resume_plan_reuses_only_exact_parent_splits(monkeypatch):
     monkeypatch.setattr(
         active8_oof_cohort_materializer,
         "load_verified_oof_manifest",
-        lambda _path, bucket: (manifest, b"{}"),
+        lambda _path, bucket, **_kwargs: (manifest, b"{}"),
     )
     windows = [
         WalkForwardWindow(0, "2025-12-15", "2026-03-14", "2026-03-15", "2026-03-31"),
@@ -281,7 +291,7 @@ def test_modal_resume_contract_verifies_artifacts_before_pending_fold_training()
     assert 'reused_window["source_fold_id"] = source_fold_id' in source
     assert "pending_windows = [" in source
     assert "asyncio.gather(*[_bounded(w) for w in pending_windows])" in source
-    assert '"active8-oof-cohort-manifest-v2"' in source
+    assert '"active8-oof-cohort-manifest-v5"' in source
     assert 'method="outer_purged_walk_forward_rank_ic"' in source
     assert '"full_fit_eligible_models"' in source
     assert 'stage="promotion"' in source
@@ -310,7 +320,7 @@ def test_oof_lifecycle_calendar_uses_checksum_verified_immutable_prep():
 
     from routers import walk_forward
 
-    prefix = "universal/canonical_adjusted_v4/test"
+    prefix = "universal/canonical_adjusted_v6/test"
     batch_path = f"{prefix}/prep/batch_0.npz"
     buffer = io.BytesIO()
     np.savez_compressed(
@@ -321,11 +331,14 @@ def test_oof_lifecycle_calendar_uses_checksum_verified_immutable_prep():
     )
     batch_raw = buffer.getvalue()
     manifest = {
-        "schema_version": "active8-canonical-adjusted-prep-v1",
+        "schema_version": "active8-canonical-adjusted-prep-v3",
         "status": "ready",
         "output_gcs_prefix": prefix,
         "sequence_gcs_prefix": "universal/sequence_long/test",
         "target_semantic_version": walk_forward._OOF_TARGET_SEMANTIC_VERSION,
+        "feature_semantic_version": walk_forward.OOF_FEATURE_SEMANTIC_VERSION,
+        "feature_imputation_semantic": walk_forward.OOF_FEATURE_IMPUTATION_SEMANTIC_VERSION,
+        "producer_source_sha": TEST_SOURCE_SHA,
         "roundtrip_cost_bps": 18.0,
         "batch_rows": [3],
         "output_checksums": {batch_path: hashlib.sha256(batch_raw).hexdigest()},
@@ -427,13 +440,17 @@ def test_oof_full_fit_plan_blocks_tree_without_fold_feature_lineage():
 
     target = "next-session-canonical-adjusted-open-to-fifth-session-canonical-adjusted-close-net-v4"
     plan = build_oof_full_fit_dispatch_plan({
-        "schema_version": "active8-oof-cohort-manifest-v3",
+        "schema_version": "active8-oof-cohort-manifest-v5",
         "target_semantic_version": target,
         "prep_manifest": {
             "manifest_checksum": "a" * 64,
             "target_semantic_version": target,
             "roundtrip_cost_bps": 18.0,
             "batch_count": 5,
+            "schema_version": "active8-canonical-adjusted-prep-v3",
+            "feature_semantic_version": "formal137-pit-rolling-rank-and-imputation-v2",
+            "feature_imputation_semantic": "prior_252_row_median_then_zero_v2",
+            "producer_source_sha": TEST_SOURCE_SHA,
         },
         "sequence_manifest": {
             "artifact_checksum": "b" * 64,
@@ -876,10 +893,15 @@ def test_completed_oof_release_alias_preserves_immutable_lineage(monkeypatch):
     }
     result = walk_forward._materialize_completed_oof_release_aliases(
         manifest={
-            "schema_version": "active8-oof-cohort-manifest-v3",
+            "schema_version": "active8-oof-cohort-manifest-v5",
             "cohort_id": "active8-oof-v5",
             "manifest_checksum": "a" * 64,
             "target_semantic_version": registry.ACTIVE8_TARGET_SEMANTIC_VERSION,
+            "prep_manifest": {
+                "feature_semantic_version": walk_forward.OOF_FEATURE_SEMANTIC_VERSION,
+                "feature_imputation_semantic": walk_forward.OOF_FEATURE_IMPUTATION_SEMANTIC_VERSION,
+                "producer_source_sha": TEST_SOURCE_SHA,
+            },
             "windows": windows,
         },
         registry_rows=[{
@@ -1008,10 +1030,15 @@ def test_completed_oof_release_alias_keeps_valid_base_when_selection_pbo_fails(m
     }
     result = walk_forward._materialize_completed_oof_release_aliases(
         manifest={
-            "schema_version": "active8-oof-cohort-manifest-v3",
+            "schema_version": "active8-oof-cohort-manifest-v5",
             "cohort_id": "active8-oof-v5",
             "manifest_checksum": "a" * 64,
             "target_semantic_version": registry.ACTIVE8_TARGET_SEMANTIC_VERSION,
+            "prep_manifest": {
+                "feature_semantic_version": walk_forward.OOF_FEATURE_SEMANTIC_VERSION,
+                "feature_imputation_semantic": walk_forward.OOF_FEATURE_IMPUTATION_SEMANTIC_VERSION,
+                "producer_source_sha": TEST_SOURCE_SHA,
+            },
             "windows": windows,
         },
         registry_rows=[source_row, existing_alias],
@@ -1378,7 +1405,7 @@ def test_oof_dispatch_fence_probes_modal_terminal_state_before_holding_lock():
 def test_oof_cohort_version_owns_immutable_fold_evidence_contract():
     from routers.walk_forward import OOF_COHORT_ID_VERSION
 
-    assert OOF_COHORT_ID_VERSION == "v8-tie-safe-immutable-fold-evidence"
+    assert OOF_COHORT_ID_VERSION == "v9-feature-semantic-source-attested"
 
 
 def test_oof_materialize_request_rejects_unknown_cadence():

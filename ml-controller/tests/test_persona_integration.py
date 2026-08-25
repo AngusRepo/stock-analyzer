@@ -24,6 +24,13 @@ from services.persona_service import (  # noqa: E402
 )
 
 
+@pytest.fixture(autouse=True)
+def _isolate_legacy_persona_path(monkeypatch):
+    import services.recommendation_service as recommendation_service
+
+    monkeypatch.setattr(recommendation_service, "_is_use_ensemble_v2", lambda: False)
+
+
 # ═══════════════════════════════════════════════════════════════════════════
 # Helpers
 # ═══════════════════════════════════════════════════════════════════════════
@@ -38,6 +45,16 @@ def _screener_rec(symbol: str, chip: float = 20.0, tech: float = 15.0) -> dict:
         "industry": "晶圓代工",
         "chip_score": chip,
         "tech_score": tech,
+        "score_components": {
+            "version": "score_v2",
+            "seedComponents": {
+                "chipFlowSeed40": chip,
+                "technicalSeed30": tech,
+                "screenerMomentumSeed20": 0.0,
+                "mlEdgeSeed30": 0.0,
+                "personaAlphaSeed": 0.0,
+            },
+        },
     }
 
 
@@ -75,8 +92,8 @@ class TestPersonaIntegration:
         row = final[0]
         assert row["persona_score"] == 0.0
         assert row["persona_applied"] is None
-        # score = chip + tech + ml_score (persona absent)
-        assert row["score"] == pytest.approx(row["chip_score"] + row["tech_score"] + row["ml_score"], abs=0.2)
+        assert row["score"] == pytest.approx(row["score_components"]["finalScore"])
+        assert row["score_components"]["seedComponents"]["personaAlphaSeed"] == 0.0
 
     def test_strong_bullish_persona_adds_positive_score(self):
         recs = [_screener_rec("2330")]

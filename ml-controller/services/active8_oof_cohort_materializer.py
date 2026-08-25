@@ -6,6 +6,7 @@ import gzip
 import hashlib
 import io
 import json
+import os
 import statistics
 from collections import Counter, defaultdict
 from datetime import datetime, timezone
@@ -39,7 +40,16 @@ from services.worker_evidence_archive_client import resolve_legacy_screener_evid
 
 TARGET_SEMANTIC_VERSION = LABEL_SCHEMA_VERSION
 SCORE_SEMANTIC_VERSION = "score-v2-active8-components-v3"
+FEATURE_SEMANTIC_VERSION = "formal137-pit-rolling-rank-and-imputation-v2"
+FEATURE_IMPUTATION_SEMANTIC_VERSION = "prior_252_row_median_then_zero_v2"
 D1_IN_CLAUSE_CHUNK_SIZE = 80
+def _runtime_source_sha() -> str:
+    source_sha = str(os.environ.get("STOCKVISION_SOURCE_SHA") or "").strip().lower()
+    if len(source_sha) != 40 or any(char not in "0123456789abcdef" for char in source_sha):
+        raise RuntimeError("stockvision_source_sha_missing_or_invalid")
+    return source_sha
+
+
 OOF_MATERIALIZED_ARTIFACT_SCHEMA_VERSION = "active8-oof-materialized-jsonl-gzip-v1"
 OOF_PIT_ELIGIBILITY_POLICY_VERSION = "recorded-score-v2-r2-sector-before-next-session-open-v4"
 OOF_POLICY_REPLACEMENT_REASON = "add-recorded-decision-cutoff-sector-pit-evidence"
@@ -508,6 +518,7 @@ def load_verified_oof_manifest(
     manifest_path: str,
     *,
     bucket: Any,
+    require_formal_lineage: bool = False,
 ) -> tuple[dict[str, Any], bytes]:
     raw = bucket.blob(manifest_path).download_as_bytes()
     manifest = json.loads(raw.decode("utf-8"))
@@ -516,6 +527,7 @@ def load_verified_oof_manifest(
         "active8-oof-cohort-manifest-v2",
         "active8-oof-cohort-manifest-v3",
         "active8-oof-cohort-manifest-v4",
+        "active8-oof-cohort-manifest-v5",
     }:
         raise ValueError("active8_oof_manifest_schema_invalid")
     if manifest.get("generation_mode") != "purged_oof":
@@ -530,6 +542,7 @@ def load_verified_oof_manifest(
         "active8-oof-cohort-manifest-v2",
         "active8-oof-cohort-manifest-v3",
         "active8-oof-cohort-manifest-v4",
+        "active8-oof-cohort-manifest-v5",
     }:
         parent = manifest.get("parent_manifest") or {}
         reused = [window for window in manifest.get("windows") or [] if window.get("source_cohort_id")]
@@ -542,6 +555,7 @@ def load_verified_oof_manifest(
     if manifest.get("schema_version") in {
         "active8-oof-cohort-manifest-v3",
         "active8-oof-cohort-manifest-v4",
+        "active8-oof-cohort-manifest-v5",
     }:
         prep = manifest.get("prep_manifest") or {}
         if (
@@ -562,7 +576,7 @@ def load_verified_oof_manifest(
             or any(len(str(value or "")) != 64 for value in batch_checksums.values())
         ):
             raise ValueError("active8_oof_sequence_manifest_lineage_invalid")
-    if manifest.get("schema_version") == "active8-oof-cohort-manifest-v4":
+    if manifest.get("schema_version") in {"active8-oof-cohort-manifest-v4", "active8-oof-cohort-manifest-v5"}:
         for window in manifest.get("windows") or []:
             if (
                 not str(window.get("source_prep_gcs_prefix") or "").strip()
@@ -571,6 +585,16 @@ def load_verified_oof_manifest(
                 or len(str(window.get("source_sequence_manifest_checksum") or "")) != 64
             ):
                 raise ValueError("active8_oof_fold_input_lineage_invalid")
+    if require_formal_lineage:
+        prep = manifest.get("prep_manifest") or {}
+        if (
+            manifest.get("schema_version") != "active8-oof-cohort-manifest-v5"
+            or prep.get("schema_version") != "active8-canonical-adjusted-prep-v3"
+            or prep.get("feature_semantic_version") != FEATURE_SEMANTIC_VERSION
+            or prep.get("feature_imputation_semantic") != FEATURE_IMPUTATION_SEMANTIC_VERSION
+            or prep.get("producer_source_sha") != _runtime_source_sha()
+        ):
+            raise ValueError("active8_oof_formal_feature_lineage_invalid")
     return manifest, raw
 
 
@@ -587,6 +611,10 @@ def _load_prediction_artifact(
     expected_model: str,
     split: dict[str, str],
     expected_generation_mode: str = "purged_oof",
+    expected_prediction_schema: str = "active8-oof-predictions-v1",
+    expected_feature_semantic: str | None = None,
+    expected_imputation_semantic: str | None = None,
+    expected_producer_source_sha: str | None = None,
 ) -> list[dict[str, Any]]:
     raw = bucket.blob(path).download_as_bytes()
     if hashlib.sha256(raw).hexdigest() != expected_checksum:
@@ -594,13 +622,19 @@ def _load_prediction_artifact(
     data = np.load(io.BytesIO(raw), allow_pickle=True)
     metadata = json.loads(str(data["metadata"].item()))
     expected = {
-        "schema_version": "active8-oof-predictions-v1",
+        "schema_version": expected_prediction_schema,
         "generation_mode": expected_generation_mode,
         "cohort_id": expected_artifact_cohort,
         "fold_id": expected_artifact_fold,
         "model_name": expected_model,
         "target_semantic_version": TARGET_SEMANTIC_VERSION,
     }
+    if expected_feature_semantic is not None:
+        expected.update({
+            "feature_semantic_version": expected_feature_semantic,
+            "feature_imputation_semantic": expected_imputation_semantic,
+            "producer_source_sha": expected_producer_source_sha,
+        })
     for key, value in expected.items():
         if metadata.get(key) != value:
             raise ValueError(f"active8_oof_artifact_metadata_mismatch:{key}:{expected_model}:{expected_artifact_fold}")
@@ -648,6 +682,8 @@ def load_oof_prediction_rows(
     bucket: Any,
 ) -> list[dict[str, Any]]:
     cohort_id = str(manifest["cohort_id"])
+    formal_lineage = manifest.get("schema_version") == "active8-oof-cohort-manifest-v5"
+    prep_lineage = manifest.get("prep_manifest") or {}
     rows: list[dict[str, Any]] = []
     for window in manifest.get("windows") or []:
         fold_id = f"w{window['window_id']}"
@@ -674,6 +710,20 @@ def load_oof_prediction_rows(
                 materialized_fold=fold_id,
                 expected_model=model_name,
                 split=split,
+                expected_prediction_schema=(
+                    "active8-oof-predictions-v2" if formal_lineage
+                    else "active8-oof-predictions-v1"
+                ),
+                expected_feature_semantic=(
+                    FEATURE_SEMANTIC_VERSION if formal_lineage else None
+                ),
+                expected_imputation_semantic=(
+                    FEATURE_IMPUTATION_SEMANTIC_VERSION if formal_lineage else None
+                ),
+                expected_producer_source_sha=(
+                    str(prep_lineage.get("producer_source_sha") or "")
+                    if formal_lineage else None
+                ),
             ))
     return rows
 
@@ -687,13 +737,16 @@ def load_verified_oof_forward_extension(
     raw = bucket.blob(manifest_path).download_as_bytes()
     manifest = json.loads(raw.decode("utf-8"))
     if (
-        manifest.get("schema_version") != "active8-oof-forward-extension-v1"
+        manifest.get("schema_version") != "active8-oof-forward-extension-v2"
         or manifest.get("status") != "ready"
         or manifest.get("generation_mode") != "frozen_forward_oos"
         or manifest.get("promotion_eligible") is not False
         or manifest.get("training_dispatched") is not False
         or manifest.get("counterfactual_reconstruction") is not True
         or manifest.get("target_semantic_version") != TARGET_SEMANTIC_VERSION
+        or manifest.get("feature_semantic_version") != FEATURE_SEMANTIC_VERSION
+        or manifest.get("feature_imputation_semantic") != FEATURE_IMPUTATION_SEMANTIC_VERSION
+        or manifest.get("producer_source_sha") != str((base_manifest.get("prep_manifest") or {}).get("producer_source_sha") or "")
         or manifest.get("manifest_checksum") != _manifest_checksum(manifest)
     ):
         raise ValueError("active8_oof_forward_manifest_invalid")
@@ -749,6 +802,10 @@ def load_oof_forward_prediction_rows(
             expected_model=model_name,
             split=split,
             expected_generation_mode="frozen_forward_oos",
+            expected_prediction_schema="active8-oof-predictions-v2",
+            expected_feature_semantic=FEATURE_SEMANTIC_VERSION,
+            expected_imputation_semantic=FEATURE_IMPUTATION_SEMANTIC_VERSION,
+            expected_producer_source_sha=str(manifest.get("producer_source_sha") or ""),
         ))
     observed = sorted({str(row["prediction_date"])[:10] for row in rows})
     if observed != sorted(str(value)[:10] for value in (manifest.get("dates") or [])):

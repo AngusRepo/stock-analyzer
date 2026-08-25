@@ -9,18 +9,20 @@ from __future__ import annotations
 import hashlib
 import io
 import json
+import os
 from datetime import datetime, timezone
 from typing import Any
 
 import numpy as np
 
+from .features import FEATURE_IMPUTATION_SEMANTIC_VERSION, FEATURE_SEMANTIC_VERSION
 from .model_store import _get_bucket, load_model
 from .oof_lineage import save_oof_prediction_artifact
 from .oof_forward_source_contract import assess_fold_forward_sources
 from .research_benchmarks.common import load_sequence_dataset
 from .sequence_training import SEQUENCE_RETURN_SEMANTIC_VERSION
 
-SCHEMA_VERSION = "active8-oof-forward-extension-v1"
+SCHEMA_VERSION = "active8-oof-forward-extension-v2"
 GENERATION_MODE = "frozen_forward_oos"
 CORE_MODELS = ("LightGBM", "XGBoost", "ExtraTrees", "TabM", "GNN")
 OPTIONAL_MODELS = ("DLinear", "PatchTST", "iTransformer")
@@ -43,10 +45,17 @@ def _load_json(bucket: Any, path: str) -> dict[str, Any]:
     return value
 
 
+def _runtime_source_sha() -> str:
+    source_sha = str(os.environ.get("STOCKVISION_SOURCE_SHA") or "").strip().lower()
+    if len(source_sha) != 40 or any(char not in "0123456789abcdef" for char in source_sha):
+        raise RuntimeError("stockvision_source_sha_missing_or_invalid")
+    return source_sha
+
+
 def _verify_base_manifest(bucket: Any, path: str) -> dict[str, Any]:
     manifest = _load_json(bucket, path)
     if (
-        manifest.get("schema_version") != "active8-oof-cohort-manifest-v4"
+        manifest.get("schema_version") != "active8-oof-cohort-manifest-v5"
         or manifest.get("status") != "ready"
         or manifest.get("generation_mode") != "purged_oof"
         or manifest.get("manifest_checksum") != _manifest_checksum(manifest)
@@ -69,18 +78,18 @@ def _verify_base_manifest(bucket: Any, path: str) -> dict[str, Any]:
 def _verify_prep_manifest(bucket: Any, prefix: str) -> dict[str, Any]:
     manifest = _load_json(bucket, f"{prefix}/prep/manifest.json")
     if (
-        manifest.get("schema_version") not in {
-            "active8-canonical-adjusted-prep-v1",
-            "active8-canonical-adjusted-prep-v2",
-        }
+        manifest.get("schema_version") != "active8-canonical-adjusted-prep-v3"
         or manifest.get("status") != "ready"
         or str(manifest.get("output_gcs_prefix") or "").rstrip("/") != prefix
+        or manifest.get("feature_semantic_version") != FEATURE_SEMANTIC_VERSION
+        or manifest.get("feature_imputation_semantic") != FEATURE_IMPUTATION_SEMANTIC_VERSION
+        or manifest.get("producer_source_sha") != _runtime_source_sha()
         or manifest.get("target_semantic_version") != SEQUENCE_RETURN_SEMANTIC_VERSION
         or float(manifest.get("roundtrip_cost_bps") or 0.0) != 18.0
         or manifest.get("manifest_checksum") != _manifest_checksum(manifest)
     ):
         raise ValueError("forward_extension_prep_manifest_invalid")
-    if manifest.get("schema_version") == "active8-canonical-adjusted-prep-v2" and (
+    if manifest.get("schema_version") == "active8-canonical-adjusted-prep-v3" and (
         manifest.get("rank_semantic_version") != "same-market-same-date-global-percentile-v2"
         or len(str(manifest.get("source_receipt_checksum") or "")) != 64
         or len(str(manifest.get("sequence_manifest_checksum") or "")) != 64
@@ -447,6 +456,9 @@ def build_frozen_forward_extension(payload: dict[str, Any]) -> dict[str, Any]:
         "knowledge_cutoff_date": cutoff,
         "prep_gcs_prefix": prep_prefix,
         "prep_manifest_checksum": prep["manifest_checksum"],
+        "feature_semantic_version": prep["feature_semantic_version"],
+        "feature_imputation_semantic": prep["feature_imputation_semantic"],
+        "producer_source_sha": prep["producer_source_sha"],
         "sequence_gcs_prefix": sequence_prefix,
         "sequence_batch_count": sequence_batch_count,
         "target_semantic_version": SEQUENCE_RETURN_SEMANTIC_VERSION,

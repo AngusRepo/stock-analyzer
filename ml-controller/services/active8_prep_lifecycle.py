@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import statistics
 from datetime import datetime, timedelta, timezone
 from typing import Any, Callable
@@ -13,9 +14,11 @@ from services.dataset_snapshots import latest_dataset_snapshot
 
 
 SEQUENCE_PREFIX = "universal/sequence_long/runs/"
-FEATURE_PREP_PREFIX = "universal/oof_forward_prep"
-ADJUSTED_PREP_PREFIX = "universal/canonical_adjusted_v5"
-ADJUSTED_PREP_SCHEMA = "active8-canonical-adjusted-prep-v2"
+FEATURE_PREP_PREFIX = "universal/oof_forward_prep_v2"
+ADJUSTED_PREP_PREFIX = "universal/canonical_adjusted_v6"
+ADJUSTED_PREP_SCHEMA = "active8-canonical-adjusted-prep-v3"
+FEATURE_SEMANTIC_VERSION = "formal137-pit-rolling-rank-and-imputation-v2"
+FEATURE_IMPUTATION_SEMANTIC_VERSION = "prior_252_row_median_then_zero_v2"
 ACTIVE8_COMPUTE_SNAPSHOT_LOOKBACK_DAYS = 504
 
 
@@ -27,6 +30,12 @@ class Active8PrepDependencyPending(RuntimeError):
         self.reason = reason
         self.evidence = evidence or {}
 
+
+def _runtime_source_sha() -> str:
+    source_sha = str(os.environ.get("STOCKVISION_SOURCE_SHA") or "").strip().lower()
+    if len(source_sha) != 40 or any(char not in "0123456789abcdef" for char in source_sha):
+        raise RuntimeError("stockvision_source_sha_missing_or_invalid")
+    return source_sha
 
 def _sha256(raw: bytes) -> str:
     return hashlib.sha256(raw).hexdigest()
@@ -231,10 +240,14 @@ async def ensure_active8_daily_prep(
         )
 
     sequence_checksum = str(sequence_manifest["manifest_checksum"])
-    source_prefix = f"{FEATURE_PREP_PREFIX}/{business_date}-{snapshot_checksum[:12]}"
+    producer_source_sha = _runtime_source_sha()
+    source_prefix = (
+        f"{FEATURE_PREP_PREFIX}/{business_date}-{snapshot_checksum[:12]}-"
+        f"{producer_source_sha[:12]}"
+    )
     adjusted_prefix = (
         f"{ADJUSTED_PREP_PREFIX}/{business_date}-"
-        f"{snapshot_checksum[:12]}-{sequence_checksum[:12]}"
+        f"{snapshot_checksum[:12]}-{sequence_checksum[:12]}-{producer_source_sha[:12]}"
     )
     plan = {
         "cutoff": cutoff,
@@ -246,6 +259,9 @@ async def ensure_active8_daily_prep(
         "snapshot_checksum": snapshot_checksum,
         "snapshot_start_date": snapshot_start_date,
         "snapshot_required_lookback_days": ACTIVE8_COMPUTE_SNAPSHOT_LOOKBACK_DAYS,
+        "feature_semantic_version": FEATURE_SEMANTIC_VERSION,
+        "feature_imputation_semantic": FEATURE_IMPUTATION_SEMANTIC_VERSION,
+        "producer_source_sha": producer_source_sha,
         "source_gcs_prefix": source_prefix,
         "sequence_gcs_prefix": sequence_prefix,
         "sequence_manifest_checksum": sequence_checksum,
@@ -286,8 +302,13 @@ async def ensure_active8_daily_prep(
     })
     if adjusted.get("error"):
         raise RuntimeError(f"canonical adjusted prep failed: {adjusted['error']}")
-    if adjusted.get("schema_version") != ADJUSTED_PREP_SCHEMA:
-        raise RuntimeError("canonical adjusted prep schema mismatch")
+    if (
+        adjusted.get("schema_version") != ADJUSTED_PREP_SCHEMA
+        or adjusted.get("feature_semantic_version") != FEATURE_SEMANTIC_VERSION
+        or adjusted.get("feature_imputation_semantic") != FEATURE_IMPUTATION_SEMANTIC_VERSION
+        or adjusted.get("producer_source_sha") != producer_source_sha
+    ):
+        raise RuntimeError("canonical adjusted prep lineage mismatch")
 
     receipt = {
         "schema_version": "active8-daily-prep-lifecycle-v1",

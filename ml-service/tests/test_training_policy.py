@@ -1,11 +1,15 @@
 from __future__ import annotations
 
 import sys
+import os
 from pathlib import Path
 
 import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
+TEST_SOURCE_SHA = "0123456789abcdef0123456789abcdef01234567"
+os.environ.setdefault("STOCKVISION_SOURCE_SHA", TEST_SOURCE_SHA)
 
 from app.training_policy import (  # noqa: E402
     FeatureSelectionPolicy,
@@ -541,7 +545,7 @@ def test_register_challenger_safe_is_disabled_but_preserves_feature_policy_metad
 def test_full_fit_base_payload_preserves_exact_dataset_and_feature_lineage():
     policy = UniversalTrainingPolicy()
     snapshot = {
-        "schema_version": "active8-oof-full-fit-prep-lineage-v1",
+        "schema_version": "active8-oof-full-fit-prep-lineage-v2",
         "source_cohort_id": "cohort-1",
     }
 
@@ -568,9 +572,12 @@ def test_full_fit_base_payload_preserves_exact_dataset_and_feature_lineage():
 def test_immutable_oof_snapshot_requires_exact_rows_and_known_labels():
     target = universal_training.SEQUENCE_RETURN_SEMANTIC_VERSION
     snapshot = {
-        "schema_version": "active8-oof-full-fit-prep-lineage-v1",
+        "schema_version": "active8-oof-full-fit-prep-lineage-v2",
         "gcs_prefix": "universal/canonical_adjusted_v4/immutable",
         "target_semantic_version": target,
+        "feature_semantic_version": universal_training.FEATURE_SEMANTIC_VERSION,
+        "feature_imputation_semantic": universal_training.FEATURE_IMPUTATION_SEMANTIC_VERSION,
+        "producer_source_sha": TEST_SOURCE_SHA,
         "manifest_checksum": "a" * 64,
         "source_manifest_checksum": "b" * 64,
         "source_cohort_id": "cohort-1",
@@ -599,9 +606,12 @@ def test_immutable_oof_snapshot_requires_exact_rows_and_known_labels():
 def test_immutable_oof_snapshot_rejects_future_label_or_row_mismatch():
     target = universal_training.SEQUENCE_RETURN_SEMANTIC_VERSION
     snapshot = {
-        "schema_version": "active8-oof-full-fit-prep-lineage-v1",
+        "schema_version": "active8-oof-full-fit-prep-lineage-v2",
         "gcs_prefix": "universal/canonical_adjusted_v4/immutable",
         "target_semantic_version": target,
+        "feature_semantic_version": universal_training.FEATURE_SEMANTIC_VERSION,
+        "feature_imputation_semantic": universal_training.FEATURE_IMPUTATION_SEMANTIC_VERSION,
+        "producer_source_sha": TEST_SOURCE_SHA,
         "manifest_checksum": "a" * 64,
         "source_manifest_checksum": "b" * 64,
         "source_cohort_id": "cohort-1",

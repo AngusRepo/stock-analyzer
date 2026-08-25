@@ -43,7 +43,14 @@ def test_build_foundation_evidence_from_d1_requires_explicit_forecast_pct(monkey
             "forecast_data": '{"rank_score":0.2}',
         },
     ]
-    monkeypatch.setattr(evidence.d1_client, "query", lambda *args, **kwargs: rows)
+    monkeypatch.setattr(evidence.LEARNING_D1_CLIENT, "query", lambda *args, **kwargs: rows)
+    monkeypatch.setattr(
+        evidence.CORE_D1_CLIENT,
+        "query",
+        lambda *args, **kwargs: [
+            {"id": row["stock_id"], "symbol": row["symbol"]} for row in rows
+        ],
+    )
 
     out = evidence.build_foundation_evidence_from_d1(
         run_date="2026-06-14",
@@ -88,7 +95,14 @@ def test_build_foundation_evidence_from_d1_uses_explicit_forecast_pct(monkeypatc
             "forecast_data": '{"forecast_pct":-0.04,"rank_score":0.2}',
         },
     ]
-    monkeypatch.setattr(evidence.d1_client, "query", lambda *args, **kwargs: rows)
+    monkeypatch.setattr(evidence.LEARNING_D1_CLIENT, "query", lambda *args, **kwargs: rows)
+    monkeypatch.setattr(
+        evidence.CORE_D1_CLIENT,
+        "query",
+        lambda *args, **kwargs: [
+            {"id": row["stock_id"], "symbol": row["symbol"]} for row in rows
+        ],
+    )
 
     out = evidence.build_foundation_evidence_from_d1(
         run_date="2026-06-14",

@@ -107,14 +107,14 @@ async def test_lineage_returns_active_and_challenger_metadata(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_lineage_marks_ft_transformer_artifact_mismatch(monkeypatch):
+async def test_lineage_marks_active_xgboost_artifact_mismatch(monkeypatch):
     pool = {
         "schema_version": "1.0",
         "models": {
-            "FT-Transformer": {
+            "XGBoost": {
                 "status": "active",
                 "version": "v1",
-                "gcs_path": "universal/ft_transformer/v1.joblib",
+                "gcs_path": "universal/xgboost/v1.joblib",
                 "model_type": "feature",
                 "balance_family": "feature",
                 "weekly_ic": [],
@@ -134,7 +134,7 @@ async def test_lineage_marks_ft_transformer_artifact_mismatch(monkeypatch):
 
     result = await model_pool.lineage()
 
-    diagnosis = result["models"]["FT-Transformer"]["lifecycle_diagnosis"]
+    diagnosis = result["models"]["XGBoost"]["lifecycle_diagnosis"]
     assert diagnosis["status"] == "artifact_mismatch"
     assert "metadata_missing" in diagnosis["blockers"]
     assert "prediction_missing" in diagnosis["blockers"]

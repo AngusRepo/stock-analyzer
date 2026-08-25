@@ -511,7 +511,7 @@ def test_v2_manifest_reuses_verified_parent_artifacts():
             "model_name": model_name,
             "target_semantic_version": TARGET_SEMANTIC_VERSION,
             "artifact_version": f"{parent_cohort}-w0-{model_name}",
-            "score_semantic": "same-market-same-date-percentile-rank-v1",
+            "score_semantic": "same-market-same-date-average-tie-percentile-rank-v2",
             "rows": 1,
         }
         buffer = io.BytesIO()

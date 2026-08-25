@@ -804,7 +804,7 @@ def build_oof_fold_artifact_rows(
                 "test_start": str(test_range[0]),
                 "test_end": str(test_range[1]),
                 "target_semantic_version": TARGET_SEMANTIC_VERSION,
-                "score_semantic_version": "same-market-same-date-percentile-rank-v1",
+                "score_semantic_version": "same-market-same-date-average-tie-percentile-rank-v2",
             })
     return output
 
@@ -2204,7 +2204,7 @@ def persist_oof_cohort(
             [
                 cohort_id,
                 TARGET_SEMANTIC_VERSION,
-                "same-market-same-date-percentile-rank-v1",
+                "same-market-same-date-average-tie-percentile-rank-v2",
                 model_signature,
                 len(manifest.get("windows") or []),
                 f"walk_forward/oof_cohorts/{cohort_id}/manifest.json",

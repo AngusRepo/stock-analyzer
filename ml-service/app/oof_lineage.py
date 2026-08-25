@@ -204,7 +204,7 @@ def save_oof_prediction_artifact(
         "model_name": model_name,
         "artifact_version": artifact_version,
         "target_semantic_version": target_semantic_version,
-        "score_semantic": "same-market-same-date-percentile-rank-v1",
+        "score_semantic": "same-market-same-date-average-tie-percentile-rank-v2",
         "rows": int(len(raw)),
         "dates": int(len(set(date_values.tolist()))),
         "split_metadata": split_metadata,

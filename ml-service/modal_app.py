@@ -2301,7 +2301,7 @@ def _load_verified_oof_resume_windows(
     expected_target = "next-session-canonical-adjusted-open-to-fifth-session-canonical-adjusted-close-net-v4"
     if parent.get("target_semantic_version") != expected_target:
         raise ValueError("active8_oof_resume_target_semantic_mismatch")
-    if parent.get("score_semantic_version") != "same-market-same-date-percentile-rank-v1":
+    if parent.get("score_semantic_version") != "same-market-same-date-average-tie-percentile-rank-v2":
         raise ValueError("active8_oof_resume_score_semantic_mismatch")
     parent_prep_prefix = str(parent.get("prep_gcs_prefix") or "").rstrip("/")
     parent_prep_checksum = str((parent.get("prep_manifest") or {}).get("manifest_checksum") or "")
@@ -3057,7 +3057,7 @@ def walk_forward_orchestrator(payload: dict) -> dict:
             "test_window_days": payload.get("test_window_days", 30),
             "generation_mode": generation_mode,
             "target_semantic_version": "next-session-canonical-adjusted-open-to-fifth-session-canonical-adjusted-close-net-v4",
-            "score_semantic_version": "same-market-same-date-percentile-rank-v1",
+            "score_semantic_version": "same-market-same-date-average-tie-percentile-rank-v2",
             "model_set": models,
             "prep_gcs_prefix": str(payload.get("prep_gcs_prefix") or "universal"),
             "prep_manifest": prep_manifest_evidence,

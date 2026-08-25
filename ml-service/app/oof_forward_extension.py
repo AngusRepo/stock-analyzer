@@ -450,7 +450,7 @@ def build_frozen_forward_extension(payload: dict[str, Any]) -> dict[str, Any]:
         "sequence_gcs_prefix": sequence_prefix,
         "sequence_batch_count": sequence_batch_count,
         "target_semantic_version": SEQUENCE_RETURN_SEMANTIC_VERSION,
-        "score_semantic_version": "same-market-same-date-percentile-rank-v1",
+        "score_semantic_version": "same-market-same-date-average-tie-percentile-rank-v2",
         "counterfactual_reconstruction": True,
         "promotion_eligible": False,
         "training_dispatched": False,

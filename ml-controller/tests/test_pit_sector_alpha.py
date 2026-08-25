@@ -160,6 +160,46 @@ def test_multi_date_loader_keeps_signal_dates_and_cutoffs_isolated() -> None:
     assert experts[("2026-07-24", "2330")]["status"] == "loaded"
 
 
+def test_market_risk_session_calendar_uses_core_domain_query() -> None:
+    market_queries: list[str] = []
+    core_queries: list[str] = []
+
+    def market_query(sql: str, params: list[object]) -> list[dict]:
+        assert "FROM market_risk" not in sql
+        market_queries.append(sql)
+        return _query(sql, params)
+
+    def core_query(sql: str, params: list[object]) -> list[dict]:
+        assert "FROM market_risk" in sql
+        core_queries.append(sql)
+        return _query(sql, params)
+
+    experts = load_pit_sector_alpha_experts_by_key(
+        market_query,
+        [{
+            "prediction_date": "2026-07-24",
+            "symbol": "2330",
+            "prediction_generated_at": DECISION_CUTOFF,
+        }],
+        core_query_fn=core_query,
+    )
+
+    assert experts[("2026-07-24", "2330")]["status"] == "loaded"
+    assert market_queries
+    assert len(core_queries) == 1
+
+
+def test_production_oof_and_allocator_replay_route_market_risk_to_core_d1() -> None:
+    walk_forward_source = Path("ml-controller/routers/walk_forward.py").read_text(encoding="utf-8")
+    allocator_source = Path(
+        "ml-controller/services/allocator_ev_feature_snapshot_backfill.py"
+    ).read_text(encoding="utf-8")
+
+    assert walk_forward_source.count("core_query_fn=CORE_D1_CLIENT.query") >= 4
+    assert "market_query if production_domain_routing else query_fn" in allocator_source
+    assert "core_query_fn=core_query if production_domain_routing else query_fn" in allocator_source
+
+
 def test_sector_defensive_interaction_is_derived_from_pit_market_context() -> None:
     expert = load_pit_sector_alpha_experts(
         _query,

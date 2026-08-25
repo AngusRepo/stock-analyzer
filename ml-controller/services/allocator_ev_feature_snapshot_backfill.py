@@ -887,7 +887,11 @@ def build_allocator_ev_feature_snapshots_for_date(
     )
     sector_alpha_load_error: str | None = None
     try:
-        sector_alpha_by_key = load_pit_sector_alpha_experts_by_key(query_fn, candidates)
+        sector_alpha_by_key = load_pit_sector_alpha_experts_by_key(
+            market_query if production_domain_routing else query_fn,
+            candidates,
+            core_query_fn=core_query if production_domain_routing else query_fn,
+        )
     except Exception as exc:  # noqa: BLE001 - missing evidence remains explicit per snapshot.
         sector_alpha_by_key = {}
         sector_alpha_load_error = f"{type(exc).__name__}:{exc}"

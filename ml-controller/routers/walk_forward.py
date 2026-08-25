@@ -1578,7 +1578,9 @@ async def materialize_walk_forward_oof(req: OofMaterializeRequest):
                 )
                 from services.pit_sector_alpha import load_pit_sector_alpha_experts_by_key
                 sector_alpha_by_key = load_pit_sector_alpha_experts_by_key(
-                    MARKET_D1_CLIENT.query, native_rows
+                    MARKET_D1_CLIENT.query,
+                    native_rows,
+                    core_query_fn=CORE_D1_CLIENT.query,
                 )
                 forward_snapshot_rows, forward_snapshot_evidence = build_oof_snapshot_rows(
                     prediction_rows,
@@ -1623,7 +1625,11 @@ async def materialize_walk_forward_oof(req: OofMaterializeRequest):
             )
             fundamental_quality_by_key = load_fundamental_quality_pit_by_key(prediction_rows)
             from services.pit_sector_alpha import load_pit_sector_alpha_experts_by_key
-            sector_alpha_by_key = load_pit_sector_alpha_experts_by_key(MARKET_D1_CLIENT.query, native_rows)
+            sector_alpha_by_key = load_pit_sector_alpha_experts_by_key(
+                MARKET_D1_CLIENT.query,
+                native_rows,
+                core_query_fn=CORE_D1_CLIENT.query,
+            )
             snapshot_rows, snapshot_evidence = build_oof_snapshot_rows(
                 prediction_rows,
                 native_rows,

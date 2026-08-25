@@ -173,6 +173,7 @@ def unavailable_sector_alpha(signal_date: str, reason: str) -> dict[str, Any]:
 def load_pit_sector_alpha_experts(
     query_fn: QueryFn,
     *,
+    core_query_fn: QueryFn | None = None,
     signal_date: str,
     symbols: list[str],
     fallback_industry_by_symbol: dict[str, str] | None = None,
@@ -223,7 +224,7 @@ def load_pit_sector_alpha_experts(
             for symbol in normalized_symbols
         }
 
-    lag_rows = query_fn(
+    lag_rows = (core_query_fn or query_fn)(
         """
         SELECT COUNT(DISTINCT date) AS source_session_lag
           FROM market_risk
@@ -431,6 +432,8 @@ def load_pit_sector_alpha_experts(
 def load_pit_sector_alpha_experts_by_key(
     query_fn: QueryFn,
     rows: list[dict[str, Any]],
+    *,
+    core_query_fn: QueryFn | None = None,
 ) -> dict[tuple[str, str], dict[str, Any]]:
     """Load multi-date PIT experts without sharing evidence across dates."""
     rows_by_date: dict[str, list[dict[str, Any]]] = defaultdict(list)
@@ -476,6 +479,7 @@ def load_pit_sector_alpha_experts_by_key(
         }
         experts = load_pit_sector_alpha_experts(
             query_fn,
+            core_query_fn=core_query_fn,
             signal_date=signal_date,
             symbols=[str(row.get("symbol") or "") for row in date_rows],
             fallback_industry_by_symbol=fallback_industries,

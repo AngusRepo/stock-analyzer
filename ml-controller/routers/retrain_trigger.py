@@ -20,7 +20,7 @@ import math
 from urllib.parse import urlsplit, urlunsplit
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Awaitable, Callable, Optional
 
 from fastapi import APIRouter, Body, HTTPException, Request
 from pydantic import BaseModel, ConfigDict, Field
@@ -93,6 +93,8 @@ _UNIVERSAL_LOCK_TTL_SECONDS = int(os.environ.get("UNIVERSAL_RETRAIN_LOCK_TTL_SEC
 _PREP_ONLY_LOCK_TTL_SECONDS = int(os.environ.get("UNIVERSAL_PREP_ONLY_LOCK_TTL_SECONDS", str(2 * 3600)))
 _UNIVERSAL_PREP_CONCURRENCY_DEFAULT = 3
 _UNIVERSAL_PREP_CONCURRENCY_MAX = 5
+_UNIVERSAL_PREP_BATCH_MAX_ATTEMPTS_DEFAULT = 3
+_UNIVERSAL_PREP_BATCH_MAX_ATTEMPTS_LIMIT = 4
 TIMESFM_L175_L2_FEATURE_RELEASE_CANDIDATE_TYPE = "timesfm_l175_l2_feature_release"
 TIMESFM_L175_HISTORY_LOOKBACK_DAYS = int(os.environ.get("TIMESFM_L175_HISTORY_LOOKBACK_DAYS", "420"))
 TIMESFM_L175_MIN_STOCK_COVERAGE = float(os.environ.get("TIMESFM_L175_MIN_STOCK_COVERAGE", "0.80"))
@@ -236,6 +238,69 @@ def _universal_prep_concurrency() -> int:
     except (TypeError, ValueError):
         value = _UNIVERSAL_PREP_CONCURRENCY_DEFAULT
     return max(1, min(_UNIVERSAL_PREP_CONCURRENCY_MAX, value))
+
+
+def _universal_prep_batch_max_attempts() -> int:
+    raw = os.environ.get(
+        "UNIVERSAL_PREP_BATCH_MAX_ATTEMPTS",
+        str(_UNIVERSAL_PREP_BATCH_MAX_ATTEMPTS_DEFAULT),
+    )
+    try:
+        value = int(raw)
+    except (TypeError, ValueError):
+        value = _UNIVERSAL_PREP_BATCH_MAX_ATTEMPTS_DEFAULT
+    return max(1, min(_UNIVERSAL_PREP_BATCH_MAX_ATTEMPTS_LIMIT, value))
+
+
+def _is_transient_prep_batch_error(error: Any) -> bool:
+    normalized = str(error or "").strip().lower()
+    return bool(normalized) and any(
+        marker in normalized
+        for marker in (
+            "timeout",
+            "timed out",
+            "connection aborted",
+            "connection reset",
+            "deadline exceeded",
+            "service unavailable",
+            "temporarily unavailable",
+            "internal server error",
+            "http 429",
+            "http 502",
+            "http 503",
+            "http 504",
+        )
+    )
+
+
+async def _run_prep_batch_with_retry(
+    run_once: Callable[[], Awaitable[dict[str, Any]]],
+    *,
+    batch_index: int,
+) -> dict[str, Any]:
+    max_attempts = _universal_prep_batch_max_attempts()
+    result: dict[str, Any] = {"batch_index": batch_index, "error": "prep_not_started"}
+    for attempt in range(1, max_attempts + 1):
+        try:
+            candidate = await run_once()
+            result = candidate if isinstance(candidate, dict) else {
+                "batch_index": batch_index,
+                "error": f"invalid prep result type: {type(candidate).__name__}",
+            }
+        except Exception as exc:  # noqa: BLE001 - only classified transient failures retry.
+            result = {"batch_index": batch_index, "error": f"{type(exc).__name__}: {exc}"}
+        result.setdefault("batch_index", batch_index)
+        result["attempts"] = attempt
+        error = result.get("error")
+        if not error or attempt >= max_attempts or not _is_transient_prep_batch_error(error):
+            return result
+        delay_seconds = min(4, 2 ** (attempt - 1))
+        logger.warning(
+            "[retrain/universal] Prep batch %s transient failure attempt=%s/%s; retrying in %ss: %s",
+            batch_index, attempt, max_attempts, delay_seconds, error,
+        )
+        await asyncio.sleep(delay_seconds)
+    return result
 
 
 def _parse_gcs_uri(uri: str) -> tuple[str, str]:
@@ -1708,8 +1773,17 @@ async def trigger_universal_retrain(
             result.setdefault("batch_index", idx)
             return result
 
+    async def _run_prep_batch_resilient(idx: int, batch_payloads: list[dict]) -> dict:
+        return await _run_prep_batch_with_retry(
+            lambda: _run_prep_batch(idx, batch_payloads),
+            batch_index=idx,
+        )
+
     prep_task_results = await asyncio.gather(
-        *(_run_prep_batch(idx, batch_payloads) for idx, batch_payloads in enumerate(batches)),
+        *(
+            _run_prep_batch_resilient(idx, batch_payloads)
+            for idx, batch_payloads in enumerate(batches)
+        ),
         return_exceptions=True,
     )
     for idx, result in enumerate(prep_task_results):

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import sys
 from pathlib import Path
 
@@ -23,6 +24,77 @@ def test_universal_prep_concurrency_clamps_invalid_and_extreme_values(monkeypatc
 
     monkeypatch.setenv("UNIVERSAL_PREP_CONCURRENCY", "99")
     assert retrain_trigger._universal_prep_concurrency() == 5
+
+
+def test_universal_prep_batch_retry_defaults_and_clamps(monkeypatch):
+    monkeypatch.delenv("UNIVERSAL_PREP_BATCH_MAX_ATTEMPTS", raising=False)
+    assert retrain_trigger._universal_prep_batch_max_attempts() == 3
+
+    monkeypatch.setenv("UNIVERSAL_PREP_BATCH_MAX_ATTEMPTS", "invalid")
+    assert retrain_trigger._universal_prep_batch_max_attempts() == 3
+
+    monkeypatch.setenv("UNIVERSAL_PREP_BATCH_MAX_ATTEMPTS", "0")
+    assert retrain_trigger._universal_prep_batch_max_attempts() == 1
+
+    monkeypatch.setenv("UNIVERSAL_PREP_BATCH_MAX_ATTEMPTS", "99")
+    assert retrain_trigger._universal_prep_batch_max_attempts() == 4
+
+
+def test_universal_prep_batch_retries_only_transient_failure(monkeypatch):
+    calls = []
+
+    async def fake_sleep(_seconds):
+        return None
+
+    async def run_once():
+        calls.append(len(calls) + 1)
+        if len(calls) == 1:
+            return {"batch_index": 0, "error": "Connection aborted: write operation timed out"}
+        return {"batch_index": 0, "rows": 123}
+
+    monkeypatch.setattr(retrain_trigger.asyncio, "sleep", fake_sleep)
+    result = asyncio.run(
+        retrain_trigger._run_prep_batch_with_retry(run_once, batch_index=0)
+    )
+
+    assert calls == [1, 2]
+    assert result == {"batch_index": 0, "rows": 123, "attempts": 2}
+
+
+def test_universal_prep_batch_does_not_retry_contract_failure():
+    calls = []
+
+    async def run_once():
+        calls.append(len(calls) + 1)
+        return {"batch_index": 2, "error": "feature_semantic_version_mismatch"}
+
+    result = asyncio.run(
+        retrain_trigger._run_prep_batch_with_retry(run_once, batch_index=2)
+    )
+
+    assert calls == [1]
+    assert result["attempts"] == 1
+    assert result["error"] == "feature_semantic_version_mismatch"
+
+
+def test_universal_prep_batch_exhausts_bounded_transient_attempts(monkeypatch):
+    calls = []
+
+    async def fake_sleep(_seconds):
+        return None
+
+    async def run_once():
+        calls.append(len(calls) + 1)
+        raise TimeoutError("write timeout")
+
+    monkeypatch.setattr(retrain_trigger.asyncio, "sleep", fake_sleep)
+    result = asyncio.run(
+        retrain_trigger._run_prep_batch_with_retry(run_once, batch_index=4)
+    )
+
+    assert calls == [1, 2, 3]
+    assert result["attempts"] == 3
+    assert result["error"] == "TimeoutError: write timeout"
 
 
 def test_snapshot_component_uris_reads_component_meta_and_components():

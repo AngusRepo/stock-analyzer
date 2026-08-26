@@ -11,6 +11,11 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from services import model_artifact_registry as registry  # noqa: E402
+from services.active8_monthly_model_profiles import model_profile  # noqa: E402
+from services.active8_monthly_training_contract import (  # noqa: E402
+    build_model_training_config_attestation,
+    build_monthly_training_contract,
+)
 
 
 PROMOTION_GRADE_OFFLINE_EVIDENCE = (
@@ -23,6 +28,32 @@ PROMOTION_GRADE_OFFLINE_EVIDENCE = (
 PROMOTION_GRADE_LIVE_EVIDENCE = (
     '{"decision":{"root_cause":"ok","metrics":{"shadow_samples":180,"production_samples":180,"min_samples":50}}}'
 )
+
+
+def _monthly_release_fields(model_name: str) -> dict:
+    run_date = "2026-08-24"
+    snapshot_id = "snapshot-2026-08-24"
+    contract = build_monthly_training_contract(
+        run_date=run_date,
+        dataset_snapshot={"business_date": run_date, "snapshot_id": snapshot_id},
+        producer_source_sha="0123456789abcdef0123456789abcdef01234567",
+    )
+    attestation = build_model_training_config_attestation(
+        contract=contract,
+        model_name=model_name,
+        effective_config=model_profile(model_name)["required_effective_config"],
+    )
+    offline = json.loads(PROMOTION_GRADE_OFFLINE_EVIDENCE)
+    offline["registration"]["metadata"]["model_training_config_attestation"] = attestation
+    offline["registration"]["metadata"]["family_feature_contract"] = {
+        "schema_version": registry.ACTIVE8_FAMILY_FEATURE_CONTRACT_VERSION,
+    }
+    return {
+        "source_run_date": run_date,
+        "trained_from_snapshot": json.dumps({"snapshot_id": snapshot_id}),
+        "checksum": "sha256:" + "a" * 64,
+        "offline_evidence_json": json.dumps(offline),
+    }
 
 
 def test_build_artifact_records_from_monthly_followup_strong_pass():
@@ -1957,7 +1988,7 @@ def test_build_promotion_queue_requires_approval_for_weekly_drift_and_monthly_re
                 "state": "live_gate_passed",
                 "offline_gate_decision": "STRONG_PASS",
                 "live_gate_status": "passed",
-                "offline_evidence_json": PROMOTION_GRADE_OFFLINE_EVIDENCE,
+                **_monthly_release_fields("LightGBM"),
                 "live_evidence_json": PROMOTION_GRADE_LIVE_EVIDENCE,
             },
         ],
@@ -2254,7 +2285,7 @@ def test_promotion_controller_confirm_updates_champion_pointer(monkeypatch):
             "offline_gate_decision": "STRONG_PASS",
             "live_gate_status": "passed",
             "live_evidence_json": PROMOTION_GRADE_LIVE_EVIDENCE,
-            "offline_evidence_json": PROMOTION_GRADE_OFFLINE_EVIDENCE,
+            **_monthly_release_fields("LightGBM"),
         }],
         d1_pointers=[{
             "model_name": "LightGBM",

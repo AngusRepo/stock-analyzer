@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
 import os
 from dataclasses import asdict, dataclass
 from typing import Any
@@ -711,6 +713,96 @@ def build_model_feature_policy_metadata(
     }
 
 
+def build_model_training_config_attestation(
+    model_name: str,
+    payload: dict[str, Any],
+    effective_config: dict[str, Any],
+) -> dict[str, Any] | None:
+    """Bind a monthly artifact to the exact immutable contract and effective config.
+
+    Non-monthly and research artifacts deliberately return ``None``. A monthly
+    candidate cannot be produced without a valid contract and non-empty effective
+    settings, so PBO is never waived merely because a caller wrote trials=1.
+    """
+
+    contract = payload.get("monthly_training_contract")
+    candidate_type = str(payload.get("candidate_type") or "").strip()
+    if contract is None and candidate_type != "monthly_release":
+        return None
+    if not isinstance(contract, dict):
+        raise ValueError("monthly_training_contract_missing")
+
+    def canonical(value: Any) -> Any:
+        if isinstance(value, dict):
+            return {str(key): canonical(item) for key, item in value.items()}
+        if isinstance(value, (list, tuple, set)):
+            return [canonical(item) for item in value]
+        if isinstance(value, (str, int, float, bool)) or value is None:
+            return value
+        return str(value)
+
+    def checksum(value: dict[str, Any]) -> str:
+        raw = json.dumps(
+            canonical(value),
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+            allow_nan=False,
+        ).encode("utf-8")
+        return hashlib.sha256(raw).hexdigest()
+
+    unsigned_contract = {key: value for key, value in contract.items() if key != "contract_checksum"}
+    if contract.get("schema_version") != "active8-monthly-training-contract-v2":
+        raise ValueError("monthly_training_contract_schema_mismatch")
+    if str(contract.get("contract_checksum") or "") != checksum(unsigned_contract):
+        raise ValueError("monthly_training_contract_checksum_mismatch")
+    model = str(model_name or "").strip()
+    model_specs = contract.get("model_specs") if isinstance(contract.get("model_specs"), dict) else {}
+    if model not in model_specs or model not in (contract.get("models") or []):
+        raise ValueError(f"monthly_training_model_not_attested:{model}")
+    config = canonical(dict(effective_config or {}))
+    if not config:
+        raise ValueError(f"monthly_training_effective_config_missing:{model}")
+    if contract.get("model_profile_schema_version") != "active8-monthly-model-profiles-v1":
+        raise ValueError("monthly_training_contract_profile_schema_mismatch")
+    profile = dict((contract.get("model_profiles") or {}).get(model) or {})
+    if not profile:
+        raise ValueError(f"monthly_training_model_profile_missing:{model}")
+
+    def require_subset(actual: Any, required: Any, path: str = "effective_config") -> None:
+        if isinstance(required, dict):
+            if not isinstance(actual, dict):
+                raise ValueError(f"monthly_model_profile_type_mismatch:{path}")
+            for key, required_value in required.items():
+                if key not in actual:
+                    raise ValueError(f"monthly_model_profile_field_missing:{path}.{key}")
+                require_subset(actual[key], required_value, f"{path}.{key}")
+            return
+        if actual != required:
+            raise ValueError(f"monthly_model_profile_value_mismatch:{path}:expected={required}:actual={actual}")
+
+    require_subset(config, profile.get("required_effective_config") or {})
+    attestation: dict[str, Any] = {
+        "schema_version": "model-training-config-attestation-v2",
+        "monthly_contract_checksum": contract["contract_checksum"],
+        "model_name": model,
+        "model_spec": model_specs[model],
+        "model_profile_schema_version": contract["model_profile_schema_version"],
+        "model_profile": profile,
+        "model_profile_checksum": checksum(profile),
+        "configuration_selection_mode": "single_predeclared_config",
+        "selection_trials": 1,
+        "pbo_applicability": "not_applicable_without_model_configuration_selection",
+        "effective_config": config,
+        "effective_config_checksum": checksum(config),
+        "producer_source_sha": contract.get("producer_source_sha"),
+        "run_date": contract.get("run_date"),
+        "dataset_snapshot_id": contract.get("dataset_snapshot_id"),
+    }
+    attestation["attestation_checksum"] = checksum(attestation)
+    return attestation
+
+
 @dataclass(frozen=True)
 class UniversalTrainingPolicy:
     default_train_groups: tuple[str, ...] = ("tree", "dlinear", "patchtst")
@@ -777,6 +869,7 @@ class UniversalTrainingPolicy:
             "dataset_snapshot",
             "generation_mode",
             "cohort_id",
+            "monthly_training_contract",
         ):
             if payload.get(key) is not None:
                 base_payload[key] = payload[key]

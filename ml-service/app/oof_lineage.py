@@ -82,13 +82,39 @@ def percentile_rank_by_date_market(
     return ranks
 
 
-def oof_date_cluster_rank_ic_from_bytes(payload: bytes, *, min_cohort_rows: int = 10) -> dict[str, Any]:
-    """Build trading-date clusters from immutable OOF scores and outcomes."""
-    artifact = np.load(io.BytesIO(payload), allow_pickle=True)
-    rank_scores = np.asarray(artifact["rank_scores"], dtype=float).reshape(-1)
-    targets = np.asarray(artifact["targets"], dtype=float).reshape(-1)
-    dates = np.asarray(artifact["dates"], dtype=object).reshape(-1)
-    markets = np.asarray(artifact["markets"], dtype=object).reshape(-1)
+def date_market_rank_ic_evidence(
+    *,
+    raw_scores: np.ndarray,
+    targets: np.ndarray,
+    dates: np.ndarray,
+    markets: np.ndarray,
+    min_cohort_rows: int = 10,
+) -> dict[str, Any]:
+    """Canonical same-market/same-date IC owner used by training and promotion."""
+    raw = np.asarray(raw_scores, dtype=float).reshape(-1)
+    targets = np.asarray(targets, dtype=float).reshape(-1)
+    dates = np.asarray(dates, dtype=object).reshape(-1)
+    markets = np.asarray([canonical_market_segment(value) for value in markets], dtype=object).reshape(-1)
+    if not (len(raw) == len(targets) == len(dates) == len(markets)):
+        raise ValueError("oof_date_cluster_length_mismatch")
+    rank_scores = percentile_rank_by_date_market(raw, dates, markets)
+    return _date_market_rank_ic_from_rank_scores(
+        rank_scores=rank_scores,
+        targets=targets,
+        dates=dates,
+        markets=markets,
+        min_cohort_rows=min_cohort_rows,
+    )
+
+
+def _date_market_rank_ic_from_rank_scores(
+    *,
+    rank_scores: np.ndarray,
+    targets: np.ndarray,
+    dates: np.ndarray,
+    markets: np.ndarray,
+    min_cohort_rows: int,
+) -> dict[str, Any]:
     if not (len(rank_scores) == len(targets) == len(dates) == len(markets)):
         raise ValueError("oof_date_cluster_length_mismatch")
     date_rows: list[dict[str, Any]] = []
@@ -99,7 +125,14 @@ def oof_date_cluster_rank_ic_from_bytes(payload: bytes, *, min_cohort_rows: int 
             finite = idx[np.isfinite(rank_scores[idx]) & np.isfinite(targets[idx])]
             if len(finite) < max(3, int(min_cohort_rows)):
                 continue
-            rho, _ = spearmanr(rank_scores[finite], targets[finite])
+            target_values = targets[finite]
+            score_values = rank_scores[finite]
+            if float(np.ptp(target_values)) <= 1e-12:
+                continue
+            if float(np.ptp(score_values)) <= 1e-12:
+                rho = 0.0
+            else:
+                rho, _ = spearmanr(score_values, target_values)
             if np.isfinite(rho):
                 segment_rows.append((float(rho), int(len(finite))))
         if not segment_rows:
@@ -115,8 +148,29 @@ def oof_date_cluster_rank_ic_from_bytes(payload: bytes, *, min_cohort_rows: int 
         "schema_version": "oof-date-cluster-rank-ic-v1",
         "date_cluster_ics": date_rows,
         "date_cluster_count": len(date_rows),
+        "fold_oos_ic": (
+            sum(float(row["rank_ic"]) for row in date_rows) / len(date_rows)
+            if date_rows
+            else None
+        ),
         "min_cohort_rows": max(3, int(min_cohort_rows)),
     }
+
+
+def oof_date_cluster_rank_ic_from_bytes(payload: bytes, *, min_cohort_rows: int = 10) -> dict[str, Any]:
+    """Build canonical trading-date clusters from an immutable OOF artifact."""
+    artifact = np.load(io.BytesIO(payload), allow_pickle=True)
+    rank_scores = np.asarray(artifact["rank_scores"], dtype=float).reshape(-1)
+    targets = np.asarray(artifact["targets"], dtype=float).reshape(-1)
+    dates = np.asarray(artifact["dates"], dtype=object).reshape(-1)
+    markets = np.asarray(artifact["markets"], dtype=object).reshape(-1)
+    return _date_market_rank_ic_from_rank_scores(
+        rank_scores=rank_scores,
+        targets=targets,
+        dates=dates,
+        markets=markets,
+        min_cohort_rows=min_cohort_rows,
+    )
 
 
 def _verify_existing_oof_payload(

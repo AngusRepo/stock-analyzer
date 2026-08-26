@@ -40,6 +40,7 @@ from .training_policy import (
     TREE_MODEL_NAMES,
     ValidationGovernancePolicy,
     build_model_feature_policy_metadata,
+    build_model_training_config_attestation,
     generated_model_pool_version,
     should_force_artifact_candidate_version,
     should_force_full_feature_pool,
@@ -101,6 +102,8 @@ class UniversalTrainRequest(BaseModel):
     label_horizon_days: int | None = None
     disable_stale_prep_guard: bool = False
     dataset_snapshot: dict | None = None
+    candidate_type: str | None = None
+    monthly_training_contract: dict | None = None
     generation_mode: str = "native"
     cohort_id: str | None = None
     fold_id: str | None = None
@@ -1672,6 +1675,23 @@ def train_universal_from_gcs(req: UniversalTrainRequest) -> dict:
                 })
                 feature_policy_meta["feature_policy"] = feature_policy
                 model_selection_evidence["feature_release_mode"] = req.feature_release_mode
+            training_config_attestation = build_model_training_config_attestation(
+                model_name,
+                req.model_dump(),
+                {
+                    "estimator_params": (
+                        model_obj.get_params(deep=False)
+                        if hasattr(model_obj, "get_params")
+                        else {"estimator_type": type(model_obj).__name__}
+                    ),
+                    "feature_names": feature_names,
+                    "validation_split": validation_split_metadata,
+                    "target_semantic_version": SEQUENCE_RETURN_SEMANTIC_VERSION,
+                    "score_semantic": "same-market-same-date-average-tie-percentile-rank-v2",
+                },
+            )
+            if training_config_attestation is not None:
+                feature_policy_meta["model_training_config_attestation"] = training_config_attestation
             model_extra_meta.update(feature_policy_meta)
             if req.output_model_version:
                 saved_artifact = _save_universal_versioned_model(

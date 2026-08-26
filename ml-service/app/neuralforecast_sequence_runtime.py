@@ -34,8 +34,13 @@ from .sequence_training import (
     canonical_session_calendar,
 )
 from .model_validation import build_model_cpcv_evidence
+from .oof_lineage import date_market_rank_ic_evidence
 from .artifact_contract import ArtifactValidationError, verify_artifact_bytes
-from .training_policy import build_model_feature_policy_metadata
+from .training_reproducibility import configure_training_reproducibility
+from .training_policy import (
+    build_model_feature_policy_metadata,
+    build_model_training_config_attestation,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -63,6 +68,53 @@ MODEL_CONFIG: dict[str, dict[str, str]] = {
         "default_seq_len": "512",
     },
 }
+
+NF_MODEL_DEFAULTS: dict[str, dict[str, Any]] = {
+    "PatchTST": {
+        "learning_rate": 1e-4,
+        "windows_batch_size": 1024,
+        "inference_windows_batch_size": 1024,
+        "scaler_type": "identity",
+        "step_size": 1,
+        "patch_len": 16,
+        "stride": 8,
+        "revin": True,
+    },
+    "iTransformer": {
+        "learning_rate": 1e-3,
+        "windows_batch_size": 32,
+        "inference_windows_batch_size": 32,
+        "scaler_type": "identity",
+        "step_size": 1,
+    },
+}
+
+
+def _resolve_nf_training_options(payload: dict[str, Any], model_name: str) -> dict[str, Any]:
+    defaults = dict(NF_MODEL_DEFAULTS[model_name])
+    for key, caster in (
+        ("learning_rate", float),
+        ("windows_batch_size", int),
+        ("inference_windows_batch_size", int),
+        ("step_size", int),
+        ("patch_len", int),
+        ("stride", int),
+    ):
+        if payload.get(key) is not None:
+            defaults[key] = caster(payload[key])
+    if payload.get("scaler_type") is not None:
+        defaults["scaler_type"] = str(payload["scaler_type"])
+    if payload.get("revin") is not None:
+        defaults["revin"] = bool(payload["revin"])
+    history_mode = str(payload.get("oof_training_history_mode") or "minimum_single_window").strip()
+    if history_mode not in {"minimum_single_window", "full_pit_history"}:
+        raise ValueError(f"oof_training_history_mode_invalid:{history_mode}")
+    return {
+        **defaults,
+        "trainer_deterministic": bool(payload.get("trainer_deterministic", True)),
+        "trainer_benchmark": False,
+        "oof_training_history_mode": history_mode,
+    }
 
 
 OOF_FOLD_MODEL_EVIDENCE_SCHEMA_VERSION = "active8-oof-fold-model-evidence-v1"
@@ -315,8 +367,14 @@ def _build_fixed_oof_panel(
     seq_len: int,
     pred_len: int,
     max_series: int,
+    training_history_mode: str = "minimum_single_window",
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]], dict[str, Any]]:
-    train_dates = [date for date in calendar if date <= train_end][-(seq_len + pred_len):]
+    available_train_dates = [date for date in calendar if date <= train_end]
+    train_dates = (
+        available_train_dates
+        if training_history_mode == "full_pit_history"
+        else available_train_dates[-(seq_len + pred_len):]
+    )
     if len(train_dates) < seq_len + pred_len:
         raise ValueError("oof_sequence_train_calendar_insufficient")
     candidates: list[tuple[float, str, dict[str, Any], list[float]]] = []
@@ -336,12 +394,21 @@ def _build_fixed_oof_panel(
         for idx, value in enumerate(values)
     ]
     selected_records = [record for _ratio, _symbol, record, _values in selected]
+    unique_training_windows = sum(
+        max(0, len(values) - seq_len - pred_len + 1)
+        for _ratio, _symbol, _record, values in selected
+    )
+    if training_history_mode == "full_pit_history" and unique_training_windows <= len(selected):
+        raise ValueError("oof_sequence_full_history_did_not_create_multiple_windows")
     return train_rows, selected_records, {
         "calendar_start": train_dates[0],
         "calendar_end": train_dates[-1],
         "calendar_rows": len(train_dates),
         "eligible_series": len(candidates),
         "selected_series": len(selected),
+        "unique_training_windows": int(unique_training_windows),
+        "training_windows_per_selected_series": round(unique_training_windows / max(1, len(selected)), 6),
+        "training_history_mode": training_history_mode,
         "min_observed_ratio": OOF_MIN_PANEL_OBSERVED_RATIO,
     }
 
@@ -415,6 +482,7 @@ def _train_dense_purged_oof(
     seed: int,
     max_series: int,
     gcs_prefix: str,
+    training_options: dict[str, Any],
 ) -> dict[str, Any]:
     train_end = str(payload.get("train_end") or "").strip()
     test_start = str(payload.get("test_start") or "").strip()
@@ -441,6 +509,7 @@ def _train_dense_purged_oof(
         seq_len=seq_len,
         pred_len=pred_len,
         max_series=max_series,
+        training_history_mode=str(training_options["oof_training_history_mode"]),
     )
     if len(panel_records) < 10:
         raise ValueError(f"oof_sequence_panel_requires_10_series:{len(panel_records)}")
@@ -453,6 +522,7 @@ def _train_dense_purged_oof(
         batch_size=batch_size,
         seed=seed,
         n_series=len(panel_records),
+        training_options=training_options,
     )
     test_dates = [date for date in calendar if test_start <= date <= test_end]
     evaluation_records = _dense_oof_evaluation_records(model_name, records, panel_records)
@@ -478,6 +548,7 @@ def _train_dense_purged_oof(
         )
         pred_return: list[float] = []
         actual_return: list[float] = []
+        market_segments: list[str] = []
         for label in labels:
             uid = str(label["unique_id"])
             if uid not in pred_by_id:
@@ -488,6 +559,7 @@ def _train_dense_purged_oof(
             actual = (float(label["actual_last"]) - entry_open) / max(entry_open, 1e-9) - cost
             pred_return.append(predicted)
             actual_return.append(actual)
+            market_segments.append(str(label["market"]))
             all_rows.append({
                 "raw_score": predicted,
                 "target": actual,
@@ -496,9 +568,16 @@ def _train_dense_purged_oof(
                 "market": str(label["market"]),
                 "label_known_date": str(label["outcome_date"]),
             })
+        daily_ic = date_market_rank_ic_evidence(
+            raw_scores=np.asarray(pred_return, dtype=float),
+            targets=np.asarray(actual_return, dtype=float),
+            dates=np.asarray([signal_date] * len(actual_return), dtype=object),
+            markets=np.asarray(market_segments, dtype=object),
+        )
         daily_metrics.append({
             "fold_id": f"outer_test_{signal_date}",
-            "oos_ic": rank_ic(np.asarray(pred_return), np.asarray(actual_return)),
+            "oos_ic": float(daily_ic.get("fold_oos_ic") or 0.0),
+            "date_cluster_ics": daily_ic.get("date_cluster_ics") or [],
             "direction_accuracy": direction_accuracy(np.asarray(pred_return), np.asarray(actual_return)),
             "test_rows": len(actual_return),
             "coverage": len(actual_return) / max(1, len(labels)),
@@ -525,31 +604,34 @@ def _train_dense_purged_oof(
         "quality_folds_non_overlapping": True,
         "purge_horizon": pred_len,
     }
-    from .oof_lineage import save_oof_prediction_artifact
+    persist_oof_artifact = bool(payload.get("persist_oof_artifact", True))
+    oof_artifact = None
+    if persist_oof_artifact:
+        from .oof_lineage import save_oof_prediction_artifact
 
-    oof_artifact = save_oof_prediction_artifact(
-        bucket=bucket,
-        gcs_prefix=gcs_prefix,
-        cohort_id=str(payload.get("cohort_id") or ""),
-        fold_id=str(payload.get("fold_id") or payload.get("window_id") or ""),
-        model_name=model_name,
-        artifact_version=version,
-        raw_scores=np.asarray([row["raw_score"] for row in all_rows]),
-        targets=np.asarray([row["target"] for row in all_rows]),
-        dates=np.asarray([row["date"] for row in all_rows], dtype=object),
-        symbols=np.asarray([row["symbol"] for row in all_rows], dtype=object),
-        markets=np.asarray([row["market"] for row in all_rows], dtype=object),
-        label_known_dates=np.asarray([row["label_known_date"] for row in all_rows], dtype=object),
-        split_metadata={
-            "method": "outer_train_fixed_dense_test_purged_rank_ic",
-            "train_start": payload.get("train_start"),
-            "train_end": train_end,
-            "test_start": test_start,
-            "test_end": test_end,
-            "purge_horizon": pred_len,
-            "refit_inside_test": False,
-        },
-    )
+        oof_artifact = save_oof_prediction_artifact(
+            bucket=bucket,
+            gcs_prefix=gcs_prefix,
+            cohort_id=str(payload.get("cohort_id") or ""),
+            fold_id=str(payload.get("fold_id") or payload.get("window_id") or ""),
+            model_name=model_name,
+            artifact_version=version,
+            raw_scores=np.asarray([row["raw_score"] for row in all_rows]),
+            targets=np.asarray([row["target"] for row in all_rows]),
+            dates=np.asarray([row["date"] for row in all_rows], dtype=object),
+            symbols=np.asarray([row["symbol"] for row in all_rows], dtype=object),
+            markets=np.asarray([row["market"] for row in all_rows], dtype=object),
+            label_known_dates=np.asarray([row["label_known_date"] for row in all_rows], dtype=object),
+            split_metadata={
+                "method": "outer_train_fixed_dense_test_purged_rank_ic",
+                "train_start": payload.get("train_start"),
+                "train_end": train_end,
+                "test_start": test_start,
+                "test_end": test_end,
+                "purge_horizon": pred_len,
+                "refit_inside_test": False,
+            },
+        )
     oos_ic = float(np.mean([metric["oos_ic"] for metric in daily_metrics]))
     cohort_id = str(payload.get("cohort_id") or "")
     fold_id = str(payload.get("fold_id") or payload.get("window_id") or "")
@@ -572,8 +654,8 @@ def _train_dense_purged_oof(
             "oos_ic": round(oos_ic, 6),
             "oos_samples": len(all_rows),
             "oos_dates": len({row["date"] for row in all_rows}),
-            "oof_artifact": str(oof_artifact.get("path") or ""),
-            "oof_artifact_checksum": str(oof_artifact.get("payload_checksum") or ""),
+            "oof_artifact": str((oof_artifact or {}).get("path") or ""),
+            "oof_artifact_checksum": str((oof_artifact or {}).get("payload_checksum") or ""),
             "split_metadata": {
                 "train_start": payload.get("train_start"),
                 "train_end": train_end,
@@ -582,8 +664,13 @@ def _train_dense_purged_oof(
                 "purge_horizon": pred_len,
             },
         },
-    )
+    ) if persist_oof_artifact else None
     return {
+        "allowed_use": "promotion_evidence" if persist_oof_artifact else "research_only",
+        "production_effect": False,
+        "research_source_bundle_checksum": (
+            str(payload.get("research_source_bundle_checksum") or "") if not persist_oof_artifact else None
+        ),
         "metadata": {
             "version": version,
             "model_name": model_name,
@@ -611,8 +698,8 @@ def _train_dense_purged_oof(
         "version": version,
         "type": f"{model_name.lower()}_purged_oof",
         "oof_artifact": oof_artifact,
-        "oof_evidence_path": fold_evidence["path"],
-        "oof_evidence_checksum": fold_evidence["evidence_checksum"],
+        "oof_evidence_path": fold_evidence["path"] if fold_evidence else None,
+        "oof_evidence_checksum": fold_evidence["evidence_checksum"] if fold_evidence else None,
     }
 
 
@@ -663,10 +750,22 @@ def _fold_metrics(candidate_id: str, pred_return: np.ndarray, actual_return: np.
     }]
 
 
-def _make_nf_model(model_name: str, *, pred_len: int, seq_len: int, max_steps: int, batch_size: int, seed: int, n_series: int):
+def _make_nf_model(
+    model_name: str,
+    *,
+    pred_len: int,
+    seq_len: int,
+    max_steps: int,
+    batch_size: int,
+    seed: int,
+    n_series: int,
+    training_options: dict[str, Any] | None = None,
+):
+    configure_training_reproducibility(seed)
     _configure_neuralforecast_runtime()
     from neuralforecast.models import PatchTST, iTransformer
 
+    training_options = training_options or _resolve_nf_training_options({}, model_name)
     val_check_steps = max(1, min(int(max_steps), 10))
     common = {
         "h": pred_len,
@@ -679,9 +778,21 @@ def _make_nf_model(model_name: str, *, pred_len: int, seq_len: int, max_steps: i
         "enable_model_summary": False,
         "enable_progress_bar": False,
         "logger": False,
+        "learning_rate": float(training_options["learning_rate"]),
+        "windows_batch_size": int(training_options["windows_batch_size"]),
+        "inference_windows_batch_size": int(training_options["inference_windows_batch_size"]),
+        "step_size": int(training_options["step_size"]),
+        "scaler_type": str(training_options["scaler_type"]),
+        "deterministic": bool(training_options["trainer_deterministic"]),
+        "benchmark": bool(training_options["trainer_benchmark"]),
     }
     if model_name == "PatchTST":
-        return PatchTST(**common)
+        return PatchTST(
+            patch_len=int(training_options["patch_len"]),
+            stride=int(training_options["stride"]),
+            revin=bool(training_options["revin"]),
+            **common,
+        )
     if model_name == "iTransformer":
         return iTransformer(n_series=max(1, n_series), **common)
     raise ValueError(f"unsupported NeuralForecast model: {model_name}")
@@ -697,6 +808,7 @@ def _train_nf(
     batch_size: int,
     seed: int,
     n_series: int,
+    training_options: dict[str, Any],
 ):
     _configure_neuralforecast_runtime()
     import pandas as pd
@@ -711,6 +823,7 @@ def _train_nf(
         batch_size=batch_size,
         seed=seed,
         n_series=n_series,
+        training_options=training_options,
     )
     nf = NeuralForecast(models=[model], freq=1)
     nf.fit(df=df)
@@ -1013,7 +1126,16 @@ def train_neuralforecast_sequence_artifact(payload: dict[str, Any], *, model_nam
     max_steps = int(payload.get("max_steps") or payload.get("n_epochs") or payload.get("epochs") or DEFAULT_MAX_STEPS)
     batch_size = int(payload.get("batch_size") or DEFAULT_BATCH_SIZE)
     seed = int(payload.get("seed") or 42)
+    reproducibility = configure_training_reproducibility(seed)
+    try:
+        import torch
+        runtime_device = "cuda" if torch.cuda.is_available() else "cpu"
+    except ImportError:
+        runtime_device = "cpu"
+    if payload.get("monthly_training_contract") is not None and runtime_device != "cuda":
+        raise RuntimeError(f"monthly_training_gpu_required:{model_name}")
     max_series = int(payload.get("max_series") or payload.get("data_slice", {}).get("max_series") or DEFAULT_MAX_SERIES)
+    training_options = _resolve_nf_training_options(payload, model_name)
     gcs_prefix = str(payload.get("gcs_prefix") or payload.get("data_slice", {}).get("gcs_prefix") or "universal").strip().rstrip("/")
     sequence_gcs_prefix = str(
         payload.get("sequence_gcs_prefix")
@@ -1050,6 +1172,7 @@ def train_neuralforecast_sequence_artifact(payload: dict[str, Any], *, model_nam
             seed=seed,
             max_series=max_series,
             gcs_prefix=gcs_prefix,
+            training_options=training_options,
         )
         result["elapsed_s"] = round(time.time() - started_at, 3)
         return result
@@ -1092,6 +1215,7 @@ def train_neuralforecast_sequence_artifact(payload: dict[str, Any], *, model_nam
             batch_size=batch_size,
             seed=seed + fold_index,
             n_series=len(eval_rows),
+            training_options=training_options,
         )
         pred_by_id, pred_col = _predict_horizon_by_id_with_column(
             fold_nf,
@@ -1101,6 +1225,8 @@ def train_neuralforecast_sequence_artifact(payload: dict[str, Any], *, model_nam
         )
         pred_return: list[float] = []
         actual_return: list[float] = []
+        market_segments: list[str] = []
+        signal_dates_per_row: list[str] = []
         for row in eval_rows:
             uid = str(row["unique_id"])
             if uid not in pred_by_id:
@@ -1108,6 +1234,8 @@ def train_neuralforecast_sequence_artifact(payload: dict[str, Any], *, model_nam
             entry_open = float(row["entry_open"])
             pred_return.append((float(pred_by_id[uid]) - entry_open) / max(entry_open, 1e-9))
             actual_return.append((float(row["actual_last"]) - entry_open) / max(entry_open, 1e-9))
+            market_segments.append(str(row.get("market") or ""))
+            signal_dates_per_row.append(str(row.get("signal_date") or ""))
             all_oof_rows.append({
                 "raw_score": pred_return[-1],
                 "target": actual_return[-1],
@@ -1122,9 +1250,16 @@ def train_neuralforecast_sequence_artifact(payload: dict[str, Any], *, model_nam
         all_actual_return.extend(actual_return)
         outcome_dates = sorted({str(row.get("outcome_date")) for row in eval_rows if row.get("outcome_date")})
         signal_dates = sorted({str(row.get("signal_date")) for row in eval_rows if row.get("signal_date")})
+        fold_ic = date_market_rank_ic_evidence(
+            raw_scores=pred_array,
+            targets=actual_array,
+            dates=np.asarray(signal_dates_per_row, dtype=object),
+            markets=np.asarray(market_segments, dtype=object),
+        )
         folds.append({
             "fold_id": f"chronological_{fold_index + 1}",
-            "oos_ic": rank_ic(pred_array, actual_array),
+            "oos_ic": float(fold_ic.get("fold_oos_ic") or 0.0),
+            "date_cluster_ics": fold_ic.get("date_cluster_ics") or [],
             "direction_accuracy": direction_accuracy(pred_array, actual_array),
             "test_rows": int(len(actual_array)),
             "coverage": float(len(actual_array) / max(1, len(eval_rows))),
@@ -1215,6 +1350,7 @@ def train_neuralforecast_sequence_artifact(payload: dict[str, Any], *, model_nam
         batch_size=batch_size,
         seed=seed,
         n_series=deployment_series,
+        training_options=training_options,
     )
 
     lineage_dates = []
@@ -1243,6 +1379,25 @@ def train_neuralforecast_sequence_artifact(payload: dict[str, Any], *, model_nam
         and payload.get("disable_stale_prep_guard") is not True
         else {"status": "skipped"}
     )
+    training_config_attestation = build_model_training_config_attestation(
+        model_name,
+        payload,
+        {
+            "seq_len": seq_len,
+            "pred_len": pred_len,
+            "max_steps": max_steps,
+            "batch_size": batch_size,
+            "seed": seed,
+            "max_series": max_series,
+            "validation_folds": validation_folds,
+            "runtime_package": "neuralforecast==3.1.9",
+            "runtime_device": runtime_device,
+            "reproducibility": reproducibility,
+            "training_options": training_options,
+            "validation_design": model_cpcv["validation_design"],
+            "target_semantic_version": SEQUENCE_RETURN_SEMANTIC_VERSION,
+        },
+    )
     trained_at = datetime.now(timezone.utc).isoformat()
     metadata = attach_prep_lineage_aliases({
         "schema_version": f"{cfg['artifact_schema']}_metadata_v1",
@@ -1260,6 +1415,7 @@ def train_neuralforecast_sequence_artifact(payload: dict[str, Any], *, model_nam
         "max_steps": max_steps,
         "batch_size": batch_size,
         "seed": seed,
+        "training_options": training_options,
         "metrics": metrics,
         "model_cpcv": model_cpcv,
         "validation_design": model_cpcv["validation_design"],
@@ -1294,6 +1450,7 @@ def train_neuralforecast_sequence_artifact(payload: dict[str, Any], *, model_nam
                 "target_semantic_version": SEQUENCE_RETURN_SEMANTIC_VERSION,
             },
         ),
+        **({"model_training_config_attestation": training_config_attestation} if training_config_attestation else {}),
     }, prep_lineage)
     saved = _save_nf_artifact(bucket, nf, model_name=model_name, version=version, metadata=metadata)
     return {

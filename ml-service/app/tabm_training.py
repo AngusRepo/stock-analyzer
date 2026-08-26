@@ -22,7 +22,11 @@ from .model_validation import build_model_cpcv_evidence
 from .research_benchmarks.common import direction_accuracy, load_tabular_dataset, rank_ic
 from .training_promotion_policy import resolve_training_promotion_intent
 from .target_rank_scope import GLOBAL_CROSS_SECTIONAL_RANK_VERSION, recompute_global_cross_sectional_rank
-from .training_policy import build_model_feature_policy_metadata
+from .training_policy import (
+    build_model_feature_policy_metadata,
+    build_model_training_config_attestation,
+)
+from .training_reproducibility import configure_training_reproducibility
 from .sequence_training import SEQUENCE_RETURN_SEMANTIC_VERSION
 
 MODEL_NAME = "TabM"
@@ -286,6 +290,8 @@ def train_tabm_universal(payload: dict | None = None) -> dict[str, Any]:
         if payload.get("standardization_clip") is not None
         else DEFAULT_STANDARDIZATION_CLIP
     )
+    seed = int(payload.get("seed") or 42)
+    reproducibility = configure_training_reproducibility(seed)
     promote_to_active, promotion_reason = resolve_training_promotion_intent(payload, model_name=MODEL_NAME)
     generation_mode = str(payload.get("generation_mode") or "native").strip().lower()
     if generation_mode == "purged_oof" and promote_to_active:
@@ -409,6 +415,26 @@ def train_tabm_universal(payload: dict | None = None) -> dict[str, Any]:
     }
 
     trained_at = datetime.now(timezone.utc).isoformat()
+    training_params = {
+        "epochs": epochs,
+        "batch_size": batch_size,
+        "lr": lr,
+        "weight_decay": weight_decay,
+        "standardization_clip": standardization_clip,
+        "device": str(device),
+        "seed": seed,
+        "reproducibility": reproducibility,
+    }
+    training_config_attestation = build_model_training_config_attestation(
+        MODEL_NAME,
+        payload,
+        {
+            **training_params,
+            "feature_names": dataset.feature_names,
+            "validation_split": split_meta,
+            "target_semantic_version": SEQUENCE_RETURN_SEMANTIC_VERSION,
+        },
+    )
     architecture = {
         "type": "tabm",
         "n_features": int(x.shape[1]),
@@ -457,14 +483,8 @@ def train_tabm_universal(payload: dict | None = None) -> dict[str, Any]:
             selection_evidence={"selection_method": "production_artifact"},
             feature_release_mode=payload.get("feature_release_mode") or payload.get("candidate_type"),
         ),
-        "training_params": {
-            "epochs": epochs,
-            "batch_size": batch_size,
-            "lr": lr,
-            "weight_decay": weight_decay,
-            "standardization_clip": standardization_clip,
-            "device": str(device),
-        },
+        **({"model_training_config_attestation": training_config_attestation} if training_config_attestation else {}),
+        "training_params": training_params,
         "market_lanes": sorted({str(value) for value in sectors.tolist()})[:20],
     }, prep_lineage)
     saved = _save_artifact(bucket=bucket, model=model.cpu(), version=version, metadata=metadata)

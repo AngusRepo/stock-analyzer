@@ -22,7 +22,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Optional
 
-from fastapi import APIRouter, Body, Request
+from fastapi import APIRouter, Body, HTTPException, Request
 from pydantic import BaseModel, Field
 from dataclasses import asdict
 
@@ -37,6 +37,11 @@ from services.payload_builder import (
     PredictPayload,
 )
 from services.active_model_policy import long_history_sequence_enabled, long_history_sequence_prefix
+from services.active8_monthly_training_contract import (
+    build_monthly_training_contract,
+    normalize_monthly_execution_scope,
+    resolve_monthly_execution_mode,
+)
 from services.training_calendar import monthly_revenue_available_date
 from services.training_policy import TrainingPolicy
 from services.modal_client import batch_retrain, prep_universal_batch, train_universal, shap_audit
@@ -1475,11 +1480,30 @@ async def trigger_universal_retrain(
     # Cloud Run only prepares feature_pool.json for prep filtering.
     import json as _json
     from google.cloud import storage as _gcs
-    is_monthly = training_policy.is_monthly(force_monthly=req.force_monthly, tw_day=tw_now.day)
+    calendar_monthly = training_policy.is_monthly(force_monthly=req.force_monthly, tw_day=tw_now.day)
+    try:
+        is_monthly, resolved_candidate_type = resolve_monthly_execution_mode(
+            calendar_monthly=calendar_monthly,
+            force_monthly=req.force_monthly,
+            explicit_candidate_type=req.candidate_type,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    req.candidate_type = resolved_candidate_type
+    monthly_training_contract = None
     if is_monthly:
+        monthly_groups, monthly_targets = normalize_monthly_execution_scope(
+            req.train_model_groups,
+            req.artifact_lifecycle_targets,
+        )
+        req.train_model_groups = monthly_groups
+        req.artifact_lifecycle_targets = monthly_targets
+        req.candidate_type = "monthly_release"
+        req.require_exact_dataset_snapshot = True
         logger.info(
             "[retrain/universal] Monthly detected "
-            f"(day<={training_policy.monthly_day_cutoff}) -> selection will run in Modal orchestrator"
+            f"(day<={training_policy.monthly_day_cutoff}) -> exact Active-8 scope "
+            f"groups={monthly_groups} targets={monthly_targets}"
         )
 
     # Prep writes the full canonical tabular matrix. Train-side policy owns
@@ -1957,6 +1981,12 @@ async def trigger_universal_retrain(
             downstream_notes="prep_only_complete_no_training_dispatched",
         )
         return {**receipt, "receipt_path": receipt_path}
+    if is_monthly:
+        monthly_training_contract = build_monthly_training_contract(
+            run_date=run_date,
+            dataset_snapshot=dataset_snapshot_info,
+            producer_source_sha=_runtime_source_sha(),
+        )
     from services.modal_client import retrain_orchestrator
     followup_webhook_url = _build_followup_webhook_url(request)
     sequence_required = (
@@ -1995,6 +2025,7 @@ async def trigger_universal_retrain(
                 "register_challengers": req.register_challengers,
                 "promotion_allowed_models": req.promotion_allowed_models,
                 "oof_promotion_evidence": req.oof_promotion_evidence,
+                "monthly_training_contract": monthly_training_contract,
                 "selection_params": training_policy.feature_selection_params(),
                 "training_policy": training_policy.to_dict(),
                 "dataset_snapshot": dataset_snapshot_info,
@@ -2041,6 +2072,7 @@ async def trigger_universal_retrain(
             "run_date": run_date,
             "is_monthly": is_monthly,
             "batch_count": batch_count,
+            "monthly_training_contract_checksum": (monthly_training_contract or {}).get("contract_checksum"),
             "prep_concurrency": prep_concurrency,
             "sequence_contract": sequence_contract or None,
             "dataset_snapshot": dataset_snapshot_info,

@@ -88,6 +88,7 @@ image = (
     modal.Image.debian_slim(python_version="3.11")
     .apt_install("libgomp1", "ocl-icd-libopencl1")  # OpenMP + OpenCL ICD loader (NVIDIA driver provides libOpenCL at runtime)
     .pip_install_from_requirements(str(_LOCAL_REQ))
+    .env({"PYTHONHASHSEED": "42", "CUBLAS_WORKSPACE_CONFIG": ":4096:8", "TORCH_FLOAT32_MATMUL_PRECISION": "high"})
     .add_local_dir(str(_LOCAL_SCRIPTS_DIR), remote_path="/root/scripts")
     .add_local_dir(str(_LOCAL_TOOLS_DIR), remote_path="/root/tools")
     .add_local_dir(str(_LOCAL_CONTROLLER_SERVICES_DIR), remote_path="/root/services")
@@ -415,11 +416,32 @@ def retrain_orchestrator(payload: dict) -> dict:
         }
     }
     partial_results: dict[str, dict] = {}
+    monthly_training_contract = payload.get("monthly_training_contract")
     artifact_lifecycle_targets = [
         str(target)
         for target in (payload.get("artifact_lifecycle_targets") or [])
         if str(target or "").strip()
     ]
+    if is_monthly:
+        from services.active8_monthly_training_contract import (
+            MONTHLY_ARTIFACT_LIFECYCLE_TARGETS,
+            MONTHLY_TRAIN_GROUPS,
+            validate_monthly_training_contract,
+        )
+        from services.active8_monthly_model_profiles import monthly_model_payload
+
+        verified_monthly_contract = validate_monthly_training_contract(monthly_training_contract)
+        if str(verified_monthly_contract.get("run_date") or "") != str(run_date or ""):
+            raise RuntimeError("monthly_training_contract_run_date_mismatch")
+        payload["train_model_groups"] = list(MONTHLY_TRAIN_GROUPS)
+        artifact_lifecycle_targets = list(MONTHLY_ARTIFACT_LIFECYCLE_TARGETS)
+        payload["artifact_lifecycle_targets"] = artifact_lifecycle_targets
+        result["stages"]["monthly_training_contract"] = {
+            "status": "verified",
+            "checksum": verified_monthly_contract["contract_checksum"],
+            "models": verified_monthly_contract["models"],
+            "configuration_selection": verified_monthly_contract["configuration_selection"],
+        }
     artifact_lifecycle_contracts = payload.get("artifact_lifecycle_contracts") or {}
     if artifact_lifecycle_targets:
         result["stages"]["artifact_lifecycle"] = {
@@ -526,6 +548,8 @@ def retrain_orchestrator(payload: dict) -> dict:
         },
         candidate_version=candidate_version,
     )
+    if is_monthly:
+        base_train_payload.update(monthly_model_payload("LightGBM"))
 
     def _train_group_seq_len(group: str) -> int:
         key = f"{group}_seq_len"
@@ -552,6 +576,11 @@ def retrain_orchestrator(payload: dict) -> dict:
         "dlinear": {
             "spawn": lambda p: train_dlinear_universal.spawn(p),
             "payload": lambda: {
+                **(monthly_model_payload("DLinear") if is_monthly else {}),
+                "candidate_type": payload.get("candidate_type"),
+                "monthly_training_contract": monthly_training_contract,
+                "dataset_snapshot": payload.get("dataset_snapshot"),
+                "run_date": run_date,
                 "sequence_records": sequence_records,
                 "device": payload.get("sequence_device") or "cuda",
                 "version": candidate_version,
@@ -566,6 +595,11 @@ def retrain_orchestrator(payload: dict) -> dict:
         "patchtst": {
             "spawn": lambda p: train_patchtst_universal.spawn(p),
             "payload": lambda: {
+                **(monthly_model_payload("PatchTST") if is_monthly else {}),
+                "candidate_type": payload.get("candidate_type"),
+                "monthly_training_contract": monthly_training_contract,
+                "dataset_snapshot": payload.get("dataset_snapshot"),
+                "run_date": run_date,
                 "sequence_records": sequence_records,
                 "device": payload.get("sequence_device") or "cuda",
                 "version": candidate_version,
@@ -658,22 +692,23 @@ def retrain_orchestrator(payload: dict) -> dict:
         )
 
         artifact_registrations = dict(tree_result.get("artifact_registrations") or {})
-        dlinear_result = aux_train.get("dlinear") or {}
-        dlinear_saved = dlinear_result.get("saved") or {}
-        dlinear_metadata = dlinear_saved.get("metadata") or dlinear_result.get("metadata") or {}
-        if dlinear_saved and dlinear_metadata:
-            artifact_registrations["DLinear"] = {
-                "status": "registered",
-                "version": dlinear_result.get("version") or candidate_version,
-                "gcs_path": dlinear_saved.get("weights_path") or dlinear_metadata.get("artifact_path"),
-                "metadata_path": dlinear_saved.get("metadata_path") or dlinear_metadata.get("metadata_path"),
-                "checksum": dlinear_saved.get("checksum") or dlinear_metadata.get("checksum"),
-                "feature_policy_version": dlinear_metadata.get("feature_policy_schema_version"),
-                "feature_policy": dlinear_metadata.get("feature_policy"),
-                "model_cpcv": dlinear_metadata.get("model_cpcv"),
-                "oos_ic": (dlinear_result.get("ic_tracking", {}).get("DLinear") or {}).get("oos_ic"),
-                "metadata": dlinear_metadata,
-            }
+        for model_name, group_name in (("DLinear", "dlinear"), ("PatchTST", "patchtst")):
+            aux_result = aux_train.get(group_name) or {}
+            aux_saved = aux_result.get("saved") or {}
+            aux_metadata = aux_saved.get("metadata") or aux_result.get("metadata") or {}
+            if aux_saved and aux_metadata:
+                artifact_registrations[model_name] = {
+                    "status": "registered",
+                    "version": aux_result.get("version") or candidate_version,
+                    "gcs_path": aux_saved.get("weights_path") or aux_metadata.get("artifact_path"),
+                    "metadata_path": aux_saved.get("metadata_path") or aux_metadata.get("metadata_path"),
+                    "checksum": aux_saved.get("checksum") or aux_metadata.get("checksum"),
+                    "feature_policy_version": aux_metadata.get("feature_policy_schema_version"),
+                    "feature_policy": aux_metadata.get("feature_policy"),
+                    "model_cpcv": aux_metadata.get("model_cpcv"),
+                    "oos_ic": (aux_result.get("ic_tracking", {}).get(model_name) or {}).get("oos_ic"),
+                    "metadata": aux_metadata,
+                }
 
         result["stages"]["train"] = {
             "status": summarize_training_stage_status(coverage),
@@ -721,11 +756,15 @@ def retrain_orchestrator(payload: dict) -> dict:
                 if not isinstance(promote_to_active, bool):
                     raise RuntimeError("artifact_lifecycle_promote_to_active must be an explicit boolean")
                 artifact_payload = {
+                    **(monthly_model_payload(model_name) if is_monthly else {}),
                     "gcs_prefix": gcs_prefix,
                     "batch_count": batch_count,
                     "output_model_version": candidate_version,
                     "promote_to_active": promote_to_active,
                     "run_date": run_date,
+                    "candidate_type": payload.get("candidate_type"),
+                    "monthly_training_contract": monthly_training_contract,
+                    "dataset_snapshot": payload.get("dataset_snapshot"),
                     "as_of_date": payload.get("as_of_date"),
                     "max_prep_stale_days": payload.get("max_prep_stale_days"),
                     "label_horizon_days": selection_params.get("label_horizon_days"),
@@ -1083,6 +1122,29 @@ def retrain_orchestrator(payload: dict) -> dict:
     except Exception as e:
         print(f"[Orchestrator] Train failed: {e}")
         result["stages"]["train"] = {"status": "error", "error": str(e)}
+
+    if is_monthly:
+        try:
+            from services.active8_monthly_training_contract import (
+                ACTIVE8_MODEL_NAMES,
+                normalize_monthly_raw_artifact_receipt,
+                validate_monthly_artifact_receipts,
+            )
+            registrations = dict(((result.get("stages") or {}).get("train") or {}).get("artifact_registrations") or {})
+            lifecycle = dict(((result.get("stages") or {}).get("artifact_lifecycle") or {}).get("results") or {})
+            receipts = {}
+            for model_name in ACTIVE8_MODEL_NAMES:
+                receipts[model_name] = normalize_monthly_raw_artifact_receipt(
+                    registrations.get(model_name) or lifecycle.get(model_name)
+                )
+            result["stages"]["monthly_model_completion"] = validate_monthly_artifact_receipts(
+                contract=monthly_training_contract,
+                receipts=receipts,
+            )
+        except Exception as exc:
+            result.setdefault("stages", {})["monthly_model_completion"] = {"status": "error", "error": str(exc)}
+            result.setdefault("stages", {}).setdefault("train", {})["status"] = "error"
+            result["stages"]["train"]["error"] = "monthly_active8_completion_incomplete"
 
     elapsed = round(time.time() - t0, 1)
     result["total_elapsed_s"] = elapsed
@@ -2815,9 +2877,11 @@ def walk_forward_orchestrator(payload: dict) -> dict:
             ("PatchTST", train_patchtst_universal),
             ("iTransformer", train_itransformer_universal),
         )
+        from services.active8_monthly_model_profiles import monthly_model_payload as active8_model_payload
         for model_name, fn in family_tasks:
             if model_name in requested:
-                tasks.append((model_name, fn.remote.aio(dict(train_payload))))
+                model_payload = {**train_payload, **active8_model_payload(model_name)}
+                tasks.append((model_name, fn.remote.aio(model_payload)))
         if tasks:
             raw = await asyncio.gather(*[t[1] for t in tasks], return_exceptions=True)
             for (kind, _), r in zip(tasks, raw):
@@ -2968,14 +3032,25 @@ def walk_forward_orchestrator(payload: dict) -> dict:
             if metrics.get("status") != "ready" or not artifact_path:
                 artifact_contract_gaps.append(f"w{window_result['window_id']}")
                 continue
+            canonical_date_ics = _date_cluster_ics(artifact_path)
+            canonical_fold_ic = (
+                sum(float(row["rank_ic"]) for row in canonical_date_ics) / len(canonical_date_ics)
+                if canonical_date_ics
+                else None
+            )
+            if canonical_fold_ic is None:
+                artifact_contract_gaps.append(f"w{window_result['window_id']}:date_market_ic_missing")
+                continue
             fold_metrics.append({
                 "fold_id": f"w{window_result['window_id']}",
-                "oos_ic": metrics.get("oos_ic"),
-                "test_rows": int(metrics.get("test_samples") or 0),
+                "oos_ic": canonical_fold_ic,
+                "reported_oos_ic": metrics.get("oos_ic"),
+                "test_rows": sum(int(row.get("test_rows") or 0) for row in canonical_date_ics),
                 "coverage": float(metrics.get("coverage") or 0.0),
                 "coverage_gate_semantics": metrics.get("coverage_gate_semantics"),
                 "coverage_mode": metrics.get("coverage_mode"),
-                "date_cluster_ics": _date_cluster_ics(artifact_path),
+                "date_cluster_ics": canonical_date_ics,
+                "score_semantic": "same-market-same-date-average-tie-percentile-rank-v2",
             })
         evidence = build_model_cpcv_evidence(
             model=model_name,
@@ -3289,9 +3364,31 @@ def train_dlinear_universal(payload: dict) -> dict:
             train_end=payload.get("train_end"),
             test_start=payload.get("test_start"),
             test_end=payload.get("test_end"),
+            seed=int(payload.get("seed") or 42),
         )
         if result.get("error"):
             return result
+        from app.training_policy import build_model_training_config_attestation
+
+        training_config_attestation = build_model_training_config_attestation(
+            "DLinear",
+            payload,
+            {
+                "seq_len": payload.get("seq_len", 512),
+                "pred_len": payload.get("pred_len", 5),
+                "kernel": payload.get("kernel", 25),
+                "n_epochs": payload.get("n_epochs", 30),
+                "batch_size": payload.get("batch_size", 256),
+                "lr": payload.get("lr", 1e-3),
+                "val_ratio": payload.get("val_ratio", 0.15),
+                "device": str(device),
+                "seed": int(payload.get("seed") or 42),
+                "reproducibility": result["metadata"].get("reproducibility"),
+                "target_semantic_version": result["metadata"].get("target_semantic_version"),
+            },
+        )
+        if training_config_attestation is not None:
+            result["metadata"]["model_training_config_attestation"] = training_config_attestation
         version = payload.get("output_model_version") or payload.get("version", "v1")
         result["metadata"]["version"] = version
         result["metadata"]["model_pool_version"] = version
@@ -3403,6 +3500,7 @@ def train_patchtst_universal(payload: dict) -> dict:
             val_ratio=payload.get("val_ratio", 0.15),
             version=payload.get("output_model_version") or payload.get("version", "v1"),
             max_steps=payload.get("max_steps"),
+            seed=int(payload.get("seed") or 42),
             model_cpcv_policy=payload.get("model_cpcv_policy") or None,
             promote_to_active=payload.get("promote_to_active", False),
             promotion_reason=payload.get("promotion_reason"),
@@ -3410,10 +3508,26 @@ def train_patchtst_universal(payload: dict) -> dict:
             sequence_gcs_prefix=payload.get("sequence_gcs_prefix"),
             sequence_batch_count=payload.get("sequence_batch_count"),
             batch_count=payload.get("batch_count"),
+            max_series=payload.get("max_series"),
             max_prep_stale_days=payload.get("max_prep_stale_days"),
             run_date=payload.get("run_date"),
             as_of_date=payload.get("as_of_date"),
             generation_mode=payload.get("generation_mode"),
+            persist_oof_artifact=payload.get("persist_oof_artifact", True),
+            research_source_bundle_checksum=payload.get("research_source_bundle_checksum"),
+            oof_training_history_mode=payload.get("oof_training_history_mode"),
+            trainer_deterministic=payload.get("trainer_deterministic", True),
+            learning_rate=payload.get("learning_rate"),
+            windows_batch_size=payload.get("windows_batch_size"),
+            inference_windows_batch_size=payload.get("inference_windows_batch_size"),
+            scaler_type=payload.get("scaler_type"),
+            step_size=payload.get("step_size"),
+            patch_len=payload.get("patch_len"),
+            stride=payload.get("stride"),
+            revin=payload.get("revin"),
+            candidate_type=payload.get("candidate_type"),
+            monthly_training_contract=payload.get("monthly_training_contract"),
+            dataset_snapshot=payload.get("dataset_snapshot"),
             cohort_id=payload.get("cohort_id"),
             fold_id=payload.get("fold_id") or payload.get("window_id"),
             train_start=payload.get("train_start"),
@@ -3433,6 +3547,10 @@ def train_patchtst_universal(payload: dict) -> dict:
             "type": result.get("type", "neuralforecast_patchtst_universal"),
             "pool_update": result.get("pool_update"),
             "oof_artifact": result.get("oof_artifact"),
+            "allowed_use": result.get("allowed_use"),
+            "production_effect": result.get("production_effect"),
+            "research_source_bundle_checksum": result.get("research_source_bundle_checksum"),
+            "metrics": result.get("metrics"),
         }
     except Exception as e:
         import traceback

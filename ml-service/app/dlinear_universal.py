@@ -32,6 +32,7 @@ from typing import Any, Optional
 import numpy as np
 
 from .artifact_contract import ArtifactValidationError, bytes_sha256, verify_artifact_bytes
+from .training_reproducibility import configure_training_reproducibility
 
 logger = logging.getLogger(__name__)
 
@@ -168,6 +169,7 @@ def train_dlinear(
     train_end: str | None = None,
     test_start: str | None = None,
     test_end: str | None = None,
+    seed: int = 42,
 ) -> dict:
     """Train universal DLinear on pooled (stock, window) samples.
 
@@ -193,6 +195,7 @@ def train_dlinear(
     )
 
     t0 = time.time()
+    reproducibility = configure_training_reproducibility(seed)
     dev = torch.device(device)
 
     # ── 1. Build (X, y) windows: every contiguous (seq_len + pred_len) span ──
@@ -379,6 +382,8 @@ def train_dlinear(
             "n_epochs": n_epochs,
             "batch_size": batch_size,
             "lr": lr,
+            "seed": int(seed),
+            "reproducibility": reproducibility,
             "elapsed_s": elapsed,
             "history": history,
             "sequence_report": sequence_report,

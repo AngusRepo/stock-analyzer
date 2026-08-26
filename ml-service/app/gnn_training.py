@@ -29,7 +29,11 @@ from .prep_lineage import (
 from .model_validation import build_model_cpcv_evidence
 from .training_promotion_policy import resolve_training_promotion_intent
 from .target_rank_scope import GLOBAL_CROSS_SECTIONAL_RANK_VERSION, recompute_global_cross_sectional_rank
-from .training_policy import build_model_feature_policy_metadata
+from .training_policy import (
+    build_model_feature_policy_metadata,
+    build_model_training_config_attestation,
+)
+from .training_reproducibility import configure_training_reproducibility
 from .sequence_training import SEQUENCE_RETURN_SEMANTIC_VERSION
 
 MODEL_NAME = "GNN"
@@ -424,6 +428,8 @@ def train_graphsage_universal(payload: dict | None = None) -> dict[str, Any]:
         if payload.get("standardization_clip") is not None
         else DEFAULT_STANDARDIZATION_CLIP
     )
+    seed = int(payload.get("seed") or 42)
+    reproducibility = configure_training_reproducibility(seed)
     promote_to_active, promotion_reason = resolve_training_promotion_intent(payload, model_name=MODEL_NAME)
     generation_mode = str(payload.get("generation_mode") or "native").strip().lower()
     if generation_mode == "purged_oof" and promote_to_active:
@@ -540,7 +546,7 @@ def train_graphsage_universal(payload: dict | None = None) -> dict[str, Any]:
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model = _build_model(n_features=x.shape[1], hidden_dim=hidden_dim, dropout=dropout).to(device)
     optimizer = torch.optim.AdamW(model.parameters(), lr=lr, weight_decay=weight_decay)
-    rng = np.random.default_rng(int(payload.get("seed") or 42))
+    rng = np.random.default_rng(seed)
     train_losses: list[float] = []
 
     stage_t0 = time.time()
@@ -619,6 +625,32 @@ def train_graphsage_universal(payload: dict | None = None) -> dict[str, Any]:
         "hidden_dim": hidden_dim,
         "dropout": dropout,
     }
+    training_params = {
+        "epochs": epochs,
+        "hidden_dim": hidden_dim,
+        "dropout": dropout,
+        "lr": lr,
+        "weight_decay": weight_decay,
+        "max_train_dates_per_epoch": max_train_dates_per_epoch,
+        "standardization_clip": standardization_clip,
+        "device": str(device),
+        "seed": seed,
+        "edge_top_k": edge_top_k,
+        "edge_threshold": edge_threshold,
+        "graph_semantic_version": GNN_GRAPH_SEMANTIC_VERSION,
+        "reproducibility": reproducibility,
+    }
+    training_config_attestation = build_model_training_config_attestation(
+        MODEL_NAME,
+        payload,
+        {
+            **training_params,
+            "feature_names": feature_names,
+            "graph_semantic_version": GNN_GRAPH_SEMANTIC_VERSION,
+            "validation_split": split_meta,
+            "target_semantic_version": SEQUENCE_RETURN_SEMANTIC_VERSION,
+        },
+    )
     metadata = attach_prep_lineage_aliases({
         "schema_version": "graphsage_formal_artifact_v1",
         "artifact_schema": "torch_graphsage_ranker_v1",
@@ -685,16 +717,8 @@ def train_graphsage_universal(payload: dict | None = None) -> dict[str, Any]:
             selection_evidence={"selection_method": "production_artifact"},
             feature_release_mode=payload.get("feature_release_mode") or payload.get("candidate_type"),
         ),
-        "training_params": {
-            "epochs": epochs,
-            "hidden_dim": hidden_dim,
-            "dropout": dropout,
-            "lr": lr,
-            "weight_decay": weight_decay,
-            "max_train_dates_per_epoch": max_train_dates_per_epoch,
-            "standardization_clip": standardization_clip,
-            "device": str(device),
-        },
+        **({"model_training_config_attestation": training_config_attestation} if training_config_attestation else {}),
+        "training_params": training_params,
         "stage_timings": stage_timings,
     }, prep_lineage)
     stage_t0 = time.time()

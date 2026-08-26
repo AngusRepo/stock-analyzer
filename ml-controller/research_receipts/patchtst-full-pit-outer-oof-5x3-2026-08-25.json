@@ -1,0 +1,59 @@
+{
+  "schema_version": "patchtst-monthly-candidate-research-receipt-v1",
+  "created_at": "2026-08-26T03:48:46.996771+00:00",
+  "model_name": "PatchTST",
+  "candidate_profile": "patchtst-full-pit-outer-oof-5x3-2026-08-25",
+  "dataset": {
+    "business_date": "2026-08-25",
+    "sequence_manifest_checksum": "a4b8161d065e6dc520c84ecfa38fc91439cbb169ce0b7139db8496a225a96df8",
+    "target_semantic_version": "next-session-canonical-adjusted-open-to-fifth-session-canonical-adjusted-close-net-v4"
+  },
+  "source_bundle_checksum": "68106ea56ca74d8c31a3475107a2ee71c589290dced584a2386a144e5a1f693a",
+  "canonical_full_receipt": {
+    "path": "output/patchtst_research_validation/full_seed_forwarded.json",
+    "sha256": "e369dc7541a91d03dad4c66d8bac6ced8092c6fc3b8e7b193f7a31336712a675",
+    "runs": 15
+  },
+  "settings": {
+    "history_mode": "full_pit_history",
+    "max_steps": 120,
+    "seeds": [42, 314, 2718],
+    "outer_windows": 5,
+    "same_market_same_date_average_tie_ic": true,
+    "persist_oof_artifact": false
+  },
+  "by_window": {
+    "0": {"mean_ic": 0.07747633333333333, "v9_ic": -0.006382, "mean_delta_vs_v9": 0.08385833333333333},
+    "1": {"mean_ic": -0.09162566666666666, "v9_ic": -0.168641, "mean_delta_vs_v9": 0.07701533333333335},
+    "2": {"mean_ic": 0.16517466666666666, "v9_ic": -0.136104, "mean_delta_vs_v9": 0.3012786666666667},
+    "3": {"mean_ic": 0.024316, "v9_ic": -0.017158, "mean_delta_vs_v9": 0.041474},
+    "4": {"mean_ic": 0.073717, "v9_ic": -0.004178, "mean_delta_vs_v9": 0.077895}
+  },
+  "research_gate": {
+    "passed": true,
+    "checks": {
+      "research_only_no_write": true,
+      "overall_mean_ic_positive": true,
+      "all_seed_means_non_negative": true,
+      "positive_window_share_at_least_60pct": true,
+      "tail_three_mean_ic_positive": true,
+      "tail_three_positive_share_at_least_two_thirds": true,
+      "mean_ic_improves_v9": true
+    },
+    "overall_mean_ic": 0.04981166666666667,
+    "v9_mean_ic": -0.0664926,
+    "mean_delta_vs_v9": 0.11630426666666667,
+    "positive_window_share": 0.8,
+    "tail_three_mean_ic": 0.08773588888888889,
+    "tail_three_positive_share": 1.0,
+    "per_seed_mean_ic": {"42": 0.047837000000000005, "314": 0.0628002, "2718": 0.0387978},
+    "interpretation": "fixed_config_repeated_seed_outer_oof_not_configuration_selection_pbo"
+  },
+  "supersedes": [
+    {"path": "full.json", "sha256": "d832976116b34fc5baedefb923e6165efeeb511351fd5354dce765c78f849fde", "reason": "seed_not_forwarded"},
+    {"path": "full_evaluated.json", "sha256": "75f49b117cd6f4e71a3f0503a14c8325d1d60bd982bb2f16944152d0e635d149", "reason": "derived_from_seed_not_forwarded_run"}
+  ],
+  "formal_action": "eligible_for_monthly_candidate_contract",
+  "allowed_use": "monthly_candidate_profile_attestation",
+  "production_effect": false
+}

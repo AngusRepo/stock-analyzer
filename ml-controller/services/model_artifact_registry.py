@@ -8,6 +8,7 @@ from copy import deepcopy
 from datetime import datetime, timezone
 from typing import Any, Callable, Literal
 
+from services.active8_monthly_training_contract import validate_model_training_config_attestation
 from services.d1_domain_client import D1DataDomain, DomainD1Client, client_for_domain
 from services.evidence_contracts import LABEL_SCHEMA_VERSION
 from services.model_validation_policy import resolve_model_validation_policy
@@ -1976,6 +1977,31 @@ def artifact_promotion_blockers(row: dict[str, Any], *, champion_version: str | 
 
     registration = _artifact_registration(row)
     metadata = _artifact_registration_metadata(row)
+    monthly_fixed_config_attested = False
+    if str(row.get("candidate_type") or "") == "monthly_release":
+        attestation = _nested_dict(metadata.get("model_training_config_attestation"))
+        try:
+            verified_attestation = validate_model_training_config_attestation(
+                attestation,
+                expected_model_name=model_name,
+            )
+            trained_snapshot = _json_loads(row.get("trained_from_snapshot"))
+            if not isinstance(trained_snapshot, dict):
+                raise ValueError("model_training_config_attestation_snapshot_lineage_missing")
+            if str(trained_snapshot.get("snapshot_id") or "") != str(verified_attestation["dataset_snapshot_id"]):
+                raise ValueError("model_training_config_attestation_snapshot_lineage_mismatch")
+            if str(row.get("source_run_date") or "") != str(verified_attestation["run_date"]):
+                raise ValueError("model_training_config_attestation_run_date_lineage_mismatch")
+            metadata_source_sha = str(metadata.get("producer_source_sha") or "").strip()
+            if metadata_source_sha and metadata_source_sha != str(verified_attestation["producer_source_sha"]):
+                raise ValueError("model_training_config_attestation_source_lineage_mismatch")
+            monthly_fixed_config_attested = True
+        except (KeyError, TypeError, ValueError) as exc:
+            add(
+                "monthly_training_config_attestation_missing_or_invalid",
+                "Monthly artifact lacks immutable model-specific config evidence",
+                f"Regenerate this model from the checksum-bound Active-8 monthly contract: {exc}",
+            )
     target_semantic = str(metadata.get("target_semantic_version") or "").strip()
     if model_name in ACTIVE8_ARTIFACT_MODEL_NAMES and target_semantic != ACTIVE8_TARGET_SEMANTIC_VERSION:
         add(
@@ -2112,7 +2138,7 @@ def artifact_promotion_blockers(row: dict[str, Any], *, champion_version: str | 
     pbo_value = _as_float(pbo.get("pbo") if isinstance(pbo, dict) else pbo)
     pbo_method = str(pbo.get("method") if isinstance(pbo, dict) else "").lower()
     pbo_policy = policy_bundle["pbo"]
-    pbo_required = bool(pbo_policy.get("required"))
+    pbo_required = bool(pbo_policy.get("required")) and not monthly_fixed_config_attested
     max_pbo = _as_float(pbo_policy.get("max_pbo"))
     if pbo_required and (
         not _truthy_gate_value(pbo, max_fail_value=max_pbo)
@@ -2129,6 +2155,16 @@ def artifact_promotion_blockers(row: dict[str, Any], *, champion_version: str | 
             "PBO method is proxy-grade",
             "Run promotion-grade CSCV rank-logit PBO; proxy PBO is visible but cannot approve production.",
         )
+    search_trials = int(_as_float(_deep_get(offline, {"search_trials", "trial_count", "optuna_trials", "context_sweep_trials"})) or 1)
+    if pbo_required and contract_required and search_trials > 1:
+        pbo_scope = str(pbo.get("selection_scope") if isinstance(pbo, dict) else "")
+        pbo_model = str(pbo.get("model_name") if isinstance(pbo, dict) else "")
+        if pbo_scope != "model_configuration_selection" or pbo_model != model_name:
+            add(
+                "pbo_model_selection_lineage_invalid",
+                "PBO does not belong to this model's configuration search",
+                "Attach model-specific CSCV evidence with selection_scope=model_configuration_selection; cohort PBO cannot approve one model.",
+            )
 
     dsr = _deep_get(offline, {"deflated_sharpe", "dsr"})
     mc = _deep_get(offline, {"monte_carlo", "mc", "mc_tail_risk", "tail_risk"})

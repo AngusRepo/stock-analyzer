@@ -1,18 +1,22 @@
 from app.main import AdaptiveMetaPolicyReplayRequest, LinUcbMultiplierReplayRequest, NeuralMetaBanditRequest, app
 
 
+def _route_paths() -> set[str]:
+    return {path for route in app.routes if (path := getattr(route, "path", None))}
+
+
 def test_neural_meta_shadow_endpoint_is_registered_without_production_effect():
-    paths = {route.path for route in app.routes}
+    paths = _route_paths()
     assert "/meta-learning/neural-shadow/train" in paths
 
 
 def test_adaptive_meta_policy_replay_endpoint_is_registered_without_production_effect():
-    paths = {route.path for route in app.routes}
+    paths = _route_paths()
     assert "/meta-learning/adaptive-policy-replay" in paths
 
 
 def test_linucb_multiplier_replay_endpoint_is_registered_without_production_effect():
-    paths = {route.path for route in app.routes}
+    paths = _route_paths()
     assert "/meta-learning/linucb-multiplier-replay" in paths
 
 

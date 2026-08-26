@@ -16,7 +16,9 @@ from app.training_policy import (  # noqa: E402
     FEATURE_SELECTION_GOVERNANCE,
     MODEL_FEATURE_POLICIES,
     UniversalTrainingPolicy,
+    _contract_payload_checksum,
     build_feature_selection_run_kwargs,
+    validate_release_training_dataset_binding,
     build_model_feature_policy_metadata,
     build_group_train_payload,
     build_tree_model_child_payloads,
@@ -568,15 +570,38 @@ def test_full_fit_base_payload_preserves_exact_dataset_and_feature_lineage():
     assert build_group_train_payload(payload, "tree")["gcs_prefix"] == payload["gcs_prefix"]
 
 
+def _release_binding_contract(snapshot: dict) -> dict:
+    contract = {
+        "schema_version": "active8-release-training-contract-v2",
+        "producer_source_sha": os.environ["STOCKVISION_SOURCE_SHA"],
+        "dataset_snapshot_id": snapshot["snapshot_id"],
+        "dataset_snapshot_business_date": snapshot["business_date"],
+        "dataset_snapshot_schema_version": snapshot["schema_version"],
+        "dataset_snapshot_checksum": _contract_payload_checksum(snapshot),
+        "input_lineage": {
+            "prep_producer_source_sha": snapshot["producer_source_sha"],
+            "prep_manifest_checksum": snapshot["manifest_checksum"],
+            "source_manifest_checksum": snapshot["source_manifest_checksum"],
+            "source_cohort_id": snapshot["source_cohort_id"],
+            "feature_pool_checksum": snapshot["feature_pool"]["artifact_checksum"],
+            "sequence_manifest_checksum": snapshot["sequence"]["manifest_checksum"],
+        },
+    }
+    contract["contract_checksum"] = _contract_payload_checksum(contract)
+    return contract
+
+
 def test_immutable_oof_snapshot_requires_exact_rows_and_known_labels():
     target = universal_training.SEQUENCE_RETURN_SEMANTIC_VERSION
     snapshot = {
         "schema_version": "active8-oof-full-fit-prep-lineage-v2",
+        "snapshot_id": "oof_full_fit:cohort-1:" + "b" * 64,
+        "business_date": "2026-07-17",
         "gcs_prefix": "universal/canonical_adjusted_v4/immutable",
         "target_semantic_version": target,
         "feature_semantic_version": universal_training.FEATURE_SEMANTIC_VERSION,
         "feature_imputation_semantic": universal_training.FEATURE_IMPUTATION_SEMANTIC_VERSION,
-        "producer_source_sha": TEST_SOURCE_SHA,
+        "producer_source_sha": "9" * 40,
         "manifest_checksum": "a" * 64,
         "source_manifest_checksum": "b" * 64,
         "source_cohort_id": "cohort-1",
@@ -586,7 +611,9 @@ def test_immutable_oof_snapshot_requires_exact_rows_and_known_labels():
             "path": "walk_forward/cohort/full_fit/feature_pool.json",
             "artifact_checksum": "c" * 64,
         },
+        "sequence": {"manifest_checksum": "d" * 64},
     }
+    contract = _release_binding_contract(snapshot)
 
     report = universal_training.validate_immutable_oof_snapshot_for_registration(
         snapshot,
@@ -595,6 +622,7 @@ def test_immutable_oof_snapshot_requires_exact_rows_and_known_labels():
         dates=np.array(["2026-07-07", "2026-07-08"]),
         label_known_dates=np.array(["2026-07-15", "2026-07-16"]),
         run_date="2026-07-17",
+        release_training_contract=contract,
     )
 
     assert report["status"] == "ok"
@@ -606,6 +634,8 @@ def test_immutable_oof_snapshot_rejects_future_label_or_row_mismatch():
     target = universal_training.SEQUENCE_RETURN_SEMANTIC_VERSION
     snapshot = {
         "schema_version": "active8-oof-full-fit-prep-lineage-v2",
+        "snapshot_id": "oof_full_fit:cohort-1:" + "b" * 64,
+        "business_date": "2026-07-17",
         "gcs_prefix": "universal/canonical_adjusted_v4/immutable",
         "target_semantic_version": target,
         "feature_semantic_version": universal_training.FEATURE_SEMANTIC_VERSION,
@@ -620,7 +650,9 @@ def test_immutable_oof_snapshot_rejects_future_label_or_row_mismatch():
             "path": "walk_forward/cohort/full_fit/feature_pool.json",
             "artifact_checksum": "c" * 64,
         },
+        "sequence": {"manifest_checksum": "d" * 64},
     }
+    contract = _release_binding_contract(snapshot)
 
     import pytest
 
@@ -632,7 +664,13 @@ def test_immutable_oof_snapshot_rejects_future_label_or_row_mismatch():
             dates=np.array(["2026-07-07", "2026-07-08"]),
             label_known_dates=np.array(["2026-07-15", "2026-07-20"]),
             run_date="2026-07-17",
+            release_training_contract=contract,
         )
+
+    tampered = dict(snapshot)
+    tampered["manifest_checksum"] = "f" * 64
+    with pytest.raises(ValueError, match="snapshot_checksum_mismatch"):
+        validate_release_training_dataset_binding(contract, tampered)
 
 
 def test_native_monthly_compute_snapshot_does_not_claim_immutable_oof_lineage():

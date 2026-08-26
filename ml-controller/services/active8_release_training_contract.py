@@ -29,7 +29,7 @@ ACTIVE8_MODEL_NAMES = (
 )
 RELEASE_TRAIN_GROUPS = ("tree", "dlinear", "patchtst")
 RELEASE_ARTIFACT_LIFECYCLE_TARGETS = ("GNN", "TabM", "iTransformer")
-RELEASE_CONTRACT_SCHEMA_VERSION = "active8-release-training-contract-v1"
+RELEASE_CONTRACT_SCHEMA_VERSION = "active8-release-training-contract-v2"
 MODEL_CONFIG_ATTESTATION_SCHEMA_VERSION = "model-training-config-attestation-v2"
 TARGET_SEMANTIC = "next-session-canonical-adjusted-open-to-fifth-session-canonical-adjusted-close-net-v4"
 SCORE_SEMANTIC = "same-market-same-date-average-tie-percentile-rank-v2"
@@ -115,11 +115,36 @@ def build_release_training_contract(
     snapshot_id = str(snapshot.get("snapshot_id") or "").strip()
     if not snapshot_id:
         raise ValueError("release_training_snapshot_id_missing")
+    snapshot_schema_version = str(snapshot.get("schema_version") or "unspecified").strip()
+    snapshot_checksum = _checksum(snapshot)
+    input_lineage: dict[str, Any] = {}
+    if snapshot_schema_version == "active8-oof-full-fit-prep-lineage-v2":
+        input_lineage = {
+            "prep_producer_source_sha": str(snapshot.get("producer_source_sha") or "").strip().lower(),
+            "prep_manifest_checksum": str(snapshot.get("manifest_checksum") or "").strip().lower(),
+            "source_manifest_checksum": str(snapshot.get("source_manifest_checksum") or "").strip().lower(),
+            "source_cohort_id": str(snapshot.get("source_cohort_id") or "").strip(),
+            "feature_pool_checksum": str((snapshot.get("feature_pool") or {}).get("artifact_checksum") or "").strip().lower(),
+            "sequence_manifest_checksum": str((snapshot.get("sequence") or {}).get("manifest_checksum") or "").strip().lower(),
+        }
+        if (
+            len(input_lineage["prep_producer_source_sha"]) != 40
+            or any(char not in "0123456789abcdef" for char in input_lineage["prep_producer_source_sha"])
+            or any(len(input_lineage[key]) != 64 for key in (
+                "prep_manifest_checksum", "source_manifest_checksum",
+                "feature_pool_checksum", "sequence_manifest_checksum",
+            ))
+            or not input_lineage["source_cohort_id"]
+        ):
+            raise ValueError("release_training_input_lineage_missing_or_invalid")
     contract: dict[str, Any] = {
         "schema_version": RELEASE_CONTRACT_SCHEMA_VERSION,
         "run_date": business_date,
         "dataset_snapshot_id": snapshot_id,
         "dataset_snapshot_business_date": snapshot_date,
+        "dataset_snapshot_schema_version": snapshot_schema_version,
+        "dataset_snapshot_checksum": snapshot_checksum,
+        "input_lineage": input_lineage,
         "producer_source_sha": source_sha,
         "models": list(ACTIVE8_MODEL_NAMES),
         "train_groups": list(RELEASE_TRAIN_GROUPS),
@@ -164,6 +189,21 @@ def validate_release_training_contract(contract: dict[str, Any]) -> dict[str, An
         raise ValueError("release_training_contract_validation_semantic_mismatch")
     if contract.get("model_profile_schema_version") != MODEL_PROFILE_SCHEMA_VERSION:
         raise ValueError("release_training_contract_profile_schema_mismatch")
+    if len(str(contract.get("dataset_snapshot_checksum") or "")) != 64:
+        raise ValueError("release_training_contract_snapshot_checksum_missing")
+    if not str(contract.get("dataset_snapshot_schema_version") or "").strip():
+        raise ValueError("release_training_contract_snapshot_schema_missing")
+    input_lineage = dict(contract.get("input_lineage") or {})
+    if contract.get("dataset_snapshot_schema_version") == "active8-oof-full-fit-prep-lineage-v2":
+        if (
+            len(str(input_lineage.get("prep_producer_source_sha") or "")) != 40
+            or any(len(str(input_lineage.get(key) or "")) != 64 for key in (
+                "prep_manifest_checksum", "source_manifest_checksum",
+                "feature_pool_checksum", "sequence_manifest_checksum",
+            ))
+            or not str(input_lineage.get("source_cohort_id") or "").strip()
+        ):
+            raise ValueError("release_training_contract_input_lineage_invalid")
     validate_profiles(contract.get("model_profiles") or {})
     return contract
 
@@ -201,6 +241,9 @@ def build_model_training_config_attestation(
         "producer_source_sha": verified["producer_source_sha"],
         "run_date": verified["run_date"],
         "dataset_snapshot_id": verified["dataset_snapshot_id"],
+        "dataset_snapshot_schema_version": verified["dataset_snapshot_schema_version"],
+        "dataset_snapshot_checksum": verified["dataset_snapshot_checksum"],
+        "input_lineage": verified["input_lineage"],
     }
     attestation["attestation_checksum"] = _checksum(attestation)
     return attestation

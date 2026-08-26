@@ -59,10 +59,47 @@ def test_release_contract_is_checksum_bound_to_exact_snapshot_and_source():
 
     assert validate_release_training_contract(contract) == contract
     assert contract["dataset_snapshot_business_date"] == contract["run_date"]
+    assert len(contract["dataset_snapshot_checksum"]) == 64
     assert contract["configuration_selection"]["cohort_pbo_must_not_be_used_as_per_model_pbo"] is True
 
     tampered = copy.deepcopy(contract)
     tampered["models"].pop()
+    with pytest.raises(ValueError, match="checksum_mismatch"):
+        validate_release_training_contract(tampered)
+
+
+def test_release_contract_separates_runtime_and_immutable_input_provenance():
+    input_source = "a" * 40
+    snapshot = {
+        "schema_version": "active8-oof-full-fit-prep-lineage-v2",
+        "snapshot_id": "oof_full_fit:cohort-1:" + "b" * 64,
+        "business_date": "2026-08-24",
+        "producer_source_sha": input_source,
+        "manifest_checksum": "c" * 64,
+        "source_manifest_checksum": "b" * 64,
+        "source_cohort_id": "cohort-1",
+        "feature_pool": {"artifact_checksum": "d" * 64},
+        "sequence": {"manifest_checksum": "e" * 64},
+    }
+    contract = build_release_training_contract(
+        run_date="2026-08-24",
+        dataset_snapshot=snapshot,
+        producer_source_sha=SOURCE_SHA,
+    )
+
+    assert contract["producer_source_sha"] == SOURCE_SHA
+    assert contract["input_lineage"] == {
+        "prep_producer_source_sha": input_source,
+        "prep_manifest_checksum": "c" * 64,
+        "source_manifest_checksum": "b" * 64,
+        "source_cohort_id": "cohort-1",
+        "feature_pool_checksum": "d" * 64,
+        "sequence_manifest_checksum": "e" * 64,
+    }
+    assert validate_release_training_contract(contract) == contract
+
+    tampered = copy.deepcopy(contract)
+    tampered["input_lineage"]["prep_producer_source_sha"] = "f" * 40
     with pytest.raises(ValueError, match="checksum_mismatch"):
         validate_release_training_contract(tampered)
 

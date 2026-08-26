@@ -714,6 +714,75 @@ def build_model_feature_policy_metadata(
     }
 
 
+def _canonical_contract_value(value: Any) -> Any:
+    if isinstance(value, dict):
+        return {str(key): _canonical_contract_value(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple, set)):
+        return [_canonical_contract_value(item) for item in value]
+    if isinstance(value, float) and not math.isfinite(value):
+        return "nonfinite:nan" if math.isnan(value) else ("nonfinite:inf" if value > 0 else "nonfinite:-inf")
+    if isinstance(value, (str, int, float, bool)) or value is None:
+        return value
+    return str(value)
+
+
+def _contract_payload_checksum(value: dict[str, Any]) -> str:
+    raw = json.dumps(
+        _canonical_contract_value(value),
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+        allow_nan=False,
+    ).encode("utf-8")
+    return hashlib.sha256(raw).hexdigest()
+
+
+def validate_release_training_dataset_binding(
+    contract: dict[str, Any],
+    dataset_snapshot: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """Verify current training runtime and immutable input producer independently."""
+
+    if not isinstance(contract, dict):
+        raise ValueError("release_training_contract_missing")
+    unsigned_contract = {key: value for key, value in contract.items() if key != "contract_checksum"}
+    if contract.get("schema_version") != "active8-release-training-contract-v2":
+        raise ValueError("release_training_contract_schema_mismatch")
+    if str(contract.get("contract_checksum") or "") != _contract_payload_checksum(unsigned_contract):
+        raise ValueError("release_training_contract_checksum_mismatch")
+    snapshot = dict(dataset_snapshot or {})
+    if not snapshot:
+        raise ValueError("release_training_dataset_snapshot_missing")
+    if str(contract.get("dataset_snapshot_id") or "") != str(snapshot.get("snapshot_id") or ""):
+        raise ValueError("release_training_dataset_snapshot_id_mismatch")
+    if str(contract.get("dataset_snapshot_business_date") or "") != str(snapshot.get("business_date") or ""):
+        raise ValueError("release_training_dataset_snapshot_date_mismatch")
+    snapshot_schema = str(snapshot.get("schema_version") or "unspecified")
+    if str(contract.get("dataset_snapshot_schema_version") or "") != snapshot_schema:
+        raise ValueError("release_training_dataset_snapshot_schema_mismatch")
+    if str(contract.get("dataset_snapshot_checksum") or "") != _contract_payload_checksum(snapshot):
+        raise ValueError("release_training_dataset_snapshot_checksum_mismatch")
+    runtime_source_sha = str(os.environ.get("STOCKVISION_SOURCE_SHA") or "").strip().lower()
+    if (
+        len(runtime_source_sha) != 40
+        or any(char not in "0123456789abcdef" for char in runtime_source_sha)
+        or str(contract.get("producer_source_sha") or "").strip().lower() != runtime_source_sha
+    ):
+        raise ValueError("release_training_runtime_source_sha_mismatch")
+    if snapshot_schema == "active8-oof-full-fit-prep-lineage-v2":
+        expected_input_lineage = {
+            "prep_producer_source_sha": str(snapshot.get("producer_source_sha") or "").strip().lower(),
+            "prep_manifest_checksum": str(snapshot.get("manifest_checksum") or "").strip().lower(),
+            "source_manifest_checksum": str(snapshot.get("source_manifest_checksum") or "").strip().lower(),
+            "source_cohort_id": str(snapshot.get("source_cohort_id") or "").strip(),
+            "feature_pool_checksum": str((snapshot.get("feature_pool") or {}).get("artifact_checksum") or "").strip().lower(),
+            "sequence_manifest_checksum": str((snapshot.get("sequence") or {}).get("manifest_checksum") or "").strip().lower(),
+        }
+        if dict(contract.get("input_lineage") or {}) != expected_input_lineage:
+            raise ValueError("release_training_input_lineage_mismatch")
+    return contract
+
+
 def build_model_training_config_attestation(
     model_name: str,
     payload: dict[str, Any],
@@ -732,37 +801,12 @@ def build_model_training_config_attestation(
     if not isinstance(contract, dict):
         raise ValueError("release_training_contract_missing")
 
-    def canonical(value: Any) -> Any:
-        if isinstance(value, dict):
-            return {str(key): canonical(item) for key, item in value.items()}
-        if isinstance(value, (list, tuple, set)):
-            return [canonical(item) for item in value]
-        if isinstance(value, float) and not math.isfinite(value):
-            return "nonfinite:nan" if math.isnan(value) else ("nonfinite:inf" if value > 0 else "nonfinite:-inf")
-        if isinstance(value, (str, int, float, bool)) or value is None:
-            return value
-        return str(value)
-
-    def checksum(value: dict[str, Any]) -> str:
-        raw = json.dumps(
-            canonical(value),
-            ensure_ascii=False,
-            sort_keys=True,
-            separators=(",", ":"),
-            allow_nan=False,
-        ).encode("utf-8")
-        return hashlib.sha256(raw).hexdigest()
-
-    unsigned_contract = {key: value for key, value in contract.items() if key != "contract_checksum"}
-    if contract.get("schema_version") != "active8-release-training-contract-v1":
-        raise ValueError("release_training_contract_schema_mismatch")
-    if str(contract.get("contract_checksum") or "") != checksum(unsigned_contract):
-        raise ValueError("release_training_contract_checksum_mismatch")
+    validate_release_training_dataset_binding(contract, payload.get("dataset_snapshot"))
     model = str(model_name or "").strip()
     model_specs = contract.get("model_specs") if isinstance(contract.get("model_specs"), dict) else {}
     if model not in model_specs or model not in (contract.get("models") or []):
         raise ValueError(f"release_training_model_not_attested:{model}")
-    config = canonical(dict(effective_config or {}))
+    config = _canonical_contract_value(dict(effective_config or {}))
     if not config:
         raise ValueError(f"monthly_training_effective_config_missing:{model}")
     if contract.get("model_profile_schema_version") != "active8-release-model-profiles-v1":
@@ -791,17 +835,20 @@ def build_model_training_config_attestation(
         "model_spec": model_specs[model],
         "model_profile_schema_version": contract["model_profile_schema_version"],
         "model_profile": profile,
-        "model_profile_checksum": checksum(profile),
+        "model_profile_checksum": _contract_payload_checksum(profile),
         "configuration_selection_mode": "single_predeclared_config",
         "selection_trials": 1,
         "pbo_applicability": "not_applicable_without_model_configuration_selection",
         "effective_config": config,
-        "effective_config_checksum": checksum(config),
+        "effective_config_checksum": _contract_payload_checksum(config),
         "producer_source_sha": contract.get("producer_source_sha"),
         "run_date": contract.get("run_date"),
         "dataset_snapshot_id": contract.get("dataset_snapshot_id"),
+        "dataset_snapshot_schema_version": contract.get("dataset_snapshot_schema_version"),
+        "dataset_snapshot_checksum": contract.get("dataset_snapshot_checksum"),
+        "input_lineage": contract.get("input_lineage"),
     }
-    attestation["attestation_checksum"] = checksum(attestation)
+    attestation["attestation_checksum"] = _contract_payload_checksum(attestation)
     return attestation
 
 

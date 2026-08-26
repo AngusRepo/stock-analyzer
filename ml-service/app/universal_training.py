@@ -42,6 +42,7 @@ from .training_policy import (
     ValidationGovernancePolicy,
     build_model_feature_policy_metadata,
     build_model_training_config_attestation,
+    validate_release_training_dataset_binding,
     generated_model_pool_version,
     should_force_artifact_candidate_version,
     should_force_full_feature_pool,
@@ -170,6 +171,7 @@ def validate_immutable_oof_snapshot_for_registration(
     dates: np.ndarray,
     label_known_dates: np.ndarray,
     run_date: str | None,
+    release_training_contract: dict | None,
 ) -> dict:
     """Verify exact point-in-time OOF lineage instead of applying native-prep freshness."""
 
@@ -184,13 +186,16 @@ def validate_immutable_oof_snapshot_for_registration(
         errors.append("immutable_oof_snapshot_feature_semantic_mismatch")
     if snapshot.get("feature_imputation_semantic") != FEATURE_IMPUTATION_SEMANTIC_VERSION:
         errors.append("immutable_oof_snapshot_imputation_semantic_mismatch")
-    runtime_source_sha = str(os.environ.get("STOCKVISION_SOURCE_SHA") or "").strip().lower()
+    input_source_sha = str(snapshot.get("producer_source_sha") or "").strip().lower()
     if (
-        len(runtime_source_sha) != 40
-        or any(char not in "0123456789abcdef" for char in runtime_source_sha)
-        or snapshot.get("producer_source_sha") != runtime_source_sha
+        len(input_source_sha) != 40
+        or any(char not in "0123456789abcdef" for char in input_source_sha)
     ):
         errors.append("immutable_oof_snapshot_source_sha_mismatch")
+    try:
+        validate_release_training_dataset_binding(release_training_contract or {}, snapshot)
+    except ValueError as exc:
+        errors.append(str(exc))
     if len(str(snapshot.get("manifest_checksum") or "")) != 64:
         errors.append("immutable_oof_snapshot_prep_checksum_missing")
     if len(str(snapshot.get("source_manifest_checksum") or "")) != 64:
@@ -1512,6 +1517,7 @@ def train_universal_from_gcs(req: UniversalTrainRequest) -> dict:
             dates=dates_arr,
             label_known_dates=label_known_dates_arr,
             run_date=req.run_date,
+            release_training_contract=req.release_training_contract,
         )
     elif not walk_forward_mode and req.dataset_snapshot:
         prep_freshness = validate_monthly_dataset_snapshot_for_registration(

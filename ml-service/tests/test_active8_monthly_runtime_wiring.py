@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import sys
 from pathlib import Path
 
@@ -21,12 +22,19 @@ from services.active8_release_training_contract import (  # noqa: E402
     validate_model_training_config_attestation,
 )
 
+TEST_SOURCE_SHA = "0123456789abcdef0123456789abcdef01234567"
+os.environ.setdefault("STOCKVISION_SOURCE_SHA", TEST_SOURCE_SHA)
 
-def _contract() -> dict:
+
+def _snapshot() -> dict:
+    return {"business_date": "2026-08-25", "snapshot_id": "snapshot:2026-08-25"}
+
+
+def _contract(snapshot: dict | None = None) -> dict:
     return build_release_training_contract(
         run_date="2026-08-25",
-        dataset_snapshot={"business_date": "2026-08-25", "snapshot_id": "snapshot:2026-08-25"},
-        producer_source_sha="0123456789abcdef0123456789abcdef01234567",
+        dataset_snapshot=snapshot or _snapshot(),
+        producer_source_sha=TEST_SOURCE_SHA,
     )
 
 
@@ -35,6 +43,7 @@ def test_modal_side_attestation_enforces_predeclared_patchtst_profile():
     payload = {
         "candidate_type": "monthly_release",
         "release_training_contract": _contract(),
+        "dataset_snapshot": _snapshot(),
     }
 
     attestation = build_model_training_config_attestation(
@@ -67,7 +76,8 @@ def test_modal_side_attestation_enforces_predeclared_patchtst_profile():
 
 def test_modal_attestation_canonicalizes_nonfinite_estimator_params():
     contract = _contract()
-    payload = {"candidate_type": "monthly_release", "release_training_contract": contract}
+    payload = {"candidate_type": "monthly_release", "release_training_contract": contract,
+               "dataset_snapshot": _snapshot()}
     effective = {
         **contract["model_profiles"]["XGBoost"]["required_effective_config"],
         "estimator_params": {

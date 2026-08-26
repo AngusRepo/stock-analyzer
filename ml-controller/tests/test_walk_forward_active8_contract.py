@@ -573,12 +573,18 @@ def test_full_fit_registry_reads_are_learning_domain_owned():
     assert "LEARNING_D1_CLIENT.query(" in dispatcher
     assert "d1_client.query(" not in dispatcher
 
-def test_full_fit_poll_only_never_dispatches_a_replacement_retrain(monkeypatch):
+def test_full_fit_poll_only_bootstraps_first_receipt_without_replacement(monkeypatch):
     from routers import walk_forward
+    import json
+
+    uploaded = []
 
     class Blob:
         def exists(self):
             return False
+
+        def upload_from_string(self, value, content_type=None):
+            uploaded.append({"value": json.loads(value), "content_type": content_type})
 
     class Bucket:
         def blob(self, _path):
@@ -599,6 +605,14 @@ def test_full_fit_poll_only_never_dispatches_a_replacement_retrain(monkeypatch):
         "build_oof_full_fit_dispatch_plan",
         lambda _manifest: plan,
     )
+    dispatched = []
+
+    async def fake_trigger(payload, request=None, **kwargs):
+        dispatched.append(payload)
+        return {"status": "dispatched", "run_id": "universal-oof-owner"}
+
+    from routers import retrain_trigger
+    monkeypatch.setattr(retrain_trigger, "trigger_universal_retrain", fake_trigger)
 
     result = asyncio.run(walk_forward.dispatch_oof_full_fit_training(
         manifest={"cohort_id": "cohort-v3", "manifest_checksum": "a" * 64},
@@ -608,10 +622,12 @@ def test_full_fit_poll_only_never_dispatches_a_replacement_retrain(monkeypatch):
         allow_new_dispatch=False,
     ))
 
-    assert result["status"] == "blocked"
-    assert result["reason"] == "full_fit_poll_only_receipt_missing"
+    assert result["status"] == "dispatched"
+    assert result["run_id"] == "universal-oof-owner"
     assert result["retry_required"] is True
-    assert result["missing_models"] == ["DLinear"]
+    assert len(dispatched) == 1
+    assert uploaded[0]["value"]["status"] == "dispatched"
+    assert uploaded[0]["value"]["run_id"] == "universal-oof-owner"
 
 def test_dispatch_completed_oof_callback_repairs_registry_without_retraining(monkeypatch):
     from routers import walk_forward

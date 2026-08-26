@@ -1294,22 +1294,17 @@ async def dispatch_oof_full_fit_training(
             )
             return {**plan, **blocked}
 
-    if not allow_new_dispatch:
+    # A durable continuation can be the first observer of a newly-ready OOF
+    # manifest. It may create the initial full-fit receipt; after a receipt/run
+    # exists, poll-only continuations must never dispatch replacement training.
+    if not allow_new_dispatch and receipt.get("run_id"):
         return {
             **plan,
             **receipt,
             "status": "blocked",
-            "reason": (
-                "full_fit_poll_only_terminal_failure"
-                if receipt.get("run_id")
-                else "full_fit_poll_only_receipt_missing"
-            ),
-            "missing_models": (
-                missing
-                if receipt.get("run_id")
-                else sorted(plan["release_models"])
-            ),
-            "training_failed_models": training_failed if receipt.get("run_id") else [],
+            "reason": "full_fit_poll_only_terminal_failure",
+            "missing_models": missing,
+            "training_failed_models": training_failed,
             "retry_required": True,
             "receipt_path": receipt_path,
         }

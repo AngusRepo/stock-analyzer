@@ -83,3 +83,23 @@ def test_fixed_config_attestation_is_model_specific_and_immutable():
     tampered["effective_config"]["max_steps"] = 30
     with pytest.raises(ValueError, match="attestation_checksum_mismatch"):
         validate_model_training_config_attestation(tampered, expected_model_name="PatchTST")
+
+
+def test_nonfinite_estimator_params_are_canonicalized_before_attestation():
+    attestation = build_model_training_config_attestation(
+        contract=_contract(),
+        model_name="XGBoost",
+        effective_config={
+            **model_profile("XGBoost")["required_effective_config"],
+            "estimator_params": {
+                **model_profile("XGBoost")["required_effective_config"]["estimator_params"],
+                "missing": float("nan"),
+                "max_delta_step": float("inf"),
+            },
+        },
+    )
+
+    params = attestation["effective_config"]["estimator_params"]
+    assert params["missing"] == "nonfinite:nan"
+    assert params["max_delta_step"] == "nonfinite:inf"
+    assert validate_model_training_config_attestation(attestation, expected_model_name="XGBoost") == attestation

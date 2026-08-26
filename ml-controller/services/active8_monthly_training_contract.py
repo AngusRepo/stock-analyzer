@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 from typing import Any, Iterable
 
 from .active8_monthly_model_profiles import (
@@ -50,6 +51,8 @@ def _json_safe(value: Any) -> Any:
         return {str(key): _json_safe(item) for key, item in value.items()}
     if isinstance(value, (list, tuple, set)):
         return [_json_safe(item) for item in value]
+    if isinstance(value, float) and not math.isfinite(value):
+        return "nonfinite:nan" if math.isnan(value) else ("nonfinite:inf" if value > 0 else "nonfinite:-inf")
     if isinstance(value, (str, int, float, bool)) or value is None:
         return value
     return str(value)

@@ -18,6 +18,7 @@ from services.active8_monthly_training_contract import (  # noqa: E402
     MONTHLY_ARTIFACT_LIFECYCLE_TARGETS,
     MONTHLY_TRAIN_GROUPS,
     build_monthly_training_contract,
+    validate_model_training_config_attestation,
 )
 
 
@@ -62,6 +63,27 @@ def test_modal_side_attestation_enforces_predeclared_patchtst_profile():
     invalid["max_steps"] = 30
     with pytest.raises(ValueError, match="profile_value_mismatch"):
         build_model_training_config_attestation("PatchTST", payload, invalid)
+
+
+def test_modal_attestation_canonicalizes_nonfinite_estimator_params():
+    contract = _contract()
+    payload = {"candidate_type": "monthly_release", "monthly_training_contract": contract}
+    effective = {
+        **contract["model_profiles"]["XGBoost"]["required_effective_config"],
+        "estimator_params": {
+            **contract["model_profiles"]["XGBoost"]["required_effective_config"]["estimator_params"],
+            "missing": float("nan"),
+            "max_delta_step": float("-inf"),
+        },
+    }
+
+    attestation = build_model_training_config_attestation("XGBoost", payload, effective)
+
+    params = attestation["effective_config"]["estimator_params"]
+    assert params["missing"] == "nonfinite:nan"
+    assert params["max_delta_step"] == "nonfinite:-inf"
+    json.dumps(attestation, allow_nan=False)
+    assert validate_model_training_config_attestation(attestation, expected_model_name="XGBoost") == attestation
 
 
 def test_all_neural_monthly_profiles_require_deterministic_seed_and_correct_accelerator():

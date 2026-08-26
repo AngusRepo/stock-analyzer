@@ -11,7 +11,6 @@ from services.compute_efficiency_contract import (  # noqa: E402
     build_compute_efficiency_report,
     build_compute_efficiency_report_from_events,
     build_compute_profile_pair,
-    build_monthly_retrain_stage_timing_report,
     normalize_compute_profile,
     validate_compute_efficiency_report,
 )
@@ -541,72 +540,3 @@ def test_build_compute_efficiency_report_from_events_blocks_quality_regression()
 
     assert report["decision"] == "BLOCK_QUALITY_REGRESSION"
     assert report["quality_gates"]["feature_spec_preserved"]["passed"] is False
-
-
-def test_monthly_stage_timing_flags_8103_second_regression_and_preserves_required_stages():
-    report = build_monthly_retrain_stage_timing_report(
-        run_id="monthly-2026-05-17",
-        generated_at="2026-05-18T00:00:00Z",
-        stages={
-            "feature_selection": 4194.8,
-            "optuna_k_sweep": 1014.3,
-            "target_permutation": 758.6,
-            "signal_sanity_gate": 478.7,
-            "tree_models": 862.0,
-            "dlinear": 0.0,
-            "patchtst": 506.2,
-            "l3_artifact_registry": 0.0,
-            "shap_audit": 288.4,
-        },
-        baseline_stages={
-            "feature_selection": 2571.1,
-            "optuna_k_sweep": 1014.3,
-            "target_permutation": 758.6,
-            "signal_sanity_gate": 478.7,
-            "tree_models": 862.0,
-            "dlinear": 0.0,
-            "patchtst": 506.2,
-            "l3_artifact_registry": 0.0,
-            "shap_audit": 288.4,
-        },
-    )
-
-    assert report["status"] == "warn"
-    assert report["severity"] == "warn"
-    assert report["total_sec"] == 8103.0
-    assert report["reason"] == "monthly_retrain_runtime_regression"
-    assert "feature_selection" in report["regressed_stages"]
-    assert report["missing_required_stages"] == []
-    assert report["quality_principle"].startswith("timing optimization cannot reduce feature count")
-
-
-def test_monthly_stage_timing_accepts_artifact_lifecycle_alias_for_l3_registry():
-    report = build_monthly_retrain_stage_timing_report(
-        run_id="monthly-artifact-lifecycle",
-        stages={
-            "feature_selection": 100.0,
-            "optuna_k_sweep": 20.0,
-            "target_permutation": 20.0,
-            "signal_sanity_gate": 20.0,
-            "tree_models": 50.0,
-            "dlinear": 10.0,
-            "patchtst": 10.0,
-            "artifact_lifecycle": {"elapsed_s": 33.3},
-            "shap_audit": 5.0,
-        },
-    )
-
-    l3_row = next(row for row in report["stages"] if row["stage"] == "l3_artifact_registry")
-    assert report["missing_required_stages"] == []
-    assert l3_row["seconds"] == 33.3
-
-
-def test_monthly_stage_timing_fails_when_required_stage_is_missing():
-    report = build_monthly_retrain_stage_timing_report(
-        run_id="monthly-missing-stage",
-        stages={"feature_selection": 10.0},
-    )
-
-    assert report["status"] == "fail"
-    assert report["severity"] == "error"
-    assert "optuna_k_sweep" in report["missing_required_stages"]

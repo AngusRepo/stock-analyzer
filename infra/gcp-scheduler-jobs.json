@@ -30,7 +30,8 @@
     "cleanup-dlq-replay",
     "d1-evidence-scrub",
     "legacy-evidence-migration",
-    "monthly-s12-smcvwap-calibration"
+    "monthly-s12-smcvwap-calibration",
+    "monthly-retrain"
   ],
   "jobs": [
     { "id": "intraday-check", "schedule": "* 1-4 * * 1-5", "task": "intraday-check", "description": "TW 09:00-12:59 intraday paper trading heartbeat" },
@@ -86,7 +87,7 @@
     { "id": "monthly-optuna", "schedule": "first saturday of month 16:00", "timeZone": "Asia/Taipei", "task": "monthly-optuna", "query": "sync=1", "description": "Monthly first Saturday TW 16:00 Optuna research sweep" },
 
     { "id": "monthly-strategy-mining", "schedule": "first saturday of month 10:00", "timeZone": "Asia/Taipei", "task": "monthly-strategy-mining", "query": "sync=1&persist=1", "description": "Monthly first Saturday TW 10:00 pymoo NSGA-III + novelty strategy mining preflight/research ledger" },
-    { "id": "active8-oof-monthly", "schedule": "first sunday of month 02:00", "timeZone": "Asia/Taipei", "task": "active8-oof-monthly", "query": "sync=1", "description": "Monthly first Sunday TW 02:00 canonical immutable OOF cohort, eight-model full-fit release, validation, and atomic promotion lifecycle" },
+    { "id": "active8-oof-monthly", "schedule": "first sunday of month 02:00", "timeZone": "Asia/Taipei", "task": "active8-oof-monthly", "query": "sync=1", "legacyIds": ["monthly-retrain"], "description": "Monthly first Sunday TW 02:00 canonical immutable OOF cohort, eight-model full-fit release, validation, and atomic promotion lifecycle" },
     { "id": "optuna-queue", "schedule": "0 */6 * * *", "task": "optuna-queue", "query": "sync=1", "description": "Every six hours Optuna queue processor" },
     { "id": "monthly-readiness", "schedule": "first sunday of month 12:30", "timeZone": "Asia/Taipei", "task": "monthly-readiness", "query": "sync=1", "description": "Monthly first Sunday TW 12:30 required-job terminal closure and fail-close summary" },
     { "id": "us-leading", "schedule": "30 22 * * 0-4", "task": "us-leading", "description": "TW 06:30 US leading signal" },

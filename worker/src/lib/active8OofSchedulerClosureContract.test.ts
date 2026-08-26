@@ -73,7 +73,7 @@ assert(
   'continuation must stop before training dispatch while the existing cohort manifest is not ready',
 )
 assert(
-  walkForward.includes('active8-oof-lifecycle-receipt-v11-tie-safe') &&
+  walkForward.includes('active8-oof-lifecycle-receipt-v12-feature-source-attested') &&
     walkForward.includes('_oof_lifecycle_receipt_matches_active_policy'),
   'materialization/promotion must invalidate stale receipts when the active PIT policy changes',
 )
@@ -124,8 +124,11 @@ assert(walkForward.indexOf('promoted = True') < walkForward.indexOf('/api/admin/
 
 const monthlyHandoff = retrainFollowup.indexOf('run_walk_forward_oof_lifecycle')
 const monthlyCallback = retrainFollowup.indexOf('scheduler_callback = await _callback_worker_scheduler(payload)')
-assert(monthlyHandoff >= 0 && monthlyHandoff < monthlyCallback, 'monthly retrain must hand off to OOF lifecycle before reporting callback closure')
-assert(retrainFollowup.includes('callback must retry until OOF handoff is durable'), 'failed monthly OOF handoff must keep retrain callback retryable')
+assert(monthlyHandoff >= 0 && monthlyHandoff < monthlyCallback, 'Active-8 full-fit must resume its OOF lifecycle before reporting callback closure')
+assert(
+  retrainFollowup.includes('OOF full-fit completed but lifecycle resume failed') && retrainFollowup.indexOf('raise HTTPException(', monthlyHandoff) < monthlyCallback,
+  'failed Active-8 lifecycle resume must return a retryable non-2xx before scheduler callback closure',
+)
 assert(retrainFollowup.includes('_resume_oof_full_fit_lifecycle') && retrainFollowup.includes('oof_lifecycle_resume_manifest_identity_mismatch'), 'completed OOF full-fit must resume only its checksum-bound lifecycle')
 assert(walkForward.includes('OOF_MATERIALIZE_EXPECTED_COHORT_ID'), 'durable materialization resume must remain bound to the originating cohort')
 assert(walkForward.includes('OOF_MATERIALIZE_DISPATCH_FULL_FIT') && walkForward.includes('if not req.dry_run and req.dispatch_full_fit'), 'full-fit training must require an explicit lifecycle dispatch flag')

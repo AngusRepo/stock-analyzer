@@ -22,22 +22,6 @@ DEFAULT_QUALITY_POLICY = {
     "min_cost_reduction_pct": 5.0,
 }
 
-REQUIRED_MONTHLY_RETRAIN_STAGES = [
-    "feature_selection",
-    "optuna_k_sweep",
-    "target_permutation",
-    "signal_sanity_gate",
-    "tree_models",
-    "dlinear",
-    "patchtst",
-    "l3_artifact_registry",
-    "shap_audit",
-]
-
-MONTHLY_STAGE_ALIASES = {
-    "l3_artifact_registry": ("artifact_lifecycle",),
-}
-
 REQUIRED_QUALITY_EVIDENCE_FIELDS = [
     "ic_delta",
     "precision_at_k_delta",
@@ -695,94 +679,6 @@ def build_compute_profile_pair(
         "optimized_profile": optimized,
         "quality": quality,
         "report": report,
-    }
-
-
-def _stage_seconds(raw: dict[str, Any], stage: str) -> float:
-    value = raw.get(stage)
-    if value is None:
-        for alias in MONTHLY_STAGE_ALIASES.get(stage, ()):
-            value = raw.get(alias)
-            if value is not None:
-                break
-    if isinstance(value, dict):
-        return _num(value.get("sec") or value.get("seconds") or value.get("duration_sec") or value.get("elapsed_s"))
-    return _num(value)
-
-
-def _has_stage(raw: dict[str, Any], stage: str) -> bool:
-    return stage in raw or any(alias in raw for alias in MONTHLY_STAGE_ALIASES.get(stage, ()))
-
-
-def build_monthly_retrain_stage_timing_report(
-    *,
-    run_id: str,
-    stages: dict[str, Any],
-    baseline_stages: dict[str, Any] | None = None,
-    generated_at: str | None = None,
-    regression_wall_sec: float = 7200.0,
-    regression_pct: float = 20.0,
-) -> dict[str, Any]:
-    """Record stage-level timing without accepting lower-quality shortcuts.
-
-    `regression_wall_sec` is intentionally conservative: a monthly retrain over
-    two hours is visible as an ops regression even if it completes.
-    """
-
-    baseline_stages = baseline_stages or {}
-    stage_rows: list[dict[str, Any]] = []
-    total_sec = 0.0
-    missing: list[str] = []
-    regressions: list[str] = []
-
-    for stage in REQUIRED_MONTHLY_RETRAIN_STAGES:
-        seconds = _stage_seconds(stages, stage)
-        if not _has_stage(stages, stage):
-            missing.append(stage)
-        total_sec += seconds
-        baseline_sec = _stage_seconds(baseline_stages, stage)
-        delta_pct = _pct_reduction(baseline_sec, seconds) * -1 if baseline_sec > 0 else None
-        if delta_pct is not None and delta_pct > regression_pct:
-            regressions.append(stage)
-        stage_rows.append(
-            {
-                "stage": stage,
-                "seconds": _round(seconds, 3),
-                "baseline_seconds": _round(baseline_sec, 3) if baseline_sec > 0 else None,
-                "delta_pct": _round(delta_pct, 2) if delta_pct is not None else None,
-            }
-        )
-
-    for row in stage_rows:
-        row["share_pct"] = _round((_num(row["seconds"]) / total_sec) * 100.0, 2) if total_sec > 0 else 0.0
-
-    status = "ok"
-    severity = "info"
-    reasons: list[str] = []
-    if missing:
-        status = "fail"
-        severity = "error"
-        reasons.append("missing_required_stage_timing")
-    if total_sec > regression_wall_sec or regressions:
-        status = "fail" if status == "fail" else "warn"
-        severity = "error" if status == "fail" else "warn"
-        reasons.append("monthly_retrain_runtime_regression")
-
-    return {
-        "schema_version": "monthly-retrain-stage-timing-v1",
-        "generated_at": generated_at,
-        "run_id": str(run_id),
-        "job_name": "monthly-universal-retrain",
-        "status": status,
-        "severity": severity,
-        "reason": "+".join(reasons) if reasons else "stage_timing_within_guard",
-        "total_sec": _round(total_sec, 3),
-        "regression_wall_sec": float(regression_wall_sec),
-        "regression_pct": float(regression_pct),
-        "missing_required_stages": missing,
-        "regressed_stages": regressions,
-        "stages": stage_rows,
-        "quality_principle": "timing optimization cannot reduce feature count, samples, model families, or validation gates",
     }
 
 

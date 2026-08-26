@@ -62,6 +62,8 @@ assert(chain.includes("job.id === 'intraday-check' && job.lastStatus === 'skip'"
 assert(chain.includes("job.lastStatus === 'sleep') return 'out_of_window'") && chain.includes("out_of_window: 'Not in window'"), 'sleep must render as Not in window rather than Not started')
 assert(chainCss.includes('.obs-chain__stage.is-out_of_window'), 'out-of-window stages must retain the neutral chain style')
 assert(chain.includes('Monthly artifact chain'), 'monthly scope should own artifact cadence')
+assert(chain.includes("['active8-oof-monthly']") && !chain.includes("'monthly-retrain':"), 'OBS monthly DAG must show only the canonical Active-8 release owner')
+assert(!chain.includes("dependsOn: 'monthly-retrain'"), 'Active-8 monthly release must not depend on the retired universal retrain scheduler')
 assert(api.includes("statusScope?: 'today' | 'historical_replay' | 'schedule'"), 'scheduler API must expose historical replay scope')
 assert(api.includes('statusRunDate?: string | null'), 'scheduler API must expose the effective replay date')
 assert(chain.includes('function statusLabel') && chain.includes('Historical replay · ${formatReplayDate(job.statusRunDate)} · ${label}'), 'historical replay stages must identify their effective date and runtime status')

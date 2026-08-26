@@ -125,7 +125,7 @@ assert(weeklyS12Calibration?.task === 's12-smcvwap-calibration', 'weekly S12 cal
 assert(weeklyS12Calibration?.schedule === '45 22 * * 6', 'weekly S12 calibration must run Sunday TW 06:45')
 assert(weeklyS12Calibration?.query === 'cadence=auto', 'weekly S12 owner must select monthly cadence after the first Saturday without a request-scoped sync timeout')
 assert(!manifest.jobs.some((job: any) => job.id === 'monthly-s12-smcvwap-calibration'), 'duplicated monthly S12 scheduler must stay retired')
-for (const retired of ['legacy-evidence-migration', 'd1-evidence-scrub', 'cleanup-dlq-replay', 'monthly-s12-smcvwap-calibration']) {
+for (const retired of ['legacy-evidence-migration', 'd1-evidence-scrub', 'cleanup-dlq-replay', 'monthly-s12-smcvwap-calibration', 'monthly-retrain']) {
   assert(manifest.deleteJobIds?.includes(retired), `${retired} must be explicitly allowlisted for deletion`)
 }
 const externalEvidence = manifest.jobs.find((job: any) => job.id === 'external-evidence')
@@ -169,7 +169,7 @@ for (const critical of [
   'linucb-multiplier-replay',
   'monthly-optuna',
   'monthly-strategy-mining',
-  'monthly-retrain',
+  'active8-oof-monthly',
   'optuna-queue',
   'model-ic-full-check',
 ]) {
@@ -182,7 +182,7 @@ assert(
   'source-readiness-probe must stay removed from GCP Scheduler',
 )
 
-for (const monthly of ['monthly-optuna', 'monthly-strategy-mining', 'monthly-retrain']) {
+for (const monthly of ['monthly-optuna', 'monthly-strategy-mining', 'active8-oof-monthly']) {
   const job = manifest.jobs.find((j: any) => j.id === monthly)
   assert(job?.schedule?.startsWith('first '), `${monthly} must use Cloud Scheduler groc syntax; cron DOM/DOW is OR and can over-trigger`)
 }
@@ -192,8 +192,10 @@ assert(monthlyStrategyMining?.task === 'monthly-strategy-mining', 'monthly strat
 assert(monthlyStrategyMining?.timeZone === 'Asia/Taipei', 'monthly strategy mining should use TW wall-clock time')
 assert(monthlyStrategyMining?.query === 'sync=1&persist=1', 'monthly strategy mining must run synchronously and persist research evidence')
 
-const monthlyRetrain = manifest.jobs.find((j: any) => j.id === 'monthly-retrain')
-assert(monthlyRetrain?.timeZone === 'Asia/Taipei', 'monthly retrain should use TW wall-clock time instead of UTC offset gymnastics')
+const active8Monthly = manifest.jobs.find((j: any) => j.id === 'active8-oof-monthly')
+assert(active8Monthly?.timeZone === 'Asia/Taipei', 'Active-8 monthly release should use TW wall-clock time')
+assert(active8Monthly?.task === 'active8-oof-monthly' && active8Monthly?.query === 'sync=1', 'Active-8 monthly release must own the canonical synchronous lifecycle')
+assert(active8Monthly?.legacyIds?.includes('monthly-retrain'), 'Active-8 monthly release must explicitly replace the retired universal retrain scheduler')
 const monthlyOptuna = manifest.jobs.find((j: any) => j.id === 'monthly-optuna')
 assert(monthlyOptuna?.timeZone === 'Asia/Taipei', 'monthly optuna should use TW wall-clock time to match the monthly strategy/retrain sequence')
 assert(cronGcpDomainTasks.includes("runWithLog('obsidian-sync'"), 'obsidian scheduler log key must match manifest id obsidian-sync')

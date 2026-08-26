@@ -133,8 +133,7 @@ const STAGES: Record<string, StageDefinition> = {
   'monthly-strategy-mining': { id: 'monthly-strategy-mining', label: 'Strategy mining', icon: ScanSearch },
   'monthly-readiness': { id: 'monthly-readiness', label: 'Monthly root', icon: Link2 },
   'monthly-optuna': { id: 'monthly-optuna', label: 'Monthly search', icon: Microscope },
-  'monthly-retrain': { id: 'monthly-retrain', label: 'Monthly retrain', icon: BrainCircuit },
-  'active8-oof-monthly': { id: 'active8-oof-monthly', label: 'Active-8 cohort', icon: Layers3, dependsOn: 'monthly-retrain' },
+  'active8-oof-monthly': { id: 'active8-oof-monthly', label: 'Active-8 monthly release', icon: Layers3 },
   'storage-capacity-report': { id: 'storage-capacity-report', label: 'Storage capacity', icon: Database, optional: true },
 }
 
@@ -232,12 +231,11 @@ const SCOPES: ChainScope[] = [
     label: 'Monthly artifact',
     title: 'Monthly artifact chain',
     orchestratorId: 'monthly-readiness',
-    description: '策略挖掘、搜尋、重訓與月度 cohort；promotion evidence 由模型池承接。',
+    description: '策略挖掘、搜尋與 Active-8 immutable OOF 月度 release；promotion evidence 由模型池承接。',
     relation: 'mixed',
     columns: [
       ['monthly-strategy-mining'],
       ['monthly-optuna'],
-      ['monthly-retrain'],
       ['active8-oof-monthly'],
       ['storage-capacity-report'],
     ],

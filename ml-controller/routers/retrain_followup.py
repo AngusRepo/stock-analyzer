@@ -24,12 +24,17 @@ from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, Field
 
 from services import d1_client, retrain_lock
+from services.active8_monthly_training_contract import (
+    ACTIVE8_MODEL_NAMES,
+    reconcile_monthly_artifact_receipts_from_immutable_metadata,
+)
 from services.d1_domain_client import D1DataDomain, client_proxy_for_domain
 from services.model_artifact_registry import (
     backfill_champion_pointers_from_model_pool,
     build_artifact_records_from_retrain_followup,
     hydrate_retrain_followup_artifact_metadata,
     is_production_artifact_model,
+    list_artifacts_by_ids,
     list_artifact_registry,
     upsert_artifact_records,
 )
@@ -557,6 +562,74 @@ async def retrain_followup(payload: RetrainFollowupPayload, request: Request) ->
     }
 
 
+def _reconcile_monthly_completion_payload(
+    payload_dict: dict[str, Any],
+    *,
+    dataset_snapshot: dict[str, Any],
+) -> dict[str, Any]:
+    if (
+        payload_dict.get("is_monthly") is not True
+        or str(payload_dict.get("candidate_type") or "") != "monthly_release"
+    ):
+        return {"attempted": False, "status": "not_applicable"}
+
+    stages = payload_dict.get("stages")
+    if not isinstance(stages, dict):
+        raise ValueError("monthly_completion_reconciliation_stages_invalid")
+    current_completion = stages.get("monthly_model_completion")
+    if isinstance(current_completion, dict) and current_completion.get("status") == "complete":
+        return {"attempted": False, "status": "already_complete"}
+
+    train = stages.get("train") if isinstance(stages.get("train"), dict) else {}
+    registrations = (
+        train.get("artifact_registrations")
+        if isinstance(train.get("artifact_registrations"), dict)
+        else {}
+    )
+    lifecycle = (
+        stages.get("artifact_lifecycle")
+        if isinstance(stages.get("artifact_lifecycle"), dict)
+        else {}
+    )
+    lifecycle_results = (
+        lifecycle.get("results")
+        if isinstance(lifecycle.get("results"), dict)
+        else {}
+    )
+    raw_receipts = {
+        model: registrations.get(model) or lifecycle_results.get(model) or {}
+        for model in ACTIVE8_MODEL_NAMES
+    }
+    completion = reconcile_monthly_artifact_receipts_from_immutable_metadata(
+        contract_stage=(
+            stages.get("monthly_training_contract")
+            if isinstance(stages.get("monthly_training_contract"), dict)
+            else {}
+        ),
+        run_date=str(payload_dict.get("run_date") or ""),
+        dataset_snapshot=dataset_snapshot,
+        raw_receipts=raw_receipts,
+    )
+    completion["reconciliation"] = {
+        "schema_version": "monthly-artifact-completion-reconciliation-v1",
+        "source": "webhook_log+immutable_gcs_metadata+immutable_dataset_snapshot",
+        "original_callback_status": payload_dict.get("status"),
+        "original_callback_error": payload_dict.get("error"),
+        "original_completion": current_completion if isinstance(current_completion, dict) else None,
+        "production_effect": False,
+        "retrain_started": False,
+    }
+    stages["monthly_model_completion"] = completion
+    payload_dict["status"] = "completed"
+    payload_dict["error"] = None
+    return {
+        "attempted": True,
+        "status": "complete",
+        "contract_checksum": completion["contract_checksum"],
+        "models_completed": completion["models_completed"],
+    }
+
+
 @router.post("/retrain/followup/registry-backfill")
 async def retrain_followup_registry_backfill(req: RetrainFollowupRegistryBackfillRequest, request: Request) -> dict[str, Any]:
     """Backfill artifact registry from an existing followup payload only.
@@ -611,6 +684,16 @@ async def retrain_followup_registry_backfill(req: RetrainFollowupRegistryBackfil
         raise HTTPException(status_code=409, detail="followup stages payload is invalid")
     stages["dataset_snapshot"] = snapshot
     payload_dict = hydrate_retrain_followup_artifact_metadata(payload_dict)
+    try:
+        monthly_completion_reconciliation = _reconcile_monthly_completion_payload(
+            payload_dict,
+            dataset_snapshot=snapshot,
+        )
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=409,
+            detail=f"monthly completion reconciliation failed: {exc}",
+        ) from exc
     artifact_records = build_artifact_records_from_retrain_followup(payload_dict)
     result = {
         "attempted": len(artifact_records),
@@ -623,6 +706,97 @@ async def retrain_followup_registry_backfill(req: RetrainFollowupRegistryBackfil
             **upsert_artifact_records(artifact_records),
             "dry_run": False,
         }
+        if monthly_completion_reconciliation.get("status") == "complete":
+            expected_models = set(ACTIVE8_MODEL_NAMES)
+            actual_models = {str(row.get("model_name") or "") for row in artifact_records}
+            if actual_models != expected_models or len(artifact_records) != len(expected_models):
+                raise HTTPException(
+                    status_code=409,
+                    detail="monthly completion reconciliation artifact set mismatch",
+                )
+            if result.get("errors") or result.get("written") != len(expected_models):
+                raise HTTPException(
+                    status_code=502,
+                    detail=f"monthly completion reconciliation registry write failed: {result}",
+                )
+            expected_by_id = {str(row["artifact_id"]): row for row in artifact_records}
+            readback = list_artifacts_by_ids(list(expected_by_id))
+            readback_by_id = {str(row.get("artifact_id") or ""): row for row in readback}
+            mismatches = []
+            for artifact_id, expected in expected_by_id.items():
+                actual = readback_by_id.get(artifact_id) or {}
+                if (
+                    str(actual.get("training_run_id") or "") != run_id
+                    or str(actual.get("checksum") or "") != str(expected.get("checksum") or "")
+                    or str(actual.get("source_run_date") or "") != run_date
+                ):
+                    mismatches.append(artifact_id)
+            if len(readback_by_id) != len(expected_by_id) or mismatches:
+                raise HTTPException(
+                    status_code=502,
+                    detail=(
+                        "monthly completion reconciliation registry readback mismatch:"
+                        + ",".join(sorted(mismatches))
+                    ),
+                )
+
+            receipt_id = f"{run_id}:monthly-artifact-completion-reconciliation-v1"
+            receipt_summary = json.dumps(
+                {
+                    "schema_version": "monthly-artifact-completion-reconciliation-v1",
+                    "source_event_run_id": run_id,
+                    "run_date": run_date,
+                    "dataset_snapshot_id": snapshot.get("snapshot_id"),
+                    "contract_checksum": monthly_completion_reconciliation.get("contract_checksum"),
+                    "artifacts": [
+                        {
+                            "artifact_id": artifact_id,
+                            "checksum": expected_by_id[artifact_id].get("checksum"),
+                            "training_run_id": run_id,
+                        }
+                        for artifact_id in sorted(expected_by_id)
+                    ],
+                    "source_evidence_read_only": True,
+                    "registry_reconciliation_only": True,
+                    "retrain_started": False,
+                    "scheduler_callback": False,
+                    "production_effect": False,
+                },
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            )
+            OPS_D1_CLIENT.execute(
+                """
+                INSERT INTO webhook_log
+                  (idempotency_key, received_at, source, action, payload_summary, status, downstream_notes)
+                VALUES (?, ?, 'ml-controller', 'monthly_artifact_completion_reconciliation', ?, 'completed',
+                        'append_only_no_retrain_no_scheduler_callback')
+                ON CONFLICT(idempotency_key) DO NOTHING
+                """,
+                [receipt_id, datetime.now(timezone.utc).isoformat(), receipt_summary],
+            )
+            receipt_rows = OPS_D1_CLIENT.query(
+                """
+                SELECT payload_summary, status
+                FROM webhook_log
+                WHERE idempotency_key=?
+                  AND action='monthly_artifact_completion_reconciliation'
+                LIMIT 2
+                """,
+                [receipt_id],
+            )
+            if (
+                len(receipt_rows) != 1
+                or str(receipt_rows[0].get("status") or "") != "completed"
+                or str(receipt_rows[0].get("payload_summary") or "") != receipt_summary
+            ):
+                raise HTTPException(
+                    status_code=502,
+                    detail="monthly completion reconciliation receipt readback mismatch",
+                )
+            monthly_completion_reconciliation["receipt_id"] = receipt_id
+            monthly_completion_reconciliation["production_effect"] = False
 
     return {
         "status": "ok",
@@ -635,6 +809,7 @@ async def retrain_followup_registry_backfill(req: RetrainFollowupRegistryBackfil
             "retrain_started": False,
         },
         "artifact_registry": result,
+        "monthly_completion_reconciliation": monthly_completion_reconciliation,
         "dataset_snapshot": {
             "snapshot_id": snapshot.get("snapshot_id"),
             "business_date": snapshot.get("business_date"),

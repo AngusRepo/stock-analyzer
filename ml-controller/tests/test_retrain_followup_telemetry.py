@@ -425,6 +425,96 @@ def test_registry_backfill_only_writes_artifact_registry(monkeypatch):
     assert executed == []
 
 
+def test_monthly_registry_backfill_appends_receipt_after_exact_readback(monkeypatch):
+    run_id = "universal-monthly-owner"
+    run_date = "2026-08-25"
+    snapshot = {
+        "snapshot_id": "snapshot-2026-08-25",
+        "business_date": run_date,
+        "schema_version": "backtest-dataset-v3",
+        "row_count": 2500000,
+        "checksum": "sha256:snapshot",
+        "manifest_errors": [],
+    }
+    source_payload = {
+        "run_id": run_id,
+        "run_date": run_date,
+        "is_monthly": True,
+        "candidate_type": "monthly_release",
+        "candidate_version": "v20260825",
+        "status": "error",
+        "error": "monthly_active8_completion_incomplete",
+        "stages": {},
+    }
+    records = [
+        {
+            "artifact_id": f"{model}:v20260825:monthly_release",
+            "model_name": model,
+            "checksum": f"sha256:{index:064x}",
+            "training_run_id": run_id,
+            "source_run_date": run_date,
+        }
+        for index, model in enumerate(followup_router.ACTIVE8_MODEL_NAMES, start=1)
+    ]
+    receipt_store: dict[str, str] = {}
+
+    def fake_query(sql, params=None, **_kwargs):
+        if "action='retrain_followup'" in sql:
+            return [{"idempotency_key": run_id, "payload_summary": json.dumps(source_payload)}]
+        if "monthly_artifact_completion_reconciliation" in sql:
+            return [{"payload_summary": receipt_store["summary"], "status": "completed"}]
+        raise AssertionError(sql)
+
+    def fake_execute(sql, params=None, **_kwargs):
+        assert "monthly_artifact_completion_reconciliation" in sql
+        receipt_store["summary"] = params[2]
+        return {"meta": {"changes": 1}}
+
+    def fake_reconcile(payload, *, dataset_snapshot):
+        assert dataset_snapshot == snapshot
+        payload["status"] = "completed"
+        payload["error"] = None
+        return {
+            "attempted": True,
+            "status": "complete",
+            "contract_checksum": "a" * 64,
+            "models_completed": 8,
+        }
+
+    monkeypatch.setattr(followup_router, "_valid_service_tokens", lambda: [])
+    monkeypatch.setattr(followup_router, "latest_dataset_snapshot", lambda **_kwargs: snapshot)
+    monkeypatch.setattr(followup_router.OPS_D1_CLIENT, "query", fake_query)
+    monkeypatch.setattr(followup_router.OPS_D1_CLIENT, "execute", fake_execute)
+    monkeypatch.setattr(followup_router, "hydrate_retrain_followup_artifact_metadata", lambda payload: payload)
+    monkeypatch.setattr(followup_router, "_reconcile_monthly_completion_payload", fake_reconcile)
+    monkeypatch.setattr(followup_router, "build_artifact_records_from_retrain_followup", lambda _payload: records)
+    monkeypatch.setattr(
+        followup_router,
+        "upsert_artifact_records",
+        lambda rows: {"attempted": len(rows), "written": len(rows), "errors": []},
+    )
+    monkeypatch.setattr(followup_router, "list_artifacts_by_ids", lambda _ids: records)
+
+    result = asyncio.run(
+        followup_router.retrain_followup_registry_backfill(
+            followup_router.RetrainFollowupRegistryBackfillRequest(run_id=run_id, dry_run=False),
+            _Request(),
+        )
+    )
+
+    reconciliation = result["monthly_completion_reconciliation"]
+    assert reconciliation["status"] == "complete"
+    assert reconciliation["receipt_id"] == (
+        f"{run_id}:monthly-artifact-completion-reconciliation-v1"
+    )
+    persisted = json.loads(receipt_store["summary"])
+    assert persisted["source_evidence_read_only"] is True
+    assert persisted["registry_reconciliation_only"] is True
+    assert persisted["retrain_started"] is False
+    assert persisted["scheduler_callback"] is False
+    assert persisted["production_effect"] is False
+
+
 def test_oof_full_fit_followup_resumes_checksum_bound_lifecycle(monkeypatch):
     from routers import walk_forward
     from services import walk_forward_retrain

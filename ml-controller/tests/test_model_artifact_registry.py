@@ -2935,6 +2935,75 @@ def test_oof_full_fit_registry_uses_lifecycle_owner_and_preserves_child_run_id()
     assert evidence["registration"]["artifact_training_run_id"] == "v20260717-xgboost"
 
 
+def test_monthly_registry_uses_verified_completion_owner_and_preserves_child_run_id():
+    contract_checksum = "a" * 64
+    receipts = {model: {"version": "v20260825"} for model in registry.ACTIVE8_MODEL_NAMES}
+    payload = {
+        "run_id": "universal-monthly-owner",
+        "run_date": "2026-08-25",
+        "is_monthly": True,
+        "candidate_type": "monthly_release",
+        "candidate_version": "v20260825",
+        "status": "completed",
+        "stages": {
+            "monthly_training_contract": {"status": "verified", "checksum": contract_checksum},
+            "monthly_model_completion": {
+                "status": "complete",
+                "models_completed": 8,
+                "models_required": 8,
+                "contract_checksum": contract_checksum,
+                "receipts": receipts,
+            },
+        },
+        "challenger_registrations": {
+            "XGBoost": {
+                "status": "registered",
+                "version": "v20260825",
+                "training_run_id": "v20260825-xgboost",
+                "oos_ic": 0.08,
+                "model_cpcv": {"decision": "PASS", "failed_gates": [], "oos_ic_mean": 0.08},
+            },
+        },
+    }
+
+    records = registry.build_artifact_records_from_retrain_followup(payload)
+
+    assert len(records) == 1
+    assert records[0]["training_run_id"] == "universal-monthly-owner"
+    evidence = json.loads(records[0]["offline_evidence_json"])
+    assert evidence["registration"]["training_run_id"] == "universal-monthly-owner"
+    assert evidence["registration"]["artifact_training_run_id"] == "v20260825-xgboost"
+    assert evidence["registration"]["monthly_model_completion"]["status"] == "complete"
+
+
+def test_monthly_registry_does_not_claim_root_owner_without_complete_receipts():
+    payload = {
+        "run_id": "universal-monthly-owner",
+        "run_date": "2026-08-25",
+        "is_monthly": True,
+        "candidate_type": "monthly_release",
+        "candidate_version": "v20260825",
+        "status": "error",
+        "stages": {
+            "monthly_training_contract": {"status": "verified", "checksum": "a" * 64},
+            "monthly_model_completion": {"status": "error"},
+        },
+        "challenger_registrations": {
+            "XGBoost": {
+                "status": "registered",
+                "version": "v20260825",
+                "training_run_id": "v20260825-xgboost",
+                "oos_ic": 0.08,
+                "model_cpcv": {"decision": "PASS", "failed_gates": [], "oos_ic_mean": 0.08},
+            },
+        },
+    }
+
+    records = registry.build_artifact_records_from_retrain_followup(payload)
+
+    assert records[0]["training_run_id"] == "v20260825-xgboost"
+
+
 def _oof_full_fit_release_row(
     *,
     decision: str = "PASS",

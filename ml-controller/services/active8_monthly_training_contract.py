@@ -269,7 +269,7 @@ def normalize_monthly_raw_artifact_receipt(raw_receipt: dict[str, Any] | None) -
     saved = dict(raw.get("saved") or {})
     metadata = dict(raw.get("metadata") or saved.get("metadata") or {})
     return {
-        "version": raw.get("version") or metadata.get("version"),
+        "version": raw.get("version") or metadata.get("version") or metadata.get("model_pool_version"),
         "artifact_path": raw.get("gcs_path") or raw.get("artifact_path") or saved.get("weights_path") or metadata.get("artifact_path"),
         "metadata_path": raw.get("metadata_path") or saved.get("metadata_path") or metadata.get("metadata_path"),
         "checksum": raw.get("checksum") or saved.get("checksum") or metadata.get("checksum") or metadata.get("artifact_checksum"),
@@ -304,7 +304,8 @@ def validate_monthly_artifact_receipts(
             raise ValueError(f"monthly_artifact_receipt_checksum_invalid:{model}")
         if metadata_checksum != receipt_checksum:
             raise ValueError(f"monthly_artifact_receipt_metadata_checksum_mismatch:{model}")
-        if str(metadata.get("version") or "") != str(receipt["version"]):
+        metadata_version = metadata.get("version") or metadata.get("model_pool_version")
+        if str(metadata_version or "") != str(receipt["version"]):
             raise ValueError(f"monthly_artifact_receipt_metadata_version_mismatch:{model}")
         metadata_artifact_path = str(metadata.get("artifact_path") or "")
         if metadata_artifact_path and metadata_artifact_path != str(receipt["artifact_path"]):
@@ -334,3 +335,46 @@ def validate_monthly_artifact_receipts(
         "contract_checksum": verified["contract_checksum"],
         "receipts": normalized,
     }
+
+
+def reconcile_monthly_artifact_receipts_from_immutable_metadata(
+    *,
+    contract_stage: dict[str, Any],
+    run_date: str,
+    dataset_snapshot: dict[str, Any],
+    raw_receipts: dict[str, dict[str, Any]],
+) -> dict[str, Any]:
+    """Rebuild completion only when immutable metadata recreates the exact contract."""
+
+    stage = dict(contract_stage or {})
+    if stage.get("status") != "verified":
+        raise ValueError("monthly_completion_reconciliation_contract_not_verified")
+    expected_checksum = str(stage.get("checksum") or "").lower()
+    if len(expected_checksum) != 64 or any(char not in "0123456789abcdef" for char in expected_checksum):
+        raise ValueError("monthly_completion_reconciliation_contract_checksum_invalid")
+    if set(raw_receipts) != set(ACTIVE8_MODEL_NAMES):
+        raise ValueError("monthly_completion_reconciliation_model_set_mismatch")
+
+    receipts = {
+        model: normalize_monthly_raw_artifact_receipt(raw_receipts.get(model))
+        for model in ACTIVE8_MODEL_NAMES
+    }
+    producer_source_shas: set[str] = set()
+    for model in ACTIVE8_MODEL_NAMES:
+        metadata = dict(receipts[model].get("metadata") or {})
+        attestation = validate_model_training_config_attestation(
+            metadata.get("model_training_config_attestation"),
+            expected_model_name=model,
+        )
+        producer_source_shas.add(str(attestation.get("producer_source_sha") or ""))
+    if len(producer_source_shas) != 1:
+        raise ValueError("monthly_completion_reconciliation_source_sha_mismatch")
+
+    contract = build_monthly_training_contract(
+        run_date=run_date,
+        dataset_snapshot=dataset_snapshot,
+        producer_source_sha=next(iter(producer_source_shas)),
+    )
+    if contract["contract_checksum"] != expected_checksum:
+        raise ValueError("monthly_completion_reconciliation_contract_checksum_mismatch")
+    return validate_monthly_artifact_receipts(contract=contract, receipts=receipts)

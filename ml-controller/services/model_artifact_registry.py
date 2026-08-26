@@ -8,7 +8,10 @@ from copy import deepcopy
 from datetime import datetime, timezone
 from typing import Any, Callable, Literal
 
-from services.active8_monthly_training_contract import validate_model_training_config_attestation
+from services.active8_monthly_training_contract import (
+    ACTIVE8_MODEL_NAMES,
+    validate_model_training_config_attestation,
+)
 from services.d1_domain_client import D1DataDomain, DomainD1Client, client_for_domain
 from services.evidence_contracts import LABEL_SCHEMA_VERSION
 from services.model_validation_policy import resolve_model_validation_policy
@@ -588,8 +591,29 @@ def _artifact_record_from_registration(
         lifecycle_resume.get("schema_version") == "active8-oof-lifecycle-resume-v1"
         and bool(lifecycle_run_id)
     )
-    if owns_oof_lifecycle:
-        enriched_registration["oof_lifecycle_resume"] = lifecycle_resume
+    stages = _nested_dict(payload_dict.get("stages"))
+    monthly_contract_stage = _nested_dict(stages.get("monthly_training_contract"))
+    monthly_completion_stage = _nested_dict(stages.get("monthly_model_completion"))
+    monthly_contract_checksum = str(monthly_contract_stage.get("checksum") or "").lower()
+    owns_monthly_lifecycle = (
+        payload_dict.get("is_monthly") is True
+        and candidate_type == "monthly_release"
+        and bool(lifecycle_run_id)
+        and monthly_contract_stage.get("status") == "verified"
+        and len(monthly_contract_checksum) == 64
+        and all(char in "0123456789abcdef" for char in monthly_contract_checksum)
+        and monthly_completion_stage.get("status") == "complete"
+        and monthly_completion_stage.get("models_completed") == len(ACTIVE8_MODEL_NAMES)
+        and monthly_completion_stage.get("models_required") == len(ACTIVE8_MODEL_NAMES)
+        and str(monthly_completion_stage.get("contract_checksum") or "").lower() == monthly_contract_checksum
+        and set(_nested_dict(monthly_completion_stage.get("receipts"))) == set(ACTIVE8_MODEL_NAMES)
+    )
+    owns_root_lifecycle = owns_oof_lifecycle or owns_monthly_lifecycle
+    if owns_root_lifecycle:
+        if owns_oof_lifecycle:
+            enriched_registration["oof_lifecycle_resume"] = lifecycle_resume
+        if owns_monthly_lifecycle:
+            enriched_registration["monthly_model_completion"] = monthly_completion_stage
         if child_training_run_id and child_training_run_id != lifecycle_run_id:
             enriched_registration["artifact_training_run_id"] = child_training_run_id
         enriched_registration["training_run_id"] = lifecycle_run_id
@@ -651,7 +675,7 @@ def _artifact_record_from_registration(
         "metadata_path": raw_registration.get("metadata_path") or model_metadata_path(model_name, record_version),
         "training_run_id": (
             lifecycle_run_id
-            if owns_oof_lifecycle
+            if owns_root_lifecycle
             else raw_registration.get("training_run_id")
             or payload_dict.get("training_run_id")
             or payload_dict.get("run_id")

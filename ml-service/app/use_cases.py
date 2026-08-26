@@ -10,9 +10,7 @@ external call sites.
 from .schemas import PredictRequest
 from .prediction_runtime import (
     ARFUpdateRequest,
-    predict_stock,
     predict_stock_v2,
-    retrain_stock,
     update_arf,
 )
 from .universal_training import (
@@ -28,10 +26,8 @@ __all__ = [
     "PredictRequest",
     "UniversalPrepRequest",
     "UniversalTrainRequest",
-    "predict_stock",
     "predict_stock_v2",
     "prep_universal_batch",
-    "retrain_stock",
     "run_shap_audit",
     "train_universal_from_gcs",
     "update_arf",

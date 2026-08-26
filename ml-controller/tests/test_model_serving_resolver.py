@@ -116,6 +116,7 @@ def test_build_pool_from_d1_champion_pointer_serves_production_artifact():
             "candidate_type": "weekly_drift",
             "state": "production",
             "artifact_path": "universal/patchtst/vGood.zip",
+            "checksum": "sha256:" + "a" * 64,
             "metadata_path": "universal/patchtst/metadata_vGood.json",
             "offline_gate_decision": "STRONG_PASS",
             "live_gate_status": "passed",
@@ -164,6 +165,7 @@ def test_gnn_graph_semantic_is_required_by_champion_resolver():
         "candidate_type": "oof_full_fit_release",
         "state": "production",
         "artifact_path": "universal/gnn/v2.pt",
+        "checksum": "sha256:" + "a" * 64,
         "metadata_path": "universal/gnn/metadata_v2.json",
         "offline_gate_decision": "PASS",
         "live_gate_status": "promoted",
@@ -206,6 +208,7 @@ def test_timesfm_production_backfill_is_eligible_only_as_l2_sidecar():
         "candidate_type": "timesfm_l175_l2_feature_release",
         "state": "production",
         "artifact_path": "universal/timesfm/v1.json",
+        "checksum": "sha256:" + "a" * 64,
         "offline_gate_decision": "PRODUCTION_BACKFILL",
         "live_gate_status": "passed",
     }
@@ -255,6 +258,7 @@ def test_d1_champion_blocks_legacy_target_without_retiring_active8_slot():
             "candidate_type": "weekly_drift",
             "state": "production",
             "artifact_path": "universal/xgboost/vLegacy.joblib",
+            "checksum": "sha256:" + "a" * 64,
             "offline_gate_decision": "STRONG_PASS",
             "live_gate_status": "passed",
             "offline_evidence_json": {
@@ -502,6 +506,7 @@ def test_oof_prior_quarantines_stale_fallback_ic_and_reconcile_repairs_pool():
         "candidate_type": "oof_full_fit_release",
         "state": "production",
         "artifact_path": "universal/xgboost/vGood.joblib",
+        "checksum": "sha256:" + "a" * 64,
         "offline_gate_decision": "STRONG_PASS",
         "live_gate_status": "promoted",
         "offline_evidence_json": {
@@ -566,3 +571,70 @@ def test_oof_prior_quarantines_stale_fallback_ic_and_reconcile_repairs_pool():
     assert entry["ic_4w_avg"] is None
     assert entry["weekly_ic"] == []
     assert entry["serving_ic_prior"]["source"] == "candidate_scoped_purged_oof_model_cpcv"
+
+
+def test_champion_projection_requires_and_reconciles_checksum():
+    checksum = "sha256:" + "c" * 64
+    artifact = {
+        "artifact_id": "LightGBM:vGood:oof_full_fit_release",
+        "model_name": "LightGBM",
+        "version": "vGood",
+        "candidate_type": "oof_full_fit_release",
+        "state": "production",
+        "artifact_path": "universal/lightgbm/vGood.joblib",
+        "metadata_path": "universal/lightgbm/metadata_vGood.json",
+        "offline_gate_decision": "PASS",
+        "checksum": checksum,
+        "offline_evidence_json": {
+            "registration": {
+                "metadata": {
+                    "target_semantic_version": resolver.LABEL_SCHEMA_VERSION,
+                    "feature_semantic_version": resolver.FORMAL_FEATURE_SEMANTIC_VERSION,
+                }
+            }
+        },
+    }
+    pointer = {
+        "model_name": "LightGBM",
+        "champion_version": "vGood",
+        "champion_artifact_id": artifact["artifact_id"],
+    }
+
+    champion_pool = resolver.build_pool_from_champion_pointers(
+        pointers=[pointer],
+        artifacts=[artifact],
+        fallback_pool=_fallback_pool(),
+        required_models=("LightGBM",),
+        sidecar_models=(),
+    )
+    champion = champion_pool["models"]["LightGBM"]
+    assert champion["status"] == "active"
+    assert champion["checksum"] == checksum
+
+    current = {
+        "models": {
+            "LightGBM": {
+                "status": "active",
+                "version": "vGood",
+                "serving_artifact_id": artifact["artifact_id"],
+            }
+        }
+    }
+    plan = resolver.build_model_pool_reconcile_plan(
+        model_pool=current, champion_pool=champion_pool, model_names=("LightGBM",)
+    )
+    assert plan["actions"][0]["patch"]["checksum"] == checksum
+    repaired = resolver.apply_model_pool_reconcile_plan(model_pool=current, plan=plan)
+    assert repaired["models"]["LightGBM"]["checksum"] == checksum
+
+    artifact_without_checksum = dict(artifact)
+    artifact_without_checksum.pop("checksum")
+    blocked = resolver.build_pool_from_champion_pointers(
+        pointers=[pointer],
+        artifacts=[artifact_without_checksum],
+        fallback_pool=_fallback_pool(),
+        required_models=("LightGBM",),
+        sidecar_models=(),
+    )["models"]["LightGBM"]
+    assert blocked["serving_eligible"] is False
+    assert blocked["serving_block_reason"] == "artifact_checksum_missing_or_invalid"

@@ -3,6 +3,7 @@ from __future__ import annotations
 import copy
 import json
 import os
+import re
 from datetime import datetime, timezone
 from typing import Any
 
@@ -101,6 +102,21 @@ def _artifact_metadata(artifact: dict[str, Any] | None) -> dict[str, Any]:
     offline = _json_obj(source.get("offline_evidence_json"))
     registration = _json_obj(offline.get("registration"))
     return _json_obj(registration.get("metadata"))
+
+
+def _artifact_checksum(artifact: dict[str, Any] | None) -> str | None:
+    source = artifact or {}
+    metadata = _artifact_metadata(source)
+    offline = _json_obj(source.get("offline_evidence_json"))
+    registration = _json_obj(offline.get("registration"))
+    raw = (
+        source.get("checksum")
+        or registration.get("checksum")
+        or metadata.get("artifact_checksum")
+        or metadata.get("checksum")
+    )
+    checksum = str(raw or "").strip().lower()
+    return checksum if re.fullmatch(r"sha256:[0-9a-f]{64}", checksum) else None
 
 
 def _positive_int(value: Any) -> int | None:
@@ -207,6 +223,8 @@ def _artifact_block_reason(
     actual_ext = artifact_path.rsplit(".", 1)[-1].lower() if "." in artifact_path else ""
     if expected_ext and actual_ext != expected_ext:
         return f"artifact_extension_{actual_ext or 'missing'}_expected_{expected_ext}"
+    if _artifact_checksum(artifact) is None:
+        return "artifact_checksum_missing_or_invalid"
     if model_name in DIRECT_ALPHA_MODELS:
         metadata = _artifact_metadata(artifact)
         target_semantic = str(metadata.get("target_semantic_version") or "").strip()
@@ -408,6 +426,7 @@ def build_pool_from_champion_pointers(
             artifact_metadata = _artifact_metadata(artifact)
             entry["gcs_path"] = str(artifact.get("artifact_path") or _default_artifact_path(model_name, version))
             entry["metadata_path"] = str(artifact.get("metadata_path") or _default_metadata_path(model_name, version))
+            entry["checksum"] = _artifact_checksum(artifact)
             entry["candidate_type"] = artifact.get("candidate_type")
             entry["offline_gate_decision"] = artifact.get("offline_gate_decision")
             entry["live_gate_status"] = artifact.get("live_gate_status")
@@ -492,6 +511,7 @@ def build_model_pool_reconcile_plan(
                     "status",
                     "gcs_path",
                     "metadata_path",
+                    "checksum",
                     "serving_owner",
                     "serving_artifact_id",
                     "serving_block_reason",
@@ -531,6 +551,7 @@ def build_model_pool_reconcile_plan(
             "status",
             "gcs_path",
             "metadata_path",
+            "checksum",
             "serving_owner",
             "serving_artifact_id",
             "serving_block_reason",

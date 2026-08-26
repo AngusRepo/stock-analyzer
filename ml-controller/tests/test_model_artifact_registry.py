@@ -453,7 +453,7 @@ def test_model_pool_release_writer_syncs_artifact_metadata_evidence():
             "feature_count": 148,
             "sample_count": 558270,
             "trained_at": "2026-06-24T06:24:13Z",
-            "artifact_checksum": "sha256:l175",
+            "artifact_checksum": "sha256:" + "a" * 64,
             "training_manifest_path": "universal/manifests/v20260624_l175-lightgbm.json",
             "prep_lineage": {"feature_count": 148},
             "feature_policy": {"feature_policy_type": "formal137_timesfm_l175_feature_release"},
@@ -2599,6 +2599,7 @@ def test_apply_promoted_artifact_to_model_pool_moves_matching_challenger_to_acti
             "version": "vNew",
             "candidate_type": "weekly_drift",
             "artifact_path": "universal/patchtst/vNew.zip",
+            "checksum": "sha256:" + "a" * 64,
             "metadata": {
                 "target_semantic_version": registry.LABEL_SCHEMA_VERSION,
                 "seq_len": 512,
@@ -2637,6 +2638,7 @@ def test_apply_promoted_oof_uncertain_recency_uses_degraded_serving_weight():
         "version": "vNew",
         "candidate_type": "oof_full_fit_release",
         "artifact_path": "universal/patchtst/vNew.zip",
+        "checksum": "sha256:" + "a" * 64,
         "metadata": {
             "target_semantic_version": registry.LABEL_SCHEMA_VERSION,
             "seq_len": 512,
@@ -2717,6 +2719,7 @@ def test_model_pool_release_writer_dry_run_does_not_mutate_pool():
             "version": "vNew",
             "candidate_type": "monthly_release",
             "artifact_path": "universal/dlinear/vNew.pt",
+            "checksum": "sha256:" + "a" * 64,
             "metadata": {
                 "target_semantic_version": registry.LABEL_SCHEMA_VERSION,
                 "seq_len": 512,
@@ -2754,6 +2757,7 @@ def test_model_pool_release_writer_confirm_mutates_pool():
             "version": "vNew",
             "candidate_type": "monthly_release",
             "artifact_path": "universal/dlinear/vNew.pt",
+            "checksum": "sha256:" + "a" * 64,
             "metadata": {
                 "target_semantic_version": registry.LABEL_SCHEMA_VERSION,
                 "seq_len": 512,
@@ -3177,6 +3181,7 @@ def test_oof_promotion_quarantines_previous_version_ic_and_sets_prior():
         "version": "vNew",
         "candidate_type": "oof_full_fit_release",
         "artifact_path": "universal/lightgbm/vNew.joblib",
+        "checksum": "sha256:" + "a" * 64,
         "offline_gate_decision": "STRONG_PASS",
         "offline_evidence_json": {
             "registration": {
@@ -3205,3 +3210,64 @@ def test_oof_promotion_quarantines_previous_version_ic_and_sets_prior():
     retired = entry["retired_versions"][-1]
     assert retired["rolling_ic_at_retire"] == -0.08
     assert retired["weekly_ic_at_retire"] == [-0.08]
+
+
+def test_model_pool_release_writer_rejects_missing_or_invalid_checksum():
+    pool = {"models": {"LightGBM": {"version": "vOld", "status": "active"}}}
+    artifact = {
+        "artifact_id": "LightGBM:vNew:monthly_release",
+        "model_name": "LightGBM",
+        "version": "vNew",
+        "candidate_type": "monthly_release",
+        "artifact_path": "universal/lightgbm/vNew.joblib",
+    }
+
+    with pytest.raises(RuntimeError, match="artifact_integrity_checksum_missing"):
+        registry.run_model_pool_release_writer(pool, artifact, reason="missing_checksum", confirm=False)
+
+    artifact["checksum"] = "sha256:not-a-real-checksum"
+    with pytest.raises(RuntimeError, match="artifact_integrity_checksum_invalid"):
+        registry.run_model_pool_release_writer(pool, artifact, reason="invalid_checksum", confirm=False)
+
+
+def test_same_champion_identity_repair_preserves_original_promotion_receipt(monkeypatch):
+    old_promoted_at = "2026-07-19T13:16:24+00:00"
+    pool = {
+        "models": {
+            "LightGBM": {
+                "version": "v20260719131624",
+                "status": "active",
+                "serving_artifact_id": "LightGBM:v20260719131624:oof_full_fit_release",
+                "promoted_at": old_promoted_at,
+                "promotion_controller": {
+                    "artifact_id": "LightGBM:v20260719131624:oof_full_fit_release",
+                    "candidate_type": "oof_full_fit_release",
+                    "reason": "original_promotion",
+                    "promoted_at": old_promoted_at,
+                    "source": "model_artifact_registry",
+                },
+            }
+        }
+    }
+    artifact = {
+        "artifact_id": "LightGBM:v20260719131624:oof_full_fit_release",
+        "model_name": "LightGBM",
+        "version": "v20260719131624",
+        "candidate_type": "oof_full_fit_release",
+        "artifact_path": "universal/lightgbm/v20260719131624.joblib",
+        "metadata_path": "universal/lightgbm/metadata_v20260719131624.json",
+        "checksum": "sha256:" + "b" * 64,
+    }
+    monkeypatch.setattr(registry, "_now_iso", lambda: "2026-08-26T05:30:00+00:00")
+
+    registry.apply_promoted_artifact_to_model_pool(
+        pool, artifact, reason="serving_identity_checksum_projection_repair_20260826"
+    )
+
+    entry = pool["models"]["LightGBM"]
+    assert entry["checksum"] == artifact["checksum"]
+    assert entry["promoted_at"] == old_promoted_at
+    assert entry["promotion_controller"]["reason"] == "original_promotion"
+    assert entry["promotion_controller"]["promoted_at"] == old_promoted_at
+    assert entry["last_artifact_evidence"]["artifact_checksum"] == artifact["checksum"]
+    assert pool["last_updated"] == "2026-08-26T05:30:00+00:00"

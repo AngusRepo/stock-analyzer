@@ -1669,6 +1669,23 @@ def _artifact_registration(row: dict[str, Any]) -> dict[str, Any]:
     return _nested_dict(_artifact_offline_evidence(row).get("registration"))
 
 
+def _canonical_artifact_checksum(row: dict[str, Any]) -> str:
+    metadata = _artifact_registration_metadata(row)
+    registration = _artifact_registration(row)
+    raw = (
+        row.get("checksum")
+        or registration.get("checksum")
+        or metadata.get("artifact_checksum")
+        or metadata.get("checksum")
+    )
+    checksum = str(raw or "").strip().lower()
+    if not checksum:
+        raise RuntimeError("artifact_integrity_checksum_missing")
+    if re.fullmatch(r"sha256:[0-9a-f]{64}", checksum) is None:
+        raise RuntimeError("artifact_integrity_checksum_invalid")
+    return checksum
+
+
 def _deep_get(source: Any, keys: set[str]) -> Any:
     if not isinstance(source, dict):
         return None
@@ -2878,9 +2895,19 @@ def apply_promoted_artifact_to_model_pool(
     if not isinstance(entry, dict):
         raise KeyError(f"{model_name} missing from model_pool.json")
 
-    promoted_at = promoted_at or _now_iso()
     old_version = entry.get("version")
+    artifact_id = str(artifact.get("artifact_id") or "").strip()
+    same_serving_identity = (
+        str(old_version or "") == candidate_version
+        and str(entry.get("serving_artifact_id") or "").strip() == artifact_id
+    )
+    existing_promoted_at = str(entry.get("promoted_at") or "").strip()
+    if same_serving_identity and existing_promoted_at:
+        promoted_at = existing_promoted_at
+    else:
+        promoted_at = promoted_at or _now_iso()
     candidate_path = artifact.get("artifact_path") or model_artifact_path(model_name, candidate_version)
+    candidate_checksum = _canonical_artifact_checksum(artifact)
     candidate_registration = _artifact_registration(artifact)
     oof_promotion_evidence = _nested_dict(candidate_registration.get("oof_promotion_evidence"))
     serving_disposition = str(oof_promotion_evidence.get("serving_disposition") or "PASS").upper()
@@ -2927,6 +2954,7 @@ def apply_promoted_artifact_to_model_pool(
     entry["metadata_path"] = artifact.get("metadata_path") or entry.get("metadata_path")
     entry["serving_owner"] = "model_champion_pointers"
     entry["serving_artifact_id"] = artifact.get("artifact_id")
+    entry["checksum"] = candidate_checksum
     entry["offline_gate_decision"] = artifact.get("offline_gate_decision")
     entry["live_gate_status"] = artifact.get("live_gate_status")
     entry["promoted_at"] = promoted_at
@@ -3016,7 +3044,7 @@ def apply_promoted_artifact_to_model_pool(
         "sample_count": metadata.get("sample_count") or registration.get("sample_count"),
         "trained_at": metadata.get("trained_at"),
         "training_manifest_path": metadata.get("training_manifest_path") or artifact.get("training_manifest_path"),
-        "artifact_checksum": metadata.get("artifact_checksum") or artifact.get("checksum"),
+        "artifact_checksum": candidate_checksum,
         "offline_gate_decision": artifact.get("offline_gate_decision"),
         "offline_gate_status": artifact.get("offline_gate_status"),
         "oos_ic": _nested_dict(gate.get("metrics")).get("oos_ic") or registration.get("oos_ic"),
@@ -3039,14 +3067,20 @@ def apply_promoted_artifact_to_model_pool(
 
     entry["serving_ic_prior"] = build_serving_ic_prior(artifact)
 
-    entry["promotion_controller"] = {
-        "artifact_id": artifact.get("artifact_id"),
-        "candidate_type": artifact.get("candidate_type"),
-        "reason": reason,
-        "promoted_at": promoted_at,
-        "source": "model_artifact_registry",
-    }
-    pool["last_updated"] = promoted_at
+    existing_controller = (
+        entry.get("promotion_controller")
+        if isinstance(entry.get("promotion_controller"), dict)
+        else None
+    )
+    if not same_serving_identity or not existing_controller:
+        entry["promotion_controller"] = {
+            "artifact_id": artifact.get("artifact_id"),
+            "candidate_type": artifact.get("candidate_type"),
+            "reason": reason,
+            "promoted_at": promoted_at,
+            "source": "model_artifact_registry",
+        }
+    pool["last_updated"] = _now_iso() if same_serving_identity else promoted_at
     return {
         "model_name": model_name,
         "old_version": old_version,

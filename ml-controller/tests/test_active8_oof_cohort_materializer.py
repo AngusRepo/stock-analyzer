@@ -770,7 +770,7 @@ def test_materialized_index_rejects_policy_upgrade_without_legal_dates():
             batch_fn=lambda *_args, **_kwargs: {"error_count": 0},
         )
 
-def test_v5_formal_manifest_requires_feature_semantic_and_exact_source_sha():
+def test_v5_formal_manifest_separates_immutable_producer_from_runtime(monkeypatch):
     from services.active8_oof_cohort_materializer import (
         ACTIVE8_MODELS, FEATURE_IMPUTATION_SEMANTIC_VERSION, FEATURE_SEMANTIC_VERSION,
         TARGET_SEMANTIC_VERSION, _manifest_checksum, load_verified_oof_manifest,
@@ -811,10 +811,37 @@ def test_v5_formal_manifest_requires_feature_semantic_and_exact_source_sha():
         def __init__(self, value): self.value = value
         def blob(self, _path): return Blob(json.dumps(self.value).encode())
 
+    runtime_source_sha = "1" * 40
+    assert runtime_source_sha != TEST_SOURCE_SHA
+    monkeypatch.setenv("STOCKVISION_SOURCE_SHA", runtime_source_sha)
+
     loaded, _ = load_verified_oof_manifest(
         "manifest.json", bucket=Bucket(manifest), require_formal_lineage=True,
     )
     assert loaded["prep_manifest"]["producer_source_sha"] == TEST_SOURCE_SHA
+
+    with pytest.raises(ValueError, match="formal_feature_lineage_invalid"):
+        load_verified_oof_manifest(
+            "manifest.json",
+            bucket=Bucket(manifest),
+            require_formal_lineage=True,
+            expected_producer_source_sha="2" * 40,
+        )
+
+    loaded, _ = load_verified_oof_manifest(
+        "manifest.json",
+        bucket=Bucket(manifest),
+        require_formal_lineage=True,
+        expected_producer_source_sha=TEST_SOURCE_SHA,
+    )
+    assert loaded["prep_manifest"]["producer_source_sha"] == TEST_SOURCE_SHA
+
+    monkeypatch.delenv("STOCKVISION_SOURCE_SHA")
+    with pytest.raises(RuntimeError, match="stockvision_source_sha_missing_or_invalid"):
+        load_verified_oof_manifest(
+            "manifest.json", bucket=Bucket(manifest), require_formal_lineage=True,
+        )
+    monkeypatch.setenv("STOCKVISION_SOURCE_SHA", runtime_source_sha)
 
     tampered = json.loads(json.dumps(manifest))
     tampered["prep_manifest"]["feature_semantic_version"] = "legacy-full-history-rank"

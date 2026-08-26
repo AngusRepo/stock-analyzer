@@ -588,15 +588,33 @@ def load_verified_oof_manifest(
                 raise ValueError("active8_oof_fold_input_lineage_invalid")
     if require_formal_lineage:
         prep = manifest.get("prep_manifest") or {}
-        expected_source = str(expected_producer_source_sha or _runtime_source_sha()).strip().lower()
+        # The immutable cohort producer and the current materializer runtime are
+        # separate provenance identities. A later release must be able to
+        # consume a checksum-bound historical cohort without pretending that it
+        # produced the cohort. Still require a valid attested runtime, and when
+        # a caller supplies an expected producer require an exact match.
+        _runtime_source_sha()
+        producer_source = str(prep.get("producer_source_sha") or "").strip().lower()
+        expected_source = str(expected_producer_source_sha or "").strip().lower()
+        producer_valid = (
+            len(producer_source) == 40
+            and all(char in "0123456789abcdef" for char in producer_source)
+        )
+        expected_valid = (
+            not expected_source
+            or (
+                len(expected_source) == 40
+                and all(char in "0123456789abcdef" for char in expected_source)
+                and expected_source == producer_source
+            )
+        )
         if (
             manifest.get("schema_version") != "active8-oof-cohort-manifest-v5"
             or prep.get("schema_version") != "active8-canonical-adjusted-prep-v3"
             or prep.get("feature_semantic_version") != FEATURE_SEMANTIC_VERSION
             or prep.get("feature_imputation_semantic") != FEATURE_IMPUTATION_SEMANTIC_VERSION
-            or len(expected_source) != 40
-            or any(char not in "0123456789abcdef" for char in expected_source)
-            or prep.get("producer_source_sha") != expected_source
+            or not producer_valid
+            or not expected_valid
         ):
             raise ValueError("active8_oof_formal_feature_lineage_invalid")
     return manifest, raw

@@ -384,6 +384,7 @@ class OofMaterializeRequest(BaseModel):
     promote: bool = True
     dispatch_full_fit: bool = False
     full_fit_poll_only: bool = False
+    expected_producer_source_sha: str | None = None
     prediction_storage_mode: str = "gcs_indexed_v1"
     lifecycle_cadence: Literal["daily", "weekly", "monthly", "manual"] = "daily"
     forward_extension_manifest_path: str | None = None
@@ -555,13 +556,15 @@ def build_oof_full_fit_dispatch_plan(manifest: dict[str, Any]) -> dict[str, Any]
     feature_consensus = build_oof_full_fit_feature_consensus(manifest)
     feature_lineage_ready = feature_consensus.get("status") == "ready"
     prep = manifest.get("prep_manifest") if isinstance(manifest.get("prep_manifest"), dict) else {}
+    prep_producer_source_sha = str(prep.get("producer_source_sha") or "").strip().lower()
     prep_lineage_ready = (
         manifest.get("schema_version") == "active8-oof-cohort-manifest-v5"
         and prep.get("schema_version") == "active8-canonical-adjusted-prep-v3"
         and len(str(prep.get("manifest_checksum") or "")) == 64
         and prep.get("feature_semantic_version") == OOF_FEATURE_SEMANTIC_VERSION
         and prep.get("feature_imputation_semantic") == OOF_FEATURE_IMPUTATION_SEMANTIC_VERSION
-        and prep.get("producer_source_sha") == _runtime_source_sha()
+        and len(prep_producer_source_sha) == 40
+        and all(char in "0123456789abcdef" for char in prep_producer_source_sha)
         and prep.get("target_semantic_version") == manifest.get("target_semantic_version")
         and float(prep.get("roundtrip_cost_bps") or 0.0) == 18.0
         and int(prep.get("batch_count") or 0) > 0
@@ -777,7 +780,11 @@ def _materialize_completed_oof_release_aliases(
         and target_semantic == ACTIVE8_TARGET_SEMANTIC_VERSION
         and (manifest.get("prep_manifest") or {}).get("feature_semantic_version") == OOF_FEATURE_SEMANTIC_VERSION
         and (manifest.get("prep_manifest") or {}).get("feature_imputation_semantic") == OOF_FEATURE_IMPUTATION_SEMANTIC_VERSION
-        and (manifest.get("prep_manifest") or {}).get("producer_source_sha") == _runtime_source_sha()
+        and len(str((manifest.get("prep_manifest") or {}).get("producer_source_sha") or "")) == 40
+        and all(
+            char in "0123456789abcdef"
+            for char in str((manifest.get("prep_manifest") or {}).get("producer_source_sha") or "").lower()
+        )
         and _chronological_oof_windows(windows)
     )
     if not chronological:
@@ -1328,6 +1335,7 @@ async def dispatch_oof_full_fit_training(
         prebuilt_prep_gcs_prefix=str(manifest.get("prep_gcs_prefix") or "") or None,
         prebuilt_prep_manifest_checksum=str((manifest.get("prep_manifest") or {}).get("manifest_checksum") or "") or None,
         prebuilt_prep_target_semantic_version=target_semantic or None,
+        prebuilt_prep_producer_source_sha=str((manifest.get("prep_manifest") or {}).get("producer_source_sha") or "") or None,
         prebuilt_prep_source_cohort_id=cohort_id,
         prebuilt_prep_source_manifest_checksum=str(manifest.get("manifest_checksum") or "") or None,
         prebuilt_feature_pool_path=str(feature_pool_contract.get("path") or "") or None,
@@ -1489,7 +1497,12 @@ async def materialize_walk_forward_oof(req: OofMaterializeRequest):
         raise HTTPException(status_code=500, detail="GCS unavailable")
     path = req.manifest_path or f"walk_forward/oof_cohorts/{req.cohort_id}/manifest.json"
     try:
-        manifest, _raw = load_verified_oof_manifest(path, bucket=bucket, require_formal_lineage=True)
+        manifest, _raw = load_verified_oof_manifest(
+            path,
+            bucket=bucket,
+            require_formal_lineage=True,
+            expected_producer_source_sha=req.expected_producer_source_sha,
+        )
         if manifest["cohort_id"] != req.cohort_id:
             raise ValueError("requested_cohort_manifest_mismatch")
         persisted = learning_client.query(
@@ -2287,6 +2300,7 @@ def _oof_lifecycle_calendar(
     *,
     bucket: object,
     prep_gcs_prefix: str,
+    expected_producer_source_sha: str | None = None,
 ) -> tuple[list[str], dict[str, object]]:
     import hashlib
     import io
@@ -2312,7 +2326,8 @@ def _oof_lifecycle_calendar(
         or manifest.get("target_semantic_version") != _OOF_TARGET_SEMANTIC_VERSION
         or manifest.get("feature_semantic_version") != OOF_FEATURE_SEMANTIC_VERSION
         or manifest.get("feature_imputation_semantic") != OOF_FEATURE_IMPUTATION_SEMANTIC_VERSION
-        or manifest.get("producer_source_sha") != _runtime_source_sha()
+        or manifest.get("producer_source_sha")
+        != str(expected_producer_source_sha or _runtime_source_sha()).strip().lower()
         or float(manifest.get("roundtrip_cost_bps") or 0.0) != 18.0
         or manifest.get("manifest_checksum") != actual_manifest_checksum
     ):
@@ -2429,7 +2444,12 @@ def _sha256_contract_valid(value: object) -> bool:
     return len(raw) == 64 and all(char in "0123456789abcdef" for char in raw)
 
 
-def _oof_forward_parent_contract(bucket: object, manifest: dict[str, Any]) -> dict[str, Any]:
+def _oof_forward_parent_contract(
+    bucket: object,
+    manifest: dict[str, Any],
+    *,
+    expected_producer_source_sha: str | None = None,
+) -> dict[str, Any]:
     """Verify that the latest fold can serve immutable frozen-forward inference."""
 
     reasons: list[str] = []
@@ -2450,7 +2470,8 @@ def _oof_forward_parent_contract(bucket: object, manifest: dict[str, Any]) -> di
         reasons.append("feature_semantic_mismatch")
     if prep_lineage.get("feature_imputation_semantic") != OOF_FEATURE_IMPUTATION_SEMANTIC_VERSION:
         reasons.append("feature_imputation_semantic_mismatch")
-    if prep_lineage.get("producer_source_sha") != _runtime_source_sha():
+    expected_source = str(expected_producer_source_sha or _runtime_source_sha()).strip().lower()
+    if prep_lineage.get("producer_source_sha") != expected_source:
         reasons.append("producer_source_sha_mismatch")
 
     windows = [row for row in (manifest.get("windows") or []) if isinstance(row, dict)]
@@ -2567,6 +2588,42 @@ def _latest_ready_oof_manifest(bucket: object) -> tuple[str, dict] | None:
     )
 
 
+def _exact_ready_oof_manifest(
+    bucket: object,
+    cohort_id: str,
+) -> tuple[str, dict, str]:
+    normalized = str(cohort_id or "").strip()
+    if not normalized or any(token in normalized for token in ("/", "\\", "..")):
+        raise ValueError("oof_exact_cohort_id_invalid")
+    path = f"walk_forward/oof_cohorts/{normalized}/manifest.json"
+    blob = bucket.blob(path)
+    if not blob.exists():
+        raise ValueError("oof_exact_cohort_manifest_missing")
+    manifest = json.loads(blob.download_as_text())
+    producer_source_sha = str(
+        (manifest.get("prep_manifest") or {}).get("producer_source_sha") or ""
+    ).strip().lower()
+    if (
+        str(manifest.get("cohort_id") or "") != normalized
+        or manifest.get("status") != "ready"
+        or manifest.get("generation_mode") != "purged_oof"
+        or len(producer_source_sha) != 40
+        or any(char not in "0123456789abcdef" for char in producer_source_sha)
+    ):
+        raise ValueError("oof_exact_cohort_manifest_identity_invalid")
+    contract = _oof_forward_parent_contract(
+        bucket,
+        manifest,
+        expected_producer_source_sha=producer_source_sha,
+    )
+    if not contract["ready"]:
+        raise ValueError(
+            "oof_exact_cohort_manifest_contract_invalid:"
+            + ",".join(str(reason) for reason in contract["reasons"])
+        )
+    return path, manifest, producer_source_sha
+
+
 @router.post("/walk_forward/oof/lifecycle")
 async def run_walk_forward_oof_lifecycle(req: OofLifecycleRequest):
     """Idempotent cadence owner for OOF generation, materialization and promotion."""
@@ -2628,11 +2685,22 @@ async def run_walk_forward_oof_lifecycle(req: OofLifecycleRequest):
     bucket = _get_bucket()
     if bucket is None:
         raise HTTPException(status_code=500, detail="GCS unavailable")
-    parent = _latest_ready_oof_manifest(bucket)
+    exact_producer_source_sha: str | None = None
+    if req.continuation_only and req.expected_cohort_id:
+        try:
+            exact_path, exact_manifest, exact_producer_source_sha = _exact_ready_oof_manifest(
+                bucket,
+                req.expected_cohort_id,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        parent = (exact_path, exact_manifest)
+    else:
+        parent = _latest_ready_oof_manifest(bucket)
     parent_manifest = parent[1] if parent is not None else {}
     # Parent owns reusable fold lineage; the calendar and every new fold must
     # use the latest independently verified immutable prep.
-    prep_gcs_prefix = _latest_canonical_prep_prefix(bucket) or ""
+    prep_gcs_prefix = "" if exact_producer_source_sha else (_latest_canonical_prep_prefix(bucket) or "")
     if not prep_gcs_prefix:
         prep_gcs_prefix = str(parent_manifest.get("prep_gcs_prefix") or "").strip().rstrip("/")
     if not prep_gcs_prefix or prep_gcs_prefix == "universal":
@@ -2642,6 +2710,7 @@ async def run_walk_forward_oof_lifecycle(req: OofLifecycleRequest):
             req.end_date,
             bucket=bucket,
             prep_gcs_prefix=prep_gcs_prefix,
+            expected_producer_source_sha=exact_producer_source_sha,
         )
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
@@ -3011,6 +3080,7 @@ async def run_walk_forward_oof_lifecycle(req: OofLifecycleRequest):
         promote=materialization_controls["promote"],
         dispatch_full_fit=materialization_controls["dispatch_full_fit"],
         full_fit_poll_only=req.continuation_only,
+        expected_producer_source_sha=exact_producer_source_sha,
         lifecycle_cadence=cadence,
         forward_extension_manifest_path=forward_extension_manifest_path,
         persist_forward_shadow_coverage=bool(

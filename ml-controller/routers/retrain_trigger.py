@@ -122,6 +122,7 @@ class UniversalRetrainTriggerRequest(BaseModel):
     prebuilt_prep_gcs_prefix: str | None = Field(default=None, description="Immutable canonical prep prefix validated before OOF full-fit.")
     prebuilt_prep_manifest_checksum: str | None = None
     prebuilt_prep_target_semantic_version: str | None = None
+    prebuilt_prep_producer_source_sha: str | None = None
     prebuilt_prep_source_cohort_id: str | None = None
     prebuilt_prep_source_manifest_checksum: str | None = None
     prebuilt_feature_pool_path: str | None = None
@@ -282,6 +283,7 @@ def _verify_prebuilt_canonical_prep(
     prefix: str,
     expected_manifest_checksum: str,
     expected_target_semantic_version: str,
+    expected_producer_source_sha: str,
 ) -> dict[str, object]:
     import hashlib
 
@@ -304,6 +306,11 @@ def _verify_prebuilt_canonical_prep(
         ACTIVE8_ADJUSTED_PREP_SCHEMA_VERSION,
     }:
         raise ValueError("prebuilt_canonical_prep_manifest_mismatch:schema_version")
+    producer_source_sha = str(expected_producer_source_sha or "").strip().lower()
+    if len(producer_source_sha) != 40 or any(
+        char not in "0123456789abcdef" for char in producer_source_sha
+    ):
+        raise ValueError("prebuilt_canonical_prep_producer_source_sha_invalid")
     required = {
         "status": "ready",
         "output_gcs_prefix": normalized_prefix,
@@ -311,7 +318,7 @@ def _verify_prebuilt_canonical_prep(
         "roundtrip_cost_bps": 18.0,
         "feature_semantic_version": ACTIVE8_FEATURE_SEMANTIC_VERSION,
         "feature_imputation_semantic": ACTIVE8_FEATURE_IMPUTATION_SEMANTIC_VERSION,
-        "producer_source_sha": _runtime_source_sha(),
+        "producer_source_sha": producer_source_sha,
     }
     for key, value in required.items():
         if manifest.get(key) != value:
@@ -1025,6 +1032,7 @@ async def _dispatch_prebuilt_oof_full_fit(
         prefix=str(req.prebuilt_prep_gcs_prefix or ""),
         expected_manifest_checksum=str(req.prebuilt_prep_manifest_checksum or ""),
         expected_target_semantic_version=str(req.prebuilt_prep_target_semantic_version or ""),
+        expected_producer_source_sha=str(req.prebuilt_prep_producer_source_sha or ""),
     )
     sequence_verified = _verify_prebuilt_sequence_prep(
         bucket=bucket,

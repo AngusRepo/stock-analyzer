@@ -55,15 +55,25 @@ async def _execute_lifecycle(
         ensure_active8_daily_prep,
     )
 
-    try:
-        prep = await ensure_active8_daily_prep(end_date=end_date, dry_run=False)
-    except Active8PrepDependencyPending as exc:
-        return {
-            "status": "pending",
-            "reason": exc.reason,
-            "dependency_retry_required": True,
-            "prep_lifecycle": exc.evidence,
+    if continuation_only and expected_cohort_id:
+        # Exact continuation reuses the checksum-bound cohort. Rebuilding a
+        # current prep cannot change its evidence and would conflate the
+        # orchestration deploy with the historical ML artifact producer.
+        prep = {
+            "status": "reused_immutable_cohort",
+            "cohort_id": expected_cohort_id,
+            "training_dispatched": False,
         }
+    else:
+        try:
+            prep = await ensure_active8_daily_prep(end_date=end_date, dry_run=False)
+        except Active8PrepDependencyPending as exc:
+            return {
+                "status": "pending",
+                "reason": exc.reason,
+                "dependency_retry_required": True,
+                "prep_lifecycle": exc.evidence,
+            }
     result = await run_walk_forward_oof_lifecycle(OofLifecycleRequest(
         cadence=cadence,
         end_date=end_date,

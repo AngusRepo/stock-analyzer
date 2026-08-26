@@ -375,6 +375,45 @@ def test_weekly_continuation_is_materialization_only_and_remains_retryable(monke
     assert callbacks[0]["metadata"]["continuation_attempt"] == 3
 
 
+def test_exact_continuation_skips_current_prep_rebuild(monkeypatch):
+    from routers import walk_forward
+    from services import active8_prep_lifecycle
+
+    prep_calls = []
+    lifecycle_requests = []
+
+    async def fail_if_prep_called(**kwargs):
+        prep_calls.append(kwargs)
+        raise AssertionError("exact continuation must not rebuild prep")
+
+    async def fake_lifecycle(request):
+        lifecycle_requests.append(request)
+        return {
+            "status": "materialized",
+            "cohort_id": request.expected_cohort_id,
+            "dependency_retry_required": False,
+        }
+
+    monkeypatch.setattr(active8_prep_lifecycle, "ensure_active8_daily_prep", fail_if_prep_called)
+    monkeypatch.setattr(walk_forward, "run_walk_forward_oof_lifecycle", fake_lifecycle)
+
+    result = asyncio.run(oof_materialize_job_main._execute_lifecycle(
+        cadence="monthly",
+        end_date="2026-08-27",
+        promote=False,
+        dispatch_full_fit=True,
+        expected_cohort_id="active8-oof-v9-exact",
+        continuation_attempt=0,
+        continuation_only=True,
+    ))
+
+    assert prep_calls == []
+    assert lifecycle_requests[0].expected_cohort_id == "active8-oof-v9-exact"
+    assert result["prep_lifecycle"]["status"] == "reused_immutable_cohort"
+    assert result["prep_lifecycle"]["cohort_id"] == "active8-oof-v9-exact"
+    assert result["prep_lifecycle"]["training_dispatched"] is False
+
+
 def test_weekly_continuation_fails_closed_after_bounded_attempts(monkeypatch):
     callbacks = []
 

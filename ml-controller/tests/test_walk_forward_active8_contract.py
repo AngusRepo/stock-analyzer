@@ -1136,9 +1136,11 @@ def _retired_completed_oof_release_alias_keeps_valid_base_when_selection_pbo_fai
 def test_oof_lifecycle_uses_latest_prep_instead_of_stale_parent_contract():
     source = (ROOT / "ml-controller" / "routers" / "walk_forward.py").read_text(encoding="utf-8")
 
-    latest_lookup = 'prep_gcs_prefix = _latest_canonical_prep_prefix(bucket) or ""'
+    latest_lookup = '_latest_canonical_prep_prefix(bucket) or ""'
     stale_parent_lookup = 'prep_gcs_prefix = str(parent_manifest.get("prep_gcs_prefix") or "").strip().rstrip("/")'
     assert source.index(latest_lookup) < source.index(stale_parent_lookup)
+    assert 'prep_gcs_prefix = "" if exact_producer_source_sha else' in source
+    assert "expected_producer_source_sha=exact_producer_source_sha" in source
     assert '                prep_gcs_prefix = str(parent_manifest.get("prep_gcs_prefix") or "")' not in source.splitlines()
     assert 'calendar_evidence.get("sequence_gcs_prefix")' in source
 
@@ -1534,6 +1536,56 @@ def _canonical_release_dispatch_manifest(*, dlinear_folds: int) -> dict:
             "per_model_promotion_evidence": evidence,
         },
     }
+
+
+def test_exact_continuation_accepts_checksum_bound_prior_producer(monkeypatch):
+    import json
+
+    from routers import walk_forward
+
+    prior_source = "4" * 40
+    cohort_id = "active8-oof-v9-test"
+    manifest = {
+        "cohort_id": cohort_id,
+        "status": "ready",
+        "generation_mode": "purged_oof",
+        "prep_manifest": {"producer_source_sha": prior_source},
+    }
+    observed = {}
+
+    class Blob:
+        def exists(self):
+            return True
+
+        def download_as_text(self):
+            return json.dumps(manifest)
+
+    class Bucket:
+        def blob(self, path):
+            observed["path"] = path
+            return Blob()
+
+    def verify(_bucket, candidate, *, expected_producer_source_sha=None):
+        observed["source"] = expected_producer_source_sha
+        assert candidate == manifest
+        return {"ready": True, "reasons": []}
+
+    monkeypatch.setattr(walk_forward, "_oof_forward_parent_contract", verify)
+    path, loaded, producer = walk_forward._exact_ready_oof_manifest(Bucket(), cohort_id)
+
+    assert path == f"walk_forward/oof_cohorts/{cohort_id}/manifest.json"
+    assert loaded == manifest
+    assert producer == prior_source
+    assert observed["source"] == prior_source
+
+
+def test_exact_continuation_rejects_path_injection():
+    import pytest
+
+    from routers import walk_forward
+
+    with pytest.raises(ValueError, match="oof_exact_cohort_id_invalid"):
+        walk_forward._exact_ready_oof_manifest(object(), "../manifest")
 
 
 def test_dlinear_requires_five_outer_oof_folds_before_full_fit_dispatch(monkeypatch):

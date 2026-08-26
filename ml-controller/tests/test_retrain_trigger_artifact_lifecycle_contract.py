@@ -203,6 +203,7 @@ def test_prebuilt_canonical_prep_requires_verified_manifest_and_batches():
         prefix=prefix,
         expected_manifest_checksum=checksum,
         expected_target_semantic_version=manifest["target_semantic_version"],
+        expected_producer_source_sha=TEST_SOURCE_SHA,
     )
     assert verified["schema_version"] == "active8-canonical-adjusted-prep-v3"
     assert verified["batch_count"] == 2
@@ -216,6 +217,7 @@ def test_prebuilt_canonical_prep_requires_verified_manifest_and_batches():
             prefix=prefix,
             expected_manifest_checksum=checksum,
             expected_target_semantic_version=manifest["target_semantic_version"],
+            expected_producer_source_sha=TEST_SOURCE_SHA,
         )
 
 def test_prebuilt_sequence_prep_requires_manifest_and_all_batch_checksums():

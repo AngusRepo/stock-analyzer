@@ -519,6 +519,7 @@ def load_verified_oof_manifest(
     *,
     bucket: Any,
     require_formal_lineage: bool = False,
+    expected_producer_source_sha: str | None = None,
 ) -> tuple[dict[str, Any], bytes]:
     raw = bucket.blob(manifest_path).download_as_bytes()
     manifest = json.loads(raw.decode("utf-8"))
@@ -587,12 +588,15 @@ def load_verified_oof_manifest(
                 raise ValueError("active8_oof_fold_input_lineage_invalid")
     if require_formal_lineage:
         prep = manifest.get("prep_manifest") or {}
+        expected_source = str(expected_producer_source_sha or _runtime_source_sha()).strip().lower()
         if (
             manifest.get("schema_version") != "active8-oof-cohort-manifest-v5"
             or prep.get("schema_version") != "active8-canonical-adjusted-prep-v3"
             or prep.get("feature_semantic_version") != FEATURE_SEMANTIC_VERSION
             or prep.get("feature_imputation_semantic") != FEATURE_IMPUTATION_SEMANTIC_VERSION
-            or prep.get("producer_source_sha") != _runtime_source_sha()
+            or len(expected_source) != 40
+            or any(char not in "0123456789abcdef" for char in expected_source)
+            or prep.get("producer_source_sha") != expected_source
         ):
             raise ValueError("active8_oof_formal_feature_lineage_invalid")
     return manifest, raw

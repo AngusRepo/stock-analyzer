@@ -59,6 +59,9 @@ assert(adminControlRoutes.includes('oofExpectedCohortId: expectedCohortId'), 'co
 assert(adminControlRoutes.includes('delaySeconds: 300'), 'continuation retries must be delayed instead of hot-looping')
 assert(updateOrchestrator.includes("if (msg.type === 'active8_oof_continuation')"), 'update queue must consume the durable OOF continuation')
 assert(updateOrchestrator.includes('continuationOnly: true'), 'queue continuation must enforce materialization-only mode')
+assert(updateOrchestrator.includes('planActive8OofContinuationCollisionRetry(summary, attempt)'), 'a singleton Cloud Run collision must be converted into another bounded durable continuation')
+assert(updateOrchestrator.includes('active8_oof_continuation_dispatch_collision'), 'collision recovery must leave an observable scheduler receipt')
+assert(updateOrchestrator.includes('oofContinuationAttempt: collisionRetry.attempt'), 'collision recovery must advance its bounded attempt instead of hot-looping')
 
 assert(walkForward.includes('@router.post("/walk_forward/oof/lifecycle")'), 'controller must expose the shared OOF lifecycle owner')
 assert(walkForward.includes('label_known_dates') && walkForward.includes('known <= cutoff'), 'OOF cohort generation must use row-level immutable label-known dates')

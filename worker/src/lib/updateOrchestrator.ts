@@ -77,6 +77,31 @@ const S12_REPLAY_LEASE_RETRY_BASE_DELAY_SECONDS = 60
 const S12_REPLAY_LEASE_RETRY_MAX_DELAY_SECONDS = 180
 const S12_REPLAY_LEASE_RETRY_MAX_ATTEMPTS = 60
 const ACTIVE8_OOF_CONTINUATION_MAX_ATTEMPTS = 12
+const ACTIVE8_OOF_CONTINUATION_DELAY_SECONDS = 300
+
+export function planActive8OofContinuationCollisionRetry(
+  summary: string,
+  currentAttempt: number,
+): { attempt: number; delaySeconds: number } | null {
+  const normalized = String(summary ?? '').trim()
+  if (
+    !normalized.includes('active8_oof_lifecycle status=pending')
+    || !normalized.includes('reason=materialization_job_active')
+  ) {
+    return null
+  }
+  if (
+    !Number.isInteger(currentAttempt)
+    || currentAttempt < 1
+    || currentAttempt >= ACTIVE8_OOF_CONTINUATION_MAX_ATTEMPTS
+  ) {
+    throw new Error(`active8_oof_continuation_collision_exhausted:${currentAttempt}`)
+  }
+  return {
+    attempt: currentAttempt + 1,
+    delaySeconds: ACTIVE8_OOF_CONTINUATION_DELAY_SECONDS,
+  }
+}
 
 function s12ReplayLeaseRetryDelaySeconds(signalDate: string, attempt: number): number {
   const seed = `${signalDate}:${attempt}`
@@ -3027,11 +3052,33 @@ export async function processUpdateBatch(
     }
     if (!expectedCohortId) throw new Error(`active8_oof_continuation_cohort_missing:${cadence}:${runDate}`)
     const { runActive8OofLifecycle } = await import('./controllerWorkflows')
-    await runActive8OofLifecycle(env, runDate, cadence, {
+    const summary = await runActive8OofLifecycle(env, runDate, cadence, {
       expectedCohortId,
       continuationAttempt: attempt,
       continuationOnly: true,
     })
+    const collisionRetry = planActive8OofContinuationCollisionRetry(summary, attempt)
+    if (collisionRetry) {
+      await env.UPDATE_QUEUE.send({
+        ...msg,
+        runId: msg.runId,
+        oofCadence: cadence,
+        oofExpectedCohortId: expectedCohortId,
+        oofContinuationAttempt: collisionRetry.attempt,
+      }, { delaySeconds: collisionRetry.delaySeconds })
+      await logSchedulerResult(env.KV, `active8-oof-${cadence}`, {
+        status: 'running',
+        summary: [
+          'active8_oof_continuation_dispatch_collision',
+          `cohort=${expectedCohortId}`,
+          `attempt=${collisionRetry.attempt}/${ACTIVE8_OOF_CONTINUATION_MAX_ATTEMPTS}`,
+          `delay_seconds=${collisionRetry.delaySeconds}`,
+        ].join(' '),
+        duration_ms: 0,
+        run_id: msg.runId,
+        run_date: runDate,
+      })
+    }
     return
   }
 

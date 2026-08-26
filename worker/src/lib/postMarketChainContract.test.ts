@@ -166,6 +166,15 @@ assert(
     updateOrchestrator.includes('continuePostScreenerPipeline(env, deps, triggerTime, runId)'),
   'indicator-queue finalization must enqueue and consume post-screener continuation instead of requiring manual pipeline trigger',
 )
+const postScreenerPipelineCatch = postScreenerContinuationBlock.slice(
+  postScreenerContinuationBlock.indexOf("summary: `event-driven chain stopped: pipeline trigger failed"),
+  postScreenerContinuationBlock.indexOf('\n  }\n}', postScreenerContinuationBlock.indexOf("summary: `event-driven chain stopped: pipeline trigger failed")),
+)
+assert(
+  postScreenerPipelineCatch.includes("console.warn('[Queue] Event-driven ML trigger failed:', e)") &&
+    postScreenerPipelineCatch.includes('throw e'),
+  'post-screener continuation must fail closed when pipeline dispatch fails so its durable stage ticket cannot report false success',
+)
 assert(
   !postMarketChain.includes("runRegimeCompute(env)"),
   'post-pipeline chain must not be the primary regime producer; pipeline already consumed market_regime_state by then',

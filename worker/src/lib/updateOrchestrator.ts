@@ -2363,6 +2363,7 @@ async function continuePostScreenerPipeline(
       run_date: triggerTime,
     })
     console.warn('[Queue] Event-driven ML trigger failed:', e)
+    throw e
   }
 }
 

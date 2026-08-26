@@ -54,3 +54,11 @@ def test_cloudflare_deploy_messages_are_single_cli_arguments_on_windows() -> Non
     assert "'--branch', pagesProductionBranch" in pages_wrapper
     assert "wranglerCli, 'pages', 'deploy'" in pages_wrapper
     assert "wranglerCli, 'deploy', '--strict'" in worker_wrapper
+
+
+def test_gcloud_upload_context_is_materialized_before_manifest_membership_check() -> None:
+    deploy = (ROOT / "deploy_ml_controller.sh").read_text(encoding="utf-8")
+
+    assert 'GCLOUD_UPLOAD_CONTEXT="$(cd "$SCRIPT_DIR" && gcloud meta list-files-for-upload' in deploy
+    assert "grep -Fx 'infra/gcp-scheduler-jobs.json' <<<\"$GCLOUD_UPLOAD_CONTEXT\"" in deploy
+    assert "gcloud meta list-files-for-upload 2>/dev/null) | sed" not in deploy

@@ -1201,7 +1201,8 @@ if [ ! -f "$ROOT_DOCKERFILE" ]; then
   echo "❌ ERROR: root Dockerfile not found at $ROOT_DOCKERFILE" >&2
   exit 1
 fi
-if ! (cd "$SCRIPT_DIR" && gcloud meta list-files-for-upload 2>/dev/null) | sed 's#\\#/#g' | grep -Fxq 'infra/gcp-scheduler-jobs.json'; then
+GCLOUD_UPLOAD_CONTEXT="$(cd "$SCRIPT_DIR" && gcloud meta list-files-for-upload 2>/dev/null | sed 's#\\#/#g')"
+if ! grep -Fx 'infra/gcp-scheduler-jobs.json' <<<"$GCLOUD_UPLOAD_CONTEXT" >/dev/null; then
   echo "❌ ERROR: infra/gcp-scheduler-jobs.json is excluded from the gcloud source upload context" >&2
   exit 1
 fi

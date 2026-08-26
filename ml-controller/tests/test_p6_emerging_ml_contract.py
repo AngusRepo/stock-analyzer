@@ -107,7 +107,6 @@ def test_stock_meta_exposes_market_segment_for_train_serve_parity():
 
 
 def test_emerging_ml_result_is_kept_as_research_only_and_never_promoted(monkeypatch):
-    monkeypatch.setattr("services.recommendation_service._is_use_ensemble_v2", lambda: False)
     screener_recs = [
         {
             "date": "2026-04-30",
@@ -141,6 +140,15 @@ def test_emerging_ml_result_is_kept_as_research_only_and_never_promoted(monkeypa
             "confidence": 0.95,
             "forecast_pct": 0.08,
             "models": {"XGBoost": {"direction": "up"}},
+            "ensemble_v2": {
+                "signal": "BUY",
+                "confidence": 0.95,
+                "forecast_pct": 0.08,
+                "signal_source": "active8_ensemble_artifact",
+                "probability_positive_net_return": 0.95,
+                "artifact_checksum": "f" * 64,
+                "validation": {"decision": "PASS"},
+            },
         }
     }
 
@@ -182,7 +190,6 @@ def test_prediction_forecast_data_preserves_market_segment_metadata(monkeypatch)
 
     monkeypatch.setattr("services.recommendation_service._predictions_batch_execute", fake_batch)
     monkeypatch.setattr("services.recommendation_service.d1_client.query", fake_query)
-    monkeypatch.setattr("services.recommendation_service._is_use_ensemble_v2", lambda: False)
 
     write_predictions_to_d1(
         {
@@ -195,6 +202,15 @@ def test_prediction_forecast_data_preserves_market_segment_metadata(monkeypatch)
                 "target2": 120.0,
                 "feature_version": "v2",
                 "rank_scores": {"XGBoost": 0.71},
+                "ensemble_v2": {
+                    "signal": "BUY",
+                    "confidence": 0.9,
+                    "forecast_pct": 0.08,
+                    "signal_source": "active8_ensemble_artifact",
+                    "probability_positive_net_return": 0.9,
+                    "artifact_checksum": "1" * 64,
+                    "validation": {"decision": "PASS"},
+                },
                 "stock_meta": {
                     "market_segment": "EMERGING",
                     "recommendation_lane": "emerging_watchlist",

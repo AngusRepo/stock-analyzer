@@ -28,7 +28,6 @@ from .models import (
     run_xgboost, run_extra_trees, run_lightgbm,
     run_garch_volatility,
 )
-from .ensemble import weighted_vote
 from .linucb_bandit import linucb_select, load_bandit, build_context, compute_dynamic_alpha
 from .arf_aggregator import (
     build_arf_features, load_arf, save_arf, apply_arf_correction, ARF_STATE_DIR,
@@ -399,21 +398,16 @@ def _check_anomaly(X: np.ndarray, X_latest: np.ndarray,
         return False, 0.0
 
 
-def predict_stock(req: PredictRequest) -> dict:
-    """Prediction core logic without auth checks."""
-    from .prediction_runtime import predict_stock as _predict_stock
 
-    return _predict_stock(req)
 
-@app.post("/predict")
 async def predict_endpoint(req: PredictRequest, request: Request):
     """Compatibility endpoint. Production prediction is v2-only."""
     await verify_service_token(request)
     return predict_stock_v2(req)
 
 
-# 2.0 predict path: regression models + IC-weighted `score_to_signal`.
-# Shared logic should keep converging toward `prediction_runtime.py`.
+# Prediction endpoints return base-model evidence only; the Controller owns
+# cross-sectional normalization and the immutable Active-8 ensemble decision.
 
 _MODEL_NAMES_V2 = [
     "LightGBM",
@@ -428,12 +422,7 @@ _MODEL_NAMES_V2 = [
 
 
 def predict_stock_v2(req: PredictRequest) -> dict:
-    """2.0 predict path using regression models from GCS and `score_to_signal()`."""
-    # Differences from predict_stock (1.0):
-    # - target_col="target_rank" instead of "target_dir"
-    # - loads universal regression models (stock_id=0)
-    # - uses `.predict()` score output and `score_to_signal()`
-    # - no per-stock retrain fallback
+    """Return governed base-model evidence for Controller aggregation."""
     from .prediction_runtime import predict_stock_v2 as _predict_stock_v2
 
     return _predict_stock_v2(req)
@@ -443,23 +432,6 @@ async def predict_v2_endpoint(req: PredictRequest, request: Request):
     """HTTP wrapper for 2.0 predict."""
     await verify_service_token(request)
     return predict_stock_v2(req)
-
-
-def retrain_stock(req: PredictRequest) -> dict:
-    """Retrain core logic without auth checks."""
-    if len(req.prices) < 60:
-        raise ValueError("樣本少於 60 筆資料，無法進行 retrain")
-
-    from .prediction_runtime import retrain_stock as _retrain_stock
-
-    return _retrain_stock(req)
-
-@app.post("/retrain")
-
-async def retrain_endpoint(req: PredictRequest, request: Request):
-    """HTTP wrapper that verifies auth then delegates to `retrain_stock()`."""
-    await verify_service_token(request)
-    return retrain_stock(req)
 
 
 # Universal model retrain flow:

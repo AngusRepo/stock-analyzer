@@ -502,20 +502,42 @@ def build_oof_full_fit_dispatch_plan(manifest: dict[str, Any]) -> dict[str, Any]
         if isinstance(aggregate.get("per_model_promotion_evidence"), dict)
         else {}
     )
-    requested = [str(name) for name in (aggregate.get("full_fit_eligible_models") or [])]
-    unknown = sorted(set(requested) - _ACTIVE8_FULL_FIT_MODELS)
-    eligible = [
-        name for name in requested
+    release_models = sorted(_ACTIVE8_FULL_FIT_MODELS)
+    requested_promotion_models = sorted([
+        str(name) for name in (aggregate.get("full_fit_eligible_models") or [])
+    ])
+    unknown = sorted(set(requested_promotion_models) - _ACTIVE8_FULL_FIT_MODELS)
+    promotion_eligible_models = sorted([
+        name
+        for name in requested_promotion_models
         if name in _ACTIVE8_FULL_FIT_MODELS
         and isinstance(evidence_by_model.get(name), dict)
         and evidence_by_model[name].get("decision") == "PASS"
-    ]
-    evidence_missing_or_failed = sorted(set(requested) - set(eligible) - set(unknown))
+    ])
+    evidence_missing = sorted(
+        name for name in release_models
+        if not isinstance(evidence_by_model.get(name), dict)
+    )
+    evidence_missing_or_failed = sorted(
+        set(requested_promotion_models) - set(promotion_eligible_models) - set(unknown)
+    )
+    invalid_outer_evidence = sorted(
+        name
+        for name in release_models
+        if isinstance(evidence_by_model.get(name), dict)
+        and (
+            evidence_by_model[name].get("schema_version") != "model-cpcv-evidence-v1"
+            or evidence_by_model[name].get("method") != "outer_purged_walk_forward_rank_ic"
+            or int(evidence_by_model[name].get("folds") or 0) < OOF_PROMOTION_MIN_FOLDS
+        )
+    )
     window_rows = manifest.get("windows") if isinstance(manifest.get("windows"), list) else []
     chronological_windows = _chronological_oof_windows(window_rows)
-    promotion_evidence = {}
-    for name in eligible:
-        evidence = dict(evidence_by_model[name])
+    promotion_evidence: dict[str, dict[str, Any]] = {}
+    for name in release_models:
+        evidence = dict(evidence_by_model.get(name) or {})
+        if not evidence:
+            continue
         evidence["validation_design"] = {
             "schema_version": "active8-oof-validation-design-v1",
             "chronological": chronological_windows,
@@ -526,19 +548,12 @@ def build_oof_full_fit_dispatch_plan(manifest: dict[str, Any]) -> dict[str, Any]
             "window_ids": [str(window.get("window_id")) for window in window_rows],
         }
         promotion_evidence[name] = evidence
-    tree_models = [name for name in eligible if name in _ACTIVE8_TREE_MODELS]
-    train_groups = []
-    if tree_models:
-        train_groups.append("tree")
-    if "DLinear" in eligible:
-        train_groups.append("dlinear")
-    lifecycle_targets = [name for name in eligible if name in _ACTIVE8_LIFECYCLE_MODELS]
-    feature_consensus = (
-        build_oof_full_fit_feature_consensus(manifest)
-        if tree_models
-        else {"status": "not_required", "reason": "no_tree_models_eligible"}
-    )
-    feature_lineage_ready = not tree_models or feature_consensus.get("status") == "ready"
+
+    tree_models = sorted(_ACTIVE8_TREE_MODELS)
+    train_groups = ["tree", "dlinear", "patchtst"]
+    lifecycle_targets = sorted(_ACTIVE8_LIFECYCLE_MODELS - {"PatchTST"})
+    feature_consensus = build_oof_full_fit_feature_consensus(manifest)
+    feature_lineage_ready = feature_consensus.get("status") == "ready"
     prep = manifest.get("prep_manifest") if isinstance(manifest.get("prep_manifest"), dict) else {}
     prep_lineage_ready = (
         manifest.get("schema_version") == "active8-oof-cohort-manifest-v5"
@@ -551,11 +566,7 @@ def build_oof_full_fit_dispatch_plan(manifest: dict[str, Any]) -> dict[str, Any]
         and float(prep.get("roundtrip_cost_bps") or 0.0) == 18.0
         and int(prep.get("batch_count") or 0) > 0
     )
-    sequence = (
-        manifest.get("sequence_manifest")
-        if isinstance(manifest.get("sequence_manifest"), dict)
-        else {}
-    )
+    sequence = manifest.get("sequence_manifest") if isinstance(manifest.get("sequence_manifest"), dict) else {}
     sequence_checksums = sequence.get("batch_checksums") or {}
     sequence_lineage_ready = (
         len(str(sequence.get("artifact_checksum") or "")) == 64
@@ -568,7 +579,8 @@ def build_oof_full_fit_dispatch_plan(manifest: dict[str, Any]) -> dict[str, Any]
     status = (
         "ready"
         if (
-            eligible
+            not evidence_missing
+            and not invalid_outer_evidence
             and chronological_windows
             and prep_lineage_ready
             and sequence_lineage_ready
@@ -576,8 +588,10 @@ def build_oof_full_fit_dispatch_plan(manifest: dict[str, Any]) -> dict[str, Any]
         )
         else "blocked"
     )
-    if not eligible:
-        reason = "no_full_fit_eligible_models"
+    if evidence_missing:
+        reason = "release_model_oof_evidence_missing"
+    elif invalid_outer_evidence:
+        reason = "release_model_outer_oof_invalid"
     elif not prep_lineage_ready or not sequence_lineage_ready:
         reason = "immutable_oof_input_lineage_missing"
     elif not feature_lineage_ready:
@@ -585,7 +599,7 @@ def build_oof_full_fit_dispatch_plan(manifest: dict[str, Any]) -> dict[str, Any]
     elif not chronological_windows:
         reason = "chronological_oof_windows_invalid"
     else:
-        reason = "eligible_models_ready"
+        reason = "eight_model_release_ready"
     return {
         "status": status,
         "reason": reason,
@@ -595,18 +609,20 @@ def build_oof_full_fit_dispatch_plan(manifest: dict[str, Any]) -> dict[str, Any]
         "feature_consensus": feature_consensus,
         "sequence_manifest": sequence,
         "prep_manifest": prep,
-        "eligible_models": eligible,
+        "release_models": release_models,
+        "promotion_eligible_models": promotion_eligible_models,
         "tree_models": tree_models,
         "train_model_groups": train_groups,
         "artifact_lifecycle_targets": lifecycle_targets,
         "promotion_evidence": promotion_evidence,
         "blocked_models": aggregate.get("full_fit_blocked_models") or {},
         "unknown_models": unknown,
+        "evidence_missing": evidence_missing,
+        "invalid_outer_evidence": invalid_outer_evidence,
         "evidence_missing_or_failed": evidence_missing_or_failed,
         "chronological_windows": chronological_windows,
         "folds": int(aggregate.get("oof_ready_folds") or 0),
     }
-
 
 def _repair_completed_oof_registry_owner(
     *,
@@ -616,6 +632,7 @@ def _repair_completed_oof_registry_owner(
     expected_manifest_checksum: str,
     expected_knowledge_cutoff_date: str,
     expected_models: list[str],
+    expected_promotion_models: list[str],
 ) -> dict[str, Any]:
     """Rebind completed OOF artifacts to their checksum-bound lifecycle owner."""
     from services.model_artifact_registry import (
@@ -652,12 +669,13 @@ def _repair_completed_oof_registry_owner(
         for key, expected in expected_identity.items()
         if identity.get(key) != expected
     }
-    allowed_models = sorted({str(name) for name in payload.get("promotion_allowed_models") or [] if str(name)})
+    eligible_models = sorted({str(name) for name in payload.get("promotion_eligible_models") or [] if str(name)})
     expected_model_set = sorted({str(name) for name in expected_models if str(name)})
-    if allowed_models != expected_model_set:
-        mismatches["promotion_allowed_models"] = {
-            "expected": expected_model_set,
-            "actual": allowed_models,
+    expected_eligible_set = sorted({str(name) for name in expected_promotion_models if str(name)})
+    if eligible_models != expected_eligible_set:
+        mismatches["promotion_eligible_models"] = {
+            "expected": expected_eligible_set,
+            "actual": eligible_models,
         }
     if mismatches:
         return {
@@ -702,41 +720,34 @@ def _repair_completed_oof_registry_owner(
 
 def _select_oof_full_fit_source_rows(
     registry_rows: list[dict[str, Any]],
-    eligible_models: list[str],
+    release_models: list[str],
 ) -> dict[str, dict[str, Any]]:
-    eligible = set(eligible_models)
+    expected = set(release_models)
     source_by_model: dict[str, dict[str, Any]] = {}
-    source_priority = {"weekly_drift": 0, "oof_full_fit_release": 1}
     for source_row in registry_rows:
         model_name = str(source_row.get("model_name") or "")
-        candidate_type = str(source_row.get("candidate_type") or "")
-        if model_name not in eligible or candidate_type not in source_priority:
-            continue
-        current = source_by_model.get(model_name)
-        if current is None or source_priority[candidate_type] < source_priority.get(
-            str(current.get("candidate_type") or ""),
-            99,
+        if (
+            model_name not in expected
+            or str(source_row.get("candidate_type") or "") != "oof_full_fit_release"
         ):
-            source_by_model[model_name] = source_row
+            continue
+        if model_name in source_by_model:
+            raise RuntimeError(f"duplicate_oof_full_fit_source:{model_name}")
+        source_by_model[model_name] = source_row
     return source_by_model
-
 
 def _oof_release_registry_matches_active_policy(
     release_registry: dict[str, Any] | None,
 ) -> bool:
-    from services.active8_oof_release_validation import (
-        ACTIVE8_OOF_RELEASE_VALIDATION_SCHEMA_VERSION,
-        COHORT_SELECTION_METHOD,
-        COHORT_SELECTION_POLICY_VERSION,
-    )
-
     registry = release_registry if isinstance(release_registry, dict) else {}
+    ensemble = registry.get("ensemble_candidate") if isinstance(registry.get("ensemble_candidate"), dict) else {}
     return bool(
         registry.get("status") == "materialized"
-        and registry.get("validation_schema_version")
-        == ACTIVE8_OOF_RELEASE_VALIDATION_SCHEMA_VERSION
-        and registry.get("selection_method") == COHORT_SELECTION_METHOD
-        and registry.get("selection_policy_version") == COHORT_SELECTION_POLICY_VERSION
+        and registry.get("selection_method") == "learned_chronological_oof_ensemble"
+        and registry.get("validation_schema_version") == "active8-oof-ensemble-validation-v1"
+        and ensemble.get("status") == "persisted"
+        and str(ensemble.get("artifact_id") or "").startswith("active8-ensemble:")
+        and len(str(ensemble.get("payload_checksum") or "")) == 64
     )
 
 
@@ -747,20 +758,13 @@ def _materialize_completed_oof_release_aliases(
     expected_run_id: str,
     knowledge_cutoff_date: str,
     lifecycle_cadence: str,
-    eligible_models: list[str],
+    release_models: list[str],
     bucket: object | None = None,
-    release_validation_by_model: dict[str, dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
-    from services.model_artifact_registry import (
-        ACTIVE8_TARGET_SEMANTIC_VERSION,
-        upsert_artifact_record,
-    )
-    from services.active8_oof_release_validation import (
-        ACTIVE8_OOF_RELEASE_VALIDATION_SCHEMA_VERSION,
-        COHORT_SELECTION_METHOD,
-        COHORT_SELECTION_POLICY_VERSION,
-        build_active8_oof_release_validation,
-    )
+    from services.active8_ensemble_artifact import build_active8_ensemble_artifact
+    from services.active8_ensemble_repository import persist_active8_ensemble_candidate
+    from services.active8_oof_cohort_materializer import load_oof_prediction_rows
+    from services.model_artifact_registry import ACTIVE8_TARGET_SEMANTIC_VERSION, upsert_artifact_record
 
     windows = manifest.get("windows") if isinstance(manifest.get("windows"), list) else []
     checksum = str(manifest.get("manifest_checksum") or "")
@@ -778,30 +782,19 @@ def _materialize_completed_oof_release_aliases(
     )
     if not chronological:
         raise RuntimeError("oof_release_alias_manifest_contract_invalid")
+    if bucket is None:
+        raise RuntimeError("active8_ensemble_archive_bucket_missing")
 
-    if release_validation_by_model is None:
-        if bucket is None:
-            raise RuntimeError("oof_release_validation_bucket_missing")
-        from services.active8_oof_cohort_materializer import load_oof_prediction_rows
-
-        release_validation = build_active8_oof_release_validation(
-            load_oof_prediction_rows(manifest, bucket=bucket),
-            eligible_models=eligible_models,
-            cohort_id=cohort_id,
-            source_manifest_checksum=checksum,
-        )
-        release_validation_by_model = release_validation["by_model"]
-    eligible = set(eligible_models)
-    source_by_model = _select_oof_full_fit_source_rows(registry_rows, eligible_models)
+    prediction_rows = load_oof_prediction_rows(manifest, bucket=bucket)
+    source_by_model = _select_oof_full_fit_source_rows(registry_rows, release_models)
     written: list[str] = []
-    passed_models: list[str] = []
-    failed_models: list[str] = []
-    selection_blocked_models: list[str] = []
+    individual_oof_decisions: dict[str, str] = {}
     errors: list[str] = []
-    for model_name in eligible_models:
+    normalized_sources: dict[str, dict[str, Any]] = {}
+    for model_name in release_models:
         source_row = source_by_model.get(model_name)
         if source_row is None:
-            errors.append(f"{model_name}:oof_release_alias_source_missing")
+            errors.append(f"{model_name}:oof_release_source_missing")
             continue
         row = dict(source_row)
         offline = row.get("offline_evidence_json")
@@ -811,27 +804,25 @@ def _materialize_completed_oof_release_aliases(
         registration = dict(offline.get("registration") or {})
         evidence = dict(registration.get("oof_promotion_evidence") or {})
         metadata = dict(registration.get("metadata") or {})
-        failed_gates = evidence.get("failed_gates")
         checksum_value = str(row.get("checksum") or registration.get("checksum") or "")
-        candidate_type = str(row.get("candidate_type") or "")
         version = str(row.get("version") or "")
-        canonical_source_id = f"{model_name}:{version}:{candidate_type}"
         valid = (
             str(row.get("training_run_id") or "") == expected_run_id
-            and str(row.get("artifact_id") or "") == canonical_source_id
-            and str(row.get("state") or "") in {"offline_passed", "offline_strong_pass"}
-            and str(row.get("offline_gate_decision") or "") in {"PASS", "STRONG_PASS"}
+            and str(row.get("artifact_id") or "") == f"{model_name}:{version}:oof_full_fit_release"
+            and str(row.get("state") or "") not in {"registration_failed", "rejected"}
             and evidence.get("schema_version") == "model-cpcv-evidence-v1"
             and evidence.get("method") == "outer_purged_walk_forward_rank_ic"
-            and evidence.get("decision") == "PASS"
-            and evidence.get("passed") is True
-            and not failed_gates
+            and evidence.get("decision") in {"PASS", "FAIL"}
+            and isinstance(evidence.get("passed"), bool)
             and int(evidence.get("folds") or 0) >= 5
             and str(metadata.get("target_semantic_version") or "") == target_semantic
             and checksum_value.startswith("sha256:")
+            and len(checksum_value.removeprefix("sha256:")) == 64
+            and bool(str(row.get("artifact_path") or ""))
+            and bool(str(row.get("metadata_path") or ""))
         )
         if not valid:
-            errors.append(f"{model_name}:oof_release_alias_source_invalid")
+            errors.append(f"{model_name}:oof_release_source_invalid")
             continue
         evidence["validation_design"] = {
             "schema_version": "active8-oof-validation-design-v1",
@@ -842,15 +833,13 @@ def _materialize_completed_oof_release_aliases(
             "fold_count": len(windows),
             "window_ids": [str(window.get("window_id")) for window in windows],
         }
-        model_release_validation = dict(
-            (release_validation_by_model or {}).get(model_name) or {}
-        )
-        if not model_release_validation:
-            errors.append(f"{model_name}:oof_release_validation_missing")
-            continue
         registration["oof_promotion_evidence"] = evidence
-        registration["oof_release_validation"] = model_release_validation
-        registration["model_cpcv"] = evidence
+        registration["ensemble_base_role"] = {
+            "schema_version": "active8-ensemble-base-role-v1",
+            "role": "learned_ensemble_feature",
+            "individual_performance_selects_weight": False,
+            "serving_requires_atomic_bundle": True,
+        }
         registration["oof_lifecycle_resume"] = {
             "schema_version": "active8-oof-lifecycle-resume-v1",
             "cohort_id": cohort_id,
@@ -859,55 +848,41 @@ def _materialize_completed_oof_release_aliases(
             "cadence": lifecycle_cadence,
         }
         offline["registration"] = registration
-        offline["pbo"] = model_release_validation["pbo"]
-        offline["validation_packet"] = model_release_validation
-        base_authority = dict(model_release_validation.get("base_artifact_authority") or {})
-        selection_authority = dict(model_release_validation.get("selection_authority") or {})
-        base_release_passed = (
-            model_release_validation.get("decision") == "PASS"
-            and base_authority.get("decision") == "PASS"
-        )
-        selection_passed = selection_authority.get("decision") == "PASS"
-        row["candidate_type"] = "oof_full_fit_release"
-        row["state"] = row.get("state") if base_release_passed else "offline_failed"
-        row["offline_gate_status"] = "passed" if base_release_passed else "failed"
-        row["offline_gate_decision"] = (
-            row.get("offline_gate_decision") if base_release_passed else "FAIL"
-        )
-        row["offline_gate_failed_gates"] = json.dumps(
-            [] if base_release_passed else model_release_validation.get("failed_gates") or []
-        )
-        row["artifact_id"] = f"{model_name}:{row.get('version')}:oof_full_fit_release"
         row["offline_evidence_json"] = json.dumps(offline, sort_keys=True)
-        row["promotion_decision"] = (
-            "not_evaluated" if selection_passed else "cohort_selection_blocked"
-        )
+        row["promotion_decision"] = "awaiting_active8_ensemble_bundle"
         row["approval_state"] = "not_required"
         upsert_artifact_record(row)
-        written.append(row["artifact_id"])
-        (passed_models if base_release_passed else failed_models).append(model_name)
-        if base_release_passed and not selection_passed:
-            selection_blocked_models.append(model_name)
-    if errors or len(written) != len(eligible):
-        raise RuntimeError(
-            "oof_release_alias_incomplete:"
-            + ",".join(errors or [f"written={len(written)} expected={len(eligible)}"])
-        )
+        written.append(str(row["artifact_id"]))
+        individual_oof_decisions[model_name] = str(evidence.get("decision") or "")
+        normalized_sources[model_name] = row
+
+    if errors or len(written) != len(release_models):
+        raise RuntimeError("oof_release_bundle_incomplete:" + ",".join(errors or [f"written={len(written)} expected={len(release_models)}"]))
+    ensemble_payload = build_active8_ensemble_artifact(
+        prediction_rows,
+        base_artifacts=normalized_sources,
+        cohort_id=cohort_id,
+        source_manifest_checksum=checksum,
+        knowledge_cutoff_date=knowledge_cutoff_date,
+    )
+    ensemble_candidate = persist_active8_ensemble_candidate(
+        ensemble_payload,
+        training_run_id=expected_run_id,
+        bucket=bucket,
+    )
     return {
         "status": "materialized",
         "candidate_type": "oof_full_fit_release",
         "written": len(written),
         "artifact_ids": written,
-        "passed_models": sorted(passed_models),
-        "failed_models": sorted(failed_models),
-        "selection_blocked_models": sorted(selection_blocked_models),
+        "individual_oof_decisions": individual_oof_decisions,
         "cohort_id": cohort_id,
         "manifest_checksum": checksum,
-        "validation_schema_version": ACTIVE8_OOF_RELEASE_VALIDATION_SCHEMA_VERSION,
-        "selection_method": COHORT_SELECTION_METHOD,
-        "selection_policy_version": COHORT_SELECTION_POLICY_VERSION,
+        "validation_schema_version": "active8-oof-ensemble-validation-v1",
+        "selection_method": "learned_chronological_oof_ensemble",
+        "selection_policy_version": "active8-ensemble-conformal-isotonic-v1",
+        "ensemble_candidate": ensemble_candidate,
     }
-
 
 async def dispatch_oof_full_fit_training(
     *,
@@ -953,9 +928,14 @@ async def dispatch_oof_full_fit_training(
         if isinstance(receipt.get("release_registry"), dict)
         else {}
     )
-    receipt_eligible = {
+    receipt_release_models = {
         str(model_name)
-        for model_name in (receipt.get("eligible_models") or [])
+        for model_name in (receipt.get("release_models") or [])
+        if str(model_name)
+    }
+    receipt_promotion_models = {
+        str(model_name)
+        for model_name in (receipt.get("promotion_eligible_models") or [])
         if str(model_name)
     }
     completed_receipt = (
@@ -963,9 +943,10 @@ async def dispatch_oof_full_fit_training(
         and receipt.get("retry_required") is False
         and str(receipt.get("cohort_id") or "") == cohort_id
         and str(receipt.get("knowledge_cutoff_date") or "") == knowledge_cutoff_date
-        and receipt_eligible == set(plan["eligible_models"])
+        and receipt_release_models == set(plan["release_models"])
+        and receipt_promotion_models == set(plan["promotion_eligible_models"])
         and not receipt.get("missing_models")
-        and not receipt.get("failed_models")
+        and not receipt.get("training_failed_models")
         and _oof_release_registry_matches_active_policy(release_registry)
     )
     artifact_states = (
@@ -978,11 +959,12 @@ async def dispatch_oof_full_fit_training(
         and receipt.get("reason") == "full_fit_retry_limit_reached"
         and str(receipt.get("cohort_id") or "") == cohort_id
         and str(receipt.get("knowledge_cutoff_date") or "") == knowledge_cutoff_date
-        and receipt_eligible == set(plan["eligible_models"])
+        and receipt_release_models == set(plan["release_models"])
+        and receipt_promotion_models == set(plan["promotion_eligible_models"])
         and not receipt.get("missing_models")
-        and set(artifact_states) == set(plan["eligible_models"])
+        and set(artifact_states) == set(plan["release_models"])
         and all(
-            state in {"offline_passed", "offline_strong_pass"}
+            state in {"offline_failed", "offline_passed", "offline_strong_pass"}
             for state in artifact_states.values()
         )
         and _oof_release_registry_matches_active_policy(release_registry)
@@ -1005,7 +987,7 @@ async def dispatch_oof_full_fit_training(
             "status": "completed",
             "reason": "immutable_full_fit_receipt_complete",
             "missing_models": [],
-            "failed_models": [],
+            "training_failed_models": [],
             "retry_required": False,
             "receipt_path": receipt_path,
         }
@@ -1029,26 +1011,29 @@ async def dispatch_oof_full_fit_training(
             """,
             [prior_run_id],
         )
-        source_rows = _select_oof_full_fit_source_rows(rows, plan["eligible_models"])
+        source_rows = _select_oof_full_fit_source_rows(rows, plan["release_models"])
         by_model = {
             model_name: str(row.get("state") or "")
             for model_name, row in source_rows.items()
         }
-        missing = sorted(set(plan["eligible_models"]) - set(by_model))
-        failed = sorted(
+        missing = sorted(set(plan["release_models"]) - set(by_model))
+        training_failed = sorted(
             model_name for model_name, state in by_model.items()
-            if model_name in plan["eligible_models"]
-            and state in {"registration_failed", "offline_failed", "rejected"}
+            if model_name in plan["release_models"]
+            and state in {"registration_failed", "rejected"}
         )
-        if not missing and not failed:
+        offline_failed = sorted(
+            model_name for model_name, state in by_model.items()
+            if model_name in plan["release_models"] and state == "offline_failed"
+        )
+        if not missing and not training_failed:
             release_registry = _materialize_completed_oof_release_aliases(
                 manifest=manifest,
                 registry_rows=rows,
                 expected_run_id=prior_run_id,
                 knowledge_cutoff_date=knowledge_cutoff_date,
                 lifecycle_cadence=lifecycle_cadence,
-                eligible_models=plan["eligible_models"],
-
+                release_models=plan["release_models"],
                 bucket=bucket,
             )
             completed = {
@@ -1056,11 +1041,13 @@ async def dispatch_oof_full_fit_training(
                 "release_registry": release_registry,
                 "schema_version": "active8-oof-full-fit-receipt-v1",
                 "status": "completed",
-                "eligible_models": plan["eligible_models"],
+                "release_models": plan["release_models"],
+                "promotion_eligible_models": plan["promotion_eligible_models"],
                 "artifact_states": by_model,
                 "reason": "artifact_registry_complete",
                 "missing_models": [],
-                "failed_models": [],
+                "training_failed_models": [],
+                "offline_failed_models": offline_failed,
                 "retry_required": False,
             }
             receipt_blob.upload_from_string(
@@ -1206,18 +1193,17 @@ async def dispatch_oof_full_fit_training(
                     prior_run_id,
                 ],
             )
-        # A stale release alias may have overwritten the canonical weekly owner
-        # row under the registry's model/version uniqueness constraint. Restore
-        # the checksum-bound terminal owner before revalidating the release;
-        # otherwise an old failed alias can permanently poison a newer policy.
-        if webhook_status == "completed" and (missing or failed):
+        # Repair only the checksum-bound canonical OOF owner. Historical candidate
+        # types never participate in source selection or registry ownership.
+        if webhook_status == "completed" and (missing or training_failed):
             registry_repair = _repair_completed_oof_registry_owner(
                 payload_summary=webhook_row.get("payload_summary"),
                 expected_run_id=prior_run_id,
                 expected_cohort_id=cohort_id,
                 expected_manifest_checksum=str(manifest.get("manifest_checksum") or ""),
                 expected_knowledge_cutoff_date=knowledge_cutoff_date,
-                expected_models=plan["eligible_models"],
+                expected_models=plan["release_models"],
+                expected_promotion_models=plan["promotion_eligible_models"],
             )
             if registry_repair["status"] == "repaired":
                 rows = LEARNING_D1_CLIENT.query(
@@ -1228,26 +1214,29 @@ async def dispatch_oof_full_fit_training(
                     """,
                     [prior_run_id],
                 )
-                source_rows = _select_oof_full_fit_source_rows(rows, plan["eligible_models"])
+                source_rows = _select_oof_full_fit_source_rows(rows, plan["release_models"])
                 by_model = {
                     model_name: str(row.get("state") or "")
                     for model_name, row in source_rows.items()
                 }
-                missing = sorted(set(plan["eligible_models"]) - set(by_model))
-                failed = sorted(
+                missing = sorted(set(plan["release_models"]) - set(by_model))
+                training_failed = sorted(
                     model_name for model_name, state in by_model.items()
-                    if model_name in plan["eligible_models"]
-                    and state in {"registration_failed", "offline_failed", "rejected"}
+                    if model_name in plan["release_models"]
+                    and state in {"registration_failed", "rejected"}
                 )
-                if not missing and not failed:
+                offline_failed = sorted(
+                    model_name for model_name, state in by_model.items()
+                    if model_name in plan["release_models"] and state == "offline_failed"
+                )
+                if not missing and not training_failed:
                     release_registry = _materialize_completed_oof_release_aliases(
                         manifest=manifest,
                         registry_rows=rows,
                         expected_run_id=prior_run_id,
                         knowledge_cutoff_date=knowledge_cutoff_date,
                         lifecycle_cadence=lifecycle_cadence,
-                        eligible_models=plan["eligible_models"],
-
+                        release_models=plan["release_models"],
                         bucket=bucket,
                     )
                     completed = {
@@ -1255,11 +1244,13 @@ async def dispatch_oof_full_fit_training(
                         "release_registry": release_registry,
                         "schema_version": "active8-oof-full-fit-receipt-v1",
                         "status": "completed",
-                        "eligible_models": plan["eligible_models"],
+                        "release_models": plan["release_models"],
+                        "promotion_eligible_models": plan["promotion_eligible_models"],
                         "artifact_states": by_model,
                         "reason": "artifact_registry_complete",
                         "missing_models": [],
-                        "failed_models": [],
+                        "training_failed_models": [],
+                        "offline_failed_models": offline_failed,
                         "retry_required": False,
                         "registry_repair": registry_repair,
                     }
@@ -1273,7 +1264,7 @@ async def dispatch_oof_full_fit_training(
                         "retry_required": False,
                         "receipt_path": receipt_path,
                     }
-        terminal_failure = webhook_status == "error" or bool(failed) or (
+        terminal_failure = webhook_status == "error" or bool(training_failed) or (
             webhook_status == "completed" and bool(missing)
         )
         if not terminal_failure:
@@ -1291,7 +1282,7 @@ async def dispatch_oof_full_fit_training(
                 "status": "blocked",
                 "reason": "full_fit_retry_limit_reached",
                 "missing_models": missing,
-                "failed_models": failed,
+                "training_failed_models": training_failed,
                 "webhook_status": webhook_status,
                 "registry_repair": registry_repair,
                 "retry_required": True,
@@ -1316,9 +1307,9 @@ async def dispatch_oof_full_fit_training(
             "missing_models": (
                 missing
                 if receipt.get("run_id")
-                else sorted(plan["eligible_models"])
+                else sorted(plan["release_models"])
             ),
-            "failed_models": failed if receipt.get("run_id") else [],
+            "training_failed_models": training_failed if receipt.get("run_id") else [],
             "retry_required": True,
             "receipt_path": receipt_path,
         }
@@ -1331,10 +1322,9 @@ async def dispatch_oof_full_fit_training(
     }
     request = UniversalRetrainTriggerRequest(
         limit=2500,
-        force_monthly=False,
         run_date=knowledge_cutoff_date,
         candidate_type="oof_full_fit_release",
-        drift_target_models=plan["eligible_models"],
+        drift_target_models=plan["release_models"],
         train_model_groups=plan["train_model_groups"],
         artifact_lifecycle_targets=plan["artifact_lifecycle_targets"],
         artifact_lifecycle_contracts=lifecycle_contracts,
@@ -1359,7 +1349,7 @@ async def dispatch_oof_full_fit_training(
         sequence_gcs_prefix=str(manifest.get("sequence_gcs_prefix") or "") or None,
         sequence_batch_count=int(manifest.get("sequence_batch_count") or 0) or None,
         register_challengers=bool(plan["tree_models"]),
-        promotion_allowed_models=plan["eligible_models"],
+        promotion_eligible_models=plan["promotion_eligible_models"],
         oof_promotion_evidence=plan["promotion_evidence"],
     )
     result = await trigger_universal_retrain(request, request=None)
@@ -1387,7 +1377,8 @@ async def dispatch_oof_full_fit_training(
         "knowledge_cutoff_date": knowledge_cutoff_date,
         "run_id": run_id,
         "attempt": attempt + 1,
-        "eligible_models": plan["eligible_models"],
+        "release_models": plan["release_models"],
+        "promotion_eligible_models": plan["promotion_eligible_models"],
         "feature_pool": feature_pool_contract,
         "dispatch": result,
     }

@@ -54,7 +54,7 @@ def _load_hyperparams(model_name: str, version: str) -> dict:
     Serving hyperparams are artifact-required; missing GCS rows make the overlay
     return per-symbol errors instead of defaulting into synthetic output.
     """
-    from .model_pool import load_state_space_hyperparams
+    from .state_space_artifacts import load_state_space_hyperparams
     return load_state_space_hyperparams(model_name, version)
 
 

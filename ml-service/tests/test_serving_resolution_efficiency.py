@@ -9,7 +9,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from app import batch_prediction, model_pool  # noqa: E402
+from app import batch_prediction, model_serving_contract as model_pool  # noqa: E402
 from app import serving_resolver as resolver  # noqa: E402
 
 
@@ -123,7 +123,6 @@ def test_d1_loader_uses_pointer_bounded_join_and_retries_timeout(monkeypatch):
     monkeypatch.setattr(resolver, "_query_rows_once", fake_query)
 
     pool = resolver.load_d1_champion_pool(
-        fallback_pool={"models": {}},
         required_models=("XGBoost",),
         sidecar_models=(),
     )
@@ -155,7 +154,6 @@ def test_d1_loader_preserves_timeout_root_cause_after_bounded_retries(monkeypatc
         match=r"d1_timeout: attempts=2: RuntimeError",
     ):
         resolver.load_d1_champion_pool(
-            fallback_pool={"models": {}},
             required_models=("XGBoost",),
             sidecar_models=(),
         )
@@ -165,9 +163,9 @@ def test_resolved_pool_cache_is_single_entry_and_returns_defensive_copy(monkeypa
     calls = {"count": 0}
     now = {"value": 100.0}
 
-    def fake_load(*, fallback_pool=None, **_kwargs):
+    def fake_load(**_kwargs):
         calls["count"] += 1
-        return {"models": {"XGBoost": {"version": "v2"}}, "fallback": fallback_pool}
+        return {"models": {"XGBoost": {"version": "v2"}}}
 
     resolver.clear_serving_pool_cache()
     monkeypatch.setenv("CF_API_TOKEN", "test")
@@ -176,11 +174,9 @@ def test_resolved_pool_cache_is_single_entry_and_returns_defensive_copy(monkeypa
     monkeypatch.setenv("MODEL_SERVING_RESOLVED_POOL_CACHE_TTL_SECONDS", "60")
     monkeypatch.setattr(resolver.time, "monotonic", lambda: now["value"])
     monkeypatch.setattr(resolver, "load_d1_champion_pool", fake_load)
-    fallback = {"models": {"XGBoost": {"status": "active"}}}
-
-    first = resolver.resolve_serving_pool(fallback)
+    first = resolver.resolve_serving_pool()
     first["models"]["XGBoost"]["version"] = "mutated"
-    second = resolver.resolve_serving_pool(fallback)
+    second = resolver.resolve_serving_pool()
 
     assert calls["count"] == 1
     assert second["models"]["XGBoost"]["version"] == "v2"
@@ -188,24 +184,11 @@ def test_resolved_pool_cache_is_single_entry_and_returns_defensive_copy(monkeypa
 
 
 def test_cold_model_pool_load_preserves_typed_d1_failure(monkeypatch):
-    class Blob:
-        def exists(self):
-            return True
-
-        def download_as_text(self):
-            return '{"models":{}}'
-
-    monkeypatch.setattr(model_pool, "_POOL_CACHE", None)
-    monkeypatch.setattr(model_pool, "_POOL_CACHE_LOADED_AT", 0.0)
-    monkeypatch.setattr(
-        model_pool,
-        "_get_bucket",
-        lambda: SimpleNamespace(blob=lambda _name: Blob()),
-    )
+    resolver.clear_serving_pool_cache()
     monkeypatch.setattr(
         resolver,
         "resolve_serving_pool",
-        lambda _fallback: (_ for _ in ()).throw(
+        lambda: (_ for _ in ()).throw(
             resolver.ServingPoolResolutionError("d1_timeout: attempts=3")
         ),
     )
@@ -215,7 +198,6 @@ def test_cold_model_pool_load_preserves_typed_d1_failure(monkeypatch):
 
 
 def test_batch_tree_loader_reuses_verified_pool_path(monkeypatch):
-    from app import ensemble
     from app.prediction_runtime import _BATCH_FEATURE_RANK_SCORES_KEY
 
     class Model:
@@ -232,7 +214,6 @@ def test_batch_tree_loader_reuses_verified_pool_path(monkeypatch):
 
     monkeypatch.setattr(batch_prediction, "_build_feature_batch_context", lambda _req: context)
     monkeypatch.setattr(batch_prediction, "_load_model_pool", lambda: pool)
-    monkeypatch.setattr(ensemble, "_extract_model_pool_ic", lambda *_args, **_kwargs: {})
 
     def fake_load(model_name, explicit_path=None, **kwargs):
         loaded.append((model_name, explicit_path, kwargs.get("require_governed_artifact")))
@@ -272,9 +253,9 @@ def test_preload_filters_lifecycle_and_uses_verified_pool_path(monkeypatch):
 @pytest.mark.parametrize(
     ("field", "value", "reason"),
     (
-        ("model_name", "LightGBM", "artifact_model_pointer_mismatch"),
-        ("version", "v999", "artifact_version_pointer_mismatch"),
-        ("artifact_id", "other-artifact", "artifact_id_pointer_mismatch"),
+        ("model_name", "LightGBM", "missing_registry_artifact"),
+        ("version", "v999", "missing_registry_artifact"),
+        ("artifact_id", "other-artifact", "missing_registry_artifact"),
     ),
 )
 def test_pointer_artifact_identity_mismatch_fails_closed(field, value, reason):
@@ -307,7 +288,6 @@ def test_pointer_artifact_identity_mismatch_fails_closed(field, value, reason):
     pool = resolver.build_pool_from_champion_pointers(
         pointers=[pointer],
         artifacts=[artifact],
-        fallback_pool={"models": {}},
         required_models=("XGBoost",),
         sidecar_models=(),
     )

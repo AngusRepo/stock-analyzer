@@ -1,4 +1,4 @@
-﻿import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useState } from 'react'
 import { useMutation, useQuery } from '@tanstack/react-query'
 import { Loader2, RefreshCw } from 'lucide-react'
 import AppShell from '@/components/AppShell'
@@ -173,9 +173,9 @@ function PromotionQueuePanelV2({
   return (
     <WorkstationPanel title="Promotion Decisions / Promotion & Parameter Governance" kicker="reason, candidate vs champion, gates, decision source, rollback target">
       <div className="grid gap-3 p-3 md:grid-cols-4">
-        <SignalInsightCard title="Auto candidates" value={String(autoCount)} detail="monthly release passed live gate and final compare" tone={autoCount ? 'ok' : 'neutral'} />
+        <SignalInsightCard title="Auto candidates" value={String(autoCount)} detail="canonical OOF release passed its evidence gates and final compare" tone={autoCount ? 'ok' : 'neutral'} />
         <SignalInsightCard title="Approval required" value={String(approvalCount)} detail="weekly/manual changes still require Wei approval" tone={approvalCount ? 'warn' : 'neutral'} />
-        <SignalInsightCard title="Superseded weekly" value={String(suppressedCount)} detail="newer monthly release hides older weekly approval rows" tone={suppressedCount ? 'info' : 'neutral'} />
+        <SignalInsightCard title="Historical ignored" value={String(suppressedCount)} detail="noncanonical legacy rows stay immutable audit-only and never enter selection" tone={suppressedCount ? 'info' : 'neutral'} />
         <SignalInsightCard title="Blocked" value={String(blockedCount)} detail="missing champion pointer, weak evidence, or final compare gap" tone={blockedCount ? 'error' : 'ok'} />
       </div>
       <div className="border-t border-[#263247] bg-[#05070c] p-3 text-xs leading-5 text-[#9aa7bd]">
@@ -227,7 +227,7 @@ function PromotionQueuePanelV2({
               label: 'Candidate type',
               value: row.candidate_type,
               detail: `state ${row.state}`,
-              tone: row.candidate_type === 'weekly_drift' || row.approval_required ? 'warn' : 'info',
+              tone: row.approval_required ? 'warn' : 'info',
             },
           ]
           const reviewGates: ApprovalReviewGate[] = [

@@ -24,13 +24,6 @@ from services.persona_service import (  # noqa: E402
 )
 
 
-@pytest.fixture(autouse=True)
-def _isolate_legacy_persona_path(monkeypatch):
-    import services.recommendation_service as recommendation_service
-
-    monkeypatch.setattr(recommendation_service, "_is_use_ensemble_v2", lambda: False)
-
-
 # ═══════════════════════════════════════════════════════════════════════════
 # Helpers
 # ═══════════════════════════════════════════════════════════════════════════
@@ -65,6 +58,15 @@ def _prediction(signal: str = "BUY", confidence: float = 0.72) -> dict:
         "forecast_pct": 0.02,
         "direction": "up",
         "ensemble_votes": {"up": 7, "down": 2, "neutral": 2},
+        "ensemble_v2": {
+            "signal": signal,
+            "confidence": confidence,
+            "forecast_pct": 0.02,
+            "signal_source": "active8_ensemble_artifact",
+            "probability_positive_net_return": confidence,
+            "artifact_checksum": "a" * 64,
+            "validation": {"decision": "PASS"},
+        },
     }
 
 

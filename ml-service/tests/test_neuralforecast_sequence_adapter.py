@@ -41,4 +41,4 @@ def test_patchtst_purged_oof_does_not_require_serving_artifact_fields(monkeypatc
 
     assert result["oof_artifact"]["path"].endswith("patchtst.npz")
     assert result["model_cpcv"] == model_cpcv
-    assert result["pool_update"] is None
+    assert "pool_update" not in result

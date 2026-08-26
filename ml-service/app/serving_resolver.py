@@ -32,7 +32,7 @@ FORMAL_RANK_IC_SEMANTIC_VERSION = "same-date-average-rank-tie-neutral-spearman-v
 SEQUENCE_CONTRACT_FIELDS = ("seq_len", "pred_len", "sequence_contract")
 SEQUENCE_CONTRACT_SCHEMA_VERSION = "model-serving-sequence-contract-v1"
 L2_SIDECARS = ("TimesFM",)
-PIPELINE_MODAL_SERVING_MANIFEST_SCHEMA = "pipeline-modal-serving-manifest-v2"
+PIPELINE_MODAL_SERVING_MANIFEST_SCHEMA = "pipeline-modal-serving-manifest-v3"
 SERVING_OK_STATES = {"production"}
 SERVING_OK_OFFLINE_DECISIONS = {"STRONG_PASS", "PASS"}
 SERVING_BAD_LIVE_STATUSES = {"failed", "rolling_ic_failed", "live_gate_failed"}
@@ -58,10 +58,6 @@ IC_STATE_FIELDS = (
     "last_ic_target_semantic_version",
     "last_ic_artifact_version",
 )
-FROZEN_ENSEMBLE_FIELDS = IC_STATE_FIELDS + (
-    "serving_ic_prior",
-    "serving_ic_source",
-)
 FROZEN_SHADOW_FIELDS = (
     "status", "version", "gcs_path", "metadata_path", "serving_artifact_id",
     "checksum", "model_type", "balance_family", "shadow_since", "weekly_ic",
@@ -79,7 +75,6 @@ FROZEN_FORMAL_SLOT_FIELDS = (
     "artifact_schema", "canonical_source", "direct_prediction", "vote_weight",
     "note",
 )
-PIPELINE_MODAL_RANK_STACKER_SCHEMA = "pipeline-modal-rank-stacker-snapshot-v1"
 FROZEN_MANIFEST_SERVING_STATUSES = {"active", "degraded"}
 FROZEN_MANIFEST_EFFECTIVE_STATUSES = {
     "active", "degraded", "challenger",
@@ -104,14 +99,8 @@ class ServingPoolResolutionError(RuntimeError):
 
 
 _RESOLVED_POOL_CACHE: dict[str, Any] | None = None
-_RESOLVED_POOL_CACHE_KEY: str | None = None
 _RESOLVED_POOL_CACHE_LOADED_AT = 0.0
 _RESOLVED_POOL_CACHE_LOCK = threading.Lock()
-
-
-def d1_champion_serving_enabled() -> bool:
-    owner = str(os.environ.get("MODEL_SERVING_OWNER") or "d1_champion").strip().lower()
-    return owner in {"d1", "d1_champion", "model_champion_pointers"}
 
 
 def _d1_env_configured() -> bool:
@@ -119,13 +108,11 @@ def _d1_env_configured() -> bool:
 
 
 def clear_serving_pool_cache() -> None:
-    """Clear the single-entry container cache used by Modal serving."""
-    global _RESOLVED_POOL_CACHE, _RESOLVED_POOL_CACHE_KEY, _RESOLVED_POOL_CACHE_LOADED_AT
+    """Clear the single-entry D1 champion snapshot cache used by Modal serving."""
+    global _RESOLVED_POOL_CACHE, _RESOLVED_POOL_CACHE_LOADED_AT
     with _RESOLVED_POOL_CACHE_LOCK:
         _RESOLVED_POOL_CACHE = None
-        _RESOLVED_POOL_CACHE_KEY = None
         _RESOLVED_POOL_CACHE_LOADED_AT = 0.0
-
 
 def _bounded_env_float(name: str, default: float, *, minimum: float, maximum: float) -> float:
     try:
@@ -141,11 +128,6 @@ def _bounded_env_int(name: str, default: int, *, minimum: int, maximum: int) -> 
     except (TypeError, ValueError):
         value = default
     return max(minimum, min(maximum, value))
-
-
-def _fallback_pool_cache_key(fallback_pool: dict[str, Any] | None) -> str:
-    payload = json.dumps(fallback_pool or {}, sort_keys=True, separators=(",", ":"), default=str)
-    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
 def serving_manifest_digest(manifest: dict[str, Any]) -> str:
@@ -271,96 +253,8 @@ def _require_manifest_checksum(value: Any, *, model_name: str) -> str:
     return checksum
 
 
-def _require_frozen_ic_weight_policy(value: Any) -> dict[str, Any]:
-    expected_fields = (
-        "schema_version",
-        "prior_ic",
-        "prior_strength",
-        "min_samples_for_hard_zero",
-        "source",
-    )
-    policy = _require_compact_mapping(
-        value,
-        label="ic_weight_policy",
-        allowed_fields=expected_fields,
-    )
-    if (
-        policy.get("schema_version") != "ic-weight-policy-v1"
-        or policy.get("source") != "controller_dispatch_environment"
-    ):
-        raise ServingPoolResolutionError(
-            "frozen_serving_manifest_ic_weight_policy_contract_invalid"
-        )
-    try:
-        prior = float(policy.get("prior_ic"))
-        strength = float(policy.get("prior_strength"))
-        min_samples = int(policy.get("min_samples_for_hard_zero"))
-    except (TypeError, ValueError) as exc:
-        raise ServingPoolResolutionError(
-            "frozen_serving_manifest_ic_weight_policy_value_invalid"
-        ) from exc
-    if (
-        not -1.0 <= prior <= 1.0
-        or not 0.0 <= strength <= 1_000_000.0
-        or not 0 <= min_samples <= 1_000_000
-    ):
-        raise ServingPoolResolutionError(
-            "frozen_serving_manifest_ic_weight_policy_value_out_of_bounds"
-        )
-    policy["prior_ic"] = prior
-    policy["prior_strength"] = strength
-    policy["min_samples_for_hard_zero"] = min_samples
-    return policy
 
 
-def _require_frozen_rank_stacker(value: Any) -> dict[str, Any]:
-    if not isinstance(value, dict):
-        raise ServingPoolResolutionError(
-            "frozen_serving_manifest_rank_stacker_not_object"
-        )
-    if value.get("schema_version") != PIPELINE_MODAL_RANK_STACKER_SCHEMA:
-        raise ServingPoolResolutionError(
-            "frozen_serving_manifest_rank_stacker_schema_invalid"
-        )
-    if value.get("effective_status") != "excluded" or not str(value.get("reason") or "").strip():
-        raise ServingPoolResolutionError(
-            "frozen_serving_manifest_rank_stacker_must_be_excluded"
-        )
-    status = str(value.get("status") or "").strip()
-    if status not in {"absent", "present", "unavailable"}:
-        raise ServingPoolResolutionError(
-            "frozen_serving_manifest_rank_stacker_status_invalid"
-        )
-    if status == "present":
-        identity = value.get("artifact_identity")
-        metadata = value.get("metadata")
-        freshness = value.get("freshness_audit")
-        if not isinstance(identity, dict) or not isinstance(metadata, dict) or not isinstance(freshness, dict):
-            raise ServingPoolResolutionError(
-                "frozen_serving_manifest_rank_stacker_audit_identity_invalid"
-            )
-        try:
-            artifact_size = int(identity.get("size") or 0)
-        except (TypeError, ValueError) as exc:
-            raise ServingPoolResolutionError(
-                "frozen_serving_manifest_rank_stacker_size_invalid"
-            ) from exc
-        if (
-            not str(value.get("artifact_path") or "").strip()
-            or not str(value.get("metadata_path") or "").strip()
-            or not str(identity.get("generation") or "").strip()
-            or not (
-                str(identity.get("md5_hash") or "").strip()
-                or str(identity.get("crc32c") or "").strip()
-            )
-            or artifact_size <= 0
-            or artifact_size > FROZEN_COMPACT_MAX_BYTES
-        ):
-            raise ServingPoolResolutionError(
-                "frozen_serving_manifest_rank_stacker_audit_identity_invalid"
-            )
-        _require_manifest_checksum(value.get("metadata_checksum"), model_name="StackingRankMetadata")
-    return copy.deepcopy(value)
 
 
 def build_pool_from_frozen_manifest(
@@ -377,7 +271,7 @@ def build_pool_from_frozen_manifest(
     actual_digest = serving_manifest_digest(manifest)
     if not expected_digest or actual_digest != str(expected_digest).strip().lower():
         raise ServingPoolResolutionError("frozen_serving_manifest_digest_mismatch")
-    if manifest.get("source_of_truth") != "model_champion_pointers/model_artifact_registry":
+    if manifest.get("source_of_truth") != "model_champion_pointers+active8_ensemble_pointer_v1":
         raise ServingPoolResolutionError("frozen_serving_manifest_source_invalid")
 
     rows = manifest.get("models")
@@ -409,8 +303,7 @@ def build_pool_from_frozen_manifest(
         "shadow_models": {},
         "active8_shadow_candidates": {},
         "formal_layer3_slots": {},
-        "rank_stacker": {},
-        "ic_weight_policy": {},
+        "active8_ensemble": {},
         "serving_coverage": serving_manifest_coverage(manifest),
     }
     for model_name in DIRECT_ALPHA_MODELS:
@@ -490,11 +383,6 @@ def build_pool_from_frozen_manifest(
                 f"expected={FORMAL_GNN_GRAPH_SEMANTIC_VERSION}"
             )
 
-        ensemble = _require_compact_mapping(
-            row.get("ensemble"),
-            label=f"ensemble_{model_name}",
-            allowed_fields=FROZEN_ENSEMBLE_FIELDS,
-        )
         checksum = _require_manifest_checksum(row.get("checksum"), model_name=model_name)
         entry = {
             "status": effective_status,
@@ -514,7 +402,6 @@ def build_pool_from_frozen_manifest(
             "feature_semantic_version": schema.get("feature_semantic_version"),
             "gnn_graph_semantic_version": schema.get("gnn_graph_semantic_version"),
         }
-        entry.update(ensemble)
         if isinstance(schema.get("sequence_contract"), dict):
             entry["sequence_contract"] = copy.deepcopy(schema["sequence_contract"])
             entry["seq_len"] = schema["sequence_contract"].get("seq_len")
@@ -615,9 +502,7 @@ def build_pool_from_frozen_manifest(
                     f"frozen_serving_manifest_active8_shadow_identity_missing:"
                     f"{model_name}:{field}"
                 )
-        if str(candidate.get("candidate_type") or "") not in {
-            "monthly_release", "weekly_drift",
-        }:
+        if str(candidate.get("candidate_type") or "") != "oof_full_fit_release":
             raise ServingPoolResolutionError(
                 f"frozen_serving_manifest_active8_shadow_candidate_type_invalid:{model_name}"
             )
@@ -734,12 +619,21 @@ def build_pool_from_frozen_manifest(
         slot["direct_prediction"] = bool(slot.get("direct_prediction"))
         pool["formal_layer3_slots"][model_name] = slot
 
-    pool["rank_stacker"] = _require_frozen_rank_stacker(
-        manifest.get("rank_stacker")
-    )
-    pool["ic_weight_policy"] = _require_frozen_ic_weight_policy(
-        manifest.get("ic_weight_policy")
-    )
+    from .active8_ensemble_runtime import validate_active8_ensemble_artifact
+
+    active8_ensemble = manifest.get("active8_ensemble")
+    if not isinstance(active8_ensemble, dict):
+        raise ServingPoolResolutionError("frozen_serving_manifest_active8_ensemble_missing")
+    try:
+        validate_active8_ensemble_artifact(
+            active8_ensemble,
+            pool_models=pool["models"],
+        )
+    except Exception as exc:
+        raise ServingPoolResolutionError(
+            f"frozen_serving_manifest_active8_ensemble_invalid:{exc}"
+        ) from exc
+    pool["active8_ensemble"] = dict(active8_ensemble)
 
     sidecar = dict(l2_sidecar_context or {})
     pool["l2_feature_sidecars"]["TimesFM"] = {
@@ -827,7 +721,7 @@ def _default_metadata_path(model_name: str, version: str) -> str:
     return f"universal/{_folder(model_name)}/metadata_{version}.json"
 
 
-def _artifact_block_reason(artifact: dict[str, Any] | None, *, model_name: str) -> str | None:
+def _artifact_block_reason(artifact: dict[str, Any] | None, *, model_name: str, artifact_role: str) -> str | None:
     if not artifact:
         return "missing_registry_artifact"
     state = str(artifact.get("state") or "").strip()
@@ -853,6 +747,8 @@ def _artifact_block_reason(artifact: dict[str, Any] | None, *, model_name: str) 
     if expected_ext and actual_ext != expected_ext:
         return f"artifact_extension_{actual_ext or 'missing'}_expected_{expected_ext}"
     if model_name in DIRECT_ALPHA_MODELS:
+        if str(artifact.get("candidate_type") or "") != "oof_full_fit_release":
+            return "artifact_candidate_type_not_canonical_oof_release"
         metadata = _artifact_metadata(artifact)
         target_semantic = str(metadata.get("target_semantic_version") or "").strip()
         if target_semantic != LABEL_SCHEMA_VERSION:
@@ -872,6 +768,8 @@ def _artifact_block_reason(artifact: dict[str, Any] | None, *, model_name: str) 
                     f"artifact_gnn_graph_semantic_{graph_semantic or 'missing'}_"
                     f"expected_{FORMAL_GNN_GRAPH_SEMANTIC_VERSION}"
                 )
+    if artifact_role == "l2_feature_sidecar" and str(artifact.get("candidate_type") or "") != "timesfm_l175_l2_feature_release":
+        return "artifact_candidate_type_not_timesfm_feature_release"
     if model_name in SEQUENCE_ALPHA_MODELS and _sequence_artifact_contract(model_name, artifact) is None:
         return "artifact_sequence_contract_missing_or_invalid"
     return None
@@ -971,14 +869,14 @@ def _live_ic_source_matches(
     return source_version == artifact_version and source_target == target_semantic_version
 
 
-def _copy_ic_fields(entry: dict[str, Any], *, artifact: dict[str, Any] | None, pointer: dict[str, Any] | None, fallback: dict[str, Any]) -> None:
+def _copy_ic_fields(entry: dict[str, Any], *, artifact: dict[str, Any] | None, pointer: dict[str, Any] | None) -> None:
     live = _json_obj((artifact or {}).get("live_evidence_json"))
     promotion = _json_obj((pointer or {}).get("promotion_evidence_json"))
     artifact_version = str(entry.get("version") or "").strip()
     target_semantic = str(entry.get("target_semantic_version") or "").strip()
     sources = [
         source
-        for source in (promotion, live, fallback)
+        for source in (promotion, live)
         if _live_ic_source_matches(
             source,
             artifact_version=artifact_version,
@@ -1011,39 +909,36 @@ def build_pool_from_champion_pointers(
     *,
     pointers: list[dict[str, Any]],
     artifacts: list[dict[str, Any]],
-    fallback_pool: dict[str, Any] | None = None,
     required_models: tuple[str, ...] = DIRECT_ALPHA_MODELS,
     sidecar_models: tuple[str, ...] = L2_SIDECARS,
 ) -> dict[str, Any]:
-    pool = copy.deepcopy(fallback_pool or {})
-    pool["schema_version"] = pool.get("schema_version") or "model_pool_v2"
-    pool["last_updated"] = datetime.now(timezone.utc).isoformat()
-    pool["source_of_truth"] = "model_champion_pointers"
-    pool["compat_shape"] = "model_pool"
-    pool["models"] = dict(pool.get("models") or {})
-    pool["l2_feature_sidecars"] = dict(pool.get("l2_feature_sidecars") or {})
+    pool: dict[str, Any] = {
+        "schema_version": "model_pool_v3_d1_pointer_owned",
+        "last_updated": datetime.now(timezone.utc).isoformat(),
+        "source_of_truth": "model_champion_pointers",
+        "models": {},
+        "l2_feature_sidecars": {},
+    }
     pointer_by_model = {str(row.get("model_name")): row for row in pointers if row.get("model_name")}
     artifacts_by_id = {str(row.get("artifact_id")): row for row in artifacts if row.get("artifact_id")}
-    artifacts_by_model_version: dict[tuple[str, str], list[dict[str, Any]]] = {}
-    for row in artifacts:
-        model_name = str(row.get("model_name") or "")
-        version = str(row.get("version") or "")
-        if model_name and version:
-            artifacts_by_model_version.setdefault((model_name, version), []).append(row)
 
-    def latest_artifact(model_name: str, version: str, artifact_id: str | None) -> dict[str, Any] | None:
-        if artifact_id and artifact_id in artifacts_by_id:
-            return artifacts_by_id[artifact_id]
-        rows = artifacts_by_model_version.get((model_name, version), [])
-        if not rows:
+    def exact_artifact(model_name: str, version: str, artifact_id: str | None) -> dict[str, Any] | None:
+        if not artifact_id:
             return None
-        return sorted(rows, key=lambda row: str(row.get("updated_at") or row.get("created_at") or ""), reverse=True)[0]
+        artifact = artifacts_by_id.get(artifact_id)
+        if (
+            not artifact
+            or str(artifact.get("model_name") or "") != model_name
+            or str(artifact.get("version") or "") != version
+        ):
+            return None
+        return artifact
 
-    def build_entry(model_name: str, fallback_entry: dict[str, Any]) -> dict[str, Any]:
+    def build_entry(model_name: str, *, artifact_role: str) -> dict[str, Any]:
         pointer = pointer_by_model.get(model_name)
         version = str((pointer or {}).get("champion_version") or "").strip()
         artifact_id = str((pointer or {}).get("champion_artifact_id") or "").strip() or None
-        artifact = latest_artifact(model_name, version, artifact_id) if pointer and version else None
+        artifact = exact_artifact(model_name, version, artifact_id) if pointer and version else None
         block_reason = None if pointer and version else "missing_d1_champion_pointer"
         block_reason = block_reason or _artifact_identity_block_reason(
             artifact,
@@ -1051,20 +946,20 @@ def build_pool_from_champion_pointers(
             version=version,
             artifact_id=artifact_id,
         )
-        block_reason = block_reason or _artifact_block_reason(artifact, model_name=model_name)
-        entry = dict(fallback_entry or {})
-        if model_name in SEQUENCE_ALPHA_MODELS:
-            for key in SEQUENCE_CONTRACT_FIELDS:
-                entry.pop(key, None)
-        entry["version"] = version or str(entry.get("version") or "")
-        # Artifact compatibility is a serving concern, not a model-family
-        # lifecycle decision. Active-8 remains eligible for the next retrain.
-        entry["model_slot_status"] = "active"
-        entry["status"] = "degraded" if block_reason else "active"
-        entry["serving_eligible"] = not bool(block_reason)
-        entry["serving_owner"] = "model_champion_pointers"
-        entry["serving_artifact_id"] = artifact_id
-        entry["serving_block_reason"] = block_reason
+        block_reason = block_reason or _artifact_block_reason(
+            artifact,
+            model_name=model_name,
+            artifact_role=artifact_role,
+        )
+        entry: dict[str, Any] = {
+            "version": version,
+            "model_slot_status": "active",
+            "status": "degraded" if block_reason else "active",
+            "serving_eligible": not bool(block_reason),
+            "serving_owner": "model_champion_pointers",
+            "serving_artifact_id": artifact_id,
+            "serving_block_reason": block_reason,
+        }
         if artifact:
             artifact_metadata = _artifact_metadata(artifact)
             entry["gcs_path"] = str(artifact.get("artifact_path") or "")
@@ -1082,23 +977,17 @@ def build_pool_from_champion_pointers(
                 entry["seq_len"] = sequence_contract["seq_len"]
                 entry["pred_len"] = sequence_contract["pred_len"]
                 entry["sequence_contract"] = sequence_contract
-        elif version:
-            entry.setdefault("gcs_path", _default_artifact_path(model_name, version))
-            entry.setdefault("metadata_path", _default_metadata_path(model_name, version))
-        _copy_ic_fields(entry, artifact=artifact, pointer=pointer, fallback=fallback_entry or {})
+        _copy_ic_fields(entry, artifact=artifact, pointer=pointer)
         return entry
 
     for model_name in required_models:
-        pool["models"][model_name] = build_entry(model_name, pool["models"].get(model_name) or {})
+        pool["models"][model_name] = build_entry(model_name, artifact_role="direct_alpha")
     for model_name in sidecar_models:
-        fallback_entry = pool["l2_feature_sidecars"].get(model_name) or pool["models"].get(model_name) or {}
-        entry = build_entry(model_name, fallback_entry)
+        entry = build_entry(model_name, artifact_role="l2_feature_sidecar")
         entry["role"] = "l2_feature_sidecar"
         entry["direct_prediction"] = False
         pool["l2_feature_sidecars"][model_name] = entry
-        pool["models"].pop(model_name, None)
     return pool
-
 
 def _query_rows_once(
     sql: str,
@@ -1160,7 +1049,6 @@ def _query_rows(sql: str, params: list[Any] | None = None) -> list[dict[str, Any
 
 def load_d1_champion_pool(
     *,
-    fallback_pool: dict[str, Any] | None = None,
     required_models: tuple[str, ...] = DIRECT_ALPHA_MODELS,
     sidecar_models: tuple[str, ...] = L2_SIDECARS,
 ) -> dict[str, Any]:
@@ -1169,7 +1057,6 @@ def load_d1_champion_pool(
         return build_pool_from_champion_pointers(
             pointers=[],
             artifacts=[],
-            fallback_pool=fallback_pool,
             required_models=required_models,
             sidecar_models=sidecar_models,
         )
@@ -1226,50 +1113,29 @@ def load_d1_champion_pool(
     return build_pool_from_champion_pointers(
         pointers=pointers,
         artifacts=artifacts,
-        fallback_pool=fallback_pool,
         required_models=required_models,
         sidecar_models=sidecar_models,
     )
 
-
-def resolve_serving_pool(fallback_pool: dict[str, Any] | None) -> dict[str, Any] | None:
-    global _RESOLVED_POOL_CACHE, _RESOLVED_POOL_CACHE_KEY, _RESOLVED_POOL_CACHE_LOADED_AT
-    if not d1_champion_serving_enabled():
-        return fallback_pool
+def resolve_serving_pool() -> dict[str, Any]:
+    global _RESOLVED_POOL_CACHE, _RESOLVED_POOL_CACHE_LOADED_AT
     if not _d1_env_configured():
-        pool = copy.deepcopy(fallback_pool or {})
-        pool["source_of_truth"] = "model_pool.json"
-        pool["serving_owner_warning"] = "d1_champion_env_missing_local_compat"
-        return pool
-    cache_key = _fallback_pool_cache_key(fallback_pool)
+        raise ServingPoolResolutionError("d1_champion_serving_environment_missing")
     ttl = _bounded_env_float(
         "MODEL_SERVING_RESOLVED_POOL_CACHE_TTL_SECONDS",
         60.0,
         minimum=0.0,
         maximum=300.0,
     )
-    try:
-        with _RESOLVED_POOL_CACHE_LOCK:
-            now = time.monotonic()
-            if (
-                ttl > 0
-                and _RESOLVED_POOL_CACHE is not None
-                and _RESOLVED_POOL_CACHE_KEY == cache_key
-                and now - _RESOLVED_POOL_CACHE_LOADED_AT < ttl
-            ):
-                return copy.deepcopy(_RESOLVED_POOL_CACHE)
-            resolved = load_d1_champion_pool(fallback_pool=fallback_pool)
-            _RESOLVED_POOL_CACHE = copy.deepcopy(resolved)
-            _RESOLVED_POOL_CACHE_KEY = cache_key
-            _RESOLVED_POOL_CACHE_LOADED_AT = time.monotonic()
-            return resolved
-    except Exception as exc:
-        if os.environ.get("MODEL_SERVING_ALLOW_GCS_COMPAT_FALLBACK", "").strip().lower() in {"1", "true", "yes", "on"}:
-            pool = copy.deepcopy(fallback_pool or {})
-            pool["source_of_truth"] = "model_pool.json"
-            pool["serving_owner_warning"] = (
-                "d1_champion_unavailable_gcs_compat_fallback:"
-                f"{_classify_d1_error(exc)}"
-            )
-            return pool
-        raise
+    with _RESOLVED_POOL_CACHE_LOCK:
+        now = time.monotonic()
+        if (
+            ttl > 0
+            and _RESOLVED_POOL_CACHE is not None
+            and now - _RESOLVED_POOL_CACHE_LOADED_AT < ttl
+        ):
+            return copy.deepcopy(_RESOLVED_POOL_CACHE)
+        resolved = load_d1_champion_pool()
+        _RESOLVED_POOL_CACHE = copy.deepcopy(resolved)
+        _RESOLVED_POOL_CACHE_LOADED_AT = time.monotonic()
+        return resolved

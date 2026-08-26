@@ -39,7 +39,7 @@ const SYNC_REQUIRED_TASKS = new Set([
   'weekly-optuna', 'adaptive-meta-policy-replay', 'linucb-multiplier-replay',
   'l4-alpha-ev-refresh', 'allocator-ev-fusion-refresh', 'opb-arm-prior-refresh',
   'allocator-ev-feature-snapshot-backfill',
-  'monthly-optuna', 'monthly-l4-alpha-ev-refresh', 'monthly-allocator-ev-fusion-refresh', 'monthly-opb-arm-prior-refresh', 'monthly-strategy-mining', 'weekly-drift-retrain',
+  'monthly-optuna', 'monthly-l4-alpha-ev-refresh', 'monthly-allocator-ev-fusion-refresh', 'monthly-opb-arm-prior-refresh', 'monthly-strategy-mining',
   'finlab-v4-backfill',
   'finlab-backfill-watchdog',
   'indicator-queue-watchdog',
@@ -64,7 +64,6 @@ const SYNC_REQUIRED_TASKS = new Set([
   'data-domain-cutover-probe',
   'strategy-evidence-metrics',
   'strategy-evidence-owner-calibration',
-  'monthly-retrain',
 ])
 
 function isDurableQueueTask(task: string): task is 'external-evidence' | 'weekly-cleanup' | 's12-smcvwap-calibration' {
@@ -327,7 +326,6 @@ export function createAdminTriggerRoutes(deps: TriggerRouteDeps) {
       'allocator-ev-fusion-refresh',
       'opb-arm-prior-refresh',
       'allocator-ev-feature-snapshot-backfill',
-      'weekly-drift-retrain',
       'monthly-optuna',
       'monthly-l4-alpha-ev-refresh',
       'monthly-allocator-ev-fusion-refresh',
@@ -341,8 +339,6 @@ export function createAdminTriggerRoutes(deps: TriggerRouteDeps) {
       'strategy-learning-finalize',
       'selection-reference-repair',
       'selection-reference-identity-repair',
-      'retrain',
-      'monthly-retrain',
       'adaptive-meta-policy-replay',
       'linucb-multiplier-replay',
       'neural-ucb-shadow',

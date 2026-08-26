@@ -111,7 +111,7 @@ class UniversalTrainRequest(BaseModel):
     disable_stale_prep_guard: bool = False
     dataset_snapshot: dict | None = None
     candidate_type: str | None = None
-    monthly_training_contract: dict | None = None
+    release_training_contract: dict | None = None
     generation_mode: str = "native"
     cohort_id: str | None = None
     fold_id: str | None = None
@@ -553,7 +553,7 @@ def model_cpcv_family_adapter_enabled(model_name: str, policy: dict | None) -> b
 
 def _load_active_model_pool_joblib(bucket, model_name: str) -> tuple[object, dict]:
     """Load the active universal artifact through model_pool.json only."""
-    from .model_pool import get_active_path, get_active_version, gcs_metadata_path_for, load_pool
+    from .model_serving_contract import get_active_path, get_active_version, gcs_metadata_path_for, load_pool
 
     pool = load_pool()
     if not pool:
@@ -1253,67 +1253,6 @@ def train_universal_from_gcs(req: UniversalTrainRequest) -> dict:
         print(f"[TrainUniversal] LightGBM failed: {exc}")
 
 
-    can_update_active_stacker = (
-        req.models_filter is None
-        and req.output_model_version is None
-        and not walk_forward_mode
-        and gcs_prefix == "universal"
-    )
-    if can_update_active_stacker:
-        try:
-            from .stacking import build_oos_rank_rows, save_meta_learner, train_rank_stacker_oof
-
-            stack_rows, stack_model_order = build_oos_rank_rows(
-                oos_rank_predictions,
-                target_len=len(y_test),
-            )
-            rank_bundle = train_rank_stacker_oof(
-                stack_rows,
-                y_test,
-                model_order=stack_model_order,
-                min_samples=80,
-            )
-            if rank_bundle:
-                saved = save_meta_learner(rank_bundle, 0)
-                results["StackingRank"] = {
-                    "trained": True,
-                    "saved": bool(saved),
-                    "oos_ic": rank_bundle.get("eval_ic"),
-                    "eval_rmse": rank_bundle.get("eval_rmse"),
-                    "train": rank_bundle.get("train_samples"),
-                    "test": rank_bundle.get("eval_samples"),
-                    "model_order": stack_model_order,
-                    "target_type": "rank",
-                }
-                print(
-                    f"[TrainUniversal] StackingRank IC={rank_bundle.get('eval_ic')} "
-                    f"models={stack_model_order} saved={saved}"
-                )
-            else:
-                results["StackingRank"] = {
-                    "trained": False,
-                    "skipped": True,
-                    "reason": "insufficient_oos_rank_samples",
-                    "model_order": stack_model_order,
-                    "oos_models": len(stack_model_order),
-                }
-        except Exception as exc:
-            results["StackingRank"] = {"error": str(exc)}
-    else:
-        reason = "active_full_universal_retrain_only"
-        if req.models_filter is not None:
-            reason = "models_filter_partial_retrain"
-        elif req.output_model_version is not None:
-            reason = "candidate_version_does_not_overwrite_active_stacker"
-        elif walk_forward_mode:
-            reason = "walk_forward_eval_does_not_overwrite_active_stacker"
-        elif gcs_prefix != "universal":
-            reason = "non_universal_prefix_does_not_overwrite_active_stacker"
-        results["StackingRank"] = {
-            "skipped": True,
-            "reason": reason,
-        }
-
     print("[TrainUniversal] Prep data preserved for SHAP audit")
     elapsed = round(time.time() - t0, 1)
     print(f"[TrainUniversal] Done in {elapsed}s -> {len(results)} models")
@@ -1433,7 +1372,7 @@ def train_universal_from_gcs(req: UniversalTrainRequest) -> dict:
             regime=model_result.get("regime"),
             stage="lifecycle",
             sample_count=len(X_test),
-            fold_count=1,
+            fold_count=int((model_cpcv_evidence_by_model.get(model_name) or {}).get("folds") or 0),
             search_trials=model_result.get("search_trials"),
         )
         oos_policy = validation_policy["oos_ic"]

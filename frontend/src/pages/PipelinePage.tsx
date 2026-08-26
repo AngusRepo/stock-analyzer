@@ -914,9 +914,11 @@ export default function PipelinePage() {
     error: maturityError,
     refetch: refetchMaturity,
   } = useQuery<PipelineDecisionMaturityPacket>({
-    queryKey: ['pipeline', 'decision-maturity', recDate],
-    queryFn: () => dashboardV4Api.pipelineMaturity(recDate) as Promise<PipelineDecisionMaturityPacket>,
-    enabled: isAuthenticated && Boolean(recDate),
+    queryKey: ['pipeline', 'decision-maturity', today],
+    // Recommendation fallback may legitimately display the last completed day.
+    // Maturity is a separate evidence owner and must advance independently.
+    queryFn: () => dashboardV4Api.pipelineMaturity(today) as Promise<PipelineDecisionMaturityPacket>,
+    enabled: isAuthenticated && Boolean(today),
     staleTime: 30_000,
     refetchInterval: 60_000,
     refetchOnWindowFocus: true,

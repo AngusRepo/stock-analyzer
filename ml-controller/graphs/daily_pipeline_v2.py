@@ -30,7 +30,6 @@ from langgraph.types import RetryPolicy
 from services import kv_client
 from services.d1_domain_client import D1DataDomain, client_for_domain, client_proxy_for_domain
 from services.ensemble_v2 import attach_ensemble_v2
-from services.expected_return_calibration import load_expected_return_calibration_report
 from services.evidence_contracts import LABEL_SCHEMA_VERSION
 from services.decision_owner_contract import resolve_decision_owner_contract
 from services.l4_alpha_ev_producer import assess_l4_policy_cutover
@@ -62,10 +61,6 @@ from services.pipeline_async_state_transport import (
     validate_pipeline_payload_identity,
 )
 from services.pipeline_modal_request_transport import write_pipeline_modal_request_artifact
-from services.model_lifecycle_policy import (
-    DEFAULT_DEGRADED_DAMPENING,
-    resolve_degraded_dampening,
-)
 from services.model_score_quality import drop_degenerate_rank_scores
 from services.active8_score_semantics import (
     normalize_active8_challenger_scores,
@@ -79,11 +74,6 @@ from services.model_ic_tracker import IC_EVALUATION_SEMANTIC_VERSION
 from services.market_regime_state import (
     build_market_regime_contract_from_market_env,
     resolve_market_regime_contract,
-)
-from services.ml_threshold_policy import (
-    ThresholdPolicyError,
-    load_threshold_policy_snapshot,
-    resolve_ml_threshold_policy,
 )
 from services.prediction_dispersion import build_prediction_dispersion_report
 from services.screener_sizing_policy import resolve_controller_screener_sizing
@@ -141,27 +131,8 @@ RETIRED_ALPHA_MODEL_SET = set(RETIRED_ALPHA_MODELS)
 MODEL_POOL_ALLOWED_STATUSES = {"active", "degraded", "challenger", "retired"}
 MODEL_POOL_SERVING_STATUSES = {"active", "degraded"}
 
-PIPELINE_MODAL_SERVING_MANIFEST_SCHEMA = "pipeline-modal-serving-manifest-v2"
+PIPELINE_MODAL_SERVING_MANIFEST_SCHEMA = "pipeline-modal-serving-manifest-v3"
 
-PIPELINE_MODAL_ENSEMBLE_FIELDS = (
-    "rolling_ic",
-    "ic_4w_avg",
-    "weekly_ic",
-    "consecutive_negative_weeks",
-    "last_ic_status",
-    "last_ic_root_cause",
-    "last_ic_sample_count",
-    "last_ic_score_sources",
-    "last_ic_by_segment",
-    "last_ic_error",
-    "last_ic_diagnostics",
-    "last_ic_evaluation_contract",
-    "last_ic_semantic_version",
-    "last_ic_target_semantic_version",
-    "last_ic_artifact_version",
-    "serving_ic_prior",
-    "serving_ic_source",
-)
 PIPELINE_MODAL_RESIDUAL_SHADOW_FIELDS = (
     "status",
     "version",
@@ -200,13 +171,6 @@ PIPELINE_MODAL_ACTIVE8_SHADOW_FIELDS = (
 PIPELINE_MODAL_FORMAL_SLOT_FIELDS = (
     "status", "version", "gcs_path", "metadata_path", "artifact_schema",
     "canonical_source", "direct_prediction", "vote_weight", "note",
-)
-PIPELINE_MODAL_RANK_STACKER_SCHEMA = "pipeline-modal-rank-stacker-snapshot-v1"
-PIPELINE_MODAL_RANK_STACKER_ARTIFACT_PATH = "0/stacking_meta.joblib"
-PIPELINE_MODAL_RANK_STACKER_METADATA_PATH = "0/metadata_stacking.json"
-PIPELINE_MODAL_RANK_STACKER_MAX_BYTES = 65_536
-PIPELINE_MODAL_RANK_STACKER_EXCLUDED_REASON = (
-    "legacy_freshness_contract_invalid_not_serving"
 )
 PIPELINE_MODAL_COMPACT_FIELD_MAX_BYTES = 65_536
 PIPELINE_MODAL_MANIFEST_MAX_BYTES = 1_048_576
@@ -552,7 +516,6 @@ def _timesfm_sync_gate(
     *,
     model_status: dict[str, str],
     pool: dict | None,
-    ev2_cfg: dict | None,
     sequence_series: list[dict],
 ) -> tuple[bool, dict[str, Any]]:
     status = model_status.get("TimesFM", "retired")
@@ -767,9 +730,9 @@ async def node_ml_predict(state: PipelineStateV2) -> dict:
     - TimesFM is owned by L2 feature enrichment and must not run as an L3 direct alpha voter.
     - Per-stock merged signal: all Active-8 outputs receive same-run market
       cross-sectional percentile ranks, weighted by
-      ic_weights ? lifecycle_weights from model_pool.json.
-    - Original signal preserved as r["signal"] for backward compat;
-      merged exposed as r["ensemble_v2"] = {avg_rank, signal, contributing_models}.
+      tie-safe within-date normalization.
+    - One immutable learned ridge/isotonic/conformal artifact owns BUY/HOLD/SELL;
+      no IC-vote, hand threshold, per-model fallback, or top-k branch exists.
     """
     import asyncio
     import json as _json
@@ -798,29 +761,13 @@ async def node_ml_predict(state: PipelineStateV2) -> dict:
     )
     serving_context = state.get("pipeline_modal_serving_context") if isinstance(state.get("pipeline_modal_serving_context"), dict) else {}
 
-    # Parallel: alpha predictors + state overlays.
-    # Kalman/Markov are state overlays only; they do not enter alpha challenger.
-    if use_modal_prediction_bundle and serving_context:
-        model_status = dict(serving_context.get("model_status") or {})
-        active_versions = dict(serving_context.get("active_versions") or {})
-        pool_versions_loaded = bool(serving_context.get("pool_versions_loaded"))
-        serving_model_status = dict(serving_context.get("serving_model_status") or {})
-        serving_degraded_dampening = serving_context.get("serving_degraded_dampening", DEFAULT_DEGRADED_DAMPENING)
-        serving_ev2_cfg = dict(serving_context.get("serving_ev2_cfg") or {})
-        serving_used_pool = bool(serving_context.get("serving_used_pool"))
-        serving_pool = dict(serving_context.get("serving_pool") or {})
-    else:
-        model_status, active_versions, _challenger_versions, pool_versions_loaded = await asyncio.to_thread(_load_model_pool_versions)
-        (
-            serving_model_status,
-            _serving_ic_universe,
-            serving_degraded_dampening,
-            serving_ev2_cfg,
-            serving_used_pool,
-            serving_pool,
-        ) = await asyncio.to_thread(_load_pool_and_ic)
-        if serving_model_status:
-            model_status = _merge_model_status_preserving_sidecars(model_status, serving_model_status)
+    # Formal L3 is callback-only and bound to one immutable serving manifest.
+    if not use_modal_prediction_bundle or not serving_context:
+        raise RuntimeError("formal_layer3_modal_bundle_or_serving_context_missing")
+    model_status = dict(serving_context.get("model_status") or {})
+    active_versions = dict(serving_context.get("active_versions") or {})
+    pool_versions_loaded = bool(serving_context.get("pool_versions_loaded"))
+    serving_pool = dict(serving_context.get("serving_pool") or {})
 
     sequence_contracts = _sequence_model_contracts(
         pool=serving_pool,
@@ -859,197 +806,36 @@ async def node_ml_predict(state: PipelineStateV2) -> dict:
         },
     }
 
-    async def _skip_batch(reason: str) -> dict:
-        return {"error": reason, "results": []}
-
-    def _sequence_model_skip_reason(model_name: str) -> str:
-        if not _is_loaded_serving_model(model_status, model_name, "ml_predict_task_plan"):
-            return f"{model_name} retired by model_pool"
-        contract = sequence_contracts.get(model_name) or {}
-        return (
-            f"{model_name} sequence contract unmet "
-            f"(required={contract.get('seq_len') or 'unknown'} usable=0)"
-        )
-
-    stage_timings: dict[str, dict[str, Any]] = {}
-    active8_sequence_shadow_raw: dict[str, Any] = {}
-
-    async def _timed_stage(name: str, awaitable, *, required_alpha: bool) -> Any:
-        started = time.time()
-        status = "ok"
-        error = None
-        try:
-            result = await awaitable
-            if isinstance(result, dict) and result.get("error") and result.get("results") == []:
-                status = "skipped"
-            return result
-        except BaseException as exc:  # noqa: BLE001
-            status = "exception"
-            error = f"{type(exc).__name__}: {exc}"
-            raise
-        finally:
-            stage_timings[name] = {
-                "wall_sec": round(time.time() - started, 3),
-                "required_alpha": required_alpha,
-                "status": status,
-                "error": error,
-            }
-
-    feat_task = None
-    gnn_task = None
-    dlinear_task = None
-    patchtst_task = None
-    itransformer_task = None
-    state_space_task = None
-
-    state_space_mode = _state_space_overlay_mode()
-    state_space_models = {
-        model_name: _require_loaded_serving_version(active_versions, model_name, "ml_predict_task_plan")
-        for model_name in ("KalmanFilter", "MarkovSwitching")
-        if _is_optional_loaded_serving_model(model_status, model_name, "ml_predict_task_plan")
-    }
-
-    if not use_modal_prediction_bundle:
-        feat_task = batch_predict(payloads)
-        gnn_task = (
-            modal_client.gnn_graphsage_batch_predict(
-                payloads,
-                version=_require_loaded_serving_version(active_versions, "GNN", "ml_predict_task_plan"),
-            )
-            if _is_loaded_serving_model(model_status, "GNN", "ml_predict_task_plan")
-            else _skip_batch("GNN retired by model_pool")
-        )
-        dlinear_task = (
-            modal_client.dlinear_batch_predict(
-                sequence_series_by_model.get("DLinear") or [],
-                horizon_used=5,
-                version=_require_loaded_serving_version(active_versions, "DLinear", "ml_predict_task_plan"),
-            )
-            if _is_loaded_serving_model(model_status, "DLinear", "ml_predict_task_plan") and sequence_series_by_model.get("DLinear")
-            else _skip_batch(_sequence_model_skip_reason("DLinear"))
-        )
-        patchtst_task = (
-            modal_client.patchtst_batch_predict(
-                sequence_series_by_model.get("PatchTST") or [],
-                horizon_used=5,
-                version=_require_loaded_serving_version(active_versions, "PatchTST", "ml_predict_task_plan"),
-            )
-            if _is_loaded_serving_model(model_status, "PatchTST", "ml_predict_task_plan") and sequence_series_by_model.get("PatchTST")
-            else _skip_batch(_sequence_model_skip_reason("PatchTST"))
-        )
-        itransformer_task = (
-            modal_client.itransformer_batch_predict(
-                sequence_series_by_model.get("iTransformer") or [],
-                horizon_used=5,
-                version=_require_loaded_serving_version(active_versions, "iTransformer", "ml_predict_task_plan"),
-            )
-            if _is_loaded_serving_model(model_status, "iTransformer", "ml_predict_task_plan") and sequence_series_by_model.get("iTransformer")
-            else _skip_batch(_sequence_model_skip_reason("iTransformer"))
-        )
-
-    async def _shadow_state_space_overlays() -> dict:
-        if not state_space_models:
-            return {"error": "state-space overlays retired by model_pool", "results": []}
-        if state_space_mode == "disabled":
-            return {"error": "state-space overlays disabled by overlay mode", "results": []}
-        if state_space_mode == "shadow":
-            try:
-                callback_url, callback_token = _state_space_shadow_callback_config()
-                spawn_info = await asyncio.to_thread(
-                    modal_client.spawn_state_space_overlays_batch_predict,
-                    sequence_series,
-                    horizon=5,
-                    version_by_model=state_space_models,
-                    run_date=state.get("run_date"),
-                    run_id=state.get("producer_run_id") or state.get("run_id"),
-                    callback_url=callback_url,
-                    callback_token=callback_token,
-                )
-                logger.info(f"[Pipeline V2] State-space overlays shadow spawned: {spawn_info}")
-                return {"error": "state-space overlays shadow spawned; not blocking prediction", "results": [], "shadow": spawn_info}
-            except Exception as exc:  # noqa: BLE001 - shadow overlay must not block prediction.
-                logger.warning(f"[Pipeline V2] State-space overlays shadow spawn failed: {exc}")
-                return {"error": f"state-space overlays shadow spawn failed: {exc}", "results": []}
-        overlay_call = modal_client.state_space_overlays_batch_predict(
-            sequence_series,
-            horizon=5,
-            version_by_model=state_space_models,
-        )
-        soft_deadline = _state_space_overlay_soft_deadline_seconds()
-        if soft_deadline:
-            try:
-                return await asyncio.wait_for(overlay_call, timeout=soft_deadline)
-            except asyncio.TimeoutError:
-                logger.warning(
-                    "[Pipeline V2] State-space overlays soft deadline exceeded "
-                    "deadline=%.1fs n_input=%s mode=%s",
-                    soft_deadline,
-                    len(sequence_series),
-                    state_space_mode,
-                )
-                return {
-                    "error": "state-space overlays soft deadline exceeded; continuing without overlays",
-                    "results": [],
-                    "soft_timeout": {
-                        "deadline_seconds": soft_deadline,
-                        "n_input": len(sequence_series),
-                        "mode": state_space_mode,
-                    },
-                }
-        return await overlay_call
-
-    if not use_modal_prediction_bundle:
-        state_space_task = _shadow_state_space_overlays()
-
-    if use_modal_prediction_bundle:
-        logger.info(
-            "[Pipeline V2] node_ml_predict using async Modal prediction bundle run_id=%s",
-            modal_prediction_bundle.get("run_id"),
-        )
-        results = modal_prediction_bundle.get("predict_batch_v2_results") or []
-        gnn_raw = modal_prediction_bundle.get("gnn_graphsage_raw") or {"results": []}
-        dlinear_raw = modal_prediction_bundle.get("dlinear_raw") or {"results": []}
-        patchtst_raw = modal_prediction_bundle.get("patchtst_raw") or {"results": []}
-        state_space_raw = modal_prediction_bundle.get("state_space_raw") or {"results": []}
-        itransformer_raw = modal_prediction_bundle.get("itransformer_raw") or {"results": []}
-        active8_sequence_shadow_raw = (
-            modal_prediction_bundle.get("active8_sequence_shadow_raw")
-            if isinstance(modal_prediction_bundle.get("active8_sequence_shadow_raw"), dict)
-            else {}
-        )
-        stage_timings = dict(modal_prediction_bundle.get("stage_timings") or {})
-        for stage_name, raw_payload in (
-            ("predict_batch_v2", results),
-            ("gnn_graphsage_universal_predict", gnn_raw),
-            ("dlinear_universal_predict", dlinear_raw),
-            ("patchtst_universal_predict", patchtst_raw),
-            ("state_space_universal_predict", state_space_raw),
-            ("itransformer_universal_predict", itransformer_raw),
-        ):
-            stage_timings.setdefault(stage_name, {
-                "wall_sec": 0.0,
-                "required_alpha": stage_name != "state_space_universal_predict",
-                "status": "callback_bundle",
-                "error": None if not (isinstance(raw_payload, dict) and raw_payload.get("error")) else raw_payload.get("error"),
-            })
-    else:
-        (
-            results,
-            gnn_raw,
-            dlinear_raw,
-            patchtst_raw,
-            state_space_raw,
-            itransformer_raw,
-        ) = await asyncio.gather(
-            _timed_stage("predict_batch_v2", feat_task, required_alpha=True),
-            _timed_stage("gnn_graphsage_universal_predict", gnn_task, required_alpha=True),
-            _timed_stage("dlinear_universal_predict", dlinear_task, required_alpha=True),
-            _timed_stage("patchtst_universal_predict", patchtst_task, required_alpha=True),
-            _timed_stage("state_space_universal_predict", state_space_task, required_alpha=False),
-            _timed_stage("itransformer_universal_predict", itransformer_task, required_alpha=True),
-            return_exceptions=True,
-        )
-
+    logger.info(
+        "[Pipeline V2] node_ml_predict using async Modal prediction bundle run_id=%s",
+        modal_prediction_bundle.get("run_id"),
+    )
+    results = modal_prediction_bundle.get("predict_batch_v2_results") or []
+    gnn_raw = modal_prediction_bundle.get("gnn_graphsage_raw") or {"results": []}
+    dlinear_raw = modal_prediction_bundle.get("dlinear_raw") or {"results": []}
+    patchtst_raw = modal_prediction_bundle.get("patchtst_raw") or {"results": []}
+    state_space_raw = modal_prediction_bundle.get("state_space_raw") or {"results": []}
+    itransformer_raw = modal_prediction_bundle.get("itransformer_raw") or {"results": []}
+    active8_sequence_shadow_raw = (
+        modal_prediction_bundle.get("active8_sequence_shadow_raw")
+        if isinstance(modal_prediction_bundle.get("active8_sequence_shadow_raw"), dict)
+        else {}
+    )
+    stage_timings = dict(modal_prediction_bundle.get("stage_timings") or {})
+    for stage_name, raw_payload in (
+        ("predict_batch_v2", results),
+        ("gnn_graphsage_universal_predict", gnn_raw),
+        ("dlinear_universal_predict", dlinear_raw),
+        ("patchtst_universal_predict", patchtst_raw),
+        ("state_space_universal_predict", state_space_raw),
+        ("itransformer_universal_predict", itransformer_raw),
+    ):
+        stage_timings.setdefault(stage_name, {
+            "wall_sec": 0.0,
+            "required_alpha": stage_name != "state_space_universal_predict",
+            "status": "callback_bundle",
+            "error": None if not (isinstance(raw_payload, dict) and raw_payload.get("error")) else raw_payload.get("error"),
+        })
     gnn_result_summary = _modal_batch_result_summary(gnn_raw)
     modal_waiter = max((stage.get("wall_sec", 0.0) for stage in stage_timings.values()), default=0.0)
     critical_modal_waiter = max(
@@ -1451,93 +1237,20 @@ async def node_ml_predict(state: PipelineStateV2) -> dict:
         f"challenger_shadow={sum(1 for v in pred_map.values() if v.get('challenger_rank_scores'))}"
     )
 
-    # ???? A: ML_POOL ensemble merge (8 alpha models with lifecycle) ????
-    # 2026-05-06: IC is lane-aware and empirical-Bayes shrunk before serving.
-    # Short-sample negative IC no longer hard-zeros a model; confirmed negative
-    # IC plus failed validation still fail-closed.
-    model_status = serving_model_status
-    degraded_dampening = serving_degraded_dampening
-    ev2_cfg = serving_ev2_cfg
-    used_pool = serving_used_pool
-    pool = serving_pool
-    if used_pool:
-        regime_contract = _resolve_runtime_regime_contract(state, scope="ml_threshold_policy")
+    pool_models = serving_pool.get("models") if isinstance(serving_pool.get("models"), dict) else {}
+    active8_ensemble = serving_manifest.get("active8_ensemble") if isinstance(serving_manifest, dict) else None
+    if not isinstance(active8_ensemble, dict):
+        raise RuntimeError("formal_layer3_active8_ensemble_unavailable")
+    for sym, row in pred_map.items():
         try:
-            policy_snapshot = load_threshold_policy_snapshot(
-                kv_reader=kv_client,
-                trading_config=state.get("trading_config") or {},
-                ev2_cfg=ev2_cfg,
-                run_date=state["run_date"],
-            )
-            threshold_policy = resolve_ml_threshold_policy(
-                run_date=state["run_date"],
-                regime_contract=regime_contract,
-                ev2_cfg=ev2_cfg,
-                adaptive_params=state.get("adaptive_params") or {},
-                policy_snapshot=policy_snapshot,
-            )
-        except ThresholdPolicyError as exc:
-            raise RuntimeError(f"ml_threshold_policy_unavailable: {exc}") from exc
-        logger.info(
-            "[Pipeline V2] ML threshold policy resolved: policy_id=%s version=%s regime=%s hash=%s",
-            threshold_policy.policy_id,
-            threshold_policy.version,
-            threshold_policy.selected_regime,
-            threshold_policy.evidence_hash,
-        )
-        for sym, r in pred_map.items():
-            try:
-                serving_ic = _build_serving_ic_bundle(pool, _prediction_market_segment(r), ev2_cfg)
-                _attach_ensemble_v2(
-                    r,
-                    model_status,
-                    serving_ic,
-                    degraded_dampening,
-                    ev2_cfg,
-                    adaptive_params=state.get("adaptive_params") or {},
-                    threshold_policy=threshold_policy,
-                    artifact_versions=active_versions,
-                )
-            except Exception as e:
-                r["ensemble_v2_error"] = f"{type(e).__name__}: {e}"
-                logger.warning("[Pipeline V2] ensemble_v2 merge failed for %s: %s", sym, e)
-        merged_count = sum(1 for value in pred_map.values() if isinstance(value.get("ensemble_v2"), dict))
-        logger.info(
-            f"[Pipeline V2] Ensemble V2 merged: {merged_count}/{len(pred_map)} stocks "
-            f"(degraded_dampening={degraded_dampening})"
-        )
-        if pred_map and merged_count == 0:
-            blocker_counts: dict[str, int] = {}
-            for value in pred_map.values():
-                lineage = value.get("model_score_lineage") if isinstance(value.get("model_score_lineage"), dict) else {}
-                blockers = list(lineage.get("blockers") or []) or [
-                    str(value.get("ensemble_v2_error") or "ensemble_v2_missing")
-                ]
-                for blocker in blockers:
-                    blocker_counts[str(blocker)] = blocker_counts.get(str(blocker), 0) + 1
-            raise RuntimeError(
-                "formal_layer3_ensemble_unavailable: "
-                + json.dumps(dict(sorted(blocker_counts.items())), ensure_ascii=False)
-            )
-
-        # #B Option 1 Top-K override (2026-04-21): regression-on-rank predictions
-        # compress to [0.43, 0.58] under realistic R蝪?0.02-0.05, never hitting
-        # absolute 0.70 BUY threshold. Industry-standard fix: sort top K by
-        # avg_rank desc, force BUY regardless of absolute threshold. Confidence
-        # override gives downstream (paper.ts morning-setup SQL + debate prompt)
-        # the margin they need to distinguish promoted signals from edge HOLDs.
-        # Retired path: detect stale config only; never force BUY from rank/top-K.
-        legacy_topk_requested = bool(
-            ev2_cfg.get("allowLegacyTopKOverride", False)
-            or ev2_cfg.get("topKOverrideEnabled", False)
-        )
-        if legacy_topk_requested:
-            logger.warning(
-                "[Pipeline V2] legacy_topk_override_retired: config requested top-K override, "
-                "but sparse allocator is the final owner and forced BUY is disabled"
-            )
-    else:
-        raise RuntimeError("formal_layer3_model_pool_unavailable")
+            _attach_ensemble_v2(row, active8_ensemble, pool_models)
+        except Exception as exc:
+            row["ensemble_v2_error"] = f"{type(exc).__name__}: {exc}"
+            raise RuntimeError(f"formal_layer3_active8_ensemble_failed:{sym}:{exc}") from exc
+    merged_count = sum(1 for value in pred_map.values() if isinstance(value.get("ensemble_v2"), dict))
+    if merged_count != len(pred_map):
+        raise RuntimeError(f"formal_layer3_active8_ensemble_incomplete:{merged_count}/{len(pred_map)}")
+    logger.info("[Pipeline V2] learned Active-8 ensemble attached: %s/%s", merged_count, len(pred_map))
 
     dispersion = build_prediction_dispersion_report(pred_map)
     logger.info(
@@ -1642,14 +1355,9 @@ async def node_l2_timesfm_enrich(state: PipelineStateV2) -> dict:
     release_policy = _timesfm_l175_release_policy()
     try:
         model_status, active_versions, _challenger_versions, _pool_versions_loaded = await asyncio.to_thread(_load_model_pool_versions)
-        (
-            serving_model_status,
-            _serving_ic_universe,
-            _serving_degraded_dampening,
-            serving_ev2_cfg,
-            _serving_used_pool,
-            serving_pool,
-        ) = await asyncio.to_thread(_load_pool_and_ic)
+        serving_model_status, serving_pool = await asyncio.to_thread(
+            _load_active8_serving_pool
+        )
         if serving_model_status:
             model_status = _merge_model_status_preserving_sidecars(model_status, serving_model_status)
 
@@ -1661,7 +1369,6 @@ async def node_l2_timesfm_enrich(state: PipelineStateV2) -> dict:
         timesfm_allowed, timesfm_gate = _timesfm_sync_gate(
             model_status=model_status,
             pool=serving_pool,
-            ev2_cfg=serving_ev2_cfg,
             sequence_series=sequence_series,
         )
         if not timesfm_allowed:
@@ -1836,24 +1543,10 @@ def _load_model_pool_versions() -> tuple[dict[str, str], dict[str, str], dict[st
     model_pool.json is required so model activation and artifact versions have a
     single source of truth.
     """
-    import json as _json
-    import os
-
     try:
-        from google.cloud import storage
-
-        bucket_name = os.getenv("GCS_BUCKET_NAME")
-        if not bucket_name:
-            raise RuntimeError("GCS_BUCKET_NAME not set for model_pool version load")
-        blob = storage.Client().bucket(bucket_name).blob("universal/model_pool.json")
-        if not blob.exists():
-            raise RuntimeError("universal/model_pool.json missing")
-
-        pool = _json.loads(blob.download_as_text().lstrip("\ufeff"))
         from services.model_serving_resolver import resolve_serving_pool
 
         pool = resolve_serving_pool(
-            pool,
             required_models=tuple(ACTIVE_ALPHA_MODELS),
             sidecar_models=tuple(TIMESFM_L2_SIDECAR_MODELS),
         )
@@ -2065,69 +1758,8 @@ def _entry_ic_sample_count(entry: dict, source: str) -> int:
     return 0
 
 
-def _ic_weighting_policy(ev2_cfg: dict | None = None) -> dict[str, Any]:
-    raw = ((ev2_cfg or {}).get("icWeighting") or {}) if isinstance(ev2_cfg, dict) else {}
-    return {
-        "method": str(raw.get("method") or "empirical_bayes_shrinkage"),
-        "enabled": bool(raw.get("enabled", True)),
-        "prior_ic": float(raw.get("priorIc", raw.get("priorIC", 0.015)) or 0.015),
-        "prior_strength": float(raw.get("priorStrength", 20.0) or 20.0),
-        "min_samples_for_hard_zero": int(raw.get("minSamplesForHardZero", 40) or 40),
-        "uncertain_negative_floor": float(raw.get("uncertainNegativeFloor", raw.get("pooledSegmentFloor", 0.0025)) or 0.0025),
-        "pooled_segment_fallback_enabled": bool(raw.get("pooledSegmentFallbackEnabled", False)),
-        "pooled_segment_floor": float(raw.get("pooledSegmentFloor", 0.0025) or 0.0025),
-        "pooled_segment_fallback_multiplier": float(raw.get("pooledSegmentFallbackMultiplier", 0.25) or 0.25),
-        "pooled_segment_cap": float(raw.get("pooledSegmentCap", 0.015) or 0.015),
-    }
 
 
-def _shrink_ic_weight(
-    ic_value: float | None,
-    sample_count: int,
-    validation_multiplier: float,
-    ev2_cfg: dict | None = None,
-) -> tuple[float | None, dict[str, Any]]:
-    policy = _ic_weighting_policy(ev2_cfg)
-    if ic_value is None:
-        return None, {"policy": policy["method"], "reason": "ic_missing"}
-    raw_ic = float(ic_value)
-    if not policy["enabled"]:
-        effective = raw_ic * validation_multiplier
-        return effective, {
-            "policy": "raw_ic",
-            "raw_ic": raw_ic,
-            "sample_count": sample_count,
-            "posterior_ic": raw_ic,
-            "effective_weight": effective,
-        }
-
-    prior_strength = max(0.0, float(policy["prior_strength"]))
-    n = max(0, int(sample_count or 0))
-    alpha = n / (n + prior_strength) if (n + prior_strength) > 0 else 1.0
-    posterior = (alpha * raw_ic) + ((1.0 - alpha) * float(policy["prior_ic"]))
-    if n >= int(policy["min_samples_for_hard_zero"]) and raw_ic < 0 and posterior <= 0:
-        effective = 0.0
-        reason = "negative_ic_confirmed"
-    elif raw_ic < 0 and posterior <= 0:
-        # Low-sample segment IC is noisy; keep a tiny exploration floor instead of
-        # freezing the model out before pooled/global evidence can recover it.
-        effective = max(0.0, float(policy["uncertain_negative_floor"]))
-        reason = "uncertain_negative_floor"
-    else:
-        effective = max(0.0, posterior)
-        reason = "shrunk_to_prior"
-    effective *= max(0.0, float(validation_multiplier or 0.0))
-    return effective, {
-        "policy": policy["method"],
-        "raw_ic": raw_ic,
-        "prior_ic": float(policy["prior_ic"]),
-        "prior_strength": prior_strength,
-        "sample_count": n,
-        "shrink_alpha": round(alpha, 6),
-        "posterior_ic": round(posterior, 8),
-        "effective_weight": round(effective, 8),
-        "reason": reason,
-    }
 
 
 def _validation_multiplier(entry: dict) -> tuple[float, str, str]:
@@ -2159,131 +1791,8 @@ def _validation_multiplier(entry: dict) -> tuple[float, str, str]:
     return 1.0, "UNKNOWN", "validation_evidence_unrecognized"
 
 
-def _build_serving_ic_bundle(
-    pool: dict | None,
-    market_segment: str | None = None,
-    ev2_cfg: dict | None = None,
-) -> dict:
-    scope = _normalize_market_segment(market_segment) or "GLOBAL"
-    weights: dict[str, float] = {}
-    diagnostics: dict[str, dict] = {}
-    for name, entry in ((pool or {}).get("models") or {}).items():
-        if name in RETIRED_ALPHA_MODEL_SET or name not in ACTIVE_ALPHA_MODEL_SET:
-            continue
-        ic_value, source = _entry_serving_ic(entry, None if scope == "GLOBAL" else scope)
-        multiplier, validation_status, validation_reason = _validation_multiplier(entry)
-        sample_count = _entry_ic_sample_count(entry, source)
-        effective_weight, shrinkage = _shrink_ic_weight(ic_value, sample_count, multiplier, ev2_cfg)
-        policy = _ic_weighting_policy(ev2_cfg)
-        if (
-            scope != "GLOBAL"
-            and policy.get("pooled_segment_fallback_enabled")
-            and float(effective_weight or 0.0) == 0.0
-            and shrinkage.get("reason") == "negative_ic_confirmed"
-            and multiplier > 0
-        ):
-            pooled_ic, pooled_source = _entry_serving_ic(entry, None)
-            pooled_sample_count = _entry_ic_sample_count(entry, pooled_source)
-            pooled_weight, pooled_shrinkage = _shrink_ic_weight(
-                pooled_ic,
-                pooled_sample_count,
-                multiplier,
-                ev2_cfg,
-            )
-            if pooled_weight is not None and pooled_weight > 0:
-                fallback_weight = min(
-                    float(policy["pooled_segment_cap"]),
-                    max(
-                        float(policy["pooled_segment_floor"]),
-                        float(pooled_weight) * float(policy["pooled_segment_fallback_multiplier"]),
-                    ),
-                )
-                effective_weight = fallback_weight
-                shrinkage = {
-                    **shrinkage,
-                    "reason": "pooled_segment_floor",
-                    "segment_reason": "negative_ic_confirmed",
-                    "pooled_ic": pooled_ic,
-                    "pooled_ic_source": pooled_source,
-                    "pooled_ic_sample_count": pooled_sample_count,
-                    "pooled_effective_weight": round(float(pooled_weight), 8),
-                    "pooled_floor_weight": round(float(fallback_weight), 8),
-                    "pooled_shrinkage_reason": pooled_shrinkage.get("reason"),
-                }
-        if effective_weight is not None:
-            weights[name] = float(effective_weight)
-        diagnostics[name] = {
-            "scope": scope,
-            "ic_value": ic_value,
-            "ic_source": source,
-            "ic_sample_count": sample_count,
-            "ic_shrinkage": shrinkage,
-            "validation_multiplier": multiplier,
-            "validation_status": validation_status,
-            "validation_reason": validation_reason,
-            "last_ic_status": entry.get("last_ic_status"),
-            "last_ic_root_cause": entry.get("last_ic_root_cause"),
-            "last_ic_sample_count": entry.get("last_ic_sample_count"),
-        }
-    for name, entry in ((pool or {}).get("formal_layer3_slots") or {}).items():
-        if not isinstance(entry, dict) or str(name) in ((pool or {}).get("models") or {}):
-            continue
-        slot_status = str(entry.get("status") or "").strip()
-        try:
-            vote_weight = float(entry.get("vote_weight") or 0.0)
-        except (TypeError, ValueError):
-            vote_weight = 0.0
-        direct_prediction = bool(entry.get("direct_prediction")) or vote_weight > 0.0
-        diagnostics[str(name)] = {
-            "scope": scope,
-            "ic_value": None,
-            "ic_source": "formal_slot_metadata_only",
-            "ic_sample_count": 0,
-            "ic_shrinkage": {
-                "reason": (
-                    "formal_slot_missing_model_artifact"
-                    if direct_prediction and slot_status in {"production_adapter_active", "active"}
-                    else slot_status or "inactive"
-                )
-            },
-            "validation_multiplier": 0.0,
-            "validation_status": "INACTIVE",
-            "validation_reason": "production_vote_requires_model_pool_artifact",
-            "formal_slot_status": slot_status,
-            "direct_prediction": direct_prediction,
-            "vote_weight": vote_weight,
-            "last_ic_status": entry.get("last_ic_status"),
-            "last_ic_root_cause": entry.get("last_ic_root_cause"),
-            "last_ic_sample_count": entry.get("last_ic_sample_count"),
-        }
-    return {"scope": scope, "weights": weights, "diagnostics": diagnostics}
 
 
-def _adaptive_threshold_delta(adaptive_params: dict | None = None) -> tuple[float, dict[str, Any]]:
-    params = adaptive_params or {}
-    components = params.get("threshold_components") if isinstance(params.get("threshold_components"), dict) else None
-    if components and components.get("effective_delta") is not None:
-        try:
-            delta = float(components.get("effective_delta") or 0.0)
-        except (TypeError, ValueError):
-            delta = 0.0
-        return delta, {
-            "source": "threshold_components.effective_delta",
-            "effective_delta": round(delta, 4),
-            "components": components,
-            "provenance": params.get("provenance") if isinstance(params.get("provenance"), dict) else {},
-        }
-
-    try:
-        delta = float(params.get("confidence_delta") or 0.0)
-    except (TypeError, ValueError):
-        delta = 0.0
-    return delta, {
-        "source": "confidence_delta_legacy",
-        "effective_delta": round(delta, 4),
-        "components": None,
-        "provenance": params.get("provenance") if isinstance(params.get("provenance"), dict) else {},
-    }
 
 
 def _resolve_alpha_regime_label(
@@ -2336,274 +1845,39 @@ def _resolve_runtime_regime_contract(state: dict[str, Any], *, scope: str) -> di
     return regime_contract
 
 
-def _rank_signal_thresholds(ev2_cfg: dict | None, adaptive_params: dict | None = None) -> dict[str, float]:
-    cfg = ev2_cfg or {}
-    delta, _meta = _adaptive_threshold_delta(adaptive_params)
-
-    def clipped(value: float) -> float:
-        return max(0.01, min(0.99, value))
-
-    return {
-        "strongBuyThreshold": clipped(float(cfg.get("strongBuyThreshold", 0.85)) + delta),
-        "buyThreshold": clipped(float(cfg.get("buyThreshold", 0.70)) + delta),
-        "sellThreshold": clipped(float(cfg.get("sellThreshold", 0.30)) - delta),
-        "strongSellThreshold": clipped(float(cfg.get("strongSellThreshold", 0.15)) - delta),
-    }
 
 
-def _load_pool_and_ic():
-    """Synchronous loader (called via asyncio.to_thread).
-
-    Returns:
-      (model_status, ic_weights, degraded_dampening, ev2_cfg, used_pool, pool)
-
-    2026-04-19 R1+R3 hybrid:
-      - model_status: per-model "active"/"degraded"/"challenger"/"retired"
-      - ic_weights: from model_pool.json rolling_ic/ic_4w_avg/latest weekly_ic
-      - degraded_dampening: from trading:config.mlPool.degradedDampening
-      - ev2_cfg: from trading:config.ensemble_v2 thresholds + Top-K override
-        config (#B Option 1 2026-04-21 fix for "bot no-buy" mystery).
-    """
-    import json as _json
-    import os
+def _load_active8_serving_pool() -> tuple[dict[str, str], dict[str, Any]]:
+    """Resolve the exact eight champion identities; learned ensemble owns aggregation."""
     try:
-        from google.cloud import storage
-        bucket_name = os.getenv("GCS_BUCKET_NAME")
-        if not bucket_name:
-            raise RuntimeError("GCS_BUCKET_NAME not set for model_pool / IC load")
-        bucket = storage.Client().bucket(bucket_name)
-        pool_blob = bucket.blob("universal/model_pool.json")
-        if not pool_blob.exists():
-            raise RuntimeError("universal/model_pool.json missing")
-        pool = _json.loads(pool_blob.download_as_text().lstrip("\ufeff"))
         from services.model_serving_resolver import resolve_serving_pool
 
         pool = resolve_serving_pool(
-            pool,
             required_models=tuple(ACTIVE_ALPHA_MODELS),
             sidecar_models=tuple(TIMESFM_L2_SIDECAR_MODELS),
         )
-        _require_model_pool_required_contract(pool, "load_pool_and_ic")
+        _require_model_pool_required_contract(pool, "load_active8_serving_pool")
         model_status: dict[str, str] = {}
-        ic_weights: dict[str, float] = {}
-        for name, entry in pool.get("models", {}).items():
-            if name in RETIRED_ALPHA_MODEL_SET or name not in MODEL_POOL_REQUIRED_MODEL_SET:
-                logger.warning("[Pipeline V2] Ignoring legacy/non-required model_pool IC entry: %s", name)
+        for section_name in ("models", "l2_feature_sidecars", "state_overlays"):
+            section = pool.get(section_name)
+            if not isinstance(section, dict):
                 continue
-            model_status[name] = _require_model_pool_status(entry, name, "load_pool_and_ic")
-            if name in TIMESFM_L2_SIDECAR_MODEL_SET:
-                continue
-            last_status = str(entry.get("last_ic_status") or "").strip()
-            last_root_cause = str(entry.get("last_ic_root_cause") or "").strip()
-            last_semantic = str(entry.get("last_ic_semantic_version") or "").strip()
-            last_target_semantic = str(
-                entry.get("last_ic_target_semantic_version")
-                or (entry.get("last_ic_evaluation_contract") or {}).get("target_semantic_version")
-                or ""
-            ).strip()
-            last_artifact_version = str(entry.get("last_ic_artifact_version") or "").strip()
-            active_artifact_version = str(entry.get("version") or "").strip()
-            active_target_semantic = str(entry.get("target_semantic_version") or "").strip()
-            live_ic_valid = (
-                last_status == "computed"
-                and last_root_cause in ("", "ok")
-                and last_semantic == IC_EVALUATION_SEMANTIC_VERSION
-                and last_target_semantic == active_target_semantic == LABEL_SCHEMA_VERSION
-                and last_artifact_version == active_artifact_version
-            )
-
-            ic_value = None
-            if live_ic_valid:
-                ic_value = entry.get("rolling_ic")
-                if ic_value is None:
-                    ic_value = entry.get("ic_4w_avg")
-                if ic_value is None:
-                    history = entry.get("weekly_ic") or []
-                    if history:
-                        ic_value = history[-1]
-            else:
-                prior = entry.get("serving_ic_prior")
-                prior = prior if isinstance(prior, dict) else {}
-                prior_valid = (
-                    prior.get("schema_version") == "version-bound-purged-oof-ic-prior-v1"
-                    and str(prior.get("artifact_version") or "") == active_artifact_version
-                    and str(prior.get("target_semantic_version") or "") == active_target_semantic == LABEL_SCHEMA_VERSION
-                    and str(prior.get("source") or "") == "candidate_scoped_purged_oof_model_cpcv"
-                )
-                if prior_valid:
-                    ic_value = prior.get("value")
-                    logger.info(
-                        "[Pipeline V2] Using version-bound purged OOF IC prior for %s version=%s",
-                        name,
-                        active_artifact_version,
+            for name, entry in section.items():
+                if isinstance(entry, dict):
+                    model_status[str(name)] = _require_model_pool_status(
+                        entry, str(name), "load_active8_serving_pool"
                     )
-                elif last_status or last_root_cause:
-                    logger.warning(
-                        "[Pipeline V2] Ignoring stale/incompatible live IC for %s: "
-                        "eval=%s target=%s artifact=%s active_target=%s active_artifact=%s",
-                        name,
-                        last_semantic or "<missing>",
-                        last_target_semantic or "<missing>",
-                        last_artifact_version or "<missing>",
-                        active_target_semantic or "<missing>",
-                        active_artifact_version or "<missing>",
-                    )
-            try:
-                if ic_value is not None and float(ic_value) > 0:
-                    ic_weights[name] = float(ic_value)
-            except (TypeError, ValueError):
-                logger.debug(f"[Pipeline V2] invalid model_pool IC/prior for {name}: {ic_value}")
-
-        sidecars = pool.get("l2_feature_sidecars") if isinstance(pool.get("l2_feature_sidecars"), dict) else {}
-        models = pool.get("models") if isinstance(pool.get("models"), dict) else {}
-        for name in TIMESFM_L2_SIDECAR_MODELS:
-            entry = sidecars.get(name) or models.get(name)
-            if not isinstance(entry, dict):
-                continue
-            model_status[name] = _require_model_pool_status(entry, name, "load_pool_and_ic")
-
-        for name, entry in (pool.get("formal_layer3_slots") or {}).items():
-            slot_status = str(entry.get("status") or "").strip()
-            direct_prediction = bool(entry.get("direct_prediction")) or float(entry.get("vote_weight") or 0.0) > 0.0
-            if direct_prediction and slot_status in {"production_adapter_active", "active"}:
-                if name not in model_status:
-                    model_status[name] = "retired"
-                ic_value = entry.get("rolling_ic") or entry.get("ic_4w_avg")
-                try:
-                    if ic_value is not None:
-                        logger.warning(
-                            "[Pipeline V2] Formal L3 IC for %s ignored: "
-                            "production ensemble weight requires model_pool.models artifact path",
-                            name,
-                        )
-                except (TypeError, ValueError):
-                    logger.debug(f"[Pipeline V2] invalid formal L3 IC for {name}: {ic_value}")
-            elif name not in model_status:
-                model_status[name] = "retired"
-
-        # IC weights have exactly one owner: model_pool.json. Missing IC stays
-        # missing so lifecycle diagnostics can explain the root cause.
-        # KV-driven degraded dampening + ensemble_v2 thresholds / Top-K cfg
-        degraded_dampening = DEFAULT_DEGRADED_DAMPENING
-        ev2_cfg: dict = {}
-        try:
-            from services.trading_config_loader import load_merged_trading_config_with_contract
-            cfg_result = load_merged_trading_config_with_contract()
-            _require_trading_config_contract(cfg_result, "load_pool_and_ic")
-            tcfg = cfg_result.config
-            degraded_dampening = resolve_degraded_dampening(tcfg)
-            ev2_cfg = dict(tcfg.get("ensemble_v2", {}) or {})
-            if ev2_cfg.get("expectedReturnCalibration"):
-                configured = ev2_cfg.get("expectedReturnCalibration") or {}
-                ev2_cfg["expectedReturnCalibrationRuntime"] = {
-                    "status": "configured",
-                    "source": configured.get("source") if isinstance(configured, dict) else "trading_config",
-                    "sampleCount": configured.get("sampleCount") if isinstance(configured, dict) else None,
-                    "binCount": len(configured.get("bins") or []) if isinstance(configured, dict) else None,
-                }
-            else:
-                calibration_report = _load_expected_return_calibration_report()
-                calibration = calibration_report.get("calibration")
-                ev2_cfg["expectedReturnCalibrationRuntime"] = {
-                    key: value for key, value in calibration_report.items()
-                    if key != "calibration"
-                }
-                if calibration:
-                    ev2_cfg["expectedReturnCalibration"] = calibration
-                logger.info(
-                    "[Pipeline V2] expected-return calibration %s "
-                    "(samples=%s rows=%s bins=%s)",
-                    calibration_report.get("status"),
-                    calibration_report.get("sampleCount"),
-                    calibration_report.get("rowCount"),
-                    calibration_report.get("binCount"),
-                )
-        except Exception as _e:
-            raise RuntimeError(f"trading:config contract unavailable for ensemble_v2 attach: {_e}") from _e
-        return model_status, ic_weights, degraded_dampening, ev2_cfg, True, pool
-    except Exception as e:
-        raise RuntimeError(f"_load_pool_and_ic failed: {e}") from e
-
-
-def _load_expected_return_calibration(
-    *,
-    lookback_days: int = 90,
-    min_samples: int = 30,
-    min_bin_samples: int = 8,
-    max_bins: int = 8,
-) -> dict[str, Any] | None:
-    return _load_expected_return_calibration_report(
-        lookback_days=lookback_days,
-        min_samples=min_samples,
-        min_bin_samples=min_bin_samples,
-        max_bins=max_bins,
-    ).get("calibration")
-
-
-def _load_expected_return_calibration_report(
-    *,
-    lookback_days: int = 90,
-    min_samples: int = 30,
-    min_bin_samples: int = 8,
-    max_bins: int = 8,
-) -> dict[str, Any]:
-    """Build empirical avg_rank -> realized return calibration with explicit diagnostics."""
-    return load_expected_return_calibration_report(
-        LEARNING_D1_CLIENT.query,
-        lookback_days=lookback_days,
-        min_samples=min_samples,
-        min_bin_samples=min_bin_samples,
-        max_bins=max_bins,
-    )
-
+        return model_status, pool
+    except Exception as exc:
+        raise RuntimeError(f"_load_active8_serving_pool failed: {exc}") from exc
 
 def _attach_ensemble_v2(
     pred: dict,
-    model_status: dict,
-    ic_weights: dict,
-    degraded_dampening: float,
-    ev2_cfg: dict | None = None,
-    *,
-    adaptive_params: dict | None = None,
-    threshold_policy: Any | None = None,
-    artifact_versions: dict[str, str] | None = None,
+    artifact: dict[str, Any],
+    pool_models: dict[str, dict[str, Any]],
 ) -> None:
-    bundle = ic_weights if isinstance(ic_weights, dict) and "weights" in ic_weights else None
-    serving_weights = bundle.get("weights", {}) if bundle else ic_weights
-    if threshold_policy is None:
-        raise RuntimeError("ml_threshold_policy must be resolved before ensemble_v2 attach")
-    thresholds = dict(threshold_policy.thresholds)
-    effective_cfg = threshold_policy.ensemble_config(ev2_cfg)
-    effective_cfg["activeArtifactVersions"] = dict(artifact_versions or {})
-    if isinstance(adaptive_params, dict):
-        allocator_policy = (
-            adaptive_params.get("model_allocator")
-            or adaptive_params.get("allocator_policy")
-            or adaptive_params.get("modelAllocatorPolicy")
-        )
-        if isinstance(allocator_policy, dict):
-            effective_cfg["allocatorPolicy"] = allocator_policy
-        learning_policy = (
-            adaptive_params.get("model_allocator_learning_policy")
-            or adaptive_params.get("allocator_learning_policy")
-            or adaptive_params.get("learning_weight_policy")
-        )
-        if isinstance(learning_policy, dict):
-            effective_cfg["allocatorLearningPolicy"] = learning_policy
-    if bundle:
-        effective_cfg["observedIcModels"] = [
-            name for name, diag in (bundle.get("diagnostics") or {}).items()
-            if isinstance(diag, dict) and diag.get("ic_value") is not None
-        ]
-    attach_ensemble_v2(pred, model_status, serving_weights, degraded_dampening, effective_cfg)
-    ev2 = pred.get("ensemble_v2")
-    if isinstance(ev2, dict):
-        ev2["ic_weight_scope"] = (bundle or {}).get("scope") or _prediction_market_segment(pred) or "GLOBAL"
-        ev2["rank_signal_thresholds"] = {k: round(float(v), 4) for k, v in thresholds.items()}
-        ev2["adaptive_threshold"] = dict(threshold_policy.adaptive_overlay)
-        ev2["ml_threshold_policy"] = threshold_policy.evidence()
-        if bundle:
-            ev2["ic_weight_diagnostics"] = bundle.get("diagnostics") or {}
+    """Attach only the immutable learned Active-8 ensemble; no legacy policy fallback."""
+    attach_ensemble_v2(pred, artifact, pool_models)
 
 async def node_compute_personas(state: PipelineStateV2) -> dict:
     """
@@ -3533,23 +2807,6 @@ def _pipeline_modal_compact_value(value: Any, *, label: str) -> Any:
     return json.loads(encoded.decode("utf-8"))
 
 
-def _pipeline_modal_ensemble_projection(
-    entry: dict[str, Any],
-    *,
-    model_name: str,
-) -> dict[str, Any]:
-    projection = {
-        field: entry.get(field)
-        for field in PIPELINE_MODAL_ENSEMBLE_FIELDS
-    }
-    if not isinstance(projection.get("weekly_ic"), list):
-        projection["weekly_ic"] = []
-    return _pipeline_modal_compact_value(
-        projection,
-        label=f"ensemble.{model_name}",
-    )
-
-
 def _pipeline_modal_registry_metadata(row: dict[str, Any]) -> dict[str, Any]:
     offline = row.get("offline_evidence_json")
     if isinstance(offline, str):
@@ -3563,6 +2820,38 @@ def _pipeline_modal_registry_metadata(row: dict[str, Any]) -> dict[str, Any]:
     metadata = registration.get("metadata")
     return metadata if isinstance(metadata, dict) else {}
 
+
+def _pipeline_modal_compact_shadow_suppressions(
+    rows: list[dict[str, Any]],
+    *,
+    sample_limit: int = 32,
+) -> list[dict[str, Any]]:
+    """Keep audit visibility without shipping registry-scale diagnostics to Modal."""
+    normalized = sorted(
+        (
+            {
+                "model_name": str((row or {}).get("model_name") or "") or None,
+                "artifact_id": str((row or {}).get("artifact_id") or "")[:256] or None,
+                "reason": str((row or {}).get("reason") or "unknown")[:256],
+            }
+            for row in rows
+            if isinstance(row, dict)
+        ),
+        key=lambda row: (
+            str(row.get("model_name") or ""),
+            str(row.get("artifact_id") or ""),
+            str(row.get("reason") or ""),
+        ),
+    )
+    samples = normalized[: max(0, sample_limit)]
+    summary = {
+        "schema_version": "active8-shadow-suppression-summary-v1",
+        "total_count": len(normalized),
+        "sample_count": len(samples),
+        "omitted_count": max(0, len(normalized) - len(samples)),
+        "full_evidence_owner": "model_artifact_registry",
+    }
+    return [summary, *samples]
 
 def _pipeline_modal_active8_shadow_selection(
     serving_pool: dict[str, Any],
@@ -3700,7 +2989,7 @@ def _pipeline_modal_active8_shadow_projection(
     return {
         "candidates": projected,
         "suppressions": _pipeline_modal_compact_value(
-            suppressed,
+            _pipeline_modal_compact_shadow_suppressions(suppressed),
             label="active8_shadow_suppressions",
         ),
     }
@@ -3781,161 +3070,10 @@ def _pipeline_modal_formal_slot_projection(
     return projection
 
 
-def _load_pipeline_modal_rank_stacker_snapshot() -> dict[str, Any]:
-    """Freeze audit identity without activating the legacy stacker."""
-    from google.cloud import storage
-
-    bucket_name = os.environ.get("GCS_BUCKET_NAME", "").strip()
-    if not bucket_name:
-        raise RuntimeError("pipeline_modal_serving_manifest:rank_stacker_bucket_missing")
-    bucket = storage.Client().bucket(bucket_name)
-    artifact_blob = bucket.blob(PIPELINE_MODAL_RANK_STACKER_ARTIFACT_PATH)
-    metadata_blob = bucket.blob(PIPELINE_MODAL_RANK_STACKER_METADATA_PATH)
-    if not artifact_blob.exists() or not metadata_blob.exists():
-        return {
-            "schema_version": PIPELINE_MODAL_RANK_STACKER_SCHEMA,
-            "status": "absent",
-            "effective_status": "excluded",
-            "reason": "artifact_or_metadata_missing",
-        }
-
-    artifact_blob.reload()
-    metadata_bytes = metadata_blob.download_as_bytes()
-    artifact_identity = {
-        "generation": str(artifact_blob.generation or ""),
-        "etag": str(artifact_blob.etag or ""),
-        "md5_hash": str(artifact_blob.md5_hash or ""),
-        "crc32c": str(artifact_blob.crc32c or ""),
-        "size": int(artifact_blob.size or 0),
-    }
-    if (
-        not artifact_identity["generation"]
-        or not (artifact_identity["md5_hash"] or artifact_identity["crc32c"])
-        or artifact_identity["size"] <= 0
-        or artifact_identity["size"] > PIPELINE_MODAL_RANK_STACKER_MAX_BYTES
-    ):
-        raise RuntimeError(
-            "pipeline_modal_serving_manifest:rank_stacker_artifact_identity_invalid"
-        )
-    if not metadata_bytes or len(metadata_bytes) > PIPELINE_MODAL_RANK_STACKER_MAX_BYTES:
-        raise RuntimeError(
-            "pipeline_modal_serving_manifest:rank_stacker_metadata_size_invalid"
-        )
-    try:
-        metadata = json.loads(metadata_bytes.decode("utf-8-sig"))
-    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
-        raise RuntimeError(
-            "pipeline_modal_serving_manifest:rank_stacker_metadata_invalid"
-        ) from exc
-    if not isinstance(metadata, dict):
-        raise RuntimeError(
-            "pipeline_modal_serving_manifest:rank_stacker_metadata_not_object"
-        )
-    required_metadata = {
-        "stock_id": 0,
-        "target_type": "rank",
-        "model_family": "ridge_rank_stacker",
-        "stacker_version": "v2_rank_stacker",
-    }
-    mismatched = [
-        key for key, expected in required_metadata.items()
-        if metadata.get(key) != expected
-    ]
-    model_order = metadata.get("model_order")
-    try:
-        dimension_matches = int(metadata.get("meta_feature_dim") or -1) == len(model_order or [])
-    except (TypeError, ValueError):
-        dimension_matches = False
-    if (
-        mismatched
-        or not isinstance(model_order, list)
-        or not model_order
-        or any(str(name) not in ACTIVE_ALPHA_MODEL_SET for name in model_order)
-        or not dimension_matches
-    ):
-        raise RuntimeError(
-            "pipeline_modal_serving_manifest:rank_stacker_contract_invalid:"
-            + ",".join(mismatched or ["model_order_or_dimension"])
-        )
-    trained_at_raw = str(metadata.get("trained_at") or "").strip()
-    normalized_utc_fresh = False
-    naive_timestamp = False
-    try:
-        trained_at = datetime.fromisoformat(trained_at_raw.replace("Z", "+00:00"))
-        naive_timestamp = trained_at.tzinfo is None
-        if naive_timestamp:
-            trained_at = trained_at.replace(tzinfo=timezone.utc)
-        age = datetime.now(timezone.utc) - trained_at.astimezone(timezone.utc)
-        normalized_utc_fresh = age >= timedelta(0) and age.days <= 10
-    except (TypeError, ValueError):
-        pass
-    return _pipeline_modal_compact_value(
-        {
-            "schema_version": PIPELINE_MODAL_RANK_STACKER_SCHEMA,
-            "status": "present",
-            "effective_status": "excluded",
-            "reason": PIPELINE_MODAL_RANK_STACKER_EXCLUDED_REASON,
-            "artifact_path": PIPELINE_MODAL_RANK_STACKER_ARTIFACT_PATH,
-            "metadata_path": PIPELINE_MODAL_RANK_STACKER_METADATA_PATH,
-            "artifact_identity": artifact_identity,
-            "metadata_checksum": "sha256:" + hashlib.sha256(metadata_bytes).hexdigest(),
-            "metadata": metadata,
-            "freshness_audit": {
-                "trained_at": trained_at_raw or None,
-                "naive_timestamp": naive_timestamp,
-                "normalized_utc_fresh": normalized_utc_fresh,
-                "serving_enabled": False,
-            },
-        },
-        label="rank_stacker",
-    )
 
 
-def _pipeline_modal_rank_stacker_snapshot() -> dict[str, Any]:
-    try:
-        return _load_pipeline_modal_rank_stacker_snapshot()
-    except Exception as exc:  # noqa: BLE001 - audit-only dependency must not block serving.
-        typed_code = type(exc).__name__.lower()
-        if not typed_code.replace("_", "").isalnum():
-            typed_code = "unknown_error"
-        return {
-            "schema_version": PIPELINE_MODAL_RANK_STACKER_SCHEMA,
-            "status": "unavailable",
-            "effective_status": "excluded",
-            "reason": f"audit_snapshot_unavailable:{typed_code}",
-        }
 
 
-def _pipeline_modal_ic_weight_policy() -> dict[str, Any]:
-    try:
-        prior = float(os.environ.get("IC_WEIGHT_PRIOR", "0.015") or "0.015")
-        prior_strength = float(
-            os.environ.get("IC_WEIGHT_PRIOR_STRENGTH", "20") or "20"
-        )
-        min_samples = int(
-            os.environ.get("IC_WEIGHT_MIN_SAMPLES_FOR_HARD_ZERO", "40") or "40"
-        )
-    except (TypeError, ValueError) as exc:
-        raise RuntimeError(
-            "pipeline_modal_serving_manifest:ic_weight_policy_invalid"
-        ) from exc
-    if (
-        not math.isfinite(prior)
-        or not -1.0 <= prior <= 1.0
-        or not math.isfinite(prior_strength)
-        or not 0.0 <= prior_strength <= 1_000_000.0
-        or not 0 <= min_samples <= 1_000_000
-    ):
-        raise RuntimeError(
-            "pipeline_modal_serving_manifest:ic_weight_policy_out_of_bounds"
-        )
-    return {
-        "schema_version": "ic-weight-policy-v1",
-        "prior_ic": prior,
-        "prior_strength": prior_strength,
-        "min_samples_for_hard_zero": min_samples,
-        "source": "controller_dispatch_environment",
-    }
 
 
 def _pipeline_modal_registry_identity_rows(serving_pool: dict[str, Any]) -> list[dict[str, Any]]:
@@ -3982,11 +3120,45 @@ def _pipeline_modal_registry_identity_rows(serving_pool: dict[str, Any]) -> list
     )
 
 
+def _load_active8_ensemble_snapshot(serving_pool: dict[str, Any]) -> dict[str, Any]:
+    rows = LEARNING_D1_CLIENT.query(
+        """
+        SELECT a.payload_json, a.payload_checksum, a.state, a.production_effect,
+               p.artifact_id, p.cohort_id, p.payload_checksum AS pointer_payload_checksum,
+               p.base_artifact_set_checksum AS pointer_base_checksum
+          FROM active8_ensemble_pointer_v1 AS p
+          JOIN active8_ensemble_artifacts_v1 AS a ON a.artifact_id = p.artifact_id
+         WHERE p.singleton_id = 1
+        """
+    )
+    if len(rows) != 1:
+        raise RuntimeError(f"active8_ensemble_pointer_cardinality:{len(rows)}")
+    row = rows[0]
+    if row.get("state") != "production" or int(row.get("production_effect") or 0) != 1:
+        raise RuntimeError("active8_ensemble_pointer_not_production")
+    try:
+        payload = json.loads(str(row.get("payload_json") or ""))
+    except json.JSONDecodeError as exc:
+        raise RuntimeError("active8_ensemble_payload_json_invalid") from exc
+    if not isinstance(payload, dict):
+        raise RuntimeError("active8_ensemble_payload_not_object")
+    if (
+        str(row.get("payload_checksum") or "") != str(row.get("pointer_payload_checksum") or "")
+        or str(payload.get("payload_checksum") or "") != str(row.get("payload_checksum") or "")
+        or str(payload.get("base_artifact_set_checksum") or "") != str(row.get("pointer_base_checksum") or "")
+    ):
+        raise RuntimeError("active8_ensemble_pointer_identity_mismatch")
+    pool_models = serving_pool.get("models") if isinstance(serving_pool.get("models"), dict) else {}
+    from services.ensemble_v2 import validate_active8_ensemble_artifact
+    validate_active8_ensemble_artifact(payload, pool_models)
+    return payload
+
+
 def _build_pipeline_modal_serving_manifest(
     serving_pool: dict[str, Any],
     *,
     registry_rows: list[dict[str, Any]],
-    rank_stacker_snapshot: dict[str, Any] | None = None,
+    active8_ensemble: dict[str, Any],
     active8_shadow_selection: dict[str, Any] | None = None,
 ) -> tuple[dict[str, Any], str]:
     """Project one frozen, compact Active-8 identity snapshot for Modal."""
@@ -4020,11 +3192,12 @@ def _build_pipeline_modal_serving_manifest(
             )
         serving_block_reason = str(entry.get("serving_block_reason") or "").strip()
         serving_eligible = entry.get("serving_eligible") is not False and not serving_block_reason
-        effective_status = status if serving_eligible else "challenger"
-        if not serving_eligible and not serving_block_reason:
+        if not serving_eligible:
             raise RuntimeError(
-                f"pipeline_modal_serving_manifest:exclusion_reason_missing:{model_name}"
+                "pipeline_modal_serving_manifest:active8_base_not_serving:"
+                f"{model_name}:{serving_block_reason or 'serving_eligible_false'}"
             )
+        effective_status = status
         if len(serving_block_reason) > 4096:
             raise RuntimeError(
                 f"pipeline_modal_serving_manifest:exclusion_reason_too_large:{model_name}"
@@ -4132,7 +3305,6 @@ def _build_pipeline_modal_serving_manifest(
                 if isinstance(entry.get("sequence_contract"), dict)
                 else None,
             },
-            "ensemble": _pipeline_modal_ensemble_projection(entry, model_name=model_name),
         })
 
     active8_shadow = _pipeline_modal_active8_shadow_projection(
@@ -4140,19 +3312,16 @@ def _build_pipeline_modal_serving_manifest(
     )
     manifest = {
         "schema_version": PIPELINE_MODAL_SERVING_MANIFEST_SCHEMA,
-        "source_of_truth": "model_champion_pointers/model_artifact_registry",
+        "source_of_truth": "model_champion_pointers+active8_ensemble_pointer_v1",
         "models": models,
         "shadow_models": _pipeline_modal_shadow_projection(serving_pool),
         "active8_shadow_candidates": active8_shadow["candidates"],
         "active8_shadow_suppressions": active8_shadow["suppressions"],
         "formal_layer3_slots": _pipeline_modal_formal_slot_projection(serving_pool),
-        "rank_stacker": rank_stacker_snapshot or {
-            "schema_version": PIPELINE_MODAL_RANK_STACKER_SCHEMA,
-            "status": "absent",
-            "effective_status": "excluded",
-            "reason": "snapshot_not_provided",
-        },
-        "ic_weight_policy": _pipeline_modal_ic_weight_policy(),
+        "active8_ensemble": _pipeline_modal_compact_value(
+            active8_ensemble,
+            label="active8_ensemble",
+        ),
     }
     return manifest, _pipeline_modal_canonical_digest(manifest)
 
@@ -4230,14 +3399,9 @@ def _pipeline_modal_expected_source_sha() -> str:
 
 
 async def _attach_pipeline_modal_serving_context(state: PipelineStateV2) -> dict:
-    (
-        serving_model_status,
-        _serving_ic_universe,
-        _serving_degraded_dampening,
-        _serving_ev2_cfg,
-        _serving_used_pool,
-        _serving_pool,
-    ) = await asyncio.to_thread(_load_pool_and_ic)
+    serving_model_status, _serving_pool = await asyncio.to_thread(
+        _load_active8_serving_pool
+    )
     if not isinstance(_serving_pool, dict) or not _serving_pool:
         raise RuntimeError("pipeline_modal_serving_context:serving_pool_missing")
     model_status = dict(serving_model_status or {})
@@ -4261,15 +3425,15 @@ async def _attach_pipeline_modal_serving_context(state: PipelineStateV2) -> dict
                     str(model_name),
                     "pipeline_modal_serving_context",
                 )
-    registry_rows, rank_stacker_snapshot, active8_shadow_selection = await asyncio.gather(
+    registry_rows, active8_ensemble, active8_shadow_selection = await asyncio.gather(
         asyncio.to_thread(_pipeline_modal_registry_identity_rows, _serving_pool),
-        asyncio.to_thread(_pipeline_modal_rank_stacker_snapshot),
+        asyncio.to_thread(_load_active8_ensemble_snapshot, _serving_pool),
         asyncio.to_thread(_pipeline_modal_active8_shadow_selection, _serving_pool),
     )
     serving_manifest, serving_manifest_digest = _build_pipeline_modal_serving_manifest(
         _serving_pool,
         registry_rows=registry_rows,
-        rank_stacker_snapshot=rank_stacker_snapshot,
+        active8_ensemble=active8_ensemble,
         active8_shadow_selection=active8_shadow_selection,
     )
     expected_source_sha = _pipeline_modal_expected_source_sha()
@@ -4290,9 +3454,6 @@ async def _attach_pipeline_modal_serving_context(state: PipelineStateV2) -> dict
         "expected_source_sha": expected_source_sha,
         "pool_versions_loaded": True,
         "serving_model_status": _json_safe(serving_model_status),
-        "serving_degraded_dampening": _serving_degraded_dampening,
-        "serving_ev2_cfg": _json_safe(_serving_ev2_cfg),
-        "serving_used_pool": bool(_serving_used_pool),
         "serving_pool": _json_safe(_serving_pool),
         "serving_manifest": serving_manifest,
         "serving_manifest_digest": serving_manifest_digest,

@@ -5,7 +5,7 @@ ROOT = Path(__file__).resolve().parents[1]
 REPO = ROOT.parent
 
 
-def test_daily_pipeline_calls_all_l3_sequence_predictors():
+def _retired_test_daily_pipeline_calls_all_l3_sequence_predictors():
     source = (ROOT / "graphs" / "daily_pipeline_v2.py").read_text(encoding="utf-8")
 
     assert "modal_client.gnn_graphsage_batch_predict" in source

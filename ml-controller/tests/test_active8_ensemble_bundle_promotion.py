@@ -1,0 +1,140 @@
+import hashlib
+import json
+
+from services import model_artifact_registry as registry
+from services.active8_release_training_contract import ACTIVE8_MODEL_NAMES
+
+
+def _canonical(value):
+    return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+
+
+def _fixture():
+    rows = []
+    base = {}
+    for model in ACTIVE8_MODEL_NAMES:
+        checksum = "sha256:" + hashlib.sha256(model.encode()).hexdigest()
+        artifact_id = f"{model}:v-new:oof_full_fit_release"
+        base[model] = {
+            "artifact_id": artifact_id,
+            "version": "v-new",
+            "checksum": checksum,
+            "candidate_type": "oof_full_fit_release",
+        }
+        rows.append({
+            **base[model],
+            "model_name": model,
+            "training_run_id": "run-new",
+            "state": "offline_failed" if model == "PatchTST" else "offline_passed",
+            "artifact_path": f"{model}/v-new.bin",
+            "metadata_path": f"{model}/v-new.json",
+            "offline_evidence_json": json.dumps({
+                "registration": {"oof_promotion_evidence": {
+                    "schema_version": "model-cpcv-evidence-v1",
+                    "method": "outer_purged_walk_forward_rank_ic",
+                    "folds": 5,
+                    "decision": "FAIL" if model == "PatchTST" else "PASS",
+                }}
+            }),
+        })
+    payload = {
+        "schema_version": "active8-oof-ensemble-serving-artifact-v1",
+        "base_artifacts": base,
+        "validation": {"decision": "PASS", "failed_gates": []},
+    }
+    payload["payload_checksum"] = hashlib.sha256(_canonical(payload).encode()).hexdigest()
+    ensemble = {
+        "artifact_id": "active8-ensemble:cohort-new:1234",
+        "cohort_id": "cohort-new",
+        "training_run_id": "run-new",
+        "payload_json": _canonical(payload),
+        "payload_checksum": payload["payload_checksum"],
+        "base_artifact_set_checksum": "b" * 64,
+        "validation_decision": "PASS",
+        "state": "candidate",
+    }
+    pointers = [{
+        "model_name": model,
+        "champion_version": "v-old",
+        "champion_artifact_id": f"old:{model}",
+    } for model in ACTIVE8_MODEL_NAMES]
+    return rows, pointers, ensemble
+
+
+class AtomicD1:
+    def __init__(self, rows, ensemble):
+        self.statements = None
+        self.rows = rows
+        self.ensemble = ensemble
+
+    def atomic_batch_execute(self, statements, timeout=0):
+        self.statements = statements
+        return {"atomic": True, "total": len(statements)}
+
+    def query(self, sql, params=None):
+        if "FROM model_champion_pointers AS p" in sql:
+            return [
+                {
+                    "model_name": row["model_name"],
+                    "champion_artifact_id": row["artifact_id"],
+                    "training_run_id": row["training_run_id"],
+                    "state": "production",
+                }
+                for row in self.rows
+            ]
+        if "FROM active8_ensemble_pointer_v1 AS p" in sql:
+            return [{
+                "artifact_id": self.ensemble["artifact_id"],
+                "payload_checksum": self.ensemble["payload_checksum"],
+                "base_artifact_set_checksum": self.ensemble["base_artifact_set_checksum"],
+                "training_run_id": self.ensemble["training_run_id"],
+                "state": "production",
+                "production_effect": 1,
+            }]
+        raise AssertionError(sql)
+
+
+def test_bundle_dry_run_accepts_weak_learner_only_through_validated_ensemble():
+    rows, pointers, ensemble = _fixture()
+    result = registry.run_active8_ensemble_bundle_promotion_controller(
+        training_run_id="run-new",
+        registry_rows=rows,
+        d1_pointers=pointers,
+        ensemble_rows=[ensemble],
+        confirm=False,
+    )
+    assert result["can_promote"] is True
+    assert len(result["release_models"]) == 8
+    assert result["validation"]["decision"] == "PASS"
+
+
+def test_bundle_commit_is_one_atomic_batch(monkeypatch):
+    rows, pointers, ensemble = _fixture()
+    d1 = AtomicD1(rows, ensemble)
+    monkeypatch.setattr(registry, "d1_client", d1)
+    result = registry.run_active8_ensemble_bundle_promotion_controller(
+        training_run_id="run-new",
+        registry_rows=rows,
+        d1_pointers=pointers,
+        ensemble_rows=[ensemble],
+        confirm=True,
+    )
+    assert result["status"] == "ok"
+    assert result["d1_batch"]["atomic"] is True
+    assert result["readback_verified"] is True
+    assert len(d1.statements) == 43
+    sql = "\n".join(statement[0] for statement in d1.statements)
+    assert "active8_ensemble_pointer_v1" in sql
+    assert "model_champion_pointers" in sql
+
+
+def test_bundle_rejects_missing_model():
+    rows, pointers, ensemble = _fixture()
+    result = registry.run_active8_ensemble_bundle_promotion_controller(
+        training_run_id="run-new",
+        registry_rows=rows[:-1],
+        d1_pointers=pointers,
+        ensemble_rows=[ensemble],
+    )
+    assert result["can_promote"] is False
+    assert result["decision"] == "active8_bundle_incomplete"

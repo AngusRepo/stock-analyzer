@@ -719,19 +719,18 @@ def build_model_training_config_attestation(
     payload: dict[str, Any],
     effective_config: dict[str, Any],
 ) -> dict[str, Any] | None:
-    """Bind a monthly artifact to the exact immutable contract and effective config.
+    """Bind a canonical OOF/full-fit artifact to its immutable contract and effective config.
 
-    Non-monthly and research artifacts deliberately return ``None``. A monthly
-    candidate cannot be produced without a valid contract and non-empty effective
-    settings, so PBO is never waived merely because a caller wrote trials=1.
+    Research artifacts return ``None``. A formal release cannot be produced
+    without a valid contract and non-empty effective settings.
     """
 
-    contract = payload.get("monthly_training_contract")
+    contract = payload.get("release_training_contract")
     candidate_type = str(payload.get("candidate_type") or "").strip()
-    if contract is None and candidate_type != "monthly_release":
+    if contract is None and candidate_type != "oof_full_fit_release":
         return None
     if not isinstance(contract, dict):
-        raise ValueError("monthly_training_contract_missing")
+        raise ValueError("release_training_contract_missing")
 
     def canonical(value: Any) -> Any:
         if isinstance(value, dict):
@@ -755,39 +754,39 @@ def build_model_training_config_attestation(
         return hashlib.sha256(raw).hexdigest()
 
     unsigned_contract = {key: value for key, value in contract.items() if key != "contract_checksum"}
-    if contract.get("schema_version") != "active8-monthly-training-contract-v2":
-        raise ValueError("monthly_training_contract_schema_mismatch")
+    if contract.get("schema_version") != "active8-release-training-contract-v1":
+        raise ValueError("release_training_contract_schema_mismatch")
     if str(contract.get("contract_checksum") or "") != checksum(unsigned_contract):
-        raise ValueError("monthly_training_contract_checksum_mismatch")
+        raise ValueError("release_training_contract_checksum_mismatch")
     model = str(model_name or "").strip()
     model_specs = contract.get("model_specs") if isinstance(contract.get("model_specs"), dict) else {}
     if model not in model_specs or model not in (contract.get("models") or []):
-        raise ValueError(f"monthly_training_model_not_attested:{model}")
+        raise ValueError(f"release_training_model_not_attested:{model}")
     config = canonical(dict(effective_config or {}))
     if not config:
         raise ValueError(f"monthly_training_effective_config_missing:{model}")
-    if contract.get("model_profile_schema_version") != "active8-monthly-model-profiles-v1":
-        raise ValueError("monthly_training_contract_profile_schema_mismatch")
+    if contract.get("model_profile_schema_version") != "active8-release-model-profiles-v1":
+        raise ValueError("release_training_contract_profile_schema_mismatch")
     profile = dict((contract.get("model_profiles") or {}).get(model) or {})
     if not profile:
-        raise ValueError(f"monthly_training_model_profile_missing:{model}")
+        raise ValueError(f"release_training_model_profile_missing:{model}")
 
     def require_subset(actual: Any, required: Any, path: str = "effective_config") -> None:
         if isinstance(required, dict):
             if not isinstance(actual, dict):
-                raise ValueError(f"monthly_model_profile_type_mismatch:{path}")
+                raise ValueError(f"release_model_profile_type_mismatch:{path}")
             for key, required_value in required.items():
                 if key not in actual:
-                    raise ValueError(f"monthly_model_profile_field_missing:{path}.{key}")
+                    raise ValueError(f"release_model_profile_field_missing:{path}.{key}")
                 require_subset(actual[key], required_value, f"{path}.{key}")
             return
         if actual != required:
-            raise ValueError(f"monthly_model_profile_value_mismatch:{path}:expected={required}:actual={actual}")
+            raise ValueError(f"release_model_profile_value_mismatch:{path}:expected={required}:actual={actual}")
 
     require_subset(config, profile.get("required_effective_config") or {})
     attestation: dict[str, Any] = {
         "schema_version": "model-training-config-attestation-v2",
-        "monthly_contract_checksum": contract["contract_checksum"],
+        "release_contract_checksum": contract["contract_checksum"],
         "model_name": model,
         "model_spec": model_specs[model],
         "model_profile_schema_version": contract["model_profile_schema_version"],
@@ -872,7 +871,7 @@ class UniversalTrainingPolicy:
             "dataset_snapshot",
             "generation_mode",
             "cohort_id",
-            "monthly_training_contract",
+            "release_training_contract",
         ):
             if payload.get(key) is not None:
                 base_payload[key] = payload[key]

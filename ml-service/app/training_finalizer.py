@@ -337,7 +337,7 @@ def build_retrain_followup_payload(
     run_id: str | None,
     lock_key: str | None,
     run_date: str | None,
-    is_monthly: bool,
+
     batch_count: int,
     gcs_prefix: str,
     candidate_version: str,
@@ -346,7 +346,7 @@ def build_retrain_followup_payload(
     partial_results: dict[str, dict],
     elapsed_s: float,
     candidate_type: str | None = None,
-    promotion_allowed_models: list[str] | None = None,
+    promotion_eligible_models: list[str] | None = None,
     oof_promotion_evidence: dict[str, dict] | None = None,
     oof_lifecycle_resume: dict | None = None,
 ) -> dict:
@@ -361,9 +361,9 @@ def build_retrain_followup_payload(
         "trained_at": _first_trained_at(partial_results),
         "lock_key": lock_key,
         "run_date": run_date,
-        "is_monthly": bool(is_monthly),
+
         "candidate_type": candidate_type,
-        "promotion_allowed_models": list(promotion_allowed_models or []),
+        "promotion_eligible_models": list(promotion_eligible_models or []),
         "oof_promotion_evidence": dict(oof_promotion_evidence or {}),
         "oof_lifecycle_resume": dict(oof_lifecycle_resume or {}),
         "batch_count": int(batch_count),
@@ -387,7 +387,7 @@ def build_retrain_followup_payload(
         "modal_telemetry": build_retrain_orchestrator_telemetry(
             stages,
             total_elapsed_s=elapsed_s,
-            is_monthly=bool(is_monthly),
+
             run_id=run_id,
             partial_results=partial_results,
         ),

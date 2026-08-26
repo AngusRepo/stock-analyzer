@@ -1591,7 +1591,7 @@ export type ModelArtifactRegistryRow = {
   artifact_id: string
   model_name: string
   version: string
-  candidate_type: 'monthly_release' | 'weekly_drift' | 'manual_hotfix' | 'model_family_shadow' | 'research_benchmark' | 'timesfm_l175_l2_feature_release' | 'unknown' | string
+  candidate_type: 'oof_full_fit_release' | 'manual_hotfix' | 'model_family_shadow' | 'research_benchmark' | 'timesfm_l175_l2_feature_release' | 'unknown' | string
   state: string
   artifact_path?: string | null
   metadata_path?: string | null
@@ -1667,15 +1667,13 @@ export type ModelArtifactSelectionResponse = {
   suppressed_count?: number
   suppressed?: ModelArtifactSuppressedRow[]
   models: Record<string, {
-    monthly_release_candidate?: ModelArtifactRegistryRow | null
-    weekly_drift_candidate?: ModelArtifactRegistryRow | null
-    latest_monthly_release_artifact?: ModelArtifactRegistryRow | null
+    oof_full_fit_release_candidate?: ModelArtifactRegistryRow | null
+    latest_oof_full_fit_release_artifact?: ModelArtifactRegistryRow | null
     serving_release_artifact?: ModelArtifactRegistryRow | null
     archive_candidates: string[]
     superseded_candidates?: string[]
     action_context?: {
-      monthly_release_candidate?: ModelArtifactActionContext
-      weekly_drift_candidate?: ModelArtifactActionContext
+      oof_full_fit_release_candidate?: ModelArtifactActionContext
     }
     policy: Record<string, unknown>
   }>
@@ -1715,7 +1713,6 @@ export type ModelArtifactPromotionControllerRequest = {
   approved?: boolean
   approved_by?: string
   reason?: string
-  allow_offline_monthly_release?: boolean
   manual_override?: boolean
 }
 
@@ -1763,7 +1760,6 @@ export const modelPoolApi = {
   artifactPromotionQueue: (limit = 200) => get<ModelArtifactPromotionQueueResponse>(`/model-pool/artifact_registry/promotion_queue?limit=${limit}`),
   promotionController: (body: ModelArtifactPromotionControllerRequest) => post<ModelArtifactPromotionControllerResponse>('/model-pool/artifact_registry/promotion_controller', body),
   championPointers: (limit = 200) => get<ModelChampionPointersResponse>(`/model-pool/artifact_registry/champion_pointers?limit=${limit}`),
-  backfillChampionPointers: (body: { confirm: boolean; reason?: string; create_missing_artifacts?: boolean }) => post<any>('/model-pool/artifact_registry/champion_pointers/backfill', body),
 }
 
 // 2026-04-21 #43 Cost Tracking API

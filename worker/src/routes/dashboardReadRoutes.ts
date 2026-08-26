@@ -186,7 +186,7 @@ dashboardReadRoutes.get('/api/observability/model-health', async (c) => {
       .map(([modelName, raw]) => {
         const model = raw as Record<string, any>
         const ic = model.ic_4w_avg ?? model.rolling_ic ?? null
-        const sourceOfTruth = lineage?.source_of_truth ?? 'model_pool.json'
+        const sourceOfTruth = lineage?.source_of_truth ?? 'model_champion_pointers/model_artifact_registry'
         return {
           date,
           model_name: modelName,
@@ -213,13 +213,13 @@ dashboardReadRoutes.get('/api/observability/model-health', async (c) => {
           source_of_truth: sourceOfTruth,
         }
       })
-    return c.json({ date, models, source_of_truth: lineage?.source_of_truth ?? 'model_pool.json', last_updated: lineage?.last_updated ?? null })
+    return c.json({ date, models, source_of_truth: lineage?.source_of_truth ?? 'model_champion_pointers/model_artifact_registry', last_updated: lineage?.last_updated ?? null })
   } catch (e: any) {
     return c.json({
       date,
       models: [],
-      source_of_truth: 'model_pool.json',
-      error: 'model_pool_unavailable',
+      source_of_truth: 'model_champion_pointers/model_artifact_registry',
+      error: 'd1_champion_pool_unavailable',
       warning: e?.message ?? String(e),
     }, 502)
   }
@@ -332,22 +332,6 @@ dashboardReadRoutes.get('/api/model-pool/artifact_registry/champion_pointers', a
     return c.json(await controllerJson<any>(c.env, `/model_pool/artifact_registry/champion_pointers${qs ? `?${qs}` : ''}`, { timeoutMs: 30_000 }))
   } catch (e: any) {
     return c.json({ status: 'error', error: e?.message ?? String(e), models: {} }, 502)
-  }
-})
-
-dashboardReadRoutes.post('/api/model-pool/artifact_registry/champion_pointers/backfill', async (c) => {
-  const authError = await requireValidToken(c)
-  if (authError) return authError
-
-  try {
-    const body = await c.req.json().catch(() => ({}))
-    return c.json(await controllerJson<any>(c.env, '/model_pool/artifact_registry/champion_pointers/backfill', {
-      method: 'POST',
-      jsonBody: body,
-      timeoutMs: 30_000,
-    }))
-  } catch (e: any) {
-    return c.json({ status: 'error', error: e?.message ?? String(e) }, 502)
   }
 })
 

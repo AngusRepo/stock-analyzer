@@ -13,7 +13,7 @@ def test_d1_champion_pool_serves_only_valid_production_artifact():
         pointers=[{
             "model_name": "TabM",
             "champion_version": "vGood",
-            "champion_artifact_id": "TabM:vGood:monthly_release",
+            "champion_artifact_id": "TabM:vGood:oof_full_fit_release",
             "promotion_evidence_json": {
                 "rolling_ic": 0.08,
                 "last_ic_status": "computed",
@@ -24,10 +24,10 @@ def test_d1_champion_pool_serves_only_valid_production_artifact():
             },
         }],
         artifacts=[{
-            "artifact_id": "TabM:vGood:monthly_release",
+            "artifact_id": "TabM:vGood:oof_full_fit_release",
             "model_name": "TabM",
             "version": "vGood",
-            "candidate_type": "monthly_release",
+            "candidate_type": "oof_full_fit_release",
             "state": "production",
             "artifact_path": "universal/tabm/vGood.pt",
             "metadata_path": "universal/tabm/metadata_vGood.json",
@@ -39,7 +39,6 @@ def test_d1_champion_pool_serves_only_valid_production_artifact():
                 "feature_semantic_version": resolver.FORMAL_FEATURE_SEMANTIC_VERSION,
             },
         }],
-        fallback_pool={"models": {"TabM": {"status": "active", "version": "old"}}},
         required_models=("TabM",),
         sidecar_models=(),
     )
@@ -56,27 +55,18 @@ def test_d1_champion_pool_retires_failed_artifact_without_model_pool_fallback():
         pointers=[{
             "model_name": "PatchTST",
             "champion_version": "vBad",
-            "champion_artifact_id": "PatchTST:vBad:monthly_release",
+            "champion_artifact_id": "PatchTST:vBad:oof_full_fit_release",
         }],
         artifacts=[{
-            "artifact_id": "PatchTST:vBad:monthly_release",
+            "artifact_id": "PatchTST:vBad:oof_full_fit_release",
             "model_name": "PatchTST",
             "version": "vBad",
-            "candidate_type": "monthly_release",
+            "candidate_type": "oof_full_fit_release",
             "state": "production",
             "artifact_path": "universal/patchtst/vBad.zip",
             "offline_gate_decision": "FAIL",
             "live_gate_status": "failed",
         }],
-        fallback_pool={
-            "models": {
-                "PatchTST": {
-                    "status": "active",
-                    "version": "old",
-                    "gcs_path": "universal/patchtst/old.zip",
-                },
-            },
-        },
         required_models=("PatchTST",),
         sidecar_models=(),
     )
@@ -109,15 +99,6 @@ def test_patchtst_d1_champion_rejects_legacy_pt_artifact():
             "offline_gate_decision": "STRONG_PASS",
             "live_gate_status": "passed",
         }],
-        fallback_pool={
-            "models": {
-                "PatchTST": {
-                    "status": "active",
-                    "version": "old",
-                    "gcs_path": "universal/patchtst/old.zip",
-                },
-            },
-        },
         required_models=("PatchTST",),
         sidecar_models=(),
     )
@@ -164,17 +145,6 @@ def test_oof_champion_projects_version_bound_ic_prior_and_quarantines_stale_live
             "champion_artifact_id": artifact["artifact_id"],
         }],
         artifacts=[artifact],
-        fallback_pool={
-            "models": {
-                "XGBoost": {
-                    "version": "v1",
-                    "rolling_ic": -0.3,
-                    "last_ic_status": "computed",
-                    "last_ic_artifact_version": "v1",
-                    "last_ic_target_semantic_version": "legacy-v2",
-                }
-            }
-        },
         required_models=("XGBoost",),
         sidecar_models=(),
     )

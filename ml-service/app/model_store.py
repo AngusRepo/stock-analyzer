@@ -207,7 +207,7 @@ def load_model(
             # Production universal models have exactly one owner: model_pool.json.
             # Do not fall back to legacy flat files; that creates split-brain artifacts.
             try:
-                from .model_pool import get_active_path, gcs_metadata_path_for, get_active_version, load_pool
+                from .model_serving_contract import get_active_path, gcs_metadata_path_for, get_active_version, load_pool
                 pool_snapshot = load_pool()
                 if not pool_snapshot:
                     logger.warning(

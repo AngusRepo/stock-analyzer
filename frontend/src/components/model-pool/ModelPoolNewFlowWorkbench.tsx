@@ -1,4 +1,4 @@
-﻿import { useMemo, useState, type ReactNode } from 'react'
+import { useMemo, useState, type ReactNode } from 'react'
 import {
   MODEL_POOL_ACTIVE_ALPHA_MODEL_IDS,
   MODEL_POOL_PRODUCTION_SLOT_IDS,
@@ -123,7 +123,7 @@ const EVIDENCE_MATRIX_COLUMNS = [
 ] as const
 
 type SelectionModelRow = ModelArtifactSelectionResponse['models'][string]
-type SelectedArtifactRow = NonNullable<SelectionModelRow['monthly_release_candidate']>
+type SelectedArtifactRow = NonNullable<SelectionModelRow['oof_full_fit_release_candidate']>
 type PromotionQueueRow = ModelArtifactPromotionQueueResponse['queue'][number]
 
 function isServing(model?: ModelPoolLineageModel): boolean {
@@ -172,7 +172,7 @@ function latestStatusFor(candidateId: string, rows?: ModelUpgradeResearchStatusR
 }
 
 function selectionCandidate(row?: SelectionModelRow) {
-  return row?.monthly_release_candidate ?? row?.weekly_drift_candidate ?? null
+  return row?.oof_full_fit_release_candidate ?? null
 }
 
 function selectedPromotionRow(
@@ -611,7 +611,7 @@ function finalCompareCell(
     return {
       value: 'N/R',
       detail: 'no candidate',
-      title: `${candidateId}: no selected weekly/monthly candidate is waiting for champion comparison.`,
+      title: `${candidateId}: no canonical OOF release candidate is waiting for champion comparison.`,
       tone: 'info' as WorkstationTone,
     }
   }
@@ -637,7 +637,7 @@ function artifactCompareSummary(record: GrafanaModelRecord) {
   const servingVersion = firstText(record.servingArtifact?.version)
   const artifactDisplay = candidate ?? (
     releaseArtifactVersion
-      ? `${releaseIsServing ? 'serving monthly release' : 'monthly release'} ${releaseArtifactVersion}`
+      ? `${releaseIsServing ? 'serving OOF release' : 'OOF release'} ${releaseArtifactVersion}`
       : null
   )
   const champion = firstText(
@@ -671,7 +671,7 @@ function artifactCompareSummary(record: GrafanaModelRecord) {
 
   return {
     artifactId,
-    candidate: artifactDisplay ?? 'no monthly/weekly release artifact',
+    candidate: artifactDisplay ?? 'no canonical OOF release artifact',
     champion: champion ?? 'champion baseline missing',
     finalComparedTo,
     hasCandidate,
@@ -683,7 +683,7 @@ function artifactCompareSummary(record: GrafanaModelRecord) {
     metricDetail,
     tone: compareReady ? 'ok' as WorkstationTone : hasReleaseArtifact && hasChampionBaseline ? 'info' as WorkstationTone : 'warn' as WorkstationTone,
     title: [
-      `${record.candidate.id}: weekly/monthly candidate artifact is compared against the current champion baseline before pointer migration.`,
+      `${record.candidate.id}: canonical OOF release artifact is compared against the exact D1 champion before pointer promotion.`,
       `artifact=${artifactDisplay ?? 'missing'}`,
       `candidate_gate=${candidate ?? 'none'}`,
       `current_champion=${champion ?? 'missing'}`,
@@ -1044,7 +1044,7 @@ function GrafanaDashboardHeader({
         <GrafanaStat
           label="Artifacts"
           value={selectedArtifacts}
-          detail="selected monthly or weekly candidates"
+          detail="selected canonical OOF candidates"
           tone={selectedArtifacts ? 'info' : 'neutral'}
         />
         <GrafanaStat
@@ -1076,11 +1076,11 @@ function candidateHousekeepingSummary(
   const superseded = suppressed.filter((row) => String(row.reason ?? '').toLowerCase().includes('superseded'))
   const archiveIds = [...new Set(selectionArchiveIds)]
   const selectedSlots = Object.values(selection?.models ?? {}).reduce((sum, row) => (
-    sum + (row.monthly_release_candidate ? 1 : 0) + (row.weekly_drift_candidate ? 1 : 0)
+    sum + (row.oof_full_fit_release_candidate ? 1 : 0)
   ), 0)
   const latestRejected = Object.entries(selection?.models ?? {})
     .filter(([modelName]) => PRODUCTION_SLOT_MODELS.has(modelName))
-    .map(([, row]) => row.latest_monthly_release_artifact)
+    .map(([, row]) => row.latest_oof_full_fit_release_artifact)
     .filter((row): row is NonNullable<typeof row> => (
       row?.state === 'offline_failed' || row?.state === 'registration_failed'
     ))
@@ -1112,7 +1112,7 @@ function CandidateHousekeepingPanel({
     >
       <div className="grid gap-3 bg-[#0b1118] p-3 lg:grid-cols-[minmax(0,0.9fr)_minmax(0,1.1fr)]">
         <div className="grid gap-2 sm:grid-cols-2">
-          <GrafanaStat label="Review slots" value={summary.selectedSlots} detail="monthly + weekly selected by policy" tone={summary.selectedSlots ? 'info' : 'neutral'} />
+          <GrafanaStat label="Review slots" value={summary.selectedSlots} detail="canonical immutable OOF selected by policy" tone={summary.selectedSlots ? 'info' : 'neutral'} />
           <GrafanaStat label="Archive-ready" value={summary.archiveIds.length} detail="superseded or candidate-not-better only" tone={summary.archiveIds.length ? 'warn' : 'ok'} />
           <GrafanaStat label="Not better" value={summary.notBetter.length} detail="candidate OOS IC <= champion" tone={summary.notBetter.length ? 'warn' : 'ok'} />
           <GrafanaStat label="Superseded" value={summary.superseded.length} detail="newer release train owns review slot" tone={summary.superseded.length ? 'info' : 'ok'} />
@@ -1611,6 +1611,7 @@ export default function ModelPoolNewFlowWorkbench({
     <WorkstationPanel
       title="Model Ops Dashboard"
       kicker="Grafana-style fleet monitoring for TimesFM L2 sidecar -> L3 active-8 family registry"
+      className="sv-readable-card-content sv-model-pool-readable"
     >
       <GrafanaDashboardHeader
         records={grafanaRecords}

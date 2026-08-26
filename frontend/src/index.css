@@ -373,6 +373,24 @@
     letter-spacing: 0 !important;
   }
 
+  .sv-model-pool-readable [class~="text-[10px]"],
+  .sv-model-pool-readable [class~="text-[11px]"],
+  .sv-model-pool-readable [class~="text-[12px]"] {
+    font-size: 0.8125rem !important;
+    line-height: 1.3rem !important;
+  }
+
+  .sv-model-pool-readable [class~="text-[13px]"] {
+    font-size: 0.875rem !important;
+    line-height: 1.4rem !important;
+  }
+
+  .sv-model-pool-readable [class~="text-[14px]"],
+  .sv-model-pool-readable [class~="text-[15px]"] {
+    font-size: 0.9375rem !important;
+    line-height: 1.5rem !important;
+  }
+
   .sv-stockintelli-page {
     min-height: 100%;
     background:

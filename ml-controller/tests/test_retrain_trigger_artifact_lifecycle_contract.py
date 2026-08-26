@@ -115,6 +115,7 @@ def test_prebuilt_oof_dataset_snapshot_preserves_immutable_owner_schema():
         },
         source_cohort_id="cohort-v7",
         source_manifest_checksum="d" * 64,
+        business_date="2026-07-29",
     )
 
     assert snapshot["schema_version"] == "active8-oof-full-fit-prep-lineage-v2"
@@ -123,6 +124,7 @@ def test_prebuilt_oof_dataset_snapshot_preserves_immutable_owner_schema():
     assert snapshot["source_manifest_checksum"] == "d" * 64
     assert snapshot["feature_pool"]["artifact_checksum"] == "b" * 64
     assert snapshot["sequence"]["artifact_checksum"] == "c" * 64
+    assert snapshot["business_date"] == "2026-07-29"
 
 def test_prebuilt_canonical_prep_requires_verified_manifest_and_batches():
 

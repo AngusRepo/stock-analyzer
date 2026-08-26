@@ -37,10 +37,6 @@ DEFAULT_REQUIRED_CONFIG: dict[str, Any] = {
         "buyThreshold": 0.70,
         "sellThreshold": 0.30,
         "strongSellThreshold": 0.15,
-        "topKOverrideEnabled": False,
-        "allowLegacyTopKOverride": False,
-        "topKCount": 3,
-        "topKConfidenceOverride": 0.72,
     },
     "mlPool": {
         "useEnsembleV2": True,

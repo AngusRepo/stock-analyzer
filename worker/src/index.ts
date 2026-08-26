@@ -23,7 +23,7 @@ import { handleScheduledCron } from './lib/cronOrchestrator'
 import {
   runWeeklyAudit as runWeeklyAuditWorkflow,
   runWeeklyOptunaResearch as runWeeklyOptunaResearchWorkflow,
-  runWeeklyLifecycleCheck as runWeeklyLifecycleCheckWorkflow,
+  runWeeklyModelRegistryCheck as runWeeklyModelRegistryCheckWorkflow,
   runWeeklyBacktest as runWeeklyBacktestWorkflow,
   runWeeklyMonteCarlo as runWeeklyMonteCarloWorkflow,
   runWeeklyPBO as runWeeklyPboWorkflow,
@@ -81,7 +81,7 @@ const adminTriggerRoutes = createAdminTriggerRoutes({
     runWeeklyModelArtifactCandidateValidation: () => runWeeklyModelArtifactCandidateValidationWorkflow(c.env),
     runWeeklyModelArtifactValidation: () => runWeeklyModelArtifactValidationWorkflow(c.env),
     runWeeklyAlphaQuality: () => runWeeklyAlphaQualityWorkflow(c.env),
-    runWeeklyLifecycleCheck: () => runWeeklyLifecycleCheckWorkflow(c.env),
+    runWeeklyModelRegistryCheck: () => runWeeklyModelRegistryCheckWorkflow(c.env),
     runWeeklyOptunaResearch: (runDate?: string) => runWeeklyOptunaResearchWorkflow(c.env, runDate),
     runMonthlyOptunaResearch: (runDate?: string) => runMonthlyOptunaResearchWorkflow(c.env, runDate),
     runL4AlphaEvRefresh: (runDate?: string, cadence?: 'weekly' | 'monthly') => runL4AlphaEvRefreshWorkflow(c.env, runDate, cadence),

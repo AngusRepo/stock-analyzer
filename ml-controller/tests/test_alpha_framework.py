@@ -231,7 +231,6 @@ def test_apply_alpha_context_adjusts_recommendation_and_prediction_targets():
 
 
 def test_filter_and_score_recommendations_embeds_alpha_context(monkeypatch):
-    monkeypatch.setattr(recommendation_service, "_is_use_ensemble_v2", lambda: True)
 
     prediction = {
         "signal": "BUY",
@@ -245,7 +244,10 @@ def test_filter_and_score_recommendations_embeds_alpha_context(monkeypatch):
             "signal": "BUY",
             "confidence": 0.74,
             "forecast_pct": 0.04,
-            "signal_source": "ensemble_v2",
+            "signal_source": "active8_ensemble_artifact",
+            "probability_positive_net_return": 0.74,
+            "artifact_checksum": "b" * 64,
+            "validation": {"decision": "PASS"},
         },
     }
     rec = {
@@ -304,7 +306,6 @@ def test_filter_and_score_recommendations_embeds_alpha_context(monkeypatch):
 
 
 def test_write_predictions_to_d1_persists_alpha_context(monkeypatch):
-    monkeypatch.setattr(recommendation_service, "_is_use_ensemble_v2", lambda: True)
     captured = {}
 
     def _fake_batch_execute(statements):
@@ -346,7 +347,6 @@ def test_write_predictions_to_d1_persists_alpha_context(monkeypatch):
 
 
 def test_write_predictions_to_d1_persists_state_space_overlay_context(monkeypatch):
-    monkeypatch.setattr(recommendation_service, "_is_use_ensemble_v2", lambda: True)
     captured = {}
 
     def _fake_batch_execute(statements):
@@ -761,11 +761,19 @@ def test_potential_buy_is_not_a_formal_buy_signal():
     assert recommendation_service._is_formal_buy_signal("STRONG_BUY") is True
     assert recommendation_service._is_formal_buy_signal("POTENTIAL_BUY") is False
     assert recommendation_service._signal_tier("POTENTIAL_BUY") == 0.0
-    assert recommendation_service.calculate_ml_score({
-        "signal": "POTENTIAL_BUY",
-        "confidence": 0.70,
-        "forecast_pct": 0.02,
-    }) == pytest.approx(9.0)
+    with pytest.raises(ValueError, match="active8_ensemble_calibrated_probability_required"):
+        recommendation_service.calculate_ml_score({
+            "signal": "POTENTIAL_BUY",
+            "confidence": 0.70,
+            "forecast_pct": 0.02,
+        })
+
+    assert recommendation_service.calculate_ml_score({}, {"ensemble_v2": {
+        "probability_positive_net_return": 0.70,
+        "artifact_checksum": "c" * 64,
+        "validation": {"decision": "PASS"},
+    }}) == pytest.approx(21.0)
+
 
 
 def test_regime_aware_allocate_uses_policy_weights_and_slate_size():

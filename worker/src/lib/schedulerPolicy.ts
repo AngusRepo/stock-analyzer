@@ -98,13 +98,12 @@ export const TASK_POLICIES: Record<string, SchedulerTaskPolicy> = {
   's12-research-recovery': { kind: 'maintenance', holidayGated: false, description: 'one-shot Shioaji quota preflight and point-in-time S12 reconstruction repair' },
   'active8-oof-lifecycle': { kind: 'research', holidayGated: false, description: 'manual cadence-compatible immutable purged OOF lifecycle' },
   'active8-oof-weekly': { kind: 'research', holidayGated: false, description: 'weekly deterministic Active-8 purged OOF cohort generation' },
-  'active8-oof-monthly': { kind: 'research', holidayGated: false, description: 'monthly post-retrain Active-8 purged OOF cohort generation' },
+  'active8-oof-monthly': { kind: 'research', holidayGated: false, description: 'monthly canonical immutable OOF cohort, full-fit release, validation, and promotion lifecycle' },
   'l4-alpha-ev-refresh': { kind: 'research', holidayGated: false, description: 'weekly production-gated L4 alpha EV artifact refresh' },
   'allocator-ev-fusion-refresh': { kind: 'research', holidayGated: false, description: 'weekly production-gated allocator EV fusion artifact refresh' },
   'monthly-opb-arm-prior-refresh': { kind: 'research', holidayGated: false, description: 'monthly production-gated OPB counterfactual arm-prior refresh' },
   'adaptive-meta-policy-replay': { kind: 'research', holidayGated: false, description: 'weekly guarded dynamic active-8 Meta policy replay with bounded canary and rollback' },
   'linucb-multiplier-replay': { kind: 'research', holidayGated: false, description: 'weekly evidence-only LinUCB bandit multiplier replay' },
-  'weekly-drift-retrain': { kind: 'research', holidayGated: false, description: 'evidence-gated weekly drift candidate; automatic promotion only after full serving gates pass' },
   'sector-leaders': { kind: 'research', holidayGated: false, description: 'weekly sector leader refresh' },
   'monthly-optuna': { kind: 'research', holidayGated: false, description: 'monthly Optuna research sweep' },
   'monthly-l4-alpha-ev-refresh': { kind: 'research', holidayGated: false, description: 'monthly production-gated L4 alpha EV artifact refresh' },
@@ -113,7 +112,6 @@ export const TASK_POLICIES: Record<string, SchedulerTaskPolicy> = {
   'monthly-readiness': { kind: 'maintenance', holidayGated: false, description: 'monthly cycle terminal closure and fail-close summary' },
   'optuna-queue': { kind: 'queue', holidayGated: false, description: 'Optuna queue processor' },
   retrain: { kind: 'research', holidayGated: false, description: 'model retrain lifecycle trigger' },
-  'monthly-retrain': { kind: 'research', holidayGated: false, description: 'monthly universal retrain lifecycle' },
 }
 
 const DOW_NAME_TO_NUM: Record<string, number> = {

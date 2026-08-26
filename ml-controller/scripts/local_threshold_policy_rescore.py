@@ -169,7 +169,6 @@ def main(argv: list[str] | None = None) -> int:
         force=True,
     )
 
-    recommendation_service._is_use_ensemble_v2 = lambda: True
     final_rows, sell_count = filter_and_score_recommendations(
         recommendations,
         overlaid_predictions,

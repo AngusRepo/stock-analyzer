@@ -106,45 +106,21 @@ export async function runRegimeCompute(env: Bindings, runDate?: string) {
 }
 export async function runModelIcFullCheck(env: Bindings) {
   requireController(env)
-
   const icData = await controllerJson<any>(env, '/model_pool/compute_weekly_ic', {
     method: 'POST',
-    jsonBody: {
-      lookback_days: 35,
-      history_max: 26,
-      min_samples: 50,
-      min_dates: 10,
-      update_pool: true,
-      append_history: true,
-    },
+    jsonBody: { lookback_days: 35, min_samples: 50, min_dates: 10, append_history: true },
     timeoutMs: 120_000,
   })
-
   const computed = Object.entries(icData.per_model_ic || {})
-    .filter(([_, v]: any) => v.status === 'computed')
-    .map(([k, v]: any) => `${k}:${v.ic?.toFixed(3)}`)
-    .join(' ')
-
-  let stage4 = '(skip)'
-  try {
-    const promoRes = await controllerFetch(env, '/model_pool/promote_check', {
-      method: 'POST',
-      jsonBody: { apply: false, confirm: false },
-      timeoutMs: 60_000,
-    })
-    if (promoRes.ok) {
-      const promoteDecision = await promoRes.json() as any
-      const transitions = (promoteDecision.actions || [])
-        .filter((a: any) => a.transition !== 'promote_blocked')
-        .map((a: any) => `${a.model}:${a.transition}`)
-        .join(',') || 'none'
-      stage4 = `dry_run=${promoteDecision.actions_count} [${transitions}]`
-    } else {
-      stage4 = `chain failed HTTP ${promoRes.status}`
-    }
-  } catch (e: any) {
-    stage4 = `chain exception ${e?.message || e}`
-  }
+    .filter(([_, value]: any) => value.status === 'computed')
+    .map(([name, value]: any) => `${name}:${value.ic?.toFixed(3)}`)
+    .join(' ') || 'none'
+  const queue = await controllerJson<any>(env, '/model_pool/artifact_registry/promotion_queue', {
+    timeoutMs: 60_000,
+  })
+  const rows = Array.isArray(queue.queue) ? queue.queue : []
+  const autoReady = rows.filter((row: any) => row.promotion_decision === 'auto_promote_candidate').length
+  const blocked = rows.filter((row: any) => String(row.promotion_decision ?? '').includes('blocked')).length
 
   let configEval = '(skip)'
   try {
@@ -154,46 +130,37 @@ export async function runModelIcFullCheck(env: Bindings) {
       timeoutMs: 300_000,
     })
     if (ceRes.ok) {
-      const cd = await ceRes.json() as any
-      if (cd.status === 'no_challenger') {
-        configEval = 'no_challenger'
-      } else {
-        const sd = cd.sharpe_delta?.toFixed?.(3) ?? cd.sharpe_delta
-        configEval = `${cd.action}(wins=${cd.consecutive_wins} losses=${cd.consecutive_losses} sharpe=${sd})`
-      }
+      const data = await ceRes.json() as any
+      configEval = data.status === 'no_challenger'
+        ? 'no_challenger'
+        : `${data.action}(wins=${data.consecutive_wins} losses=${data.consecutive_losses} sharpe=${data.sharpe_delta?.toFixed?.(3) ?? data.sharpe_delta})`
     } else {
       configEval = `HTTP ${ceRes.status}`
     }
-  } catch (e: any) {
-    configEval = `exception ${e?.message?.slice(0, 40) ?? 'unknown'}`
+  } catch (error: any) {
+    configEval = `exception ${error?.message?.slice(0, 40) ?? 'unknown'}`
   }
-
-  return `IC n_rows=${icData.n_rows_total} | ${computed} || Stage4 ${stage4} || ConfigEval ${configEval}`
+  return `IC n_rows=${icData.n_rows_total} | ${computed} || D1Registry queue=${rows.length} auto=${autoReady} blocked=${blocked} || ConfigEval ${configEval}`
 }
 
 export async function runModelIcRollingRefresh(env: Bindings, runDate?: string) {
   requireController(env)
-
   const icData = await controllerJson<any>(env, '/model_pool/compute_weekly_ic', {
     method: 'POST',
     jsonBody: {
       lookback_days: 35,
-      history_max: 26,
       min_samples: 50,
       min_dates: 10,
-      update_pool: true,
       append_history: false,
       run_date: runDate || undefined,
     },
     timeoutMs: 120_000,
   })
-
   const computed = Object.entries(icData.per_model_ic || {})
-    .filter(([_, v]: any) => v.status === 'computed')
-    .map(([k, v]: any) => `${k}:${v.ic?.toFixed(3)}(${v.n_samples})`)
+    .filter(([_, value]: any) => value.status === 'computed')
+    .map(([name, value]: any) => `${name}:${value.ic?.toFixed(3)}(${value.n_samples})`)
     .join(' ') || 'none'
-
-  return `rolling_ic run_date=${runDate ?? 'latest'} n_rows=${icData.n_rows_total} | ${computed}`
+  return `rolling_ic owner=D1Registry run_date=${runDate ?? 'latest'} n_rows=${icData.n_rows_total} | ${computed}`
 }
 
 export async function runArtifactAutoPromotion(env: Bindings) {

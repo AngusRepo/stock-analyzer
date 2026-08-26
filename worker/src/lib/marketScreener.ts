@@ -5195,8 +5195,22 @@ export async function runBottomUpScreener(env: Bindings, runDate?: string | null
   }
 
   debugLog.push(`[Final] candidates=${finalCandidates.length}`)
+  const canonicalL15BySymbol = new Map(
+    layer2CoarseQueueSeed.map((candidate, routeIndex) => [
+      String(candidate.symbol),
+      { candidate, rank: routeIndex + 1 },
+    ] as const),
+  )
+  if (canonicalL15BySymbol.size !== finalCandidates.length) {
+    throw new Error(
+      `l15_canonical_seed_identity_mismatch:route=${canonicalL15BySymbol.size}:final=${finalCandidates.length}`,
+    )
+  }
   finalCandidates.forEach((c, index) => {
     const sc = c as any
+    const routeOwner = canonicalL15BySymbol.get(String(c.symbol))
+    if (!routeOwner) throw new Error(`l15_canonical_route_missing:${c.symbol}`)
+    const routeCandidate = routeOwner.candidate as any
     const flag = selectionFlagMap.get(c.symbol)
     const layer1Telemetry = ((strategySelectionTelemetry as any)?.layer1_telemetry ?? {}) as Record<string, any>
     const l1CandidateSeedEvidence = {
@@ -5220,22 +5234,27 @@ export async function runBottomUpScreener(env: Bindings, runDate?: string | null
       strategy_pool_reason: sc.strategy_pool_reason ?? null,
       strategy_labeler_version: sc.strategy_labeler_version ?? null,
       finlab_portfolio_intelligence_version: FINLAB_PORTFOLIO_INTELLIGENCE_VERSION,
-      strategy_router_version: sc.strategy_router_version ?? null,
-      candidate_route_score: sc.candidate_route_score ?? null,
-      ml_slate_eligibility: sc.ml_slate_eligibility ?? null,
-      family_exposure: sc.family_exposure ?? null,
-      diversity_contribution: sc.diversity_contribution ?? null,
-      risk_adjusted_affinity: sc.risk_adjusted_affinity ?? null,
-      uncertainty: sc.uncertainty ?? null,
-      runtime_teacher_evidence: sc.runtime_teacher_evidence ?? null,
-      runtime_teacher_evidence_source: sc.runtime_teacher_evidence_source ?? null,
-      ml_teacher_labels: sc.ml_teacher_labels ?? null,
-      strategy_affinity_vector: sc.strategy_affinity_vector ?? null,
-      strategy_weak_label_vector: sc.strategy_weak_label_vector ?? null,
-      strategy_hit_vector: sc.strategy_hit_vector ?? null,
-      strategy_position_weight_vector: sc.strategy_position_weight_vector ?? null,
-      strategy_overlap_vector: sc.strategy_overlap_vector ?? null,
-      strategy_family_affinity: sc.strategy_family_affinity ?? null,
+      strategy_router_version: routeCandidate.strategy_router_version ?? null,
+      strategy_router_score: routeCandidate.strategy_router_score ?? null,
+      strategy_router_decision: routeCandidate.strategy_router_decision ?? null,
+      strategy_router_reason: routeCandidate.strategy_router_reason ?? null,
+      strategy_router_components: routeCandidate.strategy_router_components ?? null,
+      candidate_route_score: routeCandidate.candidate_route_score ?? null,
+      ml_slate_eligibility: routeCandidate.ml_slate_eligibility ?? null,
+      family_exposure: routeCandidate.family_exposure ?? null,
+      diversity_contribution: routeCandidate.diversity_contribution ?? null,
+      risk_adjusted_affinity: routeCandidate.risk_adjusted_affinity ?? null,
+      uncertainty: routeCandidate.uncertainty ?? null,
+      runtime_teacher_evidence: routeCandidate.runtime_teacher_evidence ?? null,
+      runtime_teacher_evidence_source: routeCandidate.runtime_teacher_evidence_source ?? null,
+      ml_teacher_labels: routeCandidate.ml_teacher_labels ?? null,
+      strategy_affinity_vector: routeCandidate.strategy_affinity_vector ?? null,
+      strategy_weak_label_vector: routeCandidate.strategy_weak_label_vector ?? null,
+      strategy_hit_vector: routeCandidate.strategy_hit_vector ?? null,
+      strategy_position_weight_vector: routeCandidate.strategy_position_weight_vector ?? null,
+      strategy_overlap_vector: routeCandidate.strategy_overlap_vector ?? null,
+      strategy_family_affinity: routeCandidate.strategy_family_affinity ?? null,
+      l15_route_rank: routeOwner.rank,
       strategy_matrix_candidate_count: layer1Telemetry.strategy_matrix_candidate_count ?? null,
       strategy_matrix_strategy_count: layer1Telemetry.strategy_matrix_strategy_count ?? null,
       strategy_matrix_cell_count: layer1Telemetry.strategy_matrix_cell_count ?? null,
@@ -5266,55 +5285,6 @@ export async function runBottomUpScreener(env: Bindings, runDate?: string | null
       layer2_coarse_keep_ratio: screenerPolicy.sizing.coarseMlKeepRatio,
       layer3_core_ml_target_size: maxCandidates,
     }
-    pushFunnelItem(funnelItems, {
-      symbol: c.symbol,
-      name: c.name,
-      stage: 'l15_ml_slate_queue',
-      decision: 'observe',
-      reasonCode: 'ml_slate_queue_seed_from_l1_5_router',
-      scoreAfter: Number(sc.score ?? 0),
-      rank: index + 1,
-      evidence: {
-        layer_contract: 'L1.5 router owns ML slate queue; ml-controller runs L2 TimesFM feature enrichment before L3 8ML',
-        worker_seed_only: true,
-        downstream_owner: 'ml-controller',
-        downstream_stage: 'layer2_timesfm_enrichment',
-        coarse_ml_queue_size_legacy: coarseQueueSize,
-        coarse_ml_keep_ratio: screenerPolicy.sizing.coarseMlKeepRatio,
-        core_ml_shortlist_size: maxCandidates,
-        soft_capacity_baseline: layer1Telemetry.soft_capacity_baseline ?? screenerPolicy.sizing.candidatePoolSize,
-        adaptive_target_size: layer1Telemetry.adaptive_target_size ?? layer1AdaptiveTargetSize,
-        adaptive_capacity_max: layer1Telemetry.adaptive_capacity_max ?? null,
-        adaptive_capacity_policy: layer1Telemetry.adaptive_capacity_policy ?? null,
-        adaptive_capacity_reason: layer1Telemetry.adaptive_capacity_reason ?? null,
-        adaptive_capacity_eligible_count: layer1Telemetry.adaptive_capacity_eligible_count ?? null,
-        adaptive_target_size_before_dynamic_quota: layer1Telemetry.adaptive_target_size_before_dynamic_quota ?? null,
-        dynamic_effective_quota_policy: layer1Telemetry.dynamic_effective_quota_policy ?? null,
-        dynamic_effective_quota_total: layer1Telemetry.dynamic_effective_quota_total ?? null,
-        dynamic_effective_quota_by_strategy: layer1Telemetry.dynamic_effective_quota_by_strategy ?? null,
-        adaptive_strategy_policy_version: layer1Telemetry.adaptive_strategy_policy_version ?? null,
-        adaptive_pool_quota_by_strategy: layer1Telemetry.adaptive_pool_quota_by_strategy ?? null,
-        adaptive_cost_budget_by_strategy: layer1Telemetry.adaptive_cost_budget_by_strategy ?? null,
-        adaptive_max_ml_share_by_strategy: layer1Telemetry.adaptive_max_ml_share_by_strategy ?? null,
-        static_pool_quota_by_strategy: layer1Telemetry.static_pool_quota_by_strategy ?? null,
-        static_cost_budget_by_strategy: layer1Telemetry.static_cost_budget_by_strategy ?? null,
-        static_max_ml_share_by_strategy: layer1Telemetry.static_max_ml_share_by_strategy ?? null,
-        strategy_pool_ids: sc.strategy_pool_ids ?? [],
-        strategy_family_ids: sc.strategy_family_ids ?? [],
-        strategy_variant_ids: sc.strategy_variant_ids ?? [],
-        strategy_owner_types: sc.strategy_owner_types ?? [],
-        strategy_pool_score: sc.strategy_pool_score ?? null,
-        strategy_pool_reason: sc.strategy_pool_reason ?? null,
-        strategy_labeler_version: sc.strategy_labeler_version ?? null,
-        strategy_router_version: sc.strategy_router_version ?? null,
-        candidate_route_score: sc.candidate_route_score ?? null,
-        ml_slate_eligibility: sc.ml_slate_eligibility ?? null,
-        family_exposure: sc.family_exposure ?? null,
-        diversity_contribution: sc.diversity_contribution ?? null,
-        risk_adjusted_affinity: sc.risk_adjusted_affinity ?? null,
-        uncertainty: sc.uncertainty ?? null,
-      },
-    })
     pushFunnelItem(funnelItems, {
       symbol: c.symbol,
       name: c.name,

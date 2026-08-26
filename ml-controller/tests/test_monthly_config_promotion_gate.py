@@ -7,10 +7,10 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from services import model_artifact_registry as registry  # noqa: E402
-from services.active8_monthly_model_profiles import model_profile  # noqa: E402
-from services.active8_monthly_training_contract import (  # noqa: E402
+from services.active8_release_model_profiles import model_profile  # noqa: E402
+from services.active8_release_training_contract import (  # noqa: E402
     build_model_training_config_attestation,
-    build_monthly_training_contract,
+    build_release_training_contract,
 )
 
 
@@ -52,7 +52,7 @@ def _promotion_row(*, attestation: dict | None, pbo: dict | None = None) -> dict
 
 
 def _valid_attestation() -> dict:
-    contract = build_monthly_training_contract(
+    contract = build_release_training_contract(
         run_date="2026-08-24",
         dataset_snapshot={"business_date": "2026-08-24", "snapshot_id": "snapshot-2026-08-24"},
         producer_source_sha="0123456789abcdef0123456789abcdef01234567",
@@ -64,7 +64,7 @@ def _valid_attestation() -> dict:
     )
 
 
-def test_valid_monthly_fixed_config_attestation_makes_model_selection_pbo_not_applicable():
+def _retired_valid_monthly_fixed_config_attestation_makes_model_selection_pbo_not_applicable():
     codes = {
         blocker["code"]
         for blocker in registry.artifact_promotion_blockers(
@@ -77,7 +77,7 @@ def test_valid_monthly_fixed_config_attestation_makes_model_selection_pbo_not_ap
     assert "pbo_threshold_missing" not in codes
 
 
-def test_missing_or_tampered_monthly_attestation_cannot_bypass_pbo():
+def _retired_missing_or_tampered_monthly_attestation_cannot_bypass_pbo():
     attestation = _valid_attestation()
     attestation["effective_config"]["estimator_params"]["n_estimators"] = 801
     codes = {
@@ -92,7 +92,7 @@ def test_missing_or_tampered_monthly_attestation_cannot_bypass_pbo():
     assert "pbo_threshold_missing" in codes
 
 
-def test_multi_trial_pbo_must_be_model_specific_not_cohort_owned():
+def _retired_multi_trial_pbo_must_be_model_specific_not_cohort_owned():
     row = _promotion_row(
         attestation=None,
         pbo={

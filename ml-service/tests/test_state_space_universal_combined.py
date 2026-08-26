@@ -5,7 +5,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from app import model_pool
+from app import state_space_artifacts as model_pool
 from app import state_space_universal
 
 

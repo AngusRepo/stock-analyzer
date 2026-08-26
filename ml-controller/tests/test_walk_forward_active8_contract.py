@@ -33,9 +33,23 @@ def test_walk_forward_defaults_to_active8_contract():
     assert coverage["coverage_mode"] == "active8_purged_oof_retrain"
 
 
-def test_oof_full_fit_plan_only_dispatches_models_with_pass_evidence():
+def test_oof_full_fit_plan_keeps_all_structurally_valid_models_as_ensemble_bases():
     from routers.walk_forward import build_oof_full_fit_dispatch_plan
 
+    models = [
+        "LightGBM", "XGBoost", "ExtraTrees", "TabM",
+        "GNN", "DLinear", "PatchTST", "iTransformer",
+    ]
+    evidence_by_model = {
+        model: {
+            "schema_version": "model-cpcv-evidence-v1",
+            "method": "outer_purged_walk_forward_rank_ic",
+            "decision": "FAIL" if model == "PatchTST" else "PASS",
+            "failed_gates": ["oos_ic_lcb"] if model == "PatchTST" else [],
+            "folds": 5,
+        }
+        for model in models
+    }
     manifest = {
         "schema_version": "active8-oof-cohort-manifest-v5",
         "target_semantic_version": "next-session-canonical-adjusted-open-to-fifth-session-canonical-adjusted-close-net-v4",
@@ -73,23 +87,22 @@ def test_oof_full_fit_plan_only_dispatches_models_with_pass_evidence():
             for idx in range(5)
         ],        "aggregate": {
             "oof_ready_folds": 5,
-            "full_fit_eligible_models": ["XGBoost", "PatchTST", "GNN"],
-            "per_model_promotion_evidence": {
-                "XGBoost": {"decision": "PASS", "failed_gates": []},
-                "PatchTST": {"decision": "PASS", "failed_gates": []},
-                "GNN": {"decision": "FAIL", "failed_gates": ["oos_ic_lcb"]},
-            },
-            "full_fit_blocked_models": {"GNN": ["oos_ic_lcb"]},
+            "full_fit_eligible_models": [model for model in models if model != "PatchTST"],
+            "per_model_promotion_evidence": evidence_by_model,
+            "full_fit_blocked_models": {"PatchTST": ["oos_ic_lcb"]},
         },
     }
 
     plan = build_oof_full_fit_dispatch_plan(manifest)
 
     assert plan["status"] == "ready"
-    assert plan["eligible_models"] == ["XGBoost", "PatchTST"]
-    assert plan["train_model_groups"] == ["tree"]
-    assert plan["artifact_lifecycle_targets"] == ["PatchTST"]
-    assert plan["evidence_missing_or_failed"] == ["GNN"]
+    assert plan["release_models"] == sorted(models)
+    assert plan["promotion_eligible_models"] == sorted(model for model in models if model != "PatchTST")
+    assert plan["train_model_groups"] == ["tree", "dlinear", "patchtst"]
+    assert plan["artifact_lifecycle_targets"] == ["GNN", "TabM", "iTransformer"]
+    assert plan["evidence_missing_or_failed"] == []
+    assert plan["blocked_models"] == {"PatchTST": ["oos_ic_lcb"]}
+    assert plan["promotion_evidence"]["PatchTST"]["decision"] == "FAIL"
     assert plan["promotion_evidence"]["XGBoost"]["validation_design"]["refit_each_fold"] is True
     assert plan["promotion_evidence"]["XGBoost"]["validation_design"]["chronological"] is True
 
@@ -125,7 +138,7 @@ def test_walk_forward_train_payload_declares_five_day_label_horizon():
 def test_modal_walk_forward_orchestrator_no_longer_defaults_tree_only():
     source = (ROOT / "ml-service" / "modal_app.py").read_text(encoding="utf-8")
 
-    assert "from app.model_pool import ALPHA_PREDICTION_MODELS" in source
+    assert "from app.model_serving_contract import ALPHA_PREDICTION_MODELS" in source
     assert "active8_models = list(ALPHA_PREDICTION_MODELS)" in source
     assert "family_tasks" in source
     assert "oof_fold_ready" in source
@@ -394,7 +407,8 @@ def test_full_fit_plan_blocks_legacy_manifest_without_immutable_prep():
     })
 
     assert plan["status"] == "blocked"
-    assert plan["reason"] == "immutable_oof_input_lineage_missing"
+    assert plan["evidence_missing"]
+    assert plan["reason"] == "release_model_oof_evidence_missing"
     assert plan["prep_lineage_ready"] is False
 
 
@@ -435,7 +449,7 @@ def test_oof_full_fit_feature_consensus_uses_outer_fold_majority_vote():
     assert len(first["artifact_checksum"]) == 64
 
 
-def test_oof_full_fit_plan_blocks_tree_without_fold_feature_lineage():
+def test_oof_full_fit_plan_blocks_incomplete_exact_eight_before_feature_lineage():
     from routers.walk_forward import build_oof_full_fit_dispatch_plan
 
     target = "next-session-canonical-adjusted-open-to-fifth-session-canonical-adjusted-close-net-v4"
@@ -468,8 +482,8 @@ def test_oof_full_fit_plan_blocks_tree_without_fold_feature_lineage():
     })
 
     assert plan["status"] == "blocked"
-    assert plan["reason"] == "outer_fold_feature_consensus_missing"
-    assert plan["feature_lineage_ready"] is False
+    assert plan["reason"] == "release_model_oof_evidence_missing"
+    assert plan["evidence_missing"]
 
 def test_completed_oof_registry_owner_repair_requires_exact_bound_identity(monkeypatch):
     import json
@@ -483,7 +497,7 @@ def test_completed_oof_registry_owner_repair_requires_exact_bound_identity(monke
         "run_id": "universal-oof-owner",
         "status": "completed",
         "candidate_version": "v20260717",
-        "promotion_allowed_models": expected_models,
+        "promotion_eligible_models": expected_models,
         "oof_lifecycle_resume": {
             "schema_version": "active8-oof-lifecycle-resume-v1",
             "cohort_id": "cohort-v3",
@@ -522,6 +536,7 @@ def test_completed_oof_registry_owner_repair_requires_exact_bound_identity(monke
         expected_manifest_checksum="a" * 64,
         expected_knowledge_cutoff_date="2026-07-17",
         expected_models=expected_models,
+        expected_promotion_models=expected_models,
     )
 
     assert result == {
@@ -539,6 +554,7 @@ def test_completed_oof_registry_owner_repair_requires_exact_bound_identity(monke
         expected_manifest_checksum="b" * 64,
         expected_knowledge_cutoff_date="2026-07-17",
         expected_models=expected_models,
+        expected_promotion_models=expected_models,
     )
     assert rejected["status"] == "rejected"
     assert rejected["reason"] == "callback_lifecycle_identity_mismatch"
@@ -570,7 +586,8 @@ def test_full_fit_poll_only_never_dispatches_a_replacement_retrain(monkeypatch):
 
     plan = {
         "status": "ready",
-        "eligible_models": ["DLinear"],
+        "release_models": ["DLinear"],
+        "promotion_eligible_models": ["DLinear"],
         "tree_models": [],
         "feature_consensus": {},
         "train_model_groups": ["sequence"],
@@ -625,7 +642,8 @@ def test_dispatch_completed_oof_callback_repairs_registry_without_retraining(mon
 
     plan = {
         "status": "ready",
-        "eligible_models": ["DLinear"],
+        "release_models": ["DLinear"],
+        "promotion_eligible_models": ["DLinear"],
         "tree_models": [],
         "feature_consensus": {},
         "train_model_groups": ["sequence"],
@@ -642,14 +660,14 @@ def test_dispatch_completed_oof_callback_repairs_registry_without_retraining(mon
         return (
             [{
                 "model_name": "DLinear",
-                "candidate_type": "oof_full_fit_release",
-                "state": "offline_failed",
+                "candidate_type": "weekly_drift",
+                "state": "offline_strong_pass",
             }]
             if owner_queries == 1
             else [{
                 "model_name": "DLinear",
-                "candidate_type": "weekly_drift",
-                "state": "offline_strong_pass",
+                "candidate_type": "oof_full_fit_release",
+                "state": "offline_failed",
             }]
         )
 
@@ -685,7 +703,7 @@ def test_dispatch_completed_oof_callback_repairs_registry_without_retraining(mon
 
     assert result["status"] == "completed"
     assert result["retry_required"] is False
-    assert result["artifact_states"] == {"DLinear": "offline_strong_pass"}
+    assert result["artifact_states"] == {"DLinear": "offline_failed"}
     assert result["registry_repair"]["status"] == "repaired"
     assert result["release_registry"]["candidate_type"] == "oof_full_fit_release"
     assert uploaded[-1]["value"]["status"] == "completed"
@@ -695,7 +713,7 @@ def test_dispatch_completed_oof_callback_repairs_registry_without_retraining(mon
 
 
 
-def test_oof_source_selector_prefers_weekly_over_stale_failed_alias():
+def test_oof_source_selector_requires_exact_release_alias_even_when_individual_oof_fails():
     from routers import walk_forward
 
     selected = walk_forward._select_oof_full_fit_source_rows(
@@ -706,8 +724,8 @@ def test_oof_source_selector_prefers_weekly_over_stale_failed_alias():
         ["DLinear"],
     )
 
-    assert selected["DLinear"]["candidate_type"] == "weekly_drift"
-    assert selected["DLinear"]["state"] == "offline_strong_pass"
+    assert selected["DLinear"]["candidate_type"] == "oof_full_fit_release"
+    assert selected["DLinear"]["state"] == "offline_failed"
 
 
 def test_dispatch_reuses_completed_full_fit_receipt_across_cadences(monkeypatch):
@@ -721,7 +739,8 @@ def test_dispatch_reuses_completed_full_fit_receipt_across_cadences(monkeypatch)
         "knowledge_cutoff_date": "2026-07-17",
         "run_id": "universal-oof-owner",
         "attempt": 3,
-        "eligible_models": ["DLinear"],
+        "release_models": ["DLinear"],
+        "promotion_eligible_models": ["DLinear"],
         "artifact_states": {"DLinear": "offline_strong_pass"},
         "missing_models": [],
         "failed_models": [],
@@ -730,9 +749,14 @@ def test_dispatch_reuses_completed_full_fit_receipt_across_cadences(monkeypatch)
             "status": "materialized",
             "candidate_type": "oof_full_fit_release",
             "failed_models": ["DLinear"],
-            "validation_schema_version": "active8-oof-base-ranker-release-validation-v3",
-            "selection_method": "label_interval_purged_cscv_rank_logit",
-            "selection_policy_version": "active8-cohort-selection-pbo-v2",
+            "validation_schema_version": "active8-oof-ensemble-validation-v1",
+            "selection_method": "learned_chronological_oof_ensemble",
+            "selection_policy_version": "active8-ensemble-conformal-isotonic-v1",
+            "ensemble_candidate": {
+                "status": "persisted",
+                "artifact_id": "active8-ensemble:cohort-v3:1234",
+                "payload_checksum": "c" * 64,
+            },
         },
     }
 
@@ -753,7 +777,8 @@ def test_dispatch_reuses_completed_full_fit_receipt_across_cadences(monkeypatch)
 
     plan = {
         "status": "ready",
-        "eligible_models": ["DLinear"],
+        "release_models": ["DLinear"],
+        "promotion_eligible_models": ["DLinear"],
         "tree_models": [],
         "feature_consensus": {},
         "train_model_groups": ["sequence"],
@@ -795,7 +820,8 @@ def test_dispatch_recovers_retry_limit_pollution_from_terminal_evidence(monkeypa
         "knowledge_cutoff_date": "2026-07-17",
         "run_id": "universal-oof-owner",
         "attempt": 3,
-        "eligible_models": ["DLinear"],
+        "release_models": ["DLinear"],
+        "promotion_eligible_models": ["DLinear"],
         "artifact_states": {"DLinear": "offline_strong_pass"},
         "missing_models": [],
         "failed_models": ["DLinear"],
@@ -803,9 +829,14 @@ def test_dispatch_recovers_retry_limit_pollution_from_terminal_evidence(monkeypa
         "release_registry": {
             "status": "materialized",
             "failed_models": ["DLinear"],
-            "validation_schema_version": "active8-oof-base-ranker-release-validation-v3",
-            "selection_method": "label_interval_purged_cscv_rank_logit",
-            "selection_policy_version": "active8-cohort-selection-pbo-v2",
+            "validation_schema_version": "active8-oof-ensemble-validation-v1",
+            "selection_method": "learned_chronological_oof_ensemble",
+            "selection_policy_version": "active8-ensemble-conformal-isotonic-v1",
+            "ensemble_candidate": {
+                "status": "persisted",
+                "artifact_id": "active8-ensemble:cohort-v3:1234",
+                "payload_checksum": "c" * 64,
+            },
         },
         "terminal_payload_path": "terminal.json",
         "terminal_payload_checksum": hashlib.sha256(terminal.encode("utf-8")).hexdigest(),
@@ -834,7 +865,8 @@ def test_dispatch_recovers_retry_limit_pollution_from_terminal_evidence(monkeypa
 
     plan = {
         "status": "ready",
-        "eligible_models": ["DLinear"],
+        "release_models": ["DLinear"],
+        "promotion_eligible_models": ["DLinear"],
         "tree_models": [],
         "feature_consensus": {},
         "train_model_groups": ["sequence"],
@@ -859,11 +891,11 @@ def test_dispatch_recovers_retry_limit_pollution_from_terminal_evidence(monkeypa
 
     assert result["status"] == "completed"
     assert result["retry_required"] is False
-    assert result["failed_models"] == []
+    assert result["failed_models"] == ["DLinear"]
     assert uploaded[-1]["value"]["status"] == "completed"
-    assert uploaded[-1]["value"]["failed_models"] == []
+    assert uploaded[-1]["value"]["failed_models"] == ["DLinear"]
 
-def test_completed_oof_release_alias_preserves_immutable_lineage(monkeypatch):
+def _retired_completed_oof_release_alias_preserves_immutable_lineage(monkeypatch):
     import json
     from routers import walk_forward
     from services import model_artifact_registry as registry
@@ -976,7 +1008,7 @@ def test_completed_oof_release_alias_preserves_immutable_lineage(monkeypatch):
 
 
 
-def test_completed_oof_release_alias_keeps_valid_base_when_selection_pbo_fails(monkeypatch):
+def _retired_completed_oof_release_alias_keeps_valid_base_when_selection_pbo_fails(monkeypatch):
     import json
     from routers import walk_forward
     from services import model_artifact_registry as registry
@@ -1254,9 +1286,14 @@ def test_oof_lifecycle_receipt_is_bound_to_active_materialization_policy():
             "retry_required": False,
             "release_registry": {
                 "status": "materialized",
-                "validation_schema_version": "active8-oof-base-ranker-release-validation-v3",
-                "selection_method": "label_interval_purged_cscv_rank_logit",
-                "selection_policy_version": "active8-cohort-selection-pbo-v2",
+                "validation_schema_version": "active8-oof-ensemble-validation-v1",
+                "selection_method": "learned_chronological_oof_ensemble",
+                "selection_policy_version": "active8-ensemble-conformal-isotonic-v1",
+                "ensemble_candidate": {
+                    "status": "persisted",
+                    "artifact_id": "active8-ensemble:cohort-v3:1234",
+                    "payload_checksum": "c" * 64,
+                },
             },
         },
     }
@@ -1429,3 +1466,74 @@ def test_oof_materialize_request_rejects_unknown_cadence():
         lifecycle_cadence="manual",
     )
     assert manual.lifecycle_cadence == "manual"
+
+def _canonical_release_dispatch_manifest(*, dlinear_folds: int) -> dict:
+    from routers import walk_forward
+
+    target = "next-session-canonical-adjusted-open-to-fifth-session-canonical-adjusted-close-net-v4"
+    models = ["LightGBM", "XGBoost", "ExtraTrees", "TabM", "GNN", "DLinear", "PatchTST", "iTransformer"]
+    evidence = {
+        model: {
+            "schema_version": "model-cpcv-evidence-v1",
+            "method": "outer_purged_walk_forward_rank_ic",
+            "decision": "PASS",
+            "passed": True,
+            "failed_gates": [],
+            "folds": dlinear_folds if model == "DLinear" else 5,
+        }
+        for model in models
+    }
+    return {
+        "schema_version": "active8-oof-cohort-manifest-v5",
+        "target_semantic_version": target,
+        "prep_manifest": {
+            "schema_version": "active8-canonical-adjusted-prep-v3",
+            "manifest_checksum": "a" * 64,
+            "feature_semantic_version": walk_forward.OOF_FEATURE_SEMANTIC_VERSION,
+            "feature_imputation_semantic": walk_forward.OOF_FEATURE_IMPUTATION_SEMANTIC_VERSION,
+            "producer_source_sha": "1" * 40,
+            "target_semantic_version": target,
+            "roundtrip_cost_bps": 18.0,
+            "batch_count": 1,
+        },
+        "sequence_manifest": {
+            "artifact_checksum": "b" * 64,
+            "contract": "sequence_records_v3",
+            "target_semantic_version": target,
+            "batch_count": 1,
+            "batch_checksums": {"sequence/batch_0.json": "c" * 64},
+        },
+        "windows": [
+            {
+                "window_id": index,
+                "train_range": ["2026-01-01", f"2026-03-{10 + index:02d}"],
+                "test_range": [f"2026-04-{1 + index * 2:02d}", f"2026-04-{2 + index * 2:02d}"],
+                "fs_result": {"feature_pool": {"tree_active": [f"feature_{i}" for i in range(12)]}},
+            }
+            for index in range(5)
+        ],
+        "aggregate": {
+            "oof_ready_folds": 5,
+            "full_fit_eligible_models": models,
+            "per_model_promotion_evidence": evidence,
+        },
+    }
+
+
+def test_dlinear_requires_five_outer_oof_folds_before_full_fit_dispatch(monkeypatch):
+    from routers import walk_forward
+
+    monkeypatch.setattr(walk_forward, "_runtime_source_sha", lambda: "1" * 40)
+    one_fold = walk_forward.build_oof_full_fit_dispatch_plan(
+        _canonical_release_dispatch_manifest(dlinear_folds=1)
+    )
+    five_folds = walk_forward.build_oof_full_fit_dispatch_plan(
+        _canonical_release_dispatch_manifest(dlinear_folds=5)
+    )
+
+    assert one_fold["status"] == "blocked"
+    assert one_fold["reason"] == "release_model_outer_oof_invalid"
+    assert one_fold["invalid_outer_evidence"] == ["DLinear"]
+    assert five_folds["status"] == "ready"
+    assert five_folds["invalid_outer_evidence"] == []
+    assert five_folds["promotion_evidence"]["DLinear"]["validation_design"]["fold_count"] == 5

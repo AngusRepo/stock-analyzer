@@ -283,27 +283,14 @@ export interface TradingConfig {
     screenerDenominator: number
     promoteMinConf: number       // promoted row 的 confidence 保底（預設 0.60，對齊 buyConfThreshold）
   }
-  // ── #B Option 1 (2026-04-21): ensemble_v2 thresholds + Top-K override ─────
-  // Fixes "bot 4 天沒掛單" — regression-on-rank ensemble_v2 predicted values
-  // cluster [0.43, 0.58] under realistic R² 0.02-0.05, never hits hardcoded
-  // 0.70 BUY threshold → signal always HOLD → no pending buys.
-  //
-  // Strategy: keep absolute thresholds (for when real strong signal emerges)
-  // AND add Top-K override — sort predictions by avg_rank desc, force top K
-  // to signal="BUY" regardless of absolute threshold (industry-standard
-  // top-K selection for compressed-distribution regression outputs).
-  //
-  // Threshold schema mirrors ml-service/app/ensemble.score_to_signal kwargs so
-  // Optuna search can tune both paths uniformly in future (#28b Tier 1).
+  // Research/observability threshold envelope only. Formal Active-8 signals
+  // are owned by the immutable learned conformal artifact and never force top-K BUYs.
+  // These values cannot control serving admission or allocation.
   ensemble_v2: {
     strongBuyThreshold: number       // 絕對 STRONG_BUY 門檻（預設 0.85）
     buyThreshold: number             // 絕對 BUY 門檻（預設 0.70）
     sellThreshold: number            // 絕對 SELL 門檻（預設 0.30）
     strongSellThreshold: number      // 絕對 STRONG_SELL 門檻（預設 0.15）
-    topKOverrideEnabled: boolean     // Top-K 補救開關（預設 false，legacy rollback only）
-    allowLegacyTopKOverride: boolean // retired compatibility guard; sparse allocator is production owner
-    topKCount: number                // 強制 BUY 的 top-K 數（預設 3，對齊 ranking.topK）
-    topKConfidenceOverride: number   // Top-K 強制 BUY 時的 confidence（預設 0.72）
   }
   mlPool: {
     useEnsembleV2: boolean
@@ -599,16 +586,12 @@ export const DEFAULT_TRADING_CONFIG: TradingConfig = {
     screenerDenominator: 60,
     promoteMinConf: 0.60,
   },
-  // ── #B Option 1 (2026-04-21): ensemble_v2 thresholds + Top-K override ─────
+  // Research/observability threshold envelope; not a formal serving owner.
   ensemble_v2: {
     strongBuyThreshold: 0.85,
     buyThreshold: 0.70,
     sellThreshold: 0.30,
     strongSellThreshold: 0.15,
-    topKOverrideEnabled: false,
-    allowLegacyTopKOverride: false,
-    topKCount: 3,
-    topKConfidenceOverride: 0.72,
   },
   mlPool: {
     useEnsembleV2: true,

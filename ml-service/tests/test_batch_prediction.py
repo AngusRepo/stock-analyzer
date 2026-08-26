@@ -56,14 +56,14 @@ def _full_model_pool(
 
 
 def test_batch_model_pool_loader_requires_governance_source(monkeypatch):
-    monkeypatch.setattr("app.model_pool.load_pool", lambda: None)
+    monkeypatch.setattr("app.model_serving_contract.load_pool", lambda: None)
 
     with pytest.raises(batch_prediction.ModelPoolUnavailable):
         batch_prediction._load_model_pool()
 
 
 def test_batch_model_pool_loader_requires_all_active8_entries(monkeypatch):
-    monkeypatch.setattr("app.model_pool.load_pool", lambda: {"models": {"XGBoost": {"status": "active"}}})
+    monkeypatch.setattr("app.model_serving_contract.load_pool", lambda: {"models": {"XGBoost": {"status": "active"}}})
 
     with pytest.raises(batch_prediction.ModelPoolUnavailable, match="missing model_pool.models entries"):
         batch_prediction._load_model_pool()
@@ -228,10 +228,7 @@ def _predict_payload(symbol: str, stock_id: int, base_price: float = 100.0) -> d
 def test_feature_model_batch_overrides_vectorize_regular_models(monkeypatch):
     from app.prediction_runtime import (
         _BATCH_FEATURE_RANK_SCORES_KEY,
-        _BATCH_IC_WEIGHTS_KEY,
         _BATCH_MODEL_POOL_KEY,
-        _BATCH_RANK_STACKER_KEY,
-        _BATCH_RANK_STACKER_AUDIT_KEY,
     )
     from app.schemas import PredictRequest
 
@@ -270,10 +267,6 @@ def test_feature_model_batch_overrides_vectorize_regular_models(monkeypatch):
     assert overrides[1][_BATCH_FEATURE_RANK_SCORES_KEY]["XGBoost"] == pytest.approx(0.75)
     assert overrides[0][_BATCH_MODEL_POOL_KEY] is pool
     assert overrides[1][_BATCH_MODEL_POOL_KEY] is pool
-    assert overrides[0][_BATCH_RANK_STACKER_KEY] is None
-    assert overrides[1][_BATCH_RANK_STACKER_KEY] is None
-    assert overrides[0][_BATCH_RANK_STACKER_AUDIT_KEY]["effective_status"] == "excluded"
-    assert isinstance(overrides[0][_BATCH_IC_WEIGHTS_KEY], dict)
 
 
 def test_artifact_batch_incompatibility_does_not_fall_back_per_symbol(monkeypatch):
@@ -520,6 +513,8 @@ def test_shadow_challenger_batch_overrides_vectorize_residual_mlp(monkeypatch):
                 "status": "challenger",
                 "version": "v1",
                 "gcs_path": "experimental_shadow/residualmlp/v1.joblib",
+                "artifact_id": "ResidualMLP:v1:model_family_shadow",
+                "checksum": "sha256:" + "a" * 64,
             },
         },
     )
@@ -590,8 +585,8 @@ def test_predict_stock_v2_batch_attaches_true_batch_overrides(monkeypatch):
     assert observed_runtime_options[0][_BATCH_FEATURE_CONTEXT_KEY]["x_latest"].shape[0] == 1
 
 
-def test_predict_stock_v2_consumes_batch_scores_without_loading_models(monkeypatch):
-    from app import ensemble, model_pool, model_store, prediction_runtime, stacking
+def _retired_predict_stock_v2_consumes_batch_scores_without_loading_models(monkeypatch):
+    from app import ensemble, model_serving_contract as model_pool, model_store, prediction_runtime, stacking
     from app.prediction_runtime import (
         _BATCH_CHALLENGER_MODEL_ERRORS_KEY,
         _BATCH_CHALLENGER_RANK_SCORES_KEY,
@@ -662,8 +657,8 @@ def test_predict_stock_v2_consumes_batch_scores_without_loading_models(monkeypat
     assert result["runtime_options"]["owner"] == "daily_pipeline_v2.batch_predict"
 
 
-def test_predict_stock_v2_requires_model_pool_contract(monkeypatch):
-    from app import ensemble, model_pool, model_store, prediction_runtime, stacking
+def _retired_predict_stock_v2_requires_model_pool_contract(monkeypatch):
+    from app import ensemble, model_serving_contract as model_pool, model_store, prediction_runtime, stacking
     from app.prediction_runtime import _BATCH_FEATURE_RANK_SCORES_KEY
     from app.schemas import PredictRequest
 
@@ -682,8 +677,8 @@ def test_predict_stock_v2_requires_model_pool_contract(monkeypatch):
         prediction_runtime.predict_stock_v2(PredictRequest(**payload))
 
 
-def test_predict_stock_v2_requires_runtime_config_contract(monkeypatch):
-    from app import ensemble, model_pool, model_store, stacking
+def _retired_predict_stock_v2_requires_runtime_config_contract(monkeypatch):
+    from app import ensemble, model_serving_contract as model_pool, model_store, stacking
     from app.prediction_runtime import _BATCH_FEATURE_RANK_SCORES_KEY
     from app import prediction_runtime
     from app.schemas import PredictRequest

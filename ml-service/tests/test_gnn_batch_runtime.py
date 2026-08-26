@@ -3,7 +3,7 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from app import gnn_batch_runtime, model_pool
+from app import gnn_batch_runtime, model_serving_contract as model_pool
 
 
 def test_correlation_edge_index_builds_batch_context_graph():

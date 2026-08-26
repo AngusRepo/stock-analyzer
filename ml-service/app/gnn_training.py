@@ -27,7 +27,7 @@ from .prep_lineage import (
     validate_prep_lineage_for_registration,
 )
 from .model_validation import build_model_cpcv_evidence
-from .training_promotion_policy import resolve_training_promotion_intent
+
 from .target_rank_scope import GLOBAL_CROSS_SECTIONAL_RANK_VERSION, recompute_global_cross_sectional_rank
 from .training_policy import (
     build_model_feature_policy_metadata,
@@ -340,71 +340,6 @@ def _save_artifact(
     return {"artifact_path": artifact_path, "metadata_path": metadata_path, "checksum": checksum, "metadata": metadata}
 
 
-def _update_model_pool_active(bucket, *, version: str, artifact_path: str, metadata: dict, reason: str) -> dict:
-    pool_blob = bucket.blob("universal/model_pool.json")
-    if not pool_blob.exists():
-        raise RuntimeError("universal/model_pool.json not found")
-    pool = json.loads(pool_blob.download_as_text().lstrip("\ufeff"))
-    entry = (pool.setdefault("models", {})).setdefault(MODEL_NAME, {})
-    old_version = entry.get("version")
-    promoted_at = datetime.now(timezone.utc).isoformat()
-    if old_version and str(old_version) != str(version):
-        entry.setdefault("retired_versions", []).append({
-            "version": old_version,
-            "gcs_path": entry.get("gcs_path"),
-            "retired_at": promoted_at,
-            "reason": reason,
-            "weekly_ic_at_retire": list(entry.get("weekly_ic") or []),
-            "ic_4w_avg_at_retire": entry.get("ic_4w_avg"),
-        })
-    entry.update({
-        "status": "active",
-        "version": version,
-        "gcs_path": artifact_path,
-        "model_type": "cross_stock_graphsage",
-        "balance_family": "graph",
-        "promoted_at": promoted_at,
-        "last_ic_status": "awaiting_live_ic",
-        "last_ic_root_cause": "new_graphsage_artifact_awaiting_verified_predictions",
-        "last_ic_sample_count": 0,
-        "last_artifact_evidence": {
-            "oos_ic": metadata.get("oos_ic"),
-            "daily_ic_count": metadata.get("daily_ic_count"),
-            "validation_range": metadata.get("validation_range"),
-            "prep_lineage": metadata.get("prep_lineage"),
-        },
-        "promotion_controller": {
-            "source": "graphsage_formal_retrain",
-            "reason": reason,
-            "promoted_at": promoted_at,
-            "artifact_path": artifact_path,
-        },
-    })
-    for field in STALE_PROMOTION_FIELDS:
-        entry.pop(field, None)
-    entry.pop("challenger", None)
-    entry.pop("degraded_since", None)
-    entry.pop("retired_at", None)
-    slot = (pool.setdefault("formal_layer3_slots", {})).setdefault(MODEL_NAME, {})
-    slot.update({
-        "status": "artifact_backed_model_pool_active",
-        "version": version,
-        "gcs_path": artifact_path,
-        "model_type": "cross_stock_graphsage",
-        "family": "graph",
-        "direct_prediction": False,
-        "vote_weight": 0.0,
-        "last_updated": promoted_at,
-        "note": "Production serving is owned by model_pool.models.GNN; formal slot kept as governance alias.",
-    })
-    pool["last_updated"] = promoted_at
-    pool_blob.upload_from_string(
-        json.dumps(pool, ensure_ascii=False, indent=2, sort_keys=True),
-        content_type="application/json",
-    )
-    return {"old_version": old_version, "new_version": version, "artifact_path": artifact_path, "promoted_at": promoted_at}
-
-
 def train_graphsage_universal(payload: dict | None = None) -> dict[str, Any]:
     payload = dict(payload or {})
     t0 = time.time()
@@ -430,11 +365,8 @@ def train_graphsage_universal(payload: dict | None = None) -> dict[str, Any]:
     )
     seed = int(payload.get("seed") or 42)
     reproducibility = configure_training_reproducibility(seed)
-    promote_to_active, promotion_reason = resolve_training_promotion_intent(payload, model_name=MODEL_NAME)
-    generation_mode = str(payload.get("generation_mode") or "native").strip().lower()
-    if generation_mode == "purged_oof" and promote_to_active:
-        raise ValueError("oof_fold_artifact_cannot_be_promoted_to_production")
 
+    generation_mode = str(payload.get("generation_mode") or "native").strip().lower()
     stage_timings: dict[str, float] = {}
     stage_t0 = time.time()
     x_raw, batch_local_y, target_returns, dates, sectors, symbols, markets, label_known_dates, io_report = _load_npz_batches(
@@ -476,7 +408,7 @@ def train_graphsage_universal(payload: dict | None = None) -> dict[str, Any]:
             max_stale_days=payload.get("max_prep_stale_days"),
             label_horizon_days=payload.get("label_horizon_days"),
         )
-        if promote_to_active and gcs_prefix == "universal" and payload.get("disable_stale_prep_guard") is not True
+        if str(payload.get("candidate_type") or "") == "oof_full_fit_release" and gcs_prefix == "universal"
         else {"status": "skipped"}
     )
 
@@ -748,16 +680,6 @@ def train_graphsage_universal(payload: dict | None = None) -> dict[str, Any]:
         f"elapsed_s={stage_timings['upload_s']}",
         flush=True,
     )
-    pool_update = None
-    if promote_to_active:
-        assert promotion_reason is not None
-        pool_update = _update_model_pool_active(
-            bucket,
-            version=version,
-            artifact_path=saved["artifact_path"],
-            metadata=saved["metadata"],
-            reason=promotion_reason,
-        )
     return {
         "status": "ok",
         "model": MODEL_NAME,
@@ -783,7 +705,7 @@ def train_graphsage_universal(payload: dict | None = None) -> dict[str, Any]:
         "validation_samples": int(len(test_idx)),
         "feature_count": len(feature_names),
         "stage_timings": stage_timings,
-        "pool_update": pool_update,
+
         "oof_artifact": oof_artifact,
         "elapsed_s": round(time.time() - t0, 3),
     }

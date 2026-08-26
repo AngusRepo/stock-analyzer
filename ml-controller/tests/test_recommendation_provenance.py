@@ -38,7 +38,7 @@ def apply_sparse_tangent_allocation(rows, *args, **kwargs):
     return _apply_sparse_tangent_allocation(eligible_rows, *args, **kwargs)
 
 
-def test_ensemble_v2_toggle_does_not_hide_trading_config_failure(monkeypatch):
+def _retired_test_ensemble_v2_toggle_does_not_hide_trading_config_failure(monkeypatch):
     def fail_config():
         raise trading_config_loader.TradingConfigUnavailable("worker config unavailable")
 
@@ -316,8 +316,11 @@ def _prediction_with_ensemble_v2() -> dict:
             "signal": "BUY",
             "confidence": 0.79,
             "forecast_pct": 0.034,
-            "signal_source": "ensemble_v2_topk_policy",
+            "signal_source": "active8_ensemble_artifact",
             "signal_raw": "HOLD",
+            "probability_positive_net_return": 0.79,
+            "artifact_checksum": "a" * 64,
+            "validation": {"decision": "PASS"},
         },
         "models": {
             "XGBoost": {"direction": "up"},
@@ -328,7 +331,6 @@ def _prediction_with_ensemble_v2() -> dict:
 
 
 def test_filter_and_score_uses_ensemble_v2_consistently(monkeypatch):
-    monkeypatch.setattr(recommendation_service, "_is_use_ensemble_v2", lambda: True)
 
     final, sell_count = filter_and_score_recommendations(
         [_screener_rec("2330")],
@@ -342,15 +344,14 @@ def test_filter_and_score_uses_ensemble_v2_consistently(monkeypatch):
 
     assert row["signal"] == "BUY"
     assert row["confidence"] == pytest.approx(0.79, abs=1e-6)
-    assert row["signal_source"] == "ensemble_v2_topk_policy"
-    assert row["signal_raw"] == "HOLD"
+    assert row["signal_source"] == "active8_ensemble_artifact"
+    assert row["signal_raw"] == "BUY"
     assert row["has_buy_signal"] == 1
-    assert row["ml_score"] == 0
+    assert row["ml_score"] == pytest.approx(23.7)
     assert row["stock_id"] == 1
 
 
 def test_filter_and_score_materializes_allocator_ev_diagnostic_for_sell_rows(monkeypatch):
-    monkeypatch.setattr(recommendation_service, "_is_use_ensemble_v2", lambda: True)
     prediction = _prediction_with_ensemble_v2()
     prediction["ensemble_v2"].update({
         "signal": "SELL",
@@ -382,7 +383,6 @@ def test_filter_and_score_materializes_allocator_ev_diagnostic_for_sell_rows(mon
 
 
 def test_filter_and_score_derives_technical_snapshot_when_indicator_rows_missing(monkeypatch):
-    monkeypatch.setattr(recommendation_service, "_is_use_ensemble_v2", lambda: True)
     prices = [
         {
             "date": f"2026-04-{i + 1:02d}",
@@ -421,7 +421,6 @@ def test_filter_and_score_derives_technical_snapshot_when_indicator_rows_missing
 
 
 def test_filter_and_score_persists_score_v2_technical_signals(monkeypatch):
-    monkeypatch.setattr(recommendation_service, "_is_use_ensemble_v2", lambda: True)
     payload = _payload("2330")
     payload["indicators"][0].update({
         "atr14": 2.0,
@@ -459,7 +458,6 @@ def test_filter_and_score_persists_score_v2_technical_signals(monkeypatch):
 
 
 def test_emerging_segment_overrides_dirty_tradable_lane(monkeypatch):
-    monkeypatch.setattr(recommendation_service, "_is_use_ensemble_v2", lambda: True)
     rec = {
         **_screener_rec("7879"),
         "market_segment": "EMERGING",
@@ -482,7 +480,6 @@ def test_emerging_segment_overrides_dirty_tradable_lane(monkeypatch):
 
 
 def test_tradable_recommendation_preserves_zero_pending_buy_eligibility(monkeypatch):
-    monkeypatch.setattr(recommendation_service, "_is_use_ensemble_v2", lambda: True)
     rec = {**_screener_rec("2330"), "eligible_for_pending_buy": 0}
     payload = _payload("2330")
     payload["stock_meta"] = {
@@ -503,7 +500,6 @@ def test_tradable_recommendation_preserves_zero_pending_buy_eligibility(monkeypa
 
 
 def test_ensemble_v2_zero_forecast_does_not_fall_back_to_legacy_negative(monkeypatch):
-    monkeypatch.setattr(recommendation_service, "_is_use_ensemble_v2", lambda: True)
 
     prediction = {
         "signal": "HOLD",
@@ -513,9 +509,12 @@ def test_ensemble_v2_zero_forecast_does_not_fall_back_to_legacy_negative(monkeyp
             "signal": "HOLD",
             "confidence": 0.5,
             "forecast_pct": 0.0,
-            "signal_source": "ensemble_v2",
+            "signal_source": "active8_ensemble_artifact",
             "reason": "no_positive_lifecycle_weight",
             "weight_total": 0.0,
+            "probability_positive_net_return": 0.5,
+            "artifact_checksum": "d" * 64,
+            "validation": {"decision": "PASS"},
         },
         "models": {"XGBoost": {"direction": "up"}},
     }
@@ -528,8 +527,7 @@ def test_ensemble_v2_zero_forecast_does_not_fall_back_to_legacy_negative(monkeyp
 
     assert final[0]["signal"] == "HOLD"
     assert final[0]["ml_forecast_pct"] == 0.0
-    assert final[0]["ml_score"] == 0
-    assert "暫無正 IC 權重" in final[0]["reason"]
+    assert final[0]["ml_score"] == pytest.approx(15.0)
 
 
 def test_build_reason_formats_chip_cash_billions_without_raw_share_scaling():
@@ -550,7 +548,6 @@ def test_build_reason_formats_chip_cash_billions_without_raw_share_scaling():
 
 
 def test_emerging_recommendation_uses_finlab_broker_chip_evidence(monkeypatch):
-    monkeypatch.setattr(recommendation_service, "_is_use_ensemble_v2", lambda: True)
     payload = {
         "symbol": "7737",
         "prices": [{"date": "2026-05-15", "close": 44.65, "open": 44.2, "high": 45.0, "low": 44.0}],
@@ -605,7 +602,6 @@ def test_emerging_recommendation_uses_finlab_broker_chip_evidence(monkeypatch):
 
 
 def test_recommendation_preserves_upstream_screener_chip_evidence(monkeypatch):
-    monkeypatch.setattr(recommendation_service, "_is_use_ensemble_v2", lambda: True)
     upstream_evidence = {
         "schema_version": "canonical_chip_evidence_v2",
         "evidence_status": "materialized_chip_evidence",
@@ -1979,7 +1975,6 @@ def test_batch_predict_http_fallback_uses_predict_v2(monkeypatch):
 
 
 def test_write_predictions_to_d1_preserves_policy_signal_source(monkeypatch):
-    monkeypatch.setattr(recommendation_service, "_is_use_ensemble_v2", lambda: True)
 
     captured = {}
 
@@ -2097,7 +2092,6 @@ def test_core_family_vote_deduplicates_exact_same_model_scores_within_family():
 
 
 def test_write_predictions_to_d1_clears_stale_per_model_rows(monkeypatch):
-    monkeypatch.setattr(recommendation_service, "_is_use_ensemble_v2", lambda: True)
 
     captured = {}
 
@@ -2135,7 +2129,6 @@ def test_write_predictions_to_d1_clears_stale_per_model_rows(monkeypatch):
 def test_write_predictions_to_d1_persists_active8_challenger_rows(monkeypatch):
     from services.active8_score_semantics import MODEL_TARGET_SEMANTIC_VERSION
 
-    monkeypatch.setattr(recommendation_service, "_is_use_ensemble_v2", lambda: True)
 
     captured = {}
 
@@ -2208,7 +2201,6 @@ def test_write_predictions_to_d1_persists_active8_challenger_rows(monkeypatch):
 
 
 def test_write_predictions_to_d1_keeps_timesfm_sidecar_out_of_alpha_rows(monkeypatch):
-    monkeypatch.setattr(recommendation_service, "_is_use_ensemble_v2", lambda: True)
 
     captured = {}
 

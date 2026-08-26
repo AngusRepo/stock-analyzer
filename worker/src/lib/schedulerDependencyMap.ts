@@ -268,7 +268,7 @@ export const SCHEDULER_DEPENDENCY_MAP: Record<string, SchedulerDependencySpec> =
     consolidationClass: 'keep_scheduler',
     currentFunction: 'Monthly pymoo NSGA-III + novelty strategy mining preflight and research ledger trigger.',
     upstream: ['feature-registry-materialization', 'formal137-similarity-contract'],
-    downstream: ['strategy_mining_runs', 'strategy_backtest_results', 'strategy_promotion_ledger', 'monthly-optuna', 'monthly-retrain'],
+    downstream: ['strategy_mining_runs', 'strategy_backtest_results', 'strategy_promotion_ledger', 'monthly-optuna', 'active8-oof-monthly'],
     requiredBeforeDisable: [],
     operatorRisk: 'medium',
     recommendation: 'Keep as the monthly strategy discovery owner; endpoint is research-only until promotion gates and Wei approval pass.',

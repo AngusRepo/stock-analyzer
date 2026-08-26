@@ -41,7 +41,6 @@ const REPORT_ARTIFACT_TASKS = new Set([
   'monthly-optuna',
   'parameter-candidate-validation',
   'monthly-strategy-mining',
-  'monthly-retrain',
   'external-evidence',
 ])
 

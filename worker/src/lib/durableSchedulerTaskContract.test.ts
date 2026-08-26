@@ -37,8 +37,8 @@ assert(processor.includes('releaseDurableTaskRecoveryFence'), 'successors must e
 assert(processor.includes('artifactIds.length === expectedArtifacts'), 'idempotent S12 success requires run/artifact count parity')
 assert(processor.includes('putTerminalReceipt'))
 assert(processor.includes('runWeeklyCleanupClosure'))
-assert(processor.includes('requireWeeklyLifecycleDryRunSuccess(lifecycle)'), 'weekly cleanup must fail closed on lifecycle non-success')
-assert(processor.includes("summary.startsWith('model_pool dry_run=')"), 'lifecycle success must require the canonical dry-run receipt')
+assert(processor.includes('requireWeeklyRegistryReadbackSuccess(registryReadback)'), 'weekly cleanup must fail closed on lifecycle non-success')
+assert(processor.includes("summary.startsWith('model_registry readback=ok')"), 'model registry success must require the canonical D1 readback receipt')
 assert(processor.includes('putManualRunLog'))
 assert(processor.includes('throw error'))
 assert(

@@ -276,62 +276,6 @@ def test_modal_feature_bundle_excludes_shadow_models_from_rank_closure() -> None
     ]
 
 
-def _pool_and_registry_rows(*, serving_eligible: bool = True) -> tuple[dict, list[dict]]:
-    models = {}
-    rows = []
-    for index, model_name in enumerate(pipeline.ACTIVE_ALPHA_MODELS):
-        artifact_id = f"{model_name}:v1:test"
-        artifact_path = f"universal/{model_name.lower()}/v1.bin"
-        metadata_path = f"universal/{model_name.lower()}/metadata_v1.json"
-        models[model_name] = {
-            "status": "active",
-            "version": "v1",
-            "gcs_path": artifact_path,
-            "metadata_path": metadata_path,
-            "serving_artifact_id": artifact_id,
-            "serving_eligible": serving_eligible if model_name == "XGBoost" else True,
-            "serving_block_reason": (
-                "test_block" if model_name == "XGBoost" and not serving_eligible else None
-            ),
-            "target_semantic_version": pipeline.LABEL_SCHEMA_VERSION,
-            "feature_semantic_version": FORMAL_FEATURE_SEMANTIC_VERSION,
-            "gnn_graph_semantic_version": (
-                FORMAL_GNN_GRAPH_SEMANTIC_VERSION if model_name == "GNN" else None
-            ),
-        }
-        rows.append({
-            "artifact_id": artifact_id,
-            "model_name": model_name,
-            "version": "v1",
-            "artifact_path": artifact_path,
-            "metadata_path": metadata_path,
-            "checksum": "sha256:" + f"{index + 1:064x}",
-            "state": "production",
-            "offline_gate_decision": "PASS",
-            "live_gate_status": "not_started",
-            "metadata_schema_version": "model-artifact-v2",
-            "registry_target_semantic_version": pipeline.LABEL_SCHEMA_VERSION,
-            "registry_feature_semantic_version": FORMAL_FEATURE_SEMANTIC_VERSION,
-            "registry_gnn_graph_semantic_version": (
-                FORMAL_GNN_GRAPH_SEMANTIC_VERSION if model_name == "GNN" else None
-            ),
-        })
-    return {"models": models}, rows
-
-
-def test_manifest_excludes_artifact_that_pool_marks_not_serving_eligible() -> None:
-    pool, rows = _pool_and_registry_rows(serving_eligible=False)
-
-    manifest, _digest = pipeline._build_pipeline_modal_serving_manifest(
-        pool,
-        registry_rows=rows,
-    )
-    xgboost = next(row for row in manifest["models"] if row["model"] == "XGBoost")
-    assert xgboost["effective_status"] == "challenger"
-    assert xgboost["health"]["serving_block_reason"] == "test_block"
-    assert "XGBoost" not in pipeline._pipeline_modal_manifest_identities(manifest, serving_only=True)
-
-
 def test_callback_rejects_digest_or_artifact_identity_drift_before_writes() -> None:
     state = _state()
     bundle = _bundle()
@@ -388,16 +332,3 @@ def test_callback_rejects_missing_serving_rank_but_not_excluded_rank() -> None:
     bundle["predict_batch_v2_results"][0]["rank_scores"].pop("TabM")
     with pytest.raises(RuntimeError, match="missing_active_feature_ranks"):
         pipeline._validate_pipeline_modal_feature_bundle_before_writes(_state(), bundle)
-
-
-def test_rank_stacker_audit_snapshot_failure_is_non_blocking(monkeypatch) -> None:
-    monkeypatch.setattr(
-        pipeline,
-        "_load_pipeline_modal_rank_stacker_snapshot",
-        lambda: (_ for _ in ()).throw(TimeoutError("gcs timeout")),
-    )
-
-    snapshot = pipeline._pipeline_modal_rank_stacker_snapshot()
-    assert snapshot["status"] == "unavailable"
-    assert snapshot["effective_status"] == "excluded"
-    assert snapshot["reason"] == "audit_snapshot_unavailable:timeouterror"

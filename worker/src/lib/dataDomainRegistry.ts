@@ -86,6 +86,7 @@ const DOMAIN_TABLES: Record<DataDomain, ReadonlySet<string>> = {
     's12_tw_calibration_runs', 's12_tw_calibration_artifacts', 'state_space_shadow_results',
     'model_accuracy', 'stock_memories', 'trade_performance', 'dataset_snapshots',
     'model_artifact_registry', 'model_champion_history', 'model_champion_pointers',
+    'active8_ensemble_artifacts_v1', 'active8_ensemble_pointer_v1',
     'expected_return_artifact_payloads', 'expected_return_owner_state_v2',
     'allocator_ev_feature_snapshots',
     'allocator_ev_snapshot_runs',
@@ -263,6 +264,8 @@ const SHADOW_BACKFILL_EXCLUDED_TABLES: Partial<Record<DataDomain, ReadonlySet<st
     'selection_reference_snapshots_staging_v1',
     'strategy_label_matrix_staging_v4',
     'strategy_route_versioned_evidence_v1',
+    'active8_ensemble_artifacts_v1',
+    'active8_ensemble_pointer_v1',
   ]),
   market: new Set([
     // Append-only knowledge-time rows start at domain creation; mutable legacy revenue cannot seed them.
@@ -316,6 +319,7 @@ const SHADOW_BACKFILL_DEPENDENCIES: Readonly<Record<string, readonly string[]>> 
   data_retention_run_items: ['data_retention_runs'],
   data_retention_runs: ['data_retention_policies'],
   expected_return_artifact_payloads: ['model_artifact_registry'],
+  active8_ensemble_pointer_v1: ['active8_ensemble_artifacts_v1'],
   model_champion_history: ['model_artifact_registry'],
   model_champion_pointers: [
     'model_artifact_registry',

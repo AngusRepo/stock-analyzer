@@ -199,31 +199,10 @@ def gcs_metadata_path_for(model_name: str, version: str) -> str:
 # ?????????????????????????????????????????????????????????????????????????????
 
 def load_pool() -> Optional[dict]:
-    """Load current model_pool.json from GCS. None if missing."""
-    global _POOL_CACHE, _POOL_CACHE_LOADED_AT
-    ttl = int(os.environ.get("MODEL_POOL_CACHE_TTL_SECONDS", "300") or "300")
-    if _POOL_CACHE is not None and time.time() - _POOL_CACHE_LOADED_AT < max(0, ttl):
-        cached = sanitize_pool_active_alpha(json.loads(json.dumps(_POOL_CACHE)))
-        from .serving_resolver import resolve_serving_pool
-
-        return resolve_serving_pool(cached)
-    try:
-        bucket = _get_bucket()
-        blob = bucket.blob(GCS_POOL_KEY)
-        if not blob.exists():
-            return None
-        _POOL_CACHE = json.loads(blob.download_as_text().lstrip("\ufeff"))
-        _POOL_CACHE_LOADED_AT = time.time()
-    except Exception as e:
-        logger.warning(f"[ModelPool] Load failed: {e}")
-        return None
-    pool = sanitize_pool_active_alpha(json.loads(json.dumps(_POOL_CACHE)))
+    """Load the exact D1 champion snapshot used by production serving."""
     from .serving_resolver import resolve_serving_pool
 
-    # D1 resolution failures are serving failures, not missing GCS pool files.
-    # Preserve their typed root cause for the batch fail-closed envelope.
-    return resolve_serving_pool(pool)
-
+    return resolve_serving_pool()
 
 def save_pool(pool: dict) -> None:
     """Write model_pool.json to GCS with updated last_updated timestamp."""

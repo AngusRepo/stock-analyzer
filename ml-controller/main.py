@@ -20,7 +20,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from services.modal_client import batch_predict_contract
 from services.trading_config_loader import DEFAULT_REQUIRED_CONFIG
 
-from routers import predict, retrain, retrain_trigger, retrain_followup, verify, recommend, risk, status, sector_flow, backtest, lifecycle, pipeline, audit, adversarial, obsidian, intraday, regime, walk_forward, debate, model_pool, config_pool, admin, research_benchmark, dataset_snapshots, meta_learning, paper_challenger, breeze2, finlab, external_evidence, strategy_similarity, strategy_mining, screener, l4_alpha_ev, allocator_ev_fusion, opb_arm_prior, s12_structure
+from routers import predict, retrain_trigger, retrain_followup, verify, recommend, risk, status, sector_flow, backtest, pipeline, audit, adversarial, obsidian, intraday, regime, walk_forward, debate, model_pool, config_pool, admin, research_benchmark, dataset_snapshots, meta_learning, paper_challenger, breeze2, finlab, external_evidence, strategy_similarity, strategy_mining, screener, l4_alpha_ev, allocator_ev_fusion, opb_arm_prior, s12_structure
 # 2026-04-07 Phase 1.6: Optuna routes 從 Modal 移到 Cloud Run
 try:
     from routers import optuna as optuna_router
@@ -75,7 +75,6 @@ async def verify_token(request: Request) -> None:
 
 # ── 注入 auth dependency 到所有 router ────────────────────────────────────────
 app.include_router(predict.router,  dependencies=[Depends(verify_token)])
-app.include_router(retrain.router,  dependencies=[Depends(verify_token)])
 app.include_router(retrain_trigger.router, dependencies=[Depends(verify_token)])
 # Modal long-task callbacks use the service-token contract inside the router.
 # Do not also require the Worker controller header here; that rejects Modal
@@ -87,7 +86,6 @@ app.include_router(risk.router,     dependencies=[Depends(verify_token)])
 app.include_router(status.router,      dependencies=[Depends(verify_token)])
 app.include_router(sector_flow.router, dependencies=[Depends(verify_token)])
 app.include_router(backtest.router,    dependencies=[Depends(verify_token)])
-app.include_router(lifecycle.router,   dependencies=[Depends(verify_token)])
 app.include_router(pipeline.router,    dependencies=[Depends(verify_token)])
 app.include_router(pipeline.callback_router)
 app.include_router(audit.router,       dependencies=[Depends(verify_token)])

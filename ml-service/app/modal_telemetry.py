@@ -103,7 +103,7 @@ def build_retrain_orchestrator_telemetry(
     stages: dict[str, Any],
     *,
     total_elapsed_s: float,
-    is_monthly: bool,
+
     run_id: str | None = None,
     partial_results: dict[str, dict[str, Any]] | None = None,
 ) -> list[dict[str, Any]]:
@@ -113,23 +113,6 @@ def build_retrain_orchestrator_telemetry(
     total_elapsed = _positive_float(total_elapsed_s)
     if total_elapsed is not None:
         telemetry.append(_event("retrain_orchestrator", total_elapsed, meta=base_meta))
-
-    feature_stage = stages.get("feature_selection") or {}
-    feature_elapsed = _positive_float(feature_stage.get("elapsed_s"))
-    if is_monthly and feature_elapsed is not None:
-        feature_meta = {
-            "run_id": run_id,
-            "stage": "feature_selection",
-            "status": feature_stage.get("status"),
-        }
-        feature_meta.update(_feature_selection_scope_meta(feature_stage))
-        telemetry.append(
-            _event(
-                "feature_selection_pipeline",
-                feature_elapsed,
-                meta=feature_meta,
-            )
-        )
 
     train_stage = stages.get("train") or {}
     group_coverage = train_stage.get("group_coverage") or {}

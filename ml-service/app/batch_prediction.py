@@ -78,25 +78,25 @@ def _is_real_runtime(request_cls: Any, predict_fn: Any) -> bool:
 
 
 class ModelPoolUnavailable(RuntimeError):
-    """Raised when model_pool.json cannot be loaded for batch governance."""
+    """Raised when canonical D1 champion pool cannot be loaded."""
 
 
 def _load_model_pool() -> dict:
-    from .model_pool import load_pool
+    from .model_serving_contract import load_pool
     from .prediction_runtime import _require_model_pool_contract
 
     pool = load_pool()
     try:
         _require_model_pool_contract(pool, stage="batch_predict")
     except Exception as exc:
-        raise ModelPoolUnavailable(f"model_pool.json unavailable for batch model governance: {exc}") from exc
+        raise ModelPoolUnavailable(f"d1_champion_pool_unavailable_for_batch_governance: {exc}") from exc
     return pool
 
 
 def _get_pool_shadow_challenger_path(model_name: str, pool: dict | None) -> str | None:
-    from .model_pool import get_shadow_challenger_path
+    from .model_serving_contract import get_explicit_shadow_path
 
-    return get_shadow_challenger_path(model_name, pool=pool)
+    return get_explicit_shadow_path(model_name, pool=pool)
 
 
 def _shadow_challenger_names(pool: dict | None) -> tuple[str, ...]:
@@ -108,7 +108,7 @@ def _shadow_challenger_names(pool: dict | None) -> tuple[str, ...]:
         return tuple(name for name in shadow_models if name == "ResidualMLP")
     if isinstance(shadow_models, dict) and shadow_models:
         return tuple(name for name in (str(name) for name in shadow_models.keys()) if name == "ResidualMLP")
-    return ("ResidualMLP",)
+    return ()
 
 
 def _load_feature_artifact(
@@ -799,27 +799,13 @@ def _build_feature_model_batch_runtime_overrides(
         _BATCH_FEATURE_CONTEXT_KEY,
         _BATCH_FEATURE_MODEL_ERRORS_KEY,
         _BATCH_FEATURE_RANK_SCORES_KEY,
-        _BATCH_IC_WEIGHTS_KEY,
         _BATCH_MODEL_POOL_KEY,
-        _BATCH_RANK_STACKER_KEY,
-        _BATCH_RANK_STACKER_AUDIT_KEY,
         _FEATURE_MODEL_NAMES_V2,
-        _normalize_market_segment_for_serving,
     )
-    from .ensemble import _extract_model_pool_ic
 
     contexts = [_build_feature_batch_context(req) for req in requests]
     pool = pool_snapshot if pool_snapshot is not None else _load_model_pool()
     model_status = _model_pool_status(pool)
-    rank_stacker_bundle, rank_stacker_audit = _resolve_rank_stacker_runtime(pool)
-    ic_weights_by_segment = {
-        segment: _extract_model_pool_ic(pool, market_segment=segment)
-        for segment in {
-            _normalize_market_segment_for_serving(ctx.req)
-            for ctx in contexts
-        }
-    }
-
     for model_name in _FEATURE_MODEL_NAMES_V2:
         if model_name == "GNN":
             continue
@@ -910,11 +896,6 @@ def _build_feature_model_batch_runtime_overrides(
             _BATCH_CHALLENGER_RANK_SCORES_KEY: dict(ctx.challenger_rank_scores),
             _BATCH_CHALLENGER_MODEL_ERRORS_KEY: list(ctx.challenger_errors),
             _BATCH_MODEL_POOL_KEY: pool,
-            _BATCH_IC_WEIGHTS_KEY: dict(
-                ic_weights_by_segment[_normalize_market_segment_for_serving(ctx.req)]
-            ),
-            _BATCH_RANK_STACKER_KEY: rank_stacker_bundle,
-            _BATCH_RANK_STACKER_AUDIT_KEY: rank_stacker_audit,
         }
         for ctx in contexts
     ]
@@ -997,36 +978,6 @@ def _copy_request_with_runtime_overrides(req: Any, overrides: dict) -> Any:
     return copied
 
 
-def _resolve_rank_stacker_runtime(
-    pool: dict[str, Any],
-) -> tuple[dict | None, dict[str, Any]]:
-    if str(pool.get("source_of_truth") or "") != "frozen_pipeline_modal_serving_manifest":
-        return None, {
-            "status": "ungoverned",
-            "effective_status": "excluded",
-            "reason": "not_in_frozen_governance",
-        }
-    snapshot = pool.get("rank_stacker")
-    if not isinstance(snapshot, dict):
-        raise ModelPoolUnavailable("frozen rank_stacker audit missing")
-    effective_status = str(snapshot.get("effective_status") or "").strip()
-    reason = str(snapshot.get("reason") or "").strip()
-    if effective_status != "excluded" or not reason:
-        raise ModelPoolUnavailable(
-            "frozen rank_stacker must remain excluded until reject-only validation"
-        )
-    return None, {
-        "status": str(snapshot.get("status") or "unknown"),
-        "effective_status": effective_status,
-        "reason": reason,
-        "artifact_path": str(snapshot.get("artifact_path") or "") or None,
-        "metadata_path": str(snapshot.get("metadata_path") or "") or None,
-        "artifact_identity": (
-            dict(snapshot.get("artifact_identity"))
-            if isinstance(snapshot.get("artifact_identity"), dict)
-            else None
-        ),
-    }
 
 
 def _error_result(payload: dict, exc: Exception) -> dict:
@@ -1069,7 +1020,7 @@ def preload_batch_artifacts(
     from .prediction_runtime import _FEATURE_MODEL_NAMES_V2
 
     try:
-        from .model_pool import load_pool
+        from .model_serving_contract import load_pool
 
         pool = pool_snapshot if pool_snapshot is not None else load_pool()
         model_status = _model_pool_status(pool)

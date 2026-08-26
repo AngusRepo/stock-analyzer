@@ -1,58 +1,34 @@
-"""
-ML Model Pool management endpoints (Plan A).
+"""Canonical model artifact registry, D1 champion pointers, IC, and research overlays."""
 
-2026-04-19 Stage 0.x bootstrap:
-  POST /model_pool/train_dlinear   -> train universal DLinear from D1 close
-
-Legacy ML_POOL Stage 1+:
-  GET  /model_pool/status           -> read model_pool.json
-  POST /model_pool/promote/{name}   -> retired; artifact_registry owns promotion
-  POST /model_pool/retire/{name}    -> manual active -> retired
-  POST /model_pool/promote_check    -> cleans legacy challenger residue, no Active-8 direct-alpha promotion
-"""
 from __future__ import annotations
 import logging
 import os
 import time
-from collections import defaultdict
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
-from services import modal_client
-from services.active_model_policy import ACTIVE_ALPHA_MODELS, MODEL_POOL_REQUIRED_MODELS, RETIRED_ALPHA_MODELS
 from services.d1_domain_client import D1DataDomain, client_for_domain
-from services.domain_stock_read_models import load_market_price_rows_with_identity
 from services import discord_alert  # 2026-04-19 Stage 5
-from services.lifecycle_promotion_gate import apply_promotion_gate_to_actions
 from services.model_artifact_registry import (
-    backfill_champion_pointers_from_model_pool,
     build_candidate_selection,
     build_live_shadow_candidate_selection,
-    build_champion_pointer_projection,
     build_promotion_queue,
     list_artifact_registry,
     list_champion_pointers,
+    list_active8_ensemble_artifacts,
+    run_active8_ensemble_bundle_promotion_controller,
     run_feature_release_promotion_controller,
-    run_model_pool_release_bundle_writer,
-    run_model_pool_release_writer,
     run_promotion_controller,
 )
-from services.model_serving_resolver import (
-    apply_model_pool_reconcile_plan,
-    build_model_pool_reconcile_plan,
-    build_pool_from_champion_pointers,
-)
+from services.model_serving_resolver import load_d1_champion_pool
 from services.model_upgrade_research_track import build_research_benchmark_manifest
 
 LEARNING_D1_CLIENT = client_for_domain(D1DataDomain.LEARNING)
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/model_pool", tags=["model_pool"])
-ACTIVE_ALPHA_MODEL_SET = set(ACTIVE_ALPHA_MODELS)
-MODEL_POOL_REQUIRED_MODEL_SET = set(MODEL_POOL_REQUIRED_MODELS)
-RETIRED_ALPHA_MODEL_SET = set(RETIRED_ALPHA_MODELS)
 
 
 def _bucket_name() -> str:
@@ -62,395 +38,12 @@ def _bucket_name() -> str:
     return name
 
 
-def _bucket_uri(path: str) -> str:
-    return f"gs://{_bucket_name()}/{path.lstrip('/')}"
-
-
-def _model_artifact_path(model_name: str, version: str) -> str:
-    if model_name == "KalmanFilter":
-        return f"per_stock_state_space/kalman/hyperparams_{version}.json"
-    if model_name == "MarkovSwitching":
-        return f"per_stock_state_space/markov_switching/hyperparams_{version}.json"
-    if model_name == "ResidualMLP":
-        ext = "joblib"
-        folder = model_name.lower().replace("-", "_")
-        return f"experimental_shadow/{folder}/{version}.{ext}"
-    ext_map = {
-        "LightGBM": "joblib",
-        "XGBoost": "joblib",
-        "ExtraTrees": "joblib",
-        "TabM": "pt",
-        "GNN": "pt",
-        "DLinear": "pt",
-        "PatchTST": "zip",
-        "iTransformer": "zip",
-        "TimesFM": "json",
-    }
-    ext = ext_map.get(model_name)
-    if ext is None:
-        raise HTTPException(status_code=400, detail=f"Unknown model {model_name}")
-    folder = model_name.lower().replace("-", "_")
-    return f"universal/{folder}/{version}.{ext}"
-
-
-def _model_metadata_path(model_name: str, version: str) -> str:
-    if model_name in {"KalmanFilter", "MarkovSwitching"}:
-        return _model_artifact_path(model_name, version)
-    folder = model_name.lower().replace("-", "_")
-    return f"universal/{folder}/metadata_{version}.json"
-
-
-def _metadata_summary(raw: dict) -> dict:
-    keep = (
-        "version",
-        "model_name",
-        "trained_at",
-        "saved_at",
-        "feature_count",
-        "selected_feature_count",
-        "feature_selection",
-        "best_params",
-        "metrics",
-        "dataset_snapshot",
-        "train_range",
-        "validation_range",
-        "feature_policy",
-        "artifact_schema",
-        "schema_hash",
-        "model_pool_version",
-        "n_input_series",
-        "n_train_windows",
-        "n_val_windows",
-        "val_dir_accuracy",
-        "oos_ic",
-        "daily_ic_count",
-        "sequence_report",
-    )
-    summary = {key: raw[key] for key in keep if key in raw}
-    feature_names = raw.get("feature_names")
-    if isinstance(feature_names, list):
-        summary["feature_name_count"] = len(feature_names)
-    return summary
-
-
-def _artifact_evidence(metadata: dict | None) -> dict:
-    """Summarize training-time artifact evidence separately from live IC."""
-    if not isinstance(metadata, dict):
-        return {
-            "status": "metadata_missing",
-            "oos_ic": None,
-            "daily_ic_count": 0,
-            "reason": "Artifact metadata is missing; training-time evidence cannot be shown.",
-        }
-    metrics = metadata.get("metrics") if isinstance(metadata.get("metrics"), dict) else {}
-    oos_ic = metadata.get("oos_ic", metrics.get("oos_ic"))
-    daily_ic_count = metadata.get("daily_ic_count", metrics.get("daily_ic_count", 0))
-    try:
-        daily_ic_count_int = int(daily_ic_count or 0)
-    except (TypeError, ValueError):
-        daily_ic_count_int = 0
-    status = "ready" if oos_ic is not None or daily_ic_count_int > 0 else "metadata_present"
-    return {
-        "status": status,
-        "oos_ic": oos_ic,
-        "daily_ic_count": daily_ic_count_int,
-        "val_dir_accuracy": metadata.get("val_dir_accuracy", metrics.get("val_dir_accuracy")),
-        "feature_policy": metadata.get("feature_policy"),
-        "dataset_snapshot": metadata.get("dataset_snapshot"),
-        "reason": (
-            "Training-time artifact evidence is present; live shadow IC still needs verified production outcomes."
-            if status == "ready"
-            else "Metadata exists but no explicit OOS IC/daily IC fields were recorded."
-        ),
-    }
-
-
-def _ic_coverage(diagnostics: dict) -> float | None:
-    raw_rows = diagnostics.get("raw_rows")
-    production_rows = diagnostics.get("production_rows")
-    try:
-        raw = float(raw_rows)
-        production = float(production_rows)
-    except (TypeError, ValueError):
-        return None
-    if raw <= 0:
-        return None
-    return round(production / raw, 4)
-
-
-def _lifecycle_diagnosis(
-    *,
-    model_name: str,
-    entry: dict,
-    metadata_exists: bool,
-    metadata: dict | None,
-    is_challenger: bool = False,
-) -> dict:
-    diagnostics = entry.get("last_ic_diagnostics") or {}
-    root_cause = entry.get("last_ic_root_cause")
-    error = entry.get("last_ic_error")
-    sample_count = int(entry.get("last_ic_sample_count") or 0)
-    metadata_feature_count = None
-    if isinstance(metadata, dict):
-        metadata_feature_count = metadata.get("feature_count") or metadata.get("feature_name_count")
-
-    blockers: list[str] = []
-    if not metadata_exists:
-        blockers.append("metadata_missing")
-    if error:
-        blockers.append(str(error))
-    if root_cause and root_cause != "ok":
-        blockers.append(str(root_cause))
-    if sample_count <= 0:
-        blockers.append("ic_sample_missing")
-    if metadata_exists and not metadata_feature_count and model_name in {"LightGBM", "XGBoost", "ExtraTrees", "TabM", "GNN"}:
-        blockers.append("feature_metadata_missing")
-
-    if is_challenger and sample_count <= 0 and metadata_exists:
-        status = "awaiting_live_shadow"
-        reason = "Challenger artifact exists, but live shadow predictions have not accumulated verified outcomes yet."
-    elif not blockers:
-        status = "ok"
-        reason = "IC, samples, metadata are present."
-    elif "metadata_missing" in blockers or "feature_metadata_missing" in blockers:
-        status = "artifact_mismatch"
-        reason = "Artifact metadata is missing or incomplete; train/serve schema cannot be audited."
-    elif "prediction_missing" in blockers:
-        status = "prediction_missing"
-        reason = "No prediction rows were found for this model in the IC lookback window."
-    elif "outcome_missing" in blockers:
-        status = "outcome_missing"
-        reason = "Prediction rows exist but verified outcome labels are missing."
-    elif "ranking_signal_missing" in blockers:
-        status = "ranking_signal_missing"
-        reason = "Prediction rows exist but forecast_data.rank_score is missing."
-    elif "verification_missing" in blockers:
-        status = "verification_missing"
-        reason = "verify-v2 has not written predictions.verified_at / actual_return_pct; IC cannot be trusted until verified_rows_written is positive."
-    elif "coverage_low" in blockers:
-        status = "coverage_low"
-        reason = "Model has too few production samples to compute stable IC."
-    else:
-        status = "warn"
-        reason = "Lifecycle evidence is incomplete; inspect diagnostics."
-
-    return {
-        "status": status,
-        "reason": reason,
-        "blockers": blockers,
-        "coverage": _ic_coverage(diagnostics),
-        "sample_count": sample_count,
-        "root_cause": root_cause,
-        "error": error,
-        "metadata_feature_count": metadata_feature_count,
-    }
-
-
-def _build_lifecycle_review_packet(
-    *,
-    actions: list[dict],
-    promotion_gate: dict | None,
-    shadow_ab_by_model: dict | None,
-    paper_order_ab_by_model: dict | None,
-    model_cpcv_by_model: dict | None = None,
-) -> dict:
-    promote_like = [a for a in actions if str(a.get("transition") or "").startswith("promote")]
-    blocked = [a for a in actions if a.get("transition") == "promote_blocked"]
-    return {
-        "summary": {
-            "actions": len(actions),
-            "promote_candidates": len(promote_like),
-            "blocked_promotions": len(blocked),
-            "gate_decision": (promotion_gate or {}).get("decision"),
-            "gate_passed": (promotion_gate or {}).get("passed"),
-        },
-        "required_evidence": {
-            "ic": "challenger.ic_4w_avg must beat active by policy margin",
-            "pbo": "promotion_gate must include PBO evidence",
-            "monte_carlo": "promotion_gate must include Monte Carlo evidence",
-            "deflated_sharpe": "promotion gate policy evaluates risk-adjusted evidence when available",
-            "shadow_ab": "shadow prediction evidence must pass when require_shadow_ab=true",
-            "paper_order_ab": "paper order AB evidence must pass when require_paper_order_ab=true",
-            "model_cpcv": "challenger model-level CPCV evidence must pass when require_model_cpcv=true",
-        },
-        "promotion_gate": promotion_gate,
-        "shadow_ab_by_model": shadow_ab_by_model or {},
-        "paper_order_ab_by_model": paper_order_ab_by_model or {},
-        "model_cpcv_by_model": model_cpcv_by_model or {},
-        "blocked": [
-            {
-                "model": a.get("model"),
-                "reason": a.get("reason"),
-                "preconditions_failed": a.get("preconditions_failed") or [],
-            }
-            for a in blocked
-        ],
-    }
-
-
-# ---------------------------------------------------------------------------
-# DLinear universal training
-# ---------------------------------------------------------------------------
-
-
-class TrainDLinearRequest(BaseModel):
-    """One-shot universal DLinear training request."""
-    lookback_days: int = 365            # how much close history to use per stock
-    min_history_days: int = 90          # skip stocks with < N days history
-    max_stocks: int = 1500              # cap to avoid Modal payload bloat
-    seq_len: int = 60
-    pred_len: int = 5
-    kernel: int = 25
-    n_epochs: int = 30
-    batch_size: int = 256
-    lr: float = 1e-3
-    val_ratio: float = 0.15
-    version: str = "v1"
-    confirm: bool = False               # explicit guard (training overwrites GCS)
-
-
-@router.post("/train_dlinear")
-async def train_dlinear(req: TrainDLinearRequest):
-    """One-shot universal DLinear training.
-
-    Loads close prices for up to max_stocks tradable stocks (delisted_date
-    NULL + min_history_days history), forwards to Modal train function,
-    returns saved GCS paths + training metadata.
-    """
-    if not req.confirm:
-        raise HTTPException(
-            status_code=400,
-            detail="train_dlinear requires confirm=true -> overwrites " + _bucket_uri(f"universal/dlinear/{req.version}.pt"),
-        )
-
-    t0 = time.time()
-    tw_now = datetime.now(timezone.utc) + timedelta(hours=8)
-    end_date = tw_now.date().isoformat()
-    start_date = (
-        datetime.fromisoformat(end_date) - timedelta(days=req.lookback_days)
-    ).date().isoformat()
-
-    # 1. Pull close per stock (single GROUP_CONCAT-free query, in-Python group)
-    # Query all (symbol, date, close) within lookback for tradable stocks,
-    # group in Python to avoid SQLite GROUP_CONCAT row limits.
-    rows = load_market_price_rows_with_identity(
-        start_date=start_date,
-        end_date=end_date,
-        fields=("date", "close"),
-        require_sector=True,
-    )
-    if not rows:
-        raise HTTPException(status_code=400, detail=f"No close rows in {start_date}~{end_date}")
-
-    by_symbol: dict[str, list[float]] = defaultdict(list)
-    for r in rows:
-        try:
-            by_symbol[r["symbol"]].append(float(r["close"]))
-        except (TypeError, ValueError):
-            continue
-
-    # Filter by min history; cap to max_stocks
-    eligible = [(sym, prices) for sym, prices in by_symbol.items() if len(prices) >= req.min_history_days]
-    eligible.sort(key=lambda x: -len(x[1]))  # longest history first
-    eligible = eligible[: req.max_stocks]
-
-    series_close = [prices for _, prices in eligible]
-    if not series_close:
-        raise HTTPException(
-            status_code=400,
-            detail=f"0 stocks with >= {req.min_history_days}d history in window",
-        )
-
-    logger.info(
-        f"[ModelPool] DLinear train candidates: {len(series_close)} stocks "
-        f"(window {start_date}~{end_date}, min_history={req.min_history_days})"
-    )
-
-    # 2. Modal training
-    try:
-        result = await modal_client.train_dlinear_universal(
-            series_close=series_close,
-            seq_len=req.seq_len,
-            pred_len=req.pred_len,
-            kernel=req.kernel,
-            n_epochs=req.n_epochs,
-            batch_size=req.batch_size,
-            lr=req.lr,
-            val_ratio=req.val_ratio,
-            version=req.version,
-        )
-    except Exception as e:
-        logger.error(f"[ModelPool] DLinear train Modal call failed: {e}")
-        raise HTTPException(status_code=500, detail=f"Modal call failed: {e}")
-
-    if result.get("error"):
-        return {
-            "status": "error",
-            "error": result.get("error"),
-            "trace": (result.get("trace") or "")[:500],
-            "input_stocks": len(series_close),
-            "elapsed_s": round(time.time() - t0, 1),
-        }
-
-    md = result.get("metadata", {})
-    return {
-        "status": "success",
-        "version": result.get("version"),
-        "saved": result.get("saved"),
-        "input_stocks": len(series_close),
-        "lookback_window": [start_date, end_date],
-        "min_history_days": req.min_history_days,
-        "best_val_loss": md.get("best_val_loss"),
-        "val_dir_accuracy": md.get("val_dir_accuracy"),
-        "n_train_windows": md.get("n_train_windows"),
-        "n_val_windows": md.get("n_val_windows"),
-        "training_elapsed_s": md.get("elapsed_s"),
-        "total_elapsed_s": round(time.time() - t0, 1),
-    }
-
-
-# ---------------------------------------------------------------------------
-# Status / read-only (placeholders for ML_POOL Stage 1+)
-# ---------------------------------------------------------------------------
-
-
-# 2026-04-19 ML_POOL Stage 0.3: PatchTST universal training (parallel structure to DLinear)
-
-
-class TrainPatchTSTRequest(BaseModel):
-    lookback_days: int = 365
-    min_history_days: int = 90
-    max_stocks: int = 1500
-    seq_len: int = 60
-    pred_len: int = 5
-    patch_len: int = 12
-    stride: int = 12
-    d_model: int = 128
-    n_heads: int = 8
-    n_layers: int = 3
-    dropout: float = 0.1
-    n_epochs: int = 30
-    batch_size: int = 256
-    lr: float = 5e-4
-    weight_decay: float = 1e-5
-    val_ratio: float = 0.15
-    version: str = "v1"
-    confirm: bool = False
-
-
-class BackfillChampionPointersRequest(BaseModel):
-    confirm: bool = False
-    reason: str = "model_pool_backfill"
-    create_missing_artifacts: bool = True
-
-
 class PromotionControllerRequest(BaseModel):
     artifact_id: str
     confirm: bool = False
     approved: bool = False
     approved_by: str | None = None
     reason: str = "promotion_controller"
-    allow_offline_monthly_release: bool = False
     manual_override: bool = False
 
 
@@ -460,6 +53,12 @@ class AutoPromotionRequest(BaseModel):
     reason: str = "scheduled_evidence_based_auto_promotion"
 
 
+class Active8BundlePromotionControllerRequest(BaseModel):
+    training_run_id: str
+    confirm: bool = False
+    reason: str = "active8_ensemble_atomic_bundle"
+
+
 class FeatureReleasePromotionControllerRequest(BaseModel):
     training_run_id: str
     confirm: bool = False
@@ -467,301 +66,39 @@ class FeatureReleasePromotionControllerRequest(BaseModel):
     approved_by: str | None = None
     reason: str = "feature_release_bundle_controller"
 
-
-@router.post("/train_patchtst")
-async def train_patchtst(req: TrainPatchTSTRequest):
-    """One-shot universal PatchTST training. Mirrors /train_dlinear pipeline."""
-    if not req.confirm:
-        raise HTTPException(
-            status_code=400,
-            detail="train_patchtst requires confirm=true -> overwrites " + _bucket_uri(f"universal/patchtst/{req.version}.zip"),
-        )
-
-    t0 = time.time()
-    tw_now = datetime.now(timezone.utc) + timedelta(hours=8)
-    end_date = tw_now.date().isoformat()
-    start_date = (
-        datetime.fromisoformat(end_date) - timedelta(days=req.lookback_days)
-    ).date().isoformat()
-
-    rows = load_market_price_rows_with_identity(
-        start_date=start_date,
-        end_date=end_date,
-        fields=("date", "close"),
-        require_sector=True,
-    )
-    if not rows:
-        raise HTTPException(status_code=400, detail=f"No close rows in {start_date}~{end_date}")
-
-    by_symbol: dict[str, list[float]] = defaultdict(list)
-    for r in rows:
-        try:
-            by_symbol[r["symbol"]].append(float(r["close"]))
-        except (TypeError, ValueError):
-            continue
-
-    eligible = [(sym, prices) for sym, prices in by_symbol.items() if len(prices) >= req.min_history_days]
-    eligible.sort(key=lambda x: -len(x[1]))
-    eligible = eligible[: req.max_stocks]
-    series_close = [prices for _, prices in eligible]
-    if not series_close:
-        raise HTTPException(
-            status_code=400,
-            detail=f"0 stocks with >= {req.min_history_days}d history in window",
-        )
-
-    logger.info(
-        f"[ModelPool] PatchTST train candidates: {len(series_close)} stocks "
-        f"(window {start_date}~{end_date}, min_history={req.min_history_days})"
-    )
-
-    try:
-        result = await modal_client.train_patchtst_universal(
-            series_close=series_close,
-            seq_len=req.seq_len,
-            pred_len=req.pred_len,
-            patch_len=req.patch_len,
-            stride=req.stride,
-            d_model=req.d_model,
-            n_heads=req.n_heads,
-            n_layers=req.n_layers,
-            dropout=req.dropout,
-            n_epochs=req.n_epochs,
-            batch_size=req.batch_size,
-            lr=req.lr,
-            weight_decay=req.weight_decay,
-            val_ratio=req.val_ratio,
-            version=req.version,
-        )
-    except Exception as e:
-        logger.error(f"[ModelPool] PatchTST train Modal call failed: {e}")
-        raise HTTPException(status_code=500, detail=f"Modal call failed: {e}")
-
-    if result.get("error"):
-        return {
-            "status": "error",
-            "error": result.get("error"),
-            "trace": (result.get("trace") or "")[:500],
-            "input_stocks": len(series_close),
-            "elapsed_s": round(time.time() - t0, 1),
-        }
-
-    md = result.get("metadata", {})
-    return {
-        "status": "success",
-        "version": result.get("version"),
-        "saved": result.get("saved"),
-        "input_stocks": len(series_close),
-        "lookback_window": [start_date, end_date],
-        "min_history_days": req.min_history_days,
-        "best_val_loss": md.get("best_val_loss"),
-        "val_dir_accuracy": md.get("val_dir_accuracy"),
-        "n_train_windows": md.get("n_train_windows"),
-        "n_val_windows": md.get("n_val_windows"),
-        "training_elapsed_s": md.get("elapsed_s"),
-        "total_elapsed_s": round(time.time() - t0, 1),
-    }
-
-
-# ---------------------------------------------------------------------------
-# Stage 3: Challenger registration / discard (manual triggers; auto-register
-# on retrain success will be wired in Stage 4 promote-gate work)
-# ---------------------------------------------------------------------------
-
-
-class RegisterChallengerRequest(BaseModel):
-    model_name: str            # one of MANAGED_MODELS keys
-    version: str               # e.g. "v2" -> must differ from active
-    confirm: bool = False
-
-
-@router.post("/register_challenger")
-async def register_challenger(req: RegisterChallengerRequest):
-    """Legacy challenger registration endpoint.
-
-    Active-8 direct-alpha model promotion is owned by artifact_registry promotion gates.
-    This endpoint is fail-closed for active/retired alpha production slots so
-    legacy model_pool challenger state cannot re-enter the new flow.
-    """
-    if not req.confirm:
-        raise HTTPException(status_code=400, detail="register_challenger requires confirm=true")
-    if req.model_name in MODEL_POOL_REQUIRED_MODEL_SET or req.model_name in RETIRED_ALPHA_MODEL_SET:
-        raise HTTPException(
-            status_code=410,
-            detail=(
-                "legacy model_pool challenger registration is disabled for alpha production slots; "
-                "use artifact_registry monthly_release/weekly_drift candidates and promotion_controller"
-            ),
-        )
-    import json as _json
-    from datetime import datetime, timezone
-    from google.cloud import storage
-
-    bucket = storage.Client().bucket(_bucket_name())
-    pool_blob = bucket.blob("universal/model_pool.json")
-    if not pool_blob.exists():
-        raise HTTPException(status_code=400, detail="model_pool.json not initialized; run /init first")
-    pool = _json.loads(pool_blob.download_as_text().lstrip("\ufeff"))
-    entry = pool.get("models", {}).get(req.model_name)
-    if not entry:
-        raise HTTPException(status_code=400, detail=f"{req.model_name} not in pool")
-    if entry.get("version") == req.version:
-        raise HTTPException(
-            status_code=400,
-            detail=f"{req.model_name} active is already {req.version}; challenger must differ",
-        )
-
-    target_path = _model_artifact_path(req.model_name, req.version)
-
-    # Verify artifact exists at expected path
-    if not bucket.blob(target_path).exists():
-        raise HTTPException(
-            status_code=400,
-            detail=f"Challenger artifact missing at {target_path}; train it first",
-        )
-
-    today = datetime.now(timezone.utc).date().isoformat()
-    entry["challenger"] = {
-        "version": req.version,
-        "gcs_path": target_path,
-        "shadow_since": today,
-        "weekly_ic": [],
-        "ic_4w_avg": None,
-        "consecutive_negative_weeks": 0,
-    }
-    pool["last_updated"] = datetime.now(timezone.utc).isoformat()
-    pool_blob.upload_from_string(_json.dumps(pool, indent=2, ensure_ascii=False), content_type="application/json")
-
-    # Stage 5 alert (graceful no-op if DISCORD_WEBHOOK_URL absent)
-    try:
-        discord_alert.alert_lifecycle(
-            event="register",
-            model_name=req.model_name,
-            from_status=None, to_status=f"challenger:{req.version}",
-            reason=f"New shadow version registered. Active stays {entry.get('version')}.",
-            metrics={"gcs_path": target_path, "shadow_since": today},
-        )
-    except Exception as _e:
-        logger.debug(f"[ModelPool] register alert skipped: {_e}")
-    return {"status": "registered", "model": req.model_name, "challenger": entry["challenger"]}
-
-
-class DiscardChallengerRequest(BaseModel):
-    model_name: str
-    confirm: bool = False
-
-
-@router.post("/discard_challenger")
-async def discard_challenger(req: DiscardChallengerRequest):
-    """Remove challenger entry (used for rollback or Stage 4 retire-not-promote)."""
-    if not req.confirm:
-        raise HTTPException(status_code=400, detail="discard_challenger requires confirm=true")
-    import json as _json
-    from datetime import datetime, timezone
-    from google.cloud import storage
-    bucket = storage.Client().bucket(_bucket_name())
-    pool_blob = bucket.blob("universal/model_pool.json")
-    if not pool_blob.exists():
-        raise HTTPException(status_code=400, detail="model_pool.json not initialized")
-    pool = _json.loads(pool_blob.download_as_text().lstrip("\ufeff"))
-    entry = pool.get("models", {}).get(req.model_name)
-    if not entry:
-        raise HTTPException(status_code=400, detail=f"{req.model_name} not in pool")
-    removed = entry.pop("challenger", None)
-    pool["last_updated"] = datetime.now(timezone.utc).isoformat()
-    pool_blob.upload_from_string(_json.dumps(pool, indent=2, ensure_ascii=False), content_type="application/json")
-    try:
-        if removed:
-            discord_alert.alert_lifecycle(
-                event="discard",
-                model_name=req.model_name,
-                from_status=f"challenger:{removed.get('version')}",
-                to_status=None,
-                reason="Manual discard or Stage 4 retire-not-promote.",
-                metrics={"weekly_ic_count": len(removed.get("weekly_ic") or []),
-                          "ic_4w_avg": removed.get("ic_4w_avg")},
-            )
-    except Exception as _e:
-        logger.debug(f"[ModelPool] discard alert skipped: {_e}")
-    return {"status": "discarded", "model": req.model_name, "removed": removed}
-
-
-# ---------------------------------------------------------------------------
-# Stage 2: Weekly IC tracker (cron-driven)
-# ---------------------------------------------------------------------------
-
-
+# Canonical rolling IC writer. D1 registry and exact champion pointers are the
+# only lifecycle authority; this endpoint never mutates serving identity outside D1.
 class ComputeWeeklyICRequest(BaseModel):
-    # Five-session outcomes make a 7-calendar-day window effectively one
-    # mature cross-section. Thirty-five days yields roughly 20 mature sessions.
     lookback_days: int = 35
-    history_max: int = 26               # cap weekly_ic array (~6 months rolling)
-    min_samples: int = 50               # IC noise floor -> skip if fewer obs/model
-    min_dates: int = 10                 # repeated daily cross-sections, not one broad market day
-    update_pool: bool = True            # write back to model_pool.json
-    update_registry: bool = True        # write selected artifact live-gate evidence
-    append_history: bool = True         # false = rolling refresh only; do not append weekly lifecycle history
-    run_date: str | None = None         # optional upper bound for verify callback/backfill parity
+    min_samples: int = 50
+    min_dates: int = 10
+    append_history: bool = True
+    run_date: str | None = None
 
 
 @router.post("/compute_weekly_ic")
 async def compute_weekly_ic(req: ComputeWeeklyICRequest):
-    """Compute Spearman IC per managed model from last lookback_days of
-      verified predictions over the mature 35-day window, append to
-      model_pool.json weekly_ic, recompute
-    ic_4w_avg, increment consecutive_negative_weeks if IC<0.
-
-    Reads:
-      D1 predictions WHERE
-        model_name IN (8 alpha prediction models + shadow challenger rows)
-        AND verified_at IS NOT NULL
-          AND prediction business date >= date('now','-35 days')
-
-    Writes:
-      gs://<configured bucket>/universal/model_pool.json
-        models[name].weekly_ic.append(this_week_ic)
-        models[name].ic_4w_avg = mean(weekly_ic[-4:])
-        models[name].consecutive_negative_weeks (incr if < 0 else 0)
-
-    NOTE: Stage 4 promote/demote logic reads these accumulated metrics; Stage 2
-    only WRITES the metrics. Decay/promotion threshold logic stays separate.
-    """
-    import json as _json
-    from datetime import datetime, timezone
-    from google.cloud import storage
-    from services.model_ic_tracker import (
-        apply_weekly_ic_to_pool,
-        compute_weekly_ic_from_rows,
-        tracked_model_names,
-    )
     from services.model_artifact_registry import update_live_gate_from_ic
+    from services.model_ic_tracker import compute_weekly_ic_from_rows, tracked_model_names
 
     t0 = time.time()
     all_tracked = tracked_model_names()
-
-    try:
-        bucket = storage.Client().bucket(_bucket_name())
-        pool_blob = bucket.blob("universal/model_pool.json")
-        if not pool_blob.exists():
-            return {"status": "error", "error": "model_pool_missing"}
-        pool = _json.loads(pool_blob.download_as_text().lstrip("\ufeff"))
-    except Exception as exc:
-        logger.error("[ModelPool] weekly_ic model_pool load failed: %s", exc)
-        return {"status": "error", "error": f"pool_load_failed: {exc}"}
-
+    pool = load_d1_champion_pool()
     expected_artifact_versions: dict[str, str] = {}
     expected_artifact_identities: dict[str, dict[str, str]] = {}
     for name, entry in (pool.get("models") or {}).items():
         if not isinstance(entry, dict):
             continue
         version = str(entry.get("version") or "").strip()
+        artifact_id = str(entry.get("serving_artifact_id") or "").strip()
+        checksum = str(entry.get("checksum") or "").strip().lower()
         if version:
             expected_artifact_versions[str(name)] = version
-        challenger = entry.get("challenger")
-        if isinstance(challenger, dict):
-            challenger_version = str(challenger.get("version") or "").strip()
-            if challenger_version:
-                expected_artifact_versions[f"{name}::challenger"] = challenger_version
+        if artifact_id and checksum:
+            expected_artifact_identities[str(name)] = {
+                "artifact_id": artifact_id,
+                "checksum": checksum,
+            }
 
     registry_shadow_selection = build_live_shadow_candidate_selection(
         list_artifact_registry(limit=1000),
@@ -774,27 +111,23 @@ async def compute_weekly_ic(req: ComputeWeeklyICRequest):
         version = str(candidate.get("version") or "").strip()
         artifact_id = str(candidate.get("artifact_id") or "").strip()
         checksum = str(candidate.get("checksum") or "").strip().lower()
-        if not model_name or not version or not artifact_id or not checksum:
-            continue
-        tracked_name = f"{model_name}::challenger"
-        expected_artifact_versions[tracked_name] = version
-        expected_artifact_identities[tracked_name] = {
-            "artifact_id": artifact_id,
-            "checksum": checksum,
-        }
+        if model_name and version and artifact_id and checksum:
+            tracked_name = f"{model_name}::challenger"
+            expected_artifact_versions[tracked_name] = version
+            expected_artifact_identities[tracked_name] = {
+                "artifact_id": artifact_id,
+                "checksum": checksum,
+            }
 
-    # 1. Pull broad per-model rows from D1. The domain service classifies
-    # missing verification/outcome/rank-signal root causes instead of letting SQL
-    # hide them behind a generic insufficient_samples result.
     placeholders = ",".join(["?"] * len(all_tracked))
     if req.run_date:
         sql = f"""
-              SELECT id, stock_id, model_name, direction_accuracy, forecast_data,
-                     actual_return_pct, verified_at, prediction_date, generated_at,
-                     verification_label_schema_version,
-                     verification_label_entry_price,
-                     verification_label_end_date,
-                     verification_label_known_date
+            SELECT id, stock_id, model_name, direction_accuracy, forecast_data,
+                   actual_return_pct, verified_at, prediction_date, generated_at,
+                   verification_label_schema_version,
+                   verification_label_entry_price,
+                   verification_label_end_date,
+                   verification_label_known_date
             FROM predictions
             WHERE model_name IN ({placeholders})
               AND date(prediction_date) <= date(?)
@@ -807,18 +140,19 @@ async def compute_weekly_ic(req: ComputeWeeklyICRequest):
         )
     else:
         sql = f"""
-              SELECT id, stock_id, model_name, direction_accuracy, forecast_data,
-                     actual_return_pct, verified_at, prediction_date, generated_at,
-                     verification_label_schema_version,
-                     verification_label_entry_price,
-                     verification_label_end_date,
-                     verification_label_known_date
+            SELECT id, stock_id, model_name, direction_accuracy, forecast_data,
+                   actual_return_pct, verified_at, prediction_date, generated_at,
+                   verification_label_schema_version,
+                   verification_label_entry_price,
+                   verification_label_end_date,
+                   verification_label_known_date
             FROM predictions
             WHERE model_name IN ({placeholders})
               AND date(verification_label_known_date) <= date('now')
               AND date(prediction_date) >= date('now', ?)
         """
         rows = LEARNING_D1_CLIENT.query(sql, [*all_tracked, f"-{req.lookback_days} days"])
+
     per_model_ic = compute_weekly_ic_from_rows(
         rows,
         min_samples=req.min_samples,
@@ -834,131 +168,24 @@ async def compute_weekly_ic(req: ComputeWeeklyICRequest):
                 "requested_run_date": req.run_date,
                 "lookback_days": req.lookback_days,
                 "append_history": req.append_history,
+                "lifecycle_owner": "model_artifact_registry/model_champion_pointers",
             })
-
-    # 3. Update model_pool.json.
-    # Active rows update entry.weekly_ic; challenger rows update
-    # entry.challenger.weekly_ic (separate IC history per shadow version).
-    pool_changes: dict[str, dict] = {}
-    if req.update_pool:
-        try:
-            pool_changes, changed = apply_weekly_ic_to_pool(
-                pool,
-                per_model_ic,
-                history_max=req.history_max,
-                append_history=req.append_history,
-            )
-            if changed:
-                pool["last_updated"] = datetime.now(timezone.utc).isoformat()
-                pool_blob.upload_from_string(
-                    _json.dumps(pool, indent=2, ensure_ascii=False),
-                    content_type="application/json",
-                )
-        except Exception as e:
-            logger.error(f"[ModelPool] weekly_ic pool update failed: {e}")
-            return {"status": "error", "error": f"pool_update_failed: {e}", "per_model_ic": per_model_ic}
-
-    registry_updates: dict | None = None
-    if req.update_registry:
-        try:
-            registry_updates = update_live_gate_from_ic(
-                per_model_ic,
-                min_samples=req.min_samples,
-            )
-        except Exception as e:
-            logger.error(f"[ModelPool] artifact registry live gate update failed: {e}")
-            registry_updates = {
-                "status": "error",
-                "error": f"artifact_registry_live_gate_failed: {e}",
-            }
-
-    # 4. Stage 5 alerts: weekly summary + decay-detection per-event
-    # Decay rules (per ML_POOL_ARCHITECTURE.md, NOT auto-flipping status;
-    # Stage 4 promote gate owns the actual transitions):
-    #   active model with consecutive_negative_weeks >= 3 -> demote candidate
-    #   degraded model with consecutive_negative_weeks >= 6 -> retire candidate
-    #   degraded model with last 2 ic > 0 -> recovery candidate
     try:
-        if discord_alert.is_enabled():
-            discord_alert.alert_weekly_ic_summary(per_model_ic, pool_changes)
-            # Per-model decay alerts (only when pool was updated)
-            if req.update_pool and pool_changes:
-                _emit_decay_alerts(pool_changes)
-    except Exception as _e:
-        logger.warning(f"[ModelPool] Stage 5 alerts failed (non-fatal): {_e}")
-
+        registry_updates = update_live_gate_from_ic(per_model_ic, min_samples=req.min_samples)
+    except Exception as exc:
+        logger.exception("canonical artifact registry live IC update failed")
+        raise HTTPException(status_code=500, detail=f"artifact_registry_live_gate_failed:{exc}") from exc
     return {
         "status": "ok",
+        "source_of_truth": "model_artifact_registry/model_champion_pointers",
         "run_date": req.run_date,
         "lookback_days": req.lookback_days,
         "min_dates": req.min_dates,
         "n_rows_total": len(rows),
         "per_model_ic": per_model_ic,
-        "pool_updates": pool_changes if req.update_pool else None,
         "artifact_registry_updates": registry_updates,
         "elapsed_s": round(time.time() - t0, 1),
     }
-
-
-def _emit_decay_alerts(pool_changes: dict) -> None:
-    """Inspect ic_4w_avg + consecutive_negative_weeks and fire candidate alerts.
-
-    Fires advisory notifications only; does NOT mutate model_pool.json status.
-    Stage 4 promote/demote gate owns actual lifecycle transitions.
-    """
-    import json as _json
-    from google.cloud import storage
-    bucket = storage.Client().bucket(_bucket_name())
-    pool_blob = bucket.blob("universal/model_pool.json")
-    if not pool_blob.exists():
-        return
-    pool = _json.loads(pool_blob.download_as_text().lstrip("\ufeff"))
-    for tracked_name, change in pool_changes.items():
-        is_challenger = tracked_name.endswith("::challenger")
-        base_name = tracked_name.replace("::challenger", "")
-        entry = pool.get("models", {}).get(base_name)
-        if not entry:
-            continue
-        target_status = entry.get("status", "active")
-        if is_challenger:
-            target_status = "challenger"
-        neg = change.get("consecutive_negative_weeks", 0) or 0
-        ic_4w = change.get("ic_4w_avg")
-        # Active model showing 3-week decay
-        if target_status == "active" and neg >= 3:
-            discord_alert.alert_lifecycle(
-                event="demote",
-                model_name=base_name,
-                from_status="active", to_status="degraded (CANDIDATE)",
-                reason=f"IC was negative for {neg} consecutive weeks (4w_avg={ic_4w})",
-                metrics={"consecutive_negative_weeks": neg, "ic_4w_avg": ic_4w,
-                          "note": "Advisory only; Stage 4 owns the actual transition"},
-            )
-        # Degraded model showing 6-week extended decay
-        elif target_status == "degraded" and neg >= 6:
-            discord_alert.alert_lifecycle(
-                event="retire",
-                model_name=base_name,
-                from_status="degraded", to_status="retired (CANDIDATE)",
-                reason=f"IC was negative for {neg} consecutive weeks (4w_avg={ic_4w})",
-                metrics={"consecutive_negative_weeks": neg, "ic_4w_avg": ic_4w,
-                          "note": "Advisory only; Stage 4 owns the actual transition"},
-            )
-        # Degraded recovery: last 2 weeks > 0 (read direct weekly_ic since
-        # consecutive_negative_weeks resets to 0 on first positive)
-        elif target_status == "degraded":
-            wkly = (entry.get("weekly_ic") or []) if not is_challenger else \
-                   (entry.get("challenger", {}).get("weekly_ic") or [])
-            if len(wkly) >= 2 and wkly[-1] > 0 and wkly[-2] > 0:
-                discord_alert.alert_lifecycle(
-                    event="recovery",
-                    model_name=base_name,
-                    from_status="degraded", to_status="active (CANDIDATE)",
-                    reason=f"IC stayed positive for 2 consecutive weeks (recent={wkly[-2]:.4f}, {wkly[-1]:.4f})",
-                    metrics={"recent_2_weeks": [round(wkly[-2], 4), round(wkly[-1], 4)],
-                              "ic_4w_avg": ic_4w,
-                              "note": "Advisory only; Stage 4 owns the actual transition"},
-                )
 
 
 # ---------------------------------------------------------------------------
@@ -1001,7 +228,7 @@ async def put_state_space_hyperparams(req: PutStateSpaceHyperparamsRequest):
     Used by:
       - Initial bootstrap (Stage 6.1, manual put with default values)
       - Future Stage 6.3 Optuna search (writes search-optimal values)
-      - Stage 4 promote_check via challenger registration
+      - Research/Optuna writes versioned hyperparameters; serving loads the exact requested version
     """
     if not req.confirm:
         raise HTTPException(status_code=400, detail="put_state_space_hyperparams requires confirm=true")
@@ -1035,7 +262,7 @@ async def put_state_space_hyperparams(req: PutStateSpaceHyperparamsRequest):
 
 @router.get("/state_space/hyperparams/{model_name}")
 async def get_state_space_hyperparams(model_name: str, version: str = "v1"):
-    """Read state-space hyperparams (or default if no GCS file)."""
+    """Read state-space hyperparams for the exact requested version."""
     if model_name not in _DEFAULT_STATE_SPACE:
         raise HTTPException(status_code=400, detail=f"{model_name} is not a state-space model")
     import json as _json
@@ -1051,529 +278,17 @@ async def get_state_space_hyperparams(model_name: str, version: str = "v1"):
             "hyperparams": _json.loads(blob.download_as_text().lstrip("\ufeff"))}
 
 
-# ---------------------------------------------------------------------------
-# Stage 4: Promote / demote / retire / recovery gate (lifecycle owner)
-# ---------------------------------------------------------------------------
-
-
-class PromoteCheckRequest(BaseModel):
-    apply: bool = False                # False = dry-run report only
-    confirm: bool = False              # required with apply=true
-    min_shadow_weeks: int = 4          # required shadow duration
-    promote_margin: float = 0.01       # challenger 4w IC > active 4w IC + margin
-    min_challenger_ic: float = 0.0     # challenger must beat this floor
-    discard_failed_challenger: bool = True
-    demote_consec_weeks: int = 3       # active -> degraded threshold
-    retire_consec_weeks: int = 6       # degraded -> retired threshold
-    recovery_consec_pos_weeks: int = 2 # degraded -> active threshold
-    require_promotion_gate: bool = True
-    promotion_gate_source: str = "backtest"
-    promotion_gate_pbo_source: str | None = None
-    require_shadow_ab: bool = True
-    shadow_ab_lookback_days: int = 90
-    require_paper_order_ab: bool = True
-    paper_order_ab_lookback_days: int = 90
-    require_model_cpcv: bool = True
-
-
-@router.post("/promote_check")
-async def promote_check(req: PromoteCheckRequest):
-    """Stage 4: scan model_pool.json for lifecycle transitions.
-
-    Checks (per ML_POOL_ARCHITECTURE.md + 4-state machine):
-      Legacy model_pool challenger:
-        discarded; production promotion is owned by artifact registry gates.
-      Active -> Degraded (demote):
-        consecutive_negative_weeks >= demote_consec_weeks
-      Degraded -> Retired (retire):
-        consecutive_negative_weeks >= retire_consec_weeks
-      Degraded -> Active (recovery):
-        last recovery_consec_pos_weeks weeks all > 0
-
-    Returns: {actions: [...], applied: bool, audit: {...}}
-    Each action has dry-run preview UNLESS req.apply=True; then mutates pool.
-    Stage 5 alerts fire on actual transitions (apply=True path).
-    """
-    if req.apply and not req.confirm:
-        raise HTTPException(status_code=400, detail="apply=true requires confirm=true")
-
-    import json as _json
-    from datetime import datetime, timezone, date as _date
-    from google.cloud import storage
-
-    bucket = storage.Client().bucket(_bucket_name())
-    pool_blob = bucket.blob("universal/model_pool.json")
-    if not pool_blob.exists():
-        raise HTTPException(status_code=400, detail="model_pool.json not initialized")
-    pool = _json.loads(pool_blob.download_as_text().lstrip("\ufeff"))
-    today = datetime.now(timezone.utc).date()
-    today_iso = today.isoformat()
-    legacy_model_names = [
-        name
-        for name in list((pool.get("models") or {}).keys())
-        if name in RETIRED_ALPHA_MODEL_SET or name not in MODEL_POOL_REQUIRED_MODEL_SET
-    ]
-
-    # Family balance baseline: count current active alpha predictors per family.
-    def _family_actives(p: dict) -> dict[str, int]:
-        counts = {"tree": 0, "tabular": 0, "graph": 0, "time_series": 0}
-        for model_name, entry in p.get("models", {}).items():
-            if model_name in RETIRED_ALPHA_MODEL_SET or model_name not in ACTIVE_ALPHA_MODEL_SET:
-                continue
-            if entry.get("status") == "active":
-                fam = entry.get("balance_family", "tree")
-                if fam == "feature":
-                    fam = "tree"
-                counts[fam] = counts.get(fam, 0) + 1
-        return counts
-    MIN_PER_FAMILY = {"tree": 2, "tabular": 1, "graph": 1, "time_series": 2}
-    projected_actives = _family_actives(pool)
-
-    actions: list[dict] = []
-    for name in legacy_model_names:
-        actions.append({
-            "model": name,
-            "transition": "delete_legacy_residue",
-            "from": "model_pool.models",
-            "to": None,
-            "reason": "non-required model residue removed from canonical model_pool",
-        })
-
-    for name, entry in pool.get("models", {}).items():
-        if name in RETIRED_ALPHA_MODEL_SET or name not in ACTIVE_ALPHA_MODEL_SET:
-            continue
-        status = entry.get("status", "active")
-        family = entry.get("balance_family", "tree")
-        if family == "feature":
-            family = "tree"
-        ic_4w = entry.get("ic_4w_avg")
-        consec_neg = entry.get("consecutive_negative_weeks", 0) or 0
-        weekly_ic = entry.get("weekly_ic") or []
-        challenger = entry.get("challenger") or {}
-
-        if challenger:
-            actions.append({
-                "model": name,
-                "transition": "discard_challenger",
-                "from": f"challenger:{challenger.get('version')}",
-                "to": None,
-                "reason": "legacy model_pool challenger slot disabled; use artifact_registry promotion gates",
-                "ic_active_4w": ic_4w,
-                "ic_challenger_4w": challenger.get("ic_4w_avg"),
-                "weekly_ic_count": len(challenger.get("weekly_ic") or []),
-            })
-            challenger = {}
-
-        # Promote check (challenger -> active) is retained only as unreachable
-        # compatibility code after legacy challenger discard above.
-        if challenger:
-            ch_4w = challenger.get("ic_4w_avg")
-            shadow_since_str = challenger.get("shadow_since")
-            ch_weekly = challenger.get("weekly_ic") or []
-            preconds_failed = []
-            shadow_age_days = 0
-            if not shadow_since_str:
-                preconds_failed.append("missing shadow_since")
-            else:
-                try:
-                    shadow_age_days = (today - _date.fromisoformat(shadow_since_str)).days
-                except ValueError:
-                    shadow_age_days = 0
-                    preconds_failed.append("invalid shadow_since")
-                if shadow_age_days < req.min_shadow_weeks * 7:
-                    preconds_failed.append(
-                        f"shadow_age={shadow_age_days}d < {req.min_shadow_weeks}w"
-                    )
-            if len(ch_weekly) < req.min_shadow_weeks:
-                preconds_failed.append(
-                    f"challenger weekly_ic samples={len(ch_weekly)} < {req.min_shadow_weeks}"
-                )
-            if ch_4w is None:
-                preconds_failed.append("challenger ic_4w_avg=null (need 4 wkly samples)")
-            elif ch_4w <= req.min_challenger_ic:
-                preconds_failed.append(f"challenger ic_4w_avg={ch_4w} <= floor {req.min_challenger_ic}")
-            if ic_4w is not None and ch_4w is not None and ch_4w <= ic_4w + req.promote_margin:
-                preconds_failed.append(
-                    f"challenger {ch_4w} <= active {ic_4w} + margin {req.promote_margin}"
-                )
-
-            if not preconds_failed:
-                actions.append({
-                    "model": name,
-                    "transition": "promote",
-                    "from": f"active:{entry.get('version')} + challenger:{challenger.get('version')}",
-                    "to": f"active:{challenger.get('version')} + retired:{entry.get('version')}",
-                    "ic_active_4w": ic_4w,
-                    "ic_challenger_4w": ch_4w,
-                    "margin": ch_4w - (ic_4w if ic_4w is not None else 0),
-                    "reason": "All promote preconditions satisfied",
-                })
-            else:
-                discard_reason = None
-                has_mature_shadow = (
-                    shadow_since_str
-                    and shadow_age_days >= req.min_shadow_weeks * 7
-                    and len(ch_weekly) >= req.min_shadow_weeks
-                    and ch_4w is not None
-                )
-                if req.discard_failed_challenger and has_mature_shadow:
-                    if ch_4w <= req.min_challenger_ic:
-                        discard_reason = (
-                            f"challenger ic_4w_avg={ch_4w} <= floor {req.min_challenger_ic}"
-                        )
-                    elif ic_4w is not None and ch_4w + req.promote_margin < ic_4w:
-                        discard_reason = (
-                            f"challenger {ch_4w} trails active {ic_4w} by more than margin {req.promote_margin}"
-                        )
-
-                if discard_reason:
-                    actions.append({
-                        "model": name,
-                        "transition": "discard_challenger",
-                        "from": f"challenger:{challenger.get('version')}",
-                        "to": None,
-                        "reason": discard_reason,
-                        "ic_active_4w": ic_4w,
-                        "ic_challenger_4w": ch_4w,
-                        "weekly_ic_count": len(ch_weekly),
-                    })
-                else:
-                    actions.append({
-                        "model": name,
-                        "transition": "promote_blocked",
-                        "preconditions_failed": preconds_failed,
-                        "ic_active_4w": ic_4w,
-                        "ic_challenger_4w": ch_4w,
-                    })
-
-        # Demote check (active -> degraded)
-        if status == "active" and consec_neg >= req.demote_consec_weeks:
-            min_active = MIN_PER_FAMILY.get(family, 0)
-            if projected_actives.get(family, 0) - 1 < min_active:
-                actions.append({
-                    "model": name,
-                    "transition": "demote_blocked",
-                    "from": "active",
-                    "to": "degraded",
-                    "consecutive_negative_weeks": consec_neg,
-                    "reason": (
-                        f"family balance guard: {family} active count would become "
-                        f"{projected_actives.get(family, 0) - 1} < min {min_active}"
-                    ),
-                })
-            else:
-                projected_actives[family] = projected_actives.get(family, 0) - 1
-                actions.append({
-                    "model": name,
-                    "transition": "demote",
-                    "from": "active",
-                    "to": "degraded",
-                    "consecutive_negative_weeks": consec_neg,
-                    "reason": f"IC has been negative for {consec_neg} weeks (threshold={req.demote_consec_weeks})",
-                })
-
-        # Retire check (degraded -> retired)
-        if status == "degraded" and consec_neg >= req.retire_consec_weeks:
-            actions.append({
-                "model": name,
-                "transition": "retire",
-                "from": "degraded",
-                "to": "retired",
-                "consecutive_negative_weeks": consec_neg,
-                "reason": f"IC has been negative for {consec_neg} weeks (extended threshold={req.retire_consec_weeks})",
-            })
-
-        # Recovery check (degraded -> active)
-        if status == "degraded" and len(weekly_ic) >= req.recovery_consec_pos_weeks:
-            recent = weekly_ic[-req.recovery_consec_pos_weeks:]
-            if all(w > 0 for w in recent):
-                actions.append({
-                    "model": name,
-                    "transition": "recovery",
-                    "from": "degraded",
-                    "to": "active",
-                    "recent_weeks_ic": recent,
-                    "reason": f"IC stayed positive for {req.recovery_consec_pos_weeks} consecutive weeks",
-                })
-
-    promotion_gate = None
-    has_promote_action = any(a.get("transition") == "promote" for a in actions)
-    if req.apply and has_promote_action:
-        disabled_governance = []
-        if not req.require_promotion_gate:
-            disabled_governance.append("promotion_gate")
-        if not req.require_shadow_ab:
-            disabled_governance.append("shadow_ab")
-        if not req.require_paper_order_ab:
-            disabled_governance.append("paper_order_ab")
-        if not req.require_model_cpcv:
-            disabled_governance.append("model_cpcv")
-        if disabled_governance:
-            raise HTTPException(
-                status_code=400,
-                detail=(
-                    "apply=true with promote actions cannot disable production promotion "
-                    f"governance: {', '.join(disabled_governance)}"
-                ),
-            )
-    shadow_ab_by_model = None
-    paper_order_ab_by_model = None
-    model_cpcv_by_model = {}
-    if has_promote_action and req.require_promotion_gate:
-        try:
-            from services.promotion_service import evaluate_latest_promotion_gate
-
-            promotion_gate = evaluate_latest_promotion_gate(
-                source=req.promotion_gate_source,
-                pbo_source=req.promotion_gate_pbo_source,
-            )
-        except Exception as e:
-            logger.exception("[Stage 4] promotion gate evaluation failed")
-            promotion_gate = {
-                "decision": "FAIL",
-                "passed": False,
-                "failed_gates": ["promotion_gate_exception"],
-                "warnings": [str(e)],
-            }
-    if has_promote_action and req.require_shadow_ab:
-        try:
-            from services.shadow_ab_service import load_shadow_ab_by_model
-
-            shadow_ab_by_model = load_shadow_ab_by_model(lookback_days=req.shadow_ab_lookback_days)
-        except Exception as e:
-            logger.exception("[Stage 4] shadow AB evidence load failed")
-            shadow_ab_by_model = {}
-            if promotion_gate is None:
-                promotion_gate = {
-                    "decision": "PASS",
-                    "passed": True,
-                    "failed_gates": [],
-                    "warnings": [str(e)],
-                }
-    if has_promote_action and req.require_paper_order_ab:
-        try:
-            from services.paper_order_ab_service import load_paper_order_ab_by_model
-
-            paper_order_ab_by_model = load_paper_order_ab_by_model(lookback_days=req.paper_order_ab_lookback_days)
-        except Exception as e:
-            logger.exception("[Stage 4] paper-order AB evidence load failed")
-            paper_order_ab_by_model = {}
-            if promotion_gate is None:
-                promotion_gate = {
-                    "decision": "PASS",
-                    "passed": True,
-                    "failed_gates": [],
-                    "warnings": [str(e)],
-                }
-    if has_promote_action and req.require_model_cpcv:
-        model_cpcv_by_model = {
-            name: (pool.get("models", {}).get(name, {}).get("challenger") or {}).get("model_cpcv")
-            for name in {
-                str(action.get("model") or "")
-                for action in actions
-                if action.get("transition") == "promote"
-            }
-        }
-        model_cpcv_by_model = {
-            name: evidence
-            for name, evidence in model_cpcv_by_model.items()
-            if isinstance(evidence, dict)
-        }
-    if has_promote_action and (
-        req.require_promotion_gate
-        or req.require_shadow_ab
-        or req.require_paper_order_ab
-        or req.require_model_cpcv
-    ):
-        actions = apply_promotion_gate_to_actions(
-            actions,
-            promotion_gate,
-            require_gate=req.require_promotion_gate,
-            require_shadow_ab=req.require_shadow_ab,
-            shadow_ab_by_model=shadow_ab_by_model,
-            require_paper_order_ab=req.require_paper_order_ab,
-            paper_order_ab_by_model=paper_order_ab_by_model,
-            require_model_cpcv=req.require_model_cpcv,
-            model_cpcv_by_model=model_cpcv_by_model,
-        )
-
-    # Apply transitions if requested. Lifecycle event audit rows are intentionally
-    # not written; the Active-8 direct-alpha surface is artifact, evidence, and pointer state.
-    applied_count = 0
-    if req.apply:
-        def _audit(_action: dict, _from_status: str | None, _to_status: str | None) -> None:
-            return None
-
-        for action in actions:
-            t = action["transition"]
-            name = action["model"]
-            if t == "delete_legacy_residue":
-                removed = pool.get("models", {}).pop(name, None)
-                if removed is not None:
-                    applied_count += 1
-                    _audit(action, "model_pool.models", None)
-                continue
-            entry = pool["models"][name]
-            if t == "promote":
-                # Move challenger -> active; keep history of v_old as "retired" sub-entry
-                ch = entry["challenger"]
-                model_cpcv = ch.get("model_cpcv") if isinstance(ch.get("model_cpcv"), dict) else None
-                _retired_history = entry.setdefault("retired_versions", [])
-                _retired_history.append({
-                    "version": entry["version"],
-                    "retired_at": today_iso,
-                    "weekly_ic_at_retire": entry.get("weekly_ic", []).copy(),
-                    "ic_4w_avg_at_retire": entry.get("ic_4w_avg"),
-                })
-                entry["version"] = ch["version"]
-                entry["gcs_path"] = ch["gcs_path"]
-                entry["promoted_at"] = today_iso
-                entry["weekly_ic"] = ch.get("weekly_ic", []).copy()
-                entry["ic_4w_avg"] = ch.get("ic_4w_avg")
-                entry["consecutive_negative_weeks"] = ch.get("consecutive_negative_weeks", 0)
-                if model_cpcv:
-                    entry["last_model_cpcv"] = model_cpcv
-                entry["status"] = "active"
-                entry.pop("challenger", None)
-                entry.pop("degraded_since", None)
-                applied_count += 1
-                _audit(action, action["from"], action["to"])
-                try:
-                    discord_alert.alert_lifecycle(
-                        event="promote", model_name=name,
-                        from_status=action["from"], to_status=action["to"],
-                        reason=action["reason"],
-                        metrics={"ic_active_4w": action["ic_active_4w"],
-                                  "ic_challenger_4w": action["ic_challenger_4w"],
-                                  "margin": action["margin"]},
-                    )
-                except Exception as _e:
-                    logger.debug(f"[Stage 4] promote alert skipped: {_e}")
-            elif t == "demote":
-                entry["status"] = "degraded"
-                entry["degraded_since"] = today_iso
-                applied_count += 1
-                _audit(action, "active", "degraded")
-                try:
-                    discord_alert.alert_lifecycle(
-                        event="demote", model_name=name,
-                        from_status="active", to_status="degraded",
-                        reason=action["reason"],
-                        metrics={"consecutive_negative_weeks": action["consecutive_negative_weeks"]},
-                    )
-                except Exception as _e:
-                    logger.debug(f"[Stage 4] demote alert skipped: {_e}")
-            elif t == "retire":
-                entry["status"] = "retired"
-                entry["retired_at"] = today_iso
-                applied_count += 1
-                _audit(action, "degraded", "retired")
-                try:
-                    discord_alert.alert_lifecycle(
-                        event="retire", model_name=name,
-                        from_status="degraded", to_status="retired",
-                        reason=action["reason"],
-                        metrics={"consecutive_negative_weeks": action["consecutive_negative_weeks"]},
-                    )
-                except Exception as _e:
-                    logger.debug(f"[Stage 4] retire alert skipped: {_e}")
-            elif t == "recovery":
-                entry["status"] = "active"
-                entry.pop("degraded_since", None)
-                applied_count += 1
-                _audit(action, "degraded", "active")
-                try:
-                    discord_alert.alert_lifecycle(
-                        event="recovery", model_name=name,
-                        from_status="degraded", to_status="active",
-                        reason=action["reason"],
-                        metrics={"recent_weeks_ic": action["recent_weeks_ic"]},
-                    )
-                except Exception as _e:
-                    logger.debug(f"[Stage 4] recovery alert skipped: {_e}")
-            elif t == "discard_challenger":
-                removed = entry.pop("challenger", None)
-                applied_count += 1
-                _audit(action, action.get("from"), None)
-                try:
-                    discord_alert.alert_lifecycle(
-                        event="discard",
-                        model_name=name,
-                        from_status=action.get("from"),
-                        to_status=None,
-                        reason=action["reason"],
-                        metrics={
-                            "ic_active_4w": action.get("ic_active_4w"),
-                            "ic_challenger_4w": action.get("ic_challenger_4w"),
-                            "weekly_ic_count": action.get("weekly_ic_count"),
-                            "removed_version": (removed or {}).get("version"),
-                        },
-                    )
-                except Exception as _e:
-                    logger.debug(f"[Stage 4] discard alert skipped: {_e}")
-        if applied_count > 0:
-            pool["last_updated"] = datetime.now(timezone.utc).isoformat()
-            pool_blob.upload_from_string(
-                _json.dumps(pool, indent=2, ensure_ascii=False),
-                content_type="application/json",
-            )
-
-    lifecycle_review_packet = _build_lifecycle_review_packet(
-        actions=actions,
-        promotion_gate=promotion_gate,
-        shadow_ab_by_model=shadow_ab_by_model,
-        paper_order_ab_by_model=paper_order_ab_by_model,
-        model_cpcv_by_model=model_cpcv_by_model,
-    )
-
-    return {
-        "status": "ok",
-        "dry_run": not req.apply,
-        "actions_count": len(actions),
-        "applied_count": applied_count,
-        "actions": actions,
-        "thresholds": {
-            "min_shadow_weeks": req.min_shadow_weeks,
-            "promote_margin": req.promote_margin,
-            "min_challenger_ic": req.min_challenger_ic,
-            "discard_failed_challenger": req.discard_failed_challenger,
-            "demote_consec_weeks": req.demote_consec_weeks,
-            "retire_consec_weeks": req.retire_consec_weeks,
-            "recovery_consec_pos_weeks": req.recovery_consec_pos_weeks,
-            "require_promotion_gate": req.require_promotion_gate,
-            "promotion_gate_source": req.promotion_gate_source,
-            "promotion_gate_pbo_source": req.promotion_gate_pbo_source,
-            "require_shadow_ab": req.require_shadow_ab,
-            "shadow_ab_lookback_days": req.shadow_ab_lookback_days,
-            "require_paper_order_ab": req.require_paper_order_ab,
-            "paper_order_ab_lookback_days": req.paper_order_ab_lookback_days,
-            "require_model_cpcv": req.require_model_cpcv,
-        },
-        "promotion_gate": promotion_gate,
-        "shadow_ab_by_model": shadow_ab_by_model,
-        "paper_order_ab_by_model": paper_order_ab_by_model,
-        "model_cpcv_by_model": model_cpcv_by_model,
-        "lifecycle_review_packet": lifecycle_review_packet,
-    }
-
-
 @router.get("/status")
 async def status():
-    """Read current model_pool.json from GCS."""
+    """Return the exact D1 champion snapshot used by production serving."""
     try:
-        import json as _json
-        from google.cloud import storage
-        bucket = storage.Client().bucket(_bucket_name())
-        blob = bucket.blob("universal/model_pool.json")
-        if not blob.exists():
-            return {"status": "not_initialized", "note": "Run POST /model_pool/init first"}
-        pool = _json.loads(blob.download_as_text().lstrip("\ufeff"))
-        pool.setdefault("research_benchmarks", build_research_benchmark_manifest(
-            datetime.now(timezone.utc).date().isoformat(),
-        ))
+        pool = load_d1_champion_pool()
+        pool["research_benchmarks"] = build_research_benchmark_manifest(
+            datetime.now(timezone.utc).date().isoformat()
+        )
         return pool
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"GCS read failed: {e}")
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"D1 champion read failed: {exc}") from exc
 
 
 @router.get("/artifact_registry")
@@ -1623,126 +338,75 @@ async def artifact_registry_selection(model_name: str | None = None, limit: int 
 
 @router.get("/artifact_registry/promotion_queue")
 async def artifact_registry_promotion_queue(model_name: str | None = None, limit: int = 200):
-    """Read-only promotion-controller queue for registry artifacts.
-
-    This does not mutate champion pointers. It explains which live-gate-passed
-    artifacts need final comparison, approval, or auto-promotion review.
-    """
+    """Read-only promotion queue owned by D1 registry and exact champion pointers."""
     try:
-        import json as _json
-        from google.cloud import storage
-
         rows = list_artifact_registry(model_name=model_name, limit=limit)
-        champion_versions: dict[str, str] = {}
-        bucket = storage.Client().bucket(_bucket_name())
-        pool_blob = bucket.blob("universal/model_pool.json")
-        if pool_blob.exists():
-            pool = _json.loads(pool_blob.download_as_text().lstrip("\ufeff"))
-            for name, entry in (pool.get("models") or {}).items():
-                version = entry.get("version")
-                if version:
-                    champion_versions[str(name)] = str(version)
+        pointers = list_champion_pointers(model_name=model_name)
+        champion_versions = {
+            str(pointer.get("model_name") or ""): str(pointer.get("champion_version") or "")
+            for pointer in pointers
+            if pointer.get("model_name") and pointer.get("champion_version")
+        }
         return build_promotion_queue(rows, champion_versions=champion_versions)
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"artifact_registry promotion queue failed: {e}")
 
-
 @router.post("/artifact_registry/promotion_controller")
 async def artifact_registry_promotion_controller(req: PromotionControllerRequest):
-    """Run final comparison and optionally update the champion pointer.
-
-    ``confirm=false`` is dry-run. ``confirm=true`` may update D1
-    model_champion_pointers, but it still does not mutate model_pool.json.
-    """
+    """Compare against and optionally update the exact D1 champion pointer."""
     if not req.artifact_id:
         raise HTTPException(status_code=400, detail="artifact_id is required")
     try:
-        import json as _json
-        from google.cloud import storage
-
-        champion_versions: dict[str, str] = {}
-        bucket = storage.Client().bucket(_bucket_name())
-        pool_blob = bucket.blob("universal/model_pool.json")
-        if pool_blob.exists():
-            pool = _json.loads(pool_blob.download_as_text().lstrip("\ufeff"))
-            for name, entry in (pool.get("models") or {}).items():
-                version = entry.get("version")
-                if version:
-                    champion_versions[str(name)] = str(version)
         rows = list_artifact_registry(limit=500)
         pointers = list_champion_pointers()
         result = run_promotion_controller(
             artifact_id=req.artifact_id,
             registry_rows=rows,
             d1_pointers=pointers,
-            model_pool_versions=champion_versions,
             confirm=req.confirm,
             approved=req.approved,
             approved_by=req.approved_by,
             reason=req.reason,
-            allow_offline_monthly_release=req.allow_offline_monthly_release,
             manual_override=req.manual_override,
         )
-        should_update_serving = req.confirm and (
+        if req.confirm and (
             result.get("can_promote") is True
             or result.get("status") == "already_promoted"
-        )
-        if should_update_serving:
-            artifact = next((row for row in rows if str(row.get("artifact_id")) == str(req.artifact_id)), None)
-            if artifact is None:
-                raise HTTPException(status_code=500, detail="promoted artifact disappeared from registry readback")
-            artifact = dict(artifact)
-            metadata_path = str(artifact.get("metadata_path") or "").strip()
-            if metadata_path:
-                metadata_blob = bucket.blob(metadata_path)
-                if metadata_blob.exists():
-                    artifact["metadata"] = _json.loads(metadata_blob.download_as_text().lstrip("\ufeff"))
-            pool = _json.loads(pool_blob.download_as_text().lstrip("\ufeff"))
-            release_writer = run_model_pool_release_writer(
-                pool,
-                artifact,
-                reason=req.reason,
-                promoted_at=result.get("confirmed_at"),
-                confirm=True,
+        ):
+            pointer = next(
+                (
+                    row for row in list_champion_pointers()
+                    if str(row.get("model_name") or "") == str(result.get("model_name") or "")
+                ),
+                None,
             )
-            pool_blob.upload_from_string(
-                _json.dumps(pool, ensure_ascii=False, indent=2, sort_keys=True),
-                content_type="application/json",
-            )
-            result = {
-                **result,
-                "serving_reader": "model_pool.json",
-                "serving_model_pool_updated": True,
-                "serving_update": release_writer["serving_update"],
-                "model_pool_release_writer": release_writer,
-                "note": "Champion pointer and model_pool.json serving owner were updated together.",
-            }
-        return result
+            if (
+                not pointer
+                or str(pointer.get("champion_artifact_id") or "") != req.artifact_id
+                or str(pointer.get("champion_version") or "") != str(result.get("candidate_version") or "")
+            ):
+                raise RuntimeError("d1_champion_pointer_readback_mismatch")
+        return {
+            **result,
+            "serving_reader": "model_champion_pointers/model_artifact_registry",
+            "serving_model_pool_updated": False,
+        }
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"artifact_registry promotion controller failed: {e}")
 
-
 @router.post("/artifact_registry/auto_promote")
 async def artifact_registry_auto_promote(req: AutoPromotionRequest = AutoPromotionRequest()):
-    """Promote evidence-complete scheduled candidates and reconcile serving metadata."""
+    """Promote evidence-complete candidates through atomic D1 pointer updates."""
     if not req.confirm:
         raise HTTPException(status_code=400, detail="auto_promote requires confirm=true; use promotion_queue for dry-run")
     try:
-        import json as _json
-        from google.cloud import storage
-
-        bucket = storage.Client().bucket(_bucket_name())
-        pool_blob = bucket.blob("universal/model_pool.json")
-        if not pool_blob.exists():
-            raise RuntimeError("universal/model_pool.json not found")
-        pool = _json.loads(pool_blob.download_as_text().lstrip("\ufeff"))
-        champion_versions = {
-            str(name): str(entry.get("version"))
-            for name, entry in (pool.get("models") or {}).items()
-            if isinstance(entry, dict) and entry.get("version")
-        }
         rows = list_artifact_registry(limit=1000)
         pointers = list_champion_pointers()
+        champion_versions = {
+            str(pointer.get("model_name") or ""): str(pointer.get("champion_version") or "")
+            for pointer in pointers
+            if pointer.get("model_name") and pointer.get("champion_version")
+        }
         queue = build_promotion_queue(rows, champion_versions=champion_versions)
         eligible = [
             row for row in queue.get("queue") or []
@@ -1763,7 +427,6 @@ async def artifact_registry_auto_promote(req: AutoPromotionRequest = AutoPromoti
                 training_run_id=training_run_id,
                 registry_rows=rows,
                 d1_pointers=pointers,
-                model_pool_versions=champion_versions,
                 confirm=True,
                 approved=False,
                 approved_by="artifact_auto_promotion",
@@ -1773,17 +436,34 @@ async def artifact_registry_auto_promote(req: AutoPromotionRequest = AutoPromoti
             results.append(result)
             if result.get("can_promote") is True:
                 promoted_artifacts.extend(artifacts)
-                run_model_pool_release_bundle_writer(
-                    pool,
-                    artifacts,
-                    reason=req.reason,
-                    promoted_at=result.get("confirmed_at"),
-                    confirm=True,
-                )
 
+        active8_candidates = [
+            row for row in list_active8_ensemble_artifacts()
+            if str(row.get("state") or "") == "candidate"
+            and str(row.get("training_run_id") or "")
+        ]
+        # Query order is updated_at DESC. Only the newest candidate may own
+        # automatic promotion; an older bundle must never overwrite a newer one.
+        active8_runs = (
+            [str(active8_candidates[0].get("training_run_id") or "")]
+            if active8_candidates
+            else []
+        )
+        for training_run_id in active8_runs:
+            result = run_active8_ensemble_bundle_promotion_controller(
+                training_run_id=training_run_id,
+                registry_rows=rows,
+                d1_pointers=pointers,
+                confirm=True,
+                reason=req.reason,
+            )
+            artifacts = [dict(row) for row in result.pop("artifacts", [])]
+            results.append(result)
+            if result.get("can_promote") is True:
+                promoted_artifacts.extend(artifacts)
         seen_models: set[str] = set()
         for item in eligible:
-            if str(item.get("candidate_type") or "") == "timesfm_l175_l2_feature_release":
+            if str(item.get("candidate_type") or "") in {"timesfm_l175_l2_feature_release", "oof_full_fit_release"}:
                 continue
             model_name = str(item.get("model_name") or "")
             if not model_name or model_name in seen_models:
@@ -1794,52 +474,30 @@ async def artifact_registry_auto_promote(req: AutoPromotionRequest = AutoPromoti
                 artifact_id=artifact_id,
                 registry_rows=rows,
                 d1_pointers=pointers,
-                model_pool_versions=champion_versions,
                 confirm=True,
                 approved=False,
                 approved_by="artifact_auto_promotion",
                 reason=req.reason,
             )
             results.append(result)
-            if result.get("can_promote") is not True:
-                continue
-            artifact = by_id[artifact_id]
-            promoted_artifacts.append(artifact)
-            run_model_pool_release_writer(
-                pool,
-                artifact,
-                reason=req.reason,
-                promoted_at=result.get("confirmed_at"),
-                confirm=True,
-            )
+            if result.get("can_promote") is True:
+                promoted_artifacts.append(by_id[artifact_id])
 
-        refreshed_rows = list_artifact_registry(limit=1000)
-        refreshed_pointers = list_champion_pointers()
-        champion_pool = build_pool_from_champion_pointers(
-            pointers=refreshed_pointers,
-            artifacts=refreshed_rows,
-            fallback_pool=pool,
-        )
-        reconcile_plan = build_model_pool_reconcile_plan(model_pool=pool, champion_pool=champion_pool)
-        if reconcile_plan.get("blocked"):
-            raise RuntimeError(f"model_pool_reconcile_blocked:{reconcile_plan['blocked']}")
-        pool = apply_model_pool_reconcile_plan(model_pool=pool, plan=reconcile_plan)
-        pool_blob.upload_from_string(
-            _json.dumps(pool, ensure_ascii=False, indent=2, sort_keys=True),
-            content_type="application/json",
-        )
-
-        projected = _json.loads(pool_blob.download_as_text().lstrip("\ufeff"))
+        readback_by_model = {
+            str(pointer.get("model_name") or ""): pointer
+            for pointer in list_champion_pointers()
+            if pointer.get("model_name")
+        }
         readback_errors: list[str] = []
         for artifact in promoted_artifacts:
             model_name = str(artifact.get("model_name") or "")
-            entry = (projected.get("models") or {}).get(model_name) or {}
-            if str(entry.get("version") or "") != str(artifact.get("version") or ""):
+            pointer = readback_by_model.get(model_name) or {}
+            if str(pointer.get("champion_version") or "") != str(artifact.get("version") or ""):
                 readback_errors.append(f"version_mismatch:{model_name}")
-            if str(entry.get("serving_artifact_id") or "") != str(artifact.get("artifact_id") or ""):
+            if str(pointer.get("champion_artifact_id") or "") != str(artifact.get("artifact_id") or ""):
                 readback_errors.append(f"artifact_id_mismatch:{model_name}")
         if readback_errors:
-            raise RuntimeError("model_pool_readback_failed:" + ",".join(readback_errors))
+            raise RuntimeError("d1_champion_pointer_readback_failed:" + ",".join(readback_errors))
 
         for artifact in promoted_artifacts:
             discord_alert.alert_lifecycle(
@@ -1853,7 +511,7 @@ async def artifact_registry_auto_promote(req: AutoPromotionRequest = AutoPromoti
                     "version": artifact.get("version"),
                     "offline_gate": artifact.get("offline_gate_decision"),
                     "live_gate": artifact.get("live_gate_status"),
-                    "promotion_basis": "all_evidence_gates_and_final_champion_comparison_passed",
+                    "promotion_basis": "canonical_oof_evidence_and_exact_d1_pointer_comparison",
                 },
             )
         return {
@@ -1861,41 +519,72 @@ async def artifact_registry_auto_promote(req: AutoPromotionRequest = AutoPromoti
             "eligible": len(eligible),
             "promoted": len(promoted_artifacts),
             "results": results,
-            "model_pool_reconcile": reconcile_plan,
+            "serving_reader": "model_champion_pointers/model_artifact_registry",
             "readback_verified": not readback_errors,
         }
     except Exception as e:
         logger.exception("artifact auto promotion failed")
         raise HTTPException(status_code=500, detail=f"artifact_registry auto promotion failed: {e}")
 
+@router.post("/artifact_registry/active8_bundle_promotion_controller")
+async def artifact_registry_active8_bundle_promotion_controller(
+    req: Active8BundlePromotionControllerRequest,
+):
+    if not req.training_run_id.strip():
+        raise HTTPException(status_code=400, detail="training_run_id is required")
+    try:
+        rows = list_artifact_registry(limit=1000)
+        result = run_active8_ensemble_bundle_promotion_controller(
+            training_run_id=req.training_run_id,
+            registry_rows=rows,
+            d1_pointers=list_champion_pointers(),
+            confirm=req.confirm,
+            reason=req.reason,
+        )
+        artifacts = [dict(row) for row in result.pop("artifacts", [])]
+        if req.confirm and result.get("can_promote") is True:
+            readback = {
+                str(pointer.get("model_name") or ""): pointer
+                for pointer in list_champion_pointers()
+                if pointer.get("model_name")
+            }
+            mismatches = [
+                str(row.get("model_name") or "")
+                for row in artifacts
+                if str((readback.get(str(row.get("model_name") or "")) or {}).get("champion_artifact_id") or "")
+                != str(row.get("artifact_id") or "")
+            ]
+            ensemble_pointer = LEARNING_D1_CLIENT.query(
+                "SELECT artifact_id FROM active8_ensemble_pointer_v1 WHERE singleton_id=1"
+            )
+            if (
+                mismatches
+                or len(ensemble_pointer) != 1
+                or str(ensemble_pointer[0].get("artifact_id") or "")
+                != str(result.get("ensemble_artifact_id") or "")
+            ):
+                raise RuntimeError("active8_bundle_d1_pointer_readback_mismatch:" + ",".join(mismatches))
+        return {
+            **result,
+            "serving_reader": "model_champion_pointers+active8_ensemble_pointer_v1",
+            "readback_verified": bool(req.confirm and result.get("can_promote") is True),
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Active8 bundle promotion controller failed: {e}")
 
 @router.post("/artifact_registry/feature_release_promotion_controller")
 async def artifact_registry_feature_release_promotion_controller(
     req: FeatureReleasePromotionControllerRequest,
 ):
-    """Promote one complete L3 feature release and one serving JSON generation."""
+    """Promote a complete TimesFM feature cohort through one atomic D1 batch."""
     if not req.training_run_id.strip():
         raise HTTPException(status_code=400, detail="training_run_id is required")
     try:
-        import json as _json
-        from google.cloud import storage
-
-        bucket = storage.Client().bucket(_bucket_name())
-        pool_blob = bucket.blob("universal/model_pool.json")
-        if not pool_blob.exists():
-            raise HTTPException(status_code=500, detail="universal/model_pool.json not found")
-        pool = _json.loads(pool_blob.download_as_text().lstrip("\ufeff"))
-        champion_versions = {
-            str(name): str(entry.get("version"))
-            for name, entry in (pool.get("models") or {}).items()
-            if isinstance(entry, dict) and entry.get("version")
-        }
         rows = list_artifact_registry(limit=500)
         result = run_feature_release_promotion_controller(
             training_run_id=req.training_run_id,
             registry_rows=rows,
             d1_pointers=list_champion_pointers(),
-            model_pool_versions=champion_versions,
             confirm=req.confirm,
             approved=req.approved,
             approved_by=req.approved_by,
@@ -1903,204 +592,70 @@ async def artifact_registry_feature_release_promotion_controller(
         )
         artifacts = [dict(row) for row in result.pop("artifacts", [])]
         if req.confirm and result.get("can_promote") is True:
-            if not artifacts:
-                raise RuntimeError("Atomic D1 release committed without artifact projection payload")
-            for artifact in artifacts:
-                metadata_path = str(artifact.get("metadata_path") or "").strip()
-                if metadata_path:
-                    metadata_blob = bucket.blob(metadata_path)
-                    if not metadata_blob.exists():
-                        raise RuntimeError(f"Feature release metadata missing: {metadata_path}")
-                    artifact["metadata"] = _json.loads(metadata_blob.download_as_text().lstrip("\ufeff"))
-            release_writer = run_model_pool_release_bundle_writer(
-                pool,
-                artifacts,
-                reason=req.reason,
-                promoted_at=result.get("confirmed_at"),
-                confirm=True,
-            )
-            pool_blob.upload_from_string(
-                _json.dumps(pool, ensure_ascii=False, indent=2, sort_keys=True),
-                content_type="application/json",
-            )
-            result = {
-                **result,
-                "serving_model_pool_updated": True,
-                "model_pool_release_writer": release_writer,
-                "note": "All affected L3 models moved in one D1 batch and one model_pool generation.",
+            readback = {
+                str(pointer.get("model_name") or ""): pointer
+                for pointer in list_champion_pointers()
+                if pointer.get("model_name")
             }
-        return result
-    except HTTPException:
-        raise
+            errors = [
+                str(artifact.get("model_name") or "")
+                for artifact in artifacts
+                if (
+                    str((readback.get(str(artifact.get("model_name") or "")) or {}).get("champion_artifact_id") or "")
+                    != str(artifact.get("artifact_id") or "")
+                    or str((readback.get(str(artifact.get("model_name") or "")) or {}).get("champion_version") or "")
+                    != str(artifact.get("version") or "")
+                )
+            ]
+            if errors:
+                raise RuntimeError("feature_release_d1_pointer_readback_mismatch:" + ",".join(errors))
+        return {
+            **result,
+            "serving_reader": "model_champion_pointers/model_artifact_registry",
+            "readback_verified": bool(req.confirm and result.get("can_promote") is True),
+        }
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"feature release promotion controller failed: {e}")
 
-
 @router.get("/artifact_registry/champion_pointers")
 async def artifact_registry_champion_pointers(model_name: str | None = None, limit: int = 200):
-    """Read-only champion pointer migration contract.
-
-    Production currently reads model_pool.json. This endpoint compares that
-    serving pointer with registry-owned D1 pointers so the next migration step
-    cannot silently create split-brain.
-    """
+    """Return the exact D1 champion pointers and their registry artifacts."""
     try:
-        import json as _json
-        from google.cloud import storage
-
+        pointers = list_champion_pointers(model_name=model_name)
         rows = list_artifact_registry(model_name=model_name, limit=limit)
-        d1_pointers = list_champion_pointers(model_name=model_name)
-        champion_versions: dict[str, str] = {}
-        bucket = storage.Client().bucket(_bucket_name())
-        pool_blob = bucket.blob("universal/model_pool.json")
-        if pool_blob.exists():
-            pool = _json.loads(pool_blob.download_as_text().lstrip("\ufeff"))
-            for name, entry in (pool.get("models") or {}).items():
-                version = entry.get("version")
-                if version:
-                    champion_versions[str(name)] = str(version)
-        return build_champion_pointer_projection(
-            registry_rows=rows,
-            d1_pointers=d1_pointers,
-            model_pool_versions=champion_versions,
-        )
+        artifacts_by_id = {
+            str(row.get("artifact_id") or ""): row
+            for row in rows
+            if row.get("artifact_id")
+        }
+        return {
+            "status": "ok",
+            "source_of_truth": "model_champion_pointers/model_artifact_registry",
+            "count": len(pointers),
+            "pointers": [
+                {
+                    **pointer,
+                    "artifact": artifacts_by_id.get(str(pointer.get("champion_artifact_id") or "")),
+                }
+                for pointer in pointers
+            ],
+        }
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"artifact_registry champion pointers failed: {e}")
 
-
-@router.post("/artifact_registry/champion_pointers/backfill")
-async def artifact_registry_champion_pointers_backfill(req: BackfillChampionPointersRequest):
-    """Backfill D1 champion pointers from current model_pool.json.
-
-    This does not promote any artifact. It only mirrors today's production
-    champion versions into the registry pointer table so future final
-    comparisons have a stable source of truth.
-    """
-    if not req.confirm:
-        raise HTTPException(
-            status_code=400,
-            detail="champion pointer backfill requires confirm=true; this writes model_champion_pointers but does not change production serving",
-        )
-    try:
-        import json as _json
-        from google.cloud import storage
-
-        champion_versions: dict[str, str] = {}
-        bucket = storage.Client().bucket(_bucket_name())
-        pool_blob = bucket.blob("universal/model_pool.json")
-        if not pool_blob.exists():
-            raise HTTPException(status_code=404, detail="model_pool.json not found")
-        pool = _json.loads(pool_blob.download_as_text().lstrip("\ufeff"))
-        for name, entry in (pool.get("models") or {}).items():
-            if name in RETIRED_ALPHA_MODEL_SET or name not in MODEL_POOL_REQUIRED_MODEL_SET:
-                continue
-            version = entry.get("version")
-            if version:
-                champion_versions[str(name)] = str(version)
-        rows = list_artifact_registry(limit=500)
-        result = backfill_champion_pointers_from_model_pool(
-            model_pool_versions=champion_versions,
-            registry_rows=rows,
-            reason=req.reason,
-            create_missing_artifacts=req.create_missing_artifacts,
-        )
-        return {
-            **result,
-            "production_reader": "model_pool.json",
-            "note": "Backfill only; serving owner migration still requires explicit deploy.",
-        }
-    except HTTPException:
-        raise
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"artifact_registry champion pointer backfill failed: {e}")
-
-
 @router.get("/lineage")
 async def lineage():
-    """Return required model_pool lineage pointers."""
+    """Return the exact D1 champion serving lineage."""
     try:
-        import json as _json
-        from google.cloud import storage
-
-        bucket = storage.Client().bucket(_bucket_name())
-        pool_blob = bucket.blob("universal/model_pool.json")
-        if not pool_blob.exists():
-            return {"status": "not_initialized", "models": {}}
-
-        pool = _json.loads(pool_blob.download_as_text().lstrip("\ufeff"))
-        out: dict[str, dict] = {}
-        for name, entry in (pool.get("models") or {}).items():
-            if name in RETIRED_ALPHA_MODEL_SET or name not in MODEL_POOL_REQUIRED_MODEL_SET:
-                continue
-            version = entry.get("version")
-            artifact_path = entry.get("gcs_path") or (version and _model_artifact_path(name, version))
-            metadata_path = _model_metadata_path(name, version) if version else None
-            metadata = None
-            metadata_exists = False
-            if metadata_path:
-                metadata_blob = bucket.blob(metadata_path)
-                metadata_exists = metadata_blob.exists()
-                if metadata_exists:
-                    try:
-                        metadata = _metadata_summary(_json.loads(metadata_blob.download_as_text().lstrip("\ufeff")))
-                    except Exception as e:
-                        metadata = {"read_error": str(e)}
-
-            challenger = entry.get("challenger")
-            challenger_out = None
-            if challenger:
-                ch_version = challenger.get("version")
-                ch_metadata_path = _model_metadata_path(name, ch_version) if ch_version else None
-                ch_metadata_exists = False
-                ch_metadata = None
-                if ch_metadata_path:
-                    ch_metadata_blob = bucket.blob(ch_metadata_path)
-                    ch_metadata_exists = ch_metadata_blob.exists()
-                    if ch_metadata_exists:
-                        try:
-                            ch_metadata = _metadata_summary(_json.loads(ch_metadata_blob.download_as_text().lstrip("\ufeff")))
-                        except Exception as e:
-                            ch_metadata = {"read_error": str(e)}
-                challenger_out = {
-                    "version": ch_version,
-                    "status": "challenger",
-                    "gcs_path": challenger.get("gcs_path"),
-                    "metadata_path": ch_metadata_path,
-                    "metadata_exists": ch_metadata_exists,
-                    "metadata": ch_metadata,
-                    "artifact_evidence": _artifact_evidence(ch_metadata),
-                    "shadow_since": challenger.get("shadow_since"),
-                    "rolling_ic": challenger.get("rolling_ic"),
-                    "weekly_ic": challenger.get("weekly_ic") or [],
-                    "ic_4w_avg": challenger.get("ic_4w_avg"),
-                    "last_ic_status": challenger.get("last_ic_status"),
-                    "last_ic_root_cause": challenger.get("last_ic_root_cause"),
-                    "last_ic_sample_count": challenger.get("last_ic_sample_count") or 0,
-                    "last_ic_diagnostics": challenger.get("last_ic_diagnostics") or {},
-                    "last_ic_score_sources": challenger.get("last_ic_score_sources") or {},
-                    "last_ic_by_segment": challenger.get("last_ic_by_segment") or {},
-                    "last_ic_error": challenger.get("last_ic_error"),
-                    "lifecycle_diagnosis": _lifecycle_diagnosis(
-                        model_name=name,
-                        entry=challenger,
-                        metadata_exists=ch_metadata_exists,
-                        metadata=ch_metadata,
-                        is_challenger=True,
-                    ),
-                }
-
-            out[name] = {
+        pool = load_d1_champion_pool()
+        models = {
+            name: {
                 "status": entry.get("status"),
                 "model_slot_status": entry.get("model_slot_status"),
                 "serving_eligible": entry.get("serving_eligible"),
-                "version": version,
-                "balance_family": entry.get("balance_family"),
-                "model_type": entry.get("model_type"),
-                "gcs_path": artifact_path,
-                "artifact_uri": _bucket_uri(artifact_path) if artifact_path else None,
-                "metadata_path": metadata_path,
-                "metadata_exists": metadata_exists,
-                "metadata": metadata,
+                "version": entry.get("version"),
+                "gcs_path": entry.get("gcs_path"),
+                "metadata_path": entry.get("metadata_path"),
                 "serving_owner": entry.get("serving_owner"),
                 "serving_artifact_id": entry.get("serving_artifact_id"),
                 "serving_block_reason": entry.get("serving_block_reason"),
@@ -2115,180 +670,20 @@ async def lineage():
                 "last_ic_status": entry.get("last_ic_status"),
                 "last_ic_root_cause": entry.get("last_ic_root_cause"),
                 "last_ic_sample_count": entry.get("last_ic_sample_count") or 0,
-                "last_ic_diagnostics": entry.get("last_ic_diagnostics") or {},
-                "last_ic_score_sources": entry.get("last_ic_score_sources") or {},
-                "last_ic_by_segment": entry.get("last_ic_by_segment") or {},
-                "last_ic_error": entry.get("last_ic_error"),
-                "lifecycle_diagnosis": _lifecycle_diagnosis(
-                    model_name=name,
-                    entry=entry,
-                    metadata_exists=metadata_exists,
-                    metadata=metadata,
-                ),
-                "consecutive_negative_weeks": entry.get("consecutive_negative_weeks") or 0,
-                "challenger": challenger_out,
             }
-
+            for name, entry in (pool.get("models") or {}).items()
+        }
         return {
             "status": "ok",
             "schema_version": pool.get("schema_version"),
             "last_updated": pool.get("last_updated"),
-            "source_of_truth": pool.get("source_of_truth") or "model_pool.json",
-            "compat_shape": pool.get("compat_shape"),
+            "source_of_truth": "model_champion_pointers/model_artifact_registry",
             "production_reader": "model_champion_pointers/model_artifact_registry",
-            "models": out,
-            "state_overlays": pool.get("state_overlays") or {},
-            "meta_optimizers": pool.get("meta_optimizers") or {},
-            "research_benchmarks": pool.get("research_benchmarks") or build_research_benchmark_manifest(
-                datetime.now(timezone.utc).date().isoformat(),
+            "models": models,
+            "l2_feature_sidecars": pool.get("l2_feature_sidecars") or {},
+            "research_benchmarks": build_research_benchmark_manifest(
+                datetime.now(timezone.utc).date().isoformat()
             ),
         }
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"GCS lineage read failed: {e}")
-
-
-@router.post("/migrate_legacy")
-async def migrate_legacy():
-    """Fail-closed guard for the removed flat-file migration path.
-
-    Production artifacts are now model_pool/versioned-only. Keeping a live
-    copy-from-flat-file path would reintroduce split-brain model ownership.
-    """
-    raise HTTPException(
-        status_code=410,
-        detail="legacy model artifact migration is disabled; model_pool.json is the canonical owner",
-    )
-
-
-class InitPoolRequest(BaseModel):
-    confirm: bool = False
-    overwrite: bool = False  # if model_pool.json already exists
-
-
-@router.post("/init")
-async def init_pool(req: InitPoolRequest):
-    """Initialize model_pool.json with all managed models as 'active' v1.
-
-    Idempotent unless overwrite=true. This writes only the canonical
-    model_pool.json owner path; it does not copy legacy flat-file artifacts.
-    """
-    if not req.confirm:
-        raise HTTPException(
-            status_code=400,
-            detail="init requires confirm=true (writes model_pool.json to GCS)",
-        )
-    import json as _json
-    from google.cloud import storage
-    bucket = storage.Client().bucket(_bucket_name())
-    pool_blob = bucket.blob("universal/model_pool.json")
-    if pool_blob.exists() and not req.overwrite:
-        existing = _json.loads(pool_blob.download_as_text().lstrip("\ufeff"))
-        return {
-            "status": "exists",
-            "note": "model_pool.json already initialized; pass overwrite=true to replace",
-            "model_count": len(existing.get("models", {})),
-            "last_updated": existing.get("last_updated"),
-        }
-
-    # Inline default pool (mirrors ml-service app/model_pool.py:init_default_pool
-    # without forcing module import here to keep ml-controller decoupled).
-    from datetime import datetime, timezone
-    today = datetime.now(timezone.utc).date().isoformat()
-    iso_now = datetime.now(timezone.utc).isoformat()
-    managed = [
-        # (name, model_type, balance_family, ext)
-        ("LightGBM",        "tree_feature",           "tree",        "joblib"),
-        ("XGBoost",         "tree_feature",           "tree",        "joblib"),
-        ("ExtraTrees",      "tree_feature",           "tree",        "joblib"),
-        ("TabM",            "tabular_neural",         "tabular",     "pt"),
-        ("GNN",             "cross_stock_graphsage",  "graph",       "pt"),
-        ("DLinear",         "time_series_learnable",  "time_series", "pt"),
-        ("PatchTST",        "time_series_neuralforecast_patchtst", "time_series", "zip"),
-        ("iTransformer",    "time_series_neuralforecast_itransformer", "time_series", "zip"),
-        ("TimesFM",         "time_series_foundation", "time_series", "json"),
-    ]
-    shadow_managed = [
-        # (name, model_type, balance_family, ext)
-        ("ResidualMLP", "experimental_mlp", "experimental", "joblib"),
-    ]
-    state_overlays = ["KalmanFilter", "MarkovSwitching"]
-    models = {}
-    for name, mt, bf, _ext in managed:
-        models[name] = {
-            "status": "active",
-            "version": "v1",
-            "gcs_path": _model_artifact_path(name, "v1"),
-            "model_type": mt,
-            "balance_family": bf,
-            "promoted_at": today,
-            "shadow_since": None,
-            "degraded_since": None,
-            "retired_at": None,
-            "weekly_ic": [],
-            "ic_4w_avg": None,
-            "consecutive_negative_weeks": 0,
-        }
-    shadow_models = {}
-    for name, mt, bf, _ext in shadow_managed:
-        shadow_models[name] = {
-            "status": "challenger",
-            "version": "v1",
-            "gcs_path": _model_artifact_path(name, "v1"),
-            "model_type": mt,
-            "balance_family": bf,
-            "vote_weight": 0.0,
-            "shadow_since": today,
-            "weekly_ic": [],
-            "ic_4w_avg": None,
-            "note": "Experimental alpha challenger; shadow predicts but does not vote.",
-        }
-    overlays = {}
-    for name in state_overlays:
-        overlays[name] = {
-            "status": "active",
-            "version": "v1",
-            "gcs_path": _model_artifact_path(name, "v1"),
-            "model_type": "state_space_overlay",
-            "balance_family": "state_space",
-            "role": "regime_risk_overlay",
-            "promoted_at": today,
-            "note": "State-space overlay only; excluded from alpha vote, IC, and challenger promotion.",
-        }
-    meta_optimizers = {
-        "GAOptimizer": {
-            "layer": "meta_optimizer",
-            "status": "learning",
-            "version": "v1",
-            "scope": "ensemble_weights,strategy_params,risk_params",
-            "model_type": "meta_optimizer",
-            "balance_family": "optimizer",
-            "direct_prediction": False,
-            "created_at": today,
-            "learning_mode": "direct",
-            "apply_gate": "walk_forward+pbo+transaction_cost_sensitivity",
-            "note": "Optimizer layer only; learns policy/search state directly and never votes as a predictor.",
-        }
-    }
-    research_benchmarks = build_research_benchmark_manifest(today)
-    pool = {
-        "schema_version": "1.0",
-        "last_updated": iso_now,
-        "models": models,
-        "shadow_models": shadow_models,
-        "state_overlays": overlays,
-        "meta_optimizers": meta_optimizers,
-        "research_benchmarks": research_benchmarks,
-    }
-    pool_blob.upload_from_string(
-        _json.dumps(pool, indent=2, ensure_ascii=False),
-        content_type="application/json",
-    )
-    return {
-        "status": "initialized",
-        "model_count": len(models),
-        "shadow_model_count": len(shadow_models),
-        "state_overlay_count": len(overlays),
-        "meta_optimizer_count": len(meta_optimizers),
-        "research_benchmark_count": len(research_benchmarks),
-        "last_updated": iso_now,
-    }
+        raise HTTPException(status_code=500, detail=f"D1 champion lineage read failed: {e}")

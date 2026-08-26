@@ -23,7 +23,7 @@ from pathlib import Path
 from typing import Any, Optional
 
 from fastapi import APIRouter, Body, HTTPException, Request
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 from dataclasses import asdict
 
 from services import d1_client, retrain_lock
@@ -37,14 +37,13 @@ from services.payload_builder import (
     PredictPayload,
 )
 from services.active_model_policy import long_history_sequence_enabled, long_history_sequence_prefix
-from services.active8_monthly_training_contract import (
-    build_monthly_training_contract,
-    normalize_monthly_execution_scope,
-    resolve_monthly_execution_mode,
+from services.active8_release_training_contract import (
+    build_release_training_contract,
+    normalize_release_execution_scope,
 )
 from services.training_calendar import monthly_revenue_available_date
 from services.training_policy import TrainingPolicy
-from services.modal_client import batch_retrain, prep_universal_batch, train_universal, shap_audit
+from services.modal_client import prep_universal_batch, train_universal, shap_audit
 
 logger = logging.getLogger(__name__)
 OPS_D1_CLIENT = client_proxy_for_domain(D1DataDomain.OPS)
@@ -99,17 +98,12 @@ TIMESFM_L175_FEATURE_NAMES = (
 )
 
 
-class RetrainTriggerRequest(BaseModel):
-    use_optuna: bool = True
-    limit: int = 50  # max stocks to retrain
-    run_date: str | None = Field(default=None, description="Business date for scheduler/manual trigger lineage.")
-
-
 class UniversalRetrainTriggerRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     limit: int = 2500  # max stocks
-    force_monthly: bool = False  # Force monthly flow, including feature selection.
     run_date: str | None = Field(default=None, description="Business date for scheduler/manual trigger lineage.")
-    candidate_type: str | None = Field(default=None, description="Release-train candidate type, e.g. monthly_release or weekly_drift.")
+    candidate_type: str | None = Field(default=None, description="Candidate type. Formal releases must use oof_full_fit_release.")
     drift_target_models: list[str] = Field(default_factory=list)
     drift_target_families: list[str] = Field(default_factory=list)
     train_model_groups: list[str] = Field(default_factory=lambda: ["tree", "dlinear", "patchtst"])
@@ -117,7 +111,7 @@ class UniversalRetrainTriggerRequest(BaseModel):
     artifact_lifecycle_contracts: dict[str, str] = Field(default_factory=dict)
     artifact_lifecycle_only: bool = False
     register_challengers: bool = False
-    promotion_allowed_models: list[str] = Field(default_factory=list)
+    promotion_eligible_models: list[str] = Field(default_factory=list)
     oof_promotion_evidence: dict[str, dict] = Field(default_factory=dict)
     oof_lifecycle_resume: dict[str, Any] = Field(default_factory=dict)
     require_exact_dataset_snapshot: bool = Field(
@@ -208,54 +202,6 @@ def _exact_dataset_snapshot_rejection(
             "snapshot_id": snapshot_info.get("snapshot_id"),
         }
     return None
-
-
-def _resolve_monthly_retrain_business_date(
-    *,
-    requested_run_date: str | None,
-    cutoff_date: str,
-) -> tuple[str, dict[str, object]]:
-    """Resolve scheduler wall-clock time to the latest complete market session.
-
-    A first-Sunday monthly run must train on Friday's immutable compute snapshot,
-    not silently fall back to mutable D1 data because no Sunday snapshot exists.
-    Explicit run_date values remain exact business-date requests.
-    """
-    if requested_run_date:
-        return requested_run_date, {
-            "mode": "explicit_business_date",
-            "cutoff_date": cutoff_date,
-            "business_date": requested_run_date,
-        }
-
-    from services.active8_prep_lifecycle import _latest_market_session
-    from services.dataset_snapshots import latest_dataset_snapshot
-
-    expected_business_date, market_session_evidence = _latest_market_session(
-        cutoff_date,
-        query_fn=MARKET_D1_CLIENT.query,
-    )
-    snapshot = latest_dataset_snapshot(
-        kind="backtest_dataset",
-        as_of_business_date=cutoff_date,
-        access_tier="compute",
-    )
-    if not snapshot or snapshot.get("manifest_errors"):
-        raise ValueError("monthly_compute_snapshot_missing_or_invalid")
-
-    snapshot_business_date = str(snapshot.get("business_date") or "")[:10]
-    if snapshot_business_date != expected_business_date:
-        raise ValueError(
-            "monthly_compute_snapshot_behind_market_session:"
-            f"expected={expected_business_date}:actual={snapshot_business_date or 'missing'}"
-        )
-    return snapshot_business_date, {
-        "mode": "latest_complete_market_session",
-        "cutoff_date": cutoff_date,
-        "business_date": snapshot_business_date,
-        "snapshot_id": snapshot.get("snapshot_id"),
-        **market_session_evidence,
-    }
 
 
 def _force_https(url: str) -> str:
@@ -949,6 +895,7 @@ def _build_prebuilt_oof_dataset_snapshot(
     verified_sequence: dict[str, object],
     source_cohort_id: str,
     source_manifest_checksum: str,
+    business_date: str,
 ) -> dict[str, object]:
     """Bind prep V2 evidence under the immutable full-fit lineage contract."""
 
@@ -956,6 +903,8 @@ def _build_prebuilt_oof_dataset_snapshot(
         **verified_prep,
         "prep_schema_version": verified_prep.get("schema_version"),
         "schema_version": "active8-oof-full-fit-prep-lineage-v2",
+        "snapshot_id": f"oof_full_fit:{source_cohort_id}:{source_manifest_checksum}",
+        "business_date": business_date,
         "source_cohort_id": source_cohort_id,
         "source_manifest_checksum": source_manifest_checksum,
         "feature_pool": verified_feature_pool,
@@ -997,94 +946,6 @@ def _upsert_retrain_status(
             downstream_notes,
         ],
     )
-
-
-@router.post("/trigger")
-async def trigger_retrain(req: RetrainTriggerRequest = Body(default=RetrainTriggerRequest())):
-    """
-    Sprint 6b retrain trigger ??builds payloads from D1, calls Modal.
-
-    1. Load all active stocks from D1
-    2. Build market_env (shared)
-    3. Bulk load prices/indicators/chips/sentiment per stock
-    4. Call Modal retrain_single_stock ? N stocks
-    """
-    t0 = time.time()
-    tw_now = datetime.now(timezone.utc) + timedelta(hours=8)
-    run_date = req.run_date or tw_now.date().isoformat()
-
-    # ?? 1. Active stocks ????????????????????????????????????????????????????
-    stock_rows = CORE_D1_CLIENT.query(
-        "SELECT id, symbol, market FROM stocks "
-        "WHERE market IN ('TW','TWO','TWSE','OTC') AND in_current_watchlist=1 "
-        "ORDER BY id LIMIT ?",
-        [req.limit],
-    )
-    if not stock_rows:
-        return {"error": "No active stocks found", "total": 0}
-
-    stock_ids = [r["id"] for r in stock_rows]
-    symbols = [r["symbol"] for r in stock_rows]
-    id_to_sym = {r["id"]: r["symbol"] for r in stock_rows}
-
-    logger.info(f"[retrain/trigger] {len(stock_rows)} active stocks, run_date={run_date}")
-
-    # ?? 2. Shared market env ????????????????????????????????????????????????
-    market_env, _adaptive, barrier_params, _lifecycle, _tc = load_market_env(run_date)
-
-    # ?? 3. Bulk load per-stock data ?????????????????????????????????????????
-    prices_map = _bulk_load_prices(stock_ids, limit=500, as_of_date=run_date)
-    indicators_map = _bulk_load_indicators(stock_ids, limit=500, as_of_date=run_date)
-    chips_map = _bulk_load_chips(symbols, limit=300, as_of_date=run_date)
-    sentiment_map = _bulk_load_sentiment(stock_ids, limit=90, as_of_date=run_date)
-
-    # ?? 4. Build payloads ???????????????????????????????????????????????????
-    payloads = []
-    skipped = []
-    for row in stock_rows:
-        sid, sym = row["id"], row["symbol"]
-        px = prices_map.get(sid, [])
-        if len(px) < 60:
-            skipped.append(f"{sym}(prices={len(px)}<60)")
-            continue
-        payloads.append({
-            "stock_id": sid,
-            "symbol": sym,
-            "market": row.get("market", "TW"),
-            "prices": px,
-            "indicators": indicators_map.get(sid, []),
-            "chips": chips_map.get(sym, []),
-            "sentiment_scores": sentiment_map.get(sid, []),
-            "market_env": asdict(market_env),
-            "barrier_params": barrier_params,
-            "use_optuna": req.use_optuna,
-        })
-
-    if not payloads:
-        return {"error": "All stocks skipped (insufficient data)", "skipped": skipped}
-
-    logger.info(
-        f"[retrain/trigger] {len(payloads)} payloads built, {len(skipped)} skipped. "
-        f"Starting Modal retrain..."
-    )
-
-    # ?? 5. Call Modal batch retrain ?????????????????????????????????????????
-    results = await batch_retrain(payloads)
-
-    elapsed = round(time.time() - t0, 2)
-    retrained = sum(1 for r in results if not r.get("error"))
-    errors = [r for r in results if r.get("error")]
-
-    logger.info(f"[retrain/trigger] Done: {retrained}/{len(payloads)} in {elapsed}s")
-
-    return {
-        "total": len(payloads),
-        "retrained": retrained,
-        "errors": len(errors),
-        "skipped": skipped,
-        "elapsed_s": elapsed,
-        "error_details": [{"symbol": e.get("symbol"), "error": e.get("error")} for e in errors[:10]],
-    }
 
 
 # ?? Universal Model Retrain ?????????????????????????????????????????????????
@@ -1198,11 +1059,12 @@ async def _dispatch_prebuilt_oof_full_fit(
         )
 
     training_policy = TrainingPolicy.from_env()
-    tw_now = datetime.now(timezone.utc) + timedelta(hours=8)
-    is_monthly = training_policy.is_monthly(
-        force_monthly=req.force_monthly,
-        tw_day=tw_now.day,
+    release_groups, release_targets = normalize_release_execution_scope(
+        req.train_model_groups,
+        req.artifact_lifecycle_targets,
     )
+    req.train_model_groups = release_groups
+    req.artifact_lifecycle_targets = release_targets
     sequence_batch_count = int(sequence_verified["batch_count"])
     if req.sequence_batch_count and int(req.sequence_batch_count) != sequence_batch_count:
         raise ValueError("prebuilt_sequence_batch_count_mismatch")
@@ -1218,7 +1080,6 @@ async def _dispatch_prebuilt_oof_full_fit(
     followup_webhook_url = ""
     payload = {
         "batch_count": verified["batch_count"],
-        "is_monthly": is_monthly,
         "candidate_type": req.candidate_type,
         "drift_target_models": req.drift_target_models,
         "drift_target_families": req.drift_target_families,
@@ -1227,12 +1088,12 @@ async def _dispatch_prebuilt_oof_full_fit(
         "artifact_lifecycle_contracts": req.artifact_lifecycle_contracts,
         "artifact_lifecycle_only": req.artifact_lifecycle_only,
         "register_challengers": req.register_challengers,
-        "promotion_allowed_models": req.promotion_allowed_models,
+        "promotion_eligible_models": req.promotion_eligible_models,
         "oof_promotion_evidence": req.oof_promotion_evidence,
         "oof_lifecycle_resume": req.oof_lifecycle_resume,
         "generation_mode": "oof_full_fit_release",
         "cohort_id": str(req.prebuilt_prep_source_cohort_id),
-        "selection_params": training_policy.feature_selection_params(),
+        "label_horizon_days": 5,
         "training_policy": training_policy.to_dict(),
         "dataset_snapshot": _build_prebuilt_oof_dataset_snapshot(
             verified_prep=verified,
@@ -1240,6 +1101,19 @@ async def _dispatch_prebuilt_oof_full_fit(
             verified_sequence=sequence_verified,
             source_cohort_id=str(req.prebuilt_prep_source_cohort_id),
             source_manifest_checksum=str(req.prebuilt_prep_source_manifest_checksum),
+            business_date=run_date,
+        ),
+        "release_training_contract": build_release_training_contract(
+            run_date=run_date,
+            dataset_snapshot=_build_prebuilt_oof_dataset_snapshot(
+                verified_prep=verified,
+                verified_feature_pool=feature_pool_verified,
+                verified_sequence=sequence_verified,
+                source_cohort_id=str(req.prebuilt_prep_source_cohort_id),
+                source_manifest_checksum=str(req.prebuilt_prep_source_manifest_checksum),
+                business_date=run_date,
+            ),
+            producer_source_sha=_runtime_source_sha(),
         ),
         "timesfm_l175_feature_release": {"requested": False},
         "followup_webhook_url": followup_webhook_url,
@@ -1301,29 +1175,7 @@ async def trigger_universal_retrain(
 
     # ?? Idempotency check (P0-4, persistent via GCS) ?????????????????????????
     scheduler_date = tw_now.date().isoformat()
-    if req.force_monthly:
-        try:
-            run_date, monthly_business_date_resolution = _resolve_monthly_retrain_business_date(
-                requested_run_date=req.run_date,
-                cutoff_date=scheduler_date,
-            )
-        except Exception as exc:
-            logger.error("[retrain/universal] monthly business-date resolution failed: %s", exc)
-            return {
-                "status": "rejected",
-                "error": f"monthly_business_date_resolution_failed:{type(exc).__name__}:{exc}",
-                "scheduler_date": scheduler_date,
-            }
-        logger.info(
-            "[retrain/universal] monthly business-date resolved: scheduler_date=%s "
-            "business_date=%s snapshot_id=%s",
-            scheduler_date,
-            run_date,
-            monthly_business_date_resolution.get("snapshot_id"),
-        )
-    else:
-        run_date = req.run_date or scheduler_date
-        monthly_business_date_resolution = None
+    run_date = req.run_date or scheduler_date
     prep_output_gcs_prefix = str(req.prep_output_gcs_prefix or "").strip().rstrip("/")
     if req.prep_only and (
         not prep_output_gcs_prefix
@@ -1365,9 +1217,8 @@ async def trigger_universal_retrain(
             "run_id": run_id,
             "run_date": run_date,
             "limit": req.limit,
-            "force_monthly": req.force_monthly,
             "candidate_type": req.candidate_type,
-            "promotion_allowed_models": req.promotion_allowed_models,
+            "promotion_eligible_models": req.promotion_eligible_models,
             "tw_now": tw_now.isoformat(),
         },
     )
@@ -1396,7 +1247,6 @@ async def trigger_universal_retrain(
             "lock_key": lock_key,
             "run_date": run_date,
             "limit": req.limit,
-            "force_monthly": req.force_monthly,
             "lock_backend": lock_result.backend,
             "lock_ttl_seconds": lock_ttl_seconds,
         },
@@ -1475,36 +1325,8 @@ async def trigger_universal_retrain(
     regime, prices_lookback = training_policy.resolve_regime(vix=float(vix), twii_bias=float(twii_bias))
     logger.info(f"[retrain/universal] Regime={regime} (VIX={vix:.1f}, bias={twii_bias:.3f}) -> prices_lookback={prices_lookback}d")
 
-    # 2b. Monthly detection + feature pool for prep filtering.
-    # Flow B: feature selection runs inside Modal orchestrator.
-    # Cloud Run only prepares feature_pool.json for prep filtering.
-    import json as _json
-    from google.cloud import storage as _gcs
-    calendar_monthly = training_policy.is_monthly(force_monthly=req.force_monthly, tw_day=tw_now.day)
-    try:
-        is_monthly, resolved_candidate_type = resolve_monthly_execution_mode(
-            calendar_monthly=calendar_monthly,
-            force_monthly=req.force_monthly,
-            explicit_candidate_type=req.candidate_type,
-        )
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
-    req.candidate_type = resolved_candidate_type
-    monthly_training_contract = None
-    if is_monthly:
-        monthly_groups, monthly_targets = normalize_monthly_execution_scope(
-            req.train_model_groups,
-            req.artifact_lifecycle_targets,
-        )
-        req.train_model_groups = monthly_groups
-        req.artifact_lifecycle_targets = monthly_targets
-        req.candidate_type = "monthly_release"
-        req.require_exact_dataset_snapshot = True
-        logger.info(
-            "[retrain/universal] Monthly detected "
-            f"(day<={training_policy.monthly_day_cutoff}) -> exact Active-8 scope "
-            f"groups={monthly_groups} targets={monthly_targets}"
-        )
+    # Native retrain is research/drift only. Formal releases enter through the immutable OOF full-fit dispatcher.
+    release_training_contract = None
 
     # Prep writes the full canonical tabular matrix. Train-side policy owns
     # model-specific filtering: active tree models use feature_pool.tree_active;
@@ -1532,7 +1354,7 @@ async def trigger_universal_retrain(
         snapshot_maps = None
 
     snapshot_rejection = _exact_dataset_snapshot_rejection(
-        require_exact=req.require_exact_dataset_snapshot or req.force_monthly,
+        require_exact=req.require_exact_dataset_snapshot,
         run_date=run_date,
         snapshot_maps=snapshot_maps,
     )
@@ -1883,8 +1705,7 @@ async def trigger_universal_retrain(
         summary={
             "lock_key": lock_key,
             "run_date": run_date,
-            "is_monthly": is_monthly,
-            "batch_count": batch_count,
+                "batch_count": batch_count,
             "prep_concurrency": prep_concurrency,
             "dataset_snapshot": dataset_snapshot_info,
             "timesfm_l175_feature_release": timesfm_l175_history_summary,
@@ -1981,12 +1802,6 @@ async def trigger_universal_retrain(
             downstream_notes="prep_only_complete_no_training_dispatched",
         )
         return {**receipt, "receipt_path": receipt_path}
-    if is_monthly:
-        monthly_training_contract = build_monthly_training_contract(
-            run_date=run_date,
-            dataset_snapshot=dataset_snapshot_info,
-            producer_source_sha=_runtime_source_sha(),
-        )
     from services.modal_client import retrain_orchestrator
     followup_webhook_url = _build_followup_webhook_url(request)
     sequence_required = (
@@ -2008,14 +1823,13 @@ async def trigger_universal_retrain(
         if value:
             sequence_contract[key] = int(value)
     logger.info(f"[retrain/universal] Flow B: spawning Modal orchestrator "
-                f"(batches={batch_count}, monthly={is_monthly}, sequence={sequence_contract or None}, "
+                f"(batches={batch_count}, candidate_type={req.candidate_type}, sequence={sequence_contract or None}, "
                 f"followup={followup_webhook_url})")
     try:
         orchestrator_result = await retrain_orchestrator(
             payload={
                 "batch_count": batch_count,
-                "is_monthly": is_monthly,
-                "candidate_type": req.candidate_type,
+                        "candidate_type": req.candidate_type,
                 "drift_target_models": req.drift_target_models,
                 "drift_target_families": req.drift_target_families,
                 "train_model_groups": req.train_model_groups,
@@ -2023,10 +1837,10 @@ async def trigger_universal_retrain(
                 "artifact_lifecycle_contracts": req.artifact_lifecycle_contracts,
                 "artifact_lifecycle_only": req.artifact_lifecycle_only,
                 "register_challengers": req.register_challengers,
-                "promotion_allowed_models": req.promotion_allowed_models,
+                "promotion_eligible_models": req.promotion_eligible_models,
                 "oof_promotion_evidence": req.oof_promotion_evidence,
-                "monthly_training_contract": monthly_training_contract,
-                "selection_params": training_policy.feature_selection_params(),
+                "release_training_contract": release_training_contract,
+                "label_horizon_days": 5,
                 "training_policy": training_policy.to_dict(),
                 "dataset_snapshot": dataset_snapshot_info,
                 "timesfm_l175_feature_release": timesfm_l175_history_summary,
@@ -2070,9 +1884,8 @@ async def trigger_universal_retrain(
         summary={
             "lock_key": lock_key,
             "run_date": run_date,
-            "is_monthly": is_monthly,
-            "batch_count": batch_count,
-            "monthly_training_contract_checksum": (monthly_training_contract or {}).get("contract_checksum"),
+                "batch_count": batch_count,
+            "release_training_contract_checksum": (release_training_contract or {}).get("contract_checksum"),
             "prep_concurrency": prep_concurrency,
             "sequence_contract": sequence_contract or None,
             "dataset_snapshot": dataset_snapshot_info,

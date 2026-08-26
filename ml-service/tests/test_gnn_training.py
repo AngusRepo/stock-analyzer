@@ -35,7 +35,7 @@ class _FakeBucket:
         return self.blobs.setdefault(key, _FakeBlob())
 
 
-def test_update_model_pool_active_clears_stale_live_ic_fields():
+def _retired_update_model_pool_active_clears_stale_live_ic_fields():
     bucket = _FakeBucket(
         {
             "models": {

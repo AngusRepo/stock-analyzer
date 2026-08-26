@@ -5,7 +5,6 @@ export const GCP_DOMAIN_ORCHESTRATION_TASKS = [
   'model-ic-full-check',
   'verify-v2',
   'weekly-audit',
-  'weekly-drift-retrain',
   'weekly-optuna',
   'monthly-optuna',
   'monthly-strategy-mining',
@@ -26,8 +25,6 @@ export const GCP_DOMAIN_ORCHESTRATION_TASKS = [
   'active8-oof-daily',
   'active8-oof-weekly',
   'active8-oof-monthly',
-  'retrain',
-  'monthly-retrain',
 ] as const
 
 export {
@@ -50,7 +47,7 @@ export {
   runWeeklyBacktest,
   runWeeklyBacktestEvidenceReconciliation,
   runWeeklyBacktestResearchBundle,
-  runWeeklyLifecycleCheck,
+  runWeeklyModelRegistryCheck,
   runActive8OofLifecycle,
   runL4AlphaEvRefresh,
   runAllocatorEvFusionRefresh,
@@ -64,10 +61,7 @@ export {
   runWeeklyOptunaResearch,
   runWeeklyPBO,
   runWeeklyValidationChain,
-  runWeeklyDriftDetection,
-  runWeeklyDriftRetrain,
   runWeeklyRetrain,
   summarizeWeeklyValidationChain,
-  triggerRetrain,
   weeklyBacktestResearchBundleEnabled,
 } from './controllerResearchWorkflows'

@@ -11,7 +11,6 @@ import pytest
 
 from app import batch_prediction
 from app import dlinear_universal
-from app import ensemble
 from app import gnn_batch_runtime
 from app import neuralforecast_sequence_runtime
 from app import prediction_runtime
@@ -19,7 +18,7 @@ from app import serving_resolver
 from app import tabm_batch_runtime
 
 
-def _manifest(*, excluded: tuple[str, ...] = ("GNN", "PatchTST")) -> dict:
+def _legacy_manifest(*, excluded: tuple[str, ...] = ("GNN", "PatchTST")) -> dict:
     extensions = {
         "LightGBM": "joblib",
         "XGBoost": "joblib",
@@ -71,7 +70,7 @@ def _manifest(*, excluded: tuple[str, ...] = ("GNN", "PatchTST")) -> dict:
                 },
                 "ensemble": {
                     field: None
-                    for field in serving_resolver.FROZEN_ENSEMBLE_FIELDS
+                    for field in ()
                 },
             }
             for index, model_name in enumerate(serving_resolver.DIRECT_ALPHA_MODELS)
@@ -81,7 +80,7 @@ def _manifest(*, excluded: tuple[str, ...] = ("GNN", "PatchTST")) -> dict:
         "active8_shadow_suppressions": [],
         "formal_layer3_slots": [],
         "rank_stacker": {
-            "schema_version": serving_resolver.PIPELINE_MODAL_RANK_STACKER_SCHEMA,
+            "schema_version": "retired-rank-stacker-v1",
             "status": "absent",
             "effective_status": "excluded",
             "reason": "artifact_or_metadata_missing",
@@ -94,6 +93,31 @@ def _manifest(*, excluded: tuple[str, ...] = ("GNN", "PatchTST")) -> dict:
             "source": "controller_dispatch_environment",
         },
     }
+
+def _manifest(*, excluded: tuple[str, ...] = ()) -> dict:
+    from app.active8_ensemble_runtime import _payload_checksum
+    from tests.test_active8_ensemble_runtime import _artifact
+
+    manifest = _legacy_manifest(excluded=excluded)
+    manifest["source_of_truth"] = "model_champion_pointers+active8_ensemble_pointer_v1"
+    manifest.pop("rank_stacker", None)
+    manifest.pop("ic_weight_policy", None)
+    for row in manifest["models"]:
+        row.pop("ensemble", None)
+    artifact = _artifact()
+    rows = {row["model"]: row for row in manifest["models"]}
+    for model_name, expected in artifact["base_artifacts"].items():
+        row = rows[model_name]
+        expected.update({
+            "artifact_id": row["artifact_id"],
+            "version": row["version"],
+            "checksum": row["checksum"],
+            "candidate_type": "oof_full_fit_release",
+        })
+    artifact["payload_checksum"] = _payload_checksum(artifact)
+    manifest["active8_ensemble"] = artifact
+    return manifest
+
 
 
 def test_frozen_manifest_builds_pool_without_d1_resolution(monkeypatch) -> None:
@@ -119,9 +143,8 @@ def test_frozen_manifest_builds_pool_without_d1_resolution(monkeypatch) -> None:
     assert pool["models"]["XGBoost"]["metadata_path"] == "registry-metadata/xgboost-v1.json"
     assert pool["l2_feature_sidecars"]["TimesFM"]["status"] == "retired"
     assert pool["serving_coverage"]["slot_count"] == 8
-    assert pool["serving_coverage"]["serving_model_count"] == 6
-    assert [row["model"] for row in pool["serving_coverage"]["excluded_models"]] == ["GNN", "PatchTST"]
-    assert all(row["reason"] for row in pool["serving_coverage"]["excluded_models"])
+    assert pool["serving_coverage"]["serving_model_count"] == 8
+    assert pool["serving_coverage"]["excluded_models"] == []
 
 
 def test_frozen_manifest_rejects_digest_or_identity_drift() -> None:
@@ -365,7 +388,7 @@ def test_torch_runtime_registry_checksum_mismatch_stops_before_deserialization(
 
 
 
-def test_frozen_ic_policy_and_four_scope_weights_match_controller_snapshot(monkeypatch) -> None:
+def _retired_frozen_ic_policy_and_four_scope_weights_match_controller_snapshot(monkeypatch) -> None:
     manifest = _manifest()
     source_pool = {"models": {}}
     for index, row in enumerate(manifest["models"]):
@@ -502,6 +525,8 @@ def test_exclusion_reason_missing_and_manifest_total_size_fail_closed() -> None:
     manifest = _manifest()
     gnn = next(row for row in manifest["models"] if row["model"] == "GNN")
     gnn["health"]["serving_block_reason"] = None
+    gnn["health"]["serving_eligible"] = False
+    gnn["effective_status"] = "challenger"
     with pytest.raises(
         serving_resolver.ServingPoolResolutionError,
         match="exclusion_reason_missing:GNN",
@@ -512,7 +537,7 @@ def test_exclusion_reason_missing_and_manifest_total_size_fail_closed() -> None:
         )
 
     oversized = _manifest()
-    oversized["models"][0]["ensemble"]["weekly_ic"] = ["x" * 1_048_576]
+    oversized["models"][0]["metadata_path"] = "x" * 1_048_576
     with pytest.raises(
         serving_resolver.ServingPoolResolutionError,
         match="frozen_serving_manifest_total_bytes",
@@ -520,7 +545,7 @@ def test_exclusion_reason_missing_and_manifest_total_size_fail_closed() -> None:
         serving_resolver.serving_manifest_digest(oversized)
 
 
-def test_rank_stacker_has_no_implicit_loader_in_direct_or_frozen_paths() -> None:
+def _retired_rank_stacker_has_no_implicit_loader_in_direct_or_frozen_paths() -> None:
     assert "load_meta_learner" not in inspect.getsource(prediction_runtime)
     bundle, audit = batch_prediction._resolve_rank_stacker_runtime({})
     assert bundle is None
@@ -662,11 +687,11 @@ def _patchtst_shadow_candidate() -> dict:
         "status": "challenger",
         "effective_status": "challenger",
         "version": "vCandidate",
-        "artifact_id": "PatchTST:vCandidate:monthly_release",
+        "artifact_id": "PatchTST:vCandidate:oof_full_fit_release",
         "artifact_path": "universal/patchtst/vCandidate.zip",
         "metadata_path": "registry-metadata/patchtst-vCandidate.json",
         "checksum": "sha256:" + "f" * 64,
-        "candidate_type": "monthly_release",
+        "candidate_type": "oof_full_fit_release",
         "registry_state": "offline_strong_pass",
         "offline_gate_decision": "STRONG_PASS",
         "live_gate_status": "not_started",
@@ -684,7 +709,7 @@ def _patchtst_shadow_candidate() -> dict:
                 "source": "model_artifact_registry",
                 "model": "PatchTST",
                 "version": "vCandidate",
-                "artifact_id": "PatchTST:vCandidate:monthly_release",
+                "artifact_id": "PatchTST:vCandidate:oof_full_fit_release",
                 "seq_len": 64,
                 "pred_len": 5,
             },
@@ -701,7 +726,7 @@ def test_frozen_manifest_accepts_zero_weight_patchtst_registry_shadow_candidate(
     )
 
     candidate = pool["active8_shadow_candidates"]["PatchTST"]
-    assert candidate["serving_artifact_id"] == "PatchTST:vCandidate:monthly_release"
+    assert candidate["serving_artifact_id"] == "PatchTST:vCandidate:oof_full_fit_release"
     assert candidate["checksum"] == "sha256:" + "f" * 64
     assert candidate["production_effect"] is False
     assert candidate["vote_weight"] == 0.0

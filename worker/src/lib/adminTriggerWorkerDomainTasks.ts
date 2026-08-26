@@ -1473,7 +1473,7 @@ export function buildAdminWorkerDomainTaskMap(c: any, deps: TriggerDeps): Record
     'monthly-readiness': () => runCadenceReadiness(c.env, 'monthly', requestedRunDate()),
     'weekly-cleanup': async () => {
       const { runWeeklyCleanupClosure } = await import('./durableSchedulerTask')
-      return runWeeklyCleanupClosure(c.env, deps.runWeeklyLifecycleCheck)
+      return runWeeklyCleanupClosure(c.env, deps.runWeeklyModelRegistryCheck)
     },
     'sector-leaders': async () => {
       const { computeSectorLeaders } = await import('./sectorCorrelation')

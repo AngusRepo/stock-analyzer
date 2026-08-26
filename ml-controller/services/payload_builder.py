@@ -21,7 +21,7 @@ from services.adaptive import resolve_adaptive_params_for_regime
 from services.active_model_policy import daily_price_history_limit, daily_price_lookback_years
 from services.market_regime_state import resolve_market_regime_contract
 from services.market_segment_policy import is_explicitly_enabled, policy_for_segment
-from services.model_lifecycle_policy import resolve_degraded_dampening
+from services.model_serving_resolver import load_d1_champion_pool
 
 CORE_D1_CLIENT = client_proxy_for_domain(D1DataDomain.CORE)
 MARKET_D1_CLIENT = client_proxy_for_domain(D1DataDomain.MARKET)
@@ -38,42 +38,16 @@ DAILY_RECOMMENDATION_PIPELINE_COLUMNS = (
 )
 
 
-def _load_lifecycle_weights_from_model_pool(trading_cfg: dict) -> dict[str, float]:
-    """Build legacy PredictRequest lifecycle_weights from model_pool.json.
-
-    model_pool.json is the source of truth. The returned map is only a transport
-    adapter for older prediction code that still accepts lifecycle_weights.
-    """
-    try:
-        import json as _json
-        import os
-        from google.cloud import storage
-
-        bucket_name = os.environ.get("GCS_BUCKET_NAME", "").strip()
-        if not bucket_name:
-            return {}
-
-        blob = storage.Client().bucket(bucket_name).blob("universal/model_pool.json")
-        if not blob.exists():
-            return {}
-
-        pool = _json.loads(blob.download_as_text().lstrip("\ufeff"))
-        degraded_dampening = resolve_degraded_dampening(trading_cfg)
-
-        weights: dict[str, float] = {}
-        for name, entry in (pool.get("models") or {}).items():
-            status = entry.get("status", "active")
-            if entry.get("serving_eligible") is False or str(entry.get("serving_block_reason") or "").strip():
-                weights[name] = 0.0
-            elif status == "degraded":
-                weights[name] = degraded_dampening
-            elif status in ("retired", "challenger"):
-                weights[name] = 0.0
-        return weights
-    except Exception as e:
-        logger.warning(f"[payload_builder] model_pool lifecycle weights read failed: {e}")
-        return {}
-
+def _load_lifecycle_weights_from_registry() -> dict[str, float]:
+    """Transport exact champion eligibility; no independent weighting formula."""
+    pool = load_d1_champion_pool()
+    models = pool.get("models")
+    if not isinstance(models, dict) or not models:
+        raise RuntimeError("d1_champion_pool_models_missing")
+    return {
+        str(name): 1.0 if isinstance(entry, dict) and entry.get("serving_eligible") is True else 0.0
+        for name, entry in models.items()
+    }
 
 # ?????????????????????????????????????????????????????????????????????????????
 # Data shapes (match worker payload schema 1:1)
@@ -546,8 +520,8 @@ def load_market_env(run_date: str) -> tuple[MarketEnv, dict, dict, dict[str, flo
         "max_days": barrier_cfg.get("maxDays"),
     }
 
-    # 8. Lifecycle weights from model_pool.json (single source of truth).
-    lifecycle_weights = _load_lifecycle_weights_from_model_pool(trading_cfg)
+    # 8. Champion eligibility from the exact D1 serving registry.
+    lifecycle_weights = _load_lifecycle_weights_from_registry()
 
     # ?? Build MarketEnv ?????????????????????????????????????????????????????
     market_env = MarketEnv(

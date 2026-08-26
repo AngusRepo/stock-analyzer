@@ -111,14 +111,12 @@ const JOB_DEF_METADATA: JobDef[] = [
   { id: 'linucb-multiplier-replay', name: 'LinUCB Multiplier Replay', schedule: 'Sunday 06:50', cron: '50 22 * * 6', group: 'weekly' },
   { id: 'active8-oof-weekly', name: 'Active-8 OOF Weekly Cohort', schedule: 'Sunday 07:05', cron: '5 23 * * 6', group: 'weekly' },
 
-  { id: 'weekly-drift-retrain', name: 'Weekly Drift Retrain', schedule: 'Manual, approval-gated shadow candidate', cron: 'manual confirm=weekly_drift', group: 'weekly' },
   { id: 'sector-leaders', name: 'Sector Leaders', schedule: 'Sunday 06:30', cron: '30 22 * * 6', group: 'weekly' },
   { id: 'monthly-optuna', name: 'Monthly Optuna', schedule: 'First Sat 16:00', cron: 'first saturday of month 16:00 taipei', group: 'monthly' },
-  { id: 'active8-oof-monthly', name: 'Active-8 OOF Monthly Cohort', schedule: 'After monthly retrain callback', cron: 'event-driven', group: 'monthly' },
+  { id: 'active8-oof-monthly', name: 'Active-8 Monthly Release Train', schedule: 'First Sunday 02:00', cron: 'first sunday of month 02:00 taipei', group: 'monthly' },
 
   { id: 'monthly-strategy-mining', name: 'Monthly Strategy Mining', schedule: 'First Sat 10:00', cron: 'first saturday of month 10:00 taipei', group: 'monthly' },
   { id: 'monthly-readiness', name: 'Monthly Readiness', schedule: 'First Sunday 12:30', cron: 'first sunday of month 12:30 taipei', group: 'monthly' },
-  { id: 'monthly-retrain', name: 'Monthly Universal Retrain', schedule: 'First Sunday 02:00', cron: 'first sunday of month 02:00 taipei', group: 'monthly' },
   { id: 'storage-capacity-report', name: 'Storage Capacity Report', schedule: 'Daily 06:55', cron: '55 22 * * *', group: 'daily' },
 
   { id: 'optuna-queue', name: 'Optuna Queue Processor', schedule: 'Every 6h', cron: '0 */6 * * *', group: 'daily' },
@@ -594,7 +592,7 @@ function isWeekdayTw(date: string): boolean {
 
 function runningSlaMs(def?: Pick<JobDef, 'id' | 'group'>): number {
   if (!def) return 60 * 60_000
-  if (def.id === 'monthly-retrain') return 8 * 60 * 60_000
+  if (def.id === 'active8-oof-monthly') return 8 * 60 * 60_000
   if (def.id === 'monthly-strategy-mining') return 4 * 60 * 60_000
   if (def.id === 'monthly-optuna') return 4 * 60 * 60_000
   if (def.id === 'weekly-optuna') return 3 * 60 * 60_000

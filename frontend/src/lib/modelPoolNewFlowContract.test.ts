@@ -22,7 +22,7 @@ assert(!workbench.includes('<PromotionReadinessPanel'), 'Candidate-vs-champion c
 assert(workbench.includes('Evidence table'), 'ModelPool should keep one dense evidence table')
 assert(workbench.includes('Best artifact vs champion'), 'Evidence table should name the selected artifact/champion comparison explicitly')
 assert(workbench.includes('one selected best artifact per model, compared only with the current champion'), 'Evidence table should explain the one-comparison-per-model rule')
-assert(workbench.includes('row?.monthly_release_candidate ?? row?.weekly_drift_candidate ?? null'), 'Selection should follow the canonical monthly-first policy with weekly drift fallback')
+assert(workbench.includes('row?.oof_full_fit_release_candidate ?? null'), 'Selection must use only the canonical immutable OOF release without monthly/weekly fallback')
 assert(workbench.includes('Active-8 retrain rejected'), 'Rejected latest retrains should remain visible as diagnosis outside production fleet health')
 assert(workbench.includes('row?.serving_release_artifact ?? selectionCandidate(row)'), 'Fleet evidence must prefer the serving champion over a newer challenger')
 assert(!workbench.includes('...notBetter.map((row) => String(row.artifact_id'), 'Candidate-not-better history must not be reinserted into the actionable archive queue')
@@ -37,7 +37,7 @@ assert(workbench.includes('promotionRows: promotionRow ? [promotionRow] : []'), 
 assert(workbench.includes('candidate</dt>') && workbench.includes('champion</dt>'), 'Evidence table should identify both compared artifacts')
 assert(workbench.includes('compareMetricDetail(candidateOosIc, championOosIc)'), 'Evidence table should expose candidate, champion, and delta values')
 assert(workbench.includes('candidate_oos_ic') && workbench.includes('champion_oos_ic') && workbench.includes('oos_ic_delta'), 'Comparison should use the canonical OOS IC evidence fields')
-assert(workbench.includes('no selected weekly/monthly candidate is waiting for champion comparison'), 'No-candidate rows should render N/R instead of manufacturing comparisons')
+assert(workbench.includes('no canonical OOF release candidate is waiting for champion comparison'), 'No-candidate rows should render N/R instead of manufacturing comparisons')
 assert(workbench.includes("url.searchParams.set('model', id)"), 'Model selection should remain URL-keyed')
 
 assert(page.includes('ModelPoolWorkbenchSnapshot'), 'ModelPool should render from a complete evidence snapshot')
@@ -50,6 +50,7 @@ assert(page.includes('onClick={refreshModelPoolSnapshot}') && page.includes('> R
 assert(page.includes('onSuccess: async () =>') && page.includes('await refreshModelPoolSnapshot()'), 'Promotion success should refresh the complete model-pool snapshot')
 assert(page.includes('!isRetiredModelName(name)'), 'Retired models should stay outside the main evidence table')
 assert(!page.includes('Auto promote pointer'), 'Automatic promotion should not expose a manual auto-promote button')
+assert(!workbench.includes('monthly_release_candidate') && !workbench.includes('weekly_drift_candidate'), 'Legacy release selection fields must be absent')
 
 for (const id of ['TabM', 'GNN', 'iTransformer']) {
   assert(track.includes(`id: '${id}'`), `${id} should remain a production L3 slot`)

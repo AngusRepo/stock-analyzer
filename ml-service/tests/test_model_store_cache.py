@@ -124,54 +124,45 @@ def test_clear_model_cache_invalidates_cached_model(monkeypatch):
     assert model_blob.download_count == 2
 
 
-def test_model_pool_missing_artifact_does_not_fallback_to_legacy(monkeypatch):
-    from app import model_pool
+def test_d1_champion_missing_artifact_does_not_fallback_to_legacy(monkeypatch):
+    from app import model_serving_contract
 
     legacy_buf = io.BytesIO()
     joblib.dump({"model": "legacy-flat"}, legacy_buf)
-    bucket = _FakeBucket(
-        {
-            "universal/model_pool.json": _FakeBlob(
-                json.dumps(
-                    {
-                        "models": {
-                            "XGBoost": {
-                                "status": "active",
-                                "version": "v9",
-                                "gcs_path": "universal/xgboost/v9.joblib",
-                            }
-                        }
-                    }
-                )
-            ),
-            "universal/xgboost.joblib": _FakeBlob(legacy_buf.getvalue()),
-        }
-    )
+    bucket = _FakeBucket({
+        "universal/xgboost.joblib": _FakeBlob(legacy_buf.getvalue()),
+    })
     monkeypatch.setattr(model_store, "_bucket", bucket)
-    monkeypatch.setattr(model_pool, "_get_bucket", lambda: bucket)
+    monkeypatch.setattr(
+        model_serving_contract,
+        "load_pool",
+        lambda: {
+            "models": {
+                "XGBoost": {
+                    "status": "active",
+                    "serving_eligible": True,
+                    "version": "v9",
+                    "gcs_path": "universal/xgboost/v9.joblib",
+                }
+            }
+        },
+    )
     model_store.clear_model_cache()
 
-    model, metadata = model_store.load_model(0, "XGBoost")
-
-    assert model is None
-    assert metadata is None
+    assert model_store.load_model(0, "XGBoost") == (None, None)
 
 
-def test_universal_model_requires_model_pool_even_when_legacy_flat_file_exists(monkeypatch):
-    from app import model_pool
+def test_universal_model_requires_d1_champion_even_when_legacy_flat_file_exists(monkeypatch):
+    from app import model_serving_contract
 
     legacy_buf = io.BytesIO()
     joblib.dump({"model": "legacy-flat"}, legacy_buf)
     bucket = _FakeBucket({"universal/xgboost.joblib": _FakeBlob(legacy_buf.getvalue())})
     monkeypatch.setattr(model_store, "_bucket", bucket)
-    monkeypatch.setattr(model_pool, "_get_bucket", lambda: bucket)
+    monkeypatch.setattr(model_serving_contract, "load_pool", lambda: None)
     model_store.clear_model_cache()
 
-    model, metadata = model_store.load_model(0, "XGBoost")
-
-    assert model is None
-    assert metadata is None
-
+    assert model_store.load_model(0, "XGBoost") == (None, None)
 
 def _valid_artifact_metadata(model_name: str = "XGBoost") -> str:
     return json.dumps(
@@ -189,64 +180,44 @@ def _valid_artifact_metadata(model_name: str = "XGBoost") -> str:
     )
 
 
-def test_model_pool_active_rejects_legacy_metadata_schema(monkeypatch):
-    from app import model_pool
+def test_d1_champion_rejects_legacy_metadata_schema(monkeypatch):
+    from app import model_serving_contract
 
     model_buf = io.BytesIO()
     joblib.dump({"model": "xgb"}, model_buf)
-    bucket = _FakeBucket(
-        {
-            "universal/model_pool.json": _FakeBlob(
-                json.dumps(
-                    {
-                        "models": {
-                            "XGBoost": {
-                                "status": "active",
-                                "version": "v1",
-                                "gcs_path": "universal/xgboost/v1.joblib",
-                            }
-                        }
-                    }
-                )
-            ),
-            "universal/xgboost/v1.joblib": _FakeBlob(model_buf.getvalue()),
-            "universal/xgboost/metadata_v1.json": _FakeBlob(json.dumps({"feature_names": ["a"]})),
-        }
-    )
+    bucket = _FakeBucket({
+        "universal/xgboost/v1.joblib": _FakeBlob(model_buf.getvalue()),
+        "universal/xgboost/metadata_v1.json": _FakeBlob(json.dumps({"feature_names": ["a"]})),
+    })
     monkeypatch.setattr(model_store, "_bucket", bucket)
-    monkeypatch.setattr(model_pool, "_get_bucket", lambda: bucket)
+    monkeypatch.setattr(
+        model_serving_contract,
+        "load_pool",
+        lambda: {
+            "models": {
+                "XGBoost": {
+                    "status": "active",
+                    "serving_eligible": True,
+                    "version": "v1",
+                    "gcs_path": "universal/xgboost/v1.joblib",
+                }
+            }
+        },
+    )
     model_store.clear_model_cache()
 
-    model, metadata = model_store.load_model(0, "XGBoost")
-
-    assert model is None
-    assert metadata is None
+    assert model_store.load_model(0, "XGBoost") == (None, None)
 
 
-def test_model_pool_active_rejects_inconsistent_sklearn_health(monkeypatch):
-    from app import model_pool
+def test_d1_champion_rejects_inconsistent_sklearn_health(monkeypatch):
+    from app import model_serving_contract
 
     model_buf = io.BytesIO()
     joblib.dump({"model": "xgb"}, model_buf)
-    bucket = _FakeBucket(
-        {
-            "universal/model_pool.json": _FakeBlob(
-                json.dumps(
-                    {
-                        "models": {
-                            "XGBoost": {
-                                "status": "active",
-                                "version": "v2",
-                                "gcs_path": "universal/xgboost/v2.joblib",
-                            }
-                        }
-                    }
-                )
-            ),
-            "universal/xgboost/v2.joblib": _FakeBlob(model_buf.getvalue()),
-            "universal/xgboost/metadata_v2.json": _FakeBlob(_valid_artifact_metadata()),
-        }
-    )
+    bucket = _FakeBucket({
+        "universal/xgboost/v2.joblib": _FakeBlob(model_buf.getvalue()),
+        "universal/xgboost/metadata_v2.json": _FakeBlob(_valid_artifact_metadata()),
+    })
 
     def fake_loader(_buf, *, artifact_name):
         return {"model": "xgb"}, {
@@ -256,15 +227,24 @@ def test_model_pool_active_rejects_inconsistent_sklearn_health(monkeypatch):
         }
 
     monkeypatch.setattr(model_store, "_bucket", bucket)
-    monkeypatch.setattr(model_pool, "_get_bucket", lambda: bucket)
+    monkeypatch.setattr(
+        model_serving_contract,
+        "load_pool",
+        lambda: {
+            "models": {
+                "XGBoost": {
+                    "status": "active",
+                    "serving_eligible": True,
+                    "version": "v2",
+                    "gcs_path": "universal/xgboost/v2.joblib",
+                }
+            }
+        },
+    )
     monkeypatch.setattr(model_store, "load_joblib_with_artifact_health", fake_loader)
     model_store.clear_model_cache()
 
-    model, metadata = model_store.load_model(0, "XGBoost")
-
-    assert model is None
-    assert metadata is None
-
+    assert model_store.load_model(0, "XGBoost") == (None, None)
 
 def _governed_metadata(raw: bytes, *, schema_version: str = "model-artifact-v2") -> str:
     return json.dumps({

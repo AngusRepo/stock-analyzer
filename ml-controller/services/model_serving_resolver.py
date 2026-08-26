@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import copy
 import json
 import os
 import re
@@ -68,14 +67,6 @@ ARTIFACT_EXTENSIONS = {
     "iTransformer": "zip",
     "TimesFM": "json",
 }
-
-
-def _serving_owner() -> str:
-    return str(os.environ.get("MODEL_SERVING_OWNER") or "d1_champion").strip().lower()
-
-
-def d1_champion_serving_enabled() -> bool:
-    return _serving_owner() in {"d1", "d1_champion", "model_champion_pointers"}
 
 
 def _d1_env_configured() -> bool:
@@ -174,25 +165,24 @@ def _default_metadata_path(model_name: str, version: str) -> str:
     return f"universal/{_folder(model_name)}/metadata_{version}.json"
 
 
-def _latest_artifact_for_pointer(
+def _artifact_for_exact_pointer(
     *,
     model_name: str,
     version: str,
     artifact_id: str | None,
     artifacts_by_id: dict[str, dict[str, Any]],
-    artifacts_by_model_version: dict[tuple[str, str], list[dict[str, Any]]],
 ) -> dict[str, Any] | None:
-    if artifact_id and artifact_id in artifacts_by_id:
-        return artifacts_by_id[artifact_id]
-    candidates = artifacts_by_model_version.get((model_name, version), [])
-    if not candidates:
+    if not artifact_id:
         return None
-    return sorted(
-        candidates,
-        key=lambda row: str(row.get("updated_at") or row.get("created_at") or ""),
-        reverse=True,
-    )[0]
-
+    artifact = artifacts_by_id.get(artifact_id)
+    if not artifact:
+        return None
+    if (
+        str(artifact.get("model_name") or "") != model_name
+        or str(artifact.get("version") or "") != version
+    ):
+        return None
+    return artifact
 
 def _artifact_block_reason(
     artifact: dict[str, Any] | None,
@@ -226,6 +216,8 @@ def _artifact_block_reason(
     if _artifact_checksum(artifact) is None:
         return "artifact_checksum_missing_or_invalid"
     if model_name in DIRECT_ALPHA_MODELS:
+        if str(artifact.get("candidate_type") or "") != "oof_full_fit_release":
+            return "artifact_candidate_type_not_canonical_oof_release"
         metadata = _artifact_metadata(artifact)
         target_semantic = str(metadata.get("target_semantic_version") or "").strip()
         if target_semantic != LABEL_SCHEMA_VERSION:
@@ -245,6 +237,8 @@ def _artifact_block_reason(
                     f"artifact_gnn_graph_semantic_{graph_semantic or 'missing'}_"
                     f"expected_{FORMAL_GNN_GRAPH_SEMANTIC_VERSION}"
                 )
+    if artifact_role == "l2_feature_sidecar" and str(artifact.get("candidate_type") or "") != "timesfm_l175_l2_feature_release":
+        return "artifact_candidate_type_not_timesfm_feature_release"
     if model_name in SEQUENCE_ALPHA_MODELS and _sequence_artifact_contract(model_name, artifact) is None:
         return "artifact_sequence_contract_missing_or_invalid"
     return None
@@ -323,14 +317,14 @@ def _live_ic_source_matches(
     return source_version == artifact_version and source_target == target_semantic_version
 
 
-def _copy_ic_fields(entry: dict[str, Any], *, artifact: dict[str, Any] | None, pointer: dict[str, Any] | None, fallback: dict[str, Any]) -> None:
+def _copy_ic_fields(entry: dict[str, Any], *, artifact: dict[str, Any] | None, pointer: dict[str, Any] | None) -> None:
     live = _json_obj((artifact or {}).get("live_evidence_json"))
     promotion = _json_obj((pointer or {}).get("promotion_evidence_json"))
     artifact_version = str(entry.get("version") or "").strip()
     target_semantic = str(entry.get("target_semantic_version") or "").strip()
     sources = [
         source
-        for source in (promotion, live, fallback)
+        for source in (promotion, live)
         if _live_ic_source_matches(
             source,
             artifact_version=artifact_version,
@@ -364,42 +358,28 @@ def build_pool_from_champion_pointers(
     *,
     pointers: list[dict[str, Any]],
     artifacts: list[dict[str, Any]],
-    fallback_pool: dict[str, Any] | None = None,
     required_models: tuple[str, ...] = DIRECT_ALPHA_MODELS,
     sidecar_models: tuple[str, ...] = L2_SIDECARS,
 ) -> dict[str, Any]:
-    pool = copy.deepcopy(fallback_pool or {})
-    pool["schema_version"] = pool.get("schema_version") or "model_pool_v2"
-    pool["last_updated"] = datetime.now(timezone.utc).isoformat()
-    pool["source_of_truth"] = "model_champion_pointers"
-    pool["compat_shape"] = "model_pool"
-    pool["models"] = dict(pool.get("models") or {})
-    pool["l2_feature_sidecars"] = dict(pool.get("l2_feature_sidecars") or {})
-
+    pool: dict[str, Any] = {
+        "schema_version": "model_pool_v3_d1_pointer_owned",
+        "last_updated": datetime.now(timezone.utc).isoformat(),
+        "source_of_truth": "model_champion_pointers",
+        "models": {},
+        "l2_feature_sidecars": {},
+    }
     pointer_by_model = {str(row.get("model_name")): row for row in pointers if row.get("model_name")}
     artifacts_by_id = {str(row.get("artifact_id")): row for row in artifacts if row.get("artifact_id")}
-    artifacts_by_model_version: dict[tuple[str, str], list[dict[str, Any]]] = {}
-    for row in artifacts:
-        model_name = str(row.get("model_name") or "")
-        version = str(row.get("version") or "")
-        if model_name and version:
-            artifacts_by_model_version.setdefault((model_name, version), []).append(row)
 
-    def build_entry(
-        model_name: str,
-        fallback_entry: dict[str, Any],
-        *,
-        artifact_role: str,
-    ) -> dict[str, Any]:
+    def build_entry(model_name: str, *, artifact_role: str) -> dict[str, Any]:
         pointer = pointer_by_model.get(model_name)
         version = str((pointer or {}).get("champion_version") or "").strip()
         artifact_id = str((pointer or {}).get("champion_artifact_id") or "").strip() or None
-        artifact = _latest_artifact_for_pointer(
+        artifact = _artifact_for_exact_pointer(
             model_name=model_name,
             version=version,
             artifact_id=artifact_id,
             artifacts_by_id=artifacts_by_id,
-            artifacts_by_model_version=artifacts_by_model_version,
         ) if pointer and version else None
         block_reason = None if pointer and version else "missing_d1_champion_pointer"
         block_reason = block_reason or _artifact_block_reason(
@@ -407,25 +387,19 @@ def build_pool_from_champion_pointers(
             model_name=model_name,
             artifact_role=artifact_role,
         )
-
-        entry = dict(fallback_entry or {})
-        if model_name in SEQUENCE_ALPHA_MODELS:
-            for key in SEQUENCE_CONTRACT_FIELDS:
-                entry.pop(key, None)
-        entry["version"] = version or str(entry.get("version") or "")
-        # Artifact compatibility is a serving concern, not a model-family
-        # lifecycle decision. Active-8 slots remain governed/retrainable even
-        # when their current champion cannot satisfy the latest contract.
-        entry["model_slot_status"] = "active"
-        entry["status"] = "degraded" if block_reason else "active"
-        entry["serving_eligible"] = not bool(block_reason)
-        entry["serving_owner"] = "model_champion_pointers"
-        entry["serving_artifact_id"] = artifact_id
-        entry["serving_block_reason"] = block_reason
+        entry: dict[str, Any] = {
+            "version": version,
+            "model_slot_status": "active",
+            "status": "degraded" if block_reason else "active",
+            "serving_eligible": not bool(block_reason),
+            "serving_owner": "model_champion_pointers",
+            "serving_artifact_id": artifact_id,
+            "serving_block_reason": block_reason,
+        }
         if artifact:
             artifact_metadata = _artifact_metadata(artifact)
-            entry["gcs_path"] = str(artifact.get("artifact_path") or _default_artifact_path(model_name, version))
-            entry["metadata_path"] = str(artifact.get("metadata_path") or _default_metadata_path(model_name, version))
+            entry["gcs_path"] = str(artifact.get("artifact_path") or "")
+            entry["metadata_path"] = str(artifact.get("metadata_path") or "")
             entry["checksum"] = _artifact_checksum(artifact)
             entry["candidate_type"] = artifact.get("candidate_type")
             entry["offline_gate_decision"] = artifact.get("offline_gate_decision")
@@ -439,225 +413,24 @@ def build_pool_from_champion_pointers(
                 entry["seq_len"] = sequence_contract["seq_len"]
                 entry["pred_len"] = sequence_contract["pred_len"]
                 entry["sequence_contract"] = sequence_contract
-        elif version:
-            entry.setdefault("gcs_path", _default_artifact_path(model_name, version))
-            entry.setdefault("metadata_path", _default_metadata_path(model_name, version))
-        _copy_ic_fields(entry, artifact=artifact, pointer=pointer, fallback=fallback_entry or {})
+        _copy_ic_fields(entry, artifact=artifact, pointer=pointer)
         return entry
 
     for model_name in required_models:
-        pool["models"][model_name] = build_entry(
-            model_name,
-            pool["models"].get(model_name) or {},
-            artifact_role="direct_alpha",
-        )
+        pool["models"][model_name] = build_entry(model_name, artifact_role="direct_alpha")
     for model_name in sidecar_models:
-        fallback_entry = (
-            pool["l2_feature_sidecars"].get(model_name)
-            or pool["models"].get(model_name)
-            or {}
-        )
-        entry = build_entry(
-            model_name,
-            fallback_entry,
-            artifact_role="l2_feature_sidecar",
-        )
+        entry = build_entry(model_name, artifact_role="l2_feature_sidecar")
         entry["role"] = "l2_feature_sidecar"
         entry["direct_prediction"] = False
         pool["l2_feature_sidecars"][model_name] = entry
-        pool["models"].pop(model_name, None)
     return pool
-
-
-def _pool_entry(pool: dict[str, Any], model_name: str) -> tuple[str, dict[str, Any] | None]:
-    models = pool.get("models") if isinstance(pool.get("models"), dict) else {}
-    if model_name in models:
-        entry = models.get(model_name)
-        return "models", entry if isinstance(entry, dict) else None
-    sidecars = pool.get("l2_feature_sidecars") if isinstance(pool.get("l2_feature_sidecars"), dict) else {}
-    if model_name in sidecars:
-        entry = sidecars.get(model_name)
-        return "l2_feature_sidecars", entry if isinstance(entry, dict) else None
-    return "models", None
-
-
-def build_model_pool_reconcile_plan(
-    *,
-    model_pool: dict[str, Any],
-    champion_pool: dict[str, Any],
-    model_names: tuple[str, ...] = DIRECT_ALPHA_MODELS,
-) -> dict[str, Any]:
-    """Build a dry-run plan for reconciling compat model_pool pointers to D1 champions."""
-
-    actions: list[dict[str, Any]] = []
-    blocked: list[dict[str, Any]] = []
-    for model_name in model_names:
-        section, current = _pool_entry(model_pool, model_name)
-        champion_section, champion = _pool_entry(champion_pool, model_name)
-        if not champion:
-            blocked.append({
-                "model_name": model_name,
-                "reason": "missing_d1_champion_entry",
-                "section": champion_section,
-            })
-            continue
-        block_reason = str(champion.get("serving_block_reason") or "").strip()
-        if str(champion.get("status") or "").strip().lower() != "active" or block_reason:
-            current = current or {}
-            blocked_patch = {
-                key: champion.get(key)
-                for key in (
-                    "version",
-                    "status",
-                    "gcs_path",
-                    "metadata_path",
-                    "checksum",
-                    "serving_owner",
-                    "serving_artifact_id",
-                    "serving_block_reason",
-                    "offline_gate_decision",
-                    "live_gate_status",
-                    "target_semantic_version",
-                )
-                if champion.get(key) is not None
-            }
-            if model_name in SEQUENCE_ALPHA_MODELS:
-                for key in SEQUENCE_CONTRACT_FIELDS:
-                    blocked_patch[key] = champion.get(key)
-            blocked_patch["model_slot_status"] = "active"
-            blocked_patch["status"] = "degraded"
-            blocked_patch["serving_eligible"] = False
-            blocked_patch["production_weight"] = 0.0
-            diff = {
-                key: {"from": current.get(key), "to": value}
-                for key, value in blocked_patch.items()
-                if current.get(key) != value
-            }
-            if diff:
-                actions.append({
-                    "action": "block_incompatible_model_pool_artifact",
-                    "model_name": model_name,
-                    "section": section,
-                    "champion_section": champion_section,
-                    "reason": block_reason or f"champion_status_{champion.get('status') or 'missing'}",
-                    "diff": diff,
-                    "patch": blocked_patch,
-                })
-            continue
-
-        current = current or {}
-        desired_keys = (
-            "version",
-            "status",
-            "gcs_path",
-            "metadata_path",
-            "checksum",
-            "serving_owner",
-            "serving_artifact_id",
-            "serving_block_reason",
-            "offline_gate_decision",
-            "live_gate_status",
-            "target_semantic_version",
-            "model_slot_status",
-            "serving_eligible",
-            "serving_ic_prior",
-            "serving_ic_source",
-            *SEQUENCE_CONTRACT_FIELDS,
-            *IC_STATE_FIELDS,
-        )
-        desired_fields = {
-            key: champion.get(key)
-            for key in desired_keys
-            if key in champion
-        }
-        diff = {
-            key: {"from": current.get(key), "to": value}
-            for key, value in desired_fields.items()
-            if current.get(key) != value
-        }
-        if diff:
-            actions.append({
-                "action": "update_model_pool_pointer",
-                "model_name": model_name,
-                "section": section,
-                "champion_section": champion_section,
-                "diff": diff,
-                "patch": desired_fields,
-            })
-
-    return {
-        "schema_version": "model-pool-reconcile-plan-v1",
-        "source": "model_champion_pointers/model_artifact_registry",
-        "mode": "dry_run",
-        "apply_allowed": not blocked,
-        "has_changes": bool(actions),
-        "action_count": len(actions),
-        "blocked_count": len(blocked),
-        "actions": actions,
-        "blocked": blocked,
-    }
-
-
-def apply_model_pool_reconcile_plan(
-    *,
-    model_pool: dict[str, Any],
-    plan: dict[str, Any],
-) -> dict[str, Any]:
-    """Return a compat model_pool projection with D1 champion pointer patches applied.
-
-    This function is pure and performs no GCS/D1 writes. It projects the
-    authoritative D1 champion state and may be applied automatically only when
-    the plan has no blocked entries.
-    """
-
-    if plan.get("blocked"):
-        raise RuntimeError(f"model_pool_reconcile_blocked: {plan.get('blocked')}")
-    updated = copy.deepcopy(model_pool or {})
-    updated["models"] = dict(updated.get("models") or {})
-    updated["l2_feature_sidecars"] = dict(updated.get("l2_feature_sidecars") or {})
-    applied: list[dict[str, Any]] = []
-    for action in plan.get("actions") or []:
-        if not isinstance(action, dict) or action.get("action") not in {
-            "update_model_pool_pointer",
-            "block_incompatible_model_pool_artifact",
-        }:
-            continue
-        model_name = str(action.get("model_name") or "").strip()
-        section = str(action.get("section") or "models").strip()
-        patch = action.get("patch") if isinstance(action.get("patch"), dict) else {}
-        if not model_name or section not in {"models", "l2_feature_sidecars"}:
-            continue
-        target = updated.setdefault(section, {})
-        current = dict(target.get(model_name) or {})
-        current.update(patch)
-        target[model_name] = current
-        applied.append({
-            "model_name": model_name,
-            "section": section,
-            "fields": sorted(patch.keys()),
-        })
-    updated["last_updated"] = datetime.now(timezone.utc).isoformat()
-    updated["source_of_truth"] = "model_champion_pointers"
-    updated["compat_shape"] = "model_pool"
-    updated["reconcile_evidence"] = {
-        "schema_version": "model-pool-reconcile-apply-v1",
-        "source": plan.get("source") or "model_champion_pointers/model_artifact_registry",
-        "applied_count": len(applied),
-        "applied": applied,
-    }
-    return updated
-
 
 def load_d1_champion_pool(
     *,
-    fallback_pool: dict[str, Any] | None = None,
     required_models: tuple[str, ...] = DIRECT_ALPHA_MODELS,
     sidecar_models: tuple[str, ...] = L2_SIDECARS,
 ) -> dict[str, Any]:
-    from services.model_artifact_registry import (
-        list_artifacts_by_ids,
-        list_champion_pointers,
-    )
+    from services.model_artifact_registry import list_artifacts_by_ids, list_champion_pointers
 
     pointers = list_champion_pointers()
     requested_models = set((*required_models, *sidecar_models))
@@ -669,42 +442,22 @@ def load_d1_champion_pool(
             and str(pointer.get("champion_artifact_id") or "").strip()
         )
     ))
-    artifacts = list_artifacts_by_ids(
-        artifact_ids,
-        max_ids=len(requested_models),
-    )
+    artifacts = list_artifacts_by_ids(artifact_ids, max_ids=len(requested_models))
     return build_pool_from_champion_pointers(
         pointers=pointers,
         artifacts=artifacts,
-        fallback_pool=fallback_pool,
         required_models=required_models,
         sidecar_models=sidecar_models,
     )
 
-
 def resolve_serving_pool(
-    fallback_pool: dict[str, Any] | None,
     *,
     required_models: tuple[str, ...] = DIRECT_ALPHA_MODELS,
     sidecar_models: tuple[str, ...] = L2_SIDECARS,
-) -> dict[str, Any] | None:
-    if not d1_champion_serving_enabled():
-        return fallback_pool
+) -> dict[str, Any]:
     if not _d1_env_configured():
-        pool = copy.deepcopy(fallback_pool or {})
-        pool["source_of_truth"] = "model_pool.json"
-        pool["serving_owner_warning"] = "d1_champion_env_missing_local_compat"
-        return pool
-    try:
-        return load_d1_champion_pool(
-            fallback_pool=fallback_pool,
-            required_models=required_models,
-            sidecar_models=sidecar_models,
-        )
-    except Exception:
-        if os.environ.get("MODEL_SERVING_ALLOW_GCS_COMPAT_FALLBACK", "").strip().lower() in {"1", "true", "yes", "on"}:
-            pool = copy.deepcopy(fallback_pool or {})
-            pool["source_of_truth"] = "model_pool.json"
-            pool["serving_owner_warning"] = "d1_champion_unavailable_gcs_compat_fallback"
-            return pool
-        raise
+        raise RuntimeError("d1_champion_serving_environment_missing")
+    return load_d1_champion_pool(
+        required_models=required_models,
+        sidecar_models=sidecar_models,
+    )

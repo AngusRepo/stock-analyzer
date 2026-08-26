@@ -45,7 +45,6 @@ def test_build_retrain_orchestrator_telemetry_includes_billable_children():
     telemetry = build_retrain_orchestrator_telemetry(
         stages,
         total_elapsed_s=120.0,
-        is_monthly=True,
         run_id="run-a",
         partial_results={
             "tree": {
@@ -63,7 +62,6 @@ def test_build_retrain_orchestrator_telemetry_includes_billable_children():
 
     assert [e["function_name"] for e in telemetry] == [
         "retrain_orchestrator",
-        "feature_selection_pipeline",
         "train_tree_models",
         "train_patchtst_universal",
         "train_gnn_graphsage_universal",
@@ -72,15 +70,11 @@ def test_build_retrain_orchestrator_telemetry_includes_billable_children():
     ]
     assert telemetry[0]["compute_sec"] == 120.0
     assert telemetry[1]["meta"]["run_id"] == "run-a"
-    assert telemetry[1]["meta"]["feature_count"] == 106
-    assert telemetry[1]["meta"]["trials"] == 150
-    assert telemetry[1]["meta"]["target_permutation_n"] == 100
-    assert telemetry[1]["meta"]["objective_cache_hits"] == 12
-    assert telemetry[3]["meta"]["group"] == "patchtst"
-    assert telemetry[4]["meta"]["stage"] == "artifact_lifecycle"
-    assert telemetry[4]["meta"]["model"] == "GNN"
-    assert telemetry[5]["meta"]["artifact_path"] == "universal/tabm/v20260606.pt"
-    assert telemetry[2]["meta"]["artifact_count"] == 3
-    assert telemetry[2]["meta"]["model_artifacts"] == ["XGBoost", "ExtraTrees", "LightGBM"]
-    assert telemetry[2]["meta"]["train_samples"] == 1000
+    assert telemetry[2]["meta"]["group"] == "patchtst"
+    assert telemetry[3]["meta"]["stage"] == "artifact_lifecycle"
+    assert telemetry[3]["meta"]["model"] == "GNN"
+    assert telemetry[4]["meta"]["artifact_path"] == "universal/tabm/v20260606.pt"
+    assert telemetry[1]["meta"]["artifact_count"] == 3
+    assert telemetry[1]["meta"]["model_artifacts"] == ["XGBoost", "ExtraTrees", "LightGBM"]
+    assert telemetry[1]["meta"]["train_samples"] == 1000
     assert all(e["source"] == "modal_followup" for e in telemetry)

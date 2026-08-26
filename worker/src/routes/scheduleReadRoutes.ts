@@ -10,7 +10,7 @@ interface ScheduleRow {
   tw_time: string
   owner: 'gcp_scheduler' | 'worker_chain' | 'controller_callback' | 'manual'
   parameter_mode: ParameterMode
-  layer: 'L0/L1 ops' | 'L2/L3 model evidence' | 'L4 allocation' | 'meta policy' | 'governance'
+  layer: 'L0/L1 ops' | 'L2/L3 model evidence' | 'L3 model release' | 'L4 allocation' | 'meta policy' | 'governance'
   description: string
 }
 
@@ -31,7 +31,7 @@ const schedule: ScheduleRow[] = [
   { task: 'active8-oof-daily', tw_time: 'Daily 01:55 (latest mature session)', owner: 'gcp_scheduler', parameter_mode: 'hard_boundary', layer: 'L4 allocation', description: 'Extends the fixed Active-8 cohort for causal shadow monitoring and evaluates T+5 outcomes for the exact Fusion artifact that served; never trains or promotes.' },
   { task: 'active8-oof-daily-watchdog', tw_time: '02:25-07:55 / 30m', owner: 'gcp_scheduler', parameter_mode: 'hard_boundary', layer: 'L4 allocation', description: 'Retries until effective OOF max reaches the immutable-prep mature watermark; stale success fails closed.' },
   { task: 'active8-oof-weekly', tw_time: 'Sunday 07:05', owner: 'gcp_scheduler', parameter_mode: 'hard_boundary', layer: 'L4 allocation', description: 'Creates one deterministic 60/10 three-fold Active-8 purged-OOF cohort.' },
-  { task: 'active8-oof-monthly', tw_time: 'monthly retrain callback', owner: 'controller_callback', parameter_mode: 'hard_boundary', layer: 'L4 allocation', description: 'Starts the same purged-OOF lifecycle only after monthly universal retrain completion.' },
+  { task: 'active8-oof-monthly', tw_time: 'First Sunday 02:00', owner: 'gcp_scheduler', parameter_mode: 'hard_boundary', layer: 'L3 model release', description: 'Owns the canonical immutable OOF cohort, eight-model full-fit release, validation, and atomic promotion lifecycle.' },
   { task: 'external-evidence', tw_time: '23:15', owner: 'gcp_scheduler', parameter_mode: 'reporting', layer: 'L0/L1 ops', description: 'Materializes formal-shadow GDELT/official external evidence for the latest available recommendation date.' },
   { task: 'update', tw_time: 'after source readiness', owner: 'worker_chain', parameter_mode: 'hard_boundary', layer: 'L0/L1 ops', description: 'Market data update and readiness manifest.' },
   { task: 'screener', tw_time: '22:00 chain', owner: 'controller_callback', parameter_mode: 'hard_boundary', layer: 'L0/L1 ops', description: 'Daily screener seed and candidate pool preparation.' },
@@ -60,7 +60,6 @@ const schedule: ScheduleRow[] = [
   { task: 'monthly-strategy-mining', tw_time: 'first Saturday 10:00', owner: 'gcp_scheduler', parameter_mode: 'research_sweep', layer: 'governance', description: 'Monthly pymoo NSGA-III + novelty strategy mining preflight, FinLab validation contract, and promotion ledger evidence.' },
   { task: 'monthly-readiness', tw_time: 'first Sunday 12:30', owner: 'gcp_scheduler', parameter_mode: 'hard_boundary', layer: 'governance', description: 'Fail-close terminal summary for all required jobs in the current monthly cycle.' },
   { task: 'monthly-optuna', tw_time: 'first Saturday 16:00', owner: 'gcp_scheduler', parameter_mode: 'research_sweep', layer: 'meta policy', description: 'Heavier 10-source research sweep including S12 Taiwan-equity calibration research.' },
-  { task: 'weekly-drift-retrain', tw_time: 'manual approval-gated', owner: 'manual', parameter_mode: 'research_sweep', layer: 'L2/L3 model evidence', description: 'Approval-gated shadow candidate path, not automatic weekly retrain.' },
   { task: 'optuna-queue', tw_time: 'every 6h', owner: 'gcp_scheduler', parameter_mode: 'queue', layer: 'meta policy', description: 'Bounded queue processor for Optuna items.' },
 ]
 

@@ -13,7 +13,6 @@ from __future__ import annotations
 import json
 import logging
 import math
-import copy
 from datetime import datetime, timedelta, timezone
 from numbers import Integral, Real
 from typing import Any, Optional
@@ -360,95 +359,41 @@ def _timesfm_sidecar_payload(data: dict) -> dict[str, Any] | None:
 # ML score calculation (port from dailyRecommendation.ts:558-568)
 # ?????????????????????????????????????????????????????????????????????????????
 
-def _ml_thresholds_from_ensemble_v2(ev2: dict[str, Any]) -> dict[str, float] | None:
-    policy = ev2.get("ml_threshold_policy")
-    policy_thresholds = policy.get("thresholds") if isinstance(policy, dict) else None
-    raw_thresholds = policy_thresholds if isinstance(policy_thresholds, dict) else ev2.get("rank_signal_thresholds")
-    if not isinstance(raw_thresholds, dict):
-        return None
-    thresholds = {
-        "strongBuyThreshold": _finite_float_or_none(raw_thresholds.get("strongBuyThreshold")),
-        "buyThreshold": _finite_float_or_none(raw_thresholds.get("buyThreshold")),
-        "sellThreshold": _finite_float_or_none(raw_thresholds.get("sellThreshold")),
-        "strongSellThreshold": _finite_float_or_none(raw_thresholds.get("strongSellThreshold")),
-    }
-    if any(value is None for value in thresholds.values()):
-        return None
-    strong_buy = thresholds["strongBuyThreshold"]
-    buy = thresholds["buyThreshold"]
-    sell = thresholds["sellThreshold"]
-    strong_sell = thresholds["strongSellThreshold"]
-    if not (0 <= strong_sell < sell < buy < strong_buy <= 1):
-        return None
-    return {key: float(value) for key, value in thresholds.items() if value is not None}
 
 
-def _linear_between(value: float, left: float, right: float, low: float, high: float) -> float:
-    if right <= left:
-        return low
-    ratio = max(0.0, min(1.0, (value - left) / (right - left)))
-    return low + ratio * (high - low)
 
 
 def _ml_threshold_policy_edge_seed30(ev2: dict[str, Any]) -> tuple[float | None, dict[str, Any] | None]:
-    """Score ML EDGE from promoted threshold-policy provenance, not legacy signal tiers."""
+    """Project learned positive-net-return probability onto the 0-30 UI scale.
+
+    The affine scale is presentation only. BUY/SELL eligibility remains owned
+    exclusively by the artifact's conformal interval rule.
+    """
     if not isinstance(ev2, dict) or not ev2:
         return None, None
-    policy = ev2.get("ml_threshold_policy")
-    if not isinstance(policy, dict):
+    probability = _finite_float_or_none(ev2.get("probability_positive_net_return"))
+    validation = ev2.get("validation") if isinstance(ev2.get("validation"), dict) else {}
+    checksum = str(ev2.get("artifact_checksum") or "").strip().lower()
+    if (
+        probability is None
+        or not 0.0 <= probability <= 1.0
+        or len(checksum) != 64
+        or validation.get("decision") != "PASS"
+    ):
         return None, None
-    weight_total = _finite_float_or_none(ev2.get("weight_total")) or 0.0
-    reason = str(ev2.get("reason") or "")
-    thresholds = _ml_thresholds_from_ensemble_v2(ev2)
-    avg_rank = _finite_float_or_none(ev2.get("avg_rank"))
-    evidence: dict[str, Any] = {
-        "schema_version": "score-v2-ml-edge-policy-v1",
-        "source": "ensemble_v2.ml_threshold_policy",
-        "policy_id": policy.get("policy_id"),
-        "version": policy.get("version"),
-        "selected_regime": policy.get("selected_regime") or policy.get("regime"),
-        "evidence_hash": policy.get("evidence_hash"),
+    score = _round1(30.0 * probability)
+    return score, {
+        "schema_version": "score-v2-ml-edge-calibrated-probability-v1",
+        "source": "ensemble_v2.probability_positive_net_return",
+        "artifact_checksum": checksum,
+        "cohort_id": ev2.get("cohort_id"),
         "signal": ev2.get("signal"),
-        "avg_rank": avg_rank,
-        "thresholds": thresholds,
-        "weight_total": weight_total,
-        "contributing_models": ev2.get("contributing_models") or [],
-    }
-    if weight_total <= 0 or reason == "no_positive_lifecycle_weight":
-        evidence.update({
-            "score_seed30": 0.0,
-            "status": "blocked",
-            "reason": reason or "non_positive_weight_total",
-        })
-        return 0.0, evidence
-    if avg_rank is None or thresholds is None:
-        return None, None
-
-    strong_buy = thresholds["strongBuyThreshold"]
-    buy = thresholds["buyThreshold"]
-    sell = thresholds["sellThreshold"]
-    strong_sell = thresholds["strongSellThreshold"]
-    if avg_rank >= strong_buy:
-        score = _linear_between(avg_rank, strong_buy, 1.0, 26.0, 30.0)
-    elif avg_rank >= buy:
-        score = _linear_between(avg_rank, buy, strong_buy, 18.0, 26.0)
-    elif avg_rank >= 0.5:
-        score = _linear_between(avg_rank, 0.5, buy, 8.0, 18.0)
-    elif avg_rank > sell:
-        score = _linear_between(avg_rank, sell, 0.5, 3.0, 8.0)
-    elif avg_rank > strong_sell:
-        score = _linear_between(avg_rank, strong_sell, sell, 0.0, 3.0)
-    else:
-        score = 0.0
-    score = _round1(max(0.0, min(30.0, score)))
-    evidence.update({
+        "probability_positive_net_return": probability,
         "score_seed30": score,
         "status": "scored",
-        "buy_distance": _round1(avg_rank - buy),
-        "sell_distance": _round1(avg_rank - sell),
-    })
-    return score, evidence
-
+        "decision_owner": "active8_conformal_signal_policy",
+        "scale_role": "presentation_only",
+    }
 
 def _ml_edge_policy_evidence(raw_prediction: dict | None) -> dict[str, Any] | None:
     ev2 = (raw_prediction or {}).get("ensemble_v2") or {}
@@ -456,79 +401,18 @@ def _ml_edge_policy_evidence(raw_prediction: dict | None) -> dict[str, Any] | No
     return evidence
 
 
-def overlay_ml_threshold_policy_source_of_truth(
-    predictions: dict[str, dict],
-    policy_evidence: dict[str, Any],
-    *,
-    force: bool = True,
-) -> dict[str, dict]:
-    """Return prediction copies with threshold-policy provenance attached.
-
-    This is for local/read-only rescoring and rerun previews. Runtime pipeline
-    should still attach policy evidence before scoring and fail closed when the
-    evidence is absent.
-    """
-    if not isinstance(policy_evidence, dict) or not policy_evidence:
-        raise ValueError("policy_evidence is required for local threshold-policy rescore")
-    thresholds = policy_evidence.get("thresholds")
-    if not isinstance(thresholds, dict) or not thresholds:
-        raise ValueError("policy_evidence.thresholds is required for local threshold-policy rescore")
-
-    out: dict[str, dict] = {}
-    for symbol, prediction in (predictions or {}).items():
-        row = copy.deepcopy(prediction) if isinstance(prediction, dict) else {}
-        ev2 = row.get("ensemble_v2")
-        if not isinstance(ev2, dict):
-            out[symbol] = row
-            continue
-        if force or not isinstance(ev2.get("ml_threshold_policy"), dict):
-            ev2["ml_threshold_policy"] = copy.deepcopy(policy_evidence)
-            ev2["rank_signal_thresholds"] = copy.deepcopy(thresholds)
-        out[symbol] = row
-    return out
 
 
 def calculate_ml_score(prediction: dict, raw_prediction: dict | None = None) -> float:
-    """Compute ml_score 0-30 from actual model evidence.
-
-    Ranking/top-K promotion is an execution/recommendation policy, not a model
-    vote. If lifecycle weighting has no positive contributors, keep the row
-    eligible for downstream T2/debate via signal, but do not inflate ML score.
-    """
-    if not prediction:
-        return 0.0
-    source = str(prediction.get("signal_source") or "")
+    """Return the calibrated artifact probability on the existing 0-30 score scale."""
     ev2 = (raw_prediction or {}).get("ensemble_v2") or {}
-    if ev2:
-        policy_score, _evidence = _ml_threshold_policy_edge_seed30(ev2)
-        if policy_score is not None:
-            return _round1(policy_score)
-        return 0.0
-    sig = _normalized_signal(prediction.get("signal"))
-    score = 0.0
-    if sig == "STRONG_BUY":
-        score += 25
-    elif sig == "BUY":
-        score += 18
-    elif sig == "HOLD":
-        score += 8
-    score += (prediction.get("confidence") or 0) * 10
-    fc = prediction.get("forecast_pct") or 0
-    if fc > 0.03:
-        score += 5
-    elif fc > 0.01:
-        score += 2
-    score = max(0.0, min(30.0, score))
+    score, evidence = _ml_threshold_policy_edge_seed30(ev2)
+    if score is None or not isinstance(evidence, dict):
+        raise ValueError("active8_ensemble_calibrated_probability_required")
     return _round1(score)
 
-
 def _effective_prediction_view(ml: dict | None, use_ensemble_v2: bool = True) -> dict:
-    """Normalize recommendation-facing ML fields to a single source of truth.
-
-    When ensemble_v2 is enabled and present, downstream scoring/reasoning/storage
-    should read signal/confidence/forecast from ensemble_v2 instead of the legacy
-    score_to_signal path. This keeps filter, score, and displayed signal aligned.
-    """
+    """Expose only the immutable learned Active-8 ensemble to recommendations."""
     if not ml:
         return {
             "signal": None,
@@ -546,91 +430,29 @@ def _effective_prediction_view(ml: dict | None, use_ensemble_v2: bool = True) ->
             "signal_source": "missing",
             "signal_raw": None,
         }
-
-    legacy_signal = ml.get("signal")
-    legacy_conf = (ml.get("confidence") if ml.get("confidence") is not None else 0.0) or 0.0
-    legacy_forecast = (ml.get("forecast_pct") if ml.get("forecast_pct") is not None else 0.0) or 0.0
-
-    if use_ensemble_v2:
-        ev2 = ml.get("ensemble_v2") or {}
-        if ev2.get("signal"):
-            confidence = ev2.get("confidence") if ev2.get("confidence") is not None else legacy_conf
-            l4_alpha_ev = (
-                ev2.get("l4_alpha_ev")
-                or ev2.get("alpha_ev")
-                or ml.get("l4_alpha_ev")
-                or ml.get("alpha_ev")
-                or ml.get("alpha_ev_prediction")
-            )
-            return {
-                "signal": ev2.get("signal"),
-                "confidence": confidence,
-                "forecast_pct": ev2.get("forecast_pct"),
-                "forecast_pct_source": ev2.get("forecast_pct_source") or "ensemble_v2",
-                "forecast_return_5bar": ev2.get("forecast_return_5bar", ev2.get("forecast_pct")),
-                "forecast_return_5bar_source": (
-                    ev2.get("forecast_return_5bar_source")
-                    or ev2.get("forecast_pct_source")
-                    or "ensemble_v2"
-                ),
-                "expected_return": ev2.get("expected_return"),
-                "expected_return_source": (
-                    ev2.get("expected_return_source")
-                    or "l4_alpha_ev_missing_no_expected_return"
-                ),
-                "expected_return_owner": "risk_abstention",
-                "trade_expected_return_net_pct": None,
-                "trade_expected_return_source": "candidate_time_s12_not_evening_ev_owner",
-                "l4_alpha_ev": l4_alpha_ev,
-                "signal_source": ev2.get("signal_source") or "ensemble_v2",
-                "signal_raw": ev2.get("signal_raw") or legacy_signal,
-            }
-
+    ev2 = ml.get("ensemble_v2")
+    if not isinstance(ev2, dict) or not ev2.get("signal"):
+        raise ValueError("active8_ensemble_evidence_required")
     return {
-        "signal": legacy_signal,
-        "confidence": legacy_conf,
-        "forecast_pct": legacy_forecast,
-        "forecast_pct_source": "legacy",
-        "forecast_return_5bar": legacy_forecast,
-        "forecast_return_5bar_source": "legacy_forecast_pct",
-        "expected_return": None,
-        "expected_return_source": "l4_alpha_ev_missing_no_expected_return",
-        "expected_return_owner": "risk_abstention",
-        "trade_expected_return_net_pct": None,
-        "trade_expected_return_source": "candidate_time_s12_not_evening_ev_owner",
-        "l4_alpha_ev": ml.get("l4_alpha_ev") or ml.get("alpha_ev") or ml.get("alpha_ev_prediction"),
-        "signal_source": "legacy",
-        "signal_raw": legacy_signal,
+        "signal": ev2.get("signal"),
+        "confidence": ev2.get("confidence") or 0.0,
+        "forecast_pct": ev2.get("forecast_pct"),
+        "forecast_pct_source": ev2.get("forecast_pct_source") or "active8_ensemble_expected_net_return",
+        "forecast_return_5bar": ev2.get("forecast_return_5bar", ev2.get("forecast_pct")),
+        "forecast_return_5bar_source": ev2.get("forecast_return_5bar_source") or "active8_ensemble_expected_net_return",
+        "expected_return": ev2.get("expected_return"),
+        "expected_return_source": ev2.get("expected_return_source") or "allocator_ev_fusion_required",
+        "expected_return_owner": ev2.get("expected_return_owner") or "allocator_ev_fusion",
+        "trade_expected_return_net_pct": ev2.get("trade_expected_return_net_pct"),
+        "trade_expected_return_source": ev2.get("trade_expected_return_source") or "allocator_ev_fusion_required",
+        "l4_alpha_ev": ev2.get("l4_alpha_ev") or ml.get("l4_alpha_ev"),
+        "signal_source": ev2.get("signal_source") or "active8_ensemble_artifact",
+        "signal_raw": ev2.get("signal"),
     }
 
-
-# ?????????????????????????????????????????????????????????????????????????????
-# Filter + score (port from dailyRecommendation.ts:541-613)
-# ?????????????????????????????????????????????????????????????????????????????
-
 def _effective_signal(ml: dict | None, use_ensemble_v2: bool = True) -> str | None:
-    """ML_POOL Plan A migration helper ??prefer ensemble_v2.signal over legacy signal.
-
-    Returns the signal string (uppercase) used for downstream BUY/SELL filter.
-    If ensemble_v2 absent or use_ensemble_v2=False ??falls back to legacy
-    feature-model score_to_signal output. When time-series models have
-    no IC data yet, ensemble_v2 weight for them = 0 ??ensemble_v2.signal is
-    mathematically equivalent to legacy signal, so migration is no-op until
-    IC tracker accumulates time-series IC (Stage 2 cron, ~3-4 weeks).
-    """
-    eff = _effective_prediction_view(ml, use_ensemble_v2=use_ensemble_v2)
-    return (eff.get("signal") or "").upper() or None
-
-
-def _is_use_ensemble_v2() -> bool:
-    """Read trading:config.mlPool.useEnsembleV2 (default True). KV override."""
-    from services.trading_config_loader import load_merged_trading_config
-
-    tcfg = load_merged_trading_config()
-    ml_pool_cfg = tcfg.get("mlPool", {}) or {}
-    v = ml_pool_cfg.get("useEnsembleV2")
-    return True if v is None else bool(v)
-
+    effective = _effective_prediction_view(ml)
+    return (effective.get("signal") or "").upper() or None
 
 def _sorted_payload_rows(payload: dict, key: str) -> list[dict]:
     rows = [row for row in (payload.get(key) or []) if isinstance(row, dict)]
@@ -649,10 +471,10 @@ def build_ml_vote_summary(ml: dict | None, eff_ml: dict, legacy_counts: dict[str
 
     contributors = ev2.get("contributing_models") or []
     if ev2 and float(ev2.get("weight_total") or 0.0) <= 0:
-        return "V2 ensemble 暫無正 IC 權重；持續驗證 IC evidence。"
+        return "Active-8 ensemble 係數影響為零；artifact 不可用。"
     if contributors:
         label = "buy" if _is_formal_buy_signal(signal) else "hold" if signal == "HOLD" else "sell"
-        return f"V2 ensemble {label}: {len(contributors)} contributing models, forecast {forecast_text}."
+        return f"Active-8 learned ensemble {label}: {len(contributors)} contributing models, forecast {forecast_text}."
 
     total = legacy_counts.get("total", 0)
     up = legacy_counts.get("up", 0)
@@ -681,154 +503,57 @@ def _forecast_fraction_to_pct(raw: Any) -> float | None:
 
 
 def build_ml_vote_summary_data(ml: dict | None, legacy_counts: dict[str, int]) -> dict[str, Any]:
-    """Structured ML vote evidence for UI/OBS; text reasons are derived elsewhere."""
+    """Expose normalized base evidence and the learned ensemble without hand transforms."""
     ev2 = (ml or {}).get("ensemble_v2") or {}
     tracked = [
-        "XGBoost", "ExtraTrees", "LightGBM",
-        "TabM", "GNN",
+        "XGBoost", "ExtraTrees", "LightGBM", "TabM", "GNN",
         "DLinear", "PatchTST", "iTransformer",
     ]
     weights = ev2.get("weights") if isinstance(ev2.get("weights"), dict) else {}
-    active_weight_count = 0
-    for name, value in weights.items():
-        if name not in tracked:
-            continue
-        numeric = _sanitize_non_finite(value)[0]
-        if isinstance(numeric, Real) and float(numeric) > 0:
-            active_weight_count += 1
-    zero_weight_models = [
-        name for name in tracked
-        if name in weights and _sanitize_non_finite(weights.get(name))[0] in (0, 0.0, None)
-    ]
-    thresholds = ev2.get("rank_signal_thresholds") if isinstance(ev2.get("rank_signal_thresholds"), dict) else {}
-    diagnostics = ev2.get("ic_weight_diagnostics") if isinstance(ev2.get("ic_weight_diagnostics"), dict) else {}
-    validation_blocked_models = [
-        name for name, detail in diagnostics.items()
-        if name in tracked
-        and isinstance(detail, dict)
-        and str(detail.get("validation_status") or "").upper() == "FAIL"
-    ]
-
     model_scores: dict[str, float] = {}
-    rank_scores = (ml or {}).get("rank_scores") or {}
-    if isinstance(rank_scores, dict):
-        for name in ["XGBoost", "ExtraTrees", "LightGBM", "TabM", "GNN"]:
-            try:
-                if rank_scores.get(name) is not None:
-                    model_scores[name] = float(rank_scores[name])
-            except (TypeError, ValueError):
-                continue
-    for src_key, model_name in (
-        ("dlinear", "DLinear"),
-        ("patchtst", "PatchTST"),
-        ("itransformer", "iTransformer"),
-    ):
-        sig = (ml or {}).get(src_key) or {}
-        try:
-            if sig.get("forecast_pct") is not None:
-                model_scores[model_name] = 1.0 / (1.0 + math.exp(-float(sig["forecast_pct"]) * 12.0))
-        except (TypeError, ValueError, OverflowError):
-            continue
-
-    if model_scores:
-        bullish = sum(1 for value in model_scores.values() if value >= 0.55)
-        bearish = sum(1 for value in model_scores.values() if value <= 0.45)
-        flat = max(0, len(model_scores) - bullish - bearish)
-        raw_forecast_pct = ev2.get("forecast_pct")
-        return {
-            "bullish": bullish,
-            "bearish": bearish,
-            "flat": flat,
-            "reported": len(model_scores),
-            "missing": max(0, len(tracked) - len(model_scores)),
-            "total": len(tracked),
-            "forecast_pct": raw_forecast_pct,
-            "forecastPct": _forecast_fraction_to_pct(raw_forecast_pct),
-            "forecastPctSource": ev2.get("forecast_pct_source"),
-            "activeWeightCount": active_weight_count,
-            "zeroWeightModels": zero_weight_models,
-            "thresholds": {
-                "bullish": thresholds.get("buyThreshold"),
-                "bearish": thresholds.get("sellThreshold"),
-                "strongBullish": thresholds.get("strongBuyThreshold"),
-                "strongBearish": thresholds.get("strongSellThreshold"),
-            } if thresholds else None,
-            "icWeightScope": ev2.get("ic_weight_scope"),
-            "validationBlockedModels": validation_blocked_models,
-            "source": ev2.get("signal_source") or (ml or {}).get("signal_source") or "unknown",
-            "signalRaw": ev2.get("signal_raw") or (ml or {}).get("signal_raw"),
-            "contributingModels": [
-                name for name in (ev2.get("contributing_models") or [])
-                if name in tracked
-            ],
-            "allocatorLearningLedger": (
-                ev2.get("allocator_learning_ledger")
-                if isinstance(ev2.get("allocator_learning_ledger"), dict)
-                else None
-            ),
-            "familyVote": ev2.get("family_vote") if isinstance(ev2.get("family_vote"), dict) else None,
-        }
-
-    models = (ml or {}).get("models") or []
-    if isinstance(models, dict):
-        iterable = list(models.values())
-    elif isinstance(models, list):
-        iterable = models
-    else:
-        iterable = []
-
-    bullish = bearish = flat = 0
-    for model in iterable:
-        if not isinstance(model, dict):
-            continue
-        direction = str(model.get("direction") or model.get("signal") or "").lower()
-        if "up" in direction or "buy" in direction or "bull" in direction:
-            bullish += 1
-        elif "down" in direction or "sell" in direction or "bear" in direction:
-            bearish += 1
-        else:
-            flat += 1
-
-    reported = bullish + bearish + flat
-    if reported == 0:
-        bullish = int(legacy_counts.get("up", 0) or 0)
-        bearish = int(legacy_counts.get("down", 0) or 0)
-        reported = int(legacy_counts.get("total", 0) or 0)
-        flat = max(0, reported - bullish - bearish)
-
-    total = max(8, reported)
+    raw_scores = (ml or {}).get("rank_scores") or {}
+    if isinstance(raw_scores, dict):
+        for name in tracked:
+            score = _finite_float_or_none(raw_scores.get(name))
+            if score is not None:
+                model_scores[name] = score
+    bullish = sum(value > 0.5 for value in model_scores.values())
+    bearish = sum(value < 0.5 for value in model_scores.values())
+    flat = len(model_scores) - bullish - bearish
     raw_forecast_pct = ev2.get("forecast_pct")
     return {
         "bullish": bullish,
         "bearish": bearish,
         "flat": flat,
-        "reported": reported,
-        "missing": max(0, total - reported),
-        "total": total,
+        "reported": len(model_scores),
+        "missing": len(tracked) - len(model_scores),
+        "total": len(tracked),
         "forecast_pct": raw_forecast_pct,
         "forecastPct": _forecast_fraction_to_pct(raw_forecast_pct),
         "forecastPctSource": ev2.get("forecast_pct_source"),
-        "activeWeightCount": active_weight_count,
-        "zeroWeightModels": zero_weight_models,
-        "thresholds": {
-            "bullish": thresholds.get("buyThreshold"),
-            "bearish": thresholds.get("sellThreshold"),
-            "strongBullish": thresholds.get("strongBuyThreshold"),
-            "strongBearish": thresholds.get("strongSellThreshold"),
-        } if thresholds else None,
-        "icWeightScope": ev2.get("ic_weight_scope"),
-        "validationBlockedModels": validation_blocked_models,
-        "source": ev2.get("signal_source") or (ml or {}).get("signal_source") or "unknown",
-        "signalRaw": ev2.get("signal_raw") or (ml or {}).get("signal_raw"),
-        "contributingModels": ev2.get("contributing_models") or [],
-        "allocatorLearningLedger": (
-            ev2.get("allocator_learning_ledger")
-            if isinstance(ev2.get("allocator_learning_ledger"), dict)
-            else None
+        "activeWeightCount": sum(
+            1 for name in tracked
+            if (_finite_float_or_none(weights.get(name)) or 0.0) > 0.0
         ),
-        "familyVote": ev2.get("family_vote") if isinstance(ev2.get("family_vote"), dict) else None,
+        "zeroWeightModels": [
+            name for name in tracked
+            if name in weights and (_finite_float_or_none(weights.get(name)) or 0.0) == 0.0
+        ],
+        "thresholds": None,
+        "icWeightScope": None,
+        "validationBlockedModels": [],
+        "source": ev2.get("signal_source") or "active8_ensemble_missing",
+        "signalRaw": ev2.get("signal"),
+        "contributingModels": [
+            name for name in (ev2.get("contributing_models") or []) if name in tracked
+        ],
+        "artifactChecksum": ev2.get("artifact_checksum"),
+        "cohortId": ev2.get("cohort_id"),
+        "probabilityPositiveNetReturn": ev2.get("probability_positive_net_return"),
+        "interval90": ev2.get("interval_90"),
+        "interval95": ev2.get("interval_95"),
+        "normalizationRole": "tie_safe_cross_sectional_scale_only",
     }
-
 
 def _build_alpha_adjustment_details(alpha_context: dict[str, Any], alpha_policy: dict | None = None) -> list[dict[str, Any]]:
     if not isinstance(alpha_context, dict):
@@ -1767,7 +1492,6 @@ def filter_and_score_recommendations(
     # BUY/SELL gate. Default True = use ensemble_v2 formal alpha slots
     # with lifecycle weights). KV override:
     # trading:config.mlPool.useEnsembleV2=false ??fall back to legacy feature-model signal.
-    use_ev2 = _is_use_ensemble_v2()
 
     # Lazy-import persona helpers so this module stays import-safe even if
     # persona_service has a downstream issue.
@@ -1786,7 +1510,7 @@ def filter_and_score_recommendations(
     for rec in screener_recs:
         symbol = rec["symbol"]
         ml = predictions.get(symbol)
-        eff_ml = _effective_prediction_view(ml, use_ensemble_v2=use_ev2)
+        eff_ml = _effective_prediction_view(ml)
         sig = (eff_ml.get("signal") or "").upper() or None
 
         # ML score reflects model evidence only; ranking/top-K promotion is
@@ -4718,7 +4442,6 @@ def write_predictions_to_d1(
     """
     statements: list[tuple[str, list[Any]]] = []
     inserted_rows = 0
-    use_ev2 = _is_use_ensemble_v2()
     for symbol, data in predictions.items():
         if data.get("error"):
             continue
@@ -4728,13 +4451,12 @@ def write_predictions_to_d1(
         feature_version = _require_prediction_feature_version(str(symbol), data)
         sanitized_count = 0
         skipped_model_rows: list[str] = []
-        # ML_POOL Plan A migration: ensemble_v2 (8-model w/ R1+R3) drives the
-        # stored signal. Legacy 5-feature signal kept in forecast_data for audit.
-        legacy_signal = data.get("signal") or "NO_SIGNAL"
-        ev2 = data.get("ensemble_v2") or {}
-        ev2_signal = ev2.get("signal")
-        ev2_signal_source = ev2.get("signal_source") or "ensemble_v2"
-        raw_signal = (ev2_signal if (use_ev2 and ev2_signal) else legacy_signal) or "NO_SIGNAL"
+        ev2 = data.get("ensemble_v2")
+        if not isinstance(ev2, dict) or not ev2.get("signal"):
+            raise ValueError(f"active8_ensemble_evidence_required:{symbol}")
+        ev2_signal = str(ev2["signal"])
+        ev2_signal_source = ev2.get("signal_source") or "active8_ensemble_artifact"
+        raw_signal = ev2_signal
         if raw_signal == "NO_SIGNAL":
             trade_signal = None
         elif _is_formal_buy_signal(raw_signal):
@@ -4746,9 +4468,9 @@ def write_predictions_to_d1(
 
         forecast_payload, replaced = _sanitize_non_finite({
             "signal": raw_signal,
-            "legacy_signal": legacy_signal,                 # feature-model signal (audit trail)
-            "ensemble_v2": data.get("ensemble_v2"),         # 8-model R1+R3 (audit trail)
-            "signal_source": ev2_signal_source if (use_ev2 and ev2_signal) else "legacy",
+            "base_evidence_signal": data.get("signal"),
+            "ensemble_v2": ev2,
+            "signal_source": ev2_signal_source,
             "alpha_context": data.get("alpha_context"),
             "alpha_allocation": data.get("alpha_allocation"),
             "l4_alpha_ev": data.get("l4_alpha_ev") or data.get("alpha_ev") or data.get("alpha_ev_prediction"),

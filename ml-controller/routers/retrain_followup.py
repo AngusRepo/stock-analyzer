@@ -24,13 +24,12 @@ from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, Field
 
 from services import d1_client, retrain_lock
-from services.active8_monthly_training_contract import (
+from services.active8_release_training_contract import (
     ACTIVE8_MODEL_NAMES,
-    reconcile_monthly_artifact_receipts_from_immutable_metadata,
+    reconcile_release_artifact_receipts_from_immutable_metadata,
 )
 from services.d1_domain_client import D1DataDomain, client_proxy_for_domain
 from services.model_artifact_registry import (
-    backfill_champion_pointers_from_model_pool,
     build_artifact_records_from_retrain_followup,
     hydrate_retrain_followup_artifact_metadata,
     is_production_artifact_model,
@@ -51,17 +50,6 @@ router = APIRouter()
 WORKER_URL = os.environ.get("STOCKVISION_WORKER_URL", "").strip()
 WORKER_AUTH = os.environ.get("STOCKVISION_AUTH_TOKEN", "").strip()
 
-
-async def _run_monthly_oof_lifecycle(run_date: str | None) -> dict[str, Any]:
-    from routers.walk_forward import OofLifecycleRequest, run_walk_forward_oof_lifecycle
-
-    return await run_walk_forward_oof_lifecycle(OofLifecycleRequest(
-        cadence="monthly",
-        end_date=run_date,
-        dry_run=False,
-        promote=True,
-        dispatch_full_fit=True,
-    ))
 
 async def _resume_oof_full_fit_lifecycle(context: dict[str, Any]) -> dict[str, Any]:
     if context.get("schema_version") != "active8-oof-lifecycle-resume-v1":
@@ -110,7 +98,6 @@ class RetrainFollowupPayload(BaseModel):
     trained_at: str | None = Field(default=None, description="ISO8601 UTC fallback idempotency key")
     lock_key: str | None = None
     run_date: str | None = None
-    is_monthly: bool | None = None
     candidate_type: str | None = None
     batch_count: int | None = None
     gcs_prefix: str = "universal"
@@ -118,7 +105,7 @@ class RetrainFollowupPayload(BaseModel):
     training_run_id: str | None = None
     training_manifest_path: str | None = None
     challenger_registrations: dict[str, Any] = Field(default_factory=dict)
-    promotion_allowed_models: list[str] = Field(default_factory=list)
+    promotion_eligible_models: list[str] = Field(default_factory=list)
     oof_promotion_evidence: dict[str, dict] = Field(default_factory=dict)
     oof_lifecycle_resume: dict[str, Any] = Field(default_factory=dict)
     window_id: int | None = None
@@ -134,7 +121,7 @@ class RetrainFollowupPayload(BaseModel):
     stages: dict[str, Any] = Field(default_factory=dict)
 
 
-class RetrainFollowupRegistryBackfillRequest(BaseModel):
+class RetrainFollowupReleaseRebuildRequest(BaseModel):
     run_id: str
     dry_run: bool = True
 
@@ -184,11 +171,15 @@ def _scheduler_status(status: str) -> str:
 
 
 def _build_scheduler_callback_payload(payload: RetrainFollowupPayload) -> dict[str, Any]:
+    if str(payload.candidate_type or "").strip() != "oof_full_fit_release":
+        return {}
+    cadence = str((payload.oof_lifecycle_resume or {}).get("cadence") or "").strip().lower()
+    if cadence not in {"daily", "weekly", "monthly"}:
+        raise ValueError("oof_release_scheduler_cadence_invalid")
     scheduler_status = _scheduler_status(payload.status)
-    task = "monthly-retrain" if payload.is_monthly else "retrain"
     summary_bits = [
         f"run_id={payload.run_id or payload.trained_at or '-'}",
-        f"monthly={bool(payload.is_monthly)}",
+        f"cadence={cadence}",
         f"batches={payload.batch_count if payload.batch_count is not None else '-'}",
         f"samples={payload.total_samples}",
         f"features={payload.feature_count}",
@@ -197,19 +188,17 @@ def _build_scheduler_callback_payload(payload: RetrainFollowupPayload) -> dict[s
         summary_bits.append(f"candidate={payload.candidate_version}")
     if payload.error:
         summary_bits.append(f"error={payload.error}")
-
     callback: dict[str, Any] = {
-        "task": task,
+        "task": f"active8-oof-{cadence}",
         "status": scheduler_status,
-        "summary": "retrain followup " + " ".join(summary_bits),
+        "summary": "Active-8 OOF release followup " + " ".join(summary_bits),
         "duration_ms": int(max(float(payload.elapsed_s or 0.0), 0.0) * 1000),
         "run_id": payload.run_id or payload.trained_at,
         "run_date": payload.run_date,
     }
     if payload.error or scheduler_status == "error":
         callback["error"] = payload.error or f"retrain status={payload.status}"
-    return {k: v for k, v in callback.items() if v is not None}
-
+    return {key: value for key, value in callback.items() if value is not None}
 
 def _safe_callback_detail(value: Any, *, max_chars: int = 300) -> str:
     text = f"{type(value).__name__}: {value}" if isinstance(value, BaseException) else str(value)
@@ -228,6 +217,9 @@ async def _callback_worker_scheduler(payload: RetrainFollowupPayload) -> dict[st
         return {"attempted": False, "ok": False, "reason": "STOCKVISION_WORKER_URL missing"}
 
     callback_payload = _build_scheduler_callback_payload(payload)
+    if not callback_payload:
+        return {"attempted": False, "ok": True, "reason": "noncanonical_candidate_no_scheduler_ticket"}
+
     url = f"{WORKER_URL.rstrip('/')}/api/admin/scheduler-callback"
     headers = {"Content-Type": "application/json"}
     if WORKER_AUTH:
@@ -294,82 +286,6 @@ async def _record_modal_telemetry(events: list[dict[str, Any]]) -> dict[str, Any
     }
 
 
-def _backfill_champion_pointers_after_cutover(
-    *,
-    artifact_records: list[dict[str, Any]],
-    reason: str,
-) -> dict[str, Any]:
-    """Mirror model_pool.json champions into D1 after artifact lifecycle cutover.
-
-    Artifact lifecycle can update the current serving owner in model_pool.json
-    before the registry pointer table is reconciled. Keep this idempotent and
-    scoped to callbacks that actually produced a production artifact row.
-    """
-    production_records = [
-        record
-        for record in artifact_records
-        if str(record.get("state") or "") == "production"
-        and is_production_artifact_model(str(record.get("model_name") or ""))
-    ]
-    if not production_records:
-        return {
-            "attempted": False,
-            "reason": "no_artifact_lifecycle_production_cutover",
-        }
-
-    bucket_name = os.environ.get("GCS_BUCKET_NAME", "").strip()
-    if not bucket_name:
-        return {
-            "attempted": True,
-            "status": "skipped",
-            "reason": "GCS_BUCKET_NAME missing",
-            "triggered_by": [record.get("artifact_id") for record in production_records],
-        }
-
-    try:
-        from google.cloud import storage
-
-        bucket = storage.Client().bucket(bucket_name)
-        blob = bucket.blob("universal/model_pool.json")
-        if not blob.exists():
-            return {
-                "attempted": True,
-                "status": "skipped",
-                "reason": "model_pool.json not found",
-                "triggered_by": [record.get("artifact_id") for record in production_records],
-            }
-
-        pool = json.loads(blob.download_as_text().lstrip("\ufeff"))
-        model_pool_versions = {
-            str(name): str(entry.get("version"))
-            for name, entry in (pool.get("models") or {}).items()
-            if isinstance(entry, dict)
-            and entry.get("version")
-            and is_production_artifact_model(str(name))
-        }
-        registry_rows = list_artifact_registry(limit=500)
-        result = backfill_champion_pointers_from_model_pool(
-            model_pool_versions=model_pool_versions,
-            registry_rows=registry_rows,
-            reason=reason,
-            create_missing_artifacts=True,
-        )
-        return {
-            **result,
-            "attempted": True,
-            "triggered_by": [record.get("artifact_id") for record in production_records],
-        }
-    except Exception as exc:  # noqa: BLE001 - retrain followup remains authoritative.
-        logger.warning("[RetrainFollowup] champion pointer reconcile failed: %s", exc)
-        return {
-            "attempted": True,
-            "status": "error",
-            "reason": reason,
-            "triggered_by": [record.get("artifact_id") for record in production_records],
-            "errors": [str(exc)],
-        }
-
-
 @router.post("/retrain/followup")
 async def retrain_followup(payload: RetrainFollowupPayload, request: Request) -> dict[str, Any]:
     _check_token(request)
@@ -420,13 +336,12 @@ async def retrain_followup(payload: RetrainFollowupPayload, request: Request) ->
             "trained_at": payload.trained_at,
             "lock_key": payload.lock_key,
             "run_date": payload.run_date,
-            "is_monthly": payload.is_monthly,
             "candidate_type": payload.candidate_type,
             "batch_count": payload.batch_count,
             "gcs_prefix": payload.gcs_prefix,
             "candidate_version": payload.candidate_version,
             "challenger_registrations": payload.challenger_registrations,
-            "promotion_allowed_models": payload.promotion_allowed_models,
+            "promotion_eligible_models": payload.promotion_eligible_models,
             "oof_promotion_evidence": payload.oof_promotion_evidence,
             "oof_lifecycle_resume": payload.oof_lifecycle_resume,
             "window_id": payload.window_id,
@@ -494,10 +409,6 @@ async def retrain_followup(payload: RetrainFollowupPayload, request: Request) ->
             "written": 0,
             "errors": [str(exc)],
         }
-    champion_pointer_reconcile = _backfill_champion_pointers_after_cutover(
-        artifact_records=artifact_records,
-        reason=f"retrain_followup_artifact_lifecycle:{idem_key}",
-    )
     oof_lifecycle_resume: dict[str, Any] | None = None
     if payload.status == "completed" and not payload.error and payload.oof_lifecycle_resume:
         try:
@@ -511,24 +422,12 @@ async def retrain_followup(payload: RetrainFollowupPayload, request: Request) ->
                 detail=f"OOF full-fit completed but lifecycle resume failed: {exc}",
             ) from exc
 
-    monthly_oof_lifecycle: dict[str, Any] | None = None
-    if payload.is_monthly and payload.status == "completed" and not payload.error:
-        try:
-            monthly_oof_lifecycle = await _run_monthly_oof_lifecycle(payload.run_date)
-
-        except Exception as exc:  # noqa: BLE001 - callback must retry until OOF handoff is durable.
-            logger.exception("[RetrainFollowup] monthly OOF lifecycle handoff failed")
-            raise HTTPException(
-                status_code=502,
-                detail=f"monthly retrain completed but OOF lifecycle handoff failed: {exc}",
-            ) from exc
     scheduler_callback = await _callback_worker_scheduler(payload)
     logger.info(
         f"[RetrainFollowup] {idem_key} status={payload.status} write={write_status} "
         f"gcs={payload.gcs_prefix} wid={payload.window_id} lock={payload.lock_key} "
         f"telemetry={telemetry_status['recorded']}/{len(payload.modal_telemetry or [])} "
         f"artifact_registry={artifact_registry['written']}/{artifact_registry['attempted']} "
-        f"champion_pointer_reconcile={champion_pointer_reconcile.get('status', champion_pointer_reconcile.get('reason'))} "
         f"scheduler_callback={scheduler_callback}"
     )
 
@@ -542,16 +441,13 @@ async def retrain_followup(payload: RetrainFollowupPayload, request: Request) ->
         "modal_telemetry": telemetry_status,
         "foundation_evidence": foundation_evidence,
         "artifact_registry": artifact_registry,
-        "champion_pointer_reconcile": champion_pointer_reconcile,
         "scheduler_callback": scheduler_callback,
-        "monthly_oof_lifecycle": monthly_oof_lifecycle,
         "oof_lifecycle_resume": oof_lifecycle_resume,
         "summary": {
             "run_id": payload.run_id,
             "trained_at": payload.trained_at,
             "lock_key": payload.lock_key,
             "run_date": payload.run_date,
-            "is_monthly": payload.is_monthly,
             "candidate_type": payload.candidate_type,
             "batch_count": payload.batch_count,
             "gcs_prefix": payload.gcs_prefix,
@@ -562,21 +458,21 @@ async def retrain_followup(payload: RetrainFollowupPayload, request: Request) ->
     }
 
 
-def _reconcile_monthly_completion_payload(
+def _reconcile_release_completion_payload(
     payload_dict: dict[str, Any],
     *,
     dataset_snapshot: dict[str, Any],
 ) -> dict[str, Any]:
-    if (
-        payload_dict.get("is_monthly") is not True
-        or str(payload_dict.get("candidate_type") or "") != "monthly_release"
-    ):
+    if str(payload_dict.get("candidate_type") or "") != "oof_full_fit_release":
         return {"attempted": False, "status": "not_applicable"}
+    resume = payload_dict.get("oof_lifecycle_resume")
+    if not isinstance(resume, dict) or resume.get("schema_version") != "active8-oof-lifecycle-resume-v1":
+        raise ValueError("release_completion_rebuild_resume_identity_invalid")
 
     stages = payload_dict.get("stages")
     if not isinstance(stages, dict):
-        raise ValueError("monthly_completion_reconciliation_stages_invalid")
-    current_completion = stages.get("monthly_model_completion")
+        raise ValueError("release_completion_rebuild_stages_invalid")
+    current_completion = stages.get("release_model_completion")
     if isinstance(current_completion, dict) and current_completion.get("status") == "complete":
         return {"attempted": False, "status": "already_complete"}
 
@@ -600,10 +496,10 @@ def _reconcile_monthly_completion_payload(
         model: registrations.get(model) or lifecycle_results.get(model) or {}
         for model in ACTIVE8_MODEL_NAMES
     }
-    completion = reconcile_monthly_artifact_receipts_from_immutable_metadata(
+    completion = reconcile_release_artifact_receipts_from_immutable_metadata(
         contract_stage=(
-            stages.get("monthly_training_contract")
-            if isinstance(stages.get("monthly_training_contract"), dict)
+            stages.get("release_training_contract")
+            if isinstance(stages.get("release_training_contract"), dict)
             else {}
         ),
         run_date=str(payload_dict.get("run_date") or ""),
@@ -611,7 +507,7 @@ def _reconcile_monthly_completion_payload(
         raw_receipts=raw_receipts,
     )
     completion["reconciliation"] = {
-        "schema_version": "monthly-artifact-completion-reconciliation-v1",
+        "schema_version": "active8-release-completion-rebuild-v1",
         "source": "webhook_log+immutable_gcs_metadata+immutable_dataset_snapshot",
         "original_callback_status": payload_dict.get("status"),
         "original_callback_error": payload_dict.get("error"),
@@ -619,7 +515,7 @@ def _reconcile_monthly_completion_payload(
         "production_effect": False,
         "retrain_started": False,
     }
-    stages["monthly_model_completion"] = completion
+    stages["release_model_completion"] = completion
     payload_dict["status"] = "completed"
     payload_dict["error"] = None
     return {
@@ -630,12 +526,12 @@ def _reconcile_monthly_completion_payload(
     }
 
 
-@router.post("/retrain/followup/registry-backfill")
-async def retrain_followup_registry_backfill(req: RetrainFollowupRegistryBackfillRequest, request: Request) -> dict[str, Any]:
-    """Backfill artifact registry from an existing followup payload only.
+@router.post("/retrain/followup/release-rebuild")
+async def retrain_followup_release_rebuild(req: RetrainFollowupReleaseRebuildRequest, request: Request) -> dict[str, Any]:
+    """Rebuild the canonical Active-8 registry from one immutable followup payload.
 
     This intentionally does not update webhook_log.received_at, release retrain
-    locks, or callback scheduler state. It is for safe registry bootstrapping
+    locks, or callback scheduler state. It is for deterministic registry reconstruction
     after the registry table is introduced.
     """
     _check_token(request)
@@ -685,14 +581,14 @@ async def retrain_followup_registry_backfill(req: RetrainFollowupRegistryBackfil
     stages["dataset_snapshot"] = snapshot
     payload_dict = hydrate_retrain_followup_artifact_metadata(payload_dict)
     try:
-        monthly_completion_reconciliation = _reconcile_monthly_completion_payload(
+        release_completion_rebuild = _reconcile_release_completion_payload(
             payload_dict,
             dataset_snapshot=snapshot,
         )
     except ValueError as exc:
         raise HTTPException(
             status_code=409,
-            detail=f"monthly completion reconciliation failed: {exc}",
+            detail=f"Active-8 release completion rebuild failed: {exc}",
         ) from exc
     artifact_records = build_artifact_records_from_retrain_followup(payload_dict)
     result = {
@@ -706,18 +602,18 @@ async def retrain_followup_registry_backfill(req: RetrainFollowupRegistryBackfil
             **upsert_artifact_records(artifact_records),
             "dry_run": False,
         }
-        if monthly_completion_reconciliation.get("status") == "complete":
+        if release_completion_rebuild.get("status") == "complete":
             expected_models = set(ACTIVE8_MODEL_NAMES)
             actual_models = {str(row.get("model_name") or "") for row in artifact_records}
             if actual_models != expected_models or len(artifact_records) != len(expected_models):
                 raise HTTPException(
                     status_code=409,
-                    detail="monthly completion reconciliation artifact set mismatch",
+                    detail="Active-8 release completion rebuild artifact set mismatch",
                 )
             if result.get("errors") or result.get("written") != len(expected_models):
                 raise HTTPException(
                     status_code=502,
-                    detail=f"monthly completion reconciliation registry write failed: {result}",
+                    detail=f"Active-8 release completion rebuild registry write failed: {result}",
                 )
             expected_by_id = {str(row["artifact_id"]): row for row in artifact_records}
             readback = list_artifacts_by_ids(list(expected_by_id))
@@ -735,19 +631,19 @@ async def retrain_followup_registry_backfill(req: RetrainFollowupRegistryBackfil
                 raise HTTPException(
                     status_code=502,
                     detail=(
-                        "monthly completion reconciliation registry readback mismatch:"
+                        "Active-8 release completion rebuild registry readback mismatch:"
                         + ",".join(sorted(mismatches))
                     ),
                 )
 
-            receipt_id = f"{run_id}:monthly-artifact-completion-reconciliation-v1"
+            receipt_id = f"{run_id}:active8-release-completion-rebuild-v1"
             receipt_summary = json.dumps(
                 {
-                    "schema_version": "monthly-artifact-completion-reconciliation-v1",
+                    "schema_version": "active8-release-completion-rebuild-v1",
                     "source_event_run_id": run_id,
                     "run_date": run_date,
                     "dataset_snapshot_id": snapshot.get("snapshot_id"),
-                    "contract_checksum": monthly_completion_reconciliation.get("contract_checksum"),
+                    "contract_checksum": release_completion_rebuild.get("contract_checksum"),
                     "artifacts": [
                         {
                             "artifact_id": artifact_id,
@@ -770,7 +666,7 @@ async def retrain_followup_registry_backfill(req: RetrainFollowupRegistryBackfil
                 """
                 INSERT INTO webhook_log
                   (idempotency_key, received_at, source, action, payload_summary, status, downstream_notes)
-                VALUES (?, ?, 'ml-controller', 'monthly_artifact_completion_reconciliation', ?, 'completed',
+                VALUES (?, ?, 'ml-controller', 'active8_release_completion_rebuild', ?, 'completed',
                         'append_only_no_retrain_no_scheduler_callback')
                 ON CONFLICT(idempotency_key) DO NOTHING
                 """,
@@ -781,7 +677,7 @@ async def retrain_followup_registry_backfill(req: RetrainFollowupRegistryBackfil
                 SELECT payload_summary, status
                 FROM webhook_log
                 WHERE idempotency_key=?
-                  AND action='monthly_artifact_completion_reconciliation'
+                  AND action='active8_release_completion_rebuild'
                 LIMIT 2
                 """,
                 [receipt_id],
@@ -793,10 +689,10 @@ async def retrain_followup_registry_backfill(req: RetrainFollowupRegistryBackfil
             ):
                 raise HTTPException(
                     status_code=502,
-                    detail="monthly completion reconciliation receipt readback mismatch",
+                    detail="Active-8 release completion rebuild receipt readback mismatch",
                 )
-            monthly_completion_reconciliation["receipt_id"] = receipt_id
-            monthly_completion_reconciliation["production_effect"] = False
+            release_completion_rebuild["receipt_id"] = receipt_id
+            release_completion_rebuild["production_effect"] = False
 
     return {
         "status": "ok",
@@ -809,7 +705,7 @@ async def retrain_followup_registry_backfill(req: RetrainFollowupRegistryBackfil
             "retrain_started": False,
         },
         "artifact_registry": result,
-        "monthly_completion_reconciliation": monthly_completion_reconciliation,
+        "release_completion_rebuild": release_completion_rebuild,
         "dataset_snapshot": {
             "snapshot_id": snapshot.get("snapshot_id"),
             "business_date": snapshot.get("business_date"),

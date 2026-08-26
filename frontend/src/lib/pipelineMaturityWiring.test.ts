@@ -10,7 +10,8 @@ const api = fs.readFileSync(path.join(root, 'lib/api.ts'), 'utf8')
 const contract = fs.readFileSync(path.join(root, 'lib/pipelineMaturityContract.ts'), 'utf8')
 
 test('Pipeline page renders maturity evidence after the daily flow', () => {
-  assert(page.includes('dashboardV4Api.pipelineMaturity(recDate)'))
+  assert(page.includes('dashboardV4Api.pipelineMaturity(today)'))
+  assert(!page.includes('dashboardV4Api.pipelineMaturity(recDate)'))
   assert(page.includes('<PipelineMaturityContribution'))
   assert(page.indexOf('<PipelineMaturityContribution') > page.indexOf('<ExecutionFlowColumn'))
   assert(!page.includes('RecommendationSummaryColumn'))

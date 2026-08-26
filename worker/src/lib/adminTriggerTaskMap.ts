@@ -23,7 +23,7 @@ export interface TriggerDeps {
   runWeeklyModelArtifactCandidateValidation: () => Promise<any>
   runWeeklyModelArtifactValidation: () => Promise<any>
   runWeeklyAlphaQuality: () => Promise<any>
-  runWeeklyLifecycleCheck: () => Promise<any>
+  runWeeklyModelRegistryCheck: () => Promise<any>
   runWeeklyOptunaResearch: (runDate?: string) => Promise<any>
   runMonthlyOptunaResearch: (runDate?: string) => Promise<any>
   runL4AlphaEvRefresh: (runDate?: string, cadence?: 'weekly' | 'monthly') => Promise<any>

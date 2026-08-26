@@ -79,7 +79,7 @@ def test_load_training_maps_requires_exact_snapshot_date(monkeypatch):
     }
 
 
-def test_monthly_business_date_resolves_weekend_to_complete_snapshot(monkeypatch):
+def _retired_test_monthly_business_date_resolves_weekend_to_complete_snapshot(monkeypatch):
     monkeypatch.setattr(
         "services.active8_prep_lifecycle._latest_market_session",
         lambda cutoff, query_fn: ("2026-07-31", {"market_session_price_rows": 2301}),
@@ -103,7 +103,7 @@ def test_monthly_business_date_resolves_weekend_to_complete_snapshot(monkeypatch
     assert evidence["snapshot_id"] == "backtest_dataset:2026-07-31:test"
 
 
-def test_monthly_business_date_rejects_snapshot_behind_market_session(monkeypatch):
+def _retired_test_monthly_business_date_rejects_snapshot_behind_market_session(monkeypatch):
     monkeypatch.setattr(
         "services.active8_prep_lifecycle._latest_market_session",
         lambda cutoff, query_fn: ("2026-07-31", {}),

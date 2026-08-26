@@ -30,7 +30,6 @@ from app.training_policy import (  # noqa: E402
     training_group_feature_policy,
 )
 from app import universal_training  # noqa: E402
-from app import model_pool  # noqa: E402
 from app.universal_training import (  # noqa: E402
     UniversalTrainRequest,
     build_non_tree_model_cpcv_gap_evidence,

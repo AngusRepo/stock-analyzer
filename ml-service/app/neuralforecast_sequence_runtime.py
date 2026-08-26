@@ -25,7 +25,7 @@ from .prep_lineage import (
     collect_prep_lineage,
     validate_prep_lineage_for_registration,
 )
-from .training_promotion_policy import resolve_training_promotion_intent
+
 from .research_benchmarks.common import cpcv_proxy_pbo, data_slice_report, direction_accuracy, load_sequence_dataset, rank_ic
 from .sequence_training import (
     CANONICAL_ROUNDTRIP_COST_BPS,
@@ -1132,7 +1132,7 @@ def train_neuralforecast_sequence_artifact(payload: dict[str, Any], *, model_nam
         runtime_device = "cuda" if torch.cuda.is_available() else "cpu"
     except ImportError:
         runtime_device = "cpu"
-    if payload.get("monthly_training_contract") is not None and runtime_device != "cuda":
+    if payload.get("release_training_contract") is not None and runtime_device != "cuda":
         raise RuntimeError(f"monthly_training_gpu_required:{model_name}")
     max_series = int(payload.get("max_series") or payload.get("data_slice", {}).get("max_series") or DEFAULT_MAX_SERIES)
     training_options = _resolve_nf_training_options(payload, model_name)
@@ -1148,10 +1148,8 @@ def train_neuralforecast_sequence_artifact(payload: dict[str, Any], *, model_nam
         or payload.get("batch_count")
         or DEFAULT_BATCH_COUNT
     )
-    promote_to_active, _promotion_reason = resolve_training_promotion_intent(payload, model_name=model_name)
+
     generation_mode = str(payload.get("generation_mode") or "native").strip().lower()
-    if generation_mode == "purged_oof" and promote_to_active:
-        raise ValueError("oof_fold_artifact_cannot_be_promoted_to_production")
     payload.setdefault("batch_count", int(payload.get("batch_count") or DEFAULT_BATCH_COUNT))
 
     dataset_source = load_sequence_dataset(payload)
@@ -1373,7 +1371,7 @@ def train_neuralforecast_sequence_artifact(payload: dict[str, Any], *, model_nam
             max_stale_days=payload.get("max_prep_stale_days"),
             label_horizon_days=payload.get("label_horizon_days"),
         )
-        if promote_to_active
+        if str(payload.get("candidate_type") or "") == "oof_full_fit_release"
         and dataset_source.source.startswith("gs://")
         and gcs_prefix == "universal"
         and payload.get("disable_stale_prep_guard") is not True

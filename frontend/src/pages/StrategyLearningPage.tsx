@@ -91,6 +91,35 @@ const STRATEGY_HEALTH_SECTIONS: Array<{
   },
 ]
 
+type StrategyLifecycleLane = 'formal' | 'learning'
+
+const STRATEGY_LIFECYCLE_LANES: Array<{
+  key: StrategyLifecycleLane
+  label: string
+  description: string
+  className: string
+  countClassName: string
+}> = [
+  {
+    key: 'formal',
+    label: '正式策略',
+    description: '目前具 production lifecycle 的策略；四種健康狀態只描述待買資格與資料品質。',
+    className: 'border-emerald-400/20 bg-emerald-400/[0.025]',
+    countClassName: 'border-emerald-400/25 bg-emerald-400/[0.08] text-emerald-200',
+  },
+  {
+    key: 'learning',
+    label: 'Shadow / Learning strategies',
+    description: '候選、影子與研究策略；持續累積證據，但不會被誤標成正式 production。',
+    className: 'border-violet-400/20 bg-violet-400/[0.025]',
+    countClassName: 'border-violet-400/25 bg-violet-400/[0.08] text-violet-200',
+  },
+]
+
+function strategyLifecycleLane(row: LearningRow): StrategyLifecycleLane {
+  return row.status === 'active' ? 'formal' : 'learning'
+}
+
 function strategyHealthBucket(row: LearningRow, gate?: StrategyPromotionGate): StrategyHealthBucket {
   if (gate?.allocation_eligible === true) return 'healthy'
   if (
@@ -548,68 +577,89 @@ function StrategyHealthBoard({
   selectedKey: string | null
   onSelect: (key: string) => void
 }) {
-  const groups = STRATEGY_HEALTH_SECTIONS.map((section) => ({
-    ...section,
-    rows: rows.filter((row) => {
-      const key = `${row.id}:${row.version}`
-      return strategyHealthBucket(row, gateById.get(key)) === section.key
-    }),
-  }))
+  const lanes = STRATEGY_LIFECYCLE_LANES.map((lane) => {
+    const laneRows = rows.filter((row) => strategyLifecycleLane(row) === lane.key)
+    return {
+      ...lane,
+      rows: laneRows,
+      groups: STRATEGY_HEALTH_SECTIONS.map((section) => ({
+        ...section,
+        rows: laneRows.filter((row) => {
+          const key = `${row.id}:${row.version}`
+          return strategyHealthBucket(row, gateById.get(key)) === section.key
+        }),
+      })),
+    }
+  })
 
   return (
     <section className="rounded-2xl border border-slate-700/80 bg-slate-950/70 p-4">
       <header className="flex flex-wrap items-start justify-between gap-3">
         <div>
-          <h2 className="font-semibold text-slate-100">正式策略健康分流</h2>
-          <p className="mt-1 max-w-3xl text-xs leading-5 text-slate-500">所有非退役策略直接依資料與績效狀態分流；點選策略後，下方工作區會顯示同一個 id:version 的完整證據。</p>
+          <h2 className="font-semibold text-slate-100">策略健康分流</h2>
+          <p className="mt-1 max-w-4xl text-xs leading-5 text-slate-500">左側只放正式 production 策略，右側只放 Shadow／Learning；兩欄各自依待買資格、證據累積、資料待修與績效降溫分流。點選後，下方工作區仍以同一個 id:version 讀取完整證據。</p>
         </div>
         <Badge variant="outline" className="border-slate-700 bg-slate-900 text-slate-300">共 {rows.length} 個策略</Badge>
       </header>
 
-      <div className="mt-4 grid gap-3 md:grid-cols-2 2xl:grid-cols-4">
-        {groups.map((group) => (
-          <section key={group.key} className={`min-w-0 rounded-xl border p-3 ${group.className}`}>
-            <header className="flex items-start justify-between gap-2">
+      <div className="mt-4 grid gap-4 xl:grid-cols-2">
+        {lanes.map((lane) => (
+          <section key={lane.key} className={`min-w-0 rounded-2xl border p-3 ${lane.className}`}>
+            <header className="flex min-h-[76px] items-start justify-between gap-3 border-b border-slate-800/80 pb-3">
               <div>
-                <h3 className="text-sm font-semibold text-slate-100">{group.label}</h3>
-                <p className="mt-1 text-[11px] leading-4 text-slate-500">{group.description}</p>
+                <h3 className="text-base font-semibold text-slate-100">{lane.label}</h3>
+                <p className="mt-1 text-xs leading-5 text-slate-500">{lane.description}</p>
               </div>
-              <Badge variant="outline" className={`sv-num shrink-0 ${group.countClassName}`}>{group.rows.length}</Badge>
+              <Badge variant="outline" className={`sv-num shrink-0 ${lane.countClassName}`}>{lane.rows.length}</Badge>
             </header>
 
-            <div className="mt-3 space-y-2">
-              {group.rows.map((row) => {
-                const key = `${row.id}:${row.version}`
-                const gate = gateById.get(key)
-                const weight = Number(policyWeights[row.id] ?? 0)
-                const selected = selectedKey === key
-                return (
-                  <button
-                    key={key}
-                    type="button"
-                    aria-pressed={selected}
-                    aria-label={`查看策略 ${row.name}`}
-                    onClick={() => onSelect(key)}
-                    className={[
-                      'w-full rounded-lg border px-3 py-2.5 text-left transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-cyan-300/70',
-                      selected ? 'border-cyan-300/40 bg-cyan-300/[0.09]' : 'border-slate-800/90 bg-slate-950/65 hover:border-slate-700 hover:bg-slate-900/75',
-                    ].join(' ')}
-                  >
-                    <span className="flex min-w-0 items-start justify-between gap-2">
-                      <span className={['min-w-0 line-clamp-2 text-xs font-semibold', selected ? 'text-cyan-100' : 'text-slate-200'].join(' ')}>{row.name}</span>
-                      <span className="sv-num shrink-0 text-[10px] text-slate-400">{Number.isFinite(weight) && weight > 0 ? pct(weight) : '0%'}</span>
-                    </span>
-                    <span className="mt-1.5 flex flex-wrap items-center gap-1">
-                      <span className={['rounded border px-1.5 py-0.5 text-[10px]', statusClass(row.status)].join(' ')}>{row.status === 'active' ? '正式' : '學習'} · {statusLabel(row.status)}</span>
-                    </span>
-                    <span className="mt-2 flex items-center justify-between gap-2 text-[10px] text-slate-500">
-                      <span className="sv-num">{row.learning.rolling_reward_dates} mature dates</span>
-                      <span className="sv-num">{gate?.missing_evidence.length ?? 0} gaps</span>
-                    </span>
-                  </button>
-                )
-              })}
-              {!group.rows.length && <p className="rounded-lg border border-dashed border-slate-800 px-3 py-4 text-center text-[11px] text-slate-600">此分類目前沒有策略。</p>}
+            <div className="mt-3 grid gap-3 2xl:grid-cols-2">
+              {lane.groups.map((group) => (
+                <section key={`${lane.key}:${group.key}`} className={`min-w-0 rounded-xl border p-3 ${group.className}`}>
+                  <header className="flex items-start justify-between gap-2">
+                    <div>
+                      <h4 className="text-sm font-semibold text-slate-100">{group.label}</h4>
+                      <p className="mt-1 text-[11px] leading-4 text-slate-500">{group.description}</p>
+                    </div>
+                    <Badge variant="outline" className={`sv-num shrink-0 ${group.countClassName}`}>{group.rows.length}</Badge>
+                  </header>
+
+                  <div className="mt-3 space-y-2">
+                    {group.rows.map((row) => {
+                      const key = `${row.id}:${row.version}`
+                      const gate = gateById.get(key)
+                      const weight = Number(policyWeights[row.id] ?? 0)
+                      const selected = selectedKey === key
+                      return (
+                        <button
+                          key={key}
+                          type="button"
+                          aria-pressed={selected}
+                          aria-label={`查看策略 ${row.name}`}
+                          onClick={() => onSelect(key)}
+                          className={[
+                            'w-full rounded-lg border px-3 py-2.5 text-left transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-cyan-300/70',
+                            selected ? 'border-cyan-300/40 bg-cyan-300/[0.09]' : 'border-slate-800/90 bg-slate-950/65 hover:border-slate-700 hover:bg-slate-900/75',
+                          ].join(' ')}
+                        >
+                          <span className="flex min-w-0 items-start justify-between gap-2">
+                            <span className={['min-w-0 line-clamp-2 text-xs font-semibold', selected ? 'text-cyan-100' : 'text-slate-200'].join(' ')}>{row.name}</span>
+                            <span className="sv-num shrink-0 text-[10px] text-slate-400">{Number.isFinite(weight) && weight > 0 ? pct(weight) : '0%'}</span>
+                          </span>
+                          <span className="mt-1.5 flex flex-wrap items-center gap-1">
+                            <span className={['rounded border px-1.5 py-0.5 text-[10px]', statusClass(row.status)].join(' ')}>{lane.key === 'formal' ? '正式' : '學習'} · {statusLabel(row.status)}</span>
+                          </span>
+                          <span className="mt-2 flex items-center justify-between gap-2 text-[10px] text-slate-500">
+                            <span className="sv-num">{row.learning.rolling_reward_dates} mature dates</span>
+                            <span className="sv-num">{gate?.missing_evidence.length ?? 0} gaps</span>
+                          </span>
+                        </button>
+                      )
+                    })}
+                    {!group.rows.length && <p className="rounded-lg border border-dashed border-slate-800 px-3 py-4 text-center text-[11px] text-slate-600">此分類目前沒有策略。</p>}
+                  </div>
+                </section>
+              ))}
             </div>
           </section>
         ))}
@@ -617,7 +667,6 @@ function StrategyHealthBoard({
     </section>
   )
 }
-
 function StrategyLineageInspector({
   row,
   gate,

@@ -1,41 +1,21 @@
-"""Model health view backed by model_pool.json.
-
-model_health_daily is a legacy D1 snapshot table. Runtime health, IC, and
-lifecycle status are owned by universal/model_pool.json.
-"""
+"""Report-friendly health read model backed by exact Learning-D1 champion identities."""
 
 from __future__ import annotations
 
-import json
-import os
 from typing import Any
 
-from google.cloud import storage
-
-
-def _bucket_name() -> str:
-    return os.environ.get("GCS_BUCKET_NAME", "").strip()
+from services.model_serving_resolver import load_d1_champion_pool
 
 
 def _as_float(value: Any) -> float | None:
     try:
-        out = float(value)
+        return float(value)
     except (TypeError, ValueError):
         return None
-    return out
 
 
 def read_model_pool_health_rows() -> list[dict[str, Any]]:
-    """Return a report-friendly model health view from model_pool.json."""
-    bucket_name = _bucket_name()
-    if not bucket_name:
-        return []
-
-    blob = storage.Client().bucket(bucket_name).blob("universal/model_pool.json")
-    if not blob.exists():
-        return []
-
-    pool = json.loads(blob.download_as_text().lstrip("\ufeff"))
+    pool = load_d1_champion_pool()
     rows: list[dict[str, Any]] = []
     for model_name, raw in sorted((pool.get("models") or {}).items()):
         if not isinstance(raw, dict):
@@ -49,7 +29,7 @@ def read_model_pool_health_rows() -> list[dict[str, Any]]:
             "profit_factor": None,
             "expectancy": None,
             "lifecycle_status": raw.get("status") or "unknown",
-            "lifecycle_weight": raw.get("weight_mult", 1.0),
+            "lifecycle_weight": 1.0 if raw.get("serving_eligible") is True else 0.0,
             "ic_4w_avg": ic_4w,
             "rolling_ic": rolling_ic,
             "ic_mean": ic_4w if ic_4w is not None else rolling_ic,
@@ -58,7 +38,9 @@ def read_model_pool_health_rows() -> list[dict[str, Any]]:
             "last_ic_sample_count": raw.get("last_ic_sample_count") or 0,
             "last_ic_diagnostics": raw.get("last_ic_diagnostics") or {},
             "weekly_ic_count": len(raw.get("weekly_ic") or []),
-            "metadata_exists": raw.get("metadata_exists"),
-            "source_of_truth": "model_pool.json",
+            "metadata_exists": bool(raw.get("metadata_path")),
+            "serving_artifact_id": raw.get("serving_artifact_id"),
+            "serving_block_reason": raw.get("serving_block_reason"),
+            "source_of_truth": "model_champion_pointers/model_artifact_registry",
         })
     return rows

@@ -110,7 +110,10 @@ def _prediction(signal="HOLD"):
             "signal": signal,
             "confidence": 0.76,
             "avg_rank": 0.72,
-            "signal_source": "ensemble_v2_topk_policy",
+            "signal_source": "active8_ensemble_artifact",
+            "probability_positive_net_return": 0.76,
+            "artifact_checksum": "e" * 64,
+            "validation": {"decision": "PASS"},
         },
         "models": {"XGBoost": {"direction": "up"}, "ExtraTrees": {"direction": "up"}},
     }
@@ -375,7 +378,6 @@ def test_materialize_l4_alpha_ev_rejects_s12_context_in_selection_owner():
 
 
 def test_filter_and_score_keeps_valid_l4_base_when_fusion_residual_abstains(monkeypatch):
-    monkeypatch.setattr(recommendation_service, "_is_use_ensemble_v2", lambda: True)
     screener_rec = {
         "id": 1,
         "date": "2026-07-06",

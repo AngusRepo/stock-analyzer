@@ -115,8 +115,6 @@ def build_artifact_lifecycle_repair_packet(
     for model_name, previous_version in sorted(kept_versions.items()):
         if model_name not in ic_summary:
             continue
-        if model_name == "StackingRank":
-            continue
         actions.append(_approval_action(
             model_name=model_name,
             version=str(run.get("candidate_version") or ""),

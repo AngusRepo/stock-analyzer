@@ -15,12 +15,12 @@ import {
   type SchedulerExecutionTicketStatus,
 } from './schedulerExecutionTickets'
 
-type WeeklyLifecycleRunner = () => Promise<unknown>
+type WeeklyRegistryRunner = () => Promise<unknown>
 
-export function requireWeeklyLifecycleDryRunSuccess(result: unknown): string {
+export function requireWeeklyRegistryReadbackSuccess(result: unknown): string {
   const summary = typeof result === 'string' ? result.trim() : ''
-  if (!summary.startsWith('model_pool dry_run=')) {
-    throw new Error(`weekly lifecycle dry-run failed: ${summary || 'non-success response'}`)
+  if (!summary.startsWith('model_registry readback=ok')) {
+    throw new Error(`weekly model registry readback failed: ${summary || 'non-success response'}`)
   }
   return summary
 }
@@ -45,18 +45,18 @@ async function putManualRunLog(
 
 export async function runWeeklyCleanupClosure(
   env: Bindings,
-  lifecycleRunner?: WeeklyLifecycleRunner,
+  registryRunner?: WeeklyRegistryRunner,
 ): Promise<string> {
   const cleanup = await runWeeklyCleanup(env)
-  const lifecycle = lifecycleRunner
-    ? await lifecycleRunner()
-    : await (await import('./controllerWorkflows')).runWeeklyLifecycleCheck(env)
-  const lifecycleSummary = requireWeeklyLifecycleDryRunSuccess(lifecycle)
+  const registryReadback = registryRunner
+    ? await registryRunner()
+    : await (await import('./controllerWorkflows')).runWeeklyModelRegistryCheck(env)
+  const registrySummary = requireWeeklyRegistryReadbackSuccess(registryReadback)
   const maintenance = await runWeeklyLocalMaintenance(env)
   if (!cleanup.ok || !maintenance.ok) {
     throw new Error(`weekly cleanup failed ${JSON.stringify({ cleanup, maintenance })}`)
   }
-  return `weekly_cleanup_v2 cleanup=${JSON.stringify(cleanup)} maintenance=${JSON.stringify(maintenance)} lifecycle dry-run=${lifecycleSummary}`
+  return `weekly_cleanup_v2 cleanup=${JSON.stringify(cleanup)} maintenance=${JSON.stringify(maintenance)} model-registry=${registrySummary}`
 }
 
 type DurableTaskResult = {

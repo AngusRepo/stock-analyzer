@@ -1,4 +1,4 @@
-﻿"""
+"""
 Adaptive Random Forest aggregation layer.
 
 Inputs are the 8 active alpha prediction models only. State-space models
@@ -14,7 +14,7 @@ import pickle
 from typing import Optional, TYPE_CHECKING
 import numpy as np
 
-from .model_pool import ALPHA_PREDICTION_MODELS
+from .model_serving_contract import ALPHA_PREDICTION_MODELS
 
 if TYPE_CHECKING:
     from .models import ModelPrediction

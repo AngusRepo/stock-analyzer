@@ -18,7 +18,6 @@ const REQUIRED_TASKS: Record<CadenceReadiness, string[]> = {
     'storage-capacity-report',
     'monthly-strategy-mining',
     'monthly-optuna',
-    'monthly-retrain',
     'active8-oof-monthly',
   ],
 }
@@ -29,7 +28,6 @@ const OBSERVED_OPTIONAL_TASKS: Record<CadenceReadiness, string[]> = {
     'sector-leaders',
     'adaptive-meta-policy-replay',
     'linucb-multiplier-replay',
-    'weekly-drift-retrain',
   ],
   monthly: [],
 }

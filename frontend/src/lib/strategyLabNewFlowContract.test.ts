@@ -16,6 +16,8 @@ assert(page.includes('策略學習與報酬帳本'), 'Strategy Lab should expose
 assert(page.includes('StrategyHealthBoard'), 'Strategy Lab should expose an always-visible strategy health board')
 assert(page.includes('StrategyLineageInspector'), 'Strategy Lab should expose a production lineage inspector')
 assert(page.includes('STRATEGY_HEALTH_SECTIONS') && page.includes('group.rows.length'), 'Health board must group strategies and show a count for every canonical health bucket')
+assert(page.includes('STRATEGY_LIFECYCLE_LANES') && page.includes("key: 'formal'") && page.includes("key: 'learning'"), 'Health board must split formal production from Shadow/Learning before applying health buckets')
+assert(page.includes('strategyLifecycleLane(row) === lane.key') && page.includes('xl:grid-cols-2'), 'Formal and Shadow/Learning lanes must stay in visible left/right columns')
 assert(page.includes('rows={orderedRows}'), 'Health board must render every non-retired strategy without a hidden filter')
 assert(!page.includes('StrategyViewFilter') && !page.includes('queueRows'), 'The old filtered queue must not hide strategy rows')
 assert(page.includes("row.status !== 'retired'"), 'Retired strategies should stay outside the workspace')

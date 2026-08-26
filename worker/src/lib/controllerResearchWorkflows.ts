@@ -914,13 +914,6 @@ export function finLabBackfillModalTriggerEnabled(env: Bindings): boolean {
     truthyFlag((env as any).FINLAB_V4_BACKFILL_MODAL_TRIGGER_ENABLED)
 }
 
-export function universalRetrainModalTriggerEnabled(env: Bindings): boolean {
-  return truthyFlag((env as any).UNIVERSAL_RETRAIN_MODAL_TRIGGER_ENABLED) ||
-    truthyFlag((env as any).RETRAIN_UNIVERSAL_MODAL_TRIGGER_ENABLED) ||
-    String((env as any).UNIVERSAL_RETRAIN_EXECUTOR ?? '').trim().toLowerCase() === 'modal' ||
-    String((env as any).RETRAIN_UNIVERSAL_EXECUTOR ?? '').trim().toLowerCase() === 'modal'
-}
-
 function finLabBackfillYears(env: Bindings): number {
   const years = parsePositiveInt((env as any).FINLAB_BACKFILL_YEARS) ?? 3
   if (years !== 3 && years !== 5) {
@@ -1299,24 +1292,17 @@ export async function runOptunaQueueProcessor(env: Bindings) {
     await releaseOptunaQueueProcessorD1Lock(opsDb, lockRunId)
   }
 }
-export async function runWeeklyLifecycleCheck(env: Bindings) {
+export async function runWeeklyModelRegistryCheck(env: Bindings) {
   requireController(env)
-
-  const resp = await controllerFetch(env, '/model_pool/promote_check', {
-    method: 'POST',
-    jsonBody: { apply: false, confirm: false },
-    timeoutMs: 60_000,
-  }).catch(() => null)
-  if (!resp?.ok) return 'failed'
-
-  const result = await resp.json() as Record<string, any>
-  if (result.status === 'failed' || result.status === 'error') return `failed: ${result.error ?? result.status}`
-
-  const transitions = (result.actions ?? [])
-    .filter((action: any) => !String(action.transition ?? '').endsWith('_blocked'))
-    .map((action: any) => `${action.model}:${action.transition}`)
-    .join(',') || 'none'
-  return `model_pool dry_run=${result.actions_count ?? 0} [${transitions}]`
+  const result = await controllerJson<Record<string, any>>(
+    env,
+    '/model_pool/artifact_registry/promotion_queue',
+    { timeoutMs: 60_000 },
+  )
+  const rows = Array.isArray(result.queue) ? result.queue : []
+  const autoReady = rows.filter((row: any) => row.promotion_decision === 'auto_promote_candidate').length
+  const blocked = rows.filter((row: any) => String(row.promotion_decision ?? '').includes('blocked')).length
+  return `model_registry readback=ok queue=${rows.length} auto=${autoReady} blocked=${blocked}`
 }
 
 export async function runWeeklyBacktest(env: Bindings, runDate = twToday()) {
@@ -1495,203 +1481,6 @@ export async function runWeeklyRetrain(env: Bindings) {
       Object.entries(trainResult.results ?? {}).map(([key, value]: [string, any]) => [key, value.accuracy ?? value.error ?? 'unknown']),
     ))}`,
   )
-}
-
-export function classifyUniversalRetrainDispatchResult(
-  result: Record<string, any>,
-  taskId: string,
-): string {
-  const status = String(result.status ?? '').trim().toLowerCase()
-  if (status === 'skipped') {
-    return `${taskId} skipped: ${result.reason ?? 'locked'}`
-  }
-  if (['failed', 'error', 'rejected'].includes(status)) {
-    return `${taskId} failed: ${result.error ?? result.reason ?? status}`
-  }
-  const runId = String(result.run_id ?? 'unknown')
-  const functionCallId = String(result.function_call_id ?? result.execution_id ?? 'unknown')
-  return `${taskId} triggered via Modal prep run_id=${runId} function_call_id=${functionCallId} callback expected`
-}
-
-async function triggerUniversalRetrainModal(
-  env: Bindings,
-  body: Record<string, unknown>,
-  taskId: string,
-): Promise<string> {
-  requireController(env)
-
-  const resp = await controllerFetch(env, '/retrain/universal/run', {
-    method: 'POST',
-    jsonBody: body,
-    timeoutMs: 60_000,
-  })
-  const text = await resp.text().catch(() => '')
-  if (!resp.ok) {
-    throw new Error(`Controller /retrain/universal/run HTTP ${resp.status}: ${text.slice(0, 200)}`)
-  }
-  const result = text ? JSON.parse(text) as Record<string, any> : {}
-  return classifyUniversalRetrainDispatchResult(result, taskId)
-}
-
-const ACTIVE_WEEKLY_DRIFT_MODEL_NAMES = new Set([
-  'LightGBM',
-  'XGBoost',
-  'ExtraTrees',
-  'TabM',
-  'GNN',
-  'DLinear',
-  'PatchTST',
-  'iTransformer',
-])
-
-const MODEL_GROUP_BY_NAME: Record<string, string | null> = {
-  XGBoost: 'tree',
-  ExtraTrees: 'tree',
-  LightGBM: 'tree',
-  TabM: null,
-  GNN: null,
-  DLinear: 'dlinear',
-  PatchTST: 'patchtst',
-  iTransformer: null,
-}
-
-const FORMAL_ARTIFACT_LIFECYCLE_BY_NAME: Record<string, string> = {
-  TabM: 'tabular_neural_artifact_retrain_registration',
-  GNN: 'graphsage_full_universe_artifact_retrain_registration',
-  PatchTST: 'sequence_artifact_retrain_registration',
-  iTransformer: 'sequence_artifact_retrain_registration',
-}
-
-function isWeeklyDriftTarget(model: Record<string, any>): boolean {
-  const status = String(model.status ?? '').toLowerCase()
-  const lastIcStatus = String(model.last_ic_status ?? '').toLowerCase()
-  const ic4w = Number(model.ic_4w_avg ?? 0)
-  const negWeeks = Number(model.consecutive_negative_weeks ?? 0)
-  return (
-    status === 'degraded' ||
-    negWeeks > 0 ||
-    lastIcStatus.includes('weak') ||
-    lastIcStatus.includes('negative') ||
-    lastIcStatus.includes('degraded') ||
-    ic4w < 0
-  )
-}
-
-async function resolveWeeklyDriftTargets(env: Bindings) {
-  requireController(env)
-
-  const pool = await controllerJson<any>(env, '/model_pool/status', { timeoutMs: 30_000 })
-  const models = pool?.models && typeof pool.models === 'object' ? pool.models as Record<string, Record<string, any>> : {}
-  return Object.entries(models)
-    .filter(([name, model]) => ACTIVE_WEEKLY_DRIFT_MODEL_NAMES.has(name) && isWeeklyDriftTarget(model))
-    .map(([name, model]) => {
-      const hasMappedGroup = Object.prototype.hasOwnProperty.call(MODEL_GROUP_BY_NAME, name)
-      return {
-        name,
-        family: String(model.balance_family ?? model.model_type ?? 'unknown'),
-        group: hasMappedGroup ? MODEL_GROUP_BY_NAME[name] : 'tree',
-        artifactLifecycle: FORMAL_ARTIFACT_LIFECYCLE_BY_NAME[name] ?? null,
-        status: String(model.status ?? 'unknown'),
-        ic4w: model.ic_4w_avg ?? null,
-        consecutiveNegativeWeeks: Number(model.consecutive_negative_weeks ?? 0),
-        lastIcStatus: model.last_ic_status ?? null,
-      }
-    })
-}
-
-export async function runWeeklyDriftDetection(env: Bindings) {
-  const targets = await resolveWeeklyDriftTargets(env)
-  const retrainTargets = targets.filter((target) => target.group)
-  const artifactLifecycleTargets = targets.filter((target) => !target.group && target.artifactLifecycle)
-  const trainModelGroups = [
-    ...new Set(retrainTargets.map((target) => target.group).filter((group): group is string => Boolean(group))),
-  ]
-  return [
-    'weekly_drift detection',
-    `target_count=${targets.length}`,
-    `retrain_groups=${trainModelGroups.join(',') || 'none'}`,
-    `retrain_targets=${retrainTargets.map((target) => target.name).join(',') || 'none'}`,
-    `artifact_lifecycle_targets=${artifactLifecycleTargets.map((target) => `${target.name}:${target.artifactLifecycle}`).join(',') || 'none'}`,
-    'promotion=automatic_after_pass_strong_pass_live_multi_evidence_and_final_champion_comparison',
-    'production_effect=none_until_serving_readback_verified',
-  ].join('; ')
-}
-
-export async function runWeeklyDriftRetrain(env: Bindings, runDate?: string) {
-  const targets = await resolveWeeklyDriftTargets(env)
-
-  if (targets.length === 0) {
-    return 'weekly_drift skipped: no degraded/weak model family; monthly release remains owner'
-  }
-
-  const retrainTargets = targets.filter((target) => target.group)
-  const artifactLifecycleTargets = targets.filter((target) => !target.group && target.artifactLifecycle)
-  const trainModelGroups = [
-    ...new Set(retrainTargets.map((target) => target.group).filter((group): group is string => Boolean(group))),
-  ]
-  if (trainModelGroups.length === 0) {
-    return `weekly_drift skipped: no supported retrain groups; artifact lifecycle targets=${artifactLifecycleTargets.map((target) => `${target.name}:${target.artifactLifecycle}`).join(',') || 'none'}`
-  }
-  const body = {
-    limit: 2500,
-    force_monthly: false,
-    candidate_type: 'weekly_drift',
-    run_date: runDate,
-    train_model_groups: trainModelGroups,
-    drift_target_models: retrainTargets.map((target) => target.name),
-    drift_target_families: [...new Set(retrainTargets.map((target) => target.family))],
-    artifact_lifecycle_targets: artifactLifecycleTargets.map((target) => target.name),
-    artifact_lifecycle_contracts: Object.fromEntries(
-      artifactLifecycleTargets.map((target) => [target.name, target.artifactLifecycle]),
-    ),
-    trigger_source: 'worker_weekly_drift',
-  }
-  if (universalRetrainModalTriggerEnabled(env)) {
-    return triggerUniversalRetrainModal(env, body, 'weekly_drift retrain')
-  }
-
-  controllerFetch(env, '/retrain/universal', {
-    method: 'POST',
-    jsonBody: body,
-    timeoutMs: 0,
-  }).catch((e) => console.error('[weekly-drift-retrain] fire-and-forget error:', e))
-
-  return `weekly_drift retrain triggered; candidate_type=weekly_drift; groups=${trainModelGroups.join(',')}; targets=${targets.map((target) => target.name).join(',')}; callback expected`
-}
-
-export async function triggerRetrain(
-  env: Bindings,
-  forceMonthly: boolean,
-  taskId = forceMonthly ? 'monthly-retrain' : 'retrain',
-  runDate?: string,
-) {
-  requireController(env)
-
-  const body = {
-    limit: 2500,
-    force_monthly: forceMonthly,
-    run_date: runDate,
-    train_model_groups: ['tree', 'dlinear', 'patchtst'],
-    artifact_lifecycle_targets: ['GNN', 'TabM', 'PatchTST', 'iTransformer'],
-    artifact_lifecycle_contracts: {
-      GNN: FORMAL_ARTIFACT_LIFECYCLE_BY_NAME.GNN,
-      TabM: FORMAL_ARTIFACT_LIFECYCLE_BY_NAME.TabM,
-      PatchTST: FORMAL_ARTIFACT_LIFECYCLE_BY_NAME.PatchTST,
-      iTransformer: FORMAL_ARTIFACT_LIFECYCLE_BY_NAME.iTransformer,
-    },
-    trigger_source: forceMonthly ? 'worker_monthly_retrain' : 'worker_retrain',
-  }
-  if (universalRetrainModalTriggerEnabled(env)) {
-    return triggerUniversalRetrainModal(env, body, taskId)
-  }
-
-  controllerFetch(env, '/retrain/universal', {
-    method: 'POST',
-    jsonBody: body,
-    timeoutMs: 0,
-  }).catch((e) => console.error('[retrain] fire-and-forget error:', e))
-
-  return `${taskId} triggered (force_monthly=${forceMonthly}); callback expected from Modal retrain followup`
 }
 
 type ExternalEvidenceReadbackRow = {

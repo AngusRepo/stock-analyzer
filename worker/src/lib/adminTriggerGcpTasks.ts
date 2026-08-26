@@ -7,13 +7,10 @@ import {
   runFinLabV4Backfill,
   runRegimeCompute,
   runVerifyV2,
-  runWeeklyDriftDetection,
-  runWeeklyDriftRetrain,
   runMonthlyStrategyMining,
   runExternalEvidenceMaterialize,
   runWeeklyBacktestEvidenceReconciliation,
   runWeeklyValidationChain,
-  triggerRetrain,
 } from './controllerWorkflows'
 import type { TaskHandler, TriggerDeps } from './adminTriggerTaskMap'
 
@@ -83,7 +80,6 @@ export function buildAdminGcpTriggerTaskMap(c: any, deps: TriggerDeps): Record<s
     'monte-carlo': () => deps.runWeeklyMonteCarlo(requestedRunDate()),
     pbo: () => deps.runWeeklyPBO(requestedRunDate()),
     'alpha-quality': () => deps.runWeeklyAlphaQuality(),
-    lifecycle: () => deps.runWeeklyLifecycleCheck(),
     'weekly-optuna': () => deps.runWeeklyOptunaResearch(requestedRunDate()),
     'l4-alpha-ev-refresh': () => deps.runL4AlphaEvRefresh(requestedRunDate(), 'weekly'),
     'allocator-ev-fusion-refresh': () => deps.runAllocatorEvFusionRefresh(requestedRunDate(), 'weekly'),
@@ -103,12 +99,6 @@ export function buildAdminGcpTriggerTaskMap(c: any, deps: TriggerDeps): Record<s
       l4MinSamples: parseBoundedInt(c.req.query('l4_min_samples'), 500, 50, 10000),
       l4MinDates: parseBoundedInt(c.req.query('l4_min_dates'), 20, 5, 252),
     }),
-    'weekly-drift-retrain': async () => {
-      if (c.req.query('confirm') !== 'weekly_drift') {
-        return runWeeklyDriftDetection(c.env)
-      }
-      return runWeeklyDriftRetrain(c.env, requestedRunDate())
-    },
     'monthly-optuna': () => deps.runMonthlyOptunaResearch(requestedRunDate()),
     'monthly-l4-alpha-ev-refresh': () => deps.runL4AlphaEvRefresh(requestedRunDate(), 'monthly'),
     'monthly-allocator-ev-fusion-refresh': () => deps.runAllocatorEvFusionRefresh(requestedRunDate(), 'monthly'),
@@ -123,10 +113,5 @@ export function buildAdminGcpTriggerTaskMap(c: any, deps: TriggerDeps): Record<s
     'monthly-strategy-mining': () => runMonthlyStrategyMining(c.env, requestedRunDate()),
     'external-evidence': () => runExternalEvidenceMaterialize(c.env, requestedRunDate()),
     'optuna-queue': () => deps.runOptunaQueueProcessor(),
-    'monthly-retrain': async () => triggerRetrain(c.env, true, 'monthly-retrain', requestedRunDate()),
-    retrain: async () => {
-      const force = c.req.query('monthly') === '1'
-      return triggerRetrain(c.env, force, force ? 'monthly-retrain' : 'retrain', requestedRunDate())
-    },
   }
 }

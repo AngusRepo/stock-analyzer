@@ -42,7 +42,7 @@ def _get_bucket():
 
 
 def _active_tabm_entry(pool: dict | None = None) -> dict:
-    from .model_pool import gcs_path_for, load_pool
+    from .model_serving_contract import gcs_path_for, load_pool
 
     snapshot = pool or load_pool()
     if not snapshot:

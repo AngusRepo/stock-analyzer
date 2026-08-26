@@ -3,7 +3,7 @@ from __future__ import annotations
 import pytest
 import numpy as np
 
-from app import model_pool, tabm_batch_runtime
+from app import model_serving_contract as model_pool, tabm_batch_runtime
 
 
 def test_tabm_artifact_requires_torch_path(monkeypatch):

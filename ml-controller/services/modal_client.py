@@ -32,7 +32,6 @@ _MODAL_RESOURCE_SPECS: dict[str, dict] = {
     "gnn_graphsage_universal_predict": {"cpu": 2.0, "memory_mb": 8192, "gpu": None},
     "train_gnn_graphsage_universal": {"cpu": 4.0, "memory_mb": 16384, "gpu": "L4"},
     "train_tabm_universal": {"cpu": 4.0, "memory_mb": 16384, "gpu": "L4"},
-    "retrain_single_stock": {"cpu": 1.0, "memory_mb": 2048, "gpu": None},
     "prep_universal_batch": {"cpu": 1.0, "memory_mb": 2048, "gpu": None},
     "retrain_orchestrator": {"cpu": 4.0, "memory_mb": 8192, "gpu": None},
     "train_universal_from_gcs": {"cpu": 1.0, "memory_mb": 4096, "gpu": "L4"},
@@ -600,25 +599,6 @@ async def _modal_batch_predict_v2(payloads: list[dict]) -> list[dict]:
         )
 
 
-async def _modal_batch_retrain(payloads: list[dict]) -> list[dict]:
-    function_name = "retrain_single_stock"
-    t0 = time.time()
-    try:
-        fn = _lookup(function_name)
-        results = []
-        async for r in fn.map.aio(payloads, order_outputs=True):
-            results.append(r)
-        return results
-    finally:
-        wall_sec = time.time() - t0
-        await _record_modal_observation(
-            function_name,
-            wall_sec=wall_sec,
-            compute_sec=_aggregate_map_compute_sec(wall_sec=wall_sec, item_count=len(payloads)),
-            meta={"call_type": "map", "input_count": len(payloads)},
-        )
-
-
 async def _modal_prep_universal_batch(payload: dict) -> dict:
     return await _modal_remote_call("prep_universal_batch", payload)
 
@@ -1150,16 +1130,6 @@ async def batch_predict(payloads: list[dict]) -> list[dict]:
         # B11 fix (2026-04-08 audit): concurrency 4→20，覆蓋 Part 6 F2 fix 默認值
         # 信號池天生小，concurrency 4 進一步壓縮高 conf 候選數量，疊加 Layer 2 後幾乎過不了
         return await _http_batch("/predict/v2", payloads, concurrency=20)
-    raise RuntimeError("Neither MODAL_TOKEN_ID nor ML_SERVICE_URL is set")
-
-
-async def batch_retrain(payloads: list[dict]) -> list[dict]:
-    """並行重訓 N 支股票模型。"""
-    if _USE_MODAL:
-        return await _modal_batch_retrain(payloads)
-    if _ML_SERVICE_URL:
-        logger.info(f"[ml_client] HTTP parallel retrain × {len(payloads)}")
-        return await _http_batch("/retrain", payloads, concurrency=2)
     raise RuntimeError("Neither MODAL_TOKEN_ID nor ML_SERVICE_URL is set")
 
 

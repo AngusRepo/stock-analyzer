@@ -1,4 +1,4 @@
-﻿"""
+"""
 LinUCB contextual bandit for alpha model weighting.
 
 Arms are the 8 active alpha prediction models plus DoNothing. State-space
@@ -10,7 +10,7 @@ import numpy as np
 from dataclasses import dataclass, field
 from typing import Optional
 
-from .model_pool import ALPHA_PREDICTION_MODELS
+from .model_serving_contract import ALPHA_PREDICTION_MODELS
 
 # ── 常數 ──────────────────────────────────────────────────────────────────────
 

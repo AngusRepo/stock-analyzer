@@ -256,6 +256,7 @@ def build_chronological_oof_stack(
                 fold_rows.append({
                     **{key: value for key, value in row.items() if key not in {"x", "raw_by_model"}},
                     "ensemble_raw": float(row["x"] @ weights + intercept),
+                    "stacker_features": row["x"].tolist(),
                     "stacker_source": source,
                     "eligible_for_efficacy": ready,
                     "stacker_semantic_version": STACKER_SEMANTIC_VERSION,

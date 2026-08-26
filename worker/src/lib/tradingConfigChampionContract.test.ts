@@ -26,16 +26,6 @@ assert.equal(
 )
 assert.equal(champion.alphaFramework.allocation.riskAversion, 2.0)
 assert.equal(champion.alphaFramework.scoring.marketHeatExpectedReturnMax, 0.006)
-assert.equal(
-  champion.ensemble_v2.topKOverrideEnabled,
-  false,
-  'legacy top-k override must stay disabled in champion config',
-)
-assert.equal(
-  champion.ensemble_v2.allowLegacyTopKOverride,
-  false,
-  'legacy top-k override rollback flag must stay disabled by default',
-)
 assert.equal(champion.mlPool.useEnsembleV2, true, 'mlPool.useEnsembleV2 must default on for Modal contract')
 assert.equal(champion.mlPool.degradedDampening, 0.1, 'mlPool.degradedDampening must default to Modal contract baseline')
 
@@ -55,10 +45,6 @@ const restored = buildChampionTradingConfig({
       },
     },
   },
-  ensemble_v2: {
-    topKOverrideEnabled: true,
-    allowLegacyTopKOverride: false,
-  },
   mlPool: {
     degradedDampening: 0.2,
   },
@@ -74,11 +60,6 @@ assert.equal(
   restored.alphaFramework.allocation.weights.bear.defensive_accumulation,
   champion.alphaFramework.allocation.weights.bear.defensive_accumulation,
   'missing regime weights must be filled from champion defaults',
-)
-assert.equal(
-  restored.ensemble_v2.allowLegacyTopKOverride,
-  false,
-  'legacy top-k rollback flag must not be enabled by materialization',
 )
 assert.equal(restored.mlPool.useEnsembleV2, true)
 assert.equal(restored.mlPool.degradedDampening, 0.2)

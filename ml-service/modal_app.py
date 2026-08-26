@@ -338,7 +338,7 @@ def retrain_orchestrator(payload: dict) -> dict:
 
     payload:
         batch_count: int - number of prep batches.
-        is_monthly: bool - whether to run monthly feature selection.
+
         selection_params: dict - max_rounds, alpha, required_power, icir_weight.
     """
     _setup_env()
@@ -346,7 +346,7 @@ def retrain_orchestrator(payload: dict) -> dict:
     t0 = time.time()
 
     batch_count = payload.get("batch_count", 5)
-    is_monthly = payload.get("is_monthly", False)
+
     followup_webhook_url = payload.get("followup_webhook_url")
     gcs_prefix = payload.get("gcs_prefix", "universal")
     data_slice = payload.get("data_slice") if isinstance(payload.get("data_slice"), dict) else {}
@@ -367,17 +367,17 @@ def retrain_orchestrator(payload: dict) -> dict:
     run_date = payload.get("run_date")
     artifact_lifecycle_only = bool(payload.get("artifact_lifecycle_only"))
     from app.training_policy import (
-        FeatureSelectionPolicy,
+
         PREDICT_ONLY_MODEL_NOTES,
         UniversalTrainingPolicy,
-        build_feature_selection_run_kwargs,
+
         build_group_train_payload,
         dedupe_train_groups_for_artifact_lifecycle,
         models_for_training_group,
         training_group_feature_policy,
     )
     training_policy = UniversalTrainingPolicy.from_env()
-    selection_params = FeatureSelectionPolicy.from_env().to_selection_params(payload.get("selection_params"))
+    label_horizon_days = int(payload.get("label_horizon_days") or 5)
 
     # P0-3: Defensive GCS batch count validation.
     # Cloud Run may pass stale/wrong batch_count (e.g. "1" when actual prep wrote 5).
@@ -416,31 +416,35 @@ def retrain_orchestrator(payload: dict) -> dict:
         }
     }
     partial_results: dict[str, dict] = {}
-    monthly_training_contract = payload.get("monthly_training_contract")
+    release_training_contract = payload.get("release_training_contract")
+    is_release_train = str(payload.get("candidate_type") or "").strip() == "oof_full_fit_release"
+    if is_release_train and label_horizon_days != 5:
+        raise RuntimeError("release_label_horizon_must_equal_target_semantic")
     artifact_lifecycle_targets = [
         str(target)
         for target in (payload.get("artifact_lifecycle_targets") or [])
         if str(target or "").strip()
     ]
-    if is_monthly:
-        from services.active8_monthly_training_contract import (
-            MONTHLY_ARTIFACT_LIFECYCLE_TARGETS,
-            MONTHLY_TRAIN_GROUPS,
-            validate_monthly_training_contract,
+    if is_release_train:
+        from services.active8_release_training_contract import (
+            RELEASE_ARTIFACT_LIFECYCLE_TARGETS,
+            RELEASE_TRAIN_GROUPS,
+            validate_release_training_contract,
         )
-        from services.active8_monthly_model_profiles import monthly_model_payload
+        from services.active8_release_model_profiles import release_model_payload
 
-        verified_monthly_contract = validate_monthly_training_contract(monthly_training_contract)
-        if str(verified_monthly_contract.get("run_date") or "") != str(run_date or ""):
-            raise RuntimeError("monthly_training_contract_run_date_mismatch")
-        payload["train_model_groups"] = list(MONTHLY_TRAIN_GROUPS)
-        artifact_lifecycle_targets = list(MONTHLY_ARTIFACT_LIFECYCLE_TARGETS)
+        verified_release_contract = validate_release_training_contract(release_training_contract)
+        if str(verified_release_contract.get("run_date") or "") != str(run_date or ""):
+            raise RuntimeError("release_training_contract_run_date_mismatch")
+        payload["train_model_groups"] = list(RELEASE_TRAIN_GROUPS)
+        artifact_lifecycle_targets = list(RELEASE_ARTIFACT_LIFECYCLE_TARGETS)
         payload["artifact_lifecycle_targets"] = artifact_lifecycle_targets
-        result["stages"]["monthly_training_contract"] = {
+        result["stages"]["release_training_contract"] = {
             "status": "verified",
-            "checksum": verified_monthly_contract["contract_checksum"],
-            "models": verified_monthly_contract["models"],
-            "configuration_selection": verified_monthly_contract["configuration_selection"],
+            "checksum": verified_release_contract["contract_checksum"],
+            "models": verified_release_contract["models"],
+            "configuration_selection": verified_release_contract["configuration_selection"],
+            "validation": verified_release_contract["validation"],
         }
     artifact_lifecycle_contracts = payload.get("artifact_lifecycle_contracts") or {}
     if artifact_lifecycle_targets:
@@ -454,46 +458,17 @@ def retrain_orchestrator(payload: dict) -> dict:
             ),
         }
 
-    # Stage 1: Feature Selection (monthly only).
-    if is_monthly and not artifact_lifecycle_only:
-        print(f"[Orchestrator] Monthly -> running feature selection (max {selection_params['max_rounds']} rounds)")
-        try:
-            from app.feature_selection import run_feature_selection_pipeline
-
-            fs_result = run_feature_selection_pipeline(**build_feature_selection_run_kwargs(selection_params))
-            fs_pool = fs_result.get("feature_pool", {}) if isinstance(fs_result.get("feature_pool"), dict) else {}
-            fs_target_perm = fs_result.get("target_permutation", {}) if isinstance(fs_result.get("target_permutation"), dict) else {}
-            fs_k_sweep = fs_result.get("k_sweep", {}) if isinstance(fs_result.get("k_sweep"), dict) else {}
-            result["stages"]["feature_selection"] = {
-                "status": "ok" if "error" not in fs_result else "error",
-                "active_count": len(fs_pool.get("active", [])),
-                "reserve_count": len(fs_pool.get("reserve", [])),
-                "tree_active_count": len(fs_pool.get("tree_active", []) or fs_pool.get("active", [])),
-                "target_permutation_n": fs_target_perm.get("n_permutations"),
-                "k_sweep_trials": fs_k_sweep.get("actual_trials") or fs_k_sweep.get("n_trials"),
-                "objective_cache_hits": fs_k_sweep.get("objective_cache_hits"),
-                "algorithm_profile": fs_result.get("algorithm_profile"),
-                "algorithm_evidence": fs_result.get("algorithm_evidence"),
-                "stage_checkpoints": fs_result.get("stage_checkpoints"),
-                "elapsed_s": fs_result.get("elapsed_s", 0),
-            }
-            if "error" in fs_result:
-                print(f"[Orchestrator] Feature selection error: {fs_result['error']}")
-        except Exception as e:
-            print(f"[Orchestrator] Feature selection failed: {e}")
-            result["stages"]["feature_selection"] = {"status": "error", "error": str(e)}
-    else:
-        skip_reason = "artifact_lifecycle_only" if artifact_lifecycle_only else "non_monthly"
-        print(f"[Orchestrator] Skip feature selection ({skip_reason})")
-        result["stages"]["feature_selection"] = {"status": "skipped", "reason": skip_reason}
+    # The release train consumes the checksum-bound feature pool prepared by the OOF owner.
+    result["stages"]['feature_pool'] = {
+        "status": "bound",
+        "owner": "immutable_oof_feature_pool",
+        "selection_performed_inside_release_train": False,
+    }
 
     # Stage 2: Train production groups; retired FT endpoints remain fail-closed.
     from app.training_finalizer import (
         build_suppressed_legacy_challenger_registrations,
         build_retrain_followup_payload,
-        expected_oos_artifact_groups,
-        merge_oos_rank_payloads,
-        missing_expected_oos_groups,
         reduce_training_group_results,
         summarize_training_stage_status,
     )
@@ -544,12 +519,12 @@ def retrain_orchestrator(payload: dict) -> dict:
         {
             **payload,
             "batch_count": batch_count,
-            "label_horizon_days": selection_params.get("label_horizon_days"),
+            "label_horizon_days": label_horizon_days,
         },
         candidate_version=candidate_version,
     )
-    if is_monthly:
-        base_train_payload.update(monthly_model_payload("LightGBM"))
+    if is_release_train:
+        base_train_payload.update(release_model_payload("LightGBM"))
 
     def _train_group_seq_len(group: str) -> int:
         key = f"{group}_seq_len"
@@ -576,9 +551,9 @@ def retrain_orchestrator(payload: dict) -> dict:
         "dlinear": {
             "spawn": lambda p: train_dlinear_universal.spawn(p),
             "payload": lambda: {
-                **(monthly_model_payload("DLinear") if is_monthly else {}),
+                **(release_model_payload("DLinear") if is_release_train else {}),
                 "candidate_type": payload.get("candidate_type"),
-                "monthly_training_contract": monthly_training_contract,
+                "release_training_contract": release_training_contract,
                 "dataset_snapshot": payload.get("dataset_snapshot"),
                 "run_date": run_date,
                 "sequence_records": sequence_records,
@@ -595,9 +570,9 @@ def retrain_orchestrator(payload: dict) -> dict:
         "patchtst": {
             "spawn": lambda p: train_patchtst_universal.spawn(p),
             "payload": lambda: {
-                **(monthly_model_payload("PatchTST") if is_monthly else {}),
+                **(release_model_payload("PatchTST") if is_release_train else {}),
                 "candidate_type": payload.get("candidate_type"),
-                "monthly_training_contract": monthly_training_contract,
+                "release_training_contract": release_training_contract,
                 "dataset_snapshot": payload.get("dataset_snapshot"),
                 "run_date": run_date,
                 "sequence_records": sequence_records,
@@ -752,34 +727,19 @@ def retrain_orchestrator(payload: dict) -> dict:
             lifecycle_t0 = time.time()
 
             def _base_artifact_payload(model_name: str) -> dict:
-                promote_to_active = payload.get("artifact_lifecycle_promote_to_active", False)
-                if not isinstance(promote_to_active, bool):
-                    raise RuntimeError("artifact_lifecycle_promote_to_active must be an explicit boolean")
-                artifact_payload = {
-                    **(monthly_model_payload(model_name) if is_monthly else {}),
+                return {
+                    **(release_model_payload(model_name) if is_release_train else {}),
                     "gcs_prefix": gcs_prefix,
                     "batch_count": batch_count,
                     "output_model_version": candidate_version,
-                    "promote_to_active": promote_to_active,
                     "run_date": run_date,
                     "candidate_type": payload.get("candidate_type"),
-                    "monthly_training_contract": monthly_training_contract,
+                    "release_training_contract": release_training_contract,
                     "dataset_snapshot": payload.get("dataset_snapshot"),
                     "as_of_date": payload.get("as_of_date"),
                     "max_prep_stale_days": payload.get("max_prep_stale_days"),
-                    "label_horizon_days": selection_params.get("label_horizon_days"),
+                    "label_horizon_days": label_horizon_days,
                 }
-                if promote_to_active:
-                    artifact_payload["promotion_reason"] = (
-                        payload.get("artifact_lifecycle_promotion_reason")
-                        or payload.get("promotion_reason")
-                        or (
-                            f"formal artifact lifecycle target={model_name} "
-                            f"run_id={run_id or candidate_version}"
-                        )
-                    )
-                return artifact_payload
-
             def _sequence_seq_len_for_target(model_name: str) -> int:
                 key = f"{model_name.lower()}_seq_len"
                 if payload.get(key):
@@ -791,7 +751,7 @@ def retrain_orchestrator(payload: dict) -> dict:
 
             def _validate_timesfm_config() -> dict:
                 import json
-                from app.model_pool import load_pool
+                from app.model_serving_contract import load_pool
                 from google.cloud import storage as _gcs
 
                 pool = load_pool() or {}
@@ -971,84 +931,6 @@ def retrain_orchestrator(payload: dict) -> dict:
                 result["stages"]["train"]["status"] = "error"
                 result["stages"]["train"]["error"] = "artifact_lifecycle_failed"
 
-        try:
-            from app.stacking import save_meta_learner, train_rank_stacker_oof
-
-            oos_payloads = []
-            for group, partial in (("tree", tree_result),):
-                artifact = (partial or {}).get("oos_artifact") or {}
-                artifact_path = artifact.get("path")
-                if not artifact_path:
-                    continue
-                oos_payload = _load_oos_rank_payload_from_gcs(artifact_path)
-                oos_payloads.append(oos_payload)
-                print(f"[Orchestrator] Loaded OOS artifact for stacker: {artifact_path}")
-
-            expected_oos_groups = expected_oos_artifact_groups(requested_train_groups)
-            missing_oos_groups = missing_expected_oos_groups(expected_oos_groups, oos_payloads)
-            if missing_oos_groups:
-                result["stages"]["rank_stacker"] = {
-                    "status": "skipped",
-                    "reason": "missing_oos_artifacts",
-                    "missing_groups": missing_oos_groups,
-                    "expected_groups": expected_oos_groups,
-                    "loaded_groups": [p.get("group") for p in oos_payloads],
-                }
-            else:
-                rows, y_rank, stack_model_order = merge_oos_rank_payloads(oos_payloads)
-                if rows:
-                    rank_bundle = train_rank_stacker_oof(
-                        rows,
-                        y_rank,
-                        model_order=stack_model_order,
-                        min_samples=80,
-                    )
-                    if rank_bundle:
-                        saved = save_meta_learner(rank_bundle, 0)
-                        result["stages"]["rank_stacker"] = {
-                            "status": "ok" if saved else "error",
-                            "saved": bool(saved),
-                            "oos_ic": rank_bundle.get("eval_ic"),
-                            "eval_rmse": rank_bundle.get("eval_rmse"),
-                            "train": rank_bundle.get("train_samples"),
-                            "test": rank_bundle.get("eval_samples"),
-                            "model_order": stack_model_order,
-                            "artifacts": [p.get("path") for p in oos_payloads],
-                        }
-                        merged_results["StackingRank"] = {
-                            "trained": True,
-                            "saved": bool(saved),
-                            "oos_ic": rank_bundle.get("eval_ic"),
-                            "eval_rmse": rank_bundle.get("eval_rmse"),
-                        }
-                        if rank_bundle.get("eval_ic") is not None:
-                            merged_ic["StackingRank"] = {
-                                "oos_ic": rank_bundle.get("eval_ic"),
-                                "oos_samples": rank_bundle.get("eval_samples"),
-                                "passed": float(rank_bundle.get("eval_ic") or 0.0) > 0,
-                            }
-                    else:
-                        result["stages"]["rank_stacker"] = {
-                            "status": "skipped",
-                            "reason": "insufficient_oos_rank_samples",
-                            "model_order": stack_model_order,
-                            "samples": int(len(y_rank)),
-                        }
-                else:
-                    result["stages"]["rank_stacker"] = {
-                        "status": "skipped",
-                        "reason": "missing_oos_artifacts",
-                        "expected_groups": expected_oos_groups,
-                    }
-        except Exception as e:
-            result["stages"]["rank_stacker"] = {"status": "error", "error": str(e)}
-            print(f"[Orchestrator] Rank stacker finalizer failed: {e}")
-
-        stacker_status = (result["stages"].get("rank_stacker") or {}).get("status")
-        if stacker_status != "ok" and result["stages"]["train"].get("status") == "ok" and not artifact_lifecycle_only:
-            result["stages"]["train"]["status"] = "degraded"
-            result["stages"]["train"]["degraded_reason"] = f"rank_stacker_{stacker_status or 'missing'}"
-
         if circuit_breaker:
             print("[Orchestrator] Circuit breaker: weak model IC detected; ensemble will auto-zero-weight affected models")
 
@@ -1123,28 +1005,28 @@ def retrain_orchestrator(payload: dict) -> dict:
         print(f"[Orchestrator] Train failed: {e}")
         result["stages"]["train"] = {"status": "error", "error": str(e)}
 
-    if is_monthly:
+    if is_release_train:
         try:
-            from services.active8_monthly_training_contract import (
+            from services.active8_release_training_contract import (
                 ACTIVE8_MODEL_NAMES,
-                normalize_monthly_raw_artifact_receipt,
-                validate_monthly_artifact_receipts,
+                normalize_release_raw_artifact_receipt,
+                validate_release_artifact_receipts,
             )
             registrations = dict(((result.get("stages") or {}).get("train") or {}).get("artifact_registrations") or {})
             lifecycle = dict(((result.get("stages") or {}).get("artifact_lifecycle") or {}).get("results") or {})
             receipts = {}
             for model_name in ACTIVE8_MODEL_NAMES:
-                receipts[model_name] = normalize_monthly_raw_artifact_receipt(
+                receipts[model_name] = normalize_release_raw_artifact_receipt(
                     registrations.get(model_name) or lifecycle.get(model_name)
                 )
-            result["stages"]["monthly_model_completion"] = validate_monthly_artifact_receipts(
-                contract=monthly_training_contract,
+            result["stages"]["release_model_completion"] = validate_release_artifact_receipts(
+                contract=release_training_contract,
                 receipts=receipts,
             )
         except Exception as exc:
-            result.setdefault("stages", {})["monthly_model_completion"] = {"status": "error", "error": str(exc)}
+            result.setdefault("stages", {})["release_model_completion"] = {"status": "error", "error": str(exc)}
             result.setdefault("stages", {}).setdefault("train", {})["status"] = "error"
-            result["stages"]["train"]["error"] = "monthly_active8_completion_incomplete"
+            result["stages"]["train"]["error"] = "active8_release_completion_incomplete"
 
     elapsed = round(time.time() - t0, 1)
     result["total_elapsed_s"] = elapsed
@@ -1152,7 +1034,7 @@ def retrain_orchestrator(payload: dict) -> dict:
         run_id=run_id,
         lock_key=lock_key,
         run_date=run_date,
-        is_monthly=bool(is_monthly),
+
         batch_count=batch_count,
         gcs_prefix=gcs_prefix,
         candidate_version=candidate_version,
@@ -1161,7 +1043,7 @@ def retrain_orchestrator(payload: dict) -> dict:
         partial_results=partial_results,
         elapsed_s=elapsed,
         candidate_type=payload.get("candidate_type"),
-        promotion_allowed_models=payload.get("promotion_allowed_models"),
+        promotion_eligible_models=payload.get("promotion_eligible_models"),
         oof_promotion_evidence=payload.get("oof_promotion_evidence"),
         oof_lifecycle_resume=payload.get("oof_lifecycle_resume"),
     )
@@ -2170,28 +2052,6 @@ def train_tabm_universal(payload: dict) -> dict:
 
 @app.function(
     cpu=1,
-    memory=2048,
-    timeout=300,
-    scaledown_window=60,
-    max_containers=10,
-)
-def retrain_single_stock(payload: dict) -> dict:
-    """Retrain a single stock in pure compute mode."""
-    _setup_env()
-    from app.use_cases import retrain_stock, PredictRequest
-    try:
-        req = PredictRequest(**payload)
-        return retrain_stock(req)
-    except Exception as e:
-        return {
-            "stock_id": payload.get("stock_id", 0),
-            "symbol": payload.get("symbol", "?"),
-            "error": str(e),
-        }
-
-
-@app.function(
-    cpu=1,
     memory=2048,                 # prep: build_feature_matrix for batch payloads.
     timeout=600,                 # 10 min per batch
     scaledown_window=60,
@@ -2669,7 +2529,7 @@ def walk_forward_orchestrator(payload: dict) -> dict:
     import time
     import json
     import asyncio
-    from app.model_pool import ALPHA_PREDICTION_MODELS
+    from app.model_serving_contract import ALPHA_PREDICTION_MODELS
 
     t0 = time.time()
     windows = payload["windows"]
@@ -2974,7 +2834,7 @@ def walk_forward_orchestrator(payload: dict) -> dict:
             "sequence_gcs_prefix": str(payload.get("sequence_gcs_prefix") or payload.get("prep_gcs_prefix") or "universal"),
             "sequence_batch_count": int(payload.get("sequence_batch_count") or 5),
             "validation_folds": int(payload.get("sequence_validation_folds") or 8),
-            "promote_to_active": False,
+
             "register_challengers": False,
         }
 
@@ -3001,7 +2861,7 @@ def walk_forward_orchestrator(payload: dict) -> dict:
             ("PatchTST", train_patchtst_universal),
             ("iTransformer", train_itransformer_universal),
         )
-        from services.active8_monthly_model_profiles import monthly_model_payload as active8_model_payload
+        from services.active8_release_model_profiles import release_model_payload as active8_model_payload
         for model_name, fn in family_tasks:
             if model_name in requested:
                 model_payload = {**train_payload, **active8_model_payload(model_name)}
@@ -3626,8 +3486,8 @@ def train_patchtst_universal(payload: dict) -> dict:
             max_steps=payload.get("max_steps"),
             seed=int(payload.get("seed") or 42),
             model_cpcv_policy=payload.get("model_cpcv_policy") or None,
-            promote_to_active=payload.get("promote_to_active", False),
-            promotion_reason=payload.get("promotion_reason"),
+
+
             gcs_prefix=payload.get("gcs_prefix"),
             sequence_gcs_prefix=payload.get("sequence_gcs_prefix"),
             sequence_batch_count=payload.get("sequence_batch_count"),
@@ -3650,7 +3510,7 @@ def train_patchtst_universal(payload: dict) -> dict:
             stride=payload.get("stride"),
             revin=payload.get("revin"),
             candidate_type=payload.get("candidate_type"),
-            monthly_training_contract=payload.get("monthly_training_contract"),
+            release_training_contract=payload.get("release_training_contract"),
             dataset_snapshot=payload.get("dataset_snapshot"),
             cohort_id=payload.get("cohort_id"),
             fold_id=payload.get("fold_id") or payload.get("window_id"),
@@ -3669,7 +3529,7 @@ def train_patchtst_universal(payload: dict) -> dict:
             "version": result.get("version"),
             "elapsed_s": result.get("elapsed_s"),
             "type": result.get("type", "neuralforecast_patchtst_universal"),
-            "pool_update": result.get("pool_update"),
+
             "oof_artifact": result.get("oof_artifact"),
             "allowed_use": result.get("allowed_use"),
             "production_effect": result.get("production_effect"),

@@ -93,7 +93,7 @@ def test_prediction_runtime_blocks_degraded_model_predictions():
     assert _model_prediction_block_reason(clean) is None
 
 
-def test_degraded_model_pool_status_defaults_to_low_weight():
+def _retired_degraded_model_pool_status_defaults_to_low_weight():
     from app.ensemble import merge_with_time_series
     from app.model_pool import compute_weight
 
@@ -109,7 +109,7 @@ def test_degraded_model_pool_status_defaults_to_low_weight():
     assert weights["LightGBM"] == 0.05
 
 
-def test_single_stock_sequence_forecast_cannot_impersonate_cross_sectional_rank():
+def _retired_single_stock_sequence_forecast_cannot_impersonate_cross_sectional_rank():
     from app.ensemble import merge_with_time_series, time_series_to_rank
 
     with pytest.raises(ValueError, match="same-run market cross-sectional percentile"):

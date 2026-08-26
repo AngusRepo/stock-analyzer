@@ -1,4 +1,4 @@
-"""Canonical fail-closed contract for the eight-model monthly retrain."""
+"""Canonical fail-closed contract for the eight-model canonical OOF/full-fit release train."""
 
 from __future__ import annotations
 
@@ -7,8 +7,8 @@ import json
 import math
 from typing import Any, Iterable
 
-from .active8_monthly_model_profiles import (
-    ACTIVE8_MONTHLY_MODEL_PROFILES,
+from .active8_release_model_profiles import (
+    ACTIVE8_RELEASE_MODEL_PROFILES,
     MODEL_PROFILE_SCHEMA_VERSION,
     checksum as profile_checksum,
     model_profiles,
@@ -27,12 +27,22 @@ ACTIVE8_MODEL_NAMES = (
     "PatchTST",
     "iTransformer",
 )
-MONTHLY_TRAIN_GROUPS = ("tree", "dlinear", "patchtst")
-MONTHLY_ARTIFACT_LIFECYCLE_TARGETS = ("GNN", "TabM", "iTransformer")
-MONTHLY_CONTRACT_SCHEMA_VERSION = "active8-monthly-training-contract-v2"
+RELEASE_TRAIN_GROUPS = ("tree", "dlinear", "patchtst")
+RELEASE_ARTIFACT_LIFECYCLE_TARGETS = ("GNN", "TabM", "iTransformer")
+RELEASE_CONTRACT_SCHEMA_VERSION = "active8-release-training-contract-v1"
 MODEL_CONFIG_ATTESTATION_SCHEMA_VERSION = "model-training-config-attestation-v2"
 TARGET_SEMANTIC = "next-session-canonical-adjusted-open-to-fifth-session-canonical-adjusted-close-net-v4"
 SCORE_SEMANTIC = "same-market-same-date-average-tie-percentile-rank-v2"
+RELEASE_VALIDATION_CONTRACT = {
+    "split_owner": "purged_chronological_oof",
+    "rank_owner": "same_market_same_date",
+    "tie_method": "average_rank",
+    "promotion_requires_immutable_oof": True,
+    "minimum_outer_folds": 5,
+    "refit_each_fold": True,
+    "dlinear_single_holdout_is_diagnostic_only": True,
+}
+
 
 _MODEL_SPECS: dict[str, dict[str, str]] = {
     "LightGBM": {"family": "tree", "feature_schema": "formal137_selected_tabular_v1", "trainer": "universal_tree"},
@@ -69,25 +79,7 @@ def _checksum(payload: dict[str, Any]) -> str:
     return hashlib.sha256(raw).hexdigest()
 
 
-def resolve_monthly_execution_mode(
-    *,
-    calendar_monthly: bool,
-    force_monthly: bool,
-    explicit_candidate_type: str | None,
-) -> tuple[bool, str | None]:
-    candidate_type = str(explicit_candidate_type or "").strip() or None
-    if force_monthly and candidate_type not in {None, "monthly_release"}:
-        raise ValueError(f"forced_monthly_candidate_type_conflict:{candidate_type}")
-    if force_monthly or candidate_type == "monthly_release":
-        return True, "monthly_release"
-    if candidate_type and candidate_type != "monthly_release":
-        return False, candidate_type
-    if calendar_monthly:
-        return True, "monthly_release"
-    return False, candidate_type
-
-
-def normalize_monthly_execution_scope(
+def normalize_release_execution_scope(
     train_groups: Iterable[str] | None,
     artifact_targets: Iterable[str] | None,
 ) -> tuple[list[str], list[str]]:
@@ -95,16 +87,16 @@ def normalize_monthly_execution_scope(
 
     requested_groups = {str(value).strip() for value in (train_groups or ()) if str(value).strip()}
     requested_targets = {str(value).strip() for value in (artifact_targets or ()) if str(value).strip()}
-    unknown_groups = requested_groups - set(MONTHLY_TRAIN_GROUPS)
-    unknown_targets = requested_targets - set(MONTHLY_ARTIFACT_LIFECYCLE_TARGETS)
+    unknown_groups = requested_groups - set(RELEASE_TRAIN_GROUPS)
+    unknown_targets = requested_targets - set(RELEASE_ARTIFACT_LIFECYCLE_TARGETS)
     if unknown_groups:
-        raise ValueError(f"monthly_training_group_not_allowed:{','.join(sorted(unknown_groups))}")
+        raise ValueError(f"release_training_group_not_allowed:{','.join(sorted(unknown_groups))}")
     if unknown_targets:
-        raise ValueError(f"monthly_artifact_target_not_allowed:{','.join(sorted(unknown_targets))}")
-    return list(MONTHLY_TRAIN_GROUPS), list(MONTHLY_ARTIFACT_LIFECYCLE_TARGETS)
+        raise ValueError(f"release_artifact_target_not_allowed:{','.join(sorted(unknown_targets))}")
+    return list(RELEASE_TRAIN_GROUPS), list(RELEASE_ARTIFACT_LIFECYCLE_TARGETS)
 
 
-def build_monthly_training_contract(
+def build_release_training_contract(
     *,
     run_date: str,
     dataset_snapshot: dict[str, Any] | None,
@@ -112,40 +104,35 @@ def build_monthly_training_contract(
 ) -> dict[str, Any]:
     source_sha = str(producer_source_sha or "").strip().lower()
     if len(source_sha) != 40 or any(char not in "0123456789abcdef" for char in source_sha):
-        raise ValueError("monthly_training_source_sha_missing_or_invalid")
+        raise ValueError("release_training_source_sha_missing_or_invalid")
     business_date = str(run_date or "").strip()
     snapshot = dict(dataset_snapshot or {})
     snapshot_date = str(snapshot.get("business_date") or "").strip()
     if not business_date or snapshot_date != business_date:
         raise ValueError(
-            f"monthly_training_snapshot_date_mismatch:run_date={business_date}:snapshot_date={snapshot_date}"
+            f"release_training_snapshot_date_mismatch:run_date={business_date}:snapshot_date={snapshot_date}"
         )
     snapshot_id = str(snapshot.get("snapshot_id") or "").strip()
     if not snapshot_id:
-        raise ValueError("monthly_training_snapshot_id_missing")
+        raise ValueError("release_training_snapshot_id_missing")
     contract: dict[str, Any] = {
-        "schema_version": MONTHLY_CONTRACT_SCHEMA_VERSION,
+        "schema_version": RELEASE_CONTRACT_SCHEMA_VERSION,
         "run_date": business_date,
         "dataset_snapshot_id": snapshot_id,
         "dataset_snapshot_business_date": snapshot_date,
         "producer_source_sha": source_sha,
         "models": list(ACTIVE8_MODEL_NAMES),
-        "train_groups": list(MONTHLY_TRAIN_GROUPS),
-        "artifact_lifecycle_targets": list(MONTHLY_ARTIFACT_LIFECYCLE_TARGETS),
+        "train_groups": list(RELEASE_TRAIN_GROUPS),
+        "artifact_lifecycle_targets": list(RELEASE_ARTIFACT_LIFECYCLE_TARGETS),
         "target_semantic_version": TARGET_SEMANTIC,
         "score_semantic": SCORE_SEMANTIC,
         "model_profile_schema_version": MODEL_PROFILE_SCHEMA_VERSION,
         "model_profiles": model_profiles(),
-        "validation": {
-            "split_owner": "purged_chronological_oof",
-            "rank_owner": "same_market_same_date",
-            "tie_method": "average_rank",
-            "promotion_requires_immutable_oof": True,
-        },
+        "validation": dict(RELEASE_VALIDATION_CONTRACT),
         "configuration_selection": {
-            "monthly_mode": "single_predeclared_config",
+            "release_mode": "single_predeclared_config",
             "pbo_required": False,
-            "pbo_reason": "no_model_configuration_selection_is_performed_inside_monthly_retrain",
+            "pbo_reason": "no_model_configuration_selection_is_performed_inside_canonical_release_train",
             "research_selection_requires_model_specific_pbo": True,
             "cohort_pbo_must_not_be_used_as_per_model_pbo": True,
         },
@@ -155,26 +142,28 @@ def build_monthly_training_contract(
     return contract
 
 
-def validate_monthly_training_contract(contract: dict[str, Any]) -> dict[str, Any]:
+def validate_release_training_contract(contract: dict[str, Any]) -> dict[str, Any]:
     if not isinstance(contract, dict):
-        raise ValueError("monthly_training_contract_missing")
+        raise ValueError("release_training_contract_missing")
     unsigned = {key: value for key, value in contract.items() if key != "contract_checksum"}
-    if contract.get("schema_version") != MONTHLY_CONTRACT_SCHEMA_VERSION:
-        raise ValueError("monthly_training_contract_schema_mismatch")
+    if contract.get("schema_version") != RELEASE_CONTRACT_SCHEMA_VERSION:
+        raise ValueError("release_training_contract_schema_mismatch")
     if str(contract.get("contract_checksum") or "") != _checksum(unsigned):
-        raise ValueError("monthly_training_contract_checksum_mismatch")
+        raise ValueError("release_training_contract_checksum_mismatch")
     if tuple(contract.get("models") or ()) != ACTIVE8_MODEL_NAMES:
-        raise ValueError("monthly_training_contract_model_set_mismatch")
-    if tuple(contract.get("train_groups") or ()) != MONTHLY_TRAIN_GROUPS:
-        raise ValueError("monthly_training_contract_group_set_mismatch")
-    if tuple(contract.get("artifact_lifecycle_targets") or ()) != MONTHLY_ARTIFACT_LIFECYCLE_TARGETS:
-        raise ValueError("monthly_training_contract_target_set_mismatch")
+        raise ValueError("release_training_contract_model_set_mismatch")
+    if tuple(contract.get("train_groups") or ()) != RELEASE_TRAIN_GROUPS:
+        raise ValueError("release_training_contract_group_set_mismatch")
+    if tuple(contract.get("artifact_lifecycle_targets") or ()) != RELEASE_ARTIFACT_LIFECYCLE_TARGETS:
+        raise ValueError("release_training_contract_target_set_mismatch")
     if contract.get("target_semantic_version") != TARGET_SEMANTIC:
-        raise ValueError("monthly_training_contract_target_semantic_mismatch")
+        raise ValueError("release_training_contract_target_semantic_mismatch")
     if contract.get("score_semantic") != SCORE_SEMANTIC:
-        raise ValueError("monthly_training_contract_score_semantic_mismatch")
+        raise ValueError("release_training_contract_score_semantic_mismatch")
+    if contract.get("validation") != RELEASE_VALIDATION_CONTRACT:
+        raise ValueError("release_training_contract_validation_semantic_mismatch")
     if contract.get("model_profile_schema_version") != MODEL_PROFILE_SCHEMA_VERSION:
-        raise ValueError("monthly_training_contract_profile_schema_mismatch")
+        raise ValueError("release_training_contract_profile_schema_mismatch")
     validate_profiles(contract.get("model_profiles") or {})
     return contract
 
@@ -185,20 +174,20 @@ def build_model_training_config_attestation(
     model_name: str,
     effective_config: dict[str, Any],
 ) -> dict[str, Any]:
-    verified = validate_monthly_training_contract(contract)
+    verified = validate_release_training_contract(contract)
     model = str(model_name or "").strip()
     if model not in ACTIVE8_MODEL_NAMES:
-        raise ValueError(f"monthly_training_model_not_allowed:{model}")
+        raise ValueError(f"release_training_model_not_allowed:{model}")
     config = _json_safe(dict(effective_config or {}))
     if not config:
-        raise ValueError(f"monthly_training_effective_config_missing:{model}")
+        raise ValueError(f"release_training_effective_config_missing:{model}")
     profile = dict((verified.get("model_profiles") or {}).get(model) or {})
     if not profile:
-        raise ValueError(f"monthly_training_model_profile_missing:{model}")
+        raise ValueError(f"release_training_model_profile_missing:{model}")
     require_nested_subset(config, profile.get("required_effective_config") or {})
     attestation: dict[str, Any] = {
         "schema_version": MODEL_CONFIG_ATTESTATION_SCHEMA_VERSION,
-        "monthly_contract_checksum": verified["contract_checksum"],
+        "release_contract_checksum": verified["contract_checksum"],
         "model_name": model,
         "model_spec": _MODEL_SPECS[model],
         "model_profile_schema_version": MODEL_PROFILE_SCHEMA_VERSION,
@@ -240,14 +229,14 @@ def validate_model_training_config_attestation(
     profile = dict(attestation.get("model_profile") or {})
     if attestation.get("model_profile_schema_version") != MODEL_PROFILE_SCHEMA_VERSION:
         raise ValueError("model_training_config_attestation_profile_schema_mismatch")
-    if profile != ACTIVE8_MONTHLY_MODEL_PROFILES[str(expected_model_name)]:
+    if profile != ACTIVE8_RELEASE_MODEL_PROFILES[str(expected_model_name)]:
         raise ValueError("model_training_config_attestation_profile_mismatch")
     if str(attestation.get("model_profile_checksum") or "") != profile_checksum(profile):
         raise ValueError("model_training_config_attestation_profile_checksum_mismatch")
     require_nested_subset(dict(attestation.get("effective_config") or {}), profile.get("required_effective_config") or {})
     if attestation.get("pbo_applicability") != "not_applicable_without_model_configuration_selection":
         raise ValueError("model_training_config_attestation_pbo_applicability_invalid")
-    monthly_checksum = str(attestation.get("monthly_contract_checksum") or "").lower()
+    monthly_checksum = str(attestation.get("release_contract_checksum") or "").lower()
     if len(monthly_checksum) != 64 or any(char not in "0123456789abcdef" for char in monthly_checksum):
         raise ValueError("model_training_config_attestation_monthly_checksum_invalid")
     source_sha = str(attestation.get("producer_source_sha") or "").lower()
@@ -264,7 +253,7 @@ def validate_model_training_config_attestation(
     return attestation
 
 
-def normalize_monthly_raw_artifact_receipt(raw_receipt: dict[str, Any] | None) -> dict[str, Any]:
+def normalize_release_raw_artifact_receipt(raw_receipt: dict[str, Any] | None) -> dict[str, Any]:
     raw = dict(raw_receipt or {})
     saved = dict(raw.get("saved") or {})
     metadata = dict(raw.get("metadata") or saved.get("metadata") or {})
@@ -277,16 +266,16 @@ def normalize_monthly_raw_artifact_receipt(raw_receipt: dict[str, Any] | None) -
     }
 
 
-def validate_monthly_artifact_receipts(
+def validate_release_artifact_receipts(
     *,
     contract: dict[str, Any],
     receipts: dict[str, dict[str, Any]],
 ) -> dict[str, Any]:
     """Require one checksum-bound candidate artifact receipt for every Active-8 model."""
 
-    verified = validate_monthly_training_contract(contract)
+    verified = validate_release_training_contract(contract)
     if tuple(receipts.keys()) != ACTIVE8_MODEL_NAMES:
-        raise ValueError("monthly_artifact_receipt_model_set_mismatch")
+        raise ValueError("release_artifact_receipt_model_set_mismatch")
     normalized: dict[str, dict[str, Any]] = {}
     for model in ACTIVE8_MODEL_NAMES:
         receipt = dict(receipts.get(model) or {})
@@ -296,30 +285,30 @@ def validate_monthly_artifact_receipts(
             if not receipt.get(key)
         ]
         if missing:
-            raise ValueError(f"monthly_artifact_receipt_incomplete:{model}:{','.join(missing)}")
+            raise ValueError(f"release_artifact_receipt_incomplete:{model}:{','.join(missing)}")
         metadata = dict(receipt["metadata"])
         receipt_checksum = str(receipt["checksum"]).lower().removeprefix("sha256:")
         metadata_checksum = str(metadata.get("checksum") or metadata.get("artifact_checksum") or "").lower().removeprefix("sha256:")
         if len(receipt_checksum) != 64 or any(char not in "0123456789abcdef" for char in receipt_checksum):
-            raise ValueError(f"monthly_artifact_receipt_checksum_invalid:{model}")
+            raise ValueError(f"release_artifact_receipt_checksum_invalid:{model}")
         if metadata_checksum != receipt_checksum:
-            raise ValueError(f"monthly_artifact_receipt_metadata_checksum_mismatch:{model}")
+            raise ValueError(f"release_artifact_receipt_metadata_checksum_mismatch:{model}")
         metadata_version = metadata.get("version") or metadata.get("model_pool_version")
         if str(metadata_version or "") != str(receipt["version"]):
-            raise ValueError(f"monthly_artifact_receipt_metadata_version_mismatch:{model}")
+            raise ValueError(f"release_artifact_receipt_metadata_version_mismatch:{model}")
         metadata_artifact_path = str(metadata.get("artifact_path") or "")
         if metadata_artifact_path and metadata_artifact_path != str(receipt["artifact_path"]):
-            raise ValueError(f"monthly_artifact_receipt_metadata_path_mismatch:{model}")
+            raise ValueError(f"release_artifact_receipt_metadata_path_mismatch:{model}")
         attestation = validate_model_training_config_attestation(
             metadata.get("model_training_config_attestation"),
             expected_model_name=model,
         )
-        if attestation["monthly_contract_checksum"] != verified["contract_checksum"]:
-            raise ValueError(f"monthly_artifact_receipt_contract_mismatch:{model}")
+        if attestation["release_contract_checksum"] != verified["contract_checksum"]:
+            raise ValueError(f"release_artifact_receipt_contract_mismatch:{model}")
         if attestation["dataset_snapshot_id"] != verified["dataset_snapshot_id"]:
-            raise ValueError(f"monthly_artifact_receipt_snapshot_mismatch:{model}")
+            raise ValueError(f"release_artifact_receipt_snapshot_mismatch:{model}")
         if attestation["run_date"] != verified["run_date"]:
-            raise ValueError(f"monthly_artifact_receipt_run_date_mismatch:{model}")
+            raise ValueError(f"release_artifact_receipt_run_date_mismatch:{model}")
         normalized[model] = {
             "version": str(receipt["version"]),
             "artifact_path": str(receipt["artifact_path"]),
@@ -337,7 +326,7 @@ def validate_monthly_artifact_receipts(
     }
 
 
-def reconcile_monthly_artifact_receipts_from_immutable_metadata(
+def reconcile_release_artifact_receipts_from_immutable_metadata(
     *,
     contract_stage: dict[str, Any],
     run_date: str,
@@ -356,7 +345,7 @@ def reconcile_monthly_artifact_receipts_from_immutable_metadata(
         raise ValueError("monthly_completion_reconciliation_model_set_mismatch")
 
     receipts = {
-        model: normalize_monthly_raw_artifact_receipt(raw_receipts.get(model))
+        model: normalize_release_raw_artifact_receipt(raw_receipts.get(model))
         for model in ACTIVE8_MODEL_NAMES
     }
     producer_source_shas: set[str] = set()
@@ -370,11 +359,11 @@ def reconcile_monthly_artifact_receipts_from_immutable_metadata(
     if len(producer_source_shas) != 1:
         raise ValueError("monthly_completion_reconciliation_source_sha_mismatch")
 
-    contract = build_monthly_training_contract(
+    contract = build_release_training_contract(
         run_date=run_date,
         dataset_snapshot=dataset_snapshot,
         producer_source_sha=next(iter(producer_source_shas)),
     )
     if contract["contract_checksum"] != expected_checksum:
         raise ValueError("monthly_completion_reconciliation_contract_checksum_mismatch")
-    return validate_monthly_artifact_receipts(contract=contract, receipts=receipts)
+    return validate_release_artifact_receipts(contract=contract, receipts=receipts)

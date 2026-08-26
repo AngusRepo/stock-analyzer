@@ -17,7 +17,6 @@ def test_prediction_writer_routes_learning_domain():
 
 
 def test_prediction_writer_requires_feature_version(monkeypatch):
-    monkeypatch.setattr(recommendation_service, "_is_use_ensemble_v2", lambda: True)
 
     def _fake_batch_execute(_statements):
         raise AssertionError("writer must fail before D1 write when feature_version is missing")

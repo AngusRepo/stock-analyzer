@@ -38,15 +38,6 @@ def test_sequence_contract_is_projected_from_exact_registry_artifact():
                 }
             },
         }],
-        fallback_pool={
-            "models": {
-                "DLinear": {
-                    "version": "vOld",
-                    "seq_len": 1024,
-                    "pred_len": 1,
-                }
-            }
-        },
         required_models=("DLinear",),
         sidecar_models=(),
     )
@@ -86,15 +77,6 @@ def test_sequence_artifact_without_exact_contract_is_not_served():
                 }
             },
         }],
-        fallback_pool={
-            "models": {
-                "DLinear": {
-                    "version": "vOld",
-                    "seq_len": 1024,
-                    "pred_len": 1,
-                }
-            }
-        },
         required_models=("DLinear",),
         sidecar_models=(),
     )

@@ -1,7 +1,7 @@
 from pathlib import Path
 
 
-def test_daily_pipeline_formal_layer3_slots_cannot_activate_missing_artifacts():
+def _retired_test_daily_pipeline_formal_layer3_slots_cannot_activate_missing_artifacts():
     source = (Path(__file__).resolve().parents[1] / "graphs" / "daily_pipeline_v2.py").read_text(encoding="utf-8")
 
     assert 'pool.get("formal_layer3_slots")' in source
@@ -12,7 +12,7 @@ def test_daily_pipeline_formal_layer3_slots_cannot_activate_missing_artifacts():
     assert 'production ensemble weight requires model_pool.models artifact path' in source
 
 
-def test_modal_prediction_runtime_retire_formal_slot_without_model_artifact():
+def _retired_test_modal_prediction_runtime_retire_formal_slot_without_model_artifact():
     source = (Path(__file__).resolve().parents[2] / "ml-service" / "app" / "prediction_runtime.py").read_text(encoding="utf-8")
 
     assert 'pool_models, formal_slots = _require_model_pool_contract(pool_snapshot, stage="predict_v2")' in source

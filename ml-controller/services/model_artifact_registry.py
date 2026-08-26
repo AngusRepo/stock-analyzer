@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import math
 import os
@@ -8,7 +9,7 @@ from copy import deepcopy
 from datetime import datetime, timezone
 from typing import Any, Callable, Literal
 
-from services.active8_monthly_training_contract import (
+from services.active8_release_training_contract import (
     ACTIVE8_MODEL_NAMES,
     validate_model_training_config_attestation,
 )
@@ -49,8 +50,6 @@ class _LearningArtifactRegistryD1Client:
 d1_client = _LearningArtifactRegistryD1Client()
 
 CandidateType = Literal[
-    "monthly_release",
-    "weekly_drift",
     "oof_full_fit_release",
     "manual_hotfix",
     "model_family_shadow",
@@ -111,19 +110,6 @@ def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
-def _iso_datetime(value: Any) -> datetime | None:
-    text = str(value or "").strip()
-    if not text:
-        return None
-    try:
-        parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
-    except ValueError:
-        return None
-    if parsed.tzinfo is None:
-        parsed = parsed.replace(tzinfo=timezone.utc)
-    return parsed.astimezone(timezone.utc)
-
-
 def _json_safe(value: Any) -> Any:
     if isinstance(value, float):
         return value if math.isfinite(value) else None
@@ -166,10 +152,8 @@ def _as_float(value: Any) -> float | None:
         return None
 
 
-def candidate_type_from_retrain(*, is_monthly: bool | None, explicit: str | None = None) -> CandidateType:
+def candidate_type_from_retrain(*, explicit: str | None = None) -> CandidateType:
     if explicit in {
-        "monthly_release",
-        "weekly_drift",
         "oof_full_fit_release",
         "manual_hotfix",
         "model_family_shadow",
@@ -177,12 +161,7 @@ def candidate_type_from_retrain(*, is_monthly: bool | None, explicit: str | None
         "timesfm_l175_l2_feature_release",
     }:
         return explicit  # type: ignore[return-value]
-    if is_monthly is True:
-        return "monthly_release"
-    if is_monthly is False:
-        return "weekly_drift"
     return "unknown"
-
 
 def is_production_artifact_model(model_name: str) -> bool:
     return model_name in PRODUCTION_ARTIFACT_MODEL_NAMES
@@ -397,13 +376,13 @@ def _normalise_lifecycle_registration(
     metrics = _nested_dict(raw_result.get("metrics"))
     ic_tracking = _nested_dict(raw_result.get("ic_tracking"))
     model_ic = _nested_dict(ic_tracking.get(model_name))
-    pool_update = _nested_dict(raw_result.get("pool_update"))
+
 
     version = (
         raw_result.get("version")
         or metadata.get("version")
-        or pool_update.get("new_version")
-        or payload_dict.get("candidate_version")
+
+
     )
     if not version:
         return None
@@ -414,7 +393,7 @@ def _normalise_lifecycle_registration(
         or raw_result.get("gcs_path")
         or saved.get("weights_path")
         or metadata.get("artifact_path")
-        or pool_update.get("artifact_path")
+
     )
     metadata_path = (
         raw_result.get("metadata_path")
@@ -439,7 +418,7 @@ def _normalise_lifecycle_registration(
     raw_status = str(raw_result.get("status") or "").lower()
     has_artifact = bool(artifact_path or saved or metadata)
     status = "registered" if raw_status in {"ok", "registered", ""} and has_artifact else raw_status or "unknown"
-    promoted_to_active = bool(pool_update and str(pool_update.get("new_version") or "") == version)
+
 
     registration: dict[str, Any] = {
         "status": status,
@@ -458,12 +437,12 @@ def _normalise_lifecycle_registration(
         ),
         "evaluation_baseline_version": (
             raw_result.get("evaluation_baseline_version")
-            or pool_update.get("old_version")
+
         ),
         "artifact_lifecycle_result": raw_result,
         "artifact_lifecycle_target": model_name,
-        "artifact_lifecycle_promoted_to_active": promoted_to_active,
-        "production_cutover_source": "artifact_lifecycle" if promoted_to_active else None,
+
+
     }
     if metadata.get("feature_policy_schema_version") is not None:
         registration["feature_policy_version"] = metadata.get("feature_policy_schema_version")
@@ -592,28 +571,26 @@ def _artifact_record_from_registration(
         and bool(lifecycle_run_id)
     )
     stages = _nested_dict(payload_dict.get("stages"))
-    monthly_contract_stage = _nested_dict(stages.get("monthly_training_contract"))
-    monthly_completion_stage = _nested_dict(stages.get("monthly_model_completion"))
-    monthly_contract_checksum = str(monthly_contract_stage.get("checksum") or "").lower()
-    owns_monthly_lifecycle = (
-        payload_dict.get("is_monthly") is True
-        and candidate_type == "monthly_release"
-        and bool(lifecycle_run_id)
-        and monthly_contract_stage.get("status") == "verified"
-        and len(monthly_contract_checksum) == 64
-        and all(char in "0123456789abcdef" for char in monthly_contract_checksum)
-        and monthly_completion_stage.get("status") == "complete"
-        and monthly_completion_stage.get("models_completed") == len(ACTIVE8_MODEL_NAMES)
-        and monthly_completion_stage.get("models_required") == len(ACTIVE8_MODEL_NAMES)
-        and str(monthly_completion_stage.get("contract_checksum") or "").lower() == monthly_contract_checksum
-        and set(_nested_dict(monthly_completion_stage.get("receipts"))) == set(ACTIVE8_MODEL_NAMES)
+    release_contract_stage = _nested_dict(stages.get("release_training_contract"))
+    release_completion_stage = _nested_dict(stages.get("release_model_completion"))
+    release_contract_checksum = str(release_contract_stage.get("checksum") or "").lower()
+    owns_release_lifecycle = (
+        owns_oof_lifecycle
+        and candidate_type == "oof_full_fit_release"
+        and release_contract_stage.get("status") == "verified"
+        and len(release_contract_checksum) == 64
+        and all(char in "0123456789abcdef" for char in release_contract_checksum)
+        and release_completion_stage.get("status") == "complete"
+        and release_completion_stage.get("models_completed") == len(ACTIVE8_MODEL_NAMES)
+        and release_completion_stage.get("models_required") == len(ACTIVE8_MODEL_NAMES)
+        and str(release_completion_stage.get("contract_checksum") or "").lower() == release_contract_checksum
+        and set(_nested_dict(release_completion_stage.get("receipts"))) == set(ACTIVE8_MODEL_NAMES)
     )
-    owns_root_lifecycle = owns_oof_lifecycle or owns_monthly_lifecycle
+    owns_root_lifecycle = owns_release_lifecycle
     if owns_root_lifecycle:
-        if owns_oof_lifecycle:
-            enriched_registration["oof_lifecycle_resume"] = lifecycle_resume
-        if owns_monthly_lifecycle:
-            enriched_registration["monthly_model_completion"] = monthly_completion_stage
+        enriched_registration["oof_lifecycle_resume"] = lifecycle_resume
+        enriched_registration["release_training_contract"] = release_contract_stage
+        enriched_registration["release_model_completion"] = release_completion_stage
         if child_training_run_id and child_training_run_id != lifecycle_run_id:
             enriched_registration["artifact_training_run_id"] = child_training_run_id
         enriched_registration["training_run_id"] = lifecycle_run_id
@@ -624,6 +601,12 @@ def _artifact_record_from_registration(
     elif not isinstance(enriched_registration.get("model_cpcv"), dict) and isinstance(evidence.get("model_cpcv"), dict):
         enriched_registration["model_cpcv"] = evidence["model_cpcv"]
     record_version = str(raw_registration.get("version") or payload_dict.get("candidate_version"))
+    if not record_version:
+        raise ValueError(f"artifact_registration_version_missing:{model_name}")
+    artifact_id = str(
+        raw_registration.get("artifact_id")
+        or f"{model_name}:{record_version}:{candidate_type}"
+    )
 
     ic_summary = payload_dict.get("ic_summary") if isinstance(payload_dict.get("ic_summary"), dict) else {}
     local_ic_summary = dict(ic_summary)
@@ -638,28 +621,13 @@ def _artifact_record_from_registration(
         registration=enriched_registration,
         ic_summary=local_ic_summary,
     )
-    promotion_requested = bool(raw_registration.get("artifact_lifecycle_promoted_to_active"))
-    pool_update = _nested_dict(raw_registration.get("artifact_lifecycle_result")).get("pool_update")
-    artifact_id = f"{model_name}:{record_version}:{candidate_type}"
-    offline_gate_passed = offline_gate["decision"] != "FAIL"
-    promoted_to_active = promotion_requested and offline_gate_passed
-    promotion_blocked_by_offline_gate = promotion_requested and not promoted_to_active
-    offline_feature_release_candidate_type = candidate_type in {"monthly_release", "timesfm_l175_l2_feature_release"}
+    offline_feature_release_candidate_type = candidate_type == "timesfm_l175_l2_feature_release"
     eligible_pending_approval = (
-        not promoted_to_active
-        and offline_feature_release_candidate_type
+        offline_feature_release_candidate_type
         and offline_gate["decision"] in {"PASS", "STRONG_PASS"}
     )
-    state = "production" if promoted_to_active else offline_gate["state"]
-    promotion_decision = (
-        "current_production"
-        if promoted_to_active
-        else "blocked_offline_gate_failed"
-        if promotion_blocked_by_offline_gate or (offline_feature_release_candidate_type and not offline_gate_passed)
-        else "eligible_pending_approval"
-        if eligible_pending_approval
-        else "not_evaluated"
-    )
+    state = offline_gate["state"]
+    promotion_decision = "eligible_pending_approval" if eligible_pending_approval else "not_evaluated"
     snapshot = (
         (payload_dict.get("stages") or {}).get("dataset_snapshot")
         if isinstance(payload_dict.get("stages"), dict)
@@ -671,8 +639,8 @@ def _artifact_record_from_registration(
         "version": record_version,
         "candidate_type": candidate_type,
         "state": state,
-        "artifact_path": raw_registration.get("gcs_path") or model_artifact_path(model_name, record_version),
-        "metadata_path": raw_registration.get("metadata_path") or model_metadata_path(model_name, record_version),
+        "artifact_path": raw_registration.get("gcs_path"),
+        "metadata_path": raw_registration.get("metadata_path"),
         "training_run_id": (
             lifecycle_run_id
             if owns_root_lifecycle
@@ -688,7 +656,7 @@ def _artifact_record_from_registration(
         "feature_policy_version": raw_registration.get("feature_policy_version") or evidence.get("feature_policy_version"),
         "checksum": raw_registration.get("checksum"),
         "source_run_date": payload_dict.get("run_date"),
-        "is_monthly": 1 if payload_dict.get("is_monthly") else 0,
+        "is_monthly": 1 if str((payload_dict.get("oof_lifecycle_resume") or {}).get("cadence") or "") == "monthly" else 0,
         "offline_gate_status": offline_gate["status"],
         "offline_gate_decision": offline_gate["decision"],
         "offline_gate_failed_gates": _json_dumps(offline_gate["failed_gates"]),
@@ -700,13 +668,13 @@ def _artifact_record_from_registration(
             "ic_summary": {model_name: local_ic_summary.get(model_name)},
             "callback_status": payload_dict.get("status"),
             "callback_error": payload_dict.get("error"),
-            "pool_update": pool_update if isinstance(pool_update, dict) else None,
-            "production_cutover_source": raw_registration.get("production_cutover_source") if promoted_to_active else None,
-            "artifact_lifecycle_promoted_to_active_requested": promotion_requested,
-            "artifact_lifecycle_promoted_to_active_effective": promoted_to_active,
-            "artifact_lifecycle_promotion_blocked_by_offline_gate": promotion_blocked_by_offline_gate,
+
+
+
+
+
         }),
-        "live_gate_status": "not_applicable" if promoted_to_active else "not_started",
+        "live_gate_status": "not_started",
         "live_evidence_json": "{}",
         "promotion_decision": promotion_decision,
         "approval_state": "required" if eligible_pending_approval else "not_required",
@@ -812,21 +780,8 @@ def build_artifact_records_from_retrain_followup(payload: Any) -> list[dict[str,
     train_stage_registrations = _train_stage_registrations(payload_dict)
     lifecycle_registrations = _lifecycle_registrations(payload_dict)
     timesfm_l2_feature_release_registrations = _timesfm_l2_feature_release_registrations(payload_dict)
-    allowed_models = {
-        str(model_name)
-        for model_name in (payload_dict.get("promotion_allowed_models") or [])
-        if str(model_name)
-    }
-    if allowed_models:
-        registrations = {
-            name: row for name, row in registrations.items() if str(name) in allowed_models
-        }
-        train_stage_registrations = {
-            name: row for name, row in train_stage_registrations.items() if str(name) in allowed_models
-        }
-        lifecycle_registrations = {
-            name: row for name, row in lifecycle_registrations.items() if str(name) in allowed_models
-        }
+    # Every Active-8 release artifact is registered. Promotion eligibility is
+    # evidence-owned and must never erase failed or diagnostic release outputs.
     if not version or (
         (not isinstance(registrations, dict) or not registrations)
         and not train_stage_registrations
@@ -836,7 +791,6 @@ def build_artifact_records_from_retrain_followup(payload: Any) -> list[dict[str,
         return []
 
     candidate_type = candidate_type_from_retrain(
-        is_monthly=payload_dict.get("is_monthly"),
         explicit=payload_dict.get("candidate_type"),
     )
     now = _now_iso()
@@ -1142,33 +1096,21 @@ def list_artifacts_by_ids(
 
 
 def list_champion_pointers(model_name: str | None = None) -> list[dict[str, Any]]:
-    """Read registry-owned champion pointers when the D1 migration is present.
-
-    During rollout, production may still read ``model_pool.json``. A missing
-    table is therefore reported as an empty pointer set instead of breaking
-    Model Pool reads; the projection endpoint will make that migration gap
-    explicit.
-    """
+    """Read the mandatory Learning-D1 champion pointer table."""
     where = ""
     params: list[Any] = []
     if model_name:
         where = "WHERE model_name = ?"
         params.append(model_name)
-    try:
-        rows = d1_client.query(
-            f"""
-            SELECT *
-            FROM model_champion_pointers
-            {where}
-            ORDER BY updated_at DESC
-            """,
-            params,
-        )
-    except RuntimeError as exc:
-        if "model_champion_pointers" in str(exc).lower() and "no such table" in str(exc).lower():
-            return []
-        raise
-
+    rows = d1_client.query(
+        f"""
+        SELECT *
+        FROM model_champion_pointers
+        {where}
+        ORDER BY updated_at DESC
+        """,
+        params,
+    )
     for row in rows:
         raw = row.get("promotion_evidence_json")
         if isinstance(raw, str):
@@ -1177,213 +1119,6 @@ def list_champion_pointers(model_name: str | None = None) -> list[dict[str, Any]
             except json.JSONDecodeError:
                 row["promotion_evidence_json"] = raw
     return rows
-
-
-def build_champion_pointer_projection(
-    *,
-    registry_rows: list[dict[str, Any]],
-    d1_pointers: list[dict[str, Any]],
-    model_pool_versions: dict[str, str],
-) -> dict[str, Any]:
-    """Explain the champion pointer migration state without mutating serving.
-
-    Production must not silently switch from ``model_pool.json`` to D1 pointers.
-    This projection gives UI/OBS a single contract showing whether each model
-    already has a registry pointer and whether it matches the current serving
-    version.
-    """
-    if model_pool_versions:
-        models = sorted(str(name) for name in model_pool_versions.keys())
-    else:
-        models = sorted({
-            *(str(r.get("model_name")) for r in registry_rows if r.get("model_name")),
-            *(str(r.get("model_name")) for r in d1_pointers if r.get("model_name")),
-        })
-    pointer_by_model = {str(r.get("model_name")): r for r in d1_pointers if r.get("model_name")}
-    artifacts_by_model: dict[str, list[dict[str, Any]]] = {}
-    for row in registry_rows:
-        name = str(row.get("model_name") or "")
-        if name:
-            artifacts_by_model.setdefault(name, []).append(row)
-
-    out: dict[str, dict[str, Any]] = {}
-    for model_name in models:
-        pointer = pointer_by_model.get(model_name)
-        serving_version = model_pool_versions.get(model_name)
-        pointer_version = str(pointer.get("champion_version")) if pointer and pointer.get("champion_version") else None
-        pointer_artifact_id = str(pointer.get("champion_artifact_id")) if pointer and pointer.get("champion_artifact_id") else None
-        latest_production_artifact = next(
-            (
-                r for r in sorted(
-                    artifacts_by_model.get(model_name, []),
-                    key=lambda r: str(r.get("updated_at") or r.get("created_at") or ""),
-                    reverse=True,
-                )
-                if r.get("state") == "production"
-            ),
-            None,
-        )
-        artifact_link_status = "not_linked"
-        if pointer_artifact_id:
-            artifact_link_status = "linked"
-        elif pointer_version:
-            artifact_link_status = "version_only_pointer"
-
-        if not pointer:
-            readiness = "missing_d1_pointer"
-            next_action = "Backfill model_champion_pointers from current model_pool.json before enabling pointer-owned serving."
-        elif serving_version and pointer_version != serving_version:
-            readiness = "pointer_mismatch"
-            next_action = "Do not switch serving owner; reconcile pointer with current model_pool.json champion first."
-        elif pointer_version and pointer_artifact_id:
-            readiness = "pointer_ready"
-            next_action = "Safe for promotion-controller final comparison; serving owner migration still requires explicit deploy."
-        elif pointer_version:
-            readiness = "pointer_version_only"
-            next_action = "Version pointer is aligned, but champion_artifact_id is missing; run production artifact backfill before treating the pointer as migration-ready."
-        else:
-            readiness = "pointer_invalid"
-            next_action = "Pointer row exists but champion_version is empty."
-
-        out[model_name] = {
-            "serving_version": serving_version,
-            "d1_pointer_version": pointer_version,
-            "d1_pointer_artifact_id": pointer_artifact_id,
-            "d1_pointer": pointer,
-            "latest_registry_production_artifact": latest_production_artifact,
-            "artifact_link_status": artifact_link_status,
-            "readiness": readiness,
-            "next_action": next_action,
-        }
-
-    ready = sum(1 for row in out.values() if row["readiness"] == "pointer_ready")
-    return {
-        "status": "ok",
-        "source_of_truth": "model_pool.json",
-        "target_source_of_truth": "model_champion_pointers",
-        "production_reader": "model_pool.json",
-        "migration_ready": bool(out) and ready == len(out),
-        "ready_count": ready,
-        "model_count": len(out),
-        "models": out,
-    }
-
-
-def backfill_champion_pointers_from_model_pool(
-    *,
-    model_pool_versions: dict[str, str],
-    registry_rows: list[dict[str, Any]],
-    reason: str = "model_pool_backfill",
-    create_missing_artifacts: bool = False,
-) -> dict[str, Any]:
-    """Populate D1 champion pointers from the current serving model_pool.json.
-
-    This is a migration bridge, not a promotion action. It copies the current
-    production truth into D1 so the promotion controller can later compare
-    candidates against an explicit champion pointer.
-    """
-    artifact_by_model_version: dict[tuple[str, str], dict[str, Any]] = {}
-    for row in registry_rows:
-        model_name = str(row.get("model_name") or "")
-        version = str(row.get("version") or "")
-        if model_name and version:
-            artifact_by_model_version[(model_name, version)] = row
-
-    written = 0
-    created_artifacts = 0
-    errors: list[str] = []
-    now = _now_iso()
-    for model_name, champion_version in sorted(model_pool_versions.items()):
-        artifact = artifact_by_model_version.get((model_name, champion_version))
-        created_this_artifact = False
-        if not artifact and create_missing_artifacts:
-            errors.append(
-                f"{model_name}:{champion_version}:artifact_backfill:"
-                "verified_sha256_registry_record_required"
-            )
-            continue
-        artifact_available = bool(
-            artifact
-            and str(artifact.get("checksum") or "").startswith("sha256:")
-            and str(artifact.get("artifact_path") or "").strip()
-        )
-        if not artifact_available:
-            errors.append(
-                f"{model_name}:{champion_version}:artifact_backfill:"
-                "verified_sha256_registry_record_required"
-            )
-            continue
-        evidence = {
-            "schema_version": "champion-pointer-backfill-v1",
-            "reason": reason,
-            "source": "model_pool.json",
-            "backfilled_at": now,
-            "registry_artifact_found": artifact_available,
-            "production_artifact_available": artifact_available,
-            "production_artifact_created": artifact_available,
-            "created_this_backfill": created_this_artifact,
-            "artifact_id": artifact.get("artifact_id") if artifact else None,
-            "artifact_path": artifact.get("artifact_path") if artifact else None,
-            "metadata_path": artifact.get("metadata_path") if artifact else None,
-        }
-        try:
-            d1_client.execute(
-                """
-                INSERT INTO model_champion_pointers (
-                  model_name, champion_version, champion_artifact_id,
-                  rollback_version, rollback_artifact_id, promoted_at,
-                  promotion_reason, promotion_evidence_json, updated_at
-                ) VALUES (?, ?, ?, NULL, NULL, CURRENT_TIMESTAMP, ?, ?, CURRENT_TIMESTAMP)
-                ON CONFLICT(model_name) DO UPDATE SET
-                  champion_version = excluded.champion_version,
-                  champion_artifact_id = excluded.champion_artifact_id,
-                  promotion_reason = excluded.promotion_reason,
-                  promotion_evidence_json = excluded.promotion_evidence_json,
-                  updated_at = CURRENT_TIMESTAMP
-                """,
-                [
-                    model_name,
-                    champion_version,
-                    artifact.get("artifact_id") if artifact else None,
-                    reason,
-                    _json_dumps(evidence),
-                ],
-            )
-            written += 1
-        except Exception as exc:  # noqa: BLE001 - report partial migration failures.
-            errors.append(f"{model_name}:{champion_version}: {exc}")
-
-    return {
-        "status": "ok" if not errors else "partial_error",
-        "source": "model_pool.json",
-        "target": "model_champion_pointers",
-        "attempted": len(model_pool_versions),
-        "written": written,
-        "created_artifacts": created_artifacts,
-        "errors": errors,
-    }
-
-
-_STATE_RANK = {
-    "approved": 9,
-    "approval_required": 8,
-    "live_gate_passed": 7,
-    "shadowing": 6,
-    "candidate_selected": 5,
-    "offline_strong_pass": 4,
-    "offline_passed": 3,
-    "offline_passed_weak": 2,
-    "registered": 1,
-}
-
-_WEEKLY_SELECTED_STATES = {
-    "offline_strong_pass",
-    "candidate_selected",
-    "live_gate_passed",
-    "approval_required",
-    "approved",
-}
-
 
 def _legacy_shadow_selection_row(row: dict[str, Any]) -> bool:
     return str(row.get("state") or "") == "shadowing"
@@ -1417,8 +1152,7 @@ def _promotion_ready(row: dict[str, Any] | None) -> bool:
     state = str(row.get("state") or "")
     live_status = str(row.get("live_gate_status") or "")
     if (
-        _offline_monthly_release_candidate(row)
-        or _offline_oof_full_fit_release_candidate(row)
+        _offline_oof_full_fit_release_candidate(row)
         or _offline_timesfm_l175_feature_release_candidate(row)
     ):
         return True
@@ -1427,22 +1161,6 @@ def _promotion_ready(row: dict[str, Any] | None) -> bool:
         "multi_evidence_passed",
         "rolling_ic_passed",
     }
-
-
-def _offline_monthly_release_candidate(row: dict[str, Any] | None) -> bool:
-    if not row:
-        return False
-    return (
-        str(row.get("candidate_type") or "") == "monthly_release"
-        and str(row.get("offline_gate_decision") or "") in {"STRONG_PASS", "PASS"}
-        and str(row.get("state") or "") in {
-            "offline_passed",
-            "offline_strong_pass",
-            "live_gate_passed",
-            "approval_required",
-            "approved",
-        }
-    )
 
 
 def _offline_oof_full_fit_base_artifact(row: dict[str, Any] | None) -> bool:
@@ -1455,6 +1173,9 @@ def _offline_oof_full_fit_base_artifact(row: dict[str, Any] | None) -> bool:
     validation_design = _nested_dict(evidence.get("validation_design"))
     release_validation = _nested_dict(registration.get("oof_release_validation"))
     base_authority = _nested_dict(release_validation.get("base_artifact_authority"))
+    release_contract = _nested_dict(registration.get("release_training_contract"))
+    release_contract_validation = _nested_dict(release_contract.get("validation"))
+    release_completion = _nested_dict(registration.get("release_model_completion"))
     failed_gates = evidence.get("failed_gates")
     return (
         str(row.get("candidate_type") or "") == "oof_full_fit_release"
@@ -1477,6 +1198,18 @@ def _offline_oof_full_fit_base_artifact(row: dict[str, Any] | None) -> bool:
         and validation_design.get("refit_each_fold") is True
         and validation_design.get("chronological") is True
         and int(_as_float(validation_design.get("purge_horizon_sessions")) or 0) >= 5
+        and release_contract.get("status") == "verified"
+        and set(release_contract.get("models") or []) == set(ACTIVE8_MODEL_NAMES)
+        and int(_as_float(release_contract_validation.get("minimum_outer_folds")) or 0) >= 5
+        and release_contract_validation.get("refit_each_fold") is True
+        and release_contract_validation.get("promotion_requires_immutable_oof") is True
+        and (
+            str(row.get("model_name") or "") != "DLinear"
+            or release_contract_validation.get("dlinear_single_holdout_is_diagnostic_only") is True
+        )
+        and release_completion.get("status") == "complete"
+        and int(_as_float(release_completion.get("models_completed")) or 0) == len(ACTIVE8_MODEL_NAMES)
+        and int(_as_float(release_completion.get("models_required")) or 0) == len(ACTIVE8_MODEL_NAMES)
         and resume.get("schema_version") == "active8-oof-lifecycle-resume-v1"
         and bool(str(resume.get("cohort_id") or "").strip())
         and len(str(resume.get("source_manifest_checksum") or "")) == 64
@@ -1585,7 +1318,7 @@ def _offline_timesfm_l175_feature_release_candidate(row: dict[str, Any] | None) 
     )
 
 
-def _offline_monthly_release_blockers(blockers: list[dict[str, Any]]) -> list[dict[str, Any]]:
+def _offline_feature_release_blockers(blockers: list[dict[str, Any]]) -> list[dict[str, Any]]:
     hard_blocker_codes = {
         "model_not_active_production_artifact",
         "missing_current_champion",
@@ -1602,40 +1335,6 @@ def _offline_monthly_release_blockers(blockers: list[dict[str, Any]]) -> list[di
         or str(blocker.get("code") or "").startswith("cpcv_")
         or str(blocker.get("code") or "").startswith("foundation_")
     ]
-
-
-def _monthly_supersedes_weekly(monthly: dict[str, Any] | None, weekly: dict[str, Any] | None) -> bool:
-    if not monthly or not weekly:
-        return False
-    if str(monthly.get("candidate_type") or "") != "monthly_release":
-        return False
-    if str(weekly.get("candidate_type") or "") != "weekly_drift":
-        return False
-    if not _promotion_ready(monthly):
-        return False
-    return _artifact_time_key(monthly) >= _artifact_time_key(weekly)
-
-
-def _build_superseded_action_context(
-    *,
-    superseded: dict[str, Any] | None,
-    superseding: dict[str, Any] | None,
-    selection_slot: str,
-) -> dict[str, Any]:
-    return {
-        "root_cause": "superseded_by_newer_monthly_release",
-        "impact": "Older weekly drift evidence is retained for audit, but should not occupy approval or live-shadow decision space.",
-        "next_action": "Promote or reject the newer monthly release candidate; archive the weekly hotfix after pointer readback.",
-        "affected_downstream": ["promotion_controller", "artifact_registry"],
-        "scheduler_dependency": ["promotion_controller"],
-        "evidence_status": "superseded",
-        "selection_slot": selection_slot,
-        "metrics": {
-            "superseded_artifact_id": (superseded or {}).get("artifact_id"),
-            "superseding_artifact_id": (superseding or {}).get("artifact_id"),
-        },
-    }
-
 
 def _non_production_artifact_context(
     row: dict[str, Any] | None,
@@ -2018,8 +1717,8 @@ def artifact_promotion_blockers(row: dict[str, Any], *, champion_version: str | 
 
     registration = _artifact_registration(row)
     metadata = _artifact_registration_metadata(row)
-    monthly_fixed_config_attested = False
-    if str(row.get("candidate_type") or "") == "monthly_release":
+    release_config_attested = False
+    if str(row.get("candidate_type") or "") == "oof_full_fit_release":
         attestation = _nested_dict(metadata.get("model_training_config_attestation"))
         try:
             verified_attestation = validate_model_training_config_attestation(
@@ -2036,12 +1735,12 @@ def artifact_promotion_blockers(row: dict[str, Any], *, champion_version: str | 
             metadata_source_sha = str(metadata.get("producer_source_sha") or "").strip()
             if metadata_source_sha and metadata_source_sha != str(verified_attestation["producer_source_sha"]):
                 raise ValueError("model_training_config_attestation_source_lineage_mismatch")
-            monthly_fixed_config_attested = True
+            release_config_attested = True
         except (KeyError, TypeError, ValueError) as exc:
             add(
-                "monthly_training_config_attestation_missing_or_invalid",
-                "Monthly artifact lacks immutable model-specific config evidence",
-                f"Regenerate this model from the checksum-bound Active-8 monthly contract: {exc}",
+                "release_training_config_attestation_missing_or_invalid",
+                "OOF release artifact lacks immutable model-specific config evidence",
+                f"Regenerate this model from the checksum-bound Active-8 release contract: {exc}",
             )
     target_semantic = str(metadata.get("target_semantic_version") or "").strip()
     if model_name in ACTIVE8_ARTIFACT_MODEL_NAMES and target_semantic != ACTIVE8_TARGET_SEMANTIC_VERSION:
@@ -2179,7 +1878,7 @@ def artifact_promotion_blockers(row: dict[str, Any], *, champion_version: str | 
     pbo_value = _as_float(pbo.get("pbo") if isinstance(pbo, dict) else pbo)
     pbo_method = str(pbo.get("method") if isinstance(pbo, dict) else "").lower()
     pbo_policy = policy_bundle["pbo"]
-    pbo_required = bool(pbo_policy.get("required")) and not monthly_fixed_config_attested
+    pbo_required = bool(pbo_policy.get("required")) and not release_config_attested
     max_pbo = _as_float(pbo_policy.get("max_pbo"))
     if pbo_required and (
         not _truthy_gate_value(pbo, max_fail_value=max_pbo)
@@ -2383,13 +2082,8 @@ def build_candidate_selection(
     *,
     champion_pointers: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
-    """Read-only release-train selection policy.
+    """Select the single canonical immutable-OOF release candidate per model."""
 
-    Monthly artifacts are the primary release train. Weekly artifacts are drift
-    candidates and only become live-shadow candidates when they are strong
-    offline passes. This prevents every weekly artifact from occupying a live
-    gate slot.
-    """
     grouped: dict[str, list[dict[str, Any]]] = {}
     pointer_by_model = {
         str(pointer.get("model_name") or ""): pointer
@@ -2397,6 +2091,7 @@ def build_candidate_selection(
         if pointer.get("model_name")
     }
     suppressed: list[dict[str, Any]] = []
+    ignored_historical_count = 0
     for row in rows:
         model_name = str(row.get("model_name") or "unknown")
         if not is_production_artifact_model(model_name):
@@ -2406,14 +2101,19 @@ def build_candidate_selection(
 
     selections: dict[str, dict[str, Any]] = {}
     for model_name, items in grouped.items():
-        monthly = [r for r in items if r.get("candidate_type") == "monthly_release"]
-        feature_release = [r for r in items if r.get("candidate_type") == "timesfm_l175_l2_feature_release"]
-        release_train = [*monthly, *feature_release]
-        weekly = [r for r in items if r.get("candidate_type") == "weekly_drift"]
-        active_weekly = [r for r in weekly if not _legacy_shadow_selection_row(r)]
-        latest_monthly = max(release_train, key=_artifact_time_key, default=None)
-        latest_active_monthly = latest_monthly if latest_monthly and not _legacy_shadow_selection_row(latest_monthly) else None
-        best_monthly = latest_active_monthly
+        canonical = [
+            row
+            for row in items
+            if str(row.get("candidate_type") or "") == "oof_full_fit_release"
+            and not _legacy_shadow_selection_row(row)
+        ]
+        ignored_historical_count += len(items) - len(canonical)
+        latest_release = max(canonical, key=_artifact_time_key, default=None)
+        selected_release = (
+            latest_release
+            if latest_release and _offline_oof_full_fit_release_candidate(latest_release)
+            else None
+        )
         pointer = pointer_by_model.get(model_name) or {}
         pointer_artifact_id = str(pointer.get("champion_artifact_id") or "").strip()
         pointer_version = str(pointer.get("champion_version") or "").strip()
@@ -2423,118 +2123,49 @@ def build_candidate_selection(
                 for row in items
                 if pointer_artifact_id
                 and str(row.get("artifact_id") or "").strip() == pointer_artifact_id
+                and (not pointer_version or str(row.get("version") or "").strip() == pointer_version)
             ),
             None,
         )
-        if serving_release is None and pointer_version:
-            serving_release = max(
-                [row for row in items if str(row.get("version") or "").strip() == pointer_version],
-                key=_artifact_time_key,
-                default=None,
-            )
-        if serving_release is None:
-            serving_release = max(
-                [row for row in items if row.get("state") == "production"],
-                key=_artifact_time_key,
-                default=None,
-            )
-        best_weekly = max(active_weekly, key=_candidate_rank, default=None)
-
-        selected_monthly = (
-            best_monthly
-            if best_monthly and _STATE_RANK.get(str(best_monthly.get("state") or ""), 0) >= 3
-            else None
-        )
-        selected_weekly = (
-            best_weekly
-            if best_weekly and str(best_weekly.get("state") or "") in _WEEKLY_SELECTED_STATES
-            else None
-        )
-        weekly_superseded_by = None
-        monthly_superseder = selected_monthly or best_monthly
-        if selected_weekly and _monthly_supersedes_weekly(monthly_superseder, selected_weekly):
-            weekly_superseded_by = monthly_superseder
-            selected_weekly = None
-
-
-        superseded_candidates = [
-            superseded_candidate_id
-            for superseded_candidate_id in [
-                best_weekly.get("artifact_id") if weekly_superseded_by and best_weekly else None
-            ]
-            if superseded_candidate_id
-        ]
-        # This is an action queue, not registry history. Candidate-not-better
-        # rows are supplied by promotion suppression; selection only owns
-        # explicit release-train supersession.
-        archive_candidates = list(dict.fromkeys(superseded_candidates))
-
-        weekly_context = (
-            _build_superseded_action_context(
-                superseded=best_weekly,
-                superseding=weekly_superseded_by,
-                selection_slot="weekly_drift_candidate",
-            )
-            if weekly_superseded_by
-            else build_artifact_action_context(
-                selected_weekly,
-                selection_slot="weekly_drift_candidate",
-            )
-        )
 
         selections[model_name] = {
-            "monthly_release_candidate": selected_monthly,
-            "weekly_drift_candidate": selected_weekly,
-            "latest_monthly_release_artifact": latest_monthly,
+            "oof_full_fit_release_candidate": selected_release,
+            "latest_oof_full_fit_release_artifact": latest_release,
             "serving_release_artifact": serving_release,
-            "archive_candidates": archive_candidates,
-            "superseded_candidates": superseded_candidates,
+            "archive_candidates": [],
+            "superseded_candidates": [],
             "action_context": {
-                "monthly_release_candidate": build_artifact_action_context(
-                    selected_monthly,
-                    selection_slot="monthly_release_candidate",
+                "oof_full_fit_release_candidate": build_artifact_action_context(
+                    selected_release,
+                    selection_slot="oof_full_fit_release_candidate",
                 ),
-                "weekly_drift_candidate": weekly_context,
             },
             "policy": {
-                "monthly": "select latest non-legacy active-8 direct-alpha monthly or TimesFM L1.75 feature-release artifact only if offline_passed or stronger",
-                "weekly": "select only non-legacy offline_strong_pass unless a newer promotion-ready monthly release supersedes it",
-                "serving_release_artifact": "canonical champion pointer artifact, independent of candidate type; falls back to a production registry row only when the pointer is unavailable",
-                "archive_candidates": "actionable superseded candidates only; terminal and historical registry rows are not an archive queue",
-                "live_shadow_slots": {
-                    "monthly": 1,
-                    "weekly": 1,
-                },
-                "weekly_superseded_by_monthly": bool(weekly_superseded_by),
+                "release": "single canonical immutable-OOF full-fit release; no monthly/weekly fallback",
+                "serving_release_artifact": "exact D1 champion pointer identity only; no production-row or version fallback",
+                "archive_candidates": "historical noncanonical artifacts remain immutable audit rows and never enter runtime selection",
+                "live_shadow_slots": {"oof_full_fit_release": 1},
             },
         }
 
     return {
         "status": "ok",
         "source_of_truth": "model_artifact_registry",
-        "selection_policy": "release_train_v2_pointer_owned",
+        "selection_policy": "canonical_oof_full_fit_release_v1",
+        "ignored_historical_count": ignored_historical_count,
         "suppressed_count": len(suppressed),
         "suppressed": suppressed,
         "models": selections,
     }
-
 
 def build_live_shadow_candidate_selection(
     rows: list[dict[str, Any]],
     *,
     champion_pointers: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
-    """Select at most one zero-weight live-shadow artifact per Active-8 model.
+    """Select at most one zero-weight canonical OOF challenger per Active-8 model."""
 
-    The release-train selector remains the sole candidate owner. Monthly is the
-    primary release train; a weekly drift artifact is used only when no monthly
-    candidate currently owns the slot. This is a lifecycle slot, not a top-k
-    stock selector, and it never changes production weights or pointers.
-    """
-    selection = build_candidate_selection(
-        rows,
-        champion_pointers=champion_pointers,
-    )
+    selection = build_candidate_selection(rows, champion_pointers=champion_pointers)
     pointer_by_model = {
         str(pointer.get("model_name") or ""): pointer
         for pointer in (champion_pointers or [])
@@ -2546,25 +2177,7 @@ def build_live_shadow_candidate_selection(
         model_selection = (selection.get("models") or {}).get(model_name)
         if not isinstance(model_selection, dict):
             continue
-        monthly = model_selection.get("monthly_release_candidate")
-        weekly = model_selection.get("weekly_drift_candidate")
-        for artifact_id in model_selection.get("superseded_candidates") or []:
-            if not any(
-                str(row.get("artifact_id") or "") == str(artifact_id)
-                for row in suppressed
-                if isinstance(row, dict)
-            ):
-                suppressed.append({
-                    "model_name": model_name,
-                    "artifact_id": artifact_id,
-                    "reason": "superseded_by_primary_release_train",
-                })
-        candidate = monthly if isinstance(monthly, dict) else weekly
-        selection_slot = (
-            "monthly_release_candidate"
-            if isinstance(monthly, dict)
-            else "weekly_drift_candidate"
-        )
+        candidate = model_selection.get("oof_full_fit_release_candidate")
         if not isinstance(candidate, dict) or not candidate.get("artifact_id"):
             continue
         pointer = pointer_by_model.get(model_name) or {}
@@ -2578,25 +2191,18 @@ def build_live_shadow_candidate_selection(
             continue
         selected.append({
             **candidate,
-            "_selection_slot": selection_slot,
+            "_selection_slot": "oof_full_fit_release_candidate",
             "_production_effect": False,
             "_vote_weight": 0.0,
         })
-        if isinstance(monthly, dict) and isinstance(weekly, dict):
-            suppressed.append({
-                "model_name": model_name,
-                "artifact_id": weekly.get("artifact_id"),
-                "reason": "monthly_primary_release_train_owns_live_shadow_slot",
-            })
     return {
-        "schema_version": "active8-live-shadow-selection-v1",
-        "source_of_truth": "model_artifact_registry.release_train_v2_pointer_owned",
+        "schema_version": "active8-live-shadow-selection-v2",
+        "source_of_truth": "model_artifact_registry.canonical_oof_full_fit_release_v1",
         "production_effect": False,
         "vote_weight": 0.0,
         "selected": selected,
         "suppressed": suppressed,
     }
-
 
 def _ic_number(info: dict[str, Any] | None) -> float | None:
     if not isinstance(info, dict):
@@ -2804,97 +2410,68 @@ def build_promotion_queue(
     *,
     champion_versions: dict[str, str] | None = None,
 ) -> dict[str, Any]:
-    """Build a read-only promotion-controller queue from registry rows.
+    """Build the canonical OOF/manual/feature promotion queue."""
 
-    This is intentionally not a mutator. It centralizes promotion semantics so
-    UI/OBS can stop inferring next steps from scattered artifact fields.
-    """
     champion_versions = champion_versions or {}
     queue: list[dict[str, Any]] = []
+    suppressed: list[dict[str, Any]] = []
+    ignored_historical_count = 0
     artifact_by_model_version = {
         (str(row.get("model_name") or ""), str(row.get("version") or "")): row
         for row in rows
         if row.get("model_name") and row.get("version")
     }
-    promotable_monthly_by_model: dict[str, dict[str, Any]] = {}
-    for row in rows:
-        if str(row.get("candidate_type") or "") != "monthly_release":
-            continue
-        model_name = str(row.get("model_name") or "")
-        if not is_production_artifact_model(model_name):
-            continue
-        if str(row.get("state") or "") in {"archived", "rejected"}:
-            continue
-        if not _promotion_ready(row):
-            continue
-        current = promotable_monthly_by_model.get(model_name)
-        if not current or _artifact_time_key(row) >= _artifact_time_key(current):
-            promotable_monthly_by_model[model_name] = row
+    supported_candidate_types = {
+        "oof_full_fit_release",
+        "manual_hotfix",
+        "timesfm_l175_l2_feature_release",
+    }
 
-    suppressed: list[dict[str, Any]] = []
     for row in rows:
+        candidate_type = str(row.get("candidate_type") or "unknown")
+        if candidate_type not in supported_candidate_types:
+            ignored_historical_count += 1
+            continue
         state = str(row.get("state") or "")
         live_status = str(row.get("live_gate_status") or "")
         live_evidence_ready = live_status in {"passed", "multi_evidence_passed", "rolling_ic_passed"}
-        offline_monthly_candidate = _offline_monthly_release_candidate(row) and not live_evidence_ready
         offline_oof_candidate = _offline_oof_full_fit_release_candidate(row) and not live_evidence_ready
-        offline_oof_base_artifact = (
-            _offline_oof_full_fit_base_artifact(row) and not live_evidence_ready
-        )
-        offline_timesfm_l175_candidate = _offline_timesfm_l175_feature_release_candidate(row) and not live_evidence_ready
+        offline_oof_base_artifact = _offline_oof_full_fit_base_artifact(row) and not live_evidence_ready
+        offline_timesfm_candidate = _offline_timesfm_l175_feature_release_candidate(row) and not live_evidence_ready
         if state in {"production", "archived", "rejected"}:
             continue
         if (
-            not offline_monthly_candidate
-            and not offline_oof_candidate
+            not offline_oof_candidate
             and not offline_oof_base_artifact
-            and not offline_timesfm_l175_candidate
+            and not offline_timesfm_candidate
             and state not in {"live_gate_passed", "approval_required", "approved"}
-            and live_status not in {
-            "passed",
-            "multi_evidence_passed",
-            "rolling_ic_passed",
-        }
+            and not live_evidence_ready
         ):
             continue
 
         model_name = str(row.get("model_name") or "")
         champion_version = champion_versions.get(model_name)
-        candidate_type = str(row.get("candidate_type") or "unknown")
         candidate_version = str(row.get("version") or "")
         if not is_production_artifact_model(model_name):
             suppressed.append(_non_production_artifact_suppression(row))
             continue
-        if champion_version and candidate_version and candidate_version == champion_version:
+        if champion_version and candidate_version == champion_version:
             suppressed.append({
                 "artifact_id": row.get("artifact_id"),
                 "model_name": model_name,
-                "candidate_version": row.get("version"),
+                "candidate_version": candidate_version,
                 "candidate_type": candidate_type,
                 "superseded_by": "current_champion_pointer",
                 "reason": "candidate_version_already_current_champion",
             })
             continue
-        superseding_monthly = promotable_monthly_by_model.get(model_name)
-        if candidate_type == "weekly_drift" and _monthly_supersedes_weekly(superseding_monthly, row):
-            suppressed.append({
-                "artifact_id": row.get("artifact_id"),
-                "model_name": model_name,
-                "candidate_version": row.get("version"),
-                "candidate_type": candidate_type,
-                "superseded_by": superseding_monthly.get("artifact_id") if superseding_monthly else None,
-                "reason": "newer_monthly_release_ready_for_promotion",
-            })
-            continue
+
         offline_decision = str(row.get("offline_gate_decision") or "")
-        # Scheduled artifacts are machine-promoted only after every evidence
-        # gate and champion comparison passes. Human approval is reserved for
-        # an explicitly manual hotfix, not used as a substitute for evidence.
         approval_required = candidate_type == "manual_hotfix"
         blockers = artifact_promotion_blockers(row, champion_version=champion_version)
         champion_artifact = artifact_by_model_version.get((model_name, champion_version or ""))
-        if offline_monthly_candidate or offline_timesfm_l175_candidate:
-            blockers = _offline_monthly_release_blockers(blockers)
+        if offline_timesfm_candidate:
+            blockers = _offline_feature_release_blockers(blockers)
         if offline_oof_base_artifact:
             blockers = _offline_oof_full_fit_release_blockers(
                 row,
@@ -2909,30 +2486,27 @@ def build_promotion_queue(
         )
         if not champion_version:
             decision = "blocked_missing_champion_pointer"
-            next_action = "Resolve current champion version before final comparison."
+            next_action = "Resolve the exact D1 champion pointer before final comparison."
         elif blockers:
             decision = "blocked_multi_evidence_gate"
             next_action = "Resolve blockers before final comparison: " + ", ".join(blocker_codes)
         elif offline_oof_candidate:
             decision = "auto_promote_candidate"
-            next_action = "Promote the immutable OOF release as the first valid target-semantic champion."
-        elif offline_monthly_candidate:
+            next_action = "Atomically promote the immutable OOF release."
+        elif offline_timesfm_candidate:
             decision = "blocked_live_evidence_required"
-            next_action = "Keep the candidate in shadow until live multi-evidence and final champion comparison pass."
-        elif offline_timesfm_l175_candidate:
-            decision = "blocked_live_evidence_required"
-            next_action = "Run the complete feature cohort in shadow and collect live evidence before atomic promotion."
+            next_action = "Collect live feature-cohort evidence before atomic promotion."
         elif approval_required:
             decision = "approval_required"
-            next_action = "Run final comparison against current champion, then request Wei approval before promotion."
+            next_action = "Run final comparison, then request explicit hotfix approval."
         else:
             decision = "auto_promote_candidate"
-            next_action = "Run final comparison against current champion; auto-promote only if no production blocker remains."
+            next_action = "Run final comparison; promote only when no production blocker remains."
 
         queue.append({
             "artifact_id": row.get("artifact_id"),
             "model_name": model_name,
-            "candidate_version": row.get("version"),
+            "candidate_version": candidate_version,
             "candidate_type": candidate_type,
             "state": state,
             "offline_gate_decision": offline_decision,
@@ -2954,307 +2528,11 @@ def build_promotion_queue(
         "source_of_truth": "model_artifact_registry",
         "promotion_owner": "promotion-controller",
         "count": len(queue),
+        "ignored_historical_count": ignored_historical_count,
         "suppressed_count": len(suppressed),
         "suppressed": suppressed,
         "queue": queue,
     }
-
-
-def apply_promoted_artifact_to_model_pool(
-    pool: dict[str, Any],
-    artifact: dict[str, Any],
-    *,
-    reason: str,
-    promoted_at: str | None = None,
-) -> dict[str, Any]:
-    """Move an approved registry artifact into the current serving pool.
-
-    During the registry migration production still reads ``model_pool.json``.
-    A promotion that only updates D1 pointers creates split brain, so the final
-    owner must also update the serving entry until the runtime reader migrates
-    fully to D1 champion pointers.
-    """
-    model_name = str(artifact.get("model_name") or "")
-    candidate_version = str(artifact.get("version") or "")
-    if not model_name or not candidate_version:
-        raise ValueError("artifact must include model_name and version")
-    if not is_production_artifact_model(model_name):
-        raise ValueError(f"{model_name} is not eligible for production artifact promotion")
-
-    models = pool.setdefault("models", {})
-    entry = models.get(model_name)
-    if not isinstance(entry, dict):
-        raise KeyError(f"{model_name} missing from model_pool.json")
-
-    old_version = entry.get("version")
-    artifact_id = str(artifact.get("artifact_id") or "").strip()
-    same_serving_identity = (
-        str(old_version or "") == candidate_version
-        and str(entry.get("serving_artifact_id") or "").strip() == artifact_id
-    )
-    existing_promoted_at = str(entry.get("promoted_at") or "").strip()
-    if same_serving_identity and existing_promoted_at:
-        promoted_at = existing_promoted_at
-    else:
-        promoted_at = promoted_at or _now_iso()
-    candidate_path = artifact.get("artifact_path") or model_artifact_path(model_name, candidate_version)
-    candidate_checksum = _canonical_artifact_checksum(artifact)
-    candidate_registration = _artifact_registration(artifact)
-    oof_promotion_evidence = _nested_dict(candidate_registration.get("oof_promotion_evidence"))
-    serving_disposition = str(oof_promotion_evidence.get("serving_disposition") or "PASS").upper()
-    serving_status = "degraded" if serving_disposition == "DEGRADED" else "active"
-    challenger = entry.get("challenger") if isinstance(entry.get("challenger"), dict) else {}
-    challenger_matches = str(challenger.get("version") or "") == candidate_version
-
-    if str(old_version or "") != candidate_version:
-        retired_versions = entry.setdefault("retired_versions", [])
-        retired_versions.append({
-            "version": old_version,
-            "retired_at": promoted_at,
-            "reason": reason,
-            "weekly_ic_at_retire": list(entry.get("weekly_ic") or []),
-            "ic_4w_avg_at_retire": entry.get("ic_4w_avg"),
-            "rolling_ic_at_retire": entry.get("rolling_ic"),
-            "last_ic_semantic_version_at_retire": entry.get("last_ic_semantic_version"),
-            "last_ic_target_semantic_version_at_retire": entry.get("last_ic_target_semantic_version"),
-            "last_ic_artifact_version_at_retire": entry.get("last_ic_artifact_version"),
-        })
-        for key in (
-            "weekly_ic",
-            "ic_4w_avg",
-            "rolling_ic",
-            "consecutive_negative_weeks",
-            "last_ic_status",
-            "last_ic_sample_count",
-            "last_ic_score_sources",
-            "last_ic_by_segment",
-            "last_ic_error",
-            "last_ic_root_cause",
-            "last_ic_diagnostics",
-            "last_ic_evaluation_contract",
-            "last_ic_semantic_version",
-            "last_ic_target_semantic_version",
-            "last_ic_artifact_version",
-            "production_weight",
-        ):
-            entry.pop(key, None)
-
-    entry["status"] = serving_status
-    entry["version"] = candidate_version
-    entry["gcs_path"] = candidate_path
-    entry["metadata_path"] = artifact.get("metadata_path") or entry.get("metadata_path")
-    entry["serving_owner"] = "model_champion_pointers"
-    entry["serving_artifact_id"] = artifact.get("artifact_id")
-    entry["checksum"] = candidate_checksum
-    entry["offline_gate_decision"] = artifact.get("offline_gate_decision")
-    entry["live_gate_status"] = artifact.get("live_gate_status")
-    entry["promoted_at"] = promoted_at
-    if serving_status == "degraded":
-        entry["degraded_since"] = promoted_at
-        entry["degraded_reason"] = "uncertain_recent_oof_degradation"
-        entry["degraded_evidence"] = {
-            "warning_gates": list(oof_promotion_evidence.get("warning_gates") or []),
-            "tail_fold_stats": _nested_dict(oof_promotion_evidence.get("tail_fold_stats")),
-        }
-    else:
-        entry.pop("degraded_since", None)
-        entry.pop("degraded_reason", None)
-        entry.pop("degraded_evidence", None)
-    entry.pop("retired_at", None)
-
-    candidate_metadata = _nested_dict(artifact.get("metadata"))
-    if not candidate_metadata:
-        candidate_metadata = _artifact_registration_metadata(artifact)
-    candidate_target_semantic = str(candidate_metadata.get("target_semantic_version") or "").strip()
-    challenger_contract = _nested_dict(challenger.get("last_ic_evaluation_contract"))
-    challenger_ic_matches = (
-        challenger_matches
-        and str(challenger.get("last_ic_artifact_version") or "").strip() == candidate_version
-        and str(
-            challenger.get("last_ic_target_semantic_version")
-            or challenger_contract.get("target_semantic_version")
-            or ""
-        ).strip() == candidate_target_semantic
-    )
-    if challenger_ic_matches:
-        for key in (
-            "weekly_ic",
-            "ic_4w_avg",
-            "consecutive_negative_weeks",
-            "rolling_ic",
-            "last_ic_status",
-            "last_ic_sample_count",
-            "last_ic_score_sources",
-            "last_ic_by_segment",
-            "last_ic_error",
-            "last_ic_root_cause",
-            "last_ic_diagnostics",
-            "last_ic_evaluation_contract",
-            "last_ic_semantic_version",
-            "last_ic_target_semantic_version",
-            "last_ic_artifact_version",
-            "model_cpcv",
-        ):
-            if key in challenger:
-                entry[key] = challenger[key]
-    if challenger_matches:
-        entry.pop("challenger", None)
-
-    metadata = candidate_metadata
-    if not metadata:
-        metadata = _artifact_registration_metadata(artifact)
-    entry["target_semantic_version"] = metadata.get("target_semantic_version")
-    if model_name in SEQUENCE_ARTIFACT_MODEL_NAMES:
-        seq_len = _positive_int(metadata.get("seq_len"))
-        pred_len = _positive_int(metadata.get("pred_len"))
-        if seq_len is None or pred_len is None:
-            raise RuntimeError(f"{model_name} exact artifact sequence contract missing or invalid")
-        entry["seq_len"] = seq_len
-        entry["pred_len"] = pred_len
-        entry["sequence_contract"] = {
-            "schema_version": "model-serving-sequence-contract-v1",
-            "source": "model_artifact_registry",
-            "model": model_name,
-            "artifact_id": artifact.get("artifact_id"),
-            "version": candidate_version,
-            "seq_len": seq_len,
-            "pred_len": pred_len,
-        }
-    offline_evidence = _json_loads(artifact.get("offline_evidence_json"))
-    registration = _nested_dict(offline_evidence.get("registration"))
-    gate = _nested_dict(offline_evidence.get("gate"))
-    artifact_evidence = {
-        "schema_version": "model-pool-artifact-evidence-v1",
-        "source": "model_artifact_registry",
-        "artifact_id": artifact.get("artifact_id"),
-        "candidate_type": artifact.get("candidate_type"),
-        "version": candidate_version,
-        "artifact_path": candidate_path,
-        "metadata_path": artifact.get("metadata_path"),
-        "feature_count": metadata.get("feature_count") or registration.get("feature_count"),
-        "sample_count": metadata.get("sample_count") or registration.get("sample_count"),
-        "trained_at": metadata.get("trained_at"),
-        "training_manifest_path": metadata.get("training_manifest_path") or artifact.get("training_manifest_path"),
-        "artifact_checksum": candidate_checksum,
-        "offline_gate_decision": artifact.get("offline_gate_decision"),
-        "offline_gate_status": artifact.get("offline_gate_status"),
-        "oos_ic": _nested_dict(gate.get("metrics")).get("oos_ic") or registration.get("oos_ic"),
-        "model_cpcv": metadata.get("model_cpcv") or registration.get("model_cpcv"),
-        "prep_lineage": metadata.get("prep_lineage"),
-        "feature_policy": metadata.get("feature_policy"),
-        "feature_policy_schema_version": metadata.get("feature_policy_schema_version"),
-        "family_feature_contract": metadata.get("family_feature_contract"),
-        "target_semantic_version": metadata.get("target_semantic_version"),
-        "seq_len": metadata.get("seq_len"),
-        "pred_len": metadata.get("pred_len"),
-        "sequence_contract": entry.get("sequence_contract"),
-    }
-    entry["last_artifact_evidence"] = {
-        key: value
-        for key, value in artifact_evidence.items()
-        if value is not None
-    }
-    from services.model_serving_resolver import build_serving_ic_prior
-
-    entry["serving_ic_prior"] = build_serving_ic_prior(artifact)
-
-    existing_controller = (
-        entry.get("promotion_controller")
-        if isinstance(entry.get("promotion_controller"), dict)
-        else None
-    )
-    if not same_serving_identity or not existing_controller:
-        entry["promotion_controller"] = {
-            "artifact_id": artifact.get("artifact_id"),
-            "candidate_type": artifact.get("candidate_type"),
-            "reason": reason,
-            "promoted_at": promoted_at,
-            "source": "model_artifact_registry",
-        }
-    pool["last_updated"] = _now_iso() if same_serving_identity else promoted_at
-    return {
-        "model_name": model_name,
-        "old_version": old_version,
-        "new_version": candidate_version,
-        "serving_status": serving_status,
-        "challenger_moved": challenger_matches,
-    }
-
-
-def run_model_pool_release_writer(
-    pool: dict[str, Any],
-    artifact: dict[str, Any],
-    *,
-    reason: str,
-    promoted_at: str | None = None,
-    confirm: bool = False,
-) -> dict[str, Any]:
-    """Build or apply the serving model_pool release update.
-
-    Promotion controller owns the approval decision. This writer owns the
-    serving JSON mutation and stays dry-run by default so a D1 pointer promotion
-    cannot silently create split-brain with model_pool.json.
-    """
-    working_pool = pool if confirm else deepcopy(pool)
-    serving_update = apply_promoted_artifact_to_model_pool(
-        working_pool,
-        artifact,
-        reason=reason,
-        promoted_at=promoted_at,
-    )
-    model_name = serving_update["model_name"]
-    entry = (working_pool.get("models") or {}).get(model_name) or {}
-    return {
-        "schema_version": "model-pool-release-writer-v1",
-        "source_of_truth": "model_artifact_registry",
-        "serving_reader": "model_pool.json",
-        "decision_effect": "write_model_pool" if confirm else "dry_run_only",
-        "confirmed": bool(confirm),
-        "model_pool_updated": bool(confirm),
-        "can_release": True,
-        "serving_update": serving_update,
-        "planned_entry": entry,
-        "requires_wei_approval": str(artifact.get("candidate_type") or "") == "manual_hotfix",
-        "production_mutation_allowed": bool(confirm),
-    }
-
-
-def run_model_pool_release_bundle_writer(
-    pool: dict[str, Any],
-    artifacts: list[dict[str, Any]],
-    *,
-    reason: str,
-    promoted_at: str | None = None,
-    confirm: bool = False,
-) -> dict[str, Any]:
-    """Apply one complete feature-era cohort to one model_pool generation."""
-    working_pool = pool if confirm else deepcopy(pool)
-    updates = [
-        apply_promoted_artifact_to_model_pool(
-            working_pool,
-            artifact,
-            reason=reason,
-            promoted_at=promoted_at,
-        )
-        for artifact in sorted(artifacts, key=lambda row: str(row.get("model_name") or ""))
-    ]
-    return {
-        "schema_version": "model-pool-release-bundle-writer-v1",
-        "source_of_truth": "model_artifact_registry",
-        "serving_reader": "model_pool.json",
-        "decision_effect": "write_model_pool_generation" if confirm else "dry_run_only",
-        "confirmed": bool(confirm),
-        "model_pool_updated": bool(confirm),
-        "can_release": True,
-        "serving_updates": updates,
-        "release_models": sorted(update["model_name"] for update in updates),
-        "requires_wei_approval": any(
-            str(artifact.get("candidate_type") or "") == "manual_hotfix"
-            for artifact in artifacts
-        ),
-        "production_mutation_allowed": bool(confirm),
-    }
-
 
 def feature_release_cohort_blockers(
     artifact: dict[str, Any],
@@ -3317,42 +2595,31 @@ def _promotion_row_decision(
     champion_version: str | None,
     approved: bool,
     manual_override: bool = False,
-    allow_offline_monthly_release: bool = False,
     champion_artifact: dict[str, Any] | None = None,
     cohort_blockers: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
-    """Evaluate the final promotion step against the current champion pointer.
+    """Evaluate the final promotion step against the exact D1 champion pointer."""
 
-    This is the last lifecycle owner. Retrain, offline gate, and IC tracker only
-    produce evidence; this function decides whether the candidate may update the
-    champion pointer.
-    """
     live_status = str(artifact.get("live_gate_status") or "")
     state = str(artifact.get("state") or "")
     candidate_type = str(artifact.get("candidate_type") or "unknown")
     offline_decision = str(artifact.get("offline_gate_decision") or "")
-    offline_monthly_release_candidate = bool(
-        allow_offline_monthly_release
-        and candidate_type == "monthly_release"
-        and offline_decision in {"STRONG_PASS", "PASS"}
-    )
-    offline_oof_full_fit_release_candidate = bool(
-        candidate_type == "oof_full_fit_release"
-        and _offline_oof_full_fit_release_candidate(artifact)
-    )
-    offline_oof_full_fit_base_artifact = bool(
+    offline_oof_base_artifact = bool(
         candidate_type == "oof_full_fit_release"
         and _offline_oof_full_fit_base_artifact(artifact)
     )
-    offline_timesfm_l175_feature_release_candidate = bool(
+    offline_oof_release_candidate = bool(
+        candidate_type == "oof_full_fit_release"
+        and _offline_oof_full_fit_release_candidate(artifact)
+    )
+    offline_timesfm_candidate = bool(
         candidate_type == "timesfm_l175_l2_feature_release"
         and offline_decision in {"STRONG_PASS", "PASS"}
     )
     approval_required = candidate_type == "manual_hotfix"
     blockers: list[str] = []
-    offline_monthly_release_cutover = offline_monthly_release_candidate and approved
     promotion_blockers = artifact_promotion_blockers(artifact, champion_version=champion_version)
-    if offline_oof_full_fit_base_artifact:
+    if offline_oof_base_artifact:
         promotion_blockers = _offline_oof_full_fit_release_blockers(
             artifact,
             champion_artifact=champion_artifact,
@@ -3363,7 +2630,7 @@ def _promotion_row_decision(
     manual_override_allowed = bool(
         manual_override_requested
         and approved
-        and candidate_type in {"weekly_drift", "manual_hotfix"}
+        and candidate_type == "manual_hotfix"
         and offline_decision in {"STRONG_PASS", "PASS"}
     )
     overridden_blockers: list[dict[str, Any]] = []
@@ -3386,7 +2653,7 @@ def _promotion_row_decision(
         blockers.extend(_blocker_codes(effective_promotion_blockers))
     if (
         not manual_override_allowed
-        and not offline_oof_full_fit_base_artifact
+        and not offline_oof_base_artifact
         and live_status not in {"passed", "multi_evidence_passed"}
     ):
         blockers.append("live_gate_not_passed")
@@ -3397,10 +2664,8 @@ def _promotion_row_decision(
     blockers = list(dict.fromkeys(blockers))
 
     current_artifact_id = pointer.get("champion_artifact_id") if pointer else None
-    live_evidence = _json_loads(artifact.get("live_evidence_json"))
-    offline_evidence = _json_loads(artifact.get("offline_evidence_json"))
     evidence = {
-        "schema_version": "promotion-controller-final-comparison-v1",
+        "schema_version": "promotion-controller-final-comparison-v2",
         "evaluated_at": _now_iso(),
         "model_name": artifact.get("model_name"),
         "candidate_artifact_id": artifact.get("artifact_id"),
@@ -3410,19 +2675,16 @@ def _promotion_row_decision(
         "current_champion_artifact_id": current_artifact_id,
         "offline_gate_decision": offline_decision,
         "live_gate_status": live_status,
-        "live_evidence": live_evidence,
-        "offline_evidence": offline_evidence,
+        "live_evidence": _json_loads(artifact.get("live_evidence_json")),
+        "offline_evidence": _json_loads(artifact.get("offline_evidence_json")),
         "approval_required": approval_required,
         "approved": approved,
         "manual_override_requested": manual_override_requested,
         "manual_override_allowed": manual_override_allowed,
         "manual_override_overridden_blockers": overridden_blockers,
-        "allow_offline_monthly_release": allow_offline_monthly_release,
-        "offline_monthly_release_candidate": offline_monthly_release_candidate,
-        "offline_oof_full_fit_base_artifact": offline_oof_full_fit_base_artifact,
-        "offline_oof_full_fit_release_candidate": offline_oof_full_fit_release_candidate,
-        "offline_timesfm_l175_feature_release_candidate": offline_timesfm_l175_feature_release_candidate,
-        "offline_monthly_release_cutover": offline_monthly_release_cutover,
+        "offline_oof_full_fit_base_artifact": offline_oof_base_artifact,
+        "offline_oof_full_fit_release_candidate": offline_oof_release_candidate,
+        "offline_timesfm_l175_feature_release_candidate": offline_timesfm_candidate,
         "blockers": blockers,
         "blocker_details": effective_promotion_blockers,
     }
@@ -3449,42 +2711,33 @@ def _promotion_row_decision(
             "final_compared_to": champion_version,
             "evidence": evidence,
         }
-    decision = "manual_override_promote" if manual_override_allowed else "promote"
-    next_action = (
-        "Update D1 champion pointer by Wei-approved manual override; keep monthly release on manual approval gate."
-        if manual_override_allowed
-        else "Update D1 champion pointer; serving reader migration still requires explicit deployment."
-    )
     return {
-        "decision": decision,
+        "decision": "manual_override_promote" if manual_override_allowed else "promote",
         "can_promote": True,
         "approval_required": approval_required,
         "target_state": "production",
         "approval_state": "approved" if approval_required else "not_required",
-        "next_action": next_action,
+        "next_action": "Atomically update the D1 champion pointer after artifact readback.",
         "final_compared_to": champion_version,
         "evidence": evidence,
     }
-
 
 def run_promotion_controller(
     *,
     artifact_id: str,
     registry_rows: list[dict[str, Any]],
     d1_pointers: list[dict[str, Any]],
-    model_pool_versions: dict[str, str],
     confirm: bool = False,
     approved: bool = False,
     approved_by: str | None = None,
     reason: str = "promotion_controller",
-    allow_offline_monthly_release: bool = False,
     manual_override: bool = False,
 ) -> dict[str, Any]:
     """Run final comparison and optionally update the champion pointer.
 
     ``confirm=False`` is a dry-run. ``confirm=True`` may mutate
     model_artifact_registry and model_champion_pointers, but it still does not
-    change model_pool.json or live serving ownership.
+    change D1 champion pointers or live serving ownership.
     """
     artifact = next((row for row in registry_rows if str(row.get("artifact_id")) == artifact_id), None)
     if not artifact:
@@ -3494,13 +2747,22 @@ def run_promotion_controller(
             "error": "artifact_id not found in model_artifact_registry",
         }
 
+    candidate_type = str(artifact.get("candidate_type") or "unknown")
+    if candidate_type not in {"manual_hotfix", "timesfm_l175_l2_feature_release"}:
+        return {
+            "status": "unsupported_candidate_type",
+            "artifact_id": artifact_id,
+            "candidate_type": candidate_type,
+            "error": "Canonical OOF artifacts require the Active8 atomic ensemble bundle controller; only explicit hotfix and TimesFM feature releases are executable here.",
+        }
+
     model_name = str(artifact.get("model_name") or "")
     pointer_by_model = {str(row.get("model_name")): row for row in d1_pointers if row.get("model_name")}
     pointer = pointer_by_model.get(model_name)
     champion_version = (
         str(pointer.get("champion_version"))
         if pointer and pointer.get("champion_version")
-        else model_pool_versions.get(model_name)
+        else None
     )
     if pointer and pointer.get("champion_artifact_id") == artifact_id and str(pointer.get("champion_version") or "") == str(artifact.get("version") or ""):
         return {
@@ -3516,9 +2778,9 @@ def run_promotion_controller(
             "target_state": artifact.get("state") or "production",
             "approval_state": artifact.get("approval_state") or "approved",
             "final_compared_to": champion_version,
-            "next_action": "Candidate is already the D1 champion pointer; reconcile serving model_pool.json if projection still shows mismatch.",
+            "next_action": "Candidate is already the exact D1 champion pointer; serving readers consume it directly.",
             "errors": [],
-            "serving_reader": "model_pool.json",
+            "serving_reader": "model_champion_pointers/model_artifact_registry",
             "note": "Idempotent promotion-controller guard prevented rollback overwrite.",
         }
     champion_artifact = next(
@@ -3544,7 +2806,6 @@ def run_promotion_controller(
         champion_version=champion_version,
         approved=approved,
         manual_override=manual_override,
-        allow_offline_monthly_release=allow_offline_monthly_release,
         champion_artifact=champion_artifact,
         cohort_blockers=cohort_blockers,
     )
@@ -3679,8 +2940,8 @@ def run_promotion_controller(
         "confirmed_at": now,
         **decision,
         "errors": errors,
-        "serving_reader": "model_pool.json",
-        "note": "Champion pointer updated only when can_promote=true; model_pool.json serving migration remains explicit.",
+        "serving_reader": "model_champion_pointers/model_artifact_registry",
+        "note": "Champion pointer updated only when can_promote=true; serving readers consume the exact D1 identity.",
     }
 
 
@@ -3689,7 +2950,6 @@ def run_feature_release_promotion_controller(
     training_run_id: str,
     registry_rows: list[dict[str, Any]],
     d1_pointers: list[dict[str, Any]],
-    model_pool_versions: dict[str, str],
     confirm: bool = False,
     approved: bool = False,
     approved_by: str | None = None,
@@ -3724,7 +2984,7 @@ def run_feature_release_promotion_controller(
         champion_version = (
             str(pointer.get("champion_version"))
             if pointer and pointer.get("champion_version")
-            else model_pool_versions.get(model_name)
+            else None
         )
         decision = _promotion_row_decision(
             artifact=artifact,
@@ -3872,190 +3132,247 @@ def run_feature_release_promotion_controller(
         "confirmed_at": now,
         "d1_batch": batch_result,
         "model_decisions": decisions,
-        "serving_reader": "model_pool.json",
+        "serving_reader": "model_champion_pointers/model_artifact_registry",
     }
 
+ACTIVE8_ENSEMBLE_ARTIFACT_SCHEMA = "active8-oof-ensemble-serving-artifact-v1"
 
-def build_model_champion_history_backfill_plan(model_pool: dict[str, Any]) -> dict[str, Any]:
-    """Build exact-only champion intervals from model_pool promotion evidence.
 
-    An entry's own promoted_at is exact. For an ordered atomic transition
-    chain, the previous version's retired_at is also the next version's exact
-    effective_at. The oldest entry remains bounded and is excluded.
-    """
-    planned: list[dict[str, Any]] = []
-    excluded: list[dict[str, Any]] = []
-    models = model_pool.get("models") if isinstance(model_pool.get("models"), dict) else {}
-    for model_name, raw_entry in sorted(models.items()):
-        if model_name not in PRODUCTION_ARTIFACT_MODEL_NAMES or not isinstance(raw_entry, dict):
-            continue
-        retired = sorted(
-            [item for item in (raw_entry.get("retired_versions") or []) if isinstance(item, dict)],
-            key=lambda item: str(item.get("retired_at") or ""),
-        )
-        candidates: list[dict[str, Any]] = []
-        previous_retired_at: str | None = None
-        for item in retired:
-            explicit_promoted_at = str(item.get("promoted_at") or "").strip() or None
-            transition_promoted_at = previous_retired_at if previous_retired_at else None
-            candidates.append({
-                "version": item.get("version"),
-                "artifact_id": item.get("artifact_id"),
-                "promoted_at": explicit_promoted_at or transition_promoted_at,
-                "retired_at": item.get("retired_at"),
-                "position": "retired",
-                "promotion_evidence": (
-                    "explicit_promoted_at"
-                    if explicit_promoted_at
-                    else "previous_atomic_transition_retired_at"
-                    if transition_promoted_at
-                    else "bounded_oldest_entry"
-                ),
-            })
-            previous_retired_at = str(item.get("retired_at") or "").strip() or None
-        promotion_controller = (
-            raw_entry.get("promotion_controller")
-            if isinstance(raw_entry.get("promotion_controller"), dict)
-            else {}
-        )
-        serving_path = str(raw_entry.get("gcs_path") or "").strip()
-        promoted_path = str(promotion_controller.get("artifact_path") or "").strip()
-        serving_artifact_id = str(raw_entry.get("serving_artifact_id") or "").strip()
-        promoted_artifact_id = str(promotion_controller.get("artifact_id") or "").strip()
-        contradictory_current_evidence = bool(
-            (serving_path and promoted_path and serving_path != promoted_path)
-            or (
-                serving_artifact_id
-                and promoted_artifact_id
-                and serving_artifact_id != promoted_artifact_id
-            )
-        )
-        candidates.append({
-            "version": raw_entry.get("version"),
-            "artifact_id": raw_entry.get("serving_artifact_id"),
-            "promoted_at": None if contradictory_current_evidence else raw_entry.get("promoted_at"),
-            "retired_at": None,
-            "position": "current",
-            "promotion_evidence": (
-                "contradictory_current_promotion_evidence"
-                if contradictory_current_evidence
-                else "explicit_promoted_at"
-            ),
-        })
-        for candidate in candidates:
-            version = str(candidate.get("version") or "").strip()
-            promoted_at = str(candidate.get("promoted_at") or "").strip()
-            retired_at = str(candidate.get("retired_at") or "").strip() or None
-            if not version:
-                continue
-            if not promoted_at:
-                excluded.append({
-                    "model_name": model_name,
-                    "version": version,
-                    "reason": (
-                        "current_promotion_evidence_mismatch"
-                        if candidate.get("promotion_evidence") == "contradictory_current_promotion_evidence"
-                        else "exact_promoted_at_missing"
-                    ),
-                    "known_upper_bound": retired_at,
-                })
-                continue
-            if _iso_datetime(promoted_at) is None or (retired_at and _iso_datetime(retired_at) is None):
-                excluded.append({
-                    "model_name": model_name,
-                    "version": version,
-                    "reason": "promotion_interval_timestamp_invalid",
-                })
-                continue
-            if retired_at and _iso_datetime(promoted_at) >= _iso_datetime(retired_at):
-                excluded.append({
-                    "model_name": model_name,
-                    "version": version,
-                    "reason": "promotion_interval_not_positive",
-                })
-                continue
-            planned.append({
-                "event_id": f"champion-backfill:{model_name}:{version}:{promoted_at}",
-                "model_name": model_name,
-                "version": version,
-                "artifact_id": candidate.get("artifact_id"),
-                "effective_at": promoted_at,
-                "retired_at": retired_at,
-                "source": "model_champion_history",
-                "evidence_grade": "exact",
-                "evidence": {
-                    "source": "universal/model_pool.json",
-                    "position": candidate.get("position"),
-                    "promotion_evidence": candidate.get("promotion_evidence"),
-                    "backfill_policy": "exact_explicit_or_atomic_transition_boundary_no_oldest_interval_inference",
-                },
-            })
+def _canonical_payload_json(value: Any) -> str:
+    return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"), allow_nan=False)
 
-    overlaps: list[dict[str, Any]] = []
-    by_model: dict[str, list[dict[str, Any]]] = {}
-    for row in planned:
-        by_model.setdefault(str(row["model_name"]), []).append(row)
-    for model_name, rows in by_model.items():
-        ordered = sorted(rows, key=lambda row: str(row["effective_at"]))
-        for previous, current in zip(ordered, ordered[1:]):
-            previous_end = _iso_datetime(previous.get("retired_at"))
-            current_start = _iso_datetime(current.get("effective_at"))
-            if previous_end is None or (current_start is not None and previous_end > current_start):
-                overlaps.append({
-                    "model_name": model_name,
-                    "previous_version": previous.get("version"),
-                    "current_version": current.get("version"),
-                    "reason": "champion_intervals_overlap_or_open_before_next",
-                })
-    return {
-        "schema_version": "model-champion-history-backfill-plan-v1",
-        "status": "blocked" if overlaps else "ready",
-        "exact_rows": planned,
-        "exact_row_count": len(planned),
-        "excluded": excluded,
-        "excluded_count": len(excluded),
-        "overlaps": overlaps,
-        "earliest_exact_effective_at": min((str(row["effective_at"]) for row in planned), default=None),
+
+def list_active8_ensemble_artifacts(*, training_run_id: str | None = None) -> list[dict[str, Any]]:
+    if training_run_id:
+        return d1_client.query(
+            "SELECT * FROM active8_ensemble_artifacts_v1 WHERE training_run_id=? ORDER BY updated_at DESC",
+            [training_run_id],
+        )
+    return d1_client.query("SELECT * FROM active8_ensemble_artifacts_v1 ORDER BY updated_at DESC LIMIT 100")
+
+
+def _validated_active8_ensemble_payload(row: dict[str, Any]) -> dict[str, Any]:
+    try:
+        payload = json.loads(str(row.get("payload_json") or ""))
+    except json.JSONDecodeError as exc:
+        raise ValueError("active8_ensemble_candidate_payload_invalid") from exc
+    if not isinstance(payload, dict):
+        raise ValueError("active8_ensemble_candidate_payload_not_object")
+    unsigned = {key: value for key, value in payload.items() if key != "payload_checksum"}
+    checksum = hashlib.sha256(_canonical_payload_json(unsigned).encode("utf-8")).hexdigest()
+    validation = payload.get("validation") if isinstance(payload.get("validation"), dict) else {}
+    if (
+        payload.get("schema_version") != ACTIVE8_ENSEMBLE_ARTIFACT_SCHEMA
+        or checksum != str(payload.get("payload_checksum") or "")
+        or checksum != str(row.get("payload_checksum") or "")
+        or validation.get("decision") != "PASS"
+        or validation.get("failed_gates")
+        or str(row.get("validation_decision") or "") != "PASS"
+        or str(row.get("state") or "") not in {"candidate", "production"}
+    ):
+        raise ValueError("active8_ensemble_candidate_not_promotion_grade")
+    return payload
+
+
+def _active8_base_artifact_blocker(
+    model_name: str,
+    row: dict[str, Any],
+    expected: dict[str, Any],
+) -> str | None:
+    offline = _json_loads(row.get("offline_evidence_json"))
+    registration = _json_loads(offline.get("registration"))
+    oof = _json_loads(registration.get("oof_promotion_evidence"))
+    actual_identity = {
+        "artifact_id": str(row.get("artifact_id") or ""),
+        "version": str(row.get("version") or ""),
+        "checksum": str(row.get("checksum") or "").lower(),
+        "candidate_type": str(row.get("candidate_type") or ""),
     }
+    expected_identity = {
+        "artifact_id": str(expected.get("artifact_id") or ""),
+        "version": str(expected.get("version") or ""),
+        "checksum": str(expected.get("checksum") or "").lower(),
+        "candidate_type": str(expected.get("candidate_type") or ""),
+    }
+    valid = (
+        actual_identity == expected_identity
+        and bool(str(row.get("artifact_path") or ""))
+        and bool(str(row.get("metadata_path") or ""))
+        and oof.get("schema_version") == "model-cpcv-evidence-v1"
+        and oof.get("method") == "outer_purged_walk_forward_rank_ic"
+        and int(oof.get("folds") or 0) >= 5
+        and str(row.get("state") or "") not in {"registration_failed", "rejected"}
+    )
+    return None if valid else f"base_artifact_contract:{model_name}"
 
 
-def backfill_model_champion_history_from_model_pool(
-    model_pool: dict[str, Any],
+def run_active8_ensemble_bundle_promotion_controller(
     *,
+    training_run_id: str,
+    registry_rows: list[dict[str, Any]],
+    d1_pointers: list[dict[str, Any]],
+    ensemble_rows: list[dict[str, Any]] | None = None,
     confirm: bool = False,
+    reason: str = "active8_ensemble_atomic_bundle",
 ) -> dict[str, Any]:
-    plan = build_model_champion_history_backfill_plan(model_pool)
-    if not confirm or plan["status"] != "ready":
-        return {**plan, "mode": "dry_run", "written": 0}
-    statements = [
-        (
-            """
-            INSERT INTO model_champion_history (
-              event_id, model_name, version, artifact_id, effective_at,
-              retired_at, source, evidence_grade, evidence_json
-            ) VALUES (?, ?, ?, ?, ?, ?, 'model_champion_history', 'exact', ?)
-            ON CONFLICT(model_name, version, effective_at) DO UPDATE SET
-              artifact_id = excluded.artifact_id,
-              retired_at = excluded.retired_at,
-              evidence_json = excluded.evidence_json
-            """,
-            [
-                row["event_id"],
-                row["model_name"],
-                row["version"],
-                row.get("artifact_id"),
-                row["effective_at"],
-                row.get("retired_at"),
-                _json_dumps(row["evidence"]),
-            ],
-        )
-        for row in plan["exact_rows"]
+    """Atomically switch eight base artifacts and their learned ensemble owner."""
+    expected_models = set(ACTIVE8_MODEL_NAMES)
+    base_rows = [
+        row for row in registry_rows
+        if str(row.get("candidate_type") or "") == "oof_full_fit_release"
+        and str(row.get("training_run_id") or "") == str(training_run_id or "")
+        and str(row.get("model_name") or "") in expected_models
     ]
-    result = d1_client.atomic_batch_execute(statements, timeout=60.0) if statements else {"total": 0}
+    by_model: dict[str, dict[str, Any]] = {}
+    duplicates: list[str] = []
+    for row in base_rows:
+        name = str(row.get("model_name") or "")
+        if name in by_model:
+            duplicates.append(name)
+        by_model[name] = row
+    missing = sorted(expected_models - set(by_model))
+    if missing or duplicates:
+        return {
+            "status": "blocked", "decision": "active8_bundle_incomplete", "can_promote": False,
+            "training_run_id": training_run_id, "missing_models": missing,
+            "duplicate_models": sorted(set(duplicates)),
+        }
+    candidates = ensemble_rows if ensemble_rows is not None else list_active8_ensemble_artifacts(training_run_id=training_run_id)
+    candidates = [row for row in candidates if str(row.get("training_run_id") or "") == training_run_id]
+    if len(candidates) != 1:
+        return {
+            "status": "blocked", "decision": "active8_ensemble_candidate_cardinality", "can_promote": False,
+            "training_run_id": training_run_id, "ensemble_candidate_count": len(candidates),
+        }
+    ensemble_row = candidates[0]
+    try:
+        ensemble_payload = _validated_active8_ensemble_payload(ensemble_row)
+    except ValueError as exc:
+        return {"status": "blocked", "decision": str(exc), "can_promote": False, "training_run_id": training_run_id}
+    expected_base = ensemble_payload.get("base_artifacts") if isinstance(ensemble_payload.get("base_artifacts"), dict) else {}
+    blockers = [
+        blocker for model_name in sorted(expected_models)
+        if (blocker := _active8_base_artifact_blocker(model_name, by_model[model_name], expected_base.get(model_name) or {}))
+    ]
+    if blockers:
+        return {
+            "status": "blocked", "decision": "active8_bundle_contract_invalid", "can_promote": False,
+            "training_run_id": training_run_id, "blockers": blockers,
+        }
+    if not confirm:
+        return {
+            "status": "dry_run", "decision": "promote_active8_ensemble_atomic_bundle", "can_promote": True,
+            "training_run_id": training_run_id, "release_models": sorted(expected_models),
+            "ensemble_artifact_id": ensemble_row.get("artifact_id"), "validation": ensemble_payload.get("validation"),
+        }
+
+    pointer_by_model = {str(row.get("model_name") or ""): row for row in d1_pointers}
+    promoted_at = _now_iso()
+    evidence = {
+        "schema_version": "active8-ensemble-atomic-promotion-evidence-v1",
+        "training_run_id": training_run_id,
+        "ensemble_artifact_id": ensemble_row.get("artifact_id"),
+        "ensemble_payload_checksum": ensemble_row.get("payload_checksum"),
+        "base_artifact_set_checksum": ensemble_row.get("base_artifact_set_checksum"),
+        "validation": ensemble_payload.get("validation"),
+        "reason": reason,
+    }
+    pointer_sql = """
+        INSERT INTO model_champion_pointers (
+          model_name, champion_version, champion_artifact_id, rollback_version,
+          rollback_artifact_id, promoted_at, promotion_reason, promotion_evidence_json, updated_at
+        ) VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP, ?, ?, CURRENT_TIMESTAMP)
+        ON CONFLICT(model_name) DO UPDATE SET
+          champion_version=excluded.champion_version,
+          champion_artifact_id=excluded.champion_artifact_id,
+          rollback_version=excluded.rollback_version,
+          rollback_artifact_id=excluded.rollback_artifact_id,
+          promoted_at=CURRENT_TIMESTAMP, promotion_reason=excluded.promotion_reason,
+          promotion_evidence_json=excluded.promotion_evidence_json, updated_at=CURRENT_TIMESTAMP
+    """
+    history_sql = """
+        INSERT INTO model_champion_history (
+          event_id, model_name, version, artifact_id, effective_at,
+          retired_at, source, evidence_grade, evidence_json
+        ) VALUES (?, ?, ?, ?, ?, NULL, 'model_champion_history', 'exact', ?)
+        ON CONFLICT(model_name, version, effective_at) DO NOTHING
+    """
+    statements: list[tuple[str, list[Any]]] = []
+    for model_name in sorted(expected_models):
+        artifact = by_model[model_name]
+        pointer = pointer_by_model.get(model_name) or {}
+        artifact_id = str(artifact.get("artifact_id") or "")
+        statements.extend([
+            ("UPDATE model_artifact_registry SET state='archived', promotion_decision='replaced_by_active8_bundle', updated_at=CURRENT_TIMESTAMP WHERE model_name=? AND state='production' AND artifact_id != ?", [model_name, artifact_id]),
+            ("UPDATE model_artifact_registry SET state='production', promotion_decision='active8_bundle_promoted', approval_state='not_required', updated_at=CURRENT_TIMESTAMP WHERE artifact_id=? AND training_run_id=?", [artifact_id, training_run_id]),
+            (pointer_sql, [model_name, artifact.get("version"), artifact_id, pointer.get("champion_version"), pointer.get("champion_artifact_id"), reason, _json_dumps(evidence)]),
+            ("UPDATE model_champion_history SET retired_at=? WHERE model_name=? AND retired_at IS NULL", [promoted_at, model_name]),
+            (history_sql, [f"champion:{model_name}:{artifact.get('version')}:{training_run_id}", model_name, artifact.get("version"), artifact_id, promoted_at, _json_dumps(evidence)]),
+        ])
+    ensemble_artifact_id = str(ensemble_row.get("artifact_id") or "")
+    ensemble_pointer_sql = """
+        INSERT INTO active8_ensemble_pointer_v1 (
+          singleton_id, artifact_id, cohort_id, payload_checksum,
+          base_artifact_set_checksum, promoted_at, promotion_reason, promotion_evidence_json
+        ) VALUES (1, ?, ?, ?, ?, CURRENT_TIMESTAMP, ?, ?)
+        ON CONFLICT(singleton_id) DO UPDATE SET
+          artifact_id=excluded.artifact_id, cohort_id=excluded.cohort_id,
+          payload_checksum=excluded.payload_checksum,
+          base_artifact_set_checksum=excluded.base_artifact_set_checksum,
+          promoted_at=CURRENT_TIMESTAMP, promotion_reason=excluded.promotion_reason,
+          promotion_evidence_json=excluded.promotion_evidence_json
+    """
+    statements.extend([
+        ("UPDATE active8_ensemble_artifacts_v1 SET state='archived', production_effect=0, updated_at=CURRENT_TIMESTAMP WHERE state='production' AND artifact_id != ?", [ensemble_artifact_id]),
+        ("UPDATE active8_ensemble_artifacts_v1 SET state='production', production_effect=1, updated_at=CURRENT_TIMESTAMP WHERE artifact_id=? AND training_run_id=? AND state IN ('candidate','production')", [ensemble_artifact_id, training_run_id]),
+        (ensemble_pointer_sql, [ensemble_artifact_id, ensemble_row.get("cohort_id"), ensemble_row.get("payload_checksum"), ensemble_row.get("base_artifact_set_checksum"), reason, _json_dumps(evidence)]),
+    ])
+    batch_result = d1_client.atomic_batch_execute(statements, timeout=60.0)
+    placeholders = ",".join("?" for _ in expected_models)
+    base_readback = d1_client.query(
+        f"""
+        SELECT p.model_name, p.champion_artifact_id, r.training_run_id, r.state
+          FROM model_champion_pointers AS p
+          JOIN model_artifact_registry AS r ON r.artifact_id = p.champion_artifact_id
+         WHERE p.model_name IN ({placeholders})
+        """,
+        sorted(expected_models),
+    )
+    readback_by_model = {str(row.get("model_name") or ""): row for row in base_readback}
+    base_mismatches = [
+        model_name for model_name in sorted(expected_models)
+        if str((readback_by_model.get(model_name) or {}).get("champion_artifact_id") or "")
+        != str(by_model[model_name].get("artifact_id") or "")
+        or str((readback_by_model.get(model_name) or {}).get("training_run_id") or "") != training_run_id
+        or str((readback_by_model.get(model_name) or {}).get("state") or "") != "production"
+    ]
+    ensemble_readback = d1_client.query(
+        """
+        SELECT p.artifact_id, p.payload_checksum, p.base_artifact_set_checksum,
+               a.training_run_id, a.state, a.production_effect
+          FROM active8_ensemble_pointer_v1 AS p
+          JOIN active8_ensemble_artifacts_v1 AS a ON a.artifact_id = p.artifact_id
+         WHERE p.singleton_id = 1
+        """
+    )
+    ensemble_ok = (
+        len(ensemble_readback) == 1
+        and str(ensemble_readback[0].get("artifact_id") or "") == ensemble_artifact_id
+        and str(ensemble_readback[0].get("training_run_id") or "") == training_run_id
+        and str(ensemble_readback[0].get("state") or "") == "production"
+        and int(ensemble_readback[0].get("production_effect") or 0) == 1
+        and str(ensemble_readback[0].get("payload_checksum") or "") == str(ensemble_row.get("payload_checksum") or "")
+        and str(ensemble_readback[0].get("base_artifact_set_checksum") or "") == str(ensemble_row.get("base_artifact_set_checksum") or "")
+    )
+    if base_mismatches or not ensemble_ok:
+        raise RuntimeError(
+            "active8_bundle_atomic_readback_mismatch:" + ",".join(base_mismatches)
+        )
     return {
-        **plan,
-        "status": "ok",
-        "mode": "confirmed",
-        "written": len(statements),
-        "d1_batch": result,
+        "status": "ok", "decision": "promoted_active8_ensemble_atomic_bundle", "can_promote": True,
+        "training_run_id": training_run_id, "release_models": sorted(expected_models),
+        "artifacts": [by_model[name] for name in sorted(expected_models)],
+        "ensemble_artifact_id": ensemble_artifact_id, "d1_batch": batch_result,
+        "readback_verified": True,
+        "confirmed_at": promoted_at, "serving_reader": "model_champion_pointers+active8_ensemble_pointer_v1",
     }

@@ -1,4 +1,4 @@
-"""Predeclared per-model profiles for the formal Active-8 monthly retrain."""
+"""Predeclared per-model profiles for the formal Active-8 canonical OOF/full-fit release train."""
 
 from __future__ import annotations
 
@@ -8,7 +8,7 @@ import json
 from typing import Any
 
 
-MODEL_PROFILE_SCHEMA_VERSION = "active8-monthly-model-profiles-v1"
+MODEL_PROFILE_SCHEMA_VERSION = "active8-release-model-profiles-v1"
 TARGET_SEMANTIC = "next-session-canonical-adjusted-open-to-fifth-session-canonical-adjusted-close-net-v4"
 SCORE_SEMANTIC = "same-market-same-date-average-tie-percentile-rank-v2"
 
@@ -21,7 +21,7 @@ _CUDA_REPRODUCIBILITY = {
     "cublas_workspace_config": ":4096:8",
 }
 
-ACTIVE8_MONTHLY_MODEL_PROFILES: dict[str, dict[str, Any]] = {
+ACTIVE8_RELEASE_MODEL_PROFILES: dict[str, dict[str, Any]] = {
     "LightGBM": {
         "runtime": {"executor": "modal_cpu", "configuration_selection": "none"},
         "payload_config": {"seed": 42},
@@ -275,33 +275,33 @@ def checksum(value: dict[str, Any]) -> str:
 
 def model_profile(model_name: str) -> dict[str, Any]:
     model = str(model_name or "").strip()
-    if model not in ACTIVE8_MONTHLY_MODEL_PROFILES:
-        raise ValueError(f"monthly_model_profile_missing:{model}")
-    return copy.deepcopy(ACTIVE8_MONTHLY_MODEL_PROFILES[model])
+    if model not in ACTIVE8_RELEASE_MODEL_PROFILES:
+        raise ValueError(f"release_model_profile_missing:{model}")
+    return copy.deepcopy(ACTIVE8_RELEASE_MODEL_PROFILES[model])
 
 
 def model_profiles() -> dict[str, dict[str, Any]]:
-    return copy.deepcopy(ACTIVE8_MONTHLY_MODEL_PROFILES)
+    return copy.deepcopy(ACTIVE8_RELEASE_MODEL_PROFILES)
 
 
-def monthly_model_payload(model_name: str) -> dict[str, Any]:
+def release_model_payload(model_name: str) -> dict[str, Any]:
     return copy.deepcopy(model_profile(model_name)["payload_config"])
 
 
 def require_nested_subset(actual: Any, required: Any, *, path: str = "effective_config") -> None:
     if isinstance(required, dict):
         if not isinstance(actual, dict):
-            raise ValueError(f"monthly_model_profile_type_mismatch:{path}")
+            raise ValueError(f"release_model_profile_type_mismatch:{path}")
         for key, value in required.items():
             if key not in actual:
-                raise ValueError(f"monthly_model_profile_field_missing:{path}.{key}")
+                raise ValueError(f"release_model_profile_field_missing:{path}.{key}")
             require_nested_subset(actual[key], value, path=f"{path}.{key}")
         return
     if actual != required:
-        raise ValueError(f"monthly_model_profile_value_mismatch:{path}:expected={required}:actual={actual}")
+        raise ValueError(f"release_model_profile_value_mismatch:{path}:expected={required}:actual={actual}")
 
 
 def validate_profiles(profiles: dict[str, Any]) -> dict[str, Any]:
-    if profiles != ACTIVE8_MONTHLY_MODEL_PROFILES:
-        raise ValueError("monthly_model_profiles_mismatch")
+    if profiles != ACTIVE8_RELEASE_MODEL_PROFILES:
+        raise ValueError("release_model_profiles_mismatch")
     return profiles

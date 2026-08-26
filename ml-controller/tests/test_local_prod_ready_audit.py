@@ -528,11 +528,21 @@ def test_local_prod_ready_audit_marks_done_when_local_gates_are_closed(tmp_path)
         ]),
     )
     _write(
-        tmp_path / "ml-service/app/ensemble.py",
+        tmp_path / "ml-controller/services/active8_ensemble_artifact.py",
         "\n".join([
-            "def score_to_signal(",
-            "def rank_to_signal(*args: Any, **kwargs: Any) -> EnsembleResult:",
-            "Deprecated compatibility alias for score_to_signal",
+            "_fit_ridge",
+            "build_chronological_oof_stack",
+            '"top_k": None',
+            'payload["payload_checksum"] = payload_checksum(payload)',
+        ]),
+    )
+    _write(
+        tmp_path / "ml-service/app/active8_ensemble_runtime.py",
+        "\n".join([
+            'CALIBRATION_SCHEMA_VERSION = "active8-chronological-conformal-isotonic-v1"',
+            'SIGNAL_POLICY_VERSION = "active8-net-return-conformal-signal-policy-v1"',
+            'policy.get("top_k") is not None',
+            '"probability_positive_net_return": probability_up',
         ]),
     )
     _write(
@@ -556,12 +566,7 @@ def test_local_prod_ready_audit_marks_done_when_local_gates_are_closed(tmp_path)
     )
     _write(
         tmp_path / "ml-service/app/prediction_runtime.py",
-        "\n".join([
-            "from .ensemble import load_ic_weights, merge_with_time_series, score_to_signal",
-            "result = score_to_signal(",
-            '"score_signal_thresholds"',
-            '"score_scores"',
-        ]),
+        "active8_ensemble_pointer_v1",
     )
     _write(
         tmp_path / "worker/src/lib/adaptiveEngineContract.test.ts",

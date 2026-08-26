@@ -2,7 +2,7 @@ import type { Bindings } from '../types'
 import { runMorningWarmup, runWeeklyCleanup, runWeeklyLocalMaintenance } from './localMaintenance'
 import { runDailySnapshot } from './paperWorkerTasks'
 import { runEODExit } from './paperExitTasks'
-import { runWeeklyLifecycleCheck } from './controllerWorkflows'
+import { runWeeklyModelRegistryCheck } from './controllerWorkflows'
 import { loadPendingBuySnapshot } from './pendingBuyStore'
 import { reconcilePendingBuyDebates, setupMorningPendingBuys } from './pendingBuyOrchestrator'
 import { formatPendingBuyCronSummary } from './pendingBuyCronSummary'
@@ -156,10 +156,10 @@ export async function handleWorkerDomainCron(deps: WorkerCronDeps): Promise<bool
     runWithLog('weekly-cleanup', async () => {
       const cleanup = await runWeeklyCleanup(env)
       if (!cleanup.ok) throw new Error(`weekly_cleanup_failed:${JSON.stringify(cleanup.tasks.filter((task) => !task.ok))}`)
-      await runWeeklyLifecycleCheck(env)
+      await runWeeklyModelRegistryCheck(env)
       const maintenance = await runWeeklyLocalMaintenance(env)
       if (!maintenance.ok) throw new Error(`weekly_maintenance_failed:${JSON.stringify(maintenance.tasks.filter((task) => !task.ok))}`)
-      return 'weekly cleanup done: local maintenance + lifecycle dry-run; retrain is monthly/manual only'
+      return 'weekly cleanup done: local maintenance + D1 model-registry readback; release training is OOF scheduled/manual only'
     })
     return true
   }

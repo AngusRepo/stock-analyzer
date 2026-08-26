@@ -6,20 +6,20 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from services.active8_monthly_training_contract import (  # noqa: E402
-    normalize_monthly_raw_artifact_receipt,
+from services.active8_release_training_contract import (  # noqa: E402
+    normalize_release_raw_artifact_receipt,
 )
 
 
 def test_normalizer_accepts_registry_and_saved_wrapper_shapes_without_cross_model_fallback():
-    registry = normalize_monthly_raw_artifact_receipt({
+    registry = normalize_release_raw_artifact_receipt({
         "version": "v1",
         "gcs_path": "universal/lightgbm/v1.joblib",
         "metadata_path": "universal/lightgbm/metadata_v1.json",
         "checksum": "sha256:" + "a" * 64,
         "metadata": {"version": "v1"},
     })
-    saved_wrapper = normalize_monthly_raw_artifact_receipt({
+    saved_wrapper = normalize_release_raw_artifact_receipt({
         "version": "v2",
         "saved": {
             "weights_path": "universal/patchtst/v2.zip",
@@ -36,7 +36,7 @@ def test_normalizer_accepts_registry_and_saved_wrapper_shapes_without_cross_mode
 
 
 def test_normalizer_leaves_missing_identity_missing_for_fail_closed_validator():
-    receipt = normalize_monthly_raw_artifact_receipt({"status": "error", "error": "gpu unavailable"})
+    receipt = normalize_release_raw_artifact_receipt({"status": "error", "error": "gpu unavailable"})
 
     assert receipt["artifact_path"] is None
     assert receipt["metadata"] == {}

@@ -63,6 +63,20 @@ def _runtime_source_sha() -> str:
         raise RuntimeError("stockvision_source_sha_missing_or_invalid")
     return source_sha
 
+def _prep_receipt_lineage_matches(
+    receipt: dict[str, Any],
+    *,
+    expected_producer_source_sha: str,
+) -> bool:
+    expected_source = str(expected_producer_source_sha or "").strip().lower()
+    return (
+        len(expected_source) == 40
+        and all(char in "0123456789abcdef" for char in expected_source)
+        and receipt.get("feature_semantic_version") == ACTIVE8_FEATURE_SEMANTIC_VERSION
+        and receipt.get("feature_imputation_semantic") == ACTIVE8_FEATURE_IMPUTATION_SEMANTIC_VERSION
+        and receipt.get("producer_source_sha") == expected_source
+    )
+
 def _prep_receipt_lineage_current(receipt: dict[str, Any]) -> bool:
     return (
         receipt.get("feature_semantic_version") == ACTIVE8_FEATURE_SEMANTIC_VERSION
@@ -372,7 +386,10 @@ def _verify_prebuilt_canonical_prep(
         ).hexdigest()
         if (
             receipt.get("schema_version") != ACTIVE8_PREP_RECEIPT_SCHEMA_VERSION
-            or not _prep_receipt_lineage_current(receipt)
+            or not _prep_receipt_lineage_matches(
+                receipt,
+                expected_producer_source_sha=producer_source_sha,
+            )
             or receipt.get("status") != "ready"
             or str(receipt.get("output_gcs_prefix") or "").rstrip("/") != source_prefix
             or receipt.get("receipt_checksum") != actual_receipt_checksum

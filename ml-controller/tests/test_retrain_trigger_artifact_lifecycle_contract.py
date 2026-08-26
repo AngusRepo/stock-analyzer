@@ -209,6 +209,23 @@ def test_prebuilt_canonical_prep_requires_verified_manifest_and_batches():
     assert verified["batch_count"] == 2
     assert verified["total_rows"] == 11000
     assert verified["manifest_checksum"] == checksum
+    assert retrain_trigger._prep_receipt_lineage_matches(
+        receipt,
+        expected_producer_source_sha=TEST_SOURCE_SHA,
+    )
+    assert not retrain_trigger._prep_receipt_lineage_matches(
+        receipt,
+        expected_producer_source_sha="3" * 40,
+    )
+
+    with pytest.raises(ValueError, match="producer_source_sha"):
+        retrain_trigger._verify_prebuilt_canonical_prep(
+            bucket=Bucket(),
+            prefix=prefix,
+            expected_manifest_checksum=checksum,
+            expected_target_semantic_version=manifest["target_semantic_version"],
+            expected_producer_source_sha="3" * 40,
+        )
 
     blobs[f"{prefix}/prep/batch_1.npz"] = b"tampered"
     with pytest.raises(ValueError, match="batch_checksum_mismatch"):

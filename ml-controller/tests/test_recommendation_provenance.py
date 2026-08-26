@@ -2133,6 +2133,8 @@ def test_write_predictions_to_d1_clears_stale_per_model_rows(monkeypatch):
 
 
 def test_write_predictions_to_d1_persists_active8_challenger_rows(monkeypatch):
+    from services.active8_score_semantics import MODEL_TARGET_SEMANTIC_VERSION
+
     monkeypatch.setattr(recommendation_service, "_is_use_ensemble_v2", lambda: True)
 
     captured = {}
@@ -2156,6 +2158,21 @@ def test_write_predictions_to_d1_persists_active8_challenger_rows(monkeypatch):
                 "ensemble_v2": {"signal": "HOLD", "signal_source": "ensemble_v2"},
                 "rank_scores": {"XGBoost": 0.6},
                 "challenger_rank_scores": {"XGBoost": 0.67, "CatBoost": 0.9},
+                "challenger_model_score_lineage": {
+                    "semantic_version": "active8-same-market-percentile-v1",
+                    "target_semantic_version": MODEL_TARGET_SEMANTIC_VERSION,
+                    "market_segment": "LISTED",
+                    "model_set_signature": "sha256:test",
+                    "artifact_versions": {"XGBoost": "vCandidate"},
+                    "artifact_ids": {
+                        "XGBoost": "XGBoost:vCandidate:monthly_release",
+                    },
+                    "artifact_checksums": {
+                        "XGBoost": "sha256:" + "a" * 64,
+                    },
+                    "candidate_types": {"XGBoost": "monthly_release"},
+                    "raw_scores": {"XGBoost": 0.73},
+                },
             }
         },
         {"2330": 1},
@@ -2179,6 +2196,15 @@ def test_write_predictions_to_d1_persists_active8_challenger_rows(monkeypatch):
     assert retired_rows == []
     assert challenger_payload["rank_score"] == 0.67
     assert challenger_payload["source"] == "model_pool_stage2_challenger"
+    signal = challenger_payload["model_signal"]
+    assert signal["artifact_version"] == "vCandidate"
+    assert signal["artifact_id"] == "XGBoost:vCandidate:monthly_release"
+    assert signal["artifact_checksum"] == "sha256:" + "a" * 64
+    assert signal["candidate_type"] == "monthly_release"
+    assert signal["raw_score"] == 0.73
+    assert signal["rank_score"] == 0.67
+    assert signal["production_effect"] is False
+    assert signal["vote_weight"] == 0.0
 
 
 def test_write_predictions_to_d1_keeps_timesfm_sidecar_out_of_alpha_rows(monkeypatch):

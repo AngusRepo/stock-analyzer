@@ -799,3 +799,51 @@ def test_active_feature_core_missing_score_becomes_top_level_error(monkeypatch):
         in row["error"]
         for row in results
     )
+def test_active8_feature_shadow_scores_are_isolated_from_champion_scores(monkeypatch):
+    class FakeModel:
+        def predict(self, matrix):
+            assert matrix.shape == (2, 1)
+            return np.array([0.8, 0.2], dtype=np.float32)
+
+    contexts = [
+        batch_prediction._FeatureBatchContext(
+            req=SimpleNamespace(symbol="2330"),
+            x_latest=np.array([[1.0]], dtype=np.float32),
+            feature_names=["f1"],
+            rank_scores={"XGBoost": 0.55},
+        ),
+        batch_prediction._FeatureBatchContext(
+            req=SimpleNamespace(symbol="2317"),
+            x_latest=np.array([[2.0]], dtype=np.float32),
+            feature_names=["f1"],
+            rank_scores={"XGBoost": 0.45},
+        ),
+    ]
+    pool = _full_model_pool({"XGBoost": "active"})
+    pool["active8_shadow_candidates"] = {
+        "XGBoost": {
+            "status": "challenger",
+            "production_effect": False,
+            "vote_weight": 0.0,
+            "version": "vCandidate",
+            "gcs_path": "universal/xgboost/vCandidate.joblib",
+            "metadata_path": "registry-metadata/xgboost-vCandidate.json",
+            "serving_artifact_id": "XGBoost:vCandidate:monthly_release",
+            "checksum": "sha256:" + "1" * 64,
+        },
+    }
+
+    def fake_load(model_name, **kwargs):
+        assert model_name == "XGBoost"
+        assert kwargs["expected_artifact_id"] == "XGBoost:vCandidate:monthly_release"
+        assert kwargs["expected_checksum"] == "sha256:" + "1" * 64
+        assert kwargs["require_governed_artifact"] is True
+        return FakeModel(), {"feature_names": ["f1"], "feature_medians": {"f1": 0.0}}
+
+    monkeypatch.setattr(batch_prediction, "_load_feature_artifact", fake_load)
+    batch_prediction._apply_active8_shadow_feature_predictions(contexts, pool)
+
+    assert [ctx.rank_scores["XGBoost"] for ctx in contexts] == [0.55, 0.45]
+    assert contexts[0].challenger_rank_scores["XGBoost"] == pytest.approx(0.8)
+    assert contexts[1].challenger_rank_scores["XGBoost"] == pytest.approx(0.2)
+    assert contexts[0].challenger_errors == []

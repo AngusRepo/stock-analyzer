@@ -17,6 +17,7 @@ def test_active8_and_timesfm_sidecar_runtime_dependencies_are_tightly_pinned_to_
         # XGBoost 3.2.0 is intentionally accepted for runtime bug/perf fixes
         # even though the local 2026-06-11 replay showed slightly weaker IC.
         "xgboost==3.2.0",
+        "shap==0.49.1",
         "lightgbm==4.6.0",
         "torch==2.12.0",
         "torch-geometric==2.8.0",
@@ -31,6 +32,8 @@ def test_active8_and_timesfm_sidecar_runtime_dependencies_are_tightly_pinned_to_
 
     drifting_specs = [
         "xgboost==2.1.1",
+        "shap>=",
+        "shap==0.50.0",
         "networkx>=",
         "scikit-learn-extra>=",
         "lightgbm>=",

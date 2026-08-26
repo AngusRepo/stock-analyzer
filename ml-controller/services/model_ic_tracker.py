@@ -86,6 +86,19 @@ def prediction_artifact_lineage(row: dict[str, Any]) -> tuple[str | None, str | 
     return artifact_version, target_semantic
 
 
+def prediction_artifact_identity(row: dict[str, Any]) -> dict[str, str | None]:
+    forecast = _safe_json(row.get("forecast_data"))
+    signal = forecast.get("model_signal")
+    signal = signal if isinstance(signal, dict) else {}
+    artifact_version, target_semantic = prediction_artifact_lineage(row)
+    return {
+        "version": artifact_version,
+        "artifact_id": str(signal.get("artifact_id") or "").strip() or None,
+        "checksum": str(signal.get("artifact_checksum") or "").strip().lower() or None,
+        "target_semantic_version": target_semantic,
+    }
+
+
 def market_segment_from_prediction_row(row: dict[str, Any]) -> str:
     forecast = _safe_json(row.get("forecast_data"))
     stock_meta = forecast.get("stock_meta")
@@ -202,6 +215,7 @@ def compute_weekly_ic_from_rows(
     min_dates: int = 1,
     all_tracked: tuple[str, ...] | None = None,
     expected_artifact_versions: dict[str, str] | None = None,
+    expected_artifact_identities: dict[str, dict[str, str]] | None = None,
 ) -> dict[str, dict[str, Any]]:
     rows, duplicate_rows_dropped = _dedupe_prediction_rows(rows)
     tracked = all_tracked or tracked_model_names()
@@ -227,6 +241,7 @@ def compute_weekly_ic_from_rows(
             "label_lineage_invalid_rows": 0,
             "duplicate_rows_dropped": int(duplicate_rows_dropped.get(name, 0)),
             "artifact_version_mismatch_rows": 0,
+            "artifact_identity_mismatch_rows": 0,
             "prediction_target_semantic_mismatch_rows": 0,
         }
         for name in tracked
@@ -238,7 +253,9 @@ def compute_weekly_ic_from_rows(
             continue
         diag = diagnostics[model_name]
         diag["raw_rows"] += 1
-        artifact_version, prediction_target_semantic = prediction_artifact_lineage(row)
+        artifact_identity = prediction_artifact_identity(row)
+        artifact_version = artifact_identity["version"]
+        prediction_target_semantic = artifact_identity["target_semantic_version"]
         expected_version = str((expected_artifact_versions or {}).get(model_name) or "").strip()
         if expected_artifact_versions is not None:
             if not expected_version or artifact_version != expected_version:
@@ -246,6 +263,18 @@ def compute_weekly_ic_from_rows(
                 continue
             if prediction_target_semantic != IC_TARGET_SEMANTIC_VERSION:
                 diag["prediction_target_semantic_mismatch_rows"] += 1
+                continue
+        expected_identity = (expected_artifact_identities or {}).get(model_name)
+        if expected_identity is not None:
+            expected_artifact_id = str(expected_identity.get("artifact_id") or "").strip()
+            expected_checksum = str(expected_identity.get("checksum") or "").strip().lower()
+            if (
+                not expected_artifact_id
+                or not expected_checksum
+                or artifact_identity["artifact_id"] != expected_artifact_id
+                or artifact_identity["checksum"] != expected_checksum
+            ):
+                diag["artifact_identity_mismatch_rows"] += 1
                 continue
         if "verified_at" in row and not row.get("verified_at"):
             diag["unverified_rows"] += 1
@@ -343,7 +372,8 @@ def compute_weekly_ic_from_rows(
             "target": "actual_return_pct",
             "target_semantic_version": IC_TARGET_SEMANTIC_VERSION,
             "artifact_version": (expected_artifact_versions or {}).get(name),
-            "artifact_version_policy": "current_champion_exact_match",
+            "artifact_identity": (expected_artifact_identities or {}).get(name),
+            "artifact_version_policy": "current_champion_or_registry_candidate_exact_match",
             "min_samples": int(min_samples),
             "min_dates": max(1, int(min_dates)),
             "n_samples": len(pairs),

@@ -26,7 +26,7 @@ def _sequence_input_contract(
     itransformer_symbols: list[str] | None = None,
 ) -> dict:
     core = {
-        "schema_version": "pipeline-modal-sequence-input-contract-v1",
+        "schema_version": "pipeline-modal-sequence-input-contract-v2",
         "serving_manifest_digest": pipeline._pipeline_modal_canonical_digest(_manifest()),
         "by_model": {
             "DLinear": {
@@ -38,6 +38,7 @@ def _sequence_input_contract(
                 "sequence_contract": {"seq_len": 64},
             },
         },
+        "shadow_by_model": {},
     }
     return {
         **core,
@@ -52,6 +53,8 @@ def _manifest() -> dict:
     return {
         "schema_version": pipeline.PIPELINE_MODAL_SERVING_MANIFEST_SCHEMA,
         "source_of_truth": "model_champion_pointers/model_artifact_registry",
+        "active8_shadow_candidates": [],
+        "active8_shadow_suppressions": [],
         "models": [
             {
                 "model": model_name,
@@ -143,6 +146,7 @@ def _bundle(*, schema_version: str = "pipeline-modal-prediction-bundle-v1") -> d
         "state_gcs_uri": STATE_URI,
         "serving_manifest_digest": pipeline._pipeline_modal_canonical_digest(manifest),
         "active_artifact_identities": identities,
+        "active8_shadow_artifact_identities": {},
         "slot_artifact_identities": slot_identities,
         "active_artifact_versions": {
             model_name: identity["version"]
@@ -151,6 +155,12 @@ def _bundle(*, schema_version: str = "pipeline-modal-prediction-bundle-v1") -> d
         "serving_coverage": pipeline._pipeline_modal_manifest_coverage(manifest),
         "modal_source_sha": SOURCE_SHA,
         "sequence_input_contract": _sequence_input_contract(),
+        "active8_sequence_shadow_raw": {
+            "schema_version": "active8-sequence-shadow-bundle-v1",
+            "production_effect": False,
+            "vote_weight": 0.0,
+            "candidates": {},
+        },
         "n_input": 2,
         "predict_batch_v2_results": [
             _feature_row("2330"),

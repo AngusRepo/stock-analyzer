@@ -3340,3 +3340,109 @@ def test_same_champion_identity_repair_preserves_original_promotion_receipt(monk
     assert entry["promotion_controller"]["promoted_at"] == old_promoted_at
     assert entry["last_artifact_evidence"]["artifact_checksum"] == artifact["checksum"]
     assert pool["last_updated"] == "2026-08-26T05:30:00+00:00"
+def test_live_shadow_selection_uses_monthly_primary_and_zero_weight_policy():
+    rows = [
+        {
+            "artifact_id": "PatchTST:vMonthly:monthly_release",
+            "model_name": "PatchTST",
+            "version": "vMonthly",
+            "candidate_type": "monthly_release",
+            "state": "offline_strong_pass",
+            "offline_gate_decision": "STRONG_PASS",
+            "artifact_path": "universal/patchtst/vMonthly.zip",
+            "metadata_path": "registry-metadata/patchtst-vMonthly.json",
+            "checksum": "sha256:" + "a" * 64,
+            "updated_at": "2026-08-26T00:00:00Z",
+        },
+        {
+            "artifact_id": "PatchTST:vWeekly:weekly_drift",
+            "model_name": "PatchTST",
+            "version": "vWeekly",
+            "candidate_type": "weekly_drift",
+            "state": "offline_strong_pass",
+            "offline_gate_decision": "STRONG_PASS",
+            "artifact_path": "universal/patchtst/vWeekly.zip",
+            "metadata_path": "registry-metadata/patchtst-vWeekly.json",
+            "checksum": "sha256:" + "b" * 64,
+            "updated_at": "2026-08-25T00:00:00Z",
+        },
+    ]
+
+    selection = registry.build_live_shadow_candidate_selection(
+        rows,
+        champion_pointers=[{
+            "model_name": "PatchTST",
+            "champion_artifact_id": "PatchTST:vChampion:oof_full_fit_release",
+        }],
+    )
+
+    assert selection["production_effect"] is False
+    assert selection["vote_weight"] == 0.0
+    assert len(selection["selected"]) == 1
+    selected = selection["selected"][0]
+    assert selected["artifact_id"] == "PatchTST:vMonthly:monthly_release"
+    assert selected["_selection_slot"] == "monthly_release_candidate"
+    assert selected["_production_effect"] is False
+    assert selected["_vote_weight"] == 0.0
+    assert selection["suppressed"][0]["artifact_id"] == "PatchTST:vWeekly:weekly_drift"
+
+
+def test_update_live_gate_uses_same_monthly_primary_shadow_owner(monkeypatch):
+    executed: list[list[object]] = []
+    rows = [
+        {
+            "artifact_id": "PatchTST:vMonthly:monthly_release",
+            "model_name": "PatchTST",
+            "version": "vMonthly",
+            "candidate_type": "monthly_release",
+            "state": "offline_strong_pass",
+            "offline_gate_decision": "STRONG_PASS",
+            "source_run_date": "2026-08-25",
+            "updated_at": "2026-08-26T08:00:00Z",
+            "offline_gate_failed_gates": "[]",
+            "offline_evidence_json": "{}",
+            "live_evidence_json": "{}",
+        },
+        {
+            "artifact_id": "PatchTST:vWeekly:weekly_drift",
+            "model_name": "PatchTST",
+            "version": "vWeekly",
+            "candidate_type": "weekly_drift",
+            "state": "offline_strong_pass",
+            "offline_gate_decision": "STRONG_PASS",
+            "source_run_date": "2026-08-24",
+            "updated_at": "2026-08-25T08:00:00Z",
+            "offline_gate_failed_gates": "[]",
+            "offline_evidence_json": "{}",
+            "live_evidence_json": "{}",
+        },
+    ]
+
+    def fake_query(sql, params=None, timeout=60.0):
+        if "model_champion_pointers" in sql:
+            return []
+        return rows
+
+    def fake_execute(sql, params=None, timeout=60.0):
+        executed.append(list(params or []))
+        return {"success": True}
+
+    monkeypatch.setattr(registry.d1_client, "query", fake_query)
+    monkeypatch.setattr(registry.d1_client, "execute", fake_execute)
+
+    result = registry.update_live_gate_from_ic(
+        {
+            "PatchTST::challenger": {
+                "status": "computed",
+                "ic": 0.08,
+                "n_samples": 80,
+                "root_cause": "ok",
+            },
+        },
+        min_samples=50,
+    )
+
+    assert result["selected"] == 1
+    assert result["updated"] == 1
+    assert result["updates"][0]["artifact_id"] == "PatchTST:vMonthly:monthly_release"
+    assert executed[0][-1] == "PatchTST:vMonthly:monthly_release"

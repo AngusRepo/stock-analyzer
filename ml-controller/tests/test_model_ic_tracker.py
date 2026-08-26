@@ -526,3 +526,48 @@ def test_weekly_ic_strictly_filters_to_current_champion_artifact_version():
     assert info["n_samples"] == 2
     assert info["diagnostics"]["artifact_version_mismatch_rows"] == 2
     assert info["evaluation_contract"]["artifact_version"] == "vCurrent"
+def test_challenger_weekly_ic_requires_exact_artifact_id_and_checksum():
+    def row(stock_id: int, artifact_id: str, checksum: str, rank: float, actual: float) -> dict:
+        return {
+            "stock_id": stock_id,
+            "model_name": "PatchTST::challenger",
+            "prediction_date": "2026-08-25",
+            "generated_at": f"2026-08-25T13:00:{stock_id:02d}Z",
+            "actual_return_pct": actual,
+            "forecast_data": json.dumps({
+                "rank_score": rank,
+                "model_signal": {
+                    "artifact_version": "vCandidate",
+                    "artifact_id": artifact_id,
+                    "artifact_checksum": checksum,
+                    "target_semantic_version": IC_TARGET_SEMANTIC_VERSION,
+                },
+            }),
+        }
+
+    expected_id = "PatchTST:vCandidate:monthly_release"
+    expected_checksum = "sha256:" + "d" * 64
+    result = compute_weekly_ic_from_rows(
+        [
+            row(1, expected_id, expected_checksum, 0.1, -0.02),
+            row(2, expected_id, expected_checksum, 0.9, 0.03),
+            row(3, "PatchTST:vOther:monthly_release", expected_checksum, 0.9, -0.04),
+            row(4, expected_id, "sha256:" + "e" * 64, 0.1, 0.05),
+        ],
+        min_samples=2,
+        all_tracked=("PatchTST::challenger",),
+        expected_artifact_versions={"PatchTST::challenger": "vCandidate"},
+        expected_artifact_identities={
+            "PatchTST::challenger": {
+                "artifact_id": expected_id,
+                "checksum": expected_checksum,
+            },
+        },
+    )
+
+    info = result["PatchTST::challenger"]
+    assert info["status"] == "computed"
+    assert info["ic"] == 1.0
+    assert info["n_samples"] == 2
+    assert info["diagnostics"]["artifact_identity_mismatch_rows"] == 2
+    assert info["evaluation_contract"]["artifact_identity"]["artifact_id"] == expected_id

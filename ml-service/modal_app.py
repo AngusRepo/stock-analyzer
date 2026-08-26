@@ -1571,6 +1571,99 @@ def _hydrate_pipeline_prediction_request_reference(payload: dict) -> dict:
     }
 
 
+
+def _run_active8_sequence_shadow_candidates(
+    *,
+    candidate_series_by_model: dict,
+    candidate_entries: dict,
+    candidate_identities: dict,
+    predictors: dict,
+) -> dict:
+    """Execute registry-owned sequence candidates without serving influence."""
+    candidate_outputs: dict[str, dict] = {}
+    for model_name, predictor in predictors.items():
+        entry = candidate_entries.get(model_name)
+        if not isinstance(entry, dict):
+            continue
+        identity = candidate_identities.get(model_name)
+        if not isinstance(identity, dict):
+            candidate_outputs[model_name] = {
+                "status": "failed",
+                "error": "candidate_identity_missing",
+                "results": [],
+            }
+            continue
+        series = candidate_series_by_model.get(model_name) or []
+        expected_symbols = [
+            str(row.get("symbol") or row.get("stock_id") or "").strip()
+            for row in series
+            if isinstance(row, dict) and (row.get("symbol") or row.get("stock_id"))
+        ]
+        if not expected_symbols:
+            candidate_outputs[model_name] = {
+                "status": "insufficient_sequence_input",
+                "error": "candidate_sequence_contract_unmet",
+                "identity": identity,
+                "results": [],
+                "n_input": 0,
+                "n_success": 0,
+            }
+            continue
+        try:
+            results = predictor(
+                series_list=series,
+                horizon_used=5,
+                version=str(identity.get("version") or ""),
+                artifact_identity={"model": model_name, **identity},
+            )
+            observed = [
+                str(row.get("symbol") or "").strip()
+                for row in results
+                if isinstance(row, dict) and not row.get("error")
+            ]
+            exact = (
+                len(results) == len(expected_symbols)
+                and len(observed) == len(expected_symbols)
+                and len(set(observed)) == len(observed)
+                and set(observed) == set(expected_symbols)
+            )
+            if not exact:
+                raise RuntimeError("candidate_sequence_result_cardinality_mismatch")
+            enriched = [
+                {
+                    **row,
+                    "artifact_id": identity.get("artifact_id"),
+                    "artifact_checksum": identity.get("checksum"),
+                    "candidate_type": entry.get("candidate_type"),
+                    "production_effect": False,
+                    "vote_weight": 0.0,
+                }
+                for row in results
+            ]
+            candidate_outputs[model_name] = {
+                "status": "complete",
+                "identity": identity,
+                "results": enriched,
+                "n_input": len(expected_symbols),
+                "n_success": len(enriched),
+            }
+        except Exception as exc:  # noqa: BLE001 - shadow cannot block champion.
+            candidate_outputs[model_name] = {
+                "status": "failed",
+                "identity": identity,
+                "error": f"{type(exc).__name__}: {exc}",
+                "results": [],
+                "n_input": len(expected_symbols),
+                "n_success": 0,
+            }
+    return {
+        "schema_version": "active8-sequence-shadow-bundle-v1",
+        "production_effect": False,
+        "vote_weight": 0.0,
+        "candidates": candidate_outputs,
+    }
+
+
 def _pipeline_prediction_bundle_impl(payload: dict) -> dict:
     """Run pipeline-v2 raw L3 prediction families inside Modal, then callback controller."""
     _setup_env()
@@ -1586,6 +1679,7 @@ def _pipeline_prediction_bundle_impl(payload: dict) -> dict:
     from app.patchtst_universal import patchtst_batch_predict
     from app.state_space_universal import state_space_overlays_batch_predict
     from app.serving_resolver import (
+        active8_shadow_candidate_identities,
         build_pool_from_frozen_manifest,
         serving_manifest_coverage,
         serving_manifest_identities,
@@ -1623,12 +1717,19 @@ def _pipeline_prediction_bundle_impl(payload: dict) -> dict:
     slot_identities = serving_manifest_identities(serving_manifest)
     serving_identities = serving_manifest_identities(serving_manifest, serving_only=True)
     coverage = serving_manifest_coverage(serving_manifest)
+    active8_shadow_identities = active8_shadow_candidate_identities(serving_manifest)
     dispatched_slots = payload.get("slot_artifact_identities")
     if not isinstance(dispatched_slots, dict) or dispatched_slots != slot_identities:
         raise ValueError("pipeline_modal_slot_artifact_identity_dispatch_mismatch")
     dispatched_identities = payload.get("active_artifact_identities")
     if not isinstance(dispatched_identities, dict) or dispatched_identities != serving_identities:
         raise ValueError("pipeline_modal_active_artifact_identity_dispatch_mismatch")
+    dispatched_shadow_identities = payload.get("active8_shadow_artifact_identities")
+    if (
+        not isinstance(dispatched_shadow_identities, dict)
+        or dispatched_shadow_identities != active8_shadow_identities
+    ):
+        raise ValueError("pipeline_modal_active8_shadow_identity_dispatch_mismatch")
     if payload.get("serving_coverage") != coverage:
         raise ValueError("pipeline_modal_serving_coverage_dispatch_mismatch")
     serving_versions = {
@@ -1739,6 +1840,20 @@ def _pipeline_prediction_bundle_impl(payload: dict) -> dict:
         )
         return {"results": results, "n_input": len(series), "n_success": sum(1 for r in results if not r.get("error"))}
 
+    def _active8_sequence_shadows() -> dict:
+        return _run_active8_sequence_shadow_candidates(
+            candidate_series_by_model=(
+                payload.get("active8_shadow_sequence_series_by_model") or {}
+            ),
+            candidate_entries=frozen_pool.get("active8_shadow_candidates") or {},
+            candidate_identities=active8_shadow_identities,
+            predictors={
+                "DLinear": dlinear_batch_predict,
+                "PatchTST": patchtst_batch_predict,
+                "iTransformer": itransformer_batch_predict,
+            },
+        )
+
     def _state_space() -> dict:
         if not state_space_models:
             return _skip("state-space overlays retired by model_pool")
@@ -1758,6 +1873,7 @@ def _pipeline_prediction_bundle_impl(payload: dict) -> dict:
         "patchtst_universal_predict": (_patchtst, _is_active("PatchTST")),
         "itransformer_universal_predict": (_itransformer, _is_active("iTransformer")),
         "state_space_universal_predict": (_state_space, False),
+        "active8_sequence_shadow_predict": (_active8_sequence_shadows, False),
     }
     outputs: dict[str, object] = {}
     timings: dict[str, dict] = {}
@@ -1918,6 +2034,7 @@ def _pipeline_prediction_bundle_impl(payload: dict) -> dict:
         "serving_manifest_digest": serving_manifest_digest,
         "slot_artifact_identities": slot_identities,
         "active_artifact_identities": serving_identities,
+        "active8_shadow_artifact_identities": active8_shadow_identities,
         "active_artifact_versions": serving_versions,
         "serving_coverage": coverage,
         "modal_source_sha": modal_source_sha,
@@ -1929,6 +2046,13 @@ def _pipeline_prediction_bundle_impl(payload: dict) -> dict:
         "patchtst_raw": outputs.get("patchtst_universal_predict") or {"results": []},
         "itransformer_raw": outputs.get("itransformer_universal_predict") or {"results": []},
         "state_space_raw": outputs.get("state_space_universal_predict") or {"results": []},
+        "active8_sequence_shadow_raw": outputs.get("active8_sequence_shadow_predict")
+        or {
+            "schema_version": "active8-sequence-shadow-bundle-v1",
+            "production_effect": False,
+            "vote_weight": 0.0,
+            "candidates": {},
+        },
         "stage_timings": timings,
         "sequence_dataset": payload.get("sequence_dataset_meta") or {},
         "sequence_input_contract": payload.get("sequence_input_contract") or {},

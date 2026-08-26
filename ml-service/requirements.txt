@@ -39,7 +39,8 @@ einops==0.8.2
 # River：ARF 聚合層（第11模型 Layer 2），ADWIN drift detection
 river>=0.21.0
 # P3#31: SHAP feature attribution for tree models
-shap>=0.46.0
+# Python 3.11 / NumPy 1.26 compatible; XGBoost uses its native pred_contribs path.
+shap==0.49.1
 # P3#29: RL Shadow Framework
 gymnasium>=0.29.0
 stable-baselines3>=2.3.0

@@ -77,6 +77,8 @@ def _manifest(*, excluded: tuple[str, ...] = ("GNN", "PatchTST")) -> dict:
             for index, model_name in enumerate(serving_resolver.DIRECT_ALPHA_MODELS)
         ],
         "shadow_models": [],
+        "active8_shadow_candidates": [],
+        "active8_shadow_suppressions": [],
         "formal_layer3_slots": [],
         "rank_stacker": {
             "schema_version": serving_resolver.PIPELINE_MODAL_RANK_STACKER_SCHEMA,
@@ -654,3 +656,72 @@ def test_modal_runtime_secret_and_bundle_echo_source_sha() -> None:
 
 def test_modal_source_sha_contract_requires_full_commit() -> None:
     assert len("0123456789abcdef0123456789abcdef01234567") == 40
+def _patchtst_shadow_candidate() -> dict:
+    return {
+        "model": "PatchTST",
+        "status": "challenger",
+        "effective_status": "challenger",
+        "version": "vCandidate",
+        "artifact_id": "PatchTST:vCandidate:monthly_release",
+        "artifact_path": "universal/patchtst/vCandidate.zip",
+        "metadata_path": "registry-metadata/patchtst-vCandidate.json",
+        "checksum": "sha256:" + "f" * 64,
+        "candidate_type": "monthly_release",
+        "registry_state": "offline_strong_pass",
+        "offline_gate_decision": "STRONG_PASS",
+        "live_gate_status": "not_started",
+        "source_run_date": "2026-08-25",
+        "training_run_id": "universal-test",
+        "selection_slot": "monthly_release_candidate",
+        "production_effect": False,
+        "vote_weight": 0.0,
+        "schema": {
+            "target_semantic_version": serving_resolver.LABEL_SCHEMA_VERSION,
+            "feature_semantic_version": None,
+            "gnn_graph_semantic_version": None,
+            "sequence_contract": {
+                "schema_version": serving_resolver.SEQUENCE_CONTRACT_SCHEMA_VERSION,
+                "source": "model_artifact_registry",
+                "model": "PatchTST",
+                "version": "vCandidate",
+                "artifact_id": "PatchTST:vCandidate:monthly_release",
+                "seq_len": 64,
+                "pred_len": 5,
+            },
+        },
+    }
+
+
+def test_frozen_manifest_accepts_zero_weight_patchtst_registry_shadow_candidate():
+    manifest = _manifest()
+    manifest["active8_shadow_candidates"] = [_patchtst_shadow_candidate()]
+    pool = serving_resolver.build_pool_from_frozen_manifest(
+        manifest,
+        expected_digest=serving_resolver.serving_manifest_digest(manifest),
+    )
+
+    candidate = pool["active8_shadow_candidates"]["PatchTST"]
+    assert candidate["serving_artifact_id"] == "PatchTST:vCandidate:monthly_release"
+    assert candidate["checksum"] == "sha256:" + "f" * 64
+    assert candidate["production_effect"] is False
+    assert candidate["vote_weight"] == 0.0
+
+
+@pytest.mark.parametrize(
+    ("field", "value", "marker"),
+    (
+        ("vote_weight", 0.1, "vote_nonzero"),
+        ("production_effect", True, "status_invalid"),
+    ),
+)
+def test_frozen_manifest_rejects_active8_shadow_policy_tamper(field, value, marker):
+    manifest = _manifest()
+    candidate = _patchtst_shadow_candidate()
+    candidate[field] = value
+    manifest["active8_shadow_candidates"] = [candidate]
+
+    with pytest.raises(serving_resolver.ServingPoolResolutionError, match=marker):
+        serving_resolver.build_pool_from_frozen_manifest(
+            manifest,
+            expected_digest=serving_resolver.serving_manifest_digest(manifest),
+        )

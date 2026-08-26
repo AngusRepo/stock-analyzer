@@ -208,3 +208,170 @@ def normalize_active8_cross_sectional_scores(
         "blocked_symbols": len(predictions) - complete,
         "blockers": dict(sorted(blockers.items())),
     }
+
+
+def normalize_active8_challenger_scores(
+    predictions: dict[str, dict[str, Any]],
+    *,
+    candidate_rows: dict[str, dict[str, Any]],
+    run_date: str,
+    min_cross_section: int = 3,
+) -> dict[str, Any]:
+    """Build zero-weight candidate ranks with exact artifact lineage."""
+    candidates: dict[str, dict[str, Any]] = {}
+    blockers: dict[str, int] = defaultdict(int)
+    for model_name, row in candidate_rows.items():
+        schema = row.get("schema") if isinstance(row.get("schema"), dict) else {}
+        checksum = str(row.get("checksum") or "").strip().lower()
+        digest = checksum.removeprefix("sha256:")
+        valid = (
+            model_name in ACTIVE_ALPHA_MODELS
+            and str(row.get("status") or "") == "challenger"
+            and str(row.get("effective_status") or "") == "challenger"
+            and row.get("production_effect") is False
+            and _finite(row.get("vote_weight")) == 0.0
+            and is_known_artifact_version(row.get("version"))
+            and bool(str(row.get("artifact_id") or "").strip())
+            and checksum.startswith("sha256:")
+            and len(digest) == 64
+            and all(char in "0123456789abcdef" for char in digest)
+            and str(schema.get("target_semantic_version") or "")
+            == MODEL_TARGET_SEMANTIC_VERSION
+        )
+        if not valid:
+            blockers[f"candidate_identity_invalid:{model_name}"] += 1
+            continue
+        candidates[model_name] = row
+
+    raw_by_group: dict[tuple[str, str], list[tuple[str, float]]] = defaultdict(list)
+    raw_by_symbol: dict[str, dict[str, float]] = defaultdict(dict)
+    for symbol, prediction in predictions.items():
+        segment = _market_segment(prediction)
+        if not segment:
+            continue
+        feature_raw = (
+            prediction.get("challenger_rank_scores")
+            if isinstance(prediction.get("challenger_rank_scores"), dict)
+            else {}
+        )
+        sequence_signals = (
+            prediction.get("challenger_model_signals")
+            if isinstance(prediction.get("challenger_model_signals"), dict)
+            else {}
+        )
+        for model_name in candidates:
+            if model_name in _SEQUENCE_SOURCE_KEYS:
+                signal = (
+                    sequence_signals.get(model_name)
+                    if isinstance(sequence_signals.get(model_name), dict)
+                    else {}
+                )
+                raw = _finite(signal.get("forecast_pct"))
+            else:
+                raw = _finite(feature_raw.get(model_name))
+            if raw is None:
+                continue
+            raw_by_group[(segment, model_name)].append((symbol, raw))
+            raw_by_symbol[symbol][model_name] = raw
+
+    segment_population: dict[str, int] = defaultdict(int)
+    for prediction in predictions.values():
+        segment = _market_segment(prediction)
+        if segment:
+            segment_population[segment] += 1
+
+    incomplete_feature_models: set[str] = set()
+    for model_name in candidates:
+        if model_name in _SEQUENCE_SOURCE_KEYS:
+            continue
+        for segment, expected_count in segment_population.items():
+            observed_count = len(raw_by_group.get((segment, model_name), []))
+            if observed_count != expected_count:
+                incomplete_feature_models.add(model_name)
+                blockers[
+                    f"candidate_feature_cross_section_incomplete:{model_name}:{segment}"
+                ] += max(1, expected_count - observed_count)
+    if incomplete_feature_models:
+        for key in list(raw_by_group):
+            if key[1] in incomplete_feature_models:
+                raw_by_group.pop(key, None)
+        for model_scores in raw_by_symbol.values():
+            for model_name in incomplete_feature_models:
+                model_scores.pop(model_name, None)
+
+    ranks_by_symbol: dict[str, dict[str, float]] = defaultdict(dict)
+    group_sizes: dict[tuple[str, str], int] = {}
+    for key, values in raw_by_group.items():
+        group_sizes[key] = len(values)
+        if len(values) < min_cross_section:
+            blockers[f"candidate_cross_section_too_small:{key[1]}"] += 1
+            continue
+        for symbol, rank in _percentile_by_average_rank(values).items():
+            ranks_by_symbol[symbol][key[1]] = rank
+
+    complete_rows = 0
+    for symbol, prediction in predictions.items():
+        segment = _market_segment(prediction)
+        ranks = dict(ranks_by_symbol.get(symbol, {}))
+        prediction["challenger_raw_model_scores"] = dict(raw_by_symbol.get(symbol, {}))
+        prediction["challenger_rank_scores"] = ranks
+        available = [name for name in candidates if name in ranks]
+        versions = {
+            name: str(candidates[name].get("version") or "")
+            for name in available
+        }
+        signature = build_model_set_signature(versions, available)
+        row_blockers = []
+        if candidates and not available:
+            row_blockers.append("challenger_score_missing")
+        if not segment:
+            row_blockers.append("market_segment_missing")
+        if available and signature is None:
+            row_blockers.append("challenger_model_set_signature_unresolvable")
+        for blocker in row_blockers:
+            blockers[blocker] += 1
+        if available and not row_blockers:
+            complete_rows += 1
+        prediction["challenger_model_score_lineage"] = {
+            "schema_version": "active8-challenger-score-lineage-v1",
+            "semantic_version": MODEL_SCORE_SEMANTIC_VERSION,
+            "target_semantic_version": MODEL_TARGET_SEMANTIC_VERSION,
+            "run_date": run_date,
+            "market_segment": segment,
+            "transform": "average_tie_percentile_(rank-1)/(n-1)",
+            "minimum_cross_section": min_cross_section,
+            "production_effect": False,
+            "vote_weight": 0.0,
+            "available_models": available,
+            "artifact_versions": versions,
+            "artifact_ids": {
+                name: str(candidates[name].get("artifact_id") or "")
+                for name in available
+            },
+            "artifact_checksums": {
+                name: str(candidates[name].get("checksum") or "")
+                for name in available
+            },
+            "candidate_types": {
+                name: str(candidates[name].get("candidate_type") or "")
+                for name in available
+            },
+            "cross_section_sizes": {
+                name: group_sizes.get((segment, name), 0) if segment else 0
+                for name in candidates
+            },
+            "model_set_signature": signature,
+            "raw_scores": dict(raw_by_symbol.get(symbol, {})),
+            "complete": bool(available) and not row_blockers,
+            "blockers": row_blockers,
+        }
+
+    return {
+        "schema_version": "active8-challenger-normalization-summary-v1",
+        "semantic_version": MODEL_SCORE_SEMANTIC_VERSION,
+        "candidate_models": sorted(candidates),
+        "symbols": len(predictions),
+        "complete_symbols": complete_rows,
+        "blockers": dict(sorted(blockers.items())),
+        "production_effect": False,
+    }

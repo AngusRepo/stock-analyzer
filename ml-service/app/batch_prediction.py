@@ -180,6 +180,63 @@ def _shadow_model_artifact_identity(model_name: str, pool: dict) -> dict[str, st
     return identity
 
 
+def _active8_shadow_candidate_names(pool: dict | None) -> tuple[str, ...]:
+    candidates = (
+        (pool or {}).get("active8_shadow_candidates", {})
+        if isinstance(pool, dict)
+        else {}
+    )
+    if not isinstance(candidates, dict):
+        return ()
+    return tuple(sorted(
+        str(name)
+        for name, entry in candidates.items()
+        if isinstance(entry, dict)
+        and str(entry.get("status") or "") == "challenger"
+        and entry.get("production_effect") is False
+        and float(entry.get("vote_weight") or 0.0) == 0.0
+    ))
+
+
+def _active8_shadow_candidate_entry(model_name: str, pool: dict) -> dict:
+    entry = (
+        (pool.get("active8_shadow_candidates") or {}).get(model_name)
+        if isinstance(pool, dict)
+        else None
+    )
+    if not isinstance(entry, dict):
+        raise ModelPoolUnavailable(
+            f"frozen Active-8 shadow entry missing for {model_name}"
+        )
+    for field in (
+        "version", "gcs_path", "metadata_path", "serving_artifact_id", "checksum",
+    ):
+        if not str(entry.get(field) or "").strip():
+            raise ModelPoolUnavailable(
+                f"frozen Active-8 shadow identity incomplete for {model_name}:{field}"
+            )
+    if (
+        str(entry.get("status") or "") != "challenger"
+        or entry.get("production_effect") is not False
+        or float(entry.get("vote_weight") or 0.0) != 0.0
+    ):
+        raise ModelPoolUnavailable(
+            f"frozen Active-8 shadow policy invalid for {model_name}"
+        )
+    return entry
+
+
+def _active8_shadow_candidate_pool(model_name: str, pool: dict) -> dict:
+    entry = dict(_active8_shadow_candidate_entry(model_name, pool))
+    entry["status"] = "active"
+    entry["effective_status"] = "active"
+    return {
+        "schema_version": "model_pool_v2",
+        "source_of_truth": "frozen_pipeline_modal_serving_manifest",
+        "models": {model_name: entry},
+    }
+
+
 def _require_runtime_artifact_identity(model_name: str, artifact: Any, pool: dict) -> None:
     identity = _active_model_artifact_identity(model_name, pool)
     source_path = str(getattr(artifact, "source_path", "") or "").strip()
@@ -533,6 +590,117 @@ def _apply_tabm_torch_batch_predictions(
             _record_feature_error(ctx, f"TabM: {exc}")
 
 
+def _apply_active8_shadow_feature_predictions(
+    contexts: list[_FeatureBatchContext],
+    pool: dict,
+) -> None:
+    """Run selected registry candidates with zero production effect."""
+    for model_name in _active8_shadow_candidate_names(pool):
+        if model_name in {"DLinear", "PatchTST", "iTransformer"}:
+            continue
+        try:
+            entry = _active8_shadow_candidate_entry(model_name, pool)
+            if model_name in {"LightGBM", "XGBoost", "ExtraTrees"}:
+                model_obj, meta = _load_feature_artifact(
+                    model_name,
+                    explicit_path=str(entry["gcs_path"]),
+                    explicit_metadata_path=str(entry["metadata_path"]),
+                    expected_version=str(entry["version"]),
+                    expected_artifact_id=str(entry["serving_artifact_id"]),
+                    expected_checksum=str(entry["checksum"]),
+                    require_governed_artifact=True,
+                )
+                if model_obj is None:
+                    raise RuntimeError("governed candidate artifact not found")
+                _apply_artifact_batch_predictions(
+                    contexts,
+                    model_name,
+                    model_obj,
+                    meta,
+                    challenger=True,
+                )
+                continue
+
+            candidate_pool = _active8_shadow_candidate_pool(model_name, pool)
+            if model_name == "TabM":
+                from .tabm_batch_runtime import (
+                    load_tabm_artifact,
+                    predict_tabm_scores,
+                )
+
+                artifact = load_tabm_artifact(pool=candidate_pool)
+                rows: list[tuple[_FeatureBatchContext, np.ndarray]] = []
+                for ctx in contexts:
+                    try:
+                        rows.append((ctx, _align_latest_features(ctx, artifact.metadata)))
+                    except Exception as exc:  # noqa: BLE001
+                        _record_feature_error(
+                            ctx,
+                            f"{model_name}: shadow {exc}",
+                            challenger=True,
+                        )
+                if rows:
+                    scores = predict_tabm_scores(
+                        artifact,
+                        features=np.vstack([row for _ctx, row in rows]),
+                    )
+                    for (ctx, _row), score in zip(rows, scores):
+                        _record_feature_score(
+                            ctx,
+                            model_name,
+                            score,
+                            challenger=True,
+                        )
+                continue
+
+            if model_name == "GNN":
+                from .gnn_batch_runtime import (
+                    load_graphsage_artifact,
+                    predict_graphsage_scores,
+                )
+
+                artifact = load_graphsage_artifact(pool=candidate_pool)
+                rows = []
+                for ctx in contexts:
+                    try:
+                        rows.append((ctx, _align_latest_features(ctx, artifact.metadata)))
+                    except Exception as exc:  # noqa: BLE001
+                        _record_feature_error(
+                            ctx,
+                            f"{model_name}: shadow {exc}",
+                            challenger=True,
+                        )
+                if rows:
+                    scores, _graph_report = predict_graphsage_scores(
+                        artifact,
+                        node_features=np.vstack([row for _ctx, row in rows]),
+                        price_series=[
+                            getattr(ctx.req, "prices", []) or []
+                            for ctx, _row in rows
+                        ],
+                        context_records=[
+                            _build_gnn_similarity_context_record(ctx.req)
+                            for ctx, _row in rows
+                        ],
+                    )
+                    for (ctx, _row), score in zip(rows, scores):
+                        _record_feature_score(
+                            ctx,
+                            model_name,
+                            score,
+                            challenger=True,
+                        )
+                continue
+            raise RuntimeError("unsupported Active-8 shadow model family")
+        except Exception as exc:  # noqa: BLE001 - candidate cannot block champions.
+            for ctx in contexts:
+                _record_feature_error(
+                    ctx,
+                    f"{model_name}: Active-8 shadow {type(exc).__name__}: {exc}",
+                    challenger=True,
+                )
+
+
 def _summarize_result_errors(results: list[dict | None], *, limit: int = 5) -> dict:
     counts: dict[str, int] = {}
     for item in results or []:
@@ -728,6 +896,8 @@ def _build_feature_model_batch_runtime_overrides(
                     )
                 continue
             _apply_artifact_batch_predictions(contexts, model_name, model_obj, meta, challenger=True)
+
+    _apply_active8_shadow_feature_predictions(contexts, pool)
 
     return [
         {

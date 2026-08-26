@@ -67,7 +67,14 @@ from services.model_lifecycle_policy import (
     resolve_degraded_dampening,
 )
 from services.model_score_quality import drop_degenerate_rank_scores
-from services.active8_score_semantics import normalize_active8_cross_sectional_scores
+from services.active8_score_semantics import (
+    normalize_active8_challenger_scores,
+    normalize_active8_cross_sectional_scores,
+)
+from services.model_artifact_registry import (
+    build_live_shadow_candidate_selection,
+    list_artifact_registry,
+)
 from services.model_ic_tracker import IC_EVALUATION_SEMANTIC_VERSION
 from services.market_regime_state import (
     build_market_regime_contract_from_market_env,
@@ -134,7 +141,7 @@ RETIRED_ALPHA_MODEL_SET = set(RETIRED_ALPHA_MODELS)
 MODEL_POOL_ALLOWED_STATUSES = {"active", "degraded", "challenger", "retired"}
 MODEL_POOL_SERVING_STATUSES = {"active", "degraded"}
 
-PIPELINE_MODAL_SERVING_MANIFEST_SCHEMA = "pipeline-modal-serving-manifest-v1"
+PIPELINE_MODAL_SERVING_MANIFEST_SCHEMA = "pipeline-modal-serving-manifest-v2"
 
 PIPELINE_MODAL_ENSEMBLE_FIELDS = (
     "rolling_ic",
@@ -169,6 +176,26 @@ PIPELINE_MODAL_RESIDUAL_SHADOW_FIELDS = (
     "ic_4w_avg",
     "consecutive_negative_weeks",
     "vote_weight",
+)
+PIPELINE_MODAL_ACTIVE8_SHADOW_FIELDS = (
+    "model",
+    "status",
+    "effective_status",
+    "version",
+    "artifact_id",
+    "artifact_path",
+    "metadata_path",
+    "checksum",
+    "candidate_type",
+    "registry_state",
+    "offline_gate_decision",
+    "live_gate_status",
+    "source_run_date",
+    "training_run_id",
+    "selection_slot",
+    "production_effect",
+    "vote_weight",
+    "schema",
 )
 PIPELINE_MODAL_FORMAL_SLOT_FIELDS = (
     "status", "version", "gcs_path", "metadata_path", "artifact_schema",
@@ -845,6 +872,7 @@ async def node_ml_predict(state: PipelineStateV2) -> dict:
         )
 
     stage_timings: dict[str, dict[str, Any]] = {}
+    active8_sequence_shadow_raw: dict[str, Any] = {}
 
     async def _timed_stage(name: str, awaitable, *, required_alpha: bool) -> Any:
         started = time.time()
@@ -984,6 +1012,11 @@ async def node_ml_predict(state: PipelineStateV2) -> dict:
         patchtst_raw = modal_prediction_bundle.get("patchtst_raw") or {"results": []}
         state_space_raw = modal_prediction_bundle.get("state_space_raw") or {"results": []}
         itransformer_raw = modal_prediction_bundle.get("itransformer_raw") or {"results": []}
+        active8_sequence_shadow_raw = (
+            modal_prediction_bundle.get("active8_sequence_shadow_raw")
+            if isinstance(modal_prediction_bundle.get("active8_sequence_shadow_raw"), dict)
+            else {}
+        )
         stage_timings = dict(modal_prediction_bundle.get("stage_timings") or {})
         for stage_name, raw_payload in (
             ("predict_batch_v2", results),
@@ -1322,6 +1355,38 @@ async def node_ml_predict(state: PipelineStateV2) -> dict:
         _attach_alt_sources(row, sym)
         pred_map[sym] = row
 
+    serving_manifest = (
+        serving_context.get("serving_manifest")
+        if isinstance(serving_context.get("serving_manifest"), dict)
+        else {}
+    )
+    active8_shadow_candidate_rows = {
+        str(row.get("model") or ""): row
+        for row in (serving_manifest.get("active8_shadow_candidates") or [])
+        if isinstance(row, dict) and str(row.get("model") or "").strip()
+    }
+    candidate_outputs = (
+        active8_sequence_shadow_raw.get("candidates")
+        if isinstance(active8_sequence_shadow_raw.get("candidates"), dict)
+        else {}
+    )
+    for model_name, candidate_output in candidate_outputs.items():
+        if (
+            model_name not in SEQUENCE_ALPHA_MODELS
+            or model_name not in active8_shadow_candidate_rows
+            or not isinstance(candidate_output, dict)
+            or candidate_output.get("status") != "complete"
+        ):
+            continue
+        for candidate_signal in candidate_output.get("results") or []:
+            if not isinstance(candidate_signal, dict) or candidate_signal.get("error"):
+                continue
+            symbol = str(candidate_signal.get("symbol") or "").strip()
+            prediction = pred_map.get(symbol)
+            if not isinstance(prediction, dict):
+                continue
+            prediction.setdefault("challenger_model_signals", {})[model_name] = candidate_signal
+
     rank_run_date = str(state.get("run_date") or "").strip()
     if not rank_run_date:
         payload_dates = [
@@ -1348,6 +1413,16 @@ async def node_ml_predict(state: PipelineStateV2) -> dict:
         run_date=rank_run_date,
     )
     logger.info("[Pipeline V2] Active-8 rank normalization: %s", rank_normalization)
+
+    challenger_normalization = normalize_active8_challenger_scores(
+        pred_map,
+        candidate_rows=active8_shadow_candidate_rows,
+        run_date=rank_run_date,
+    )
+    logger.info(
+        "[Pipeline V2] Active-8 challenger normalization: %s",
+        challenger_normalization,
+    )
 
     degenerate_scores = drop_degenerate_rank_scores(pred_map, score_field="rank_scores")
     degenerate_challengers = drop_degenerate_rank_scores(pred_map, score_field="challenger_rank_scores")
@@ -3475,6 +3550,162 @@ def _pipeline_modal_ensemble_projection(
     )
 
 
+def _pipeline_modal_registry_metadata(row: dict[str, Any]) -> dict[str, Any]:
+    offline = row.get("offline_evidence_json")
+    if isinstance(offline, str):
+        try:
+            offline = json.loads(offline)
+        except json.JSONDecodeError:
+            offline = {}
+    offline = offline if isinstance(offline, dict) else {}
+    registration = offline.get("registration")
+    registration = registration if isinstance(registration, dict) else {}
+    metadata = registration.get("metadata")
+    return metadata if isinstance(metadata, dict) else {}
+
+
+def _pipeline_modal_active8_shadow_selection(
+    serving_pool: dict[str, Any],
+) -> dict[str, Any]:
+    pool_models = (
+        serving_pool.get("models")
+        if isinstance(serving_pool.get("models"), dict)
+        else {}
+    )
+    champion_pointers = [
+        {
+            "model_name": model_name,
+            "champion_version": str((pool_models.get(model_name) or {}).get("version") or "").strip(),
+            "champion_artifact_id": str(
+                (pool_models.get(model_name) or {}).get("serving_artifact_id") or ""
+            ).strip(),
+        }
+        for model_name in ACTIVE_ALPHA_MODELS
+    ]
+    return build_live_shadow_candidate_selection(
+        list_artifact_registry(limit=500),
+        champion_pointers=champion_pointers,
+    )
+
+
+def _pipeline_modal_active8_shadow_projection(
+    selection: dict[str, Any] | None,
+) -> dict[str, list[dict[str, Any]]]:
+    projected: list[dict[str, Any]] = []
+    suppressed = list((selection or {}).get("suppressed") or [])
+    seen: set[str] = set()
+    for row in (selection or {}).get("selected") or []:
+        model_name = str((row or {}).get("model_name") or "").strip()
+        artifact_id = str((row or {}).get("artifact_id") or "").strip()
+        try:
+            if model_name not in ACTIVE_ALPHA_MODEL_SET or model_name in seen:
+                raise RuntimeError("candidate_model_set_invalid")
+            seen.add(model_name)
+            metadata = _pipeline_modal_registry_metadata(row)
+            identity = {
+                "version": str(row.get("version") or "").strip(),
+                "artifact_id": artifact_id,
+                "artifact_path": str(row.get("artifact_path") or "").strip(),
+                "metadata_path": str(row.get("metadata_path") or "").strip(),
+            }
+            missing = [key for key, value in identity.items() if not value]
+            if missing:
+                raise RuntimeError("candidate_identity_missing:" + ",".join(missing))
+            target_semantic = str(metadata.get("target_semantic_version") or "").strip()
+            if target_semantic != LABEL_SCHEMA_VERSION:
+                raise RuntimeError(
+                    "candidate_target_semantic_mismatch:"
+                    + (target_semantic or "<missing>")
+                )
+            feature_semantic = str(metadata.get("feature_semantic_version") or "").strip()
+            graph_semantic = str(
+                (
+                    (metadata.get("graph") or {}).get("semantic_version")
+                    if isinstance(metadata.get("graph"), dict)
+                    else metadata.get("gnn_graph_semantic_version")
+                )
+                or ""
+            ).strip()
+            if (
+                model_name in {"LightGBM", "XGBoost", "ExtraTrees", "TabM", "GNN"}
+                and feature_semantic != "formal137-pit-rolling-rank-and-imputation-v2"
+            ):
+                raise RuntimeError(
+                    "candidate_feature_semantic_mismatch:"
+                    + (feature_semantic or "<missing>")
+                )
+            if model_name == "GNN" and graph_semantic != "gnn-feature-sector-graph-v1":
+                raise RuntimeError(
+                    "candidate_gnn_graph_semantic_mismatch:"
+                    + (graph_semantic or "<missing>")
+                )
+            sequence_contract = None
+            if model_name in SEQUENCE_ALPHA_MODELS:
+                try:
+                    seq_len = int(metadata.get("seq_len"))
+                    pred_len = int(metadata.get("pred_len"))
+                except (TypeError, ValueError):
+                    seq_len = 0
+                    pred_len = 0
+                if seq_len <= 0 or pred_len <= 0:
+                    raise RuntimeError("candidate_sequence_contract_missing_or_invalid")
+                sequence_contract = {
+                    "schema_version": "model-serving-sequence-contract-v1",
+                    "source": "model_artifact_registry",
+                    "model": model_name,
+                    "version": identity["version"],
+                    "artifact_id": artifact_id,
+                    "seq_len": seq_len,
+                    "pred_len": pred_len,
+                }
+            projection = {
+                "model": model_name,
+                "status": "challenger",
+                "effective_status": "challenger",
+                **identity,
+                "checksum": _pipeline_modal_registry_checksum(
+                    row.get("checksum"),
+                    model_name=model_name,
+                ),
+                "candidate_type": str(row.get("candidate_type") or "").strip(),
+                "registry_state": str(row.get("state") or "").strip(),
+                "offline_gate_decision": str(row.get("offline_gate_decision") or "").strip(),
+                "live_gate_status": str(row.get("live_gate_status") or "").strip(),
+                "source_run_date": str(row.get("source_run_date") or "").strip(),
+                "training_run_id": str(row.get("training_run_id") or "").strip(),
+                "selection_slot": str(row.get("_selection_slot") or "").strip(),
+                "production_effect": False,
+                "vote_weight": 0.0,
+                "schema": {
+                    "target_semantic_version": target_semantic,
+                    "feature_semantic_version": feature_semantic or None,
+                    "gnn_graph_semantic_version": graph_semantic or None,
+                    "sequence_contract": sequence_contract,
+                },
+            }
+            if set(projection) != set(PIPELINE_MODAL_ACTIVE8_SHADOW_FIELDS):
+                raise RuntimeError("candidate_projection_fields_invalid")
+            projected.append(
+                _pipeline_modal_compact_value(
+                    projection,
+                    label=f"active8_shadow.{model_name}",
+                )
+            )
+        except Exception as exc:  # noqa: BLE001 - candidate failure cannot block champion serving.
+            suppressed.append({
+                "model_name": model_name or None,
+                "artifact_id": artifact_id or None,
+                "reason": str(exc)[:500],
+            })
+    return {
+        "candidates": projected,
+        "suppressions": _pipeline_modal_compact_value(
+            suppressed,
+            label="active8_shadow_suppressions",
+        ),
+    }
+
+
 def _pipeline_modal_shadow_projection(serving_pool: dict[str, Any]) -> list[dict[str, Any]]:
     shadows = serving_pool.get("shadow_models")
     shadows = shadows if isinstance(shadows, dict) else {}
@@ -3756,6 +3987,7 @@ def _build_pipeline_modal_serving_manifest(
     *,
     registry_rows: list[dict[str, Any]],
     rank_stacker_snapshot: dict[str, Any] | None = None,
+    active8_shadow_selection: dict[str, Any] | None = None,
 ) -> tuple[dict[str, Any], str]:
     """Project one frozen, compact Active-8 identity snapshot for Modal."""
     pool_models = serving_pool.get("models") if isinstance(serving_pool.get("models"), dict) else {}
@@ -3903,11 +4135,16 @@ def _build_pipeline_modal_serving_manifest(
             "ensemble": _pipeline_modal_ensemble_projection(entry, model_name=model_name),
         })
 
+    active8_shadow = _pipeline_modal_active8_shadow_projection(
+        active8_shadow_selection,
+    )
     manifest = {
         "schema_version": PIPELINE_MODAL_SERVING_MANIFEST_SCHEMA,
         "source_of_truth": "model_champion_pointers/model_artifact_registry",
         "models": models,
         "shadow_models": _pipeline_modal_shadow_projection(serving_pool),
+        "active8_shadow_candidates": active8_shadow["candidates"],
+        "active8_shadow_suppressions": active8_shadow["suppressions"],
         "formal_layer3_slots": _pipeline_modal_formal_slot_projection(serving_pool),
         "rank_stacker": rank_stacker_snapshot or {
             "schema_version": PIPELINE_MODAL_RANK_STACKER_SCHEMA,
@@ -3942,6 +4179,25 @@ def _pipeline_modal_manifest_identities(
             not serving_only
             or str(row.get("effective_status") or "") in MODEL_POOL_SERVING_STATUSES
         )
+    }
+
+
+def _pipeline_modal_active8_shadow_identities(
+    manifest: dict[str, Any],
+) -> dict[str, dict[str, Any]]:
+    return {
+        str(row.get("model") or ""): {
+            key: row.get(key)
+            for key in (
+                "version",
+                "artifact_id",
+                "artifact_path",
+                "metadata_path",
+                "checksum",
+            )
+        }
+        for row in (manifest.get("active8_shadow_candidates") or [])
+        if isinstance(row, dict) and str(row.get("model") or "").strip()
     }
 
 
@@ -4005,14 +4261,16 @@ async def _attach_pipeline_modal_serving_context(state: PipelineStateV2) -> dict
                     str(model_name),
                     "pipeline_modal_serving_context",
                 )
-    registry_rows, rank_stacker_snapshot = await asyncio.gather(
+    registry_rows, rank_stacker_snapshot, active8_shadow_selection = await asyncio.gather(
         asyncio.to_thread(_pipeline_modal_registry_identity_rows, _serving_pool),
         asyncio.to_thread(_pipeline_modal_rank_stacker_snapshot),
+        asyncio.to_thread(_pipeline_modal_active8_shadow_selection, _serving_pool),
     )
     serving_manifest, serving_manifest_digest = _build_pipeline_modal_serving_manifest(
         _serving_pool,
         registry_rows=registry_rows,
         rank_stacker_snapshot=rank_stacker_snapshot,
+        active8_shadow_selection=active8_shadow_selection,
     )
     expected_source_sha = _pipeline_modal_expected_source_sha()
     for row in serving_manifest.get("models") or []:
@@ -4079,6 +4337,43 @@ async def _build_pipeline_modal_prediction_payload(state: PipelineStateV2, *, st
         sequence_series,
         contracts=sequence_contracts,
     )
+    active8_shadow_rows = {
+        str(row.get("model") or ""): row
+        for row in (serving_manifest.get("active8_shadow_candidates") or [])
+        if isinstance(row, dict) and str(row.get("model") or "").strip()
+    }
+    active8_shadow_sequence_contracts: dict[str, dict[str, Any]] = {}
+    for model_name in SEQUENCE_ALPHA_MODELS:
+        row = active8_shadow_rows.get(model_name)
+        if not isinstance(row, dict):
+            continue
+        schema = row.get("schema") if isinstance(row.get("schema"), dict) else {}
+        contract = (
+            schema.get("sequence_contract")
+            if isinstance(schema.get("sequence_contract"), dict)
+            else {}
+        )
+        if (
+            contract.get("schema_version") != "model-serving-sequence-contract-v1"
+            or str(contract.get("source") or "") != "model_artifact_registry"
+            or str(contract.get("model") or "") != model_name
+            or str(contract.get("version") or "") != str(row.get("version") or "")
+            or str(contract.get("artifact_id") or "") != str(row.get("artifact_id") or "")
+        ):
+            raise RuntimeError(
+                f"pipeline_modal_active8_shadow_sequence_contract_invalid:{model_name}"
+            )
+        active8_shadow_sequence_contracts[model_name] = {
+            **contract,
+            "artifact_path": str(row.get("artifact_path") or "").strip(),
+        }
+    (
+        active8_shadow_sequence_series_by_model,
+        active8_shadow_sequence_excluded_by_model,
+    ) = _sequence_model_subsets(
+        sequence_series,
+        contracts=active8_shadow_sequence_contracts,
+    )
     recovery_lineage = state.get("snapshot_recovery_lineage") if isinstance(state.get("snapshot_recovery_lineage"), dict) else {}
     state_space_models = {
         model_name: _require_loaded_serving_version(active_versions, model_name, "pipeline_modal_prediction_bundle")
@@ -4086,7 +4381,7 @@ async def _build_pipeline_modal_prediction_payload(state: PipelineStateV2, *, st
         if _is_optional_loaded_serving_model(model_status, model_name, "pipeline_modal_prediction_bundle")
     }
     sequence_input_contract_core = {
-        "schema_version": "pipeline-modal-sequence-input-contract-v1",
+        "schema_version": "pipeline-modal-sequence-input-contract-v2",
         "serving_manifest_digest": serving_manifest_digest,
         "by_model": {
             model_name: {
@@ -4100,6 +4395,18 @@ async def _build_pipeline_modal_prediction_payload(state: PipelineStateV2, *, st
             for model_name, rows in sequence_series_by_model.items()
             for contract in [sequence_contracts.get(model_name) or {}]
         },
+    }
+    sequence_input_contract_core["shadow_by_model"] = {
+        model_name: {
+            "symbols": [
+                str(row.get("symbol") or row.get("stock_id") or "").strip()
+                for row in rows
+                if isinstance(row, dict) and (row.get("symbol") or row.get("stock_id"))
+            ],
+            "sequence_contract": contract,
+        }
+        for model_name, rows in active8_shadow_sequence_series_by_model.items()
+        for contract in [active8_shadow_sequence_contracts.get(model_name) or {}]
     }
     sequence_input_contract = {
         **sequence_input_contract_core,
@@ -4117,6 +4424,12 @@ async def _build_pipeline_modal_prediction_payload(state: PipelineStateV2, *, st
         "sequence_series": _json_safe(sequence_series),
         "sequence_model_series_by_model": _json_safe(sequence_series_by_model),
         "sequence_model_contracts": _json_safe(sequence_contracts),
+        "active8_shadow_sequence_series_by_model": _json_safe(
+            active8_shadow_sequence_series_by_model
+        ),
+        "active8_shadow_sequence_contracts": _json_safe(
+            active8_shadow_sequence_contracts
+        ),
         "sequence_input_contract": _json_safe(sequence_input_contract),
         "sequence_dataset_meta": {
             **sequence_dataset_meta,
@@ -4137,6 +4450,9 @@ async def _build_pipeline_modal_prediction_payload(state: PipelineStateV2, *, st
         "serving_manifest_digest": serving_manifest_digest,
         "slot_artifact_identities": _pipeline_modal_manifest_identities(serving_manifest),
         "expected_source_sha": str(context.get("expected_source_sha") or "").strip().lower(),
+        "active8_shadow_artifact_identities": _pipeline_modal_active8_shadow_identities(
+            serving_manifest
+        ),
         "active_artifact_identities": _pipeline_modal_manifest_identities(
             serving_manifest,
             serving_only=True,
@@ -4192,6 +4508,30 @@ def _validate_pipeline_modal_feature_bundle_before_writes(
         raise RuntimeError(
             "pipeline_modal_prediction_bundle_contract:active_artifact_identity_mismatch"
         )
+    expected_shadow_identities = _pipeline_modal_active8_shadow_identities(
+        expected_manifest
+    )
+    actual_shadow_identities = bundle.get("active8_shadow_artifact_identities")
+    if (
+        not isinstance(actual_shadow_identities, dict)
+        or actual_shadow_identities != expected_shadow_identities
+    ):
+        raise RuntimeError(
+            "pipeline_modal_prediction_bundle_contract:"
+            "active8_shadow_artifact_identity_mismatch"
+        )
+    shadow_raw = bundle.get("active8_sequence_shadow_raw")
+    if (
+        not isinstance(shadow_raw, dict)
+        or shadow_raw.get("schema_version") != "active8-sequence-shadow-bundle-v1"
+        or shadow_raw.get("production_effect") is not False
+        or float(shadow_raw.get("vote_weight") or 0.0) != 0.0
+        or not isinstance(shadow_raw.get("candidates"), dict)
+    ):
+        raise RuntimeError(
+            "pipeline_modal_prediction_bundle_contract:"
+            "active8_sequence_shadow_bundle_invalid"
+        )
     expected_versions = {
         model_name: str(identity.get("version") or "")
         for model_name, identity in expected_identities.items()
@@ -4220,7 +4560,7 @@ def _validate_pipeline_modal_feature_bundle_before_writes(
     }
     if (
         expected_sequence_input_contract.get("schema_version")
-        != "pipeline-modal-sequence-input-contract-v1"
+        != "pipeline-modal-sequence-input-contract-v2"
         or expected_sequence_input_contract.get("serving_manifest_digest")
         != expected_digest
         or expected_sequence_input_contract.get("digest")
@@ -4231,6 +4571,85 @@ def _validate_pipeline_modal_feature_bundle_before_writes(
         raise RuntimeError(
             "pipeline_modal_prediction_bundle_contract:sequence_input_contract_mismatch"
         )
+    shadow_inputs_by_model = expected_sequence_input_contract.get("shadow_by_model")
+    if not isinstance(shadow_inputs_by_model, dict):
+        raise RuntimeError(
+            "pipeline_modal_prediction_bundle_contract:shadow_sequence_input_models_missing"
+        )
+    shadow_outputs = shadow_raw.get("candidates") or {}
+    if set(shadow_outputs) != set(shadow_inputs_by_model):
+        raise RuntimeError(
+            "pipeline_modal_prediction_bundle_contract:"
+            "active8_sequence_shadow_model_set_mismatch"
+        )
+    for model_name, contract in shadow_inputs_by_model.items():
+        output = shadow_outputs.get(model_name)
+        expected_identity = expected_shadow_identities.get(model_name)
+        if (
+            not isinstance(contract, dict)
+            or not isinstance(output, dict)
+            or not isinstance(expected_identity, dict)
+            or output.get("identity") != expected_identity
+        ):
+            raise RuntimeError(
+                "pipeline_modal_prediction_bundle_contract:"
+                f"active8_sequence_shadow_identity_mismatch:{model_name}"
+            )
+        status = str(output.get("status") or "")
+        results = output.get("results")
+        if not isinstance(results, list):
+            raise RuntimeError(
+                "pipeline_modal_prediction_bundle_contract:"
+                f"active8_sequence_shadow_results_invalid:{model_name}"
+            )
+        if status != "complete":
+            if results:
+                raise RuntimeError(
+                    "pipeline_modal_prediction_bundle_contract:"
+                    f"active8_sequence_shadow_partial_results:{model_name}"
+                )
+            continue
+        expected_shadow_symbols = {
+            str(symbol)
+            for symbol in (contract.get("symbols") or [])
+            if str(symbol).strip()
+        }
+        observed_shadow_symbols = {
+            str(row.get("symbol") or "").strip()
+            for row in results
+            if isinstance(row, dict) and not row.get("error")
+        }
+        if (
+            len(results) != len(expected_shadow_symbols)
+            or len(observed_shadow_symbols) != len(expected_shadow_symbols)
+            or observed_shadow_symbols != expected_shadow_symbols
+        ):
+            raise RuntimeError(
+                "pipeline_modal_prediction_bundle_contract:"
+                f"active8_sequence_shadow_cardinality_mismatch:{model_name}"
+            )
+        expected_candidate = next(
+            (
+                row
+                for row in (expected_manifest.get("active8_shadow_candidates") or [])
+                if isinstance(row, dict) and row.get("model") == model_name
+            ),
+            {},
+        )
+        for row in results:
+            if (
+                not isinstance(row, dict)
+                or row.get("artifact_id") != expected_identity.get("artifact_id")
+                or row.get("artifact_checksum") != expected_identity.get("checksum")
+                or row.get("candidate_type") != expected_candidate.get("candidate_type")
+                or row.get("production_effect") is not False
+                or float(row.get("vote_weight") or 0.0) != 0.0
+            ):
+                raise RuntimeError(
+                    "pipeline_modal_prediction_bundle_contract:"
+                    f"active8_sequence_shadow_result_identity_mismatch:{model_name}"
+                )
+
     sequence_inputs_by_model = expected_sequence_input_contract.get("by_model")
     if not isinstance(sequence_inputs_by_model, dict):
         raise RuntimeError(

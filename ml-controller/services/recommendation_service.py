@@ -5139,7 +5139,19 @@ def _per_model_signal_payload(pred: dict, model_name: str) -> dict[str, Any]:
         "PatchTST": "patchtst",
         "iTransformer": "itransformer",
     }.get(base_model_name)
-    signal = pred.get(source_key) if source_key and isinstance(pred.get(source_key), dict) else {}
+    is_challenger = model_name.endswith("::challenger")
+    challenger_signals = (
+        pred.get("challenger_model_signals")
+        if isinstance(pred.get("challenger_model_signals"), dict)
+        else {}
+    )
+    signal = (
+        challenger_signals.get(base_model_name)
+        if is_challenger and isinstance(challenger_signals.get(base_model_name), dict)
+        else pred.get(source_key)
+        if source_key and isinstance(pred.get(source_key), dict)
+        else {}
+    )
     payload: dict[str, Any] = {}
     for key in (
         "forecast_pct",
@@ -5161,7 +5173,7 @@ def _per_model_signal_payload(pred: dict, model_name: str) -> dict[str, Any]:
     versions = lineage.get("artifact_versions") if isinstance(lineage.get("artifact_versions"), dict) else {}
     raw_scores = lineage.get("raw_scores") if isinstance(lineage.get("raw_scores"), dict) else {}
     rank_scores = pred.get("rank_scores") if isinstance(pred.get("rank_scores"), dict) else {}
-    if base_model_name in rank_scores and not model_name.endswith("::challenger"):
+    if base_model_name in rank_scores and not is_challenger:
         payload.update({
             "artifact_version": versions.get(base_model_name),
             "raw_score": raw_scores.get(base_model_name),
@@ -5171,7 +5183,7 @@ def _per_model_signal_payload(pred: dict, model_name: str) -> dict[str, Any]:
             "model_set_signature": lineage.get("model_set_signature"),
             "market_segment": lineage.get("market_segment"),
         })
-    if model_name.endswith("::challenger"):
+    if is_challenger:
         challenger_lineage = (
             pred.get("challenger_model_score_lineage")
             if isinstance(pred.get("challenger_model_score_lineage"), dict)
@@ -5182,12 +5194,44 @@ def _per_model_signal_payload(pred: dict, model_name: str) -> dict[str, Any]:
             if isinstance(challenger_lineage.get("artifact_versions"), dict)
             else {}
         )
+        challenger_artifact_ids = (
+            challenger_lineage.get("artifact_ids")
+            if isinstance(challenger_lineage.get("artifact_ids"), dict)
+            else {}
+        )
+        challenger_checksums = (
+            challenger_lineage.get("artifact_checksums")
+            if isinstance(challenger_lineage.get("artifact_checksums"), dict)
+            else {}
+        )
+        challenger_candidate_types = (
+            challenger_lineage.get("candidate_types")
+            if isinstance(challenger_lineage.get("candidate_types"), dict)
+            else {}
+        )
+        challenger_raw_scores = (
+            challenger_lineage.get("raw_scores")
+            if isinstance(challenger_lineage.get("raw_scores"), dict)
+            else {}
+        )
+        challenger_rank_scores = (
+            pred.get("challenger_rank_scores")
+            if isinstance(pred.get("challenger_rank_scores"), dict)
+            else {}
+        )
         payload.update({
             "artifact_version": challenger_versions.get(base_model_name),
+            "artifact_id": challenger_artifact_ids.get(base_model_name),
+            "artifact_checksum": challenger_checksums.get(base_model_name),
+            "candidate_type": challenger_candidate_types.get(base_model_name),
+            "raw_score": challenger_raw_scores.get(base_model_name),
+            "rank_score": challenger_rank_scores.get(base_model_name),
             "score_semantic_version": challenger_lineage.get("semantic_version"),
             "target_semantic_version": challenger_lineage.get("target_semantic_version"),
             "model_set_signature": challenger_lineage.get("model_set_signature"),
             "market_segment": challenger_lineage.get("market_segment"),
+            "production_effect": False,
+            "vote_weight": 0.0,
         })
     return payload
 

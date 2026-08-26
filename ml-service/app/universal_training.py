@@ -12,6 +12,7 @@ import os
 import time
 import hashlib
 from datetime import datetime
+from importlib.metadata import version as package_version
 
 import numpy as np
 import polars as pl
@@ -55,6 +56,13 @@ from .target_rank_scope import (
     GLOBAL_CROSS_SECTIONAL_RANK_VERSION,
     recompute_global_cross_sectional_rank,
 )
+
+
+SHAP_AUDIT_REQUIRED_VERSION = "0.49.1"
+SHAP_AUDIT_TREE_MODELS = ("xgboost", "extratrees", "lightgbm")
+SHAP_AUDIT_EXCLUDED_MODELS = {
+    "catboost": "retired_by_active_model_pool_policy",
+}
 
 
 class UniversalPrepRequest(BaseModel):
@@ -1824,10 +1832,69 @@ def train_universal_from_gcs(req: UniversalTrainRequest) -> dict:
     }
 
 
+def _shap_audit_backend(model_name: str) -> str:
+    if str(model_name).strip().lower() == "xgboost":
+        return "xgboost_native_pred_contribs"
+    return "shap_tree_explainer"
+
+
+def _compute_tree_feature_contributions(
+    model_name: str,
+    model,
+    X_values: np.ndarray,
+    *,
+    shap_module,
+) -> np.ndarray:
+    normalized_name = str(model_name).strip().lower()
+    if normalized_name == "xgboost":
+        import xgboost as xgb
+
+        booster = model.get_booster() if hasattr(model, "get_booster") else model
+        feature_names = getattr(booster, "feature_names", None)
+        dmatrix_feature_names = (
+            feature_names
+            if feature_names and len(feature_names) == X_values.shape[1]
+            else None
+        )
+        dmatrix = xgb.DMatrix(
+            X_values,
+            feature_names=dmatrix_feature_names,
+        )
+        contributions = np.asarray(
+            booster.predict(dmatrix, pred_contribs=True),
+            dtype=np.float64,
+        )
+        if contributions.ndim == 2:
+            return np.abs(contributions[:, :-1])
+        if contributions.ndim == 3:
+            return np.abs(contributions[..., :-1]).mean(axis=1)
+        raise RuntimeError(
+            f"xgboost_pred_contribs_shape_invalid:{contributions.shape}"
+        )
+
+    explainer = shap_module.TreeExplainer(model)
+    shap_values = explainer.shap_values(X_values)
+    if isinstance(shap_values, list):
+        values = np.abs(shap_values[0])
+    elif isinstance(shap_values, np.ndarray) and shap_values.ndim == 3:
+        values = np.abs(shap_values[:, :, 0])
+    else:
+        values = np.abs(shap_values)
+    return np.asarray(values, dtype=np.float64)
+
+
 def run_shap_audit(shap_samples: int = 5000) -> dict:
     import json
 
     import shap
+
+    shap_version = str(getattr(shap, "__version__", "") or "").strip()
+    if shap_version != SHAP_AUDIT_REQUIRED_VERSION:
+        return {
+            "error": "shap_runtime_version_mismatch",
+            "expected_shap_version": SHAP_AUDIT_REQUIRED_VERSION,
+            "actual_shap_version": shap_version or None,
+        }
 
     t0 = time.time()
     bucket = _get_bucket()
@@ -1875,8 +1942,9 @@ def run_shap_audit(shap_samples: int = 5000) -> dict:
     print(f"[SHAP] Using {len(X_shap)} samples for SHAP computation")
 
     model_importance: dict[str, np.ndarray] = {}
-    tree_models = ["xgboost", "catboost", "extratrees", "lightgbm"]
-    for name in tree_models:
+    model_backends: dict[str, str] = {}
+    for name in SHAP_AUDIT_TREE_MODELS:
+        model_backends[name] = _shap_audit_backend(name)
         try:
             blob = bucket.blob(f"universal/{name}.joblib")
             buf = io.BytesIO()
@@ -1900,14 +1968,12 @@ def run_shap_audit(shap_samples: int = 5000) -> dict:
             X_shap_model = X_shap[:, model_keep_idx] if len(model_keep_idx) < n_features else X_shap
             print(f"[SHAP] Computing TreeExplainer for {name} ({X_shap_model.shape[1]} features)...")
             t1 = time.time()
-            explainer = shap.TreeExplainer(model)
-            shap_values = explainer.shap_values(X_shap_model)
-            if isinstance(shap_values, list):
-                sv = np.abs(shap_values[0])
-            elif isinstance(shap_values, np.ndarray) and shap_values.ndim == 3:
-                sv = np.abs(shap_values[:, :, 0])
-            else:
-                sv = np.abs(shap_values)
+            sv = _compute_tree_feature_contributions(
+                name,
+                model,
+                X_shap_model,
+                shap_module=shap,
+            )
             local_importance = sv.mean(axis=0)
             if local_importance.ndim > 1:
                 local_importance = local_importance.ravel()
@@ -1972,6 +2038,12 @@ def run_shap_audit(shap_samples: int = 5000) -> dict:
         "shap_samples": len(X_shap),
         "models_computed": list(model_importance.keys()),
         "models_success": [k for k, v in model_importance.items() if v.sum() > 0],
+        "model_backends": model_backends,
+        "models_excluded": SHAP_AUDIT_EXCLUDED_MODELS,
+        "runtime_versions": {
+            "shap": shap_version,
+            "xgboost": package_version("xgboost"),
+        },
         "below_1pct_count": n_below,
         "keep_count": n_features - n_below,
         "elapsed_s": elapsed,

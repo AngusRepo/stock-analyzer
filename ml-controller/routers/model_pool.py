@@ -29,6 +29,7 @@ from services.lifecycle_promotion_gate import apply_promotion_gate_to_actions
 from services.model_artifact_registry import (
     backfill_champion_pointers_from_model_pool,
     build_candidate_selection,
+    build_live_shadow_candidate_selection,
     build_champion_pointer_projection,
     build_promotion_queue,
     list_artifact_registry,
@@ -749,6 +750,7 @@ async def compute_weekly_ic(req: ComputeWeeklyICRequest):
         return {"status": "error", "error": f"pool_load_failed: {exc}"}
 
     expected_artifact_versions: dict[str, str] = {}
+    expected_artifact_identities: dict[str, dict[str, str]] = {}
     for name, entry in (pool.get("models") or {}).items():
         if not isinstance(entry, dict):
             continue
@@ -760,6 +762,26 @@ async def compute_weekly_ic(req: ComputeWeeklyICRequest):
             challenger_version = str(challenger.get("version") or "").strip()
             if challenger_version:
                 expected_artifact_versions[f"{name}::challenger"] = challenger_version
+
+    registry_shadow_selection = build_live_shadow_candidate_selection(
+        list_artifact_registry(limit=1000),
+        champion_pointers=list_champion_pointers(),
+    )
+    for candidate in registry_shadow_selection.get("selected") or []:
+        if not isinstance(candidate, dict):
+            continue
+        model_name = str(candidate.get("model_name") or "").strip()
+        version = str(candidate.get("version") or "").strip()
+        artifact_id = str(candidate.get("artifact_id") or "").strip()
+        checksum = str(candidate.get("checksum") or "").strip().lower()
+        if not model_name or not version or not artifact_id or not checksum:
+            continue
+        tracked_name = f"{model_name}::challenger"
+        expected_artifact_versions[tracked_name] = version
+        expected_artifact_identities[tracked_name] = {
+            "artifact_id": artifact_id,
+            "checksum": checksum,
+        }
 
     # 1. Pull broad per-model rows from D1. The domain service classifies
     # missing verification/outcome/rank-signal root causes instead of letting SQL
@@ -803,6 +825,7 @@ async def compute_weekly_ic(req: ComputeWeeklyICRequest):
         min_dates=req.min_dates,
         all_tracked=all_tracked,
         expected_artifact_versions=expected_artifact_versions,
+        expected_artifact_identities=expected_artifact_identities,
     )
     for info in per_model_ic.values():
         contract = info.get("evaluation_contract")

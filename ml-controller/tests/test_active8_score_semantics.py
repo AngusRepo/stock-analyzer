@@ -151,3 +151,65 @@ def test_active8_lineage_masks_unavailable_sequence_outputs_but_requires_core_mo
     )
     assert blocked["complete_symbols"] == 0
     assert "rank_missing:GNN" in predictions["A"]["model_score_lineage"]["blockers"]
+def _challenger_candidate(model_name: str) -> dict:
+    return {
+        "model": model_name,
+        "status": "challenger",
+        "effective_status": "challenger",
+        "version": "vCandidate",
+        "artifact_id": f"{model_name}:vCandidate:monthly_release",
+        "checksum": "sha256:" + "c" * 64,
+        "candidate_type": "monthly_release",
+        "production_effect": False,
+        "vote_weight": 0.0,
+        "schema": {"target_semantic_version": MODEL_TARGET_SEMANTIC_VERSION},
+    }
+
+
+def test_challenger_normalization_uses_average_ties_and_exact_identity_lineage():
+    from services.active8_score_semantics import normalize_active8_challenger_scores
+
+    predictions = {
+        "A": {"stock_meta": {"market": "TWSE"}, "challenger_rank_scores": {"XGBoost": 0.4}},
+        "B": {"stock_meta": {"market": "TWSE"}, "challenger_rank_scores": {"XGBoost": 0.4}},
+        "C": {"stock_meta": {"market": "TWSE"}, "challenger_rank_scores": {"XGBoost": 0.9}},
+    }
+    summary = normalize_active8_challenger_scores(
+        predictions,
+        candidate_rows={"XGBoost": _challenger_candidate("XGBoost")},
+        run_date="2026-08-25",
+        min_cross_section=2,
+    )
+
+    assert summary["complete_symbols"] == 3
+    assert predictions["A"]["challenger_rank_scores"]["XGBoost"] == 0.25
+    assert predictions["B"]["challenger_rank_scores"]["XGBoost"] == 0.25
+    assert predictions["C"]["challenger_rank_scores"]["XGBoost"] == 1.0
+    lineage = predictions["A"]["challenger_model_score_lineage"]
+    assert lineage["artifact_ids"]["XGBoost"] == "XGBoost:vCandidate:monthly_release"
+    assert lineage["artifact_checksums"]["XGBoost"] == "sha256:" + "c" * 64
+    assert lineage["production_effect"] is False
+    assert lineage["vote_weight"] == 0.0
+
+
+def test_feature_challenger_partial_cross_section_is_rejected_all_or_none():
+    from services.active8_score_semantics import normalize_active8_challenger_scores
+
+    predictions = {
+        "A": {"stock_meta": {"market": "TWSE"}, "challenger_rank_scores": {"XGBoost": 0.4}},
+        "B": {"stock_meta": {"market": "TWSE"}, "challenger_rank_scores": {"XGBoost": 0.7}},
+        "C": {"stock_meta": {"market": "TWSE"}, "challenger_rank_scores": {}},
+    }
+    summary = normalize_active8_challenger_scores(
+        predictions,
+        candidate_rows={"XGBoost": _challenger_candidate("XGBoost")},
+        run_date="2026-08-25",
+        min_cross_section=2,
+    )
+
+    assert summary["complete_symbols"] == 0
+    assert all(row["challenger_rank_scores"] == {} for row in predictions.values())
+    assert any(
+        key.startswith("candidate_feature_cross_section_incomplete:XGBoost:LISTED")
+        for key in summary["blockers"]
+    )

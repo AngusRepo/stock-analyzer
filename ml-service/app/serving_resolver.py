@@ -3,6 +3,7 @@ from __future__ import annotations
 import copy
 import hashlib
 import json
+import math
 import os
 import threading
 import time
@@ -31,7 +32,7 @@ FORMAL_RANK_IC_SEMANTIC_VERSION = "same-date-average-rank-tie-neutral-spearman-v
 SEQUENCE_CONTRACT_FIELDS = ("seq_len", "pred_len", "sequence_contract")
 SEQUENCE_CONTRACT_SCHEMA_VERSION = "model-serving-sequence-contract-v1"
 L2_SIDECARS = ("TimesFM",)
-PIPELINE_MODAL_SERVING_MANIFEST_SCHEMA = "pipeline-modal-serving-manifest-v1"
+PIPELINE_MODAL_SERVING_MANIFEST_SCHEMA = "pipeline-modal-serving-manifest-v2"
 SERVING_OK_STATES = {"production"}
 SERVING_OK_OFFLINE_DECISIONS = {"STRONG_PASS", "PASS"}
 SERVING_BAD_LIVE_STATUSES = {"failed", "rolling_ic_failed", "live_gate_failed"}
@@ -65,6 +66,13 @@ FROZEN_SHADOW_FIELDS = (
     "status", "version", "gcs_path", "metadata_path", "serving_artifact_id",
     "checksum", "model_type", "balance_family", "shadow_since", "weekly_ic",
     "ic_4w_avg", "consecutive_negative_weeks", "vote_weight", "model",
+)
+FROZEN_ACTIVE8_SHADOW_FIELDS = (
+    "model", "status", "effective_status", "version", "artifact_id",
+    "artifact_path", "metadata_path", "checksum", "candidate_type",
+    "registry_state", "offline_gate_decision", "live_gate_status",
+    "source_run_date", "training_run_id", "selection_slot",
+    "production_effect", "vote_weight", "schema",
 )
 FROZEN_FORMAL_SLOT_FIELDS = (
     "model", "status", "version", "gcs_path", "metadata_path",
@@ -178,6 +186,25 @@ def serving_manifest_identities(
             or str(row.get("effective_status") or "")
             in FROZEN_MANIFEST_SERVING_STATUSES
         )
+    }
+
+
+def active8_shadow_candidate_identities(
+    manifest: dict[str, Any],
+) -> dict[str, dict[str, Any]]:
+    return {
+        str(row.get("model") or ""): {
+            key: row.get(key)
+            for key in (
+                "version",
+                "artifact_id",
+                "artifact_path",
+                "metadata_path",
+                "checksum",
+            )
+        }
+        for row in (manifest.get("active8_shadow_candidates") or [])
+        if isinstance(row, dict) and str(row.get("model") or "").strip()
     }
 
 
@@ -380,6 +407,7 @@ def build_pool_from_frozen_manifest(
         "models": {},
         "l2_feature_sidecars": {},
         "shadow_models": {},
+        "active8_shadow_candidates": {},
         "formal_layer3_slots": {},
         "rank_stacker": {},
         "ic_weight_policy": {},
@@ -540,6 +568,139 @@ def build_pool_from_frozen_manifest(
         shadow["serving_eligible"] = False
         shadow["vote_weight"] = 0.0
         pool["shadow_models"][model_name] = shadow
+
+    active8_shadow_rows = manifest.get("active8_shadow_candidates")
+    if not isinstance(active8_shadow_rows, list):
+        raise ServingPoolResolutionError(
+            "frozen_serving_manifest_active8_shadow_candidates_not_list"
+        )
+    active8_shadow_names: set[str] = set()
+    for row in active8_shadow_rows:
+        candidate = _require_compact_mapping(
+            row,
+            label="active8_shadow_candidate",
+            allowed_fields=FROZEN_ACTIVE8_SHADOW_FIELDS,
+        )
+        model_name = str(candidate.get("model") or "").strip()
+        if model_name not in DIRECT_ALPHA_MODELS or model_name in active8_shadow_names:
+            raise ServingPoolResolutionError(
+                "frozen_serving_manifest_active8_shadow_model_set_invalid"
+            )
+        active8_shadow_names.add(model_name)
+        if (
+            str(candidate.get("status") or "") != "challenger"
+            or str(candidate.get("effective_status") or "") != "challenger"
+            or candidate.get("production_effect") is not False
+        ):
+            raise ServingPoolResolutionError(
+                f"frozen_serving_manifest_active8_shadow_status_invalid:{model_name}"
+            )
+        try:
+            vote_weight = float(candidate.get("vote_weight"))
+        except (TypeError, ValueError) as exc:
+            raise ServingPoolResolutionError(
+                f"frozen_serving_manifest_active8_shadow_vote_invalid:{model_name}"
+            ) from exc
+        if not math.isfinite(vote_weight) or vote_weight != 0.0:
+            raise ServingPoolResolutionError(
+                f"frozen_serving_manifest_active8_shadow_vote_nonzero:{model_name}"
+            )
+        for field in (
+            "version", "artifact_id", "artifact_path", "metadata_path",
+            "candidate_type", "registry_state", "offline_gate_decision",
+            "selection_slot",
+        ):
+            if not str(candidate.get(field) or "").strip():
+                raise ServingPoolResolutionError(
+                    f"frozen_serving_manifest_active8_shadow_identity_missing:"
+                    f"{model_name}:{field}"
+                )
+        if str(candidate.get("candidate_type") or "") not in {
+            "monthly_release", "weekly_drift",
+        }:
+            raise ServingPoolResolutionError(
+                f"frozen_serving_manifest_active8_shadow_candidate_type_invalid:{model_name}"
+            )
+        if str(candidate.get("offline_gate_decision") or "") not in {
+            "PASS", "STRONG_PASS",
+        }:
+            raise ServingPoolResolutionError(
+                f"frozen_serving_manifest_active8_shadow_offline_gate_invalid:{model_name}"
+            )
+        schema = candidate.get("schema")
+        if not isinstance(schema, dict) or set(schema) != {
+            "target_semantic_version",
+            "feature_semantic_version",
+            "gnn_graph_semantic_version",
+            "sequence_contract",
+        }:
+            raise ServingPoolResolutionError(
+                f"frozen_serving_manifest_active8_shadow_schema_invalid:{model_name}"
+            )
+        if str(schema.get("target_semantic_version") or "") != LABEL_SCHEMA_VERSION:
+            raise ServingPoolResolutionError(
+                f"frozen_serving_manifest_active8_shadow_target_semantic_invalid:{model_name}"
+            )
+        if (
+            model_name in FORMAL_FEATURE_MODELS
+            and str(schema.get("feature_semantic_version") or "")
+            != FORMAL_FEATURE_SEMANTIC_VERSION
+        ):
+            raise ServingPoolResolutionError(
+                f"frozen_serving_manifest_active8_shadow_feature_semantic_invalid:{model_name}"
+            )
+        if (
+            model_name == "GNN"
+            and str(schema.get("gnn_graph_semantic_version") or "")
+            != FORMAL_GNN_GRAPH_SEMANTIC_VERSION
+        ):
+            raise ServingPoolResolutionError(
+                "frozen_serving_manifest_active8_shadow_gnn_graph_semantic_invalid"
+            )
+        if model_name in SEQUENCE_ALPHA_MODELS:
+            contract = schema.get("sequence_contract")
+            if not isinstance(contract, dict):
+                raise ServingPoolResolutionError(
+                    f"frozen_serving_manifest_active8_shadow_sequence_contract_missing:{model_name}"
+                )
+            try:
+                seq_len = int(contract.get("seq_len"))
+                pred_len = int(contract.get("pred_len"))
+            except (TypeError, ValueError) as exc:
+                raise ServingPoolResolutionError(
+                    f"frozen_serving_manifest_active8_shadow_sequence_contract_invalid:{model_name}"
+                ) from exc
+            if (
+                contract.get("schema_version") != SEQUENCE_CONTRACT_SCHEMA_VERSION
+                or str(contract.get("source") or "") != "model_artifact_registry"
+                or str(contract.get("model") or "") != model_name
+                or str(contract.get("version") or "") != str(candidate.get("version") or "")
+                or str(contract.get("artifact_id") or "") != str(candidate.get("artifact_id") or "")
+                or seq_len <= 0
+                or pred_len <= 0
+            ):
+                raise ServingPoolResolutionError(
+                    f"frozen_serving_manifest_active8_shadow_sequence_contract_invalid:{model_name}"
+                )
+        candidate["checksum"] = _require_manifest_checksum(
+            candidate.get("checksum"),
+            model_name=model_name,
+        )
+        pool["active8_shadow_candidates"][model_name] = {
+            **copy.deepcopy(candidate),
+            "gcs_path": candidate["artifact_path"],
+            "serving_artifact_id": candidate["artifact_id"],
+            "serving_owner": "frozen_pipeline_modal_serving_manifest",
+            "serving_eligible": False,
+            "vote_weight": 0.0,
+            "production_effect": False,
+        }
+
+    suppressions = manifest.get("active8_shadow_suppressions")
+    if not isinstance(suppressions, list):
+        raise ServingPoolResolutionError(
+            "frozen_serving_manifest_active8_shadow_suppressions_not_list"
+        )
 
     formal_rows = manifest.get("formal_layer3_slots")
     if not isinstance(formal_rows, list):

@@ -2519,6 +2519,85 @@ def build_candidate_selection(
     }
 
 
+def build_live_shadow_candidate_selection(
+    rows: list[dict[str, Any]],
+    *,
+    champion_pointers: list[dict[str, Any]] | None = None,
+) -> dict[str, Any]:
+    """Select at most one zero-weight live-shadow artifact per Active-8 model.
+
+    The release-train selector remains the sole candidate owner. Monthly is the
+    primary release train; a weekly drift artifact is used only when no monthly
+    candidate currently owns the slot. This is a lifecycle slot, not a top-k
+    stock selector, and it never changes production weights or pointers.
+    """
+    selection = build_candidate_selection(
+        rows,
+        champion_pointers=champion_pointers,
+    )
+    pointer_by_model = {
+        str(pointer.get("model_name") or ""): pointer
+        for pointer in (champion_pointers or [])
+        if pointer.get("model_name")
+    }
+    selected: list[dict[str, Any]] = []
+    suppressed: list[dict[str, Any]] = list(selection.get("suppressed") or [])
+    for model_name in sorted(ACTIVE8_ARTIFACT_MODEL_NAMES):
+        model_selection = (selection.get("models") or {}).get(model_name)
+        if not isinstance(model_selection, dict):
+            continue
+        monthly = model_selection.get("monthly_release_candidate")
+        weekly = model_selection.get("weekly_drift_candidate")
+        for artifact_id in model_selection.get("superseded_candidates") or []:
+            if not any(
+                str(row.get("artifact_id") or "") == str(artifact_id)
+                for row in suppressed
+                if isinstance(row, dict)
+            ):
+                suppressed.append({
+                    "model_name": model_name,
+                    "artifact_id": artifact_id,
+                    "reason": "superseded_by_primary_release_train",
+                })
+        candidate = monthly if isinstance(monthly, dict) else weekly
+        selection_slot = (
+            "monthly_release_candidate"
+            if isinstance(monthly, dict)
+            else "weekly_drift_candidate"
+        )
+        if not isinstance(candidate, dict) or not candidate.get("artifact_id"):
+            continue
+        pointer = pointer_by_model.get(model_name) or {}
+        champion_artifact_id = str(pointer.get("champion_artifact_id") or "").strip()
+        if str(candidate.get("artifact_id") or "").strip() == champion_artifact_id:
+            suppressed.append({
+                "model_name": model_name,
+                "artifact_id": candidate.get("artifact_id"),
+                "reason": "candidate_is_current_champion",
+            })
+            continue
+        selected.append({
+            **candidate,
+            "_selection_slot": selection_slot,
+            "_production_effect": False,
+            "_vote_weight": 0.0,
+        })
+        if isinstance(monthly, dict) and isinstance(weekly, dict):
+            suppressed.append({
+                "model_name": model_name,
+                "artifact_id": weekly.get("artifact_id"),
+                "reason": "monthly_primary_release_train_owns_live_shadow_slot",
+            })
+    return {
+        "schema_version": "active8-live-shadow-selection-v1",
+        "source_of_truth": "model_artifact_registry.release_train_v2_pointer_owned",
+        "production_effect": False,
+        "vote_weight": 0.0,
+        "selected": selected,
+        "suppressed": suppressed,
+    }
+
+
 def _ic_number(info: dict[str, Any] | None) -> float | None:
     if not isinstance(info, dict):
         return None
@@ -2638,29 +2717,17 @@ def update_live_gate_from_ic(
     release-train policy, and it writes evidence; it does not promote champions.
     """
     rows = list_artifact_registry(limit=limit)
-    selection = build_candidate_selection(rows)
-    selected: dict[str, dict[str, Any]] = {}
-    for model_name, model_selection in (selection.get("models") or {}).items():
-        for key in ("monthly_release_candidate", "weekly_drift_candidate"):
-            candidate = model_selection.get(key)
-            if isinstance(candidate, dict) and candidate.get("artifact_id"):
-                candidate_type = str(candidate.get("candidate_type") or "")
-                candidate_model_name = str(candidate.get("model_name") or model_name)
-                if str(candidate.get("state") or "") in {"production", "archived", "rejected"}:
-                    continue
-                if candidate_type not in {
-                    "monthly_release",
-                    "weekly_drift",
-                    "model_family_shadow",
-                    "timesfm_l175_l2_feature_release",
-                }:
-                    continue
-                if not is_production_artifact_model(candidate_model_name):
-                    continue
-                selected[str(candidate["artifact_id"])] = candidate | {
-                    "_selection_slot": key,
-                    "_model_name": model_name,
-                }
+    selection = build_live_shadow_candidate_selection(
+        rows,
+        champion_pointers=list_champion_pointers(),
+    )
+    selected: dict[str, dict[str, Any]] = {
+        str(candidate["artifact_id"]): candidate
+        for candidate in (selection.get("selected") or [])
+        if isinstance(candidate, dict)
+        and candidate.get("artifact_id")
+        and str(candidate.get("model_name") or "") in ACTIVE8_ARTIFACT_MODEL_NAMES
+    }
 
     updates: list[dict[str, Any]] = []
     errors: list[str] = []

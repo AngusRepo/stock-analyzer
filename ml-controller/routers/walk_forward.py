@@ -754,6 +754,22 @@ def _oof_release_registry_matches_active_policy(
     )
 
 
+def _oof_release_registry_is_terminal_validation_blocked(
+    release_registry: dict[str, Any] | None,
+) -> bool:
+    registry = release_registry if isinstance(release_registry, dict) else {}
+    validation = registry.get("validation") if isinstance(registry.get("validation"), dict) else {}
+    failed_gates = validation.get("failed_gates")
+    return bool(
+        registry.get("status") == "blocked"
+        and registry.get("reason") == "active8_ensemble_validation_failed"
+        and registry.get("retry_required") is False
+        and validation.get("schema_version") == "active8-oof-ensemble-validation-v1"
+        and validation.get("decision") == "FAIL"
+        and isinstance(failed_gates, list) and bool(failed_gates)
+    )
+
+
 def _materialize_completed_oof_release_aliases(
     *,
     manifest: dict[str, Any],
@@ -764,7 +780,10 @@ def _materialize_completed_oof_release_aliases(
     release_models: list[str],
     bucket: object | None = None,
 ) -> dict[str, Any]:
-    from services.active8_ensemble_artifact import build_active8_ensemble_artifact
+    from services.active8_ensemble_artifact import (
+        Active8EnsembleValidationError,
+        build_active8_ensemble_artifact,
+    )
     from services.active8_ensemble_repository import persist_active8_ensemble_candidate
     from services.active8_oof_cohort_materializer import load_oof_prediction_rows
     from services.model_artifact_registry import ACTIVE8_TARGET_SEMANTIC_VERSION, upsert_artifact_record
@@ -865,13 +884,31 @@ def _materialize_completed_oof_release_aliases(
 
     if errors or len(written) != len(release_models):
         raise RuntimeError("oof_release_bundle_incomplete:" + ",".join(errors or [f"written={len(written)} expected={len(release_models)}"]))
-    ensemble_payload = build_active8_ensemble_artifact(
-        prediction_rows,
-        base_artifacts=normalized_sources,
-        cohort_id=cohort_id,
-        source_manifest_checksum=checksum,
-        knowledge_cutoff_date=knowledge_cutoff_date,
-    )
+    try:
+        ensemble_payload = build_active8_ensemble_artifact(
+            prediction_rows,
+            base_artifacts=normalized_sources,
+            cohort_id=cohort_id,
+            source_manifest_checksum=checksum,
+            knowledge_cutoff_date=knowledge_cutoff_date,
+        )
+    except Active8EnsembleValidationError as exc:
+        return {
+            "status": "blocked",
+            "reason": "active8_ensemble_validation_failed",
+            "retry_required": False,
+            "candidate_type": "oof_full_fit_release",
+            "written": len(written),
+            "artifact_ids": written,
+            "individual_oof_decisions": individual_oof_decisions,
+            "cohort_id": cohort_id,
+            "manifest_checksum": checksum,
+            "validation_schema_version": "active8-oof-ensemble-validation-v1",
+            "selection_method": "learned_chronological_oof_ensemble",
+            "selection_policy_version": "active8-ensemble-conformal-isotonic-v1",
+            "validation": exc.validation,
+            "ensemble_candidate": None,
+        }
     ensemble_candidate = persist_active8_ensemble_candidate(
         ensemble_payload,
         training_run_id=expected_run_id,
@@ -987,6 +1024,20 @@ async def dispatch_oof_full_fit_training(
             and terminal_payload.get("status") == "completed"
             and str(terminal_payload.get("run_id") or "") == str(receipt.get("run_id") or "")
         )
+    terminal_validation_blocked = (
+        receipt.get("status") == "blocked"
+        and receipt.get("reason") == "active8_ensemble_validation_failed"
+        and receipt.get("retry_required") is False
+        and str(receipt.get("cohort_id") or "") == cohort_id
+        and str(receipt.get("knowledge_cutoff_date") or "") == knowledge_cutoff_date
+        and receipt_release_models == set(plan["release_models"])
+        and receipt_promotion_models == set(plan["promotion_eligible_models"])
+        and not receipt.get("missing_models")
+        and not receipt.get("training_failed_models")
+        and _oof_release_registry_is_terminal_validation_blocked(release_registry)
+    )
+    if terminal_validation_blocked:
+        return {**plan, **receipt, "retry_required": False, "receipt_path": receipt_path}
     if completed_receipt or recoverable_retry_limit:
         normalized = {
             **plan,
@@ -1043,6 +1094,26 @@ async def dispatch_oof_full_fit_training(
                 release_models=plan["release_models"],
                 bucket=bucket,
             )
+            if _oof_release_registry_is_terminal_validation_blocked(release_registry):
+                blocked = {
+                    **receipt,
+                    "release_registry": release_registry,
+                    "schema_version": "active8-oof-full-fit-receipt-v1",
+                    "status": "blocked",
+                    "release_models": plan["release_models"],
+                    "promotion_eligible_models": plan["promotion_eligible_models"],
+                    "artifact_states": by_model,
+                    "reason": "active8_ensemble_validation_failed",
+                    "missing_models": [],
+                    "training_failed_models": [],
+                    "offline_failed_models": offline_failed,
+                    "retry_required": False,
+                }
+                receipt_blob.upload_from_string(
+                    json.dumps(blocked, sort_keys=True),
+                    content_type="application/json",
+                )
+                return {**plan, **blocked, "retry_required": False, "receipt_path": receipt_path}
             completed = {
                 **receipt,
                 "release_registry": release_registry,
@@ -1246,6 +1317,30 @@ async def dispatch_oof_full_fit_training(
                         release_models=plan["release_models"],
                         bucket=bucket,
                     )
+                    if _oof_release_registry_is_terminal_validation_blocked(release_registry):
+                        blocked = {
+                            **receipt,
+                            "release_registry": release_registry,
+                            "schema_version": "active8-oof-full-fit-receipt-v1",
+                            "status": "blocked",
+                            "release_models": plan["release_models"],
+                            "promotion_eligible_models": plan["promotion_eligible_models"],
+                            "artifact_states": by_model,
+                            "reason": "active8_ensemble_validation_failed",
+                            "missing_models": [],
+                            "training_failed_models": [],
+                            "offline_failed_models": offline_failed,
+                            "retry_required": False,
+                            "registry_repair": registry_repair,
+                        }
+                        receipt_blob.upload_from_string(
+                            json.dumps(blocked, sort_keys=True),
+                            content_type="application/json",
+                        )
+                        return {
+                            **plan, **blocked, "retry_required": False,
+                            "receipt_path": receipt_path,
+                        }
                     completed = {
                         **receipt,
                         "release_registry": release_registry,

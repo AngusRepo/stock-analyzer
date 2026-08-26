@@ -37,6 +37,15 @@ MIN_VALIDATION_DATES = 5
 MIN_VALIDATION_ROWS = 200
 
 
+class Active8EnsembleValidationError(ValueError):
+    """Terminal evidence rejection with machine-readable validation truth."""
+
+    def __init__(self, validation: dict[str, Any]):
+        self.validation = dict(validation)
+        failed = ",".join(str(item) for item in validation.get("failed_gates") or [])
+        super().__init__("active8_ensemble_validation_failed:" + failed)
+
+
 def canonical_json(value: Any) -> str:
     return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"), allow_nan=False)
 
@@ -204,7 +213,7 @@ def build_active8_ensemble_artifact(
         validation["failed_gates"].append("directional_signal_net_mean_non_positive")
     validation["decision"] = "PASS" if not validation["failed_gates"] else "FAIL"
     if validation["decision"] != "PASS":
-        raise ValueError("active8_ensemble_validation_failed:" + ",".join(validation["failed_gates"]))
+        raise Active8EnsembleValidationError(validation)
 
     x = np.asarray([row["stacker_features"] for row in resolved], dtype=float)
     y = np.asarray([row["target_return"] for row in resolved], dtype=float)

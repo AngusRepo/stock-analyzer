@@ -5,6 +5,7 @@ from datetime import date, timedelta
 import pytest
 
 from services.active8_ensemble_artifact import (
+    Active8EnsembleValidationError,
     ARTIFACT_SCHEMA_VERSION,
     build_active8_ensemble_artifact,
 )
@@ -79,8 +80,11 @@ def test_artifact_is_deterministic_learned_and_binds_all_eight_models():
 
 
 def test_later_chronological_validation_can_reject_calibration_period_winner():
-    with pytest.raises(ValueError, match="active8_ensemble_validation_failed"):
+    with pytest.raises(Active8EnsembleValidationError, match="active8_ensemble_validation_failed") as exc_info:
         _build(_rows(reverse_late=True))
+    validation = exc_info.value.validation
+    assert validation["decision"] == "FAIL"
+    assert "chronological_validation_rank_ic_non_positive" in validation["failed_gates"]
 
 
 def test_constant_scores_cannot_manufacture_rank_ic():

@@ -822,6 +822,84 @@ def test_dispatch_reuses_completed_full_fit_receipt_across_cadences(monkeypatch)
     assert result["reason"] == "immutable_full_fit_receipt_complete"
     assert result["release_registry"]["failed_models"] == ["DLinear"]
 
+
+def test_dispatch_reuses_terminal_ensemble_validation_block_without_registry_query(monkeypatch):
+    import json
+    from routers import walk_forward
+
+    receipt = {
+        "schema_version": "active8-oof-full-fit-receipt-v1",
+        "status": "blocked",
+        "reason": "active8_ensemble_validation_failed",
+        "cohort_id": "cohort-v3",
+        "knowledge_cutoff_date": "2026-07-17",
+        "run_id": "universal-oof-owner",
+        "release_models": ["DLinear"],
+        "promotion_eligible_models": ["DLinear"],
+        "artifact_states": {"DLinear": "offline_strong_pass"},
+        "missing_models": [],
+        "training_failed_models": [],
+        "retry_required": False,
+        "release_registry": {
+            "status": "blocked",
+            "reason": "active8_ensemble_validation_failed",
+            "retry_required": False,
+            "validation_schema_version": "active8-oof-ensemble-validation-v1",
+            "validation": {
+                "schema_version": "active8-oof-ensemble-validation-v1",
+                "decision": "FAIL",
+                "failed_gates": ["chronological_validation_rank_ic_non_positive"],
+            },
+        },
+    }
+
+    class Blob:
+        def exists(self):
+            return True
+
+        def download_as_text(self):
+            return json.dumps(receipt)
+
+        def upload_from_string(self, _value, content_type=None):
+            raise AssertionError("terminal validation receipt must remain immutable")
+
+    class Bucket:
+        def blob(self, path):
+            assert path == "walk_forward/oof_cohorts/cohort-v3/full_fit/2026-07-17.json"
+            return Blob()
+
+    plan = {
+        "status": "ready",
+        "release_models": ["DLinear"],
+        "promotion_eligible_models": ["DLinear"],
+        "tree_models": [],
+        "feature_consensus": {},
+        "train_model_groups": ["sequence"],
+        "artifact_lifecycle_targets": [],
+        "promotion_evidence": {"DLinear": {"decision": "PASS"}},
+    }
+    monkeypatch.setattr(walk_forward, "build_oof_full_fit_dispatch_plan", lambda _manifest: plan)
+    monkeypatch.setattr(
+        walk_forward.LEARNING_D1_CLIENT,
+        "query",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("terminal validation receipt must not query mutable registry state")
+        ),
+    )
+
+    result = asyncio.run(walk_forward.dispatch_oof_full_fit_training(
+        manifest={"cohort_id": "cohort-v3", "manifest_checksum": "a" * 64},
+        knowledge_cutoff_date="2026-07-17",
+        bucket=Bucket(),
+        lifecycle_cadence="monthly",
+        allow_new_dispatch=False,
+    ))
+
+    assert result["status"] == "blocked"
+    assert result["reason"] == "active8_ensemble_validation_failed"
+    assert result["retry_required"] is False
+    assert result["release_registry"]["validation"]["decision"] == "FAIL"
+
 def test_dispatch_recovers_retry_limit_pollution_from_terminal_evidence(monkeypatch):
     import hashlib
     import json

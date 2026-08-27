@@ -79,6 +79,9 @@ def test_l4_loader_splits_learning_evidence_from_core_identity_and_scores() -> N
     primary_sql = learning_sql[0]
     assert "daily_recommendations" not in primary_sql
     assert "JOIN stocks" not in primary_sql
+    assert "\n                p.forecast_data," not in primary_sql
+    assert "json_object(" in primary_sql
+    assert "$.ensemble_v2.avg_rank" in primary_sql
     assert any("FROM stocks" in sql for sql in core_sql)
     assert any("FROM daily_recommendations" in sql for sql in core_sql)
 

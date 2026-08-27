@@ -873,7 +873,16 @@ def load_l4_alpha_ev_training_rows(
                 date(p.prediction_date) AS prediction_date,
                 p.generated_at AS prediction_generated_at,
                 datetime(ph.entry_date, '+1 hour') AS next_session_open_at,
-                p.forecast_data,
+                json_object(
+                  'ensemble_v2', json_object(
+                    'avg_rank', json_extract(p.forecast_data, '$.ensemble_v2.avg_rank'),
+                    'semantic_version', json_extract(p.forecast_data, '$.ensemble_v2.semantic_version'),
+                    'generation_mode', json_extract(p.forecast_data, '$.ensemble_v2.generation_mode'),
+                    'artifact_versions', json(COALESCE(json_extract(p.forecast_data, '$.ensemble_v2.artifact_versions'), '{{}}')),
+                    'contributing_models', json(COALESCE(json_extract(p.forecast_data, '$.ensemble_v2.contributing_models'), '[]')),
+                    'model_set_signature', json_extract(p.forecast_data, '$.ensemble_v2.model_set_signature')
+                  )
+                ) AS forecast_data,
                 ph.source AS label_adjustment_source,
                 ((ph.exit_raw_close * ph.exit_adjustment_factor)
                   / (ph.entry_raw_open * ph.entry_adjustment_factor)) - 1.0 AS l4_executable_return_pct,

@@ -17,6 +17,7 @@ setattr(google_cloud, "run_v2", run_v2_stub)
 sys.modules.setdefault("google.cloud.run_v2", run_v2_stub)
 
 from routers import screener  # noqa: E402
+from screener_job_main import _diagnostic_excerpt  # noqa: E402
 
 
 def test_screener_v2_trigger_passes_run_context_to_cloud_run_job(monkeypatch):
@@ -57,3 +58,14 @@ def test_screener_job_main_callbacks_with_chain_metadata():
     assert '"continue_post_screener_pipeline": bool(chain_run_id)' in source
     assert 'payload["chain_run_id"] = chain_run_id' in source
     assert 'from routers.pipeline import _callback_worker' in source
+
+
+def test_screener_failure_excerpt_preserves_root_cause_and_terminal_stack():
+    root_cause = "Error: Cannot find module '../../../schemas/expected-return-contracts-v1.json'"
+    require_stack = "\n".join(f"at require-frame-{index}" for index in range(200))
+
+    excerpt = _diagnostic_excerpt(f"{root_cause}\n{require_stack}", 1200)
+
+    assert root_cause in excerpt
+    assert "at require-frame-199" in excerpt
+    assert "diagnostic excerpt truncated" in excerpt

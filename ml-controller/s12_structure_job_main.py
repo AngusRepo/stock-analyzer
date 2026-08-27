@@ -31,7 +31,7 @@ def _extract_terminal(stdout: str) -> dict:
 def _run_node(run_date: str, run_id: str, source: str) -> dict:
     entrypoint = Path(os.environ.get(
         "S12_STRUCTURE_NODE_ENTRYPOINT",
-        "/app/worker-dist/node-runner/s12StructureBatchJobMain.js",
+        "/app/worker-dist/src/node-runner/s12StructureBatchJobMain.js",
     ))
     if not entrypoint.exists():
         raise RuntimeError(f"s12 structure node entrypoint not found: {entrypoint}")

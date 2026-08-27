@@ -27,10 +27,22 @@ def _tail(value: str, limit: int = 4000) -> str:
     return value[-limit:]
 
 
+def _diagnostic_excerpt(value: str, limit: int = 1200) -> str:
+    """Preserve the root error and the terminal stack within callback bounds."""
+    value = value or ""
+    if len(value) <= limit:
+        return value
+    marker = "\n... diagnostic excerpt truncated ...\n"
+    remaining = max(0, limit - len(marker))
+    head_limit = remaining // 2
+    tail_limit = remaining - head_limit
+    return f"{value[:head_limit]}{marker}{value[-tail_limit:]}"
+
+
 def _node_entrypoint() -> str:
     return os.environ.get(
         "SCREENER_NODE_ENTRYPOINT",
-        "/app/worker-dist/node-runner/screenerJobMain.js",
+        "/app/worker-dist/src/node-runner/screenerJobMain.js",
     )
 
 
@@ -83,7 +95,7 @@ def _run_node_screener(run_date: str, run_id: str) -> dict:
     if completed.returncode != 0:
         raise RuntimeError(
             f"node screener failed rc={completed.returncode}: "
-            f"{_tail(completed.stderr or completed.stdout, 1200)}"
+            f"{_diagnostic_excerpt(completed.stderr or completed.stdout, 1200)}"
         )
     return _extract_result(completed.stdout)
 

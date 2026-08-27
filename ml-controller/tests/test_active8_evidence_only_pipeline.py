@@ -71,16 +71,53 @@ def test_evidence_only_recommendation_closes_every_seed_without_action(monkeypat
     )
 
 
-def test_evidence_only_recommendation_requires_all_eight_models(monkeypatch) -> None:
+def test_evidence_only_recommendation_accepts_optional_sequence_missingness(monkeypatch) -> None:
+    missing = list(pipeline.SEQUENCE_ALPHA_MODELS)
+    available = [model for model in pipeline.ACTIVE_ALPHA_MODELS if model not in missing]
     monkeypatch.setattr(
         pipeline,
         "build_formal_model_input_contract",
         lambda _pred: {
             "complete": True,
             "full_active8_coverage": False,
-            "available_models": list(pipeline.ACTIVE_ALPHA_MODELS[:-1]),
-            "missing_models": [pipeline.ACTIVE_ALPHA_MODELS[-1]],
+            "available_models": available,
+            "missing_models": missing,
+            "model_availability": {model: model in available for model in pipeline.ACTIVE_ALPHA_MODELS},
+        },
+    )
+    state = {
+        **_frozen_manifest_state(_authority()),
+        "run_date": "2026-08-26",
+        "predictions": {"2330": {}},
+    }
+
+    result = pipeline._build_active8_evidence_only_recommendation_result(
+        state,
+        [{"symbol": "2330"}],
+        {"schema_version": "expected-return-serving-preflight-v1"},
+    )
+
+    assert result is not None
+    assert result["final_recommendations"] == []
+    evidence = state["predictions"]["2330"]["core_family_evidence"]
+    assert evidence["formal_base_model_contract_passed"] is True
+    assert evidence["missing_active_models"] == missing
+    assert evidence["active8_action_authority"]["buy_authorized"] is False
+
+
+def test_evidence_only_recommendation_rejects_missing_core_or_lineage(monkeypatch) -> None:
+    monkeypatch.setattr(
+        pipeline,
+        "build_formal_model_input_contract",
+        lambda _pred: {
+            "complete": False,
+            "full_active8_coverage": False,
+            "available_models": ["LightGBM", "XGBoost"],
+            "missing_models": [
+                "ExtraTrees", "TabM", "GNN", "DLinear", "PatchTST", "iTransformer"
+            ],
             "model_availability": {},
+            "lineage_blockers": ["rank_missing:ExtraTrees"],
         },
     )
     state = {
@@ -98,7 +135,7 @@ def test_evidence_only_recommendation_requires_all_eight_models(monkeypatch) -> 
     except RuntimeError as exc:
         assert "active8_evidence_only_base_model_closure_failed:2330" in str(exc)
     else:
-        raise AssertionError("evidence-only lane must require all eight model scores")
+        raise AssertionError("missing core or score lineage must fail closed")
 
 
 def test_evidence_only_prediction_writer_never_inserts_ensemble(monkeypatch) -> None:

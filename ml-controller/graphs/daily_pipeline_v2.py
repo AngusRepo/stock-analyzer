@@ -2075,10 +2075,13 @@ def _build_active8_evidence_only_recommendation_result(
     for symbol in symbols:
         pred = predictions.get(symbol) if isinstance(predictions.get(symbol), dict) else None
         contract = build_formal_model_input_contract(pred)
-        base_complete = (
-            bool(contract.get("complete"))
-            and bool(contract.get("full_active8_coverage"))
-        )
+        # Evidence-only observation follows the same missingness-aware input
+        # contract used by the eventual ensemble: verified cross-sectional
+        # models are required, while sequence models may be unavailable when a
+        # symbol lacks the immutable history required by its serving artifact.
+        # Requiring all eight here contradicts that contract and turns a legal
+        # optional mask into a pipeline-wide failure.
+        base_complete = bool(contract.get("complete"))
         if pred is None or not base_complete:
             base_contract_blockers.append(symbol)
             continue

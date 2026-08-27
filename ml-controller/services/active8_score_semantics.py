@@ -343,6 +343,22 @@ def normalize_active8_challenger_scores(
             "production_effect": False,
             "vote_weight": 0.0,
             "available_models": available,
+            "candidate_artifact_versions": {
+                name: str(candidates[name].get("version") or "")
+                for name in candidates
+            },
+            "candidate_artifact_ids": {
+                name: str(candidates[name].get("artifact_id") or "")
+                for name in candidates
+            },
+            "candidate_artifact_checksums": {
+                name: str(candidates[name].get("checksum") or "")
+                for name in candidates
+            },
+            "candidate_types_all": {
+                name: str(candidates[name].get("candidate_type") or "")
+                for name in candidates
+            },
             "artifact_versions": versions,
             "artifact_ids": {
                 name: str(candidates[name].get("artifact_id") or "")

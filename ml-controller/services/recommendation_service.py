@@ -42,7 +42,11 @@ from services.alpha_framework import (
     normalize_alpha_policy,
     regime_aware_allocate,
 )
-from services.active_model_policy import ACTIVE_ALPHA_MODELS, gnn_return_history_lookback
+from services.active_model_policy import (
+    ACTIVE_ALPHA_MODELS,
+    OPTIONAL_SEQUENCE_ALPHA_MODELS,
+    gnn_return_history_lookback,
+)
 from services.ensemble_v2 import ENSEMBLE_V2_SEMANTIC_VERSION, build_formal_model_input_contract
 from services.fundamental_quality import score_fundamental_quality
 from services.market_segment_policy import is_explicitly_enabled, normalize_segment, policy_for_segment
@@ -4558,6 +4562,7 @@ def write_predictions_to_d1(
         # 2026-06-27: active-8 challenger rows are non-voting live-gate evidence
         # for artifact registry candidates; TimesFM remains L2 sidecar only.
         per_model_scores = _extract_per_model_scores_for_d1(data)
+        missing_observation_rows: dict[str, dict[str, Any]] = {}
         if observation_only:
             per_model_scores = {
                 model_name: score
@@ -4568,24 +4573,65 @@ def write_predictions_to_d1(
                 f"{model_name}::challenger"
                 for model_name in ACTIVE_ALPHA_MODELS
             }
-            if set(per_model_scores) != expected_observation_models:
-                missing = sorted(expected_observation_models - set(per_model_scores))
-                unexpected = sorted(set(per_model_scores) - expected_observation_models)
+            missing = sorted(expected_observation_models - set(per_model_scores))
+            unexpected = sorted(set(per_model_scores) - expected_observation_models)
+            eligibility = (
+                data.get("l3_model_eligibility")
+                if isinstance(data.get("l3_model_eligibility"), dict)
+                else {}
+            )
+            sequence_eligibility = (
+                eligibility.get("sequence_models")
+                if isinstance(eligibility.get("sequence_models"), dict)
+                else {}
+            )
+            invalid_missing: list[str] = []
+            for model_name in missing:
+                base_model_name = model_name.removesuffix("::challenger")
+                model_eligibility = sequence_eligibility.get(base_model_name)
+                valid_optional_mask = (
+                    base_model_name in OPTIONAL_SEQUENCE_ALPHA_MODELS
+                    and isinstance(model_eligibility, dict)
+                    and model_eligibility.get("eligible") is False
+                    and model_eligibility.get("reason")
+                    == "active8_sequence_history_contract_unmet_optional_masked"
+                )
+                if not valid_optional_mask:
+                    invalid_missing.append(model_name)
+                    continue
+                missing_observation_rows[model_name] = {
+                    "schema_version": "active8-optional-model-missingness-v1",
+                    "availability_status": "unavailable",
+                    "reason": model_eligibility["reason"],
+                    "required_sequence_points": model_eligibility.get("required_sequence_points"),
+                    "available_sequence_points": model_eligibility.get("available_sequence_points"),
+                    "production_effect": False,
+                    "vote_weight": 0.0,
+                }
+            if unexpected or invalid_missing:
                 raise ValueError(
                     "active8_evidence_only_candidate_rows_incomplete:"
-                    f"missing={missing}:unexpected={unexpected}"
+                    f"missing={invalid_missing}:unexpected={unexpected}"
                 )
-        for model_name, model_score in per_model_scores.items():
-            safe_model_score, replaced = _sanitize_non_finite(model_score)
-            sanitized_count += replaced
-            if safe_model_score is None:
-                skipped_model_rows.append(model_name)
-                continue
+        model_rows = sorted(set(per_model_scores) | set(missing_observation_rows))
+        for model_name in model_rows:
+            missingness = missing_observation_rows.get(model_name)
+            model_score = per_model_scores.get(model_name)
+            if missingness is None:
+                safe_model_score, replaced = _sanitize_non_finite(model_score)
+                sanitized_count += replaced
+                if safe_model_score is None:
+                    skipped_model_rows.append(model_name)
+                    continue
+            else:
+                safe_model_score = None
             signal_payload = _per_model_signal_payload(data, model_name)
             per_model_payload, replaced = _sanitize_non_finite(
                 {
                     "signal": raw_signal,
                     "rank_score": safe_model_score,
+                    "availability_status": "unavailable" if missingness else "observed",
+                    "missingness": missingness,
                     "source": "model_pool_stage2_challenger" if model_name.endswith("::challenger") else "model_pool_stage2",
                     "forecast_pct": signal_payload.get("forecast_pct"),
                     "forecast_pct_source": (
@@ -4969,16 +5015,48 @@ def _per_model_signal_payload(pred: dict, model_name: str) -> dict[str, Any]:
             if isinstance(challenger_lineage.get("raw_scores"), dict)
             else {}
         )
+        candidate_versions = (
+            challenger_lineage.get("candidate_artifact_versions")
+            if isinstance(challenger_lineage.get("candidate_artifact_versions"), dict)
+            else {}
+        )
+        candidate_artifact_ids = (
+            challenger_lineage.get("candidate_artifact_ids")
+            if isinstance(challenger_lineage.get("candidate_artifact_ids"), dict)
+            else {}
+        )
+        candidate_checksums = (
+            challenger_lineage.get("candidate_artifact_checksums")
+            if isinstance(challenger_lineage.get("candidate_artifact_checksums"), dict)
+            else {}
+        )
+        candidate_types_all = (
+            challenger_lineage.get("candidate_types_all")
+            if isinstance(challenger_lineage.get("candidate_types_all"), dict)
+            else {}
+        )
         challenger_rank_scores = (
             pred.get("challenger_rank_scores")
             if isinstance(pred.get("challenger_rank_scores"), dict)
             else {}
         )
         payload.update({
-            "artifact_version": challenger_versions.get(base_model_name),
-            "artifact_id": challenger_artifact_ids.get(base_model_name),
-            "artifact_checksum": challenger_checksums.get(base_model_name),
-            "candidate_type": challenger_candidate_types.get(base_model_name),
+            "artifact_version": (
+                challenger_versions.get(base_model_name)
+                or candidate_versions.get(base_model_name)
+            ),
+            "artifact_id": (
+                challenger_artifact_ids.get(base_model_name)
+                or candidate_artifact_ids.get(base_model_name)
+            ),
+            "artifact_checksum": (
+                challenger_checksums.get(base_model_name)
+                or candidate_checksums.get(base_model_name)
+            ),
+            "candidate_type": (
+                challenger_candidate_types.get(base_model_name)
+                or candidate_types_all.get(base_model_name)
+            ),
             "raw_score": challenger_raw_scores.get(base_model_name),
             "rank_score": challenger_rank_scores.get(base_model_name),
             "score_semantic_version": challenger_lineage.get("semantic_version"),

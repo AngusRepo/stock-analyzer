@@ -185,6 +185,66 @@ def test_evidence_only_prediction_writer_never_inserts_ensemble(monkeypatch) -> 
     assert all(params[10] is None and params[12] == "NO_SIGNAL" for _sql, params in inserts)
 
 
+def test_evidence_only_writer_persists_optional_sequence_missingness_without_fake_score(monkeypatch) -> None:
+    statements: list[tuple[str, list]] = []
+    monkeypatch.setattr(
+        recommendation_service,
+        "_predictions_batch_execute",
+        lambda rows: statements.extend(rows) or {"ok": True},
+    )
+    core_models = list(recommendation_service.ACTIVE_ALPHA_MODELS[:5])
+    optional_models = list(recommendation_service.OPTIONAL_SEQUENCE_ALPHA_MODELS)
+    candidate_versions = {model: "v20260826225443" for model in recommendation_service.ACTIVE_ALPHA_MODELS}
+    candidate_ids = {model: f"{model}:v20260826225443:oof_full_fit_release" for model in recommendation_service.ACTIVE_ALPHA_MODELS}
+    candidate_checksums = {model: f"sha256:{model.lower()}" for model in recommendation_service.ACTIVE_ALPHA_MODELS}
+    written = recommendation_service.write_predictions_to_d1(
+        {
+            "2330": {
+                "feature_version": "formal137:test",
+                "rank_scores": {model: 0.5 for model in core_models},
+                "challenger_rank_scores": {model: 0.5 for model in core_models},
+                "challenger_model_score_lineage": {
+                    "semantic_version": "active8-daily-market-cross-sectional-percentile-v1",
+                    "target_semantic_version": "prediction-target-close-to-close-5d-pit-v1",
+                    "candidate_artifact_versions": candidate_versions,
+                    "candidate_artifact_ids": candidate_ids,
+                    "candidate_artifact_checksums": candidate_checksums,
+                    "candidate_types_all": {model: "oof_full_fit_release" for model in candidate_versions},
+                },
+                "l3_model_eligibility": {
+                    "sequence_models": {
+                        model: {
+                            "eligible": False,
+                            "reason": "active8_sequence_history_contract_unmet_optional_masked",
+                            "required_sequence_points": 512,
+                            "available_sequence_points": 416,
+                        }
+                        for model in optional_models
+                    }
+                },
+                "active8_action_authority": _authority(),
+                "ensemble_v2": None,
+            }
+        },
+        {"2330": 1},
+        "2026-08-26",
+    )
+
+    inserts = [(sql, params) for sql, params in statements if sql.lstrip().startswith("INSERT INTO predictions")]
+    assert written == len(recommendation_service.ACTIVE_ALPHA_MODELS)
+    assert {params[1] for _sql, params in inserts} == {
+        f"{model}::challenger" for model in recommendation_service.ACTIVE_ALPHA_MODELS
+    }
+    missing_rows = [params for _sql, params in inserts if params[4] is None]
+    assert len(missing_rows) == len(optional_models)
+    for params in missing_rows:
+        payload = recommendation_service.json.loads(params[5])
+        assert payload["rank_score"] is None
+        assert payload["availability_status"] == "unavailable"
+        assert payload["missingness"]["reason"] == "active8_sequence_history_contract_unmet_optional_masked"
+        assert payload["model_signal"]["artifact_id"] == candidate_ids[params[1].removesuffix("::challenger")]
+
+
 def test_evidence_only_prediction_writer_rejects_hidden_ensemble(monkeypatch) -> None:
     monkeypatch.setattr(
         recommendation_service,

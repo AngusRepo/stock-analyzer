@@ -1711,6 +1711,22 @@ def _run_active8_sequence_shadow_candidates(
     }
 
 
+def _pipeline_runtime_expected_symbols(
+    model_name: str,
+    expected_symbols: list[str],
+    sequence_rows: list[dict],
+) -> list[str]:
+    """Resolve the canonical symbol owner for each runtime alpha family."""
+    if model_name == "GNN":
+        return list(expected_symbols)
+    return [
+        str(row.get("symbol") or row.get("stock_id") or "").strip()
+        for row in sequence_rows
+        if isinstance(row, dict)
+        and (row.get("symbol") or row.get("stock_id"))
+    ]
+
+
 def _pipeline_prediction_bundle_impl(payload: dict) -> dict:
     """Run pipeline-v2 raw L3 prediction families inside Modal, then callback controller."""
     _setup_env()
@@ -2043,12 +2059,11 @@ def _pipeline_prediction_bundle_impl(payload: dict) -> dict:
             continue
         output = outputs.get(output_key)
         rows = output.get("results") if isinstance(output, dict) else None
-        model_symbols = [
-            str(row.get("symbol") or row.get("stock_id") or "").strip()
-            for row in _sequence_input(model_name)
-            if isinstance(row, dict)
-            and (row.get("symbol") or row.get("stock_id"))
-        ]
+        model_symbols = _pipeline_runtime_expected_symbols(
+            model_name,
+            expected_symbols,
+            _sequence_input(model_name),
+        )
         _assert_exact_rows(model_name, rows, expected=model_symbols)
 
     elapsed_s = round(time.time() - started, 3)

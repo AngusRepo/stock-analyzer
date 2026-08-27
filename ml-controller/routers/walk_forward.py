@@ -770,6 +770,78 @@ def _oof_release_registry_is_terminal_validation_blocked(
     )
 
 
+def _reconcile_tabm_oof_feature_semantic_metadata(
+    metadata: dict[str, Any],
+    *,
+    manifest: dict[str, Any],
+) -> dict[str, Any]:
+    """Recover a missing TabM semantic only from its immutable OOF snapshot binding."""
+
+    reconciled = dict(metadata)
+    current_semantic = str(reconciled.get("feature_semantic_version") or "").strip()
+    current_imputation = str(reconciled.get("feature_imputation_semantic") or "").strip()
+    if current_semantic or current_imputation:
+        if (
+            current_semantic != OOF_FEATURE_SEMANTIC_VERSION
+            or current_imputation != OOF_FEATURE_IMPUTATION_SEMANTIC_VERSION
+        ):
+            raise RuntimeError("TabM:oof_release_feature_semantic_mismatch")
+        return reconciled
+
+    prep = manifest.get("prep_manifest") if isinstance(manifest.get("prep_manifest"), dict) else {}
+    manifest_checksum = str(manifest.get("manifest_checksum") or "").strip().lower()
+    cohort_id = str(manifest.get("cohort_id") or "").strip()
+    prep_checksum = str(prep.get("manifest_checksum") or "").strip().lower()
+    prep_source_sha = str(prep.get("producer_source_sha") or "").strip().lower()
+    attestation = (
+        reconciled.get("model_training_config_attestation")
+        if isinstance(reconciled.get("model_training_config_attestation"), dict)
+        else {}
+    )
+    input_lineage = (
+        attestation.get("input_lineage")
+        if isinstance(attestation.get("input_lineage"), dict)
+        else {}
+    )
+    model_spec = (
+        attestation.get("model_spec")
+        if isinstance(attestation.get("model_spec"), dict)
+        else {}
+    )
+    expected_snapshot_id = f"oof_full_fit:{cohort_id}:{manifest_checksum}"
+    valid = (
+        prep.get("feature_semantic_version") == OOF_FEATURE_SEMANTIC_VERSION
+        and prep.get("feature_imputation_semantic") == OOF_FEATURE_IMPUTATION_SEMANTIC_VERSION
+        and len(manifest_checksum) == 64
+        and len(prep_checksum) == 64
+        and len(prep_source_sha) == 40
+        and attestation.get("dataset_snapshot_schema_version")
+        == "active8-oof-full-fit-prep-lineage-v2"
+        and attestation.get("dataset_snapshot_id") == expected_snapshot_id
+        and input_lineage.get("source_cohort_id") == cohort_id
+        and input_lineage.get("source_manifest_checksum") == manifest_checksum
+        and input_lineage.get("prep_manifest_checksum") == prep_checksum
+        and input_lineage.get("prep_producer_source_sha") == prep_source_sha
+        and model_spec.get("family") == "tabular_neural"
+        and model_spec.get("feature_schema") == "formal137_selected_tabular_v1"
+        and model_spec.get("trainer") == "tabm_artifact"
+    )
+    if not valid:
+        raise RuntimeError("TabM:oof_release_feature_semantic_attestation_invalid")
+
+    reconciled["feature_semantic_version"] = OOF_FEATURE_SEMANTIC_VERSION
+    reconciled["feature_imputation_semantic"] = OOF_FEATURE_IMPUTATION_SEMANTIC_VERSION
+    reconciled["feature_semantic_attestation"] = {
+        "schema_version": "active8-oof-feature-semantic-attestation-v1",
+        "source": "immutable_oof_snapshot_binding",
+        "cohort_id": cohort_id,
+        "source_manifest_checksum": manifest_checksum,
+        "prep_manifest_checksum": prep_checksum,
+        "prep_producer_source_sha": prep_source_sha,
+    }
+    return reconciled
+
+
 def _materialize_completed_oof_release_aliases(
     *,
     manifest: dict[str, Any],
@@ -830,6 +902,12 @@ def _materialize_completed_oof_release_aliases(
         registration = dict(offline.get("registration") or {})
         evidence = dict(registration.get("oof_promotion_evidence") or {})
         metadata = dict(registration.get("metadata") or {})
+        if model_name == "TabM":
+            metadata = _reconcile_tabm_oof_feature_semantic_metadata(
+                metadata,
+                manifest=manifest,
+            )
+            registration["metadata"] = metadata
         checksum_value = str(row.get("checksum") or registration.get("checksum") or "")
         version = str(row.get("version") or "")
         valid = (
@@ -1037,6 +1115,61 @@ async def dispatch_oof_full_fit_training(
         and _oof_release_registry_is_terminal_validation_blocked(release_registry)
     )
     if terminal_validation_blocked:
+        if "TabM" not in set(plan["release_models"]):
+            return {**plan, **receipt, "retry_required": False, "receipt_path": receipt_path}
+        prior_run_id = str(receipt.get("run_id") or "")
+        rows = LEARNING_D1_CLIENT.query(
+            """
+            SELECT *
+            FROM model_artifact_registry
+            WHERE training_run_id = ?
+            """,
+            [prior_run_id],
+        )
+        source_rows = _select_oof_full_fit_source_rows(rows, plan["release_models"])
+        tabm_row = source_rows.get("TabM")
+        tabm_registration: dict[str, Any] = {}
+        if isinstance(tabm_row, dict):
+            tabm_offline = tabm_row.get("offline_evidence_json")
+            if isinstance(tabm_offline, str):
+                tabm_offline = json.loads(tabm_offline)
+            if isinstance(tabm_offline, dict):
+                tabm_registration = (
+                    tabm_offline.get("registration")
+                    if isinstance(tabm_offline.get("registration"), dict)
+                    else {}
+                )
+        tabm_metadata = (
+            tabm_registration.get("metadata")
+            if isinstance(tabm_registration.get("metadata"), dict)
+            else {}
+        )
+        if str(tabm_metadata.get("feature_semantic_version") or "") != OOF_FEATURE_SEMANTIC_VERSION:
+            release_registry = _materialize_completed_oof_release_aliases(
+                manifest=manifest,
+                registry_rows=rows,
+                expected_run_id=prior_run_id,
+                knowledge_cutoff_date=knowledge_cutoff_date,
+                lifecycle_cadence=lifecycle_cadence,
+                release_models=plan["release_models"],
+                bucket=bucket,
+            )
+            if not _oof_release_registry_is_terminal_validation_blocked(release_registry):
+                raise RuntimeError("oof_release_terminal_reconciliation_changed_validation_outcome")
+            receipt = {
+                **receipt,
+                "release_registry": release_registry,
+                "semantic_reconciliation": {
+                    "status": "complete",
+                    "model": "TabM",
+                    "source": "immutable_oof_snapshot_binding",
+                    "source_manifest_checksum": str(manifest.get("manifest_checksum") or ""),
+                },
+            }
+            receipt_blob.upload_from_string(
+                json.dumps(receipt, sort_keys=True),
+                content_type="application/json",
+            )
         return {**plan, **receipt, "retry_required": False, "receipt_path": receipt_path}
     if completed_receipt or recoverable_retry_limit:
         normalized = {

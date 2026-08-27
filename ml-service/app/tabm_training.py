@@ -12,6 +12,7 @@ from typing import Any
 
 import numpy as np
 
+from .features import FEATURE_IMPUTATION_SEMANTIC_VERSION, FEATURE_SEMANTIC_VERSION
 from .model_store import _get_bucket
 from .prep_lineage import (
     attach_prep_lineage_aliases,
@@ -379,6 +380,8 @@ def train_tabm_universal(payload: dict | None = None) -> dict[str, Any]:
         "model_type": "tabular_neural_tabm",
         "family": "tabular_neural",
         "target_semantic_version": SEQUENCE_RETURN_SEMANTIC_VERSION,
+        "feature_semantic_version": FEATURE_SEMANTIC_VERSION,
+        "feature_imputation_semantic": FEATURE_IMPUTATION_SEMANTIC_VERSION,
         "target_rank_scope": GLOBAL_CROSS_SECTIONAL_RANK_VERSION,
         "batch_local_target_rank_used_for_training": False,
         "trained_at": trained_at,

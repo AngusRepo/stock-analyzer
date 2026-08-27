@@ -317,6 +317,8 @@ const screenerSeedDomainOwner = fs.readFileSync('../ml-controller/services/scree
   assert((marketScreener.match(/stage: 'l15_ml_slate_queue'/g) ?? []).length === 1, 'L1.5 must have exactly one canonical funnel writer per screener run')
   assert(marketScreener.includes('const canonicalL15BySymbol = new Map('), 'L1 seed must join the canonical L1.5 route carrier by symbol')
   assert(marketScreener.includes('l15_canonical_seed_identity_mismatch'), 'L1/L1.5 identity mismatch must fail closed')
+  assert(marketScreener.includes('postL15SafetyExcludedSymbols'), 'post-route safety exclusions must carry explicit identity receipts')
+  assert(marketScreener.includes("stage: 'l1_post_route_safety_gate'"), 'post-route safety exclusions must be written to funnel evidence')
   assert(marketScreener.includes('l15_canonical_route_missing'), 'missing per-symbol L1.5 lineage must fail closed')
   assert(marketScreener.includes('candidate_route_score: routeCandidate.candidate_route_score ?? null'), 'canonical L1 seed must preserve the exact L1.5 route score for audit')
   assert(marketScreener.includes('strategy_router_components: routeCandidate.strategy_router_components ?? null'), 'canonical L1 seed must preserve full L1.5 route components')

@@ -691,6 +691,33 @@ export function dedupeScreenerCandidatesBySymbol<T extends { symbol?: unknown }>
   return deduped
 }
 
+export function assertCanonicalL15SeedIdentity(input: {
+  routeSymbols: Iterable<unknown>
+  finalSymbols: Iterable<unknown>
+  safetyExcludedSymbols?: Iterable<unknown>
+}): void {
+  const normalize = (values: Iterable<unknown>) => new Set(
+    [...values].map((value) => String(value ?? '').trim().toUpperCase()).filter(Boolean),
+  )
+  const routeSymbols = normalize(input.routeSymbols)
+  const finalSymbols = normalize(input.finalSymbols)
+  const safetyExcludedSymbols = normalize(input.safetyExcludedSymbols ?? [])
+  const missingRoute = [...finalSymbols].filter((symbol) => !routeSymbols.has(symbol))
+  const excludedAfterRoute = [...routeSymbols].filter((symbol) => !finalSymbols.has(symbol))
+  const unexplainedExclusions = excludedAfterRoute.filter((symbol) => !safetyExcludedSymbols.has(symbol))
+  const invalidSafetyReceipts = [...safetyExcludedSymbols].filter(
+    (symbol) => !routeSymbols.has(symbol) || finalSymbols.has(symbol),
+  )
+  if (missingRoute.length > 0 || unexplainedExclusions.length > 0 || invalidSafetyReceipts.length > 0) {
+    throw new Error(
+      `l15_canonical_seed_identity_mismatch:route=${routeSymbols.size}:final=${finalSymbols.size}:` +
+      `missing_route=${missingRoute.join(',') || 'none'}:` +
+      `unexplained_exclusion=${unexplainedExclusions.join(',') || 'none'}:` +
+      `invalid_safety_receipt=${invalidSafetyReceipts.join(',') || 'none'}`,
+    )
+  }
+}
+
 export async function queryTopConceptTagsForSymbols(
   db: D1Database,
   symbols: string[],
@@ -5153,6 +5180,7 @@ export async function runBottomUpScreener(env: Bindings, runDate?: string | null
   }
 
   // ?? Step 6: 鞈??釭嚗elistingMonitor嚗??
+  const postL15SafetyExcludedSymbols = new Set<string>()
   try {
     const candSymbols = finalCandidates.map(c => c.symbol)
     if (candSymbols.length > 0) {
@@ -5180,6 +5208,24 @@ export async function runBottomUpScreener(env: Bindings, runDate?: string | null
       }
       if (delistRisk.size > 0) {
         const removed = finalCandidates.filter(c => delistRisk.has(c.symbol))
+        for (const candidate of removed) {
+          const symbol = String(candidate.symbol || '').trim().toUpperCase()
+          if (!symbol) continue
+          postL15SafetyExcludedSymbols.add(symbol)
+          pushFunnelItem(funnelItems, {
+            symbol,
+            name: candidate.name,
+            stage: 'l1_post_route_safety_gate',
+            decision: 'drop',
+            reasonCode: 'delisting_monitor_insufficient_recent_sessions',
+            scoreBefore: Number((candidate as any).score ?? 0),
+            scoreAfter: null,
+            evidence: {
+              canonical_l15_route_present: true,
+              recent_market_sessions_max: 2,
+            },
+          })
+        }
         for (let i = finalCandidates.length - 1; i >= 0; i--) {
           if (delistRisk.has(finalCandidates[i].symbol)) finalCandidates.splice(i, 1)
         }
@@ -5245,11 +5291,11 @@ export async function runBottomUpScreener(env: Bindings, runDate?: string | null
       { candidate, rank: routeIndex + 1 },
     ] as const),
   )
-  if (canonicalL15BySymbol.size !== finalCandidates.length) {
-    throw new Error(
-      `l15_canonical_seed_identity_mismatch:route=${canonicalL15BySymbol.size}:final=${finalCandidates.length}`,
-    )
-  }
+  assertCanonicalL15SeedIdentity({
+    routeSymbols: canonicalL15BySymbol.keys(),
+    finalSymbols: finalCandidates.map((candidate) => candidate.symbol),
+    safetyExcludedSymbols: postL15SafetyExcludedSymbols,
+  })
   finalCandidates.forEach((c, index) => {
     const sc = c as any
     const routeOwner = canonicalL15BySymbol.get(String(c.symbol))

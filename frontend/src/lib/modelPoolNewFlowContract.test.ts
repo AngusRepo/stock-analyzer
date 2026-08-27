@@ -20,6 +20,7 @@ assert(page.includes('ModelPoolNewFlowWorkbench'), 'ModelPool page should render
 assert(!page.includes('<PromotionQueuePanelV2'), 'ModelPool page should not render one comparison card per promotion-queue artifact')
 assert(!workbench.includes('<PromotionReadinessPanel'), 'Candidate-vs-champion comparison should not be duplicated above the Evidence table')
 assert(workbench.includes('Evidence table'), 'ModelPool should keep one dense evidence table')
+assert(workbench.includes('FULL OOF IC') && workbench.includes('不可直接和 ensemble 尾端 validation IC 比較'), 'Model Pool must distinguish full-window individual OOF IC from later-window ensemble validation')
 assert(workbench.includes('Production champion vs latest retrain'), 'Evidence table should separate the formal production champion from latest retrain evidence')
 assert(workbench.includes('formal production champion, selected challenger, and latest retrain diagnosis stay separate'), 'Evidence table should explain the three distinct artifact roles')
 assert(workbench.includes('row?.oof_full_fit_release_candidate ?? null'), 'Selection must use only the canonical immutable OOF release')

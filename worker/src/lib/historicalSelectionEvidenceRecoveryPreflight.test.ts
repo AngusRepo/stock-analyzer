@@ -22,7 +22,11 @@ const unavailableArtifact: HistoricalScreenerArtifactEvidence = {
   route_recovery_parity_checksum: null,
   route_recovery_candidate_count: 0,
   route_recovery_score_count: 0,
+  route_recovery_artifact_id: null,
+  route_recovery_r2_key: null,
+  route_recovery_artifact_checksum: null,
   route_recovery_packet_ready: false,
+  route_recovery_scores: [],
 }
 
 function fakeDb(overrides: Record<string, unknown> = {}) {
@@ -100,6 +104,9 @@ async function main() {
         route_recovery_parity_checksum: `sha256:${'c'.repeat(64)}`,
         route_recovery_candidate_count: 540,
         route_recovery_score_count: 540,
+        route_recovery_artifact_id: "artifact:strategy_route_recovery:test",
+        route_recovery_r2_key: "evidence/route-recovery.json",
+        route_recovery_artifact_checksum: `sha256:${"d".repeat(64)}`,
         route_recovery_packet_ready: true,
       },
     },

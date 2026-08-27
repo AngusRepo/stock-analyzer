@@ -3,6 +3,7 @@
   "canonical_label_schema_version": "next-session-canonical-adjusted-open-to-fifth-session-canonical-adjusted-close-net-v4",
   "legacy_label_schema_version": "next-session-raw-open-to-fifth-session-raw-close-canonical-finlab-factor-net-v3",
   "canonical_roundtrip_cost_bps": 18.0,
+  "selection_route_semantic_version": "strategy-semantic-continuous-affinity-v5",
   "owners": {
     "l4_alpha_ev": {
       "current": {

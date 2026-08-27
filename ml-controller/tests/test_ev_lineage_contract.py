@@ -8,6 +8,8 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from services.ev_lineage_contract import (  # noqa: E402
+    ENSEMBLE_SEMANTIC_VERSION,
+    OOF_ENSEMBLE_SEMANTIC_VERSION,
     attach_next_session_open_evidence,
     attach_same_run_model_version_evidence,
     canonical_ev_feature_values,
@@ -101,12 +103,12 @@ def test_ensemble_semantic_isolated_by_generation_mode():
     assert not ensemble_lineage_blockers({
         **common,
         "generation_mode": "native",
-        "semantic_version": "active8-ic-weighted-rank-v4",
+        "semantic_version": ENSEMBLE_SEMANTIC_VERSION,
     })
     assert not ensemble_lineage_blockers({
         **common,
         "generation_mode": "purged_oof",
-        "semantic_version": "active8-purged-oof-chronological-ridge-v4",
+        "semantic_version": OOF_ENSEMBLE_SEMANTIC_VERSION,
     })
     assert "ensemble_semantic_version_incompatible" in ensemble_lineage_blockers({
         **common,

@@ -79,6 +79,7 @@ export interface ExpectedReturnCandidateEvidence {
   residual_spread_lcb90: number | null
   fusion_top_trade_ev_lcb90: number | null
   fusion_oof_max_date: string | null
+  mature_outcome_max_date: string | null
   fusion_final_comparison_decision: string | null
   fusion_final_comparison_samples: number | null
   fusion_final_comparison_dates: number | null
@@ -361,6 +362,7 @@ export function adaptExpectedReturnCandidate(row: ExpectedReturnCandidateDbRow):
     residual_spread_lcb90: finiteOrNull(residualOos.top_bottom_spread_lcb90),
     fusion_top_trade_ev_lcb90: finiteOrNull(championComparison.top_trade_ev_lcb90),
     fusion_oof_max_date: stringOrNull(sampleAudit.oof_max_date),
+    mature_outcome_max_date: stringOrNull(sampleAudit.label_known_max_date),
     fusion_final_comparison_decision: stringOrNull(championComparison.decision),
     fusion_final_comparison_samples: pairedSamples,
     fusion_final_comparison_dates: finiteOrNull(championComparison.oos_date_count),

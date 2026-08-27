@@ -9,7 +9,7 @@ from services.active8_ensemble_artifact import (
     ARTIFACT_SCHEMA_VERSION,
     build_active8_ensemble_artifact,
 )
-from services.active8_oof_stacker import ACTIVE8_MODELS
+from services.active8_oof_stacker import ACTIVE8_MODELS, _fit_ridge
 
 
 def _base_artifacts():
@@ -71,10 +71,17 @@ def test_artifact_is_deterministic_learned_and_binds_all_eight_models():
     assert first["schema_version"] == ARTIFACT_SCHEMA_VERSION
     assert first["payload_checksum"] == second["payload_checksum"]
     assert first["fit"]["outer_folds"] == 5
-    assert first["fit"]["method"] == "ridge_full_fit_after_heldout_chronological_oof_validation"
+    assert first["fit"]["method"] == "nonnegative_rank_ridge_full_fit_after_heldout_chronological_oof_validation"
+    assert first["fit"]["rank_coefficient_constraint"] == "nonnegative"
     assert len(first["fit"]["coefficients"]) == 16
-    assert set(first["base_artifacts"]) == set(ACTIVE8_MODELS)
+    assert all(value >= -1e-12 for value in first["fit"]["coefficients"][:8])
+    assert set(first["observation_artifacts"]) == set(ACTIVE8_MODELS)
+    assert set(first["base_artifacts"]) == set(first["selected_models"])
+    assert set(first["excluded_models"]) == set(ACTIVE8_MODELS) - set(first["selected_models"])
     assert first["validation"]["decision"] == "PASS"
+    assert first["validation"]["rank_ic_equal_date_market_lcb90"] > 0.0
+    assert first["validation"]["top_bottom_net_return_spread_lcb90"] > 0.0
+    assert set(first["validation"]["same_window_comparison"]["models"]) == set(ACTIVE8_MODELS)
     assert first["signal_policy"]["top_k"] is None
     assert first["signal_policy"]["buy_rule"] == "conformal_lower_bound_gt_zero"
 
@@ -84,7 +91,14 @@ def test_later_chronological_validation_can_reject_calibration_period_winner():
         _build(_rows(reverse_late=True))
     validation = exc_info.value.validation
     assert validation["decision"] == "FAIL"
-    assert "chronological_validation_rank_ic_non_positive" in validation["failed_gates"]
+    assert (
+        "chronological_validation_equal_date_market_rank_ic_lcb90_non_positive"
+        in validation["failed_gates"]
+    )
+    assert validation["validation_start_date"] < validation["validation_end_date"]
+    comparison = validation["same_window_comparison"]
+    assert comparison["window_start"] == validation["validation_start_date"]
+    assert comparison["window_end"] == validation["validation_end_date"]
 
 
 def test_constant_scores_cannot_manufacture_rank_ic():
@@ -95,3 +109,15 @@ def test_constant_scores_cannot_manufacture_rank_ic():
 def test_one_fold_diagnostic_cannot_create_serving_ensemble():
     with pytest.raises(ValueError, match="active8_ensemble_outer_folds_insufficient"):
         _build(_rows(one_fold=True))
+
+
+def test_nonnegative_rank_ridge_cannot_invert_an_anti_predictive_model():
+    import numpy as np
+
+    feature = np.linspace(0.0, 1.0, 100)
+    x = np.zeros((100, 16), dtype=float)
+    x[:, 0] = feature
+    x[:, 8] = 1.0
+    weights, _ = _fit_ridge(x, -feature, 0.1)
+    assert weights[0] >= -1e-12
+    assert weights[0] == pytest.approx(0.0, abs=1e-8)

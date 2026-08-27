@@ -25,6 +25,7 @@ MIN_STACKER_TRAIN_ROWS = 500
 MIN_STACKER_TRAIN_DATES = 5
 RIDGE_CANDIDATES = (0.01, 0.1, 1.0, 10.0)
 TARGET_AGREEMENT_TOLERANCE = 1e-6
+MODEL_WEIGHT_ZERO_TOLERANCE = 1e-10
 CORE_CROSS_SECTIONAL_MODELS = ACTIVE8_MODELS[:5]
 STACKER_FEATURE_NAMES = tuple(
     [f"{model}.rank" for model in ACTIVE8_MODELS]
@@ -59,21 +60,98 @@ def _average_rank(values: np.ndarray) -> np.ndarray:
     return ranks
 
 
-def _fit_ridge(x: np.ndarray, y: np.ndarray, regularization: float) -> tuple[np.ndarray, float]:
-    mean = np.mean(x, axis=0)
-    scale = np.std(x, axis=0)
+def _fit_ridge(
+    x: np.ndarray,
+    y: np.ndarray,
+    regularization: float,
+    *,
+    active_models: tuple[str, ...] | None = None,
+) -> tuple[np.ndarray, float]:
+    """Fit convex ridge while forbidding sign inversion of model-rank alpha."""
+
+    from scipy.optimize import lsq_linear
+
+    selected = tuple(ACTIVE8_MODELS if active_models is None else active_models)
+    selected_indices = [ACTIVE8_MODELS.index(name) for name in selected]
+    feature_indices = [
+        *selected_indices,
+        *[index + len(ACTIVE8_MODELS) for index in selected_indices],
+    ]
+    if not feature_indices:
+        return np.zeros(x.shape[1], dtype=float), float(np.mean(y))
+    selected_x = x[:, feature_indices]
+    mean = np.mean(selected_x, axis=0)
+    scale = np.std(selected_x, axis=0)
     scale = np.where(scale > 1e-9, scale, 1.0)
-    normalized = (x - mean) / scale
+    normalized = (selected_x - mean) / scale
     design = np.column_stack([np.ones(len(normalized)), normalized])
-    penalty = np.eye(design.shape[1], dtype=float) * float(regularization)
-    penalty[0, 0] = 0.0
-    coefficient = np.linalg.solve(design.T @ design + penalty, design.T @ y)
-    raw_weights = coefficient[1:] / scale
-    intercept = float(coefficient[0] - np.dot(mean, raw_weights))
-    return raw_weights, intercept
+    ridge_rows = np.column_stack([
+        np.zeros(design.shape[1] - 1, dtype=float),
+        np.eye(design.shape[1] - 1, dtype=float) * math.sqrt(float(regularization)),
+    ])
+    augmented_x = np.vstack([design, ridge_rows])
+    augmented_y = np.concatenate([y, np.zeros(design.shape[1] - 1, dtype=float)])
+    lower = np.full(design.shape[1], -np.inf, dtype=float)
+    lower[1 : 1 + len(selected_indices)] = 0.0
+    result = lsq_linear(
+        augmented_x,
+        augmented_y,
+        bounds=(lower, np.full(design.shape[1], np.inf, dtype=float)),
+        tol=1e-10,
+        max_iter=2000,
+        lsmr_tol="auto",
+    )
+    if not result.success:
+        raise RuntimeError(f"active8_nonnegative_ridge_fit_failed:{result.status}")
+    selected_weights = result.x[1:] / scale
+    selected_weights[: len(selected_indices)] = np.maximum(
+        selected_weights[: len(selected_indices)], 0.0
+    )
+    weights = np.zeros(x.shape[1], dtype=float)
+    weights[feature_indices] = selected_weights
+    intercept = float(result.x[0] - np.dot(mean, selected_weights))
+    return weights, intercept
 
 
-def _select_regularization(x: np.ndarray, y: np.ndarray, dates: np.ndarray) -> float:
+def _date_market_ic_values(
+    prediction: np.ndarray,
+    target: np.ndarray,
+    dates: np.ndarray,
+    markets: np.ndarray,
+) -> list[float]:
+    daily_values: list[float] = []
+    for prediction_date in sorted(set(dates.tolist())):
+        market_values: list[float] = []
+        date_mask = dates == prediction_date
+        for market in sorted(set(markets[date_mask].tolist())):
+            mask = date_mask & (markets == market)
+            if int(mask.sum()) >= 3:
+                market_values.append(_spearman(prediction[mask], target[mask]))
+        if market_values:
+            daily_values.append(float(np.mean(market_values)))
+    return daily_values
+
+
+def _equal_date_market_ic(
+    prediction: np.ndarray,
+    target: np.ndarray,
+    dates: np.ndarray,
+    markets: np.ndarray,
+) -> tuple[float, int]:
+    """Equal-weight cross-sectional IC by PIT date, never pooled across dates."""
+
+    daily_values = _date_market_ic_values(prediction, target, dates, markets)
+    return (float(np.mean(daily_values)) if daily_values else 0.0, len(daily_values))
+
+
+def _select_regularization(
+    x: np.ndarray,
+    y: np.ndarray,
+    dates: np.ndarray,
+    markets: np.ndarray,
+    *,
+    active_models: tuple[str, ...] | None = None,
+) -> float:
     unique_dates = sorted(set(dates.tolist()))
     if len(unique_dates) < 5:
         return 1.0
@@ -86,12 +164,61 @@ def _select_regularization(x: np.ndarray, y: np.ndarray, dates: np.ndarray) -> f
         return 1.0
     candidates: list[tuple[float, float, float]] = []
     for regularization in RIDGE_CANDIDATES:
-        weights, intercept = _fit_ridge(x[train_idx], y[train_idx], regularization)
+        weights, intercept = _fit_ridge(
+            x[train_idx],
+            y[train_idx],
+            regularization,
+            active_models=active_models,
+        )
         prediction = x[validation_idx] @ weights + intercept
-        ic = _spearman(prediction, y[validation_idx])
+        ic, _ = _equal_date_market_ic(
+            prediction,
+            y[validation_idx],
+            dates[validation_idx],
+            markets[validation_idx],
+        )
         mse = float(np.mean((prediction - y[validation_idx]) ** 2))
         candidates.append((ic, -mse, regularization))
     return max(candidates)[2]
+
+
+def _fit_selected_ridge(
+    x: np.ndarray,
+    y: np.ndarray,
+    dates: np.ndarray,
+    markets: np.ndarray,
+) -> tuple[np.ndarray, float, float, tuple[str, ...]]:
+    """Use the convex nonnegative-ridge active set; no hand-ranked model quota."""
+
+    regularization = _select_regularization(x, y, dates, markets)
+    weights, intercept = _fit_ridge(x, y, regularization)
+    selected_models = tuple(
+        model_name
+        for index, model_name in enumerate(ACTIVE8_MODELS)
+        if float(weights[index]) > MODEL_WEIGHT_ZERO_TOLERANCE
+    )
+    if not selected_models:
+        return (
+            np.zeros(x.shape[1], dtype=float),
+            float(np.mean(y)),
+            regularization,
+            selected_models,
+        )
+    if len(selected_models) != len(ACTIVE8_MODELS):
+        regularization = _select_regularization(
+            x,
+            y,
+            dates,
+            markets,
+            active_models=selected_models,
+        )
+        weights, intercept = _fit_ridge(
+            x,
+            y,
+            regularization,
+            active_models=selected_models,
+        )
+    return weights, intercept, regularization, selected_models
 
 
 def _rank_by_date_market(rows: list[dict[str, Any]]) -> None:
@@ -241,11 +368,20 @@ def build_chronological_oof_stack(
                 x_train = np.vstack([row["x"] for row in prior])
                 y_train = np.asarray([row["target_return"] for row in prior], dtype=float)
                 dates_train = np.asarray([row["prediction_date"] for row in prior], dtype=object)
-                regularization = _select_regularization(x_train, y_train, dates_train)
-                weights, intercept = _fit_ridge(x_train, y_train, regularization)
-                source = "chronological_resolved_oof_ridge"
+                markets_train = np.asarray(
+                    [row["market_segment"] for row in prior], dtype=object
+                )
+                weights, intercept, regularization, selected_models = _fit_selected_ridge(
+                    x_train, y_train, dates_train, markets_train
+                )
+                source = (
+                    "chronological_resolved_oof_nonnegative_ridge"
+                    if selected_models
+                    else "chronological_no_positive_model_abstention"
+                )
             else:
                 regularization = None
+                selected_models = tuple(ACTIVE8_MODELS)
                 weights = np.concatenate([
                     np.full(len(ACTIVE8_MODELS), 1.0 / len(ACTIVE8_MODELS), dtype=float),
                     np.zeros(len(ACTIVE8_MODELS), dtype=float),
@@ -267,6 +403,7 @@ def build_chronological_oof_stack(
                 "train_dates": len(train_dates),
                 "eligible_for_efficacy": ready,
                 "regularization": regularization,
+                "selected_models": list(selected_models),
                 "intercept": intercept,
                 "weights": dict(zip(STACKER_FEATURE_NAMES, weights.tolist())),
                 "source": source,

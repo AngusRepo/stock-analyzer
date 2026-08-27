@@ -16,6 +16,7 @@ from services.l4_alpha_ev_artifact_builder import (  # noqa: E402
     build_l4_alpha_ev_artifact_from_rows,
     load_l4_alpha_ev_training_rows,
 )
+from services.ev_lineage_contract import ENSEMBLE_SEMANTIC_VERSION  # noqa: E402
 
 
 def _row(day: str, idx: int, *, target: float) -> dict:
@@ -58,7 +59,7 @@ def _row(day: str, idx: int, *, target: float) -> dict:
         }),
         "forecast_data": json.dumps({
             "ensemble_v2": {
-                "semantic_version": "active8-ic-weighted-rank-v4",
+                "semantic_version": ENSEMBLE_SEMANTIC_VERSION,
                 "contributing_models": ["LightGBM", "XGBoost"],
                 "artifact_versions": {"LightGBM": "vTest", "XGBoost": "vTest"},
                 "model_set_signature": "LightGBM@vTest|XGBoost@vTest",
@@ -79,7 +80,7 @@ def test_l4_purged_oof_accepts_only_recorded_canonical_market_lineage():
         forecast = json.loads(row["forecast_data"])
         forecast["ensemble_v2"].update({
             "generation_mode": "purged_oof",
-            "semantic_version": "active8-purged-oof-chronological-ridge-v4",
+            "semantic_version": "active8-purged-oof-chronological-nonnegative-ridge-v5",
         })
         row["forecast_data"] = json.dumps(forecast)
         rows.append(row)
@@ -210,7 +211,7 @@ def test_l4_alpha_ev_artifact_builder_reports_oof_semantic_by_generation_mode():
             row["label_adjustment_source"] = "canonical_market_daily:finlab.price"
             forecast["ensemble_v2"]["generation_mode"] = "purged_oof"
             forecast["ensemble_v2"]["semantic_version"] = (
-                "active8-purged-oof-chronological-ridge-v4"
+                "active8-purged-oof-chronological-nonnegative-ridge-v5"
             )
             row["forecast_data"] = json.dumps(forecast)
             rows.append(row)
@@ -229,7 +230,7 @@ def test_l4_alpha_ev_artifact_builder_reports_oof_semantic_by_generation_mode():
     assert audit["evidence_max_date"] == "2026-06-05"
     assert audit["oof_max_date"] == "2026-06-05"
     assert audit["required_ensemble_semantic_version"] == (
-        "active8-purged-oof-chronological-ridge-v4"
+        "active8-purged-oof-chronological-nonnegative-ridge-v5"
     )
     assert audit["lineage_blocker_counts"] == {}
     assert audit["feature_profile"]["fundamental_quality_norm"]["nonzero_samples"] == 100

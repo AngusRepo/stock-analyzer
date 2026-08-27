@@ -14,6 +14,7 @@ const manifest = contractManifest as {
   canonical_label_schema_version: string
   legacy_label_schema_version: string
   canonical_roundtrip_cost_bps: number
+  selection_route_semantic_version: string
   owners: {
     l4_alpha_ev: { current: ManifestContract; retired_compatibility: Record<string, unknown>[] }
     allocator_ev_fusion: { current: ManifestContract; retired_compatibility: Record<string, unknown>[] }
@@ -35,6 +36,7 @@ export const EXPECTED_RETURN_CONTRACT_MANIFEST_VERSION = manifest.schema_version
 export const EVIDENCE_LABEL_SCHEMA_VERSION = manifest.canonical_label_schema_version
 export const LEGACY_EVIDENCE_LABEL_SCHEMA_VERSION = manifest.legacy_label_schema_version
 export const CANONICAL_ROUNDTRIP_COST_BPS = manifest.canonical_roundtrip_cost_bps
+export const SELECTION_ROUTE_SEMANTIC_VERSION = manifest.selection_route_semantic_version
 export const RETIRED_EXPECTED_RETURN_COMPATIBILITY = Object.freeze({
   l4_alpha_ev: Object.freeze([...manifest.owners.l4_alpha_ev.retired_compatibility]),
   allocator_ev_fusion: Object.freeze([...manifest.owners.allocator_ev_fusion.retired_compatibility]),

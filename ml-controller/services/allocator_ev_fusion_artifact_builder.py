@@ -15,8 +15,9 @@ from services.evidence_contracts import (
 
     ALLOCATOR_EV_FEATURE_SEMANTIC_VERSION,
     LABEL_SCHEMA_VERSION,
+    SELECTION_ROUTE_SEMANTIC_VERSION,
 )
-from services.ev_lineage_contract import ev_feature_lineage_blockers
+from services.ev_lineage_contract import ENSEMBLE_SEMANTIC_VERSION, ev_feature_lineage_blockers
 from services.expected_return_artifact_identity import attach_expected_return_artifact_identity
 
 from services.l4_alpha_ev_resolver import (
@@ -69,7 +70,7 @@ VALIDATION_MIN_EXPERT_SAMPLES = 100
 VALIDATION_MIN_EXPERT_DATES = 10
 CANONICAL_SCORE_FEATURE_VERSION = "score_v2"
 CANONICAL_SCORE_SEMANTIC_VERSION = "score-v2-active8-components-v3"
-CANONICAL_ENSEMBLE_SEMANTIC_VERSION = "active8-ic-weighted-rank-v4"
+CANONICAL_ENSEMBLE_SEMANTIC_VERSION = ENSEMBLE_SEMANTIC_VERSION
 CANONICAL_ADJUSTMENT_FACTOR_SOURCE = PRICE_HORIZON_SOURCE
 MIN_CROSS_SECTION_SAMPLES_PER_DATE = 20
 LABEL_PURGE_DATE_GROUPS = 5
@@ -315,6 +316,11 @@ def _snapshot_lineage_receipt(
     generation_mode = str(row.get("snapshot_generation_mode") or "").strip().lower()
     recorded_model_set = str(row.get("snapshot_model_set_signature") or "").strip()
     recorded_target_semantic = str(row.get("snapshot_target_semantic_version") or "").strip()
+    snapshot_allocation = _loads(row.get("alpha_allocation"))
+    recorded_route_semantic = str(
+        snapshot_allocation.get("selection_route_semantic_version") or ""
+    ).strip()
+    recorded_route_score_present = snapshot_allocation.get("selection_route_score_present") is True
     resolved_model_set = recorded_model_set or str(ensemble.get("model_set_signature") or "").strip()
     resolved_target_semantic = recorded_target_semantic or str(
         ensemble.get("target_semantic_version")
@@ -328,6 +334,8 @@ def _snapshot_lineage_receipt(
         and generation_mode == "native"
         and recorded_model_set
         and recorded_target_semantic == MODEL_TARGET_SEMANTIC_VERSION
+        and recorded_route_semantic == SELECTION_ROUTE_SEMANTIC_VERSION
+        and recorded_route_score_present
     )
     run_id = str(row.get("snapshot_revalidation_run_id") or "").strip()
     expected_rows = int(row.get("snapshot_revalidation_expected_rows") or 0)
@@ -352,6 +360,8 @@ def _snapshot_lineage_receipt(
         and run_complete
         and resolved_model_set
         and resolved_target_semantic == MODEL_TARGET_SEMANTIC_VERSION
+        and recorded_route_semantic == SELECTION_ROUTE_SEMANTIC_VERSION
+        and recorded_route_score_present
     )
     if recorded_complete or ledger_revalidated:
         receipt_source = (
@@ -360,7 +370,7 @@ def _snapshot_lineage_receipt(
             else "allocator_snapshot_ledger_revalidation_v1"
         )
         return {
-            "schema_version": "allocator-ev-snapshot-lineage-receipt-v1",
+            "schema_version": "allocator-ev-snapshot-lineage-receipt-v2",
             "status": "verified",
             "receipt_source": receipt_source,
             "snapshot_date": str(row.get("prediction_date") or row.get("snapshot_date") or "")[:10],
@@ -368,6 +378,8 @@ def _snapshot_lineage_receipt(
             "generation_mode": generation_mode or "native",
             "model_set_signature": resolved_model_set,
             "target_semantic_version": resolved_target_semantic,
+            "selection_route_semantic_version": recorded_route_semantic,
+            "selection_route_score_present": recorded_route_score_present,
             "revalidation_run_id": run_id or None,
             "point_in_time_only": True,
         }, []
@@ -382,6 +394,12 @@ def _snapshot_lineage_receipt(
         blockers.append("snapshot_target_semantic_version_missing")
     elif resolved_target_semantic != MODEL_TARGET_SEMANTIC_VERSION:
         blockers.append("snapshot_target_semantic_version_incompatible")
+    if not recorded_route_semantic:
+        blockers.append("snapshot_selection_route_semantic_missing")
+    elif recorded_route_semantic != SELECTION_ROUTE_SEMANTIC_VERSION:
+        blockers.append("snapshot_selection_route_semantic_incompatible")
+    if not recorded_route_score_present:
+        blockers.append("snapshot_selection_route_score_missing")
     if not recorded_cohort_id and not run_complete:
         blockers.append("snapshot_native_lineage_receipt_missing")
     if not blockers:
@@ -550,6 +568,7 @@ def _samples(
             ),
             "execution_archetype": replay_archetype or None,
             "actual_trade_target_audit_only": actual_trade_target,
+            "label_known_date": str(row.get("label_known_date") or "")[:10] or None,
         })
     raw_day_counts: dict[str, int] = {}
     for sample in out:
@@ -649,6 +668,10 @@ def _samples(
         "oof_max_date": (
             max((row["date"] for row in out), default=None)
             if set(generation_mode_counts) == {"purged_oof"} else None
+        ),
+        "label_known_max_date": max(
+            (str(row.get("label_known_date") or "")[:10] for row in out if str(row.get("label_known_date") or "")[:10]),
+            default=None,
         ),
         "date_count": len({row["date"] for row in out}),
         "l4_available_count": len(l4_available_samples),
@@ -2314,6 +2337,7 @@ def load_allocator_ev_fusion_training_rows(
                 date(fs.snapshot_date) AS prediction_date,
                 fs.forecast_data,
                 ph.source AS label_adjustment_source,
+                ph.exit_date AS label_known_date,
                 ((ph.exit_raw_close * ph.exit_adjustment_factor)
                   / (ph.entry_raw_open * ph.entry_adjustment_factor)) - 1.0 AS l4_executable_return_pct,
                 p.trade_pnl_pct,
@@ -2451,6 +2475,7 @@ def load_allocator_ev_fusion_training_rows(
             date(p.prediction_date) AS prediction_date,
             p.forecast_data,
             ph.source AS label_adjustment_source,
+            ph.exit_date AS label_known_date,
             ((ph.exit_raw_close * ph.exit_adjustment_factor)
               / (ph.entry_raw_open * ph.entry_adjustment_factor)) - 1.0 AS l4_executable_return_pct,
             p.trade_pnl_pct,

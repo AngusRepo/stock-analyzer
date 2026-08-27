@@ -3772,10 +3772,17 @@ export async function rebuildHistoricalStrategyEvidenceV5(
         throw new Error('reference_lineage_incomplete')
       }
       const referenceLabeler = [...referenceLabelers][0]
-      const references = [...new Map(referenceRows.map((row) => [cleanToken(row.symbol), row])).values()]
-      const referenceBySymbol = new Map(references.map((row) => [cleanToken(row.symbol), row]))
+      const rawReferences = [...new Map(referenceRows.map((row) => [cleanToken(row.symbol), row])).values()]
+
       const producerRunId = [...producerRunIds][0]
       const artifactEvidence = await options.resolveHistoricalArtifactEvidence?.(date, producerRunId) ?? null
+      const { applyStrategyRouteRecoveryScores } = await import('./strategyRouteRecoveryPacket')
+      const references = artifactEvidence?.route_recovery_packet_ready
+        ? applyStrategyRouteRecoveryScores(
+            rawReferences, artifactEvidence.route_recovery_scores, date, producerRunId,
+          )
+        : rawReferences
+      const referenceBySymbol = new Map(references.map((row) => [cleanToken(row.symbol), row]))
       const acceptedHistoricalSourceLabelers = new Set([
         ...STRATEGY_FORMAL_LABELER_VERSIONS,
         'strategy-labeler-v1',

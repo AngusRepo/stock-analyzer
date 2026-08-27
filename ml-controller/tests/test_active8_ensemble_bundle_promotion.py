@@ -37,9 +37,14 @@ def _fixture():
                 }}
             }),
         })
+    selected = [model for model in ACTIVE8_MODEL_NAMES if model != "PatchTST"]
     payload = {
         "schema_version": "active8-oof-ensemble-serving-artifact-v1",
-        "base_artifacts": base,
+        "observation_artifacts": base,
+        "observation_artifact_set_checksum": "a" * 64,
+        "base_artifacts": {model: base[model] for model in selected},
+        "selected_models": selected,
+        "excluded_models": ["PatchTST"],
         "validation": {"decision": "PASS", "failed_gates": []},
     }
     payload["payload_checksum"] = hashlib.sha256(_canonical(payload).encode()).hexdigest()
@@ -94,7 +99,7 @@ class AtomicD1:
         raise AssertionError(sql)
 
 
-def test_bundle_dry_run_accepts_weak_learner_only_through_validated_ensemble():
+def test_bundle_dry_run_observes_weak_learner_but_promotes_only_selected_models():
     rows, pointers, ensemble = _fixture()
     result = registry.run_active8_ensemble_bundle_promotion_controller(
         training_run_id="run-new",
@@ -104,7 +109,9 @@ def test_bundle_dry_run_accepts_weak_learner_only_through_validated_ensemble():
         confirm=False,
     )
     assert result["can_promote"] is True
-    assert len(result["release_models"]) == 8
+    assert len(result["observation_models"]) == 8
+    assert len(result["release_models"]) == 7
+    assert "PatchTST" not in result["release_models"]
     assert result["validation"]["decision"] == "PASS"
 
 
@@ -122,7 +129,7 @@ def test_bundle_commit_is_one_atomic_batch(monkeypatch):
     assert result["status"] == "ok"
     assert result["d1_batch"]["atomic"] is True
     assert result["readback_verified"] is True
-    assert len(d1.statements) == 43
+    assert len(d1.statements) == 38
     sql = "\n".join(statement[0] for statement in d1.statements)
     assert "active8_ensemble_pointer_v1" in sql
     assert "model_champion_pointers" in sql

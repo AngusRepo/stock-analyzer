@@ -27,7 +27,7 @@ from services.active8_score_semantics import (
 )
 
 ENSEMBLE_V2_SCHEMA_VERSION = "active8-oof-ensemble-runtime-v1"
-ENSEMBLE_V2_SEMANTIC_VERSION = "active8-purged-oof-chronological-ridge-v4"
+ENSEMBLE_V2_SEMANTIC_VERSION = "active8-purged-oof-chronological-nonnegative-ridge-v5"
 ARTIFACT_SCHEMA_VERSION = "active8-oof-ensemble-serving-artifact-v1"
 CALIBRATION_SCHEMA_VERSION = "active8-chronological-conformal-isotonic-v1"
 SIGNAL_POLICY_VERSION = "active8-net-return-conformal-signal-policy-v1"
@@ -126,10 +126,17 @@ def validate_active8_ensemble_artifact(payload: dict[str, Any], pool_models: dic
         or checksum != str(payload.get("payload_checksum") or "")
         or list(payload.get("model_order") or []) != list(ACTIVE_ALPHA_MODELS)
         or list(payload.get("feature_names") or []) != list(FEATURE_NAMES)
-        or fit.get("method") != "ridge_full_fit_after_heldout_chronological_oof_validation"
+        or fit.get("method") != "nonnegative_rank_ridge_full_fit_after_heldout_chronological_oof_validation"
+        or fit.get("rank_coefficient_constraint") != "nonnegative"
         or int(fit.get("outer_folds") or 0) < 5
         or len(fit.get("coefficients") or []) != len(FEATURE_NAMES)
+        or any(
+            float(value) < -1e-12
+            for value in (fit.get("coefficients") or [])[: len(ACTIVE_ALPHA_MODELS)]
+        )
         or validation.get("decision") != "PASS"
+        or float(validation.get("rank_ic_equal_date_market_lcb90") or 0.0) <= 0.0
+        or float(validation.get("top_bottom_net_return_spread_lcb90") or 0.0) <= 0.0
         or validation.get("failed_gates")
         or policy.get("schema_version") != SIGNAL_POLICY_VERSION
         or policy.get("top_k") is not None
@@ -137,10 +144,36 @@ def validate_active8_ensemble_artifact(payload: dict[str, Any], pool_models: dic
         or policy.get("sell_rule") != "conformal_upper_bound_lt_zero"
     ):
         raise RuntimeError("active8_ensemble_artifact_contract_invalid")
+    selected = payload.get("selected_models")
+    excluded = payload.get("excluded_models")
+    coefficient = [float(value) for value in fit.get("coefficients") or []]
+    if (
+        not isinstance(selected, list)
+        or not selected
+        or len(selected) != len(set(selected))
+        or not set(selected).issubset(set(ACTIVE_ALPHA_MODELS))
+        or not isinstance(excluded, list)
+        or set(excluded) != set(ACTIVE_ALPHA_MODELS) - set(selected)
+    ):
+        raise RuntimeError("active8_ensemble_selected_model_set_invalid")
+    observation = (
+        payload.get("observation_artifacts")
+        if isinstance(payload.get("observation_artifacts"), dict)
+        else {}
+    )
+    if set(observation) != set(ACTIVE_ALPHA_MODELS):
+        raise RuntimeError("active8_ensemble_observation_set_invalid")
     base = payload.get("base_artifacts") if isinstance(payload.get("base_artifacts"), dict) else {}
-    if set(base) != set(ACTIVE_ALPHA_MODELS):
+    if set(base) != set(selected):
         raise RuntimeError("active8_ensemble_base_set_invalid")
-    for model in ACTIVE_ALPHA_MODELS:
+    for model in excluded:
+        index = list(ACTIVE_ALPHA_MODELS).index(model)
+        if (
+            abs(coefficient[index]) > 1e-12
+            or abs(coefficient[index + len(ACTIVE_ALPHA_MODELS)]) > 1e-12
+        ):
+            raise RuntimeError(f"active8_ensemble_excluded_model_has_weight:{model}")
+    for model in selected:
         expected = base.get(model) if isinstance(base.get(model), dict) else {}
         actual = pool_models.get(model) if isinstance(pool_models.get(model), dict) else {}
         actual_identity = {
@@ -206,7 +239,10 @@ def attach_ensemble_v2(
         model: (value / total_influence if total_influence > 0.0 else 0.0)
         for model, value in influence.items()
     }
-    contributing = [name for name in ACTIVE_ALPHA_MODELS if name in scores]
+    contributing = [
+        name for name in artifact["selected_models"]
+        if name in scores
+    ]
     confidence = probability if signal in {"BUY", "STRONG_BUY"} else 1.0 - probability if signal in {"SELL", "STRONG_SELL"} else max(probability, 1.0 - probability)
     pred["ensemble_v2"] = {
         "schema_version": ENSEMBLE_V2_SCHEMA_VERSION,

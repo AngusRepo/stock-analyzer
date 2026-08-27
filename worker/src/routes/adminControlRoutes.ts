@@ -109,6 +109,7 @@ export function parseScreenerArtifactInput(body: any): EvidenceArtifactWriteInpu
     ])],
     ['screener_funnel_chunk', new Set(['screener-funnel-evidence-chunk-v1'])],
     ['strategy_redundancy_oof', new Set(['strategy-redundancy-oof-evidence-v1'])],
+    ["strategy_route_recovery", new Set(["strategy-route-recovery-packet-v1"])],
     ['s12_research_minute_bars', new Set(['s12-research-minute-bars-v2'])],
     ['s12_structure_batch', new Set(['s12-structure-batch-summary-v1'])],
   ])
@@ -124,6 +125,7 @@ export function parseScreenerArtifactInput(body: any): EvidenceArtifactWriteInpu
     ['screener_funnel', new Set(['canonical_model_evidence', 'failed_debug'])],
     ['screener_funnel_chunk', new Set(['canonical_model_evidence', 'failed_debug'])],
     ['strategy_redundancy_oof', new Set(['canonical_model_evidence'])],
+    ["strategy_route_recovery", new Set(["canonical_model_evidence"])],
     ['s12_research_minute_bars', new Set(['raw_market_unreferenced'])],
     ['s12_structure_batch', new Set(['canonical_model_evidence', 'paper_shadow', 'failed_debug'])],
   ])
@@ -165,6 +167,24 @@ export function parseScreenerArtifactInput(body: any): EvidenceArtifactWriteInpu
       || Array.isArray(payload.pairwise_oof_evidence)
     ) {
       throw new Error('invalid strategy redundancy OOF artifact payload')
+    }
+  }
+  if (body.domain === "strategy_route_recovery") {
+    const payload = body.payload
+    if (
+      payload.schema_version !== "strategy-route-recovery-packet-v1"
+      || payload.reference_contract_version !== "selection-reference-snapshot-v3"
+      || payload.route_version !== "strategy-semantic-continuous-affinity-v5"
+      || payload.affinity_version !== "strategy-threshold-margin-affinity-v2"
+      || !/^sha256:[a-f0-9]{64}$/i.test(String(payload.strategy_registry_checksum ?? ""))
+      || !/^sha256:[a-f0-9]{64}$/i.test(String(payload.input_packet_checksum ?? ""))
+      || !/^sha256:[a-f0-9]{64}$/i.test(String(payload.route_score_parity_checksum ?? ""))
+      || !Array.isArray(payload.route_scores)
+      || Number(payload.candidate_count) !== rowCount
+      || Number(payload.route_score_count) !== rowCount
+      || payload.route_scores.length !== rowCount
+    ) {
+      throw new Error("invalid strategy route recovery artifact payload")
     }
   }
   if (body.domain === 's12_research_minute_bars') {

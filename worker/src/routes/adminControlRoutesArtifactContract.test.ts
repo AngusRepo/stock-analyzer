@@ -38,3 +38,32 @@ assert.throws(
   () => parseScreenerArtifactInput({ ...valid, domain: 'strategy_redundancy_shadow_unknown' }),
   /artifact domain is not allowed/,
 )
+
+const routeValid = {
+  domain: "strategy_route_recovery",
+  businessDate: "2026-08-27",
+  producerRunId: "screener-2026-08-27-test",
+  retentionClass: "canonical_model_evidence",
+  schemaVersion: "strategy-route-recovery-packet-v1",
+  rowCount: 1,
+  payload: {
+    schema_version: "strategy-route-recovery-packet-v1",
+    reference_contract_version: "selection-reference-snapshot-v3",
+    route_version: "strategy-semantic-continuous-affinity-v5",
+    affinity_version: "strategy-threshold-margin-affinity-v2",
+    strategy_registry_checksum: "sha256:" + "a".repeat(64),
+    input_packet_checksum: "sha256:" + "b".repeat(64),
+    route_score_parity_checksum: "sha256:" + "c".repeat(64),
+    candidate_count: 1,
+    route_score_count: 1,
+    route_scores: [{ symbol: "2330" }],
+  },
+}
+assert.equal(parseScreenerArtifactInput(routeValid).domain, "strategy_route_recovery")
+assert.throws(
+  () => parseScreenerArtifactInput({
+    ...routeValid,
+    payload: { ...routeValid.payload, route_score_count: 0 },
+  }),
+  /invalid strategy route recovery artifact payload/,
+)

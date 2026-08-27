@@ -22,8 +22,8 @@ from services.active8_oof_stacker import (
     MIN_STACKER_TRAIN_ROWS,
     STACKER_FEATURE_NAMES,
     STACKER_SEMANTIC_VERSION,
-    _fit_ridge,
-    _select_regularization,
+    _equal_date_market_ic,
+    _fit_selected_ridge,
     _spearman,
     build_chronological_oof_stack,
 )
@@ -88,7 +88,44 @@ def isotonic_predict(x_thresholds: list[float], y_thresholds: list[float], value
     return float(y_thresholds[left] + ratio * (y_thresholds[right] - y_thresholds[left]))
 
 
-def _daily_spread(rows: list[dict[str, Any]]) -> tuple[float, int]:
+def _daily_metric_summary(values: list[float]) -> dict[str, Any]:
+    array = np.asarray(values, dtype=float)
+    mean = float(np.mean(array)) if len(array) else 0.0
+    if len(array) < 2:
+        lcb90 = None
+    else:
+        from scipy.stats import t
+
+        standard_error = float(np.std(array, ddof=1) / math.sqrt(len(array)))
+        lcb90 = float(mean - t.ppf(0.90, len(array) - 1) * standard_error)
+    return {"mean": mean, "lcb90": lcb90, "dates": len(array)}
+
+
+def _daily_ic_values(
+    rows: list[dict[str, Any]],
+    scores: list[float],
+) -> list[float]:
+    grouped: dict[tuple[str, str], list[int]] = defaultdict(list)
+    for index, row in enumerate(rows):
+        grouped[(row["prediction_date"], row["market_segment"])].append(index)
+    daily: dict[str, list[float]] = defaultdict(list)
+    for (prediction_date, _market), indices in grouped.items():
+        if len(indices) < 3:
+            continue
+        daily[prediction_date].append(
+            _spearman(
+                np.asarray([scores[index] for index in indices], dtype=float),
+                np.asarray([rows[index]["target_return"] for index in indices], dtype=float),
+            )
+        )
+    return [
+        float(np.mean(daily[prediction_date]))
+        for prediction_date in sorted(daily)
+        if daily[prediction_date]
+    ]
+
+
+def _daily_spread_values(rows: list[dict[str, Any]]) -> list[float]:
     grouped: dict[tuple[str, str], list[tuple[float, float]]] = defaultdict(list)
     for row in rows:
         grouped[(row["prediction_date"], row["market_segment"])].append(
@@ -104,8 +141,53 @@ def _daily_spread(rows: list[dict[str, Any]]) -> tuple[float, int]:
             sum(target for _score, target in values[-count:]) / count
             - sum(target for _score, target in values[:count]) / count
         )
-    spreads = [sum(values) / len(values) for values in daily.values() if values]
-    return (float(np.mean(spreads)) if spreads else 0.0, len(spreads))
+    return [
+        float(np.mean(daily[prediction_date]))
+        for prediction_date in sorted(daily)
+        if daily[prediction_date]
+    ]
+
+
+def _same_window_diagnostics(rows: list[dict[str, Any]]) -> dict[str, Any]:
+    model_metrics: dict[str, Any] = {}
+    for model_index, model_name in enumerate(ACTIVE8_MODELS):
+        eligible = [
+            (row, float(row["stacker_features"][model_index]))
+            for row in rows
+            if float(row["stacker_features"][model_index + len(ACTIVE8_MODELS)]) > 0.5
+        ]
+        model_rows = [item[0] for item in eligible]
+        scores = [item[1] for item in eligible]
+        metric = _daily_metric_summary(_daily_ic_values(model_rows, scores))
+        metric["rows"] = len(model_rows)
+        metric["pooled_rank_ic_diagnostic"] = _spearman(
+            np.asarray(scores, dtype=float),
+            np.asarray([row["target_return"] for row in model_rows], dtype=float),
+        ) if model_rows else 0.0
+        model_metrics[model_name] = metric
+
+    equal_weight_scores: list[float] = []
+    for row in rows:
+        features = row["stacker_features"]
+        available = [
+            float(features[index])
+            for index in range(len(ACTIVE8_MODELS))
+            if float(features[index + len(ACTIVE8_MODELS)]) > 0.5
+        ]
+        equal_weight_scores.append(float(np.mean(available)) if available else 0.5)
+    baseline = _daily_metric_summary(_daily_ic_values(rows, equal_weight_scores))
+    baseline["rows"] = len(rows)
+    baseline["pooled_rank_ic_diagnostic"] = _spearman(
+        np.asarray(equal_weight_scores, dtype=float),
+        np.asarray([row["target_return"] for row in rows], dtype=float),
+    )
+    return {
+        "schema_version": "active8-same-window-model-comparison-v1",
+        "window_start": min(row["prediction_date"] for row in rows),
+        "window_end": max(row["prediction_date"] for row in rows),
+        "models": model_metrics,
+        "equal_weight_baseline": baseline,
+    }
 
 
 def _base_identity(base_artifacts: dict[str, dict[str, Any]]) -> tuple[dict[str, Any], str]:
@@ -179,7 +261,18 @@ def build_active8_ensemble_artifact(
     val_prediction = np.asarray([row["ensemble_raw"] for row in validation_rows], dtype=float)
     val_target = np.asarray([row["target_return"] for row in validation_rows], dtype=float)
     probability = np.asarray([isotonic_predict(iso_x, iso_y, value) for value in val_prediction])
-    spread, spread_dates = _daily_spread(validation_rows)
+    validation_dates_array = np.asarray(
+        [row["prediction_date"] for row in validation_rows], dtype=object
+    )
+    validation_markets = np.asarray(
+        [row["market_segment"] for row in validation_rows], dtype=object
+    )
+    rank_ic_mean, rank_ic_dates = _equal_date_market_ic(
+        val_prediction, val_target, validation_dates_array, validation_markets
+    )
+    rank_ic = _daily_metric_summary(_daily_ic_values(validation_rows, val_prediction.tolist()))
+    spread = _daily_metric_summary(_daily_spread_values(validation_rows))
+    same_window = _same_window_diagnostics(validation_rows)
     buy_mask = val_prediction - q_buy > 0.0
     sell_mask = val_prediction + q_buy < 0.0
     directional = np.concatenate([val_target[buy_mask], -val_target[sell_mask]])
@@ -191,9 +284,17 @@ def build_active8_ensemble_artifact(
         "calibration_rows": len(calibration_rows),
         "validation_dates": len(validation_dates),
         "validation_rows": len(validation_rows),
-        "rank_ic": _spearman(val_prediction, val_target),
-        "top_bottom_net_return_spread": spread,
-        "spread_dates": spread_dates,
+        "validation_start_date": min(validation_dates),
+        "validation_end_date": max(validation_dates),
+        "rank_ic": rank_ic_mean,
+        "rank_ic_equal_date_market_mean": rank_ic_mean,
+        "rank_ic_equal_date_market_lcb90": rank_ic["lcb90"],
+        "rank_ic_dates": rank_ic_dates,
+        "rank_ic_pooled_diagnostic": _spearman(val_prediction, val_target),
+        "top_bottom_net_return_spread": spread["mean"],
+        "top_bottom_net_return_spread_lcb90": spread["lcb90"],
+        "spread_dates": spread["dates"],
+        "same_window_comparison": same_window,
         "buy_interval_empirical_coverage": float(np.mean(np.abs(val_target - val_prediction) <= q_buy)),
         "strong_interval_empirical_coverage": float(np.mean(np.abs(val_target - val_prediction) <= q_strong)),
         "probability_brier": float(np.mean((probability - (val_target > 0.0).astype(float)) ** 2)),
@@ -201,10 +302,21 @@ def build_active8_ensemble_artifact(
         "directional_signal_net_mean": directional_mean,
         "failed_gates": [],
     }
-    if validation["rank_ic"] <= 0.0:
-        validation["failed_gates"].append("chronological_validation_rank_ic_non_positive")
-    if spread <= 0.0 or spread_dates < MIN_VALIDATION_DATES:
-        validation["failed_gates"].append("chronological_validation_spread_non_positive")
+    if (
+        validation["rank_ic_equal_date_market_lcb90"] is None
+        or validation["rank_ic_equal_date_market_lcb90"] <= 0.0
+    ):
+        validation["failed_gates"].append(
+            "chronological_validation_equal_date_market_rank_ic_lcb90_non_positive"
+        )
+    if (
+        validation["top_bottom_net_return_spread_lcb90"] is None
+        or validation["top_bottom_net_return_spread_lcb90"] <= 0.0
+        or validation["spread_dates"] < MIN_VALIDATION_DATES
+    ):
+        validation["failed_gates"].append(
+            "chronological_validation_daily_spread_lcb90_non_positive"
+        )
     if validation["buy_interval_empirical_coverage"] < BUY_COVERAGE - 0.05:
         validation["failed_gates"].append("buy_conformal_coverage_below_policy")
     if validation["strong_interval_empirical_coverage"] < STRONG_COVERAGE - 0.05:
@@ -218,13 +330,31 @@ def build_active8_ensemble_artifact(
     x = np.asarray([row["stacker_features"] for row in resolved], dtype=float)
     y = np.asarray([row["target_return"] for row in resolved], dtype=float)
     fit_dates = np.asarray([row["prediction_date"] for row in resolved], dtype=object)
-    regularization = _select_regularization(x, y, fit_dates)
-    coefficients, intercept = _fit_ridge(x, y, regularization)
+    fit_markets = np.asarray([row["market_segment"] for row in resolved], dtype=object)
+    coefficients, intercept, regularization, selected_models = _fit_selected_ridge(
+        x, y, fit_dates, fit_markets
+    )
+    if not selected_models:
+        raise Active8EnsembleValidationError({
+            **validation,
+            "decision": "FAIL",
+            "failed_gates": [
+                *validation["failed_gates"],
+                "full_fit_nonnegative_ridge_active_set_empty",
+            ],
+        })
     all_prediction = np.asarray([row["ensemble_raw"] for row in honest], dtype=float)
     all_target = np.asarray([row["target_return"] for row in honest], dtype=float)
     all_residual = np.abs(all_target - all_prediction)
     all_iso_x, all_iso_y = _fit_isotonic(all_prediction, all_target)
-    base_identity, base_checksum = _base_identity(base_artifacts)
+    observation_identity, observation_checksum = _base_identity(base_artifacts)
+    base_identity = {
+        model_name: observation_identity[model_name]
+        for model_name in selected_models
+    }
+    base_checksum = hashlib.sha256(
+        canonical_json(base_identity).encode("utf-8")
+    ).hexdigest()
     payload = {
         "schema_version": ARTIFACT_SCHEMA_VERSION,
         "ensemble_semantic_version": STACKER_SEMANTIC_VERSION,
@@ -242,12 +372,20 @@ def build_active8_ensemble_artifact(
         "cohort_id": cohort_id,
         "source_manifest_checksum": source_manifest_checksum,
         "knowledge_cutoff_date": knowledge_cutoff_date,
+        "observation_artifacts": observation_identity,
+        "observation_artifact_set_checksum": observation_checksum,
         "base_artifacts": base_identity,
         "base_artifact_set_checksum": base_checksum,
+        "selected_models": list(selected_models),
+        "excluded_models": [
+            model_name for model_name in ACTIVE8_MODELS
+            if model_name not in selected_models
+        ],
         "feature_names": list(STACKER_FEATURE_NAMES),
         "model_order": list(ACTIVE8_MODELS),
         "fit": {
-            "method": "ridge_full_fit_after_heldout_chronological_oof_validation",
+            "method": "nonnegative_rank_ridge_full_fit_after_heldout_chronological_oof_validation",
+            "rank_coefficient_constraint": "nonnegative",
             "regularization": regularization,
             "intercept": float(intercept),
             "coefficients": coefficients.astype(float).tolist(),

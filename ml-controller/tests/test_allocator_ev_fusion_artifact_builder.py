@@ -27,8 +27,12 @@ from services.l4_alpha_ev_resolver import (  # noqa: E402
     SNAPSHOT_BACKFILL_SOURCE,
     SNAPSHOT_BACKFILL_USAGE_SCOPE,
 )
-from services.ev_lineage_contract import prediction_timing_blockers  # noqa: E402
+from services.ev_lineage_contract import (  # noqa: E402
+    ENSEMBLE_SEMANTIC_VERSION,
+    prediction_timing_blockers,
+)
 from services.active8_score_semantics import MODEL_TARGET_SEMANTIC_VERSION  # noqa: E402
+from services.evidence_contracts import SELECTION_ROUTE_SEMANTIC_VERSION  # noqa: E402
 
 
 def _l4_payload(value: float) -> dict:
@@ -55,7 +59,7 @@ def _l4_payload(value: float) -> dict:
 def _ensemble_forecast(avg_rank: float = 0.65, confidence: float = 0.72) -> str:
     return json.dumps({
         "ensemble_v2": {
-            "semantic_version": "active8-ic-weighted-rank-v4",
+            "semantic_version": ENSEMBLE_SEMANTIC_VERSION,
             "contributing_models": ["LightGBM", "XGBoost"],
             "artifact_versions": {"LightGBM": "vTest", "XGBoost": "vTest"},
             "model_set_signature": "LightGBM@vTest|XGBoost@vTest",
@@ -345,7 +349,7 @@ def test_fusion_purged_oof_uses_snapshot_date_and_recorded_market_lineage():
         forecast = json.loads(row["forecast_data"])
         forecast["ensemble_v2"].update({
             "generation_mode": "purged_oof",
-            "semantic_version": "active8-purged-oof-chronological-ridge-v4",
+            "semantic_version": "active8-purged-oof-chronological-nonnegative-ridge-v5",
         })
         row["forecast_data"] = json.dumps(forecast)
         rows.append(row)
@@ -551,6 +555,7 @@ def test_snapshot_candidate_query_avoids_correlated_evidence_lookups():
         "2026-06-19",
         "2026-06-18",
         "2026-06-19",
+        SELECTION_ROUTE_SEMANTIC_VERSION,
         200,
     ]
 
@@ -1512,6 +1517,8 @@ def test_allocator_snapshot_candidate_loader_joins_split_d1_domains_in_memory():
                 "market_segment": "listed",
                 "producer_run_id": "screener-run-1",
                 "feature_contract_version": "selection-reference-v1",
+                "strategy_challenger_route_version": SELECTION_ROUTE_SEMANTIC_VERSION,
+                "strategy_challenger_route_score": 0.72,
                 "feature_available": 1,
                 "feature_rejection_reason": None,
             }]

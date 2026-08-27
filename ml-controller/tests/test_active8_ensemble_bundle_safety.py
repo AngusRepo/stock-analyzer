@@ -71,6 +71,29 @@ def test_bundle_rejects_base_identity_drift_even_when_ensemble_is_valid():
     assert result["decision"] == "active8_bundle_contract_invalid"
 
 
+def test_bundle_rejects_selected_model_without_individual_oof_pass():
+    rows, pointers, ensemble = _fixture()
+    payload = json.loads(ensemble["payload_json"])
+    payload["selected_models"].append("PatchTST")
+    payload["excluded_models"] = []
+    payload["base_artifacts"] = dict(payload["observation_artifacts"])
+    unsigned = {key: value for key, value in payload.items() if key != "payload_checksum"}
+    payload["payload_checksum"] = registry.hashlib.sha256(
+        registry._canonical_payload_json(unsigned).encode("utf-8")
+    ).hexdigest()
+    ensemble["payload_json"] = registry._canonical_payload_json(payload)
+    ensemble["payload_checksum"] = payload["payload_checksum"]
+    result = registry.run_active8_ensemble_bundle_promotion_controller(
+        training_run_id="run-new",
+        registry_rows=rows,
+        d1_pointers=pointers,
+        ensemble_rows=[ensemble],
+    )
+    assert result["can_promote"] is False
+    assert result["decision"] == "active8_bundle_contract_invalid"
+    assert result["blockers"] == ["base_artifact_contract:PatchTST"]
+
+
 def test_bundle_confirmation_fails_closed_on_pointer_readback_drift(monkeypatch):
     rows, pointers, ensemble = _fixture()
     d1 = BrokenReadbackD1(rows, ensemble)
@@ -84,4 +107,4 @@ def test_bundle_confirmation_fails_closed_on_pointer_readback_drift(monkeypatch)
             confirm=True,
         )
     assert d1.statements is not None
-    assert len(d1.statements) == 43
+    assert len(d1.statements) == 38

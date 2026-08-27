@@ -42,7 +42,7 @@ def test_stacker_never_uses_current_fold_targets_for_its_weights():
     by_fold = {row["fold_id"]: row for row in evidence["folds"]}
     assert by_fold["w1"]["source"] == "warmup_equal_weight_baseline"
     assert by_fold["w1"]["train_rows"] == 0
-    assert by_fold["w2"]["source"] == "chronological_resolved_oof_ridge"
+    assert by_fold["w2"]["source"] == "chronological_resolved_oof_nonnegative_ridge"
     assert by_fold["w2"]["train_rows"] == 520
     assert all(0.0 <= row["ensemble_rank"] <= 1.0 for row in output)
 

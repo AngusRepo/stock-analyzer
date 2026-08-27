@@ -137,7 +137,11 @@ assert(walkForward.includes('OOF_MATERIALIZE_EXPECTED_COHORT_ID'), 'durable mate
 assert(walkForward.includes('OOF_MATERIALIZE_DISPATCH_FULL_FIT') && walkForward.includes('if not req.dry_run and req.dispatch_full_fit'), 'full-fit training must require an explicit lifecycle dispatch flag')
 assert(walkForward.includes('full_fit_poll_only=req.continuation_only'), 'continuation must carry an explicit poll-only guard into materialization')
 assert(walkForward.includes('allow_new_dispatch=not req.full_fit_poll_only'), 'poll-only continuation must be unable to start a replacement retrain')
-assert(walkForward.includes('if not allow_new_dispatch:'), 'full-fit dispatcher must fail closed when a poll-only receipt is missing or terminal-failed')
+assert(
+  walkForward.includes('if not allow_new_dispatch and receipt.get("run_id"):') &&
+    walkForward.includes('full_fit_poll_only_terminal_failure'),
+  'poll-only continuation may create the first receipt, but must fail closed instead of replacing an existing run',
+)
 assert(walkForward.includes('outer_fold_majority_vote') && walkForward.includes('active8-oof-full-fit-feature-consensus-v1'), 'tree full-fit must use checksum-bound majority consensus from outer OOF feature selections')
 for (const field of ['gcs_prefix', 'feature_pool_path', 'dataset_snapshot']) {
   assert(trainingPolicy.includes(`"${field}"`), `full-fit train payload must preserve ${field} lineage`)

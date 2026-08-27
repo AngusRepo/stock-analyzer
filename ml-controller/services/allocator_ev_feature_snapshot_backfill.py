@@ -8,6 +8,7 @@ from typing import Any, Callable
 
 
 from services.active8_score_semantics import MODEL_TARGET_SEMANTIC_VERSION
+from services.evidence_contracts import SELECTION_ROUTE_SEMANTIC_VERSION
 from services.d1_domain_client import D1DataDomain, client_for_domain
 from services.ev_lineage_contract import (
     attach_next_session_open_evidence,
@@ -167,7 +168,8 @@ def _load_allocator_ev_snapshot_candidate_rows_split(
         """
         SELECT symbol, signal_date, score_v2, score_components, market_segment,
                producer_run_id, feature_contract_version, feature_available,
-               feature_rejection_reason
+               feature_rejection_reason, strategy_challenger_route_version,
+               strategy_challenger_route_score
           FROM selection_reference_snapshots_v1
          WHERE signal_date>=? AND signal_date<?
            AND score_components IS NOT NULL
@@ -235,6 +237,10 @@ def _load_allocator_ev_snapshot_candidate_rows_split(
             rejection = "missing_point_in_time_ensemble_prediction"
         elif not score_components:
             rejection = "missing_score_v2_components"
+        elif str(reference.get("strategy_challenger_route_version") or "").strip() != SELECTION_ROUTE_SEMANTIC_VERSION:
+            rejection = "selection_route_semantic_incompatible"
+        elif reference.get("strategy_challenger_route_score") is None:
+            rejection = "selection_route_score_missing"
         elif not parsed_score_components:
             rejection = "invalid_score_v2_json"
         elif parsed_score_components.get("version") != "score_v2":
@@ -258,6 +264,8 @@ def _load_allocator_ev_snapshot_candidate_rows_split(
             "ml_score": recommendation.get("ml_score"),
             "reference_producer_run_id": reference.get("producer_run_id"),
             "reference_contract_version": reference.get("feature_contract_version"),
+            "selection_route_semantic_version": reference.get("strategy_challenger_route_version"),
+            "selection_route_score": reference.get("strategy_challenger_route_score"),
             "reference_feature_rejection_reason": rejection,
             "_rank": int(recommendation.get("rank") or 999999),
         })
@@ -356,11 +364,15 @@ def load_allocator_ev_snapshot_candidate_rows(
             dr.current_price, dr.confidence, dr.chip_score, dr.tech_score, dr.ml_score,
             r.producer_run_id reference_producer_run_id,
             r.feature_contract_version reference_contract_version,
+            r.strategy_challenger_route_version selection_route_semantic_version,
+            r.strategy_challenger_route_score selection_route_score,
             CASE
               WHEN r.feature_available!=1 THEN COALESCE(r.feature_rejection_reason, 'reference_feature_unavailable')
               WHEN st.id IS NULL THEN 'missing_stock_identity'
               WHEN p.id IS NULL THEN 'missing_point_in_time_ensemble_prediction'
               WHEN r.score_components IS NULL THEN 'missing_score_v2_components'
+              WHEN r.strategy_challenger_route_version!=? THEN 'selection_route_semantic_incompatible'
+              WHEN r.strategy_challenger_route_score IS NULL THEN 'selection_route_score_missing'
               WHEN json_valid(r.score_components)!=1 THEN 'invalid_score_v2_json'
               WHEN json_extract(r.score_components, '$.version')!='score_v2' THEN 'invalid_score_v2_semantic'
               ELSE NULL
@@ -378,7 +390,7 @@ def load_allocator_ev_snapshot_candidate_rows(
         ORDER BY COALESCE(dr.rank, 999999), r.score_v2 DESC, r.symbol
         LIMIT ?
         """,
-        [snapshot_date, supplied_next_session, snapshot_date, next_date, snapshot_date, next_date, int(limit)],
+        [snapshot_date, supplied_next_session, snapshot_date, next_date, snapshot_date, next_date, SELECTION_ROUTE_SEMANTIC_VERSION, int(limit)],
     )
 
 def _parse_candidate_row(row: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any]]:
@@ -1043,6 +1055,8 @@ def build_allocator_ev_feature_snapshots_for_date(
             },
             "ev_lineage_status": lineage_status,
             "ev_lineage_audit": lineage_result.get("audit"),
+            "selection_route_semantic_version": row.get("selection_route_semantic_version"),
+            "selection_route_score_present": row.get("selection_route_score") is not None,
         }
         alpha_allocation.update(_recorded_serving_fusion_projection(existing))
         if l4_payload is not None:

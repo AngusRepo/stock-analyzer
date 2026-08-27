@@ -274,6 +274,10 @@ def _samples(
             max((row["date"] for row in out), default=None)
             if generation_modes == {"purged_oof"} else None
         ),
+        "label_known_max_date": max(
+            (str(row.get("label_known_date") or "")[:10] for row in out if str(row.get("label_known_date") or "")[:10]),
+            default=None,
+        ),
         "feature_profile": feature_profile,
         "degenerate_features": sorted(
             name for name, profile in feature_profile.items() if profile["degenerate"]

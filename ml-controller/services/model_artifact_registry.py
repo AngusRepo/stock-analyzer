@@ -3178,6 +3178,8 @@ def _active8_base_artifact_blocker(
     model_name: str,
     row: dict[str, Any],
     expected: dict[str, Any],
+    *,
+    require_individual_pass: bool,
 ) -> str | None:
     offline = _json_loads(row.get("offline_evidence_json"))
     registration = _json_loads(offline.get("registration"))
@@ -3201,6 +3203,13 @@ def _active8_base_artifact_blocker(
         and oof.get("schema_version") == "model-cpcv-evidence-v1"
         and oof.get("method") == "outer_purged_walk_forward_rank_ic"
         and int(oof.get("folds") or 0) >= 5
+        and (
+            not require_individual_pass
+            or (
+                oof.get("decision") == "PASS"
+                and str(row.get("state") or "") in {"offline_passed", "production"}
+            )
+        )
         and str(row.get("state") or "") not in {"registration_failed", "rejected"}
     )
     return None if valid else f"base_artifact_contract:{model_name}"
@@ -3215,7 +3224,7 @@ def run_active8_ensemble_bundle_promotion_controller(
     confirm: bool = False,
     reason: str = "active8_ensemble_atomic_bundle",
 ) -> dict[str, Any]:
-    """Atomically switch eight base artifacts and their learned ensemble owner."""
+    """Atomically switch the validated selected subset and its learned ensemble owner."""
     expected_models = set(ACTIVE8_MODEL_NAMES)
     base_rows = [
         row for row in registry_rows
@@ -3249,10 +3258,38 @@ def run_active8_ensemble_bundle_promotion_controller(
         ensemble_payload = _validated_active8_ensemble_payload(ensemble_row)
     except ValueError as exc:
         return {"status": "blocked", "decision": str(exc), "can_promote": False, "training_run_id": training_run_id}
+    expected_observation = (
+        ensemble_payload.get("observation_artifacts")
+        if isinstance(ensemble_payload.get("observation_artifacts"), dict)
+        else {}
+    )
     expected_base = ensemble_payload.get("base_artifacts") if isinstance(ensemble_payload.get("base_artifacts"), dict) else {}
+    selected_models = ensemble_payload.get("selected_models")
+    if (
+        set(expected_observation) != expected_models
+        or not isinstance(selected_models, list)
+        or not selected_models
+        or len(selected_models) != len(set(selected_models))
+        or set(selected_models) != set(expected_base)
+        or not set(selected_models).issubset(expected_models)
+    ):
+        return {
+            "status": "blocked",
+            "decision": "active8_ensemble_selected_model_contract_invalid",
+            "can_promote": False,
+            "training_run_id": training_run_id,
+        }
+    release_models = sorted(selected_models)
     blockers = [
         blocker for model_name in sorted(expected_models)
-        if (blocker := _active8_base_artifact_blocker(model_name, by_model[model_name], expected_base.get(model_name) or {}))
+        if (
+            blocker := _active8_base_artifact_blocker(
+                model_name,
+                by_model[model_name],
+                expected_observation.get(model_name) or {},
+                require_individual_pass=model_name in selected_models,
+            )
+        )
     ]
     if blockers:
         return {
@@ -3262,7 +3299,8 @@ def run_active8_ensemble_bundle_promotion_controller(
     if not confirm:
         return {
             "status": "dry_run", "decision": "promote_active8_ensemble_atomic_bundle", "can_promote": True,
-            "training_run_id": training_run_id, "release_models": sorted(expected_models),
+            "training_run_id": training_run_id, "release_models": release_models,
+            "observation_models": sorted(expected_models),
             "ensemble_artifact_id": ensemble_row.get("artifact_id"), "validation": ensemble_payload.get("validation"),
         }
 
@@ -3274,6 +3312,8 @@ def run_active8_ensemble_bundle_promotion_controller(
         "ensemble_artifact_id": ensemble_row.get("artifact_id"),
         "ensemble_payload_checksum": ensemble_row.get("payload_checksum"),
         "base_artifact_set_checksum": ensemble_row.get("base_artifact_set_checksum"),
+        "observation_artifact_set_checksum": ensemble_payload.get("observation_artifact_set_checksum"),
+        "selected_models": release_models,
         "validation": ensemble_payload.get("validation"),
         "reason": reason,
     }
@@ -3298,7 +3338,7 @@ def run_active8_ensemble_bundle_promotion_controller(
         ON CONFLICT(model_name, version, effective_at) DO NOTHING
     """
     statements: list[tuple[str, list[Any]]] = []
-    for model_name in sorted(expected_models):
+    for model_name in release_models:
         artifact = by_model[model_name]
         pointer = pointer_by_model.get(model_name) or {}
         artifact_id = str(artifact.get("artifact_id") or "")
@@ -3328,7 +3368,7 @@ def run_active8_ensemble_bundle_promotion_controller(
         (ensemble_pointer_sql, [ensemble_artifact_id, ensemble_row.get("cohort_id"), ensemble_row.get("payload_checksum"), ensemble_row.get("base_artifact_set_checksum"), reason, _json_dumps(evidence)]),
     ])
     batch_result = d1_client.atomic_batch_execute(statements, timeout=60.0)
-    placeholders = ",".join("?" for _ in expected_models)
+    placeholders = ",".join("?" for _ in release_models)
     base_readback = d1_client.query(
         f"""
         SELECT p.model_name, p.champion_artifact_id, r.training_run_id, r.state
@@ -3336,11 +3376,11 @@ def run_active8_ensemble_bundle_promotion_controller(
           JOIN model_artifact_registry AS r ON r.artifact_id = p.champion_artifact_id
          WHERE p.model_name IN ({placeholders})
         """,
-        sorted(expected_models),
+        release_models,
     )
     readback_by_model = {str(row.get("model_name") or ""): row for row in base_readback}
     base_mismatches = [
-        model_name for model_name in sorted(expected_models)
+        model_name for model_name in release_models
         if str((readback_by_model.get(model_name) or {}).get("champion_artifact_id") or "")
         != str(by_model[model_name].get("artifact_id") or "")
         or str((readback_by_model.get(model_name) or {}).get("training_run_id") or "") != training_run_id
@@ -3370,8 +3410,9 @@ def run_active8_ensemble_bundle_promotion_controller(
         )
     return {
         "status": "ok", "decision": "promoted_active8_ensemble_atomic_bundle", "can_promote": True,
-        "training_run_id": training_run_id, "release_models": sorted(expected_models),
-        "artifacts": [by_model[name] for name in sorted(expected_models)],
+        "training_run_id": training_run_id, "release_models": release_models,
+        "observation_models": sorted(expected_models),
+        "artifacts": [by_model[name] for name in release_models],
         "ensemble_artifact_id": ensemble_artifact_id, "d1_batch": batch_result,
         "readback_verified": True,
         "confirmed_at": promoted_at, "serving_reader": "model_champion_pointers+active8_ensemble_pointer_v1",

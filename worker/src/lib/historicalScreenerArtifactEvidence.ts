@@ -1,5 +1,9 @@
 import type { Bindings } from '../types'
 import { databaseForDataDomain } from './dataDomainRegistry'
+import {
+  verifyStrategyRouteRecoveryPacket,
+  type StrategyRouteRecoveryScore,
+} from './strategyRouteRecoveryPacket'
 
 export const HISTORICAL_SCREENER_ARTIFACT_SOURCE_LABELER = 'strategy-labeler-v1' as const
 
@@ -19,7 +23,11 @@ export type HistoricalScreenerArtifactEvidence = {
   route_recovery_parity_checksum: string | null
   route_recovery_candidate_count: number
   route_recovery_score_count: number
+  route_recovery_artifact_id: string | null
+  route_recovery_r2_key: string | null
+  route_recovery_artifact_checksum: string | null
   route_recovery_packet_ready: boolean
+  route_recovery_scores: StrategyRouteRecoveryScore[]
 }
 
 type ArtifactIndexRow = {
@@ -122,11 +130,43 @@ export async function loadHistoricalScreenerArtifactEvidence(
   const routeCandidateCount = finiteInteger(routePacket?.candidate_count) ?? 0
   const routeScoreCount = finiteInteger(routePacket?.route_score_count) ?? 0
   const checksumPattern = /^sha256:[a-f0-9]{64}$/i
-  const routePacketReady = routePacketSchema === 'strategy-route-recovery-packet-v1'
+  const routeArtifactId = String(routePacket?.artifact_id ?? "").trim() || null
+  const routeR2Key = String(routePacket?.r2_key ?? "").trim() || null
+  const routeArtifactChecksum = String(routePacket?.artifact_checksum ?? "").trim() || null
+  const declaredRoutePacketReady = routePacketSchema === "strategy-route-recovery-packet-v1"
     && routeCandidateCount === candidateCount
     && routeScoreCount === candidateCount
-    && checksumPattern.test(routePacketChecksum ?? '')
-    && checksumPattern.test(routeParityChecksum ?? '')
+    && checksumPattern.test(routePacketChecksum ?? "")
+    && checksumPattern.test(routeParityChecksum ?? "")
+    && Boolean(routeArtifactId)
+    && Boolean(routeR2Key)
+    && checksumPattern.test(routeArtifactChecksum ?? "")
+  let routePacketReady = false
+  let routeRecoveryScores: StrategyRouteRecoveryScore[] = []
+  if (declaredRoutePacketReady && routeR2Key && routeArtifactChecksum) {
+    const routeObject = await (env.ARTIFACTS as any).get(routeR2Key).catch(() => null)
+    const routeBody = routeObject ? await routeObject.text().catch(() => "") : ""
+    if (routeBody && await sha256(routeBody) === routeArtifactChecksum) {
+      try {
+        const routeEnvelope = JSON.parse(routeBody)
+        const routePayload = routeEnvelope?.payload
+        routePacketReady = routeEnvelope?.schema_version === routePacketSchema
+          && routeEnvelope?.domain === "strategy_route_recovery"
+          && routeEnvelope?.business_date === signalDate
+          && routePayload?.input_packet_checksum === routePacketChecksum
+          && routePayload?.route_score_parity_checksum === routeParityChecksum
+          && routePayload?.candidate_count === routeCandidateCount
+          && routePayload?.route_score_count === routeScoreCount
+          && Array.isArray(routePayload?.route_scores)
+          && routePayload.route_scores.every((score: any) =>
+            score?.signal_date === signalDate && score?.producer_run_id === producerRunId)
+          && await verifyStrategyRouteRecoveryPacket(routePayload)
+        if (routePacketReady) routeRecoveryScores = routePayload.route_scores
+      } catch {
+        routePacketReady = false
+      }
+    }
+  }
   if (
     manifest?.schema_version !== 'screener-funnel-evidence-index-v1'
     || manifest?.business_date !== signalDate
@@ -155,6 +195,10 @@ export async function loadHistoricalScreenerArtifactEvidence(
     route_recovery_parity_checksum: routeParityChecksum,
     route_recovery_candidate_count: routeCandidateCount,
     route_recovery_score_count: routeScoreCount,
+    route_recovery_artifact_id: routeArtifactId,
+    route_recovery_r2_key: routeR2Key,
+    route_recovery_artifact_checksum: routeArtifactChecksum,
     route_recovery_packet_ready: routePacketReady,
+    route_recovery_scores: routeRecoveryScores,
   }
 }

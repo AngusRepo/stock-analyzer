@@ -8,6 +8,7 @@ const edge = readFileSync('src/lib/strategyMarginalEdgeV4.ts', 'utf8')
 const runState = readFileSync('src/lib/strategyLearningRunState.ts', 'utf8')
 const orchestrator = readFileSync('src/lib/updateOrchestrator.ts', 'utf8')
 const historicalArtifact = readFileSync('src/lib/historicalScreenerArtifactEvidence.ts', 'utf8')
+const routeRecovery = readFileSync('src/lib/strategyRouteRecoveryPacket.ts', 'utf8')
 const adminTasks = readFileSync('src/lib/adminTriggerWorkerDomainTasks.ts', 'utf8')
 const selectionEvidence = readFileSync('src/lib/selectionReferenceEvidence.ts', 'utf8')
 const adminWrite = readFileSync('src/routes/adminWriteRoutes.ts', 'utf8')
@@ -93,6 +94,11 @@ assert(!historicalRebuild.includes(".filter((spec) => spec.status !== 'retired')
 assert(orchestrator.includes('loadHistoricalScreenerArtifactEvidence')
   && adminTasks.includes('loadHistoricalScreenerArtifactEvidence'),
   'queue and manual finalizers must use the same immutable artifact verifier')
+assert(historicalRebuild.includes('applyStrategyRouteRecoveryScores')
+  && routeRecovery.includes('route_recovery_coverage_mismatch')
+  && routeRecovery.includes('route_recovery_carrier_conflict')
+  && routeRecovery.includes('strategy_challenger_route_score: recovery.challenger_route_score'),
+  'verified immutable route packet must repair missing scores and reject conflicting carriers before CAS persistence')
 assert(historicalRebuild.includes('loadLegacyStrategyProductionWeightsBefore'),
   'legacy policy compatibility must remain scoped to historical reconstruction, never runtime serving')
 assert(historicalRebuild.includes('new Map(referenceRows.map'), 'raw reference lineage must be deduplicated by symbol after validation')
@@ -108,18 +114,23 @@ assert(orchestrator.includes('loadCanonicalScreenerRunIds')
   && adminTasks.includes('loadCanonicalScreenerRunIds')
   && adminWrite.includes('loadCanonicalScreenerRunIds'),
   'queue, finalizers, and admin dry-runs must resolve canonical screener authority from Ops D1')
-assert(orchestrator.includes("msg.type === 'strategy_evidence_rebuild'") && orchestrator.includes('priorityOnly: false'),
-  'explicit maintenance rebuild queues must validate the full canonical matrix instead of using the live-finalizer success fast path')
-assert(historicalRebuild.includes('superseded_by_strategy_decision_log_pit_reconstruction_v5'),
-  'legacy ready matrices must be durably superseded before V5 replacement')
+assert(orchestrator.includes("msg.type === 'strategy_evidence_rebuild'")
+  && orchestrator.includes('priorityOnly: true')
+  && orchestrator.includes('report.successfulDates !== 1 || report.blockedDates !== 0'),
+  'explicit maintenance rebuild queues must fully validate exactly the requested canonical date')
+assert(historicalRebuild.includes('persistSelectionEvidenceV4')
+  && !historicalRebuild.includes('superseded_by_strategy_decision_log_pit_reconstruction_v5')
+  && !historicalRebuild.includes("DELETE FROM strategy_label_matrix_v4 WHERE producer_run_id=?"),
+  'historical replacement must use fenced staging/CAS and must not delete immutable ready carriers')
 assert(historicalRebuild.includes('existingMatrixMatchedRows > 0'),
   'legacy ready matrix reuse must require matched strategy evidence')
 assert(historicalRebuild.includes('existingMatrixThresholdEvidenceRows === existingMatrixMatchedRows'),
   'legacy ready matrix reuse must require complete threshold-margin evidence')
 assert(selectionEvidence.includes('reference_candidate_count=excluded.reference_candidate_count'),
   'matrix retry must replace stale run metadata with the current canonical universe')
-assert(selectionEvidence.includes('producer_run_id = ? AND hard_gate_passed = 1'),
-  'reference persistence coverage must count the canonical hard-gate universe only')
+assert(selectionEvidence.includes('FROM selection_reference_snapshots_v1 r')
+  && selectionEvidence.includes('WHEN r.signal_date=? AND r.hard_gate_passed=1'),
+  'reference persistence coverage must verify the complete canonical hard-gate contract')
 assert(selectionEvidence.includes('FROM json_each(?)'),
   'matrix persistence must use bounded set-based JSON inserts instead of one D1 statement per row')
 assert(selectionEvidence.includes('const matrixJsonChunkSize = 1000'),

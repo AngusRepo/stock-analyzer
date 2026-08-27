@@ -37,6 +37,27 @@ export type StrategyRouteBackfillEligibility = {
   blockers: string[]
 }
 
+export type StrategyRouteMaturityProjection = {
+  schemaVersion: 'strategy-route-maturity-projection-v1'
+  asOfDate: string
+  labelHorizonSessions: 5
+  requiredDates: number
+  eligibleDates: number
+  pendingDates: number
+  unavailableDates: number
+  datesRemaining: number
+  earliestPendingMaturityDate: string | null
+  bestCaseThresholdDate: string | null
+  status: 'complete' | 'projected' | 'calendar_unavailable'
+  assumption: 'future_signal_dates_are_projection_only_and_require_full_v5_carrier_closure'
+  dates: Array<{
+    signalDate: string
+    status: StrategyRouteBackfillEligibility['status']
+    expectedMaturityDate: string | null
+    blockers: string[]
+  }>
+}
+
 function count(value: unknown): number {
   const parsed = Number(value)
   return Number.isFinite(parsed) ? Math.max(0, Math.floor(parsed)) : 0
@@ -45,6 +66,109 @@ function count(value: unknown): number {
 function shiftUtcDate(date: string, days: number): string {
   const timestamp = Date.parse(`${date}T00:00:00Z`)
   return new Date(timestamp + days * 86_400_000).toISOString().slice(0, 10)
+}
+
+export async function projectStrategyRouteMaturity(
+  rows: StrategyRouteBackfillEligibility[],
+  asOfDate: string,
+  options: {
+    requiredDates: number
+    nextTradingDate: (afterDate: string) => Promise<string>
+    labelHorizonSessions?: number
+  },
+): Promise<StrategyRouteMaturityProjection> {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(asOfDate)) throw new Error(`invalid_strategy_route_projection_date:${asOfDate}`)
+  const requiredDates = Math.max(1, Math.floor(options.requiredDates))
+  const labelHorizonSessions = Math.max(1, Math.floor(options.labelHorizonSessions ?? 5))
+  if (labelHorizonSessions !== 5) throw new Error(`unsupported_strategy_route_label_horizon:${labelHorizonSessions}`)
+  const canonicalRows = [...rows]
+    .filter((row) => /^\d{4}-\d{2}-\d{2}$/.test(row.signalDate) && row.signalDate <= asOfDate)
+    .sort((left, right) => left.signalDate.localeCompare(right.signalDate))
+  const eligibleDates = canonicalRows.filter((row) => row.status === 'eligible').length
+  const pendingRows = canonicalRows.filter((row) => row.status === 'pending_maturity')
+  const unavailableDates = canonicalRows.filter((row) => row.status === 'unavailable').length
+  const datesRemaining = Math.max(0, requiredDates - eligibleDates)
+  const nextByDate = new Map<string, string>()
+  const next = async (date: string): Promise<string> => {
+    const cached = nextByDate.get(date)
+    if (cached) return cached
+    const resolved = await options.nextTradingDate(date)
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(resolved) || resolved <= date) {
+      throw new Error(`invalid_next_trading_date:${date}:${resolved}`)
+    }
+    nextByDate.set(date, resolved)
+    return resolved
+  }
+  const advance = async (date: string, sessions: number): Promise<string> => {
+    let cursor = date
+    for (let offset = 0; offset < sessions; offset += 1) cursor = await next(cursor)
+    return cursor
+  }
+  const projectedDates: StrategyRouteMaturityProjection['dates'] = canonicalRows.map((row) => ({
+    signalDate: row.signalDate,
+    status: row.status,
+    expectedMaturityDate: row.status === 'eligible' ? row.signalDate : null,
+    blockers: [...row.blockers],
+  }))
+  try {
+    for (const pending of pendingRows) {
+      const date = projectedDates.find((row) => row.signalDate === pending.signalDate)!
+      date.expectedMaturityDate = await advance(pending.signalDate, labelHorizonSessions)
+    }
+    const pendingThatCanClose = Math.min(datesRemaining, pendingRows.length)
+    const futureDatesNeeded = Math.max(0, datesRemaining - pendingThatCanClose)
+    let futureSignalDate = canonicalRows.at(-1)?.signalDate ?? asOfDate
+    if (futureSignalDate < asOfDate) futureSignalDate = asOfDate
+    const thresholdMaturityDates = pendingRows
+      .slice(0, pendingThatCanClose)
+      .map((row) => projectedDates.find((item) => item.signalDate === row.signalDate)?.expectedMaturityDate)
+      .filter((date): date is string => Boolean(date))
+    for (let offset = 0; offset < futureDatesNeeded; offset += 1) {
+      futureSignalDate = await next(futureSignalDate)
+      const expectedMaturityDate = await advance(futureSignalDate, labelHorizonSessions)
+      thresholdMaturityDates.push(expectedMaturityDate)
+      projectedDates.push({
+        signalDate: futureSignalDate,
+        status: 'pending_maturity',
+        expectedMaturityDate,
+        blockers: ['future_signal_date_projection_requires_full_v5_carrier'],
+      })
+    }
+    return {
+      schemaVersion: 'strategy-route-maturity-projection-v1',
+      asOfDate,
+      labelHorizonSessions: 5,
+      requiredDates,
+      eligibleDates,
+      pendingDates: pendingRows.length,
+      unavailableDates,
+      datesRemaining,
+      earliestPendingMaturityDate: pendingRows
+        .map((row) => projectedDates.find((item) => item.signalDate === row.signalDate)?.expectedMaturityDate)
+        .filter((date): date is string => Boolean(date))
+        .sort()[0] ?? null,
+      bestCaseThresholdDate: datesRemaining === 0 ? asOfDate : thresholdMaturityDates.sort().at(-1) ?? null,
+      status: datesRemaining === 0 ? 'complete' : 'projected',
+      assumption: 'future_signal_dates_are_projection_only_and_require_full_v5_carrier_closure',
+      dates: projectedDates,
+    }
+  } catch {
+    return {
+      schemaVersion: 'strategy-route-maturity-projection-v1',
+      asOfDate,
+      labelHorizonSessions: 5,
+      requiredDates,
+      eligibleDates,
+      pendingDates: pendingRows.length,
+      unavailableDates,
+      datesRemaining,
+      earliestPendingMaturityDate: null,
+      bestCaseThresholdDate: null,
+      status: 'calendar_unavailable',
+      assumption: 'future_signal_dates_are_projection_only_and_require_full_v5_carrier_closure',
+      dates: projectedDates,
+    }
+  }
 }
 
 export async function auditStrategyRouteBackfillEligibility(

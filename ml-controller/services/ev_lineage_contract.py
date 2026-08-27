@@ -12,8 +12,8 @@ from services.active_model_policy import ACTIVE_ALPHA_MODELS
 
 SCORE_FEATURE_VERSION = "score_v2"
 SCORE_SEMANTIC_VERSION = "score-v2-active8-components-v3"
-ENSEMBLE_SEMANTIC_VERSION = "active8-ic-weighted-rank-v4"
-OOF_ENSEMBLE_SEMANTIC_VERSION = "active8-purged-oof-chronological-ridge-v4"
+ENSEMBLE_SEMANTIC_VERSION = "active8-purged-oof-chronological-nonnegative-ridge-v5"
+OOF_ENSEMBLE_SEMANTIC_VERSION = "active8-purged-oof-chronological-nonnegative-ridge-v5"
 RECONSTRUCTION_VERSION = "ev-point-in-time-lineage-reconstruction-v1"
 CHAMPION_HISTORY_SOURCE = "model_champion_history"
 ROW_MODEL_VERSION_SOURCE = "predictions.model_signal"

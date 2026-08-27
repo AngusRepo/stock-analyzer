@@ -848,7 +848,7 @@ def test_dispatch_reuses_terminal_ensemble_validation_block_without_registry_que
             "validation": {
                 "schema_version": "active8-oof-ensemble-validation-v1",
                 "decision": "FAIL",
-                "failed_gates": ["chronological_validation_rank_ic_non_positive"],
+                "failed_gates": ["chronological_validation_equal_date_market_rank_ic_lcb90_non_positive"],
             },
         },
     }

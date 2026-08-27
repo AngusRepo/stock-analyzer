@@ -23,6 +23,12 @@ import {
   STRATEGY_FORMAL_LABELER_VERSION,
   STRATEGY_FORMAL_RECONSTRUCTION_LABELER_VERSION,
 } from './strategySpec'
+import { nextTwTradingDate } from './schedulerPolicy'
+import {
+  projectStrategyRouteMaturity,
+  type StrategyRouteBackfillEligibility,
+  type StrategyRouteMaturityProjection,
+} from './strategyRouteBackfillEligibility'
 
 export type PipelineMaturityStatus =
   | 'serving'
@@ -89,7 +95,10 @@ export interface PipelineMaturityStage {
   lineage: {
     requested_date: string
     evidence_date: string | null
+    data_cutoff_date?: string | null
+    mature_outcome_max_date?: string | null
     oof_max_date?: string | null
+    frozen_forward_business_date?: string | null
     oof_applicable?: boolean
     evidence_semantics?: string
     artifact_id?: string | null
@@ -188,6 +197,7 @@ export interface StrategyRouteBundleMaturity {
   route_required_dates: number
   promoted_run_id: string | null
   blockers: string[]
+  maturity_projection: StrategyRouteMaturityProjection
 }
 
 
@@ -220,6 +230,22 @@ type SectorPitReadiness = {
   first_signal_date: string | null
   latest_signal_date: string | null
   signal_dates: number | null
+}
+
+type RouteEligibilityDbRow = {
+  signal_date: string
+  producer_run_id: string
+  status: StrategyRouteBackfillEligibility['status']
+  reference_rows: number | string
+  mature_label_rows: number | string
+  rejected_label_rows: number | string
+  matrix_rows: number | string
+  evaluable_matrix_rows: number | string
+  matched_matrix_rows: number | string
+  challenger_affinity_rows: number | string
+  threshold_margin_rows: number | string
+  challenger_route_rows: number | string
+  blocker_json: string
 }
 
 function validDate(value: string): boolean {
@@ -412,7 +438,7 @@ export async function buildPipelineDecisionMaturityPacket(
   `).bind(requestedDate).first<CanonicalHead>())
   const head = canonicalHead.value
 
-  const [reference, matrix, redundancy, routeRun, routeHead, evRows, evShadowRows, serving, l4Maturity, sectorPit] = await Promise.all([
+  const [reference, matrix, redundancy, routeRun, routeHead, evRows, evShadowRows, serving, l4Maturity, sectorPit, routeEligibility] = await Promise.all([
     safeQuery(() => head ? learningDb.prepare(`
       SELECT COUNT(*) reference_rows,
              SUM(CASE WHEN r.strategy_challenger_affinity_version=? THEN 1 ELSE 0 END) affinity_v2_rows,
@@ -496,19 +522,35 @@ export async function buildPipelineDecisionMaturityPacket(
        LIMIT 1
     `).bind(requestedDate).first<any>()),
     safeQuery(() => learningDb.prepare(`
-      SELECT run_id, artifact_version, as_of_date, status, candidate_route_version,
-             route_floor, sample_count, date_count, train_start_date, train_end_date,
+      SELECT route_run.run_id, route_run.artifact_version, route_run.as_of_date, route_run.status, route_run.candidate_route_version,
+             route_run.route_floor, route_run.sample_count, route_run.date_count, route_run.train_start_date, route_run.train_end_date,
              oos_start_date, oos_end_date, top_bucket_net_return,
              top_bucket_net_return_lcb90, absolute_spread, absolute_spread_lcb90,
              residual_spread, residual_spread_lcb90, incumbent_sample_count,
              paired_sample_count, paired_date_count, challenger_incumbent_delta,
              challenger_incumbent_delta_lcb90,
-             brier_score, climatology_brier_score, log_loss, gate_json, created_at
-        FROM strategy_route_calibration_runs_v1
-       WHERE as_of_date<=? AND sample_count>0 AND date_count>0
-       ORDER BY as_of_date DESC, created_at DESC
+             route_run.brier_score, route_run.climatology_brier_score, route_run.log_loss,
+             route_run.gate_json, route_run.created_at,
+             (
+               SELECT MAX(label.outcome_known_date)
+                 FROM selection_reference_snapshots_v1 reference
+                 JOIN canonical_selection_labels_v4 label
+                   ON label.signal_date=reference.signal_date
+                  AND label.symbol=reference.symbol
+                  AND label.producer_run_id=reference.producer_run_id
+                 JOIN strategy_route_backfill_eligibility_v1 eligibility
+                   ON eligibility.signal_date=reference.signal_date
+                  AND eligibility.producer_run_id=reference.producer_run_id
+                  AND eligibility.status='eligible'
+                WHERE reference.strategy_challenger_route_version=?
+                  AND reference.strategy_challenger_route_score IS NOT NULL
+                  AND label.outcome_known_date<=route_run.as_of_date
+             ) mature_outcome_max_date
+        FROM strategy_route_calibration_runs_v1 route_run
+       WHERE route_run.as_of_date<=? AND route_run.sample_count>0 AND route_run.date_count>0
+       ORDER BY route_run.as_of_date DESC, route_run.created_at DESC
        LIMIT 1
-    `).bind(requestedDate).first<any>()),
+    `).bind(STRATEGY_ROUTE_CHALLENGER_VERSION, requestedDate).first<any>()),
     safeQuery(() => learningDb.prepare(`
       SELECT h.run_id, h.artifact_version, h.candidate_route_version,
              h.route_floor, h.promoted_at
@@ -608,7 +650,50 @@ export async function buildPipelineDecisionMaturityPacket(
              COUNT(*) signal_dates
         FROM ready_signals
     `).bind(requestedDate).first<SectorPitReadiness>()),
+    safeQuery(() => learningDb.prepare(`
+      WITH ranked AS (
+        SELECT signal_date, producer_run_id, status, reference_rows, mature_label_rows,
+               rejected_label_rows, matrix_rows, evaluable_matrix_rows, matched_matrix_rows,
+               challenger_affinity_rows, threshold_margin_rows, challenger_route_rows,
+               blocker_json,
+               ROW_NUMBER() OVER (
+                 PARTITION BY signal_date
+                 ORDER BY datetime(updated_at) DESC, producer_run_id DESC
+               ) ordinal
+          FROM strategy_route_backfill_eligibility_v1
+         WHERE signal_date<=?
+      )
+      SELECT signal_date, producer_run_id, status, reference_rows, mature_label_rows,
+             rejected_label_rows, matrix_rows, evaluable_matrix_rows, matched_matrix_rows,
+             challenger_affinity_rows, threshold_margin_rows, challenger_route_rows,
+             blocker_json
+        FROM ranked
+       WHERE ordinal=1
+       ORDER BY signal_date
+    `).bind(requestedDate).all<RouteEligibilityDbRow>().then((result) => result.results ?? [])),
   ])
+
+  const eligibilityRows: StrategyRouteBackfillEligibility[] = (routeEligibility.value ?? []).map((row) => ({
+    signalDate: row.signal_date,
+    producerRunId: row.producer_run_id,
+    status: row.status,
+    referenceRows: finite(row.reference_rows),
+    matureLabelRows: finite(row.mature_label_rows),
+    rejectedLabelRows: finite(row.rejected_label_rows),
+    matrixRows: finite(row.matrix_rows),
+    evaluableMatrixRows: finite(row.evaluable_matrix_rows),
+    matchedMatrixRows: finite(row.matched_matrix_rows),
+    challengerAffinityRows: finite(row.challenger_affinity_rows),
+    thresholdMarginRows: finite(row.threshold_margin_rows),
+    challengerRouteRows: finite(row.challenger_route_rows),
+    blockers: stringArray(row.blocker_json),
+  }))
+  const routeMaturityProjection = await projectStrategyRouteMaturity(eligibilityRows, requestedDate, {
+    requiredDates: STRATEGY_ROUTE_MIN_TOTAL_DATES,
+    nextTradingDate: (afterDate) => nextTwTradingDate(env.KV, afterDate, marketDb, {
+      requireOfficialFutureCalendar: true,
+    }),
+  })
 
   const stages: PipelineMaturityStage[] = []
   let referenceRow = reference.value
@@ -862,6 +947,8 @@ export async function buildPipelineDecisionMaturityPacket(
       lineage: {
         requested_date: requestedDate,
         evidence_date: route.as_of_date,
+        data_cutoff_date: route.as_of_date,
+        mature_outcome_max_date: route.mature_outcome_max_date ?? null,
         artifact_id: route.run_id,
         oof_max_date: route.oos_end_date ?? null,
         oof_applicable: true,
@@ -982,7 +1069,10 @@ export async function buildPipelineDecisionMaturityPacket(
       lineage: {
         requested_date: requestedDate,
         evidence_date: l4?.source_run_date ?? null,
+        data_cutoff_date: l4?.source_run_date ?? null,
+        mature_outcome_max_date: l4?.mature_outcome_max_date ?? null,
         oof_max_date: l4?.fusion_oof_max_date ?? null,
+        frozen_forward_business_date: l4ShadowPacket?.business_date ?? null,
         cadence: l4?.cadence ?? 'unknown',
         role: 'candidate',
         date_semantic: 'candidate_cutoff',
@@ -1182,6 +1272,9 @@ export async function buildPipelineDecisionMaturityPacket(
       lineage: {
         requested_date: requestedDate,
         evidence_date: fusion?.source_run_date ?? null,
+        data_cutoff_date: fusion?.source_run_date ?? null,
+        mature_outcome_max_date: fusion?.mature_outcome_max_date ?? null,
+        frozen_forward_business_date: fusionShadowPacket?.business_date ?? null,
         artifact_id: fusion?.artifact_id ?? null,
         model_version: fusion?.version ?? null,
         cadence: fusion?.cadence ?? 'unknown',
@@ -1465,6 +1558,7 @@ export async function buildPipelineDecisionMaturityPacket(
     route_required_dates: STRATEGY_ROUTE_MIN_TOTAL_DATES,
     promoted_run_id: routePromoted ? promotedRoute.run_id : null,
     blockers: bundleBlockers,
+    maturity_projection: routeMaturityProjection,
   }
 
   return {

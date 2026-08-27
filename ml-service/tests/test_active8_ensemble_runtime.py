@@ -26,7 +26,7 @@ def _artifact():
     coefficients[0] = 0.10
     payload = {
         "schema_version": "active8-oof-ensemble-serving-artifact-v1",
-        "ensemble_semantic_version": "active8-purged-oof-chronological-ridge-v4",
+        "ensemble_semantic_version": "active8-purged-oof-chronological-nonnegative-ridge-v5",
         "calibration_schema_version": "active8-chronological-conformal-isotonic-v1",
         "signal_policy": {
             "schema_version": "active8-net-return-conformal-signal-policy-v1",
@@ -41,7 +41,7 @@ def _artifact():
         "cohort_id": "cohort-v1",
         "source_manifest_checksum": "a" * 64,
         "knowledge_cutoff_date": "2026-08-25",
-        "base_artifacts": {
+        "observation_artifacts": {
             name: {
                 "artifact_id": f"{name}:v-new:oof_full_fit_release",
                 "version": "v-new",
@@ -50,14 +50,28 @@ def _artifact():
             }
             for index, name in enumerate(ALPHA_PREDICTION_MODELS)
         },
+        "observation_artifact_set_checksum": "a" * 64,
+        "base_artifacts": {
+            "LightGBM": {
+                "artifact_id": "LightGBM:v-new:oof_full_fit_release",
+                "version": "v-new",
+                "checksum": "sha256:" + format(1, "064x"),
+                "candidate_type": "oof_full_fit_release",
+            }
+        },
         "base_artifact_set_checksum": "b" * 64,
+        "selected_models": ["LightGBM"],
+        "excluded_models": [
+            name for name in ALPHA_PREDICTION_MODELS if name != "LightGBM"
+        ],
         "feature_names": [
             *[f"{name}.rank" for name in ALPHA_PREDICTION_MODELS],
             *[f"{name}.available" for name in ALPHA_PREDICTION_MODELS],
         ],
         "model_order": list(ALPHA_PREDICTION_MODELS),
         "fit": {
-            "method": "ridge_full_fit_after_heldout_chronological_oof_validation",
+            "method": "nonnegative_rank_ridge_full_fit_after_heldout_chronological_oof_validation",
+            "rank_coefficient_constraint": "nonnegative",
             "regularization": 1.0,
             "intercept": -0.05,
             "coefficients": coefficients,
@@ -79,7 +93,9 @@ def _artifact():
             "validation_dates": 8,
             "validation_rows": 320,
             "rank_ic": 0.1,
+            "rank_ic_equal_date_market_lcb90": 0.02,
             "top_bottom_net_return_spread": 0.01,
+            "top_bottom_net_return_spread_lcb90": 0.001,
         },
     }
     payload["payload_checksum"] = _payload_checksum(payload)
@@ -101,11 +117,30 @@ def test_runtime_uses_learned_return_and_conformal_bounds_without_top_k():
     assert result.evidence["signal_policy"]["top_k"] is None
 
 
-def test_runtime_binds_exact_base_artifact_identity():
+def test_runtime_binds_selected_identity_but_ignores_unselected_pointer_drift():
     pool = _pool_models()
     pool["PatchTST"]["version"] = "stale"
-    with pytest.raises(Active8EnsembleContractError, match="base_artifact_mismatch:PatchTST"):
+    validate_active8_ensemble_artifact(_artifact(), pool_models=pool)
+
+    pool["LightGBM"]["version"] = "stale"
+    with pytest.raises(Active8EnsembleContractError, match="base_artifact_mismatch:LightGBM"):
         validate_active8_ensemble_artifact(_artifact(), pool_models=pool)
+
+
+def test_excluded_model_cannot_retain_hidden_weight():
+    artifact = _artifact()
+    artifact["fit"]["coefficients"][6] = 0.01
+    artifact["payload_checksum"] = _payload_checksum(artifact)
+    with pytest.raises(Active8EnsembleContractError, match="excluded_model_has_weight:PatchTST"):
+        validate_active8_ensemble_artifact(artifact, pool_models=_pool_models())
+
+
+def test_negative_rank_coefficient_is_rejected():
+    artifact = _artifact()
+    artifact["fit"]["coefficients"][0] = -0.01
+    artifact["payload_checksum"] = _payload_checksum(artifact)
+    with pytest.raises(Active8EnsembleContractError, match="fit_contract_invalid"):
+        validate_active8_ensemble_artifact(artifact, pool_models=_pool_models())
 
 
 def test_one_fold_artifact_is_not_serving_grade():

@@ -116,7 +116,7 @@ const EVIDENCE_MATRIX_COLUMNS = [
   { label: 'W-3', description: '三週前 weekly IC；看短期趨勢，不是升級門檻。' },
   { label: 'W-2', description: '兩週前 weekly IC；用來觀察是否連續轉弱。' },
   { label: 'W-1', description: '上週 weekly IC；反映最近一次已驗證週期。' },
-  { label: 'OOS IC', description: 'retrain/backtest artifact 的離線 out-of-sample rank IC。' },
+  { label: 'FULL OOF IC', description: '單一模型完整 immutable CPCV／OOF 窗口的平均 rank IC；不可直接和 ensemble 尾端 validation IC 比較。' },
   { label: 'LIVE IC', description: 'daily verify 後的 rolling live rank IC；看上線後近期真實命中。' },
   { label: 'PBO/CPCV', description: '防 overfit 與 purged CV/foundation validation；用模型專屬 policy。' },
   { label: 'COMPARE', description: 'candidate vs current champion 的最終比較；dry-run 不切 pointer。' },
@@ -292,7 +292,7 @@ function maxTone(tones: WorkstationTone[]): WorkstationTone {
 }
 
 function fleetToneFromMatrix(statusTone: WorkstationTone, blockers: string[], history: GrafanaModelRecord['history']): WorkstationTone {
-  const requiredGateLabels = new Set(['OOS IC', 'LIVE IC', 'PBO/CPCV', 'COMPARE'])
+  const requiredGateLabels = new Set(['FULL OOF IC', 'LIVE IC', 'PBO/CPCV', 'COMPARE'])
   const gateTones = history
     .filter((cell) => requiredGateLabels.has(cell.label))
     .map((cell) => (cell.tone === 'neutral' ? 'warn' : cell.tone))
@@ -856,9 +856,12 @@ function buildEvidenceCells({
       }
     }),
     {
-      label: 'OOS IC',
+      label: 'FULL OOF IC',
       value: compactNumber(oosIc),
-      title: oosIc == null ? `${candidateId}: OOS IC unavailable` : `${candidateId}: artifact OOS IC ${oosIc.toFixed(4)}`,
+      detail: '完整單模 OOF 窗口；ensemble 另用較晚的 held-out validation 窗口',
+      title: oosIc == null
+        ? `${candidateId}: full-window model OOF IC unavailable`
+        : `${candidateId}: full-window immutable model OOF IC ${oosIc.toFixed(4)}; do not compare directly with later-window ensemble validation IC.`,
       tone: toneFromIc(oosIc),
     },
     {

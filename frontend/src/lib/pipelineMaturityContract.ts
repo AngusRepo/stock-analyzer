@@ -59,7 +59,10 @@ export type PipelineMaturityStage = {
   lineage: {
     requested_date: string
     evidence_date: string | null
+    data_cutoff_date?: string | null
+    mature_outcome_max_date?: string | null
     oof_max_date?: string | null
+    frozen_forward_business_date?: string | null
     artifact_id?: string | null
     model_version?: string | null
     oof_applicable?: boolean
@@ -134,6 +137,27 @@ export type PipelineMaturityStage = {
   }
 }
 
+export type StrategyRouteMaturityProjection = {
+  schemaVersion: 'strategy-route-maturity-projection-v1'
+  asOfDate: string
+  labelHorizonSessions: 5
+  requiredDates: number
+  eligibleDates: number
+  pendingDates: number
+  unavailableDates: number
+  datesRemaining: number
+  earliestPendingMaturityDate: string | null
+  bestCaseThresholdDate: string | null
+  status: 'complete' | 'projected' | 'calendar_unavailable'
+  assumption: 'future_signal_dates_are_projection_only_and_require_full_v5_carrier_closure'
+  dates: Array<{
+    signalDate: string
+    status: 'eligible' | 'unavailable' | 'pending_maturity'
+    expectedMaturityDate: string | null
+    blockers: string[]
+  }>
+}
+
 export type StrategyRouteBundleMaturity = {
   version: string
   status: PipelineMaturityStatus
@@ -147,6 +171,7 @@ export type StrategyRouteBundleMaturity = {
   route_required_dates: number
   promoted_run_id: string | null
   blockers: string[]
+  maturity_projection?: StrategyRouteMaturityProjection
 }
 
 export type PipelineDecisionMaturityPacket = {

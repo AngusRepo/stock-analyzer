@@ -1,5 +1,7 @@
+import { SELECTION_ROUTE_SEMANTIC_VERSION } from './evidenceContracts'
+
 export const STRATEGY_ROUTE_CALIBRATION_ARTIFACT_VERSION = 'strategy-route-calibration-v2'
-export const STRATEGY_ROUTE_CHALLENGER_VERSION = 'strategy-semantic-continuous-affinity-v5'
+export const STRATEGY_ROUTE_CHALLENGER_VERSION = SELECTION_ROUTE_SEMANTIC_VERSION
 export const STRATEGY_ROUTE_AFFINITY_VERSION = 'strategy-threshold-margin-affinity-v2'
 
 const MIN_TRAIN_DATES = 3

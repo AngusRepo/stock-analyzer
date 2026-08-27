@@ -454,13 +454,15 @@ function StageRow({ stage }: { stage: PipelineMaturityStage }) {
             <div className="border-t border-white/[0.07] pt-3">
               <p className="flex items-center gap-1.5 text-xs font-semibold text-slate-500"><Database className="h-3.5 w-3.5" /> 資料來源與版本 lineage</p>
               <dl className="mt-2 grid grid-cols-[84px_minmax(0,1fr)] gap-x-2 gap-y-1 text-[11px] leading-4">
-                <dt className="text-slate-600">{stage.lineage.date_semantic === 'candidate_cutoff' ? '候選資料截止日' : '證據日期'}</dt><dd className="sv-num break-all text-slate-400">{stage.lineage.evidence_date ?? '資料尚未具備'}</dd>
+                <dt className="text-slate-600">資料截止日</dt><dd className="sv-num break-all text-slate-400">{stage.lineage.data_cutoff_date ?? stage.lineage.evidence_date ?? '資料尚未具備'}</dd>
+                <dt className="text-slate-600">成熟結果已知截至</dt><dd className="sv-num break-all text-slate-400">{stage.lineage.mature_outcome_max_date ?? '尚未發布'}</dd>
+                <dt className="text-slate-600">OOF 訊號截止日</dt><dd className="sv-num break-all text-slate-400">{stage.lineage.oof_applicable === false ? '不適用（此階段不是 OOF）' : stage.lineage.oof_max_date ?? `資料尚未具備 · ${stage.lineage.oof_unavailable_reason ?? '原因未提供'}`}</dd>
+                <dt className="text-slate-600">固定樣本監控業務日</dt><dd className="sv-num break-all text-slate-400">{stage.lineage.frozen_forward_business_date ?? '不適用／尚未具備'}</dd>
                 {stage.lineage.cadence ? <><dt className="text-slate-600">更新頻率</dt><dd className="sv-num break-all text-slate-400">{stage.lineage.cadence}</dd></> : null}
                 {stage.lineage.role ? <><dt className="text-slate-600">用途角色</dt><dd className="sv-num break-all text-slate-400">{stage.lineage.role}</dd></> : null}
                 <dt className="text-slate-600">前次證據</dt><dd className="sv-num break-all text-slate-400">{previousHistory?.evidence_date ?? '首次證據'}</dd>
                 <dt className="text-slate-600">相較前次變化</dt><dd className="sv-num break-words text-cyan-300">{historyComparison}</dd>
                 <dt className="text-slate-600">近期趨勢</dt><dd className="sv-num break-words text-slate-400">{historyTrend || '尚無前次歷史'}</dd>
-                <dt className="text-slate-600">樣本外證據截至</dt><dd className="sv-num break-all text-slate-400">{stage.lineage.oof_applicable === false ? '不適用（此階段不是 OOF）' : stage.lineage.oof_max_date ?? `資料尚未具備 · ${stage.lineage.oof_unavailable_reason ?? '原因未提供'}`}</dd>
                 <dt className="text-slate-600">版本</dt><dd className="sv-num break-all text-slate-400">{stage.version ?? '資料尚未具備'}</dd>
                 <dt className="text-slate-600">產物 ID</dt><dd className="sv-num break-all text-slate-400">{stage.lineage.artifact_id ?? '不適用'}</dd>
                 <dt className="text-slate-600">來源</dt><dd className="break-words text-slate-400">{stage.lineage.source}</dd>
@@ -614,6 +616,27 @@ export default function PipelineMaturityContribution({
               <div className="rounded-xl border border-white/[0.07] px-3 py-2"><p className="text-slate-500">成熟交易日／要求日數</p><p className="sv-num mt-1 font-semibold text-slate-100">{strategyRouteBundle.route_mature_dates}/{strategyRouteBundle.route_required_dates}</p></div>
             </div>
           </div>
+          {strategyRouteBundle.maturity_projection ? (
+            <div className="mt-3 grid gap-2 text-xs sm:grid-cols-2 xl:grid-cols-4">
+              <div className="rounded-xl border border-white/[0.07] px-3 py-2">
+                <p className="text-slate-500">合法／待成熟／不可重建</p>
+                <p className="sv-num mt-1 font-semibold text-slate-100">{strategyRouteBundle.maturity_projection.eligibleDates}/{strategyRouteBundle.maturity_projection.pendingDates}/{strategyRouteBundle.maturity_projection.unavailableDates}</p>
+              </div>
+              <div className="rounded-xl border border-white/[0.07] px-3 py-2">
+                <p className="text-slate-500">最早待成熟日期</p>
+                <p className="sv-num mt-1 font-semibold text-slate-100">{strategyRouteBundle.maturity_projection.earliestPendingMaturityDate ?? '官方日曆尚未具備'}</p>
+              </div>
+              <div className="rounded-xl border border-white/[0.07] px-3 py-2">
+                <p className="text-slate-500">最佳情境達 11 日</p>
+                <p className="sv-num mt-1 font-semibold text-slate-100">{strategyRouteBundle.maturity_projection.bestCaseThresholdDate ?? '尚無法投影'}</p>
+              </div>
+              <div className="rounded-xl border border-white/[0.07] px-3 py-2">
+                <p className="text-slate-500">仍需合法成熟日</p>
+                <p className="sv-num mt-1 font-semibold text-slate-100">{strategyRouteBundle.maturity_projection.datesRemaining}</p>
+              </div>
+              <p className="text-[11px] leading-4 text-slate-500 sm:col-span-2 xl:col-span-4">未來日期僅為最佳情境投影；每一日仍須完整 V5 carrier、T+5 outcome、canonical identity 與 re-audit 全部通過，才會真正計入。</p>
+            </div>
+          ) : null}
           {strategyRouteBundle.blockers.length ? (
             <div className="mt-3 flex flex-wrap gap-2">
               {strategyRouteBundle.blockers.map((blocker) => <span key={blocker} className="rounded-full border border-rose-400/20 bg-rose-400/[0.06] px-2 py-1 text-[11px] text-rose-200">{blockerText(blocker)}</span>)}

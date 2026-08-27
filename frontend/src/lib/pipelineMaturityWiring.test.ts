@@ -46,8 +46,10 @@ test('maturity lineage labels cadence, role, availability, and comparable contra
     assert(contract.includes(field), `missing maturity evidence scope field: ${field}`)
   }
   for (const label of [
-    '候選資料截止日',
-    '樣本外證據截至',
+    '資料截止日',
+    '成熟結果已知截至',
+    'OOF 訊號截止日',
+    '固定樣本監控業務日',
     '目前正式服務中的產物（Production pointer）',
     '${evidenceScopes.offline_candidate.cadence} 升級候選（尚未正式服務）',
     '每日固定樣本 forward 監控證據（不影響正式結果）',
@@ -66,4 +68,12 @@ test('maturity lineage labels cadence, role, availability, and comparable contra
   assert(panel.includes('此範圍證據被 lineage 擋住'))
   assert(panel.includes("item.scope === 'promotion_gate'"))
   assert(contract.includes("'promotion_gate' | 'lifecycle' | 'monitoring' | 'diagnostic' | 'production'"))
+  for (const field of [
+    "data_cutoff_date", "mature_outcome_max_date", "oof_max_date", "frozen_forward_business_date",
+  ]) {
+    assert(contract.includes(field), "missing four-date lineage field: " + field)
+  }
+  assert(contract.includes("maturity_projection"))
+  assert(panel.includes("最佳情境達 11 日"))
+  assert(panel.includes("每一日仍須完整 V5 carrier、T+5 outcome、canonical identity 與 re-audit 全部通過"))
 })

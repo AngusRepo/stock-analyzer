@@ -14,6 +14,7 @@ import {
   type StrategySpec,
 } from './strategySpec'
 import type { AlphaFrameworkBucket, AlphaFrameworkRegime } from './tradingConfig'
+import { SELECTION_ROUTE_SEMANTIC_VERSION } from './evidenceContracts'
 import type { StrategyCandidatePoolCandidate, StrategyQueueDecision } from './strategyCandidatePool'
 import {
   buildMissingStrategySimilarityGraphEvidence,
@@ -23,7 +24,7 @@ import {
 export const STRATEGY_LABELER_VERSION = STRATEGY_FORMAL_LABELER_VERSION
 export const STRATEGY_AFFINITY_VERSION = 'strategy-raw-quality-affinity-v1'
 export const STRATEGY_AFFINITY_CHALLENGER_VERSION = 'strategy-threshold-margin-affinity-v2'
-export const STRATEGY_EVIDENCE_ALIGNED_ROUTE_VERSION = 'strategy-semantic-continuous-affinity-v5'
+export const STRATEGY_EVIDENCE_ALIGNED_ROUTE_VERSION = SELECTION_ROUTE_SEMANTIC_VERSION
 export const FINLAB_PORTFOLIO_INTELLIGENCE_VERSION = 'strategy-portfolio-evidence-v2'
 export const MULTI_STRATEGY_PLE_ROUTER_VERSION = 'multi-strategy-policy-router-v2'
 export const L15_MARGINAL_SLATE_BUILDER_VERSION = 'l15-continuous-full-universe-priority-v3'

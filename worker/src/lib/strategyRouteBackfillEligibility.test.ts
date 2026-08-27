@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
-import { auditStrategyRouteBackfillEligibility } from './strategyRouteBackfillEligibility'
+import { auditStrategyRouteBackfillEligibility, projectStrategyRouteMaturity } from './strategyRouteBackfillEligibility'
 
 type Row = {
   signal_date: string
@@ -145,6 +145,23 @@ async function main(): Promise<void> {
   assert.match(routeSource, /persist: !dryRun/)
   assert.match(routeSource, /X-Confirm-Strategy-Learning/)
   assert.match(routeSource, /canonical_route_eligibility_rows_missing/)
+
+  const sessions = ['2026-07-15', '2026-07-16', '2026-07-17', '2026-07-20', '2026-07-21', '2026-07-22', '2026-07-23', '2026-07-24']
+  const projection = await projectStrategyRouteMaturity(rows, '2026-07-20', {
+    requiredDates: 3,
+    nextTradingDate: async (afterDate) => {
+      const nextDate = sessions.find((date) => date > afterDate)
+      if (!nextDate) throw new Error('calendar_exhausted')
+      return nextDate
+    },
+  })
+  assert.equal(projection.eligibleDates, 2)
+  assert.equal(projection.pendingDates, 1)
+  assert.equal(projection.datesRemaining, 1)
+  assert.equal(projection.earliestPendingMaturityDate, '2026-07-24')
+  assert.equal(projection.bestCaseThresholdDate, '2026-07-24')
+  assert.equal(projection.status, 'projected')
+  assert.equal(projection.labelHorizonSessions, 5)
 }
 
 void main()

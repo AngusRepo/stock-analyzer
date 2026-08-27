@@ -66,6 +66,7 @@ import {
 import { promoteCanonicalRun, registerPipelineRun, writeEvidenceArtifact } from './artifactLifecycle'
 import { sha256Text } from './datasetSnapshots'
 import { buildL0DropReasonConservation, compactL0DropReasonConservationReceipt } from './screenerFunnelEvidence'
+import { buildStrategyRouteRecoveryPacket } from "./strategyRouteRecoveryPacket"
 import {
   buildSelectionEvidenceV4,
   persistSelectionEvidenceV4,
@@ -863,8 +864,51 @@ async function writeScreenerFunnel(
   if (!env.ARTIFACTS && !env.EVIDENCE_ARTIFACT_WRITER) {
     throw new Error('screener_r2_artifact_transport_missing')
   }
+  const routeRecoveryPacket = await buildStrategyRouteRecoveryPacket(input.selectionEvidence.references)
+  const routeRecoveryArtifact = await writeEvidenceArtifact(env, {
+    domain: "strategy_route_recovery",
+    businessDate: input.date,
+    producerRunId: input.runId,
+    retentionClass: "canonical_model_evidence",
+    schemaVersion: routeRecoveryPacket.schema_version,
+    payload: routeRecoveryPacket,
+    rowCount: routeRecoveryPacket.route_score_count,
+    metadata: {
+      route_version: routeRecoveryPacket.route_version,
+      affinity_version: routeRecoveryPacket.affinity_version,
+      strategy_registry_checksum: routeRecoveryPacket.strategy_registry_checksum,
+      reference_contract_version: routeRecoveryPacket.reference_contract_version,
+      input_packet_checksum: routeRecoveryPacket.input_packet_checksum,
+      route_score_parity_checksum: routeRecoveryPacket.route_score_parity_checksum,
+    },
+  })
+  const strategyCandidatePool = (
+    input.metadata.strategyCandidatePool && typeof input.metadata.strategyCandidatePool === "object"
+      ? input.metadata.strategyCandidatePool
+      : {}
+  ) as Record<string, unknown>
+  const metadataWithRouteRecovery = {
+    ...input.metadata,
+    strategyCandidatePool: {
+      ...strategyCandidatePool,
+      route_recovery_packet: {
+        schema_version: routeRecoveryPacket.schema_version,
+        route_version: routeRecoveryPacket.route_version,
+        affinity_version: routeRecoveryPacket.affinity_version,
+        strategy_registry_checksum: routeRecoveryPacket.strategy_registry_checksum,
+        reference_contract_version: routeRecoveryPacket.reference_contract_version,
+        candidate_count: routeRecoveryPacket.candidate_count,
+        route_score_count: routeRecoveryPacket.route_score_count,
+        input_packet_checksum: routeRecoveryPacket.input_packet_checksum,
+        route_score_parity_checksum: routeRecoveryPacket.route_score_parity_checksum,
+        artifact_id: routeRecoveryArtifact.artifact_id,
+        r2_key: routeRecoveryArtifact.r2_key,
+        artifact_checksum: routeRecoveryArtifact.checksum,
+      },
+    },
+  }
   const artifactPayload = {
-    metadata: input.metadata,
+    metadata: metadataWithRouteRecovery,
     debug_log: input.debugLog,
     items: input.items,
   }
@@ -908,7 +952,7 @@ async function writeScreenerFunnel(
     console.log(`[ScreenerFunnel] reused canonical run=${registry.reused_from_run_id} requested_run=${input.runId}`)
     return
   }
-  const metadata = JSON.stringify(input.metadata)
+  const metadata = JSON.stringify(metadataWithRouteRecovery)
   const debugLog = JSON.stringify(input.debugLog.slice(-80))
   const initialStatus = input.status === 'success' ? 'error' : input.status
   const initialDebugLog = input.status === 'success'

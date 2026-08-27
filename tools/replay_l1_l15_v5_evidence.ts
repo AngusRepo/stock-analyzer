@@ -9,6 +9,10 @@ import {
   type MultiStrategyPleAnnotatedCandidate,
 } from '../worker/src/lib/multiStrategyPleRouter'
 import { registryRowToStrategySpec } from '../worker/src/lib/strategyLearning'
+import {
+  SELECTION_REFERENCE_CONTRACT_VERSION,
+  strategyRegistryFingerprintPayload,
+} from '../worker/src/lib/selectionReferenceEvidence'
 import type { StrategyCandidatePoolCandidate } from '../worker/src/lib/strategyCandidatePool'
 import type { StrategyRawSignals, StrategySpec } from '../worker/src/lib/strategySpec'
 
@@ -20,8 +24,8 @@ const OUTPUT = join(OUT_DIR, 'semantic_v5_evidence_rows.json')
 const RECEIPT = join(OUT_DIR, 'semantic_v5_replay_receipt.json')
 const ROUTE_VERSION = 'strategy-semantic-continuous-affinity-v5'
 const AFFINITY_VERSION = 'strategy-threshold-margin-affinity-v2'
-const REFERENCE_CONTRACT = 'selection-reference-snapshot-v3'
 const PARITY_EPSILON = 1e-8
+const SQL_QUOTE = String.fromCharCode(39)
 
 function flag(name: string, fallback = ''): string {
   const index = process.argv.indexOf(name)
@@ -118,27 +122,168 @@ const heads = query(OPS_DB, [
 ].join(' '))
 const canonical = Object.fromEntries(heads.map((row) => [String(row.signal_date), String(row.run_id)]))
 const dates = heads.map((row) => String(row.signal_date)).filter((date) => !onlyDates.size || onlyDates.has(date))
-const registry = query(LEARNING_DB, [
-  'SELECT strategy_id, version, name, status, owner, alpha_bucket, family_id, variant_id,',
-  'owner_type, promotion_status, supported_regimes_json, thesis, thresholds_json,',
-  'candidate_policy_json, risk_notes_json, source_refs_json, created_by, created_at, updated_at',
-  'FROM strategy_spec_registry WHERE status <> \'retired\' ORDER BY strategy_id, version',
-].join(' ')).map((row) => registryRowToStrategySpec(row as any) as StrategySpec)
+const registryRows = query(LEARNING_DB, [
+  "SELECT strategy_id, version, name, status, owner, alpha_bucket, family_id, variant_id,",
+  "owner_type, promotion_status, supported_regimes_json, thesis, thresholds_json,",
+  "candidate_policy_json, risk_notes_json, source_refs_json, created_by, created_at, updated_at",
+  "FROM strategy_spec_registry ORDER BY strategy_id, version",
+].join(" "))
+const registryByKey = new Map(
+  registryRows.map((row) => [
+    String(row.strategy_id) + "|" + String(row.version),
+    registryRowToStrategySpec(row as any) as StrategySpec,
+  ]),
+)
 
 const evidenceRows: Array<Record<string, any>> = []
 const accepted: Array<Record<string, any>> = []
+const pending: Array<Record<string, any>> = []
 const rejected: Array<Record<string, any>> = []
 
 for (const signalDate of dates) {
   const runId = canonical[signalDate]
   const matrix = query(LEARNING_DB, [
-    'SELECT status,expected_cell_count,persisted_cell_count,reference_contract_version,payload_checksum',
+    'SELECT status,expected_cell_count,persisted_cell_count,strategy_registry_checksum,reference_contract_version,payload_checksum',
     "FROM strategy_label_matrix_runs_v4 WHERE producer_run_id='" + sqlText(runId) + "' LIMIT 1",
   ].join(' '))[0]
   if (!matrix || matrix.status !== 'ready' || Number(matrix.expected_cell_count) <= 0
       || Number(matrix.expected_cell_count) !== Number(matrix.persisted_cell_count)
-      || !/^sha256:[a-f0-9]{64}$/.test(String(matrix.payload_checksum ?? ''))) {
+      || !/^sha256:[a-f0-9]{64}$/.test(String(matrix.payload_checksum ?? ''))
+      || !/^sha256:[a-f0-9]{64}$/.test(String(matrix.strategy_registry_checksum ?? ''))
+      || matrix.reference_contract_version !== SELECTION_REFERENCE_CONTRACT_VERSION) {
     rejected.push({ signal_date: signalDate, producer_run_id: runId, reason: 'matrix_not_immutable_ready' })
+    continue
+  }
+  const currentCarrier = query(LEARNING_DB, [
+    "SELECT COUNT(*) reference_rows,",
+    "SUM(CASE WHEN strategy_challenger_route_version=" + SQL_QUOTE + ROUTE_VERSION + SQL_QUOTE,
+    "AND strategy_challenger_route_score IS NOT NULL THEN 1 ELSE 0 END) v5_route_rows,",
+    "SUM(CASE WHEN strategy_challenger_affinity_version=" + SQL_QUOTE + AFFINITY_VERSION + SQL_QUOTE,
+    "THEN 1 ELSE 0 END) v5_affinity_rows,",
+    "COUNT(DISTINCT strategy_registry_checksum) registry_checksum_count,",
+    "MIN(strategy_registry_checksum) strategy_registry_checksum",
+    "FROM selection_reference_snapshots_v1",
+    "WHERE signal_date=" + SQL_QUOTE + sqlText(signalDate) + SQL_QUOTE,
+    "AND producer_run_id=" + SQL_QUOTE + sqlText(runId) + SQL_QUOTE,
+    "AND hard_gate_passed=1 AND strategy_matrix_status=" + SQL_QUOTE + "ready" + SQL_QUOTE,
+  ].join(" "))[0] ?? {}
+  const referenceRows = Number(currentCarrier.reference_rows ?? 0)
+  const directV5Carrier = referenceRows > 0
+    && Number(currentCarrier.v5_route_rows ?? 0) === referenceRows
+    && Number(currentCarrier.v5_affinity_rows ?? 0) === referenceRows
+    && Number(currentCarrier.registry_checksum_count ?? 0) === 1
+    && String(currentCarrier.strategy_registry_checksum ?? "") === String(matrix.strategy_registry_checksum ?? "")
+  if (directV5Carrier) {
+    const eligibility = query(LEARNING_DB, [
+      "SELECT status,blocker_json,reference_rows,mature_label_rows,challenger_route_rows",
+      "FROM strategy_route_backfill_eligibility_v1",
+      "WHERE signal_date=" + SQL_QUOTE + sqlText(signalDate) + SQL_QUOTE,
+      "AND producer_run_id=" + SQL_QUOTE + sqlText(runId) + SQL_QUOTE,
+      "LIMIT 1",
+    ].join(" "))[0]
+    if (eligibility?.status === "pending_maturity") {
+      pending.push({
+        signal_date: signalDate,
+        producer_run_id: runId,
+        reference_rows: referenceRows,
+        route_rows: Number(currentCarrier.v5_route_rows ?? 0),
+        reason: "outcome_not_mature",
+      })
+      continue
+    }
+    if (eligibility?.status !== "eligible") {
+      rejected.push({
+        signal_date: signalDate,
+        producer_run_id: runId,
+        rows: referenceRows,
+        reasons: ["canonical_v5_carrier_eligibility_not_ready"],
+        eligibility_status: eligibility?.status ?? "missing",
+        eligibility_blockers: eligibility?.blocker_json ?? null,
+      })
+      continue
+    }
+    const directRows = query(LEARNING_DB, [
+      "SELECT signal_date,symbol,producer_run_id,strategy_challenger_route_score route_score,",
+      "strategy_router_version incumbent_route_version,strategy_router_score incumbent_route_score,",
+      "strategy_registry_checksum",
+      "FROM selection_reference_snapshots_v1",
+      "WHERE signal_date=" + SQL_QUOTE + sqlText(signalDate) + SQL_QUOTE,
+      "AND producer_run_id=" + SQL_QUOTE + sqlText(runId) + SQL_QUOTE,
+      "AND hard_gate_passed=1 AND strategy_matrix_status=" + SQL_QUOTE + "ready" + SQL_QUOTE,
+      "AND strategy_challenger_route_version=" + SQL_QUOTE + ROUTE_VERSION + SQL_QUOTE,
+      "AND strategy_challenger_route_score IS NOT NULL ORDER BY symbol",
+    ].join(" "))
+    const directEvidence = directRows.map((row) => ({
+      route_version: ROUTE_VERSION,
+      signal_date: row.signal_date,
+      symbol: row.symbol,
+      producer_run_id: row.producer_run_id,
+      route_score: Number(row.route_score),
+      incumbent_route_version: row.incumbent_route_version,
+      incumbent_route_score: finite(row.incumbent_route_score),
+      strategy_registry_checksum: row.strategy_registry_checksum,
+      evidence_method: "canonical_v5_carrier",
+      source_reference_contract: SELECTION_REFERENCE_CONTRACT_VERSION,
+    }))
+    evidenceRows.push(...directEvidence)
+    accepted.push({
+      signal_date: signalDate,
+      producer_run_id: runId,
+      rows: directEvidence.length,
+      evidence_method: "canonical_v5_carrier",
+      matrix_payload_checksum: matrix.payload_checksum,
+      strategy_registry_checksum: matrix.strategy_registry_checksum,
+      reference_contract_version: SELECTION_REFERENCE_CONTRACT_VERSION,
+    })
+    continue
+  }
+  const decisionSpecs = query(LEARNING_DB, [
+    "SELECT d.strategy_id,d.strategy_version,MIN(d.strategy_status) strategy_status,",
+    "COUNT(DISTINCT d.strategy_status) status_count",
+    "FROM strategy_decision_log d",
+    "WHERE d.date=" + SQL_QUOTE + sqlText(signalDate) + SQL_QUOTE,
+    "AND EXISTS (SELECT 1 FROM selection_reference_snapshots_v1 r",
+    "WHERE r.signal_date=d.date AND r.symbol=d.symbol",
+    "AND r.producer_run_id=" + SQL_QUOTE + sqlText(runId) + SQL_QUOTE,
+    "AND r.hard_gate_passed=1)",
+    "GROUP BY d.strategy_id,d.strategy_version ORDER BY d.strategy_id,d.strategy_version",
+  ].join(" "))
+  const registryBlockers: string[] = []
+  const historicalRegistry: StrategySpec[] = []
+  if (!decisionSpecs.length) registryBlockers.push("historical_strategy_grid_missing")
+  for (const decisionSpec of decisionSpecs) {
+    const key = String(decisionSpec.strategy_id) + "|" + String(decisionSpec.strategy_version)
+    const versionedSpec = registryByKey.get(key)
+    if (!versionedSpec) {
+      registryBlockers.push("historical_strategy_spec_missing:" + key)
+      continue
+    }
+    if (Number(decisionSpec.status_count) !== 1) {
+      registryBlockers.push("historical_strategy_status_ambiguous:" + key)
+      continue
+    }
+    historicalRegistry.push({
+      ...versionedSpec,
+      status: String(decisionSpec.strategy_status) as StrategySpec["status"],
+    })
+  }
+  const registryFingerprint = "sha256:" + sha256(
+    JSON.stringify(strategyRegistryFingerprintPayload(historicalRegistry)),
+  )
+  if (String(matrix.strategy_registry_checksum ?? "") !== registryFingerprint) {
+    registryBlockers.push("historical_strategy_registry_fingerprint_mismatch")
+  }
+  if (String(matrix.reference_contract_version ?? "") !== SELECTION_REFERENCE_CONTRACT_VERSION) {
+    registryBlockers.push("selection_reference_contract_incompatible")
+  }
+  if (registryBlockers.length) {
+    rejected.push({
+      signal_date: signalDate,
+      producer_run_id: runId,
+      reasons: [...new Set(registryBlockers)],
+      recorded_strategy_registry_checksum: matrix.strategy_registry_checksum ?? null,
+      replay_strategy_registry_checksum: registryFingerprint,
+    })
     continue
   }
   const rows = query(LEARNING_DB, [
@@ -160,6 +305,10 @@ for (const signalDate of dates) {
     'ORDER BY r.symbol',
   ].join(' '))
   const blockers: string[] = []
+  const expectedGridCells = rows.length * historicalRegistry.filter((spec) => spec.status !== "retired").length
+  if (Number(matrix.expected_cell_count) !== expectedGridCells) {
+    blockers.push("matrix_strategy_grid_shape_mismatch")
+  }
   if (!rows.length) blockers.push('canonical_hard_gate_references_missing')
   if (rows.some((row) => Number(row.context_count) !== 1 || !row.context_id)) blockers.push('candidate_context_identity_incomplete')
   if (rows.some((row) => !/^sha256:[a-f0-9]{64}$/.test(String(row.context_hash ?? '')))) blockers.push('context_hash_invalid')
@@ -178,7 +327,7 @@ for (const signalDate of dates) {
     raw_signals: item.raw_signals as StrategyRawSignals,
     industry: item.industry,
   })))
-  const replay = buildMultiStrategyPleRoutingPlan(candidates, registry, {
+  const replay = buildMultiStrategyPleRoutingPlan(candidates, historicalRegistry, {
     maxSlateSize: candidates.length,
     evidenceMode: 'historical_replay',
     minRouteScore: 0,
@@ -205,9 +354,9 @@ for (const signalDate of dates) {
       route_score: challengerReplay,
       incumbent_route_version: String(row.strategy_router_version),
       incumbent_route_score: incumbentStored,
-      strategy_spec_version: 'strategy-spec-v2',
+      strategy_registry_checksum: registryFingerprint,
       evidence_method: 'deterministic_paired_pit_replay',
-      source_reference_contract: REFERENCE_CONTRACT,
+      source_reference_contract: SELECTION_REFERENCE_CONTRACT_VERSION,
     })
   }
   if (blockers.length || maxParityError > PARITY_EPSILON) {
@@ -226,6 +375,9 @@ for (const signalDate of dates) {
     producer_run_id: runId,
     rows: rows.length,
     matrix_payload_checksum: matrix.payload_checksum,
+    strategy_registry_checksum: registryFingerprint,
+    strategy_count: historicalRegistry.length,
+    reference_contract_version: SELECTION_REFERENCE_CONTRACT_VERSION,
     context_artifact_checksums: [...new Set(rows.map((row) => String(row.checksum)))].sort(),
     max_incumbent_parity_error: maxParityError,
   })
@@ -235,7 +387,7 @@ evidenceRows.sort((left, right) => left.signal_date.localeCompare(right.signal_d
   || left.symbol.localeCompare(right.symbol) || left.producer_run_id.localeCompare(right.producer_run_id))
 const receipt = {
   generated_at: new Date().toISOString(),
-  contract: 'l1-l15-v5-immutable-deterministic-replay-v1',
+  contract: 'l1-l15-v5-immutable-deterministic-replay-v2',
   production_effect: false,
   as_of_date: asOfDate,
   route_version: ROUTE_VERSION,
@@ -243,6 +395,7 @@ const receipt = {
   score_generation_uses_outcomes: false,
   incumbent_parity_epsilon: PARITY_EPSILON,
   accepted_dates: accepted,
+  pending_dates: pending,
   rejected_dates: rejected,
   evidence_rows: evidenceRows.length,
   evidence_payload_checksum: sha256(JSON.stringify(evidenceRows)),

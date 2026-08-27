@@ -12,7 +12,7 @@ import numpy as np
 from .model_serving_contract import ALPHA_PREDICTION_MODELS
 
 ARTIFACT_SCHEMA_VERSION = "active8-oof-ensemble-serving-artifact-v1"
-ENSEMBLE_SEMANTIC_VERSION = "active8-purged-oof-chronological-ridge-v4"
+ENSEMBLE_SEMANTIC_VERSION = "active8-purged-oof-chronological-nonnegative-ridge-v5"
 CALIBRATION_SCHEMA_VERSION = "active8-chronological-conformal-isotonic-v1"
 SIGNAL_POLICY_VERSION = "active8-net-return-conformal-signal-policy-v1"
 FEATURE_NAMES = tuple(
@@ -91,11 +91,13 @@ def validate_active8_ensemble_artifact(
     fit = payload.get("fit") if isinstance(payload.get("fit"), dict) else {}
     coefficients = fit.get("coefficients")
     if (
-        fit.get("method") != "ridge_full_fit_after_heldout_chronological_oof_validation"
+        fit.get("method") != "nonnegative_rank_ridge_full_fit_after_heldout_chronological_oof_validation"
+        or fit.get("rank_coefficient_constraint") != "nonnegative"
         or int(fit.get("outer_folds") or 0) < 5
         or not isinstance(coefficients, list)
         or len(coefficients) != len(FEATURE_NAMES)
         or not all(np.isfinite(float(value)) for value in coefficients)
+        or any(float(value) < -1e-12 for value in coefficients[: len(ALPHA_PREDICTION_MODELS)])
         or not np.isfinite(float(fit.get("intercept")))
     ):
         raise Active8EnsembleContractError("active8_ensemble_fit_contract_invalid")
@@ -106,8 +108,8 @@ def validate_active8_ensemble_artifact(
         or validation.get("failed_gates")
         or int(validation.get("validation_dates") or 0) < 5
         or int(validation.get("validation_rows") or 0) < 200
-        or float(validation.get("rank_ic") or 0.0) <= 0.0
-        or float(validation.get("top_bottom_net_return_spread") or 0.0) <= 0.0
+        or float(validation.get("rank_ic_equal_date_market_lcb90") or 0.0) <= 0.0
+        or float(validation.get("top_bottom_net_return_spread_lcb90") or 0.0) <= 0.0
     ):
         raise Active8EnsembleContractError("active8_ensemble_validation_not_promotion_grade")
     policy = payload.get("signal_policy") if isinstance(payload.get("signal_policy"), dict) else {}
@@ -129,10 +131,37 @@ def validate_active8_ensemble_artifact(
         if coverage_name not in quantiles or float(quantiles[coverage_name]) < 0.0:
             raise Active8EnsembleContractError("active8_ensemble_conformal_quantile_invalid")
 
+    selected = payload.get("selected_models")
+    excluded = payload.get("excluded_models")
+    if (
+        not isinstance(selected, list)
+        or not selected
+        or len(selected) != len(set(selected))
+        or not set(selected).issubset(set(ALPHA_PREDICTION_MODELS))
+        or not isinstance(excluded, list)
+        or set(excluded) != set(ALPHA_PREDICTION_MODELS) - set(selected)
+    ):
+        raise Active8EnsembleContractError("active8_ensemble_selected_model_set_invalid")
+    observation = (
+        payload.get("observation_artifacts")
+        if isinstance(payload.get("observation_artifacts"), dict)
+        else {}
+    )
+    if set(observation) != set(ALPHA_PREDICTION_MODELS):
+        raise Active8EnsembleContractError("active8_ensemble_observation_artifact_set_invalid")
     base = payload.get("base_artifacts") if isinstance(payload.get("base_artifacts"), dict) else {}
-    if set(base) != set(ALPHA_PREDICTION_MODELS):
+    if set(base) != set(selected):
         raise Active8EnsembleContractError("active8_ensemble_base_artifact_set_invalid")
-    for model_name in ALPHA_PREDICTION_MODELS:
+    for model_name in excluded:
+        index = list(ALPHA_PREDICTION_MODELS).index(model_name)
+        if (
+            abs(float(coefficients[index])) > 1e-12
+            or abs(float(coefficients[index + len(ALPHA_PREDICTION_MODELS)])) > 1e-12
+        ):
+            raise Active8EnsembleContractError(
+                f"active8_ensemble_excluded_model_has_weight:{model_name}"
+            )
+    for model_name in selected:
         expected = base[model_name]
         actual = pool_models.get(model_name)
         if not isinstance(expected, dict) or not isinstance(actual, dict):
@@ -198,10 +227,15 @@ def score_active8_ensemble(
         expected_return,
     )
     confidence = probability_up if direction == "up" else 1.0 - probability_up if direction == "down" else max(probability_up, 1.0 - probability_up)
-    available_scores = [float(rank_scores[name]) for name in ALPHA_PREDICTION_MODELS if availability[name]]
+    selected_models = list(artifact["selected_models"])
+    available_scores = [float(rank_scores[name]) for name in selected_models if availability[name]]
     bullish = sum(value > 0.5 for value in available_scores)
     bearish = len(available_scores) - bullish
-    consensus = max(bullish, bearish) / len(available_scores)
+    consensus = (
+        max(bullish, bearish) / len(available_scores)
+        if available_scores
+        else 0.0
+    )
     strength = {"STRONG_BUY": 5, "BUY": 4, "HOLD": 0, "SELL": 4, "STRONG_SELL": 5}[signal]
     return Active8EnsembleResult(
         signal=signal,

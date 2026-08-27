@@ -1,7 +1,7 @@
 import type { Bindings } from '../types'
 import { databaseForDataDomain } from './dataDomainRegistry'
 import { runAdaptiveUpdate, runLinUcbRewardLedgerRefresh } from './adaptiveEngine'
-import { runArtifactAutoPromotion, runModelIcRollingRefresh, runObsidianDaily, runPaperActivePostmarketPromotion, runVerifyV2 } from './controllerWorkflows'
+import { expectedVerifyProducerRunId, runArtifactAutoPromotion, runModelIcRollingRefresh, runObsidianDaily, runPaperActivePostmarketPromotion, runVerifyV2 } from './controllerWorkflows'
 import { generateDailyReport } from './dailyReport'
 import { ensureMetaLearningResearchRegistry } from './metaLearningResearchTrack'
 import { runNeuralMetaShadow } from './metaLearningShadowRunner'
@@ -401,15 +401,6 @@ async function recordPostPipelineLifecycle(
   if (!recorded) {
     throw new Error(`post_pipeline_stage_authority_lost:${input.businessDate}:${canonicalRunId}`)
   }
-}
-
-async function expectedVerifyProducerRunId(runDate: string, idempotencyKey: string): Promise<string> {
-  const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(idempotencyKey))
-  const shortHash = Array.from(new Uint8Array(digest))
-    .map((value) => value.toString(16).padStart(2, '0'))
-    .join('')
-    .slice(0, 12)
-  return `verify-${runDate.replaceAll('/', '-')}-${shortHash}`
 }
 
 export async function runPostPipelineCallbackChain(

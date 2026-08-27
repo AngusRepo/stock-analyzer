@@ -58,6 +58,15 @@ assert(
     controllerDailyWorkflows.includes('retry_required'),
   'an unproven active verify execution must fail closed for bounded retry instead of waiting for a nonexistent callback',
 )
+assert(
+  adminTasks.includes('runVerifyV2Repair') &&
+    controllerDailyWorkflows.includes("stage: 'verify_v2'") &&
+    controllerDailyWorkflows.includes('expectedVerifyProducerRunId') &&
+    controllerDailyWorkflows.includes('verify-repair:') &&
+    controllerDailyWorkflows.includes("status: 'waiting'") &&
+    controllerDailyWorkflows.includes('callbackWonRace'),
+  'direct verify repair must establish a canonical producer cursor before dispatch and preserve callback-race idempotency',
+)
 assert(callbackRoutes.includes('lock:ml-predict'), 'pipeline terminal callback must clear the ML predict lock')
 assert(
   callbackRoutes.includes('queuePostPipelineStage') &&

@@ -7,6 +7,12 @@ import {
   restoreMarketRegimeStateFromHistory,
 } from './marketRegimeState'
 import { recordPaperActivePostmarketReport } from './paperActiveChallenger'
+import {
+  claimPipelineStage,
+  enqueuePipelineStage,
+  markPipelineStageFenced,
+  setPipelineStageCursorFenced,
+} from './pipelineStageLease'
 
 function requireController(env: Bindings): void {
   if (!env.ML_CONTROLLER_URL) {
@@ -224,6 +230,108 @@ export async function runVerifyV2(env: Bindings, runDate?: string, idempotencyKe
   }
 
   return `verified ${data.verified}/${data.pending} correct ${data.correct} pnl ${(data.total_pnl_pct * 100).toFixed(1)}% arf ${data.arf_updated}`
+}
+
+export async function expectedVerifyProducerRunId(runDate: string, idempotencyKey: string): Promise<string> {
+  const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(idempotencyKey))
+  const shortHash = Array.from(new Uint8Array(digest))
+    .map((value) => value.toString(16).padStart(2, '0'))
+    .join('')
+    .slice(0, 12)
+  return `verify-${runDate.replaceAll('/', '-')}-${shortHash}`
+}
+
+export async function runVerifyV2Repair(
+  env: Bindings,
+  runDate?: string,
+  options: { resumeWaiting?: boolean } = {},
+): Promise<string> {
+  const businessDate = String(runDate ?? '').trim()
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(businessDate)) {
+    throw new Error('verify_v2_repair_run_date_required')
+  }
+  const opsDb = databaseForDataDomain(env, 'ops')
+  const canonicalRunId = `verify-repair:${businessDate}`
+  let stage = await enqueuePipelineStage(opsDb, {
+    businessDate,
+    stage: 'verify_v2',
+    runId: canonicalRunId,
+  })
+  if (!stage.shouldEnqueue && stage.row.status === 'error') {
+    stage = await enqueuePipelineStage(opsDb, {
+      businessDate,
+      stage: 'verify_v2',
+      runId: canonicalRunId,
+      resumeWaiting: stage.row.canonical_run_id === canonicalRunId,
+      adoptRunIdOnResume: stage.row.canonical_run_id !== canonicalRunId,
+    })
+  } else if (!stage.shouldEnqueue && stage.row.status === 'waiting' && options.resumeWaiting) {
+    stage = await enqueuePipelineStage(opsDb, {
+      businessDate,
+      stage: 'verify_v2',
+      runId: canonicalRunId,
+      resumeWaiting: true,
+      expectedCanonicalRunId: stage.row.canonical_run_id,
+    })
+  }
+  if (!stage.shouldEnqueue) {
+    return `verify repair already ${stage.row.status} date=${businessDate} run_id=${stage.row.canonical_run_id}`
+  }
+
+  const leaseOwner = `${canonicalRunId}:dispatch:${crypto.randomUUID()}`
+  const claimed = await claimPipelineStage(opsDb, {
+    businessDate,
+    stage: 'verify_v2',
+    ownerId: leaseOwner,
+    canonicalRunId: stage.row.canonical_run_id,
+    leaseSeconds: 120,
+  })
+  if (!claimed) {
+    return `verify repair already claimed date=${businessDate} run_id=${stage.row.canonical_run_id}`
+  }
+  const idempotencyKey = `verify_v2_repair:${businessDate}:${stage.row.canonical_run_id}`
+  const producerRunId = await expectedVerifyProducerRunId(businessDate, idempotencyKey)
+  const cursorStored = await setPipelineStageCursorFenced(opsDb, {
+    businessDate,
+    stage: 'verify_v2',
+    canonicalRunId: stage.row.canonical_run_id,
+    leaseOwner,
+    cursorKey: producerRunId,
+  })
+  if (!cursorStored) throw new Error('verify_v2_repair_cursor_fence_lost')
+
+  let summary: string
+  try {
+    summary = await runVerifyV2(env, businessDate, idempotencyKey)
+  } catch (error) {
+    await markPipelineStageFenced(opsDb, {
+      businessDate,
+      stage: 'verify_v2',
+      canonicalRunId: stage.row.canonical_run_id,
+      cursorKey: producerRunId,
+      leaseOwner,
+      status: 'error',
+      error: error instanceof Error ? error.message : String(error),
+    })
+    throw error
+  }
+  const finalized = await markPipelineStageFenced(opsDb, {
+    businessDate,
+    stage: 'verify_v2',
+    canonicalRunId: stage.row.canonical_run_id,
+    cursorKey: producerRunId,
+    leaseOwner,
+    status: 'waiting',
+  })
+  if (!finalized) {
+    const callbackWonRace = await opsDb.prepare(`
+      SELECT 1 AS ok FROM pipeline_stage_runs
+       WHERE business_date=? AND stage='verify_v2'
+         AND canonical_run_id=? AND cursor_key=? AND status='success'
+    `).bind(businessDate, stage.row.canonical_run_id, producerRunId).first<{ ok: number }>()
+    if (!callbackWonRace) throw new Error('verify_v2_repair_finalize_fence_lost')
+  }
+  return `${summary}; canonical_run_id=${stage.row.canonical_run_id}; producer_run_id=${producerRunId}`
 }
 
 export async function runPaperActivePostmarketPromotion(env: Bindings, runDate?: string): Promise<string> {

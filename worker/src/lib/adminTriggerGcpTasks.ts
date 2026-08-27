@@ -6,7 +6,7 @@ import {
   runPaperActivePostmarketPromotion,
   runFinLabV4Backfill,
   runRegimeCompute,
-  runVerifyV2,
+  runVerifyV2Repair,
   runMonthlyStrategyMining,
   runExternalEvidenceMaterialize,
   runWeeklyBacktestEvidenceReconciliation,
@@ -72,7 +72,9 @@ export function buildAdminGcpTriggerTaskMap(c: any, deps: TriggerDeps): Record<s
     },
     'paper-active-postmarket': async () => runPaperActivePostmarketPromotion(c.env, requestedRunDate()),
     'weekly-audit': () => deps.runWeeklyAudit(),
-    'verify-v2': async () => runVerifyV2(c.env, requestedRunDate()),
+    'verify-v2': async () => runVerifyV2Repair(c.env, requestedRunDate(), {
+      resumeWaiting: c.req.query('retry') === '1',
+    }),
     backtest: () => deps.runWeeklyBacktest(requestedRunDate()),
     'weekly-backtest': () => c.req.query('reconcile') === '1'
       ? runWeeklyBacktestEvidenceReconciliation(c.env, requestedRunDate())

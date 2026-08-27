@@ -35,6 +35,8 @@ export {
   runPaperActivePostmarketPromotion,
   runRegimeCompute,
   runVerifyV2,
+  runVerifyV2Repair,
+  expectedVerifyProducerRunId,
 } from './controllerDailyWorkflows'
 
 export {

@@ -68,6 +68,20 @@ _LOCAL_CONTROLLER_SERVICES_DIR = (
 )
 
 
+_RELEASE_PROVENANCE_ENV = {
+    key: value
+    for key, value in {
+        "STOCKVISION_SOURCE_SHA": os.environ.get("STOCKVISION_SOURCE_SHA", "").strip(),
+        "STOCKVISION_SOURCE_TREE_SHA": os.environ.get("STOCKVISION_SOURCE_TREE_SHA", "").strip(),
+        "STOCKVISION_SOURCE_BRANCH": os.environ.get("STOCKVISION_SOURCE_BRANCH", "").strip(),
+        "STOCKVISION_SCHEDULER_MANIFEST_SHA256": os.environ.get(
+            "STOCKVISION_SCHEDULER_MANIFEST_SHA256", ""
+        ).strip(),
+    }.items()
+    if value
+}
+
+
 def _controller_callback_token() -> str:
     return normalize_callback_token([
         os.environ.get("ML_CONTROLLER_TOKEN"),
@@ -88,7 +102,12 @@ image = (
     modal.Image.debian_slim(python_version="3.11")
     .apt_install("libgomp1", "ocl-icd-libopencl1")  # OpenMP + OpenCL ICD loader (NVIDIA driver provides libOpenCL at runtime)
     .pip_install_from_requirements(str(_LOCAL_REQ))
-    .env({"PYTHONHASHSEED": "42", "CUBLAS_WORKSPACE_CONFIG": ":4096:8", "TORCH_FLOAT32_MATMUL_PRECISION": "high"})
+    .env({
+        "PYTHONHASHSEED": "42",
+        "CUBLAS_WORKSPACE_CONFIG": ":4096:8",
+        "TORCH_FLOAT32_MATMUL_PRECISION": "high",
+        **_RELEASE_PROVENANCE_ENV,
+    })
     .add_local_dir(str(_LOCAL_SCRIPTS_DIR), remote_path="/root/scripts")
     .add_local_dir(str(_LOCAL_TOOLS_DIR), remote_path="/root/tools")
     .add_local_dir(str(_LOCAL_CONTROLLER_SERVICES_DIR), remote_path="/root/services")
@@ -136,8 +155,6 @@ runtime_env_secret = modal.Secret.from_dict({
         "FINLAB_API_KEY": os.environ.get("FINLAB_API_KEY", "").strip(),
         "FINLAB_REFRESH_TOKEN": os.environ.get("FINLAB_REFRESH_TOKEN", "").strip(),
         "FINLAB_SESSION_ID": os.environ.get("FINLAB_SESSION_ID", "").strip(),
-        "STOCKVISION_SOURCE_SHA": os.environ.get("STOCKVISION_SOURCE_SHA", "").strip(),
-        "STOCKVISION_SOURCE_TREE_SHA": os.environ.get("STOCKVISION_SOURCE_TREE_SHA", "").strip(),
     }.items()
     if value
 })
@@ -164,6 +181,32 @@ def _setup_env():
 
 def _get_gcs_bucket_name() -> str | None:
     return get_gcs_bucket_name()
+
+
+@app.function(cpu=0.25, memory=256, timeout=30, scaledown_window=30, max_containers=1)
+def deployment_provenance() -> dict:
+    """Return non-secret deployment identity for release preflight readback."""
+    source_sha = str(os.environ.get("STOCKVISION_SOURCE_SHA") or "").strip().lower()
+    tree_sha = str(os.environ.get("STOCKVISION_SOURCE_TREE_SHA") or "").strip().lower()
+    branch = str(os.environ.get("STOCKVISION_SOURCE_BRANCH") or "").strip()
+    scheduler_sha = str(
+        os.environ.get("STOCKVISION_SCHEDULER_MANIFEST_SHA256") or ""
+    ).strip().lower()
+    if (
+        len(source_sha) != 40
+        or len(tree_sha) != 40
+        or len(scheduler_sha) != 64
+        or any(char not in "0123456789abcdef" for char in source_sha + tree_sha + scheduler_sha)
+        or not branch
+    ):
+        raise RuntimeError("modal_deployment_provenance_invalid")
+    return {
+        "schema_version": "stockvision-modal-deployment-provenance-v1",
+        "source_sha": source_sha,
+        "tree_sha": tree_sha,
+        "source_branch": branch,
+        "scheduler_manifest_sha256": scheduler_sha,
+    }
 
 
 def _training_input_cache_location() -> dict[str, str]:

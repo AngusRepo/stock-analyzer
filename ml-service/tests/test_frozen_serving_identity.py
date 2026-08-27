@@ -676,12 +676,17 @@ def test_itransformer_uses_exact_registry_paths_and_identity(monkeypatch) -> Non
 from pathlib import Path
 
 
-def test_modal_runtime_secret_and_bundle_echo_source_sha() -> None:
+def test_modal_image_provenance_and_bundle_echo_source_sha() -> None:
     source = (
         Path(__file__).resolve().parent.parent / "modal_app.py"
     ).read_text(encoding="utf-8")
-    assert '"STOCKVISION_SOURCE_SHA": os.environ.get("STOCKVISION_SOURCE_SHA"' in source
-    assert '"STOCKVISION_SOURCE_TREE_SHA": os.environ.get("STOCKVISION_SOURCE_TREE_SHA"' in source
+    runtime_secret = source.split("runtime_env_secret =", 1)[1].split(
+        "TRAINING_INPUT_CACHE_MOUNT", 1
+    )[0]
+    assert '"STOCKVISION_SOURCE_SHA"' not in runtime_secret
+    assert '"STOCKVISION_SOURCE_TREE_SHA"' not in runtime_secret
+    assert "**_RELEASE_PROVENANCE_ENV" in source
+    assert "def deployment_provenance()" in source
     assert 'modal_source_sha = str(os.environ.get("STOCKVISION_SOURCE_SHA")' in source
     assert '"modal_source_sha": modal_source_sha' in source
 

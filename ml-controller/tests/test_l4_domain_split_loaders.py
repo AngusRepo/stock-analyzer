@@ -11,6 +11,21 @@ from services.l4_alpha_ev_artifact_builder import load_l4_alpha_ev_training_rows
 from services.l4_alpha_ev_resolver import SNAPSHOT_BACKFILL_AS_OF_GUARD, SNAPSHOT_BACKFILL_SOURCE
 
 
+def test_snapshot_l4_asof_builder_forwards_core_domain_client() -> None:
+    source = (
+        Path(__file__).resolve().parents[1]
+        / "services"
+        / "allocator_ev_feature_snapshot_backfill.py"
+    ).read_text(encoding="utf-8")
+    assert "core_query_fn: QueryFn | None = None" in source
+    assert "core_query_fn=core_query_fn" in source
+    assert (
+        "core_query_fn=core_query if production_domain_routing else None"
+        in source
+    )
+
+
+
 def test_l4_loader_splits_learning_evidence_from_core_identity_and_scores() -> None:
     learning_sql: list[str] = []
     core_sql: list[str] = []

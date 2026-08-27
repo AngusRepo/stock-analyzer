@@ -433,6 +433,7 @@ def _existing_l4_payload(allocation: dict[str, Any], *, snapshot_date: str) -> d
 def _build_l4_asof_artifact(
     query_fn: QueryFn,
     *,
+    core_query_fn: QueryFn | None = None,
     snapshot_date: str,
     lookback_days: int,
     min_samples: int,
@@ -442,6 +443,7 @@ def _build_l4_asof_artifact(
     trained_until = _previous_day(snapshot_date)
     rows = load_l4_alpha_ev_training_rows(
         query_fn,
+        core_query_fn=core_query_fn,
         end_date=trained_until,
         lookback_days=lookback_days,
         limit=limit,
@@ -843,6 +845,7 @@ def build_allocator_ev_feature_snapshots_for_date(
         )
     l4_result = _build_l4_asof_artifact(
         learning_query,
+        core_query_fn=core_query if production_domain_routing else None,
         snapshot_date=snapshot_date,
         lookback_days=l4_lookback_days,
         min_samples=l4_min_samples,

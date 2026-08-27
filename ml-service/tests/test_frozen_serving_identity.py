@@ -99,7 +99,7 @@ def _manifest(*, excluded: tuple[str, ...] = ()) -> dict:
     from tests.test_active8_ensemble_runtime import _artifact
 
     manifest = _legacy_manifest(excluded=excluded)
-    manifest["source_of_truth"] = "model_champion_pointers+active8_ensemble_pointer_v1"
+    manifest["source_of_truth"] = "model_champion_pointers+active8_action_authority_v1"
     manifest.pop("rank_stacker", None)
     manifest.pop("ic_weight_policy", None)
     for row in manifest["models"]:
@@ -115,6 +115,13 @@ def _manifest(*, excluded: tuple[str, ...] = ()) -> dict:
             "candidate_type": "oof_full_fit_release",
         })
     artifact["payload_checksum"] = _payload_checksum(artifact)
+    manifest["active8_action_authority"] = {
+        "schema_version": serving_resolver.ACTIVE8_ACTION_AUTHORITY_SCHEMA,
+        "mode": serving_resolver.ACTIVE8_ACTION_MODE_PRODUCTION,
+        "buy_authorized": True,
+        "production_effect": True,
+        "reason": "promoted_active8_ensemble_pointer",
+    }
     manifest["active8_ensemble"] = artifact
     return manifest
 

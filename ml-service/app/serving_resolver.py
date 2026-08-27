@@ -32,7 +32,10 @@ FORMAL_RANK_IC_SEMANTIC_VERSION = "same-date-average-rank-tie-neutral-spearman-v
 SEQUENCE_CONTRACT_FIELDS = ("seq_len", "pred_len", "sequence_contract")
 SEQUENCE_CONTRACT_SCHEMA_VERSION = "model-serving-sequence-contract-v1"
 L2_SIDECARS = ("TimesFM",)
-PIPELINE_MODAL_SERVING_MANIFEST_SCHEMA = "pipeline-modal-serving-manifest-v3"
+PIPELINE_MODAL_SERVING_MANIFEST_SCHEMA = "pipeline-modal-serving-manifest-v4"
+ACTIVE8_ACTION_AUTHORITY_SCHEMA = "active8-action-authority-v1"
+ACTIVE8_ACTION_MODE_PRODUCTION = "production_ensemble"
+ACTIVE8_ACTION_MODE_EVIDENCE_ONLY = "evidence_only_no_action"
 SERVING_OK_STATES = {"production"}
 SERVING_OK_OFFLINE_DECISIONS = {"STRONG_PASS", "PASS"}
 SERVING_BAD_LIVE_STATUSES = {"failed", "rolling_ic_failed", "live_gate_failed"}
@@ -271,7 +274,7 @@ def build_pool_from_frozen_manifest(
     actual_digest = serving_manifest_digest(manifest)
     if not expected_digest or actual_digest != str(expected_digest).strip().lower():
         raise ServingPoolResolutionError("frozen_serving_manifest_digest_mismatch")
-    if manifest.get("source_of_truth") != "model_champion_pointers+active8_ensemble_pointer_v1":
+    if manifest.get("source_of_truth") != "model_champion_pointers+active8_action_authority_v1":
         raise ServingPoolResolutionError("frozen_serving_manifest_source_invalid")
 
     rows = manifest.get("models")
@@ -303,7 +306,8 @@ def build_pool_from_frozen_manifest(
         "shadow_models": {},
         "active8_shadow_candidates": {},
         "formal_layer3_slots": {},
-        "active8_ensemble": {},
+        "active8_ensemble": None,
+        "active8_action_authority": {},
         "serving_coverage": serving_manifest_coverage(manifest),
     }
     for model_name in DIRECT_ALPHA_MODELS:
@@ -621,19 +625,39 @@ def build_pool_from_frozen_manifest(
 
     from .active8_ensemble_runtime import validate_active8_ensemble_artifact
 
+    authority = manifest.get("active8_action_authority")
+    if not isinstance(authority, dict):
+        raise ServingPoolResolutionError("frozen_serving_manifest_active8_action_authority_missing")
+    if authority.get("schema_version") != ACTIVE8_ACTION_AUTHORITY_SCHEMA:
+        raise ServingPoolResolutionError("frozen_serving_manifest_active8_action_authority_schema_invalid")
+    mode = str(authority.get("mode") or "")
     active8_ensemble = manifest.get("active8_ensemble")
-    if not isinstance(active8_ensemble, dict):
-        raise ServingPoolResolutionError("frozen_serving_manifest_active8_ensemble_missing")
-    try:
-        validate_active8_ensemble_artifact(
-            active8_ensemble,
-            pool_models=pool["models"],
-        )
-    except Exception as exc:
+    if mode == ACTIVE8_ACTION_MODE_PRODUCTION:
+        if authority.get("buy_authorized") is not True or authority.get("production_effect") is not True:
+            raise ServingPoolResolutionError("frozen_serving_manifest_active8_action_authority_production_invalid")
+        if not isinstance(active8_ensemble, dict):
+            raise ServingPoolResolutionError("frozen_serving_manifest_active8_ensemble_missing")
+        try:
+            validate_active8_ensemble_artifact(
+                active8_ensemble,
+                pool_models=pool["models"],
+            )
+        except Exception as exc:
+            raise ServingPoolResolutionError(
+                f"frozen_serving_manifest_active8_ensemble_invalid:{exc}"
+            ) from exc
+        pool["active8_ensemble"] = dict(active8_ensemble)
+    elif mode == ACTIVE8_ACTION_MODE_EVIDENCE_ONLY:
+        if authority.get("buy_authorized") is not False or authority.get("production_effect") is not False:
+            raise ServingPoolResolutionError("frozen_serving_manifest_active8_action_authority_evidence_only_invalid")
+        if active8_ensemble is not None:
+            raise ServingPoolResolutionError("frozen_serving_manifest_evidence_only_ensemble_must_be_absent")
+        pool["active8_ensemble"] = None
+    else:
         raise ServingPoolResolutionError(
-            f"frozen_serving_manifest_active8_ensemble_invalid:{exc}"
-        ) from exc
-    pool["active8_ensemble"] = dict(active8_ensemble)
+            f"frozen_serving_manifest_active8_action_authority_mode_invalid:{mode or 'missing'}"
+        )
+    pool["active8_action_authority"] = dict(authority)
 
     sidecar = dict(l2_sidecar_context or {})
     pool["l2_feature_sidecars"]["TimesFM"] = {

@@ -95,7 +95,7 @@ def test_controller_manifest_is_accepted_by_modal_without_contract_drift() -> No
     )
 
     assert modal_resolver.serving_manifest_digest(manifest) == controller_digest
-    assert manifest["source_of_truth"] == "model_champion_pointers+active8_ensemble_pointer_v1"
+    assert manifest["source_of_truth"] == "model_champion_pointers+active8_action_authority_v1"
     assert modal_pool["serving_coverage"]["slot_count"] == 8
     assert modal_pool["serving_coverage"]["serving_model_count"] == 8
     assert modal_pool["serving_coverage"]["excluded_models"] == []
@@ -119,3 +119,47 @@ def test_manifest_rejects_any_non_serving_base_before_modal_dispatch() -> None:
         assert "active8_base_not_serving:XGBoost:test_block" in str(exc)
     else:
         raise AssertionError("non-serving Active-8 base must block manifest construction")
+
+
+def test_controller_evidence_only_manifest_is_non_actionable_and_modal_accepted() -> None:
+    artifact = _artifact()
+    controller_pool, registry_rows = _pool_and_rows(artifact)
+
+    manifest, digest = controller_pipeline._build_pipeline_modal_serving_manifest(
+        controller_pool,
+        registry_rows=registry_rows,
+        active8_ensemble=None,
+    )
+    modal_pool = modal_resolver.build_pool_from_frozen_manifest(
+        manifest,
+        expected_digest=digest,
+    )
+
+    authority = manifest["active8_action_authority"]
+    assert authority["mode"] == "evidence_only_no_action"
+    assert authority["buy_authorized"] is False
+    assert authority["production_effect"] is False
+    assert manifest["active8_ensemble"] is None
+    assert modal_pool["active8_ensemble"] is None
+    assert modal_pool["active8_action_authority"] == authority
+
+
+def test_modal_rejects_evidence_only_manifest_with_ensemble_payload() -> None:
+    artifact = _artifact()
+    controller_pool, registry_rows = _pool_and_rows(artifact)
+    manifest, _digest = controller_pipeline._build_pipeline_modal_serving_manifest(
+        controller_pool,
+        registry_rows=registry_rows,
+        active8_ensemble=None,
+    )
+    manifest["active8_ensemble"] = artifact
+
+    try:
+        modal_resolver.build_pool_from_frozen_manifest(
+            manifest,
+            expected_digest=modal_resolver.serving_manifest_digest(manifest),
+        )
+    except modal_resolver.ServingPoolResolutionError as exc:
+        assert "evidence_only_ensemble_must_be_absent" in str(exc)
+    else:
+        raise AssertionError("evidence-only manifest must reject any ensemble payload")

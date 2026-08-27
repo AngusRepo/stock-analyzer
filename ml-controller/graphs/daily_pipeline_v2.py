@@ -29,7 +29,7 @@ from langgraph.types import RetryPolicy
 
 from services import kv_client
 from services.d1_domain_client import D1DataDomain, client_for_domain, client_proxy_for_domain
-from services.ensemble_v2 import attach_ensemble_v2
+from services.ensemble_v2 import attach_ensemble_v2, build_formal_model_input_contract
 from services.evidence_contracts import LABEL_SCHEMA_VERSION
 from services.decision_owner_contract import resolve_decision_owner_contract
 from services.l4_alpha_ev_producer import assess_l4_policy_cutover
@@ -131,7 +131,10 @@ RETIRED_ALPHA_MODEL_SET = set(RETIRED_ALPHA_MODELS)
 MODEL_POOL_ALLOWED_STATUSES = {"active", "degraded", "challenger", "retired"}
 MODEL_POOL_SERVING_STATUSES = {"active", "degraded"}
 
-PIPELINE_MODAL_SERVING_MANIFEST_SCHEMA = "pipeline-modal-serving-manifest-v3"
+PIPELINE_MODAL_SERVING_MANIFEST_SCHEMA = "pipeline-modal-serving-manifest-v4"
+ACTIVE8_ACTION_AUTHORITY_SCHEMA = "active8-action-authority-v1"
+ACTIVE8_ACTION_MODE_PRODUCTION = "production_ensemble"
+ACTIVE8_ACTION_MODE_EVIDENCE_ONLY = "evidence_only_no_action"
 
 PIPELINE_MODAL_RESIDUAL_SHADOW_FIELDS = (
     "status",
@@ -1239,18 +1242,30 @@ async def node_ml_predict(state: PipelineStateV2) -> dict:
 
     pool_models = serving_pool.get("models") if isinstance(serving_pool.get("models"), dict) else {}
     active8_ensemble = serving_manifest.get("active8_ensemble") if isinstance(serving_manifest, dict) else None
-    if not isinstance(active8_ensemble, dict):
-        raise RuntimeError("formal_layer3_active8_ensemble_unavailable")
-    for sym, row in pred_map.items():
-        try:
-            _attach_ensemble_v2(row, active8_ensemble, pool_models)
-        except Exception as exc:
-            row["ensemble_v2_error"] = f"{type(exc).__name__}: {exc}"
-            raise RuntimeError(f"formal_layer3_active8_ensemble_failed:{sym}:{exc}") from exc
-    merged_count = sum(1 for value in pred_map.values() if isinstance(value.get("ensemble_v2"), dict))
-    if merged_count != len(pred_map):
-        raise RuntimeError(f"formal_layer3_active8_ensemble_incomplete:{merged_count}/{len(pred_map)}")
-    logger.info("[Pipeline V2] learned Active-8 ensemble attached: %s/%s", merged_count, len(pred_map))
+    evidence_only = _active8_evidence_only_from_manifest(serving_manifest)
+    if evidence_only:
+        if active8_ensemble is not None:
+            raise RuntimeError("formal_layer3_evidence_only_ensemble_must_be_absent")
+        authority = dict(serving_manifest["active8_action_authority"])
+        for row in pred_map.values():
+            row["active8_action_authority"] = authority
+        logger.info(
+            "[Pipeline V2] Active-8 base evidence only: %s symbols; no ensemble signal or action authority",
+            len(pred_map),
+        )
+    else:
+        if not isinstance(active8_ensemble, dict):
+            raise RuntimeError("formal_layer3_active8_ensemble_unavailable")
+        for sym, row in pred_map.items():
+            try:
+                _attach_ensemble_v2(row, active8_ensemble, pool_models)
+            except Exception as exc:
+                row["ensemble_v2_error"] = f"{type(exc).__name__}: {exc}"
+                raise RuntimeError(f"formal_layer3_active8_ensemble_failed:{sym}:{exc}") from exc
+        merged_count = sum(1 for value in pred_map.values() if isinstance(value.get("ensemble_v2"), dict))
+        if merged_count != len(pred_map):
+            raise RuntimeError(f"formal_layer3_active8_ensemble_incomplete:{merged_count}/{len(pred_map)}")
+        logger.info("[Pipeline V2] learned Active-8 ensemble attached: %s/%s", merged_count, len(pred_map))
 
     dispersion = build_prediction_dispersion_report(pred_map)
     logger.info(
@@ -2027,6 +2042,99 @@ async def node_compute_sector_flow(state: PipelineStateV2) -> dict:
     raise RuntimeError(f"sector_flow_daily_closure_failed:{last_error}") from last_error
 
 
+def _build_active8_evidence_only_recommendation_result(
+    state: PipelineStateV2,
+    screener_recs: list[dict[str, Any]],
+    expected_return_serving_preflight: dict[str, Any],
+) -> dict[str, Any] | None:
+    manifest = state.get("serving_manifest")
+    if not _active8_evidence_only_from_manifest(manifest):
+        return None
+    authority = dict(manifest["active8_action_authority"])
+    predictions = state.get("predictions") if isinstance(state.get("predictions"), dict) else {}
+    symbols = [
+        str(row.get("symbol") or "").strip()
+        for row in screener_recs
+        if str(row.get("symbol") or "").strip()
+    ]
+    base_contract_blockers: list[str] = []
+    for symbol in symbols:
+        pred = predictions.get(symbol) if isinstance(predictions.get(symbol), dict) else None
+        contract = build_formal_model_input_contract(pred)
+        base_complete = (
+            bool(contract.get("complete"))
+            and bool(contract.get("full_active8_coverage"))
+        )
+        if pred is None or not base_complete:
+            base_contract_blockers.append(symbol)
+            continue
+        evidence = {
+            "schema_version": "active8-base-observation-evidence-v1",
+            "selection_role": "evidence_only_no_action",
+            "formal_base_model_contract_passed": True,
+            "formal_model_contract_passed": False,
+            "ensemble_v2_available": False,
+            "available_active_models": contract.get("available_models") or [],
+            "missing_active_models": contract.get("missing_models") or [],
+            "model_availability": contract.get("model_availability") or {},
+            "formal_model_contract_blockers": ["active8_ensemble_pointer_missing"],
+            "active8_action_authority": authority,
+        }
+        pred["core_family_evidence"] = evidence
+        pred["core_family_vote"] = evidence
+    if base_contract_blockers:
+        raise RuntimeError(
+            "active8_evidence_only_base_model_closure_failed:"
+            + ",".join(base_contract_blockers[:20])
+        )
+    diagnostics = {
+        symbol: {
+            "filtered_signal": "NO_SIGNAL",
+            "filtered_signal_source": "active8_evidence_only_no_promoted_ensemble",
+            "filtered_confidence": 0.0,
+            "sparse_decision_coverage": False,
+            "decision_pool_reason": "active8_ensemble_action_authority_unavailable",
+            "decision_expected_return_owner": "risk_abstention",
+            "production_effect": False,
+        }
+        for symbol in symbols
+    }
+    serving_preflight = {
+        **expected_return_serving_preflight,
+        "selection_signal_owner": "active8_base_evidence_only",
+        "action_gate": "active8_ensemble_unavailable_no_action",
+        "active8_action_authority": authority,
+    }
+    return {
+        "final_recommendations": [],
+        "layer2_recommendation_symbols": symbols,
+        "layer3_formal_gate_target_size": len(symbols),
+        "sell_filtered_symbols": symbols,
+        "sell_filtered_diagnostics": diagnostics,
+        "expected_return_serving_preflight": serving_preflight,
+        "expected_return_owner_coverage": {
+            "schema_version": "expected-return-owner-coverage-v1",
+            "seed_rows": len(symbols),
+            "covered_rows": len(symbols),
+            "owner_counts": {"risk_abstention": len(symbols)},
+            "unresolved_symbols": [],
+            "valid_owner_or_explicit_abstention_required": True,
+            "expected_return_serving_preflight": serving_preflight,
+        },
+        "pit_sector_alpha_coverage": {
+            "schema_version": "pit-sector-alpha-runtime-coverage-v1",
+            "signal_date": state.get("run_date"),
+            "candidate_rows": len(symbols),
+            "available_rows": 0,
+            "coverage": 0.0,
+            "load_error": None,
+            "application_scope": "not_evaluated_without_active8_action_authority",
+            "candidate_set_mutation_allowed": False,
+        },
+        "active8_action_authority": authority,
+    }
+
+
 async def node_recommend(state: PipelineStateV2) -> dict:
     """
     Filter SELL, compute canonical Score V2 finalScore, then run L2/L3 ranking and sparse allocation.
@@ -2109,6 +2217,17 @@ async def node_recommend(state: PipelineStateV2) -> dict:
             "screener_recs_missing: daily pipeline requires full-market screener "
             "seeds before ML/recommendation; refusing watchlist fallback"
         )
+    evidence_only_result = _build_active8_evidence_only_recommendation_result(
+        state,
+        screener_recs,
+        expected_return_serving_preflight,
+    )
+    if evidence_only_result is not None:
+        logger.warning(
+            "[Pipeline V2] Active-8 evidence-only lane closed %s seeds with zero actionable recommendations",
+            len(screener_recs),
+        )
+        return evidence_only_result
 
     decision_cutoff = str(state.get("decision_universe_frozen_at") or "").strip()
     fallback_industries = {
@@ -2509,14 +2628,30 @@ async def node_write_d1(state: PipelineStateV2) -> dict:
         if (((state.get("predictions") or {}).get(symbol) or {}).get("l3_model_eligibility") or {}).get("eligible") is False
     }
     l3_eligible_prediction_symbols = formal_evidence_prediction_symbols - l3_ineligible_symbols
+    action_authority = state.get("active8_action_authority")
+    if not isinstance(action_authority, dict):
+        manifest = state.get("serving_manifest") if isinstance(state.get("serving_manifest"), dict) else {}
+        action_authority = manifest.get("active8_action_authority")
+    observation_only = (
+        isinstance(action_authority, dict)
+        and action_authority.get("mode") == ACTIVE8_ACTION_MODE_EVIDENCE_ONLY
+        and action_authority.get("buy_authorized") is False
+        and action_authority.get("production_effect") is False
+    )
     full_active_model_symbols = sum(
         1
         for symbol in l3_eligible_prediction_symbols
-        if bool((((state.get("predictions") or {}).get(symbol) or {}).get("core_family_evidence") or {}).get("formal_model_contract_passed"))
+        if bool(
+            ((((state.get("predictions") or {}).get(symbol) or {}).get("core_family_evidence") or {}).get(
+                "formal_base_model_contract_passed" if observation_only else "formal_model_contract_passed"
+            ))
+        )
     )
 
     metrics = {
         "predictions_written": predictions_written,
+        "active8_action_authority": action_authority,
+        "active8_observation_only": observation_only,
         "layer2_timesfm_enrichment_audit_rows": layer2_audit_rows,
         "layer3_formal_gate_audit_rows": layer3_audit_rows,
         "prediction_symbols": len(successful_prediction_symbols),
@@ -3120,7 +3255,7 @@ def _pipeline_modal_registry_identity_rows(serving_pool: dict[str, Any]) -> list
     )
 
 
-def _load_active8_ensemble_snapshot(serving_pool: dict[str, Any]) -> dict[str, Any]:
+def _load_active8_ensemble_snapshot(serving_pool: dict[str, Any]) -> dict[str, Any] | None:
     rows = LEARNING_D1_CLIENT.query(
         """
         SELECT a.payload_json, a.payload_checksum, a.state, a.production_effect,
@@ -3131,6 +3266,8 @@ def _load_active8_ensemble_snapshot(serving_pool: dict[str, Any]) -> dict[str, A
          WHERE p.singleton_id = 1
         """
     )
+    if not rows:
+        return None
     if len(rows) != 1:
         raise RuntimeError(f"active8_ensemble_pointer_cardinality:{len(rows)}")
     row = rows[0]
@@ -3154,11 +3291,57 @@ def _load_active8_ensemble_snapshot(serving_pool: dict[str, Any]) -> dict[str, A
     return payload
 
 
+def _active8_action_authority(
+    active8_ensemble: dict[str, Any] | None,
+) -> dict[str, Any]:
+    if isinstance(active8_ensemble, dict):
+        return {
+            "schema_version": ACTIVE8_ACTION_AUTHORITY_SCHEMA,
+            "mode": ACTIVE8_ACTION_MODE_PRODUCTION,
+            "buy_authorized": True,
+            "production_effect": True,
+            "reason": "promoted_active8_ensemble_pointer",
+            "artifact_id": active8_ensemble.get("artifact_id"),
+            "cohort_id": active8_ensemble.get("cohort_id"),
+            "payload_checksum": active8_ensemble.get("payload_checksum"),
+        }
+    return {
+        "schema_version": ACTIVE8_ACTION_AUTHORITY_SCHEMA,
+        "mode": ACTIVE8_ACTION_MODE_EVIDENCE_ONLY,
+        "buy_authorized": False,
+        "production_effect": False,
+        "reason": "no_promoted_active8_ensemble_pointer",
+        "artifact_id": None,
+        "cohort_id": None,
+        "payload_checksum": None,
+    }
+
+
+def _active8_evidence_only_from_manifest(manifest: Any) -> bool:
+    if not isinstance(manifest, dict):
+        raise RuntimeError("active8_action_authority_manifest_missing")
+    authority = manifest.get("active8_action_authority")
+    if not isinstance(authority, dict):
+        raise RuntimeError("active8_action_authority_missing")
+    if authority.get("schema_version") != ACTIVE8_ACTION_AUTHORITY_SCHEMA:
+        raise RuntimeError("active8_action_authority_schema_invalid")
+    mode = str(authority.get("mode") or "")
+    if mode == ACTIVE8_ACTION_MODE_PRODUCTION:
+        if authority.get("buy_authorized") is not True or authority.get("production_effect") is not True:
+            raise RuntimeError("active8_action_authority_production_invalid")
+        return False
+    if mode == ACTIVE8_ACTION_MODE_EVIDENCE_ONLY:
+        if authority.get("buy_authorized") is not False or authority.get("production_effect") is not False:
+            raise RuntimeError("active8_action_authority_evidence_only_invalid")
+        return True
+    raise RuntimeError(f"active8_action_authority_mode_invalid:{mode or 'missing'}")
+
+
 def _build_pipeline_modal_serving_manifest(
     serving_pool: dict[str, Any],
     *,
     registry_rows: list[dict[str, Any]],
-    active8_ensemble: dict[str, Any],
+    active8_ensemble: dict[str, Any] | None,
     active8_shadow_selection: dict[str, Any] | None = None,
 ) -> tuple[dict[str, Any], str]:
     """Project one frozen, compact Active-8 identity snapshot for Modal."""
@@ -3312,15 +3495,20 @@ def _build_pipeline_modal_serving_manifest(
     )
     manifest = {
         "schema_version": PIPELINE_MODAL_SERVING_MANIFEST_SCHEMA,
-        "source_of_truth": "model_champion_pointers+active8_ensemble_pointer_v1",
+        "source_of_truth": "model_champion_pointers+active8_action_authority_v1",
         "models": models,
         "shadow_models": _pipeline_modal_shadow_projection(serving_pool),
         "active8_shadow_candidates": active8_shadow["candidates"],
         "active8_shadow_suppressions": active8_shadow["suppressions"],
         "formal_layer3_slots": _pipeline_modal_formal_slot_projection(serving_pool),
-        "active8_ensemble": _pipeline_modal_compact_value(
-            active8_ensemble,
-            label="active8_ensemble",
+        "active8_action_authority": _active8_action_authority(active8_ensemble),
+        "active8_ensemble": (
+            _pipeline_modal_compact_value(
+                active8_ensemble,
+                label="active8_ensemble",
+            )
+            if isinstance(active8_ensemble, dict)
+            else None
         ),
     }
     return manifest, _pipeline_modal_canonical_digest(manifest)

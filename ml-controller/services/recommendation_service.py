@@ -4451,11 +4451,26 @@ def write_predictions_to_d1(
         feature_version = _require_prediction_feature_version(str(symbol), data)
         sanitized_count = 0
         skipped_model_rows: list[str] = []
+        authority = data.get("active8_action_authority")
+        observation_only = (
+            isinstance(authority, dict)
+            and authority.get("schema_version") == "active8-action-authority-v1"
+            and authority.get("mode") == "evidence_only_no_action"
+            and authority.get("buy_authorized") is False
+            and authority.get("production_effect") is False
+        )
         ev2 = data.get("ensemble_v2")
-        if not isinstance(ev2, dict) or not ev2.get("signal"):
-            raise ValueError(f"active8_ensemble_evidence_required:{symbol}")
-        ev2_signal = str(ev2["signal"])
-        ev2_signal_source = ev2.get("signal_source") or "active8_ensemble_artifact"
+        if observation_only:
+            if ev2 is not None:
+                raise ValueError(f"active8_evidence_only_ensemble_must_be_absent:{symbol}")
+            ev2 = {}
+            ev2_signal = "NO_SIGNAL"
+            ev2_signal_source = "active8_evidence_only_no_promoted_ensemble"
+        else:
+            if not isinstance(ev2, dict) or not ev2.get("signal"):
+                raise ValueError(f"active8_ensemble_evidence_required:{symbol}")
+            ev2_signal = str(ev2["signal"])
+            ev2_signal_source = ev2.get("signal_source") or "active8_ensemble_artifact"
         raw_signal = ev2_signal
         if raw_signal == "NO_SIGNAL":
             trade_signal = None
@@ -4519,24 +4534,25 @@ def write_predictions_to_d1(
             f"AND {delete_date_sql}",
             [stock_id, *delete_date_params],
         ))
-        statements.append((
-            INSERT_PREDICTIONS_SQL,
-            [
-                stock_id,
-                run_date,
-                14,
-                confidence,
-                forecast_data,
-                entry_price,
-                stop_loss,
-                target1,
-                target2,
-                trade_signal,
-                feature_version,
-                raw_signal,
-            ],
-        ))
-        inserted_rows += 1
+        if not observation_only:
+            statements.append((
+                INSERT_PREDICTIONS_SQL,
+                [
+                    stock_id,
+                    run_date,
+                    14,
+                    confidence,
+                    forecast_data,
+                    entry_price,
+                    stop_loss,
+                    target1,
+                    target2,
+                    trade_signal,
+                    feature_version,
+                    raw_signal,
+                ],
+            ))
+            inserted_rows += 1
 
         # 2026-04-19 ML_POOL Stage 2: per-model rows for weekly IC tracking.
         # 2026-06-27: active-8 challenger rows are non-voting live-gate evidence

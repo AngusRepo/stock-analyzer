@@ -113,6 +113,25 @@ async def _execute_allocator_snapshot(
     )
 
 
+async def _execute_semantic_reconciliation(
+    *,
+    expected_cohort_id: str | None,
+    knowledge_cutoff_date: str | None,
+    cadence: str,
+) -> dict[str, Any]:
+    from routers.walk_forward import reconcile_terminal_oof_feature_semantics
+
+    if not expected_cohort_id or not knowledge_cutoff_date:
+        raise RuntimeError(
+            "semantic reconciliation requires exact cohort and knowledge cutoff"
+        )
+    return await reconcile_terminal_oof_feature_semantics(
+        cohort_id=expected_cohort_id,
+        knowledge_cutoff_date=knowledge_cutoff_date,
+        lifecycle_cadence=cadence,
+    )
+
+
 def _summary(run_id: str, result: dict[str, Any], *, mode: str) -> str:
     if mode == "allocator_snapshot":
         return " ".join([
@@ -125,6 +144,15 @@ def _summary(run_id: str, result: dict[str, Any], *, mode: str) -> str:
             "l4_blockers=" + json.dumps(
                 result.get("l4_materialization_blockers") or {}, separators=(",", ":"), sort_keys=True
             ),
+        ])
+    if mode == "semantic_reconcile_only":
+        return " ".join([
+            f"run_id={run_id}",
+            f"status={result.get('status', 'unknown')}",
+            f"cohort={result.get('cohort_id', 'none')}",
+            f"training_dispatched={bool(result.get('training_dispatched'))}",
+            f"promotion_attempted={bool(result.get('promotion_attempted'))}",
+            f"serving_pointer_changed={bool(result.get('serving_pointer_changed'))}",
         ])
     parts = [
         f"run_id={run_id}",
@@ -271,6 +299,24 @@ async def _run() -> int:
                     f"written={result.get('written')} "
                     f"skip_reasons={result.get('skip_reasons') or {}}"
                 )
+        elif mode == "semantic_reconcile_only":
+            if promote or dispatch_full_fit or continuation_only:
+                raise RuntimeError(
+                    "semantic_reconcile_only forbids promote, dispatch, and continuation"
+                )
+            result = await _execute_semantic_reconciliation(
+                expected_cohort_id=expected_cohort_id,
+                knowledge_cutoff_date=end_date,
+                cadence=cadence,
+            )
+            if (
+                result.get("status") != "semantic_reconciled"
+                or result.get("training_dispatched") is not False
+                or result.get("promotion_attempted") is not False
+                or result.get("serving_pointer_changed") is not False
+            ):
+                raise RuntimeError("semantic reconciliation postcondition failed")
+            callback_status = "success"
         else:
             if mode != "oof_lifecycle":
                 raise RuntimeError(f"invalid OOF materialize mode: {mode}")
@@ -351,6 +397,15 @@ async def _run() -> int:
         calendar = result.get("calendar")
         calendar = calendar if isinstance(calendar, dict) else {}
         payload["run_date"] = end_date or str(calendar.get("cutoff") or "")[:10]
+    elif mode == "semantic_reconcile_only":
+        payload["metadata"] = {
+            "mode": mode,
+            "cohort_id": result.get("cohort_id"),
+            "training_dispatched": False,
+            "promotion_attempted": False,
+            "serving_pointer_changed": False,
+            "semantic_reconciliation": result.get("semantic_reconciliation") or {},
+        }
     if end_date:
         payload["run_date"] = end_date
     if error:

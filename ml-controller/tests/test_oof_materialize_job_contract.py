@@ -47,6 +47,67 @@ def test_oof_materialize_job_closes_scheduler_callback(monkeypatch):
     assert callback["metadata"]["oof_freshness"]["business_date"] == "2026-07-16"
 
 
+def test_semantic_reconcile_only_forbids_training_promotion_and_serving_change(monkeypatch):
+    callbacks = []
+    calls = []
+
+    async def fake_reconcile(**kwargs):
+        calls.append(kwargs)
+        return {
+            "status": "semantic_reconciled",
+            "cohort_id": kwargs["expected_cohort_id"],
+            "knowledge_cutoff_date": kwargs["knowledge_cutoff_date"],
+            "training_dispatched": False,
+            "promotion_attempted": False,
+            "serving_pointer_changed": False,
+            "semantic_reconciliation": {"status": "complete", "model": "TabM"},
+        }
+
+    async def fake_callback(payload):
+        callbacks.append(payload)
+
+    monkeypatch.setattr(oof_materialize_job_main, "_execute_semantic_reconciliation", fake_reconcile)
+    monkeypatch.setattr(oof_materialize_job_main, "_callback_worker", fake_callback)
+    monkeypatch.setenv("OOF_MATERIALIZE_MODE", "semantic_reconcile_only")
+    monkeypatch.setenv("OOF_MATERIALIZE_CADENCE", "monthly")
+    monkeypatch.setenv("OOF_MATERIALIZE_END_DATE", "2026-08-18")
+    monkeypatch.setenv("OOF_MATERIALIZE_EXPECTED_COHORT_ID", "cohort-v9")
+    monkeypatch.setenv("OOF_MATERIALIZE_PROMOTE", "0")
+    monkeypatch.setenv("OOF_MATERIALIZE_DISPATCH_FULL_FIT", "0")
+    monkeypatch.setenv("OOF_MATERIALIZE_CONTINUATION_ONLY", "0")
+    monkeypatch.setenv("OOF_MATERIALIZE_RUN_ID", "semantic-only-run")
+
+    assert asyncio.run(oof_materialize_job_main._run()) == 0
+    assert calls == [{
+        "expected_cohort_id": "cohort-v9",
+        "knowledge_cutoff_date": "2026-08-18",
+        "cadence": "monthly",
+    }]
+    assert callbacks[0]["status"] == "success"
+    assert callbacks[0]["metadata"]["training_dispatched"] is False
+    assert callbacks[0]["metadata"]["promotion_attempted"] is False
+    assert callbacks[0]["metadata"]["serving_pointer_changed"] is False
+
+
+def test_semantic_reconcile_only_rejects_any_mutating_control(monkeypatch):
+    callbacks = []
+
+    async def fake_callback(payload):
+        callbacks.append(payload)
+
+    monkeypatch.setattr(oof_materialize_job_main, "_callback_worker", fake_callback)
+    monkeypatch.setenv("OOF_MATERIALIZE_MODE", "semantic_reconcile_only")
+    monkeypatch.setenv("OOF_MATERIALIZE_END_DATE", "2026-08-18")
+    monkeypatch.setenv("OOF_MATERIALIZE_EXPECTED_COHORT_ID", "cohort-v9")
+    monkeypatch.setenv("OOF_MATERIALIZE_PROMOTE", "1")
+    monkeypatch.setenv("OOF_MATERIALIZE_DISPATCH_FULL_FIT", "0")
+    monkeypatch.setenv("OOF_MATERIALIZE_CONTINUATION_ONLY", "0")
+
+    assert asyncio.run(oof_materialize_job_main._run()) == 1
+    assert callbacks[0]["status"] == "error"
+    assert "forbids promote, dispatch, and continuation" in callbacks[0]["error"]
+
+
 def test_oof_materialize_job_treats_daily_shadow_evaluation_as_terminal_success(monkeypatch):
     callbacks = []
 

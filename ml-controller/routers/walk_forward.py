@@ -1625,6 +1625,85 @@ async def dispatch_oof_full_fit_training(
     }
 
 
+async def reconcile_terminal_oof_feature_semantics(
+    *,
+    cohort_id: str,
+    knowledge_cutoff_date: str,
+    lifecycle_cadence: str = "monthly",
+) -> dict[str, Any]:
+    """Repair checksum-bound release metadata without training or promotion."""
+
+    from services.walk_forward_retrain import _get_bucket
+
+    if lifecycle_cadence not in {"daily", "weekly", "monthly"}:
+        raise RuntimeError("oof_semantic_reconciliation_cadence_invalid")
+    cutoff = str(knowledge_cutoff_date or "").strip()[:10]
+    if len(cutoff) != 10:
+        raise RuntimeError("oof_semantic_reconciliation_cutoff_invalid")
+    bucket = _get_bucket()
+    if bucket is None:
+        raise RuntimeError("oof_semantic_reconciliation_bucket_missing")
+    _path, manifest, _producer_sha = _exact_ready_oof_manifest(bucket, cohort_id)
+    receipt_path = f"walk_forward/oof_cohorts/{cohort_id}/full_fit/{cutoff}.json"
+    receipt_blob = bucket.blob(receipt_path)
+    if not receipt_blob.exists():
+        raise RuntimeError("oof_semantic_reconciliation_terminal_receipt_missing")
+    receipt = json.loads(receipt_blob.download_as_text())
+    release_registry = (
+        receipt.get("release_registry")
+        if isinstance(receipt.get("release_registry"), dict)
+        else {}
+    )
+    terminal_blocked = (
+        receipt.get("status") == "blocked"
+        and receipt.get("reason") == "active8_ensemble_validation_failed"
+        and receipt.get("retry_required") is False
+        and str(receipt.get("cohort_id") or "") == cohort_id
+        and str(receipt.get("knowledge_cutoff_date") or "") == cutoff
+        and bool(str(receipt.get("run_id") or ""))
+        and not receipt.get("missing_models")
+        and not receipt.get("training_failed_models")
+        and _oof_release_registry_is_terminal_validation_blocked(release_registry)
+    )
+    if not terminal_blocked:
+        raise RuntimeError("oof_semantic_reconciliation_requires_terminal_blocked_receipt")
+
+    result = await dispatch_oof_full_fit_training(
+        manifest=manifest,
+        knowledge_cutoff_date=cutoff,
+        bucket=bucket,
+        lifecycle_cadence=lifecycle_cadence,
+        allow_new_dispatch=False,
+    )
+    reconciliation = (
+        result.get("semantic_reconciliation")
+        if isinstance(result.get("semantic_reconciliation"), dict)
+        else {}
+    )
+    if (
+        result.get("status") != "blocked"
+        or result.get("reason") != "active8_ensemble_validation_failed"
+        or result.get("retry_required") is not False
+        or reconciliation.get("status") != "complete"
+        or reconciliation.get("model") != "TabM"
+        or not _oof_release_registry_is_terminal_validation_blocked(
+            result.get("release_registry")
+        )
+    ):
+        raise RuntimeError("oof_semantic_reconciliation_postcondition_failed")
+    return {
+        "status": "semantic_reconciled",
+        "cohort_id": cohort_id,
+        "knowledge_cutoff_date": cutoff,
+        "training_dispatched": False,
+        "promotion_attempted": False,
+        "serving_pointer_changed": False,
+        "validation_decision": "FAIL",
+        "semantic_reconciliation": reconciliation,
+        "receipt_path": receipt_path,
+    }
+
+
 def _without_frozen_forward_rows(
     rows: list[dict[str, Any]],
 ) -> list[dict[str, Any]]:

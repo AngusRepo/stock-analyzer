@@ -637,7 +637,10 @@ async def artifact_registry_champion_pointers(model_name: str | None = None, lim
             for pointer in pointers
             if pointer.get("model_name")
         }
-        model_names = sorted(set(ACTIVE8_MODEL_NAMES) | set(pointer_by_model) | set(base_artifacts))
+        # Current production slots are exactly Active-8. Legacy pointer names remain
+        # available below as rollback/audit lineage, but must not expand the
+        # serving readiness surface or its model_count.
+        model_names = sorted(set(ACTIVE8_MODEL_NAMES))
         models = {}
         for name in model_names:
             pointer = pointer_by_model.get(name) or {}

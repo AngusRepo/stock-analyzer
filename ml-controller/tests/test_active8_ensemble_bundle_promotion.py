@@ -1,6 +1,8 @@
+import asyncio
 import hashlib
 import json
 
+from routers import model_pool as model_pool_router
 from services import model_artifact_registry as registry
 from services.active8_release_training_contract import ACTIVE8_MODEL_NAMES
 
@@ -163,6 +165,35 @@ def test_serving_bundle_read_model_never_falls_back_to_legacy_pointers(monkeypat
     assert missing["production_effect"] is False
     assert missing["base_artifacts"] == {}
     assert missing["blockers"] == ["active8_v5_serving_bundle_not_promoted"]
+
+def test_champion_pointer_read_model_keeps_legacy_names_out_of_active8_slots(monkeypatch):
+    monkeypatch.setattr(
+        model_pool_router,
+        "list_champion_pointers",
+        lambda model_name=None: [{
+            "model_name": "legacy_retired_model",
+            "champion_version": "v-old",
+            "champion_artifact_id": "legacy:artifact",
+        }],
+    )
+    monkeypatch.setattr(model_pool_router, "list_artifact_registry", lambda model_name=None, limit=200: [])
+    monkeypatch.setattr(
+        model_pool_router,
+        "load_active8_ensemble_serving_bundle",
+        lambda: {
+            "status": "evidence_only_no_action",
+            "production_effect": False,
+            "base_artifacts": {},
+        },
+    )
+
+    result = asyncio.run(model_pool_router.artifact_registry_champion_pointers())
+
+    assert result["model_count"] == len(ACTIVE8_MODEL_NAMES)
+    assert set(result["models"]) == set(ACTIVE8_MODEL_NAMES)
+    assert "legacy_retired_model" not in result["models"]
+    assert result["pointers"][0]["authority"] == "legacy_rollback_audit_only"
+
 
 def test_bundle_rejects_missing_model():
     rows, pointers, ensemble = _fixture()

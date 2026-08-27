@@ -131,10 +131,13 @@ RETIRED_ALPHA_MODEL_SET = set(RETIRED_ALPHA_MODELS)
 MODEL_POOL_ALLOWED_STATUSES = {"active", "degraded", "challenger", "retired"}
 MODEL_POOL_SERVING_STATUSES = {"active", "degraded"}
 
-PIPELINE_MODAL_SERVING_MANIFEST_SCHEMA = "pipeline-modal-serving-manifest-v4"
+PIPELINE_MODAL_SERVING_MANIFEST_SCHEMA = "pipeline-modal-serving-manifest-v5"
 ACTIVE8_ACTION_AUTHORITY_SCHEMA = "active8-action-authority-v1"
 ACTIVE8_ACTION_MODE_PRODUCTION = "production_ensemble"
 ACTIVE8_ACTION_MODE_EVIDENCE_ONLY = "evidence_only_no_action"
+FORMAL_FEATURE_SEMANTIC_VERSION = "formal137-pit-rolling-rank-and-imputation-v2"
+FORMAL_GNN_GRAPH_SEMANTIC_VERSION = "gnn-same-date-feature-cosine-sector-v2"
+ACTIVE8_OBSERVATION_ALLOWED_GATES = {"WEAK_PASS", "PASS", "STRONG_PASS"}
 
 PIPELINE_MODAL_RESIDUAL_SHADOW_FIELDS = (
     "status",
@@ -1149,11 +1152,16 @@ async def node_ml_predict(state: PipelineStateV2) -> dict:
         if isinstance(serving_context.get("serving_manifest"), dict)
         else {}
     )
-    active8_shadow_candidate_rows = {
-        str(row.get("model") or ""): row
-        for row in (serving_manifest.get("active8_shadow_candidates") or [])
-        if isinstance(row, dict) and str(row.get("model") or "").strip()
-    }
+    evidence_only = _active8_evidence_only_from_manifest(serving_manifest)
+    active8_shadow_candidate_rows = (
+        _active8_observation_candidates_from_manifest(serving_manifest)
+        if evidence_only
+        else {
+            str(row.get("model") or ""): row
+            for row in (serving_manifest.get("active8_shadow_candidates") or [])
+            if isinstance(row, dict) and str(row.get("model") or "").strip()
+        }
+    )
     candidate_outputs = (
         active8_sequence_shadow_raw.get("candidates")
         if isinstance(active8_sequence_shadow_raw.get("candidates"), dict)
@@ -1175,6 +1183,12 @@ async def node_ml_predict(state: PipelineStateV2) -> dict:
             if not isinstance(prediction, dict):
                 continue
             prediction.setdefault("challenger_model_signals", {})[model_name] = candidate_signal
+
+    if evidence_only:
+        _stage_active8_observation_outputs(
+            pred_map,
+            candidate_rows=active8_shadow_candidate_rows,
+        )
 
     rank_run_date = str(state.get("run_date") or "").strip()
     if not rank_run_date:
@@ -1242,7 +1256,6 @@ async def node_ml_predict(state: PipelineStateV2) -> dict:
 
     pool_models = serving_pool.get("models") if isinstance(serving_pool.get("models"), dict) else {}
     active8_ensemble = serving_manifest.get("active8_ensemble") if isinstance(serving_manifest, dict) else None
-    evidence_only = _active8_evidence_only_from_manifest(serving_manifest)
     if evidence_only:
         if active8_ensemble is not None:
             raise RuntimeError("formal_layer3_evidence_only_ensemble_must_be_absent")
@@ -3043,22 +3056,20 @@ def _pipeline_modal_active8_shadow_projection(
                 )
             feature_semantic = str(metadata.get("feature_semantic_version") or "").strip()
             graph_semantic = str(
-                (
-                    (metadata.get("graph") or {}).get("semantic_version")
-                    if isinstance(metadata.get("graph"), dict)
-                    else metadata.get("gnn_graph_semantic_version")
-                )
+                (metadata.get("graph_context") or {}).get("semantic_version")
+                if isinstance(metadata.get("graph_context"), dict)
+                else None
                 or ""
             ).strip()
             if (
                 model_name in {"LightGBM", "XGBoost", "ExtraTrees", "TabM", "GNN"}
-                and feature_semantic != "formal137-pit-rolling-rank-and-imputation-v2"
+                and feature_semantic != FORMAL_FEATURE_SEMANTIC_VERSION
             ):
                 raise RuntimeError(
                     "candidate_feature_semantic_mismatch:"
                     + (feature_semantic or "<missing>")
                 )
-            if model_name == "GNN" and graph_semantic != "gnn-feature-sector-graph-v1":
+            if model_name == "GNN" and graph_semantic != FORMAL_GNN_GRAPH_SEMANTIC_VERSION:
                 raise RuntimeError(
                     "candidate_gnn_graph_semantic_mismatch:"
                     + (graph_semantic or "<missing>")
@@ -3128,6 +3139,79 @@ def _pipeline_modal_active8_shadow_projection(
             label="active8_shadow_suppressions",
         ),
     }
+
+
+def _pipeline_modal_active8_observation_models(
+    projected_candidates: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Build one coherent 8/8 immutable observation bundle with zero action authority."""
+    by_model = {
+        str(row.get("model") or "").strip(): row
+        for row in projected_candidates
+        if isinstance(row, dict) and str(row.get("model") or "").strip()
+    }
+    missing = sorted(ACTIVE_ALPHA_MODEL_SET - set(by_model))
+    unexpected = sorted(set(by_model) - ACTIVE_ALPHA_MODEL_SET)
+    if missing or unexpected or len(by_model) != len(projected_candidates):
+        raise RuntimeError(
+            "pipeline_modal_observation_bundle:model_set_invalid:"
+            f":missing={missing}:unexpected={unexpected}"
+        )
+    common_versions = {str(row.get("version") or "").strip() for row in by_model.values()}
+    common_training_runs = {str(row.get("training_run_id") or "").strip() for row in by_model.values()}
+    common_source_dates = {str(row.get("source_run_date") or "").strip() for row in by_model.values()}
+    if (
+        len(common_versions) != 1
+        or len(common_training_runs) != 1
+        or len(common_source_dates) != 1
+        or not next(iter(common_versions), "")
+        or not next(iter(common_training_runs), "")
+        or not next(iter(common_source_dates), "")
+    ):
+        raise RuntimeError("pipeline_modal_observation_bundle:cohort_identity_mismatch")
+
+    models: list[dict[str, Any]] = []
+    for model_name in ACTIVE_ALPHA_MODELS:
+        candidate = by_model[model_name]
+        gate = str(candidate.get("offline_gate_decision") or "").strip()
+        if gate not in ACTIVE8_OBSERVATION_ALLOWED_GATES:
+            raise RuntimeError(
+                f"pipeline_modal_observation_bundle:offline_gate_invalid:{model_name}:{gate or '<missing>'}"
+            )
+        if (
+            candidate.get("production_effect") is not False
+            or float(candidate.get("vote_weight") or 0.0) != 0.0
+            or str(candidate.get("candidate_type") or "") != "oof_full_fit_release"
+        ):
+            raise RuntimeError(
+                f"pipeline_modal_observation_bundle:non_action_policy_invalid:{model_name}"
+            )
+        models.append({
+            "model": model_name,
+            "status": "active",
+            "effective_status": "active",
+            "version": candidate["version"],
+            "artifact_id": candidate["artifact_id"],
+            "artifact_path": candidate["artifact_path"],
+            "metadata_path": candidate["metadata_path"],
+            "checksum": candidate["checksum"],
+            "candidate_type": candidate["candidate_type"],
+            "source_run_date": candidate["source_run_date"],
+            "training_run_id": candidate["training_run_id"],
+            "selection_slot": candidate["selection_slot"],
+            "selection_role": ACTIVE8_ACTION_MODE_EVIDENCE_ONLY,
+            "production_effect": False,
+            "vote_weight": 0.0,
+            "health": {
+                "registry_state": candidate["registry_state"],
+                "offline_gate_decision": gate,
+                "live_gate_status": candidate.get("live_gate_status"),
+                "serving_eligible": True,
+                "serving_block_reason": None,
+            },
+            "schema": candidate["schema"],
+        })
+    return models
 
 
 def _pipeline_modal_shadow_projection(serving_pool: dict[str, Any]) -> list[dict[str, Any]]:
@@ -3246,7 +3330,7 @@ def _pipeline_modal_registry_identity_rows(serving_pool: dict[str, Any]) -> list
                ) AS registry_feature_semantic_version,
                json_extract(
                    offline_evidence_json,
-                   '$.registration.metadata.graph.semantic_version'
+                   '$.registration.metadata.graph_context.semantic_version'
                ) AS registry_gnn_graph_semantic_version
           FROM model_artifact_registry
          WHERE artifact_id IN ({placeholders})
@@ -3337,6 +3421,83 @@ def _active8_evidence_only_from_manifest(manifest: Any) -> bool:
     raise RuntimeError(f"active8_action_authority_mode_invalid:{mode or 'missing'}")
 
 
+def _active8_observation_candidates_from_manifest(
+    manifest: dict[str, Any],
+) -> dict[str, dict[str, Any]]:
+    if not _active8_evidence_only_from_manifest(manifest):
+        return {}
+    rows = manifest.get("models")
+    if not isinstance(rows, list):
+        raise RuntimeError("active8_observation_bundle:models_missing")
+    candidates: dict[str, dict[str, Any]] = {}
+    for row in rows:
+        if not isinstance(row, dict):
+            raise RuntimeError("active8_observation_bundle:model_not_object")
+        model_name = str(row.get("model") or "").strip()
+        if (
+            model_name not in ACTIVE_ALPHA_MODEL_SET
+            or model_name in candidates
+            or row.get("selection_role") != ACTIVE8_ACTION_MODE_EVIDENCE_ONLY
+            or row.get("production_effect") is not False
+            or float(row.get("vote_weight") or 0.0) != 0.0
+        ):
+            raise RuntimeError(
+                f"active8_observation_bundle:model_policy_invalid:{model_name or '<missing>'}"
+            )
+        candidates[model_name] = {
+            **row,
+            "status": "challenger",
+            "effective_status": "challenger",
+        }
+    if set(candidates) != ACTIVE_ALPHA_MODEL_SET:
+        raise RuntimeError(
+            "active8_observation_bundle:model_set_invalid:"
+            f"missing={sorted(ACTIVE_ALPHA_MODEL_SET - set(candidates))}"
+        )
+    return candidates
+
+
+def _stage_active8_observation_outputs(
+    predictions: dict[str, dict[str, Any]],
+    *,
+    candidate_rows: dict[str, dict[str, Any]],
+) -> None:
+    """Mirror one inference pass into candidate evidence without a second model run."""
+    if set(candidate_rows) != ACTIVE_ALPHA_MODEL_SET:
+        raise RuntimeError("active8_observation_bundle:stage_model_set_invalid")
+    feature_models = ACTIVE_ALPHA_MODEL_SET - set(SEQUENCE_ALPHA_MODELS)
+    for symbol, prediction in predictions.items():
+        if not isinstance(prediction, dict) or prediction.get("error"):
+            continue
+        raw_feature_scores = (
+            prediction.get("rank_scores")
+            if isinstance(prediction.get("rank_scores"), dict)
+            else {}
+        )
+        prediction["challenger_rank_scores"] = {
+            model_name: raw_feature_scores[model_name]
+            for model_name in feature_models
+            if model_name in raw_feature_scores
+        }
+        challenger_signals: dict[str, dict[str, Any]] = {}
+        for model_name, source_key in (
+            ("DLinear", "dlinear"),
+            ("PatchTST", "patchtst"),
+            ("iTransformer", "itransformer"),
+        ):
+            signal = prediction.get(source_key)
+            if isinstance(signal, dict) and not signal.get("error"):
+                challenger_signals[model_name] = dict(signal)
+        prediction["challenger_model_signals"] = challenger_signals
+        prediction["active8_observation_bundle"] = {
+            "schema_version": "active8-immutable-observation-bundle-v1",
+            "selection_role": ACTIVE8_ACTION_MODE_EVIDENCE_ONLY,
+            "models": list(ACTIVE_ALPHA_MODELS),
+            "production_effect": False,
+            "vote_weight": 0.0,
+        }
+
+
 def _build_pipeline_modal_serving_manifest(
     serving_pool: dict[str, Any],
     *,
@@ -3360,6 +3521,27 @@ def _build_pipeline_modal_serving_manifest(
             "pipeline_modal_serving_manifest:duplicate_registry_artifact_id:"
             + ",".join(sorted(set(duplicate_ids)))
         )
+
+    action_authority = _active8_action_authority(active8_ensemble)
+    active8_shadow = _pipeline_modal_active8_shadow_projection(
+        active8_shadow_selection,
+    )
+    if action_authority["mode"] == ACTIVE8_ACTION_MODE_EVIDENCE_ONLY:
+        observation_models = _pipeline_modal_active8_observation_models(
+            active8_shadow["candidates"],
+        )
+        manifest = {
+            "schema_version": PIPELINE_MODAL_SERVING_MANIFEST_SCHEMA,
+            "source_of_truth": "immutable_active8_observation_bundle+active8_action_authority_v1",
+            "models": observation_models,
+            "shadow_models": _pipeline_modal_shadow_projection(serving_pool),
+            "active8_shadow_candidates": [],
+            "active8_shadow_suppressions": active8_shadow["suppressions"],
+            "formal_layer3_slots": _pipeline_modal_formal_slot_projection(serving_pool),
+            "active8_action_authority": action_authority,
+            "active8_ensemble": None,
+        }
+        return manifest, _pipeline_modal_canonical_digest(manifest)
 
     models: list[dict[str, Any]] = []
     for model_name in ACTIVE_ALPHA_MODELS:
@@ -3440,7 +3622,7 @@ def _build_pipeline_modal_serving_manifest(
         if (
             serving_eligible
             and model_name in {"LightGBM", "XGBoost", "ExtraTrees", "TabM", "GNN"}
-            and feature_semantic_version != "formal137-pit-rolling-rank-and-imputation-v2"
+            and feature_semantic_version != FORMAL_FEATURE_SEMANTIC_VERSION
         ):
             raise RuntimeError(
                 "pipeline_modal_serving_manifest:feature_semantic_mismatch:"
@@ -3452,11 +3634,11 @@ def _build_pipeline_modal_serving_manifest(
             or entry.get("gnn_graph_semantic_version")
             or ""
         ).strip()
-        if serving_eligible and model_name == "GNN" and gnn_graph_semantic_version != "gnn-feature-sector-graph-v1":
+        if serving_eligible and model_name == "GNN" and gnn_graph_semantic_version != FORMAL_GNN_GRAPH_SEMANTIC_VERSION:
             raise RuntimeError(
                 "pipeline_modal_serving_manifest:gnn_graph_semantic_mismatch:"
                 f"{gnn_graph_semantic_version or '<missing>'}:"
-                "expected=gnn-feature-sector-graph-v1"
+                f"expected={FORMAL_GNN_GRAPH_SEMANTIC_VERSION}"
             )
 
         checksum = _pipeline_modal_registry_checksum(
@@ -3490,9 +3672,6 @@ def _build_pipeline_modal_serving_manifest(
             },
         })
 
-    active8_shadow = _pipeline_modal_active8_shadow_projection(
-        active8_shadow_selection,
-    )
     manifest = {
         "schema_version": PIPELINE_MODAL_SERVING_MANIFEST_SCHEMA,
         "source_of_truth": "model_champion_pointers+active8_action_authority_v1",
@@ -3501,7 +3680,7 @@ def _build_pipeline_modal_serving_manifest(
         "active8_shadow_candidates": active8_shadow["candidates"],
         "active8_shadow_suppressions": active8_shadow["suppressions"],
         "formal_layer3_slots": _pipeline_modal_formal_slot_projection(serving_pool),
-        "active8_action_authority": _active8_action_authority(active8_ensemble),
+        "active8_action_authority": action_authority,
         "active8_ensemble": (
             _pipeline_modal_compact_value(
                 active8_ensemble,
@@ -3577,6 +3756,50 @@ def _pipeline_modal_manifest_coverage(manifest: dict[str, Any]) -> dict[str, Any
     }
 
 
+def _pipeline_modal_runtime_pool_from_manifest(
+    serving_pool: dict[str, Any],
+    manifest: dict[str, Any],
+) -> dict[str, Any]:
+    """Use the frozen manifest identities for both payload construction and Modal."""
+    runtime_pool = dict(serving_pool)
+    runtime_models: dict[str, dict[str, Any]] = {}
+    for row in manifest.get("models") or []:
+        if not isinstance(row, dict):
+            continue
+        model_name = str(row.get("model") or "").strip()
+        schema = row.get("schema") if isinstance(row.get("schema"), dict) else {}
+        health = row.get("health") if isinstance(row.get("health"), dict) else {}
+        entry = {
+            "status": str(row.get("effective_status") or "").strip(),
+            "lifecycle_status": str(row.get("status") or "").strip(),
+            "effective_status": str(row.get("effective_status") or "").strip(),
+            "version": str(row.get("version") or "").strip(),
+            "gcs_path": str(row.get("artifact_path") or "").strip(),
+            "metadata_path": str(row.get("metadata_path") or "").strip(),
+            "checksum": str(row.get("checksum") or "").strip(),
+            "serving_artifact_id": str(row.get("artifact_id") or "").strip(),
+            "serving_owner": "frozen_pipeline_modal_serving_manifest",
+            "serving_eligible": health.get("serving_eligible") is True,
+            "serving_block_reason": health.get("serving_block_reason"),
+            "offline_gate_decision": health.get("offline_gate_decision"),
+            "live_gate_status": health.get("live_gate_status"),
+            "target_semantic_version": schema.get("target_semantic_version"),
+            "feature_semantic_version": schema.get("feature_semantic_version"),
+            "gnn_graph_semantic_version": schema.get("gnn_graph_semantic_version"),
+            "selection_role": row.get("selection_role"),
+            "production_effect": row.get("production_effect"),
+        }
+        if isinstance(schema.get("sequence_contract"), dict):
+            entry["sequence_contract"] = dict(schema["sequence_contract"])
+            entry["seq_len"] = schema["sequence_contract"].get("seq_len")
+            entry["pred_len"] = schema["sequence_contract"].get("pred_len")
+        runtime_models[model_name] = entry
+    if set(runtime_models) != ACTIVE_ALPHA_MODEL_SET:
+        raise RuntimeError("pipeline_modal_runtime_pool:model_set_invalid")
+    runtime_pool["models"] = runtime_models
+    return runtime_pool
+
+
 def _pipeline_modal_expected_source_sha() -> str:
     source_sha = str(os.environ.get("STOCKVISION_SOURCE_SHA") or "").strip().lower()
     if (
@@ -3642,7 +3865,7 @@ async def _attach_pipeline_modal_serving_context(state: PipelineStateV2) -> dict
         "expected_source_sha": expected_source_sha,
         "pool_versions_loaded": True,
         "serving_model_status": _json_safe(serving_model_status),
-        "serving_pool": _json_safe(_serving_pool),
+        "serving_pool": _json_safe(_pipeline_modal_runtime_pool_from_manifest(_serving_pool, serving_manifest)),
         "serving_manifest": serving_manifest,
         "serving_manifest_digest": serving_manifest_digest,
     }

@@ -21,7 +21,7 @@ DIRECT_ALPHA_MODELS = (
 SEQUENCE_ALPHA_MODELS = ("DLinear", "PatchTST", "iTransformer")
 FORMAL_FEATURE_MODELS = ("LightGBM", "XGBoost", "ExtraTrees", "TabM", "GNN")
 FORMAL_FEATURE_SEMANTIC_VERSION = "formal137-pit-rolling-rank-and-imputation-v2"
-FORMAL_GNN_GRAPH_SEMANTIC_VERSION = "gnn-feature-sector-graph-v1"
+FORMAL_GNN_GRAPH_SEMANTIC_VERSION = "gnn-same-date-feature-cosine-sector-v2"
 FORMAL_RANK_IC_SEMANTIC_VERSION = "same-date-average-rank-tie-neutral-spearman-v2"
 SEQUENCE_CONTRACT_FIELDS = ("seq_len", "pred_len", "sequence_contract")
 SEQUENCE_CONTRACT_SCHEMA_VERSION = "model-serving-sequence-contract-v1"
@@ -230,7 +230,7 @@ def _artifact_block_reason(
                     f"expected_{FORMAL_FEATURE_SEMANTIC_VERSION}"
                 )
         if model_name == "GNN":
-            graph = metadata.get("graph") if isinstance(metadata.get("graph"), dict) else {}
+            graph = metadata.get("graph_context") if isinstance(metadata.get("graph_context"), dict) else {}
             graph_semantic = str(graph.get("semantic_version") or "").strip()
             if graph_semantic != FORMAL_GNN_GRAPH_SEMANTIC_VERSION:
                 return (
@@ -406,7 +406,7 @@ def build_pool_from_champion_pointers(
             entry["live_gate_status"] = artifact.get("live_gate_status")
             entry["target_semantic_version"] = artifact_metadata.get("target_semantic_version")
             entry["feature_semantic_version"] = artifact_metadata.get("feature_semantic_version")
-            graph = artifact_metadata.get("graph") if isinstance(artifact_metadata.get("graph"), dict) else {}
+            graph = artifact_metadata.get("graph_context") if isinstance(artifact_metadata.get("graph_context"), dict) else {}
             entry["gnn_graph_semantic_version"] = graph.get("semantic_version") if model_name == "GNN" else None
             sequence_contract = _sequence_artifact_contract(model_name, artifact)
             if sequence_contract:

@@ -31,7 +31,7 @@ def _pool_and_rows(artifact: dict) -> tuple[dict, list[dict]]:
         artifact_path = f"universal/{model_name.lower()}/v-new.{extensions[model_name]}"
         metadata_path = f"universal/{model_name.lower()}/metadata_v-new.json"
         sequence_contract = None
-        if model_name in {"DLinear", "iTransformer"}:
+        if model_name in {"DLinear", "PatchTST", "iTransformer"}:
             sequence_contract = {
                 "schema_version": "model-serving-sequence-contract-v1",
                 "source": "model_artifact_registry",
@@ -78,6 +78,44 @@ def _pool_and_rows(artifact: dict) -> tuple[dict, list[dict]]:
             ),
         })
     return {"models": models, "shadow_models": {}, "formal_layer3_slots": {}}, rows
+
+
+def _observation_selection(artifact: dict) -> dict:
+    selected: list[dict] = []
+    common_version = "v20260826225443"
+    common_training_run = "universal-20260827T065411-a06f53be"
+    for slot, model_name in enumerate(controller_pipeline.ACTIVE_ALPHA_MODELS):
+        identity = artifact["base_artifacts"][model_name]
+        metadata = {
+            "target_semantic_version": controller_pipeline.LABEL_SCHEMA_VERSION,
+        }
+        if model_name in {"LightGBM", "XGBoost", "ExtraTrees", "TabM", "GNN"}:
+            metadata["feature_semantic_version"] = modal_resolver.FORMAL_FEATURE_SEMANTIC_VERSION
+        if model_name == "GNN":
+            metadata["graph_context"] = {
+                "semantic_version": modal_resolver.FORMAL_GNN_GRAPH_SEMANTIC_VERSION,
+            }
+        if model_name in {"DLinear", "PatchTST", "iTransformer"}:
+            metadata.update({"seq_len": 512, "pred_len": 5})
+        selected.append({
+            "artifact_id": f"observation-{model_name.lower()}",
+            "model_name": model_name,
+            "version": common_version,
+            "artifact_path": f"universal/{model_name.lower()}/{common_version}.bin",
+            "metadata_path": f"universal/{model_name.lower()}/metadata_{common_version}.json",
+            "checksum": identity["checksum"],
+            "candidate_type": "oof_full_fit_release",
+            "state": "candidate",
+            "offline_gate_decision": "WEAK_PASS" if model_name == "iTransformer" else "PASS",
+            "live_gate_status": "not_started",
+            "source_run_date": "2026-08-27",
+            "training_run_id": common_training_run,
+            "_selection_slot": f"slot-{slot}",
+            "offline_evidence_json": {
+                "registration": {"metadata": metadata},
+            },
+        })
+    return {"selected": selected, "suppressions": []}
 
 
 def test_controller_manifest_is_accepted_by_modal_without_contract_drift() -> None:
@@ -129,6 +167,7 @@ def test_controller_evidence_only_manifest_is_non_actionable_and_modal_accepted(
         controller_pool,
         registry_rows=registry_rows,
         active8_ensemble=None,
+        active8_shadow_selection=_observation_selection(artifact),
     )
     modal_pool = modal_resolver.build_pool_from_frozen_manifest(
         manifest,
@@ -140,8 +179,43 @@ def test_controller_evidence_only_manifest_is_non_actionable_and_modal_accepted(
     assert authority["buy_authorized"] is False
     assert authority["production_effect"] is False
     assert manifest["active8_ensemble"] is None
+    assert manifest["source_of_truth"] == "immutable_active8_observation_bundle+active8_action_authority_v1"
+    assert manifest["active8_shadow_candidates"] == []
+    assert {row["selection_role"] for row in manifest["models"]} == {controller_pipeline.ACTIVE8_ACTION_MODE_EVIDENCE_ONLY}
     assert modal_pool["active8_ensemble"] is None
     assert modal_pool["active8_action_authority"] == authority
+
+
+def test_evidence_only_manifest_rejects_incomplete_or_mixed_cohort() -> None:
+    artifact = _artifact()
+    controller_pool, registry_rows = _pool_and_rows(artifact)
+    incomplete = _observation_selection(artifact)
+    incomplete["selected"].pop()
+    try:
+        controller_pipeline._build_pipeline_modal_serving_manifest(
+            controller_pool,
+            registry_rows=registry_rows,
+            active8_ensemble=None,
+            active8_shadow_selection=incomplete,
+        )
+    except RuntimeError as exc:
+        assert "pipeline_modal_observation_bundle:model_set_invalid" in str(exc)
+    else:
+        raise AssertionError("evidence-only manifest must reject an incomplete Active-8 bundle")
+
+    mixed = _observation_selection(artifact)
+    mixed["selected"][0]["training_run_id"] = "mixed-training-run"
+    try:
+        controller_pipeline._build_pipeline_modal_serving_manifest(
+            controller_pool,
+            registry_rows=registry_rows,
+            active8_ensemble=None,
+            active8_shadow_selection=mixed,
+        )
+    except RuntimeError as exc:
+        assert "pipeline_modal_observation_bundle:cohort_identity_mismatch" in str(exc)
+    else:
+        raise AssertionError("evidence-only manifest must reject a mixed training cohort")
 
 
 def test_modal_rejects_evidence_only_manifest_with_ensemble_payload() -> None:
@@ -151,6 +225,7 @@ def test_modal_rejects_evidence_only_manifest_with_ensemble_payload() -> None:
         controller_pool,
         registry_rows=registry_rows,
         active8_ensemble=None,
+        active8_shadow_selection=_observation_selection(artifact),
     )
     manifest["active8_ensemble"] = artifact
 

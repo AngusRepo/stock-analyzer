@@ -124,6 +124,7 @@ const EVIDENCE_MATRIX_COLUMNS = [
 
 type SelectionModelRow = ModelArtifactSelectionResponse['models'][string]
 type SelectedArtifactRow = NonNullable<SelectionModelRow['oof_full_fit_release_candidate']>
+type RegistryArtifactRow = NonNullable<SelectionModelRow['latest_oof_full_fit_release_artifact']>
 type PromotionQueueRow = ModelArtifactPromotionQueueResponse['queue'][number]
 
 function isServing(model?: ModelPoolLineageModel): boolean {
@@ -251,6 +252,7 @@ type GrafanaModelRecord = {
   fleetTone: WorkstationTone
   artifactVersion: string
   selectedArtifact?: SelectedArtifactRow | null
+  latestRetrainArtifact?: RegistryArtifactRow | null
   dataset?: { window: string; shape: string; note: string }
   pointerRow?: ModelChampionPointersResponse['models'][string]
   pointerTone: WorkstationTone
@@ -626,53 +628,81 @@ function finalCompareCell(
   }
 }
 
+function artifactGateFailures(artifact: RegistryArtifactRow | null | undefined): string[] {
+  const offline = asRecord(artifact?.offline_evidence_json)
+  const gate = asRecord(offline.gate)
+  return uniqueTokens([
+    ...asStringList(artifact?.offline_gate_failed_gates),
+    ...asStringList(gate.failed_gates),
+  ])
+}
+
 function artifactCompareSummary(record: GrafanaModelRecord) {
   const promotion = record.promotionRows[0]
+  const selectedChallenger = record.selectedArtifact ?? null
+  const latestRetrain = record.latestRetrainArtifact ?? null
   const candidate = firstText(
     promotion?.candidate_version,
-    record.selectedArtifact?.version,
-  )
-  const releaseArtifactVersion = firstText(record.releaseArtifact?.version)
-  const releaseIsServing = record.releaseArtifact?.state === 'production'
-  const servingVersion = firstText(record.servingArtifact?.version)
-  const artifactDisplay = candidate ?? (
-    releaseArtifactVersion
-      ? `${releaseIsServing ? 'serving OOF release' : 'OOF release'} ${releaseArtifactVersion}`
-      : null
+    selectedChallenger?.version,
   )
   const champion = firstText(
     promotion?.current_champion_version,
     promotion?.evaluation_baseline_version,
-    servingVersion,
-    record.selectedArtifact?.final_compared_to,
-    record.selectedArtifact?.evaluation_baseline_version,
+    record.servingArtifact?.version,
+    selectedChallenger?.final_compared_to,
+    selectedChallenger?.evaluation_baseline_version,
     record.pointerRow?.serving_version,
     record.pointerRow?.d1_pointer_version,
   )
-  const candidateEvidenceArtifact = record.selectedArtifact ?? (
-    candidate && record.releaseArtifact?.version === candidate ? record.releaseArtifact : null
-  )
   const compare = promotion?.artifact_compare
-  const candidateOosIc = firstFiniteNumber(compare?.candidate_oos_ic, artifactOosIc(candidateEvidenceArtifact, record.candidate.id))
-  const championOosIc = firstFiniteNumber(compare?.champion_oos_ic, artifactOosIc(record.servingArtifact, record.candidate.id))
+  const candidateOosIc = firstFiniteNumber(
+    compare?.candidate_oos_ic,
+    artifactOosIc(selectedChallenger, record.candidate.id),
+  )
+  const latestRetrainOosIc = artifactOosIc(latestRetrain, record.candidate.id)
+  const championOosIc = firstFiniteNumber(
+    compare?.champion_oos_ic,
+    artifactOosIc(record.servingArtifact, record.candidate.id),
+  )
   const metricStatus = firstText(compare?.metric_status)
   const hasCandidate = Boolean(candidate)
-  const metricDetail = !hasCandidate
-    ? 'serving only / no selected candidate'
+  const latestRetrainVersion = firstText(latestRetrain?.version)
+  const latestRetrainIsSelected = Boolean(
+    hasCandidate
+    && latestRetrainVersion
+    && latestRetrainVersion === candidate,
+  )
+  const latestRetrainFailedGates = artifactGateFailures(latestRetrain)
+  const selectedMetricDetail = !hasCandidate
+    ? 'no selected challenger / formal compare N/R'
     : [
-      metricStatus ? humanizeToken(metricStatus) : null,
+      metricStatus ? humanizeToken(metricStatus) : 'formal head-to-head pending',
       compareMetricDetail(candidateOosIc, championOosIc),
     ].filter(Boolean).join('\n')
-  const finalComparedTo = firstText(promotion?.final_compared_to, record.selectedArtifact?.final_compared_to)
-  const hasReleaseArtifact = Boolean(artifactDisplay)
+  const latestMetricDetail = latestRetrainVersion
+    ? [
+      `${latestRetrainIsSelected ? 'selected challenger' : 'latest retrain only'} · ${latestRetrain?.state ?? 'state unavailable'}`,
+      compareMetricDetail(latestRetrainOosIc, championOosIc),
+      latestRetrainFailedGates.length ? `failed gates: ${latestRetrainFailedGates.map(humanizeToken).join(', ')}` : null,
+      latestRetrainIsSelected ? 'formal live/final comparison still required' : 'diagnostic only; not eligible for promotion',
+    ].filter(Boolean).join('\n')
+    : 'latest retrain artifact unavailable'
+  const finalComparedTo = firstText(promotion?.final_compared_to, selectedChallenger?.final_compared_to)
+  const hasReleaseArtifact = Boolean(record.servingArtifact?.version || selectedChallenger?.version)
   const hasChampionBaseline = Boolean(champion)
   const compareReady = hasCandidate && Boolean(finalComparedTo)
-  const artifactId = firstText(promotion?.artifact_id, candidateEvidenceArtifact?.artifact_id, record.selectedArtifact?.artifact_id)
+  const artifactId = firstText(promotion?.artifact_id, selectedChallenger?.artifact_id)
 
   return {
     artifactId,
-    candidate: artifactDisplay ?? 'no canonical OOF release artifact',
-    champion: champion ?? 'champion baseline missing',
+    candidate: candidate ?? 'no selected challenger',
+    champion: champion ?? 'production champion missing',
+    latestRetrain: latestRetrainVersion ?? 'latest retrain unavailable',
+    latestRetrainState: latestRetrain?.state ?? null,
+    latestRetrainFailedGates,
+    latestRetrainIsSelected,
+    latestRetrainOosIc,
+    latestMetricDetail,
     finalComparedTo,
     hasCandidate,
     hasReleaseArtifact,
@@ -680,20 +710,20 @@ function artifactCompareSummary(record: GrafanaModelRecord) {
     compareReady,
     candidateOosIc,
     championOosIc,
-    metricDetail,
-    tone: compareReady ? 'ok' as WorkstationTone : hasReleaseArtifact && hasChampionBaseline ? 'info' as WorkstationTone : 'warn' as WorkstationTone,
+    metricDetail: selectedMetricDetail,
+    tone: compareReady ? 'ok' as WorkstationTone : hasCandidate ? 'info' as WorkstationTone : latestRetrainVersion ? 'warn' as WorkstationTone : 'neutral' as WorkstationTone,
     title: [
-      `${record.candidate.id}: canonical OOF release artifact is compared against the exact D1 champion before pointer promotion.`,
-      `artifact=${artifactDisplay ?? 'missing'}`,
-      `candidate_gate=${candidate ?? 'none'}`,
-      `current_champion=${champion ?? 'missing'}`,
+      `${record.candidate.id}: production champion and selected challenger are separate identities.`,
+      `selected_challenger=${candidate ?? 'none'}`,
+      `latest_retrain=${latestRetrainVersion ?? 'missing'}`,
+      `latest_retrain_state=${latestRetrain?.state ?? 'missing'}`,
+      `production_champion=${champion ?? 'missing'}`,
       `metric_status=${metricStatus ?? 'n/a'}`,
-      metricDetail,
+      latestMetricDetail,
       `final_compared_to=${finalComparedTo ?? 'pending'}`,
     ].join(' | '),
   }
 }
-
 function finalCompareResultFor(
   result: ModelArtifactPromotionControllerResponse | null | undefined,
   modelId: string,
@@ -876,6 +906,7 @@ function buildGrafanaRecord({
   const artifact = selectionCandidate(selectionRow)
   const release = releaseArtifact(selectionRow)
   const servingArtifact = selectionRow?.serving_release_artifact ?? null
+  const latestRetrainArtifact = selectionRow?.latest_oof_full_fit_release_artifact ?? null
   const artifactOk = artifactReady(model, selectionRow)
   const evidenceOk = evidenceReady(model, release)
   const pointerOk = pointerReady(pointerRow)
@@ -919,6 +950,7 @@ function buildGrafanaRecord({
     fleetTone,
     artifactVersion: release?.version ?? model?.version ?? 'no artifact',
     selectedArtifact: artifact,
+    latestRetrainArtifact,
     releaseArtifact: release,
     servingArtifact,
     dataset: MODEL_DATASET_REQUIREMENTS[candidate.id],
@@ -1303,11 +1335,11 @@ function PromotionReadinessPanel({
   const diagnosis = researchStatusDiagnosis(selected)
 
   const gates = [
-    { label: 'Release artifact', ready: compare.hasReleaseArtifact, detail: compare.candidate },
+    { label: 'Production champion', ready: compare.hasChampionBaseline, detail: compare.champion },
+    ...(finalCompareApplies ? [{ label: 'Selected challenger', ready: compare.hasCandidate, detail: compare.candidate }] : []),
     { label: 'Artifact evidence', ready: selected.evidenceOk, detail: selected.status },
     { label: 'PBO/CPCV', ready: selected.history.find((cell) => cell.label === 'PBO/CPCV')?.tone === 'ok', detail: selected.history.find((cell) => cell.label === 'PBO/CPCV')?.detail ?? 'policy pending' },
-    { label: 'Champion baseline', ready: compare.hasChampionBaseline, detail: compare.champion },
-    { label: 'Final compare', ready: finalCompareReady, detail: finalCompareApplies ? finalComparedTo ?? 'run dry-run candidate-vs-champion comparison' : 'N/R: no selected candidate' },
+    { label: 'Final compare', ready: finalCompareReady, detail: finalCompareApplies ? finalComparedTo ?? 'run dry-run challenger-vs-production comparison' : 'N/R: no selected challenger' },
     { label: 'Approval', ready: selected.approvalOk, detail: selected.promotionRows.some((row) => row.approval_required) ? 'required' : 'clear' },
     { label: 'Current pointer baseline', ready: selected.pointerOk, detail: selected.pointerRow?.readiness ?? 'missing' },
   ]
@@ -1346,14 +1378,19 @@ function PromotionReadinessPanel({
         </div>
 
         <div className="mt-3 rounded-xl border border-[#263247] bg-[#0b1118] p-3" title={compare.title}>
-          <p className="sv-num text-[12px] normal-case text-[#90a0b8]">Candidate vs current champion</p>
+          <p className="sv-num text-[12px] normal-case text-[#90a0b8]">Production champion vs selected challenger</p>
           <div className="mt-3 grid gap-2">
             <div className="rounded-lg border border-[#253242] bg-[#101722] px-3 py-2">
-              <p className="sv-num text-[12px] normal-case text-[#90a0b8]">candidate artifact</p>
+              <p className="sv-num text-[12px] normal-case text-[#90a0b8]">selected challenger</p>
               <p className="mt-1 break-all sv-num text-[13px] font-semibold text-[#dce3ea]">{compare.candidate}</p>
             </div>
             <div className="rounded-lg border border-[#253242] bg-[#101722] px-3 py-2">
-              <p className="sv-num text-[12px] normal-case text-[#90a0b8]">current champion baseline</p>
+              <p className="sv-num text-[12px] normal-case text-[#90a0b8]">latest retrain (diagnostic)</p>
+              <p className="mt-1 break-all sv-num text-[13px] font-semibold text-[#dce3ea]">{compare.latestRetrain}</p>
+              <p className="mt-1 text-[12px] text-[#90a0b8]">{compare.latestRetrainState ?? 'state unavailable'}{compare.latestRetrainIsSelected ? ' · selected challenger' : ' · not selected'}</p>
+            </div>
+            <div className="rounded-lg border border-[#253242] bg-[#101722] px-3 py-2">
+              <p className="sv-num text-[12px] normal-case text-[#90a0b8]">formal production champion</p>
               <p className="mt-1 break-all sv-num text-[13px] font-semibold text-[#dce3ea]">{compare.champion}</p>
             </div>
             <div className="flex items-center justify-between gap-3 rounded-lg border border-[#253242] bg-[#101722] px-3 py-2">
@@ -1397,8 +1434,8 @@ function PromotionReadinessPanel({
               )}
             </div>
             <div className="rounded-lg border border-[#253242] bg-[#101722] px-3 py-2">
-              <p className="sv-num text-[12px] normal-case text-[#90a0b8]">OOS IC delta</p>
-              <p className="mt-1 sv-num text-[13px] font-semibold text-[#dce3ea]">{compare.metricDetail}</p>
+              <p className="sv-num text-[12px] normal-case text-[#90a0b8]">Latest retrain vs production OOS IC</p>
+              <p className="mt-1 whitespace-pre-line sv-num text-[13px] font-semibold text-[#dce3ea]">{compare.latestMetricDetail}</p>
             </div>
           </div>
         </div>
@@ -1435,19 +1472,19 @@ function EvidenceTablePanel({
   onSelectModel: (modelId: string) => void
 }) {
   return (
-    <GrafanaPanel title="Evidence table" kicker="one selected best artifact per model, compared only with the current champion">
+    <GrafanaPanel title="Evidence table" kicker="formal production champion, selected challenger, and latest retrain diagnosis stay separate">
       <div className="overflow-x-auto bg-[#0b1118] p-3">
         <table className="w-full min-w-[1380px] border-separate border-spacing-y-2 text-left">
           <thead className="sv-num text-[12px] normal-case text-[#90a0b8]">
             <tr>
               <th className="px-3 py-2 font-medium">Model</th>
               <th className="px-3 py-2 font-medium">Family</th>
-              <th className="px-3 py-2 font-medium">Artifact</th>
+              <th className="px-3 py-2 font-medium">Production artifact</th>
               <th className="px-3 py-2 font-medium">Dataset</th>
               <th className="px-3 py-2 font-medium">Pointer</th>
               <th className="px-3 py-2 font-medium" title="Latest research registry state for this model artifact lane.">Research state</th>
               <th className="px-3 py-2 font-medium" title="Promotion queue load plus blockers that need review before release.">Review pressure</th>
-              <th className="min-w-[240px] whitespace-normal px-3 py-2 font-medium leading-5">Best artifact vs champion</th>
+              <th className="min-w-[300px] whitespace-normal px-3 py-2 font-medium leading-5">Production champion vs latest retrain</th>
               <th className="px-3 py-2 font-medium">Missing evidence</th>
             </tr>
           </thead>
@@ -1459,6 +1496,8 @@ function EvidenceTablePanel({
               const missing = uniqueTokens([...record.missingEvidence, ...record.blockers])
               const compare = artifactCompareSummary(record)
               const diagnosis = researchStatusDiagnosis(record)
+              const researchState = record.latestRetrainArtifact?.state ?? (record.selectedArtifact?.state ?? 'no new retrain')
+              const researchTone = toneFromStatus(researchState)
               return (
               <tr
                 key={record.candidate.id}
@@ -1487,8 +1526,8 @@ function EvidenceTablePanel({
                   </span>
                 </td>
                 <td className="border-y border-[#263247] px-3 py-3">
-                  <span className={`border px-2.5 py-1 sv-num text-[12px] ${grafanaCellClass(record.statusTone)}`}>
-                    {record.status}
+                  <span className={`border px-2.5 py-1 sv-num text-[12px] ${grafanaCellClass(researchTone)}`}>
+                    {researchState}
                   </span>
                   <p className="mt-1 max-w-[280px] text-[12px] leading-5 text-[#a7b5c8]">{diagnosis.rootCause}</p>
                   <p className="mt-1 max-w-[280px] sv-num text-[12px] leading-5 text-sky-200">next: {diagnosis.nextAction}</p>
@@ -1498,15 +1537,16 @@ function EvidenceTablePanel({
                     {pressureLabel}
                   </span>
                 </td>
-                <td className="min-w-[240px] max-w-[340px] border-y border-[#263247] px-3 py-3" title={compare.title}>
+                <td className="min-w-[300px] max-w-[390px] border-y border-[#263247] px-3 py-3" title={compare.title}>
                   <span className={`inline-block border px-2.5 py-1 sv-num text-[12px] ${grafanaCellClass(compare.tone)}`}>
-                    {compare.compareReady ? 'ready' : compare.hasCandidate ? 'baseline' : compare.hasReleaseArtifact ? 'serving' : 'no candidate'}
+                    {compare.compareReady ? 'formal compare ready' : compare.hasCandidate ? 'selected challenger' : compare.latestRetrainState ? 'latest retrain rejected' : 'serving only'}
                   </span>
-                  <dl className="mt-2 grid max-w-[300px] gap-1 sv-num text-[12px] leading-5">
-                    <div className="grid grid-cols-[68px_1fr] gap-2"><dt className="text-[#70809b]">candidate</dt><dd className="break-all text-[#dce3ea]">{compare.candidate}</dd></div>
-                    <div className="grid grid-cols-[68px_1fr] gap-2"><dt className="text-[#70809b]">champion</dt><dd className="break-all text-[#dce3ea]">{compare.champion}</dd></div>
+                  <dl className="mt-2 grid max-w-[360px] gap-1.5 sv-num text-[12px] leading-5">
+                    <div className="grid grid-cols-[96px_1fr] gap-2"><dt className="text-[#70809b]">production</dt><dd className="break-all text-[#dce3ea]">{compare.champion}</dd></div>
+                    <div className="grid grid-cols-[96px_1fr] gap-2"><dt className="text-[#70809b]">challenger</dt><dd className="break-all text-[#dce3ea]">{compare.candidate}</dd></div>
+                    <div className="grid grid-cols-[96px_1fr] gap-2"><dt className="text-[#70809b]">latest retrain</dt><dd className="break-all text-[#dce3ea]">{compare.latestRetrain}</dd></div>
                   </dl>
-                  <p className="mt-1 max-w-[260px] sv-num text-[12px] leading-5 text-[#dce3ea]">{compare.metricDetail}</p>
+                  <p className="mt-2 max-w-[340px] whitespace-pre-line sv-num text-[12px] leading-5 text-[#dce3ea]">{compare.latestMetricDetail}</p>
                 </td>
                 <td className="rounded-r-xl border-y border-r border-[#263247] px-3 py-3">
                   <div className="flex max-w-[320px] flex-wrap gap-1">

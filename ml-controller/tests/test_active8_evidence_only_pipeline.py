@@ -98,11 +98,24 @@ def test_evidence_only_prediction_writer_never_inserts_ensemble(monkeypatch) -> 
         model: 0.5
         for model in recommendation_service.ACTIVE_ALPHA_MODELS
     }
+    challenger_rank_scores = dict(rank_scores)
+    challenger_lineage = {
+        model: {
+            "artifact_id": f"observation-{model.lower()}",
+            "artifact_version": "v20260826225443",
+            "checksum": f"sha256:{model.lower()}",
+            "candidate_type": "oof_full_fit_release",
+            "raw_score": 0.5,
+        }
+        for model in recommendation_service.ACTIVE_ALPHA_MODELS
+    }
     written = recommendation_service.write_predictions_to_d1(
         {
             "2330": {
                 "feature_version": "formal137:test",
                 "rank_scores": rank_scores,
+                "challenger_rank_scores": challenger_rank_scores,
+                "challenger_model_score_lineage": challenger_lineage,
                 "active8_action_authority": _authority(),
                 "ensemble_v2": None,
             }
@@ -115,7 +128,9 @@ def test_evidence_only_prediction_writer_never_inserts_ensemble(monkeypatch) -> 
     assert written == len(rank_scores)
     assert len(inserts) == len(rank_scores)
     assert all("'ensemble'" not in sql for sql, _params in inserts)
-    assert {params[1] for _sql, params in inserts} == set(rank_scores)
+    assert {params[1] for _sql, params in inserts} == {
+        f"{model}::challenger" for model in rank_scores
+    }
     assert all(params[10] is None and params[12] == "NO_SIGNAL" for _sql, params in inserts)
 
 

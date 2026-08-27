@@ -27,12 +27,12 @@ DIRECT_ALPHA_MODELS = (
 SEQUENCE_ALPHA_MODELS = ("DLinear", "PatchTST", "iTransformer")
 FORMAL_FEATURE_MODELS = ("LightGBM", "XGBoost", "ExtraTrees", "TabM", "GNN")
 FORMAL_FEATURE_SEMANTIC_VERSION = "formal137-pit-rolling-rank-and-imputation-v2"
-FORMAL_GNN_GRAPH_SEMANTIC_VERSION = "gnn-feature-sector-graph-v1"
+FORMAL_GNN_GRAPH_SEMANTIC_VERSION = "gnn-same-date-feature-cosine-sector-v2"
 FORMAL_RANK_IC_SEMANTIC_VERSION = "same-date-average-rank-tie-neutral-spearman-v2"
 SEQUENCE_CONTRACT_FIELDS = ("seq_len", "pred_len", "sequence_contract")
 SEQUENCE_CONTRACT_SCHEMA_VERSION = "model-serving-sequence-contract-v1"
 L2_SIDECARS = ("TimesFM",)
-PIPELINE_MODAL_SERVING_MANIFEST_SCHEMA = "pipeline-modal-serving-manifest-v4"
+PIPELINE_MODAL_SERVING_MANIFEST_SCHEMA = "pipeline-modal-serving-manifest-v5"
 ACTIVE8_ACTION_AUTHORITY_SCHEMA = "active8-action-authority-v1"
 ACTIVE8_ACTION_MODE_PRODUCTION = "production_ensemble"
 ACTIVE8_ACTION_MODE_EVIDENCE_ONLY = "evidence_only_no_action"
@@ -274,7 +274,11 @@ def build_pool_from_frozen_manifest(
     actual_digest = serving_manifest_digest(manifest)
     if not expected_digest or actual_digest != str(expected_digest).strip().lower():
         raise ServingPoolResolutionError("frozen_serving_manifest_digest_mismatch")
-    if manifest.get("source_of_truth") != "model_champion_pointers+active8_action_authority_v1":
+    source_of_truth = str(manifest.get("source_of_truth") or "")
+    if source_of_truth not in {
+        "model_champion_pointers+active8_action_authority_v1",
+        "immutable_active8_observation_bundle+active8_action_authority_v1",
+    }:
         raise ServingPoolResolutionError("frozen_serving_manifest_source_invalid")
 
     rows = manifest.get("models")
@@ -405,6 +409,12 @@ def build_pool_from_frozen_manifest(
             "target_semantic_version": schema.get("target_semantic_version"),
             "feature_semantic_version": schema.get("feature_semantic_version"),
             "gnn_graph_semantic_version": schema.get("gnn_graph_semantic_version"),
+            "selection_role": row.get("selection_role"),
+            "production_effect": row.get("production_effect"),
+            "candidate_type": row.get("candidate_type"),
+            "source_run_date": row.get("source_run_date"),
+            "training_run_id": row.get("training_run_id"),
+            "selection_slot": row.get("selection_slot"),
         }
         if isinstance(schema.get("sequence_contract"), dict):
             entry["sequence_contract"] = copy.deepcopy(schema["sequence_contract"])
@@ -633,6 +643,8 @@ def build_pool_from_frozen_manifest(
     mode = str(authority.get("mode") or "")
     active8_ensemble = manifest.get("active8_ensemble")
     if mode == ACTIVE8_ACTION_MODE_PRODUCTION:
+        if source_of_truth != "model_champion_pointers+active8_action_authority_v1":
+            raise ServingPoolResolutionError("frozen_serving_manifest_production_source_invalid")
         if authority.get("buy_authorized") is not True or authority.get("production_effect") is not True:
             raise ServingPoolResolutionError("frozen_serving_manifest_active8_action_authority_production_invalid")
         if not isinstance(active8_ensemble, dict):
@@ -648,10 +660,42 @@ def build_pool_from_frozen_manifest(
             ) from exc
         pool["active8_ensemble"] = dict(active8_ensemble)
     elif mode == ACTIVE8_ACTION_MODE_EVIDENCE_ONLY:
+        if source_of_truth != "immutable_active8_observation_bundle+active8_action_authority_v1":
+            raise ServingPoolResolutionError("frozen_serving_manifest_observation_source_invalid")
         if authority.get("buy_authorized") is not False or authority.get("production_effect") is not False:
             raise ServingPoolResolutionError("frozen_serving_manifest_active8_action_authority_evidence_only_invalid")
         if active8_ensemble is not None:
             raise ServingPoolResolutionError("frozen_serving_manifest_evidence_only_ensemble_must_be_absent")
+        observation_versions = set()
+        observation_training_runs = set()
+        observation_source_dates = set()
+        for row in rows:
+            model_name = str(row.get("model") or "")
+            gate = str((row.get("health") or {}).get("offline_gate_decision") or "")
+            if (
+                row.get("selection_role") != ACTIVE8_ACTION_MODE_EVIDENCE_ONLY
+                or row.get("production_effect") is not False
+                or float(row.get("vote_weight") or 0.0) != 0.0
+                or row.get("candidate_type") != "oof_full_fit_release"
+                or gate not in {"WEAK_PASS", "PASS", "STRONG_PASS"}
+            ):
+                raise ServingPoolResolutionError(
+                    f"frozen_serving_manifest_observation_policy_invalid:{model_name}"
+                )
+            observation_versions.add(str(row.get("version") or ""))
+            observation_training_runs.add(str(row.get("training_run_id") or ""))
+            observation_source_dates.add(str(row.get("source_run_date") or ""))
+        if (
+            len(observation_versions) != 1
+            or len(observation_training_runs) != 1
+            or len(observation_source_dates) != 1
+            or "" in observation_versions
+            or "" in observation_training_runs
+            or "" in observation_source_dates
+        ):
+            raise ServingPoolResolutionError(
+                "frozen_serving_manifest_observation_cohort_identity_mismatch"
+            )
         pool["active8_ensemble"] = None
     else:
         raise ServingPoolResolutionError(
@@ -785,7 +829,7 @@ def _artifact_block_reason(artifact: dict[str, Any] | None, *, model_name: str, 
                     f"expected_{FORMAL_FEATURE_SEMANTIC_VERSION}"
                 )
         if model_name == "GNN":
-            graph = metadata.get("graph") if isinstance(metadata.get("graph"), dict) else {}
+            graph = metadata.get("graph_context") if isinstance(metadata.get("graph_context"), dict) else {}
             graph_semantic = str(graph.get("semantic_version") or "").strip()
             if graph_semantic != FORMAL_GNN_GRAPH_SEMANTIC_VERSION:
                 return (
@@ -994,7 +1038,7 @@ def build_pool_from_champion_pointers(
             entry["live_gate_status"] = artifact.get("live_gate_status")
             entry["target_semantic_version"] = artifact_metadata.get("target_semantic_version")
             entry["feature_semantic_version"] = artifact_metadata.get("feature_semantic_version")
-            graph = artifact_metadata.get("graph") if isinstance(artifact_metadata.get("graph"), dict) else {}
+            graph = artifact_metadata.get("graph_context") if isinstance(artifact_metadata.get("graph_context"), dict) else {}
             entry["gnn_graph_semantic_version"] = graph.get("semantic_version") if model_name == "GNN" else None
             sequence_contract = _sequence_artifact_contract(model_name, artifact)
             if sequence_contract:

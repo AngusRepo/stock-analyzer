@@ -4558,6 +4558,23 @@ def write_predictions_to_d1(
         # 2026-06-27: active-8 challenger rows are non-voting live-gate evidence
         # for artifact registry candidates; TimesFM remains L2 sidecar only.
         per_model_scores = _extract_per_model_scores_for_d1(data)
+        if observation_only:
+            per_model_scores = {
+                model_name: score
+                for model_name, score in per_model_scores.items()
+                if model_name.endswith("::challenger")
+            }
+            expected_observation_models = {
+                f"{model_name}::challenger"
+                for model_name in ACTIVE_ALPHA_MODELS
+            }
+            if set(per_model_scores) != expected_observation_models:
+                missing = sorted(expected_observation_models - set(per_model_scores))
+                unexpected = sorted(set(per_model_scores) - expected_observation_models)
+                raise ValueError(
+                    "active8_evidence_only_candidate_rows_incomplete:"
+                    f"missing={missing}:unexpected={unexpected}"
+                )
         for model_name, model_score in per_model_scores.items():
             safe_model_score, replaced = _sanitize_non_finite(model_score)
             sanitized_count += replaced

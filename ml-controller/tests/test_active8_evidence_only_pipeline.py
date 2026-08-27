@@ -21,6 +21,20 @@ def _authority() -> dict:
     }
 
 
+def _frozen_manifest_state(authority: dict) -> dict:
+    manifest = {
+        "schema_version": pipeline.PIPELINE_MODAL_SERVING_MANIFEST_SCHEMA,
+        "active8_action_authority": authority,
+    }
+    return {
+        "pipeline_modal_serving_context": {
+            "schema_version": "pipeline-modal-serving-context-v1",
+            "serving_manifest": manifest,
+            "serving_manifest_digest": pipeline._pipeline_modal_canonical_digest(manifest),
+        }
+    }
+
+
 def test_evidence_only_recommendation_closes_every_seed_without_action(monkeypatch) -> None:
     authority = _authority()
     predictions = {"2330": {}, "2317": {}}
@@ -36,8 +50,8 @@ def test_evidence_only_recommendation_closes_every_seed_without_action(monkeypat
         },
     )
     state = {
+        **_frozen_manifest_state(authority),
         "run_date": "2026-08-26",
-        "serving_manifest": {"active8_action_authority": authority},
         "predictions": predictions,
     }
     result = pipeline._build_active8_evidence_only_recommendation_result(
@@ -70,8 +84,8 @@ def test_evidence_only_recommendation_requires_all_eight_models(monkeypatch) -> 
         },
     )
     state = {
+        **_frozen_manifest_state(_authority()),
         "run_date": "2026-08-26",
-        "serving_manifest": {"active8_action_authority": _authority()},
         "predictions": {"2330": {}},
     }
 

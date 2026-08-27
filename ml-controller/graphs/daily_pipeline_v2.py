@@ -2061,7 +2061,7 @@ def _build_active8_evidence_only_recommendation_result(
     screener_recs: list[dict[str, Any]],
     expected_return_serving_preflight: dict[str, Any],
 ) -> dict[str, Any] | None:
-    manifest = state.get("serving_manifest")
+    manifest = _pipeline_frozen_serving_manifest(state)
     if not _active8_evidence_only_from_manifest(manifest):
         return None
     authority = dict(manifest["active8_action_authority"])
@@ -2644,7 +2644,7 @@ async def node_write_d1(state: PipelineStateV2) -> dict:
     l3_eligible_prediction_symbols = formal_evidence_prediction_symbols - l3_ineligible_symbols
     action_authority = state.get("active8_action_authority")
     if not isinstance(action_authority, dict):
-        manifest = state.get("serving_manifest") if isinstance(state.get("serving_manifest"), dict) else {}
+        manifest = _pipeline_frozen_serving_manifest(state)
         action_authority = manifest.get("active8_action_authority")
     observation_only = (
         isinstance(action_authority, dict)
@@ -3405,6 +3405,25 @@ def _active8_evidence_only_from_manifest(manifest: Any) -> bool:
             raise RuntimeError("active8_action_authority_evidence_only_invalid")
         return True
     raise RuntimeError(f"active8_action_authority_mode_invalid:{mode or 'missing'}")
+
+
+def _pipeline_frozen_serving_manifest(state: PipelineStateV2) -> dict[str, Any]:
+    context = state.get("pipeline_modal_serving_context")
+    if (
+        not isinstance(context, dict)
+        or context.get("schema_version") != "pipeline-modal-serving-context-v1"
+    ):
+        raise RuntimeError("pipeline_modal_serving_context:missing")
+    manifest = context.get("serving_manifest")
+    expected_digest = str(context.get("serving_manifest_digest") or "").strip()
+    if (
+        not isinstance(manifest, dict)
+        or manifest.get("schema_version") != PIPELINE_MODAL_SERVING_MANIFEST_SCHEMA
+        or not expected_digest
+        or _pipeline_modal_canonical_digest(manifest) != expected_digest
+    ):
+        raise RuntimeError("pipeline_modal_serving_context:serving_manifest_invalid")
+    return manifest
 
 
 def _active8_observation_candidates_from_manifest(

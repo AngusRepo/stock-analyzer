@@ -1171,21 +1171,18 @@ def _offline_oof_full_fit_base_artifact(row: dict[str, Any] | None) -> bool:
     resume = _nested_dict(registration.get("oof_lifecycle_resume"))
     metadata = _artifact_registration_metadata(row)
     validation_design = _nested_dict(evidence.get("validation_design"))
-    release_validation = _nested_dict(registration.get("oof_release_validation"))
-    base_authority = _nested_dict(release_validation.get("base_artifact_authority"))
+    base_role = _nested_dict(registration.get("ensemble_base_role"))
     release_contract = _nested_dict(registration.get("release_training_contract"))
     release_contract_validation = _nested_dict(release_contract.get("validation"))
     release_completion = _nested_dict(registration.get("release_model_completion"))
     failed_gates = evidence.get("failed_gates")
     return (
         str(row.get("candidate_type") or "") == "oof_full_fit_release"
-        and str(row.get("offline_gate_decision") or "") in {"STRONG_PASS", "PASS"}
-        and str(row.get("state") or "") in {
-            "offline_passed",
-            "offline_strong_pass",
-            "live_gate_passed",
-            "approval_required",
-            "approved",
+        and str(row.get("state") or "") not in {
+            "registration_failed",
+            "offline_failed",
+            "rejected",
+            "archived",
         }
         and evidence.get("schema_version") == "model-cpcv-evidence-v1"
         and evidence.get("method") == "outer_purged_walk_forward_rank_ic"
@@ -1215,13 +1212,10 @@ def _offline_oof_full_fit_base_artifact(row: dict[str, Any] | None) -> bool:
         and len(str(resume.get("source_manifest_checksum") or "")) == 64
         and bool(str(resume.get("knowledge_cutoff_date") or "").strip())
         and str(metadata.get("target_semantic_version") or "") == ACTIVE8_TARGET_SEMANTIC_VERSION
-        and release_validation.get("schema_version") == "active8-oof-base-ranker-release-validation-v3"
-        and release_validation.get("validation_role") == "base_ranker"
-        and release_validation.get("decision") == "PASS"
-        and not release_validation.get("failed_gates")
-        and base_authority.get("decision") == "PASS"
-        and base_authority.get("owner") == "individual_outer_purged_oof"
-        and base_authority.get("effect") == "base_artifact_release_only"
+        and base_role.get("schema_version") == "active8-ensemble-base-role-v1"
+        and base_role.get("role") == "learned_ensemble_feature"
+        and base_role.get("individual_performance_selects_weight") is False
+        and base_role.get("serving_requires_atomic_bundle") is True
     )
 
 
@@ -2203,6 +2197,50 @@ def build_live_shadow_candidate_selection(
         "selected": selected,
         "suppressed": suppressed,
     }
+
+
+def build_active8_observation_candidate_selection(
+    rows: list[dict[str, Any]],
+) -> dict[str, Any]:
+    """Select one coherent base-release cohort for zero-authority observation.
+
+    Base-model OOF validity controls whether an artifact may produce shadow
+    evidence. Cohort selection/PBO controls ensemble promotion separately and
+    must never veto the incumbent pipeline before an ensemble is promoted.
+    """
+
+    selection = build_candidate_selection(rows)
+    selected: list[dict[str, Any]] = []
+    suppressed: list[dict[str, Any]] = list(selection.get("suppressed") or [])
+    for model_name in sorted(ACTIVE8_ARTIFACT_MODEL_NAMES):
+        model_selection = (selection.get("models") or {}).get(model_name)
+        if not isinstance(model_selection, dict):
+            continue
+        candidate = model_selection.get("latest_oof_full_fit_release_artifact")
+        if not isinstance(candidate, dict) or not candidate.get("artifact_id"):
+            continue
+        if not _offline_oof_full_fit_base_artifact(candidate):
+            suppressed.append({
+                "model_name": model_name,
+                "artifact_id": candidate.get("artifact_id"),
+                "reason": "base_artifact_not_observation_eligible",
+            })
+            continue
+        selected.append({
+            **candidate,
+            "_selection_slot": "oof_full_fit_base_observation",
+            "_production_effect": False,
+            "_vote_weight": 0.0,
+        })
+    return {
+        "schema_version": "active8-observation-candidate-selection-v1",
+        "source_of_truth": "model_artifact_registry.individual_outer_purged_oof_base_v1",
+        "production_effect": False,
+        "vote_weight": 0.0,
+        "selected": selected,
+        "suppressed": suppressed,
+    }
+
 
 def _ic_number(info: dict[str, Any] | None) -> float | None:
     if not isinstance(info, dict):

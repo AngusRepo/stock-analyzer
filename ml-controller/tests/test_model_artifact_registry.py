@@ -3081,6 +3081,12 @@ def _oof_full_fit_release_row(
                 "models_completed": 8,
                 "models_required": 8,
             },
+            "ensemble_base_role": {
+                "schema_version": "active8-ensemble-base-role-v1",
+                "role": "learned_ensemble_feature",
+                "individual_performance_selects_weight": False,
+                "serving_requires_atomic_bundle": True,
+            },
             "oof_lifecycle_resume": {
                 "schema_version": "active8-oof-lifecycle-resume-v1",
                 "cohort_id": "active8-oof-v5",
@@ -3204,6 +3210,25 @@ def test_oof_full_fit_selection_pbo_failure_keeps_base_but_blocks_promotion(monk
         "cohort_model_selection_pbo_failed",
     ]
 
+
+def test_oof_selection_failure_still_allows_zero_authority_base_observation():
+    candidate = _oof_full_fit_release_row(selection_decision="FAIL")
+    offline = json.loads(str(candidate["offline_evidence_json"]))
+    offline["registration"].pop("oof_release_validation")
+    candidate["offline_evidence_json"] = json.dumps(offline)
+    candidate["state"] = "offline_passed_weak"
+    candidate["offline_gate_status"] = "weak_pass"
+    candidate["offline_gate_decision"] = "WEAK_PASS"
+
+    selection = registry.build_active8_observation_candidate_selection([candidate])
+
+    assert registry._offline_oof_full_fit_base_artifact(candidate) is True
+    assert selection["production_effect"] is False
+    assert selection["vote_weight"] == 0.0
+    assert len(selection["selected"]) == 1
+    assert selection["selected"][0]["artifact_id"] == candidate["artifact_id"]
+    assert selection["selected"][0]["_selection_slot"] == "oof_full_fit_base_observation"
+    assert registry._offline_oof_full_fit_release_candidate(candidate) is False
 
 
 def _retired_test_promotion_controller_allows_strict_oof_semantic_bootstrap(monkeypatch):

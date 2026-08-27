@@ -67,7 +67,7 @@ from services.active8_score_semantics import (
     normalize_active8_cross_sectional_scores,
 )
 from services.model_artifact_registry import (
-    build_live_shadow_candidate_selection,
+    build_active8_observation_candidate_selection,
     list_artifact_registry,
 )
 from services.model_ic_tracker import IC_EVALUATION_SEMANTIC_VERSION
@@ -3004,24 +3004,9 @@ def _pipeline_modal_compact_shadow_suppressions(
 def _pipeline_modal_active8_shadow_selection(
     serving_pool: dict[str, Any],
 ) -> dict[str, Any]:
-    pool_models = (
-        serving_pool.get("models")
-        if isinstance(serving_pool.get("models"), dict)
-        else {}
-    )
-    champion_pointers = [
-        {
-            "model_name": model_name,
-            "champion_version": str((pool_models.get(model_name) or {}).get("version") or "").strip(),
-            "champion_artifact_id": str(
-                (pool_models.get(model_name) or {}).get("serving_artifact_id") or ""
-            ).strip(),
-        }
-        for model_name in ACTIVE_ALPHA_MODELS
-    ]
-    return build_live_shadow_candidate_selection(
+    _ = serving_pool  # Observation identity is independent of champion pointers.
+    return build_active8_observation_candidate_selection(
         list_artifact_registry(limit=500),
-        champion_pointers=champion_pointers,
     )
 
 

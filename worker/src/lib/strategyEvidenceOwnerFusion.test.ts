@@ -21,7 +21,7 @@ const profileRows = requiredMetrics.map((metric_name) => ({
   sample_count: 100,
   mature_dates: 8,
   outcome_as_of_date: '2026-08-16',
-  definition_version: 'strategy-evidence-metrics-v3',
+  definition_version: 'strategy-evidence-metrics-v4',
 }))
 
 const snapshot = await buildStrategyEvidenceOwnerSnapshot({
@@ -72,6 +72,14 @@ const futureOnly = await buildStrategyEvidenceOwnerSnapshot({
 })
 assert.equal(futureOnly.integration_ready, false, 'same-day evidence must not leak into the production policy cutoff')
 assert.equal(futureOnly.outcome_as_of_date, null)
+
+const legacyDefinition = await buildStrategyEvidenceOwnerSnapshot({
+  strategies: [active],
+  rows: profileRows.map((row) => ({ ...row, definition_version: 'strategy-evidence-metrics-v3' })),
+  knowledgeCutoffDate: '2026-08-17',
+})
+assert.equal(legacyDefinition.integration_ready, false, 'legacy metric definitions must not enter the v3 formal owner')
+assert.equal(legacyDefinition.outcome_as_of_date, null)
 
 const missing = await buildStrategyEvidenceOwnerSnapshot({
   strategies: [active],

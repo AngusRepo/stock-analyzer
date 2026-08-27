@@ -118,7 +118,7 @@ const EVIDENCE_MATRIX_COLUMNS = [
   { label: 'W-1', description: '上週 weekly IC；反映最近一次已驗證週期。' },
   { label: 'FULL OOF IC', description: '單一模型完整 immutable CPCV／OOF 窗口的平均 rank IC；不可直接和 ensemble 尾端 validation IC 比較。' },
   { label: 'LIVE IC', description: 'daily verify 後的 rolling live rank IC；看上線後近期真實命中。' },
-  { label: 'PBO/CPCV', description: '防 overfit 與 purged CV/foundation validation；用模型專屬 policy。' },
+  { label: 'BASE CPCV', description: '各模型自己的 5-fold purged OOF 證據；bundle selection validation 另由 V5 ensemble owner 持有。' },
   { label: 'COMPARE', description: 'candidate vs current champion 的最終比較；dry-run 不切 pointer。' },
 ] as const
 
@@ -191,10 +191,16 @@ function selectedPromotionRow(
     ?? null
 }
 
-function releaseArtifact(row?: SelectionModelRow) {
-  // Fleet health is owned by the serving champion. A challenger is evaluated
-  // separately and must not replace serving evidence merely because it is newer.
-  return row?.serving_release_artifact ?? selectionCandidate(row) ?? null
+function v5ServingArtifact(
+  row: SelectionModelRow | undefined,
+  pointer?: ModelChampionPointersResponse['models'][string],
+) {
+  const serving = row?.serving_release_artifact ?? null
+  return pointer?.readiness === 'v5_serving'
+    && Boolean(pointer.serving_artifact_id)
+    && pointer.serving_artifact_id === serving?.artifact_id
+    ? serving
+    : null
 }
 
 function promotionPressureTone(rows: PromotionQueueRow[]): WorkstationTone {
@@ -205,7 +211,8 @@ function promotionPressureTone(rows: PromotionQueueRow[]): WorkstationTone {
 }
 
 function pointerTone(readiness?: string | null): WorkstationTone {
-  if (readiness === 'ready' || readiness === 'pointer_ready' || readiness === 'synced') return 'ok'
+  if (readiness === 'v5_serving' || readiness === 'ready' || readiness === 'pointer_ready' || readiness === 'synced') return 'ok'
+  if (readiness === 'evidence_only_no_action') return 'info'
   if (readiness === 'missing' || readiness === 'artifact_mismatch') return 'error'
   if (readiness) return 'warn'
   return 'neutral'
@@ -219,12 +226,12 @@ function toneFromIc(value: number | null | undefined): WorkstationTone {
 }
 
 function artifactReady(model?: ModelPoolLineageModel, selectionRow?: SelectionModelRow): boolean {
-  const artifact = releaseArtifact(selectionRow)
-  return Boolean(artifact?.version || model?.version || model?.gcs_path || model?.artifact_uri)
+  const artifact = selectionRow?.latest_oof_full_fit_release_artifact
+  return Boolean(artifact?.version)
 }
 
-function evidenceReady(model?: ModelPoolLineageModel, artifact?: SelectedArtifactRow | null): boolean {
-  return Boolean(artifact?.version || model?.version || model?.gcs_path || model?.artifact_uri)
+function evidenceReady(_model?: ModelPoolLineageModel, artifact?: SelectedArtifactRow | null): boolean {
+  return Boolean(artifact?.version)
 }
 
 function pointerReady(pointerRow?: ModelChampionPointersResponse['models'][string]): boolean {
@@ -292,7 +299,7 @@ function maxTone(tones: WorkstationTone[]): WorkstationTone {
 }
 
 function fleetToneFromMatrix(statusTone: WorkstationTone, blockers: string[], history: GrafanaModelRecord['history']): WorkstationTone {
-  const requiredGateLabels = new Set(['FULL OOF IC', 'LIVE IC', 'PBO/CPCV', 'COMPARE'])
+  const requiredGateLabels = new Set(['FULL OOF IC', 'LIVE IC', 'BASE CPCV', 'COMPARE'])
   const gateTones = history
     .filter((cell) => requiredGateLabels.has(cell.label))
     .map((cell) => (cell.tone === 'neutral' ? 'warn' : cell.tone))
@@ -430,9 +437,9 @@ function toneFromGate(value?: string | null): WorkstationTone {
 function selectedArtifactEvidence(artifact?: SelectedArtifactRow | null) {
   const offline = asRecord(artifact?.offline_evidence_json)
   const live = asRecord(artifact?.live_evidence_json)
+  const registration = asRecord(offline.registration)
   const gate = asRecord(offline.gate)
   const metrics = asRecord(gate.metrics)
-  const registration = asRecord(offline.registration)
   const registrationIcTracking = asRecord(registration.ic_tracking)
   const lifecycleResult = asRecord(registration.artifact_lifecycle_result)
   const foundationForecastValidation = asRecord(
@@ -442,19 +449,16 @@ function selectedArtifactEvidence(artifact?: SelectedArtifactRow | null) {
   )
   const gatePolicy = asRecord(gate.policy ?? offline.policy)
   const gateCpcvPolicy = asRecord(gatePolicy.cpcv ?? gate.cpcv_policy ?? offline.cpcv_policy)
-  const gatePboPolicy = asRecord(gatePolicy.pbo ?? gate.pbo_policy ?? offline.pbo_policy)
   const modelCpcv = asRecord(
-    registration.model_cpcv
+    registration.oof_promotion_evidence
+      ?? registration.model_cpcv
       ?? registrationIcTracking.model_cpcv
       ?? gate.model_cpcv
       ?? offline.model_cpcv
       ?? foundationForecastValidation,
   )
-  const validationPacket = asRecord(offline.validation_packet)
-  const pbo = asRecord(offline.pbo ?? validationPacket.pbo)
   const icSummary = asRecord(offline.ic_summary)
   const cpcvPolicy = asRecord(modelCpcv.policy ?? gateCpcvPolicy)
-  const pboPolicy = asRecord(pbo.policy ?? gatePboPolicy)
   const rowFailedGates = asStringList(artifact?.offline_gate_failed_gates)
   return {
     offline,
@@ -466,13 +470,10 @@ function selectedArtifactEvidence(artifact?: SelectedArtifactRow | null) {
     lifecycleResult,
     foundationForecastValidation,
     modelCpcv,
-    pbo,
     icSummary,
     gatePolicy,
     gateCpcvPolicy,
-    gatePboPolicy,
     cpcvPolicy,
-    pboPolicy,
     rowFailedGates,
   }
 }
@@ -523,82 +524,46 @@ function liveGateCell(candidateId: string, liveStatus: string | null | undefined
   }
 }
 
-function pboCpcvCell(candidateId: string, evidence: ReturnType<typeof selectedArtifactEvidence>) {
-  const pboValue = firstFiniteNumber(
-    evidence.metrics.pbo,
-    evidence.pbo.pbo,
-    evidence.modelCpcv.pbo,
-    evidence.modelCpcv.probability_of_backtest_overfitting,
+function baseCpcvCell(candidateId: string, evidence: ReturnType<typeof selectedArtifactEvidence>) {
+  const cpcvFolds = firstFiniteNumber(evidence.modelCpcv.folds, evidence.foundationForecastValidation.folds)
+  const cpcvContractReady = (
+    evidence.modelCpcv.schema_version === 'model-cpcv-evidence-v1'
+    && evidence.modelCpcv.method === 'outer_purged_walk_forward_rank_ic'
+    && cpcvFolds != null
+    && cpcvFolds >= 5
   )
-  const pboMax = firstFiniteNumber(evidence.pboPolicy.max_pbo, evidence.pbo.max_pbo)
-  const pboRequiredRaw = evidence.pboPolicy.required
-  // Active-8 artifacts need explicit validation evidence. Missing policy is a
-  // blocker, not implicit proof that PBO/CPCV does not apply.
-  const pboRequired = pboRequiredRaw !== false
-  const oosMeanReturn = firstFiniteNumber(evidence.pbo.oos_mean_return, evidence.metrics.pbo_oos_mean_return)
-  const minOosMeanReturn = firstFiniteNumber(evidence.pboPolicy.min_oos_mean_return) ?? 0
-  const cpcvDecision = firstText(
+  const rawDecision = firstText(
     evidence.metrics.model_cpcv_decision,
     evidence.modelCpcv.decision,
     evidence.foundationForecastValidation.decision,
   ) ?? (typeof evidence.modelCpcv.passed === 'boolean' ? (evidence.modelCpcv.passed ? 'PASS' : 'FAIL') : null)
-  const pboDecision = firstText(
-    evidence.pbo.go_live_verdict,
-    evidence.pbo.decision,
-    evidence.pbo.status,
-  ) ?? (
-    pboValue != null && pboMax != null
-      ? (pboValue <= pboMax ? 'PASS' : 'FAIL')
-      : null
-  )
+  const cpcvDecision = cpcvContractReady ? rawDecision : null
   const failedGates = uniqueTokens([
     ...evidence.rowFailedGates,
     ...asStringList(evidence.gate.failed_gates),
     ...asStringList(evidence.modelCpcv.failed_gates),
     ...asStringList(evidence.foundationForecastValidation.failed_gates),
   ])
-  const pboNotApplicableDetail = 'PBO 不適用（policy 明確標示）'
-  const pboNotApplicableTitle = `PBO 不適用：${firstText(evidence.pboPolicy.reason, evidence.pboPolicy.method) ?? `${candidateId} artifact policy explicitly sets required=false`}`
-  const pboDetail = !pboRequired
-    ? pboNotApplicableDetail
-    : pboValue == null || pboMax == null
-      ? 'PBO evidence 缺失'
-      : `PBO ${formatMetric(pboValue, 3)} ${pboValue <= pboMax ? '≤' : '>'} ${formatMetric(pboMax, 2)} ${pboValue <= pboMax ? '通過' : '未通過'}`
   const cpcvIc = firstFiniteNumber(evidence.modelCpcv.oos_ic_mean, evidence.foundationForecastValidation.oos_ic_mean)
-  const cpcvFolds = firstFiniteNumber(evidence.modelCpcv.folds, evidence.foundationForecastValidation.folds)
   const cpcvDetail = cpcvDecision
-    ? `CPCV ${gateToken(cpcvDecision) === 'PASS' ? '通過' : '未通過'}${cpcvFolds != null ? ` · ${Math.trunc(cpcvFolds)} folds` : ''}${cpcvIc != null ? ` · IC ${formatMetric(cpcvIc, 3)}` : ''}`
-    : 'CPCV evidence 缺失'
+    ? 'CPCV ' + (gateToken(cpcvDecision) === 'PASS' ? '通過' : '未通過') + ' · ' + Math.trunc(cpcvFolds!) + ' folds' + (cpcvIc != null ? ' · IC ' + formatMetric(cpcvIc, 3) : '')
+    : 'BASE CPCV evidence 缺失或不符合 V5 contract'
   const detailParts = [
-    failedGates.length ? `fail gates: ${failedGates.map((item) => humanizeToken(item)).join(', ')}` : null,
-    pboDetail,
+    failedGates.length ? 'fail gates: ' + failedGates.map((item) => humanizeToken(item)).join(', ') : null,
     cpcvDetail,
+    'selection risk：由 V5 ensemble 的 later-window IC／spread LCB 與 conformal coverage 驗證，不在單一模型重複填 PBO。',
   ].filter(Boolean)
-  const titleParts = [
-    `${candidateId}: PBO=${pboDecision ?? (pboRequired ? 'missing' : 'not_required')}, CPCV=${cpcvDecision ?? 'missing'}`,
-    failedGates.length ? `failed_gates=${failedGates.join(',')}` : null,
-    !pboRequired
-      ? pboNotApplicableTitle
-      : `PBO=${formatMetric(pboValue, 3)} <= max ${formatMetric(pboMax, 2)}`,
-    `PBO OOS return=${formatMetric(oosMeanReturn, 4)} >= ${formatMetric(minOosMeanReturn, 4)}`,
-  ].filter(Boolean)
-  const pboFailed = pboRequired && gateToken(pboDecision) === 'FAIL'
   const cpcvFailed = gateToken(cpcvDecision) === 'FAIL'
-  const pboPassed = !pboRequired || gateToken(pboDecision) === 'PASS'
   const cpcvPassed = gateToken(cpcvDecision) === 'PASS'
-  const tone: WorkstationTone = pboFailed || cpcvFailed
-    ? 'error'
-    : pboPassed && cpcvPassed
-      ? 'ok'
-      : 'warn'
+  const tone: WorkstationTone = cpcvFailed ? 'error' : cpcvPassed ? 'ok' : 'warn'
   return {
-    value: pboFailed || cpcvFailed
-      ? '未通過'
-      : pboPassed && cpcvPassed
-        ? '通過'
-        : '待補證據',
+    value: cpcvFailed ? '未通過' : cpcvPassed ? '通過' : '待補證據',
     detail: detailParts.join('\n'),
-    title: titleParts.join(' | '),
+    title: [
+      candidateId + ': base CPCV=' + (cpcvDecision ?? 'missing'),
+      failedGates.length ? 'failed_gates=' + failedGates.join(',') : null,
+      'V5 bundle selection authority=chronological held-out ensemble validation',
+    ].filter(Boolean).join(' | '),
     tone,
   }
 }
@@ -646,13 +611,7 @@ function artifactCompareSummary(record: GrafanaModelRecord) {
     selectedChallenger?.version,
   )
   const champion = firstText(
-    promotion?.current_champion_version,
-    promotion?.evaluation_baseline_version,
     record.servingArtifact?.version,
-    selectedChallenger?.final_compared_to,
-    selectedChallenger?.evaluation_baseline_version,
-    record.pointerRow?.serving_version,
-    record.pointerRow?.d1_pointer_version,
   )
   const compare = promotion?.artifact_compare
   const candidateOosIc = firstFiniteNumber(
@@ -660,10 +619,7 @@ function artifactCompareSummary(record: GrafanaModelRecord) {
     artifactOosIc(selectedChallenger, record.candidate.id),
   )
   const latestRetrainOosIc = artifactOosIc(latestRetrain, record.candidate.id)
-  const championOosIc = firstFiniteNumber(
-    compare?.champion_oos_ic,
-    artifactOosIc(record.servingArtifact, record.candidate.id),
-  )
+  const championOosIc = artifactOosIc(record.servingArtifact, record.candidate.id)
   const metricStatus = firstText(compare?.metric_status)
   const hasCandidate = Boolean(candidate)
   const latestRetrainVersion = firstText(latestRetrain?.version)
@@ -687,16 +643,16 @@ function artifactCompareSummary(record: GrafanaModelRecord) {
       latestRetrainIsSelected ? 'formal live/final comparison still required' : 'diagnostic only; not eligible for promotion',
     ].filter(Boolean).join('\n')
     : 'latest retrain artifact unavailable'
-  const finalComparedTo = firstText(promotion?.final_compared_to, selectedChallenger?.final_compared_to)
-  const hasReleaseArtifact = Boolean(record.servingArtifact?.version || selectedChallenger?.version)
+  const finalComparedTo = champion ? firstText(promotion?.final_compared_to, selectedChallenger?.final_compared_to) : null
+  const hasReleaseArtifact = Boolean(record.servingArtifact?.version)
   const hasChampionBaseline = Boolean(champion)
-  const compareReady = hasCandidate && Boolean(finalComparedTo)
+  const compareReady = hasCandidate && hasChampionBaseline && Boolean(finalComparedTo)
   const artifactId = firstText(promotion?.artifact_id, selectedChallenger?.artifact_id)
 
   return {
     artifactId,
     candidate: candidate ?? 'no selected challenger',
-    champion: champion ?? 'production champion missing',
+    champion: champion ?? 'V5 serving bundle not promoted',
     latestRetrain: latestRetrainVersion ?? 'latest retrain unavailable',
     latestRetrainState: latestRetrain?.state ?? null,
     latestRetrainFailedGates,
@@ -713,11 +669,11 @@ function artifactCompareSummary(record: GrafanaModelRecord) {
     metricDetail: selectedMetricDetail,
     tone: compareReady ? 'ok' as WorkstationTone : hasCandidate ? 'info' as WorkstationTone : latestRetrainVersion ? 'warn' as WorkstationTone : 'neutral' as WorkstationTone,
     title: [
-      `${record.candidate.id}: production champion and selected challenger are separate identities.`,
+      `${record.candidate.id}: V5 serving bundle and selected challenger are separate identities.`,
       `selected_challenger=${candidate ?? 'none'}`,
       `latest_retrain=${latestRetrainVersion ?? 'missing'}`,
       `latest_retrain_state=${latestRetrain?.state ?? 'missing'}`,
-      `production_champion=${champion ?? 'missing'}`,
+      `v5_serving_bundle=${champion ?? 'not_promoted'}`,
       `metric_status=${metricStatus ?? 'n/a'}`,
       latestMetricDetail,
       `final_compared_to=${finalComparedTo ?? 'pending'}`,
@@ -828,7 +784,7 @@ function buildEvidenceCells({
     model?.challenger?.artifact_evidence?.oos_ic,
   )
   const liveIc = firstFiniteNumber(model?.rolling_ic, model?.challenger?.rolling_ic)
-  const pboCpcv = pboCpcvCell(candidateId, evidence)
+  const baseCpcv = baseCpcvCell(candidateId, evidence)
   const finalComparedTo = firstText(
     promotionRows[0]?.final_compared_to,
     selectedCandidate?.final_compared_to,
@@ -873,11 +829,11 @@ function buildEvidenceCells({
       tone: toneFromIc(liveIc),
     },
     {
-      label: 'PBO/CPCV',
-      value: pboCpcv.value,
-      detail: pboCpcv.detail,
-      title: pboCpcv.title,
-      tone: pboCpcv.tone,
+      label: 'BASE CPCV',
+      value: baseCpcv.value,
+      detail: baseCpcv.detail,
+      title: baseCpcv.title,
+      tone: baseCpcv.tone,
     },
     {
       label: 'COMPARE',
@@ -907,35 +863,29 @@ function buildGrafanaRecord({
   modelUpgradeStatusReady: boolean
 }): GrafanaModelRecord {
   const artifact = selectionCandidate(selectionRow)
-  const release = releaseArtifact(selectionRow)
-  const servingArtifact = selectionRow?.serving_release_artifact ?? null
   const latestRetrainArtifact = selectionRow?.latest_oof_full_fit_release_artifact ?? null
+  const servingArtifact = v5ServingArtifact(selectionRow, pointerRow)
   const artifactOk = artifactReady(model, selectionRow)
-  const evidenceOk = evidenceReady(model, release)
+  const evidenceOk = evidenceReady(model, latestRetrainArtifact)
   const pointerOk = pointerReady(pointerRow)
   const queueTone = promotionPressureTone(promotionRows)
   const blockers = uniqueTokens([
-    ...(model?.serving_block_reason ? [model.serving_block_reason] : []),
     ...(!artifactOk ? ['artifact_missing'] : []),
-    ...(!pointerOk ? ['champion_pointer_not_ready'] : []),
+    ...(!pointerOk ? ['active8_v5_bundle_not_promoted'] : []),
     ...promotionRows.flatMap((row) => (row.blockers ?? []).map((blocker) => (
       typeof blocker === 'string' ? blocker : blocker.code ?? blocker.label ?? 'promotion_blocker'
     ))),
   ])
-  const rawStatus = release?.state ?? model?.status ?? 'no_data'
+  const rawStatus = latestRetrainArtifact?.state ?? 'no_data'
   const slotStatus = model?.model_slot_status ?? 'active'
-  const servingStatus = model?.serving_eligible === false || model?.serving_block_reason
-    ? 'artifact blocked'
-    : isServing(model)
-      ? 'artifact serving'
-      : 'artifact pending'
+  const servingStatus = pointerOk ? 'V5 bundle serving' : 'V5 evidence-only'
   const statusTone = blockers.length
     ? maxTone([toneFromStatus(rawStatus), queueTone, 'warn'])
     : maxTone([toneFromStatus(rawStatus), queueTone])
   const history = buildEvidenceCells({
     candidateId: candidate.id,
     model,
-    artifact: release,
+    artifact: latestRetrainArtifact,
     servingArtifact,
     selectedCandidate: artifact,
     promotionRows,
@@ -951,10 +901,10 @@ function buildGrafanaRecord({
     servingStatus,
     statusTone,
     fleetTone,
-    artifactVersion: release?.version ?? model?.version ?? 'no artifact',
+    artifactVersion: pointerRow?.serving_version ?? 'V5 evidence-only · no production bundle',
     selectedArtifact: artifact,
     latestRetrainArtifact,
-    releaseArtifact: release,
+    releaseArtifact: latestRetrainArtifact,
     servingArtifact,
     dataset: MODEL_DATASET_REQUIREMENTS[candidate.id],
     pointerRow,
@@ -1071,9 +1021,9 @@ function GrafanaDashboardHeader({
           tone={blockedCount ? 'error' : 'ok'}
         />
         <GrafanaStat
-          label="Pointer ready"
+          label="V5 bundle members"
           value={`${readyPointers}/${pointerTotal || 'N/A'}`}
-          detail="champion pointer serving parity"
+          detail="atomic bundle serving parity"
           tone={pointerTotal && readyPointers === pointerTotal ? 'ok' : 'warn'}
         />
         <GrafanaStat
@@ -1143,13 +1093,13 @@ function CandidateHousekeepingPanel({
   return (
     <GrafanaPanel
       title="Candidate housekeeping"
-      kicker="serving champion / selected review slots / action-only archive queue"
+      kicker="V5 retrain review slots; legacy comparison rows remain audit-only"
     >
       <div className="grid gap-3 bg-[#0b1118] p-3 lg:grid-cols-[minmax(0,0.9fr)_minmax(0,1.1fr)]">
         <div className="grid gap-2 sm:grid-cols-2">
           <GrafanaStat label="Review slots" value={summary.selectedSlots} detail="canonical immutable OOF selected by policy" tone={summary.selectedSlots ? 'info' : 'neutral'} />
           <GrafanaStat label="Archive-ready" value={summary.archiveIds.length} detail="superseded or candidate-not-better only" tone={summary.archiveIds.length ? 'warn' : 'ok'} />
-          <GrafanaStat label="Not better" value={summary.notBetter.length} detail="candidate OOS IC <= champion" tone={summary.notBetter.length ? 'warn' : 'ok'} />
+          <GrafanaStat label="Legacy comparisons" value={summary.notBetter.length} detail="audit-only; excluded from V5 serving" tone={summary.notBetter.length ? 'info' : 'ok'} />
           <GrafanaStat label="Superseded" value={summary.superseded.length} detail="newer release train owns review slot" tone={summary.superseded.length ? 'info' : 'ok'} />
           <GrafanaStat label="Active-8 retrain rejected" value={summary.latestRejected.length} detail="diagnosis only; never production fleet health" tone={summary.latestRejected.length ? 'warn' : 'ok'} />
         </div>
@@ -1312,159 +1262,6 @@ function StateTimelinePanel({
   )
 }
 
-function PromotionReadinessPanel({
-  records,
-  selectedModelId,
-  promotionResult,
-  finalComparePending = false,
-  onDryRunFinalCompare,
-}: {
-  records: GrafanaModelRecord[]
-  selectedModelId?: string | null
-  promotionResult?: ModelArtifactPromotionControllerResponse | null
-  finalComparePending?: boolean
-  onDryRunFinalCompare?: (artifactId: string) => void
-}) {
-  const selected = records.find((record) => record.candidate.id === selectedModelId)
-    ?? records.find((record) => record.blockers.length > 0)
-    ?? records[0]
-  if (!selected) return null
-  const compare = artifactCompareSummary(selected)
-  const finalCompareResult = finalCompareResultFor(promotionResult, selected.candidate.id, compare.artifactId)
-  const finalComparedTo = firstText(compare.finalComparedTo, finalCompareResult?.final_compared_to)
-  const finalCompareApplies = compare.hasCandidate
-  const finalCompareReady = !finalCompareApplies || compare.compareReady || Boolean(finalComparedTo)
-  const canDryRunFinalCompare = Boolean(finalCompareApplies && compare.artifactId && onDryRunFinalCompare)
-  const diagnosis = researchStatusDiagnosis(selected)
-
-  const gates = [
-    { label: 'Production champion', ready: compare.hasChampionBaseline, detail: compare.champion },
-    ...(finalCompareApplies ? [{ label: 'Selected challenger', ready: compare.hasCandidate, detail: compare.candidate }] : []),
-    { label: 'Artifact evidence', ready: selected.evidenceOk, detail: selected.status },
-    { label: 'PBO/CPCV', ready: selected.history.find((cell) => cell.label === 'PBO/CPCV')?.tone === 'ok', detail: selected.history.find((cell) => cell.label === 'PBO/CPCV')?.detail ?? 'policy pending' },
-    { label: 'Final compare', ready: finalCompareReady, detail: finalCompareApplies ? finalComparedTo ?? 'run dry-run challenger-vs-production comparison' : 'N/R: no selected challenger' },
-    { label: 'Approval', ready: selected.approvalOk, detail: selected.promotionRows.some((row) => row.approval_required) ? 'required' : 'clear' },
-    { label: 'Current pointer baseline', ready: selected.pointerOk, detail: selected.pointerRow?.readiness ?? 'missing' },
-  ]
-
-  return (
-    <GrafanaPanel title="Candidate release readiness" kicker={`selected model: ${selected.candidate.id} / release evidence; candidate gate when available; candidate gate, not current prod artifact`}>
-      <div className="bg-[#0c1219] p-4">
-        <div className={`rounded-xl border p-3 ${grafanaBorderClass(selected.statusTone)} bg-[#111821]`}>
-          <div className="flex items-start justify-between gap-3">
-            <div className="min-w-0">
-              <p className="font-['Space_Grotesk'] text-[18px] font-semibold text-[#f2ead8]">{selected.candidate.id}</p>
-              <p className="mt-1 text-[13px] leading-5 text-[#9aa8ba]">{selected.family} / {selected.dataset?.window ?? 'model-specific'} / {selected.artifactVersion}</p>
-            </div>
-            <span className={`border px-2.5 py-1 sv-num text-[12px] font-semibold ${grafanaCellClass(selected.statusTone)}`}>
-              {selected.status}
-            </span>
-          </div>
-        </div>
-
-        <div className="mt-3 rounded-xl border border-[#263247] bg-[#0b1118] p-3">
-          <p className="sv-num text-[12px] normal-case text-[#90a0b8]">Research diagnosis</p>
-          <p className="mt-2 text-[13px] leading-5 text-[#dce3ea]">{diagnosis.rootCause}</p>
-          <div className="mt-2 rounded-lg border border-[#253242] bg-[#101722] px-3 py-2">
-            <p className="sv-num text-[12px] normal-case text-[#90a0b8]">next action</p>
-            <p className="mt-1 text-[13px] leading-5 text-[#a7b5c8]">{diagnosis.nextAction}</p>
-          </div>
-          {diagnosis.missing.length > 0 && (
-            <div className="mt-2 flex flex-wrap gap-1.5">
-              {diagnosis.missing.slice(0, 5).map((item) => (
-                <span key={item} className="rounded-full border border-amber-300/30 bg-amber-300/10 px-2 py-0.5 sv-num text-[12px] text-amber-200">
-                  {humanizeToken(item)}
-                </span>
-              ))}
-            </div>
-          )}
-        </div>
-
-        <div className="mt-3 rounded-xl border border-[#263247] bg-[#0b1118] p-3" title={compare.title}>
-          <p className="sv-num text-[12px] normal-case text-[#90a0b8]">Production champion vs selected challenger</p>
-          <div className="mt-3 grid gap-2">
-            <div className="rounded-lg border border-[#253242] bg-[#101722] px-3 py-2">
-              <p className="sv-num text-[12px] normal-case text-[#90a0b8]">selected challenger</p>
-              <p className="mt-1 break-all sv-num text-[13px] font-semibold text-[#dce3ea]">{compare.candidate}</p>
-            </div>
-            <div className="rounded-lg border border-[#253242] bg-[#101722] px-3 py-2">
-              <p className="sv-num text-[12px] normal-case text-[#90a0b8]">latest retrain (diagnostic)</p>
-              <p className="mt-1 break-all sv-num text-[13px] font-semibold text-[#dce3ea]">{compare.latestRetrain}</p>
-              <p className="mt-1 text-[12px] text-[#90a0b8]">{compare.latestRetrainState ?? 'state unavailable'}{compare.latestRetrainIsSelected ? ' · selected challenger' : ' · not selected'}</p>
-            </div>
-            <div className="rounded-lg border border-[#253242] bg-[#101722] px-3 py-2">
-              <p className="sv-num text-[12px] normal-case text-[#90a0b8]">formal production champion</p>
-              <p className="mt-1 break-all sv-num text-[13px] font-semibold text-[#dce3ea]">{compare.champion}</p>
-            </div>
-            <div className="flex items-center justify-between gap-3 rounded-lg border border-[#253242] bg-[#101722] px-3 py-2">
-              <div className="min-w-0">
-                <p className="sv-num text-[12px] normal-case text-[#90a0b8]">final compare</p>
-                <p className="mt-1 truncate text-[13px] text-[#a7b5c8]">
-                  {finalCompareApplies ? finalComparedTo ? `completed vs ${finalComparedTo}` : 'dry-run compare not run yet' : 'N/R: no selected candidate'}
-                </p>
-              </div>
-              <span className={`shrink-0 border px-2.5 py-1 sv-num text-[12px] font-semibold ${grafanaCellClass(finalCompareReady ? 'ok' : compare.tone)}`}>
-                {finalCompareReady ? 'READY' : 'WAIT'}
-              </span>
-            </div>
-            <div className="rounded-lg border border-[#253242] bg-[#101722] px-3 py-2">
-              <div className="flex flex-wrap items-center justify-between gap-2">
-                <div>
-                  <p className="sv-num text-[12px] normal-case text-[#90a0b8]">compare action</p>
-                  <p className="mt-1 text-[12px] leading-5 text-[#90a0b8]">
-                    {finalCompareApplies ? '只做 candidate vs current champion dry-run；不切 pointer、不升級 production。' : '目前沒有 selected candidate；current production artifact 不需要 final compare。'}
-                  </p>
-                </div>
-                <button
-                  type="button"
-                  disabled={!canDryRunFinalCompare || finalComparePending}
-                  onClick={() => {
-                    if (compare.artifactId) onDryRunFinalCompare?.(compare.artifactId)
-                  }}
-                  className="rounded-lg border border-[#d6a85f]/40 bg-[#1b2430] px-3 py-2 sv-num text-[12px] font-semibold text-[#f0c365] transition-colors hover:border-[#f0c365]/70 disabled:cursor-not-allowed disabled:border-[#303947] disabled:text-[#6e7a8d]"
-                >
-                  {!finalCompareApplies ? 'No candidate' : finalComparePending ? 'Running...' : 'Dry-run final compare'}
-                </button>
-              </div>
-              {finalCompareResult && (
-                <div className="mt-2 rounded-lg border border-[#303947] bg-[#0b1118] px-3 py-2">
-                  <p className="sv-num text-[12px] text-[#dce3ea]">{finalCompareResultDetail(finalCompareResult)}</p>
-                  {finalCompareResult.next_action && <p className="mt-1 text-[12px] leading-5 text-[#90a0b8]">next: {finalCompareResult.next_action}</p>}
-                  {(finalCompareResult.errors?.length ?? 0) > 0 && (
-                    <p className="mt-1 text-[12px] leading-5 text-rose-200">errors: {finalCompareResult.errors?.join(', ')}</p>
-                  )}
-                </div>
-              )}
-            </div>
-            <div className="rounded-lg border border-[#253242] bg-[#101722] px-3 py-2">
-              <p className="sv-num text-[12px] normal-case text-[#90a0b8]">Latest retrain vs production OOS IC</p>
-              <p className="mt-1 whitespace-pre-line sv-num text-[13px] font-semibold text-[#dce3ea]">{compare.latestMetricDetail}</p>
-            </div>
-          </div>
-        </div>
-
-        <div className="mt-3 rounded-xl border border-[#263247] bg-[#0b1118] p-3">
-          <p className="sv-num text-[12px] normal-case text-[#90a0b8]">Candidate release funnel</p>
-          <div className="mt-3 space-y-2">
-            {gates.map((gate, index) => (
-              <div key={gate.label} className="grid grid-cols-[28px_1fr_auto] items-center gap-2">
-                <span className="grid h-7 w-7 place-items-center rounded-lg border border-[#303947] bg-[#121a24] sv-num text-[12px] text-[#a7b5c8]">{index + 1}</span>
-                <div className="min-w-0">
-                  <p className="font-['Space_Grotesk'] text-[14px] text-[#f2ead8]">{gate.label}</p>
-                  <p className="text-[12px] leading-5 text-[#90a0b8]">{gate.detail}</p>
-                </div>
-                <span className={`border px-2.5 py-1 sv-num text-[12px] ${grafanaCellClass(gate.ready ? 'ok' : 'warn')}`}>
-                  {gate.ready ? 'PASS' : 'WAIT'}
-                </span>
-              </div>
-            ))}
-          </div>
-        </div>
-      </div>
-    </GrafanaPanel>
-  )
-}
-
 function EvidenceTablePanel({
   records,
   selectedModelId,
@@ -1475,19 +1272,19 @@ function EvidenceTablePanel({
   onSelectModel: (modelId: string) => void
 }) {
   return (
-    <GrafanaPanel title="Evidence table" kicker="formal production champion, selected challenger, and latest retrain diagnosis stay separate">
+    <GrafanaPanel title="Evidence table" kicker="V5 serving bundle, selected challenger, and latest retrain evidence stay separate; legacy pointers are audit-only">
       <div className="overflow-x-auto bg-[#0b1118] p-3">
         <table className="w-full min-w-[1380px] border-separate border-spacing-y-2 text-left">
           <thead className="sv-num text-[12px] normal-case text-[#90a0b8]">
             <tr>
               <th className="px-3 py-2 font-medium">Model</th>
               <th className="px-3 py-2 font-medium">Family</th>
-              <th className="px-3 py-2 font-medium">Production artifact</th>
+              <th className="px-3 py-2 font-medium">V5 production bundle artifact</th>
               <th className="px-3 py-2 font-medium">Dataset</th>
               <th className="px-3 py-2 font-medium">Pointer</th>
               <th className="px-3 py-2 font-medium" title="Latest research registry state for this model artifact lane.">Research state</th>
               <th className="px-3 py-2 font-medium" title="Promotion queue load plus blockers that need review before release.">Review pressure</th>
-              <th className="min-w-[300px] whitespace-normal px-3 py-2 font-medium leading-5">Production champion vs latest retrain</th>
+              <th className="min-w-[300px] whitespace-normal px-3 py-2 font-medium leading-5">V5 serving bundle vs latest retrain</th>
               <th className="px-3 py-2 font-medium">Missing evidence</th>
             </tr>
           </thead>
@@ -1545,7 +1342,7 @@ function EvidenceTablePanel({
                     {compare.compareReady ? 'formal compare ready' : compare.hasCandidate ? 'selected challenger' : compare.latestRetrainState ? 'latest retrain rejected' : 'serving only'}
                   </span>
                   <dl className="mt-2 grid max-w-[360px] gap-1.5 sv-num text-[12px] leading-5">
-                    <div className="grid grid-cols-[96px_1fr] gap-2"><dt className="text-[#70809b]">production</dt><dd className="break-all text-[#dce3ea]">{compare.champion}</dd></div>
+                    <div className="grid grid-cols-[96px_1fr] gap-2"><dt className="text-[#70809b]">V5 bundle</dt><dd className="break-all text-[#dce3ea]">{compare.champion}</dd></div>
                     <div className="grid grid-cols-[96px_1fr] gap-2"><dt className="text-[#70809b]">challenger</dt><dd className="break-all text-[#dce3ea]">{compare.candidate}</dd></div>
                     <div className="grid grid-cols-[96px_1fr] gap-2"><dt className="text-[#70809b]">latest retrain</dt><dd className="break-all text-[#dce3ea]">{compare.latestRetrain}</dd></div>
                   </dl>
@@ -1690,7 +1487,7 @@ export default function ModelPoolNewFlowWorkbench({
       <div className="border-t border-[#263247] bg-[#071018] p-4 text-[15px] leading-6 text-[#a7b5c8]">
         Parameter search and allocator/meta proposals stay in Promotion & Parameter Governance.
         This cockpit is only the L2 TimesFM sidecar and L3 active-8 evidence surface: active slots, artifacts, verified rows,
-        blockers, and champion pointer readiness.
+        blockers, and V5 bundle pointer readiness.
       </div>
     </WorkstationPanel>
   )

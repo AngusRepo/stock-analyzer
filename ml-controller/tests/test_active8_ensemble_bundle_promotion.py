@@ -93,6 +93,10 @@ class AtomicD1:
                 "payload_checksum": self.ensemble["payload_checksum"],
                 "base_artifact_set_checksum": self.ensemble["base_artifact_set_checksum"],
                 "training_run_id": self.ensemble["training_run_id"],
+                "cohort_id": self.ensemble["cohort_id"],
+                "payload_json": self.ensemble["payload_json"],
+                "validation_decision": self.ensemble["validation_decision"],
+                "promoted_at": "2026-08-27T00:00:00Z",
                 "state": "production",
                 "production_effect": 1,
             }]
@@ -134,6 +138,31 @@ def test_bundle_commit_is_one_atomic_batch(monkeypatch):
     assert "active8_ensemble_pointer_v1" in sql
     assert "model_champion_pointers" in sql
 
+
+def test_serving_bundle_read_model_never_falls_back_to_legacy_pointers(monkeypatch):
+    rows, _, ensemble = _fixture()
+    d1 = AtomicD1(rows, ensemble)
+    monkeypatch.setattr(registry, "d1_client", d1)
+
+    serving = registry.load_active8_ensemble_serving_bundle()
+    assert serving["status"] == "production"
+    assert serving["production_effect"] is True
+    assert serving["artifact_id"] == ensemble["artifact_id"]
+    assert set(serving["selected_models"]) == set(json.loads(ensemble["payload_json"])["selected_models"])
+    assert set(serving["base_artifacts"]) == set(serving["selected_models"])
+
+    class NoBundleD1:
+        @staticmethod
+        def query(sql, params=None):
+            assert "active8_ensemble_pointer_v1" in sql
+            return []
+
+    monkeypatch.setattr(registry, "d1_client", NoBundleD1())
+    missing = registry.load_active8_ensemble_serving_bundle()
+    assert missing["status"] == "evidence_only_no_action"
+    assert missing["production_effect"] is False
+    assert missing["base_artifacts"] == {}
+    assert missing["blockers"] == ["active8_v5_serving_bundle_not_promoted"]
 
 def test_bundle_rejects_missing_model():
     rows, pointers, ensemble = _fixture()

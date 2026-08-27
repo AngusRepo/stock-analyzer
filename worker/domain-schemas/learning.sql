@@ -277,6 +277,8 @@ CREATE INDEX IF NOT EXISTS idx_trade_perf ON trade_performance(stock_id, model_n
 CREATE TABLE IF NOT EXISTS strategy_route_backfill_eligibility_v1 (
   signal_date TEXT NOT NULL,
   producer_run_id TEXT NOT NULL,
+  route_version TEXT,
+  affinity_version TEXT,
   status TEXT NOT NULL CHECK(status IN ('eligible', 'unavailable', 'pending_maturity')),
   reference_rows INTEGER NOT NULL,
   mature_label_rows INTEGER NOT NULL,
@@ -294,6 +296,14 @@ CREATE TABLE IF NOT EXISTS strategy_route_backfill_eligibility_v1 (
 
 CREATE INDEX IF NOT EXISTS idx_strategy_route_backfill_eligibility_v1_status
   ON strategy_route_backfill_eligibility_v1(status, signal_date);
+
+CREATE INDEX IF NOT EXISTS idx_strategy_route_backfill_eligibility_v1_semantic
+  ON strategy_route_backfill_eligibility_v1(
+    route_version,
+    affinity_version,
+    status,
+    signal_date
+  );
 
 CREATE TABLE IF NOT EXISTS dataset_snapshots (
   snapshot_id     TEXT PRIMARY KEY,

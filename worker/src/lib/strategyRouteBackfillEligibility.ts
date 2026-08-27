@@ -347,13 +347,16 @@ export async function auditStrategyRouteBackfillEligibility(
     for (let offset = 0; offset < output.length; offset += 100) {
       await db.batch(output.slice(offset, offset + 100).map((row) => db.prepare(`
         INSERT INTO strategy_route_backfill_eligibility_v1 (
-          signal_date, producer_run_id, status, reference_rows, mature_label_rows,
+          signal_date, producer_run_id, route_version, affinity_version,
+          status, reference_rows, mature_label_rows,
           rejected_label_rows,
           matrix_rows, evaluable_matrix_rows, matched_matrix_rows, challenger_affinity_rows,
           threshold_margin_rows, challenger_route_rows, blocker_json, audited_as_of_date
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(signal_date, producer_run_id) DO UPDATE SET
           status=excluded.status,
+          route_version=excluded.route_version,
+          affinity_version=excluded.affinity_version,
           reference_rows=excluded.reference_rows,
           mature_label_rows=excluded.mature_label_rows,
           rejected_label_rows=excluded.rejected_label_rows,
@@ -369,6 +372,8 @@ export async function auditStrategyRouteBackfillEligibility(
       `).bind(
         row.signalDate,
         row.producerRunId,
+        STRATEGY_ROUTE_CHALLENGER_VERSION,
+        STRATEGY_ROUTE_AFFINITY_VERSION,
         row.status,
         row.referenceRows,
         row.matureLabelRows,

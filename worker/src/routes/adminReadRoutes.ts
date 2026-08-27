@@ -398,7 +398,7 @@ adminReadRoutes.get('/api/admin/strategy/evidence-profiles', async (c) => {
       STRATEGY_EVIDENCE_PROFILE_VERSION,
     },
     { shadowDatabaseForDataDomain },
-    { STRATEGY_ROUTE_MIN_TOTAL_DATES },
+    { STRATEGY_ROUTE_MIN_TOTAL_DATES, STRATEGY_ROUTE_CHALLENGER_VERSION },
     { STRATEGY_EVIDENCE_METRIC_DEFINITION_VERSION },
   ] = await Promise.all([
     import('../lib/strategyLearning'),
@@ -470,16 +470,18 @@ adminReadRoutes.get('/api/admin/strategy/evidence-profiles', async (c) => {
       created_at: string
     }>(),
     learningDb.prepare(`
-      SELECT run_id, as_of_date, status, date_count, gate_json, created_at
+      SELECT run_id, as_of_date, status, date_count, gate_json, created_at,
+             candidate_route_version
         FROM strategy_route_calibration_runs_v1
-       WHERE sample_count>0 AND date_count>0
+       WHERE candidate_route_version=?
        ORDER BY as_of_date DESC, created_at DESC, run_id DESC
        LIMIT 1
-    `).first<{
+    `).bind(STRATEGY_ROUTE_CHALLENGER_VERSION).first<{
       run_id: string
       as_of_date: string
       status: string
       date_count: number
+      candidate_route_version: string
       gate_json: string
       created_at: string
     }>(),
@@ -552,7 +554,6 @@ adminReadRoutes.get('/api/admin/strategy/evidence-profiles', async (c) => {
     profile.metric_completion.materialized === profile.metric_completion.total
   )).length
   const metricAsOfDate = metricArtifacts.map((row) => row.outcome_as_of_date).sort().at(-1) ?? null
-  const formalEvidence = parseObject(formalPolicy?.evidence_json)
   const productionEvidence = parseObject(productionPolicy?.evidence_json)
   const storedEvidenceOwner = productionEvidence.evidence_owner && typeof productionEvidence.evidence_owner === 'object'
     ? productionEvidence.evidence_owner as Record<string, unknown>
@@ -589,18 +590,18 @@ adminReadRoutes.get('/api/admin/strategy/evidence-profiles', async (c) => {
       formal: {
         lane_id: 'formal_adaptive_policy',
         label: '正式策略政策',
-        version: formalOwnerIntegrated ? 'strategy-production-contribution-firewall-v3' : formalPolicy?.version ?? null,
-        status: formalOwnerIntegrated ? 'active' : formalPolicy?.status ?? 'unavailable',
+        version: 'strategy-production-contribution-firewall-v3',
+        status: formalOwnerIntegrated ? 'active' : 'owner_upgrade_required',
         as_of_date: productionPolicy?.knowledge_cutoff_date ?? formalPolicy?.knowledge_cutoff_date ?? null,
         base_policy_version: formalPolicy?.version ?? null,
         base_policy_as_of_date: formalPolicy?.knowledge_cutoff_date ?? null,
-        production_effect: formalOwnerIntegrated || formalEvidence.production_effect === true,
+        production_effect: formalOwnerIntegrated,
         authority: 'pending_buy_and_strategy_weights',
       },
       threshold_route_shadow: {
         lane_id: 'strategy_threshold_route_shadow',
         label: 'Shadow A：各策略門檻與路由',
-        version: 'strategy-threshold-margin-affinity-v2',
+        version: routeCalibration?.candidate_route_version ?? STRATEGY_ROUTE_CHALLENGER_VERSION,
         status: routeCalibration?.status ?? 'not_materialized',
         as_of_date: routeCalibration?.as_of_date ?? null,
         mature_dates: routeDates,
@@ -610,7 +611,7 @@ adminReadRoutes.get('/api/admin/strategy/evidence-profiles', async (c) => {
         production_effect: false,
         authority: 'comparison_only',
       },
-      multi_horizon_shadow: {
+      multi_horizon_formal: {
         lane_id: 'strategy_multi_horizon_formal_evidence',
         label: 'Multi-horizon formal evidence：策略專屬 3／5／10 日證據',
         version: STRATEGY_EVIDENCE_PROFILE_VERSION,
@@ -629,7 +630,7 @@ adminReadRoutes.get('/api/admin/strategy/evidence-profiles', async (c) => {
           && evidenceOwnerSnapshot.integration_ready,
         production_owner: formalOwnerIntegrated
           ? 'strategy-production-contribution-firewall-v3'
-          : 'strategy-adaptive-lifecycle-v2',
+          : 'none_pending_strategy-production-contribution-firewall-v3',
         materialized_metrics: materializedMultiHorizonMetrics,
         missing_required_metrics: missingMultiHorizonMetrics,
         metric_materialized_profiles: metricMaterializedProfiles,

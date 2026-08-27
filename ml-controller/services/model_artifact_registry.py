@@ -3174,6 +3174,93 @@ def _validated_active8_ensemble_payload(row: dict[str, Any]) -> dict[str, Any]:
     return payload
 
 
+def load_active8_ensemble_serving_bundle() -> dict[str, Any]:
+    """Return the only production-grade Active-8 serving owner.
+
+    Per-model champion pointers remain immutable rollback/audit lineage. They
+    are not V5 production artifacts unless the atomic ensemble pointer binds
+    them through a validated production bundle.
+    """
+    rows = d1_client.query(
+        """
+        SELECT p.artifact_id, p.cohort_id, p.payload_checksum,
+               p.base_artifact_set_checksum, p.promoted_at,
+               a.training_run_id, a.state, a.production_effect,
+               a.validation_decision, a.payload_json
+          FROM active8_ensemble_pointer_v1 AS p
+          JOIN active8_ensemble_artifacts_v1 AS a ON a.artifact_id=p.artifact_id
+         WHERE p.singleton_id=1
+         LIMIT 2
+        """
+    )
+    if not rows:
+        return {
+            "status": "evidence_only_no_action",
+            "production_effect": False,
+            "artifact_id": None,
+            "training_run_id": None,
+            "selected_models": [],
+            "base_artifacts": {},
+            "blockers": ["active8_v5_serving_bundle_not_promoted"],
+        }
+    if len(rows) != 1:
+        return {
+            "status": "invalid_pointer_cardinality",
+            "production_effect": False,
+            "artifact_id": None,
+            "training_run_id": None,
+            "selected_models": [],
+            "base_artifacts": {},
+            "blockers": ["active8_v5_serving_pointer_cardinality"],
+        }
+    row = rows[0]
+    try:
+        payload = _validated_active8_ensemble_payload(row)
+    except ValueError as exc:
+        return {
+            "status": "invalid_bundle",
+            "production_effect": False,
+            "artifact_id": row.get("artifact_id"),
+            "training_run_id": row.get("training_run_id"),
+            "selected_models": [],
+            "base_artifacts": {},
+            "blockers": [str(exc)],
+        }
+    selected_models = payload.get("selected_models")
+    base_artifacts = payload.get("base_artifacts")
+    pointer_matches = (
+        str(row.get("state") or "") == "production"
+        and int(row.get("production_effect") or 0) == 1
+        and str(row.get("validation_decision") or "") == "PASS"
+        and str(row.get("payload_checksum") or "") == str(payload.get("payload_checksum") or "")
+        and isinstance(selected_models, list)
+        and bool(selected_models)
+        and isinstance(base_artifacts, dict)
+        and set(selected_models) == set(base_artifacts)
+    )
+    if not pointer_matches:
+        return {
+            "status": "invalid_bundle_lineage",
+            "production_effect": False,
+            "artifact_id": row.get("artifact_id"),
+            "training_run_id": row.get("training_run_id"),
+            "selected_models": [],
+            "base_artifacts": {},
+            "blockers": ["active8_v5_serving_bundle_lineage_mismatch"],
+        }
+    return {
+        "status": "production",
+        "production_effect": True,
+        "artifact_id": row.get("artifact_id"),
+        "cohort_id": row.get("cohort_id"),
+        "training_run_id": row.get("training_run_id"),
+        "promoted_at": row.get("promoted_at"),
+        "selected_models": list(selected_models),
+        "base_artifacts": dict(base_artifacts),
+        "blockers": [],
+    }
+
+
 def _active8_base_artifact_blocker(
     model_name: str,
     row: dict[str, Any],

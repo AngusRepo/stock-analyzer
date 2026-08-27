@@ -1,4 +1,5 @@
 import { listStrategyEvidenceProfiles } from './strategyEvidenceProfile'
+import { STRATEGY_EVIDENCE_METRIC_DEFINITION_VERSION } from './strategyEvidenceMetrics'
 import type { StrategySpec } from './strategySpec'
 import {
   calibrationMetricSnapshotChecksum,
@@ -77,6 +78,7 @@ export async function buildStrategyEvidenceOwnerSnapshot(input: {
   const validRows = input.rows.filter((row) => (
     /^\d{4}-\d{2}-\d{2}$/.test(row.outcome_as_of_date)
     && row.outcome_as_of_date < input.knowledgeCutoffDate
+    && row.definition_version === STRATEGY_EVIDENCE_METRIC_DEFINITION_VERSION
   ))
   const outcomeAsOfDate = validRows.map((row) => row.outcome_as_of_date).sort().at(-1) ?? null
   const latestRows = outcomeAsOfDate == null
@@ -181,8 +183,9 @@ export async function loadStrategyEvidenceOwnerSnapshotBefore(
              outcome_as_of_date, definition_version
         FROM strategy_evidence_metrics_v1
        WHERE outcome_as_of_date < ?
+         AND definition_version=?
        ORDER BY outcome_as_of_date DESC, strategy_id, metric_name
-    `).bind(knowledgeCutoffDate).all<StrategyEvidenceOwnerMetricRow>()
+    `).bind(knowledgeCutoffDate, STRATEGY_EVIDENCE_METRIC_DEFINITION_VERSION).all<StrategyEvidenceOwnerMetricRow>()
       .catch(() => ({ results: [] as StrategyEvidenceOwnerMetricRow[] })),
     loadPromotedStrategyEvidenceOwnerCalibrationBefore(db, knowledgeCutoffDate).catch(() => null),
   ])

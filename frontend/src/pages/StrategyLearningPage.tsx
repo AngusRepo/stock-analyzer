@@ -394,7 +394,6 @@ function StrategyLedgerGroup({
   rows,
   gateById,
   profileById,
-  policyWeights,
   requestedDate,
   empty,
 }: {
@@ -403,7 +402,6 @@ function StrategyLedgerGroup({
   rows: LearningRow[]
   gateById: Map<string, StrategyPromotionGate>
   profileById: Map<string, StrategyEvidenceProfile>
-  policyWeights: Record<string, number>
   requestedDate: string | null
   empty: string
 }) {
@@ -421,11 +419,6 @@ function StrategyLedgerGroup({
         {rows.map((row) => {
           const gate = gateById.get(`${row.id}:${row.version}`)
           const profile = profileById.get(`${row.id}:${row.version}`)
-          const hasWeight = Object.prototype.hasOwnProperty.call(policyWeights, row.id)
-          const weight = Number(policyWeights[row.id] ?? 0)
-          const executionEligible = gate?.allocation_eligible === true && Number.isFinite(weight) && weight > 0
-          const evidence = gate?.missing_evidence ?? []
-          const evidenceLabels = gate ? (evidence.length ? evidence : ['全部待買門檻已通過']) : ['報酬帳本資料未取得']
           const healthBucket = strategyHealthBucket(row, gate)
           const rewardPending = row.learning.reward_state === 'pending_maturity'
           const rewardMissing = row.learning.reward_state === 'reward_join_missing'
@@ -527,40 +520,41 @@ function StrategyLedgerGroup({
                 ) : <p className="mt-2 text-xs text-amber-200">Evidence profile API 未回傳此策略；這是資料缺漏，不代表策略績效失敗。</p>}
               </div>
 
-              <div className="grid gap-3 lg:grid-cols-2">
-                <div className="rounded-xl border border-slate-800 bg-slate-900/35 p-3">
-                  <div className="flex flex-wrap items-center justify-between gap-2 text-xs text-slate-500">
-                    <span>待買資格相對權重（Pending-buy gate share）</span>
-                    <div className="flex items-center gap-2">
-                      <Badge variant="outline" className={executionEligible ? statusClass('active') : statusClass('not_ready')}>{executionEligible ? '可讓推薦進入待買' : '只選股與評估，不進待買'}</Badge>
-                      <span className="font-mono text-slate-300">{hasWeight ? pct(weight) : '未取得待買權重'}</span>
-                    </div>
-                  </div>
-                  <div className="mt-2 h-2 overflow-hidden rounded-full bg-slate-800">
-                    <div className="h-full bg-emerald-300" style={{ width: `${hasWeight ? Math.max(0, Math.min(100, weight * 100)) : 0}%` }} />
-                  </div>
-                  <p className="mt-2 text-xs text-slate-500">這個百分比只在「已通過全部門檻」的策略之間正規化，用來決定哪個策略可讓推薦進待買；不是帳戶資金、下單金額或部位比例。0% 仍繼續選股與累積證據。</p>
-                </div>
-
-                <div className="rounded-xl border border-slate-800 bg-slate-900/35 p-3">
-                  <div className="flex flex-wrap items-center gap-2">
-                    <Badge variant="outline" className={statusClass(gate?.decision ?? 'ledger_pending')}>{gate?.decision ?? 'ledger pending'}</Badge>
-                    <span className="text-xs text-slate-500">{gate?.current_stage ?? 'stage unavailable'} &rarr; {gate?.recommended_stage ?? gate?.recommended_next_status ?? 'reward gate unavailable'}</span>
-                  </div>
-                  <div className="mt-2 flex flex-wrap gap-1.5">
-                    {evidenceLabels.slice(0, 3).map((item) => (
-                      <span key={item} className={`rounded-md border px-2 py-1 text-xs ${evidence.length ? 'border-amber-400/20 bg-amber-400/[0.06] text-amber-200' : gate ? 'border-emerald-400/20 bg-emerald-400/[0.06] text-emerald-200' : 'border-slate-600/40 bg-slate-800/50 text-slate-400'}`}>{gateReasonLabel(item)}</span>
-                    ))}
-                  </div>
-                  <StrategyGateDetails row={row} gate={gate} />
-                </div>
-              </div>
             </article>
           )
         })}
         {!rows.length && <div className="px-5 py-8 text-sm text-slate-500">{empty}</div>}
       </div>
     </section>
+  )
+}
+
+function StrategyStageTransitionCard({
+  row,
+  gate,
+}: {
+  row: LearningRow | null
+  gate: StrategyPromotionGate | undefined
+}) {
+  if (!row) return <aside className="rounded-2xl border border-slate-800 bg-slate-950/70 p-4 text-xs text-slate-500">Stage transition unavailable.</aside>
+  const evidence = gate?.missing_evidence ?? []
+  const evidenceLabels = gate ? (evidence.length ? evidence : ['全部待買門檻已通過']) : ['報酬帳本資料未取得']
+  return (
+    <aside className="rounded-2xl border border-slate-800 bg-slate-950/70 p-4 xl:sticky xl:top-4 xl:self-start">
+      <p className="text-[10px] font-semibold uppercase tracking-[0.16em] text-cyan-300/80">Stage transition</p>
+      <div className="mt-3 flex flex-wrap items-center gap-2">
+        <Badge variant="outline" className={statusClass(gate?.decision ?? 'ledger_pending')}>{gate?.decision ?? 'ledger pending'}</Badge>
+      </div>
+      <p className="mt-3 font-mono text-xs leading-5 text-slate-300">
+        {gate?.current_stage ?? 'stage unavailable'} &rarr; {gate?.recommended_stage ?? gate?.recommended_next_status ?? 'reward gate unavailable'}
+      </p>
+      <div className="mt-3 flex flex-wrap gap-1.5">
+        {evidenceLabels.slice(0, 3).map((item) => (
+          <span key={item} className={`rounded-md border px-2 py-1 text-[10px] ${evidence.length ? 'border-amber-400/20 bg-amber-400/[0.06] text-amber-200' : gate ? 'border-emerald-400/20 bg-emerald-400/[0.06] text-emerald-200' : 'border-slate-600/40 bg-slate-800/50 text-slate-400'}`}>{gateReasonLabel(item)}</span>
+        ))}
+      </div>
+      <StrategyGateDetails row={row} gate={gate} />
+    </aside>
   )
 }
 
@@ -698,7 +692,6 @@ function StrategyLineageInspector({
           <div className="flex justify-between gap-3"><dt className="text-slate-500">Reward owner</dt><dd className="min-w-0 truncate font-mono text-slate-300">{row.learning.reward_owner}</dd></div>
           <div className="flex justify-between gap-3"><dt className="text-slate-500">Latest decision</dt><dd className="font-mono text-slate-300">{row.learning.latest_decision_date ?? '尚無'}</dd></div>
           <div className="flex justify-between gap-3"><dt className="text-slate-500">Latest reward</dt><dd className="font-mono text-slate-300">{row.learning.latest_reward_date ?? '尚無'}</dd></div>
-          <div className="flex justify-between gap-3"><dt className="text-slate-500">Gate share</dt><dd className="font-mono text-slate-300">{policyWeight == null ? '未取得' : pct(policyWeight)}</dd></div>
           <div className="flex justify-between gap-3"><dt className="text-slate-500">Evidence authority</dt><dd className="text-right text-slate-300">{profile?.production_authority ?? 'profile missing'}</dd></div>
         </dl>
       </section>
@@ -707,7 +700,7 @@ function StrategyLineageInspector({
         <dl className="mt-3 space-y-2 text-[11px]">
           <div className="flex justify-between gap-3"><dt className="text-slate-500">Production firewall</dt><dd className={lanes?.formal.production_effect ? 'text-emerald-300' : 'text-slate-500'}>{lanes?.formal.production_effect ? 'effective' : 'unavailable'}</dd></div>
           <div className="flex justify-between gap-3"><dt className="text-slate-500">Shadow A</dt><dd className="text-cyan-300">{lanes?.threshold_route_shadow.mature_dates ?? 0} / {lanes?.threshold_route_shadow.required_mature_dates ?? 11} dates</dd></div>
-          <div className="flex justify-between gap-3"><dt className="text-slate-500">Multi-horizon owner</dt><dd className={lanes?.multi_horizon_shadow.production_effect ? 'text-violet-300' : 'text-slate-500'}>{lanes?.multi_horizon_shadow.production_effect ? 'formal owner' : 'pending'}</dd></div>
+          <div className="flex justify-between gap-3"><dt className="text-slate-500">Multi-horizon owner</dt><dd className={lanes?.multi_horizon_formal.production_effect ? 'text-violet-300' : 'text-slate-500'}>{lanes?.multi_horizon_formal.production_effect ? 'formal owner' : 'pending'}</dd></div>
         </dl>
       </section>
       <section className="rounded-2xl border border-slate-800 bg-slate-950/70 p-4">
@@ -717,6 +710,17 @@ function StrategyLineageInspector({
             <span key={reason} className={['rounded-md border px-2 py-1 text-[10px]', missing.length ? 'border-amber-400/20 bg-amber-400/[0.06] text-amber-200' : 'border-emerald-400/20 bg-emerald-400/[0.06] text-emerald-200'].join(' ')}>{gateReasonLabel(reason)}</span>
           ))}
         </div>
+      </section>
+      <section className="rounded-2xl border border-slate-800 bg-slate-950/70 p-4">
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <h3 className="text-xs font-semibold text-slate-200">待買資格相對權重</h3>
+          <Badge variant="outline" className={statusClass(executionEligible ? 'active' : 'not_ready')}>{executionEligible ? '可讓推薦進入待買' : '只選股與評估'}</Badge>
+        </div>
+        <p className="mt-2 font-mono text-lg text-slate-100">{policyWeight == null ? '未取得待買權重' : pct(policyWeight)}</p>
+        <div className="mt-2 h-2 overflow-hidden rounded-full bg-slate-800">
+          <div className="h-full bg-emerald-300" style={{ width: `${policyWeight == null ? 0 : Math.max(0, Math.min(100, policyWeight * 100))}%` }} />
+        </div>
+        <p className="mt-2 text-[11px] leading-5 text-slate-500">只在已通過全部門檻的策略間正規化；不是帳戶資金、下單金額或部位比例。0% 仍持續選股與累積證據。</p>
       </section>
     </aside>
   )
@@ -767,7 +771,7 @@ export default function StrategyLearningPage() {
       if (!ledger) setNotice('Reward ledger API unavailable; showing canonical strategy registry rows without reward metrics.')
       else if (!registry) setNotice('Strategy registry API unavailable; showing the latest reward-ledger snapshot.')
       else if ((ledger.specs ?? []).length === 0) setNotice('Reward ledger returned no specs; showing canonical strategy registry rows.')
-      else if (profilesResult.status === 'rejected') setNotice('Strategy evidence profile API unavailable; legacy 5-day gate remains visible, but strategy-specific horizon details cannot be shown.')
+      else if (profilesResult.status === 'rejected') setNotice('Strategy evidence profile API unavailable; current-semantic evidence is unavailable and no legacy maturity fallback is shown.')
     } catch (cause) {
       setLearning(null)
       setProfiles([])
@@ -876,10 +880,10 @@ export default function StrategyLearningPage() {
                 <p className="mt-2 text-xs leading-5 text-slate-400">每個策略都有自己的型態命中與送評路由；共享 Atomic V7 只管 pair replacement，不是策略門檻。目前成熟交易日 <span className="font-mono text-cyan-100">{strategyLanes?.threshold_route_shadow.mature_dates ?? 0} / {strategyLanes?.threshold_route_shadow.required_mature_dates ?? 11}</span>；滿 11 日後仍須通過扣成本 LCB90、殘差優勢與校準誤差，才可申請取代。</p>
               </article>
               <article className="rounded-2xl border border-violet-400/25 bg-violet-400/[0.06] p-4">
-                <div className="flex items-center justify-between gap-2"><h2 className="font-semibold text-violet-100">正式：Multi-horizon evidence（原 Shadow B）</h2><Badge variant="outline" className="border-violet-400/30 bg-violet-400/10 text-violet-200">{strategyLanes?.multi_horizon_shadow.production_effect ? '正式 evidence owner' : strategyLanes?.multi_horizon_shadow.production_integration_ready ? '已就緒，待正式 policy closure' : '結果資料已齊，指標建置中'}</Badge></div>
-                <p className="mt-2 text-xs leading-5 text-slate-400">依策略特性使用 3、5 或 10 日結果窗評估；fully ready 才以 bounded multiplier 加減正式權重，未成熟保持 1.0 中性。主週期結果已具資料的 profile：<span className="font-mono text-violet-100">{strategyLanes?.multi_horizon_shadow.ready_primary_profiles ?? 0} / {strategyLanes?.multi_horizon_shadow.total_profiles ?? profiles.length}</span>。</p>
-                <p className="mt-1 text-[11px] text-slate-500">已封存正式 policy 吸收的 fully-ready profile：{Number(strategyLanes?.multi_horizon_shadow.active_policy_evidence_owner?.ready_profile_count ?? 0)}；最新一輪 input 已完整物化 {strategyLanes?.multi_horizon_shadow.metric_materialized_profiles ?? 0} / {strategyLanes?.multi_horizon_shadow.total_profiles ?? profiles.length}、本輪 fully ready {strategyLanes?.multi_horizon_shadow.metric_ready_profiles ?? 0}。最新一輪仍缺 {strategyLanes?.multi_horizon_shadow.missing_required_metrics?.length ?? 0} 種資料依賴；這只讓該輪未成熟 profile 維持 1.0 中性，不撤銷已封存的 formal-owner 權責。</p>
-                <p className="mt-1 text-[11px] text-slate-500">物化筆數：{(strategyLanes?.multi_horizon_shadow.horizon_coverage ?? []).map((row) => `${row.horizon_days} 日 ${row.outcome_rows}`).join(' · ') || '尚未開始'}</p>
+                <div className="flex items-center justify-between gap-2"><h2 className="font-semibold text-violet-100">正式：Multi-horizon evidence（原 Shadow B）</h2><Badge variant="outline" className="border-violet-400/30 bg-violet-400/10 text-violet-200">{strategyLanes?.multi_horizon_formal.production_effect ? '正式 evidence owner' : strategyLanes?.multi_horizon_formal.production_integration_ready ? '已就緒，待正式 policy closure' : '結果資料已齊，指標建置中'}</Badge></div>
+                <p className="mt-2 text-xs leading-5 text-slate-400">依策略特性使用 3、5 或 10 日結果窗評估；fully ready 才以 bounded multiplier 加減正式權重，未成熟保持 1.0 中性。主週期結果已具資料的 profile：<span className="font-mono text-violet-100">{strategyLanes?.multi_horizon_formal.ready_primary_profiles ?? 0} / {strategyLanes?.multi_horizon_formal.total_profiles ?? profiles.length}</span>。</p>
+                <p className="mt-1 text-[11px] text-slate-500">已封存正式 policy 吸收的 fully-ready profile：{Number(strategyLanes?.multi_horizon_formal.active_policy_evidence_owner?.ready_profile_count ?? 0)}；最新一輪 input 已完整物化 {strategyLanes?.multi_horizon_formal.metric_materialized_profiles ?? 0} / {strategyLanes?.multi_horizon_formal.total_profiles ?? profiles.length}、本輪 fully ready {strategyLanes?.multi_horizon_formal.metric_ready_profiles ?? 0}。最新一輪仍缺 {strategyLanes?.multi_horizon_formal.missing_required_metrics?.length ?? 0} 種資料依賴；這只讓該輪未成熟 profile 維持 1.0 中性，不撤銷已封存的 formal-owner 權責。</p>
+                <p className="mt-1 text-[11px] text-slate-500">物化筆數：{(strategyLanes?.multi_horizon_formal.horizon_coverage ?? []).map((row) => `${row.horizon_days} 日 ${row.outcome_rows}`).join(' · ') || '尚未開始'}</p>
               </article>
             </section>
 
@@ -921,7 +925,7 @@ export default function StrategyLearningPage() {
             {notice && <div className="rounded-xl border border-amber-400/25 bg-amber-400/[0.06] p-4 text-sm text-amber-100">{notice}</div>}
             {result && <div className="rounded-xl border border-emerald-400/25 bg-emerald-400/[0.06] p-4 text-sm text-emerald-200">{result}</div>}
 
-            <section className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_300px] xl:items-start">
+            <section className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_260px_300px] xl:items-start">
               <div className="min-w-0">
                 {selectedRow ? (
                   <StrategyLedgerGroup
@@ -930,12 +934,12 @@ export default function StrategyLearningPage() {
                     rows={[selectedRow]}
                     gateById={gateById}
                     profileById={profileById}
-                    policyWeights={policy?.strategy_weights ?? {}}
                     requestedDate={learning?.date ?? null}
                     empty="目前篩選沒有可顯示的策略。"
                   />
                 ) : <div className="rounded-2xl border border-slate-800 bg-slate-950/70 p-6 text-sm text-slate-500">目前篩選沒有可顯示的策略。</div>}
               </div>
+              <StrategyStageTransitionCard row={selectedRow} gate={selectedGate} />
               <StrategyLineageInspector
                 row={selectedRow}
                 gate={selectedGate}

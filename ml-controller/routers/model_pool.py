@@ -9,6 +9,7 @@ from datetime import datetime, timezone
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
+from services.active8_release_training_contract import ACTIVE8_MODEL_NAMES
 from services.d1_domain_client import D1DataDomain, client_for_domain
 from services import discord_alert  # 2026-04-19 Stage 5
 from services.model_artifact_registry import (
@@ -18,6 +19,7 @@ from services.model_artifact_registry import (
     list_artifact_registry,
     list_champion_pointers,
     list_active8_ensemble_artifacts,
+    load_active8_ensemble_serving_bundle,
     run_active8_ensemble_bundle_promotion_controller,
     run_feature_release_promotion_controller,
     run_promotion_controller,
@@ -619,7 +621,7 @@ async def artifact_registry_feature_release_promotion_controller(
 
 @router.get("/artifact_registry/champion_pointers")
 async def artifact_registry_champion_pointers(model_name: str | None = None, limit: int = 200):
-    """Return the exact D1 champion pointers and their registry artifacts."""
+    """Return the V5 serving bundle plus legacy pointers as audit lineage."""
     try:
         pointers = list_champion_pointers(model_name=model_name)
         rows = list_artifact_registry(model_name=model_name, limit=limit)
@@ -628,14 +630,49 @@ async def artifact_registry_champion_pointers(model_name: str | None = None, lim
             for row in rows
             if row.get("artifact_id")
         }
+        bundle = load_active8_ensemble_serving_bundle()
+        base_artifacts = bundle.get("base_artifacts") if isinstance(bundle.get("base_artifacts"), dict) else {}
+        pointer_by_model = {
+            str(pointer.get("model_name") or ""): pointer
+            for pointer in pointers
+            if pointer.get("model_name")
+        }
+        model_names = sorted(set(ACTIVE8_MODEL_NAMES) | set(pointer_by_model) | set(base_artifacts))
+        models = {}
+        for name in model_names:
+            pointer = pointer_by_model.get(name) or {}
+            serving = base_artifacts.get(name) if isinstance(base_artifacts.get(name), dict) else {}
+            is_serving = bundle.get("production_effect") is True and bool(serving)
+            models[name] = {
+                "serving_version": serving.get("version") if is_serving else None,
+                "serving_artifact_id": serving.get("artifact_id") if is_serving else None,
+                "serving_checksum": serving.get("checksum") if is_serving else None,
+                "d1_pointer_version": pointer.get("champion_version"),
+                "d1_pointer_artifact_id": pointer.get("champion_artifact_id"),
+                "artifact_link_status": "v5_bundle_bound" if is_serving else "legacy_audit_only",
+                "readiness": "v5_serving" if is_serving else "evidence_only_no_action",
+                "next_action": (
+                    "V5 bundle is the production serving owner."
+                    if is_serving
+                    else "Wait for a validated V5 bundle; the legacy champion pointer is rollback/audit lineage only."
+                ),
+            }
         return {
             "status": "ok",
-            "source_of_truth": "model_champion_pointers/model_artifact_registry",
+            "source_of_truth": "active8_ensemble_pointer_v1/model_artifact_registry",
+            "target_source_of_truth": "active8_ensemble_pointer_v1",
+            "production_reader": "active8_ensemble_pointer_v1",
+            "migration_ready": bundle.get("production_effect") is True,
+            "ready_count": sum(1 for row in models.values() if row["readiness"] == "v5_serving"),
+            "model_count": len(models),
             "count": len(pointers),
+            "models": models,
+            "active8_bundle": bundle,
             "pointers": [
                 {
                     **pointer,
                     "artifact": artifacts_by_id.get(str(pointer.get("champion_artifact_id") or "")),
+                    "authority": "legacy_rollback_audit_only",
                 }
                 for pointer in pointers
             ],

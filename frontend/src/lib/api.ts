@@ -886,7 +886,7 @@ export type StrategyEvidenceLane = {
   latest_input_integration_ready?: boolean
   base_policy_version?: string | null
   base_policy_as_of_date?: string | null
-  production_owner?: 'strategy-adaptive-lifecycle-v2' | 'strategy-production-contribution-firewall-v3'
+  production_owner?: 'strategy-production-contribution-firewall-v3' | 'none_pending_strategy-production-contribution-firewall-v3'
   materialized_metrics?: string[]
   missing_required_metrics?: string[]
   integration_effect?: 'status_aware_owner_input_active' | 'status_aware_owner_input_ready'
@@ -908,7 +908,7 @@ export type StrategyEvidenceProfilesResponse = {
   lanes: {
     formal: StrategyEvidenceLane
     threshold_route_shadow: StrategyEvidenceLane
-    multi_horizon_shadow: StrategyEvidenceLane
+    multi_horizon_formal: StrategyEvidenceLane
   }
   profiles: StrategyEvidenceProfile[]
 }
@@ -1734,6 +1734,22 @@ export type ModelArtifactPromotionControllerResponse = {
   note?: string
 }
 
+export type Active8ServingBundleReadModel = {
+  status: string
+  production_effect: boolean
+  artifact_id?: string | null
+  cohort_id?: string | null
+  training_run_id?: string | null
+  promoted_at?: string | null
+  selected_models: string[]
+  base_artifacts: Record<string, {
+    artifact_id?: string | null
+    version?: string | null
+    checksum?: string | null
+  }>
+  blockers: string[]
+}
+
 export type ModelChampionPointersResponse = {
   status: string
   source_of_truth: string
@@ -1749,6 +1765,16 @@ export type ModelChampionPointersResponse = {
     artifact_link_status?: string | null
     readiness: string
     next_action: string
+    serving_artifact_id?: string | null
+    serving_checksum?: string | null
+  }>
+  active8_bundle: Active8ServingBundleReadModel
+  pointers: Array<{
+    model_name: string
+    champion_version?: string | null
+    champion_artifact_id?: string | null
+    authority: 'legacy_rollback_audit_only'
+    artifact?: ModelArtifactRegistryRow | null
   }>
 }
 

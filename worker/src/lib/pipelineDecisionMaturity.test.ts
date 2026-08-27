@@ -34,12 +34,52 @@ test('maturity progress separates completed evidence volume from artifact qualit
 test('route maturity threshold has one exported source of truth', () => {
   assert.equal(STRATEGY_ROUTE_MIN_TRAIN_DATES, 3)
   assert.equal(STRATEGY_ROUTE_PURGE_DATES, 5)
-  assert.equal(STRATEGY_ROUTE_MIN_OOS_DATES, 3)
   assert.equal(STRATEGY_ROUTE_MIN_TOTAL_DATES, 11)
+})
+  assert.equal(STRATEGY_ROUTE_MIN_OOS_DATES, 3)
+test('route eligibility migration only adopts exact V5 semantic carriers', () => {
+  const db = new DatabaseSync(':memory:')
+  try {
+    db.exec(`
+      CREATE TABLE strategy_route_backfill_eligibility_v1 (
+        signal_date TEXT NOT NULL,
+        producer_run_id TEXT NOT NULL,
+        status TEXT NOT NULL,
+        reference_rows INTEGER NOT NULL,
+        PRIMARY KEY(signal_date, producer_run_id)
+      );
+      CREATE TABLE selection_reference_snapshots_v1 (
+        signal_date TEXT NOT NULL,
+        producer_run_id TEXT NOT NULL,
+        symbol TEXT NOT NULL,
+        hard_gate_passed INTEGER NOT NULL,
+        strategy_challenger_route_version TEXT,
+        strategy_challenger_affinity_version TEXT,
+        strategy_challenger_route_score REAL
+      );
+      INSERT INTO strategy_route_backfill_eligibility_v1 VALUES
+        ('2026-08-24', 'legacy', 'eligible', 1),
+        ('2026-08-25', 'v5', 'pending_maturity', 1);
+      INSERT INTO selection_reference_snapshots_v1 VALUES
+        ('2026-08-24', 'legacy', '1111', 1, 'strategy-route-score-v4', 'strategy-threshold-margin-affinity-v2', 0.2),
+        ('2026-08-25', 'v5', '2222', 1, 'strategy-semantic-continuous-affinity-v5', 'strategy-threshold-margin-affinity-v2', 0.3);
+    `)
+    db.exec(fs.readFileSync(path.join(process.cwd(), 'domain-migrations/learning/0028_strategy_route_eligibility_semantic_fence.sql'), 'utf8'))
+    const legacy = db.prepare("SELECT route_version, affinity_version FROM strategy_route_backfill_eligibility_v1 WHERE producer_run_id='legacy'").get()
+    const current = db.prepare("SELECT route_version, affinity_version FROM strategy_route_backfill_eligibility_v1 WHERE producer_run_id='v5'").get()
+    assert.equal(legacy?.route_version, null)
+    assert.equal(legacy?.affinity_version, null)
+    assert.equal(current?.route_version, 'strategy-semantic-continuous-affinity-v5')
+    assert.equal(current?.affinity_version, 'strategy-threshold-margin-affinity-v2')
+  } finally {
+    db.close()
+  }
 })
 
 test('pipeline maturity API preserves canonical lineage and explicit evidence fields', () => {
   const source = fs.readFileSync(path.join(process.cwd(), 'src/lib/pipelineDecisionMaturity.ts'), 'utf8')
+  const adminRead = fs.readFileSync(path.join(process.cwd(), 'src/routes/adminReadRoutes.ts'), 'utf8')
+  const routeSemanticMigration = fs.readFileSync(path.join(process.cwd(), 'domain-migrations/learning/0028_strategy_route_eligibility_semantic_fence.sql'), 'utf8')
   const routes = fs.readFileSync(path.join(process.cwd(), 'src/routes/dashboardReadRoutes.ts'), 'utf8')
   const evidenceAdapter = fs.readFileSync(path.join(process.cwd(), 'src/lib/expectedReturnMaturityEvidence.ts'), 'utf8')
   const expectedReturnManifest = fs.readFileSync(path.join(process.cwd(), '../schemas/expected-return-contracts-v1.json'), 'utf8')
@@ -63,8 +103,16 @@ test('pipeline maturity API preserves canonical lineage and explicit evidence fi
   assert.match(source, /PARTITION BY as_of_date\s+ORDER BY created_at DESC, artifact_id DESC/)
   assert.doesNotMatch(source, /ORDER BY date_count DESC, as_of_date DESC/)
   assert.match(source, /FROM strategy_redundancy_artifacts_v1\s+WHERE as_of_date<=\?\s+ORDER BY as_of_date DESC, created_at DESC/)
-  assert.match(source, /FROM strategy_route_calibration_runs_v1\s+WHERE as_of_date<=\? AND sample_count>0 AND date_count>0\s+ORDER BY as_of_date DESC, created_at DESC/)
+  assert.match(source, /FROM strategy_route_calibration_runs_v1 route_run\s+WHERE route_run\.as_of_date<=\?\s+AND route_run\.candidate_route_version=\?/)
+  assert.doesNotMatch(source, /route_run\.sample_count>0|route_run\.date_count>0/)
+  assert.match(source, /eligibility\.route_version=\?[\s\S]*eligibility\.affinity_version=\?/)
   assert.match(source, /m\.challenger_affinity_version=\?/)
+  assert.match(routeSemanticMigration, /ADD COLUMN route_version TEXT/)
+  assert.match(routeSemanticMigration, /ADD COLUMN affinity_version TEXT/)
+  assert.match(routeSemanticMigration, /strategy_challenger_route_version='strategy-semantic-continuous-affinity-v5'/)
+  assert.match(adminRead, /FROM strategy_route_calibration_runs_v1\s+WHERE candidate_route_version=\?/)
+  assert.doesNotMatch(adminRead, /WHERE sample_count>0 AND date_count>0/)
+  assert.match(adminRead, /production_effect: formalOwnerIntegrated/)
   assert.match(source, /adaptExpectedReturnCandidate/)
   assert.match(source, /adaptExpectedReturnShadow/)
   assert.match(source, /ORDER BY source_run_date DESC, updated_at DESC, artifact_id DESC/)

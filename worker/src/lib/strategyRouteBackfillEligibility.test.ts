@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import { auditStrategyRouteBackfillEligibility, projectStrategyRouteMaturity } from './strategyRouteBackfillEligibility'
+import { STRATEGY_ROUTE_AFFINITY_VERSION, STRATEGY_ROUTE_CHALLENGER_VERSION } from './strategyRouteCalibration'
 
 type Row = {
   signal_date: string
@@ -112,6 +113,10 @@ async function main(): Promise<void> {
   assert.deepEqual(rows[0].blockers, [])
   assert.equal(rows[1].status, 'unavailable')
   assert(rows[1].blockers.includes('full_route_pit_inputs_not_persisted'))
+  const eligibilityInsert = db.statements.find((statement) => statement.sql.includes('INSERT INTO strategy_route_backfill_eligibility_v1'))
+  assert(eligibilityInsert)
+  assert.equal(eligibilityInsert.boundArgs[2], STRATEGY_ROUTE_CHALLENGER_VERSION)
+  assert.equal(eligibilityInsert.boundArgs[3], STRATEGY_ROUTE_AFFINITY_VERSION)
   assert(rows[1].blockers.includes('challenger_route_score_missing'))
   assert.equal(rows[2].status, 'pending_maturity')
   assert(rows[2].blockers.includes('outcome_not_mature'))

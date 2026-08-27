@@ -21,5 +21,10 @@ assert.match(
   /WHERE outcome_as_of_date < \?/,
   'production policy must keep strict prior-date cutoff and reject look-ahead evidence',
 )
+assert.match(
+  fusion,
+  /AND definition_version=\?/,
+  'formal owner must only read the current strategy evidence metric definition',
+)
 
 console.log('strategy evidence PIT identity contract tests passed')

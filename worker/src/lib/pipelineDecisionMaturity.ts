@@ -540,6 +540,8 @@ export async function buildPipelineDecisionMaturityPacket(
                   AND label.producer_run_id=reference.producer_run_id
                  JOIN strategy_route_backfill_eligibility_v1 eligibility
                    ON eligibility.signal_date=reference.signal_date
+                  AND eligibility.route_version=?
+                  AND eligibility.affinity_version=?
                   AND eligibility.producer_run_id=reference.producer_run_id
                   AND eligibility.status='eligible'
                 WHERE reference.strategy_challenger_route_version=?
@@ -547,18 +549,26 @@ export async function buildPipelineDecisionMaturityPacket(
                   AND label.outcome_known_date<=route_run.as_of_date
              ) mature_outcome_max_date
         FROM strategy_route_calibration_runs_v1 route_run
-       WHERE route_run.as_of_date<=? AND route_run.sample_count>0 AND route_run.date_count>0
+       WHERE route_run.as_of_date<=?
+         AND route_run.candidate_route_version=?
        ORDER BY route_run.as_of_date DESC, route_run.created_at DESC
        LIMIT 1
-    `).bind(STRATEGY_ROUTE_CHALLENGER_VERSION, requestedDate).first<any>()),
+    `).bind(
+      STRATEGY_ROUTE_CHALLENGER_VERSION,
+      STRATEGY_ROUTE_AFFINITY_VERSION,
+      STRATEGY_ROUTE_CHALLENGER_VERSION,
+      requestedDate,
+      STRATEGY_ROUTE_CHALLENGER_VERSION,
+    ).first<any>()),
     safeQuery(() => learningDb.prepare(`
       SELECT h.run_id, h.artifact_version, h.candidate_route_version,
              h.route_floor, h.promoted_at
         FROM strategy_route_calibration_head_v1 h
         JOIN strategy_route_calibration_runs_v1 r ON r.run_id=h.run_id
        WHERE h.singleton_id=1 AND r.status='promoted' AND r.as_of_date<=?
+         AND h.candidate_route_version=?
        LIMIT 1
-    `).bind(requestedDate).first<any>()),
+    `).bind(requestedDate, STRATEGY_ROUTE_CHALLENGER_VERSION).first<any>()),
     safeQuery(() => learningDb.prepare(`
       WITH ranked AS (
         SELECT model_name, artifact_id, version, candidate_type, training_run_id,
@@ -661,7 +671,7 @@ export async function buildPipelineDecisionMaturityPacket(
                  ORDER BY datetime(updated_at) DESC, producer_run_id DESC
                ) ordinal
           FROM strategy_route_backfill_eligibility_v1
-         WHERE signal_date<=?
+         WHERE signal_date<=? AND route_version=? AND affinity_version=?
       )
       SELECT signal_date, producer_run_id, status, reference_rows, mature_label_rows,
              rejected_label_rows, matrix_rows, evaluable_matrix_rows, matched_matrix_rows,
@@ -670,7 +680,11 @@ export async function buildPipelineDecisionMaturityPacket(
         FROM ranked
        WHERE ordinal=1
        ORDER BY signal_date
-    `).bind(requestedDate).all<RouteEligibilityDbRow>().then((result) => result.results ?? [])),
+    `).bind(
+      requestedDate,
+      STRATEGY_ROUTE_CHALLENGER_VERSION,
+      STRATEGY_ROUTE_AFFINITY_VERSION,
+    ).all<RouteEligibilityDbRow>().then((result) => result.results ?? [])),
   ])
 
   const eligibilityRows: StrategyRouteBackfillEligibility[] = (routeEligibility.value ?? []).map((row) => ({
@@ -1424,10 +1438,10 @@ export async function buildPipelineDecisionMaturityPacket(
     safeQuery(() => learningDb.prepare(`
       SELECT as_of_date evidence_date, date_count value, ? target
         FROM strategy_route_calibration_runs_v1
-       WHERE as_of_date <= ? AND sample_count>0 AND date_count>0
+       WHERE as_of_date <= ? AND candidate_route_version=?
        ORDER BY as_of_date DESC, created_at DESC
        LIMIT 7
-    `).bind(STRATEGY_ROUTE_MIN_TOTAL_DATES, requestedDate).all<{ evidence_date: string; value: number | null; target: number | null }>().then((result) => result.results ?? [])),
+    `).bind(STRATEGY_ROUTE_MIN_TOTAL_DATES, requestedDate, STRATEGY_ROUTE_CHALLENGER_VERSION).all<{ evidence_date: string; value: number | null; target: number | null }>().then((result) => result.results ?? [])),
     safeQuery(() => learningDb.prepare(`
       WITH ranked AS (
         SELECT model_name, artifact_id, version, candidate_type, training_run_id,

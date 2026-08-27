@@ -39,6 +39,10 @@ for (const task of ['active8-oof-daily', 'active8-oof-weekly', 'active8-oof-mont
 }
 assert(policies.includes("'active8-oof-daily': { kind: 'maintenance', holidayGated: false"), 'post-midnight daily OOF continuation must not be skipped by the next calendar day weekend/holiday gate')
 assert(adminControlRoutes.includes("body.task === 'active8-oof-daily'"), 'daily OOF callback must own an event-driven follow-up')
+assert(
+  adminControlRoutes.includes("['pending', 'spawned', 'materialized', 'shadow_evaluated'].includes(lifecycleStatus)"),
+  'weekly/monthly callbacks must continue polling when the cohort is materialized but its full-fit dependency is still active',
+)
 assert(adminControlRoutes.includes("active8FreshnessStatus === 'fresh'"), 'Allocator follow-up must run only after the durable OOF freshness audit passes')
 assert(adminControlRoutes.includes('readinessRunDate = active8FreshnessBusinessDate ?? callbackRunDate'), 'fresh daily OOF callback must prefer immutable prep business date over the post-midnight scheduler date')
 assert(adminControlRoutes.includes('runDailyAllocatorEvReadiness(c.env, readinessRunDate, {'), 'fresh daily OOF callback must re-evaluate Allocator readiness for the immutable prep business date')

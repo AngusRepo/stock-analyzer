@@ -597,7 +597,11 @@ async function handleSchedulerCallback(c: any) {
     if (
       body.status === 'triggered'
       && ['weekly', 'monthly'].includes(cadence)
-      && ['pending', 'spawned'].includes(lifecycleStatus)
+      // callback_status=triggered is emitted only while the weekly/monthly
+      // cohort or its bound full-fit dependency still needs a continuation.
+      // A cohort may already be materialized while the Modal full-fit remains
+      // active, so lifecycleStatus must not narrow the durable retry here.
+      && ['pending', 'spawned', 'materialized', 'shadow_evaluated'].includes(lifecycleStatus)
       && callbackRunDate
       && expectedCohortId
       && continuationAttempt < continuationMaxAttempts

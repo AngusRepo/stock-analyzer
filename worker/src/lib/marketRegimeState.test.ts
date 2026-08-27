@@ -9,6 +9,7 @@ import {
   marketRegimeStateArchiveKey,
   readHistoricalHmmRegimeFamily,
   readMarketRegimeStateForDate,
+  restoreMarketRegimeStateFromHistory,
   buildMarketRegimeState,
   normalizeRegimeLabel,
   persistMarketRegimeState,
@@ -74,6 +75,24 @@ void (async () => {
   const archiveKey = marketRegimeStateArchiveKey('2026-05-16')
   assert((kv as any).store.has(archiveKey), 'date-keyed HMM archive must be written for PIT reconstruction')
   assert((await readMarketRegimeStateForDate(kv, '2026-05-16'))?.family === 'bear', 'date reader must resolve exact archived regime')
+  const immutableState = { ...state, pushed_at: '2026-05-16T10:31:00.000Z' }
+  const immutableJson = JSON.stringify(immutableState)
+  const immutableDigest = [...new Uint8Array(await crypto.subtle.digest(
+    'SHA-256',
+    new TextEncoder().encode(immutableJson),
+  ))].map((byte) => byte.toString(16).padStart(2, '0')).join('')
+  const historyDb = {
+    prepare: () => ({
+      bind: () => ({
+        first: async () => ({ state_json: immutableJson, state_checksum: immutableDigest }),
+      }),
+    }),
+  } as unknown as D1Database
+  const restoredKv = new FakeKV() as unknown as KVNamespace
+  const restored = await restoreMarketRegimeStateFromHistory(restoredKv, historyDb, '2026-05-16')
+  assert(restored?.run_date === '2026-05-16', 'immutable history restore must return exact date')
+  assert((restoredKv as any).store.get(MARKET_REGIME_STATE_KEY) === immutableJson, 'restore must republish exact immutable payload')
+  assert(JSON.parse((restoredKv as any).store.get(LEGACY_REGIME_META_KEY)).restored_from_immutable_history === true, 'legacy mirror must expose immutable restore provenance')
   assert(await readHistoricalHmmRegimeFamily(kv, '2026-05-17') === null, 'HMM date reader must not reuse a different date')
 
   assert((kv as any).store.has(MARKET_REGIME_STATE_KEY), 'new market_regime_state key must be written')

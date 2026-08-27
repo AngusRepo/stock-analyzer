@@ -80,7 +80,9 @@ assert(
   'mature strategy labels/edge/rewards must refresh fail-closed before the current-day screener consumes priors',
 )
 assert(
-  controllerDailyWorkflows.includes('assertRegimeComputeClosure(data, runDate)') &&
+  controllerDailyWorkflows.includes('restoreMarketRegimeStateFromHistory') &&
+    controllerDailyWorkflows.includes('immutable_market_d1_history') &&
+    controllerDailyWorkflows.includes('assertRegimeComputeClosure(data, runDate)') &&
     controllerDailyWorkflows.includes('readMarketRegimeState(env.KV)') &&
     controllerDailyWorkflows.includes('market_regime_state readback mismatch'),
   'regime compute must verify same-date KV persistence and posterior surface before downstream stages',

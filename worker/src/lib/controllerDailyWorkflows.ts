@@ -1,6 +1,11 @@
 import type { Bindings } from '../types'
 import { controllerFetch, controllerJson } from './controllerClient'
-import { readCurrentLegacyRegimeLabel, readMarketRegimeState } from './marketRegimeState'
+import { databaseForDataDomain } from './dataDomainRegistry'
+import {
+  readCurrentLegacyRegimeLabel,
+  readMarketRegimeState,
+  restoreMarketRegimeStateFromHistory,
+} from './marketRegimeState'
 import { recordPaperActivePostmarketReport } from './paperActiveChallenger'
 
 function requireController(env: Bindings): void {
@@ -55,6 +60,16 @@ export function assertRegimeComputeClosure(data: any, runDate?: string): void {
 }
 
 export async function runRegimeCompute(env: Bindings, runDate?: string) {
+  if (runDate) {
+    const restored = await restoreMarketRegimeStateFromHistory(
+      env.KV,
+      databaseForDataDomain(env, 'market'),
+      runDate,
+    )
+    if (restored?.source === 'hmm' && restored.run_date === runDate) {
+      return `regime=${restored.label} idx=${restored.regime_index} kv=restored source=immutable_market_d1_history`
+    }
+  }
   requireController(env)
 
   const prevLabel = await readCurrentLegacyRegimeLabel(env.KV)

@@ -11,7 +11,7 @@ import { computeAndStoreIndicators } from './technicalIndicators'
 import { fetchAndStoreStockData } from '../routes/stocks'
 import { assertMarketDataReady, loadMarketDataReadinessStats } from './marketDataReadiness'
 import { runRegimeCompute } from './controllerDailyWorkflows'
-import { readMarketRegimeState } from './marketRegimeState'
+import { readMarketRegimeState, restoreMarketRegimeStateFromHistory } from './marketRegimeState'
 import {
   runAllocatorEvFeatureSnapshotBackfill,
   runFinLabV4Backfill,
@@ -1671,6 +1671,14 @@ async function ensureSameDateRegimeReady(
   const current = await readMarketRegimeState(env.KV)
   if (current?.source === 'hmm' && current.run_date === triggerTime) {
     return `regime=${current.label} idx=${current.regime_index} kv=verified source=existing`
+  }
+  const restored = await restoreMarketRegimeStateFromHistory(
+    env.KV,
+    databaseForDataDomain(env, 'market'),
+    triggerTime,
+  )
+  if (restored?.source === 'hmm' && restored.run_date === triggerTime) {
+    return `regime=${restored.label} idx=${restored.regime_index} kv=restored source=immutable_market_d1_history`
   }
 
   const attemptId = `${source}:${Date.now().toString(36)}:${crypto.randomUUID()}`

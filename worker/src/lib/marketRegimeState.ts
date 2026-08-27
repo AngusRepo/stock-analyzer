@@ -284,6 +284,66 @@ export async function readCurrentRegimeFamily(kv: KVNamespace): Promise<MarketRe
   return (await readMarketRegimeState(kv))?.family ?? null
 }
 
+export async function restoreMarketRegimeStateFromHistory(
+  kv: KVNamespace,
+  historyDb: D1Database,
+  runDate: string,
+  options: { expirationTtl?: number; archiveExpirationTtl?: number } = {},
+): Promise<MarketRegimeState | null> {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(runDate)) {
+    throw new Error(`market_regime_history_restore_date_invalid:${runDate}`)
+  }
+  const payload = await readMarketRegimeStateHistory(historyDb, runDate)
+  if (!payload) return null
+  const ttl = options.expirationTtl ?? 2 * 86400
+  const archiveTtl = options.archiveExpirationTtl ?? 400 * 86400
+  const serialized = JSON.stringify(payload)
+  await kv.put(marketRegimeStateArchiveKey(runDate), serialized, { expirationTtl: archiveTtl })
+  await kv.put(MARKET_REGIME_STATE_KEY, serialized, { expirationTtl: ttl })
+  await kv.put(LEGACY_REGIME_KEY, payload.label, { expirationTtl: ttl })
+  await kv.put(LEGACY_REGIME_META_KEY, JSON.stringify({
+    label: payload.label,
+    raw_label: payload.raw_label,
+    family: payload.family,
+    regime_index: payload.regime_index,
+    hmm_state: payload.hmm_state,
+    label_zh: payload.label_zh,
+    regime_surface: payload.regime_surface,
+    consensus_threshold: payload.consensus_threshold,
+    weight_multipliers: payload.weight_multipliers,
+    regime_evidence: payload.regime_evidence,
+    transition_guard: payload.transition_guard,
+    monitors: payload.monitors,
+    run_date: payload.run_date,
+    computed_at: payload.computed_at,
+    market_regime_state_key: MARKET_REGIME_STATE_KEY,
+    pushed_at: payload.pushed_at,
+    restored_from_immutable_history: true,
+  }), { expirationTtl: ttl })
+  const [archiveRaw, currentRaw, legacyLabel, legacyMetaRaw] = await Promise.all([
+    kv.get(marketRegimeStateArchiveKey(runDate), 'text'),
+    kv.get(MARKET_REGIME_STATE_KEY, 'text'),
+    kv.get(LEGACY_REGIME_KEY, 'text'),
+    kv.get(LEGACY_REGIME_META_KEY, 'text'),
+  ])
+  let legacyMeta: Record<string, unknown> = {}
+  try {
+    legacyMeta = JSON.parse(String(legacyMetaRaw ?? '{}')) as Record<string, unknown>
+  } catch {
+    throw new Error(`market_regime_history_restore_meta_invalid:${runDate}`)
+  }
+  if (
+    archiveRaw !== serialized
+    || currentRaw !== serialized
+    || legacyLabel !== payload.label
+    || legacyMeta.run_date !== runDate
+    || legacyMeta.restored_from_immutable_history !== true
+  ) {
+    throw new Error(`market_regime_history_restore_readback_mismatch:${runDate}`)
+  }
+  return payload
+}
+
 export async function persistMarketRegimeState(
   kv: KVNamespace,
   state: MarketRegimeState,

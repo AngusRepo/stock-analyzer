@@ -770,6 +770,7 @@ async def node_ml_predict(state: PipelineStateV2) -> dict:
     # Formal L3 is callback-only and bound to one immutable serving manifest.
     if not use_modal_prediction_bundle or not serving_context:
         raise RuntimeError("formal_layer3_modal_bundle_or_serving_context_missing")
+    state_space_mode = _pipeline_modal_context_overlay_mode(serving_context)
     model_status = dict(serving_context.get("model_status") or {})
     active_versions = dict(serving_context.get("active_versions") or {})
     pool_versions_loaded = bool(serving_context.get("pool_versions_loaded"))
@@ -3785,6 +3786,15 @@ def _pipeline_modal_runtime_pool_from_manifest(
     return runtime_pool
 
 
+def _pipeline_modal_context_overlay_mode(context: dict[str, Any]) -> str:
+    mode = str(context.get("state_space_overlay_mode") or "").strip().lower()
+    if mode not in {"blocking", "shadow", "disabled"}:
+        raise RuntimeError(
+            "pipeline_modal_serving_context:state_space_overlay_mode_invalid"
+        )
+    return mode
+
+
 def _pipeline_modal_expected_source_sha() -> str:
     source_sha = str(os.environ.get("STOCKVISION_SOURCE_SHA") or "").strip().lower()
     if (
@@ -3848,6 +3858,7 @@ async def _attach_pipeline_modal_serving_context(state: PipelineStateV2) -> dict
         "model_status": _json_safe(model_status),
         "active_versions": _json_safe(active_versions),
         "expected_source_sha": expected_source_sha,
+        "state_space_overlay_mode": _state_space_overlay_mode(),
         "pool_versions_loaded": True,
         "serving_model_status": _json_safe(serving_model_status),
         "serving_pool": _json_safe(_pipeline_modal_runtime_pool_from_manifest(_serving_pool, serving_manifest)),
@@ -3863,6 +3874,7 @@ async def _build_pipeline_modal_prediction_payload(state: PipelineStateV2, *, st
     if not isinstance(context, dict) or context.get("schema_version") != "pipeline-modal-serving-context-v1":
         context = await _attach_pipeline_modal_serving_context(state)
     model_status = dict(context.get("model_status") or {})
+    state_space_mode = _pipeline_modal_context_overlay_mode(context)
     active_versions = dict(context.get("active_versions") or {})
     serving_pool = dict(context.get("serving_pool") or {})
     serving_manifest = context.get("serving_manifest")
@@ -4015,7 +4027,7 @@ async def _build_pipeline_modal_prediction_payload(state: PipelineStateV2, *, st
             serving_only=True,
         ),
         "serving_coverage": _pipeline_modal_manifest_coverage(serving_manifest),
-        "state_space_overlay_mode": _state_space_overlay_mode(),
+        "state_space_overlay_mode": state_space_mode,
         "state_space_soft_deadline_sec": _state_space_overlay_soft_deadline_seconds(),
         "state_space_models": state_space_models,
         "callback_url": _pipeline_modal_prediction_callback_url(),

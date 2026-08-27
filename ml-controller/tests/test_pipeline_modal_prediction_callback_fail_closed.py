@@ -112,6 +112,7 @@ def _state() -> dict:
             "serving_manifest": manifest,
             "serving_manifest_digest": pipeline._pipeline_modal_canonical_digest(manifest),
             "expected_source_sha": SOURCE_SHA,
+            "state_space_overlay_mode": "blocking",
         },
         "pipeline_modal_sequence_input_contract": _sequence_input_contract(),
         "errors": [],

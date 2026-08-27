@@ -88,7 +88,7 @@
     {"name": "realtime-runtime-min-1-trading-open", "job": "realtime-runtime-min-1", "cron": "30 8 * * 1-5"},
     {"name": "realtime-runtime-min-0-trading-close", "job": "realtime-runtime-min-0", "cron": "31 13 * * 1-5"},
     {"name": "ml-controller-min-1-trading-open", "job": "ml-controller-min-1", "cron": "40 8 * * 1-5"},
-    {"name": "ml-controller-min-0-trading-midday", "job": "ml-controller-min-0", "cron": "0 14 * * 1-5"},
+    {"name": "ml-controller-min-0-trading-midday", "job": "ml-controller-min-0", "cron": "40 13 * * 1-5"},
     {"name": "ml-controller-min-0-night", "job": "ml-controller-min-0", "cron": "0 0 * * 2-6"},
     {"name": "ml-controller-min-1-monthly-sat", "job": "ml-controller-monthly-min-1", "cron": "first saturday of month 09:50"},
     {"name": "ml-controller-min-0-monthly-sat", "job": "ml-controller-monthly-min-0", "cron": "first saturday of month 16:30"},
@@ -100,5 +100,20 @@
     "classification": "retired_low_value_warm_window",
     "reason": "callback correctness is durable queue owned and the weekday evening warm window is not a correctness dependency",
     "reassess_after_successful_native_chains": 10
+  },
+  "trading_warm_window_policy": {
+    "schema_version": "ml-controller-trading-warm-window-v2",
+    "window": "08:40-13:40 Asia/Taipei weekdays",
+    "source": "cloud_run_request_logs",
+    "observed_period": "2026-08-13..2026-08-26",
+    "late_window": "13:40-13:59 Asia/Taipei",
+    "late_window_request_days": 1,
+    "late_window_request_classification": "manual_or_research_non_correctness_path",
+    "correctness_owner": "durable_queue_and_terminal_receipt",
+    "estimated_monthly_saving_usd": 0.5,
+    "rollback": {
+      "restore_cron": "0 14 * * 1-5",
+      "condition": "scheduled_production_request_after_13:40_or_cold_start_p95_slo_regression"
+    }
   }
 }

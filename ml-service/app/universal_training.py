@@ -48,7 +48,11 @@ from .training_policy import (
     should_force_full_feature_pool,
 )
 from .training_finalizer import build_oos_artifact_path, derive_oos_artifact_group
-from .gcs_batch_io import download_existing_blobs
+from .gcs_batch_io import (
+    diff_gcs_batch_cache_stats,
+    download_existing_blobs,
+    get_gcs_batch_cache_stats,
+)
 from .sequence_training import RANK_IC_SEMANTIC_VERSION, SEQUENCE_RETURN_SEMANTIC_VERSION
 from .features import FEATURE_IMPUTATION_SEMANTIC_VERSION, FEATURE_SEMANTIC_VERSION
 
@@ -890,6 +894,7 @@ def train_universal_from_gcs(req: UniversalTrainRequest) -> dict:
     gcs_prefix = (req.gcs_prefix or "universal").rstrip("/")
     all_X, all_y, all_target_returns, all_dates, all_missingness_rates = [], [], [], [], []
     all_symbols, all_markets, all_label_known_dates = [], [], []
+    cache_before = get_gcs_batch_cache_stats()
     gcs_io = {"prep_objects": 0, "prep_bytes": 0, "download_elapsed_s": 0.0}
     gcs_t0 = time.time()
     batch_keys = [f"{gcs_prefix}/prep/batch_{i}.npz" for i in range(req.batch_count)]
@@ -916,6 +921,7 @@ def train_universal_from_gcs(req: UniversalTrainRequest) -> dict:
             all_missingness_rates.append(np.asarray(data["missingness_rates"], dtype=float))
         print(f"[TrainUniversal] {key.split('/')[-1]}: {len(data['X'])} rows loaded")
     gcs_io["download_elapsed_s"] = round(time.time() - gcs_t0, 3)
+    gcs_io["cache"] = diff_gcs_batch_cache_stats(cache_before, get_gcs_batch_cache_stats())
 
     if not all_X:
         raise ValueError("No prep batches found in GCS")

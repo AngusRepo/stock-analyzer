@@ -36,6 +36,8 @@ export interface Breeze2FactCheckRequest {
 
 export type Breeze2Report = Record<string, any>
 
+const BREEZE2_ADVISORY_CACHE_TTL_SECONDS = 6 * 60 * 60
+
 function asNumber(value: unknown, fallback = 0): number {
   const parsed = Number(value)
   return Number.isFinite(parsed) ? parsed : fallback
@@ -159,6 +161,32 @@ export function extractBreeze2WatchPoint(report: Breeze2Report | null | undefine
   ].filter(Boolean).join(' ')
 }
 
+function canonicalJsonValue(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(canonicalJsonValue)
+  if (value && typeof value === 'object') {
+    return Object.fromEntries(
+      Object.entries(value as Record<string, unknown>)
+        .filter(([, child]) => child !== undefined)
+        .sort(([left], [right]) => left.localeCompare(right))
+        .map(([key, child]) => [key, canonicalJsonValue(child)]),
+    )
+  }
+  return value
+}
+
+async function sha256Hex(value: string): Promise<string> {
+  const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(value))
+  return [...new Uint8Array(digest)].map((byte) => byte.toString(16).padStart(2, '0')).join('')
+}
+
+export async function breeze2AdvisoryCacheKey(request: Breeze2FactCheckRequest): Promise<string> {
+  const identity = JSON.stringify({
+    schema_version: 'breeze2-advisory-request-cache-v1',
+    request: canonicalJsonValue(request),
+  })
+  return `breeze2:fact-check:v1:${await sha256Hex(identity)}`
+}
+
 function validReport(report: Breeze2Report): boolean {
   return report?.schema_version === 'breeze2-research-context-v1'
     && report.allowed_use === 'research_context_only'
@@ -170,17 +198,36 @@ export async function requestBreeze2FactCheck(
   env: Bindings,
   request: Breeze2FactCheckRequest,
   timeoutMs = 60_000,
+  fetcher: typeof controllerFetch = controllerFetch,
 ): Promise<Breeze2Report | null> {
   if (!env.ML_CONTROLLER_URL || !request.symbol) return null
+  let cacheKey: string | null = null
   try {
-    const res = await controllerFetch(env, '/breeze2/fact_check', {
+    cacheKey = await breeze2AdvisoryCacheKey(request)
+    const cached = await env.KV.get(cacheKey, 'json') as Breeze2Report | null
+    if (cached && validReport(cached)) return cached
+  } catch (error) {
+    console.warn('[Breeze2] advisory cache read skipped:', error)
+  }
+  try {
+    const res = await fetcher(env, '/breeze2/fact_check', {
       method: 'POST',
       jsonBody: request,
       timeoutMs,
     })
     if (!res.ok) return null
     const report = await res.json() as Breeze2Report
-    return validReport(report) ? report : null
+    if (!validReport(report)) return null
+    if (cacheKey) {
+      try {
+        await env.KV.put(cacheKey, JSON.stringify(report), {
+          expirationTtl: BREEZE2_ADVISORY_CACHE_TTL_SECONDS,
+        })
+      } catch (error) {
+        console.warn('[Breeze2] advisory cache write skipped:', error)
+      }
+    }
+    return report
   } catch (error) {
     console.warn('[Breeze2] fact check skipped:', error)
     return null

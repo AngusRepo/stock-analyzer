@@ -142,6 +142,13 @@ runtime_env_secret = modal.Secret.from_dict({
     if value
 })
 
+TRAINING_INPUT_CACHE_MOUNT = "/mnt/stockvision-training-input-cache"
+training_input_cache_volume = modal.Volume.from_name(
+    "stockvision-training-input-cache-v1",
+    create_if_missing=True,
+)
+TRAINING_INPUT_CACHE_VOLUMES = {TRAINING_INPUT_CACHE_MOUNT: training_input_cache_volume}
+
 # Modal application definition.
 app = modal.App(
     name="stockvision-ml",
@@ -157,6 +164,112 @@ def _setup_env():
 
 def _get_gcs_bucket_name() -> str | None:
     return get_gcs_bucket_name()
+
+
+def _training_input_cache_location() -> dict[str, str]:
+    return {
+        "cloud_provider": str(os.environ.get("MODAL_CLOUD_PROVIDER") or "unknown"),
+        "region": str(os.environ.get("MODAL_REGION") or "unknown"),
+    }
+
+
+def _training_input_cache_inputs(
+    gcs_prefix: str,
+    batch_count: int,
+    *,
+    sequence_gcs_prefix: str | None = None,
+    sequence_batch_count: int | None = None,
+) -> list[tuple[str, int]]:
+    counts: dict[str, int] = {}
+    for prefix, count in (
+        (gcs_prefix, batch_count),
+        (sequence_gcs_prefix, sequence_batch_count),
+    ):
+        normalized = str(prefix or "").strip().rstrip("/")
+        if not normalized:
+            continue
+        counts[normalized] = max(counts.get(normalized, 0), max(0, int(count or 0)))
+    return sorted(counts.items())
+
+
+def _prewarm_training_input_cache(
+    inputs: list[tuple[str, int]],
+    *, reload_volume: bool,
+    prune_volume: bool = False,
+) -> dict:
+    location = _training_input_cache_location()
+    if str(os.environ.get("STOCKVISION_MODAL_TRAINING_CACHE_ENABLED", "1")).strip() in {"0", "false", "False"}:
+        os.environ.pop("STOCKVISION_GCS_BATCH_CACHE_DIR", None)
+        return {
+            "status": "disabled",
+            "schema_version": "modal-training-input-cache-v1",
+            "cache_role": "performance_only",
+            **location,
+        }
+    try:
+        if reload_volume:
+            training_input_cache_volume.reload()
+        os.environ["STOCKVISION_GCS_BATCH_CACHE_DIR"] = TRAINING_INPUT_CACHE_MOUNT
+        from google.cloud import storage
+        from app.gcs_batch_io import (
+            diff_gcs_batch_cache_stats,
+            download_existing_blobs,
+            get_gcs_batch_cache_stats,
+            prune_gcs_batch_disk_cache,
+        )
+
+        bucket_name = _get_gcs_bucket_name()
+        if not bucket_name:
+            raise RuntimeError("GCS bucket not configured")
+        bucket = storage.Client().bucket(bucket_name)
+        keys = [
+            f"{prefix}/prep/batch_{index}.npz"
+            for prefix, count in inputs
+            for index in range(count)
+        ]
+        before = get_gcs_batch_cache_stats()
+        loaded = download_existing_blobs(bucket, keys, max_workers=4)
+        missing = [key for key, raw in loaded if raw is None]
+        retention = prune_gcs_batch_disk_cache() if prune_volume else None
+        training_input_cache_volume.commit()
+        cache_stats = diff_gcs_batch_cache_stats(before, get_gcs_batch_cache_stats())
+        return {
+            "status": "partial" if missing else "ready",
+            "schema_version": "modal-training-input-cache-v1",
+            "identity_schema_version": "stockvision-gcs-generation-cache-v1",
+            "source_authority": "gcs_generation",
+            "cache_role": "performance_only",
+            "production_effect": False,
+            "inputs": [{"gcs_prefix": prefix, "batch_count": count} for prefix, count in inputs],
+            "objects": sum(1 for _, raw in loaded if raw is not None),
+            "bytes": sum(len(raw) for _, raw in loaded if raw is not None),
+            "missing_objects": missing,
+            "cache_stats": cache_stats,
+            "retention": retention,
+            **location,
+        }
+    except Exception as exc:
+        # GCS remains the only source of truth. Cache failure may increase cost but
+        # must not replace, mutate, or weaken immutable training input validation.
+        os.environ.pop("STOCKVISION_GCS_BATCH_CACHE_DIR", None)
+        return {
+            "status": "degraded",
+            "schema_version": "modal-training-input-cache-v1",
+            "cache_role": "performance_only",
+            "source_authority": "gcs_direct",
+            "production_effect": False,
+            "error": str(exc)[:300],
+            **location,
+        }
+
+
+def _prepare_training_input_cache_for_payload(payload: dict) -> dict:
+    prefix = str(payload.get("prep_gcs_prefix") or payload.get("gcs_prefix") or "universal")
+    count = int(payload.get("batch_count") or 5)
+    return _prewarm_training_input_cache(
+        _training_input_cache_inputs(prefix, count),
+        reload_volume=True,
+    )
 
 
 def _load_sequence_records_from_gcs(gcs_prefix: str, batch_count: int) -> list[dict]:
@@ -324,6 +437,7 @@ def _combine_tree_child_oos_artifacts(child_results: dict[str, dict], payload: d
 # feature selection, training, and SHAP audit.
 
 @app.function(
+    volumes=TRAINING_INPUT_CACHE_VOLUMES,
     cpu=4,
     memory=8192,
     timeout=18000,              # 300 min: selection, train, SHAP, and regime-history buffer
@@ -415,6 +529,14 @@ def retrain_orchestrator(payload: dict) -> dict:
             "dataset_snapshot": payload.get("dataset_snapshot"),
         }
     }
+    result["stages"]["training_input_cache"] = _prewarm_training_input_cache(
+        _training_input_cache_inputs(
+            gcs_prefix, batch_count,
+            sequence_gcs_prefix=sequence_gcs_prefix, sequence_batch_count=sequence_batch_count,
+        ),
+        reload_volume=True,
+        prune_volume=True,
+    )
     partial_results: dict[str, dict] = {}
     release_training_contract = payload.get("release_training_contract")
     is_release_train = str(payload.get("candidate_type") or "").strip() == "oof_full_fit_release"
@@ -2015,6 +2137,7 @@ def gnn_graphsage_universal_predict(payload: dict) -> dict:
 
 
 @app.function(
+    volumes=TRAINING_INPUT_CACHE_VOLUMES,
     cpu=4,
     memory=16384,
     gpu="L4",
@@ -2025,12 +2148,16 @@ def gnn_graphsage_universal_predict(payload: dict) -> dict:
 def train_gnn_graphsage_universal(payload: dict) -> dict:
     """Formal GraphSAGE artifact training and model_pool registration."""
     _setup_env()
+    cache_receipt = _prepare_training_input_cache_for_payload(payload)
     from app.gnn_training import train_graphsage_universal
 
-    return train_graphsage_universal(payload or {})
+    result = train_graphsage_universal(payload or {})
+    result["training_input_cache"] = cache_receipt
+    return result
 
 
 @app.function(
+    volumes=TRAINING_INPUT_CACHE_VOLUMES,
     cpu=4,
     memory=16384,
     gpu="L4",
@@ -2041,13 +2168,16 @@ def train_gnn_graphsage_universal(payload: dict) -> dict:
 def train_tabm_universal(payload: dict) -> dict:
     """Formal TabM torch artifact training and model_pool registration."""
     _setup_env()
+    cache_receipt = _prepare_training_input_cache_for_payload(payload)
     from app.tabm_training import train_tabm_universal as _train_tabm_universal
 
     try:
-        return _train_tabm_universal(payload or {})
+        result = _train_tabm_universal(payload or {})
+        result["training_input_cache"] = cache_receipt
+        return result
     except Exception as e:
         import traceback
-        return {"error": str(e), "trace": traceback.format_exc()[:2000], "type": "train_tabm_universal"}
+        return {"error": str(e), "trace": traceback.format_exc()[:2000], "type": "train_tabm_universal", "training_input_cache": cache_receipt}
 
 
 @app.function(
@@ -2069,6 +2199,7 @@ def prep_universal_batch(payload: dict) -> dict:
 
 
 @app.function(
+    volumes=TRAINING_INPUT_CACHE_VOLUMES,
     gpu="L4",                    # Sequence training can use GPU; tree-only groups run in CPU split jobs.
     memory=4096,
     timeout=7200,
@@ -2081,12 +2212,14 @@ def train_universal_from_gcs(payload: dict) -> dict:
     Compatibility single-container path for Cloud Run direct train calls.
     """
     _setup_env()
+    cache_receipt = _prepare_training_input_cache_for_payload(payload)
     from app.use_cases import train_universal_from_gcs as _train, UniversalTrainRequest
     try:
         req = UniversalTrainRequest(**payload)
         train_result = _train(req)
+        train_result["training_input_cache"] = cache_receipt
     except Exception as e:
-        return {"error": str(e), "type": "universal"}
+        return {"error": str(e), "type": "universal", "training_input_cache": cache_receipt}
 
     # Auto-trigger SHAP dashboard (Modal internal, no Cloud Run dependency)
     auto_audit = payload.get("auto_audit", True)
@@ -2114,6 +2247,7 @@ def train_universal_from_gcs(payload: dict) -> dict:
 # Split training: tree models run on CPU; sequence models use their own artifact paths.
 
 @app.function(
+    volumes=TRAINING_INPUT_CACHE_VOLUMES,
     cpu=2,
     memory=4096,
     timeout=5400,
@@ -2123,15 +2257,19 @@ def train_universal_from_gcs(payload: dict) -> dict:
 def train_tree_model(payload: dict) -> dict:
     """CPU-only: one governed tree ensemble member for opt-in fan-out."""
     _setup_env()
+    cache_receipt = _prepare_training_input_cache_for_payload(payload)
     from app.use_cases import train_universal_from_gcs as _train, UniversalTrainRequest
     try:
         req = UniversalTrainRequest(**payload)
-        return _train(req)
+        result = _train(req)
+        result["training_input_cache"] = cache_receipt
+        return result
     except Exception as e:
         return {
             "error": str(e),
             "type": "tree_model",
             "tree_split_model": payload.get("tree_split_model"),
+            "training_input_cache": cache_receipt,
         }
 
 
@@ -2177,6 +2315,7 @@ def train_tree_models_split_parent(payload: dict) -> dict:
 
 
 @app.function(
+    volumes=TRAINING_INPUT_CACHE_VOLUMES,
     cpu=2,
     memory=4096,
     timeout=5400,                # 90 min for four tree models sequentially on CPU.
@@ -2186,6 +2325,7 @@ def train_tree_models_split_parent(payload: dict) -> dict:
 def train_tree_models(payload: dict) -> dict:
     """CPU-only: LightGBM + XGBoost + ExtraTrees."""
     _setup_env()
+    cache_receipt = _prepare_training_input_cache_for_payload(payload)
     from app.use_cases import train_universal_from_gcs as _train, UniversalTrainRequest
     from app.training_finalizer import reduce_tree_model_child_results
     from app.training_policy import build_group_train_payload, build_tree_model_child_payloads
@@ -2207,12 +2347,15 @@ def train_tree_models(payload: dict) -> dict:
                 oos_artifact_error=artifact_error,
             )
         req = UniversalTrainRequest(**build_group_train_payload(payload, "tree"))
-        return _train(req)
+        result = _train(req)
+        result["training_input_cache"] = cache_receipt
+        return result
     except Exception as e:
-        return {"error": str(e), "type": "tree_models"}
+        return {"error": str(e), "type": "tree_models", "training_input_cache": cache_receipt}
 
 
 @app.function(
+    volumes=TRAINING_INPUT_CACHE_VOLUMES,
     cpu=2,
     memory=4096,
     timeout=3600,   # 60 min per window for tree models on short train windows.
@@ -2226,6 +2369,7 @@ def train_wf_tree_window(payload: dict) -> dict:
              feature_pool_path (2026-04-19 N2: per-window pool to eliminate look-ahead)
     """
     _setup_env()
+    cache_receipt = _prepare_training_input_cache_for_payload(payload)
     from app.use_cases import train_universal_from_gcs as _train, UniversalTrainRequest
     try:
         gcs_prefix = str(payload.get("prep_gcs_prefix") or "universal").strip().rstrip("/")
@@ -2249,7 +2393,9 @@ def train_wf_tree_window(payload: dict) -> dict:
             fold_id=str(payload.get("fold_id") or payload.get("window_id") or ""),
             output_model_version=payload.get("output_model_version"),
         )
-        return _train(req)
+        result = _train(req)
+        result["training_input_cache"] = cache_receipt
+        return result
     except Exception as e:
         import traceback
         return {
@@ -2257,6 +2403,7 @@ def train_wf_tree_window(payload: dict) -> dict:
             "trace": traceback.format_exc()[:2000],
             "window_id": payload.get("window_id"),
             "type": "wf_tree",
+            "training_input_cache": cache_receipt,
         }
 
 

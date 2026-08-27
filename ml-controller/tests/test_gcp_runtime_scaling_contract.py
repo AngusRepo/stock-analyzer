@@ -31,6 +31,13 @@ def test_runtime_scaling_manifest_matches_scheduler_and_warm_ownership() -> None
     schedule_by_name = {row["name"]: row["cron"] for row in scaling["schedules"]}
     assert schedule_by_name["ml-controller-min-1-monthly-sat"] == "first saturday of month 09:50"
     assert schedule_by_name["ml-controller-min-0-monthly-sat"] == "first saturday of month 16:30"
+    assert schedule_by_name["ml-controller-min-1-trading-open"] == "40 8 * * 1-5"
+    assert schedule_by_name["ml-controller-min-0-trading-midday"] == "40 13 * * 1-5"
+    warm_policy = scaling["trading_warm_window_policy"]
+    assert warm_policy["source"] == "cloud_run_request_logs"
+    assert warm_policy["correctness_owner"] == "durable_queue_and_terminal_receipt"
+    assert warm_policy["rollback"]["restore_cron"] == "0 14 * * 1-5"
+    assert warm_policy["late_window_request_classification"] == "manual_or_research_non_correctness_path"
 
 
 def test_scaler_has_repository_scoped_pull_permission_and_fail_open_calendar() -> None:

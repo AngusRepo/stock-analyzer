@@ -19,6 +19,7 @@ from typing import Any
 import numpy as np
 
 from .model_store import _get_bucket
+from .gcs_batch_io import download_existing_blobs
 from .features import FEATURE_SEMANTIC_VERSION
 from .gnn_graph_contract import GNN_GRAPH_SEMANTIC_VERSION, build_feature_sector_edge_index
 from .prep_lineage import (
@@ -98,12 +99,13 @@ def _load_npz_batches(bucket, *, gcs_prefix: str, batch_count: int) -> tuple[
     all_markets: list[np.ndarray] = []
     all_label_known_dates: list[np.ndarray] = []
     io_report = {"prep_objects": 0, "prep_bytes": 0}
-    for idx in range(max(1, int(batch_count))):
-        key = f"{gcs_prefix}/prep/batch_{idx}.npz"
-        blob = bucket.blob(key)
-        if not blob.exists():
+    keys = [
+        f"{gcs_prefix}/prep/batch_{idx}.npz"
+        for idx in range(max(1, int(batch_count)))
+    ]
+    for key, raw in download_existing_blobs(bucket, keys, max_workers=4):
+        if raw is None:
             continue
-        raw = blob.download_as_bytes()
         io_report["prep_objects"] += 1
         io_report["prep_bytes"] += len(raw)
         data = np.load(io.BytesIO(raw), allow_pickle=True)

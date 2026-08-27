@@ -15,6 +15,14 @@ const monthlyMin0 = manifest.schedules.find((row: any) => row.name === 'ml-contr
 assert.equal(monthlyMin1?.cron, 'first saturday of month 09:50')
 assert.equal(monthlyMin0?.cron, 'first saturday of month 16:30')
 
+const tradingMin1 = manifest.schedules.find((row: any) => row.name === 'ml-controller-min-1-trading-open')
+const tradingMin0 = manifest.schedules.find((row: any) => row.name === 'ml-controller-min-0-trading-midday')
+assert.equal(tradingMin1?.cron, '40 8 * * 1-5')
+assert.equal(tradingMin0?.cron, '40 13 * * 1-5')
+assert.equal(manifest.trading_warm_window_policy.correctness_owner, 'durable_queue_and_terminal_receipt')
+assert.equal(manifest.trading_warm_window_policy.rollback.restore_cron, '0 14 * * 1-5')
+assert.equal(manifest.trading_warm_window_policy.late_window_request_days, 1)
+
 assert(syncScript.includes('"run", "jobs", "add-iam-policy-binding"'))
 assert(syncScript.includes('"--role=roles/run.invoker"'))
 assert(syncScript.includes('get-iam-policy $jobName'))

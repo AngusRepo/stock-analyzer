@@ -21,11 +21,18 @@ class _Blob:
     def __init__(self, store: dict[str, bytes], key: str):
         self.store = store
         self.key = key
+        self.generation = 1
+        self.size = len(store[key]) if key in store else 0
 
     def exists(self) -> bool:
         return self.key in self.store
 
-    def download_as_bytes(self) -> bytes:
+    def reload(self) -> None:
+        self.generation = 1
+        self.size = len(self.store[self.key])
+
+    def download_as_bytes(self, *, if_generation_match: int | None = None) -> bytes:
+        assert if_generation_match in {None, self.generation}
         return self.store[self.key]
 
     def download_as_text(self) -> str:
@@ -38,6 +45,8 @@ class _Blob:
 
 
 class _Bucket:
+    name = "long-history-test-bucket"
+
     def __init__(self):
         self.store: dict[str, bytes] = {}
 

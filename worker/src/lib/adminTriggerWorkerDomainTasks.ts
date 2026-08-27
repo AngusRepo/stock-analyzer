@@ -479,6 +479,7 @@ export function buildAdminWorkerDomainTaskMap(c: any, deps: TriggerDeps): Record
                 c.env,
                 runDate,
                 String(runState.producer_run_id ?? ''),
+                { requireSectorBreadth: currentBusinessDateRun },
               )
               closureSummary = summarizeEveningChainEvidenceClosure(closureAudit)
             },

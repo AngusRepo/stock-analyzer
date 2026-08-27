@@ -3851,6 +3851,7 @@ export async function processUpdateBatch(
               env,
               triggerTime,
               String(state.producer_run_id ?? ''),
+              { requireSectorBreadth: policyMutationAllowed },
             )
             closureSummary = summarizeEveningChainEvidenceClosure(closureAudit)
             return closureSummary

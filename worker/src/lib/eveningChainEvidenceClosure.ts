@@ -52,6 +52,7 @@ export async function auditEveningChainEvidenceClosure(
   env: Bindings,
   businessDateInput: string,
   producerRunIdInput: string,
+  options: { requireSectorBreadth?: boolean } = {},
 ): Promise<EveningChainEvidenceClosure> {
   const businessDate = dateOnly(businessDateInput)
   const producerRunId = String(producerRunIdInput ?? '').trim()
@@ -174,7 +175,7 @@ export async function auditEveningChainEvidenceClosure(
   `).bind(businessDate).first<any>()
   const sectorRows = Number(sector?.sector_rows ?? 0)
   const sectorBreadthRows = Number(sector?.breadth_rows ?? 0)
-  if (sectorRows <= 0 || sectorBreadthRows !== sectorRows) {
+  if (options.requireSectorBreadth !== false && (sectorRows <= 0 || sectorBreadthRows !== sectorRows)) {
     throw new Error(`evening_chain_sector_breadth_incomplete:${sectorBreadthRows}/${sectorRows}`)
   }
 

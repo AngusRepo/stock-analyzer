@@ -161,6 +161,14 @@ await assert.rejects(
   auditEveningChainEvidenceClosure(envFor(new FakeD1({ sectorBreadthRows: 19 })), '2026-07-29', 'screener-2026-07-29'),
   /evening_chain_sector_breadth_incomplete:19\/20/,
 )
+const historicalWithoutLiveSectorBreadth = await auditEveningChainEvidenceClosure(
+  envFor(new FakeD1({ sectorBreadthRows: 19 })),
+  '2026-07-29',
+  'screener-2026-07-29',
+  { requireSectorBreadth: false },
+)
+assert.equal(historicalWithoutLiveSectorBreadth.sectorBreadthRows, 19)
+
 await assert.rejects(
   auditEveningChainEvidenceClosure(envFor(new FakeD1({ matureBacklog: true })), '2026-07-29', 'screener-2026-07-29'),
   /evening_chain_mature_evidence_backlog:2026-07-22:canonical_labels_incomplete/,

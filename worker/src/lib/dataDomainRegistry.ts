@@ -84,6 +84,7 @@ const DOMAIN_TABLES: Record<DataDomain, ReadonlySet<string>> = {
   learning: new Set([
     'predictions', 's12_replay_trade_outcomes', 's12_structure_snapshots',
     's12_tw_calibration_runs', 's12_tw_calibration_artifacts', 'state_space_shadow_results',
+    'state_space_v2_runs', 'state_space_v2_observations', 'state_space_v2_evaluations',
     'model_accuracy', 'stock_memories', 'trade_performance', 'dataset_snapshots',
     'model_artifact_registry', 'model_champion_history', 'model_champion_pointers',
     'active8_ensemble_artifacts_v1', 'active8_ensemble_pointer_v1',
@@ -116,6 +117,7 @@ const DOMAIN_TABLES: Record<DataDomain, ReadonlySet<string>> = {
     'price_horizon_labels_v1', 'price_horizon_label_rejections_v1',
     'price_horizon_labels_v2', 'price_horizon_label_rejections_v2',
     'canonical_selection_outcomes_v1', 'strategy_evidence_metrics_v1',
+    'strategy_evidence_metric_snapshot_runs_v1',
     'allocator_ev_daily_lifecycle',
     'strategy_production_policy_history_v1', 'expected_return_shadow_evaluation_packets',
     'expected_return_serving_forward_evaluations',
@@ -151,6 +153,8 @@ const DOMAIN_TABLES: Record<DataDomain, ReadonlySet<string>> = {
     'paper_daily_snapshots', 'paper_execution_events', 'paper_order_intents',
     'paper_exit_intents', 'paper_challenger_candidates',
     'paper_challenger_daily_metrics', 'paper_decision_attribution',
+    'paper_kelly_calibration_runs_v1', 'paper_kelly_calibration_artifacts_v1',
+    'paper_kelly_calibration_head_v1',
   ]),
   research: new Set([
     'input_snapshots', 'feature_versions', 'features', 'strategy_versions', 'strategies',
@@ -209,6 +213,9 @@ const EXTENDED_PRODUCTION_TABLE_OWNERSHIP: readonly TableOwnershipMetadata[] = [
   { table: 'model_lifecycle_state', domain: 'learning', disposition: 'full_scalar', route_ready: true, shadow_ready: true },
   { table: 'persona_opinions', domain: 'learning', disposition: 'compact_projection', route_ready: true, shadow_ready: true },
   { table: 'strategy_candidate_contexts', domain: 'learning', disposition: 'compact_projection', route_ready: true, shadow_ready: false },
+  { table: 's12_exit_policy_artifacts_v1', domain: 'learning', disposition: 'compact_projection', route_ready: true, shadow_ready: false },
+  { table: 's12_exit_policy_head_v1', domain: 'learning', disposition: 'full_scalar', route_ready: true, shadow_ready: false },
+  { table: 's12_exit_policy_promotion_events_v1', domain: 'learning', disposition: 'active_window', route_ready: true, shadow_ready: false },
   { table: 'strategy_evidence_owner_calibration_artifacts_v1', domain: 'learning', disposition: 'compact_projection', route_ready: true, shadow_ready: false },
   { table: 'strategy_evidence_owner_calibration_head_v1', domain: 'learning', disposition: 'full_scalar', route_ready: true, shadow_ready: false },
   { table: 'strategy_evidence_owner_calibration_runs_v1', domain: 'learning', disposition: 'active_window', route_ready: true, shadow_ready: false },
@@ -259,6 +266,7 @@ const SHADOW_BACKFILL_EXCLUDED_TABLES: Partial<Record<DataDomain, ReadonlySet<st
     'price_horizon_label_rejections_v2',
     'canonical_selection_outcomes_v1',
     'strategy_evidence_metrics_v1',
+    'strategy_evidence_metric_snapshot_runs_v1',
     'expected_return_owner_state_v2',
     'selection_evidence_staging_runs_v1',
     'selection_reference_snapshots_staging_v1',
@@ -281,6 +289,11 @@ const SHADOW_BACKFILL_EXCLUDED_TABLES: Partial<Record<DataDomain, ReadonlySet<st
     'data_domain_cutover_probe_receipts',
     'data_domain_cutover_probe_canary',
     'price_horizon_projection_status_v2',
+  ]),
+  paper: new Set([
+    'paper_kelly_calibration_runs_v1',
+    'paper_kelly_calibration_artifacts_v1',
+    'paper_kelly_calibration_head_v1',
   ]),
 }
 
@@ -320,6 +333,8 @@ const SHADOW_BACKFILL_DEPENDENCIES: Readonly<Record<string, readonly string[]>> 
   data_retention_runs: ['data_retention_policies'],
   expected_return_artifact_payloads: ['model_artifact_registry'],
   active8_ensemble_pointer_v1: ['active8_ensemble_artifacts_v1'],
+  s12_exit_policy_head_v1: ['s12_exit_policy_artifacts_v1'],
+  s12_exit_policy_promotion_events_v1: ['s12_exit_policy_artifacts_v1'],
   model_champion_history: ['model_artifact_registry'],
   model_champion_pointers: [
     'model_artifact_registry',

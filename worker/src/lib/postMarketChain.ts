@@ -29,8 +29,12 @@ import {
   materializeStrategyMultiHorizonPriceLabels,
 } from './priceHorizonProjection'
 import { materializeStrategyMultiHorizonOutcomes } from './strategyMultiHorizonOutcomes'
-import { materializeStrategyEvidenceMetrics } from './strategyEvidenceMetrics'
+import {
+  backfillMissingStrategyEvidenceMetricSnapshots,
+  materializeStrategyEvidenceMetrics,
+} from './strategyEvidenceMetrics'
 import { refreshStrategyEvidenceOwnerCalibration } from './strategyEvidenceOwnerCalibration'
+import { assertAutomaticPromotionAllowed } from './shadowPromotionGovernance'
 import { resolveEveningChainRunAuthority } from './eveningChainRunAuthority'
 
 export type ChainContext = {
@@ -733,15 +737,22 @@ export async function runPostVerifyCallbackChain(
     })
     stageMs.multi_horizon_outcomes = Date.now() - stageStartedAt
     stageStartedAt = Date.now()
+    const metricBackfill = await backfillMissingStrategyEvidenceMetricSnapshots(env, {
+      knowledgeCutoffDate: ctx.runDate!,
+      maxDates: 2,
+    })
+    stageMs.strategy_evidence_metric_backfill = Date.now() - stageStartedAt
+    stageStartedAt = Date.now()
     const metrics = await materializeStrategyEvidenceMetrics(env, { outcomeAsOfDate })
     stageMs.strategy_evidence_metrics = Date.now() - stageStartedAt
     stageStartedAt = Date.now()
+    if (productionEligible) assertAutomaticPromotionAllowed('multi_horizon_evidence', 'decision_artifact')
     const calibration = await refreshStrategyEvidenceOwnerCalibration(env, {
       knowledgeCutoffDate: ctx.runDate!,
       allowPromotion: productionEligible,
     })
     stageMs.strategy_evidence_owner_calibration = Date.now() - stageStartedAt
-    return `${canonical.summary} | ${multiHorizon.summary} | ${outcomes.summary} | ${metrics.summary} | strategy_evidence_owner_calibration=${calibration.result.status}:${calibration.runId} | stage_ms=${JSON.stringify(stageMs)}`
+    return `${canonical.summary} | ${multiHorizon.summary} | ${outcomes.summary} | ${metricBackfill.summary} | ${metrics.summary} | strategy_evidence_owner_calibration=${calibration.result.status}:${calibration.runId} | stage_ms=${JSON.stringify(stageMs)}`
   }, { timeoutMs: 360_000 })
   results.push(projectionTask)
   if (projectionTask.status === 'error') {

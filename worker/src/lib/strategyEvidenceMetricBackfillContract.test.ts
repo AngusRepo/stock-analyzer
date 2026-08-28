@@ -1,0 +1,28 @@
+import assert from 'node:assert/strict'
+import fs from 'node:fs'
+
+const metrics = fs.readFileSync('src/lib/strategyEvidenceMetrics.ts', 'utf8')
+const chain = fs.readFileSync('src/lib/postMarketChain.ts', 'utf8')
+const calibration = fs.readFileSync('src/lib/strategyEvidenceOwnerCalibration.ts', 'utf8')
+
+assert(metrics.includes('backfillMissingStrategyEvidenceMetricSnapshots'))
+assert(metrics.includes('strategy_evidence_metric_snapshot_runs_v1'))
+assert(metrics.includes("receipt.status !== 'ready'"))
+assert(metrics.includes('strategy_evidence_metric_snapshot_receipt_conflict'))
+assert(!metrics.includes('SELECT 1 FROM strategy_evidence_metrics_v1 m'))
+assert(metrics.includes("r.definition_version='strategy-evidence-metrics-v4'"))
+assert(metrics.includes('r.outcome_as_of_date=v.outcome_known_date'))
+assert(metrics.includes("r.source_mode=?"))
+assert(metrics.includes('await materializeStrategyEvidenceMetrics(env, {'))
+assert(metrics.includes('outcomeAsOfDate: row.outcome_known_date'))
+assert(chain.includes('const metricBackfill = await backfillMissingStrategyEvidenceMetricSnapshots'))
+assert(chain.indexOf('const metricBackfill = await backfillMissingStrategyEvidenceMetricSnapshots') < chain.indexOf('const metrics = await materializeStrategyEvidenceMetrics'))
+assert(chain.indexOf('const metrics = await materializeStrategyEvidenceMetrics') < chain.indexOf('const calibration = await refreshStrategyEvidenceOwnerCalibration'))
+assert(calibration.includes('JOIN strategy_evidence_metric_snapshot_runs_v1 s'))
+assert(calibration.includes("s.source_mode='authority_bridge'"))
+assert(calibration.includes("s.status='ready'"))
+assert(calibration.includes('knowledge_cutoff_date=excluded.knowledge_cutoff_date'))
+assert(calibration.includes('strategy_evidence_owner_calibration_head_v1.knowledge_cutoff_date <= excluded.knowledge_cutoff_date'))
+assert(calibration.includes('h.knowledge_cutoff_date=r.knowledge_cutoff_date'))
+
+console.log('strategy evidence metric backfill contract tests passed')

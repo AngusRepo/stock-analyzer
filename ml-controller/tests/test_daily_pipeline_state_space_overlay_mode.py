@@ -70,6 +70,25 @@ from graphs import daily_pipeline_v2  # noqa: E402
 from services import modal_client  # noqa: E402
 
 
+def test_state_space_overlay_daily_runtime_is_absent():
+    source = Path(daily_pipeline_v2.__file__).read_text(encoding="utf-8")
+    assert "def _state_space_overlay_mode" not in source
+    assert "state_space_raw" not in source
+    assert "state_space_overlay_mode" not in source
+    assert "state_space_models" not in source
+
+
+def test_deploy_manifest_retires_state_space_daily_compute():
+    repo_root = Path(__file__).resolve().parents[2]
+    deploy_source = (repo_root / "deploy_ml_controller.sh").read_text(encoding="utf-8")
+    modal_source = (repo_root / "ml-service" / "modal_app.py").read_text(encoding="utf-8")
+    assert "PIPELINE_STATE_SPACE_OVERLAY_MODE" not in deploy_source
+    assert "PIPELINE_STATE_SPACE_OVERLAY_SOFT_DEADLINE_SECONDS" not in deploy_source
+    assert '"state_space_universal_predict": (_state_space, False)' not in modal_source
+    assert '"state_space_raw"' not in modal_source
+    assert "def state_space_universal_predict" in modal_source
+
+
 def _run(coro):
     return asyncio.run(coro)
 

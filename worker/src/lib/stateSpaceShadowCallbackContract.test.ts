@@ -2,8 +2,9 @@ import assert from 'node:assert/strict'
 import fs from 'node:fs'
 
 const adminControlRoutes = fs.readFileSync('src/routes/adminControlRoutes.ts', 'utf8')
-const schema = fs.readFileSync('schema.sql', 'utf8')
-const migration = fs.readFileSync('migration_state_space_shadow_results.sql', 'utf8')
+const learningSchema = fs.readFileSync('domain-schemas/learning.sql', 'utf8')
+const learningBaseline = fs.readFileSync('domain-migrations/learning/0001_learning_baseline.sql', 'utf8')
+const registry = fs.readFileSync('src/lib/dataDomainRegistry.ts', 'utf8')
 
 assert(
   adminControlRoutes.includes("adminControlRoutes.post('/api/internal/state-space-shadow/callback'"),
@@ -16,14 +17,26 @@ assert(
   'state-space shadow callback must upsert structured D1 rows',
 )
 
+const callbackBlock = adminControlRoutes.slice(
+  adminControlRoutes.indexOf("adminControlRoutes.post('/api/internal/state-space-shadow/callback'"),
+  adminControlRoutes.indexOf("adminControlRoutes.get('/api/admin/adaptive-params'"),
+)
+assert(callbackBlock.includes("const learningDb = databaseForDataDomain(c.env, 'learning')"))
+assert(callbackBlock.includes('statements.push(learningDb.prepare(sql).bind('))
+assert(callbackBlock.includes('await learningDb.batch(statements)'))
+assert(!callbackBlock.includes('c.env.DB.prepare(sql)'))
+assert(!callbackBlock.includes('c.env.DB.batch(statements)'))
+
 assert(
-  schema.includes('CREATE TABLE IF NOT EXISTS state_space_shadow_results') &&
-    migration.includes('CREATE TABLE IF NOT EXISTS state_space_shadow_results'),
-  'state-space shadow result table must be in canonical schema and migration',
+  learningSchema.includes('CREATE TABLE IF NOT EXISTS state_space_shadow_results') &&
+    learningBaseline.includes('CREATE TABLE IF NOT EXISTS state_space_shadow_results'),
+  'state-space shadow result table must be in the canonical Learning schema and baseline',
 )
 
 assert(
-  schema.includes('idx_state_space_shadow_errors') &&
-    migration.includes('idx_state_space_shadow_errors'),
-  'state-space shadow table needs query indexes for validation and fallback analysis',
+  learningSchema.includes('idx_state_space_shadow_errors') &&
+    learningBaseline.includes('idx_state_space_shadow_errors'),
+  'state-space shadow table needs Learning query indexes for validation and fallback analysis',
 )
+const learningRegistryBlock = registry.slice(registry.indexOf('  learning: new Set(['), registry.indexOf('  ops: new Set(['))
+assert(learningRegistryBlock.includes("'state_space_shadow_results'"))

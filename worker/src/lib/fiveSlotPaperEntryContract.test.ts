@@ -25,9 +25,10 @@ assert(
 )
 assert(
   source.includes('nav_slot_floor_budget') &&
-    source.includes("sizingMode: 'kelly' | 'risk_parity' | 'l4_sparse_weight' | 'nav_slot_floor'") &&
+    source.includes("sizingMode: 'kelly_cap' | 'risk_parity' | 'l4_sparse_weight' | 'nav_slot_floor'") &&
+    source.includes('Math.min(requestedBaseBudget, kellyBudget)') &&
     !source.includes('s12_limited_takeover_reduced_sizing'),
-  'paper entry sizing must use NAV slot-floor fusion instead of a fixed S12 limited-takeover size multiplier',
+  'paper entry sizing must use NAV slot-floor fusion while preserving a promoted Kelly hard cap',
 )
 assert(source.includes("replacementDecision?.action !== 'replace'"), 'auto-swap must require an allocator replace decision')
 assert(source.includes('allocator_replace_requires_sell_first'), 'paper entry must not buy a sixth slot before replacement sell completes')

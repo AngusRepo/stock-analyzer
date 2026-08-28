@@ -247,6 +247,8 @@ export interface S12ReplayOutcome {
   replay_diagnostics?: Record<string, unknown> | null
   lineage_validation?: Record<string, unknown> | null
   market?: string | null
+  replay_variant?: 'incumbent' | 's12_profit_continuation_v1'
+  decision_path?: S12ReplayDecisionPathStep[]
 }
 
 export interface S12ReplayInput {
@@ -274,6 +276,46 @@ export interface S12ReplayOptions {
   entryAssessment?: S12IntradayAssessment | null
   assessmentProvider?: (bars: S12Bar[], nowMs: number) => S12IntradayAssessment
   maxExitBars?: number
+  captureDecisionPath?: boolean
+  profitContinuation?: {
+    enabled: true
+    maxMinutes?: 60
+  }
+}
+
+export interface S12ReplayDecisionPathStep {
+  bar_start_ms: number
+  session_date: string
+  active_stop_before: number
+  active_stop_after: number
+  remaining_before: number
+  remaining_after: number
+  action: string
+  reason: string | null
+  fill_price: number | null
+  assessment_state: string | null
+  defensive_action: string | null
+}
+
+export interface S12ProfitContinuationPair {
+  schema_version: 's12-profit-continuation-paired-replay-v1'
+  contract: 's12-profit-continuation-v1'
+  production_effect: false
+  rank_or_top_k_used: false
+  maximum_continuation_minutes: 60
+  final_tranche_only: true
+  no_overnight: true
+  incumbent: S12ReplayOutcome
+  candidate: S12ReplayOutcome
+  eligible: boolean
+  gross_delta_pct: number | null
+  cost_net_delta_pct: number | null
+  incremental_transaction_cost_bps: 0
+  safety_priority: readonly [
+    'active_structure_stop',
+    'bearish_defense_or_reverse_bos',
+    'profit_continuation_deadline',
+  ]
 }
 
 export interface S12ReplayBars {
@@ -859,6 +901,36 @@ export function simulateS12ReplayTradeOutcome(input: S12ReplayInput, options: S1
     ratio: index === targets.length - 1 ? 1 : 1 / Math.max(1, targets.length),
     label: `tp${index + 1}`,
   }))
+  const continuationEnabled = options.profitContinuation?.enabled === true
+  if (options.profitContinuation?.maxMinutes != null && options.profitContinuation.maxMinutes !== 60) {
+    throw new Error('s12_profit_continuation_max_minutes_must_equal_60')
+  }
+  const decisionPath: S12ReplayDecisionPathStep[] = []
+  const recordPath = (
+    bar: S12Bar,
+    activeStopBefore: number,
+    remainingBefore: number,
+    action: string,
+    reason: string | null,
+    fillPrice: number | null,
+    barAssessment: S12IntradayAssessment | null,
+  ): void => {
+    if (!options.captureDecisionPath) return
+    decisionPath.push({
+      bar_start_ms: bar.startMs,
+      session_date: twDateKey(bar.startMs),
+      active_stop_before: round(activeStopBefore, 6) ?? activeStopBefore,
+      active_stop_after: round(activeStop, 6) ?? activeStop,
+      remaining_before: round(remainingBefore, 10) ?? remainingBefore,
+      remaining_after: round(remaining, 10) ?? remaining,
+      action,
+      reason,
+      fill_price: round(fillPrice, 6),
+      assessment_state: barAssessment?.state ?? null,
+      defensive_action: barAssessment?.defensiveAction ?? null,
+    })
+  }
+
   let nextTarget = 0
   let remaining = 1
   let realized = 0
@@ -869,9 +941,50 @@ export function simulateS12ReplayTradeOutcome(input: S12ReplayInput, options: S1
   let barsToExit: number | null = null
   let maxHigh = entry
   let minLow = entry
+  let continuationTriggerMs: number | null = null
+  let continuationDeadlineMs: number | null = null
+  let continuationSessionDate: string | null = null
+  let lastProcessedBar: S12Bar | null = null
 
   for (let i = 0; i < futureBars.length; i += 1) {
     const bar = futureBars[i]
+    const activeStopBefore = activeStop
+    const remainingBefore = remaining
+
+    if (
+      continuationTriggerMs != null &&
+      continuationSessionDate != null &&
+      twDateKey(bar.startMs) !== continuationSessionDate
+    ) {
+      const fillBar = lastProcessedBar ?? bar
+      const fillPrice = fillBar.close
+      realized += remaining * ((fillPrice - entry) / entry)
+      remaining = 0
+      exitPrice = fillPrice
+      exitMs = fillBar.startMs
+      exitReason = 'profit_continuation_session_close'
+      barsToExit = i
+      recordPath(bar, activeStopBefore, remainingBefore, 'exit', exitReason, fillPrice, null)
+      break
+    }
+
+    if (
+      continuationTriggerMs != null &&
+      continuationDeadlineMs != null &&
+      bar.startMs >= continuationDeadlineMs
+    ) {
+      const fillBar = lastProcessedBar ?? bar
+      const fillPrice = lastProcessedBar == null ? bar.open : fillBar.close
+      realized += remaining * ((fillPrice - entry) / entry)
+      remaining = 0
+      exitPrice = fillPrice
+      exitMs = fillBar.startMs
+      exitReason = 'profit_continuation_60m_time_exit'
+      barsToExit = i
+      recordPath(bar, activeStopBefore, remainingBefore, 'exit', exitReason, fillPrice, null)
+      break
+    }
+
     maxHigh = Math.max(maxHigh, bar.high)
     minLow = Math.min(minLow, bar.low)
 
@@ -881,8 +994,13 @@ export function simulateS12ReplayTradeOutcome(input: S12ReplayInput, options: S1
       remaining = 0
       exitPrice = stopFill
       exitMs = bar.startMs
-      exitReason = nextTarget > 0 ? 'trailing_structure_stop' : 'structure_stop'
+      exitReason = continuationTriggerMs != null
+        ? 'profit_continuation_structure_stop'
+        : nextTarget > 0
+          ? 'trailing_structure_stop'
+          : 'structure_stop'
       barsToExit = i + 1
+      recordPath(bar, activeStopBefore, remainingBefore, 'exit', exitReason, stopFill, null)
       break
     }
 
@@ -892,8 +1010,11 @@ export function simulateS12ReplayTradeOutcome(input: S12ReplayInput, options: S1
       remaining = 0
       exitPrice = bar.close
       exitMs = bar.startMs
-      exitReason = 'bearish_defense_exit'
+      exitReason = continuationTriggerMs != null
+        ? 'profit_continuation_bearish_defense_exit'
+        : 'bearish_defense_exit'
       barsToExit = i + 1
+      recordPath(bar, activeStopBefore, remainingBefore, 'exit', exitReason, bar.close, defense)
       break
     }
     const refreshedStructureStop = finitePositive(defense.exitPlan.trailingStop.initial)
@@ -902,8 +1023,24 @@ export function simulateS12ReplayTradeOutcome(input: S12ReplayInput, options: S1
       activeStop = refreshedStructureStop
     }
 
+    let pathAction = 'hold'
+    let pathReason: string | null = null
+    let pathFill: number | null = null
     while (nextTarget < tranches.length && bar.high >= tranches[nextTarget].price && remaining > 0) {
       const target = tranches[nextTarget]
+      const isFinalTranche = nextTarget === tranches.length - 1
+      if (continuationEnabled && tranches.length >= 2 && isFinalTranche && continuationTriggerMs == null) {
+        continuationTriggerMs = bar.startMs
+        continuationDeadlineMs = bar.startMs + 60 * 60_000
+        continuationSessionDate = twDateKey(bar.startMs)
+        nextTarget += 1
+        activeStop = Math.max(activeStop, target.price)
+        pathAction = 'activate_profit_continuation'
+        pathReason = 'final_tranche_held_for_s12_dynamic_exit'
+        pathFill = target.price
+        break
+      }
+
       const sellRatio = Math.min(remaining, target.ratio)
       realized += sellRatio * ((target.price - entry) / entry)
       remaining -= sellRatio
@@ -912,19 +1049,29 @@ export function simulateS12ReplayTradeOutcome(input: S12ReplayInput, options: S1
       exitReason = target.label
       barsToExit = i + 1
       nextTarget += 1
+      pathAction = remaining > 0 ? 'partial_take_profit' : 'exit'
+      pathReason = target.label
+      pathFill = target.price
       if (nextTarget === 1) activeStop = Math.max(activeStop, entry)
     }
 
+    recordPath(bar, activeStopBefore, remainingBefore, pathAction, pathReason, pathFill, defense)
+    lastProcessedBar = bar
     if (remaining <= 0) break
   }
 
   if (remaining > 0) {
     const last = futureBars[futureBars.length - 1]
+    const remainingBefore = remaining
     realized += remaining * ((last.close - entry) / entry)
     exitPrice = last.close
     exitMs = last.startMs
-    exitReason = exitReason ?? 'time_exit'
+    exitReason = continuationTriggerMs != null
+      ? 'profit_continuation_data_horizon_exit'
+      : exitReason ?? 'time_exit'
     barsToExit = futureBars.length
+    remaining = 0
+    recordPath(last, activeStop, remainingBefore, 'exit', exitReason, last.close, null)
   }
 
   const riskPct = (entry - stop) / entry
@@ -955,6 +1102,8 @@ export function simulateS12ReplayTradeOutcome(input: S12ReplayInput, options: S1
     bars_to_exit: barsToExit,
     exit_reason: exitReason,
     conservative_intrabar_order: 'stop_before_target',
+    replay_variant: continuationEnabled ? 's12_profit_continuation_v1' : 'incumbent',
+    ...(options.captureDecisionPath ? { decision_path: decisionPath } : {}),
     ...assessmentSnapshot(assessment),
     ...alphaReplayMetadata(input),
     replay_diagnostics: {
@@ -969,7 +1118,62 @@ export function simulateS12ReplayTradeOutcome(input: S12ReplayInput, options: S1
       ].join('|'),
       target_price_domain_contract: S12_REPLAY_TARGET_PRICE_DOMAIN_CONTRACT,
       targets_rejected_outside_five_session_price_domain: targetResult.rejectedOutsideFiveSessionPriceDomain,
+      profit_continuation_contract: continuationEnabled ? 's12-profit-continuation-v1' : null,
+      profit_continuation_max_minutes: continuationEnabled ? 60 : null,
+      profit_continuation_trigger_ms: continuationTriggerMs,
+      profit_continuation_deadline_ms: continuationDeadlineMs,
+      profit_continuation_final_tranche_only: continuationEnabled ? true : null,
+      profit_continuation_no_overnight: continuationEnabled ? true : null,
+      profit_continuation_safety_priority: continuationEnabled
+        ? ['active_structure_stop', 'bearish_defense_or_reverse_bos', 'profit_continuation_deadline']
+        : null,
     },
+  }
+}
+
+export function simulateS12ProfitContinuationPair(
+  input: S12ReplayInput,
+  options: Omit<S12ReplayOptions, 'profitContinuation'> = {},
+): S12ProfitContinuationPair {
+  const incumbent = simulateS12ReplayTradeOutcome(input, {
+    ...options,
+    captureDecisionPath: options.captureDecisionPath ?? true,
+  })
+  const candidate = simulateS12ReplayTradeOutcome(input, {
+    ...options,
+    captureDecisionPath: options.captureDecisionPath ?? true,
+    profitContinuation: { enabled: true, maxMinutes: 60 },
+  })
+  const triggered = Number(candidate.replay_diagnostics?.profit_continuation_trigger_ms ?? 0) > 0
+  const eligible = (
+    incumbent.status === 'executed' &&
+    candidate.status === 'executed' &&
+    incumbent.pnl_pct != null &&
+    candidate.pnl_pct != null &&
+    triggered
+  )
+  const delta = eligible
+    ? round((candidate.pnl_pct as number) - (incumbent.pnl_pct as number), 10)
+    : null
+  return {
+    schema_version: 's12-profit-continuation-paired-replay-v1',
+    contract: 's12-profit-continuation-v1',
+    production_effect: false,
+    rank_or_top_k_used: false,
+    maximum_continuation_minutes: 60,
+    final_tranche_only: true,
+    no_overnight: true,
+    incumbent,
+    candidate,
+    eligible,
+    gross_delta_pct: delta,
+    cost_net_delta_pct: delta,
+    incremental_transaction_cost_bps: 0,
+    safety_priority: [
+      'active_structure_stop',
+      'bearish_defense_or_reverse_bos',
+      'profit_continuation_deadline',
+    ],
   }
 }
 

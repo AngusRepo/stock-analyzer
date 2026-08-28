@@ -1,0 +1,202 @@
+{
+  "schema_version": "stockvision-five-day-shadow-validation-v2",
+  "effective_date": "2026-08-28",
+  "purpose": "rolling operational qualification for the current StockVision architecture; not a statistical promotion shortcut",
+  "production_effect": false,
+  "schedule": {
+    "time_zone": "Asia/Taipei",
+    "rrule_intent": "Tuesday through Saturday at 08:30, validating the latest completed TWSE trading day",
+    "holiday_policy": "skip_without_reset",
+    "incomplete_evening_chain_policy": "required_gate_failed"
+  },
+  "mutation_boundary": {
+    "forbidden": [
+      "retrain",
+      "deploy",
+      "commit",
+      "push",
+      "job_trigger",
+      "real_order",
+      "broker_read_enable",
+      "realtime_enable",
+      "threshold_change",
+      "data_delete"
+    ],
+    "read_only_sources": [
+      "Obsidian",
+      "repo",
+      "Cloudflare health/logs/KV/D1/R2",
+      "GCP Cloud Run/Scheduler logs",
+      "production authenticated APIs"
+    ]
+  },
+  "counting_policy": {
+    "rolling_operational_days": 5,
+    "reset_on": [
+      "required_gate_failed",
+      "required_evidence_missing",
+      "owner_route_violation",
+      "safety_invariant_failed"
+    ],
+    "do_not_reset_on": [
+      "optional_not_applicable",
+      "comparison_pending_maturity",
+      "no_candidate",
+      "no_fill",
+      "non_trading_day"
+    ],
+    "comparison_evidence_clocks_are_independent": true,
+    "keep_monitoring_after_five_passes": true
+  },
+  "required_gate_groups": [
+    {
+      "id": "safety_boundary",
+      "checks": [
+        "all live-submit, broker-read and realtime order-enabling flags remain disabled",
+        "real broker intent/order/event count is zero",
+        "all comparison and automatic evidence gates retain realOrderEffect=false and realtimeMutation=false"
+      ]
+    },
+    {
+      "id": "release_identity",
+      "checks": [
+        "Worker, Pages, ML Controller and Modal source/version manifests match their deployed provenance",
+        "current model/route/feature semantic is read from canonical production pointers; no hard-coded obsolete semantic",
+        "formal consumers have no hidden legacy fallback, no top-k truncation and no mixed semantic cohort"
+      ]
+    },
+    {
+      "id": "evening_chain",
+      "checks": [
+        "derive required nodes and edges from the current scheduler manifest and dependency map",
+        "all required tickets for the target business date are terminal success with canonical run_id",
+        "stage timestamps are monotonic inside the same run; stale callback or evidence date cannot satisfy the target date",
+        "optional nodes are reported separately and never masquerade as required success"
+      ]
+    },
+    {
+      "id": "ten_year_data_plane",
+      "checks": [
+        "canonical domains are exactly core, market, learning, ops, execution, paper and research",
+        "every table read/write resolves to its registered owner binding",
+        "direct legacy DB reads/writes are zero except explicit Time Travel rollback probes",
+        "cutover, writer epoch, migration parity, owner readback, capacity projection and retention/archive receipts are current",
+        "R2 immutable manifest checksum and restore-readiness evidence are present where policy requires archive"
+      ]
+    },
+    {
+      "id": "selection_and_ml",
+      "checks": [
+        "L0 and L0.5 remain universe/liquidity policy only and never reset downstream maturity",
+        "L1, L1.25 and L1.5 report data cutoff, mature outcome, OOF and frozen-forward dates separately",
+        "L1.5 V5 counts only current-semantic immutable evidence; unavailable dates never inherit V4 credit",
+        "Active8 serving bundle pointer, member checksums, feature semantic and OOF cohort are internally consistent",
+        "L4 and L4+ use only current route/Active8 semantics and keep legacy cohorts comparison-only"
+      ]
+    },
+    {
+      "id": "strategy_and_multi_horizon",
+      "checks": [
+        "all 26 strategy metrics resolve from immutable return-series receipts without fabricated proxy statistics",
+        "Multi-horizon formal-owner head, calibration artifact, metric receipts and checksums agree",
+        "Shadow A is comparison-only and its evidence clock is never substituted for Multi-horizon authority"
+      ]
+    },
+    {
+      "id": "paper_execution_and_api",
+      "checks": [
+        "S12 remains structural exit owner and the retired hand-written regime multiplier has no runtime or telemetry consumer",
+        "Paper Kelly is inactive without a promoted checksum-bound calibration artifact",
+        "recommendation, pipeline, strategy, model-pool and paper APIs return without HTTP 500, timeout or no-such-table/sqlite errors",
+        "frontend dates, owner labels and readiness states match canonical API/D1 readback"
+      ]
+    }
+  ],
+  "comparison_lanes": [
+    {
+      "mechanism": "shadow_a",
+      "governance": "comparison_only",
+      "auto_promote": false,
+      "evidence_owner": "Learning D1 strategy route/evidence receipts",
+      "monitor": [
+        "freshness",
+        "eligible samples",
+        "distinct mature dates",
+        "cost-adjusted delta",
+        "LCB",
+        "calibration error",
+        "blockers"
+      ],
+      "review_rule": "use the owning strategy-route contract; do not invent or lower thresholds"
+    },
+    {
+      "mechanism": "rfs_allocator",
+      "governance": "comparison_only",
+      "auto_promote": false,
+      "evidence_owner": "daily allocation_contract.rfs_shadow_challenger packets",
+      "monitor": [
+        "freshness",
+        "eligible pool coverage",
+        "turnover",
+        "estimated cost",
+        "constraint violations",
+        "net return/drawdown delta",
+        "regime slices",
+        "packet checksum",
+        "blockers"
+      ],
+      "review_rule": "manual architecture review only after a predeclared OOS comparison; no automatic replacement or fusion"
+    },
+    {
+      "mechanism": "execution_parity",
+      "governance": "manual_only",
+      "auto_promote": false,
+      "evidence_owner": "Execution/Paper intents, legs, events and authoritative quote receipts",
+      "monitor": [
+        "eligible event count",
+        "intent parity",
+        "impossible fills",
+        "timestamp validity",
+        "duplicates",
+        "unresolved states",
+        "quote age",
+        "source disagreements",
+        "blockers"
+      ],
+      "review_rule": "five consecutive eligible operational days support manual review; days with no eligible event are N/A and do not fabricate parity"
+    }
+  ],
+  "comparison_report_fields": [
+    "status",
+    "latest_evidence_date",
+    "sample_count",
+    "distinct_dates",
+    "supported_regimes",
+    "coverage",
+    "incumbent_delta",
+    "confidence_bound",
+    "blockers",
+    "artifact_or_packet_checksum"
+  ],
+  "retired_daily_checks": [
+    "fixed-symbol assertions for 4541, 2441 or 6712",
+    "exit_shadow_log as a required signal",
+    "blanket legacy D1 migration backlog from the pre-cutover architecture",
+    "same-day maturity expectation for T+N labels",
+    "missing evidence from an explicitly disabled comparison lane as a global failure",
+    "State-space overlay active maturity clock or daily production compute after negative incremental OOS validation"
+  ],
+  "output_contract": {
+    "daily_note": "Obsidian Sessions draft with exact queries, receipts, run ids, checksums and source paths",
+    "required_summary": [
+      "target_business_date",
+      "operational_day_result",
+      "rolling_pass_count",
+      "required_blockers",
+      "optional_findings",
+      "comparison_lane_statuses",
+      "no_mutation_receipt"
+    ],
+    "five_day_result": "report rolling readiness and continue monitoring; never enable realtime or auto-promote a comparison-only lane"
+  }
+}

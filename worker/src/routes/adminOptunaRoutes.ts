@@ -606,6 +606,8 @@ adminOptunaRoutes.post('/api/admin/optuna-push', async (c) => {
         audit_source: 'optuna-push',
         updated_fields: updatedFields,
         source_names: Array.isArray(meta?.source_names) ? meta.source_names : undefined,
+        optimizer_evidence: meta?.optimizer_evidence ?? null,
+        data_access: meta?.data_access ?? null,
       },
     })
   } catch (error: any) {

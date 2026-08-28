@@ -173,8 +173,9 @@ const paperRoute = readFileSync('src/routes/paper.ts', 'utf8')
   assert(
     paperEntryTasks.includes('l4SparseSizingFromWatchPoints(pending.watch_points)') &&
       paperEntryTasks.includes('resolveL4SparseBudgetFloor') &&
-      paperEntryTasks.includes("let sizingMode: 'kelly' | 'risk_parity' | 'l4_sparse_weight'"),
-    'paper entry sizing should consume L4 sparse allocation weight as a budget floor before daily/cash/slot caps',
+      paperEntryTasks.includes("let sizingMode: 'kelly_cap' | 'risk_parity' | 'l4_sparse_weight'") &&
+      paperEntryTasks.includes('Math.min(requestedBaseBudget, kellyBudget)'),
+    'paper entry sizing should consume L4 sparse allocation while preserving Kelly as a hard upper cap',
   )
   assert(
     paperEntryTasks.includes('avgVolume20dMap') &&

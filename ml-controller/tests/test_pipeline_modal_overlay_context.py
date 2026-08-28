@@ -1,22 +1,16 @@
-import sys
 from pathlib import Path
 
-import pytest
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+def test_pipeline_modal_payload_has_no_state_space_daily_control_plane() -> None:
+    repo_root = Path(__file__).resolve().parents[2]
+    pipeline_source = (repo_root / "ml-controller" / "graphs" / "daily_pipeline_v2.py").read_text(encoding="utf-8")
+    modal_source = (repo_root / "ml-service" / "modal_app.py").read_text(encoding="utf-8")
+    deploy_source = (repo_root / "deploy_ml_controller.sh").read_text(encoding="utf-8")
 
-from graphs.daily_pipeline_v2 import _pipeline_modal_context_overlay_mode  # noqa: E402
-
-
-@pytest.mark.parametrize("mode", ["blocking", "shadow", "disabled"])
-def test_frozen_modal_overlay_context_accepts_canonical_modes(mode: str) -> None:
-    assert _pipeline_modal_context_overlay_mode({"state_space_overlay_mode": mode}) == mode
-
-
-@pytest.mark.parametrize("mode", [None, "", "unexpected"])
-def test_frozen_modal_overlay_context_rejects_missing_or_invalid_modes(mode: object) -> None:
-    with pytest.raises(
-        RuntimeError,
-        match="pipeline_modal_serving_context:state_space_overlay_mode_invalid",
-    ):
-        _pipeline_modal_context_overlay_mode({"state_space_overlay_mode": mode})
+    assert "def _pipeline_modal_context_overlay_mode" not in pipeline_source
+    assert "state_space_overlay_mode" not in pipeline_source
+    assert "state_space_soft_deadline_sec" not in pipeline_source
+    assert "state_space_models" not in pipeline_source
+    assert '"state_space_raw"' not in modal_source
+    assert "PIPELINE_STATE_SPACE_OVERLAY_MODE" not in deploy_source
+    assert "PIPELINE_STATE_SPACE_OVERLAY_SOFT_DEADLINE_SECONDS" not in deploy_source

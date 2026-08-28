@@ -13,6 +13,11 @@ export const STRATEGY_EVIDENCE_MIN_SAMPLES = 20
 export const STRATEGY_EVIDENCE_MIN_MATURE_DATES = 5
 const STRATEGY_EVIDENCE_REFERENCE_CONTRACT = 'selection-reference-snapshot-v3'
 
+async function sha256Hex(value: string): Promise<string> {
+  const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(value))
+  return [...new Uint8Array(digest)].map((byte) => byte.toString(16).padStart(2, '0')).join('')
+}
+
 type CanonicalScreenerRunIds = Record<string, string>
 
 async function loadCanonicalScreenerRunIds(
@@ -990,7 +995,16 @@ async function attachFundamentalRevisionPersistence(
 export async function materializeStrategyEvidenceMetrics(
   env: Bindings,
   options: { outcomeAsOfDate: string; sourceMode?: 'authority_bridge' | 'learning_target' },
-): Promise<{ profiles: number; observations: number; metric_rows: number; ready_rows: number; source: string; summary: string }> {
+): Promise<{
+  profiles: number
+  observations: number
+  metric_rows: number
+  ready_rows: number
+  source: string
+  snapshot_run_id: string
+  payload_checksum: string
+  summary: string
+}> {
   if (!/^\d{4}-\d{2}-\d{2}$/.test(options.outcomeAsOfDate)) throw new Error('invalid_strategy_metric_outcome_as_of_date')
   const authorityDb = databaseForDataDomain(env, 'learning')
   const learningTargetDb = shadowDatabaseForDataDomain(env, 'learning')
@@ -1017,6 +1031,7 @@ export async function materializeStrategyEvidenceMetrics(
   let observationCount = 0
   let metricRowCount = 0
   let readyRows = 0
+  const receiptRows: StrategyEvidenceMetricRow[] = []
 
   if (observationDb === db) {
     // Bound the in-memory observation graph by one runtime profile. The full
@@ -1048,6 +1063,7 @@ export async function materializeStrategyEvidenceMetrics(
         }),
       }))
       await persistMetricRows(db, rows)
+      receiptRows.push(...rows)
       observationCount += observations.length
       metricRowCount += rows.length
       readyRows += rows.filter((row) => row.metric_status === 'ready').length
@@ -1090,9 +1106,72 @@ export async function materializeStrategyEvidenceMetrics(
       }),
     }))
     await persistMetricRows(db, rows)
+    receiptRows.push(...rows)
     observationCount = observations.length
     metricRowCount = rows.length
     readyRows = rows.filter((row) => row.metric_status === 'ready').length
+  }
+
+  const sourceMode = options.sourceMode ?? 'authority_bridge'
+  const canonicalReceiptRows = [...receiptRows].sort((left, right) => (
+    left.strategy_id.localeCompare(right.strategy_id)
+    || left.strategy_version.localeCompare(right.strategy_version)
+    || left.primary_horizon_days - right.primary_horizon_days
+    || left.metric_name.localeCompare(right.metric_name)
+  ))
+  const payloadChecksum = await sha256Hex(JSON.stringify(canonicalReceiptRows))
+  const snapshotRunId = [
+    STRATEGY_EVIDENCE_METRIC_DEFINITION_VERSION,
+    options.outcomeAsOfDate,
+    sourceMode,
+    payloadChecksum.slice(0, 20),
+  ].join(':')
+  await db.prepare(`
+    INSERT OR IGNORE INTO strategy_evidence_metric_snapshot_runs_v1 (
+      snapshot_run_id, outcome_as_of_date, definition_version, source_mode,
+      materialization_source, status, profile_count, observation_count,
+      metric_row_count, ready_row_count, payload_checksum
+    ) VALUES (?, ?, ?, ?, ?, 'ready', ?, ?, ?, ?, ?)
+  `).bind(
+    snapshotRunId,
+    options.outcomeAsOfDate,
+    STRATEGY_EVIDENCE_METRIC_DEFINITION_VERSION,
+    sourceMode,
+    source,
+    profiles.length,
+    observationCount,
+    metricRowCount,
+    readyRows,
+    payloadChecksum,
+  ).run()
+  const receipt = await db.prepare(`
+    SELECT snapshot_run_id, status, profile_count, observation_count,
+           metric_row_count, ready_row_count, payload_checksum
+      FROM strategy_evidence_metric_snapshot_runs_v1
+     WHERE outcome_as_of_date=? AND definition_version=? AND source_mode=?
+  `).bind(
+    options.outcomeAsOfDate,
+    STRATEGY_EVIDENCE_METRIC_DEFINITION_VERSION,
+    sourceMode,
+  ).first<{
+    snapshot_run_id: string
+    status: string
+    profile_count: number
+    observation_count: number
+    metric_row_count: number
+    ready_row_count: number
+    payload_checksum: string
+  }>()
+  if (!receipt
+    || receipt.status !== 'ready'
+    || receipt.snapshot_run_id !== snapshotRunId
+    || Number(receipt.profile_count) !== profiles.length
+    || Number(receipt.observation_count) !== observationCount
+    || Number(receipt.metric_row_count) !== metricRowCount
+    || Number(receipt.ready_row_count) !== readyRows
+    || receipt.payload_checksum !== payloadChecksum
+  ) {
+    throw new Error(`strategy_evidence_metric_snapshot_receipt_conflict:${options.outcomeAsOfDate}:${sourceMode}`)
   }
 
   return {
@@ -1101,6 +1180,66 @@ export async function materializeStrategyEvidenceMetrics(
     metric_rows: metricRowCount,
     ready_rows: readyRows,
     source,
-    summary: `strategy_evidence_metrics source=${source} profiles=${profiles.length} observations=${observationCount} rows=${metricRowCount} ready=${readyRows}`,
+    snapshot_run_id: snapshotRunId,
+    payload_checksum: payloadChecksum,
+    summary: `strategy_evidence_metrics source=${source} profiles=${profiles.length} observations=${observationCount} rows=${metricRowCount} ready=${readyRows} receipt=${snapshotRunId}`,
+  }
+}
+
+export async function backfillMissingStrategyEvidenceMetricSnapshots(
+  env: Bindings,
+  options: {
+    knowledgeCutoffDate: string
+    maxDates?: number
+    sourceMode?: 'authority_bridge' | 'learning_target'
+  },
+): Promise<{
+  processedDates: string[]
+  materializedRows: number
+  readyRows: number
+  summary: string
+}> {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(options.knowledgeCutoffDate)) {
+    throw new Error('invalid_strategy_metric_backfill_cutoff')
+  }
+  const maxDates = Math.max(0, Math.min(8, Math.floor(options.maxDates ?? 2)))
+  if (maxDates === 0) {
+    return { processedDates: [], materializedRows: 0, readyRows: 0, summary: 'strategy_evidence_metric_backfill processed=0' }
+  }
+  const db = options.sourceMode === 'learning_target'
+    ? (shadowDatabaseForDataDomain(env, 'learning') ?? databaseForDataDomain(env, 'learning'))
+    : databaseForDataDomain(env, 'learning')
+  const sourceMode = options.sourceMode ?? 'authority_bridge'
+  const candidates = await db.prepare(`
+    SELECT DISTINCT v.outcome_known_date
+      FROM strategy_evidence_observations_v1 v
+     WHERE v.outcome_known_date < ?
+       AND NOT EXISTS (
+         SELECT 1 FROM strategy_evidence_metric_snapshot_runs_v1 r
+          WHERE r.outcome_as_of_date=v.outcome_known_date
+            AND r.definition_version='strategy-evidence-metrics-v4'
+            AND r.source_mode=?
+            AND r.status='ready'
+       )
+     ORDER BY v.outcome_known_date
+     LIMIT ?
+  `).bind(options.knowledgeCutoffDate, sourceMode, maxDates).all<{ outcome_known_date: string }>()
+  const processedDates: string[] = []
+  let materializedRows = 0
+  let readyRows = 0
+  for (const row of candidates.results ?? []) {
+    const result = await materializeStrategyEvidenceMetrics(env, {
+      outcomeAsOfDate: row.outcome_known_date,
+      sourceMode: options.sourceMode,
+    })
+    processedDates.push(row.outcome_known_date)
+    materializedRows += result.metric_rows
+    readyRows += result.ready_rows
+  }
+  return {
+    processedDates,
+    materializedRows,
+    readyRows,
+    summary: `strategy_evidence_metric_backfill processed=${processedDates.length} dates=${processedDates.join(',') || 'none'} rows=${materializedRows} ready=${readyRows}`,
   }
 }

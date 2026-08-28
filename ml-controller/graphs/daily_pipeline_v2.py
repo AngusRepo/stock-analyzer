@@ -287,48 +287,6 @@ async def _load_market_env_with_backoff(run_date: str):
             await asyncio.sleep(delay)
 
 
-def _state_space_overlay_mode() -> str:
-    raw = (
-        os.environ.get("PIPELINE_STATE_SPACE_OVERLAY_MODE")
-        or os.environ.get("STATE_SPACE_OVERLAY_MODE")
-        or "blocking"
-    )
-    mode = str(raw).strip().lower()
-    return mode if mode in {"blocking", "shadow", "disabled"} else "blocking"
-
-
-def _state_space_overlay_soft_deadline_seconds() -> float | None:
-    raw = (
-        os.environ.get("PIPELINE_STATE_SPACE_OVERLAY_SOFT_DEADLINE_SECONDS")
-        or os.environ.get("STATE_SPACE_OVERLAY_SOFT_DEADLINE_SECONDS")
-    )
-    if raw is None or not str(raw).strip():
-        return None
-    try:
-        value = float(str(raw).strip())
-    except ValueError:
-        return None
-    return value if value > 0 else None
-
-
-def _state_space_shadow_callback_config() -> tuple[str | None, str | None]:
-    worker_url = os.environ.get("STOCKVISION_WORKER_URL", "").strip().rstrip("/")
-    token = os.environ.get("STOCKVISION_AUTH_TOKEN", "").strip()
-    if not worker_url or not token:
-        return None, None
-    return f"{worker_url}/api/internal/state-space-shadow/callback", token
-
-
-def _state_space_overlay_block_reason(row: dict[str, Any]) -> str | None:
-    """Return why a state-space overlay row must stay out of prediction payloads."""
-    if row.get("error"):
-        return str(row.get("error") or "state_space_overlay_error")
-    fallback_reason = row.get("fallback_reason")
-    if row.get("degraded") or fallback_reason:
-        return str(fallback_reason or "degraded_state_space_overlay")
-    return None
-
-
 def _require_trading_config_contract(cfg_result: Any, stage: str) -> None:
     contract = getattr(cfg_result, "contract", None)
     if not getattr(contract, "degraded", False):
@@ -770,7 +728,6 @@ async def node_ml_predict(state: PipelineStateV2) -> dict:
     # Formal L3 is callback-only and bound to one immutable serving manifest.
     if not use_modal_prediction_bundle or not serving_context:
         raise RuntimeError("formal_layer3_modal_bundle_or_serving_context_missing")
-    state_space_mode = _pipeline_modal_context_overlay_mode(serving_context)
     model_status = dict(serving_context.get("model_status") or {})
     active_versions = dict(serving_context.get("active_versions") or {})
     pool_versions_loaded = bool(serving_context.get("pool_versions_loaded"))
@@ -821,7 +778,6 @@ async def node_ml_predict(state: PipelineStateV2) -> dict:
     gnn_raw = modal_prediction_bundle.get("gnn_graphsage_raw") or {"results": []}
     dlinear_raw = modal_prediction_bundle.get("dlinear_raw") or {"results": []}
     patchtst_raw = modal_prediction_bundle.get("patchtst_raw") or {"results": []}
-    state_space_raw = modal_prediction_bundle.get("state_space_raw") or {"results": []}
     itransformer_raw = modal_prediction_bundle.get("itransformer_raw") or {"results": []}
     active8_sequence_shadow_raw = (
         modal_prediction_bundle.get("active8_sequence_shadow_raw")
@@ -834,12 +790,11 @@ async def node_ml_predict(state: PipelineStateV2) -> dict:
         ("gnn_graphsage_universal_predict", gnn_raw),
         ("dlinear_universal_predict", dlinear_raw),
         ("patchtst_universal_predict", patchtst_raw),
-        ("state_space_universal_predict", state_space_raw),
         ("itransformer_universal_predict", itransformer_raw),
     ):
         stage_timings.setdefault(stage_name, {
             "wall_sec": 0.0,
-            "required_alpha": stage_name != "state_space_universal_predict",
+            "required_alpha": True,
             "status": "callback_bundle",
             "error": None if not (isinstance(raw_payload, dict) and raw_payload.get("error")) else raw_payload.get("error"),
         })
@@ -859,8 +814,6 @@ async def node_ml_predict(state: PipelineStateV2) -> dict:
         "critical_modal_waiter_sec": round(float(critical_modal_waiter), 3),
         "slowest_stage": slowest_stage,
         "stage_timings": stage_timings,
-        "state_space_overlay_mode": state_space_mode,
-        "state_space_soft_deadline_sec": _state_space_overlay_soft_deadline_seconds(),
         "timesfm_l2_owner": "node_l2_timesfm_enrich",
         "sequence_dataset": sequence_dataset_meta,
         "gnn_result_summary": gnn_result_summary,
@@ -1012,53 +965,6 @@ async def node_ml_predict(state: PipelineStateV2) -> dict:
             logger.warning(f"[Pipeline V2] {name} batch returned error: {raw}")
         return out
 
-    # Stage 6.2: KalmanFilter + MarkovSwitching state-space overlays.
-    # They share one Modal call to avoid duplicate cold-start/import paths.
-    def _drain_state_space(raw, name: str) -> dict[str, dict]:
-        out: dict[str, dict] = {}
-        if isinstance(raw, BaseException):
-            logger.warning(f"[Pipeline V2] {name} batch failed: {raw}")
-            return out
-        if isinstance(raw, dict) and not raw.get("error"):
-            blocked_count = 0
-            blocked_reasons: dict[str, int] = {}
-            for r in raw.get("results") or []:
-                sym = r.get("symbol")
-                if sym and not r.get("error"):
-                    block_reason = _state_space_overlay_block_reason(r)
-                    if block_reason:
-                        blocked_count += 1
-                        blocked_reasons[block_reason] = blocked_reasons.get(block_reason, 0) + 1
-                        continue
-                    out[sym] = r
-            log_msg = f"[Pipeline V2] {name}: {len(out)}/{len(sequence_series)} usable blocked={blocked_count}"
-            if blocked_count:
-                logger.warning(f"{log_msg} reasons={blocked_reasons}")
-            else:
-                logger.info(log_msg)
-        elif isinstance(raw, dict) and raw.get("results") == []:
-            logger.debug(f"[Pipeline V2] {name} skipped: {raw.get('error')}")
-        else:
-            logger.warning(f"[Pipeline V2] {name} batch returned error: {raw}")
-        return out
-    state_space_overlays = {}
-    if isinstance(state_space_raw, dict) and isinstance(state_space_raw.get("overlays"), dict):
-        state_space_overlays = state_space_raw["overlays"]
-        logger.info(f"[Pipeline V2] State-space overlays metrics: {state_space_raw.get('metrics')}")
-    elif isinstance(state_space_raw, dict) and state_space_raw.get("shadow"):
-        logger.info(f"[Pipeline V2] State-space overlays shadow mode: {state_space_raw.get('shadow')}")
-    elif isinstance(state_space_raw, dict) and state_space_raw.get("soft_timeout"):
-        logger.warning(f"[Pipeline V2] State-space overlays soft timeout: {state_space_raw.get('soft_timeout')}")
-    elif isinstance(state_space_raw, dict) and state_space_raw.get("results") == []:
-        logger.debug(f"[Pipeline V2] State-space overlays skipped: {state_space_raw.get('error')}")
-    elif isinstance(state_space_raw, BaseException):
-        logger.warning(f"[Pipeline V2] State-space overlays failed entirely: {state_space_raw}")
-    else:
-        logger.warning(f"[Pipeline V2] State-space overlays returned invalid payload: {state_space_raw}")
-    kalman_raw = state_space_overlays.get("KalmanFilter", {})
-    markov_raw = state_space_overlays.get("MarkovSwitching", {})
-    kalman_map = _drain_state_space(kalman_raw, "KalmanFilter")
-    markov_map = _drain_state_space(markov_raw, "MarkovSwitching")
     itransformer_map = _drain_ts_result(
         itransformer_raw,
         "iTransformer",
@@ -1083,10 +989,6 @@ async def node_ml_predict(state: PipelineStateV2) -> dict:
                 rank_scores = {}
                 row["rank_scores"] = rank_scores
             rank_scores["GNN"] = float(gnn_map[sym]["rank_score"])
-        if sym in kalman_map:
-            row["kalman_filter"] = kalman_map[sym]
-        if sym in markov_map:
-            row["markov_switching"] = markov_map[sym]
 
     feature_by_symbol: dict[str, dict] = {}
     feature_errors_by_symbol: dict[str, str] = {}
@@ -3808,15 +3710,6 @@ def _pipeline_modal_runtime_pool_from_manifest(
     return runtime_pool
 
 
-def _pipeline_modal_context_overlay_mode(context: dict[str, Any]) -> str:
-    mode = str(context.get("state_space_overlay_mode") or "").strip().lower()
-    if mode not in {"blocking", "shadow", "disabled"}:
-        raise RuntimeError(
-            "pipeline_modal_serving_context:state_space_overlay_mode_invalid"
-        )
-    return mode
-
-
 def _pipeline_modal_expected_source_sha() -> str:
     source_sha = str(os.environ.get("STOCKVISION_SOURCE_SHA") or "").strip().lower()
     if (
@@ -3880,7 +3773,6 @@ async def _attach_pipeline_modal_serving_context(state: PipelineStateV2) -> dict
         "model_status": _json_safe(model_status),
         "active_versions": _json_safe(active_versions),
         "expected_source_sha": expected_source_sha,
-        "state_space_overlay_mode": _state_space_overlay_mode(),
         "pool_versions_loaded": True,
         "serving_model_status": _json_safe(serving_model_status),
         "serving_pool": _json_safe(_pipeline_modal_runtime_pool_from_manifest(_serving_pool, serving_manifest)),
@@ -3896,7 +3788,6 @@ async def _build_pipeline_modal_prediction_payload(state: PipelineStateV2, *, st
     if not isinstance(context, dict) or context.get("schema_version") != "pipeline-modal-serving-context-v1":
         context = await _attach_pipeline_modal_serving_context(state)
     model_status = dict(context.get("model_status") or {})
-    state_space_mode = _pipeline_modal_context_overlay_mode(context)
     active_versions = dict(context.get("active_versions") or {})
     serving_pool = dict(context.get("serving_pool") or {})
     serving_manifest = context.get("serving_manifest")
@@ -3966,11 +3857,6 @@ async def _build_pipeline_modal_prediction_payload(state: PipelineStateV2, *, st
         contracts=active8_shadow_sequence_contracts,
     )
     recovery_lineage = state.get("snapshot_recovery_lineage") if isinstance(state.get("snapshot_recovery_lineage"), dict) else {}
-    state_space_models = {
-        model_name: _require_loaded_serving_version(active_versions, model_name, "pipeline_modal_prediction_bundle")
-        for model_name in ("KalmanFilter", "MarkovSwitching")
-        if _is_optional_loaded_serving_model(model_status, model_name, "pipeline_modal_prediction_bundle")
-    }
     sequence_input_contract_core = {
         "schema_version": "pipeline-modal-sequence-input-contract-v2",
         "serving_manifest_digest": serving_manifest_digest,
@@ -4049,9 +3935,6 @@ async def _build_pipeline_modal_prediction_payload(state: PipelineStateV2, *, st
             serving_only=True,
         ),
         "serving_coverage": _pipeline_modal_manifest_coverage(serving_manifest),
-        "state_space_overlay_mode": state_space_mode,
-        "state_space_soft_deadline_sec": _state_space_overlay_soft_deadline_seconds(),
-        "state_space_models": state_space_models,
         "callback_url": _pipeline_modal_prediction_callback_url(),
         "callback_token": _pipeline_modal_prediction_callback_token(),
         "snapshot_recovery_lineage": _json_safe(recovery_lineage) if recovery_lineage else None,

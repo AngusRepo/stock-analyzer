@@ -663,7 +663,36 @@ export const storageApi = {
   capacity: () => get<StorageCapacitySnapshot>('/admin/storage/capacity'),
 }
 
+export type ShadowEvidenceClock = {
+  mechanism: 'shadow_a' | 'rfs_allocator' | 'execution_parity'
+  label: string
+  governance: 'comparison_only' | 'manual_only'
+  auto_promote: false
+  status: string
+  latest_evidence_date: string | null
+  sample_count: number
+  distinct_dates: number
+  supported_regimes: string[]
+  coverage: number | null
+  incumbent_delta: number | null
+  confidence_bound: number | null
+  blockers: string[]
+  artifact_or_packet_checksum: string | null
+  details: Record<string, unknown>
+}
+
+export type ShadowEvidenceClockReport = {
+  success: true
+  mode: 'read_only'
+  schema_version: 'shadow-evidence-clocks-v1'
+  generated_at: string
+  clocks_are_independent: true
+  production_effect: false
+  clocks: ShadowEvidenceClock[]
+}
+
 export const observabilityApi = {
+  evidenceClocks: () => get<ShadowEvidenceClockReport>('/admin/observability/evidence-clocks'),
   events: (opts?: { date?: string; live?: boolean }) => {
     const params = new URLSearchParams()
     if (opts?.date) params.set('date', opts.date)

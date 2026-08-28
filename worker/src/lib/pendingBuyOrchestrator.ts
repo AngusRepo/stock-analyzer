@@ -51,6 +51,10 @@ import {
   buildEntryPriceModelV2FromOhlcvPlan,
   formatEntryPriceModelV2WatchPoint,
 } from './entryPriceModelV2'
+import {
+  loadPromotedPaperKellyCalibrationBefore,
+  resolvePaperKellyPct,
+} from './paperKellyCalibration'
 
 import { withD1ReadRetry } from './d1TransientRetry'
 type CircuitBreakerState = _CBState
@@ -370,35 +374,6 @@ function calcRiskPct(
   else if (signal.includes('BUY') && confidence >= buyThreshold) risk = buyRisk
   if (debateVerdict === 'DOWNGRADE') risk *= downgradeMultiplier
   return risk
-}
-
-function calcKellyPct(
-  confidence: number,
-  entryPrice: number,
-  stopLoss: number | null,
-  target1: number | null,
-  kellyCfg: { enabled: boolean; halfKelly: boolean; confClipLo: number; confClipHi: number; maxKellyPct: number },
-): { pct: number; info: string } | null {
-  if (!kellyCfg.enabled) return null
-  if (!stopLoss || !target1) return null
-  if (stopLoss >= entryPrice || target1 <= entryPrice) return null
-
-  const p = Math.max(kellyCfg.confClipLo, Math.min(kellyCfg.confClipHi, confidence))
-  const q = 1 - p
-  const winR = (target1 - entryPrice) / entryPrice
-  const lossR = (entryPrice - stopLoss) / entryPrice
-  if (winR <= 0 || lossR <= 0) return null
-  const b = winR / lossR
-
-  const fullKelly = (p * b - q) / b
-  if (fullKelly <= 0) return null
-
-  const kelly = kellyCfg.halfKelly ? fullKelly * 0.5 : fullKelly
-  const capped = Math.min(kelly, kellyCfg.maxKellyPct)
-  return {
-    pct: capped,
-    info: `p=${p.toFixed(2)} b=${b.toFixed(2)} fullK=${(fullKelly * 100).toFixed(1)}% -> ${kellyCfg.halfKelly ? 'half' : 'full'}Kelly=${(capped * 100).toFixed(1)}%`,
-  }
 }
 
 async function getPrevTradingDay(db: D1Database, kv?: KVNamespace): Promise<string> {
@@ -830,6 +805,13 @@ export async function setupMorningPendingBuys(env: Bindings): Promise<void> {
   try {
     const prevDay = await withD1Retry('previous_trading_day', () => getPrevTradingDay(databaseForDataDomain(env, 'core'), env.KV))
     const sourceRecoDate = prevDay
+    const kellyArtifact = await loadPromotedPaperKellyCalibrationBefore(
+      databaseForDataDomain(env, 'paper'),
+      pendingDate,
+    ).catch((error) => {
+      console.warn('[MorningSetup] promoted Paper Kelly artifact unavailable; neutral sizing:', error)
+      return null
+    })
     const configuredBuySignalCount = Math.max(1, Math.floor(cfg.alphaFramework?.allocation?.buySignalCount ?? 3))
     const { results: coreRecommendationRows } = await withD1Retry('buy_recommendations', () => databaseForDataDomain(env, 'core').prepare(`
       SELECT s.id AS stock_id, dr.symbol, dr.name, dr.signal, dr.confidence, dr.has_buy_signal,
@@ -1046,6 +1028,11 @@ export async function setupMorningPendingBuys(env: Bindings): Promise<void> {
         continue
       }
       const forecastData = parsePredictionForecastData(rec.forecast_data)
+      const ensembleSemantic = String(forecastData?.ensemble_v2?.semantic_version ?? '').trim()
+      const targetSemantic = String(forecastData?.ensemble_v2?.target_semantic_version ?? '').trim()
+      const mlConfidenceSemantic = ensembleSemantic && targetSemantic
+        ? `${ensembleSemantic}|${targetSemantic}`
+        : null
       const alphaContext = parseAlphaContext(forecastData)
       const sparseAllocation = buildSparseAllocationSummary(rec.alpha_allocation)
       const mlVoteSummary = buildMlVoteSummary(forecastData, perModelByStock.get(Number(rec.stock_id)) ?? [])
@@ -1207,6 +1194,7 @@ export async function setupMorningPendingBuys(env: Bindings): Promise<void> {
       let adjustedTarget1 = rec.ml_target1
       let adjustedTarget2 = rec.ml_target2
       const entryWatchPoints: string[] = []
+      if (mlConfidenceSemantic) entryWatchPoints.push(`ml_confidence_semantic:${mlConfidenceSemantic}`)
       let originalEntry = rec.ml_entry_price
       const ohlcvEntryPlan = resolveOhlcvEntryPlan(
         ohlcvLevelsByStock.get(Number(rec.stock_id)),
@@ -1286,15 +1274,15 @@ export async function setupMorningPendingBuys(env: Bindings): Promise<void> {
         }
       }
 
-      const kellyResult = calcKellyPct(
+      const kellyResult = resolvePaperKellyPct(
+        kellyArtifact,
         rec.confidence,
-        adjustedEntry,
-        adjustedStop,
-        rec.ml_target1,
-        cfg.position.kelly,
+        cfg.position.kelly.maxKellyPct,
+        mlConfidenceSemantic,
       )
       if (kellyResult) {
         console.log(`[MorningSetup] ${rec.symbol} ${kellyResult.info}`)
+        entryWatchPoints.push(`paper_kelly_artifact:${kellyResult.artifactId}:pct=${kellyResult.pct.toFixed(6)}`)
       }
 
       entryWatchPoints.push(

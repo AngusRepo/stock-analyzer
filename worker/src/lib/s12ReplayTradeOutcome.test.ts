@@ -10,6 +10,7 @@ import {
   runS12HistoricalReplayForDate,
   s12ReplayEligibleLineageBlockers,
   s12ReplayOutcomeToEvSample,
+  simulateS12ProfitContinuationPair,
   simulateS12ReplayTradeOutcome,
 } from './s12ReplayTradeOutcome'
 import type { S12Bar, S12IntradayAssessment } from './s12IntradayStructure'
@@ -283,6 +284,80 @@ function assessment(overrides: Partial<S12IntradayAssessment> = {}): S12Intraday
     { entryAssessment: assessment(), assessmentProvider: provider },
   )
   assert(outcome.exit_reason === 'bearish_defense_exit', 'bearish defense should exit remaining position')
+}
+
+{
+  const bars = [
+    ...[0, 1, 2, 3, 4].map((i) => bar(i, 99, 101, 98, 100)),
+    bar(5, 104, 109, 103, 108),
+    bar(6, 108, 113, 107, 112),
+    bar(7, 113, 114, 112.5, 113),
+    bar(8, 114, 115, 113, 114),
+    bar(9, 115, 116, 114, 115),
+    bar(10, 116, 117, 115, 116),
+  ]
+  const pair = simulateS12ProfitContinuationPair(
+    { symbol: '8091', tradeDate: '2026-07-02', baseBars: bars },
+    { entryAssessment: assessment(), assessmentProvider: () => assessment(), captureDecisionPath: true },
+  )
+  assert(pair.eligible, 'paired replay should be eligible only when the formal final tranche target is reached')
+  assert(pair.production_effect === false, 'paired research replay must never mutate the formal exit owner')
+  assert(pair.rank_or_top_k_used === false, 'profit continuation must remain continuous and must not use rank/top-k')
+  assert(pair.incumbent.pnl_pct === 0.1, 'paired replay must preserve incumbent TP economics')
+  assert(pair.candidate.exit_reason === 'profit_continuation_60m_time_exit', 'candidate must stop at the pre-registered 60m ceiling')
+  assert(pair.gross_delta_pct === 0.015 && pair.cost_net_delta_pct === 0.015, 'same-order-count candidate should expose the exact whole-trade delta at the last observed bar before deadline')
+  assert(
+    pair.candidate.decision_path?.some((step) => step.action === 'activate_profit_continuation'),
+    'candidate receipt must preserve the final-tranche activation event',
+  )
+}
+
+{
+  const bars = [
+    ...[0, 1, 2, 3, 4].map((i) => bar(i, 99, 101, 98, 100)),
+    bar(5, 104, 109, 103, 108),
+    bar(6, 108, 113, 107, 112),
+    bar(7, 111, 113, 99, 100),
+  ]
+  const pair = simulateS12ProfitContinuationPair(
+    { symbol: '8091', tradeDate: '2026-07-02', baseBars: bars },
+    { entryAssessment: assessment(), assessmentProvider: () => assessment(), captureDecisionPath: true },
+  )
+  assert(pair.candidate.exit_reason === 'profit_continuation_structure_stop', 'active stop must override continuation')
+  assert(pair.candidate.exit_price === 111, 'gap through the ratcheted target stop must use the exact observed open')
+}
+
+{
+  const bars = [
+    ...[0, 1, 2, 3, 4].map((i) => datedBar('2026-07-02', i, 99, 101, 98, 100)),
+    datedBar('2026-07-02', 5, 104, 109, 103, 108),
+    datedBar('2026-07-02', 6, 108, 113, 107, 114),
+    datedBar('2026-07-03', 0, 130, 132, 129, 131),
+  ]
+  const pair = simulateS12ProfitContinuationPair(
+    { symbol: '8091', tradeDate: '2026-07-02', baseBars: bars },
+    { entryAssessment: assessment(), assessmentProvider: () => assessment() },
+  )
+  assert(pair.candidate.exit_reason === 'profit_continuation_session_close', 'candidate must never carry the extension overnight')
+  assert(pair.candidate.exit_ms === bars[6].startMs, 'session-close exit must use the last same-session bar')
+  assert(pair.candidate.exit_price === 114, 'next-session gap must not leak into a no-overnight candidate')
+}
+
+{
+  let rejected = false
+  try {
+    simulateS12ReplayTradeOutcome(
+      { symbol: '8091', tradeDate: '2026-07-02', baseBars: [0, 1, 2, 3, 4, 5].map((i) => bar(i, 100, 101, 99, 100)) },
+      {
+        entryAssessment: assessment(),
+        assessmentProvider: () => assessment(),
+        profitContinuation: { enabled: true, maxMinutes: 30 as 60 },
+      },
+    )
+  } catch (error) {
+    rejected = String(error).includes('s12_profit_continuation_max_minutes_must_equal_60')
+  }
+  assert(rejected, 'runtime must reject unregistered horizon tuning')
 }
 
 async function runAsyncTests(): Promise<void> {

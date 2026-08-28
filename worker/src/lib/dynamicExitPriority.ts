@@ -1,9 +1,9 @@
 /**
  * Runtime helper for regime-aware paper-exit priority.
  *
- * This module is wired through paperExitPolicy and paperMarketData, but remains
- * disabled by default until KV trading config enables dynamicExitPriorityEnabled.
- * It must not submit orders or bypass paper-exit guards.
+ * Comparison-only legacy evaluator. Formal paper execution no longer consumes
+ * this module or the dynamicExitPriorityEnabled KV field. It must not submit
+ * orders or bypass paper-exit guards.
  *
  * Each exit layer gets a priority score based on market regime:
  * - Volatile/bear markets tighten hard-stop and ATR trail handling.

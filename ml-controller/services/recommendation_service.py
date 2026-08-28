@@ -4414,7 +4414,7 @@ def apply_sparse_tangent_allocation(
     allocated = regime_aware_allocate(
         scored,
         regime_label,
-        slate_size=max(int(policy["allocation"].get("buy_signal_count") or 3), policy["allocation"]["slate_size"]),
+        slate_size=len(scored),
         policy=policy,
         regime_surface=regime_surface,
     )

@@ -1,6 +1,6 @@
 """
 optuna_l2_sensitivity.py — 2026-04-20 #28 P7
-NSGA-II search over L2 / circuit dims that Mode B now consumes (P2-P5 done).
+TPE search over L2 / circuit dims that Mode B now consumes (P2-P5 done).
 
 Bandit dims (5) excluded by design — LinUCB runtime not simulated in Mode B.
 Clarification: `adaptive_meta_policy_replay` compares LinUCB / NeuralUCB /
@@ -27,7 +27,7 @@ Live push gate:
   Mode B replay candidate evidence, CSCV rank-logit PBO PASS, and attached
   walk-forward evidence PASS.
 
-Objective (single scalar for NSGA-II dominance):
+Objective (single scalar, optimized with TPE):
   score = sharpe - dd_penalty * max_drawdown
   with dd_penalty configurable (default 2.0).
 
@@ -37,6 +37,8 @@ To use NSGA-II multi-objective (future extension), swap to
 from __future__ import annotations
 
 import copy
+import hashlib
+import json
 import logging
 import os
 import sys
@@ -293,7 +295,7 @@ def run_l2_sensitivity_search(
     n_trials: int = 50,
     dd_penalty: float | None = None,
     initial_capital: float = 1_000_000.0,
-    sampler_name: str = "nsga2",
+    sampler_name: str = "tpe",
     seed: int = 42,
     policy: OptunaL2Policy | None = None,
 ) -> dict[str, Any]:
@@ -308,9 +310,8 @@ def run_l2_sensitivity_search(
             leaves into a deep copy each iteration.
         n_trials: total trials (50 for sanity, 200-300 for full search).
         dd_penalty: single-objective weight; score = sharpe - dd_penalty * max_dd.
-        sampler_name: 'nsga2' | 'tpe' — NSGA-II (Deb 2002) preferred for
-            multi-objective intent even in single-obj compile (tournament
-            selection + diversity preservation still helps).
+        sampler_name: must be 'tpe'. NSGA-II is reserved for a separate,
+            genuinely multi-objective study; it is forbidden on this scalar route.
         seed: deterministic trial sequence. M14 discipline.
 
     Returns dict:
@@ -340,7 +341,15 @@ def run_l2_sensitivity_search(
     # per trial would be N+1 disaster (200+ trials × 580+ days). Module docstring
     # on replay_period_loading spells this out.
     logger.info(f"[L2 Optuna] Loading BacktestDataset {start_date}~{end_date}")
-    dataset = BacktestDataset.load_from_d1(start_date=start_date, end_date=end_date)
+    dataset, data_access = BacktestDataset.load_for_research(
+        lane="optuna.l2_sensitivity",
+        start_date=start_date,
+        end_date=end_date,
+        business_date=end_date,
+        mode="snapshot",
+    )
+    if data_access.get("source") != "snapshot":
+        raise RuntimeError("optuna_l2_requires_immutable_snapshot")
     logger.info(f"[L2 Optuna] Dataset loaded, starting {n_trials} trials")
 
     def objective(trial: "optuna.Trial") -> float:
@@ -386,16 +395,16 @@ def run_l2_sensitivity_search(
             policy=policy,
         )
         trial.set_user_attr("partition_returns", partition_returns)
+        trial.set_user_attr("sharpe", sharpe)
         logger.info(
             f"[L2 Optuna] trial {trial.number} sharpe={sharpe:.3f} "
             f"dd={max_dd:.3f} trades={n_trades} score={score:.3f}"
         )
         return score
 
-    if sampler_name == "tpe":
-        sampler = optuna.samplers.TPESampler(seed=seed)
-    else:
-        sampler = optuna.samplers.NSGAIISampler(seed=seed)
+    if sampler_name != "tpe":
+        raise ValueError("optuna_l2_scalar_objective_requires_tpe")
+    sampler = optuna.samplers.TPESampler(seed=seed, multivariate=True)
 
     study = optuna.create_study(
         direction="maximize",
@@ -422,6 +431,27 @@ def run_l2_sensitivity_search(
         min_partitions=policy.pbo_min_partitions,
     )
     pbo_audit = _pbo_audit_from_strategy_returns(strategy_returns_by_partition)
+    trial_sharpes = [
+        round(float(trial.user_attrs["sharpe"]), 12)
+        for trial in sorted(study.trials, key=lambda item: item.number)
+        if trial.value is not None and trial.user_attrs.get("sharpe") is not None
+    ]
+    trial_payload = json.dumps(trial_sharpes, separators=(",", ":"), allow_nan=False)
+    trial_checksum = hashlib.sha256(trial_payload.encode("utf-8")).hexdigest()
+    optimizer_evidence = {
+        "trial_sharpe_distribution": trial_sharpes,
+        "effective_trials": len(trial_sharpes),
+        "trial_distribution_lineage": {
+            "artifact_id": f"optuna-l2-trials-{trial_checksum[:40]}",
+            "payload_checksum": trial_checksum,
+            "as_of_date": end_date,
+            "pit_fenced": True,
+            "dataset_snapshot": data_access,
+            "sampler": sampler_name,
+            "seed": seed,
+            "effective_trials_policy": "all_completed_trials_conservative_upper_bound",
+        },
+    }
 
     return {
         "best_value": best.value,
@@ -430,6 +460,8 @@ def run_l2_sensitivity_search(
         "n_trials": len(study.trials),
         "strategy_returns_by_partition": strategy_returns_by_partition,
         "pbo_audit": pbo_audit,
+        "optimizer_evidence": optimizer_evidence,
+        "data_access": data_access,
         "policy": {
             "min_trades": policy.min_trades,
             "dd_penalty": policy.dd_penalty,

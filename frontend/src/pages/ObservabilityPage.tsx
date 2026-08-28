@@ -35,6 +35,7 @@ import {
   type ObservabilitySeverity,
   type SchedulerJob,
   type SchedulerStatus,
+  type ShadowEvidenceClockReport,
   type StorageCapacitySnapshot,
 } from '@/lib/api'
 
@@ -1082,6 +1083,61 @@ function summarizeLearnedPolicy(policy: Record<string, unknown>) {
   return parts.length ? parts.join(' / ') : 'learned params not exposed'
 }
 
+function EvidenceClockPanel({
+  report,
+  loading,
+  error,
+}: {
+  report?: ShadowEvidenceClockReport
+  loading: boolean
+  error: string | null
+}) {
+  return (
+    <WorkstationPanel title="Independent Evidence Clocks" kicker="comparison lanes do not share maturity credit">
+      <div className="p-3">
+        <p className="mb-3 text-xs leading-5 text-slate-400">
+          各條有效 evidence clock 獨立累積；已證偽或退役的機制不再占用成熟時鐘，也不會影響正式決策。
+        </p>
+        {loading ? (
+          <div className="flex items-center gap-2 rounded-xl border border-[#263247] bg-[#05070c] p-4 text-xs text-slate-400">
+            <Loader2 className="h-4 w-4 animate-spin text-sky-300" /> Loading evidence clocks
+          </div>
+        ) : error ? (
+          <div className="rounded-xl border border-rose-400/25 bg-rose-400/5 p-4 text-xs text-rose-200">{error}</div>
+        ) : (
+          <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
+            {(report?.clocks ?? []).map((clock) => (
+              <article key={clock.mechanism} className="min-w-0 rounded-xl border border-[#263247] bg-[#05070c] p-3">
+                <div className="flex items-start justify-between gap-2">
+                  <div className="min-w-0">
+                    <p className="truncate text-sm font-medium text-slate-100">{clock.label}</p>
+                    <p className="mt-1 sv-num text-[10px] normal-case text-slate-500">{clock.governance} · auto promote OFF</p>
+                  </div>
+                  <WorkstationPill tone={statusTone(clock.status)}>{formatStatus(clock.status)}</WorkstationPill>
+                </div>
+                <dl className="mt-3 grid grid-cols-2 gap-2 text-xs">
+                  <div><dt className="text-slate-500">latest</dt><dd className="sv-num mt-1 text-slate-200">{clock.latest_evidence_date ?? 'N/A'}</dd></div>
+                  <div><dt className="text-slate-500">samples</dt><dd className="sv-num mt-1 text-slate-200">{clock.sample_count}</dd></div>
+                  <div><dt className="text-slate-500">dates</dt><dd className="sv-num mt-1 text-slate-200">{clock.distinct_dates}</dd></div>
+                  <div><dt className="text-slate-500">coverage</dt><dd className="sv-num mt-1 text-slate-200">{clock.coverage == null ? 'N/A' : (clock.coverage * 100).toFixed(1) + '%'}</dd></div>
+                </dl>
+                <div className="mt-3 space-y-1 border-t border-[#1c2534] pt-2 sv-num text-[10px] normal-case text-slate-500">
+                  <p>regimes {clock.supported_regimes.length ? clock.supported_regimes.join(' / ') : 'N/A'}</p>
+                  <p>delta {clock.incumbent_delta == null ? 'N/A' : clock.incumbent_delta.toFixed(4)} · LCB {clock.confidence_bound == null ? 'N/A' : clock.confidence_bound.toFixed(4)}</p>
+                  <p className="truncate">receipt {clock.artifact_or_packet_checksum?.slice(0, 16) ?? 'N/A'}</p>
+                </div>
+                <div className="mt-2 text-[11px] leading-5 text-slate-400">
+                  {clock.blockers.length ? clock.blockers.join(' · ') : 'No current blocker'}
+                </div>
+              </article>
+            ))}
+          </div>
+        )}
+      </div>
+    </WorkstationPanel>
+  )
+}
+
 function AdaptiveMetaPanel({
   events,
   onGaReview,
@@ -1461,6 +1517,12 @@ export default function ObservabilityPage() {
   const deployGate = useQuery({ queryKey: ['obs', 'deploy-gate'], queryFn: () => deployGateApi.predeploy(), refetchInterval: 60_000, staleTime: 30_000 })
   const system = useQuery({ queryKey: ['obs', 'system'], queryFn: systemApi.status, refetchInterval: 60_000, staleTime: 30_000 })
   const observability = useQuery({ queryKey: ['obs', 'events'], queryFn: () => observabilityApi.events(), refetchInterval: 60_000, staleTime: 30_000 })
+  const evidenceClocks = useQuery({
+    queryKey: ['obs', 'evidence-clocks'],
+    queryFn: observabilityApi.evidenceClocks,
+    refetchInterval: 60_000,
+    staleTime: 30_000,
+  })
   const capacity = useQuery({
     queryKey: ['obs', 'storage-capacity'],
     queryFn: storageApi.capacity,
@@ -1559,6 +1621,14 @@ export default function ObservabilityPage() {
             </div>
           </div>
         </WorkstationPanel>
+
+        <section>
+          <EvidenceClockPanel
+            report={evidenceClocks.data}
+            loading={evidenceClocks.isLoading}
+            error={errorMessage(evidenceClocks.error)}
+          />
+        </section>
 
         <section>
           <AdaptiveMetaPanel

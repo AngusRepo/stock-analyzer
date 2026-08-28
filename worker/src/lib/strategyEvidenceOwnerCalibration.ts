@@ -385,11 +385,16 @@ export async function refreshStrategyEvidenceOwnerCalibration(
     { availableOutcomeHorizonDays: [3, 5, 10] },
   ).filter((profile) => profile.strategy_status === 'active' || profile.strategy_status === 'shadow')
   const metricQuery = await db.prepare(`
-    SELECT strategy_id, strategy_version, primary_horizon_days, metric_name,
-           metric_value, metric_status, outcome_as_of_date, definition_version
-      FROM strategy_evidence_metrics_v1
-     WHERE outcome_as_of_date < ? AND definition_version='strategy-evidence-metrics-v4'
-     ORDER BY outcome_as_of_date, strategy_id, strategy_version, metric_name
+    SELECT m.strategy_id, m.strategy_version, m.primary_horizon_days, m.metric_name,
+           m.metric_value, m.metric_status, m.outcome_as_of_date, m.definition_version
+      FROM strategy_evidence_metrics_v1 m
+      JOIN strategy_evidence_metric_snapshot_runs_v1 s
+        ON s.outcome_as_of_date=m.outcome_as_of_date
+       AND s.definition_version=m.definition_version
+       AND s.source_mode='authority_bridge'
+       AND s.status='ready'
+     WHERE m.outcome_as_of_date < ? AND m.definition_version='strategy-evidence-metrics-v4'
+     ORDER BY m.outcome_as_of_date, m.strategy_id, m.strategy_version, m.metric_name
   `).bind(input.knowledgeCutoffDate).all<StrategyEvidenceCalibrationMetricRow>()
   const canonical = await canonicalRunIdsBefore(databaseForDataDomain(env, 'ops'), input.knowledgeCutoffDate)
   const dateReturns = await loadDateReturns(db, profiles, input.knowledgeCutoffDate, canonical)
@@ -450,11 +455,14 @@ export async function refreshStrategyEvidenceOwnerCalibration(
   }
   if (result.status === 'promoted') {
     statements.push(db.prepare(`
-      INSERT INTO strategy_evidence_owner_calibration_head_v1 (singleton_id, run_id, artifact_checksum)
-      VALUES (1, ?, ?)
+      INSERT INTO strategy_evidence_owner_calibration_head_v1 (
+        singleton_id, run_id, artifact_checksum, knowledge_cutoff_date
+      ) VALUES (1, ?, ?, ?)
       ON CONFLICT(singleton_id) DO UPDATE SET
-        run_id=excluded.run_id, artifact_checksum=excluded.artifact_checksum, promoted_at=CURRENT_TIMESTAMP
-    `).bind(runId, result.artifactChecksum))
+        run_id=excluded.run_id, artifact_checksum=excluded.artifact_checksum,
+        knowledge_cutoff_date=excluded.knowledge_cutoff_date, promoted_at=CURRENT_TIMESTAMP
+      WHERE strategy_evidence_owner_calibration_head_v1.knowledge_cutoff_date <= excluded.knowledge_cutoff_date
+    `).bind(runId, result.artifactChecksum, input.knowledgeCutoffDate))
   }
   if (statements.length > 100) throw new Error('strategy_evidence_owner_calibration_atomic_batch_too_large')
   await db.batch(statements)
@@ -481,6 +489,7 @@ export async function loadPromotedStrategyEvidenceOwnerCalibrationBefore(
       JOIN strategy_evidence_owner_calibration_runs_v1 r ON r.run_id=h.run_id
      WHERE h.singleton_id=1 AND r.status='promoted' AND r.knowledge_cutoff_date<=?
        AND h.artifact_checksum=r.artifact_checksum
+       AND h.knowledge_cutoff_date=r.knowledge_cutoff_date
   `).bind(knowledgeCutoffDate).first<{
     run_id: string
     knowledge_cutoff_date: string

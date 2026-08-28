@@ -1293,7 +1293,7 @@ class L2SensitivityReq(BaseModel):
     push_kv: bool = True
     dry_run: bool = False
     dd_penalty: float | None = None
-    sampler: str = "nsga2"          # 'nsga2' | 'tpe'
+    sampler: str = "tpe"            # scalar objective contract: TPE only
     walk_forward_evidence: dict[str, Any] | None = Field(
         default=None,
         description="Promotion-grade walk-forward evidence. KV push requires this to pass.",
@@ -1408,6 +1408,8 @@ def run_l2_sensitivity(req: L2SensitivityReq = Body(default=L2SensitivityReq()))
                 "sampler": req.sampler,
                 "dd_penalty": (result.get("policy") or {}).get("dd_penalty"),
                 "search_space_source": used_source,
+                "optimizer_evidence": result.get("optimizer_evidence"),
+                "data_access": result.get("data_access"),
             },
         )
     elif req.push_kv and not req.dry_run:
@@ -1428,6 +1430,8 @@ def run_l2_sensitivity(req: L2SensitivityReq = Body(default=L2SensitivityReq()))
         "n_trials": result.get("n_trials"),
         "pbo_candidate_count": len(result.get("strategy_returns_by_partition") or {}),
         "pbo_audit": result.get("pbo_audit"),
+        "optimizer_evidence": result.get("optimizer_evidence"),
+        "data_access": result.get("data_access"),
         "policy": result.get("policy"),
         "strategy_returns_by_partition": result.get("strategy_returns_by_partition"),
         "search_space_source": used_source,

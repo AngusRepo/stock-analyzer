@@ -1,4 +1,4 @@
-import { getExitMultiplier, type MarketRegime } from './dynamicExitPriority'
+import type { MarketRegime } from './dynamicExitPriority'
 import type { TradingConfig } from './tradingConfig'
 import { normalizeTwEquityStopPrice, normalizeTwEquityTargetPrice } from './twEquityMarketContract'
 
@@ -27,6 +27,7 @@ export interface ExitDecision {
   newHighest?: number
   newTp2Price?: number
   moveStopToEntry?: boolean
+  tradeLifecycleJson?: string | null
 }
 
 export function categorizeExitReason(reason: string): string {
@@ -56,33 +57,26 @@ export function checkExitConditions(
   const entryPrice = pos.entry_price ?? pos.avg_cost
   const pnlPct = (currentPrice - entryPrice) / entryPrice
 
-  const useRegime = Boolean(ex.dynamicExitPriorityEnabled && regime)
-  const mHardStop = useRegime ? getExitMultiplier(regime!, 'hardStop') : 1.0
-  const mAtrTrail = useRegime ? getExitMultiplier(regime!, 'atrTrail') : 1.0
-  const mMlSell = useRegime ? getExitMultiplier(regime!, 'mlSell') : 1.0
-  const mTp1 = useRegime ? getExitMultiplier(regime!, 'tp1') : 1.0
-  const mTp2 = useRegime ? getExitMultiplier(regime!, 'tp2') : 1.0
-  const mTimeStop = useRegime ? getExitMultiplier(regime!, 'timeStop') : 1.0
-  void mMlSell
-  void mTp1
-  void mTp2
-  void mTimeStop
+  // S12 is the structural owner. The fixed paper cascade remains a safety
+  // fallback; the retired hand-written regime multiplier must never change it.
+  void regime
+  void ex.dynamicExitPriorityEnabled
 
-  const effHardStopPct = ex.hardStopPct / mHardStop
+  const effHardStopPct = ex.hardStopPct
   if (pnlPct <= effHardStopPct) {
     return {
       action: 'full_sell',
-      reason: `Hard stop ${(pnlPct * 100).toFixed(1)}%${useRegime ? ` [regime=${regime} x${mHardStop}]` : ''}`,
+      reason: `Hard stop ${(pnlPct * 100).toFixed(1)}%`,
       exitIntentKind: 'risk_stop',
     }
   }
 
   const initStopRaw = normalizeTwEquityStopPrice(pos.initial_stop ?? entryPrice * ex.fallbackInitStopMult)
-  const effInitStop = entryPrice - (entryPrice - initStopRaw) / mAtrTrail
+  const effInitStop = initStopRaw
   if (currentPrice <= effInitStop) {
     return {
       action: 'full_sell',
-      reason: `ATR 初始停損 @ ${effInitStop.toFixed(1)} ${(pnlPct * 100).toFixed(1)}%${useRegime ? ` [regime=${regime} x${mAtrTrail}]` : ''}`,
+      reason: `ATR 初始停損 @ ${effInitStop.toFixed(1)} ${(pnlPct * 100).toFixed(1)}%`,
       exitIntentKind: 'risk_stop',
     }
   }
@@ -92,11 +86,11 @@ export function checkExitConditions(
   }
 
   const trailingStopRaw = pos.trailing_stop ?? initStopRaw
-  const effTrailingStop = entryPrice - (entryPrice - trailingStopRaw) / mAtrTrail
+  const effTrailingStop = trailingStopRaw
   if (currentPrice <= effTrailingStop && effTrailingStop > effInitStop) {
     return {
       action: 'full_sell',
-      reason: `Trailing Stop @ ${effTrailingStop.toFixed(1)} ${(pnlPct * 100).toFixed(1)}%${useRegime ? ` [regime=${regime} x${mAtrTrail}]` : ''}`,
+      reason: `Trailing Stop @ ${effTrailingStop.toFixed(1)} ${(pnlPct * 100).toFixed(1)}%`,
       exitIntentKind: 'risk_stop',
     }
   }

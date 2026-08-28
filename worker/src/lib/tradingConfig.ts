@@ -150,16 +150,10 @@ export interface TradingConfig {
     trailMultAt3pct: number      // 獲利 >3% 時 trail 倍數（預設 2.5）
     trailMultAt8pct: number      // 獲利 >8% 時 trail 倍數（預設 2.0）
     fallbackAtrPct: number       // ATR 不可用時的替代 %（預設 0.02）
-    // ── #28b T2.3/#30 Step 9c (2026-04-21): Regime-conditional exit cascade ──
-    // When true, checkExitConditions uses dynamicExitPriority.getExitOrder(regime)
-    // to reorder the exit rule cascade (hardStop / atrTrail / tp1 / tp2 / timeStop)
-    // based on the current HMM regime label. Default false = fixed cascade order
-    // (backwards-compat, same behavior since Sprint 3). Flip via `wrangler kv put`
-    // after 2026-04-27 shadow-log review (logRegimeShadow printed hypothetical
-    // orders since 4/20 for A/B comparison). Actual sltp multiplier overlay
-    // (resolveSltpForRegime) is ALREADY live since T2.3 — this flag only
-    // controls cascade ORDER.
-    dynamicExitPriorityEnabled: boolean  // 預設 false，4/27 後 Wei KV 翻
+    // Retired execution toggle retained for KV schema compatibility only.
+    // S12 structural exits are primary; the fixed paper SL/TP cascade remains
+    // the safety fallback. Dynamic priority is comparison-only and inert.
+    dynamicExitPriorityEnabled: boolean
   }
   position: {
     dailyBuyLimit: number        // 每日自動買入上限 NT$
@@ -176,13 +170,14 @@ export interface TradingConfig {
     maxDailySwaps: number        // 每日最大換股次數（預設 1）
     swapThreshold: number        // 換股評分門檻倍數（預設 1.15）
     swapMinHoldDays: number      // 換股最低持有天數（預設 3）
-    // ── Sprint 3 P0-1: Kelly Position Sizing ────────────────────────────────
+    // Legacy Kelly fields remain for KV compatibility. Runtime accepts only
+    // a checksum-bound promoted paper-kelly-pav-v1 artifact.
     kelly: {
-      enabled: boolean         // feature flag（預設 false，安全上線）
-      halfKelly: boolean       // 半 Kelly（預設 true，保守）
-      confClipLo: number       // ML confidence 下限 clip（預設 0.50，防 overconfident）
-      confClipHi: number       // ML confidence 上限 clip（預設 0.75）
-      maxKellyPct: number      // Kelly % 上限 hard cap（預設 0.15 = 15%）
+      enabled: boolean         // legacy field; never enables raw-confidence Kelly
+      halfKelly: boolean       // legacy field; artifact owns fractional Kelly
+      confClipLo: number       // legacy field; artifact owns probability calibration
+      confClipHi: number       // legacy field; artifact owns probability calibration
+      maxKellyPct: number      // independent runtime hard cap（<= 15%）
     }
     // ── Sprint 4-1: Paper.ts L3 hardcode 接 KV ─────────────────────────────
     swapWeights: {
@@ -465,7 +460,7 @@ export const DEFAULT_TRADING_CONFIG: TradingConfig = {
     trailMultAt3pct: 2.5,
     trailMultAt8pct: 2.0,
     fallbackAtrPct: 0.02,
-    dynamicExitPriorityEnabled: false,  // #16 Step 9c prep — 4/27 Wei KV 翻
+    dynamicExitPriorityEnabled: false,  // retired/inert; must not change execution order
   },
   position: {
     dailyBuyLimit: 800_000,
@@ -483,7 +478,7 @@ export const DEFAULT_TRADING_CONFIG: TradingConfig = {
     maxDailySwaps: 1,             // max position replacements per day
     swapThreshold: 1.15,          // new score must exceed weakest × 1.15
     swapMinHoldDays: 3,           // don't swap positions held < 3 days
-    // Sprint 3 P0-1: Kelly (default OFF; flip in KV when ready)
+    // Legacy KV compatibility only; promoted immutable artifact is the runtime owner.
     kelly: {
       enabled: false,
       halfKelly: true,

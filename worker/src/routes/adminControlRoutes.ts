@@ -402,6 +402,7 @@ adminControlRoutes.post('/api/internal/state-space-shadow/callback', async (c) =
     result_metrics: result?.metrics ?? null,
   })
 
+  const learningDb = databaseForDataDomain(c.env, 'learning')
   const statements = []
   const sql = `
     INSERT INTO state_space_shadow_results (
@@ -437,7 +438,7 @@ adminControlRoutes.post('/api/internal/state-space-shadow/callback', async (c) =
       const symbol = nullableText(row?.symbol)
       if (!symbol) continue
       const meta = seriesMeta.get(symbol) ?? {}
-      statements.push(c.env.DB.prepare(sql).bind(
+      statements.push(learningDb.prepare(sql).bind(
         runDate,
         runId,
         nullableText(body?.source) ?? 'modal_state_space_shadow',
@@ -468,7 +469,7 @@ adminControlRoutes.post('/api/internal/state-space-shadow/callback', async (c) =
   }
 
   const t0 = Date.now()
-  const results = await c.env.DB.batch(statements)
+  const results = await learningDb.batch(statements)
   const changesTotal = results.reduce((sum: number, item: any) => {
     const meta = item?.meta ?? {}
     return sum + Number(meta.changes ?? meta.rows_written ?? 0)
@@ -481,6 +482,35 @@ adminControlRoutes.post('/api/internal/state-space-shadow/callback', async (c) =
     duration_ms: Date.now() - t0,
     mode: 'state_space_shadow_callback',
   })
+})
+
+adminControlRoutes.post('/api/internal/state-space-v2/callback', async (c) => {
+  const authError = requireServiceToken(c)
+  if (authError) return authError
+
+  const packet = await c.req.json().catch(() => null)
+  const learningDb = databaseForDataDomain(c.env, 'learning')
+  const marketDb = databaseForDataDomain(c.env, 'market')
+  const { persistStateSpaceV2Packet, matureStateSpaceV2Evidence } = await import('../lib/stateSpaceV2Evidence')
+  try {
+    const persisted = await persistStateSpaceV2Packet(learningDb, packet)
+    const throughDate = String((packet as any)?.as_of_date ?? '')
+    const maturity = await matureStateSpaceV2Evidence(learningDb, marketDb, throughDate)
+    return c.json({
+      ok: true,
+      mode: 'state_space_v2_observation_only',
+      production_effect: false,
+      persisted,
+      maturity,
+    })
+  } catch (error: any) {
+    return c.json({
+      ok: false,
+      error: error?.message ?? String(error),
+      mode: 'state_space_v2_observation_only',
+      production_effect: false,
+    }, 409)
+  }
 })
 
 adminControlRoutes.get('/api/admin/adaptive-params', async (c) => {

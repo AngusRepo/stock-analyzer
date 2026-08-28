@@ -14,6 +14,8 @@ import {
   updateSchedulerExecutionTicket,
   type SchedulerExecutionTicketStatus,
 } from './schedulerExecutionTickets'
+import { refreshPaperKellyCalibration } from './paperKellyCalibration'
+import { assertAutomaticPromotionAllowed } from './shadowPromotionGovernance'
 
 type WeeklyRegistryRunner = () => Promise<unknown>
 
@@ -56,7 +58,13 @@ export async function runWeeklyCleanupClosure(
   if (!cleanup.ok || !maintenance.ok) {
     throw new Error(`weekly cleanup failed ${JSON.stringify({ cleanup, maintenance })}`)
   }
-  return `weekly_cleanup_v2 cleanup=${JSON.stringify(cleanup)} maintenance=${JSON.stringify(maintenance)} model-registry=${registrySummary}`
+  const knowledgeCutoffDate = new Date(Date.now() + 8 * 3600_000).toISOString().slice(0, 10)
+  assertAutomaticPromotionAllowed('paper_kelly', 'paper_position_cap')
+  const paperKelly = await refreshPaperKellyCalibration(env, {
+    knowledgeCutoffDate,
+    allowPromotion: true,
+  })
+  return `weekly_cleanup_v2 cleanup=${JSON.stringify(cleanup)} maintenance=${JSON.stringify(maintenance)} model-registry=${registrySummary} paper-kelly=${paperKelly.status}:${paperKelly.runId}`
 }
 
 type DurableTaskResult = {

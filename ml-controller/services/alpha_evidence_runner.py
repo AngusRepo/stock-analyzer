@@ -87,7 +87,12 @@ def _per_regime_from_trades(metrics: Any) -> dict[str, dict[str, Any]]:
     }
 
 
-def _backtest_row(metrics: Any, *, parity_audit: dict[str, Any] | None) -> dict[str, Any]:
+def _backtest_row(
+    metrics: Any,
+    *,
+    parity_audit: dict[str, Any] | None,
+    optimizer_evidence: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     summary = {
         "total_trades": _metric_attr(metrics, "total_trades", 0),
         "sharpe": _metric_attr(metrics, "sharpe", 0.0),
@@ -100,6 +105,8 @@ def _backtest_row(metrics: Any, *, parity_audit: dict[str, Any] | None) -> dict[
     skip_reasons = _metric_attr(metrics, "skip_reasons", {}) or {}
     mode_b_prediction_diagnostics = _metric_attr(metrics, "mode_b_prediction_diagnostics", {}) or {}
     mode_b_threshold_diagnostics = _metric_attr(metrics, "mode_b_threshold_diagnostics", {}) or {}
+    return_series, _ = _trade_returns_and_regimes(metrics)
+    optimizer = optimizer_evidence if isinstance(optimizer_evidence, dict) else {}
     raw = {
         "mode": _metric_attr(metrics, "mode", "B"),
         "summary": summary,
@@ -127,6 +134,10 @@ def _backtest_row(metrics: Any, *, parity_audit: dict[str, Any] | None) -> dict[
         "skip_reasons": skip_reasons,
         "mode_b_prediction_diagnostics": mode_b_prediction_diagnostics,
         "mode_b_threshold_diagnostics": mode_b_threshold_diagnostics,
+        "return_series": return_series,
+        "trial_sharpe_distribution": optimizer.get("trial_sharpe_distribution"),
+        "effective_trials": optimizer.get("effective_trials"),
+        "trial_distribution_lineage": optimizer.get("trial_distribution_lineage"),
         "raw_results": json.dumps(raw),
     }
 
@@ -304,12 +315,25 @@ def run_parameter_candidate_evidence(
 ) -> dict[str, Any]:
     from services.backtest_engine import BacktestDataset, replay_period
 
-    dataset_loader = dataset_loader or BacktestDataset.load_from_d1
+    using_canonical_loader = dataset_loader is None
+    dataset_loader = dataset_loader or (
+        lambda **kwargs: BacktestDataset.load_for_research(
+            lane="parameter_candidate_validation",
+            business_date=end_date,
+            mode="snapshot",
+            **kwargs,
+        )
+    )
     replay_fn = replay_fn or replay_period
 
     baseline = deepcopy(baseline_config or {})
     candidate_params = _deep_merge(baseline, _candidate_config(candidate))
-    dataset = dataset_loader(start_date=start_date, end_date=end_date, symbols=symbols)
+    loaded = dataset_loader(start_date=start_date, end_date=end_date, symbols=symbols)
+    dataset, data_access = loaded if isinstance(loaded, tuple) else (loaded, {})
+    if using_canonical_loader and data_access.get("source") != "snapshot":
+        raise RuntimeError("parameter_candidate_validation_requires_immutable_snapshot")
+    metadata = candidate.get("metadata") if isinstance(candidate.get("metadata"), dict) else {}
+    optimizer_evidence = metadata.get("optimizer_evidence") if isinstance(metadata.get("optimizer_evidence"), dict) else {}
     replay_args = {
         "dataset": dataset,
         "start_date": start_date,
@@ -322,7 +346,11 @@ def run_parameter_candidate_evidence(
 
     evidence = build_parameter_candidate_evidence_bundle(
         candidate_id=_candidate_id(candidate),
-        backtest=_backtest_row(candidate_metrics, parity_audit=parity_audit),
+        backtest=_backtest_row(
+            candidate_metrics,
+            parity_audit=parity_audit,
+            optimizer_evidence=optimizer_evidence,
+        ),
         monte_carlo=_monte_carlo_row(candidate_metrics, n_simulations=mc_simulations),
         pbo=_pbo_row(champion_metrics, candidate_metrics),
         data_snooping=_data_snooping_row(champion_metrics, candidate_metrics),
@@ -340,5 +368,7 @@ def run_parameter_candidate_evidence(
             "candidate_replayed": True,
             "candidate_specific": True,
             "parity_audit_present": bool(parity_audit),
+            "data_access": data_access,
+            "optimizer_evidence_present": bool(optimizer_evidence),
         },
     }

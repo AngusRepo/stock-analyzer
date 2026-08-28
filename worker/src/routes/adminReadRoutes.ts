@@ -187,6 +187,14 @@ adminReadRoutes.get('/api/admin/observability/events', async (c) => {
   })
 })
 
+adminReadRoutes.get('/api/admin/observability/evidence-clocks', async (c) => {
+  const authError = await requireAdminOrServiceToken(c)
+  if (authError) return authError
+
+  const { buildShadowEvidenceClockReport } = await import('../lib/shadowEvidenceClocks')
+  return c.json(await buildShadowEvidenceClockReport(c.env))
+})
+
 adminReadRoutes.get('/api/admin/observability/audit', async (c) => {
   const authError = await requireAdminOrServiceToken(c)
   if (authError) return authError

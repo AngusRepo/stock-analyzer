@@ -2,13 +2,7 @@ import { databaseForDataDomain } from './dataDomainRegistry'
 import { sendDiscordNotification } from './notify'
 import { getCurrentRegime as getCurrentSltpRegime, getTradingConfig, resolveSltpForRegime } from './tradingConfig'
 import { batchGetIntradayOHLC, batchGetIntradayPrices } from './paperIntradayData'
-import {
-
-  getCurrentRegime,
-  isDayTradeAllowed,
-  logRegimeShadow,
-  recordSellSettlement,
-} from './paperMarketData'
+import { recordSellSettlement } from './paperMarketData'
 import { batchGetAtrByDomain, batchGetLatestPricesByDomain } from './paperMarketDomainData'
 import { calcCommission, calcTax, resolveLimitBuyFill, resolveMarketSellFill } from './paperTradeMath'
 import { matchPaperOrderAgainstAuthoritativeDepth } from './paperOrderBookMatcher'
@@ -2091,7 +2085,7 @@ async function runIntradayCheckUnlocked(env: Bindings, leaseRunId: string): Prom
 
     const sparseSizing = l4SparseSizingFromWatchPoints(pending.watch_points)
     let budget: number
-    let sizingMode: 'kelly' | 'risk_parity' | 'l4_sparse_weight' | 'nav_slot_floor'
+    let sizingMode: 'kelly_cap' | 'risk_parity' | 'l4_sparse_weight' | 'nav_slot_floor'
     let allocationTargetBudget: number | null = null
     let navSlotFloorBudget: number | null = null
     if (pending.kelly_pct != null && pending.kelly_pct > 0) {
@@ -2103,15 +2097,17 @@ async function runIntradayCheckUnlocked(env: Bindings, leaseRunId: string): Prom
         allocationWeight: sparseSizing?.weight,
       })
       allocationTargetBudget = sparseFloor.allocationTarget
+      const requestedBaseBudget = Math.max(sparseFloor.budget, allocatorDecision.slotFloorBudget)
       navSlotFloorBudget = allocatorDecision.slotFloorBudget > sparseFloor.budget
+        && allocatorDecision.slotFloorBudget <= kellyBudget
         ? allocatorDecision.slotFloorBudget
         : null
-      const baseBudget = Math.max(sparseFloor.budget, allocatorDecision.slotFloorBudget)
+      const baseBudget = Math.min(requestedBaseBudget, kellyBudget)
       budget = Math.min(baseBudget, allocatorDecision.budgetCap, totalPortfolio * maxSingleNamePct, acc.cash, dailyRemaining)
-      sizingMode = navSlotFloorBudget != null
-        ? 'nav_slot_floor'
-        : sparseFloor.sizingMode === 'l4_sparse_weight' ? 'l4_sparse_weight' : 'kelly'
-      console.log(`[Sizing] ${pending.symbol} kelly ${(kellyAdj * 100).toFixed(1)}% -> budget ${budget.toFixed(0)}`)
+      sizingMode = requestedBaseBudget > kellyBudget
+        ? 'kelly_cap'
+        : navSlotFloorBudget != null ? 'nav_slot_floor' : sparseFloor.sizingMode
+      console.log(`[Sizing] ${pending.symbol} Kelly cap ${(kellyAdj * 100).toFixed(1)}% requested=${requestedBaseBudget.toFixed(0)} capped=${budget.toFixed(0)}`)
     } else {
       const riskPctAdj = pending.risk_pct * mediumRiskDampen
       const riskBudget = totalPortfolio * riskPctAdj / stopPct
@@ -2469,6 +2465,9 @@ async function runIntradayCheckUnlocked(env: Bindings, leaseRunId: string): Prom
             ml_t2: pending.ml_target2,
             risk_pct: pending.risk_pct,
             kelly_pct: pending.kelly_pct,
+            ml_confidence_semantic: pending.watch_points
+              .find((point) => point.startsWith('ml_confidence_semantic:'))
+              ?.slice('ml_confidence_semantic:'.length) ?? null,
             sizing_mode: sizingMode,
             allocation_action: allocatorDecision.action,
             allocation_reason: allocatorDecision.reason,

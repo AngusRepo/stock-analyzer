@@ -4,16 +4,13 @@ import { formatTradeNotification, sendDiscordNotification } from './notify'
 import { checkExitConditions, type ExitDecision } from './paperExitPolicy'
 import { batchGetExecutionOrderbooks, batchGetIntradayOHLC, type IntradayOHLC } from './paperIntradayData'
 import {
-
-  getCurrentRegime,
   getPrevTradingDay,
   isDayTradeAllowed,
-  logRegimeShadow,
   recordSellSettlement,
 } from './paperMarketData'
 import { batchGetAtrByDomain } from './paperMarketDomainData'
 import { loadPreviousMarketCloseBySymbols } from './stockIdentityMarketBridge'
-import { databaseForDataDomain, databaseForTable } from './dataDomainRegistry'
+import { databaseForDataDomain } from './dataDomainRegistry'
 import { calcCommission, calcTax, resolveMarketSellFill } from './paperTradeMath'
 import { buildSellOrderNote, calcRealizedPnlSnapshot } from './paperOrderAccounting'
 import { putIntradayPrice } from './paperIntradayPriceCache'
@@ -43,6 +40,10 @@ import {
   resolveS12TwCalibrationArtifact,
   s12TwEntryCohortFromState,
 } from './s12TwEquityCalibration'
+import {
+  loadPromotedS12ProfitContinuationPolicy,
+  resolveS12ProfitContinuationPolicy,
+} from './s12ProfitContinuationPolicy'
 import { persistS12StructureSnapshot } from './s12StructureSnapshots'
 import {
   getCurrentRegime as getCurrentSltpRegime,
@@ -283,7 +284,11 @@ async function persistExitPositionUpdate(
   const nextTrailingStop = decision.newTrailingStop ?? pos.trailing_stop
   const nextHighest = decision.newHighest ?? pos.highest_since_entry
   const nextTp2 = decision.newTp2Price ?? pos.tp2_price
-  const nextLifecycleJson = updateLifecycleS12TrailingStop(pos.trade_lifecycle_json, positiveNumber(nextTrailingStop), decision.reason)
+  const nextLifecycleJson = decision.tradeLifecycleJson ?? updateLifecycleS12TrailingStop(
+    pos.trade_lifecycle_json,
+    positiveNumber(nextTrailingStop),
+    decision.reason,
+  )
   const changed =
     nextTrailingStop !== pos.trailing_stop ||
     nextHighest !== pos.highest_since_entry ||
@@ -747,6 +752,7 @@ function s12PositionDecisionToExitDecision(
         action: 'full_sell',
         reason: `S12 ${decision.reason} @ ${currentPrice.toFixed(2)}`,
         exitIntentKind: 'take_profit',
+        newTrailingStop: decision.targetPrice ?? undefined,
         newHighest: highest,
       }
     }
@@ -1151,8 +1157,6 @@ export async function forceDayTradeClose(env: Bindings, cfg: TradingConfig, toda
     requireBrokerQuote: true,
   })
   const atrMap = await batchGetAtrByDomain(env, symbols)
-  const regime = await getCurrentRegime(env.KV)
-
   for (const pos of sameDayPos) {
     const quote = quoteMap.get(pos.symbol)
     if (!quote) continue
@@ -1187,9 +1191,7 @@ export async function forceDayTradeClose(env: Bindings, cfg: TradingConfig, toda
       false,
       cfg,
       resolveSltpForRegime(cfg, await getCurrentSltpRegime(env.KV)),
-      regime ?? undefined,
     )
-    if (regime) logRegimeShadow('forceDayTradeClose', pos.symbol, regime, decision.action, decision.reason, databaseForTable(env, 'exit_shadow_log'))
     if (decision.action === 'hold') continue
 
     const exitIntentKind = decision.exitIntentKind ?? 'forced_close'
@@ -1325,8 +1327,6 @@ export async function runEODExit(env: Bindings): Promise<void> {
     requireBrokerQuote: true,
   })
   const exitAtrMap = await batchGetAtrByDomain(env, exitSymbols)
-  const eodRegime = await getCurrentRegime(env.KV)
-
   const prevDay = await getPrevTradingDay(databaseForDataDomain(env, 'core'), env.KV)
   const cb = await checkCircuitBreakersForDomains(env, cfg, env.KV)
   {
@@ -1350,6 +1350,10 @@ export async function runEODExit(env: Bindings): Promise<void> {
   }
 
   const eodToday = new Date(Date.now() + 8 * 3600_000).toISOString().slice(0, 10)
+  const promotedProfitContinuation = await loadPromotedS12ProfitContinuationPolicy(
+    databaseForDataDomain(env, 'learning'),
+    eodToday,
+  ).catch(() => null)
 
   for (const pos of exitPositions) {
     const quote = exitQuoteMap.get(pos.symbol)
@@ -1373,10 +1377,19 @@ export async function runEODExit(env: Bindings): Promise<void> {
       true,
       cfg,
       resolveSltpForRegime(cfg, await getCurrentSltpRegime(env.KV)),
-      eodRegime ?? undefined,
     )
     let decision = resolveS12PrimaryExitDecision(s12ExitDecision, fallbackDecision)
-    if (eodRegime) logRegimeShadow('runEODExit', pos.symbol, eodRegime, decision.action, decision.reason, databaseForTable(env, 'exit_shadow_log'))
+    const continuation = resolveS12ProfitContinuationPolicy({
+      policy: promotedProfitContinuation,
+      baseDecision: decision,
+      position: pos,
+      tradeDate: eodToday,
+      nowMs: Date.now(),
+      allowActivation: false,
+    })
+    decision = continuation.lifecycleJson == null
+      ? continuation.decision
+      : { ...continuation.decision, tradeLifecycleJson: continuation.lifecycleJson }
 
     let dayTradeSell = false
     if (pos.entry_date === eodToday && decision.action !== 'hold') {
@@ -1622,6 +1635,10 @@ export async function pollIntradayStopLoss(env: Bindings): Promise<IntradayStopL
     if (quote) quoteMap.set(pos.symbol, quote)
   }
   const intradayToday = new Date(Date.now() + 8 * 3600_000).toISOString().slice(0, 10)
+  const promotedProfitContinuation = await loadPromotedS12ProfitContinuationPolicy(
+    databaseForDataDomain(env, 'learning'),
+    intradayToday,
+  ).catch(() => null)
   const missingQuotePositions = positions.filter((pos: any) => !quoteMap.has(pos.symbol))
   const recordMissingHoldingQuote = async (pos: any): Promise<void> => {
     const shares = Math.max(0, Math.floor(Number(pos.shares ?? 0)))
@@ -1652,8 +1669,6 @@ export async function pollIntradayStopLoss(env: Bindings): Promise<IntradayStopL
     })
   }
   const atrMap = await batchGetAtrByDomain(env, symbols)
-  const intraRegime = await getCurrentRegime(env.KV)
-
   if (quoteMap.size === 0) {
     await Promise.all(missingQuotePositions.map(recordMissingHoldingQuote))
     throw new Error('holding_authoritative_market_data_unavailable_all_positions')
@@ -1695,10 +1710,19 @@ export async function pollIntradayStopLoss(env: Bindings): Promise<IntradayStopL
       false,
       cfg,
       resolveSltpForRegime(cfg, await getCurrentSltpRegime(env.KV)),
-      intraRegime ?? undefined,
     )
     let decision = resolveS12PrimaryExitDecision(s12ExitDecision, fallbackDecision)
-    if (intraRegime) logRegimeShadow('pollIntradayStopLoss', pos.symbol, intraRegime, decision.action, decision.reason, databaseForTable(env, 'exit_shadow_log'))
+    const continuation = resolveS12ProfitContinuationPolicy({
+      policy: promotedProfitContinuation,
+      baseDecision: decision,
+      position: pos,
+      tradeDate: intradayToday,
+      nowMs: Date.now(),
+      allowActivation: true,
+    })
+    decision = continuation.lifecycleJson == null
+      ? continuation.decision
+      : { ...continuation.decision, tradeLifecycleJson: continuation.lifecycleJson }
 
     if (decision.action !== 'hold') {
       const prevC = prevCloseMapSell.get(pos.symbol)

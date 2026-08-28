@@ -1740,7 +1740,6 @@ def _pipeline_prediction_bundle_impl(payload: dict) -> dict:
     from app.dlinear_universal import dlinear_batch_predict
     from app.itransformer_universal import itransformer_batch_predict
     from app.patchtst_universal import patchtst_batch_predict
-    from app.state_space_universal import state_space_overlays_batch_predict
     from app.serving_resolver import (
         active8_shadow_candidate_identities,
         build_pool_from_frozen_manifest,
@@ -1767,8 +1766,6 @@ def _pipeline_prediction_bundle_impl(payload: dict) -> dict:
     sequence_series = payload.get("sequence_series") or []
     active_versions = payload.get("active_versions") or {}
     model_status = payload.get("model_status") or {}
-    state_space_models = payload.get("state_space_models") or {}
-    state_space_mode = str(payload.get("state_space_overlay_mode") or "blocking").strip().lower()
 
     serving_manifest = payload.get("serving_manifest")
     serving_manifest_digest = str(payload.get("serving_manifest_digest") or "").strip().lower()
@@ -1917,25 +1914,12 @@ def _pipeline_prediction_bundle_impl(payload: dict) -> dict:
             },
         )
 
-    def _state_space() -> dict:
-        if not state_space_models:
-            return _skip("state-space overlays retired by model_pool")
-        if state_space_mode in {"disabled", "shadow"}:
-            return _skip(f"state-space overlays {state_space_mode}; not blocking prediction")
-        return state_space_overlays_batch_predict(
-            model_names=["KalmanFilter", "MarkovSwitching"],
-            series_list=sequence_series,
-            horizon=5,
-            version_by_model=state_space_models,
-        )
-
     stages = {
         "predict_batch_v2": (_feature, True),
         "gnn_graphsage_universal_predict": (_gnn, _is_active("GNN")),
         "dlinear_universal_predict": (_dlinear, _is_active("DLinear")),
         "patchtst_universal_predict": (_patchtst, _is_active("PatchTST")),
         "itransformer_universal_predict": (_itransformer, _is_active("iTransformer")),
-        "state_space_universal_predict": (_state_space, False),
         "active8_sequence_shadow_predict": (_active8_sequence_shadows, False),
     }
     outputs: dict[str, object] = {}
@@ -2107,7 +2091,6 @@ def _pipeline_prediction_bundle_impl(payload: dict) -> dict:
         "dlinear_raw": outputs.get("dlinear_universal_predict") or {"results": []},
         "patchtst_raw": outputs.get("patchtst_universal_predict") or {"results": []},
         "itransformer_raw": outputs.get("itransformer_universal_predict") or {"results": []},
-        "state_space_raw": outputs.get("state_space_universal_predict") or {"results": []},
         "active8_sequence_shadow_raw": outputs.get("active8_sequence_shadow_predict")
         or {
             "schema_version": "active8-sequence-shadow-bundle-v1",

@@ -46,6 +46,10 @@ const metaShadowClosureBlock = postMarketChain.slice(
   postMarketChain.indexOf('async function runMetaLearningShadowClosure'),
   postMarketChain.indexOf('async function enqueueStrategyLearningClosureTask'),
 )
+const evidenceOnlySnapshotBlock = postMarketChain.slice(
+  postMarketChain.indexOf('let snapshotTask: ChainedTask'),
+  postMarketChain.indexOf('results.push(snapshotTask)'),
+)
 
 assert(callbackRoutes.includes("body.task === 'pipeline'"), 'pipeline callback must be explicitly handled')
 assert(
@@ -149,6 +153,9 @@ assert(
     postMarketChain.includes("task: 'active8-action-authority'") &&
     postMarketChain.includes('actionable=0 production_effect=0') &&
     postMarketChain.includes("'active8-evidence-only-authority-v1'") &&
+    evidenceOnlySnapshotBlock.includes('emitChainedTaskObservability(') &&
+    evidenceOnlySnapshotBlock.includes("'skipped'") &&
+    evidenceOnlySnapshotBlock.includes('critical: false') &&
     postMarketChain.includes('if (!snapshotUnavailableInEvidenceOnlyMode) {'),
   'evidence-only continuation must require an exact zero-action authority attestation and preserve pointer integrity fail-closed',
 )

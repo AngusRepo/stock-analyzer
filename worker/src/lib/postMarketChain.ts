@@ -492,14 +492,25 @@ export async function runPostPipelineCallbackChain(
     await logChainSummary(env, ctx, 'post-pipeline-chain', startedAt, results)
     return 'error'
   }
-  const snapshotTask: ChainedTask = snapshotUnavailableInEvidenceOnlyMode
-    ? {
+  let snapshotTask: ChainedTask
+  if (snapshotUnavailableInEvidenceOnlyMode) {
+    const summary = `not applicable: Active8 evidence-only authority attested date=${ctx.runDate} recommendations=${actionAuthority.recommendationRows} actionable=0 production_effect=0`
+    await emitChainedTaskObservability(
+      env,
+      ctx,
+      'allocator-ev-feature-snapshot-backfill',
+      'skipped',
+      summary,
+      0,
+    )
+    snapshotTask = {
       task: 'allocator-ev-feature-snapshot-backfill',
-      summary: `not applicable: Active8 evidence-only authority attested date=${ctx.runDate} recommendations=${actionAuthority.recommendationRows} actionable=0 production_effect=0`,
+      summary,
       status: 'skipped',
       critical: false,
     }
-    : await logChainedTask(
+  } else {
+    snapshotTask = await logChainedTask(
       env,
       ctx,
       'allocator-ev-feature-snapshot-backfill',
@@ -516,6 +527,7 @@ export async function runPostPipelineCallbackChain(
         }),
       { timeoutMs: 330_000 },
     )
+  }
   results.push(snapshotTask)
   const snapshotPending = snapshotTask.status !== 'error'
     && /\bstatus=(?:spawned|pending)\b/i.test(snapshotTask.summary)

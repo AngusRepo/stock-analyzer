@@ -11,13 +11,13 @@ Why:
 
 取樣策略：
   1. 讀 `stocks` 表 active + not delisted 的 (id, symbol, sector)
-  2. 讀每檔近 lookback_days 平均 volume (stock_prices)
-  3. 濾掉：無 sector / avg_volume < min_avg_volume / 無 30d 資料
+  2. 讀每檔近 lookback_days 的 close × volume (stock_prices)
+  3. 濾掉：無 sector / median daily traded value 未達 L0.5 capacity / 少於 3 個 PIT sessions
   4. 按 sector 分層 → 每層 sample 數 = round(target_size * sector_ratio)
-  5. 層內按 avg_volume 降序 pick top-N（穩定再現：同 sector 內成交活躍者優先）
+  5. 層內用 end_date + symbol 的 deterministic hash 取樣，不依流動性排序
   6. 層分配總數湊不齊 target_size 時，從最大層補
 
-回傳：sorted list[str] (symbol)。
+回傳：sorted list[str] (symbol)。這是 research compute subset，不是 production top-k。
 
 NOTE (2026-04-09 F1 fix):
   這裡刻意不濾 `in_current_watchlist=1`。`in_current_watchlist` 是 ML 運算成本
@@ -27,7 +27,9 @@ NOTE (2026-04-09 F1 fix):
   當週 screener 偏好。正確的 tradability filter 是 `delisted_date IS NULL`。
 """
 from __future__ import annotations
+import hashlib
 import logging
+from statistics import median
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 
@@ -40,14 +42,14 @@ def select_stratified_subset(
     target_size: int = 250,
     end_date: Optional[str] = None,
     lookback_days: int = 30,
-    min_avg_volume: int = 500_000,
+    min_median_daily_traded_value: float = 13_000_000,
 ) -> list[str]:
     """
     Args:
         target_size:    目標取樣檔數，預設 250
         end_date:       lookback 上界，預設今天 (TW)；格式 'YYYY-MM-DD'
-        lookback_days:  avg_volume 計算的回看天數，預設 30
-        min_avg_volume: 最低平均日成交量（股），低於此值直接排除
+        lookback_days:  PIT daily traded value 計算的回看天數，預設 30
+        min_median_daily_traded_value: L0.5 median ADTV capacity floor (TWD)
 
     Returns:
         list[str] symbols, sorted, len ≈ target_size
@@ -64,45 +66,68 @@ def select_stratified_subset(
     price_rows = load_market_price_rows_with_identity(
         start_date=start_date,
         end_date=end_date,
-        fields=("date", "volume"),
+        fields=("date", "close", "volume"),
         require_sector=True,
     )
-    min_days = max(5, lookback_days // 3)
+    window_sessions = 20
+    min_days = 3
     aggregates: dict[str, dict[str, object]] = {}
     for price_row in price_rows:
         symbol = str(price_row.get("symbol") or "")
         sector = str(price_row.get("sector") or "")
+        trade_date = str(price_row.get("date") or "")
+        close = price_row.get("close")
         volume = price_row.get("volume")
-        if not symbol or not sector or volume is None:
+        if not symbol or not sector or not trade_date or close is None or volume is None:
             continue
-        packet = aggregates.setdefault(symbol, {"symbol": symbol, "sector": sector, "count": 0, "sum": 0.0})
-        packet["count"] = int(packet["count"]) + 1
-        packet["sum"] = float(packet["sum"]) + float(volume)
-    rows = [
-        {"symbol": packet["symbol"], "sector": packet["sector"], "avg_vol": float(packet["sum"]) / int(packet["count"])}
-        for packet in aggregates.values()
-        if int(packet["count"]) >= min_days
-        and float(packet["sum"]) / int(packet["count"]) >= min_avg_volume
-    ]
+        daily_value = float(close) * float(volume)
+        if daily_value < 0:
+            continue
+        packet = aggregates.setdefault(
+            symbol,
+            {"symbol": symbol, "sector": sector, "daily_values_by_date": {}},
+        )
+        values_by_date = packet["daily_values_by_date"]
+        if isinstance(values_by_date, dict):
+            values_by_date[trade_date] = daily_value
+    rows: list[dict[str, object]] = []
+    for packet in aggregates.values():
+        values_by_date = packet["daily_values_by_date"]
+        if not isinstance(values_by_date, dict):
+            continue
+        recent_values = [float(value) for _, value in sorted(values_by_date.items())[-window_sessions:]]
+        if len(recent_values) < min_days:
+            continue
+        median_daily_value = float(median(recent_values))
+        if median_daily_value < min_median_daily_traded_value:
+            continue
+        symbol = str(packet["symbol"])
+        sample_key = hashlib.sha256(f"{end_date}:{symbol}".encode("utf-8")).hexdigest()
+        rows.append({
+            "symbol": symbol,
+            "sector": packet["sector"],
+            "median_daily_value": median_daily_value,
+            "sample_key": sample_key,
+        })
     if not rows:
         logger.warning(
             f"[stratified_subset] 0 candidates in {start_date}~{end_date} "
-            f"(min_avg_volume={min_avg_volume})"
+            f"(min_median_daily_traded_value={min_median_daily_traded_value})"
         )
         return []
 
     logger.info(
         f"[stratified_subset] {len(rows)} candidates after basic filter "
-        f"({start_date}~{end_date}, min_avg_volume={min_avg_volume})"
+        f"({start_date}~{end_date}, min_median_daily_traded_value={min_median_daily_traded_value})"
     )
 
     # ── Step 2: group by sector ─────────────────────────────────────────────
     by_sector: dict[str, list[dict]] = {}
     for r in rows:
         by_sector.setdefault(r["sector"], []).append(r)
-    # Stable: sort each sector by avg_vol desc
+    # Stable deterministic sample; never rank the research universe by liquidity.
     for sector in by_sector:
-        by_sector[sector].sort(key=lambda x: x["avg_vol"] or 0, reverse=True)
+        by_sector[sector].sort(key=lambda x: str(x["sample_key"]))
 
     total = len(rows)
     # ── Step 3: proportional allocation per sector ─────────────────────────
@@ -116,7 +141,7 @@ def select_stratified_subset(
     for s in quotas:
         quotas[s] = min(quotas[s], sector_counts[s])
 
-    # ── Step 4: pick top-avg_vol per sector up to quota ────────────────────
+    # ── Step 4: deterministic within-sector compute sample ────────────────
     picked: list[str] = []
     for sector, lst in by_sector.items():
         q = quotas[sector]
@@ -126,21 +151,21 @@ def select_stratified_subset(
     deficit = target_size - len(picked)
     if deficit > 0:
         # 從最大 sector 補（逐一加回尚未選的 symbol）
-        leftover: list[tuple[str, float]] = []
+        leftover: list[tuple[str, str]] = []
         picked_set = set(picked)
         for sector, lst in by_sector.items():
             for r in lst:
                 if r["symbol"] not in picked_set:
-                    leftover.append((r["symbol"], r["avg_vol"] or 0))
+                    leftover.append((str(r["symbol"]), str(r["sample_key"])))
         leftover.sort(key=lambda x: x[1], reverse=True)
         picked.extend(sym for sym, _ in leftover[:deficit])
     elif deficit < 0:
-        # 超出 target：按 avg_vol 保留 top-target_size（跨 sector）
-        all_picked: list[tuple[str, float, str]] = []
+        # 超出 target：用相同 deterministic key 收束 compute subset。
+        all_picked: list[tuple[str, str, str]] = []
         for sector, lst in by_sector.items():
             q = quotas[sector]
             for r in lst[:q]:
-                all_picked.append((r["symbol"], r["avg_vol"] or 0, sector))
+                all_picked.append((str(r["symbol"]), str(r["sample_key"]), sector))
         all_picked.sort(key=lambda x: x[1], reverse=True)
         picked = [x[0] for x in all_picked[:target_size]]
 

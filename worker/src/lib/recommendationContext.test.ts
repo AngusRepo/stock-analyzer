@@ -46,13 +46,34 @@ function assert(condition: unknown, message: string): void {
     persistedRecommendationLane: 'tradable',
     eligibleForMl: 1,
     eligibleForPendingBuy: 1,
+    liquidityPolicyVersion: 'l05-liquidity-capacity-policy-v2',
+    liquidityPolicyChecksum: `sha256:${'a'.repeat(64)}`,
+    liquidityMetric: 'median_daily_traded_value_twd',
+    liquidityObservedSessions: 20,
+    medianDailyTradedValueTwd: 20_000_000,
+    minMedianDailyTradedValueTwd: 13_000_000,
+    liquidityCapacityPassed: true,
+    maturityImpact: 'none_no_reset',
   })
 
-  assert(gate.schema_version === 'l05_hard_gate_summary_v1', 'L0.5 hard gate summary should expose a stable schema version')
-  assert(gate.decision_policy === 'exclude_untradable_or_untrusted_only_not_alpha_ranker', 'L0.5 hard gate must not present itself as an alpha ranker')
-  assert(gate.gate_scope === 'tradeability_data_trust_pending_buy', 'L0.5 hard gate scope should be explicit')
+  assert(gate.schema_version === 'l05_hard_gate_summary_v2', 'L0.5 hard gate summary should expose the liquidity-capacity schema')
+  assert(gate.decision_policy === 'exclude_untradable_untrusted_or_execution_infeasible_only_not_alpha_ranker', 'L0.5 hard gate must not present itself as an alpha ranker')
+  assert(gate.gate_scope === 'tradeability_data_trust_liquidity_capacity_pending_buy', 'L0.5 hard gate scope should be explicit')
+  assert(gate.liquidity_capacity_passed === true, 'sufficient median traded value must pass L0.5 capacity')
+  assert(gate.maturity_impact === 'none_no_reset', 'L0.5 universe policy must not reset downstream maturity')
   assert(gate.ml_slate_allowed === true, 'tradable rows should remain eligible for ML slate')
   assert(gate.pending_buy_blocked === false, 'tradable rows should remain eligible for pending buy')
+
+  const thin = buildHardGateSummary({
+    boardType: 'LISTED',
+    tradabilityTier: 'auto_tradable',
+    recommendationLane: 'tradable',
+    eligibleForMl: true,
+    eligibleForPendingBuy: true,
+    liquidityCapacityPassed: false,
+  })
+  assert(thin.hard_blocked === true, 'insufficient execution capacity must hard-block the trade lane')
+  assert(thin.pending_buy_blocked === true, 'a liquidity-capacity failure must block pending buy even when stale governance says eligible')
 
   const emerging = buildHardGateSummary({
     boardType: 'EMERGING',

@@ -98,10 +98,10 @@ export interface SparseAllocationSummary {
 }
 
 export interface HardGateSummary {
-  schema_version: 'l05_hard_gate_summary_v1'
-  source: 'board_tradability+persisted_recommendation_governance'
-  decision_policy: 'exclude_untradable_or_untrusted_only_not_alpha_ranker'
-  gate_scope: 'tradeability_data_trust_pending_buy'
+  schema_version: 'l05_hard_gate_summary_v2'
+  source: 'board_tradability+persisted_recommendation_governance+screener_funnel_liquidity_capacity'
+  decision_policy: 'exclude_untradable_untrusted_or_execution_infeasible_only_not_alpha_ranker'
+  gate_scope: 'tradeability_data_trust_liquidity_capacity_pending_buy'
   board_type: string | null
   tradability_tier: string | null
   recommendation_lane: string | null
@@ -113,6 +113,14 @@ export interface HardGateSummary {
   ml_slate_allowed: boolean
   pending_buy_blocked: boolean
   hard_blocked: boolean
+  liquidity_policy_version: string | null
+  liquidity_policy_checksum: string | null
+  liquidity_metric: string | null
+  liquidity_observed_sessions: number | null
+  median_daily_traded_value_twd: number | null
+  min_median_daily_traded_value_twd: number | null
+  liquidity_capacity_passed: boolean | null
+  maturity_impact: string | null
   notes: string[]
 }
 
@@ -125,6 +133,14 @@ export interface HardGateSummaryInput {
   persistedRecommendationLane?: string | null
   eligibleForMl?: unknown
   eligibleForPendingBuy?: unknown
+  liquidityPolicyVersion?: unknown
+  liquidityPolicyChecksum?: unknown
+  liquidityMetric?: unknown
+  liquidityObservedSessions?: unknown
+  medianDailyTradedValueTwd?: unknown
+  minMedianDailyTradedValueTwd?: unknown
+  liquidityCapacityPassed?: unknown
+  maturityImpact?: unknown
 }
 
 export interface PerModelPredictionRow {
@@ -588,21 +604,30 @@ export function buildHardGateSummary(input: HardGateSummaryInput): HardGateSumma
   const persistedRecommendationLane = cleanTextOrNull(input.persistedRecommendationLane)
   const eligibleForMl = boolFromUnknown(input.eligibleForMl)
   const eligibleForPendingBuy = boolFromUnknown(input.eligibleForPendingBuy)
+  const liquidityCapacityPassed = input.liquidityCapacityPassed == null
+    ? null
+    : boolFromUnknown(input.liquidityCapacityPassed)
   const hardBlocked = tradabilityTier === 'blocked'
     || boardType === 'ETF'
     || boardType === 'UNKNOWN'
+    || liquidityCapacityPassed === false
     || (recommendationLane === 'research_only' && !eligibleForMl && !eligibleForPendingBuy)
   const notes = [
     eligibleForMl ? 'ml_evaluation_allowed' : 'ml_evaluation_blocked',
     eligibleForPendingBuy ? 'pending_buy_allowed' : 'pending_buy_blocked',
     hardBlocked ? 'hard_gate_blocked_from_trade_lane' : 'hard_gate_passed_for_lane',
+    liquidityCapacityPassed == null
+      ? 'liquidity_capacity_evidence_unavailable'
+      : liquidityCapacityPassed
+        ? 'liquidity_capacity_passed'
+        : 'liquidity_capacity_blocked',
   ]
 
   return {
-    schema_version: 'l05_hard_gate_summary_v1',
-    source: 'board_tradability+persisted_recommendation_governance',
-    decision_policy: 'exclude_untradable_or_untrusted_only_not_alpha_ranker',
-    gate_scope: 'tradeability_data_trust_pending_buy',
+    schema_version: 'l05_hard_gate_summary_v2',
+    source: 'board_tradability+persisted_recommendation_governance+screener_funnel_liquidity_capacity',
+    decision_policy: 'exclude_untradable_untrusted_or_execution_infeasible_only_not_alpha_ranker',
+    gate_scope: 'tradeability_data_trust_liquidity_capacity_pending_buy',
     board_type: boardType,
     tradability_tier: tradabilityTier,
     recommendation_lane: recommendationLane,
@@ -612,8 +637,16 @@ export function buildHardGateSummary(input: HardGateSummaryInput): HardGateSumma
     eligible_for_ml: eligibleForMl,
     eligible_for_pending_buy: eligibleForPendingBuy,
     ml_slate_allowed: eligibleForMl && !hardBlocked,
-    pending_buy_blocked: !eligibleForPendingBuy,
+    pending_buy_blocked: !eligibleForPendingBuy || hardBlocked,
     hard_blocked: hardBlocked,
+    liquidity_policy_version: cleanTextOrNull(input.liquidityPolicyVersion),
+    liquidity_policy_checksum: cleanTextOrNull(input.liquidityPolicyChecksum),
+    liquidity_metric: cleanTextOrNull(input.liquidityMetric),
+    liquidity_observed_sessions: finiteOrNull(input.liquidityObservedSessions),
+    median_daily_traded_value_twd: finiteOrNull(input.medianDailyTradedValueTwd),
+    min_median_daily_traded_value_twd: finiteOrNull(input.minMedianDailyTradedValueTwd),
+    liquidity_capacity_passed: liquidityCapacityPassed,
+    maturity_impact: cleanTextOrNull(input.maturityImpact),
     notes,
   }
 }

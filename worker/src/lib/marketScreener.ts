@@ -66,6 +66,11 @@ import {
 import { promoteCanonicalRun, registerPipelineRun, writeEvidenceArtifact } from './artifactLifecycle'
 import { sha256Text } from './datasetSnapshots'
 import { buildL0DropReasonConservation, compactL0DropReasonConservationReceipt } from './screenerFunnelEvidence'
+import {
+  L05_LIQUIDITY_CAPACITY_POLICY,
+  L05_LIQUIDITY_CAPACITY_POLICY_CHECKSUM,
+  evaluateL05LiquidityCapacity,
+} from './l05LiquidityCapacity'
 import { buildStrategyRouteRecoveryPacket } from "./strategyRouteRecoveryPacket"
 import {
   buildSelectionEvidenceV4,
@@ -3589,7 +3594,7 @@ export async function runBottomUpScreener(env: Bindings, runDate?: string | null
 
   // ?? Step 1: Universe hard filter ??
   const universe: { stockId: string; prices: CanonicalScreenerPrice[] }[] = []
-  let skipPriceHistory = 0, skipPrice = 0, skipVol = 0, skipTurnover = 0, skipPunish = 0, skipVolZero = 0, skipEtf = 0
+  let skipPriceHistory = 0, skipPrice = 0, skipLiquidity = 0, skipPunish = 0, skipVolZero = 0, skipEtf = 0
 
   for (const [stockId, prices] of data.prices) {
     if (prices.length < 3) {
@@ -3631,18 +3636,16 @@ export async function runBottomUpScreener(env: Bindings, runDate?: string | null
       continue
     }
 
-    const volSlice = prices.slice(-Math.min(20, prices.length))
-    const avgVol20 = volSlice.reduce((s, p) => s + p.Trading_Volume, 0) / volSlice.length
-    if (avgVol20 < sc.minAvgVolume) {
-      skipVol++
-      pushFunnelItem(funnelItems, { symbol: stockId, stage: 'universe', decision: 'drop', reasonCode: 'avg_volume_below_min', evidence: { avgVol20, minAvgVolume: sc.minAvgVolume } })
-      continue
-    }
-
-    const avgDailyTurnover = avgVol20 * latest.close
-    if (avgDailyTurnover < sc.minDailyTurnover) {
-      skipTurnover++
-      pushFunnelItem(funnelItems, { symbol: stockId, stage: 'universe', decision: 'drop', reasonCode: 'turnover_below_min', evidence: { avgDailyTurnover, minDailyTurnover: sc.minDailyTurnover } })
+    const liquidityCapacity = evaluateL05LiquidityCapacity(prices, sc.minDailyTurnover)
+    if (!liquidityCapacity.passed) {
+      skipLiquidity++
+      pushFunnelItem(funnelItems, {
+        symbol: stockId,
+        stage: 'universe',
+        decision: 'drop',
+        reasonCode: liquidityCapacity.reason_code,
+        evidence: { ...liquidityCapacity },
+      })
       continue
     }
 
@@ -3651,16 +3654,15 @@ export async function runBottomUpScreener(env: Bindings, runDate?: string | null
       symbol: stockId,
       stage: 'universe',
       decision: 'pass',
-      reasonCode: 'hard_filters_passed',
+      reasonCode: 'l0_l05_capacity_passed',
       evidence: {
         close: latest.close,
-        avgVol20,
-        avgDailyTurnover,
         tradingRestrictionRisk: restrictionRiskSet.has(stockId),
+        ...liquidityCapacity,
       },
     })
   }
-  const universeMsg = `[Step 1] Universe: ${universe.length} passed | drops: priceHistory=${skipPriceHistory} price=${skipPrice} avgVol=${skipVol} turnover=${skipTurnover} restricted=${skipPunish} zeroVol=${skipVolZero} etf=${skipEtf}`
+  const universeMsg = `[Step 1] L0+L0.5: ${universe.length} passed | drops: priceHistory=${skipPriceHistory} price=${skipPrice} liquidityCapacity=${skipLiquidity} restricted=${skipPunish} zeroVol=${skipVolZero} etf=${skipEtf}`
   debugLog.push(universeMsg)
   if (skipEtf > 0) debugLog.push(`[Step 1] hard gate excluded ETFs=${skipEtf}`)
 
@@ -5754,6 +5756,11 @@ export async function runBottomUpScreener(env: Bindings, runDate?: string | null
         l0RawSignalCoverageAudit,
         finLabFactorNormalization: finLabFactorNormalizationTelemetry,
         restrictedCount: punishedSet.size,
+        l05LiquidityCapacityPolicy: {
+          ...L05_LIQUIDITY_CAPACITY_POLICY,
+          policy_checksum: L05_LIQUIDITY_CAPACITY_POLICY_CHECKSUM,
+          min_median_daily_traded_value_twd: sc.minDailyTurnover,
+        },
         l0DropReasonConservation: l0DropReasonConservationReceipt,
         buzzConcepts: combinedBuzz.slice(0, 10).map(b => b.concept),
         performance: {

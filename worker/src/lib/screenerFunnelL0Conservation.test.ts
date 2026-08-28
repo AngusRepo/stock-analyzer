@@ -229,7 +229,7 @@ assert.ok(
     < producerSource.indexOf('await writeScreenerFunnel(env, {'),
   'conservation must validate before funnel persistence',
 )
-assert.match(producerSource, /const artifactPayload = \{\s*metadata: input\.metadata,/)
-assert.match(producerSource, /const metadata = JSON\.stringify\(input\.metadata\)/)
+assert.match(producerSource, /const artifactPayload = \{\s*metadata: metadataWithRouteRecovery,/)
+assert.match(producerSource, /const metadata = JSON\.stringify\(metadataWithRouteRecovery\)/)
 
 console.log('screener funnel L0 conservation tests passed')

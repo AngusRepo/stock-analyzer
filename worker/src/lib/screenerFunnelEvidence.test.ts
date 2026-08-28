@@ -12,8 +12,19 @@ function assert(condition: unknown, message: string): void {
       symbol: '2330',
       stage: 'universe',
       decision: 'pass',
-      reason_code: 'hard_filters_passed',
-      evidence: JSON.stringify({ close: 910, avgVol20: 12000, avgDailyTurnover: 3_200_000_000 }),
+      reason_code: 'l0_l05_capacity_passed',
+      evidence: JSON.stringify({
+        close: 910,
+        policy_version: 'l05-liquidity-capacity-policy-v2',
+        policy_checksum: `sha256:${'a'.repeat(64)}`,
+        metric: 'median_daily_traded_value_twd',
+        window_sessions: 20,
+        observed_sessions: 20,
+        median_daily_traded_value_twd: 3_200_000_000,
+        min_median_daily_traded_value_twd: 13_000_000,
+        passed: true,
+        maturity_impact: 'none_no_reset',
+      }),
     },
     {
       symbol: '2330',
@@ -189,7 +200,8 @@ function assert(condition: unknown, message: string): void {
   assert(summary?.rank === 4, 'final selection rank must be preserved')
   assert(summary?.reason_code === 'selected_for_ml_shortlist', 'final reason must be preserved')
   assert(summary?.timeline.length === 9, 'timeline must retain all screener stages')
-  assert((summary?.evidence.layer0_universe_features as any)?.schema_version === 'layer0_universe_features_summary_v1', 'Layer0 universe/features evidence must expose a stable summary schema')
+  assert((summary?.evidence.layer0_universe_features as any)?.schema_version === 'layer0_universe_features_summary_v2', 'Layer0 universe/features evidence must expose the liquidity-capacity schema')
+  assert((summary?.evidence.layer0_universe_features as any)?.median_daily_traded_value_twd === 3_200_000_000, 'Layer0 summary must expose PIT median daily traded value')
   assert((summary?.evidence.layer0_universe_features as any)?.decision_policy === 'feature_materialization_only_not_selector', 'Layer0 feature materialization must not be summarized as a selector')
   assert((summary?.evidence.layer0_universe_features as any)?.selection_policy === 'no_topk_no_shrink', 'Layer0 summary must explicitly reject top-k/shrink semantics')
   assert((summary?.evidence.layer0_universe_features as any)?.source_universe_count === 486, 'Layer0 summary should carry source universe count when available')

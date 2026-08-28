@@ -197,6 +197,14 @@ type HardGateSummary = {
   ml_slate_allowed?: boolean | number | string | null
   pending_buy_blocked?: boolean | number | string | null
   hard_blocked?: boolean | number | string | null
+  liquidity_policy_version?: string | null
+  liquidity_policy_checksum?: string | null
+  liquidity_metric?: string | null
+  liquidity_observed_sessions?: number | string | null
+  median_daily_traded_value_twd?: number | string | null
+  min_median_daily_traded_value_twd?: number | string | null
+  liquidity_capacity_passed?: boolean | number | string | null
+  maturity_impact?: string | null
   notes?: string[]
 }
 
@@ -215,8 +223,15 @@ type UniverseFeatureSummary = {
   has_strategy_raw_signals?: boolean | number | string | null
   has_taxonomy_profile?: boolean | number | string | null
   close?: number | string | null
-  avg_volume_20d?: number | string | null
-  avg_daily_turnover?: number | string | null
+  liquidity_policy_version?: string | null
+  liquidity_policy_checksum?: string | null
+  liquidity_metric?: string | null
+  liquidity_observed_sessions?: number | string | null
+  median_daily_traded_value_twd?: number | string | null
+  mean_daily_traded_value_twd?: number | string | null
+  min_median_daily_traded_value_twd?: number | string | null
+  liquidity_capacity_passed?: boolean | number | string | null
+  maturity_impact?: string | null
 }
 
 type StrategyLabelerSummary = {
@@ -644,13 +659,13 @@ function hardGateFromRec(rec: any): HardGateSummary | null {
   const funnelEvidence = parseObject(rec?.screener_funnel_evidence)
   const gate = parseObject(rec?.l05_hard_gate)
     ?? parseObject(funnelEvidence?.layer05_hard_gate)
-  if (gate?.schema_version === 'l05_hard_gate_summary_v1') return gate
+  if (gate?.schema_version === 'l05_hard_gate_summary_v2' || gate?.schema_version === 'l05_hard_gate_summary_v1') return gate
   const hasGovernanceFields = rec?.board_type || rec?.tradability_tier || rec?.recommendation_lane || rec?.board_reason
   if (!hasGovernanceFields) return null
   return {
-    schema_version: 'l05_hard_gate_summary_v1',
-    decision_policy: 'exclude_untradable_or_untrusted_only_not_alpha_ranker',
-    gate_scope: 'tradeability_data_trust_pending_buy',
+    schema_version: 'l05_hard_gate_summary_v2',
+    decision_policy: 'exclude_untradable_untrusted_or_execution_infeasible_only_not_alpha_ranker',
+    gate_scope: 'tradeability_data_trust_liquidity_capacity_pending_buy',
     board_type: rec?.board_type ?? null,
     tradability_tier: rec?.tradability_tier ?? null,
     recommendation_lane: rec?.recommendation_lane ?? null,
@@ -667,7 +682,7 @@ function hardGateFromRec(rec: any): HardGateSummary | null {
 function universeFeaturesFromRec(rec: any): UniverseFeatureSummary | null {
   const funnelEvidence = parseObject(rec?.screener_funnel_evidence)
   const layer0 = parseObject(funnelEvidence?.layer0_universe_features)
-  if (layer0?.schema_version === 'layer0_universe_features_summary_v1') return layer0
+  if (layer0?.schema_version === 'layer0_universe_features_summary_v2' || layer0?.schema_version === 'layer0_universe_features_summary_v1') return layer0
   return null
 }
 
@@ -1662,6 +1677,11 @@ function HardGateEvidenceBlock({ gate }: { gate: HardGateSummary | null }) {
   const hardBlocked = boolFromValue(gate.hard_blocked)
   const pendingBlocked = boolFromValue(gate.pending_buy_blocked)
   const mlAllowed = boolFromValue(gate.ml_slate_allowed ?? gate.eligible_for_ml)
+  const liquidityPassed = gate.liquidity_capacity_passed == null
+    ? null
+    : boolFromValue(gate.liquidity_capacity_passed)
+  const medianDailyValue = finiteMetric(gate.median_daily_traded_value_twd)
+  const minimumDailyValue = finiteMetric(gate.min_median_daily_traded_value_twd)
   const tone = hardBlocked
     ? 'border-rose-500/25 bg-rose-500/[0.06] text-rose-700 dark:text-rose-300'
     : pendingBlocked
@@ -1671,8 +1691,8 @@ function HardGateEvidenceBlock({ gate }: { gate: HardGateSummary | null }) {
   return (
     <div className={cn('rounded-lg border p-3 text-xs', tone)}>
       <div className="mb-2 flex items-center justify-between gap-3">
-        <span className="font-medium">L0.5 Hard Gate</span>
-        <span className="sv-num text-[11px] text-muted-foreground">tradeability / data trust, not alpha ranker</span>
+        <span className="font-medium">L0.5 Tradability / Capacity</span>
+        <span className="sv-num text-[11px] text-muted-foreground">execution capacity floor, no top-k</span>
       </div>
       <div className="grid gap-2 sm:grid-cols-4">
         <MetricPill label="lane" value={String(gate.recommendation_lane ?? '-')} />
@@ -1680,9 +1700,16 @@ function HardGateEvidenceBlock({ gate }: { gate: HardGateSummary | null }) {
         <MetricPill label="ML slate" value={mlAllowed ? 'allowed' : 'blocked'} />
         <MetricPill label="pending buy" value={pendingBlocked ? 'blocked' : 'allowed'} />
       </div>
+      <div className="mt-2 grid gap-2 sm:grid-cols-4">
+        <MetricPill label="liquidity" value={liquidityPassed == null ? 'unavailable' : liquidityPassed ? 'PASS' : 'BLOCKED'} />
+        <MetricPill label="median ADTV" value={medianDailyValue == null ? '-' : fmtNumber(medianDailyValue, 0)} />
+        <MetricPill label="minimum" value={minimumDailyValue == null ? '-' : fmtNumber(minimumDailyValue, 0)} />
+        <MetricPill label="sessions" value={countText(gate.liquidity_observed_sessions)} />
+      </div>
       <div className="mt-2 flex flex-wrap gap-1.5 text-[11px] text-muted-foreground">
-        <span className="rounded-full border border-border/40 bg-background/50 px-2 py-0.5">{gate.decision_policy ?? 'exclude_untradable_or_untrusted_only_not_alpha_ranker'}</span>
-        <span className="rounded-full border border-border/40 bg-background/50 px-2 py-0.5">{gate.gate_scope ?? 'tradeability_data_trust_pending_buy'}</span>
+        <span className="rounded-full border border-border/40 bg-background/50 px-2 py-0.5">{gate.decision_policy ?? 'exclude_untradable_untrusted_or_execution_infeasible_only_not_alpha_ranker'}</span>
+        <span className="rounded-full border border-border/40 bg-background/50 px-2 py-0.5">{gate.liquidity_policy_version ?? 'liquidity policy unavailable'}</span>
+        <span className="rounded-full border border-border/40 bg-background/50 px-2 py-0.5">{gate.gate_scope ?? 'tradeability_data_trust_liquidity_capacity_pending_buy'}</span>
         <span className="rounded-full border border-border/40 bg-background/50 px-2 py-0.5">{gate.tradability_tier ?? 'tradability unknown'}</span>
         <span className="rounded-full border border-border/40 bg-background/50 px-2 py-0.5">{gate.board_reason ?? 'board reason unknown'}</span>
       </div>
@@ -1696,7 +1723,7 @@ function UniverseFeatureEvidenceBlock({ universe }: { universe: UniverseFeatureS
   const featureGroups = universe.feature_groups?.length
     ? universe.feature_groups.join(' / ')
     : 'feature groups unavailable'
-  const liquidity = finiteMetric(universe.avg_daily_turnover)
+  const liquidity = finiteMetric(universe.median_daily_traded_value_twd)
 
   return (
     <div className="rounded-lg border border-cyan-500/20 bg-cyan-500/[0.05] p-3 text-xs">
@@ -1714,7 +1741,8 @@ function UniverseFeatureEvidenceBlock({ universe }: { universe: UniverseFeatureS
         <span className="rounded-full border border-border/40 bg-background/50 px-2 py-0.5">{universe.decision_policy ?? 'feature_materialization_only_not_selector'}</span>
         <span className="rounded-full border border-border/40 bg-background/50 px-2 py-0.5">{universe.selection_policy ?? 'no_topk_no_shrink'}</span>
         <span className="rounded-full border border-border/40 bg-background/50 px-2 py-0.5">{featureGroups}</span>
-        <span className="rounded-full border border-border/40 bg-background/50 px-2 py-0.5">liquidity {liquidity == null ? '-' : fmtNumber(liquidity, 0)}</span>
+        <span className="rounded-full border border-border/40 bg-background/50 px-2 py-0.5">median ADTV {liquidity == null ? '-' : fmtNumber(liquidity, 0)}</span>
+        <span className="rounded-full border border-border/40 bg-background/50 px-2 py-0.5">{universe.liquidity_policy_version ?? 'liquidity policy unavailable'}</span>
       </div>
     </div>
   )

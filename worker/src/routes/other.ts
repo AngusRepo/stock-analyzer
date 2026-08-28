@@ -4322,6 +4322,7 @@ recommendations.get('/daily', async (c) => {
       eligibleForMl: r.eligible_for_ml,
       eligibleForPendingBuy: r.eligible_for_pending_buy,
     })
+    const layer0UniverseFeatures = screenerFunnelEvidenceBase?.layer0_universe_features as Record<string, unknown> | undefined
     const hardGateSummary = buildHardGateSummary({
       boardType: board.boardType,
       tradabilityTier: board.tradabilityTier,
@@ -4331,6 +4332,14 @@ recommendations.get('/daily', async (c) => {
       persistedRecommendationLane: persistedLane,
       eligibleForMl: governance.eligibleForMl,
       eligibleForPendingBuy: governance.eligibleForPendingBuy,
+      liquidityPolicyVersion: layer0UniverseFeatures?.liquidity_policy_version,
+      liquidityPolicyChecksum: layer0UniverseFeatures?.liquidity_policy_checksum,
+      liquidityMetric: layer0UniverseFeatures?.liquidity_metric,
+      liquidityObservedSessions: layer0UniverseFeatures?.liquidity_observed_sessions,
+      medianDailyTradedValueTwd: layer0UniverseFeatures?.median_daily_traded_value_twd,
+      minMedianDailyTradedValueTwd: layer0UniverseFeatures?.min_median_daily_traded_value_twd,
+      liquidityCapacityPassed: layer0UniverseFeatures?.liquidity_capacity_passed,
+      maturityImpact: layer0UniverseFeatures?.maturity_impact,
     })
     const screenerFunnelEvidence = screenerFunnelEvidenceBase
       ? {

@@ -247,6 +247,7 @@ def run_search(
         target_size=subset_size,
         end_date=end_date,
         lookback_days=30,
+        min_median_daily_traded_value=float(baseline_params["screener"]["minDailyTurnover"]),
     )
     if not symbols:
         raise RuntimeError(

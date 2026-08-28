@@ -249,8 +249,6 @@ adminOptunaRoutes.post('/api/admin/optuna-push', async (c) => {
         ...current.screener,
         ...(params.minPrice != null && { minPrice: Number(params.minPrice) }),
         ...(params.maxPrice != null && { maxPrice: Number(params.maxPrice) }),
-        ...(params.minAvgVolume != null && { minAvgVolume: Number(params.minAvgVolume) }),
-        ...(params.minDailyTurnover != null && { minDailyTurnover: Number(params.minDailyTurnover) }),
         ...(params.maxPerIndustry != null && { maxPerIndustry: Number(params.maxPerIndustry) }),
         ...(params.maxCandidates != null && { maxCandidates: Number(params.maxCandidates) }),
         ...(Array.isArray(params.chipScoreTiers) && { chipScoreTiers: params.chipScoreTiers.map(Number) }),

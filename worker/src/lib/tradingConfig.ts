@@ -217,8 +217,8 @@ export interface TradingConfig {
   screener: {
     minPrice: number             // 最低股價（預設 15）
     maxPrice: number             // 最高股價（預設 2000）
-    minAvgVolume: number         // 最低日均量（預設 300000 shares）
-    minDailyTurnover: number     // 最低日均成交金額（預設 5000000 = 500萬，Survivorship Bias 防護）
+    minAvgVolume: number         // legacy config compatibility only; L0.5 decision effect is false
+    minDailyTurnover: number     // L0.5 20-session median daily traded value capacity floor
     max5dDrop: number            // 最大 5 日跌幅（預設 -0.10）
     minVolRatio: number          // 動量掃描最低量比（預設 1.2）
     strongVolRatio: number       // 量能放大標記門檻（預設 1.5）
@@ -524,8 +524,8 @@ export const DEFAULT_TRADING_CONFIG: TradingConfig = {
   screener: {
     minPrice: 15,
     maxPrice: 2000,
-    minAvgVolume: 300_000,
-    minDailyTurnover: 5_000_000,  // 500 萬：排除殭屍股但保留小型黑馬
+    minAvgVolume: 300_000,        // legacy observation only; not a selector
+    minDailyTurnover: 13_000_000, // L0.5 median ADTV floor; production KV may override
     max5dDrop: -0.10,
     minVolRatio: 1.2,
     strongVolRatio: 1.5,

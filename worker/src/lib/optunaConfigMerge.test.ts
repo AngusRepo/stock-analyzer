@@ -32,6 +32,7 @@ const sources: Record<string, any> = {
     minPrice: 25,
     maxPrice: 900,
     minAvgVolume: 800,
+    minDailyTurnover: 99_000_000,
   },
   conformal: {
     coverage: 0.93,
@@ -70,6 +71,8 @@ assert.equal(candidate.config.barrier.upperMult, 1.7)
 assert.equal(candidate.config.signal.consensusThreshold, 0.72)
 assert.equal(candidate.config.sltp.slMultBase, 1.2)
 assert.equal(candidate.config.screener.minPrice, 25)
+assert.equal(candidate.config.screener.minAvgVolume, DEFAULT_TRADING_CONFIG.screener.minAvgVolume, 'retired share-volume gate must ignore stale Optuna output')
+assert.equal(candidate.config.screener.minDailyTurnover, DEFAULT_TRADING_CONFIG.screener.minDailyTurnover, 'execution-universe capacity floor must not be changed by alpha Optuna')
 assert.equal((candidate.config.L2_formula as any).conformal_coverage, 0.93)
 assert.equal(candidate.config.circuit.drawdownHalt, 0.14)
 assert.equal(candidate.config.position.riskPctPerTrade, 0.012)

@@ -946,8 +946,8 @@ class ScreenerParams:
     """Subset of trading:config.screener needed for Mode A replay."""
     min_price: float = 15.0
     max_price: float = 2000.0
-    min_avg_volume: float = 300_000
-    min_daily_turnover: float = 5_000_000
+    min_avg_volume: float = 300_000  # legacy config compatibility; no selection effect
+    min_daily_turnover: float = 13_000_000
     max_per_industry: int = 5
     max_candidates: int = 25
     consec_buy_bonus_tiers: list[float] = field(default_factory=lambda: [3, 1])
@@ -970,7 +970,7 @@ class ScreenerParams:
             min_price=sc.get("minPrice", 15),
             max_price=sc.get("maxPrice", 2000),
             min_avg_volume=sc.get("minAvgVolume", 300_000),
-            min_daily_turnover=sc.get("minDailyTurnover", 5_000_000),
+            min_daily_turnover=sc.get("minDailyTurnover", 13_000_000),
             max_per_industry=sc.get("maxPerIndustry", 5),
             max_candidates=sc.get("maxCandidates", 25),
             consec_buy_bonus_tiers=sc.get("consecBuyBonusTiers", [3, 1]),
@@ -985,6 +985,25 @@ class ScreenerParams:
             score_calibration_percentile_weight=float(sc.get("scoreCalibrationPercentileWeight", 0.65)),
             score_calibration_zscore_weight=float(sc.get("scoreCalibrationZScoreWeight", 0.35)),
         )
+
+
+L05_LIQUIDITY_WINDOW_SESSIONS = 20
+L05_LIQUIDITY_MIN_OBSERVATIONS = 3
+
+
+def _median_daily_traded_value(
+    closes: np.ndarray,
+    volumes: np.ndarray,
+    window_sessions: int = L05_LIQUIDITY_WINDOW_SESSIONS,
+) -> float | None:
+    window = min(max(0, int(window_sessions)), len(closes), len(volumes))
+    if window < L05_LIQUIDITY_MIN_OBSERVATIONS:
+        return None
+    values = np.asarray(closes[-window:], dtype=float) * np.asarray(volumes[-window:], dtype=float)
+    finite = values[np.isfinite(values) & (values >= 0)]
+    if len(finite) < L05_LIQUIDITY_MIN_OBSERVATIONS:
+        return None
+    return float(np.median(finite))
 
 
 @dataclass
@@ -2075,12 +2094,8 @@ def replay_screener_for_date(
             continue
         if latest_volume == 0:
             continue
-        vol_tail = volumes[-min(20, pnp["n"]):]
-        avg_vol_20 = float(vol_tail.mean())
-        if avg_vol_20 < screener.min_avg_volume:
-            continue
-        avg_daily_turnover = avg_vol_20 * latest_close
-        if avg_daily_turnover < screener.min_daily_turnover:
+        median_daily_traded_value = _median_daily_traded_value(closes, volumes)
+        if median_daily_traded_value is None or median_daily_traded_value < screener.min_daily_turnover:
             continue
 
         # Chip history (last 5 days, as per TS logic)
@@ -2221,8 +2236,9 @@ def diagnose_replay_for_date(
             "S0_universe": int,
             "S1_pnp_none": int, "S1_pnp_short": int, "S1_pnp_ok": int,
             "S2_price_low_fail": int, "S2_price_high_fail": int,
-            "S2_volume_zero_fail": int, "S2_avg_vol_fail": int,
-            "S2_turnover_fail": int,
+            "S2_volume_zero_fail": int,
+            "S2_liquidity_capacity_fail": int,
+            "S2_avg_vol_fail": 0, "S2_turnover_fail": 0,
             "S2_hard_filter_pass": int,
             "S3_scored": int,
             "S4_after_industry_cap": int,
@@ -2291,8 +2307,9 @@ def diagnose_replay_for_date(
         funnel.update({
             "S1_pnp_none": 0, "S1_pnp_short": 0, "S1_pnp_ok": 0,
             "S2_price_low_fail": 0, "S2_price_high_fail": 0,
-            "S2_volume_zero_fail": 0, "S2_avg_vol_fail": 0,
-            "S2_turnover_fail": 0, "S2_hard_filter_pass": 0,
+            "S2_volume_zero_fail": 0, "S2_liquidity_capacity_fail": 0,
+            "S2_avg_vol_fail": 0, "S2_turnover_fail": 0,
+            "S2_hard_filter_pass": 0,
             "S3_scored": 0, "S4_after_industry_cap": 0,
             "S5_final_candidates": 0, "S6_has_buy_signal": 0,
         })
@@ -2311,7 +2328,7 @@ def diagnose_replay_for_date(
     # ── Stage 1-3: per-symbol filter + scoring ───────────────────────────────
     pnp_none = pnp_short = pnp_ok = 0
     price_low_fail = price_high_fail = 0
-    volume_zero_fail = avg_vol_fail = turnover_fail = 0
+    volume_zero_fail = liquidity_capacity_fail = 0
 
     scored: list[Candidate] = []
     passed_samples: list[dict] = []
@@ -2346,16 +2363,10 @@ def diagnose_replay_for_date(
             _push("volume_zero", symbol)
             continue
 
-        vol_tail = volumes[-min(20, pnp["n"]):]
-        avg_vol_20 = float(vol_tail.mean())
-        if avg_vol_20 < screener.min_avg_volume:
-            avg_vol_fail += 1
-            _push("avg_vol_low", symbol)
-            continue
-        avg_daily_turnover = avg_vol_20 * latest_close
-        if avg_daily_turnover < screener.min_daily_turnover:
-            turnover_fail += 1
-            _push("turnover_low", symbol)
+        median_daily_traded_value = _median_daily_traded_value(closes, volumes)
+        if median_daily_traded_value is None or median_daily_traded_value < screener.min_daily_turnover:
+            liquidity_capacity_fail += 1
+            _push("median_daily_traded_value_low", symbol)
             continue
 
         cnp = dataset.get_chip_history_np(symbol, date, lookback_days=5)
@@ -2412,8 +2423,9 @@ def diagnose_replay_for_date(
         "S2_price_low_fail": price_low_fail,
         "S2_price_high_fail": price_high_fail,
         "S2_volume_zero_fail": volume_zero_fail,
-        "S2_avg_vol_fail": avg_vol_fail,
-        "S2_turnover_fail": turnover_fail,
+        "S2_liquidity_capacity_fail": liquidity_capacity_fail,
+        "S2_avg_vol_fail": 0,
+        "S2_turnover_fail": 0,
         "S2_hard_filter_pass": len(scored),
         "S3_scored": len(scored),
         "S4_after_industry_cap": len(after_industry),

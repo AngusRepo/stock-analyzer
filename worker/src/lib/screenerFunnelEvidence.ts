@@ -27,8 +27,8 @@ export interface ScreenerFunnelSummary {
 }
 
 export const L0_DROP_REASON_CONSERVATION_SCHEMA_VERSION = 'l0-drop-reason-conservation-v1' as const
-export const L0_DROP_REASON_CONSERVATION_RUN_VERSION = 'l0-universe-terminal-decision-v1' as const
-export const L0_DROP_REASON_CONFIG_VERSION = 'l0-drop-reason-taxonomy-v1' as const
+export const L0_DROP_REASON_CONSERVATION_RUN_VERSION = 'l0-l05-terminal-decision-v2' as const
+export const L0_DROP_REASON_CONFIG_VERSION = 'l0-drop-reason-taxonomy-v2' as const
 
 export const L0_DROP_PRIMARY_REASON_TAXONOMY = [
   'insufficient_price_history',
@@ -36,8 +36,8 @@ export const L0_DROP_PRIMARY_REASON_TAXONOMY = [
   'price_out_of_range',
   'zero_volume',
   'hard_trading_restriction_block',
-  'avg_volume_below_min',
-  'turnover_below_min',
+  'l05_liquidity_observations_insufficient',
+  'median_daily_traded_value_below_min',
 ] as const
 
 export type L0DropPrimaryReason = typeof L0_DROP_PRIMARY_REASON_TAXONOMY[number]
@@ -683,8 +683,8 @@ function buildLayer0UniverseFeaturesSummary(
   const featureGroups = [
     universe && (
       universeEvidence.close != null
-      || universeEvidence.avgVol20 != null
-      || universeEvidence.avgDailyTurnover != null
+      || universeEvidence.median_daily_traded_value_twd != null
+      || universeEvidence.mean_daily_traded_value_twd != null
     ) ? 'price_volume_liquidity' : null,
     scoringEvidence.score_components != null ? 'score_v2_components' : null,
     hasRecord(scoringEvidence.raw_signals) ? 'strategy_raw_signals' : null,
@@ -692,7 +692,7 @@ function buildLayer0UniverseFeaturesSummary(
   ].filter((value): value is string => Boolean(value))
 
   return {
-    schema_version: 'layer0_universe_features_summary_v1',
+    schema_version: 'layer0_universe_features_summary_v2',
     source: 'screener_funnel_items',
     decision_policy: 'feature_materialization_only_not_selector',
     selection_policy: 'no_topk_no_shrink',
@@ -708,8 +708,16 @@ function buildLayer0UniverseFeaturesSummary(
     has_strategy_raw_signals: hasRecord(scoringEvidence.raw_signals),
     has_taxonomy_profile: hasRecord(scoringEvidence.taxonomy),
     close: toNullableNumber(universeEvidence.close),
-    avg_volume_20d: toNullableNumber(universeEvidence.avgVol20),
-    avg_daily_turnover: toNullableNumber(universeEvidence.avgDailyTurnover),
+    liquidity_policy_version: universeEvidence.policy_version ?? null,
+    liquidity_policy_checksum: universeEvidence.policy_checksum ?? null,
+    liquidity_metric: universeEvidence.metric ?? null,
+    liquidity_window_sessions: toNullableNumber(universeEvidence.window_sessions),
+    liquidity_observed_sessions: toNullableNumber(universeEvidence.observed_sessions),
+    median_daily_traded_value_twd: toNullableNumber(universeEvidence.median_daily_traded_value_twd),
+    mean_daily_traded_value_twd: toNullableNumber(universeEvidence.mean_daily_traded_value_twd),
+    min_median_daily_traded_value_twd: toNullableNumber(universeEvidence.min_median_daily_traded_value_twd),
+    liquidity_capacity_passed: universeEvidence.passed === true,
+    maturity_impact: universeEvidence.maturity_impact ?? null,
   }
 }
 

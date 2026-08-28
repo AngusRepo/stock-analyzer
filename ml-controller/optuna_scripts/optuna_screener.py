@@ -1,11 +1,9 @@
 """
 optuna_screener.py — Sprint 5.2: Screener factor-weights Optuna search via backtest_engine
 
-搜尋空間（15 dim）：score_multi_factor 內部的評分公式權重 + 流動性過濾帶
+搜尋空間：score_multi_factor 內部的評分公式權重。
 
-  Liquidity filters (2):
-    minAvgVolume             [200k, 800k]   20 日均量下限
-    minDailyTurnover         [3M, 15M]      日均週轉金額下限
+  L0.5 liquidity capacity is a fixed execution-universe policy and is not an alpha hyperparameter.
 
   Chip score (0-40, 4 dims):
     chipScoreTiers[0]        [28, 42]       Tier 0 籌碼強度最高分
@@ -80,7 +78,7 @@ def _default_baseline_params() -> dict:
             "minPrice": 15,
             "maxPrice": 2000,
             "minAvgVolume": 300_000,
-            "minDailyTurnover": 5_000_000,
+            "minDailyTurnover": 13_000_000,
             "maxPerIndustry": 5,
             "maxCandidates": 25,
             "chipScoreTiers": [36, 28, 20, 12, 5],
@@ -108,9 +106,6 @@ def _default_baseline_params() -> dict:
 
 def _build_trial_params(trial: optuna.Trial, baseline: dict) -> dict:
     """Build a params override dict matching trading:config shape for this trial."""
-    # ── Liquidity filters (2) ───────────────────────────────────────────────
-    min_avg_vol      = trial.suggest_int("minAvgVolume",    200_000, 800_000, step=50_000)
-    min_daily_to     = trial.suggest_int("minDailyTurnover", 3_000_000, 15_000_000, step=1_000_000)
 
     # ── Chip score weights (5 dims, tiers [0] and [1] free, [2-4] scaled linearly) ──
     chip_tier0       = trial.suggest_int("chipScoreTier0", 28, 42, step=2)
@@ -146,8 +141,6 @@ def _build_trial_params(trial: optuna.Trial, baseline: dict) -> dict:
     chip_tier4 = round(chip_tier1 * 0.18)
 
     base_screener.update({
-        "minAvgVolume": min_avg_vol,
-        "minDailyTurnover": min_daily_to,
         "chipScoreTiers": [chip_tier0, chip_tier1, chip_tier2, chip_tier3, chip_tier4],
         # thresholds: keep [2,3,4] at defaults, only tune [0,1] top tiers
         "chipIntensityThresholds": [chip_th0, chip_th1, base_chip_ths[2], base_chip_ths[3], base_chip_ths[4]],
@@ -206,11 +199,8 @@ def _check_constraints(trial_params: dict) -> Optional[str]:
     if len(rsi_tiers) >= 2 and rsi_tiers[0] <= rsi_tiers[1]:
         return "rsiScoreTiers[0] <= rsiScoreTiers[1]"
 
-    # Removed: minAvgVolume * minPrice > minDailyTurnover cross-constraint.
-    # Reason: minPrice=15 is the hard floor, not the avg price (median ~208 TWD).
-    # Using 15 falsely rejects 23% of trials. minAvgVolume and minDailyTurnover
-    # are independent liquidity filters — no industry precedent for cross-checking.
-    # See Sprint 5.2 reject diagnostics (2026-04-09).
+    # L0.5 median daily traded value is fixed outside Optuna. Alpha search may
+    # not change the source universe or restore the retired share-volume gate.
 
     return None
 
@@ -354,6 +344,7 @@ def run_search(
         target_size=subset_size,
         end_date=end_date,
         lookback_days=30,
+        min_median_daily_traded_value=float(baseline_params["screener"]["minDailyTurnover"]),
     )
     if not symbols:
         raise RuntimeError(

@@ -155,6 +155,7 @@ assert(
     postMarketChain.includes("'active8-evidence-only-authority-v1'") &&
     evidenceOnlySnapshotBlock.includes('emitChainedTaskObservability(') &&
     evidenceOnlySnapshotBlock.includes("'skipped'") &&
+    evidenceOnlySnapshotBlock.includes('{ supersedePrevious: true }') &&
     evidenceOnlySnapshotBlock.includes('critical: false') &&
     postMarketChain.includes('if (!snapshotUnavailableInEvidenceOnlyMode) {'),
   'evidence-only continuation must require an exact zero-action authority attestation and preserve pointer integrity fail-closed',

@@ -27,6 +27,7 @@ type SchedulerRunResultInput = Omit<SchedulerRunLogEntry, 'task' | 'timestamp'> 
   date?: string
   run_date?: string
   strict?: boolean
+  supersedePrevious?: boolean
 }
 
 const TASK_NAMES: Record<string, string> = {
@@ -191,8 +192,11 @@ export function classifySchedulerRunSummary(summary: string): SchedulerRunStatus
 export function resolveMonotonicSchedulerEntry(
   previous: SchedulerRunLogEntry | null,
   incoming: SchedulerRunLogEntry,
+  options: { supersedePrevious?: boolean } = {},
 ): SchedulerRunLogEntry {
   if (!previous || previous.run_date !== incoming.run_date) return incoming
+  const exactCanonicalRun = Boolean(incoming.run_id) && previous.run_id === incoming.run_id
+  if (options.supersedePrevious === true && exactCanonicalRun) return incoming
   const explicitNewRun = Boolean(incoming.run_id) && previous.run_id !== incoming.run_id
   if (explicitNewRun) return incoming
   const sameLogicalRun = Boolean(incoming.run_id) && previous.run_id === incoming.run_id
@@ -234,7 +238,9 @@ export async function logSchedulerRunResult(
 
   try {
     const previous = await kv.get(`scheduler:run:${task}:${today}`, 'json') as SchedulerRunLogEntry | null
-    const entry = resolveMonotonicSchedulerEntry(previous, incoming)
+    const entry = resolveMonotonicSchedulerEntry(previous, incoming, {
+      supersedePrevious: result.supersedePrevious === true,
+    })
     const payload = JSON.stringify(entry)
     await Promise.all([
       kv.put(`scheduler:run:${task}:${today}`, payload, { expirationTtl: DAILY_RUN_LOG_TTL_SECONDS }),

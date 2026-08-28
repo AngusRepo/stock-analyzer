@@ -34,6 +34,14 @@ assert(
   'same-date terminal success must not be overwritten by a later scheduler skip',
 )
 assert(
+  resolveMonotonicSchedulerEntry(
+    entry('success'),
+    entry('skipped'),
+    { supersedePrevious: true },
+  ).status === 'skipped',
+  'an explicitly attested final receipt must supersede an earlier state for the exact canonical run',
+)
+assert(
   getTaskDisplayName('post-close-price-refresh') === 'Post-close Price Refresh',
   'post-close price refresh must remain visible in scheduler log reads',
 )

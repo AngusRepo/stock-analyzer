@@ -119,6 +119,7 @@ async function emitChainedTaskObservability(
   summary: string,
   durationMs: number,
   error?: string,
+  options: { supersedePrevious?: boolean } = {},
 ): Promise<void> {
   await assertChainStageAuthority(ctx, `${task}:observability`)
   const results = await Promise.allSettled([
@@ -131,6 +132,7 @@ async function emitChainedTaskObservability(
       attempt_id: resolveChainAttemptId(ctx),
       run_date: ctx.runDate,
       run_scope: ctx.runScope,
+      supersedePrevious: options.supersedePrevious,
     }, env)),
     withObservabilityTimeout(`${task} compute profile`, recordWorkerTaskComputeProfile(env, {
       task,
@@ -502,6 +504,8 @@ export async function runPostPipelineCallbackChain(
       'skipped',
       summary,
       0,
+      undefined,
+      { supersedePrevious: true },
     )
     snapshotTask = {
       task: 'allocator-ev-feature-snapshot-backfill',

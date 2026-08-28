@@ -32,6 +32,7 @@ assert.match(inspector, /learningDb\?: D1Database/)
 assert.match(inspector, /opsDb\?: D1Database/)
 assert.match(inspector, /coreDb\?: D1Database/)
 assert.doesNotMatch(inspector, /JOIN canonical_reference/)
-for (const source of [lifecycle, chain, research]) {
+assert.match(lifecycle, /const learningDb = databaseForDataDomain\(env, 'learning'\)/)
+for (const source of [chain, research]) {
   assert.match(source, /learningDb: databaseForDataDomain\(env, 'learning'\)/)
 }

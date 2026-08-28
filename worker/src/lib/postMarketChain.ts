@@ -12,6 +12,8 @@ import { classifySchedulerSummary, logSchedulerResult, type SchedulerRunStatus }
 import { recordWorkerTaskComputeProfile } from './computeProfileEvents'
 import { runAllocatorEvFeatureSnapshotBackfill } from './controllerResearchWorkflows'
 import {
+  evidenceOnlySnapshotNotApplicable,
+  inspectActive8ActionAuthorityState,
   inspectAllocatorSnapshotClosure,
   readAllocatorEvLifecycle,
   recordAllocatorEvLifecycle,
@@ -436,6 +438,29 @@ export async function runPostPipelineCallbackChain(
     kv: env.KV,
   })
   await assertChainStageAuthority(ctx, 'post-pipeline:after_snapshot_inspection')
+  const actionAuthority = await inspectActive8ActionAuthorityState(
+    databaseForDataDomain(env, 'learning'),
+    databaseForDataDomain(env, 'core'),
+    ctx.runDate,
+  )
+  if (actionAuthority.pointerRows !== actionAuthority.validServingRows) {
+    throw new Error(
+      `active8_serving_pointer_integrity_invalid:pointer=${actionAuthority.pointerRows}:valid=${actionAuthority.validServingRows}`,
+    )
+  }
+  const snapshotUnavailableInEvidenceOnlyMode = evidenceOnlySnapshotNotApplicable(
+    snapshotClosure,
+    actionAuthority,
+  )
+  if (actionAuthority.pointerRows === 0 && actionAuthority.actionableRows > 0) {
+    throw new Error(`active8_evidence_only_action_leak:rows=${actionAuthority.actionableRows}`)
+  }
+  results.push({
+    task: 'active8-action-authority',
+    summary: `pointer=${actionAuthority.pointerRows} valid=${actionAuthority.validServingRows} recommendations=${actionAuthority.recommendationRows} actionable=${actionAuthority.actionableRows} production_effect=${actionAuthority.pointerRows === 1 ? 1 : 0}`,
+    status: 'success',
+    critical: true,
+  })
   await recordPostPipelineLifecycle(env, ctx, {
     businessDate: ctx.runDate,
     state: 'lineage_ready',
@@ -444,7 +469,7 @@ export async function runPostPipelineCallbackChain(
     incrementAttempt: true,
   })
   const snapshotAttempt = Math.max(0, Number(ctx.recoveryAttempt ?? 0))
-  if (!snapshotClosure.ready && snapshotAttempt >= 3) {
+  if (!snapshotClosure.ready && !snapshotUnavailableInEvidenceOnlyMode && snapshotAttempt >= 3) {
     const error = `allocator snapshot retry budget exhausted attempt=${snapshotAttempt} `
       + `native=${snapshotClosure.runNativeLineageRows} reconstructed=${snapshotClosure.reconstructedLineageRows} `
       + `rejected=${snapshotClosure.rejectedLineageRows} expected=${snapshotClosure.expectedRows} `
@@ -467,23 +492,30 @@ export async function runPostPipelineCallbackChain(
     await logChainSummary(env, ctx, 'post-pipeline-chain', startedAt, results)
     return 'error'
   }
-  const snapshotTask = await logChainedTask(
-    env,
-    ctx,
-    'allocator-ev-feature-snapshot-backfill',
-    () => snapshotClosure.ready
-      ? Promise.resolve(`allocator snapshot already ready date=${ctx.runDate} rows=${snapshotClosure.actualRows}`)
-      : runAllocatorEvFeatureSnapshotBackfill(env, {
-        startDate: ctx.runDate!,
-        endDate: ctx.runDate!,
-        dryRun: false,
-        candidateLimit: 1000,
-        l4MinSamples: 500,
-        l4MinDates: 20,
-        runId: ctx.upstreamRunId,
-      }),
-    { timeoutMs: 330_000 },
-  )
+  const snapshotTask: ChainedTask = snapshotUnavailableInEvidenceOnlyMode
+    ? {
+      task: 'allocator-ev-feature-snapshot-backfill',
+      summary: `not applicable: Active8 evidence-only authority attested date=${ctx.runDate} recommendations=${actionAuthority.recommendationRows} actionable=0 production_effect=0`,
+      status: 'skipped',
+      critical: false,
+    }
+    : await logChainedTask(
+      env,
+      ctx,
+      'allocator-ev-feature-snapshot-backfill',
+      () => snapshotClosure.ready
+        ? Promise.resolve(`allocator snapshot already ready date=${ctx.runDate} rows=${snapshotClosure.actualRows}`)
+        : runAllocatorEvFeatureSnapshotBackfill(env, {
+          startDate: ctx.runDate!,
+          endDate: ctx.runDate!,
+          dryRun: false,
+          candidateLimit: 1000,
+          l4MinSamples: 500,
+          l4MinDates: 20,
+          runId: ctx.upstreamRunId,
+        }),
+      { timeoutMs: 330_000 },
+    )
   results.push(snapshotTask)
   const snapshotPending = snapshotTask.status !== 'error'
     && /\bstatus=(?:spawned|pending)\b/i.test(snapshotTask.summary)
@@ -497,16 +529,18 @@ export async function runPostPipelineCallbackChain(
     await logChainSummary(env, ctx, 'post-pipeline-chain', startedAt, results)
     return 'waiting'
   }
-  await assertChainStageAuthority(ctx, 'post-pipeline:before_snapshot_readback')
-  snapshotClosure = await inspectAllocatorSnapshotClosure(env.DB, ctx.runDate, {
-    allowPointInTimeReconstruction: true,
-    learningDb: databaseForDataDomain(env, 'learning'),
-    opsDb: databaseForDataDomain(env, 'ops'),
-    coreDb: databaseForDataDomain(env, 'core'),
-    kv: env.KV,
-  })
-  await assertChainStageAuthority(ctx, 'post-pipeline:after_snapshot_readback')
-  if (snapshotTask.status === 'error' || !snapshotClosure.ready) {
+  if (!snapshotUnavailableInEvidenceOnlyMode) {
+    await assertChainStageAuthority(ctx, 'post-pipeline:before_snapshot_readback')
+    snapshotClosure = await inspectAllocatorSnapshotClosure(env.DB, ctx.runDate, {
+      allowPointInTimeReconstruction: true,
+      learningDb: databaseForDataDomain(env, 'learning'),
+      opsDb: databaseForDataDomain(env, 'ops'),
+      coreDb: databaseForDataDomain(env, 'core'),
+      kv: env.KV,
+    })
+    await assertChainStageAuthority(ctx, 'post-pipeline:after_snapshot_readback')
+  }
+  if (snapshotTask.status === 'error' || (!snapshotUnavailableInEvidenceOnlyMode && !snapshotClosure.ready)) {
     const error = snapshotTask.status === 'error'
       ? snapshotTask.summary
       : `snapshot readback incomplete native=${snapshotClosure.runNativeLineageRows} `
@@ -536,14 +570,19 @@ export async function runPostPipelineCallbackChain(
     await logChainSummary(env, ctx, 'post-pipeline-chain', startedAt, results)
     return retryScheduled ? 'waiting' : 'error'
   }
-  await recordPostPipelineLifecycle(env, ctx, {
-    businessDate: ctx.runDate,
-    state: 'snapshot_ready',
-    nativeLineageRows: snapshotClosure.nativeLineageRows,
-    snapshotRunId: snapshotClosure.snapshotRunId,
-    snapshotRows: snapshotClosure.actualRows,
-    upstreamRunId: ctx.upstreamRunId,
-  })
+  if (!snapshotUnavailableInEvidenceOnlyMode) {
+    await recordPostPipelineLifecycle(env, ctx, {
+      businessDate: ctx.runDate,
+      state: 'snapshot_ready',
+      nativeLineageRows: snapshotClosure.nativeLineageRows,
+      snapshotRunId: snapshotClosure.snapshotRunId,
+      snapshotRows: snapshotClosure.actualRows,
+      upstreamRunId: ctx.upstreamRunId,
+    })
+  }
+  const snapshotEvidenceKey = snapshotUnavailableInEvidenceOnlyMode
+    ? 'active8-evidence-only-authority-v1'
+    : String(snapshotClosure.snapshotRunId ?? '')
   const pipelineRunId = String(ctx.upstreamRunId ?? '').trim()
   const pipelineLeaseOwner = String(ctx.stageLeaseOwner ?? '').trim()
   await assertChainStageAuthority(ctx, 'verify-v2:before_stage_enqueue')
@@ -588,7 +627,7 @@ export async function runPostPipelineCallbackChain(
         summary: 'verify stage was claimed by another worker',
       }
     } else {
-      const verifyIdempotencyKey = `verify_v2:${ctx.runDate}:${snapshotClosure.snapshotRunId}`
+      const verifyIdempotencyKey = `verify_v2:${ctx.runDate}:${snapshotEvidenceKey}`
       const expectedProducerRunId = await expectedVerifyProducerRunId(ctx.runDate, verifyIdempotencyKey)
       const cursorStored = await setPipelineStageCursorFenced(databaseForDataDomain(env, 'ops'), {
         businessDate: ctx.runDate,

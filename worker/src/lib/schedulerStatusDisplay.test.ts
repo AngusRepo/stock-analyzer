@@ -3,6 +3,7 @@ import {
   getSchedulerScanDates,
   mergeDirectSchedulerLog,
   reconcileDurablePipelineStageStatus,
+  resolveBusinessDateScopedChainDisplay,
   resolveSchedulerDisplayStatus,
   resolveSchedulerRunDisplayTime,
   resolveSchedulerLogStatus,
@@ -641,4 +642,55 @@ const logs: SchedulerDisplayLogCandidate[] = [
   assert(status.status === 'failed', 'stale monthly callback must remain visible instead of becoming out-of-window')
   assert(status.statusScope === 'cadence_cycle', 'monthly stale callback must retain current-cycle authority')
   assert(status.staleReason?.includes('no final callback'), 'monthly stale callback must explain missing closure')
+}
+
+
+{
+  const scoped = resolveBusinessDateScopedChainDisplay({
+    def: { id: 'allocator-ev-feature-snapshot-backfill', group: 'pipeline_chain', chainIndex: 14 },
+    chainStatusDate: '2026-08-27',
+    today: '2026-08-28',
+  })
+  assert(scoped?.resolvedDisplay.status === 'waiting', 'missing same-date ticket must remain waiting')
+  assert(scoped?.resolvedDisplay.statusRunDate === '2026-08-27', 'missing same-date ticket must retain the selected DAG date')
+  assert(scoped?.displayLog === undefined, 'missing 8/27 ticket must never fall back to an 8/25 log')
+}
+
+{
+  const scoped = resolveBusinessDateScopedChainDisplay({
+    def: { id: 'post-pipeline-chain', group: 'pipeline_chain', chainIndex: 13 },
+    chainStatusDate: '2026-08-27',
+    today: '2026-08-28',
+    exactLog: {
+      task: 'post-pipeline-chain',
+      status: 'success',
+      summary: 'stale prior ticket',
+      duration_ms: 1,
+      run_date: '2026-08-25',
+      timestamp: '2026-08-25T16:19:00.000Z',
+    },
+  })
+  assert(scoped?.displayLog === undefined, 'a mismatched business-date callback ticket must be rejected')
+  assert(scoped?.resolvedDisplay.status === 'waiting', 'a rejected stale callback must not claim completion')
+}
+
+{
+  const exactLog = {
+    task: 'post-pipeline-chain',
+    status: 'success' as const,
+    summary: 'same-date callback closed',
+    duration_ms: 100,
+    run_date: '2026-08-27',
+    run_scope: 'live_canonical' as const,
+    timestamp: '2026-08-27T16:19:00.000Z',
+  }
+  const scoped = resolveBusinessDateScopedChainDisplay({
+    def: { id: 'post-pipeline-chain', group: 'pipeline_chain', chainIndex: 13 },
+    chainStatusDate: '2026-08-27',
+    today: '2026-08-28',
+    exactLog,
+  })
+  assert(scoped?.displayLog === exactLog, 'same-date callback ticket must remain visible')
+  assert(scoped?.resolvedDisplay.status === 'success', 'same-date callback terminal status must remain authoritative')
+  assert(scoped?.resolvedDisplay.statusRunDate === '2026-08-27', 'same-date callback must retain the DAG business date')
 }

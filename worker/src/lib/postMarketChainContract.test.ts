@@ -100,7 +100,7 @@ assert(
   'verify terminal callback must durably and idempotently queue the post-verify chain',
 )
 assert(
-  postMarketChain.includes('verify_v2:${ctx.runDate}:${snapshotClosure.snapshotRunId}'),
+  postMarketChain.includes('verify_v2:${ctx.runDate}:${snapshotEvidenceKey}'),
   'verify idempotency must change with snapshot evidence while duplicate callbacks for the same snapshot remain stable',
 )
 assert(
@@ -127,7 +127,7 @@ assert(
   'production-only tasks must use resolved canonical authority so historical reruns cannot dirty current reports',
 )
 assert(
-  postMarketChain.includes('verify_v2:${ctx.runDate}:${snapshotClosure.snapshotRunId}') &&
+  postMarketChain.includes('verify_v2:${ctx.runDate}:${snapshotEvidenceKey}') &&
     postMarketChain.includes("stage: 'verify_v2'"),
   'verify-v2 must receive the callback business date and deterministic snapshot-owned idempotency key',
 )
@@ -138,9 +138,19 @@ assert(
   'same-date allocator feature snapshots must be materialized after pipeline output and before verify',
 )
 assert(
-  postMarketChain.includes("snapshotTask.status === 'error' || !snapshotClosure.ready") &&
+  postMarketChain.includes("snapshotTask.status === 'error' || (!snapshotUnavailableInEvidenceOnlyMode && !snapshotClosure.ready)") &&
     postMarketChain.includes("await logChainSummary(env, ctx, 'post-pipeline-chain'"),
   'post-pipeline chain must stop before verify when canonical allocator snapshots are missing',
+)
+assert(
+  postMarketChain.includes('inspectActive8ActionAuthorityState') &&
+    postMarketChain.includes('active8_serving_pointer_integrity_invalid') &&
+    postMarketChain.includes('active8_evidence_only_action_leak') &&
+    postMarketChain.includes("task: 'active8-action-authority'") &&
+    postMarketChain.includes('actionable=0 production_effect=0') &&
+    postMarketChain.includes("'active8-evidence-only-authority-v1'") &&
+    postMarketChain.includes('if (!snapshotUnavailableInEvidenceOnlyMode) {'),
+  'evidence-only continuation must require an exact zero-action authority attestation and preserve pointer integrity fail-closed',
 )
 assert(
   pipelineStageLease.includes('attempt_count') &&

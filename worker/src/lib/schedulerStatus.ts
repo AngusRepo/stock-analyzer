@@ -753,6 +753,45 @@ export function resolveSchedulerDisplayStatus(input: {
   }
 }
 
+export function resolveBusinessDateScopedChainDisplay(input: {
+  def: Pick<JobDef, 'id' | 'group' | 'chainIndex'>
+  chainStatusDate: string | null
+  today: string
+  exactLog?: CronLogEntry
+  nowMs?: number
+}): { displayLog?: CronLogEntry; resolvedDisplay: SchedulerDisplayStatus } | null {
+  const chainDate = String(input.chainStatusDate ?? '').trim()
+  if (!chainDate || !CHAIN_STEP_IDS.includes(input.def.id)) return null
+
+  const logRunDate = String(input.exactLog?.run_date ?? '').trim()
+  const exactLog = input.exactLog && (!logRunDate || logRunDate === chainDate)
+    ? input.exactLog
+    : undefined
+  if (!exactLog) {
+    return {
+      displayLog: undefined,
+      resolvedDisplay: {
+        status: 'waiting',
+        statusScope: chainDate === input.today ? 'today' : 'historical_replay',
+        statusRunDate: chainDate,
+      },
+    }
+  }
+
+  const resolved = resolveSchedulerLogStatus(exactLog, input.def, input.nowMs)
+  return {
+    displayLog: exactLog,
+    resolvedDisplay: {
+      status: resolved.status ?? 'waiting',
+      statusScope: exactLog.run_scope === 'live_canonical' || chainDate === input.today
+        ? 'today'
+        : 'historical_replay',
+      statusRunDate: chainDate,
+      staleReason: resolved.staleReason,
+    },
+  }
+}
+
 function startOfWeeklyCycle(today: string): string {
   const date = new Date(`${today}T00:00:00.000Z`)
   const mondayOffset = (date.getUTCDay() + 6) % 7
@@ -870,7 +909,7 @@ export async function getSchedulerStatus(env: Bindings, anchorDate?: string) {
       return log.status === 'success' ? 'success' : 'failed'
     }).reverse()
 
-    const resolvedDisplay = resolveSchedulerDisplayStatus({
+    const baseResolvedDisplay = resolveSchedulerDisplayStatus({
       todayLog,
       lastAttempt,
       activeReplayLog: chainReplayLog,
@@ -883,11 +922,14 @@ export async function getSchedulerStatus(env: Bindings, anchorDate?: string) {
       nextRun,
       today,
     })
-    const displayLog = resolvedDisplay.statusScope === 'historical_replay'
-      && resolvedDisplay.statusRunDate === chainStatusDate
-      && chainReplayLog
-      ? chainReplayLog
-      : lastLog
+    const chainScopedDisplay = resolveBusinessDateScopedChainDisplay({
+      def,
+      chainStatusDate,
+      today,
+      exactLog: chainReplayLog,
+    })
+    const resolvedDisplay = chainScopedDisplay?.resolvedDisplay ?? baseResolvedDisplay
+    const displayLog = chainScopedDisplay ? chainScopedDisplay.displayLog : lastLog
     const durableState = resolvedDisplay.statusRunDate
       ? durableStageStates.get(`${resolvedDisplay.statusRunDate}:${def.id}`)
       : undefined

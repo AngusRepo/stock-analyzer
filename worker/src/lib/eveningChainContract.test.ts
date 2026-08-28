@@ -317,7 +317,7 @@ assert(
 
 const postMarketChain = fs.readFileSync('src/lib/postMarketChain.ts', 'utf8')
 assert(
-  postMarketChain.includes('`verify_v2:${ctx.runDate}:${snapshotClosure.snapshotRunId}`'),
+  postMarketChain.includes('`verify_v2:${ctx.runDate}:${snapshotEvidenceKey}`'),
   'post-pipeline chain must trigger verify-v2 with a deterministic date-level idempotency key',
 )
 assert(

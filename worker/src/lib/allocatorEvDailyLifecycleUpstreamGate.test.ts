@@ -1,7 +1,12 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 
-import { evaluateAllocatorEvRecoveryUpstreamGate } from './allocatorEvDailyLifecycle'
+import {
+  evidenceOnlySnapshotNotApplicable,
+  evaluateAllocatorEvRecoveryUpstreamGate,
+  type Active8ActionAuthorityState,
+  type AllocatorSnapshotClosure,
+} from './allocatorEvDailyLifecycle'
 
 const runId = 'pipeline-v2-current'
 const completeSummary = `run_id=${runId} symbols=83/83 rows=664 models=8 `
@@ -97,3 +102,32 @@ test('watchdog can recover a downstream root error after upstream closure passed
   assert.equal(gate.ready, true)
   assert.deepEqual(gate.blockers, [])
 })
+
+
+const baseSnapshot: AllocatorSnapshotClosure = {
+  businessDate: '2026-08-27',
+  recommendationRows: 421,
+  recommendationMaxCreatedAt: '2026-08-27 15:57:00',
+  nativeLineageRows: 0,
+  runNativeLineageRows: 0,
+  reconstructedLineageRows: 0,
+  rejectedLineageRows: 421,
+  snapshotRunId: null,
+  expectedRows: 421,
+  publishedRows: 0,
+  actualRows: 0,
+  snapshotMaxGeneratedAt: null,
+  ready: false,
+}
+const evidenceOnlyAuthority: Active8ActionAuthorityState = {
+  pointerRows: 0,
+  validServingRows: 0,
+  recommendationRows: 421,
+  actionableRows: 0,
+}
+
+assert.equal(evidenceOnlySnapshotNotApplicable(baseSnapshot, evidenceOnlyAuthority), true)
+assert.equal(evidenceOnlySnapshotNotApplicable(baseSnapshot, { ...evidenceOnlyAuthority, actionableRows: 1 }), false)
+assert.equal(evidenceOnlySnapshotNotApplicable(baseSnapshot, { ...evidenceOnlyAuthority, pointerRows: 1, validServingRows: 1 }), false)
+assert.equal(evidenceOnlySnapshotNotApplicable(baseSnapshot, { ...evidenceOnlyAuthority, recommendationRows: 420 }), false)
+assert.equal(evidenceOnlySnapshotNotApplicable({ ...baseSnapshot, nativeLineageRows: 1 }, evidenceOnlyAuthority), false)

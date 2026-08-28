@@ -44,6 +44,65 @@ export interface AllocatorSnapshotClosure {
   ready: boolean
 }
 
+export interface Active8ActionAuthorityState {
+  pointerRows: number
+  validServingRows: number
+  recommendationRows: number
+  actionableRows: number
+}
+
+export async function inspectActive8ActionAuthorityState(
+  learningDb: D1Database,
+  coreDb: D1Database,
+  businessDate: string,
+): Promise<Active8ActionAuthorityState> {
+  const [pointer, recommendations] = await Promise.all([
+    learningDb.prepare(`
+      SELECT COUNT(p.singleton_id) AS pointer_rows,
+             COALESCE(SUM(CASE
+               WHEN a.artifact_id IS NOT NULL
+                AND a.cohort_id = p.cohort_id
+                AND a.payload_checksum = p.payload_checksum
+                AND a.base_artifact_set_checksum = p.base_artifact_set_checksum
+                AND a.validation_decision = 'PASS'
+                AND a.state = 'production'
+                AND a.production_effect = 1
+               THEN 1 ELSE 0 END), 0) AS valid_serving_rows
+        FROM active8_ensemble_pointer_v1 p
+        LEFT JOIN active8_ensemble_artifacts_v1 a ON a.artifact_id = p.artifact_id
+       WHERE p.singleton_id = 1
+    `).first<{ pointer_rows?: number | string; valid_serving_rows?: number | string }>(),
+    coreDb.prepare(`
+      SELECT COUNT(*) AS recommendation_rows,
+             COALESCE(SUM(CASE
+               WHEN COALESCE(has_buy_signal, 0) != 0
+                 OR COALESCE(eligible_for_pending_buy, 0) != 0
+                 OR UPPER(COALESCE(signal, '')) IN ('BUY','STRONG_BUY','POTENTIAL_BUY')
+               THEN 1 ELSE 0 END), 0) AS actionable_rows
+        FROM daily_recommendations
+       WHERE date = ?
+    `).bind(businessDate).first<{ recommendation_rows?: number | string; actionable_rows?: number | string }>(),
+  ])
+  return {
+    pointerRows: Number(pointer?.pointer_rows ?? 0),
+    validServingRows: Number(pointer?.valid_serving_rows ?? 0),
+    recommendationRows: Number(recommendations?.recommendation_rows ?? 0),
+    actionableRows: Number(recommendations?.actionable_rows ?? 0),
+  }
+}
+
+export function evidenceOnlySnapshotNotApplicable(
+  snapshot: AllocatorSnapshotClosure,
+  authority: Active8ActionAuthorityState,
+): boolean {
+  return authority.pointerRows === 0
+    && authority.validServingRows === 0
+    && authority.recommendationRows > 0
+    && authority.recommendationRows === snapshot.recommendationRows
+    && authority.actionableRows === 0
+    && snapshot.nativeLineageRows === 0
+}
+
 export interface AllocatorEvMaturityCoverage {
   asOfDate: string
   snapshotRows: number
@@ -674,19 +733,31 @@ export async function runAllocatorEvLifecycleWatchdog(
   requestedDate?: string,
 ): Promise<string> {
   const businessDate = await resolveLifecycleBusinessDate(env.DB, requestedDate)
-  const [snapshot, maturity] = await Promise.all([
+  const learningDb = databaseForDataDomain(env, 'learning')
+  const coreDb = databaseForDataDomain(env, 'core')
+  const [snapshot, maturity, actionAuthority] = await Promise.all([
     inspectAllocatorSnapshotClosure(env.DB, businessDate, {
       allowPointInTimeReconstruction: true,
-      learningDb: databaseForDataDomain(env, 'learning'),
+      learningDb,
       opsDb: databaseForDataDomain(env, 'ops'),
-      coreDb: databaseForDataDomain(env, 'core'),
+      coreDb,
       kv: env.KV,
     }),
-    inspectAllocatorEvMaturityCoverage(databaseForDataDomain(env, 'learning'), businessDate),
+    inspectAllocatorEvMaturityCoverage(learningDb, businessDate),
+    inspectActive8ActionAuthorityState(learningDb, coreDb, businessDate),
   ])
   if (snapshot.nativeLineageRows <= 0) {
     if (snapshot.recommendationRows <= 0) {
       return `skipped: allocator EV lifecycle has no Score V2 recommendations for ${businessDate}; ${maturitySummary(maturity)}`
+    }
+    if (actionAuthority.pointerRows !== actionAuthority.validServingRows) {
+      throw new Error(
+        `active8_serving_pointer_integrity_invalid:pointer=${actionAuthority.pointerRows}:valid=${actionAuthority.validServingRows}`,
+      )
+    }
+    if (evidenceOnlySnapshotNotApplicable(snapshot, actionAuthority)) {
+      return `skipped: allocator EV snapshot not applicable under attested Active8 evidence-only authority `
+        + `date=${businessDate} recommendations=${snapshot.recommendationRows} actionable=0 production_effect=0`
     }
     const reason = `missing point-in-time ensemble lineage before next executable session open `
       + `recommendations=${snapshot.recommendationRows}; ${maturitySummary(maturity)}`

@@ -1759,7 +1759,10 @@ def _pipeline_prediction_bundle_impl(payload: dict) -> dict:
     ):
         raise ValueError("pipeline_modal_source_sha_missing")
     if modal_source_sha != expected_source_sha:
-        raise ValueError("pipeline_modal_source_sha_mismatch")
+        raise ValueError(
+            "pipeline_modal_source_sha_mismatch:"
+            f"expected={expected_source_sha}:actual={modal_source_sha}"
+        )
     payloads = payload.get("payloads") or []
     sequence_model_series_by_model = payload.get("sequence_model_series_by_model") or {}
     sequence_model_contracts = payload.get("sequence_model_contracts") or {}

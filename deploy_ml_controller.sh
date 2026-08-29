@@ -246,6 +246,11 @@ for arg in "$@"; do
   esac
 done
 
+if [ "$CHECK_ONLY" != "1" ] && [ "$WITH_MODAL" != "1" ]; then
+  echo "ERROR: production ML release requires --with-modal so Cloud Run and Modal share one source identity" >&2
+  exit 7
+fi
+
 require_nonempty() {
   local var_name="$1"
   local hint="$2"
@@ -1498,6 +1503,37 @@ if [ "$WITH_MODAL" = "1" ]; then
     echo "ERROR: dedicated strategy-mining Modal deploy failed" >&2
     exit 6
   fi
+  MODAL_PROVENANCE_JSON=$("$MODAL_PYTHON_BIN" -c 'import json, modal; print(json.dumps(modal.Function.from_name("stockvision-ml", "deployment_provenance").remote(), sort_keys=True))')
+  if ! MODAL_PROVENANCE_JSON="$MODAL_PROVENANCE_JSON" \
+    EXPECTED_SOURCE_SHA="$SOURCE_SHA" \
+    EXPECTED_TREE_SHA="$SOURCE_TREE_SHA" \
+    EXPECTED_BRANCH="$SOURCE_BRANCH" \
+    EXPECTED_SCHEDULER_SHA="$SCHEDULER_MANIFEST_SHA256" \
+    "$PYTHON_BIN" - <<'PY'
+import json
+import os
+
+raw = os.environ.get("MODAL_PROVENANCE_JSON", "")
+start = raw.find("{")
+end = raw.rfind("}")
+if start < 0 or end < start:
+    raise SystemExit("modal provenance readback missing JSON")
+actual = json.loads(raw[start:end + 1])
+expected = {
+    "schema_version": "stockvision-modal-deployment-provenance-v1",
+    "source_sha": os.environ["EXPECTED_SOURCE_SHA"],
+    "tree_sha": os.environ["EXPECTED_TREE_SHA"],
+    "source_branch": os.environ["EXPECTED_BRANCH"],
+    "scheduler_manifest_sha256": os.environ["EXPECTED_SCHEDULER_SHA"],
+}
+if actual != expected:
+    raise SystemExit(f"modal provenance mismatch: expected={expected} actual={actual}")
+PY
+  then
+    echo "ERROR: Modal production provenance readback does not match this release" >&2
+    exit 6
+  fi
+  echo "Modal provenance: exact source/tree/branch/scheduler parity"
   echo ""
 fi
 

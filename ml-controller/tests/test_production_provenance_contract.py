@@ -62,3 +62,15 @@ def test_gcloud_upload_context_is_materialized_before_manifest_membership_check(
     assert 'GCLOUD_UPLOAD_CONTEXT="$(cd "$SCRIPT_DIR" && gcloud meta list-files-for-upload' in deploy
     assert "grep -Fx 'infra/gcp-scheduler-jobs.json' <<<\"$GCLOUD_UPLOAD_CONTEXT\"" in deploy
     assert "gcloud meta list-files-for-upload 2>/dev/null) | sed" not in deploy
+
+
+def test_ml_release_requires_modal_and_reads_back_exact_provenance() -> None:
+    deploy = (ROOT / "deploy_ml_controller.sh").read_text(encoding="utf-8")
+
+    assert 'production ML release requires --with-modal' in deploy
+    assert 'modal.Function.from_name("stockvision-ml", "deployment_provenance").remote()' in deploy
+    assert 'Modal provenance: exact source/tree/branch/scheduler parity' in deploy
+    assert '"source_sha": os.environ["EXPECTED_SOURCE_SHA"]' in deploy
+    assert '"tree_sha": os.environ["EXPECTED_TREE_SHA"]' in deploy
+    assert '"source_branch": os.environ["EXPECTED_BRANCH"]' in deploy
+    assert '"scheduler_manifest_sha256": os.environ["EXPECTED_SCHEDULER_SHA"]' in deploy

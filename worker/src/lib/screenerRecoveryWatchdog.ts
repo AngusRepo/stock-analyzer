@@ -6,7 +6,10 @@ import {
   enqueuePipelineStage,
   type PipelineStageRow,
 } from './pipelineStageLease'
-import { enqueuePostScreenerPipelineContinuation } from './postScreenerContinuation'
+import {
+  enqueuePostScreenerPipelineContinuation,
+  enqueuePostScreenerPipelineRecovery,
+} from './postScreenerContinuation'
 
 const SCREENER_STAGE = 'screener_v2'
 const SCREENER_LEASE_SECONDS = 6000
@@ -354,10 +357,20 @@ export async function runScreenerRecoveryWatchdog(
       source: 'screener-v2-watchdog-closure',
       summary: `watchdog verified exact screener funnel=${funnel.run_id} universe=${Number(funnel.universe_count ?? 0)}`,
     })
+    const pipelineRecovery = !continuation.queued && continuation.status === 'success'
+      ? await enqueuePostScreenerPipelineRecovery(env, {
+          businessDate,
+          workerVersion: env.CF_VERSION_METADATA,
+          source: 'screener-v2-watchdog-pipeline-recovery',
+        })
+      : null
     return [
       `success funnel=${funnel.run_id}`,
       `universe=${Number(funnel.universe_count ?? 0)}`,
       `continuation=${continuation.queued ? 'queued' : `already_${continuation.status}`}`,
+      `pipeline_recovery=${pipelineRecovery
+        ? (pipelineRecovery.queued ? 'queued' : pipelineRecovery.reason)
+        : 'not_needed'}`,
     ].join(' ')
   }
   if (stage?.status === 'success') {

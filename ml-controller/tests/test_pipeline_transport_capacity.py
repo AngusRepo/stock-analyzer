@@ -182,3 +182,5 @@ def test_modal_runtime_contract_hydrates_generation_fenced_reference() -> None:
     assert "if_generation_match=0" in request_transport
     assert "pipeline-modal-prediction-request-ref-v1" in request_transport
     assert '"pipeline-modal-capacity-v1"' in source
+    assert 'pipeline_modal_source_sha_mismatch:' in source
+    assert 'f"expected={expected_source_sha}:actual={modal_source_sha}"' in source

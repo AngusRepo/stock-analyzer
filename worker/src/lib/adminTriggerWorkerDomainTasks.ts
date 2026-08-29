@@ -27,6 +27,7 @@ const D1_HEAVY_MAINTENANCE_TASKS = new Set([
   'legacy-hot-data-retirement', 'd1-evidence-scrub', 'r2-retention-sweep',
   'orphan-reachability-gc', 'cleanup-dlq-replay', 'weekly-cleanup',
   'price-horizon-projection',
+  'canonical-selection-labels-rebuild',
   'strategy-evidence-owner-calibration',
   'strategy-learning-finalize',
   'selection-reference-repair', 'selection-reference-identity-repair',
@@ -1110,6 +1111,20 @@ export function buildAdminWorkerDomainTaskMap(c: any, deps: TriggerDeps): Record
       })
       const metrics = await materializeStrategyEvidenceMetrics(c.env, { outcomeAsOfDate })
       return `${canonical.summary} | ${multiHorizon.summary} | ${outcomes.summary} | ${metrics.summary}`
+    },
+    'canonical-selection-labels-rebuild': async () => {
+      const asOfDate = c.req.query('as_of_date') || requestedRunDate() || twToday()
+      const { materializeCanonicalSelectionLabelsV4 } = await import('./canonicalSelectionLabels')
+      const { loadCanonicalScreenerRunIds } = await import('./historicalScreenerArtifactEvidence')
+      const canonicalRunIds = await loadCanonicalScreenerRunIds(c.env, asOfDate)
+      const labels = await materializeCanonicalSelectionLabelsV4(
+        databaseForDataDomain(c.env, 'learning'),
+        { asOfDate, canonicalRunIds },
+      )
+      if (labels.persisted_rows <= 0) {
+        throw new Error(`canonical_selection_labels_rebuild_empty:${asOfDate}`)
+      }
+      return `canonical_selection_labels_rebuild as_of_date=${asOfDate} persisted=${labels.persisted_rows} pending=${labels.pending_rows} unavailable=${labels.unavailable_rows}`
     },
     'strategy-evidence-metrics': async () => {
       const { materializeStrategyEvidenceMetrics } = await import('./strategyEvidenceMetrics')

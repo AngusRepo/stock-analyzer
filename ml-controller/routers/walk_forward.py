@@ -856,7 +856,10 @@ def _materialize_completed_oof_release_aliases(
         Active8EnsembleValidationError,
         build_active8_ensemble_artifact,
     )
-    from services.active8_ensemble_repository import persist_active8_ensemble_candidate
+    from services.active8_ensemble_repository import (
+        persist_active8_ensemble_candidate,
+        persist_active8_ensemble_validation_attempt,
+    )
     from services.active8_oof_cohort_materializer import load_oof_prediction_rows
     from services.model_artifact_registry import ACTIVE8_TARGET_SEMANTIC_VERSION, upsert_artifact_record
 
@@ -971,6 +974,14 @@ def _materialize_completed_oof_release_aliases(
             knowledge_cutoff_date=knowledge_cutoff_date,
         )
     except Active8EnsembleValidationError as exc:
+        validation_attempt = persist_active8_ensemble_validation_attempt(
+            exc.validation,
+            base_artifacts=normalized_sources,
+            cohort_id=cohort_id,
+            training_run_id=expected_run_id,
+            knowledge_cutoff_date=knowledge_cutoff_date,
+            source_manifest_checksum=checksum,
+        )
         return {
             "status": "blocked",
             "reason": "active8_ensemble_validation_failed",
@@ -985,6 +996,7 @@ def _materialize_completed_oof_release_aliases(
             "selection_method": "learned_chronological_oof_ensemble",
             "selection_policy_version": "active8-ensemble-conformal-isotonic-v1",
             "validation": exc.validation,
+            "validation_attempt": validation_attempt,
             "ensemble_candidate": None,
         }
     ensemble_candidate = persist_active8_ensemble_candidate(
@@ -1115,8 +1127,6 @@ async def dispatch_oof_full_fit_training(
         and _oof_release_registry_is_terminal_validation_blocked(release_registry)
     )
     if terminal_validation_blocked:
-        if "TabM" not in set(plan["release_models"]):
-            return {**plan, **receipt, "retry_required": False, "receipt_path": receipt_path}
         prior_run_id = str(receipt.get("run_id") or "")
         rows = LEARNING_D1_CLIENT.query(
             """
@@ -1127,6 +1137,8 @@ async def dispatch_oof_full_fit_training(
             [prior_run_id],
         )
         source_rows = _select_oof_full_fit_source_rows(rows, plan["release_models"])
+        if set(source_rows) != set(plan["release_models"]):
+            raise RuntimeError("active8_terminal_validation_projection_source_incomplete")
         tabm_row = source_rows.get("TabM")
         tabm_registration: dict[str, Any] = {}
         if isinstance(tabm_row, dict):
@@ -1144,7 +1156,10 @@ async def dispatch_oof_full_fit_training(
             if isinstance(tabm_registration.get("metadata"), dict)
             else {}
         )
-        if str(tabm_metadata.get("feature_semantic_version") or "") != OOF_FEATURE_SEMANTIC_VERSION:
+        if (
+            tabm_row is not None
+            and str(tabm_metadata.get("feature_semantic_version") or "") != OOF_FEATURE_SEMANTIC_VERSION
+        ):
             release_registry = _materialize_completed_oof_release_aliases(
                 manifest=manifest,
                 registry_rows=rows,
@@ -1170,7 +1185,29 @@ async def dispatch_oof_full_fit_training(
                 json.dumps(receipt, sort_keys=True),
                 content_type="application/json",
             )
-        return {**plan, **receipt, "retry_required": False, "receipt_path": receipt_path}
+        validation_attempt = (
+            release_registry.get("validation_attempt")
+            if isinstance(release_registry.get("validation_attempt"), dict)
+            else None
+        )
+        if validation_attempt is None:
+            from services.active8_ensemble_repository import persist_active8_ensemble_validation_attempt
+
+            validation_attempt = persist_active8_ensemble_validation_attempt(
+                dict(release_registry.get("validation") or {}),
+                base_artifacts=source_rows,
+                cohort_id=cohort_id,
+                training_run_id=prior_run_id,
+                knowledge_cutoff_date=knowledge_cutoff_date,
+                source_manifest_checksum=str(manifest.get("manifest_checksum") or ""),
+            )
+        return {
+            **plan,
+            **receipt,
+            "retry_required": False,
+            "receipt_path": receipt_path,
+            "validation_attempt": validation_attempt,
+        }
     if completed_receipt or recoverable_retry_limit:
         normalized = {
             **plan,

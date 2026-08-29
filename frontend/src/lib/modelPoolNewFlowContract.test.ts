@@ -22,6 +22,7 @@ assert(!workbench.includes('<PromotionReadinessPanel'), 'Candidate-vs-champion c
 assert(workbench.includes('Evidence table'), 'ModelPool should keep one dense evidence table')
 assert(workbench.includes('FULL OOF IC') && workbench.includes('不可直接和 ensemble 尾端 validation IC 比較'), 'Model Pool must distinguish full-window individual OOF IC from later-window ensemble validation')
 assert(workbench.includes('V5 serving bundle vs latest retrain'), 'Evidence table should separate the V5 serving bundle from latest retrain evidence')
+assert(workbench.includes("readiness === 'validation_failed'"), 'Failed immutable V5 bundle validation must render as an error, not generic missing evidence')
 assert(workbench.includes('V5 serving bundle, selected challenger, and latest retrain evidence stay separate; legacy pointers are audit-only'), 'Evidence table should explain that legacy pointers are audit-only')
 assert(workbench.includes('row?.oof_full_fit_release_candidate ?? null'), 'Selection must use only the canonical immutable OOF release')
 assert(workbench.includes('Active-8 retrain rejected'), 'Rejected latest retrains should remain visible as diagnosis outside production fleet health')

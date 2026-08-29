@@ -142,6 +142,12 @@ def test_terminal_validation_reconciles_missing_tabm_alias_once(monkeypatch):
     reconciled_registry = {
         **receipt["release_registry"],
         "validation": dict(receipt["release_registry"]["validation"]),
+        "validation_attempt": {
+            "status": "persisted",
+            "attempt_id": "attempt-tabm-v1",
+            "validation_decision": "FAIL",
+            "production_effect": False,
+        },
     }
     calls = []
     monkeypatch.setattr(walk_forward, "build_oof_full_fit_dispatch_plan", lambda _manifest: plan)

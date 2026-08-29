@@ -1777,6 +1777,24 @@ export type Active8ServingBundleReadModel = {
     checksum?: string | null
   }>
   blockers: string[]
+  latest_validation_attempt?: {
+    attempt_id?: string | null
+    cohort_id?: string | null
+    training_run_id?: string | null
+    knowledge_cutoff_date?: string | null
+    validation_decision?: 'FAIL'
+    validation?: {
+      rank_ic_equal_date_market_mean?: number | null
+      rank_ic_equal_date_market_lcb90?: number | null
+      top_bottom_net_return_spread?: number | null
+      top_bottom_net_return_spread_lcb90?: number | null
+      validation_dates?: number | null
+      validation_start_date?: string | null
+      validation_end_date?: string | null
+      failed_gates?: string[]
+    }
+    production_effect?: false
+  } | null
 }
 
 export type ModelChampionPointersResponse = {

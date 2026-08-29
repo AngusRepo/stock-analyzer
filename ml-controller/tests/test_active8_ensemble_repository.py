@@ -3,7 +3,10 @@ import json
 import pytest
 
 from services.active8_ensemble_artifact import payload_checksum
-from services.active8_ensemble_repository import persist_active8_ensemble_candidate
+from services.active8_ensemble_repository import (
+    persist_active8_ensemble_candidate,
+    persist_active8_ensemble_validation_attempt,
+)
 
 
 class Blob:
@@ -84,3 +87,95 @@ def test_d1_identity_conflict_fails_closed():
     d1.row["payload_json"] = "{}"
     with pytest.raises(RuntimeError, match="immutable_conflict"):
         persist_active8_ensemble_candidate(first, training_run_id="run-1", bucket=bucket, d1_client=d1)
+
+
+class AttemptD1:
+    def __init__(self):
+        self.row = None
+    def execute(self, _sql, params):
+        candidate = dict(zip((
+            "attempt_id", "cohort_id", "training_run_id", "knowledge_cutoff_date",
+            "schema_version", "source_manifest_checksum",
+            "observation_artifact_set_checksum", "validation_decision",
+            "validation_json", "receipt_json", "receipt_checksum",
+        ), params))
+        candidate["production_effect"] = 0
+        if self.row is None:
+            self.row = candidate
+        return {"success": True}
+    def query(self, _sql, params):
+        return [self.row] if self.row and self.row["attempt_id"] == params[0] else []
+
+
+def failed_validation():
+    return {
+        "schema_version": "active8-oof-ensemble-validation-v1",
+        "decision": "FAIL",
+        "failed_gates": ["chronological_validation_equal_date_market_rank_ic_lcb90_non_positive"],
+        "rank_ic_equal_date_market_lcb90": -0.1,
+    }
+
+
+def observation_artifacts():
+    return {
+        "DLinear": {
+            "artifact_id": "DLinear:v1:oof_full_fit_release",
+            "model_name": "DLinear",
+            "version": "v1",
+            "checksum": "sha256:" + "a" * 64,
+            "artifact_path": "DLinear/v1.joblib",
+            "metadata_path": "DLinear/v1.json",
+            "candidate_type": "oof_full_fit_release",
+            "training_run_id": "run-1",
+        },
+    }
+
+
+def test_failed_validation_attempt_is_immutable_and_has_no_production_effect():
+    d1 = AttemptD1()
+    first = persist_active8_ensemble_validation_attempt(
+        failed_validation(),
+        base_artifacts=observation_artifacts(),
+        cohort_id="cohort-1",
+        training_run_id="run-1",
+        knowledge_cutoff_date="2026-08-27",
+        source_manifest_checksum="b" * 64,
+        d1_client=d1,
+    )
+    second = persist_active8_ensemble_validation_attempt(
+        failed_validation(),
+        base_artifacts=observation_artifacts(),
+        cohort_id="cohort-1",
+        training_run_id="run-1",
+        knowledge_cutoff_date="2026-08-27",
+        source_manifest_checksum="b" * 64,
+        d1_client=d1,
+    )
+    assert first == second
+    assert first["validation_decision"] == "FAIL"
+    assert first["production_effect"] is False
+    assert json.loads(d1.row["receipt_json"])["production_effect"] is False
+
+
+def test_failed_validation_attempt_identity_conflict_fails_closed():
+    d1 = AttemptD1()
+    persist_active8_ensemble_validation_attempt(
+        failed_validation(),
+        base_artifacts=observation_artifacts(),
+        cohort_id="cohort-1",
+        training_run_id="run-1",
+        knowledge_cutoff_date="2026-08-27",
+        source_manifest_checksum="b" * 64,
+        d1_client=d1,
+    )
+    d1.row["validation_json"] = "{}"
+    with pytest.raises(RuntimeError, match="immutable_conflict"):
+        persist_active8_ensemble_validation_attempt(
+            failed_validation(),
+            base_artifacts=observation_artifacts(),
+            cohort_id="cohort-1",
+            training_run_id="run-1",
+            knowledge_cutoff_date="2026-08-27",
+            source_manifest_checksum="b" * 64,
+            d1_client=d1,
+        )

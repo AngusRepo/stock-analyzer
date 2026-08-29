@@ -156,7 +156,10 @@ def test_serving_bundle_read_model_never_falls_back_to_legacy_pointers(monkeypat
     class NoBundleD1:
         @staticmethod
         def query(sql, params=None):
-            assert "active8_ensemble_pointer_v1" in sql
+            assert (
+                "active8_ensemble_pointer_v1" in sql
+                or "active8_ensemble_validation_attempts_v1" in sql
+            )
             return []
 
     monkeypatch.setattr(registry, "d1_client", NoBundleD1())
@@ -165,6 +168,57 @@ def test_serving_bundle_read_model_never_falls_back_to_legacy_pointers(monkeypat
     assert missing["production_effect"] is False
     assert missing["base_artifacts"] == {}
     assert missing["blockers"] == ["active8_v5_serving_bundle_not_promoted"]
+
+def test_serving_read_model_exposes_latest_failed_bundle_attempt(monkeypatch):
+    validation = {
+        "schema_version": "active8-oof-ensemble-validation-v1",
+        "decision": "FAIL",
+        "failed_gates": ["chronological_validation_daily_spread_lcb90_non_positive"],
+        "rank_ic_equal_date_market_lcb90": -0.1,
+    }
+    receipt = {
+        "schema_version": "active8-oof-ensemble-validation-attempt-v1",
+        "cohort_id": "cohort-fail",
+        "training_run_id": "run-fail",
+        "knowledge_cutoff_date": "2026-08-27",
+        "source_manifest_checksum": "a" * 64,
+        "observation_artifacts": {"DLinear": {"artifact_id": "DLinear:v1:oof_full_fit_release"}},
+        "observation_artifact_set_checksum": "b" * 64,
+        "validation": validation,
+        "production_effect": False,
+    }
+    receipt_json = _canonical(receipt)
+
+    class FailedBundleD1:
+        @staticmethod
+        def query(sql, params=None):
+            if "active8_ensemble_pointer_v1" in sql:
+                return []
+            if "active8_ensemble_validation_attempts_v1" in sql:
+                return [{
+                    "attempt_id": "attempt-fail",
+                    "cohort_id": "cohort-fail",
+                    "training_run_id": "run-fail",
+                    "knowledge_cutoff_date": "2026-08-27",
+                    "schema_version": "active8-oof-ensemble-validation-attempt-v1",
+                    "source_manifest_checksum": "a" * 64,
+                    "observation_artifact_set_checksum": "b" * 64,
+                    "validation_decision": "FAIL",
+                    "validation_json": _canonical(validation),
+                    "receipt_json": receipt_json,
+                    "receipt_checksum": hashlib.sha256(receipt_json.encode()).hexdigest(),
+                    "production_effect": 0,
+                    "created_at": "2026-08-27 00:00:00",
+                }]
+            raise AssertionError(sql)
+
+    monkeypatch.setattr(registry, "d1_client", FailedBundleD1())
+    result = registry.load_active8_ensemble_serving_bundle()
+    assert result["status"] == "validation_failed"
+    assert result["production_effect"] is False
+    assert result["blockers"] == validation["failed_gates"]
+    assert result["latest_validation_attempt"]["knowledge_cutoff_date"] == "2026-08-27"
+
 
 def test_champion_pointer_read_model_keeps_legacy_names_out_of_active8_slots(monkeypatch):
     monkeypatch.setattr(

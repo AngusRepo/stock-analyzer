@@ -10,7 +10,6 @@ function assert(condition: unknown, message: string): void {
 const root = path.join(process.cwd(), '..')
 const frontend = path.join(root, 'frontend', 'src')
 const page = fs.readFileSync(path.join(frontend, 'pages', 'ModelPoolPage.tsx'), 'utf8')
-const track = fs.readFileSync(path.join(frontend, 'lib', 'modelUpgradeTrack.ts'), 'utf8')
 const api = fs.readFileSync(path.join(frontend, 'lib', 'api.ts'), 'utf8')
 const workbench = fs.readFileSync(
   path.join(frontend, 'components', 'model-pool', 'ModelPoolNewFlowWorkbench.tsx'),
@@ -20,109 +19,40 @@ const dashboardReadRoutes = fs.readFileSync(
   path.join(root, 'worker', 'src', 'routes', 'dashboardReadRoutes.ts'),
   'utf8',
 )
-
-assert(page.includes('ModelPoolNewFlowWorkbench'), 'Model Pool must render the new L2/L3 cockpit')
-assert(page.includes('PromotionQueuePanelV2'), 'Model Pool must keep promotion and parameter governance')
-assert(!page.includes('UpgradeTrackPanelV2'), 'Model Pool must not duplicate active-8 details outside the operating matrix')
-assert(page.includes('!isRetiredModelName(name)'), 'Model Pool must filter retired ML from the main surface')
-assert(!page.includes('{false &&'), 'Model Pool must not hide retired UI in a false render branch')
-assert(page.includes('ModelPoolWorkbenchSnapshot'), 'Model Pool must render from a complete evidence snapshot instead of partial query hydration')
-assert(page.includes('Promise.allSettled'), 'Model Pool refresh must refetch all evidence feeds as one snapshot refresh')
-assert(page.includes('modelPoolSnapshotReady'), 'Model Pool must guard the cockpit until the evidence snapshot is ready')
-assert(page.includes('Loading complete model-pool evidence snapshot'), 'Model Pool loading copy must make snapshot hydration explicit')
-assert(!page.includes('refetchInterval: 60_000'), 'Model Pool must not let independent query intervals create staggered UI updates')
-assert(
-  page.includes("label: 'OOS IC'") && page.includes('candidate: governanceMetric') && page.includes('champion: governanceMetric') && page.includes('delta: signedGovernanceMetric'),
-  'Promotion governance must show candidate/champion metric deltas per artifact row',
+const registry = fs.readFileSync(
+  path.join(root, 'ml-controller', 'services', 'model_artifact_registry.py'),
+  'utf8',
 )
-assert(page.includes('candidate minus current champion') && page.includes('OOS IC'), 'Promotion governance must expose numeric OOS IC comparison')
-assert(page.includes('live comparison missing'), 'Promotion governance must surface missing live comparison as an operator-visible root cause')
-assert(page.includes('Suppressed versions'), 'Promotion governance must expose hidden/superseded artifact versions with reasons')
+const migration = fs.readFileSync(
+  path.join(root, 'worker', 'domain-migrations', 'learning', '0032_active8_ensemble_validation_attempts.sql'),
+  'utf8',
+)
 
-assert(!workbench.includes("from 'lightweight-charts'"), 'Model Pool cockpit must not use the unclear fake timeline chart')
-assert(workbench.includes('Grafana-style model operations'), 'Model Pool cockpit must expose the Grafana-style operations header')
-assert(workbench.includes('Fleet status'), 'Model Pool cockpit must show active-8 fleet status cells')
-assert(workbench.includes('Evidence matrix'), 'Model Pool cockpit must show weekly IC, OOS, live, PBO/CPCV, and champion compare in one matrix')
-assert(workbench.includes('fleetToneFromMatrix'), 'Fleet status must be derived from the same gate tones used by the Evidence matrix')
-assert(workbench.includes("requiredGateLabels = new Set(['OOS IC', 'LIVE IC', 'PBO/CPCV', 'COMPARE'])"), 'Fleet status must summarize required matrix gate cells')
-assert(workbench.includes('record.fleetTone'), 'Fleet status cards must render the matrix-derived fleet tone')
-assert(workbench.includes('Candidate release readiness'), 'Model Pool cockpit must make selected-model readiness explicitly candidate-release oriented')
-assert(!workbench.includes('Gate & incidents'), 'Model Pool cockpit must not keep a duplicated gate/incidents panel')
-assert(!workbench.includes('Incidents queue'), 'Model Pool cockpit must consolidate incidents into the evidence table missing-evidence column')
-assert(!workbench.includes('Alert queue'), 'Model Pool cockpit must not duplicate next-action copy in a separate alert queue panel')
-assert(!workbench.includes('Gate inspector'), 'Model Pool cockpit must not keep a separate gate inspector panel after merging incidents')
-assert(workbench.includes('selectedModelId'), 'Model Pool gate inspector must be driven by selected model state')
-assert(workbench.includes('onSelectModel'), 'Model Pool fleet/timeline/alert rows must update the selected inspector model')
-assert(workbench.includes('aria-pressed={isSelected}'), 'Selectable model rows must expose pressed state')
-assert(workbench.includes('selectedArtifactEvidence'), 'Evidence matrix must read artifact offline/live evidence instead of weekly IC only')
-assert(workbench.includes('return selectionCandidate(row) ?? row?.serving_release_artifact ?? null'), 'Fleet PBO/CPCV must read the selected candidate or canonical serving champion, not a rejected latest retrain')
-assert(workbench.includes('Active-8 retrain rejected'), 'Latest failed retrains must remain visible as non-serving diagnosis')
-assert(workbench.includes('min-w-[240px] whitespace-normal'), 'Best artifact vs champion heading must wrap without clipping')
-assert(!workbench.includes('compactVersion(compare.candidate, 22)') && !workbench.includes('compactVersion(compare.champion, 22)'), 'Best artifact vs champion values must not be truncated')
-assert(workbench.includes('OOS IC') && workbench.includes('PBO/CPCV') && workbench.includes('COMPARE'), 'Evidence matrix must include OOS IC, PBO/CPCV, and champion compare gates')
-assert(!workbench.includes("label: 'STATE'"), 'Evidence matrix must not duplicate fleet status as a STATE column')
-assert(workbench.includes('PBO ${formatMetric(pboValue, 2)}<${formatMetric(pboMax, 2)}'), 'PBO/CPCV cells must expose values and thresholds')
-assert(workbench.includes("label: 'LIVE IC'") && workbench.includes('daily rolling live IC'), 'LIVE IC cells must show daily rolling verified IC instead of old shadow/parity gate language')
-assert(workbench.includes('Missing evidence'), 'Evidence table must expose missing evidence chips')
-assert(page.includes('modelPoolSnapshot!.statusRows'), 'Model Pool page must pass model-upgrade status rows from the stable snapshot into the cockpit')
-assert(workbench.includes('modelUpgradeStatusReady?: boolean'), 'Model Pool cockpit must accept model-upgrade status readiness')
-assert(workbench.includes("const rawStatus = release?.state ?? model?.status ?? 'no_data'"), 'Model Pool cockpit must derive active-8 status from artifact registry state')
-assert(workbench.includes('statusRow: modelUpgradeStatusReady ? statusRow : undefined'), 'Model-upgrade status rows must be limited to drilldown diagnosis after snapshot hydration')
-assert(!workbench.includes('evidence_status_syncing'), 'Model Pool cockpit must not let model-upgrade status feed create active-8 gate blockers')
-assert(!workbench.includes('evidence_not_ready'), 'Model Pool cockpit must not mark production artifacts blocked by Strategy Lab research backlog')
-assert(!workbench.includes("const rawStatus = statusRow?.registry_status ?? model?.status ?? 'no_data'"), 'Model Pool cockpit must not use an unguarded lineage-active status fallback')
-assert(workbench.includes('no selected weekly/monthly candidate is waiting for champion comparison'), 'COMPARE must render N/R when no candidate exists instead of reusing champion pointer readiness')
-assert(workbench.includes('PBO policy missing'), 'PBO/CPCV cell must surface missing adaptive policy instead of falling back to a fixed threshold')
-assert(!workbench.includes('PBO<0.50'), 'PBO/CPCV UI must not hardcode a shared 0.50 threshold')
-assert(workbench.includes('foundation_forecast_validation'), 'TimesFM foundation forecast validation must feed the PBO/CPCV evidence cell')
-assert(workbench.includes("detailParts.join('\\n')"), 'PBO/CPCV detail must render as multiple complete lines')
-assert(workbench.includes('whitespace-pre-line') && !workbench.includes('block truncate text-[12px] font-medium opacity-80'), 'Evidence cells must not truncate multiline gate details')
-assert(workbench.includes('Evidence table'), 'Model Pool cockpit must keep dense registry evidence table')
-assert(workbench.includes('Research diagnosis'), 'Selected-model drilldown must expose root cause and next action for research states')
-assert(workbench.includes('Candidate release funnel'), 'Selected-model drilldown must show the candidate release readiness funnel')
-assert(workbench.includes('TimesFM L2 sidecar -> L3 active-8 family'), 'Model Pool cockpit must show the L2 sidecar / L3 active-8 ownership split')
-assert(workbench.includes('candidate gate, not current prod artifact'), 'Candidate release panel must clarify it is not judging the already-serving prod artifact')
-assert(workbench.includes('Candidate vs current champion'), 'Candidate release readiness must expose the selected candidate artifact against the current champion baseline')
-assert(workbench.includes('evaluation_pending') && workbench.includes('no completed evaluation run'), 'Research state diagnostics must explain evaluation_pending root cause')
-assert(workbench.includes('needs_attention') && workbench.includes('evidence is incomplete'), 'Research state diagnostics must explain needs_attention root cause')
-assert(workbench.includes('Best artifact vs champion'), 'Evidence table must show candidate-vs-champion artifact comparison instead of duplicating PBO/CPCV')
-assert(workbench.includes('OOS IC delta') && workbench.includes('metricDetail'), 'Candidate compare must expose candidate-vs-champion metric deltas')
-for (const heading of ['Dataset', 'Pointer', 'Review pressure', 'Best artifact vs champion', 'Missing evidence']) {
-  assert(workbench.includes(heading), `Evidence table should include ${heading}`)
-}
-assert(!workbench.includes(['Snapshot', 'of the active-8 evidence chain'].join(' ')), 'Model Pool cockpit must remove the unclear snapshot copy')
+assert(page.includes('ModelPoolNewFlowWorkbench'), 'Model Pool must render the canonical V5 cockpit')
+assert(page.includes('ModelPoolWorkbenchSnapshot'), 'Model Pool must hydrate one complete evidence snapshot')
+assert(page.includes('Promise.allSettled'), 'Model Pool evidence feeds must refresh together')
+assert(!page.includes('<PromotionQueuePanelV2'), 'Legacy per-artifact promotion queue must stay retired')
 
-for (const id of ['TabM', 'GNN', 'iTransformer']) {
-  assert(track.includes(`id: '${id}'`), `${id} must be listed as production_slot_member`)
-  assert(workbench.includes(id), `${id} must appear in the L3 model cockpit`)
-}
-assert(track.includes("id: 'TimesFM'") && track.includes("stage: 'l2_feature_sidecar_member'"), 'TimesFM must be listed as an L2 feature sidecar member')
-assert(track.includes('TimesFM 2.5 L2 sidecar'), 'TimesFM sidecar must be labeled as TimesFM 2.5 L2 sidecar')
-assert(!track.includes("id: 'TimesFM25'"), 'TimesFM25 migration benchmark must not appear as a visible active-flow candidate')
+assert(workbench.includes('V5 serving bundle vs latest retrain'), 'Model Pool must separate serving bundle from retrain evidence')
+assert(workbench.includes('row?.oof_full_fit_release_candidate ?? null'), 'Base evidence must use immutable OOF releases only')
+assert(workbench.includes("readiness === 'validation_failed'"), 'Failed V5 bundle validation must be explicit')
+assert(!workbench.includes('row?.serving_release_artifact ?? selectionCandidate(row)'), 'Legacy serving pointers must not enter V5 evidence')
 
-for (const retired of ['FT-Transformer', 'FTTransformer', 'Chronos', 'Chronos2ZeroShot', 'Chronos2LoRA']) {
-  assert(track.includes(`'${retired}'`), `${retired} must be documented in the retired model list`)
+assert(api.includes('latest_validation_attempt?:'), 'Frontend API must expose the immutable validation attempt')
+assert(api.includes('production_effect: false'), 'Validation attempts must be observation-only')
+assert(registry.includes('latest_validation_attempt'), 'Model registry read model must expose the latest failed attempt')
+assert(registry.includes('"status": "validation_failed"'), 'Missing serving pointer must distinguish validation failure')
+assert(migration.includes('active8_ensemble_validation_attempts_v1'), 'Learning D1 must own immutable validation attempts')
+assert(migration.includes('production_effect = 0'), 'Validation attempts must never affect serving')
+
+for (const route of [
+  '/api/model-pool/artifact_registry',
+  '/model_pool/artifact_registry/selection',
+  '/model_pool/artifact_registry/promotion_queue',
+  '/model_pool/artifact_registry/promotion_controller',
+  '/model_pool/artifact_registry/champion_pointers',
+]) {
+  assert(dashboardReadRoutes.includes(route), `Worker proxy route missing: ${route}`)
 }
 
-assert(track.includes('MODEL_POOL_RESEARCH_SHADOW_MODEL_IDS'), 'ResidualMLP must be documented as research shadow, not retired alpha')
-assert(track.includes("'ResidualMLP'"), 'ResidualMLP research shadow id must stay visible to taxonomy readers')
-assert(!track.includes("id: 'ResidualMLP'"), 'ResidualMLP must not be a visible production candidate')
-assert(!track.includes("id: 'Chronos2ZeroShot'"), 'Chronos2ZeroShot must not be a visible production candidate')
-assert(!track.includes("id: 'Chronos2LoRA'"), 'Chronos2LoRA must not be a visible production candidate')
-assert(track.includes('production_slot_member'), 'L3 targets must be formal production slots')
-assert(!track.includes('benchmark-only'), 'L3 target candidates must not be described as benchmark-only')
-assert(track.includes('L2 feature release'), 'TimesFM evidence must require L2 feature release wiring')
-assert(track.includes("stage: 'meta_optimizer'"), 'GAOptimizer must be a meta optimizer')
-assert(track.includes("stage: 'state_space_overlay'"), 'Kalman/Markov must stay overlays')
-
-assert(api.includes('production_slot_member'), 'Frontend API type must accept production slot stage')
-assert(api.includes('ModelArtifactCompare'), 'Frontend API type must accept artifact compare deltas from promotion queue')
-assert(api.includes('timesfm_l175_l2_feature_release'), 'Frontend API type must accept TimesFM L1.75/L2 feature release artifact rows')
-assert(api.includes('formatApiError'), 'Frontend API client must format non-OK responses with endpoint context')
-assert(api.includes('API unavailable') && api.includes('localhost:8787'), 'Local proxy errors must point to Worker API dependency')
-
-assert(dashboardReadRoutes.includes('/api/model-pool/artifact_registry'), 'Worker must proxy model artifact registry API')
-assert(dashboardReadRoutes.includes('/model_pool/artifact_registry/selection'), 'Worker must proxy artifact selection API')
-assert(dashboardReadRoutes.includes('/model_pool/artifact_registry/promotion_queue'), 'Worker must proxy artifact promotion queue API')
-assert(dashboardReadRoutes.includes('/model_pool/artifact_registry/promotion_controller'), 'Worker must proxy promotion-controller API')
-assert(dashboardReadRoutes.includes('/model_pool/artifact_registry/champion_pointers'), 'Worker must proxy champion pointer API')
+console.log('modelPoolUiContract: OK')

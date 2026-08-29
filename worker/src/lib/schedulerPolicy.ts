@@ -34,6 +34,7 @@ export const TASK_POLICIES: Record<string, SchedulerTaskPolicy> = {
   'indicator-queue-watchdog': { kind: 'trading_day', holidayGated: true, description: 'recover stale or dead-lettered indicator shards and orphaned finalizers' },
   'allocator-ev-lifecycle-watchdog': { kind: 'trading_day', holidayGated: true, description: 'recover incomplete allocator EV lineage, snapshot, verify, and replay stages' },
   'active8-oof-daily': { kind: 'maintenance', holidayGated: false, description: 'post-midnight continuation that materializes the prior session ready purged OOF cohort' },
+  'dataset-snapshot-export': { kind: 'maintenance', holidayGated: false, description: 'detached immutable research snapshot callback and durable Active-8 evidence handoff' },
   update: { kind: 'trading_day', holidayGated: true, description: 'post-market TWSE/TPEX market data update' },
   'indicator-queue': { kind: 'trading_day', holidayGated: true, description: 'post-market full-market technical indicator queue' },
   'ml-warmup': { kind: 'trading_day', holidayGated: true, description: 'post-market ML control-plane warmup' },

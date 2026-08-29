@@ -340,6 +340,7 @@ export interface UpdateQueueMsg {
     | 'data_domain_shadow_backfill'
     | 'strategy_evidence_rebuild'
     | 'active8_oof_continuation'
+    | 'active8_oof_after_snapshot'
   newsStocks?: Array<{
     id: number
     symbol: string
@@ -384,6 +385,7 @@ export interface UpdateQueueMsg {
   oofCadence?: 'weekly' | 'monthly'
   oofExpectedCohortId?: string
   oofContinuationAttempt?: number
+  active8SnapshotId?: string
 }
 
 // MLQueueMsg removed in Phase 3 — ML batch predict now goes through Controller

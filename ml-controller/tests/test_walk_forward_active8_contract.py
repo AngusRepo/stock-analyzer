@@ -823,7 +823,7 @@ def test_dispatch_reuses_completed_full_fit_receipt_across_cadences(monkeypatch)
     assert result["release_registry"]["failed_models"] == ["DLinear"]
 
 
-def test_dispatch_reuses_terminal_ensemble_validation_block_without_registry_query(monkeypatch):
+def test_dispatch_reuses_terminal_ensemble_validation_block_and_repairs_projection(monkeypatch):
     import json
     from routers import walk_forward
 
@@ -879,12 +879,30 @@ def test_dispatch_reuses_terminal_ensemble_validation_block_without_registry_que
         "promotion_evidence": {"DLinear": {"decision": "PASS"}},
     }
     monkeypatch.setattr(walk_forward, "build_oof_full_fit_dispatch_plan", lambda _manifest: plan)
+    artifact_row = {
+        "artifact_id": "DLinear:v1:oof_full_fit_release",
+        "model_name": "DLinear",
+        "version": "v1",
+        "checksum": "sha256:" + "b" * 64,
+        "artifact_path": "gs://models/dlinear/v1.pt",
+        "metadata_path": "gs://models/dlinear/v1.json",
+        "candidate_type": "oof_full_fit_release",
+        "training_run_id": "universal-oof-owner",
+        "state": "offline_strong_pass",
+        "offline_evidence_json": "{}",
+    }
+    monkeypatch.setattr(walk_forward.LEARNING_D1_CLIENT, "query", lambda *_args, **_kwargs: [artifact_row])
+    persisted = []
+    from services import active8_ensemble_repository
     monkeypatch.setattr(
-        walk_forward.LEARNING_D1_CLIENT,
-        "query",
-        lambda *_args, **_kwargs: (_ for _ in ()).throw(
-            AssertionError("terminal validation receipt must not query mutable registry state")
-        ),
+        active8_ensemble_repository,
+        "persist_active8_ensemble_validation_attempt",
+        lambda validation, **kwargs: persisted.append((validation, kwargs)) or {
+            "status": "persisted",
+            "attempt_id": "attempt-v1",
+            "validation_decision": "FAIL",
+            "production_effect": False,
+        },
     )
 
     result = asyncio.run(walk_forward.dispatch_oof_full_fit_training(
@@ -899,6 +917,10 @@ def test_dispatch_reuses_terminal_ensemble_validation_block_without_registry_que
     assert result["reason"] == "active8_ensemble_validation_failed"
     assert result["retry_required"] is False
     assert result["release_registry"]["validation"]["decision"] == "FAIL"
+    assert result["validation_attempt"]["attempt_id"] == "attempt-v1"
+    assert len(persisted) == 1
+    assert persisted[0][1]["base_artifacts"] == {"DLinear": artifact_row}
+    assert persisted[0][1]["training_run_id"] == "universal-oof-owner"
 
 def test_dispatch_recovers_retry_limit_pollution_from_terminal_evidence(monkeypatch):
     import hashlib

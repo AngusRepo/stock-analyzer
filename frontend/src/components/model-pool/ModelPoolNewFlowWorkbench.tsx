@@ -213,7 +213,7 @@ function promotionPressureTone(rows: PromotionQueueRow[]): WorkstationTone {
 function pointerTone(readiness?: string | null): WorkstationTone {
   if (readiness === 'v5_serving' || readiness === 'ready' || readiness === 'pointer_ready' || readiness === 'synced') return 'ok'
   if (readiness === 'evidence_only_no_action') return 'info'
-  if (readiness === 'missing' || readiness === 'artifact_mismatch') return 'error'
+  if (readiness === 'validation_failed' || readiness === 'missing' || readiness === 'artifact_mismatch') return 'error'
   if (readiness) return 'warn'
   return 'neutral'
 }

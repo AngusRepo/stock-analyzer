@@ -148,6 +148,10 @@ export function isSchedulerRunStatus(status: unknown): status is SchedulerRunSta
 
 export function classifySchedulerRunSummary(summary: string): SchedulerRunStatus {
   const normalized = summary.trim().toLowerCase()
+  if (/\bstatus=(?:failed|error)\b/.test(normalized)) return 'error'
+  if (/\bstatus=skipped\b/.test(normalized)) return 'skipped'
+  if (/\bstatus=(?:pending|spawned|triggered)\b/.test(normalized)) return 'triggered'
+  if (/\bstatus=running\b/.test(normalized)) return 'running'
   if (
     normalized.startsWith('running') ||
     normalized.includes('started (background)') ||

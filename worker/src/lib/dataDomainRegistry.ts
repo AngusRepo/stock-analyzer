@@ -87,7 +87,8 @@ const DOMAIN_TABLES: Record<DataDomain, ReadonlySet<string>> = {
     'state_space_v2_runs', 'state_space_v2_observations', 'state_space_v2_evaluations',
     'model_accuracy', 'stock_memories', 'trade_performance', 'dataset_snapshots',
     'model_artifact_registry', 'model_champion_history', 'model_champion_pointers',
-    'active8_ensemble_artifacts_v1', 'active8_ensemble_pointer_v1',
+    'active8_ensemble_artifacts_v1', 'active8_ensemble_validation_attempts_v1',
+    'active8_ensemble_pointer_v1',
     'expected_return_artifact_payloads', 'expected_return_owner_state_v2',
     'allocator_ev_feature_snapshots',
     'allocator_ev_snapshot_runs',
@@ -273,6 +274,7 @@ const SHADOW_BACKFILL_EXCLUDED_TABLES: Partial<Record<DataDomain, ReadonlySet<st
     'strategy_label_matrix_staging_v4',
     'strategy_route_versioned_evidence_v1',
     'active8_ensemble_artifacts_v1',
+    'active8_ensemble_validation_attempts_v1',
     'active8_ensemble_pointer_v1',
   ]),
   market: new Set([

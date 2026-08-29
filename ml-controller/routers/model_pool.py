@@ -632,6 +632,8 @@ async def artifact_registry_champion_pointers(model_name: str | None = None, lim
         }
         bundle = load_active8_ensemble_serving_bundle()
         base_artifacts = bundle.get("base_artifacts") if isinstance(bundle.get("base_artifacts"), dict) else {}
+        bundle_status = str(bundle.get("status") or "")
+        bundle_blockers = [str(item) for item in bundle.get("blockers") or []]
         pointer_by_model = {
             str(pointer.get("model_name") or ""): pointer
             for pointer in pointers
@@ -653,10 +655,18 @@ async def artifact_registry_champion_pointers(model_name: str | None = None, lim
                 "d1_pointer_version": pointer.get("champion_version"),
                 "d1_pointer_artifact_id": pointer.get("champion_artifact_id"),
                 "artifact_link_status": "v5_bundle_bound" if is_serving else "legacy_audit_only",
-                "readiness": "v5_serving" if is_serving else "evidence_only_no_action",
+                "readiness": (
+                    "v5_serving"
+                    if is_serving
+                    else "validation_failed"
+                    if bundle_status == "validation_failed"
+                    else "evidence_only_no_action"
+                ),
                 "next_action": (
                     "V5 bundle is the production serving owner."
                     if is_serving
+                    else "Latest V5 bundle failed held-out quality gates: " + ", ".join(bundle_blockers)
+                    if bundle_status == "validation_failed"
                     else "Wait for a validated V5 bundle; the legacy champion pointer is rollback/audit lineage only."
                 ),
             }

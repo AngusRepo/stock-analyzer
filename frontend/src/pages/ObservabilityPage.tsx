@@ -1111,7 +1111,7 @@ function EvidenceClockPanel({
                 <div className="flex items-start justify-between gap-2">
                   <div className="min-w-0">
                     <p className="truncate text-sm font-medium text-slate-100">{clock.label}</p>
-                    <p className="mt-1 sv-num text-[10px] normal-case text-slate-500">{clock.governance} · auto promote OFF</p>
+                    <p className="mt-1 sv-num text-xs normal-case text-slate-500">{clock.governance} · auto promote OFF</p>
                   </div>
                   <WorkstationPill tone={statusTone(clock.status)}>{formatStatus(clock.status)}</WorkstationPill>
                 </div>
@@ -1121,12 +1121,12 @@ function EvidenceClockPanel({
                   <div><dt className="text-slate-500">dates</dt><dd className="sv-num mt-1 text-slate-200">{clock.distinct_dates}</dd></div>
                   <div><dt className="text-slate-500">coverage</dt><dd className="sv-num mt-1 text-slate-200">{clock.coverage == null ? 'N/A' : (clock.coverage * 100).toFixed(1) + '%'}</dd></div>
                 </dl>
-                <div className="mt-3 space-y-1 border-t border-[#1c2534] pt-2 sv-num text-[10px] normal-case text-slate-500">
+                <div className="mt-3 space-y-1 border-t border-[#1c2534] pt-2 sv-num text-xs normal-case text-slate-500">
                   <p>regimes {clock.supported_regimes.length ? clock.supported_regimes.join(' / ') : 'N/A'}</p>
                   <p>delta {clock.incumbent_delta == null ? 'N/A' : clock.incumbent_delta.toFixed(4)} · LCB {clock.confidence_bound == null ? 'N/A' : clock.confidence_bound.toFixed(4)}</p>
                   <p className="truncate">receipt {clock.artifact_or_packet_checksum?.slice(0, 16) ?? 'N/A'}</p>
                 </div>
-                <div className="mt-2 text-[11px] leading-5 text-slate-400">
+                <div className="mt-2 text-xs leading-5 text-slate-400">
                   {clock.blockers.length ? clock.blockers.join(' · ') : 'No current blocker'}
                 </div>
               </article>

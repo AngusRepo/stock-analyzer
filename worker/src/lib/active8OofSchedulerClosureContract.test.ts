@@ -9,6 +9,7 @@ const workflows = fs.readFileSync('src/lib/controllerResearchWorkflows.ts', 'utf
 const adminTasks = fs.readFileSync('src/lib/adminTriggerGcpTasks.ts', 'utf8')
 const adminControlRoutes = fs.readFileSync('src/routes/adminControlRoutes.ts', 'utf8')
 const updateOrchestrator = fs.readFileSync('src/lib/updateOrchestrator.ts', 'utf8')
+const snapshotContinuation = fs.readFileSync('src/lib/active8SnapshotReadyContinuation.ts', 'utf8')
 const policies = fs.readFileSync('src/lib/schedulerPolicy.ts', 'utf8')
 const triggerRoutes = fs.readFileSync('src/routes/adminTriggerRoutes.ts', 'utf8')
 const scheduleReadRoutes = fs.readFileSync('src/routes/scheduleReadRoutes.ts', 'utf8')
@@ -39,6 +40,11 @@ for (const task of ['active8-oof-daily', 'active8-oof-weekly', 'active8-oof-mont
 }
 assert(policies.includes("'active8-oof-daily': { kind: 'maintenance', holidayGated: false"), 'post-midnight daily OOF continuation must not be skipped by the next calendar day weekend/holiday gate')
 assert(adminControlRoutes.includes("body.task === 'active8-oof-daily'"), 'daily OOF callback must own an event-driven follow-up')
+assert(adminControlRoutes.includes("body.task === 'dataset-snapshot-export' && body.status === 'success'"), 'ready dataset snapshot callback must own the primary daily Active-8 continuation')
+assert(adminControlRoutes.includes('enqueueActive8AfterDatasetSnapshot'), 'snapshot success callback must enqueue the durable Active-8 child ticket')
+assert(snapshotContinuation.includes("type: 'active8_oof_after_snapshot'"), 'snapshot-ready event must use a dedicated durable queue message')
+assert(snapshotContinuation.includes('claimSchedulerExecutionTicket'), 'at-least-once queue delivery must be protected by a ticket CAS claim')
+assert(snapshotContinuation.includes("runActive8OofLifecycle(env, businessDate, 'daily')"), 'snapshot-ready continuation must invoke daily materialization without retraining')
 assert(
   adminControlRoutes.includes("['pending', 'spawned', 'materialized', 'shadow_evaluated'].includes(lifecycleStatus)"),
   'weekly/monthly callbacks must continue polling when the cohort is materialized but its full-fit dependency is still active',

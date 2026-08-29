@@ -10,7 +10,7 @@ import { getSchedulerDependencySpec } from './schedulerDependencyMap'
 import { schedulerGovernanceSummary, schedulerJobAccounting } from './schedulerManifestGovernance'
 import { databaseForDataDomain } from './dataDomainRegistry'
 import {
-  loadLatestSchedulerRootTickets,
+  loadSchedulerExecutionTickets,
   SCHEDULER_TICKET_CONTRACT_ROOTS,
   type SchedulerExecutionTicketRow,
 } from './schedulerExecutionTickets'
@@ -48,16 +48,18 @@ const JOB_DEF_METADATA: JobDef[] = [
   { id: 'finlab-backfill-watchdog', name: 'FinLab Pending Watchdog', schedule: 'Weekdays 21:20-23:50 / 10m', cron: '*/10 13-15 * * 1-5', group: 'pipeline_chain', chainIndex: 3 },
   { id: 'indicator-queue-watchdog', name: 'Indicator Queue Watchdog', schedule: 'Weekdays 21:00-01:55 / 5m', cron: '*/5 13-17 * * 1-5', group: 'pipeline_chain', chainIndex: 5 },
   { id: 'allocator-ev-lifecycle-watchdog', name: 'Allocator EV Lifecycle Watchdog', schedule: 'Weekdays 21:00-01:50 / 10m', cron: '*/10 13-17 * * 1-5', group: 'pipeline_chain', chainIndex: 13 },
-  { id: 'active8-oof-daily', name: 'Active-8 OOF Materialize', schedule: 'Tue-Sat 01:55 (prior trading session)', cron: '55 17 * * 1-5', group: 'pipeline_chain' },
+  { id: 'active8-oof-daily', name: 'Active-8 Daily Evidence', schedule: 'Snapshot-ready event + Tue-Sat watchdog', cron: '55 17 * * 1-5', group: 'pipeline_chain' },
   { id: 'update', name: 'Market Data Update', schedule: 'After FinLab canonical ready', cron: '', group: 'pipeline_chain', chainIndex: 4 },
   { id: 'indicator-queue', name: 'Indicator Queue', schedule: 'After update readiness', cron: '', group: 'pipeline_chain', chainIndex: 5 },
   { id: 'screener', name: 'Screener', schedule: 'After indicators', cron: '', group: 'pipeline_chain', chainIndex: 6 },
+  { id: 'screener-v2-watchdog', name: 'Screener Callback Watchdog', schedule: 'Weekdays 21:00-01:50 / 10m', cron: '*/10 13-17 * * 1-5', group: 'pipeline_chain', chainIndex: 6 },
   { id: 'regime-compute', name: 'HMM Regime', schedule: 'Before pipeline recommendation', cron: '', group: 'pipeline_chain', chainIndex: 7 },
   { id: 'allocator-ev-readiness', name: 'Allocator EV Readiness', schedule: 'After screener + regime', cron: '', group: 'pipeline_chain', chainIndex: 8 },
   { id: 'pipeline', name: 'Pipeline', schedule: 'After allocator EV readiness', cron: '', group: 'pipeline_chain', chainIndex: 9 },
   { id: 'ml-predict', name: 'ML Predict', schedule: 'Inside pipeline', cron: '', group: 'pipeline_chain', chainIndex: 11 },
   { id: 'recommendation', name: 'Daily Recommendation', schedule: 'Inside pipeline', cron: '', group: 'pipeline_chain', chainIndex: 12 },
   { id: 'post-pipeline-chain', name: 'Post Pipeline Callback', schedule: 'After pipeline callback', cron: '', group: 'pipeline_chain', chainIndex: 13 },
+  { id: 'dataset-snapshot-export', name: 'Research Dataset Snapshot', schedule: 'Detached after pipeline success', cron: '', group: 'pipeline_chain', chainIndex: 14 },
   { id: 'allocator-ev-feature-snapshot-backfill', name: 'Allocator EV Feature Snapshot', schedule: 'Inside post-pipeline callback before verify', cron: '', group: 'pipeline_chain', chainIndex: 14 },
   { id: 'verify-v2', name: 'Verify (V2 LangGraph)', schedule: 'After pipeline callback', cron: '', group: 'pipeline_chain', chainIndex: 15 },
   { id: 'post-verify-chain', name: 'Post Verify Callback', schedule: 'After verify callback', cron: '', group: 'pipeline_chain', chainIndex: 16 },
@@ -83,9 +85,11 @@ const JOB_DEF_METADATA: JobDef[] = [
   { id: 'retention-archive-only', name: 'Retention Archive Only', schedule: 'Daily 02:30', cron: '30 18 * * *', group: 'daily' },
   { id: 'retention-hot-window-drain', name: 'Retention Hot Window Drain Preflight', schedule: 'Daily 02:35', cron: '35 18 * * *', group: 'daily' },
   { id: 'data-domain-shadow-backfill-next', name: 'Multi-D1 Sequential Backfill', schedule: 'Daily 00:30', cron: '30 16 * * *', group: 'daily' },
+  { id: 'data-domain-shadow-backfill', name: 'Multi-D1 Backfill Workers', schedule: 'Paused ops + execution/paper watchdogs', cron: '', group: 'daily' },
   { id: 'legacy-strategy-evidence-migration', name: 'Legacy Strategy Evidence Migration', schedule: 'Daily 01:50??5:50 hourly', cron: '50 17-21 * * *', group: 'daily' },
   { id: 'legacy-hot-data-retirement', name: 'Legacy Hot Data Retirement', schedule: 'Daily 01:10??5:10 hourly', cron: '10 17-21 * * *', group: 'daily' },
   { id: 'r2-retention-sweep', name: 'R2 Retention Sweep', schedule: 'Daily 02:40', cron: '40 18 * * *', group: 'daily' },
+  { id: 'audit-json-retention', name: 'Audit JSON Retention', schedule: 'Daily 01:00-06:45 / 15m', cron: '*/15 17-22 * * *', group: 'daily' },
   { id: 'orphan-reachability-gc', name: 'Orphan Reachability GC', schedule: 'Daily 03:00', cron: '0 19 * * *', group: 'daily' },
   { id: 'storage-health-check', name: 'Storage Health Check', schedule: 'Daily 06:45', cron: '45 22 * * *', group: 'daily' },
   { id: 'learning-retention-readiness', name: 'Learning Ten-Year Retention Readiness', schedule: 'Daily 02:20', cron: '20 18 * * *', group: 'daily' },
@@ -127,11 +131,8 @@ const SCHEDULER_MANIFEST_JOBS = (schedulerManifest as { jobs: SchedulerManifestJ
 
 function canonicalCronFor(def: JobDef): string {
   const exact = SCHEDULER_MANIFEST_JOBS.filter((job) => job.id === def.id)
-  const owned = def.id === 'intraday-check'
-    ? SCHEDULER_MANIFEST_JOBS.filter((job) => job.task === def.id)
-    : exact.length > 0
-      ? exact
-      : SCHEDULER_MANIFEST_JOBS.filter((job) => job.task === def.id)
+  const taskOwned = SCHEDULER_MANIFEST_JOBS.filter((job) => job.task === def.id)
+  const owned = taskOwned.length > 0 ? taskOwned : exact
   return owned.length > 0
     ? [...new Set(owned.map((job) => job.schedule))].join(' + ')
     : def.cron
@@ -141,6 +142,8 @@ const JOB_DEFS: JobDef[] = JOB_DEF_METADATA.map((def) => ({
   ...def,
   cron: canonicalCronFor(def),
 }))
+
+export const SCHEDULER_STATUS_JOB_DEFS = JOB_DEFS
 
 const CHAIN_STEP_IDS = [
   'market-close-refresh',
@@ -845,16 +848,20 @@ export async function getSchedulerStatus(env: Bindings, anchorDate?: string) {
 
   const [durableStageStates, schedulerExecutionTickets] = await Promise.all([
     durableStageStatesPromise,
-    loadLatestSchedulerRootTickets(opsDb, dates).catch((error) => {
+    loadSchedulerExecutionTickets(opsDb, dates).catch((error) => {
       console.warn('[schedulerStatus] scheduler execution ticket read failed:', error)
       return [] as SchedulerExecutionTicketRow[]
     }),
   ])
   const executionTicketsByJobDate = new Map<string, SchedulerExecutionTicketRow>()
+  const executionTicketsByTaskDate = new Map<string, SchedulerExecutionTicketRow>()
   for (const ticket of schedulerExecutionTickets) {
-    if (!ticket.scheduler_job_id) continue
-    const key = `${ticket.business_date}:${ticket.scheduler_job_id}`
-    if (!executionTicketsByJobDate.has(key)) executionTicketsByJobDate.set(key, ticket)
+    const taskKey = `${ticket.business_date}:${ticket.task}`
+    if (!executionTicketsByTaskDate.has(taskKey)) executionTicketsByTaskDate.set(taskKey, ticket)
+    if (ticket.scheduler_job_id) {
+      const jobKey = `${ticket.business_date}:${ticket.scheduler_job_id}`
+      if (!executionTicketsByJobDate.has(jobKey)) executionTicketsByJobDate.set(jobKey, ticket)
+    }
   }
   const { activeChainDate, chainStatusDate } = selectSchedulerChainDates(dates, allLogs)
   if (chainStatusDate) {
@@ -943,9 +950,10 @@ export async function getSchedulerStatus(env: Bindings, anchorDate?: string) {
     const baseLastStatus = durableOverride?.lastStatus ?? resolvedDisplay.status
     const baseTimestamp = durableOverride?.lastRunAt ?? displayLog?.timestamp ?? null
     const executionTicketDate = resolvedDisplay.statusRunDate ?? today
-    const executionTicket = accounting.schedulerJobId
-      ? executionTicketsByJobDate.get(`${executionTicketDate}:${accounting.schedulerJobId}`)
-      : undefined
+    const executionTicket = executionTicketsByTaskDate.get(`${executionTicketDate}:${accounting.task}`)
+      ?? (accounting.schedulerJobId
+        ? executionTicketsByJobDate.get(`${executionTicketDate}:${accounting.schedulerJobId}`)
+        : undefined)
     const executionTicketOverride = reconcileSchedulerExecutionTicketStatus({
       baseStatus: baseLastStatus,
       baseTimestamp,

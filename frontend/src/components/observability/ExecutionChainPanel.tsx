@@ -80,6 +80,7 @@ const STAGES: Record<string, StageDefinition> = {
   'ml-predict': { id: 'ml-predict', label: 'ML predict', icon: BrainCircuit },
   recommendation: { id: 'recommendation', label: 'Recommendation', icon: Target },
   'post-pipeline-chain': { id: 'post-pipeline-chain', label: 'Pipeline callback', icon: GitBranch },
+  'dataset-snapshot-export': { id: 'dataset-snapshot-export', label: 'Research snapshot', icon: Database },
   'allocator-ev-feature-snapshot-backfill': { id: 'allocator-ev-feature-snapshot-backfill', label: 'EV feature snapshot', icon: Database },
   'verify-v2': { id: 'verify-v2', label: 'Verify', icon: ShieldCheck },
   'post-verify-chain': { id: 'post-verify-chain', label: 'Verify callback', icon: GitBranch },
@@ -122,19 +123,17 @@ const STAGES: Record<string, StageDefinition> = {
   'storage-integrity-audit': { id: 'storage-integrity-audit', label: 'Storage integrity', icon: ShieldCheck },
   'model-ic-full-check': { id: 'model-ic-full-check', label: 'Model IC full', icon: Activity },
   'weekly-cleanup': { id: 'weekly-cleanup', label: 'Weekly cleanup', icon: Archive },
-  'weekly-drift-retrain': { id: 'weekly-drift-retrain', label: 'Drift retrain', icon: BrainCircuit, optional: true },
   'weekly-optuna': { id: 'weekly-optuna', label: 'Drift research', icon: Microscope, optional: true },
   'adaptive-meta-policy-replay': { id: 'adaptive-meta-policy-replay', label: 'Meta replay', icon: BrainCircuit, optional: true },
   's12-smcvwap-calibration': { id: 's12-smcvwap-calibration', label: 'S12 calibration', icon: Settings2, optional: true },
   'linucb-multiplier-replay': { id: 'linucb-multiplier-replay', label: 'LinUCB replay', icon: BrainCircuit, optional: true },
-  'active8-oof-daily': { id: 'active8-oof-daily', label: 'Active-8 OOF daily', icon: Layers3 },
-  'active8-oof-weekly': { id: 'active8-oof-weekly', label: 'Active-8 OOF', icon: Layers3 },
+  'active8-oof-daily': { id: 'active8-oof-daily', label: 'Active-8 daily evidence', icon: Layers3 },
+  'active8-oof-weekly': { id: 'active8-oof-weekly', label: 'Active-8 weekly cohort', icon: Layers3 },
   'sector-leaders': { id: 'sector-leaders', label: 'Sector leaders', icon: Target, optional: true },
   'monthly-strategy-mining': { id: 'monthly-strategy-mining', label: 'Strategy mining', icon: ScanSearch },
   'monthly-readiness': { id: 'monthly-readiness', label: 'Monthly root', icon: Link2 },
   'monthly-optuna': { id: 'monthly-optuna', label: 'Monthly search', icon: Microscope },
   'active8-oof-monthly': { id: 'active8-oof-monthly', label: 'Active-8 monthly release', icon: Layers3 },
-  'storage-capacity-report': { id: 'storage-capacity-report', label: 'Storage capacity', icon: Database, optional: true },
 }
 
 const SCOPES: ChainScope[] = [
@@ -167,6 +166,19 @@ const SCOPES: ChainScope[] = [
       ['paper-active-postmarket'],
       ['obsidian-sync'],
       ['meta-learning-shadow', 'strategy-learning'],
+    ],
+    branches: [
+      {
+        id: 'post-close-evidence-extension',
+        label: 'Post-close evidence extension',
+        description: 'Detached compute snapshot 完成後，以 durable ticket 事件接續 Active-8 daily evidence；不等待固定 watchdog，也不執行 retrain。',
+        anchorId: 'post-pipeline-chain',
+        relation: 'evidence',
+        columns: [
+          ['dataset-snapshot-export'],
+          ['active8-oof-daily'],
+        ],
+      },
     ],
   },
   {
@@ -223,7 +235,6 @@ const SCOPES: ChainScope[] = [
       ['weekly-optuna', 'sector-leaders'],
       ['adaptive-meta-policy-replay', 's12-smcvwap-calibration', 'linucb-multiplier-replay'],
       ['weekly-cleanup'],
-      ['weekly-drift-retrain'],
     ],
   },
   {
@@ -237,7 +248,6 @@ const SCOPES: ChainScope[] = [
       ['monthly-strategy-mining'],
       ['monthly-optuna'],
       ['active8-oof-monthly'],
-      ['storage-capacity-report'],
     ],
   },
 ]
@@ -257,6 +267,24 @@ function scopeStageIds(scope: ChainScope): string[] {
 }
 
 const MAPPED_JOB_IDS = new Set(SCOPES.flatMap(scopeStageIds))
+
+function duplicateScopeJobIds(scopes: ChainScope[]): string[] {
+  const owners = new Map<string, string[]>()
+  for (const scope of scopes) {
+    for (const jobId of scopeStageIds(scope)) {
+      owners.set(jobId, [...(owners.get(jobId) ?? []), scope.id])
+    }
+  }
+  return [...owners.entries()]
+    .filter(([, scopeIds]) => new Set(scopeIds).size > 1)
+    .map(([jobId]) => jobId)
+    .sort()
+}
+
+const DUPLICATE_SCOPE_JOB_IDS = duplicateScopeJobIds(SCOPES)
+if (DUPLICATE_SCOPE_JOB_IDS.length > 0) {
+  throw new Error(`scheduler DAG jobs assigned to multiple cadence scopes: ${DUPLICATE_SCOPE_JOB_IDS.join(',')}`)
+}
 
 const STATUS_LABEL: Record<VisualStatus, string> = {
   completed: 'Completed',

@@ -22,6 +22,7 @@ const morningBriefing = fs.readFileSync('src/lib/morningBriefing.ts', 'utf8')
 const sectorCorrelation = fs.readFileSync('src/lib/sectorCorrelation.ts', 'utf8')
 const updateOrchestrator = fs.readFileSync('src/lib/updateOrchestrator.ts', 'utf8')
 const postMarketChain = fs.readFileSync('src/lib/postMarketChain.ts', 'utf8')
+const adminControlRoutes = fs.readFileSync('src/routes/adminControlRoutes.ts', 'utf8')
 const combinedHandlers = `${workerTasks}\n${gcpTasks}\n${cronWorker}\n${cronGcp}`
 
 function hasHandler(task: string): boolean {
@@ -57,7 +58,8 @@ for (const spec of Object.values(SCHEDULER_DEPENDENCY_MAP)) {
   const hasInternalChainOwner =
     (spec.task === 'allocator-ev-readiness' && updateOrchestrator.includes("logSchedulerResult(env.KV, 'allocator-ev-readiness'")) ||
     (spec.task === 'allocator-ev-feature-snapshot-backfill' && postMarketChain.includes("task: 'allocator-ev-feature-snapshot-backfill'")) ||
-    (spec.task === 'model-ic-rolling' && postMarketChain.includes("'model-ic-rolling', () => runModelIcRollingRefresh"))
+    (spec.task === 'model-ic-rolling' && postMarketChain.includes("'model-ic-rolling', () => runModelIcRollingRefresh")) ||
+    (spec.task === 'dataset-snapshot-export' && adminControlRoutes.includes("body.task === 'dataset-snapshot-export'"))
   assert(hasHandler(spec.task) || hasInternalChainOwner, `${spec.task} must keep a scheduled/manual handler or explicit internal chain owner during consolidation`)
 }
 

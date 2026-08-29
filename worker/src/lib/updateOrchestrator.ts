@@ -3048,6 +3048,12 @@ export async function processUpdateBatch(
   env: Bindings,
   deps: ProcessUpdateBatchDeps,
 ): Promise<void> {
+  if (msg.type === 'active8_oof_after_snapshot') {
+    const { processActive8AfterDatasetSnapshot } = await import('./active8SnapshotReadyContinuation')
+    await processActive8AfterDatasetSnapshot(msg, env)
+    return
+  }
+
   if (msg.type === 'active8_oof_continuation') {
     const cadence = msg.oofCadence === 'monthly' ? 'monthly' : 'weekly'
     const runDate = String(msg.triggerTime ?? '').slice(0, 10)

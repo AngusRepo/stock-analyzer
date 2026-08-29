@@ -648,6 +648,62 @@ async function handleSchedulerCallback(c: any) {
     }
   }
 
+  if (
+    body.task === 'active8-oof-daily'
+    && ['success', 'error', 'skipped'].includes(String(body.status))
+    && callbackRunDate
+    && callbackRunId
+  ) {
+    try {
+      const { settleActive8SnapshotContinuationTicket } = await import('../lib/active8SnapshotReadyContinuation')
+      await settleActive8SnapshotContinuationTicket(c.env, {
+        businessDate: callbackRunDate,
+        callbackRunId,
+        status: body.status as 'success' | 'error' | 'skipped',
+        summary: String(body.summary ?? body.status),
+        error: body.error != null ? String(body.error) : undefined,
+      })
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
+      return c.json({
+        ok: false,
+        retryable: true,
+        error: 'active8_snapshot_continuation_ticket_settlement_failed',
+        detail: message,
+      }, 503)
+    }
+  }
+
+  if (body.task === 'dataset-snapshot-export' && body.status === 'success') {
+    if (!callbackRunDate || !callbackRunId) {
+      return c.json({ error: 'dataset snapshot callback missing run_date or run_id' }, 400)
+    }
+    try {
+      const { enqueueActive8AfterDatasetSnapshot } = await import('../lib/active8SnapshotReadyContinuation')
+      await enqueueActive8AfterDatasetSnapshot(c.env, {
+        businessDate: callbackRunDate,
+        snapshotRunId: callbackRunId,
+        summary: String(body.summary ?? ''),
+      })
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
+      await logSchedulerResult(c.env.KV, 'active8-oof-daily', {
+        status: 'error',
+        summary: `dataset snapshot ready continuation failed: ${message}`,
+        duration_ms: 0,
+        error: message,
+        run_id: callbackRunId,
+        run_date: callbackRunDate,
+      }, c.env as any)
+      return c.json({
+        ok: false,
+        retryable: true,
+        error: 'dataset_snapshot_active8_continuation_failed',
+        detail: message,
+      }, 503)
+    }
+  }
+
   if (body.task === 'finlab-v4-backfill' && callbackRunDate) {
     const current = await c.env.KV.get(
       `scheduler:run:finlab-v4-backfill:${callbackRunDate}`,

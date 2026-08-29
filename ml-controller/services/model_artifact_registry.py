@@ -3189,6 +3189,58 @@ def list_active8_ensemble_artifacts(*, training_run_id: str | None = None) -> li
     return d1_client.query("SELECT * FROM active8_ensemble_artifacts_v1 ORDER BY updated_at DESC LIMIT 100")
 
 
+def load_latest_active8_ensemble_validation_attempt() -> dict[str, Any] | None:
+    rows = d1_client.query(
+        """
+        SELECT attempt_id, cohort_id, training_run_id, knowledge_cutoff_date,
+               schema_version, source_manifest_checksum,
+               observation_artifact_set_checksum, validation_decision,
+               validation_json, receipt_json, receipt_checksum,
+               production_effect, created_at
+          FROM active8_ensemble_validation_attempts_v1
+         ORDER BY knowledge_cutoff_date DESC, created_at DESC, attempt_id DESC
+         LIMIT 2
+        """
+    )
+    if not rows:
+        return None
+    row = dict(rows[0])
+    try:
+        receipt = json.loads(str(row.get("receipt_json") or ""))
+        validation = json.loads(str(row.get("validation_json") or ""))
+    except json.JSONDecodeError as exc:
+        raise ValueError("active8_ensemble_validation_attempt_json_invalid") from exc
+    receipt_checksum = hashlib.sha256(
+        _canonical_payload_json(receipt).encode("utf-8")
+    ).hexdigest()
+    if (
+        not isinstance(receipt, dict)
+        or not isinstance(validation, dict)
+        or str(row.get("schema_version") or "") != "active8-oof-ensemble-validation-attempt-v1"
+        or str(row.get("validation_decision") or "") != "FAIL"
+        or validation.get("decision") != "FAIL"
+        or not validation.get("failed_gates")
+        or receipt.get("validation") != validation
+        or receipt.get("production_effect") is not False
+        or int(row.get("production_effect") or 0) != 0
+        or receipt_checksum != str(row.get("receipt_checksum") or "")
+    ):
+        raise ValueError("active8_ensemble_validation_attempt_attestation_invalid")
+    return {
+        "attempt_id": row.get("attempt_id"),
+        "cohort_id": row.get("cohort_id"),
+        "training_run_id": row.get("training_run_id"),
+        "knowledge_cutoff_date": row.get("knowledge_cutoff_date"),
+        "source_manifest_checksum": row.get("source_manifest_checksum"),
+        "observation_artifact_set_checksum": row.get("observation_artifact_set_checksum"),
+        "validation_decision": "FAIL",
+        "validation": validation,
+        "receipt_checksum": row.get("receipt_checksum"),
+        "production_effect": False,
+        "created_at": row.get("created_at"),
+    }
+
+
 def _validated_active8_ensemble_payload(row: dict[str, Any]) -> dict[str, Any]:
     try:
         payload = json.loads(str(row.get("payload_json") or ""))
@@ -3232,14 +3284,31 @@ def load_active8_ensemble_serving_bundle() -> dict[str, Any]:
         """
     )
     if not rows:
+        latest_attempt = load_latest_active8_ensemble_validation_attempt()
+        if latest_attempt is not None:
+            validation = latest_attempt.get("validation") if isinstance(latest_attempt.get("validation"), dict) else {}
+            failed_gates = [str(item) for item in validation.get("failed_gates") or []]
+            return {
+                "status": "validation_failed",
+                "production_effect": False,
+                "artifact_id": None,
+                "cohort_id": latest_attempt.get("cohort_id"),
+                "training_run_id": latest_attempt.get("training_run_id"),
+                "selected_models": [],
+                "base_artifacts": {},
+                "blockers": failed_gates or ["active8_v5_bundle_quality_failed"],
+                "latest_validation_attempt": latest_attempt,
+            }
         return {
             "status": "evidence_only_no_action",
             "production_effect": False,
             "artifact_id": None,
+            "cohort_id": None,
             "training_run_id": None,
             "selected_models": [],
             "base_artifacts": {},
             "blockers": ["active8_v5_serving_bundle_not_promoted"],
+            "latest_validation_attempt": None,
         }
     if len(rows) != 1:
         return {

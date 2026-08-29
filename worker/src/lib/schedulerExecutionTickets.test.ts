@@ -4,6 +4,7 @@ import { Miniflare } from 'miniflare'
 import {
   admitSchedulerChildTicket,
   admitSchedulerExecutionTicket,
+  claimSchedulerExecutionTicket,
   schedulerDeliveryIdentity,
   updateSchedulerExecutionTicket,
 } from './schedulerExecutionTickets'
@@ -120,6 +121,27 @@ async function main(): Promise<void> {
     assert.equal(new Set(children.map((row) => row.ticket_id)).size, 1)
     assert.equal(children[0].root_ticket_id, root.ticket_id)
     assert.equal(children[0].parent_ticket_id, root.ticket_id)
+
+    const claims = await Promise.all(Array.from({ length: 6 }, () => claimSchedulerExecutionTicket(db, {
+      ticketId: children[0].ticket_id,
+      runId: children[0].run_id,
+    })))
+    assert.equal(claims.filter((claim) => claim.shouldExecute).length, 1)
+    assert.equal(claims.find((claim) => claim.shouldExecute)?.reason, 'claimed')
+    await updateSchedulerExecutionTicket(db, {
+      ticketId: children[0].ticket_id,
+      runId: children[0].run_id,
+      status: 'error',
+      authority: 'durable_queue',
+      summary: 'retryable child failure',
+    })
+    const retryClaim = await claimSchedulerExecutionTicket(db, {
+      ticketId: children[0].ticket_id,
+      runId: children[0].run_id,
+    })
+    assert.equal(retryClaim.shouldExecute, true)
+    assert.equal(retryClaim.reason, 'retry_claimed')
+    assert.equal(retryClaim.ticket.attempt_count, 2)
 
     await assert.rejects(
       admitSchedulerExecutionTicket(db, {

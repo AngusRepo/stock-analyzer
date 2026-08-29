@@ -116,6 +116,6 @@ assert.match(weekly, /\['weekly-backtest', 'alpha-quality', 'active8-oof-weekly'
 assert.match(weekly, /\['weekly-optuna', 'sector-leaders'\]/)
 assert.match(weekly, /\['adaptive-meta-policy-replay', 's12-smcvwap-calibration', 'linucb-multiplier-replay'\]/)
 assert.match(weekly, /\['weekly-cleanup'\]/)
-assert.match(weekly, /\['weekly-drift-retrain'\]/)
+assert.doesNotMatch(weekly, /\['weekly-drift-retrain'\]/)
 
 assert.match(schemaGenerator, /CREATE\(\?:\\s\+UNIQUE\)\?\\s\+INDEX/)

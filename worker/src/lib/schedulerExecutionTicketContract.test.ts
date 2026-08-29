@@ -47,7 +47,8 @@ assert.match(consumer, /await updateTicket\('running', 'durable queue consumer s
 assert.match(consumer, /schedulerTicketStatusForRunLog\(status\)/)
 assert.match(consumer, /await updateTicket\('error', result\.summary, result\.error\)/)
 
-assert.match(status, /loadLatestSchedulerRootTickets\(opsDb, dates\)/)
+assert.match(status, /loadSchedulerExecutionTickets\(opsDb, dates\)/)
+assert.match(status, /executionTicketsByTaskDate/)
 assert.match(status, /statusAuthority: 'scheduler_execution_ticket'/)
 assert.match(status, /ticketContractRoots: SCHEDULER_TICKET_CONTRACT_ROOTS/)
 assert.match(status, /observedTicketRoots:/)

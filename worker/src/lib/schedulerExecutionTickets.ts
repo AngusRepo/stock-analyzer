@@ -327,6 +327,106 @@ export async function admitSchedulerChildTicket(
   return child
 }
 
+export type SchedulerTicketClaim = {
+  ticket: SchedulerExecutionTicketRow
+  shouldExecute: boolean
+  reason: 'claimed' | 'retry_claimed' | 'duplicate_inflight' | 'duplicate_terminal' | 'attempt_limit'
+}
+
+export async function claimSchedulerExecutionTicket(
+  db: D1Database,
+  input: { ticketId: string; runId: string },
+): Promise<SchedulerTicketClaim> {
+  const claimed = await db.prepare(`
+    UPDATE scheduler_execution_tickets_v1
+       SET status='running', status_authority='durable_queue',
+           started_at=COALESCE(started_at, CURRENT_TIMESTAMP),
+           completed_at=NULL, updated_at=CURRENT_TIMESTAMP
+     WHERE ticket_id=? AND run_id=? AND status IN ('accepted','queued')
+  `).bind(input.ticketId, input.runId).run()
+  if (Number(claimed.meta?.changes ?? 0) === 1) {
+    return { ticket: await readTicket(db, input.ticketId), shouldExecute: true, reason: 'claimed' }
+  }
+
+  const existing = await readTicket(db, input.ticketId)
+  if ((existing.status === 'error' || existing.status === 'blocked') && existing.attempt_count < MAX_ATTEMPTS) {
+    const nextAttempt = existing.attempt_count + 1
+    const retry = await db.prepare(`
+      UPDATE scheduler_execution_tickets_v1
+         SET status='running', status_authority='durable_queue',
+             attempt_count=?, attempt_id=?, last_summary=NULL, last_error=NULL,
+             started_at=CURRENT_TIMESTAMP, completed_at=NULL, updated_at=CURRENT_TIMESTAMP
+       WHERE ticket_id=? AND run_id=?
+         AND status IN ('error','blocked') AND attempt_count=?
+    `).bind(
+      nextAttempt,
+      ticketAttemptId(input.ticketId, nextAttempt),
+      input.ticketId,
+      input.runId,
+      existing.attempt_count,
+    ).run()
+    if (Number(retry.meta?.changes ?? 0) === 1) {
+      return { ticket: await readTicket(db, input.ticketId), shouldExecute: true, reason: 'retry_claimed' }
+    }
+  }
+
+  const current = await readTicket(db, input.ticketId)
+  return {
+    ticket: current,
+    shouldExecute: false,
+    reason: (current.status === 'error' || current.status === 'blocked') && current.attempt_count >= MAX_ATTEMPTS
+      ? 'attempt_limit'
+      : TERMINAL_STATUSES.has(current.status)
+        ? 'duplicate_terminal'
+        : 'duplicate_inflight',
+  }
+}
+
+export async function markSchedulerExecutionTicketQueued(
+  db: D1Database,
+  input: { ticketId: string; runId: string; summary: string },
+): Promise<SchedulerExecutionTicketRow> {
+  await db.prepare(`
+    UPDATE scheduler_execution_tickets_v1
+       SET status='queued', status_authority='durable_queue', last_summary=?,
+           updated_at=CURRENT_TIMESTAMP
+     WHERE ticket_id=? AND run_id=? AND status='accepted'
+  `).bind(input.summary, input.ticketId, input.runId).run()
+  return readTicket(db, input.ticketId)
+}
+
+export async function loadLatestSchedulerRootTicket(
+  db: D1Database,
+  input: { schedulerJobId: string; businessDate: string },
+): Promise<SchedulerExecutionTicketRow | null> {
+  return db.prepare(`
+    SELECT *
+      FROM scheduler_execution_tickets_v1
+     WHERE scheduler_job_id=? AND business_date=? AND ticket_kind='physical_root'
+     ORDER BY updated_at DESC, ticket_id DESC
+     LIMIT 1
+  `).bind(input.schedulerJobId, input.businessDate).first<SchedulerExecutionTicketRow>()
+}
+
+export async function loadLatestSchedulerChildTicket(
+  db: D1Database,
+  input: { task: string; businessDate: string; origin?: string },
+): Promise<SchedulerExecutionTicketRow | null> {
+  const originClause = input.origin ? ` AND json_extract(metadata_json, '$.origin')=?` : ''
+  const statement = db.prepare(`
+    SELECT *
+      FROM scheduler_execution_tickets_v1
+     WHERE task=? AND business_date=? AND ticket_kind='logical_child'
+       ${originClause}
+     ORDER BY updated_at DESC, ticket_id DESC
+     LIMIT 1
+  `)
+  return (input.origin
+    ? statement.bind(input.task, input.businessDate, input.origin)
+    : statement.bind(input.task, input.businessDate)
+  ).first<SchedulerExecutionTicketRow>()
+}
+
 export async function loadSchedulerExecutionTickets(
   db: D1Database,
   businessDates: readonly string[],

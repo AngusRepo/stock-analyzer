@@ -164,6 +164,17 @@ const logs: SchedulerDisplayLogCandidate[] = [
 }
 
 {
+  assert(
+    classifySchedulerSummary('active8_oof_lifecycle status=skipped cadence=daily reason=compute_snapshot_behind_market_session') === 'skipped',
+    'tokenized Active8 skipped status must not be misreported as success',
+  )
+  assert(
+    classifySchedulerSummary('active8_oof_lifecycle status=spawned cadence=daily cloud_run_dispatched=true') === 'triggered',
+    'tokenized Active8 spawned status must remain pending until terminal callback',
+  )
+}
+
+{
   const status = resolveSchedulerLogStatus(
     {
       task: 'evening-chain',

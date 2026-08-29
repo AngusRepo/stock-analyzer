@@ -44,8 +44,8 @@ assert(schedulerManifestJobs().length === 59, 'physical Scheduler root inventory
 assert(manifestTasks.length === 52, 'logical manifest task inventory must remain 52')
 assert(summary.physicalRoots === 59, 'summary physical root count mismatch')
 assert(summary.uniqueLogicalTasks === 52 && summary.accountedLogicalTasks === 52, 'logical task accounting must be 52/52')
-assert(summary.reviewedDependencies === 14, 'reviewed dependency baseline must remain explicit')
-assert(summary.unmappedDependencies === 38 && summary.unmappedTasks.length === 38, 'unmapped dependency debt must be explicit, not fabricated as DAG')
+assert(summary.reviewedDependencies === 20, 'reviewed dependency baseline must remain explicit')
+assert(summary.unmappedDependencies === 32 && summary.unmappedTasks.length === 32, 'unmapped dependency debt must be explicit, not fabricated as DAG')
 assert(summary.pausedPhysicalRoots === 1, 'exactly one manifest-owned physical root should be paused')
 assert(summary.internalLogicalSteps === 23, 'internal logical step accounting must preserve caller total')
 

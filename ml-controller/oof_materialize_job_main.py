@@ -132,6 +132,70 @@ async def _execute_semantic_reconciliation(
     )
 
 
+async def _execute_forward_extension_resume(
+    *,
+    expected_cohort_id: str | None,
+    knowledge_cutoff_date: str | None,
+    forward_extension_manifest_path: str | None,
+) -> dict[str, Any]:
+    """Consume one verified immutable forward extension without rebuilding prep or models."""
+
+    from routers.walk_forward import OofMaterializeRequest, materialize_walk_forward_oof
+
+    if not expected_cohort_id or not knowledge_cutoff_date:
+        raise RuntimeError(
+            "forward extension resume requires exact cohort and knowledge cutoff"
+        )
+    if not forward_extension_manifest_path:
+        raise RuntimeError("forward extension resume requires exact manifest path")
+    result = await materialize_walk_forward_oof(OofMaterializeRequest(
+        cohort_id=expected_cohort_id,
+        knowledge_cutoff_date=knowledge_cutoff_date,
+        dry_run=True,
+        confirm=False,
+        promote=False,
+        dispatch_full_fit=False,
+        lifecycle_cadence="daily",
+        forward_extension_manifest_path=forward_extension_manifest_path,
+        persist_forward_shadow_coverage=True,
+    ))
+    extension = result.get("forward_extension")
+    extension = extension if isinstance(extension, dict) else {}
+    dates = sorted({
+        str(value or "")[:10]
+        for value in extension.get("dates") or []
+        if len(str(value or "")[:10]) == 10
+    })
+    if not dates:
+        raise RuntimeError("forward extension resume produced no verified dates")
+    coverage = result.get("physical_prediction_coverage")
+    coverage = coverage if isinstance(coverage, dict) else {}
+    result.update({
+        "status": "shadow_evaluated",
+        "promoted": False,
+        "promotion_allowed": False,
+        "promotion_attempted": False,
+        "training_dispatched": False,
+        "serving_pointer_changed": False,
+        "promotion_reason": "immutable_forward_extension_resume_shadow_only",
+        "forward_extension_manifest_path": forward_extension_manifest_path,
+        "calendar": {
+            "cutoff": knowledge_cutoff_date,
+            "mature_max_date": dates[-1],
+            "calendar_source": "immutable_forward_extension_manifest",
+            "parent_physical_coverage": {
+                "max_date": coverage.get("base_max_date"),
+            },
+        },
+        "prep_lifecycle": {
+            "status": "reused_immutable_forward_extension",
+            "business_date": knowledge_cutoff_date,
+            "training_dispatched": False,
+        },
+    })
+    return result
+
+
 def _summary(run_id: str, result: dict[str, Any], *, mode: str) -> str:
     if mode == "allocator_snapshot":
         return " ".join([
@@ -261,6 +325,10 @@ async def _run() -> int:
     continuation_only = _truthy(
         os.environ.get("OOF_MATERIALIZE_CONTINUATION_ONLY", "0")
     )
+    forward_extension_manifest_path = (
+        os.environ.get("OOF_MATERIALIZE_FORWARD_EXTENSION_MANIFEST_PATH", "").strip()
+        or None
+    )
     callback_task = os.environ.get(
         "OOF_MATERIALIZE_CALLBACK_TASK",
         f"active8-oof-{cadence}",
@@ -316,6 +384,35 @@ async def _run() -> int:
                 or result.get("serving_pointer_changed") is not False
             ):
                 raise RuntimeError("semantic reconciliation postcondition failed")
+            callback_status = "success"
+        elif mode == "forward_extension_resume":
+            if cadence != "daily":
+                raise RuntimeError("forward_extension_resume requires daily cadence")
+            if promote or dispatch_full_fit or continuation_only:
+                raise RuntimeError(
+                    "forward_extension_resume forbids promotion, training, and continuation"
+                )
+            result = await _execute_forward_extension_resume(
+                expected_cohort_id=expected_cohort_id,
+                knowledge_cutoff_date=end_date,
+                forward_extension_manifest_path=forward_extension_manifest_path,
+            )
+            if (
+                result.get("status") != "shadow_evaluated"
+                or result.get("durable_shadow_base_materialization") is not True
+                or result.get("training_dispatched") is not False
+                or result.get("promotion_attempted") is not False
+                or result.get("serving_pointer_changed") is not False
+                or result.get("promoted") is not False
+            ):
+                raise RuntimeError("forward extension resume postcondition failed")
+            freshness = _oof_freshness_evidence(result)
+            if freshness["status"] != "fresh":
+                raise RuntimeError(
+                    "oof_freshness_closure_failed:"
+                    f"{freshness['reason']}:expected={freshness['expected_max_date']}:"
+                    f"effective={freshness['effective_max_date']}"
+                )
             callback_status = "success"
         else:
             if mode != "oof_lifecycle":
@@ -382,13 +479,14 @@ async def _run() -> int:
         "run_id": run_id,
         "attempt_id": execution_id,
     }
-    if mode == "oof_lifecycle":
+    if mode in {"oof_lifecycle", "forward_extension_resume"}:
         freshness = freshness or _oof_freshness_evidence(result)
         payload["metadata"] = {
             "oof_freshness": freshness,
             "cadence": cadence,
             "lifecycle_status": str(result.get("status") or "").lower(),
             "cohort_id": result.get("cohort_id"),
+            "mode": mode,
             "continuation_attempt": continuation_attempt,
             "continuation_max_attempts": OOF_CONTINUATION_MAX_ATTEMPTS,
             "continuation_only": continuation_only,

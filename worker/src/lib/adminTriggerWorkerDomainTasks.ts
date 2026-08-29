@@ -1104,6 +1104,9 @@ export function buildAdminWorkerDomainTaskMap(c: any, deps: TriggerDeps): Record
         maxProcessDates,
         force,
       })
+      if (c.req.query('projection_only') === '1') {
+        return `${canonical.summary} | ${multiHorizon.summary} | downstream=skipped_by_explicit_projection_only`
+      }
       const outcomes = await materializeStrategyMultiHorizonOutcomes(c.env, {
         asOfDate: outcomeAsOfDate,
         startDate,

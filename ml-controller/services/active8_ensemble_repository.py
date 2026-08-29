@@ -183,14 +183,6 @@ def persist_active8_ensemble_validation_attempt(
     mismatches = [field for field in exact_fields if str(actual.get(field) or "") != str(row[field])]
     if mismatches or int(actual.get("production_effect") or 0) != 0:
         raise RuntimeError("active8_ensemble_validation_attempt_immutable_conflict:" + ",".join(mismatches))
-    d1_client.execute(
-        """
-        UPDATE data_domain_control_revisions
-           SET revision=revision+1, updated_at=CURRENT_TIMESTAMP
-         WHERE table_name=?
-        """,
-        ["active8_ensemble_validation_attempts_v1"],
-    )
     return {
         "status": "persisted",
         "attempt_id": attempt_id,

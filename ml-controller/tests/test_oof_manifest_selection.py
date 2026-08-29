@@ -37,6 +37,7 @@ def _manifest(cohort_id: str, end_date: str, checksum: str) -> dict:
         "status": "ready",
         "generation_mode": "purged_oof",
         "manifest_checksum": checksum,
+        "prep_manifest": {"producer_source_sha": "1" * 40},
     }
 
 
@@ -91,3 +92,40 @@ def test_newer_end_date_still_wins_over_older_revision() -> None:
     selected = _select([(base_path, base), (revision_path, revision), (newer_path, newer)])
     assert selected is not None
     assert selected[0] == newer_path
+
+
+def test_latest_parent_uses_manifest_attested_producer_across_deploys() -> None:
+    path = "walk_forward/oof_cohorts/prior-release/manifest.json"
+    manifest = _manifest("prior-release", "2026-08-18", "a" * 64)
+    prior_source = "4" * 40
+    manifest["prep_manifest"]["producer_source_sha"] = prior_source
+    bucket = Bucket([(path, manifest)])
+
+    with patch("routers.walk_forward._runtime_source_sha", return_value="9" * 40), patch(
+        "routers.walk_forward._oof_forward_parent_contract",
+        return_value={"ready": True},
+    ) as verify:
+        selected = _latest_ready_oof_manifest(bucket)
+
+    assert selected is not None
+    assert selected[0] == path
+    verify.assert_called_once_with(
+        bucket,
+        manifest,
+        expected_producer_source_sha=prior_source,
+    )
+
+
+def test_latest_parent_rejects_missing_producer_attestation() -> None:
+    path = "walk_forward/oof_cohorts/unattested/manifest.json"
+    manifest = _manifest("unattested", "2026-08-18", "a" * 64)
+    manifest["prep_manifest"] = {}
+
+    with patch(
+        "routers.walk_forward._oof_forward_parent_contract",
+        return_value={"ready": True},
+    ) as verify:
+        selected = _latest_ready_oof_manifest(Bucket([(path, manifest)]))
+
+    assert selected is None
+    verify.assert_not_called()

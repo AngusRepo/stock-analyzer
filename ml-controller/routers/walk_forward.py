@@ -2895,10 +2895,22 @@ def _latest_ready_oof_manifest(bucket: object) -> tuple[str, dict] | None:
             manifest = json.loads(blob.download_as_text())
         except Exception:  # noqa: BLE001 - corrupt candidates are ignored, never promoted.
             continue
+        producer_source_sha = str(
+            (manifest.get("prep_manifest") or {}).get("producer_source_sha") or ""
+        ).strip().lower()
+        producer_source_attested = (
+            len(producer_source_sha) == 40
+            and all(char in "0123456789abcdef" for char in producer_source_sha)
+        )
         if (
             manifest.get("status") == "ready"
             and manifest.get("generation_mode") == "purged_oof"
-            and _oof_forward_parent_contract(bucket, manifest)["ready"]
+            and producer_source_attested
+            and _oof_forward_parent_contract(
+                bucket,
+                manifest,
+                expected_producer_source_sha=producer_source_sha,
+            )["ready"]
         ):
             ready.append((str(blob.name), manifest))
     if not ready:

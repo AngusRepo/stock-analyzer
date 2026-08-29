@@ -1,8 +1,8 @@
 """Shared SQL contract for point-in-time five-session outcome labels."""
 from __future__ import annotations
 
-PRICE_HORIZON_PROJECTION_VERSION = "price_horizon_v3_canonical_reference_identity"
-PRICE_HORIZON_SOURCE = "stock_prices:finlab_primary_canonical_mirror"
+PRICE_HORIZON_PROJECTION_VERSION = "price_horizon_v4_finlab_canonical_adjusted_price_lineage"
+PRICE_HORIZON_SOURCE = "canonical_market_daily:finlab_adjusted_price_lineage"
 OOF_PRICE_HORIZON_SOURCE = "canonical_market_daily:finlab.price"
 
 

@@ -30,7 +30,7 @@ def _row(day: str, idx: int, *, target: float) -> dict:
     return {
         "symbol": f"{idx:04d}",
         "prediction_date": day,
-        "label_adjustment_source": "stock_prices:finlab_primary_canonical_mirror",
+        "label_adjustment_source": "canonical_market_daily:finlab_adjusted_price_lineage",
         "l4_executable_return_pct": target,
         "score": score,
         "score_components": json.dumps({
@@ -90,7 +90,7 @@ def test_l4_purged_oof_accepts_only_recorded_canonical_market_lineage():
     assert audit["date_count"] == 1
     assert audit["invalid_reason_counts"] == {}
 
-    rows[0]["label_adjustment_source"] = "stock_prices:finlab_primary_canonical_mirror"
+    rows[0]["label_adjustment_source"] = "canonical_market_daily:finlab_adjusted_price_lineage"
     samples, audit = _samples(rows, min_cross_section_samples_per_date=1)
     assert len(samples) == 19
     assert audit["invalid_reason_counts"] == {"adjustment_source_mismatch:purged_oof": 1}
@@ -321,7 +321,7 @@ def test_l4_training_query_uses_outcome_knowledge_cutoff_after_signal_end_date()
         6000,
     ]
     assert "price_horizon_labels_v1" in captured["sql"]
-    assert "projection_version = 'price_horizon_v3_canonical_reference_identity'" in captured["sql"]
+    assert "projection_version = 'price_horizon_v4_finlab_canonical_adjusted_price_lineage'" in captured["sql"]
     assert "LEAD(" not in captured["sql"]
     assert "ph.exit_raw_close * ph.exit_adjustment_factor" in captured["sql"]
     assert "ph.entry_raw_open * ph.entry_adjustment_factor" in captured["sql"]

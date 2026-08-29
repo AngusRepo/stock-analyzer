@@ -915,6 +915,7 @@ def retrain_orchestrator(payload: dict) -> dict:
                 return default_seq_len_for_model(model_name)
 
             def _validate_timesfm_config() -> dict:
+                import hashlib
                 import json
                 from app.model_serving_contract import load_pool
                 from google.cloud import storage as _gcs
@@ -955,7 +956,14 @@ def retrain_orchestrator(payload: dict) -> dict:
                         return {}
                     return loaded
 
-                config = _load_json_blob(gcs_path, required=True)
+                config_bytes = config_blob.download_as_bytes()
+                config_checksum = f"sha256:{hashlib.sha256(config_bytes).hexdigest()}"
+                try:
+                    config = json.loads(config_bytes.decode("utf-8"))
+                except Exception as exc:
+                    raise RuntimeError(f"TimesFM config artifact invalid: {gcs_path}: {exc}") from exc
+                if not isinstance(config, dict):
+                    raise RuntimeError(f"TimesFM config artifact is not an object: {gcs_path}")
                 explicit_metadata_path = (
                     str(entry.get("metadata_path") or "").strip()
                     or str(config.get("metadata_path") or "").strip()
@@ -1007,6 +1015,11 @@ def retrain_orchestrator(payload: dict) -> dict:
                     "artifact_path": gcs_path,
                     "metadata_path": metadata_path if metadata else None,
                     "artifact_type": "foundation_forecast_config",
+                    "checksum": config_checksum,
+                    "candidate_type": "timesfm_l175_l2_feature_release",
+                    "release_stage": "timesfm_l2_feature_release",
+                    "direct_alpha_blocked": True,
+                    "producer_contract": "timesfm-l2-sidecar-immutable-candidate-v1",
                     "note": "TimesFM is config-backed foundation runtime; no local retrain is run.",
                 }
                 if not evidence:
@@ -1095,6 +1108,28 @@ def retrain_orchestrator(payload: dict) -> dict:
             if lifecycle_errors:
                 result["stages"]["train"]["status"] = "error"
                 result["stages"]["train"]["error"] = "artifact_lifecycle_failed"
+
+            oof_resume = payload.get("oof_lifecycle_resume") if isinstance(payload.get("oof_lifecycle_resume"), dict) else {}
+            if str(oof_resume.get("cadence") or "").strip().lower() == "monthly":
+                sidecar_t0 = time.time()
+                try:
+                    sidecar_result = _validate_timesfm_config()
+                    result["stages"]["timesfm_l2_feature_release"] = {
+                        "status": "candidate_ready",
+                        "producer_contract": "timesfm-l2-sidecar-immutable-candidate-v1",
+                        "results": {"TimesFM": sidecar_result},
+                        "elapsed_s": round(time.time() - sidecar_t0, 3),
+                        "production_effect": False,
+                    }
+                except Exception as exc:
+                    result["stages"]["timesfm_l2_feature_release"] = {
+                        "status": "blocked",
+                        "producer_contract": "timesfm-l2-sidecar-immutable-candidate-v1",
+                        "results": {},
+                        "error": str(exc),
+                        "elapsed_s": round(time.time() - sidecar_t0, 3),
+                        "production_effect": False,
+                    }
 
         if circuit_breaker:
             print("[Orchestrator] Circuit breaker: weak model IC detected; ensemble will auto-zero-weight affected models")

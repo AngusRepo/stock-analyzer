@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict'
+import { readFileSync } from 'node:fs'
 import {
   PRICE_HORIZON_PROJECTION_VERSION,
   STRATEGY_MULTI_HORIZON_PROJECTION_VERSION,
@@ -107,4 +108,14 @@ const forced = planPriceHorizonWork(horizons, statuses, {
 assert.deepEqual(
   forced.work.map((row) => row.signal_date),
   ['2026-06-12', '2026-06-11', '2026-06-01'],
+)
+const projectionSource = readFileSync(new URL('./priceHorizonProjection.ts', import.meta.url), 'utf8')
+assert.match(projectionSource, /price_horizon_v4_finlab_canonical_adjusted_price_lineage/)
+assert.match(projectionSource, /FROM canonical_market_daily/)
+assert.match(projectionSource, /source IN \('finlab\.price', 'finlab\.rotc_price'\)/)
+assert.match(projectionSource, /loadCoreStockIdentitiesByIds/)
+assert.doesNotMatch(
+  projectionSource,
+  /SELECT stock_id, open, close, adj_close\s+FROM stock_prices INDEXED BY idx_prices_date_stock/,
+  'price horizon labels must not consume legacy raw-close fallback rows',
 )

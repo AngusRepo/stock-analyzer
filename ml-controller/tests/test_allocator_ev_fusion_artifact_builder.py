@@ -122,7 +122,7 @@ def _row(day: str, idx: int) -> dict:
     return {
         "symbol": f"{idx:04d}",
         "prediction_date": day,
-        "label_adjustment_source": "stock_prices:finlab_primary_canonical_mirror",
+        "label_adjustment_source": "canonical_market_daily:finlab_adjusted_price_lineage",
         "score_components": json.dumps({
             "version": "score_v2",
             "semanticVersion": "score-v2-active8-components-v3",
@@ -493,7 +493,7 @@ def test_load_allocator_ev_fusion_training_rows_queries_verified_allocation_evid
     assert "replay_diagnostics.outcome_known_date" in observed[0]["sql"]
     assert "AS l4_executable_return_pct" in observed[0]["sql"]
     assert "price_horizon_labels_v1" in observed[0]["sql"]
-    assert "projection_version = 'price_horizon_v3_canonical_reference_identity'" in observed[0]["sql"]
+    assert "projection_version = 'price_horizon_v4_finlab_canonical_adjusted_price_lineage'" in observed[0]["sql"]
     assert "LEAD(" not in observed[0]["sql"]
     assert "ph.exit_raw_close * ph.exit_adjustment_factor" in observed[0]["sql"]
     assert "ph.entry_raw_open * ph.entry_adjustment_factor" in observed[0]["sql"]
@@ -846,7 +846,7 @@ def test_allocator_ev_feature_snapshot_backfill_uses_fitted_fail_artifact_only_f
                 "symbol": f"{symbol_idx:04d}",
                 "prediction_date": day,
                 "prediction_generated_at": f"{day}T12:00:00Z",
-                "label_adjustment_source": "stock_prices:finlab_primary_canonical_mirror",
+                "label_adjustment_source": "canonical_market_daily:finlab_adjusted_price_lineage",
                 "forecast_data": _ensemble_forecast(
                     0.25 + (symbol_idx % 10) * 0.04,
                     0.55 + (symbol_idx % 8) * 0.03,
@@ -1279,7 +1279,7 @@ def test_allocator_ev_fusion_artifact_builder_keeps_explicit_s12_invalid_payload
             rows.append({
                 "symbol": f"{symbol_idx:04d}",
                 "prediction_date": day,
-                "label_adjustment_source": "stock_prices:finlab_primary_canonical_mirror",
+                "label_adjustment_source": "canonical_market_daily:finlab_adjusted_price_lineage",
                 "score_components": json.dumps({
                     "version": "score_v2",
                     "semanticVersion": "score-v2-active8-components-v3",
@@ -1317,7 +1317,7 @@ def test_allocator_ev_fusion_keeps_raw_selection_sample_when_l4_and_s12_are_miss
     row = {
         "symbol": "2330",
         "prediction_date": "2026-07-02",
-        "label_adjustment_source": "stock_prices:finlab_primary_canonical_mirror",
+        "label_adjustment_source": "canonical_market_daily:finlab_adjusted_price_lineage",
         "actual_return_pct": -0.30,
         "l4_executable_return_pct": 0.02,
         "score": 70,
@@ -1386,7 +1386,7 @@ def test_execution_replay_label_is_kept_when_prior_s12_ev_was_unavailable():
     row = {
         "symbol": "2330",
         "prediction_date": "2026-07-02",
-        "label_adjustment_source": "stock_prices:finlab_primary_canonical_mirror",
+        "label_adjustment_source": "canonical_market_daily:finlab_adjusted_price_lineage",
         "actual_return_pct": -0.30,
         "l4_executable_return_pct": 0.02,
         "s12_replay_pnl_pct": 0.015,

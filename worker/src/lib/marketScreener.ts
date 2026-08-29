@@ -10,6 +10,7 @@
  */
 
 import type { Bindings } from '../types'
+import { CANONICAL_SELECTION_ADJUSTMENT_SOURCE } from './canonicalSelectionLabels'
 import { databaseForDataDomain } from './dataDomainRegistry'
 import { loadCanonicalScreenerRunIds } from './historicalScreenerArtifactEvidence'
 import {
@@ -619,6 +620,7 @@ export async function loadMatureStrategyOofReturns(
        AND l.symbol=m.symbol
        AND l.producer_run_id=m.producer_run_id
        AND l.label_schema_version='canonical-strategy-selection-label-v4'
+       AND l.adjustment_source=?
      WHERE m.evaluable=1
        AND m.strategy_hit=1
        AND EXISTS (
@@ -638,6 +640,7 @@ export async function loadMatureStrategyOofReturns(
   `).bind(
     asOfDate,
     asOfDate,
+    CANONICAL_SELECTION_ADJUSTMENT_SOURCE,
     SELECTION_REFERENCE_CONTRACT_VERSION,
     ...STRATEGY_FORMAL_LABELER_VERSIONS,
     JSON.stringify(canonicalRunIds),

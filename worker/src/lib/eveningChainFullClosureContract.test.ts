@@ -16,13 +16,14 @@ const schemaGenerator = fs.readFileSync('scripts/build-domain-schemas.mjs', 'utf
 
 assert.match(reference, /resolveReferenceStockIds/)
 assert.match(reference, /selection_reference_stock_identity_incomplete/)
-assert.match(reference, /stock_id=CASE/)
+assert.match(reference, /stockIds\.get\(clean\(row\.symbol\)\) \?\? null/)
+assert.doesNotMatch(reference, /stock_id=CASE/)
 assert.match(repair, /repairSelectionReferenceStockIdentities/)
 assert.match(repair, /selection_reference_identity_repair_runs_v1/)
 assert.match(domainTasks, /'selection-reference-identity-repair': async/)
 assert.match(triggerRoute, /'selection-reference-identity-repair'/)
 
-assert.match(projection, /price_horizon_v3_canonical_reference_identity/)
+assert.match(projection, /price_horizon_v4_finlab_canonical_adjusted_price_lineage/)
 assert.match(projection, /loadCandidateSignalDates/)
 assert.match(projection, /price_horizon_reference_identity_incomplete/)
 assert.match(projection, /feature_contract_version=\?/)

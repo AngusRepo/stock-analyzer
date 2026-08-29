@@ -1,11 +1,12 @@
 import type { Bindings } from '../types'
 import { databaseForDataDomain, shadowDatabaseForDataDomain } from './dataDomainRegistry'
 import { SELECTION_REFERENCE_CONTRACT_VERSION } from './selectionReferenceEvidence'
+import { loadCoreStockIdentitiesByIds, type CoreStockIdentity } from './stockIdentityMarketBridge'
 
-export const PRICE_HORIZON_PROJECTION_VERSION = 'price_horizon_v3_canonical_reference_identity'
-export const STRATEGY_MULTI_HORIZON_PROJECTION_VERSION = 'strategy_multi_horizon_price_v1'
+export const PRICE_HORIZON_PROJECTION_VERSION = 'price_horizon_v4_finlab_canonical_adjusted_price_lineage'
+export const STRATEGY_MULTI_HORIZON_PROJECTION_VERSION = 'strategy_multi_horizon_price_v2_finlab_canonical_adjusted_price_lineage'
 export const STRATEGY_EVIDENCE_HORIZON_DAYS = [3, 5, 10] as const
-export const PRICE_HORIZON_SOURCE = 'stock_prices:finlab_primary_canonical_mirror'
+export const PRICE_HORIZON_SOURCE = 'canonical_market_daily:finlab_adjusted_price_lineage'
 const MIN_SESSION_SAMPLE_SIZE = 100
 const DEFAULT_LOOKBACK_DAYS = 120
 const DEFAULT_MAX_SIGNAL_DATES = 60
@@ -20,6 +21,12 @@ type PriceRow = {
   open: number | null
   close: number | null
   adj_close: number | null
+}
+
+type CanonicalPriceRow = Omit<PriceRow, 'stock_id'> & {
+  stock_id: string
+  source: string
+  lineage_json: string
 }
 
 export type PriceHorizonLabel = {
@@ -318,13 +325,32 @@ async function loadProjectionStatuses(
   return results ?? []
 }
 
-async function loadPriceRows(db: D1Database, date: string): Promise<PriceRow[]> {
-  const { results } = await db.prepare(`
-    SELECT stock_id, open, close, adj_close
-      FROM stock_prices INDEXED BY idx_prices_date_stock
+async function loadPriceRows(
+  env: Pick<Bindings, 'DB'> & Partial<Bindings>,
+  date: string,
+  identities: Map<number, CoreStockIdentity>,
+): Promise<PriceRow[]> {
+  const { results } = await databaseForDataDomain(env, 'market').prepare(`
+    SELECT stock_id, open, close, adj_close, source, lineage_json
+      FROM canonical_market_daily
      WHERE date = ?
-  `).bind(date).all<PriceRow>()
-  return results ?? []
+       AND source IN ('finlab.price', 'finlab.rotc_price')
+       AND open IS NOT NULL
+       AND close IS NOT NULL
+       AND adj_close IS NOT NULL
+  `).bind(date).all<CanonicalPriceRow>()
+  const canonicalRows = results ?? []
+  const identityBySymbol = new Map([...identities.values()].map((row) => [row.symbol, row]))
+  return canonicalRows.flatMap((row) => {
+    const identity = identityBySymbol.get(String(row.stock_id))
+    if (!identity) return []
+    return [{
+      stock_id: identity.id,
+      open: row.open,
+      close: row.close,
+      adj_close: row.adj_close,
+    }]
+  })
 }
 
 type CandidateIdentityCoverage = {
@@ -586,9 +612,10 @@ export async function materializePriceHorizonLabels(
         throw new Error(`price_horizon_candidate_identity_empty:${horizon.signal_date}`)
       }
 
+      const identities = await loadCoreStockIdentitiesByIds(env, candidates)
       const [entryRows, exitRows] = await Promise.all([
-        loadPriceRows(marketDb, horizon.entry_date),
-        loadPriceRows(marketDb, horizon.exit_date),
+        loadPriceRows(env, horizon.entry_date, identities),
+        loadPriceRows(env, horizon.exit_date, identities),
       ])
       const observations = buildPriceHorizonObservations(
         candidates,
@@ -818,9 +845,10 @@ export async function materializeStrategyMultiHorizonPriceLabels(
         throw new Error(`multi_horizon_reference_identity_incomplete:${horizonDays}:${horizon.signal_date}`)
       }
       if (!coverage.stockIds.length) throw new Error(`multi_horizon_candidate_identity_empty:${horizonDays}:${horizon.signal_date}`)
+      const identities = await loadCoreStockIdentitiesByIds(env, coverage.stockIds)
       const [entryRows, exitRows] = await Promise.all([
-        loadPriceRows(marketDb, horizon.entry_date),
-        loadPriceRows(marketDb, horizon.exit_date),
+        loadPriceRows(env, horizon.entry_date, identities),
+        loadPriceRows(env, horizon.exit_date, identities),
       ])
       const observations = buildPriceHorizonObservations(
         coverage.stockIds, horizon.signal_date, horizon.entry_date, horizon.exit_date,

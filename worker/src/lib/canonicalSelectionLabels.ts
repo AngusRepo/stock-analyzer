@@ -2,6 +2,8 @@ import { SELECTION_REFERENCE_CONTRACT_VERSION } from './selectionReferenceEviden
 import { PRICE_HORIZON_PROJECTION_VERSION } from './priceHorizonProjection'
 
 export const CANONICAL_SELECTION_LABEL_SCHEMA_VERSION = 'canonical-strategy-selection-label-v4'
+export const CANONICAL_SELECTION_ADJUSTMENT_SOURCE =
+  'price_horizon_labels_v1:finlab_canonical_adjusted_price_lineage_v4'
 export const CANONICAL_SELECTION_ROUNDTRIP_COST_BPS = 18
 
 interface ReferenceRow {
@@ -291,7 +293,7 @@ export async function materializeCanonicalSelectionLabelsV4(
       gross_return, transaction_cost_bps, absolute_return_net,
       benchmark_return_net, benchmark_scope, residual_return_net, cross_section_rank,
       adjustment_source, reference_contract_version
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'price_horizon_labels_v1:finlab_primary_canonical_mirror', ?)
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT(signal_date, symbol, producer_run_id, label_schema_version) DO UPDATE SET
       market_segment=excluded.market_segment,
       sector=excluded.sector,
@@ -317,7 +319,7 @@ export async function materializeCanonicalSelectionLabelsV4(
     row.entryDate, row.exitDate, row.exitDate, row.entryRawOpen, row.exitRawClose,
     row.entryFactor, row.exitFactor, row.grossReturn, costBps, row.absoluteReturnNet,
     row.benchmarkReturnNet, row.benchmarkScope, row.residualReturnNet, row.crossSectionRank,
-    SELECTION_REFERENCE_CONTRACT_VERSION,
+    CANONICAL_SELECTION_ADJUSTMENT_SOURCE, SELECTION_REFERENCE_CONTRACT_VERSION,
   ))
   for (let offset = 0; offset < labelStatements.length; offset += 200) {
     await db.batch(labelStatements.slice(offset, offset + 200))

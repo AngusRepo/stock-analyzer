@@ -1775,6 +1775,39 @@ def _can_reuse_indexed_oof_base(
     )
 
 
+def _indexed_oof_base_semantic_evidence(
+    snapshot_rows: list[dict[str, Any]],
+) -> dict[str, Any]:
+    """Require compact snapshots to match the current ensemble semantic before reuse."""
+
+    from services.ev_lineage_contract import OOF_ENSEMBLE_SEMANTIC_VERSION
+
+    semantic_counts: dict[str, int] = {}
+    for row in snapshot_rows:
+        payload = row.get("forecast_data")
+        if isinstance(payload, str):
+            try:
+                payload = json.loads(payload)
+            except json.JSONDecodeError:
+                payload = {}
+        payload = payload if isinstance(payload, dict) else {}
+        ensemble = payload.get("ensemble_v2")
+        ensemble = ensemble if isinstance(ensemble, dict) else {}
+        semantic = str(ensemble.get("semantic_version") or "missing")
+        semantic_counts[semantic] = semantic_counts.get(semantic, 0) + 1
+    compatible = bool(snapshot_rows) and semantic_counts == {
+        OOF_ENSEMBLE_SEMANTIC_VERSION: len(snapshot_rows)
+    }
+    return {
+        "schema_version": "active8-oof-indexed-semantic-reuse-v1",
+        "status": "compatible" if compatible else "rebuild_required",
+        "compatible": compatible,
+        "required_ensemble_semantic_version": OOF_ENSEMBLE_SEMANTIC_VERSION,
+        "observed_ensemble_semantic_counts": dict(sorted(semantic_counts.items())),
+        "snapshot_rows": len(snapshot_rows),
+    }
+
+
 @router.post("/walk_forward/oof/materialize")
 async def materialize_walk_forward_oof(req: OofMaterializeRequest):
     """Verify one OOF manifest and build the L4/Fusion offline evidence chain."""
@@ -1879,17 +1912,30 @@ async def materialize_walk_forward_oof(req: OofMaterializeRequest):
         native_rows: list[dict[str, Any]] = []
         fundamental_quality_by_key: dict[tuple[str, str], dict[str, Any]] = {}
         indexed_l4_predictions: list[dict[str, Any]] = []
+        indexed_base_rows: tuple[
+            list[dict[str, Any]], list[dict[str, Any]], dict[str, Any]
+        ] | None = None
+        indexed_base_semantic_evidence: dict[str, Any] | None = None
         if reuse_indexed:
-            snapshot_rows, indexed_l4_predictions, indexed_loader_evidence = load_indexed_oof_ev_rows(
+            indexed_base_rows = load_indexed_oof_ev_rows(
                 bucket=bucket,
                 cohort_id=req.cohort_id,
                 source_manifest_checksum=manifest["manifest_checksum"],
                 knowledge_cutoff_date=req.knowledge_cutoff_date,
                 query_fn=learning_client.query,
             )
+            indexed_base_semantic_evidence = _indexed_oof_base_semantic_evidence(
+                indexed_base_rows[0]
+            )
+            reuse_indexed = indexed_base_semantic_evidence["compatible"] is True
+        if reuse_indexed:
+            if indexed_base_rows is None:
+                raise ValueError("active8_oof_indexed_base_load_missing")
+            snapshot_rows, indexed_l4_predictions, indexed_loader_evidence = indexed_base_rows
             l4_predictions = list(indexed_l4_predictions)
             snapshot_evidence = {
                 **indexed_loader_evidence,
+                "indexed_base_semantic_evidence": indexed_base_semantic_evidence,
                 "snapshot_dates": len({row["snapshot_date"] for row in snapshot_rows}),
                 "reused_immutable_materialization": True,
             }
@@ -1982,6 +2028,12 @@ async def materialize_walk_forward_oof(req: OofMaterializeRequest):
                 market_context_by_date=market_context_by_date,
                 sector_alpha_by_key=sector_alpha_by_key,
             )
+            if indexed_base_semantic_evidence is not None:
+                snapshot_evidence["indexed_base_semantic_evidence"] = (
+                    indexed_base_semantic_evidence
+                )
+                snapshot_evidence["reused_immutable_materialization"] = False
+                snapshot_evidence["deterministic_semantic_rebuild"] = True
         l4_result = build_l4_alpha_ev_artifact_from_rows(
             snapshot_rows,
             trained_until=req.knowledge_cutoff_date,

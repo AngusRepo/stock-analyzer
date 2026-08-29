@@ -1297,11 +1297,14 @@ def test_daily_oof_materialization_reuses_checksum_verified_gcs_indexes():
     )
 
     assert "load_indexed_oof_ev_rows" in router
+    indexed_call_start = router.index("indexed_base_rows = load_indexed_oof_ev_rows(")
     indexed_call = router[
-        router.index("snapshot_rows, indexed_l4_predictions, indexed_loader_evidence = load_indexed_oof_ev_rows("):
-        router.index("snapshot_evidence = {", router.index("snapshot_rows, indexed_l4_predictions, indexed_loader_evidence = load_indexed_oof_ev_rows("))
+        indexed_call_start:
+        router.index("if reuse_indexed:", indexed_call_start)
     ]
     assert "query_fn=learning_client.query" in indexed_call
+    assert "_indexed_oof_base_semantic_evidence" in indexed_call
+    assert 'reuse_indexed = indexed_base_semantic_evidence["compatible"] is True' in indexed_call
     assert 'prediction_storage_mode") == "gcs_indexed_v1"' in router
     assert "len(materialized_indexes) == 2" in router
     assert "OOF_PIT_ELIGIBILITY_POLICY_VERSION" in router
@@ -1561,6 +1564,53 @@ def test_oof_cohort_version_owns_immutable_fold_evidence_contract():
     from routers.walk_forward import OOF_COHORT_ID_VERSION
 
     assert OOF_COHORT_ID_VERSION == "v9-feature-semantic-source-attested"
+
+
+def test_indexed_oof_base_reuse_requires_current_ensemble_semantic():
+    import json
+
+    from routers.walk_forward import _indexed_oof_base_semantic_evidence
+    from services.ev_lineage_contract import OOF_ENSEMBLE_SEMANTIC_VERSION
+
+    current = [{
+        "forecast_data": json.dumps({
+            "ensemble_v2": {"semantic_version": OOF_ENSEMBLE_SEMANTIC_VERSION},
+        }),
+    }]
+    compatible = _indexed_oof_base_semantic_evidence(current)
+    assert compatible["status"] == "compatible"
+    assert compatible["compatible"] is True
+
+    legacy = [{
+        "forecast_data": json.dumps({
+            "ensemble_v2": {
+                "semantic_version": "active8-purged-oof-chronological-ridge-v4",
+            },
+        }),
+    }]
+    rebuild = _indexed_oof_base_semantic_evidence(legacy)
+    assert rebuild["status"] == "rebuild_required"
+    assert rebuild["compatible"] is False
+    assert rebuild["observed_ensemble_semantic_counts"] == {
+        "active8-purged-oof-chronological-ridge-v4": 1,
+    }
+
+
+def test_indexed_oof_base_reuse_rejects_mixed_or_missing_semantics():
+    import json
+
+    from routers.walk_forward import _indexed_oof_base_semantic_evidence
+    from services.ev_lineage_contract import OOF_ENSEMBLE_SEMANTIC_VERSION
+
+    evidence = _indexed_oof_base_semantic_evidence([
+        {"forecast_data": json.dumps({
+            "ensemble_v2": {"semantic_version": OOF_ENSEMBLE_SEMANTIC_VERSION},
+        })},
+        {"forecast_data": "{}"},
+    ])
+    assert evidence["status"] == "rebuild_required"
+    assert evidence["compatible"] is False
+    assert evidence["observed_ensemble_semantic_counts"]["missing"] == 1
 
 
 def test_oof_materialize_request_rejects_unknown_cadence():

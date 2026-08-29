@@ -721,7 +721,9 @@ def test_materialized_index_accepts_verified_no_lookahead_policy_upgrade():
             "compressed_bytes": 100,
             "uncompressed_bytes": 200,
             "source_manifest_checksum": "b" * 64,
-            "eligibility_policy_version": "legacy-unversioned",
+            "eligibility_policy_version": (
+                "recorded-score-v2-r2-sector-before-next-session-open-v4"
+            ),
             "date_set_checksum": None,
         }],
         batch_fn=batch_fn,
@@ -729,8 +731,12 @@ def test_materialized_index_accepts_verified_no_lookahead_policy_upgrade():
 
     assert len(captured) == 2
     assert "active8_oof_materialized_artifact_history" in captured[0][0]
-    assert captured[0][1][-1] == "add-recorded-decision-cutoff-sector-pit-evidence"
+    assert captured[0][1][-1] == "rebuild-active8-nonnegative-ridge-semantic-v5"
+    assert captured[0][1][12] == (
+        "recorded-score-v2-r2-sector-before-next-session-open-v4"
+    )
     assert "replacement_reason" in captured[1][0]
+    assert "rebuild-active8-nonnegative-ridge-semantic-v5" in captured[1][0]
 
 
 def test_materialized_index_rejects_policy_upgrade_without_legal_dates():

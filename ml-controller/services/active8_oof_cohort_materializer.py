@@ -51,8 +51,11 @@ def _runtime_source_sha() -> str:
 
 
 OOF_MATERIALIZED_ARTIFACT_SCHEMA_VERSION = "active8-oof-materialized-jsonl-gzip-v1"
-OOF_PIT_ELIGIBILITY_POLICY_VERSION = "recorded-score-v2-r2-sector-before-next-session-open-v4"
-OOF_POLICY_REPLACEMENT_REASON = "add-recorded-decision-cutoff-sector-pit-evidence"
+OOF_PIT_ELIGIBILITY_POLICY_VERSION = (
+    "recorded-score-v2-r2-sector-before-next-session-open-"
+    "active8-nonnegative-ridge-v5"
+)
+OOF_POLICY_REPLACEMENT_REASON = "rebuild-active8-nonnegative-ridge-semantic-v5"
 OOF_MATERIALIZED_ARTIFACT_KINDS = {
     "allocator_ev_snapshots": "snapshot_date",
     "l4_predictions": "prediction_date",
@@ -498,7 +501,8 @@ def persist_oof_materialized_artifact_indexes(
               'strict-forward-extension',
               'remove-post-next-open-native-pit-rows',
               'restore-checksum-verified-recorded-pit-evidence',
-              'add-recorded-decision-cutoff-sector-pit-evidence'
+              'add-recorded-decision-cutoff-sector-pit-evidence',
+              'rebuild-active8-nonnegative-ridge-semantic-v5'
             )
           )
     """

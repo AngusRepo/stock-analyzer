@@ -92,7 +92,12 @@ def test_d1_identity_conflict_fails_closed():
 class AttemptD1:
     def __init__(self):
         self.row = None
-    def execute(self, _sql, params):
+        self.revision_bumps = 0
+    def execute(self, sql, params):
+        if "UPDATE data_domain_control_revisions" in sql:
+            assert params == ["active8_ensemble_validation_attempts_v1"]
+            self.revision_bumps += 1
+            return {"success": True}
         candidate = dict(zip((
             "attempt_id", "cohort_id", "training_run_id", "knowledge_cutoff_date",
             "schema_version", "source_manifest_checksum",
@@ -155,6 +160,7 @@ def test_failed_validation_attempt_is_immutable_and_has_no_production_effect():
     assert first["validation_decision"] == "FAIL"
     assert first["production_effect"] is False
     assert json.loads(d1.row["receipt_json"])["production_effect"] is False
+    assert d1.revision_bumps == 2
 
 
 def test_failed_validation_attempt_identity_conflict_fails_closed():

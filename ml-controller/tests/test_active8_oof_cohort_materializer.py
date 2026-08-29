@@ -867,6 +867,17 @@ def test_forward_extension_manifest_is_shadow_only_and_bound_to_base():
         "manifest_checksum": "a" * 64,
         "prep_manifest": {"producer_source_sha": "0" * 40},
     }
+    prep_prefix = "universal/canonical_adjusted_v6/current"
+    prep = {
+        "schema_version": "active8-canonical-adjusted-prep-v3",
+        "status": "ready",
+        "output_gcs_prefix": prep_prefix,
+        "target_semantic_version": "next-session-canonical-adjusted-open-to-fifth-session-canonical-adjusted-close-net-v4",
+        "feature_semantic_version": "formal137-pit-rolling-rank-and-imputation-v2",
+        "feature_imputation_semantic": "prior_252_row_median_then_zero_v2",
+        "producer_source_sha": "1" * 40,
+    }
+    prep["manifest_checksum"] = _manifest_checksum(prep)
     manifest = {
         "schema_version": "active8-oof-forward-extension-v2",
         "status": "ready",
@@ -880,7 +891,9 @@ def test_forward_extension_manifest_is_shadow_only_and_bound_to_base():
         "target_semantic_version": "next-session-canonical-adjusted-open-to-fifth-session-canonical-adjusted-close-net-v4",
         "feature_semantic_version": "formal137-pit-rolling-rank-and-imputation-v2",
         "feature_imputation_semantic": "prior_252_row_median_then_zero_v2",
-        "producer_source_sha": "0" * 40,
+        "producer_source_sha": "1" * 40,
+        "prep_gcs_prefix": prep_prefix,
+        "prep_manifest_checksum": prep["manifest_checksum"],
         "extension_range": ["2026-07-08", "2026-07-16"],
         "knowledge_cutoff_date": "2026-07-23",
         "dates": ["2026-07-08", "2026-07-09"],
@@ -888,24 +901,42 @@ def test_forward_extension_manifest_is_shadow_only_and_bound_to_base():
     }
     manifest["manifest_checksum"] = _manifest_checksum(manifest)
     raw = json.dumps(manifest).encode()
+    prep_raw = json.dumps(prep).encode()
 
     class Blob:
+        def __init__(self, payload):
+            self.payload = payload
+
         def download_as_bytes(self):
-            return raw
+            return self.payload
 
     class Bucket:
-        def blob(self, _path):
-            return Blob()
+        def blob(self, path):
+            return Blob(
+                prep_raw if path == f"{prep_prefix}/prep/manifest.json" else raw
+            )
 
     loaded = load_verified_oof_forward_extension(
         "forward/manifest.json", bucket=Bucket(), base_manifest=base
     )
     assert loaded["promotion_eligible"] is False
+    assert loaded["producer_source_sha"] != base["prep_manifest"]["producer_source_sha"]
 
     manifest["promotion_eligible"] = True
     manifest["manifest_checksum"] = _manifest_checksum(manifest)
     raw = json.dumps(manifest).encode()
     with pytest.raises(ValueError, match="active8_oof_forward_manifest_invalid"):
+        load_verified_oof_forward_extension(
+            "forward/manifest.json", bucket=Bucket(), base_manifest=base
+        )
+
+    manifest["promotion_eligible"] = False
+    manifest["manifest_checksum"] = _manifest_checksum(manifest)
+    raw = json.dumps(manifest).encode()
+    prep["producer_source_sha"] = "2" * 40
+    prep["manifest_checksum"] = _manifest_checksum(prep)
+    prep_raw = json.dumps(prep).encode()
+    with pytest.raises(ValueError, match="active8_oof_forward_prep_lineage_invalid"):
         load_verified_oof_forward_extension(
             "forward/manifest.json", bucket=Bucket(), base_manifest=base
         )

@@ -758,6 +758,13 @@ def load_verified_oof_forward_extension(
 ) -> dict[str, Any]:
     raw = bucket.blob(manifest_path).download_as_bytes()
     manifest = json.loads(raw.decode("utf-8"))
+    producer_source_sha = str(manifest.get("producer_source_sha") or "").strip().lower()
+    prep_gcs_prefix = str(manifest.get("prep_gcs_prefix") or "").strip().rstrip("/")
+    prep_manifest_checksum = str(manifest.get("prep_manifest_checksum") or "").strip().lower()
+    producer_source_attested = (
+        len(producer_source_sha) == 40
+        and all(char in "0123456789abcdef" for char in producer_source_sha)
+    )
     if (
         manifest.get("schema_version") != "active8-oof-forward-extension-v2"
         or manifest.get("status") != "ready"
@@ -768,10 +775,27 @@ def load_verified_oof_forward_extension(
         or manifest.get("target_semantic_version") != TARGET_SEMANTIC_VERSION
         or manifest.get("feature_semantic_version") != FEATURE_SEMANTIC_VERSION
         or manifest.get("feature_imputation_semantic") != FEATURE_IMPUTATION_SEMANTIC_VERSION
-        or manifest.get("producer_source_sha") != str((base_manifest.get("prep_manifest") or {}).get("producer_source_sha") or "")
+        or not producer_source_attested
+        or not prep_gcs_prefix
+        or len(prep_manifest_checksum) != 64
         or manifest.get("manifest_checksum") != _manifest_checksum(manifest)
     ):
         raise ValueError("active8_oof_forward_manifest_invalid")
+    prep_raw = bucket.blob(f"{prep_gcs_prefix}/prep/manifest.json").download_as_bytes()
+    prep_manifest = json.loads(prep_raw.decode("utf-8"))
+    if (
+        prep_manifest.get("schema_version") != "active8-canonical-adjusted-prep-v3"
+        or prep_manifest.get("status") != "ready"
+        or str(prep_manifest.get("output_gcs_prefix") or "").rstrip("/") != prep_gcs_prefix
+        or prep_manifest.get("manifest_checksum") != _manifest_checksum(prep_manifest)
+        or prep_manifest.get("manifest_checksum") != prep_manifest_checksum
+        or prep_manifest.get("target_semantic_version") != TARGET_SEMANTIC_VERSION
+        or prep_manifest.get("feature_semantic_version") != FEATURE_SEMANTIC_VERSION
+        or prep_manifest.get("feature_imputation_semantic") != FEATURE_IMPUTATION_SEMANTIC_VERSION
+        or str(prep_manifest.get("producer_source_sha") or "").strip().lower()
+        != producer_source_sha
+    ):
+        raise ValueError("active8_oof_forward_prep_lineage_invalid")
     if (
         str(manifest.get("base_cohort_id") or "") != str(base_manifest.get("cohort_id") or "")
         or str(manifest.get("base_manifest_checksum") or "")

@@ -24,7 +24,5 @@ VALUES ('active8_ensemble_validation_attempts_v1', 0, CURRENT_TIMESTAMP);
 
 CREATE TRIGGER IF NOT EXISTS trg_active8_ensemble_validation_attempts_revision_insert
 AFTER INSERT ON active8_ensemble_validation_attempts_v1 BEGIN
-  UPDATE data_domain_control_revisions
-     SET revision=revision+1, updated_at=CURRENT_TIMESTAMP
-   WHERE table_name='active8_ensemble_validation_attempts_v1';
+  UPDATE data_domain_control_revisions SET revision=revision+1, updated_at=CURRENT_TIMESTAMP WHERE table_name='active8_ensemble_validation_attempts_v1';
 END;

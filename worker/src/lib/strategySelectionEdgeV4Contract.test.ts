@@ -36,6 +36,8 @@ assert.match(canonicalLabels, /reference_contract_version=excluded\.reference_co
 assert.match(canonicalLabels, /SELECTION_REFERENCE_CONTRACT_VERSION/)
 assert.match(canonicalLabels, /CANONICAL_SELECTION_ADJUSTMENT_SOURCE/)
 assert.match(canonicalLabels, /price_horizon_labels_v1:finlab_canonical_adjusted_price_lineage_v4/)
+assert.match(canonicalLabels, /l\.adjustment_source = \?/)
+assert.match(canonicalLabels, /SELECTION_REFERENCE_CONTRACT_VERSION, CANONICAL_SELECTION_ADJUSTMENT_SOURCE/)
 assert.match(screener, /l\.adjustment_source=\?/)
 assert.match(screener, /CANONICAL_SELECTION_ADJUSTMENT_SOURCE/)
 console.log('strategySelectionEdgeV4Contract tests passed')

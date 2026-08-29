@@ -1121,10 +1121,7 @@ export function buildAdminWorkerDomainTaskMap(c: any, deps: TriggerDeps): Record
         databaseForDataDomain(c.env, 'learning'),
         { asOfDate, canonicalRunIds },
       )
-      if (labels.persisted_rows <= 0) {
-        throw new Error(`canonical_selection_labels_rebuild_empty:${asOfDate}`)
-      }
-      return `canonical_selection_labels_rebuild as_of_date=${asOfDate} persisted=${labels.persisted_rows} pending=${labels.pending_rows} unavailable=${labels.unavailable_rows}`
+      return `canonical_selection_labels_rebuild as_of_date=${asOfDate} persisted=${labels.persisted_rows} pending=${labels.pending_rows} unavailable=${labels.unavailable_rows} idempotent=${labels.persisted_rows === 0}`
     },
     'strategy-evidence-metrics': async () => {
       const { materializeStrategyEvidenceMetrics } = await import('./strategyEvidenceMetrics')

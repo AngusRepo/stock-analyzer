@@ -12,6 +12,7 @@ const main = fs.readFileSync(path.join(root, 'src', 'main.tsx'), 'utf8')
 
 assert(page.includes('sv-home-glass-panel'), 'Homepage glass panels should use the isolated paint class')
 assert((page.match(/sv-home-deferred-section/g) ?? []).length >= 2, 'Below-fold homepage groups should defer rendering')
+assert(page.includes('xl:grid-cols-[minmax(0,3fr)_minmax(380px,2fr)]'), 'Recommendation list and group residual momentum must share a 6:4 desktop row')
 assert(page.includes('aria-label="市場概況與風險"'), 'Market overview should be split into a semantic section')
 assert(page.includes("panelClass('grid gap-4 p-4 xl:self-stretch')"), 'Large market overview should be split into contained cards')
 
@@ -27,11 +28,7 @@ assert(css.includes('.sv-app-header {') && css.includes('backdrop-filter: none !
 
 assert(!page.includes("'backdrop-blur-xl',"), 'Desktop homepage panels should not use large backdrop blur surfaces')
 assert(css.includes('-webkit-backdrop-filter: none !important;') && css.includes('backdrop-filter: none !important;'), 'Homepage panels should explicitly disable backdrop filters')
-assert(page.includes('new IntersectionObserver(') && page.includes("rootMargin: '160px 0px'"), 'Keyword animation should be gated near the viewport')
-assert(page.includes("data-animate={isAnimationVisible ? 'true' : 'false'}"), 'Keyword cloud should expose its animation visibility state')
-assert(page.includes('sv-home-keyword') && !page.includes('shadow-[0_0_24px_rgba(0,0,0,0.25)]'), 'Moving keyword pills should not carry repaint-heavy shadows')
-assert(css.includes('translate3d(') && css.includes('will-change: transform;'), 'Keyword motion should stay compositor-only')
-assert(css.includes(".sv-home-keyword-cloud[data-animate='false'] .sv-home-keyword") && css.includes('animation-play-state: paused !important;'), 'Offscreen keyword animations should pause')
+assert(!page.includes('sv-home-keyword-cloud') && !page.includes('new IntersectionObserver('), 'Removed keyword animation should not return to the homepage')
 
 assert(main.includes("navigator.serviceWorker.addEventListener('controllerchange'"), 'PWA should detect an activated replacement worker')
 assert(main.includes('if (serviceWorkerReloadScheduled) return') && main.includes('window.location.reload()'), 'PWA should reload an existing document exactly once when a replacement worker claims it')

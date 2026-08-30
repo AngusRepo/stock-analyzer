@@ -37,7 +37,7 @@ function gateResultClass(pass: boolean | null): string {
 }
 
 function gateResultLabel(pass: boolean | null): string {
-  if (pass == null) return '待累積'
+  if (pass == null) return '尚無判定'
   return pass ? '通過' : '未通過'
 }
 
@@ -299,20 +299,39 @@ function GateMetric({
   )
 }
 
+function DiagnosticMetric({
+  label,
+  description,
+  value,
+  role,
+}: {
+  label: string
+  description: string
+  value: string
+  role: string
+}) {
+  return (
+    <div className="flex min-w-0 items-baseline justify-between gap-2 border-b border-slate-800/60 py-1 last:border-0">
+      <span className="min-w-0 text-slate-500">
+        <span className="block truncate">{label}</span>
+        <span className="mt-0.5 block text-[10px] leading-4 text-slate-600">{description}</span>
+      </span>
+      <span className="shrink-0 text-right font-mono text-slate-300">
+        {value} <span className="block text-[10px] text-cyan-200/70">{role}</span>
+      </span>
+    </div>
+  )
+}
+
 function StrategyGateDetails({ row, gate }: { row: LearningRow; gate: StrategyPromotionGate | undefined }) {
   if (!gate) return <p className="mt-3 text-xs text-slate-500">Promotion threshold evidence is unavailable.</p>
   const thresholds = gate.thresholds
   const evidence = gate.evidence
   const isActiveIncumbent = gate.strategy_status === 'active'
   const isS12ExecutionOwner = row.learning.reward_owner === 's12_execution_replay_v3_net'
-  const readiness = [
+  const hardGates = [
     { label: '可評估決策數', description: 'PIT 欄位齊全、可公平判定策略是否命中的決策筆數。', value: String(evidence.decisions), target: `>= ${thresholds.min_evaluable_decisions}`, pass: evidence.decisions >= thresholds.min_evaluable_decisions },
-    { label: '型態命中率（診斷）', description: '稀有型態不該因通用 2% 門檻失敗；用來檢查 setup 是否過窄或資料斷線。', value: pct(evidence.match_rate), target: '不設共用 hard gate', pass: null },
     { label: '成熟報酬樣本', description: '已走完結果窗並扣除交易成本、可計算績效的樣本數。', value: String(evidence.samples), target: `>= ${thresholds.min_reward_samples}`, pass: evidence.samples >= thresholds.min_reward_samples },
-    { label: '勝率（診斷）', description: '勝率必須搭配平均獲利／虧損幅度；不再用 52%／48% 對所有策略做升降級。', value: pct(evidence.hit_rate), target: '不設共用 hard gate', pass: null },
-    { label: isS12ExecutionOwner ? '扣成本平均 R' : '相對基準扣成本平均 Alpha（診斷）', description: isS12ExecutionOwner ? '每筆執行 replay 扣除成本後的平均 R multiple。' : '先扣來回成本，再扣同產業／市場同期報酬；可影響 Active 的相對待買權重，但不作 Candidate 共用 hard gate。Candidate → Active 走 Atomic V7 相對替換。', value: rewardMetric(evidence.avg_return_pct, row.learning.reward_unit), target: '診斷／權重訊號', pass: null },
-    { label: '日期 Alpha 均值 LCB90（診斷）', description: '這是平均 Alpha 的單側 90% 下界，不代表每天或每筆交易都不會虧損；升級改用 Atomic V7 的 paired LCB95 HAC。', value: rewardMetric(evidence.date_return_lcb90, row.learning.reward_unit), target: '診斷', pass: null },
-    { label: '日期投組 Alpha 曲線 MDD（診斷）', description: '成熟日期的相對基準扣成本 Alpha 依序複利後，由高點到低點的回撤；不是單一股票一天的漲跌幅。Atomic V7 比較相對 MDD 惡化，不用共用 -8%。', value: rewardMetric(evidence.max_drawdown_pct, row.learning.reward_unit), target: '診斷', pass: null },
     { label: '成熟交易日數', description: '至少有一筆報酬成熟、可納入每日統計的不同交易日數。', value: String(evidence.mature_dates), target: `>= ${thresholds.min_mature_dates}`, pass: evidence.mature_dates >= thresholds.min_mature_dates },
     ...(gate.activation_gate.required ? [{
       label: 'Atomic V7 相對替換',
@@ -322,6 +341,18 @@ function StrategyGateDetails({ row, gate }: { row: LearningRow; gate: StrategyPr
       pass: gate.activation_gate.status === 'accepted',
     }] : []),
   ]
+  const diagnostics = [
+    { label: '型態命中率', description: '用來檢查 setup 是否過窄或資料斷線；稀有型態不因通用命中率被淘汰。', value: pct(evidence.match_rate), role: '僅供診斷 · 非門檻' },
+    { label: '勝率', description: '必須搭配平均獲利／虧損幅度解讀；不以共用 52%／48% 判定升降級。', value: pct(evidence.hit_rate), role: '僅供診斷 · 非門檻' },
+    {
+      label: isS12ExecutionOwner ? '扣成本平均 R' : '相對基準扣成本平均 Alpha',
+      description: isS12ExecutionOwner ? '每筆執行 replay 扣除成本後的平均 R multiple。' : '先扣來回成本，再扣同產業／市場同期報酬；Candidate → Active 仍只走 Atomic V7。',
+      value: rewardMetric(evidence.avg_return_pct, row.learning.reward_unit),
+      role: isActiveIncumbent ? 'Active 權重輸入 · 非門檻' : '僅供診斷 · 非門檻',
+    },
+    { label: '日期 Alpha 均值 LCB90', description: '平均 Alpha 的單側 90% 下界，不代表每天或每筆交易都不會虧損；升級使用 Atomic V7 paired LCB95 HAC。', value: rewardMetric(evidence.date_return_lcb90, row.learning.reward_unit), role: '僅供診斷 · 非門檻' },
+    { label: '日期投組 Alpha 曲線 MDD', description: '成熟日期相對基準扣成本 Alpha 複利曲線的回撤；不是單一股票一天的漲跌幅。Atomic V7 只比較相對惡化。', value: rewardMetric(evidence.max_drawdown_pct, row.learning.reward_unit), role: '僅供診斷 · 非門檻' },
+  ]
   return (
     <div className="mt-3 border-t border-slate-800 pt-3 text-[11px]">
       <div className="mb-1 flex items-center justify-between gap-2">
@@ -329,7 +360,15 @@ function StrategyGateDetails({ row, gate }: { row: LearningRow; gate: StrategyPr
         <span className="text-slate-500">門檻路由比較（原 Shadow A；非 lifecycle stage）</span>
       </div>
       <p className="mb-2 rounded-md border border-emerald-400/20 bg-emerald-400/[0.05] px-2 py-1.5 text-[10px] leading-4 text-emerald-100/80">共用 hard gate 只管資料可比性與成熟度；它適用於 Candidate evidence。平均 Alpha、match rate、hit rate、MDD、LCB90 保留為診斷。策略 setup threshold 由版本化 Strategy Spec 管理，正式升級只由 Atomic V7 相對替換管理。</p>
-      <div className="grid gap-x-4 md:grid-cols-2">{readiness.map((item) => <GateMetric key={item.label} {...item} />)}</div>
+      <section aria-label="共用成熟度門檻">
+        <h3 className="text-xs font-semibold text-slate-200">共用成熟度門檻</h3>
+        <div className="mt-1 grid gap-x-4 md:grid-cols-2">{hardGates.map((item) => <GateMetric key={item.label} {...item} />)}</div>
+      </section>
+      <section className="mt-3 border-t border-slate-800 pt-3" aria-label="觀察指標">
+        <h3 className="text-xs font-semibold text-slate-200">觀察指標（不判定通過／失敗）</h3>
+        <p className="mt-1 text-[10px] leading-4 text-slate-500">這些數值會持續累積以提高解讀可信度，但不是 Candidate 升降級門檻；沒有「待通過」狀態。</p>
+        <div className="mt-1 grid gap-x-4 md:grid-cols-2">{diagnostics.map((item) => <DiagnosticMetric key={item.label} {...item} />)}</div>
+      </section>
     </div>
   )
 }
@@ -543,12 +582,14 @@ function StrategyStageTransitionCard({
   row: LearningRow | null
   gate: StrategyPromotionGate | undefined
 }) {
-  if (!row) return <aside className="rounded-2xl border border-slate-800 bg-slate-950/70 p-4 text-xs text-slate-500">Stage transition unavailable.</aside>
+  if (!row) return <aside className="sv-readable-card-content rounded-2xl border border-slate-800 bg-slate-950/70 p-4 text-xs text-slate-500">Stage transition unavailable.</aside>
   const evidence = gate?.missing_evidence ?? []
   const evidenceLabels = gate ? (evidence.length ? evidence : ['全部待買門檻已通過']) : ['報酬帳本資料未取得']
   return (
-    <aside className="rounded-2xl border border-slate-800 bg-slate-950/70 p-4 xl:sticky xl:top-4 xl:self-start">
-      <p className="text-[10px] font-semibold uppercase tracking-[0.16em] text-cyan-300/80">Stage transition</p>
+    <aside className="sv-readable-card-content rounded-2xl border border-slate-800 bg-slate-950/70 p-4 xl:sticky xl:top-4 xl:self-start">
+      <header className="-mx-4 -mt-4 flex min-h-[56px] items-center border-b border-slate-800 px-4 py-4">
+        <h2 className="truncate text-[15px] font-bold text-slate-100">Stage transition</h2>
+      </header>
       <div className="mt-3 flex flex-wrap items-center gap-2">
         <Badge variant="outline" className={statusClass(gate?.decision ?? 'ledger_pending')}>{gate?.decision ?? 'ledger pending'}</Badge>
       </div>

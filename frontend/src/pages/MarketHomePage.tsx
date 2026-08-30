@@ -1466,9 +1466,9 @@ export default function MarketHomePage() {
           </div>
 
           <MarketOverviewBlock />
-          <div className="sv-home-deferred-section space-y-4">
-            <RecommendationPanel />
-            <GroupFactorTrajectoryPanel />
+          <div className="sv-home-deferred-section grid items-start gap-4 xl:grid-cols-[minmax(0,3fr)_minmax(380px,2fr)]">
+            <div className="min-w-0"><RecommendationPanel /></div>
+            <div className="min-w-0"><GroupFactorTrajectoryPanel /></div>
           </div>
         </main>
       </div>

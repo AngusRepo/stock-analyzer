@@ -852,7 +852,7 @@ export const opsApi = {
     get<DataDomainCutoverReadinessReport>(`/admin/data-domains/cutover-readiness?domain=${encodeURIComponent(domain)}`),
 }
 
-export type StrategySpecStatus = 'research' | 'shadow' | 'candidate' | 'active' | 'retired'
+export type StrategySpecStatus = 'candidate' | 'active' | 'retired'
 export type StrategySpec = {
   id: string
   version: string
@@ -1056,25 +1056,35 @@ export type StrategyPromotionGate = {
   strategy_version: string
   strategy_status: StrategySpecStatus
   alpha_bucket: string
-  current_stage?: 'L0_hypothesis' | 'L1_shadow' | 'L2_paper_active' | 'L3_production_allocation'
-  recommended_stage?: 'L0_hypothesis' | 'L1_shadow' | 'L2_paper_active' | 'L3_production_allocation'
+  current_stage?: 'candidate_evidence' | 'active' | 'retired'
+  recommended_stage?: 'candidate_evidence' | 'active' | 'retired'
   decision: 'not_ready' | 'candidate_ready' | 'active_monitor' | 'active_cooldown'
-  recommended_next_status: 'shadow' | 'candidate' | 'active'
+  recommended_next_status: 'candidate' | 'active'
   requires_wei_approval: boolean
   l3_requires_wei_approval?: boolean
   production_effect: false
   allocation_eligible: boolean
+  gate_policy: 'candidate_evidence_then_atomic_replacement_v7'
+  gate_role: 'atomic_replacement_to_active' | 'incumbent_monitoring'
+  hard_gate_metrics: string[]
+  diagnostic_only_metrics: string[]
+  activation_gate: {
+    policy_version: string
+    required: boolean
+    status: 'not_applicable' | 'pending' | 'accepted'
+    run_id: string | null
+  }
   missing_evidence: string[]
   thresholds: {
     min_evaluable_decisions: number
-    min_match_rate: number
+    min_match_rate: number | null
     min_reward_samples: number
-    min_hit_rate: number
-    active_retention_min_hit_rate: number
-    min_avg_cost_net_return_exclusive: number
-    min_max_drawdown: number
+    min_hit_rate: number | null
+    active_retention_min_hit_rate: number | null
+    min_avg_cost_net_return_exclusive: number | null
+    min_max_drawdown: number | null
     min_mature_dates: number
-    min_date_return_lcb90_exclusive: number
+    min_date_return_lcb90_exclusive: number | null
   }
   evidence: {
     decisions: number
@@ -1120,9 +1130,20 @@ export type StrategyReplacementDecisionSummary = {
 export type StrategyReplacementGateSummary = {
   policy: {
     schema_version: string
+    policy_version: string
+    outcome_horizon_trading_days: number
+    dependence_adjustment: 'newey_west_bartlett'
+    hac_lag: number
     min_paired_dates: number
-    min_paired_delta_lcb90_exclusive: number
+    min_effective_paired_dates: number
+    min_paired_delta_lcb95_hac_exclusive: number
+    minimum_economic_paired_delta: number
+    min_power_at_minimum_economic_delta: number
+    multiple_testing: 'holm_bonferroni'
+    familywise_alpha: number
     min_candidate_absolute_cost_net_mean_exclusive: number
+    min_candidate_absolute_cost_net_lcb95_hac_exclusive: number
+    min_final_portfolio_absolute_cost_net_lcb95_hac_exclusive: number
     max_drawdown_degradation: number
     max_turnover_increase: number
     max_duplicate_return_correlation: number
@@ -1162,10 +1183,10 @@ export type StrategyAdaptivePolicyState = {
   threshold_deltas: Record<string, Record<string, number>>
   lifecycle_recommendations: Record<string, {
     current_status: StrategySpecStatus
-    recommended_status: 'shadow' | 'candidate' | 'active'
+      recommended_status: 'candidate' | 'active'
     decision: 'not_ready' | 'candidate_ready' | 'active_monitor' | 'active_cooldown'
     production_weight: number
-    automatic_effect: 'weight_and_threshold_only'
+      automatic_effect: 'weight_only' | 'weight_and_threshold_only'
     reasons: string[]
   }>
   evidence: {

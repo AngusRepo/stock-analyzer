@@ -66,7 +66,7 @@ assert(chain.includes("['active8-oof-monthly']") && !chain.includes("'monthly-re
 assert(chain.includes("id: 'post-close-evidence-extension'") && chain.includes("['dataset-snapshot-export']") && chain.includes("['active8-oof-daily']"), 'daily DAG must expose the durable detached snapshot -> Active-8 evidence branch')
 assert(!chain.includes("['weekly-drift-retrain']") && !chain.includes("['storage-capacity-report']"), 'weekly/monthly DAG must not include nonexistent or daily-only jobs')
 assert(chain.includes('duplicateScopeJobIds') && chain.includes('DUPLICATE_SCOPE_JOB_IDS'), 'one scheduler job must have exactly one cadence scope owner')
-assert(chain.includes('Active-8 daily evidence') && chain.includes('Active-8 weekly cohort') && chain.includes('Active-8 monthly release'), 'Active-8 cadence roles must be visually distinct')
+assert(chain.includes('Active-8 daily evidence') && chain.includes('Active-8 weekly cohort / validation-release') && chain.includes('Active-8 monthly release / validation'), 'Active-8 cadence roles must be visually distinct without claiming monthly-only promotion')
 assert(!chain.includes("dependsOn: 'monthly-retrain'"), 'Active-8 monthly release must not depend on the retired universal retrain scheduler')
 assert(api.includes("statusScope?: 'today' | 'historical_replay' | 'schedule'"), 'scheduler API must expose historical replay scope')
 assert(api.includes('statusRunDate?: string | null'), 'scheduler API must expose the effective replay date')

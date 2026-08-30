@@ -5,6 +5,7 @@ import {
   STRATEGY_FORMAL_RECONSTRUCTION_LABELER_VERSION,
   assessCandidateAgainstStrategySpecs,
   assessStrategySpecEvaluability,
+  canonicalStrategyLifecycleStatus,
   deriveStrategyRawSignals,
   deriveStrategyThresholdScores,
   explainFeatureRefDsl,
@@ -161,21 +162,20 @@ interface StrategyLearningHeadRow {
 
 export type StrategyPromotionDecision = 'not_ready' | 'candidate_ready' | 'active_monitor' | 'active_cooldown'
 export type StrategyLearningStage =
-  | 'L0_hypothesis'
-  | 'L1_shadow'
-  | 'L2_paper_active'
-  | 'L3_production_allocation'
+  | 'candidate_evidence'
+  | 'active'
+  | 'retired'
 
 export interface StrategyPromotionThresholds {
   min_evaluable_decisions: number
-  min_match_rate: number
+  min_match_rate: number | null
   min_reward_samples: number
-  min_hit_rate: number
-  active_retention_min_hit_rate: number
-  min_avg_cost_net_return_exclusive: number
-  min_max_drawdown: number
+  min_hit_rate: number | null
+  active_retention_min_hit_rate: number | null
+  min_avg_cost_net_return_exclusive: number | null
+  min_max_drawdown: number | null
   min_mature_dates: number
-  min_date_return_lcb90_exclusive: number
+  min_date_return_lcb90_exclusive: number | null
 }
 
 export interface StrategyReplacementDecisionSummary {
@@ -236,11 +236,21 @@ export interface StrategyPromotionGateRow {
   current_stage: StrategyLearningStage
   recommended_stage: StrategyLearningStage
   decision: StrategyPromotionDecision
-  recommended_next_status: 'shadow' | 'candidate' | 'active'
+  recommended_next_status: 'candidate' | 'active'
   requires_wei_approval: boolean
   l3_requires_wei_approval: boolean
   production_effect: false
   allocation_eligible: boolean
+  gate_policy: 'candidate_evidence_then_atomic_replacement_v7'
+  gate_role: 'atomic_replacement_to_active' | 'incumbent_monitoring'
+  hard_gate_metrics: string[]
+  diagnostic_only_metrics: string[]
+  activation_gate: {
+    policy_version: string
+    required: boolean
+    status: 'not_applicable' | 'pending' | 'accepted'
+    run_id: string | null
+  }
   missing_evidence: string[]
   thresholds: StrategyPromotionThresholds
   evidence: {
@@ -273,7 +283,7 @@ export interface StrategyAdaptiveThresholdDelta {
 
 export interface StrategyAdaptiveLifecycleRecommendation {
   current_status: StrategySpecStatus
-  recommended_status: 'shadow' | 'candidate' | 'active'
+  recommended_status: 'candidate' | 'active'
   decision: StrategyPromotionDecision
   production_weight: number
   automatic_effect: 'weight_only' | 'weight_and_threshold_only'
@@ -354,44 +364,36 @@ export interface StrategyLearningSummary {
   policy_state_preview: StrategyAdaptivePolicyState
 }
 
-export const STRATEGY_POLICY_ID = 'strategy-adaptive-lifecycle-v2'
-export const STRATEGY_ADAPTIVE_POLICY_VERSION = 'strategy-adaptive-lifecycle-v2'
+export const STRATEGY_POLICY_ID = 'strategy-adaptive-lifecycle-v3'
+export const STRATEGY_ADAPTIVE_POLICY_VERSION = 'strategy-adaptive-lifecycle-v3'
 const LEGACY_RETIRED_STRATEGY_SPEC_IDS = [
   'finlab_ai_skill_shadow_v1',
   'finlab_ai_skill_discovery_v1',
 ]
 
 const PROMOTION_MIN_DECISIONS = 30
-const PROMOTION_MIN_MATCH_RATE = 0.02
 const PROMOTION_MIN_SAMPLES = 30
-const PROMOTION_MIN_HIT_RATE = 0.52
-const ACTIVE_RETENTION_MIN_HIT_RATE = 0.48
-const PROMOTION_MIN_AVG_RETURN = 0
-const PROMOTION_MIN_MAX_DRAWDOWN = -0.08
 const PROMOTION_MIN_MATURE_DATES = 10
-const PROMOTION_MIN_DATE_RETURN_LCB90 = 0
 export const STRATEGY_PROMOTION_THRESHOLDS = Object.freeze({
   min_evaluable_decisions: PROMOTION_MIN_DECISIONS,
-  min_match_rate: PROMOTION_MIN_MATCH_RATE,
+  min_match_rate: null,
   min_reward_samples: PROMOTION_MIN_SAMPLES,
-  min_hit_rate: PROMOTION_MIN_HIT_RATE,
-  active_retention_min_hit_rate: ACTIVE_RETENTION_MIN_HIT_RATE,
-  min_avg_cost_net_return_exclusive: PROMOTION_MIN_AVG_RETURN,
-  min_max_drawdown: PROMOTION_MIN_MAX_DRAWDOWN,
+  min_hit_rate: null,
+  active_retention_min_hit_rate: null,
+  min_avg_cost_net_return_exclusive: null,
+  min_max_drawdown: null,
   min_mature_dates: PROMOTION_MIN_MATURE_DATES,
-  min_date_return_lcb90_exclusive: PROMOTION_MIN_DATE_RETURN_LCB90,
+  min_date_return_lcb90_exclusive: null,
 }) satisfies StrategyPromotionThresholds
 const STRATEGY_LEARNING_ROLLING_SESSIONS = 60
 const STRATEGY_DAILY_RECONCILIATION_CALENDAR_DAYS = 21
-const ACTIVE_COOLDOWN_MIN_SAMPLES = 30
 const STRATEGY_LEARNING_DEFAULT_CANDIDATE_LIMIT = 2000
 const STRATEGY_LEARNING_D1_BATCH_SIZE = 250
 
 function stageForStrategyStatus(status: StrategySpecStatus): StrategyLearningStage {
-  if (status === 'active') return 'L3_production_allocation'
-  if (status === 'candidate') return 'L2_paper_active'
-  if (status === 'shadow') return 'L1_shadow'
-  return 'L0_hypothesis'
+  const canonicalStatus = canonicalStrategyLifecycleStatus(status)
+  if (canonicalStatus === 'active' || canonicalStatus === 'retired') return canonicalStatus
+  return 'candidate_evidence'
 }
 
 const SCHEMA_DDL = [
@@ -861,17 +863,22 @@ export function strategySpecToRegistryRow(
   options: StrategySpecRegistryRowOptions = {},
 ): StrategySpecRegistryRow {
   const normalized = normalizeStrategySpecGovernance(spec)
+  const lifecycleStatus = canonicalStrategyLifecycleStatus(normalized.status)
   return {
     strategy_id: normalized.id,
     version: normalized.version,
     name: normalized.name,
-    status: normalized.status,
+    status: lifecycleStatus,
     owner: 'strategy',
     alpha_bucket: normalized.alphaBucket,
     family_id: normalized.familyId!,
     variant_id: normalized.variantId!,
     owner_type: normalized.ownerType!,
-    promotion_status: normalized.promotionStatus!,
+    promotion_status: lifecycleStatus === 'active'
+      ? 'production'
+      : lifecycleStatus === 'retired'
+        ? 'retired'
+        : 'candidate',
     supported_regimes_json: safeJson(normalized.supportedRegimes),
     thesis: normalized.thesis,
     thresholds_json: safeJson(normalized.thresholds),
@@ -915,17 +922,22 @@ function hasRuntimeCandidatePolicy(row: StrategySpecRegistryRow): boolean {
 }
 
 export function registryRowToStrategySpec(row: StrategySpecRegistryRow): StrategySpec {
+  const lifecycleStatus = canonicalStrategyLifecycleStatus(row.status)
   return normalizeStrategySpecGovernance({
     id: row.strategy_id,
     version: row.version,
     name: row.name,
-    status: row.status,
+    status: lifecycleStatus,
     owner: 'strategy',
     alphaBucket: row.alpha_bucket as StrategySpec['alphaBucket'],
     familyId: row.family_id,
     variantId: row.variant_id || row.strategy_id,
     ownerType: row.owner_type,
-    promotionStatus: row.promotion_status,
+    promotionStatus: lifecycleStatus === 'active'
+      ? 'production'
+      : lifecycleStatus === 'retired'
+        ? 'retired'
+        : 'candidate',
     supportedRegimes: parseJson(row.supported_regimes_json, []) as StrategySpec['supportedRegimes'],
     thesis: row.thesis,
     thresholds: parseJson(row.thresholds_json, {}),
@@ -962,9 +974,9 @@ export async function seedDefaultStrategySpecRegistry(
       ON CONFLICT(strategy_id, version) DO UPDATE SET
         name=excluded.name,
         status=CASE
-          WHEN strategy_spec_registry.status IN ('research','shadow','candidate','active','retired')
-          THEN strategy_spec_registry.status
-          ELSE excluded.status
+          WHEN strategy_spec_registry.status='active' THEN 'active'
+          WHEN strategy_spec_registry.status='retired' THEN 'retired'
+          ELSE 'candidate'
         END,
         alpha_bucket=excluded.alpha_bucket,
         family_id=excluded.family_id,
@@ -975,9 +987,9 @@ export async function seedDefaultStrategySpecRegistry(
           ELSE excluded.owner_type
         END,
         promotion_status=CASE
-          WHEN strategy_spec_registry.promotion_status IN ('production','candidate','research','retired')
-          THEN strategy_spec_registry.promotion_status
-          ELSE excluded.promotion_status
+          WHEN strategy_spec_registry.status='active' THEN 'production'
+          WHEN strategy_spec_registry.status='retired' THEN 'retired'
+          ELSE 'candidate'
         END,
         supported_regimes_json=excluded.supported_regimes_json,
         thesis=excluded.thesis,
@@ -2529,101 +2541,81 @@ function gateEvidenceFromSpec(spec: StrategyLearningSummary['specs'][number]): S
 
 export function evaluateStrategyPromotionGate(summary: StrategyLearningSummary): StrategyPromotionGateRow[] {
   return summary.specs.map((spec) => {
+    const lifecycleStatus = canonicalStrategyLifecycleStatus(spec.status)
     const evidence = gateEvidenceFromSpec(spec)
     const missing: string[] = []
-    if (spec.status === 'research') missing.push('status_must_enter_shadow_before_promotion')
     if (spec.learning.reward_owner === 's12_execution_replay_v3_net') {
       missing.push('production_owned_by_s12_calibration_not_selection_replacement')
     }
     if (evidence.decisions < PROMOTION_MIN_DECISIONS) missing.push(`decisions_lt_${PROMOTION_MIN_DECISIONS}`)
-    if (evidence.match_rate == null || evidence.match_rate < PROMOTION_MIN_MATCH_RATE) missing.push(`match_rate_lt_${PROMOTION_MIN_MATCH_RATE}`)
     if (evidence.samples < PROMOTION_MIN_SAMPLES) missing.push(`samples_lt_${PROMOTION_MIN_SAMPLES}`)
-    if (evidence.hit_rate == null || evidence.hit_rate < PROMOTION_MIN_HIT_RATE) missing.push(`hit_rate_lt_${PROMOTION_MIN_HIT_RATE}`)
-    if (evidence.avg_return_pct == null || evidence.avg_return_pct <= PROMOTION_MIN_AVG_RETURN) missing.push('avg_return_not_positive')
-    if (evidence.max_drawdown_pct == null) {
-      missing.push('max_drawdown_missing')
-    } else if (evidence.max_drawdown_pct < PROMOTION_MIN_MAX_DRAWDOWN) {
-      missing.push(`max_drawdown_lt_${PROMOTION_MIN_MAX_DRAWDOWN}`)
-    }
     if (evidence.mature_dates < PROMOTION_MIN_MATURE_DATES) {
       missing.push(`mature_dates_lt_${PROMOTION_MIN_MATURE_DATES}`)
     }
-    if (evidence.date_return_lcb90 == null || evidence.date_return_lcb90 <= PROMOTION_MIN_DATE_RETURN_LCB90) {
-      missing.push('date_return_lcb90_not_positive')
-    }
-
-    const activeMonitor = spec.status === 'active'
-    const activeEvidenceReady = evidence.samples >= ACTIVE_COOLDOWN_MIN_SAMPLES
+    const activeMonitor = lifecycleStatus === 'active'
+    const activeEvidenceReady = evidence.samples >= PROMOTION_MIN_SAMPLES
       && evidence.mature_dates >= PROMOTION_MIN_MATURE_DATES
     const activeRetentionMissing = activeMonitor
       ? [
-        evidence.samples < ACTIVE_COOLDOWN_MIN_SAMPLES ? `samples_lt_${ACTIVE_COOLDOWN_MIN_SAMPLES}` : null,
+        evidence.samples < PROMOTION_MIN_SAMPLES ? `samples_lt_${PROMOTION_MIN_SAMPLES}` : null,
         evidence.mature_dates < PROMOTION_MIN_MATURE_DATES ? `mature_dates_lt_${PROMOTION_MIN_MATURE_DATES}` : null,
-        evidence.hit_rate == null ? 'active_hit_rate_missing' : null,
-        evidence.avg_return_pct == null ? 'active_avg_return_missing' : null,
-        evidence.max_drawdown_pct == null ? 'active_max_drawdown_missing' : null,
-        evidence.date_return_lcb90 == null ? 'active_date_return_lcb90_missing' : null,
       ].filter((reason): reason is string => reason != null)
       : []
-    const activeCooldownReasons = activeMonitor && activeEvidenceReady
-      ? [
-        evidence.hit_rate != null && evidence.hit_rate < ACTIVE_RETENTION_MIN_HIT_RATE ? `active_hit_rate_lt_${ACTIVE_RETENTION_MIN_HIT_RATE}` : null,
-        evidence.avg_return_pct != null && evidence.avg_return_pct <= 0 ? 'active_avg_return_not_positive' : null,
-        evidence.max_drawdown_pct != null && evidence.max_drawdown_pct < PROMOTION_MIN_MAX_DRAWDOWN ? `active_max_drawdown_lt_${PROMOTION_MIN_MAX_DRAWDOWN}` : null,
-        evidence.date_return_lcb90 != null && evidence.date_return_lcb90 <= PROMOTION_MIN_DATE_RETURN_LCB90 ? 'active_date_return_lcb90_not_positive' : null,
-      ].filter((reason): reason is string => reason != null)
-      : []
-    const activeCooldown = activeMonitor && activeCooldownReasons.length > 0
-    const allocationEligible = activeMonitor
-      && activeRetentionMissing.length === 0
-      && !activeCooldown
-    const ready = !activeMonitor && missing.length === 0
-    const currentStage = stageForStrategyStatus(spec.status)
-    const recommendedNextStatus = activeCooldown
-      ? 'candidate'
-      : activeMonitor
+    const acceptedReplacement = summary.replacement_gate.decisions.find((decision) =>
+      decision.candidate_strategy_id === spec.id
+      && decision.candidate_strategy_version === spec.version
+      && decision.status === 'accepted'
+      && decision.promotion_allowed)
+    const activationRequired = lifecycleStatus === 'candidate'
+    if (activationRequired && !acceptedReplacement) {
+      missing.push('atomic_replacement_v7_not_accepted')
+    }
+    const allocationEligible = activeMonitor && activeEvidenceReady
+    const ready = activationRequired && missing.length === 0
+    const currentStage = stageForStrategyStatus(lifecycleStatus)
+    const recommendedNextStatus = activeMonitor
+      ? 'active'
+      : ready
         ? 'active'
-      : ready && spec.status === 'candidate'
+        : 'candidate'
+    const recommendedStage = activeMonitor
+      ? 'active'
+      : ready
         ? 'active'
-        : ready
-          ? 'candidate'
-          : spec.status === 'research'
-            ? 'shadow'
-          : spec.status === 'candidate'
-            ? 'candidate'
-            : 'shadow'
-    const recommendedStage = activeCooldown
-      ? 'L2_paper_active'
-      : activeMonitor
-        ? allocationEligible
-          ? 'L3_production_allocation'
-          : 'L2_paper_active'
-      : ready && spec.status === 'candidate'
-        ? 'L3_production_allocation'
-        : ready
-          ? 'L2_paper_active'
-          : spec.status === 'research'
-            ? 'L1_shadow'
-            : currentStage
+        : 'candidate_evidence'
 
     return {
       strategy_id: spec.id,
       strategy_version: spec.version,
-      strategy_status: spec.status,
+      strategy_status: lifecycleStatus,
       alpha_bucket: spec.alphaBucket,
       current_stage: currentStage,
       recommended_stage: recommendedStage,
-      decision: activeCooldown ? 'active_cooldown' : activeMonitor ? 'active_monitor' : ready ? 'candidate_ready' : 'not_ready',
+      decision: activeMonitor ? 'active_monitor' : ready ? 'candidate_ready' : 'not_ready',
       recommended_next_status: recommendedNextStatus,
       requires_wei_approval: false,
       l3_requires_wei_approval: false,
       production_effect: false,
       allocation_eligible: allocationEligible,
-      missing_evidence: activeCooldown
-        ? activeCooldownReasons
-        : activeMonitor
-          ? activeRetentionMissing
-          : missing,
+      gate_policy: 'candidate_evidence_then_atomic_replacement_v7',
+      gate_role: activeMonitor
+        ? 'incumbent_monitoring'
+        : 'atomic_replacement_to_active',
+      hard_gate_metrics: activeMonitor
+        ? ['reward_samples', 'mature_dates']
+        : ['evaluable_decisions', 'reward_samples', 'mature_dates', 'atomic_replacement_v7'],
+      diagnostic_only_metrics: ['match_rate', 'hit_rate', 'avg_cost_net_alpha', 'max_drawdown', 'date_return_lcb90'],
+      activation_gate: {
+        policy_version: STRATEGY_REPLACEMENT_POLICY_V7.policy_version,
+        required: activationRequired,
+        status: activationRequired
+          ? acceptedReplacement
+            ? 'accepted'
+            : 'pending'
+          : 'not_applicable',
+        run_id: acceptedReplacement?.run_id ?? null,
+      },
+      missing_evidence: activeMonitor ? activeRetentionMissing : missing,
       thresholds: STRATEGY_PROMOTION_THRESHOLDS,
       evidence,
     }
@@ -2631,77 +2623,19 @@ export function evaluateStrategyPromotionGate(summary: StrategyLearningSummary):
 }
 
 function strategyPolicyScore(spec: StrategyLearningSummary['specs'][number], gate: StrategyPromotionGateRow): number {
-  if (!gate.allocation_eligible || gate.decision === 'active_cooldown') return 0
+  if (!gate.allocation_eligible) return 0
   if (spec.learning.rolling_reward_dates < PROMOTION_MIN_MATURE_DATES) return 0
-  if (spec.learning.rolling_date_return_lcb90 == null || spec.learning.rolling_date_return_lcb90 <= 0) return 0
   const samples = Math.max(0, spec.learning.rolling_samples)
-  const hitRate = spec.learning.rolling_hit_rate
-  const avgReturn = spec.learning.rolling_avg_return_pct
-  const maxDrawdown = spec.learning.rolling_max_drawdown_pct
-  if (samples <= 0 || hitRate == null || avgReturn == null) return 0
-  const sampleConfidence = Math.min(samples / 100, 1) * 0.2
-  const hitLift = Math.max(hitRate - 0.5, 0) * 1.5
-  const returnLift = Math.max(avgReturn, 0) * 4
-  const drawdownPenalty = maxDrawdown != null && maxDrawdown < PROMOTION_MIN_MAX_DRAWDOWN
-    ? Math.abs(maxDrawdown) * 2
-    : 0
-  const gateBonus = gate.decision === 'candidate_ready' || gate.decision === 'active_monitor' ? 0.08 : 0
-  return Math.max(0, 0.01 + sampleConfidence + hitLift + returnLift + gateBonus - drawdownPenalty)
+  const dates = Math.max(0, spec.learning.rolling_reward_dates)
+  const avgReturn = spec.learning.rolling_date_return_mean
+  if (samples <= 0 || avgReturn == null || avgReturn <= 0) return 0
+  const sampleMaturity = Math.min(samples / 100, 1)
+  const dateMaturity = Math.min(dates / 30, 1)
+  return Math.max(0, avgReturn * sampleMaturity * dateMaturity)
 }
 
 function clampPolicyValue(value: number, minimum: number, maximum: number): number {
   return Math.min(maximum, Math.max(minimum, value))
-}
-
-function adaptiveThresholdDelta(
-  spec: StrategyLearningSummary['specs'][number],
-  gate: StrategyPromotionGateRow,
-): StrategyAdaptiveThresholdDelta {
-  const healthy = spec.learning.rolling_reward_dates >= PROMOTION_MIN_MATURE_DATES
-    && spec.learning.rolling_date_return_lcb90 != null
-    && spec.learning.rolling_date_return_lcb90 > 0
-    && spec.learning.rolling_avg_return_pct != null
-    && spec.learning.rolling_avg_return_pct > 0
-    && spec.learning.rolling_hit_rate != null
-    && spec.learning.rolling_hit_rate >= 0.58
-  if (gate.decision === 'active_cooldown') {
-    return {
-      minVolumeExpansion20: 0.08,
-      minCloseAboveMa20Pct: 0.01,
-      minRevenueGrowthYoY: 1,
-      maxReturn20d: -0.02,
-      maxPe: -3,
-      maxPb: -0.3,
-      weightedScoreMin: 0.025,
-    }
-  }
-  const weak = (spec.learning.rolling_max_drawdown_pct != null
-      && spec.learning.rolling_max_drawdown_pct < PROMOTION_MIN_MAX_DRAWDOWN)
-    || (spec.learning.rolling_avg_return_pct != null
-      && spec.learning.rolling_avg_return_pct <= 0)
-  if (healthy) {
-    return {
-      minVolumeExpansion20: -0.03,
-      minCloseAboveMa20Pct: -0.003,
-      minBrokerCount: spec.learning.rolling_hit_rate >= 0.6 ? -1 : 0,
-      maxReturn20d: 0.01,
-      maxPe: 2,
-      maxPb: 0.2,
-      weightedScoreMin: -0.015,
-    }
-  }
-  if (weak) {
-    return {
-      minVolumeExpansion20: 0.05,
-      minCloseAboveMa20Pct: 0.005,
-      minRevenueGrowthYoY: 1,
-      maxReturn20d: -0.01,
-      maxPe: -2,
-      maxPb: -0.2,
-      weightedScoreMin: 0.015,
-    }
-  }
-  return {}
 }
 
 function applyOptionalThresholdDelta(
@@ -2718,7 +2652,12 @@ export function applyStrategyAdaptivePolicyThresholds(
   specs: readonly StrategySpec[],
   state: StrategyAdaptivePolicyState | null,
 ): StrategySpec[] {
-  if (!state || state.status !== 'active') return [...specs]
+  if (
+    !state ||
+    state.status !== 'active' ||
+    state.policy_id !== STRATEGY_POLICY_ID ||
+    state.version !== STRATEGY_ADAPTIVE_POLICY_VERSION
+  ) return [...specs]
   return specs.map((spec) => {
     if (spec.status !== 'active') return spec
     const delta = state.threshold_deltas[spec.id]
@@ -2780,7 +2719,8 @@ export function buildStrategyAdaptivePolicyState(
       return { spec, gate, score }
     })
   const total = activeScores.reduce((sum, row) => sum + row.score, 0)
-  for (const spec of summary.specs.filter((row) => row.status !== 'retired' && row.status !== 'research')) {
+  for (const spec of summary.specs.filter((row) => row.status !== 'retired')) {
+    const lifecycleStatus = canonicalStrategyLifecycleStatus(spec.status)
     const gate = gateById.get(`${spec.id}|${spec.version}`)
     const active = activeScores.find((row) => row.spec.id === spec.id)
     const weight = active && total > 0 ? round6(active.score / total) ?? 0 : 0
@@ -2792,13 +2732,11 @@ export function buildStrategyAdaptivePolicyState(
       ? 'active'
       : decision === 'active_cooldown'
         ? 'candidate'
-        : spec.status === 'active'
+        : lifecycleStatus === 'active'
           ? 'active'
-          : spec.status === 'candidate'
-            ? 'candidate'
-            : 'shadow'
+          : 'candidate'
     lifecycleRecommendations[spec.id] = {
-      current_status: spec.status,
+      current_status: lifecycleStatus,
       recommended_status: recommendedStatus,
       decision,
       production_weight: weight,
@@ -4195,6 +4133,11 @@ export async function rebuildHistoricalStrategyEvidenceV5(
             family_id: cleanToken(spec.familyId) || 'UNKNOWN',
             production_owner: thresholdAffinity.productionOwner ? 1 : 0,
             strategy_hit: classification.evaluable === 1 && thresholdAffinity.matched ? 1 : 0,
+            pre_regime_setup_hit: classification.evaluable === 1 && thresholdAffinity.preRegimeMatched ? 1 : 0,
+            regime_eligible: thresholdAffinity.regimeEligible ? 1 : 0,
+            formal_veto_reason: classification.evaluable === 1 ? thresholdAffinity.formalVetoReason : null,
+            counterfactual_affinity: classification.evaluable === 1 ? thresholdAffinity.counterfactualAffinity : 0,
+            counterfactual_production_effect: 0 as const,
             evaluable: classification.evaluable,
             evaluability_status: classification.status,
             unavailable_reason: classification.reason,

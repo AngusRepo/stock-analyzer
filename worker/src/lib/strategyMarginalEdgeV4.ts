@@ -1106,13 +1106,13 @@ export async function refreshStrategyMarginalEdgeV4(
          AND l.label_schema_version='canonical-strategy-selection-label-v4'
        WHERE m.signal_date BETWEEN ? AND ?
          AND l.outcome_known_date <= ?
-         AND m.strategy_status IN ('active', 'candidate', 'shadow')
+         AND m.strategy_status IN ('active', 'candidate')
          AND EXISTS (
            SELECT 1 FROM strategy_spec_registry eligible_owner
             WHERE eligible_owner.strategy_id=m.strategy_id
               AND eligible_owner.version=m.strategy_version
               AND eligible_owner.owner_type='strategy'
-              AND eligible_owner.status IN ('active','candidate','shadow')
+              AND eligible_owner.status IN ('active','candidate')
               AND eligible_owner.promotion_status <> 'retired'
               AND eligible_owner.variant_id NOT LIKE 's12_%'
          )
@@ -1279,7 +1279,7 @@ export async function refreshStrategyMarginalEdgeV4(
       paired_champion_improvement_lcb95_hac: paired.lcb95Hac != null && paired.lcb95Hac > 0,
       active_count_unchanged: championWeights.size === replacement.finalWeights.size,
       no_hard_top_k: true,
-      candidate_and_shadow_strategies_evaluated: true,
+      candidate_strategies_evaluated: true,
       s12_execution_owner_excluded_from_selection_replacement: true,
       registry_cutover_is_atomic_one_in_one_out: true,
       promotion_allowed_for_business_date: promotionAllowed,
@@ -1434,7 +1434,7 @@ export async function refreshStrategyMarginalEdgeV4(
                  CASE WHEN EXISTS (
                    SELECT 1 FROM strategy_spec_registry
                     WHERE strategy_id=? AND version=? AND owner_type='strategy'
-                      AND status IN ('shadow','candidate') AND promotion_status <> 'retired'
+                      AND status='candidate' AND promotion_status='candidate'
                  ) AND EXISTS (
                    SELECT 1 FROM strategy_spec_registry
                     WHERE strategy_id=? AND version=? AND owner_type='strategy'
@@ -1450,8 +1450,8 @@ export async function refreshStrategyMarginalEdgeV4(
              SET status='active', promotion_status='production', updated_at=CURRENT_TIMESTAMP
            WHERE strategy_id=? AND version=?
              AND owner_type='strategy'
-             AND status IN ('shadow','candidate')
-             AND promotion_status <> 'retired'
+             AND status='candidate'
+             AND promotion_status='candidate'
         `).bind(candidateId, candidateVersion))
         cutoverStatements.push(db.prepare(`
           UPDATE strategy_spec_registry

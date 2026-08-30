@@ -10,7 +10,7 @@ import {
 } from './strategyEvaluability'
 import { sha256Text } from './datasetSnapshots'
 
-export const SELECTION_REFERENCE_CONTRACT_VERSION = 'selection-reference-snapshot-v3'
+export const SELECTION_REFERENCE_CONTRACT_VERSION = 'selection-reference-snapshot-v4-regime-veto-evidence'
 export const STRATEGY_LABEL_MATRIX_VERSION = 'strategy-label-matrix-v4'
 
 export interface SelectionEvidenceCandidate {
@@ -38,6 +38,11 @@ export interface SelectionEvidenceCandidate {
   strategy_affinity_evidence_count_vector?: Record<string, number>
   strategy_weak_label_vector?: Record<string, number>
   strategy_hit_vector?: Record<string, number>
+  strategy_pre_regime_setup_hit_vector?: Record<string, number>
+  strategy_regime_eligible_vector?: Record<string, number>
+  strategy_formal_veto_reason_vector?: Record<string, string | null>
+  strategy_counterfactual_affinity_vector?: Record<string, number>
+  strategy_counterfactual_production_effect_vector?: Record<string, number>
   strategy_position_weight_vector?: Record<string, number>
   strategy_challenger_position_weight_vector?: Record<string, number>
   strategy_overlap_vector?: Record<string, number>
@@ -109,6 +114,11 @@ export interface StrategyLabelMatrixRowV4 {
   family_id: string
   production_owner: number
   strategy_hit: number
+  pre_regime_setup_hit: number
+  regime_eligible: number
+  formal_veto_reason: string | null
+  counterfactual_affinity: number
+  counterfactual_production_effect: 0
   weak_label: number
   affinity: number
   affinity_version: string | null
@@ -255,6 +265,11 @@ export function buildSelectionEvidenceV4(input: {
         family_id: clean(spec.familyId) || 'UNKNOWN',
         production_owner: owner ? 1 : 0,
         strategy_hit: finite(candidate.strategy_hit_vector?.[spec.id]) > 0 ? 1 : 0,
+        pre_regime_setup_hit: finite(candidate.strategy_pre_regime_setup_hit_vector?.[spec.id]) > 0 ? 1 : 0,
+        regime_eligible: finite(candidate.strategy_regime_eligible_vector?.[spec.id], 1) > 0 ? 1 : 0,
+        formal_veto_reason: clean(candidate.strategy_formal_veto_reason_vector?.[spec.id]) || null,
+        counterfactual_affinity: finite(candidate.strategy_counterfactual_affinity_vector?.[spec.id]),
+        counterfactual_production_effect: 0,
         weak_label: finite(candidate.strategy_weak_label_vector?.[spec.id]),
         affinity: finite(candidate.strategy_affinity_vector?.[spec.id]),
         affinity_version: clean(candidate.strategy_affinity_version) || null,
@@ -951,7 +966,9 @@ export async function persistSelectionEvidenceV4(
         INSERT INTO strategy_label_matrix_staging_v4 (
           attempt_id, signal_date, symbol, producer_run_id, strategy_id, strategy_version,
           strategy_status, alpha_bucket, family_id, production_owner,
-          strategy_hit, weak_label, affinity, affinity_version, match_strength,
+          strategy_hit, pre_regime_setup_hit, regime_eligible, formal_veto_reason,
+          counterfactual_affinity, counterfactual_production_effect,
+          weak_label, affinity, affinity_version, match_strength,
           threshold_margin, affinity_evidence_count, position_weight,
           challenger_affinity, challenger_affinity_version, challenger_position_weight, overlap,
           evaluable, evaluability_status, unavailable_reason, label_reason, labeler_version,
@@ -963,6 +980,9 @@ export async function persistSelectionEvidenceV4(
           json_extract(value, '$.strategy_version'), json_extract(value, '$.strategy_status'),
           json_extract(value, '$.alpha_bucket'), json_extract(value, '$.family_id'),
           json_extract(value, '$.production_owner'), json_extract(value, '$.strategy_hit'),
+          json_extract(value, '$.pre_regime_setup_hit'), json_extract(value, '$.regime_eligible'),
+          json_extract(value, '$.formal_veto_reason'), json_extract(value, '$.counterfactual_affinity'),
+          json_extract(value, '$.counterfactual_production_effect'),
           json_extract(value, '$.weak_label'), json_extract(value, '$.affinity'),
           json_extract(value, '$.affinity_version'), json_extract(value, '$.match_strength'),
           json_extract(value, '$.threshold_margin'), json_extract(value, '$.affinity_evidence_count'),
@@ -1098,7 +1118,9 @@ export async function persistSelectionEvidenceV4(
         INSERT INTO strategy_label_matrix_v4 (
           signal_date, symbol, producer_run_id, strategy_id, strategy_version,
           strategy_status, alpha_bucket, family_id, production_owner,
-          strategy_hit, weak_label, affinity, affinity_version, match_strength,
+          strategy_hit, pre_regime_setup_hit, regime_eligible, formal_veto_reason,
+          counterfactual_affinity, counterfactual_production_effect,
+          weak_label, affinity, affinity_version, match_strength,
           threshold_margin, affinity_evidence_count, position_weight,
           challenger_affinity, challenger_affinity_version, challenger_position_weight, overlap,
           evaluable, evaluability_status, unavailable_reason, label_reason, labeler_version,
@@ -1107,7 +1129,9 @@ export async function persistSelectionEvidenceV4(
         SELECT
           st.signal_date, st.symbol, st.producer_run_id, st.strategy_id, st.strategy_version,
           st.strategy_status, st.alpha_bucket, st.family_id, st.production_owner,
-          st.strategy_hit, st.weak_label, st.affinity, st.affinity_version, st.match_strength,
+          st.strategy_hit, st.pre_regime_setup_hit, st.regime_eligible, st.formal_veto_reason,
+          st.counterfactual_affinity, st.counterfactual_production_effect,
+          st.weak_label, st.affinity, st.affinity_version, st.match_strength,
           st.threshold_margin, st.affinity_evidence_count, st.position_weight,
           st.challenger_affinity, st.challenger_affinity_version, st.challenger_position_weight, st.overlap,
           st.evaluable, st.evaluability_status, st.unavailable_reason, st.label_reason, st.labeler_version,

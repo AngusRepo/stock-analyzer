@@ -113,11 +113,11 @@ export async function runWeeklyICAudit(env: Bindings) {
 
 export async function runWeeklyDriftCheck(env: Bindings) {
   const mlUrl = env.ML_SERVICE_URL
-  if (!mlUrl) return
+  if (!mlUrl) return null
 
   const topStock = await selectTopStockByMarketHistory(env)
 
-  if (!topStock) return
+  if (!topStock) return null
 
   const [prices, indicators, chips] = await Promise.all([
     databaseForDataDomain(env, 'market').prepare('SELECT * FROM stock_prices WHERE stock_id=? ORDER BY date DESC LIMIT 252').bind(topStock.id).all<any>(),
@@ -149,6 +149,7 @@ export async function runWeeklyDriftCheck(env: Bindings) {
   const date = new Date(Date.now() + 8 * 3600_000).toISOString().slice(0, 10)
   await env.KV.put(`ml:drift:${date}`, JSON.stringify(data), { expirationTtl: 30 * 86400 })
   console.log(`[Drift Check] ${data.drifted_count}/${data.total_features} features drifted, needs_retrain=${data.needs_retrain}`)
+  return data as Record<string, unknown>
 }
 
 export type MaintenanceTaskResult = {

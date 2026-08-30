@@ -10,6 +10,8 @@ export interface MarketDataReadinessStats {
   priceOtcRowsOnLatest?: number
   chipLatestDate: string | null
   chipRowsOnLatest: number
+  marginLatestDate?: string | null
+  marginRowsOnLatest?: number
   indicatorLatestDate?: string | null
   indicatorRowsOnLatest?: number
 }
@@ -19,8 +21,10 @@ export interface MarketDataReadinessOptions {
   minPriceTwseRows?: number
   minPriceOtcRows?: number
   minChipRows?: number
+  minMarginRows?: number
   minIndicatorRows?: number
   requireIndicators?: boolean
+  requireMargin?: boolean
 }
 
 export interface MarketDataReadinessResult {
@@ -34,6 +38,7 @@ const DEFAULT_MIN_PRICE_ROWS = 1000
 const DEFAULT_MIN_PRICE_TWSE_ROWS = 900
 const DEFAULT_MIN_PRICE_OTC_ROWS = 700
 const DEFAULT_MIN_CHIP_ROWS = 1000
+const DEFAULT_MIN_MARGIN_ROWS = 1500
 const DEFAULT_MIN_INDICATOR_ROWS = 1000
 
 function normalizeRows(value: unknown): number {
@@ -49,8 +54,10 @@ export function evaluateMarketDataReadiness(
   const minPriceTwseRows = options.minPriceTwseRows ?? DEFAULT_MIN_PRICE_TWSE_ROWS
   const minPriceOtcRows = options.minPriceOtcRows ?? DEFAULT_MIN_PRICE_OTC_ROWS
   const minChipRows = options.minChipRows ?? DEFAULT_MIN_CHIP_ROWS
+  const minMarginRows = options.minMarginRows ?? DEFAULT_MIN_MARGIN_ROWS
   const minIndicatorRows = options.minIndicatorRows ?? DEFAULT_MIN_INDICATOR_ROWS
   const requireIndicators = options.requireIndicators ?? true
+  const requireMargin = options.requireMargin ?? false
   const errors: string[] = []
 
   if (stats.priceLatestDate !== stats.targetDate) {
@@ -71,6 +78,12 @@ export function evaluateMarketDataReadiness(
   if (normalizeRows(stats.chipRowsOnLatest) < minChipRows) {
     errors.push(`chip rows=${stats.chipRowsOnLatest}/${minChipRows}`)
   }
+  if (requireMargin && stats.marginLatestDate !== stats.targetDate) {
+    errors.push(`margin latest=${stats.marginLatestDate ?? 'none'} expected=${stats.targetDate}`)
+  }
+  if (requireMargin && normalizeRows(stats.marginRowsOnLatest) < minMarginRows) {
+    errors.push(`margin rows=${stats.marginRowsOnLatest ?? 0}/${minMarginRows}`)
+  }
   if (requireIndicators && stats.indicatorLatestDate !== undefined && stats.indicatorLatestDate !== stats.targetDate) {
     errors.push(`indicator latest=${stats.indicatorLatestDate ?? 'none'} expected=${stats.targetDate}`)
   }
@@ -86,6 +99,7 @@ export function evaluateMarketDataReadiness(
         (stats.priceTwseRowsOnLatest !== undefined ? ` TWSE=${stats.priceTwseRowsOnLatest}` : '') +
         (stats.priceOtcRowsOnLatest !== undefined ? ` OTC=${stats.priceOtcRowsOnLatest}` : '') +
         `, chip=${stats.chipRowsOnLatest}` +
+        (stats.marginRowsOnLatest !== undefined ? `, margin=${stats.marginRowsOnLatest}` : '') +
         (stats.indicatorRowsOnLatest !== undefined ? `, indicators=${stats.indicatorRowsOnLatest}` : ''),
     errors,
     stats,
@@ -141,9 +155,10 @@ export async function loadMarketDataReadinessStats(
   targetDate: string,
 ): Promise<MarketDataReadinessStats> {
   const marketDb = databaseForDataDomain(env, 'market')
-  const [price, chip, indicators] = await Promise.all([
+  const [price, chip, margin, indicators] = await Promise.all([
     targetAwareTableStats(marketDb, 'stock_prices', targetDate),
     targetAwareTableStats(marketDb, 'chip_data', targetDate),
+    targetAwareTableStats(marketDb, 'margin_data', targetDate),
     targetAwareTableStats(marketDb, 'technical_indicators', targetDate),
   ])
   const priceSegments = await latestPriceSegmentStats(env, price.latestDate)
@@ -155,6 +170,8 @@ export async function loadMarketDataReadinessStats(
     priceOtcRowsOnLatest: priceSegments.otcRows,
     chipLatestDate: chip.latestDate,
     chipRowsOnLatest: chip.rowsOnLatest,
+    marginLatestDate: margin.latestDate,
+    marginRowsOnLatest: margin.rowsOnLatest,
     indicatorLatestDate: indicators.latestDate,
     indicatorRowsOnLatest: indicators.rowsOnLatest,
   }

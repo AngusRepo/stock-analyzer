@@ -82,6 +82,40 @@ function strategyReplacementGateEvidence(): StrategyLearningSummary['replacement
   }
 }
 
+function acceptedStrategyReplacementGate(
+  candidateStrategyId: string,
+  candidateStrategyVersion: string,
+): StrategyLearningSummary['replacement_gate'] {
+  return {
+    ...strategyReplacementGateEvidence(),
+    evidence_status: 'ready',
+    status_reason: 'test fixture has accepted Atomic V7 paired replacement evidence',
+    decisions: [{
+      run_id: 'atomic-v7-test',
+      as_of_date: '2026-05-19',
+      candidate_strategy_id: candidateStrategyId,
+      candidate_strategy_version: candidateStrategyVersion,
+      replaced_strategy_id: 'incumbent-test',
+      replaced_strategy_version: 'v1',
+      candidate_family_id: 'technical_trend',
+      incumbent_family_id: 'technical_trend',
+      replacement_scope: 'same_family',
+      status: 'accepted',
+      paired_dates: 40,
+      paired_delta_mean: 0.004,
+      paired_delta_lcb90: 0.001,
+      candidate_absolute_cost_net_mean: 0.006,
+      candidate_max_drawdown: -0.04,
+      incumbent_max_drawdown: -0.05,
+      candidate_turnover: 0.3,
+      incumbent_turnover: 0.3,
+      return_correlation: 0.7,
+      rejection_reasons: [],
+      promotion_allowed: true,
+    }],
+  }
+}
+
 
 {
   assert(!shouldRetireStaleStrategyRewardRows({
@@ -530,7 +564,7 @@ runStrategyCandidateDailyFeatureHydrationTest().catch((error) => {
   const restored = registryRowToStrategySpec(row)
   assert(restored.id === spec.id, 'registry conversion should preserve strategy id')
   assert(restored.name === spec.name, 'registry conversion should preserve strategy display name')
-  assert(restored.status === spec.status, 'registry conversion should preserve status')
+  assert(restored.status === 'candidate', 'registry conversion should canonicalize legacy shadow status to Candidate')
   assert(restored.candidatePolicy?.poolQuota === spec.candidatePolicy?.poolQuota, 'registry conversion should restore candidate-pool policy for default specs')
 }
 
@@ -556,7 +590,7 @@ runStrategyCandidateDailyFeatureHydrationTest().catch((error) => {
     sourceRefs: ['codex_seed_2026_05_22'],
   })
   const restored = registryRowToStrategySpec(staleLegacyRow)
-  assert(restored.status === 'shadow', 'registry conversion must preserve D1 status instead of silently restoring code default')
+  assert(restored.status === 'candidate', 'registry conversion must canonicalize legacy D1 shadow status to Candidate')
   assert(restored.thresholds.minSeedScore === 58, 'registry conversion must expose stale Score V2 thresholds so runtime seed guard can fail closed')
   assert(restored.candidatePolicy?.poolQuota === DEFAULT_STRATEGY_SPECS[0].candidatePolicy?.poolQuota, 'registry conversion should preserve candidate policy stored in D1 row')
 }
@@ -798,9 +832,11 @@ runStrategyCandidateDailyFeatureHydrationTest().catch((error) => {
   assert(gate[0].evidence.lifetime_decisions === 16042, 'gate evidence must expose cumulative observability')
   assert(gate[0].evidence.decisions === 0, 'promotion must use rolling decisions rather than lifetime totals')
   assert(gate[0].missing_evidence.includes('mature_dates_lt_10'), 'promotion must require independent mature dates')
-  assert(gate[0].missing_evidence.includes('date_return_lcb90_not_positive'), 'promotion must require positive cross-date confidence')
+  assert(!gate[0].missing_evidence.includes('date_return_lcb90_not_positive'), 'single-strategy LCB90 must remain diagnostic rather than a universal promotion gate')
+  assert(gate[0].diagnostic_only_metrics.includes('date_return_lcb90'), 'gate contract must expose LCB90 as diagnostic-only')
   const policy = buildStrategyAdaptivePolicyState({ ...summary, promotion_gate: gate })
-  assert(policy.strategy_weights[spec.id] === 0, 'shadow evidence must stay observable but receive zero production weight')
+  assert(gate[0].strategy_status === 'candidate', 'legacy shadow rows must normalize to Candidate at the learning boundary')
+  assert(policy.strategy_weights[spec.id] === 0, 'Candidate evidence must stay observable but receive zero production weight')
 }
 
 {
@@ -819,19 +855,19 @@ runStrategyCandidateDailyFeatureHydrationTest().catch((error) => {
     policy_state_preview: {} as any,
   } satisfies StrategyLearningSummary
   const gate = evaluateStrategyPromotionGate(summary)
-  assert(gate[0].decision === 'candidate_ready', 'strong strategy evidence should be candidate-ready')
+  assert(gate[0].decision === 'not_ready', 'mature Candidate evidence must still wait for Atomic V7 acceptance')
   assert(gate[0].requires_wei_approval === false, 'strategy promotion is automatic but remains Edge V5 gated')
-  assert(gate[0].current_stage === 'L1_shadow', 'shadow strategy should be L1')
-  assert(gate[0].recommended_stage === 'L2_paper_active', 'ready shadow strategy should advance to L2 paper-active')
-  assert(gate[0].l3_requires_wei_approval === false, 'L2 paper-active does not equal production allocation')
+  assert(gate[0].current_stage === 'candidate_evidence', 'legacy shadow status must surface as Candidate evidence')
+  assert(gate[0].recommended_stage === 'candidate_evidence', 'Candidate must stay Candidate until Atomic V7 accepts a replacement')
+  assert(gate[0].l3_requires_wei_approval === false, 'Candidate evidence does not equal production allocation')
   assert(gate[0].production_effect === false, 'strategy gate must not mutate production')
 
   const policy = buildStrategyAdaptivePolicyState({ ...summary, promotion_gate: gate })
   assert(policy.status === 'active', 'Adaptive policy is the sole active threshold and weight owner')
   assert(policy.evidence.production_effect === true, 'PIT policy must explicitly declare its production effect')
   assert(policy.evidence.requires_approval_to_activate === false, 'daily policy refresh must not depend on a manual activation toggle')
-  assert(policy.strategy_weights[spec.id] === 0, 'candidate-ready shadow strategy must remain full-universe observable without production weight')
-  assert(policy.lifecycle_recommendations[spec.id].recommended_status === 'active', 'candidate-ready shadow strategy must surface an active lifecycle recommendation')
+  assert(policy.strategy_weights[spec.id] === 0, 'Candidate strategy must remain full-universe observable without production weight')
+  assert(policy.lifecycle_recommendations[spec.id].recommended_status === 'candidate', 'Candidate must remain Candidate without Atomic V7 acceptance')
   assert(policy.evidence.threshold_owner === 'versioned_strategy_spec', 'versioned specs must remain the only production threshold owner')
 }
 
@@ -870,9 +906,9 @@ runStrategyCandidateDailyFeatureHydrationTest().catch((error) => {
   } satisfies StrategyLearningSummary
   const gate = evaluateStrategyPromotionGate(summary)
   assert(gate[0].decision === 'not_ready', 'weak evidence should not be ready for strategy promotion')
-  assert(gate[0].recommended_stage === 'L1_shadow', 'weak shadow evidence should stay at L1')
+  assert(gate[0].recommended_stage === 'candidate_evidence', 'weak Candidate evidence should stay Candidate')
   assert(gate[0].missing_evidence.includes('samples_lt_30'), 'gate should expose sample shortage')
-  assert(gate[0].missing_evidence.includes('avg_return_not_positive'), 'gate should expose weak reward evidence')
+  assert(!gate[0].missing_evidence.includes('avg_return_not_positive'), 'absolute average return must remain diagnostic rather than a universal hard gate')
 }
 
 {
@@ -887,11 +923,12 @@ runStrategyCandidateDailyFeatureHydrationTest().catch((error) => {
 
     }],
     promotion_gate: [],
-    replacement_gate: strategyReplacementGateEvidence(),
+    replacement_gate: acceptedStrategyReplacementGate(spec.id, spec.version),
     policy_state_preview: {} as any,
   } satisfies StrategyLearningSummary
   const gate = evaluateStrategyPromotionGate(summary)
-  assert(gate[0].recommended_stage === 'L3_production_allocation', 'ready candidate strategy should request L3')
+  assert(gate[0].recommended_stage === 'active', 'Atomic V7 accepted Candidate should request Active lifecycle status')
+  assert(gate[0].activation_gate.status === 'accepted', 'candidate activation must expose accepted Atomic V7 evidence')
   assert(gate[0].l3_requires_wei_approval === false, 'L3 production allocation must be automatically governed by Edge V5')
   assert(gate[0].production_effect === false, 'L3 gate is still metadata until approved')
 }
@@ -929,17 +966,17 @@ runStrategyCandidateDailyFeatureHydrationTest().catch((error) => {
     policy_state_preview: {} as any,
   } satisfies StrategyLearningSummary
   const gate = evaluateStrategyPromotionGate(summary)
-  assert(gate[0].decision === 'active_cooldown', 'weak active strategy evidence should trigger cooldown')
-  assert(gate[0].allocation_eligible === false, 'cooldown strategy must be ineligible for production allocation')
-  assert(gate[0].recommended_next_status === 'candidate', 'active cooldown should recommend demotion to candidate')
-  assert(gate[0].recommended_stage === 'L2_paper_active', 'cooldown should move weak active strategies back to paper-active review')
-  assert(gate[0].missing_evidence.includes('active_avg_return_not_positive'), 'cooldown should expose weak return evidence')
+  assert(gate[0].decision === 'active_monitor', 'single-strategy performance diagnostics must not auto-demote an active incumbent')
+  assert(gate[0].allocation_eligible === true, 'mature incumbent remains lifecycle-eligible while its negative edge receives zero weight')
+  assert(gate[0].recommended_next_status === 'active', 'active lifecycle demotion requires a governed replacement decision')
+  assert(gate[0].recommended_stage === 'active', 'mature incumbent remains in Active lifecycle monitoring')
+  assert(gate[0].diagnostic_only_metrics.includes('max_drawdown'), 'active MDD must remain diagnostic outside Atomic V7 relative replacement')
 
   const policy = buildStrategyAdaptivePolicyState({ ...summary, promotion_gate: gate })
   assert(policy.strategy_weights[spec.id] === 0, 'negative-edge cooldown strategies must have zero production contribution')
   assert(policy.threshold_deltas[spec.id] == null, 'performance evidence must not rewrite immutable strategy label thresholds')
   assert(policy.lifecycle_recommendations[spec.id].automatic_effect === 'weight_only', 'adaptive policy may only change contribution weight')
-  assert(policy.lifecycle_recommendations[spec.id].recommended_status === 'candidate', 'cooldown lifecycle recommendation should return the strategy to paper-active candidate review')
+  assert(policy.lifecycle_recommendations[spec.id].recommended_status === 'active', 'negative diagnostics alone must not demote the incumbent lifecycle status')
   const applied = applyStrategyAdaptivePolicyThresholds([spec], policy)
   assert(applied[0].thresholds.minVolumeExpansion20 === spec.thresholds.minVolumeExpansion20, 'immutable strategy thresholds must remain unchanged')
 }
@@ -978,8 +1015,8 @@ runStrategyCandidateDailyFeatureHydrationTest().catch((error) => {
   } satisfies StrategyLearningSummary
   const gate = evaluateStrategyPromotionGate(summary)
   assert(gate[0].decision === 'active_monitor', 'retained incumbent must remain active-monitor')
-  assert(gate[0].allocation_eligible === true, '48% incumbent hysteresis must retain positive allocation eligibility')
-  assert(gate[0].missing_evidence.length === 0, 'candidate-only 52% hit-rate deficit must not block incumbent retention')
+  assert(gate[0].allocation_eligible === true, 'mature incumbent evidence must retain lifecycle eligibility without a universal hit-rate threshold')
+  assert(gate[0].missing_evidence.length === 0, 'hit-rate diagnostics must not block incumbent retention')
   const policy = buildStrategyAdaptivePolicyState({ ...summary, promotion_gate: gate })
   assert(policy.strategy_weights[spec.id] === 1, 'retained incumbent must receive the available production allocation')
 }
@@ -1050,7 +1087,7 @@ runStrategyCandidateDailyFeatureHydrationTest().catch((error) => {
   const gate = evaluateStrategyPromotionGate(summary)
   assert(gate[0].decision === 'active_monitor', 'immature active evidence should remain observable without forced lifecycle demotion')
   assert(gate[0].allocation_eligible === false, 'immature active evidence must be ineligible for production allocation')
-  assert(gate[0].recommended_stage === 'L2_paper_active', 'immature active evidence must collect locked-forward evidence in paper-active')
+  assert(gate[0].recommended_stage === 'active', 'immature Active evidence remains Active while allocation fails closed')
   assert(gate[0].missing_evidence.includes('samples_lt_30'), 'immature active gate must disclose the sample deficit')
   assert(gate[0].missing_evidence.includes('mature_dates_lt_10'), 'immature active gate must disclose the date deficit')
   const policy = buildStrategyAdaptivePolicyState({ ...summary, promotion_gate: gate })

@@ -1302,7 +1302,20 @@ export async function runWeeklyModelRegistryCheck(env: Bindings) {
   const rows = Array.isArray(result.queue) ? result.queue : []
   const autoReady = rows.filter((row: any) => row.promotion_decision === 'auto_promote_candidate').length
   const blocked = rows.filter((row: any) => String(row.promotion_decision ?? '').includes('blocked')).length
-  return `model_registry readback=ok queue=${rows.length} auto=${autoReady} blocked=${blocked}`
+  const lifecycle = await controllerJson<Record<string, any>>(
+    env,
+    '/config_pool/weekly_eval',
+    {
+      method: 'POST',
+      jsonBody: { apply: false, confirm: false },
+      timeoutMs: 300_000,
+    },
+  )
+  const lifecycleStatus = String(lifecycle.status ?? 'missing')
+  if (!['dry_run', 'no_challenger'].includes(lifecycleStatus)) {
+    throw new Error(`weekly_lifecycle_dry_run_invalid_status:${lifecycleStatus}`)
+  }
+  return `model_registry readback=ok queue=${rows.length} auto=${autoReady} blocked=${blocked} lifecycle dry-run=${lifecycleStatus}`
 }
 
 export async function runWeeklyBacktest(env: Bindings, runDate = twToday()) {
@@ -1466,6 +1479,124 @@ export async function runWeeklyAlphaQuality(env: Bindings) {
     .join(',')
 
   return `samples=${samples}, alerts=${alerts}${weakBuckets ? `, weak=[${weakBuckets}]` : ''}`
+}
+
+const ACTIVE_WEEKLY_DRIFT_MODEL_NAMES = new Set([
+  'LightGBM', 'XGBoost', 'ExtraTrees', 'TabM',
+  'GNN', 'DLinear', 'PatchTST', 'iTransformer',
+])
+
+const MODEL_GROUP_BY_NAME: Readonly<Record<string, 'tree' | 'dlinear' | 'patchtst'>> = {
+  LightGBM: 'tree',
+  XGBoost: 'tree',
+  ExtraTrees: 'tree',
+  DLinear: 'dlinear',
+  PatchTST: 'patchtst',
+}
+
+const FORMAL_ARTIFACT_LIFECYCLE_BY_NAME: Readonly<Record<string, string>> = {
+  GNN: 'graph_artifact_retrain_registration',
+  TabM: 'tabular_artifact_retrain_registration',
+  iTransformer: 'sequence_artifact_retrain_registration',
+}
+
+const DRIFT_FAMILY_BY_NAME: Readonly<Record<string, string>> = {
+  LightGBM: 'tree',
+  XGBoost: 'tree',
+  ExtraTrees: 'tree',
+  TabM: 'tabular_neural',
+  GNN: 'graph',
+  DLinear: 'sequence',
+  PatchTST: 'learned_sequence',
+  iTransformer: 'learned_sequence',
+}
+
+function modelNamesFromDriftEvidence(evidence: Record<string, any>): string[] {
+  const explicit = Array.isArray(evidence.drift_target_models)
+    ? evidence.drift_target_models
+    : []
+  const perModel = evidence.per_model && typeof evidence.per_model === 'object'
+    ? Object.entries(evidence.per_model)
+      .filter(([, value]: [string, any]) => value?.needs_retrain === true || value?.drifted === true)
+      .map(([name]) => name)
+    : []
+  return [...new Set([...explicit, ...perModel].map(String))]
+    .filter((name) => ACTIVE_WEEKLY_DRIFT_MODEL_NAMES.has(name))
+}
+
+export async function runWeeklyDriftDetection(env: Bindings, runDate = twToday()) {
+  requireController(env)
+  if (runDate !== twToday()) {
+    return {
+      status: 'unavailable' as const,
+      as_of_date: runDate,
+      needs_retrain: false,
+      drift_target_models: [] as string[],
+      drift_target_families: [] as string[],
+      reason: 'historical_feature_drift_reconstruction_forbidden',
+      evidence: null,
+    }
+  }
+  const { runWeeklyDriftCheck } = await import('./localMaintenance')
+  const evidence = await runWeeklyDriftCheck(env)
+  if (!evidence) {
+    return {
+      status: 'unavailable' as const,
+      as_of_date: runDate,
+      needs_retrain: false,
+      drift_target_models: [] as string[],
+      drift_target_families: [] as string[],
+      reason: 'feature_drift_evidence_missing',
+      evidence: null,
+    }
+  }
+  const driftTargetModels = modelNamesFromDriftEvidence(evidence)
+  const driftTargetFamilies = [...new Set(driftTargetModels.map((name) => DRIFT_FAMILY_BY_NAME[name]).filter(Boolean))]
+  return {
+    status: 'ready' as const,
+    as_of_date: runDate,
+    needs_retrain: evidence.needs_retrain === true,
+    drift_target_models: driftTargetModels,
+    drift_target_families: driftTargetFamilies,
+    reason: evidence.needs_retrain === true && driftTargetModels.length === 0
+      ? 'model_level_drift_targets_missing'
+      : null,
+    evidence,
+  }
+}
+
+export async function runWeeklyDriftRetrain(
+  env: Bindings,
+  options: { runDate?: string; driftTargetModels: string[] },
+) {
+  requireController(env)
+  const driftTargetModels = [...new Set(options.driftTargetModels)]
+    .filter((name) => ACTIVE_WEEKLY_DRIFT_MODEL_NAMES.has(name))
+  const trainModelGroups = [...new Set(driftTargetModels.map((name) => MODEL_GROUP_BY_NAME[name]).filter(Boolean))]
+  const artifactLifecycleTargets = driftTargetModels.filter((name) => Boolean(FORMAL_ARTIFACT_LIFECYCLE_BY_NAME[name]))
+  if (trainModelGroups.length === 0 && artifactLifecycleTargets.length === 0) {
+    return 'weekly_drift skipped: no supported retrain groups'
+  }
+  const driftTargetFamilies = [...new Set(driftTargetModels.map((name) => DRIFT_FAMILY_BY_NAME[name]).filter(Boolean))]
+  const artifactLifecycleContracts = Object.fromEntries(
+    artifactLifecycleTargets.map((name) => [name, FORMAL_ARTIFACT_LIFECYCLE_BY_NAME[name]]),
+  )
+  const result = await controllerPostJson<any>(env, '/retrain/universal', {
+    limit: 2500,
+    run_date: options.runDate ?? twToday(),
+    candidate_type: 'weekly_drift',
+    force_monthly: false,
+    drift_target_models: driftTargetModels,
+    drift_target_families: driftTargetFamilies,
+    train_model_groups: trainModelGroups,
+    artifact_lifecycle_targets: artifactLifecycleTargets,
+    artifact_lifecycle_contracts: artifactLifecycleContracts,
+    artifact_lifecycle_only: trainModelGroups.length === 0,
+    // Candidate registration is owned by the formal artifact-registry follow-up.
+    register_challengers: false,
+    promotion_eligible_models: [],
+  })
+  return `weekly_drift candidate dispatched status=${result?.status ?? 'unknown'} run_id=${result?.run_id ?? '-'} models=${driftTargetModels.join(',')}`
 }
 
 export async function runWeeklyRetrain(env: Bindings) {

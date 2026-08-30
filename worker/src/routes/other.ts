@@ -3413,13 +3413,15 @@ async function buildDailyPipelineSummaries(
     passed: number | null
     eliminated?: number | null
     previous?: number | null
+    mode?: 'gate' | 'evidence_only'
+    evaluated?: number | null
   }
   const layerDefs: PipelineLayerDef[] = [
     { layer: 'L0', label: 'Universe gate', stage: String(layer0Stage?.stage ?? 'universe'), passed: l0Pass, eliminated: l0Drop },
     { layer: 'L1', label: 'Active strategy breadth', stage: String(layer1Stage?.stage ?? 'l1_candidate_seed_after_overlay'), passed: l1Pass, eliminated: finiteNumber(layer1Stage?.drop_count), previous: l0Pass },
     { layer: 'L2', label: 'ML slate queue', stage: String(layer2Stage?.stage ?? 'l15_ml_slate_queue'), passed: l2Pass, eliminated: finiteNumber(layer2Stage?.drop_count), previous: l1Pass },
-    { layer: 'L3', label: 'Formal ML gate', stage: String(layer3Stage?.stage ?? 'layer3_formal_ml_gate'), passed: l3Pass, eliminated: finiteNumber(layer3Stage?.drop_count), previous: l2Pass },
-    { layer: 'L4', label: 'BUY signal allocation', stage: 'daily_recommendations.signal BUY', passed: l4Pass, previous: l3Pass ?? l2Pass ?? l1Pass },
+    { layer: 'L3', label: 'Formal ML evidence', stage: String(layer3Stage?.stage ?? 'layer3_formal_ml_gate'), passed: l3Pass, eliminated: 0, previous: l2Pass, mode: 'evidence_only', evaluated: finiteNumber(layer3Stage?.total_count) },
+    { layer: 'L4', label: 'BUY signal allocation', stage: 'daily_recommendations.signal BUY', passed: l4Pass, previous: l2Pass ?? l1Pass },
   ]
   const layers = layerDefs.map((row) => {
     const eliminated = row.eliminated != null
@@ -3433,6 +3435,8 @@ async function buildDailyPipelineSummaries(
       stage: row.stage,
       passed: row.passed,
       eliminated,
+      mode: row.mode ?? 'gate',
+      evaluated: row.evaluated ?? null,
     }
   })
 

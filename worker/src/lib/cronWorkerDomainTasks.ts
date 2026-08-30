@@ -156,10 +156,10 @@ export async function handleWorkerDomainCron(deps: WorkerCronDeps): Promise<bool
     runWithLog('weekly-cleanup', async () => {
       const cleanup = await runWeeklyCleanup(env)
       if (!cleanup.ok) throw new Error(`weekly_cleanup_failed:${JSON.stringify(cleanup.tasks.filter((task) => !task.ok))}`)
-      await runWeeklyModelRegistryCheck(env)
+      const registry = await runWeeklyModelRegistryCheck(env)
       const maintenance = await runWeeklyLocalMaintenance(env)
       if (!maintenance.ok) throw new Error(`weekly_maintenance_failed:${JSON.stringify(maintenance.tasks.filter((task) => !task.ok))}`)
-      return 'weekly cleanup done: local maintenance + D1 model-registry readback; release training is OOF scheduled/manual only'
+      return `weekly cleanup done: local maintenance + D1 model-registry readback; lifecycle dry-run enforced; ${registry}; release training is OOF scheduled/manual only`
     })
     return true
   }

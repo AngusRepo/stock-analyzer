@@ -1462,6 +1462,11 @@ CREATE TABLE IF NOT EXISTS strategy_label_matrix_v4 (
   family_id TEXT NOT NULL,
   production_owner INTEGER NOT NULL CHECK(production_owner IN (0, 1)),
   strategy_hit INTEGER NOT NULL CHECK(strategy_hit IN (0, 1)),
+  pre_regime_setup_hit INTEGER NOT NULL DEFAULT 0 CHECK(pre_regime_setup_hit IN (0, 1)),
+  regime_eligible INTEGER NOT NULL DEFAULT 1 CHECK(regime_eligible IN (0, 1)),
+  formal_veto_reason TEXT,
+  counterfactual_affinity REAL NOT NULL DEFAULT 0,
+  counterfactual_production_effect INTEGER NOT NULL DEFAULT 0 CHECK(counterfactual_production_effect = 0),
   evaluable INTEGER NOT NULL DEFAULT 0 CHECK(evaluable IN (0, 1)),
   evaluability_status TEXT NOT NULL DEFAULT 'UNKNOWN_LEGACY'
     CHECK(evaluability_status IN (
@@ -1491,6 +1496,8 @@ CREATE INDEX IF NOT EXISTS idx_strategy_label_matrix_v4_date
   ON strategy_label_matrix_v4(signal_date, strategy_id, strategy_hit);
 CREATE INDEX IF NOT EXISTS idx_strategy_label_matrix_v4_evaluable
   ON strategy_label_matrix_v4(signal_date, strategy_id, evaluable, strategy_hit);
+CREATE INDEX IF NOT EXISTS idx_strategy_label_matrix_v4_regime_veto
+  ON strategy_label_matrix_v4(signal_date, strategy_id, pre_regime_setup_hit, regime_eligible);
 CREATE INDEX IF NOT EXISTS idx_strategy_label_matrix_v4_symbol
   ON strategy_label_matrix_v4(symbol, signal_date DESC);
 CREATE INDEX IF NOT EXISTS idx_strategy_label_matrix_challenger_v1

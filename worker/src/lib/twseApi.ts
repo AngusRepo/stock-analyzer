@@ -939,7 +939,7 @@ export async function bulkFetchAndStoreChipData(
   date: string,
   controllerUrl?: string,
   controllerSecret?: string,
-): Promise<{ chipCount: number; marginCount: number }> {
+): Promise<{ chipCount: number; marginCount: number; canonicalMarginCount: number }> {
   console.log(`[BulkChip] Fetching TWSE/TPEX chips + margins for ${date}...`)
 
   // TWSE + TPEX 都擋 CF Workers IP → 全部透過 Controller proxy
@@ -986,7 +986,9 @@ export async function bulkFetchAndStoreChipData(
 
   console.log(`[BulkChip] Fetched: ${allChips.length} chips, ${allMargin.length} margins`)
 
-  if (!allChips.length) return { chipCount: 0, marginCount: 0 }
+  if (!allChips.length && !allMargin.length) {
+    return { chipCount: 0, marginCount: 0, canonicalMarginCount: 0 }
+  }
 
   // Build margin lookup
   const marginMap = new Map(allMargin.map(m => [m.symbol, m]))
@@ -1026,6 +1028,44 @@ export async function bulkFetchAndStoreChipData(
     }
   }
 
+  const canonicalMarginSource = 'twse.tpex.official_margin_fallback'
+  const canonicalMarginLineage = JSON.stringify({
+    schema_version: 'official-margin-fallback-v1',
+    provider: 'twse_tpex',
+    target_date: date,
+    trigger: 'bulk_fetch_after_finlab_margin_gap',
+  })
+  let canonicalMarginCount = 0
+  for (let i = 0; i < allMargin.length; i += WRITE_BATCH) {
+    const statements = allMargin.slice(i, i + WRITE_BATCH).map((m) => db.prepare(`
+      INSERT INTO canonical_chip_daily (
+        stock_id, date, market_segment,
+        foreign_net, trust_net, dealer_net,
+        margin_buy, margin_sell, margin_balance,
+        short_buy, short_sell, short_balance,
+        source, lineage_json, as_of_date
+      ) VALUES (?, ?, NULL, NULL, NULL, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(stock_id, date, source) DO UPDATE SET
+        margin_buy=excluded.margin_buy,
+        margin_sell=excluded.margin_sell,
+        margin_balance=excluded.margin_balance,
+        short_buy=excluded.short_buy,
+        short_sell=excluded.short_sell,
+        short_balance=excluded.short_balance,
+        lineage_json=excluded.lineage_json,
+        as_of_date=excluded.as_of_date
+    `).bind(
+      m.symbol, date,
+      m.margin_buy, m.margin_sell, m.margin_balance,
+      m.short_buy, m.short_sell, m.short_balance,
+      canonicalMarginSource, canonicalMarginLineage, date,
+    ))
+    if (statements.length) {
+      await db.batch(statements)
+      canonicalMarginCount += statements.length
+    }
+  }
+
   // 寫入 margin_data（仍用 stock_id FK，需要 idMap）
   const idMap = new Map<string, number>()
   const { results: allStocksRows } = await db.prepare('SELECT id, symbol FROM stocks').all<{ id: number; symbol: string }>()
@@ -1061,8 +1101,8 @@ export async function bulkFetchAndStoreChipData(
     }
   }
 
-  console.log(`[BulkChip] Written: ${chipCount} chip_data + ${marginCount} margin_data rows`)
-  return { chipCount, marginCount }
+  console.log(`[BulkChip] Written: ${chipCount} chip_data + ${marginCount} margin_data + ${canonicalMarginCount} canonical margin rows`)
+  return { chipCount, marginCount, canonicalMarginCount }
 }
 
 // ─── TWSE STOCK_DAY_ALL: 全市場每日股價（替代 FinMind per-stock fetchTWPrice）──

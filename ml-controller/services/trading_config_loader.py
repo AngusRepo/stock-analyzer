@@ -191,9 +191,26 @@ def load_merged_trading_config_with_contract(
         try:
             worker_cfg = load_active_trading_config(timeout=timeout, allow_offline=allow_offline_defaults)
         except Exception as exc:
+            worker_error = f"{type(exc).__name__}: {exc}"
+            if raw_present and not raw_missing and not raw_error:
+                logger.warning(
+                    "[trading_config_loader] Worker config unavailable; using complete raw KV config: %s",
+                    worker_error,
+                )
+                return TradingConfigLoadResult(
+                    config=_normalize_required_aliases(raw or {}),
+                    contract=TradingConfigContract(
+                        source="direct_kv_worker_fallback",
+                        raw_present=True,
+                        degraded=True,
+                        missing_sections=[],
+                        defaulted_sections=[],
+                        error=worker_error,
+                    ),
+                )
             if not allow_offline_defaults:
                 raise TradingConfigUnavailable(
-                    f"Worker trading:config source unavailable: {type(exc).__name__}: {exc}"
+                    f"Worker trading:config source unavailable: {worker_error}"
                 ) from exc
             worker_cfg = {}
             raw_error = raw_error or str(exc)
@@ -216,6 +233,18 @@ def load_merged_trading_config_with_contract(
                 ),
             )
         if not allow_offline_defaults:
+            if raw_present and not raw_missing and not raw_error:
+                return TradingConfigLoadResult(
+                    config=_normalize_required_aliases(raw or {}),
+                    contract=TradingConfigContract(
+                        source="direct_kv_worker_fallback",
+                        raw_present=True,
+                        degraded=True,
+                        missing_sections=[],
+                        defaulted_sections=[],
+                        error="Worker trading:config returned empty config",
+                    ),
+                )
             raise TradingConfigUnavailable("Worker trading:config returned empty config")
 
     if raw_present and not raw_missing and not raw_error:

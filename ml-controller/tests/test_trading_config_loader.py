@@ -103,7 +103,7 @@ def test_worker_config_failure_is_not_silently_replaced_by_defaults(monkeypatch)
         loader.load_merged_trading_config_with_contract()
 
 
-def test_full_raw_kv_config_can_be_used_only_when_worker_is_not_preferred(monkeypatch):
+def test_full_raw_kv_config_can_be_used_when_worker_is_not_preferred(monkeypatch):
     full = {
         "ranking": {"topK": 3, "enabled": True},
         "ensemble_v2": {"buyThreshold": 0.70},
@@ -119,4 +119,31 @@ def test_full_raw_kv_config_can_be_used_only_when_worker_is_not_preferred(monkey
 
     assert result.contract.source == "direct_kv_config"
     assert result.contract.degraded is False
+    assert result.config["ranking"]["topK"] == 3
+
+
+def test_complete_raw_kv_config_is_safe_worker_timeout_fallback(monkeypatch):
+    full = {
+        "ranking": {"topK": 3, "enabled": True},
+        "ensemble_v2": {"buyThreshold": 0.70},
+        "mlPool": {"useEnsembleV2": True, "degradedDampening": 0.1},
+        "alphaFramework": {"quality": {"minSamples": 30}},
+        "signal": {"buySignalScore": 0.52},
+        "sltp": {"slMultBase": 2.0},
+        "L2_formula": {"confidence_risk_mult": 0.15},
+    }
+    monkeypatch.setattr(loader, "get_raw_trading_config", lambda: full)
+
+    def fail_worker(timeout=10.0, allow_offline=False):
+        raise TimeoutError("worker read timed out")
+
+    monkeypatch.setattr(loader, "load_active_trading_config", fail_worker)
+
+    result = loader.load_merged_trading_config_with_contract()
+
+    assert result.contract.source == "direct_kv_worker_fallback"
+    assert result.contract.degraded is True
+    assert result.contract.missing_sections == []
+    assert result.contract.defaulted_sections == []
+    assert result.contract.error == "TimeoutError: worker read timed out"
     assert result.config["ranking"]["topK"] == 3

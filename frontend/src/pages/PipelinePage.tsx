@@ -620,6 +620,7 @@ function FunnelSummaryColumn({ summary, fallbackCount }: { summary: any; fallbac
       <div className="space-y-2">
         {layers.map((row: any, index: number) => {
           const accent = SECTOR_ACCENTS[index % SECTOR_ACCENTS.length]
+          const evidenceOnly = row.mode === 'evidence_only'
           return (
             <div key={row.layer} className={`rounded-xl border ${accent.border} ${accent.bg} p-3`}>
               <div className="flex items-center justify-between gap-2">
@@ -633,12 +634,12 @@ function FunnelSummaryColumn({ summary, fallbackCount }: { summary: any; fallbac
               </div>
               <div className="mt-3 grid grid-cols-2 gap-2 text-xs">
                 <div className="rounded-md border border-emerald-500/20 bg-emerald-500/10 p-2">
-                  <p className="text-[10px] text-emerald-300">通過</p>
-                  <p className="mt-1 sv-num text-lg font-semibold text-emerald-200">{countValue(row.passed)}</p>
+                  <p className="text-[10px] text-emerald-300">{evidenceOnly ? '完成評估' : '通過'}</p>
+                  <p className="mt-1 sv-num text-lg font-semibold text-emerald-200">{countValue(evidenceOnly ? row.evaluated : row.passed)}</p>
                 </div>
-                <div className="rounded-md border border-rose-500/20 bg-rose-500/10 p-2">
-                  <p className="text-[10px] text-rose-300">淘汰</p>
-                  <p className="mt-1 sv-num text-lg font-semibold text-rose-200">{countValue(row.eliminated)}</p>
+                <div className={`rounded-md border p-2 ${evidenceOnly ? 'border-cyan-500/20 bg-cyan-500/10' : 'border-rose-500/20 bg-rose-500/10'}`}>
+                  <p className={`text-[10px] ${evidenceOnly ? 'text-cyan-300' : 'text-rose-300'}`}>{evidenceOnly ? '證據合格' : '淘汰'}</p>
+                  <p className={`mt-1 sv-num text-lg font-semibold ${evidenceOnly ? 'text-cyan-200' : 'text-rose-200'}`}>{countValue(evidenceOnly ? row.passed : row.eliminated)}</p>
                 </div>
               </div>
             </div>

@@ -85,7 +85,7 @@ const JOB_DEF_METADATA: JobDef[] = [
   { id: 'retention-archive-only', name: 'Retention Archive Only', schedule: 'Daily 02:30', cron: '30 18 * * *', group: 'daily' },
   { id: 'retention-hot-window-drain', name: 'Retention Hot Window Drain Preflight', schedule: 'Daily 02:35', cron: '35 18 * * *', group: 'daily' },
   { id: 'data-domain-shadow-backfill-next', name: 'Multi-D1 Sequential Backfill', schedule: 'Daily 00:30', cron: '30 16 * * *', group: 'daily' },
-  { id: 'data-domain-shadow-backfill', name: 'Multi-D1 Backfill Workers', schedule: 'Paused ops + execution/paper watchdogs', cron: '', group: 'daily' },
+  { id: 'data-domain-shadow-backfill', name: 'Multi-D1 Backfill Workers', schedule: 'Paused ops/execution/paper watchdogs', cron: '', group: 'daily' },
   { id: 'legacy-strategy-evidence-migration', name: 'Legacy Strategy Evidence Migration', schedule: 'Daily 01:50??5:50 hourly', cron: '50 17-21 * * *', group: 'daily' },
   { id: 'legacy-hot-data-retirement', name: 'Legacy Hot Data Retirement', schedule: 'Daily 01:10??5:10 hourly', cron: '10 17-21 * * *', group: 'daily' },
   { id: 'r2-retention-sweep', name: 'R2 Retention Sweep', schedule: 'Daily 02:40', cron: '40 18 * * *', group: 'daily' },
@@ -114,6 +114,7 @@ const JOB_DEF_METADATA: JobDef[] = [
   { id: 's12-smcvwap-calibration', name: 'S12 SMC/VWAP Calibration', schedule: 'Sunday 06:45 (monthly cadence after first Sat)', cron: '45 22 * * 6', group: 'weekly' },
   { id: 'linucb-multiplier-replay', name: 'LinUCB Multiplier Replay', schedule: 'Sunday 06:50', cron: '50 22 * * 6', group: 'weekly' },
   { id: 'active8-oof-weekly', name: 'Active-8 OOF Weekly Cohort', schedule: 'Sunday 07:05', cron: '5 23 * * 6', group: 'weekly' },
+  { id: 'weekly-drift-retrain', name: 'Weekly Drift Candidate', schedule: 'Manual, approval-gated shadow candidate', cron: '', group: 'weekly' },
 
   { id: 'sector-leaders', name: 'Sector Leaders', schedule: 'Sunday 06:30', cron: '30 22 * * 6', group: 'weekly' },
   { id: 'monthly-optuna', name: 'Monthly Optuna', schedule: 'First Sat 16:00', cron: 'first saturday of month 16:00 taipei', group: 'monthly' },

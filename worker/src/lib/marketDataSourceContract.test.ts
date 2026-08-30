@@ -6,12 +6,15 @@ function assert(condition: unknown, message: string): void {
   if (!condition) throw new Error(message)
 }
 
-const updateOrchestrator = fs.readFileSync('src/lib/updateOrchestrator.ts', 'utf8')
-const marketScreener = fs.readFileSync('src/lib/marketScreener.ts', 'utf8')
-const twseApi = fs.readFileSync('src/lib/twseApi.ts', 'utf8')
-const officialMarketSummaryRefresh = fs.readFileSync('src/lib/officialMarketSummaryRefresh.ts', 'utf8')
-const otherRoutes = fs.readFileSync('src/routes/other.ts', 'utf8')
-const wranglerToml = fs.readFileSync('wrangler.toml', 'utf8')
+const readSource = (path: string): string =>
+  fs.readFileSync(path, 'utf8').replace(/\r\n/g, '\n')
+
+const updateOrchestrator = readSource('src/lib/updateOrchestrator.ts')
+const marketScreener = readSource('src/lib/marketScreener.ts')
+const twseApi = readSource('src/lib/twseApi.ts')
+const officialMarketSummaryRefresh = readSource('src/lib/officialMarketSummaryRefresh.ts')
+const otherRoutes = readSource('src/routes/other.ts')
+const wranglerToml = readSource('wrangler.toml')
 
 assert(
   updateOrchestrator.includes('UPDATE_UNIVERSE_WHERE'),
@@ -34,8 +37,16 @@ assert(
 )
 
 assert(
-  updateOrchestrator.includes('assertMarketDataReady(env, twDate, { requireIndicators: false })'),
-  'bulk fetch readiness must not require indicators before the indicator queue has run',
+  updateOrchestrator.includes('assertMarketDataReady(env, twDate, { requireIndicators: false, requireMargin: true })'),
+  'bulk fetch readiness must require broad same-day margin coverage before the indicator queue has run',
+)
+
+assert(
+  twseApi.includes("canonicalMarginSource = 'twse.tpex.official_margin_fallback'") &&
+    twseApi.includes("schema_version: 'official-margin-fallback-v1'") &&
+    twseApi.includes('INSERT INTO canonical_chip_daily') &&
+    twseApi.includes('canonicalMarginCount'),
+  'official TWSE/TPEX margin fallback must write canonical per-symbol lineage rather than only a legacy serving row',
 )
 
 assert(

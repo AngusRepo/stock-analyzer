@@ -110,7 +110,6 @@ function splitCsv(value: string) {
 
 function compactEvidenceLabel(value: string) {
   return value
-    .replace('status_must_enter_shadow_before_promotion', '需先進 shadow')
     .replace('avg_return_not_positive', '平均報酬未轉正')
     .replace('decisions_lt_', '決策數不足 ')
     .replace('match_rate_lt_', '命中覆蓋不足 ')
@@ -540,7 +539,7 @@ function StrategyLearningPanel({
                   <div>
                     {gate && (
                       <div className="mb-2 rounded-lg border border-slate-800 bg-slate-950/70 px-2 py-1 text-[11px] text-slate-400">
-                        {gate.current_stage ?? 'L0_hypothesis'}{' -> '}{gate.recommended_stage ?? gate.recommended_next_status}
+                        {gate.current_stage ?? 'candidate_evidence'}{' -> '}{gate.recommended_stage ?? gate.recommended_next_status}
                       </div>
                     )}
                     <div className="flex flex-wrap items-center gap-1.5">

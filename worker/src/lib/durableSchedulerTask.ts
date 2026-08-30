@@ -64,7 +64,7 @@ export async function runWeeklyCleanupClosure(
     knowledgeCutoffDate,
     allowPromotion: true,
   })
-  return `weekly_cleanup_v2 cleanup=${JSON.stringify(cleanup)} maintenance=${JSON.stringify(maintenance)} model-registry=${registrySummary} paper-kelly=${paperKelly.status}:${paperKelly.runId}`
+  return `weekly_cleanup_v2 cleanup=${JSON.stringify(cleanup)} maintenance=${JSON.stringify(maintenance)} model-registry=${registrySummary} lifecycle dry-run=required paper-kelly=${paperKelly.status}:${paperKelly.runId}`
 }
 
 type DurableTaskResult = {

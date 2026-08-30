@@ -258,6 +258,8 @@ const paperDomainDb = readyDomainDb('0001_paper_baseline.sql', [
   'paper_order_intents', 'paper_exit_intents', 'paper_challenger_candidates',
   'paper_challenger_daily_metrics', 'paper_decision_attribution', 'pending_buy_filter_audit',
   'pending_buy_items', 'pending_buy_runs', 'promotion_audit_events',
+  'paper_kelly_calibration_artifacts_v1', 'paper_kelly_calibration_head_v1',
+  'paper_kelly_calibration_runs_v1',
 ])
 
 async function testStorageHealthCheckUsesD1ResultSizeAndReportsTruthfulScope(): Promise<void> {
@@ -272,7 +274,7 @@ async function testStorageHealthCheckUsesD1ResultSizeAndReportsTruthfulScope(): 
   }
   const splitBindings = { EXECUTION_DB: executionDomainDb as any, PAPER_DB: paperDomainDb as any }
   const healthy = await runStorageHealthCheck({ DB: healthyDb as any, ...splitBindings })
-  assert.equal(healthy.healthy, true)
+  assert.equal(healthy.healthy, true, JSON.stringify(healthy))
   assert.equal(healthy.enforcement_scope, 'scheduler_and_producer_admission')
   assert.equal(healthy.admission_control, true)
   assert.equal(healthy.blocks_storage_producers, true)
@@ -300,6 +302,19 @@ async function testStorageHealthCheckUsesD1ResultSizeAndReportsTruthfulScope(): 
   assert.equal(frozenLegacy.healthy, true)
   assert.equal(frozenLegacy.legacy_capacity_role, 'frozen_rollback_source')
   assert.deepEqual(frozenLegacy.blocking_capacity_domains, [])
+
+  const staleOpsMirrorDb = new MockDb()
+  staleOpsMirrorDb.firstHandler = (statement) => statement.sql.includes('AS frozen_domains')
+    ? { frozen_domains: 0 }
+    : healthyDb.firstHandler(statement)
+  const canonicalCutoverWins = await runStorageHealthCheck({
+    DB: frozenLegacyDb as any,
+    OPS_DB: staleOpsMirrorDb as any,
+    ...splitBindings,
+  })
+  assert.equal(canonicalCutoverWins.healthy, true)
+  assert.equal(canonicalCutoverWins.legacy_capacity_role, 'frozen_rollback_source')
+  assert.deepEqual(canonicalCutoverWins.blocking_capacity_domains, [])
 
   const criticalLearningDb = new MockDb()
   criticalLearningDb.queryMeta = { size_after: 8_864_489_472 }

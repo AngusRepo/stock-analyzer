@@ -11,11 +11,13 @@ export const STRATEGY_SEMANTIC_V2_ALPHA_IDS = new Set([
   'alpha223_0248',
   'alpha223_0283',
 ])
-export const STRATEGY_FORMAL_LABELER_VERSION = 'strategy-labeler-v2-revenue-pit-fuse-v1'
+export const STRATEGY_FORMAL_LABELER_VERSION = 'strategy-labeler-v3-regime-veto-counterfactual-v1'
+export const STRATEGY_FORMAL_LABELER_LEGACY_VERSION = 'strategy-labeler-v2-revenue-pit-fuse-v1'
 export const STRATEGY_FORMAL_RECONSTRUCTION_LABELER_VERSION =
   'strategy-decision-log-pit-reconstruction-v7-revenue-pit-fuse-v1'
 export const STRATEGY_FORMAL_LABELER_VERSIONS = [
   STRATEGY_FORMAL_LABELER_VERSION,
+  STRATEGY_FORMAL_LABELER_LEGACY_VERSION,
   STRATEGY_FORMAL_RECONSTRUCTION_LABELER_VERSION,
 ] as const
 
@@ -66,7 +68,9 @@ export function resolveLegacyMonthlyRevenueEvidence(options: {
   }
 }
 
-export type StrategySpecStatus = 'research' | 'shadow' | 'candidate' | 'active' | 'retired'
+export type StrategyLifecycleStatus = 'candidate' | 'active' | 'retired'
+export type LegacyStrategySpecStatus = 'research' | 'shadow'
+export type StrategySpecStatus = StrategyLifecycleStatus | LegacyStrategySpecStatus
 export type StrategyFamilyId =
   | 'VOLATILITY_CONTRACTION_BREAKOUT'
   | 'TREND_RECLAIM_CONTINUATION'
@@ -498,6 +502,11 @@ export function inferStrategyOwnerType(spec: Pick<StrategySpec, 'id' | 'status'>
   if (spec.status === 'retired') return 'retired'
   if (spec.status === 'research' || spec.status === 'shadow') return 'observe'
   return 'strategy'
+}
+
+export function canonicalStrategyLifecycleStatus(status: StrategySpecStatus): StrategyLifecycleStatus {
+  if (status === 'active' || status === 'retired') return status
+  return 'candidate'
 }
 
 export function inferStrategyPromotionStatus(spec: Pick<StrategySpec, 'status'>): StrategyPromotionStatus {

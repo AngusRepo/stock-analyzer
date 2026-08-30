@@ -128,12 +128,12 @@ const STAGES: Record<string, StageDefinition> = {
   's12-smcvwap-calibration': { id: 's12-smcvwap-calibration', label: 'S12 calibration', icon: Settings2, optional: true },
   'linucb-multiplier-replay': { id: 'linucb-multiplier-replay', label: 'LinUCB replay', icon: BrainCircuit, optional: true },
   'active8-oof-daily': { id: 'active8-oof-daily', label: 'Active-8 daily evidence', icon: Layers3 },
-  'active8-oof-weekly': { id: 'active8-oof-weekly', label: 'Active-8 weekly cohort', icon: Layers3 },
+  'active8-oof-weekly': { id: 'active8-oof-weekly', label: 'Active-8 weekly cohort / validation-release', icon: Layers3 },
   'sector-leaders': { id: 'sector-leaders', label: 'Sector leaders', icon: Target, optional: true },
   'monthly-strategy-mining': { id: 'monthly-strategy-mining', label: 'Strategy mining', icon: ScanSearch },
   'monthly-readiness': { id: 'monthly-readiness', label: 'Monthly root', icon: Link2 },
   'monthly-optuna': { id: 'monthly-optuna', label: 'Monthly search', icon: Microscope },
-  'active8-oof-monthly': { id: 'active8-oof-monthly', label: 'Active-8 monthly release', icon: Layers3 },
+  'active8-oof-monthly': { id: 'active8-oof-monthly', label: 'Active-8 monthly release / validation', icon: Layers3 },
 }
 
 const SCOPES: ChainScope[] = [
@@ -242,7 +242,7 @@ const SCOPES: ChainScope[] = [
     label: 'Monthly artifact',
     title: 'Monthly artifact chain',
     orchestratorId: 'monthly-readiness',
-    description: '策略挖掘、搜尋與 Active-8 immutable OOF 月度 release；promotion evidence 由模型池承接。',
+    description: '策略挖掘、搜尋與 Active-8 月度 full-fit／ensemble validation；weekly 與 monthly 都可在整合 bundle 通過時 promotion。',
     relation: 'mixed',
     columns: [
       ['monthly-strategy-mining'],

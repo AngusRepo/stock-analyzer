@@ -11,6 +11,8 @@ import {
   runExternalEvidenceMaterialize,
   runWeeklyBacktestEvidenceReconciliation,
   runWeeklyValidationChain,
+  runWeeklyDriftDetection,
+  runWeeklyDriftRetrain,
 } from './controllerWorkflows'
 import type { TaskHandler, TriggerDeps } from './adminTriggerTaskMap'
 
@@ -79,6 +81,20 @@ export function buildAdminGcpTriggerTaskMap(c: any, deps: TriggerDeps): Record<s
     'weekly-backtest': () => c.req.query('reconcile') === '1'
       ? runWeeklyBacktestEvidenceReconciliation(c.env, requestedRunDate())
       : runWeeklyValidationChain(c.env, requestedRunDate()),
+    'weekly-drift-retrain': async () => {
+      const runDate = requestedRunDate() || twToday()
+      const detection = await runWeeklyDriftDetection(c.env, runDate)
+      if (c.req.query('confirm') !== 'weekly_drift') {
+        return JSON.stringify({ mode: 'detection_only', production_effect: false, detection })
+      }
+      if (detection.status !== 'ready' || detection.needs_retrain !== true) {
+        return `weekly_drift skipped: ${detection.reason ?? 'retrain_not_required'}`
+      }
+      return runWeeklyDriftRetrain(c.env, {
+        runDate,
+        driftTargetModels: detection.drift_target_models,
+      })
+    },
     'monte-carlo': () => deps.runWeeklyMonteCarlo(requestedRunDate()),
     pbo: () => deps.runWeeklyPBO(requestedRunDate()),
     'alpha-quality': () => deps.runWeeklyAlphaQuality(),

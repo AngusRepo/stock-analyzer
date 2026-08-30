@@ -6,6 +6,38 @@ function assert(condition: unknown, message: string): void {
 
 {
   const result = evaluateMarketDataReadiness({
+    targetDate: '2026-08-28',
+    priceLatestDate: '2026-08-28',
+    priceRowsOnLatest: 2283,
+    priceTwseRowsOnLatest: 1085,
+    priceOtcRowsOnLatest: 1198,
+    chipLatestDate: '2026-08-28',
+    chipRowsOnLatest: 2347,
+    marginLatestDate: '2026-08-20',
+    marginRowsOnLatest: 1872,
+  }, { requireIndicators: false, requireMargin: true })
+  assert(!result.ok, 'stale margin data must trigger the official fallback before screener')
+  assert(result.summary.includes('margin latest=2026-08-20 expected=2026-08-28'), 'margin date gap must be explicit')
+}
+
+{
+  const result = evaluateMarketDataReadiness({
+    targetDate: '2026-08-28',
+    priceLatestDate: '2026-08-28',
+    priceRowsOnLatest: 2283,
+    priceTwseRowsOnLatest: 1085,
+    priceOtcRowsOnLatest: 1198,
+    chipLatestDate: '2026-08-28',
+    chipRowsOnLatest: 2347,
+    marginLatestDate: '2026-08-28',
+    marginRowsOnLatest: 800,
+  }, { requireIndicators: false, requireMargin: true })
+  assert(!result.ok, 'partial one-market margin coverage must not be accepted for cross-sectional strategy ranks')
+  assert(result.summary.includes('margin rows=800/1500'), 'margin coverage floor must be explicit')
+}
+
+{
+  const result = evaluateMarketDataReadiness({
     targetDate: '2026-04-30',
     priceLatestDate: '2026-04-29',
     priceRowsOnLatest: 2283,

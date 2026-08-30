@@ -120,6 +120,7 @@ class UniversalRetrainTriggerRequest(BaseModel):
     limit: int = 2500  # max stocks
     run_date: str | None = Field(default=None, description="Business date for scheduler/manual trigger lineage.")
     candidate_type: str | None = Field(default=None, description="Candidate type. Formal releases must use oof_full_fit_release.")
+    force_monthly: bool = Field(default=False, description="Explicit execution lineage. weekly_drift callers must remain false.")
     drift_target_models: list[str] = Field(default_factory=list)
     drift_target_families: list[str] = Field(default_factory=list)
     train_model_groups: list[str] = Field(default_factory=lambda: ["tree", "dlinear", "patchtst"])
@@ -1929,6 +1930,7 @@ async def trigger_universal_retrain(
             payload={
                 "batch_count": batch_count,
                         "candidate_type": req.candidate_type,
+                "force_monthly": req.force_monthly,
                 "drift_target_models": req.drift_target_models,
                 "drift_target_families": req.drift_target_families,
                 "train_model_groups": req.train_model_groups,

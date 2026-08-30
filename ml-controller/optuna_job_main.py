@@ -83,7 +83,10 @@ def _build_request() -> OptunaResearchSweepReq:
         cadence=os.environ.get("OPTUNA_CADENCE", "weekly"),
         n_trials=_env_int("OPTUNA_N_TRIALS", 200),
         subset_size=_env_int("OPTUNA_SUBSET_SIZE", 1000),
-        max_parallel_sources=_env_int("OPTUNA_MAX_PARALLEL_SOURCES", 3),
+        # Scheduled research sources share the same Learning D1 authority.
+        # Serial is the safe default; operators may explicitly raise it after
+        # confirming database headroom for a controlled research run.
+        max_parallel_sources=_env_int("OPTUNA_MAX_PARALLEL_SOURCES", 1),
         ga_population_size=_env_int("OPTUNA_GA_POPULATION_SIZE", 24),
         ga_generations=_env_int("OPTUNA_GA_GENERATIONS", 8),
         research_data_source=os.environ.get("OPTUNA_RESEARCH_DATA_SOURCE", "snapshot"),

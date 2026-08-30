@@ -147,7 +147,7 @@ export async function runModelIcFullCheck(env: Bindings) {
   try {
     const ceRes = await controllerFetch(env, '/config_pool/weekly_eval', {
       method: 'POST',
-      jsonBody: { lookback_days: 90, apply: true },
+      jsonBody: { apply: false, confirm: false },
       timeoutMs: 300_000,
     })
     if (ceRes.ok) {

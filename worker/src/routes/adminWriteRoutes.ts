@@ -710,7 +710,7 @@ adminWriteRoutes.post('/api/admin/strategy/decision-log/materialize', async (c) 
   if (!dryRun && c.req.header('X-Confirm-Strategy-Learning') !== 'true') {
     return c.json({
       error: 'Strategy decision log materialization requires header X-Confirm-Strategy-Learning: true',
-      hint: 'Run dry_run first. This persists shadow/active strategy evidence only; it never changes production decisions.',
+      hint: 'Run dry_run first. This persists Candidate/Active strategy evidence only; it never changes production decisions.',
     }, 400)
   }
   const { materializeStrategyDecisionLog, seedDefaultStrategySpecRegistry } = await import('../lib/strategyLearning')
@@ -1039,7 +1039,7 @@ adminWriteRoutes.post('/api/admin/strategy/marginal-edge-v4/refresh', async (c) 
   if (c.req.header('X-Confirm-Strategy-Learning') !== 'true') {
     return c.json({
       error: 'Strategy marginal-edge refresh requires header X-Confirm-Strategy-Learning: true',
-      hint: 'This persists shadow marginal-edge evidence with promotion disabled and never marks evening-chain complete.',
+      hint: 'This persists comparison-only marginal-edge evidence with promotion disabled and never marks evening-chain complete.',
     }, 400)
   }
 

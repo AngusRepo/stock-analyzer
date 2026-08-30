@@ -4,6 +4,7 @@ import asyncio
 import json
 import sys
 import types
+from pathlib import Path
 
 try:
     import google.cloud as google_cloud
@@ -399,3 +400,21 @@ def test_optuna_no_feasible_pareto_is_not_an_infrastructure_error():
 
     assert result["status"] == "skipped"
     assert "SKIPPED_NOT_READY" in result["summary"]
+
+
+def test_scheduled_optuna_defaults_to_serial_source_access(monkeypatch):
+    monkeypatch.delenv("OPTUNA_MAX_PARALLEL_SOURCES", raising=False)
+
+    request = optuna_job_main._build_request()
+
+    assert request.max_parallel_sources == 1
+
+    monkeypatch.setenv("OPTUNA_MAX_PARALLEL_SOURCES", "2")
+    assert optuna_job_main._build_request().max_parallel_sources == 2
+
+
+def test_weekly_eval_requires_explicit_confirmation_before_apply():
+    source = (Path(__file__).resolve().parents[1] / "routers" / "config_pool.py").read_text(encoding="utf-8")
+    assert "confirm: bool = Field(default=False" in source
+    assert "if req.apply and not req.confirm:" in source
+    assert "weekly_eval apply=true requires confirm=true" in source

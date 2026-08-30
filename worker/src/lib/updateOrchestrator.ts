@@ -1547,7 +1547,7 @@ export async function runBulkFetch(env: Bindings, force = false, runDate?: strin
     const mirror = await syncLegacyMarketDataFromFinLabCanonical(env, twDate)
     finlabMirrorSummary = mirror.summary
     if (supplementalMode !== 'always') {
-      const ready = await assertMarketDataReady(env, twDate, { requireIndicators: false })
+      const ready = await assertMarketDataReady(env, twDate, { requireIndicators: false, requireMargin: true })
       await env.KV.put(lockKey, '1', { expirationTtl: 86400 })
       return `${ready.summary}; ${mirror.summary}; TWSE/TPEX supplemental bulk fetch skipped; source_role=${mirror.sourceRole}; supplemental_mode=${supplementalMode}`
     }
@@ -1560,7 +1560,7 @@ export async function runBulkFetch(env: Bindings, force = false, runDate?: strin
 
   if (isHistoricalReplayDate(twDate)) {
     try {
-      const ready = await assertMarketDataReady(env, twDate, { requireIndicators: false })
+      const ready = await assertMarketDataReady(env, twDate, { requireIndicators: false, requireMargin: true })
       await env.KV.put(lockKey, '1', { expirationTtl: 86400 })
       return `TWSE/TPEX supplemental fetch skipped for historical replay; ${ready.summary}; ${finlabMirrorSummary ?? 'FinLab canonical mirror not applied'}; source_role=legacy_ready_after_finlab_primary_attempt`
     } catch {
@@ -1570,14 +1570,14 @@ export async function runBulkFetch(env: Bindings, force = false, runDate?: strin
   }
   if (!force && await env.KV.get(lockKey)) {
     console.log(`[Cron] TWSE/TPEX supplemental fetch already done today (${twDate}), skipping.`)
-    const ready = await assertMarketDataReady(env, twDate, { requireIndicators: false })
+    const ready = await assertMarketDataReady(env, twDate, { requireIndicators: false, requireMargin: true })
     return `TWSE/TPEX supplemental fetch skipped; ${ready.summary}; ${finlabMirrorSummary ?? 'FinLab canonical mirror not applied'}; source_role=legacy_ready_after_finlab_primary_attempt`
   }
 
   try {
     const { bulkFetchAndStoreChipData, bulkFetchAndStorePrices } = await import('./twseApi')
     const controllerUrl = env.ML_CONTROLLER_URL ?? env.SHIOAJI_PROXY_URL
-    const [{ chipCount, marginCount }, priceCount] = await Promise.all([
+    const [{ chipCount, marginCount, canonicalMarginCount }, priceCount] = await Promise.all([
       bulkFetchAndStoreChipData(databaseForDataDomain(env, 'market'), twDate, controllerUrl, env.ML_CONTROLLER_SECRET),
       bulkFetchAndStorePrices(
         databaseForDataDomain(env, 'market'),
@@ -1587,11 +1587,11 @@ export async function runBulkFetch(env: Bindings, force = false, runDate?: strin
         env.ML_CONTROLLER_SECRET,
       ),
     ])
-    console.log(`[Cron] TWSE/TPEX supplemental: ${priceCount} prices + ${chipCount} chips + ${marginCount} margins`)
-    const ready = await assertMarketDataReady(env, twDate, { requireIndicators: false })
+    console.log(`[Cron] TWSE/TPEX supplemental: ${priceCount} prices + ${chipCount} chips + ${marginCount} margins + ${canonicalMarginCount} canonical margins`)
+    const ready = await assertMarketDataReady(env, twDate, { requireIndicators: false, requireMargin: true })
     await env.KV.put(lockKey, '1', { expirationTtl: 86400 })
     await fetchWave2Data(env, twDate).catch((e) => console.warn('[Wave2] failed:', e))
-    return `${ready.summary}; ${finlabMirrorSummary ?? 'FinLab canonical mirror not applied'}; TWSE/TPEX supplemental fetched price=${priceCount} chip=${chipCount} margin=${marginCount}; source_role=official_fallback_after_finlab_primary_attempt`
+    return `${ready.summary}; ${finlabMirrorSummary ?? 'FinLab canonical mirror not applied'}; TWSE/TPEX supplemental fetched price=${priceCount} chip=${chipCount} margin=${marginCount} canonical_margin=${canonicalMarginCount}; source_role=official_fallback_after_finlab_primary_attempt`
   } catch (e) {
     console.warn('[Cron] TWSE/TPEX supplemental fetch failed:', e)
     const message = e instanceof Error ? e.message : String(e)

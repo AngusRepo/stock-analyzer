@@ -870,7 +870,10 @@ export async function runStorageHealthCheck(
            AND status='ready'
            AND created_at >= datetime('now','-24 hours'))) AS progress_24h
   `).first<any>()
-  const frozenDomainReceipt = await artifactOpsDb(env).prepare(`
+  // Cutover and writer-epoch authority is anchored in the legacy source DB.
+  // OPS_DB may contain only a stale pre-cutover mirror and must not reclassify
+  // the frozen rollback source as an active capacity blocker.
+  const frozenDomainReceipt = await env.DB.prepare(`
     SELECT COUNT(DISTINCT c.domain) AS frozen_domains
       FROM data_domain_cutovers c
       JOIN data_domain_writer_epochs w ON w.domain=c.domain

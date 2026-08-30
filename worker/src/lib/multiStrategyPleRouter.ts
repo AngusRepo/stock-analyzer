@@ -141,6 +141,11 @@ export interface MultiStrategyPleAnnotatedCandidate extends StrategyCandidatePoo
   strategy_affinity_evidence_count_vector?: Record<string, number>
   strategy_weak_label_vector?: Record<string, number>
   strategy_hit_vector?: Record<string, number>
+  strategy_pre_regime_setup_hit_vector?: Record<string, number>
+  strategy_regime_eligible_vector?: Record<string, number>
+  strategy_formal_veto_reason_vector?: Record<string, string | null>
+  strategy_counterfactual_affinity_vector?: Record<string, number>
+  strategy_counterfactual_production_effect_vector?: Record<string, number>
   strategy_position_weight_vector?: Record<string, number>
   strategy_challenger_position_weight_vector?: Record<string, number>
   strategy_raw_position_weight_vector?: Record<string, number>
@@ -188,6 +193,11 @@ interface StrategyLabel {
   challenger_affinity: number
   weak_label: number
   strategy_hit: number
+  pre_regime_setup_hit: number
+  regime_eligible: number
+  formal_veto_reason: string | null
+  counterfactual_affinity: number
+  counterfactual_production_effect: 0
   position_weight: number
   overlap: number
   evaluable: boolean
@@ -206,6 +216,10 @@ export interface StrategyThresholdMarginAffinityAssessment {
   unavailableReasons: string[]
   matched: boolean
   match: ReturnType<typeof assessCandidateAgainstStrategySpecs>['matches'][number] | null
+  preRegimeMatched: boolean
+  regimeEligible: boolean
+  formalVetoReason: string | null
+  counterfactualAffinity: number
   configuredWeight: number
   regimeWeight: number
   productionOwner: boolean
@@ -394,17 +408,29 @@ export function assessStrategyThresholdMarginAffinity(
   const policy = resolveNormalizedStrategyThresholdMarginAffinityPolicy(spec, options)
   const evaluationOptions = { evidenceMode: options.evidenceMode }
   const evaluability = assessStrategySpecEvaluability(candidate, spec, evaluationOptions)
-  const assessment = policy.regimeWeight > 0 && evaluability.evaluable
+  const assessment = evaluability.evaluable
     ? assessCandidateAgainstStrategySpecs(candidate, [spec], evaluationOptions)
     : { matches: [] }
   const match = assessment.matches[0] ?? null
+  const preRegimeMatched = match != null
+  const regimeEligible = policy.regimeWeight > 0
+  const matched = preRegimeMatched && regimeEligible
+  const counterfactualAffinity = match
+    ? round3(clamp(match.matchStrength * 100 * policy.configuredWeight * policy.statusMultiplier, 0, 100))
+    : 0
   return {
     evaluable: evaluability.evaluable,
     unavailableReasons: evaluability.unavailableReasons,
-    matched: match != null,
+    matched,
     match,
+    preRegimeMatched,
+    regimeEligible,
+    formalVetoReason: preRegimeMatched && !regimeEligible
+      ? `unsupported_regime:${cleanText(options.regime).toLowerCase() || 'unknown'}`
+      : null,
+    counterfactualAffinity,
     ...policy,
-    challengerAffinity: match
+    challengerAffinity: matched && match
       ? round3(clamp(match.matchStrength * 100 * policy.configuredWeight * policy.regimeWeight * policy.statusMultiplier, 0, 100))
       : 0,
   }
@@ -524,6 +550,11 @@ function buildCandidateLabelStates<T extends StrategyCandidatePoolCandidate>(
         affinity_evidence_count: match?.evidenceCount ?? 0,
         weak_label: 0,
         strategy_hit: matched ? 1 : 0,
+        pre_regime_setup_hit: thresholdAssessment.preRegimeMatched ? 1 : 0,
+        regime_eligible: thresholdAssessment.regimeEligible ? 1 : 0,
+        formal_veto_reason: thresholdAssessment.formalVetoReason,
+        counterfactual_affinity: thresholdAssessment.counterfactualAffinity,
+        counterfactual_production_effect: 0,
         position_weight: 0,
         overlap: 0,
         evaluable,
@@ -1086,6 +1117,11 @@ function annotateCandidate<T extends StrategyCandidatePoolCandidate>(
   )
   const strategyWeakLabels = Object.fromEntries(state.labels.map((label) => [label.strategy_id, label.weak_label]))
   const strategyHitVector = Object.fromEntries(state.labels.map((label) => [label.strategy_id, label.strategy_hit]))
+  const strategyPreRegimeSetupHitVector = Object.fromEntries(state.labels.map((label) => [label.strategy_id, label.pre_regime_setup_hit]))
+  const strategyRegimeEligibleVector = Object.fromEntries(state.labels.map((label) => [label.strategy_id, label.regime_eligible]))
+  const strategyFormalVetoReasonVector = Object.fromEntries(state.labels.map((label) => [label.strategy_id, label.formal_veto_reason]))
+  const strategyCounterfactualAffinityVector = Object.fromEntries(state.labels.map((label) => [label.strategy_id, label.counterfactual_affinity]))
+  const strategyCounterfactualProductionEffectVector = Object.fromEntries(state.labels.map((label) => [label.strategy_id, label.counterfactual_production_effect]))
   const strategyOverlapVector = Object.fromEntries(state.labels.map((label) => [
     label.strategy_id,
     prior.strategy_metrics[label.strategy_id]?.holding_overlap ?? label.overlap,
@@ -1299,6 +1335,11 @@ function annotateCandidate<T extends StrategyCandidatePoolCandidate>(
     strategy_affinity_evidence_count_vector: strategyAffinityEvidenceCount,
     strategy_weak_label_vector: strategyWeakLabels,
     strategy_hit_vector: strategyHitVector,
+    strategy_pre_regime_setup_hit_vector: strategyPreRegimeSetupHitVector,
+    strategy_regime_eligible_vector: strategyRegimeEligibleVector,
+    strategy_formal_veto_reason_vector: strategyFormalVetoReasonVector,
+    strategy_counterfactual_affinity_vector: strategyCounterfactualAffinityVector,
+    strategy_counterfactual_production_effect_vector: strategyCounterfactualProductionEffectVector,
     strategy_position_weight_vector: challengerServing ? strategyChallengerPositionWeights : strategyPositionWeights,
     strategy_raw_position_weight_vector: strategyPositionWeights,
     strategy_challenger_position_weight_vector: strategyChallengerPositionWeights,

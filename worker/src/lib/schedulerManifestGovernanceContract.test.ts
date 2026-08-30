@@ -44,13 +44,20 @@ assert(schedulerManifestJobs().length === 59, 'physical Scheduler root inventory
 assert(manifestTasks.length === 52, 'logical manifest task inventory must remain 52')
 assert(summary.physicalRoots === 59, 'summary physical root count mismatch')
 assert(summary.uniqueLogicalTasks === 52 && summary.accountedLogicalTasks === 52, 'logical task accounting must be 52/52')
-assert(summary.reviewedDependencies === 20, 'reviewed dependency baseline must remain explicit')
-assert(summary.unmappedDependencies === 32 && summary.unmappedTasks.length === 32, 'unmapped dependency debt must be explicit, not fabricated as DAG')
-assert(summary.pausedPhysicalRoots === 1, 'exactly one manifest-owned physical root should be paused')
+assert(summary.reviewedDependencies === 35, 'reviewed dependency baseline must include all verified Daily Operations roots')
+assert(summary.unmappedDependencies === 17 && summary.unmappedTasks.length === 17, 'unreviewed non-daily dependency debt must remain fail-visible')
+assert(summary.pausedPhysicalRoots === 3, 'exactly three manifest-owned physical roots should be paused')
 assert(summary.internalLogicalSteps === 23, 'internal logical step accounting must preserve caller total')
 
 const paused = manifest.jobs.filter((job) => 'desiredState' in job && job.desiredState === 'PAUSED')
-assert(paused.length === 1 && paused[0].id === 'data-domain-shadow-backfill-ops', 'production PAUSED truth must be represented in manifest')
+assert(
+  JSON.stringify(paused.map((job) => job.id).sort()) === JSON.stringify([
+    'data-domain-shadow-backfill-execution',
+    'data-domain-shadow-backfill-ops',
+    'data-domain-shadow-backfill-paper',
+  ]),
+  'production PAUSED truth must be represented in manifest',
+)
 for (const job of manifest.jobs) {
   const accounting = schedulerJobAccounting(job.id)
   assert(accounting.physicalRoot, `${job.id} must be classified as a physical Scheduler root`)
@@ -60,6 +67,16 @@ for (const job of manifest.jobs) {
 }
 assert(schedulerJobAccounting('post-pipeline-chain', 13).accountingClass === 'internal_chain', 'deployed chain child must be an internal logical ticket')
 assert(schedulerJobAccounting('intraday-check').accountingClass === 'unmapped_dependency', 'unreviewed task must fail visible as unmapped')
+for (const task of [
+  'us-leading', 'news-analyst', 'morning-setup', 'morning-briefing', 'daily-snapshot',
+  'daily-execution-paper-lineage', 'external-evidence', 'debate-memory-retention', 'artifact-reconcile',
+  'retention-archive-only', 'retention-hot-window-drain', 'data-domain-shadow-backfill-next',
+  'legacy-strategy-evidence-migration', 'legacy-hot-data-retirement', 'r2-retention-sweep',
+  'orphan-reachability-gc', 'storage-health-check', 'learning-retention-readiness',
+  'legacy-learning-deletion-readiness', 'storage-capacity-report', 'optuna-queue',
+]) {
+  assert(schedulerJobAccounting(task).accountingClass !== 'unmapped_dependency', `${task} must have a reviewed Daily Operations dependency contract`)
+}
 
 const rotation = fs.readFileSync('../scripts/auth_rotation_scheduler_rest.ps1', 'utf8')
 for (const required of [

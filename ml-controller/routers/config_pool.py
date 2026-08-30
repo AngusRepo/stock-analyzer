@@ -62,7 +62,8 @@ async def fetch_worker_admin(*args, **kwargs) -> dict:
 class WeeklyEvalRequest(BaseModel):
     """Weekly challenger evaluation request body."""
     lookback_days: int = Field(default=DEFAULT_CONFIG_POOL_POLICY.lookback_days, ge=7, le=180)
-    apply: bool = Field(default=False, description="If true, apply promote/retire transitions + write lifecycle events. Default false = dry-run reporting only. Friday cron explicitly sends apply=true in body.")
+    apply: bool = Field(default=False, description="If true, apply lifecycle events. Scheduled callers must remain dry-run.")
+    confirm: bool = Field(default=False, description="Required with apply=true; scheduled callers must send false.")
     end_date: Optional[str] = None  # default: today TW
 
 
@@ -734,6 +735,8 @@ async def weekly_eval(
         req.apply = apply_query
     if lookback_query is not None:
         req.lookback_days = lookback_query
+    if req.apply and not req.confirm:
+        raise HTTPException(status_code=400, detail="weekly_eval apply=true requires confirm=true")
 
     from services.backtest_engine import BacktestDataset, replay_period
 

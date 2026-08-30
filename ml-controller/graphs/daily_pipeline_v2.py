@@ -4758,6 +4758,7 @@ async def run_pipeline_v2_from_modal_prediction_callback(callback_payload: dict)
             node_llm_reasons,
             node_write_d1,
             node_compute_sector_flow,
+            node_compute_pit_residual_shadow,
             node_export_dataset_snapshot,
         ])
         elapsed = asyncio.get_event_loop().time() - t0

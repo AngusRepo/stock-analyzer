@@ -22,10 +22,10 @@ test('daily flow consumes only the compact pipeline aggregate', () => {
   }
 })
 
-test('daily flow isolates recommendation, pending-buy, and quadrant failures', () => {
+test('daily flow isolates recommendation, pending-buy, and risk-audit failures', () => {
   assert(page.includes('recIsError ?'))
   assert(page.includes('pbIsError ?'))
-  assert(page.includes('qfError={qfIsError'))
+  assert(page.includes('riskAuditError={riskAuditIsError'))
   assert(page.includes('PipelineColumnLoading'))
   assert(page.includes('PipelineColumnError'))
   assert(!page.includes('const isLoading = recLoading || pbLoading'))
@@ -34,7 +34,7 @@ test('daily flow isolates recommendation, pending-buy, and quadrant failures', (
 
 test('daily flow requests are abortable and bounded', () => {
   assert(page.includes("paperApi.pendingBuys({ signal, timeoutMs: 10_000 })"))
-  assert(page.includes("paperApi.quadrantFilter(undefined, { signal, timeoutMs: 8_000 })"))
+  assert(page.includes("paperApi.riskAudit(undefined, { signal, timeoutMs: 8_000 })"))
   assert(page.includes('queryTtl.dailyDecision'))
   assert(page.includes('queryTtl.dashboard'))
   assert(api.includes('requestOptions.signal'))

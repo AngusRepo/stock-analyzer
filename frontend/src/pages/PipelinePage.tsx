@@ -328,14 +328,12 @@ function buildScreenerSectorSummary(recs: any[]) {
     if (rec.symbol && row.symbols.length < 4) row.symbols.push(String(rec.symbol))
     if (rec.screener_funnel_reason) row.reasons.add(String(rec.screener_funnel_reason))
     const evidence = parseMaybeJson(rec.screener_funnel_evidence)
-    const rrg = parseMaybeJson(evidence.rrg_overlay ?? evidence.rrg)
     const strategyIds = evidence.strategy_ids ?? rec.strategy_pool_ids ?? []
     const keywords = [
       ...(Array.isArray(evidence.keywords) ? evidence.keywords : []),
       ...(Array.isArray(evidence.theme_keywords) ? evidence.theme_keywords : []),
       ...(Array.isArray(evidence.top_keywords) ? evidence.top_keywords : []),
     ].filter(Boolean).slice(0, 3)
-    if (rrg.quadrant) row.rotationReasons.add(`RRG ${rrg.quadrant}`)
     if (evidence.buzz_score != null || evidence.buzz_z != null) {
       row.themeReasons.add(keywords.length ? `題材熱度：${keywords.join('、')}` : '題材熱度升溫')
     }
@@ -773,23 +771,23 @@ function ExecutionFlowColumn({
   pendingBuys,
   pbDate,
   sourceRecoDate,
-  qfList,
+  riskAuditList,
   candidateCount,
-  qfError,
-  onRetryQuadrant,
+  riskAuditError,
+  onRetryRiskAudit,
 }: {
   pendingBuys: any[]
   pbDate: string
   sourceRecoDate?: string
-  qfList: any[]
+  riskAuditList: any[]
   candidateCount: number | null
-  qfError?: Error | null
-  onRetryQuadrant?: () => void
+  riskAuditError?: Error | null
+  onRetryRiskAudit?: () => void
 }) {
   const steps = [
     { label: '候選', value: countValue(candidateCount), detail: 'BUY signal allocation' },
     { label: '辯論', value: String(pendingBuys.length), detail: 'T2 pending buys' },
-    { label: '報價', value: String(qfList.length), detail: 'RRG / quote sanity' },
+    { label: '報價', value: String(riskAuditList.length), detail: 'risk / quote sanity' },
     { label: '掛單', value: String(pendingBuys.filter((buy: any) => String(buy.execution_status ?? '').toLowerCase().includes('filled')).length), detail: 'paper fills' },
   ]
   const subtitleDate = sourceRecoDate
@@ -822,30 +820,28 @@ function ExecutionFlowColumn({
         </div>
       )}
 
-      {qfError ? (
+      {riskAuditError ? (
         <div role="alert" className="rounded-lg border border-amber-400/20 bg-amber-400/[0.06] p-3 text-xs text-amber-100/80">
-          <p>RRG 象限資料暫時無法讀取：{qfError.message}</p>
-          {onRetryQuadrant ? (
-            <button type="button" onClick={onRetryQuadrant} className="mt-2 inline-flex items-center gap-1 font-semibold text-amber-200 hover:text-amber-100">
+          <p>晨間風控紀錄暫時無法讀取：{riskAuditError.message}</p>
+          {onRetryRiskAudit ? (
+            <button type="button" onClick={onRetryRiskAudit} className="mt-2 inline-flex items-center gap-1 font-semibold text-amber-200 hover:text-amber-100">
               <RefreshCw className="h-3.5 w-3.5" />重新載入
             </button>
           ) : null}
         </div>
       ) : null}
 
-      {qfList.length > 0 && (
+      {riskAuditList.length > 0 && (
         <div className="border-t border-border pt-3">
-          <p className="mb-2 text-xs text-muted-foreground">RRG 象限過濾結果</p>
+          <p className="mb-2 text-xs text-muted-foreground">晨間風控與報價檢查紀錄</p>
           <div className="flex flex-wrap gap-1.5">
-            {qfList.map((q: any) => {
-              const qColor = q.quadrant === 'Leading' ? 'text-emerald-400' :
-                             q.quadrant === 'Improving' ? 'text-blue-400' :
-                             q.quadrant === 'Weakening' ? 'text-amber-400' : 'text-red-400'
+            {riskAuditList.map((entry: any) => {
+              const tone = entry.stage === 'hard_safety' ? 'text-red-300' : entry.stage === 'soft_risk_overlay' ? 'text-amber-300' : 'text-slate-300'
               return (
-                <Badge key={q.symbol} variant="outline" className="gap-1 text-[10px]">
-                  <span className="sv-num">{q.symbol}</span>
-                  <span className={qColor}>{q.quadrant}</span>
-                  <span className="text-muted-foreground">{q.action}</span>
+                <Badge key={`${entry.symbol}-${entry.reason_code ?? entry.action}`} variant="outline" className="gap-1 text-[10px]">
+                  <span className="sv-num">{entry.symbol}</span>
+                  <span className={tone}>{entry.reason_code ?? entry.action}</span>
+                  <span className="text-muted-foreground">{entry.stage ?? 'audit'}</span>
                 </Badge>
               )
             })}
@@ -891,15 +887,15 @@ export default function PipelinePage() {
     retry: 1,
   })
 
-  // Quadrant filter
+  // Legacy endpoint now serves generic morning risk and quote-sanity audit rows.
   const {
-    data: qfData,
-    isError: qfIsError,
-    error: qfError,
-    refetch: refetchQuadrant,
+    data: riskAuditData,
+    isError: riskAuditIsError,
+    error: riskAuditError,
+    refetch: refetchRiskAudit,
   } = useQuery({
-    queryKey: ['paper', 'quadrant-filter'],
-    queryFn: ({ signal }) => paperApi.quadrantFilter(undefined, { signal, timeoutMs: 8_000 }),
+    queryKey: ['paper', 'risk-audit'],
+    queryFn: ({ signal }) => paperApi.riskAudit(undefined, { signal, timeoutMs: 8_000 }),
     staleTime: queryTtl.dashboard,
     refetchInterval: queryTtl.dashboard,
     retry: 1,
@@ -930,7 +926,18 @@ export default function PipelinePage() {
     : typeof pbData?.meta?.source_reco_date === 'string'
       ? pbData.meta.source_reco_date
       : undefined
-  const qfList = Array.isArray(qfData?.filters) ? qfData.filters : Array.isArray(qfData) ? qfData : []
+  const rawRiskAuditList = Array.isArray(riskAuditData?.filters)
+    ? riskAuditData.filters
+    : Array.isArray(riskAuditData)
+      ? riskAuditData
+      : []
+  const riskAuditList = rawRiskAuditList.filter((entry: any) => (
+    !/\bRRG\b|rrg_|relative rotation/i.test(JSON.stringify({
+      action: entry?.action,
+      reason_code: entry?.reason_code,
+      details: entry?.details,
+    }))
+  ))
 
   // Stage breakdown comes from the dedicated aggregate view; no recommendation-row payload is required.
   const funnelSummary = recData?.funnel_summary ?? null
@@ -1014,10 +1021,10 @@ export default function PipelinePage() {
               pendingBuys={pendingBuys}
               pbDate={pbDate}
               sourceRecoDate={pendingSourceRecoDate}
-              qfList={qfList}
+              riskAuditList={riskAuditList}
               candidateCount={l4BuyCount}
-              qfError={qfIsError ? qfError as Error : null}
-              onRetryQuadrant={() => { void refetchQuadrant() }}
+              riskAuditError={riskAuditIsError ? riskAuditError as Error : null}
+              onRetryRiskAudit={() => { void refetchRiskAudit() }}
             />
           )}
         </div>

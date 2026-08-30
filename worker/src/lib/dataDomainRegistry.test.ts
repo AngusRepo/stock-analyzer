@@ -68,7 +68,8 @@ assert.deepEqual(
   [...migrationTransientTables].sort(),
   'every migration-created table must be explicitly owned or explicitly transient',
 )
-assert.equal(productionTableNames.length, 236, 'production schema table count changed; ownership review is required')
+assert.equal(productionTableNames.length, 237, 'production schema table count changed; ownership review is required')
+assert.equal(dataDomainForTable('pit_factor_shadow_daily_v1'), 'learning', 'PIT factor shadow has one Learning owner')
 assert.equal(dataDomainForTable('canonical_revenue_observations_v2'), 'market', 'append-only revenue revisions require one Market owner')
 const tableNames = [...new Set([
   ...productionTableNames,

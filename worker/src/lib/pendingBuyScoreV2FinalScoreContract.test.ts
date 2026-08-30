@@ -136,12 +136,11 @@ const paperRoute = readFileSync('src/routes/paper.ts', 'utf8')
     'morning setup should persist filter audit evidence for empty-after-filter diagnosis',
   )
   assert(
-    pendingBuyOrchestrator.includes("reason_code: 'RRG_LAGGING_SOFT_RISK'") &&
-      pendingBuyOrchestrator.includes("action: 'SOFT_DOWNGRADE_DEBATE_REQUIRED'") &&
-      pendingBuyOrchestrator.includes('rrg_lagging_soft_downgrade') &&
-      pendingBuyOrchestrator.includes('debate_required=true') &&
-      !pendingBuyOrchestrator.includes("action: 'REJECT'"),
-    'RRG Lagging must be a soft risk/debate overlay, not a hard reject in morning setup',
+    !pendingBuyOrchestrator.includes("reason_code: 'RRG_LAGGING_SOFT_RISK'") &&
+      !pendingBuyOrchestrator.includes('RRG_WEAKENING_DOWNGRADE') &&
+      !pendingBuyOrchestrator.includes('loadQuadrantMap') &&
+      !pendingBuyOrchestrator.includes('rrg_lagging_soft_downgrade'),
+    'RRG must not influence pending-buy rejection, debate, sizing, or watch points',
   )
   assert(
     pendingBuyOrchestrator.includes("action: 'ALPHA_RISK_DEBATE_REQUIRED'") &&

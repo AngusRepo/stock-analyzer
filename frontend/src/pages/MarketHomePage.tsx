@@ -1,4 +1,4 @@
-import { lazy, Suspense, useEffect, useMemo, useRef, useState, type ComponentType, type CSSProperties, type ReactNode } from 'react'
+import { lazy, Suspense, useEffect, useMemo, useRef, useState, type ComponentType, type ReactNode } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import {
   Activity,
@@ -9,13 +9,13 @@ import {
   Globe2,
   Newspaper,
   PieChart,
-  Radar,
   ShieldAlert,
   Sparkles,
   TrendingDown,
   Waves,
 } from 'lucide-react'
 import AppShell from '@/components/AppShell'
+import { GroupFactorTrajectoryPanel } from '@/components/PitFactorTrajectoryPanel'
 import { MarketRiskDetailBreakdown } from '@/components/MarketRiskDetailBreakdown'
 import { marketApi, recommendationsApi } from '@/lib/api'
 import { splitRecommendationLanes } from '@/lib/recommendationLanes'
@@ -1199,174 +1199,6 @@ function GlobalEventContextCard({ risk }: { risk: any }) {
   )
 }
 
-function FlowList({ title, rows }: { title: string; rows: any[] }) {
-  const max = Math.max(1, ...rows.map((row) => Math.abs(asNumber(row?.total_net ?? row?.net_flow) ?? 0)))
-  return (
-    <div>
-      <p className="mb-3 text-sm font-bold text-slate-200">{title}</p>
-      {rows.length ? (
-        <div className="space-y-3">
-          {rows.map((row) => {
-            const name = row?.sector ?? row?.industry ?? row?.name ?? '-'
-            const value = asNumber(row?.total_net ?? row?.net_flow) ?? 0
-            const tone = toneBySigned(value)
-            return (
-              <div key={name} className="grid grid-cols-[112px_1fr_84px] items-center gap-3 text-sm">
-                <span className="truncate text-slate-400" title={name}>{name}</span>
-                <div className="h-2 overflow-hidden rounded-full bg-white/[0.06]">
-                  <div className={cx('h-full rounded-full', toneBar(tone))} style={{ width: `${Math.max(6, Math.abs(value) / max * 100)}%` }} />
-                </div>
-                <span className={cx('text-right text-xs font-bold tabular-nums', toneText(tone))}>
-                  {value >= 0 ? '+' : ''}{value.toFixed(1)}億
-                </span>
-              </div>
-            )
-          })}
-        </div>
-      ) : (
-        <p className="rounded-[16px] border border-white/[0.06] bg-white/[0.03] p-4 text-sm text-slate-500">尚無 sector-flow 資料。</p>
-      )}
-    </div>
-  )
-}
-
-function keywordFromFlowRow(row: any): string | null {
-  const raw = row?.theme ?? row?.concept ?? row?.industry ?? row?.sector ?? row?.name
-  const text = String(raw ?? '').trim()
-  return text && text !== '-' ? text : null
-}
-
-function flowRowValue(row: any): number | null {
-  return asNumber(row?.total_net ?? row?.net_flow ?? row?.turnover_share_delta ?? row?.avg_momentum_5d ?? row?.score)
-}
-
-function HotKeywordCloud({ rows }: { rows: any[] }) {
-  const cloudRef = useRef<HTMLDivElement>(null)
-  const [isAnimationVisible, setIsAnimationVisible] = useState(false)
-  const seen = new Set<string>()
-  const keywords = rows
-    .map((row) => {
-      const keyword = keywordFromFlowRow(row)
-      if (!keyword || seen.has(keyword)) return null
-      seen.add(keyword)
-      const value = flowRowValue(row)
-      return {
-        keyword,
-        value,
-        tone: value == null ? (seen.size % 2 === 0 ? 'red' : 'green') : toneBySigned(value),
-      }
-    })
-    .filter((item): item is { keyword: string; value: number | null; tone: Tone } => Boolean(item))
-    .slice(0, 14)
-  const hasKeywords = keywords.length > 0
-
-  useEffect(() => {
-    const node = cloudRef.current
-    if (!hasKeywords || !node) {
-      setIsAnimationVisible(false)
-      return
-    }
-
-    const observer = new IntersectionObserver(
-      ([entry]) => setIsAnimationVisible(entry.isIntersecting),
-      { rootMargin: '160px 0px' },
-    )
-    observer.observe(node)
-    return () => observer.disconnect()
-  }, [hasKeywords])
-
-  if (!hasKeywords) return null
-
-  return (
-    <div
-      ref={cloudRef}
-      className="sv-home-keyword-cloud mt-5 overflow-hidden border-t border-white/[0.07] pt-4"
-      data-animate={isAnimationVisible ? 'true' : 'false'}
-    >
-      <p className="mb-3 text-sm font-bold text-slate-200">熱門關鍵字</p>
-      <div className="relative min-h-[104px] rounded-[18px] border border-white/[0.055] bg-[#0b0d12] px-3 py-4">
-        <div className="flex flex-wrap justify-center gap-x-5 gap-y-4">
-          {keywords.map((item, index) => {
-            const size = index < 3 ? 'text-base sm:text-lg' : index < 8 ? 'text-sm sm:text-base' : 'text-xs sm:text-sm'
-            const style = {
-              ['--wc-dx' as any]: `${6 + (index % 4) * 3}`,
-              ['--wc-dy' as any]: `${5 + (index % 5) * 2}`,
-              ['--wc-rot' as any]: `${(index % 5) - 2}deg`,
-              animation: `wc-float-${(index % 3) + 1} ${8 + (index % 4)}s ease-in-out infinite`,
-              animationDelay: `${index * -0.55}s`,
-            } as CSSProperties
-            return (
-              <span
-                key={item.keyword}
-                style={style}
-                className={cx(
-                  'sv-home-keyword inline-flex rounded-full border px-3 py-1.5 font-extrabold leading-none tracking-normal',
-                  size,
-                  item.tone === 'red'
-                    ? 'border-red-400/25 bg-red-500/[0.07] text-red-300'
-                    : item.tone === 'green'
-                      ? 'border-emerald-400/25 bg-emerald-500/[0.07] text-emerald-300'
-                      : 'border-cyan-400/20 bg-cyan-500/[0.06] text-cyan-200',
-                )}
-                title={item.value == null ? item.keyword : `${item.keyword} ${item.value >= 0 ? '+' : ''}${item.value.toFixed(1)}`}
-              >
-                {item.keyword}
-              </span>
-            )
-          })}
-        </div>
-      </div>
-    </div>
-  )
-}
-
-function ThemeFlowPanel({ compact = false }: { compact?: boolean }) {
-  const { data: themeData, error: themeError, isError: themeIsError } = useQuery({
-    queryKey: ['recommendations', 'sector-flow', 'theme', 'home'],
-    queryFn: () => recommendationsApi.sectorFlow(undefined, 'theme'),
-    staleTime: 30 * 60 * 1000,
-    retry: 1,
-  })
-  const { data: industryData, error: industryError, isError: industryIsError } = useQuery({
-    queryKey: ['recommendations', 'sector-flow', 'industry', 'home'],
-    queryFn: () => recommendationsApi.sectorFlow(undefined, 'industry'),
-    staleTime: 30 * 60 * 1000,
-    retry: 1,
-  })
-  const limit = 15
-  const themeRows = asArray<any>(themeData?.flows).slice(0, limit)
-  const industryRows = asArray<any>(industryData?.flows).slice(0, limit)
-  const hotKeywordRows = [...themeRows, ...industryRows]
-  const errorText = themeIsError || industryIsError
-    ? String((themeError as Error | null)?.message ?? (industryError as Error | null)?.message ?? 'sector-flow API error')
-    : null
-
-  return (
-    <section className={panelClass('h-full p-5')}>
-      <div className="mb-5 flex items-center justify-between gap-3">
-        <div className="flex items-center gap-2">
-          <Radar className="h-4 w-4 text-cyan-300" />
-          <h2 className="font-bold text-slate-100">法人資金流與題材輪動</h2>
-        </div>
-        <SourceBadge>{themeData?.date ?? industryData?.date ?? 'sector-flow'}</SourceBadge>
-      </div>
-      {errorText ? (
-        <div className="rounded-[16px] border border-amber-300/15 bg-amber-400/[0.055] p-4 text-sm text-amber-100">
-          法人資金流與題材輪動讀取失敗：{errorText}
-        </div>
-      ) : (
-        <>
-          <HotKeywordCloud rows={hotKeywordRows} />
-          <div className={cx('mt-5 grid gap-6 border-t border-white/[0.07] pt-4', compact ? 'grid-cols-1' : 'xl:grid-cols-2')}>
-            <FlowList title="題材資金流" rows={themeRows} />
-            <FlowList title="產業資金流" rows={industryRows} />
-          </div>
-        </>
-      )}
-    </section>
-  )
-}
-
 function recommendationRowsFromPayload(payload: any) {
   const explicitAll = asArray<any>(payload?.all_recommendations)
   if (explicitAll.length) return explicitAll
@@ -1634,9 +1466,9 @@ export default function MarketHomePage() {
           </div>
 
           <MarketOverviewBlock />
-          <div className="sv-home-deferred-section grid items-start gap-4 xl:grid-cols-[minmax(0,2fr)_minmax(360px,1fr)]">
+          <div className="sv-home-deferred-section space-y-4">
             <RecommendationPanel />
-            <ThemeFlowPanel compact />
+            <GroupFactorTrajectoryPanel />
           </div>
         </main>
       </div>

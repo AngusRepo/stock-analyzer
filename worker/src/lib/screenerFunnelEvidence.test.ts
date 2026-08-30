@@ -160,12 +160,21 @@ function assert(condition: unknown, message: string): void {
     },
     {
       symbol: '2330',
-      stage: 'rrg_overlay',
+      stage: 'pit_residual_momentum_shadow',
       decision: 'observe',
-      reason_code: 'rrg_overlay_leading_confirmed',
+      reason_code: 'pit_residual_shadow_rank_up',
       score_before: 72,
-      score_after: 75,
-      evidence: JSON.stringify({ tag: 'AI', quadrant: 'Leading', adjustment: 3 }),
+      score_after: 72,
+      evidence: JSON.stringify({
+        applicationMode: 'shadow_pre_l2_candidate_rank_feature_only',
+        candidateSetMutationAllowed: false,
+        decisionEffect: 'none',
+        industry: 'Semiconductor',
+        residualMomentumRank: 0.82,
+        productionRank: 9,
+        shadowRank: 6,
+        rankDelta: 3,
+      }),
     },
     {
       symbol: '2330',
@@ -317,7 +326,7 @@ function assert(condition: unknown, message: string): void {
   assert((summary?.evidence.layer35_evidence_fusion as any)?.active_l3_family_sufficient === true, 'Layer3.5 should mark sufficient L3 family evidence')
   assert((summary?.evidence.layer35_evidence_fusion as any)?.conflict_level === 'low', 'aligned L1.5 route and L3 formal family score should be low conflict')
   assert((summary?.evidence.layer35_evidence_fusion as any)?.recommended_action === 'allow_downstream_sparse_allocation', 'low conflict should allow downstream sparse allocation')
-  assert((summary?.evidence.rrg_overlay as any)?.quadrant === 'Leading', 'RRG overlay evidence must be summarized')
+  assert((summary?.evidence.pit_residual_momentum_shadow as any)?.rankDelta === 3, 'PIT residual shadow evidence must be summarized')
   assert((summary?.evidence.buzz_evidence as any)?.concept === 'AI', 'buzz evidence must be summarized')
   assert(Array.isArray(summary?.evidence.diversity_cooldown), 'diversity/cooldown evidence must be summarized')
   assert(Array.isArray(summary?.evidence.decision_path), 'decision path must be UI-readable')

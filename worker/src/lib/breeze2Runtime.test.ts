@@ -103,6 +103,17 @@ function scoreV2(finalScore: number): string {
   assert(request.mutation_allowed === false, 'request must stay non-mutating')
   assert(request.real_trading_allowed === false, 'request must never request real trading')
   assert(request.metadata?.run_date === '2026-05-17', 'request should preserve run date metadata')
+  const snippets = request.evidence_items.map((item) => String(item.snippet ?? ''))
+  assert(!snippets.some((snippet) => /rrg/i.test(snippet)), 'RRG watch points must not enter Breeze2 evidence')
+  assert(snippets.includes('buzz_evidence:AI server'), 'non-RRG evidence should remain visible to Breeze2')
+}
+
+{
+  const baseline = { symbol: '2330', score_v2: scoreV2(88) }
+  assert(
+    shouldRequestBreeze2({ ...baseline, watch_points: ['rrg_overlay:Leading'] }) === shouldRequestBreeze2(baseline),
+    'RRG-only watch points must not change Breeze2 request authority',
+  )
 }
 
 {

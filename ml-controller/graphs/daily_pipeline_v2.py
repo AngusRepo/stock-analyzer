@@ -107,6 +107,7 @@ from services.breeze2_reason_shadow import (
     build_breeze2_reason_shadow_for_canonical_payloads,
 )
 from services.sector_flow_service import run_sector_flow_pipeline
+from services.pit_residual_shadow_service import run_pit_residual_shadow
 from services.pit_sector_alpha import load_pit_sector_alpha_experts, unavailable_sector_alpha
 from services.persona_service import (
     ChipBar,
@@ -592,7 +593,8 @@ class PipelineStateV2(TypedDict, total=False):
     breeze2_reason_shadow: dict             # symbol -> advisory-only Breeze2 shadow reason
 
     # Outputs
-    sector_flow_summary: dict               # Phase 6: RRG compute result (concept + industry)
+    sector_flow_summary: dict               # Legacy sector-flow compatibility snapshot
+    pit_residual_shadow_summary: dict        # Prospective 10% residual challenger; no decision authority
     persona_opinions: dict                  # symbol ??{trust:{...}, retail:{...}} (Taiwan-persona augmentation)
     metrics: dict                           # timing, counts
     errors: Annotated[list[str], operator.add]
@@ -1956,6 +1958,28 @@ async def node_compute_sector_flow(state: PipelineStateV2) -> dict:
             if attempt < 3:
                 await asyncio.sleep(2 ** attempt)
     raise RuntimeError(f"sector_flow_daily_closure_failed:{last_error}") from last_error
+
+
+async def node_compute_pit_residual_shadow(state: PipelineStateV2) -> dict:
+    """Persist the prospective PIT residual-momentum snapshot.
+
+    This node is deliberately non-fatal and has no current-session score,
+    candidate-set, debate, sizing, or order authority.
+    """
+    logger.info("[Pipeline V2] node_compute_pit_residual_shadow")
+    try:
+        summary = await asyncio.to_thread(run_pit_residual_shadow, state["run_date"])
+        return {"pit_residual_shadow_summary": summary}
+    except Exception as exc:
+        logger.warning("[Pipeline V2] PIT residual shadow failed (non-fatal): %s", exc)
+        return {
+            "pit_residual_shadow_summary": {
+                "status": "error",
+                "decision_effect": "none",
+                "error": str(exc),
+            },
+            "errors": [f"pit_residual_shadow:{exc}"],
+        }
 
 
 def _build_active8_evidence_only_recommendation_result(
@@ -4481,6 +4505,7 @@ def build_graph():
     g.add_node("load_inputs",       node_load_inputs)
     g.add_node("load_market_env",   node_load_market_env)
     g.add_node("compute_sector_flow", node_compute_sector_flow)
+    g.add_node("compute_pit_residual_shadow", node_compute_pit_residual_shadow)
     g.add_node("build_payloads",    node_build_payloads)
     g.add_node("l2_timesfm_enrich", node_l2_timesfm_enrich, retry=ml_retry)
     g.add_node("l3_formal_predict", node_l3_formal_predict, retry=ml_retry)
@@ -4503,7 +4528,8 @@ def build_graph():
     g.add_edge("recommend",           "gen_llm_reasons")
     g.add_edge("gen_llm_reasons",     "write_d1")
     g.add_edge("write_d1",            "compute_sector_flow")
-    g.add_edge("compute_sector_flow", "export_dataset_snapshot")
+    g.add_edge("compute_sector_flow", "compute_pit_residual_shadow")
+    g.add_edge("compute_pit_residual_shadow", "export_dataset_snapshot")
     g.add_edge("export_dataset_snapshot", END)
 
     # Checkpointer disabled for now:

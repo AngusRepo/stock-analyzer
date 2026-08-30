@@ -976,7 +976,7 @@ function summarizeEvidence(steps: ScreenerFunnelStep[]): Record<string, unknown>
   const layer125 = buildLayer125FinLabPortfolioIntelligenceSummary(layer1, candidateSeed)
   const layer15 = buildLayer15MultiStrategyRouterSummary(layer1, candidateSeed)
   const layer35 = buildLayer35EvidenceFusion(layer1, layer3)
-  const rrg = pickLastByStage(steps, 'rrg_overlay')
+  const pitResidualShadow = pickLastByStage(steps, 'pit_residual_momentum_shadow')
   const buzz = pickLastByStage(steps, 'buzz_evidence')
   const strategyPool = [
     ...pickAllByStage(steps, 'strategy_pool_ml_queue'),
@@ -1018,7 +1018,12 @@ function summarizeEvidence(steps: ScreenerFunnelStep[]): Record<string, unknown>
   if (layer3Summary) evidence.layer3_8ml_formal = layer3Summary
   if (layer3) evidence.layer3_formal_ml = { reason_code: layer3.reason_code, rank: layer3.rank, score_after: layer3.score_after, ...layer3.evidence }
   if (layer35) evidence.layer35_evidence_fusion = layer35
-  if (rrg) evidence.rrg_overlay = { reason_code: rrg.reason_code, ...rrg.evidence }
+  if (pitResidualShadow) {
+    evidence.pit_residual_momentum_shadow = {
+      reason_code: pitResidualShadow.reason_code,
+      ...pitResidualShadow.evidence,
+    }
+  }
   if (buzz) evidence.buzz_evidence = { reason_code: buzz.reason_code, ...buzz.evidence }
   if (strategyPool.length) {
     evidence.strategy_pool = strategyPool.map((step) => ({

@@ -64,7 +64,9 @@ function collectWatchPoints(candidate: Breeze2CandidateShape): string[] {
   return [
     ...(Array.isArray(candidate.watch_points) ? candidate.watch_points : []),
     ...(Array.isArray(candidate.strategy_watch_points) ? candidate.strategy_watch_points : []),
-  ].map(String).filter(Boolean)
+  ].map(String).filter((point) =>
+    Boolean(point) && !/rrg(?:_|\s|:)|relative rotation/i.test(point),
+  )
 }
 
 function inferTheme(candidate: Breeze2CandidateShape): Record<string, unknown> {
@@ -72,10 +74,9 @@ function inferTheme(candidate: Breeze2CandidateShape): Record<string, unknown> {
   const score = normalizeCandidateScore(candidate)
   const points = collectWatchPoints(candidate)
   const hasBuzz = points.some((point) => point.includes('buzz_evidence'))
-  const hasRrg = points.some((point) => point.includes('rrg_overlay'))
   return {
-    theme_score: explicit.theme_score ?? (hasRrg || hasBuzz ? Math.max(score, 0.72) : score),
-    fact_support: explicit.fact_support ?? (hasBuzz && !hasRrg ? 0.48 : 0.55),
+    theme_score: explicit.theme_score ?? (hasBuzz ? Math.max(score, 0.72) : score),
+    fact_support: explicit.fact_support ?? (hasBuzz ? 0.48 : 0.55),
     hype_risk: explicit.hype_risk ?? (hasBuzz ? 0.62 : 0.35),
     name: explicit.name ?? points.find((point) => point.includes('buzz_evidence')) ?? undefined,
   }

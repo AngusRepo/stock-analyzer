@@ -12,6 +12,16 @@
 import type { Bindings } from '../types'
 import { CANONICAL_SELECTION_ADJUSTMENT_SOURCE } from './canonicalSelectionLabels'
 import { databaseForDataDomain } from './dataDomainRegistry'
+import {
+  buildPitResidualCounterfactuals,
+  loadPitResidualShadowSnapshot,
+  PIT_RESIDUAL_CANDIDATE_SET_MUTATION_ALLOWED,
+  PIT_RESIDUAL_DEBATE_VISIBILITY,
+  PIT_RESIDUAL_PRIMARY_HORIZON_SESSIONS,
+  PIT_RESIDUAL_SHADOW_APPLICATION_MODE,
+  PIT_RESIDUAL_SHADOW_WEIGHT,
+  requireLearningShadowDatabase,
+} from './pitResidualShadow'
 import { loadCanonicalScreenerRunIds } from './historicalScreenerArtifactEvidence'
 import {
   loadCoreStockIdentitiesBySymbols,
@@ -94,6 +104,7 @@ const SCREENER_FUNNEL_AUDIT_CRITICAL_STAGES = new Set([
   'l15_ml_slate_queue',
   'layer2_timesfm_enrichment',
   'strategy_pool_ml_queue',
+  'pit_residual_momentum_shadow',
 ])
 
 function isEtfHardGateSymbol(symbol: string, info?: { market?: string }): boolean {
@@ -3021,7 +3032,7 @@ async function storeSectorHeat(
 // ??? Main Entry ??????????????????????????????????????????????????????????????
 
 // ????????????????????????????????????????????????????????????????????????????????
-// Bottom-up 憭?摮?+ RRG ?Ｘ平頛芸? Screener嚗2嚗?
+// Bottom-up multi-factor screener v2.
 // ????????????????????????????????????????????????????????????????????????????????
 
 /**
@@ -3359,12 +3370,8 @@ export function scoreMultiFactor(
   }
 }
 
-// RRG logic (classifyQuadrant / backfillRRG / calcIndustryRRG) removed in Phase 6.6
-// of 4/8 audit. The Z-score formula used here was incorrect (not Julius de Kempenaer
-// RRG). RRG is now computed by ml-controller/services/sector_flow_service.py using
-// the vs-TWII benchmark formula (1+group_ret)/(1+twii_ret)*100. V2 LangGraph
-// daily_pipeline_v2.py ??node_compute_sector_flow writes sector_flow with the
-// correct formula for both concept ('theme') and industry tag_types.
+// Legacy in-worker rotation math remains retired. The controller-owned sector_flow
+// artifact stays available for historical API compatibility, not selection authority.
 
 
 /**
@@ -4190,7 +4197,7 @@ export async function runBottomUpScreener(env: Bindings, runDate?: string | null
           source_universe: 'full_feature_enriched_universe',
           source_universe_count: strategySourceUniverse.length,
           selection_order: layer1BreadthPlan.telemetry.selection_order,
-          layer_contract: 'L1 keeps breadth; RRG/news/PTT/heavy ML are not selection owners here',
+          layer_contract: 'L1 keeps breadth; news/PTT/heavy ML are not selection owners here',
           formal_l2_queue: !isObserveTopUp,
         },
       })
@@ -4340,7 +4347,7 @@ export async function runBottomUpScreener(env: Bindings, runDate?: string | null
           strategy_position_weight_vector: entry.strategy_position_weight_vector ?? null,
           strategy_overlap_vector: entry.strategy_overlap_vector ?? null,
           strategy_family_affinity: entry.strategy_family_affinity ?? null,
-          source_universe: 'post_safety_hard_filter_pre_rrg',
+          source_universe: 'post_safety_hard_filter_pre_factor_shadow',
           source_universe_count: strategySourceUniverse.length,
           market_segment: entry.market_segment ?? null,
         },
@@ -4365,7 +4372,7 @@ export async function runBottomUpScreener(env: Bindings, runDate?: string | null
           strategy_pool_fallback_source: entry.strategy_pool_fallback_source ?? null,
           strategy_pool_score: entry.strategy_pool_score ?? null,
           market_segment: entry.market_segment ?? null,
-          source_universe: 'post_safety_hard_filter_pre_rrg',
+          source_universe: 'post_safety_hard_filter_pre_factor_shadow',
         },
       })
     }
@@ -4374,215 +4381,75 @@ export async function runBottomUpScreener(env: Bindings, runDate?: string | null
     throw new Error(`strategy_registry_required_for_clean_runtime:${String(e)}`)
   }
 
-  // ?? Step 3: RRG 鞊⊿??? ?? (2026-04-09 rewired)
-  // RRG bonus config is consumed below from trading config / Optuna pushes.
-  // 雿? consumer?ㄐ?乩?嚗? ml-controller 撖怎? sector_flow (classification='theme'
-  // + ???date + ?征 quadrant)嚗?瘥???∠? top concept tag 撠???quadrant嚗?
-  // ?嗅???cfg.rrg.{leadingBonus, improvingBonus, weakeningBonus, laggingPenalty}
-  // 隤踵 score?誑 Score V2 partial total 雿?seed score嚗?蝥?overlay 隤踵敺???c.score??
-  // RRG quadrant axes (RS=100, Mom=0) are canonical de Kempenaer coordinates,
-  // so they stay fixed rather than becoming Optuna-tunable policy knobs.
+  // Step 3: prospective PIT residual-momentum challenger.
+  // Breadth and flow diffusion are confirmation diagnostics only; production score stays unchanged.
   const sectorHeatScores: SectorHeatScore[] = []
-  let rrgShadowNonzeroCount = 0
-  const rrgCfg = cfg.rrg
-  if (rrgCfg && scored.length > 0) {
+  if (scored.length > 0) {
     try {
-      // (a) 瘥???∠? top (highest weight) concept tag
-      const topTagRows = await queryTopConceptTagsForSymbols(databaseForDataDomain(env, 'market'), [...overlayEligibleSymbols], 400, endDate)
-      const symbolTags = new Map<string, Array<{ tag: string; classification: string }>>()
-      for (const r of topTagRows ?? []) {
-        const tags = symbolTags.get(r.symbol) ?? []
-        tags.push({ tag: r.tag, classification: rrgClassificationForTagType(r.tag_type) })
-        symbolTags.set(r.symbol, tags)
-      }
-      // (b) ???sector_flow ??撅?taxonomy quadrant
-      const { results: qRows } = await databaseForDataDomain(env, 'market').prepare(
-        `SELECT sector, classification, quadrant, rs_ratio, rs_momentum, turnover_share_delta,
-                rotation_score, rotation_regime, rotation_hysteresis, rotation_velocity,
-                rotation_acceleration, quadrant_age, transition_path, rotation_window
-           FROM sector_flow
-         WHERE classification IN ('industry', 'industry_theme', 'subindustry', 'theme')
-           AND date <= ?
-           AND quadrant IS NOT NULL
-           AND rs_ratio IS NOT NULL
-           AND rs_momentum IS NOT NULL
-           AND date = (SELECT MAX(date) FROM sector_flow
-                       WHERE classification IN ('industry', 'industry_theme', 'subindustry', 'theme')
-                         AND date <= ?
-                         AND rs_ratio IS NOT NULL
-                         AND rs_momentum IS NOT NULL)`
-      ).bind(endDate, endDate).all<{
-        sector: string
-        classification: string
-        quadrant: string
-        rs_ratio: number | null
-        rs_momentum: number | null
-        turnover_share_delta: number | null
-        rotation_score: number | null
-        rotation_regime: string | null
-        rotation_hysteresis: string | null
-        rotation_velocity: number | null
-        rotation_acceleration: number | null
-        quadrant_age: number | null
-        transition_path: string | null
-        rotation_window: number | null
-      }>()
-      const themeQuadrant = new Map<string, {
-        quadrant: string
-        rsRatio: number
-        rsMomentum: number
-        turnoverShareDelta: number
-        rotationScore: number | null
-        rotationRegime: string | null
-        rotationHysteresis: string | null
-        rotationVelocity: number | null
-        rotationAcceleration: number | null
-        quadrantAge: number | null
-        transitionPath: string | null
-        rotationWindow: number | null
-      }>()
-      for (const r of qRows ?? []) {
-        const classification = String(r.classification || '').trim()
-        const sector = String(r.sector || '').trim()
-        if (!classification || !sector) continue
-        themeQuadrant.set(`${classification}:${sector}`, {
-          quadrant: r.quadrant,
-          rsRatio: Number(r.rs_ratio ?? 100),
-          rsMomentum: Number(r.rs_momentum ?? 0),
-          turnoverShareDelta: Number(r.turnover_share_delta ?? 0),
-          rotationScore: r.rotation_score == null ? null : Number(r.rotation_score),
-          rotationRegime: r.rotation_regime == null ? null : String(r.rotation_regime),
-          rotationHysteresis: r.rotation_hysteresis == null ? null : String(r.rotation_hysteresis),
-          rotationVelocity: r.rotation_velocity == null ? null : Number(r.rotation_velocity),
-          rotationAcceleration: r.rotation_acceleration == null ? null : Number(r.rotation_acceleration),
-          quadrantAge: r.quadrant_age == null ? null : Number(r.quadrant_age),
-          transitionPath: r.transition_path == null ? null : String(r.transition_path),
-          rotationWindow: r.rotation_window == null ? null : Number(r.rotation_window),
+      const learningDb = requireLearningShadowDatabase(env)
+      const eligibleCandidates = scored
+        .filter((candidate) => overlayEligibleSymbols.has(candidate.symbol))
+        .map((candidate) => ({ symbol: candidate.symbol, score: candidate.score }))
+      const snapshot = await loadPitResidualShadowSnapshot(
+        learningDb,
+        eligibleCandidates.map((candidate) => candidate.symbol),
+        endDate,
+      )
+      const counterfactuals = buildPitResidualCounterfactuals(eligibleCandidates, snapshot)
+      const candidateBySymbol = new Map(scored.map((candidate) => [candidate.symbol, candidate]))
+      for (const row of counterfactuals) {
+        const candidate = candidateBySymbol.get(row.symbol)
+        if (!candidate) continue
+        pushFunnelItem(funnelItems, {
+          symbol: candidate.symbol,
+          name: candidate.name,
+          stage: 'pit_residual_momentum_shadow',
+          decision: 'observe',
+          reasonCode: row.rankDelta > 0
+            ? 'pit_residual_shadow_rank_up'
+            : row.rankDelta < 0
+              ? 'pit_residual_shadow_rank_down'
+              : 'pit_residual_shadow_rank_unchanged',
+          scoreBefore: candidate.score,
+          scoreAfter: candidate.score,
+          rank: row.productionRank,
+          evidence: {
+            applicationMode: PIT_RESIDUAL_SHADOW_APPLICATION_MODE,
+            candidateSetMutationAllowed: PIT_RESIDUAL_CANDIDATE_SET_MUTATION_ALLOWED,
+            debateVisibility: PIT_RESIDUAL_DEBATE_VISIBILITY,
+            decisionEffect: 'none',
+            residualWeight: PIT_RESIDUAL_SHADOW_WEIGHT,
+            primaryHorizonSessions: PIT_RESIDUAL_PRIMARY_HORIZON_SESSIONS,
+            signalDate: row.signalDate,
+            industry: row.industry,
+            productionBasePercentile: row.productionBasePercentile,
+            residualMomentumRank: row.residualMomentumRank,
+            productionShadowScore: row.productionShadowScore,
+            productionRank: row.productionRank,
+            shadowRank: row.shadowRank,
+            rankDelta: row.rankDelta,
+            breadthRank: row.breadthRank,
+            flowDiffusionRank: row.flowDiffusionRank,
+            diagnosticConfirmationRank: row.diagnosticConfirmationRank,
+            auxiliaryAuthority: 'diagnostic_only',
+            researchBaseScore: row.researchBaseScore,
+            researchShadowScore: row.researchShadowScore,
+            factorContractVersion: row.factorContractVersion,
+            taxonomySnapshotDate: row.taxonomySnapshotDate,
+            taxonomyChecksum: row.taxonomyChecksum,
+          },
         })
       }
-      const latestThemeUniverse = new Set(themeQuadrant.keys())
-
-      // Apply bonus to each scored candidate
-      for (const c of scored) {
-        if (!overlayEligibleSymbols.has(c.symbol)) continue
-        const tags = symbolTags.get(c.symbol) ?? []
-        const matched = tags.find((candidateTag) => latestThemeUniverse.has(`${candidateTag.classification}:${candidateTag.tag}`)) ?? tags[0]
-        if (!matched) continue
-        const taxonomyKey = `${matched.classification}:${matched.tag}`
-        const overlay = themeQuadrant.get(taxonomyKey)
-        if (!overlay) {
-          pushFunnelItem(funnelItems, {
-            symbol: c.symbol,
-            name: c.name,
-            stage: 'rrg_overlay',
-            decision: 'observe',
-            reasonCode: 'rrg_overlay_unmapped_neutral',
-            scoreBefore: c.score,
-            scoreAfter: c.score,
-            evidence: {
-              tag: matched.tag,
-              classification: matched.classification,
-              taxonomyKey,
-              latestThemeUniverseSize: latestThemeUniverse.size,
-              applicationMode: 'shadow_late_l4_fusion_feature_only',
-              candidateSetMutationAllowed: false,
-            },
-          })
-          continue
-        }
-        const {
-          quadrant: q,
-          rsRatio,
-          rsMomentum,
-          turnoverShareDelta,
-          rotationScore,
-          rotationRegime,
-          rotationHysteresis,
-          rotationVelocity,
-          rotationAcceleration,
-          quadrantAge,
-          transitionPath,
-          rotationWindow,
-        } = overlay
-        let adjustment = 0
-        let reasonCode = 'rrg_overlay_neutral'
-        if (q === 'Leading' && rsRatio >= 100 && rsMomentum >= 0) {
-          adjustment = Math.min(4, Math.max(0, Number(rrgCfg.leadingBonus ?? 0)))
-          reasonCode = 'rrg_overlay_leading_confirmed'
-        } else if (q === 'Improving' && rsMomentum > 0) {
-          adjustment = Math.min(3, Math.max(0, Number(rrgCfg.improvingBonus ?? 0)))
-          reasonCode = 'rrg_overlay_improving_tailwind'
-        } else if (q === 'Weakening' && rsMomentum < 0) {
-          adjustment = Math.min(0, Number(rrgCfg.weakeningBonus ?? -2) || -2)
-          reasonCode = 'rrg_overlay_weakening_risk'
-        } else if (q === 'Lagging') {
-          adjustment = Math.max(-6, Math.min(-2, Number(rrgCfg.laggingPenalty ?? -4)))
-          reasonCode = 'rrg_overlay_lagging_risk'
-        }
-        const rotationAdjustment = Number.isFinite(rotationScore)
-          ? Math.max(-3, Math.min(3, Number(rotationScore) * 3))
-          : 0
-        if (rotationAdjustment !== 0) {
-          adjustment += rotationAdjustment
-          reasonCode = rotationRegime ? `rrg_rotation_${rotationRegime}` : reasonCode
-        }
-        let turnoverShareAdjustment = 0
-        if ((q === 'Leading' || q === 'Improving') && turnoverShareDelta >= 0.002) {
-          turnoverShareAdjustment = 1
-          reasonCode = 'rrg_overlay_turnover_share_tailwind'
-        } else if ((q === 'Weakening' || q === 'Lagging') && turnoverShareDelta <= -0.003) {
-          turnoverShareAdjustment = -1
-          reasonCode = 'rrg_overlay_turnover_share_outflow_risk'
-        }
-        adjustment += turnoverShareAdjustment
-        if (adjustment !== 0) {
-          const frozenScore = c.score
-          rrgShadowNonzeroCount++
-          pushFunnelItem(funnelItems, {
-            symbol: c.symbol,
-            name: c.name,
-            stage: 'rrg_overlay',
-            decision: 'observe',
-            reasonCode,
-            scoreBefore: frozenScore,
-            scoreAfter: frozenScore,
-            evidence: {
-              tag: matched.tag,
-              classification: matched.classification,
-              taxonomyKey,
-              quadrant: q,
-              rsRatio,
-              rsMomentum,
-              turnoverShareDelta,
-              rotationScore,
-              rotationRegime,
-              rotationHysteresis,
-              rotationVelocity,
-              rotationAcceleration,
-              quadrantAge,
-              transitionPath,
-              rotationWindow,
-              rotationAdjustment,
-              turnoverShareAdjustment,
-              shadowAdjustment: adjustment,
-              applicationMode: 'shadow_late_l4_fusion_feature_only',
-              downstreamOwner: 'l4_fusion_allocator',
-              candidateSetMutationAllowed: false,
-            },
-          })
-        }
-      }
       debugLog.push(
-        `[Step 3] RRG shadow evidence nonzero=${rrgShadowNonzeroCount}/${scored.length} ` +
-        `(taxonomy sectors loaded: ${themeQuadrant.size}, ` +
-        `bonuses: L=${rrgCfg.leadingBonus} I=${rrgCfg.improvingBonus} W=${rrgCfg.weakeningBonus} La=${rrgCfg.laggingPenalty})`
+        `[Step 3] PIT residual 10% shadow observed on ${counterfactuals.length}/${eligibleCandidates.length}; `
+        + `breadth/flow diagnostic-only; source=${snapshot.signalDate ?? 'missing'}; decision_effect=none`,
       )
     } catch (e) {
-      console.warn('[Screener v2] RRG quadrant bonus failed (non-fatal):', e)
-      debugLog.push(`[Step 3] RRG quadrant bonus skipped (error): ${e}`)
+      console.warn('[Screener v2] PIT residual shadow failed (non-fatal):', e)
+      debugLog.push(`[Step 3] PIT residual shadow skipped (error): ${e}`)
     }
   } else {
-    debugLog.push('[Step 3] RRG shadow evidence skipped (cfg.rrg missing or empty scored)')
+    debugLog.push('[Step 3] PIT residual shadow skipped (empty scored)')
   }
 
   // ?? Step 4: ???Ｗ?????
@@ -5693,9 +5560,7 @@ export async function runBottomUpScreener(env: Bindings, runDate?: string | null
   // Discord ?
   try {
     const { sendDiscordNotification } = await import('./notify')
-    // Phase 6.6: RRG moved to ml-controller; screener no longer has in-memory `rrg` map.
-    // Leading industry list omitted from this notification (can be re-added by
-    // querying sector_flow table if needed).
+    // Sector rotation stays outside screener authority; notification keeps no leading-industry inference.
     const leadingIndustries = ''
     const topCands = finalCandidates.slice(0, 5).map(c => `${c.symbol}${c.name}(${c.score.toFixed(0)})`).join(' ')
     const pttTop = combinedBuzz.slice(0, 3).map(b => `${b.concept}(${b.mentionCount})`).join(', ')

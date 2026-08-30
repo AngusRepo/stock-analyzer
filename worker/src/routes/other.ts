@@ -190,6 +190,7 @@ async function buildMarketRiskFallback(reason: string) {
 
 import type { Bindings, Variables } from '../types'
 import { databaseForDataDomain } from '../lib/dataDomainRegistry'
+import { loadPitFactorFlowMap } from '../lib/pitFactorFlowMap'
 import { authMiddleware, adminMiddleware } from '../lib/auth'
 import { rateLimitMiddleware } from '../lib/rateLimit'
 import { withCache, TTL } from '../lib/cache'
@@ -4210,7 +4211,7 @@ recommendations.get('/daily', async (c) => {
            AND stage IN (
              'universe',
              'scoring',
-             'rrg_overlay',
+             'pit_residual_momentum_shadow',
              'buzz_evidence',
              'diversity_cooldown',
              'layer1_strategy_breadth_gate',
@@ -4507,6 +4508,39 @@ recommendations.get('/sector-flow', async (c) => {
   }
 
   return c.json({ date, requested_date: date, stale: false, stale_date: null, flows: results })
+})
+
+// GET /api/recommendations/factor-flow-map?date=YYYY-MM-DD&days=10&symbols=2330,2317
+// The residual factor is the sole challenger; breadth and flow remain chart diagnostics only.
+recommendations.get('/factor-flow-map', async (c) => {
+  const requestedDate = c.req.query('date') ?? new Date(Date.now() + 8 * 3600_000).toISOString().slice(0, 10)
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(requestedDate)) {
+    return c.json({ error: 'invalid_date', requested_date: requestedDate }, 400)
+  }
+  const symbols = String(c.req.query('symbols') ?? '')
+    .split(',')
+    .map((symbol) => symbol.trim())
+    .filter(Boolean)
+  try {
+    const payload = await loadPitFactorFlowMap(c.env, {
+      requestedDate,
+      days: Math.min(parsePosInt(c.req.query('days'), 10), 30),
+      symbols,
+      includeMovers: Math.max(0, Math.min(Number(c.req.query('include_movers') ?? 6) || 0, 12)),
+    })
+    return c.json(payload)
+  } catch (error) {
+    console.warn('[recommendations/factor-flow-map] unavailable:', error)
+    return c.json({
+      error: 'pit_factor_flow_map_unavailable',
+      requested_date: requestedDate,
+      detail: String(error),
+      governance: {
+        auxiliary_authority: 'diagnostic_only',
+        decision_effect: 'none',
+      },
+    }, 503)
+  }
 })
 
 // GET /api/recommendations/sector-trend?sector=半導體&days=14&type=industry|theme

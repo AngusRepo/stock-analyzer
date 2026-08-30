@@ -112,22 +112,6 @@ interface BuyRecommendationRow {
   watch_points?: unknown
 }
 
-interface QuadrantInfo {
-  theme: string
-  classification: string
-  quadrant: string
-  rs_ratio: number
-  rs_momentum: number
-  rotation_score?: number | null
-  rotation_regime?: string | null
-  rotation_hysteresis?: string | null
-  rotation_velocity?: number | null
-  rotation_acceleration?: number | null
-  quadrant_age?: number | null
-  transition_path?: string | null
-  rotation_window?: number | null
-}
-
 interface QuadrantFilterLogEntry {
   symbol: string
   name: string
@@ -153,11 +137,7 @@ interface PendingBuyFilterAuditSummary {
   score_v2_missing: number
   alpha_skip: number
   alpha_risk_debate_required: number
-  rrg_unmapped_neutral: number
-  rrg_lagging_soft_downgrade: number
-  rrg_weakening_downgrade: number
   trading_attention_risk_evidence: number
-  rrg_pass: number
   gap_reject: number
   final_candidates: number
   debate_pending: number
@@ -223,14 +203,18 @@ function getTwDate(offsetDays = 0): string {
 }
 
 function parseWatchPoints(raw: unknown): string[] {
+  const keep = (value: unknown): value is string =>
+    typeof value === 'string'
+    && value.trim().length > 0
+    && !/rrg(?:_|\s|:)|relative rotation/i.test(value)
   if (Array.isArray(raw)) {
-    return raw.filter((value): value is string => typeof value === 'string' && value.trim().length > 0)
+    return raw.filter(keep)
   }
   if (typeof raw !== 'string' || !raw.trim()) return []
   try {
     const parsed = JSON.parse(raw)
     return Array.isArray(parsed)
-      ? parsed.filter((value): value is string => typeof value === 'string' && value.trim().length > 0)
+      ? parsed.filter(keep)
       : []
   } catch {
     return []
@@ -238,13 +222,16 @@ function parseWatchPoints(raw: unknown): string[] {
 }
 
 function formatDebateWatchPoints(watchPoints: string[] | undefined): string | null {
-  const points = (watchPoints ?? []).filter((point) => typeof point === 'string' && point.trim().length > 0)
+  const points = (watchPoints ?? []).filter((point) =>
+    typeof point === 'string'
+    && point.trim().length > 0
+    && !/rrg(?:_|\s|:)|relative rotation/i.test(point),
+  )
   if (!points.length) return null
   const riskEvidence = points.filter((point) =>
     point.includes('debate_required=true') ||
     point.includes('alpha_risk_overlay') ||
-    point.includes('trading_attention_risk_evidence') ||
-    point.includes('rrg_soft_overlay'),
+    point.includes('trading_attention_risk_evidence'),
   )
   const supportingEvidence = points.filter((point) => !riskEvidence.includes(point))
   const promptPoints = [...riskEvidence, ...supportingEvidence].slice(0, 16)
@@ -282,11 +269,7 @@ function newFilterAuditSummary(initialBuySignals: number): PendingBuyFilterAudit
     score_v2_missing: 0,
     alpha_skip: 0,
     alpha_risk_debate_required: 0,
-    rrg_unmapped_neutral: 0,
-    rrg_lagging_soft_downgrade: 0,
-    rrg_weakening_downgrade: 0,
     trading_attention_risk_evidence: 0,
-    rrg_pass: 0,
     gap_reject: 0,
     final_candidates: 0,
     debate_pending: 0,
@@ -481,124 +464,6 @@ async function loadPendingBuyRestrictionPolicy(db: D1Database, kv: KVNamespace, 
   } catch {
     return { hardBlockedSymbols: new Set(), riskEvidenceSymbols: new Set() }
   }
-}
-
-const RRG_TAXONOMY_CHUNK_SIZE = 40
-
-function rrgClassificationForTagType(tagType: string | null | undefined): string {
-  const normalized = String(tagType || '').trim()
-  return normalized === 'concept' ? 'theme' : normalized
-}
-
-async function loadRrgTaxonomyTags(
-  db: D1Database,
-  symbols: string[],
-): Promise<Array<{ symbol: string; tag: string; tag_type: string; classification: string }>> {
-  const uniqueSymbols = [...new Set(symbols.map((symbol) => String(symbol || '').trim()).filter(Boolean))]
-  const rows: Array<{ symbol: string; tag: string; tag_type: string; classification: string }> = []
-  for (let i = 0; i < uniqueSymbols.length; i += RRG_TAXONOMY_CHUNK_SIZE) {
-    const chunk = uniqueSymbols.slice(i, i + RRG_TAXONOMY_CHUNK_SIZE)
-    const placeholders = chunk.map(() => '?').join(',')
-    const { results } = await db.prepare(
-      `SELECT symbol, tag, tag_type
-         FROM (
-           SELECT symbol, tag, tag_type, weight, 1 AS priority
-             FROM finlab_taxonomy_tags
-            WHERE tag_type IN ('industry_theme', 'subindustry', 'industry')
-              AND symbol IN (${placeholders})
-           UNION ALL
-           SELECT symbol, tag, tag_type, weight, 2 AS priority
-             FROM stock_tags
-            WHERE tag_type='concept'
-              AND symbol IN (${placeholders})
-         )
-        ORDER BY symbol, priority ASC, weight DESC`,
-    ).bind(...chunk, ...chunk).all<{ symbol: string; tag: string; tag_type?: string | null }>()
-    for (const row of results ?? []) {
-      const symbol = String(row.symbol || '').trim()
-      const tag = String(row.tag || '').trim()
-      const tagType = String(row.tag_type || 'concept').trim()
-      const classification = rrgClassificationForTagType(tagType)
-      if (!symbol || !tag || !classification) continue
-      rows.push({ symbol, tag, tag_type: tagType, classification })
-    }
-  }
-  return rows
-}
-
-async function loadQuadrantMap(db: D1Database, symbols: string[]): Promise<Map<string, QuadrantInfo>> {
-  const symbolQuadrantMap = new Map<string, QuadrantInfo>()
-  if (!symbols.length) return symbolQuadrantMap
-  try {
-    const tagRows = await loadRrgTaxonomyTags(db, symbols)
-    const tagsBySymbol = new Map<string, Array<{ tag: string; classification: string }>>()
-    for (const row of tagRows ?? []) {
-      const tags = tagsBySymbol.get(row.symbol) ?? []
-      tags.push({ tag: row.tag, classification: row.classification })
-      tagsBySymbol.set(row.symbol, tags)
-    }
-
-    const { results: quadrantRows } = await db.prepare(
-      `SELECT sector, classification, rs_ratio, rs_momentum, quadrant
-              , rotation_score, rotation_regime, rotation_hysteresis, rotation_velocity
-              , rotation_acceleration, quadrant_age, transition_path, rotation_window
-         FROM sector_flow
-        WHERE classification IN ('industry', 'industry_theme', 'subindustry', 'theme')
-          AND quadrant IS NOT NULL
-          AND rs_ratio IS NOT NULL
-          AND rs_momentum IS NOT NULL
-          AND date = (
-            SELECT MAX(date)
-              FROM sector_flow
-             WHERE classification IN ('industry', 'industry_theme', 'subindustry', 'theme')
-               AND rs_ratio IS NOT NULL
-               AND rs_momentum IS NOT NULL
-          )`,
-    ).all<any>()
-    const themeQuadrants = new Map<string, Omit<QuadrantInfo, 'theme' | 'classification'>>()
-    for (const row of quadrantRows ?? []) {
-      const classification = String(row.classification || '').trim()
-      const sector = String(row.sector || '').trim()
-      if (!classification || !sector) continue
-      themeQuadrants.set(`${classification}:${sector}`, {
-        quadrant: row.quadrant,
-        rs_ratio: Number(row.rs_ratio),
-        rs_momentum: Number(row.rs_momentum),
-        rotation_score: row.rotation_score == null ? null : Number(row.rotation_score),
-        rotation_regime: row.rotation_regime == null ? null : String(row.rotation_regime),
-        rotation_hysteresis: row.rotation_hysteresis == null ? null : String(row.rotation_hysteresis),
-        rotation_velocity: row.rotation_velocity == null ? null : Number(row.rotation_velocity),
-        rotation_acceleration: row.rotation_acceleration == null ? null : Number(row.rotation_acceleration),
-        quadrant_age: row.quadrant_age == null ? null : Number(row.quadrant_age),
-        transition_path: row.transition_path == null ? null : String(row.transition_path),
-        rotation_window: row.rotation_window == null ? null : Number(row.rotation_window),
-      })
-    }
-    const themeUniverse = new Set(themeQuadrants.keys())
-
-    for (const symbol of symbols) {
-      const tags = tagsBySymbol.get(symbol) ?? []
-      const matched = tags.find((candidate) => themeUniverse.has(`${candidate.classification}:${candidate.tag}`)) ?? tags[0]
-      if (!matched) continue
-      const key = `${matched.classification}:${matched.tag}`
-      if (!themeUniverse.has(key)) {
-        symbolQuadrantMap.set(symbol, {
-          theme: matched.tag,
-          classification: matched.classification,
-          quadrant: 'Unmapped',
-          rs_ratio: 100,
-          rs_momentum: 0,
-        })
-        continue
-      }
-      const info = themeQuadrants.get(key)
-      if (!info) continue
-      symbolQuadrantMap.set(symbol, { theme: matched.tag, classification: matched.classification, ...info })
-    }
-  } catch (error) {
-    console.warn('[PendingBuyOrchestrator] quadrant query failed:', error)
-  }
-  return symbolQuadrantMap
 }
 
 async function collectCooldownSet(kv: KVNamespace, tradeDate: string, buyRecs: BuyRecommendationRow[]): Promise<{
@@ -974,10 +839,8 @@ export async function setupMorningPendingBuys(env: Bindings): Promise<void> {
       return
     }
 
-    const quadrantMap = await loadQuadrantMap(marketDb, buyRecs.map((rec) => rec.symbol))
     const quadrantFilterLog: QuadrantFilterLogEntry[] = []
     const pendingBuys: PendingBuy[] = []
-    const downgradeMultiplier = cfg.position.downgradeRiskMultiplier ?? 0.5
 
     for (const rec of buyRecs) {
       const board = classifyBoard({
@@ -1079,7 +942,6 @@ export async function setupMorningPendingBuys(env: Bindings): Promise<void> {
         incAudit(filterAudit, 'alpha_risk_debate_required')
       }
 
-      const quadrant = quadrantMap.get(rec.symbol)
       let debateVerdict = 'PENDING'
       let riskPct = calcRiskPct(pendingSignal, rec.confidence, undefined, cfg)
       const alphaSizing = clampNumber(alphaContext?.sizing_multiplier, 0.25, 1.25, 1.0)
@@ -1100,95 +962,6 @@ export async function setupMorningPendingBuys(env: Bindings): Promise<void> {
         })
         incAudit(filterAudit, 'trading_attention_risk_evidence')
       }
-      const rotationDetails = quadrant ? {
-        rotation_score: quadrant.rotation_score ?? null,
-        rotation_regime: quadrant.rotation_regime ?? null,
-        rotation_hysteresis: quadrant.rotation_hysteresis ?? null,
-        rotation_velocity: quadrant.rotation_velocity ?? null,
-        rotation_acceleration: quadrant.rotation_acceleration ?? null,
-        quadrant_age: quadrant.quadrant_age ?? null,
-        transition_path: quadrant.transition_path ?? null,
-        rotation_window: quadrant.rotation_window ?? null,
-      } : undefined
-      if (quadrant?.rotation_regime) {
-        softRiskWatchPoints.push(
-          `rrg_rotation_model:${quadrant.rotation_regime}:score=${Number(quadrant.rotation_score ?? 0).toFixed(3)}:path=${quadrant.transition_path ?? quadrant.quadrant}:hysteresis=${quadrant.rotation_hysteresis ?? 'unknown'}`,
-        )
-      }
-      if (quadrant?.quadrant === 'Lagging') {
-        riskPct *= downgradeMultiplier
-        softRiskWatchPoints.push(
-          `rrg_soft_overlay:Lagging:risk_multiplier=${downgradeMultiplier.toFixed(2)}:debate_required=true`,
-        )
-        quadrantFilterLog.push({
-          symbol: rec.symbol,
-          name: rec.name ?? rec.symbol,
-          theme: quadrant.theme,
-          classification: quadrant.classification,
-          quadrant: quadrant.quadrant,
-          action: 'SOFT_DOWNGRADE_DEBATE_REQUIRED',
-          stage: 'soft_risk_overlay',
-          reason_code: 'RRG_LAGGING_SOFT_RISK',
-          rs_ratio: quadrant.rs_ratio,
-          rs_momentum: quadrant.rs_momentum,
-          risk_multiplier: downgradeMultiplier,
-          momentum_dir: quadrant.rs_momentum >= 0 ? 'up' : 'down',
-          details: rotationDetails,
-        })
-        incAudit(filterAudit, 'rrg_lagging_soft_downgrade')
-      } else if (quadrant?.quadrant === 'Unmapped') {
-        quadrantFilterLog.push({
-          symbol: rec.symbol,
-          name: rec.name ?? rec.symbol,
-          theme: quadrant.theme,
-          classification: quadrant.classification,
-          quadrant: quadrant.quadrant,
-          action: 'RRG_UNMAPPED_NEUTRAL',
-          stage: 'soft_risk_overlay',
-          reason_code: 'RRG_UNMAPPED_NEUTRAL',
-          details: rotationDetails,
-        })
-        incAudit(filterAudit, 'rrg_unmapped_neutral')
-      }
-
-      if (quadrant?.quadrant === 'Weakening') {
-        riskPct *= downgradeMultiplier
-        softRiskWatchPoints.push(
-          `rrg_soft_overlay:Weakening:risk_multiplier=${downgradeMultiplier.toFixed(2)}:debate_required=true`,
-        )
-        quadrantFilterLog.push({
-          symbol: rec.symbol,
-          name: rec.name ?? rec.symbol,
-          theme: quadrant.theme,
-          classification: quadrant.classification,
-          quadrant: quadrant.quadrant,
-          action: 'SOFT_DOWNGRADE_DEBATE_REQUIRED',
-          stage: 'soft_risk_overlay',
-          reason_code: 'RRG_WEAKENING_DOWNGRADE',
-          rs_ratio: quadrant.rs_ratio,
-          rs_momentum: quadrant.rs_momentum,
-          risk_multiplier: downgradeMultiplier,
-          details: rotationDetails,
-        })
-        incAudit(filterAudit, 'rrg_weakening_downgrade')
-      } else if (quadrant && quadrant.quadrant !== 'Lagging' && quadrant.quadrant !== 'Unmapped') {
-        quadrantFilterLog.push({
-          symbol: rec.symbol,
-          name: rec.name ?? rec.symbol,
-          theme: quadrant.theme,
-          classification: quadrant.classification,
-          quadrant: quadrant.quadrant,
-          action: 'PASS',
-          stage: 'soft_risk_overlay',
-          reason_code: 'RRG_PASS',
-          rs_ratio: quadrant.rs_ratio,
-          rs_momentum: quadrant.rs_momentum,
-          momentum_dir: quadrant.rs_momentum >= 0 ? 'up' : 'down',
-          details: rotationDetails,
-        })
-        incAudit(filterAudit, 'rrg_pass')
-      }
-
       let adjustedEntry = rec.ml_entry_price
       let adjustedStop = rec.ml_stop_loss
       let adjustedTarget1 = rec.ml_target1
@@ -1235,8 +1008,8 @@ export async function setupMorningPendingBuys(env: Bindings): Promise<void> {
               symbol: rec.symbol,
               name: rec.name ?? rec.symbol,
               theme: 'pre_market_gap',
-              classification: quadrant?.classification,
-              quadrant: quadrant?.quadrant ?? 'unknown',
+              classification: 'market',
+              quadrant: 'pre_market_gap',
               action: 'PRE_MARKET_GAP_REJECT',
               stage: 'hard_safety',
               reason_code: 'PRE_MARKET_GAP_REJECT',

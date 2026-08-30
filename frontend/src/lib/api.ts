@@ -247,6 +247,20 @@ export const recommendationsApi = {
     const qs = params.toString()
     return get<any>(`/recommendations/sector-flow${qs ? `?${qs}` : ''}`)
   },
+  factorFlowMap: (options: {
+    date?: string
+    days?: number
+    symbols?: string[]
+    includeMovers?: number
+  } = {}) => {
+    const params = new URLSearchParams()
+    if (options.date) params.set('date', options.date)
+    if (options.days != null) params.set('days', String(options.days))
+    if (options.symbols?.length) params.set('symbols', options.symbols.join(','))
+    if (options.includeMovers != null) params.set('include_movers', String(options.includeMovers))
+    const qs = params.toString()
+    return get<FactorFlowMapResponse>(`/recommendations/factor-flow-map${qs ? `?${qs}` : ''}`)
+  },
   sectorFlowStocks: (date?: string, classification?: 'top' | 'dark_horse') => {
     const params = new URLSearchParams()
     if (date) params.set('date', date)
@@ -261,6 +275,47 @@ export const recommendationsApi = {
   },
   dailyReport: (date?: string) =>
     get<any>(`/recommendations/daily-report${date ? `?date=${date}` : ''}`),
+}
+
+export type FactorTrajectoryPoint = {
+  date: string
+  x: number
+  y: number | null
+  flow?: number | null
+  breadth?: number | null
+  rank_delta?: number | null
+  mean_rank_delta?: number | null
+  member_count?: number
+}
+
+export type FactorTrajectorySeries = {
+  key: string
+  label: string
+  symbol?: string
+  industry?: string
+  requested?: boolean
+  points: FactorTrajectoryPoint[]
+}
+
+export type FactorFlowMapResponse = {
+  requested_date: string
+  date: string | null
+  session_count: number
+  requested_sessions: number
+  group_series: FactorTrajectorySeries[]
+  stock_series: FactorTrajectorySeries[]
+  governance: {
+    candidate: string
+    phase: 'prospective_shadow' | 'promoted' | string
+    weight: number
+    primary_horizon_sessions: number
+    auxiliary_authority: 'diagnostic_only'
+    decision_effect: 'none' | string
+    candidate_set_mutation_allowed: boolean
+    debate_visibility: boolean
+    sizing_authority: boolean
+    order_authority: boolean
+  }
 }
 
 export type PboNumericResult = {
@@ -1878,7 +1933,7 @@ export const paperApi = {
   realized:        () => get<any>('/paper/realized'),
   journal:         () => get<any>('/paper/journal'),
   cronLogs:        (date?: string) => get<any>(`/admin/cron-logs${date ? `?date=${date}` : ''}`),
-  quadrantFilter:  (date?: string, options?: ApiRequestOptions) => get<any>(`/paper/quadrant-filter${date ? `?date=${date}` : ''}`, options),
+  riskAudit:       (date?: string, options?: ApiRequestOptions) => get<any>(`/paper/quadrant-filter${date ? `?date=${date}` : ''}`, options),
   pendingBuys:     (options?: ApiRequestOptions) => get<any>('/paper/pending-buys', options),
   gateCalibration: (days = 7) => get<any>(`/paper/gate-calibration?days=${days}`),
 }

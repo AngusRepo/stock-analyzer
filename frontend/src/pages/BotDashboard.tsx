@@ -16,7 +16,7 @@ import {
   Activity, TrendingUp, Wallet, Bot, ShieldCheck, ShieldAlert,
   Clock, ArrowUpRight, ArrowDownRight, Scale, Cpu,
 } from 'lucide-react'
-import { BotThemeFlowPanel } from '@/components/DailyRecommendationPanel'
+import { StockFactorTrajectoryPanel } from '@/components/PitFactorTrajectoryPanel'
 import { RecommendationCardClean as RecommendationCard } from '@/components/RecommendationCardClean'
 import CandlestickChart from '@/components/CandlestickChart'
 import AppShell from '@/components/AppShell'
@@ -200,25 +200,6 @@ function ConvictionGauge({ value, size = 48 }: { value: number; size?: number })
       <text x={cx} y={cy - 2} textAnchor="middle" fill={color} fontSize={size * 0.22} fontFamily="Manrope, Noto Sans TC, system-ui, sans-serif" fontWeight="bold">
         {pct.toFixed(0)}
       </text>
-    </svg>
-  )
-}
-
-// ─── Micro RRG 2×2 方格 ──────────────────────────────────────────────────────
-function MicroRRG({ quadrant }: { quadrant?: string }) {
-  const cells = [
-    { q: 'Improving', x: 0, y: 0, color: '#3b82f6' },
-    { q: 'Leading',   x: 1, y: 0, color: '#22c55e' },
-    { q: 'Lagging',   x: 0, y: 1, color: '#ef4444' },
-    { q: 'Weakening', x: 1, y: 1, color: '#eab308' },
-  ]
-  return (
-    <svg width={24} height={24} viewBox="0 0 24 24">
-      {cells.map(c => (
-        <rect key={c.q} x={c.x * 12} y={c.y * 12} width={11} height={11} rx={2}
-          fill={c.q === quadrant ? c.color : '#27272a'}
-          opacity={c.q === quadrant ? 0.9 : 0.3} />
-      ))}
     </svg>
   )
 }
@@ -554,17 +535,6 @@ function SignalTable({ onSelectSymbol, selectedSymbol }: { onSelectSymbol?: (s: 
     recommendationRowsFromPayload(recContextData).map((row: any) => [String(row?.symbol ?? '').trim(), row]),
   )
 
-  // Quadrant filter
-  const { data: qfData } = useQuery({
-    queryKey: ['paper', 'quadrant-filter'],
-    queryFn: () => paperApi.quadrantFilter(),
-    staleTime: 5 * 60_000,
-  })
-  const qfList: any[] = Array.isArray(qfData?.filters) ? qfData.filters : Array.isArray(qfData) ? qfData : []
-  const qfMap = new Map<string, { quadrant: string; action: string }>(
-    qfList.map((q: any) => [q.symbol, { quadrant: q.quadrant, action: q.action }])
-  )
-
   if (isLoading) return <div className="text-muted-foreground text-sm p-4 sv-num">Loading...</div>
 
   // 如果沒有 pending buys，fallback 到 daily recommendations
@@ -590,7 +560,6 @@ function SignalTable({ onSelectSymbol, selectedSymbol }: { onSelectSymbol?: (s: 
       <div className="border-t border-muted/40 pt-3 px-1 text-xs font-semibold text-emerald-300 sv-num">{showingDate} · 已通過 debate 的 pending BUY</div>
       <PendingBuyStateBadges state={pendingState} stale={isStalePending} meta={pendingMeta} policy={pendingExecutionPolicy} />
       {buys.map((b: any, idx: number) => {
-        const qf = qfMap.get(b.symbol)
         const sourceRec = recContextBySymbol.get(String(b.symbol ?? '').trim())
         const executionBadge = formatPendingBuyExecutionBadge(b)
         const s12Badge = formatS12IntradayStructureBadge(b.watch_points)
@@ -620,7 +589,7 @@ function SignalTable({ onSelectSymbol, selectedSymbol }: { onSelectSymbol?: (s: 
           confidence: b.confidence ?? sourceRec?.confidence,
           current_price: b.ml_entry_price ?? sourceRec?.current_price,
           score: b.score ?? sourceRec?.score ?? b.score_v2?.finalScore ?? b.score_v2?.total ?? 0,
-          sector: qf?.quadrant ?? sourceRec?.sector ?? '',
+          sector: sourceRec?.sector ?? sourceRec?.industry ?? '',
           reason: cleanReason ? `${priceLine}\n\n${cleanReason}` : priceLine,
           watch_points: b.watch_points ?? sourceRec?.watch_points ?? null,
           chip_score: sourceRec?.chip_score ?? b.chip_score ?? null,
@@ -1702,7 +1671,7 @@ export default function BotDashboard() {
               <PerformanceChart />
             </div>
           </WorkstationPanel>
-          <BotThemeFlowPanel />
+          <StockFactorTrajectoryPanel />
         </div>
 
         <div className="grid grid-cols-1 gap-3 xl:grid-cols-[minmax(0,1.5fr)_minmax(380px,1fr)]">

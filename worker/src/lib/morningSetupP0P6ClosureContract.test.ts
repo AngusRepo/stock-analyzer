@@ -51,16 +51,12 @@ assert(
     sectorFlowService.includes('_load_rrg_history') &&
     sectorFlowService.includes('rrg_tail_json') &&
     sectorFlowRotationMigration.includes('ALTER TABLE sector_flow ADD COLUMN rotation_score REAL') &&
-    pendingBuyOrchestrator.includes('AND rs_ratio IS NOT NULL') &&
-    pendingBuyOrchestrator.includes('AND rs_momentum IS NOT NULL') &&
-    pendingBuyOrchestrator.includes('rrg_rotation_model') &&
-    marketScreener.includes('AND rs_ratio IS NOT NULL') &&
-    marketScreener.includes('AND rs_momentum IS NOT NULL') &&
-    marketScreener.includes('rotationScore') &&
-    marketScreener.includes('rrg_rotation_${rotationRegime}') &&
-    pendingBuyOrchestrator.includes('RRG_LAGGING_SOFT_RISK') &&
-    pendingBuyOrchestrator.includes('RRG_WEAKENING_DOWNGRADE'),
-  'P2 must implement the full RRG rotation model, persist rotation fields, and consume them as soft overlay evidence',
+    !pendingBuyOrchestrator.includes('rrg_rotation_model') &&
+    !pendingBuyOrchestrator.includes('RRG_LAGGING_SOFT_RISK') &&
+    !pendingBuyOrchestrator.includes('RRG_WEAKENING_DOWNGRADE') &&
+    !marketScreener.includes("stage: 'rrg_overlay'") &&
+    marketScreener.includes("stage: 'pit_residual_momentum_shadow'"),
+  'P2 legacy RRG history must remain readable while current screener and pending-buy authority stay retired',
 )
 
 assert(

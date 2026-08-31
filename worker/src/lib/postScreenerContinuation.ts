@@ -27,6 +27,26 @@ export async function enqueuePostScreenerPipelineContinuation(
     adoptRunIdOnResume: true,
   })
   if (!state.shouldEnqueue) {
+    const root = await env.KV.get(
+      `scheduler:run:evening-chain:${options.triggerTime}`,
+      'json',
+    ) as { status?: string; run_id?: string } | null
+    const durableStageAdvanced = ['queued', 'running', 'waiting', 'success']
+      .includes(String(state.row.status ?? ''))
+    if (
+      durableStageAdvanced
+      && root?.status === 'error'
+      && root.run_id === state.row.canonical_run_id
+    ) {
+      await logSchedulerResult(env.KV, 'evening-chain', {
+        status: 'running',
+        summary: `reconciled recovered post-screener continuation for ${options.triggerTime}; run_id=${state.row.canonical_run_id}; durable_stage=${state.row.status}; source=${options.source}`,
+        duration_ms: 0,
+        run_date: options.triggerTime,
+        run_id: state.row.canonical_run_id,
+        supersedePrevious: true,
+      })
+    }
     return {
       queued: false,
       canonicalRunId: state.row.canonical_run_id,

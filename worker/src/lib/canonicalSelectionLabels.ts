@@ -334,6 +334,13 @@ export async function materializeCanonicalSelectionLabelsV4(
   for (let offset = 0; offset < resolvedRejectionDeletes.length; offset += 200) {
     await db.batch(resolvedRejectionDeletes.slice(offset, offset + 200))
   }
+  const rejectedLabelDeletes = rejections.map(({ reference }) => db.prepare(`
+    DELETE FROM canonical_selection_labels_v4
+     WHERE signal_date=? AND symbol=? AND producer_run_id=?
+  `).bind(reference.signal_date, reference.symbol, reference.producer_run_id))
+  for (let offset = 0; offset < rejectedLabelDeletes.length; offset += 200) {
+    await db.batch(rejectedLabelDeletes.slice(offset, offset + 200))
+  }
   const rejectionDeletes = rejections.map(({ reference }) => db.prepare(`
     DELETE FROM canonical_selection_label_rejections_v4
      WHERE signal_date=? AND symbol=? AND producer_run_id=?

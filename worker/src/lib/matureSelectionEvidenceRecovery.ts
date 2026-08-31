@@ -1,6 +1,7 @@
 import type { Bindings } from '../types'
 import { databaseForDataDomain } from './dataDomainRegistry'
 import {
+  CANONICAL_SELECTION_ADJUSTMENT_SOURCE,
   CANONICAL_SELECTION_LABEL_SCHEMA_VERSION,
   materializeCanonicalSelectionLabelsV4,
 } from './canonicalSelectionLabels'
@@ -174,7 +175,7 @@ async function loadCoverageRows(
           JOIN target_heads t
             ON t.signal_date=l.signal_date
            AND t.producer_run_id=l.producer_run_id
-         WHERE l.label_schema_version=?
+         WHERE l.label_schema_version=? AND l.adjustment_source=?
       ),
       label_rejections AS (
         SELECT DISTINCT x.signal_date, x.symbol, x.producer_run_id
@@ -238,6 +239,7 @@ async function loadCoverageRows(
       PRICE_HORIZON_PROJECTION_VERSION,
       PRICE_HORIZON_PROJECTION_VERSION,
       CANONICAL_SELECTION_LABEL_SCHEMA_VERSION,
+      CANONICAL_SELECTION_ADJUSTMENT_SOURCE,
     ).all<CoverageRow>()
     output.push(...(result.results ?? []))
   }

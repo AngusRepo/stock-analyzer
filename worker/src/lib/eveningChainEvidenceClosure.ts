@@ -4,7 +4,10 @@ import {
   SELECTION_REFERENCE_CONTRACT_VERSION,
   SELECTION_REFERENCE_MATURE_COMPATIBLE_CONTRACT_VERSIONS,
 } from './selectionReferenceEvidence'
-import { CANONICAL_SELECTION_LABEL_SCHEMA_VERSION } from './canonicalSelectionLabels'
+import {
+  CANONICAL_SELECTION_ADJUSTMENT_SOURCE,
+  CANONICAL_SELECTION_LABEL_SCHEMA_VERSION,
+} from './canonicalSelectionLabels'
 import { PRICE_HORIZON_PROJECTION_VERSION } from './priceHorizonProjection'
 import { STRATEGY_ROUTE_AFFINITY_VERSION } from './strategyRouteCalibration'
 import {
@@ -259,6 +262,7 @@ export async function auditEveningChainEvidenceClosure(
              AND l.producer_run_id=r.producer_run_id
              AND l.label_schema_version=?
              AND l.reference_contract_version=?
+             AND l.adjustment_source=?
         ) THEN 1 ELSE 0 END) label_rows,
         SUM(CASE WHEN EXISTS (
           SELECT 1 FROM canonical_selection_label_rejections_v4 x
@@ -275,6 +279,7 @@ export async function auditEveningChainEvidenceClosure(
       PRICE_HORIZON_PROJECTION_VERSION,
       CANONICAL_SELECTION_LABEL_SCHEMA_VERSION,
       matureReferenceContractVersion,
+      CANONICAL_SELECTION_ADJUSTMENT_SOURCE,
       matureSignalDate,
       matureReferenceContractVersion,
       matureProducerRunId,

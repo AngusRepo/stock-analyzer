@@ -2,7 +2,7 @@ import type { Bindings } from '../types'
 import { databaseForDataDomain } from './dataDomainRegistry'
 import {
   SELECTION_REFERENCE_CONTRACT_VERSION,
-  SELECTION_REFERENCE_MATURE_COMPATIBLE_CONTRACT_VERSIONS,
+  SELECTION_REFERENCE_LEGACY_MATURE_CONTRACT_VERSION,
 } from './selectionReferenceEvidence'
 import {
   CANONICAL_SELECTION_ADJUSTMENT_SOURCE,
@@ -11,6 +11,7 @@ import {
 import { PRICE_HORIZON_PROJECTION_VERSION } from './priceHorizonProjection'
 import { STRATEGY_ROUTE_AFFINITY_VERSION } from './strategyRouteCalibration'
 import {
+  STRATEGY_FORMAL_LABELER_LEGACY_VERSION,
   STRATEGY_FORMAL_LABELER_VERSION,
   STRATEGY_FORMAL_RECONSTRUCTION_LABELER_VERSION,
 } from './strategySpec'
@@ -218,8 +219,11 @@ export async function auditEveningChainEvidenceClosure(
                  AND r.feature_contract_version=mr.reference_contract_version) reference_contract_rows
         FROM strategy_label_matrix_runs_v4 mr
        WHERE signal_date=? AND producer_run_id=? AND status='ready'
-         AND reference_contract_version IN (?, ?)
-         AND labeler_version IN (?, ?)
+         AND (
+           (reference_contract_version=? AND labeler_version IN (?, ?))
+           OR
+           (reference_contract_version=? AND labeler_version IN (?, ?))
+         )
          AND NOT EXISTS (
            SELECT 1 FROM strategy_label_matrix_v4 m
             WHERE m.producer_run_id=mr.producer_run_id
@@ -229,8 +233,11 @@ export async function auditEveningChainEvidenceClosure(
     `).bind(
       matureSignalDate,
       matureProducerRunId,
-      ...SELECTION_REFERENCE_MATURE_COMPATIBLE_CONTRACT_VERSIONS,
+      SELECTION_REFERENCE_CONTRACT_VERSION,
       STRATEGY_FORMAL_LABELER_VERSION,
+      STRATEGY_FORMAL_RECONSTRUCTION_LABELER_VERSION,
+      SELECTION_REFERENCE_LEGACY_MATURE_CONTRACT_VERSION,
+      STRATEGY_FORMAL_LABELER_LEGACY_VERSION,
       STRATEGY_FORMAL_RECONSTRUCTION_LABELER_VERSION,
     ).first<any>()
     const matureReferenceContractVersion = String(matureMatrix?.reference_contract_version ?? '')

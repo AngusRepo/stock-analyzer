@@ -10,9 +10,11 @@ import {
   materializePriceHorizonLabels,
 } from './priceHorizonProjection'
 import {
-  SELECTION_REFERENCE_MATURE_COMPATIBLE_CONTRACT_VERSIONS,
+  SELECTION_REFERENCE_CONTRACT_VERSION,
+  SELECTION_REFERENCE_LEGACY_MATURE_CONTRACT_VERSION,
 } from './selectionReferenceEvidence'
 import {
+  STRATEGY_FORMAL_LABELER_LEGACY_VERSION,
   STRATEGY_FORMAL_LABELER_VERSION,
   STRATEGY_FORMAL_RECONSTRUCTION_LABELER_VERSION,
 } from './strategySpec'
@@ -154,8 +156,11 @@ async function loadCoverageRows(
           JOIN target_heads t
             ON t.signal_date=mr.signal_date
            AND t.producer_run_id=mr.producer_run_id
-         WHERE mr.status='ready' AND mr.reference_contract_version IN (?, ?)
-           AND mr.labeler_version IN (?, ?)
+         WHERE mr.status='ready' AND (
+           (mr.reference_contract_version=? AND mr.labeler_version IN (?, ?))
+           OR
+           (mr.reference_contract_version=? AND mr.labeler_version IN (?, ?))
+         )
       ),
       horizon AS (
         SELECT DISTINCT p.price_date, p.stock_id
@@ -233,8 +238,11 @@ async function loadCoverageRows(
        ORDER BY r.signal_date
     `).bind(
       ...binds,
-      ...SELECTION_REFERENCE_MATURE_COMPATIBLE_CONTRACT_VERSIONS,
+      SELECTION_REFERENCE_CONTRACT_VERSION,
       STRATEGY_FORMAL_LABELER_VERSION,
+      STRATEGY_FORMAL_RECONSTRUCTION_LABELER_VERSION,
+      SELECTION_REFERENCE_LEGACY_MATURE_CONTRACT_VERSION,
+      STRATEGY_FORMAL_LABELER_LEGACY_VERSION,
       STRATEGY_FORMAL_RECONSTRUCTION_LABELER_VERSION,
       PRICE_HORIZON_PROJECTION_VERSION,
       PRICE_HORIZON_PROJECTION_VERSION,

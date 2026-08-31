@@ -30,7 +30,8 @@ assert.doesNotMatch(
 )
 
 const recovery = readFileSync(new URL('./matureSelectionEvidenceRecovery.ts', import.meta.url), 'utf8')
-assert.match(recovery, /mr\.reference_contract_version IN \(\?, \?\)/)
+assert.match(recovery, /mr\.reference_contract_version=\? AND mr\.labeler_version IN \(\?, \?\)/)
+assert.match(recovery, /STRATEGY_FORMAL_LABELER_LEGACY_VERSION/)
 assert.match(recovery, /r\.feature_contract_version=mr\.reference_contract_version/)
 assert.match(recovery, /l\.reference_contract_version=mr\.reference_contract_version/)
 assert.match(recovery, /mc\.reference_contract_version=mr\.reference_contract_version/)
@@ -38,7 +39,8 @@ assert.match(recovery, /l\.label_schema_version=\? AND l\.adjustment_source=\?/)
 
 const closure = readFileSync(new URL('./eveningChainEvidenceClosure.ts', import.meta.url), 'utf8')
 assert.match(closure, /matureReferenceContractVersion/)
-assert.match(closure, /reference_contract_version IN \(\?, \?\)/)
+assert.match(closure, /reference_contract_version=\? AND labeler_version IN \(\?, \?\)/)
+assert.match(closure, /STRATEGY_FORMAL_LABELER_LEGACY_VERSION/)
 assert.match(closure, /matureMatrix\?\.matrix_rows/)
 assert.match(closure, /matureMatrix\?\.reference_contract_rows/)
 assert.match(

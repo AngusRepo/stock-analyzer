@@ -176,6 +176,10 @@ const domainNativeLearningTables = [
   'canonical_selection_outcomes_v1',
   'strategy_evidence_metrics_v1',
   'expected_return_owner_state_v2',
+  'state_space_v2_runs',
+  'state_space_v2_observations',
+  'state_space_v2_evaluations',
+  'pit_factor_shadow_daily_v1',
 ]
 assert(domainNativeLearningTables.every((table) => tablesForDataDomain('learning').includes(table)))
 assert(domainNativeLearningTables.every((table) => tablesForDataDomainRouteReady('learning').includes(table)))

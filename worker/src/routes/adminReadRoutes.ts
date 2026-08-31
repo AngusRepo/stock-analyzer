@@ -1038,3 +1038,13 @@ adminReadRoutes.get('/api/admin/data-domains/cutover-readiness', async (c) => {
     ten_year_closure: tenYearClosure,
   })
 })
+
+adminReadRoutes.get('/api/admin/data-domains/backfill-retirement-readiness', async (c) => {
+  const authError = await requireAdminOrServiceToken(c)
+  if (authError) return authError
+
+  const { inspectDataDomainBackfillRetirementReadiness } = await import(
+    '../lib/dataDomainBackfillRetirementReadiness'
+  )
+  return c.json(await inspectDataDomainBackfillRetirementReadiness(c.env.DB, c.env.KV))
+})

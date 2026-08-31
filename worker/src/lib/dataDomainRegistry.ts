@@ -276,6 +276,10 @@ const SHADOW_BACKFILL_EXCLUDED_TABLES: Partial<Record<DataDomain, ReadonlySet<st
     'active8_ensemble_artifacts_v1',
     'active8_ensemble_validation_attempts_v1',
     'active8_ensemble_pointer_v1',
+    'state_space_v2_runs',
+    'state_space_v2_observations',
+    'state_space_v2_evaluations',
+    'pit_factor_shadow_daily_v1',
   ]),
   market: new Set([
     // Append-only knowledge-time rows start at domain creation; mutable legacy revenue cannot seed them.

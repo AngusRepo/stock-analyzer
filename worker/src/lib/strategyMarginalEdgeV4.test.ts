@@ -197,7 +197,9 @@ assert.equal(matureV7.finalWeights.size, 1)
 const source = fs.readFileSync('src/lib/strategyMarginalEdgeV4.ts', 'utf8')
 const orchestratorSource = fs.readFileSync('src/lib/updateOrchestrator.ts', 'utf8')
 assert.match(source, /canonicalRunIds\?: Record<string, string>/)
-assert.match(source, /json_each\(\?\)/)
+assert.match(source, /Object\.entries\(options\.canonicalRunIds \?\? \{\}\)/)
+assert.match(source, /m\.signal_date=\?[\s\S]*m\.producer_run_id=\?/)
+assert.doesNotMatch(source, /canonicalOwnerClause/)
 assert.match(
   orchestratorSource,
   /refreshStrategyMarginalEdgeV4\(learningDb, asOfDate, \{ canonicalRunIds \}\)/,

@@ -9,7 +9,7 @@ const REPLACEMENT_MDD_TOLERANCE = 0.02
 const REPLACEMENT_TURNOVER_TOLERANCE = 0.15
 const REPLACEMENT_DUPLICATE_CORRELATION = 0.95
 const EDGE_LOOKBACK_CALENDAR_DAYS = 540
-const EDGE_PAGE_SIZE = 1000
+const EDGE_PAGE_SIZE = 5000
 const T_PLUS_OUTCOME_HORIZON_TRADING_DAYS = 5
 const REPLACEMENT_HAC_LAG = T_PLUS_OUTCOME_HORIZON_TRADING_DAYS - 1
 const MIN_EFFECTIVE_PAIRED_DATES = 30
@@ -1083,69 +1083,64 @@ export async function refreshStrategyMarginalEdgeV4(
   const asOfMs = Date.parse(`${asOfDate}T00:00:00Z`)
   if (!Number.isFinite(asOfMs)) throw new Error(`invalid_strategy_edge_as_of_date:${asOfDate}`)
   const startDate = new Date(asOfMs - EDGE_LOOKBACK_CALENDAR_DAYS * 86_400_000).toISOString().slice(0, 10)
-  const canonicalOwnerClause = "EXISTS (SELECT 1 FROM json_each(?) h WHERE h.key=m.signal_date AND h.value=m.producer_run_id)"
   const formalLabelerPlaceholders = STRATEGY_FORMAL_LABELER_VERSIONS.map(() => '?').join(',')
   const cells: OutcomeCell[] = []
-  let cursorDate = ''
-  let cursorSymbol = ''
-  let cursorStrategyId = ''
-  let cursorStrategyVersion = ''
-  for (;;) {
-    const page = await db.prepare(`
-      SELECT m.signal_date, m.symbol, m.strategy_id, m.strategy_version,
-             m.family_id, m.production_owner, m.strategy_hit,
-             l.absolute_return_net, l.residual_return_net
-        FROM strategy_label_matrix_v4 m
-        JOIN strategy_label_matrix_runs_v4 mr
-          ON mr.producer_run_id=m.producer_run_id
-         AND mr.signal_date=m.signal_date
-         AND mr.status='ready'
-         AND mr.labeler_version IN (${formalLabelerPlaceholders})
-         AND m.labeler_version=mr.labeler_version
-        JOIN canonical_selection_labels_v4 l
-          ON l.signal_date=m.signal_date
-         AND l.symbol=m.symbol
-         AND l.producer_run_id=m.producer_run_id
-         AND l.label_schema_version='canonical-strategy-selection-label-v4'
-       WHERE m.signal_date BETWEEN ? AND ?
-         AND l.outcome_known_date <= ?
-         AND m.strategy_status IN ('active', 'candidate')
-         AND EXISTS (
-           SELECT 1 FROM strategy_spec_registry eligible_owner
-            WHERE eligible_owner.strategy_id=m.strategy_id
-              AND eligible_owner.version=m.strategy_version
-              AND eligible_owner.owner_type='strategy'
-              AND eligible_owner.status IN ('active','candidate')
-              AND eligible_owner.promotion_status <> 'retired'
-              AND eligible_owner.variant_id NOT LIKE 's12_%'
-         )
-         AND ${canonicalOwnerClause}
-         AND (
-           m.signal_date > ?
-           OR (m.signal_date = ? AND m.symbol > ?)
-           OR (m.signal_date = ? AND m.symbol = ? AND m.strategy_id > ?)
-           OR (m.signal_date = ? AND m.symbol = ? AND m.strategy_id = ? AND m.strategy_version > ?)
-         )
-       ORDER BY m.signal_date, m.symbol, m.strategy_id, m.strategy_version
-       LIMIT ?
-    `).bind(
-      ...STRATEGY_FORMAL_LABELER_VERSIONS,
-      startDate, asOfDate, asOfDate,
-      JSON.stringify(options.canonicalRunIds ?? {}),
-      cursorDate,
-      cursorDate, cursorSymbol,
-      cursorDate, cursorSymbol, cursorStrategyId,
-      cursorDate, cursorSymbol, cursorStrategyId, cursorStrategyVersion,
-      EDGE_PAGE_SIZE,
-    ).all<OutcomeCell>()
-    const rows = page.results ?? []
-    cells.push(...rows)
-    if (rows.length < EDGE_PAGE_SIZE) break
-    const last = rows.at(-1)!
-    cursorDate = last.signal_date
-    cursorSymbol = last.symbol
-    cursorStrategyId = last.strategy_id
-    cursorStrategyVersion = last.strategy_version
+  const canonicalOwners = Object.entries(options.canonicalRunIds ?? {})
+    .filter(([signalDate, producerRunId]) => (
+      signalDate >= startDate && signalDate <= asOfDate && producerRunId.trim().length > 0
+    ))
+    .sort(([left], [right]) => left.localeCompare(right))
+  for (const [signalDate, producerRunId] of canonicalOwners) {
+    let cursorSymbol = ''
+    let cursorStrategyId = ''
+    let cursorStrategyVersion = ''
+    for (;;) {
+      const page = await db.prepare(`
+        SELECT m.signal_date, m.symbol, m.strategy_id, m.strategy_version,
+               m.family_id, m.production_owner, m.strategy_hit,
+               l.absolute_return_net, l.residual_return_net
+          FROM strategy_label_matrix_v4 m
+          JOIN strategy_label_matrix_runs_v4 mr
+            ON mr.producer_run_id=m.producer_run_id
+           AND mr.signal_date=m.signal_date
+           AND mr.status='ready'
+           AND mr.labeler_version IN (${formalLabelerPlaceholders})
+           AND m.labeler_version=mr.labeler_version
+          JOIN canonical_selection_labels_v4 l
+            ON l.signal_date=m.signal_date
+           AND l.symbol=m.symbol
+           AND l.producer_run_id=m.producer_run_id
+           AND l.label_schema_version='canonical-strategy-selection-label-v4'
+         WHERE m.signal_date=?
+           AND m.producer_run_id=?
+           AND l.outcome_known_date <= ?
+           AND m.strategy_status IN ('active', 'candidate')
+           AND EXISTS (
+             SELECT 1 FROM strategy_spec_registry eligible_owner
+              WHERE eligible_owner.strategy_id=m.strategy_id
+                AND eligible_owner.version=m.strategy_version
+                AND eligible_owner.owner_type='strategy'
+                AND eligible_owner.status IN ('active','candidate')
+                AND eligible_owner.promotion_status <> 'retired'
+                AND eligible_owner.variant_id NOT LIKE 's12_%'
+           )
+           AND (m.symbol, m.strategy_id, m.strategy_version) > (?, ?, ?)
+         ORDER BY m.symbol, m.strategy_id, m.strategy_version
+         LIMIT ?
+      `).bind(
+        ...STRATEGY_FORMAL_LABELER_VERSIONS,
+        signalDate, producerRunId, asOfDate,
+        cursorSymbol, cursorStrategyId, cursorStrategyVersion,
+        EDGE_PAGE_SIZE,
+      ).all<OutcomeCell>()
+      const rows = page.results ?? []
+      cells.push(...rows)
+      if (rows.length < EDGE_PAGE_SIZE) break
+      const last = rows.at(-1)!
+      cursorSymbol = last.symbol
+      cursorStrategyId = last.strategy_id
+      cursorStrategyVersion = last.strategy_version
+    }
   }
 
   const edges = evaluateStrategyMarginalEdgesV4(cells)

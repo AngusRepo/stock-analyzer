@@ -13,7 +13,7 @@ export const STRATEGY_ROUTE_MIN_OOS_DATES = MIN_OOS_DATES
 export const STRATEGY_ROUTE_PURGE_DATES = PURGE_DATES
 export const STRATEGY_ROUTE_MIN_TOTAL_DATES = MIN_TOTAL_DATES
 const LOOKBACK_CALENDAR_DAYS = 540
-const PAGE_SIZE = 1000
+const PAGE_SIZE = 5000
 
 export interface StrategyRouteObservation {
   signal_date: string
@@ -354,57 +354,61 @@ export async function refreshStrategyRouteCalibration(
   if (!Number.isFinite(endMs)) throw new Error('invalid_strategy_route_calibration_date:' + asOfDate)
   const startDate = new Date(endMs - LOOKBACK_CALENDAR_DAYS * 86_400_000).toISOString().slice(0, 10)
   const rows: StrategyRouteObservation[] = []
-  const canonicalOwnerClause = 'EXISTS (SELECT 1 FROM json_each(?) h WHERE h.key=c.signal_date AND h.value=c.producer_run_id)'
-  let cursorDate = ''
-  let cursorSymbol = ''
-  for (;;) {
-    const page = await db.prepare(`
-      WITH candidate_routes AS (
-        SELECT r.signal_date, r.symbol, r.producer_run_id,
-               r.strategy_challenger_route_score route_score,
-               r.strategy_router_score incumbent_route_score
-          FROM selection_reference_snapshots_v1 r
-         WHERE r.strategy_challenger_route_version=?
-           AND r.strategy_challenger_route_score IS NOT NULL
-        UNION ALL
-        SELECT e.signal_date, e.symbol, e.producer_run_id,
-               e.route_score, e.incumbent_route_score
-          FROM strategy_route_versioned_evidence_v1 e
-         WHERE e.route_version=?
-           AND NOT EXISTS (
-             SELECT 1
-               FROM selection_reference_snapshots_v1 r
-              WHERE r.signal_date=e.signal_date AND r.symbol=e.symbol
-                AND r.producer_run_id=e.producer_run_id
-                AND r.strategy_challenger_route_version=?
-                AND r.strategy_challenger_route_score IS NOT NULL
-           )
-      )
-      SELECT c.signal_date, c.symbol, c.route_score, c.incumbent_route_score,
-             l.absolute_return_net, l.residual_return_net
-        FROM candidate_routes c
-        JOIN canonical_selection_labels_v4 l
-          ON l.signal_date=c.signal_date AND l.symbol=c.symbol AND l.producer_run_id=c.producer_run_id
-       WHERE c.signal_date BETWEEN ? AND ?
-         AND l.label_schema_version='canonical-strategy-selection-label-v4'
-         AND l.outcome_known_date <= ?
-         AND ${canonicalOwnerClause}
-         AND (c.signal_date > ? OR (c.signal_date=? AND c.symbol > ?))
-       ORDER BY c.signal_date, c.symbol
-       LIMIT ?
-    `).bind(
-      STRATEGY_ROUTE_CHALLENGER_VERSION,
-      STRATEGY_ROUTE_CHALLENGER_VERSION,
-      STRATEGY_ROUTE_CHALLENGER_VERSION,
-      startDate, asOfDate, asOfDate,
-      JSON.stringify(options.canonicalRunIds ?? {}),
-      cursorDate, cursorDate, cursorSymbol, PAGE_SIZE,
-    ).all<StrategyRouteObservation>()
-    const pageRows = page.results ?? []
-    rows.push(...pageRows)
-    if (pageRows.length < PAGE_SIZE) break
-    cursorDate = pageRows.at(-1)!.signal_date
-    cursorSymbol = pageRows.at(-1)!.symbol
+  const canonicalOwners = Object.entries(options.canonicalRunIds ?? {})
+    .filter(([signalDate, producerRunId]) => (
+      signalDate >= startDate && signalDate <= asOfDate && producerRunId.trim().length > 0
+    ))
+    .sort(([left], [right]) => left.localeCompare(right))
+  for (const [signalDate, producerRunId] of canonicalOwners) {
+    let cursorSymbol = ''
+    for (;;) {
+      const page = await db.prepare(`
+        WITH candidate_routes AS (
+          SELECT r.signal_date, r.symbol, r.producer_run_id,
+                 r.strategy_challenger_route_score route_score,
+                 r.strategy_router_score incumbent_route_score
+            FROM selection_reference_snapshots_v1 r
+           WHERE r.strategy_challenger_route_version=?
+             AND r.strategy_challenger_route_score IS NOT NULL
+             AND r.signal_date=? AND r.producer_run_id=?
+          UNION ALL
+          SELECT e.signal_date, e.symbol, e.producer_run_id,
+                 e.route_score, e.incumbent_route_score
+            FROM strategy_route_versioned_evidence_v1 e
+           WHERE e.route_version=?
+             AND e.signal_date=? AND e.producer_run_id=?
+             AND NOT EXISTS (
+               SELECT 1
+                 FROM selection_reference_snapshots_v1 r
+                WHERE r.signal_date=e.signal_date AND r.symbol=e.symbol
+                  AND r.producer_run_id=e.producer_run_id
+                  AND r.strategy_challenger_route_version=?
+                  AND r.strategy_challenger_route_score IS NOT NULL
+             )
+        )
+        SELECT c.signal_date, c.symbol, c.route_score, c.incumbent_route_score,
+               l.absolute_return_net, l.residual_return_net
+          FROM candidate_routes c
+          JOIN canonical_selection_labels_v4 l
+            ON l.signal_date=c.signal_date AND l.symbol=c.symbol AND l.producer_run_id=c.producer_run_id
+         WHERE l.label_schema_version='canonical-strategy-selection-label-v4'
+           AND l.outcome_known_date <= ?
+           AND c.symbol > ?
+         ORDER BY c.symbol
+         LIMIT ?
+      `).bind(
+        STRATEGY_ROUTE_CHALLENGER_VERSION,
+        signalDate, producerRunId,
+        STRATEGY_ROUTE_CHALLENGER_VERSION,
+        signalDate, producerRunId,
+        STRATEGY_ROUTE_CHALLENGER_VERSION,
+        asOfDate, cursorSymbol, PAGE_SIZE,
+      ).all<StrategyRouteObservation>()
+      const pageRows = page.results ?? []
+      rows.push(...pageRows)
+      if (pageRows.length < PAGE_SIZE) break
+      cursorSymbol = pageRows.at(-1)!.symbol
+    }
   }
   const evaluated = evaluateStrategyRouteCalibration(rows)
   const currentCoverage = await inspectStrategyRouteCurrentCoverage(db, asOfDate, options.canonicalRunIds)

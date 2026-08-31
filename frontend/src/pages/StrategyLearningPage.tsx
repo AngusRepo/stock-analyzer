@@ -384,12 +384,12 @@ function GateMetric({
   pass: boolean | null
 }) {
   return (
-    <div className="flex min-w-0 items-baseline justify-between gap-2 border-b border-slate-800/60 py-1 last:border-0">
+    <div className="grid min-w-0 grid-cols-[minmax(0,1fr)_minmax(8rem,auto)] items-start gap-4 border-b border-slate-800/60 py-2 last:border-0">
       <span className="min-w-0 text-slate-500">
-        <span className="block truncate">{label}</span>
+        <span className="block font-medium text-slate-300">{label}</span>
         <span className="mt-0.5 block text-[10px] leading-4 text-slate-600">{description}</span>
       </span>
-      <span className="shrink-0 text-right font-mono text-slate-300">
+      <span className="min-w-0 break-words text-right font-mono text-slate-300">
         {value} <span className="text-slate-600">/ {target}</span>{' '}
         <span className={gateResultClass(pass)}>{gateResultLabel(pass)}</span>
       </span>
@@ -421,7 +421,7 @@ function DiagnosticMetric({
   )
 }
 
-function StrategyGateDetails({ row, gate }: { row: LearningRow; gate: StrategyPromotionGate | undefined }) {
+function StrategyGateDetails({ row, gate, onOpenAtomicV7 }: { row: LearningRow; gate: StrategyPromotionGate | undefined; onOpenAtomicV7: () => void }) {
   if (!gate) return <p className="mt-3 text-xs text-slate-500">Promotion threshold evidence is unavailable.</p>
   const thresholds = gate.thresholds
   const evidence = gate.evidence
@@ -431,13 +431,6 @@ function StrategyGateDetails({ row, gate }: { row: LearningRow; gate: StrategyPr
     { label: '可評估決策數', description: 'PIT 欄位齊全、可公平判定策略是否命中的決策筆數。', value: String(evidence.decisions), target: `>= ${thresholds.min_evaluable_decisions}`, pass: evidence.decisions >= thresholds.min_evaluable_decisions },
     { label: '成熟報酬樣本', description: '已走完結果窗並扣除交易成本、可計算績效的樣本數。', value: String(evidence.samples), target: `>= ${thresholds.min_reward_samples}`, pass: evidence.samples >= thresholds.min_reward_samples },
     { label: '成熟交易日數', description: '至少有一筆報酬成熟、可納入每日統計的不同交易日數。', value: String(evidence.mature_dates), target: `>= ${thresholds.min_mature_dates}`, pass: evidence.mature_dates >= thresholds.min_mature_dates },
-    ...(gate.activation_gate.required ? [{
-      label: 'Atomic V7 相對替換',
-      description: '同日 paired、HAC4、Holm family-wise correction、minimum economic delta、power 與全組合風險 gate。',
-      value: activationGateStatusLabel(gate.activation_gate.status),
-      target: 'accepted',
-      pass: activationGatePass(gate.activation_gate.status),
-    }] : []),
   ]
   const diagnostics = [
     { label: '型態命中率', description: '用來檢查 setup 是否過窄或資料斷線；稀有型態不因通用命中率被淘汰。', value: pct(evidence.match_rate), role: '僅供診斷 · 非門檻' },
@@ -457,11 +450,28 @@ function StrategyGateDetails({ row, gate }: { row: LearningRow; gate: StrategyPr
         <span className="font-semibold text-slate-300">{isActiveIncumbent ? 'Active：成熟度與權重監控' : 'Candidate evidence → Active：Atomic V7'}</span>
         <span className="text-slate-500">門檻路由比較（原 Shadow A；非 lifecycle stage）</span>
       </div>
-      <p className="mb-2 rounded-md border border-emerald-400/20 bg-emerald-400/[0.05] px-2 py-1.5 text-[10px] leading-4 text-emerald-100/80">共用 hard gate 只管資料可比性與成熟度；它適用於 Candidate evidence。平均 Alpha、match rate、hit rate、MDD、LCB90 保留為診斷。策略 setup threshold 由版本化 Strategy Spec 管理，正式升級只由 Atomic V7 相對替換管理。</p>
+      <p className="mb-2 rounded-md border border-emerald-400/20 bg-emerald-400/[0.05] px-2 py-1.5 text-[10px] leading-4 text-emerald-100/80">{isActiveIncumbent ? 'Active 不再用共用勝率或 MDD hard gate 判定績效降溫；v3 依每個策略自己的成熟報酬、成熟日期與 rolling date-return 分配 contribution。Threshold route comparison 只校準送評路由，不接管策略 lifecycle。' : '共用 hard gate 只管 Candidate 的資料可比性與成熟度。平均 Alpha、match rate、hit rate、MDD、LCB90 保留為診斷；正式升級只由 Atomic V7 相對替換管理。'}</p>
       <section aria-label="共用成熟度門檻">
         <h3 className="text-xs font-semibold text-slate-200">共用成熟度門檻</h3>
         <div className="mt-1 grid gap-x-4 md:grid-cols-2">{hardGates.map((item) => <GateMetric key={item.label} {...item} />)}</div>
       </section>
+      {!isActiveIncumbent && gate.activation_gate.required ? (
+        <section className="mt-3 rounded-xl border border-violet-400/25 bg-violet-400/[0.06] p-3" aria-label="Atomic V7 相對替換指標">
+          <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+            <div className="min-w-0">
+              <div className="flex flex-wrap items-center gap-2">
+                <h3 className="text-xs font-semibold text-violet-100">Atomic V7 相對替換</h3>
+                <Badge variant="outline" className={statusClass(gate.activation_gate.status)}>{activationGateStatusLabel(gate.activation_gate.status)}</Badge>
+                <span className={['text-[10px] font-semibold', gateResultClass(activationGatePass(gate.activation_gate.status))].join(' ')}>{gateResultLabel(activationGatePass(gate.activation_gate.status))} · target accepted</span>
+              </div>
+              <p className="mt-1 text-[10px] leading-4 text-slate-500">同日 paired、HAC4、Holm family-wise correction、minimum economic delta、power 與完整 cutover firewall。</p>
+            </div>
+            <Button type="button" size="sm" variant="outline" className="shrink-0 border-violet-400/30 bg-slate-950/45 text-violet-100 hover:bg-violet-400/[0.12]" onClick={onOpenAtomicV7}>
+              查看全門檻
+            </Button>
+          </div>
+        </section>
+      ) : null}
       <section className="mt-3 border-t border-slate-800 pt-3" aria-label="觀察指標">
         <h3 className="text-xs font-semibold text-slate-200">觀察指標（不判定通過／失敗）</h3>
         <p className="mt-1 text-[10px] leading-4 text-slate-500">這些數值會持續累積以提高解讀可信度，但不是 Candidate 升降級門檻；沒有「待通過」狀態。</p>
@@ -484,6 +494,10 @@ function CandidateAtomicV7Dialog({
   open: boolean
   onOpenChange: (open: boolean) => void
 }) {
+  const [phase, setPhase] = useState<'prefilter' | 'pair' | 'cutover'>('prefilter')
+  useEffect(() => {
+    if (open) setPhase('prefilter')
+  }, [open, row?.id, row?.version])
   const policy = replacementGate?.policy ?? null
   const run = replacementGate?.latest_run ?? null
   const champion = run?.champion_comparison ?? null
@@ -637,19 +651,38 @@ function CandidateAtomicV7Dialog({
   ] : []
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-h-[92vh] max-w-6xl overflow-y-auto border-slate-700 bg-slate-950 text-slate-100">
-        <DialogHeader>
+      <DialogContent className="grid h-[min(92dvh,920px)] w-[calc(100vw-1rem)] grid-rows-[auto_auto_auto_minmax(0,1fr)] gap-3 overflow-hidden border-slate-700 bg-slate-950 p-0 text-slate-100 sm:max-w-[96vw] xl:max-w-[1500px]">
+        <DialogHeader className="border-b border-slate-800 px-5 pb-4 pt-5">
           <div className="flex flex-wrap items-center gap-2 pr-8">
-            <DialogTitle>{row?.name ?? 'Candidate'} · Atomic V7 全門檻</DialogTitle>
+            <DialogTitle className="text-xl">{row?.name ?? 'Candidate'} · Atomic V7 全門檻</DialogTitle>
             <Badge variant="outline" className={statusClass(gate?.activation_gate.status ?? 'not_ready')}>{activationGateStatusLabel(gate?.activation_gate.status ?? 'evidence_pending')}</Badge>
           </div>
-          <DialogDescription className="text-left text-xs leading-5 text-slate-400">
+          <DialogDescription className="max-w-5xl text-left text-xs leading-5 text-slate-400">
             只顯示 {row ? [row.id, row.version].join(':') : '目前 Candidate'} 的 actual／target／pass。灰色「尚無判定」代表該門檻尚未執行，不等於未通過。
           </DialogDescription>
         </DialogHeader>
-        {policy ? <p className="rounded-lg border border-slate-800 bg-slate-900/40 px-3 py-2 font-mono text-[10px] text-slate-500">policy {policy.policy_version} · run {run?.run_id ?? '尚無'} · as-of {run?.as_of_date ?? '尚無'}</p> : <p className="text-xs text-slate-500">Replacement policy evidence is unavailable.</p>}
+        {policy ? <p className="mx-5 rounded-lg border border-slate-800 bg-slate-900/40 px-3 py-2 font-mono text-[10px] text-slate-500">policy {policy.policy_version} · run {run?.run_id ?? '尚無'} · as-of {run?.as_of_date ?? '尚無'}</p> : <p className="mx-5 text-xs text-slate-500">Replacement policy evidence is unavailable.</p>}
+        <nav className="grid gap-2 px-5 md:grid-cols-3" aria-label="Atomic V7 phases">
+          <button type="button" aria-selected={phase === 'prefilter'} onClick={() => setPhase('prefilter')} className={['rounded-xl border px-4 py-3 text-left transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-cyan-300/70', phase === 'prefilter' ? 'border-cyan-300/45 bg-cyan-300/[0.1] text-cyan-50' : 'border-slate-800 bg-slate-900/40 text-slate-400 hover:border-slate-700'].join(' ')}>
+            <span className="block text-[10px] font-semibold tracking-[0.14em]">PHASE A</span>
+            <span className="mt-1 block text-sm font-semibold">Candidate prefilter</span>
+            <span className="mt-1 block text-[10px]">{candidatePrefilters.length ? (prefilterPassed ? '通過' : prefilterReady ? '未通過' : '證據待累積') : '尚無 evidence'}</span>
+          </button>
+          <button type="button" aria-selected={phase === 'pair'} onClick={() => setPhase('pair')} className={['rounded-xl border px-4 py-3 text-left transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-violet-300/70', phase === 'pair' ? 'border-violet-300/45 bg-violet-300/[0.1] text-violet-50' : 'border-slate-800 bg-slate-900/40 text-slate-400 hover:border-slate-700'].join(' ')}>
+            <span className="block text-[10px] font-semibold tracking-[0.14em]">PHASE B</span>
+            <span className="mt-1 block text-sm font-semibold">Candidate vs Active</span>
+            <span className="mt-1 block text-[10px]">{candidateDecisions.length} 組 pair</span>
+          </button>
+          <button type="button" aria-selected={phase === 'cutover'} onClick={() => setPhase('cutover')} className={['rounded-xl border px-4 py-3 text-left transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-300/70', phase === 'cutover' ? 'border-emerald-300/45 bg-emerald-300/[0.1] text-emerald-50' : 'border-slate-800 bg-slate-900/40 text-slate-400 hover:border-slate-700'].join(' ')}>
+            <span className="block text-[10px] font-semibold tracking-[0.14em]">PHASE C</span>
+            <span className="mt-1 block text-sm font-semibold">Atomic cutover firewall</span>
+            <span className="mt-1 block text-[10px]">{candidateCutoverEvaluated ? '已連結本 Candidate' : '尚未評估'}</span>
+          </button>
+        </nav>
+        <div className="min-h-0 overflow-y-auto px-5 pb-5">
+        <div className={phase === 'prefilter' ? 'min-h-0' : 'hidden'}>
       {policy && candidatePrefilters.length > 0 ? (
-        <section className="mt-3 rounded-lg border border-cyan-400/20 bg-cyan-400/[0.04] p-3">
+        <section className="rounded-xl border border-cyan-400/20 bg-cyan-400/[0.04] p-4">
           <h3 className="text-xs font-semibold text-cyan-100">A. Candidate prefilter actual / target / pass</h3>
           <p className="mt-2 text-[11px] leading-5 text-slate-500">這三道 prefilter 只套用 Challenger Candidate，決定它能否形成 Candidate → incumbent pair；incumbent Active 是同日 portfolio benchmark，雙方比較值列在下方 pair inspector。</p>
           <div className="mt-2 grid gap-2">
@@ -715,8 +748,10 @@ function CandidateAtomicV7Dialog({
           </div>
         </section>
       ) : null}
+        </div>
+        <div className={phase === 'pair' ? 'min-h-0' : 'hidden'}>
       {candidateDecisions.length ? (
-        <div className="mt-3 grid gap-2">
+        <div className="grid gap-3">
           <h3 className="text-xs font-semibold text-violet-100">B. Candidate vs Active pair actual / target / pass</h3>
           {candidateDecisions.map((decision) => {
             const mddPass = decision.candidate_max_drawdown == null || decision.incumbent_max_drawdown == null || !policy
@@ -899,13 +934,17 @@ function CandidateAtomicV7Dialog({
           <div className="mt-2 grid gap-x-4 md:grid-cols-2">{notEvaluatedPairMetrics.map((metric) => <GateMetric key={metric.label} {...metric} />)}</div>
         </section>
       )}
+        </div>
+        <div className={phase === 'cutover' ? 'min-h-0' : 'hidden'}>
       {policy ? (
-        <section className="mt-3 rounded-lg border border-slate-800 bg-slate-900/30 p-3">
+        <section className="rounded-xl border border-emerald-400/20 bg-emerald-400/[0.035] p-4">
           <h3 className="text-xs font-semibold text-slate-300">C. 最終 cutover firewall actual / target / pass</h3>
           <p className="mt-1 text-[10px] leading-4 text-slate-500">{candidateCutoverEvaluated ? '此 Candidate 已由 promotion_allowed decision 連到最新 run，以下是它的 final cutover actual。' : '此 Candidate 尚無 promotion_allowed decision identity；不拿其他 Candidate 的 run-level portfolio actual 冒充，所有 final gates 顯示未評估。'}</p>
           <div className="mt-2 grid gap-x-4 md:grid-cols-2">{(candidateCutoverEvaluated ? runMetrics : notEvaluatedCutoverMetrics).map((metric) => <GateMetric key={metric.label} {...metric} />)}</div>
         </section>
       ) : null}
+        </div>
+        </div>
       </DialogContent>
     </Dialog>
   )
@@ -1102,9 +1141,11 @@ function StrategyLedgerGroup({
 function StrategyStageTransitionCard({
   row,
   gate,
+  onOpenAtomicV7,
 }: {
   row: LearningRow | null
   gate: StrategyPromotionGate | undefined
+  onOpenAtomicV7: () => void
 }) {
   if (!row) return <aside className="sv-readable-card-content rounded-2xl border border-slate-800 bg-slate-950/70 p-4 text-xs text-slate-500">Stage transition unavailable.</aside>
   const evidence = gate?.missing_evidence ?? []
@@ -1125,7 +1166,7 @@ function StrategyStageTransitionCard({
           <span key={item} className={`rounded-md border px-2 py-1 text-[10px] ${evidence.length ? 'border-amber-400/20 bg-amber-400/[0.06] text-amber-200' : gate ? 'border-emerald-400/20 bg-emerald-400/[0.06] text-emerald-200' : 'border-slate-600/40 bg-slate-800/50 text-slate-400'}`}>{gateReasonLabel(item)}</span>
         ))}
       </div>
-      <StrategyGateDetails row={row} gate={gate} />
+      <StrategyGateDetails row={row} gate={gate} onOpenAtomicV7={onOpenAtomicV7} />
     </aside>
   )
 }
@@ -1140,7 +1181,6 @@ function StrategyHealthBoard({
   formalQuarantinedStrategyIds,
   selectedKey,
   onSelect,
-  onOpenAtomicV7,
 }: {
   rows: LearningRow[]
   gateById: Map<string, StrategyPromotionGate>
@@ -1151,7 +1191,6 @@ function StrategyHealthBoard({
   formalQuarantinedStrategyIds: string[]
   selectedKey: string | null
   onSelect: (key: string) => void
-  onOpenAtomicV7: (key: string) => void
 }) {
   const lanes = STRATEGY_LIFECYCLE_LANES.map((lane) => {
     const laneRows = rows.filter((row) => strategyLifecycleLane(row) === lane.key)
@@ -1218,10 +1257,7 @@ function StrategyHealthBoard({
                           type="button"
                           aria-pressed={selected}
                           aria-label={`查看策略 ${row.name}`}
-                          onClick={() => {
-                            onSelect(key)
-                            if (lane.key === 'candidate') onOpenAtomicV7(key)
-                          }}
+                          onClick={() => onSelect(key)}
                           className={[
                             'w-full rounded-lg border px-3 py-2.5 text-left transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-cyan-300/70',
                             selected ? 'border-cyan-300/40 bg-cyan-300/[0.09]' : 'border-slate-800/90 bg-slate-950/65 hover:border-slate-700 hover:bg-slate-900/75',
@@ -1238,11 +1274,15 @@ function StrategyHealthBoard({
                             <span className={['rounded border px-1.5 py-0.5 text-[10px]', statusClass(row.status)].join(' ')}>{lane.key === 'active' ? 'Active' : 'Candidate'} · {statusLabel(row.status)}</span>
                           </span>
                           <span className="mt-2 flex items-center justify-between gap-2 text-[10px] text-slate-500">
-                            <span className="sv-num">{row.learning.rolling_reward_dates} mature dates</span>
+                            <span className="sv-num">{!row.learning.evidence_available
+                              ? '成熟度未取得'
+                              : row.learning.reward_state === 'no_matches'
+                                ? '0 dates · 0 samples · 無型態命中'
+                                : `${row.learning.rolling_reward_dates} dates · ${row.learning.samples} samples`}</span>
                             <span className="sv-num">{gate?.missing_evidence.length ?? 0} gaps</span>
                           </span>
                           {lane.key === 'candidate' ? (
-                            <span className="mt-2 block rounded-md border border-violet-400/20 bg-violet-400/[0.06] px-2 py-1.5 text-[10px] text-violet-200">點擊查看此策略 Atomic V7 全門檻 actual／target／pass</span>
+                            <span className="mt-2 block text-[10px] text-slate-600">選取後於下方工作區查看證據與 Atomic V7。</span>
                           ) : group.key === 'performance_cooldown' ? (
                             <span className="mt-2 block rounded-md border border-amber-400/20 bg-amber-400/[0.06] px-2 py-1.5 text-[10px] leading-4 text-amber-100">
                               <span className="font-semibold">正式 policy 降溫原因：</span>{' '}
@@ -1550,16 +1590,10 @@ export default function StrategyLearningPage() {
               <div className="rounded-xl border border-slate-800 bg-slate-950/70 p-4"><div className="text-xs text-slate-500">待買政策 Preview（診斷）</div><div className="mt-2 flex items-center gap-2 font-mono text-lg text-slate-100"><ShieldCheck className="h-4 w-4" /> {statusLabel(previewPolicy?.status ?? 'unavailable')}</div><div className="mt-1 text-xs text-slate-500">{previewPolicy?.evidence.production_effect ? 'API source 標記 production-effect' : '零 production-effect 比較'}；此欄仍是 read-time preview，不代表封存 formal policy</div></div>
             </section>
 
-            <section className="rounded-2xl border border-slate-700/80 bg-slate-950/70 px-4 py-3 text-xs leading-5 text-slate-400">
-              <h2 className="font-semibold text-slate-100">Active 正式 contribution 分配</h2>
-              <p className="mt-1">raw score = max(0, rolling date-return mean) × min(samples / 100, 1) × min(mature dates / 30, 1)；只在 allocation gate 通過且 raw score &gt; 0 的 Active 之間正規化為 100%，再經 multi-horizon multiplier 與 formal firewall 重算。此 contribution 只控制推薦能否進待買，不是資金或部位比例。</p>
-              <p className="mt-1 font-mono text-[10px] text-slate-500">formal base {formalBasePolicyVersion ?? 'unavailable'} · as-of {formalBasePolicyAsOfDate ?? 'unavailable'} · preview {previewPolicyVersion ?? 'unavailable'}</p>
-            </section>
-
             {formalPolicyRefreshRequired ? (
               <section className="rounded-2xl border border-amber-400/30 bg-amber-400/[0.08] px-4 py-3 text-sm leading-6 text-amber-50" role="status">
-                <span className="font-semibold">正式政策版本落後：</span>
-                目前頁面正式 contribution 仍來自 {formalBasePolicyVersion}（{formalBasePolicyAsOfDate ?? '日期未取得'}），current preview 已是 {previewPolicyVersion}。系統不會用 read-time preview 冒充 production；正式權重會維持 fail-closed，直到 governed materialization 產生並封存新版 formal policy。
+                <span className="font-semibold">正式 policy 待下一輪封存：</span>
+                目前 production 仍使用 {formalBasePolicyVersion}（{formalBasePolicyAsOfDate ?? '日期未取得'}），current preview 已是 {previewPolicyVersion}。下一次 current-business-date authoritative evening chain 若完整成功，會依序物化 adaptive policy 與 production policy；失敗時仍保留舊正式版本，不以 preview 冒充 production。
               </section>
             ) : null}
 
@@ -1572,7 +1606,7 @@ export default function StrategyLearningPage() {
               </article>
               <article className="rounded-2xl border border-cyan-400/25 bg-cyan-400/[0.06] p-4">
                 <div className="flex items-center justify-between gap-2"><h2 className="font-semibold text-cyan-100">Threshold route comparison（原 Shadow A）</h2><Badge variant="outline" className={statusClass(strategyLanes?.threshold_route_shadow.status ?? 'not_ready')}>evidence mode；不是 stage</Badge></div>
-                <p className="mt-2 text-xs leading-5 text-slate-400">每個 Candidate 都有自己的型態命中與送評路由。此 lane 的 <span className="font-mono text-cyan-100">{strategyLanes?.threshold_route_shadow.mature_dates ?? 0} / {strategyLanes?.threshold_route_shadow.required_mature_dates ?? 11}</span> 日期只代表路由估計器成熟度；LCB90、殘差優勢與校準誤差是比較診斷，不能自行把 Candidate 升級。正式 activation 只走 Atomic V7。</p>
+                <p className="mt-2 text-xs leading-5 text-slate-400">此 lane 的 <span className="font-mono text-cyan-100">{strategyLanes?.threshold_route_shadow.mature_dates ?? 0} / {strategyLanes?.threshold_route_shadow.required_mature_dates ?? 11}</span> 日期只代表市場層級路由估計器成熟度。成熟並 promotion 後可控制哪些股票送入策略比較，但不決定單一 Active 是否降溫，也不能自行把 Candidate 升級；前者仍看每策略 reward evidence 與 formal firewall，後者只走 Atomic V7。</p>
               </article>
               <article className="rounded-2xl border border-violet-400/25 bg-violet-400/[0.06] p-4">
                 <div className="flex items-center justify-between gap-2"><h2 className="font-semibold text-violet-100">正式：Multi-horizon evidence（原 Shadow B）</h2><Badge variant="outline" className="border-violet-400/30 bg-violet-400/10 text-violet-200">{strategyLanes?.multi_horizon_formal.production_effect ? '正式 evidence owner' : strategyLanes?.multi_horizon_formal.production_integration_ready ? '已就緒，待正式 policy closure' : '結果資料已齊，指標建置中'}</Badge></div>
@@ -1613,7 +1647,6 @@ export default function StrategyLearningPage() {
               formalQuarantinedStrategyIds={formalQuarantinedStrategyIds}
               selectedKey={selectedStrategyKey}
               onSelect={setSelectedStrategyKey}
-              onOpenAtomicV7={setAtomicV7StrategyKey}
             />
 
             <CandidateAtomicV7Dialog
@@ -1643,7 +1676,9 @@ export default function StrategyLearningPage() {
                   />
                 ) : <div className="rounded-2xl border border-slate-800 bg-slate-950/70 p-6 text-sm text-slate-500">目前篩選沒有可顯示的策略。</div>}
               </div>
-              <StrategyStageTransitionCard row={selectedRow} gate={selectedGate} />
+              <StrategyStageTransitionCard row={selectedRow} gate={selectedGate} onOpenAtomicV7={() => {
+                if (selectedRow?.status === 'candidate') setAtomicV7StrategyKey([selectedRow.id, selectedRow.version].join(':'))
+              }} />
               <StrategyLineageInspector
                 row={selectedRow}
                 gate={selectedGate}

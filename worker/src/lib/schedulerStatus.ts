@@ -53,6 +53,7 @@ const JOB_DEF_METADATA: JobDef[] = [
   { id: 'indicator-queue', name: 'Indicator Queue', schedule: 'After update readiness', cron: '', group: 'pipeline_chain', chainIndex: 5 },
   { id: 'screener', name: 'Screener', schedule: 'After indicators', cron: '', group: 'pipeline_chain', chainIndex: 6 },
   { id: 'screener-v2-watchdog', name: 'Screener Callback Watchdog', schedule: 'Weekdays 21:00-01:50 / 10m', cron: '*/10 13-17 * * 1-5', group: 'pipeline_chain', chainIndex: 6 },
+  { id: 'strategy-learning-watchdog', name: 'Strategy Learning Recovery Watchdog', schedule: 'Inside Screener Callback Watchdog', cron: '', group: 'pipeline_chain', chainIndex: 24 },
   { id: 'regime-compute', name: 'HMM Regime', schedule: 'Before pipeline recommendation', cron: '', group: 'pipeline_chain', chainIndex: 7 },
   { id: 'allocator-ev-readiness', name: 'Allocator EV Readiness', schedule: 'After screener + regime', cron: '', group: 'pipeline_chain', chainIndex: 8 },
   { id: 'pipeline', name: 'Pipeline', schedule: 'After allocator EV readiness', cron: '', group: 'pipeline_chain', chainIndex: 9 },

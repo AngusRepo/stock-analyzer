@@ -341,15 +341,36 @@ export function buildAdminWorkerDomainTaskMap(c: any, deps: TriggerDeps): Record
       if (!deps.runScreenerV2) throw new Error('screener-v2 trigger dependency not configured')
       return deps.runScreenerV2(requestedRunDate())
     },
+    'strategy-learning-watchdog': async () => {
+      const { runStrategyLearningRecoveryWatchdog } = await import('./strategyLearningRecoveryWatchdog')
+      return runStrategyLearningRecoveryWatchdog(c.env, requestedRunDate())
+    },
     'screener-v2-watchdog': async () => {
       if (!deps.runScreenerV2) throw new Error('screener-v2 trigger dependency not configured')
-      const runDate = assertRunDate(requestedRunDate() || twToday())
-      const { runScreenerRecoveryWatchdog } = await import('./screenerRecoveryWatchdog')
-      return runScreenerRecoveryWatchdog(
-        c.env,
-        (_env, date, options) => deps.runScreenerV2!(date, options),
-        runDate,
-      )
+      const explicitDate = requestedRunDate()
+      const screenerRunDate = assertRunDate(explicitDate || twToday())
+      const [{ runScreenerRecoveryWatchdog }, { runStrategyLearningRecoveryWatchdog }] = await Promise.all([
+        import('./screenerRecoveryWatchdog'),
+        import('./strategyLearningRecoveryWatchdog'),
+      ])
+      const [screenerSummary, strategyLearningSummary] = await Promise.all([
+        runScreenerRecoveryWatchdog(
+          c.env,
+          (_env, date, options) => deps.runScreenerV2!(date, options),
+          screenerRunDate,
+        ),
+        runStrategyLearningRecoveryWatchdog(c.env, explicitDate),
+      ])
+      const compositeStatuses = [
+        classifySchedulerSummary(screenerSummary),
+        classifySchedulerSummary(strategyLearningSummary),
+      ]
+      const compositeStatus = compositeStatuses.includes('triggered')
+        ? 'triggered'
+        : compositeStatuses.includes('running')
+          ? 'running'
+          : compositeStatuses.every((status) => status === 'skipped') ? 'skipped' : 'success'
+      return `status=${compositeStatus} screener={${screenerSummary}} strategy_learning={${strategyLearningSummary}}`
     },
     update: () => deps.runDailyUpdate(!!c.req.query('force'), requestedRunDate()),
     ml: () => deps.runMLAndRiskV2(requestedRunDate()),

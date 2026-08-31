@@ -125,6 +125,18 @@ export const SCHEDULER_DEPENDENCY_MAP: Record<string, SchedulerDependencySpec> =
     operatorRisk: 'high',
     recommendation: 'Keep as a recovery watchdog and display it outside the primary DAG lane.',
   },
+  'strategy-learning-watchdog': {
+    task: 'strategy-learning-watchdog',
+    owner: 'worker_chain',
+    consolidationClass: 'downstream_evidence',
+    currentFunction: 'Reclaims canonical queued or expired-running strategy-learning evidence after post-verify authority is complete.',
+    replacementOwner: 'strategy-learning durable queue and finalizer checkpoints',
+    upstream: ['post-verify-chain', 'strategy-learning'],
+    downstream: ['strategy-learning'],
+    requiredBeforeDisable: ['cross-midnight expired-lease recovery must remain canonical-lineage fenced and evidence-only'],
+    operatorRisk: 'high',
+    recommendation: 'Keep inside the existing post-market watchdog cadence until the durable queue can self-resume after DLQ exhaustion.',
+  },
   'audit-json-retention': {
     task: 'audit-json-retention',
     owner: 'gcp_scheduler',

@@ -8,13 +8,10 @@ import { getTradingConfig } from './tradingConfig'
 import { databaseForDataDomain } from './dataDomainRegistry'
 import { paperDomainDatabase } from './paperDomainDatabase'
 import { evaluateGaPromotion } from './gaPromotion'
+import { readLatestMarketRegimeStateOnOrBefore } from './marketRegimeState'
+import type { Bindings } from '../types'
 
-interface AdaptiveEngineEnv {
-  DB: D1Database
-  KV: KVNamespace
-  ML_CONTROLLER_URL?: string
-  ML_CONTROLLER_SECRET?: string
-}
+type AdaptiveEngineEnv = Pick<Bindings, 'DB' | 'KV'> & Partial<Bindings>
 
 const ACTIVE_8_MODELS = [
   'LightGBM',
@@ -142,7 +139,17 @@ async function loadGaOptimizerAdaptiveContext(kv: KVNamespace): Promise<Record<s
   }
 }
 
-async function queryAdaptiveInputs(env: { DB: D1Database }) {
+async function queryAdaptiveInputs(env: AdaptiveEngineEnv, asOfDate: string) {
+  const regimeState = await readLatestMarketRegimeStateOnOrBefore(
+    databaseForDataDomain(env, 'market'),
+    asOfDate,
+  )
+  if (!regimeState?.run_date || regimeState.source !== 'hmm') {
+    throw new Error(
+      'adaptive_regime_evidence_missing:' + asOfDate + ':' + (regimeState?.source ?? 'not_materialized'),
+    )
+  }
+
   const riskRow = await databaseForDataDomain(env, 'core').prepare(
     'SELECT risk_score, risk_level FROM market_risk ORDER BY date DESC LIMIT 1',
   ).first<{ risk_score: number; risk_level: string }>()
@@ -192,6 +199,9 @@ async function queryAdaptiveInputs(env: { DB: D1Database }) {
   const recentOrders = summarizeSellOrderLosses(recentSellRows ?? [])
 
   return {
+    regime: regimeState.family,
+    regimeAsOfDate: regimeState.run_date,
+    regimeSource: regimeState.source,
     riskScore: riskRow?.risk_score ?? 50,
     riskLevel: riskRow?.risk_level ?? 'medium',
     accuracy30d: accGlobal?.avg_acc ?? 0.6,
@@ -268,11 +278,11 @@ export async function runAdaptiveUpdate(env: AdaptiveEngineEnv, options: { refre
     throw new Error('ML_CONTROLLER_URL is required for adaptive update; Worker local adaptive computation is disabled')
   }
 
-  const inputs = await queryAdaptiveInputs(env)
+  const today = new Date(Date.now() + 8 * 3600_000).toISOString().slice(0, 10)
+  const inputs = await queryAdaptiveInputs(env, today)
   const current = await getAdaptiveParams(env.KV)
   const tradingConfig = await getTradingConfig(env.KV)
   const gaOptimizerContext = await loadGaOptimizerAdaptiveContext(env.KV)
-  const today = new Date(Date.now() + 8 * 3600_000).toISOString().slice(0, 10)
   const headers: Record<string, string> = { 'Content-Type': 'application/json' }
   if (env.ML_CONTROLLER_SECRET) headers['X-Controller-Token'] = env.ML_CONTROLLER_SECRET
 
@@ -281,7 +291,13 @@ export async function runAdaptiveUpdate(env: AdaptiveEngineEnv, options: { refre
     headers,
     body: JSON.stringify({
       date: today,
-      market: { risk_score: inputs.riskScore, risk_level: inputs.riskLevel },
+      market: {
+        risk_score: inputs.riskScore,
+        risk_level: inputs.riskLevel,
+        regime: inputs.regime,
+        regime_as_of_date: inputs.regimeAsOfDate,
+        regime_source: inputs.regimeSource,
+      },
       accuracy: {
         global_30d: inputs.accuracy30d,
         active_9_quality_30d: inputs.accuracy30d,

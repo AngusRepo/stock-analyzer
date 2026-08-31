@@ -274,6 +274,30 @@ async def test_weekly_callback_does_not_retry_stale_4xx(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_optuna_callback_retries_rate_limit_to_durable_closure(monkeypatch):
+    calls = 0
+    sleeps: list[int] = []
+
+    async def rate_limited_callback(_payload):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise optuna_job_main.CallbackWorkerError("Worker scheduler callback HTTP 429")
+
+    async def fake_sleep(seconds):
+        sleeps.append(seconds)
+
+    monkeypatch.setattr(optuna_job_main, "_callback_worker", rate_limited_callback)
+    monkeypatch.setattr(optuna_job_main.asyncio, "sleep", fake_sleep)
+    monkeypatch.setenv("OPTUNA_CALLBACK_MAX_ATTEMPTS", "3")
+
+    await optuna_job_main._callback_optuna_with_bounded_retry({"task": "weekly-optuna"})
+
+    assert calls == 2
+    assert sleeps == [1]
+
+
+@pytest.mark.asyncio
 async def test_weekly_source_evidence_reconciliation_only_appends_no_effect_receipt(monkeypatch):
     evidence_clock = {
         "schema_version": "weekly-evidence-clock-v1",
@@ -418,3 +442,66 @@ def test_weekly_eval_requires_explicit_confirmation_before_apply():
     assert "confirm: bool = Field(default=False" in source
     assert "if req.apply and not req.confirm:" in source
     assert "weekly_eval apply=true requires confirm=true" in source
+
+
+@pytest.mark.asyncio
+async def test_research_sweep_retries_transient_source_failure_to_atomic_success(monkeypatch):
+    calls = []
+    sleeps = []
+
+    def fake_sweep(_req):
+        calls.append(len(calls) + 1)
+        if len(calls) == 1:
+            return {
+                "status": "error",
+                "failures": ["barrier:ERROR(HTTP 429 D1 overload)"],
+                "staging": {"status": "blocked", "reason": "source_failure"},
+            }
+        return {
+            "status": "completed",
+            "failures": [],
+            "staging": {"status": "staged", "reason": None},
+        }
+
+    async def fake_sleep(seconds):
+        sleeps.append(seconds)
+
+    monkeypatch.setattr(optuna_job_main, "execute_research_sweep", fake_sweep)
+    monkeypatch.setattr(optuna_job_main.asyncio, "sleep", fake_sleep)
+    monkeypatch.setenv("OPTUNA_SWEEP_MAX_ATTEMPTS", "3")
+    monkeypatch.setenv("OPTUNA_SWEEP_RETRY_BASE_SECONDS", "0.1")
+
+    result, attempts = await optuna_job_main._execute_research_sweep_with_bounded_retry(
+        optuna_job_main._build_request()
+    )
+
+    assert attempts == 2
+    assert result["status"] == "completed"
+    assert result["staging"]["status"] == "staged"
+    assert result["attempt_count"] == 2
+    assert len(sleeps) == 1
+
+
+@pytest.mark.asyncio
+async def test_research_sweep_does_not_retry_permanent_failure(monkeypatch):
+    calls = []
+
+    def fake_sweep(_req):
+        calls.append(1)
+        return {
+            "status": "error",
+            "failures": ["ga_optimizer:ERROR(ValueError: invalid candidate schema)"],
+            "staging": {"status": "blocked", "reason": "source_failure"},
+        }
+
+    monkeypatch.setattr(optuna_job_main, "execute_research_sweep", fake_sweep)
+    monkeypatch.setenv("OPTUNA_SWEEP_MAX_ATTEMPTS", "3")
+
+    result, attempts = await optuna_job_main._execute_research_sweep_with_bounded_retry(
+        optuna_job_main._build_request()
+    )
+
+    assert attempts == 1
+    assert result["status"] == "error"
+    assert result["staging"]["status"] == "blocked"
+    assert len(calls) == 1

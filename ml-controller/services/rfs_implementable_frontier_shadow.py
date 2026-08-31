@@ -118,6 +118,7 @@ def build_rfs_implementable_frontier_shadow(
     daily_vol_floor: float = 0.01,
     iterations: int = 240,
     comparison_only_shadow_alpha: bool = False,
+    as_of_date: str | None = None,
 ) -> dict[str, Any]:
     """Build a cost-aware aim portfolio with production_effect fixed to false."""
 
@@ -194,6 +195,7 @@ def build_rfs_implementable_frontier_shadow(
         payload = {
             "schema_version": SCHEMA_VERSION,
             "method": METHOD,
+            "as_of_date": as_of_date,
             "status": "insufficient_evidence",
             "production_effect": False,
             "promotion_eligible": False,
@@ -365,6 +367,7 @@ def build_rfs_implementable_frontier_shadow(
     payload = {
         "schema_version": SCHEMA_VERSION,
         "method": METHOD,
+        "as_of_date": as_of_date,
         "status": "shadow_ready" if not validation_blockers else "shadow_observation_only",
         "production_effect": False,
         "promotion_eligible": False,

@@ -271,25 +271,144 @@ async def _run_weekly_backtest_bundle(run_date: str) -> dict[str, Any]:
     }
 
 
-async def _callback_weekly_with_bounded_retry(payload: dict[str, Any]) -> None:
-    max_attempts = max(1, min(5, _env_int("WEEKLY_BACKTEST_CALLBACK_MAX_ATTEMPTS", 3)))
+async def _callback_with_bounded_retry(
+    payload: dict[str, Any],
+    *,
+    max_attempts_env: str,
+    label: str,
+) -> None:
+    max_attempts = max(1, min(5, _env_int(max_attempts_env, 3)))
     for attempt in range(1, max_attempts + 1):
         try:
             await _callback_worker(payload)
             return
         except CallbackWorkerError as exc:
             message = str(exc)
-            if attempt >= max_attempts or "HTTP 4" in message:
+            if attempt >= max_attempts or not _callback_failure_is_retryable(message):
                 raise
             delay_seconds = min(8, 2 ** (attempt - 1))
             logger.warning(
-                "[OptunaJob] weekly callback retry attempt=%s/%s delay_seconds=%s error=%s",
+                "[OptunaJob] %s callback retry attempt=%s/%s delay_seconds=%s error=%s",
+                label,
                 attempt,
                 max_attempts,
                 delay_seconds,
                 message,
             )
             await asyncio.sleep(delay_seconds)
+
+
+def _callback_failure_is_retryable(message: str) -> bool:
+    normalized = str(message or "").lower()
+    transient_markers = (
+        "http 408",
+        "http 425",
+        "http 429",
+        "http 500",
+        "http 502",
+        "http 503",
+        "http 504",
+        "callback unreachable",
+        "timeout",
+        "timed out",
+        "connection reset",
+        "connection refused",
+    )
+    return any(marker in normalized for marker in transient_markers)
+
+
+async def _callback_weekly_with_bounded_retry(payload: dict[str, Any]) -> None:
+    await _callback_with_bounded_retry(
+        payload,
+        max_attempts_env="WEEKLY_BACKTEST_CALLBACK_MAX_ATTEMPTS",
+        label="weekly",
+    )
+
+
+async def _callback_optuna_with_bounded_retry(payload: dict[str, Any]) -> None:
+    await _callback_with_bounded_retry(
+        payload,
+        max_attempts_env="OPTUNA_CALLBACK_MAX_ATTEMPTS",
+        label="optuna",
+    )
+
+
+_TRANSIENT_RESEARCH_SWEEP_MARKERS = (
+    "429",
+    "too many requests",
+    "http 500",
+    "http 502",
+    "http 503",
+    "http 504",
+    "internal server error",
+    "temporarily unavailable",
+    "d1 overload",
+    "d1 query failed",
+    "timeout",
+    "timed out",
+    "connection reset",
+    "connection refused",
+)
+
+
+def _research_sweep_failures(result: dict[str, Any] | None) -> list[str]:
+    failures = result.get("failures") if isinstance(result, dict) else None
+    return [str(item) for item in failures] if isinstance(failures, list) else []
+
+
+def _is_transient_research_sweep_failure(message: str) -> bool:
+    normalized = str(message or "").lower()
+    return any(marker in normalized for marker in _TRANSIENT_RESEARCH_SWEEP_MARKERS)
+
+
+async def _execute_research_sweep_with_bounded_retry(
+    req: OptunaResearchSweepReq,
+) -> tuple[dict[str, Any], int]:
+    max_attempts = max(1, min(5, _env_int("OPTUNA_SWEEP_MAX_ATTEMPTS", 3)))
+    base_delay_seconds = max(0.0, min(10.0, _env_float("OPTUNA_SWEEP_RETRY_BASE_SECONDS", 2.0)))
+    last_result: dict[str, Any] | None = None
+    for attempt in range(1, max_attempts + 1):
+        try:
+            result = await asyncio.to_thread(execute_research_sweep, req)
+        except Exception as exc:
+            message = f"{type(exc).__name__}: {exc}"
+            if attempt >= max_attempts or not _is_transient_research_sweep_failure(message):
+                raise
+            delay_seconds = min(10.0, base_delay_seconds * (2 ** (attempt - 1)))
+            logger.warning(
+                "[OptunaJob] research sweep transient exception attempt=%s/%s delay_seconds=%.1f error=%s",
+                attempt,
+                max_attempts,
+                delay_seconds,
+                message,
+            )
+            await asyncio.sleep(delay_seconds)
+            continue
+
+        last_result = result
+        failures = _research_sweep_failures(result)
+        if result.get("status") == "completed" and not failures:
+            result["attempt_count"] = attempt
+            return result, attempt
+        if not failures or not any(_is_transient_research_sweep_failure(item) for item in failures):
+            result["attempt_count"] = attempt
+            return result, attempt
+        if attempt >= max_attempts:
+            result["attempt_count"] = attempt
+            return result, attempt
+        delay_seconds = min(10.0, base_delay_seconds * (2 ** (attempt - 1)))
+        logger.warning(
+            "[OptunaJob] research sweep transient source failure attempt=%s/%s delay_seconds=%.1f failures=%s",
+            attempt,
+            max_attempts,
+            delay_seconds,
+            failures,
+        )
+        await asyncio.sleep(delay_seconds)
+
+    if last_result is None:
+        raise RuntimeError("research_sweep_retry_exhausted_without_result")
+    return last_result, max_attempts
 
 
 async def _run() -> int:
@@ -348,6 +467,7 @@ async def _run() -> int:
     summary = ""
     error: str | None = None
     result: dict[str, Any] | None = None
+    research_sweep_attempts = 0
 
     try:
         if mode == "weekly_backtest":
@@ -389,7 +509,7 @@ async def _run() -> int:
                 f"blocked={result.get('blocked', 0)} validation_run_id={result.get('validation_run_id') or run_id}"
             )[:1200]
         else:
-            result = await asyncio.to_thread(execute_research_sweep, req)
+            result, research_sweep_attempts = await _execute_research_sweep_with_bounded_retry(req)
             failures = result.get("failures") if isinstance(result, dict) else None
             if isinstance(result, dict) and result.get("status") == "completed" and not failures:
                 status = "success"
@@ -463,6 +583,7 @@ async def _run() -> int:
             "push_results": [item for item in (composite, ga_learning_state) if item],
             "snapshot": staging,
             "performance": result.get("performance") if isinstance(result, dict) else None,
+            "attempt_count": research_sweep_attempts,
         }
         payload.update({
             "sandbox_id": composite.get("sandbox_id"),
@@ -477,7 +598,7 @@ async def _run() -> int:
     if mode == "weekly_backtest":
         await _callback_weekly_with_bounded_retry(payload)
     else:
-        await _callback_worker(payload)
+        await _callback_optuna_with_bounded_retry(payload)
     logger.info("[OptunaJob] finished task=%s status=%s", task, status)
     return 0 if status in {"success", "skipped"} else 1
 

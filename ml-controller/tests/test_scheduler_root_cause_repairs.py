@@ -78,9 +78,55 @@ def test_filtered_recommendations_preserve_screener_seed_rows(monkeypatch):
         assert allocation["expected_return_owner"] == "risk_abstention"
         assert allocation["allocator_edge_resolver"]["abstention"] is True
         assert allocation["expected_return_abstention"]["candidate_contract"] == "explicit_no_trade_abstention"
+        rfs = allocation["rfs_shadow_challenger"]
+        assert rfs["status"] == "insufficient_evidence"
+        assert rfs["source_expected_return_candidate_count"] == 0
+        assert rfs["as_of_date"] == "2026-06-08"
+        assert rfs["packet_checksum"]
+        assert rfs["production_effect"] is False
         assert diagnostic["status"] == "not_evaluated"
         assert diagnostic["reason"] == "ml_filter_preserved_non_buy"
         if params[2] == "2330":
             assert diagnostic["filtered_signal"] == "SELL"
             assert diagnostic["sparse_decision_coverage"] is False
         assert params[1] == "2026-06-08"
+
+
+def test_filtered_recommendations_reuse_same_run_rfs_packet(monkeypatch):
+    captured = {}
+
+    def _fake_batch_execute(statements):
+        captured["statements"] = statements
+        return {"success_count": len(statements)}
+
+    monkeypatch.setattr(recommendation_service.CORE_D1_CLIENT, "batch_execute", _fake_batch_execute)
+    packet = {
+        "schema_version": "portfolio-ml-implementable-frontier-shadow-v2",
+        "method": "portfolio_ml_inspired_direct_weight_cost_aware_shadow",
+        "as_of_date": "2026-06-08",
+        "status": "shadow_observation_only",
+        "packet_checksum": "same-run-checksum",
+        "validation_blockers": ["return_history_coverage_below_80pct"],
+        "candidate_pool_policy": "full_formal_expected_return_pool_no_hard_top_k",
+        "source_expected_return_candidate_count": 7,
+        "excluded_missing_adv_symbols": ["9999"],
+        "metrics": {"challenger_net_utility": 0.1},
+    }
+
+    recommendation_service.delete_filtered_recommendations(
+        ["2330"],
+        "2026-06-08",
+        rfs_shadow_packet=packet,
+    )
+
+    allocation = json.loads(captured["statements"][0][1][0])
+    rfs = allocation["rfs_shadow_challenger"]
+    assert rfs["packet_checksum"] == "same-run-checksum"
+    assert rfs["source_expected_return_candidate_count"] == 7
+    assert rfs["excluded_missing_adv_symbols"] == ["9999"]
+    assert rfs["production_effect"] is False
+
+    graph_source = (
+        Path(__file__).resolve().parent.parent / "graphs" / "daily_pipeline_v2.py"
+    ).read_text(encoding="utf-8")
+    assert "rfs_shadow_packet=run_rfs_shadow_packet" in graph_source

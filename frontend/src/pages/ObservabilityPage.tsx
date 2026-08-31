@@ -1117,8 +1117,22 @@ function EvidenceClockPanel({
                 </div>
                 <dl className="mt-3 grid grid-cols-2 gap-2 text-xs">
                   <div><dt className="text-slate-500">latest</dt><dd className="sv-num mt-1 text-slate-200">{clock.latest_evidence_date ?? 'N/A'}</dd></div>
-                  <div><dt className="text-slate-500">samples</dt><dd className="sv-num mt-1 text-slate-200">{clock.sample_count}</dd></div>
-                  <div><dt className="text-slate-500">dates</dt><dd className="sv-num mt-1 text-slate-200">{clock.distinct_dates}</dd></div>
+                  <div>
+                    <dt className="text-slate-500">samples</dt>
+                    <dd className="sv-num mt-1 text-slate-200">
+                      {clock.mechanism === 'execution_parity' && clock.status === 'not_applicable_no_real_intents'
+                        ? 'N/A'
+                        : clock.sample_count}
+                    </dd>
+                  </div>
+                  <div>
+                    <dt className="text-slate-500">dates</dt>
+                    <dd className="sv-num mt-1 text-slate-200">
+                      {clock.mechanism === 'execution_parity' && clock.status === 'not_applicable_no_real_intents'
+                        ? 'N/A'
+                        : clock.distinct_dates}
+                    </dd>
+                  </div>
                   <div><dt className="text-slate-500">coverage</dt><dd className="sv-num mt-1 text-slate-200">{clock.coverage == null ? 'N/A' : (clock.coverage * 100).toFixed(1) + '%'}</dd></div>
                 </dl>
                 <div className="mt-3 space-y-1 border-t border-[#1c2534] pt-2 sv-num text-xs normal-case text-slate-500">
@@ -1126,6 +1140,37 @@ function EvidenceClockPanel({
                   <p>delta {clock.incumbent_delta == null ? 'N/A' : clock.incumbent_delta.toFixed(4)} · LCB {clock.confidence_bound == null ? 'N/A' : clock.confidence_bound.toFixed(4)}</p>
                   <p className="truncate">receipt {clock.artifact_or_packet_checksum?.slice(0, 16) ?? 'N/A'}</p>
                 </div>
+                {clock.mechanism === 'shadow_a' && (
+                  <div className="mt-2 rounded-lg border border-[#263247] bg-[#070a10] p-2 text-xs leading-5 text-slate-400">
+                    <p>cohort {String(asRecord(clock.details).candidate_route_version ?? 'N/A')}</p>
+                    <p>
+                      maturity {String(asRecord(asRecord(clock.details).maturity).observed_total_dates ?? 0)}
+                      {' / '}
+                      {String(asRecord(asRecord(clock.details).maturity).minimum_total_dates ?? '-')} total dates
+                    </p>
+                    <p>
+                      prior cohort {String(asRecord(asRecord(clock.details).prior_cohort).sample_count ?? 'N/A')} samples
+                      {asRecord(clock.details).cohort_reset === true ? ' · current semantic reset is isolated' : ''}
+                    </p>
+                  </div>
+                )}
+                {clock.mechanism === 'rfs_allocator' && (
+                  <div className="mt-2 rounded-lg border border-[#263247] bg-[#070a10] p-2 text-xs leading-5 text-slate-400">
+                    <p>packets {String(asRecord(clock.details).latest_packet_count ?? 0)} · persisted rows {String(asRecord(clock.details).latest_recommendation_rows ?? 0)}</p>
+                    <p>formal candidates {String(asRecord(clock.details).candidate_count ?? 0)} · usable {String(asRecord(clock.details).usable_candidate_count ?? 0)}</p>
+                    {asRecord(clock.details).zero_candidate_run_materialized === true && (
+                      <p className="text-amber-200">producer completed with zero formal candidates; this is materialized evidence, not a missing run.</p>
+                    )}
+                  </div>
+                )}
+                {clock.mechanism === 'execution_parity' && (
+                  <div className="mt-2 rounded-lg border border-[#263247] bg-[#070a10] p-2 text-xs leading-5 text-slate-400">
+                    <p>paper intents {String(asRecord(clock.details).paper_intents ?? 0)} · real intents {String(asRecord(clock.details).real_intents ?? 0)}</p>
+                    {clock.status === 'not_applicable_no_real_intents' && (
+                      <p className="text-sky-200">No real-order authority is enabled; parity is not applicable, so zero is not treated as maturity evidence.</p>
+                    )}
+                  </div>
+                )}
                 <div className="mt-2 text-xs leading-5 text-slate-400">
                   {clock.blockers.length ? clock.blockers.join(' · ') : 'No current blocker'}
                 </div>
@@ -1159,6 +1204,10 @@ function AdaptiveMetaPanel({
   const runtimePolicy = asRecord(thresholdPolicyEvidence.policy)
   const runtimePolicyThresholds = asRecord(runtimePolicy.thresholds)
   const runtimePolicyOverlay = asRecord(runtimePolicy.adaptive_overlay)
+  const runtimeSignalPolicy = asRecord(runtimePolicy.signal_policy)
+  const runtimePolicyRequestedDate = String(thresholdPolicyEvidence.requested_date ?? '-')
+  const runtimePolicyEvidenceDate = String(thresholdPolicyEvidence.evidence_date ?? '-')
+  const runtimePolicyStaleDays = thresholdPolicyEvidence.stale_days
   const bandit = asRecord(evidence.bandit_context)
   const linucbLedger = asRecord(bandit.linucb_reward_ledger)
   const expandedContext = asRecord(bandit.expanded_context)
@@ -1187,7 +1236,7 @@ function AdaptiveMetaPanel({
   const gaNextAction = String(promotion.nextAction ?? ga?.next_action ?? '')
   const approvalRequiredForNextLevel =
     promotion.approvalRequiredForNextLevel === true || promotion.approval_required_for_next_level === true
-  const l3Blockers = missingEvidence.length
+  const rawL3Blockers = missingEvidence.length
     ? missingEvidence
     : canRequestNextLevel && approvalRequiredForNextLevel
       ? ['Wei approval']
@@ -1207,6 +1256,11 @@ function AdaptiveMetaPanel({
     : Array.isArray(gate.failed_gates)
       ? gate.failed_gates.map(String)
       : []
+  const l3Blockers = rawL3Blockers.flatMap((item) => (
+    item === 'primary_gate' && failedGates.length
+      ? failedGates.map((gateName) => 'primary_gate / ' + gateName)
+      : [item]
+  ))
   const gaReviewStatusTone: WorkstationTone = pendingApprovalLevel
     ? 'warn'
     : missingEvidence.length || failedGates.length
@@ -1249,15 +1303,17 @@ function AdaptiveMetaPanel({
     },
   ]
   const gaGates: ApprovalReviewGate[] = [
-    ...(requiredEvidence.length ? requiredEvidence : ['policy_candidate', 'primary_gate', 'stable_history', 'pbo_mc_cost_governance']).map((item) => ({
+    ...(requiredEvidence.length ? requiredEvidence : ['policy_candidate', 'primary_gate', 'stable_history', 'pbo_mc_cost_governance'])
+      .filter((item) => !(item === 'primary_gate' && failedGates.length))
+      .map((item) => ({
       label: item,
       status: missingEvidence.includes(item) ? 'missing' as const : 'pass' as const,
       detail: missingEvidence.includes(item) ? '缺 evidence，不能升 L3/L4。' : 'promotion packet 已具備此 evidence。',
     })),
     ...failedGates.slice(0, 4).map((item) => ({
-      label: item,
+      label: 'primary_gate / ' + item,
       status: 'fail' as const,
-      detail: 'GA primary gate 回報 failed gate。',
+      detail: '這是 primary gate 的具體失敗子門檻，不再另列一筆 missing primary_gate。',
     })),
     {
       label: 'Wei approval boundary',
@@ -1371,23 +1427,27 @@ function AdaptiveMetaPanel({
             </div>
             <div className="mt-3 rounded-lg border border-sky-400/15 bg-sky-400/5 p-2 text-xs leading-5 text-slate-300">
               <div className="flex items-center justify-between gap-2">
-                <span className="sv-num text-sky-200">Runtime ML threshold policy</span>
+                <span className="sv-num text-sky-200">Runtime Active-8 signal policy</span>
                 <WorkstationPill tone={severityTone(thresholdPolicyEvent?.severity)}>{thresholdPolicyEvent?.status ?? 'missing'}</WorkstationPill>
               </div>
               <div className="mt-2 grid grid-cols-2 gap-x-3 gap-y-1">
                 <span>id {String(runtimePolicy.policy_id ?? '-')}</span>
-                <span>regime {String(runtimePolicy.selected_regime ?? '-')}</span>
-                <span>buy {fmtNumber(runtimePolicyThresholds.buyThreshold, 3)}</span>
-                <span>sell {fmtNumber(runtimePolicyThresholds.sellThreshold, 3)}</span>
-                <span>overlay {fmtNumber(runtimePolicyOverlay.applied_delta, 3)}</span>
+                <span>scope {String(runtimePolicy.selected_regime ?? '-')}</span>
+                <span>buy coverage {fmtNumber(runtimePolicyThresholds.buyCoverage ?? runtimeSignalPolicy.buy_coverage, 3)}</span>
+                <span>strong coverage {fmtNumber(runtimePolicyThresholds.strongCoverage ?? runtimeSignalPolicy.strong_coverage, 3)}</span>
+                <span>overlay {runtimePolicyOverlay.applied_delta == null ? 'N/A' : fmtNumber(runtimePolicyOverlay.applied_delta, 3)}</span>
                 <span>hash {String(runtimePolicy.evidence_hash ?? '-').slice(0, 10)}</span>
+                <span>requested {runtimePolicyRequestedDate}</span>
+                <span>evidence {runtimePolicyEvidenceDate}</span>
+                <span>age {runtimePolicyStaleDays == null ? '-' : String(runtimePolicyStaleDays) + 'd'}</span>
+                <span>rows {String(thresholdPolicyEvidence.sample_count ?? '-')}</span>
               </div>
             </div>
           </div>
 
           <div className="rounded-xl border border-[#263247] bg-[#05070c] p-3">
             <div className="flex items-center justify-between gap-2">
-              <p className="sv-num text-xs normal-case text-[#70809b]">LinUCB Guard</p>
+              <p className="sv-num text-xs normal-case text-[#70809b]">LinUCB Risk Guard</p>
               <WorkstationPill tone={bandit.decision ? 'ok' : 'warn'}>{String(bandit.decision ?? 'missing')}</WorkstationPill>
             </div>
             <div className="mt-3 grid grid-cols-3 gap-2 text-xs">
@@ -1400,7 +1460,7 @@ function AdaptiveMetaPanel({
                 <p className="sv-num text-lg text-amber-200">{bandit.loss_rate == null ? '-' : `${fmtNumber(bandit.loss_rate, 2)}`}</p>
               </div>
               <div>
-                <p className="text-slate-500">samples</p>
+                <p className="text-slate-500">5d paper exits</p>
                 <p className="sv-num text-lg text-slate-100">{String(bandit.total_5d ?? '-')}</p>
               </div>
             </div>
@@ -1410,11 +1470,12 @@ function AdaptiveMetaPanel({
                   ledger {String(linucbLedger.reward_ledger_status ?? 'missing')}
                 </WorkstationPill>
                 <span>arms {String(linucbLedger.arm_count ?? '-')}</span>
-                <span>samples {String(linucbLedger.total_samples ?? linucbLedger.source_rows ?? '-')}</span>
+                <span>lifetime ledger samples {String(linucbLedger.total_samples ?? linucbLedger.source_rows ?? '-')}</span>
+                <span>ledger updated {String(linucbLedger.updated_at ?? '-')}</span>
                 <span>ctx {String(expandedContext.version ?? linucbLedger.context_version ?? '-')}</span>
               </div>
               <p className="mt-2 text-[#70809b]">
-                LinUCB reward ledger 由 post-verify chain 自動刷新；手動刷新只用於補跑或修復。NeuralUCB / NeuralTS 只使用這些 evidence 做 shadow 訓練，不直接改 production。
+                上方 5d paper exits 只控制近期虧損保護；lifetime ledger samples 才是 LinUCB 的學習樣本。兩者不可互相代稱。NeuralUCB / NeuralTS 只使用這些 evidence 做 shadow 訓練，不直接改 production。
               </p>
             </div>
           </div>
@@ -1452,7 +1513,7 @@ function AdaptiveMetaPanel({
           ))}
           {!metaLearners.length && (
             <div className="rounded-xl border border-amber-500/20 bg-amber-500/5 p-3 text-xs leading-5 text-amber-200 xl:col-span-5">
-              Meta learner research cards are owned by Strategy Lab / Model Pool. OBS only shows operational evidence: threshold policy, LinUCB ledger, and GA promotion health.
+              Meta learner research cards are owned by Strategy Lab / Model Pool. OBS only shows operational evidence: Active-8 signal policy, LinUCB ledger, and GA promotion health.
             </div>
           )}
         </div>

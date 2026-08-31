@@ -670,6 +670,9 @@ export function buildEventsFromMlThresholdPolicy(input: {
   generatedAt: string
   policy?: Record<string, unknown> | null
   sampleCount?: number
+  requestedDate?: string | null
+  evidenceDate?: string | null
+  latestPredictionDate?: string | null
   sourceError?: string
 }): ObservabilityEvent[] {
   if (input.sourceError) {
@@ -680,13 +683,18 @@ export function buildEventsFromMlThresholdPolicy(input: {
       domain: 'ml_threshold_policy',
       source: 'predictions.forecast_data',
       status: 'unavailable',
-      title: 'ML threshold policy unavailable',
-      summary: 'OBS could not read runtime threshold policy evidence from predictions.',
+      title: 'ML runtime signal policy unavailable',
+      summary: 'OBS could not read Active-8 signal policy evidence from predictions.',
       owner: 'ML Runtime',
-      impact: 'BUY/HOLD/SELL threshold provenance is not observable for the latest pipeline run.',
-      next_action: 'Check predictions.forecast_data.ensemble_v2.ml_threshold_policy after daily pipeline completes.',
-      runbook: 'ML threshold policy runtime contract',
-      evidence: { error: input.sourceError },
+      impact: 'BUY/HOLD/SELL conformal signal provenance is not observable for the latest pipeline run.',
+      next_action: 'Check predictions.forecast_data.ensemble_v2.signal_policy after daily pipeline completes.',
+      runbook: 'Active-8 signal policy runtime contract',
+      evidence: {
+        error: input.sourceError,
+        requested_date: input.requestedDate ?? null,
+        evidence_date: input.evidenceDate ?? null,
+        latest_prediction_date: input.latestPredictionDate ?? null,
+      },
     }]
   }
 
@@ -699,13 +707,18 @@ export function buildEventsFromMlThresholdPolicy(input: {
       domain: 'ml_threshold_policy',
       source: 'predictions.forecast_data',
       status: 'missing',
-      title: 'ML threshold policy missing',
-      summary: 'Latest predictions do not expose ensemble_v2.ml_threshold_policy evidence.',
+      title: 'ML runtime signal policy missing',
+      summary: 'Latest predictions do not expose canonical ensemble_v2.signal_policy evidence.',
       owner: 'ML Runtime',
-      impact: 'Runtime may still be using legacy threshold wiring or the daily pipeline has not completed.',
-      next_action: 'Rerun daily pipeline after ml_threshold_policy resolver deploy, then verify forecast_data provenance.',
-      runbook: 'ML threshold policy runtime contract',
-      evidence: { sample_count: input.sampleCount ?? 0 },
+      impact: 'The Active-8 daily pipeline has not materialized a conformal signal policy receipt.',
+      next_action: 'Repair the failed daily pipeline execution, then verify same-date signal_policy provenance.',
+      runbook: 'Active-8 signal policy runtime contract',
+      evidence: {
+        sample_count: input.sampleCount ?? 0,
+        requested_date: input.requestedDate ?? null,
+        evidence_date: input.evidenceDate ?? null,
+        latest_prediction_date: input.latestPredictionDate ?? null,
+      },
     }]
   }
 
@@ -720,27 +733,57 @@ export function buildEventsFromMlThresholdPolicy(input: {
   const thresholds = policy.thresholds && typeof policy.thresholds === 'object'
     ? policy.thresholds as Record<string, unknown>
     : {}
+  const canonicalActive8 = source === 'active8_ensemble_artifact'
+  const primaryBoundary = thresholds.buyCoverage ?? thresholds.buyThreshold ?? null
+  const strongBoundary = thresholds.strongCoverage ?? thresholds.sellThreshold ?? null
   const bootstrap = String(validation.status ?? '').includes('bootstrap') || source.includes('bootstrap')
-  const severity: ObservabilitySeverity = bootstrap || status === 'unknown' ? 'warn' : 'ok'
+  const requestedMs = Date.parse(String(input.requestedDate ?? '') + 'T00:00:00Z')
+  const evidenceMs = Date.parse(String(input.evidenceDate ?? '') + 'T00:00:00Z')
+  const staleDays = Number.isFinite(requestedMs) && Number.isFinite(evidenceMs)
+    ? Math.max(0, Math.floor((requestedMs - evidenceMs) / 86_400_000))
+    : null
+  const stale = staleDays != null && staleDays > 0
+  const severity: ObservabilitySeverity = stale || bootstrap || status === 'unknown' ? 'warn' : 'ok'
+  const eventStatus = stale
+    ? (bootstrap ? 'stale_bootstrap' : 'stale')
+    : (bootstrap ? 'bootstrap_compat' : status)
   return [{
     id: eventId('ml_threshold_policy', 'runtime_policy', String(policy.policy_id ?? 'unknown')),
     ts: input.generatedAt,
     severity,
     domain: 'ml_threshold_policy',
     source: 'predictions.forecast_data',
-    status: bootstrap ? 'bootstrap_compat' : status,
-    title: 'ML threshold policy',
-    summary: `policy=${String(policy.policy_id ?? 'unknown')} regime=${String(policy.selected_regime ?? 'unknown')} buy=${String(thresholds.buyThreshold ?? '-')} sell=${String(thresholds.sellThreshold ?? '-')} overlay=${String(overlay.applied_delta ?? '-')}.`,
+    status: eventStatus,
+    title: 'ML runtime signal policy',
+    summary: [
+      'policy=' + String(policy.policy_id ?? 'unknown'),
+      'scope=' + String(policy.selected_regime ?? 'unknown'),
+      'primary=' + String(primaryBoundary ?? '-'),
+      'strong=' + String(strongBoundary ?? '-'),
+      'overlay=' + String(overlay.applied_delta ?? 'N/A'),
+    ].join(' ') + '.',
     owner: 'ML Runtime',
-    impact: bootstrap
+    impact: stale
+      ? 'The last materialized runtime signal policy is older than the requested observation date; it is evidence, not a fresh runtime result.'
+      : canonicalActive8
+      ? 'BUY/HOLD/SELL is owned by the immutable Active-8 conformal signal policy; regime is intentionally not a selector.'
+      : bootstrap
       ? 'Runtime is observable, but still using bootstrap compatibility until ml:threshold_policy:champion is seeded.'
-      : 'BUY/HOLD/SELL classification uses a resolved threshold policy with capped adaptive overlay.',
-    next_action: bootstrap
+      : 'Legacy threshold-policy evidence remains visible for historical audit only.',
+    next_action: stale
+      ? 'Repair the failed daily pipeline, then verify a same-date ensemble_v2.signal_policy packet.'
+      : canonicalActive8
+      ? 'Keep the Active-8 artifact checksum, validation packet, and prediction date fresh.'
+      : bootstrap
       ? 'Seed/promote ml:threshold_policy:champion after validation evidence is available.'
-      : 'Keep policy freshness, validation evidence, and adaptive as-of guards green.',
-    runbook: 'ML threshold policy runtime contract',
+      : 'Keep legacy policy evidence read-only; do not restore it as a second runtime signal owner.',
+    runbook: 'Active-8 signal policy runtime contract',
     evidence: {
       sample_count: input.sampleCount ?? 0,
+      requested_date: input.requestedDate ?? null,
+      evidence_date: input.evidenceDate ?? null,
+      latest_prediction_date: input.latestPredictionDate ?? null,
+      stale_days: staleDays,
       policy,
     },
   }]
@@ -885,6 +928,9 @@ export function buildObservabilityEventReport(input: {
   adaptiveError?: string
   mlThresholdPolicy?: Record<string, unknown>
   mlThresholdPolicySampleCount?: number
+  mlThresholdPolicyRequestedDate?: string | null
+  mlThresholdPolicyEvidenceDate?: string | null
+  mlThresholdPolicyLatestPredictionDate?: string | null
   mlThresholdPolicyError?: string
   gaOptimizerState?: Record<string, unknown> | null
   gaOptimizerError?: string
@@ -916,6 +962,9 @@ export function buildObservabilityEventReport(input: {
       generatedAt: input.generatedAt,
       policy: input.mlThresholdPolicy,
       sampleCount: input.mlThresholdPolicySampleCount,
+      requestedDate: input.mlThresholdPolicyRequestedDate,
+      evidenceDate: input.mlThresholdPolicyEvidenceDate,
+      latestPredictionDate: input.mlThresholdPolicyLatestPredictionDate,
       sourceError: input.mlThresholdPolicyError,
     }),
     ...buildEventsFromGaOptimizer({
@@ -1036,37 +1085,115 @@ function mergeLinUcbLedgerEvidence(
   }
 }
 
+export function selectRuntimeSignalPolicyFromForecastRows(
+  rows: Array<Record<string, unknown>>,
+): Record<string, unknown> | null {
+  let legacyPolicyFallback: Record<string, unknown> | null = null
+  for (const row of rows) {
+    const forecast = safeJsonParse(row.forecast_data)
+    const ev2 = forecast.ensemble_v2 && typeof forecast.ensemble_v2 === 'object' && !Array.isArray(forecast.ensemble_v2)
+      ? forecast.ensemble_v2 as Record<string, unknown>
+      : {}
+    const signalPolicy = ev2.signal_policy && typeof ev2.signal_policy === 'object' && !Array.isArray(ev2.signal_policy)
+      ? ev2.signal_policy as Record<string, unknown>
+      : null
+    const legacyPolicy = ev2.ml_threshold_policy && typeof ev2.ml_threshold_policy === 'object' && !Array.isArray(ev2.ml_threshold_policy)
+      ? ev2.ml_threshold_policy as Record<string, unknown>
+      : null
+    if (!signalPolicy) {
+      if (!legacyPolicyFallback && legacyPolicy) legacyPolicyFallback = legacyPolicy
+      continue
+    }
+    const validation = ev2.validation && typeof ev2.validation === 'object' && !Array.isArray(ev2.validation)
+      ? ev2.validation as Record<string, unknown>
+      : {}
+    return {
+      schema_version: 'active8-conformal-signal-policy-observability-v1',
+      policy_id: ev2.artifact_id ?? 'active8-ensemble-artifact',
+      version: ev2.semantic_version ?? ev2.schema_version ?? 'unknown',
+      status: 'active',
+      source: 'active8_ensemble_artifact',
+      selected_regime: 'regime_independent',
+      target_semantic_version: ev2.target_semantic_version ?? null,
+      thresholds: {
+        buyCoverage: signalPolicy.buy_coverage ?? null,
+        strongCoverage: signalPolicy.strong_coverage ?? null,
+      },
+      signal_policy: signalPolicy,
+      adaptive_overlay: { status: 'not_applicable', applied_delta: null },
+      validation_evidence: validation,
+      evidence_hash: ev2.artifact_checksum ?? null,
+    }
+  }
+  return legacyPolicyFallback
+}
+
 async function readLatestMlThresholdPolicyEvidence(env: Bindings, date: string): Promise<{
   policy?: Record<string, unknown> | null
   sampleCount: number
+  requestedDate: string
+  evidenceDate: string | null
+  latestPredictionDate: string | null
   error?: string
 }> {
   try {
+    const watermark = await databaseForDataDomain(env, 'learning').prepare(
+      'SELECT MAX(prediction_date) AS latest_prediction_date, ' +
+      'MAX(CASE WHEN json_valid(forecast_data) THEN CASE ' +
+      "WHEN json_type(forecast_data, '$.ensemble_v2.signal_policy')='object' " +
+      "OR json_type(forecast_data, '$.ensemble_v2.ml_threshold_policy')='object' " +
+      'THEN prediction_date END END) AS evidence_date ' +
+      'FROM predictions WHERE prediction_date<=? ' +
+      "AND model_name IN ('ensemble', 'ensemble_v2') AND forecast_data IS NOT NULL",
+    ).bind(date).first<{ latest_prediction_date: string | null; evidence_date: string | null }>()
+    const evidenceDate = watermark?.evidence_date ?? null
+    const latestPredictionDate = watermark?.latest_prediction_date ?? null
+    if (!evidenceDate) {
+      return {
+        policy: null,
+        sampleCount: 0,
+        requestedDate: date,
+        evidenceDate: null,
+        latestPredictionDate,
+      }
+    }
     const { results } = await databaseForDataDomain(env, 'learning').prepare(`
-      SELECT forecast_data
+      SELECT forecast_data, COUNT(*) OVER() AS evidence_row_count
         FROM predictions
        WHERE prediction_date = ?
          AND model_name IN ('ensemble', 'ensemble_v2')
          AND forecast_data IS NOT NULL
        ORDER BY generated_at DESC, id DESC
        LIMIT 80
-    `).bind(date).all<Record<string, unknown>>()
+    `).bind(evidenceDate).all<Record<string, unknown>>()
     const rows = results ?? []
-    for (const row of rows) {
-      const forecast = safeJsonParse(row.forecast_data)
-      const ev2 = forecast.ensemble_v2 && typeof forecast.ensemble_v2 === 'object' && !Array.isArray(forecast.ensemble_v2)
-        ? forecast.ensemble_v2 as Record<string, unknown>
-        : {}
-      const policy = ev2.ml_threshold_policy && typeof ev2.ml_threshold_policy === 'object' && !Array.isArray(ev2.ml_threshold_policy)
-        ? ev2.ml_threshold_policy as Record<string, unknown>
-        : null
-      if (policy) {
-        return { policy, sampleCount: rows.length }
+    const evidenceRowCount = Number(rows[0]?.evidence_row_count ?? rows.length)
+    const policy = selectRuntimeSignalPolicyFromForecastRows(rows)
+    if (policy) {
+      return {
+        policy,
+        sampleCount: evidenceRowCount,
+        requestedDate: date,
+        evidenceDate,
+        latestPredictionDate,
       }
     }
-    return { policy: null, sampleCount: rows.length }
+    return {
+      policy: null,
+      sampleCount: evidenceRowCount,
+      requestedDate: date,
+      evidenceDate,
+      latestPredictionDate,
+    }
   } catch (error) {
-    return { policy: null, sampleCount: 0, error: String(error) }
+    return {
+      policy: null,
+      sampleCount: 0,
+      requestedDate: date,
+      evidenceDate: null,
+      latestPredictionDate: null,
+      error: String(error),
+    }
   }
 }
 
@@ -1128,6 +1255,9 @@ export async function buildLiveObservabilityEventReport(env: Bindings, options: 
     adaptiveError: 'error' in adaptiveResult ? adaptiveResult.error : undefined,
     mlThresholdPolicy: thresholdPolicyResult.policy ?? undefined,
     mlThresholdPolicySampleCount: thresholdPolicyResult.sampleCount,
+    mlThresholdPolicyRequestedDate: thresholdPolicyResult.requestedDate,
+    mlThresholdPolicyEvidenceDate: thresholdPolicyResult.evidenceDate,
+    mlThresholdPolicyLatestPredictionDate: thresholdPolicyResult.latestPredictionDate,
     mlThresholdPolicyError: thresholdPolicyResult.error,
     gaOptimizerState: 'state' in gaOptimizerResult ? gaOptimizerResult.state : undefined,
     gaOptimizerError: 'error' in gaOptimizerResult ? gaOptimizerResult.error : undefined,

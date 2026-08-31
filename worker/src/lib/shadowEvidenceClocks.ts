@@ -1,5 +1,11 @@
 import { databaseForDataDomain } from './dataDomainRegistry'
 import type { Bindings } from '../types'
+import {
+  STRATEGY_ROUTE_CHALLENGER_VERSION,
+  STRATEGY_ROUTE_MIN_OOS_DATES,
+  STRATEGY_ROUTE_MIN_TOTAL_DATES,
+  STRATEGY_ROUTE_MIN_TRAIN_DATES,
+} from './strategyRouteCalibration'
 
 export type EvidenceClockMechanism = 'shadow_a' | 'rfs_allocator' | 'execution_parity'
 
@@ -78,20 +84,34 @@ function unavailable(
 async function shadowAClock(env: Bindings): Promise<EvidenceClock> {
   const db = databaseForDataDomain(env, 'learning')
   const row = await db.prepare(`
-    SELECT run_id, as_of_date, status, sample_count, date_count,
+    SELECT run_id, artifact_version, candidate_route_version, as_of_date, status,
+           sample_count, date_count, train_start_date, train_end_date,
+           oos_start_date, oos_end_date,
            paired_sample_count, paired_date_count, challenger_incumbent_delta,
            challenger_incumbent_delta_lcb90, gate_json, evidence_artifact_id
       FROM strategy_route_calibration_runs_v1
+     WHERE candidate_route_version=?
      ORDER BY as_of_date DESC, created_at DESC, run_id DESC
      LIMIT 1
-  `).first<Record<string, unknown>>()
+  `).bind(STRATEGY_ROUTE_CHALLENGER_VERSION).first<Record<string, unknown>>()
+  const priorRow = await db.prepare(
+    'SELECT run_id, artifact_version, candidate_route_version, as_of_date, status, ' +
+    'sample_count, date_count, paired_sample_count, paired_date_count ' +
+    'FROM strategy_route_calibration_runs_v1 WHERE candidate_route_version<>? ' +
+    'ORDER BY as_of_date DESC, created_at DESC, run_id DESC LIMIT 1',
+  ).bind(STRATEGY_ROUTE_CHALLENGER_VERSION).first<Record<string, unknown>>()
   const gate = jsonRecord(row?.gate_json)
+  const gateMetadata = jsonRecord(gate._metadata)
   const blockers = stringList(gate.failed_gates ?? gate.blockers)
   if (row && ['fail', 'blocked'].includes(String(row.status ?? '').toLowerCase()) && !blockers.length) {
     blockers.push('route_gate_failed_without_structured_blocker')
   }
   const sampleCount = Number(row?.paired_sample_count ?? row?.sample_count ?? 0)
   const total = Number(row?.sample_count ?? 0)
+  if (row && String(row.status ?? '').toLowerCase() === 'pending_maturity' && sampleCount === 0) {
+    blockers.push('current_route_cohort_waiting_for_mature_outcomes')
+  }
+  const priorSampleCount = Number(priorRow?.paired_sample_count ?? priorRow?.sample_count ?? 0)
   return {
     mechanism: 'shadow_a',
     label: 'Shadow A route comparison',
@@ -107,7 +127,37 @@ async function shadowAClock(env: Bindings): Promise<EvidenceClock> {
     confidence_bound: finite(row?.challenger_incumbent_delta_lcb90),
     blockers,
     artifact_or_packet_checksum: row ? String(row.evidence_artifact_id ?? row.run_id ?? '') || null : null,
-    details: { run_id: row?.run_id ?? null, gate },
+    details: {
+      run_id: row?.run_id ?? null,
+      artifact_version: row?.artifact_version ?? null,
+      candidate_route_version: row?.candidate_route_version ?? STRATEGY_ROUTE_CHALLENGER_VERSION,
+      train_start_date: row?.train_start_date ?? null,
+      train_end_date: row?.train_end_date ?? null,
+      oos_start_date: row?.oos_start_date ?? null,
+      oos_end_date: row?.oos_end_date ?? null,
+      maturity: {
+        observed_total_dates: Number(row?.date_count ?? 0),
+        observed_paired_dates: Number(row?.paired_date_count ?? 0),
+        minimum_train_dates: STRATEGY_ROUTE_MIN_TRAIN_DATES,
+        minimum_oos_dates: STRATEGY_ROUTE_MIN_OOS_DATES,
+        minimum_total_dates: STRATEGY_ROUTE_MIN_TOTAL_DATES,
+      },
+      cohort_reset: Boolean(
+        row && priorRow &&
+        row.candidate_route_version !== priorRow.candidate_route_version &&
+        sampleCount === 0 && priorSampleCount > 0
+      ),
+      prior_cohort: priorRow ? {
+        run_id: priorRow.run_id ?? null,
+        candidate_route_version: priorRow.candidate_route_version ?? null,
+        as_of_date: priorRow.as_of_date ?? null,
+        status: priorRow.status ?? null,
+        sample_count: priorSampleCount,
+        distinct_dates: Number(priorRow.paired_date_count ?? priorRow.date_count ?? 0),
+      } : null,
+      gate_metadata: gateMetadata,
+      gate,
+    },
   }
 }
 
@@ -128,28 +178,61 @@ async function rfsClock(env: Bindings): Promise<EvidenceClock> {
   const dates = [...new Set(packets.map((row) => row.date))]
   const latestDate = dates[0] ?? null
   const latest = packets.filter((row) => row.date === latestDate)
-  const ready = latest.filter((row) => !['shadow_error', 'blocked'].includes(String(row.packet.status ?? '')))
-  const packetChecksum = latest.map((row) => String(row.packet.packet_checksum ?? '')).find(Boolean) ?? null
-  const blockers = [...new Set(latest.flatMap((row) => stringList(row.packet.validation_blockers)))]
-  if (latest.some((row) => String(row.packet.status ?? '') === 'shadow_error')) blockers.push('rfs_shadow_builder_error')
-  if (latest.length && !ready.length) blockers.push('rfs_no_usable_rows')
+  const latestPacketMap = new Map<string, typeof latest[number]>()
+  for (const row of latest) {
+    const checksum = String(row.packet.packet_checksum ?? '').trim()
+    latestPacketMap.set(checksum || JSON.stringify(row.packet), row)
+  }
+  const latestPackets = [...latestPacketMap.values()]
+  const packetChecksum = latestPackets.length === 1
+    ? String(latestPackets[0].packet.packet_checksum ?? '') || null
+    : null
+  const blockers = [...new Set(latestPackets.flatMap((row) => stringList(row.packet.validation_blockers)))]
+  if (latestPackets.some((row) => String(row.packet.status ?? '') === 'shadow_error')) blockers.push('rfs_shadow_builder_error')
+  if (latestPackets.length > 1) blockers.push('rfs_packet_mismatch_same_date')
+  const candidateCount = latestPackets.reduce(
+    (sum, row) => sum + Math.max(0, Number(row.packet.source_expected_return_candidate_count ?? 0)),
+    0,
+  )
+  const excludedMissingAdv = latestPackets.reduce(
+    (sum, row) => sum + stringList(row.packet.excluded_missing_adv_symbols).length,
+    0,
+  )
+  const usableCandidateCount = Math.max(0, candidateCount - excludedMissingAdv)
   const uniqueBlockers = [...new Set(blockers)]
+  const status = !latestPackets.length
+    ? 'not_materialized'
+    : latestPackets.length > 1
+      ? 'blocked_mixed_packets'
+      : candidateCount === 0
+        ? 'observed_zero_candidates'
+        : uniqueBlockers.length
+          ? 'blocked'
+          : 'collecting'
   return {
     mechanism: 'rfs_allocator',
     label: 'RFS allocator comparison',
     governance: 'comparison_only',
     auto_promote: false,
-    status: latest.length ? (uniqueBlockers.length ? 'blocked' : 'collecting') : 'not_materialized',
+    status,
     latest_evidence_date: latestDate,
-    sample_count: latest.length,
+    sample_count: candidateCount,
     distinct_dates: dates.length,
     supported_regimes: [...new Set(packets.map((row) => String(row.market_segment ?? '')).filter(Boolean))],
-    coverage: latest.length ? ready.length / latest.length : null,
+    coverage: candidateCount > 0 ? usableCandidateCount / candidateCount : null,
     incumbent_delta: null,
     confidence_bound: null,
     blockers: uniqueBlockers,
     artifact_or_packet_checksum: packetChecksum,
-    details: { latest_ready_rows: ready.length, production_effect: false },
+    details: {
+      latest_recommendation_rows: latest.length,
+      latest_packet_count: latestPackets.length,
+      candidate_count: candidateCount,
+      usable_candidate_count: usableCandidateCount,
+      zero_candidate_run_materialized: latestPackets.length === 1 && candidateCount === 0,
+      packet_statuses: latestPackets.map((row) => String(row.packet.status ?? 'unknown')),
+      production_effect: false,
+    },
   }
 }
 

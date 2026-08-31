@@ -21,7 +21,10 @@ def test_risk_assess_consumes_worker_l2_formula():
     response = post_risk_assess(
         RiskAssessRequest(
             date="2026-06-08",
-            market=MarketData(risk_score=80, risk_level="red"),
+            market=MarketData(
+                risk_score=80, risk_level="red", regime="sideways",
+                regime_as_of_date="2026-06-08", regime_source="hmm",
+            ),
             accuracy=AccuracyData(global_30d=0.50, rows_30d=[], rows_90d=[]),
             trading=TradingData(losses_5d=3, total_5d=4),
             adaptive_config=AdaptiveConfigData(
@@ -57,7 +60,10 @@ def test_risk_assess_preserves_ga_optimizer_adaptive_context():
     response = post_risk_assess(
         RiskAssessRequest(
             date="2026-06-22",
-            market=MarketData(risk_score=30, risk_level="green"),
+            market=MarketData(
+                risk_score=30, risk_level="green", regime="bull",
+                regime_as_of_date="2026-06-22", regime_source="hmm",
+            ),
             accuracy=AccuracyData(global_30d=0.60, rows_30d=[], rows_90d=[]),
             trading=TradingData(losses_5d=0, total_5d=2),
             adaptive_config=AdaptiveConfigData(
@@ -94,7 +100,10 @@ def test_risk_assess_confidence_hook_uses_active_8_only():
     response = post_risk_assess(
         RiskAssessRequest(
             date="2026-06-08",
-            market=MarketData(risk_score=0, risk_level="green"),
+            market=MarketData(
+                risk_score=0, risk_level="green", regime="bull",
+                regime_as_of_date="2026-06-08", regime_source="hmm",
+            ),
             accuracy=AccuracyData(
                 global_30d=0.50,
                 rows_30d=[
@@ -135,9 +144,44 @@ def test_risk_assess_requires_worker_l2_formula_contract():
         post_risk_assess(
             RiskAssessRequest(
                 date="2026-06-08",
-                market=MarketData(risk_score=50, risk_level="yellow"),
+                market=MarketData(
+                    risk_score=50, risk_level="yellow", regime="sideways",
+                    regime_as_of_date="2026-06-08", regime_source="hmm",
+                ),
                 accuracy=AccuracyData(global_30d=0.55),
                 trading=TradingData(losses_5d=0, total_5d=0),
                 adaptive_config=AdaptiveConfigData(),
+            )
+        )
+
+
+def test_risk_assess_rejects_non_hmm_regime_evidence():
+    with pytest.raises(HTTPException, match="immutable HMM evidence"):
+        post_risk_assess(
+            RiskAssessRequest(
+                date="2026-06-08",
+                market=MarketData(
+                    risk_score=50, risk_level="yellow", regime="sideways",
+                    regime_as_of_date="2026-06-08", regime_source="fallback",
+                ),
+                accuracy=AccuracyData(global_30d=0.55),
+                trading=TradingData(losses_5d=0, total_5d=0),
+                adaptive_config=AdaptiveConfigData(L2_formula={"confidence_risk_mult": 0.15}),
+            )
+        )
+
+
+def test_risk_assess_rejects_unknown_hmm_regime_label():
+    with pytest.raises(HTTPException, match="must resolve"):
+        post_risk_assess(
+            RiskAssessRequest(
+                date="2026-06-08",
+                market=MarketData(
+                    risk_score=50, risk_level="yellow", regime="unknown",
+                    regime_as_of_date="2026-06-08", regime_source="hmm",
+                ),
+                accuracy=AccuracyData(global_30d=0.55),
+                trading=TradingData(losses_5d=0, total_5d=0),
+                adaptive_config=AdaptiveConfigData(L2_formula={"confidence_risk_mult": 0.15}),
             )
         )

@@ -2492,10 +2492,20 @@ async def node_write_d1(state: PipelineStateV2) -> dict:
     rec_updated = update_recommendations_in_d1(final, run_date)
 
     # 4. Preserve screener seed rows while marking SELL/NO_SIGNAL outputs as non-buy.
+    run_rfs_shadow_packet = next(
+        (
+            (row.get("alpha_allocation") or {}).get("rfs_shadow_challenger")
+            for row in final
+            if isinstance(row.get("alpha_allocation"), dict)
+            and isinstance((row.get("alpha_allocation") or {}).get("rfs_shadow_challenger"), dict)
+        ),
+        None,
+    )
     sell_marked_non_buy = delete_filtered_recommendations(
         state.get("sell_filtered_symbols") or [],
         run_date,
         filtered_diagnostics=state.get("sell_filtered_diagnostics") or {},
+        rfs_shadow_packet=run_rfs_shadow_packet,
     )
     seed_rows = len(state.get("screener_recs") or [])
     closed_rows = rec_updated + sell_marked_non_buy

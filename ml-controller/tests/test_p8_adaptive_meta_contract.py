@@ -15,6 +15,9 @@ def test_adaptive_params_expose_p8_governance_metadata():
         losses_5d=2,
         total_5d=4,
         current_version=3,
+        regime="sideways",
+        regime_as_of_date="2026-08-28",
+        regime_source="hmm",
     )
 
     provenance = params["provenance"]
@@ -23,6 +26,9 @@ def test_adaptive_params_expose_p8_governance_metadata():
     assert provenance["l2_formula_source"] == "controller_fallback_defaults"
     assert provenance["update_frequency"] == "daily_after_verify"
     assert provenance["fallback"] is False
+    assert provenance["regime"] == "sideways"
+    assert provenance["regime_as_of_date"] == "2026-08-28"
+    assert provenance["regime_source"] == "hmm"
 
     assert set(params["regime_overrides"]) == {"bull", "bear", "volatile", "sideways"}
     assert params["threshold_components"]["formula"].startswith("risk_penalty")

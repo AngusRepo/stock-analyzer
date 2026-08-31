@@ -31,6 +31,30 @@ function makeFakeDb(calls: Array<{ sql: string; binds: unknown[] }>) {
           return this
         },
         async first() {
+          if (sql.includes('FROM market_regime_state_history_v1')) {
+            const state = JSON.stringify({
+              schema_version: 'market-regime-state-v1',
+              label: 'sideways',
+              raw_label: 'sideways',
+              family: 'sideways',
+              run_date: '2026-06-08',
+              computed_at: '2026-06-08T08:00:00.000Z',
+              source: 'hmm',
+              regime_index: 2,
+              hmm_state: 1,
+              label_zh: '盤整',
+              regime_surface: { sideways: 1 },
+              consensus_threshold: 0.6,
+              weight_multipliers: {},
+              regime_evidence: {},
+              transition_guard: {},
+              monitors: {},
+              downstream_contract: {},
+            })
+            const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(state))
+            const checksum = [...new Uint8Array(digest)].map((byte) => byte.toString(16).padStart(2, '0')).join('')
+            return { run_date: '2026-06-08', state_json: state, state_checksum: checksum }
+          }
           if (sql.includes('FROM market_risk')) return { risk_score: 80, risk_level: 'red' }
           if (sql.includes('SUM(correct_count)')) return { avg_acc: 0.5, sample_count: 120, model_count: 3 }
           return null
@@ -154,6 +178,9 @@ void (async () => {
     assert(requestBody.accuracy.active_9_quality_30d === 0.5, 'risk-assess payload must include Active-8 direct-alpha confidence quality')
     assert(requestBody.accuracy.active_9_samples_30d === 120, 'risk-assess payload must include Active-8 direct-alpha sample count')
     assert(requestBody.accuracy.rows_30d[0].accuracy === 0.55, 'risk-assess rows_30d must carry per-model accuracy for the controller hook')
+    assert(requestBody.market.regime === 'sideways', 'risk-assess payload must carry immutable HMM regime family')
+    assert(requestBody.market.regime_as_of_date === '2026-06-08', 'risk-assess payload must carry regime evidence date')
+    assert(requestBody.market.regime_source === 'hmm', 'risk-assess payload must reject legacy or fallback regime sources')
     assert(requestBody.adaptive_config.L2_formula.bandit_loss_thresh_high === 0.9, 'risk-assess payload must include champion L2_formula')
     assert(requestBody.adaptive_config.baseline_buy_signal_score === 0.51, 'risk-assess payload must include baseline buy score')
     assert(requestBody.adaptive_config.ga_optimizer.status === 'approved', 'risk-assess payload must include GA optimizer promotion status')

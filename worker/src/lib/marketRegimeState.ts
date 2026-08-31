@@ -187,6 +187,26 @@ async function readMarketRegimeStateHistory(
   return parsed
 }
 
+export async function readLatestMarketRegimeStateOnOrBefore(
+  db: D1Database,
+  asOfDate: string,
+): Promise<MarketRegimeState | null> {
+  const row = await db.prepare(
+    'SELECT run_date, state_json, state_checksum ' +
+    'FROM market_regime_state_history_v1 ' +
+    'WHERE run_date<=? ORDER BY run_date DESC LIMIT 1',
+  ).bind(asOfDate).first<{ run_date: string; state_json: string; state_checksum: string }>()
+  if (!row) return null
+  if (await sha256Hex(row.state_json) !== row.state_checksum) {
+    throw new Error('market_regime_history_checksum_mismatch:' + row.run_date)
+  }
+  const parsed = parseMarketRegimeState(JSON.parse(row.state_json))
+  if (!parsed || parsed.run_date !== row.run_date) {
+    throw new Error('market_regime_history_payload_invalid:' + row.run_date)
+  }
+  return parsed
+}
+
 async function persistMarketRegimeStateHistory(
   db: D1Database,
   payload: MarketRegimeState,

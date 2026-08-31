@@ -3956,6 +3956,7 @@ def _apply_sparse_tangent_buy_selection(
             max_weight=max_weight,
             risk_aversion=risk_aversion,
             l2_penalty=l2_penalty,
+            as_of_date=shadow_as_of_date,
         )
     except Exception as exc:  # noqa: BLE001 - shadow failure must not affect incumbent.
         rfs_shadow_packet = {
@@ -3973,11 +3974,17 @@ def _apply_sparse_tangent_buy_selection(
     allocation_contract["rfs_shadow_challenger"] = {
         "schema_version": rfs_shadow_packet.get("schema_version"),
         "method": rfs_shadow_packet.get("method"),
+        "as_of_date": rfs_shadow_packet.get("as_of_date") or shadow_as_of_date,
         "status": rfs_shadow_packet.get("status"),
         "production_effect": False,
         "promotion_eligible": False,
         "packet_checksum": rfs_shadow_packet.get("packet_checksum"),
         "validation_blockers": rfs_shadow_packet.get("validation_blockers") or [],
+        "candidate_pool_policy": rfs_shadow_packet.get("candidate_pool_policy"),
+        "source_expected_return_candidate_count": (
+            rfs_shadow_packet.get("source_expected_return_candidate_count") or 0
+        ),
+        "excluded_missing_adv_symbols": rfs_shadow_packet.get("excluded_missing_adv_symbols") or [],
         "metrics": rfs_shadow_packet.get("metrics") or {},
         "portfolio_ml_inputs": rfs_shadow_packet.get("portfolio_ml_inputs") or {},
         "research_components_not_yet_implemented": (
@@ -5397,10 +5404,40 @@ def delete_filtered_recommendations(
     run_date: str,
     *,
     filtered_diagnostics: dict[str, dict[str, Any]] | None = None,
+    rfs_shadow_packet: dict[str, Any] | None = None,
 ) -> int:
     """Preserve screener-owned rows and mark ML-filtered symbols as non-buy."""
     if not filtered_symbols:
         return 0
+    if not isinstance(rfs_shadow_packet, dict):
+        rfs_shadow_packet = build_rfs_implementable_frontier_shadow(
+            [],
+            {},
+            incumbent_weights={},
+            inherited_weights={},
+            portfolio_ml_inputs={
+                "status": "not_applicable_no_formal_candidates",
+                "validation_blockers": ["formal_expected_return_candidates_missing"],
+            },
+            as_of_date=run_date,
+        )
+    rfs_evidence = {
+        "schema_version": rfs_shadow_packet.get("schema_version"),
+        "method": rfs_shadow_packet.get("method"),
+        "as_of_date": rfs_shadow_packet.get("as_of_date") or run_date,
+        "status": rfs_shadow_packet.get("status"),
+        "production_effect": False,
+        "promotion_eligible": False,
+        "packet_checksum": rfs_shadow_packet.get("packet_checksum"),
+        "validation_blockers": rfs_shadow_packet.get("validation_blockers") or [],
+        "candidate_pool_policy": rfs_shadow_packet.get("candidate_pool_policy"),
+        "source_expected_return_candidate_count": (
+            rfs_shadow_packet.get("source_expected_return_candidate_count") or 0
+        ),
+        "excluded_missing_adv_symbols": rfs_shadow_packet.get("excluded_missing_adv_symbols") or [],
+        "metrics": rfs_shadow_packet.get("metrics") or {},
+        "decision_role": "comparison_only",
+    }
     statements: list[tuple[str, list[Any]]] = []
     for sym in filtered_symbols:
         diagnostic = {
@@ -5437,6 +5474,7 @@ def delete_filtered_recommendations(
             "sparse_input_blocked_reason": "ml_filter_preserved_non_buy",
             "no_l3_allocation_reason": "ml_filtered_sell_or_no_signal_preserved_seed",
             "allocator_ev_fusion_diagnostic": diagnostic,
+            "rfs_shadow_challenger": rfs_evidence,
         }
         statements.append((
             """

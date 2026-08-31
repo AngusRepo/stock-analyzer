@@ -470,6 +470,9 @@ def compute_adaptive_params(
     active_9_samples_30d: int | None = None,
     active_9_model_count_30d: int | None = None,
     ga_optimizer_context: dict | None = None,
+    regime: str | None = None,
+    regime_as_of_date: str | None = None,
+    regime_source: str | None = None,
 ) -> dict:
     """
     計算完整的自適應參數字典（可直接寫入 KV ml:adaptive_params）。
@@ -493,13 +496,18 @@ def compute_adaptive_params(
         active_9_model_count_30d=active_9_model_count_30d,
     )
     model_quality_30d = ml_confidence_hook["model_quality_30d"]
+    normalized_regime = normalize_regime_label(regime)
+    if normalized_regime == "unknown":
+        raise ValueError("adaptive_regime_evidence_unknown")
+    if regime_source != "hmm" or not str(regime_as_of_date or "").strip():
+        raise ValueError("adaptive_regime_provenance_invalid")
 
     threshold_components = compute_confidence_components(
         risk_score,
         accuracy_30d,
         L2,
         risk_level=risk_level,
-        regime="unknown",
+        regime=normalized_regime,
         model_quality=model_quality_30d,
     )
     conf_delta      = threshold_components["effective_delta"]
@@ -556,6 +564,9 @@ def compute_adaptive_params(
             "update_frequency": "daily_after_verify",
             "computed_at": computed_at,
             "fallback": False,
+            "regime": normalized_regime,
+            "regime_as_of_date": regime_as_of_date,
+            "regime_source": regime_source,
         },
         "meta_layer": {
             "alpha_vote_models": ALPHA_VOTE_MODELS,

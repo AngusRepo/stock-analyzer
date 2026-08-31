@@ -35,7 +35,7 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 from typing import Any, Optional
 
-from services.adaptive import compute_adaptive_params
+from services.adaptive import compute_adaptive_params, normalize_regime_label
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -44,6 +44,9 @@ router = APIRouter()
 class MarketData(BaseModel):
     risk_score: float = 50.0
     risk_level: str = "medium"
+    regime: str
+    regime_as_of_date: str
+    regime_source: str
 
 
 class AccuracyData(BaseModel):
@@ -68,7 +71,7 @@ class AdaptiveConfigData(BaseModel):
 
 class RiskAssessRequest(BaseModel):
     date: str
-    market: MarketData = MarketData()
+    market: MarketData
     accuracy: AccuracyData = AccuracyData()
     trading: TradingData = TradingData()
     adaptive_config: AdaptiveConfigData = Field(default_factory=AdaptiveConfigData)
@@ -81,6 +84,16 @@ def post_risk_assess(req: RiskAssessRequest):
         raise HTTPException(
             status_code=422,
             detail="adaptive_config.L2_formula is required; controller fallback defaults are disabled on /risk-assess",
+        )
+    if req.market.regime_source != "hmm":
+        raise HTTPException(
+            status_code=422,
+            detail="market.regime_source must be immutable HMM evidence",
+        )
+    if normalize_regime_label(req.market.regime) == "unknown":
+        raise HTTPException(
+            status_code=422,
+            detail="market.regime must resolve to bull, bear, volatile, or sideways",
         )
     params = compute_adaptive_params(
         risk_score=req.market.risk_score,
@@ -97,6 +110,9 @@ def post_risk_assess(req: RiskAssessRequest):
         active_9_samples_30d=req.accuracy.active_9_samples_30d,
         active_9_model_count_30d=req.accuracy.active_9_model_count_30d,
         ga_optimizer_context=req.adaptive_config.ga_optimizer,
+        regime=req.market.regime,
+        regime_as_of_date=req.market.regime_as_of_date,
+        regime_source=req.market.regime_source,
     )
 
     sl_tp = params.get("sl_tp_override")

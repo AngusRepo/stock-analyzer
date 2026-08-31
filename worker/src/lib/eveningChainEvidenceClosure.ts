@@ -1,6 +1,9 @@
 import type { Bindings } from '../types'
 import { databaseForDataDomain } from './dataDomainRegistry'
-import { SELECTION_REFERENCE_CONTRACT_VERSION } from './selectionReferenceEvidence'
+import {
+  SELECTION_REFERENCE_CONTRACT_VERSION,
+  SELECTION_REFERENCE_MATURE_COMPATIBLE_CONTRACT_VERSIONS,
+} from './selectionReferenceEvidence'
 import { CANONICAL_SELECTION_LABEL_SCHEMA_VERSION } from './canonicalSelectionLabels'
 import { PRICE_HORIZON_PROJECTION_VERSION } from './priceHorizonProjection'
 import { STRATEGY_ROUTE_AFFINITY_VERSION } from './strategyRouteCalibration'
@@ -199,10 +202,20 @@ export async function auditEveningChainEvidenceClosure(
       throw new Error(`evening_chain_mature_canonical_head_missing:${matureSignalDate}`)
     }
     const matureMatrix = await learningDb.prepare(`
-      SELECT reference_candidate_count, expected_cell_count, persisted_cell_count, labeler_version
+      SELECT reference_candidate_count, expected_cell_count, persisted_cell_count,
+             labeler_version, reference_contract_version,
+             (SELECT COUNT(*) FROM strategy_label_matrix_v4 m
+               WHERE m.producer_run_id=mr.producer_run_id
+                 AND m.labeler_version=mr.labeler_version
+                 AND m.reference_contract_version=mr.reference_contract_version) matrix_rows,
+             (SELECT COUNT(*) FROM selection_reference_snapshots_v1 r
+               WHERE r.signal_date=mr.signal_date AND r.producer_run_id=mr.producer_run_id
+                 AND r.hard_gate_passed=1
+                 AND r.strategy_labeler_version=mr.labeler_version
+                 AND r.feature_contract_version=mr.reference_contract_version) reference_contract_rows
         FROM strategy_label_matrix_runs_v4 mr
        WHERE signal_date=? AND producer_run_id=? AND status='ready'
-         AND reference_contract_version=?
+         AND reference_contract_version IN (?, ?)
          AND labeler_version IN (?, ?)
          AND NOT EXISTS (
            SELECT 1 FROM strategy_label_matrix_v4 m
@@ -213,14 +226,17 @@ export async function auditEveningChainEvidenceClosure(
     `).bind(
       matureSignalDate,
       matureProducerRunId,
-      SELECTION_REFERENCE_CONTRACT_VERSION,
+      ...SELECTION_REFERENCE_MATURE_COMPATIBLE_CONTRACT_VERSIONS,
       STRATEGY_FORMAL_LABELER_VERSION,
       STRATEGY_FORMAL_RECONSTRUCTION_LABELER_VERSION,
     ).first<any>()
+    const matureReferenceContractVersion = String(matureMatrix?.reference_contract_version ?? '')
     if (
       Number(matureMatrix?.reference_candidate_count ?? 0) <= 0
       || Number(matureMatrix?.expected_cell_count ?? 0) <= 0
       || Number(matureMatrix?.persisted_cell_count ?? 0) !== Number(matureMatrix?.expected_cell_count ?? 0)
+      || Number(matureMatrix?.matrix_rows ?? 0) !== Number(matureMatrix?.expected_cell_count ?? 0)
+      || Number(matureMatrix?.reference_contract_rows ?? 0) !== Number(matureMatrix?.reference_candidate_count ?? 0)
     ) {
       throw new Error(`evening_chain_mature_strategy_matrix_incomplete:${matureSignalDate}`)
     }
@@ -258,9 +274,9 @@ export async function auditEveningChainEvidenceClosure(
       PRICE_HORIZON_PROJECTION_VERSION,
       PRICE_HORIZON_PROJECTION_VERSION,
       CANONICAL_SELECTION_LABEL_SCHEMA_VERSION,
-      SELECTION_REFERENCE_CONTRACT_VERSION,
+      matureReferenceContractVersion,
       matureSignalDate,
-      SELECTION_REFERENCE_CONTRACT_VERSION,
+      matureReferenceContractVersion,
       matureProducerRunId,
       String(matureMatrix?.labeler_version ?? ''),
     ).first<any>()

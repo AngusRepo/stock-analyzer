@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict'
 import { auditEveningChainEvidenceClosure } from './eveningChainEvidenceClosure'
+import { SELECTION_REFERENCE_LEGACY_MATURE_CONTRACT_VERSION } from './selectionReferenceEvidence'
 import { STRATEGY_FORMAL_LABELER_VERSION } from './strategySpec'
 
 type Overrides = {
@@ -77,7 +78,10 @@ class FakeD1 {
         reference_candidate_count: 100,
         expected_cell_count: 2500,
         persisted_cell_count: 2500,
+        matrix_rows: 2500,
+        reference_contract_rows: 100,
         labeler_version: STRATEGY_FORMAL_LABELER_VERSION,
+        reference_contract_version: SELECTION_REFERENCE_LEGACY_MATURE_CONTRACT_VERSION,
       }
     }
     if (normalized.includes('COUNT(*) reference_rows') && normalized.includes('price_horizon_labels_v1')) {

@@ -1,4 +1,6 @@
-import { SELECTION_REFERENCE_CONTRACT_VERSION } from './selectionReferenceEvidence'
+import {
+  SELECTION_REFERENCE_MATURE_COMPATIBLE_CONTRACT_VERSIONS,
+} from './selectionReferenceEvidence'
 import { PRICE_HORIZON_PROJECTION_VERSION } from './priceHorizonProjection'
 
 export const CANONICAL_SELECTION_LABEL_SCHEMA_VERSION = 'canonical-strategy-selection-label-v4'
@@ -13,6 +15,7 @@ interface ReferenceRow {
   stock_id: number
   market_segment: string | null
   sector: string | null
+  feature_contract_version: string
 }
 
 interface PriceHorizonEvidenceRow {
@@ -153,12 +156,12 @@ async function listCanonicalReferences(
   for (;;) {
     const clauses = [
       "r.signal_date <= ?",
-      "r.feature_contract_version = ?",
+      "r.feature_contract_version IN (?, ?)",
       "(r.signal_date > ? OR (r.signal_date = ? AND r.symbol > ?))",
     ]
     const binds: unknown[] = [
       asOfDate,
-      SELECTION_REFERENCE_CONTRACT_VERSION,
+      ...SELECTION_REFERENCE_MATURE_COMPATIBLE_CONTRACT_VERSIONS,
       cursorDate,
       cursorDate,
       cursorSymbol,
@@ -170,11 +173,11 @@ async function listCanonicalReferences(
     } else {
       clauses.push("EXISTS (SELECT 1 FROM canonical_run_heads h WHERE h.logical_run_key = 'screener:' || r.signal_date || ':TW:production:market_screener' AND h.run_id = r.producer_run_id)")
     }
-    clauses.push("NOT EXISTS (SELECT 1 FROM canonical_selection_labels_v4 l WHERE l.signal_date = r.signal_date AND l.symbol = r.symbol AND l.producer_run_id = r.producer_run_id AND l.label_schema_version = 'canonical-strategy-selection-label-v4' AND l.reference_contract_version = ? AND l.adjustment_source = ?)")
-    binds.push(SELECTION_REFERENCE_CONTRACT_VERSION, CANONICAL_SELECTION_ADJUSTMENT_SOURCE)
+    clauses.push("NOT EXISTS (SELECT 1 FROM canonical_selection_labels_v4 l WHERE l.signal_date = r.signal_date AND l.symbol = r.symbol AND l.producer_run_id = r.producer_run_id AND l.label_schema_version = 'canonical-strategy-selection-label-v4' AND l.reference_contract_version = r.feature_contract_version AND l.adjustment_source = ?)")
+    binds.push(CANONICAL_SELECTION_ADJUSTMENT_SOURCE)
     if (endDate) { clauses.push('r.signal_date <= ?'); binds.push(endDate) }
     const page = await db.prepare(`
-      SELECT r.signal_date, r.symbol, r.producer_run_id, r.stock_id, r.market_segment, r.sector
+      SELECT r.signal_date, r.symbol, r.producer_run_id, r.stock_id, r.market_segment, r.sector, r.feature_contract_version
         FROM selection_reference_snapshots_v1 r
        WHERE ${clauses.join(' AND ')}
        ORDER BY r.signal_date, r.symbol
@@ -319,7 +322,7 @@ export async function materializeCanonicalSelectionLabelsV4(
     row.entryDate, row.exitDate, row.exitDate, row.entryRawOpen, row.exitRawClose,
     row.entryFactor, row.exitFactor, row.grossReturn, costBps, row.absoluteReturnNet,
     row.benchmarkReturnNet, row.benchmarkScope, row.residualReturnNet, row.crossSectionRank,
-    CANONICAL_SELECTION_ADJUSTMENT_SOURCE, SELECTION_REFERENCE_CONTRACT_VERSION,
+    CANONICAL_SELECTION_ADJUSTMENT_SOURCE, row.reference.feature_contract_version,
   ))
   for (let offset = 0; offset < labelStatements.length; offset += 200) {
     await db.batch(labelStatements.slice(offset, offset + 200))

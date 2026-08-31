@@ -1,6 +1,9 @@
 import type { Bindings } from '../types'
 import { databaseForDataDomain, shadowDatabaseForDataDomain } from './dataDomainRegistry'
-import { SELECTION_REFERENCE_CONTRACT_VERSION } from './selectionReferenceEvidence'
+import {
+  SELECTION_REFERENCE_CONTRACT_VERSION,
+  SELECTION_REFERENCE_MATURE_COMPATIBLE_CONTRACT_VERSIONS,
+} from './selectionReferenceEvidence'
 import { loadCoreStockIdentitiesByIds, type CoreStockIdentity } from './stockIdentityMarketBridge'
 
 export const PRICE_HORIZON_PROJECTION_VERSION = 'price_horizon_v4_finlab_canonical_adjusted_price_lineage'
@@ -392,8 +395,10 @@ async function loadCandidateStockIds(db: D1Database, signalDate: string): Promis
     SELECT COUNT(DISTINCT symbol) reference_rows,
            COUNT(DISTINCT CASE WHEN stock_id IS NOT NULL THEN symbol END) identified_reference_rows
       FROM selection_reference_snapshots_v1
-     WHERE signal_date=? AND hard_gate_passed=1 AND feature_contract_version=?
-  `).bind(signalDate, SELECTION_REFERENCE_CONTRACT_VERSION).first<{
+     WHERE signal_date=? AND hard_gate_passed=1 AND feature_contract_version IN (?, ?)
+  `).bind(
+    signalDate, ...SELECTION_REFERENCE_MATURE_COMPATIBLE_CONTRACT_VERSIONS,
+  ).first<{
     reference_rows: number
     identified_reference_rows: number
   }>()
@@ -402,7 +407,7 @@ async function loadCandidateStockIds(db: D1Database, signalDate: string): Promis
       FROM (
         SELECT stock_id
           FROM selection_reference_snapshots_v1
-         WHERE signal_date = ? AND hard_gate_passed = 1
+         WHERE signal_date = ? AND hard_gate_passed = 1 AND feature_contract_version IN (?, ?)
         UNION ALL
         SELECT stock_id
           FROM allocator_ev_feature_snapshots
@@ -418,7 +423,10 @@ async function loadCandidateStockIds(db: D1Database, signalDate: string): Promis
       )
      WHERE stock_id IS NOT NULL
      ORDER BY stock_id
-  `).bind(signalDate, signalDate, signalDate, signalDate).all<{ stock_id: number }>()
+  `).bind(
+    signalDate, ...SELECTION_REFERENCE_MATURE_COMPATIBLE_CONTRACT_VERSIONS,
+    signalDate, signalDate, signalDate,
+  ).all<{ stock_id: number }>()
   return {
     stockIds: (results ?? []).map((row) => Number(row.stock_id)).filter((value) => Number.isInteger(value) && value > 0),
     referenceRows: Number(reference?.reference_rows ?? 0),

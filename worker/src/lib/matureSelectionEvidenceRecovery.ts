@@ -8,7 +8,9 @@ import {
   PRICE_HORIZON_PROJECTION_VERSION,
   materializePriceHorizonLabels,
 } from './priceHorizonProjection'
-import { SELECTION_REFERENCE_CONTRACT_VERSION } from './selectionReferenceEvidence'
+import {
+  SELECTION_REFERENCE_MATURE_COMPATIBLE_CONTRACT_VERSIONS,
+} from './selectionReferenceEvidence'
 import {
   STRATEGY_FORMAL_LABELER_VERSION,
   STRATEGY_FORMAL_RECONSTRUCTION_LABELER_VERSION,
@@ -146,12 +148,12 @@ async function loadCoverageRows(
       ),
       formal_runs AS (
         SELECT mr.producer_run_id, mr.signal_date, mr.expected_cell_count,
-               mr.persisted_cell_count, mr.labeler_version
+               mr.persisted_cell_count, mr.labeler_version, mr.reference_contract_version
           FROM strategy_label_matrix_runs_v4 mr
           JOIN target_heads t
             ON t.signal_date=mr.signal_date
            AND t.producer_run_id=mr.producer_run_id
-         WHERE mr.status='ready' AND mr.reference_contract_version=?
+         WHERE mr.status='ready' AND mr.reference_contract_version IN (?, ?)
            AND mr.labeler_version IN (?, ?)
       ),
       horizon AS (
@@ -167,12 +169,12 @@ async function loadCoverageRows(
          WHERE p.projection_version=?
       ),
       labels AS (
-        SELECT DISTINCT l.signal_date, l.symbol, l.producer_run_id
+        SELECT DISTINCT l.signal_date, l.symbol, l.producer_run_id, l.reference_contract_version
           FROM canonical_selection_labels_v4 l
           JOIN target_heads t
             ON t.signal_date=l.signal_date
            AND t.producer_run_id=l.producer_run_id
-         WHERE l.label_schema_version=? AND l.reference_contract_version=?
+         WHERE l.label_schema_version=?
       ),
       label_rejections AS (
         SELECT DISTINCT x.signal_date, x.symbol, x.producer_run_id
@@ -182,12 +184,13 @@ async function loadCoverageRows(
            AND t.producer_run_id=x.producer_run_id
       ),
       matrix_counts AS (
-        SELECT m.signal_date, m.producer_run_id, m.labeler_version, COUNT(*) matrix_rows
+        SELECT m.signal_date, m.producer_run_id, m.labeler_version,
+               m.reference_contract_version, COUNT(*) matrix_rows
           FROM strategy_label_matrix_v4 m
           JOIN target_heads t
             ON t.signal_date=m.signal_date
            AND t.producer_run_id=m.producer_run_id
-         GROUP BY m.signal_date, m.producer_run_id, m.labeler_version
+         GROUP BY m.signal_date, m.producer_run_id, m.labeler_version, m.reference_contract_version
       )
       SELECT r.signal_date, r.producer_run_id,
              COUNT(*) reference_rows,
@@ -214,6 +217,7 @@ async function loadCoverageRows(
         LEFT JOIN labels l
           ON l.signal_date=r.signal_date AND l.symbol=r.symbol
          AND l.producer_run_id=r.producer_run_id
+         AND l.reference_contract_version=mr.reference_contract_version
         LEFT JOIN label_rejections x
           ON x.signal_date=r.signal_date AND x.symbol=r.symbol
          AND x.producer_run_id=r.producer_run_id
@@ -221,20 +225,19 @@ async function loadCoverageRows(
           ON mc.signal_date=r.signal_date
          AND mc.producer_run_id=r.producer_run_id
          AND mc.labeler_version=mr.labeler_version
+         AND mc.reference_contract_version=mr.reference_contract_version
        WHERE r.hard_gate_passed=1
-         AND r.feature_contract_version=?
+         AND r.feature_contract_version=mr.reference_contract_version
        GROUP BY r.signal_date, r.producer_run_id
        ORDER BY r.signal_date
     `).bind(
       ...binds,
-      SELECTION_REFERENCE_CONTRACT_VERSION,
+      ...SELECTION_REFERENCE_MATURE_COMPATIBLE_CONTRACT_VERSIONS,
       STRATEGY_FORMAL_LABELER_VERSION,
       STRATEGY_FORMAL_RECONSTRUCTION_LABELER_VERSION,
       PRICE_HORIZON_PROJECTION_VERSION,
       PRICE_HORIZON_PROJECTION_VERSION,
       CANONICAL_SELECTION_LABEL_SCHEMA_VERSION,
-      SELECTION_REFERENCE_CONTRACT_VERSION,
-      SELECTION_REFERENCE_CONTRACT_VERSION,
     ).all<CoverageRow>()
     output.push(...(result.results ?? []))
   }

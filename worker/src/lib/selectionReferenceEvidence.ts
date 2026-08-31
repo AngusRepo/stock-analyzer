@@ -11,6 +11,11 @@ import {
 import { sha256Text } from './datasetSnapshots'
 
 export const SELECTION_REFERENCE_CONTRACT_VERSION = 'selection-reference-snapshot-v4-regime-veto-evidence'
+export const SELECTION_REFERENCE_LEGACY_MATURE_CONTRACT_VERSION = 'selection-reference-snapshot-v3'
+export const SELECTION_REFERENCE_MATURE_COMPATIBLE_CONTRACT_VERSIONS = [
+  SELECTION_REFERENCE_CONTRACT_VERSION,
+  SELECTION_REFERENCE_LEGACY_MATURE_CONTRACT_VERSION,
+] as const
 export const STRATEGY_LABEL_MATRIX_VERSION = 'strategy-label-matrix-v4'
 
 export interface SelectionEvidenceCandidate {

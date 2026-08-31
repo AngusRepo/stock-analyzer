@@ -3819,7 +3819,7 @@ export async function processUpdateBatch(
       const policyMutationAllowed = currentBusinessDateRun
         && msg.policyMutationAllowed !== false
       const finalizerCacheMode = policyMutationAllowed ? 'policy-mutation' : 'evidence-only'
-      const finalizerCacheKey = `strategy-learning:finalizer:${triggerTime}:${canonicalRunId}:${finalizerCacheMode}:v1`
+      const finalizerCacheKey = `strategy-learning:finalizer:${triggerTime}:${canonicalRunId}:${finalizerCacheMode}:v2-contract-lineage`
       const cachedFinalizer = await env.KV.get(finalizerCacheKey, 'json') as {
         canonical_run_id?: string
         stages?: Record<string, unknown>

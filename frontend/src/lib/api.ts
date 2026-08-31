@@ -990,6 +990,10 @@ export type StrategyFormalPolicyLineage = {
   candidate_ready_strategy_ids: string[]
   base_weight_source: string | null
   base_weight_run_id: string | null
+  base_policy_version: string | null
+  base_policy_as_of_date: string | null
+  base_policy_run_id: string | null
+  base_lifecycle_recommendations: StrategyAdaptivePolicyState['lifecycle_recommendations'] | null
   evidence: Record<string, unknown> | null
   checksum: string | null
   created_at: string | null
@@ -1259,7 +1263,7 @@ export type StrategyAdaptivePolicyState = {
   threshold_deltas: Record<string, Record<string, number>>
   lifecycle_recommendations: Record<string, {
     current_status: StrategySpecStatus
-      recommended_status: 'candidate' | 'active'
+      recommended_status: 'shadow' | 'candidate' | 'active'
     decision: 'not_ready' | 'candidate_ready' | 'active_monitor' | 'active_cooldown'
     production_weight: number
       automatic_effect: 'weight_only' | 'weight_and_threshold_only'

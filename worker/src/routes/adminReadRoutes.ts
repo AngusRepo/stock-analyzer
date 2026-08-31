@@ -464,21 +464,7 @@ adminReadRoutes.get('/api/admin/strategy/evidence-profiles', async (c) => {
     ...multiHorizonCoverage.map((row) => row.horizon_days),
   ])].sort((left, right) => left - right)
   const profiles = listStrategyEvidenceProfiles(runtimeSpecs, { availableOutcomeHorizonDays })
-  const [formalPolicy, routeCalibration, loadedProductionPolicy] = await Promise.all([
-    learningDb.prepare(`
-      SELECT policy_id, version, status, knowledge_cutoff_date, evidence_json, created_at
-        FROM strategy_adaptive_policy_history_v2
-       WHERE status='active'
-       ORDER BY knowledge_cutoff_date DESC, created_at DESC
-       LIMIT 1
-    `).first<{
-      policy_id: string
-      version: string
-      status: string
-      knowledge_cutoff_date: string
-      evidence_json: string
-      created_at: string
-    }>(),
+  const [routeCalibration, loadedProductionPolicy] = await Promise.all([
     learningDb.prepare(`
       SELECT run_id, as_of_date, status, date_count, gate_json, created_at,
              candidate_route_version
@@ -501,6 +487,29 @@ adminReadRoutes.get('/api/admin/strategy/evidence-profiles', async (c) => {
       runtimeSpecs.map((spec) => spec.id),
     ).catch(() => null),
   ])
+  const productionPolicyState = loadedProductionPolicy?.state
+  const formalPolicy = productionPolicyState?.base_weight_source === 'adaptive_strategy_policy_v2'
+    ? await learningDb.prepare(`
+      SELECT policy_id, version, status, knowledge_cutoff_date,
+             lifecycle_recommendations_json, evidence_json, created_at
+        FROM strategy_adaptive_policy_history_v2
+       WHERE status='active'
+         AND knowledge_cutoff_date=?
+       ORDER BY CASE WHEN created_at=? THEN 0 ELSE 1 END, created_at DESC
+       LIMIT 1
+    `).bind(
+      productionPolicyState.knowledge_cutoff_date,
+      productionPolicyState.base_weight_run_id ?? '',
+    ).first<{
+      policy_id: string
+      version: string
+      status: string
+      knowledge_cutoff_date: string
+      lifecycle_recommendations_json: string
+      evidence_json: string
+      created_at: string
+    }>()
+    : null
   const parseObject = (value: string | null | undefined): Record<string, unknown> => {
     try {
       const parsed = JSON.parse(String(value ?? '{}'))
@@ -555,7 +564,6 @@ adminReadRoutes.get('/api/admin/strategy/evidence-profiles', async (c) => {
     profile.metric_completion.materialized === profile.metric_completion.total
   )).length
   const metricAsOfDate = metricArtifacts.map((row) => row.outcome_as_of_date).sort().at(-1) ?? null
-  const productionPolicyState = loadedProductionPolicy?.state
   const productionEvidence = productionPolicyState?.evidence
   const productionEvidenceRecord = productionEvidence
     ? productionEvidence as unknown as Record<string, unknown>
@@ -571,6 +579,12 @@ adminReadRoutes.get('/api/admin/strategy/evidence-profiles', async (c) => {
     candidate_ready_strategy_ids: productionPolicyState.candidate_ready_strategy_ids,
     base_weight_source: productionPolicyState.base_weight_source,
     base_weight_run_id: productionPolicyState.base_weight_run_id,
+    base_policy_version: formalPolicy?.version ?? null,
+    base_policy_as_of_date: formalPolicy?.knowledge_cutoff_date ?? null,
+    base_policy_run_id: formalPolicy?.created_at ?? null,
+    base_lifecycle_recommendations: formalPolicy
+      ? parseObject(formalPolicy.lifecycle_recommendations_json)
+      : null,
     evidence: productionPolicyState.evidence,
     checksum: loadedProductionPolicy.checksum,
     created_at: loadedProductionPolicy.created_at,

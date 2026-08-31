@@ -28,6 +28,16 @@ assert.match(
   /loadStrategyProductionPolicyBefore\(\s*learningDb,\s*twToday\(\),\s*runtimeSpecs\.map\(\(spec\) => spec\.id\),\s*\)\.catch\(\(\) => null\)/,
   'formal evidence read API must validate the complete non-retired runtime strategy set at the serving cutoff',
 )
+assert.match(
+  evidenceProfilesRoute,
+  /AND knowledge_cutoff_date=\?[\s\S]*?productionPolicyState\.knowledge_cutoff_date,[\s\S]*?productionPolicyState\.base_weight_run_id/,
+  'formal cooldown reasons must resolve the adaptive policy row from the loaded production policy cutoff and base run',
+)
+assert.match(
+  evidenceProfilesRoute,
+  /lifecycle_recommendations_json[\s\S]*?base_lifecycle_recommendations: formalPolicy[\s\S]*?parseObject\(formalPolicy\.lifecycle_recommendations_json\)/,
+  'formal lineage must expose persisted per-strategy lifecycle reasons from the same base policy row',
+)
 assert.doesNotMatch(
   evidenceProfilesRoute,
   /FROM strategy_production_policy_history_v1/,

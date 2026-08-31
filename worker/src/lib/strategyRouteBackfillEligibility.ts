@@ -1,10 +1,7 @@
 import { CANONICAL_SELECTION_LABEL_SCHEMA_VERSION } from './canonicalSelectionLabels'
 import { SELECTION_REFERENCE_CONTRACT_VERSION } from './selectionReferenceEvidence'
 import { STRATEGY_ROUTE_AFFINITY_VERSION, STRATEGY_ROUTE_CHALLENGER_VERSION } from './strategyRouteCalibration'
-import {
-  STRATEGY_FORMAL_LABELER_VERSION,
-  STRATEGY_FORMAL_RECONSTRUCTION_LABELER_VERSION,
-} from './strategySpec'
+import { STRATEGY_FORMAL_LABELER_VERSIONS } from './strategySpec'
 
 type EligibilityRow = {
   signal_date: string
@@ -191,6 +188,7 @@ export async function auditStrategyRouteBackfillEligibility(
   if (Object.keys(canonicalRunIds).length === 0) return []
 
   const canonicalRunIdsJson = JSON.stringify(canonicalRunIds)
+  const formalLabelerPlaceholders = STRATEGY_FORMAL_LABELER_VERSIONS.map(() => '?').join(', ')
   const result = await db.prepare(`
     WITH canonical_heads AS (
       SELECT h.key signal_date, CAST(h.value AS TEXT) producer_run_id
@@ -201,7 +199,7 @@ export async function auditStrategyRouteBackfillEligibility(
       SELECT producer_run_id, signal_date, expected_cell_count, labeler_version
         FROM strategy_label_matrix_runs_v4
        WHERE status='ready' AND reference_contract_version=?
-         AND labeler_version IN (?, ?)
+         AND labeler_version IN (${formalLabelerPlaceholders})
     )
     SELECT h.signal_date, h.producer_run_id,
            COUNT(r.symbol) reference_rows,
@@ -268,8 +266,7 @@ export async function auditStrategyRouteBackfillEligibility(
     startDate,
     asOfDate,
     SELECTION_REFERENCE_CONTRACT_VERSION,
-    STRATEGY_FORMAL_LABELER_VERSION,
-    STRATEGY_FORMAL_RECONSTRUCTION_LABELER_VERSION,
+    ...STRATEGY_FORMAL_LABELER_VERSIONS,
     CANONICAL_SELECTION_LABEL_SCHEMA_VERSION,
     SELECTION_REFERENCE_CONTRACT_VERSION,
     asOfDate,

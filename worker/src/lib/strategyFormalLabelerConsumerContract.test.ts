@@ -18,12 +18,18 @@ assert.match(strategySpec, /STRATEGY_FORMAL_RECONSTRUCTION_LABELER_VERSION =[\s\
 assert.match(strategySpec, /STRATEGY_FORMAL_LABELER_VERSIONS = \[[\s\S]*STRATEGY_FORMAL_LABELER_VERSION,[\s\S]*STRATEGY_FORMAL_LABELER_LEGACY_VERSION,[\s\S]*STRATEGY_FORMAL_RECONSTRUCTION_LABELER_VERSION/)
 
 for (const [name, source] of Object.entries(sources)) {
-  if (name === 'marginal' || name === 'maturity') {
+  if (name === 'marginal' || name === 'maturity' || name === 'eligibility' || name === 'adminRoute') {
     assert.match(source, /STRATEGY_FORMAL_LABELER_VERSIONS/, 'Atomic V7 must consume the complete formal labeler allowlist')
   } else {
     assert.match(source, /STRATEGY_FORMAL_LABELER_VERSION/, `${name} must accept the native formal labeler`)
   }
-  if (name !== 'publicRoute' && name !== 'marginal' && name !== 'maturity') {
+  if (
+    name !== 'publicRoute'
+    && name !== 'marginal'
+    && name !== 'maturity'
+    && name !== 'eligibility'
+    && name !== 'adminRoute'
+  ) {
     assert.match(source, /STRATEGY_FORMAL_RECONSTRUCTION_LABELER_VERSION/, `${name} must accept the reconstruction formal labeler`)
   }
   assert.doesNotMatch(source, /strategy-labeler-v1/, `${name} must reject the legacy native labeler`)
@@ -51,6 +57,34 @@ assert.doesNotMatch(
 )
 assert.doesNotMatch(pipelineTrackingMatrixQueries, /\bSTRATEGY_FORMAL_LABELER_VERSION\b/)
 assert.doesNotMatch(pipelineTrackingMatrixQueries, /\bSTRATEGY_FORMAL_RECONSTRUCTION_LABELER_VERSION\b/)
+
+for (const [name, source, anchor] of [
+  ['route eligibility', sources.eligibility, 'const canonicalRunIdsJson'],
+  ['redundancy backfill', sources.adminRoute, "adminWriteRoutes.post('/api/admin/strategy/redundancy/backfill'"],
+] as const) {
+  const consumer = source.slice(source.indexOf(anchor))
+  assert(
+    consumer.includes("STRATEGY_FORMAL_LABELER_VERSIONS.map(() => '?').join(', ')"),
+    `${name} must derive SQL placeholders from the complete formal labeler allowlist`,
+  )
+  assert(
+    consumer.includes('...STRATEGY_FORMAL_LABELER_VERSIONS'),
+    `${name} must bind the complete formal labeler allowlist`,
+  )
+  assert(
+    consumer.includes('labeler_version IN (${formalLabelerPlaceholders})'),
+    `${name} SQL must consume the dynamic complete formal labeler allowlist`,
+  )
+  assert.doesNotMatch(
+    consumer,
+    /labeler_version IN \(\?, \?\)/,
+    `${name} must not drop legacy-formal v2 evidence`,
+  )
+}
+assert.doesNotMatch(sources.eligibility, /\bSTRATEGY_FORMAL_LABELER_VERSION\b/)
+assert.doesNotMatch(sources.eligibility, /\bSTRATEGY_FORMAL_RECONSTRUCTION_LABELER_VERSION\b/)
+assert.doesNotMatch(sources.adminRoute, /\bSTRATEGY_FORMAL_LABELER_VERSION\b/)
+assert.doesNotMatch(sources.adminRoute, /\bSTRATEGY_FORMAL_RECONSTRUCTION_LABELER_VERSION\b/)
 
 const maturityConsumer = sources.maturity.slice(sources.maturity.indexOf('export async function buildPipelineDecisionMaturityPacket'))
 assert(

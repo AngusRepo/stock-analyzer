@@ -115,6 +115,14 @@ assert(chainCss.includes('-webkit-line-clamp: 3') && !chainCss.includes('max-hei
 assert(chainCss.includes('@media (prefers-reduced-motion: reduce)'), 'chain animations must respect reduced-motion preference')
 
 assert(page.includes('const schedulerApiError = errorMessage(scheduler.error)'), 'Scheduler API error must remain first-class')
+assert(
+  page.includes('const readinessScore = Math.round(schedulerScore)') &&
+    !page.includes('computeDataQualityScore') &&
+    !page.includes('dataQualityScore * 0.48') &&
+    !page.includes('>DQ {formatStatus'),
+  'top readiness must represent scheduler execution only and must not revive retired DQ gating',
+)
+assert(page.includes('const dqChecks = dataQuality.data?.checks ?? []'), 'DQ evidence must remain available for operational drilldown')
 assert(page.includes('aria-labelledby="source-gates-title"') && page.includes('<DataQualityCompactMatrix gates={gates} compact />'), 'full Source Gates must sit beside the readiness summary')
 assert(page.includes('xl:grid-cols-[minmax(0,2fr)_minmax(0,3fr)]') && page.includes("compact ? 'grid grid-cols-2 gap-2 lg:grid-cols-4'"), 'Readiness control and Source Gates must use a 4:6 desktop ratio with four Source Gate cards per row')
 assert(page.includes('truncate text-sm font-semibold text-[#f2ead8]">Source Gates'), 'Source Gates must remain on the homepage StockIntelli typography baseline')

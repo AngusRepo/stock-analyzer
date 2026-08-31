@@ -841,6 +841,25 @@ async function handleSchedulerCallback(c: any) {
     run_date: callbackRunDate,
   })
   if (!criticalTerminalCallback) await logAcceptedCallbackTask()
+  if (body.task === 'finlab-v4-backfill' && ['success', 'error', 'skipped'].includes(String(body.status)) && callbackRunDate) {
+    const dispatchAttempt = Number(
+      body.dispatch_attempt
+      ?? body.result?.dispatch_attempt
+      ?? body.metadata?.dispatch_attempt
+      ?? 1,
+    )
+    if (Number.isFinite(dispatchAttempt) && dispatchAttempt > 1) {
+      await logSchedulerResult(c.env.KV, 'finlab-backfill-watchdog', {
+        status: body.status === 'success' ? 'success' : body.status === 'skipped' ? 'skipped' : 'error',
+        summary: `FinLab watchdog terminal callback status=${body.status} dispatch_attempt=${dispatchAttempt}`,
+        duration_ms: Number(body.duration_ms ?? 0),
+        error: body.error != null ? String(body.error) : undefined,
+        run_id: callbackRunId,
+        run_date: callbackRunDate,
+        supersedePrevious: true,
+      })
+    }
+  }
 
   if (
     body.task === 'active8-oof-daily'
@@ -976,6 +995,7 @@ async function handleSchedulerCallback(c: any) {
         duration_ms: 0,
         run_id: callbackRunId,
         run_date: callbackRunDate,
+        supersedePrevious: true,
       })
       await c.env.UPDATE_QUEUE.send({
         type: 'finlab_backfill_complete',

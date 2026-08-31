@@ -121,3 +121,24 @@ assert(orchestrator.includes('waiting_for_replay_data='), 'incomplete replay dat
 assert(orchestrator.includes("status: hasMore ? 'running' : replayClosed ? 'success' : 'skipped'"), 'only an actually requeued S12 chunk may remain running')
 assert(orchestrator.includes('dynamicCohortStalled'), 'dynamic replay must detect a zero-persistence no-progress loop')
 assert(orchestrator.includes('requeue=0'), 'terminal market-data failures must not self-requeue and exhaust broker quota')
+
+assert(
+  lifecycle.indexOf("const learningDb = databaseForDataDomain(env, 'learning')")
+    < lifecycle.indexOf('resolveLifecycleBusinessDate(learningDb, requestedDate)') &&
+    !lifecycle.includes('resolveLifecycleBusinessDate(env.DB, requestedDate)'),
+  'EV lifecycle business date must be resolved from Learning D1, never the retired legacy DB mirror',
+)
+assert(
+  lifecycle.includes('status=pending allocator EV lifecycle awaiting durable callback') &&
+    lifecycle.includes("status=${lifecycleComplete ? 'success' : 'pending'}") &&
+    lifecycle.includes("lifecycle?.state === 'replay_complete'") &&
+    lifecycle.includes("lifecycle_complete=${lifecycleComplete ? 1 : 0}"),
+  'EV lifecycle must only report success for replay_complete and keep maturity/callback states pending',
+)
+assert(
+  lifecycle.includes('status=triggered allocator EV lifecycle replay enqueued') &&
+    lifecycle.includes('status=triggered allocator EV lifecycle recovered post-verify') &&
+    lifecycle.includes('status=triggered allocator EV lifecycle recovery queued') &&
+    lifecycle.includes('status=failed allocator EV lifecycle post-verify authority mismatch'),
+  'EV lifecycle watchdog summaries must expose triggered and failed outcomes to the canonical scheduler classifier',
+)

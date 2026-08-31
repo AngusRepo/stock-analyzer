@@ -162,6 +162,18 @@ assert(
   'FinLab watchdog must reserve the next attempt before cancellation/spawn so stale callbacks are fenced',
 )
 assert(
+  updateOrchestrator.includes('FINLAB_POST_CANONICAL_WATCHDOG_STALE_MS') &&
+    updateOrchestrator.includes("readSchedulerRunLog(env, 'update', twDate)") &&
+    updateOrchestrator.includes('finlab:post-canonical-watchdog:') &&
+    updateOrchestrator.includes('continueAfterFinLabBackfill(env, twDate, false, runId)') &&
+    updateOrchestrator.includes('FinLab post-canonical watchdog recovered market continuation'),
+  'FinLab watchdog must resume a failed or missing Market Update handoff after canonical data becomes ready',
+)
+assert(
+  updateOrchestrator.match(/supersedePrevious: true/g)?.length >= 2,
+  'same-run FinLab recovery must supersede the stale terminal scheduler head while retry and continuation are active',
+)
+assert(
   updateOrchestrator.includes('retriablePartialFailure') &&
     updateOrchestrator.includes('/partial_failed/i') &&
     updateOrchestrator.includes('allowFetchedLaneRefetch: retriablePartialFailure') &&

@@ -133,3 +133,20 @@ assert(
     otherRoutes.includes('stocks: []'),
   'sector-flow stock details must not silently fallback to stale MAX(date) rows',
 )
+
+assert(
+  twseApi.includes('identityDb: D1Database') &&
+    twseApi.includes("identityDb.prepare('SELECT id, symbol FROM stocks')") &&
+    !twseApi.includes("db.prepare('SELECT id, symbol FROM stocks')"),
+  'chip supplemental writes must resolve stock identities from Core D1 instead of querying the Market D1 owner',
+)
+
+assert(
+  updateOrchestrator.includes(`bulkFetchAndStoreChipData(
+        databaseForDataDomain(env, 'market'),
+        databaseForDataDomain(env, 'core'),`) &&
+    updateOrchestrator.includes(`bulkFetchAndStorePrices(
+        databaseForDataDomain(env, 'market'),
+        databaseForDataDomain(env, 'core'),`),
+  'both chip and price bulk refresh must receive separate Market storage and Core identity databases',
+)

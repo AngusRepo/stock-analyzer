@@ -63,6 +63,7 @@ const SOURCE_READINESS_RETRY_DELAY_SECONDS = 10 * 60
 const SOURCE_READINESS_RETRY_MAX_ATTEMPTS = 9
 const SOURCE_READINESS_FINLAB_REFRESH_COOLDOWN_SECONDS = 45 * 60
 const FINLAB_PENDING_WATCHDOG_STALE_MS = 15 * 60_000
+const FINLAB_POST_CANONICAL_WATCHDOG_STALE_MS = 2 * 60_000
 const FINLAB_PENDING_WATCHDOG_MAX_ATTEMPTS = 3
 const STRATEGY_LEARNING_QUEUE_CHUNK_SIZE = 80
 const S12_REPLAY_QUEUE_CHUNK_SIZE = 20
@@ -1578,7 +1579,13 @@ export async function runBulkFetch(env: Bindings, force = false, runDate?: strin
     const { bulkFetchAndStoreChipData, bulkFetchAndStorePrices } = await import('./twseApi')
     const controllerUrl = env.ML_CONTROLLER_URL ?? env.SHIOAJI_PROXY_URL
     const [{ chipCount, marginCount, canonicalMarginCount }, priceCount] = await Promise.all([
-      bulkFetchAndStoreChipData(databaseForDataDomain(env, 'market'), twDate, controllerUrl, env.ML_CONTROLLER_SECRET),
+      bulkFetchAndStoreChipData(
+        databaseForDataDomain(env, 'market'),
+        databaseForDataDomain(env, 'core'),
+        twDate,
+        controllerUrl,
+        env.ML_CONTROLLER_SECRET,
+      ),
       bulkFetchAndStorePrices(
         databaseForDataDomain(env, 'market'),
         databaseForDataDomain(env, 'core'),
@@ -2683,6 +2690,45 @@ export async function runFinLabBackfillWatchdog(env: Bindings, runDate?: string)
   if (finlabLog?.status === 'running') {
     return `skipped: FinLab start heartbeat received for ${twDate}`
   }
+  if (finlabLog?.status === 'success') {
+    const updateLog = await readSchedulerRunLog(env, 'update', twDate)
+    if (updateLog?.status === 'success') {
+      return `skipped: FinLab canonical handoff already completed market update for ${twDate}`
+    }
+    if (updateLog?.status === 'running' || updateLog?.status === 'triggered') {
+      return `status=pending FinLab canonical handoff already progressing market update for ${twDate}`
+    }
+
+    const handoffTimestamp = updateLog?.timestamp ?? finlabLog.timestamp
+    const handoffAt = handoffTimestamp ? Date.parse(handoffTimestamp) : Number.NaN
+    const handoffAgeMs = Number.isFinite(handoffAt) ? Date.now() - handoffAt : Number.POSITIVE_INFINITY
+    if (handoffAgeMs < FINLAB_POST_CANONICAL_WATCHDOG_STALE_MS) {
+      return `skipped: FinLab canonical handoff age=${Math.max(0, Math.floor(handoffAgeMs / 1000))}s below watchdog threshold`
+    }
+
+    const runId = updateLog?.run_id ?? finlabLog.run_id ?? schedulerSummaryField(finlabLog, 'run_id')
+    if (!runId) throw new Error(`FinLab post-canonical watchdog cannot recover ${twDate}: run_id missing`)
+    const retryKey = `finlab:post-canonical-watchdog:${twDate}:${runId}`
+    if (await env.KV.get(retryKey)) {
+      return `skipped: FinLab post-canonical watchdog already claimed run_id=${runId}`
+    }
+    await env.KV.put(retryKey, new Date().toISOString(), { expirationTtl: 3600 })
+    try {
+      const summary = await continueAfterFinLabBackfill(env, twDate, false, runId)
+      await logSchedulerResult(env.KV, 'evening-chain', {
+        status: 'running',
+        summary: `FinLab post-canonical watchdog recovered market continuation for ${twDate}; ${summary}`,
+        duration_ms: Number.isFinite(handoffAgeMs) ? Math.max(0, handoffAgeMs) : 0,
+        run_id: runId,
+        run_date: twDate,
+        supersedePrevious: true,
+      })
+      return `status=triggered FinLab post-canonical watchdog resumed market continuation for ${twDate}; ${summary}`
+    } catch (error) {
+      await env.KV.delete(retryKey)
+      throw error
+    }
+  }
   const retriablePartialFailure = finlabLog?.status === 'error' && (
     /partial_failed/i.test(finlabLog.summary ?? '') ||
     /source_key_blockers/i.test(finlabLog.summary ?? '') ||
@@ -2728,6 +2774,7 @@ export async function runFinLabBackfillWatchdog(env: Bindings, runDate?: string)
     duration_ms: 0,
     run_id: runId,
     run_date: twDate,
+    supersedePrevious: true,
   })
 
   try {
@@ -2765,6 +2812,7 @@ export async function runFinLabBackfillWatchdog(env: Bindings, runDate?: string)
       duration_ms: 0,
       run_id: runId,
       run_date: twDate,
+      supersedePrevious: true,
     })
     return summary
   } catch (error) {

@@ -85,17 +85,6 @@ function formatStatus(status?: string | null) {
   return status ? String(status).toUpperCase() : 'N/A'
 }
 
-function computeDataQualityScore(report?: DataQualityReport) {
-  const checks = report?.checks ?? []
-  if (!checks.length) return 0
-  const score = checks.reduce((sum, check) => {
-    if (check.status === 'ok') return sum + 1
-    if (check.status === 'warn') return sum + 0.5
-    return sum
-  }, 0)
-  return Math.round((score / checks.length) * 100)
-}
-
 function errorMessage(error: unknown) {
   if (!error) return null
   if (error instanceof Error && error.message) return error.message
@@ -1604,27 +1593,15 @@ export default function ObservabilityPage() {
   const dqChecks = dataQuality.data?.checks ?? []
   const schedulerScore = Number(scheduler.data?.stats?.successRate7d ?? 0)
   const schedulerApiError = errorMessage(scheduler.error)
-  const dataQualityScore = computeDataQualityScore(dataQuality.data)
-  const deployScore = deployGate.data ? deployGate.data.decision === 'PASS' ? 100 : deployGate.data.decision === 'WARN' ? 70 : 30 : 0
   const initialLoading = [scheduler, dataQuality, deployGate, system, observability].some((query) => query.isLoading)
-  const apiErrors = [
-    { label: 'Scheduler API', message: schedulerApiError },
-    { label: 'Data Quality API', message: errorMessage(dataQuality.error) },
-    { label: 'Deploy Gate API', message: errorMessage(deployGate.error) },
-    { label: 'OBS Events API', message: errorMessage(observability.error) },
-    { label: 'System API', message: errorMessage(system.error) },
-  ].filter((item): item is { label: string; message: string } => Boolean(item.message))
   const readinessStages = READINESS_STAGES.map((stage) => stageFromDefinition(stage, jobs))
-  const readinessGates = buildReadinessGates(dqChecks)
-  const readinessScore = Math.round((schedulerScore * 0.32) + (dataQualityScore * 0.48) + (deployScore * 0.20))
-  const readinessTone: WorkstationTone = apiErrors.length
+  const readinessScore = Math.round(schedulerScore)
+  const readinessTone: WorkstationTone = schedulerApiError
     || readinessStages.some((stage) => stage.status === 'blocked')
-    || readinessGates.some((gate) => gate.status === 'blocked')
-    || deployGate.data?.decision === 'BLOCK'
     ? 'error'
-    : readinessStages.some((stage) => stage.status === 'waiting' || stage.status === 'running')
-      || readinessGates.some((gate) => gate.status === 'waiting' || gate.status === 'pending')
-      || deployGate.data?.decision === 'WARN' ? 'warn' : 'ok'
+    : readinessStages.some((stage) => stage.status === 'waiting' || stage.status === 'running' || stage.status === 'pending')
+      ? 'warn'
+      : 'ok'
 
   return (
     <AppShell>
@@ -1647,7 +1624,6 @@ export default function ObservabilityPage() {
             <div className="flex flex-wrap items-center gap-3">
               <ReadinessGauge score={readinessScore} tone={readinessTone} />
               <div className="flex max-w-xs flex-wrap gap-2">
-                <WorkstationPill tone={statusTone(dataQuality.data?.overall)}>DQ {formatStatus(dataQuality.data?.overall)}</WorkstationPill>
                 <WorkstationPill tone={statusTone(deployGate.data?.decision)}>Gate {formatStatus(deployGate.data?.decision)}</WorkstationPill>
                 <WorkstationPill tone={severityTone(observability.data?.overall)}>OBS {formatStatus(observability.data?.overall)}</WorkstationPill>
                 <WorkstationPill tone={system.error ? 'error' : 'ok'}>System {system.error ? 'ERROR' : 'ONLINE'}</WorkstationPill>

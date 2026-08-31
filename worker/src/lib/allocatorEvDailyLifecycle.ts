@@ -732,8 +732,8 @@ export async function runAllocatorEvLifecycleWatchdog(
   env: Bindings,
   requestedDate?: string,
 ): Promise<string> {
-  const businessDate = await resolveLifecycleBusinessDate(env.DB, requestedDate)
   const learningDb = databaseForDataDomain(env, 'learning')
+  const businessDate = await resolveLifecycleBusinessDate(learningDb, requestedDate)
   const coreDb = databaseForDataDomain(env, 'core')
   const [snapshot, maturity, actionAuthority] = await Promise.all([
     inspectAllocatorSnapshotClosure(env.DB, businessDate, {
@@ -798,7 +798,7 @@ export async function runAllocatorEvLifecycleWatchdog(
     && stageAgeMs >= 0
     && stageAgeMs < 15 * 60_000
   if (callbackGraceActive) {
-    return `allocator EV lifecycle awaiting durable callback date=${businessDate} `
+    return `status=pending allocator EV lifecycle awaiting durable callback date=${businessDate} `
       + `stage=${postPipelineStage?.status} age_seconds=${Math.floor(stageAgeMs / 1000)} `
       + `run_id=${postPipelineStage?.canonical_run_id ?? 'unknown'} `
       + `lineage=${snapshot.nativeLineageRows} expected=${snapshot.expectedRows} actual=${snapshot.actualRows}`
@@ -843,7 +843,7 @@ export async function runAllocatorEvLifecycleWatchdog(
       incrementAttempt: true,
     })
     if (!replayRecorded) {
-      return `allocator EV lifecycle stale replay enqueue ignored date=${businessDate} run_id=${runId}`
+      return `skipped: allocator EV lifecycle stale replay enqueue ignored date=${businessDate} run_id=${runId}`
     }
     await env.UPDATE_QUEUE.send({
       type: 's12_replay_backfill_chunk',
@@ -855,13 +855,14 @@ export async function runAllocatorEvLifecycleWatchdog(
       statusRunDate: businessDate,
       lifecycleRunId: lifecycle.upstream_run_id,
     } as any)
-    return `allocator EV lifecycle replay enqueued date=${businessDate} mature_missing=${matureReplayMissingRows} as_of=${maturityAsOfDate}; ${maturitySummary(maturity)}`
+    return `status=triggered allocator EV lifecycle replay enqueued date=${businessDate} mature_missing=${matureReplayMissingRows} as_of=${maturityAsOfDate}; ${maturitySummary(maturity)}`
   }
   if (snapshot.ready && (
     (postVerifyReached && matureReplayMissingRows === 0)
     || (lifecycle?.state === 'verify_triggered' && !staleVerifyTrigger(lifecycle))
   )) {
-    return `allocator EV lifecycle current date=${businessDate} state=${lifecycle?.state} snapshot_rows=${snapshot.actualRows}; ${maturitySummary(maturity)}`
+    const lifecycleComplete = lifecycle?.state === 'replay_complete'
+    return `status=${lifecycleComplete ? 'success' : 'pending'} allocator EV lifecycle current date=${businessDate} state=${lifecycle?.state} lifecycle_complete=${lifecycleComplete ? 1 : 0} snapshot_rows=${snapshot.actualRows}; ${maturitySummary(maturity)}`
   }
   if (snapshot.ready && lifecycle?.state === 'verify_triggered') {
     const verifyStage = await databaseForDataDomain(env, 'ops').prepare(`
@@ -878,7 +879,7 @@ export async function runAllocatorEvLifecycleWatchdog(
       const verifyCanonicalRunId = String(verifyStage.canonical_run_id ?? '').trim()
       const verifyCursorKey = String(verifyStage.cursor_key ?? '').trim()
       if (!lifecycleRunId || verifyCanonicalRunId !== lifecycleRunId || !verifyCursorKey) {
-        return `allocator EV lifecycle post-verify authority mismatch date=${businessDate} `
+        return `status=failed allocator EV lifecycle post-verify authority mismatch date=${businessDate} `
           + `lifecycle_run_id=${lifecycleRunId || 'missing'} `
           + `verify_canonical_run_id=${verifyCanonicalRunId || 'missing'} `
           + `verify_cursor_key=${verifyCursorKey || 'missing'}`
@@ -898,7 +899,7 @@ export async function runAllocatorEvLifecycleWatchdog(
         attempt: Math.max(1, Number(lifecycle.attempt_count ?? 0) + 1),
       })
       return continuation.queued
-        ? `allocator EV lifecycle recovered post-verify date=${businessDate} run_id=${continuation.canonicalRunId}`
+        ? `status=triggered allocator EV lifecycle recovered post-verify date=${businessDate} run_id=${continuation.canonicalRunId}`
         : `allocator EV lifecycle post-verify current date=${businessDate} status=${continuation.status}`
     }
   }
@@ -941,6 +942,6 @@ export async function runAllocatorEvLifecycleWatchdog(
     attempt: recoveryAttempt,
   })
   return continuation.queued
-    ? `allocator EV lifecycle recovery queued date=${businessDate} attempt=${recoveryAttempt} run_id=${continuation.canonicalRunId}`
+    ? `status=triggered allocator EV lifecycle recovery queued date=${businessDate} attempt=${recoveryAttempt} run_id=${continuation.canonicalRunId}`
     : `allocator EV lifecycle recovery current date=${businessDate} status=${continuation.status} run_id=${continuation.canonicalRunId}`
 }

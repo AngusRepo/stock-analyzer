@@ -82,6 +82,21 @@ assert(
     finLabDispatchFence.includes('incomingAttempt < activeAttempt'),
   'FinLab callback must fence stale run IDs and late callbacks from superseded Modal attempts',
 )
+assert(
+  adminControlRoutes.includes("logSchedulerResult(c.env.KV, 'finlab-backfill-watchdog'") &&
+    adminControlRoutes.includes('dispatchAttempt > 1') &&
+    adminControlRoutes.includes('FinLab watchdog terminal callback status=') &&
+    adminControlRoutes.includes('supersedePrevious: true'),
+  'retried FinLab terminal callbacks must settle the watchdog card and supersede its running reservation',
+)
+const finLabContinuationStart = adminControlRoutes.indexOf("if (body.task === 'finlab-v4-backfill'")
+const finLabContinuationBlock = adminControlRoutes.slice(finLabContinuationStart)
+assert(
+  finLabContinuationBlock.includes("logSchedulerResult(c.env.KV, 'evening-chain'") &&
+    finLabContinuationBlock.includes("status: 'running'") &&
+    finLabContinuationBlock.includes('supersedePrevious: true'),
+  'FinLab success continuation must visibly recover the same-run evening-chain head from its earlier error',
+)
 
 assert(
   schedulerRunLogger.includes('run_id?: string') &&

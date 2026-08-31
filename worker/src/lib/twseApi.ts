@@ -936,6 +936,7 @@ export async function fetchTpexMargin(_date: string): Promise<BulkMarginRow[]> {
 
 export async function bulkFetchAndStoreChipData(
   db: D1Database,
+  identityDb: D1Database,
   date: string,
   controllerUrl?: string,
   controllerSecret?: string,
@@ -1068,7 +1069,7 @@ export async function bulkFetchAndStoreChipData(
 
   // 寫入 margin_data（仍用 stock_id FK，需要 idMap）
   const idMap = new Map<string, number>()
-  const { results: allStocksRows } = await db.prepare('SELECT id, symbol FROM stocks').all<{ id: number; symbol: string }>()
+  const { results: allStocksRows } = await identityDb.prepare('SELECT id, symbol FROM stocks').all<{ id: number; symbol: string }>()
   for (const r of allStocksRows ?? []) idMap.set(r.symbol, r.id)
 
   let marginCount = 0

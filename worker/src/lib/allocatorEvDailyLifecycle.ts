@@ -683,7 +683,11 @@ function staleVerifyTrigger(row: AllocatorEvLifecycleRow | null): boolean {
   return !Number.isFinite(updatedAt) || Date.now() - updatedAt >= 15 * 60_000
 }
 
-async function resolveLifecycleBusinessDate(db: D1Database, requestedDate?: string): Promise<string> {
+async function resolveLifecycleBusinessDate(
+  env: Bindings,
+  db: D1Database,
+  requestedDate?: string,
+): Promise<string> {
   if (requestedDate) {
     if (!validDate(requestedDate)) throw new Error(`invalid allocator EV lifecycle date: ${requestedDate}`)
     return requestedDate
@@ -708,8 +712,8 @@ async function resolveLifecycleBusinessDate(db: D1Database, requestedDate?: stri
   `).first<{ business_date?: string | null }>()
   const pendingDate = String(pending?.business_date ?? '').trim().slice(0, 10)
   if (validDate(pendingDate)) {
-    const { loadFusionSnapshotReplayCoverage } = await import('./s12ReplayTradeOutcome')
-    const coverage = await loadFusionSnapshotReplayCoverage(db, pendingDate, twTodayDate())
+    const { loadSplitFusionSnapshotReplayCoverage } = await import('./s12ReplaySplitReadModels')
+    const coverage = await loadSplitFusionSnapshotReplayCoverage(env, pendingDate, twTodayDate())
     if (coverage.matureMissingRows > 0) return pendingDate
   }
   const twToday = new Date(Date.now() + 8 * 3600_000).toISOString().slice(0, 10)
@@ -733,7 +737,7 @@ export async function runAllocatorEvLifecycleWatchdog(
   requestedDate?: string,
 ): Promise<string> {
   const learningDb = databaseForDataDomain(env, 'learning')
-  const businessDate = await resolveLifecycleBusinessDate(learningDb, requestedDate)
+  const businessDate = await resolveLifecycleBusinessDate(env, learningDb, requestedDate)
   const coreDb = databaseForDataDomain(env, 'core')
   const [snapshot, maturity, actionAuthority] = await Promise.all([
     inspectAllocatorSnapshotClosure(env.DB, businessDate, {
@@ -827,8 +831,8 @@ export async function runAllocatorEvLifecycleWatchdog(
   }
   let matureReplayMissingRows = 0
   if (lifecycle?.state === 'replay_pending_maturity') {
-    const { loadFusionSnapshotReplayCoverage } = await import('./s12ReplayTradeOutcome')
-    const coverage = await loadFusionSnapshotReplayCoverage(env.DB, businessDate, twTodayDate())
+    const { loadSplitFusionSnapshotReplayCoverage } = await import('./s12ReplaySplitReadModels')
+    const coverage = await loadSplitFusionSnapshotReplayCoverage(env, businessDate, twTodayDate())
     matureReplayMissingRows = coverage.matureMissingRows
   }
   if (snapshot.ready && lifecycle?.state === 'replay_pending_maturity' && matureReplayMissingRows > 0) {

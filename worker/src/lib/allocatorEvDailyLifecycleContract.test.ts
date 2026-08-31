@@ -124,9 +124,15 @@ assert(orchestrator.includes('requeue=0'), 'terminal market-data failures must n
 
 assert(
   lifecycle.indexOf("const learningDb = databaseForDataDomain(env, 'learning')")
-    < lifecycle.indexOf('resolveLifecycleBusinessDate(learningDb, requestedDate)') &&
+    < lifecycle.indexOf('resolveLifecycleBusinessDate(env, learningDb, requestedDate)') &&
     !lifecycle.includes('resolveLifecycleBusinessDate(env.DB, requestedDate)'),
   'EV lifecycle business date must be resolved from Learning D1, never the retired legacy DB mirror',
+)
+assert(
+  lifecycle.match(/loadSplitFusionSnapshotReplayCoverage\(env,/g)?.length === 2 &&
+    !lifecycle.includes('loadFusionSnapshotReplayCoverage(db,') &&
+    !lifecycle.includes('loadFusionSnapshotReplayCoverage(env.DB,'),
+  'EV lifecycle maturity selection and replay decisions must use the split Learning/Ops/Market read model',
 )
 assert(
   lifecycle.includes('status=pending allocator EV lifecycle awaiting durable callback') &&

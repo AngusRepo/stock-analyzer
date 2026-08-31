@@ -1,5 +1,11 @@
 import assert from 'node:assert/strict'
 import { parseScreenerArtifactInput } from './adminControlRoutes'
+import {
+  STRATEGY_AFFINITY_CHALLENGER_VERSION,
+  STRATEGY_EVIDENCE_ALIGNED_ROUTE_VERSION,
+} from '../lib/multiStrategyPleRouter'
+import { SELECTION_REFERENCE_CONTRACT_VERSION } from '../lib/selectionReferenceEvidence'
+import { STRATEGY_ROUTE_RECOVERY_PACKET_SCHEMA } from '../lib/strategyRouteRecoveryPacket'
 
 const valid = {
   domain: 'strategy_redundancy_oof',
@@ -44,13 +50,13 @@ const routeValid = {
   businessDate: "2026-08-27",
   producerRunId: "screener-2026-08-27-test",
   retentionClass: "canonical_model_evidence",
-  schemaVersion: "strategy-route-recovery-packet-v1",
+  schemaVersion: STRATEGY_ROUTE_RECOVERY_PACKET_SCHEMA,
   rowCount: 1,
   payload: {
-    schema_version: "strategy-route-recovery-packet-v1",
-    reference_contract_version: "selection-reference-snapshot-v3",
-    route_version: "strategy-semantic-continuous-affinity-v5",
-    affinity_version: "strategy-threshold-margin-affinity-v2",
+    schema_version: STRATEGY_ROUTE_RECOVERY_PACKET_SCHEMA,
+    reference_contract_version: SELECTION_REFERENCE_CONTRACT_VERSION,
+    route_version: STRATEGY_EVIDENCE_ALIGNED_ROUTE_VERSION,
+    affinity_version: STRATEGY_AFFINITY_CHALLENGER_VERSION,
     strategy_registry_checksum: "sha256:" + "a".repeat(64),
     input_packet_checksum: "sha256:" + "b".repeat(64),
     route_score_parity_checksum: "sha256:" + "c".repeat(64),

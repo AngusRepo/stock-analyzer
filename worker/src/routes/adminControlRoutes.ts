@@ -22,6 +22,12 @@ import {
   queuePostPipelineStage,
   queuePostVerifyStage,
 } from '../lib/pipelineStageLease'
+import {
+  STRATEGY_AFFINITY_CHALLENGER_VERSION,
+  STRATEGY_EVIDENCE_ALIGNED_ROUTE_VERSION,
+} from '../lib/multiStrategyPleRouter'
+import { SELECTION_REFERENCE_CONTRACT_VERSION } from '../lib/selectionReferenceEvidence'
+import { STRATEGY_ROUTE_RECOVERY_PACKET_SCHEMA } from '../lib/strategyRouteRecoveryPacket'
 
 export const adminControlRoutes = new Hono<{ Bindings: Bindings; Variables: Variables }>()
 
@@ -172,10 +178,10 @@ export function parseScreenerArtifactInput(body: any): EvidenceArtifactWriteInpu
   if (body.domain === "strategy_route_recovery") {
     const payload = body.payload
     if (
-      payload.schema_version !== "strategy-route-recovery-packet-v1"
-      || payload.reference_contract_version !== "selection-reference-snapshot-v3"
-      || payload.route_version !== "strategy-semantic-continuous-affinity-v5"
-      || payload.affinity_version !== "strategy-threshold-margin-affinity-v2"
+      payload.schema_version !== STRATEGY_ROUTE_RECOVERY_PACKET_SCHEMA
+      || payload.reference_contract_version !== SELECTION_REFERENCE_CONTRACT_VERSION
+      || payload.route_version !== STRATEGY_EVIDENCE_ALIGNED_ROUTE_VERSION
+      || payload.affinity_version !== STRATEGY_AFFINITY_CHALLENGER_VERSION
       || !/^sha256:[a-f0-9]{64}$/i.test(String(payload.strategy_registry_checksum ?? ""))
       || !/^sha256:[a-f0-9]{64}$/i.test(String(payload.input_packet_checksum ?? ""))
       || !/^sha256:[a-f0-9]{64}$/i.test(String(payload.route_score_parity_checksum ?? ""))

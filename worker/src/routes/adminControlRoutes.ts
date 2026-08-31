@@ -1046,6 +1046,24 @@ async function handleSchedulerCallback(c: any) {
         source: 'screener-v2-callback',
         summary: `event-driven chain accepted screener-v2 callback for ${callbackRunDate}; screener_run_id=${callbackRunId ?? 'n/a'}; chain_run_id=${continuationRunId}`,
       })
+      const watchdog = await c.env.KV.get(
+        `scheduler:run:screener-v2-watchdog:${callbackRunDate}`,
+        'json',
+      ) as { status?: string; summary?: string; run_id?: string } | null
+      if (
+        callbackRunId
+        && ['running', 'triggered'].includes(String(watchdog?.status ?? ''))
+        && String(watchdog?.summary ?? '').includes(callbackRunId)
+      ) {
+        await logSchedulerResult(c.env.KV, 'screener-v2-watchdog', {
+          status: 'success',
+          summary: `Screener watchdog terminal callback accepted screener_run_id=${callbackRunId} chain_run_id=${continuationRunId}`,
+          duration_ms: Number(body.duration_ms ?? 0),
+          run_id: watchdog?.run_id,
+          run_date: callbackRunDate,
+          supersedePrevious: true,
+        })
+      }
     } else if (body.status !== 'success' && callbackRunDate && screenerShouldContinue && screenerCallbackLineageAccepted) {
       await logSchedulerResult(c.env.KV, 'evening-chain', {
         status: body.status === 'skipped' ? 'skipped' : 'error',

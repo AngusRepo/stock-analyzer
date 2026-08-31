@@ -40,6 +40,7 @@ export async function enqueuePostScreenerPipelineContinuation(
     duration_ms: 0,
     run_date: options.triggerTime,
     run_id: state.row.canonical_run_id,
+    supersedePrevious: true,
   })
   try {
     await env.UPDATE_QUEUE.send({

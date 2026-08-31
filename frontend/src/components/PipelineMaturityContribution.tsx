@@ -96,6 +96,9 @@ const BLOCKER_LABELS: Record<string, string> = {
   current_day_challenger_route_incomplete: '當日通過 L0 的股票尚未全部留下 Route V2 分數',
   joint_promotion_not_committed: 'Threshold V2 與 Route V2 尚未共同完成 promotion commit',
   formal_labeler_upgrade_pending: '既有 production evidence 存在；正式 revenue-PIT labeler 尚未物化',
+  'data_validity:date_count_below_validation_floor': '可用交易日未達離線驗證下限',
+  'residual_adjustment:insufficient_dates': 'Residual adjustment 的獨立交易日不足，尚不能執行正式 walk-forward',
+  'residual_champion:residual_adjustment_model_not_validated': 'Residual candidate 尚未通過驗證；只阻擋 L4+ residual，production 維持 safe-abstention',
 }
 
 function stageIcon(id: PipelineMaturityStage['id']) {

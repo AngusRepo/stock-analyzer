@@ -18,12 +18,12 @@ assert.match(strategySpec, /STRATEGY_FORMAL_RECONSTRUCTION_LABELER_VERSION =[\s\
 assert.match(strategySpec, /STRATEGY_FORMAL_LABELER_VERSIONS = \[[\s\S]*STRATEGY_FORMAL_LABELER_VERSION,[\s\S]*STRATEGY_FORMAL_LABELER_LEGACY_VERSION,[\s\S]*STRATEGY_FORMAL_RECONSTRUCTION_LABELER_VERSION/)
 
 for (const [name, source] of Object.entries(sources)) {
-  if (name === 'marginal') {
+  if (name === 'marginal' || name === 'maturity') {
     assert.match(source, /STRATEGY_FORMAL_LABELER_VERSIONS/, 'Atomic V7 must consume the complete formal labeler allowlist')
   } else {
     assert.match(source, /STRATEGY_FORMAL_LABELER_VERSION/, `${name} must accept the native formal labeler`)
   }
-  if (name !== 'publicRoute' && name !== 'marginal') {
+  if (name !== 'publicRoute' && name !== 'marginal' && name !== 'maturity') {
     assert.match(source, /STRATEGY_FORMAL_RECONSTRUCTION_LABELER_VERSION/, `${name} must accept the reconstruction formal labeler`)
   }
   assert.doesNotMatch(source, /strategy-labeler-v1/, `${name} must reject the legacy native labeler`)
@@ -51,6 +51,27 @@ assert.doesNotMatch(
 )
 assert.doesNotMatch(pipelineTrackingMatrixQueries, /\bSTRATEGY_FORMAL_LABELER_VERSION\b/)
 assert.doesNotMatch(pipelineTrackingMatrixQueries, /\bSTRATEGY_FORMAL_RECONSTRUCTION_LABELER_VERSION\b/)
+
+const maturityConsumer = sources.maturity.slice(sources.maturity.indexOf('export async function buildPipelineDecisionMaturityPacket'))
+assert(
+  maturityConsumer.includes("STRATEGY_FORMAL_LABELER_VERSIONS.map(() => '?').join(',')"),
+  'L1 maturity must derive SQL placeholders from the complete formal labeler allowlist',
+)
+assert.equal(
+  maturityConsumer.split('formalLabelerPlaceholders').length - 1,
+  6,
+  'L1 primary reference, primary matrix, fallback matrix, and both history queries must use the same full allowlist',
+)
+assert.equal(
+  maturityConsumer.split('...STRATEGY_FORMAL_LABELER_VERSIONS').length - 1,
+  5,
+  'L1 maturity binds must spread the complete allowlist for every canonical query',
+)
+assert(
+  maturityConsumer.includes('STRATEGY_FORMAL_LABELER_VERSIONS.includes(String(matrixRow.labeler_version)'),
+  'L1 readiness must accept every officially supported formal labeler',
+)
+assert(!maturityConsumer.includes('IN (?, ?)'), 'L1 maturity must not regress to a two-labeler SQL allowlist')
 
 const atomicV7MatrixLoader = sources.marginal.match(
   /const formalLabelerPlaceholders[\s\S]*?const edges = evaluateStrategyMarginalEdgesV4\(cells\)/,

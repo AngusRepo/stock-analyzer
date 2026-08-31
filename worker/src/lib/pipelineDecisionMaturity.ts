@@ -20,8 +20,7 @@ import {
   STRATEGY_ROUTE_PURGE_DATES,
 } from './strategyRouteCalibration'
 import {
-  STRATEGY_FORMAL_LABELER_VERSION,
-  STRATEGY_FORMAL_RECONSTRUCTION_LABELER_VERSION,
+  STRATEGY_FORMAL_LABELER_VERSIONS,
 } from './strategySpec'
 import { nextTwTradingDate } from './schedulerPolicy'
 import {
@@ -427,6 +426,7 @@ export async function buildPipelineDecisionMaturityPacket(
   if (!validDate(requestedDate)) throw new Error(`invalid_pipeline_maturity_date:${requestedDate}`)
   const learningDb = databaseForDataDomain(env, 'learning')
   const marketDb = databaseForDataDomain(env, 'market')
+  const formalLabelerPlaceholders = STRATEGY_FORMAL_LABELER_VERSIONS.map(() => '?').join(',')
 
   const canonicalHead = await safeQuery(() => databaseForDataDomain(env, 'ops').prepare(`
     SELECT substr(logical_run_key, 10, 10) signal_date, run_id
@@ -466,7 +466,7 @@ export async function buildPipelineDecisionMaturityPacket(
               AND mr.producer_run_id=r.producer_run_id
               AND mr.status='ready'
               AND mr.reference_contract_version=?
-              AND mr.labeler_version IN (?, ?)
+              AND mr.labeler_version IN (${formalLabelerPlaceholders})
               AND mr.labeler_version=r.strategy_labeler_version
          )
     `).bind(
@@ -477,8 +477,7 @@ export async function buildPipelineDecisionMaturityPacket(
       head.signal_date,
       head.run_id,
       SELECTION_REFERENCE_CONTRACT_VERSION,
-      STRATEGY_FORMAL_LABELER_VERSION,
-      STRATEGY_FORMAL_RECONSTRUCTION_LABELER_VERSION,
+      ...STRATEGY_FORMAL_LABELER_VERSIONS,
     ).first<any>() : Promise.resolve(null)),
     safeQuery(() => head ? learningDb.prepare(`
       SELECT r.status, r.reference_candidate_count, r.strategy_count,
@@ -498,7 +497,7 @@ export async function buildPipelineDecisionMaturityPacket(
        WHERE r.signal_date=? AND r.producer_run_id=?
          AND r.status='ready'
          AND r.reference_contract_version=?
-         AND r.labeler_version IN (?, ?)
+         AND r.labeler_version IN (${formalLabelerPlaceholders})
        LIMIT 1
     `).bind(
       STRATEGY_ROUTE_AFFINITY_VERSION,
@@ -506,8 +505,7 @@ export async function buildPipelineDecisionMaturityPacket(
       head.signal_date,
       head.run_id,
       SELECTION_REFERENCE_CONTRACT_VERSION,
-      STRATEGY_FORMAL_LABELER_VERSION,
-      STRATEGY_FORMAL_RECONSTRUCTION_LABELER_VERSION,
+      ...STRATEGY_FORMAL_LABELER_VERSIONS,
     ).first<any>() : Promise.resolve(null)),
     safeQuery(() => learningDb.prepare(`
       SELECT artifact_id, as_of_date, status, source_contract, strategy_count,
@@ -731,7 +729,7 @@ export async function buildPipelineDecisionMaturityPacket(
        WHERE r.signal_date=? AND r.producer_run_id=?
          AND r.status='ready'
          AND r.reference_contract_version=?
-         AND r.labeler_version NOT IN (?, ?)
+         AND r.labeler_version NOT IN (${formalLabelerPlaceholders})
        ORDER BY r.updated_at DESC
        LIMIT 1
     `).bind(
@@ -740,8 +738,7 @@ export async function buildPipelineDecisionMaturityPacket(
       head.signal_date,
       head.run_id,
       SELECTION_REFERENCE_CONTRACT_VERSION,
-      STRATEGY_FORMAL_LABELER_VERSION,
-      STRATEGY_FORMAL_RECONSTRUCTION_LABELER_VERSION,
+      ...STRATEGY_FORMAL_LABELER_VERSIONS,
     ).first<any>())
     const incumbentMatrixRow = incumbentMatrix.value
     if (incumbentMatrixRow) {
@@ -798,10 +795,7 @@ export async function buildPipelineDecisionMaturityPacket(
       [canonicalHead.error, reference.error, matrix.error, !head ? 'canonical_run_head_missing' : null],
     ))
   } else {
-    const formalLabeler = (
-      matrixRow.labeler_version === STRATEGY_FORMAL_LABELER_VERSION
-      || matrixRow.labeler_version === STRATEGY_FORMAL_RECONSTRUCTION_LABELER_VERSION
-    )
+    const formalLabeler = STRATEGY_FORMAL_LABELER_VERSIONS.includes(String(matrixRow.labeler_version) as typeof STRATEGY_FORMAL_LABELER_VERSIONS[number])
     const matched = finite(matrixRow.matched_rows)
     const rawCovered = finite(matrixRow.raw_threshold_rows)
     const projected = finite(matrixRow.projected_threshold_rows)
@@ -1385,7 +1379,7 @@ export async function buildPipelineDecisionMaturityPacket(
         SELECT signal_date
           FROM strategy_label_matrix_runs_v4
          WHERE signal_date <= ? AND status = 'ready'
-           AND labeler_version IN (?, ?)
+           AND labeler_version IN (${formalLabelerPlaceholders})
          GROUP BY signal_date
          ORDER BY signal_date DESC
          LIMIT 7
@@ -1395,7 +1389,7 @@ export async function buildPipelineDecisionMaturityPacket(
           FROM strategy_label_matrix_runs_v4 runs
           JOIN recent_dates USING (signal_date)
          WHERE runs.status = 'ready'
-           AND runs.labeler_version IN (?, ?)
+           AND runs.labeler_version IN (${formalLabelerPlaceholders})
       )
       SELECT run.signal_date evidence_date,
              SUM(CASE WHEN matrix.evaluable=1 AND matrix.strategy_hit=1
@@ -1412,10 +1406,8 @@ export async function buildPipelineDecisionMaturityPacket(
        LIMIT 7
     `).bind(
       requestedDate,
-      STRATEGY_FORMAL_LABELER_VERSION,
-      STRATEGY_FORMAL_RECONSTRUCTION_LABELER_VERSION,
-      STRATEGY_FORMAL_LABELER_VERSION,
-      STRATEGY_FORMAL_RECONSTRUCTION_LABELER_VERSION,
+      ...STRATEGY_FORMAL_LABELER_VERSIONS,
+      ...STRATEGY_FORMAL_LABELER_VERSIONS,
       STRATEGY_ROUTE_AFFINITY_VERSION,
     ).all<{ evidence_date: string; value: number | null; target: number | null }>().then((result) => result.results ?? [])),
     safeQuery(() => learningDb.prepare(`

@@ -207,9 +207,13 @@ function strategyHealthBucket(
       && gate.missing_evidence.some((reason) => reason.endsWith('_missing'))
     )
   ) return 'evidence_repair'
+  if (strategyLifecycleLane(row) === 'active') {
+    if (formalWeight == null) return 'evidence_repair'
+    if (gate.allocation_eligible === true && formalWeight > 0) return 'execution_eligible'
+    return 'performance_cooldown'
+  }
   if (
-    strategyLifecycleLane(row) === 'candidate'
-    && String(gate.activation_gate.status) === 'prefilter_failed'
+    String(gate.activation_gate.status) === 'prefilter_failed'
   ) return 'prefilter_failed'
   if (
     row.learning.reward_state === 'pending_maturity'
@@ -220,10 +224,7 @@ function strategyHealthBucket(
       || reason.startsWith('mature_dates_lt_')
     ))
   ) return 'accumulating'
-  if (strategyLifecycleLane(row) === 'candidate') return 'promotion_pending'
-  if (gate?.allocation_eligible === true && formalWeight != null && formalWeight > 0) return 'execution_eligible'
-  if (formalWeight == null) return 'evidence_repair'
-  return 'performance_cooldown'
+  return 'promotion_pending'
 }
 
 function strategyHealthLabel(bucket: StrategyHealthBucket): string {
@@ -464,6 +465,49 @@ function AtomicReplacementSummary({ replacementGate }: { replacementGate: Strate
   const champion = run?.champion_comparison ?? null
   const candidatePortfolio = run?.candidate_portfolio ?? null
   const candidatePrefilters = replacementGate?.candidate_prefilters ?? []
+  const prefilterPassedCount = candidatePrefilters.filter((row) => row.evidence_status === 'ready' && row.production_eligible === true).length
+  const prefilterFailedCount = candidatePrefilters.filter((row) => row.evidence_status === 'ready' && row.production_eligible === false).length
+  const evidencePendingCount = candidatePrefilters.filter((row) => row.evidence_status !== 'ready' || row.production_eligible == null).length
+  const fixedGateGroups = policy ? [
+    {
+      title: 'A. Candidate prefilter（先決條件）',
+      gates: [
+        '有效 observation dates >= ' + policy.candidate_prefilter_min_observation_dates,
+        'Marginal-edge LCB90 > ' + percentageMetric(policy.candidate_prefilter_min_marginal_edge_lcb90_exclusive),
+        'Absolute hit-return cost-net mean > ' + percentageMetric(policy.candidate_prefilter_min_absolute_hit_return_mean_exclusive),
+        '三項必須同時通過，才會建立 Candidate → Active pair；缺 evidence 不算失敗。',
+      ],
+    },
+    {
+      title: 'B. Candidate vs Active 同日 pair',
+      gates: [
+        'T+' + policy.outcome_horizon_trading_days + ' sector／market-neutral cost-net outcome',
+        '同日 paired dates >= ' + policy.min_paired_dates,
+        'Newey-West Bartlett HAC lag = ' + policy.hac_lag + '；有效 paired dates >= ' + policy.min_effective_paired_dates,
+        'Paired delta LCB95 HAC > ' + percentageMetric(policy.min_paired_delta_lcb95_hac_exclusive),
+        'Minimum economic delta = ' + pct(policy.minimum_economic_paired_delta) + '；Holm-local-alpha power >= ' + pct(policy.min_power_at_minimum_economic_delta),
+        'Holm-Bonferroni family-wise alpha = ' + policy.familywise_alpha + '，adjusted p-value 必須被拒絕虛無假設',
+        'Candidate absolute cost-net mean > ' + percentageMetric(policy.min_candidate_absolute_cost_net_mean_exclusive),
+        'Candidate absolute cost-net LCB95 HAC > ' + percentageMetric(policy.min_candidate_absolute_cost_net_lcb95_hac_exclusive),
+        'Candidate MDD 相對 incumbent 惡化 <= ' + pct(policy.max_drawdown_degradation),
+        'Candidate turnover 相對 incumbent 增加 <= ' + pct(policy.max_turnover_increase),
+        'Return correlation <= ' + numericMetric(policy.max_duplicate_return_correlation, 2) + '；若更高，Candidate 必須改善 MDD 或 turnover',
+      ],
+    },
+    {
+      title: 'C. 完整 portfolio 與原子 cutover',
+      gates: [
+        '至少存在一組通過 HAC、Holm、power 與 pair risk gates 的 replacement。',
+        '替換後 full portfolio paired dates >= ' + policy.min_paired_dates + '、有效 dates >= ' + policy.min_effective_paired_dates + '、paired delta LCB95 HAC > 0、power >= ' + pct(policy.min_power_at_minimum_economic_delta),
+        '替換後 full portfolio absolute cost-net mean > 0，LCB95 HAC > ' + percentageMetric(policy.min_final_portfolio_absolute_cost_net_lcb95_hac_exclusive),
+        'Full portfolio MDD 惡化 <= ' + pct(policy.max_drawdown_degradation) + '、turnover 增加 <= ' + pct(policy.max_turnover_increase),
+        'Full portfolio return correlation <= ' + numericMetric(policy.max_duplicate_return_correlation, 2) + '；若更高，必須改善 MDD 或 turnover',
+        'Registry Active 與 serving production owner coverage 必須完整一致。',
+        'Active 數量前後不變；Candidate 升級與 incumbent 降級必須 atomic one-in-one-out。',
+        '以上 full portfolio gates 全部通過，且該 business date 明確允許 promotion，才可 cutover。',
+      ],
+    },
+  ] : []
   const runMetrics = policy && run ? [
     {
       label: 'Full portfolio paired dates',
@@ -573,6 +617,31 @@ function AtomicReplacementSummary({ replacementGate }: { replacementGate: Strate
         <Badge variant="outline" className={statusClass(run?.status ?? replacementGate?.evidence_status ?? 'not_ready')}>{run ? [run.as_of_date, run.status === 'shadow' ? '比較中' : run.status].join(' · ') : replacementGate?.evidence_status ?? 'evidence not ready'}</Badge>
       </div>
       {policy ? <p className="mt-3 text-xs leading-5 text-slate-400">至少 {policy.min_paired_dates} 個同日 pair、有效日期至少 {policy.min_effective_paired_dates}、HAC{policy.hac_lag} paired delta LCB95 &gt; 0、Holm family-wise α {policy.familywise_alpha}、minimum economic delta {pct(policy.minimum_economic_paired_delta)}、power {pct(policy.min_power_at_minimum_economic_delta)}，並限制相對 MDD 惡化 {pct(policy.max_drawdown_degradation)}、換手增加 {pct(policy.max_turnover_increase)}、重複報酬相關性 {policy.max_duplicate_return_correlation.toFixed(2)}。</p> : <p className="mt-3 text-xs text-slate-500">Replacement policy evidence is unavailable.</p>}
+      {policy ? (
+        <section className="mt-3 rounded-xl border border-violet-400/25 bg-violet-400/[0.05] p-3" aria-label="Atomic V7 完整門檻總表">
+          <div className="flex flex-wrap items-start justify-between gap-2">
+            <div>
+              <h3 className="text-xs font-semibold text-violet-100">Atomic V7 完整門檻總表（固定顯示）</h3>
+              <p className="mt-1 text-[11px] leading-5 text-slate-400">prefilter-failed = 已有 evidence，但三道先決門檻至少一項未過；evidence-pending = 尚無可判定 evidence，不能算失敗，也還不能建立 pair。</p>
+            </div>
+            <div className="flex flex-wrap gap-1 text-[10px]">
+              <span className="rounded border border-emerald-400/30 px-2 py-1 text-emerald-200">prefilter pass {prefilterPassedCount}</span>
+              <span className="rounded border border-rose-400/30 px-2 py-1 text-rose-200">prefilter failed {prefilterFailedCount}</span>
+              <span className="rounded border border-amber-400/30 px-2 py-1 text-amber-200">evidence pending {evidencePendingCount}</span>
+            </div>
+          </div>
+          <div className="mt-3 grid gap-3 xl:grid-cols-3">
+            {fixedGateGroups.map((group) => (
+              <article key={group.title} className="rounded-lg border border-slate-800 bg-slate-950/50 p-3">
+                <h4 className="text-[11px] font-semibold text-slate-200">{group.title}</h4>
+                <ol className="mt-2 list-decimal space-y-1 pl-4 text-[10px] leading-4 text-slate-400">
+                  {group.gates.map((gate) => <li key={gate}>{gate}</li>)}
+                </ol>
+              </article>
+            ))}
+          </div>
+        </section>
+      ) : null}
       {policy && candidatePrefilters.length > 0 ? (
         <details className="mt-3 rounded-lg border border-cyan-400/20 bg-cyan-400/[0.04] p-3">
           <summary className="cursor-pointer text-xs font-semibold text-cyan-100">Candidate prefilter actual / target / pass</summary>
@@ -1292,6 +1361,15 @@ export default function StrategyLearningPage() {
   const formalPolicy = strategyLanes?.formal.production_effect === true
     ? strategyLanes.formal.formal_policy_lineage ?? null
     : null
+  const formalBasePolicyVersion = strategyLanes?.formal.base_policy_version ?? null
+  const formalBasePolicyAsOfDate = strategyLanes?.formal.base_policy_as_of_date ?? null
+  const previewPolicyVersion = previewPolicy?.version ?? null
+  const formalPolicyRefreshRequired = Boolean(
+    formalPolicy
+    && formalBasePolicyVersion
+    && previewPolicyVersion
+    && formalBasePolicyVersion !== previewPolicyVersion
+  )
   const formalPolicyWeights = formalPolicy?.strategy_weights ?? EMPTY_STRATEGY_WEIGHTS
   const orderedRows = useMemo(() => {
     const priority: Record<StrategyHealthBucket, number> = {
@@ -1372,8 +1450,21 @@ export default function StrategyLearningPage() {
               <div className="rounded-xl border border-slate-800 bg-slate-950/70 p-4"><div className="text-xs text-slate-500">待買政策 Preview（診斷）</div><div className="mt-2 flex items-center gap-2 font-mono text-lg text-slate-100"><ShieldCheck className="h-4 w-4" /> {statusLabel(previewPolicy?.status ?? 'unavailable')}</div><div className="mt-1 text-xs text-slate-500">{previewPolicy?.evidence.production_effect ? 'API source 標記 production-effect' : '零 production-effect 比較'}；此欄仍是 read-time preview，不代表封存 formal policy</div></div>
             </section>
 
+            <section className="rounded-2xl border border-slate-700/80 bg-slate-950/70 px-4 py-3 text-xs leading-5 text-slate-400">
+              <h2 className="font-semibold text-slate-100">Active 正式 contribution 分配</h2>
+              <p className="mt-1">raw score = max(0, rolling date-return mean) × min(samples / 100, 1) × min(mature dates / 30, 1)；只在 allocation gate 通過且 raw score &gt; 0 的 Active 之間正規化為 100%，再經 multi-horizon multiplier 與 formal firewall 重算。此 contribution 只控制推薦能否進待買，不是資金或部位比例。</p>
+              <p className="mt-1 font-mono text-[10px] text-slate-500">formal base {formalBasePolicyVersion ?? 'unavailable'} · as-of {formalBasePolicyAsOfDate ?? 'unavailable'} · preview {previewPolicyVersion ?? 'unavailable'}</p>
+            </section>
+
+            {formalPolicyRefreshRequired ? (
+              <section className="rounded-2xl border border-amber-400/30 bg-amber-400/[0.08] px-4 py-3 text-sm leading-6 text-amber-50" role="status">
+                <span className="font-semibold">正式政策版本落後：</span>
+                目前頁面正式 contribution 仍來自 {formalBasePolicyVersion}（{formalBasePolicyAsOfDate ?? '日期未取得'}），current preview 已是 {previewPolicyVersion}。系統不會用 read-time preview 冒充 production；正式權重會維持 fail-closed，直到 governed materialization 產生並封存新版 formal policy。
+              </section>
+            ) : null}
+
             <details className="rounded-2xl border border-slate-800 bg-slate-950/70 p-3">
-              <summary className="cursor-pointer text-sm font-semibold text-slate-200">治理與權責詳情：Production firewall／Threshold route comparison／Multi-horizon／Atomic V7</summary>
+              <summary className="cursor-pointer text-sm font-semibold text-slate-200">治理與權責詳情：Production firewall／Threshold route comparison／Multi-horizon</summary>
             <section className="grid gap-3 lg:grid-cols-3">
               <article className="rounded-2xl border border-emerald-400/25 bg-emerald-400/[0.06] p-4">
                 <div className="flex items-center justify-between gap-2"><h2 className="font-semibold text-emerald-100">正式：Production contribution firewall</h2><Badge variant="outline" className={statusClass(strategyLanes?.formal.status ?? 'unavailable')}>{strategyLanes?.formal.production_effect ? '有 production 權限' : '權限資料未取得'}</Badge></div>
@@ -1391,8 +1482,9 @@ export default function StrategyLearningPage() {
               </article>
             </section>
 
-            <AtomicReplacementSummary replacementGate={learning?.replacement_gate ?? null} />
             </details>
+
+            <AtomicReplacementSummary replacementGate={learning?.replacement_gate ?? null} />
 
             <details className="rounded-2xl border border-slate-700/80 bg-slate-950/70 px-4 py-3 text-sm text-slate-300">
               <summary className="cursor-pointer font-semibold text-slate-100">名詞白話說明（點開查看）</summary>
@@ -1406,10 +1498,6 @@ export default function StrategyLearningPage() {
               </dl>
             </details>
 
-            <section className="rounded-2xl border border-cyan-400/20 bg-cyan-400/[0.05] px-4 py-3 text-sm leading-6 text-cyan-50">
-              <span className="font-semibold">單一推薦資料流：</span>
-              所有未退役策略都持續選股、產生推薦標籤並累積證據；只有「待買資格」控制推薦能不能進入待買，不會把未過門檻的策略移出學習系統。
-            </section>
             {concentratedGateShare && concentratedStrategy ? (
               <section className="rounded-2xl border border-amber-400/30 bg-amber-400/[0.08] px-4 py-3 text-sm leading-6 text-amber-50">
                 <span className="font-semibold">待買資格過度集中（非健康穩態）：</span>

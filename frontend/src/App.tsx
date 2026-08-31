@@ -1,20 +1,35 @@
 import { lazy, Suspense, type ReactNode } from 'react'
 import { Route, Switch } from 'wouter'
 import ErrorBoundary from './components/ErrorBoundary'
-import MarketHomePage from './pages/MarketHomePage'
-import Unauthorized from './pages/Unauthorized'
 import { useAuth } from './_core/hooks/useAuth'
 import { isPrimaryAdminUser } from './lib/adminAccess'
+import {
+  loadBotDashboard,
+  loadDashboard,
+  loadDataQualityPage,
+  loadMarketHomePage,
+  loadModelPoolPage,
+  loadNotFound,
+  loadObservabilityPage,
+  loadPipelinePage,
+  loadSchedulerPage,
+  loadStockReportPage,
+  loadStrategyLabPage,
+  loadUnauthorized,
+} from './lib/routeModules'
 
-const Dashboard = lazy(() => import('./pages/Dashboard'))
-const BotDashboard = lazy(() => import('./pages/BotDashboard'))
-const StockReportPage = lazy(() => import('./pages/StockReportPage'))
-const PipelinePage = lazy(() => import('./pages/PipelinePage'))
-const SchedulerPage = lazy(() => import('./pages/SchedulerPage'))
-const ModelPoolPage = lazy(() => import('./pages/ModelPoolPage'))
-const DataQualityPage = lazy(() => import('./pages/DataQualityPage'))
-const StrategyLabPage = lazy(() => import('./pages/StrategyLearningPage'))
-const ObservabilityPage = lazy(() => import('./pages/ObservabilityPage'))
+const MarketHomePage = lazy(loadMarketHomePage)
+const Dashboard = lazy(loadDashboard)
+const Unauthorized = lazy(loadUnauthorized)
+const BotDashboard = lazy(loadBotDashboard)
+const StockReportPage = lazy(loadStockReportPage)
+const PipelinePage = lazy(loadPipelinePage)
+const SchedulerPage = lazy(loadSchedulerPage)
+const ModelPoolPage = lazy(loadModelPoolPage)
+const NotFound = lazy(loadNotFound)
+const DataQualityPage = lazy(loadDataQualityPage)
+const StrategyLabPage = lazy(loadStrategyLabPage)
+const ObservabilityPage = lazy(loadObservabilityPage)
 
 function PageLoader({ label }: { label: string }) {
   return (
@@ -34,15 +49,10 @@ function AdminOnly({ children, label }: { children: ReactNode; label: string }) 
 export default function App() {
   return (
     <ErrorBoundary>
-      <Switch>
+      <Suspense fallback={<PageLoader label="Page" />}>
+        <Switch>
         <Route path="/" component={MarketHomePage} />
-        <Route path="/dashboard" component={MarketHomePage} />
-        <Route path="/home" component={MarketHomePage} />
-        <Route path="/stock/:id">
-          <Suspense fallback={<PageLoader label="Stock Dashboard" />}>
-            <Dashboard />
-          </Suspense>
-        </Route>
+        <Route path="/stock/:id" component={Dashboard} />
         <Route path="/unauthorized" component={Unauthorized} />
 
         <Route path="/report/:symbol">
@@ -107,8 +117,9 @@ export default function App() {
           </AdminOnly>
         </Route>
 
-        <Route component={MarketHomePage} />
-      </Switch>
+          <Route component={NotFound} />
+        </Switch>
+      </Suspense>
     </ErrorBoundary>
   )
 }

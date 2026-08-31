@@ -1,16 +1,17 @@
-﻿import { useEffect, useMemo } from 'react'
 import { useQuery } from '@tanstack/react-query'
+import { lazy, Suspense, useEffect, useMemo } from 'react'
 import { AlertTriangle, CheckCircle2, Database, ExternalLink, RefreshCw } from 'lucide-react'
 import AppShell from '@/components/AppShell'
 import { dataQualityApi, type DataQualityCheck, type V41DataRuntimeStatus } from '@/lib/api'
 import { queryTtl } from '@/lib/queryPolicy'
-import DataQualityTrendChart from '@/components/charts/DataQualityTrendChart'
 import {
   WorkstationPageTitle,
   WorkstationPanel,
   WorkstationPill,
   type WorkstationTone,
 } from '@/components/workstation/WorkstationChrome'
+
+const DataQualityTrendChart = lazy(() => import('@/components/charts/DataQualityTrendChart'))
 
 function statusTone(status?: string): WorkstationTone {
   if (status === 'ok' || status === 'PASS') return 'ok'
@@ -288,11 +289,13 @@ export default function DataQualityPage() {
           <DataQualityMetric label="Generated" value={report?.generated_at ? report.generated_at.slice(11, 16) : '-'} tone="info" detail={report?.generated_at ?? 'not generated'} />
         </section>
 
-        <DataQualityTrendChart
-          report={report}
-          loading={quality.isLoading}
-          error={quality.error}
-        />
+        <Suspense fallback={<div className="min-h-80 rounded-2xl border border-[#3a3125] bg-[#171714]/86" />}>
+          <DataQualityTrendChart
+            report={report}
+            loading={quality.isLoading}
+            error={quality.error}
+          />
+        </Suspense>
 
         <DataRuntimeSourcePanel runtime={runtime.data} />
 

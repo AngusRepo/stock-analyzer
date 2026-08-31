@@ -1,7 +1,7 @@
 ﻿import { useQuery } from '@tanstack/react-query'
 import { Activity, AlertTriangle, ArrowRight, Clock, ExternalLink, RefreshCw } from 'lucide-react'
+import { lazy, Suspense } from 'react'
 import AppShell from '@/components/AppShell'
-import SchedulerCadenceChart from '@/components/charts/SchedulerCadenceChart'
 import { schedulerApi, type SchedulerJob } from '@/lib/api'
 import { queryTtl } from '@/lib/queryPolicy'
 import {
@@ -11,6 +11,8 @@ import {
   type WorkstationTone,
 } from '@/components/workstation/WorkstationChrome'
 import { VirtualizedList } from '@/components/performance/VirtualizedList'
+
+const LazySchedulerCadenceChart = lazy(() => import('@/components/charts/SchedulerCadenceChart'))
 
 function statusTone(status?: string): WorkstationTone {
   if (status === 'success') return 'ok'
@@ -243,11 +245,13 @@ export default function SchedulerPage() {
           <MetricCell label="Pipeline" value={pipelineLast?.lastDuration ?? 'N/A'} tone={pipelineLast && !suspiciousDuration(pipelineLast) ? 'ok' : 'warn'} detail={pipelineLast?.lastRun ?? 'no run'} />
         </section>
 
-        <SchedulerCadenceChart
-          status={scheduler.data}
-          loading={scheduler.isLoading}
-          error={scheduler.error}
-        />
+        <Suspense fallback={<div className="min-h-80 rounded-2xl border border-[#3a3125] bg-[#171714]/86" />}>
+          <LazySchedulerCadenceChart
+            status={scheduler.data}
+            loading={scheduler.isLoading}
+            error={scheduler.error}
+          />
+        </Suspense>
 
         <WorkstationPanel title="Daily Pipeline Chain / 每日流程鏈" kicker="dependency chain">
           <PipelineDag jobs={jobs} />

@@ -18,6 +18,7 @@ import { Sheet, SheetContent } from '@/components/ui/sheet'
 import { isPrimaryAdminUser } from '@/lib/adminAccess'
 import { useAuth } from '@/_core/hooks/useAuth'
 import { prefetchWorkstationRoute } from '@/lib/queryPolicy'
+import { preloadRouteModule } from '@/lib/routeModules'
 
 type NavItem = {
   label: string
@@ -36,7 +37,7 @@ const NAV_ITEMS: NavItem[] = [
 ]
 
 function isActivePath(itemHref: string, currentPath: string) {
-  if (itemHref === '/') return currentPath === '/' || currentPath === '/dashboard' || currentPath === '/home' || currentPath.startsWith('/stock/')
+  if (itemHref === '/') return currentPath === '/' || currentPath.startsWith('/stock/')
   return currentPath === itemHref || currentPath.startsWith(`${itemHref}/`)
 }
 
@@ -51,7 +52,7 @@ function BrandButton({ onClick }: { onClick: () => void }) {
         <span className="absolute inset-1 rounded-[8px] bg-blue-500/20 blur-[6px]" />
         <span className="relative h-3.5 w-3.5 rounded-[4px] border-2 border-blue-300 bg-[#090a0d] shadow-[inset_4px_0_0_rgba(255,255,255,0.86)]" />
       </span>
-      <span className="hidden font-['Outfit'] text-lg font-semibold text-slate-100 sm:inline">
+      <span className="hidden font-sans text-lg font-semibold text-slate-100 sm:inline">
         Stock<span className="text-blue-400">Vision</span>
       </span>
     </button>
@@ -76,7 +77,7 @@ function MobileNav({
             <span className="h-3.5 w-3.5 rounded-[4px] border-2 border-blue-300 bg-[#090a0d] shadow-[inset_4px_0_0_rgba(255,255,255,0.85)]" />
           </div>
           <div>
-            <p className="font-['Outfit'] text-sm font-bold">StockVision</p>
+            <p className="font-sans text-sm font-bold">StockVision</p>
             <p className="text-[11px] text-slate-500">market intelligence</p>
           </div>
         </div>
@@ -137,8 +138,13 @@ export default function AppShell({ children }: { children: ReactNode }) {
   const isAdmin = isPrimaryAdminUser(user)
   const items = visibleNavItems(isAdmin)
 
-  const navigate = (href: string) => {
+  const prefetchRoute = (href: string) => {
+    preloadRouteModule(href)
     prefetchWorkstationRoute(queryClient, href, { isAuthenticated, isAdmin })
+  }
+
+  const navigate = (href: string) => {
+    prefetchRoute(href)
     setLocation(href)
     setMobileOpen(false)
   }
@@ -165,8 +171,8 @@ export default function AppShell({ children }: { children: ReactNode }) {
                 <button
                   key={item.href}
                   type="button"
-                  onMouseEnter={() => prefetchWorkstationRoute(queryClient, item.href, { isAuthenticated, isAdmin })}
-                  onFocus={() => prefetchWorkstationRoute(queryClient, item.href, { isAuthenticated, isAdmin })}
+                  onMouseEnter={() => prefetchRoute(item.href)}
+                  onFocus={() => prefetchRoute(item.href)}
                   onClick={() => navigate(item.href)}
                   className={`relative px-1 py-4 text-[14px] font-semibold transition-colors ${
                     active ? 'text-white' : 'text-slate-400 hover:text-slate-100'

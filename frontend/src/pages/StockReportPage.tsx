@@ -3,11 +3,10 @@
  * 路由: /report/:symbol
  * 自動 fetch 所有資料（ML 預測 + AI Summary + LLM 摘要/技術/交易）
  */
-import { useEffect } from 'react'
+import { lazy, Suspense, useEffect } from 'react'
 import { useRoute, Link } from 'wouter'
 import { useQuery, useMutation } from '@tanstack/react-query'
 import { stocksApi, mlApi, llmApi, dashboardV4Api } from '@/lib/api'
-import DashboardV4LightweightChart from '@/components/charts/DashboardV4LightweightChart'
 import {
   ArrowLeft, TrendingUp, TrendingDown, Brain, BarChart2,
   Shield, Target, Zap, RefreshCw, Tag, Building2, DollarSign,
@@ -15,6 +14,8 @@ import {
 import { cn } from '@/lib/utils'
 import { formatTwDateTimeShort } from '@/lib/twTime'
 import { buildScoreBreakdownViewModel } from '@/lib/scoreV2ViewModel'
+
+const DashboardV4LightweightChart = lazy(() => import('@/components/charts/DashboardV4LightweightChart'))
 
 // ─── Signal 設定 ───────────────────────────────────────────────────────────────
 const SIGNAL_CFG: Record<string, { label: string; accent: string; bg: string; border: string }> = {
@@ -190,11 +191,13 @@ export default function StockReportPage() {
 
         {!isLoading && (
           <>
-            <DashboardV4LightweightChart
-              packet={chartPacket}
-              loading={chartLoading}
-              error={chartError}
-            />
+            <Suspense fallback={<div className="min-h-96 rounded-2xl border border-[#3a3125] bg-[#171714]/86" />}>
+              <DashboardV4LightweightChart
+                packet={chartPacket}
+                loading={chartLoading}
+                error={chartError}
+              />
+            </Suspense>
 
             {/* ═══ Section 1: 信號總覽 ═══ */}
             <SectionCard title="投資信號總覽" icon={Zap}>

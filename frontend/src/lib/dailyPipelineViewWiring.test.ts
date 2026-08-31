@@ -6,6 +6,7 @@ import test from 'node:test'
 const sourceRoot = path.resolve(process.cwd(), 'src')
 const page = fs.readFileSync(path.join(sourceRoot, 'pages/PipelinePage.tsx'), 'utf8')
 const api = fs.readFileSync(path.join(sourceRoot, 'lib/api.ts'), 'utf8')
+const apiClient = fs.readFileSync(path.join(sourceRoot, 'lib/apiClient.ts'), 'utf8')
 
 test('daily flow consumes only the compact pipeline aggregate', () => {
   assert(page.includes("queryKey: ['recommendations', 'daily', today, 'pipeline-view-v1']"))
@@ -37,7 +38,7 @@ test('daily flow requests are abortable and bounded', () => {
   assert(page.includes("paperApi.riskAudit(undefined, { signal, timeoutMs: 8_000 })"))
   assert(page.includes('queryTtl.dailyDecision'))
   assert(page.includes('queryTtl.dashboard'))
-  assert(api.includes('requestOptions.signal'))
-  assert(api.includes('new AbortController()'))
-  assert(api.includes('timeoutTriggered'))
+  assert(apiClient.includes('requestOptions.signal'))
+  assert(apiClient.includes('new AbortController()'))
+  assert(apiClient.includes('timeoutTriggered'))
 })

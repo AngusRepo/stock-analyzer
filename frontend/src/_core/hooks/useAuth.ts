@@ -1,5 +1,6 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { AUTH_TOKEN_EVENT, authApi, setToken, clearToken, getToken } from '@/lib/api'
+import { authApi } from '@/lib/authApi'
+import { AUTH_TOKEN_EVENT, setToken, clearToken, getToken } from '@/lib/apiClient'
 import { useEffect } from 'react'
 
 export function useAuth() {

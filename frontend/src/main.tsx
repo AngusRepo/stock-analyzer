@@ -1,9 +1,8 @@
 import React from 'react'
 import ReactDOM from 'react-dom/client'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import { registerSW } from 'virtual:pwa-register'
 import App from './App'
-import { defaultQueryOptions } from './lib/queryPolicy'
+import { defaultQueryOptions } from './lib/queryDefaults'
 import './index.css'
 
 let serviceWorkerReloadScheduled = false
@@ -37,15 +36,39 @@ window.addEventListener('unhandledrejection', (event) => {
   recoverStaleAssetGraph()
 })
 
-const updateServiceWorker = registerSW({
-  immediate: true,
-  onNeedRefresh() {
-    void updateServiceWorker(false)
-  },
-  onRegisteredSW(_swUrl, registration) {
-    void registration?.update()
-  },
-})
+function registerServiceWorkerWhenIdle() {
+  const register = () => {
+    void import('virtual:pwa-register')
+      .then(({ registerSW }) => {
+        const updateServiceWorker = registerSW({
+          immediate: false,
+          onNeedRefresh() {
+            void updateServiceWorker(false)
+          },
+          onRegisteredSW(_swUrl, registration) {
+            void registration?.update()
+          },
+        })
+      })
+      .catch(() => undefined)
+  }
+
+  const schedule = () => {
+    const requestIdleCallback = (window as unknown as {
+      requestIdleCallback?: (callback: IdleRequestCallback, options?: IdleRequestOptions) => number
+    }).requestIdleCallback
+    if (requestIdleCallback) {
+      requestIdleCallback.call(window, register, { timeout: 3_000 })
+      return
+    }
+    window.setTimeout(register, 1_500)
+  }
+
+  if (document.readyState === 'complete') schedule()
+  else window.addEventListener('load', schedule, { once: true })
+}
+
+registerServiceWorkerWhenIdle()
 
 const queryClient = new QueryClient({
   defaultOptions: defaultQueryOptions,

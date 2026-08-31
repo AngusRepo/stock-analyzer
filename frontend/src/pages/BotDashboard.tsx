@@ -1,10 +1,10 @@
-﻿/**
+/**
  * 模擬交易室 — Auto Trade Bot 專頁
  *
  * Design: Dark Mode + Mobile-first, inspired by FreqUI + 3Commas
  * Sections: Portfolio Summary → Signals → Positions → Trade History → Bot Status
  */
-import { Fragment, useState } from 'react'
+import { Fragment, lazy, Suspense, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { paperApi, marketApi, recommendationsApi, systemApi, backtestApi, cronApi, adaptiveApi } from '@/lib/api'
 import { useAuth } from '@/_core/hooks/useAuth'
@@ -17,10 +17,8 @@ import {
   Clock, ArrowUpRight, ArrowDownRight, Scale, Cpu,
 } from 'lucide-react'
 import { StockFactorTrajectoryPanel } from '@/components/PitFactorTrajectoryPanel'
-import { RecommendationCardClean as RecommendationCard } from '@/components/RecommendationCardClean'
-import CandlestickChart from '@/components/CandlestickChart'
 import AppShell from '@/components/AppShell'
-import PaperTradePerformanceChart from '@/components/charts/PaperTradePerformanceChart'
+import { DeferredRender } from '@/components/DeferredRender'
 import { stocksApi } from '@/lib/api'
 import { explainExecutionEvent, formatExecutionEvent } from '@/lib/executionEvent'
 import { formatCanonicalTradeLifecycleBadge, formatPartialFillRemaining, formatPendingBuyExecutionBadge, formatPositionRiskPlan, formatS12HoldingDefenseBadge, formatS12IntradayStructureBadge } from '@/lib/pendingBuyExecutionUi'
@@ -35,6 +33,12 @@ import {
 } from '@/components/workstation/WorkstationChrome'
 import { buildScoreV2PayloadFromProjectedScores } from '@/lib/scoreV2ViewModel'
 import { queryTtl, recommendationDailyKey } from '@/lib/queryPolicy'
+
+const RecommendationCard = lazy(() => import('@/components/RecommendationCardClean').then((module) => ({
+  default: module.RecommendationCardClean,
+})))
+const CandlestickChart = lazy(() => import('@/components/CandlestickChart'))
+const PaperTradePerformanceChart = lazy(() => import('@/components/charts/PaperTradePerformanceChart'))
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
 
@@ -197,7 +201,7 @@ function ConvictionGauge({ value, size = 48 }: { value: number; size?: number })
       <path d={`M ${cx - r} ${cy} A ${r} ${r} 0 0 1 ${cx + r} ${cy}`}
         fill="none" stroke={color} strokeWidth={4} strokeLinecap="round"
         strokeDasharray={`${filled} ${circumHalf}`} />
-      <text x={cx} y={cy - 2} textAnchor="middle" fill={color} fontSize={size * 0.22} fontFamily="Manrope, Noto Sans TC, system-ui, sans-serif" fontWeight="bold">
+      <text x={cx} y={cy - 2} textAnchor="middle" fill={color} fontSize={size * 0.22} fontFamily="Segoe UI Variable, PingFang TC, Microsoft JhengHei, system-ui, sans-serif" fontWeight="bold">
         {pct.toFixed(0)}
       </text>
     </svg>
@@ -1666,35 +1670,43 @@ export default function BotDashboard() {
         </WorkstationPanel>
 
         <div className="grid grid-cols-1 gap-3 xl:grid-cols-[minmax(0,0.85fr)_minmax(420px,1.15fr)]">
-          <WorkstationPanel title="資產曲線" kicker="paper trading performance">
-            <div className="px-3 pb-2 pt-1">
-              <PerformanceChart />
-            </div>
-          </WorkstationPanel>
+          <DeferredRender minHeight={360}>
+            <WorkstationPanel title="資產曲線" kicker="paper trading performance">
+              <div className="px-3 pb-2 pt-1">
+                <Suspense fallback={<div className="grid min-h-80 place-items-center text-xs text-muted-foreground">圖表載入中…</div>}>
+                  <PerformanceChart />
+                </Suspense>
+              </div>
+            </WorkstationPanel>
+          </DeferredRender>
           <StockFactorTrajectoryPanel />
         </div>
 
-        <div className="grid grid-cols-1 gap-3 xl:grid-cols-[minmax(0,1.5fr)_minmax(380px,1fr)]">
-          <WorkstationPanel
-            title="推薦候選"
-            kicker="daily trading candidates"
-            action={<WorkstationPill tone="info">latest</WorkstationPill>}
-          >
-            <div className="border-b border-[#263247] px-4 pb-2 pt-3">
-              <div className="text-xs font-medium text-muted-foreground flex items-center gap-1.5 sv-num normal-case">
-                <TrendingUp className="w-3.5 h-3.5" /> 推薦候選
+        <DeferredRender minHeight={720}>
+          <div className="grid grid-cols-1 gap-3 xl:grid-cols-[minmax(0,1.5fr)_minmax(380px,1fr)]">
+            <WorkstationPanel
+              title="推薦候選"
+              kicker="daily trading candidates"
+              action={<WorkstationPill tone="info">latest</WorkstationPill>}
+            >
+              <div className="border-b border-[#263247] px-4 pb-2 pt-3">
+                <div className="text-xs font-medium text-muted-foreground flex items-center gap-1.5 sv-num normal-case">
+                  <TrendingUp className="w-3.5 h-3.5" /> 推薦候選
+                </div>
+                <p className="mt-1 text-[10px] leading-relaxed text-muted-foreground/70">與晨間概覽同源，點開牌卡查看個股資訊與交易計劃。</p>
               </div>
-              <p className="mt-1 text-[10px] leading-relaxed text-muted-foreground/70">與晨間概覽同源，點開牌卡查看個股資訊與交易計劃。</p>
-            </div>
-            <div className="p-2">
-              <SignalTable onSelectSymbol={setSelectedSymbol} selectedSymbol={selectedSymbol} />
-            </div>
-          </WorkstationPanel>
+              <div className="p-2">
+                <Suspense fallback={<div className="p-4 text-xs text-muted-foreground">推薦卡載入中…</div>}>
+                  <SignalTable onSelectSymbol={setSelectedSymbol} selectedSymbol={selectedSymbol} />
+                </Suspense>
+              </div>
+            </WorkstationPanel>
 
-          <WorkstationPanel title="交易紀錄" kicker="orders and fills audit">
-            <TradeHistory />
-          </WorkstationPanel>
-        </div>
+            <WorkstationPanel title="交易紀錄" kicker="orders and fills audit">
+              <TradeHistory />
+            </WorkstationPanel>
+          </div>
+        </DeferredRender>
 
         {/* K-Line Dialog (popup on stock click) */}
         <Dialog open={!!selectedStockId} onOpenChange={(open) => { if (!open) setSelectedSymbol(null) }}>
@@ -1702,7 +1714,11 @@ export default function BotDashboard() {
             <DialogHeader>
               <DialogTitle className="text-sm sv-num">{selectedSymbol} K 線圖</DialogTitle>
             </DialogHeader>
-            {selectedStockId && <CandlestickChart stockId={selectedStockId} />}
+            {selectedStockId && (
+              <Suspense fallback={<div className="grid min-h-80 place-items-center text-xs text-muted-foreground">K 線載入中…</div>}>
+                <CandlestickChart stockId={selectedStockId} />
+              </Suspense>
+            )}
           </DialogContent>
         </Dialog>
 

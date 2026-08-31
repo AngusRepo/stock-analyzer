@@ -27,8 +27,8 @@ assert(stockReportPage.includes('dashboardV4Api.stockChart'), 'StockReportPage s
 assert(stockReportPage.includes("queryKey: ['dashboard-v4-chart', 'report', stockId]"), 'Stock report chart cache should stay scoped by stockId')
 
 const marketHomePage = fs.readFileSync(marketHomePagePath, 'utf8')
-assert(marketHomePage.includes('const RecommendationCardClean = lazy(() =>'), 'Home recommendation cards must remain lazy so Lightweight Charts stays outside initial navigation')
+assert(marketHomePage.includes('const RecommendationCardClean = lazy(loadRecommendationCardClean)'), 'Home recommendation cards must remain lazy so Lightweight Charts stays outside initial navigation')
 assert(marketHomePage.includes('<Suspense fallback='), 'Home recommendation cards must expose a stable loading fallback')
 
 const viteConfig = fs.readFileSync(viteConfigPath, 'utf8')
-assert(!viteConfig.includes("'vendor-charts': ['recharts', 'lightweight-charts']"), 'Chart libraries must stay behind route/component lazy boundaries instead of polluting the initial manual chunk graph')
+assert(!viteConfig.includes("'vendor-charts': ['recharts', 'lightweight-charts']"), 'Vite must not force both chart libraries into one shared chunk')

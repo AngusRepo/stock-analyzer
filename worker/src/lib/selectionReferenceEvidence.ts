@@ -1,5 +1,8 @@
 import {
+  STRATEGY_FORMAL_LABELER_LEGACY_VERSION,
+  STRATEGY_FORMAL_LABELER_VERSION,
   STRATEGY_FORMAL_LABELER_VERSIONS,
+  STRATEGY_FORMAL_RECONSTRUCTION_LABELER_VERSION,
   normalizeStrategySpecGovernance,
   validateStrategySpec,
   type StrategySpec,
@@ -16,6 +19,48 @@ export const SELECTION_REFERENCE_MATURE_COMPATIBLE_CONTRACT_VERSIONS = [
   SELECTION_REFERENCE_CONTRACT_VERSION,
   SELECTION_REFERENCE_LEGACY_MATURE_CONTRACT_VERSION,
 ] as const
+export const SELECTION_REFERENCE_FORMAL_MATURE_COMPATIBILITY = [
+  {
+    referenceContractVersion: SELECTION_REFERENCE_CONTRACT_VERSION,
+    labelerVersions: [
+      STRATEGY_FORMAL_LABELER_VERSION,
+      STRATEGY_FORMAL_RECONSTRUCTION_LABELER_VERSION,
+    ],
+  },
+  {
+    referenceContractVersion: SELECTION_REFERENCE_LEGACY_MATURE_CONTRACT_VERSION,
+    labelerVersions: [
+      STRATEGY_FORMAL_LABELER_LEGACY_VERSION,
+      STRATEGY_FORMAL_RECONSTRUCTION_LABELER_VERSION,
+    ],
+  },
+] as const
+
+export function buildStrategyFormalMatureCompatibilitySql(tableAlias = 'mr'): {
+  sql: string
+  binds: string[]
+} {
+  if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(tableAlias)) {
+    throw new Error(`invalid_strategy_formal_mature_table_alias:${tableAlias}`)
+  }
+  const clauses = SELECTION_REFERENCE_FORMAL_MATURE_COMPATIBILITY.map((entry) => (
+    `(${tableAlias}.reference_contract_version=? AND ${tableAlias}.labeler_version IN (${entry.labelerVersions.map(() => '?').join(', ')}))`
+  ))
+  return {
+    sql: `(${clauses.join(' OR ')})`,
+    binds: SELECTION_REFERENCE_FORMAL_MATURE_COMPATIBILITY.flatMap((entry) => [
+      entry.referenceContractVersion,
+      ...entry.labelerVersions,
+    ]),
+  }
+}
+
+export function isStrategyFormalMatureEvidencePair(referenceContractVersion: unknown, labelerVersion: unknown): boolean {
+  return SELECTION_REFERENCE_FORMAL_MATURE_COMPATIBILITY.some((entry) => (
+    entry.referenceContractVersion === String(referenceContractVersion ?? '').trim()
+    && entry.labelerVersions.some((version) => version === String(labelerVersion ?? '').trim())
+  ))
+}
 export const STRATEGY_LABEL_MATRIX_VERSION = 'strategy-label-matrix-v4'
 
 export interface SelectionEvidenceCandidate {

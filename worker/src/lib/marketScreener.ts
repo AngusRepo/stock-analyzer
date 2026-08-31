@@ -85,6 +85,8 @@ import {
 import { buildStrategyRouteRecoveryPacket } from "./strategyRouteRecoveryPacket"
 import {
   buildSelectionEvidenceV4,
+  buildStrategyFormalMatureCompatibilitySql,
+  isStrategyFormalMatureEvidencePair,
   persistSelectionEvidenceV4,
   SELECTION_REFERENCE_CONTRACT_VERSION,
   strategyRegistryFingerprintPayload,
@@ -365,7 +367,8 @@ export async function prepareStrategyRedundancyBackfill(
   if (!STRATEGY_FORMAL_LABELER_VERSIONS.some((version) => version === matrixLabelerVersion)) {
     throw new Error(`strategy_redundancy_matrix_labeler_contract_invalid:${asOfDate}:${run.labeler_version ?? 'missing'}`)
   }
-  if (String(run.reference_contract_version ?? '').trim() !== SELECTION_REFERENCE_CONTRACT_VERSION) {
+  const matrixReferenceContractVersion = String(run.reference_contract_version ?? '').trim()
+  if (!isStrategyFormalMatureEvidencePair(matrixReferenceContractVersion, matrixLabelerVersion)) {
     throw new Error(`strategy_redundancy_reference_contract_invalid:${asOfDate}:${run.reference_contract_version ?? 'missing'}`)
   }
 
@@ -401,7 +404,7 @@ export async function prepareStrategyRedundancyBackfill(
   if (rows.some((row) => String(row.labeler_version ?? '').trim() !== matrixLabelerVersion)) {
     throw new Error(`strategy_redundancy_matrix_row_labeler_contract_invalid:${asOfDate}`)
   }
-  if (rows.some((row) => String(row.reference_contract_version ?? '').trim() !== SELECTION_REFERENCE_CONTRACT_VERSION)) {
+  if (rows.some((row) => String(row.reference_contract_version ?? '').trim() !== matrixReferenceContractVersion)) {
     throw new Error(`strategy_redundancy_matrix_row_reference_contract_invalid:${asOfDate}`)
   }
 
@@ -611,6 +614,7 @@ export async function loadMatureStrategyOofReturns(
   asOfDate: string,
   canonicalRunIds: Record<string, string>,
 ): Promise<Record<string, Array<{ signal_date: string; residual_return: number; sample_count: number }>>> {
+  const formalMatureCompatibility = buildStrategyFormalMatureCompatibilitySql('mr')
   const { results } = await db.prepare(`
     WITH mature_dates AS (
       SELECT DISTINCT signal_date
@@ -632,13 +636,14 @@ export async function loadMatureStrategyOofReturns(
        AND l.producer_run_id=m.producer_run_id
        AND l.label_schema_version='canonical-strategy-selection-label-v4'
        AND l.adjustment_source=?
+       AND l.reference_contract_version=m.reference_contract_version
      WHERE m.evaluable=1
        AND m.strategy_hit=1
        AND EXISTS (
          SELECT 1 FROM strategy_label_matrix_runs_v4 mr
           WHERE mr.producer_run_id=m.producer_run_id AND mr.status='ready'
-            AND mr.reference_contract_version=?
-            AND mr.labeler_version IN (${STRATEGY_FORMAL_LABELER_VERSIONS.map(() => '?').join(', ')})
+            AND mr.reference_contract_version=m.reference_contract_version
+            AND ${formalMatureCompatibility.sql}
             AND mr.labeler_version=m.labeler_version
        )
        AND EXISTS (
@@ -652,8 +657,7 @@ export async function loadMatureStrategyOofReturns(
     asOfDate,
     asOfDate,
     CANONICAL_SELECTION_ADJUSTMENT_SOURCE,
-    SELECTION_REFERENCE_CONTRACT_VERSION,
-    ...STRATEGY_FORMAL_LABELER_VERSIONS,
+    ...formalMatureCompatibility.binds,
     JSON.stringify(canonicalRunIds),
   ).all<{
     strategy_id: string

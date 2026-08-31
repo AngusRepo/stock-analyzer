@@ -2,6 +2,7 @@ import { Hono } from 'hono'
 import { twToday } from '../lib/dateUtils'
 import { requireAdminJWT, requireAdminOrServiceToken, requireServiceToken } from '../lib/auth'
 import { databaseForDataDomain } from '../lib/dataDomainRegistry'
+import { buildStrategyFormalMatureCompatibilitySql } from '../lib/selectionReferenceEvidence'
 import {
   completeLearningDataDomainCutover,
   inspectLearningDataDomainCompletion,
@@ -15,7 +16,6 @@ import {
 } from '../lib/dataDomainFormalCutover'
 import { runDailyUpdate } from '../lib/updateOrchestrator'
 import type { Bindings, Variables } from '../types'
-import { STRATEGY_FORMAL_LABELER_VERSIONS } from '../lib/strategySpec'
 
 export const adminWriteRoutes = new Hono<{ Bindings: Bindings; Variables: Variables }>()
 
@@ -960,13 +960,13 @@ adminWriteRoutes.post('/api/admin/strategy/redundancy/backfill', async (c) => {
   const canonicalRunByDate = new Map(
     (canonicalRows.results ?? []).map((row) => [row.signal_date, row.run_id]),
   )
-  const formalLabelerPlaceholders = STRATEGY_FORMAL_LABELER_VERSIONS.map(() => '?').join(', ')
+  const formalMatureCompatibility = buildStrategyFormalMatureCompatibilitySql('mr')
   const dateRows = await learningDb.prepare(`
     SELECT DISTINCT mr.signal_date, mr.producer_run_id
       FROM strategy_label_matrix_runs_v4 mr
      WHERE mr.signal_date BETWEEN ? AND ?
        AND mr.status='ready'
-       AND mr.labeler_version IN (${formalLabelerPlaceholders})
+       AND ${formalMatureCompatibility.sql}
        AND NOT EXISTS (
          SELECT 1 FROM strategy_label_matrix_v4 m
           WHERE m.producer_run_id=mr.producer_run_id
@@ -981,7 +981,7 @@ adminWriteRoutes.post('/api/admin/strategy/redundancy/backfill', async (c) => {
   `).bind(
     startDate,
     endDate,
-    ...STRATEGY_FORMAL_LABELER_VERSIONS,
+    ...formalMatureCompatibility.binds,
   ).all<{ signal_date: string; producer_run_id: string }>()
   const dates = (dateRows.results ?? [])
     .filter((row) => canonicalRunByDate.get(row.signal_date) === row.producer_run_id)

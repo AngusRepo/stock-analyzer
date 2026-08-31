@@ -64,16 +64,20 @@ const screenerSeedDomainOwner = fs.readFileSync('../ml-controller/services/scree
   assert(marketScreener.includes('loadMatureStrategyOofReturns'), 'daily routing must load mature OOF residual-return evidence')
   assert(marketScreener.includes('outcome_known_date <= ?') && marketScreener.includes('signal_date < ?'), 'OOF redundancy evidence must be point-in-time')
   assert(
-    /`\)\.bind\(\s*asOfDate,\s*asOfDate,\s*CANONICAL_SELECTION_ADJUSTMENT_SOURCE,\s*SELECTION_REFERENCE_CONTRACT_VERSION,\s*\.\.\.STRATEGY_FORMAL_LABELER_VERSIONS,\s*JSON\.stringify\(canonicalRunIds\),\s*\)\.all/.test(marketScreener),
-    'OOF redundancy bind order must match PIT dates, adjustment source, reference version, labeler versions, then canonical run-id JSON placeholders',
+    /`\)\.bind\(\s*asOfDate,\s*asOfDate,\s*CANONICAL_SELECTION_ADJUSTMENT_SOURCE,\s*\.\.\.formalMatureCompatibility\.binds,\s*JSON\.stringify\(canonicalRunIds\),\s*\)\.all/.test(marketScreener),
+    'OOF redundancy bind order must match PIT dates, adjustment source, paired mature compatibility, then canonical run-id JSON placeholders',
   )
   assert(
-    marketScreener.includes("mr.labeler_version IN (${STRATEGY_FORMAL_LABELER_VERSIONS.map(() => '?').join(', ')})"),
-    'OOF redundancy query must allocate one SQL placeholder per formal labeler version',
+    marketScreener.includes("buildStrategyFormalMatureCompatibilitySql('mr')"),
+    'OOF redundancy must derive exact reference-contract × labeler compatibility pairs',
   )
   assert(
-    !marketScreener.includes('mr.labeler_version IN (?, ?)'),
-    'OOF redundancy query must not hard-code a two-version labeler allowlist',
+    marketScreener.includes('AND ${formalMatureCompatibility.sql}'),
+    'OOF redundancy SQL must consume paired mature compatibility',
+  )
+  assert(
+    marketScreener.includes('l.reference_contract_version=m.reference_contract_version'),
+    'OOF labels must retain the same immutable reference contract as their strategy matrix cells',
   )
   assert(marketScreener.includes("label_schema_version = 'canonical-strategy-selection-label-v4'"), 'OOF redundancy evidence must use canonical selection labels')
   assert(marketScreener.includes('mature_oof_residual_returns_with_same_day_overlap_diagnostic'), 'same-day strategy overlap must remain diagnostic-only')

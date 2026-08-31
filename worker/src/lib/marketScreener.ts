@@ -638,7 +638,7 @@ export async function loadMatureStrategyOofReturns(
          SELECT 1 FROM strategy_label_matrix_runs_v4 mr
           WHERE mr.producer_run_id=m.producer_run_id AND mr.status='ready'
             AND mr.reference_contract_version=?
-            AND mr.labeler_version IN (?, ?)
+            AND mr.labeler_version IN (${STRATEGY_FORMAL_LABELER_VERSIONS.map(() => '?').join(', ')})
             AND mr.labeler_version=m.labeler_version
        )
        AND EXISTS (

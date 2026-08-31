@@ -6,7 +6,63 @@ const learningSource = readFileSync(resolve(process.cwd(), 'src/lib/strategyLear
 const screenerSource = readFileSync(resolve(process.cwd(), 'src/lib/marketScreener.ts'), 'utf8')
 const policyStoreSource = readFileSync(resolve(process.cwd(), 'src/lib/strategyProductionPolicyStore.ts'), 'utf8')
 const policyServiceSource = readFileSync(resolve(process.cwd(), 'src/lib/strategyProductionPolicyService.ts'), 'utf8')
+const adminReadSource = readFileSync(resolve(process.cwd(), 'src/routes/adminReadRoutes.ts'), 'utf8')
 const adminWriteSource = readFileSync(resolve(process.cwd(), 'src/routes/adminWriteRoutes.ts'), 'utf8')
+
+const evidenceProfilesRoute = adminReadSource.slice(
+  adminReadSource.indexOf("adminReadRoutes.get('/api/admin/strategy/evidence-profiles'"),
+  adminReadSource.indexOf("adminReadRoutes.get('/api/admin/strategy/learning'"),
+)
+const formalLaneSource = evidenceProfilesRoute.slice(
+  evidenceProfilesRoute.indexOf('formal: {'),
+  evidenceProfilesRoute.indexOf('threshold_route_shadow:'),
+)
+
+assert.match(
+  evidenceProfilesRoute,
+  /import\('\.\.\/lib\/strategyProductionPolicyStore'\)/,
+  'formal evidence read API must use the validated production-policy serving loader',
+)
+assert.match(
+  evidenceProfilesRoute,
+  /loadStrategyProductionPolicyBefore\(\s*learningDb,\s*twToday\(\),\s*runtimeSpecs\.map\(\(spec\) => spec\.id\),\s*\)\.catch\(\(\) => null\)/,
+  'formal evidence read API must validate the complete non-retired runtime strategy set at the serving cutoff',
+)
+assert.doesNotMatch(
+  evidenceProfilesRoute,
+  /FROM strategy_production_policy_history_v1/,
+  'formal evidence read API must not trust a raw latest active production-policy row',
+)
+assert.doesNotMatch(evidenceProfilesRoute, /const parseStringArray =/)
+assert.doesNotMatch(evidenceProfilesRoute, /const parseNumberRecord =/)
+assert.match(
+  evidenceProfilesRoute,
+  /const formalPolicyLineage = productionPolicyState && loadedProductionPolicy \? \{[\s\S]*?strategy_weights: productionPolicyState\.strategy_weights,[\s\S]*?positive_weight_count: productionPolicyState\.evidence\.positive_weight_count,[\s\S]*?evidence: productionPolicyState\.evidence,[\s\S]*?checksum: loadedProductionPolicy\.checksum,[\s\S]*?created_at: loadedProductionPolicy\.created_at/,
+  'formal evidence read API must build lineage only from the validated loaded policy state',
+)
+assert.match(
+  formalLaneSource,
+  /formal_policy_lineage: formalPolicyLineage/,
+  'lanes.formal must expose the sanitized formal policy lineage',
+)
+assert.doesNotMatch(
+  formalLaneSource,
+  /\w+\s*:\s*productionPolicy(?:\s*[,}])/,
+  'lanes.formal must never return the raw production policy database row',
+)
+assert.doesNotMatch(
+  formalLaneSource,
+  /(?:^|[{,])\s*productionPolicy\s*[,}]/m,
+  'lanes.formal must never return the raw production policy database row by shorthand',
+)
+assert.match(formalLaneSource, /status: servingProductionPolicyAvailable \? 'active' : 'unavailable'/)
+assert.match(formalLaneSource, /production_effect: servingProductionPolicyAvailable/)
+assert.doesNotMatch(
+  formalLaneSource,
+  /formalOwnerIntegrated/,
+  'formal serving status must not be coupled to multi-horizon evidence-owner integration',
+)
+assert.match(evidenceProfilesRoute, /const formalOwnerIntegrated = storedOwnerLineageValid/)
 
 assert.match(
   learningSource,

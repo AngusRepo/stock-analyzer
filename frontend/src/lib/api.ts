@@ -976,7 +976,23 @@ export type StrategyEvidenceLane = {
   integration_effect?: 'status_aware_owner_input_active' | 'status_aware_owner_input_ready'
   evidence_owner_snapshot?: Record<string, unknown>
   active_policy_evidence_owner?: Record<string, unknown>
-  formal_policy_lineage?: Record<string, unknown> | null
+  formal_policy_lineage?: StrategyFormalPolicyLineage | null
+}
+
+export type StrategyFormalPolicyLineage = {
+  policy_id: string
+  version: number | string
+  status: string
+  knowledge_cutoff_date: string | null
+  strategy_weights: Record<string, number>
+  positive_weight_count: number
+  quarantined_strategy_ids: string[]
+  candidate_ready_strategy_ids: string[]
+  base_weight_source: string | null
+  base_weight_run_id: string | null
+  evidence: Record<string, unknown> | null
+  checksum: string | null
+  created_at: string | null
 }
 
 export type StrategyEvidenceProfilesResponse = {
@@ -1071,8 +1087,9 @@ export type StrategyPromotionGate = {
   activation_gate: {
     policy_version: string
     required: boolean
-    status: 'not_applicable' | 'pending' | 'accepted'
+    status: 'not_applicable' | 'evidence_pending' | 'prefilter_failed' | 'not_evaluated' | 'proposed' | 'rejected' | 'accepted'
     run_id: string | null
+    decision_id: string | null
   }
   missing_evidence: string[]
   thresholds: {
@@ -1104,6 +1121,7 @@ export type StrategyPromotionGate = {
 }
 
 export type StrategyReplacementDecisionSummary = {
+  decision_id: string
   run_id: string
   as_of_date: string
   candidate_strategy_id: string
@@ -1117,7 +1135,23 @@ export type StrategyReplacementDecisionSummary = {
   paired_dates: number
   paired_delta_mean: number | null
   paired_delta_lcb90: number | null
+  statistical_policy_version: string | null
+  hac_lag: number | null
+  effective_paired_dates: number | null
+  paired_delta_hac_standard_error: number | null
+  paired_delta_lcb95_hac: number | null
+  paired_delta_one_sided_p_value: number | null
+  paired_delta_power_at_minimum_economic_delta: number | null
+  minimum_economic_delta: number | null
   candidate_absolute_cost_net_mean: number | null
+  candidate_absolute_effective_dates: number | null
+  candidate_absolute_hac_standard_error: number | null
+  candidate_absolute_cost_net_lcb95_hac: number | null
+  holm_family_size: number | null
+  holm_rank: number | null
+  holm_local_alpha: number | null
+  holm_adjusted_p_value: number | null
+  holm_rejected: boolean | null
   candidate_max_drawdown: number | null
   incumbent_max_drawdown: number | null
   candidate_turnover: number | null
@@ -1127,6 +1161,19 @@ export type StrategyReplacementDecisionSummary = {
   promotion_allowed: boolean
 }
 
+export type StrategyReplacementCandidatePrefilterSummary = {
+  strategy_id: string
+  strategy_version: string
+  evidence_status: 'ready' | 'missing'
+  observation_dates: number
+  candidate_observations: number
+  marginal_edge_mean: number | null
+  marginal_edge_lcb90: number | null
+  absolute_hit_return_mean: number | null
+  production_eligible: boolean | null
+  production_weight_raw: number
+}
+
 export type StrategyReplacementGateSummary = {
   policy: {
     schema_version: string
@@ -1134,6 +1181,9 @@ export type StrategyReplacementGateSummary = {
     outcome_horizon_trading_days: number
     dependence_adjustment: 'newey_west_bartlett'
     hac_lag: number
+    candidate_prefilter_min_observation_dates: number
+    candidate_prefilter_min_marginal_edge_lcb90_exclusive: number
+    candidate_prefilter_min_absolute_hit_return_mean_exclusive: number
     min_paired_dates: number
     min_effective_paired_dates: number
     min_paired_delta_lcb95_hac_exclusive: number
@@ -1161,6 +1211,31 @@ export type StrategyReplacementGateSummary = {
     eligible_strategy_count: number
     sample_dates: number
     created_at: string
+    candidate_portfolio: {
+      dates: number | null
+      residual_mean: number | null
+      residual_lcb90: number | null
+      absolute_mean: number | null
+      absolute_effective_dates: number | null
+      absolute_hac_standard_error: number | null
+      absolute_lcb95_hac: number | null
+    }
+    champion_comparison: {
+      champion_run_id: string | null
+      paired_dates: number | null
+      hac_lag: number | null
+      effective_paired_dates: number | null
+      paired_residual_delta_mean: number | null
+      paired_residual_delta_lcb90_iid_diagnostic_only: number | null
+      paired_residual_delta_hac_standard_error: number | null
+      paired_residual_delta_lcb95_hac: number | null
+      paired_residual_delta_one_sided_p_value: number | null
+      power_at_minimum_economic_delta: number | null
+      minimum_economic_delta: number | null
+    }
+    production_owner_count_before: number | null
+    production_owner_count_after: number | null
+    serving_owner_coverage_complete: boolean | null
     portfolio_risk: {
       baseline_max_drawdown: number | null
       final_max_drawdown: number | null
@@ -1170,8 +1245,9 @@ export type StrategyReplacementGateSummary = {
       correlation_pass: boolean | null
       turnover_pass: boolean | null
     }
-    promotion_gates: Record<string, boolean>
+    promotion_gates: Record<string, boolean | number | string | string[] | null>
   } | null
+  candidate_prefilters: StrategyReplacementCandidatePrefilterSummary[]
   decisions: StrategyReplacementDecisionSummary[]
 }
 

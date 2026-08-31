@@ -12,16 +12,72 @@ const sources = {
 }
 
 const strategySpec = fs.readFileSync('src/lib/strategySpec.ts', 'utf8')
-assert.match(strategySpec, /STRATEGY_FORMAL_LABELER_VERSION = 'strategy-labeler-v2-revenue-pit-fuse-v1'/)
+assert.match(strategySpec, /STRATEGY_FORMAL_LABELER_VERSION = 'strategy-labeler-v3-regime-veto-counterfactual-v1'/)
+assert.match(strategySpec, /STRATEGY_FORMAL_LABELER_LEGACY_VERSION = 'strategy-labeler-v2-revenue-pit-fuse-v1'/)
 assert.match(strategySpec, /STRATEGY_FORMAL_RECONSTRUCTION_LABELER_VERSION =[\s\S]*'strategy-decision-log-pit-reconstruction-v7-revenue-pit-fuse-v1'/)
-assert.match(strategySpec, /STRATEGY_FORMAL_LABELER_VERSIONS = \[[\s\S]*STRATEGY_FORMAL_LABELER_VERSION,[\s\S]*STRATEGY_FORMAL_RECONSTRUCTION_LABELER_VERSION/)
+assert.match(strategySpec, /STRATEGY_FORMAL_LABELER_VERSIONS = \[[\s\S]*STRATEGY_FORMAL_LABELER_VERSION,[\s\S]*STRATEGY_FORMAL_LABELER_LEGACY_VERSION,[\s\S]*STRATEGY_FORMAL_RECONSTRUCTION_LABELER_VERSION/)
 
 for (const [name, source] of Object.entries(sources)) {
-  assert.match(source, /STRATEGY_FORMAL_LABELER_VERSION/, `${name} must accept the native formal labeler`)
-  assert.match(source, /STRATEGY_FORMAL_RECONSTRUCTION_LABELER_VERSION/, `${name} must accept the reconstruction formal labeler`)
+  if (name === 'marginal') {
+    assert.match(source, /STRATEGY_FORMAL_LABELER_VERSIONS/, 'Atomic V7 must consume the complete formal labeler allowlist')
+  } else {
+    assert.match(source, /STRATEGY_FORMAL_LABELER_VERSION/, `${name} must accept the native formal labeler`)
+  }
+  if (name !== 'publicRoute' && name !== 'marginal') {
+    assert.match(source, /STRATEGY_FORMAL_RECONSTRUCTION_LABELER_VERSION/, `${name} must accept the reconstruction formal labeler`)
+  }
   assert.doesNotMatch(source, /strategy-labeler-v1/, `${name} must reject the legacy native labeler`)
   assert.doesNotMatch(source, /strategy-decision-log-pit-reconstruction-v6/, `${name} must reject the legacy reconstruction labeler`)
 }
+
+const pipelineTrackingMatrixQueries = sources.publicRoute.match(
+  /const \{ results: rawMatrixRows \}[\s\S]*?const loadStageStrategyRows/,
+)?.[0]
+assert.ok(pipelineTrackingMatrixQueries, 'public pipeline tracking route must load canonical matrix evidence')
+assert.equal(
+  pipelineTrackingMatrixQueries.match(/STRATEGY_FORMAL_LABELER_VERSIONS\.map\(\(\) => '\?'\)\.join\(','\)/g)?.length,
+  3,
+  'raw matrix, reference count, and matrix run SQL must all use the complete formal labeler allowlist',
+)
+assert.equal(
+  pipelineTrackingMatrixQueries.match(/\.\.\.STRATEGY_FORMAL_LABELER_VERSIONS/g)?.length,
+  3,
+  'raw matrix, reference count, and matrix run binds must all use the complete formal labeler allowlist',
+)
+assert.doesNotMatch(
+  pipelineTrackingMatrixQueries,
+  /IN \(\?, \?\)/,
+  'pipeline tracking must not regress to a direct two-labeler allowlist',
+)
+assert.doesNotMatch(pipelineTrackingMatrixQueries, /\bSTRATEGY_FORMAL_LABELER_VERSION\b/)
+assert.doesNotMatch(pipelineTrackingMatrixQueries, /\bSTRATEGY_FORMAL_RECONSTRUCTION_LABELER_VERSION\b/)
+
+const atomicV7MatrixLoader = sources.marginal.match(
+  /const formalLabelerPlaceholders[\s\S]*?const edges = evaluateStrategyMarginalEdgesV4\(cells\)/,
+)?.[0]
+assert.ok(atomicV7MatrixLoader, 'Atomic V7 must load canonical strategy matrix evidence')
+assert.match(
+  atomicV7MatrixLoader,
+  /STRATEGY_FORMAL_LABELER_VERSIONS\.map\(\(\) => '\?'\)\.join\(','\)/,
+  'Atomic V7 matrix SQL must derive placeholders from the complete formal labeler allowlist',
+)
+assert.match(
+  atomicV7MatrixLoader,
+  /mr\.labeler_version IN \(\$\{formalLabelerPlaceholders\}\)/,
+  'Atomic V7 matrix SQL must use the dynamic full-allowlist placeholders',
+)
+assert.match(
+  atomicV7MatrixLoader,
+  /\.\.\.STRATEGY_FORMAL_LABELER_VERSIONS/,
+  'Atomic V7 matrix binds must spread the complete formal labeler allowlist',
+)
+assert.doesNotMatch(
+  atomicV7MatrixLoader,
+  /IN \(\?, \?\)/,
+  'Atomic V7 must not regress to a direct two-labeler allowlist',
+)
+assert.doesNotMatch(sources.marginal, /\bSTRATEGY_FORMAL_LABELER_VERSION\b/)
+assert.doesNotMatch(sources.marginal, /\bSTRATEGY_FORMAL_RECONSTRUCTION_LABELER_VERSION\b/)
 
 assert.match(sources.marginal, /m\.labeler_version=mr\.labeler_version/)
 assert.match(sources.eligibility, /m\.labeler_version=mr\.labeler_version/)
@@ -33,7 +89,7 @@ assert.match(sources.closure, /m\.labeler_version=r\.labeler_version/)
 assert.match(sources.recovery, /WITH target_heads\(signal_date, producer_run_id\) AS/)
 assert.match(sources.recovery, /LEFT JOIN matrix_counts mc/)
 assert.doesNotMatch(sources.recovery, /SUM\(CASE WHEN EXISTS \(/)
-assert.match(sources.maturity, /mr\.labeler_version=selection_reference_snapshots_v1\.strategy_labeler_version/)
+assert.match(sources.maturity, /mr\.labeler_version=r\.strategy_labeler_version/)
 assert.match(sources.maturity, /m\.labeler_version=r\.labeler_version/)
 assert.match(sources.maturity, /matrix\.labeler_version=run\.labeler_version/)
 assert.match(sources.publicRoute, /mr\.labeler_version=strategy_label_matrix_v4\.labeler_version/)

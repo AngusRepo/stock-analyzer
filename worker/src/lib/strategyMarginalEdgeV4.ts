@@ -1,6 +1,5 @@
 import {
-  STRATEGY_FORMAL_LABELER_VERSION,
-  STRATEGY_FORMAL_RECONSTRUCTION_LABELER_VERSION,
+  STRATEGY_FORMAL_LABELER_VERSIONS,
 } from './strategySpec'
 
 export const STRATEGY_MARGINAL_EDGE_SCHEMA_VERSION_V6 = 'strategy-marginal-edge-v6'
@@ -39,6 +38,9 @@ export const STRATEGY_REPLACEMENT_POLICY_V7 = Object.freeze({
   outcome_horizon_trading_days: T_PLUS_OUTCOME_HORIZON_TRADING_DAYS,
   dependence_adjustment: 'newey_west_bartlett' as const,
   hac_lag: REPLACEMENT_HAC_LAG,
+  candidate_prefilter_min_observation_dates: MIN_EDGE_DATES,
+  candidate_prefilter_min_marginal_edge_lcb90_exclusive: 0,
+  candidate_prefilter_min_absolute_hit_return_mean_exclusive: 0,
   min_paired_dates: MIN_EDGE_DATES,
   min_effective_paired_dates: MIN_EFFECTIVE_PAIRED_DATES,
   min_paired_delta_lcb95_hac_exclusive: 0,
@@ -1082,6 +1084,7 @@ export async function refreshStrategyMarginalEdgeV4(
   if (!Number.isFinite(asOfMs)) throw new Error(`invalid_strategy_edge_as_of_date:${asOfDate}`)
   const startDate = new Date(asOfMs - EDGE_LOOKBACK_CALENDAR_DAYS * 86_400_000).toISOString().slice(0, 10)
   const canonicalOwnerClause = "EXISTS (SELECT 1 FROM json_each(?) h WHERE h.key=m.signal_date AND h.value=m.producer_run_id)"
+  const formalLabelerPlaceholders = STRATEGY_FORMAL_LABELER_VERSIONS.map(() => '?').join(',')
   const cells: OutcomeCell[] = []
   let cursorDate = ''
   let cursorSymbol = ''
@@ -1097,7 +1100,7 @@ export async function refreshStrategyMarginalEdgeV4(
           ON mr.producer_run_id=m.producer_run_id
          AND mr.signal_date=m.signal_date
          AND mr.status='ready'
-         AND mr.labeler_version IN (?, ?)
+         AND mr.labeler_version IN (${formalLabelerPlaceholders})
          AND m.labeler_version=mr.labeler_version
         JOIN canonical_selection_labels_v4 l
           ON l.signal_date=m.signal_date
@@ -1126,8 +1129,7 @@ export async function refreshStrategyMarginalEdgeV4(
        ORDER BY m.signal_date, m.symbol, m.strategy_id, m.strategy_version
        LIMIT ?
     `).bind(
-      STRATEGY_FORMAL_LABELER_VERSION,
-      STRATEGY_FORMAL_RECONSTRUCTION_LABELER_VERSION,
+      ...STRATEGY_FORMAL_LABELER_VERSIONS,
       startDate, asOfDate, asOfDate,
       JSON.stringify(options.canonicalRunIds ?? {}),
       cursorDate,

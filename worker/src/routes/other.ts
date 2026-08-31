@@ -5,8 +5,7 @@ import { loadLatestStockFinancialSnapshot, toLlmFinancialContext } from '../lib/
 import { loadCoreStockIdentitiesByIds, loadMarketPriceHistoryBySymbols } from '../lib/stockIdentityMarketBridge'
 import {
   DEFAULT_STRATEGY_SPECS,
-  STRATEGY_FORMAL_LABELER_VERSION,
-  STRATEGY_FORMAL_RECONSTRUCTION_LABELER_VERSION,
+  STRATEGY_FORMAL_LABELER_VERSIONS,
 } from '../lib/strategySpec'
 
 // ── 安全的 ID 解析（parseInt NaN 防護）─────────────────────────────────────
@@ -3450,13 +3449,12 @@ async function buildDailyPipelineSummaries(
          SELECT 1 FROM strategy_label_matrix_runs_v4 mr
           WHERE mr.producer_run_id=strategy_label_matrix_v4.producer_run_id
             AND mr.status='ready'
-            AND mr.labeler_version IN (?, ?)
+            AND mr.labeler_version IN (${STRATEGY_FORMAL_LABELER_VERSIONS.map(() => '?').join(',')})
             AND mr.labeler_version=strategy_label_matrix_v4.labeler_version
        )
   `).bind(
     latestRun.run_id,
-    STRATEGY_FORMAL_LABELER_VERSION,
-    STRATEGY_FORMAL_RECONSTRUCTION_LABELER_VERSION,
+    ...STRATEGY_FORMAL_LABELER_VERSIONS,
   ).all<any>().catch(() => ({ results: [] as any[] }))
   const referenceCount = await learningDb.prepare(`
     SELECT COUNT(*) AS candidate_count
@@ -3467,24 +3465,22 @@ async function buildDailyPipelineSummaries(
          SELECT 1 FROM strategy_label_matrix_runs_v4 mr
           WHERE mr.producer_run_id=selection_reference_snapshots_v1.producer_run_id
             AND mr.status='ready'
-            AND mr.labeler_version IN (?, ?)
+            AND mr.labeler_version IN (${STRATEGY_FORMAL_LABELER_VERSIONS.map(() => '?').join(',')})
             AND mr.labeler_version=selection_reference_snapshots_v1.strategy_labeler_version
        )
   `).bind(
     latestRun.run_id,
-    STRATEGY_FORMAL_LABELER_VERSION,
-    STRATEGY_FORMAL_RECONSTRUCTION_LABELER_VERSION,
+    ...STRATEGY_FORMAL_LABELER_VERSIONS,
   ).first<any>().catch(() => null)
   const matrixRun = await learningDb.prepare(`
     SELECT status, reference_candidate_count, expected_cell_count, persisted_cell_count
       FROM strategy_label_matrix_runs_v4
      WHERE producer_run_id=?
        AND status='ready'
-       AND labeler_version IN (?, ?)
+       AND labeler_version IN (${STRATEGY_FORMAL_LABELER_VERSIONS.map(() => '?').join(',')})
   `).bind(
     latestRun.run_id,
-    STRATEGY_FORMAL_LABELER_VERSION,
-    STRATEGY_FORMAL_RECONSTRUCTION_LABELER_VERSION,
+    ...STRATEGY_FORMAL_LABELER_VERSIONS,
   ).first<any>().catch(() => null)
   const loadStageStrategyRows = async (stage: string) => opsDb.prepare(`
     SELECT DISTINCT i.symbol, CAST(strategy.value AS TEXT) AS strategy_id

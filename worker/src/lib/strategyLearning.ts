@@ -179,6 +179,7 @@ export interface StrategyPromotionThresholds {
 }
 
 export interface StrategyReplacementDecisionSummary {
+  decision_id: string
   run_id: string
   as_of_date: string
   candidate_strategy_id: string
@@ -192,7 +193,23 @@ export interface StrategyReplacementDecisionSummary {
   paired_dates: number
   paired_delta_mean: number | null
   paired_delta_lcb90: number | null
+  statistical_policy_version: string | null
+  hac_lag: number | null
+  effective_paired_dates: number | null
+  paired_delta_hac_standard_error: number | null
+  paired_delta_lcb95_hac: number | null
+  paired_delta_one_sided_p_value: number | null
+  paired_delta_power_at_minimum_economic_delta: number | null
+  minimum_economic_delta: number | null
   candidate_absolute_cost_net_mean: number | null
+  candidate_absolute_effective_dates: number | null
+  candidate_absolute_hac_standard_error: number | null
+  candidate_absolute_cost_net_lcb95_hac: number | null
+  holm_family_size: number | null
+  holm_rank: number | null
+  holm_local_alpha: number | null
+  holm_adjusted_p_value: number | null
+  holm_rejected: boolean | null
   candidate_max_drawdown: number | null
   incumbent_max_drawdown: number | null
   candidate_turnover: number | null
@@ -200,6 +217,19 @@ export interface StrategyReplacementDecisionSummary {
   return_correlation: number | null
   rejection_reasons: string[]
   promotion_allowed: boolean
+}
+
+export interface StrategyReplacementCandidatePrefilterSummary {
+  strategy_id: string
+  strategy_version: string
+  evidence_status: 'ready' | 'missing'
+  observation_dates: number
+  candidate_observations: number
+  marginal_edge_mean: number | null
+  marginal_edge_lcb90: number | null
+  absolute_hit_return_mean: number | null
+  production_eligible: boolean | null
+  production_weight_raw: number
 }
 
 export interface StrategyReplacementGateSummary {
@@ -214,6 +244,31 @@ export interface StrategyReplacementGateSummary {
     eligible_strategy_count: number
     sample_dates: number
     created_at: string
+    production_owner_count_before: number | null
+    production_owner_count_after: number | null
+    serving_owner_coverage_complete: boolean | null
+    candidate_portfolio: {
+      dates: number | null
+      residual_mean: number | null
+      residual_lcb90: number | null
+      absolute_mean: number | null
+      absolute_effective_dates: number | null
+      absolute_hac_standard_error: number | null
+      absolute_lcb95_hac: number | null
+    }
+    champion_comparison: {
+      champion_run_id: string | null
+      paired_dates: number | null
+      hac_lag: number | null
+      effective_paired_dates: number | null
+      paired_residual_delta_mean: number | null
+      paired_residual_delta_lcb90_iid_diagnostic_only: number | null
+      paired_residual_delta_hac_standard_error: number | null
+      paired_residual_delta_lcb95_hac: number | null
+      paired_residual_delta_one_sided_p_value: number | null
+      power_at_minimum_economic_delta: number | null
+      minimum_economic_delta: number | null
+    }
     portfolio_risk: {
       baseline_max_drawdown: number | null
       final_max_drawdown: number | null
@@ -223,8 +278,9 @@ export interface StrategyReplacementGateSummary {
       correlation_pass: boolean | null
       turnover_pass: boolean | null
     }
-    promotion_gates: Record<string, boolean>
+    promotion_gates: Record<string, boolean | number | string | string[] | null>
   } | null
+  candidate_prefilters: StrategyReplacementCandidatePrefilterSummary[]
   decisions: StrategyReplacementDecisionSummary[]
 }
 
@@ -248,7 +304,8 @@ export interface StrategyPromotionGateRow {
   activation_gate: {
     policy_version: string
     required: boolean
-    status: 'not_applicable' | 'pending' | 'accepted'
+    status: 'not_applicable' | 'evidence_pending' | 'prefilter_failed' | 'not_evaluated' | 'proposed' | 'rejected' | 'accepted'
+    decision_id: string | null
     run_id: string | null
   }
   missing_evidence: string[]
@@ -2561,14 +2618,39 @@ export function evaluateStrategyPromotionGate(summary: StrategyLearningSummary):
         evidence.mature_dates < PROMOTION_MIN_MATURE_DATES ? `mature_dates_lt_${PROMOTION_MIN_MATURE_DATES}` : null,
       ].filter((reason): reason is string => reason != null)
       : []
-    const acceptedReplacement = summary.replacement_gate.decisions.find((decision) =>
+    const candidateReplacementDecisions = summary.replacement_gate.decisions.filter((decision) =>
       decision.candidate_strategy_id === spec.id
-      && decision.candidate_strategy_version === spec.version
-      && decision.status === 'accepted'
-      && decision.promotion_allowed)
+      && decision.candidate_strategy_version === spec.version)
+    const acceptedReplacement = candidateReplacementDecisions.find((decision) =>
+      decision.status === 'accepted' && decision.promotion_allowed)
+    const activationDecision = acceptedReplacement
+      ?? candidateReplacementDecisions.find((decision) => decision.status === 'accepted')
+      ?? candidateReplacementDecisions.find((decision) => decision.status === 'proposed')
+      ?? candidateReplacementDecisions.find((decision) => decision.status === 'rejected')
     const activationRequired = lifecycleStatus === 'candidate'
+    const candidatePrefilter = summary.replacement_gate.candidate_prefilters.find((prefilter) =>
+      prefilter.strategy_id === spec.id && prefilter.strategy_version === spec.version)
+    const activationStatus: StrategyPromotionGateRow['activation_gate']['status'] = !activationRequired
+      ? 'not_applicable'
+      : activationDecision
+        ? activationDecision.status
+        : summary.replacement_gate.evidence_status !== 'ready'
+          ? 'evidence_pending'
+          : candidatePrefilter?.evidence_status !== 'ready'
+            ? 'evidence_pending'
+            : candidatePrefilter.production_eligible === false
+              ? 'prefilter_failed'
+              : candidatePrefilter.production_eligible === true
+                ? 'not_evaluated'
+                : 'evidence_pending'
     if (activationRequired && !acceptedReplacement) {
-      missing.push('atomic_replacement_v7_not_accepted')
+      missing.push(activationStatus === 'evidence_pending'
+        ? 'atomic_replacement_v7_evidence_pending'
+        : activationStatus === 'prefilter_failed'
+          ? 'atomic_replacement_v7_prefilter_failed'
+          : activationStatus === 'not_evaluated'
+            ? 'atomic_replacement_v7_no_pair'
+            : 'atomic_replacement_v7_not_accepted')
     }
     const allocationEligible = activeMonitor && activeEvidenceReady
     const ready = activationRequired && missing.length === 0
@@ -2608,12 +2690,9 @@ export function evaluateStrategyPromotionGate(summary: StrategyLearningSummary):
       activation_gate: {
         policy_version: STRATEGY_REPLACEMENT_POLICY_V7.policy_version,
         required: activationRequired,
-        status: activationRequired
-          ? acceptedReplacement
-            ? 'accepted'
-            : 'pending'
-          : 'not_applicable',
-        run_id: acceptedReplacement?.run_id ?? null,
+        status: activationStatus,
+        decision_id: activationRequired ? activationDecision?.decision_id ?? null : null,
+        run_id: activationRequired ? activationDecision?.run_id ?? null : null,
       },
       missing_evidence: activeMonitor ? activeRetentionMissing : missing,
       thresholds: STRATEGY_PROMOTION_THRESHOLDS,
@@ -3011,9 +3090,235 @@ async function loadS12ExecutionLearningMetrics(
   }
 }
 
+interface StrategyReplacementCandidatePrefilterPersistenceRow {
+  strategy_id: string
+  strategy_version: string
+  observation_dates: number | string
+  candidate_observations: number | string
+  marginal_edge_mean: number | string | null
+  marginal_edge_lcb90: number | string | null
+  absolute_hit_return_mean: number | string | null
+  production_eligible: number | string | boolean
+  production_weight_raw: number | string
+}
+
+export function projectStrategyReplacementCandidatePrefilters(
+  rows: StrategyReplacementCandidatePrefilterPersistenceRow[],
+  candidateStrategyKeys: ReadonlySet<string>,
+): StrategyReplacementCandidatePrefilterSummary[] {
+  const rowByStrategyKey = new Map(
+    rows
+      .filter((row) => candidateStrategyKeys.has(`${row.strategy_id}|${row.strategy_version}`))
+      .map((row) => [`${row.strategy_id}|${row.strategy_version}`, row]),
+  )
+  return [...candidateStrategyKeys].map((strategyKey) => {
+    const row = rowByStrategyKey.get(strategyKey)
+    const separator = strategyKey.lastIndexOf('|')
+    const strategyId = separator >= 0 ? strategyKey.slice(0, separator) : strategyKey
+    const strategyVersion = separator >= 0 ? strategyKey.slice(separator + 1) : ''
+    if (!row) {
+      return {
+        strategy_id: strategyId,
+        strategy_version: strategyVersion,
+        evidence_status: 'missing',
+        observation_dates: 0,
+        candidate_observations: 0,
+        marginal_edge_mean: null,
+        marginal_edge_lcb90: null,
+        absolute_hit_return_mean: null,
+        production_eligible: null,
+        production_weight_raw: 0,
+      }
+    }
+    return {
+      strategy_id: row.strategy_id,
+      strategy_version: row.strategy_version,
+      evidence_status: 'ready',
+      observation_dates: finiteNumber(row.observation_dates) ?? 0,
+      candidate_observations: finiteNumber(row.candidate_observations) ?? 0,
+      marginal_edge_mean: finiteNumber(row.marginal_edge_mean),
+      marginal_edge_lcb90: finiteNumber(row.marginal_edge_lcb90),
+      absolute_hit_return_mean: finiteNumber(row.absolute_hit_return_mean),
+      production_eligible: finiteNumber(row.production_eligible) === 1,
+      production_weight_raw: finiteNumber(row.production_weight_raw) ?? 0,
+    }
+  })
+}
+
+interface StrategyReplacementDecisionPersistenceRow {
+  decision_id: string
+  run_id: string
+  as_of_date: string
+  family_id: string
+  candidate_strategy_id: string
+  candidate_strategy_version: string
+  replaced_strategy_id: string
+  replaced_strategy_version: string
+  status: 'proposed' | 'accepted' | 'rejected'
+  paired_dates: number
+  paired_delta_mean: number | null
+  paired_delta_lcb90: number | null
+  candidate_absolute_mean: number | null
+  candidate_max_drawdown: number | null
+  replaced_max_drawdown: number | null
+  candidate_turnover: number | null
+  replaced_turnover: number | null
+  return_correlation: number | null
+  evidence_json: string
+}
+
+export function projectStrategyReplacementDecisionSummary(
+  row: StrategyReplacementDecisionPersistenceRow,
+): StrategyReplacementDecisionSummary {
+  const evidence = parseJson<Record<string, unknown>>(row.evidence_json, {})
+  const scope = evidence.replacement_scope === 'same_family' || evidence.replacement_scope === 'cross_family'
+    ? evidence.replacement_scope
+    : null
+  return {
+    decision_id: row.decision_id,
+    run_id: row.run_id,
+    as_of_date: row.as_of_date,
+    candidate_strategy_id: row.candidate_strategy_id,
+    candidate_strategy_version: row.candidate_strategy_version,
+    replaced_strategy_id: row.replaced_strategy_id,
+    replaced_strategy_version: row.replaced_strategy_version,
+    candidate_family_id: row.family_id,
+    incumbent_family_id: typeof evidence.incumbent_family_id === 'string' ? evidence.incumbent_family_id : null,
+    replacement_scope: scope,
+    status: row.status,
+    paired_dates: finiteNumber(row.paired_dates) ?? 0,
+    paired_delta_mean: finiteNumber(row.paired_delta_mean),
+    paired_delta_lcb90: finiteNumber(row.paired_delta_lcb90),
+    statistical_policy_version: typeof evidence.statistical_policy_version === 'string'
+      ? evidence.statistical_policy_version
+      : null,
+    hac_lag: finiteNumber(evidence.hac_lag),
+    effective_paired_dates: finiteNumber(evidence.effective_paired_dates),
+    paired_delta_hac_standard_error: finiteNumber(evidence.paired_delta_hac_standard_error),
+    paired_delta_lcb95_hac: finiteNumber(evidence.paired_delta_lcb95_hac),
+    paired_delta_one_sided_p_value: finiteNumber(evidence.paired_delta_one_sided_p_value),
+    paired_delta_power_at_minimum_economic_delta: finiteNumber(
+      evidence.paired_delta_power_at_minimum_economic_delta,
+    ),
+    minimum_economic_delta: finiteNumber(evidence.minimum_economic_delta),
+    candidate_absolute_cost_net_mean: finiteNumber(row.candidate_absolute_mean),
+    candidate_absolute_effective_dates: finiteNumber(evidence.candidate_absolute_effective_dates),
+    candidate_absolute_hac_standard_error: finiteNumber(evidence.candidate_absolute_hac_standard_error),
+    candidate_absolute_cost_net_lcb95_hac: finiteNumber(evidence.candidate_absolute_lcb95_hac),
+    holm_family_size: finiteNumber(evidence.holm_family_size),
+    holm_rank: finiteNumber(evidence.holm_rank),
+    holm_local_alpha: finiteNumber(evidence.holm_critical_alpha),
+    holm_adjusted_p_value: finiteNumber(evidence.holm_adjusted_p_value),
+    holm_rejected: typeof evidence.holm_rejected === 'boolean' ? evidence.holm_rejected : null,
+    candidate_max_drawdown: finiteNumber(row.candidate_max_drawdown),
+    incumbent_max_drawdown: finiteNumber(row.replaced_max_drawdown),
+    candidate_turnover: finiteNumber(row.candidate_turnover),
+    incumbent_turnover: finiteNumber(row.replaced_turnover),
+    return_correlation: finiteNumber(row.return_correlation),
+    rejection_reasons: Array.isArray(evidence.rejection_reasons)
+      ? evidence.rejection_reasons.filter((value): value is string => typeof value === 'string')
+      : [],
+    promotion_allowed: evidence.promotion_allowed === true,
+  }
+}
+
+type StrategyReplacementRunEvidenceProjection = Pick<
+  NonNullable<StrategyReplacementGateSummary['latest_run']>,
+  | 'production_owner_count_before'
+  | 'production_owner_count_after'
+  | 'serving_owner_coverage_complete'
+  | 'candidate_portfolio'
+  | 'champion_comparison'
+  | 'portfolio_risk'
+  | 'promotion_gates'
+>
+
+function replacementPromotionGateValues(
+  value: unknown,
+): Record<string, boolean | number | string | string[] | null> {
+  if (value == null || typeof value !== 'object' || Array.isArray(value)) return {}
+  return Object.fromEntries(Object.entries(value).flatMap(([key, actual]) => {
+    if (
+      actual == null
+      || typeof actual === 'boolean'
+      || typeof actual === 'string'
+      || (typeof actual === 'number' && Number.isFinite(actual))
+    ) return [[key, actual]]
+    if (Array.isArray(actual) && actual.every((item) => typeof item === 'string')) return [[key, actual]]
+    return []
+  }))
+}
+
+export function projectStrategyReplacementRunEvidence(evidenceJson: string): StrategyReplacementRunEvidenceProjection {
+  const evidence = parseJson<Record<string, unknown>>(evidenceJson, {})
+  const candidatePortfolio = evidence.candidate_portfolio != null
+    && typeof evidence.candidate_portfolio === 'object'
+    && !Array.isArray(evidence.candidate_portfolio)
+    ? evidence.candidate_portfolio as Record<string, unknown>
+    : {}
+  const championComparison = evidence.champion_comparison != null
+    && typeof evidence.champion_comparison === 'object'
+    && !Array.isArray(evidence.champion_comparison)
+    ? evidence.champion_comparison as Record<string, unknown>
+    : {}
+  const portfolioRisk = evidence.portfolio_risk != null
+    && typeof evidence.portfolio_risk === 'object'
+    && !Array.isArray(evidence.portfolio_risk)
+    ? evidence.portfolio_risk as Record<string, unknown>
+    : {}
+  return {
+    production_owner_count_before: finiteNumber(evidence.production_owner_count_before),
+    production_owner_count_after: finiteNumber(evidence.production_owner_count_after),
+    serving_owner_coverage_complete: typeof evidence.serving_owner_coverage_complete === 'boolean'
+      ? evidence.serving_owner_coverage_complete
+      : null,
+    candidate_portfolio: {
+      dates: finiteNumber(candidatePortfolio.dates),
+      residual_mean: finiteNumber(candidatePortfolio.residual_mean),
+      residual_lcb90: finiteNumber(candidatePortfolio.residual_lcb90),
+      absolute_mean: finiteNumber(candidatePortfolio.absolute_mean),
+      absolute_effective_dates: finiteNumber(candidatePortfolio.absolute_effective_dates),
+      absolute_hac_standard_error: finiteNumber(candidatePortfolio.absolute_hac_standard_error),
+      absolute_lcb95_hac: finiteNumber(candidatePortfolio.absolute_lcb95_hac),
+    },
+    champion_comparison: {
+      champion_run_id: typeof championComparison.champion_run_id === 'string'
+        ? championComparison.champion_run_id
+        : null,
+      paired_dates: finiteNumber(championComparison.paired_dates),
+      hac_lag: finiteNumber(championComparison.hac_lag),
+      effective_paired_dates: finiteNumber(championComparison.effective_paired_dates),
+      paired_residual_delta_mean: finiteNumber(championComparison.paired_residual_delta_mean),
+      paired_residual_delta_lcb90_iid_diagnostic_only: finiteNumber(
+        championComparison.paired_residual_delta_lcb90_iid_diagnostic_only,
+      ),
+      paired_residual_delta_hac_standard_error: finiteNumber(
+        championComparison.paired_residual_delta_hac_standard_error,
+      ),
+      paired_residual_delta_lcb95_hac: finiteNumber(championComparison.paired_residual_delta_lcb95_hac),
+      paired_residual_delta_one_sided_p_value: finiteNumber(
+        championComparison.paired_residual_delta_one_sided_p_value,
+      ),
+      power_at_minimum_economic_delta: finiteNumber(championComparison.power_at_minimum_economic_delta),
+      minimum_economic_delta: finiteNumber(championComparison.minimum_economic_delta),
+    },
+    portfolio_risk: {
+      baseline_max_drawdown: finiteNumber(portfolioRisk.baseline_max_drawdown),
+      final_max_drawdown: finiteNumber(portfolioRisk.final_max_drawdown),
+      baseline_turnover: finiteNumber(portfolioRisk.baseline_turnover),
+      final_turnover: finiteNumber(portfolioRisk.final_turnover),
+      return_correlation: finiteNumber(portfolioRisk.return_correlation),
+      correlation_pass: typeof portfolioRisk.correlation_pass === 'boolean' ? portfolioRisk.correlation_pass : null,
+      turnover_pass: typeof portfolioRisk.turnover_pass === 'boolean' ? portfolioRisk.turnover_pass : null,
+    },
+    promotion_gates: replacementPromotionGateValues(evidence.promotion_gates),
+  }
+}
+
 async function loadStrategyReplacementGateSummary(
   db: D1Database,
   date: string,
+  candidateStrategyKeys: ReadonlySet<string>,
 ): Promise<StrategyReplacementGateSummary> {
   try {
     const run = await db.prepare(`
@@ -3045,31 +3350,43 @@ async function loadStrategyReplacementGateSummary(
       return {
         policy: STRATEGY_REPLACEMENT_POLICY_V7,
         evidence_status: 'pending',
-        status_reason: 'No contract-valid V6 replacement run exists on or before this date.',
+        status_reason: 'No contract-valid V7 replacement run exists on or before this date.',
         latest_run: null,
+        candidate_prefilters: projectStrategyReplacementCandidatePrefilters([], candidateStrategyKeys),
         decisions: [],
       }
     }
 
-    const runEvidence = parseJson<{
-      portfolio_risk?: {
-        baseline_max_drawdown?: unknown
-        final_max_drawdown?: unknown
-        baseline_turnover?: unknown
-        final_turnover?: unknown
-        return_correlation?: unknown
-        correlation_pass?: unknown
-        turnover_pass?: unknown
-      }
-      promotion_gates?: Record<string, unknown>
-    }>(run.evidence_json, {})
-    const portfolioRisk = runEvidence.portfolio_risk ?? {}
-    const promotionGates = Object.fromEntries(
-      Object.entries(runEvidence.promotion_gates ?? {})
-        .filter((entry): entry is [string, boolean] => typeof entry[1] === 'boolean'),
+    const runEvidence = projectStrategyReplacementRunEvidence(run.evidence_json)
+    const { results: candidatePrefilterRows } = await db.prepare(`
+      SELECT edge.strategy_id,
+             edge.strategy_version,
+             edge.observation_dates,
+             edge.candidate_observations,
+             edge.marginal_edge_mean,
+             edge.marginal_edge_lcb90,
+             edge.absolute_hit_return_mean,
+             edge.production_eligible,
+             edge.production_weight_raw
+        FROM strategy_marginal_edge_v4 edge
+       WHERE edge.run_id = ?
+         AND EXISTS (
+           SELECT 1
+             FROM json_each(?) candidate_key
+            WHERE candidate_key.value = edge.strategy_id || '|' || edge.strategy_version
+         )
+       ORDER BY edge.production_eligible DESC,
+                edge.marginal_edge_lcb90 DESC,
+                edge.strategy_id,
+                edge.strategy_version
+    `).bind(run.run_id, JSON.stringify([...candidateStrategyKeys])).all<StrategyReplacementCandidatePrefilterPersistenceRow>()
+    const candidatePrefilters = projectStrategyReplacementCandidatePrefilters(
+      candidatePrefilterRows ?? [],
+      candidateStrategyKeys,
     )
     const { results } = await db.prepare(`
-      SELECT run_id,
+      SELECT decision_id,
+             run_id,
              as_of_date,
              family_id,
              candidate_strategy_id,
@@ -3093,68 +3410,14 @@ async function loadStrategyReplacementGateSummary(
                 paired_delta_lcb90 DESC,
                 candidate_strategy_id,
                 replaced_strategy_id
-    `).bind(run.run_id).all<{
-      run_id: string
-      as_of_date: string
-      family_id: string
-      candidate_strategy_id: string
-      candidate_strategy_version: string
-      replaced_strategy_id: string
-      replaced_strategy_version: string
-      status: 'proposed' | 'accepted' | 'rejected'
-      paired_dates: number
-      paired_delta_mean: number | null
-      paired_delta_lcb90: number | null
-      candidate_absolute_mean: number | null
-      candidate_max_drawdown: number | null
-      replaced_max_drawdown: number | null
-      candidate_turnover: number | null
-      replaced_turnover: number | null
-      return_correlation: number | null
-      evidence_json: string
-    }>()
-    const decisions = (results ?? []).map((row): StrategyReplacementDecisionSummary => {
-      const evidence = parseJson<{
-        rejection_reasons?: unknown
-        promotion_allowed?: unknown
-        replacement_scope?: unknown
-        incumbent_family_id?: unknown
-      }>(row.evidence_json, {})
-      const scope = evidence.replacement_scope === 'same_family' || evidence.replacement_scope === 'cross_family'
-        ? evidence.replacement_scope
-        : null
-      return {
-        run_id: row.run_id,
-        as_of_date: row.as_of_date,
-        candidate_strategy_id: row.candidate_strategy_id,
-        candidate_strategy_version: row.candidate_strategy_version,
-        replaced_strategy_id: row.replaced_strategy_id,
-        replaced_strategy_version: row.replaced_strategy_version,
-        candidate_family_id: row.family_id,
-        incumbent_family_id: typeof evidence.incumbent_family_id === 'string' ? evidence.incumbent_family_id : null,
-        replacement_scope: scope,
-        status: row.status,
-        paired_dates: Number(row.paired_dates ?? 0),
-        paired_delta_mean: finiteNumber(row.paired_delta_mean),
-        paired_delta_lcb90: finiteNumber(row.paired_delta_lcb90),
-        candidate_absolute_cost_net_mean: finiteNumber(row.candidate_absolute_mean),
-        candidate_max_drawdown: finiteNumber(row.candidate_max_drawdown),
-        incumbent_max_drawdown: finiteNumber(row.replaced_max_drawdown),
-        candidate_turnover: finiteNumber(row.candidate_turnover),
-        incumbent_turnover: finiteNumber(row.replaced_turnover),
-        return_correlation: finiteNumber(row.return_correlation),
-        rejection_reasons: Array.isArray(evidence.rejection_reasons)
-          ? evidence.rejection_reasons.filter((value): value is string => typeof value === 'string')
-          : [],
-        promotion_allowed: evidence.promotion_allowed === true,
-      }
-    })
+    `).bind(run.run_id).all<StrategyReplacementDecisionPersistenceRow>()
+    const decisions = (results ?? []).map(projectStrategyReplacementDecisionSummary)
     return {
       policy: STRATEGY_REPLACEMENT_POLICY_V7,
       evidence_status: 'ready',
       status_reason: decisions.length > 0
         ? `${decisions.length} paired replacement decisions loaded from ${run.run_id}.`
-        : `V6 run ${run.run_id} completed without a paired replacement proposal.`,
+        : `V7 run ${run.run_id} completed without a paired replacement proposal.`,
       latest_run: {
         run_id: run.run_id,
         as_of_date: run.as_of_date,
@@ -3163,17 +3426,9 @@ async function loadStrategyReplacementGateSummary(
         eligible_strategy_count: Number(run.eligible_strategy_count ?? 0),
         sample_dates: Number(run.sample_dates ?? 0),
         created_at: run.created_at,
-        portfolio_risk: {
-          baseline_max_drawdown: finiteNumber(portfolioRisk.baseline_max_drawdown),
-          final_max_drawdown: finiteNumber(portfolioRisk.final_max_drawdown),
-          baseline_turnover: finiteNumber(portfolioRisk.baseline_turnover),
-          final_turnover: finiteNumber(portfolioRisk.final_turnover),
-          return_correlation: finiteNumber(portfolioRisk.return_correlation),
-          correlation_pass: typeof portfolioRisk.correlation_pass === 'boolean' ? portfolioRisk.correlation_pass : null,
-          turnover_pass: typeof portfolioRisk.turnover_pass === 'boolean' ? portfolioRisk.turnover_pass : null,
-        },
-        promotion_gates: promotionGates,
+        ...runEvidence,
       },
+      candidate_prefilters: candidatePrefilters,
       decisions,
     }
   } catch (cause) {
@@ -3182,6 +3437,7 @@ async function loadStrategyReplacementGateSummary(
       evidence_status: 'unavailable',
       status_reason: cause instanceof Error ? cause.message : 'Replacement evidence query failed.',
       latest_run: null,
+      candidate_prefilters: projectStrategyReplacementCandidatePrefilters([], candidateStrategyKeys),
       decisions: [],
     }
   }
@@ -3192,6 +3448,11 @@ export async function buildStrategyLearningSummary(
   date: string,
 ): Promise<StrategyLearningSummary> {
   const { specs, source } = await listStrategySpecsForLearning(db)
+  const candidateStrategyKeys = new Set(
+    specs
+      .filter((spec) => canonicalStrategyLifecycleStatus(spec.status) === 'candidate')
+      .map((spec) => `${spec.id}|${spec.version}`),
+  )
   const projectionHead = await db.prepare(`
     SELECT MAX(latest_date) AS latest_date
       FROM (
@@ -3328,7 +3589,7 @@ export async function buildStrategyLearningSummary(
     : []
   const [s12ExecutionMetrics, replacementGate] = await Promise.all([
     loadS12ExecutionLearningMetrics(db, date, windowStart),
-    loadStrategyReplacementGateSummary(db, date),
+    loadStrategyReplacementGateSummary(db, date, candidateStrategyKeys),
   ])
   const dailyBySpec = new Map<string, StrategyLearningDailyStatsRow[]>()
   for (const row of dailyRows) {

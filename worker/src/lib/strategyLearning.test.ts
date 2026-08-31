@@ -13,6 +13,9 @@ import {
   hydrateStrategyCandidateDailyFeatures,
   evaluateStrategyPromotionGate,
   listStrategySpecsForLearning,
+  projectStrategyReplacementCandidatePrefilters,
+  projectStrategyReplacementDecisionSummary,
+  projectStrategyReplacementRunEvidence,
   registryRowToStrategySpec,
   seedDefaultStrategySpecRegistry,
   shouldRetireStaleStrategyRewardRows,
@@ -78,6 +81,7 @@ function strategyReplacementGateEvidence(): StrategyLearningSummary['replacement
     evidence_status: 'pending',
     status_reason: 'test fixture has no paired replacement run',
     latest_run: null,
+    candidate_prefilters: [],
     decisions: [],
   }
 }
@@ -91,6 +95,7 @@ function acceptedStrategyReplacementGate(
     evidence_status: 'ready',
     status_reason: 'test fixture has accepted Atomic V7 paired replacement evidence',
     decisions: [{
+      decision_id: 'atomic-v7-test:candidate:incumbent-test',
       run_id: 'atomic-v7-test',
       as_of_date: '2026-05-19',
       candidate_strategy_id: candidateStrategyId,
@@ -104,7 +109,23 @@ function acceptedStrategyReplacementGate(
       paired_dates: 40,
       paired_delta_mean: 0.004,
       paired_delta_lcb90: 0.001,
+      statistical_policy_version: 'strategy-replacement-policy-v7-hac4-holm-power80-v1',
+      hac_lag: 4,
+      effective_paired_dates: 34.5,
+      paired_delta_hac_standard_error: 0.001,
+      paired_delta_lcb95_hac: 0.002,
+      paired_delta_one_sided_p_value: 0.01,
+      paired_delta_power_at_minimum_economic_delta: 0.82,
+      minimum_economic_delta: 0.001,
       candidate_absolute_cost_net_mean: 0.006,
+      candidate_absolute_effective_dates: 35,
+      candidate_absolute_hac_standard_error: 0.0012,
+      candidate_absolute_cost_net_lcb95_hac: 0.003,
+      holm_family_size: 6,
+      holm_rank: 1,
+      holm_local_alpha: 0.008333333333333333,
+      holm_adjusted_p_value: 0.04,
+      holm_rejected: true,
       candidate_max_drawdown: -0.04,
       incumbent_max_drawdown: -0.05,
       candidate_turnover: 0.3,
@@ -114,6 +135,207 @@ function acceptedStrategyReplacementGate(
       promotion_allowed: true,
     }],
   }
+}
+
+function candidatePrefilterGate(
+  candidateStrategyId: string,
+  candidateStrategyVersion: string,
+  productionEligible: boolean,
+): StrategyLearningSummary['replacement_gate'] {
+  const gate = acceptedStrategyReplacementGate(candidateStrategyId, candidateStrategyVersion)
+  return {
+    ...gate,
+    status_reason: 'test fixture has ready Atomic V7 Candidate prefilter evidence without a pair',
+    candidate_prefilters: [{
+      strategy_id: candidateStrategyId,
+      strategy_version: candidateStrategyVersion,
+      evidence_status: 'ready',
+      observation_dates: 40,
+      candidate_observations: 120,
+      marginal_edge_mean: productionEligible ? 0.004 : -0.002,
+      marginal_edge_lcb90: productionEligible ? 0.001 : -0.004,
+      absolute_hit_return_mean: productionEligible ? 0.006 : -0.001,
+      production_eligible: productionEligible,
+      production_weight_raw: productionEligible ? 0.25 : 0,
+    }],
+    decisions: [],
+  }
+}
+
+{
+  const candidateKeys = new Set(['candidate-v7|v1', 'candidate-missing|v9'])
+  const prefilters = projectStrategyReplacementCandidatePrefilters([
+    {
+      strategy_id: 'candidate-v7',
+      strategy_version: 'v1',
+      observation_dates: '38',
+      candidate_observations: 124,
+      marginal_edge_mean: '0.0042',
+      marginal_edge_lcb90: 0.0013,
+      absolute_hit_return_mean: 0.0061,
+      production_eligible: 1,
+      production_weight_raw: '0.28',
+    },
+    {
+      strategy_id: 'active-v7',
+      strategy_version: 'v2',
+      observation_dates: 41,
+      candidate_observations: 180,
+      marginal_edge_mean: 0.005,
+      marginal_edge_lcb90: 0.002,
+      absolute_hit_return_mean: 0.007,
+      production_eligible: 1,
+      production_weight_raw: 0.72,
+    },
+  ], candidateKeys)
+  assert(prefilters.length === 2, 'Candidate prefilter projection must cover every Candidate key while excluding Active keys')
+  assert(prefilters[0].strategy_id === 'candidate-v7' && prefilters[0].strategy_version === 'v1', 'Candidate prefilter projection must preserve strategy identity')
+  assert(prefilters[0].evidence_status === 'ready', 'persisted Candidate edge rows must be marked ready')
+  assert(prefilters[0].observation_dates === 38 && prefilters[0].candidate_observations === 124, 'Candidate prefilter projection must preserve evidence counts')
+  assert(prefilters[0].marginal_edge_mean === 0.0042 && prefilters[0].marginal_edge_lcb90 === 0.0013, 'Candidate prefilter projection must expose marginal-edge actuals')
+  assert(prefilters[0].absolute_hit_return_mean === 0.0061, 'Candidate prefilter projection must expose absolute return actuals')
+  assert(prefilters[0].production_eligible === true && prefilters[0].production_weight_raw === 0.28, 'Candidate prefilter projection must expose eligibility and raw weight')
+  assert(prefilters[1].strategy_id === 'candidate-missing' && prefilters[1].strategy_version === 'v9', 'missing Candidate edge rows must retain registry identity')
+  assert(prefilters[1].evidence_status === 'missing', 'missing Candidate edge rows must be explicit rather than silently omitted')
+  assert(prefilters[1].observation_dates === 0 && prefilters[1].candidate_observations === 0, 'missing Candidate counts must use zero defaults')
+  assert(prefilters[1].marginal_edge_mean === null && prefilters[1].marginal_edge_lcb90 === null, 'missing Candidate metrics must remain nullable')
+  assert(prefilters[1].production_eligible === null && prefilters[1].production_weight_raw === 0, 'missing Candidate eligibility must not be projected as a failed boolean')
+  assert(projectStrategyReplacementCandidatePrefilters(prefilters.map((row) => ({
+    ...row,
+    production_eligible: row.production_eligible ? 1 : 0,
+  })), new Set()).length === 0, 'empty Candidate key sets must project no prefilter rows')
+}
+
+{
+  const decision = projectStrategyReplacementDecisionSummary({
+    decision_id: 'decision-v7-1',
+    run_id: 'run-v7-1',
+    as_of_date: '2026-08-28',
+    family_id: 'TREND_RECLAIM_CONTINUATION',
+    candidate_strategy_id: 'candidate-v7',
+    candidate_strategy_version: 'v1',
+    replaced_strategy_id: 'incumbent-v7',
+    replaced_strategy_version: 'v2',
+    status: 'proposed',
+    paired_dates: 42,
+    paired_delta_mean: 0.004,
+    paired_delta_lcb90: 0.001,
+    candidate_absolute_mean: 0.006,
+    candidate_max_drawdown: -0.04,
+    replaced_max_drawdown: -0.05,
+    candidate_turnover: 0.3,
+    replaced_turnover: 0.27,
+    return_correlation: 0.72,
+    evidence_json: JSON.stringify({
+      statistical_policy_version: 'strategy-replacement-policy-v7-hac4-holm-power80-v1',
+      hac_lag: 4,
+      effective_paired_dates: 35.5,
+      paired_delta_hac_standard_error: 0.0011,
+      paired_delta_lcb95_hac: 0.0022,
+      paired_delta_one_sided_p_value: 0.012,
+      paired_delta_power_at_minimum_economic_delta: 0.83,
+      candidate_absolute_effective_dates: 36.5,
+      candidate_absolute_hac_standard_error: 0.0013,
+      candidate_absolute_lcb95_hac: 0.0031,
+      minimum_economic_delta: 0.001,
+      holm_family_size: 8,
+      holm_rank: 2,
+      holm_critical_alpha: 0.007142857142857143,
+      holm_adjusted_p_value: 0.048,
+      holm_rejected: true,
+      rejection_reasons: [],
+      promotion_allowed: false,
+      replacement_scope: 'cross_family',
+      incumbent_family_id: 'VALUE_QUALITY',
+    }),
+  })
+  assert(decision.decision_id === 'decision-v7-1', 'replacement projection must preserve immutable decision identity')
+  assert(decision.status === 'proposed', 'replacement projection must preserve proposed verdicts')
+  assert(decision.effective_paired_dates === 35.5, 'replacement projection must expose effective paired dates')
+  assert(decision.paired_delta_hac_standard_error === 0.0011, 'replacement projection must expose paired HAC SE')
+  assert(decision.paired_delta_lcb95_hac === 0.0022, 'replacement projection must expose paired HAC LCB95')
+  assert(decision.paired_delta_one_sided_p_value === 0.012, 'replacement projection must expose one-sided p-value')
+  assert(decision.paired_delta_power_at_minimum_economic_delta === 0.83, 'replacement projection must expose local-alpha power')
+  assert(decision.candidate_absolute_effective_dates === 36.5, 'replacement projection must expose candidate absolute ESS')
+  assert(decision.candidate_absolute_cost_net_lcb95_hac === 0.0031, 'replacement projection must expose candidate absolute HAC LCB95')
+  assert(decision.holm_family_size === 8 && decision.holm_rank === 2, 'replacement projection must expose Holm family and rank')
+  assert(decision.holm_local_alpha === 0.007142857142857143, 'Holm critical alpha must project under the local-alpha API name')
+  assert(decision.holm_adjusted_p_value === 0.048 && decision.holm_rejected === true, 'replacement projection must expose Holm verdict evidence')
+
+  const legacy = projectStrategyReplacementDecisionSummary({
+    decision_id: 'decision-legacy',
+    run_id: 'run-legacy',
+    as_of_date: '2026-08-01',
+    family_id: 'TREND_RECLAIM_CONTINUATION',
+    candidate_strategy_id: 'candidate-legacy',
+    candidate_strategy_version: 'v1',
+    replaced_strategy_id: 'incumbent-legacy',
+    replaced_strategy_version: 'v1',
+    status: 'rejected',
+    paired_dates: 12,
+    paired_delta_mean: null,
+    paired_delta_lcb90: null,
+    candidate_absolute_mean: null,
+    candidate_max_drawdown: null,
+    replaced_max_drawdown: null,
+    candidate_turnover: null,
+    replaced_turnover: null,
+    return_correlation: null,
+    evidence_json: '{}',
+  })
+  assert(legacy.effective_paired_dates === null && legacy.holm_rejected === null, 'legacy evidence must remain readable with nullable V7 fields')
+}
+
+{
+  const run = projectStrategyReplacementRunEvidence(JSON.stringify({
+    production_owner_count_before: 8,
+    production_owner_count_after: 8,
+    serving_owner_coverage_complete: true,
+    candidate_portfolio: {
+      dates: 44,
+      residual_mean: 0.003,
+      residual_lcb90: 0.001,
+      absolute_mean: 0.006,
+      absolute_effective_dates: 37.5,
+      absolute_hac_standard_error: 0.0012,
+      absolute_lcb95_hac: 0.004,
+    },
+    champion_comparison: {
+      champion_run_id: 'champion-v6',
+      paired_dates: 44,
+      hac_lag: 4,
+      effective_paired_dates: 36.25,
+      paired_residual_delta_mean: 0.003,
+      paired_residual_delta_lcb90_iid_diagnostic_only: 0.0014,
+      paired_residual_delta_hac_standard_error: 0.0011,
+      paired_residual_delta_lcb95_hac: 0.0012,
+      paired_residual_delta_one_sided_p_value: 0.02,
+      power_at_minimum_economic_delta: 0.81,
+      minimum_economic_delta: 0.001,
+    },
+    portfolio_risk: {
+      baseline_max_drawdown: -0.06,
+      final_max_drawdown: -0.05,
+      baseline_turnover: 0.32,
+      final_turnover: 0.29,
+      return_correlation: 0.88,
+      correlation_pass: true,
+      turnover_pass: true,
+    },
+    promotion_gates: {
+      statistical_policy_version: 'strategy-replacement-policy-v7-hac4-holm-power80-v1',
+      holm_family_size: 8,
+      full_portfolio_all_gates_pass: false,
+      full_portfolio_rejection_reasons: ['no_holm_accepted_replacement'],
+    },
+  }))
+  assert(run.production_owner_count_before === 8 && run.production_owner_count_after === 8, 'run projection must expose owner-count actuals')
+  assert(run.candidate_portfolio.absolute_effective_dates === 37.5, 'run projection must expose final portfolio absolute ESS')
+  assert(run.champion_comparison.paired_residual_delta_lcb95_hac === 0.0012, 'run projection must expose portfolio paired HAC LCB95')
+  assert(run.portfolio_risk.final_turnover === 0.29, 'run projection must preserve portfolio risk actuals')
+  assert(run.promotion_gates.holm_family_size === 8, 'run projection must not discard numeric gate actuals')
+  assert(run.promotion_gates.statistical_policy_version === 'strategy-replacement-policy-v7-hac4-holm-power80-v1', 'run projection must not discard gate version evidence')
+  assert(Array.isArray(run.promotion_gates.full_portfolio_rejection_reasons), 'run projection must not discard gate rejection reasons')
 }
 
 
@@ -318,6 +540,33 @@ class FakeCandidateFeatureD1 {
   assert(source.includes('STRATEGY_LEARNING_DEFAULT_CANDIDATE_LIMIT = 2000'), 'strategy learning must default to full L0 universe scale, not the old 500-candidate partial cap')
   assert(source.includes('STRATEGY_LEARNING_D1_BATCH_SIZE = 250'), 'strategy learning D1 writes must avoid excessive 50-row round trips that can be killed in callback waitUntil')
   assert(source.includes('await db.batch(chunk)'), 'strategy learning replay must use D1 batch persistence')
+  assert(
+    source.includes("canonicalStrategyLifecycleStatus(spec.status) === 'candidate'")
+      && source.includes('loadStrategyReplacementGateSummary(db, date, candidateStrategyKeys)'),
+    'Atomic V7 prefilter loader must receive canonical Candidate keys from the registry projection',
+  )
+  assert(
+    source.includes('FROM strategy_marginal_edge_v4 edge')
+      && source.includes('FROM json_each(?) candidate_key')
+      && source.includes("candidate_key.value = edge.strategy_id || '|' || edge.strategy_version"),
+    'Atomic V7 prefilter query must exclude Active rows before API projection',
+  )
+  assert(
+    source.includes('candidate_prefilters: projectStrategyReplacementCandidatePrefilters([], candidateStrategyKeys)'),
+    'missing or unavailable Atomic V7 runs must retain complete Candidate keys with explicit missing evidence',
+  )
+  assert(
+    !source.includes("status: 'not_applicable' | 'pending'")
+      && !source.includes("activationDecision?.status ?? 'pending'")
+      && source.includes("'evidence_pending' | 'prefilter_failed' | 'not_evaluated'"),
+    'Candidate activation must not collapse no-run, prefilter-failed, or no-pair states into generic pending',
+  )
+  assert(
+    source.includes('atomic_replacement_v7_evidence_pending')
+      && source.includes('atomic_replacement_v7_prefilter_failed')
+      && source.includes('atomic_replacement_v7_no_pair'),
+    'Candidate missing-evidence reasons must distinguish evidence, prefilter, and pair blockers',
+  )
   assert(
     source.includes('selection_reference_snapshots_v1') &&
       source.includes('r.hard_gate_passed=1') &&
@@ -909,6 +1158,43 @@ runStrategyCandidateDailyFeatureHydrationTest().catch((error) => {
   assert(gate[0].recommended_stage === 'candidate_evidence', 'weak Candidate evidence should stay Candidate')
   assert(gate[0].missing_evidence.includes('samples_lt_30'), 'gate should expose sample shortage')
   assert(!gate[0].missing_evidence.includes('avg_return_not_positive'), 'absolute average return must remain diagnostic rather than a universal hard gate')
+  assert(gate[0].activation_gate.status === 'evidence_pending', 'Candidate without a ready replacement run must expose evidence_pending')
+  assert(gate[0].missing_evidence.includes('atomic_replacement_v7_evidence_pending'), 'Candidate without a ready replacement run must expose the evidence blocker')
+  assert(!gate[0].missing_evidence.includes('atomic_replacement_v7_not_accepted'), 'no-run Candidate must not be mislabeled as a rejected decision')
+}
+
+{
+  const spec = { ...DEFAULT_STRATEGY_SPECS[0], status: 'candidate' as const }
+  const summary = {
+    version: 'strategy-learning-v5',
+    date: '2026-08-28',
+    spec_source: 'registry',
+    specs: [{ ...spec, learning: strategyLearningEvidence() }],
+    promotion_gate: [],
+    replacement_gate: candidatePrefilterGate(spec.id, spec.version, false),
+    policy_state_preview: {} as any,
+  } satisfies StrategyLearningSummary
+  const gate = evaluateStrategyPromotionGate(summary)
+  assert(gate[0].activation_gate.status === 'prefilter_failed', 'ineligible ready Candidate prefilter must expose prefilter_failed')
+  assert(gate[0].missing_evidence.includes('atomic_replacement_v7_prefilter_failed'), 'prefilter failure must expose its own blocker reason')
+  assert(!gate[0].missing_evidence.includes('atomic_replacement_v7_not_accepted'), 'prefilter failure must not masquerade as a replacement rejection')
+}
+
+{
+  const spec = { ...DEFAULT_STRATEGY_SPECS[0], status: 'candidate' as const }
+  const summary = {
+    version: 'strategy-learning-v5',
+    date: '2026-08-28',
+    spec_source: 'registry',
+    specs: [{ ...spec, learning: strategyLearningEvidence() }],
+    promotion_gate: [],
+    replacement_gate: candidatePrefilterGate(spec.id, spec.version, true),
+    policy_state_preview: {} as any,
+  } satisfies StrategyLearningSummary
+  const gate = evaluateStrategyPromotionGate(summary)
+  assert(gate[0].activation_gate.status === 'not_evaluated', 'eligible Candidate without a pair must expose not_evaluated')
+  assert(gate[0].missing_evidence.includes('atomic_replacement_v7_no_pair'), 'eligible Candidate without a pair must expose the no-pair blocker')
+  assert(!gate[0].missing_evidence.includes('atomic_replacement_v7_not_accepted'), 'no-pair Candidate must not masquerade as a replacement rejection')
 }
 
 {
@@ -931,6 +1217,55 @@ runStrategyCandidateDailyFeatureHydrationTest().catch((error) => {
   assert(gate[0].activation_gate.status === 'accepted', 'candidate activation must expose accepted Atomic V7 evidence')
   assert(gate[0].l3_requires_wei_approval === false, 'L3 production allocation must be automatically governed by Edge V5')
   assert(gate[0].production_effect === false, 'L3 gate is still metadata until approved')
+}
+
+{
+  const spec = { ...DEFAULT_STRATEGY_SPECS[0], status: 'candidate' as const }
+  const replacementGate = acceptedStrategyReplacementGate(spec.id, spec.version)
+  replacementGate.decisions[0] = {
+    ...replacementGate.decisions[0],
+    status: 'proposed',
+    promotion_allowed: false,
+  }
+  const summary = {
+    version: 'strategy-learning-v5',
+    date: '2026-08-28',
+    spec_source: 'registry',
+    specs: [{ ...spec, learning: strategyLearningEvidence() }],
+    promotion_gate: [],
+    replacement_gate: replacementGate,
+    policy_state_preview: {} as any,
+  } satisfies StrategyLearningSummary
+  const gate = evaluateStrategyPromotionGate(summary)
+  assert(gate[0].decision === 'not_ready', 'proposed replacement must not activate a Candidate before cutover')
+  assert(gate[0].activation_gate.status === 'proposed', 'activation summary must preserve proposed verdicts')
+  assert(gate[0].activation_gate.decision_id === replacementGate.decisions[0].decision_id, 'activation summary must retain proposed decision identity')
+  assert(gate[0].missing_evidence.includes('atomic_replacement_v7_not_accepted'), 'proposed replacement may retain the not-accepted blocker')
+}
+
+{
+  const spec = { ...DEFAULT_STRATEGY_SPECS[0], status: 'candidate' as const }
+  const replacementGate = acceptedStrategyReplacementGate(spec.id, spec.version)
+  replacementGate.decisions[0] = {
+    ...replacementGate.decisions[0],
+    status: 'rejected',
+    promotion_allowed: true,
+    rejection_reasons: ['paired_delta_lcb95_hac_not_positive'],
+  }
+  const summary = {
+    version: 'strategy-learning-v5',
+    date: '2026-08-28',
+    spec_source: 'registry',
+    specs: [{ ...spec, learning: strategyLearningEvidence() }],
+    promotion_gate: [],
+    replacement_gate: replacementGate,
+    policy_state_preview: {} as any,
+  } satisfies StrategyLearningSummary
+  const gate = evaluateStrategyPromotionGate(summary)
+  assert(gate[0].decision === 'not_ready', 'rejected replacement must not activate a Candidate')
+  assert(gate[0].activation_gate.status === 'rejected', 'activation summary must preserve rejected verdicts')
+  assert(gate[0].activation_gate.run_id === replacementGate.decisions[0].run_id, 'activation summary must retain rejected run identity')
+  assert(gate[0].missing_evidence.includes('atomic_replacement_v7_not_accepted'), 'rejected replacement may retain the not-accepted blocker')
 }
 
 {

@@ -39,7 +39,7 @@ function chartOptions(width: number): DeepPartial<ChartOptions> {
     layout: {
       background: { type: ColorType.Solid, color: '#0a0b0f' },
       textColor: '#8992a3',
-      fontFamily: 'Manrope, Noto Sans TC, system-ui, sans-serif',
+      fontFamily: 'Segoe UI Variable, PingFang TC, Microsoft JhengHei, system-ui, sans-serif',
     },
     grid: {
       vertLines: { color: 'rgba(255, 255, 255, 0.045)' },

@@ -4,16 +4,19 @@ import assert from 'node:assert/strict'
 
 const root = process.cwd()
 const appPath = path.join(root, 'src', 'App.tsx')
+const routeModulesPath = path.join(root, 'src', 'lib', 'routeModules.ts')
 const pagePath = path.join(root, 'src', 'pages', 'StrategyLearningPage.tsx')
 const apiPath = path.join(root, 'src', 'lib', 'api.ts')
 
 assert(fs.existsSync(pagePath), 'Strategy Lab should have a dedicated Learning + Reward Ledger page')
 
 const app = fs.readFileSync(appPath, 'utf8')
+const routeModules = fs.readFileSync(routeModulesPath, 'utf8')
 const page = fs.readFileSync(pagePath, 'utf8')
 const api = fs.readFileSync(apiPath, 'utf8')
 
-assert(app.includes("import('./pages/StrategyLearningPage')"), '/strategy-lab should route to the focused learning page')
+assert(routeModules.includes("strategyLab: () => import('@/pages/StrategyLearningPage')"), '/strategy-lab should load the focused learning page')
+assert(app.includes('const StrategyLabPage = lazy(loadStrategyLabPage)'), '/strategy-lab should remain lazy loaded')
 assert(page.includes('策略學習與報酬帳本'), 'Strategy Lab should expose the production learning and reward-ledger mission')
 assert(page.includes('StrategyHealthBoard'), 'Strategy Lab should expose an always-visible strategy health board')
 assert(page.includes('StrategyLineageInspector'), 'Strategy Lab should expose a production lineage inspector')

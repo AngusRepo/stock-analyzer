@@ -12,6 +12,7 @@ import {
   systemApi,
 } from '@/lib/api'
 import { splitRecommendationLanes } from '@/lib/recommendationLanes'
+export { defaultQueryOptions } from '@/lib/queryDefaults'
 
 export const queryTtl = {
   realtime: 30_000,
@@ -20,17 +21,6 @@ export const queryTtl = {
   dailyDecision: 30 * 60_000,
   reference: 60 * 60_000,
 } as const
-
-export const defaultQueryOptions = {
-  queries: {
-    retry: 1,
-    staleTime: 2 * 60_000,
-    gcTime: 30 * 60_000,
-    refetchOnWindowFocus: false,
-    refetchOnReconnect: true,
-    structuralSharing: true,
-  },
-}
 
 export function twToday(): string {
   return new Date(Date.now() + 8 * 3600_000).toISOString().slice(0, 10)

@@ -57,7 +57,16 @@ export default defineConfig({
       registerType: 'autoUpdate',
       devOptions: { enabled: process.env.VITE_PWA_DEV === '1' },
       workbox: {
-        globPatterns: ['**/*.{js,css,html,ico,png,svg,woff2}'],
+        globPatterns: [
+          'index.html',
+          'assets/index-*.js',
+          'assets/index-*.css',
+          'assets/vendor-react-*.js',
+          'assets/vendor-query-*.js',
+          'assets/rolldown-runtime-*.js',
+          'assets/const-*.js',
+        ],
+        globIgnores: ['**/uiux-demo.html', '**/obs-chain-demo.html'],
         skipWaiting: true,
         clientsClaim: true,
         cleanupOutdatedCaches: true,
@@ -67,6 +76,14 @@ export default defineConfig({
           {
             urlPattern: /^\/api\//,
             handler: 'NetworkOnly',
+          },
+          {
+            urlPattern: /\/assets\/.*\.(?:js|css)$/,
+            handler: 'CacheFirst',
+            options: {
+              cacheName: 'code-cache',
+              expiration: { maxEntries: 80, maxAgeSeconds: 365 * 24 * 60 * 60 },
+            },
           },
           {
             urlPattern: /\.(?:png|jpg|jpeg|svg|gif|webp|ico)$/,

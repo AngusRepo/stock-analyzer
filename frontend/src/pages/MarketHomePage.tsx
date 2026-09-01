@@ -15,15 +15,16 @@ import {
   Waves,
 } from 'lucide-react'
 import AppShell from '@/components/AppShell'
+import { DeferredRender } from '@/components/DeferredRender'
 import { GroupFactorTrajectoryPanel } from '@/components/PitFactorTrajectoryPanel'
 import { MarketRiskDetailBreakdown } from '@/components/MarketRiskDetailBreakdown'
 import { marketApi, recommendationsApi } from '@/lib/api'
 import { splitRecommendationLanes } from '@/lib/recommendationLanes'
 import { queryTtl, recommendationDailyKey } from '@/lib/queryPolicy'
 
-const RecommendationCardClean = lazy(() =>
-  import('@/components/RecommendationCardClean').then((module) => ({ default: module.RecommendationCardClean })),
-)
+const loadRecommendationCardClean = () =>
+  import('@/components/RecommendationCardClean').then((module) => ({ default: module.RecommendationCardClean }))
+const RecommendationCardClean = lazy(loadRecommendationCardClean)
 
 type Tone = 'red' | 'green' | 'blue' | 'amber' | 'slate'
 
@@ -1466,10 +1467,12 @@ export default function MarketHomePage() {
           </div>
 
           <MarketOverviewBlock />
-          <div className="sv-home-deferred-section grid items-start gap-4 xl:grid-cols-[minmax(0,3fr)_minmax(380px,2fr)]">
-            <div className="min-w-0"><RecommendationPanel /></div>
-            <div className="min-w-0"><GroupFactorTrajectoryPanel /></div>
-          </div>
+          <DeferredRender className="sv-home-deferred-section" minHeight={760}>
+            <div className="grid items-start gap-4 xl:grid-cols-[minmax(0,3fr)_minmax(380px,2fr)]">
+              <div className="min-w-0"><RecommendationPanel /></div>
+              <div className="min-w-0"><GroupFactorTrajectoryPanel /></div>
+            </div>
+          </DeferredRender>
         </main>
       </div>
     </AppShell>

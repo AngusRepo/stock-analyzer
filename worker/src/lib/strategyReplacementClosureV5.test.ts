@@ -182,8 +182,9 @@ assert(learning.includes("'route_calibration'"), 'route calibration must retain 
 assert(learning.includes("'adaptive_policy'"), 'adaptive policy must have a distinct finalizer failure owner')
 assert(orchestrator.includes('resolveEveningChainRunAuthority'), 'queue finalizer must revalidate durable canonical production authority')
 assert(orchestrator.includes('productionAuthority?.allowed === true'), 'production mutation must require resolved authority')
-assert(orchestrator.includes('queue_not_marked_production_eligible'), 'shadow reruns must remain fail-closed without queue eligibility')
-assert(orchestrator.includes('policyMutationAllowed = currentBusinessDateRun'), 'production policy mutation must start from live canonical authority')
+assert(orchestrator.includes('durable_run_not_marked_production_eligible'), 'shadow reruns must remain fail-closed without durable production-authority intent')
+assert(orchestrator.includes('productionAuthorityIntent && !currentBusinessDateRun'), 'a live-intent run must fail rather than downgrade silently when authority is denied')
+assert(orchestrator.includes('policyMutationAllowed = productionAuthorityIntent && currentBusinessDateRun'), 'production policy mutation must require both durable live intent and current canonical authority')
 assert(orchestrator.includes('allowPromotion: policyMutationAllowed'), 'evidence-only recovery must close live lineage without cutting over production owners')
 
 console.log('strategyReplacementClosureV5 contract tests passed')

@@ -27,6 +27,7 @@ const candidateSections = page.slice(page.indexOf('const CANDIDATE_STRATEGY_HEAL
 assert(activeSections.includes("key: 'performance_cooldown'") && activeSections.includes('連續兩次 OOS promoted primary-horizon 分數為負') && activeSections.includes('diversity sleeve') && !activeSections.includes("key: 'promotion_pending'"), 'Active cooldown must be owned by consecutive promoted primary-horizon evidence and never show promotion pending')
 assert(candidateSections.includes("key: 'promotion_pending'") && !candidateSections.includes("key: 'performance_cooldown'"), 'Only Candidate may expose promotion pending')
 assert(candidateSections.includes("key: 'prefilter_failed'") && page.includes("String(gate.activation_gate.status) === 'prefilter_failed'"), 'Candidate prefilter failure must have its own bucket instead of promotion pending')
+assert(candidateSections.includes("key: 'atomic_not_applicable'") && page.includes("String(gate.activation_gate.status) === 'not_applicable'"), 'Non-selection Candidate owners must have an explicit Atomic-not-applicable bucket')
 assert(page.includes('strategyLifecycleLane(row) === lane.key') && page.includes('xl:grid-cols-2'), 'Active and Candidate lanes must stay in visible left/right columns')
 assert(page.includes('沒有額外的 Shadow 策略 stage'), 'Candidate must be the evidence accumulation lifecycle state')
 assert(page.includes('rows={orderedRows}'), 'Health board must render every non-retired strategy without a hidden filter')
@@ -79,11 +80,13 @@ const healthBucket = page.slice(page.indexOf('function strategyHealthBucket'), p
 assert(healthBucket.indexOf("strategyLifecycleLane(row) === 'active'") < healthBucket.indexOf("row.learning.reward_state === 'pending_maturity'"), 'Active formal contribution routing must run before generic evidence accumulation')
 assert(healthBucket.includes("ownerDecision?.performance_state === 'cooldown'") && healthBucket.includes("return 'performance_cooldown'"), 'Active performance cooldown must come from the persisted formal owner decision')
 assert(healthBucket.includes("return gate.missing_evidence.length > 0") && healthBucket.includes("? 'accumulating' : 'evidence_repair'"), 'Readiness deficits must not be mislabeled as performance cooldown')
+assert(healthBucket.includes("return 'formal_policy_pending'") && !healthBucket.includes("if (formalWeight == null) return 'evidence_repair'"), 'A missing or zero formal weight after data gates pass must be policy-pending rather than data repair')
 assert(page.includes('gate?.allocation_eligible === true && formalPolicyWeight != null && formalPolicyWeight > 0'), 'Pending-buy health requires both the allocation gate and a positive formal weight')
 assert(page.includes('formal_policy_lineage') && page.includes('formalPolicyWeights') && page.includes("formalPolicy ? executionEligibleCount : '-'"), 'Formal lineage must own weight display and execution-eligible counts, failing closed when unavailable')
 assert(page.includes('const formalPolicy = strategyLanes?.formal.production_effect === true') && page.includes('const formalPolicy = lanes?.formal.production_effect === true'), 'Formal weights and inspector must require both production effect and formal lineage')
 assert(api.includes('owner_strategy_decisions') && api.includes('performance_reason') && page.includes('formalPolicy.base_policy_version === formalBasePolicyVersion') && page.includes('formalPolicy.base_policy_as_of_date === formalBasePolicyAsOfDate'), 'Cooldown reasons must come from the exact persisted formal owner policy lineage')
 assert(page.includes('formalOwnerDecisions[row.id]') && page.includes('正式 policy 降溫原因') && page.includes('為什麼被排入績效降溫') && page.includes('formalCooldownReasons.map'), 'Active cooldown cards and inspector must expose every persisted formal owner reason')
+assert(page.includes('為什麼正式 contribution 尚未大於 0') && page.includes('不代表 reward、PIT 或 decision 資料損壞') && !page.includes('formalCooldown || formalContributionZero'), 'Zero contribution must have a policy/firewall explanation and must not render the cooldown panel')
 assert(page.includes('production_firewall_allocation_gate_blocked_reason_not_archived') && page.includes('formalQuarantinedStrategyIds.includes(row.id)'), 'A quarantined Active without adaptive failure reasons must disclose the production firewall layer and archival limitation')
 assert(page.includes('不拿 preview 原因冒充正式降溫原因'), 'Formal cooldown reasons must fail closed on lineage mismatch')
 assert(page.includes('正式 contribution') && page.includes('Preview weight（診斷）'), 'Formal and preview weights must be visibly separate')
@@ -104,6 +107,8 @@ assert(!page.includes('單一推薦資料流：'), 'The removed single recommend
 assert(page.includes("const evidenceReady = prefilter.evidence_status === 'ready'") && page.includes('prefilter.production_eligible === false') && page.includes('evidence-missing（持續累積）'), 'Missing Candidate prefilter evidence must remain pending/missing; only ready plus production_eligible=false may fail')
 assert(!page.includes("prefilter.production_eligible ? 'prefilter-pass' : 'prefilter-failed'"), 'Nullable Candidate eligibility must not collapse missing evidence into prefilter failure')
 assert(page.includes('Candidate observation dates') && page.includes('Candidate marginal-edge LCB90') && page.includes('Candidate absolute hit-return mean'), 'Candidate prefilter must render every actual against its versioned target')
+assert(api.includes("'not_applicable'") && api.includes('applicability_reason') && page.includes('atomicV7InapplicabilityLabel'), 'Atomic API and modal must distinguish owner-boundary not-applicable from missing evidence')
+assert(page.includes('Prefilter verdict：通過') && page.includes('未通過：{metric.label}') && page.includes('actual {metric.value}；target {metric.target}'), 'S8-style prefilter failures must expose a visible passed/failed count and each failed actual versus target')
 for (const field of [
   'effective_paired_dates',
   'paired_delta_hac_standard_error',

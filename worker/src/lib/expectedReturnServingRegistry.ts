@@ -282,6 +282,7 @@ export async function commitExpectedReturnChampion(
     promotionPacketId: string
     candidateId: string
     sourceRunDate: string
+    prospectiveValidation: JsonRecord
   },
 ): Promise<{ artifact_id: string; previous_version: string | null; payload_checksum: string }> {
   const modelVersion = String(input.artifact.model_version ?? '').trim()
@@ -313,6 +314,61 @@ export async function commitExpectedReturnChampion(
   if (String(registry.checksum ?? '').toLowerCase() !== artifactChecksum) {
     throw new Error('expected_return_registry_artifact_checksum_mismatch')
   }
+  const prospective = input.prospectiveValidation ?? {}
+  const fingerprint = String(input.artifact.model_fingerprint ?? '').trim().toLowerCase()
+  const prospectiveCorrLcb = prospective.corr_or_delta_lcb90 == null
+    ? null
+    : Number(prospective.corr_or_delta_lcb90)
+  const prospectiveSpreadLcb = prospective.spread_or_delta_lcb90 == null
+    ? null
+    : Number(prospective.spread_or_delta_lcb90)
+  const prospectiveTopLcb = prospective.top_return_lcb90 == null
+    ? null
+    : Number(prospective.top_return_lcb90)
+  if (
+    prospective.schema_version !== 'expected-return-candidate-forward-gate-v1'
+    || prospective.decision !== 'PASS'
+    || !Array.isArray(prospective.failed_gates)
+    || prospective.failed_gates.length > 0
+    || prospective.candidate_artifact_id !== artifactId
+    || String(prospective.candidate_artifact_checksum ?? '').toLowerCase() !== artifactChecksum
+    || String(prospective.model_fingerprint ?? '').toLowerCase() !== fingerprint
+    || String(prospective.source_run_date ?? '').slice(0, 10) !== input.sourceRunDate.slice(0, 10)
+    || prospective.training_dispatched !== false
+    || !Number.isFinite(prospectiveCorrLcb)
+    || !Number.isFinite(prospectiveSpreadLcb)
+    || !Number.isFinite(prospectiveTopLcb)
+    || Number(prospectiveTopLcb) <= 0
+    || (input.owner === 'l4_alpha_ev'
+      ? Number(prospectiveCorrLcb) <= 0 || Number(prospectiveSpreadLcb) <= 0
+      : Number(prospectiveCorrLcb) < 0 || Number(prospectiveSpreadLcb) < 0)
+  ) {
+    throw new Error('expected_return_registry_prospective_gate_invalid')
+  }
+  const forwardEvidence = await db.prepare(`
+    SELECT COUNT(*) AS evaluable_date_count,
+           MIN(prediction_date) AS prediction_date_min,
+           MAX(prediction_date) AS prediction_date_max,
+           SUM(CASE WHEN prediction_date <= source_run_date THEN 1 ELSE 0 END) AS invalid_pre_freeze_rows
+      FROM expected_return_candidate_forward_evaluations
+     WHERE candidate_artifact_id = ?
+       AND candidate_artifact_checksum = ?
+       AND model_name = ?
+       AND model_fingerprint = ?
+       AND quality_decision IN ('PASS','DEGRADED')
+  `).bind(artifactId, artifactChecksum, input.owner, fingerprint).first<Record<string, any>>()
+  const evaluableDates = Number(forwardEvidence?.evaluable_date_count ?? 0)
+  const minimumDates = Number(prospective.minimum_evaluable_dates ?? 0)
+  if (
+    minimumDates < 5
+    || evaluableDates !== Number(prospective.evaluable_date_count ?? -1)
+    || evaluableDates < minimumDates
+    || Number(forwardEvidence?.invalid_pre_freeze_rows ?? 0) !== 0
+    || String(forwardEvidence?.prediction_date_min ?? '') !== String(prospective.prediction_date_min ?? '')
+    || String(forwardEvidence?.prediction_date_max ?? '') !== String(prospective.prediction_date_max ?? '')
+  ) {
+    throw new Error('expected_return_registry_prospective_evidence_mismatch')
+  }
   const previous = await db.prepare(`
     SELECT champion_version, champion_artifact_id
       FROM model_champion_pointers
@@ -329,6 +385,7 @@ export async function commitExpectedReturnChampion(
     artifact_path: input.artifactPath,
     artifact_checksum: artifactChecksum,
     payload_checksum: payloadChecksum,
+    prospective_validation: prospective,
   })
   const eventId = `expected-return:${input.owner}:${modelVersion}:${artifactChecksum.slice(0, 16)}`
   await db.batch([

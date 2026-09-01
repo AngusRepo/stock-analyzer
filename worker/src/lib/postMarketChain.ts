@@ -609,6 +609,15 @@ export async function runPostPipelineCallbackChain(
     })
     return result.summary
   }, { critical: false, timeoutMs: TASK_EXECUTION_TIMEOUT_MS }))
+  results.push(await logChainedTask(env, ctx, 'pit-residual-funnel-recovery', async () => {
+    const { recoverMissingPitResidualFunnels } = await import('./pitResidualFunnelEnrichment')
+    const result = await recoverMissingPitResidualFunnels(env, {
+      throughDate: ctx.runDate!,
+      excludeBusinessDate: ctx.runDate!,
+      maxDates: 1,
+    })
+    return result.summary
+  }, { critical: false, timeoutMs: TASK_EXECUTION_TIMEOUT_MS }))
   const snapshotEvidenceKey = snapshotUnavailableInEvidenceOnlyMode
     ? 'active8-evidence-only-authority-v1'
     : String(snapshotClosure.snapshotRunId ?? '')

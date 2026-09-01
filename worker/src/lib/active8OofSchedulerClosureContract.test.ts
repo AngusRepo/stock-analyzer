@@ -29,7 +29,7 @@ assert(!['l4-alpha-ev-refresh', 'allocator-ev-fusion-refresh', 'monthly-l4-alpha
 
 assert(workflows.includes("'/walk_forward/oof/lifecycle'"), 'all Worker cadence tasks must call the same controller OOF lifecycle owner')
 assert(workflows.includes("dispatch_full_fit: cadence !== 'daily'"), 'daily evidence materialization must not implicitly dispatch Active-8 full-fit training')
-assert(workflows.includes('promote: options.continuationOnly ? false : true'), 'cohort continuation must never promote a candidate')
+assert(workflows.includes("promote: cadence === 'daily' || options.continuationOnly !== true"), 'daily continuation must finish exact prospective candidate promotion while weekly/monthly continuation remains promotion-disabled')
 assert(workflows.includes("dispatch_full_fit: cadence !== 'daily'"), 'weekly/monthly continuation must poll the existing full-fit lifecycle')
 assert(workflows.includes('continuation_only: options.continuationOnly === true'), 'Worker must explicitly attest materialization-only continuation')
 assert(workflows.includes("evidence_mode: 'purged_oof'"), 'manual Fusion refresh must use formal purged OOF evidence')
@@ -47,7 +47,7 @@ assert(snapshotContinuation.includes('claimSchedulerExecutionTicket'), 'at-least
 assert(snapshotContinuation.includes("runActive8OofLifecycle(env, businessDate, 'daily')"), 'snapshot-ready continuation must invoke daily materialization without retraining')
 assert(
   adminControlRoutes.includes("['pending', 'spawned', 'materialized', 'shadow_evaluated'].includes(lifecycleStatus)"),
-  'weekly/monthly callbacks must continue polling when the cohort is materialized but its full-fit dependency is still active',
+  'daily/weekly/monthly callbacks must continue polling while a durable lifecycle dependency is still active',
 )
 assert(adminControlRoutes.includes("active8FreshnessStatus === 'fresh'"), 'Allocator follow-up must run only after the durable OOF freshness audit passes')
 assert(adminControlRoutes.includes('readinessRunDate = active8FreshnessBusinessDate ?? callbackRunDate'), 'fresh daily OOF callback must prefer immutable prep business date over the post-midnight scheduler date')
@@ -64,11 +64,12 @@ assert(/!safeProductionLane\s+\? 'safe_abstain'/.test(updateOrchestrator), 'miss
 assert(updateOrchestrator.includes("status: state === 'fatal' ? 'error' : 'success'"), 'safe abstention must close Scheduler green while preserving fatal infrastructure errors')
 assert(updateOrchestrator.includes('action_ready=${safeProductionLane ? 1 : 0}'), 'Allocator summary must separate job completion from BUY/allocation readiness')
 assert(!adminControlRoutes.includes("active8FreshnessStatus === 'fresh'\n    && callbackRunDate\n    &&"), 'OOF follow-up must not silently add an unrelated promotion or training condition')
-assert(adminControlRoutes.includes("type: 'active8_oof_continuation'"), 'weekly/monthly spawned cohorts must enqueue a delayed durable continuation')
+assert(adminControlRoutes.includes("['daily', 'weekly', 'monthly'].includes(cadence)"), 'daily dependency closure must use the same bounded durable continuation path')
+assert(adminControlRoutes.includes("type: 'active8_oof_continuation'"), 'triggered lifecycle dependencies must enqueue a delayed durable continuation')
 assert(adminControlRoutes.includes('oofExpectedCohortId: expectedCohortId'), 'continuation must stay pinned to the exact immutable cohort identity')
 assert(adminControlRoutes.includes('delaySeconds: 300'), 'continuation retries must be delayed instead of hot-looping')
 assert(updateOrchestrator.includes("if (msg.type === 'active8_oof_continuation')"), 'update queue must consume the durable OOF continuation')
-assert(updateOrchestrator.includes('continuationOnly: true'), 'queue continuation must enforce materialization-only mode')
+assert(updateOrchestrator.includes('continuationOnly: Boolean(expectedCohortId)'), 'exact-cohort continuation must be materialization-only while pre-cohort daily prep remains safely retryable')
 assert(updateOrchestrator.includes('planActive8OofContinuationCollisionRetry(summary, attempt)'), 'a singleton Cloud Run collision must be converted into another bounded durable continuation')
 assert(updateOrchestrator.includes('active8_oof_continuation_dispatch_collision'), 'collision recovery must leave an observable scheduler receipt')
 assert(updateOrchestrator.includes('oofContinuationAttempt: collisionRetry.attempt'), 'collision recovery must advance its bounded attempt instead of hot-looping')
@@ -86,7 +87,7 @@ assert(
   'continuation must stop before training dispatch while the existing cohort manifest is not ready',
 )
 assert(
-  walkForward.includes('active8-oof-lifecycle-receipt-v12-feature-source-attested') &&
+  walkForward.includes('active8-oof-lifecycle-receipt-v13-candidate-forward-closed') &&
     walkForward.includes('_oof_lifecycle_receipt_matches_active_policy'),
   'materialization/promotion must invalidate stale receipts when the active PIT policy changes',
 )
@@ -121,7 +122,7 @@ assert(
   walkForward.includes('if forward_extension_retry_required:') &&
     walkForward.includes('"reason": "daily_forward_extension_not_materialized"') &&
     walkForward.includes('"dependency_retry_required": True') &&
-    walkForward.includes('dependency_retry_required = opb_failed or full_fit_retry_required') &&
+    walkForward.includes('candidate_forward_retry_required') &&
     walkForward.includes('if not req.dry_run and not dependency_retry_required'),
   'frozen-forward gaps must stop before stale materialization; failed OPB/full-fit must remain terminal and retryable',
 )

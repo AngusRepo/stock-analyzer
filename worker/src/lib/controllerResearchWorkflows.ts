@@ -412,7 +412,10 @@ export async function runActive8OofLifecycle(
       cadence,
       end_date: runDate,
       dry_run: false,
-      promote: options.continuationOnly ? false : true,
+      // Daily continuations may finish promotion for the exact frozen
+      // candidates whose prospective evidence has already passed. The
+      // controller still forbids training/rebuilding through continuation_only.
+      promote: cadence === 'daily' || options.continuationOnly !== true,
       dispatch_full_fit: cadence !== 'daily',
       expected_cohort_id: options.expectedCohortId,
       continuation_attempt: Math.max(0, Math.min(12, Number(options.continuationAttempt ?? 0))),
@@ -428,7 +431,7 @@ export async function runActive8OofLifecycle(
   }
   const data = text ? JSON.parse(text) as Record<string, any> : {}
   const status = String(data.status ?? '').toLowerCase()
-  if (!['skipped', 'pending', 'spawned', 'materialized', 'idempotent_complete'].includes(status)) {
+  if (!['skipped', 'pending', 'spawned', 'materialized', 'shadow_evaluated', 'idempotent_complete'].includes(status)) {
     throw new Error(`Active-8 OOF lifecycle unexpected status=${status || 'unknown'}`)
   }
   return [

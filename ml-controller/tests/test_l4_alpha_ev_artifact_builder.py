@@ -87,6 +87,7 @@ def test_l4_purged_oof_accepts_only_recorded_canonical_market_lineage():
 
     samples, audit = _samples(rows)
     assert len(samples) == 20
+    assert samples[0]["target"] == pytest.approx(rows[0]["l4_executable_return_pct"])
     assert audit["date_count"] == 1
     assert audit["invalid_reason_counts"] == {}
 

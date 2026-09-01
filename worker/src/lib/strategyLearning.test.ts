@@ -150,6 +150,7 @@ function candidatePrefilterGate(
       strategy_id: candidateStrategyId,
       strategy_version: candidateStrategyVersion,
       evidence_status: 'ready',
+      applicability_reason: null,
       observation_dates: 40,
       candidate_observations: 120,
       marginal_edge_mean: productionEligible ? 0.004 : -0.002,
@@ -163,7 +164,10 @@ function candidatePrefilterGate(
 }
 
 {
-  const candidateKeys = new Set(['candidate-v7|v1', 'candidate-missing|v9'])
+  const candidateApplicability = new Map<string, string | null>([
+    ['candidate-v7|v1', null],
+    ['candidate-missing|v9', null],
+  ])
   const prefilters = projectStrategyReplacementCandidatePrefilters([
     {
       strategy_id: 'candidate-v7',
@@ -187,7 +191,7 @@ function candidatePrefilterGate(
       production_eligible: 1,
       production_weight_raw: 0.72,
     },
-  ], candidateKeys)
+  ], candidateApplicability)
   assert(prefilters.length === 2, 'Candidate prefilter projection must cover every Candidate key while excluding Active keys')
   assert(prefilters[0].strategy_id === 'candidate-v7' && prefilters[0].strategy_version === 'v1', 'Candidate prefilter projection must preserve strategy identity')
   assert(prefilters[0].evidence_status === 'ready', 'persisted Candidate edge rows must be marked ready')
@@ -197,13 +201,16 @@ function candidatePrefilterGate(
   assert(prefilters[0].production_eligible === true && prefilters[0].production_weight_raw === 0.28, 'Candidate prefilter projection must expose eligibility and raw weight')
   assert(prefilters[1].strategy_id === 'candidate-missing' && prefilters[1].strategy_version === 'v9', 'missing Candidate edge rows must retain registry identity')
   assert(prefilters[1].evidence_status === 'missing', 'missing Candidate edge rows must be explicit rather than silently omitted')
-  assert(prefilters[1].observation_dates === 0 && prefilters[1].candidate_observations === 0, 'missing Candidate counts must use zero defaults')
+  assert(prefilters[1].observation_dates === null && prefilters[1].candidate_observations === null, 'missing Candidate counts must remain null instead of projecting fake zeroes')
   assert(prefilters[1].marginal_edge_mean === null && prefilters[1].marginal_edge_lcb90 === null, 'missing Candidate metrics must remain nullable')
-  assert(prefilters[1].production_eligible === null && prefilters[1].production_weight_raw === 0, 'missing Candidate eligibility must not be projected as a failed boolean')
-  assert(projectStrategyReplacementCandidatePrefilters(prefilters.map((row) => ({
-    ...row,
-    production_eligible: row.production_eligible ? 1 : 0,
-  })), new Set()).length === 0, 'empty Candidate key sets must project no prefilter rows')
+  assert(prefilters[1].production_eligible === null && prefilters[1].production_weight_raw === null, 'missing Candidate eligibility and weight must remain unknown')
+  const notApplicable = projectStrategyReplacementCandidatePrefilters([], new Map([
+    ['stock_tech_s12_multitimeframe_smc_reclaim_v2|strategy-spec-v1', 's12_execution_calibration_owner'],
+  ]))[0]
+  assert(notApplicable.evidence_status === 'not_applicable', 'non-selection owners must not masquerade as missing Atomic evidence')
+  assert(notApplicable.applicability_reason === 's12_execution_calibration_owner', 'Atomic applicability projection must preserve the owner-boundary reason')
+  assert(notApplicable.observation_dates === null && notApplicable.production_weight_raw === null, 'not-applicable owners must never project numeric zeroes')
+  assert(projectStrategyReplacementCandidatePrefilters([], new Map()).length === 0, 'empty Candidate applicability maps must project no prefilter rows')
 }
 
 {
@@ -542,8 +549,9 @@ class FakeCandidateFeatureD1 {
   assert(source.includes('await db.batch(chunk)'), 'strategy learning replay must use D1 batch persistence')
   assert(
     source.includes("canonicalStrategyLifecycleStatus(spec.status) === 'candidate'")
-      && source.includes('loadStrategyReplacementGateSummary(db, date, candidateStrategyKeys)'),
-    'Atomic V7 prefilter loader must receive canonical Candidate keys from the registry projection',
+      && source.includes('loadStrategyReplacementGateSummary(db, date, candidateStrategyApplicability)')
+      && source.includes('strategyAtomicV7InapplicabilityReason(spec)'),
+    'Atomic V7 prefilter loader must receive canonical Candidate owner applicability from the registry projection',
   )
   assert(
     source.includes('FROM strategy_marginal_edge_v4 edge')
@@ -552,8 +560,8 @@ class FakeCandidateFeatureD1 {
     'Atomic V7 prefilter query must exclude Active rows before API projection',
   )
   assert(
-    source.includes('candidate_prefilters: projectStrategyReplacementCandidatePrefilters([], candidateStrategyKeys)'),
-    'missing or unavailable Atomic V7 runs must retain complete Candidate keys with explicit missing evidence',
+    source.includes('candidate_prefilters: projectStrategyReplacementCandidatePrefilters([], candidateStrategyApplicability)'),
+    'missing or unavailable Atomic V7 runs must retain Candidate applicability with explicit missing or not-applicable evidence',
   )
   assert(
     !source.includes("status: 'not_applicable' | 'pending'")
@@ -1195,6 +1203,39 @@ runStrategyCandidateDailyFeatureHydrationTest().catch((error) => {
   assert(gate[0].activation_gate.status === 'not_evaluated', 'eligible Candidate without a pair must expose not_evaluated')
   assert(gate[0].missing_evidence.includes('atomic_replacement_v7_no_pair'), 'eligible Candidate without a pair must expose the no-pair blocker')
   assert(!gate[0].missing_evidence.includes('atomic_replacement_v7_not_accepted'), 'no-pair Candidate must not masquerade as a replacement rejection')
+}
+
+{
+  const spec = { ...DEFAULT_STRATEGY_SPECS[0], status: 'candidate' as const }
+  const replacementGate = acceptedStrategyReplacementGate(spec.id, spec.version)
+  replacementGate.candidate_prefilters = [{
+    strategy_id: spec.id,
+    strategy_version: spec.version,
+    evidence_status: 'not_applicable',
+    applicability_reason: 'owner_type_observe_not_selection_replacement',
+    observation_dates: null,
+    candidate_observations: null,
+    marginal_edge_mean: null,
+    marginal_edge_lcb90: null,
+    absolute_hit_return_mean: null,
+    production_eligible: null,
+    production_weight_raw: null,
+  }]
+  replacementGate.decisions = []
+  const summary = {
+    version: 'strategy-learning-v5',
+    date: '2026-08-28',
+    spec_source: 'registry',
+    specs: [{ ...spec, learning: strategyLearningEvidence() }],
+    promotion_gate: [],
+    replacement_gate: replacementGate,
+    policy_state_preview: {} as any,
+  } satisfies StrategyLearningSummary
+  const gate = evaluateStrategyPromotionGate(summary)
+  assert(gate[0].activation_gate.required === false, 'observe-only Candidate must not be forced through Atomic V7')
+  assert(gate[0].activation_gate.status === 'not_applicable', 'observe-only Candidate must expose not_applicable instead of evidence_pending')
+  assert(gate[0].activation_gate.applicability_reason === 'owner_type_observe_not_selection_replacement', 'activation gate must preserve the owner-boundary reason')
+  assert(!gate[0].missing_evidence.some((reason) => reason.startsWith('atomic_replacement_v7_')), 'not-applicable Candidate must not receive a fake Atomic blocker')
 }
 
 {

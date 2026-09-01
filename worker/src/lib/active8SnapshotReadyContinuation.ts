@@ -214,5 +214,20 @@ export async function settleActive8SnapshotContinuationTicket(
     summary: input.summary,
     error: input.error,
   })
+  const { closeEveningChainRootIfComplete } = await import('./eveningChainRootClosure')
+  const closure = await closeEveningChainRootIfComplete(opsDb, {
+    businessDate: input.businessDate,
+  })
+  if (closure.status === 'closed_success' || closure.status === 'closed_error') {
+    await logSchedulerResult(env.KV, 'evening-chain', {
+      status: closure.status === 'closed_success' ? 'success' : 'error',
+      summary: closure.summary,
+      error: closure.blockers.length ? closure.blockers.join(',') : undefined,
+      duration_ms: 0,
+      run_id: closure.canonical_run_id ?? input.callbackRunId,
+      run_date: input.businessDate,
+      strict: true,
+    }, env)
+  }
   return true
 }

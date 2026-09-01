@@ -393,7 +393,7 @@ def test_oof_materialize_job_reports_full_fit_dispatch_as_triggered_continuation
     assert "error" not in callbacks[0]
     assert "full_fit=dispatched" in callbacks[0]["summary"]
 
-def test_oof_materialize_job_keeps_prep_dependency_terminal_and_retriable(monkeypatch):
+def test_oof_materialize_job_keeps_daily_prep_dependency_running_and_retriable(monkeypatch):
     callbacks = []
 
     async def fake_execute_lifecycle(**_kwargs):
@@ -412,9 +412,9 @@ def test_oof_materialize_job_keeps_prep_dependency_terminal_and_retriable(monkey
     monkeypatch.setenv("OOF_MATERIALIZE_END_DATE", "2026-07-25")
     monkeypatch.setenv("OOF_MATERIALIZE_RUN_ID", "run-prep-pending")
 
-    assert asyncio.run(oof_materialize_job_main._run()) == 1
-    assert callbacks[0]["status"] == "error"
-    assert "oof_dependency_retry_required:immutable_sequence_behind_compute_snapshot" in callbacks[0]["error"]
+    assert asyncio.run(oof_materialize_job_main._run()) == 0
+    assert callbacks[0]["status"] == "triggered"
+    assert "error" not in callbacks[0]
     assert "immutable_sequence_behind_compute_snapshot" in callbacks[0]["summary"]
 
 
@@ -441,12 +441,37 @@ def test_oof_materialize_job_exposes_prep_dependency_dates(monkeypatch):
     monkeypatch.setenv("OOF_MATERIALIZE_CADENCE", "daily")
     monkeypatch.setenv("OOF_MATERIALIZE_RUN_ID", "run-prep-behind")
 
-    assert asyncio.run(oof_materialize_job_main._run()) == 1
+    assert asyncio.run(oof_materialize_job_main._run()) == 0
     callback = callbacks[0]
+    assert callback["status"] == "triggered"
     assert callback["metadata"]["prep_lifecycle"]["expected_business_date"] == "2026-08-19"
     assert callback["metadata"]["prep_lifecycle"]["snapshot_business_date"] == "2026-08-18"
     assert "expected_snapshot_date=2026-08-19" in callback["summary"]
     assert "actual_snapshot_date=2026-08-18" in callback["summary"]
+
+
+def test_oof_materialize_job_fails_closed_after_dependency_retry_budget(monkeypatch):
+    callbacks = []
+
+    async def fake_execute_lifecycle(**_kwargs):
+        return {
+            "status": "shadow_evaluated",
+            "dependency_retry_required": True,
+            "opb_refresh": {"status": "failed", "error": "opb_timeout"},
+        }
+
+    async def fake_callback(payload):
+        callbacks.append(payload)
+
+    monkeypatch.setattr(oof_materialize_job_main, "_execute_lifecycle", fake_execute_lifecycle)
+    monkeypatch.setattr(oof_materialize_job_main, "_callback_worker", fake_callback)
+    monkeypatch.setenv("OOF_MATERIALIZE_CADENCE", "daily")
+    monkeypatch.setenv("OOF_MATERIALIZE_END_DATE", "2026-09-01")
+    monkeypatch.setenv("OOF_MATERIALIZE_CONTINUATION_ATTEMPT", "12")
+
+    assert asyncio.run(oof_materialize_job_main._run()) == 1
+    assert callbacks[0]["status"] == "error"
+    assert "oof_dependency_continuation_exhausted:opb_timeout:attempt=12" in callbacks[0]["error"]
 
 def test_oof_materialize_summary_uses_verified_business_date_for_legacy_receipt():
     summary = oof_materialize_job_main._summary(

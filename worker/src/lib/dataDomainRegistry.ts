@@ -122,6 +122,7 @@ const DOMAIN_TABLES: Record<DataDomain, ReadonlySet<string>> = {
     'allocator_ev_daily_lifecycle', 'pit_factor_shadow_daily_v1',
     'strategy_production_policy_history_v1', 'expected_return_shadow_evaluation_packets',
     'expected_return_serving_forward_evaluations',
+    'expected_return_candidate_forward_evaluations',
     'expected_return_forward_guard_state',
     'adaptive_meta_policy_decisions', 'active8_oof_freshness_sla',
     'strategy_adaptive_policy_history_v2',

@@ -69,7 +69,8 @@ function gateResultLabel(pass: boolean | null): string {
 }
 
 function activationGateStatusLabel(status: string): string {
-  if (status === 'not_evaluated' || status === 'not_applicable') return 'not-evaluated'
+  if (status === 'not_applicable') return 'not-applicable'
+  if (status === 'not_evaluated') return 'not-evaluated'
   return status
 }
 
@@ -77,6 +78,17 @@ function activationGatePass(status: string): boolean | null {
   if (status === 'accepted') return true
   if (status === 'prefilter_failed' || status === 'rejected') return false
   return null
+}
+
+function atomicV7InapplicabilityLabel(reason: string | null | undefined): string {
+  if (reason === 's12_execution_calibration_owner') {
+    return 'S12 是 execution calibration owner，不參與選股策略一進一出替換。'
+  }
+  if (reason?.startsWith('owner_type_')) {
+    const ownerType = reason.replace(/^owner_type_/, '').replace(/_not_selection_replacement$/, '')
+    return ownerType + ' owner 只負責觀察／特徵，不具 Candidate → Active selection replacement 權責。'
+  }
+  return '此 Candidate 不屬於 Atomic V7 selection replacement owner。'
 }
 
 function statusLabel(status: string): string {
@@ -91,7 +103,7 @@ function statusLabel(status: string): string {
 }
 
 type StrategyLifecycleLane = 'active' | 'candidate'
-type StrategyHealthBucket = 'execution_eligible' | 'performance_cooldown' | 'evidence_repair' | 'accumulating' | 'prefilter_failed' | 'promotion_pending'
+type StrategyHealthBucket = 'execution_eligible' | 'performance_cooldown' | 'formal_policy_pending' | 'evidence_repair' | 'accumulating' | 'atomic_not_applicable' | 'prefilter_failed' | 'promotion_pending'
 type StrategyHealthSection = {
   key: StrategyHealthBucket
   label: string
@@ -123,6 +135,13 @@ const ACTIVE_STRATEGY_HEALTH_SECTIONS: StrategyHealthSection[] = [
     countClassName: 'border-cyan-400/25 bg-cyan-400/[0.08] text-cyan-200',
   },
   {
+    key: 'formal_policy_pending',
+    label: '正式政策待封存',
+    description: '資料與成熟度正常，但 formal policy 尚未物化正權重；不是資料待修或績效降溫。',
+    className: 'border-violet-400/20 bg-violet-400/[0.04]',
+    countClassName: 'border-violet-400/25 bg-violet-400/[0.08] text-violet-200',
+  },
+  {
     key: 'evidence_repair',
     label: '資料待修',
     description: '需重建 decision、PIT reference、reward join 或 formal policy lineage。',
@@ -152,6 +171,13 @@ const CANDIDATE_STRATEGY_HEALTH_SECTIONS: StrategyHealthSection[] = [
     description: 'Candidate 已完成可比性檢查，但尚未通過 Atomic V7 proposal 前置門檻。',
     className: 'border-rose-400/20 bg-rose-400/[0.04]',
     countClassName: 'border-rose-400/25 bg-rose-400/[0.08] text-rose-200',
+  },
+  {
+    key: 'atomic_not_applicable',
+    label: '非選股替換 Owner',
+    description: 'S12 execution calibration 或 observe-only owner 不參與 Candidate → Active Atomic V7 替換。',
+    className: 'border-slate-600/40 bg-slate-800/[0.2]',
+    countClassName: 'border-slate-600 bg-slate-800/60 text-slate-300',
   },
   {
     key: 'promotion_pending',
@@ -210,7 +236,6 @@ function strategyHealthBucket(
     )
   ) return 'evidence_repair'
   if (strategyLifecycleLane(row) === 'active') {
-    if (formalWeight == null) return 'evidence_repair'
     if (gate.allocation_eligible !== true) {
       return gate.missing_evidence.length > 0 && gate.missing_evidence.every((reason) => (
         reason.startsWith('samples_lt_') || reason.startsWith('mature_dates_lt_')
@@ -218,8 +243,9 @@ function strategyHealthBucket(
     }
     if (ownerDecision?.performance_state === 'cooldown') return 'performance_cooldown'
     if (formalWeight > 0) return 'execution_eligible'
-    return 'evidence_repair'
+    return 'formal_policy_pending'
   }
+  if (String(gate.activation_gate.status) === 'not_applicable') return 'atomic_not_applicable'
   if (
     String(gate.activation_gate.status) === 'prefilter_failed'
   ) return 'prefilter_failed'
@@ -239,8 +265,10 @@ function strategyHealthLabel(bucket: StrategyHealthBucket): string {
   return {
     execution_eligible: '可進待買',
     performance_cooldown: '績效降溫 · bounded sleeve',
+    formal_policy_pending: '正式政策待封存',
     evidence_repair: '資料管線待修',
     accumulating: '證據累積中',
+    atomic_not_applicable: 'Atomic V7 不適用',
     prefilter_failed: 'Atomic 前置門檻未過',
     promotion_pending: '等待 Atomic V7 比較',
   }[bucket]
@@ -469,19 +497,19 @@ function StrategyGateDetails({ row, gate, onOpenAtomicV7 }: { row: LearningRow; 
         <h3 className="text-xs font-semibold text-slate-200">共用成熟度門檻</h3>
         <div className="mt-1 grid gap-x-4 md:grid-cols-2">{hardGates.map((item) => <GateMetric key={item.label} {...item} />)}</div>
       </section>
-      {!isActiveIncumbent && gate.activation_gate.required ? (
+      {!isActiveIncumbent ? (
         <section className="mt-3 rounded-xl border border-violet-400/25 bg-violet-400/[0.06] p-3" aria-label="Atomic V7 相對替換指標">
           <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
             <div className="min-w-0">
               <div className="flex flex-wrap items-center gap-2">
                 <h3 className="text-xs font-semibold text-violet-100">Atomic V7 相對替換</h3>
                 <Badge variant="outline" className={statusClass(gate.activation_gate.status)}>{activationGateStatusLabel(gate.activation_gate.status)}</Badge>
-                <span className={['text-[10px] font-semibold', gateResultClass(activationGatePass(gate.activation_gate.status))].join(' ')}>{gateResultLabel(activationGatePass(gate.activation_gate.status))} · target accepted</span>
+                <span className={['text-[10px] font-semibold', gateResultClass(activationGatePass(gate.activation_gate.status))].join(' ')}>{gate.activation_gate.required ? gateResultLabel(activationGatePass(gate.activation_gate.status)) + ' · target accepted' : 'owner boundary · 不進入替換判定'}</span>
               </div>
-              <p className="mt-1 text-[10px] leading-4 text-slate-500">同日 paired、HAC4、Holm family-wise correction、minimum economic delta、power 與完整 cutover firewall。</p>
+              <p className="mt-1 text-[10px] leading-4 text-slate-500">{gate.activation_gate.required ? '同日 paired、HAC4、Holm family-wise correction、minimum economic delta、power 與完整 cutover firewall。' : atomicV7InapplicabilityLabel(gate.activation_gate.applicability_reason)}</p>
             </div>
             <Button type="button" size="sm" variant="outline" className="shrink-0 border-violet-400/30 bg-slate-950/45 text-violet-100 hover:bg-violet-400/[0.12]" onClick={onOpenAtomicV7}>
-              查看全門檻
+              {gate.activation_gate.required ? '查看全門檻' : '查看不適用原因'}
             </Button>
           </div>
         </section>
@@ -530,6 +558,7 @@ function CandidateAtomicV7Dialog({
     decision.run_id === run?.run_id && decision.promotion_allowed
   ))
   const prefilter = candidatePrefilters[0] ?? null
+  const prefilterNotApplicable = prefilter?.evidence_status === 'not_applicable'
   const prefilterReady = prefilter?.evidence_status === 'ready'
   const prefilterPassed = prefilterReady && prefilter?.production_eligible === true
   const runMetrics = policy && run ? [
@@ -680,7 +709,7 @@ function CandidateAtomicV7Dialog({
           <button type="button" aria-selected={phase === 'prefilter'} onClick={() => setPhase('prefilter')} className={['rounded-xl border px-4 py-3 text-left transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-cyan-300/70', phase === 'prefilter' ? 'border-cyan-300/45 bg-cyan-300/[0.1] text-cyan-50' : 'border-slate-800 bg-slate-900/40 text-slate-400 hover:border-slate-700'].join(' ')}>
             <span className="block text-[10px] font-semibold tracking-[0.14em]">PHASE A</span>
             <span className="mt-1 block text-sm font-semibold">Candidate prefilter</span>
-            <span className="mt-1 block text-[10px]">{candidatePrefilters.length ? (prefilterPassed ? '通過' : prefilterReady ? '未通過' : '證據待累積') : '尚無 evidence'}</span>
+            <span className="mt-1 block text-[10px]">{prefilterNotApplicable ? '不適用此 owner' : candidatePrefilters.length ? (prefilterPassed ? '通過' : prefilterReady ? '未通過' : '證據待累積') : '尚無 evidence'}</span>
           </button>
           <button type="button" aria-selected={phase === 'pair'} onClick={() => setPhase('pair')} className={['rounded-xl border px-4 py-3 text-left transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-violet-300/70', phase === 'pair' ? 'border-violet-300/45 bg-violet-300/[0.1] text-violet-50' : 'border-slate-800 bg-slate-900/40 text-slate-400 hover:border-slate-700'].join(' ')}>
             <span className="block text-[10px] font-semibold tracking-[0.14em]">PHASE B</span>
@@ -701,6 +730,18 @@ function CandidateAtomicV7Dialog({
           <p className="mt-2 text-[11px] leading-5 text-slate-500">這三道 prefilter 只套用 Challenger Candidate，決定它能否形成 Candidate → incumbent pair；incumbent Active 是同日 portfolio benchmark，雙方比較值列在下方 pair inspector。</p>
           <div className="mt-2 grid gap-2">
             {candidatePrefilters.map((prefilter) => {
+              if (prefilter.evidence_status === 'not_applicable') {
+                return (
+                  <article key={[prefilter.strategy_id, prefilter.strategy_version].join(':')} className="rounded-lg border border-slate-700 bg-slate-900/50 p-4">
+                    <div className="flex flex-wrap items-center gap-2">
+                      <span className="text-xs font-semibold text-slate-200">{compactStrategyId(prefilter.strategy_id)}</span>
+                      <Badge variant="outline" className="border-slate-600 bg-slate-800 text-slate-300">Atomic V7 不適用</Badge>
+                    </div>
+                    <p className="mt-2 text-sm leading-6 text-slate-300">{atomicV7InapplicabilityLabel(prefilter.applicability_reason)}</p>
+                    <p className="mt-2 text-[10px] leading-4 text-slate-500">此狀態不是 prefilter failed，也不是資料尚未具備；因此不顯示 0 observations、0 weight 或虛構的 pass/fail。</p>
+                  </article>
+                )
+              }
               const evidenceReady = prefilter.evidence_status === 'ready'
               const prefilterPassed = evidenceReady && prefilter.production_eligible === true
               const prefilterFailed = evidenceReady && prefilter.production_eligible === false
@@ -715,9 +756,9 @@ function CandidateAtomicV7Dialog({
                   description: 'Date-clustered marginal-edge 有效觀察日期。',
                   value: integerMetric(prefilter.observation_dates),
                   target: '>= ' + policy.candidate_prefilter_min_observation_dates,
-                  pass: evidenceReady
-                    ? prefilter.observation_dates >= policy.candidate_prefilter_min_observation_dates
-                    : null,
+                  pass: !evidenceReady || prefilter.observation_dates == null
+                    ? null
+                    : prefilter.observation_dates >= policy.candidate_prefilter_min_observation_dates,
                 },
                 {
                   label: 'Candidate marginal-edge LCB90',
@@ -738,13 +779,27 @@ function CandidateAtomicV7Dialog({
                     : prefilter.absolute_hit_return_mean > policy.candidate_prefilter_min_absolute_hit_return_mean_exclusive,
                 },
               ]
+              const passedMetrics = metrics.filter((metric) => metric.pass === true)
+              const failedMetrics = metrics.filter((metric) => metric.pass === false)
               return (
                 <article key={[prefilter.strategy_id, prefilter.strategy_version].join(':')} className="rounded-lg border border-slate-800 bg-slate-950/40 p-3">
                   <div className="text-xs">
                     <span className="text-slate-300">{compactStrategyId(prefilter.strategy_id)}</span>
                     <span className={['ml-2 rounded border px-1.5 py-0.5', statusClass(prefilterPassed ? 'accepted' : prefilterFailed ? 'rejected' : 'pending_maturity')].join(' ')}>{prefilterStatus}</span>
                   </div>
-                  <p className="mt-2 font-mono text-[10px] text-slate-500">{prefilter.strategy_version} · evidence {prefilter.evidence_status} · observations {prefilter.candidate_observations} · marginal mean {percentageMetric(prefilter.marginal_edge_mean)} · raw weight {evidenceReady ? percentageMetric(prefilter.production_weight_raw) : '資料尚未具備'}</p>
+                  <p className="mt-2 font-mono text-[10px] text-slate-500">{prefilter.strategy_version} · evidence {prefilter.evidence_status} · observations {evidenceReady ? integerMetric(prefilter.candidate_observations) : '資料尚未具備'} · marginal mean {percentageMetric(prefilter.marginal_edge_mean)} · raw weight {evidenceReady ? percentageMetric(prefilter.production_weight_raw) : '資料尚未具備'}</p>
+                  {evidenceReady ? (
+                    <div className={['mt-3 rounded-lg border px-3 py-2', failedMetrics.length ? 'border-rose-400/30 bg-rose-400/[0.08]' : 'border-emerald-400/30 bg-emerald-400/[0.08]'].join(' ')} role="status">
+                      <p className={['text-xs font-semibold', failedMetrics.length ? 'text-rose-100' : 'text-emerald-100'].join(' ')}>Prefilter verdict：通過 {passedMetrics.length} / {metrics.length} · 未通過 {failedMetrics.length} / {metrics.length}</p>
+                      {failedMetrics.length ? (
+                        <ul className="mt-1 space-y-1 text-[10px] leading-4 text-rose-100/90">
+                          {failedMetrics.map((metric) => <li key={metric.label}>未通過：{metric.label}（actual {metric.value}；target {metric.target}）</li>)}
+                        </ul>
+                      ) : null}
+                    </div>
+                  ) : (
+                    <p className="mt-3 rounded-lg border border-cyan-400/20 bg-cyan-400/[0.05] px-3 py-2 text-[10px] leading-4 text-cyan-100/80">此 Candidate 適用 Atomic V7，但最新 run 尚未產生可判定 evidence；門檻保持尚無判定，不投影成 0 或 failed。</p>
+                  )}
                   <div className="mt-2 grid gap-x-4 md:grid-cols-2">{metrics.map((metric) => <GateMetric key={metric.label} {...metric} />)}</div>
                 </article>
               )
@@ -1359,8 +1414,13 @@ function StrategyLineageInspector({
     : null
   const formalCooldown = formalOwnerDecision?.performance_state === 'cooldown'
   const executionEligible = gate?.allocation_eligible === true && formalPolicyWeight != null && formalPolicyWeight > 0
-  const formalContributionZero = row.status === 'active' && formalPolicyWeight === 0
+  const formalPolicyPending = row.status === 'active'
+    && !formalCooldown
+    && (typeof formalPolicyWeight !== 'number' || formalPolicyWeight <= 0)
   const formalCooldownReasons = formalCooldownReasonCodes(formalPolicyRecommendation, formalPolicyQuarantined, formalOwnerDecision)
+  const formalPolicyPendingReasons = formalPolicyPending
+    ? formalCooldownReasonCodes(formalPolicyRecommendation, formalPolicyQuarantined)
+    : []
   return (
     <aside className="space-y-3 xl:sticky xl:top-4 xl:self-start">
       <section className="rounded-2xl border border-slate-800 bg-slate-950/70 p-4">
@@ -1401,7 +1461,7 @@ function StrategyLineageInspector({
       <section className="rounded-2xl border border-slate-800 bg-slate-950/70 p-4">
         <div className="flex flex-wrap items-center justify-between gap-2">
           <h3 className="text-xs font-semibold text-slate-200">正式 pending-buy contribution</h3>
-          <Badge variant="outline" className={statusClass(executionEligible && !formalCooldown ? 'active' : 'not_ready')}>{formalCooldown ? '績效降溫 · bounded sleeve' : executionEligible ? '可讓推薦進入待買' : formalContributionZero ? '正式 contribution 0' : '只選股與評估'}</Badge>
+          <Badge variant="outline" className={statusClass(executionEligible && !formalCooldown ? 'active' : 'not_ready')}>{formalCooldown ? '績效降溫 · bounded sleeve' : executionEligible ? '可讓推薦進入待買' : formalPolicyPending ? '正式政策待封存' : '只選股與評估'}</Badge>
         </div>
         <p className="mt-2 font-mono text-lg text-slate-100">{formalPolicyWeight == null ? '未取得正式 contribution' : pct(formalPolicyWeight)}</p>
         <div className="mt-2 h-2 overflow-hidden rounded-full bg-slate-800">
@@ -1412,11 +1472,11 @@ function StrategyLineageInspector({
           <div className="flex items-center justify-between gap-2 text-[11px]"><span className="font-semibold text-cyan-100">Preview weight（診斷）</span><span className="font-mono text-cyan-200">{previewPolicyWeight == null ? '未取得' : pct(previewPolicyWeight)}</span></div>
           <p className="mt-1 text-[10px] leading-4 text-slate-500">Read-time preview；不是 formal production policy，不能單獨判定待買資格。</p>
         </div>
-        {formalCooldown || formalContributionZero ? (
+        {formalCooldown ? (
           <div className="mt-3 rounded-lg border border-amber-400/25 bg-amber-400/[0.07] p-3">
             <div className="flex flex-wrap items-center justify-between gap-2">
               <h4 className="text-[11px] font-semibold text-amber-100">為什麼被排入績效降溫</h4>
-              <Badge variant="outline" className="border-amber-400/30 bg-amber-400/10 text-amber-200">{formalCooldown ? formalOwnerDecision?.contribution_mode ?? 'formal owner cooldown' : formalPolicyQuarantined && !formalPolicyRecommendation?.reasons.length ? 'production firewall quarantine' : formalPolicyRecommendation?.decision ?? 'reason unavailable'}</Badge>
+              <Badge variant="outline" className="border-amber-400/30 bg-amber-400/10 text-amber-200">{formalOwnerDecision?.contribution_mode ?? 'formal owner cooldown'}</Badge>
             </div>
             {formalCooldownReasons.length ? (
               <ul className="mt-2 space-y-1 text-[10px] leading-4 text-amber-100/90">
@@ -1433,6 +1493,27 @@ function StrategyLineageInspector({
                   ? '這版正式 policy 將 contribution 設為 0，但 lifecycle recommendation 未留下逐門檻原因。'
                   : 'Formal production policy 的 base lifecycle reason row 未取得，因此不拿 preview 原因冒充正式降溫原因。'}
               </p>
+            )}
+          </div>
+        ) : null}
+        {formalPolicyPending ? (
+          <div className="mt-3 rounded-lg border border-violet-400/25 bg-violet-400/[0.07] p-3">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <h4 className="text-[11px] font-semibold text-violet-100">為什麼正式 contribution 尚未大於 0</h4>
+              <Badge variant="outline" className="border-violet-400/30 bg-violet-400/10 text-violet-200">{formalPolicyWeight == null ? 'formal lineage unavailable' : formalPolicyQuarantined ? 'production firewall quarantine' : 'formal policy pending refresh'}</Badge>
+            </div>
+            <p className="mt-2 text-[10px] leading-4 text-slate-400">此策略沒有被 persisted primary-horizon owner 判定為績效降溫；零權重描述的是封存 policy／firewall 狀態，不代表 reward、PIT 或 decision 資料損壞。</p>
+            {formalPolicyPendingReasons.length ? (
+              <ul className="mt-2 space-y-1 text-[10px] leading-4 text-violet-100/90">
+                {formalPolicyPendingReasons.map((reason) => (
+                  <li key={reason} className="rounded border border-violet-400/15 bg-slate-950/30 px-2 py-1">
+                    <span className="font-medium">{gateReasonLabel(reason)}</span>
+                    <span className="ml-1 font-mono text-slate-500">({reason})</span>
+                  </li>
+                ))}
+              </ul>
+            ) : (
+              <p className="mt-2 text-[10px] leading-4 text-slate-500">{formalPolicyReasonLineageAvailable ? '封存 policy 未留下更細的 zero-contribution 子原因；需由下一次 live canonical policy closure 重新物化。' : 'Formal base-policy lineage 尚未取得，因此不拿 preview 或共用門檻冒充正式原因。'}</p>
             )}
           </div>
         ) : null}
@@ -1540,9 +1621,11 @@ export default function StrategyLearningPage() {
       evidence_repair: 0,
       prefilter_failed: 1,
       performance_cooldown: 2,
-      promotion_pending: 3,
-      accumulating: 4,
-      execution_eligible: 5,
+      formal_policy_pending: 3,
+      promotion_pending: 4,
+      accumulating: 5,
+      atomic_not_applicable: 6,
+      execution_eligible: 7,
     }
     return [...visibleRows].sort((left, right) => {
       const leftGate = gateById.get([left.id, left.version].join(':'))

@@ -19,6 +19,35 @@ import type { Bindings, Variables } from '../types'
 
 export const adminWriteRoutes = new Hono<{ Bindings: Bindings; Variables: Variables }>()
 
+adminWriteRoutes.post('/api/admin/pit-residual/funnel-enrichment/recover', async (c) => {
+  const authError = await requireAdminOrServiceToken(c)
+  if (authError) return authError
+
+  type Body = { through_date?: string; max_dates?: number }
+  const body: Body = await c.req.json<Body>().catch(() => ({}))
+  const throughDate = String(body.through_date ?? twToday()).trim()
+  const parsedMaxDates = Number(body.max_dates ?? 1)
+  const maxDates = Number.isFinite(parsedMaxDates)
+    ? Math.max(1, Math.min(5, Math.floor(parsedMaxDates)))
+    : 1
+  try {
+    const { recoverMissingPitResidualFunnels } = await import('../lib/pitResidualFunnelEnrichment')
+    const result = await recoverMissingPitResidualFunnels(c.env, { throughDate, maxDates })
+    return c.json({
+      ok: result.failures.length === 0,
+      schema_version: 'pit-residual-funnel-recovery-v1',
+      decision_effect: 'none',
+      candidate_set_mutation_allowed: false,
+      result,
+    }, result.failures.length ? 409 : 200)
+  } catch (error) {
+    return c.json({
+      ok: false,
+      error: error instanceof Error ? error.message : String(error),
+    }, 400)
+  }
+})
+
 adminWriteRoutes.post('/api/admin/data-domains/learning/cutover/complete', async (c) => {
   const authError = await requireAdminOrServiceToken(c)
   if (authError) return authError

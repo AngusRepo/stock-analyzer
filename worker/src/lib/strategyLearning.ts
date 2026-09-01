@@ -222,14 +222,15 @@ export interface StrategyReplacementDecisionSummary {
 export interface StrategyReplacementCandidatePrefilterSummary {
   strategy_id: string
   strategy_version: string
-  evidence_status: 'ready' | 'missing'
-  observation_dates: number
-  candidate_observations: number
+  evidence_status: 'ready' | 'missing' | 'not_applicable'
+  applicability_reason: string | null
+  observation_dates: number | null
+  candidate_observations: number | null
   marginal_edge_mean: number | null
   marginal_edge_lcb90: number | null
   absolute_hit_return_mean: number | null
   production_eligible: boolean | null
-  production_weight_raw: number
+  production_weight_raw: number | null
 }
 
 export interface StrategyReplacementGateSummary {
@@ -298,7 +299,7 @@ export interface StrategyPromotionGateRow {
   production_effect: false
   allocation_eligible: boolean
   gate_policy: 'candidate_evidence_then_atomic_replacement_v7'
-  gate_role: 'atomic_replacement_to_active' | 'incumbent_monitoring'
+  gate_role: 'atomic_replacement_to_active' | 'incumbent_monitoring' | 'non_selection_owner_monitoring'
   hard_gate_metrics: string[]
   diagnostic_only_metrics: string[]
   activation_gate: {
@@ -307,6 +308,7 @@ export interface StrategyPromotionGateRow {
     status: 'not_applicable' | 'evidence_pending' | 'prefilter_failed' | 'not_evaluated' | 'proposed' | 'rejected' | 'accepted'
     decision_id: string | null
     run_id: string | null
+    applicability_reason: string | null
   }
   missing_evidence: string[]
   thresholds: StrategyPromotionThresholds
@@ -2627,9 +2629,10 @@ export function evaluateStrategyPromotionGate(summary: StrategyLearningSummary):
       ?? candidateReplacementDecisions.find((decision) => decision.status === 'accepted')
       ?? candidateReplacementDecisions.find((decision) => decision.status === 'proposed')
       ?? candidateReplacementDecisions.find((decision) => decision.status === 'rejected')
-    const activationRequired = lifecycleStatus === 'candidate'
     const candidatePrefilter = summary.replacement_gate.candidate_prefilters.find((prefilter) =>
       prefilter.strategy_id === spec.id && prefilter.strategy_version === spec.version)
+    const activationRequired = lifecycleStatus === 'candidate'
+      && candidatePrefilter?.evidence_status !== 'not_applicable'
     const activationStatus: StrategyPromotionGateRow['activation_gate']['status'] = !activationRequired
       ? 'not_applicable'
       : activationDecision
@@ -2682,7 +2685,9 @@ export function evaluateStrategyPromotionGate(summary: StrategyLearningSummary):
       gate_policy: 'candidate_evidence_then_atomic_replacement_v7',
       gate_role: activeMonitor
         ? 'incumbent_monitoring'
-        : 'atomic_replacement_to_active',
+        : activationRequired
+          ? 'atomic_replacement_to_active'
+          : 'non_selection_owner_monitoring',
       hard_gate_metrics: activeMonitor
         ? ['reward_samples', 'mature_dates']
         : ['evaluable_decisions', 'reward_samples', 'mature_dates', 'atomic_replacement_v7'],
@@ -2693,6 +2698,7 @@ export function evaluateStrategyPromotionGate(summary: StrategyLearningSummary):
         status: activationStatus,
         decision_id: activationRequired ? activationDecision?.decision_id ?? null : null,
         run_id: activationRequired ? activationDecision?.run_id ?? null : null,
+        applicability_reason: candidatePrefilter?.applicability_reason ?? null,
       },
       missing_evidence: activeMonitor ? activeRetentionMissing : missing,
       thresholds: STRATEGY_PROMOTION_THRESHOLDS,
@@ -3101,38 +3107,67 @@ interface StrategyReplacementCandidatePrefilterPersistenceRow {
   production_weight_raw: number | string
 }
 
+export function strategyAtomicV7InapplicabilityReason(
+  spec: Pick<StrategySpec, 'ownerType' | 'variantId'>,
+): string | null {
+  if (String(spec.variantId ?? '').startsWith('s12_')) {
+    return 's12_execution_calibration_owner'
+  }
+  const ownerType = String(spec.ownerType ?? 'strategy')
+  return ownerType === 'strategy'
+    ? null
+    : 'owner_type_' + ownerType + '_not_selection_replacement'
+}
+
 export function projectStrategyReplacementCandidatePrefilters(
   rows: StrategyReplacementCandidatePrefilterPersistenceRow[],
-  candidateStrategyKeys: ReadonlySet<string>,
+  candidateStrategyApplicability: ReadonlyMap<string, string | null>,
 ): StrategyReplacementCandidatePrefilterSummary[] {
   const rowByStrategyKey = new Map(
     rows
-      .filter((row) => candidateStrategyKeys.has(`${row.strategy_id}|${row.strategy_version}`))
+      .filter((row) => candidateStrategyApplicability.has(`${row.strategy_id}|${row.strategy_version}`))
       .map((row) => [`${row.strategy_id}|${row.strategy_version}`, row]),
   )
-  return [...candidateStrategyKeys].map((strategyKey) => {
+  return [...candidateStrategyApplicability].map(([strategyKey, applicabilityReason]) => {
     const row = rowByStrategyKey.get(strategyKey)
     const separator = strategyKey.lastIndexOf('|')
     const strategyId = separator >= 0 ? strategyKey.slice(0, separator) : strategyKey
     const strategyVersion = separator >= 0 ? strategyKey.slice(separator + 1) : ''
+    if (applicabilityReason) {
+      return {
+        strategy_id: strategyId,
+        strategy_version: strategyVersion,
+        evidence_status: 'not_applicable',
+        applicability_reason: applicabilityReason,
+        observation_dates: null,
+        candidate_observations: null,
+        marginal_edge_mean: null,
+        marginal_edge_lcb90: null,
+        absolute_hit_return_mean: null,
+        production_eligible: null,
+        production_weight_raw: null,
+      }
+    }
     if (!row) {
       return {
         strategy_id: strategyId,
         strategy_version: strategyVersion,
         evidence_status: 'missing',
-        observation_dates: 0,
-        candidate_observations: 0,
+        applicability_reason: null,
+        observation_dates: null,
+        candidate_observations: null,
         marginal_edge_mean: null,
         marginal_edge_lcb90: null,
         absolute_hit_return_mean: null,
         production_eligible: null,
-        production_weight_raw: 0,
+        production_weight_raw: null,
       }
     }
     return {
       strategy_id: row.strategy_id,
       strategy_version: row.strategy_version,
       evidence_status: 'ready',
+      applicability_reason: null,
       observation_dates: finiteNumber(row.observation_dates) ?? 0,
       candidate_observations: finiteNumber(row.candidate_observations) ?? 0,
       marginal_edge_mean: finiteNumber(row.marginal_edge_mean),
@@ -3317,7 +3352,7 @@ export function projectStrategyReplacementRunEvidence(evidenceJson: string): Str
 async function loadStrategyReplacementGateSummary(
   db: D1Database,
   date: string,
-  candidateStrategyKeys: ReadonlySet<string>,
+  candidateStrategyApplicability: ReadonlyMap<string, string | null>,
 ): Promise<StrategyReplacementGateSummary> {
   try {
     const run = await db.prepare(`
@@ -3351,7 +3386,7 @@ async function loadStrategyReplacementGateSummary(
         evidence_status: 'pending',
         status_reason: 'No contract-valid V7 replacement run exists on or before this date.',
         latest_run: null,
-        candidate_prefilters: projectStrategyReplacementCandidatePrefilters([], candidateStrategyKeys),
+        candidate_prefilters: projectStrategyReplacementCandidatePrefilters([], candidateStrategyApplicability),
         decisions: [],
       }
     }
@@ -3378,10 +3413,10 @@ async function loadStrategyReplacementGateSummary(
                 edge.marginal_edge_lcb90 DESC,
                 edge.strategy_id,
                 edge.strategy_version
-    `).bind(run.run_id, JSON.stringify([...candidateStrategyKeys])).all<StrategyReplacementCandidatePrefilterPersistenceRow>()
+    `).bind(run.run_id, JSON.stringify([...candidateStrategyApplicability.keys()])).all<StrategyReplacementCandidatePrefilterPersistenceRow>()
     const candidatePrefilters = projectStrategyReplacementCandidatePrefilters(
       candidatePrefilterRows ?? [],
-      candidateStrategyKeys,
+      candidateStrategyApplicability,
     )
     const { results } = await db.prepare(`
       SELECT decision_id,
@@ -3436,7 +3471,7 @@ async function loadStrategyReplacementGateSummary(
       evidence_status: 'unavailable',
       status_reason: cause instanceof Error ? cause.message : 'Replacement evidence query failed.',
       latest_run: null,
-      candidate_prefilters: projectStrategyReplacementCandidatePrefilters([], candidateStrategyKeys),
+      candidate_prefilters: projectStrategyReplacementCandidatePrefilters([], candidateStrategyApplicability),
       decisions: [],
     }
   }
@@ -3447,10 +3482,13 @@ export async function buildStrategyLearningSummary(
   date: string,
 ): Promise<StrategyLearningSummary> {
   const { specs, source } = await listStrategySpecsForLearning(db)
-  const candidateStrategyKeys = new Set(
+  const candidateStrategyApplicability = new Map(
     specs
       .filter((spec) => canonicalStrategyLifecycleStatus(spec.status) === 'candidate')
-      .map((spec) => `${spec.id}|${spec.version}`),
+      .map((spec) => [
+        `${spec.id}|${spec.version}`,
+        strategyAtomicV7InapplicabilityReason(spec),
+      ] as const),
   )
   const projectionHead = await db.prepare(`
     SELECT MAX(latest_date) AS latest_date
@@ -3588,7 +3626,7 @@ export async function buildStrategyLearningSummary(
     : []
   const [s12ExecutionMetrics, replacementGate] = await Promise.all([
     loadS12ExecutionLearningMetrics(db, date, windowStart),
-    loadStrategyReplacementGateSummary(db, date, candidateStrategyKeys),
+    loadStrategyReplacementGateSummary(db, date, candidateStrategyApplicability),
   ])
   const dailyBySpec = new Map<string, StrategyLearningDailyStatsRow[]>()
   for (const row of dailyRows) {

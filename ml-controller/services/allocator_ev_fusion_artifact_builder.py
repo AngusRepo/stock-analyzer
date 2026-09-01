@@ -492,7 +492,9 @@ def _samples(
             else None
         )
         selection_target = (
-            selection_gross_target - max(0.0, execution_cost_bps) / 10000.0
+            selection_gross_target
+            if adjustment_source == OOF_PRICE_HORIZON_SOURCE
+            else selection_gross_target - max(0.0, execution_cost_bps) / 10000.0
             if selection_gross_target is not None
             else None
         )
@@ -1813,6 +1815,7 @@ def build_allocator_ev_fusion_artifact_from_rows(
     search_trial_count: int = 1,
     multiple_testing_evidence: dict[str, Any] | None = None,
     benchmark_panel_id: str | None = None,
+    artifact_generated_at: str | None = None,
 ) -> dict[str, Any]:
     if generation_mode not in {"native", "purged_oof"}:
         raise ValueError("fusion_generation_mode_invalid")
@@ -2080,7 +2083,7 @@ def build_allocator_ev_fusion_artifact_from_rows(
             "source": "as-of ScoreV2/L4/market snapshots joined to canonical five-session price-horizon outcomes",
             "trained_until": trained_until,
             "knowledge_cutoff_date": knowledge_cutoff_date or trained_until,
-            "generated_at": datetime.now(timezone.utc).isoformat(),
+            "generated_at": artifact_generated_at or datetime.now(timezone.utc).isoformat(),
             **diagnostics,
             "generation_mode": generation_mode,
             "cohort_id": cohort_id,

@@ -389,6 +389,7 @@ class OofMaterializeRequest(BaseModel):
     lifecycle_cadence: Literal["daily", "weekly", "monthly", "manual"] = "daily"
     forward_extension_manifest_path: str | None = None
     persist_forward_shadow_coverage: bool = False
+    promote_exact_candidates: bool = False
 
 
 class OofRetentionArchiveRequest(BaseModel):
@@ -1864,6 +1865,9 @@ async def materialize_walk_forward_oof(req: OofMaterializeRequest):
     from services.expected_return_serving_forward_guard import (
         evaluate_serving_forward_guard,
     )
+    from services.expected_return_candidate_forward_evaluator import (
+        evaluate_expected_return_candidates_forward,
+    )
     from services.fusion_market_context import load_pit_market_contexts
     from services.d1_domain_client import D1DataDomain, client_for_domain
     from services import d1_client
@@ -1912,6 +1916,7 @@ async def materialize_walk_forward_oof(req: OofMaterializeRequest):
         native_rows: list[dict[str, Any]] = []
         fundamental_quality_by_key: dict[tuple[str, str], dict[str, Any]] = {}
         indexed_l4_predictions: list[dict[str, Any]] = []
+        indexed_loader_evidence: dict[str, Any] = {}
         indexed_base_rows: tuple[
             list[dict[str, Any]], list[dict[str, Any]], dict[str, Any]
         ] | None = None
@@ -2039,6 +2044,7 @@ async def materialize_walk_forward_oof(req: OofMaterializeRequest):
             trained_until=req.knowledge_cutoff_date,
             generation_mode="purged_oof",
             cohort_id=req.cohort_id,
+            artifact_generated_at=f"{req.knowledge_cutoff_date}T00:00:00+00:00",
         )
         if reuse_indexed and not forward_extension:
             l4_prediction_evidence = {
@@ -2087,10 +2093,12 @@ async def materialize_walk_forward_oof(req: OofMaterializeRequest):
             knowledge_cutoff_date=req.knowledge_cutoff_date,
             generation_mode="purged_oof",
             cohort_id=req.cohort_id,
+            artifact_generated_at=f"{req.knowledge_cutoff_date}T00:00:00+00:00",
         )
         shadow_evaluation_packets = None
         forward_shadow_coverage = None
         serving_forward_guard = None
+        candidate_forward_evaluation = None
         if forward_extension and req.persist_forward_shadow_coverage:
             forward_shadow_coverage = persist_verified_oof_forward_coverage(
                 cohort_id=req.cohort_id,
@@ -2139,6 +2147,16 @@ async def materialize_walk_forward_oof(req: OofMaterializeRequest):
                 serving_forward_guard = evaluate_serving_forward_guard(
                     as_of_date=req.knowledge_cutoff_date,
                 )
+                candidate_forward_evaluation = evaluate_expected_return_candidates_forward(
+                    bucket=bucket,
+                    cohort_id=req.cohort_id,
+                    business_date=req.knowledge_cutoff_date,
+                    extension_manifest_checksum=str(forward_extension["manifest_checksum"]),
+                    snapshot_rows=snapshot_rows,
+                    build_fusion_rows_fn=build_fusion_oof_rows,
+                    query_fn=learning_client.query,
+                    batch_fn=learning_client.batch_execute,
+                )
         elif reuse_indexed:
             forward_shadow_coverage = load_verified_oof_forward_coverage(
                 cohort_id=req.cohort_id,
@@ -2168,6 +2186,15 @@ async def materialize_walk_forward_oof(req: OofMaterializeRequest):
                 "cohort_id": req.cohort_id,
                 "prediction_storage_mode": "gcs_indexed_v1",
                 "source": "checksum_verified_indexed_loader",
+                "counts": {
+                    "materialized_artifact_rows": len(materialized_indexes),
+                    "indexed_snapshot_rows": int(
+                        indexed_loader_evidence.get("snapshot_rows_loaded") or 0
+                    ),
+                    "indexed_l4_prediction_rows": int(
+                        indexed_loader_evidence.get("l4_rows_loaded") or 0
+                    ),
+                },
             }
             if reuse_indexed
             else persist_oof_cohort(
@@ -2195,6 +2222,76 @@ async def materialize_walk_forward_oof(req: OofMaterializeRequest):
         promotion_receipt_error = None
         notification_sent = False
         opb_refresh: dict[str, Any] | None = None
+        candidate_forward_promotion_response: dict[str, Any] | None = None
+        candidate_forward_promotion_error: str | None = None
+        if (
+            req.promote_exact_candidates
+            and isinstance(candidate_forward_evaluation, dict)
+            and candidate_forward_evaluation.get("promotion_payload")
+        ):
+            from services.worker_config_client import worker_fetch
+
+            try:
+                candidate_forward_promotion_response = await worker_fetch(
+                    "/api/admin/config/expected-return/promote",
+                    method="POST",
+                    json_body=candidate_forward_evaluation["promotion_payload"],
+                    timeout=30.0,
+                )
+                promotion_closure = _candidate_forward_promotion_closure(
+                    candidate_forward_evaluation["promotion_payload"],
+                    candidate_forward_promotion_response,
+                )
+                promoted_by_owner.update(promotion_closure["promoted_by_owner"])
+                promotion_errors_by_owner.update(promotion_closure["errors_by_owner"])
+                promoted = bool(promotion_closure["promoted_any"])
+                if not promotion_closure["complete"]:
+                    candidate_forward_promotion_error = (
+                        "exact_candidate_forward_promotion_incomplete:"
+                        + ",".join(promotion_closure["failed_owners"])
+                    )
+                if promoted:
+                    serving_owner = (
+                        "allocator_ev_fusion"
+                        if promoted_by_owner["allocator_ev_fusion"]
+                        else "l4_alpha_ev"
+                    )
+                    try:
+                        opb_refresh = await worker_fetch(
+                            "/api/admin/trigger/opb-arm-prior-refresh"
+                            f"?sync=1&date={req.knowledge_cutoff_date}"
+                            f"&expected_return_owner={serving_owner}",
+                            method="POST",
+                            timeout=120.0,
+                        )
+                    except Exception as exc:  # noqa: BLE001 - promotion is durable; retry OPB closure.
+                        opb_refresh = {"status": "failed", "error": str(exc)}
+            except Exception as exc:  # noqa: BLE001 - evidence stays durable; promotion fails closed.
+                candidate_forward_promotion_error = str(exc)
+        opb_retry_owner = _candidate_forward_opb_retry_owner(
+            candidate_forward_evaluation
+        )
+        if (
+            req.promote_exact_candidates
+            and not promoted
+            and not candidate_forward_promotion_error
+            and opb_retry_owner
+        ):
+            # A previous attempt may have committed the serving pointer and
+            # then failed its OPB projection. Retry that closure idempotently
+            # before writing the terminal lifecycle receipt.
+            from services.worker_config_client import worker_fetch
+
+            try:
+                opb_refresh = await worker_fetch(
+                    "/api/admin/trigger/opb-arm-prior-refresh"
+                    f"?sync=1&date={req.knowledge_cutoff_date}"
+                    f"&expected_return_owner={opb_retry_owner}",
+                    method="POST",
+                    timeout=120.0,
+                )
+            except Exception as exc:  # noqa: BLE001 - retry until OPB closure is durable.
+                opb_refresh = {"status": "failed", "error": str(exc)}
         l4_artifact = l4_result.get("artifact") if isinstance(l4_result, dict) else None
         fusion_artifact = fusion_result.get("artifact") if isinstance(fusion_result, dict) else None
         l4_decision = str((l4_result.get("validation_packet") or {}).get("decision") or "")
@@ -2423,6 +2520,9 @@ async def materialize_walk_forward_oof(req: OofMaterializeRequest):
             "forward_shadow_coverage": forward_shadow_coverage,
             "shadow_evaluation_packets": shadow_evaluation_packets,
             "serving_forward_guard": serving_forward_guard,
+            "candidate_forward_evaluation": candidate_forward_evaluation,
+            "candidate_forward_promotion_response": candidate_forward_promotion_response,
+            "candidate_forward_promotion_error": candidate_forward_promotion_error,
             "physical_prediction_coverage": {
                 "date_count": len(physical_prediction_dates) or None,
                 "min_date": physical_prediction_dates[0] if physical_prediction_dates else None,
@@ -2494,7 +2594,51 @@ OOF_SCORE_SEMANTIC_VERSION = "same-market-same-date-average-tie-percentile-rank-
 OOF_FEATURE_SEMANTIC_VERSION = "formal137-pit-rolling-rank-and-imputation-v2"
 OOF_FEATURE_IMPUTATION_SEMANTIC_VERSION = "prior_252_row_median_then_zero_v2"
 OOF_COHORT_ID_VERSION = "v9-feature-semantic-source-attested"
-OOF_LIFECYCLE_RECEIPT_SCHEMA_VERSION = "active8-oof-lifecycle-receipt-v12-feature-source-attested"
+OOF_LIFECYCLE_RECEIPT_SCHEMA_VERSION = "active8-oof-lifecycle-receipt-v13-candidate-forward-closed"
+
+
+def _candidate_forward_promotion_closure(
+    requested_payload: dict[str, Any],
+    response: dict[str, Any],
+) -> dict[str, Any]:
+    owners = ("l4_alpha_ev", "allocator_ev_fusion")
+    requested = [owner for owner in owners if isinstance(requested_payload.get(owner), dict)]
+    outcomes = response.get("outcomes") if isinstance(response.get("outcomes"), dict) else {}
+    promoted_by_owner = {owner: False for owner in owners}
+    errors_by_owner: dict[str, list[str]] = {}
+    for owner in requested:
+        outcome = outcomes.get(owner) if isinstance(outcomes.get(owner), dict) else {}
+        promoted_by_owner[owner] = outcome.get("promoted") is True
+        if not promoted_by_owner[owner]:
+            blockers = outcome.get("blockers") if isinstance(outcome.get("blockers"), list) else []
+            errors_by_owner[owner] = [str(value) for value in blockers] or [
+                "promotion_outcome_missing_or_not_confirmed"
+            ]
+    return {
+        "requested_owners": requested,
+        "promoted_by_owner": promoted_by_owner,
+        "errors_by_owner": errors_by_owner,
+        "promoted_any": any(promoted_by_owner.values()),
+        "complete": bool(requested) and not errors_by_owner,
+        "failed_owners": list(errors_by_owner),
+    }
+
+
+def _candidate_forward_opb_retry_owner(
+    candidate_forward_evaluation: dict[str, Any] | None,
+) -> str | None:
+    evaluation = (
+        candidate_forward_evaluation
+        if isinstance(candidate_forward_evaluation, dict)
+        else {}
+    )
+    states = evaluation.get("candidate_states")
+    states = states if isinstance(states, dict) else {}
+    if str(states.get("allocator_ev_fusion") or "").lower() == "production":
+        return "allocator_ev_fusion"
+    if str(states.get("l4_alpha_ev") or "").lower() == "production":
+        return "l4_alpha_ev"
+    return None
 
 
 def _runtime_source_sha() -> str:
@@ -2610,6 +2754,10 @@ def _oof_lifecycle_receipt_matches_active_policy(
     l4_coverage = coverage_artifacts.get("l4_predictions")
     shadow_packets = evidence.get("shadow_evaluation_packets")
     shadow_packets = shadow_packets if isinstance(shadow_packets, dict) else {}
+    candidate_forward = evidence.get("candidate_forward_evaluation")
+    candidate_forward = (
+        candidate_forward if isinstance(candidate_forward, dict) else {}
+    )
     persistence = receipt.get("persistence")
     persistence = persistence if isinstance(persistence, dict) else {}
     persistence_counts = persistence.get("counts")
@@ -2633,7 +2781,12 @@ def _oof_lifecycle_receipt_matches_active_policy(
         and all(
             packet.get("policy_decision") == "shadow_only" for packet in shadow_packets.values()
         )
-        and persistence.get("status") in {"ready", "ready_refreshed"}
+        and candidate_forward.get("status") in {
+            "waiting_for_post_freeze_mature_dates",
+            "evaluated",
+        }
+        and candidate_forward.get("training_dispatched") is False
+        and persistence.get("status") in {"ready", "ready_refreshed", "idempotent_ready"}
         and persistence.get("prediction_storage_mode") == "gcs_indexed_v1"
         and int(persistence_counts.get("materialized_artifact_rows") or 0) == 2
         and int(persistence_counts.get("indexed_snapshot_rows") or 0) > 0
@@ -3032,6 +3185,71 @@ def _exact_ready_oof_manifest(
     return path, manifest, producer_source_sha
 
 
+def _pre_dispatch_completed_oof_lifecycle(
+    req: OofLifecycleRequest,
+    *,
+    cadence: str,
+    bucket: Any,
+) -> dict[str, Any] | None:
+    """Return only a checksum-verified terminal receipt; never create work."""
+
+    if bucket is None:
+        return None
+    exact_producer_source_sha: str | None = None
+    if req.continuation_only and req.expected_cohort_id:
+        exact_path, exact_manifest, exact_producer_source_sha = _exact_ready_oof_manifest(
+            bucket,
+            req.expected_cohort_id,
+        )
+        parent: tuple[str, dict[str, Any]] | None = (exact_path, exact_manifest)
+    else:
+        parent = _latest_ready_oof_manifest(bucket)
+    if parent is None:
+        return None
+    parent_path, manifest = parent
+    prep_gcs_prefix = (
+        "" if exact_producer_source_sha else (_latest_canonical_prep_prefix(bucket) or "")
+    )
+    if not prep_gcs_prefix:
+        prep_gcs_prefix = str(manifest.get("prep_gcs_prefix") or "").strip().rstrip("/")
+    if not prep_gcs_prefix or prep_gcs_prefix == "universal":
+        return None
+    dates, calendar = _oof_lifecycle_calendar(
+        req.end_date,
+        bucket=bucket,
+        prep_gcs_prefix=prep_gcs_prefix,
+        expected_producer_source_sha=exact_producer_source_sha,
+    )
+    if len(dates) < OOF_LIFECYCLE_MIN_SESSIONS:
+        return None
+    cohort_id = str(manifest.get("cohort_id") or "")
+    if not cohort_id or (req.expected_cohort_id and cohort_id != req.expected_cohort_id):
+        return None
+    cutoff = str(calendar.get("cutoff") or "")[:10]
+    receipt_path = _oof_lifecycle_receipt_path(cohort_id, cutoff, cadence)
+    blob = bucket.blob(receipt_path)
+    if not blob.exists():
+        return None
+    receipt = json.loads(blob.download_as_text())
+    if not _oof_lifecycle_receipt_matches_active_policy(
+        receipt,
+        cadence=cadence,
+        require_full_fit=req.dispatch_full_fit,
+        expected_calendar=calendar,
+    ):
+        return None
+    return {
+        "status": "idempotent_complete",
+        "reason": "checksum_verified_terminal_receipt_before_dispatch",
+        "cadence": cadence,
+        "cohort_id": cohort_id,
+        "manifest_path": parent_path,
+        "knowledge_cutoff_date": cutoff,
+        "calendar": calendar,
+        "receipt": receipt,
+    }
+
+
 @router.post("/walk_forward/oof/lifecycle")
 async def run_walk_forward_oof_lifecycle(req: OofLifecycleRequest):
     """Idempotent cadence owner for OOF generation, materialization and promotion."""
@@ -3043,7 +3261,18 @@ async def run_walk_forward_oof_lifecycle(req: OofLifecycleRequest):
     cadence = str(req.cadence or "daily").strip().lower()
     if cadence not in {"daily", "weekly", "monthly"}:
         raise HTTPException(status_code=400, detail="OOF lifecycle cadence must be daily, weekly, or monthly")
+    bucket = _get_bucket()
     if not req.dry_run and os.environ.get("OOF_MATERIALIZE_JOB_EXECUTION", "").strip() != "1":
+        try:
+            completed = _pre_dispatch_completed_oof_lifecycle(
+                req,
+                cadence=cadence,
+                bucket=bucket,
+            )
+        except Exception:  # noqa: BLE001 - durable job owns full error reporting.
+            completed = None
+        if completed is not None:
+            return completed
         from datetime import datetime, timedelta, timezone
         from services.cloud_run_jobs_client import CloudRunJobsClient, JobAlreadyRunningError
 
@@ -3090,7 +3319,6 @@ async def run_walk_forward_oof_lifecycle(req: OofLifecycleRequest):
             "execution_name": execution.execution_name,
             "run_id": run_id,
         }
-    bucket = _get_bucket()
     if bucket is None:
         raise HTTPException(status_code=500, detail="GCS unavailable")
     exact_producer_source_sha: str | None = None
@@ -3486,6 +3714,9 @@ async def run_walk_forward_oof_lifecycle(req: OofLifecycleRequest):
         dry_run=materialization_controls["dry_run"],
         confirm=materialization_controls["confirm"],
         promote=materialization_controls["promote"],
+        promote_exact_candidates=bool(
+            cadence == "daily" and req.promote and not req.dry_run
+        ),
         dispatch_full_fit=materialization_controls["dispatch_full_fit"],
         full_fit_poll_only=req.continuation_only,
         expected_producer_source_sha=exact_producer_source_sha,
@@ -3499,17 +3730,41 @@ async def run_walk_forward_oof_lifecycle(req: OofLifecycleRequest):
     if materialization_controls["frozen_forward_shadow"]:
         result["materialization_status"] = result.get("status")
         result["status"] = "shadow_evaluated"
-        result["promoted"] = False
-        result["promotion_allowed"] = False
+        exact_evaluation = result.get("candidate_forward_evaluation")
+        exact_evaluation = (
+            exact_evaluation if isinstance(exact_evaluation, dict) else {}
+        )
+        result["promotion_allowed"] = bool(exact_evaluation.get("promotion_ready"))
         result["promotion_reason"] = (
-            "frozen_forward_oos_shadow_evidence_not_promotion_eligible"
+            "exact_frozen_candidate_post_freeze_gate_promoted"
+            if result.get("promoted")
+            else "exact_frozen_candidate_post_freeze_evaluation_complete"
         )
     opb_failed = (
         isinstance(result.get("opb_refresh"), dict)
         and result["opb_refresh"].get("status") == "failed"
     )
     full_fit_retry_required = bool(result.get("full_fit_retry_required"))
-    dependency_retry_required = opb_failed or full_fit_retry_required
+    candidate_forward = result.get("candidate_forward_evaluation")
+    candidate_forward = candidate_forward if isinstance(candidate_forward, dict) else {}
+    candidate_forward_status = str(candidate_forward.get("status") or "")
+    candidate_forward_retry_required = bool(
+        materialization_controls["frozen_forward_shadow"]
+        and candidate_forward_status not in {
+            "waiting_for_post_freeze_mature_dates",
+            "evaluated",
+        }
+    )
+    candidate_forward_promotion_failed = bool(
+        result.get("candidate_forward_promotion_error")
+        and candidate_forward.get("promotion_ready") is True
+    )
+    dependency_retry_required = (
+        opb_failed
+        or full_fit_retry_required
+        or candidate_forward_retry_required
+        or candidate_forward_promotion_failed
+    )
     if not req.dry_run and not dependency_retry_required:
         lifecycle_blob.upload_from_string(
             json.dumps({
@@ -3532,6 +3787,7 @@ async def run_walk_forward_oof_lifecycle(req: OofLifecycleRequest):
                     "forward_shadow_coverage": result.get("forward_shadow_coverage"),
                     "shadow_evaluation_packets": result.get("shadow_evaluation_packets"),
                     "serving_forward_guard": result.get("serving_forward_guard"),
+                    "candidate_forward_evaluation": result.get("candidate_forward_evaluation"),
                 },
                 "serving_closure": {
                     "alpha_champion_promoted": bool(result.get("promoted")),

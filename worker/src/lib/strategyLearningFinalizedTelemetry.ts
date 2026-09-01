@@ -19,6 +19,7 @@ export type StrategyLearningFinalizedTelemetryInput = {
 }
 
 async function reconcileStrategyLearningFinalizedTelemetry(
+  db: D1Database,
   kv: KVNamespace,
   input: StrategyLearningFinalizedTelemetryInput,
 ): Promise<void> {
@@ -43,10 +44,17 @@ async function reconcileStrategyLearningFinalizedTelemetry(
     ...common,
     summary: `strategy-learning durable finalize closed; ${durableSummary}`,
   })
-  await logSchedulerResult(kv, 'evening-chain', {
-    ...common,
-    summary: `root chain closed from durable strategy-learning finalize; ${durableSummary}`,
+  const { closeEveningChainRootIfComplete } = await import('./eveningChainRootClosure')
+  const closure = await closeEveningChainRootIfComplete(db, {
+    businessDate: input.runDate,
+    canonicalRunId: input.canonicalRunId,
   })
+  if (closure.status === 'closed_success') {
+    await logSchedulerResult(kv, 'evening-chain', {
+      ...common,
+      summary: closure.summary,
+    })
+  }
 }
 
 export async function reconcileAndReleaseStrategyLearningFinalizedTelemetry(
@@ -65,7 +73,7 @@ export async function reconcileAndReleaseStrategyLearningFinalizedTelemetry(
     && !(await closeStrategyLearningPostVerifyStage(db, identity))
   ) return false
 
-  await reconcileStrategyLearningFinalizedTelemetry(kv, input)
+  await reconcileStrategyLearningFinalizedTelemetry(db, kv, input)
 
   const released = await releaseStrategyLearningFinalizedLease(db, identity)
   if (!released) {

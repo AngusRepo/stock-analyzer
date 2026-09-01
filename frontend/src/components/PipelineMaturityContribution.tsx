@@ -285,45 +285,9 @@ function StageRow({ stage }: { stage: PipelineMaturityStage }) {
     ].join(' · ')
     : null
   const evidenceScopeRows = [
-    evidenceScopes?.serving_pointer ? {
-      scope: 'serving_pointer',
-      title: '目前正式服務中的產物（Production pointer）',
-      rows: [
-        ['Artifact', evidenceScopes.serving_pointer.artifact_id],
-        ['Cadence', evidenceScopes.serving_pointer.cadence],
-        ['Role', evidenceScopes.serving_pointer.role],
-        ['Date means', evidenceScopes.serving_pointer.date_semantic],
-        ['Availability', evidenceScopes.serving_pointer.availability],
-        ['Reason', evidenceScopes.serving_pointer.reason_code],
-        ['State', evidenceScopes.serving_pointer.artifact_state],
-        ['Model', evidenceScopes.serving_pointer.model_version],
-        ['Contract', evidenceScopes.serving_pointer.artifact_contract_version],
-        ['Mode', evidenceScopes.serving_pointer.serving_mode],
-        ['Effective at', evidenceScopes.serving_pointer.updated_at],
-        ['Observed at', evidenceScopes.serving_pointer.observed_at],
-      ],
-    } : null,
-    evidenceScopes?.offline_candidate ? {
-      scope: 'offline_candidate',
-      title: `${evidenceScopes.offline_candidate.cadence} 離線升級候選（日期不隨 nightly monitoring 自動前進）`,
-      rows: [
-        ['Cadence', evidenceScopes.offline_candidate.cadence],
-        ['Role', evidenceScopes.offline_candidate.role],
-        ['Date means', '離線候選本身的資料／OOF 截止日'],
-        ['Availability', evidenceScopes.offline_candidate.availability],
-        ['Reason', evidenceScopes.offline_candidate.reason_code],
-        ['Identity', evidenceScopes.offline_candidate.identity_assurance],
-        ['Artifact', evidenceScopes.offline_candidate.artifact_id],
-        ['Model', evidenceScopes.offline_candidate.model_version],
-        ['Contract', evidenceScopes.offline_candidate.artifact_contract_version],
-        ['Validation', evidenceScopes.offline_candidate.validation_schema_version],
-        ['Run date', evidenceScopes.offline_candidate.source_run_date],
-        ['OOF max', evidenceScopes.offline_candidate.oof_max_date],
-      ],
-    } : null,
     evidenceScopes?.frozen_forward ? {
       scope: 'frozen_forward',
-      title: '每日固定樣本 forward 監控證據（不影響正式結果）',
+      title: '日更監控（和 L1.5 對照；不影響正式結果）',
       rows: [
         ['Cohort', evidenceScopes.frozen_forward.cohort_id],
         ['Evaluation', evidenceScopes.frozen_forward.evaluation_id],
@@ -346,6 +310,42 @@ function StageRow({ stage }: { stage: PipelineMaturityStage }) {
         ['OOF rows', evidenceScopes.frozen_forward.oof_row_count == null ? null : String(evidenceScopes.frozen_forward.oof_row_count)],
         ['Usable samples', evidenceScopes.frozen_forward.sample_count == null ? null : String(evidenceScopes.frozen_forward.sample_count)],
         ['Usable dates', evidenceScopes.frozen_forward.date_count == null ? null : String(evidenceScopes.frozen_forward.date_count)],
+      ],
+    } : null,
+    evidenceScopes?.offline_candidate ? {
+      scope: 'offline_candidate',
+      title: `${evidenceScopes.offline_candidate.cadence} 離線正式升級候選（只在新候選產生時更新）`,
+      rows: [
+        ['Cadence', evidenceScopes.offline_candidate.cadence],
+        ['Role', evidenceScopes.offline_candidate.role],
+        ['Date means', '離線候選本身的資料／OOF 截止日'],
+        ['Availability', evidenceScopes.offline_candidate.availability],
+        ['Reason', evidenceScopes.offline_candidate.reason_code],
+        ['Identity', evidenceScopes.offline_candidate.identity_assurance],
+        ['Artifact', evidenceScopes.offline_candidate.artifact_id],
+        ['Model', evidenceScopes.offline_candidate.model_version],
+        ['Contract', evidenceScopes.offline_candidate.artifact_contract_version],
+        ['Validation', evidenceScopes.offline_candidate.validation_schema_version],
+        ['Run date', evidenceScopes.offline_candidate.source_run_date],
+        ['OOF max', evidenceScopes.offline_candidate.oof_max_date],
+      ],
+    } : null,
+    evidenceScopes?.serving_pointer ? {
+      scope: 'serving_pointer',
+      title: '目前正式服務中的產物（Production pointer）',
+      rows: [
+        ['Artifact', evidenceScopes.serving_pointer.artifact_id],
+        ['Cadence', evidenceScopes.serving_pointer.cadence],
+        ['Role', evidenceScopes.serving_pointer.role],
+        ['Date means', evidenceScopes.serving_pointer.date_semantic],
+        ['Availability', evidenceScopes.serving_pointer.availability],
+        ['Reason', evidenceScopes.serving_pointer.reason_code],
+        ['State', evidenceScopes.serving_pointer.artifact_state],
+        ['Model', evidenceScopes.serving_pointer.model_version],
+        ['Contract', evidenceScopes.serving_pointer.artifact_contract_version],
+        ['Mode', evidenceScopes.serving_pointer.serving_mode],
+        ['Effective at', evidenceScopes.serving_pointer.updated_at],
+        ['Observed at', evidenceScopes.serving_pointer.observed_at],
       ],
     } : null,
     evidenceScopes?.runtime_guard ? {
@@ -422,9 +422,16 @@ function StageRow({ stage }: { stage: PipelineMaturityStage }) {
             </div>
             <div className="space-y-4">
               <MetricSection
-                title={scopedCandidateStage ? '正式升級門檻（只約束 promotion candidate）' : '成熟度證據'}
+                title="日更 Frozen-forward 監控（和 L1.5 對照）"
+                description="先用業務日確認排程有執行，再看 usable samples/dates、OOF rows/max 與『是否新增成熟 evidence』；只有這些數值改變才代表成熟資料真的前進。"
+                metrics={monitoringMetrics}
+              />
+              <MetricSection
+                title={scopedCandidateStage
+                  ? `${evidenceScopes?.offline_candidate?.cadence ?? 'weekly'} 離線候選正式升級門檻（決定能否正式參與）`
+                  : '成熟度證據'}
                 description={scopedCandidateStage
-                  ? '這些欄位只決定 learned artifact 能否升級；不代表 safe-abstention production pointer 或上游選股被擋住。'
+                  ? '這是同一個不可變候選的 promotion packet；每日監控日期前進不會改寫這些門檻統計，只有新候選完成離線評估後才更新。門檻全數通過並完成 promotion commit，learned artifact 才能正式參與。'
                   : '本階段的正式成熟度欄位。'}
                 metrics={promotionMetrics}
               />
@@ -437,11 +444,6 @@ function StageRow({ stage }: { stage: PipelineMaturityStage }) {
                 title="正式 serving artifact runtime guard"
                 description="只監控目前實際 serving 的 artifact；N/A 表示 safe-abstention 下不需要 residual guard。"
                 metrics={productionMetrics}
-              />
-              <MetricSection
-                title="Frozen-forward 監控（comparison-only）"
-                description="監控業務日只代表封包有執行；請同時看 usable samples/dates、OOF rows/max 與『是否新增成熟 evidence』，才算實質進度。"
-                metrics={monitoringMetrics}
               />
               <MetricSection
                 title="診斷與不適用欄位（非必要門檻）"
@@ -542,8 +544,13 @@ export default function PipelineMaturityContribution({
     return (
       <section className="sv-readable-card-content overflow-hidden rounded-[24px] border border-white/[0.09] bg-[linear-gradient(180deg,rgba(22,23,30,0.96),rgba(10,11,15,0.985))]" aria-label="成熟度與決策貢獻載入中">
         <div className="p-5"><div className="h-5 w-64 animate-pulse rounded bg-white/[0.08]" /></div>
-        <div className="grid gap-3 p-4 lg:grid-cols-2">
-          {[1, 2, 3, 4, 5, 6].map((row) => <div key={row} className="h-64 animate-pulse rounded-[18px] border border-white/[0.06] bg-white/[0.032]" />)}
+        <div className="space-y-3 p-4">
+          <div className="grid gap-3 lg:grid-cols-3">
+            {[1, 2, 3].map((row) => <div key={row} className="h-64 animate-pulse rounded-[18px] border border-white/[0.06] bg-white/[0.032]" />)}
+          </div>
+          <div className="grid gap-3 lg:grid-cols-2">
+            {[4, 5].map((row) => <div key={row} className="h-64 animate-pulse rounded-[18px] border border-white/[0.06] bg-white/[0.032]" />)}
+          </div>
         </div>
       </section>
     )
@@ -585,6 +592,15 @@ export default function PipelineMaturityContribution({
     { label: '必要門檻未通過', value: String(data.summary.failed_or_blocked) },
   ]
   const strategyRouteBundle = data.strategy_route_bundle
+  const upstreamStageIds = new Set<PipelineMaturityStage['id']>([
+    'threshold_margin_affinity_v2',
+    'oof_redundancy',
+    'route_score_v2',
+  ])
+  const expectedReturnStageIds = new Set<PipelineMaturityStage['id']>(['l4', 'fusion'])
+  const upstreamStages = data.stages.filter((stage) => upstreamStageIds.has(stage.id))
+  const expectedReturnStages = data.stages.filter((stage) => expectedReturnStageIds.has(stage.id))
+  const otherStages = data.stages.filter((stage) => !upstreamStageIds.has(stage.id) && !expectedReturnStageIds.has(stage.id))
 
   return (
     <section className="sv-readable-card-content overflow-hidden rounded-[24px] border border-white/[0.09] bg-[linear-gradient(180deg,rgba(22,23,30,0.96),rgba(10,11,15,0.985))] shadow-[inset_0_1px_0_rgba(255,255,255,0.045),0_18px_52px_rgba(0,0,0,0.42)]" aria-labelledby="pipeline-maturity-title">
@@ -679,8 +695,18 @@ export default function PipelineMaturityContribution({
         </div>
       ) : null}
 
-      <div className="grid items-start gap-3 p-4 lg:grid-cols-2">
-        {data.stages.map((stage) => <StageRow key={stage.id} stage={stage} />)}
+      <div className="space-y-3 p-4">
+        <div className="grid items-start gap-3 lg:grid-cols-3">
+          {upstreamStages.map((stage) => <StageRow key={stage.id} stage={stage} />)}
+        </div>
+        <div className="grid items-start gap-3 lg:grid-cols-2">
+          {expectedReturnStages.map((stage) => <StageRow key={stage.id} stage={stage} />)}
+        </div>
+        {otherStages.length ? (
+          <div className="grid items-start gap-3 lg:grid-cols-2">
+            {otherStages.map((stage) => <StageRow key={stage.id} stage={stage} />)}
+          </div>
+        ) : null}
       </div>
     </section>
   )

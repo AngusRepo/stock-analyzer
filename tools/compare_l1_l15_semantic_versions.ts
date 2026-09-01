@@ -469,6 +469,8 @@ for (const signalDate of routeDates) {
     'ORDER BY r.symbol',
   ].join(' '))
   let matched = 0
+  let unmatched = 0
+  const unmatchedSymbols: string[] = []
   let deltaSum = 0
   let alphaV1Evaluable = 0
   let alphaV2Evaluable = 0
@@ -477,7 +479,11 @@ for (const signalDate of routeDates) {
     const v1 = incumbentBySymbol.get(symbol)
     const v2 = repairedBySymbol.get(symbol)
     const routeEvidence = routeEvidenceBySymbol.get(symbol)
-    if (!v1 || !v2 || !routeEvidence) throw new Error('replay_symbol_missing:' + signalDate + ':' + symbol)
+    if (!v1 || !v2 || !routeEvidence) {
+      unmatched += 1
+      if (unmatchedSymbols.length < 20) unmatchedSymbols.push(symbol)
+      continue
+    }
     const { v1Route, v2Route, repairedScore } = routeEvidence
     const pairedDelta = v2Route - v1Route
     const contextRankNeutralizationDelta = pairedDelta
@@ -520,6 +526,9 @@ for (const signalDate of routeDates) {
     candidates: candidates.length,
     labels: labels.length,
     paired_symbols: matched,
+    unmatched_symbols: unmatched,
+    paired_coverage: labels.length ? matched / labels.length : null,
+    unmatched_symbol_sample: unmatchedSymbols,
     mean_route_delta: matched ? deltaSum / matched : null,
     alpha_v1_evaluable_cells: alphaV1Evaluable,
     alpha_v2_evaluable_cells: alphaV2Evaluable,
@@ -532,6 +541,25 @@ for (const signalDate of routeDates) {
 const formal = summarize(rows, 'incumbent_score')
 const accumulated = summarize(rows, 'accumulated_challenger_score')
 const repaired = summarize(rows, 'repaired_semantic_v2_score')
+const accumulatedPerDate = new Map(
+  accumulated.per_date.map((row: Record<string, any>) => [String(row.date), row]),
+)
+const pairedDailyDeltas = repaired.per_date.map((row: Record<string, any>) => {
+  const baseline = accumulatedPerDate.get(String(row.date)) as Record<string, any> | undefined
+  const repairedSpearman = finite(row.spearman)
+  const baselineSpearman = finite(baseline?.spearman)
+  const repairedSpread = finite(row.high_minus_low)
+  const baselineSpread = finite(baseline?.high_minus_low)
+  return {
+    signal_date: String(row.date),
+    spearman_delta: repairedSpearman != null && baselineSpearman != null
+      ? repairedSpearman - baselineSpearman
+      : null,
+    high_minus_low_delta: repairedSpread != null && baselineSpread != null
+      ? repairedSpread - baselineSpread
+      : null,
+  }
+})
 const componentKeys = [
   'production_seed_score',
   'local_incumbent_spec_replay_score',
@@ -564,14 +592,36 @@ const strategyDiagnostics = Object.fromEntries([...ALPHA_IDS].sort().map((strate
 const sourceContextCount = replayDiagnostics.reduce((sum, row) => sum + row.candidates, 0)
 const incumbentStrategyHitCount = replayDiagnostics.reduce((sum, row) => sum + row.incumbent_replay_retained, 0)
 const repairedStrategyHitCount = replayDiagnostics.reduce((sum, row) => sum + row.repaired_replay_retained, 0)
+const totalLabelCount = replayDiagnostics.reduce((sum, row) => sum + row.labels, 0)
+const totalPairedCount = replayDiagnostics.reduce((sum, row) => sum + row.paired_symbols, 0)
+const pairedCoverage = totalLabelCount > 0 ? totalPairedCount / totalLabelCount : 0
+const evaluatedDates = replayDiagnostics
+  .filter((row) => row.paired_symbols > 0)
+  .map((row) => String(row.signal_date))
+const unavailableDates = replayDiagnostics
+  .filter((row) => row.paired_symbols === 0)
+  .map((row) => ({
+    signal_date: String(row.signal_date),
+    labels: Number(row.labels ?? 0),
+    candidates: Number(row.candidates ?? 0),
+    reason: Number(row.candidates ?? 0) === 0
+      ? 'no_replay_context'
+      : 'no_paired_symbols',
+  }))
+if (pairedCoverage < 0.9) {
+  throw new Error(`paired_replay_coverage_below_floor:${pairedCoverage.toFixed(6)}`)
+}
 const report = {
   generated_at: new Date().toISOString(),
   contract: 'l1-l15-same-canonical-ready-mature-semantic-paired-comparison-v3',
   production_effect: false,
   selection_semantics: 'full_universe_continuous_positive_weights_no_topk_admission',
   quantiles_are_diagnostic_only: true,
-  compared_dates: routeDates,
+  requested_dates: routeDates,
+  evaluated_dates: evaluatedDates,
+  unavailable_dates: unavailableDates,
   compared_samples: rows.length,
+  paired_replay_coverage: pairedCoverage,
   runtime_strategy_match_breadth: {
     source_context_count: sourceContextCount,
     paired_mature_label_count: rows.length,
@@ -612,11 +662,17 @@ const report = {
     high_minus_low_delta: finite(repaired.high_minus_low) != null && finite(accumulated.high_minus_low) != null
       ? repaired.high_minus_low - accumulated.high_minus_low
       : null,
+    paired_daily_consistency: {
+      evaluated_dates: pairedDailyDeltas.length,
+      spearman_improved_dates: pairedDailyDeltas.filter((row: Record<string, any>) => Number(row.spearman_delta) > 0).length,
+      high_minus_low_improved_dates: pairedDailyDeltas.filter((row: Record<string, any>) => Number(row.high_minus_low_delta) > 0).length,
+      by_date: pairedDailyDeltas,
+    },
     negative_ranking_resolved: finite(repaired.global_spearman) != null
       && repaired.global_spearman > 0
       && finite(repaired.high_minus_low) != null
       && repaired.high_minus_low > 0
-      && repaired.positive_daily_spearman_dates >= Math.ceil(routeDates.length * 0.6),
+      && repaired.positive_daily_spearman_dates >= Math.ceil(repaired.dates * 0.6),
   },
   replay: {
     method: 'production_v4_paired_delta_replay',
@@ -636,7 +692,9 @@ console.log(JSON.stringify({
   outputPath,
   evidencePath,
   compared_samples: rows.length,
-  compared_dates: routeDates.length,
+  requested_dates: routeDates.length,
+  evaluated_dates: evaluatedDates.length,
+  unavailable_dates: unavailableDates,
   evidence_rows: versionedEvidenceRows.length,
   versions: report.versions,
   improvement_vs_accumulated: report.improvement_vs_accumulated,

@@ -6,12 +6,19 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent.parent
 
 
-def test_oof_external_lifecycle_dispatches_durable_prep_owner_before_selecting_cohort():
+def test_oof_external_lifecycle_checks_terminal_receipt_before_durable_dispatch():
     source = (ROOT / "ml-controller" / "routers" / "walk_forward.py").read_text(encoding="utf-8")
-    dispatch = source.index('"reason": "durable_prep_first_oof_job_dispatched"')
-    bucket_lookup = source.index("bucket = _get_bucket()", source.index("async def run_walk_forward_oof_lifecycle"))
-    parent_lookup = source.index("parent = _latest_ready_oof_manifest(bucket)")
-    assert dispatch < bucket_lookup < parent_lookup
+    endpoint = source[source.index("async def run_walk_forward_oof_lifecycle"):]
+    dispatch = endpoint.index('"reason": "durable_prep_first_oof_job_dispatched"')
+    bucket_lookup = endpoint.index("bucket = _get_bucket()")
+    preflight = endpoint.index("_pre_dispatch_completed_oof_lifecycle(")
+    assert bucket_lookup < preflight < dispatch
+    helper = source[
+        source.index("def _pre_dispatch_completed_oof_lifecycle"):
+        source.index('@router.post("/walk_forward/oof/lifecycle")')
+    ]
+    assert "_oof_lifecycle_receipt_matches_active_policy" in helper
+    assert '"status": "idempotent_complete"' in helper
     assert 'os.environ.get("OOF_MATERIALIZE_JOB_EXECUTION", "").strip() != "1"' in source
 
 

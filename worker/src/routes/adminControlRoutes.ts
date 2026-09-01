@@ -632,14 +632,14 @@ async function handleSchedulerCallback(c: any) {
     const expectedCohortId = String(callbackMetadata?.cohort_id ?? '').trim()
     if (
       body.status === 'triggered'
-      && ['weekly', 'monthly'].includes(cadence)
-      // callback_status=triggered is emitted only while the weekly/monthly
-      // cohort or its bound full-fit dependency still needs a continuation.
-      // A cohort may already be materialized while the Modal full-fit remains
-      // active, so lifecycleStatus must not narrow the durable retry here.
+      && ['daily', 'weekly', 'monthly'].includes(cadence)
+      // callback_status=triggered is emitted only while a durable dependency
+      // still needs a continuation. Daily may need to finish immutable prep,
+      // forward materialization, exact-candidate promotion, or OPB closure;
+      // weekly/monthly may also be waiting on their bound full-fit lifecycle.
       && ['pending', 'spawned', 'materialized', 'shadow_evaluated'].includes(lifecycleStatus)
       && callbackRunDate
-      && expectedCohortId
+      && (cadence === 'daily' || expectedCohortId)
       && continuationAttempt < continuationMaxAttempts
     ) {
       await c.env.UPDATE_QUEUE.send({
@@ -647,8 +647,8 @@ async function handleSchedulerCallback(c: any) {
         cursor: 0,
         triggerTime: callbackRunDate,
         runId: callbackRunId,
-        oofCadence: cadence as 'weekly' | 'monthly',
-        oofExpectedCohortId: expectedCohortId,
+        oofCadence: cadence as 'daily' | 'weekly' | 'monthly',
+        oofExpectedCohortId: expectedCohortId || undefined,
         oofContinuationAttempt: continuationAttempt + 1,
       }, { delaySeconds: 300 })
     }

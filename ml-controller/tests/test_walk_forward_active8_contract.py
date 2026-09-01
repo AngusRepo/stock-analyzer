@@ -1472,10 +1472,26 @@ def test_oof_lifecycle_receipt_is_bound_to_active_materialization_policy():
                 "l4_alpha_ev": {"policy_decision": "shadow_only"},
                 "allocator_ev_fusion": {"policy_decision": "shadow_only"},
             },
+            "candidate_forward_evaluation": {
+                "status": "waiting_for_post_freeze_mature_dates",
+                "training_dispatched": False,
+            },
         },
     }
     assert _oof_lifecycle_receipt_matches_active_policy(
         shadow,
+        cadence="daily",
+        require_full_fit=False,
+    )
+    assert _oof_lifecycle_receipt_matches_active_policy(
+        {
+            **shadow,
+            "persistence": {
+                **shadow["persistence"],
+                "status": "idempotent_ready",
+                "source": "checksum_verified_indexed_loader",
+            },
+        },
         cadence="daily",
         require_full_fit=False,
     )
@@ -1494,6 +1510,16 @@ def test_oof_lifecycle_receipt_is_bound_to_active_materialization_policy():
     }
     assert not _oof_lifecycle_receipt_matches_active_policy(
         missing_packets, cadence="daily", require_full_fit=False
+    )
+    missing_candidate_forward = {
+        **shadow,
+        "evidence_closure": {
+            **shadow["evidence_closure"],
+            "candidate_forward_evaluation": None,
+        },
+    }
+    assert not _oof_lifecycle_receipt_matches_active_policy(
+        missing_candidate_forward, cadence="daily", require_full_fit=False
     )
     missing_coverage = {
         **shadow,
@@ -1545,6 +1571,63 @@ def test_oof_lifecycle_receipt_is_bound_to_active_materialization_policy():
     assert _oof_lifecycle_receipt_path("cohort-1", "2026-07-29", "weekly").endswith(
         "/2026-07-29.weekly.json"
     )
+
+
+def test_exact_candidate_multi_owner_promotion_requires_every_requested_owner():
+    from routers.walk_forward import _candidate_forward_promotion_closure
+
+    requested = {
+        "l4_alpha_ev": {"artifact_id": "l4"},
+        "allocator_ev_fusion": {"artifact_id": "fusion"},
+    }
+    partial = _candidate_forward_promotion_closure(requested, {
+        "outcomes": {
+            "l4_alpha_ev": {"promoted": True},
+            "allocator_ev_fusion": {
+                "promoted": False,
+                "blockers": ["fusion_requires_serving_compatible_l4"],
+            },
+        },
+    })
+
+    assert partial["promoted_any"] is True
+    assert partial["complete"] is False
+    assert partial["failed_owners"] == ["allocator_ev_fusion"]
+    assert partial["errors_by_owner"]["allocator_ev_fusion"] == [
+        "fusion_requires_serving_compatible_l4"
+    ]
+
+    complete = _candidate_forward_promotion_closure(requested, {
+        "outcomes": {
+            "l4_alpha_ev": {"promoted": True},
+            "allocator_ev_fusion": {"promoted": True},
+        },
+    })
+    assert complete["complete"] is True
+    assert complete["failed_owners"] == []
+
+
+def test_exact_candidate_production_state_retries_opb_without_repromotion():
+    from routers.walk_forward import _candidate_forward_opb_retry_owner
+
+    assert _candidate_forward_opb_retry_owner({
+        "candidate_states": {
+            "l4_alpha_ev": "production",
+            "allocator_ev_fusion": "offline_passed",
+        }
+    }) == "l4_alpha_ev"
+    assert _candidate_forward_opb_retry_owner({
+        "candidate_states": {
+            "l4_alpha_ev": "production",
+            "allocator_ev_fusion": "production",
+        }
+    }) == "allocator_ev_fusion"
+    assert _candidate_forward_opb_retry_owner({
+        "candidate_states": {
+            "l4_alpha_ev": "offline_passed",
+            "allocator_ev_fusion": "offline_passed",
+        }
+    }) is None
 
 
 def test_oof_dispatch_fence_probes_modal_terminal_state_before_holding_lock():

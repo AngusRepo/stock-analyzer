@@ -175,6 +175,7 @@ adminConfigCoreRoutes.post('/api/admin/config/expected-return/promote', async (c
       source_run_date: String(rawCandidate.source_run_date ?? ''),
       artifact_path: String(rawCandidate.artifact_path ?? ''),
       artifact_checksum: String(rawCandidate.artifact_checksum ?? ''),
+      prospective_validation: rawCandidate.prospective_validation ?? {},
     }
     const plan = buildExpectedReturnOwnerPromotionPlan(current, owner, candidate)
     await recordParameterCandidateFromSandbox(learningDb, {
@@ -221,6 +222,7 @@ adminConfigCoreRoutes.post('/api/admin/config/expected-return/promote', async (c
         l4_serving_coverage: candidate.operational_parity.l4_serving_coverage ?? null,
         fusion_serving_coverage: candidate.operational_parity.fusion_serving_coverage ?? null,
       },
+      prospective_validation: candidate.prospective_validation,
       serving_state: plan.serving_state,
       validation_packet: {
         schema_version: 'expected-return-owner-promotion-packet-v1',
@@ -283,6 +285,7 @@ adminConfigCoreRoutes.post('/api/admin/config/expected-return/promote', async (c
         promotionPacketId: recorded.promotion_packet_id,
         candidateId: plan.candidate_id,
         sourceRunDate: candidate.source_run_date,
+        prospectiveValidation: candidate.prospective_validation,
       })
     } catch (error) {
       outcomes[owner] = {

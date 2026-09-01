@@ -1007,7 +1007,7 @@ export type StrategyPromotionGate = {
   production_effect: false
   allocation_eligible: boolean
   gate_policy: 'candidate_evidence_then_atomic_replacement_v7'
-  gate_role: 'atomic_replacement_to_active' | 'incumbent_monitoring'
+  gate_role: 'atomic_replacement_to_active' | 'incumbent_monitoring' | 'non_selection_owner_monitoring'
   hard_gate_metrics: string[]
   diagnostic_only_metrics: string[]
   activation_gate: {
@@ -1016,6 +1016,7 @@ export type StrategyPromotionGate = {
     status: 'not_applicable' | 'evidence_pending' | 'prefilter_failed' | 'not_evaluated' | 'proposed' | 'rejected' | 'accepted'
     run_id: string | null
     decision_id: string | null
+    applicability_reason: string | null
   }
   missing_evidence: string[]
   thresholds: {
@@ -1090,14 +1091,15 @@ export type StrategyReplacementDecisionSummary = {
 export type StrategyReplacementCandidatePrefilterSummary = {
   strategy_id: string
   strategy_version: string
-  evidence_status: 'ready' | 'missing'
-  observation_dates: number
-  candidate_observations: number
+  evidence_status: 'ready' | 'missing' | 'not_applicable'
+  applicability_reason: string | null
+  observation_dates: number | null
+  candidate_observations: number | null
   marginal_edge_mean: number | null
   marginal_edge_lcb90: number | null
   absolute_hit_return_mean: number | null
   production_eligible: boolean | null
-  production_weight_raw: number
+  production_weight_raw: number | null
 }
 
 export type StrategyReplacementGateSummary = {

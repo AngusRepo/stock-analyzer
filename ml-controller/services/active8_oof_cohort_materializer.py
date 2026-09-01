@@ -2006,9 +2006,17 @@ def archive_ev_shadow_evaluation_packets(
         artifact = dict(result.get("artifact") or {})
         validation = dict(result.get("validation_packet") or {})
         model_version = str(artifact.get("model_version") or "unknown")
-        subject_artifact_checksum = hashlib.sha256(
-            json.dumps(artifact, sort_keys=True, ensure_ascii=False).encode("utf-8")
-        ).hexdigest()
+        # The model fingerprint excludes observation timestamps and validation
+        # telemetry.  Re-evaluating the same immutable model and extension must
+        # address the same shadow subject instead of creating a new packet.
+        subject_artifact_checksum = str(artifact.get("model_fingerprint") or "").lower()
+        if (
+            len(subject_artifact_checksum) != 64
+            or any(char not in "0123456789abcdef" for char in subject_artifact_checksum)
+        ):
+            raise ValueError(
+                f"expected_return_shadow_subject_model_fingerprint_invalid:{model_name}"
+            )
         evaluator_contract = {
             "evaluator_version": EXPECTED_RETURN_SHADOW_EVALUATOR_VERSION,
             "model_name": model_name,

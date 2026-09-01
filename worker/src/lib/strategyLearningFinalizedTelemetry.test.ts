@@ -67,6 +67,7 @@ class FakeFinalizedLeaseD1 {
   }
 
   first(sql: string, values: unknown[]): { authorized?: number; closed?: number } | null {
+    if (sql.includes('FROM scheduler_execution_tickets_v1')) return null
     if (sql.includes('UPDATE strategy_learning_runs') && sql.includes('RETURNING 1 AS')) {
       const alias = sql.match(/RETURNING 1 AS (\w+)/)?.[1]
       const changed = this.run(sql, values)
@@ -224,7 +225,7 @@ async function main(): Promise<void> {
   ), 'reconciled')
   assert.equal(readStatus(kv, 'strategy-learning'), 'success')
   assert.equal(readStatus(kv, 'post-verify-chain'), 'success')
-  assert.equal(readStatus(kv, 'evening-chain'), 'success')
+  assert.equal(readStatus(kv, 'evening-chain'), null)
   assert.equal(evidenceRuns, 1)
   assert.equal(policyRuns, 1)
   assert.equal(db.releaseCount, 1)
@@ -247,7 +248,7 @@ async function main(): Promise<void> {
   ), 'reconciled')
   assert.equal(readStatus(expiredKv, 'strategy-learning'), 'success')
   assert.equal(readStatus(expiredKv, 'post-verify-chain'), 'success')
-  assert.equal(readStatus(expiredKv, 'evening-chain'), 'success')
+  assert.equal(readStatus(expiredKv, 'evening-chain'), null)
   assert.equal(expiredDb.heartbeatCount, 0)
   assert.equal(expiredDb.reclaimCount, 1)
   assert.equal(expiredDb.releaseCount, 1)

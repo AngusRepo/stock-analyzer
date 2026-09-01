@@ -109,6 +109,11 @@ def _target(row: dict[str, Any], *, cost_model_bps: float) -> float | None:
     value = _float_or_none(row.get("l4_executable_return_pct"))
     if value is None or not (-1.0 < value < 1.0):
         return None
+    # Canonical adjusted prep writes an already-net target. Native
+    # price_horizon_labels_v1 rows expose the gross adjusted-price return and
+    # still require the single round-trip deduction here.
+    if str(row.get("label_adjustment_source") or "") == OOF_PRICE_HORIZON_SOURCE:
+        return value
     return value - max(0.0, float(cost_model_bps)) / 10000.0
 
 
@@ -519,6 +524,7 @@ def build_l4_alpha_ev_artifact_from_rows(
     fit_min_dates: int | None = None,
     generation_mode: str = "native",
     cohort_id: str | None = None,
+    artifact_generated_at: str | None = None,
 ) -> dict[str, Any]:
     if generation_mode not in {"native", "purged_oof"}:
         raise ValueError("l4_generation_mode_invalid")
@@ -663,7 +669,7 @@ def build_l4_alpha_ev_artifact_from_rows(
         "training_data": {
             "source": "point-in-time ensemble and ScoreV2 components joined to raw executable horizon labels with stable adjustment factors",
             "trained_until": trained_until,
-            "generated_at": datetime.now(timezone.utc).isoformat(),
+            "generated_at": artifact_generated_at or datetime.now(timezone.utc).isoformat(),
             **diagnostics,
             "generation_mode": generation_mode,
             "cohort_id": cohort_id,

@@ -3103,7 +3103,11 @@ export async function processUpdateBatch(
   }
 
   if (msg.type === 'active8_oof_continuation') {
-    const cadence = msg.oofCadence === 'monthly' ? 'monthly' : 'weekly'
+    const cadence = msg.oofCadence === 'daily'
+      ? 'daily'
+      : msg.oofCadence === 'monthly'
+      ? 'monthly'
+      : 'weekly'
     const runDate = String(msg.triggerTime ?? '').slice(0, 10)
     const attempt = Number(msg.oofContinuationAttempt)
     const expectedCohortId = String(msg.oofExpectedCohortId ?? '').trim()
@@ -3113,12 +3117,14 @@ export async function processUpdateBatch(
     if (!Number.isInteger(attempt) || attempt < 1 || attempt > ACTIVE8_OOF_CONTINUATION_MAX_ATTEMPTS) {
       throw new Error(`active8_oof_continuation_exhausted:${cadence}:${runDate}:${attempt}`)
     }
-    if (!expectedCohortId) throw new Error(`active8_oof_continuation_cohort_missing:${cadence}:${runDate}`)
+    if (cadence !== 'daily' && !expectedCohortId) {
+      throw new Error(`active8_oof_continuation_cohort_missing:${cadence}:${runDate}`)
+    }
     const { runActive8OofLifecycle } = await import('./controllerWorkflows')
     const summary = await runActive8OofLifecycle(env, runDate, cadence, {
       expectedCohortId,
       continuationAttempt: attempt,
-      continuationOnly: true,
+      continuationOnly: Boolean(expectedCohortId),
     })
     const collisionRetry = planActive8OofContinuationCollisionRetry(summary, attempt)
     if (collisionRetry) {

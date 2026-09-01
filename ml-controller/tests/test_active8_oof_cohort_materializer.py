@@ -1271,13 +1271,19 @@ def test_forward_shadow_evaluation_packets_are_separate_from_candidates(monkeypa
         base_manifest_checksum="a" * 64,
         extension_manifest=extension,
         l4_result={
-            "artifact": {"model_version": "l4-v1"},
+            "artifact": {
+                "model_version": "l4-v1",
+                "model_fingerprint": "1" * 64,
+            },
             "validation_packet": {
                 "decision": "PASS",
             },
         },
         fusion_result={
-            "artifact": {"model_version": "fusion-v1"},
+            "artifact": {
+                "model_version": "fusion-v1",
+                "model_fingerprint": "2" * 64,
+            },
             "validation_packet": {
                 "decision": "FAIL",
             },

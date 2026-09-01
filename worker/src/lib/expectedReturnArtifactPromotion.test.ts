@@ -7,6 +7,8 @@ const cohortId = 'active8-oof-20260724'
 const sourceRunDate = '2026-07-24'
 const l4Checksum = 'a'.repeat(64)
 const fusionChecksum = 'b'.repeat(64)
+const l4Fingerprint = 'c'.repeat(64)
+const fusionFingerprint = 'd'.repeat(64)
 const parity = {
   schema_version: 'ev-operational-parity-v2',
   decision: 'FAIL',
@@ -26,13 +28,16 @@ const parity = {
 
 function l4Candidate() {
   const validation = { decision: 'PASS', failed_gates: [] }
+  const version = 'l4-alpha-ev-ridge-v5-sector-20260724'
   return {
+    artifact_id: `l4_alpha_ev:${version}:${l4Checksum}`,
     artifact: {
       expected_return_owner: 'l4_alpha_ev',
       artifact_contract_version: L4_ALPHA_EV_CONTRACT.artifactContractVersion,
       feature_semantic_version: L4_ALPHA_EV_CONTRACT.featureSemanticVersion,
       label_schema_version: L4_ALPHA_EV_CONTRACT.labelSchemaVersion,
-      model_version: 'l4-alpha-ev-ridge-v5-sector-20260724',
+      model_version: version,
+      model_fingerprint: l4Fingerprint,
       trained_until: '2026-07-09',
       output_is_net_of_costs: true,
       validation_packet: validation,
@@ -44,18 +49,38 @@ function l4Candidate() {
     source_run_date: sourceRunDate,
     artifact_path: `universal/ev_candidates/${cohortId}/l4_alpha_ev/${l4Checksum}.json`,
     artifact_checksum: l4Checksum,
+    prospective_validation: {
+      schema_version: 'expected-return-candidate-forward-gate-v1',
+      decision: 'PASS',
+      failed_gates: [],
+      candidate_artifact_id: `l4_alpha_ev:${version}:${l4Checksum}`,
+      candidate_artifact_checksum: l4Checksum,
+      model_fingerprint: l4Fingerprint,
+      source_run_date: sourceRunDate,
+      minimum_evaluable_dates: 5,
+      evaluable_date_count: 5,
+      prediction_date_min: '2026-07-27',
+      prediction_date_max: '2026-07-31',
+      corr_or_delta_lcb90: 0.01,
+      spread_or_delta_lcb90: 0.005,
+      top_return_lcb90: 0.004,
+      training_dispatched: false,
+    },
   }
 }
 
 function fusionCandidate(ownerParity = parity) {
   const validation = { decision: 'PASS', failed_gates: [] }
+  const version = 'allocator-ev-fusion-residual-v14-20260724'
   return {
+    artifact_id: `allocator_ev_fusion:${version}:${fusionChecksum}`,
     artifact: {
       expected_return_owner: 'allocator_ev_fusion',
       artifact_contract_version: ALLOCATOR_EV_FUSION_CONTRACT.artifactContractVersion,
       feature_semantic_version: ALLOCATOR_EV_FUSION_CONTRACT.featureSemanticVersion,
       label_schema_version: ALLOCATOR_EV_FUSION_CONTRACT.labelSchemaVersion,
-      model_version: 'allocator-ev-fusion-residual-v14-20260724',
+      model_version: version,
+      model_fingerprint: fusionFingerprint,
       policy_value_head_count: 1,
       policy_value_heads: ['residual_adjustment_model'],
       residual_adjustment_model: { coefficients: { l4_expected_return: 0.6 } },
@@ -70,6 +95,23 @@ function fusionCandidate(ownerParity = parity) {
     source_run_date: sourceRunDate,
     artifact_path: `universal/ev_candidates/${cohortId}/allocator_ev_fusion/${fusionChecksum}.json`,
     artifact_checksum: fusionChecksum,
+    prospective_validation: {
+      schema_version: 'expected-return-candidate-forward-gate-v1',
+      decision: 'PASS',
+      failed_gates: [],
+      candidate_artifact_id: `allocator_ev_fusion:${version}:${fusionChecksum}`,
+      candidate_artifact_checksum: fusionChecksum,
+      model_fingerprint: fusionFingerprint,
+      source_run_date: sourceRunDate,
+      minimum_evaluable_dates: 5,
+      evaluable_date_count: 5,
+      prediction_date_min: '2026-07-27',
+      prediction_date_max: '2026-07-31',
+      corr_or_delta_lcb90: 0,
+      spread_or_delta_lcb90: 0,
+      top_return_lcb90: 0.003,
+      training_dispatched: false,
+    },
   }
 }
 
@@ -97,6 +139,15 @@ const tamperedPlan = buildExpectedReturnOwnerPromotionPlan(
 )
 assert.equal(tamperedPlan.eligible, false)
 assert(tamperedPlan.blockers.includes('artifact_path_checksum_lineage_mismatch'))
+
+const noProspectiveL4 = { ...l4Candidate(), prospective_validation: {} }
+const noProspectivePlan = buildExpectedReturnOwnerPromotionPlan(
+  staleConfig,
+  'l4_alpha_ev',
+  noProspectiveL4,
+)
+assert.equal(noProspectivePlan.eligible, false)
+assert(noProspectivePlan.blockers.includes('prospective_validation_contract_incompatible'))
 
 const fusionBlocked = buildExpectedReturnOwnerPromotionPlan(
   staleConfig,

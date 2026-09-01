@@ -16,7 +16,10 @@ test('Pipeline page renders maturity evidence after the daily flow', () => {
   assert(page.indexOf('<PipelineMaturityContribution') > page.indexOf('<ExecutionFlowColumn'))
   assert(!page.includes('RecommendationSummaryColumn'))
   assert(!page.includes('title="今日推薦股票"'))
-  assert(panel.includes('grid items-start gap-3 p-4 lg:grid-cols-2'))
+  assert(panel.includes('grid items-start gap-3 lg:grid-cols-3'))
+  assert(panel.includes('grid items-start gap-3 lg:grid-cols-2'))
+  assert(panel.includes('upstreamStages.map'))
+  assert(panel.includes('expectedReturnStages.map'))
   assert(api.includes('/dashboard/v4/pipeline/maturity'))
 })
 
@@ -51,8 +54,8 @@ test('maturity lineage labels cadence, role, availability, and comparable contra
     'OOF 訊號截止日',
     '監控封包業務日（非成熟進度）',
     '目前正式服務中的產物（Production pointer）',
-    '${evidenceScopes.offline_candidate.cadence} 離線升級候選（日期不隨 nightly monitoring 自動前進）',
-    '每日固定樣本 forward 監控證據（不影響正式結果）',
+    '${evidenceScopes.offline_candidate.cadence} 離線正式升級候選（只在新候選產生時更新）',
+    '日更監控（和 L1.5 對照；不影響正式結果）',
     'First comparable',
   ]) {
     assert(panel.includes(label), `missing explicit maturity label: ${label}`)
@@ -61,9 +64,11 @@ test('maturity lineage labels cadence, role, availability, and comparable contra
   assert(panel.includes("metric.availability === 'pending'"))
   assert(panel.includes('point.artifact_contract_version === latestHistory?.artifact_contract_version'))
   assert(panel.includes('Current evidence unavailable or identity-blocked'))
-  assert(panel.includes('正式升級門檻（只約束 promotion candidate）'))
+  assert(panel.includes('離線候選正式升級門檻（決定能否正式參與）'))
   assert(panel.includes('資料生命週期與下一批候選 readiness'))
-  assert(panel.includes('Frozen-forward 監控（comparison-only）'))
+  assert(panel.includes('日更 Frozen-forward 監控（和 L1.5 對照）'))
+  assert(panel.indexOf('日更 Frozen-forward 監控（和 L1.5 對照）') < panel.indexOf('離線候選正式升級門檻（決定能否正式參與）'))
+  assert(panel.indexOf("scope: 'frozen_forward'") < panel.indexOf("scope: 'offline_candidate'"))
   assert(panel.includes('診斷與不適用欄位（非必要門檻）'))
   assert(panel.includes('此範圍證據被 lineage 擋住'))
   assert(panel.includes("item.scope === 'promotion_gate'"))

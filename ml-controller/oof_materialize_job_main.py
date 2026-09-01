@@ -245,17 +245,6 @@ def _summary(run_id: str, result: dict[str, Any], *, mode: str) -> str:
     return " ".join(parts)
 
 
-def _full_fit_continuation_active(result: dict[str, Any]) -> bool:
-    full_fit = result.get("full_fit_dispatch")
-    full_fit = full_fit if isinstance(full_fit, dict) else {}
-    return (
-        result.get("dependency_retry_required") is True
-        and full_fit.get("retry_required") is True
-        and str(full_fit.get("status") or "").lower() in {"dispatched", "pending"}
-        and not full_fit.get("failed_models")
-    )
-
-
 def _oof_freshness_evidence(result: dict[str, Any]) -> dict[str, Any]:
     prep_lifecycle = result.get("prep_lifecycle")
     prep_lifecycle = prep_lifecycle if isinstance(prep_lifecycle, dict) else {}
@@ -430,9 +419,7 @@ async def _run() -> int:
             )
             status = str(result.get("status") or "").lower()
             if result.get("dependency_retry_required"):
-                if _full_fit_continuation_active(result):
-                    callback_status = "triggered"
-                else:
+                if continuation_attempt >= OOF_CONTINUATION_MAX_ATTEMPTS:
                     forward_extension = result.get("daily_forward_extension") or {}
                     reason = (
                         result.get("reason")
@@ -441,9 +428,11 @@ async def _run() -> int:
                         or (result.get("opb_refresh") or {}).get("error")
                         or "dependency_retry_required"
                     )
-                    detail = str(forward_extension.get("reason") or "").strip()
-                    suffix = f":{detail}" if detail and detail != reason else ""
-                    raise RuntimeError(f"oof_dependency_retry_required:{reason}{suffix}")
+                    raise RuntimeError(
+                        "oof_dependency_continuation_exhausted:"
+                        f"{reason}:attempt={continuation_attempt}"
+                    )
+                callback_status = "triggered"
             elif status in {"materialized", "shadow_evaluated", "idempotent_complete"}:
                 freshness = _oof_freshness_evidence(result)
                 if freshness["status"] != "fresh":

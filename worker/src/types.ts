@@ -383,7 +383,7 @@ export interface UpdateQueueMsg {
   scheduledTask?: 'external-evidence' | 'weekly-cleanup' | 's12-smcvwap-calibration'
   force?: boolean
   strategyEvidenceMaxDates?: number
-  oofCadence?: 'weekly' | 'monthly'
+  oofCadence?: 'daily' | 'weekly' | 'monthly'
   oofExpectedCohortId?: string
   oofContinuationAttempt?: number
   active8SnapshotId?: string

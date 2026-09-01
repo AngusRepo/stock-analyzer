@@ -40,6 +40,14 @@ export type PitResidualFunnelEnrichmentResult = {
   summary: string
 }
 
+export type PitResidualFunnelRecoveryResult = {
+  throughDate: string
+  attemptedDates: string[]
+  recovered: PitResidualFunnelEnrichmentResult[]
+  failures: Array<{ businessDate: string; error: string }>
+  summary: string
+}
+
 function chunks<T>(rows: T[], size: number): T[][] {
   const output: T[][] = []
   for (let index = 0; index < rows.length; index += size) output.push(rows.slice(index, index + size))
@@ -291,5 +299,127 @@ export async function enrichCanonicalPitResidualFunnel(
       }).catch(() => {})
     }
     throw error
+  }
+}
+
+/**
+ * Repairs a bounded number of historical canonical funnel dates that already
+ * have both an authoritative pipeline run and same-day Learning shadow data.
+ * This never changes screener decisions, candidate_count, or final_count.
+ */
+export async function recoverMissingPitResidualFunnels(
+  env: Bindings,
+  input: { throughDate: string; excludeBusinessDate?: string | null; maxDates?: number },
+): Promise<PitResidualFunnelRecoveryResult> {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(input.throughDate)) {
+    throw new Error(`pit_residual_invalid_recovery_date:${input.throughDate}`)
+  }
+  const excludeBusinessDate = input.excludeBusinessDate?.trim() || null
+  if (excludeBusinessDate && !/^\d{4}-\d{2}-\d{2}$/.test(excludeBusinessDate)) {
+    throw new Error(`pit_residual_invalid_recovery_exclusion:${excludeBusinessDate}`)
+  }
+  const parsedMaxDates = Number(input.maxDates ?? 1)
+  const maxDates = Number.isFinite(parsedMaxDates)
+    ? Math.max(1, Math.min(5, Math.floor(parsedMaxDates)))
+    : 1
+  const opsDb = databaseForDataDomain(env, 'ops')
+  const learningDb = databaseForDataDomain(env, 'learning')
+  const { results } = await opsDb.prepare(`
+    WITH ranked AS (
+      SELECT r.date AS business_date,
+             authority.canonical_run_id AS pipeline_canonical_run_id,
+             ROW_NUMBER() OVER (
+               PARTITION BY r.date
+               ORDER BY authority.updated_at DESC, authority.canonical_run_id DESC
+             ) AS ordinal
+        FROM screener_funnel_runs r
+        JOIN canonical_run_heads h
+          ON h.run_id=r.run_id
+         AND h.logical_run_key='screener:' || r.date || ':TW:production:market_screener'
+        JOIN pipeline_stage_runs authority
+          ON authority.business_date=r.date
+         AND authority.stage='pipeline_execution'
+         AND authority.status='success'
+       WHERE r.date <= ?
+         AND (? IS NULL OR r.date <> ?)
+         AND r.status='success'
+         AND EXISTS (
+           SELECT 1
+             FROM screener_funnel_items base
+            WHERE base.run_id=r.run_id
+              AND base.stage IN (?, ?)
+              AND base.decision='observe'
+              AND base.score_after IS NOT NULL
+         )
+         AND NOT EXISTS (
+           SELECT 1
+             FROM pit_residual_funnel_enrichment_runs_v1 receipt
+            WHERE receipt.business_date=r.date
+              AND receipt.screener_run_id=r.run_id
+              AND receipt.status='success'
+         )
+    )
+    SELECT business_date, pipeline_canonical_run_id
+      FROM ranked
+     WHERE ordinal=1
+     ORDER BY business_date DESC
+     LIMIT 20
+  `).bind(
+    input.throughDate,
+    excludeBusinessDate,
+    excludeBusinessDate,
+    BASE_STAGE,
+    LEGACY_BASE_STAGE,
+  ).all<{ business_date: string; pipeline_canonical_run_id: string }>()
+
+  const candidates = results ?? []
+  if (!candidates.length) {
+    return {
+      throughDate: input.throughDate,
+      attemptedDates: [],
+      recovered: [],
+      failures: [],
+      summary: `pit_residual_funnel_recovery through=${input.throughDate} attempted=0 recovered=0 failed=0`,
+    }
+  }
+  const placeholders = candidates.map(() => '?').join(',')
+  const { results: availableRows } = await learningDb.prepare(`
+    SELECT DISTINCT signal_date
+      FROM pit_factor_shadow_daily_v1
+     WHERE signal_date IN (${placeholders})
+       AND decision_effect='none'
+  `).bind(...candidates.map((row) => row.business_date)).all<{ signal_date: string }>()
+  const availableDates = new Set((availableRows ?? []).map((row) => String(row.signal_date)))
+  const repairable = candidates
+    .filter((row) => availableDates.has(String(row.business_date)))
+    .slice(0, maxDates)
+  const recovered: PitResidualFunnelEnrichmentResult[] = []
+  const failures: Array<{ businessDate: string; error: string }> = []
+  for (const row of repairable) {
+    try {
+      recovered.push(await enrichCanonicalPitResidualFunnel(env, {
+        businessDate: String(row.business_date),
+        pipelineCanonicalRunId: String(row.pipeline_canonical_run_id),
+      }))
+    } catch (error) {
+      failures.push({
+        businessDate: String(row.business_date),
+        error: error instanceof Error ? error.message : String(error),
+      })
+    }
+  }
+  const attemptedDates = repairable.map((row) => String(row.business_date))
+  return {
+    throughDate: input.throughDate,
+    attemptedDates,
+    recovered,
+    failures,
+    summary: [
+      `pit_residual_funnel_recovery through=${input.throughDate}`,
+      `attempted=${attemptedDates.length}`,
+      `recovered=${recovered.length}`,
+      `failed=${failures.length}`,
+      `dates=${attemptedDates.join(',') || 'none'}`,
+    ].join(' '),
   }
 }

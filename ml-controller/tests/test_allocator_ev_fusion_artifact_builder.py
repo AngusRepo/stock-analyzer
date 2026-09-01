@@ -356,6 +356,8 @@ def test_fusion_purged_oof_uses_snapshot_date_and_recorded_market_lineage():
 
     samples, audit = _samples(rows)
     assert len(samples) == 20
+    expected_net_target = rows[0]["l4_executable_return_pct"]
+    assert samples[0]["actual_return_target"] == pytest.approx(expected_net_target)
     assert audit["date_count"] == 1
     assert audit["raw_date_counts"] == {"2026-05-01": 20}
     assert audit["invalid_reason_counts"] == {}

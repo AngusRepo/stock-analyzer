@@ -3,6 +3,7 @@ import { resolveExpectedReturnServingState, type ExpectedReturnOwner } from './e
 type JsonRecord = Record<string, any>
 
 export interface ExpectedReturnPromotionCandidate {
+  artifact_id: string
   artifact: JsonRecord
   validation_packet: JsonRecord
   operational_parity: JsonRecord
@@ -10,6 +11,7 @@ export interface ExpectedReturnPromotionCandidate {
   source_run_date: string
   artifact_path: string
   artifact_checksum: string
+  prospective_validation: JsonRecord
 }
 
 export interface ExpectedReturnOwnerPromotionPlan {
@@ -47,6 +49,12 @@ function stringArray(value: unknown): string[] {
     : []
 }
 
+function finiteNumber(value: unknown): number | null {
+  if (value == null || value === '') return null
+  const parsed = Number(value)
+  return Number.isFinite(parsed) ? parsed : null
+}
+
 export function buildExpectedReturnOwnerPromotionPlan(
   currentConfig: JsonRecord,
   owner: ExpectedReturnOwner,
@@ -63,6 +71,9 @@ export function buildExpectedReturnOwnerPromotionPlan(
   const modelVersion = String(artifact.model_version ?? '').trim()
   const artifactPath = String(candidate.artifact_path ?? '').trim()
   const artifactChecksum = String(candidate.artifact_checksum ?? '').trim().toLowerCase()
+  const artifactId = String(candidate.artifact_id ?? '').trim()
+  const artifactFingerprint = String(artifact.model_fingerprint ?? '').trim().toLowerCase()
+  const prospective = recordValue(candidate.prospective_validation)
   const trainedUntil = cleanDate(artifact.trained_until)
   const blockers: string[] = []
 
@@ -70,6 +81,10 @@ export function buildExpectedReturnOwnerPromotionPlan(
   if (!sourceRunDate) blockers.push('source_run_date_missing')
   if (!modelVersion) blockers.push('model_version_missing')
   if (!/^[a-f0-9]{64}$/.test(artifactChecksum)) blockers.push('artifact_checksum_invalid')
+  if (!/^[a-f0-9]{64}$/.test(artifactFingerprint)) blockers.push('model_fingerprint_invalid')
+  if (artifactId !== `${owner}:${modelVersion}:${artifactChecksum}`) {
+    blockers.push('artifact_id_checksum_lineage_mismatch')
+  }
   const expectedArtifactPrefix = `universal/ev_candidates/${cohortId}/${owner}/`
   if (
     !artifactPath.startsWith(expectedArtifactPrefix)
@@ -89,12 +104,51 @@ export function buildExpectedReturnOwnerPromotionPlan(
   if (cleanId(trainingData.cohort_id) !== cohortId) blockers.push('cohort_lineage_mismatch')
   if (!trainedUntil || (sourceRunDate && trainedUntil > sourceRunDate)) blockers.push('trained_until_after_source_run_date')
   if (artifact.output_is_net_of_costs !== true) blockers.push('expected_return_not_net_of_costs')
+  if (prospective.schema_version !== 'expected-return-candidate-forward-gate-v1') {
+    blockers.push('prospective_validation_contract_incompatible')
+  }
+  if (decision(prospective.decision) !== 'PASS') blockers.push('prospective_validation_not_pass')
+  if (stringArray(prospective.failed_gates).length > 0) blockers.push('prospective_validation_has_failed_gates')
+  if (prospective.candidate_artifact_id !== artifactId) blockers.push('prospective_candidate_artifact_mismatch')
+  if (String(prospective.candidate_artifact_checksum ?? '').toLowerCase() !== artifactChecksum) {
+    blockers.push('prospective_candidate_checksum_mismatch')
+  }
+  if (String(prospective.model_fingerprint ?? '').toLowerCase() !== artifactFingerprint) {
+    blockers.push('prospective_model_fingerprint_mismatch')
+  }
+  if (cleanDate(prospective.source_run_date) !== sourceRunDate) blockers.push('prospective_source_run_date_mismatch')
+  const prospectiveDates = Number(prospective.evaluable_date_count ?? 0)
+  const minimumProspectiveDates = Number(prospective.minimum_evaluable_dates ?? 0)
+  const prospectiveMinDate = cleanDate(prospective.prediction_date_min)
+  const prospectiveMaxDate = cleanDate(prospective.prediction_date_max)
+  if (
+    !Number.isInteger(prospectiveDates)
+    || !Number.isInteger(minimumProspectiveDates)
+    || minimumProspectiveDates < 5
+    || prospectiveDates < minimumProspectiveDates
+  ) blockers.push('prospective_date_count_below_floor')
+  if (!prospectiveMinDate || prospectiveMinDate <= sourceRunDate) blockers.push('prospective_prediction_not_after_candidate_freeze')
+  if (!prospectiveMaxDate || prospectiveMaxDate < prospectiveMinDate) blockers.push('prospective_prediction_range_invalid')
+  if (prospective.training_dispatched !== false) blockers.push('prospective_validation_dispatched_training')
+  const corrOrDeltaLcb = finiteNumber(prospective.corr_or_delta_lcb90)
+  const spreadOrDeltaLcb = finiteNumber(prospective.spread_or_delta_lcb90)
+  const topReturnLcb = finiteNumber(prospective.top_return_lcb90)
+  if (topReturnLcb == null || topReturnLcb <= 0) blockers.push('prospective_top_return_lcb90_not_positive')
+  if (
+    corrOrDeltaLcb == null
+    || (owner === 'l4_alpha_ev' ? corrOrDeltaLcb <= 0 : corrOrDeltaLcb < 0)
+  ) blockers.push('prospective_corr_or_delta_lcb90_not_pass')
+  if (
+    spreadOrDeltaLcb == null
+    || (owner === 'l4_alpha_ev' ? spreadOrDeltaLcb <= 0 : spreadOrDeltaLcb < 0)
+  ) blockers.push('prospective_spread_or_delta_lcb90_not_pass')
 
   const servingArtifact = blockers.length === 0
     ? {
       ...artifact,
       validation_packet: validationPacket,
       operational_parity: parity,
+      prospective_validation: prospective,
       promotion_state: owner === 'l4_alpha_ev' ? 'production_approved' : 'production_primary',
       approval_state: owner === 'l4_alpha_ev' ? 'production_approved' : artifact.approval_state,
       promotion_tier: owner === 'allocator_ev_fusion' ? 'primary' : artifact.promotion_tier,

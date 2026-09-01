@@ -93,6 +93,8 @@ function strategyLearningEvidence(
     today_decisions: 0,
     today_evaluable_decisions: 0,
     today_unavailable_decisions: 0,
+    latest_unavailable_reason_date: null,
+    latest_unavailable_reasons: [],
     today_matched: 0,
     rolling_decisions: 80,
     rolling_evaluable_decisions: 76,

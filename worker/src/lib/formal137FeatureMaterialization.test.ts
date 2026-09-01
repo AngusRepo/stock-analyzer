@@ -196,6 +196,11 @@ const strategy0193 = {
   assert.equal(telemetry.materializedCount, 0)
   assert.equal(telemetry.skippedNeutralCount, 2)
   assert.equal(candidates[0].raw_signals.factorSignals.formal137UsSentimentScoreRank, undefined)
+  const assessment = assessCandidateAgainstStrategySpecs(candidates[0], [strategy0193])
+  assert(
+    assessment.watchPoints.some((point) => point.includes('non_discriminative_feature_ref:us_sentiment_score:neutral_market_signal')),
+    'known neutral sentiment must be reported as non-discriminative rather than missing PIT evidence',
+  )
 }
 
 {

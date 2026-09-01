@@ -1034,6 +1034,8 @@ function registryLearningRow(spec: StrategySpec): LearningRow {
       today_decisions: 0,
       today_evaluable_decisions: 0,
       today_unavailable_decisions: 0,
+      latest_unavailable_reason_date: null,
+      latest_unavailable_reasons: [],
       today_matched: 0,
       rolling_decisions: 0,
       rolling_evaluable_decisions: 0,
@@ -1087,6 +1089,20 @@ function StrategyLedgerGroup({
   decisionEvidenceHealth: StrategyLearningResponse['decision_evidence_health']
   empty: string
 }) {
+  const unavailableReasonLabel = (reason: string) => reason
+    .split('|')
+    .map((part) => {
+      if (part === 'non_discriminative_feature_ref:us_sentiment_score:neutral_market_signal') return '美股情緒已知為 neutral，無截面排序力'
+      if (part === 'missing_feature_ref:us_sentiment_score') return '缺少可排序的美股情緒截面值（neutral／常數不當成選股訊號）'
+      if (part === 'missing_feature_ref:margin_balance') return '融資餘額截面 rank 缺值'
+      if (part === 'selection_phase_owned_by_s12_execution_replay') return 'S12 由 execution replay 評估，不適用 selection label'
+      if (part.startsWith('monthly_revenue_pit_unavailable')) return '月營收 PIT 證據不可用'
+      if (part.startsWith('missing_feature_ref:')) return `正規化特徵缺值：${part.slice('missing_feature_ref:'.length)}`
+      if (part.startsWith('missing_signal:')) return `原始訊號缺值：${part.slice('missing_signal:'.length)}`
+      return part
+    })
+    .join('、')
+
   return (
     <section className="sv-readable-card-content h-full overflow-hidden rounded-2xl border border-slate-800 bg-slate-950/70">
       <header className="flex min-h-[112px] flex-wrap items-end justify-between gap-3 border-b border-slate-800 px-4 py-4 lg:px-5">
@@ -1134,6 +1150,13 @@ function StrategyLedgerGroup({
                   <dd className="mt-1 font-mono text-sm text-slate-200">{row.learning.evidence_available ? row.learning.evaluable_decisions : '-'}</dd>
                   <div className="mt-1 text-xs text-slate-500">{row.learning.evidence_available ? <>實際不可評估 {row.learning.unavailable_decisions} · 總決策 {row.learning.decisions}</> : 'evidence not ready'}</div>
                   <div className={`mt-1 text-xs ${latestBatchInvalid ? 'text-rose-300' : currentDecisionPending ? 'text-amber-300' : 'text-cyan-300'}`}>{currentDecisionLabel}</div>
+                  {row.learning.latest_unavailable_reasons.length > 0 && (
+                    <div className="mt-1 text-[10px] leading-4 text-amber-200">
+                      {row.learning.latest_unavailable_reason_date} 原因：{row.learning.latest_unavailable_reasons
+                        .map((item) => `${unavailableReasonLabel(item.reason)} × ${item.count}`)
+                        .join('；')}
+                    </div>
+                  )}
                   <div className="mt-1 text-xs text-slate-500">{row.learning.reward_owner === 's12_execution_replay_v3_net' ? 'S12 execution reward' : 'selection edge reward'}</div>
                 </div>
                 <div className="rounded-lg border border-slate-800/80 bg-slate-900/45 p-2">

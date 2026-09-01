@@ -392,6 +392,8 @@ export interface StrategyLearningSummary {
       today_decisions: number
       today_evaluable_decisions: number
       today_unavailable_decisions: number
+      latest_unavailable_reason_date: string | null
+      latest_unavailable_reasons: Array<{ reason: string; count: number }>
       today_matched: number
       rolling_decisions: number
       rolling_evaluable_decisions: number
@@ -4021,6 +4023,36 @@ export async function buildStrategyLearningSummary(
 ): Promise<StrategyLearningSummary> {
   const { specs, source } = await listStrategySpecsForLearning(db)
   const decisionEvidenceHealth = await loadStrategyDecisionEvidenceHealth(db, date)
+  const latestUnavailableReasonDate = decisionEvidenceHealth.latest_valid_date
+  const latestUnavailableReasonRows = latestUnavailableReasonDate
+    ? (await db.prepare(`
+        SELECT strategy_id,
+               strategy_version,
+               COALESCE(NULLIF(TRIM(unavailable_reason), ''), evaluability_status) AS reason,
+               COUNT(*) AS reason_count
+          FROM strategy_decision_log
+         WHERE date = ?
+           AND evaluation_contract_version = 'strategy-evaluation-v2'
+           AND evaluable <> 1
+         GROUP BY strategy_id, strategy_version,
+                  COALESCE(NULLIF(TRIM(unavailable_reason), ''), evaluability_status)
+         ORDER BY strategy_id, strategy_version, reason_count DESC, reason
+      `).bind(latestUnavailableReasonDate).all<{
+        strategy_id: string
+        strategy_version: string
+        reason: string
+        reason_count: number
+      }>()).results ?? []
+    : []
+  const latestUnavailableReasonsBySpec = new Map<string, Array<{ reason: string; count: number }>>()
+  for (const row of latestUnavailableReasonRows) {
+    const key = row.strategy_id + '|' + row.strategy_version
+    const reasons = latestUnavailableReasonsBySpec.get(key) ?? []
+    if (reasons.length < 3) {
+      reasons.push({ reason: String(row.reason || 'unavailable_reason_missing'), count: Number(row.reason_count ?? 0) })
+      latestUnavailableReasonsBySpec.set(key, reasons)
+    }
+  }
   const candidateStrategyApplicability = new Map(
     specs
       .filter((spec) => canonicalStrategyLifecycleStatus(spec.status) === 'candidate')
@@ -4243,6 +4275,8 @@ export async function buildStrategyLearningSummary(
           today_decisions: Number(todayRow?.decisions ?? 0),
           today_evaluable_decisions: Number(todayRow?.evaluable_decisions ?? 0),
           today_unavailable_decisions: Number(todayRow?.unavailable_decisions ?? 0),
+          latest_unavailable_reason_date: latestUnavailableReasonDate,
+          latest_unavailable_reasons: latestUnavailableReasonsBySpec.get(key) ?? [],
           today_matched: Number(todayRow?.matched ?? 0),
           rolling_decisions: rollingDecisions,
           rolling_evaluable_decisions: rollingEvaluable,

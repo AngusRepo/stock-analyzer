@@ -980,6 +980,18 @@ function usSentimentScoreFeatureRefValue(raw: StrategyRawSignals): unknown {
   return null
 }
 
+function missingFeatureRefReason(raw: StrategyRawSignals, featureRef: string): string {
+  if (featureRef === 'us_sentiment_score') {
+    const rawSentiment = finiteNumber(
+      raw.factorSignals?.us_sentiment_score ?? raw.factorSignals?.usSentimentScore,
+    )
+    if (rawSentiment != null && rawSentiment >= 0.45 && rawSentiment <= 0.55) {
+      return 'non_discriminative_feature_ref:us_sentiment_score:neutral_market_signal'
+    }
+  }
+  return 'missing_feature_ref:' + featureRef
+}
+
 function featureRefValue(raw: StrategyRawSignals, term: StrategyFeatureRefTerm): unknown {
   const featureRef = cleanText(term.featureRef)
   if (featureRef === 'margin_balance') return marginBalanceFeatureRefValue(raw)
@@ -1365,7 +1377,7 @@ export function assessStrategySpecEvaluability(
     ...missingFeatureRefs.map((featureRef) => (
       monthlyRevenuePitUnavailable && isMonthlyRevenueDerivedSignal(featureRef)
         ? MONTHLY_REVENUE_PIT_UNAVAILABLE_REASON
-        : 'missing_feature_ref:' + featureRef
+        : missingFeatureRefReason(raw, featureRef)
     )),
   ])]
   return {

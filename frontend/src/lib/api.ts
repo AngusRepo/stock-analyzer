@@ -962,6 +962,8 @@ export type StrategyLearningResponse = {
       today_decisions: number
       today_evaluable_decisions: number
       today_unavailable_decisions: number
+      latest_unavailable_reason_date: string | null
+      latest_unavailable_reasons: Array<{ reason: string; count: number }>
       today_matched: number
       rolling_decisions: number
       rolling_evaluable_decisions: number

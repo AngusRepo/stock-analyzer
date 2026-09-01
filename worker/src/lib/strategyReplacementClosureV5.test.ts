@@ -3,6 +3,10 @@ import { readFileSync } from 'node:fs'
 
 const migration = readFileSync('migrations/0089_strategy_evaluability_and_atomic_replacement.sql', 'utf8')
 const migration0090 = readFileSync('migrations/0090_daily_technical_strategy_producer_closure.sql', 'utf8')
+const canonicalLineageMigration = readFileSync(
+  'domain-migrations/learning/0036_strategy_evidence_v5_canonical_lineage.sql',
+  'utf8',
+)
 const learning = readFileSync('src/lib/strategyLearning.ts', 'utf8')
 const edge = readFileSync('src/lib/strategyMarginalEdgeV4.ts', 'utf8')
 const runState = readFileSync('src/lib/strategyLearningRunState.ts', 'utf8')
@@ -18,6 +22,16 @@ assert(migration.includes('evaluable INTEGER NOT NULL DEFAULT 0'), 'legacy strat
 assert(migration.includes('unavailable_decisions INTEGER NOT NULL DEFAULT 0'), 'daily projection must separate unavailable decisions')
 assert(migration.includes('strategy_evidence_rebuild_runs_v5'), 'historical PIT rebuild requires a durable ledger')
 assert(migration0090.includes('ADD COLUMN evaluation_contract_version TEXT'), 'rebuild ledger must distinguish pre-v2 success from valid v2 reconstruction')
+for (const column of [
+  'producer_run_id',
+  'source_reference_contract_version',
+  'production_policy_id',
+  'production_policy_knowledge_cutoff_date',
+  'production_policy_checksum',
+  'production_policy_source_contract',
+]) {
+  assert(canonicalLineageMigration.includes(`ADD COLUMN ${column} TEXT`), `${column} must be durable formal-ledger lineage`)
+}
 assert(migration.includes('strategy_replacement_decisions_v5'), 'paired replacements require immutable decision evidence')
 for (const id of [
   'stock_tech_s05_first_dry_pullback_v1',
@@ -35,15 +49,18 @@ assert(learning.includes('assessStrategySpecEvaluability'), 'decision logging mu
 assert(learning.includes('hydrateS12StrategyEvidence'), 'S12 must read formal intraday snapshot evidence')
 assert(learning.includes('rebuildHistoricalStrategyEvidenceV5'), 'daily closure must own bounded PIT backlog reconstruction')
 assert(learning.includes('options.maxDates ?? 2'), 'maintenance callers must retain a bounded backlog drain default')
-assert(learning.includes('maxDates: 1'), 'critical finalizer must repair at most one PIT date per invocation')
-assert(learning.includes('priorityOnly: true'), 'critical finalizer must not block live closure on older maintenance backlog')
+assert(learning.includes('drainHistoricalStrategyEvidenceV5'), 'critical finalizer must drain the bounded live PIT frontier')
+assert(learning.includes('formal_strategy_evidence_backlog_not_drained'), 'critical finalizer must fail closed while formal backlog remains')
 assert(!learning.includes('d.strategy_status, d.alpha_bucket, d.context_json, d.evidence_json'), 'historical decision query must not duplicate large JSON per strategy row')
 assert(learning.includes('GROUP BY d.symbol'), 'historical context must be loaded once per symbol')
 assert(learning.includes('historicalCandidateBySymbol'), 'historical raw-signal derivation must be memoized once per symbol')
 assert(learning.includes('evidence_json=json_patch'), 'historical evidence must merge in D1 without a read-modify-write payload')
 const historicalSelector = learning.slice(learning.indexOf('export async function listHistoricalStrategyEvidenceV5Dates'), learning.indexOf('export async function rebuildHistoricalStrategyEvidenceV5'))
-assert(historicalSelector.indexOf('if (options.priorityOnly)') < historicalSelector.indexOf('WITH decision_dates'),
-  'priority-only live closure must return from the single-date ledger fast path before the full-history CTE')
+assert(historicalSelector.indexOf('if (options.priorityOnly)') < historicalSelector.indexOf('WITH source_dates'),
+  'standalone single-date maintenance must return before the live-frontier CTE')
+assert(historicalSelector.includes('FROM strategy_label_matrix_runs_v4')
+  && historicalSelector.includes('STRATEGY_EVIDENCE_V5_LIVE_FRONTIER_START_DATE'),
+  'live backlog discovery must use canonical matrix dates and the explicit v5 closure epoch')
 const historicalRebuild = learning.slice(learning.indexOf('export async function rebuildHistoricalStrategyEvidenceV5'), learning.indexOf('export async function finalizeStrategyLearningEvidenceV5'))
 assert(
   historicalRebuild.includes("'strategy-labeler-v1'")
@@ -85,9 +102,13 @@ assert(historicalRebuild.includes('includeRetired: true')
   && historicalRebuild.includes('historicalStatusByKey')
   && historicalRebuild.includes('status: historicalStatusByKey.get'),
   'historical reconstruction must load retired registry lineage and restore the immutable decision-date status')
-assert(historicalSelector.includes("startsWith('matrix_strategy_spec_version_missing:')")
-  && historicalSelector.includes("instr(r.blocker_reason, 'matrix_strategy_spec_version_missing:')=1"),
-  'maintenance retry must reopen only the repaired historical spec-lineage blocker')
+assert(historicalSelector.includes("r.status <> 'success'")
+  && historicalSelector.includes("COALESCE(r.labeler_version, '') <>"),
+  'live-frontier drain must reopen every non-success or stale-contract ledger row')
+assert(historicalSelector.includes("COALESCE(r.producer_run_id, '') <> d.producer_run_id")
+  && historicalSelector.includes("COALESCE(r.production_policy_id, '') = ''")
+  && historicalSelector.includes("length(COALESCE(r.production_policy_checksum, '')) <> 64"),
+  'live-frontier drain must reopen success rows whose canonical producer or PIT policy lineage is absent')
 assert(!historicalRebuild.includes(".filter((spec) => spec.status !== 'retired')\n        .map((spec) => spec.id)"),
   'historical production weights must cover the decision-date strategy universe, including later-retired IDs')
 
@@ -101,6 +122,16 @@ assert(historicalRebuild.includes('applyStrategyRouteRecoveryScores')
   'verified immutable route packet must repair missing scores and reject conflicting carriers before CAS persistence')
 assert(historicalRebuild.includes('loadLegacyStrategyProductionWeightsBefore'),
   'legacy policy compatibility must remain scoped to historical reconstruction, never runtime serving')
+assert(historicalRebuild.includes('loadStrategyProductionPolicyForHistoricalReconstructionBefore')
+  && historicalRebuild.includes('reconstruction_receipt'),
+  'owner-v2 compatibility must be checksum-verified and scoped to historical reconstruction')
+assert(historicalRebuild.includes('production_policy_knowledge_cutoff_date=?')
+  && historicalRebuild.includes('strategy_production_policy_lineage_incomplete'),
+  'formal success must persist and validate the exact PIT production-policy lineage')
+assert(historicalRebuild.includes('SELECTION_REFERENCE_LEGACY_MATURE_CONTRACT_VERSION')
+  && historicalRebuild.includes('legacyMatureCarrier')
+  && historicalRebuild.includes('sourceReferenceContractVersion'),
+  'legacy v3 selection carriers need explicit lineage and coverage verification')
 assert(historicalRebuild.includes('new Map(referenceRows.map'), 'raw reference lineage must be deduplicated by symbol after validation')
 assert(historicalRebuild.includes("cleanToken(row.evaluation_contract_version) !== 'strategy-evaluation-v2'"),
   'historical retries must skip decision rows already reconstructed under the V2 evaluation contract')
@@ -126,6 +157,9 @@ assert(historicalRebuild.includes('existingMatrixMatchedRows > 0'),
   'legacy ready matrix reuse must require matched strategy evidence')
 assert(historicalRebuild.includes('existingMatrixThresholdEvidenceRows === existingMatrixMatchedRows'),
   'legacy ready matrix reuse must require complete threshold-margin evidence')
+assert(learning.includes('repairHistoricalStrategyDecisionGrid')
+  && learning.includes('historical_strategy_decision_grid_incomplete'),
+  'missing decision grids must be rebuilt by the canonical producer and read back exactly')
 assert(selectionEvidence.includes('reference_candidate_count=excluded.reference_candidate_count'),
   'matrix retry must replace stale run metadata with the current canonical universe')
 assert(selectionEvidence.includes('FROM selection_reference_snapshots_v1 r')

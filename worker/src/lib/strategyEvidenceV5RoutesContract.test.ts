@@ -25,8 +25,22 @@ test('persisted rebuild runs on the durable queue owner', () => {
   assert(types.includes("| 'strategy_evidence_rebuild'"))
   assert(orchestrator.includes("msg.type === 'strategy_evidence_rebuild'"))
   assert(orchestrator.includes('rebuildHistoricalStrategyEvidenceV5'))
+  assert(orchestrator.includes('repairHistoricalStrategyDecisionGrid'))
   assert(orchestrator.includes('priorityOnly: true'))
   assert(orchestrator.includes('report.successfulDates !== 1 || report.blockedDates !== 0'))
+})
+
+test('production-policy recovery requires the complete cross-domain formal frontier', () => {
+  const route = routes.slice(
+    routes.indexOf("/api/admin/strategy/production-policy/recover"),
+    routes.indexOf("/api/admin/entry-model-v2/replay"),
+  )
+  assert(route.includes('auditFormalStrategyEvidenceFrontier'))
+  assert(route.includes('resolveExpectedMatureSignalDate'))
+  assert(route.includes("databaseForDataDomain(c.env, 'ops')"))
+  assert(route.includes("databaseForDataDomain(c.env, 'market')"))
+  assert(route.includes('formalFrontier.backlog.length'))
+  assert(route.includes('latestFormalDate'))
 })
 
 test('historical strategy evidence preview and rebuild share one eligibility owner', () => {
@@ -36,7 +50,9 @@ test('historical strategy evidence preview and rebuild share one eligibility own
   assert(learning.includes('SELECT status, evaluation_contract_version, labeler_version'))
   assert(learning.includes("ledgerStatus === 'blocked'"))
   assert(learning.includes("ledgerStatus === 'success' && labelerCurrent"))
-  assert(learning.includes("r.status NOT IN ('success','blocked')"))
+  assert(learning.includes("r.status <> 'success'"))
+  assert(learning.includes('WITH source_dates AS'))
+  assert(learning.includes('drainHistoricalStrategyEvidenceV5'))
   assert(learning.includes('Math.min(5'))
 })
 

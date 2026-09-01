@@ -73,8 +73,9 @@ assert.match(source, /force: forcePolicy \|\| productionRecovery/)
 assert.match(source, /'strategy-learning-finalize': async/)
 assert.match(
   source,
-  /'strategy-learning-finalize': async[\s\S]*recoverMatureSelectionEvidence[\s\S]*route_backfill_eligible=/,
+  /'strategy-learning-finalize': async[\s\S]*drainMatureSelectionEvidence[\s\S]*route_backfill_eligible=/,
 )
+assert.match(source, /repairHistoricalStrategyDecisionGrid/)
 assert.match(source, /completeStrategyLearningRun/)
 assert.match(source, /finalizeStrategyLearningEvidenceV5/)
 assert.match(source, /strategy_pit_rebuild=/)

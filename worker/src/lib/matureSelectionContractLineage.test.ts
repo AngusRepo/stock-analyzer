@@ -36,6 +36,9 @@ assert.match(recovery, /r\.feature_contract_version=mr\.reference_contract_versi
 assert.match(recovery, /l\.reference_contract_version=mr\.reference_contract_version/)
 assert.match(recovery, /mc\.reference_contract_version=mr\.reference_contract_version/)
 assert.match(recovery, /l\.label_schema_version=\? AND l\.adjustment_source=\?/)
+assert.match(recovery, /export async function drainMatureSelectionEvidence/)
+assert.match(recovery, /mature_selection_evidence_backlog_not_drained/)
+assert.match(recovery, /remainingRecoverable\.length/)
 
 const closure = readFileSync(new URL('./eveningChainEvidenceClosure.ts', import.meta.url), 'utf8')
 assert.match(closure, /matureReferenceContractVersion/)
@@ -57,5 +60,6 @@ assert.match(
 const orchestrator = readFileSync(new URL('./updateOrchestrator.ts', import.meta.url), 'utf8')
 assert.match(
   orchestrator,
-  /strategy-learning:finalizer:\$\{triggerTime\}:\$\{canonicalRunId\}:\$\{finalizerCacheMode\}:v2-contract-lineage/,
+  /strategy-learning:finalizer:\$\{triggerTime\}:\$\{canonicalRunId\}:\$\{finalizerCacheMode\}:v3-backlog-closure/,
 )
+assert.match(orchestrator, /drainMatureSelectionEvidence/)

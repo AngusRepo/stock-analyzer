@@ -1792,13 +1792,14 @@ export async function refreshMatureStrategyEvidenceBeforeScreener(
 ): Promise<string> {
   const startedAt = Date.now()
   try {
-    const { recoverMatureSelectionEvidence } = await import('./matureSelectionEvidenceRecovery')
+    const { drainMatureSelectionEvidence } = await import('./matureSelectionEvidenceRecovery')
     const { materializeCanonicalSelectionLabelsV4 } = await import('./canonicalSelectionLabels')
     const { refreshStrategyMarginalEdgeV4 } = await import('./strategyMarginalEdgeV4')
     const { refreshStrategyRewardLedger } = await import('./strategyLearning')
     const { loadCanonicalScreenerRunIds } = await import('./historicalScreenerArtifactEvidence')
-    const recovery = await recoverMatureSelectionEvidence(env, asOfDate, {
+    const recovery = await drainMatureSelectionEvidence(env, asOfDate, {
       maxRecoveryDates: 4,
+      maxBatches: 3,
     })
     const learningDb = databaseForDataDomain(env, 'learning')
     const canonicalRunIds = await loadCanonicalScreenerRunIds(env, asOfDate)
@@ -3168,9 +3169,13 @@ export async function processUpdateBatch(
     if (!/^\d{4}-\d{2}-\d{2}$/.test(signalDate)) {
       throw new Error(`strategy_evidence_rebuild_date_invalid:${signalDate}`)
     }
-    const { rebuildHistoricalStrategyEvidenceV5 } = await import('./strategyLearning')
+    const {
+      rebuildHistoricalStrategyEvidenceV5,
+      repairHistoricalStrategyDecisionGrid,
+    } = await import('./strategyLearning')
     const { readHistoricalHmmRegimeFamily } = await import('./marketRegimeState')
-    const report = await rebuildHistoricalStrategyEvidenceV5(databaseForDataDomain(env, 'learning'), {
+    const learningDb = databaseForDataDomain(env, 'learning')
+    const report = await rebuildHistoricalStrategyEvidenceV5(learningDb, {
       asOfDate: signalDate,
       maxDates: Math.max(1, Math.min(5, Number(msg.strategyEvidenceMaxDates ?? 1))),
       identityDb: databaseForDataDomain(env, 'core'),
@@ -3189,6 +3194,10 @@ export async function processUpdateBatch(
         const { loadHistoricalScreenerArtifactEvidence } = await import('./historicalScreenerArtifactEvidence')
         return loadHistoricalScreenerArtifactEvidence(env, date, producerRunId)
       },
+      repairHistoricalDecisionGrid: (date, producerRunId) => repairHistoricalStrategyDecisionGrid(
+        learningDb,
+        { date, canonicalProducerRunId: producerRunId },
+      ),
     })
     if (report.successfulDates !== 1 || report.blockedDates !== 0) {
       throw new Error(`strategy_evidence_rebuild_incomplete:${signalDate}:${JSON.stringify(report)}`)
@@ -3661,6 +3670,7 @@ export async function processUpdateBatch(
       finalizeStrategyLearningEvidenceV5,
       listStrategySpecsForLearning,
       materializeStrategyDecisionLogChunk,
+      repairHistoricalStrategyDecisionGrid,
       seedDefaultStrategySpecRegistry,
     } = await import('./strategyLearning')
     if (!requestedCursor) {
@@ -3832,7 +3842,7 @@ export async function processUpdateBatch(
       }
       const policyMutationAllowed = productionAuthorityIntent && currentBusinessDateRun
       const finalizerCacheMode = policyMutationAllowed ? 'policy-mutation' : 'evidence-only'
-      const finalizerCacheKey = `strategy-learning:finalizer:${triggerTime}:${canonicalRunId}:${finalizerCacheMode}:v2-contract-lineage`
+      const finalizerCacheKey = `strategy-learning:finalizer:${triggerTime}:${canonicalRunId}:${finalizerCacheMode}:v3-backlog-closure`
       const cachedFinalizer = await env.KV.get(finalizerCacheKey, 'json') as {
         canonical_run_id?: string
         stages?: Record<string, unknown>
@@ -3867,8 +3877,8 @@ export async function processUpdateBatch(
         summarizeEveningChainEvidenceClosure,
       } = await import('./eveningChainEvidenceClosure')
       const historicalPriorityDate = await resolveExpectedMatureSignalDate(env, triggerTime)
-      const { recoverMatureSelectionEvidence } = await import('./matureSelectionEvidenceRecovery')
-      let matureRecovery: Awaited<ReturnType<typeof recoverMatureSelectionEvidence>>
+      const { drainMatureSelectionEvidence } = await import('./matureSelectionEvidenceRecovery')
+      let matureRecovery: Awaited<ReturnType<typeof drainMatureSelectionEvidence>>
       await assertFinalizerLease('mature_recovery')
       if (Object.prototype.hasOwnProperty.call(finalizerStageResults, 'mature_recovery')) {
         await logFinalizerStage('mature_recovery', 'cached')
@@ -3876,8 +3886,9 @@ export async function processUpdateBatch(
       } else {
         const matureRecoveryStartedAt = Date.now()
         await logFinalizerStage('mature_recovery', 'running')
-        matureRecovery = await recoverMatureSelectionEvidence(env, triggerTime, {
+        matureRecovery = await drainMatureSelectionEvidence(env, triggerTime, {
           maxRecoveryDates: 4,
+          maxBatches: 3,
         })
         await assertFinalizerLease('mature_recovery')
         await persistFinalizerStage('mature_recovery', matureRecovery)
@@ -3913,6 +3924,13 @@ export async function processUpdateBatch(
             const { loadHistoricalScreenerArtifactEvidence } = await import('./historicalScreenerArtifactEvidence')
             return loadHistoricalScreenerArtifactEvidence(env, signalDate, producerRunId)
           },
+          repairHistoricalDecisionGrid: (signalDate, producerRunId) => repairHistoricalStrategyDecisionGrid(
+            learningDb,
+            {
+              date: signalDate,
+              canonicalProducerRunId: producerRunId,
+            },
+          ),
           beforePromotion: async () => {
             const closureAudit = await auditEveningChainEvidenceClosure(
               env,

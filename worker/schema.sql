@@ -1648,12 +1648,20 @@ CREATE TABLE IF NOT EXISTS strategy_evidence_rebuild_runs_v5 (
   matrix_rows INTEGER NOT NULL DEFAULT 0,
   labeler_version TEXT NOT NULL DEFAULT 'strategy-decision-log-pit-reconstruction-v7-revenue-pit-fuse-v1',
   evaluation_contract_version TEXT,
+  producer_run_id TEXT,
+  source_reference_contract_version TEXT,
+  production_policy_id TEXT,
+  production_policy_knowledge_cutoff_date TEXT,
+  production_policy_checksum TEXT,
+  production_policy_source_contract TEXT,
   source_checksum TEXT,
   blocker_reason TEXT,
   updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 CREATE INDEX IF NOT EXISTS idx_strategy_evidence_rebuild_v5_status
   ON strategy_evidence_rebuild_runs_v5(status, signal_date);
+CREATE INDEX IF NOT EXISTS idx_strategy_evidence_rebuild_v5_producer
+  ON strategy_evidence_rebuild_runs_v5(signal_date, producer_run_id, status);
 
 CREATE TABLE IF NOT EXISTS strategy_replacement_decisions_v5 (
   decision_id TEXT PRIMARY KEY,

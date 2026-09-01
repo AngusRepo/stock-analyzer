@@ -417,7 +417,10 @@ export function buildAdminWorkerDomainTaskMap(c: any, deps: TriggerDeps): Record
         return `strategy_learning_finalize date=${runDate} already_finalized_authority_changed run_id=${runState.canonical_run_id}`
       }
 
-      const { finalizeStrategyLearningEvidenceV5 } = await import('./strategyLearning')
+      const {
+        finalizeStrategyLearningEvidenceV5,
+        repairHistoricalStrategyDecisionGrid,
+      } = await import('./strategyLearning')
       const { logSchedulerResult } = await import('./schedulerRunLogger')
       const finalizerAttemptId = `${runState.canonical_run_id}:manual-finalize:${Date.now().toString(36)}`
       const leaseOwner = `${runState.canonical_run_id}:manual-finalize-lease:${crypto.randomUUID()}`
@@ -474,10 +477,11 @@ export function buildAdminWorkerDomainTaskMap(c: any, deps: TriggerDeps): Record
           summarizeEveningChainEvidenceClosure,
         } = await import('./eveningChainEvidenceClosure')
         const historicalPriorityDate = await resolveExpectedMatureSignalDate(c.env, runDate)
-        const { recoverMatureSelectionEvidence } = await import('./matureSelectionEvidenceRecovery')
+        const { drainMatureSelectionEvidence } = await import('./matureSelectionEvidenceRecovery')
         await assertFinalizerLease('mature_recovery')
-        const matureRecovery = await recoverMatureSelectionEvidence(c.env, runDate, {
+        const matureRecovery = await drainMatureSelectionEvidence(c.env, runDate, {
           maxRecoveryDates: 4,
+          maxBatches: 3,
         })
         await assertFinalizerLease('mature_recovery')
         let closureSummary = ''
@@ -504,6 +508,13 @@ export function buildAdminWorkerDomainTaskMap(c: any, deps: TriggerDeps): Record
               const { loadHistoricalScreenerArtifactEvidence } = await import('./historicalScreenerArtifactEvidence')
               return loadHistoricalScreenerArtifactEvidence(c.env, signalDate, producerRunId)
             },
+            repairHistoricalDecisionGrid: (signalDate, producerRunId) => repairHistoricalStrategyDecisionGrid(
+              learningDb,
+              {
+                date: signalDate,
+                canonicalProducerRunId: producerRunId,
+              },
+            ),
             beforePromotion: async () => {
               const closureAudit = await auditEveningChainEvidenceClosure(
                 c.env,

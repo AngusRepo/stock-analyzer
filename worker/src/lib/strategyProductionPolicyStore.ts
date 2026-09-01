@@ -73,6 +73,13 @@ export interface LoadedStrategyProductionPolicy {
   checksum: string
   created_at: string
 }
+export interface LoadedHistoricalStrategyProductionPolicy extends LoadedStrategyProductionPolicy {
+  reconstruction_receipt: {
+    source_contract: 'strategy-evidence-owner-fusion-v3' | 'strategy-evidence-owner-fusion-v2' | 'previous-firewall-v2'
+    scope: 'historical_reconstruction_only'
+    checksum_verified: true
+  }
+}
 export type PreviousStrategyProductionFirewallState = Omit<
   StrategyProductionFirewallState,
   'policy_id' | 'version' | 'evidence'
@@ -291,6 +298,100 @@ export function deserializeStrategyProductionPolicyRow(
   }
 }
 
+/**
+ * Historical reconstruction compatibility is deliberately narrower than the
+ * runtime reader above. It accepts only the immutable owner-v2 payload that
+ * was persisted by firewall-v3 before owner-v3 existed. Runtime allocation
+ * and serving must never call this adapter.
+ */
+export function deserializeHistoricalStrategyProductionPolicyRow(
+  row: StrategyProductionPolicyHistoryRow,
+  expectedStrategyIds: readonly string[],
+): Omit<LoadedHistoricalStrategyProductionPolicy, 'reconstruction_receipt'> & {
+  reconstruction_receipt: Omit<LoadedHistoricalStrategyProductionPolicy['reconstruction_receipt'], 'checksum_verified'>
+} {
+  try {
+    const loaded = deserializeStrategyProductionPolicyRow(row, expectedStrategyIds)
+    return {
+      ...loaded,
+      reconstruction_receipt: {
+        source_contract: 'strategy-evidence-owner-fusion-v3',
+        scope: 'historical_reconstruction_only',
+      },
+    }
+  } catch (error) {
+    if (!(error instanceof Error) || error.message !== 'invalid_strategy_production_policy_evidence_owner') {
+      throw error
+    }
+  }
+
+  const evidence = parseJsonRecord(row.evidence_json)
+  const evidenceOwner = evidence.evidence_owner && typeof evidence.evidence_owner === 'object'
+    && !Array.isArray(evidence.evidence_owner)
+    ? evidence.evidence_owner as Record<string, unknown>
+    : {}
+  if (
+    row.policy_id !== STRATEGY_PRODUCTION_FIREWALL_POLICY_ID
+    || Number(row.version) !== STRATEGY_PRODUCTION_FIREWALL_VERSION
+    || row.status !== 'active'
+    || row.base_weight_source !== 'adaptive_strategy_policy_v2'
+    || evidenceOwner.version !== 'strategy-evidence-owner-fusion-v2'
+    || evidenceOwner.weight_effect !== 'mature_ready_only_bounded_bidirectional'
+    || !/^[a-f0-9]{64}$/.test(String(evidenceOwner.checksum ?? ''))
+    || !Number.isInteger(Number(evidenceOwner.ready_profile_count))
+    || Number(evidenceOwner.ready_profile_count) <= 0
+  ) {
+    throw new Error('invalid_historical_strategy_production_policy_evidence_owner')
+  }
+  if (
+    evidence.production_effect !== true
+    || evidence.safety_reducing_only !== false
+    || evidence.bounded_bidirectional_adjustment !== true
+    || evidence.raw_labels_preserved !== true
+    || evidence.experimental_threshold_deltas_applied !== false
+    || evidence.allocation_eligibility_contract_version
+      !== STRATEGY_ALLOCATION_ELIGIBILITY_CONTRACT_VERSION
+    || evidence.complete_non_retired_weight_map !== true
+  ) {
+    throw new Error('invalid_historical_strategy_production_policy_evidence')
+  }
+
+  return {
+    state: {
+      policy_id: STRATEGY_PRODUCTION_FIREWALL_POLICY_ID,
+      version: STRATEGY_PRODUCTION_FIREWALL_VERSION,
+      status: 'active',
+      knowledge_cutoff_date: row.knowledge_cutoff_date,
+      strategy_weights: parseWeights(row.strategy_weights_json, expectedStrategyIds),
+      quarantined_strategy_ids: parseStringArray(row.quarantined_strategy_ids_json),
+      candidate_ready_strategy_ids: parseStringArray(row.candidate_ready_strategy_ids_json),
+      base_weight_source: parseBaseWeightSource(row.base_weight_source),
+      base_weight_run_id: row.base_weight_run_id,
+      canonical_payload: row.canonical_payload,
+      evidence: {
+        production_effect: true,
+        safety_reducing_only: false,
+        bounded_bidirectional_adjustment: true,
+        diversity_retention_budget: 0.15,
+        raw_labels_preserved: true,
+        experimental_threshold_deltas_applied: false,
+        complete_non_retired_weight_map: true,
+        allocation_eligibility_contract_version: STRATEGY_ALLOCATION_ELIGIBILITY_CONTRACT_VERSION,
+        normalized_promoted_weights: evidence.normalized_promoted_weights === true,
+        positive_weight_count: Number(evidence.positive_weight_count) || 0,
+        diversity_retained_strategy_count: Number(evidence.diversity_retained_strategy_count) || 0,
+        evidence_owner: evidenceOwner as StrategyProductionFirewallState['evidence']['evidence_owner'],
+      },
+    },
+    checksum: row.checksum,
+    created_at: row.created_at,
+    reconstruction_receipt: {
+      source_contract: 'strategy-evidence-owner-fusion-v2',
+      scope: 'historical_reconstruction_only',
+    },
+  }
+}
+
 export function deserializePreviousStrategyProductionPolicyRow(
   row: StrategyProductionPolicyHistoryRow,
   expectedStrategyIds: readonly string[],
@@ -437,6 +538,99 @@ export async function loadStrategyProductionPolicyBefore(
   return previous ? deserializePreviousStrategyProductionPolicyRow(previous, expectedStrategyIds) : null
 }
 
+function assertHistoricalStrategyProductionPolicyCanonicalParity(
+  row: StrategyProductionPolicyHistoryRow,
+): void {
+  const canonical = parseJsonRecord(row.canonical_payload)
+  const canonicalWeights = canonical.strategy_weights && typeof canonical.strategy_weights === 'object'
+    && !Array.isArray(canonical.strategy_weights)
+    ? canonical.strategy_weights as Record<string, unknown>
+    : {}
+  const persistedWeights = parseJsonRecord(row.strategy_weights_json)
+  const normalized = (value: Record<string, unknown>) => JSON.stringify(
+    Object.fromEntries(Object.entries(value).sort(([left], [right]) => left.localeCompare(right))),
+  )
+  const evidence = parseJsonRecord(row.evidence_json)
+  const canonicalOwner = canonical.evidence_owner && typeof canonical.evidence_owner === 'object'
+    && !Array.isArray(canonical.evidence_owner)
+    ? canonical.evidence_owner as Record<string, unknown>
+    : {}
+  const persistedOwner = evidence.evidence_owner && typeof evidence.evidence_owner === 'object'
+    && !Array.isArray(evidence.evidence_owner)
+    ? evidence.evidence_owner as Record<string, unknown>
+    : {}
+  const canonicalQuarantined = Array.isArray(canonical.quarantined_strategy_ids)
+    ? [...canonical.quarantined_strategy_ids].map(String).sort()
+    : []
+  const canonicalCandidates = Array.isArray(canonical.candidate_ready_strategy_ids)
+    ? [...canonical.candidate_ready_strategy_ids].map(String).sort()
+    : []
+  const hasEvidenceOwner = Object.keys(canonicalOwner).length > 0
+    || Object.keys(persistedOwner).length > 0
+  if (
+    canonical.policy_id !== row.policy_id
+    || Number(canonical.version) !== Number(row.version)
+    || canonical.knowledge_cutoff_date !== row.knowledge_cutoff_date
+    || canonical.base_weight_source !== row.base_weight_source
+    || (canonical.base_weight_run_id ?? null) !== row.base_weight_run_id
+    || normalized(canonicalWeights) !== normalized(persistedWeights)
+    || JSON.stringify(canonicalQuarantined) !== JSON.stringify(parseStringArray(row.quarantined_strategy_ids_json))
+    || JSON.stringify(canonicalCandidates) !== JSON.stringify(parseStringArray(row.candidate_ready_strategy_ids_json))
+    || (hasEvidenceOwner && (
+      canonicalOwner.version !== persistedOwner.version
+      || canonicalOwner.checksum !== persistedOwner.checksum
+      || canonicalOwner.weight_effect !== persistedOwner.weight_effect
+      || Number(canonicalOwner.ready_profile_count) !== Number(persistedOwner.ready_profile_count)
+    ))
+  ) {
+    throw new Error(`historical_strategy_production_policy_canonical_parity_failed:${row.knowledge_cutoff_date}`)
+  }
+}
+
+export async function loadStrategyProductionPolicyForHistoricalReconstructionBefore(
+  db: D1Database,
+  knowledgeCutoffDate: string,
+  expectedStrategyIds: readonly string[],
+): Promise<LoadedHistoricalStrategyProductionPolicy | null> {
+  await ensureStrategyProductionPolicyHistoryTable(db)
+  const row = await db.prepare(STRATEGY_PRODUCTION_POLICY_POINT_IN_TIME_SQL)
+    .bind(STRATEGY_PRODUCTION_FIREWALL_POLICY_ID, knowledgeCutoffDate)
+    .first<StrategyProductionPolicyHistoryRow>()
+  if (row) {
+    const loaded = deserializeHistoricalStrategyProductionPolicyRow(row, expectedStrategyIds)
+    assertHistoricalStrategyProductionPolicyCanonicalParity(row)
+    const checksum = await sha256StrategyProductionPolicyPayload(row.canonical_payload)
+    if (checksum !== row.checksum) {
+      throw new Error(`historical_strategy_production_policy_checksum_mismatch:${row.knowledge_cutoff_date}`)
+    }
+    return {
+      ...loaded,
+      reconstruction_receipt: {
+        ...loaded.reconstruction_receipt,
+        checksum_verified: true,
+      },
+    }
+  }
+  const previous = await db.prepare(STRATEGY_PRODUCTION_POLICY_POINT_IN_TIME_SQL)
+    .bind(PREVIOUS_STRATEGY_PRODUCTION_FIREWALL_POLICY_ID, knowledgeCutoffDate)
+    .first<StrategyProductionPolicyHistoryRow>()
+  if (!previous) return null
+  const loaded = deserializePreviousStrategyProductionPolicyRow(previous, expectedStrategyIds)
+  assertHistoricalStrategyProductionPolicyCanonicalParity(previous)
+  const checksum = await sha256StrategyProductionPolicyPayload(previous.canonical_payload)
+  if (checksum !== previous.checksum) {
+    throw new Error(`historical_strategy_production_policy_checksum_mismatch:${previous.knowledge_cutoff_date}`)
+  }
+  return {
+    ...loaded,
+    reconstruction_receipt: {
+      source_contract: 'previous-firewall-v2',
+      scope: 'historical_reconstruction_only',
+      checksum_verified: true,
+    },
+  }
+}
+
 /**
  * Historical reconstruction only: reads the immutable v1 policy that was
  * actually available before a legacy-labeler signal date. Runtime serving
@@ -451,5 +645,12 @@ export async function loadLegacyStrategyProductionWeightsBefore(
   const row = await db.prepare(STRATEGY_PRODUCTION_POLICY_POINT_IN_TIME_SQL)
     .bind(LEGACY_STRATEGY_PRODUCTION_FIREWALL_POLICY_ID, knowledgeCutoffDate)
     .first<StrategyProductionPolicyHistoryRow>()
-  return row ? deserializeLegacyStrategyProductionWeightsRow(row, expectedStrategyIds) : null
+  if (!row) return null
+  const loaded = deserializeLegacyStrategyProductionWeightsRow(row, expectedStrategyIds)
+  assertHistoricalStrategyProductionPolicyCanonicalParity(row)
+  const checksum = await sha256StrategyProductionPolicyPayload(row.canonical_payload)
+  if (checksum !== row.checksum) {
+    throw new Error(`historical_strategy_production_policy_checksum_mismatch:${row.knowledge_cutoff_date}`)
+  }
+  return loaded
 }

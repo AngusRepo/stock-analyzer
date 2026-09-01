@@ -412,3 +412,68 @@ export async function recoverMatureSelectionEvidence(
     summary,
   }
 }
+
+export async function drainMatureSelectionEvidence(
+  env: Bindings,
+  businessDateInput: string,
+  options: { lookbackDays?: number; maxRecoveryDates?: number; maxBatches?: number } = {},
+): Promise<MatureSelectionEvidenceRecoveryResult> {
+  const businessDate = dateOnly(businessDateInput, 'mature_selection_business_date')
+  const initial = await inspectMatureSelectionEvidenceGaps(env, businessDate, options)
+  const recoveredDates: string[] = []
+  let projectionRuns = 0
+  let labelRowsPersisted = 0
+  const maxBatches = Math.max(1, Math.min(4, Math.floor(options.maxBatches ?? 3)))
+
+  for (let batch = 0; batch < maxBatches; batch += 1) {
+    const current = await inspectMatureSelectionEvidenceGaps(env, businessDate, options)
+    const recoverable = current.gaps.filter(isMatureSelectionEvidenceGapRecoverable)
+    if (!recoverable.length) break
+    const result = await recoverMatureSelectionEvidence(env, businessDate, {
+      lookbackDays: options.lookbackDays,
+      maxRecoveryDates: options.maxRecoveryDates ?? DEFAULT_MAX_RECOVERY_DATES,
+    })
+    recoveredDates.push(...result.recoveredDates)
+    projectionRuns += result.projectionRuns
+    labelRowsPersisted += result.labelRowsPersisted
+    if (!result.recoveredDates.length) break
+  }
+
+  const after = await inspectMatureSelectionEvidenceGaps(env, businessDate, options)
+  const remainingRecoverable = after.gaps.filter(isMatureSelectionEvidenceGapRecoverable)
+  if (remainingRecoverable.length) {
+    throw new Error(
+      `mature_selection_evidence_backlog_not_drained:${remainingRecoverable.map((gap) => (
+        `${gap.signalDate}:${gap.blockers.join('|')}`
+      )).join(',')}`,
+    )
+  }
+  const blocked = after.gaps.filter((gap) => !isMatureSelectionEvidenceGapRecoverable(gap))
+  const uniqueRecoveredDates = [...new Set(recoveredDates)].sort()
+  const summary = [
+    `mature_signal_date=${initial.matureSignalDate ?? 'none'}`,
+    `inspected_dates=${initial.inspectedDates}`,
+    `gaps_before=${initial.gaps.length}`,
+    `targeted=${uniqueRecoveredDates.join(',') || 'none'}`,
+    `projection_runs=${projectionRuns}`,
+    `labels_persisted=${labelRowsPersisted}`,
+    `gaps_after=${after.gaps.length}`,
+    `recoverable_after=0`,
+    `blocked=${blocked.map((gap) => gap.signalDate).join(',') || 'none'}`,
+  ].join(' ')
+  return {
+    businessDate,
+    matureSignalDate: initial.matureSignalDate,
+    inspectedDates: initial.inspectedDates,
+    gapDatesBefore: initial.gaps.map((gap) => gap.signalDate),
+    recoveredDates: uniqueRecoveredDates,
+    gapDatesAfter: after.gaps.map((gap) => gap.signalDate),
+    blockedDates: blocked.map((gap) => ({
+      signalDate: gap.signalDate,
+      blockers: gap.blockers,
+    })),
+    projectionRuns,
+    labelRowsPersisted,
+    summary,
+  }
+}

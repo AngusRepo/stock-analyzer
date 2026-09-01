@@ -1194,13 +1194,31 @@ adminWriteRoutes.post('/api/admin/strategy/production-policy/recover', async (c)
   }
 
   const learningDb = databaseForDataDomain(c.env, 'learning')
+  const {
+    auditFormalStrategyEvidenceFrontier,
+    resolveExpectedMatureSignalDate,
+  } = await import('../lib/eveningChainEvidenceClosure')
+  const matureSignalDate = await resolveExpectedMatureSignalDate(c.env, date)
+  const formalFrontier = await auditFormalStrategyEvidenceFrontier(
+    learningDb,
+    databaseForDataDomain(c.env, 'ops'),
+    databaseForDataDomain(c.env, 'market'),
+    matureSignalDate,
+  )
+  if (formalFrontier.backlog.length) {
+    return c.json({
+      error: `formal_strategy_evidence_frontier_incomplete:${date}`,
+      mature_signal_date: matureSignalDate,
+      formal_backlog: formalFrontier.backlog,
+    }, 409)
+  }
   const closure = await learningDb.prepare(`
     SELECT signal_date, status, labeler_version, evaluation_contract_version, candidate_count, strategy_count, matrix_rows
       FROM strategy_evidence_rebuild_runs_v5
      WHERE signal_date<=? AND status='success'
      ORDER BY signal_date DESC
      LIMIT 1
-  `).bind(date).first<{
+  `).bind(matureSignalDate ?? date).first<{
     signal_date?: string
     status?: string
     labeler_version?: string
@@ -1210,6 +1228,7 @@ adminWriteRoutes.post('/api/admin/strategy/production-policy/recover', async (c)
     matrix_rows?: number | string
   }>()
   const closureDate = String(closure?.signal_date ?? '')
+  const latestFormalDate = formalFrontier.readyDates.at(-1) ?? null
   if (
     closure?.status !== 'success'
     || closure.labeler_version !== 'strategy-decision-log-pit-reconstruction-v7-revenue-pit-fuse-v1'
@@ -1217,8 +1236,14 @@ adminWriteRoutes.post('/api/admin/strategy/production-policy/recover', async (c)
     || Number(closure.candidate_count ?? 0) <= 0
     || Number(closure.strategy_count ?? 0) <= 0
     || Number(closure.matrix_rows ?? 0) !== Number(closure.candidate_count) * Number(closure.strategy_count)
+    || (latestFormalDate != null && closureDate !== latestFormalDate)
   ) {
-    return c.json({ error: `formal_strategy_evidence_closure_required:${date}`, closure }, 409)
+    return c.json({
+      error: `formal_strategy_evidence_closure_required:${date}`,
+      mature_signal_date: matureSignalDate,
+      latest_formal_date: latestFormalDate,
+      closure,
+    }, 409)
   }
   if (requestedClosureDate != null && requestedClosureDate !== closureDate) {
     return c.json({ error: `latest_formal_strategy_evidence_closure_mismatch:${requestedClosureDate}:${closureDate}`, closure }, 409)

@@ -217,6 +217,8 @@ export type FactorFlowMapResponse = {
   governance: {
     candidate: string
     phase: 'prospective_shadow' | 'promoted' | string
+    taxonomy_layer: 'industry' | string
+    available_taxonomy_layers: string[]
     weight: number
     primary_horizon_sessions: number
     auxiliary_authority: 'diagnostic_only'

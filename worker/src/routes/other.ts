@@ -4524,9 +4524,9 @@ recommendations.get('/factor-flow-map', async (c) => {
   try {
     const payload = await loadPitFactorFlowMap(c.env, {
       requestedDate,
-      days: Math.min(parsePosInt(c.req.query('days'), 10), 30),
+      days: Math.min(parsePosInt(c.req.query('days'), 10), 60),
       symbols,
-      includeMovers: Math.max(0, Math.min(Number(c.req.query('include_movers') ?? 6) || 0, 12)),
+      includeMovers: Math.max(0, Math.min(Number(c.req.query('include_movers') ?? 0) || 0, 12)),
     })
     return c.json(payload)
   } catch (error) {

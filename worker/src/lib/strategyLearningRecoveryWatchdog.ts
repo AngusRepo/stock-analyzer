@@ -94,15 +94,16 @@ async function loadRecoveryRun(
            lease_owner, lease_expires_at, attempt_count, last_error, updated_at,
            production_authority_intent, policy_closure_status
       FROM strategy_learning_runs
-     WHERE status IN ('queued','running')
-       AND business_date BETWEEN date(?, ?) AND ?
+     WHERE business_date BETWEEN date(?, ?) AND ?
        AND (
          (status='queued' AND lease_owner IS NULL AND lease_expires_at IS NULL)
          OR (status='running' AND (lease_expires_at IS NULL OR lease_expires_at<=CURRENT_TIMESTAMP))
+         OR (status='success' AND business_date=?)
        )
-     ORDER BY business_date DESC
+     ORDER BY CASE WHEN status IN ('queued','running') THEN 0 ELSE 1 END,
+              business_date DESC
      LIMIT 1
-  `).bind(cutoffDate, `-${RECOVERY_LOOKBACK_DAYS} days`, cutoffDate).first<StrategyLearningRecoveryRow>()
+  `).bind(cutoffDate, `-${RECOVERY_LOOKBACK_DAYS} days`, cutoffDate, cutoffDate).first<StrategyLearningRecoveryRow>()
 }
 
 async function loadPostVerifyAuthority(
@@ -156,9 +157,26 @@ export async function runStrategyLearningRecoveryWatchdog(
       await logWatchdog(env, row, 'error', summary)
       throw new Error(summary)
     }
-    const status = decision.reason === 'run_success' ? 'success' : 'running'
-    const summary = `${status} strategy-learning recovery date=${row.business_date} reason=${decision.reason}`
-    await logWatchdog(env, row, status, summary)
+    if (decision.reason === 'run_success') {
+      const { closeEveningChainRootIfComplete } = await import('./eveningChainRootClosure')
+      const closure = await closeEveningChainRootIfComplete(opsDb, {
+        businessDate: row.business_date,
+        canonicalRunId: row.canonical_run_id,
+      })
+      const summary = `success strategy-learning recovery date=${row.business_date} reason=run_success root=${closure.status}`
+      await logWatchdog(env, row, 'success', summary)
+      if (closure.status === 'closed_success') {
+        await logSchedulerResult(env.KV, 'evening-chain', {
+          status: 'success', summary: closure.summary, duration_ms: 0,
+          run_id: row.canonical_run_id, run_date: row.business_date,
+          run_scope: Number(row.production_authority_intent ?? 0) === 1 ? 'live_canonical' : 'historical_replay',
+          supersedePrevious: true,
+        }, env)
+      }
+      return summary
+    }
+    const summary = `running strategy-learning recovery date=${row.business_date} reason=${decision.reason}`
+    await logWatchdog(env, row, 'running', summary)
     return summary
   }
 

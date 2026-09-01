@@ -68,13 +68,31 @@ const l4 = adaptExpectedReturnCandidate(row('l4_alpha_ev', l4Version, {
       top_quintile_mean_return: -0.03,
       date_mean_top_quintile_return_lcb90: -0.05,
     },
-    walk_forward: { passed: false },
+    walk_forward: {
+      passed: false,
+      reason: 'walk_forward_not_stable',
+      fold_count: 1,
+      positive_corr_folds: 0,
+      positive_spread_folds: 1,
+      required_positive_folds: 1,
+      folds: [{
+        fold: 1,
+        test_start_date: '2026-07-01', test_end_date: '2026-07-05',
+        date_mean_cross_section_corr: -0.1,
+        date_mean_top_bottom_spread: 0.02,
+      }],
+    },
   },
 }))
 assert.equal(l4.identity_valid, true)
 assert.equal(l4.sector_samples, 1000)
 assert.equal(l4.fusion_oof_max_date, '2026-07-31')
 assert.equal(l4.l4_corr_lcb90, -0.2)
+assert.equal(l4.walk_forward?.reason, 'walk_forward_not_stable')
+assert.equal(l4.walk_forward?.folds[0].test_start_date, '2026-07-01')
+assert.equal(l4.walk_forward?.folds[0].correlation, -0.1)
+assert.equal(l4.walk_forward?.folds[0].spread, 0.02)
+assert.equal(l4.walk_forward?.folds[0].passed, false)
 
 const fusionVersion = 'allocator-ev-fusion-residual-v14-20260808'
 const fusionArtifact = {

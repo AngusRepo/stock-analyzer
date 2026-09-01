@@ -68,7 +68,7 @@ async function main(): Promise<void> {
       `).bind(
         businessDate,
         stage,
-        canonicalRunId,
+        stage === 'screener_v2' ? 'indicator-run:2026-08-31' : canonicalRunId,
         stage === 'screener_v2' ? 'screener:2026-08-31' : null,
       ).run()
     }

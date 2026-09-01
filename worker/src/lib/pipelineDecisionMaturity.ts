@@ -269,6 +269,29 @@ function optionalFinite(value: unknown): number | null {
   return value == null || value === '' || !Number.isFinite(parsed) ? null : parsed
 }
 
+function compactMetric(value: number | null): string {
+  if (value == null) return 'NA'
+  return Math.abs(value) >= 0.01 ? value.toFixed(4) : value.toFixed(6)
+}
+
+function walkForwardNote(evidence: ExpectedReturnCandidateEvidence['walk_forward']): string | undefined {
+  if (!evidence) return undefined
+  const header = [
+    `原因=${evidence.reason ?? 'unknown'}`,
+    `corr 正向 fold=${evidence.positive_corr_folds ?? 'NA'}/${evidence.fold_count ?? evidence.folds.length}`,
+    `spread 正向 fold=${evidence.positive_spread_folds ?? 'NA'}/${evidence.fold_count ?? evidence.folds.length}`,
+    evidence.required_positive_folds == null ? null : `至少需 ${evidence.required_positive_folds} folds`,
+  ].filter(Boolean).join('；')
+  const folds = evidence.folds.map((fold) => {
+    const range = fold.test_start_date
+      ? `${fold.test_start_date}→${fold.test_end_date ?? fold.test_start_date}`
+      : '舊 artifact 未發布日期範圍'
+    const status = fold.passed == null ? '資料不足' : fold.passed ? '通過' : '未過'
+    return `Fold ${fold.fold ?? '?'} [${range}] corr=${compactMetric(fold.correlation)} spread=${compactMetric(fold.spread)} ${status}`
+  })
+  return [header, ...folds].filter(Boolean).join('；')
+}
+
 function jsonRecord(value: unknown): Record<string, any> {
   if (value && typeof value === 'object' && !Array.isArray(value)) return value as Record<string, any>
   if (typeof value !== 'string' || !value.trim()) return {}
@@ -977,8 +1000,8 @@ export async function buildPipelineDecisionMaturityPacket(
         metric('sample_count', 'Labeled route observations', route.sample_count, { unit: 'rows' }),
         metric('incumbent_sample_count', 'Paired incumbent observations', route.incumbent_sample_count, { unit: 'rows' }),
         metric('paired_date_count', 'Paired incumbent dates', route.paired_date_count, { unit: 'dates' }),
-        metric('incumbent_route_avg', 'Incumbent route avg', referenceRow?.incumbent_route_avg ?? null, { unit: 'score' }),
-        metric('challenger_route_avg', 'Challenger route avg', referenceRow?.challenger_route_avg ?? null, { unit: 'score' }),
+        metric('incumbent_route_avg', 'Incumbent route avg', referenceRow?.incumbent_route_avg ?? null, { unit: 'score', note: '當日未成熟的 route priority 分數；不是報酬、命中率或已實現選股績效。' }),
+        metric('challenger_route_avg', 'Challenger route avg', referenceRow?.challenger_route_avg ?? null, { unit: 'score', note: '當日 challenger priority 分數；高於 incumbent 只代表分數尺度／排序傾向，必須等待 paired T+5 報酬與 LCB gate 才能比較績效。' }),
         metric('route_floor', 'Train-selected route floor', route.route_floor, { unit: 'score', passed: route.route_floor == null ? null : true }),
         gateMetric('top_bucket_lcb90', 'Top bucket net return LCB90', route.top_bucket_net_return_lcb90, 0, 'return', 'gt'),
         gateMetric('absolute_spread_lcb90', 'Challenger absolute spread LCB90', route.absolute_spread_lcb90, 0, 'return', 'gt'),
@@ -1094,7 +1117,7 @@ export async function buildPipelineDecisionMaturityPacket(
         gateMetric('spread_lcb90', 'Offline candidate spread LCB90', l4?.l4_spread_lcb90, 0, 'return', 'gt', { ...candidateMetricScope, scope: 'promotion_gate' }),
         gateMetric('top_return', 'Offline candidate top-quintile mean', l4?.l4_top_return, 0, 'return', 'gt', { ...candidateMetricScope, scope: 'promotion_gate' }),
         gateMetric('top_lcb90', 'Offline candidate top-quintile LCB90', l4?.l4_top_lcb90, 0, 'return', 'gt', { ...candidateMetricScope, scope: 'promotion_gate' }),
-        metric('walk_forward', 'Offline candidate walk-forward', l4?.walk_forward_passed, { target: true, comparator: 'eq', unit: 'status', passed: l4?.walk_forward_passed == null ? null : l4.walk_forward_passed, ...candidateMetricScope, scope: 'promotion_gate' }),
+        metric('walk_forward', 'Offline candidate walk-forward', l4?.walk_forward_passed, { target: true, comparator: 'eq', unit: 'status', passed: l4?.walk_forward_passed == null ? null : l4.walk_forward_passed, ...candidateMetricScope, scope: 'promotion_gate', note: walkForwardNote(l4?.walk_forward ?? null) }),
         metric('strict_pit_rows', 'Materialized strict L4 PIT', maturity?.strictL4PitRows ?? null, { unit: 'rows', scope: 'lifecycle' }),
         metric('strict_pit_dates', 'Materialized strict L4 PIT dates', maturity?.strictL4PitDates ?? null, { unit: 'dates', scope: 'lifecycle' }),
         metric('sector_source_signal_dates', '目前可供後續 cohort 使用的 PIT sector signal dates', sectorReadiness?.signal_dates ?? null, { unit: 'dates', scope: 'lifecycle', note: `合法 prior-session source window：${sectorReadiness?.first_signal_date ?? '尚無'} → ${sectorReadiness?.latest_signal_date ?? '尚無'}。這是 source readiness，不是舊 candidate 的 promotion evidence。` }),
@@ -1104,7 +1127,7 @@ export async function buildPipelineDecisionMaturityPacket(
         gateMetric('shadow_spread_lcb90', 'Latest shadow spread LCB90', l4Shadow?.l4_spread_lcb90, 0, 'return', 'gt', { ...shadowMetricScope, scope: 'monitoring' }),
         gateMetric('shadow_top_return', 'Latest shadow top-quintile mean', l4Shadow?.l4_top_return, 0, 'return', 'gt', { ...shadowMetricScope, scope: 'monitoring' }),
         gateMetric('shadow_top_lcb90', 'Latest shadow top-quintile LCB90', l4Shadow?.l4_top_lcb90, 0, 'return', 'gt', { ...shadowMetricScope, scope: 'monitoring' }),
-        metric('shadow_walk_forward', 'Latest shadow walk-forward', l4Shadow?.walk_forward_passed, { target: true, comparator: 'eq', unit: 'status', passed: l4Shadow?.walk_forward_passed ?? null, ...shadowMetricScope, scope: 'monitoring' }),
+        metric('shadow_walk_forward', 'Latest shadow walk-forward', l4Shadow?.walk_forward_passed, { target: true, comparator: 'eq', unit: 'status', passed: l4Shadow?.walk_forward_passed ?? null, ...shadowMetricScope, scope: 'monitoring', note: walkForwardNote(l4Shadow?.walk_forward ?? null) }),
         metric('frozen_forward_quality', 'Active-8 cohort causal shadow quality', l4Shadow?.quality_decision ?? null, { target: 'PASS', comparator: 'eq', unit: 'status', passed: l4Shadow == null ? null : l4Shadow.quality_decision === 'PASS', ...shadowMetricScope, scope: 'monitoring' }),
         metric('shadow_usable_samples', 'Latest shadow usable samples', l4Shadow?.sample_count ?? null, { unit: 'rows', ...shadowMetricScope, scope: 'monitoring' }),
         metric('shadow_usable_dates', 'Latest shadow usable dates', l4Shadow?.date_count ?? null, { unit: 'dates', ...shadowMetricScope, scope: 'monitoring' }),
@@ -1295,7 +1318,7 @@ export async function buildPipelineDecisionMaturityPacket(
         metric('sector_source_signal_dates', '目前可供後續 cohort 使用的 PIT sector signal dates', sectorReadiness?.signal_dates ?? null, { unit: 'dates', scope: 'lifecycle', note: `合法 prior-session source window：${sectorReadiness?.first_signal_date ?? '尚無'} → ${sectorReadiness?.latest_signal_date ?? '尚無'}。這是 source readiness，不是舊 candidate 的 promotion evidence。` }),
         gateMetric('residual_corr_lcb90', 'Residual adjustment corr LCB90', fusion?.residual_corr_lcb90, 0, 'ratio', 'gt', { ...candidateMetricScope, scope: 'promotion_gate' }),
         gateMetric('residual_spread_lcb90', 'Residual adjustment spread LCB90', fusion?.residual_spread_lcb90, 0, 'return', 'gt', { ...candidateMetricScope, scope: 'promotion_gate' }),
-        metric('walk_forward', 'Offline candidate residual walk-forward', fusion?.walk_forward_passed, { target: true, comparator: 'eq', unit: 'status', passed: fusion?.walk_forward_passed ?? null, ...candidateMetricScope, scope: 'promotion_gate' }),
+        metric('walk_forward', 'Offline candidate residual walk-forward', fusion?.walk_forward_passed, { target: true, comparator: 'eq', unit: 'status', passed: fusion?.walk_forward_passed ?? null, ...candidateMetricScope, scope: 'promotion_gate', note: walkForwardNote(fusion?.walk_forward ?? null) }),
         metric('selection_corr_lcb90', 'Selection diagnostic corr LCB90', fusion?.selection_corr_lcb90, { unit: 'ratio', ...candidateMetricScope, scope: 'diagnostic', note: 'Reported for diagnosis only; the v14 serving head is residual_adjustment_model.' }),
         metric('selection_spread_lcb90', 'Selection diagnostic spread LCB90', fusion?.selection_spread_lcb90, { unit: 'return', ...candidateMetricScope, scope: 'diagnostic', note: 'Reported for diagnosis only; the v14 serving head is residual_adjustment_model.' }),
         metric('champion_corr_delta', 'Selection diagnostic corr delta vs canonical L4 LCB90', fusion?.fusion_corr_delta_lcb90, { unit: 'ratio', ...candidateMetricScope, scope: 'diagnostic', note: 'Not a v14 serving gate.' }),
@@ -1316,7 +1339,7 @@ export async function buildPipelineDecisionMaturityPacket(
         gateMetric('shadow_sector_dates', 'Latest shadow PIT sector-alpha dates', fusionShadow?.sector_dates, Math.max(1, finite(fusion?.min_sector_dates, 8)), 'dates', 'gte', { ...shadowMetricScope, scope: 'monitoring' }),
         gateMetric('shadow_residual_corr_lcb90', 'Latest shadow residual corr LCB90', fusionShadow?.residual_corr_lcb90, 0, 'ratio', 'gt', { ...shadowMetricScope, scope: 'monitoring' }),
         gateMetric('shadow_residual_spread_lcb90', 'Latest shadow residual spread LCB90', fusionShadow?.residual_spread_lcb90, 0, 'return', 'gt', { ...shadowMetricScope, scope: 'monitoring' }),
-        metric('shadow_walk_forward', 'Latest shadow residual walk-forward', fusionShadow?.walk_forward_passed, { target: true, comparator: 'eq', unit: 'status', passed: fusionShadow?.walk_forward_passed ?? null, ...shadowMetricScope, scope: 'monitoring' }),
+        metric('shadow_walk_forward', 'Latest shadow residual walk-forward', fusionShadow?.walk_forward_passed, { target: true, comparator: 'eq', unit: 'status', passed: fusionShadow?.walk_forward_passed ?? null, ...shadowMetricScope, scope: 'monitoring', note: walkForwardNote(fusionShadow?.walk_forward ?? null) }),
         metric('frozen_forward_quality', 'Active-8 cohort causal shadow quality', fusionShadow?.quality_decision ?? null, { target: 'PASS', comparator: 'eq', unit: 'status', passed: fusionShadow == null ? null : fusionShadow.quality_decision === 'PASS', ...shadowMetricScope, scope: 'monitoring' }),
         metric('shadow_usable_samples', 'Latest shadow usable samples', fusionShadow?.sample_count ?? null, { unit: 'rows', ...shadowMetricScope, scope: 'monitoring' }),
         metric('shadow_usable_dates', 'Latest shadow usable dates', fusionShadow?.date_count ?? null, { unit: 'dates', ...shadowMetricScope, scope: 'monitoring' }),

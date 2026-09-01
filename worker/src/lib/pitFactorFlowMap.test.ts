@@ -33,6 +33,13 @@ assert.equal(groups[0].points[0].x, 62.5)
 assert.equal(groups[0].points[1].x, 62.5)
 assert.equal(groups[0].points[0].y, 70)
 
+const allIndustries = buildPitFactorGroupSeries(Array.from({ length: 13 }, (_value, index) => point({
+  symbol: `S${index}`,
+  industry: `產業${index}`,
+  rankDelta: index - 6,
+})))
+assert.equal(allIndustries.length, 13, 'industry trajectories must not be truncated to 12')
+
 const selected = selectPitFactorStockSymbols([
   point({ symbol: 'A', rankDelta: 1 }),
   point({ symbol: 'B', rankDelta: -4 }),

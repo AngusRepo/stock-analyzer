@@ -26,6 +26,7 @@ type BaseCandidate = {
   symbol: string
   name: string | null
   score_after: number | string
+  rank: number | string | null
 }
 
 export type PitResidualFunnelEnrichmentResult = {
@@ -36,6 +37,8 @@ export type PitResidualFunnelEnrichmentResult = {
   baseStage: string
   baseCandidateCount: number
   residualItemCount: number
+  evaluableItemCount: number
+  unavailableItemCount: number
   decisionEffect: 'none'
   summary: string
 }
@@ -76,7 +79,7 @@ async function loadBaseCandidates(
 ): Promise<{ stage: string; rows: BaseCandidate[] }> {
   for (const stage of [BASE_STAGE, LEGACY_BASE_STAGE]) {
     const { results } = await db.prepare(`
-      SELECT symbol, name, score_after
+      SELECT symbol, name, score_after, rank
         FROM screener_funnel_items
        WHERE run_id=? AND stage=? AND decision='observe'
          AND score_after IS NOT NULL
@@ -172,64 +175,89 @@ export async function enrichCanonicalPitResidualFunnel(
       )
     }
     const counterfactuals = buildPitResidualCounterfactuals(candidates, snapshot)
-    if (counterfactuals.length !== candidates.length) {
+    if (!counterfactuals.length) {
       throw new Error(
-        `pit_residual_counterfactual_coverage_incomplete:${counterfactuals.length}/${candidates.length}`,
+        `pit_residual_counterfactual_coverage_empty:${counterfactuals.length}/${candidates.length}`,
       )
     }
-    const nameBySymbol = new Map(base.rows.map((row) => [String(row.symbol).trim(), row.name ?? null]))
-    const scoreBySymbol = new Map(candidates.map((row) => [row.symbol, row.score]))
+    const counterfactualBySymbol = new Map(counterfactuals.map((row) => [row.symbol, row]))
+    const evaluableItemCount = counterfactuals.length
+    const unavailableItemCount = candidates.length - evaluableItemCount
     const statements: D1PreparedStatement[] = [
       opsDb.prepare(`DELETE FROM screener_funnel_items WHERE run_id=? AND stage=?`)
         .bind(canonical.run_id, RESIDUAL_STAGE),
     ]
-    for (const group of chunks(counterfactuals, INSERT_ROWS_PER_STATEMENT)) {
+    for (const group of chunks(base.rows, INSERT_ROWS_PER_STATEMENT)) {
       const values = group.map(() => '(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)').join(', ')
       const bindings: unknown[] = []
-      for (const row of group) {
-        bindings.push(
-          canonical.run_id,
-          input.businessDate,
-          row.symbol,
-          nameBySymbol.get(row.symbol) ?? null,
-          RESIDUAL_STAGE,
-          'observe',
-          row.rankDelta > 0
+      for (const baseRow of group) {
+        const symbol = String(baseRow.symbol).trim()
+        const score = Number(baseRow.score_after)
+        const row = counterfactualBySymbol.get(symbol)
+        const rank = row?.productionRank
+          ?? (Number.isFinite(Number(baseRow.rank)) ? Number(baseRow.rank) : null)
+        const reasonCode = !row
+          ? 'pit_residual_shadow_not_evaluable'
+          : row.rankDelta > 0
             ? 'pit_residual_shadow_rank_up'
             : row.rankDelta < 0
               ? 'pit_residual_shadow_rank_down'
-              : 'pit_residual_shadow_rank_unchanged',
-          scoreBySymbol.get(row.symbol) ?? null,
-          scoreBySymbol.get(row.symbol) ?? null,
-          row.productionRank,
-          JSON.stringify({
-            applicationMode: PIT_RESIDUAL_SHADOW_APPLICATION_MODE,
-            candidateSetMutationAllowed: PIT_RESIDUAL_CANDIDATE_SET_MUTATION_ALLOWED,
-            debateVisibility: PIT_RESIDUAL_DEBATE_VISIBILITY,
-            decisionEffect: 'none',
-            residualWeight: PIT_RESIDUAL_SHADOW_WEIGHT,
-            primaryHorizonSessions: PIT_RESIDUAL_PRIMARY_HORIZON_SESSIONS,
-            signalDate: row.signalDate,
-            industry: row.industry,
-            productionBasePercentile: row.productionBasePercentile,
-            residualMomentumRank: row.residualMomentumRank,
-            productionShadowScore: row.productionShadowScore,
-            productionRank: row.productionRank,
-            shadowRank: row.shadowRank,
-            rankDelta: row.rankDelta,
-            breadthRank: row.breadthRank,
-            flowDiffusionRank: row.flowDiffusionRank,
-            diagnosticConfirmationRank: row.diagnosticConfirmationRank,
-            auxiliaryAuthority: 'diagnostic_only',
-            researchBaseScore: row.researchBaseScore,
-            researchShadowScore: row.researchShadowScore,
-            factorContractVersion: row.factorContractVersion,
-            taxonomySnapshotDate: row.taxonomySnapshotDate,
-            taxonomyChecksum: row.taxonomyChecksum,
-            enrichmentContractVersion: 'pit-residual-funnel-enrichment-v1',
-            enrichmentBaseStage: base.stage,
-            pipelineCanonicalRunId: input.pipelineCanonicalRunId,
-          }),
+              : 'pit_residual_shadow_rank_unchanged'
+        const evidence = row ? {
+          applicationMode: PIT_RESIDUAL_SHADOW_APPLICATION_MODE,
+          candidateSetMutationAllowed: PIT_RESIDUAL_CANDIDATE_SET_MUTATION_ALLOWED,
+          debateVisibility: PIT_RESIDUAL_DEBATE_VISIBILITY,
+          decisionEffect: 'none',
+          evaluationStatus: 'evaluable',
+          residualWeight: PIT_RESIDUAL_SHADOW_WEIGHT,
+          primaryHorizonSessions: PIT_RESIDUAL_PRIMARY_HORIZON_SESSIONS,
+          signalDate: row.signalDate,
+          industry: row.industry,
+          productionBasePercentile: row.productionBasePercentile,
+          residualMomentumRank: row.residualMomentumRank,
+          productionShadowScore: row.productionShadowScore,
+          productionRank: row.productionRank,
+          shadowRank: row.shadowRank,
+          rankDelta: row.rankDelta,
+          breadthRank: row.breadthRank,
+          flowDiffusionRank: row.flowDiffusionRank,
+          diagnosticConfirmationRank: row.diagnosticConfirmationRank,
+          auxiliaryAuthority: 'diagnostic_only',
+          researchBaseScore: row.researchBaseScore,
+          researchShadowScore: row.researchShadowScore,
+          factorContractVersion: row.factorContractVersion,
+          taxonomySnapshotDate: row.taxonomySnapshotDate,
+          taxonomyChecksum: row.taxonomyChecksum,
+          enrichmentContractVersion: 'pit-residual-funnel-enrichment-v2',
+          enrichmentBaseStage: base.stage,
+          pipelineCanonicalRunId: input.pipelineCanonicalRunId,
+        } : {
+          applicationMode: PIT_RESIDUAL_SHADOW_APPLICATION_MODE,
+          candidateSetMutationAllowed: PIT_RESIDUAL_CANDIDATE_SET_MUTATION_ALLOWED,
+          debateVisibility: PIT_RESIDUAL_DEBATE_VISIBILITY,
+          decisionEffect: 'none',
+          evaluationStatus: 'not_evaluable',
+          unavailableReason: 'pit_residual_factor_snapshot_missing_for_symbol',
+          residualWeight: PIT_RESIDUAL_SHADOW_WEIGHT,
+          primaryHorizonSessions: PIT_RESIDUAL_PRIMARY_HORIZON_SESSIONS,
+          signalDate: snapshot.signalDate,
+          auxiliaryAuthority: 'diagnostic_only',
+          enrichmentContractVersion: 'pit-residual-funnel-enrichment-v2',
+          enrichmentBaseStage: base.stage,
+          pipelineCanonicalRunId: input.pipelineCanonicalRunId,
+        }
+        bindings.push(
+          canonical.run_id,
+          input.businessDate,
+          symbol,
+          baseRow.name ?? null,
+          RESIDUAL_STAGE,
+          'observe',
+          reasonCode,
+          score,
+          score,
+          rank,
+          JSON.stringify(evidence),
         )
       }
       statements.push(opsDb.prepare(`
@@ -250,8 +278,8 @@ export async function enrichCanonicalPitResidualFunnel(
        WHERE run_id=? AND stage=?
     `).bind(canonical.run_id, RESIDUAL_STAGE).first<{ row_count: number | string }>()
     const residualItemCount = Math.max(0, Number(persisted?.row_count ?? 0))
-    if (residualItemCount !== counterfactuals.length) {
-      throw new Error(`pit_residual_enrichment_persistence_incomplete:${residualItemCount}/${counterfactuals.length}`)
+    if (residualItemCount !== candidates.length) {
+      throw new Error(`pit_residual_enrichment_persistence_incomplete:${residualItemCount}/${candidates.length}`)
     }
     await persistReceipt(opsDb, {
       businessDate: input.businessDate,
@@ -270,6 +298,8 @@ export async function enrichCanonicalPitResidualFunnel(
       `base_stage=${base.stage}`,
       `base=${candidates.length}`,
       `residual_items=${residualItemCount}`,
+      `evaluable=${evaluableItemCount}`,
+      `unavailable=${unavailableItemCount}`,
       'decision_effect=none',
       `candidate_count_unchanged=${Number(canonical.candidate_count)}`,
       `final_count_unchanged=${Number(canonical.final_count)}`,
@@ -282,6 +312,8 @@ export async function enrichCanonicalPitResidualFunnel(
       baseStage: base.stage,
       baseCandidateCount: candidates.length,
       residualItemCount,
+      evaluableItemCount,
+      unavailableItemCount,
       decisionEffect: 'none',
       summary,
     }

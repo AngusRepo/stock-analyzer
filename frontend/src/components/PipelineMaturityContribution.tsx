@@ -37,7 +37,7 @@ const METRIC_LABELS: Record<string, string> = {
   strategy_count: '策略數', matrix_cells: 'PIT 策略×股票標籤格數', challenger_route_rows: '下游 Route V2 分數列數',
   oof_max_date: '樣本外證據最晚日期', overlap_pairs: '有重疊的策略配對數', eligible_pairs: '可評估的樣本外策略配對數',
   edge_count: '策略重複關係邊數', effective_strategies: '去除重複後的有效策略數', sample_count: 'Route V2 已標記觀察數',
-  incumbent_route_avg: '現行 Route 平均分', challenger_route_avg: '候選 Route 平均分', route_floor: '只用訓練集選出的最低 Route 分數',
+  incumbent_route_avg: '現行 Route 當日平均分（非績效）', challenger_route_avg: '候選 Route 當日平均分（非績效）', route_floor: '只用訓練集選出的最低 Route 分數',
   incumbent_sample_count: '同日配對的現行 Route 樣本', paired_date_count: '現行與候選 Route 完整配對日期',
   absolute_spread_lcb90: '候選 Route 絕對報酬價差 LCB90', challenger_incumbent_delta_lcb90: '候選相對現行 Route 連續權重增量 LCB90',
   brier: '機率誤差（Brier，需優於基準）', walk_forward: '離線候選跨窗驗證', strict_pit_rows: '正式 L4 PIT 樣本列數',
@@ -696,7 +696,7 @@ export default function PipelineMaturityContribution({
       ) : null}
 
       <div className="space-y-3 p-4">
-        <div className="grid items-start gap-3 lg:grid-cols-3">
+        <div className="grid items-start gap-3 lg:grid-cols-[minmax(0,3fr)_minmax(0,3fr)_minmax(0,4fr)]">
           {upstreamStages.map((stage) => <StageRow key={stage.id} stage={stage} />)}
         </div>
         <div className="grid items-start gap-3 lg:grid-cols-2">

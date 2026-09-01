@@ -482,10 +482,16 @@ def _walk_forward(samples: list[dict[str, Any]], *, folds: int, l2: float) -> di
             continue
         intercept, coefs = _fit_ridge(train, l2=l2)
         metric = _metrics(test, intercept, coefs)
+        train_date_list = sorted(train_dates)
+        test_date_list = sorted(test_dates)
         fold_rows.append({
             "fold": fold,
             "train_dates": len(train_dates),
             "test_dates": len(test_dates),
+            "train_start_date": train_date_list[0] if train_date_list else None,
+            "train_end_date": train_date_list[-1] if train_date_list else None,
+            "test_start_date": test_date_list[0] if test_date_list else None,
+            "test_end_date": test_date_list[-1] if test_date_list else None,
             "intercept": round(intercept, 10),
             "coefficients": {name: round(value, 10) for name, value in coefs.items()},
             **metric,

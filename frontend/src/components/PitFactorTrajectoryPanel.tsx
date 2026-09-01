@@ -14,6 +14,7 @@ const WIDTH = 760
 const HEIGHT = 410
 const PAD = { left: 60, right: 70, top: 42, bottom: 58 }
 const COLORS = ['#67e8f9', '#fbbf24', '#fb7185', '#a78bfa', '#34d399', '#60a5fa', '#f97316', '#e879f9', '#a3e635', '#fda4af', '#22d3ee', '#c4b5fd']
+const WINDOW_OPTIONS = [3, 5, 10, 20, 60] as const
 
 function cx(...classes: Array<string | false | null | undefined>) {
   return classes.filter(Boolean).join(' ')
@@ -52,6 +53,17 @@ function formatPoint(point: FactorTrajectoryPoint, scope: 'group' | 'stock') {
     point.flow == null ? null : `資金擴散 ${point.flow.toFixed(1)}`,
     delta == null ? null : `Δrank ${delta >= 0 ? '+' : ''}${delta.toFixed(2)}`,
   ].filter(Boolean).join(' · ')
+}
+
+function pointRadius(point: FactorTrajectoryPoint, latest = false) {
+  const residualStrength = Math.min(1, Math.abs(Number(point.x) - 50) / 50)
+  const confirmationStrength = Math.min(1, Math.abs(Number(point.y) - 50) / 50)
+  return 2.8 + Math.max(residualStrength, confirmationStrength) * 4.2 + (latest ? 1.8 : 0)
+}
+
+function pointOpacity(point: FactorTrajectoryPoint) {
+  const flow = point.flow == null ? 0.35 : Math.max(0, Math.min(1, Number(point.flow) / 100))
+  return 0.18 + flow * 0.68
 }
 
 function TrajectoryChart({ series, scope }: { series: FactorTrajectorySeries[]; scope: 'group' | 'stock' }) {
@@ -127,8 +139,10 @@ function TrajectoryChart({ series, scope }: { series: FactorTrajectorySeries[]; 
           <text x="16" y={HEIGHT / 2} textAnchor="middle" fontSize="12" fontWeight="600" fill="#a5b4c7" transform={`rotate(-90 16 ${HEIGHT / 2})`}>
             廣度／資金擴散確認
           </text>
-          <text x={WIDTH - PAD.right - 8} y={PAD.top + 18} textAnchor="end" fontSize="10" fill="#6ee7b7">強勢且擴散</text>
-          <text x={WIDTH - PAD.right - 8} y={HEIGHT - PAD.bottom - 10} textAnchor="end" fontSize="10" fill="#fbbf24">個股強、族群未確認</text>
+          <text x={PAD.left + 8} y={PAD.top + 18} textAnchor="start" fontSize="10" fill="#94a3b8">殘差弱、擴散確認</text>
+          <text x={WIDTH - PAD.right - 8} y={PAD.top + 18} textAnchor="end" fontSize="10" fill="#6ee7b7">殘差強、擴散確認</text>
+          <text x={PAD.left + 8} y={HEIGHT - PAD.bottom - 10} textAnchor="start" fontSize="10" fill="#fb7185">殘差弱、族群未確認</text>
+          <text x={WIDTH - PAD.right - 8} y={HEIGHT - PAD.bottom - 10} textAnchor="end" fontSize="10" fill="#fbbf24">殘差強、族群未確認</text>
 
           {visible.map((item) => {
             const sourceIndex = series.findIndex((candidate) => candidate.key === item.key)
@@ -160,8 +174,9 @@ function TrajectoryChart({ series, scope }: { series: FactorTrajectorySeries[]; 
                       key={`${item.key}-${point.date}`}
                       cx={position.x}
                       cy={position.y}
-                      r={2.6}
-                      fill="#090d14"
+                      r={pointRadius(point)}
+                      fill={color}
+                      fillOpacity={pointOpacity(point)}
                       stroke={color}
                       strokeWidth={1.5}
                       tabIndex={0}
@@ -179,7 +194,15 @@ function TrajectoryChart({ series, scope }: { series: FactorTrajectorySeries[]; 
                     <animateMotion dur="1300ms" path={path} fill="freeze" repeatCount="1" />
                   </circle>
                 ) : null}
-                <circle cx={latestPosition.x} cy={latestPosition.y} r="5.2" fill={color} stroke="#f8fafc" strokeWidth="1.4" />
+                <circle
+                  cx={latestPosition.x}
+                  cy={latestPosition.y}
+                  r={pointRadius(latest, true)}
+                  fill={color}
+                  fillOpacity={pointOpacity(latest)}
+                  stroke="#f8fafc"
+                  strokeWidth="1.4"
+                />
                 <text x={latestPosition.x + 8} y={latestPosition.y - 9} fontSize="11" fontWeight="700" fill={color}>{item.label}</text>
               </g>
             )
@@ -192,18 +215,24 @@ function TrajectoryChart({ series, scope }: { series: FactorTrajectorySeries[]; 
           </div>
         ) : null}
       </div>
+      <div className="mt-2 flex flex-wrap gap-x-4 gap-y-1 text-[10px] text-slate-500">
+        <span>圓點大小＝殘差／確認強度</span>
+        <span>填色深淺＝相對資金擴散 rank（非絕對資金流入）</span>
+      </div>
     </div>
   )
 }
 
-function PanelShell({ data, isLoading, error, scope }: {
+function PanelShell({ data, isLoading, error, scope, days, onDaysChange }: {
   data?: FactorFlowMapResponse
   isLoading: boolean
   error: Error | null
   scope: 'group' | 'stock'
+  days: number
+  onDaysChange: (days: number) => void
 }) {
   const series = scope === 'group' ? data?.group_series ?? [] : data?.stock_series ?? []
-  const title = scope === 'group' ? '族群殘差動能 × 擴散確認' : '待買個股殘差動能軌跡'
+  const title = scope === 'group' ? '族群殘差動能 × 擴散確認' : '持倉／待買個股殘差動能軌跡'
   return (
     <section className="h-full overflow-hidden rounded-2xl border border-[#2a3446] bg-[#111722]/90 p-4 shadow-[0_18px_60px_rgba(0,0,0,0.18)] sm:p-5">
       <div className="mb-4 flex flex-wrap items-start justify-between gap-3">
@@ -215,12 +244,32 @@ function PanelShell({ data, isLoading, error, scope }: {
           <p className="mt-1 max-w-3xl text-xs leading-5 text-slate-500">
             {scope === 'group'
               ? '每條線是一個族群；X 軸取自 residual challenger 對實際候選排序的反事實影響，Y 軸以廣度與法人資金擴散做診斷確認。'
-              : 'Shadow 階段顯示 active pending buys 與近門檻 movers；每個節點都是實際交易日資料，曲線只做視覺平滑。'}
+              : '只顯示實際持倉與 active pending buys；每個節點都是實際交易日資料，曲線只做視覺平滑。'}
           </p>
         </div>
-        <div className="flex flex-wrap gap-2 text-[10px] font-bold">
-          <span className="rounded-full border border-white/10 px-2.5 py-1 text-slate-400">{data?.date ?? '等待資料'}</span>
-          <span className="rounded-full border border-cyan-300/20 bg-cyan-400/[0.07] px-2.5 py-1 text-cyan-200">10% shadow · 決策權 0%</span>
+        <div className="flex flex-col items-end gap-2">
+          <div className="flex flex-wrap justify-end gap-1" aria-label="軌跡交易日視窗">
+            {WINDOW_OPTIONS.map((option) => (
+              <button
+                key={option}
+                type="button"
+                onClick={() => onDaysChange(option)}
+                aria-pressed={days === option}
+                className={cx(
+                  'rounded-full border px-2.5 py-1 text-[10px] font-bold transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-cyan-300/70',
+                  days === option
+                    ? 'border-cyan-300/35 bg-cyan-300/10 text-cyan-100'
+                    : 'border-white/10 text-slate-500 hover:text-slate-300',
+                )}
+              >
+                {option}日
+              </button>
+            ))}
+          </div>
+          <div className="flex flex-wrap justify-end gap-2 text-[10px] font-bold">
+            <span className="rounded-full border border-white/10 px-2.5 py-1 text-slate-400">{data?.date ?? '等待資料'}</span>
+            <span className="rounded-full border border-cyan-300/20 bg-cyan-400/[0.07] px-2.5 py-1 text-cyan-200">10% shadow · 決策權 0%</span>
+          </div>
         </div>
       </div>
       {isLoading ? (
@@ -234,6 +283,9 @@ function PanelShell({ data, isLoading, error, scope }: {
           <TrajectoryChart series={series} scope={scope} />
           <div className="mt-3 flex flex-wrap items-center justify-between gap-2 text-[11px] text-slate-500">
             <span>已累積 {data?.session_count ?? 0}/{data?.requested_sessions ?? 10} 個實際 session</span>
+            {scope === 'group' ? (
+              <span>正式圖層：{data?.governance.taxonomy_layer ?? 'industry'} · {series.length} 類；系統 taxonomy 共 {data?.governance.available_taxonomy_layers?.length ?? 4} 層</span>
+            ) : null}
             <span>Residual 是唯一 challenger；廣度／資金擴散不加分</span>
           </div>
         </>
@@ -243,40 +295,34 @@ function PanelShell({ data, isLoading, error, scope }: {
 }
 
 export function GroupFactorTrajectoryPanel() {
+  const [days, setDays] = useState<number>(10)
   const query = useQuery({
-    queryKey: ['recommendations', 'factor-flow-map', 'groups', 10],
-    queryFn: () => recommendationsApi.factorFlowMap({ days: 10, includeMovers: 0 }),
+    queryKey: ['recommendations', 'factor-flow-map', 'groups', days],
+    queryFn: () => recommendationsApi.factorFlowMap({ days, includeMovers: 0 }),
     staleTime: 30 * 60_000,
     retry: 1,
   })
-  return <PanelShell data={query.data} isLoading={query.isLoading} error={query.error as Error | null} scope="group" />
+  return <PanelShell data={query.data} isLoading={query.isLoading} error={query.error as Error | null} scope="group" days={days} onDaysChange={setDays} />
 }
 
 export function StockFactorTrajectoryPanel() {
   const pending = useQuery({ queryKey: ['paper', 'pending-buys'], queryFn: () => paperApi.pendingBuys(), staleTime: 60_000 })
   const positions = useQuery({ queryKey: ['paper', 'positions'], queryFn: paperApi.positions, staleTime: 60_000 })
-  const governance = useQuery({
-    queryKey: ['recommendations', 'factor-flow-map', 'governance'],
-    queryFn: () => recommendationsApi.factorFlowMap({ days: 2, includeMovers: 0 }),
-    staleTime: 30 * 60_000,
-  })
-  const phase = governance.data?.governance?.phase ?? 'prospective_shadow'
+  const [days, setDays] = useState<number>(10)
   const symbols = useMemo(() => {
     const pendingSymbols = paperPendingBuysFromPayload<any>(pending.data).map((row) => String(row.symbol ?? row.stock_symbol ?? '')).filter(Boolean)
-    const positionSymbols = phase === 'promoted'
-      ? paperPositionsFromPayload<any>(positions.data).map((row) => String(row.symbol ?? row.stock_symbol ?? '')).filter(Boolean)
-      : []
+    const positionSymbols = paperPositionsFromPayload<any>(positions.data).map((row) => String(row.symbol ?? row.stock_symbol ?? '')).filter(Boolean)
     return [...new Set([...pendingSymbols, ...positionSymbols])]
-  }, [pending.data, positions.data, phase])
+  }, [pending.data, positions.data])
   const query = useQuery({
-    queryKey: ['recommendations', 'factor-flow-map', 'stocks', phase, symbols.join(',')],
+    queryKey: ['recommendations', 'factor-flow-map', 'stocks', days, symbols.join(',')],
     queryFn: () => recommendationsApi.factorFlowMap({
-      days: 10,
+      days,
       symbols,
-      includeMovers: phase === 'promoted' ? 0 : 6,
+      includeMovers: 0,
     }),
     staleTime: 5 * 60_000,
     retry: 1,
   })
-  return <PanelShell data={query.data} isLoading={query.isLoading || pending.isLoading || governance.isLoading} error={query.error as Error | null} scope="stock" />
+  return <PanelShell data={query.data} isLoading={query.isLoading || pending.isLoading || positions.isLoading} error={query.error as Error | null} scope="stock" days={days} onDaysChange={setDays} />
 }

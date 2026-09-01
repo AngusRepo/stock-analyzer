@@ -175,7 +175,10 @@ export async function closeEveningChainRootIfComplete(
       blockers.push(`${stage}:missing`)
       continue
     }
-    if (row.canonical_run_id !== canonicalRunId) {
+    // screener_v2 is owned by the upstream indicator canonical run. Its
+    // lineage into the pipeline is fenced by cursor_key -> producer_run_id
+    // below; forcing its canonical ID to equal the pipeline ID deadlocks root closure.
+    if (stage !== 'screener_v2' && row.canonical_run_id !== canonicalRunId) {
       blockers.push(`${stage}:canonical_run_id_mismatch`)
       terminalError = terminalError || terminalFailure(row.status)
       continue

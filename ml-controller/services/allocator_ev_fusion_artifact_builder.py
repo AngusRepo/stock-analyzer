@@ -1412,9 +1412,15 @@ def _walk_forward(
                 calibration_slope,
             )
             metrics_target_key = calibration_target_key
+        train_date_list = sorted(train_dates)
+        test_date_list = sorted(test_dates)
         rows.append({
             "fold": fold,
             "calibration_method": calibration_method if calibration_target_key else None,
+            "train_start_date": train_date_list[0] if train_date_list else None,
+            "train_end_date": train_date_list[-1] if train_date_list else None,
+            "test_start_date": test_date_list[0] if test_date_list else None,
+            "test_end_date": test_date_list[-1] if test_date_list else None,
             **_metrics(test, intercept, coefs, target_key=metrics_target_key),
         })
     if not rows:

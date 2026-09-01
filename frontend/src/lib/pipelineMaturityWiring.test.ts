@@ -16,7 +16,7 @@ test('Pipeline page renders maturity evidence after the daily flow', () => {
   assert(page.indexOf('<PipelineMaturityContribution') > page.indexOf('<ExecutionFlowColumn'))
   assert(!page.includes('RecommendationSummaryColumn'))
   assert(!page.includes('title="今日推薦股票"'))
-  assert(panel.includes('grid items-start gap-3 lg:grid-cols-3'))
+  assert(panel.includes('grid items-start gap-3 lg:grid-cols-[minmax(0,3fr)_minmax(0,3fr)_minmax(0,4fr)]'))
   assert(panel.includes('grid items-start gap-3 lg:grid-cols-2'))
   assert(panel.includes('upstreamStages.map'))
   assert(panel.includes('expectedReturnStages.map'))

@@ -5,6 +5,26 @@ import {
 
 export type ExpectedReturnMaturityModel = 'l4_alpha_ev' | 'allocator_ev_fusion'
 
+export type WalkForwardFoldEvidence = {
+  fold: number | null
+  train_start_date: string | null
+  train_end_date: string | null
+  test_start_date: string | null
+  test_end_date: string | null
+  correlation: number | null
+  spread: number | null
+  passed: boolean | null
+}
+
+export type WalkForwardEvidence = {
+  reason: string | null
+  fold_count: number | null
+  positive_corr_folds: number | null
+  positive_spread_folds: number | null
+  required_positive_folds: number | null
+  folds: WalkForwardFoldEvidence[]
+}
+
 export interface ExpectedReturnCandidateDbRow {
   model_name: ExpectedReturnMaturityModel
   artifact_id: string | null
@@ -85,6 +105,7 @@ export interface ExpectedReturnCandidateEvidence {
   fusion_final_comparison_dates: number | null
   fusion_final_comparison_reason: string | null
   walk_forward_passed: boolean | null
+  walk_forward: WalkForwardEvidence | null
   execution_decision: string | null
   execution_probability_decision: string | null
   promotion_tier: string | null
@@ -159,6 +180,7 @@ export interface ExpectedReturnShadowEvidence {
   residual_corr_lcb90: number | null
   residual_spread_lcb90: number | null
   walk_forward_passed: boolean | null
+  walk_forward: WalkForwardEvidence | null
   execution_decision: string | null
   execution_probability_decision: string | null
   previous_business_date: string | null
@@ -208,6 +230,34 @@ function stringArray(value: unknown): string[] {
     return Array.isArray(parsed) ? parsed.map((item) => String(item ?? '').trim()).filter(Boolean) : []
   } catch {
     return []
+  }
+}
+
+function adaptWalkForward(value: unknown): WalkForwardEvidence | null {
+  const raw = record(value)
+  if (!Object.keys(raw).length) return null
+  const folds = (Array.isArray(raw.folds) ? raw.folds : []).map((value): WalkForwardFoldEvidence => {
+    const fold = record(value)
+    const correlation = finiteOrNull(fold.date_mean_cross_section_corr ?? fold.prediction_target_corr)
+    const spread = finiteOrNull(fold.date_mean_top_bottom_spread ?? fold.top_bottom_spread)
+    return {
+      fold: finiteOrNull(fold.fold),
+      train_start_date: stringOrNull(fold.train_start_date),
+      train_end_date: stringOrNull(fold.train_end_date),
+      test_start_date: stringOrNull(fold.test_start_date),
+      test_end_date: stringOrNull(fold.test_end_date),
+      correlation,
+      spread,
+      passed: correlation == null || spread == null ? null : correlation > 0 && spread > 0,
+    }
+  })
+  return {
+    reason: stringOrNull(raw.reason),
+    fold_count: finiteOrNull(raw.fold_count) ?? folds.length,
+    positive_corr_folds: finiteOrNull(raw.positive_corr_folds),
+    positive_spread_folds: finiteOrNull(raw.positive_spread_folds),
+    required_positive_folds: finiteOrNull(raw.required_positive_folds),
+    folds,
   }
 }
 
@@ -384,6 +434,7 @@ export function adaptExpectedReturnCandidate(row: ExpectedReturnCandidateDbRow):
       ? 'residual_adjustment_model_not_validated'
       : null,
     walk_forward_passed: boolOrNull(walkForward.passed),
+    walk_forward: adaptWalkForward(walkForward),
     execution_decision: stringOrNull(executionModel.decision),
     execution_probability_decision: stringOrNull(executionProbabilityModel.decision),
     promotion_tier: stringOrNull(promotion.tier),
@@ -472,6 +523,7 @@ export function adaptExpectedReturnShadow(row: ExpectedReturnShadowDbRow): Expec
     residual_corr_lcb90: finiteOrNull(residualOos.prediction_target_corr_lcb90),
     residual_spread_lcb90: finiteOrNull(residualOos.top_bottom_spread_lcb90),
     walk_forward_passed: boolOrNull(walkForward.passed),
+    walk_forward: adaptWalkForward(walkForward),
     execution_decision: stringOrNull(record(shadowDiagnostics.conditional_execution_return_model).decision),
     execution_probability_decision: stringOrNull(record(shadowDiagnostics.execution_probability_model).decision),
     previous_business_date: stringOrNull(row.previous_business_date),

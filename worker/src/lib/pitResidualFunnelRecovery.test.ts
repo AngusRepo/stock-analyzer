@@ -26,6 +26,7 @@ class Statement {
 
 class MockDb {
   residualRows = 0
+  insertedEvidence: string[] = []
 
   constructor(readonly domain: 'ops' | 'learning') {}
 
@@ -42,7 +43,10 @@ class MockDb {
     }
     if (this.domain === 'ops' && sql.includes('SELECT symbol, name, score_after')) {
       return args[1] === 'pit_residual_momentum_shadow_base'
-        ? { results: [{ symbol: '2330', name: '台積電', score_after: 77.5 }] }
+        ? { results: [
+          { symbol: '2330', name: '台積電', score_after: 77.5, rank: 1 },
+          { symbol: '9999', name: '未分類測試股', score_after: 60, rank: 2 },
+        ] }
         : { results: [] }
     }
     if (this.domain === 'learning' && sql.includes('SELECT DISTINCT signal_date')) {
@@ -87,9 +91,11 @@ class MockDb {
   }
 
   async batch(statements: Statement[]) {
-    this.residualRows = statements.filter((statement) => (
-      statement.sql.includes('INSERT INTO screener_funnel_items')
-    )).length
+    const inserts = statements.filter((statement) => statement.sql.includes('INSERT INTO screener_funnel_items'))
+    this.residualRows = inserts.reduce((count, statement) => count + statement.args.length / 11, 0)
+    this.insertedEvidence = inserts.flatMap((statement) => statement.args
+      .filter((_value, index) => index % 11 === 10)
+      .map(String))
     return statements.map(() => ({ success: true, meta: { changes: 1 } }))
   }
 }
@@ -113,9 +119,12 @@ async function main() {
   assert.equal(result.recovered.length, 1)
   assert.equal(result.failures.length, 0)
   assert.equal(result.recovered[0].sourceSignalDate, '2026-08-31')
-  assert.equal(result.recovered[0].baseCandidateCount, 1)
-  assert.equal(result.recovered[0].residualItemCount, 1)
+  assert.equal(result.recovered[0].baseCandidateCount, 2)
+  assert.equal(result.recovered[0].residualItemCount, 2)
+  assert.equal(result.recovered[0].evaluableItemCount, 1)
+  assert.equal(result.recovered[0].unavailableItemCount, 1)
   assert.equal(result.recovered[0].decisionEffect, 'none')
+  assert(ops.insertedEvidence.some((value) => value.includes('pit_residual_factor_snapshot_missing_for_symbol')))
   assert.match(result.recovered[0].summary, /candidate_count_unchanged=830/)
   assert.match(result.recovered[0].summary, /final_count_unchanged=683/)
 

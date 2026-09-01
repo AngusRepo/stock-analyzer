@@ -150,7 +150,6 @@ export function buildPitFactorGroupSeries(points: PitFactorFunnelPoint[]) {
       const rightSignal = Math.abs(Number(rightLatest?.x ?? 50) - 50) + Math.abs(Number(rightLatest?.y ?? 50) - 50)
       return rightSignal - leftSignal || left.label.localeCompare(right.label)
     })
-    .slice(0, 12)
 }
 
 export function selectPitFactorStockSymbols(points: PitFactorFunnelPoint[], requested: string[], includeMovers: number): string[] {
@@ -235,7 +234,7 @@ async function loadStockSeries(
 }
 
 export async function loadPitFactorFlowMap(env: Bindings, query: PitFactorFlowMapQuery) {
-  const days = Math.max(2, Math.min(30, Math.floor(query.days)))
+  const days = Math.max(2, Math.min(60, Math.floor(query.days)))
   const requestedSymbols = [...new Set(query.symbols.map((symbol) => symbol.trim()).filter(Boolean))].slice(0, MAX_SYMBOLS)
   const funnelPoints = await loadFunnelPoints(env, query.requestedDate, days)
   const stockSymbols = selectPitFactorStockSymbols(funnelPoints, requestedSymbols, Math.max(0, Math.min(12, query.includeMovers)))
@@ -258,6 +257,8 @@ export async function loadPitFactorFlowMap(env: Bindings, query: PitFactorFlowMa
     governance: {
       candidate: 'pit_residual_momentum_w10',
       phase: 'prospective_shadow',
+      taxonomy_layer: 'industry',
+      available_taxonomy_layers: ['industry', 'industry_theme', 'subindustry', 'theme'],
       weight: 0.10,
       primary_horizon_sessions: 10,
       x_axis: 'residual_counterfactual_rank_tilt',

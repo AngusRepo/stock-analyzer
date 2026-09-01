@@ -311,6 +311,37 @@ def _corr(xs: list[float], ys: list[float]) -> float | None:
     return cov / math.sqrt(xv * yv)
 
 
+def _select_fit_feature_names(
+    samples: list[dict[str, Any]],
+) -> tuple[list[str], dict[str, str]]:
+    """Select a causal, full-rank design from the declared serving features."""
+
+    selected: list[str] = []
+    excluded: dict[str, str] = {}
+    values_by_name = {
+        name: [float(sample["features"][name]) for sample in samples]
+        for name in FEATURE_NAMES
+    }
+    for name in FEATURE_NAMES:
+        values = values_by_name[name]
+        if not values or max(values) - min(values) <= 1e-12:
+            excluded[name] = "degenerate_in_fit_window"
+            continue
+        duplicate_of = None
+        for prior in selected:
+            correlation = _corr(values, values_by_name[prior])
+            if correlation is not None and abs(correlation) >= 1.0 - 1e-12:
+                duplicate_of = prior
+                break
+        if duplicate_of is not None:
+            excluded[name] = f"affine_duplicate_of:{duplicate_of}"
+            continue
+        selected.append(name)
+    if not selected:
+        raise ValueError("ridge_fit_no_independent_features")
+    return selected, excluded
+
+
 def _solve_linear_system(a: list[list[float]], b: list[float]) -> list[float] | None:
     n = len(b)
     mat = [row[:] + [b[idx]] for idx, row in enumerate(a)]
@@ -332,11 +363,12 @@ def _solve_linear_system(a: list[list[float]], b: list[float]) -> list[float] | 
 
 
 def _fit_ridge(samples: list[dict[str, Any]], *, l2: float) -> tuple[float, dict[str, float]]:
-    p = len(FEATURE_NAMES) + 1
+    fit_feature_names, _ = _select_fit_feature_names(samples)
+    p = len(fit_feature_names) + 1
     xtx = [[0.0 for _ in range(p)] for _ in range(p)]
     xty = [0.0 for _ in range(p)]
     for sample in samples:
-        x = [1.0, *[float(sample["features"][name]) for name in FEATURE_NAMES]]
+        x = [1.0, *[float(sample["features"][name]) for name in fit_feature_names]]
         y = float(sample["target"])
         for i in range(p):
             xty[i] += x[i] * y
@@ -347,7 +379,12 @@ def _fit_ridge(samples: list[dict[str, Any]], *, l2: float) -> tuple[float, dict
     solved = _solve_linear_system(xtx, xty)
     if solved is None:
         raise ValueError("ridge_fit_singular_matrix")
-    return solved[0], {name: solved[idx + 1] for idx, name in enumerate(FEATURE_NAMES)}
+    fitted = {
+        name: solved[idx + 1] for idx, name in enumerate(fit_feature_names)
+    }
+    return solved[0], {
+        name: fitted.get(name, 0.0) for name in FEATURE_NAMES
+    }
 
 
 def _predict(sample: dict[str, Any], intercept: float, coefs: dict[str, float]) -> float:
@@ -466,11 +503,18 @@ def _date_cluster_lcb90(values: list[float]) -> float | None:
     return _mean(values) - critical_value * standard_error
 
 
-def _walk_forward(samples: list[dict[str, Any]], *, folds: int, l2: float) -> dict[str, Any]:
+def _walk_forward(
+    samples: list[dict[str, Any]],
+    *,
+    folds: int,
+    l2: float,
+    min_train_dates: int,
+) -> dict[str, Any]:
     dates = sorted({str(sample["date"]) for sample in samples})
     if len(dates) < folds + 1:
         return {"passed": False, "reason": "insufficient_dates", "folds": []}
     fold_rows: list[dict[str, Any]] = []
+    skipped_folds: list[dict[str, Any]] = []
     for fold in range(1, folds + 1):
         split_idx = max(1, round(len(dates) * fold / (folds + 1)))
         next_idx = max(split_idx + 1, round(len(dates) * (fold + 1) / (folds + 1)))
@@ -478,7 +522,26 @@ def _walk_forward(samples: list[dict[str, Any]], *, folds: int, l2: float) -> di
         test_dates = set(dates[split_idx:next_idx])
         train = [sample for sample in samples if sample["date"] in train_dates]
         test = [sample for sample in samples if sample["date"] in test_dates]
-        if len(train) < len(FEATURE_NAMES) + 2 or not test or len(test_dates) < 2:
+        skip_reasons: list[str] = []
+        if len(train_dates) < min_train_dates:
+            skip_reasons.append("insufficient_train_dates")
+        fit_feature_count = len(_select_fit_feature_names(train)[0]) if train else 0
+        if len(train) < fit_feature_count + 2:
+            skip_reasons.append("insufficient_train_rows")
+        if not test:
+            skip_reasons.append("empty_test_rows")
+        if len(test_dates) < 2:
+            skip_reasons.append("insufficient_test_dates")
+        if skip_reasons:
+            skipped_folds.append({
+                "fold": fold,
+                "train_dates": len(train_dates),
+                "test_dates": len(test_dates),
+                "train_rows": len(train),
+                "test_rows": len(test),
+                "required_train_dates": min_train_dates,
+                "reasons": skip_reasons,
+            })
             continue
         intercept, coefs = _fit_ridge(train, l2=l2)
         metric = _metrics(test, intercept, coefs)
@@ -497,7 +560,14 @@ def _walk_forward(samples: list[dict[str, Any]], *, folds: int, l2: float) -> di
             **metric,
         })
     if not fold_rows:
-        return {"passed": False, "reason": "no_valid_folds", "folds": []}
+        return {
+            "passed": False,
+            "reason": "no_valid_folds",
+            "minimum_train_dates": min_train_dates,
+            "fold_count": 0,
+            "skipped_folds": skipped_folds,
+            "folds": [],
+        }
     positive_spread = sum(1 for row in fold_rows if float(row.get("date_mean_top_bottom_spread") or 0.0) > 0.0)
     positive_corr = sum(1 for row in fold_rows if float(row.get("date_mean_cross_section_corr") or 0.0) > 0.0)
     required_positive_folds = max(1, math.ceil(len(fold_rows) * 0.75))
@@ -513,6 +583,8 @@ def _walk_forward(samples: list[dict[str, Any]], *, folds: int, l2: float) -> di
         "positive_spread_folds": positive_spread,
         "positive_corr_folds": positive_corr,
         "required_positive_folds": required_positive_folds,
+        "minimum_train_dates": min_train_dates,
+        "skipped_folds": skipped_folds,
         "folds": fold_rows,
     }
 
@@ -545,6 +617,9 @@ def build_l4_alpha_ev_artifact_from_rows(
         if invalid_modes:
             raise ValueError("l4_oof_mixed_or_missing_cohort_lineage")
     samples, diagnostics = _samples(rows, cost_model_bps=cost_model_bps)
+    fit_feature_names, fit_feature_exclusions = (
+        _select_fit_feature_names(samples) if samples else ([], {})
+    )
     dates = sorted({sample["date"] for sample in samples})
     split_idx = max(1, round(len(dates) * 0.8)) if dates else 0
     train_dates = set(dates[:max(0, split_idx - LABEL_PURGE_DATE_GROUPS)])
@@ -552,7 +627,7 @@ def build_l4_alpha_ev_artifact_from_rows(
     train = [sample for sample in samples if sample["date"] in train_dates]
     test = [sample for sample in samples if sample["date"] in test_dates]
     blockers: list[str] = []
-    effective_fit_min_samples = max(len(FEATURE_NAMES) + 2, int(fit_min_samples or min_samples))
+    effective_fit_min_samples = max(len(fit_feature_names) + 2, int(fit_min_samples or min_samples))
     effective_fit_min_dates = max(2, int(fit_min_dates or min_dates))
     if len(samples) < min_samples:
         blockers.append("insufficient_samples")
@@ -564,7 +639,7 @@ def build_l4_alpha_ev_artifact_from_rows(
         blockers.append("pit_sector_alpha_samples_low")
     if int(diagnostics.get("sector_alpha_available_date_count") or 0) < required_sector_dates:
         blockers.append("pit_sector_alpha_dates_low")
-    if len(train) < len(FEATURE_NAMES) + 2 or not test:
+    if len(train) < len(fit_feature_names) + 2 or not test:
         blockers.append("insufficient_train_test_split")
 
     fit_blockers: list[str] = []
@@ -572,7 +647,7 @@ def build_l4_alpha_ev_artifact_from_rows(
         fit_blockers.append("insufficient_fit_samples")
     if len(dates) < effective_fit_min_dates:
         fit_blockers.append("insufficient_fit_dates")
-    if len(train) < len(FEATURE_NAMES) + 2 or not test:
+    if len(train) < len(fit_feature_names) + 2 or not test:
         fit_blockers.append("insufficient_fit_train_test_split")
 
     fitted = not fit_blockers
@@ -593,7 +668,12 @@ def build_l4_alpha_ev_artifact_from_rows(
         intercept, coefs = _fit_ridge(train, l2=l2)
         train_metrics = _metrics(train, intercept, coefs)
         oos_metrics = _metrics(test, intercept, coefs)
-        walk_forward = _walk_forward(samples, folds=4, l2=l2)
+        walk_forward = _walk_forward(
+            samples,
+            folds=4,
+            l2=l2,
+            min_train_dates=effective_fit_min_dates,
+        )
         if (oos_metrics.get("date_mean_cross_section_corr_lcb90") or 0.0) <= 0.0:
             blockers.append("oos_date_cluster_corr_lcb90_not_positive")
         min_economic_spread = 0.0
@@ -604,7 +684,12 @@ def build_l4_alpha_ev_artifact_from_rows(
         if float(oos_metrics.get("date_mean_top_quintile_return_lcb90") or 0.0) <= 0.0:
             blockers.append("oos_date_cluster_top_quintile_return_lcb90_not_positive")
         if not walk_forward.get("passed"):
-            blockers.append("walk_forward_not_stable")
+            walk_forward_reason = str(walk_forward.get("reason") or "not_stable")
+            blockers.append(
+                "walk_forward_not_stable"
+                if walk_forward_reason == "walk_forward_not_stable"
+                else f"walk_forward_{walk_forward_reason}"
+            )
         serving_intercept, serving_coefs = _fit_ridge(samples, l2=l2)
         deployment_fit = {
             "method": "full_known_sample_refit_after_purged_oos_validation",
@@ -635,6 +720,8 @@ def build_l4_alpha_ev_artifact_from_rows(
             "purged_signal_date_groups": LABEL_PURGE_DATE_GROUPS,
             "fit_min_samples": effective_fit_min_samples,
             "fit_min_dates": effective_fit_min_dates,
+            "fit_feature_names": fit_feature_names,
+            "fit_feature_exclusions": fit_feature_exclusions,
             "min_sector_alpha_samples": required_sector_samples,
             "min_sector_alpha_dates": required_sector_dates,
         },
@@ -669,6 +756,8 @@ def build_l4_alpha_ev_artifact_from_rows(
         "output_is_net_of_costs": True,
         "feature_families": ["score_v2_components", "formal_ml_direction", "pit_sector_alpha"],
         "feature_names": FEATURE_NAMES,
+        "fit_feature_names": fit_feature_names,
+        "fit_feature_exclusions": fit_feature_exclusions,
         "intercept": round(serving_intercept, 10),
         "coefficients": {name: round(value, 10) for name, value in serving_coefs.items()},
         "output_clip": {"min": -0.08, "max": 0.08},
@@ -822,7 +911,18 @@ def load_l4_alpha_ev_oof_training_rows(
 
     return query_fn(
         f"""
-        WITH {PRICE_HORIZONS_CTE}
+        WITH immutable_targets AS (
+          SELECT cohort_id, fold_id, prediction_date, stock_id, symbol,
+                 market_segment, MIN(target_return) target_return,
+                 MAX(label_known_date) label_known_date,
+                 MAX(target_return) - MIN(target_return) target_spread,
+                 COUNT(DISTINCT target_semantic_version) target_semantic_count,
+                 MIN(target_semantic_version) target_semantic_version
+            FROM active8_oof_predictions
+           WHERE cohort_id = ?
+           GROUP BY cohort_id, fold_id, prediction_date, stock_id, symbol,
+                    market_segment
+        )
         SELECT
           fs.cohort_id,
           fs.fold_id,
@@ -839,30 +939,32 @@ def load_l4_alpha_ev_oof_training_rows(
           fs.recommendation_lane,
           fs.label_known_date,
           fs.model_set_signature,
-          ph.source label_adjustment_source,
-          ((ph.exit_raw_close * ph.exit_adjustment_factor)
-            / (ph.entry_raw_open * ph.entry_adjustment_factor)) - 1.0 l4_executable_return_pct,
-          ph.entry_date l4_entry_date,
-          ph.exit_date l4_exit_date
+          '{OOF_PRICE_HORIZON_SOURCE}' label_adjustment_source,
+          target.target_return l4_executable_return_pct,
+          NULL l4_entry_date,
+          target.label_known_date l4_exit_date
         FROM allocator_ev_oof_snapshots fs
         JOIN active8_oof_cohorts cohort
           ON cohort.cohort_id = fs.cohort_id
          AND cohort.status = 'ready'
-        JOIN price_horizons ph
-          ON ph.stock_id = fs.stock_id
-         AND ph.price_date = fs.snapshot_date
+        JOIN immutable_targets target
+          ON target.cohort_id = fs.cohort_id
+         AND target.fold_id = fs.fold_id
+         AND target.stock_id = fs.stock_id
+         AND target.symbol = fs.symbol
+         AND target.market_segment = fs.market_segment
+         AND target.prediction_date = fs.snapshot_date
         WHERE fs.cohort_id = ?
           AND fs.generation_mode = 'purged_oof'
-          AND ph.entry_raw_open > 0
-          AND ph.exit_raw_close > 0
-          AND ph.entry_adjustment_factor > 0
-          AND ph.exit_adjustment_factor > 0
-          AND date(ph.exit_date) <= date(?)
+          AND target.target_spread <= 0.000000000001
+          AND target.target_semantic_count = 1
+          AND target.target_semantic_version = '{LABEL_SCHEMA_VERSION}'
+          AND date(target.label_known_date) <= date(?)
           AND date(fs.label_known_date) <= date(?)
         ORDER BY fs.snapshot_date, fs.symbol
         LIMIT ?
         """,
-        [cohort_id, knowledge_cutoff_date, knowledge_cutoff_date, int(limit)],
+        [cohort_id, cohort_id, knowledge_cutoff_date, knowledge_cutoff_date, int(limit)],
     )
 
 

@@ -3,6 +3,7 @@ from __future__ import annotations
 import inspect
 import json
 import sys
+from datetime import date, timedelta
 from pathlib import Path
 
 import pytest
@@ -14,6 +15,7 @@ from services.l4_alpha_ev_artifact_builder import (  # noqa: E402
     _date_cluster_metrics,
     _samples,
     build_l4_alpha_ev_artifact_from_rows,
+    load_l4_alpha_ev_oof_training_rows,
     load_l4_alpha_ev_training_rows,
 )
 from services.ev_lineage_contract import ENSEMBLE_SEMANTIC_VERSION  # noqa: E402
@@ -128,8 +130,8 @@ def test_l4_date_cluster_metrics_equal_weight_trading_dates():
 
 def test_l4_alpha_ev_artifact_builder_emits_production_artifact_when_oos_passes():
     rows = []
-    for day_idx in range(30):
-        day = f"2026-05-{day_idx + 1:02d}"
+    for day_idx in range(65):
+        day = (date(2026, 4, 1) + timedelta(days=day_idx)).isoformat()
         for symbol_idx in range(25):
             strength = symbol_idx / 25.0
             target = -0.01 + 0.03 * strength + 0.0001 * day_idx
@@ -155,6 +157,7 @@ def test_l4_alpha_ev_artifact_builder_emits_production_artifact_when_oos_passes(
     assert artifact["feature_semantic_version"] == "l4-directional-score-sector-components-v3-lineage-bound"
     assert "expectedReturnCalibration" not in artifact
     assert artifact["coefficients"]["ensemble_directional_margin"] != 0
+    assert artifact["coefficients"]["ml_edge_norm"] != 0
     assert "ensemble_confidence_centered" not in artifact["coefficients"]
     assert artifact["validation_packet"]["sample_audit"]["sector_alpha_available_count"] == len(rows)
 
@@ -296,6 +299,120 @@ def test_l4_alpha_ev_artifact_builder_can_fit_strict_asof_oof_without_promotion(
     assert artifact["promotion_state"] == "approval_required"
     assert "insufficient_dates" in artifact["validation_packet"]["failed_gates"]
     assert artifact["coefficients"]["ensemble_directional_margin"] != 0
+    walk_forward = artifact["validation_packet"]["walk_forward"]
+    assert walk_forward["reason"] == "walk_forward_not_stable"
+    assert walk_forward["fold_count"] == 1
+    assert walk_forward["minimum_train_dates"] == 5
+    assert all(
+        "insufficient_train_dates" in fold["reasons"]
+        for fold in walk_forward["skipped_folds"][:2]
+    )
+
+
+def test_l4_walk_forward_requires_minimum_training_dates_per_fold():
+    rows = []
+    for day_idx in range(30):
+        day = (date(2026, 5, 1) + timedelta(days=day_idx)).isoformat()
+        for symbol_idx in range(25):
+            strength = symbol_idx / 25.0
+            rows.append(_row(day, symbol_idx, target=-0.01 + 0.03 * strength))
+
+    out = build_l4_alpha_ev_artifact_from_rows(
+        rows,
+        trained_until="2026-06-30",
+        min_samples=200,
+        min_dates=20,
+        fit_min_dates=20,
+    )
+
+    packet = out["artifact"]["validation_packet"]
+    assert packet["walk_forward"]["reason"] == "no_valid_folds"
+    assert "walk_forward_no_valid_folds" in packet["failed_gates"]
+    assert [fold["train_dates"] for fold in packet["walk_forward"]["skipped_folds"]] == [1, 7, 13, 19]
+    assert all(
+        "insufficient_train_dates" in fold["reasons"]
+        for fold in packet["walk_forward"]["skipped_folds"]
+    )
+
+
+def test_l4_purged_oof_zeroes_affine_duplicate_and_degenerate_features():
+    rows = []
+    for day_idx in range(12):
+        day = (date(2026, 6, 1) + timedelta(days=day_idx)).isoformat()
+        for symbol_idx in range(24):
+            row = _row(day, symbol_idx, target=-0.01 + 0.001 * symbol_idx)
+            forecast = json.loads(row["forecast_data"])
+            forecast["ensemble_v2"].update({
+                "generation_mode": "purged_oof",
+                "semantic_version": "active8-purged-oof-chronological-nonnegative-ridge-v5",
+            })
+            avg_rank = forecast["ensemble_v2"]["avg_rank"]
+            score = json.loads(row["score_components"])
+            score["components"]["mlEdge"] = avg_rank * 25.0
+            alpha = json.loads(row["alpha_context"])
+            availability = float(symbol_idx % 2)
+            alpha["pit_sector_alpha_expert"]["features"].update({
+                "sector_alpha_available": availability,
+                "sector_breadth_available": availability,
+                "sector_participation_available": availability,
+            })
+            row.update({
+                "cohort_id": "cohort-v1",
+                "generation_mode": "purged_oof",
+                "label_adjustment_source": "canonical_market_daily:finlab.price",
+                "forecast_data": json.dumps(forecast),
+                "score_components": json.dumps(score),
+                "alpha_context": json.dumps(alpha),
+            })
+            rows.append(row)
+
+    out = build_l4_alpha_ev_artifact_from_rows(
+        rows,
+        trained_until="2026-06-30",
+        min_samples=500,
+        min_dates=20,
+        fit_min_samples=100,
+        fit_min_dates=5,
+        generation_mode="purged_oof",
+        cohort_id="cohort-v1",
+    )
+
+    artifact = out["artifact"]
+    assert artifact["coefficients"]["ensemble_directional_margin"] == 0
+    assert artifact["fit_feature_exclusions"]["ensemble_directional_margin"] == (
+        "affine_duplicate_of:ml_edge_norm"
+    )
+    assert artifact["fit_feature_exclusions"]["sector_breadth_available"] == (
+        "affine_duplicate_of:sector_alpha_available"
+    )
+    assert artifact["fit_feature_exclusions"]["sector_participation_available"] == (
+        "affine_duplicate_of:sector_alpha_available"
+    )
+
+
+def test_l4_oof_loader_uses_immutable_net_target_without_price_recomputation():
+    captured = {}
+
+    def fake_query(sql, params):
+        captured["sql"] = sql
+        captured["params"] = params
+        return []
+
+    load_l4_alpha_ev_oof_training_rows(
+        fake_query,
+        cohort_id="cohort-v1",
+        knowledge_cutoff_date="2026-08-31",
+        limit=321,
+    )
+
+    assert captured["params"] == [
+        "cohort-v1", "cohort-v1", "2026-08-31", "2026-08-31", 321,
+    ]
+    assert "FROM active8_oof_predictions" in captured["sql"]
+    assert "target.target_return l4_executable_return_pct" in captured["sql"]
+    assert "target.target_spread <= 0.000000000001" in captured["sql"]
+    assert "price_horizon_labels_v1" not in captured["sql"]
+    assert "exit_raw_close" not in captured["sql"]
 
 
 def test_l4_training_query_uses_outcome_knowledge_cutoff_after_signal_end_date():

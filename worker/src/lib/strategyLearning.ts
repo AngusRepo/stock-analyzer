@@ -1937,6 +1937,10 @@ export async function materializeStrategyDecisionLog(
     limit?: number
     dryRun?: boolean
     candidateDb?: D1Database
+    candidateReferenceDb?: D1Database
+    recommendationDb?: D1Database
+    marketDb?: D1Database
+    canonicalProducerRunId?: string | null
     artifactEnv?: Pick<Bindings, 'DB' | 'ARTIFACTS'>
     producerRunId?: string
   },
@@ -1951,8 +1955,24 @@ export async function materializeStrategyDecisionLog(
   preview: StrategyDecisionLogRow[]
 }> {
   const { specs, source } = await listStrategySpecsForLearning(db, { asOfDate: options.date })
-  const candidates = await listStrategyLearningCandidates(options.candidateDb ?? db, options.date, options.limit)
-  const rows = buildStrategyDecisionRows(options.date, candidates, specs)
+  const candidates = options.candidateReferenceDb && options.canonicalProducerRunId
+    ? await listCanonicalStrategyReferencePage(
+        options.candidateReferenceDb,
+        options.date,
+        options.canonicalProducerRunId,
+        Math.max(1, Math.min(options.limit ?? STRATEGY_LEARNING_DEFAULT_CANDIDATE_LIMIT, 2000)),
+        '',
+      )
+    : await listStrategyLearningCandidates(options.candidateDb ?? db, options.date, options.limit)
+  const rows = options.candidateReferenceDb && options.canonicalProducerRunId
+    ? await loadCanonicalStrategyDecisionRows(
+        options.candidateReferenceDb,
+        options.date,
+        options.canonicalProducerRunId,
+        candidates,
+        specs,
+      )
+    : buildStrategyDecisionRows(options.date, candidates, specs)
   const dryRun = options.dryRun !== false
   const persisted = dryRun ? 0 : await persistStrategyDecisionRows(db, rows, options.artifactEnv, options.producerRunId)
   return {

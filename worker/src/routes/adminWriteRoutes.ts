@@ -745,14 +745,25 @@ adminWriteRoutes.post('/api/admin/strategy/decision-log/materialize', async (c) 
   const { materializeStrategyDecisionLog, seedDefaultStrategySpecRegistry } = await import('../lib/strategyLearning')
   const learningDb = databaseForDataDomain(c.env, 'learning')
   const opsDb = databaseForDataDomain(c.env, 'ops')
+  const date = body.date ?? c.req.query('date') ?? twToday()
+  const { loadCanonicalScreenerRunIds } = await import('../lib/historicalScreenerArtifactEvidence')
+  const canonicalRunIds = await loadCanonicalScreenerRunIds(c.env, date)
+  const canonicalProducerRunId = canonicalRunIds[date] ?? null
+  if (!canonicalProducerRunId) {
+    return c.json({ error: `canonical_strategy_matrix_run_missing:${date}` }, 409)
+  }
   if (!dryRun) await seedDefaultStrategySpecRegistry(learningDb)
   const report = await materializeStrategyDecisionLog(learningDb, {
-    date: body.date ?? c.req.query('date') ?? twToday(),
+    date,
     limit: body.limit,
     dryRun,
     candidateDb: opsDb,
+    candidateReferenceDb: learningDb,
+    recommendationDb: databaseForDataDomain(c.env, 'core'),
+    marketDb: databaseForDataDomain(c.env, 'market'),
+    canonicalProducerRunId,
     artifactEnv: c.env,
-    producerRunId: `manual-strategy-learning-${body.date ?? c.req.query('date') ?? twToday()}-${Date.now().toString(36)}`,
+    producerRunId: `manual-strategy-learning-${date}-${Date.now().toString(36)}`,
   })
   return c.json({
     ...report,

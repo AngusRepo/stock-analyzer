@@ -423,6 +423,23 @@ export interface StrategyLearningSummary {
   promotion_gate: StrategyPromotionGateRow[]
   replacement_gate: StrategyReplacementGateSummary
   policy_state_preview: StrategyAdaptivePolicyState
+  decision_evidence_health?: StrategyDecisionEvidenceHealth
+}
+
+export interface StrategyDecisionEvidenceHealth {
+  requested_date: string
+  requested_date_status: 'ready' | 'pending'
+  latest_record_date: string | null
+  latest_valid_date: string | null
+  latest_record_status: 'valid' | 'invalid' | 'missing'
+  canonical_producer_run_id: string | null
+  expected_rows: number
+  matrix_rows: number
+  decision_rows: number
+  matrix_evaluable_rows: number
+  decision_evaluable_rows: number
+  mismatch_rows: number
+  reason: string
 }
 
 export const STRATEGY_POLICY_ID = 'strategy-adaptive-lifecycle-v3'
@@ -1534,6 +1551,36 @@ export async function listStrategyLearningCandidatesAcrossDomains(
   await hydrateS12StrategyEvidence(referenceDb, date, candidates)
   return candidates
 }
+
+async function listCanonicalStrategyReferencePage(
+  db: D1Database,
+  date: string,
+  canonicalProducerRunId: string,
+  limit: number,
+  afterSymbol: string,
+): Promise<StrategyCandidateInput[]> {
+  const page = await db.prepare(`
+    SELECT symbol, name, sector, market_segment, score_components
+      FROM selection_reference_snapshots_v1
+     WHERE signal_date=?
+       AND producer_run_id=?
+       AND hard_gate_passed=1
+       AND strategy_labeled=1
+       AND strategy_matrix_status='ready'
+       AND symbol>?
+     ORDER BY symbol ASC
+     LIMIT ?
+  `).bind(date, canonicalProducerRunId, cleanToken(afterSymbol), limit)
+    .all<CrossDomainStrategyReferenceRow>()
+  return (page.results ?? []).map((row) => ({
+    symbol: cleanToken(row.symbol),
+    name: cleanToken(row.name) || null,
+    sector: cleanToken(row.sector) || null,
+    market_segment: cleanToken(row.market_segment) || null,
+    score_v2: row.score_components ?? null,
+    raw_signals: null,
+  }))
+}
 interface StrategyS12EvidenceRow {
   symbol: string
   source: string
@@ -2421,6 +2468,134 @@ export async function persistStrategyRewardLedgerRows(
   return persisted
 }
 
+interface CanonicalStrategyDecisionSourceRow {
+  symbol: string
+  strategy_id: string
+  strategy_version: string
+  strategy_status: string
+  alpha_bucket: string
+  evaluable: number | string
+  evaluability_status: StrategyEvaluabilityStatus
+  unavailable_reason: string | null
+  strategy_hit: number | string
+  match_strength: number | string | null
+  labeler_version: string
+  strategy_registry_checksum: string
+  reference_contract_version: string
+}
+
+export function projectCanonicalStrategyDecisionRows(
+  date: string,
+  canonicalProducerRunId: string,
+  candidates: StrategyCandidateInput[],
+  specs: StrategySpec[],
+  sourceRows: CanonicalStrategyDecisionSourceRow[],
+  nowIso = new Date().toISOString(),
+): StrategyDecisionLogRow[] {
+  const expectedRows = candidates.length * specs.length
+  const specKeys = new Set(specs.map((spec) => `${spec.id}|${spec.version}`))
+  const candidateNames = new Map(candidates.map((candidate) => [cleanToken(candidate.symbol), candidate.name ?? null]))
+  const seen = new Set<string>()
+  const rows = sourceRows.map((source) => {
+    const symbol = cleanToken(source.symbol)
+    const specKey = `${cleanToken(source.strategy_id)}|${cleanToken(source.strategy_version)}`
+    const cellKey = `${symbol}|${specKey}`
+    if (!candidateNames.has(symbol)) throw new Error(`canonical_strategy_decision_unknown_symbol:${date}:${symbol}`)
+    if (!specKeys.has(specKey)) throw new Error(`canonical_strategy_decision_unknown_spec:${date}:${specKey}`)
+    if (seen.has(cellKey)) throw new Error(`canonical_strategy_decision_duplicate_cell:${date}:${cellKey}`)
+    seen.add(cellKey)
+    const strategyStatus = cleanToken(source.strategy_status)
+    if (!['candidate', 'active', 'retired'].includes(strategyStatus)) {
+      throw new Error(`canonical_strategy_decision_invalid_status:${date}:${specKey}:${strategyStatus}`)
+    }
+    const evaluable: 0 | 1 = Number(source.evaluable) === 1 ? 1 : 0
+    const matched: 0 | 1 = evaluable === 1 && Number(source.strategy_hit) === 1 ? 1 : 0
+    const strength = finiteNumber(source.match_strength)
+    const matchScore = matched === 1 ? Math.min(1, Math.max(0, strength ?? 0)) : null
+    const unavailableReason = cleanToken(source.unavailable_reason) || null
+    const reasonCode = evaluable !== 1
+      ? `strategy_spec_unavailable:${unavailableReason ?? source.evaluability_status}`
+      : matched === 1 ? 'strategy_spec_matched' : 'strategy_spec_no_match'
+    const lineage = {
+      producer_run_id: canonicalProducerRunId,
+      labeler_version: source.labeler_version,
+      strategy_registry_checksum: source.strategy_registry_checksum,
+      reference_contract_version: source.reference_contract_version,
+    }
+    return {
+      decision_id: `canonical-matrix-projection:${canonicalProducerRunId}:${symbol}:${source.strategy_id}:${source.strategy_version}`,
+      date,
+      symbol,
+      name: candidateNames.get(symbol) ?? null,
+      strategy_id: source.strategy_id,
+      strategy_version: source.strategy_version,
+      strategy_status: strategyStatus as StrategySpecStatus,
+      alpha_bucket: source.alpha_bucket,
+      evaluable,
+      evaluability_status: source.evaluability_status,
+      unavailable_reason: unavailableReason,
+      evaluation_contract_version: 'strategy-evaluation-v2' as const,
+      matched,
+      match_score: matchScore,
+      reason_code: reasonCode,
+      context_json: JSON.stringify({
+        schema_version: 'strategy-context-canonical-matrix-projection-v2',
+        signal_date: date,
+        symbol,
+        candidate: { name: candidateNames.get(symbol) ?? null },
+        ...lineage,
+      }),
+      evidence_json: JSON.stringify({
+        schema_version: 'strategy-decision-canonical-matrix-projection-v2',
+        source: 'canonical_strategy_label_matrix_v4',
+        no_lookahead: true,
+        evaluability: {
+          evaluable: evaluable === 1,
+          status: source.evaluability_status,
+          unavailable_reasons: unavailableReason ? [unavailableReason] : [],
+        },
+        ...lineage,
+      }),
+      created_at: nowIso,
+    }
+  })
+  if (rows.length !== expectedRows || seen.size !== expectedRows) {
+    throw new Error(`canonical_strategy_decision_grid_incomplete:${date}:${rows.length}/${expectedRows}`)
+  }
+  return rows.sort((left, right) => left.symbol.localeCompare(right.symbol)
+    || left.strategy_id.localeCompare(right.strategy_id)
+    || left.strategy_version.localeCompare(right.strategy_version))
+}
+
+async function loadCanonicalStrategyDecisionRows(
+  db: D1Database,
+  date: string,
+  canonicalProducerRunId: string,
+  candidates: StrategyCandidateInput[],
+  specs: StrategySpec[],
+): Promise<StrategyDecisionLogRow[]> {
+  if (!candidates.length) return []
+  const symbols = candidates.map((candidate) => cleanToken(candidate.symbol))
+  const placeholders = symbols.map(() => '?').join(', ')
+  const page = await db.prepare(`
+    SELECT symbol, strategy_id, strategy_version, strategy_status, alpha_bucket,
+           evaluable, evaluability_status, unavailable_reason,
+           strategy_hit, match_strength, labeler_version,
+           strategy_registry_checksum, reference_contract_version
+      FROM strategy_label_matrix_v4
+     WHERE signal_date=? AND producer_run_id=?
+       AND symbol IN (${placeholders})
+     ORDER BY symbol, strategy_id, strategy_version
+  `).bind(date, canonicalProducerRunId, ...symbols).all<CanonicalStrategyDecisionSourceRow>()
+  return projectCanonicalStrategyDecisionRows(
+    date,
+    canonicalProducerRunId,
+    candidates,
+    specs,
+    page.results ?? [],
+  )
+}
+
 export async function materializeStrategyDecisionLogChunk(
   db: D1Database,
   options: {
@@ -2455,16 +2630,23 @@ export async function materializeStrategyDecisionLogChunk(
   const limit = Math.max(1, Math.min(Math.floor(options.limit ?? 80), 250))
   const { specs, source } = await listStrategySpecsForLearning(db, { asOfDate: options.date })
   const candidatePage = options.candidateReferenceDb && options.canonicalProducerRunId
-    ? await listStrategyLearningCandidatesAcrossDomains(
-        options.candidateReferenceDb, options.candidateDb ?? db,
-        options.recommendationDb ?? db, options.marketDb ?? db, options.date,
-        options.canonicalProducerRunId, limit + 1, afterSymbol,
+    ? await listCanonicalStrategyReferencePage(
+        options.candidateReferenceDb, options.date, options.canonicalProducerRunId,
+        limit + 1, afterSymbol,
       )
     : await listStrategyLearningCandidates(options.candidateDb ?? db, options.date, limit + 1, afterSymbol)
   const hasMore = candidatePage.length > limit
   const candidates = candidatePage.slice(0, limit)
   const nextCursorSymbol = cleanToken(candidates[candidates.length - 1]?.symbol) || afterSymbol
-  const rows = buildStrategyDecisionRows(options.date, candidates, specs)
+  const rows = options.candidateReferenceDb && options.canonicalProducerRunId
+    ? await loadCanonicalStrategyDecisionRows(
+        options.candidateReferenceDb,
+        options.date,
+        options.canonicalProducerRunId,
+        candidates,
+        specs,
+      )
+    : buildStrategyDecisionRows(options.date, candidates, specs)
   const dryRun = options.dryRun !== false
   const persisted = dryRun ? 0 : await persistStrategyDecisionRows(db, rows, options.artifactEnv, options.producerRunId)
   return {
@@ -2538,14 +2720,13 @@ export async function repairHistoricalStrategyDecisionGrid(
       `historical_strategy_decision_grid_overflow:${options.date}:${decisionRowsBefore}/${expectedRows}`,
     )
   }
-  const projection = decisionRowsBefore === expectedRows
-    ? null
-    : await db.prepare(`
+  const projection = await db.prepare(`
       INSERT INTO strategy_decision_log (
         decision_id, date, symbol, name, strategy_id, strategy_version,
         strategy_status, alpha_bucket, evaluable, evaluability_status,
         unavailable_reason, evaluation_contract_version,
-        matched, match_score, reason_code, context_json, evidence_json, created_at
+        matched, match_score, reason_code, context_json, evidence_json, created_at,
+        context_id, evidence_artifact_id
       )
       SELECT
         'historical-matrix-projection:' || m.producer_run_id || ':' || m.symbol || ':' || m.strategy_id || ':' || m.strategy_version,
@@ -2577,13 +2758,29 @@ export async function repairHistoricalStrategyDecisionGrid(
           'reference_contract_version', m.reference_contract_version,
           'no_lookahead', json('true')
         ),
-        CURRENT_TIMESTAMP
+        CURRENT_TIMESTAMP, NULL, NULL
         FROM strategy_label_matrix_v4 m
         JOIN selection_reference_snapshots_v1 r
           ON r.signal_date=m.signal_date AND r.symbol=m.symbol
          AND r.producer_run_id=m.producer_run_id AND r.hard_gate_passed=1
        WHERE m.signal_date=? AND m.producer_run_id=?
-      ON CONFLICT(date, symbol, strategy_id, strategy_version) DO NOTHING
+      ON CONFLICT(date, symbol, strategy_id, strategy_version) DO UPDATE SET
+        decision_id=excluded.decision_id,
+        name=excluded.name,
+        strategy_status=excluded.strategy_status,
+        alpha_bucket=excluded.alpha_bucket,
+        evaluable=excluded.evaluable,
+        evaluability_status=excluded.evaluability_status,
+        unavailable_reason=excluded.unavailable_reason,
+        evaluation_contract_version=excluded.evaluation_contract_version,
+        matched=excluded.matched,
+        match_score=excluded.match_score,
+        reason_code=excluded.reason_code,
+        context_json=excluded.context_json,
+        evidence_json=excluded.evidence_json,
+        created_at=excluded.created_at,
+        context_id=NULL,
+        evidence_artifact_id=NULL
     `).bind(options.date, options.canonicalProducerRunId).run()
   const persistedRows = Number(projection?.meta?.changes ?? 0)
   const decisionRowsAfter = await countDecisionRows()
@@ -2634,6 +2831,169 @@ export async function repairHistoricalStrategyDecisionGrid(
     decisionRowsBefore,
     decisionRowsAfter,
     persistedRows,
+  }
+}
+
+export async function assertCanonicalStrategyDecisionGridParity(
+  db: D1Database,
+  options: { date: string; canonicalProducerRunId: string },
+): Promise<{
+  expectedRows: number
+  matrixRows: number
+  decisionRows: number
+  matrixEvaluableRows: number
+  decisionEvaluableRows: number
+  mismatchRows: number
+}> {
+  const source = await db.prepare(`
+    SELECT expected_cell_count
+      FROM strategy_label_matrix_runs_v4
+     WHERE signal_date=? AND producer_run_id=? AND status='ready'
+     LIMIT 1
+  `).bind(options.date, options.canonicalProducerRunId)
+    .first<{ expected_cell_count: number | string }>()
+  const expectedRows = Number(source?.expected_cell_count ?? 0)
+  if (expectedRows <= 0) {
+    throw new Error(`strategy_decision_canonical_matrix_not_ready:${options.date}`)
+  }
+  const parity = await db.prepare(`
+    SELECT COUNT(*) matrix_rows,
+           SUM(CASE WHEN m.evaluable=1 THEN 1 ELSE 0 END) matrix_evaluable_rows,
+           SUM(CASE WHEN d.decision_id IS NOT NULL THEN 1 ELSE 0 END) decision_rows,
+           SUM(CASE WHEN d.evaluable=1 THEN 1 ELSE 0 END) decision_evaluable_rows,
+           SUM(CASE WHEN
+             d.decision_id IS NULL
+             OR d.strategy_status<>m.strategy_status
+             OR d.alpha_bucket<>m.alpha_bucket
+             OR d.evaluable<>m.evaluable
+             OR COALESCE(d.evaluability_status, '')<>COALESCE(m.evaluability_status, '')
+             OR COALESCE(d.unavailable_reason, '')<>COALESCE(m.unavailable_reason, '')
+             OR d.matched<>CASE WHEN m.evaluable=1 AND m.strategy_hit=1 THEN 1 ELSE 0 END
+             OR CASE
+               WHEN m.evaluable=1 AND m.strategy_hit=1
+                 THEN d.match_score IS NULL
+                   OR ABS(d.match_score - MIN(1.0, MAX(0.0, COALESCE(m.match_strength, 0)))) > 0.000000001
+               ELSE d.match_score IS NOT NULL
+             END
+             OR d.reason_code<>CASE
+               WHEN m.evaluable<>1 THEN 'strategy_spec_unavailable:' || COALESCE(m.unavailable_reason, m.evaluability_status)
+               WHEN m.strategy_hit=1 THEN 'strategy_spec_matched'
+               ELSE 'strategy_spec_no_match'
+             END
+             OR d.evaluation_contract_version<>'strategy-evaluation-v2'
+           THEN 1 ELSE 0 END) mismatch_rows
+      FROM strategy_label_matrix_v4 m
+      LEFT JOIN strategy_decision_log d
+        ON d.date=m.signal_date AND d.symbol=m.symbol
+       AND d.strategy_id=m.strategy_id AND d.strategy_version=m.strategy_version
+     WHERE m.signal_date=? AND m.producer_run_id=?
+  `).bind(options.date, options.canonicalProducerRunId).first<{
+    matrix_rows: number | string
+    matrix_evaluable_rows: number | string
+    decision_rows: number | string
+    decision_evaluable_rows: number | string
+    mismatch_rows: number | string
+  }>()
+  const report = {
+    expectedRows,
+    matrixRows: Number(parity?.matrix_rows ?? 0),
+    decisionRows: Number(parity?.decision_rows ?? 0),
+    matrixEvaluableRows: Number(parity?.matrix_evaluable_rows ?? 0),
+    decisionEvaluableRows: Number(parity?.decision_evaluable_rows ?? 0),
+    mismatchRows: Number(parity?.mismatch_rows ?? 0),
+  }
+  if (
+    report.matrixRows !== report.expectedRows
+    || report.decisionRows !== report.expectedRows
+    || report.matrixEvaluableRows !== report.decisionEvaluableRows
+    || report.mismatchRows !== 0
+  ) {
+    throw new Error(
+      `strategy_decision_canonical_parity_failed:${options.date}`
+      + `:rows=${report.decisionRows}/${report.matrixRows}/${report.expectedRows}`
+      + `:evaluable=${report.decisionEvaluableRows}/${report.matrixEvaluableRows}`
+      + `:mismatch=${report.mismatchRows}`,
+    )
+  }
+  return report
+}
+
+export async function loadStrategyDecisionEvidenceHealth(
+  db: D1Database,
+  requestedDate: string,
+): Promise<StrategyDecisionEvidenceHealth> {
+  const latest = await db.prepare(`
+    SELECT mr.producer_run_id, mr.signal_date, mr.expected_cell_count
+      FROM strategy_label_matrix_runs_v4 mr
+     WHERE mr.status='ready' AND mr.signal_date<=?
+       AND EXISTS (
+         SELECT 1 FROM canonical_run_heads h
+          WHERE h.logical_run_key='screener:' || mr.signal_date || ':TW:production:market_screener'
+            AND h.run_id=mr.producer_run_id
+       )
+     ORDER BY mr.signal_date DESC, mr.updated_at DESC
+     LIMIT 1
+  `).bind(requestedDate).first<{
+    producer_run_id: string
+    signal_date: string
+    expected_cell_count: number | string
+  }>()
+  if (!latest) {
+    return {
+      requested_date: requestedDate,
+      requested_date_status: 'pending',
+      latest_record_date: null,
+      latest_valid_date: null,
+      latest_record_status: 'missing',
+      canonical_producer_run_id: null,
+      expected_rows: 0,
+      matrix_rows: 0,
+      decision_rows: 0,
+      matrix_evaluable_rows: 0,
+      decision_evaluable_rows: 0,
+      mismatch_rows: 0,
+      reason: 'canonical_strategy_matrix_missing',
+    }
+  }
+  const expectedRows = Number(latest.expected_cell_count ?? 0)
+  try {
+    const parity = await assertCanonicalStrategyDecisionGridParity(db, {
+      date: latest.signal_date,
+      canonicalProducerRunId: latest.producer_run_id,
+    })
+    return {
+      requested_date: requestedDate,
+      requested_date_status: latest.signal_date === requestedDate ? 'ready' : 'pending',
+      latest_record_date: latest.signal_date,
+      latest_valid_date: latest.signal_date,
+      latest_record_status: 'valid',
+      canonical_producer_run_id: latest.producer_run_id,
+      expected_rows: parity.expectedRows,
+      matrix_rows: parity.matrixRows,
+      decision_rows: parity.decisionRows,
+      matrix_evaluable_rows: parity.matrixEvaluableRows,
+      decision_evaluable_rows: parity.decisionEvaluableRows,
+      mismatch_rows: parity.mismatchRows,
+      reason: 'canonical_matrix_log_parity_verified',
+    }
+  } catch (cause) {
+    const message = cause instanceof Error ? cause.message : String(cause)
+    const values = message.match(/rows=(\d+)\/(\d+)\/(\d+):evaluable=(\d+)\/(\d+):mismatch=(\d+)/)
+    return {
+      requested_date: requestedDate,
+      requested_date_status: latest.signal_date === requestedDate ? 'ready' : 'pending',
+      latest_record_date: latest.signal_date,
+      latest_valid_date: null,
+      latest_record_status: 'invalid',
+      canonical_producer_run_id: latest.producer_run_id,
+      expected_rows: values ? Number(values[3]) : expectedRows,
+      matrix_rows: values ? Number(values[2]) : 0,
+      decision_rows: values ? Number(values[1]) : 0,
+      matrix_evaluable_rows: values ? Number(values[5]) : 0,
+      decision_evaluable_rows: values ? Number(values[4]) : 0,
+      mismatch_rows: values ? Number(values[6]) : 0,
+      reason: message,
+    }
   }
 }
 
@@ -3645,6 +4005,7 @@ export async function buildStrategyLearningSummary(
   date: string,
 ): Promise<StrategyLearningSummary> {
   const { specs, source } = await listStrategySpecsForLearning(db)
+  const decisionEvidenceHealth = await loadStrategyDecisionEvidenceHealth(db, date)
   const candidateStrategyApplicability = new Map(
     specs
       .filter((spec) => canonicalStrategyLifecycleStatus(spec.status) === 'candidate')
@@ -3909,6 +4270,7 @@ export async function buildStrategyLearningSummary(
     promotion_gate: [],
     replacement_gate: replacementGate,
     policy_state_preview: {} as StrategyAdaptivePolicyState,
+    decision_evidence_health: decisionEvidenceHealth,
   } as StrategyLearningSummary
   summary.promotion_gate = evaluateStrategyPromotionGate(summary)
   summary.policy_state_preview = buildStrategyAdaptivePolicyState(summary)

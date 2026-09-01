@@ -3670,6 +3670,7 @@ export async function processUpdateBatch(
       finalizeStrategyLearningEvidenceV5,
       listStrategySpecsForLearning,
       materializeStrategyDecisionLogChunk,
+      assertCanonicalStrategyDecisionGridParity,
       repairHistoricalStrategyDecisionGrid,
       seedDefaultStrategySpecRegistry,
     } = await import('./strategyLearning')
@@ -3813,6 +3814,14 @@ export async function processUpdateBatch(
       return
       }
 
+      await repairHistoricalStrategyDecisionGrid(learningDb, {
+        date: triggerTime,
+        canonicalProducerRunId: state.producer_run_id,
+      })
+      await assertCanonicalStrategyDecisionGridParity(learningDb, {
+        date: triggerTime,
+        canonicalProducerRunId: state.producer_run_id,
+      })
       const coverage = await completeStrategyLearningRun(runStateDb, {
         ...leaseIdentity,
         leaseSeconds: STRATEGY_LEARNING_LEASE_SECONDS,
@@ -3842,7 +3851,7 @@ export async function processUpdateBatch(
       }
       const policyMutationAllowed = productionAuthorityIntent && currentBusinessDateRun
       const finalizerCacheMode = policyMutationAllowed ? 'policy-mutation' : 'evidence-only'
-      const finalizerCacheKey = `strategy-learning:finalizer:${triggerTime}:${canonicalRunId}:${finalizerCacheMode}:v3-backlog-closure`
+      const finalizerCacheKey = `strategy-learning:finalizer:${triggerTime}:${canonicalRunId}:${finalizerCacheMode}:v4-canonical-matrix-parity`
       const cachedFinalizer = await env.KV.get(finalizerCacheKey, 'json') as {
         canonical_run_id?: string
         stages?: Record<string, unknown>

@@ -993,6 +993,21 @@ export type StrategyLearningResponse = {
   promotion_gate: StrategyPromotionGate[]
   replacement_gate: StrategyReplacementGateSummary
   policy_state_preview: StrategyAdaptivePolicyState
+  decision_evidence_health?: {
+    requested_date: string
+    requested_date_status: 'ready' | 'pending'
+    latest_record_date: string | null
+    latest_valid_date: string | null
+    latest_record_status: 'valid' | 'invalid' | 'missing'
+    canonical_producer_run_id: string | null
+    expected_rows: number
+    matrix_rows: number
+    decision_rows: number
+    matrix_evaluable_rows: number
+    decision_evaluable_rows: number
+    mismatch_rows: number
+    reason: string
+  }
 }
 
 export type StrategyPromotionGate = {

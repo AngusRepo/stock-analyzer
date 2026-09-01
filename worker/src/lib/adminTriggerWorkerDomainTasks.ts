@@ -418,6 +418,7 @@ export function buildAdminWorkerDomainTaskMap(c: any, deps: TriggerDeps): Record
       }
 
       const {
+        assertCanonicalStrategyDecisionGridParity,
         finalizeStrategyLearningEvidenceV5,
         repairHistoricalStrategyDecisionGrid,
       } = await import('./strategyLearning')
@@ -441,6 +442,14 @@ export function buildAdminWorkerDomainTaskMap(c: any, deps: TriggerDeps): Record
       let durableFinalized = false
       let finalizerHeartbeat: ReturnType<typeof startStrategyLearningLeaseHeartbeat> | null = null
       try {
+        await repairHistoricalStrategyDecisionGrid(learningDb, {
+          date: runDate,
+          canonicalProducerRunId: runState.producer_run_id,
+        })
+        await assertCanonicalStrategyDecisionGridParity(learningDb, {
+          date: runDate,
+          canonicalProducerRunId: runState.producer_run_id,
+        })
         const coverage = await completeStrategyLearningRun(runStateDb, {
           ...leaseIdentity,
           leaseSeconds: STRATEGY_LEARNING_LEASE_SECONDS,

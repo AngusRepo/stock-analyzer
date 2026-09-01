@@ -1073,6 +1073,7 @@ function StrategyLedgerGroup({
   formalPolicyWeights,
   formalOwnerDecisions,
   requestedDate,
+  decisionEvidenceHealth,
   empty,
 }: {
   title: string
@@ -1083,6 +1084,7 @@ function StrategyLedgerGroup({
   formalPolicyWeights: Record<string, number>
   formalOwnerDecisions: Record<string, StrategyFormalOwnerDecision>
   requestedDate: string | null
+  decisionEvidenceHealth: StrategyLearningResponse['decision_evidence_health']
   empty: string
 }) {
   return (
@@ -1105,10 +1107,15 @@ function StrategyLedgerGroup({
           const noMatches = row.learning.reward_state === 'no_matches'
           const rewardCount = rewardPending ? 'Pending T+5' : rewardMissing ? 'Join missing' : noMatches ? 'No setups' : String(row.learning.samples)
           const rollingMature = rewardPending ? 'Pending T+5' : rewardMissing ? 'Join missing' : noMatches ? 'No setups' : String(row.learning.rolling_reward_dates)
-          const currentDecisionPending = Boolean(requestedDate && row.learning.today_decisions === 0 && row.learning.latest_decision_date !== requestedDate)
-          const currentDecisionLabel = currentDecisionPending
-            ? `${requestedDate} 尚未產生；最新 decision date ${row.learning.latest_decision_date ?? '無歷史資料'}`
-            : `${requestedDate ?? row.learning.latest_decision_date ?? '今日'} 可評估 ${row.learning.today_evaluable_decisions} · 命中 ${row.learning.today_matched} · PIT 欄位不足 ${row.learning.today_unavailable_decisions}`
+          const latestBatchInvalid = decisionEvidenceHealth?.latest_record_status === 'invalid'
+          const currentDecisionPending = decisionEvidenceHealth
+            ? decisionEvidenceHealth.requested_date_status === 'pending'
+            : Boolean(requestedDate && row.learning.today_decisions === 0 && row.learning.latest_decision_date !== requestedDate)
+          const currentDecisionLabel = latestBatchInvalid
+            ? `${decisionEvidenceHealth?.latest_record_date ?? requestedDate ?? '最新'} decision 批次無效；不歸因為各策略 PIT 缺欄`
+            : currentDecisionPending
+              ? `${requestedDate} 盤後尚未執行；最新有效 decision date ${decisionEvidenceHealth?.latest_valid_date ?? row.learning.latest_decision_date ?? '無歷史資料'}`
+              : `${requestedDate ?? row.learning.latest_decision_date ?? '今日'} 可評估 ${row.learning.today_evaluable_decisions} · 命中 ${row.learning.today_matched} · 實際不可評估 ${row.learning.today_unavailable_decisions}`
           return (
             <article key={`${row.id}:${row.version}`} className="min-w-0 space-y-4 bg-slate-950/70 px-4 py-4 lg:px-5">
               <div className="min-w-0">
@@ -1125,14 +1132,14 @@ function StrategyLedgerGroup({
                 <div className="rounded-lg border border-slate-800/80 bg-slate-900/45 p-2">
                   <dt className="text-xs text-slate-500">可評估決策</dt>
                   <dd className="mt-1 font-mono text-sm text-slate-200">{row.learning.evidence_available ? row.learning.evaluable_decisions : '-'}</dd>
-                  <div className="mt-1 text-xs text-slate-500">{row.learning.evidence_available ? <>PIT 欄位不足 {row.learning.unavailable_decisions} · 總決策 {row.learning.decisions}</> : 'evidence not ready'}</div>
-                  <div className={`mt-1 text-xs ${currentDecisionPending ? 'text-amber-300' : 'text-cyan-300'}`}>{currentDecisionLabel}</div>
+                  <div className="mt-1 text-xs text-slate-500">{row.learning.evidence_available ? <>實際不可評估 {row.learning.unavailable_decisions} · 總決策 {row.learning.decisions}</> : 'evidence not ready'}</div>
+                  <div className={`mt-1 text-xs ${latestBatchInvalid ? 'text-rose-300' : currentDecisionPending ? 'text-amber-300' : 'text-cyan-300'}`}>{currentDecisionLabel}</div>
                   <div className="mt-1 text-xs text-slate-500">{row.learning.reward_owner === 's12_execution_replay_v3_net' ? 'S12 execution reward' : 'selection edge reward'}</div>
                 </div>
                 <div className="rounded-lg border border-slate-800/80 bg-slate-900/45 p-2">
                   <dt className="text-xs text-slate-500">滾動可評估</dt>
                   <dd className="mt-1 font-mono text-sm text-slate-200">{row.learning.evidence_available ? row.learning.rolling_evaluable_decisions : '-'}</dd>
-                  <div className="mt-1 text-xs text-slate-500">{row.learning.evidence_available ? <>PIT 欄位不足 {row.learning.rolling_unavailable_decisions} · {row.learning.rolling_sessions} 個決策日</> : 'evidence not ready'}</div>
+                  <div className="mt-1 text-xs text-slate-500">{row.learning.evidence_available ? <>實際不可評估 {row.learning.rolling_unavailable_decisions} · {row.learning.rolling_sessions} 個決策日</> : 'evidence not ready'}</div>
                 </div>
                 <div className="rounded-lg border border-slate-800/80 bg-slate-900/45 p-2">
                   <dt className="text-xs text-slate-500">累積成熟報酬樣本</dt>
@@ -1694,6 +1701,20 @@ export default function StrategyLearningPage() {
           <div className="flex items-center gap-2 rounded-2xl border border-slate-800 bg-slate-950/70 p-5 text-sm text-slate-400"><Loader2 className="h-4 w-4 animate-spin" /> Loading reward ledger...</div>
         ) : (
           <>
+            {learning?.decision_evidence_health?.latest_record_status === 'invalid' ? (
+              <section className="rounded-2xl border border-rose-400/35 bg-rose-400/[0.08] px-4 py-3 text-sm leading-6 text-rose-100" role="alert">
+                <span className="font-semibold">Decision evidence 批次無效：</span>
+                {learning.decision_evidence_health.latest_record_date ?? '最新日期'} canonical matrix / decision log 未通過逐欄 parity
+                （rows {learning.decision_evidence_health.decision_rows}/{learning.decision_evidence_health.matrix_rows}、
+                evaluable {learning.decision_evidence_health.decision_evaluable_rows}/{learning.decision_evidence_health.matrix_evaluable_rows}、
+                mismatch {learning.decision_evidence_health.mismatch_rows}）。本批次不會被解釋成各策略「PIT 欄位不足」。
+              </section>
+            ) : learning?.decision_evidence_health?.requested_date_status === 'pending' ? (
+              <section className="rounded-2xl border border-cyan-400/25 bg-cyan-400/[0.06] px-4 py-3 text-sm leading-6 text-cyan-50" role="status">
+                <span className="font-semibold">{learning.decision_evidence_health.requested_date} 盤後尚未執行：</span>
+                最新有效 decision date {learning.decision_evidence_health.latest_valid_date ?? '尚無'}；這是交易日批次尚未開始，不是 0 筆或資料斷鏈。
+              </section>
+            ) : null}
             <section className="grid gap-2 sm:grid-cols-2 xl:grid-cols-4">
               <div className="rounded-xl border border-slate-800 bg-slate-950/70 p-4"><div className="text-xs text-slate-500">正式參與選股的策略 / 持續評估</div><div className="mt-2 font-mono text-2xl text-emerald-200">{activeRows.length} <span className="text-sm text-slate-600">/ {visibleRows.length}</span></div><div className="mt-1 text-xs text-slate-500">待買權重 0% 仍持續學習、選股與累積證據；此處以 formal contribution 為準</div></div>
               <div className="rounded-xl border border-emerald-400/20 bg-emerald-400/[0.06] p-4"><div className="text-xs text-slate-400">目前可讓推薦進待買</div><div className="mt-2 font-mono text-2xl text-emerald-100">{formalPolicy ? executionEligibleCount : '-'}</div><div className="mt-1 text-xs text-slate-500">Allocation gate 與 formal contribution &gt; 0 必須同時成立；formal lineage 未取得時不判定</div></div>
@@ -1785,6 +1806,7 @@ export default function StrategyLearningPage() {
                     formalPolicyWeights={formalPolicyWeights}
                     formalOwnerDecisions={formalOwnerDecisions}
                     requestedDate={learning?.date ?? null}
+                    decisionEvidenceHealth={learning?.decision_evidence_health}
                     empty="目前篩選沒有可顯示的策略。"
                   />
                 ) : <div className="rounded-2xl border border-slate-800 bg-slate-950/70 p-6 text-sm text-slate-500">目前篩選沒有可顯示的策略。</div>}

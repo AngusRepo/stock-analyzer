@@ -16,6 +16,7 @@ import {
   projectStrategyReplacementCandidatePrefilters,
   projectStrategyReplacementDecisionSummary,
   projectStrategyReplacementRunEvidence,
+  projectCanonicalStrategyDecisionRows,
   registryRowToStrategySpec,
   seedDefaultStrategySpecRegistry,
   shouldRetireStaleStrategyRewardRows,
@@ -29,6 +30,52 @@ import { STRATEGY_REPLACEMENT_POLICY_V7 } from './strategyMarginalEdgeV4'
 function assert(condition: unknown, message: string): void {
   if (!condition) throw new Error(message)
 }
+
+function runCanonicalStrategyDecisionProjectionTest(): void {
+  const spec = DEFAULT_STRATEGY_SPECS[0]
+  const rows = projectCanonicalStrategyDecisionRows(
+    '2026-09-01',
+    'screener-run-2026-09-01',
+    [{ symbol: '2330', name: '台積電', raw_signals: null }],
+    [spec],
+    [{
+      symbol: '2330',
+      strategy_id: spec.id,
+      strategy_version: spec.version,
+      strategy_status: spec.status,
+      alpha_bucket: spec.alphaBucket,
+      evaluable: 1,
+      evaluability_status: 'EVALUABLE',
+      unavailable_reason: null,
+      strategy_hit: 1,
+      match_strength: 0.73,
+      labeler_version: 'strategy-formal-labeler-v7',
+      strategy_registry_checksum: 'sha256:test',
+      reference_contract_version: 'selection-reference-snapshot-v3',
+    }],
+    '2026-09-01T22:00:00.000Z',
+  )
+  assert(rows.length === 1, 'canonical matrix projection must produce one decision per matrix cell')
+  assert(rows[0].evaluable === 1 && rows[0].matched === 1, 'canonical matrix evaluability and hit must be preserved exactly')
+  assert(rows[0].match_score === 0.73, 'canonical matrix match strength must be preserved')
+  assert(rows[0].evidence_json.includes('canonical_strategy_label_matrix_v4'), 'canonical matrix must be the persisted decision owner')
+
+  let incompleteRejected = false
+  try {
+    projectCanonicalStrategyDecisionRows(
+      '2026-09-01',
+      'screener-run-2026-09-01',
+      [{ symbol: '2330', name: '台積電', raw_signals: null }],
+      [spec],
+      [],
+    )
+  } catch (error) {
+    incompleteRejected = String(error).includes('canonical_strategy_decision_grid_incomplete')
+  }
+  assert(incompleteRejected, 'canonical decision projection must fail closed when any matrix cell is missing')
+}
+
+runCanonicalStrategyDecisionProjectionTest()
 
 function strategyLearningEvidence(
   overrides: Partial<StrategyLearningSummary['specs'][number]['learning']> = {},

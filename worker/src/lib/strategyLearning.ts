@@ -2926,11 +2926,6 @@ export async function loadStrategyDecisionEvidenceHealth(
     SELECT mr.producer_run_id, mr.signal_date, mr.expected_cell_count
       FROM strategy_label_matrix_runs_v4 mr
      WHERE mr.status='ready' AND mr.signal_date<=?
-       AND EXISTS (
-         SELECT 1 FROM canonical_run_heads h
-          WHERE h.logical_run_key='screener:' || mr.signal_date || ':TW:production:market_screener'
-            AND h.run_id=mr.producer_run_id
-       )
      ORDER BY mr.signal_date DESC, mr.updated_at DESC
      LIMIT 1
   `).bind(requestedDate).first<{

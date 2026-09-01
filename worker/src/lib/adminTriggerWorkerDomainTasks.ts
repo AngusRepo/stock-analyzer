@@ -1240,10 +1240,20 @@ export function buildAdminWorkerDomainTaskMap(c: any, deps: TriggerDeps): Record
       return `data_domain_shadow_backfill ${JSON.stringify(result)}`
     },
     'data-domain-shadow-backfill-next': async () => {
-      const {
-        enqueueNextDataDomainShadowBackfill,
-        inspectLatestEveningChainClosure,
-      } = await import('./dataDomainShadowBackfillDrain')
+      const [
+        {
+          enqueueNextDataDomainShadowBackfill,
+          inspectLatestEveningChainClosure,
+        },
+        { inspectDataDomainBackfillRetirementReadiness },
+      ] = await Promise.all([
+        import('./dataDomainShadowBackfillDrain'),
+        import('./dataDomainBackfillRetirementReadiness'),
+      ])
+      const readiness = await inspectDataDomainBackfillRetirementReadiness(c.env.DB, c.env.KV)
+      if (readiness.retirement_data_plane_ready) {
+        return `data_domain_shadow_backfill_next all_domains_caught_up=true retirement_data_plane_ready=true observed_at=${readiness.observed_at}`
+      }
       const closure = await inspectLatestEveningChainClosure(c.env.KV, c.env.DB)
       if (!closure.terminalSuccess) {
         return `skipped: data_domain_shadow_backfill_next ${closure.reason} run_date=${closure.runDate ?? 'missing'}`
@@ -1253,7 +1263,14 @@ export function buildAdminWorkerDomainTaskMap(c: any, deps: TriggerDeps): Record
         maxAttempts: parseBoundedPositiveInt(c.req.query('max_attempts'), 5000, 20000),
         parityNotBefore: closure.timestamp,
       })
-      if (next.caughtUp) return 'data_domain_shadow_backfill_next all_domains_caught_up=true'
+      if (next.caughtUp) {
+        const refreshedReadiness = await inspectDataDomainBackfillRetirementReadiness(c.env.DB, c.env.KV)
+        if (refreshedReadiness.retirement_data_plane_ready) {
+          return `data_domain_shadow_backfill_next all_domains_caught_up=true retirement_data_plane_ready=true observed_at=${refreshedReadiness.observed_at}`
+        }
+        const blockers = refreshedReadiness.blockers.slice(0, 8).join('|') || 'unknown'
+        return `skipped: data_domain_shadow_backfill_next retirement_data_plane_not_ready blockers=${blockers}`
+      }
       return `data_domain_shadow_backfill_next domain=${next.domain} queued=${next.queued} run_id=${next.runId}`
     },
     'data-domain-control-revision-trigger-install': async () => {

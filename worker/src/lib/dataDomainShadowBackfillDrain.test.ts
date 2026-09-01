@@ -195,6 +195,15 @@ assert(drain.indexOf("if (domain === 'ops')") < drain.indexOf('const queued = aw
 assert(drain.includes('input.parityNotBefore || dataDomainParitySessionWatermark()'))
 assert(admin.includes('parityNotBefore: closure.timestamp'))
 assert(!admin.includes('parityNotBefore: dataDomainParitySessionWatermark()'))
+const nextAdminHandler = admin.slice(
+  admin.indexOf("'data-domain-shadow-backfill-next': async () =>"),
+  admin.indexOf("'data-domain-control-revision-trigger-install': async () =>"),
+)
+assert(nextAdminHandler.includes('inspectDataDomainBackfillRetirementReadiness'))
+assert(nextAdminHandler.indexOf('retirement_data_plane_ready')
+  < nextAdminHandler.indexOf('const closure = await inspectLatestEveningChainClosure'))
+assert(nextAdminHandler.includes('all_domains_caught_up=true retirement_data_plane_ready=true'))
+assert(nextAdminHandler.includes('retirement_data_plane_not_ready'))
 const latestRunning = resolveLatestEveningChainClosure([
   {
     task: 'evening-chain', status: 'success', summary: 'closed', duration_ms: 1,

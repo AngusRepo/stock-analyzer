@@ -31,7 +31,7 @@ type SchedulerResolvedStatus = {
   staleRunning: boolean
   staleReason?: string
 }
-export type SchedulerStatusScope = 'today' | 'historical_replay' | 'schedule' | 'cadence_cycle'
+export type SchedulerStatusScope = 'today' | 'historical_replay' | 'schedule' | 'cadence_cycle' | 'durable_event'
 export type SchedulerDisplayStatus = {
   status: SchedulerLastStatus
   statusScope: SchedulerStatusScope
@@ -174,11 +174,12 @@ const CHAIN_STEP_IDS = [
   'strategy-learning',
 ]
 const PIPELINE_CHILD_TASKS = new Set(['ml-predict', 'recommendation'])
+const DURABLE_EVENT_TASK_IDS = new Set(['dataset-snapshot-export', 'active8-oof-daily'])
 const SCHEDULER_STATUS_SCAN_DAYS = 7
 const SCHEDULER_STATUS_LEGACY_FALLBACK_DAYS = 2
 
 export function estimateSchedulerStatusKvReads(): number {
-  return SCHEDULER_STATUS_SCAN_DAYS * 2 + CHAIN_STEP_IDS.filter((task) => task !== 'evening-chain').length
+  return SCHEDULER_STATUS_SCAN_DAYS * 2 + CHAIN_STEP_IDS.filter((task) => task !== 'evening-chain').length + 1
 }
 
 export interface SchedulerDisplayLogCandidate {
@@ -212,6 +213,21 @@ export function selectSchedulerChainDates(
     // a newer terminal chain, while a newer active attempt still takes over.
     chainStatusDate,
   }
+}
+
+export function selectSchedulerChainDisplayDate(input: {
+  today: string
+  activeChainDate: string | null
+  chainStatusDate: string | null
+  logsByDate: Record<string, CronLogEntry[]>
+}): string | null {
+  if (input.activeChainDate) return input.activeChainDate
+  const todayHasLiveChainActivity = (input.logsByDate[input.today] ?? []).some((entry) => (
+    CHAIN_STEP_IDS.includes(entry.task)
+    && String(entry.run_date ?? input.today) === input.today
+    && ['running', 'triggered', 'success', 'error'].includes(entry.status)
+  ))
+  return todayHasLiveChainActivity ? input.today : input.chainStatusDate
 }
 
 export function selectSchedulerDisplayLogs(candidates: SchedulerDisplayLogCandidate[]): {
@@ -431,6 +447,37 @@ export function reconcileSchedulerExecutionTicketStatus(input: {
     attemptId: ticket.attempt_id,
     attemptCount: ticket.attempt_count,
     ticketId: ticket.ticket_id,
+  }
+}
+
+type DurableEventTicketEvidence = Pick<
+  SchedulerExecutionTicketRow,
+  'status' | 'business_date' | 'updated_at'
+>
+
+export function resolveDurableEventDisplay(input: {
+  jobId: string
+  today: string
+  baseTimestamp?: string | null
+  ticket?: DurableEventTicketEvidence
+}): SchedulerDisplayStatus | null {
+  if (!DURABLE_EVENT_TASK_IDS.has(input.jobId) || !input.ticket) return null
+  const ticketTimestamp = sqliteUtcTimestamp(input.ticket.updated_at)
+  const ticketMs = Date.parse(ticketTimestamp)
+  const baseMs = input.baseTimestamp ? Date.parse(input.baseTimestamp) : Number.NEGATIVE_INFINITY
+  if (!Number.isFinite(ticketMs) || (Number.isFinite(baseMs) && ticketMs <= baseMs)) return null
+
+  const status: SchedulerLastStatus = input.ticket.status === 'success'
+    ? 'success'
+    : input.ticket.status === 'error' || input.ticket.status === 'blocked'
+      ? 'failed'
+      : input.ticket.status === 'skipped'
+        ? 'skip'
+        : 'running'
+  return {
+    status,
+    statusScope: input.ticket.business_date === input.today ? 'today' : 'durable_event',
+    statusRunDate: input.ticket.business_date,
   }
 }
 
@@ -823,14 +870,20 @@ export async function getSchedulerStatus(env: Bindings, anchorDate?: string) {
   })
   await Promise.all(
     dates.map(async (date, index) => {
-      const [aggregateLogs, directRootLog] = await Promise.all([
+      const [aggregateLogs, directRootLog, directTodayCloseLog] = await Promise.all([
         getCronLogs(env.KV, date, {
           legacyFallback: index < SCHEDULER_STATUS_LEGACY_FALLBACK_DAYS,
           directFallback: false,
         }),
         env.KV.get(`scheduler:run:evening-chain:${date}`, 'json') as Promise<CronLogEntry | null>,
+        index === 0
+          ? env.KV.get(`scheduler:run:market-close-refresh:${date}`, 'json') as Promise<CronLogEntry | null>
+          : Promise.resolve(null),
       ])
-      allLogs[date] = mergeDirectSchedulerLog(aggregateLogs, directRootLog)
+      allLogs[date] = mergeDirectSchedulerLog(
+        mergeDirectSchedulerLog(aggregateLogs, directRootLog),
+        directTodayCloseLog,
+      )
     }),
   )
   const cadenceDirectReads = JOB_DEFS.flatMap((def) => (
@@ -857,23 +910,31 @@ export async function getSchedulerStatus(env: Bindings, anchorDate?: string) {
   ])
   const executionTicketsByJobDate = new Map<string, SchedulerExecutionTicketRow>()
   const executionTicketsByTaskDate = new Map<string, SchedulerExecutionTicketRow>()
+  const latestExecutionTicketByTask = new Map<string, SchedulerExecutionTicketRow>()
   for (const ticket of schedulerExecutionTickets) {
     const taskKey = `${ticket.business_date}:${ticket.task}`
     if (!executionTicketsByTaskDate.has(taskKey)) executionTicketsByTaskDate.set(taskKey, ticket)
+    if (!latestExecutionTicketByTask.has(ticket.task)) latestExecutionTicketByTask.set(ticket.task, ticket)
     if (ticket.scheduler_job_id) {
       const jobKey = `${ticket.business_date}:${ticket.scheduler_job_id}`
       if (!executionTicketsByJobDate.has(jobKey)) executionTicketsByJobDate.set(jobKey, ticket)
     }
   }
   const { activeChainDate, chainStatusDate } = selectSchedulerChainDates(dates, allLogs)
-  if (chainStatusDate) {
+  const chainDisplayDate = selectSchedulerChainDisplayDate({
+    today,
+    activeChainDate,
+    chainStatusDate,
+    logsByDate: allLogs,
+  })
+  if (chainDisplayDate) {
     const activeTaskIds = CHAIN_STEP_IDS.filter((task) => task !== 'evening-chain')
     const directChainLogs = await Promise.all(activeTaskIds.map((task) => (
-      env.KV.get(`scheduler:run:${task}:${chainStatusDate}`, 'json') as Promise<CronLogEntry | null>
+      env.KV.get(`scheduler:run:${task}:${chainDisplayDate}`, 'json') as Promise<CronLogEntry | null>
     )))
-    allLogs[chainStatusDate] = directChainLogs.reduce(
+    allLogs[chainDisplayDate] = directChainLogs.reduce(
       (logs, directLog) => mergeDirectSchedulerLog(logs, directLog),
-      allLogs[chainStatusDate] ?? [],
+      allLogs[chainDisplayDate] ?? [],
     )
   }
   const activeReplayHeartbeatAt = activeChainDate
@@ -895,8 +956,8 @@ export async function getSchedulerStatus(env: Bindings, anchorDate?: string) {
 
   const jobs = await Promise.all(JOB_DEFS.map(async (def) => {
     const todayLog = getJobDisplayLog(allLogs[today], def)
-    const chainReplayLog = chainStatusDate && CHAIN_STEP_IDS.includes(def.id)
-      ? getJobDisplayLog(allLogs[chainStatusDate], def)
+    const chainReplayLog = chainDisplayDate && CHAIN_STEP_IDS.includes(def.id)
+      ? getJobDisplayLog(allLogs[chainDisplayDate], def)
       : undefined
     const nextRun = await getNextRunApproxWithPolicy({ task: def.id, cron: def.cron, kv: env.KV, skipKvPolicy: true })
     const accounting = schedulerJobAccounting(def.id, def.chainIndex)
@@ -922,10 +983,10 @@ export async function getSchedulerStatus(env: Bindings, anchorDate?: string) {
       todayLog,
       lastAttempt,
       activeReplayLog: chainReplayLog,
-      activeReplayRunDate: chainStatusDate,
+      activeReplayRunDate: chainDisplayDate,
       activeReplayHeartbeatAt,
       activeReplayClosureAt: replayClosureAt,
-      activeReplayIsRunning: Boolean(activeChainDate && chainStatusDate === activeChainDate),
+      activeReplayIsRunning: Boolean(activeChainDate && chainDisplayDate === activeChainDate),
       def,
       cadenceCycleLog,
       nextRun,
@@ -933,12 +994,22 @@ export async function getSchedulerStatus(env: Bindings, anchorDate?: string) {
     })
     const chainScopedDisplay = resolveBusinessDateScopedChainDisplay({
       def,
-      chainStatusDate,
+      chainStatusDate: chainDisplayDate,
       today,
       exactLog: chainReplayLog,
     })
-    const resolvedDisplay = chainScopedDisplay?.resolvedDisplay ?? baseResolvedDisplay
-    const displayLog = chainScopedDisplay ? chainScopedDisplay.displayLog : lastLog
+    let resolvedDisplay = chainScopedDisplay?.resolvedDisplay ?? baseResolvedDisplay
+    let displayLog = chainScopedDisplay ? chainScopedDisplay.displayLog : lastLog
+    const durableEventDisplay = resolveDurableEventDisplay({
+      jobId: def.id,
+      today,
+      baseTimestamp: displayLog?.timestamp,
+      ticket: latestExecutionTicketByTask.get(def.id),
+    })
+    if (durableEventDisplay) {
+      resolvedDisplay = durableEventDisplay
+      displayLog = undefined
+    }
     const durableState = resolvedDisplay.statusRunDate
       ? durableStageStates.get(`${resolvedDisplay.statusRunDate}:${def.id}`)
       : undefined

@@ -9,6 +9,7 @@ Required env vars (Cloud Run env):
   CF_D1_DB_ID
 """
 from __future__ import annotations
+import json
 import os
 import logging
 import random
@@ -105,6 +106,16 @@ def _sleep_before_retry(attempt: int) -> None:
 
 
 def _is_retryable_d1_response(status_code: int, text: str) -> bool:
+    if status_code == 401:
+        try:
+            payload = json.loads(text or "{}")
+        except (TypeError, ValueError):
+            return False
+        errors = payload.get("errors") if isinstance(payload, dict) else None
+        return isinstance(errors, list) and any(
+            isinstance(error, dict) and error.get("code") == 10000
+            for error in errors
+        )
     if status_code in {429, 500, 502, 503, 504}:
         return True
     lowered = (text or "").lower()

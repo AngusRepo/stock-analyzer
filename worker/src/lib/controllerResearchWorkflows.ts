@@ -6,6 +6,7 @@ import { nextTwTradingDate } from './schedulerPolicy'
 import { twToday } from './dateUtils'
 import { strategyMiningDispatchKey } from './strategyMiningGateway'
 import { databaseForDataDomain } from './dataDomainRegistry'
+import { loadLatestSchedulerChildTicket, type SchedulerExecutionTicketRow } from './schedulerExecutionTickets'
 
 function requireController(env: Bindings): void {
   if (!env.ML_CONTROLLER_URL) {
@@ -252,6 +253,11 @@ export type Active8DailySnapshotPreflight = {
   market_session_price_rows: number | null
 }
 
+type Active8DailyTerminalTicketEvidence = Pick<
+  SchedulerExecutionTicketRow,
+  'status' | 'business_date' | 'metadata_json'
+>
+
 const ACTIVE8_COMPUTE_SNAPSHOT_LOOKBACK_DAYS = 504
 
 function active8SnapshotStartDate(snapshot: Active8ComputeSnapshotRow | null): string | null {
@@ -352,6 +358,48 @@ export function assessActive8DailySnapshotPreflight(
   return { ...base, ready: true, reason: 'ready' }
 }
 
+export function assessActive8DailyTerminalFence(
+  preflight: Active8DailySnapshotPreflight,
+  ticket: Active8DailyTerminalTicketEvidence | null,
+): { closed: boolean; reason: string } {
+  if (!preflight.ready || !preflight.snapshot_business_date || !preflight.snapshot_id) {
+    return { closed: false, reason: 'snapshot_preflight_not_ready' }
+  }
+  if (!ticket) return { closed: false, reason: 'terminal_ticket_missing' }
+  if (ticket.status !== 'success') {
+    return { closed: false, reason: `terminal_ticket_${ticket.status}` }
+  }
+  if (ticket.business_date !== preflight.snapshot_business_date) {
+    return { closed: false, reason: 'terminal_ticket_business_date_mismatch' }
+  }
+
+  let metadata: Record<string, unknown>
+  try {
+    metadata = JSON.parse(ticket.metadata_json || '{}') as Record<string, unknown>
+  } catch {
+    return { closed: false, reason: 'terminal_ticket_metadata_invalid' }
+  }
+  if (String(metadata.origin ?? '') !== 'dataset_snapshot_ready') {
+    return { closed: false, reason: 'terminal_ticket_origin_mismatch' }
+  }
+  if (String(metadata.snapshot_id ?? '') !== preflight.snapshot_id) {
+    return { closed: false, reason: 'terminal_ticket_snapshot_mismatch' }
+  }
+  return { closed: true, reason: 'exact_snapshot_terminal_success' }
+}
+
+async function loadActive8DailyTerminalTicket(
+  env: Bindings,
+  preflight: Active8DailySnapshotPreflight,
+): Promise<SchedulerExecutionTicketRow | null> {
+  if (!preflight.snapshot_business_date) return null
+  return loadLatestSchedulerChildTicket(databaseForDataDomain(env, 'ops'), {
+    task: 'active8-oof-daily',
+    businessDate: preflight.snapshot_business_date,
+    origin: 'dataset_snapshot_ready',
+  })
+}
+
 async function inspectActive8DailySnapshotPreflight(
   env: Bindings,
   cutoff: string,
@@ -392,12 +440,27 @@ export async function runActive8OofLifecycle(
 
   if (cadence === 'daily' && options.continuationOnly !== true) {
     const cutoff = runDate || twToday()
-    const preflight = await inspectActive8DailySnapshotPreflight(env, cutoff).catch(() => null)
+    const preflight = await inspectActive8DailySnapshotPreflight(env, cutoff)
     if (preflight && !preflight.ready) {
       return [
         'active8_oof_lifecycle status=skipped',
         'cadence=daily',
         `reason=${preflight.reason}`,
+        `expected_business_date=${preflight.expected_business_date ?? 'none'}`,
+        `snapshot_business_date=${preflight.snapshot_business_date ?? 'none'}`,
+        `snapshot_id=${preflight.snapshot_id ?? 'none'}`,
+        'cloud_run_dispatched=false',
+      ].join(' ')
+    }
+    const terminalTicket = await loadActive8DailyTerminalTicket(env, preflight)
+    const terminalFence = assessActive8DailyTerminalFence(preflight, terminalTicket)
+    if (terminalFence.closed) {
+      return [
+        'active8_oof_lifecycle status=idempotent_complete',
+        'cadence=daily',
+        'cohort=none',
+        'promoted=false',
+        `reason=${terminalFence.reason}`,
         `expected_business_date=${preflight.expected_business_date ?? 'none'}`,
         `snapshot_business_date=${preflight.snapshot_business_date ?? 'none'}`,
         `snapshot_id=${preflight.snapshot_id ?? 'none'}`,

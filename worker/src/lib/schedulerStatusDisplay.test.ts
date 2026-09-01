@@ -3,11 +3,13 @@ import {
   getSchedulerScanDates,
   mergeDirectSchedulerLog,
   reconcileDurablePipelineStageStatus,
+  resolveDurableEventDisplay,
   resolveBusinessDateScopedChainDisplay,
   resolveSchedulerDisplayStatus,
   resolveSchedulerRunDisplayTime,
   resolveSchedulerLogStatus,
   selectSchedulerChainDates,
+  selectSchedulerChainDisplayDate,
   selectSchedulerDisplayLogs,
   type SchedulerDisplayLogCandidate,
 } from './schedulerStatus'
@@ -61,6 +63,61 @@ function assert(condition: unknown, message: string): void {
   assert(selection.chainStatusDate === '2026-07-27', 'latest completed chain must replace the older replay date')
 }
 
+{
+  const today = '2026-09-01'
+  const displayDate = selectSchedulerChainDisplayDate({
+    today,
+    activeChainDate: null,
+    chainStatusDate: '2026-08-31',
+    logsByDate: {
+      [today]: [{
+        task: 'market-close-refresh',
+        status: 'success',
+        summary: 'price_latest=2026-09-01',
+        duration_ms: 74_426,
+        run_date: today,
+        timestamp: '2026-09-01T10:11:18.208Z',
+      }],
+      '2026-08-31': [{
+        task: 'evening-chain',
+        status: 'success',
+        summary: 'prior chain closed',
+        duration_ms: 1,
+        run_date: '2026-08-31',
+        timestamp: '2026-08-31T17:40:22.531Z',
+      }],
+    },
+  })
+  assert(displayDate === today, 'today close refresh must start a current-day display chain before the 21:00 root begins')
+}
+
+{
+  const displayDate = selectSchedulerChainDisplayDate({
+    today: '2026-09-01',
+    activeChainDate: '2026-08-29',
+    chainStatusDate: '2026-08-29',
+    logsByDate: {
+      '2026-09-01': [{
+        task: 'market-close-refresh',
+        status: 'success',
+        summary: 'today close refreshed',
+        duration_ms: 1,
+        run_date: '2026-09-01',
+        timestamp: '2026-09-01T10:11:18.208Z',
+      }],
+      '2026-08-29': [{
+        task: 'evening-chain',
+        status: 'running',
+        summary: 'historical replay active',
+        duration_ms: 1,
+        run_date: '2026-08-29',
+        timestamp: '2026-09-01T10:12:00.000Z',
+      }],
+    },
+  })
+  assert(displayDate === '2026-08-29', 'an active historical replay must remain display authority until terminal callback')
+}
+
 const logs: SchedulerDisplayLogCandidate[] = [
   {
     date: '2026-04-29',
@@ -105,6 +162,7 @@ const logs: SchedulerDisplayLogCandidate[] = [
   const loggerSource = fs.readFileSync('src/lib/schedulerRunLogger.ts', 'utf8')
   const policySource = fs.readFileSync('src/lib/schedulerPolicy.ts', 'utf8')
   assert(statusSource.includes('directFallback: false'), 'scheduler status must not per-task scan KV logs')
+  assert(statusSource.includes('scheduler:run:market-close-refresh:${date}'), 'today close refresh must be read directly so aggregate lost updates cannot hide the current trading date')
   assert(statusSource.includes('const cadenceDirectReads = JOB_DEFS.flatMap') && statusSource.includes('isCurrentCadenceCycle(date, today, def.group)'), 'weekly/monthly current-cycle status must directly recover task logs lost from concurrent daily aggregate writes')
   assert(statusSource.includes('skipKvPolicy: true'), 'scheduler status nextRun must not probe KV policy per card')
   assert(!statusSource.includes("id: 's12-structure-snapshot'") && statusSource.includes("id: 'allocator-ev-readiness'"), 'scheduler status must remove the duplicate S12 evening stage and keep allocator readiness visible')
@@ -418,6 +476,49 @@ const logs: SchedulerDisplayLogCandidate[] = [
   assert(status.status === 'success', 'today close refresh must not be hidden by a terminal prior-session chain snapshot')
   assert(status.statusScope === 'today', 'today close refresh must retain today scope')
   assert(status.statusRunDate === '2026-07-29', 'today close refresh must expose today as its run date')
+}
+
+{
+  const status = resolveDurableEventDisplay({
+    jobId: 'dataset-snapshot-export',
+    today: '2026-09-01',
+    baseTimestamp: '2026-08-29T05:53:38.000Z',
+    ticket: {
+      status: 'success',
+      business_date: '2026-08-31',
+      updated_at: '2026-08-31 15:19:13',
+    },
+  })
+  assert(status?.status === 'success', 'newer durable Research Snapshot ticket must recover a lost aggregate receipt')
+  assert(status?.statusScope === 'durable_event', 'cross-date detached callback must expose durable event scope')
+  assert(status?.statusRunDate === '2026-08-31', 'Research Snapshot must expose its canonical business date')
+}
+
+{
+  const status = resolveDurableEventDisplay({
+    jobId: 'active8-oof-daily',
+    today: '2026-09-01',
+    baseTimestamp: '2026-08-31T23:59:11.292Z',
+    ticket: {
+      status: 'success',
+      business_date: '2026-08-31',
+      updated_at: '2026-08-31 15:33:41',
+    },
+  })
+  assert(status === null, 'older durable Active-8 ticket must not hide a newer direct failure receipt')
+}
+
+{
+  const status = resolveDurableEventDisplay({
+    jobId: 'daily-snapshot',
+    today: '2026-09-01',
+    ticket: {
+      status: 'success',
+      business_date: '2026-09-01',
+      updated_at: '2026-09-01 06:20:09',
+    },
+  })
+  assert(status === null, 'durable event override must stay scoped to detached snapshot and Active-8 tasks')
 }
 
 {

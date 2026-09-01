@@ -1,6 +1,9 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { assessActive8DailySnapshotPreflight } from './controllerResearchWorkflows'
+import {
+  assessActive8DailySnapshotPreflight,
+  assessActive8DailyTerminalFence,
+} from './controllerResearchWorkflows'
 
 const marketRows = [
   { trading_date: '2026-08-18', price_rows: 1000 },
@@ -47,4 +50,56 @@ test('daily Active-8 preflight fails closed when the compute snapshot is missing
   const result = assessActive8DailySnapshotPreflight('2026-08-22', marketRows, null)
   assert.equal(result.ready, false)
   assert.equal(result.reason, 'exact_compute_snapshot_missing')
+})
+
+const readyPreflight = assessActive8DailySnapshotPreflight('2026-09-01', [
+  { trading_date: '2026-08-28', price_rows: 1940 },
+  { trading_date: '2026-08-31', price_rows: 1950 },
+], {
+  snapshot_id: 'backtest_dataset:2026-08-31:run-1:snapshot',
+  business_date: '2026-08-31',
+  metadata_json: JSON.stringify({ start_date: '2025-04-14' }),
+})
+
+test('daily Active-8 terminal fence closes only the exact ready snapshot ticket', () => {
+  const result = assessActive8DailyTerminalFence(readyPreflight, {
+    status: 'success',
+    business_date: '2026-08-31',
+    metadata_json: JSON.stringify({
+      origin: 'dataset_snapshot_ready',
+      snapshot_id: 'backtest_dataset:2026-08-31:run-1:snapshot',
+    }),
+  })
+  assert.deepEqual(result, { closed: true, reason: 'exact_snapshot_terminal_success' })
+})
+
+test('daily Active-8 terminal fence does not hide a failed ticket', () => {
+  const result = assessActive8DailyTerminalFence(readyPreflight, {
+    status: 'error',
+    business_date: '2026-08-31',
+    metadata_json: JSON.stringify({
+      origin: 'dataset_snapshot_ready',
+      snapshot_id: 'backtest_dataset:2026-08-31:run-1:snapshot',
+    }),
+  })
+  assert.equal(result.closed, false)
+  assert.equal(result.reason, 'terminal_ticket_error')
+})
+
+test('daily Active-8 terminal fence rejects a different snapshot identity', () => {
+  const result = assessActive8DailyTerminalFence(readyPreflight, {
+    status: 'success',
+    business_date: '2026-08-31',
+    metadata_json: JSON.stringify({
+      origin: 'dataset_snapshot_ready',
+      snapshot_id: 'backtest_dataset:2026-08-31:other-run:snapshot',
+    }),
+  })
+  assert.equal(result.closed, false)
+  assert.equal(result.reason, 'terminal_ticket_snapshot_mismatch')
+})
+
+test('daily Active-8 terminal fence fails open to real work when no ticket exists', () => {
+  const result = assessActive8DailyTerminalFence(readyPreflight, null)
+  assert.deepEqual(result, { closed: false, reason: 'terminal_ticket_missing' })
 })

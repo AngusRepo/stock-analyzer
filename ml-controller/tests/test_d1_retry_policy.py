@@ -4,6 +4,8 @@ import sys
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
+
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from services import d1_client  # noqa: E402
@@ -38,3 +40,50 @@ def test_d1_post_retries_overloaded_429(monkeypatch):
 
     assert rows == [{"ok": 1}]
     assert len(calls) == 2
+
+
+def test_d1_post_recovers_from_single_cloudflare_auth_10000(monkeypatch):
+    calls: list[int] = []
+
+    def fake_post(*_args, **_kwargs):
+        calls.append(1)
+        if len(calls) == 1:
+            return _FakeResponse(
+                401,
+                '{"result":null,"success":false,"errors":[{"code":10000,"message":"Authentication error"}]}',
+            )
+        return _FakeResponse(200)
+
+    monkeypatch.setattr(d1_client, "CF_API_TOKEN", "token")
+    monkeypatch.setattr(d1_client, "CF_ACCOUNT_ID", "account")
+    monkeypatch.setattr(d1_client, "CF_D1_DB_ID", "db")
+    monkeypatch.setattr(d1_client, "httpx", SimpleNamespace(post=fake_post, RequestError=Exception))
+    monkeypatch.setattr(d1_client, "_sleep_before_retry", lambda *_args, **_kwargs: None)
+
+    rows = d1_client.query("SELECT 1 AS ok")
+
+    assert rows == [{"ok": 1}]
+    assert len(calls) == 2
+
+
+def test_d1_post_persistent_auth_10000_still_fails_after_bound(monkeypatch):
+    calls: list[int] = []
+
+    def fake_post(*_args, **_kwargs):
+        calls.append(1)
+        return _FakeResponse(
+            401,
+            '{"result":null,"success":false,"errors":[{"code":10000,"message":"Authentication error"}]}',
+        )
+
+    monkeypatch.setattr(d1_client, "CF_API_TOKEN", "invalid-token")
+    monkeypatch.setattr(d1_client, "CF_ACCOUNT_ID", "account")
+    monkeypatch.setattr(d1_client, "CF_D1_DB_ID", "db")
+    monkeypatch.setattr(d1_client, "MAX_D1_RETRIES", 2)
+    monkeypatch.setattr(d1_client, "httpx", SimpleNamespace(post=fake_post, RequestError=Exception))
+    monkeypatch.setattr(d1_client, "_sleep_before_retry", lambda *_args, **_kwargs: None)
+
+    with pytest.raises(RuntimeError, match="HTTP 401"):
+        d1_client.query("SELECT 1 AS ok")
+
+    assert len(calls) == 3

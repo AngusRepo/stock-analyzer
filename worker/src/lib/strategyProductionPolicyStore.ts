@@ -565,6 +565,8 @@ function assertHistoricalStrategyProductionPolicyCanonicalParity(
   const canonicalCandidates = Array.isArray(canonical.candidate_ready_strategy_ids)
     ? [...canonical.candidate_ready_strategy_ids].map(String).sort()
     : []
+  const persistedQuarantined = parseStringArray(row.quarantined_strategy_ids_json).sort()
+  const persistedCandidates = parseStringArray(row.candidate_ready_strategy_ids_json).sort()
   const hasEvidenceOwner = Object.keys(canonicalOwner).length > 0
     || Object.keys(persistedOwner).length > 0
   if (
@@ -574,8 +576,8 @@ function assertHistoricalStrategyProductionPolicyCanonicalParity(
     || canonical.base_weight_source !== row.base_weight_source
     || (canonical.base_weight_run_id ?? null) !== row.base_weight_run_id
     || normalized(canonicalWeights) !== normalized(persistedWeights)
-    || JSON.stringify(canonicalQuarantined) !== JSON.stringify(parseStringArray(row.quarantined_strategy_ids_json))
-    || JSON.stringify(canonicalCandidates) !== JSON.stringify(parseStringArray(row.candidate_ready_strategy_ids_json))
+    || JSON.stringify(canonicalQuarantined) !== JSON.stringify(persistedQuarantined)
+    || JSON.stringify(canonicalCandidates) !== JSON.stringify(persistedCandidates)
     || (hasEvidenceOwner && (
       canonicalOwner.version !== persistedOwner.version
       || canonicalOwner.checksum !== persistedOwner.checksum

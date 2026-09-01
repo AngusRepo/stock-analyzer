@@ -213,6 +213,48 @@ async function main(): Promise<void> {
   )
   assert.equal(historicalPrevious?.reconstruction_receipt.source_contract, 'previous-firewall-v2')
   assert.deepEqual(historicalPrevious?.state.strategy_weights, { 'active-a': 1, 'active-b': 0 })
+  const reorderedCanonicalPayload = JSON.stringify({
+    policy_id: 'strategy-production-contribution-firewall-v2',
+    version: 2,
+    allocation_eligibility_contract_version: 'strategy-allocation-eligibility-v2',
+    knowledge_cutoff_date: '2026-08-14',
+    strategy_weights: { 'active-a': 1, 'active-b': 0, 'active-c': 0 },
+    quarantined_strategy_ids: ['active-b', 'active-c'],
+    candidate_ready_strategy_ids: [],
+    base_weight_source: 'adaptive_strategy_policy_v2',
+    base_weight_run_id: 'previous-policy-run',
+  })
+  const reorderedPolicyRow: StrategyProductionPolicyHistoryRow = {
+    ...previousPolicyRow,
+    strategy_weights_json: JSON.stringify({ 'active-a': 1, 'active-b': 0, 'active-c': 0 }),
+    quarantined_strategy_ids_json: JSON.stringify(['active-c', 'active-b']),
+    canonical_payload: reorderedCanonicalPayload,
+    checksum: await sha256StrategyProductionPolicyPayload(reorderedCanonicalPayload),
+  }
+  const historicalReordered = await loadStrategyProductionPolicyForHistoricalReconstructionBefore(
+    new FakePolicyD1({ [reorderedPolicyRow.policy_id]: reorderedPolicyRow }) as any,
+    '2026-08-18',
+    ['active-a', 'active-b', 'active-c'],
+  )
+  assert.deepEqual(
+    [...(historicalReordered?.state.quarantined_strategy_ids ?? [])].sort(),
+    ['active-b', 'active-c'],
+    'canonical parity must treat strategy-id collections as order-insensitive while preserving all members',
+  )
+  await assert.rejects(
+    () => loadStrategyProductionPolicyForHistoricalReconstructionBefore(
+      new FakePolicyD1({
+        [reorderedPolicyRow.policy_id]: {
+          ...reorderedPolicyRow,
+          quarantined_strategy_ids_json: JSON.stringify(['active-b']),
+        },
+      }) as any,
+      '2026-08-18',
+      ['active-a', 'active-b', 'active-c'],
+    ),
+    /historical_strategy_production_policy_canonical_parity_failed/,
+    'canonical parity must still fail when collection membership differs',
+  )
   await assert.rejects(
     () => loadStrategyProductionPolicyForHistoricalReconstructionBefore(
       new FakePolicyD1({

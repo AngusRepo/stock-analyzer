@@ -6,6 +6,9 @@ const manifest = JSON.parse(fs.readFileSync('../infra/gcp-scheduler-jobs.json', 
   jobs: Array<{ id: string; task: string }>
 }
 const registryIds = new Set(SCHEDULER_STATUS_JOB_DEFS.map((job) => job.id))
+const allocatorLifecycle = SCHEDULER_STATUS_JOB_DEFS.find((job) => job.id === 'allocator-ev-lifecycle-watchdog')
+assert.equal(allocatorLifecycle?.group, 'daily', 'allocator EV lifecycle watchdog is an independent scheduled recovery root')
+assert.equal(allocatorLifecycle?.chainIndex, undefined, 'allocator EV lifecycle watchdog must not claim a primary-chain position')
 const missingPhysicalRoots = manifest.jobs
   .filter((job) => !registryIds.has(job.id) && !registryIds.has(job.task))
   .map((job) => job.id)

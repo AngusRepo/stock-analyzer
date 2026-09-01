@@ -158,7 +158,6 @@ const SCOPES: ChainScope[] = [
       ['allocator-ev-feature-snapshot-backfill'],
       ['verify-v2'],
       ['post-verify-chain'],
-      ['allocator-ev-lifecycle-watchdog'],
       ['model-ic-rolling'],
       ['linucb-reward-ledger'],
       ['adapt'],
@@ -177,6 +176,16 @@ const SCOPES: ChainScope[] = [
         columns: [
           ['dataset-snapshot-export'],
           ['active8-oof-daily'],
+        ],
+      },
+      {
+        id: 'allocator-ev-lifecycle-recovery',
+        label: 'Allocator EV lifecycle recovery',
+        description: '獨立每 10 分鐘檢查 replay maturity 與 lineage；不是 Verify callback 的下游，也不代表主鏈可越過 blocker。',
+        anchorId: 'allocator-ev-readiness',
+        relation: 'shared_context',
+        columns: [
+          ['allocator-ev-lifecycle-watchdog'],
         ],
       },
     ],
@@ -316,10 +325,25 @@ function isAllocatorSafeAbstention(job?: SchedulerJob): boolean {
   return /no_validated_expected_return_lane|no_eligible_owner|expected_return_serving_state=no_eligible_owner/i.test(evidence)
 }
 
+function isExpectedEvidenceNoop(job?: SchedulerJob): boolean {
+  if (!job || job.lastStatus !== 'skip') return false
+  const evidence = [job.lastError, job.summary, ...(job.details ?? [])]
+    .filter(Boolean)
+    .join(' ')
+  if (job.id === 'allocator-ev-feature-snapshot-backfill') {
+    return /not applicable: Active8 evidence-only authority attested[\s\S]*actionable=0[\s\S]*production_effect=0/i.test(evidence)
+  }
+  if (job.id === 'verify-v2') {
+    return /pending predictions do not yet have five stock-specific trading sessions[\s\S]*verified=0/i.test(evidence)
+  }
+  return false
+}
+
 function visualStatus(job?: SchedulerJob): VisualStatus {
   if (!job) return 'not_started'
   if (job.lastStatus === 'success') return 'completed'
   if (isAllocatorSafeAbstention(job)) return 'noop'
+  if (isExpectedEvidenceNoop(job)) return 'noop'
   if (job.id === 'intraday-check' && job.lastStatus === 'skip') return 'noop'
   if (job.lastStatus === 'running') return 'running'
   if (job.lastStatus === 'waiting') return 'waiting'
@@ -339,6 +363,9 @@ function formatReplayDate(runDate?: string | null): string {
 function statusLabel(job?: SchedulerJob): string {
   const label = STATUS_LABEL[visualStatus(job)]
   if (isAllocatorSafeAbstention(job)) return 'Checked · safe abstention'
+  if (isExpectedEvidenceNoop(job)) {
+    return job?.id === 'verify-v2' ? 'Checked · awaiting maturity' : 'Checked · not applicable'
+  }
   if (job?.recoveredFromStatus === 'failed' && job.lastStatus === 'success') {
     const replay = job.statusScope === 'historical_replay' && job.statusRunDate ? `Historical replay \u00b7 ${formatReplayDate(job.statusRunDate)} \u00b7 ` : ''
     return `${replay}Recovered`
@@ -363,8 +390,8 @@ function StageStatusMarker({ status }: { status: VisualStatus }) {
 }
 
 function statusPriority(status: VisualStatus): number {
-  if (status === 'running') return 0
-  if (status === 'blocked') return 1
+  if (status === 'blocked') return 0
+  if (status === 'running') return 1
   if (status === 'waiting') return 2
   if (status === 'completed' || status === 'noop') return 3
   if (status === 'out_of_window') return 4

@@ -88,6 +88,7 @@ const TASK_NAMES: Record<string, string> = {
   'legacy-learning-deletion-readiness': 'Legacy Learning Deletion Readiness',
   'strategy-learning-finalize': 'Strategy Learning Finalizer',
   'data-domain-shadow-backfill': 'Data Domain Shadow Backfill',
+  'data-domain-shadow-backfill-next': 'Multi-D1 Sequential Backfill',
   'intraday-check': 'Limit Buy + SL/TP',
   'intraday-rescore': 'Intraday Re-score',
   'rescore-10': 'Intraday Re-score 10:00',

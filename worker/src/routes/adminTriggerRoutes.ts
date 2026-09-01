@@ -486,6 +486,7 @@ export function createAdminTriggerRoutes(deps: TriggerRouteDeps) {
         duration_ms: Date.now() - t0,
         run_id: syncRunId,
         run_date: requestedRunDate,
+        strict: task === 'data-domain-shadow-backfill-next',
       })
       return c.json({
         success: true,

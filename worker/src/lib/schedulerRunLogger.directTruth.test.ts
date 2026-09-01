@@ -82,6 +82,40 @@ async function main() {
     assert.equal(rows.find((row) => row.task === 's12-replay-backfill')?.status, 'skipped')
   }
 
+  {
+    const coordinatorReceipt = {
+      task: 'data-domain-shadow-backfill-next',
+      status: 'success',
+      summary: 'data_domain_shadow_backfill_next all_domains_caught_up=true',
+      duration_ms: 4852,
+      timestamp: '2026-08-31T16:30:05.380Z',
+      run_date: date,
+    }
+    const directWorkerReceipt = {
+      task: 'data-domain-shadow-backfill',
+      status: 'skipped',
+      summary: 'domain=ops last_batch_rows=0 status=complete',
+      duration_ms: 0,
+      timestamp: '2026-08-31T16:00:00.000Z',
+      run_date: date,
+    }
+    const kv = new FakeKv(new Map<string, Stored>([
+      [`scheduler:run:data-domain-shadow-backfill-next:${date}`, coordinatorReceipt],
+      [`scheduler:run:data-domain-shadow-backfill:${date}`, directWorkerReceipt],
+    ]))
+    const rows = await getSchedulerRunLogs(kv as any, date)
+    assert.equal(
+      rows.find((row) => row.task === 'data-domain-shadow-backfill-next')?.summary,
+      coordinatorReceipt.summary,
+      'the coordinator all-domains-caught-up receipt must survive canonical registry filtering',
+    )
+    assert.equal(
+      rows.find((row) => row.task === 'data-domain-shadow-backfill')?.summary,
+      directWorkerReceipt.summary,
+      'the coordinator receipt must not overwrite the direct worker receipt',
+    )
+  }
+
   console.log('schedulerRunLogger direct truth tests passed')
 }
 

@@ -32,3 +32,4 @@ assert(logger.includes('if (result.strict) throw error'), 'schedulerRunLogger mu
 assert(route.includes("../lib/schedulerRunLogger"), 'admin trigger must use schedulerRunLogger naming')
 assert(route.includes('proposedRunId: buildRunId(task)') && route.includes('const syncRunId = executionRunId'), 'every sync retry must use its admitted unique scheduler ticket identity')
 assert((route.match(/run_id: syncRunId/g) ?? []).length >= 2, 'sync success and failure logs must both carry the retry identity')
+assert(route.includes("strict: task === 'data-domain-shadow-backfill-next'"), 'backfill coordinator must fail closed when its retirement receipt cannot be persisted')

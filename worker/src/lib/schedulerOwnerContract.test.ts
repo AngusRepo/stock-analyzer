@@ -134,6 +134,7 @@ assert(externalEvidence && !externalEvidence.query, 'external evidence must use 
 assert(weeklyCleanup && !weeklyCleanup.query, 'weekly cleanup must use observable async execution instead of sync request timeout')
 assert(schedulerRunLogger.includes("'s12-smcvwap-calibration': 'S12 SMC/VWAP Calibration'"), 'S12 scheduler result must survive canonical log registry filtering')
 assert(schedulerRunLogger.includes("'weekly-readiness': 'Weekly Readiness'") && schedulerRunLogger.includes("'monthly-readiness': 'Monthly Readiness'"), 'cadence roots must survive canonical log registry filtering')
+assert(schedulerRunLogger.includes("'data-domain-shadow-backfill-next': 'Multi-D1 Sequential Backfill'"), 'backfill coordinator terminal receipt must survive canonical log registry filtering')
 
 for (const replay of [
   ['adaptive-meta-policy-replay', '40 22 * * 6'],

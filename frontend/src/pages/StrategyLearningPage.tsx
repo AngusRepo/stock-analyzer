@@ -464,7 +464,7 @@ function StrategyGateDetails({ row, gate, onOpenAtomicV7 }: { row: LearningRow; 
         <span className="font-semibold text-slate-300">{isActiveIncumbent ? 'Active：成熟度與權重監控' : 'Candidate evidence → Active：Atomic V7'}</span>
         <span className="text-slate-500">門檻路由比較（原 Shadow A；非 lifecycle stage）</span>
       </div>
-      <p className="mb-2 rounded-md border border-emerald-400/20 bg-emerald-400/[0.05] px-2 py-1.5 text-[10px] leading-4 text-emerald-100/80">{isActiveIncumbent ? 'Active 不再用共用勝率或 MDD hard gate 判定績效降溫；v3 依每個策略自己的成熟報酬、成熟日期與 rolling date-return 分配 contribution。Threshold route comparison 只校準送評路由，不接管策略 lifecycle。' : '共用 hard gate 只管 Candidate 的資料可比性與成熟度。平均 Alpha、match rate、hit rate、MDD、LCB90 保留為診斷；正式升級只由 Atomic V7 相對替換管理。'}</p>
+      <p className="mb-2 rounded-md border border-emerald-400/20 bg-emerald-400/[0.05] px-2 py-1.5 text-[10px] leading-4 text-emerald-100/80">{isActiveIncumbent ? 'Active 不再用共用勝率或 MDD hard gate 判定績效降溫；正式 policy 由每個策略自己的 primary-horizon OOS promoted calibration 管理：連續兩個不同 knowledge cutoff 負分才降溫，連續兩個正分才恢復。資料與風控 readiness 仍採 fail-closed；Threshold route comparison 只校準送評路由，不接管策略 lifecycle。' : '共用 hard gate 只管 Candidate 的資料可比性與成熟度。平均 Alpha、match rate、hit rate、MDD、LCB90 保留為診斷；正式升級只由 Atomic V7 相對替換管理。'}</p>
       <section aria-label="共用成熟度門檻">
         <h3 className="text-xs font-semibold text-slate-200">共用成熟度門檻</h3>
         <div className="mt-1 grid gap-x-4 md:grid-cols-2">{hardGates.map((item) => <GateMetric key={item.label} {...item} />)}</div>

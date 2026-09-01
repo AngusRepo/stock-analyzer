@@ -35,6 +35,8 @@ assert(page.includes("row.status !== 'retired'"), 'Retired strategies should sta
 assert(page.includes('rows={[selectedRow]}'), 'The evidence workspace must render one selected strategy instead of every card at once')
 assert(page.includes('xl:grid-cols-[minmax(0,10fr)_minmax(0,7fr)_minmax(0,3fr)]'), 'Desktop workspace, stage transition, and lineage inspector must use the requested 5:3.5:1.5 ratio')
 assert(page.includes('共用 hard gate 只管 Candidate 的資料可比性與成熟度') && page.includes('Active 不再用共用勝率或 MDD hard gate'), 'Stage transition must separate Candidate maturity gates from Active per-strategy cooldown evidence')
+assert(page.includes('primary-horizon OOS promoted calibration') && page.includes('連續兩個不同 knowledge cutoff 負分才降溫') && page.includes('連續兩個正分才恢復'), 'Active cooldown copy must describe the formal promoted-owner hysteresis')
+assert(!page.includes('v3 依每個策略自己的成熟報酬、成熟日期與 rolling date-return 分配 contribution'), 'Retired rolling date-return contribution copy must not return')
 assert(page.includes('sv-readable-card-content rounded-2xl') && page.includes('<h2 className="truncate text-[15px] font-bold text-slate-100">Stage transition</h2>'), 'Stage transition must use the homepage 15px bold title role and readable body typography')
 assert(page.includes('共用成熟度門檻') && page.includes('觀察指標（不判定通過／失敗）'), 'Hard gates and diagnostics must render as separate semantic groups')
 assert(page.includes('Active 權重輸入 · 非門檻') && page.includes('僅供診斷 · 非門檻'), 'Diagnostic values must state their non-gating role')

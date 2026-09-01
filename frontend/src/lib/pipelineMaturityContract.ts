@@ -114,7 +114,15 @@ export type PipelineMaturityStage = {
         model_version: string | null
         validation_schema_version: string | null
         business_date: string | null
+        previous_business_date: string | null
+        evidence_comparable_to_previous_business_date: boolean | null
+        evidence_advanced_from_previous_business_date: boolean | null
+        oof_min_date: string | null
         oof_max_date: string | null
+        oof_date_count: number | null
+        oof_row_count: number | null
+        sample_count: number | null
+        date_count: number | null
         updated_at: string | null
       }
       runtime_guard?: {

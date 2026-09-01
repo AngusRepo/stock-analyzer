@@ -16,6 +16,8 @@ const base: StrategyLearningRecoveryRow = {
   attempt_count: 38,
   last_error: null,
   updated_at: '2026-08-31 16:38:28',
+  production_authority_intent: 1,
+  policy_closure_status: 'pending',
 }
 
 assert.deepEqual(
@@ -59,9 +61,9 @@ assert(source.includes("status IN ('queued','running')"), 'watchdog must not aut
 assert(source.includes('business_date BETWEEN date(?, ?) AND ?'), 'watchdog must resolve the latest cross-midnight incomplete run')
 assert(source.includes("status='running' AND (lease_expires_at IS NULL OR lease_expires_at<=CURRENT_TIMESTAMP)"), 'an active newer run must not starve an older expired recovery')
 assert(source.includes("stage='post_verify_chain'"), 'watchdog must require post-verify authority')
-assert(source.includes('authority.canonical_run_id !== row.canonical_run_id'), 'watchdog must fence canonical lineage')
-assert(source.includes("force: false"), 'watchdog recovery must not claim production authority')
-assert(source.includes('policyMutationAllowed: false'), 'watchdog recovery must remain evidence-only')
+assert(source.includes('authority?.canonical_run_id !== row.canonical_run_id'), 'watchdog must fence canonical lineage')
+assert(source.includes('productionAuthorityIntent: Number(row.production_authority_intent ?? 0) === 1'), 'watchdog must preserve durable live authority intent')
+assert(source.includes('authority=revalidate_at_finalizer'), 'watchdog must defer current authority validation to the canonical finalizer')
 assert(source.includes('strategy-learning:watchdog-dispatch:'), 'watchdog must fence duplicate queue dispatches')
 assert(source.includes('DISPATCH_FENCE_TTL_SECONDS'), 'dispatch fence must expire for bounded retry')
 assert(tasks.includes("'strategy-learning-watchdog'"), 'admin task map must expose the dedicated watchdog')

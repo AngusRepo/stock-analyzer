@@ -42,6 +42,9 @@ const METRIC_LABELS: Record<string, string> = {
   absolute_spread_lcb90: '候選 Route 絕對報酬價差 LCB90', challenger_incumbent_delta_lcb90: '候選相對現行 Route 連續權重增量 LCB90',
   brier: '機率誤差（Brier，需優於基準）', walk_forward: '離線候選跨窗驗證', strict_pit_rows: '正式 L4 PIT 樣本列數',
   strict_pit_dates: '正式 L4 PIT 交易日數', shadow_walk_forward: '最新影子候選跨窗驗證', frozen_forward_quality: '固定 Active-8 cohort 的因果影子品質',
+  shadow_usable_samples: '最新監控封包 usable samples', shadow_usable_dates: '最新監控封包 usable dates',
+  shadow_oof_rows: '最新監控封包 OOF rows', shadow_oof_max_date: '最新監控封包 OOF 截止日',
+  shadow_evidence_advanced: '相較前一監控業務日是否有新增成熟 evidence',
   frozen_forward_dates: '固定 Active-8 cohort 的因果影子交易日數', structure_samples: 'S12 影子結構樣本', structure_dates: 'S12 影子結構交易日',
   execution_samples: 'S12 影子實際執行樣本', execution_dates: 'S12 影子實際執行交易日', selection_corr_lcb90: '選股相關性 90% 保守下界（診斷）',
   selection_spread_lcb90: '選股價差報酬 90% 保守下界（診斷）', champion_corr_delta: '相對正式 L4 的相關性增量下界（診斷）',
@@ -57,6 +60,9 @@ const FIELD_LABELS: Record<string, string> = {
   Reason: '原因', State: '服務狀態', Model: '模型版本', Contract: '資料契約版本', Mode: '服務模式', 'Effective at': '生效時間',
   'Observed at': '觀測時間', Identity: '身分／lineage 確認', Validation: '驗證版本', 'Run date': '執行日期', 'OOF max': '樣本外證據最晚日期',
   Cohort: '固定評估 cohort', Evaluation: '評估 ID', 'Business date': '業務日期', Fingerprint: '模型指紋', 'Evaluable dates': '可評估交易日',
+  'Previous business date': '前一監控業務日', 'Evidence comparable': '是否同 cohort／同 evaluator 可比較',
+  'Evidence advanced': '是否新增成熟 evidence', 'OOF min': '樣本外證據最早日期', 'OOF dates': '樣本外交易日數',
+  'OOF rows': '樣本外列數', 'Usable samples': '可用樣本數', 'Usable dates': '可用交易日數',
   'Degraded streak': '連續惡化日數', 'Recovery streak': '連續恢復日數', 'Last date': '最新預測日期', 'Lineage bound': '是否綁定同一產物 lineage',
 }
 
@@ -263,6 +269,21 @@ function StageRow({ stage }: { stage: PipelineMaturityStage }) {
         ? 'Production：learned expected-return artifact 正式服務中'
         : `Production：serving pointer ${evidenceScopes.serving_pointer.availability}`
     : null
+  const frozenForward = evidenceScopes?.frozen_forward
+  const scopedEvidenceTruth = scopedCandidateStage && evidenceScopes?.offline_candidate
+    ? [
+      `離線升級候選截止日 ${evidenceScopes.offline_candidate.source_run_date ?? '缺漏'}`,
+      `監控封包業務日 ${frozenForward?.business_date ?? '缺漏'}`,
+      `監控 OOF 截止日 ${frozenForward?.oof_max_date ?? '缺漏'}`,
+      frozenForward?.evidence_advanced_from_previous_business_date === true
+        ? '相較前一監控業務日：有新增成熟 evidence'
+        : frozenForward?.evidence_advanced_from_previous_business_date === false
+          ? '相較前一監控業務日：沒有新增成熟 evidence（只有封包日期前進）'
+          : frozenForward?.previous_business_date
+            ? '相較前一監控業務日：lineage 不同，不可直接比較'
+            : '相較前一監控業務日：首次證據',
+    ].join(' · ')
+    : null
   const evidenceScopeRows = [
     evidenceScopes?.serving_pointer ? {
       scope: 'serving_pointer',
@@ -284,11 +305,11 @@ function StageRow({ stage }: { stage: PipelineMaturityStage }) {
     } : null,
     evidenceScopes?.offline_candidate ? {
       scope: 'offline_candidate',
-      title: `${evidenceScopes.offline_candidate.cadence} 升級候選（尚未正式服務）`,
+      title: `${evidenceScopes.offline_candidate.cadence} 離線升級候選（日期不隨 nightly monitoring 自動前進）`,
       rows: [
         ['Cadence', evidenceScopes.offline_candidate.cadence],
         ['Role', evidenceScopes.offline_candidate.role],
-        ['Date means', evidenceScopes.offline_candidate.date_semantic],
+        ['Date means', '離線候選本身的資料／OOF 截止日'],
         ['Availability', evidenceScopes.offline_candidate.availability],
         ['Reason', evidenceScopes.offline_candidate.reason_code],
         ['Identity', evidenceScopes.offline_candidate.identity_assurance],
@@ -309,12 +330,22 @@ function StageRow({ stage }: { stage: PipelineMaturityStage }) {
         ['Model', evidenceScopes.frozen_forward.model_version],
         ['Validation', evidenceScopes.frozen_forward.validation_schema_version],
         ['Business date', evidenceScopes.frozen_forward.business_date],
+        ['Previous business date', evidenceScopes.frozen_forward.previous_business_date],
+        ['Evidence comparable', evidenceScopes.frozen_forward.evidence_comparable_to_previous_business_date == null ? null : evidenceScopes.frozen_forward.evidence_comparable_to_previous_business_date ? '是' : '否'],
+        ['Evidence advanced', evidenceScopes.frozen_forward.evidence_advanced_from_previous_business_date == null
+          ? evidenceScopes.frozen_forward.previous_business_date ? '不可比較（lineage 不同）' : '首次證據'
+          : evidenceScopes.frozen_forward.evidence_advanced_from_previous_business_date ? '是' : '否，只有封包日期前進'],
         ['Cadence', evidenceScopes.frozen_forward.cadence],
         ['Role', evidenceScopes.frozen_forward.role],
-        ['Date means', evidenceScopes.frozen_forward.date_semantic],
+        ['Date means', '監控封包的執行業務日，不等於成熟 OOF 有增加'],
         ['Availability', evidenceScopes.frozen_forward.availability],
         ['Reason', evidenceScopes.frozen_forward.reason_code],
+        ['OOF min', evidenceScopes.frozen_forward.oof_min_date],
         ['OOF max', evidenceScopes.frozen_forward.oof_max_date],
+        ['OOF dates', evidenceScopes.frozen_forward.oof_date_count == null ? null : String(evidenceScopes.frozen_forward.oof_date_count)],
+        ['OOF rows', evidenceScopes.frozen_forward.oof_row_count == null ? null : String(evidenceScopes.frozen_forward.oof_row_count)],
+        ['Usable samples', evidenceScopes.frozen_forward.sample_count == null ? null : String(evidenceScopes.frozen_forward.sample_count)],
+        ['Usable dates', evidenceScopes.frozen_forward.date_count == null ? null : String(evidenceScopes.frozen_forward.date_count)],
       ],
     } : null,
     evidenceScopes?.runtime_guard ? {
@@ -356,6 +387,7 @@ function StageRow({ stage }: { stage: PipelineMaturityStage }) {
             <Badge variant="outline" className={`h-auto whitespace-normal rounded-full px-2 py-0.5 text-[11px] ${mode.cls}`}>{mode.label}</Badge>
           </div>
           {productionServingState ? <p className="mt-2 text-xs font-semibold leading-5 text-emerald-200">{productionServingState}</p> : null}
+          {scopedEvidenceTruth ? <p className="mt-2 rounded-md border border-cyan-300/15 bg-cyan-300/[0.05] px-2.5 py-2 text-[11px] leading-5 text-cyan-100">{scopedEvidenceTruth}</p> : null}
         </div>
 
         <div className="min-w-0">
@@ -408,9 +440,8 @@ function StageRow({ stage }: { stage: PipelineMaturityStage }) {
               />
               <MetricSection
                 title="Frozen-forward 監控（comparison-only）"
-                description="只觀察同一 candidate 的 forward 品質；沒有決策權，lineage 阻擋只顯示一次且不算 promotion blocker。"
+                description="監控業務日只代表封包有執行；請同時看 usable samples/dates、OOF rows/max 與『是否新增成熟 evidence』，才算實質進度。"
                 metrics={monitoringMetrics}
-                collapsible
               />
               <MetricSection
                 title="診斷與不適用欄位（非必要門檻）"
@@ -457,10 +488,10 @@ function StageRow({ stage }: { stage: PipelineMaturityStage }) {
             <div className="border-t border-white/[0.07] pt-3">
               <p className="flex items-center gap-1.5 text-xs font-semibold text-slate-500"><Database className="h-3.5 w-3.5" /> 資料來源與版本 lineage</p>
               <dl className="mt-2 grid grid-cols-[84px_minmax(0,1fr)] gap-x-2 gap-y-1 text-[11px] leading-4">
-                <dt className="text-slate-600">資料截止日</dt><dd className="sv-num break-all text-slate-400">{stage.lineage.data_cutoff_date ?? stage.lineage.evidence_date ?? '資料尚未具備'}</dd>
+                <dt className="text-slate-600">{scopedCandidateStage ? '離線升級候選截止日' : '資料截止日'}</dt><dd className="sv-num break-all text-slate-400">{stage.lineage.data_cutoff_date ?? stage.lineage.evidence_date ?? '資料尚未具備'}</dd>
                 <dt className="text-slate-600">成熟結果已知截至</dt><dd className="sv-num break-all text-slate-400">{stage.lineage.mature_outcome_max_date ?? '尚未發布'}</dd>
                 <dt className="text-slate-600">OOF 訊號截止日</dt><dd className="sv-num break-all text-slate-400">{stage.lineage.oof_applicable === false ? '不適用（此階段不是 OOF）' : stage.lineage.oof_max_date ?? `資料尚未具備 · ${stage.lineage.oof_unavailable_reason ?? '原因未提供'}`}</dd>
-                <dt className="text-slate-600">固定樣本監控業務日</dt><dd className="sv-num break-all text-slate-400">{stage.lineage.frozen_forward_business_date ?? '不適用／尚未具備'}</dd>
+                <dt className="text-slate-600">監控封包業務日（非成熟進度）</dt><dd className="sv-num break-all text-slate-400">{stage.lineage.frozen_forward_business_date ?? '不適用／尚未具備'}</dd>
                 {stage.lineage.cadence ? <><dt className="text-slate-600">更新頻率</dt><dd className="sv-num break-all text-slate-400">{stage.lineage.cadence}</dd></> : null}
                 {stage.lineage.role ? <><dt className="text-slate-600">用途角色</dt><dd className="sv-num break-all text-slate-400">{stage.lineage.role}</dd></> : null}
                 <dt className="text-slate-600">前次證據</dt><dd className="sv-num break-all text-slate-400">{previousHistory?.evidence_date ?? '首次證據'}</dd>

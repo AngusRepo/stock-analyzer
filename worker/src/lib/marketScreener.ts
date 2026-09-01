@@ -106,6 +106,7 @@ const SCREENER_FUNNEL_AUDIT_CRITICAL_STAGES = new Set([
   'l15_ml_slate_queue',
   'layer2_timesfm_enrichment',
   'strategy_pool_ml_queue',
+  'pit_residual_momentum_shadow_base',
   'pit_residual_momentum_shadow',
 ])
 
@@ -4389,17 +4390,38 @@ export async function runBottomUpScreener(env: Bindings, runDate?: string | null
   // Breadth and flow diffusion are confirmation diagnostics only; production score stays unchanged.
   const sectorHeatScores: SectorHeatScore[] = []
   if (scored.length > 0) {
+    const eligibleCandidates = scored
+      .filter((candidate) => overlayEligibleSymbols.has(candidate.symbol))
+      .map((candidate) => ({ symbol: candidate.symbol, name: candidate.name, score: candidate.score }))
+    eligibleCandidates.forEach((candidate) => {
+      pushFunnelItem(funnelItems, {
+        symbol: candidate.symbol,
+        name: candidate.name,
+        stage: 'pit_residual_momentum_shadow_base',
+        decision: 'observe',
+        reasonCode: 'pit_residual_shadow_base_receipt',
+        scoreBefore: candidate.score,
+        scoreAfter: candidate.score,
+        evidence: {
+          applicationMode: PIT_RESIDUAL_SHADOW_APPLICATION_MODE,
+          candidateSetMutationAllowed: PIT_RESIDUAL_CANDIDATE_SET_MUTATION_ALLOWED,
+          decisionEffect: 'none',
+          baseReceipt: true,
+          baseReceiptTiming: 'post_l1_breadth_pre_residual_shadow',
+        },
+      })
+    })
     try {
       const learningDb = requireLearningShadowDatabase(env)
-      const eligibleCandidates = scored
-        .filter((candidate) => overlayEligibleSymbols.has(candidate.symbol))
-        .map((candidate) => ({ symbol: candidate.symbol, score: candidate.score }))
       const snapshot = await loadPitResidualShadowSnapshot(
         learningDb,
         eligibleCandidates.map((candidate) => candidate.symbol),
         endDate,
       )
-      const counterfactuals = buildPitResidualCounterfactuals(eligibleCandidates, snapshot)
+      const counterfactuals = buildPitResidualCounterfactuals(
+        eligibleCandidates.map((candidate) => ({ symbol: candidate.symbol, score: candidate.score })),
+        snapshot,
+      )
       const candidateBySymbol = new Map(scored.map((candidate) => [candidate.symbol, candidate]))
       for (const row of counterfactuals) {
         const candidate = candidateBySymbol.get(row.symbol)

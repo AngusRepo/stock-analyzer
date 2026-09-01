@@ -103,6 +103,7 @@ export interface ExpectedReturnShadowDbRow {
   business_date: string
   model_name: ExpectedReturnMaturityModel
   model_version: string
+  oof_min_date: string
   oof_max_date: string
   oof_date_count: number | string
   oof_row_count: number | string
@@ -110,6 +111,15 @@ export interface ExpectedReturnShadowDbRow {
   policy_decision: string
   validation_packet_json: string
   updated_at: string | null
+  previous_business_date?: string | null
+  previous_cohort_id?: string | null
+  previous_base_manifest_checksum?: string | null
+  previous_evaluator_contract_checksum?: string | null
+  previous_oof_max_date?: string | null
+  previous_oof_date_count?: number | string | null
+  previous_oof_row_count?: number | string | null
+  previous_sample_count?: number | string | null
+  previous_date_count?: number | string | null
 }
 
 export interface ExpectedReturnShadowEvidence {
@@ -125,6 +135,7 @@ export interface ExpectedReturnShadowEvidence {
   business_date: string
   model_name: ExpectedReturnMaturityModel
   model_version: string
+  oof_min_date: string
   oof_max_date: string
   oof_date_count: number
   oof_row_count: number
@@ -150,6 +161,9 @@ export interface ExpectedReturnShadowEvidence {
   walk_forward_passed: boolean | null
   execution_decision: string | null
   execution_probability_decision: string | null
+  previous_business_date: string | null
+  evidence_comparable_to_previous_business_date: boolean | null
+  evidence_advanced_from_previous_business_date: boolean | null
 }
 
 type JsonRecord = Record<string, any>
@@ -434,6 +448,7 @@ export function adaptExpectedReturnShadow(row: ExpectedReturnShadowDbRow): Expec
     business_date: row.business_date,
     model_name: row.model_name,
     model_version: row.model_version,
+    oof_min_date: row.oof_min_date,
     oof_max_date: row.oof_max_date,
     oof_date_count: finiteOrNull(row.oof_date_count) ?? 0,
     oof_row_count: finiteOrNull(row.oof_row_count) ?? 0,
@@ -459,5 +474,21 @@ export function adaptExpectedReturnShadow(row: ExpectedReturnShadowDbRow): Expec
     walk_forward_passed: boolOrNull(walkForward.passed),
     execution_decision: stringOrNull(record(shadowDiagnostics.conditional_execution_return_model).decision),
     execution_probability_decision: stringOrNull(record(shadowDiagnostics.execution_probability_model).decision),
+    previous_business_date: stringOrNull(row.previous_business_date),
+    evidence_comparable_to_previous_business_date: !row.previous_business_date
+      ? null
+      : row.cohort_id === stringOrNull(row.previous_cohort_id)
+        && row.base_manifest_checksum === stringOrNull(row.previous_base_manifest_checksum)
+        && row.evaluator_contract_checksum === stringOrNull(row.previous_evaluator_contract_checksum),
+    evidence_advanced_from_previous_business_date: !row.previous_business_date
+      || row.cohort_id !== stringOrNull(row.previous_cohort_id)
+      || row.base_manifest_checksum !== stringOrNull(row.previous_base_manifest_checksum)
+      || row.evaluator_contract_checksum !== stringOrNull(row.previous_evaluator_contract_checksum)
+      ? null
+      : row.oof_max_date !== stringOrNull(row.previous_oof_max_date)
+        || (finiteOrNull(row.oof_date_count) ?? 0) !== (finiteOrNull(row.previous_oof_date_count) ?? 0)
+        || (finiteOrNull(row.oof_row_count) ?? 0) !== (finiteOrNull(row.previous_oof_row_count) ?? 0)
+        || finiteOrNull(sampleAudit.sample_count) !== finiteOrNull(row.previous_sample_count)
+        || finiteOrNull(sampleAudit.date_count) !== finiteOrNull(row.previous_date_count),
   }
 }

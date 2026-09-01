@@ -161,7 +161,15 @@ export interface PipelineMaturityStage {
         model_version: string | null
         validation_schema_version: string | null
         business_date: string | null
+        previous_business_date: string | null
+        evidence_comparable_to_previous_business_date: boolean | null
+        evidence_advanced_from_previous_business_date: boolean | null
+        oof_min_date: string | null
         oof_max_date: string | null
+        oof_date_count: number | null
+        oof_row_count: number | null
+        sample_count: number | null
+        date_count: number | null
         updated_at: string | null
       }
       runtime_guard?: {
@@ -604,7 +612,7 @@ export async function buildPipelineDecisionMaturityPacket(
                p.cohort_id, p.base_manifest_checksum,
                p.extension_manifest_checksum, p.artifact_path, p.artifact_checksum,
                p.business_date, p.model_name, p.model_version,
-               p.oof_max_date, p.oof_date_count, p.oof_row_count,
+               p.oof_min_date, p.oof_max_date, p.oof_date_count, p.oof_row_count,
                p.quality_decision, p.policy_decision, p.validation_packet_json, p.updated_at,
                ROW_NUMBER() OVER (
                  PARTITION BY p.model_name
@@ -617,16 +625,42 @@ export async function buildPipelineDecisionMaturityPacket(
            AND p.base_manifest_checksum=b.base_manifest_checksum
            AND p.extension_manifest_checksum=b.extension_manifest_checksum
          WHERE p.policy_decision='shadow_only'
+      ), prior_ranked AS (
+        SELECT p.business_date, p.model_name, p.cohort_id,
+               p.base_manifest_checksum, p.evaluator_contract_checksum,
+               p.oof_max_date, p.oof_date_count, p.oof_row_count,
+               json_extract(p.validation_packet_json, '$.sample_audit.sample_count') sample_count,
+               json_extract(p.validation_packet_json, '$.sample_audit.date_count') date_count,
+               ROW_NUMBER() OVER (
+                 PARTITION BY p.model_name
+                 ORDER BY p.business_date DESC, p.updated_at DESC, p.evaluation_id DESC
+               ) ordinal
+          FROM expected_return_shadow_evaluation_packets p
+          JOIN latest_batch b ON p.business_date < b.business_date
+         WHERE p.policy_decision='shadow_only'
       )
-      SELECT evaluation_id, identity_schema_version,
-             subject_artifact_checksum, evaluator_contract_checksum,
-             cohort_id, base_manifest_checksum, extension_manifest_checksum,
-             artifact_path, artifact_checksum, business_date, model_name, model_version,
-             oof_max_date, oof_date_count, oof_row_count, quality_decision,
-             policy_decision, validation_packet_json, updated_at
-        FROM ranked_batch
-       WHERE ordinal=1
-       ORDER BY model_name
+      SELECT latest.evaluation_id, latest.identity_schema_version,
+             latest.subject_artifact_checksum, latest.evaluator_contract_checksum,
+             latest.cohort_id, latest.base_manifest_checksum, latest.extension_manifest_checksum,
+             latest.artifact_path, latest.artifact_checksum,
+             latest.business_date, latest.model_name, latest.model_version,
+             latest.oof_min_date, latest.oof_max_date, latest.oof_date_count, latest.oof_row_count,
+             latest.quality_decision, latest.policy_decision,
+             latest.validation_packet_json, latest.updated_at,
+             prior.business_date previous_business_date,
+             prior.cohort_id previous_cohort_id,
+             prior.base_manifest_checksum previous_base_manifest_checksum,
+             prior.evaluator_contract_checksum previous_evaluator_contract_checksum,
+             prior.oof_max_date previous_oof_max_date,
+             prior.oof_date_count previous_oof_date_count,
+             prior.oof_row_count previous_oof_row_count,
+             prior.sample_count previous_sample_count,
+             prior.date_count previous_date_count
+        FROM ranked_batch latest
+        LEFT JOIN prior_ranked prior
+          ON prior.model_name=latest.model_name AND prior.ordinal=1
+       WHERE latest.ordinal=1
+       ORDER BY latest.model_name
     `).bind(requestedDate).all<ExpectedReturnShadowDbRow>().then((result) => result.results ?? [])),
     safeQuery(() => readCurrentExpectedReturnServingState({ ...env, DB: learningDb }, requestedDate)),
     safeQuery(() => inspectAllocatorEvMaturityCoverage(learningDb, requestedDate)),
@@ -1072,6 +1106,11 @@ export async function buildPipelineDecisionMaturityPacket(
         gateMetric('shadow_top_lcb90', 'Latest shadow top-quintile LCB90', l4Shadow?.l4_top_lcb90, 0, 'return', 'gt', { ...shadowMetricScope, scope: 'monitoring' }),
         metric('shadow_walk_forward', 'Latest shadow walk-forward', l4Shadow?.walk_forward_passed, { target: true, comparator: 'eq', unit: 'status', passed: l4Shadow?.walk_forward_passed ?? null, ...shadowMetricScope, scope: 'monitoring' }),
         metric('frozen_forward_quality', 'Active-8 cohort causal shadow quality', l4Shadow?.quality_decision ?? null, { target: 'PASS', comparator: 'eq', unit: 'status', passed: l4Shadow == null ? null : l4Shadow.quality_decision === 'PASS', ...shadowMetricScope, scope: 'monitoring' }),
+        metric('shadow_usable_samples', 'Latest shadow usable samples', l4Shadow?.sample_count ?? null, { unit: 'rows', ...shadowMetricScope, scope: 'monitoring' }),
+        metric('shadow_usable_dates', 'Latest shadow usable dates', l4Shadow?.date_count ?? null, { unit: 'dates', ...shadowMetricScope, scope: 'monitoring' }),
+        metric('shadow_oof_rows', 'Latest shadow OOF rows', l4Shadow?.oof_row_count ?? null, { unit: 'rows', ...shadowMetricScope, scope: 'monitoring' }),
+        metric('shadow_oof_max_date', 'Latest shadow OOF max date', l4Shadow?.oof_max_date ?? null, { unit: 'status', ...shadowMetricScope, scope: 'monitoring' }),
+        metric('shadow_evidence_advanced', 'Shadow evidence advanced vs previous business date', l4Shadow?.evidence_advanced_from_previous_business_date == null ? null : l4Shadow.evidence_advanced_from_previous_business_date ? 'advanced' : 'no_new_mature_evidence', { unit: 'status', ...shadowMetricScope, scope: 'monitoring', note: `前次監控業務日：${l4Shadow?.previous_business_date ?? '首次證據'}。no_new_mature_evidence 代表只產生新業務日封包，成熟 OOF/usable evidence 未增加。` }),
         metric('frozen_forward_dates', 'Active-8 cohort causal shadow dates', l4Shadow?.oof_date_count ?? null, { unit: 'dates', ...shadowMetricScope, scope: 'monitoring', note: 'Rebuilds causal validation on a fixed Active-8 cohort; it is not the production serving artifact, training evidence, or promotion evidence.' }),
       ],
       lineage: {
@@ -1144,7 +1183,15 @@ export async function buildPipelineDecisionMaturityPacket(
             model_version: l4ShadowPacket?.model_version ?? null,
             validation_schema_version: l4ShadowPacket?.validation_schema_version ?? null,
             business_date: l4ShadowPacket?.business_date ?? null,
+            previous_business_date: l4ShadowPacket?.previous_business_date ?? null,
+            evidence_comparable_to_previous_business_date: l4ShadowPacket?.evidence_comparable_to_previous_business_date ?? null,
+            evidence_advanced_from_previous_business_date: l4ShadowPacket?.evidence_advanced_from_previous_business_date ?? null,
+            oof_min_date: l4ShadowPacket?.oof_min_date ?? null,
             oof_max_date: l4ShadowPacket?.oof_max_date ?? null,
+            oof_date_count: l4ShadowPacket?.oof_date_count ?? null,
+            oof_row_count: l4ShadowPacket?.oof_row_count ?? null,
+            sample_count: l4ShadowPacket?.sample_count ?? null,
+            date_count: l4ShadowPacket?.date_count ?? null,
             updated_at: l4ShadowPacket?.updated_at ?? null,
           },
         },
@@ -1271,6 +1318,11 @@ export async function buildPipelineDecisionMaturityPacket(
         gateMetric('shadow_residual_spread_lcb90', 'Latest shadow residual spread LCB90', fusionShadow?.residual_spread_lcb90, 0, 'return', 'gt', { ...shadowMetricScope, scope: 'monitoring' }),
         metric('shadow_walk_forward', 'Latest shadow residual walk-forward', fusionShadow?.walk_forward_passed, { target: true, comparator: 'eq', unit: 'status', passed: fusionShadow?.walk_forward_passed ?? null, ...shadowMetricScope, scope: 'monitoring' }),
         metric('frozen_forward_quality', 'Active-8 cohort causal shadow quality', fusionShadow?.quality_decision ?? null, { target: 'PASS', comparator: 'eq', unit: 'status', passed: fusionShadow == null ? null : fusionShadow.quality_decision === 'PASS', ...shadowMetricScope, scope: 'monitoring' }),
+        metric('shadow_usable_samples', 'Latest shadow usable samples', fusionShadow?.sample_count ?? null, { unit: 'rows', ...shadowMetricScope, scope: 'monitoring' }),
+        metric('shadow_usable_dates', 'Latest shadow usable dates', fusionShadow?.date_count ?? null, { unit: 'dates', ...shadowMetricScope, scope: 'monitoring' }),
+        metric('shadow_oof_rows', 'Latest shadow OOF rows', fusionShadow?.oof_row_count ?? null, { unit: 'rows', ...shadowMetricScope, scope: 'monitoring' }),
+        metric('shadow_oof_max_date', 'Latest shadow OOF max date', fusionShadow?.oof_max_date ?? null, { unit: 'status', ...shadowMetricScope, scope: 'monitoring' }),
+        metric('shadow_evidence_advanced', 'Shadow evidence advanced vs previous business date', fusionShadow?.evidence_advanced_from_previous_business_date == null ? null : fusionShadow.evidence_advanced_from_previous_business_date ? 'advanced' : 'no_new_mature_evidence', { unit: 'status', ...shadowMetricScope, scope: 'monitoring', note: `前次監控業務日：${fusionShadow?.previous_business_date ?? '首次證據'}。no_new_mature_evidence 代表只產生新業務日封包，成熟 OOF/usable evidence 未增加。` }),
         metric('frozen_forward_dates', 'Active-8 cohort causal shadow dates', fusionShadow?.oof_date_count ?? null, { unit: 'dates', ...shadowMetricScope, scope: 'monitoring', note: 'Rebuilds causal validation on a fixed Active-8 cohort; it is not the production serving artifact.' }),
         metric('serving_forward_guard_state', 'Actual serving artifact T+5 guard', runtimeGuardBound ? runtimeGuard?.state ?? null : runtimeGuard ? 'IDENTITY_MISMATCH' : null, { unit: 'status', passed: runtimeGuardBound ? runtimeGuard?.state !== 'residual_bypass' : null, ...runtimeGuardMetricScope, scope: 'production', note: 'Bound by artifact ID and model fingerprint; it can only bypass the Fusion residual back to canonical L4.' }),
         metric('serving_forward_evaluable_dates', 'Serving-forward evaluable dates', runtimeGuardBound ? runtimeGuard?.evaluable_date_count ?? 0 : null, { unit: 'dates', ...runtimeGuardMetricScope, scope: 'production' }),
@@ -1365,7 +1417,15 @@ export async function buildPipelineDecisionMaturityPacket(
             identity_blockers: fusionShadowPacket?.identity_blockers ?? ['frozen_forward_packet_missing'],
             identity_valid: fusionShadowPacket?.identity_valid ?? false,
             business_date: fusionShadowPacket?.business_date ?? null,
+            previous_business_date: fusionShadowPacket?.previous_business_date ?? null,
+            evidence_comparable_to_previous_business_date: fusionShadowPacket?.evidence_comparable_to_previous_business_date ?? null,
+            evidence_advanced_from_previous_business_date: fusionShadowPacket?.evidence_advanced_from_previous_business_date ?? null,
+            oof_min_date: fusionShadowPacket?.oof_min_date ?? null,
             oof_max_date: fusionShadowPacket?.oof_max_date ?? null,
+            oof_date_count: fusionShadowPacket?.oof_date_count ?? null,
+            oof_row_count: fusionShadowPacket?.oof_row_count ?? null,
+            sample_count: fusionShadowPacket?.sample_count ?? null,
+            date_count: fusionShadowPacket?.date_count ?? null,
             updated_at: fusionShadowPacket?.updated_at ?? null,
           },
         },

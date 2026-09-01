@@ -23,20 +23,11 @@ function finitePositive(value: unknown): number {
   return Number.isFinite(parsed) && parsed > 0 ? parsed : 0
 }
 
-function isSoftPerformanceCooldown(gate: StrategyPromotionGateRow): boolean {
-  if (gate.strategy_status !== 'active' || gate.decision !== 'active_cooldown') return false
-  return gate.missing_evidence.length > 0 && gate.missing_evidence.every((reason) => (
-    reason.startsWith('active_hit_rate_lt_')
-    || reason === 'active_avg_return_not_positive'
-    || reason === 'active_date_return_lcb90_not_positive'
-  ))
-}
-
 /**
- * Keeps hard safety/data failures fail-closed while replacing the old
- * all-or-nothing performance cooldown with a bounded diversification sleeve.
- * Multi-horizon evidence only changes weights for fully mature profiles;
- * insufficient samples remain neutral instead of becoming an implicit zero.
+ * Readiness failures remain fail-closed. Performance cooldown is owned only
+ * by consecutive, OOS-promoted primary-horizon evidence and receives a
+ * bounded diversification sleeve instead of an implicit zero. Missing or
+ * unpromoted performance evidence stays neutral.
  */
 export function buildFormalOwnerWeightInputs(input: {
   strategies: readonly StrategySpec[]
@@ -49,18 +40,17 @@ export function buildFormalOwnerWeightInputs(input: {
 } {
   const activeIds = new Set(input.strategies.filter((strategy) => strategy.status === 'active').map((strategy) => strategy.id))
   const gateById = new Map(input.gates.map((gate) => [gate.strategy_id, gate]))
-  const multiplierById = new Map(input.evidenceFusion.profiles.map((profile) => [
-    profile.strategy_id,
-    profile.weight_multiplier,
-  ]))
+  const profileById = new Map(input.evidenceFusion.profiles.map((profile) => [profile.strategy_id, profile]))
   const hasPositiveAnchor = [...activeIds].some((strategyId) => (
     gateById.get(strategyId)?.allocation_eligible === true
+    && profileById.get(strategyId)?.performance_state !== 'cooldown'
     && finitePositive(input.adaptiveWeights[strategyId]) > 0
   ))
   const retainedIds = hasPositiveAnchor
     ? [...activeIds].filter((strategyId) => {
       const gate = gateById.get(strategyId)
-      return gate != null && isSoftPerformanceCooldown(gate)
+      return gate?.allocation_eligible === true
+        && profileById.get(strategyId)?.performance_state === 'cooldown'
     })
     : []
   const retainedFloor = retainedIds.length > 0
@@ -71,18 +61,19 @@ export function buildFormalOwnerWeightInputs(input: {
 
   for (const strategyId of [...activeIds].sort()) {
     const gate = gateById.get(strategyId)
-    const mode: StrategyFormalContributionMode = gate?.allocation_eligible === true
-      ? 'full'
-      : retainedIds.includes(strategyId)
-        ? 'diversity_retention'
-        : 'blocked'
+    const profile = profileById.get(strategyId)
+    const mode: StrategyFormalContributionMode = gate?.allocation_eligible !== true
+      ? 'blocked'
+      : profile?.performance_state === 'cooldown'
+        ? retainedIds.includes(strategyId) ? 'diversity_retention' : 'blocked'
+        : 'full'
     contributionModes[strategyId] = mode
     const baseWeight = mode === 'full'
       ? finitePositive(input.adaptiveWeights[strategyId])
       : mode === 'diversity_retention'
         ? retainedFloor
         : 0
-    weights[strategyId] = baseWeight * (multiplierById.get(strategyId) ?? 1)
+    weights[strategyId] = baseWeight * (profile?.weight_multiplier ?? 1)
   }
   return { weights, contributionModes }
 }
@@ -136,6 +127,19 @@ export async function refreshStrategyProductionContributionPolicy(
         ready_profile_count: evidenceFusion.active_ready_profile_count,
         calibration_run_id: evidenceFusion.calibration_run_id,
         calibration_artifact_checksum: evidenceFusion.calibration_artifact_checksum,
+        strategy_decisions: Object.fromEntries(evidenceFusion.profiles.map((profile) => [
+          profile.strategy_id,
+          {
+            primary_horizon_days: profile.primary_horizon_days,
+            performance_state: profile.performance_state,
+            performance_reason: profile.performance_reason,
+            negative_calibration_streak: profile.negative_calibration_streak,
+            positive_calibration_streak: profile.positive_calibration_streak,
+            multi_horizon_score: profile.multi_horizon_score,
+            weight_multiplier: profile.weight_multiplier,
+            contribution_mode: formalOwnerWeights.contributionModes[profile.strategy_id] ?? 'blocked',
+          },
+        ])),
       },
     },
   })

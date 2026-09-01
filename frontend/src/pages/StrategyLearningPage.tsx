@@ -4,7 +4,7 @@ import AppShell from '@/components/AppShell'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from '@/components/ui/dialog'
-import { strategyLabApi, type StrategyAdaptivePolicyState, type StrategyEvidenceProfile, type StrategyEvidenceProfilesResponse, type StrategyLearningResponse, type StrategyPromotionGate, type StrategyReplacementGateSummary, type StrategySpec } from '@/lib/api'
+import { strategyLabApi, type StrategyAdaptivePolicyState, type StrategyEvidenceProfile, type StrategyEvidenceProfilesResponse, type StrategyFormalOwnerDecision, type StrategyLearningResponse, type StrategyPromotionGate, type StrategyReplacementGateSummary, type StrategySpec } from '@/lib/api'
 
 type LearningRow = StrategyLearningResponse['specs'][number]
 const EMPTY_STRATEGY_WEIGHTS: Record<string, number> = {}
@@ -111,7 +111,7 @@ const ACTIVE_STRATEGY_HEALTH_SECTIONS: StrategyHealthSection[] = [
   {
     key: 'performance_cooldown',
     label: '績效降溫',
-    description: 'Active lifecycle 保留，但 formal contribution = 0；卡片會區分 adaptive 績效門檻與 production firewall quarantine。',
+    description: 'Active lifecycle 保留；只有連續兩次 OOS promoted primary-horizon 分數為負才降溫，並保留有上限的 diversity sleeve。',
     className: 'border-amber-400/20 bg-amber-400/[0.04]',
     countClassName: 'border-amber-400/25 bg-amber-400/[0.08] text-amber-200',
   },
@@ -198,6 +198,7 @@ function strategyHealthBucket(
   row: LearningRow,
   gate: StrategyPromotionGate | undefined,
   formalWeight: number | null,
+  ownerDecision?: StrategyFormalOwnerDecision,
 ): StrategyHealthBucket {
   if (
     !gate
@@ -210,8 +211,14 @@ function strategyHealthBucket(
   ) return 'evidence_repair'
   if (strategyLifecycleLane(row) === 'active') {
     if (formalWeight == null) return 'evidence_repair'
-    if (gate.allocation_eligible === true && formalWeight > 0) return 'execution_eligible'
-    return 'performance_cooldown'
+    if (gate.allocation_eligible !== true) {
+      return gate.missing_evidence.length > 0 && gate.missing_evidence.every((reason) => (
+        reason.startsWith('samples_lt_') || reason.startsWith('mature_dates_lt_')
+      )) ? 'accumulating' : 'evidence_repair'
+    }
+    if (ownerDecision?.performance_state === 'cooldown') return 'performance_cooldown'
+    if (formalWeight > 0) return 'execution_eligible'
+    return 'evidence_repair'
   }
   if (
     String(gate.activation_gate.status) === 'prefilter_failed'
@@ -231,7 +238,7 @@ function strategyHealthBucket(
 function strategyHealthLabel(bucket: StrategyHealthBucket): string {
   return {
     execution_eligible: '可進待買',
-    performance_cooldown: '績效降溫 · contribution 0',
+    performance_cooldown: '績效降溫 · bounded sleeve',
     evidence_repair: '資料管線待修',
     accumulating: '證據累積中',
     prefilter_failed: 'Atomic 前置門檻未過',
@@ -260,6 +267,11 @@ function gateReasonLabel(reason: string): string {
     production_owned_by_s12_calibration_not_selection_replacement: '正式權責屬於 S12 校準，不由選股策略替換流程升級',
     atomic_replacement_v7_not_accepted: '尚未取得 Atomic V7 同日配對替換接受證據',
     production_firewall_allocation_gate_blocked_reason_not_archived: 'Production firewall allocation eligibility 未通過；此版正式 artifact 未封存更細的子門檻',
+    formal_owner_two_consecutive_negative_promoted_scores: '策略專屬 primary-horizon OOS promoted 分數連續兩期為負，進入績效降溫',
+    formal_owner_cooldown_recovery_not_yet_confirmed: '曾連續兩期為負，尚未連續兩期轉正，維持績效降溫',
+    formal_owner_two_consecutive_positive_promoted_scores: '策略專屬 primary-horizon OOS promoted 分數連續兩期為正，已恢復正式權重',
+    formal_owner_default_full_until_consecutive_failure: '尚未形成連續兩期負分，不觸發績效降溫',
+    promoted_primary_horizon_calibration_missing_or_stale: '尚無 lineage 相符的 promoted primary-horizon calibration，採中性權重',
   }
   if (reason.startsWith('max_drawdown_lt_') || reason.startsWith('active_max_drawdown_lt_')) {
     return `最大回撤超過容許範圍（門檻 ${pct(Number(reason.replace(/^(active_)?max_drawdown_lt_/, ''))) }）`
@@ -270,7 +282,9 @@ function gateReasonLabel(reason: string): string {
 function formalCooldownReasonCodes(
   recommendation: StrategyAdaptivePolicyState['lifecycle_recommendations'][string] | undefined,
   productionFirewallQuarantined: boolean,
+  ownerDecision?: StrategyFormalOwnerDecision,
 ): string[] {
+  if (ownerDecision?.performance_state === 'cooldown') return [ownerDecision.performance_reason]
   if (recommendation?.reasons.length) return recommendation.reasons
   return productionFirewallQuarantined
     ? ['production_firewall_allocation_gate_blocked_reason_not_archived']
@@ -1002,6 +1016,7 @@ function StrategyLedgerGroup({
   gateById,
   profileById,
   formalPolicyWeights,
+  formalOwnerDecisions,
   requestedDate,
   empty,
 }: {
@@ -1011,6 +1026,7 @@ function StrategyLedgerGroup({
   gateById: Map<string, StrategyPromotionGate>
   profileById: Map<string, StrategyEvidenceProfile>
   formalPolicyWeights: Record<string, number>
+  formalOwnerDecisions: Record<string, StrategyFormalOwnerDecision>
   requestedDate: string | null
   empty: string
 }) {
@@ -1028,7 +1044,7 @@ function StrategyLedgerGroup({
         {rows.map((row) => {
           const gate = gateById.get(`${row.id}:${row.version}`)
           const profile = profileById.get(`${row.id}:${row.version}`)
-          const healthBucket = strategyHealthBucket(row, gate, strategyWeight(formalPolicyWeights, row.id))
+          const healthBucket = strategyHealthBucket(row, gate, strategyWeight(formalPolicyWeights, row.id), formalOwnerDecisions[row.id])
           const rewardPending = row.learning.reward_state === 'pending_maturity'
           const rewardMissing = row.learning.reward_state === 'reward_join_missing'
           const noMatches = row.learning.reward_state === 'no_matches'
@@ -1175,6 +1191,7 @@ function StrategyHealthBoard({
   rows,
   gateById,
   formalPolicyWeights,
+  formalOwnerDecisions,
   previewPolicyWeights,
   formalLifecycleRecommendations,
   formalPolicyReasonLineageAvailable,
@@ -1185,6 +1202,7 @@ function StrategyHealthBoard({
   rows: LearningRow[]
   gateById: Map<string, StrategyPromotionGate>
   formalPolicyWeights: Record<string, number>
+  formalOwnerDecisions: Record<string, StrategyFormalOwnerDecision>
   previewPolicyWeights: Record<string, number>
   formalLifecycleRecommendations: StrategyAdaptivePolicyState['lifecycle_recommendations']
   formalPolicyReasonLineageAvailable: boolean
@@ -1201,7 +1219,7 @@ function StrategyHealthBoard({
         ...section,
         rows: laneRows.filter((row) => {
           const key = `${row.id}:${row.version}`
-          return strategyHealthBucket(row, gateById.get(key), strategyWeight(formalPolicyWeights, row.id)) === section.key
+          return strategyHealthBucket(row, gateById.get(key), strategyWeight(formalPolicyWeights, row.id), formalOwnerDecisions[row.id]) === section.key
         }),
       })),
     }
@@ -1246,9 +1264,11 @@ function StrategyHealthBoard({
                       const formalWeight = strategyWeight(formalPolicyWeights, row.id)
                       const previewWeight = strategyWeight(previewPolicyWeights, row.id)
                       const formalRecommendation = formalLifecycleRecommendations[row.id]
+                      const formalOwnerDecision = formalOwnerDecisions[row.id]
                       const cooldownReasons = formalCooldownReasonCodes(
                         formalRecommendation,
                         formalQuarantinedStrategyIds.includes(row.id),
+                        formalOwnerDecision,
                       )
                       const selected = selectedKey === key
                       return (
@@ -1315,6 +1335,7 @@ function StrategyLineageInspector({
   formalPolicyWeight,
   previewPolicyWeight,
   formalPolicyRecommendation,
+  formalOwnerDecision,
   formalPolicyReasonLineageAvailable,
   formalPolicyQuarantined,
   lanes,
@@ -1326,6 +1347,7 @@ function StrategyLineageInspector({
   formalPolicyWeight: number | null
   previewPolicyWeight: number | null
   formalPolicyRecommendation: StrategyAdaptivePolicyState['lifecycle_recommendations'][string] | undefined
+  formalOwnerDecision: StrategyFormalOwnerDecision | undefined
   formalPolicyReasonLineageAvailable: boolean
   formalPolicyQuarantined: boolean
   lanes: StrategyEvidenceProfilesResponse['lanes'] | null
@@ -1335,9 +1357,10 @@ function StrategyLineageInspector({
   const formalPolicy = lanes?.formal.production_effect === true
     ? lanes.formal.formal_policy_lineage ?? null
     : null
+  const formalCooldown = formalOwnerDecision?.performance_state === 'cooldown'
   const executionEligible = gate?.allocation_eligible === true && formalPolicyWeight != null && formalPolicyWeight > 0
   const formalContributionZero = row.status === 'active' && formalPolicyWeight === 0
-  const formalCooldownReasons = formalCooldownReasonCodes(formalPolicyRecommendation, formalPolicyQuarantined)
+  const formalCooldownReasons = formalCooldownReasonCodes(formalPolicyRecommendation, formalPolicyQuarantined, formalOwnerDecision)
   return (
     <aside className="space-y-3 xl:sticky xl:top-4 xl:self-start">
       <section className="rounded-2xl border border-slate-800 bg-slate-950/70 p-4">
@@ -1362,6 +1385,9 @@ function StrategyLineageInspector({
           <div className="flex justify-between gap-3"><dt className="text-slate-500">Knowledge cutoff</dt><dd className="font-mono text-slate-300">{formalPolicy?.knowledge_cutoff_date ?? '未取得'}</dd></div>
           <div className="flex justify-between gap-3"><dt className="text-slate-500">Threshold route comparison</dt><dd className="text-cyan-300">{lanes?.threshold_route_shadow.mature_dates ?? 0} / {lanes?.threshold_route_shadow.required_mature_dates ?? 11} dates</dd></div>
           <div className="flex justify-between gap-3"><dt className="text-slate-500">Multi-horizon owner</dt><dd className={lanes?.multi_horizon_formal.production_effect ? 'text-violet-300' : 'text-slate-500'}>{lanes?.multi_horizon_formal.production_effect ? 'formal owner' : 'pending'}</dd></div>
+          <div className="flex justify-between gap-3"><dt className="text-slate-500">Primary horizon</dt><dd className="font-mono text-slate-300">{formalOwnerDecision ? `${formalOwnerDecision.primary_horizon_days}D` : '尚無正式決策'}</dd></div>
+          <div className="flex justify-between gap-3"><dt className="text-slate-500">Owner state</dt><dd className={formalCooldown ? 'text-amber-200' : 'text-slate-300'}>{formalOwnerDecision?.performance_state ?? 'neutral pending closure'}</dd></div>
+          <div className="flex justify-between gap-3"><dt className="text-slate-500">Promoted streak</dt><dd className="font-mono text-slate-300">{formalOwnerDecision ? `negative ${formalOwnerDecision.negative_calibration_streak} · positive ${formalOwnerDecision.positive_calibration_streak}` : '-'}</dd></div>
         </dl>
       </section>
       <section className="rounded-2xl border border-slate-800 bg-slate-950/70 p-4">
@@ -1375,7 +1401,7 @@ function StrategyLineageInspector({
       <section className="rounded-2xl border border-slate-800 bg-slate-950/70 p-4">
         <div className="flex flex-wrap items-center justify-between gap-2">
           <h3 className="text-xs font-semibold text-slate-200">正式 pending-buy contribution</h3>
-          <Badge variant="outline" className={statusClass(executionEligible ? 'active' : 'not_ready')}>{executionEligible ? '可讓推薦進入待買' : formalContributionZero ? '績效降溫 · contribution 0' : '只選股與評估'}</Badge>
+          <Badge variant="outline" className={statusClass(executionEligible && !formalCooldown ? 'active' : 'not_ready')}>{formalCooldown ? '績效降溫 · bounded sleeve' : executionEligible ? '可讓推薦進入待買' : formalContributionZero ? '正式 contribution 0' : '只選股與評估'}</Badge>
         </div>
         <p className="mt-2 font-mono text-lg text-slate-100">{formalPolicyWeight == null ? '未取得正式 contribution' : pct(formalPolicyWeight)}</p>
         <div className="mt-2 h-2 overflow-hidden rounded-full bg-slate-800">
@@ -1386,11 +1412,11 @@ function StrategyLineageInspector({
           <div className="flex items-center justify-between gap-2 text-[11px]"><span className="font-semibold text-cyan-100">Preview weight（診斷）</span><span className="font-mono text-cyan-200">{previewPolicyWeight == null ? '未取得' : pct(previewPolicyWeight)}</span></div>
           <p className="mt-1 text-[10px] leading-4 text-slate-500">Read-time preview；不是 formal production policy，不能單獨判定待買資格。</p>
         </div>
-        {formalContributionZero ? (
+        {formalCooldown || formalContributionZero ? (
           <div className="mt-3 rounded-lg border border-amber-400/25 bg-amber-400/[0.07] p-3">
             <div className="flex flex-wrap items-center justify-between gap-2">
               <h4 className="text-[11px] font-semibold text-amber-100">為什麼被排入績效降溫</h4>
-              <Badge variant="outline" className="border-amber-400/30 bg-amber-400/10 text-amber-200">{formalPolicyQuarantined && !formalPolicyRecommendation?.reasons.length ? 'production firewall quarantine' : formalPolicyRecommendation?.decision ?? 'reason unavailable'}</Badge>
+              <Badge variant="outline" className="border-amber-400/30 bg-amber-400/10 text-amber-200">{formalCooldown ? formalOwnerDecision?.contribution_mode ?? 'formal owner cooldown' : formalPolicyQuarantined && !formalPolicyRecommendation?.reasons.length ? 'production firewall quarantine' : formalPolicyRecommendation?.decision ?? 'reason unavailable'}</Badge>
             </div>
             {formalCooldownReasons.length ? (
               <ul className="mt-2 space-y-1 text-[10px] leading-4 text-amber-100/90">
@@ -1507,6 +1533,7 @@ export default function StrategyLearningPage() {
     ? formalPolicy?.base_lifecycle_recommendations ?? {}
     : {}
   const formalPolicyWeights = formalPolicy?.strategy_weights ?? EMPTY_STRATEGY_WEIGHTS
+  const formalOwnerDecisions = formalPolicy?.owner_strategy_decisions ?? {}
   const formalQuarantinedStrategyIds = formalPolicy?.quarantined_strategy_ids ?? []
   const orderedRows = useMemo(() => {
     const priority: Record<StrategyHealthBucket, number> = {
@@ -1520,11 +1547,11 @@ export default function StrategyLearningPage() {
     return [...visibleRows].sort((left, right) => {
       const leftGate = gateById.get([left.id, left.version].join(':'))
       const rightGate = gateById.get([right.id, right.version].join(':'))
-      return priority[strategyHealthBucket(left, leftGate, strategyWeight(formalPolicyWeights, left.id))]
-        - priority[strategyHealthBucket(right, rightGate, strategyWeight(formalPolicyWeights, right.id))]
+      return priority[strategyHealthBucket(left, leftGate, strategyWeight(formalPolicyWeights, left.id), formalOwnerDecisions[left.id])]
+        - priority[strategyHealthBucket(right, rightGate, strategyWeight(formalPolicyWeights, right.id), formalOwnerDecisions[right.id])]
         || left.name.localeCompare(right.name, 'zh-Hant')
     })
-  }, [visibleRows, gateById, formalPolicyWeights])
+  }, [visibleRows, gateById, formalPolicyWeights, formalOwnerDecisions])
   useEffect(() => {
     if (!orderedRows.some((row) => [row.id, row.version].join(':') === selectedStrategyKey)) {
       setSelectedStrategyKey(orderedRows[0] ? [orderedRows[0].id, orderedRows[0].version].join(':') : null)
@@ -1534,6 +1561,7 @@ export default function StrategyLearningPage() {
   const selectedGate = selectedRow ? gateById.get([selectedRow.id, selectedRow.version].join(':')) : undefined
   const selectedProfile = selectedRow ? profileById.get([selectedRow.id, selectedRow.version].join(':')) : undefined
   const selectedFormalRecommendation = selectedRow ? formalLifecycleRecommendations[selectedRow.id] : undefined
+  const selectedFormalOwnerDecision = selectedRow ? formalOwnerDecisions[selectedRow.id] : undefined
   const atomicV7Row = useMemo(() => orderedRows.find((row) => [row.id, row.version].join(':') === atomicV7StrategyKey && row.status === 'candidate') ?? null, [orderedRows, atomicV7StrategyKey])
   const atomicV7Gate = atomicV7Row ? gateById.get([atomicV7Row.id, atomicV7Row.version].join(':')) : undefined
   const executionEligibleCount = useMemo(() => {
@@ -1641,6 +1669,7 @@ export default function StrategyLearningPage() {
               rows={orderedRows}
               gateById={gateById}
               formalPolicyWeights={formalPolicyWeights}
+              formalOwnerDecisions={formalOwnerDecisions}
               previewPolicyWeights={previewPolicyWeights}
               formalLifecycleRecommendations={formalLifecycleRecommendations}
               formalPolicyReasonLineageAvailable={formalPolicyReasonLineageAvailable}
@@ -1671,6 +1700,7 @@ export default function StrategyLearningPage() {
                     gateById={gateById}
                     profileById={profileById}
                     formalPolicyWeights={formalPolicyWeights}
+                    formalOwnerDecisions={formalOwnerDecisions}
                     requestedDate={learning?.date ?? null}
                     empty="目前篩選沒有可顯示的策略。"
                   />
@@ -1687,6 +1717,7 @@ export default function StrategyLearningPage() {
                 formalPolicyWeight={selectedFormalPolicyWeight}
                 previewPolicyWeight={selectedPreviewPolicyWeight}
                 formalPolicyRecommendation={selectedFormalRecommendation}
+                formalOwnerDecision={selectedFormalOwnerDecision}
                 formalPolicyReasonLineageAvailable={formalPolicyReasonLineageAvailable}
                 formalPolicyQuarantined={selectedRow ? formalQuarantinedStrategyIds.includes(selectedRow.id) : false}
                 lanes={strategyLanes}

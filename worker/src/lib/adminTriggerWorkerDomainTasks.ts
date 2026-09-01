@@ -387,6 +387,7 @@ export function buildAdminWorkerDomainTaskMap(c: any, deps: TriggerDeps): Record
         isStrategyLearningLeaseLost,
         loadStrategyLearningRun,
         markStrategyLearningRunFinalized,
+        recordStrategyLearningPolicyClosure,
         startStrategyLearningLeaseHeartbeat,
         STRATEGY_LEARNING_LEASE_SECONDS,
       } = await import('./strategyLearningRunState')
@@ -450,7 +451,11 @@ export function buildAdminWorkerDomainTaskMap(c: any, deps: TriggerDeps): Record
           leaseSeconds: STRATEGY_LEARNING_LEASE_SECONDS,
         })
         const assertFinalizerLease = async (_stage: string): Promise<void> => finalizerHeartbeat!.assertActive()
-        const productionAuthority = c.req.query('force_policy') === '1'
+        const productionAuthorityIntent = runState.production_authority_intent === 1
+        if (c.req.query('force_policy') === '1' && !productionAuthorityIntent) {
+          throw new Error(`strategy_learning_durable_production_authority_intent_required:${runDate}`)
+        }
+        const productionAuthority = productionAuthorityIntent
           ? await resolveEveningChainRunAuthority(c.env, {
               businessDate: runDate,
               canonicalRunId: runState.canonical_run_id,
@@ -458,7 +463,10 @@ export function buildAdminWorkerDomainTaskMap(c: any, deps: TriggerDeps): Record
           : null
         const currentBusinessDateRun = productionAuthority?.allowed === true
         const runScope = productionAuthority?.runScope ?? 'historical_replay'
-        const authorityReason = productionAuthority?.reason ?? 'force_policy_not_requested'
+        const authorityReason = productionAuthority?.reason ?? 'durable_run_not_marked_production_eligible'
+        if (productionAuthorityIntent && !currentBusinessDateRun) {
+          throw new Error(`strategy_learning_production_authority_denied:${runDate}:${authorityReason}`)
+        }
         const chainDurationMs = await resolveEveningChainClosureDurationMs(c.env.DB, runDate)
         const {
           auditEveningChainEvidenceClosure,
@@ -507,6 +515,22 @@ export function buildAdminWorkerDomainTaskMap(c: any, deps: TriggerDeps): Record
             },
           })
         if (!closureSummary) throw new Error('evening_chain_evidence_closure_callback_missing')
+        if (currentBusinessDateRun && (!policy || !productionPolicy)) {
+          throw new Error(`strategy_learning_live_policy_closure_missing:${runDate}`)
+        }
+        const policyClosureStatus = currentBusinessDateRun ? 'materialized' : 'evidence_only'
+        const policyClosureReason = currentBusinessDateRun
+          ? `live_canonical:${authorityReason}`
+          : `historical_replay:${authorityReason}`
+        await assertFinalizerLease('policy_closure')
+        const policyClosureRecorded = await recordStrategyLearningPolicyClosure(runStateDb, {
+          ...leaseIdentity,
+          status: policyClosureStatus,
+          reason: policyClosureReason,
+        })
+        if (!policyClosureRecorded) {
+          throw new Error(`strategy_learning_policy_closure_fence_lost:${runDate}:${runState.canonical_run_id}`)
+        }
         const summary = [
         `strategy_learning_finalize date=${runDate}`,
         `materialized_complete candidates=${coverage.candidateRows}/${coverage.expectedCandidates} rows=${coverage.decisionRows}/${coverage.expectedRows}`,
@@ -532,6 +556,8 @@ export function buildAdminWorkerDomainTaskMap(c: any, deps: TriggerDeps): Record
         `evidence_closure=${closureSummary}`,
         `run_scope=${runScope}`,
         `production_authority=${authorityReason}`,
+        `production_authority_intent=${productionAuthorityIntent}`,
+        `policy_closure=${policyClosureStatus}`,
         ].join(' ')
         await assertFinalizerLease('finalize')
         const finalized = await markStrategyLearningRunFinalized(runStateDb, leaseIdentity)
@@ -570,7 +596,10 @@ export function buildAdminWorkerDomainTaskMap(c: any, deps: TriggerDeps): Record
           console.warn(`[Admin] strategy-learning lease lost; explicit retry required date=${runDate} run_id=${runState.canonical_run_id}`)
           throw error
         }
-        const transitioned = materializationValidated
+        const terminalPolicyClosureFailure = errorMessage.startsWith('strategy_learning_production_authority_denied:')
+          || errorMessage.startsWith('strategy_learning_live_policy_closure_missing:')
+          || errorMessage.startsWith('strategy_learning_durable_production_authority_intent_required:')
+        const transitioned = materializationValidated && !terminalPolicyClosureFailure
           ? await deferStrategyLearningFinalizer(runStateDb, {
               ...leaseIdentity,
               error: errorMessage,

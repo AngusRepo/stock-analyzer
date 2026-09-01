@@ -1308,10 +1308,10 @@ runStrategyCandidateDailyFeatureHydrationTest().catch((error) => {
   assert(gate[0].diagnostic_only_metrics.includes('max_drawdown'), 'active MDD must remain diagnostic outside Atomic V7 relative replacement')
 
   const policy = buildStrategyAdaptivePolicyState({ ...summary, promotion_gate: gate })
-  assert(policy.strategy_weights[spec.id] === 0, 'negative-edge cooldown strategies must have zero production contribution')
+  assert(policy.strategy_weights[spec.id] === 1, 'readiness-mature incumbents must keep a neutral adaptive base until the promoted primary-horizon owner changes contribution')
   assert(policy.threshold_deltas[spec.id] == null, 'performance evidence must not rewrite immutable strategy label thresholds')
   assert(policy.lifecycle_recommendations[spec.id].automatic_effect === 'weight_only', 'adaptive policy may only change contribution weight')
-  assert(policy.lifecycle_recommendations[spec.id].recommended_status === 'active', 'negative diagnostics alone must not demote the incumbent lifecycle status')
+  assert(policy.lifecycle_recommendations[spec.id].recommended_status === 'active', 'five-day diagnostics alone must neither demote nor zero the incumbent')
   const applied = applyStrategyAdaptivePolicyThresholds([spec], policy)
   assert(applied[0].thresholds.minVolumeExpansion20 === spec.thresholds.minVolumeExpansion20, 'immutable strategy thresholds must remain unchanged')
 }

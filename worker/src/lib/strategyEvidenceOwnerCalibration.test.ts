@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict'
+import fs from 'node:fs'
 import {
   calibrationMetricSnapshotChecksum,
   evaluateStrategyEvidenceOwnerCalibration,
@@ -9,6 +10,13 @@ import {
 import { buildStrategyEvidenceOwnerSnapshot } from './strategyEvidenceOwnerFusion'
 import { listStrategyEvidenceProfiles } from './strategyEvidenceProfile'
 import { DEFAULT_STRATEGY_SPECS } from './strategySpec'
+
+const calibrationSource = fs.readFileSync('src/lib/strategyEvidenceOwnerCalibration.ts', 'utf8')
+assert.match(
+  calibrationSource,
+  /ROW_NUMBER\(\) OVER \([\s\S]*PARTITION BY knowledge_cutoff_date[\s\S]*WHERE ordinal=1/,
+  'hysteresis history must count distinct knowledge cutoffs, not same-day reruns',
+)
 
 const profiles: StrategyEvidenceCalibrationProfile[] = ['a', 'b', 'c'].map((strategyId) => ({
   strategy_id: strategyId,
@@ -112,6 +120,51 @@ const calibratedOwner = await buildStrategyEvidenceOwnerSnapshot({
 assert.equal(calibratedOwner.weight_effect, 'immutable_oos_calibrated_bounded_bidirectional')
 assert.equal(calibratedOwner.calibration_run_id, 'calibration-run')
 assert.equal(calibratedOwner.profiles.every((row) => row.weight_effect === 'immutable_oos_calibrated'), true)
+assert.equal(calibratedOwner.profiles[0].performance_state, 'full', 'one promoted score cannot trigger cooldown')
+
+const negativeHistory = [-0.2, -0.1].map((score, index) => ({
+  runId: `negative-${index}`,
+  artifactChecksum: String(index + 1).repeat(64),
+  sourceMetricChecksum: index === 0 ? sourceMetricChecksum : 'e'.repeat(64),
+  knowledgeCutoffDate: `2026-01-${String(10 - index).padStart(2, '0')}`,
+  artifacts: [{
+    ...ownerArtifacts[0],
+    multi_horizon_score: score,
+    weight_multiplier: 0.75 + index * 0.01,
+    source_metric_checksum: index === 0 ? sourceMetricChecksum : 'e'.repeat(64),
+  }],
+}))
+const cooldownOwner = await buildStrategyEvidenceOwnerSnapshot({
+  strategies: [activeSpec],
+  rows: ownerMetricRows,
+  knowledgeCutoffDate: '2026-01-11',
+  calibration: negativeHistory[0],
+  calibrationHistory: negativeHistory,
+})
+assert.equal(cooldownOwner.profiles[0].performance_state, 'cooldown')
+assert.equal(cooldownOwner.profiles[0].negative_calibration_streak, 2)
+
+const recoveryHistory = [0.2, 0.1].map((score, index) => ({
+  runId: `recovery-${index}`,
+  artifactChecksum: String(index + 3).repeat(64),
+  sourceMetricChecksum: index === 0 ? sourceMetricChecksum : 'f'.repeat(64),
+  knowledgeCutoffDate: `2026-01-${String(10 - index).padStart(2, '0')}`,
+  artifacts: [{
+    ...ownerArtifacts[0],
+    multi_horizon_score: score,
+    weight_multiplier: 1.05,
+    source_metric_checksum: index === 0 ? sourceMetricChecksum : 'f'.repeat(64),
+  }],
+}))
+const recoveredOwner = await buildStrategyEvidenceOwnerSnapshot({
+  strategies: [activeSpec],
+  rows: ownerMetricRows,
+  knowledgeCutoffDate: '2026-01-11',
+  calibration: recoveryHistory[0],
+  calibrationHistory: [...recoveryHistory, ...negativeHistory],
+})
+assert.equal(recoveredOwner.profiles[0].performance_state, 'full')
+assert.equal(recoveredOwner.profiles[0].positive_calibration_streak, 2)
 
 const staleOwner = await buildStrategyEvidenceOwnerSnapshot({
   strategies: [activeSpec],

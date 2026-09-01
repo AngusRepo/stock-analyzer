@@ -49,9 +49,9 @@ test('maturity lineage labels cadence, role, availability, and comparable contra
     '資料截止日',
     '成熟結果已知截至',
     'OOF 訊號截止日',
-    '固定樣本監控業務日',
+    '監控封包業務日（非成熟進度）',
     '目前正式服務中的產物（Production pointer）',
-    '${evidenceScopes.offline_candidate.cadence} 升級候選（尚未正式服務）',
+    '${evidenceScopes.offline_candidate.cadence} 離線升級候選（日期不隨 nightly monitoring 自動前進）',
     '每日固定樣本 forward 監控證據（不影響正式結果）',
     'First comparable',
   ]) {

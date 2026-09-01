@@ -362,6 +362,7 @@ export interface UpdateQueueMsg {
   durableTaskExpectedLeaseOwner?: string // stale-holder fence for a durable scheduler continuation
   dataDomainErrorAttempt?: number // bounded consecutive error retry for shadow backfill
   policyMutationAllowed?: boolean // live recovery can close lineage without promoting strategy policy
+  productionAuthorityIntent?: boolean // durable live-canonical intent; finalizer must revalidate current authority
   maintenanceTask?:
     | 'legacy-evidence-migration'
     | 'legacy-strategy-evidence-migration'

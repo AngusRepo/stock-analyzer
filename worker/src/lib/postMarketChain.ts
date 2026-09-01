@@ -280,6 +280,7 @@ async function enqueueMetaLearningShadowClosureTask(
     triggerTime: runDate,
     runId,
     force: productionEligible,
+    productionAuthorityIntent: productionEligible,
   })
   return `triggered meta-learning-shadow queue run_date=${runDate} run_id=${runId}`
 }
@@ -600,6 +601,14 @@ export async function runPostPipelineCallbackChain(
       upstreamRunId: ctx.upstreamRunId,
     })
   }
+  results.push(await logChainedTask(env, ctx, 'pit-residual-funnel-enrichment', async () => {
+    const { enrichCanonicalPitResidualFunnel } = await import('./pitResidualFunnelEnrichment')
+    const result = await enrichCanonicalPitResidualFunnel(env, {
+      businessDate: ctx.runDate!,
+      pipelineCanonicalRunId: String(ctx.upstreamRunId ?? ''),
+    })
+    return result.summary
+  }, { critical: false, timeoutMs: TASK_EXECUTION_TIMEOUT_MS }))
   const snapshotEvidenceKey = snapshotUnavailableInEvidenceOnlyMode
     ? 'active8-evidence-only-authority-v1'
     : String(snapshotClosure.snapshotRunId ?? '')
@@ -700,7 +709,7 @@ export async function runPostPipelineCallbackChain(
 export async function runPostVerifyCallbackChain(
   env: Bindings,
   ctx: ChainContext,
-): Promise<'success' | 'error'> {
+): Promise<'waiting' | 'success' | 'error'> {
   const startedAt = Date.now()
   const results: ChainedTask[] = []
   await assertChainStageAuthority(ctx, 'post-verify:entry')
@@ -807,5 +816,7 @@ export async function runPostVerifyCallbackChain(
   if (criticalFailure) {
     throw new Error(`post_verify_chain_failed:${criticalFailure.task}:${criticalFailure.summary}`)
   }
-  return 'success'
+  return results.some((row) => row.task === 'strategy-learning' && row.status === 'triggered')
+    ? 'waiting'
+    : 'success'
 }

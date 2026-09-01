@@ -1,5 +1,6 @@
 import { logSchedulerResult } from './schedulerRunLogger'
 import {
+  closeStrategyLearningPostVerifyStage,
   hasStrategyLearningPostVerifyAuthority,
   heartbeatStrategyLearningLease,
   reclaimStrategyLearningFinalizedLease,
@@ -36,6 +37,8 @@ async function reconcileStrategyLearningFinalizedTelemetry(
     ...common,
     summary: durableSummary,
   })
+  if (input.runScope === 'historical_replay') return
+
   await logSchedulerResult(kv, 'post-verify-chain', {
     ...common,
     summary: `strategy-learning durable finalize closed; ${durableSummary}`,
@@ -56,6 +59,11 @@ export async function reconcileAndReleaseStrategyLearningFinalizedTelemetry(
   const renewed = await heartbeatStrategyLearningLease(db, identity)
     || await reclaimStrategyLearningFinalizedLease(db, identity)
   if (!renewed) return false
+
+  if (
+    input.runScope !== 'historical_replay'
+    && !(await closeStrategyLearningPostVerifyStage(db, identity))
+  ) return false
 
   await reconcileStrategyLearningFinalizedTelemetry(kv, input)
 
@@ -86,6 +94,13 @@ export async function reconcileStrategyLearningFinalizedRetryFastPath(
       `strategy_learning_finalized_provenance_missing:${state.business_date}:${state.canonical_run_id}`,
     )
   }
+  const policyClosureValid = state.policy_closure_status === 'materialized'
+    || (state.production_authority_intent === 0 && state.policy_closure_status === 'evidence_only')
+  if (!policyClosureValid) {
+    throw new Error(
+      `strategy_learning_policy_closure_provenance_missing:${state.business_date}:${state.canonical_run_id}:${state.policy_closure_status}`,
+    )
+  }
   if (!state.lease_owner || !state.lease_expires_at) return 'no_live_telemetry_lease'
 
   const reconciled = await reconcileAndReleaseStrategyLearningFinalizedTelemetry(
@@ -100,6 +115,7 @@ export async function reconcileStrategyLearningFinalizedRetryFastPath(
       runDate: state.business_date,
       canonicalRunId: state.canonical_run_id,
       attemptId: input.attemptId,
+      runScope: state.production_authority_intent === 1 ? 'live_canonical' : 'historical_replay',
     },
   )
   return reconciled ? 'reconciled' : 'authority_changed'

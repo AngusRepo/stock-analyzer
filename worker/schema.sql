@@ -816,6 +816,25 @@ CREATE INDEX IF NOT EXISTS idx_screener_funnel_items_run ON screener_funnel_item
 CREATE INDEX IF NOT EXISTS idx_screener_funnel_items_symbol ON screener_funnel_items(symbol, date DESC);
 CREATE INDEX IF NOT EXISTS idx_screener_funnel_items_date_id ON screener_funnel_items(date, id);
 
+CREATE TABLE IF NOT EXISTS pit_residual_funnel_enrichment_runs_v1 (
+  business_date TEXT NOT NULL,
+  screener_run_id TEXT NOT NULL,
+  pipeline_canonical_run_id TEXT NOT NULL,
+  source_signal_date TEXT,
+  base_stage TEXT,
+  base_candidate_count INTEGER NOT NULL DEFAULT 0,
+  residual_item_count INTEGER NOT NULL DEFAULT 0,
+  decision_effect TEXT NOT NULL DEFAULT 'none' CHECK(decision_effect = 'none'),
+  status TEXT NOT NULL CHECK(status IN ('success', 'error')),
+  last_error TEXT,
+  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  completed_at TEXT,
+  PRIMARY KEY(business_date, screener_run_id)
+);
+CREATE INDEX IF NOT EXISTS idx_pit_residual_funnel_enrichment_latest
+  ON pit_residual_funnel_enrichment_runs_v1(business_date DESC, status, updated_at DESC);
+
 CREATE TABLE IF NOT EXISTS dataset_snapshots (
   snapshot_id     TEXT PRIMARY KEY,
   kind            TEXT NOT NULL,
@@ -1338,6 +1357,10 @@ CREATE TABLE IF NOT EXISTS strategy_learning_runs (
   lease_owner TEXT,
   lease_expires_at TEXT,
   attempt_count INTEGER NOT NULL DEFAULT 0,
+  production_authority_intent INTEGER NOT NULL DEFAULT 0 CHECK(production_authority_intent IN (0, 1)),
+  policy_closure_status TEXT NOT NULL DEFAULT 'pending' CHECK(policy_closure_status IN ('pending', 'materialized', 'evidence_only')),
+  policy_closure_reason TEXT,
+  policy_closure_completed_at TEXT,
   last_error TEXT,
   created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
   updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -1345,6 +1368,8 @@ CREATE TABLE IF NOT EXISTS strategy_learning_runs (
 );
 CREATE INDEX IF NOT EXISTS idx_strategy_learning_runs_status
   ON strategy_learning_runs(status, business_date DESC);
+CREATE INDEX IF NOT EXISTS idx_strategy_learning_runs_policy_closure
+  ON strategy_learning_runs(business_date DESC, production_authority_intent, policy_closure_status);
 
 CREATE TABLE IF NOT EXISTS maintenance_task_leases (
   lease_group TEXT PRIMARY KEY,

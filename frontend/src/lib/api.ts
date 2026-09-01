@@ -994,9 +994,21 @@ export type StrategyFormalPolicyLineage = {
   base_policy_as_of_date: string | null
   base_policy_run_id: string | null
   base_lifecycle_recommendations: StrategyAdaptivePolicyState['lifecycle_recommendations'] | null
+  owner_strategy_decisions: Record<string, StrategyFormalOwnerDecision> | null
   evidence: Record<string, unknown> | null
   checksum: string | null
   created_at: string | null
+}
+
+export type StrategyFormalOwnerDecision = {
+  primary_horizon_days: number
+  performance_state: 'neutral_pending_calibration' | 'full' | 'cooldown'
+  performance_reason: string
+  negative_calibration_streak: number
+  positive_calibration_streak: number
+  multi_horizon_score: number | null
+  weight_multiplier: number
+  contribution_mode: 'full' | 'diversity_retention' | 'blocked'
 }
 
 export type StrategyEvidenceProfilesResponse = {

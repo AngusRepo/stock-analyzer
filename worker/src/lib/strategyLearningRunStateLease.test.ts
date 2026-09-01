@@ -37,6 +37,10 @@ function runRow(input: Partial<StrategyLearningRunRow> = {}): StrategyLearningRu
     lease_owner: 'lease-a',
     lease_expires_at: FUTURE,
     completed_at: null,
+    production_authority_intent: 0,
+    policy_closure_status: 'evidence_only',
+    policy_closure_reason: 'historical_replay:test',
+    policy_closure_completed_at: NOW,
     ...input,
   }
 }

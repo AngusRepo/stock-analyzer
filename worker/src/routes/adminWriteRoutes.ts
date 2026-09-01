@@ -601,7 +601,7 @@ adminWriteRoutes.post('/api/admin/strategy-learning/resume', async (c) => {
   if (c.req.header('X-Confirm-Strategy-Learning-Recovery') !== 'true') {
     return c.json({
       error: 'Strategy learning recovery requires header X-Confirm-Strategy-Learning-Recovery: true',
-      hint: 'This only resumes an existing canonical queued or expired-running run. It cannot create a run or mutate production policy.',
+      hint: 'This only resumes an existing canonical queued or expired-running run. Durable live authority is revalidated at the finalizer and cannot be created by this route.',
     }, 400)
   }
 
@@ -617,6 +617,7 @@ adminWriteRoutes.post('/api/admin/strategy-learning/resume', async (c) => {
     SELECT canonical_run_id, status, cursor_symbol, expected_candidates,
            processed_candidates, expected_decision_rows, persisted_decision_rows,
            lease_owner, lease_expires_at,
+           production_authority_intent, policy_closure_status,
            CASE WHEN lease_expires_at IS NOT NULL AND lease_expires_at < CURRENT_TIMESTAMP THEN 1 ELSE 0 END lease_expired
       FROM strategy_learning_runs
      WHERE business_date=?
@@ -631,6 +632,8 @@ adminWriteRoutes.post('/api/admin/strategy-learning/resume', async (c) => {
     persisted_decision_rows: number
     lease_owner: string | null
     lease_expires_at: string | null
+    production_authority_intent: number
+    policy_closure_status: string
     lease_expired: number
   }>()
   const recoverableProgress = run
@@ -653,7 +656,7 @@ adminWriteRoutes.post('/api/admin/strategy-learning/resume', async (c) => {
      WHERE business_date=? AND stage='post_verify_chain'
      LIMIT 1
   `).bind(date).first<{ status: string; canonical_run_id: string }>()
-  if (authority?.status !== 'success') {
+  if (!['running', 'waiting', 'success'].includes(String(authority?.status ?? ''))) {
     return c.json({ error: `post_verify_canonical_authority_required:${date}`, authority, run }, 409)
   }
 
@@ -677,8 +680,7 @@ adminWriteRoutes.post('/api/admin/strategy-learning/resume', async (c) => {
     cursorKey: String(run.cursor_symbol ?? ''),
     triggerTime: date,
     runId: run.canonical_run_id,
-    force: false,
-    policyMutationAllowed: false,
+    productionAuthorityIntent: Number(run.production_authority_intent ?? 0) === 1,
     leaseRetryAttempt: 0,
   })
   return c.json({
@@ -689,7 +691,8 @@ adminWriteRoutes.post('/api/admin/strategy-learning/resume', async (c) => {
     cursor_symbol: run.cursor_symbol,
     processed_candidates: Number(run.processed_candidates),
     expected_candidates: Number(run.expected_candidates),
-    production_policy_mutation: false,
+    production_authority_intent: Number(run.production_authority_intent ?? 0) === 1,
+    production_policy_mutation: 'revalidate_at_finalizer',
   })
 })
 

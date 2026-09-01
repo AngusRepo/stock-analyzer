@@ -3429,7 +3429,7 @@ export async function processUpdateBatch(
         duration_ms?: number
         run_scope?: 'live_canonical' | 'historical_replay' | 'derived'
       } | null
-      const rootStatus = chain?.status ?? status
+      const rootStatus = status === 'waiting' ? 'running' : chain?.status ?? status
       const terminalStillCurrent = await isPipelineStageCanonicalState(databaseForDataDomain(env, 'ops'), {
         businessDate: triggerTime,
         stage: 'post_verify_chain',
@@ -3614,6 +3614,7 @@ export async function processUpdateBatch(
       isStrategyLearningLeaseLost,
       loadStrategyLearningRun,
       markStrategyLearningRunFinalized,
+      recordStrategyLearningPolicyClosure,
       startStrategyLearningLeaseHeartbeat,
       STRATEGY_LEARNING_LEASE_SECONDS,
     } = await import('./strategyLearningRunState')
@@ -3669,6 +3670,7 @@ export async function processUpdateBatch(
       strategyCount: specs.length,
       universeDb: learningDb,
       canonicalProducerRunId,
+      productionAuthorityIntent: Boolean(msg.productionAuthorityIntent ?? msg.force),
     })
     if (await handleFinalizedRetry(state)) return
     const expectedCandidates = Math.max(0, Number(state.expected_candidates ?? 0))
@@ -3767,6 +3769,7 @@ export async function processUpdateBatch(
           runId: canonicalRunId,
           force: Boolean(msg.force),
           policyMutationAllowed: msg.policyMutationAllowed,
+          productionAuthorityIntent: state.production_authority_intent === 1,
           leaseRetryAttempt: 0,
         })
         return
@@ -3788,6 +3791,7 @@ export async function processUpdateBatch(
         runId: canonicalRunId,
         force: Boolean(msg.force),
         policyMutationAllowed: msg.policyMutationAllowed,
+        productionAuthorityIntent: state.production_authority_intent === 1,
         leaseRetryAttempt: 0,
       })
       return
@@ -3807,7 +3811,8 @@ export async function processUpdateBatch(
       })
       const assertFinalizerLease = async (_stage: string): Promise<void> => finalizerHeartbeat!.assertActive()
 
-      const productionAuthority = Boolean(msg.force)
+      const productionAuthorityIntent = state.production_authority_intent === 1
+      const productionAuthority = productionAuthorityIntent
         ? await resolveEveningChainRunAuthority(env, {
             businessDate: triggerTime,
             canonicalRunId,
@@ -3815,9 +3820,11 @@ export async function processUpdateBatch(
         : null
       const currentBusinessDateRun = productionAuthority?.allowed === true
       const runScope = productionAuthority?.runScope ?? 'historical_replay'
-      const authorityReason = productionAuthority?.reason ?? 'queue_not_marked_production_eligible'
-      const policyMutationAllowed = currentBusinessDateRun
-        && msg.policyMutationAllowed !== false
+      const authorityReason = productionAuthority?.reason ?? 'durable_run_not_marked_production_eligible'
+      if (productionAuthorityIntent && !currentBusinessDateRun) {
+        throw new Error(`strategy_learning_production_authority_denied:${triggerTime}:${authorityReason}`)
+      }
+      const policyMutationAllowed = productionAuthorityIntent && currentBusinessDateRun
       const finalizerCacheMode = policyMutationAllowed ? 'policy-mutation' : 'evidence-only'
       const finalizerCacheKey = `strategy-learning:finalizer:${triggerTime}:${canonicalRunId}:${finalizerCacheMode}:v2-contract-lineage`
       const cachedFinalizer = await env.KV.get(finalizerCacheKey, 'json') as {
@@ -3915,6 +3922,22 @@ export async function processUpdateBatch(
         closureSummary = finalizerStageResults.before_promotion
       }
       if (!closureSummary) throw new Error('evening_chain_evidence_closure_callback_missing')
+      if (policyMutationAllowed && (!policy || !productionPolicy)) {
+        throw new Error(`strategy_learning_live_policy_closure_missing:${triggerTime}`)
+      }
+      const policyClosureStatus = policyMutationAllowed ? 'materialized' : 'evidence_only'
+      const policyClosureReason = policyMutationAllowed
+        ? `live_canonical:${authorityReason}`
+        : `historical_replay:${authorityReason}`
+      await assertFinalizerLease('policy_closure')
+      const policyClosureRecorded = await recordStrategyLearningPolicyClosure(runStateDb, {
+        ...leaseIdentity,
+        status: policyClosureStatus,
+        reason: policyClosureReason,
+      })
+      if (!policyClosureRecorded) {
+        throw new Error(`strategy_learning_policy_closure_fence_lost:${triggerTime}:${canonicalRunId}`)
+      }
       const summary = [
       `materialized_complete candidates=${coverage.candidateRows}/${coverage.expectedCandidates} rows=${coverage.decisionRows}/${coverage.expectedRows}`,
       `last_candidates=${chunk?.candidate_count ?? 0}`,
@@ -3938,7 +3961,9 @@ export async function processUpdateBatch(
       `evidence_closure=${closureSummary}`,
       `run_scope=${runScope}`,
       `production_authority=${authorityReason}`,
+      `production_authority_intent=${productionAuthorityIntent}`,
       `policy_mutation=${policyMutationAllowed}`,
+      `policy_closure=${policyClosureStatus}`,
       ].join(' ')
 
       await assertFinalizerLease('finalize')
@@ -4009,10 +4034,12 @@ export async function processUpdateBatch(
         console.warn(`[Queue] strategy-learning lease lost; queue retry required date=${triggerTime} run_id=${canonicalRunId}`)
         throw error
       }
-      const transitioned = materializationValidated
-        ? await deferStrategyLearningFinalizer(runStateDb, {
-            ...leaseIdentity,
-            error: errorMessage,
+        const terminalPolicyClosureFailure = errorMessage.startsWith('strategy_learning_production_authority_denied:')
+          || errorMessage.startsWith('strategy_learning_live_policy_closure_missing:')
+        const transitioned = materializationValidated && !terminalPolicyClosureFailure
+          ? await deferStrategyLearningFinalizer(runStateDb, {
+              ...leaseIdentity,
+              error: errorMessage,
           })
         : await failStrategyLearningRun(runStateDb, {
             ...leaseIdentity,

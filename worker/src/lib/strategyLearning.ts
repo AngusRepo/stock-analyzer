@@ -2703,14 +2703,13 @@ export function evaluateStrategyPromotionGate(summary: StrategyLearningSummary):
 
 function strategyPolicyScore(spec: StrategyLearningSummary['specs'][number], gate: StrategyPromotionGateRow): number {
   if (!gate.allocation_eligible) return 0
-  if (spec.learning.rolling_reward_dates < PROMOTION_MIN_MATURE_DATES) return 0
-  const samples = Math.max(0, spec.learning.rolling_samples)
-  const dates = Math.max(0, spec.learning.rolling_reward_dates)
-  const avgReturn = spec.learning.rolling_date_return_mean
-  if (samples <= 0 || avgReturn == null || avgReturn <= 0) return 0
-  const sampleMaturity = Math.min(samples / 100, 1)
-  const dateMaturity = Math.min(dates / 30, 1)
-  return Math.max(0, avgReturn * sampleMaturity * dateMaturity)
+  if (
+    spec.learning.rolling_samples < PROMOTION_MIN_SAMPLES
+    || spec.learning.rolling_reward_dates < PROMOTION_MIN_MATURE_DATES
+  ) return 0
+  // The adaptive base owns readiness only. Strategy-specific performance is
+  // applied later by the immutable, OOS-promoted multi-horizon evidence owner.
+  return 1
 }
 
 function clampPolicyValue(value: number, minimum: number, maximum: number): number {

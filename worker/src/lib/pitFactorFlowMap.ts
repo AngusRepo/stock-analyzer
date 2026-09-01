@@ -79,20 +79,18 @@ function parseFunnelRows(rows: Array<Record<string, unknown>>): PitFactorFunnelP
 async function loadFunnelPoints(env: Bindings, requestedDate: string, days: number): Promise<PitFactorFunnelPoint[]> {
   const opsDb = databaseForDataDomain(env, 'ops')
   const { results } = await opsDb.prepare(
-    `WITH ranked_runs AS (
-       SELECT r.run_id, r.date, r.candidate_count,
-              ROW_NUMBER() OVER (PARTITION BY r.date ORDER BY r.created_at DESC, r.run_id DESC) AS run_rank
+    `WITH canonical_runs AS (
+       SELECT r.run_id, r.date, r.candidate_count
          FROM screener_funnel_runs r
+         JOIN canonical_run_heads h
+           ON h.run_id=r.run_id
+          AND h.logical_run_key='screener:' || r.date || ':TW:production:market_screener'
         WHERE r.date <= ?
           AND r.status = 'success'
           AND EXISTS (
             SELECT 1 FROM screener_funnel_items x
              WHERE x.run_id = r.run_id AND x.stage = ?
           )
-     ), canonical_runs AS (
-       SELECT run_id, date, candidate_count
-         FROM ranked_runs
-        WHERE run_rank = 1
         ORDER BY date DESC
         LIMIT ?
      )

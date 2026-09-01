@@ -6,6 +6,21 @@ const finalizer = fs.readFileSync('src/lib/strategyLearning.ts', 'utf8')
 const orchestrator = fs.readFileSync('src/lib/updateOrchestrator.ts', 'utf8')
 const manual = fs.readFileSync('src/lib/adminTriggerWorkerDomainTasks.ts', 'utf8')
 const finalizedTelemetry = fs.readFileSync('src/lib/strategyLearningFinalizedTelemetry.ts', 'utf8')
+const opsMigration = fs.readFileSync('domain-migrations/ops/0012_evening_strategy_and_pit_residual_closure.sql', 'utf8')
+const opsSchema = fs.readFileSync('domain-schemas/ops.sql', 'utf8')
+
+for (const field of [
+  'production_authority_intent',
+  'policy_closure_status',
+  'policy_closure_reason',
+  'policy_closure_completed_at',
+]) {
+  assert.match(opsMigration, new RegExp(field), `Ops migration must materialize ${field}`)
+  assert.match(opsSchema, new RegExp(field), `Ops schema must expose ${field}`)
+}
+assert.match(opsMigration, /legacy_success_backfill_no_durable_policy_closure/)
+assert.match(opsMigration, /WHERE status='success'[\s\S]*policy_closure_status='pending'/)
+assert.match(opsMigration, /policy_closure_status='evidence_only'/)
 
 const initializeWriter = runState.slice(
   runState.indexOf('export async function initializeStrategyLearningRun'),
@@ -41,6 +56,13 @@ assert.doesNotMatch(
   /SET status='success', lease_owner=NULL/,
 )
 assert.match(runState, /export async function hasStrategyLearningPostVerifyAuthority/)
+const closePostVerify = runState.slice(
+  runState.indexOf('export async function closeStrategyLearningPostVerifyStage'),
+  runState.indexOf('export async function hasStrategyLearningPostVerifyAuthority'),
+)
+assert.match(closePostVerify, /production_authority_intent=1/)
+assert.match(closePostVerify, /policy_closure_status='materialized'/)
+assert.doesNotMatch(closePostVerify, /policy_closure_status IN \('materialized', 'evidence_only'\)/)
 assert.match(runState, /export async function adoptStrategyLearningPostVerifyAuthority/)
 const authorityAdoption = runState.slice(
   runState.indexOf('export async function adoptStrategyLearningPostVerifyAuthority'),
@@ -52,7 +74,7 @@ assert.match(authorityAdoption, /processed_candidates=expected_candidates/)
 assert.match(authorityAdoption, /persisted_decision_rows=expected_decision_rows/)
 assert.match(authorityAdoption, /last_error LIKE 'strategy_learning_finalize_authority_lost:%'/)
 assert.match(authorityAdoption, /p\.stage='post_verify_chain'/)
-assert.match(authorityAdoption, /p\.status='success'/)
+assert.match(authorityAdoption, /p\.status IN \('running', 'waiting', 'success'\)/)
 assert.match(runState, /export async function releaseStrategyLearningFinalizedLease/)
 assert.match(runState, /export async function reclaimStrategyLearningFinalizedLease/)
 const reclaimWriter = runState.slice(runState.indexOf('export async function reclaimStrategyLearningFinalizedLease'))
@@ -142,6 +164,8 @@ assert.ok(
 )
 
 assert.match(finalizedTelemetry, /strict: true/)
+assert.match(finalizedTelemetry, /if \(input\.runScope === 'historical_replay'\) return/)
+assert.match(finalizedTelemetry, /input\.runScope !== 'historical_replay'[\s\S]*closeStrategyLearningPostVerifyStage/)
 assert.doesNotMatch(
   finalizedTelemetry, /export async function reconcileStrategyLearningFinalizedTelemetry/,
 )

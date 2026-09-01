@@ -79,6 +79,8 @@ export type PromotedStrategyEvidenceOwnerCalibration = {
   artifacts: StrategyEvidenceOwnerCalibrationArtifactRow[]
 }
 
+export const STRATEGY_EVIDENCE_OWNER_HYSTERESIS_HISTORY_LIMIT = 8
+
 function finite(value: unknown): number | null {
   if (value == null || (typeof value === 'string' && value.trim() === '')) return null
   const parsed = Number(value)
@@ -479,49 +481,103 @@ export async function refreshStrategyEvidenceOwnerCalibration(
   return { runId, result }
 }
 
-export async function loadPromotedStrategyEvidenceOwnerCalibrationBefore(
+export async function loadPromotedStrategyEvidenceOwnerCalibrationHistoryBefore(
   db: D1Database,
   knowledgeCutoffDate: string,
-): Promise<PromotedStrategyEvidenceOwnerCalibration | null> {
-  const run = await db.prepare(`
-    SELECT r.run_id, r.knowledge_cutoff_date, r.source_snapshot_checksum, r.artifact_checksum
-      FROM strategy_evidence_owner_calibration_head_v1 h
-      JOIN strategy_evidence_owner_calibration_runs_v1 r ON r.run_id=h.run_id
-     WHERE h.singleton_id=1 AND r.status='promoted' AND r.knowledge_cutoff_date<=?
-       AND h.artifact_checksum=r.artifact_checksum
-       AND h.knowledge_cutoff_date=r.knowledge_cutoff_date
-  `).bind(knowledgeCutoffDate).first<{
+  limit = STRATEGY_EVIDENCE_OWNER_HYSTERESIS_HISTORY_LIMIT,
+): Promise<PromotedStrategyEvidenceOwnerCalibration[]> {
+  const boundedLimit = Math.max(1, Math.min(32, Math.trunc(limit)))
+  const runResult = await db.prepare(`
+    WITH ranked AS (
+      SELECT run_id, knowledge_cutoff_date, source_snapshot_checksum,
+             artifact_checksum, gate_json,
+             ROW_NUMBER() OVER (
+               PARTITION BY knowledge_cutoff_date
+               ORDER BY created_at DESC, run_id DESC
+             ) AS ordinal
+        FROM strategy_evidence_owner_calibration_runs_v1
+       WHERE status='promoted' AND knowledge_cutoff_date<=?
+         AND artifact_version=?
+    )
+    SELECT run_id, knowledge_cutoff_date, source_snapshot_checksum,
+           artifact_checksum, gate_json
+      FROM ranked
+     WHERE ordinal=1
+     ORDER BY knowledge_cutoff_date DESC, run_id DESC
+     LIMIT ?
+  `).bind(
+    knowledgeCutoffDate,
+    STRATEGY_EVIDENCE_OWNER_CALIBRATION_VERSION,
+    boundedLimit,
+  ).all<{
     run_id: string
     knowledge_cutoff_date: string
     source_snapshot_checksum: string
     artifact_checksum: string
+    gate_json: string
   }>()
-  if (!run) return null
-  const result = await db.prepare(`
-    SELECT strategy_id, strategy_version, metric_outcome_as_of_date, multi_horizon_score,
-           weight_multiplier, source_metric_checksum, payload_checksum
-      FROM strategy_evidence_owner_calibration_artifacts_v1
-     WHERE run_id=? ORDER BY strategy_id, strategy_version
-  `).bind(run.run_id).all<StrategyEvidenceOwnerCalibrationArtifactRow>()
-  const artifacts = result.results ?? []
-  for (const artifact of artifacts) {
-    const expected = await sha256(JSON.stringify({
-      strategy_id: artifact.strategy_id,
-      strategy_version: artifact.strategy_version,
-      metric_outcome_as_of_date: artifact.metric_outcome_as_of_date,
+  const history: PromotedStrategyEvidenceOwnerCalibration[] = []
+  for (const run of runResult.results ?? []) {
+    const result = await db.prepare(`
+      SELECT strategy_id, strategy_version, metric_outcome_as_of_date, multi_horizon_score,
+             weight_multiplier, source_metric_checksum, payload_checksum
+        FROM strategy_evidence_owner_calibration_artifacts_v1
+       WHERE run_id=? ORDER BY strategy_id, strategy_version
+    `).bind(run.run_id).all<StrategyEvidenceOwnerCalibrationArtifactRow>()
+    const artifacts = (result.results ?? []).map((artifact) => ({
+      ...artifact,
       multi_horizon_score: finite(artifact.multi_horizon_score),
       weight_multiplier: Number(artifact.weight_multiplier),
-      source_metric_checksum: artifact.source_metric_checksum,
     }))
-    if (expected !== artifact.payload_checksum || artifact.source_metric_checksum !== run.source_snapshot_checksum) {
-      return null
+    if (!artifacts.length) return []
+    for (const artifact of artifacts) {
+      const expected = await sha256(JSON.stringify({
+        strategy_id: artifact.strategy_id,
+        strategy_version: artifact.strategy_version,
+        metric_outcome_as_of_date: artifact.metric_outcome_as_of_date,
+        multi_horizon_score: artifact.multi_horizon_score,
+        weight_multiplier: artifact.weight_multiplier,
+        source_metric_checksum: artifact.source_metric_checksum,
+      }))
+      if (expected !== artifact.payload_checksum || artifact.source_metric_checksum !== run.source_snapshot_checksum) {
+        return []
+      }
     }
+    let historyChecksum: string | null = null
+    try {
+      const gate = JSON.parse(run.gate_json) as Record<string, unknown>
+      historyChecksum = typeof gate.history_checksum === 'string' ? gate.history_checksum : null
+    } catch {
+      return []
+    }
+    if (!historyChecksum) return []
+    const expectedArtifactChecksum = await sha256(JSON.stringify({
+      version: STRATEGY_EVIDENCE_OWNER_CALIBRATION_VERSION,
+      challenger: STRATEGY_EVIDENCE_OWNER_CHALLENGER_VERSION,
+      source_snapshot_checksum: run.source_snapshot_checksum,
+      history_checksum: historyChecksum,
+      artifacts,
+    }))
+    if (expectedArtifactChecksum !== run.artifact_checksum) return []
+    history.push({
+      runId: run.run_id,
+      artifactChecksum: run.artifact_checksum,
+      sourceMetricChecksum: run.source_snapshot_checksum,
+      knowledgeCutoffDate: run.knowledge_cutoff_date,
+      artifacts,
+    })
   }
-  return {
-    runId: run.run_id,
-    artifactChecksum: run.artifact_checksum,
-    sourceMetricChecksum: run.source_snapshot_checksum,
-    knowledgeCutoffDate: run.knowledge_cutoff_date,
-    artifacts,
-  }
+  return history
+}
+
+export async function loadPromotedStrategyEvidenceOwnerCalibrationBefore(
+  db: D1Database,
+  knowledgeCutoffDate: string,
+): Promise<PromotedStrategyEvidenceOwnerCalibration | null> {
+  const history = await loadPromotedStrategyEvidenceOwnerCalibrationHistoryBefore(
+    db,
+    knowledgeCutoffDate,
+    1,
+  )
+  return history[0] ?? null
 }

@@ -12,6 +12,10 @@ export type StrategyLearningRunRow = {
   lease_owner: string | null
   lease_expires_at: string | null
   completed_at: string | null
+  production_authority_intent: number
+  policy_closure_status: 'pending' | 'materialized' | 'evidence_only'
+  policy_closure_reason: string | null
+  policy_closure_completed_at: string | null
 }
 
 export const STRATEGY_LEARNING_LEASE_SECONDS = 900
@@ -87,6 +91,7 @@ export async function initializeStrategyLearningRun(
     strategyCount: number
     universeDb?: D1Database
     canonicalProducerRunId?: string | null
+    productionAuthorityIntent?: boolean
   },
 ): Promise<StrategyLearningRunRow> {
   const universe = await inspectCanonicalStrategyUniverse(
@@ -99,8 +104,9 @@ export async function initializeStrategyLearningRun(
   await db.prepare(`
     INSERT INTO strategy_learning_runs (
       business_date, canonical_run_id, producer_run_id, status,
-      expected_candidates, strategy_count, expected_decision_rows, updated_at
-    ) VALUES (?, ?, ?, 'queued', ?, ?, ?, CURRENT_TIMESTAMP)
+      expected_candidates, strategy_count, expected_decision_rows,
+      production_authority_intent, policy_closure_status, updated_at
+    ) VALUES (?, ?, ?, 'queued', ?, ?, ?, ?, 'pending', CURRENT_TIMESTAMP)
     ON CONFLICT(business_date) DO UPDATE SET
       canonical_run_id=CASE
         WHEN strategy_learning_runs.producer_run_id IS NOT excluded.producer_run_id
@@ -132,6 +138,26 @@ export async function initializeStrategyLearningRun(
       expected_candidates=excluded.expected_candidates,
       strategy_count=excluded.strategy_count,
       expected_decision_rows=excluded.expected_decision_rows,
+      production_authority_intent=CASE
+        WHEN strategy_learning_runs.producer_run_id IS NOT excluded.producer_run_id
+          THEN excluded.production_authority_intent
+        ELSE MAX(strategy_learning_runs.production_authority_intent, excluded.production_authority_intent)
+      END,
+      policy_closure_status=CASE
+        WHEN strategy_learning_runs.producer_run_id IS NOT excluded.producer_run_id THEN 'pending'
+        WHEN strategy_learning_runs.status='error' THEN 'pending'
+        ELSE strategy_learning_runs.policy_closure_status
+      END,
+      policy_closure_reason=CASE
+        WHEN strategy_learning_runs.producer_run_id IS NOT excluded.producer_run_id THEN NULL
+        WHEN strategy_learning_runs.status='error' THEN NULL
+        ELSE strategy_learning_runs.policy_closure_reason
+      END,
+      policy_closure_completed_at=CASE
+        WHEN strategy_learning_runs.producer_run_id IS NOT excluded.producer_run_id THEN NULL
+        WHEN strategy_learning_runs.status='error' THEN NULL
+        ELSE strategy_learning_runs.policy_closure_completed_at
+      END,
       lease_owner=CASE
         WHEN strategy_learning_runs.producer_run_id IS NOT excluded.producer_run_id THEN NULL
         WHEN strategy_learning_runs.status='error' THEN NULL
@@ -155,6 +181,7 @@ export async function initializeStrategyLearningRun(
     universe.expected_candidates,
     input.strategyCount,
     expectedRows,
+    input.productionAuthorityIntent ? 1 : 0,
   ).run()
   const row = await loadStrategyLearningRun(db, input.businessDate)
   if (!row) throw new Error(`strategy_learning_run_init_failed:${input.businessDate}`)
@@ -169,7 +196,9 @@ export async function loadStrategyLearningRun(
     SELECT business_date, canonical_run_id, producer_run_id, status, cursor_symbol,
            expected_candidates, processed_candidates, strategy_count,
            expected_decision_rows, persisted_decision_rows,
-           lease_owner, lease_expires_at, completed_at
+           lease_owner, lease_expires_at, completed_at,
+           production_authority_intent, policy_closure_status,
+           policy_closure_reason, policy_closure_completed_at
       FROM strategy_learning_runs
      WHERE business_date=?
   `).bind(businessDate).first<StrategyLearningRunRow>()
@@ -195,7 +224,9 @@ export async function claimStrategyLearningPage(
     RETURNING business_date, canonical_run_id, producer_run_id, status, cursor_symbol,
               expected_candidates, processed_candidates, strategy_count,
               expected_decision_rows, persisted_decision_rows,
-              lease_owner, lease_expires_at, completed_at
+              lease_owner, lease_expires_at, completed_at,
+              production_authority_intent, policy_closure_status,
+              policy_closure_reason, policy_closure_completed_at
   `).bind(
     input.leaseOwner,
     modifier,
@@ -406,6 +437,11 @@ export async function markStrategyLearningRunFinalized(
        AND lease_expires_at >= CURRENT_TIMESTAMP
        AND processed_candidates=expected_candidates
        AND persisted_decision_rows=expected_decision_rows
+       AND policy_closure_status IN ('materialized', 'evidence_only')
+       AND (
+         production_authority_intent=0
+         OR policy_closure_status='materialized'
+       )
        AND EXISTS (
          SELECT 1
            FROM pipeline_stage_runs p
@@ -417,6 +453,82 @@ export async function markStrategyLearningRunFinalized(
     RETURNING 1 AS finalized
   `).bind(input.businessDate, input.canonicalRunId, input.leaseOwner).first<{ finalized: number }>()
   return Number(row?.finalized ?? 0) === 1
+}
+
+export async function recordStrategyLearningPolicyClosure(
+  db: D1Database,
+  input: StrategyLearningLeaseIdentity & {
+    status: 'materialized' | 'evidence_only'
+    reason: string
+  },
+): Promise<boolean> {
+  const row = await db.prepare(`
+    UPDATE strategy_learning_runs
+       SET policy_closure_status=?, policy_closure_reason=?,
+           policy_closure_completed_at=CURRENT_TIMESTAMP,
+           updated_at=CURRENT_TIMESTAMP
+     WHERE business_date=? AND canonical_run_id=?
+       AND status='running' AND lease_owner=?
+       AND lease_expires_at >= CURRENT_TIMESTAMP
+       AND processed_candidates=expected_candidates
+       AND persisted_decision_rows=expected_decision_rows
+       AND (
+         production_authority_intent=0
+         OR ?='materialized'
+       )
+    RETURNING 1 AS recorded
+  `).bind(
+    input.status,
+    input.reason.slice(0, 1000),
+    input.businessDate,
+    input.canonicalRunId,
+    input.leaseOwner,
+    input.status,
+  ).first<{ recorded: number }>()
+  return Number(row?.recorded ?? 0) === 1
+}
+
+export async function closeStrategyLearningPostVerifyStage(
+  db: D1Database,
+  input: Pick<StrategyLearningLeaseIdentity, 'businessDate' | 'canonicalRunId'>,
+): Promise<boolean> {
+  const alreadyClosed = await db.prepare(`
+    SELECT 1 AS closed
+      FROM pipeline_stage_runs
+     WHERE business_date=? AND stage='post_verify_chain'
+       AND canonical_run_id=? AND status='success'
+       AND EXISTS (
+         SELECT 1
+           FROM strategy_learning_runs strategy_learning
+          WHERE strategy_learning.business_date=pipeline_stage_runs.business_date
+            AND strategy_learning.canonical_run_id=pipeline_stage_runs.canonical_run_id
+            AND strategy_learning.status='success'
+            AND strategy_learning.production_authority_intent=1
+            AND strategy_learning.policy_closure_status='materialized'
+       )
+     LIMIT 1
+  `).bind(input.businessDate, input.canonicalRunId).first<{ closed: number }>()
+  if (Number(alreadyClosed?.closed ?? 0) === 1) return true
+
+  const row = await db.prepare(`
+    UPDATE pipeline_stage_runs
+       SET status='success', completed_at=CURRENT_TIMESTAMP,
+           updated_at=CURRENT_TIMESTAMP, last_error=NULL
+     WHERE business_date=? AND stage='post_verify_chain'
+       AND canonical_run_id=? AND status='waiting'
+       AND lease_owner IS NULL
+       AND EXISTS (
+         SELECT 1
+           FROM strategy_learning_runs strategy_learning
+          WHERE strategy_learning.business_date=pipeline_stage_runs.business_date
+            AND strategy_learning.canonical_run_id=pipeline_stage_runs.canonical_run_id
+            AND strategy_learning.status='success'
+            AND strategy_learning.production_authority_intent=1
+            AND strategy_learning.policy_closure_status='materialized'
+       )
+    RETURNING 1 AS closed
+  `).bind(input.businessDate, input.canonicalRunId).first<{ closed: number }>()
+  return Number(row?.closed ?? 0) === 1
 }
 
 export async function hasStrategyLearningPostVerifyAuthority(
@@ -457,7 +569,7 @@ export async function adoptStrategyLearningPostVerifyAuthority(
           WHERE p.business_date=strategy_learning_runs.business_date
             AND p.stage='post_verify_chain'
             AND p.canonical_run_id=?
-            AND p.status='success'
+            AND p.status IN ('running', 'waiting', 'success')
        )
     RETURNING 1 AS adopted
   `).bind(
@@ -530,14 +642,18 @@ export async function deferStrategyLearningFinalizer(
   const row = await db.prepare(`
     UPDATE strategy_learning_runs
        SET status='queued', lease_owner=NULL, lease_expires_at=NULL, completed_at=NULL,
-           last_error=?, updated_at=CURRENT_TIMESTAMP
+           policy_closure_status='pending', policy_closure_reason=?,
+           policy_closure_completed_at=NULL, last_error=?, updated_at=CURRENT_TIMESTAMP
      WHERE business_date=? AND canonical_run_id=?
        AND status='running' AND lease_owner=?
        AND lease_expires_at >= CURRENT_TIMESTAMP
        AND processed_candidates=expected_candidates
        AND persisted_decision_rows=expected_decision_rows
     RETURNING 1 AS deferred
-  `).bind(input.error.slice(0, 1000), input.businessDate, input.canonicalRunId, input.leaseOwner).first<{ deferred: number }>()
+  `).bind(
+    input.error.slice(0, 1000), input.error.slice(0, 1000),
+    input.businessDate, input.canonicalRunId, input.leaseOwner,
+  ).first<{ deferred: number }>()
   return Number(row?.deferred ?? 0) === 1
 }
 
@@ -548,11 +664,15 @@ export async function failStrategyLearningRun(
   const row = await db.prepare(`
     UPDATE strategy_learning_runs
        SET status='error', lease_owner=NULL, lease_expires_at=NULL, completed_at=NULL,
-           last_error=?, updated_at=CURRENT_TIMESTAMP
+           policy_closure_status='pending', policy_closure_reason=?,
+           policy_closure_completed_at=NULL, last_error=?, updated_at=CURRENT_TIMESTAMP
      WHERE business_date=? AND canonical_run_id=?
        AND status='running' AND lease_owner=?
        AND lease_expires_at >= CURRENT_TIMESTAMP
     RETURNING 1 AS failed
-  `).bind(input.error.slice(0, 1000), input.businessDate, input.canonicalRunId, input.leaseOwner).first<{ failed: number }>()
+  `).bind(
+    input.error.slice(0, 1000), input.error.slice(0, 1000),
+    input.businessDate, input.canonicalRunId, input.leaseOwner,
+  ).first<{ failed: number }>()
   return Number(row?.failed ?? 0) === 1
 }

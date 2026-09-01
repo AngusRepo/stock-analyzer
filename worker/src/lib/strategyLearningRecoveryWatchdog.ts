@@ -20,6 +20,8 @@ export type StrategyLearningRecoveryRow = {
   attempt_count: number | string | null
   last_error: string | null
   updated_at: string | null
+  production_authority_intent: number | string | null
+  policy_closure_status: string | null
 }
 
 export type StrategyLearningRecoveryDecision = {
@@ -77,7 +79,8 @@ async function loadRecoveryRun(
       SELECT business_date, canonical_run_id, status, cursor_symbol,
              expected_candidates, processed_candidates,
              expected_decision_rows, persisted_decision_rows,
-             lease_owner, lease_expires_at, attempt_count, last_error, updated_at
+             lease_owner, lease_expires_at, attempt_count, last_error, updated_at,
+             production_authority_intent, policy_closure_status
         FROM strategy_learning_runs
        WHERE business_date=?
        LIMIT 1
@@ -88,7 +91,8 @@ async function loadRecoveryRun(
     SELECT business_date, canonical_run_id, status, cursor_symbol,
            expected_candidates, processed_candidates,
            expected_decision_rows, persisted_decision_rows,
-           lease_owner, lease_expires_at, attempt_count, last_error, updated_at
+           lease_owner, lease_expires_at, attempt_count, last_error, updated_at,
+           production_authority_intent, policy_closure_status
       FROM strategy_learning_runs
      WHERE status IN ('queued','running')
        AND business_date BETWEEN date(?, ?) AND ?
@@ -125,7 +129,7 @@ async function logWatchdog(
     duration_ms: 0,
     run_id: row?.canonical_run_id,
     run_date: row?.business_date ?? twToday(),
-    run_scope: 'historical_replay',
+    run_scope: Number(row?.production_authority_intent ?? 0) === 1 ? 'live_canonical' : 'historical_replay',
     error: status === 'error' ? summary : undefined,
     supersedePrevious: true,
   }, env)
@@ -159,7 +163,8 @@ export async function runStrategyLearningRecoveryWatchdog(
   }
 
   const authority = await loadPostVerifyAuthority(opsDb, row.business_date)
-  if (authority?.status !== 'success' || authority.canonical_run_id !== row.canonical_run_id) {
+  if (!['running', 'waiting', 'success'].includes(String(authority?.status ?? ''))
+      || authority?.canonical_run_id !== row.canonical_run_id) {
     const summary = [
       `strategy-learning recovery authority denied date=${row.business_date}`,
       `post_verify_status=${authority?.status ?? 'missing'}`,
@@ -183,8 +188,7 @@ export async function runStrategyLearningRecoveryWatchdog(
     cursorKey: String(row.cursor_symbol ?? ''),
     triggerTime: row.business_date,
     runId: row.canonical_run_id,
-    force: false,
-    policyMutationAllowed: false,
+    productionAuthorityIntent: Number(row.production_authority_intent ?? 0) === 1,
     leaseRetryAttempt: 0,
   })
   await env.KV.put(dispatchKey, JSON.stringify({
@@ -198,7 +202,8 @@ export async function runStrategyLearningRecoveryWatchdog(
     `reason=${decision.reason}`,
     `attempts=${Number(row.attempt_count ?? 0)}`,
     `cursor=${row.cursor_symbol ?? ''}`,
-    'policy_mutation=false',
+    `production_authority_intent=${Number(row.production_authority_intent ?? 0) === 1}`,
+    'authority=revalidate_at_finalizer',
   ].join(' ')
   await logWatchdog(env, row, 'triggered', summary)
   return summary

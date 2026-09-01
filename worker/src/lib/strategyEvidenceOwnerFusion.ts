@@ -3,7 +3,7 @@ import { STRATEGY_EVIDENCE_METRIC_DEFINITION_VERSION } from './strategyEvidenceM
 import type { StrategySpec } from './strategySpec'
 import {
   calibrationMetricSnapshotChecksum,
-  loadPromotedStrategyEvidenceOwnerCalibrationBefore,
+  loadPromotedStrategyEvidenceOwnerCalibrationHistoryBefore,
   type PromotedStrategyEvidenceOwnerCalibration,
 } from './strategyEvidenceOwnerCalibration'
 
@@ -33,6 +33,15 @@ export type StrategyEvidenceOwnerProfile = {
   multi_horizon_score: number | null
   weight_multiplier: number
   weight_effect: 'immutable_oos_calibrated' | 'neutral_unvalidated_calibration'
+  performance_state: 'neutral_pending_calibration' | 'full' | 'cooldown'
+  performance_reason: string
+  negative_calibration_streak: number
+  positive_calibration_streak: number
+  calibration_history: Array<{
+    run_id: string
+    knowledge_cutoff_date: string
+    multi_horizon_score: number
+  }>
   metric_evidence: Array<{
     metric_name: string
     metric_value: number | null
@@ -48,6 +57,7 @@ export type StrategyEvidenceOwnerSnapshot = {
   active_profile_count: number
   active_materialized_profile_count: number
   active_ready_profile_count: number
+  active_cooldown_profile_count: number
   learning_profile_count: number
   integration_ready: boolean
   weight_effect: 'immutable_oos_calibrated_bounded_bidirectional' | 'neutral_until_immutable_calibration'
@@ -72,6 +82,7 @@ export async function buildStrategyEvidenceOwnerSnapshot(input: {
   rows: readonly StrategyEvidenceOwnerMetricRow[]
   knowledgeCutoffDate: string
   calibration?: PromotedStrategyEvidenceOwnerCalibration | null
+  calibrationHistory?: readonly PromotedStrategyEvidenceOwnerCalibration[]
 }): Promise<StrategyEvidenceOwnerSnapshot> {
   const profiles = listStrategyEvidenceProfiles([...input.strategies])
     .filter((profile) => profile.strategy_status === 'active' || profile.strategy_status === 'shadow')
@@ -91,6 +102,11 @@ export async function buildStrategyEvidenceOwnerSnapshot(input: {
     `${row.strategy_id}|${row.strategy_version}`,
     row,
   ]))
+  const calibrationHistory = input.calibrationHistory?.length
+    ? [...input.calibrationHistory]
+    : input.calibration
+      ? [input.calibration]
+      : []
   const byKey = new Map(latestRows.map((row) => [
     `${row.strategy_id}|${row.strategy_version}|${Number(row.primary_horizon_days)}|${row.metric_name}`,
     row,
@@ -119,6 +135,51 @@ export async function buildStrategyEvidenceOwnerSnapshot(input: {
       && calibration.multi_horizon_score != null
       && Number.isFinite(Number(calibration.weight_multiplier))
     const multiHorizonScore = calibrated ? Number(calibration!.multi_horizon_score) : null
+    const profileCalibrationHistory = calibrationHistory.map((run) => {
+      const artifact = run.artifacts.find((item) => (
+        item.strategy_id === profile.strategy_id && item.strategy_version === profile.strategy_version
+      ))
+      const score = finite(artifact?.multi_horizon_score)
+      return score == null ? null : {
+        run_id: run.runId,
+        knowledge_cutoff_date: run.knowledgeCutoffDate,
+        multi_horizon_score: score,
+      }
+    }).filter((row): row is NonNullable<typeof row> => row != null)
+    const negativeCalibrationStreak = calibrated
+      ? profileCalibrationHistory.findIndex((row) => row.multi_horizon_score >= 0) === -1
+        ? profileCalibrationHistory.length
+        : profileCalibrationHistory.findIndex((row) => row.multi_horizon_score >= 0)
+      : 0
+    const positiveCalibrationStreak = calibrated
+      ? profileCalibrationHistory.findIndex((row) => row.multi_horizon_score <= 0) === -1
+        ? profileCalibrationHistory.length
+        : profileCalibrationHistory.findIndex((row) => row.multi_horizon_score <= 0)
+      : 0
+    let performanceState: StrategyEvidenceOwnerProfile['performance_state'] = 'neutral_pending_calibration'
+    let performanceReason = 'promoted_primary_horizon_calibration_missing_or_stale'
+    if (calibrated) {
+      performanceState = 'full'
+      performanceReason = 'formal_owner_default_full_until_consecutive_failure'
+      for (let index = 0; index + 1 < profileCalibrationHistory.length; index += 1) {
+        const latest = profileCalibrationHistory[index].multi_horizon_score
+        const previous = profileCalibrationHistory[index + 1].multi_horizon_score
+        if (latest < 0 && previous < 0) {
+          performanceState = 'cooldown'
+          performanceReason = index === 0
+            ? 'formal_owner_two_consecutive_negative_promoted_scores'
+            : 'formal_owner_cooldown_recovery_not_yet_confirmed'
+          break
+        }
+        if (latest > 0 && previous > 0) {
+          performanceState = 'full'
+          performanceReason = index === 0
+            ? 'formal_owner_two_consecutive_positive_promoted_scores'
+            : 'formal_owner_full_entry_not_yet_failed_twice'
+          break
+        }
+      }
+    }
     return {
       strategy_id: profile.strategy_id,
       strategy_status: profile.strategy_status,
@@ -134,6 +195,11 @@ export async function buildStrategyEvidenceOwnerSnapshot(input: {
       multi_horizon_score: multiHorizonScore,
       weight_multiplier: calibrated ? Number(calibration!.weight_multiplier) : 1,
       weight_effect: calibrated ? 'immutable_oos_calibrated' : 'neutral_unvalidated_calibration',
+      performance_state: performanceState,
+      performance_reason: performanceReason,
+      negative_calibration_streak: negativeCalibrationStreak,
+      positive_calibration_streak: positiveCalibrationStreak,
+      calibration_history: profileCalibrationHistory,
       metric_evidence: metricEvidence,
     }
   }).sort((left, right) => left.strategy_id.localeCompare(right.strategy_id))
@@ -144,6 +210,7 @@ export async function buildStrategyEvidenceOwnerSnapshot(input: {
   const activeReady = active.filter((profile) => (
     profile.ready_metrics === profile.required_metrics
   )).length
+  const activeCooldown = active.filter((profile) => profile.performance_state === 'cooldown').length
   const canonical = JSON.stringify({
     version: STRATEGY_EVIDENCE_OWNER_FUSION_VERSION,
     knowledge_cutoff_date: input.knowledgeCutoffDate,
@@ -159,6 +226,7 @@ export async function buildStrategyEvidenceOwnerSnapshot(input: {
     active_profile_count: active.length,
     active_materialized_profile_count: activeMaterialized,
     active_ready_profile_count: activeReady,
+    active_cooldown_profile_count: activeCooldown,
     learning_profile_count: ownerProfiles.length,
     integration_ready: active.length > 0 && activeMaterialized === active.length,
     weight_effect: calibrationValid
@@ -176,7 +244,7 @@ export async function loadStrategyEvidenceOwnerSnapshotBefore(
   strategies: readonly StrategySpec[],
   knowledgeCutoffDate: string,
 ): Promise<StrategyEvidenceOwnerSnapshot> {
-  const [rows, calibration] = await Promise.all([
+  const [rows, calibrationHistory] = await Promise.all([
     db.prepare(`
       SELECT strategy_id, strategy_version, primary_horizon_days, metric_name,
              metric_value, metric_status, sample_count, mature_dates,
@@ -187,13 +255,14 @@ export async function loadStrategyEvidenceOwnerSnapshotBefore(
        ORDER BY outcome_as_of_date DESC, strategy_id, metric_name
     `).bind(knowledgeCutoffDate, STRATEGY_EVIDENCE_METRIC_DEFINITION_VERSION).all<StrategyEvidenceOwnerMetricRow>()
       .catch(() => ({ results: [] as StrategyEvidenceOwnerMetricRow[] })),
-    loadPromotedStrategyEvidenceOwnerCalibrationBefore(db, knowledgeCutoffDate).catch(() => null),
+    loadPromotedStrategyEvidenceOwnerCalibrationHistoryBefore(db, knowledgeCutoffDate).catch(() => []),
   ])
   return buildStrategyEvidenceOwnerSnapshot({
     strategies,
     rows: rows.results ?? [],
     knowledgeCutoffDate,
-    calibration,
+    calibration: calibrationHistory[0] ?? null,
+    calibrationHistory,
   })
 }
 

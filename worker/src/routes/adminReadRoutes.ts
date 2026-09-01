@@ -585,6 +585,14 @@ adminReadRoutes.get('/api/admin/strategy/evidence-profiles', async (c) => {
     base_lifecycle_recommendations: formalPolicy
       ? parseObject(formalPolicy.lifecycle_recommendations_json)
       : null,
+    owner_strategy_decisions: (() => {
+      const owner = productionEvidenceRecord.evidence_owner
+      if (!owner || typeof owner !== 'object' || Array.isArray(owner)) return null
+      const decisions = (owner as Record<string, unknown>).strategy_decisions
+      return decisions && typeof decisions === 'object' && !Array.isArray(decisions)
+        ? decisions as Record<string, unknown>
+        : null
+    })(),
     evidence: productionPolicyState.evidence,
     checksum: loadedProductionPolicy.checksum,
     created_at: loadedProductionPolicy.created_at,

@@ -52,6 +52,16 @@ export interface StrategyProductionFirewallBaseWeights {
     ready_profile_count: number
     calibration_run_id?: string | null
     calibration_artifact_checksum?: string | null
+    strategy_decisions?: Record<string, {
+      primary_horizon_days: number
+      performance_state: 'neutral_pending_calibration' | 'full' | 'cooldown'
+      performance_reason: string
+      negative_calibration_streak: number
+      positive_calibration_streak: number
+      multi_horizon_score: number | null
+      weight_multiplier: number
+      contribution_mode: 'full' | 'diversity_retention' | 'blocked'
+    }>
   } | null
 }
 

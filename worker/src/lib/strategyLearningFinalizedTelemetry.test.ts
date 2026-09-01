@@ -60,12 +60,25 @@ class FakeFinalizedLeaseD1 {
   heartbeatCount = 0
   reclaimCount = 0
   releaseCount = 0
+  postVerifyCloseCheckCount = 0
 
   prepare(sql: string): FakeFinalizedLeaseStatement {
     return new FakeFinalizedLeaseStatement(this, sql)
   }
 
-  first(sql: string, values: unknown[]): { authorized: number } | null {
+  first(sql: string, values: unknown[]): { authorized?: number; closed?: number } | null {
+    if (sql.includes('UPDATE strategy_learning_runs') && sql.includes('RETURNING 1 AS')) {
+      const alias = sql.match(/RETURNING 1 AS (\w+)/)?.[1]
+      const changed = this.run(sql, values)
+      return changed === 1 && alias ? { [alias]: 1 } : null
+    }
+    if (sql.includes('SELECT 1 AS closed') && sql.includes('FROM pipeline_stage_runs')) {
+      this.postVerifyCloseCheckCount += 1
+      const [businessDate, canonicalRunId] = values.map(String)
+      return businessDate === '2026-08-14' && canonicalRunId === this.postVerifyCanonicalRunId
+        ? { closed: 1 }
+        : null
+    }
     if (!sql.includes('SELECT 1 AS authorized') || !sql.includes('FROM pipeline_stage_runs')) {
       throw new Error(`unsupported first SQL: ${sql}`)
     }
@@ -156,6 +169,10 @@ function finalizedRow(db: FakeFinalizedLeaseD1): StrategyLearningRunRow {
     lease_owner: db.leaseOwner,
     lease_expires_at: db.leaseExpiresAt,
     completed_at: '2026-08-15 00:00:00',
+    production_authority_intent: 1,
+    policy_closure_status: 'materialized',
+    policy_closure_reason: 'live_canonical:test',
+    policy_closure_completed_at: '2026-08-15 00:00:00',
   }
 }
 
@@ -235,6 +252,25 @@ async function main(): Promise<void> {
   assert.equal(expiredDb.reclaimCount, 1)
   assert.equal(expiredDb.releaseCount, 1)
   assert.equal(expiredDb.leaseOwner, null)
+
+  const historicalDb = new FakeFinalizedLeaseD1()
+  const historicalKv = new PartialFailureKv(false)
+  const historicalRow = finalizedRow(historicalDb)
+  historicalRow.production_authority_intent = 0
+  historicalRow.policy_closure_status = 'evidence_only'
+  historicalRow.policy_closure_reason = 'historical_replay:evidence_only'
+  assert.equal(await reconcileStrategyLearningFinalizedRetryFastPath(
+    historicalDb as unknown as D1Database,
+    historicalKv as unknown as KVNamespace,
+    historicalRow,
+    { attemptId: 'attempt-historical-retry' },
+  ), 'reconciled')
+  assert.equal(readStatus(historicalKv, 'strategy-learning'), 'success')
+  assert.equal(readStatus(historicalKv, 'post-verify-chain'), null)
+  assert.equal(readStatus(historicalKv, 'evening-chain'), null)
+  assert.equal(historicalDb.postVerifyCloseCheckCount, 0)
+  assert.equal(historicalDb.releaseCount, 1)
+  assert.equal(historicalDb.leaseOwner, null)
 
   const staleDb = new FakeFinalizedLeaseD1()
   staleDb.leaseLive = false

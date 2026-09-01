@@ -130,6 +130,7 @@ const DOMAIN_TABLES: Record<DataDomain, ReadonlySet<string>> = {
   ]),
   ops: new Set([
     'system_logs', 'observability_events', 'screener_funnel_runs', 'screener_funnel_items',
+    'pit_residual_funnel_enrichment_runs_v1',
     'pipeline_stage_runs', 'pipeline_runs', 'canonical_run_heads', 'run_artifacts',
     'artifact_cleanup_cursors', 'artifact_cleanup_dlq',
     'compute_profile_events', 'compute_efficiency_reports', 'cost_events',

@@ -1960,6 +1960,7 @@ def build_taxonomy_rows(
                         "dataset_lane": "security_master",
                         "market": row.get("market"),
                         "raw_tag": raw_category,
+                        "raw_emitted_tag": raw_category,
                         "normalized_tag": category,
                     }),
                     "as_of_date": generated_at[:10],
@@ -1976,6 +1977,7 @@ def build_taxonomy_rows(
                 if not tag:
                     continue
                 if ":" in tag:
+                    raw_parent, raw_child = [part.strip() for part in raw_tag.split(":", 1)]
                     parent, child = [_clean_taxonomy_tag(part) for part in tag.split(":", 1)]
                     if parent:
                         rows.append({
@@ -1987,6 +1989,7 @@ def build_taxonomy_rows(
                             "lineage_json": _json({
                                 "dataset_lane": "taxonomy_expansion",
                                 "raw_tag": raw_tag,
+                                "raw_emitted_tag": raw_parent,
                                 "normalized_tag": tag,
                             }),
                             "as_of_date": generated_at[:10],
@@ -2001,6 +2004,7 @@ def build_taxonomy_rows(
                             "lineage_json": _json({
                                 "dataset_lane": "taxonomy_expansion",
                                 "raw_tag": raw_tag,
+                                "raw_emitted_tag": raw_child,
                                 "normalized_tag": tag,
                                 "parent": parent,
                             }),
@@ -2016,6 +2020,7 @@ def build_taxonomy_rows(
                         "lineage_json": _json({
                             "dataset_lane": "taxonomy_expansion",
                             "raw_tag": raw_tag,
+                            "raw_emitted_tag": raw_tag,
                             "normalized_tag": tag,
                         }),
                         "as_of_date": generated_at[:10],
@@ -2405,6 +2410,36 @@ def _d1_param(value: Any) -> Any:
     if isinstance(value, float) and not math.isfinite(value):
         return None
     return value
+
+
+def _taxonomy_stale_row_cleanup_statements(
+    rows: list[dict[str, Any]],
+) -> list[tuple[str, list[Any]]]:
+    """Delete only the exact pre-normalization PK that this run replaces."""
+    statements: list[tuple[str, list[Any]]] = []
+    seen: set[tuple[str, str, str, str]] = set()
+    sql = (
+        "DELETE FROM finlab_taxonomy_tags "
+        "WHERE symbol=? AND tag=? AND tag_type=? AND source=?"
+    )
+    for row in rows:
+        try:
+            lineage = json.loads(str(row.get("lineage_json") or "{}"))
+        except (TypeError, ValueError, json.JSONDecodeError):
+            lineage = {}
+        raw_tag = str(lineage.get("raw_emitted_tag") or "")
+        normalized_tag = str(row.get("tag") or "")
+        identity = (
+            str(row.get("symbol") or ""),
+            raw_tag,
+            str(row.get("tag_type") or ""),
+            str(row.get("source") or ""),
+        )
+        if not all(identity) or raw_tag == normalized_tag or identity in seen:
+            continue
+        seen.add(identity)
+        statements.append((sql, list(identity)))
+    return statements
 
 
 def build_d1_upsert_statements(outputs: FinLabCanonicalOutputs) -> list[tuple[str, list[Any]]]:
@@ -2870,6 +2905,7 @@ def build_d1_upsert_statements(outputs: FinLabCanonicalOutputs) -> list[tuple[st
         ["stock_id", "date", "source", "rank_side", "rank_no"],
         ["market_segment", "broker_code", "broker_name", "buy_lots", "sell_lots", "net_lots", "lineage_json", "as_of_date"],
     ))
+    statements.extend(_taxonomy_stale_row_cleanup_statements(outputs.finlab_taxonomy_tags))
     statements.extend(_row_statements(
         "finlab_taxonomy_tags",
         outputs.finlab_taxonomy_tags,

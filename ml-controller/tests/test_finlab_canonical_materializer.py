@@ -266,6 +266,22 @@ def test_taxonomy_rows_strip_finlab_display_bullets_and_keep_raw_lineage() -> No
     assert all(not row["tag"].startswith(("\u25ba", "\u25b6", "\u25b8", "\u25b9", "\u2022", "\u00b7")) for row in rows)
     semiconductor = next(row for row in rows if row["tag_type"] == "industry_theme" and row["tag"] == "Semiconductor")
     assert json.loads(semiconductor["lineage_json"])["raw_tag"] == "\u25baSemiconductor:\u25baProcess Equipment"
+    assert json.loads(semiconductor["lineage_json"])["raw_emitted_tag"] == "\u25baSemiconductor"
+
+    outputs = materialize_finlab_canonical_outputs(
+        root,
+        generated_at="2026-09-03T00:00:00+00:00",
+        datasets=["finlab_taxonomy_tags"],
+    )
+    cleanup = [
+        params
+        for sql, params in build_d1_upsert_statements(outputs)
+        if sql.startswith("DELETE FROM finlab_taxonomy_tags")
+    ]
+    assert ["3551", "\u25baGreen Energy", "industry", "finlab.security_categories"] in cleanup
+    assert ["3551", "\u25baSemiconductor", "industry_theme", "finlab.security_industry_themes"] in cleanup
+    assert ["3551", "\u25baProcess Equipment", "subindustry", "finlab.security_industry_themes"] in cleanup
+    assert ["3551", "\u200b\u25baAI", "industry_theme", "finlab.security_industry_themes"] in cleanup
 
 
 def test_single_day_materialization_does_not_carry_prior_financial_fields() -> None:

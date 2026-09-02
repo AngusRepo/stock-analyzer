@@ -3117,6 +3117,12 @@ def partition_finlab_canonical_statements(
     for statement in statements:
         sql = statement[0]
         match = re.search(r"\b(?:INSERT\s+(?:OR\s+\w+\s+)?INTO|UPDATE)\s+[\"`]?([a-z_][a-z0-9_]*)", sql, re.IGNORECASE)
+        if not match:
+            match = re.search(
+                r"\bDELETE\s+FROM\s+[\"\x60]?([a-z_][a-z0-9_]*)",
+                sql,
+                re.IGNORECASE,
+            )
         target = match.group(1).lower() if match else ""
         if target in FINLAB_OPS_METADATA_TABLES:
             ops.append(statement)

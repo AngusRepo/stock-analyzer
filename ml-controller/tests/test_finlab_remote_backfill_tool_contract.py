@@ -239,13 +239,14 @@ def test_finlab_canonical_statement_partition_routes_domain_owners():
         ("INSERT INTO canonical_market_daily VALUES (?)", [1]),
         ("INSERT INTO data_source_inventory VALUES (?)", [2]),
         ("INSERT OR REPLACE INTO finlab_materialization_manifest VALUES (?)", [3]),
+        ("DELETE FROM finlab_taxonomy_tags WHERE symbol=?", [4]),
     ]
 
     legacy, ops, market = tool.partition_finlab_canonical_statements(statements, market_active=True)
 
     assert legacy == []
     assert [params for _sql, params in ops] == [[2], [3]]
-    assert [params for _sql, params in market] == [[1]]
+    assert [params for _sql, params in market] == [[1], [4]]
 
 
 def test_finlab_fundamental_fields_fail_closed_without_deadline_owner():

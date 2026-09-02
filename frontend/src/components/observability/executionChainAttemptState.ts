@@ -13,9 +13,14 @@ export function buildAttemptAwareJobMap(
   inferOrchestratorStage: InferOrchestratorStage,
 ): Map<string, SchedulerJob> {
   const orchestrator = scope.orchestratorId ? base.get(scope.orchestratorId) : undefined
-  const directRunningStageId = [...scope.columns].reverse().flat()
-    .find((stageId) => base.get(stageId)?.lastStatus === 'running')
   const orchestratorRunning = orchestrator?.lastStatus === 'running'
+  const activeRunDate = orchestratorRunning ? orchestrator.statusRunDate : null
+  const directRunningStageId = [...scope.columns].reverse().flat()
+    .find((stageId) => {
+      const job = base.get(stageId)
+      if (job?.lastStatus !== 'running') return false
+      return !activeRunDate || job.statusRunDate === activeRunDate
+    })
 
   if (!directRunningStageId && !orchestratorRunning) return base
 

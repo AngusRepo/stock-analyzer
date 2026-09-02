@@ -297,7 +297,7 @@ assert(
   mlPipelineTrigger.includes('prevalidatedEventChain') &&
     mlPipelineTrigger.includes('assertMarketDataReady(env, twDate)') &&
     updateOrchestrator.includes('prevalidatedEventChain: true'),
-  'event-driven post-screener pipeline trigger must not depend on KV scheduler telemetry after the chain has already validated indicator/screener/regime stages',
+  'event-driven post-screener pipeline trigger must not depend on KV scheduler telemetry after the chain has already validated indicator/regime/screener stages',
 )
 assert(
   mlPipelineTrigger.includes('active execution') && mlPipelineTrigger.includes('return `LOCKED active execution'),

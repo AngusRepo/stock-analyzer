@@ -51,10 +51,10 @@ const JOB_DEF_METADATA: JobDef[] = [
   { id: 'active8-oof-daily', name: 'Active-8 Daily Evidence', schedule: 'Snapshot-ready event + Tue-Sat watchdog', cron: '55 17 * * 1-5', group: 'pipeline_chain' },
   { id: 'update', name: 'Market Data Update', schedule: 'After FinLab canonical ready', cron: '', group: 'pipeline_chain', chainIndex: 4 },
   { id: 'indicator-queue', name: 'Indicator Queue', schedule: 'After update readiness', cron: '', group: 'pipeline_chain', chainIndex: 5 },
-  { id: 'screener', name: 'Screener', schedule: 'After indicators', cron: '', group: 'pipeline_chain', chainIndex: 6 },
-  { id: 'screener-v2-watchdog', name: 'Screener Callback Watchdog', schedule: 'Weekdays 21:00-01:50 / 10m', cron: '*/10 13-17 * * 1-5', group: 'pipeline_chain', chainIndex: 6 },
+  { id: 'regime-compute', name: 'HMM Regime', schedule: 'After indicators, before screener', cron: '', group: 'pipeline_chain', chainIndex: 6 },
+  { id: 'screener', name: 'Screener', schedule: 'After same-date HMM regime', cron: '', group: 'pipeline_chain', chainIndex: 7 },
+  { id: 'screener-v2-watchdog', name: 'Screener Callback Watchdog', schedule: 'Weekdays 21:00-01:50 / 10m', cron: '*/10 13-17 * * 1-5', group: 'pipeline_chain', chainIndex: 7 },
   { id: 'strategy-learning-watchdog', name: 'Strategy Learning Recovery Watchdog', schedule: 'Inside Screener Callback Watchdog', cron: '', group: 'pipeline_chain', chainIndex: 24 },
-  { id: 'regime-compute', name: 'HMM Regime', schedule: 'Before pipeline recommendation', cron: '', group: 'pipeline_chain', chainIndex: 7 },
   { id: 'allocator-ev-readiness', name: 'Allocator EV Readiness', schedule: 'After screener + regime', cron: '', group: 'pipeline_chain', chainIndex: 8 },
   { id: 'pipeline', name: 'Pipeline', schedule: 'After allocator EV readiness', cron: '', group: 'pipeline_chain', chainIndex: 9 },
   { id: 'ml-predict', name: 'ML Predict', schedule: 'Inside pipeline', cron: '', group: 'pipeline_chain', chainIndex: 11 },
@@ -153,8 +153,8 @@ const CHAIN_STEP_IDS = [
   'finlab-v4-backfill',
   'update',
   'indicator-queue',
-  'screener',
   'regime-compute',
+  'screener',
   'allocator-ev-readiness',
   'pipeline',
   'ml-predict',
@@ -412,6 +412,7 @@ export function reconcileSchedulerExecutionTicketStatus(input: {
   baseStatus: SchedulerLastStatus
   baseTimestamp?: string | null
   ticket?: SchedulerExecutionTicketRow
+  expectedRunDate?: string | null
 }): {
   lastStatus: SchedulerLastStatus
   lastRunAt: string
@@ -425,6 +426,7 @@ export function reconcileSchedulerExecutionTicketStatus(input: {
 } | null {
   const { ticket } = input
   if (!ticket) return null
+  if (input.expectedRunDate && ticket.business_date !== input.expectedRunDate) return null
   const ticketTimestamp = sqliteUtcTimestamp(ticket.updated_at)
   const ticketMs = Date.parse(ticketTimestamp)
   const baseMs = input.baseTimestamp ? Date.parse(input.baseTimestamp) : Number.NEGATIVE_INFINITY
@@ -454,10 +456,11 @@ export function selectSchedulerExecutionTicketForDisplay<T>(input: {
   exactJobTicket?: T
   latestTaskTicket?: T
   physicalRoot: boolean
+  scopedRunDate?: string | null
 }): T | undefined {
   return input.exactTaskTicket
     ?? input.exactJobTicket
-    ?? (input.physicalRoot ? undefined : input.latestTaskTicket)
+    ?? (input.physicalRoot || input.scopedRunDate ? undefined : input.latestTaskTicket)
 }
 
 type DurableEventTicketEvidence = Pick<
@@ -1040,11 +1043,13 @@ export async function getSchedulerStatus(env: Bindings, anchorDate?: string) {
         : undefined,
       latestTaskTicket: latestExecutionTicketByTask.get(accounting.task),
       physicalRoot: accounting.physicalRoot,
+      scopedRunDate: resolvedDisplay.statusRunDate,
     })
     const executionTicketOverride = reconcileSchedulerExecutionTicketStatus({
       baseStatus: baseLastStatus,
       baseTimestamp,
       ticket: executionTicket,
+      expectedRunDate: resolvedDisplay.statusRunDate,
     })
     const lastStatus = executionTicketOverride?.lastStatus ?? baseLastStatus
     const displayTime = executionTicketOverride

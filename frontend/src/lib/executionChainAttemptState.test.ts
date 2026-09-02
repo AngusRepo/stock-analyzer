@@ -115,3 +115,43 @@ const inferStage = (summary?: string | null): string | null => (
   ])
   assert(buildAttemptAwareJobMap(base, scope, inferStage) === base, 'inactive chain without direct running evidence must remain unchanged')
 }
+
+{
+  const liveScope: AttemptAwareChainScope = {
+    orchestratorId: 'evening-chain',
+    columns: [
+      ['finlab-v4-backfill'],
+      ['update'],
+      ['pipeline'],
+    ],
+  }
+  const base = new Map<string, SchedulerJob>([
+    ['evening-chain', job('evening-chain', 'running', {
+      summary: 'awaiting FinLab canonical callback',
+      statusScope: 'today',
+      statusRunDate: '2026-09-02',
+    })],
+    ['finlab-v4-backfill', job('finlab-v4-backfill', 'waiting', {
+      statusScope: 'today',
+      statusRunDate: '2026-09-02',
+    })],
+    ['update', job('update', 'waiting', {
+      statusScope: 'today',
+      statusRunDate: '2026-09-02',
+    })],
+    ['pipeline', job('pipeline', 'running', {
+      lastRun: '8/28 03:45',
+      statusScope: 'historical_replay',
+      statusRunDate: '2026-08-27',
+    })],
+  ])
+  const resolved = buildAttemptAwareJobMap(
+    base,
+    liveScope,
+    (summary) => /finlab/i.test(String(summary ?? '')) ? 'finlab-v4-backfill' : null,
+  )
+  assert(resolved.get('finlab-v4-backfill')?.lastStatus === 'running', 'same-date parent hint must identify the true current stage')
+  assert(resolved.get('finlab-v4-backfill')?.statusRunDate === '2026-09-02', 'derived current stage must retain the active business date')
+  assert(resolved.get('pipeline')?.lastStatus === 'waiting', 'stale prior-date pipeline running evidence must be suppressed')
+  assert(resolved.get('pipeline')?.statusRunDate === '2026-09-02', 'suppressed downstream stage must inherit the active business date')
+}

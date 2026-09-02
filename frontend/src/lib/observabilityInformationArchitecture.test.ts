@@ -42,7 +42,7 @@ for (const scope of ['Daily readiness', 'Intraday guard', 'Weekly research', 'Mo
 }
 assert(!chain.includes("id: 'daily_ops'"), 'independent daily jobs must not be forced into a fake chain')
 assert(chain.includes("relation: 'event'") && chain.includes("relation: 'mixed'"), 'chain must distinguish event-only and mixed-trigger scopes')
-assert(chain.includes("['screener'],") && chain.includes("['regime-compute'],") && chain.includes("['allocator-ev-readiness'],") && !chain.includes("['s12-structure-snapshot'],"), 'daily chain must expose screener -> regime -> allocator without a duplicate S12 evening stage')
+assert(chain.includes("['regime-compute'],") && chain.includes("['screener'],") && chain.indexOf("['regime-compute'],") < chain.indexOf("['screener'],") && chain.includes("['allocator-ev-readiness'],") && !chain.includes("['s12-structure-snapshot'],"), 'daily chain must expose indicator -> regime -> screener -> allocator without a duplicate S12 evening stage')
 assert(chain.includes("id: 'weekly'"), 'weekly validation dependencies must retain their explicit evidence topology')
 assert(chain.includes("orchestratorId: 'evening-chain'") && !chain.includes("      ['evening-chain'],"), 'Evening Chain must render as parent orchestration rather than an earlier sequential step')
 assert(chain.includes('function scopeExecutionStageIds') && chain.includes('Parent orchestration · terminal callback'), 'parent orchestration must be excluded from step progress and explain terminal-callback ownership')

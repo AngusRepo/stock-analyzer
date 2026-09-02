@@ -3,6 +3,7 @@ import {
   getSchedulerScanDates,
   mergeDirectSchedulerLog,
   reconcileDurablePipelineStageStatus,
+  reconcileSchedulerExecutionTicketStatus,
   resolveDurableEventDisplay,
   resolveBusinessDateScopedChainDisplay,
   resolveSchedulerDisplayStatus,
@@ -15,6 +16,7 @@ import {
   type SchedulerDisplayLogCandidate,
 } from './schedulerStatus'
 import { classifySchedulerSummary } from './schedulerRunLogger'
+import type { SchedulerExecutionTicketRow } from './schedulerExecutionTickets'
 import * as fs from 'node:fs'
 
 function assert(condition: unknown, message: string): void {
@@ -251,6 +253,53 @@ const logs: SchedulerDisplayLogCandidate[] = [
     }) === undefined,
     'physical roots must not borrow a stale ticket from a prior cadence date',
   )
+  assert(
+    selectSchedulerExecutionTicketForDisplay({
+      exactTaskTicket: undefined,
+      exactJobTicket: undefined,
+      latestTaskTicket: previousBusinessDateTicket,
+      physicalRoot: false,
+      scopedRunDate: '2026-09-02',
+    }) === undefined,
+    'business-date-scoped DAG children must not borrow a prior-date logical ticket',
+  )
+}
+
+{
+  const stalePipelineTicket: SchedulerExecutionTicketRow = {
+    ticket_id: 'pipeline:2026-08-27',
+    dedupe_key: 'pipeline:2026-08-27',
+    root_ticket_id: 'pipeline:2026-08-27',
+    parent_ticket_id: null,
+    scheduler_job_id: null,
+    task: 'pipeline',
+    business_date: '2026-08-27',
+    scheduled_at: null,
+    run_id: 'pipeline-2026-08-27',
+    attempt_id: 'pipeline-2026-08-27:attempt:1',
+    ticket_kind: 'manual',
+    status: 'triggered',
+    status_authority: 'logical_child',
+    attempt_count: 1,
+    payload_checksum: 'test',
+    last_summary: 'callback expected',
+    last_error: null,
+    metadata_json: '{}',
+    accepted_at: '2026-08-27 19:45:00',
+    started_at: '2026-08-27 19:45:00',
+    completed_at: null,
+    expires_at: '2027-08-27 19:45:00',
+    created_at: '2026-08-27 19:45:00',
+    updated_at: '2026-08-27 19:45:49',
+  }
+  assert(
+    reconcileSchedulerExecutionTicketStatus({
+      baseStatus: 'waiting',
+      ticket: stalePipelineTicket,
+      expectedRunDate: '2026-09-02',
+    }) === null,
+    'ticket reconciliation must fail closed when the ticket business date differs from the displayed chain date',
+  )
 }
 
 {
@@ -385,7 +434,7 @@ const logs: SchedulerDisplayLogCandidate[] = [
     },
     activeReplayRunDate: '2026-07-24',
     activeReplayIsRunning: true,
-    def: { id: 'screener', group: 'pipeline_chain', chainIndex: 6 },
+    def: { id: 'screener', group: 'pipeline_chain', chainIndex: 7 },
     nextRun: '7/27 21:38',
     today: '2026-07-27',
     nowMs: Date.parse('2026-07-26T16:21:30.000Z'),
@@ -672,7 +721,7 @@ const logs: SchedulerDisplayLogCandidate[] = [
     activeReplayRunDate: '2026-07-31',
     activeReplayHeartbeatAt: '2026-08-01T01:05:00.000Z',
     activeReplayIsRunning: false,
-    def: { id: 'screener', group: 'pipeline_chain', chainIndex: 6 },
+    def: { id: 'screener', group: 'pipeline_chain', chainIndex: 7 },
     nextRun: '8/3 21:38',
     today: '2026-08-01',
     nowMs: Date.parse('2026-08-01T01:06:00.000Z'),

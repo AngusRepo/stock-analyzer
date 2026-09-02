@@ -238,7 +238,7 @@ export function buildPitFactorGroupSeries(points: PitFactorFunnelPoint[]) {
 export function buildPitFactorIndustryThemeSeries(
   points: PitFactorFunnelPoint[],
   memberships: PitFactorTaxonomyMembership[],
-  parentIndustry: string,
+  parentIndustry?: string | null,
 ) {
   const tagsByPoint = new Map<string, Set<string>>()
   for (const membership of memberships) {
@@ -253,7 +253,7 @@ export function buildPitFactorIndustryThemeSeries(
   }
   const grouped: PitFactorGroupedPoint[] = []
   for (const point of points) {
-    if (point.industry !== parentIndustry) continue
+    if (parentIndustry && point.industry !== parentIndustry) continue
     const tags = [...(tagsByPoint.get(`${point.date}\u0000${point.symbol}`) ?? [])].sort()
     if (!tags.length) continue
     const attributionWeight = 1 / tags.length
@@ -387,8 +387,11 @@ export async function loadPitFactorFlowMap(env: Bindings, query: PitFactorFlowMa
   const days = Math.max(2, Math.min(60, Math.floor(query.days)))
   const layer = query.layer ?? 'industry'
   const parent = String(query.parent ?? '').trim()
-  if (layer === 'industry_theme' && (query.parentLayer !== 'industry' || !parent)) {
-    throw new Error('pit_factor_industry_theme_parent_required')
+  if (
+    layer === 'industry_theme'
+    && ((parent && query.parentLayer !== 'industry') || (!parent && query.parentLayer))
+  ) {
+    throw new Error('pit_factor_industry_theme_parent_invalid')
   }
   const requestedSymbols = [...new Set(query.symbols.map((symbol) => symbol.trim()).filter(Boolean))].slice(0, MAX_SYMBOLS)
   const funnelPoints = await loadFunnelPoints(env, query.requestedDate, days)
@@ -410,11 +413,11 @@ export async function loadPitFactorFlowMap(env: Bindings, query: PitFactorFlowMa
           env,
           dates,
           funnelPoints
-            .filter((point) => point.industry === parent)
+            .filter((point) => !parent || point.industry === parent)
             .map((point) => point.symbol),
           'industry_theme',
         ),
-        parent,
+        parent || null,
       )
   return {
     requested_date: query.requestedDate,
@@ -427,8 +430,8 @@ export async function loadPitFactorFlowMap(env: Bindings, query: PitFactorFlowMa
       candidate: 'pit_residual_momentum_w10',
       phase: 'prospective_shadow',
       taxonomy_layer: layer,
-      parent_layer: layer === 'industry_theme' ? 'industry' : null,
-      parent: layer === 'industry_theme' ? parent : null,
+      parent_layer: layer === 'industry_theme' && parent ? 'industry' : null,
+      parent: layer === 'industry_theme' && parent ? parent : null,
       available_taxonomy_layers: ['industry', 'industry_theme', 'subindustry', 'theme'],
       supported_visual_layers: ['industry', 'industry_theme'],
       theme_relationship: 'cross_cutting_overlay_not_strict_child',

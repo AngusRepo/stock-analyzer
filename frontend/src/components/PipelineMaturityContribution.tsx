@@ -422,8 +422,8 @@ function StageRow({ stage }: { stage: PipelineMaturityStage }) {
             </div>
             <div className="space-y-4">
               <MetricSection
-                title="日更 Frozen-forward 監控（和 L1.5 對照）"
-                description="先用業務日確認排程有執行，再看 usable samples/dates、OOF rows/max 與『是否新增成熟 evidence』；只有這些數值改變才代表成熟資料真的前進。"
+                title="日更 Frozen-forward 固定候選外推監控（非升級成熟度）"
+                description="固定同一候選與 Active-8 OOF cohort，只檢查新增成熟標籤後是否退化；sector-alpha dates 是此監控 usable dates 的可用子集合，不等於正式 L4 PIT 物化日數，也不會改寫 promotion packet。"
                 metrics={monitoringMetrics}
               />
               <MetricSection
@@ -436,8 +436,8 @@ function StageRow({ stage }: { stage: PipelineMaturityStage }) {
                 metrics={promotionMetrics}
               />
               <MetricSection
-                title="資料生命週期與下一批候選 readiness"
-                description="顯示目前 source/materialization 累積，不回頭改寫舊 candidate，也不直接取得 promotion 權限。"
+                title="Production 物化覆蓋與下一批候選 readiness"
+                description="正式 L4 PIT 交易日數只代表 production materialization coverage；source readiness 供下一批候選使用，不回頭改寫舊 candidate，也不直接取得 promotion 權限。"
                 metrics={lifecycleMetrics}
               />
               <MetricSection

@@ -4523,10 +4523,16 @@ recommendations.get('/factor-flow-map', async (c) => {
   }
   const parentLayer = String(c.req.query('parent_layer') ?? '')
   const parent = String(c.req.query('parent') ?? '').trim()
-  if (requestedLayer === 'industry_theme' && (parentLayer !== 'industry' || !parent)) {
+  if (
+    requestedLayer === 'industry_theme'
+    && ((parent && parentLayer !== 'industry') || (!parent && parentLayer))
+  ) {
     return c.json({
-      error: 'industry_theme_parent_required',
-      required: { parent_layer: 'industry', parent: 'non_empty' },
+      error: 'industry_theme_parent_invalid',
+      allowed: [
+        { parent_layer: '', parent: '' },
+        { parent_layer: 'industry', parent: 'non_empty' },
+      ],
     }, 400)
   }
   const symbols = String(c.req.query('symbols') ?? '')

@@ -1928,6 +1928,14 @@ def _parse_category_list(value: Any) -> list[str]:
     return [raw]
 
 
+def _clean_taxonomy_tag(value: Any) -> str:
+    """Normalize FinLab display bullets without changing the taxonomy meaning."""
+    raw = str(value or "").replace("\ufeff", "").replace("\u200b", "").strip()
+    while raw and raw[0] in {"\u25ba", "\u25b6", "\u25b8", "\u25b9", "\u2022", "\u00b7"}:
+        raw = raw[1:].lstrip()
+    return " ".join(raw.split())
+
+
 def build_taxonomy_rows(
     artifact_root: Path,
     *,
@@ -1939,7 +1947,8 @@ def build_taxonomy_rows(
     if not security_master.is_empty():
         for row in _rows(security_master):
             symbol = normalize_symbol(row.get("stock_id") or row.get("symbol"))
-            category = str(row.get("category") or "").strip()
+            raw_category = str(row.get("category") or "").strip()
+            category = _clean_taxonomy_tag(raw_category)
             if symbol and category:
                 rows.append({
                     "symbol": symbol,
@@ -1947,7 +1956,12 @@ def build_taxonomy_rows(
                     "tag_type": "industry",
                     "source": "finlab.security_categories",
                     "weight": 1,
-                    "lineage_json": _json({"dataset_lane": "security_master", "market": row.get("market")}),
+                    "lineage_json": _json({
+                        "dataset_lane": "security_master",
+                        "market": row.get("market"),
+                        "raw_tag": raw_category,
+                        "normalized_tag": category,
+                    }),
                     "as_of_date": generated_at[:10],
                 })
 
@@ -1957,9 +1971,12 @@ def build_taxonomy_rows(
             symbol = normalize_symbol(row.get("stock_id") or row.get("symbol"))
             if not symbol:
                 continue
-            for tag in _parse_category_list(row.get("category")):
+            for raw_tag in _parse_category_list(row.get("category")):
+                tag = _clean_taxonomy_tag(raw_tag)
+                if not tag:
+                    continue
                 if ":" in tag:
-                    parent, child = [part.strip() for part in tag.split(":", 1)]
+                    parent, child = [_clean_taxonomy_tag(part) for part in tag.split(":", 1)]
                     if parent:
                         rows.append({
                             "symbol": symbol,
@@ -1967,7 +1984,11 @@ def build_taxonomy_rows(
                             "tag_type": "industry_theme",
                             "source": "finlab.security_industry_themes",
                             "weight": 0.9,
-                            "lineage_json": _json({"dataset_lane": "taxonomy_expansion", "raw_tag": tag}),
+                            "lineage_json": _json({
+                                "dataset_lane": "taxonomy_expansion",
+                                "raw_tag": raw_tag,
+                                "normalized_tag": tag,
+                            }),
                             "as_of_date": generated_at[:10],
                         })
                     if child:
@@ -1977,7 +1998,12 @@ def build_taxonomy_rows(
                             "tag_type": "subindustry",
                             "source": "finlab.security_industry_themes",
                             "weight": 0.8,
-                            "lineage_json": _json({"dataset_lane": "taxonomy_expansion", "raw_tag": tag, "parent": parent}),
+                            "lineage_json": _json({
+                                "dataset_lane": "taxonomy_expansion",
+                                "raw_tag": raw_tag,
+                                "normalized_tag": tag,
+                                "parent": parent,
+                            }),
                             "as_of_date": generated_at[:10],
                         })
                 else:
@@ -1987,7 +2013,11 @@ def build_taxonomy_rows(
                         "tag_type": "industry_theme",
                         "source": "finlab.security_industry_themes",
                         "weight": 0.85,
-                        "lineage_json": _json({"dataset_lane": "taxonomy_expansion", "raw_tag": tag}),
+                        "lineage_json": _json({
+                            "dataset_lane": "taxonomy_expansion",
+                            "raw_tag": raw_tag,
+                            "normalized_tag": tag,
+                        }),
                         "as_of_date": generated_at[:10],
                     })
 

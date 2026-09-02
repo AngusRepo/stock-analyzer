@@ -70,6 +70,27 @@ assert(
   'child themes must be percentile-ranked against siblings inside the selected industry',
 )
 
+const marketThemeSeries = buildPitFactorIndustryThemeSeries([
+  point({ symbol: 'A', industry: '電子', rankDelta: 3 }),
+  point({ symbol: 'B', industry: '電子', rankDelta: -2 }),
+  point({ symbol: 'C', industry: '金融', rankDelta: 4 }),
+], [
+  { date: '2026-08-28', symbol: 'A', tag: 'AI' },
+  { date: '2026-08-28', symbol: 'A', tag: 'CoWoS' },
+  { date: '2026-08-28', symbol: 'B', tag: 'AI' },
+  { date: '2026-08-28', symbol: 'C', tag: '金融科技' },
+])
+assert.deepEqual(
+  marketThemeSeries.map((series) => series.key).sort(),
+  ['AI', 'CoWoS', '金融科技'],
+  'homepage industry-theme view must be an independent cross-industry universe, not a fake child of formal industry',
+)
+assert.equal(
+  marketThemeSeries.find((series) => series.key === 'AI')?.points[0].member_count,
+  2,
+  'cross-industry theme view must preserve distinct theme members',
+)
+
 const selected = selectPitFactorStockSymbols([
   point({ symbol: 'A', rankDelta: 1 }),
   point({ symbol: 'B', rankDelta: -4 }),

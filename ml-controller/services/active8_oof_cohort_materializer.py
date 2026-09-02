@@ -64,7 +64,7 @@ OOF_FORWARD_COVERAGE_POLICY_VERSION = "verified-frozen-forward-monitoring-v2"
 EXPECTED_RETURN_SHADOW_EVALUATION_IDENTITY_VERSION = (
     "expected-return-shadow-evaluation-identity-v2"
 )
-EXPECTED_RETURN_SHADOW_EVALUATOR_VERSION = "expected-return-frozen-forward-evaluator-v2"
+EXPECTED_RETURN_SHADOW_EVALUATOR_VERSION = "expected-return-frozen-forward-evaluator-v3"
 
 CORE_D1_CLIENT = client_proxy_for_domain(D1DataDomain.CORE)
 MARKET_D1_CLIENT = client_proxy_for_domain(D1DataDomain.MARKET)
@@ -2024,6 +2024,10 @@ def archive_ev_shadow_evaluation_packets(
             "feature_semantic_version": artifact.get("feature_semantic_version"),
             "label_schema_version": artifact.get("label_schema_version"),
             "validation_schema_version": validation.get("schema_version"),
+            "forward_extension_producer_source_sha": extension_manifest.get("producer_source_sha"),
+            "target_source": "active8_oof_predictions.target_return",
+            "fit_feature_policy": "drop_degenerate_and_affine_duplicate_features_v1",
+            "walk_forward_policy": "minimum_training_dates_enforced_per_fold_v1",
             "policy_decision": "shadow_only",
         }
         evaluator_contract_checksum = hashlib.sha256(

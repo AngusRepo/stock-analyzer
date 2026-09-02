@@ -1122,7 +1122,11 @@ export async function buildPipelineDecisionMaturityPacket(
         metric('strict_pit_dates', 'Materialized strict L4 PIT dates', maturity?.strictL4PitDates ?? null, { unit: 'dates', scope: 'lifecycle' }),
         metric('sector_source_signal_dates', '目前可供後續 cohort 使用的 PIT sector signal dates', sectorReadiness?.signal_dates ?? null, { unit: 'dates', scope: 'lifecycle', note: `合法 prior-session source window：${sectorReadiness?.first_signal_date ?? '尚無'} → ${sectorReadiness?.latest_signal_date ?? '尚無'}。這是 source readiness，不是舊 candidate 的 promotion evidence。` }),
         gateMetric('shadow_sector_samples', 'Latest shadow PIT sector-alpha samples', l4Shadow?.sector_samples, Math.max(1, finite(l4?.min_sector_samples, 300)), 'rows', 'gte', { ...shadowMetricScope, scope: 'monitoring' }),
-        gateMetric('shadow_sector_dates', 'Latest shadow PIT sector-alpha dates', l4Shadow?.sector_dates, Math.max(1, finite(l4?.min_sector_dates, 8)), 'dates', 'gte', { ...shadowMetricScope, scope: 'monitoring' }),
+        gateMetric('shadow_sector_dates', 'Frozen-forward PIT sector-alpha available dates', l4Shadow?.sector_dates, Math.max(1, finite(l4?.min_sector_dates, 8)), 'dates', 'gte', {
+          ...shadowMetricScope,
+          scope: 'monitoring',
+          note: `固定候選外推監控的 sector-alpha 可用日期子集合：${l4Shadow?.sector_dates ?? '資料尚未具備'}/${l4Shadow?.date_count ?? '資料尚未具備'} usable dates。這不是正式 L4 PIT 物化日數，也不計入 promotion maturity。`,
+        }),
         gateMetric('shadow_corr_lcb90', 'Latest shadow corr LCB90', l4Shadow?.l4_corr_lcb90, 0, 'ratio', 'gt', { ...shadowMetricScope, scope: 'monitoring' }),
         gateMetric('shadow_spread_lcb90', 'Latest shadow spread LCB90', l4Shadow?.l4_spread_lcb90, 0, 'return', 'gt', { ...shadowMetricScope, scope: 'monitoring' }),
         gateMetric('shadow_top_return', 'Latest shadow top-quintile mean', l4Shadow?.l4_top_return, 0, 'return', 'gt', { ...shadowMetricScope, scope: 'monitoring' }),

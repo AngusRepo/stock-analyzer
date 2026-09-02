@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
-import { ChevronLeft, Pause, Play, Radar, RotateCcw } from 'lucide-react'
+import { Pause, Play, Radar, RotateCcw } from 'lucide-react'
 import { useReducedMotion } from 'framer-motion'
 import {
   paperApi,
@@ -386,12 +386,11 @@ function PanelShell({
   scope,
   days,
   onDaysChange,
-  selectedParent,
+  groupLayer,
+  onGroupLayerChange,
   totalGroupCount,
   showAllGroups,
   onShowAllGroupsChange,
-  onGroupSelect,
-  onBackToIndustries,
 }: {
   data?: FactorFlowMapResponse
   isLoading: boolean
@@ -399,18 +398,17 @@ function PanelShell({
   scope: 'group' | 'stock'
   days: number
   onDaysChange: (days: number) => void
-  selectedParent?: string | null
+  groupLayer?: 'industry' | 'industry_theme'
+  onGroupLayerChange?: (layer: 'industry' | 'industry_theme') => void
   totalGroupCount?: number
   showAllGroups?: boolean
   onShowAllGroupsChange?: (showAll: boolean) => void
-  onGroupSelect?: (key: string) => void
-  onBackToIndustries?: () => void
 }) {
   const series = scope === 'group' ? data?.group_series ?? [] : data?.stock_series ?? []
   const title = scope === 'group'
-    ? selectedParent
-      ? `${selectedParent} · 產業主題軌跡`
-      : '族群強弱 × 資金確認'
+    ? groupLayer === 'industry_theme'
+      ? '產業題材輪動 × 資金確認'
+      : '正式產業輪動 × 資金確認'
     : '持倉／待買個股強弱軌跡'
   return (
     <section className="h-full overflow-hidden rounded-2xl border border-[#2a3446] bg-[#111722]/90 p-4 shadow-[0_18px_60px_rgba(0,0,0,0.18)] sm:p-5">
@@ -420,25 +418,38 @@ function PanelShell({
             <Radar className="h-4 w-4 text-cyan-300" />
             <h2 className="font-bold text-slate-100">{title}</h2>
           </div>
-          {scope === 'group' && selectedParent && onBackToIndustries ? (
-            <button
-              type="button"
-              onClick={onBackToIndustries}
-              className="mt-2 inline-flex items-center gap-1 rounded-full border border-white/10 px-2.5 py-1 text-[11px] font-semibold text-slate-400 transition hover:border-cyan-300/30 hover:text-cyan-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-cyan-300/70"
-            >
-              <ChevronLeft className="h-3 w-3" />
-              全部產業 / {selectedParent}
-            </button>
-          ) : null}
           <p className="mt-1 max-w-3xl text-xs leading-5 text-slate-500">
             {scope === 'group'
-              ? selectedParent
-                ? '這裡只比較同一產業內的 industry_theme；同一股票若屬於多個主題會分攤權重，避免重複灌大。殘差仍沿用正式 industry 觀察層，不把主題分組冒充新的 Alpha。'
-                : '這張圖回答兩件事：哪些族群的表現比原本預期更強？這份強勢是否有更多股票和資金一起支持？往右越強、往上代表支持越廣，右上角通常最值得留意。點選產業可查看內部主題。'
+              ? groupLayer === 'industry_theme'
+                ? '預設用 FinLab 產業題材比較市場主線。題材是跨產業、多對多的供應鏈標籤，不是正式產業的子分類；同一股票屬於多個題材時會分攤權重。往右越強、往上代表股票與資金支持越廣。'
+                : '這裡只使用每家公司單一正式產業分類，適合查看大類股輪動。產業與題材是兩個獨立 universe，不再把半導體題材畫成綠能環保的子產業。'
               : '只顯示實際持倉與 active pending buys；每個節點都是實際交易日資料，曲線只做視覺平滑。'}
           </p>
         </div>
         <div className="flex flex-col items-end gap-2">
+          {scope === 'group' && groupLayer && onGroupLayerChange ? (
+            <div className="inline-flex rounded-full border border-white/10 bg-black/20 p-0.5" aria-label="族群分類方式">
+              {([
+                ['industry_theme', '產業題材'],
+                ['industry', '正式產業'],
+              ] as const).map(([layer, label]) => (
+                <button
+                  key={layer}
+                  type="button"
+                  onClick={() => onGroupLayerChange(layer)}
+                  aria-pressed={groupLayer === layer}
+                  className={cx(
+                    'rounded-full px-3 py-1 text-[11px] font-bold transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-cyan-300/70',
+                    groupLayer === layer
+                      ? 'bg-cyan-300/12 text-cyan-100'
+                      : 'text-slate-500 hover:text-slate-300',
+                  )}
+                >
+                  {label}
+                </button>
+              ))}
+            </div>
+          ) : null}
           <div className="flex flex-wrap justify-end gap-1" aria-label="軌跡交易日視窗">
             {WINDOW_OPTIONS.map((option) => (
               <button
@@ -481,12 +492,12 @@ function PanelShell({
         <div className="rounded-xl border border-white/[0.06] bg-white/[0.025] p-5 text-sm text-slate-500">尚無 prospective PIT residual 軌跡；正式選股、倉位與下單維持原狀。</div>
       ) : (
         <>
-          <TrajectoryChart series={series} scope={scope} onSeriesSelect={selectedParent ? undefined : onGroupSelect} />
+          <TrajectoryChart series={series} scope={scope} />
           <div className="mt-3 flex flex-wrap items-center justify-between gap-2 text-[11px] text-slate-500">
             <span>已累積 {data?.session_count ?? 0}/{data?.requested_sessions ?? 10} 個實際 session</span>
             {scope === 'group' ? (
               <span>
-                圖層：{data?.governance.taxonomy_layer ?? 'industry'} · 顯示 {series.length}/{totalGroupCount ?? series.length} 類；
+                圖層：{data?.governance.taxonomy_layer === 'industry_theme' ? '產業題材' : '正式產業'} · 顯示 {series.length}/{totalGroupCount ?? series.length} 類；
                 系統 taxonomy 共 {data?.governance.available_taxonomy_layers?.length ?? 4} 層
               </span>
             ) : null}
@@ -500,16 +511,14 @@ function PanelShell({
 
 export function GroupFactorTrajectoryPanel() {
   const [days, setDays] = useState<number>(10)
-  const [selectedIndustry, setSelectedIndustry] = useState<string | null>(null)
+  const [groupLayer, setGroupLayer] = useState<'industry' | 'industry_theme'>('industry_theme')
   const [showAllGroups, setShowAllGroups] = useState(false)
   const query = useQuery({
-    queryKey: ['recommendations', 'factor-flow-map', 'groups', days, selectedIndustry ?? 'industry'],
+    queryKey: ['recommendations', 'factor-flow-map', 'groups', days, groupLayer],
     queryFn: () => recommendationsApi.factorFlowMap({
       days,
       includeMovers: 0,
-      layer: selectedIndustry ? 'industry_theme' : 'industry',
-      parentLayer: selectedIndustry ? 'industry' : undefined,
-      parent: selectedIndustry ?? undefined,
+      layer: groupLayer,
     }),
     staleTime: 30 * 60_000,
     retry: 1,
@@ -530,18 +539,14 @@ export function GroupFactorTrajectoryPanel() {
       scope="group"
       days={days}
       onDaysChange={setDays}
-      selectedParent={selectedIndustry}
+      groupLayer={groupLayer}
+      onGroupLayerChange={(layer) => {
+        setGroupLayer(layer)
+        setShowAllGroups(false)
+      }}
       totalGroupCount={totalGroupCount}
       showAllGroups={showAllGroups}
       onShowAllGroupsChange={setShowAllGroups}
-      onGroupSelect={(industry) => {
-        setSelectedIndustry(industry)
-        setShowAllGroups(false)
-      }}
-      onBackToIndustries={() => {
-        setSelectedIndustry(null)
-        setShowAllGroups(false)
-      }}
     />
   )
 }

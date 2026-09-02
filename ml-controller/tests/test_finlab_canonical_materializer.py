@@ -230,6 +230,44 @@ def test_taxonomy_rows_build_four_layer_finlab_tags() -> None:
     assert ("industry_theme", "CoWoS") in tags
 
 
+def test_taxonomy_rows_strip_finlab_display_bullets_and_keep_raw_lineage() -> None:
+    root = _root("taxonomy_rows_bullet_cleanup")
+    _write(
+        root / "raw" / "security_master" / "table.parquet",
+        pl.DataFrame(
+            {
+                "symbol": ["3551"],
+                "stock_id": ["3551"],
+                "name": ["Clean Process"],
+                "category": ["\u25baGreen Energy"],
+                "market": ["otc"],
+            }
+        ),
+    )
+    _write(
+        root / "raw" / "taxonomy_expansion" / "table.parquet",
+        pl.DataFrame(
+            {
+                "symbol": ["3551"],
+                "stock_id": ["3551"],
+                "name": ["Clean Process"],
+                "category": ["['\u25baSemiconductor:\u25baProcess Equipment', '\u200b\u25baAI']"],
+                "key_date": ["2026-09-03"],
+            }
+        ),
+    )
+
+    rows = build_taxonomy_rows(root, generated_at="2026-09-03T00:00:00+00:00")
+    tags = {(row["tag_type"], row["tag"]) for row in rows}
+    assert ("industry", "Green Energy") in tags
+    assert ("industry_theme", "Semiconductor") in tags
+    assert ("subindustry", "Process Equipment") in tags
+    assert ("industry_theme", "AI") in tags
+    assert all(not row["tag"].startswith(("\u25ba", "\u25b6", "\u25b8", "\u25b9", "\u2022", "\u00b7")) for row in rows)
+    semiconductor = next(row for row in rows if row["tag_type"] == "industry_theme" and row["tag"] == "Semiconductor")
+    assert json.loads(semiconductor["lineage_json"])["raw_tag"] == "\u25baSemiconductor:\u25baProcess Equipment"
+
+
 def test_single_day_materialization_does_not_carry_prior_financial_fields() -> None:
     root = _root("fundamental_single_day_snapshot")
     lane = root / "raw" / "fundamental_factor_diversity"

@@ -1304,6 +1304,21 @@ def test_forward_shadow_evaluation_packets_are_separate_from_candidates(monkeypa
     assert len(blobs) == 2
     assert all(len(packet["subject_artifact_checksum"]) == 64 for packet in result.values())
     assert all(len(packet["evaluator_contract_checksum"]) == 64 for packet in result.values())
+    archived_payloads = [json.loads(raw.decode("utf-8")) for raw in blobs.values()]
+    assert all(
+        packet["evaluator_contract"]["evaluator_version"]
+        == "expected-return-frozen-forward-evaluator-v3"
+        for packet in archived_payloads
+    )
+    assert all(
+        "forward_extension_producer_source_sha" in packet["evaluator_contract"]
+        for packet in archived_payloads
+    )
+    assert all(
+        packet["evaluator_contract"]["target_source"]
+        == "active8_oof_predictions.target_return"
+        for packet in archived_payloads
+    )
 
     router = (ROOT / "ml-controller" / "routers" / "walk_forward.py").read_text()
     forward_policy_start = router.index('if forward_extension:')

@@ -2364,6 +2364,7 @@ export async function listStrategyRewardSourceRows(
   options: { startDate?: string; endDate?: string; limit?: number; canonicalRunIds?: Record<string, string> } = {},
 ): Promise<StrategyRewardSourceRow[]> {
   const pageSize = Math.max(1, Math.min(options.limit ?? 1000, 5000))
+  const formalLabelerPlaceholders = STRATEGY_FORMAL_LABELER_VERSIONS.map(() => '?').join(',')
   const rows: StrategyRewardSourceRow[] = []
   let cursorDate = ''
   let cursorStrategyId = ''
@@ -2375,10 +2376,7 @@ export async function listStrategyRewardSourceRows(
       'm.evaluable = 1',
       "m.reference_contract_version = 'selection-reference-snapshot-v3'",
       "l.label_schema_version = 'canonical-strategy-selection-label-v4'",
-      `m.labeler_version IN (
-        '${STRATEGY_FORMAL_LABELER_VERSION}',
-        '${STRATEGY_FORMAL_RECONSTRUCTION_LABELER_VERSION}'
-      )`,
+      `m.labeler_version IN (${formalLabelerPlaceholders})`,
       'r.strategy_labeler_version = m.labeler_version',
       `EXISTS (
         SELECT 1 FROM strategy_label_matrix_runs_v4 mr
@@ -2393,6 +2391,7 @@ export async function listStrategyRewardSourceRows(
       )`,
     ]
     const binds: unknown[] = [
+      ...STRATEGY_FORMAL_LABELER_VERSIONS,
       cursorDate,
       cursorDate, cursorStrategyId,
       cursorDate, cursorStrategyId, cursorSymbol,
@@ -2443,6 +2442,20 @@ export async function listStrategyRewardSourceRows(
     cursorStrategyVersion = last.strategy_version
   }
   return rows
+}
+
+export function hasUnjoinedMatureSelectionMatches(
+  decisionRows: Array<Pick<StrategyLearningDailyStatsRow, 'date' | 'matched' | 'decision_contract_version'>>,
+  latestRewardDate: string | null,
+  matureLabelMaxDate: string | null,
+): boolean {
+  if (!matureLabelMaxDate) return false
+  return decisionRows.some((row) => (
+    row.decision_contract_version === 'strategy-evaluation-v2'
+    && Number(row.matched ?? 0) > 0
+    && row.date <= matureLabelMaxDate
+    && (latestRewardDate == null || row.date > latestRewardDate)
+  ))
 }
 
 export async function persistStrategyRewardLedgerRows(
@@ -4226,7 +4239,15 @@ export async function buildStrategyLearningSummary(
       const firstEvidence = firstEvidenceBySpec.get(key)
       const firstDecisionDate = firstEvidence?.first_decision_date ?? null
       const firstMatchedDate = firstEvidence?.first_matched_date ?? null
-      const rewardState = lifetimeSamples > 0
+      const latestRewardDate = usesS12ExecutionReward ? s12ExecutionMetrics.latestRewardDate : (head?.latest_reward_date ?? null)
+      const hasMatureRewardJoinGap = !usesS12ExecutionReward && hasUnjoinedMatureSelectionMatches(
+        decisionRows,
+        latestRewardDate,
+        matureLabelMaxDate,
+      )
+      const rewardState = hasMatureRewardJoinGap
+        ? 'reward_join_missing' as const
+        : lifetimeSamples > 0
         ? 'ready' as const
         : lifetimeUnavailable > 0 && lifetimeEvaluable === 0
           ? 'unavailable' as const
@@ -4236,13 +4257,13 @@ export async function buildStrategyLearningSummary(
               ? 'pending_maturity' as const
               : 'reward_join_missing' as const
       const rewardStatusReason = rewardState === 'ready'
-        ? `reward evidence available through ${usesS12ExecutionReward ? s12ExecutionMetrics.latestRewardDate ?? 'unknown' : head?.latest_reward_date ?? 'unknown'}`
+        ? `reward evidence available through ${latestRewardDate ?? 'unknown'}`
         : rewardState === 'pending_maturity'
           ? `matched decisions start ${firstMatchedDate ?? 'unknown'}; canonical T+5 labels mature through ${matureLabelMaxDate ?? 'none'}`
           : rewardState === 'no_matches'
             ? 'evaluable decisions exist but no strategy setup matched'
             : rewardState === 'reward_join_missing'
-              ? `matched decisions are mature through ${matureLabelMaxDate}; reward join requires repair`
+              ? `mature matched decisions exist after reward frontier ${latestRewardDate ?? 'none'} through ${matureLabelMaxDate}; reward join requires repair`
               : 'strategy evidence is unavailable'
       const rollingDecisions = decisionRows.reduce((sum, row) => sum + Number(row.decisions ?? 0), 0)
       const rollingEvaluable = decisionRows.reduce((sum, row) => sum + Number(row.evaluable_decisions ?? 0), 0)
@@ -4296,7 +4317,7 @@ export async function buildStrategyLearningSummary(
           rolling_date_return_mean: usesS12ExecutionReward ? s12ExecutionMetrics.rollingDateReturnMean : selectionDateReturnStats.mean,
           rolling_date_return_lcb90: usesS12ExecutionReward ? s12ExecutionMetrics.rollingDateReturnLcb90 : selectionDateReturnStats.lcb90,
           latest_decision_date: head?.latest_decision_date ?? null,
-          latest_reward_date: usesS12ExecutionReward ? s12ExecutionMetrics.latestRewardDate : (head?.latest_reward_date ?? null),
+          latest_reward_date: latestRewardDate,
           first_decision_date: firstDecisionDate,
           first_matched_date: firstMatchedDate,
           mature_label_max_date: matureLabelMaxDate,

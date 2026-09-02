@@ -48,10 +48,10 @@ function formatPoint(point: FactorTrajectoryPoint, scope: 'group' | 'stock') {
   const delta = scope === 'group' ? point.mean_rank_delta : point.rank_delta
   return [
     point.date,
-    `Residual ${point.x.toFixed(1)}`,
-    `確認 ${Number(point.y).toFixed(1)}`,
-    point.flow == null ? null : `資金擴散 ${point.flow.toFixed(1)}`,
-    delta == null ? null : `Δrank ${delta >= 0 ? '+' : ''}${delta.toFixed(2)}`,
+    scope === 'group' ? `比預期強弱位置 ${point.x.toFixed(1)}` : `個股比預期強弱 ${point.x.toFixed(1)}`,
+    `股票／資金支持度 ${Number(point.y).toFixed(1)}`,
+    point.flow == null ? null : `相對資金參與度 ${point.flow.toFixed(1)}`,
+    delta == null ? null : `實際名次變動 ${delta >= 0 ? '+' : ''}${delta.toFixed(2)}`,
   ].filter(Boolean).join(' · ')
 }
 
@@ -61,9 +61,14 @@ function pointRadius(point: FactorTrajectoryPoint, latest = false) {
   return 2.8 + Math.max(residualStrength, confirmationStrength) * 4.2 + (latest ? 1.8 : 0)
 }
 
-function pointOpacity(point: FactorTrajectoryPoint) {
+function flowRingRadius(point: FactorTrajectoryPoint) {
   const flow = point.flow == null ? 0.35 : Math.max(0, Math.min(1, Number(point.flow) / 100))
-  return 0.18 + flow * 0.68
+  return pointRadius(point) + 2.5 + flow * 5.5
+}
+
+function flowRingWidth(point: FactorTrajectoryPoint) {
+  const flow = point.flow == null ? 0.35 : Math.max(0, Math.min(1, Number(point.flow) / 100))
+  return 0.8 + flow * 1.8
 }
 
 function TrajectoryChart({ series, scope }: { series: FactorTrajectorySeries[]; scope: 'group' | 'stock' }) {
@@ -134,15 +139,27 @@ function TrajectoryChart({ series, scope }: { series: FactorTrajectorySeries[]; 
             )
           })}
           <text x={WIDTH / 2} y={HEIGHT - 14} textAnchor="middle" fontSize="12" fontWeight="600" fill="#a5b4c7">
-            {scope === 'group' ? '10% residual 對候選排序的族群傾斜' : '個股 PIT residual momentum rank'}
+            {scope === 'group' ? '比原本預期弱 ← 族群表現 → 比原本預期強' : '比原本預期弱 ← 個股表現 → 比原本預期強'}
           </text>
           <text x="16" y={HEIGHT / 2} textAnchor="middle" fontSize="12" fontWeight="600" fill="#a5b4c7" transform={`rotate(-90 16 ${HEIGHT / 2})`}>
-            廣度／資金擴散確認
+            更多股票與資金一起支持 →
           </text>
-          <text x={PAD.left + 8} y={PAD.top + 18} textAnchor="start" fontSize="10" fill="#94a3b8">殘差弱、擴散確認</text>
-          <text x={WIDTH - PAD.right - 8} y={PAD.top + 18} textAnchor="end" fontSize="10" fill="#6ee7b7">殘差強、擴散確認</text>
-          <text x={PAD.left + 8} y={HEIGHT - PAD.bottom - 10} textAnchor="start" fontSize="10" fill="#fb7185">殘差弱、族群未確認</text>
-          <text x={WIDTH - PAD.right - 8} y={HEIGHT - PAD.bottom - 10} textAnchor="end" fontSize="10" fill="#fbbf24">殘差強、族群未確認</text>
+          <g>
+            <rect x={PAD.left + 7} y={PAD.top + 7} width="160" height="26" rx="7" fill="#111827" fillOpacity="0.94" stroke="#64748b" strokeOpacity="0.8" />
+            <text x={PAD.left + 15} y={PAD.top + 24} textAnchor="start" fontSize="13" fontWeight="700" fill="#e2e8f0">表現偏弱，但資金有跟</text>
+          </g>
+          <g>
+            <rect x={WIDTH - PAD.right - 167} y={PAD.top + 7} width="160" height="26" rx="7" fill="#052e2b" fillOpacity="0.96" stroke="#34d399" strokeOpacity="0.75" />
+            <text x={WIDTH - PAD.right - 15} y={PAD.top + 24} textAnchor="end" fontSize="13" fontWeight="700" fill="#d1fae5">表現偏強，資金也有跟</text>
+          </g>
+          <g>
+            <rect x={PAD.left + 7} y={HEIGHT - PAD.bottom - 35} width="147" height="26" rx="7" fill="#321525" fillOpacity="0.96" stroke="#fb7185" strokeOpacity="0.75" />
+            <text x={PAD.left + 15} y={HEIGHT - PAD.bottom - 18} textAnchor="start" fontSize="13" fontWeight="700" fill="#fecdd3">表現偏弱，資金也少</text>
+          </g>
+          <g>
+            <rect x={WIDTH - PAD.right - 167} y={HEIGHT - PAD.bottom - 35} width="160" height="26" rx="7" fill="#35260b" fillOpacity="0.96" stroke="#fbbf24" strokeOpacity="0.75" />
+            <text x={WIDTH - PAD.right - 15} y={HEIGHT - PAD.bottom - 18} textAnchor="end" fontSize="13" fontWeight="700" fill="#fef3c7">表現偏強，資金還沒跟</text>
+          </g>
 
           {visible.map((item) => {
             const sourceIndex = series.findIndex((candidate) => candidate.key === item.key)
@@ -170,23 +187,26 @@ function TrajectoryChart({ series, scope }: { series: FactorTrajectorySeries[]; 
                 {validPoints.map((point) => {
                   const position = coordinate(point)
                   return (
-                    <circle
-                      key={`${item.key}-${point.date}`}
-                      cx={position.x}
-                      cy={position.y}
-                      r={pointRadius(point)}
-                      fill={color}
-                      fillOpacity={pointOpacity(point)}
-                      stroke={color}
-                      strokeWidth={1.5}
-                      tabIndex={0}
-                      onMouseEnter={() => setHovered({ label: item.label, point })}
-                      onMouseLeave={() => setHovered(null)}
-                      onFocus={() => setHovered({ label: item.label, point })}
-                      onBlur={() => setHovered(null)}
-                    >
-                      <title>{item.label} · {formatPoint(point, scope)}</title>
-                    </circle>
+                    <g key={`${item.key}-${point.date}`}>
+                      <circle cx={position.x} cy={position.y} r={flowRingRadius(point)} fill="none" stroke={color} strokeOpacity="0.5" strokeWidth={flowRingWidth(point)} />
+                      <circle
+                        cx={position.x}
+                        cy={position.y}
+                        r={pointRadius(point)}
+                        fill={color}
+                        fillOpacity="0.7"
+                        stroke="#e2e8f0"
+                        strokeOpacity="0.7"
+                        strokeWidth={1.1}
+                        tabIndex={0}
+                        onMouseEnter={() => setHovered({ label: item.label, point })}
+                        onMouseLeave={() => setHovered(null)}
+                        onFocus={() => setHovered({ label: item.label, point })}
+                        onBlur={() => setHovered(null)}
+                      >
+                        <title>{item.label} · {formatPoint(point, scope)}</title>
+                      </circle>
+                    </g>
                   )
                 })}
                 {validPoints.length > 1 ? (
@@ -199,7 +219,7 @@ function TrajectoryChart({ series, scope }: { series: FactorTrajectorySeries[]; 
                   cy={latestPosition.y}
                   r={pointRadius(latest, true)}
                   fill={color}
-                  fillOpacity={pointOpacity(latest)}
+                  fillOpacity="0.95"
                   stroke="#f8fafc"
                   strokeWidth="1.4"
                 />
@@ -216,8 +236,8 @@ function TrajectoryChart({ series, scope }: { series: FactorTrajectorySeries[]; 
         ) : null}
       </div>
       <div className="mt-2 flex flex-wrap gap-x-4 gap-y-1 text-[10px] text-slate-500">
-        <span>圓點大小＝殘差／確認強度</span>
-        <span>填色深淺＝相對資金擴散 rank（非絕對資金流入）</span>
+        <span>圓點越大＝當天的強弱或支持訊號越明顯</span>
+        <span>外圈越大、越粗＝相對更多資金參與（只比較當天族群，不是實際金額）</span>
       </div>
     </div>
   )
@@ -232,7 +252,7 @@ function PanelShell({ data, isLoading, error, scope, days, onDaysChange }: {
   onDaysChange: (days: number) => void
 }) {
   const series = scope === 'group' ? data?.group_series ?? [] : data?.stock_series ?? []
-  const title = scope === 'group' ? '族群殘差動能 × 擴散確認' : '持倉／待買個股殘差動能軌跡'
+  const title = scope === 'group' ? '族群強弱 × 資金確認' : '持倉／待買個股強弱軌跡'
   return (
     <section className="h-full overflow-hidden rounded-2xl border border-[#2a3446] bg-[#111722]/90 p-4 shadow-[0_18px_60px_rgba(0,0,0,0.18)] sm:p-5">
       <div className="mb-4 flex flex-wrap items-start justify-between gap-3">
@@ -243,7 +263,7 @@ function PanelShell({ data, isLoading, error, scope, days, onDaysChange }: {
           </div>
           <p className="mt-1 max-w-3xl text-xs leading-5 text-slate-500">
             {scope === 'group'
-              ? '每條線是一個族群；X 軸取自 residual challenger 對實際候選排序的反事實影響，Y 軸以廣度與法人資金擴散做診斷確認。'
+              ? '這張圖回答兩件事：哪些族群的表現比原本預期更強？這份強勢是否有更多股票和資金一起支持？往右越強、往上代表支持越廣，右上角通常最值得留意。系統把「比預期多出來的強弱」稱為殘差。'
               : '只顯示實際持倉與 active pending buys；每個節點都是實際交易日資料，曲線只做視覺平滑。'}
           </p>
         </div>
@@ -268,7 +288,7 @@ function PanelShell({ data, isLoading, error, scope, days, onDaysChange }: {
           </div>
           <div className="flex flex-wrap justify-end gap-2 text-[10px] font-bold">
             <span className="rounded-full border border-white/10 px-2.5 py-1 text-slate-400">{data?.date ?? '等待資料'}</span>
-            <span className="rounded-full border border-cyan-300/20 bg-cyan-400/[0.07] px-2.5 py-1 text-cyan-200">10% shadow · 決策權 0%</span>
+            <span className="rounded-full border border-cyan-300/20 bg-cyan-400/[0.07] px-2.5 py-1 text-cyan-200">10% 觀察層 · 不影響交易</span>
           </div>
         </div>
       </div>
@@ -286,7 +306,7 @@ function PanelShell({ data, isLoading, error, scope, days, onDaysChange }: {
             {scope === 'group' ? (
               <span>正式圖層：{data?.governance.taxonomy_layer ?? 'industry'} · {series.length} 類；系統 taxonomy 共 {data?.governance.available_taxonomy_layers?.length ?? 4} 層</span>
             ) : null}
-            <span>Residual 是唯一 challenger；廣度／資金擴散不加分</span>
+            <span>這是觀察圖；股票與資金支持度只用來確認，不會直接改變選股、持倉或下單</span>
           </div>
         </>
       )}

@@ -696,7 +696,7 @@ export default function PipelineMaturityContribution({
       ) : null}
 
       <div className="space-y-3 p-4">
-        <div className="grid items-start gap-3 lg:grid-cols-[minmax(0,3fr)_minmax(0,3fr)_minmax(0,4fr)]">
+        <div className="grid items-start gap-3 lg:grid-cols-[minmax(0,32fr)_minmax(0,32fr)_minmax(0,36fr)]">
           {upstreamStages.map((stage) => <StageRow key={stage.id} stage={stage} />)}
         </div>
         <div className="grid items-start gap-3 lg:grid-cols-2">

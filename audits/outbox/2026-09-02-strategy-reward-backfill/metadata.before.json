@@ -1,0 +1,16 @@
+{
+  "schema_version": "strategy-reward-backfill-snapshot-v1",
+  "phase": "before",
+  "captured_at": "2026-09-02T06:49:04.385Z",
+  "as_of_date": "2026-09-02",
+  "replay_range": {
+    "start": "2026-08-17",
+    "end": "2026-08-25"
+  },
+  "decision_effect": "read_only_snapshot",
+  "git": {
+    "branch": "codex/reward-residual-closure-20260902",
+    "sha": "46eb4bac7dd8854329fb2901435a72a6c4fa6689"
+  },
+  "strategy_count": 26
+}

@@ -10,6 +10,16 @@ const sources = {
   publicRoute: fs.readFileSync('src/routes/other.ts', 'utf8'),
   adminRoute: fs.readFileSync('src/routes/adminWriteRoutes.ts', 'utf8'),
 }
+const learning = fs.readFileSync('src/lib/strategyLearning.ts', 'utf8')
+
+const rewardConsumer = learning.slice(
+  learning.indexOf('export async function listStrategyRewardSourceRows'),
+  learning.indexOf('export async function persistStrategyRewardLedgerRows'),
+)
+assert.match(rewardConsumer, /STRATEGY_FORMAL_LABELER_VERSIONS\.map\(\(\) => '\?'\)\.join\(','\)/)
+assert.match(rewardConsumer, /\.\.\.STRATEGY_FORMAL_LABELER_VERSIONS/)
+assert.doesNotMatch(rewardConsumer, /\bSTRATEGY_FORMAL_LABELER_VERSION\b/)
+assert.doesNotMatch(rewardConsumer, /\bSTRATEGY_FORMAL_RECONSTRUCTION_LABELER_VERSION\b/)
 
 const strategySpec = fs.readFileSync('src/lib/strategySpec.ts', 'utf8')
 assert.match(strategySpec, /STRATEGY_FORMAL_LABELER_VERSION = 'strategy-labeler-v3-regime-veto-counterfactual-v1'/)

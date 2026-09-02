@@ -50,6 +50,16 @@ function average(values: Array<number | null>): number | null {
   return valid.length ? valid.reduce((total, value) => total + value, 0) / valid.length : null
 }
 
+function percentilePosition(value: number, sortedAsc: number[]): number {
+  if (sortedAsc.length <= 1) return 50
+  let lower = 0
+  while (lower < sortedAsc.length && sortedAsc[lower] < value) lower += 1
+  let upper = lower
+  while (upper < sortedAsc.length && sortedAsc[upper] <= value) upper += 1
+  const midpoint = (lower + Math.max(lower, upper - 1)) / 2
+  return ((midpoint + 0.5) / sortedAsc.length) * 100
+}
+
 function parseFunnelRows(rows: Array<Record<string, unknown>>): PitFactorFunnelPoint[] {
   const points: PitFactorFunnelPoint[] = []
   for (const row of rows) {
@@ -112,7 +122,16 @@ export function buildPitFactorGroupSeries(points: PitFactorFunnelPoint[]) {
     buckets.set(key, bucket)
   }
 
-  const byIndustry = new Map<string, Array<Record<string, unknown>>>()
+  const aggregates: Array<{
+    date: string
+    industry: string
+    tilt: number
+    confirmation: number | null
+    flow: number | null
+    breadth: number
+    memberCount: number
+    meanRankDelta: number
+  }> = []
   for (const [key, bucket] of buckets) {
     const [date, industry] = key.split('\u0000')
     const normalizedDeltas = bucket.map((point) =>
@@ -121,17 +140,40 @@ export function buildPitFactorGroupSeries(points: PitFactorFunnelPoint[]) {
     const tilt = average(normalizedDeltas) ?? 0
     const confirmation = average(bucket.map((point) => point.confirmationRank))
     const flow = average(bucket.map((point) => point.flowRank))
-    const series = byIndustry.get(industry) ?? []
-    series.push({
+    aggregates.push({
       date,
-      x: 50 + (50 * Math.max(-1, Math.min(1, tilt))),
-      y: confirmation == null ? null : confirmation * 100,
-      flow: flow == null ? null : flow * 100,
-      breadth: (average(bucket.map((point) => point.breadthRank)) ?? 0) * 100,
-      member_count: bucket.length,
-      mean_rank_delta: average(bucket.map((point) => point.rankDelta)) ?? 0,
+      industry,
+      tilt,
+      confirmation,
+      flow,
+      breadth: average(bucket.map((point) => point.breadthRank)) ?? 0,
+      memberCount: bucket.length,
+      meanRankDelta: average(bucket.map((point) => point.rankDelta)) ?? 0,
     })
-    byIndustry.set(industry, series)
+  }
+
+  const tiltsByDate = new Map<string, number[]>()
+  for (const row of aggregates) {
+    const values = tiltsByDate.get(row.date) ?? []
+    values.push(row.tilt)
+    tiltsByDate.set(row.date, values)
+  }
+  for (const values of tiltsByDate.values()) values.sort((left, right) => left - right)
+
+  const byIndustry = new Map<string, Array<Record<string, unknown>>>()
+  for (const row of aggregates) {
+    const series = byIndustry.get(row.industry) ?? []
+    series.push({
+      date: row.date,
+      x: percentilePosition(row.tilt, tiltsByDate.get(row.date) ?? []),
+      raw_tilt: row.tilt,
+      y: row.confirmation == null ? null : row.confirmation * 100,
+      flow: row.flow == null ? null : row.flow * 100,
+      breadth: row.breadth * 100,
+      member_count: row.memberCount,
+      mean_rank_delta: row.meanRankDelta,
+    })
+    byIndustry.set(row.industry, series)
   }
 
   const sortedDates = [...new Set(points.map((point) => point.date))].sort()
@@ -261,7 +303,7 @@ export async function loadPitFactorFlowMap(env: Bindings, query: PitFactorFlowMa
       available_taxonomy_layers: ['industry', 'industry_theme', 'subindustry', 'theme'],
       weight: 0.10,
       primary_horizon_sessions: 10,
-      x_axis: 'residual_counterfactual_rank_tilt',
+      x_axis: 'same_date_group_residual_counterfactual_tilt_percentile',
       y_axis: 'breadth_flow_confirmation',
       auxiliary_authority: 'diagnostic_only',
       decision_effect: 'none',

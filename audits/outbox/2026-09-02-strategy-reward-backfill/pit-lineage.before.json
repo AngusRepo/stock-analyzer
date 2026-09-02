@@ -1,0 +1,105 @@
+{
+  "results": [
+    {
+      "signal_date": "2026-08-17",
+      "labeler_version": "strategy-labeler-v2-revenue-pit-fuse-v1",
+      "joined_matrix_label_rows": 12922,
+      "mature_matched_rows": 950,
+      "producer_run_count": 1,
+      "min_entry_date": "2026-08-18",
+      "max_exit_date": "2026-08-25",
+      "max_outcome_known_date": "2026-08-25",
+      "not_known_by_audit_date": 0,
+      "invalid_entry_timing_rows": 0,
+      "invalid_outcome_timing_rows": 0,
+      "lineage_mismatch_rows": 0
+    },
+    {
+      "signal_date": "2026-08-18",
+      "labeler_version": "strategy-labeler-v2-revenue-pit-fuse-v1",
+      "joined_matrix_label_rows": 12974,
+      "mature_matched_rows": 913,
+      "producer_run_count": 1,
+      "min_entry_date": "2026-08-19",
+      "max_exit_date": "2026-08-26",
+      "max_outcome_known_date": "2026-08-26",
+      "not_known_by_audit_date": 0,
+      "invalid_entry_timing_rows": 0,
+      "invalid_outcome_timing_rows": 0,
+      "lineage_mismatch_rows": 0
+    },
+    {
+      "signal_date": "2026-08-19",
+      "labeler_version": "strategy-labeler-v2-revenue-pit-fuse-v1",
+      "joined_matrix_label_rows": 13078,
+      "mature_matched_rows": 1181,
+      "producer_run_count": 1,
+      "min_entry_date": "2026-08-21",
+      "max_exit_date": "2026-08-27",
+      "max_outcome_known_date": "2026-08-27",
+      "not_known_by_audit_date": 0,
+      "invalid_entry_timing_rows": 0,
+      "invalid_outcome_timing_rows": 0,
+      "lineage_mismatch_rows": 0
+    },
+    {
+      "signal_date": "2026-08-21",
+      "labeler_version": "strategy-labeler-v2-revenue-pit-fuse-v1",
+      "joined_matrix_label_rows": 13156,
+      "mature_matched_rows": 897,
+      "producer_run_count": 1,
+      "min_entry_date": "2026-08-24",
+      "max_exit_date": "2026-08-28",
+      "max_outcome_known_date": "2026-08-28",
+      "not_known_by_audit_date": 0,
+      "invalid_entry_timing_rows": 0,
+      "invalid_outcome_timing_rows": 0,
+      "lineage_mismatch_rows": 0
+    },
+    {
+      "signal_date": "2026-08-24",
+      "labeler_version": "strategy-labeler-v2-revenue-pit-fuse-v1",
+      "joined_matrix_label_rows": 15002,
+      "mature_matched_rows": 1344,
+      "producer_run_count": 1,
+      "min_entry_date": "2026-08-25",
+      "max_exit_date": "2026-08-31",
+      "max_outcome_known_date": "2026-08-31",
+      "not_known_by_audit_date": 0,
+      "invalid_entry_timing_rows": 0,
+      "invalid_outcome_timing_rows": 0,
+      "lineage_mismatch_rows": 0
+    },
+    {
+      "signal_date": "2026-08-25",
+      "labeler_version": "strategy-labeler-v2-revenue-pit-fuse-v1",
+      "joined_matrix_label_rows": 15132,
+      "mature_matched_rows": 1377,
+      "producer_run_count": 1,
+      "min_entry_date": "2026-08-26",
+      "max_exit_date": "2026-09-01",
+      "max_outcome_known_date": "2026-09-01",
+      "not_known_by_audit_date": 0,
+      "invalid_entry_timing_rows": 0,
+      "invalid_outcome_timing_rows": 0,
+      "lineage_mismatch_rows": 0
+    }
+  ],
+  "meta": {
+    "served_by": "v3-prod",
+    "served_by_region": "APAC",
+    "served_by_colo": "SIN",
+    "served_by_primary": true,
+    "timings": {
+      "sql_duration_ms": 968.0163
+    },
+    "duration": 968.0163,
+    "changes": 0,
+    "last_row_id": 0,
+    "changed_db": false,
+    "size_after": 4883316736,
+    "rows_read": 411867,
+    "rows_written": 0,
+    "total_attempts": 1
+  }
+}

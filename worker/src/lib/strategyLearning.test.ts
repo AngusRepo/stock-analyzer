@@ -11,6 +11,7 @@ import {
   buildStrategyRewardDailyStatsRows,
   buildStrategyRewardLedgerRows,
   hydrateStrategyCandidateDailyFeatures,
+  hasUnjoinedMatureSelectionMatches,
   evaluateStrategyPromotionGate,
   listStrategySpecsForLearning,
   projectStrategyReplacementCandidatePrefilters,
@@ -76,6 +77,15 @@ function runCanonicalStrategyDecisionProjectionTest(): void {
 }
 
 runCanonicalStrategyDecisionProjectionTest()
+
+assert(hasUnjoinedMatureSelectionMatches([
+  { date: '2026-08-14', matched: 5, decision_contract_version: 'strategy-evaluation-v2' },
+  { date: '2026-08-25', matched: 3, decision_contract_version: 'strategy-evaluation-v2' },
+], '2026-08-14', '2026-08-25'), 'mature matched decisions beyond the reward frontier must expose a join gap')
+assert(!hasUnjoinedMatureSelectionMatches([
+  { date: '2026-08-14', matched: 5, decision_contract_version: 'strategy-evaluation-v2' },
+  { date: '2026-08-25', matched: 0, decision_contract_version: 'strategy-evaluation-v2' },
+], '2026-08-14', '2026-08-25'), 'a strategy with no newer mature matches must not be labeled as a reward join failure')
 
 function strategyLearningEvidence(
   overrides: Partial<StrategyLearningSummary['specs'][number]['learning']> = {},

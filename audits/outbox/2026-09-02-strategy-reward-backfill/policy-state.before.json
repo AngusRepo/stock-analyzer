@@ -1,0 +1,2445 @@
+{
+  "success": true,
+  "mode": "read_only",
+  "date": "2026-09-02",
+  "latest": {
+    "policy_id": "strategy-adaptive-lifecycle-v3",
+    "version": "strategy-adaptive-lifecycle-v3",
+    "status": "active",
+    "strategy_weights": {
+      "alpha223_0009": 0.1,
+      "alpha223_0109": 0.1,
+      "alpha223_0166": 0.1,
+      "alpha223_0248": 0.1,
+      "alpha223_0283": 0.1,
+      "alpha_miner_pymoo_nsga3_novelty_0081": 0.1,
+      "alpha_miner_pymoo_nsga3_novelty_0193": 0,
+      "defensive_accumulation_seed_v1": 0.1,
+      "finlab_ai_skill_reversion_value_v1": 0.1,
+      "smrc_vwap_reclaim_v1": 0.1,
+      "stock_tech_s02_52w_dual_momentum_v1": 0.1,
+      "stock_tech_s06_nr7_inside_bar_breakout_v1": 0,
+      "trend_quality_breakout_fused_v1": 0,
+      "alpha_miner_pymoo_nsga3_novelty_0187": 0,
+      "finlab_ai_skill_quality_trend_v1": 0,
+      "finlab_ai_skill_revenue_revision_breakout_v1": 0,
+      "stock_tech_s01_55d_trend_volume_breakout_v1": 0,
+      "stock_tech_s03_vcp_contraction_breakout_v1": 0,
+      "stock_tech_s04_ma_deduct_turn_breakout_v1": 0,
+      "stock_tech_s05_first_dry_pullback_v1": 0,
+      "stock_tech_s07_2b_false_break_reversal_v1": 0,
+      "stock_tech_s08_rsi2_bull_mean_reversion_v1": 0,
+      "stock_tech_s08_rsi2_risk_filter_v1": 0,
+      "stock_tech_s09_three_soldiers_base_breakout_v1": 0,
+      "stock_tech_s10_island_reversal_v1": 0,
+      "stock_tech_s12_multitimeframe_smc_reclaim_v2": 0
+    },
+    "threshold_deltas": {},
+    "lifecycle_recommendations": {
+      "alpha223_0009": {
+        "current_status": "active",
+        "recommended_status": "active",
+        "decision": "active_monitor",
+        "production_weight": 0.1,
+        "automatic_effect": "weight_only",
+        "reasons": []
+      },
+      "alpha223_0109": {
+        "current_status": "active",
+        "recommended_status": "active",
+        "decision": "active_monitor",
+        "production_weight": 0.1,
+        "automatic_effect": "weight_only",
+        "reasons": []
+      },
+      "alpha223_0166": {
+        "current_status": "active",
+        "recommended_status": "active",
+        "decision": "active_monitor",
+        "production_weight": 0.1,
+        "automatic_effect": "weight_only",
+        "reasons": []
+      },
+      "alpha223_0248": {
+        "current_status": "active",
+        "recommended_status": "active",
+        "decision": "active_monitor",
+        "production_weight": 0.1,
+        "automatic_effect": "weight_only",
+        "reasons": []
+      },
+      "alpha223_0283": {
+        "current_status": "active",
+        "recommended_status": "active",
+        "decision": "active_monitor",
+        "production_weight": 0.1,
+        "automatic_effect": "weight_only",
+        "reasons": []
+      },
+      "alpha_miner_pymoo_nsga3_novelty_0081": {
+        "current_status": "active",
+        "recommended_status": "active",
+        "decision": "active_monitor",
+        "production_weight": 0.1,
+        "automatic_effect": "weight_only",
+        "reasons": []
+      },
+      "alpha_miner_pymoo_nsga3_novelty_0193": {
+        "current_status": "active",
+        "recommended_status": "active",
+        "decision": "active_monitor",
+        "production_weight": 0,
+        "automatic_effect": "weight_only",
+        "reasons": [
+          "mature_dates_lt_10"
+        ]
+      },
+      "defensive_accumulation_seed_v1": {
+        "current_status": "active",
+        "recommended_status": "active",
+        "decision": "active_monitor",
+        "production_weight": 0.1,
+        "automatic_effect": "weight_only",
+        "reasons": []
+      },
+      "finlab_ai_skill_reversion_value_v1": {
+        "current_status": "active",
+        "recommended_status": "active",
+        "decision": "active_monitor",
+        "production_weight": 0.1,
+        "automatic_effect": "weight_only",
+        "reasons": []
+      },
+      "smrc_vwap_reclaim_v1": {
+        "current_status": "active",
+        "recommended_status": "active",
+        "decision": "active_monitor",
+        "production_weight": 0.1,
+        "automatic_effect": "weight_only",
+        "reasons": []
+      },
+      "stock_tech_s02_52w_dual_momentum_v1": {
+        "current_status": "active",
+        "recommended_status": "active",
+        "decision": "active_monitor",
+        "production_weight": 0.1,
+        "automatic_effect": "weight_only",
+        "reasons": []
+      },
+      "stock_tech_s06_nr7_inside_bar_breakout_v1": {
+        "current_status": "active",
+        "recommended_status": "active",
+        "decision": "active_monitor",
+        "production_weight": 0,
+        "automatic_effect": "weight_only",
+        "reasons": [
+          "mature_dates_lt_10"
+        ]
+      },
+      "trend_quality_breakout_fused_v1": {
+        "current_status": "active",
+        "recommended_status": "active",
+        "decision": "active_monitor",
+        "production_weight": 0,
+        "automatic_effect": "weight_only",
+        "reasons": [
+          "mature_dates_lt_10"
+        ]
+      },
+      "alpha_miner_pymoo_nsga3_novelty_0187": {
+        "current_status": "candidate",
+        "recommended_status": "candidate",
+        "decision": "not_ready",
+        "production_weight": 0,
+        "automatic_effect": "weight_only",
+        "reasons": [
+          "mature_dates_lt_10",
+          "atomic_replacement_v7_prefilter_failed"
+        ]
+      },
+      "finlab_ai_skill_quality_trend_v1": {
+        "current_status": "candidate",
+        "recommended_status": "candidate",
+        "decision": "not_ready",
+        "production_weight": 0,
+        "automatic_effect": "weight_only",
+        "reasons": [
+          "atomic_replacement_v7_prefilter_failed"
+        ]
+      },
+      "finlab_ai_skill_revenue_revision_breakout_v1": {
+        "current_status": "candidate",
+        "recommended_status": "candidate",
+        "decision": "not_ready",
+        "production_weight": 0,
+        "automatic_effect": "weight_only",
+        "reasons": [
+          "samples_lt_30",
+          "mature_dates_lt_10",
+          "atomic_replacement_v7_prefilter_failed"
+        ]
+      },
+      "stock_tech_s01_55d_trend_volume_breakout_v1": {
+        "current_status": "candidate",
+        "recommended_status": "candidate",
+        "decision": "not_ready",
+        "production_weight": 0,
+        "automatic_effect": "weight_only",
+        "reasons": [
+          "mature_dates_lt_10",
+          "atomic_replacement_v7_prefilter_failed"
+        ]
+      },
+      "stock_tech_s03_vcp_contraction_breakout_v1": {
+        "current_status": "candidate",
+        "recommended_status": "candidate",
+        "decision": "not_ready",
+        "production_weight": 0,
+        "automatic_effect": "weight_only",
+        "reasons": [
+          "samples_lt_30",
+          "mature_dates_lt_10",
+          "atomic_replacement_v7_prefilter_failed"
+        ]
+      },
+      "stock_tech_s04_ma_deduct_turn_breakout_v1": {
+        "current_status": "candidate",
+        "recommended_status": "candidate",
+        "decision": "not_ready",
+        "production_weight": 0,
+        "automatic_effect": "weight_only",
+        "reasons": [
+          "atomic_replacement_v7_prefilter_failed"
+        ]
+      },
+      "stock_tech_s05_first_dry_pullback_v1": {
+        "current_status": "candidate",
+        "recommended_status": "candidate",
+        "decision": "not_ready",
+        "production_weight": 0,
+        "automatic_effect": "weight_only",
+        "reasons": [
+          "samples_lt_30",
+          "mature_dates_lt_10",
+          "atomic_replacement_v7_prefilter_failed"
+        ]
+      },
+      "stock_tech_s07_2b_false_break_reversal_v1": {
+        "current_status": "candidate",
+        "recommended_status": "candidate",
+        "decision": "not_ready",
+        "production_weight": 0,
+        "automatic_effect": "weight_only",
+        "reasons": [
+          "samples_lt_30",
+          "mature_dates_lt_10",
+          "atomic_replacement_v7_prefilter_failed"
+        ]
+      },
+      "stock_tech_s08_rsi2_bull_mean_reversion_v1": {
+        "current_status": "candidate",
+        "recommended_status": "candidate",
+        "decision": "not_ready",
+        "production_weight": 0,
+        "automatic_effect": "weight_only",
+        "reasons": [
+          "mature_dates_lt_10",
+          "atomic_replacement_v7_prefilter_failed"
+        ]
+      },
+      "stock_tech_s08_rsi2_risk_filter_v1": {
+        "current_status": "candidate",
+        "recommended_status": "candidate",
+        "decision": "not_ready",
+        "production_weight": 0,
+        "automatic_effect": "weight_only",
+        "reasons": []
+      },
+      "stock_tech_s09_three_soldiers_base_breakout_v1": {
+        "current_status": "candidate",
+        "recommended_status": "candidate",
+        "decision": "not_ready",
+        "production_weight": 0,
+        "automatic_effect": "weight_only",
+        "reasons": [
+          "samples_lt_30",
+          "mature_dates_lt_10",
+          "atomic_replacement_v7_prefilter_failed"
+        ]
+      },
+      "stock_tech_s10_island_reversal_v1": {
+        "current_status": "candidate",
+        "recommended_status": "candidate",
+        "decision": "not_ready",
+        "production_weight": 0,
+        "automatic_effect": "weight_only",
+        "reasons": [
+          "samples_lt_30",
+          "mature_dates_lt_10",
+          "atomic_replacement_v7_prefilter_failed"
+        ]
+      },
+      "stock_tech_s12_multitimeframe_smc_reclaim_v2": {
+        "current_status": "candidate",
+        "recommended_status": "candidate",
+        "decision": "not_ready",
+        "production_weight": 0,
+        "automatic_effect": "weight_only",
+        "reasons": [
+          "production_owned_by_s12_calibration_not_selection_replacement",
+          "decisions_lt_30"
+        ]
+      }
+    },
+    "evidence": {
+      "version": "strategy-learning-v5",
+      "date": "2026-09-01",
+      "source": "strategy_reward_ledger",
+      "production_effect": true,
+      "requires_approval_to_activate": false,
+      "threshold_owner": "versioned_strategy_spec",
+      "pit_rule": "knowledge_cutoff_lt_signal_date",
+      "weight_semantics": "relative_pending_buy_gate_share_not_capital_allocation",
+      "selection_participation_semantics": "all_non_retired_strategies_single_evaluation_stream",
+      "eligible_strategy_count": 10,
+      "missing_evidence": {
+        "alpha223_0009": [],
+        "alpha223_0109": [],
+        "alpha223_0166": [],
+        "alpha223_0248": [],
+        "alpha223_0283": [],
+        "alpha_miner_pymoo_nsga3_novelty_0081": [],
+        "alpha_miner_pymoo_nsga3_novelty_0193": [
+          "mature_dates_lt_10"
+        ],
+        "defensive_accumulation_seed_v1": [],
+        "finlab_ai_skill_reversion_value_v1": [],
+        "smrc_vwap_reclaim_v1": [],
+        "stock_tech_s02_52w_dual_momentum_v1": [],
+        "stock_tech_s06_nr7_inside_bar_breakout_v1": [
+          "mature_dates_lt_10"
+        ],
+        "trend_quality_breakout_fused_v1": [
+          "mature_dates_lt_10"
+        ],
+        "alpha_miner_pymoo_nsga3_novelty_0187": [
+          "mature_dates_lt_10",
+          "atomic_replacement_v7_prefilter_failed"
+        ],
+        "finlab_ai_skill_quality_trend_v1": [
+          "atomic_replacement_v7_prefilter_failed"
+        ],
+        "finlab_ai_skill_revenue_revision_breakout_v1": [
+          "samples_lt_30",
+          "mature_dates_lt_10",
+          "atomic_replacement_v7_prefilter_failed"
+        ],
+        "stock_tech_s01_55d_trend_volume_breakout_v1": [
+          "mature_dates_lt_10",
+          "atomic_replacement_v7_prefilter_failed"
+        ],
+        "stock_tech_s03_vcp_contraction_breakout_v1": [
+          "samples_lt_30",
+          "mature_dates_lt_10",
+          "atomic_replacement_v7_prefilter_failed"
+        ],
+        "stock_tech_s04_ma_deduct_turn_breakout_v1": [
+          "atomic_replacement_v7_prefilter_failed"
+        ],
+        "stock_tech_s05_first_dry_pullback_v1": [
+          "samples_lt_30",
+          "mature_dates_lt_10",
+          "atomic_replacement_v7_prefilter_failed"
+        ],
+        "stock_tech_s07_2b_false_break_reversal_v1": [
+          "samples_lt_30",
+          "mature_dates_lt_10",
+          "atomic_replacement_v7_prefilter_failed"
+        ],
+        "stock_tech_s08_rsi2_bull_mean_reversion_v1": [
+          "mature_dates_lt_10",
+          "atomic_replacement_v7_prefilter_failed"
+        ],
+        "stock_tech_s08_rsi2_risk_filter_v1": [],
+        "stock_tech_s09_three_soldiers_base_breakout_v1": [
+          "samples_lt_30",
+          "mature_dates_lt_10",
+          "atomic_replacement_v7_prefilter_failed"
+        ],
+        "stock_tech_s10_island_reversal_v1": [
+          "samples_lt_30",
+          "mature_dates_lt_10",
+          "atomic_replacement_v7_prefilter_failed"
+        ],
+        "stock_tech_s12_multitimeframe_smc_reclaim_v2": [
+          "production_owned_by_s12_calibration_not_selection_replacement",
+          "decisions_lt_30"
+        ]
+      }
+    },
+    "updated_at": "2026-09-01T15:34:26.044Z"
+  },
+  "preview": {
+    "policy_id": "strategy-adaptive-lifecycle-v3",
+    "version": "strategy-adaptive-lifecycle-v3",
+    "status": "active",
+    "strategy_weights": {
+      "alpha223_0009": 0.1,
+      "alpha223_0109": 0.1,
+      "alpha223_0166": 0.1,
+      "alpha223_0248": 0.1,
+      "alpha223_0283": 0.1,
+      "alpha_miner_pymoo_nsga3_novelty_0081": 0.1,
+      "alpha_miner_pymoo_nsga3_novelty_0193": 0,
+      "defensive_accumulation_seed_v1": 0.1,
+      "finlab_ai_skill_reversion_value_v1": 0.1,
+      "smrc_vwap_reclaim_v1": 0.1,
+      "stock_tech_s02_52w_dual_momentum_v1": 0.1,
+      "stock_tech_s06_nr7_inside_bar_breakout_v1": 0,
+      "trend_quality_breakout_fused_v1": 0,
+      "alpha_miner_pymoo_nsga3_novelty_0187": 0,
+      "finlab_ai_skill_quality_trend_v1": 0,
+      "finlab_ai_skill_revenue_revision_breakout_v1": 0,
+      "stock_tech_s01_55d_trend_volume_breakout_v1": 0,
+      "stock_tech_s03_vcp_contraction_breakout_v1": 0,
+      "stock_tech_s04_ma_deduct_turn_breakout_v1": 0,
+      "stock_tech_s05_first_dry_pullback_v1": 0,
+      "stock_tech_s07_2b_false_break_reversal_v1": 0,
+      "stock_tech_s08_rsi2_bull_mean_reversion_v1": 0,
+      "stock_tech_s08_rsi2_risk_filter_v1": 0,
+      "stock_tech_s09_three_soldiers_base_breakout_v1": 0,
+      "stock_tech_s10_island_reversal_v1": 0,
+      "stock_tech_s12_multitimeframe_smc_reclaim_v2": 0
+    },
+    "threshold_deltas": {},
+    "lifecycle_recommendations": {
+      "alpha223_0009": {
+        "current_status": "active",
+        "recommended_status": "active",
+        "decision": "active_monitor",
+        "production_weight": 0.1,
+        "automatic_effect": "weight_only",
+        "reasons": []
+      },
+      "alpha223_0109": {
+        "current_status": "active",
+        "recommended_status": "active",
+        "decision": "active_monitor",
+        "production_weight": 0.1,
+        "automatic_effect": "weight_only",
+        "reasons": []
+      },
+      "alpha223_0166": {
+        "current_status": "active",
+        "recommended_status": "active",
+        "decision": "active_monitor",
+        "production_weight": 0.1,
+        "automatic_effect": "weight_only",
+        "reasons": []
+      },
+      "alpha223_0248": {
+        "current_status": "active",
+        "recommended_status": "active",
+        "decision": "active_monitor",
+        "production_weight": 0.1,
+        "automatic_effect": "weight_only",
+        "reasons": []
+      },
+      "alpha223_0283": {
+        "current_status": "active",
+        "recommended_status": "active",
+        "decision": "active_monitor",
+        "production_weight": 0.1,
+        "automatic_effect": "weight_only",
+        "reasons": []
+      },
+      "alpha_miner_pymoo_nsga3_novelty_0081": {
+        "current_status": "active",
+        "recommended_status": "active",
+        "decision": "active_monitor",
+        "production_weight": 0.1,
+        "automatic_effect": "weight_only",
+        "reasons": []
+      },
+      "alpha_miner_pymoo_nsga3_novelty_0193": {
+        "current_status": "active",
+        "recommended_status": "active",
+        "decision": "active_monitor",
+        "production_weight": 0,
+        "automatic_effect": "weight_only",
+        "reasons": [
+          "mature_dates_lt_10"
+        ]
+      },
+      "defensive_accumulation_seed_v1": {
+        "current_status": "active",
+        "recommended_status": "active",
+        "decision": "active_monitor",
+        "production_weight": 0.1,
+        "automatic_effect": "weight_only",
+        "reasons": []
+      },
+      "finlab_ai_skill_reversion_value_v1": {
+        "current_status": "active",
+        "recommended_status": "active",
+        "decision": "active_monitor",
+        "production_weight": 0.1,
+        "automatic_effect": "weight_only",
+        "reasons": []
+      },
+      "smrc_vwap_reclaim_v1": {
+        "current_status": "active",
+        "recommended_status": "active",
+        "decision": "active_monitor",
+        "production_weight": 0.1,
+        "automatic_effect": "weight_only",
+        "reasons": []
+      },
+      "stock_tech_s02_52w_dual_momentum_v1": {
+        "current_status": "active",
+        "recommended_status": "active",
+        "decision": "active_monitor",
+        "production_weight": 0.1,
+        "automatic_effect": "weight_only",
+        "reasons": []
+      },
+      "stock_tech_s06_nr7_inside_bar_breakout_v1": {
+        "current_status": "active",
+        "recommended_status": "active",
+        "decision": "active_monitor",
+        "production_weight": 0,
+        "automatic_effect": "weight_only",
+        "reasons": [
+          "mature_dates_lt_10"
+        ]
+      },
+      "trend_quality_breakout_fused_v1": {
+        "current_status": "active",
+        "recommended_status": "active",
+        "decision": "active_monitor",
+        "production_weight": 0,
+        "automatic_effect": "weight_only",
+        "reasons": [
+          "mature_dates_lt_10"
+        ]
+      },
+      "alpha_miner_pymoo_nsga3_novelty_0187": {
+        "current_status": "candidate",
+        "recommended_status": "candidate",
+        "decision": "not_ready",
+        "production_weight": 0,
+        "automatic_effect": "weight_only",
+        "reasons": [
+          "mature_dates_lt_10",
+          "atomic_replacement_v7_prefilter_failed"
+        ]
+      },
+      "finlab_ai_skill_quality_trend_v1": {
+        "current_status": "candidate",
+        "recommended_status": "candidate",
+        "decision": "not_ready",
+        "production_weight": 0,
+        "automatic_effect": "weight_only",
+        "reasons": [
+          "atomic_replacement_v7_prefilter_failed"
+        ]
+      },
+      "finlab_ai_skill_revenue_revision_breakout_v1": {
+        "current_status": "candidate",
+        "recommended_status": "candidate",
+        "decision": "not_ready",
+        "production_weight": 0,
+        "automatic_effect": "weight_only",
+        "reasons": [
+          "samples_lt_30",
+          "mature_dates_lt_10",
+          "atomic_replacement_v7_prefilter_failed"
+        ]
+      },
+      "stock_tech_s01_55d_trend_volume_breakout_v1": {
+        "current_status": "candidate",
+        "recommended_status": "candidate",
+        "decision": "not_ready",
+        "production_weight": 0,
+        "automatic_effect": "weight_only",
+        "reasons": [
+          "mature_dates_lt_10",
+          "atomic_replacement_v7_prefilter_failed"
+        ]
+      },
+      "stock_tech_s03_vcp_contraction_breakout_v1": {
+        "current_status": "candidate",
+        "recommended_status": "candidate",
+        "decision": "not_ready",
+        "production_weight": 0,
+        "automatic_effect": "weight_only",
+        "reasons": [
+          "samples_lt_30",
+          "mature_dates_lt_10",
+          "atomic_replacement_v7_prefilter_failed"
+        ]
+      },
+      "stock_tech_s04_ma_deduct_turn_breakout_v1": {
+        "current_status": "candidate",
+        "recommended_status": "candidate",
+        "decision": "not_ready",
+        "production_weight": 0,
+        "automatic_effect": "weight_only",
+        "reasons": [
+          "atomic_replacement_v7_prefilter_failed"
+        ]
+      },
+      "stock_tech_s05_first_dry_pullback_v1": {
+        "current_status": "candidate",
+        "recommended_status": "candidate",
+        "decision": "not_ready",
+        "production_weight": 0,
+        "automatic_effect": "weight_only",
+        "reasons": [
+          "samples_lt_30",
+          "mature_dates_lt_10",
+          "atomic_replacement_v7_prefilter_failed"
+        ]
+      },
+      "stock_tech_s07_2b_false_break_reversal_v1": {
+        "current_status": "candidate",
+        "recommended_status": "candidate",
+        "decision": "not_ready",
+        "production_weight": 0,
+        "automatic_effect": "weight_only",
+        "reasons": [
+          "samples_lt_30",
+          "mature_dates_lt_10",
+          "atomic_replacement_v7_prefilter_failed"
+        ]
+      },
+      "stock_tech_s08_rsi2_bull_mean_reversion_v1": {
+        "current_status": "candidate",
+        "recommended_status": "candidate",
+        "decision": "not_ready",
+        "production_weight": 0,
+        "automatic_effect": "weight_only",
+        "reasons": [
+          "mature_dates_lt_10",
+          "atomic_replacement_v7_prefilter_failed"
+        ]
+      },
+      "stock_tech_s08_rsi2_risk_filter_v1": {
+        "current_status": "candidate",
+        "recommended_status": "candidate",
+        "decision": "not_ready",
+        "production_weight": 0,
+        "automatic_effect": "weight_only",
+        "reasons": []
+      },
+      "stock_tech_s09_three_soldiers_base_breakout_v1": {
+        "current_status": "candidate",
+        "recommended_status": "candidate",
+        "decision": "not_ready",
+        "production_weight": 0,
+        "automatic_effect": "weight_only",
+        "reasons": [
+          "samples_lt_30",
+          "mature_dates_lt_10",
+          "atomic_replacement_v7_prefilter_failed"
+        ]
+      },
+      "stock_tech_s10_island_reversal_v1": {
+        "current_status": "candidate",
+        "recommended_status": "candidate",
+        "decision": "not_ready",
+        "production_weight": 0,
+        "automatic_effect": "weight_only",
+        "reasons": [
+          "samples_lt_30",
+          "mature_dates_lt_10",
+          "atomic_replacement_v7_prefilter_failed"
+        ]
+      },
+      "stock_tech_s12_multitimeframe_smc_reclaim_v2": {
+        "current_status": "candidate",
+        "recommended_status": "candidate",
+        "decision": "not_ready",
+        "production_weight": 0,
+        "automatic_effect": "weight_only",
+        "reasons": [
+          "production_owned_by_s12_calibration_not_selection_replacement",
+          "decisions_lt_30"
+        ]
+      }
+    },
+    "evidence": {
+      "version": "strategy-learning-v5",
+      "date": "2026-09-02",
+      "source": "strategy_reward_ledger",
+      "production_effect": true,
+      "requires_approval_to_activate": false,
+      "threshold_owner": "versioned_strategy_spec",
+      "pit_rule": "knowledge_cutoff_lt_signal_date",
+      "weight_semantics": "relative_pending_buy_gate_share_not_capital_allocation",
+      "selection_participation_semantics": "all_non_retired_strategies_single_evaluation_stream",
+      "eligible_strategy_count": 10,
+      "missing_evidence": {
+        "alpha223_0009": [],
+        "alpha223_0109": [],
+        "alpha223_0166": [],
+        "alpha223_0248": [],
+        "alpha223_0283": [],
+        "alpha_miner_pymoo_nsga3_novelty_0081": [],
+        "alpha_miner_pymoo_nsga3_novelty_0193": [
+          "mature_dates_lt_10"
+        ],
+        "defensive_accumulation_seed_v1": [],
+        "finlab_ai_skill_reversion_value_v1": [],
+        "smrc_vwap_reclaim_v1": [],
+        "stock_tech_s02_52w_dual_momentum_v1": [],
+        "stock_tech_s06_nr7_inside_bar_breakout_v1": [
+          "mature_dates_lt_10"
+        ],
+        "trend_quality_breakout_fused_v1": [
+          "mature_dates_lt_10"
+        ],
+        "alpha_miner_pymoo_nsga3_novelty_0187": [
+          "mature_dates_lt_10",
+          "atomic_replacement_v7_prefilter_failed"
+        ],
+        "finlab_ai_skill_quality_trend_v1": [
+          "atomic_replacement_v7_prefilter_failed"
+        ],
+        "finlab_ai_skill_revenue_revision_breakout_v1": [
+          "samples_lt_30",
+          "mature_dates_lt_10",
+          "atomic_replacement_v7_prefilter_failed"
+        ],
+        "stock_tech_s01_55d_trend_volume_breakout_v1": [
+          "mature_dates_lt_10",
+          "atomic_replacement_v7_prefilter_failed"
+        ],
+        "stock_tech_s03_vcp_contraction_breakout_v1": [
+          "samples_lt_30",
+          "mature_dates_lt_10",
+          "atomic_replacement_v7_prefilter_failed"
+        ],
+        "stock_tech_s04_ma_deduct_turn_breakout_v1": [
+          "atomic_replacement_v7_prefilter_failed"
+        ],
+        "stock_tech_s05_first_dry_pullback_v1": [
+          "samples_lt_30",
+          "mature_dates_lt_10",
+          "atomic_replacement_v7_prefilter_failed"
+        ],
+        "stock_tech_s07_2b_false_break_reversal_v1": [
+          "samples_lt_30",
+          "mature_dates_lt_10",
+          "atomic_replacement_v7_prefilter_failed"
+        ],
+        "stock_tech_s08_rsi2_bull_mean_reversion_v1": [
+          "mature_dates_lt_10",
+          "atomic_replacement_v7_prefilter_failed"
+        ],
+        "stock_tech_s08_rsi2_risk_filter_v1": [],
+        "stock_tech_s09_three_soldiers_base_breakout_v1": [
+          "samples_lt_30",
+          "mature_dates_lt_10",
+          "atomic_replacement_v7_prefilter_failed"
+        ],
+        "stock_tech_s10_island_reversal_v1": [
+          "samples_lt_30",
+          "mature_dates_lt_10",
+          "atomic_replacement_v7_prefilter_failed"
+        ],
+        "stock_tech_s12_multitimeframe_smc_reclaim_v2": [
+          "production_owned_by_s12_calibration_not_selection_replacement",
+          "decisions_lt_30"
+        ]
+      }
+    },
+    "updated_at": "2026-09-02T06:48:59.940Z"
+  },
+  "promotion_gate": [
+    {
+      "strategy_id": "alpha223_0009",
+      "strategy_version": "strategy-spec-v1",
+      "strategy_status": "active",
+      "alpha_bucket": "smart_money_accumulation",
+      "current_stage": "active",
+      "recommended_stage": "active",
+      "decision": "active_monitor",
+      "recommended_next_status": "active",
+      "requires_wei_approval": false,
+      "l3_requires_wei_approval": false,
+      "production_effect": false,
+      "allocation_eligible": true,
+      "gate_policy": "candidate_evidence_then_atomic_replacement_v7",
+      "gate_role": "incumbent_monitoring",
+      "hard_gate_metrics": [
+        "reward_samples",
+        "mature_dates"
+      ],
+      "diagnostic_only_metrics": [
+        "match_rate",
+        "hit_rate",
+        "avg_cost_net_alpha",
+        "max_drawdown",
+        "date_return_lcb90"
+      ],
+      "activation_gate": {
+        "policy_version": "strategy-replacement-policy-v7-hac4-holm-power80-v1",
+        "required": false,
+        "status": "not_applicable",
+        "decision_id": null,
+        "run_id": null,
+        "applicability_reason": null
+      },
+      "missing_evidence": [],
+      "thresholds": {
+        "min_evaluable_decisions": 30,
+        "min_match_rate": null,
+        "min_reward_samples": 30,
+        "min_hit_rate": null,
+        "active_retention_min_hit_rate": null,
+        "min_avg_cost_net_return_exclusive": null,
+        "min_max_drawdown": null,
+        "min_mature_dates": 10,
+        "min_date_return_lcb90_exclusive": null
+      },
+      "evidence": {
+        "decisions": 13621,
+        "total_decisions": 15353,
+        "evaluable_decisions": 13621,
+        "unavailable_decisions": 1732,
+        "matched": 3214,
+        "match_rate": 0.235959,
+        "samples": 1652,
+        "hit_rate": 0.465496,
+        "avg_return_pct": -0.00006,
+        "max_drawdown_pct": -0.031759,
+        "mature_dates": 14,
+        "date_return_lcb90": -0.002701,
+        "lifetime_decisions": 15353
+      }
+    },
+    {
+      "strategy_id": "alpha223_0109",
+      "strategy_version": "strategy-spec-v1",
+      "strategy_status": "active",
+      "alpha_bucket": "trend_following",
+      "current_stage": "active",
+      "recommended_stage": "active",
+      "decision": "active_monitor",
+      "recommended_next_status": "active",
+      "requires_wei_approval": false,
+      "l3_requires_wei_approval": false,
+      "production_effect": false,
+      "allocation_eligible": true,
+      "gate_policy": "candidate_evidence_then_atomic_replacement_v7",
+      "gate_role": "incumbent_monitoring",
+      "hard_gate_metrics": [
+        "reward_samples",
+        "mature_dates"
+      ],
+      "diagnostic_only_metrics": [
+        "match_rate",
+        "hit_rate",
+        "avg_cost_net_alpha",
+        "max_drawdown",
+        "date_return_lcb90"
+      ],
+      "activation_gate": {
+        "policy_version": "strategy-replacement-policy-v7-hac4-holm-power80-v1",
+        "required": false,
+        "status": "not_applicable",
+        "decision_id": null,
+        "run_id": null,
+        "applicability_reason": null
+      },
+      "missing_evidence": [],
+      "thresholds": {
+        "min_evaluable_decisions": 30,
+        "min_match_rate": null,
+        "min_reward_samples": 30,
+        "min_hit_rate": null,
+        "active_retention_min_hit_rate": null,
+        "min_avg_cost_net_return_exclusive": null,
+        "min_max_drawdown": null,
+        "min_mature_dates": 10,
+        "min_date_return_lcb90_exclusive": null
+      },
+      "evidence": {
+        "decisions": 13019,
+        "total_decisions": 15353,
+        "evaluable_decisions": 13019,
+        "unavailable_decisions": 2334,
+        "matched": 3870,
+        "match_rate": 0.297258,
+        "samples": 1906,
+        "hit_rate": 0.423924,
+        "avg_return_pct": -0.002302,
+        "max_drawdown_pct": -0.062003,
+        "mature_dates": 14,
+        "date_return_lcb90": -0.007641,
+        "lifetime_decisions": 15353
+      }
+    },
+    {
+      "strategy_id": "alpha223_0166",
+      "strategy_version": "strategy-spec-v1",
+      "strategy_status": "active",
+      "alpha_bucket": "trend_following",
+      "current_stage": "active",
+      "recommended_stage": "active",
+      "decision": "active_monitor",
+      "recommended_next_status": "active",
+      "requires_wei_approval": false,
+      "l3_requires_wei_approval": false,
+      "production_effect": false,
+      "allocation_eligible": true,
+      "gate_policy": "candidate_evidence_then_atomic_replacement_v7",
+      "gate_role": "incumbent_monitoring",
+      "hard_gate_metrics": [
+        "reward_samples",
+        "mature_dates"
+      ],
+      "diagnostic_only_metrics": [
+        "match_rate",
+        "hit_rate",
+        "avg_cost_net_alpha",
+        "max_drawdown",
+        "date_return_lcb90"
+      ],
+      "activation_gate": {
+        "policy_version": "strategy-replacement-policy-v7-hac4-holm-power80-v1",
+        "required": false,
+        "status": "not_applicable",
+        "decision_id": null,
+        "run_id": null,
+        "applicability_reason": null
+      },
+      "missing_evidence": [],
+      "thresholds": {
+        "min_evaluable_decisions": 30,
+        "min_match_rate": null,
+        "min_reward_samples": 30,
+        "min_hit_rate": null,
+        "active_retention_min_hit_rate": null,
+        "min_avg_cost_net_return_exclusive": null,
+        "min_max_drawdown": null,
+        "min_mature_dates": 10,
+        "min_date_return_lcb90_exclusive": null
+      },
+      "evidence": {
+        "decisions": 14105,
+        "total_decisions": 15353,
+        "evaluable_decisions": 14105,
+        "unavailable_decisions": 1248,
+        "matched": 5040,
+        "match_rate": 0.35732,
+        "samples": 2668,
+        "hit_rate": 0.458396,
+        "avg_return_pct": -0.000823,
+        "max_drawdown_pct": -0.067612,
+        "mature_dates": 14,
+        "date_return_lcb90": -0.005468,
+        "lifetime_decisions": 15353
+      }
+    },
+    {
+      "strategy_id": "alpha223_0248",
+      "strategy_version": "strategy-spec-v1",
+      "strategy_status": "active",
+      "alpha_bucket": "breakout_vol_expansion",
+      "current_stage": "active",
+      "recommended_stage": "active",
+      "decision": "active_monitor",
+      "recommended_next_status": "active",
+      "requires_wei_approval": false,
+      "l3_requires_wei_approval": false,
+      "production_effect": false,
+      "allocation_eligible": true,
+      "gate_policy": "candidate_evidence_then_atomic_replacement_v7",
+      "gate_role": "incumbent_monitoring",
+      "hard_gate_metrics": [
+        "reward_samples",
+        "mature_dates"
+      ],
+      "diagnostic_only_metrics": [
+        "match_rate",
+        "hit_rate",
+        "avg_cost_net_alpha",
+        "max_drawdown",
+        "date_return_lcb90"
+      ],
+      "activation_gate": {
+        "policy_version": "strategy-replacement-policy-v7-hac4-holm-power80-v1",
+        "required": false,
+        "status": "not_applicable",
+        "decision_id": null,
+        "run_id": null,
+        "applicability_reason": null
+      },
+      "missing_evidence": [],
+      "thresholds": {
+        "min_evaluable_decisions": 30,
+        "min_match_rate": null,
+        "min_reward_samples": 30,
+        "min_hit_rate": null,
+        "active_retention_min_hit_rate": null,
+        "min_avg_cost_net_return_exclusive": null,
+        "min_max_drawdown": null,
+        "min_mature_dates": 10,
+        "min_date_return_lcb90_exclusive": null
+      },
+      "evidence": {
+        "decisions": 13621,
+        "total_decisions": 15353,
+        "evaluable_decisions": 13621,
+        "unavailable_decisions": 1732,
+        "matched": 1938,
+        "match_rate": 0.14228,
+        "samples": 962,
+        "hit_rate": 0.47921,
+        "avg_return_pct": 0.004529,
+        "max_drawdown_pct": -0.017725,
+        "mature_dates": 14,
+        "date_return_lcb90": 0.001344,
+        "lifetime_decisions": 15353
+      }
+    },
+    {
+      "strategy_id": "alpha223_0283",
+      "strategy_version": "strategy-spec-v1",
+      "strategy_status": "active",
+      "alpha_bucket": "breakout_vol_expansion",
+      "current_stage": "active",
+      "recommended_stage": "active",
+      "decision": "active_monitor",
+      "recommended_next_status": "active",
+      "requires_wei_approval": false,
+      "l3_requires_wei_approval": false,
+      "production_effect": false,
+      "allocation_eligible": true,
+      "gate_policy": "candidate_evidence_then_atomic_replacement_v7",
+      "gate_role": "incumbent_monitoring",
+      "hard_gate_metrics": [
+        "reward_samples",
+        "mature_dates"
+      ],
+      "diagnostic_only_metrics": [
+        "match_rate",
+        "hit_rate",
+        "avg_cost_net_alpha",
+        "max_drawdown",
+        "date_return_lcb90"
+      ],
+      "activation_gate": {
+        "policy_version": "strategy-replacement-policy-v7-hac4-holm-power80-v1",
+        "required": false,
+        "status": "not_applicable",
+        "decision_id": null,
+        "run_id": null,
+        "applicability_reason": null
+      },
+      "missing_evidence": [],
+      "thresholds": {
+        "min_evaluable_decisions": 30,
+        "min_match_rate": null,
+        "min_reward_samples": 30,
+        "min_hit_rate": null,
+        "active_retention_min_hit_rate": null,
+        "min_avg_cost_net_return_exclusive": null,
+        "min_max_drawdown": null,
+        "min_mature_dates": 10,
+        "min_date_return_lcb90_exclusive": null
+      },
+      "evidence": {
+        "decisions": 13043,
+        "total_decisions": 15353,
+        "evaluable_decisions": 13043,
+        "unavailable_decisions": 2310,
+        "matched": 4133,
+        "match_rate": 0.316875,
+        "samples": 2065,
+        "hit_rate": 0.461017,
+        "avg_return_pct": 0.000898,
+        "max_drawdown_pct": -0.005732,
+        "mature_dates": 14,
+        "date_return_lcb90": -0.000445,
+        "lifetime_decisions": 15353
+      }
+    },
+    {
+      "strategy_id": "alpha_miner_pymoo_nsga3_novelty_0081",
+      "strategy_version": "strategy-spec-v1",
+      "strategy_status": "active",
+      "alpha_bucket": "trend_following",
+      "current_stage": "active",
+      "recommended_stage": "active",
+      "decision": "active_monitor",
+      "recommended_next_status": "active",
+      "requires_wei_approval": false,
+      "l3_requires_wei_approval": false,
+      "production_effect": false,
+      "allocation_eligible": true,
+      "gate_policy": "candidate_evidence_then_atomic_replacement_v7",
+      "gate_role": "incumbent_monitoring",
+      "hard_gate_metrics": [
+        "reward_samples",
+        "mature_dates"
+      ],
+      "diagnostic_only_metrics": [
+        "match_rate",
+        "hit_rate",
+        "avg_cost_net_alpha",
+        "max_drawdown",
+        "date_return_lcb90"
+      ],
+      "activation_gate": {
+        "policy_version": "strategy-replacement-policy-v7-hac4-holm-power80-v1",
+        "required": false,
+        "status": "not_applicable",
+        "decision_id": null,
+        "run_id": null,
+        "applicability_reason": null
+      },
+      "missing_evidence": [],
+      "thresholds": {
+        "min_evaluable_decisions": 30,
+        "min_match_rate": null,
+        "min_reward_samples": 30,
+        "min_hit_rate": null,
+        "active_retention_min_hit_rate": null,
+        "min_avg_cost_net_return_exclusive": null,
+        "min_max_drawdown": null,
+        "min_mature_dates": 10,
+        "min_date_return_lcb90_exclusive": null
+      },
+      "evidence": {
+        "decisions": 14105,
+        "total_decisions": 15353,
+        "evaluable_decisions": 14105,
+        "unavailable_decisions": 1248,
+        "matched": 278,
+        "match_rate": 0.019709,
+        "samples": 160,
+        "hit_rate": 0.51875,
+        "avg_return_pct": 0.012529,
+        "max_drawdown_pct": -0.185043,
+        "mature_dates": 14,
+        "date_return_lcb90": -0.015005,
+        "lifetime_decisions": 15353
+      }
+    },
+    {
+      "strategy_id": "alpha_miner_pymoo_nsga3_novelty_0193",
+      "strategy_version": "strategy-spec-v1",
+      "strategy_status": "active",
+      "alpha_bucket": "defensive_accumulation",
+      "current_stage": "active",
+      "recommended_stage": "active",
+      "decision": "active_monitor",
+      "recommended_next_status": "active",
+      "requires_wei_approval": false,
+      "l3_requires_wei_approval": false,
+      "production_effect": false,
+      "allocation_eligible": false,
+      "gate_policy": "candidate_evidence_then_atomic_replacement_v7",
+      "gate_role": "incumbent_monitoring",
+      "hard_gate_metrics": [
+        "reward_samples",
+        "mature_dates"
+      ],
+      "diagnostic_only_metrics": [
+        "match_rate",
+        "hit_rate",
+        "avg_cost_net_alpha",
+        "max_drawdown",
+        "date_return_lcb90"
+      ],
+      "activation_gate": {
+        "policy_version": "strategy-replacement-policy-v7-hac4-holm-power80-v1",
+        "required": false,
+        "status": "not_applicable",
+        "decision_id": null,
+        "run_id": null,
+        "applicability_reason": null
+      },
+      "missing_evidence": [
+        "mature_dates_lt_10"
+      ],
+      "thresholds": {
+        "min_evaluable_decisions": 30,
+        "min_match_rate": null,
+        "min_reward_samples": 30,
+        "min_hit_rate": null,
+        "active_retention_min_hit_rate": null,
+        "min_avg_cost_net_return_exclusive": null,
+        "min_max_drawdown": null,
+        "min_mature_dates": 10,
+        "min_date_return_lcb90_exclusive": null
+      },
+      "evidence": {
+        "decisions": 5143,
+        "total_decisions": 15353,
+        "evaluable_decisions": 5143,
+        "unavailable_decisions": 10210,
+        "matched": 1918,
+        "match_rate": 0.372934,
+        "samples": 1619,
+        "hit_rate": 0.462014,
+        "avg_return_pct": 0.002601,
+        "max_drawdown_pct": -0.005683,
+        "mature_dates": 9,
+        "date_return_lcb90": -0.000928,
+        "lifetime_decisions": 15353
+      }
+    },
+    {
+      "strategy_id": "defensive_accumulation_seed_v1",
+      "strategy_version": "strategy-spec-v1",
+      "strategy_status": "active",
+      "alpha_bucket": "defensive_accumulation",
+      "current_stage": "active",
+      "recommended_stage": "active",
+      "decision": "active_monitor",
+      "recommended_next_status": "active",
+      "requires_wei_approval": false,
+      "l3_requires_wei_approval": false,
+      "production_effect": false,
+      "allocation_eligible": true,
+      "gate_policy": "candidate_evidence_then_atomic_replacement_v7",
+      "gate_role": "incumbent_monitoring",
+      "hard_gate_metrics": [
+        "reward_samples",
+        "mature_dates"
+      ],
+      "diagnostic_only_metrics": [
+        "match_rate",
+        "hit_rate",
+        "avg_cost_net_alpha",
+        "max_drawdown",
+        "date_return_lcb90"
+      ],
+      "activation_gate": {
+        "policy_version": "strategy-replacement-policy-v7-hac4-holm-power80-v1",
+        "required": false,
+        "status": "not_applicable",
+        "decision_id": null,
+        "run_id": null,
+        "applicability_reason": null
+      },
+      "missing_evidence": [],
+      "thresholds": {
+        "min_evaluable_decisions": 30,
+        "min_match_rate": null,
+        "min_reward_samples": 30,
+        "min_hit_rate": null,
+        "active_retention_min_hit_rate": null,
+        "min_avg_cost_net_return_exclusive": null,
+        "min_max_drawdown": null,
+        "min_mature_dates": 10,
+        "min_date_return_lcb90_exclusive": null
+      },
+      "evidence": {
+        "decisions": 14105,
+        "total_decisions": 15353,
+        "evaluable_decisions": 14105,
+        "unavailable_decisions": 1248,
+        "matched": 4328,
+        "match_rate": 0.306842,
+        "samples": 2250,
+        "hit_rate": 0.421333,
+        "avg_return_pct": -0.005207,
+        "max_drawdown_pct": -0.131926,
+        "mature_dates": 14,
+        "date_return_lcb90": -0.013368,
+        "lifetime_decisions": 15353
+      }
+    },
+    {
+      "strategy_id": "finlab_ai_skill_reversion_value_v1",
+      "strategy_version": "strategy-spec-v1",
+      "strategy_status": "active",
+      "alpha_bucket": "mean_reversion",
+      "current_stage": "active",
+      "recommended_stage": "active",
+      "decision": "active_monitor",
+      "recommended_next_status": "active",
+      "requires_wei_approval": false,
+      "l3_requires_wei_approval": false,
+      "production_effect": false,
+      "allocation_eligible": true,
+      "gate_policy": "candidate_evidence_then_atomic_replacement_v7",
+      "gate_role": "incumbent_monitoring",
+      "hard_gate_metrics": [
+        "reward_samples",
+        "mature_dates"
+      ],
+      "diagnostic_only_metrics": [
+        "match_rate",
+        "hit_rate",
+        "avg_cost_net_alpha",
+        "max_drawdown",
+        "date_return_lcb90"
+      ],
+      "activation_gate": {
+        "policy_version": "strategy-replacement-policy-v7-hac4-holm-power80-v1",
+        "required": false,
+        "status": "not_applicable",
+        "decision_id": null,
+        "run_id": null,
+        "applicability_reason": null
+      },
+      "missing_evidence": [],
+      "thresholds": {
+        "min_evaluable_decisions": 30,
+        "min_match_rate": null,
+        "min_reward_samples": 30,
+        "min_hit_rate": null,
+        "active_retention_min_hit_rate": null,
+        "min_avg_cost_net_return_exclusive": null,
+        "min_max_drawdown": null,
+        "min_mature_dates": 10,
+        "min_date_return_lcb90_exclusive": null
+      },
+      "evidence": {
+        "decisions": 13961,
+        "total_decisions": 15353,
+        "evaluable_decisions": 13961,
+        "unavailable_decisions": 1392,
+        "matched": 2186,
+        "match_rate": 0.156579,
+        "samples": 1181,
+        "hit_rate": 0.455546,
+        "avg_return_pct": -0.001056,
+        "max_drawdown_pct": -0.060703,
+        "mature_dates": 10,
+        "date_return_lcb90": -0.007222,
+        "lifetime_decisions": 15353
+      }
+    },
+    {
+      "strategy_id": "smrc_vwap_reclaim_v1",
+      "strategy_version": "strategy-spec-v1",
+      "strategy_status": "active",
+      "alpha_bucket": "breakout_vol_expansion",
+      "current_stage": "active",
+      "recommended_stage": "active",
+      "decision": "active_monitor",
+      "recommended_next_status": "active",
+      "requires_wei_approval": false,
+      "l3_requires_wei_approval": false,
+      "production_effect": false,
+      "allocation_eligible": true,
+      "gate_policy": "candidate_evidence_then_atomic_replacement_v7",
+      "gate_role": "incumbent_monitoring",
+      "hard_gate_metrics": [
+        "reward_samples",
+        "mature_dates"
+      ],
+      "diagnostic_only_metrics": [
+        "match_rate",
+        "hit_rate",
+        "avg_cost_net_alpha",
+        "max_drawdown",
+        "date_return_lcb90"
+      ],
+      "activation_gate": {
+        "policy_version": "strategy-replacement-policy-v7-hac4-holm-power80-v1",
+        "required": false,
+        "status": "not_applicable",
+        "decision_id": null,
+        "run_id": null,
+        "applicability_reason": null
+      },
+      "missing_evidence": [],
+      "thresholds": {
+        "min_evaluable_decisions": 30,
+        "min_match_rate": null,
+        "min_reward_samples": 30,
+        "min_hit_rate": null,
+        "active_retention_min_hit_rate": null,
+        "min_avg_cost_net_return_exclusive": null,
+        "min_max_drawdown": null,
+        "min_mature_dates": 10,
+        "min_date_return_lcb90_exclusive": null
+      },
+      "evidence": {
+        "decisions": 13525,
+        "total_decisions": 15353,
+        "evaluable_decisions": 13525,
+        "unavailable_decisions": 1828,
+        "matched": 763,
+        "match_rate": 0.056414,
+        "samples": 277,
+        "hit_rate": 0.3213,
+        "avg_return_pct": -0.021973,
+        "max_drawdown_pct": -0.283969,
+        "mature_dates": 14,
+        "date_return_lcb90": -0.028865,
+        "lifetime_decisions": 15353
+      }
+    },
+    {
+      "strategy_id": "stock_tech_s02_52w_dual_momentum_v1",
+      "strategy_version": "strategy-spec-v1",
+      "strategy_status": "active",
+      "alpha_bucket": "trend_following",
+      "current_stage": "active",
+      "recommended_stage": "active",
+      "decision": "active_monitor",
+      "recommended_next_status": "active",
+      "requires_wei_approval": false,
+      "l3_requires_wei_approval": false,
+      "production_effect": false,
+      "allocation_eligible": true,
+      "gate_policy": "candidate_evidence_then_atomic_replacement_v7",
+      "gate_role": "incumbent_monitoring",
+      "hard_gate_metrics": [
+        "reward_samples",
+        "mature_dates"
+      ],
+      "diagnostic_only_metrics": [
+        "match_rate",
+        "hit_rate",
+        "avg_cost_net_alpha",
+        "max_drawdown",
+        "date_return_lcb90"
+      ],
+      "activation_gate": {
+        "policy_version": "strategy-replacement-policy-v7-hac4-holm-power80-v1",
+        "required": false,
+        "status": "not_applicable",
+        "decision_id": null,
+        "run_id": null,
+        "applicability_reason": null
+      },
+      "missing_evidence": [],
+      "thresholds": {
+        "min_evaluable_decisions": 30,
+        "min_match_rate": null,
+        "min_reward_samples": 30,
+        "min_hit_rate": null,
+        "active_retention_min_hit_rate": null,
+        "min_avg_cost_net_return_exclusive": null,
+        "min_max_drawdown": null,
+        "min_mature_dates": 10,
+        "min_date_return_lcb90_exclusive": null
+      },
+      "evidence": {
+        "decisions": 14105,
+        "total_decisions": 15353,
+        "evaluable_decisions": 14105,
+        "unavailable_decisions": 1248,
+        "matched": 313,
+        "match_rate": 0.022191,
+        "samples": 148,
+        "hit_rate": 0.425676,
+        "avg_return_pct": -0.004443,
+        "max_drawdown_pct": -0.225015,
+        "mature_dates": 14,
+        "date_return_lcb90": -0.018853,
+        "lifetime_decisions": 15353
+      }
+    },
+    {
+      "strategy_id": "stock_tech_s06_nr7_inside_bar_breakout_v1",
+      "strategy_version": "strategy-spec-v1",
+      "strategy_status": "active",
+      "alpha_bucket": "breakout_vol_expansion",
+      "current_stage": "active",
+      "recommended_stage": "active",
+      "decision": "active_monitor",
+      "recommended_next_status": "active",
+      "requires_wei_approval": false,
+      "l3_requires_wei_approval": false,
+      "production_effect": false,
+      "allocation_eligible": false,
+      "gate_policy": "candidate_evidence_then_atomic_replacement_v7",
+      "gate_role": "incumbent_monitoring",
+      "hard_gate_metrics": [
+        "reward_samples",
+        "mature_dates"
+      ],
+      "diagnostic_only_metrics": [
+        "match_rate",
+        "hit_rate",
+        "avg_cost_net_alpha",
+        "max_drawdown",
+        "date_return_lcb90"
+      ],
+      "activation_gate": {
+        "policy_version": "strategy-replacement-policy-v7-hac4-holm-power80-v1",
+        "required": false,
+        "status": "not_applicable",
+        "decision_id": null,
+        "run_id": null,
+        "applicability_reason": null
+      },
+      "missing_evidence": [
+        "mature_dates_lt_10"
+      ],
+      "thresholds": {
+        "min_evaluable_decisions": 30,
+        "min_match_rate": null,
+        "min_reward_samples": 30,
+        "min_hit_rate": null,
+        "active_retention_min_hit_rate": null,
+        "min_avg_cost_net_return_exclusive": null,
+        "min_max_drawdown": null,
+        "min_mature_dates": 10,
+        "min_date_return_lcb90_exclusive": null
+      },
+      "evidence": {
+        "decisions": 14105,
+        "total_decisions": 15353,
+        "evaluable_decisions": 14105,
+        "unavailable_decisions": 1248,
+        "matched": 70,
+        "match_rate": 0.004963,
+        "samples": 42,
+        "hit_rate": 0.428571,
+        "avg_return_pct": -0.014108,
+        "max_drawdown_pct": -0.112128,
+        "mature_dates": 6,
+        "date_return_lcb90": -0.030287,
+        "lifetime_decisions": 15353
+      }
+    },
+    {
+      "strategy_id": "trend_quality_breakout_fused_v1",
+      "strategy_version": "strategy-spec-v1",
+      "strategy_status": "active",
+      "alpha_bucket": "trend_following",
+      "current_stage": "active",
+      "recommended_stage": "active",
+      "decision": "active_monitor",
+      "recommended_next_status": "active",
+      "requires_wei_approval": false,
+      "l3_requires_wei_approval": false,
+      "production_effect": false,
+      "allocation_eligible": false,
+      "gate_policy": "candidate_evidence_then_atomic_replacement_v7",
+      "gate_role": "incumbent_monitoring",
+      "hard_gate_metrics": [
+        "reward_samples",
+        "mature_dates"
+      ],
+      "diagnostic_only_metrics": [
+        "match_rate",
+        "hit_rate",
+        "avg_cost_net_alpha",
+        "max_drawdown",
+        "date_return_lcb90"
+      ],
+      "activation_gate": {
+        "policy_version": "strategy-replacement-policy-v7-hac4-holm-power80-v1",
+        "required": false,
+        "status": "not_applicable",
+        "decision_id": null,
+        "run_id": null,
+        "applicability_reason": null
+      },
+      "missing_evidence": [
+        "mature_dates_lt_10"
+      ],
+      "thresholds": {
+        "min_evaluable_decisions": 30,
+        "min_match_rate": null,
+        "min_reward_samples": 30,
+        "min_hit_rate": null,
+        "active_retention_min_hit_rate": null,
+        "min_avg_cost_net_return_exclusive": null,
+        "min_max_drawdown": null,
+        "min_mature_dates": 10,
+        "min_date_return_lcb90_exclusive": null
+      },
+      "evidence": {
+        "decisions": 1398,
+        "total_decisions": 15353,
+        "evaluable_decisions": 1398,
+        "unavailable_decisions": 13955,
+        "matched": 751,
+        "match_rate": 0.537196,
+        "samples": 341,
+        "hit_rate": 0.480938,
+        "avg_return_pct": -0.006812,
+        "max_drawdown_pct": -0.013639,
+        "mature_dates": 2,
+        "date_return_lcb90": -0.008755,
+        "lifetime_decisions": 15353
+      }
+    },
+    {
+      "strategy_id": "alpha_miner_pymoo_nsga3_novelty_0187",
+      "strategy_version": "strategy-spec-v1",
+      "strategy_status": "candidate",
+      "alpha_bucket": "trend_following",
+      "current_stage": "candidate_evidence",
+      "recommended_stage": "candidate_evidence",
+      "decision": "not_ready",
+      "recommended_next_status": "candidate",
+      "requires_wei_approval": false,
+      "l3_requires_wei_approval": false,
+      "production_effect": false,
+      "allocation_eligible": false,
+      "gate_policy": "candidate_evidence_then_atomic_replacement_v7",
+      "gate_role": "atomic_replacement_to_active",
+      "hard_gate_metrics": [
+        "evaluable_decisions",
+        "reward_samples",
+        "mature_dates",
+        "atomic_replacement_v7"
+      ],
+      "diagnostic_only_metrics": [
+        "match_rate",
+        "hit_rate",
+        "avg_cost_net_alpha",
+        "max_drawdown",
+        "date_return_lcb90"
+      ],
+      "activation_gate": {
+        "policy_version": "strategy-replacement-policy-v7-hac4-holm-power80-v1",
+        "required": true,
+        "status": "prefilter_failed",
+        "decision_id": null,
+        "run_id": null,
+        "applicability_reason": null
+      },
+      "missing_evidence": [
+        "mature_dates_lt_10",
+        "atomic_replacement_v7_prefilter_failed"
+      ],
+      "thresholds": {
+        "min_evaluable_decisions": 30,
+        "min_match_rate": null,
+        "min_reward_samples": 30,
+        "min_hit_rate": null,
+        "active_retention_min_hit_rate": null,
+        "min_avg_cost_net_return_exclusive": null,
+        "min_max_drawdown": null,
+        "min_mature_dates": 10,
+        "min_date_return_lcb90_exclusive": null
+      },
+      "evidence": {
+        "decisions": 1403,
+        "total_decisions": 15353,
+        "evaluable_decisions": 1403,
+        "unavailable_decisions": 13950,
+        "matched": 427,
+        "match_rate": 0.304348,
+        "samples": 205,
+        "hit_rate": 0.468293,
+        "avg_return_pct": -0.000926,
+        "max_drawdown_pct": -0.001897,
+        "mature_dates": 2,
+        "date_return_lcb90": -0.002215,
+        "lifetime_decisions": 15353
+      }
+    },
+    {
+      "strategy_id": "finlab_ai_skill_quality_trend_v1",
+      "strategy_version": "strategy-spec-v1",
+      "strategy_status": "candidate",
+      "alpha_bucket": "trend_following",
+      "current_stage": "candidate_evidence",
+      "recommended_stage": "candidate_evidence",
+      "decision": "not_ready",
+      "recommended_next_status": "candidate",
+      "requires_wei_approval": false,
+      "l3_requires_wei_approval": false,
+      "production_effect": false,
+      "allocation_eligible": false,
+      "gate_policy": "candidate_evidence_then_atomic_replacement_v7",
+      "gate_role": "atomic_replacement_to_active",
+      "hard_gate_metrics": [
+        "evaluable_decisions",
+        "reward_samples",
+        "mature_dates",
+        "atomic_replacement_v7"
+      ],
+      "diagnostic_only_metrics": [
+        "match_rate",
+        "hit_rate",
+        "avg_cost_net_alpha",
+        "max_drawdown",
+        "date_return_lcb90"
+      ],
+      "activation_gate": {
+        "policy_version": "strategy-replacement-policy-v7-hac4-holm-power80-v1",
+        "required": true,
+        "status": "prefilter_failed",
+        "decision_id": null,
+        "run_id": null,
+        "applicability_reason": null
+      },
+      "missing_evidence": [
+        "atomic_replacement_v7_prefilter_failed"
+      ],
+      "thresholds": {
+        "min_evaluable_decisions": 30,
+        "min_match_rate": null,
+        "min_reward_samples": 30,
+        "min_hit_rate": null,
+        "active_retention_min_hit_rate": null,
+        "min_avg_cost_net_return_exclusive": null,
+        "min_max_drawdown": null,
+        "min_mature_dates": 10,
+        "min_date_return_lcb90_exclusive": null
+      },
+      "evidence": {
+        "decisions": 13890,
+        "total_decisions": 15353,
+        "evaluable_decisions": 13890,
+        "unavailable_decisions": 1463,
+        "matched": 1221,
+        "match_rate": 0.087905,
+        "samples": 611,
+        "hit_rate": 0.374795,
+        "avg_return_pct": -0.009816,
+        "max_drawdown_pct": -0.184573,
+        "mature_dates": 14,
+        "date_return_lcb90": -0.019197,
+        "lifetime_decisions": 15353
+      }
+    },
+    {
+      "strategy_id": "finlab_ai_skill_revenue_revision_breakout_v1",
+      "strategy_version": "strategy-spec-v1",
+      "strategy_status": "candidate",
+      "alpha_bucket": "breakout_vol_expansion",
+      "current_stage": "candidate_evidence",
+      "recommended_stage": "candidate_evidence",
+      "decision": "not_ready",
+      "recommended_next_status": "candidate",
+      "requires_wei_approval": false,
+      "l3_requires_wei_approval": false,
+      "production_effect": false,
+      "allocation_eligible": false,
+      "gate_policy": "candidate_evidence_then_atomic_replacement_v7",
+      "gate_role": "atomic_replacement_to_active",
+      "hard_gate_metrics": [
+        "evaluable_decisions",
+        "reward_samples",
+        "mature_dates",
+        "atomic_replacement_v7"
+      ],
+      "diagnostic_only_metrics": [
+        "match_rate",
+        "hit_rate",
+        "avg_cost_net_alpha",
+        "max_drawdown",
+        "date_return_lcb90"
+      ],
+      "activation_gate": {
+        "policy_version": "strategy-replacement-policy-v7-hac4-holm-power80-v1",
+        "required": true,
+        "status": "prefilter_failed",
+        "decision_id": null,
+        "run_id": null,
+        "applicability_reason": null
+      },
+      "missing_evidence": [
+        "samples_lt_30",
+        "mature_dates_lt_10",
+        "atomic_replacement_v7_prefilter_failed"
+      ],
+      "thresholds": {
+        "min_evaluable_decisions": 30,
+        "min_match_rate": null,
+        "min_reward_samples": 30,
+        "min_hit_rate": null,
+        "active_retention_min_hit_rate": null,
+        "min_avg_cost_net_return_exclusive": null,
+        "min_max_drawdown": null,
+        "min_mature_dates": 10,
+        "min_date_return_lcb90_exclusive": null
+      },
+      "evidence": {
+        "decisions": 1392,
+        "total_decisions": 15353,
+        "evaluable_decisions": 1392,
+        "unavailable_decisions": 13961,
+        "matched": 29,
+        "match_rate": 0.020833,
+        "samples": 8,
+        "hit_rate": 0.375,
+        "avg_return_pct": -0.021722,
+        "max_drawdown_pct": -0.046811,
+        "mature_dates": 2,
+        "date_return_lcb90": -0.028691,
+        "lifetime_decisions": 15353
+      }
+    },
+    {
+      "strategy_id": "stock_tech_s01_55d_trend_volume_breakout_v1",
+      "strategy_version": "strategy-spec-v1",
+      "strategy_status": "candidate",
+      "alpha_bucket": "breakout_vol_expansion",
+      "current_stage": "candidate_evidence",
+      "recommended_stage": "candidate_evidence",
+      "decision": "not_ready",
+      "recommended_next_status": "candidate",
+      "requires_wei_approval": false,
+      "l3_requires_wei_approval": false,
+      "production_effect": false,
+      "allocation_eligible": false,
+      "gate_policy": "candidate_evidence_then_atomic_replacement_v7",
+      "gate_role": "atomic_replacement_to_active",
+      "hard_gate_metrics": [
+        "evaluable_decisions",
+        "reward_samples",
+        "mature_dates",
+        "atomic_replacement_v7"
+      ],
+      "diagnostic_only_metrics": [
+        "match_rate",
+        "hit_rate",
+        "avg_cost_net_alpha",
+        "max_drawdown",
+        "date_return_lcb90"
+      ],
+      "activation_gate": {
+        "policy_version": "strategy-replacement-policy-v7-hac4-holm-power80-v1",
+        "required": true,
+        "status": "prefilter_failed",
+        "decision_id": null,
+        "run_id": null,
+        "applicability_reason": null
+      },
+      "missing_evidence": [
+        "mature_dates_lt_10",
+        "atomic_replacement_v7_prefilter_failed"
+      ],
+      "thresholds": {
+        "min_evaluable_decisions": 30,
+        "min_match_rate": null,
+        "min_reward_samples": 30,
+        "min_hit_rate": null,
+        "active_retention_min_hit_rate": null,
+        "min_avg_cost_net_return_exclusive": null,
+        "min_max_drawdown": null,
+        "min_mature_dates": 10,
+        "min_date_return_lcb90_exclusive": null
+      },
+      "evidence": {
+        "decisions": 14105,
+        "total_decisions": 15353,
+        "evaluable_decisions": 14105,
+        "unavailable_decisions": 1248,
+        "matched": 96,
+        "match_rate": 0.006806,
+        "samples": 59,
+        "hit_rate": 0.338983,
+        "avg_return_pct": -0.035478,
+        "max_drawdown_pct": -0.1956,
+        "mature_dates": 6,
+        "date_return_lcb90": -0.054526,
+        "lifetime_decisions": 15353
+      }
+    },
+    {
+      "strategy_id": "stock_tech_s03_vcp_contraction_breakout_v1",
+      "strategy_version": "strategy-spec-v1",
+      "strategy_status": "candidate",
+      "alpha_bucket": "breakout_vol_expansion",
+      "current_stage": "candidate_evidence",
+      "recommended_stage": "candidate_evidence",
+      "decision": "not_ready",
+      "recommended_next_status": "candidate",
+      "requires_wei_approval": false,
+      "l3_requires_wei_approval": false,
+      "production_effect": false,
+      "allocation_eligible": false,
+      "gate_policy": "candidate_evidence_then_atomic_replacement_v7",
+      "gate_role": "atomic_replacement_to_active",
+      "hard_gate_metrics": [
+        "evaluable_decisions",
+        "reward_samples",
+        "mature_dates",
+        "atomic_replacement_v7"
+      ],
+      "diagnostic_only_metrics": [
+        "match_rate",
+        "hit_rate",
+        "avg_cost_net_alpha",
+        "max_drawdown",
+        "date_return_lcb90"
+      ],
+      "activation_gate": {
+        "policy_version": "strategy-replacement-policy-v7-hac4-holm-power80-v1",
+        "required": true,
+        "status": "prefilter_failed",
+        "decision_id": null,
+        "run_id": null,
+        "applicability_reason": null
+      },
+      "missing_evidence": [
+        "samples_lt_30",
+        "mature_dates_lt_10",
+        "atomic_replacement_v7_prefilter_failed"
+      ],
+      "thresholds": {
+        "min_evaluable_decisions": 30,
+        "min_match_rate": null,
+        "min_reward_samples": 30,
+        "min_hit_rate": null,
+        "active_retention_min_hit_rate": null,
+        "min_avg_cost_net_return_exclusive": null,
+        "min_max_drawdown": null,
+        "min_mature_dates": 10,
+        "min_date_return_lcb90_exclusive": null
+      },
+      "evidence": {
+        "decisions": 12864,
+        "total_decisions": 15353,
+        "evaluable_decisions": 12864,
+        "unavailable_decisions": 2489,
+        "matched": 0,
+        "match_rate": 0,
+        "samples": 0,
+        "hit_rate": null,
+        "avg_return_pct": null,
+        "max_drawdown_pct": null,
+        "mature_dates": 0,
+        "date_return_lcb90": null,
+        "lifetime_decisions": 15353
+      }
+    },
+    {
+      "strategy_id": "stock_tech_s04_ma_deduct_turn_breakout_v1",
+      "strategy_version": "strategy-spec-v1",
+      "strategy_status": "candidate",
+      "alpha_bucket": "trend_following",
+      "current_stage": "candidate_evidence",
+      "recommended_stage": "candidate_evidence",
+      "decision": "not_ready",
+      "recommended_next_status": "candidate",
+      "requires_wei_approval": false,
+      "l3_requires_wei_approval": false,
+      "production_effect": false,
+      "allocation_eligible": false,
+      "gate_policy": "candidate_evidence_then_atomic_replacement_v7",
+      "gate_role": "atomic_replacement_to_active",
+      "hard_gate_metrics": [
+        "evaluable_decisions",
+        "reward_samples",
+        "mature_dates",
+        "atomic_replacement_v7"
+      ],
+      "diagnostic_only_metrics": [
+        "match_rate",
+        "hit_rate",
+        "avg_cost_net_alpha",
+        "max_drawdown",
+        "date_return_lcb90"
+      ],
+      "activation_gate": {
+        "policy_version": "strategy-replacement-policy-v7-hac4-holm-power80-v1",
+        "required": true,
+        "status": "prefilter_failed",
+        "decision_id": null,
+        "run_id": null,
+        "applicability_reason": null
+      },
+      "missing_evidence": [
+        "atomic_replacement_v7_prefilter_failed"
+      ],
+      "thresholds": {
+        "min_evaluable_decisions": 30,
+        "min_match_rate": null,
+        "min_reward_samples": 30,
+        "min_hit_rate": null,
+        "active_retention_min_hit_rate": null,
+        "min_avg_cost_net_return_exclusive": null,
+        "min_max_drawdown": null,
+        "min_mature_dates": 10,
+        "min_date_return_lcb90_exclusive": null
+      },
+      "evidence": {
+        "decisions": 14105,
+        "total_decisions": 15353,
+        "evaluable_decisions": 14105,
+        "unavailable_decisions": 1248,
+        "matched": 211,
+        "match_rate": 0.014959,
+        "samples": 101,
+        "hit_rate": 0.316832,
+        "avg_return_pct": -0.038868,
+        "max_drawdown_pct": -0.374474,
+        "mature_dates": 14,
+        "date_return_lcb90": -0.046563,
+        "lifetime_decisions": 15353
+      }
+    },
+    {
+      "strategy_id": "stock_tech_s05_first_dry_pullback_v1",
+      "strategy_version": "strategy-spec-v1",
+      "strategy_status": "candidate",
+      "alpha_bucket": "trend_following",
+      "current_stage": "candidate_evidence",
+      "recommended_stage": "candidate_evidence",
+      "decision": "not_ready",
+      "recommended_next_status": "candidate",
+      "requires_wei_approval": false,
+      "l3_requires_wei_approval": false,
+      "production_effect": false,
+      "allocation_eligible": false,
+      "gate_policy": "candidate_evidence_then_atomic_replacement_v7",
+      "gate_role": "atomic_replacement_to_active",
+      "hard_gate_metrics": [
+        "evaluable_decisions",
+        "reward_samples",
+        "mature_dates",
+        "atomic_replacement_v7"
+      ],
+      "diagnostic_only_metrics": [
+        "match_rate",
+        "hit_rate",
+        "avg_cost_net_alpha",
+        "max_drawdown",
+        "date_return_lcb90"
+      ],
+      "activation_gate": {
+        "policy_version": "strategy-replacement-policy-v7-hac4-holm-power80-v1",
+        "required": true,
+        "status": "prefilter_failed",
+        "decision_id": null,
+        "run_id": null,
+        "applicability_reason": null
+      },
+      "missing_evidence": [
+        "samples_lt_30",
+        "mature_dates_lt_10",
+        "atomic_replacement_v7_prefilter_failed"
+      ],
+      "thresholds": {
+        "min_evaluable_decisions": 30,
+        "min_match_rate": null,
+        "min_reward_samples": 30,
+        "min_hit_rate": null,
+        "active_retention_min_hit_rate": null,
+        "min_avg_cost_net_return_exclusive": null,
+        "min_max_drawdown": null,
+        "min_mature_dates": 10,
+        "min_date_return_lcb90_exclusive": null
+      },
+      "evidence": {
+        "decisions": 12864,
+        "total_decisions": 15353,
+        "evaluable_decisions": 12864,
+        "unavailable_decisions": 2489,
+        "matched": 0,
+        "match_rate": 0,
+        "samples": 0,
+        "hit_rate": null,
+        "avg_return_pct": null,
+        "max_drawdown_pct": null,
+        "mature_dates": 0,
+        "date_return_lcb90": null,
+        "lifetime_decisions": 15353
+      }
+    },
+    {
+      "strategy_id": "stock_tech_s07_2b_false_break_reversal_v1",
+      "strategy_version": "strategy-spec-v1",
+      "strategy_status": "candidate",
+      "alpha_bucket": "mean_reversion",
+      "current_stage": "candidate_evidence",
+      "recommended_stage": "candidate_evidence",
+      "decision": "not_ready",
+      "recommended_next_status": "candidate",
+      "requires_wei_approval": false,
+      "l3_requires_wei_approval": false,
+      "production_effect": false,
+      "allocation_eligible": false,
+      "gate_policy": "candidate_evidence_then_atomic_replacement_v7",
+      "gate_role": "atomic_replacement_to_active",
+      "hard_gate_metrics": [
+        "evaluable_decisions",
+        "reward_samples",
+        "mature_dates",
+        "atomic_replacement_v7"
+      ],
+      "diagnostic_only_metrics": [
+        "match_rate",
+        "hit_rate",
+        "avg_cost_net_alpha",
+        "max_drawdown",
+        "date_return_lcb90"
+      ],
+      "activation_gate": {
+        "policy_version": "strategy-replacement-policy-v7-hac4-holm-power80-v1",
+        "required": true,
+        "status": "prefilter_failed",
+        "decision_id": null,
+        "run_id": null,
+        "applicability_reason": null
+      },
+      "missing_evidence": [
+        "samples_lt_30",
+        "mature_dates_lt_10",
+        "atomic_replacement_v7_prefilter_failed"
+      ],
+      "thresholds": {
+        "min_evaluable_decisions": 30,
+        "min_match_rate": null,
+        "min_reward_samples": 30,
+        "min_hit_rate": null,
+        "active_retention_min_hit_rate": null,
+        "min_avg_cost_net_return_exclusive": null,
+        "min_max_drawdown": null,
+        "min_mature_dates": 10,
+        "min_date_return_lcb90_exclusive": null
+      },
+      "evidence": {
+        "decisions": 12864,
+        "total_decisions": 15353,
+        "evaluable_decisions": 12864,
+        "unavailable_decisions": 2489,
+        "matched": 2,
+        "match_rate": 0.000155,
+        "samples": 2,
+        "hit_rate": 0,
+        "avg_return_pct": -0.022136,
+        "max_drawdown_pct": -0.044137,
+        "mature_dates": 2,
+        "date_return_lcb90": -0.04627,
+        "lifetime_decisions": 15353
+      }
+    },
+    {
+      "strategy_id": "stock_tech_s08_rsi2_bull_mean_reversion_v1",
+      "strategy_version": "strategy-spec-v1",
+      "strategy_status": "candidate",
+      "alpha_bucket": "mean_reversion",
+      "current_stage": "candidate_evidence",
+      "recommended_stage": "candidate_evidence",
+      "decision": "not_ready",
+      "recommended_next_status": "candidate",
+      "requires_wei_approval": false,
+      "l3_requires_wei_approval": false,
+      "production_effect": false,
+      "allocation_eligible": false,
+      "gate_policy": "candidate_evidence_then_atomic_replacement_v7",
+      "gate_role": "atomic_replacement_to_active",
+      "hard_gate_metrics": [
+        "evaluable_decisions",
+        "reward_samples",
+        "mature_dates",
+        "atomic_replacement_v7"
+      ],
+      "diagnostic_only_metrics": [
+        "match_rate",
+        "hit_rate",
+        "avg_cost_net_alpha",
+        "max_drawdown",
+        "date_return_lcb90"
+      ],
+      "activation_gate": {
+        "policy_version": "strategy-replacement-policy-v7-hac4-holm-power80-v1",
+        "required": true,
+        "status": "prefilter_failed",
+        "decision_id": null,
+        "run_id": null,
+        "applicability_reason": null
+      },
+      "missing_evidence": [
+        "mature_dates_lt_10",
+        "atomic_replacement_v7_prefilter_failed"
+      ],
+      "thresholds": {
+        "min_evaluable_decisions": 30,
+        "min_match_rate": null,
+        "min_reward_samples": 30,
+        "min_hit_rate": null,
+        "active_retention_min_hit_rate": null,
+        "min_avg_cost_net_return_exclusive": null,
+        "min_max_drawdown": null,
+        "min_mature_dates": 10,
+        "min_date_return_lcb90_exclusive": null
+      },
+      "evidence": {
+        "decisions": 12864,
+        "total_decisions": 14750,
+        "evaluable_decisions": 12864,
+        "unavailable_decisions": 1886,
+        "matched": 215,
+        "match_rate": 0.016713,
+        "samples": 176,
+        "hit_rate": 0.602273,
+        "avg_return_pct": 0.033478,
+        "max_drawdown_pct": -0.059477,
+        "mature_dates": 7,
+        "date_return_lcb90": -0.001166,
+        "lifetime_decisions": 14750
+      }
+    },
+    {
+      "strategy_id": "stock_tech_s08_rsi2_risk_filter_v1",
+      "strategy_version": "strategy-spec-v1",
+      "strategy_status": "candidate",
+      "alpha_bucket": "mean_reversion",
+      "current_stage": "candidate_evidence",
+      "recommended_stage": "candidate_evidence",
+      "decision": "not_ready",
+      "recommended_next_status": "candidate",
+      "requires_wei_approval": false,
+      "l3_requires_wei_approval": false,
+      "production_effect": false,
+      "allocation_eligible": false,
+      "gate_policy": "candidate_evidence_then_atomic_replacement_v7",
+      "gate_role": "non_selection_owner_monitoring",
+      "hard_gate_metrics": [
+        "evaluable_decisions",
+        "reward_samples",
+        "mature_dates",
+        "atomic_replacement_v7"
+      ],
+      "diagnostic_only_metrics": [
+        "match_rate",
+        "hit_rate",
+        "avg_cost_net_alpha",
+        "max_drawdown",
+        "date_return_lcb90"
+      ],
+      "activation_gate": {
+        "policy_version": "strategy-replacement-policy-v7-hac4-holm-power80-v1",
+        "required": false,
+        "status": "not_applicable",
+        "decision_id": null,
+        "run_id": null,
+        "applicability_reason": "owner_type_observe_not_selection_replacement"
+      },
+      "missing_evidence": [],
+      "thresholds": {
+        "min_evaluable_decisions": 30,
+        "min_match_rate": null,
+        "min_reward_samples": 30,
+        "min_hit_rate": null,
+        "active_retention_min_hit_rate": null,
+        "min_avg_cost_net_return_exclusive": null,
+        "min_max_drawdown": null,
+        "min_mature_dates": 10,
+        "min_date_return_lcb90_exclusive": null
+      },
+      "evidence": {
+        "decisions": 12310,
+        "total_decisions": 13467,
+        "evaluable_decisions": 12310,
+        "unavailable_decisions": 1157,
+        "matched": 1070,
+        "match_rate": 0.086921,
+        "samples": 725,
+        "hit_rate": 0.517241,
+        "avg_return_pct": 0.014949,
+        "max_drawdown_pct": -0.078937,
+        "mature_dates": 10,
+        "date_return_lcb90": -0.009989,
+        "lifetime_decisions": 13467
+      }
+    },
+    {
+      "strategy_id": "stock_tech_s09_three_soldiers_base_breakout_v1",
+      "strategy_version": "strategy-spec-v1",
+      "strategy_status": "candidate",
+      "alpha_bucket": "breakout_vol_expansion",
+      "current_stage": "candidate_evidence",
+      "recommended_stage": "candidate_evidence",
+      "decision": "not_ready",
+      "recommended_next_status": "candidate",
+      "requires_wei_approval": false,
+      "l3_requires_wei_approval": false,
+      "production_effect": false,
+      "allocation_eligible": false,
+      "gate_policy": "candidate_evidence_then_atomic_replacement_v7",
+      "gate_role": "atomic_replacement_to_active",
+      "hard_gate_metrics": [
+        "evaluable_decisions",
+        "reward_samples",
+        "mature_dates",
+        "atomic_replacement_v7"
+      ],
+      "diagnostic_only_metrics": [
+        "match_rate",
+        "hit_rate",
+        "avg_cost_net_alpha",
+        "max_drawdown",
+        "date_return_lcb90"
+      ],
+      "activation_gate": {
+        "policy_version": "strategy-replacement-policy-v7-hac4-holm-power80-v1",
+        "required": true,
+        "status": "prefilter_failed",
+        "decision_id": null,
+        "run_id": null,
+        "applicability_reason": null
+      },
+      "missing_evidence": [
+        "samples_lt_30",
+        "mature_dates_lt_10",
+        "atomic_replacement_v7_prefilter_failed"
+      ],
+      "thresholds": {
+        "min_evaluable_decisions": 30,
+        "min_match_rate": null,
+        "min_reward_samples": 30,
+        "min_hit_rate": null,
+        "active_retention_min_hit_rate": null,
+        "min_avg_cost_net_return_exclusive": null,
+        "min_max_drawdown": null,
+        "min_mature_dates": 10,
+        "min_date_return_lcb90_exclusive": null
+      },
+      "evidence": {
+        "decisions": 12864,
+        "total_decisions": 15353,
+        "evaluable_decisions": 12864,
+        "unavailable_decisions": 2489,
+        "matched": 0,
+        "match_rate": 0,
+        "samples": 0,
+        "hit_rate": null,
+        "avg_return_pct": null,
+        "max_drawdown_pct": null,
+        "mature_dates": 0,
+        "date_return_lcb90": null,
+        "lifetime_decisions": 15353
+      }
+    },
+    {
+      "strategy_id": "stock_tech_s10_island_reversal_v1",
+      "strategy_version": "strategy-spec-v1",
+      "strategy_status": "candidate",
+      "alpha_bucket": "mean_reversion",
+      "current_stage": "candidate_evidence",
+      "recommended_stage": "candidate_evidence",
+      "decision": "not_ready",
+      "recommended_next_status": "candidate",
+      "requires_wei_approval": false,
+      "l3_requires_wei_approval": false,
+      "production_effect": false,
+      "allocation_eligible": false,
+      "gate_policy": "candidate_evidence_then_atomic_replacement_v7",
+      "gate_role": "atomic_replacement_to_active",
+      "hard_gate_metrics": [
+        "evaluable_decisions",
+        "reward_samples",
+        "mature_dates",
+        "atomic_replacement_v7"
+      ],
+      "diagnostic_only_metrics": [
+        "match_rate",
+        "hit_rate",
+        "avg_cost_net_alpha",
+        "max_drawdown",
+        "date_return_lcb90"
+      ],
+      "activation_gate": {
+        "policy_version": "strategy-replacement-policy-v7-hac4-holm-power80-v1",
+        "required": true,
+        "status": "prefilter_failed",
+        "decision_id": null,
+        "run_id": null,
+        "applicability_reason": null
+      },
+      "missing_evidence": [
+        "samples_lt_30",
+        "mature_dates_lt_10",
+        "atomic_replacement_v7_prefilter_failed"
+      ],
+      "thresholds": {
+        "min_evaluable_decisions": 30,
+        "min_match_rate": null,
+        "min_reward_samples": 30,
+        "min_hit_rate": null,
+        "active_retention_min_hit_rate": null,
+        "min_avg_cost_net_return_exclusive": null,
+        "min_max_drawdown": null,
+        "min_mature_dates": 10,
+        "min_date_return_lcb90_exclusive": null
+      },
+      "evidence": {
+        "decisions": 12864,
+        "total_decisions": 15353,
+        "evaluable_decisions": 12864,
+        "unavailable_decisions": 2489,
+        "matched": 0,
+        "match_rate": 0,
+        "samples": 0,
+        "hit_rate": null,
+        "avg_return_pct": null,
+        "max_drawdown_pct": null,
+        "mature_dates": 0,
+        "date_return_lcb90": null,
+        "lifetime_decisions": 15353
+      }
+    },
+    {
+      "strategy_id": "stock_tech_s12_multitimeframe_smc_reclaim_v2",
+      "strategy_version": "strategy-spec-v1",
+      "strategy_status": "candidate",
+      "alpha_bucket": "breakout_vol_expansion",
+      "current_stage": "candidate_evidence",
+      "recommended_stage": "candidate_evidence",
+      "decision": "not_ready",
+      "recommended_next_status": "candidate",
+      "requires_wei_approval": false,
+      "l3_requires_wei_approval": false,
+      "production_effect": false,
+      "allocation_eligible": false,
+      "gate_policy": "candidate_evidence_then_atomic_replacement_v7",
+      "gate_role": "non_selection_owner_monitoring",
+      "hard_gate_metrics": [
+        "evaluable_decisions",
+        "reward_samples",
+        "mature_dates",
+        "atomic_replacement_v7"
+      ],
+      "diagnostic_only_metrics": [
+        "match_rate",
+        "hit_rate",
+        "avg_cost_net_alpha",
+        "max_drawdown",
+        "date_return_lcb90"
+      ],
+      "activation_gate": {
+        "policy_version": "strategy-replacement-policy-v7-hac4-holm-power80-v1",
+        "required": false,
+        "status": "not_applicable",
+        "decision_id": null,
+        "run_id": null,
+        "applicability_reason": "s12_execution_calibration_owner"
+      },
+      "missing_evidence": [
+        "production_owned_by_s12_calibration_not_selection_replacement",
+        "decisions_lt_30"
+      ],
+      "thresholds": {
+        "min_evaluable_decisions": 30,
+        "min_match_rate": null,
+        "min_reward_samples": 30,
+        "min_hit_rate": null,
+        "active_retention_min_hit_rate": null,
+        "min_avg_cost_net_return_exclusive": null,
+        "min_max_drawdown": null,
+        "min_mature_dates": 10,
+        "min_date_return_lcb90_exclusive": null
+      },
+      "evidence": {
+        "decisions": 0,
+        "total_decisions": 603,
+        "evaluable_decisions": 0,
+        "unavailable_decisions": 603,
+        "matched": 5,
+        "match_rate": null,
+        "samples": 4207,
+        "hit_rate": 0.206323,
+        "avg_return_pct": -0.00689,
+        "max_drawdown_pct": -0.145528,
+        "mature_dates": 22,
+        "date_return_lcb90": -0.007998,
+        "lifetime_decisions": 603
+      }
+    }
+  ]
+}

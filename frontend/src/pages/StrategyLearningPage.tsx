@@ -1092,8 +1092,8 @@ function StrategyLedgerGroup({
   const unavailableReasonLabel = (reason: string) => reason
     .split('|')
     .map((part) => {
-      if (part === 'non_discriminative_feature_ref:us_sentiment_score:neutral_market_signal') return '美股情緒已知為 neutral，無截面排序力'
-      if (part === 'missing_feature_ref:us_sentiment_score') return '缺少可排序的美股情緒截面值（neutral／常數不當成選股訊號）'
+      if (part === 'non_discriminative_feature_ref:us_sentiment_score:neutral_market_signal') return '美股情緒資料已取得但為中性；沒有個股差異，不是缺資料'
+      if (part === 'missing_feature_ref:us_sentiment_score') return '缺少「美股情緒 × 個股風險曝險」截面值；中性或常數資料不補值、不當成選股訊號'
       if (part === 'missing_feature_ref:margin_balance') return '融資餘額截面 rank 缺值'
       if (part === 'selection_phase_owned_by_s12_execution_replay') return 'S12 由 execution replay 評估，不適用 selection label'
       if (part.startsWith('monthly_revenue_pit_unavailable')) return '月營收 PIT 證據不可用'
@@ -1121,8 +1121,17 @@ function StrategyLedgerGroup({
           const rewardPending = row.learning.reward_state === 'pending_maturity'
           const rewardMissing = row.learning.reward_state === 'reward_join_missing'
           const noMatches = row.learning.reward_state === 'no_matches'
-          const rewardCount = rewardPending ? 'Pending T+5' : rewardMissing ? 'Join missing' : noMatches ? 'No setups' : String(row.learning.samples)
-          const rollingMature = rewardPending ? 'Pending T+5' : rewardMissing ? 'Join missing' : noMatches ? 'No setups' : String(row.learning.rolling_reward_dates)
+          const rewardCount = rewardPending ? '等待 T+5' : rewardMissing ? '串接異常' : noMatches ? '尚未命中' : String(row.learning.samples)
+          const rollingMature = rewardPending ? '等待 T+5' : rewardMissing ? '串接異常' : noMatches ? '尚未命中' : String(row.learning.rolling_reward_dates)
+          const rewardStatusText = rewardMissing
+            ? `成熟標籤已到 ${row.learning.mature_label_max_date ?? '未知'}，但 ${row.learning.latest_reward_date ?? '尚無'} 之後仍有正式命中尚未串入報酬；這是資料鏈異常，不是策略未命中。`
+            : rewardPending
+              ? `已命中，等待 T+5 結果成熟；目前成熟標籤到 ${row.learning.mature_label_max_date ?? '尚無'}。`
+              : noMatches
+                ? '決策可評估，但目前尚未觸發此策略型態。'
+                : row.learning.reward_state === 'ready'
+                  ? `成熟績效樣本已更新至 ${row.learning.latest_reward_date ?? '未知'}。`
+                  : '策略 evidence 尚未具備。'
           const latestBatchInvalid = decisionEvidenceHealth?.latest_record_status === 'invalid'
           const currentDecisionPending = decisionEvidenceHealth
             ? decisionEvidenceHealth.requested_date_status === 'pending'
@@ -1167,8 +1176,8 @@ function StrategyLedgerGroup({
                 <div className="rounded-lg border border-slate-800/80 bg-slate-900/45 p-2">
                   <dt className="text-xs text-slate-500">累積成熟報酬樣本</dt>
                   <dd className={`mt-1 font-mono text-sm ${rewardMissing ? 'text-rose-300' : rewardPending || noMatches ? 'text-amber-200' : 'text-slate-200'}`}>{row.learning.evidence_available ? rewardCount : '-'}</dd>
-                  <div className="mt-1 text-xs leading-4 text-slate-500">{row.learning.reward_status_reason}</div>
-                  {row.learning.reward_state === 'ready' && row.learning.latest_reward_date && row.learning.mature_label_max_date && row.learning.latest_reward_date < row.learning.mature_label_max_date && <div className="mt-1 text-[10px] leading-4 text-cyan-300">資料管線已成熟至 {row.learning.mature_label_max_date}；此策略最後一次正式命中在 {row.learning.latest_reward_date}，之後沒有新的成熟命中，並非資料停更。</div>}
+                  <div className={`mt-1 text-xs leading-4 ${rewardMissing ? 'text-rose-200' : 'text-slate-500'}`}>{rewardStatusText}</div>
+                  {row.learning.reward_state === 'ready' && row.learning.latest_reward_date && row.learning.mature_label_max_date && row.learning.latest_reward_date < row.learning.mature_label_max_date && <div className="mt-1 text-[10px] leading-4 text-cyan-300">全域標籤已成熟至 {row.learning.mature_label_max_date}；此策略最新一筆已成熟績效樣本為 {row.learning.latest_reward_date}，兩者之間沒有待串接的正式命中。</div>}
                 </div>
                 <div className="rounded-lg border border-slate-800/80 bg-slate-900/45 p-2">
                   <dt className="text-xs text-slate-500">滾動成熟交易日</dt>

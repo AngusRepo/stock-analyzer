@@ -1,0 +1,46 @@
+{
+  "schema_version": "strategy-reward-backfill-snapshot-v1",
+  "phase": "before",
+  "captured_at": "2026-09-02T06:49:04.385Z",
+  "as_of_date": "2026-09-02",
+  "replay_range": {
+    "start": "2026-08-17",
+    "end": "2026-08-25"
+  },
+  "decision_effect": "read_only_snapshot",
+  "git": {
+    "branch": "codex/reward-residual-closure-20260902",
+    "sha": "46eb4bac7dd8854329fb2901435a72a6c4fa6689"
+  },
+  "strategy_count": 26,
+  "artifacts": [
+    {
+      "name": "metadata.before.json",
+      "sha256": "0bec23f219d2b86960e0f80062beb35d6fb99947313bb2f1f6d1a23d7ab35670"
+    },
+    {
+      "name": "strategy-learning.before.json",
+      "sha256": "4e63fd591a69391235c814b8d6ef6b229fc1ceab62e656ad716448424d42195e"
+    },
+    {
+      "name": "policy-state.before.json",
+      "sha256": "0ffd0b60a24c1076fabda754add18883db2e469e51382214d40b583d3005b63e"
+    },
+    {
+      "name": "strategy-specs.before.json",
+      "sha256": "497b555b271babf2ceaea6a28757e15bc8e2d61f9d63be58e88977b78d527df5"
+    },
+    {
+      "name": "evidence-profiles.before.json",
+      "sha256": "5a0e2a41b5b99df446174eb89abe711cd553c3cec0bf18ef660ff97e3e98caa5"
+    },
+    {
+      "name": "per-strategy.before.json",
+      "sha256": "9904ad85161ec2657058ed3470e0071b669d003f9da99b24c5fe2227f3c87906"
+    },
+    {
+      "name": "pit-lineage.before.json",
+      "sha256": "8de48c6e3e79e6dd78e26616086510e3b7844b878f638e4f2714fd5fe9d34fc7"
+    }
+  ]
+}

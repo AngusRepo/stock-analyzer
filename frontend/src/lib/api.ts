@@ -195,6 +195,7 @@ export type FactorTrajectoryPoint = {
   breadth?: number | null
   rank_delta?: number | null
   mean_rank_delta?: number | null
+  raw_tilt?: number | null
   member_count?: number
 }
 

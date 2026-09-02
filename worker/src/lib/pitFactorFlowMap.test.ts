@@ -29,8 +29,8 @@ const groups = buildPitFactorGroupSeries([
 ])
 assert.equal(groups.length, 1)
 assert.equal(groups[0].points.length, 2)
-assert.equal(groups[0].points[0].x, 62.5)
-assert.equal(groups[0].points[1].x, 62.5)
+assert.equal(groups[0].points[0].x, 50)
+assert.equal(groups[0].points[1].x, 50)
 assert.equal(groups[0].points[0].y, 70)
 
 const allIndustries = buildPitFactorGroupSeries(Array.from({ length: 13 }, (_value, index) => point({
@@ -39,6 +39,9 @@ const allIndustries = buildPitFactorGroupSeries(Array.from({ length: 13 }, (_val
   rankDelta: index - 6,
 })))
 assert.equal(allIndustries.length, 13, 'industry trajectories must not be truncated to 12')
+const allIndustryXs = allIndustries.map((series) => Number(series.points[0].x)).sort((left, right) => left - right)
+assert(allIndustryXs[0] < 5 && allIndustryXs.at(-1)! > 95, 'same-day group percentile must use the chart width instead of collapsing near x=50')
+assert.equal(new Set(allIndustryXs).size, 13, 'distinct group tilts must remain distinguishable')
 
 const selected = selectPitFactorStockSymbols([
   point({ symbol: 'A', rankDelta: 1 }),

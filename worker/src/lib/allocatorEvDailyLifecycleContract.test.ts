@@ -92,7 +92,7 @@ assert(lifecycle.includes('callbackGraceActive'), 'watchdog must respect the dur
 assert(lifecycle.includes('stageAgeMs < 15 * 60_000'), 'watchdog callback grace must be bounded to fifteen minutes')
 assert(lifecycle.includes('stageLeaseLive'), 'watchdog callback grace must not protect an expired running lease')
 assert(lifecycle.includes("postPipelineStage?.status !== 'running' || stageLeaseLive"), 'expired running callbacks must be recoverable immediately')
-assert(lifecycle.includes('allocator EV lifecycle awaiting durable callback'), 'watchdog must report an in-flight callback instead of racing recovery')
+assert(lifecycle.includes('callback_observation=pending'), 'watchdog must report an in-flight callback without leaving its own durable ticket non-terminal')
 assert(lifecycle.includes("excluded.state = 'replay_pending_maturity'"), 'replay queue must be able to return to stock-specific maturity waiting')
 assert(lifecycle.includes('MAX(prediction_date) AS business_date'), 'cross-midnight watchdog must follow the latest native lineage date')
 assert(lifecycle.includes("WHERE state = 'replay_pending_maturity'"), 'watchdog must revisit older replay cohorts waiting for five sessions')
@@ -135,16 +135,21 @@ assert(
   'EV lifecycle maturity selection and replay decisions must use the split Learning/Ops/Market read model',
 )
 assert(
-  lifecycle.includes('status=pending allocator EV lifecycle awaiting durable callback') &&
-    lifecycle.includes("status=${lifecycleComplete ? 'success' : 'pending'}") &&
+  lifecycle.includes('status=success allocator EV lifecycle callback_observation=pending') &&
+    lifecycle.includes('status=success allocator EV lifecycle observed') &&
     lifecycle.includes("lifecycle?.state === 'replay_complete'") &&
     lifecycle.includes("lifecycle_complete=${lifecycleComplete ? 1 : 0}"),
-  'EV lifecycle must only report success for replay_complete and keep maturity/callback states pending',
+  'EV lifecycle watchdog must terminalize its own successful observation while preserving the underlying lifecycle state',
 )
 assert(
-  lifecycle.includes('status=triggered allocator EV lifecycle replay enqueued') &&
-    lifecycle.includes('status=triggered allocator EV lifecycle recovered post-verify') &&
-    lifecycle.includes('status=triggered allocator EV lifecycle recovery queued') &&
+  lifecycle.includes('status=success allocator EV lifecycle replay_dispatch=enqueued') &&
+    lifecycle.includes('status=success allocator EV lifecycle recovery_dispatch=post_verify_queued') &&
+    lifecycle.includes('status=success allocator EV lifecycle recovery_dispatch=post_pipeline_queued') &&
     lifecycle.includes('status=failed allocator EV lifecycle post-verify authority mismatch'),
-  'EV lifecycle watchdog summaries must expose triggered and failed outcomes to the canonical scheduler classifier',
+  'EV lifecycle watchdog must terminalize successful dispatches and keep authority mismatches failed',
+)
+assert(
+  !lifecycle.includes('status=pending allocator EV lifecycle')
+    && !lifecycle.includes('status=triggered allocator EV lifecycle'),
+  'EV lifecycle watchdog must not leave physical root tickets waiting for callbacks owned by downstream stages',
 )

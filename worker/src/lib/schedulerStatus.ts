@@ -449,6 +449,17 @@ export function reconcileSchedulerExecutionTicketStatus(input: {
   }
 }
 
+export function selectSchedulerExecutionTicketForDisplay<T>(input: {
+  exactTaskTicket?: T
+  exactJobTicket?: T
+  latestTaskTicket?: T
+  physicalRoot: boolean
+}): T | undefined {
+  return input.exactTaskTicket
+    ?? input.exactJobTicket
+    ?? (input.physicalRoot ? undefined : input.latestTaskTicket)
+}
+
 type DurableEventTicketEvidence = Pick<
   SchedulerExecutionTicketRow,
   'status' | 'business_date' | 'updated_at'
@@ -1022,10 +1033,14 @@ export async function getSchedulerStatus(env: Bindings, anchorDate?: string) {
     const baseLastStatus = durableOverride?.lastStatus ?? resolvedDisplay.status
     const baseTimestamp = durableOverride?.lastRunAt ?? displayLog?.timestamp ?? null
     const executionTicketDate = resolvedDisplay.statusRunDate ?? today
-    const executionTicket = executionTicketsByTaskDate.get(`${executionTicketDate}:${accounting.task}`)
-      ?? (accounting.schedulerJobId
+    const executionTicket = selectSchedulerExecutionTicketForDisplay({
+      exactTaskTicket: executionTicketsByTaskDate.get(`${executionTicketDate}:${accounting.task}`),
+      exactJobTicket: accounting.schedulerJobId
         ? executionTicketsByJobDate.get(`${executionTicketDate}:${accounting.schedulerJobId}`)
-        : undefined)
+        : undefined,
+      latestTaskTicket: latestExecutionTicketByTask.get(accounting.task),
+      physicalRoot: accounting.physicalRoot,
+    })
     const executionTicketOverride = reconcileSchedulerExecutionTicketStatus({
       baseStatus: baseLastStatus,
       baseTimestamp,

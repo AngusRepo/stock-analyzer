@@ -802,7 +802,7 @@ export async function runAllocatorEvLifecycleWatchdog(
     && stageAgeMs >= 0
     && stageAgeMs < 15 * 60_000
   if (callbackGraceActive) {
-    return `status=pending allocator EV lifecycle awaiting durable callback date=${businessDate} `
+    return `status=success allocator EV lifecycle callback_observation=pending date=${businessDate} `
       + `stage=${postPipelineStage?.status} age_seconds=${Math.floor(stageAgeMs / 1000)} `
       + `run_id=${postPipelineStage?.canonical_run_id ?? 'unknown'} `
       + `lineage=${snapshot.nativeLineageRows} expected=${snapshot.expectedRows} actual=${snapshot.actualRows}`
@@ -859,14 +859,14 @@ export async function runAllocatorEvLifecycleWatchdog(
       statusRunDate: businessDate,
       lifecycleRunId: lifecycle.upstream_run_id,
     } as any)
-    return `status=triggered allocator EV lifecycle replay enqueued date=${businessDate} mature_missing=${matureReplayMissingRows} as_of=${maturityAsOfDate}; ${maturitySummary(maturity)}`
+    return `status=success allocator EV lifecycle replay_dispatch=enqueued date=${businessDate} mature_missing=${matureReplayMissingRows} as_of=${maturityAsOfDate}; ${maturitySummary(maturity)}`
   }
   if (snapshot.ready && (
     (postVerifyReached && matureReplayMissingRows === 0)
     || (lifecycle?.state === 'verify_triggered' && !staleVerifyTrigger(lifecycle))
   )) {
     const lifecycleComplete = lifecycle?.state === 'replay_complete'
-    return `status=${lifecycleComplete ? 'success' : 'pending'} allocator EV lifecycle current date=${businessDate} state=${lifecycle?.state} lifecycle_complete=${lifecycleComplete ? 1 : 0} snapshot_rows=${snapshot.actualRows}; ${maturitySummary(maturity)}`
+    return `status=success allocator EV lifecycle observed date=${businessDate} state=${lifecycle?.state} lifecycle_complete=${lifecycleComplete ? 1 : 0} snapshot_rows=${snapshot.actualRows}; ${maturitySummary(maturity)}`
   }
   if (snapshot.ready && lifecycle?.state === 'verify_triggered') {
     const verifyStage = await databaseForDataDomain(env, 'ops').prepare(`
@@ -903,8 +903,8 @@ export async function runAllocatorEvLifecycleWatchdog(
         attempt: Math.max(1, Number(lifecycle.attempt_count ?? 0) + 1),
       })
       return continuation.queued
-        ? `status=triggered allocator EV lifecycle recovered post-verify date=${businessDate} run_id=${continuation.canonicalRunId}`
-        : `allocator EV lifecycle post-verify current date=${businessDate} status=${continuation.status}`
+        ? `status=success allocator EV lifecycle recovery_dispatch=post_verify_queued date=${businessDate} run_id=${continuation.canonicalRunId}`
+        : `status=success allocator EV lifecycle recovery_observation=post_verify_current date=${businessDate} downstream_status=${continuation.status}`
     }
   }
   const repairBoundary = !snapshot.ready
@@ -946,6 +946,6 @@ export async function runAllocatorEvLifecycleWatchdog(
     attempt: recoveryAttempt,
   })
   return continuation.queued
-    ? `status=triggered allocator EV lifecycle recovery queued date=${businessDate} attempt=${recoveryAttempt} run_id=${continuation.canonicalRunId}`
-    : `allocator EV lifecycle recovery current date=${businessDate} status=${continuation.status} run_id=${continuation.canonicalRunId}`
+    ? `status=success allocator EV lifecycle recovery_dispatch=post_pipeline_queued date=${businessDate} attempt=${recoveryAttempt} run_id=${continuation.canonicalRunId}`
+    : `status=success allocator EV lifecycle recovery_observation=post_pipeline_current date=${businessDate} downstream_status=${continuation.status} run_id=${continuation.canonicalRunId}`
 }

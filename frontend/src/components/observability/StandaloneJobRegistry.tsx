@@ -51,6 +51,11 @@ function statusCount(jobs: SchedulerJob[], status: SchedulerJob['lastStatus']) {
   return jobs.filter((job) => job.lastStatus === status).length
 }
 
+function ticketLabel(ticket: SchedulerJob['ticket'] | undefined) {
+  if (ticket?.ticketId) return ticket.ticketId.slice(0, 18)
+  return ticket?.missing ? 'missing' : 'not required'
+}
+
 export default function StandaloneJobRegistry({
   jobs,
   mappedJobIds,
@@ -142,7 +147,7 @@ export default function StandaloneJobRegistry({
                         <dl className="obs-standalone__timing sv-num">
                           <div><dt>Last</dt><dd>{job.lastRun || '—'}</dd></div>
                           <div><dt>Next</dt><dd>{job.nextRun || job.schedule || '—'}</dd></div>
-                          <div><dt>Ticket</dt><dd>{job.ticket?.ticketId ? job.ticket.ticketId.slice(0, 18) : 'missing'}</dd></div>
+                          <div><dt>Ticket</dt><dd>{ticketLabel(job.ticket)}</dd></div>
                         </dl>
                       </article>
                     )

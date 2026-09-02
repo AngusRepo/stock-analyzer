@@ -11,6 +11,7 @@ import {
   selectSchedulerChainDates,
   selectSchedulerChainDisplayDate,
   selectSchedulerDisplayLogs,
+  selectSchedulerExecutionTicketForDisplay,
   type SchedulerDisplayLogCandidate,
 } from './schedulerStatus'
 import { classifySchedulerSummary } from './schedulerRunLogger'
@@ -219,6 +220,37 @@ const logs: SchedulerDisplayLogCandidate[] = [
 {
   const status = classifySchedulerSummary('allocator_ev_fusion_refresh failed_validation cadence=weekly decision=FAIL')
   assert(status === 'error', 'artifact refresh failed_validation summaries must be logged as scheduler errors')
+}
+
+{
+  assert(
+    classifySchedulerSummary('status=success allocator EV lifecycle observed date=2026-08-24 state=replay_pending_maturity lifecycle_complete=0') === 'success',
+    'successful EV lifecycle observations must terminalize the watchdog ticket even while evidence maturity remains pending',
+  )
+  assert(
+    classifySchedulerSummary('status=success allocator EV lifecycle recovery_dispatch=post_pipeline_queued date=2026-08-24') === 'success',
+    'successful EV recovery dispatches must not wait for a downstream callback owned by another durable stage',
+  )
+}
+
+{
+  const previousBusinessDateTicket = { ticket_id: 'strategy-learning-watchdog:2026-09-01' }
+  const selected = selectSchedulerExecutionTicketForDisplay({
+    exactTaskTicket: undefined,
+    exactJobTicket: undefined,
+    latestTaskTicket: previousBusinessDateTicket,
+    physicalRoot: false,
+  })
+  assert(selected === previousBusinessDateTicket, 'logical watchdog tickets must remain visible after Taipei midnight')
+  assert(
+    selectSchedulerExecutionTicketForDisplay({
+      exactTaskTicket: undefined,
+      exactJobTicket: undefined,
+      latestTaskTicket: previousBusinessDateTicket,
+      physicalRoot: true,
+    }) === undefined,
+    'physical roots must not borrow a stale ticket from a prior cadence date',
+  )
 }
 
 {

@@ -282,6 +282,7 @@ const SHADOW_BACKFILL_EXCLUDED_TABLES: Partial<Record<DataDomain, ReadonlySet<st
     'state_space_v2_observations',
     'state_space_v2_evaluations',
     'pit_factor_shadow_daily_v1',
+    'expected_return_candidate_forward_evaluations',
   ]),
   market: new Set([
     // Append-only knowledge-time rows start at domain creation; mutable legacy revenue cannot seed them.
@@ -297,6 +298,7 @@ const SHADOW_BACKFILL_EXCLUDED_TABLES: Partial<Record<DataDomain, ReadonlySet<st
     'data_domain_cutover_probe_receipts',
     'data_domain_cutover_probe_canary',
     'price_horizon_projection_status_v2',
+    'pit_residual_funnel_enrichment_runs_v1',
   ]),
   paper: new Set([
     'paper_kelly_calibration_runs_v1',

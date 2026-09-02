@@ -25,5 +25,11 @@ assert.doesNotMatch(componentSource, /rotate\(-90/, 'Y-axis explanation must not
 assert.ok(componentSource.indexOf('四象限判讀說明') < componentSource.indexOf('<svg'), 'quadrant explanations must sit outside the XY plotting surface')
 assert.doesNotMatch(homeSource, /xl:grid-cols-\[minmax\(0,3fr\)_minmax\(380px,2fr\)\]/, 'home trajectory panel must not remain constrained to the old 40% side column')
 assert.match(homeSource, /xl:grid-cols-\[minmax\(380px,2fr\)_minmax\(0,3fr\)\]/, 'recommendations must remain visible beside a wider 60% trajectory panel on desktop')
+assert.match(componentSource, /group_series: query\.data\.group_series\.slice\(0, DEFAULT_GROUP_LIMIT\)/, 'homepage must default to a bounded set of salient industries')
+assert.match(componentSource, /顯示全部 \$\{totalGroupCount\} 類/, 'bounded industry view must provide an explicit show-all control')
+assert.match(componentSource, /layer: selectedIndustry \? 'industry_theme' : 'industry'/, 'selecting an industry must request the PIT industry-theme drill-down layer')
+assert.match(componentSource, /parentLayer: selectedIndustry \? 'industry' : undefined/, 'industry-theme drill-down must carry an explicit parent taxonomy fence')
+assert.match(componentSource, /全部產業 \/ \{selectedParent\}/, 'drill-down must keep an in-place breadcrumb back to industries')
+assert.match(componentSource, /onSeriesSelect=\{selectedParent \? undefined : onGroupSelect\}/, 'only the top industry layer should drill down; child themes remain focusable series')
 
 console.log('pit factor trajectory UI/playback contract passed')

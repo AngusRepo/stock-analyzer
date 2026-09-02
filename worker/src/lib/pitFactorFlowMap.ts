@@ -22,6 +22,22 @@ export interface PitFactorFlowMapQuery {
   days: number
   symbols: string[]
   includeMovers: number
+  layer?: PitFactorGroupLayer
+  parentLayer?: 'industry'
+  parent?: string
+}
+
+export type PitFactorGroupLayer = 'industry' | 'industry_theme'
+
+export interface PitFactorTaxonomyMembership {
+  date: string
+  symbol: string
+  tag: string
+}
+
+interface PitFactorGroupedPoint extends PitFactorFunnelPoint {
+  group: string
+  attributionWeight: number
 }
 
 function finite(value: unknown): number | null {
@@ -48,6 +64,23 @@ function safeJson(value: unknown): Record<string, unknown> {
 function average(values: Array<number | null>): number | null {
   const valid = values.filter((value): value is number => value != null && Number.isFinite(value))
   return valid.length ? valid.reduce((total, value) => total + value, 0) / valid.length : null
+}
+
+function weightedAverage(
+  rows: PitFactorGroupedPoint[],
+  value: (row: PitFactorGroupedPoint) => number | null,
+): number | null {
+  let numerator = 0
+  let denominator = 0
+  for (const row of rows) {
+    const candidate = value(row)
+    if (candidate == null || !Number.isFinite(candidate)) continue
+    const weight = Math.max(0, finite(row.attributionWeight) ?? 0)
+    if (weight <= 0) continue
+    numerator += candidate * weight
+    denominator += weight
+  }
+  return denominator > 0 ? numerator / denominator : null
 }
 
 function percentilePosition(value: number, sortedAsc: number[]): number {
@@ -113,10 +146,10 @@ async function loadFunnelPoints(env: Bindings, requestedDate: string, days: numb
   return parseFunnelRows(results ?? [])
 }
 
-export function buildPitFactorGroupSeries(points: PitFactorFunnelPoint[]) {
-  const buckets = new Map<string, PitFactorFunnelPoint[]>()
+function buildPitFactorSeries(points: PitFactorGroupedPoint[]) {
+  const buckets = new Map<string, PitFactorGroupedPoint[]>()
   for (const point of points) {
-    const key = `${point.date}\u0000${point.industry}`
+    const key = `${point.date}\u0000${point.group}`
     const bucket = buckets.get(key) ?? []
     bucket.push(point)
     buckets.set(key, bucket)
@@ -134,21 +167,21 @@ export function buildPitFactorGroupSeries(points: PitFactorFunnelPoint[]) {
   }> = []
   for (const [key, bucket] of buckets) {
     const [date, industry] = key.split('\u0000')
-    const normalizedDeltas = bucket.map((point) =>
-      point.rankDelta / Math.max(1, point.candidateCount - 1),
-    )
-    const tilt = average(normalizedDeltas) ?? 0
-    const confirmation = average(bucket.map((point) => point.confirmationRank))
-    const flow = average(bucket.map((point) => point.flowRank))
+    const tilt = weightedAverage(
+      bucket,
+      (point) => point.rankDelta / Math.max(1, point.candidateCount - 1),
+    ) ?? 0
+    const confirmation = weightedAverage(bucket, (point) => point.confirmationRank)
+    const flow = weightedAverage(bucket, (point) => point.flowRank)
     aggregates.push({
       date,
       industry,
       tilt,
       confirmation,
       flow,
-      breadth: average(bucket.map((point) => point.breadthRank)) ?? 0,
-      memberCount: bucket.length,
-      meanRankDelta: average(bucket.map((point) => point.rankDelta)) ?? 0,
+      breadth: weightedAverage(bucket, (point) => point.breadthRank) ?? 0,
+      memberCount: new Set(bucket.map((point) => point.symbol)).size,
+      meanRankDelta: weightedAverage(bucket, (point) => point.rankDelta) ?? 0,
     })
   }
 
@@ -192,6 +225,81 @@ export function buildPitFactorGroupSeries(points: PitFactorFunnelPoint[]) {
       const rightSignal = Math.abs(Number(rightLatest?.x ?? 50) - 50) + Math.abs(Number(rightLatest?.y ?? 50) - 50)
       return rightSignal - leftSignal || left.label.localeCompare(right.label)
     })
+}
+
+export function buildPitFactorGroupSeries(points: PitFactorFunnelPoint[]) {
+  return buildPitFactorSeries(points.map((point) => ({
+    ...point,
+    group: point.industry,
+    attributionWeight: 1,
+  })))
+}
+
+export function buildPitFactorIndustryThemeSeries(
+  points: PitFactorFunnelPoint[],
+  memberships: PitFactorTaxonomyMembership[],
+  parentIndustry: string,
+) {
+  const tagsByPoint = new Map<string, Set<string>>()
+  for (const membership of memberships) {
+    const date = String(membership.date || '').trim()
+    const symbol = String(membership.symbol || '').trim()
+    const tag = String(membership.tag || '').trim()
+    if (!date || !symbol || !tag) continue
+    const key = `${date}\u0000${symbol}`
+    const tags = tagsByPoint.get(key) ?? new Set<string>()
+    tags.add(tag)
+    tagsByPoint.set(key, tags)
+  }
+  const grouped: PitFactorGroupedPoint[] = []
+  for (const point of points) {
+    if (point.industry !== parentIndustry) continue
+    const tags = [...(tagsByPoint.get(`${point.date}\u0000${point.symbol}`) ?? [])].sort()
+    if (!tags.length) continue
+    const attributionWeight = 1 / tags.length
+    for (const tag of tags) grouped.push({ ...point, group: tag, attributionWeight })
+  }
+  return buildPitFactorSeries(grouped)
+}
+
+async function loadPitFactorTaxonomyMemberships(
+  env: Bindings,
+  dates: string[],
+  symbols: string[],
+  tagType: 'industry_theme',
+): Promise<PitFactorTaxonomyMembership[]> {
+  const uniqueDates = [...new Set(dates.filter((date) => /^\d{4}-\d{2}-\d{2}$/.test(date)))].sort()
+  const uniqueSymbols = [...new Set(symbols.map((symbol) => symbol.trim()).filter(Boolean))]
+  if (!uniqueDates.length || !uniqueSymbols.length) return []
+  const marketDb = databaseForDataDomain(env, 'market')
+  const dateValues = uniqueDates.map(() => '(?)').join(',')
+  const memberships: PitFactorTaxonomyMembership[] = []
+  for (let index = 0; index < uniqueSymbols.length; index += 80) {
+    const chunk = uniqueSymbols.slice(index, index + 80)
+    const symbolPlaceholders = chunk.map(() => '?').join(',')
+    const { results } = await marketDb.prepare(`
+      WITH requested_dates(signal_date) AS (VALUES ${dateValues}),
+      resolved_snapshots AS (
+        SELECT requested_dates.signal_date,
+               MAX(snapshot_runs.snapshot_date) AS snapshot_date
+          FROM requested_dates
+          JOIN sector_taxonomy_snapshot_runs_v1 snapshot_runs
+            ON snapshot_runs.tag_type=?
+           AND snapshot_runs.status='ready'
+           AND snapshot_runs.snapshot_date<=requested_dates.signal_date
+         GROUP BY requested_dates.signal_date
+      )
+      SELECT resolved.signal_date AS date, membership.symbol, membership.tag
+        FROM resolved_snapshots resolved
+        JOIN sector_taxonomy_membership_snapshots_v1 membership
+          ON membership.snapshot_date=resolved.snapshot_date
+         AND membership.tag_type=?
+       WHERE membership.symbol IN (${symbolPlaceholders})
+       ORDER BY resolved.signal_date, membership.symbol, membership.tag
+    `).bind(...uniqueDates, tagType, tagType, ...chunk).all<PitFactorTaxonomyMembership>()
+    memberships.push(...(results ?? []))
+  }
+  return memberships
 }
 
 export function selectPitFactorStockSymbols(points: PitFactorFunnelPoint[], requested: string[], includeMovers: number): string[] {
@@ -277,6 +385,11 @@ async function loadStockSeries(
 
 export async function loadPitFactorFlowMap(env: Bindings, query: PitFactorFlowMapQuery) {
   const days = Math.max(2, Math.min(60, Math.floor(query.days)))
+  const layer = query.layer ?? 'industry'
+  const parent = String(query.parent ?? '').trim()
+  if (layer === 'industry_theme' && (query.parentLayer !== 'industry' || !parent)) {
+    throw new Error('pit_factor_industry_theme_parent_required')
+  }
   const requestedSymbols = [...new Set(query.symbols.map((symbol) => symbol.trim()).filter(Boolean))].slice(0, MAX_SYMBOLS)
   const funnelPoints = await loadFunnelPoints(env, query.requestedDate, days)
   const stockSymbols = selectPitFactorStockSymbols(funnelPoints, requestedSymbols, Math.max(0, Math.min(12, query.includeMovers)))
@@ -289,18 +402,36 @@ export async function loadPitFactorFlowMap(env: Bindings, query: PitFactorFlowMa
     funnelPoints,
   )
   const dates = [...new Set(funnelPoints.map((point) => point.date))].sort()
+  const groupSeries = layer === 'industry'
+    ? buildPitFactorGroupSeries(funnelPoints)
+    : buildPitFactorIndustryThemeSeries(
+        funnelPoints,
+        await loadPitFactorTaxonomyMemberships(
+          env,
+          dates,
+          funnelPoints
+            .filter((point) => point.industry === parent)
+            .map((point) => point.symbol),
+          'industry_theme',
+        ),
+        parent,
+      )
   return {
     requested_date: query.requestedDate,
     date: dates[dates.length - 1] ?? null,
     session_count: dates.length,
     requested_sessions: days,
-    group_series: buildPitFactorGroupSeries(funnelPoints),
+    group_series: groupSeries,
     stock_series: stockSeries,
     governance: {
       candidate: 'pit_residual_momentum_w10',
       phase: 'prospective_shadow',
-      taxonomy_layer: 'industry',
+      taxonomy_layer: layer,
+      parent_layer: layer === 'industry_theme' ? 'industry' : null,
+      parent: layer === 'industry_theme' ? parent : null,
       available_taxonomy_layers: ['industry', 'industry_theme', 'subindustry', 'theme'],
+      supported_visual_layers: ['industry', 'industry_theme'],
+      theme_relationship: 'cross_cutting_overlay_not_strict_child',
       weight: 0.10,
       primary_horizon_sessions: 10,
       x_axis: 'same_date_group_residual_counterfactual_tilt_percentile',

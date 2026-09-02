@@ -4517,6 +4517,18 @@ recommendations.get('/factor-flow-map', async (c) => {
   if (!/^\d{4}-\d{2}-\d{2}$/.test(requestedDate)) {
     return c.json({ error: 'invalid_date', requested_date: requestedDate }, 400)
   }
+  const requestedLayer = String(c.req.query('layer') ?? 'industry')
+  if (!['industry', 'industry_theme'].includes(requestedLayer)) {
+    return c.json({ error: 'invalid_factor_group_layer', layer: requestedLayer }, 400)
+  }
+  const parentLayer = String(c.req.query('parent_layer') ?? '')
+  const parent = String(c.req.query('parent') ?? '').trim()
+  if (requestedLayer === 'industry_theme' && (parentLayer !== 'industry' || !parent)) {
+    return c.json({
+      error: 'industry_theme_parent_required',
+      required: { parent_layer: 'industry', parent: 'non_empty' },
+    }, 400)
+  }
   const symbols = String(c.req.query('symbols') ?? '')
     .split(',')
     .map((symbol) => symbol.trim())
@@ -4527,6 +4539,9 @@ recommendations.get('/factor-flow-map', async (c) => {
       days: Math.min(parsePosInt(c.req.query('days'), 10), 60),
       symbols,
       includeMovers: Math.max(0, Math.min(Number(c.req.query('include_movers') ?? 0) || 0, 12)),
+      layer: requestedLayer as 'industry' | 'industry_theme',
+      parentLayer: parentLayer === 'industry' ? 'industry' : undefined,
+      parent: parent || undefined,
     })
     return c.json(payload)
   } catch (error) {

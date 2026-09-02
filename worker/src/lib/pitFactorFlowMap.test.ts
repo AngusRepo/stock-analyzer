@@ -1,6 +1,8 @@
 import assert from 'node:assert/strict'
+import fs from 'node:fs'
 import {
   buildPitFactorGroupSeries,
+  buildPitFactorIndustryThemeSeries,
   selectPitFactorStockSymbols,
   type PitFactorFunnelPoint,
 } from './pitFactorFlowMap'
@@ -43,9 +45,47 @@ const allIndustryXs = allIndustries.map((series) => Number(series.points[0].x)).
 assert(allIndustryXs[0] < 5 && allIndustryXs.at(-1)! > 95, 'same-day group percentile must use the chart width instead of collapsing near x=50')
 assert.equal(new Set(allIndustryXs).size, 13, 'distinct group tilts must remain distinguishable')
 
+const themeSeries = buildPitFactorIndustryThemeSeries([
+  point({ symbol: 'A', industry: '電子', rankDelta: 3 }),
+  point({ symbol: 'B', industry: '電子', rankDelta: -2 }),
+  point({ symbol: 'C', industry: '金融', rankDelta: 4 }),
+], [
+  { date: '2026-08-28', symbol: 'A', tag: 'AI' },
+  { date: '2026-08-28', symbol: 'A', tag: 'CoWoS' },
+  { date: '2026-08-28', symbol: 'B', tag: 'AI' },
+  { date: '2026-08-28', symbol: 'C', tag: '金融科技' },
+], '電子')
+assert.deepEqual(themeSeries.map((series) => series.key).sort(), ['AI', 'CoWoS'])
+assert.equal(
+  themeSeries.find((series) => series.key === 'AI')?.points[0].member_count,
+  2,
+  'industry-theme drill-down must count distinct members within the selected parent industry',
+)
+assert(
+  !themeSeries.some((series) => series.key === '金融科技'),
+  'industry-theme drill-down must not leak a same-name or cross-industry membership from another parent',
+)
+assert(
+  new Set(themeSeries.map((series) => series.points[0].x)).size === 2,
+  'child themes must be percentile-ranked against siblings inside the selected industry',
+)
+
 const selected = selectPitFactorStockSymbols([
   point({ symbol: 'A', rankDelta: 1 }),
   point({ symbol: 'B', rankDelta: -4 }),
   point({ symbol: 'C', rankDelta: 3 }),
 ], ['PENDING'], 2)
 assert.deepEqual(selected, ['PENDING', 'B', 'C'])
+
+const source = fs.readFileSync('src/lib/pitFactorFlowMap.ts', 'utf8')
+assert.match(source, /snapshot_runs\.status='ready'/, 'drill-down must consume only completed taxonomy snapshots')
+assert.match(
+  source,
+  /snapshot_runs\.snapshot_date<=requested_dates\.signal_date/,
+  'drill-down must resolve taxonomy point-in-time and never borrow a future classification',
+)
+assert.match(
+  source,
+  /const attributionWeight = 1 \/ tags\.length/,
+  'multi-theme symbols must split attribution instead of being counted at full weight in every child theme',
+)

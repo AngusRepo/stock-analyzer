@@ -162,12 +162,18 @@ export const recommendationsApi = {
     days?: number
     symbols?: string[]
     includeMovers?: number
+    layer?: 'industry' | 'industry_theme'
+    parentLayer?: 'industry'
+    parent?: string
   } = {}) => {
     const params = new URLSearchParams()
     if (options.date) params.set('date', options.date)
     if (options.days != null) params.set('days', String(options.days))
     if (options.symbols?.length) params.set('symbols', options.symbols.join(','))
     if (options.includeMovers != null) params.set('include_movers', String(options.includeMovers))
+    if (options.layer) params.set('layer', options.layer)
+    if (options.parentLayer) params.set('parent_layer', options.parentLayer)
+    if (options.parent) params.set('parent', options.parent)
     const qs = params.toString()
     return get<FactorFlowMapResponse>(`/recommendations/factor-flow-map${qs ? `?${qs}` : ''}`)
   },
@@ -218,8 +224,12 @@ export type FactorFlowMapResponse = {
   governance: {
     candidate: string
     phase: 'prospective_shadow' | 'promoted' | string
-    taxonomy_layer: 'industry' | string
+    taxonomy_layer: 'industry' | 'industry_theme' | string
+    parent_layer?: 'industry' | null
+    parent?: string | null
     available_taxonomy_layers: string[]
+    supported_visual_layers?: string[]
+    theme_relationship?: string
     weight: number
     primary_horizon_sessions: number
     auxiliary_authority: 'diagnostic_only'

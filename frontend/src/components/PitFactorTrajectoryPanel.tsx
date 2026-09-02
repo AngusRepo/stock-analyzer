@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
-import { Pause, Play, Radar, RotateCcw } from 'lucide-react'
+import { ChevronLeft, Pause, Play, Radar, RotateCcw } from 'lucide-react'
 import { useReducedMotion } from 'framer-motion'
 import {
   paperApi,
@@ -22,6 +22,7 @@ const PLOT_MID_Y = PAD.top + PLOT_HEIGHT / 2
 const COLORS = ['#67e8f9', '#fbbf24', '#fb7185', '#a78bfa', '#34d399', '#60a5fa', '#f97316', '#e879f9', '#a3e635', '#fda4af', '#22d3ee', '#c4b5fd']
 const WINDOW_OPTIONS = [3, 5, 10, 20, 60] as const
 const MAX_DEFAULT_LABELS = 12
+const DEFAULT_GROUP_LIMIT = 12
 
 const QUADRANT_GUIDES = [
   { corner: '左上', title: '資金先卡位', detail: '表現仍偏弱，但參與開始增加', className: 'border-slate-400/25 bg-slate-500/[0.07] text-slate-200' },
@@ -122,7 +123,15 @@ function defaultLabeledSeriesKeys(series: FactorTrajectorySeries[], currentDate:
   return new Set(accepted.map((item) => item.key))
 }
 
-function TrajectoryChart({ series, scope }: { series: FactorTrajectorySeries[]; scope: 'group' | 'stock' }) {
+function TrajectoryChart({
+  series,
+  scope,
+  onSeriesSelect,
+}: {
+  series: FactorTrajectorySeries[]
+  scope: 'group' | 'stock'
+  onSeriesSelect?: (key: string) => void
+}) {
   const [focusKey, setFocusKey] = useState<string | null>(null)
   const [replayKey, setReplayKey] = useState(0)
   const [playbackIndex, setPlaybackIndex] = useState(0)
@@ -190,8 +199,12 @@ function TrajectoryChart({ series, scope }: { series: FactorTrajectorySeries[]; 
           <button
             type="button"
             key={item.key}
-            onClick={() => setFocusKey((current) => current === item.key ? null : item.key)}
+            onClick={() => {
+              if (onSeriesSelect) onSeriesSelect(item.key)
+              else setFocusKey((current) => current === item.key ? null : item.key)
+            }}
             aria-pressed={focusKey === item.key}
+            aria-label={onSeriesSelect ? `查看 ${item.label} 的產業主題` : undefined}
             className={cx(
               'inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-[11px] transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-cyan-300/70',
               focusKey === item.key ? 'border-white/25 bg-white/10 text-white' : 'border-white/[0.07] text-slate-400 hover:border-white/15 hover:text-slate-200',
@@ -366,16 +379,39 @@ function TrajectoryChart({ series, scope }: { series: FactorTrajectorySeries[]; 
   )
 }
 
-function PanelShell({ data, isLoading, error, scope, days, onDaysChange }: {
+function PanelShell({
+  data,
+  isLoading,
+  error,
+  scope,
+  days,
+  onDaysChange,
+  selectedParent,
+  totalGroupCount,
+  showAllGroups,
+  onShowAllGroupsChange,
+  onGroupSelect,
+  onBackToIndustries,
+}: {
   data?: FactorFlowMapResponse
   isLoading: boolean
   error: Error | null
   scope: 'group' | 'stock'
   days: number
   onDaysChange: (days: number) => void
+  selectedParent?: string | null
+  totalGroupCount?: number
+  showAllGroups?: boolean
+  onShowAllGroupsChange?: (showAll: boolean) => void
+  onGroupSelect?: (key: string) => void
+  onBackToIndustries?: () => void
 }) {
   const series = scope === 'group' ? data?.group_series ?? [] : data?.stock_series ?? []
-  const title = scope === 'group' ? '族群強弱 × 資金確認' : '持倉／待買個股強弱軌跡'
+  const title = scope === 'group'
+    ? selectedParent
+      ? `${selectedParent} · 產業主題軌跡`
+      : '族群強弱 × 資金確認'
+    : '持倉／待買個股強弱軌跡'
   return (
     <section className="h-full overflow-hidden rounded-2xl border border-[#2a3446] bg-[#111722]/90 p-4 shadow-[0_18px_60px_rgba(0,0,0,0.18)] sm:p-5">
       <div className="mb-4 flex flex-wrap items-start justify-between gap-3">
@@ -384,9 +420,21 @@ function PanelShell({ data, isLoading, error, scope, days, onDaysChange }: {
             <Radar className="h-4 w-4 text-cyan-300" />
             <h2 className="font-bold text-slate-100">{title}</h2>
           </div>
+          {scope === 'group' && selectedParent && onBackToIndustries ? (
+            <button
+              type="button"
+              onClick={onBackToIndustries}
+              className="mt-2 inline-flex items-center gap-1 rounded-full border border-white/10 px-2.5 py-1 text-[11px] font-semibold text-slate-400 transition hover:border-cyan-300/30 hover:text-cyan-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-cyan-300/70"
+            >
+              <ChevronLeft className="h-3 w-3" />
+              全部產業 / {selectedParent}
+            </button>
+          ) : null}
           <p className="mt-1 max-w-3xl text-xs leading-5 text-slate-500">
             {scope === 'group'
-              ? '這張圖回答兩件事：哪些族群的表現比原本預期更強？這份強勢是否有更多股票和資金一起支持？往右越強、往上代表支持越廣，右上角通常最值得留意。系統把「比預期多出來的強弱」稱為殘差。'
+              ? selectedParent
+                ? '這裡只比較同一產業內的 industry_theme；同一股票若屬於多個主題會分攤權重，避免重複灌大。殘差仍沿用正式 industry 觀察層，不把主題分組冒充新的 Alpha。'
+                : '這張圖回答兩件事：哪些族群的表現比原本預期更強？這份強勢是否有更多股票和資金一起支持？往右越強、往上代表支持越廣，右上角通常最值得留意。點選產業可查看內部主題。'
               : '只顯示實際持倉與 active pending buys；每個節點都是實際交易日資料，曲線只做視覺平滑。'}
           </p>
         </div>
@@ -410,6 +458,16 @@ function PanelShell({ data, isLoading, error, scope, days, onDaysChange }: {
             ))}
           </div>
           <div className="flex flex-wrap justify-end gap-2 text-[10px] font-bold">
+            {scope === 'group' && onShowAllGroupsChange && Number(totalGroupCount ?? 0) > DEFAULT_GROUP_LIMIT ? (
+              <button
+                type="button"
+                onClick={() => onShowAllGroupsChange(!showAllGroups)}
+                aria-pressed={Boolean(showAllGroups)}
+                className="rounded-full border border-white/10 px-2.5 py-1 text-slate-400 transition hover:border-cyan-300/30 hover:text-cyan-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-cyan-300/70"
+              >
+                {showAllGroups ? `精簡顯示前 ${DEFAULT_GROUP_LIMIT} 類` : `顯示全部 ${totalGroupCount} 類`}
+              </button>
+            ) : null}
             <span className="rounded-full border border-white/10 px-2.5 py-1 text-slate-400">{data?.date ?? '等待資料'}</span>
             <span className="rounded-full border border-cyan-300/20 bg-cyan-400/[0.07] px-2.5 py-1 text-cyan-200">10% 觀察層 · 不影響交易</span>
           </div>
@@ -423,11 +481,14 @@ function PanelShell({ data, isLoading, error, scope, days, onDaysChange }: {
         <div className="rounded-xl border border-white/[0.06] bg-white/[0.025] p-5 text-sm text-slate-500">尚無 prospective PIT residual 軌跡；正式選股、倉位與下單維持原狀。</div>
       ) : (
         <>
-          <TrajectoryChart series={series} scope={scope} />
+          <TrajectoryChart series={series} scope={scope} onSeriesSelect={selectedParent ? undefined : onGroupSelect} />
           <div className="mt-3 flex flex-wrap items-center justify-between gap-2 text-[11px] text-slate-500">
             <span>已累積 {data?.session_count ?? 0}/{data?.requested_sessions ?? 10} 個實際 session</span>
             {scope === 'group' ? (
-              <span>正式圖層：{data?.governance.taxonomy_layer ?? 'industry'} · {series.length} 類；系統 taxonomy 共 {data?.governance.available_taxonomy_layers?.length ?? 4} 層</span>
+              <span>
+                圖層：{data?.governance.taxonomy_layer ?? 'industry'} · 顯示 {series.length}/{totalGroupCount ?? series.length} 類；
+                系統 taxonomy 共 {data?.governance.available_taxonomy_layers?.length ?? 4} 層
+              </span>
             ) : null}
             <span>這是觀察圖；股票與資金支持度只用來確認，不會直接改變選股、持倉或下單</span>
           </div>
@@ -439,13 +500,50 @@ function PanelShell({ data, isLoading, error, scope, days, onDaysChange }: {
 
 export function GroupFactorTrajectoryPanel() {
   const [days, setDays] = useState<number>(10)
+  const [selectedIndustry, setSelectedIndustry] = useState<string | null>(null)
+  const [showAllGroups, setShowAllGroups] = useState(false)
   const query = useQuery({
-    queryKey: ['recommendations', 'factor-flow-map', 'groups', days],
-    queryFn: () => recommendationsApi.factorFlowMap({ days, includeMovers: 0 }),
+    queryKey: ['recommendations', 'factor-flow-map', 'groups', days, selectedIndustry ?? 'industry'],
+    queryFn: () => recommendationsApi.factorFlowMap({
+      days,
+      includeMovers: 0,
+      layer: selectedIndustry ? 'industry_theme' : 'industry',
+      parentLayer: selectedIndustry ? 'industry' : undefined,
+      parent: selectedIndustry ?? undefined,
+    }),
     staleTime: 30 * 60_000,
     retry: 1,
   })
-  return <PanelShell data={query.data} isLoading={query.isLoading} error={query.error as Error | null} scope="group" days={days} onDaysChange={setDays} />
+  const totalGroupCount = query.data?.group_series.length ?? 0
+  const displayData = useMemo<FactorFlowMapResponse | undefined>(() => {
+    if (!query.data || showAllGroups) return query.data
+    return {
+      ...query.data,
+      group_series: query.data.group_series.slice(0, DEFAULT_GROUP_LIMIT),
+    }
+  }, [query.data, showAllGroups])
+  return (
+    <PanelShell
+      data={displayData}
+      isLoading={query.isLoading}
+      error={query.error as Error | null}
+      scope="group"
+      days={days}
+      onDaysChange={setDays}
+      selectedParent={selectedIndustry}
+      totalGroupCount={totalGroupCount}
+      showAllGroups={showAllGroups}
+      onShowAllGroupsChange={setShowAllGroups}
+      onGroupSelect={(industry) => {
+        setSelectedIndustry(industry)
+        setShowAllGroups(false)
+      }}
+      onBackToIndustries={() => {
+        setSelectedIndustry(null)
+        setShowAllGroups(false)
+      }}
+    />
+  )
 }
 
 export function StockFactorTrajectoryPanel() {

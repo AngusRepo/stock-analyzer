@@ -2,7 +2,10 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 import { Miniflare } from 'miniflare'
 import type { Bindings } from '../types'
-import { enqueuePostScreenerPipelineRecovery } from './postScreenerContinuation'
+import {
+  enqueuePostScreenerPipelineContinuation,
+  enqueuePostScreenerPipelineRecovery,
+} from './postScreenerContinuation'
 
 test('pipeline provenance recovery is exact-error CAS fenced and once per Worker release', async () => {
   const mf = new Miniflare({
@@ -121,6 +124,81 @@ test('pipeline provenance recovery is exact-error CAS fenced and once per Worker
     })
     assert.equal(nextRelease.queued, true)
     assert.equal(sent.length, 2)
+  } finally {
+    await mf.dispose()
+  }
+})
+
+test('stale queued post-screener continuation is re-enqueued once and remains lease-deduplicated', async () => {
+  const mf = new Miniflare({
+    modules: true,
+    script: 'export default { fetch() { return new Response("ok") } }',
+    d1Databases: ['OPS'],
+  })
+  try {
+    const db = await mf.getD1Database('OPS')
+    await db.prepare(`
+      CREATE TABLE pipeline_stage_runs (
+        business_date TEXT NOT NULL,
+        stage TEXT NOT NULL,
+        canonical_run_id TEXT NOT NULL,
+        status TEXT NOT NULL,
+        cursor_key TEXT,
+        processed_count INTEGER NOT NULL DEFAULT 0,
+        expected_count INTEGER,
+        persisted_count INTEGER NOT NULL DEFAULT 0,
+        attempt_count INTEGER NOT NULL DEFAULT 0,
+        lease_owner TEXT,
+        lease_expires_at TEXT,
+        queued_at TEXT,
+        started_at TEXT,
+        completed_at TEXT,
+        last_error TEXT,
+        updated_at TEXT NOT NULL,
+        PRIMARY KEY (business_date, stage)
+      )
+    `).run()
+    await db.prepare(`
+      INSERT INTO pipeline_stage_runs (
+        business_date, stage, canonical_run_id, status, queued_at, updated_at
+      ) VALUES ('2026-09-02', 'post_screener_continuation', 'chain-1', 'queued',
+                datetime('now', '-10 minutes'), datetime('now', '-10 minutes'))
+    `).run()
+
+    const kvRows = new Map<string, string>()
+    const sent: unknown[] = []
+    const env = {
+      DB: db,
+      OPS_DB: db,
+      KV: {
+        get: async (key: string) => {
+          const value = kvRows.get(key)
+          return value == null ? null : JSON.parse(value)
+        },
+        put: async (key: string, value: string) => { kvRows.set(key, value) },
+      },
+      UPDATE_QUEUE: {
+        send: async (message: unknown) => { sent.push(message) },
+      },
+    } as unknown as Bindings
+
+    const recovered = await enqueuePostScreenerPipelineContinuation(env, {
+      triggerTime: '2026-09-02',
+      runId: 'chain-1',
+      source: 'watchdog-test',
+    })
+    assert.equal(recovered.queued, true)
+    assert.equal(recovered.status, 'requeued')
+    assert.equal(sent.length, 1)
+
+    const duplicate = await enqueuePostScreenerPipelineContinuation(env, {
+      triggerTime: '2026-09-02',
+      runId: 'chain-1',
+      source: 'watchdog-test-duplicate',
+    })
+    assert.equal(duplicate.queued, false)
+    assert.equal(duplicate.status, 'queued')
+    assert.equal(sent.length, 1, 'a fresh requeue must not emit a duplicate message before the recovery threshold')
   } finally {
     await mf.dispose()
   }

@@ -85,6 +85,17 @@ async function main(): Promise<void> {
   assert.equal(staleError.reason, 'screener_callback_stale_non_success_after_success')
   assert.equal(terminal.updates(), 0)
 
+  const duplicateSuccess = await recordCanonicalScreenerCallback(terminal.db, {
+    businessDate: '2026-08-14', canonicalRunId: 'chain-1', producerRunId: 'producer-new', status: 'success',
+  })
+  assert.equal(duplicateSuccess.accepted, true)
+  assert.equal(duplicateSuccess.reason, 'callback_terminal_already_success')
+  assert.equal(
+    terminal.updates(),
+    0,
+    'duplicate watchdog success must preserve the first terminal completed_at instead of rewriting it',
+  )
+
   const exact = fakeDb(base, ['producer-new'])
   const exactReceipt = await recordCanonicalScreenerCallback(exact.db, {
     businessDate: '2026-08-14', canonicalRunId: 'chain-1', producerRunId: 'producer-new', status: 'success',

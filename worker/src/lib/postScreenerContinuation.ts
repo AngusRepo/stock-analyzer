@@ -7,6 +7,27 @@ import {
 import { logSchedulerResult } from './schedulerRunLogger'
 
 export const POST_SCREENER_CONTINUATION_STAGE = 'post_screener_continuation'
+export const POST_SCREENER_QUEUED_RECOVERY_SECONDS = 300
+
+async function reclaimStaleQueuedPostScreenerContinuation(
+  db: D1Database,
+  input: { businessDate: string; canonicalRunId: string },
+): Promise<boolean> {
+  const recovered = await db.prepare(`
+    UPDATE pipeline_stage_runs
+       SET queued_at=CURRENT_TIMESTAMP, updated_at=CURRENT_TIMESTAMP
+     WHERE business_date=? AND stage=? AND canonical_run_id=?
+       AND status='queued'
+       AND COALESCE(queued_at, updated_at) < datetime('now', ?)
+    RETURNING canonical_run_id
+  `).bind(
+    input.businessDate,
+    POST_SCREENER_CONTINUATION_STAGE,
+    input.canonicalRunId,
+    `-${POST_SCREENER_QUEUED_RECOVERY_SECONDS} seconds`,
+  ).first<{ canonical_run_id?: string | null }>()
+  return String(recovered?.canonical_run_id ?? '') === input.canonicalRunId
+}
 
 export async function enqueuePostScreenerPipelineContinuation(
   env: Bindings,
@@ -26,7 +47,14 @@ export async function enqueuePostScreenerPipelineContinuation(
     resumeWaiting: true,
     adoptRunIdOnResume: true,
   })
-  if (!state.shouldEnqueue) {
+  const reclaimedStaleQueue = !state.shouldEnqueue
+    && state.row.status === 'queued'
+    && state.row.canonical_run_id === options.runId
+    && await reclaimStaleQueuedPostScreenerContinuation(
+      databaseForDataDomain(env, 'ops'),
+      { businessDate: options.triggerTime, canonicalRunId: options.runId },
+    )
+  if (!state.shouldEnqueue && !reclaimedStaleQueue) {
     const root = await env.KV.get(
       `scheduler:run:evening-chain:${options.triggerTime}`,
       'json',
@@ -52,6 +80,16 @@ export async function enqueuePostScreenerPipelineContinuation(
       canonicalRunId: state.row.canonical_run_id,
       status: state.row.status,
     }
+  }
+  if (reclaimedStaleQueue) {
+    await logSchedulerResult(env.KV, 'evening-chain', {
+      status: 'running',
+      summary: `requeued stale post-screener continuation for ${options.triggerTime}; run_id=${options.runId}; source=${options.source}`,
+      duration_ms: 0,
+      run_date: options.triggerTime,
+      run_id: options.runId,
+      supersedePrevious: true,
+    })
   }
   await logSchedulerResult(env.KV, 'evening-chain', {
     status: 'running',
@@ -86,7 +124,11 @@ export async function enqueuePostScreenerPipelineContinuation(
     new Date().toISOString(),
     { expirationTtl: 7 * 86400 },
   ).catch((e) => console.warn('[Queue] Post-screener enqueue marker write failed:', e))
-  return { queued: true, canonicalRunId: state.row.canonical_run_id, status: 'queued' }
+  return {
+    queued: true,
+    canonicalRunId: state.row.canonical_run_id,
+    status: reclaimedStaleQueue ? 'requeued' : 'queued',
+  }
 }
 
 type PipelineExecutionFailure = {

@@ -268,6 +268,14 @@ export async function recordCanonicalScreenerCallback(
       producerRunId: stage.cursor_key,
     }
   }
+  if (stage.status === 'success') {
+    return {
+      accepted: true,
+      reason: 'callback_terminal_already_success',
+      canonicalRunId: stage.canonical_run_id,
+      producerRunId: stage.cursor_key,
+    }
+  }
   if (input.status === 'success') {
     const funnel = await loadSuccessfulFunnel(db, input.businessDate, input.producerRunId)
     if (!funnel?.run_id) {
@@ -306,7 +314,7 @@ export async function recordCanonicalScreenerCallback(
   }
   return {
     accepted: true,
-    reason: stage.status === 'success' ? 'callback_terminal_already_success' : `callback_${input.status}`,
+    reason: `callback_${input.status}`,
     canonicalRunId: stage.canonical_run_id,
     producerRunId: stage.cursor_key,
   }

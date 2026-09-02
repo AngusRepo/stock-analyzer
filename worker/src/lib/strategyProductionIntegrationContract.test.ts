@@ -113,6 +113,21 @@ assert.match(
   /loadStrategyProductionPolicyBefore\(databaseForDataDomain\(env, 'learning'\), endDate, strategyIds\)/,
   'screener must load the immutable production policy point-in-time',
 )
+assert.match(
+  screenerSource,
+  /runtimeStrategyRoutingWeights = runtimeStrategyWeightResolution\.routingWeights/,
+  'screener must retain the bounded numeric routing weights resolved from the formal production policy',
+)
+assert.match(
+  screenerSource,
+  /buildStrategySimilarityEvidencePayload\([\s\S]*?strategyWeights: evaluationStrategyWeights/,
+  'similarity/evidence reconstruction must continue to observe every strategy with unit evaluation weights',
+)
+assert.match(
+  screenerSource,
+  /buildLayer1StrategyBreadthPlan\([\s\S]*?productionStrategyWeights: runtimeStrategyRoutingWeights,[\s\S]*?performanceWeightOwner: runtimeStrategyPerformanceWeightOwner/,
+  'production L1/PLE routing must consume numeric formal weights and the single performance-weight owner',
+)
 assert.doesNotMatch(
   screenerSource,
   /loadPromotedStrategyMarginalEdgeWeightsBefore/,

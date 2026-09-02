@@ -3850,6 +3850,8 @@ export async function runBottomUpScreener(env: Bindings, runDate?: string | null
   let runtimeStrategySpecs: StrategySpec[] = []
   let runtimeStrategyRegime: string | null = null
   let runtimeStrategyAllocationWeights: Record<string, number> = {}
+  let runtimeStrategyRoutingWeights: Record<string, number> = {}
+  let runtimeStrategyPerformanceWeightOwner: 'ple_portfolio_metrics' | 'formal_evidence_owner' = 'ple_portfolio_metrics'
   let selectionEvidence: {
     references: SelectionReferenceRowV1[]
     matrix: StrategyLabelMatrixRowV4[]
@@ -3899,6 +3901,8 @@ export async function runBottomUpScreener(env: Bindings, runDate?: string | null
     const runtimeStrategyWeightResolution = resolveRuntimeStrategyWeights(strategyIds, productionPolicyState)
     const evaluationStrategyWeights = runtimeStrategyWeightResolution.evaluationWeights
     runtimeStrategyAllocationWeights = runtimeStrategyWeightResolution.allocationWeights
+    runtimeStrategyRoutingWeights = runtimeStrategyWeightResolution.routingWeights
+    runtimeStrategyPerformanceWeightOwner = runtimeStrategyWeightResolution.performanceWeightOwner
     const strategySimilarityPayload = buildStrategySimilarityEvidencePayload(
       strategySourceUniverse as any,
       specs,
@@ -3953,6 +3957,8 @@ export async function runBottomUpScreener(env: Bindings, runDate?: string | null
         regime: currentRegime,
         evidenceMode: monthlyRevenue.evidenceMode,
         strategyWeights: evaluationStrategyWeights,
+        productionStrategyWeights: runtimeStrategyRoutingWeights,
+        performanceWeightOwner: runtimeStrategyPerformanceWeightOwner,
         strategyPortfolioMetrics: strategyPortfolioMetrics.metrics,
         strategyPortfolioMetricSource: strategyPortfolioMetrics.telemetry.source,
         strategySimilarityGraphEvidence: strategySimilarityEvidence.evidence,
@@ -4043,6 +4049,8 @@ export async function runBottomUpScreener(env: Bindings, runDate?: string | null
       promoted_route_calibration_run_id: promotedRouteCalibration?.runId ?? null,
       promoted_route_calibration_load_error: promotedRouteCalibrationLoad.error,
       effective_strategy_weight_source: runtimeStrategyWeightResolution.source,
+      strategy_production_policy_routing_weights: runtimeStrategyRoutingWeights,
+      strategy_performance_weight_owner: runtimeStrategyPerformanceWeightOwner,
       positive_allocation_strategy_count: Object.values(runtimeStrategyAllocationWeights)
         .filter((weight) => weight > 0).length,
       evaluation_strategy_count: Object.keys(evaluationStrategyWeights).length,

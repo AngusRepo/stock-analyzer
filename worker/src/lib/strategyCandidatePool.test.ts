@@ -474,8 +474,19 @@ const candidates: StrategyCandidatePoolCandidate[] = Array.from({ length: 90 }, 
   const routed = plan.l0Annotated[0] as any
   const looseProjection = assessStrategyThresholdMarginAffinity(marginCandidate, baseSpec, { regime: 'bull' })
   const tightProjection = assessStrategyThresholdMarginAffinity(marginCandidate, tightSpec, { regime: 'bull' })
+  const legacyWeightedProjection = assessStrategyThresholdMarginAffinity(marginCandidate, baseSpec, {
+    regime: 'bull',
+    strategyWeights: { [baseSpec.id]: 0.5 },
+  })
+  const formalWeightedProjection = assessStrategyThresholdMarginAffinity(marginCandidate, baseSpec, {
+    regime: 'bull',
+    strategyWeights: { [baseSpec.id]: 1 },
+    productionStrategyWeights: { [baseSpec.id]: 0.5 },
+  })
   assert(looseProjection.challengerAffinity === routed.strategy_challenger_affinity_vector.loose_margin_v1, 'shared PIT projector must equal native loose-strategy affinity')
   assert(tightProjection.challengerAffinity === routed.strategy_challenger_affinity_vector.tight_margin_v1, 'shared PIT projector must equal native tight-strategy affinity')
+  assert(legacyWeightedProjection.productionWeight === 1, 'legacy strategyWeights-only callers must not apply the configured weight twice')
+  assert(legacyWeightedProjection.challengerAffinity === formalWeightedProjection.challengerAffinity, 'legacy configured weight and explicit production multiplier must preserve equivalent single-weight routing')
   assert(routed.strategy_affinity_vector.loose_margin_v1 === routed.strategy_affinity_vector.tight_margin_v1, 'incumbent affinity must remain unchanged until challenger promotion')
   assert(routed.strategy_challenger_affinity_vector.loose_margin_v1 > routed.strategy_challenger_affinity_vector.tight_margin_v1, 'challenger affinity must follow each strategy threshold margin')
   assert(routed.strategy_router_components.challenger_raw_active_strategy_support > routed.strategy_router_components.challenger_residualized_active_strategy_support, 'correlated strategy hits must receive diminishing challenger support')

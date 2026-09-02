@@ -295,6 +295,7 @@ export interface Layer1StrategyBreadthPlan<T extends StrategyCandidatePoolCandid
     runtime_teacher_evidence_policy?: string
     runtime_teacher_evidence_available_count?: number
     runtime_teacher_evidence_missing_count?: number
+    performance_weight_owner?: 'ple_portfolio_metrics' | 'formal_evidence_owner'
     strategy_metric_status_counts?: Record<string, number>
     strategy_metric_ready_count?: number
     strategy_metric_no_evidence_count?: number
@@ -1408,6 +1409,8 @@ export function buildLayer1StrategyBreadthPlan<T extends StrategyCandidatePoolCa
     regime?: AlphaFrameworkRegime | string | null
     evidenceMode?: StrategyEvidenceMode
     strategyWeights?: Record<string, number>
+    productionStrategyWeights?: Record<string, number>
+    performanceWeightOwner?: 'ple_portfolio_metrics' | 'formal_evidence_owner'
     strategyPortfolioMetrics?: Record<string, Partial<StrategyPortfolioMetrics>>
     strategyPortfolioMetricSource?: string
     strategySimilarityGraphEvidence?: StrategySimilarityGraphEvidence | null
@@ -1432,6 +1435,8 @@ export function buildLayer1StrategyBreadthPlan<T extends StrategyCandidatePoolCa
     regime: options.regime,
     evidenceMode: options.evidenceMode,
     strategyWeights: options.strategyWeights,
+    productionStrategyWeights: options.productionStrategyWeights,
+    performanceWeightOwner: options.performanceWeightOwner,
     strategyPortfolioMetrics: options.strategyPortfolioMetrics,
     strategySimilarityGraphEvidence: options.strategySimilarityGraphEvidence,
     runtimeTeacherEvidence: options.runtimeTeacherEvidence,
@@ -1467,6 +1472,8 @@ export function buildLayer1StrategyBreadthPlan<T extends StrategyCandidatePoolCa
         regime: options.regime,
         evidenceMode: options.evidenceMode,
         strategyWeights: options.strategyWeights,
+        productionStrategyWeights: options.productionStrategyWeights,
+        performanceWeightOwner: options.performanceWeightOwner,
         strategyPortfolioMetrics: options.strategyPortfolioMetrics,
         strategySimilarityGraphEvidence: options.strategySimilarityGraphEvidence,
         runtimeTeacherEvidence: options.runtimeTeacherEvidence,
@@ -1553,6 +1560,7 @@ export function buildLayer1StrategyBreadthPlan<T extends StrategyCandidatePoolCa
       runtime_teacher_evidence_policy: routerPlan.telemetry.runtime_teacher_evidence_policy,
       runtime_teacher_evidence_available_count: routerPlan.telemetry.runtime_teacher_evidence_available_count,
       runtime_teacher_evidence_missing_count: routerPlan.telemetry.runtime_teacher_evidence_missing_count,
+      performance_weight_owner: routerPlan.telemetry.performance_weight_owner,
       strategy_metric_status_counts: routerPlan.telemetry.strategy_metric_status_counts,
       strategy_metric_ready_count: routerPlan.telemetry.strategy_metric_ready_count,
       strategy_metric_no_evidence_count: routerPlan.telemetry.strategy_metric_no_evidence_count,

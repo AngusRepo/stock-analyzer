@@ -146,6 +146,7 @@ export interface MultiStrategyPleAnnotatedCandidate extends StrategyCandidatePoo
   strategy_formal_veto_reason_vector?: Record<string, string | null>
   strategy_counterfactual_affinity_vector?: Record<string, number>
   strategy_counterfactual_production_effect_vector?: Record<string, number>
+  strategy_production_weight_vector?: Record<string, number>
   strategy_position_weight_vector?: Record<string, number>
   strategy_challenger_position_weight_vector?: Record<string, number>
   strategy_raw_position_weight_vector?: Record<string, number>
@@ -186,6 +187,7 @@ interface StrategyLabel {
   owner_type: StrategyOwnerType
   status: StrategySpec['status']
   production_owner: boolean
+  production_weight_multiplier: number
   affinity: number
   match_strength: number
   threshold_margin: number
@@ -221,6 +223,7 @@ export interface StrategyThresholdMarginAffinityAssessment {
   formalVetoReason: string | null
   counterfactualAffinity: number
   configuredWeight: number
+  productionWeight: number
   regimeWeight: number
   productionOwner: boolean
   statusMultiplier: number
@@ -229,6 +232,7 @@ export interface StrategyThresholdMarginAffinityAssessment {
 
 export interface StrategyThresholdMarginAffinityPolicy {
   configuredWeight: number
+  productionWeight: number
   regimeWeight: number
   productionOwner: boolean
   statusMultiplier: number
@@ -286,6 +290,7 @@ export interface MultiStrategyPleRoutingPlan<T extends StrategyCandidatePoolCand
     runtime_teacher_evidence_policy: 'previous_trading_day_or_latest_verified_cache_no_same_day_l2_l3_dependency'
     runtime_teacher_evidence_available_count: number
     runtime_teacher_evidence_missing_count: number
+    performance_weight_owner: 'ple_portfolio_metrics' | 'formal_evidence_owner'
     strategy_usage: Record<string, number>
     family_usage: Partial<Record<StrategyFamilyId, number>>
     previous_slate_count: number
@@ -301,6 +306,8 @@ export interface MultiStrategyPleRoutingOptions {
   evidenceMode?: StrategyEvidenceMode
   regime?: AlphaFrameworkRegime | string | null
   strategyWeights?: Record<string, number>
+  productionStrategyWeights?: Record<string, number>
+  performanceWeightOwner?: 'ple_portfolio_metrics' | 'formal_evidence_owner'
   strategyPortfolioMetrics?: Record<string, Partial<StrategyPortfolioMetrics>>
   strategySimilarityGraphEvidence?: StrategySimilarityGraphEvidence | null
   runtimeTeacherEvidence?: Record<string, Record<string, number>>
@@ -372,13 +379,16 @@ function specCanEnterMlSlate(spec: StrategySpec): boolean {
 
 function resolveNormalizedStrategyThresholdMarginAffinityPolicy(
   spec: StrategySpec,
-  options: Pick<MultiStrategyPleRoutingOptions, 'regime' | 'strategyWeights'>,
+  options: Pick<MultiStrategyPleRoutingOptions, 'regime' | 'strategyWeights' | 'productionStrategyWeights'>,
 ): StrategyThresholdMarginAffinityPolicy {
   const regimeWeight = specRegimeWeight(spec, options.regime)
   const configuredWeight = options.strategyWeights == null
     ? 1
     : finiteNumber(options.strategyWeights[spec.id]) ?? 0
-  const productionOwner = specCanEnterMlSlate(spec) && configuredWeight > 0
+  const productionWeight = options.productionStrategyWeights == null
+    ? 1
+    : finiteNumber(options.productionStrategyWeights[spec.id]) ?? 0
+  const productionOwner = specCanEnterMlSlate(spec) && configuredWeight > 0 && productionWeight > 0
   const statusMultiplier = productionOwner
     ? 1
     : spec.status === 'candidate'
@@ -386,12 +396,12 @@ function resolveNormalizedStrategyThresholdMarginAffinityPolicy(
       : spec.status === 'shadow'
         ? 0.55
         : 0.3
-  return { configuredWeight, regimeWeight, productionOwner, statusMultiplier }
+  return { configuredWeight, productionWeight, regimeWeight, productionOwner, statusMultiplier }
 }
 
 export function resolveStrategyThresholdMarginAffinityPolicy(
   specInput: StrategySpec,
-  options: Pick<MultiStrategyPleRoutingOptions, 'regime' | 'strategyWeights'> = {},
+  options: Pick<MultiStrategyPleRoutingOptions, 'regime' | 'strategyWeights' | 'productionStrategyWeights'> = {},
 ): StrategyThresholdMarginAffinityPolicy {
   return resolveNormalizedStrategyThresholdMarginAffinityPolicy(
     normalizeStrategySpecGovernance(specInput),
@@ -402,7 +412,7 @@ export function resolveStrategyThresholdMarginAffinityPolicy(
 export function assessStrategyThresholdMarginAffinity(
   candidate: StrategyCandidateInput,
   specInput: StrategySpec,
-  options: Pick<MultiStrategyPleRoutingOptions, 'regime' | 'strategyWeights' | 'evidenceMode'> = {},
+  options: Pick<MultiStrategyPleRoutingOptions, 'regime' | 'strategyWeights' | 'productionStrategyWeights' | 'evidenceMode'> = {},
 ): StrategyThresholdMarginAffinityAssessment {
   const spec = normalizeStrategySpecGovernance(specInput)
   const policy = resolveNormalizedStrategyThresholdMarginAffinityPolicy(spec, options)
@@ -431,7 +441,16 @@ export function assessStrategyThresholdMarginAffinity(
     counterfactualAffinity,
     ...policy,
     challengerAffinity: matched && match
-      ? round3(clamp(match.matchStrength * 100 * policy.configuredWeight * policy.regimeWeight * policy.statusMultiplier, 0, 100))
+      ? round3(clamp(
+        match.matchStrength
+          * 100
+          * policy.configuredWeight
+          * policy.regimeWeight
+          * policy.statusMultiplier
+          * (policy.productionOwner ? policy.productionWeight : 1),
+        0,
+        100,
+      ))
       : 0,
   }
 }
@@ -531,6 +550,7 @@ function buildCandidateLabelStates<T extends StrategyCandidatePoolCandidate>(
         match,
         matched,
         configuredWeight,
+        productionWeight,
         regimeWeight,
         productionOwner,
         statusMultiplier,
@@ -543,7 +563,18 @@ function buildCandidateLabelStates<T extends StrategyCandidatePoolCandidate>(
         owner_type: spec.ownerType!,
         status: spec.status,
         production_owner: productionOwner,
-        affinity: matched ? round3(clamp(rawQuality * configuredWeight * regimeWeight * statusMultiplier, 0, 100)) : 0,
+        production_weight_multiplier: productionWeight,
+        affinity: matched
+          ? round3(clamp(
+            rawQuality
+              * configuredWeight
+              * regimeWeight
+              * statusMultiplier
+              * (productionOwner ? productionWeight : 1),
+            0,
+            100,
+          ))
+          : 0,
         challenger_affinity: thresholdAssessment.challengerAffinity,
         match_strength: match?.matchStrength ?? 0,
         threshold_margin: match?.thresholdMargin ?? 0,
@@ -845,10 +876,14 @@ function portfolioPriorForLabels(
       && ['ready', 'reward_only', 'backtest_only'].includes(declaredStatus)
       && metricSources.length > 0,
     )
-    const performanceOverride = performanceEvidenceReady ? rawOverride : undefined
+    const formalPerformanceOwner = options.performanceWeightOwner === 'formal_evidence_owner'
+    const structuralOverride = performanceEvidenceReady ? rawOverride : undefined
+    const performanceOverride = performanceEvidenceReady && !formalPerformanceOwner ? rawOverride : undefined
     const metricStatus = performanceEvidenceReady ? (declaredStatus || 'ready') : 'no_evidence'
     const metricReason = performanceEvidenceReady
-      ? (cleanText((rawOverride as Record<string, unknown>).metric_reason) || 'immutable_strategy_performance_metrics_loaded')
+      ? formalPerformanceOwner
+        ? 'formal_evidence_owner_controls_performance_weight_structural_ple_metrics_only'
+        : (cleanText((rawOverride as Record<string, unknown>).metric_reason) || 'immutable_strategy_performance_metrics_loaded')
       : 'candidate_affinity_is_not_strategy_performance_evidence'
     const metricSampleCount = performanceEvidenceReady
       ? finiteNumber((rawOverride as Record<string, unknown> | undefined)?.metric_sample_count) ?? 0
@@ -857,19 +892,21 @@ function portfolioPriorForLabels(
       rolling_sharpe: overrideNumber(performanceOverride, 'rolling_sharpe', derived.rolling_sharpe),
       max_drawdown: overrideNumber(performanceOverride, 'max_drawdown', derived.max_drawdown),
       recent_alpha: overrideNumber(performanceOverride, 'recent_alpha', derived.recent_alpha),
-      return_correlation: overrideNumber(performanceOverride, 'return_correlation', derived.return_correlation),
-      holding_overlap: overrideNumber(performanceOverride, 'holding_overlap', derived.holding_overlap),
-      turnover: overrideNumber(performanceOverride, 'turnover', derived.turnover),
+      return_correlation: overrideNumber(structuralOverride, 'return_correlation', derived.return_correlation),
+      holding_overlap: overrideNumber(structuralOverride, 'holding_overlap', derived.holding_overlap),
+      turnover: overrideNumber(structuralOverride, 'turnover', derived.turnover),
       factor_return: overrideNumber(performanceOverride, 'factor_return', derived.factor_return),
-      factor_crowding: overrideNumber(performanceOverride, 'factor_crowding', derived.factor_crowding),
-      centrality: overrideNumber(performanceOverride, 'centrality', derived.centrality),
+      factor_crowding: overrideNumber(structuralOverride, 'factor_crowding', derived.factor_crowding),
+      centrality: overrideNumber(structuralOverride, 'centrality', derived.centrality),
       ic: overrideNumber(performanceOverride, 'ic', derived.ic),
       rank_ic: overrideNumber(performanceOverride, 'rank_ic', derived.rank_ic),
       shapley_contribution: overrideNumber(performanceOverride, 'shapley_contribution', derived.shapley_contribution),
       regime_performance: overrideNumber(performanceOverride, 'regime_performance', derived.regime_performance),
       live_backtest_divergence: overrideNumber(performanceOverride, 'live_backtest_divergence', derived.live_backtest_divergence),
     }
-    const reliability = performanceEvidenceReady
+    const reliability = formalPerformanceOwner
+      ? 0.5
+      : performanceEvidenceReady
       ? overrideNumber(rawOverride, 'reliability', computeReliability(baseMetrics))
       : 0.5
     const structuralCrowding = round3(clamp(
@@ -888,7 +925,9 @@ function portfolioPriorForLabels(
     const diversificationValue = performanceEvidenceReady
       ? overrideNumber(rawOverride, 'diversification_value', structuralDiversification)
       : structuralDiversification
-    const priorWeight = performanceEvidenceReady
+    const priorWeight = formalPerformanceOwner
+      ? 1
+      : performanceEvidenceReady
       ? overrideNumber(rawOverride, 'prior_weight', computePriorWeight({
         ...baseMetrics,
         reliability,
@@ -1122,6 +1161,9 @@ function annotateCandidate<T extends StrategyCandidatePoolCandidate>(
   const strategyFormalVetoReasonVector = Object.fromEntries(state.labels.map((label) => [label.strategy_id, label.formal_veto_reason]))
   const strategyCounterfactualAffinityVector = Object.fromEntries(state.labels.map((label) => [label.strategy_id, label.counterfactual_affinity]))
   const strategyCounterfactualProductionEffectVector = Object.fromEntries(state.labels.map((label) => [label.strategy_id, label.counterfactual_production_effect]))
+  const strategyProductionWeightVector = Object.fromEntries(
+    state.labels.map((label) => [label.strategy_id, label.production_weight_multiplier]),
+  )
   const strategyOverlapVector = Object.fromEntries(state.labels.map((label) => [
     label.strategy_id,
     prior.strategy_metrics[label.strategy_id]?.holding_overlap ?? label.overlap,
@@ -1133,6 +1175,7 @@ function annotateCandidate<T extends StrategyCandidatePoolCandidate>(
     state.labels.map((label) => [label.strategy_id, label.unavailable_reason]),
   )
   const rawPositionWeights = Object.fromEntries(state.labels.map((label) => {
+    if (!label.production_owner) return [label.strategy_id, 0]
     const metrics = prior.strategy_metrics[label.strategy_id]
     const weight = label.affinity
       * (metrics?.prior_weight ?? 1)
@@ -1340,6 +1383,7 @@ function annotateCandidate<T extends StrategyCandidatePoolCandidate>(
     strategy_formal_veto_reason_vector: strategyFormalVetoReasonVector,
     strategy_counterfactual_affinity_vector: strategyCounterfactualAffinityVector,
     strategy_counterfactual_production_effect_vector: strategyCounterfactualProductionEffectVector,
+    strategy_production_weight_vector: strategyProductionWeightVector,
     strategy_position_weight_vector: challengerServing ? strategyChallengerPositionWeights : strategyPositionWeights,
     strategy_raw_position_weight_vector: strategyPositionWeights,
     strategy_challenger_position_weight_vector: strategyChallengerPositionWeights,
@@ -1588,6 +1632,7 @@ export function buildMultiStrategyPleRoutingPlan<T extends StrategyCandidatePool
       runtime_teacher_evidence_policy: 'previous_trading_day_or_latest_verified_cache_no_same_day_l2_l3_dependency',
       runtime_teacher_evidence_available_count: runtimeTeacherAvailableCount,
       runtime_teacher_evidence_missing_count: Math.max(0, annotated.length - runtimeTeacherAvailableCount),
+      performance_weight_owner: options.performanceWeightOwner ?? 'ple_portfolio_metrics',
       strategy_usage: Object.fromEntries(Object.entries(strategyUsage).sort()),
       family_usage: Object.fromEntries(Object.entries(familyUsage).sort()) as Partial<Record<StrategyFamilyId, number>>,
       previous_slate_count: previousSlate.size,

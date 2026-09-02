@@ -327,6 +327,8 @@ async function main(): Promise<void> {
   const missingPolicy = resolveRuntimeStrategyWeights(['active-b', 'active-a'], null)
   assert.deepEqual(missingPolicy.allocationWeights, { 'active-a': 0, 'active-b': 0 })
   assert.deepEqual(missingPolicy.evaluationWeights, { 'active-a': 1, 'active-b': 1 })
+  assert.deepEqual(missingPolicy.routingWeights, { 'active-a': 0, 'active-b': 0 })
+  assert.equal(missingPolicy.performanceWeightOwner, 'ple_portfolio_metrics')
   assert.equal(missingPolicy.source, 'production_policy_unavailable_abstain')
   assert.equal(missingPolicy.abstained, true)
   assert.equal(hasPositiveStrategyAllocation(['active-a'], missingPolicy.allocationWeights), false)
@@ -334,11 +336,35 @@ async function main(): Promise<void> {
   const authoritativePolicy = resolveRuntimeStrategyWeights(['active-a', 'active-b'], loaded)
   assert.deepEqual(authoritativePolicy.allocationWeights, { 'active-a': 1, 'active-b': 0 })
   assert.deepEqual(authoritativePolicy.evaluationWeights, { 'active-a': 1, 'active-b': 1 })
+  assert.deepEqual(authoritativePolicy.routingWeights, { 'active-a': 1, 'active-b': 0 })
+  assert.equal(authoritativePolicy.performanceWeightOwner, 'ple_portfolio_metrics')
   assert.equal(authoritativePolicy.source, 'authoritative_production_policy')
   assert.equal(authoritativePolicy.abstained, false)
   assert.equal(hasPositiveStrategyAllocation(['active-b'], authoritativePolicy.allocationWeights), false)
   assert.equal(hasPositiveStrategyAllocation(['active-b', 'active-a'], authoritativePolicy.allocationWeights), true)
   assert.equal(hasPositiveStrategyAllocation([], authoritativePolicy.allocationWeights), false)
+
+  const calibratedPolicy = resolveRuntimeStrategyWeights(['active-a', 'active-b'], {
+    ...loaded,
+    state: {
+      ...loaded.state,
+      strategy_weights: { 'active-a': 0.8, 'active-b': 0.2 },
+      evidence: {
+        ...loaded.state.evidence,
+        evidence_owner: {
+          version: 'strategy-evidence-owner-fusion-v3',
+          checksum: 'a'.repeat(64),
+          weight_effect: 'immutable_oos_calibrated_bounded_bidirectional',
+          ready_profile_count: 2,
+          calibration_run_id: 'calibration-run',
+          calibration_artifact_checksum: 'b'.repeat(64),
+        },
+      },
+    },
+  } as any)
+  assert.deepEqual(calibratedPolicy.allocationWeights, { 'active-a': 0.8, 'active-b': 0.2 })
+  assert.deepEqual(calibratedPolicy.routingWeights, { 'active-a': 1.6, 'active-b': 0.4 })
+  assert.equal(calibratedPolicy.performanceWeightOwner, 'formal_evidence_owner')
 
   assert.doesNotMatch(STRATEGY_PRODUCTION_POLICY_POINT_IN_TIME_SQL, /knowledge_cutoff_date\s*<=\s*\?/)
 

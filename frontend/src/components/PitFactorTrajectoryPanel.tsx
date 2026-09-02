@@ -1,6 +1,7 @@
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
-import { Radar, RotateCcw } from 'lucide-react'
+import { Pause, Play, Radar, RotateCcw } from 'lucide-react'
+import { useReducedMotion } from 'framer-motion'
 import {
   paperApi,
   recommendationsApi,
@@ -9,21 +10,34 @@ import {
   type FactorTrajectorySeries,
 } from '@/lib/api'
 import { paperPendingBuysFromPayload, paperPositionsFromPayload } from '@/lib/paperPayload'
+import { buildFactorTrajectoryTimeline, factorTrajectoryPlaybackInterval } from '@/lib/pitFactorTrajectoryPlayback'
 
-const WIDTH = 760
-const HEIGHT = 410
-const PAD = { left: 60, right: 70, top: 42, bottom: 58 }
+const WIDTH = 1040
+const HEIGHT = 560
+const PAD = { left: 68, right: 34, top: 28, bottom: 46 }
+const PLOT_WIDTH = WIDTH - PAD.left - PAD.right
+const PLOT_HEIGHT = HEIGHT - PAD.top - PAD.bottom
+const PLOT_MID_X = PAD.left + PLOT_WIDTH / 2
+const PLOT_MID_Y = PAD.top + PLOT_HEIGHT / 2
 const COLORS = ['#67e8f9', '#fbbf24', '#fb7185', '#a78bfa', '#34d399', '#60a5fa', '#f97316', '#e879f9', '#a3e635', '#fda4af', '#22d3ee', '#c4b5fd']
 const WINDOW_OPTIONS = [3, 5, 10, 20, 60] as const
+const MAX_DEFAULT_LABELS = 12
+
+const QUADRANT_GUIDES = [
+  { corner: '左上', title: '資金先卡位', detail: '表現仍偏弱，但參與開始增加', className: 'border-slate-400/25 bg-slate-500/[0.07] text-slate-200' },
+  { corner: '右上', title: '強勢擴散', detail: '表現優於預期，且股票與資金同步', className: 'border-emerald-300/25 bg-emerald-400/[0.07] text-emerald-100' },
+  { corner: '左下', title: '弱勢退潮', detail: '表現偏弱，資金參與也較少', className: 'border-rose-300/25 bg-rose-400/[0.07] text-rose-100' },
+  { corner: '右下', title: '強但未擴散', detail: '表現偏強，但支持面仍偏窄', className: 'border-amber-300/25 bg-amber-400/[0.07] text-amber-100' },
+] as const
 
 function cx(...classes: Array<string | false | null | undefined>) {
   return classes.filter(Boolean).join(' ')
 }
 
 function coordinate(point: FactorTrajectoryPoint) {
-  const x = PAD.left + (Math.max(0, Math.min(100, Number(point.x))) / 100) * (WIDTH - PAD.left - PAD.right)
+  const x = PAD.left + (Math.max(0, Math.min(100, Number(point.x))) / 100) * PLOT_WIDTH
   const yValue = Math.max(0, Math.min(100, Number(point.y)))
-  const y = HEIGHT - PAD.bottom - (yValue / 100) * (HEIGHT - PAD.top - PAD.bottom)
+  const y = HEIGHT - PAD.bottom - (yValue / 100) * PLOT_HEIGHT
   return { x, y }
 }
 
@@ -71,11 +85,92 @@ function flowRingWidth(point: FactorTrajectoryPoint) {
   return 0.8 + flow * 1.8
 }
 
+function revealedTrajectoryPoints(points: FactorTrajectoryPoint[], currentDate: string | null) {
+  if (!currentDate) return []
+  return points.filter((point) => point.date <= currentDate && Number.isFinite(point.x) && Number.isFinite(point.y))
+}
+
+function defaultLabeledSeriesKeys(series: FactorTrajectorySeries[], currentDate: string | null) {
+  const candidates = series
+    .map((item) => {
+      const revealed = revealedTrajectoryPoints(item.points, currentDate)
+      const current = revealed[revealed.length - 1]
+      const salience = current == null ? -1 : Math.hypot(Number(current.x) - 50, Number(current.y) - 50)
+      if (!current) return null
+      const position = coordinate(current)
+      const width = Math.max(42, [...item.label].length * 12.5)
+      const height = 18
+      const left = position.x > PLOT_MID_X ? position.x - 10 - width : position.x + 10
+      const top = position.y < PAD.top + 34 ? position.y + 7 : position.y - 26
+      return { key: item.key, salience, box: { left, right: left + width, top, bottom: top + height } }
+    })
+    .filter((item): item is NonNullable<typeof item> => item != null)
+    .sort((left, right) => right.salience - left.salience)
+
+  const accepted: typeof candidates = []
+  for (const candidate of candidates) {
+    const overlaps = accepted.some((existing) => (
+      candidate.box.left < existing.box.right + 6
+      && candidate.box.right + 6 > existing.box.left
+      && candidate.box.top < existing.box.bottom + 6
+      && candidate.box.bottom + 6 > existing.box.top
+    ))
+    if (overlaps) continue
+    accepted.push(candidate)
+    if (accepted.length >= MAX_DEFAULT_LABELS) break
+  }
+  return new Set(accepted.map((item) => item.key))
+}
+
 function TrajectoryChart({ series, scope }: { series: FactorTrajectorySeries[]; scope: 'group' | 'stock' }) {
   const [focusKey, setFocusKey] = useState<string | null>(null)
   const [replayKey, setReplayKey] = useState(0)
+  const [playbackIndex, setPlaybackIndex] = useState(0)
+  const [isPlaying, setIsPlaying] = useState(false)
   const [hovered, setHovered] = useState<{ label: string; point: FactorTrajectoryPoint } | null>(null)
-  const visible = focusKey ? series.filter((item) => item.key === focusKey) : series
+  const prefersReducedMotion = useReducedMotion()
+  const visible = useMemo(
+    () => focusKey ? series.filter((item) => item.key === focusKey) : series,
+    [focusKey, series],
+  )
+  const timeline = useMemo(() => buildFactorTrajectoryTimeline(visible), [visible])
+  const timelineKey = timeline.join('|')
+  const lastPlaybackIndex = Math.max(0, timeline.length - 1)
+  const currentDate = timeline[Math.min(playbackIndex, lastPlaybackIndex)] ?? null
+  const labeledSeriesKeys = defaultLabeledSeriesKeys(visible, currentDate)
+
+  useEffect(() => {
+    if (focusKey && !series.some((item) => item.key === focusKey)) setFocusKey(null)
+  }, [focusKey, series])
+
+  useEffect(() => {
+    if (prefersReducedMotion || timeline.length <= 1) {
+      setPlaybackIndex(lastPlaybackIndex)
+      setIsPlaying(false)
+      return
+    }
+    setPlaybackIndex(0)
+    setIsPlaying(true)
+  }, [focusKey, lastPlaybackIndex, prefersReducedMotion, replayKey, timeline.length, timelineKey])
+
+  useEffect(() => {
+    if (!isPlaying) return
+    if (playbackIndex >= lastPlaybackIndex) {
+      setIsPlaying(false)
+      return
+    }
+    const timer = window.setTimeout(
+      () => setPlaybackIndex((current) => Math.min(lastPlaybackIndex, current + 1)),
+      factorTrajectoryPlaybackInterval(timeline.length),
+    )
+    return () => window.clearTimeout(timer)
+  }, [isPlaying, lastPlaybackIndex, playbackIndex, timeline.length])
+
+  function togglePlayback() {
+    if (timeline.length <= 1) return
+    if (playbackIndex >= lastPlaybackIndex) setPlaybackIndex(0)
+    setIsPlaying((current) => !current)
+  }
 
   return (
     <div>
@@ -106,97 +201,102 @@ function TrajectoryChart({ series, scope }: { series: FactorTrajectorySeries[]; 
             {item.label}
           </button>
         ))}
-        <button
-          type="button"
-          onClick={() => setReplayKey((value) => value + 1)}
-          className="ml-auto inline-flex items-center gap-1.5 rounded-full border border-white/10 px-2.5 py-1 text-[11px] font-semibold text-slate-300 transition hover:border-cyan-300/30 hover:text-cyan-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-cyan-300/70"
-        >
-          <RotateCcw className="h-3 w-3" />重播路徑
-        </button>
+        <div className="ml-auto flex flex-wrap items-center justify-end gap-2">
+          <span data-playback-date className="rounded-full border border-cyan-300/20 bg-cyan-400/[0.07] px-2.5 py-1 text-[11px] font-semibold tabular-nums text-cyan-100">
+            {currentDate ? `播放至 ${currentDate}` : '等待交易日'}
+          </span>
+          <button
+            type="button"
+            onClick={togglePlayback}
+            disabled={timeline.length <= 1}
+            className="inline-flex items-center gap-1.5 rounded-full border border-white/10 px-2.5 py-1 text-[11px] font-semibold text-slate-300 transition hover:border-cyan-300/30 hover:text-cyan-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-cyan-300/70 disabled:cursor-not-allowed disabled:opacity-40"
+          >
+            {isPlaying ? <Pause className="h-3 w-3" /> : <Play className="h-3 w-3" />}
+            {isPlaying ? '暫停' : playbackIndex >= lastPlaybackIndex ? '從頭播放' : '繼續播放'}
+          </button>
+          <button
+            type="button"
+            onClick={() => setReplayKey((value) => value + 1)}
+            disabled={timeline.length <= 1 || Boolean(prefersReducedMotion)}
+            className="inline-flex items-center gap-1.5 rounded-full border border-white/10 px-2.5 py-1 text-[11px] font-semibold text-slate-300 transition hover:border-cyan-300/30 hover:text-cyan-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-cyan-300/70 disabled:cursor-not-allowed disabled:opacity-40"
+          >
+            <RotateCcw className="h-3 w-3" />重播
+          </button>
+        </div>
       </div>
 
-      <div className="relative overflow-hidden rounded-2xl border border-white/[0.07] bg-[#090d14]">
-        <svg viewBox={`0 0 ${WIDTH} ${HEIGHT}`} className="block h-auto min-h-[330px] w-full" role="img" aria-label="PIT residual 與族群廣度資金擴散的近期軌跡圖">
-          <style>{`
-            @keyframes sv-factor-trace { from { stroke-dashoffset: 1; } to { stroke-dashoffset: 0; } }
-            @media (prefers-reduced-motion: reduce) { .sv-factor-path { animation: none !important; stroke-dashoffset: 0 !important; } .sv-factor-head { display: none; } }
-          `}</style>
-          <rect x={PAD.left} y={PAD.top} width={(WIDTH - PAD.left - PAD.right) / 2} height={(HEIGHT - PAD.top - PAD.bottom) / 2} fill="#0f172a" opacity="0.42" />
-          <rect x={WIDTH / 2 - 5} y={PAD.top} width={(WIDTH - PAD.left - PAD.right) / 2} height={(HEIGHT - PAD.top - PAD.bottom) / 2} fill="#0b2a2b" opacity="0.40" />
-          <rect x={PAD.left} y={HEIGHT / 2 - 8} width={(WIDTH - PAD.left - PAD.right) / 2} height={(HEIGHT - PAD.top - PAD.bottom) / 2} fill="#241721" opacity="0.34" />
-          <rect x={WIDTH / 2 - 5} y={HEIGHT / 2 - 8} width={(WIDTH - PAD.left - PAD.right) / 2} height={(HEIGHT - PAD.top - PAD.bottom) / 2} fill="#2a220d" opacity="0.31" />
+      <div className="mb-3 grid gap-2 sm:grid-cols-2 xl:grid-cols-4" aria-label="四象限判讀說明">
+        {QUADRANT_GUIDES.map((guide) => (
+          <div key={guide.corner} data-quadrant-guide className={cx('rounded-xl border px-3 py-2', guide.className)}>
+            <div className="flex items-baseline gap-2">
+              <span className="text-[10px] font-bold tracking-[0.16em] opacity-60">{guide.corner}</span>
+              <strong className="text-xs">{guide.title}</strong>
+            </div>
+            <p className="mt-1 text-[11px] leading-4 opacity-70">{guide.detail}</p>
+          </div>
+        ))}
+      </div>
+
+      <div className="relative rounded-2xl border border-white/[0.07] bg-[#090d14] pl-9 sm:pl-12">
+        <div data-y-axis-guide className="absolute inset-y-0 left-1.5 flex items-center gap-1 text-[11px] font-semibold text-slate-400 sm:left-3" aria-hidden="true">
+          <span className="text-cyan-300">↑</span>
+          <span style={{ writingMode: 'vertical-rl', textOrientation: 'upright' }} className="tracking-[0.18em]">越上方，股票與資金支持越廣</span>
+        </div>
+        <div className="overflow-hidden rounded-r-2xl">
+        <svg data-trajectory-plot viewBox={`0 0 ${WIDTH} ${HEIGHT}`} className={cx('block w-full', scope === 'group' ? 'min-h-[480px]' : 'min-h-[390px]')} role="img" aria-label="PIT residual 與族群廣度資金擴散的近期軌跡圖">
+          <rect x={PAD.left} y={PAD.top} width={PLOT_WIDTH / 2} height={PLOT_HEIGHT / 2} fill="#0f172a" opacity="0.42" />
+          <rect x={PLOT_MID_X} y={PAD.top} width={PLOT_WIDTH / 2} height={PLOT_HEIGHT / 2} fill="#0b2a2b" opacity="0.40" />
+          <rect x={PAD.left} y={PLOT_MID_Y} width={PLOT_WIDTH / 2} height={PLOT_HEIGHT / 2} fill="#241721" opacity="0.34" />
+          <rect x={PLOT_MID_X} y={PLOT_MID_Y} width={PLOT_WIDTH / 2} height={PLOT_HEIGHT / 2} fill="#2a220d" opacity="0.31" />
 
           {[0, 25, 50, 75, 100].map((tick) => {
-            const x = PAD.left + (tick / 100) * (WIDTH - PAD.left - PAD.right)
-            const y = HEIGHT - PAD.bottom - (tick / 100) * (HEIGHT - PAD.top - PAD.bottom)
+            const x = PAD.left + (tick / 100) * PLOT_WIDTH
+            const y = HEIGHT - PAD.bottom - (tick / 100) * PLOT_HEIGHT
             return (
               <g key={tick}>
                 <line x1={x} x2={x} y1={PAD.top} y2={HEIGHT - PAD.bottom} stroke={tick === 50 ? '#64748b' : '#334155'} strokeOpacity={tick === 50 ? 0.62 : 0.32} strokeDasharray={tick === 50 ? '5 5' : '2 7'} />
                 <line x1={PAD.left} x2={WIDTH - PAD.right} y1={y} y2={y} stroke={tick === 50 ? '#64748b' : '#334155'} strokeOpacity={tick === 50 ? 0.62 : 0.32} strokeDasharray={tick === 50 ? '5 5' : '2 7'} />
-                <text x={x} y={HEIGHT - PAD.bottom + 22} textAnchor="middle" fontSize="11" fill="#7f8da3">{tick}</text>
-                <text x={PAD.left - 13} y={y + 4} textAnchor="end" fontSize="11" fill="#7f8da3">{tick}</text>
+                <text x={x} y={HEIGHT - PAD.bottom + 25} textAnchor="middle" fontSize="13" fontWeight="600" fill="#94a3b8">{tick}</text>
+                <text x={PAD.left - 14} y={y + 5} textAnchor="end" fontSize="13" fontWeight="600" fill="#94a3b8">{tick}</text>
               </g>
             )
           })}
-          <text x={WIDTH / 2} y={HEIGHT - 14} textAnchor="middle" fontSize="12" fontWeight="600" fill="#a5b4c7">
-            {scope === 'group' ? '比原本預期弱 ← 族群表現 → 比原本預期強' : '比原本預期弱 ← 個股表現 → 比原本預期強'}
-          </text>
-          <text x="16" y={HEIGHT / 2} textAnchor="middle" fontSize="12" fontWeight="600" fill="#a5b4c7" transform={`rotate(-90 16 ${HEIGHT / 2})`}>
-            更多股票與資金一起支持 →
-          </text>
-          <g>
-            <rect x={PAD.left + 7} y={PAD.top + 7} width="160" height="26" rx="7" fill="#111827" fillOpacity="0.94" stroke="#64748b" strokeOpacity="0.8" />
-            <text x={PAD.left + 15} y={PAD.top + 24} textAnchor="start" fontSize="13" fontWeight="700" fill="#e2e8f0">表現偏弱，但資金有跟</text>
-          </g>
-          <g>
-            <rect x={WIDTH - PAD.right - 167} y={PAD.top + 7} width="160" height="26" rx="7" fill="#052e2b" fillOpacity="0.96" stroke="#34d399" strokeOpacity="0.75" />
-            <text x={WIDTH - PAD.right - 15} y={PAD.top + 24} textAnchor="end" fontSize="13" fontWeight="700" fill="#d1fae5">表現偏強，資金也有跟</text>
-          </g>
-          <g>
-            <rect x={PAD.left + 7} y={HEIGHT - PAD.bottom - 35} width="147" height="26" rx="7" fill="#321525" fillOpacity="0.96" stroke="#fb7185" strokeOpacity="0.75" />
-            <text x={PAD.left + 15} y={HEIGHT - PAD.bottom - 18} textAnchor="start" fontSize="13" fontWeight="700" fill="#fecdd3">表現偏弱，資金也少</text>
-          </g>
-          <g>
-            <rect x={WIDTH - PAD.right - 167} y={HEIGHT - PAD.bottom - 35} width="160" height="26" rx="7" fill="#35260b" fillOpacity="0.96" stroke="#fbbf24" strokeOpacity="0.75" />
-            <text x={WIDTH - PAD.right - 15} y={HEIGHT - PAD.bottom - 18} textAnchor="end" fontSize="13" fontWeight="700" fill="#fef3c7">表現偏強，資金還沒跟</text>
-          </g>
-
           {visible.map((item) => {
             const sourceIndex = series.findIndex((candidate) => candidate.key === item.key)
             const color = COLORS[Math.max(0, sourceIndex) % COLORS.length]
-            const validPoints = item.points.filter((point) => Number.isFinite(point.x) && Number.isFinite(point.y))
-            const path = smoothPath(validPoints)
-            const latest = validPoints[validPoints.length - 1]
+            const revealedPoints = revealedTrajectoryPoints(item.points, currentDate)
+            const path = smoothPath(revealedPoints)
+            const latest = revealedPoints[revealedPoints.length - 1]
             if (!path || !latest) return null
             const latestPosition = coordinate(latest)
+            const labelOnLeft = latestPosition.x > PLOT_MID_X
+            const labelBelow = latestPosition.y < PAD.top + 34
+            const showLabel = focusKey != null || labeledSeriesKeys.has(item.key)
             return (
-              <g key={`${item.key}-${replayKey}`}>
+              <g key={item.key}>
                 <path
+                  data-trajectory-path={item.key}
                   d={path}
-                  pathLength={1}
                   fill="none"
                   stroke={color}
                   strokeWidth={focusKey ? 3.4 : 2.2}
                   strokeLinecap="round"
                   strokeLinejoin="round"
-                  strokeDasharray={1}
-                  strokeDashoffset={1}
-                  className="sv-factor-path"
-                  style={{ animation: 'sv-factor-trace 1300ms cubic-bezier(.22,.75,.2,1) forwards' }}
+                  strokeOpacity={focusKey ? 0.95 : 0.78}
                 />
-                {validPoints.map((point) => {
+                {revealedPoints.map((point) => {
                   const position = coordinate(point)
                   return (
-                    <g key={`${item.key}-${point.date}`}>
-                      <circle cx={position.x} cy={position.y} r={flowRingRadius(point)} fill="none" stroke={color} strokeOpacity="0.5" strokeWidth={flowRingWidth(point)} />
+                    <g key={`${item.key}-${point.date}`} data-trajectory-point={`${item.key}:${point.date}`}>
+                      <circle cx={position.x} cy={position.y} r={flowRingRadius(point)} fill="none" stroke={color} strokeOpacity="0.38" strokeWidth={flowRingWidth(point)} />
                       <circle
                         cx={position.x}
                         cy={position.y}
                         r={pointRadius(point)}
                         fill={color}
-                        fillOpacity="0.7"
+                        fillOpacity="0.56"
                         stroke="#e2e8f0"
-                        strokeOpacity="0.7"
+                        strokeOpacity="0.55"
                         strokeWidth={1.1}
                         tabIndex={0}
                         onMouseEnter={() => setHovered({ label: item.label, point })}
@@ -209,35 +309,58 @@ function TrajectoryChart({ series, scope }: { series: FactorTrajectorySeries[]; 
                     </g>
                   )
                 })}
-                {validPoints.length > 1 ? (
-                  <circle r="4" fill={color} className="sv-factor-head">
-                    <animateMotion dur="1300ms" path={path} fill="freeze" repeatCount="1" />
-                  </circle>
-                ) : null}
-                <circle
-                  cx={latestPosition.x}
-                  cy={latestPosition.y}
-                  r={pointRadius(latest, true)}
-                  fill={color}
-                  fillOpacity="0.95"
-                  stroke="#f8fafc"
-                  strokeWidth="1.4"
-                />
-                <text x={latestPosition.x + 8} y={latestPosition.y - 9} fontSize="11" fontWeight="700" fill={color}>{item.label}</text>
+                <g
+                  style={{
+                    transform: `translate(${latestPosition.x}px, ${latestPosition.y}px)`,
+                    transition: prefersReducedMotion ? undefined : `transform ${Math.min(520, factorTrajectoryPlaybackInterval(timeline.length))}ms cubic-bezier(.22,.75,.2,1)`,
+                  }}
+                >
+                  {isPlaying ? <circle r={pointRadius(latest, true) + 6} fill="none" stroke={color} strokeOpacity="0.28" strokeWidth="2" /> : null}
+                  <circle
+                    r={pointRadius(latest, true)}
+                    fill={color}
+                    fillOpacity="0.96"
+                    stroke="#f8fafc"
+                    strokeWidth="1.6"
+                  />
+                  {showLabel ? (
+                    <text
+                      data-trajectory-label={item.key}
+                      x={labelOnLeft ? -10 : 10}
+                      y={labelBelow ? 20 : -11}
+                      textAnchor={labelOnLeft ? 'end' : 'start'}
+                      fontSize="12"
+                      fontWeight="700"
+                      paintOrder="stroke"
+                      stroke="#090d14"
+                      strokeWidth="3"
+                      fill={color}
+                    >
+                      {item.label}
+                    </text>
+                  ) : null}
+                </g>
               </g>
             )
           })}
         </svg>
+        </div>
         {hovered ? (
-          <div className="pointer-events-none absolute left-4 top-4 max-w-[min(90%,360px)] rounded-xl border border-white/10 bg-[#10151f]/95 px-3 py-2 text-xs shadow-2xl">
+          <div className="pointer-events-none absolute left-14 top-4 max-w-[min(82%,360px)] rounded-xl border border-white/10 bg-[#10151f]/95 px-3 py-2 text-xs shadow-2xl sm:left-20">
             <p className="font-bold text-slate-100">{hovered.label}</p>
             <p className="mt-1 leading-5 text-slate-400">{formatPoint(hovered.point, scope)}</p>
           </div>
         ) : null}
+        <div data-x-axis-guide className="grid grid-cols-[1fr_auto_1fr] items-center gap-3 border-t border-white/[0.06] px-4 py-2.5 text-[11px] font-semibold text-slate-400">
+          <span className="text-left">← 比原本預期弱</span>
+          <span className="text-center text-slate-300">{scope === 'group' ? '族群表現' : '個股表現'}</span>
+          <span className="text-right">比原本預期強 →</span>
+        </div>
       </div>
       <div className="mt-2 flex flex-wrap gap-x-4 gap-y-1 text-[10px] text-slate-500">
         <span>圓點越大＝當天的強弱或支持訊號越明顯</span>
         <span>外圈越大、越粗＝相對更多資金參與（只比較當天族群，不是實際金額）</span>
+        {focusKey == null && series.length > 1 ? <span>為避免文字打架，預設最多標示離中心最遠且互不重疊的 {MAX_DEFAULT_LABELS} 類；點上方族群可單獨查看</span> : null}
       </div>
     </div>
   )
@@ -293,7 +416,7 @@ function PanelShell({ data, isLoading, error, scope, days, onDaysChange }: {
         </div>
       </div>
       {isLoading ? (
-        <div className="h-[410px] animate-pulse rounded-2xl border border-white/[0.06] bg-white/[0.025]" />
+        <div className={cx('animate-pulse rounded-2xl border border-white/[0.06] bg-white/[0.025]', scope === 'group' ? 'h-[620px]' : 'h-[480px]')} />
       ) : error ? (
         <div className="rounded-xl border border-amber-300/15 bg-amber-400/[0.055] p-4 text-sm text-amber-100">PIT factor map 暫時無法讀取：{error.message}</div>
       ) : series.length === 0 ? (

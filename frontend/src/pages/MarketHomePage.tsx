@@ -1468,7 +1468,7 @@ export default function MarketHomePage() {
 
           <MarketOverviewBlock />
           <DeferredRender className="sv-home-deferred-section" minHeight={760}>
-            <div className="grid items-start gap-4 xl:grid-cols-[minmax(0,3fr)_minmax(380px,2fr)]">
+            <div className="grid items-start gap-4 xl:grid-cols-[minmax(380px,2fr)_minmax(0,3fr)]">
               <div className="min-w-0"><RecommendationPanel /></div>
               <div className="min-w-0"><GroupFactorTrajectoryPanel /></div>
             </div>

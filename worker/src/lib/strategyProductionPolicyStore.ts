@@ -1,4 +1,5 @@
 import {
+  FORMAL_STRATEGY_EVIDENCE_CALIBRATED_WEIGHT_EFFECT,
   STRATEGY_ALLOCATION_ELIGIBILITY_CONTRACT_VERSION,
   STRATEGY_PRODUCTION_FIREWALL_POLICY_ID,
   STRATEGY_PRODUCTION_FIREWALL_VERSION,
@@ -100,9 +101,14 @@ export type PreviousStrategyProductionFirewallState = Omit<
 export type RuntimeStrategyWeightResolution = {
   allocationWeights: Record<string, number>
   evaluationWeights: Record<string, number>
+  routingWeights: Record<string, number>
+  performanceWeightOwner: 'ple_portfolio_metrics' | 'formal_evidence_owner'
   source: 'authoritative_production_policy' | 'production_policy_unavailable_abstain'
   abstained: boolean
 }
+
+export const STRATEGY_ROUTING_WEIGHT_MULTIPLIER_MIN = 0.15 as const
+export const STRATEGY_ROUTING_WEIGHT_MULTIPLIER_MAX = 1.8 as const
 export interface LoadedLegacyStrategyProductionWeights {
   policy_id: typeof LEGACY_STRATEGY_PRODUCTION_FIREWALL_POLICY_ID
   version: typeof LEGACY_STRATEGY_PRODUCTION_FIREWALL_VERSION
@@ -166,16 +172,39 @@ export function resolveRuntimeStrategyWeights(
     return {
       allocationWeights: Object.fromEntries(ids.map((id) => [id, 0])),
       evaluationWeights,
+      routingWeights: Object.fromEntries(ids.map((id) => [id, 0])),
+      performanceWeightOwner: 'ple_portfolio_metrics',
       source: 'production_policy_unavailable_abstain',
       abstained: true,
     }
   }
+  const allocationWeights = Object.fromEntries(ids.map((id) => {
+    const value = Number(policy.state.strategy_weights[id])
+    return [id, Number.isFinite(value) && value > 0 ? value : 0]
+  }))
+  const positiveWeights = Object.values(allocationWeights).filter((weight) => weight > 0)
+  const meanPositiveWeight = positiveWeights.length > 0
+    ? positiveWeights.reduce((sum, weight) => sum + weight, 0) / positiveWeights.length
+    : 0
+  const routingWeights = Object.fromEntries(ids.map((id) => {
+    const weight = allocationWeights[id]
+    if (!(weight > 0) || !(meanPositiveWeight > 0)) return [id, 0]
+    const relative = weight / meanPositiveWeight
+    return [id, Number(Math.min(
+      STRATEGY_ROUTING_WEIGHT_MULTIPLIER_MAX,
+      Math.max(STRATEGY_ROUTING_WEIGHT_MULTIPLIER_MIN, relative),
+    ).toFixed(6))]
+  }))
+  const evidenceOwner = (policy.state.evidence as {
+    evidence_owner?: { weight_effect?: unknown } | null
+  }).evidence_owner
   return {
-    allocationWeights: Object.fromEntries(ids.map((id) => {
-      const value = Number(policy.state.strategy_weights[id])
-      return [id, Number.isFinite(value) && value > 0 ? value : 0]
-    })),
+    allocationWeights,
     evaluationWeights,
+    routingWeights,
+    performanceWeightOwner: evidenceOwner?.weight_effect === FORMAL_STRATEGY_EVIDENCE_CALIBRATED_WEIGHT_EFFECT
+      ? 'formal_evidence_owner'
+      : 'ple_portfolio_metrics',
     source: 'authoritative_production_policy',
     abstained: false,
   }

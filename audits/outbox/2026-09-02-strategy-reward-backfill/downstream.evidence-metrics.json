@@ -1,0 +1,8 @@
+{
+  "success": true,
+  "message": "strategy-evidence-metrics 執行成功",
+  "triggered_at": "2026-09-02T06:55:48.647Z",
+  "result": "strategy_evidence_metrics source=learning_target_join profiles=26 observations=55359 rows=130 ready=70 receipt=strategy-evidence-metrics-v4:2026-09-02:authority_bridge:8bd10f60c4c88a06667f",
+  "run_id": "strategy-evidence-metrics-1788332116963-ox9j5wp3",
+  "ticket_id": "scheduler-ticket-v1-f32981ba99744ef3832df8099f3158233e952c13"
+}

@@ -1,0 +1,8 @@
+{
+  "success": true,
+  "message": "strategy-evidence-owner-calibration 執行成功",
+  "triggered_at": "2026-09-02T06:56:02.363Z",
+  "result": "strategy_evidence_owner_calibration status=pending_maturity run_id=strategy-evidence-owner-calibration-v1-2026-09-02-11a0c43771f946696864 dates=0 oos=0 delta_lcb90=null",
+  "run_id": "strategy-evidence-owner-calibration-1788332150343-chvt4ahc",
+  "ticket_id": "scheduler-ticket-v1-00146ce656f6be3365e49c7f9f12218d68565b75"
+}

@@ -247,6 +247,39 @@ async function replay(options) {
   }))
 }
 
+async function refreshDownstream(options) {
+  const asOfDate = String(options.as_of_date ?? '2026-09-02')
+  const outputDir = resolve(String(options.output_dir ?? 'audits/outbox/2026-09-02-strategy-reward-backfill'))
+  const marginalEdge = await apiJson('/api/admin/strategy/marginal-edge-v4/refresh', {
+    method: 'POST',
+    body: { as_of_date: asOfDate },
+    confirm: true,
+  })
+  if (!marginalEdge.success || marginalEdge.promotion_allowed !== false) {
+    throw new Error(`marginal edge refresh violated shadow-only contract: ${JSON.stringify(marginalEdge)}`)
+  }
+  writeJson(join(outputDir, 'downstream.marginal-edge.json'), marginalEdge)
+
+  const metrics = await apiJson(`/api/admin/trigger/strategy-evidence-metrics?sync=1&outcome_as_of_date=${encodeURIComponent(asOfDate)}&source_mode=authority_bridge`, {
+    method: 'POST',
+  })
+  if (!metrics.success) throw new Error(`strategy evidence metrics refresh failed: ${JSON.stringify(metrics)}`)
+  writeJson(join(outputDir, 'downstream.evidence-metrics.json'), metrics)
+
+  const calibration = await apiJson(`/api/admin/trigger/strategy-evidence-owner-calibration?sync=1&knowledge_cutoff_date=${encodeURIComponent(asOfDate)}&allow_promotion=0`, {
+    method: 'POST',
+  })
+  if (!calibration.success) throw new Error(`strategy evidence owner calibration failed: ${JSON.stringify(calibration)}`)
+  writeJson(join(outputDir, 'downstream.owner-calibration.json'), calibration)
+  console.log(JSON.stringify({
+    as_of_date: asOfDate,
+    marginal_edge_status: marginalEdge.status,
+    evidence_metrics: metrics.summary ?? metrics.status ?? 'success',
+    owner_calibration: calibration.summary ?? calibration.status ?? 'success',
+    promotion_allowed: false,
+  }))
+}
+
 function scalar(value) {
   if (value === null || value === undefined) return ''
   if (typeof value === 'number' || typeof value === 'boolean') return String(value)
@@ -324,5 +357,6 @@ const options = argsMap(process.argv.slice(2))
 const command = options._[0]
 if (command === 'snapshot') await snapshot(options)
 else if (command === 'replay') await replay(options)
+else if (command === 'refresh-downstream') await refreshDownstream(options)
 else if (command === 'compare') compare(options)
-else throw new Error('usage: snapshot|replay|compare [--phase before|after] [--as-of-date YYYY-MM-DD] [--output-dir PATH]')
+else throw new Error('usage: snapshot|replay|refresh-downstream|compare [--phase before|after] [--as-of-date YYYY-MM-DD] [--output-dir PATH]')

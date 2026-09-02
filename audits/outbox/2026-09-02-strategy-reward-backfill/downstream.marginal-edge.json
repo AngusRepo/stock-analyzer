@@ -1,0 +1,11 @@
+{
+  "success": true,
+  "mode": "persisted_shadow",
+  "as_of_date": "2026-09-02",
+  "promotion_allowed": false,
+  "runId": "strategy-marginal-edge-v7-2026-09-02-ccc217d114cda31da541",
+  "status": "shadow",
+  "sampleDates": 19,
+  "eligibleStrategies": 0,
+  "note": "Marginal-edge evidence refreshed without promotion or evening-chain scheduler mutation."
+}

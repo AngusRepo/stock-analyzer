@@ -116,10 +116,15 @@ const postCutoverLearningTables = [
   'state_space_v2_observations',
   'state_space_v2_evaluations',
   'pit_factor_shadow_daily_v1',
+  'expected_return_candidate_forward_evaluations',
 ]
 const learningBackfillTables = tablesForDataDomainShadowBackfill('learning')
 for (const table of postCutoverLearningTables) {
   assert(!learningBackfillTables.includes(table), `${table} must not require a legacy backfill cursor`)
 }
+assert(
+  !tablesForDataDomainShadowBackfill('ops').includes('pit_residual_funnel_enrichment_runs_v1'),
+  'post-cutover PIT residual receipts must not require a legacy backfill cursor',
+)
 
 console.log('dataDomainBackfillRetirementReadiness tests passed')

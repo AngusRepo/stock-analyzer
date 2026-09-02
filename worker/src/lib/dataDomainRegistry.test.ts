@@ -111,6 +111,17 @@ for (const table of ['meta_reward_ledger', 'meta_shadow_decisions']) {
   assert.equal(tableOwnershipMetadata(table)?.shadow_ready, false,
     `${table} is active-owner materialization and must not re-enter inactive-only shadow backfill`)
 }
+for (const [table, domain] of [
+  ['expected_return_candidate_forward_evaluations', 'learning'],
+  ['pit_residual_funnel_enrichment_runs_v1', 'ops'],
+] as const) {
+  assert.equal(tableOwnershipMetadata(table)?.route_ready, true,
+    `${table} must route to its active ${domain} owner`)
+  assert.equal(tableOwnershipMetadata(table)?.shadow_ready, false,
+    `${table} was created after cutover and has no legacy backfill authority`)
+  assert.equal(tablesForDataDomainShadowBackfill(domain).includes(table), false,
+    `${table} must not re-enter the retired legacy shadow-backfill inventory`)
+}
 
 const unresolvedProductionTables = productionTableNames.filter((table) => (
   tableOwnershipMetadata(table)?.route_ready === false && !LEGACY_CONTROL_PLANE_TABLES.has(table)

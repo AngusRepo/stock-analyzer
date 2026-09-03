@@ -141,25 +141,6 @@ class RrgBackfillRequest(BaseModel):
     dates: list[str] | None = None
 
 
-class TagRefreshRequest(BaseModel):
-    """
-    Bulk refresh tag pool for one tag_type from a manually-curated JSON source.
-
-    `tag_type`: one of 'concept' | 'subindustry' | 'industry'
-    `source`: free-text source label, e.g. 'manual_curated_2026_04_08'
-    `tags`: dict of {tag_name: [stock_symbols]}
-    `replace_mode`: how to handle existing rows of the same (tag_type, source-prefix)
-       - 'replace_type': delete ALL existing rows of this tag_type then insert
-       - 'replace_source': delete only rows matching the source label then insert
-       - 'merge': INSERT OR REPLACE per-row, do not delete (default)
-    `archive_old_source`: optional source label to mark as 'archived' before
-       inserting (preserves rollback capability via UPDATE source).
-    """
-    tag_type: Literal["concept", "subindustry", "industry"]
-    source: str
-    tags: dict[str, list[str]]
-    replace_mode: Literal["replace_type", "replace_source", "merge"] = "merge"
-    archive_old_source: str | None = None
 
 
 # ─── Helper ───────────────────────────────────────────────────────────────────
@@ -220,112 +201,8 @@ async def compute_sector_flow(req: SectorFlowRequest):
     )
 
 
-# ─── Tag pool refresh (bulk import from curated JSON) ───────────────────────
+# Legacy curated-tag writer removed: FinLab is the sole taxonomy owner.
 
-@router.post("/sector-flow/refresh-tags")
-async def refresh_tags(req: TagRefreshRequest):
-    """
-    Bulk refresh stock_tags pool for one tag_type from a curated JSON source.
-
-    Use case: operator pastes manually-curated tag→symbols JSON, this endpoint
-    DELETEs old rows and bulk INSERTs the new pool. A separate backfill
-    endpoint then re-computes sector_flow RRG for the new pool.
-
-    Body example:
-    {
-      "tag_type": "concept",
-      "source": "manual_curated_2026_04_08",
-      "tags": {
-        "GB200": ["2330","2382","2376"],
-        "HBM":   ["2330","2454"]
-      },
-      "replace_mode": "replace_type",
-      "archive_old_source": "goodinfo"
-    }
-    """
-    from services.d1_domain_client import D1DataDomain, client_proxy_for_domain
-
-    if not req.tags:
-        return {"error": "tags dict is empty"}
-
-    statements: list[tuple[str, list]] = []
-
-    # Step 1: archive old (rename source label) if requested
-    if req.archive_old_source:
-        statements.append((
-            "UPDATE stock_tags SET source = ? WHERE tag_type = ? AND source = ?",
-            [f"{req.archive_old_source}_archived", req.tag_type, req.archive_old_source],
-        ))
-
-    # Step 2: optional delete based on replace_mode
-    if req.replace_mode == "replace_type":
-        statements.append((
-            "DELETE FROM stock_tags WHERE tag_type = ?",
-            [req.tag_type],
-        ))
-    elif req.replace_mode == "replace_source":
-        statements.append((
-            "DELETE FROM stock_tags WHERE tag_type = ? AND source = ?",
-            [req.tag_type, req.source],
-        ))
-    # 'merge' mode: no delete, rely on INSERT OR REPLACE
-
-    # Step 3: build bulk INSERT statements
-    insert_count = 0
-    for tag_name, symbols in req.tags.items():
-        tag_clean = tag_name.strip()
-        if not tag_clean:
-            continue
-        for sym in symbols:
-            sym_clean = str(sym).strip()
-            if not sym_clean:
-                continue
-            statements.append((
-                """
-                INSERT INTO stock_tags (symbol, tag, source, weight, tag_type, updated_at)
-                VALUES (?, ?, ?, 1.0, ?, datetime('now'))
-                ON CONFLICT(symbol, tag) DO UPDATE SET
-                  source = excluded.source,
-                  weight = excluded.weight,
-                  tag_type = excluded.tag_type,
-                  updated_at = excluded.updated_at
-                """.strip(),
-                [sym_clean, tag_clean, req.source, req.tag_type],
-            ))
-            insert_count += 1
-
-    if not statements:
-        return {"error": "no valid statements generated"}
-
-    # Step 4: execute in batches (D1 limits per-call statement count)
-    BATCH = 80
-    total_executed = 0
-    for i in range(0, len(statements), BATCH):
-        chunk = statements[i:i + BATCH]
-        try:
-            result = await asyncio.to_thread(
-                client_proxy_for_domain(D1DataDomain.MARKET).batch_execute, chunk
-            )
-            total_executed += result.get("total", 0)
-        except Exception as e:
-            logger.error(f"refresh_tags batch {i//BATCH} failed: {e}")
-            return {
-                "error": f"batch {i//BATCH} failed: {e}",
-                "executed_before_error": total_executed,
-                "total_statements": len(statements),
-            }
-
-    logger.info(
-        f"[refresh_tags] tag_type={req.tag_type} source={req.source} "
-        f"tags={len(req.tags)} insert_count={insert_count} executed={total_executed}"
-    )
-    return {
-        "tag_type": req.tag_type,
-        "source": req.source,
-        "tag_count": len(req.tags),
-        "row_count": insert_count,
-        "executed_statements": total_executed,
-    }
 
 
 # ─── Phase 6.5 of 4/8 audit — RRG backfill via new sector_flow_service ───────

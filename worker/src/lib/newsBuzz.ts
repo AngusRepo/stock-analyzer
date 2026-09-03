@@ -5,7 +5,7 @@
  * 邏輯：統計最近 24h 新聞標題中各概念關鍵字出現次數
  * 回傳：ConceptBuzzResult[]（與 pttBuzz 同 interface）
  *
- * keywords 由 marketScreener 透過 loadBuzzKeywords(db) 從 D1 動態載入後傳入
+ * keywords 由 marketScreener 從 FinLab taxonomy 動態載入後傳入
  */
 import type { ConceptBuzzResult } from './pttBuzz'
 

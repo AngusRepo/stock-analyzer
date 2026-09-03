@@ -201,7 +201,7 @@ const EXTENDED_PRODUCTION_TABLE_OWNERSHIP: readonly TableOwnershipMetadata[] = [
   { table: 'shareholding', domain: 'market', disposition: 'full_scalar', route_ready: true, shadow_ready: true },
   { table: 'source_quality_metrics', domain: 'market', disposition: 'active_window', route_ready: true, shadow_ready: true },
   { table: 'stock_profiles', domain: 'market', disposition: 'compact_projection', route_ready: true, shadow_ready: true },
-  { table: 'stock_tags', domain: 'market', disposition: 'full_scalar', route_ready: true, shadow_ready: true },
+  { table: 'stock_tags', domain: 'market', disposition: 'legacy_only', route_ready: false, shadow_ready: false },
   { table: 'stock_theme_features', domain: 'market', disposition: 'full_scalar', route_ready: true, shadow_ready: true },
   { table: 'stock_trading_restrictions', domain: 'market', disposition: 'full_scalar', route_ready: true, shadow_ready: true },
   { table: 'theme_signals', domain: 'market', disposition: 'active_window', route_ready: true, shadow_ready: true },

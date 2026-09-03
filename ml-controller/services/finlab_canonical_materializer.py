@@ -1931,6 +1931,8 @@ def _parse_category_list(value: Any) -> list[str]:
 def _clean_taxonomy_tag(value: Any) -> str:
     """Normalize FinLab display bullets without changing the taxonomy meaning."""
     raw = str(value or "").replace("\ufeff", "").replace("\u200b", "").strip()
+    if raw.lower() in {"nan", "none", "null", "na", "n/a"}:
+        return ""
     while raw and raw[0] in {"\u25ba", "\u25b6", "\u25b8", "\u25b9", "\u2022", "\u00b7"}:
         raw = raw[1:].lstrip()
     return " ".join(raw.split())
@@ -1962,6 +1964,7 @@ def build_taxonomy_rows(
                         "raw_tag": raw_category,
                         "raw_emitted_tag": raw_category,
                         "normalized_tag": category,
+                        "materialization_id": generated_at,
                     }),
                     "as_of_date": generated_at[:10],
                 })
@@ -1991,6 +1994,7 @@ def build_taxonomy_rows(
                                 "raw_tag": raw_tag,
                                 "raw_emitted_tag": raw_parent,
                                 "normalized_tag": tag,
+                                "materialization_id": generated_at,
                             }),
                             "as_of_date": generated_at[:10],
                         })
@@ -2007,6 +2011,7 @@ def build_taxonomy_rows(
                                 "raw_emitted_tag": raw_child,
                                 "normalized_tag": tag,
                                 "parent": parent,
+                                "materialization_id": generated_at,
                             }),
                             "as_of_date": generated_at[:10],
                         })
@@ -2022,6 +2027,7 @@ def build_taxonomy_rows(
                             "raw_tag": raw_tag,
                             "raw_emitted_tag": raw_tag,
                             "normalized_tag": tag,
+                            "materialization_id": generated_at,
                         }),
                         "as_of_date": generated_at[:10],
                     })
@@ -2439,6 +2445,45 @@ def _taxonomy_stale_row_cleanup_statements(
             continue
         seen.add(identity)
         statements.append((sql, list(identity)))
+    return statements
+
+
+def _taxonomy_owner_snapshot_cleanup_statements(
+    rows: list[dict[str, Any]],
+    *,
+    materialization_id: str,
+    full_snapshot: bool,
+) -> list[tuple[str, list[Any]]]:
+    """Retire rows absent from a completed FinLab owner snapshot.
+
+    Upserts are emitted before these statements, so a failed or interrupted
+    write cannot erase the prior canonical snapshot. Limited research runs are
+    never allowed to prune production membership.
+    """
+    if not full_snapshot or not rows or not materialization_id:
+        return []
+    groups = sorted({
+        (str(row.get("source") or ""), str(row.get("tag_type") or ""))
+        for row in rows
+        if row.get("source") and row.get("tag_type")
+    })
+    statements = [
+        (
+            "DELETE FROM finlab_taxonomy_tags "
+            "WHERE source=? AND tag_type=? "
+            "AND COALESCE(json_extract(lineage_json,'$.materialization_id'),'')<>?",
+            [source, tag_type, materialization_id],
+        )
+        for source, tag_type in groups
+    ]
+    statements.append((
+        "DELETE FROM finlab_taxonomy_tags "
+        "WHERE tag_type IN ('industry','industry_theme','subindustry') "
+        "AND NOT ((tag_type='industry' AND source='finlab.security_categories') "
+        "OR (tag_type IN ('industry_theme','subindustry') "
+        "AND source='finlab.security_industry_themes'))",
+        [],
+    ))
     return statements
 
 
@@ -2912,6 +2957,11 @@ def build_d1_upsert_statements(outputs: FinLabCanonicalOutputs) -> list[tuple[st
         ["symbol", "tag", "tag_type", "source", "weight", "lineage_json", "as_of_date"],
         ["symbol", "tag", "tag_type", "source"],
         ["weight", "lineage_json", "as_of_date"],
+    ))
+    statements.extend(_taxonomy_owner_snapshot_cleanup_statements(
+        outputs.finlab_taxonomy_tags,
+        materialization_id=outputs.generated_at,
+        full_snapshot=not bool(outputs.manifest.get("filters", {}).get("limit_per_dataset")),
     ))
     statements.extend(_row_statements(
         "data_source_inventory",

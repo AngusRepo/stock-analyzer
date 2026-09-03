@@ -1818,7 +1818,7 @@ async def node_compute_personas(state: PipelineStateV2) -> dict:
 
     For each active stock with a payload, compute two opinions using
     chip_data (trust_net) and margin_data (margin_balance) already loaded
-    into the payload, plus concept-level PTT sentiment via stock_tags ??
+    into the payload, plus FinLab industry-theme PTT sentiment via
     concept_buzz.
 
     Written to persona_opinions D1 table AND returned in state for the
@@ -1838,13 +1838,15 @@ async def node_compute_personas(state: PipelineStateV2) -> dict:
     symbols = [s for s in symbols if s]
     sentiment_by_symbol: dict[str, float] = {}
     try:
-        # Top concept per symbol (highest weight)
+        # Top FinLab industry theme per symbol (highest weight)
         tag_rows: list[dict[str, Any]] = []
         for chunk in _d1_bind_chunks(list(symbols)):
             placeholders = ",".join("?" * len(chunk))
             tag_rows.extend(MARKET_D1_CLIENT.query(
-                f"SELECT symbol, tag FROM stock_tags WHERE tag_type = 'concept' AND symbol IN ({placeholders}) "
-                f"ORDER BY symbol, weight DESC",
+                f"SELECT symbol, tag FROM finlab_taxonomy_tags "
+                f"WHERE tag_type='industry_theme' "
+                f"AND source='finlab.security_industry_themes' "
+                f"AND symbol IN ({placeholders}) ORDER BY symbol, weight DESC, tag",
                 chunk,
             ) or [])
         top_concept_by_symbol: dict[str, str] = {}

@@ -113,7 +113,7 @@ def ensure_stock(symbol: str) -> int:
         return int(existing[0]["id"])
     d1_exec(
         "INSERT INTO stocks (symbol, name, market, sector, in_current_watchlist, source, added_at, updated_at) "
-        "VALUES (?, ?, 'TWSE', 'ETF', 0, 'finlab.paper_benchmark', datetime('now'), datetime('now'))",
+        "VALUES (?, ?, 'TWSE', NULL, 0, 'finlab.paper_benchmark', datetime('now'), datetime('now'))",
         [symbol, symbol],
     )
     created = d1_query("SELECT id FROM stocks WHERE symbol = ? ORDER BY id DESC LIMIT 1", [symbol])
@@ -142,7 +142,7 @@ def write_sql_file(rows: list[dict[str, Any]], path: Path) -> dict[str, int]:
     for symbol in sorted({row["symbol"] for row in rows}):
         lines.append(
             "INSERT INTO stocks (symbol, name, market, sector, in_current_watchlist, source, added_at, updated_at) "
-            f"SELECT {sql_quote(symbol)}, {sql_quote(symbol)}, 'TWSE', 'ETF', 0, 'finlab.paper_benchmark', datetime('now'), datetime('now') "
+            f"SELECT {sql_quote(symbol)}, {sql_quote(symbol)}, 'TWSE', NULL, 0, 'finlab.paper_benchmark', datetime('now'), datetime('now') "
             f"WHERE NOT EXISTS (SELECT 1 FROM stocks WHERE symbol = {sql_quote(symbol)});"
         )
     for row in rows:

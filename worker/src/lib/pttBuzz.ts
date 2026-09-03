@@ -10,45 +10,8 @@ import type { Bindings } from '../types'
 import { databaseForDataDomain } from './dataDomainRegistry'
 import { loadCoreStockIdentitiesBySymbols } from './stockIdentityMarketBridge'
 
-// ── FALLBACK 概念關鍵字（當 D1 動態載入失敗時使用）────────────────────────
-// 正常情況下由 loadBuzzKeywords(db) 從 D1 stock_tags 動態生成
-const CONCEPT_KEYWORDS: Record<string, string[]> = {
-  'AI_Server':       ['AI', 'GB200', 'H100', 'H200', 'B200', 'AI伺服器', 'AI server', 'NVIDIA', '輝達'],
-  'CoWoS先進封裝':    ['CoWoS', '先進封裝', '封裝', 'InFO'],
-  'HBM記憶體':       ['HBM', '記憶體', 'DRAM', '南亞科', '華邦電'],
-  'DRAM':            ['DRAM', '記憶體', '南亞科', '華邦電', '群聯'],
-  'CPO共封裝光學':    ['CPO', '共封裝', '光學', '800G', '光模組', '光收發'],
-  '矽光子':          ['矽光子', 'SiPh', 'silicon photonics'],
-  'IC設計':          ['IC設計', '聯發科', '聯詠', '瑞昱', '信驊', 'IC design'],
-  '晶圓代工':        ['台積', 'TSMC', '晶圓代工', '聯電', 'N2', 'N3', 'A16'],
-  '半導體設備':       ['半導體設備', '環球晶', '漢微科', '精測', '矽晶圓'],
-  '電動車':          ['電動車', 'EV', '特斯拉', 'Tesla', '充電'],
-  '充電樁':          ['充電樁', '充電站', '華城', '士電', '中興電'],
-  '儲能':            ['儲能', 'ESS', '電池'],
-  '太陽能':          ['太陽能', '光電', '元晶', '茂迪', '聯合再生'],
-  '5G':              ['5G', '6G', '網通', '智邦', '啟碁'],
-  '低軌衛星':        ['低軌衛星', 'LEO', 'Starlink', '衛星', '星鏈'],
-  '光通訊':          ['光通訊', '光纖', '億光', '聯亞'],
-  '蘋果供應鏈':      ['蘋果', 'Apple', 'iPhone', '鴻海', '大立光', '和碩'],
-  '航運_貨櫃':       ['貨櫃', '長榮', '陽明', '萬海', '運價'],
-  '航空':            ['航空', '華航', '長榮航', '星宇', '機票'],
-  '金控':            ['金控', '富邦金', '國泰金', '中信金', '配息', '股利'],
-  '軍工國防':        ['軍工', '國防', '台船', '漢翔', '潛艦', '無人機'],
-  '生技新藥':        ['生技', '新藥', '藥華', '保瑞', 'FDA', '解盲'],
-  '營建資產':        ['營建', '建商', '房市', '房價', '豪宅', '都更'],
-  '重電':            ['重電', '變壓器', '士電', '華城', '中興電', '電力'],
-  'PCB印刷電路板':   ['PCB', '印刷電路板', '欣興', '南電', '景碩', 'ABF'],
-  '鋼鐵':            ['鋼鐵', '中鋼', '大成鋼', '豐興', '鋼價'],
-  '觀光飯店':        ['觀光', '飯店', '旅遊', '晶華', '旅宿'],
-  '散熱':            ['散熱', '水冷', '液冷', '熱管', '雙鴻', '奇鋐'],
-  '機器人':          ['機器人', 'robot', '人形', '機械手臂', '自動化'],
-  '資料中心':        ['資料中心', 'data center', 'DC', '伺服器'],
-  'ABF載板':         ['ABF', '載板', '欣興', '南電', '景碩'],
-  '碳權':            ['碳權', '碳交易', 'ESG', '碳中和', '淨零'],
-  'CIS影像感測':     ['CIS', '影像感測', '鏡頭', '光學鏡片'],
-  '量子計算':        ['量子', 'quantum', '量子電腦'],
-  '邊緣AI':          ['邊緣AI', 'Edge AI', '端側', 'AIoT', 'ASIC'],
-}
+// Taxonomy keywords are loaded exclusively from FinLab canonical tables.
+
 
 interface PttPost {
   title: string
@@ -121,7 +84,7 @@ export interface ConceptBuzzResult {
 }
 
 /**
- * 從 D1 stock_tags 動態載入概念關鍵字
+ * 從 FinLab canonical industry_theme/subindustry 動態載入關鍵字
  * tag name 本身作為 keyword + 每個 tag 的 top 5 成員股名稱
  * KV 快取 24h，避免重複查詢
  */
@@ -136,11 +99,13 @@ export async function loadBuzzKeywords(
 
   const { results: tagRows } = await databaseForDataDomain(env, 'market').prepare(`
     SELECT tag, symbol
-      FROM stock_tags
-     WHERE weight >= 0.3 AND tag_type = 'concept'
+      FROM finlab_taxonomy_tags
+     WHERE weight >= 0.3
+       AND tag_type IN ('industry_theme','subindustry')
+       AND source='finlab.security_industry_themes'
      ORDER BY tag, weight DESC
   `).all<{ tag: string; symbol: string }>()
-  if (!tagRows?.length) return CONCEPT_KEYWORDS
+  if (!tagRows?.length) return {}
 
   const identities = await loadCoreStockIdentitiesBySymbols(env, tagRows.map((row) => row.symbol))
   const kwMap: Record<string, string[]> = {}
@@ -167,14 +132,14 @@ export async function loadBuzzKeywords(
   }
 
   if (kv) await kv.put('buzz:keywords', JSON.stringify(kwMap), { expirationTtl: 86400 })
-  console.log(`[BuzzKeywords] Loaded ${Object.keys(kwMap).length} concepts from split D1 (${tagRows.length} tag-stock pairs)`)
+  console.log(`[BuzzKeywords] Loaded ${Object.keys(kwMap).length} FinLab taxonomy groups (${tagRows.length} tag-stock pairs)`)
   return kwMap
 }
 
 /**
  * 偵測 PTT Stock 板的概念題材熱度
  */export async function detectPttBuzz(keywords?: Record<string, string[]>): Promise<ConceptBuzzResult[]> {
-  const kwMap = keywords ?? CONCEPT_KEYWORDS
+  const kwMap = keywords ?? {}
   // 抓最新 2 頁（~40 篇）
   const prevPage = await getPttPrevPage()
   const [page1, page2] = await Promise.all([

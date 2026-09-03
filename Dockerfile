@@ -56,6 +56,7 @@ COPY tools/finlab_alpha_miner_bakeoff.py /app/tools/finlab_alpha_miner_bakeoff.p
 COPY tools/finlab_alphabuilders_factor_backtest.py /app/tools/finlab_alphabuilders_factor_backtest.py
 COPY tools/finlab_strategy_spec_backtest.py /app/tools/finlab_strategy_spec_backtest.py
 COPY tools/feature_strategy_overlap_numeric.py /app/tools/feature_strategy_overlap_numeric.py
+COPY tools/repair_finlab_taxonomy_owner.py /app/tools/repair_finlab_taxonomy_owner.py
 
 ENV PORT=8080
 EXPOSE 8080

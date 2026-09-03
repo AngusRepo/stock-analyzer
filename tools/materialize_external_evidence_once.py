@@ -261,14 +261,11 @@ def tags_query(symbols: list[str]) -> dict[str, list[str]]:
     rows = []
     rows.extend(
         d1(
-            f"SELECT symbol, tag, tag_type, weight FROM finlab_taxonomy_tags WHERE symbol IN ({placeholders})",
-            symbols,
-            domain="market",
-        )
-    )
-    rows.extend(
-        d1(
-            f"SELECT symbol, tag, tag_type, weight FROM stock_tags WHERE symbol IN ({placeholders})",
+            f"SELECT symbol, tag, tag_type, weight FROM finlab_taxonomy_tags "
+            f"WHERE symbol IN ({placeholders}) "
+            "AND ((tag_type='industry' AND source='finlab.security_categories') "
+            "OR (tag_type IN ('industry_theme','subindustry') "
+            "AND source='finlab.security_industry_themes'))",
             symbols,
             domain="market",
         )
@@ -294,7 +291,9 @@ def finlab_taxonomy_tags_query(symbols: list[str]) -> dict[str, list[dict[str, A
         SELECT symbol, tag, tag_type, weight
           FROM finlab_taxonomy_tags
          WHERE symbol IN ({placeholders})
-           AND tag_type IN ('industry', 'industry_theme', 'subindustry', 'concept')
+           AND ((tag_type='industry' AND source='finlab.security_categories')
+             OR (tag_type IN ('industry_theme','subindustry')
+                 AND source='finlab.security_industry_themes'))
         """,
         symbols,
         domain="market",

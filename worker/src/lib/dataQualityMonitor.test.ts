@@ -5,7 +5,7 @@ import {
   buildPredictionCoverageCheck,
   buildRecommendationMlOwnerCheck,
   buildClassificationCoverageCheck,
-  buildRrgTaxonomyCoverageCheck,
+  buildFinLabTaxonomyCoverageCheck,
   buildScreenerSourceOfTruthCheck,
   buildPendingBuyDateSanityCheck,
   buildPendingBuyAllocatorOwnerCheck,
@@ -258,7 +258,7 @@ void (async () => {
 }
 
 {
-  const check = buildRrgTaxonomyCoverageCheck({
+  const check = buildFinLabTaxonomyCoverageCheck({
     latestThemeDate: '2026-04-30',
     targetDate: '2026-04-30',
     latestThemeRows: 47,
@@ -266,12 +266,12 @@ void (async () => {
     topUnmappedSymbols: 0,
     topOtherSymbols: 0,
   })
-  assert(check.status === 'ok', 'aligned concept taxonomy and RRG theme universe should pass')
-  assert(check.metrics?.source_of_truth === 'stock_tags.tag_type=concept + latest sector_flow.classification=theme', 'RRG taxonomy gate must declare its source of truth')
+  assert(check.status === 'ok', 'aligned FinLab taxonomy and industry-theme flow universe should pass')
+  assert(check.metrics?.source_of_truth === 'finlab_taxonomy_tags.industry_theme + latest sector_flow.classification=industry_theme', 'FinLab taxonomy gate must declare its source of truth')
 }
 
 {
-  const check = buildRrgTaxonomyCoverageCheck({
+  const check = buildFinLabTaxonomyCoverageCheck({
     latestThemeDate: '2026-04-07',
     targetDate: '2026-04-30',
     latestThemeRows: 47,
@@ -283,7 +283,7 @@ void (async () => {
 }
 
 {
-  const check = buildRrgTaxonomyCoverageCheck({
+  const check = buildFinLabTaxonomyCoverageCheck({
     latestThemeDate: '2026-04-30',
     targetDate: '2026-04-30',
     latestThemeRows: 47,

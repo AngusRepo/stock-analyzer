@@ -20,7 +20,7 @@ SCHEMA_VERSION = "pit-sector-alpha-expert-v1"
 FEATURE_SEMANTIC_VERSION = "pit-sector-alpha-prior-completed-cross-layer-rank-v1"
 SECTOR_FLOW_PIT_LINEAGE_VERSION = "sector-flow-pit-v1"
 MAX_SOURCE_SESSION_LAG = 1
-LAYERS = ("industry", "industry_theme", "subindustry", "theme")
+LAYERS = ("industry", "industry_theme", "subindustry")
 TAG_TYPE_TO_CLASSIFICATION = {
     "industry": "industry",
     "industry_theme": "industry_theme",
@@ -126,21 +126,11 @@ def _membership_rows(
             SELECT symbol, tag, tag_type, source, weight, as_of_date
               FROM finlab_taxonomy_tags
              WHERE symbol IN ({placeholders})
-               AND tag_type IN ('industry','industry_theme','subindustry')
+               AND ((tag_type='industry' AND source='finlab.security_categories')
+                 OR (tag_type IN ('industry_theme','subindustry')
+                     AND source='finlab.security_industry_themes'))
                AND date(as_of_date)<=date(?)
              ORDER BY symbol, tag_type, tag, date(as_of_date) DESC
-            """,
-            [*chunk, signal_date],
-        ))
-        rows.extend(query_fn(
-            f"""
-            SELECT symbol, tag, tag_type, source, weight,
-                   substr(updated_at,1,10) as_of_date
-              FROM stock_tags
-             WHERE symbol IN ({placeholders})
-               AND tag_type IN ('industry','industry_theme','subindustry','concept')
-               AND datetime(updated_at)<datetime(?, '+1 day')
-             ORDER BY symbol, tag_type, tag, datetime(updated_at) DESC
             """,
             [*chunk, signal_date],
         ))
@@ -204,7 +194,7 @@ def load_pit_sector_alpha_experts(
                COUNT(DISTINCT classification) AS source_layer_count
           FROM sector_flow
          WHERE date < ?
-           AND classification IN ('industry','industry_theme','subindustry','theme')
+           AND classification IN ('industry','industry_theme','subindustry')
            AND pit_lineage_version = ?
            AND datetime(COALESCE(updated_at, created_at)) <= datetime(?)
          GROUP BY date
@@ -255,7 +245,7 @@ def load_pit_sector_alpha_experts(
                pit_lineage_version
           FROM sector_flow
          WHERE date = ?
-           AND classification IN ('industry','industry_theme','subindustry','theme')
+           AND classification IN ('industry','industry_theme','subindustry')
            AND pit_lineage_version = ?
            AND datetime(COALESCE(updated_at, created_at)) <= datetime(?)
         """,

@@ -1,4 +1,4 @@
-import { queryTopConceptTagsForSymbols } from './marketScreener'
+import { queryTopTaxonomyTagsForSymbols } from './marketScreener'
 
 function assert(condition: unknown, message: string): void {
   if (!condition) throw new Error(message)
@@ -35,21 +35,20 @@ void (async () => {
   const symbols = Array.from({ length: 1001 }, (_, index) => `S${index}`)
   const { db, calls } = makeDb()
 
-  const rows = await queryTopConceptTagsForSymbols(db, symbols, 400)
+  const rows = await queryTopTaxonomyTagsForSymbols(db, symbols, 400)
 
   assert(rows.length === 1001, 'chunked concept tag query should return all rows')
   assert(calls.length === 26, '1001 symbols should be capped by the runtime D1 chunk size')
-  assert(calls.every((call) => call.params.length <= 80), 'each taxonomy query binds two symbol chunks and stays below D1 limits')
+  assert(calls.every((call) => call.params.length <= 40), 'each FinLab taxonomy query binds one bounded symbol chunk')
   assert(calls.every((call) => call.sql.includes('finlab_taxonomy_tags')), 'query should read FinLab taxonomy first')
-  assert(calls.every((call) => call.sql.includes("tag_type='concept'")), 'query should keep stock_tags concept overlay')
+  assert(calls.every((call) => !call.sql.includes('stock_tags')), 'query must use FinLab as the sole taxonomy owner')
 
   const dated = makeDb()
-  await queryTopConceptTagsForSymbols(dated.db, symbols.slice(0, 41), 400, '2026-07-24')
+  await queryTopTaxonomyTagsForSymbols(dated.db, symbols.slice(0, 41), 400, '2026-07-24')
   assert(dated.calls.length === 2, 'as-of taxonomy query must preserve bounded chunking')
   assert(dated.calls.every((call) => call.sql.includes('date(as_of_date) <= date(?)')), 'FinLab taxonomy must use as-of date')
-  assert(dated.calls.every((call) => call.sql.includes("datetime(updated_at) < datetime(?, '+1 day')")), 'stock_tags overlay must use as-of date')
-  assert(dated.calls.every((call) => call.params.filter((param) => param === '2026-07-24').length === 2), 'each taxonomy union branch must bind its decision date')
-  assert(dated.calls.every((call) => call.params.length <= 82), 'as-of taxonomy query must stay below the bounded D1 variable budget')
+  assert(dated.calls.every((call) => call.params.filter((param) => param === '2026-07-24').length === 1), 'the sole FinLab taxonomy branch must bind its decision date once')
+  assert(dated.calls.every((call) => call.params.length <= 41), 'as-of taxonomy query must stay below the bounded D1 variable budget')
 })().catch((error) => {
   console.error(error)
   process.exit(1)

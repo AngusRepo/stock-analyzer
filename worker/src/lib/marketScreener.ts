@@ -12,6 +12,7 @@
 import type { Bindings } from '../types'
 import { CANONICAL_SELECTION_ADJUSTMENT_SOURCE } from './canonicalSelectionLabels'
 import { databaseForDataDomain } from './dataDomainRegistry'
+import { syncFinLabIndustryProjection } from './finlabTaxonomy'
 import {
   buildPitResidualCounterfactuals,
   loadPitResidualShadowSnapshot,
@@ -742,7 +743,7 @@ export function assertCanonicalL15SeedIdentity(input: {
   }
 }
 
-export async function queryTopConceptTagsForSymbols(
+export async function queryTopTaxonomyTagsForSymbols(
   db: D1Database,
   symbols: string[],
   chunkSize = 400,
@@ -753,7 +754,6 @@ export async function queryTopConceptTagsForSymbols(
   const rows: Array<{ symbol: string; tag: string; tag_type?: string }> = []
   const decisionDate = String(asOfDate ?? '').slice(0, 10)
   const finlabAsOfClause = decisionDate ? ' AND date(as_of_date) <= date(?)' : ''
-  const stockTagsAsOfClause = decisionDate ? " AND datetime(updated_at) < datetime(?, '+1 day')" : ''
 
   for (let i = 0; i < uniqueSymbols.length; i += safeChunkSize) {
     const chunk = uniqueSymbols.slice(i, i + safeChunkSize)
@@ -763,19 +763,16 @@ export async function queryTopConceptTagsForSymbols(
          FROM (
            SELECT symbol, tag, tag_type, weight, 1 AS priority
              FROM finlab_taxonomy_tags
-            WHERE tag_type IN ('industry_theme', 'subindustry', 'industry')
+            WHERE ((tag_type='industry' AND source='finlab.security_categories')
+                OR (tag_type IN ('industry_theme','subindustry')
+                    AND source='finlab.security_industry_themes'))
               AND symbol IN (${placeholders})${finlabAsOfClause}
-           UNION ALL
-           SELECT symbol, tag, tag_type, weight, 2 AS priority
-             FROM stock_tags
-            WHERE tag_type='concept'
-              AND symbol IN (${placeholders})${stockTagsAsOfClause}
          )
         ORDER BY symbol, priority ASC, weight DESC`
     )
     const params = decisionDate
-      ? [...chunk, decisionDate, ...chunk, decisionDate]
-      : [...chunk, ...chunk]
+      ? [...chunk, decisionDate]
+      : [...chunk]
     const { results } = await statement.bind(...params).all<{ symbol: string; tag: string; tag_type?: string }>()
     rows.push(...(results ?? []))
   }
@@ -788,7 +785,7 @@ async function materializeScreenerThemeRuntime(
   date: string,
   symbols: string[],
 ): Promise<{ signals: number; tags: number; features: number }> {
-  const tags = await queryTopConceptTagsForSymbols(db, symbols, 400, date) as FinLabTaxonomyTagRow[]
+  const tags = await queryTopTaxonomyTagsForSymbols(db, symbols, 400, date) as FinLabTaxonomyTagRow[]
   const generatedAt = new Date().toISOString()
   const signals = buildFinLabTaxonomyThemeSignals(tags, date, generatedAt)
   await upsertThemeSignals(db, signals)
@@ -818,7 +815,7 @@ async function loadSymbolTaxonomyProfiles(
   symbols: string[],
   asOfDate?: string,
 ): Promise<Map<string, SymbolTaxonomyProfile>> {
-  const rows = await queryTopConceptTagsForSymbols(db, symbols, 400, asOfDate)
+  const rows = await queryTopTaxonomyTagsForSymbols(db, symbols, 400, asOfDate)
   const profiles = new Map<string, SymbolTaxonomyProfile>()
   for (const row of rows) {
     const symbol = String(row.symbol || '').trim()
@@ -837,7 +834,10 @@ async function loadSymbolTaxonomyProfiles(
 }
 
 function taxonomyDisplay(profile: SymbolTaxonomyProfile | undefined, fallback: string): string {
-  return profile?.industryTheme || profile?.industry || profile?.subindustry || fallback
+  // A scalar compatibility field must use FinLab formal industry. Themes and
+  // subindustries remain multi-valued metadata and must not be collapsed into
+  // an arbitrary first tag.
+  return profile?.industry || fallback
 }
 
 function taxonomyWatchPoint(profile: SymbolTaxonomyProfile | undefined): string | null {
@@ -1256,7 +1256,7 @@ interface SectorMap {
  */
 async function getSectorMapping(env: Bindings): Promise<SectorMap> {
   // ? KV 敹怠?
-  const cacheKey = 'screener:sector-map'
+  const cacheKey = 'screener:sector-map:v5-finlab'
   const cached = await env.KV.get(cacheKey, 'json') as SectorMap | null
   if (cached) return cached
 
@@ -3040,39 +3040,27 @@ async function storeSectorHeat(
 // Bottom-up multi-factor screener v2.
 // ????????????????????????????????????????????????????????????????????????????????
 
-/**
- * 敺?stock_tags(tag_type='industry') 撱箇? symbol ??摰?Ｘ平 mapping
- * ?誨??getSectorMapping()嚗?? stocks.sector ?舀?敹萄?嚗?
- */
+/** FinLab formal industry mapping; no stock_tags or stocks.sector fallback. */
 async function getIndustryMapping(db: D1Database, kv: KVNamespace): Promise<Map<string, string>> {
-  const cacheKey = 'screener:industry-map:v4.2-finlab-four-layer-taxonomy'
+  const cacheKey = 'screener:industry-map:v5-finlab'
   const cached = await kv.get(cacheKey, 'json') as Record<string, string> | null
   if (cached) return new Map(Object.entries(cached))
 
   const map = new Map<string, string>()
-  try {
-    const { results } = await db.prepare(`
-      SELECT symbol, tag, tag_type, source, weight, priority
-      FROM (
-        SELECT symbol, tag, tag_type, source, weight, 1 AS priority
-          FROM finlab_taxonomy_tags
-         WHERE tag_type IN ('industry_theme', 'industry', 'subindustry')
-        UNION ALL
-        SELECT symbol, tag, tag_type, source, weight, 5 AS priority
-          FROM stock_tags
-         WHERE tag_type='industry'
-      )
-      ORDER BY symbol, priority ASC, weight DESC
-    `).all<{ symbol: string; tag: string; tag_type?: string; source?: string; weight?: number; priority?: number }>()
-    for (const r of (results ?? [])) {
-      if (!map.has(r.symbol)) map.set(r.symbol, r.tag)
-    }
-  } catch {
-    const { results } = await db.prepare(
-      "SELECT symbol, tag FROM stock_tags WHERE tag_type='industry'"
-    ).all<{ symbol: string; tag: string }>()
-    for (const r of (results ?? [])) map.set(r.symbol, r.tag)
-  }
+  const { results } = await db.prepare(`
+    SELECT symbol, tag
+    FROM (
+      SELECT symbol, tag,
+             ROW_NUMBER() OVER (
+               PARTITION BY symbol ORDER BY date(as_of_date) DESC, tag ASC
+             ) AS rn
+      FROM finlab_taxonomy_tags
+      WHERE tag_type='industry' AND source='finlab.security_categories'
+    )
+    WHERE rn=1
+    ORDER BY symbol
+  `).all<{ symbol: string; tag: string }>()
+  for (const row of results ?? []) map.set(row.symbol, row.tag)
 
   // 敹怠? 7 憭?
   await kv.put(cacheKey, JSON.stringify(Object.fromEntries(map)), { expirationTtl: 7 * 86400 })
@@ -3476,7 +3464,7 @@ export async function runBottomUpScreener(env: Bindings, runDate?: string | null
   let conceptEvidenceBreakdown = new Map<string, Record<string, number>>()
 
   try {
-    const buzzKeywords = await loadBuzzKeywords(env, env.KV).catch(() => undefined)
+    const buzzKeywords = await loadBuzzKeywords(env, env.KV).catch(() => ({}))
 
     const [marketData, pttBuzz, newsBuzz, anueBuzz, runtimeThemeSignals] = await Promise.all([
       loadMarketDataFromD1(env, STOCK_TECHNICAL_HISTORY_PRICE_DAYS, 5, endDate),
@@ -3531,6 +3519,8 @@ export async function runBottomUpScreener(env: Bindings, runDate?: string | null
   debugLog.push(`[Guard] trading restriction policy hard_block=${punishedSet.size} risk_evidence=${restrictionRiskSet.size} (attention/notice soft; disposition/punish hard)`)
 
   // ?? 霈???寧璆?mapping + 璁艙璅惜 ??
+  const projection = await syncFinLabIndustryProjection(env)
+  debugLog.push(`[Taxonomy] owner=${projection.owner} projection_updated=${projection.updated} cleared=${projection.cleared}`)
   const industryMap = await getIndustryMapping(databaseForDataDomain(env, 'market'), env.KV)
   const taxonomyUniverse = [...new Set([
     ...allPrices.map((p) => p.stock_id),

@@ -1555,13 +1555,13 @@ export function buildAdminWorkerDomainTaskMap(c: any, deps: TriggerDeps): Record
     verify: async () => {
       return runVerifyV2(c.env)
     },
-    'reclassify-tags': async () => {
-      const { reclassifyTags } = await import('./tagReclassifier')
-      return reclassifyTags(c.env)
-    },
     'sync-industries': async () => {
-      const { syncIndustryTags } = await import('./twseApi')
-      return syncIndustryTags(c.env.DB, c.env.KV)
+      const { syncFinLabIndustryProjection } = await import('./finlabTaxonomy')
+      return syncFinLabIndustryProjection(c.env)
+    },
+    'taxonomy-owner-audit': async () => {
+      const { auditFinLabTaxonomyOwner } = await import('./finlabTaxonomy')
+      return auditFinLabTaxonomyOwner(c.env)
     },
     'factor-ic': async () => {
       const { calcFactorIC } = await import('./marketScreener')

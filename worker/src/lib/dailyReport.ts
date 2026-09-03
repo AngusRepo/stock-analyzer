@@ -266,7 +266,11 @@ export async function generateDailyReport(env: Bindings): Promise<string> {
     const chunk = watchlistSymbols.slice(offset, offset + 400)
     const marks = chunk.map(() => '?').join(',')
     const { results } = await databaseForDataDomain(env, 'market').prepare(`
-      SELECT DISTINCT symbol FROM stock_tags WHERE symbol IN (${marks})
+      SELECT DISTINCT symbol
+        FROM finlab_taxonomy_tags
+       WHERE symbol IN (${marks})
+         AND tag_type='industry'
+         AND source='finlab.security_categories'
     `).bind(...chunk).all<{ symbol: string }>().catch(() => ({ results: [] as Array<{ symbol: string }> }))
     for (const row of results ?? []) taggedSymbols.add(row.symbol)
   }
@@ -279,14 +283,14 @@ export async function generateDailyReport(env: Bindings): Promise<string> {
     embeds.push({
       title: `分類待補 ${untaggedStocks.length} 檔`,
       color: 0xe67e22,
-      description: `這些候選股尚未有 stock_tags，會影響 sector/RRG/diversity 解釋：\n${list}`,
+      description: `這些候選股尚未有 FinLab 正式產業分類，會影響族群與多樣性解釋：\n${list}`,
     })
   }
 
   const { results: themeFlows } = await databaseForDataDomain(env, 'market').prepare(`
     SELECT sector, total_net, stock_count, quadrant, rs_ratio, rs_momentum
       FROM sector_flow
-     WHERE date=? AND classification='theme'
+     WHERE date=? AND classification='industry_theme'
      ORDER BY total_net DESC
   `).bind(reportDate).all<any>().catch(() => ({ results: [] as any[] }))
 

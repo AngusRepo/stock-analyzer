@@ -1,5 +1,6 @@
 import { Hono } from 'hono'
 import { databaseForDataDomain } from '../lib/dataDomainRegistry'
+import { loadPrimaryFinLabIndustries } from '../lib/finlabTaxonomy'
 
 // ── 安全的 ID 解析（parseInt NaN 防護）─────────────────────────────────────
 function parseId(s: string | undefined | null): number | null {
@@ -195,10 +196,11 @@ stocks.get('/:id', async (c) => {
 // [CODE-REVIEW-FIX] 2026-03-23: 全域 stocks 表，非 admin 不應新增
 // 加 rate limiting 防止 admin 腳本誤觸浪費 D1 寫入額度
 stocks.post('/', rateLimitMiddleware('api'), authMiddleware, adminMiddleware, async (c) => {
-  const { symbol, name, market = 'TWSE', sector } = await c.req.json()
+  const { symbol, name, market = 'TWSE' } = await c.req.json()
   if (!symbol || !name) return c.json({ error: '請提供 symbol 與 name' }, 400)
 
   const sym = symbol.toUpperCase()
+  const canonicalSector = (await loadPrimaryFinLabIndustries(c.env)).get(sym) ?? null
   const existing = await databaseForDataDomain(c.env, 'core').prepare(
     'SELECT id, in_current_watchlist FROM stocks WHERE symbol=?'
   ).bind(sym).first<{ id: number; in_current_watchlist: number }>()
@@ -207,14 +209,14 @@ stocks.post('/', rateLimitMiddleware('api'), authMiddleware, adminMiddleware, as
 
   if (existing) {
     await databaseForDataDomain(c.env, 'core').prepare('UPDATE stocks SET in_current_watchlist=1, name=?, sector=? WHERE id=?')
-      .bind(name, sector ?? null, existing.id).run()
+      .bind(name, canonicalSector, existing.id).run()
     const row = await databaseForDataDomain(c.env, 'core').prepare('SELECT * FROM stocks WHERE id=?').bind(existing.id).first()
     return c.json(row, 201)
   }
 
   const result = await databaseForDataDomain(c.env, 'core').prepare(
     'INSERT INTO stocks (symbol, name, market, sector) VALUES (?,?,?,?) RETURNING id'
-  ).bind(sym, name, market, sector ?? null).first<{ id: number }>()
+  ).bind(sym, name, market, canonicalSector).first<{ id: number }>()
 
   if (!result) return c.json({ error: '新增失敗' }, 500)
 
@@ -526,10 +528,19 @@ stocks.get('/:id/ai-summary', async (c) => {
     databaseForDataDomain(c.env, 'core').prepare(
       'SELECT * FROM daily_recommendations WHERE symbol=? ORDER BY date DESC LIMIT 1'
     ).bind(stock.symbol).first<any>().catch(() => null),
-    // 概念標籤
-    databaseForDataDomain(c.env, 'market').prepare(
-      'SELECT tag, weight FROM stock_tags WHERE symbol=? ORDER BY weight DESC'
-    ).bind(stock.symbol).all<any>().then(r => r.results ?? []).catch(() => []),
+    // FinLab 正式 taxonomy + StockVision concept overlay
+    databaseForDataDomain(c.env, 'market').prepare(`
+      SELECT tag, weight
+      FROM (
+        SELECT tag, weight,
+               CASE tag_type WHEN 'industry_theme' THEN 0 WHEN 'subindustry' THEN 1 ELSE 2 END AS priority
+          FROM finlab_taxonomy_tags
+         WHERE symbol=?
+           AND ((tag_type='industry' AND source='finlab.security_categories')
+             OR (tag_type IN ('industry_theme','subindustry') AND source='finlab.security_industry_themes'))
+      )
+      ORDER BY priority, weight DESC, tag
+    `).bind(stock.symbol).all<any>().then(r => r.results ?? []).catch(() => []),
     // 近 5 日法人
     databaseForDataDomain(c.env, 'market').prepare(`
       SELECT SUM(foreign_net) as foreign_net,

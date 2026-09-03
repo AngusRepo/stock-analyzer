@@ -661,7 +661,7 @@ export function buildClassificationCoverageCheck(input: {
   }
 }
 
-export function buildRrgTaxonomyCoverageCheck(input: {
+export function buildFinLabTaxonomyCoverageCheck(input: {
   latestThemeDate?: string | null
   targetDate: string
   latestThemeRows: number
@@ -683,8 +683,8 @@ export function buildRrgTaxonomyCoverageCheck(input: {
       ? 'warn'
       : 'ok'
   return {
-    id: 'rrg_taxonomy_coverage',
-    label: 'RRG taxonomy coverage',
+    id: 'finlab_taxonomy_coverage',
+    label: 'FinLab taxonomy coverage',
     status,
     summary: `theme_date=${input.latestThemeDate ?? 'none'} lag=${lagDays ?? 'n/a'}d themes=${latestThemeRows} unmapped=${topUnmappedSymbols}/${topConceptSymbols} other=${topOtherSymbols}`,
     metrics: {
@@ -697,7 +697,7 @@ export function buildRrgTaxonomyCoverageCheck(input: {
       top_other_symbols: topOtherSymbols,
       unmapped_ratio: unmappedRatio,
       warn_unmapped_ratio: warnUnmappedRatio,
-      source_of_truth: 'stock_tags.tag_type=concept + latest sector_flow.classification=theme',
+      source_of_truth: 'finlab_taxonomy_tags.industry_theme + latest sector_flow.classification=industry_theme',
     },
   }
 }
@@ -1172,8 +1172,9 @@ async function loadClassificationStats(
     `).bind(targetDate).all<RecommendationClassificationRow>(),
     marketDb.prepare(`
       SELECT DISTINCT symbol
-        FROM stock_tags
+        FROM finlab_taxonomy_tags
        WHERE tag_type = 'industry'
+         AND source = 'finlab.security_categories'
     `).all<{ symbol: string }>(),
   ])
   const recommendations = recommendationResult.results ?? []
@@ -1452,13 +1453,13 @@ export async function buildDataQualityReport(env: Bindings, options: { date?: st
       `WITH latest_theme_date AS (
          SELECT MAX(date) AS latest_theme_date
            FROM sector_flow
-          WHERE classification = 'theme'
+          WHERE classification = 'industry_theme'
             AND quadrant IS NOT NULL
        ),
        latest_theme AS (
          SELECT sector
            FROM sector_flow
-          WHERE classification = 'theme'
+          WHERE classification = 'industry_theme'
             AND quadrant IS NOT NULL
             AND date = (SELECT latest_theme_date FROM latest_theme_date)
        ),
@@ -1472,9 +1473,10 @@ export async function buildDataQualityReport(env: Bindings, options: { date?: st
                            st.weight DESC,
                            st.tag ASC
                 ) AS rn
-           FROM stock_tags st
+           FROM finlab_taxonomy_tags st
            LEFT JOIN latest_theme lt ON lt.sector = st.tag
-          WHERE st.tag_type = 'concept'
+          WHERE st.tag_type = 'industry_theme'
+            AND st.source = 'finlab.security_industry_themes'
        )
        SELECT
          (SELECT latest_theme_date FROM latest_theme_date) AS latest_theme_date,
@@ -1993,7 +1995,7 @@ export async function buildDataQualityReport(env: Bindings, options: { date?: st
       researchTotal: Number(classificationStats.research_total ?? 0),
       researchMissingIndustryTags: Number(classificationStats.research_missing_industry_tags ?? 0),
     }),
-    buildRrgTaxonomyCoverageCheck({
+    buildFinLabTaxonomyCoverageCheck({
       latestThemeDate: rrgTaxonomyStats.latest_theme_date,
       targetDate,
       latestThemeRows: Number(rrgTaxonomyStats.latest_theme_rows ?? 0),

@@ -416,31 +416,41 @@ def _load_stock_metadata(symbols: list[str]) -> dict[str, dict[str, Any]]:
         return {}
     if str(ML_CONTROLLER) not in sys.path:
         sys.path.insert(0, str(ML_CONTROLLER))
-    from services import d1_client
+    from services.d1_domain_client import D1DataDomain, client_proxy_for_domain
 
     rows: list[dict[str, Any]] = []
+    industries: dict[str, str] = {}
+    core = client_proxy_for_domain(D1DataDomain.CORE)
+    market = client_proxy_for_domain(D1DataDomain.MARKET)
     unique_symbols = sorted(dict.fromkeys(str(symbol) for symbol in symbols if str(symbol).strip()))
     chunk_size = 80
     for start in range(0, len(unique_symbols), chunk_size):
         chunk = unique_symbols[start : start + chunk_size]
-        rows.extend(
-            d1_client.query(
-                f"""
-                SELECT s.id, s.symbol, s.name, s.market, s.sector,
-                       (
-                         SELECT tag
-                           FROM stock_tags st
-                          WHERE st.symbol = s.symbol
-                            AND st.tag_type IN ('industry', 'sector')
-                          ORDER BY CASE st.tag_type WHEN 'industry' THEN 0 ELSE 1 END
-                          LIMIT 1
-                       ) AS industry
-                  FROM stocks s
-                 WHERE s.symbol IN ({_stock_placeholders(len(chunk))})
-                """,
-                chunk,
-            )
+        rows.extend(core.query(
+            f"SELECT id, symbol, name, market, sector FROM stocks "
+            f"WHERE symbol IN ({_stock_placeholders(len(chunk))})",
+            chunk,
+        ))
+        taxonomy_rows = market.query(
+            f"""
+            SELECT symbol, tag
+              FROM (
+                SELECT symbol, tag,
+                       ROW_NUMBER() OVER (
+                         PARTITION BY symbol ORDER BY date(as_of_date) DESC, tag ASC
+                       ) AS rn
+                  FROM finlab_taxonomy_tags
+                 WHERE tag_type='industry'
+                   AND source='finlab.security_categories'
+                   AND symbol IN ({_stock_placeholders(len(chunk))})
+              )
+             WHERE rn=1
+            """,
+            chunk,
         )
+        industries.update({str(row["symbol"]): str(row["tag"]) for row in taxonomy_rows})
+    for row in rows:
+        row["industry"] = industries.get(str(row.get("symbol")))
     return {str(row["symbol"]): dict(row) for row in rows}
 
 

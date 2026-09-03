@@ -162,8 +162,8 @@ export const recommendationsApi = {
     days?: number
     symbols?: string[]
     includeMovers?: number
-    layer?: 'industry' | 'industry_theme'
-    parentLayer?: 'industry'
+    layer?: 'industry_theme' | 'subindustry'
+    parentLayer?: 'industry_theme'
     parent?: string
   } = {}) => {
     const params = new URLSearchParams()
@@ -224,8 +224,9 @@ export type FactorFlowMapResponse = {
   governance: {
     candidate: string
     phase: 'prospective_shadow' | 'promoted' | string
-    taxonomy_layer: 'industry' | 'industry_theme' | string
-    parent_layer?: 'industry' | null
+    taxonomy_owner?: 'finlab_taxonomy_tags' | string
+    taxonomy_layer: 'industry_theme' | 'subindustry' | string
+    parent_layer?: 'industry_theme' | null
     parent?: string | null
     available_taxonomy_layers: string[]
     supported_visual_layers?: string[]

@@ -1,18 +1,15 @@
 """
-sector_flow_service.py — Compute + write sector_flow RRG (Phase 6.2+6.3)
+sector_flow_service.py — Compute + write FinLab taxonomy sector-flow (Phase 6.2+6.3)
 
 Replaces:
 - V1 dailyRecommendation.ts:170-204 theme RRG (correct formula, wrong in_current_watchlist=1 filter)
 - V1 marketScreener.ts:calcIndustryRRG (wrong Z-score formula)
 
 Drops B8 bug: `in_current_watchlist=1` filter (only 33 stocks) — now reads ALL stocks.
-Fixes B9 bug: uses `tag_type` filter to separate concept vs industry.
-V4 adds FinLab taxonomy layer `industry_theme` between formal industry and
-subindustry, so sector-flow can aggregate all four label layers separately.
+FinLab canonical taxonomy is the sole classification owner. Formal industry,
+industry_theme, and subindustry are aggregated as separate layers.
 
-Mapping:
-    stock_tags.tag_type = 'concept'  → sector_flow.classification = 'theme'
-    stock_tags.tag_type = 'industry' → sector_flow.classification = 'industry'
+Mapping: finlab_taxonomy_tags industry/industry_theme/subindustry → matching classifications
 """
 from __future__ import annotations
 import json
@@ -30,8 +27,14 @@ CORE_D1_CLIENT = client_proxy_for_domain(D1DataDomain.CORE)
 MARKET_D1_CLIENT = client_proxy_for_domain(D1DataDomain.MARKET)
 OPS_D1_CLIENT = client_proxy_for_domain(D1DataDomain.OPS)
 
-TagType = Literal["concept", "industry", "industry_theme", "subindustry"]
-Classification = Literal["theme", "industry", "industry_theme", "subindustry"]
+TagType = Literal["industry", "industry_theme", "subindustry"]
+Classification = Literal["industry", "industry_theme", "subindustry"]
+
+FINLAB_TAXONOMY_SOURCES = {
+    "industry": "finlab.security_categories",
+    "industry_theme": "finlab.security_industry_themes",
+    "subindustry": "finlab.security_industry_themes",
+}
 SECTOR_FLOW_PIT_LINEAGE_VERSION = "sector-flow-pit-v1"
 
 
@@ -58,8 +61,6 @@ class SectorSessionStats(TypedDict):
 
 
 def _tag_type_to_classification(tag_type: TagType) -> Classification:
-    if tag_type == "concept":
-        return "theme"
     if tag_type == "industry_theme":
         return "industry_theme"
     if tag_type == "subindustry":
@@ -242,7 +243,7 @@ def _load_persisted_taxonomy_snapshot(
     expected_count = int(manifest.get("expected_row_count") or 0)
     rows = MARKET_D1_CLIENT.query(
         """
-        SELECT tag, symbol
+        SELECT tag, symbol, source
           FROM sector_taxonomy_membership_snapshots_v1
          WHERE snapshot_date=? AND tag_type=? AND snapshot_id=?
          ORDER BY tag, symbol
@@ -250,10 +251,23 @@ def _load_persisted_taxonomy_snapshot(
         [as_of_date, tag_type, snapshot_id],
     )
     by_tag: dict[str, list[str]] = {}
+    industry_by_symbol: dict[str, str] = {}
     for row in rows:
+        source = str(row.get("source") or "").strip()
+        expected_source = FINLAB_TAXONOMY_SOURCES.get(tag_type)
+        if expected_source and source != expected_source:
+            raise RuntimeError(
+                f"sector_taxonomy_snapshot_owner_violation:{as_of_date}:{tag_type}:{source or 'missing'}"
+            )
         tag = str(row.get("tag") or "").strip()
         symbol = str(row.get("symbol") or "").strip()
         if tag and symbol:
+            if tag_type == "industry" and symbol in industry_by_symbol and industry_by_symbol[symbol] != tag:
+                raise RuntimeError(
+                    f"sector_taxonomy_snapshot_industry_cardinality_failed:{as_of_date}:{symbol}"
+                )
+            if tag_type == "industry":
+                industry_by_symbol[symbol] = tag
             by_tag.setdefault(tag, []).append(symbol)
     actual_snapshot_id, actual_checksum = _taxonomy_snapshot_identity(tag_type, as_of_date, by_tag)
     if (
@@ -318,7 +332,9 @@ def _persist_taxonomy_snapshot(
             canonical_rows.setdefault((tag, symbol), row)
     statements: list[tuple[str, list]] = []
     for (tag, symbol), row in sorted(canonical_rows.items()):
-        source = str(row.get("source") or "stock_tags").strip() or "stock_tags"
+        source = str(row.get("source") or "").strip()
+        if source != FINLAB_TAXONOMY_SOURCES[tag_type]:
+            raise RuntimeError(f"sector_taxonomy_snapshot_source_invalid:{tag_type}:{source or 'missing'}")
         source_as_of = str(row.get("source_as_of_date") or as_of_date).strip() or as_of_date
         statements.append((
             """
@@ -379,7 +395,7 @@ def _persist_taxonomy_snapshot(
     return snapshot_id, checksum
 
 
-def _load_stock_tags(
+def _load_taxonomy_memberships(
     tag_type: TagType,
     as_of_date: str | None = None,
     *,
@@ -394,33 +410,35 @@ def _load_stock_tags(
             raise RuntimeError(f"historical_taxonomy_snapshot_missing:{as_of_date}:{tag_type}")
 
     rows: list[dict] = []
-    if tag_type != "concept":
-        try:
-            sql = """
-                SELECT tag, symbol, source, as_of_date source_as_of_date, lineage_json
-                  FROM finlab_taxonomy_tags
-                 WHERE tag_type = ?
-            """
-            params: list = [tag_type]
-            if as_of_date:
-                sql += " AND date(as_of_date) <= date(?)"
-                params.append(as_of_date)
-            rows.extend(MARKET_D1_CLIENT.query(sql, params))
-        except Exception as exc:
-            logger.warning("[sector_flow] FinLab taxonomy load failed for %s: %s", tag_type, exc)
     try:
+        expected_source = FINLAB_TAXONOMY_SOURCES[tag_type]
         sql = """
-            SELECT tag, symbol, source, updated_at source_as_of_date, NULL lineage_json
-              FROM stock_tags
-             WHERE tag_type = ?
+            SELECT tag, symbol, source, as_of_date source_as_of_date, lineage_json
+              FROM finlab_taxonomy_tags
+             WHERE tag_type = ? AND source = ?
         """
-        params = [tag_type]
+        params: list = [tag_type, expected_source]
         if as_of_date:
-            sql += " AND date(updated_at) <= date(?)"
+            sql += " AND date(as_of_date) <= date(?)"
             params.append(as_of_date)
+        if tag_type == "industry":
+            sql = f"""
+                SELECT tag, symbol, source, as_of_date source_as_of_date, lineage_json
+                  FROM (
+                    SELECT tag, symbol, source, as_of_date, lineage_json,
+                           ROW_NUMBER() OVER (
+                             PARTITION BY symbol
+                             ORDER BY date(as_of_date) DESC, tag ASC
+                           ) AS rn
+                      FROM finlab_taxonomy_tags
+                     WHERE tag_type = ? AND source = ?
+                     {"AND date(as_of_date) <= date(?)" if as_of_date else ""}
+                  )
+                 WHERE rn=1
+            """
         rows.extend(MARKET_D1_CLIENT.query(sql, params))
     except Exception as exc:
-        logger.warning("[sector_flow] stock_tags load failed for %s: %s", tag_type, exc)
+        raise RuntimeError(f"finlab_taxonomy_load_failed:{tag_type}:{exc}") from exc
 
     by_tag: dict[str, list[str]] = {}
     seen: set[tuple[str, str]] = set()
@@ -632,9 +650,6 @@ def write_sector_flow_stock_details(
     top_per_theme: int = 10,
 ) -> int:
     """Refresh sector_flow_stocks so UI detail rows do not fall back to stale dates."""
-    if not tag_members:
-        return 0
-
     stock_names = _load_stock_names()
     statements: list[tuple[str, list]] = [
         ("DELETE FROM sector_flow_stocks WHERE date = ?", [as_of_date])
@@ -777,7 +792,7 @@ def compute_sector_flow_for_tag_type(
     Pure computation — does NOT write to D1 (call write_sector_flow to persist).
     """
     if tag_members is None:
-        tag_members = _load_stock_tags(tag_type)
+        tag_members = _load_taxonomy_memberships(tag_type)
     returns = _load_member_returns_5d(as_of_date)
     twii_ret = _load_twii_return_5d(as_of_date)
     classification = _tag_type_to_classification(tag_type)
@@ -829,14 +844,15 @@ def write_sector_flow(
     Only writes rs_ratio / rs_momentum / quadrant (other chip-flow fields
     stay as they were, or default to 0/NULL if row is new).
     """
-    if not points:
-        return 0
-
     # INSERT OR REPLACE preserves UNIQUE constraint semantics
     # stock_count/up_count/foreign_net/trust_net/total_net are populated by
     # chip-flow computation (separate path) — here we ONLY populate RRG fields.
     # Use COALESCE via SELECT existing row, fallback to 0.
-    statements: list[tuple[str, list]] = []
+    # Replace the complete derived classification slice. Upsert-only semantics
+    # leave sectors that disappeared from the active FinLab snapshot behind.
+    statements: list[tuple[str, list]] = [
+        ("DELETE FROM sector_flow WHERE date=? AND classification=?", [as_of_date, classification])
+    ]
     available_at = datetime.now(timezone.utc).isoformat()
     for pt in points:
         if pt.rs_ratio is None:
@@ -927,10 +943,13 @@ def write_sector_flow(
             ],
         ))
 
-    if not statements:
+    if len(statements) == 1:
+        # An empty canonical membership is still a complete replacement: clear
+        # any rows left by the prior owner for this date/classification.
+        MARKET_D1_CLIENT.batch_execute(statements)
         return 0
     result = MARKET_D1_CLIENT.batch_execute(statements)
-    written = result.get("total", 0)
+    written = max(0, int(result.get("success_count") or result.get("total") or 0) - 1)
     logger.info(f"[sector_flow] Wrote {written} {classification} rows for {as_of_date}")
     return written
 
@@ -973,7 +992,7 @@ def run_sector_flow_pipeline(
     reconstruction_mode: Literal["native", "historical_reconstruction"] = "native",
 ) -> dict:
     """
-    Full pipeline: compute concept + industry_theme + subindustry + industry,
+    Full pipeline: compute industry_theme + subindustry + industry,
     write all to sector_flow.
 
     Called by:
@@ -998,7 +1017,6 @@ def run_sector_flow_pipeline(
     }
 
     paths: list[tuple[TagType, Classification]] = [
-        ("concept", "theme"),
         ("industry_theme", "industry_theme"),
         ("subindustry", "subindustry"),
         ("industry", "industry"),
@@ -1012,7 +1030,7 @@ def run_sector_flow_pipeline(
     rows_written = 0
     for tag_type, classification in paths:
         try:
-            tag_members = _load_stock_tags(
+            tag_members = _load_taxonomy_memberships(
                 tag_type,
                 as_of_date,
                 reconstruction_mode=reconstruction_mode,
@@ -1057,7 +1075,7 @@ def run_sector_flow_pipeline(
                 "quadrants": counts,
                 "rotation_regimes": regimes,
             }
-            if tag_type == "concept":
+            if tag_type == "industry_theme":
                 summary[tag_type]["stock_details_written"] = write_sector_flow_stock_details(
                     as_of_date=as_of_date,
                     tag_members=tag_members,

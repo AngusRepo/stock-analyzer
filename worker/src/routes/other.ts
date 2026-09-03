@@ -2248,8 +2248,16 @@ watchlist.get('/', async (c) => {
     if (!chunk.length) continue
     const marks = chunk.map(() => '?').join(',')
     const tags = await marketDb.prepare(`
-      SELECT symbol, tag FROM stock_tags
-       WHERE symbol IN (${marks}) ORDER BY symbol, weight DESC
+      SELECT symbol, tag
+      FROM (
+        SELECT symbol, tag, weight,
+               CASE tag_type WHEN 'industry_theme' THEN 0 WHEN 'subindustry' THEN 1 ELSE 2 END AS priority
+          FROM finlab_taxonomy_tags
+         WHERE symbol IN (${marks})
+           AND ((tag_type='industry' AND source='finlab.security_categories')
+             OR (tag_type IN ('industry_theme','subindustry') AND source='finlab.security_industry_themes'))
+      )
+      ORDER BY symbol, priority, weight DESC, tag
     `).bind(...chunk).all<{ symbol: string; tag: string }>()
     for (const row of tags.results ?? []) {
       const list = tagsBySymbol.get(row.symbol) ?? []
@@ -4517,23 +4525,22 @@ recommendations.get('/factor-flow-map', async (c) => {
   if (!/^\d{4}-\d{2}-\d{2}$/.test(requestedDate)) {
     return c.json({ error: 'invalid_date', requested_date: requestedDate }, 400)
   }
-  const requestedLayer = String(c.req.query('layer') ?? 'industry')
-  if (!['industry', 'industry_theme'].includes(requestedLayer)) {
+  const requestedLayer = String(c.req.query('layer') ?? 'industry_theme')
+  if (!['industry_theme', 'subindustry'].includes(requestedLayer)) {
     return c.json({ error: 'invalid_factor_group_layer', layer: requestedLayer }, 400)
   }
   const parentLayer = String(c.req.query('parent_layer') ?? '')
   const parent = String(c.req.query('parent') ?? '').trim()
-  if (
-    requestedLayer === 'industry_theme'
-    && ((parent && parentLayer !== 'industry') || (!parent && parentLayer))
-  ) {
+  if (requestedLayer === 'subindustry' && (!parent || parentLayer !== 'industry_theme')) {
     return c.json({
-      error: 'industry_theme_parent_invalid',
+      error: 'subindustry_parent_required',
       allowed: [
-        { parent_layer: '', parent: '' },
-        { parent_layer: 'industry', parent: 'non_empty' },
+        { parent_layer: 'industry_theme', parent: 'non_empty' },
       ],
     }, 400)
+  }
+  if (requestedLayer !== 'subindustry' && (parent || parentLayer)) {
+    return c.json({ error: 'industry_theme_parent_invalid' }, 400)
   }
   const symbols = String(c.req.query('symbols') ?? '')
     .split(',')
@@ -4545,8 +4552,8 @@ recommendations.get('/factor-flow-map', async (c) => {
       days: Math.min(parsePosInt(c.req.query('days'), 10), 60),
       symbols,
       includeMovers: Math.max(0, Math.min(Number(c.req.query('include_movers') ?? 0) || 0, 12)),
-      layer: requestedLayer as 'industry' | 'industry_theme',
-      parentLayer: parentLayer === 'industry' ? 'industry' : undefined,
+      layer: requestedLayer as 'industry_theme' | 'subindustry',
+      parentLayer: parentLayer === 'industry_theme' ? 'industry_theme' : undefined,
       parent: parent || undefined,
     })
     return c.json(payload)

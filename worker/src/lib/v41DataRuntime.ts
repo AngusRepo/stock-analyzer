@@ -332,21 +332,14 @@ export async function refreshStockThemeFeaturesFromSignals(db: D1Database, date:
   try {
     const tagsResult = await db.prepare(`
       SELECT symbol, tag, weight
-        FROM stock_tags
-       WHERE tag_type = 'concept'
-      UNION ALL
-      SELECT symbol, tag, weight
         FROM finlab_taxonomy_tags
-       WHERE tag_type IN ('industry', 'industry_theme', 'subindustry', 'concept')
+       WHERE (tag_type='industry' AND source='finlab.security_categories')
+          OR (tag_type IN ('industry_theme','subindustry')
+              AND source='finlab.security_industry_themes')
     `).all<StockConceptTagRow>()
     tags = tagsResult.results ?? []
   } catch {
-    const tagsResult = await db.prepare(`
-      SELECT symbol, tag, weight
-      FROM stock_tags
-      WHERE tag_type = 'concept'
-    `).all<StockConceptTagRow>()
-    tags = tagsResult.results ?? []
+    tags = []
   }
   const features = buildStockThemeFeatureRows(signals, tags)
   await upsertStockThemeFeatures(db, features)

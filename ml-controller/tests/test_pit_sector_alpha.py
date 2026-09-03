@@ -40,7 +40,7 @@ def _query(sql: str, params: list[object]) -> list[dict]:
                 "date": "2026-07-23",
                 "source_available_at": SOURCE_AVAILABLE_AT,
                 "source_row_count": 8,
-                "source_layer_count": 4,
+                "source_layer_count": 3,
             }]
         return []
     if "FROM market_risk" in sql:
@@ -55,7 +55,6 @@ def _query(sql: str, params: list[object]) -> list[dict]:
             "industry": [("SEMICONDUCTOR", 1.2), ("STEEL", -0.7)],
             "industry_theme": [("AI", 1.0), ("RETAIL", -0.5)],
             "subindustry": [("IC_DESIGN", 0.8), ("FOOD", -0.3)],
-            "theme": [("CPO", 1.4), ("SHIPPING", -0.8)],
         }
         for classification, sectors in definitions.items():
             for sector, value in sectors:
@@ -84,15 +83,6 @@ def _query(sql: str, params: list[object]) -> list[dict]:
             {"symbol": "9999", "tag": "SEMICONDUCTOR", "tag_type": "industry", "source": "future", "weight": 1, "as_of_date": "2026-07-25"},
         ]
         return [row for row in rows if row["as_of_date"] <= signal_date]
-    if "FROM stock_tags" in sql:
-        return [{
-            "symbol": "2330",
-            "tag": "CPO",
-            "tag_type": "concept",
-            "source": "stock_tags",
-            "weight": 1,
-            "as_of_date": "2026-07-01",
-        }]
     raise AssertionError(sql)
 
 

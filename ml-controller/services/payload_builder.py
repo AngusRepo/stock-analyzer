@@ -1218,7 +1218,21 @@ def build_payloads(
     # ?? Stock meta: sector encoding + cross-sectional features ??????????????
     # Sector tags
     tag_rows = MARKET_D1_CLIENT.query(
-        "SELECT symbol, tag FROM stock_tags WHERE tag_type='industry'"
+        """
+        SELECT symbol, tag
+          FROM (
+            SELECT symbol, tag,
+                   ROW_NUMBER() OVER (
+                     PARTITION BY symbol ORDER BY date(as_of_date) DESC, tag ASC
+                   ) AS rn
+              FROM finlab_taxonomy_tags
+             WHERE tag_type='industry'
+               AND source='finlab.security_categories'
+               AND date(as_of_date)<=date(?)
+          )
+         WHERE rn=1
+        """,
+        [decision_date],
     )
     sym_to_sector: dict[str, str] = {}
     for r in tag_rows:

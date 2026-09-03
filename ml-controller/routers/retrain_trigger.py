@@ -1050,7 +1050,8 @@ def _build_sector_encoding() -> dict[str, int]:
     if _SECTOR_ENCODING:
         return _SECTOR_ENCODING
     rows = MARKET_D1_CLIENT.query(
-        "SELECT DISTINCT tag FROM stock_tags WHERE tag_type='industry' ORDER BY tag"
+        "SELECT DISTINCT tag FROM finlab_taxonomy_tags "
+        "WHERE tag_type='industry' AND source='finlab.security_categories' ORDER BY tag"
     )
     _SECTOR_ENCODING = {r["tag"]: i for i, r in enumerate(rows)}
     logger.info(f"[universal] sector encoding: {len(_SECTOR_ENCODING)} industries")
@@ -1599,7 +1600,21 @@ async def trigger_universal_retrain(
     sector_enc = _build_sector_encoding()
     # Load per-symbol industry tag
     tag_rows = MARKET_D1_CLIENT.query(
-        "SELECT symbol, tag FROM stock_tags WHERE tag_type='industry'"
+        """
+        SELECT symbol, tag
+          FROM (
+            SELECT symbol, tag,
+                   ROW_NUMBER() OVER (
+                     PARTITION BY symbol ORDER BY date(as_of_date) DESC, tag ASC
+                   ) AS rn
+              FROM finlab_taxonomy_tags
+             WHERE tag_type='industry'
+               AND source='finlab.security_categories'
+               AND date(as_of_date)<=date(?)
+          )
+         WHERE rn=1
+        """,
+        [run_date],
     )
     sym_to_sector: dict[str, str] = {}
     for r in tag_rows:

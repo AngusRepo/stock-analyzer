@@ -23,11 +23,11 @@ export interface PitFactorFlowMapQuery {
   symbols: string[]
   includeMovers: number
   layer?: PitFactorGroupLayer
-  parentLayer?: 'industry'
+  parentLayer?: 'industry_theme'
   parent?: string
 }
 
-export type PitFactorGroupLayer = 'industry' | 'industry_theme'
+export type PitFactorGroupLayer = 'industry_theme' | 'subindustry'
 
 export interface PitFactorTaxonomyMembership {
   date: string
@@ -235,10 +235,9 @@ export function buildPitFactorGroupSeries(points: PitFactorFunnelPoint[]) {
   })))
 }
 
-export function buildPitFactorIndustryThemeSeries(
+export function buildPitFactorTaxonomySeries(
   points: PitFactorFunnelPoint[],
   memberships: PitFactorTaxonomyMembership[],
-  parentIndustry?: string | null,
 ) {
   const tagsByPoint = new Map<string, Set<string>>()
   for (const membership of memberships) {
@@ -253,7 +252,6 @@ export function buildPitFactorIndustryThemeSeries(
   }
   const grouped: PitFactorGroupedPoint[] = []
   for (const point of points) {
-    if (parentIndustry && point.industry !== parentIndustry) continue
     const tags = [...(tagsByPoint.get(`${point.date}\u0000${point.symbol}`) ?? [])].sort()
     if (!tags.length) continue
     const attributionWeight = 1 / tags.length
@@ -262,11 +260,14 @@ export function buildPitFactorIndustryThemeSeries(
   return buildPitFactorSeries(grouped)
 }
 
+export const buildPitFactorIndustryThemeSeries = buildPitFactorTaxonomySeries
+
 async function loadPitFactorTaxonomyMemberships(
   env: Bindings,
   dates: string[],
   symbols: string[],
-  tagType: 'industry_theme',
+  tagType: PitFactorGroupLayer,
+  parent?: string | null,
 ): Promise<PitFactorTaxonomyMembership[]> {
   const uniqueDates = [...new Set(dates.filter((date) => /^\d{4}-\d{2}-\d{2}$/.test(date)))].sort()
   const uniqueSymbols = [...new Set(symbols.map((symbol) => symbol.trim()).filter(Boolean))]
@@ -279,24 +280,36 @@ async function loadPitFactorTaxonomyMemberships(
     const symbolPlaceholders = chunk.map(() => '?').join(',')
     const { results } = await marketDb.prepare(`
       WITH requested_dates(signal_date) AS (VALUES ${dateValues}),
-      resolved_snapshots AS (
+      snapshot_candidates AS (
         SELECT requested_dates.signal_date,
-               MAX(snapshot_runs.snapshot_date) AS snapshot_date
+               snapshot_runs.snapshot_date,
+               snapshot_runs.snapshot_id,
+               ROW_NUMBER() OVER (
+                 PARTITION BY requested_dates.signal_date
+                 ORDER BY snapshot_runs.snapshot_date DESC
+               ) AS rn
           FROM requested_dates
           JOIN sector_taxonomy_snapshot_runs_v1 snapshot_runs
             ON snapshot_runs.tag_type=?
            AND snapshot_runs.status='ready'
            AND snapshot_runs.snapshot_date<=requested_dates.signal_date
-         GROUP BY requested_dates.signal_date
+      ),
+      resolved_snapshots AS (
+        SELECT signal_date, snapshot_date, snapshot_id
+          FROM snapshot_candidates
+         WHERE rn=1
       )
       SELECT resolved.signal_date AS date, membership.symbol, membership.tag
         FROM resolved_snapshots resolved
         JOIN sector_taxonomy_membership_snapshots_v1 membership
-          ON membership.snapshot_date=resolved.snapshot_date
+         ON membership.snapshot_date=resolved.snapshot_date
+         AND membership.snapshot_id=resolved.snapshot_id
          AND membership.tag_type=?
+         AND membership.source='finlab.security_industry_themes'
        WHERE membership.symbol IN (${symbolPlaceholders})
+         AND (? IS NULL OR json_extract(membership.source_lineage_json, '$.parent') = ?)
        ORDER BY resolved.signal_date, membership.symbol, membership.tag
-    `).bind(...uniqueDates, tagType, tagType, ...chunk).all<PitFactorTaxonomyMembership>()
+    `).bind(...uniqueDates, tagType, tagType, ...chunk, parent || null, parent || null).all<PitFactorTaxonomyMembership>()
     memberships.push(...(results ?? []))
   }
   return memberships
@@ -385,12 +398,12 @@ async function loadStockSeries(
 
 export async function loadPitFactorFlowMap(env: Bindings, query: PitFactorFlowMapQuery) {
   const days = Math.max(2, Math.min(60, Math.floor(query.days)))
-  const layer = query.layer ?? 'industry'
+  const layer = query.layer ?? 'industry_theme'
   const parent = String(query.parent ?? '').trim()
-  if (
-    layer === 'industry_theme'
-    && ((parent && query.parentLayer !== 'industry') || (!parent && query.parentLayer))
-  ) {
+  if (layer === 'subindustry' && (!parent || query.parentLayer !== 'industry_theme')) {
+    throw new Error('pit_factor_subindustry_parent_required')
+  }
+  if (layer !== 'subindustry' && (parent || query.parentLayer)) {
     throw new Error('pit_factor_industry_theme_parent_invalid')
   }
   const requestedSymbols = [...new Set(query.symbols.map((symbol) => symbol.trim()).filter(Boolean))].slice(0, MAX_SYMBOLS)
@@ -405,20 +418,16 @@ export async function loadPitFactorFlowMap(env: Bindings, query: PitFactorFlowMa
     funnelPoints,
   )
   const dates = [...new Set(funnelPoints.map((point) => point.date))].sort()
-  const groupSeries = layer === 'industry'
-    ? buildPitFactorGroupSeries(funnelPoints)
-    : buildPitFactorIndustryThemeSeries(
-        funnelPoints,
-        await loadPitFactorTaxonomyMemberships(
-          env,
-          dates,
-          funnelPoints
-            .filter((point) => !parent || point.industry === parent)
-            .map((point) => point.symbol),
-          'industry_theme',
-        ),
-        parent || null,
-      )
+  const groupSeries = buildPitFactorTaxonomySeries(
+    funnelPoints,
+    await loadPitFactorTaxonomyMemberships(
+      env,
+      dates,
+      funnelPoints.map((point) => point.symbol),
+      layer,
+      layer === 'subindustry' ? parent : null,
+    ),
+  )
   return {
     requested_date: query.requestedDate,
     date: dates[dates.length - 1] ?? null,
@@ -430,11 +439,12 @@ export async function loadPitFactorFlowMap(env: Bindings, query: PitFactorFlowMa
       candidate: 'pit_residual_momentum_w10',
       phase: 'prospective_shadow',
       taxonomy_layer: layer,
-      parent_layer: layer === 'industry_theme' && parent ? 'industry' : null,
-      parent: layer === 'industry_theme' && parent ? parent : null,
+      taxonomy_owner: 'finlab_taxonomy_tags',
+      parent_layer: layer === 'subindustry' ? 'industry_theme' : null,
+      parent: layer === 'subindustry' ? parent : null,
       available_taxonomy_layers: ['industry', 'industry_theme', 'subindustry', 'theme'],
-      supported_visual_layers: ['industry', 'industry_theme'],
-      theme_relationship: 'cross_cutting_overlay_not_strict_child',
+      supported_visual_layers: ['industry_theme', 'subindustry'],
+      theme_relationship: 'finlab_industry_theme_to_finlab_subindustry',
       weight: 0.10,
       primary_horizon_sessions: 10,
       x_axis: 'same_date_group_residual_counterfactual_tilt_percentile',

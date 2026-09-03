@@ -98,6 +98,7 @@ tools/*
 !tools/finlab_alphabuilders_factor_backtest.py
 !tools/finlab_strategy_spec_backtest.py
 !tools/feature_strategy_overlap_numeric.py
+!tools/repair_finlab_taxonomy_owner.py
 
 deploy_ml_controller.sh
 *.md

@@ -15,22 +15,8 @@ import httpx
 
 logger = logging.getLogger(__name__)
 
-# ─── Constants ────────────────────────────────────────────────────────────────
+# Industry taxonomy is owned exclusively by FinLab canonical materialization.
 
-# TWSE 產業代碼 → 名稱（t187ap03_L 的 產業別 欄位是數字代碼）
-TWSE_INDUSTRY_MAP = {
-    "01": "水泥工業", "02": "食品工業", "03": "塑膠工業", "04": "紡織纖維",
-    "05": "電機機械", "06": "電器電纜", "21": "化學工業", "22": "生技醫療業",
-    "07": "化學生技醫療", "08": "玻璃陶瓷", "09": "造紙工業", "10": "鋼鐵工業",
-    "11": "橡膠工業", "12": "汽車工業", "13": "電子工業", "24": "半導體業",
-    "25": "電腦及週邊設備業", "26": "光電業", "27": "通信網路業",
-    "28": "電子零組件業", "29": "電子通路業", "30": "資訊服務業",
-    "31": "其他電子類", "14": "建材營造業", "15": "航運業", "16": "觀光餐旅",
-    "17": "金融保險", "18": "貿易百貨", "23": "油電燃氣業", "19": "綜合",
-    "20": "其他", "32": "文化創意業", "33": "農業科技", "34": "電子商務",
-    "35": "綠能環保類", "36": "數位雲端類", "37": "運動休閒類",
-    "38": "居家生活類",
-}
 
 
 # ─── Utility Functions ────────────────────────────────────────────────────────
@@ -235,30 +221,32 @@ async def fetch_tpex_prices(client: httpx.AsyncClient, date: str) -> dict[str, f
 
 
 async def fetch_sector_mapping(client: httpx.AsyncClient, finmind_token: str | None = None) -> dict[str, str]:
-    """取得 stock_id → 產業名稱 mapping（TWSE + TPEX opendata）。"""
-    sector_of: dict[str, str] = {}
+    """Load the compatibility industry projection from the FinLab owner."""
+    del client, finmind_token
+    from services.d1_domain_client import D1DataDomain, client_proxy_for_domain
 
-    twse_task = client.get("https://openapi.twse.com.tw/v1/opendata/t187ap03_L", timeout=30.0)
-    tpex_task = client.get("https://www.tpex.org.tw/openapi/v1/mopsfin_t187ap03_O", timeout=30.0)
-    results = await asyncio.gather(twse_task, tpex_task, return_exceptions=True)
-
-    if not isinstance(results[0], Exception) and results[0].status_code == 200:
-        for r in results[0].json():
-            sid = r.get("公司代號", "").strip()
-            code = r.get("產業別", "").strip()
-            if sid and code:
-                sector_of[sid] = TWSE_INDUSTRY_MAP.get(code, f"產業{code}")
-
-    if not isinstance(results[1], Exception) and results[1].status_code == 200:
-        for r in results[1].json():
-            sid = r.get("SecuritiesCompanyCode", "").strip()
-            code = r.get("SecuritiesIndustryCode", "").strip()
-            if sid and code and sid not in sector_of:
-                sector_of[sid] = TWSE_INDUSTRY_MAP.get(code, f"產業{code}")
-
-    if sector_of:
-        logger.info(f"TWSE+TPEX opendata sector mapping: {len(sector_of)} stocks")
-
+    rows = await asyncio.to_thread(
+        client_proxy_for_domain(D1DataDomain.MARKET).query,
+        """
+        SELECT symbol, tag
+          FROM (
+            SELECT symbol, tag,
+                   ROW_NUMBER() OVER (
+                     PARTITION BY symbol ORDER BY date(as_of_date) DESC, tag ASC
+                   ) AS rn
+              FROM finlab_taxonomy_tags
+             WHERE tag_type='industry'
+               AND source='finlab.security_categories'
+          )
+         WHERE rn=1
+        """,
+    )
+    sector_of = {
+        str(row.get("symbol") or "").strip(): str(row.get("tag") or "").strip()
+        for row in rows
+        if row.get("symbol") and row.get("tag")
+    }
+    logger.info("FinLab canonical industry mapping: %s stocks", len(sector_of))
     return sector_of
 
 

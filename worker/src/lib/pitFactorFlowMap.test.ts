@@ -54,20 +54,16 @@ const themeSeries = buildPitFactorIndustryThemeSeries([
   { date: '2026-08-28', symbol: 'A', tag: 'CoWoS' },
   { date: '2026-08-28', symbol: 'B', tag: 'AI' },
   { date: '2026-08-28', symbol: 'C', tag: '金融科技' },
-], '電子')
-assert.deepEqual(themeSeries.map((series) => series.key).sort(), ['AI', 'CoWoS'])
+])
+assert.deepEqual(themeSeries.map((series) => series.key).sort(), ['AI', 'CoWoS', '金融科技'])
 assert.equal(
   themeSeries.find((series) => series.key === 'AI')?.points[0].member_count,
   2,
-  'industry-theme drill-down must count distinct members within the selected parent industry',
+  'industry-theme view must count distinct members after multi-tag attribution',
 )
 assert(
-  !themeSeries.some((series) => series.key === '金融科技'),
-  'industry-theme drill-down must not leak a same-name or cross-industry membership from another parent',
-)
-assert(
-  new Set(themeSeries.map((series) => series.points[0].x)).size === 2,
-  'child themes must be percentile-ranked against siblings inside the selected industry',
+  new Set(themeSeries.map((series) => series.points[0].x)).size === 3,
+  'theme groups must be percentile-ranked against the selected taxonomy layer',
 )
 
 const marketThemeSeries = buildPitFactorIndustryThemeSeries([
@@ -107,6 +103,21 @@ assert.match(
 )
 assert.match(
   source,
+  /membership\.snapshot_id=resolved\.snapshot_id/,
+  'drill-down must consume the exact ready snapshot identity, not every row sharing its date',
+)
+assert.match(
+  source,
+  /membership\.source='finlab\.security_industry_themes'/,
+  'homepage visual taxonomy must fail closed to the FinLab industry-theme owner',
+)
+assert.match(
+  source,
   /const attributionWeight = 1 \/ tags\.length/,
   'multi-theme symbols must split attribution instead of being counted at full weight in every child theme',
+)
+assert.match(
+  source,
+  /json_extract\(membership\.source_lineage_json, '\$\.parent'\)/,
+  'subindustry drill-down must be constrained by its FinLab industry_theme parent at the PIT snapshot',
 )

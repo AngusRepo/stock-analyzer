@@ -170,15 +170,15 @@ export async function syncTimeverse(env: Bindings): Promise<string> {
 
           // Upsert D1
           await databaseForDataDomain(env, 'market').prepare(`
-            INSERT INTO stock_profiles (symbol, name, sector, business_desc, supply_chain, key_customers, key_suppliers, financials_summary, wikilinks, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
+            INSERT INTO stock_profiles (symbol, name, business_desc, supply_chain, key_customers, key_suppliers, financials_summary, wikilinks, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
             ON CONFLICT(symbol) DO UPDATE SET
-              name=excluded.name, sector=excluded.sector, business_desc=excluded.business_desc,
+              name=excluded.name, business_desc=excluded.business_desc,
               supply_chain=excluded.supply_chain, key_customers=excluded.key_customers,
               key_suppliers=excluded.key_suppliers, financials_summary=excluded.financials_summary,
               wikilinks=excluded.wikilinks, updated_at=datetime('now')
           `).bind(
-            profile.symbol, profile.name, profile.sector,
+            profile.symbol, profile.name,
             profile.business_desc, profile.supply_chain,
             profile.key_customers, profile.key_suppliers,
             profile.financials_summary, profile.wikilinks,

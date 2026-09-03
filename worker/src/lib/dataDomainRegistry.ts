@@ -126,8 +126,8 @@ const DOMAIN_TABLES: Record<DataDomain, ReadonlySet<string>> = {
     'expected_return_forward_guard_state',
     'adaptive_meta_policy_decisions', 'active8_oof_freshness_sla',
     'strategy_adaptive_policy_history_v2',
-
-
+    'ga_optimizer_shadow_candidates_v1', 'ga_optimizer_shadow_daily_evidence_v1',
+    'ga_optimizer_shadow_runs_v1',
   ]),
   ops: new Set([
     'system_logs', 'observability_events', 'screener_funnel_runs', 'screener_funnel_items',
@@ -283,6 +283,9 @@ const SHADOW_BACKFILL_EXCLUDED_TABLES: Partial<Record<DataDomain, ReadonlySet<st
     'state_space_v2_evaluations',
     'pit_factor_shadow_daily_v1',
     'expected_return_candidate_forward_evaluations',
+    'ga_optimizer_shadow_candidates_v1',
+    'ga_optimizer_shadow_daily_evidence_v1',
+    'ga_optimizer_shadow_runs_v1',
   ]),
   market: new Set([
     // Append-only knowledge-time rows start at domain creation; mutable legacy revenue cannot seed them.

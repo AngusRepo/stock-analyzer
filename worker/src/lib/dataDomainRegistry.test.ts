@@ -114,6 +114,9 @@ for (const table of ['meta_reward_ledger', 'meta_shadow_decisions']) {
 for (const [table, domain] of [
   ['expected_return_candidate_forward_evaluations', 'learning'],
   ['pit_residual_funnel_enrichment_runs_v1', 'ops'],
+  ['ga_optimizer_shadow_candidates_v1', 'learning'],
+  ['ga_optimizer_shadow_daily_evidence_v1', 'learning'],
+  ['ga_optimizer_shadow_runs_v1', 'learning'],
 ] as const) {
   assert.equal(tableOwnershipMetadata(table)?.route_ready, true,
     `${table} must route to its active ${domain} owner`)
@@ -124,16 +127,27 @@ for (const [table, domain] of [
 }
 
 const unresolvedProductionTables = productionTableNames.filter((table) => (
-  tableOwnershipMetadata(table)?.route_ready === false && !LEGACY_CONTROL_PLANE_TABLES.has(table)
+  tableOwnershipMetadata(table)?.route_ready === false
+  && tableOwnershipMetadata(table)?.disposition !== 'legacy_only'
+  && !LEGACY_CONTROL_PLANE_TABLES.has(table)
 ))
+assert.equal(tableOwnershipMetadata('stock_tags')?.disposition, 'legacy_only',
+  'FinLab taxonomy cutover must keep the retired stock_tags table explicitly legacy-only')
+assert.equal(tableOwnershipMetadata('stock_tags')?.route_ready, false,
+  'retired stock_tags must not route new writes to Market D1')
+assert.equal(tableOwnershipMetadata('stock_tags')?.shadow_ready, false,
+  'retired stock_tags must not re-enter the legacy shadow-backfill inventory')
 assert.deepEqual(
   unresolvedProductionTables,
   [],
   'all seven production domains must have completed owner routing closure',
 )
-const marketProductionTables = productionTableNames.filter((table) => dataDomainForTable(table) === 'market')
-assert(marketProductionTables.length >= 43, 'Market production ownership unexpectedly incomplete')
-for (const table of marketProductionTables) {
+const marketRouteReadyTables = productionTableNames.filter((table) => (
+  dataDomainForTable(table) === 'market'
+  && tableOwnershipMetadata(table)?.disposition !== 'legacy_only'
+))
+assert(marketRouteReadyTables.length >= 42, 'Market route-ready production ownership unexpectedly incomplete')
+for (const table of marketRouteReadyTables) {
   const metadata = tableOwnershipMetadata(table)
   assert(metadata, `missing metadata for Market production table ${table}`)
   assert.equal(metadata.route_ready, true, `${table} must route to Market D1 after formal runtime closure`)

@@ -435,7 +435,8 @@ export function buildGaOptimizerPolicyValidationEvidence(input: {
       promotion_key: input.promotionKey ?? null,
       sandbox_config_required: false,
       mutates_trading_config: false,
-      wei_approval_required: ['L3', 'L4'].includes(String(targetLevel)),
+      manual_approval_required: false,
+      promotion_mode: 'automatic_candidate_specific_evidence',
       learned_alpha_framework_sections: Object.keys(learnedAlphaFramework).sort(),
       metrics: {
         score: best.score ?? null,

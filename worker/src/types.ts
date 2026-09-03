@@ -331,6 +331,7 @@ export interface UpdateQueueMsg {
     | 'strategy_learning_materialize'
     | 'meta_learning_shadow_closure'
     | 's12_replay_backfill_chunk'
+    | 'ga_optimizer_shadow_closure'
     | 's12_research_recovery'
     | 'allocator_ev_lifecycle_recovery'
     | 'post_pipeline_chain'

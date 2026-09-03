@@ -47,6 +47,7 @@ const TASK_NAMES: Record<string, string> = {
   'linucb-multiplier-replay': 'LinUCB Multiplier Replay',
   'meta-learning-shadow': 'Meta Learning Shadow',
   'strategy-learning': 'Strategy Learning',
+  'ga-shadow-daily': 'GA Frozen Shadow Daily',
   'strategy-learning-watchdog': 'Strategy Learning Recovery Watchdog',
   's12-replay-backfill': 'S12 Replay Backfill',
   pipeline: 'Pipeline',

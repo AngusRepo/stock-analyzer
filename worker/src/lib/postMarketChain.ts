@@ -285,6 +285,26 @@ async function enqueueMetaLearningShadowClosureTask(
   return `triggered meta-learning-shadow queue run_date=${runDate} run_id=${runId}`
 }
 
+async function enqueueGaOptimizerShadowClosureTask(
+  env: Bindings,
+  ctx: ChainContext,
+  productionEligible: boolean,
+): Promise<string> {
+  const runDate = ctx.runDate ?? new Date(Date.now() + 8 * 3600_000).toISOString().slice(0, 10)
+  const canonicalRunId = ctx.upstreamRunId || `evening-chain-${runDate}-${Date.now()}`
+  const runId = canonicalRunId
+  await assertChainStageAuthority(ctx, 'ga-optimizer-shadow:before_queue')
+  await env.UPDATE_QUEUE.send({
+    type: 'ga_optimizer_shadow_closure',
+    cursor: 0,
+    triggerTime: runDate,
+    runId,
+    force: productionEligible,
+    productionAuthorityIntent: productionEligible,
+  })
+  return `triggered GA frozen shadow queue run_date=${runDate} run_id=${runId} production_effect=false`
+}
+
 async function enqueueStrategyLearningClosureTask(
   env: Bindings,
   ctx: ChainContext,
@@ -802,6 +822,10 @@ export async function runPostVerifyCallbackChain(
       critical: false,
       timeoutMs: TASK_EXECUTION_TIMEOUT_MS,
     }))
+    results.push(await logChainedTask(env, ctx, 'ga-shadow-daily', () => enqueueGaOptimizerShadowClosureTask(env, ctx, productionEligible), {
+      critical: false,
+      timeoutMs: TASK_EXECUTION_TIMEOUT_MS,
+    }))
   } else {
     results.push(await logSkippedHistoricalTask(env, ctx, 'linucb-reward-ledger'))
     results.push(await logSkippedHistoricalTask(env, ctx, 'paper-intraday-cache-clear'))
@@ -810,6 +834,7 @@ export async function runPostVerifyCallbackChain(
     results.push(await logSkippedHistoricalTask(env, ctx, 'paper-active-postmarket'))
     results.push(await logSkippedHistoricalTask(env, ctx, 'obsidian-sync'))
     results.push(await logSkippedHistoricalTask(env, ctx, 'meta-learning-shadow'))
+    results.push(await logSkippedHistoricalTask(env, ctx, 'ga-shadow-daily'))
   }
 
   // Strategy learning is evidence materialization, not a live trading mutation.

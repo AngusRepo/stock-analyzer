@@ -19,8 +19,8 @@ const LEVEL_LABELS: Record<GAPromotionLevel, string> = {
   L0: 'Learning only',
   L1: 'Review candidate',
   L2: 'Shadow config',
-  L3: 'Limited production config',
-  L4: 'Full production config',
+  L3: 'Limited production meta-policy',
+  L4: 'Full production meta-policy',
 }
 
 const LEVEL_ORDER: GAPromotionLevel[] = ['L0', 'L1', 'L2', 'L3', 'L4']
@@ -41,6 +41,7 @@ function normalizeLevel(value: unknown): GAPromotionLevel | null {
 }
 
 export const GA_CANDIDATE_LATEST_KEY = 'optimizer:ga:candidate:latest'
+export const GA_SHADOW_ACTIVE_KEY = 'optimizer:ga:shadow:active'
 export const GA_CHAMPION_KEY = 'optimizer:ga:champion'
 export const GA_LEGACY_LATEST_KEY = 'optimizer:ga:latest'
 
@@ -61,13 +62,16 @@ function hasPolicyCandidate(state: Record<string, any>): boolean {
   return Boolean(state.best_alphaFramework ?? state.bestAlphaFramework ?? state.best?.candidate?.params?.alphaFramework)
 }
 
-function hasStableHistory(state: Record<string, any>): boolean {
-  const history = Array.isArray(state.history) ? state.history : []
-  if (history.length < 2) return false
-  const last = finiteNumber(history[history.length - 1]?.best_score)
-  const prev = finiteNumber(history[history.length - 2]?.best_score)
-  if (last == null || prev == null) return false
-  return last >= prev
+function hasProspectiveShadowEvidence(
+  state: Record<string, any>,
+  level: 'l2' | 'l3' | 'l4',
+): boolean {
+  const maturity = state.shadow_maturity
+  if (!maturity || maturity.schema_version !== 'ga-shadow-promotion-policy-v1') return false
+  if (maturity.production_effect !== false) return false
+  if (String(maturity.ga_candidate_id ?? '') !== String(state?.best?.candidate?.id ?? '')) return false
+  if (String(maturity.shadow_id ?? '') !== String(state?.shadow?.shadow_id ?? '')) return false
+  return maturity[`${level}_pass`] === true
 }
 
 function hasGovernanceEvidence(state: Record<string, any>): boolean {
@@ -91,9 +95,14 @@ export function evaluateGaPromotion(
   previousState?: Record<string, any> | null,
 ): GAPromotionDecision {
   const reasons: string[] = []
-  const requiredEvidence = ['policy_candidate', 'primary_gate', 'stable_history', 'pbo_mc_cost_governance']
+  const requiredEvidence = [
+    'policy_candidate',
+    'primary_gate',
+    'prospective_shadow_l2',
+    'pbo_mc_cost_governance',
+    'prospective_shadow_l3_l4',
+  ]
   const missingEvidence: string[] = []
-  const approvedLevel = normalizeLevel(state?.promotion?.approved_level ?? state?.meta?.promotion_approved_level)
   const previousLevel = normalizeLevel(previousState?.promotion?.level) ?? 'L0'
   let level: GAPromotionLevel = 'L0'
 
@@ -125,59 +134,38 @@ export function evaluateGaPromotion(
     reasons.push('primary GA gate not passed')
   }
 
-  const stableHistory = hasStableHistory(state)
   const governanceEvidence = hasGovernanceEvidence(state)
-  if (level === 'L1' && stableHistory && governanceEvidence) {
+  const l2ShadowReady = hasProspectiveShadowEvidence(state, 'l2')
+  const l3ShadowReady = hasProspectiveShadowEvidence(state, 'l3')
+  const l4ShadowReady = hasProspectiveShadowEvidence(state, 'l4')
+  if (level === 'L1' && l2ShadowReady && governanceEvidence) {
     level = 'L2'
-    reasons.push('stable generation history plus PBO/MC evidence')
+    reasons.push('frozen prospective shadow plus PBO/MC evidence')
   }
-  if (level === 'L1' && !stableHistory) missingEvidence.push('stable_history')
+  if (level === 'L1' && !l2ShadowReady) missingEvidence.push('prospective_shadow_l2')
   if (level === 'L1' && !governanceEvidence) missingEvidence.push('pbo_mc_cost_governance')
 
-  const requestedLevel = normalizeLevel(state?.promotion?.requested_level ?? state?.meta?.promotion_requested_level)
-  const manualPromotionEvidenceReady = levelIndex(level) >= levelIndex('L2') && missingEvidence.length === 0
-  const targetApprovalLevel = manualPromotionEvidenceReady
-    && requestedLevel
-    && levelIndex(requestedLevel) > levelIndex(level)
-    ? requestedLevel
-    : null
-  let pendingApprovalLevel: GAPromotionLevel | null = null
-  if (requestedLevel && levelIndex(requestedLevel) >= levelIndex('L3') && !manualPromotionEvidenceReady) {
-    reasons.push(`${requestedLevel} approval ignored until all GA evidence gates pass`)
-  } else if (targetApprovalLevel && levelIndex(targetApprovalLevel) >= levelIndex('L3')) {
-    if (approvedLevel && levelIndex(approvedLevel) >= levelIndex(targetApprovalLevel)) {
-      level = targetApprovalLevel
-      reasons.push(`Wei approval accepted for ${targetApprovalLevel}`)
-    } else {
-      pendingApprovalLevel = targetApprovalLevel
-      reasons.push(`${targetApprovalLevel} requires Wei approval`)
-    }
+  if (level === 'L2' && l3ShadowReady) {
+    level = 'L3'
+    reasons.push('candidate-specific L3 evidence auto-promoted the bounded meta-policy')
+  }
+  if (level === 'L3' && l4ShadowReady) {
+    level = 'L4'
+    reasons.push('candidate-specific L4 evidence auto-promoted the full meta-policy')
   }
 
-  const autoPromoted = levelIndex(level) > levelIndex(previousLevel) && levelIndex(level) <= levelIndex('L2')
+  const autoPromoted = levelIndex(level) > levelIndex(previousLevel)
   const nextLevel = LEVEL_ORDER[levelIndex(level) + 1] ?? null
-  const approvalRequiredForNextLevel = nextLevel != null && levelIndex(nextLevel) >= levelIndex('L3')
-  const canRequestNextLevel =
-    nextLevel != null &&
-    levelIndex(level) >= levelIndex('L2') &&
-    approvalRequiredForNextLevel &&
-    missingEvidence.length === 0
-  const status =
-    pendingApprovalLevel ? 'approval_required'
-      : level === 'L0' ? 'learning'
+  if (level === 'L2' && !l3ShadowReady) missingEvidence.push('prospective_shadow_l3')
+  if (level === 'L3' && !l4ShadowReady) missingEvidence.push('prospective_shadow_l4')
+  const status = level === 'L0' ? 'learning'
         : level === 'L1' ? 'review_candidate'
           : level === 'L2' ? 'shadow_config'
-            : approvedLevel && levelIndex(approvedLevel) >= levelIndex(level) ? 'approved'
-              : 'approval_required'
-  const nextAction =
-    status === 'approval_required'
-      ? `Wei approval is required before GA can enter ${pendingApprovalLevel ?? nextLevel ?? 'the next level'}.`
-      : canRequestNextLevel
-        ? `Ready to request Wei approval for ${nextLevel}; production trading:config remains unchanged until approval.`
-        : missingEvidence.length
-          ? `Collect missing GA evidence: ${missingEvidence.join(', ')}.`
+            : 'approved'
+  const nextAction = missingEvidence.length
+          ? `Collect missing frozen prospective GA evidence: ${[...new Set(missingEvidence)].join(', ')}.`
           : nextLevel
-            ? `Continue GA learning toward ${nextLevel}.`
+            ? `Continue automatic GA evidence accumulation toward ${nextLevel}.`
             : 'GA promotion ladder is complete.'
 
   return {
@@ -185,11 +173,11 @@ export function evaluateGaPromotion(
     levelLabel: LEVEL_LABELS[level],
     status,
     autoPromoted,
-    approvalRequiredForNextLevel,
+    approvalRequiredForNextLevel: false,
     nextLevel,
-    pendingApprovalLevel,
-    canRequestNextLevel,
-    missingEvidence,
+    pendingApprovalLevel: null,
+    canRequestNextLevel: false,
+    missingEvidence: [...new Set(missingEvidence)],
     requiredEvidence,
     nextAction,
     reasons,

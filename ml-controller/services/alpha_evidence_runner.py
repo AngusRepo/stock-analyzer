@@ -187,6 +187,42 @@ def _pbo_row(champion_metrics: Any, candidate_metrics: Any) -> dict[str, Any]:
     }
 
 
+def _paired_comparison_row(champion_metrics: Any, candidate_metrics: Any) -> dict[str, Any]:
+    champion_returns, _ = _trade_returns_and_regimes(champion_metrics)
+    candidate_returns, _ = _trade_returns_and_regimes(candidate_metrics)
+
+    def _summary(metrics: Any, returns: list[float]) -> dict[str, Any]:
+        return {
+            "total_return": _as_float(_metric_attr(metrics, "total_return", 0.0)),
+            "total_trades": int(_metric_attr(metrics, "total_trades", 0) or 0),
+            "sharpe": _metric_attr(metrics, "sharpe", None),
+            "max_drawdown": _as_float(_metric_attr(metrics, "max_drawdown", 0.0)),
+            "profit_factor": _as_float(_metric_attr(metrics, "profit_factor", 0.0)),
+            "win_rate": _as_float(_metric_attr(metrics, "win_rate", 0.0)),
+            "fill_rate": _as_float(_metric_attr(metrics, "fill_rate", 0.0)),
+            "trade_return_series": returns,
+            "partition_returns": [
+                _as_float(value)
+                for value in (_metric_attr(metrics, "partition_returns", []) or [])
+            ],
+        }
+
+    champion = _summary(champion_metrics, champion_returns)
+    candidate = _summary(candidate_metrics, candidate_returns)
+    return {
+        "schema_version": "paired-candidate-champion-comparison-v1",
+        "champion": champion,
+        "candidate": candidate,
+        "delta": {
+            "total_return": round(candidate["total_return"] - champion["total_return"], 10),
+            "total_trades": candidate["total_trades"] - champion["total_trades"],
+            "fill_rate": round(candidate["fill_rate"] - champion["fill_rate"], 10),
+        },
+        "same_dataset": True,
+        "costs_included": True,
+    }
+
+
 def _walk_forward_row(champion_metrics: Any, candidate_metrics: Any) -> dict[str, Any]:
     champion_partitions = [_as_float(v) for v in (_metric_attr(champion_metrics, "partition_returns", []) or [])]
     candidate_partitions = [_as_float(v) for v in (_metric_attr(candidate_metrics, "partition_returns", []) or [])]
@@ -287,6 +323,7 @@ def run_alpha_candidate_evidence(
     return {
         **evidence,
         "gate": gate,
+        "comparison": _paired_comparison_row(champion_metrics, candidate_metrics),
         "provenance": {
             "start_date": start_date,
             "end_date": end_date,
@@ -360,6 +397,7 @@ def run_parameter_candidate_evidence(
     return {
         **evidence,
         "gate": gate,
+        "comparison": _paired_comparison_row(champion_metrics, candidate_metrics),
         "provenance": {
             "start_date": start_date,
             "end_date": end_date,

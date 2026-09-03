@@ -413,13 +413,18 @@ async def _execute_research_sweep_with_bounded_retry(
 
 async def _run() -> int:
     mode = os.environ.get("OPTUNA_JOB_MODE", "research_sweep").strip().lower()
-    if mode not in {"research_sweep", "per_regime", "parameter_validation", "weekly_backtest"}:
+    if mode not in {"research_sweep", "per_regime", "parameter_validation", "weekly_backtest", "ga_shadow_daily"}:
         raise RuntimeError(f"unsupported OPTUNA_JOB_MODE={mode}")
 
     run_date = os.environ.get("OPTUNA_RUN_DATE", "") or ""
     queue_entry_id = os.environ.get("OPTUNA_QUEUE_ENTRY_ID", "") or ""
     trigger_source = os.environ.get("OPTUNA_TRIGGER_SOURCE", "") or ""
-    if mode == "weekly_backtest":
+    if mode == "ga_shadow_daily":
+        req: Any = None
+        cadence = "daily"
+        task = os.environ.get("OPTUNA_CALLBACK_TASK", "ga-shadow-daily") or "ga-shadow-daily"
+        log_parallel = 1
+    elif mode == "weekly_backtest":
         req: Any = None
         cadence = "weekly"
         task = os.environ.get("OPTUNA_CALLBACK_TASK", "weekly-backtest") or "weekly-backtest"
@@ -445,7 +450,7 @@ async def _run() -> int:
     )
     run_id = (
         (os.environ.get("OPTUNA_RUN_ID") or execution_run_id)
-        if mode == "weekly_backtest"
+        if mode in {"weekly_backtest", "ga_shadow_daily"}
         else execution_run_id
     )
     if mode == "parameter_validation":
@@ -470,7 +475,23 @@ async def _run() -> int:
     research_sweep_attempts = 0
 
     try:
-        if mode == "weekly_backtest":
+        if mode == "ga_shadow_daily":
+            from services.ga_production_shadow_service import run_ga_production_shadow
+
+            result = await asyncio.to_thread(
+                run_ga_production_shadow,
+                run_date=run_date,
+                run_id=run_id,
+            )
+            result_status = str(result.get("status") or "") if isinstance(result, dict) else ""
+            if result_status == "COMPLETED":
+                status = "success"
+            elif result_status in {"NO_ACTIVE", "NOT_READY"}:
+                status = "skipped"
+            else:
+                error = str(result)
+            summary = _summarize_result(result if isinstance(result, dict) else {})
+        elif mode == "weekly_backtest":
             result = await _run_weekly_backtest_bundle(run_date)
             if isinstance(result, dict) and result.get("status") == "completed":
                 status = "success"
@@ -538,7 +559,19 @@ async def _run() -> int:
         payload["run_date"] = run_date
     if error:
         payload["error"] = error[:1200]
-    if mode == "weekly_backtest":
+    if mode == "ga_shadow_daily":
+        payload["metadata"] = {
+            "source": "ga_production_shadow",
+            "executor": "cloud_run_job",
+            "mode": mode,
+            "shadow_id": result.get("shadow_id") if isinstance(result, dict) else None,
+            "ga_candidate_id": result.get("ga_candidate_id") if isinstance(result, dict) else None,
+            "evidence_business_date": result.get("evidence_business_date") if isinstance(result, dict) else None,
+            "evidence_dates": result.get("evidence_dates") if isinstance(result, dict) else None,
+            "production_effect": False,
+        }
+        payload["result"] = result
+    elif mode == "weekly_backtest":
         pbo = result.get("pbo") if isinstance(result, dict) and isinstance(result.get("pbo"), dict) else {}
         payload["metadata"] = {
             "source": "weekly_backtest_research_bundle",

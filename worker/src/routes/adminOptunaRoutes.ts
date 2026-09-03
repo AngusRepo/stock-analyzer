@@ -7,6 +7,7 @@ import {
   GA_CHAMPION_KEY,
   GA_LEGACY_LATEST_KEY,
   evaluateGaPromotion,
+  GA_SHADOW_ACTIVE_KEY,
   formatGaPromotionNotification,
   isApprovedGaRelease,
 } from '../lib/gaPromotion'
@@ -36,11 +37,9 @@ adminOptunaRoutes.post('/api/admin/ga-promotion/review', async (c) => {
     return c.json({ error: 'level must be L3 or L4' }, 400)
   }
 
-  const latestKey = GA_CANDIDATE_LATEST_KEY
-  const candidateRaw = await c.env.KV.get(latestKey, 'json').catch(() => null) as any
-  const legacyRaw = await c.env.KV.get(GA_LEGACY_LATEST_KEY, 'json').catch(() => null) as any
-  const previousRaw = candidateRaw ?? legacyRaw
-  if (!previousRaw) return c.json({ error: 'optimizer:ga:candidate:latest missing' }, 404)
+  const latestKey = GA_SHADOW_ACTIVE_KEY
+  const previousRaw = await c.env.KV.get(latestKey, 'json').catch(() => null) as any
+  if (!previousRaw) return c.json({ error: 'optimizer:ga:shadow:active missing' }, 404)
 
   const currentPromotion = evaluateGaPromotion(previousRaw as Record<string, any>)
   if (action === 'request' && (!currentPromotion.canRequestNextLevel || currentPromotion.nextLevel !== level)) {
@@ -99,9 +98,19 @@ adminOptunaRoutes.post('/api/admin/ga-promotion/review', async (c) => {
   }
 
   const auditKey = `optimizer:ga:review:${twToday()}:${Date.now()}`
-  const updatedKeys = [latestKey, GA_LEGACY_LATEST_KEY, auditKey]
+  const updatedKeys = [latestKey, auditKey]
   await c.env.KV.put(latestKey, JSON.stringify(nextState))
-  await c.env.KV.put(GA_LEGACY_LATEST_KEY, JSON.stringify(nextState))
+  const latestCandidate = await c.env.KV.get(GA_CANDIDATE_LATEST_KEY, 'json').catch(() => null) as any
+  const sameCandidateIdentity =
+    String(latestCandidate?.best?.candidate?.id ?? '') === String(nextState?.best?.candidate?.id ?? '') &&
+    String(latestCandidate?.shadow?.shadow_id ?? '') === String(nextState?.shadow?.shadow_id ?? '')
+  if (sameCandidateIdentity) {
+    await Promise.all([
+      c.env.KV.put(GA_CANDIDATE_LATEST_KEY, JSON.stringify(nextState)),
+      c.env.KV.put(GA_LEGACY_LATEST_KEY, JSON.stringify(nextState)),
+    ])
+    updatedKeys.push(GA_CANDIDATE_LATEST_KEY, GA_LEGACY_LATEST_KEY)
+  }
   if (action === 'approve' && isApprovedGaRelease(nextState)) {
     const championState = {
       ...nextState,
@@ -151,7 +160,7 @@ adminOptunaRoutes.post('/api/admin/optuna-push', async (c) => {
   const { source, params, meta } = body
   const { getSandboxEntry, getTradingConfig, setTradingConfig, validateTradingConfig, writeSandbox, mergeAlphaFrameworkConfig } = await import('../lib/tradingConfig')
   const sourceName = String(source ?? '')
-  const current = ['feature_window', 'ga_optimizer', 'regime'].includes(sourceName)
+  const current = ['feature_window', 'regime'].includes(sourceName)
     ? {} as any
     : await getTradingConfig(c.env.KV)
 
@@ -404,6 +413,11 @@ adminOptunaRoutes.post('/api/admin/optuna-push', async (c) => {
         mutates_trading_config: false,
         updated_at: now,
         meta: meta ?? null,
+        materialization: {
+          status: 'PENDING',
+          run_id: meta?.run_id ?? null,
+          production_effect: false,
+        },
       }
       const promotion = evaluateGaPromotion(learningState, previousCandidate)
       learningState.status = promotion.status
@@ -425,7 +439,7 @@ adminOptunaRoutes.post('/api/admin/optuna-push', async (c) => {
       await c.env.KV.put(latestKey, JSON.stringify(learningState))
       await c.env.KV.put(legacyKey, JSON.stringify(learningState))
       const latestReadback = await c.env.KV.get(latestKey, 'json').catch(() => null) as any
-      const latestReadbackOk = latestReadback?.source === 'ga_optimizer' &&
+      let latestReadbackOk = latestReadback?.source === 'ga_optimizer' &&
         latestReadback?.optimizer === 'GAOptimizer' &&
         latestReadback?.promotion?.evaluated_at === learningState.promotion.evaluated_at
       await c.env.KV.put(historyKey, JSON.stringify(learningState), { expirationTtl: 90 * 86400 })
@@ -440,6 +454,9 @@ adminOptunaRoutes.post('/api/admin/optuna-push', async (c) => {
 
       let candidateRecord: Record<string, unknown> | null = null
       let candidateEvidenceRecord: Record<string, unknown> | null = null
+      let shadowEnrollment: Record<string, any> | null = null
+      let shadowActiveReadbackOk = false
+      let candidateShadowReadbackOk = false
       let candidateRecordError: string | null = null
       const learningDb = databaseForDataDomain(c.env, 'learning')
       try {
@@ -477,6 +494,57 @@ adminOptunaRoutes.post('/api/admin/optuna-push', async (c) => {
             evidenceType: 'ga_optimizer_policy_packet_validation',
             evidence,
           })
+          const {
+            enrollGaProductionShadowCandidate,
+            gaShadowStateKey,
+          } = await import('../lib/gaProductionShadow')
+          shadowEnrollment = await enrollGaProductionShadowCandidate(learningDb, {
+            candidateRegistryId: String(candidateRecord.candidate_id),
+            learningState,
+            baselineConfig: current,
+            runDate: typeof meta?.run_date === 'string' ? meta.run_date : null,
+            runId: typeof meta?.run_id === 'string' ? meta.run_id : null,
+            cadence: typeof meta?.cadence === 'string' ? meta.cadence : null,
+          })
+          const enrolledState = {
+            ...learningState,
+            materialization: {
+              status: 'COMPLETE',
+              run_id: meta?.run_id ?? null,
+              candidate_registry_id: candidateRecord.candidate_id,
+              shadow_id: shadowEnrollment.shadow_id,
+              production_effect: false,
+            },
+            shadow: {
+              schema_version: 'ga-frozen-shadow-enrollment-v1',
+              ...shadowEnrollment,
+              active_key: shadowEnrollment.status === 'ACTIVE' ? GA_SHADOW_ACTIVE_KEY : null,
+              production_effect: false,
+            },
+          }
+          await Promise.all([
+            c.env.KV.put(latestKey, JSON.stringify(enrolledState)),
+            c.env.KV.put(legacyKey, JSON.stringify(enrolledState)),
+            c.env.KV.put(gaShadowStateKey(shadowEnrollment.shadow_id), JSON.stringify(enrolledState)),
+          ])
+          updatedKeys.push(gaShadowStateKey(shadowEnrollment.shadow_id))
+          const candidateShadowReadback = await c.env.KV.get(latestKey, 'json').catch(() => null) as any
+          candidateShadowReadbackOk =
+            candidateShadowReadback?.shadow?.shadow_id === shadowEnrollment.shadow_id &&
+            candidateShadowReadback?.best?.candidate?.id === shadowEnrollment.ga_candidate_id &&
+            candidateShadowReadback?.materialization?.status === 'COMPLETE'
+          latestReadbackOk = latestReadbackOk && candidateShadowReadbackOk
+          if (shadowEnrollment.status === 'ACTIVE') {
+            await c.env.KV.put(GA_SHADOW_ACTIVE_KEY, JSON.stringify(enrolledState))
+            const activeReadback = await c.env.KV.get(GA_SHADOW_ACTIVE_KEY, 'json').catch(() => null) as any
+            shadowActiveReadbackOk =
+              activeReadback?.shadow?.shadow_id === shadowEnrollment.shadow_id &&
+              activeReadback?.best?.candidate?.id === shadowEnrollment.ga_candidate_id &&
+              activeReadback?.shadow?.production_effect === false
+            if (shadowActiveReadbackOk) updatedKeys.push(GA_SHADOW_ACTIVE_KEY)
+          } else {
+            shadowActiveReadbackOk = true
+          }
         }
       } catch (error: any) {
         candidateRecordError = error?.message ?? String(error)
@@ -486,6 +554,9 @@ adminOptunaRoutes.post('/api/admin/optuna-push', async (c) => {
         kv_readback: latestReadbackOk,
         d1_candidate: Boolean(candidateRecord?.candidate_id),
         d1_candidate_evidence: Boolean(candidateEvidenceRecord?.status),
+        d1_frozen_shadow_enrollment: Boolean(shadowEnrollment?.shadow_id),
+        candidate_shadow_kv_readback: candidateShadowReadbackOk,
+        active_shadow_kv_readback: shadowActiveReadbackOk,
       }
       const materializationComplete = Object.values(materializationChecks).every(Boolean)
 
@@ -502,6 +573,7 @@ adminOptunaRoutes.post('/api/admin/optuna-push', async (c) => {
         promotion,
         candidate_record: candidateRecord,
         candidate_evidence_record: candidateEvidenceRecord,
+        shadow_enrollment: shadowEnrollment,
         candidate_record_error: candidateRecordError,
         kv_readback_ok: latestReadbackOk,
         materialization_checks: materializationChecks,
@@ -530,6 +602,7 @@ adminOptunaRoutes.post('/api/admin/optuna-push', async (c) => {
         materialization_checks: materializationChecks,
         materialization_complete: materializationComplete,
         candidate_evidence_record: candidateEvidenceRecord,
+        shadow_enrollment: shadowEnrollment,
         candidate_record_error: candidateRecordError,
         promotion,
         notification_channel: notificationChannel,

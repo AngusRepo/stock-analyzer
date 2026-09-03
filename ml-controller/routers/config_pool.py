@@ -359,71 +359,67 @@ async def _persist_parameter_candidate_evidence(
         "promotion_packet_id": promotion_packet_id,
         "validation_run_id": validation_run_id,
     }
-    await fetch_worker_admin(
-        "/api/internal/d1/batch",
-        method="POST",
-        json_body={
-            "statements": [
-                {
-                    "sql": (
+    statements = [
+        (
+            (
                         "DELETE FROM parameter_candidate_evidence "
                         "WHERE candidate_id = ? AND evidence_type = ? "
                         "AND json_extract(evidence_json, '$.validation_run_id') = ?"
                     ),
-                    "params": [
+            [
                         candidate_id,
                         evidence_type,
                         validation_run_id,
                     ],
-                },
-                {
-                    "sql": (
+        ),
+        (
+            (
                         "INSERT INTO parameter_candidate_registry "
                         "(candidate_id, source, status, latest_evidence_json, promotion_packet_id, updated_at) "
                         "VALUES (?, ?, ?, ?, ?, datetime('now')) "
                         "ON CONFLICT(candidate_id) DO NOTHING"
                     ),
-                    "params": [
+            [
                         candidate_id,
                         source or "unknown",
                         status,
                         _json.dumps(persisted, ensure_ascii=False),
                         promotion_packet_id,
                     ],
-                },
-                {
-                    "sql": (
+        ),
+        (
+            (
                         "INSERT INTO parameter_candidate_evidence "
                         "(candidate_id, evidence_type, decision, evidence_json, promotion_packet_id) "
                         "VALUES (?, ?, ?, ?, ?)"
                     ),
-                    "params": [
+            [
                         candidate_id,
                         evidence_type,
                         decision,
                         _json.dumps(persisted, ensure_ascii=False),
                         promotion_packet_id,
                     ],
-                },
-                {
-                    "sql": (
+        ),
+        (
+            (
                         "UPDATE parameter_candidate_registry "
                         "SET status = ?, latest_evidence_json = ?, promotion_packet_id = ?, updated_at = datetime('now') "
                         "WHERE candidate_id = ?"
                     ),
-                    "params": [
+            [
                         status,
                         _json.dumps(persisted, ensure_ascii=False),
                         promotion_packet_id,
                         candidate_id,
                     ],
-                },
-                {
-                    "sql": (
+        ),
+        (
+            (
                         "INSERT INTO parameter_candidate_events "
                         "(candidate_id, event_type, detail_json) VALUES (?, ?, ?)"
                     ),
-                    "params": [
+            [
                         candidate_id,
                         "candidate_specific_validation",
                         _json.dumps({
@@ -433,9 +429,10 @@ async def _persist_parameter_candidate_evidence(
                             "validation_run_id": validation_run_id,
                         }, ensure_ascii=False),
                     ],
-                },
-            ],
-        },
+        ),
+    ]
+    await anyio.to_thread.run_sync(
+        lambda: LEARNING_D1_CLIENT.atomic_batch_execute(statements)
     )
     return promotion_packet_id
 
@@ -448,27 +445,24 @@ async def _record_parameter_candidate_validation_running(
 ) -> None:
     import json as _json
 
-    await fetch_worker_admin(
-        "/api/internal/d1/batch",
-        method="POST",
-        json_body={
-            "statements": [
-                {
-                    "sql": (
-                        "INSERT INTO parameter_candidate_events "
-                        "(candidate_id, event_type, detail_json) VALUES (?, ?, ?)"
-                    ),
-                    "params": [
-                        candidate_id,
-                        "candidate_validation_running",
-                        _json.dumps({
-                            "source": source,
-                            "validation_run_id": validation_run_id,
-                        }, ensure_ascii=False),
-                    ],
-                },
+    statements = [
+        (
+            (
+                "INSERT INTO parameter_candidate_events "
+                "(candidate_id, event_type, detail_json) VALUES (?, ?, ?)"
+            ),
+            [
+                candidate_id,
+                "candidate_validation_running",
+                _json.dumps({
+                    "source": source,
+                    "validation_run_id": validation_run_id,
+                }, ensure_ascii=False),
             ],
-        },
+        ),
+    ]
+    await anyio.to_thread.run_sync(
+        lambda: LEARNING_D1_CLIENT.atomic_batch_execute(statements)
     )
 
 

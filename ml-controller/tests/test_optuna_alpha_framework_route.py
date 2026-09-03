@@ -366,6 +366,10 @@ def test_research_sweep_two_phase_commit_stages_once_after_all_sources_succeed(m
             "champion_key": "optimizer:ga:champion",
             "candidate_record": {"candidate_id": "parameter:ga_optimizer:test"},
             "candidate_evidence_record": {"status": "EVIDENCE_INSUFFICIENT"},
+            "shadow_enrollment": {
+                "shadow_id": "ga-shadow-v1:execution-two-phase",
+                "status": "ACTIVE",
+            },
         }
 
     monkeypatch.setattr(optuna, "push_optuna_result", fake_push)
@@ -385,6 +389,8 @@ def test_research_sweep_two_phase_commit_stages_once_after_all_sources_succeed(m
     assert [item["source"] for item in pushes] == ["ga_optimizer", "research_sweep"]
     assert out["ga_closure"]["materialized"] is True
     assert out["ga_closure"]["run_id"] == "execution-two-phase"
+    assert out["ga_closure"]["shadow_id"] == "ga-shadow-v1:execution-two-phase"
+    assert out["ga_closure"]["shadow_status"] == "ACTIVE"
     assert pushes[1]["params"]["sources"]["screener"] == {"minPrice": 20}
     assert all(out["ga_closure"]["closure_checks"].values())
     assert pushes[1]["meta"]["run_id"] == "execution-two-phase"
@@ -443,6 +449,10 @@ def test_research_sweep_failure_keeps_independent_ga_candidate_receipt(monkeypat
             "champion_key": "optimizer:ga:champion",
             "candidate_record": {"candidate_id": "parameter:ga_optimizer:test"},
             "candidate_evidence_record": {"status": "EVIDENCE_INSUFFICIENT"},
+            "shadow_enrollment": {
+                "shadow_id": "ga-shadow-v1:partial-sweep",
+                "status": "ACTIVE",
+            },
         }
 
     monkeypatch.setattr(optuna, "push_optuna_result", fake_ga_push)
@@ -462,6 +472,7 @@ def test_research_sweep_failure_keeps_independent_ga_candidate_receipt(monkeypat
     assert [item["source"] for item in pushes] == ["ga_optimizer"]
     assert out["ga_closure"]["materialized"] is True
     assert all(out["ga_closure"]["closure_checks"].values())
+    assert out["ga_closure"]["shadow_id"] == "ga-shadow-v1:partial-sweep"
     assert out["staging"]["ga_candidate"]["status"] == "staged"
 
 
@@ -491,3 +502,37 @@ def test_ga_commit_fails_closed_when_materialization_receipt_is_incomplete(monke
         assert "ga_candidate_materialization_incomplete:kv_readback" in str(exc)
     else:
         raise AssertionError("GA closure must fail when KV readback is missing")
+
+
+def test_ga_commit_fails_closed_when_frozen_shadow_enrollment_is_missing(monkeypatch):
+    req = optuna.OptunaResearchSweepReq(push_kv=True, dry_run=False)
+    results = [
+        {
+            "source": "ga_optimizer",
+            "status": "success",
+            "candidate_params": {
+                "validation": {"status": "completed", "decision": "PASS"},
+            },
+        },
+    ]
+    monkeypatch.setattr(
+        optuna,
+        "push_optuna_result",
+        lambda **_kwargs: {
+            "success": True,
+            "kv_readback_ok": True,
+            "candidate_record": {"candidate_id": "parameter:ga_optimizer:test"},
+            "candidate_evidence_record": {"status": "EVIDENCE_INSUFFICIENT"},
+            "shadow_enrollment": None,
+        },
+    )
+
+    try:
+        optuna._commit_ga_research_candidate(req, results, run_id="missing-shadow-test")
+    except RuntimeError as exc:
+        assert str(exc) == (
+            "ga_candidate_materialization_incomplete:"
+            "d1_frozen_shadow_enrollment"
+        )
+    else:
+        raise AssertionError("GA closure must fail without frozen shadow enrollment")

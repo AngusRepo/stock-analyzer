@@ -303,6 +303,27 @@ assert(
   'Neural meta-learning shadow must run as a durable queue continuation with final scheduler status',
 )
 assert(
+  postMarketChain.includes("'ga-shadow-daily', () => enqueueGaOptimizerShadowClosureTask") &&
+    postMarketChain.includes("type: 'ga_optimizer_shadow_closure'") &&
+    updateOrchestrator.includes("if (msg.type === 'ga_optimizer_shadow_closure')") &&
+    updateOrchestrator.includes('ensureLatestGaShadowEnrolled'),
+  'GA frozen shadow must run as a durable post-verify queue continuation',
+)
+assert(
+  updateOrchestrator.includes('ga_shadow_daily_requires_production_authority_intent') &&
+    updateOrchestrator.includes('ga_shadow_daily_production_authority_denied') &&
+    updateOrchestrator.includes('resolveEveningChainRunAuthority'),
+  'GA shadow queue finalizer must reject historical/non-canonical evidence accumulation',
+)
+assert(
+  researchWorkflows.includes("'/optuna/ga_shadow/daily/run'") &&
+    researchWorkflows.includes('remote_execution_id=${remote.remoteExecutionId}') &&
+    callbackRoutes.includes("body.task === 'ga-shadow-daily'") &&
+    callbackRoutes.includes('refreshActiveGaShadowProjection') &&
+    callbackRoutes.includes('ga_shadow_projection_readback_failed'),
+  'GA shadow must have async Cloud Run dispatch and retryable terminal projection closure',
+)
+assert(
   metaShadowClosureBlock.includes('const sourceRows = await listLinUcbRewardSourceRows') &&
     metaShadowClosureBlock.includes('Promise.all([') &&
     metaShadowClosureBlock.match(/sourceRows,/g)?.length === 3,
@@ -385,6 +406,7 @@ assert(logger.includes("'post-pipeline-chain'"), 'post-pipeline-chain must be vi
 assert(logger.includes("'post-verify-chain'"), 'post-verify-chain must be visible in scheduler/OBS logs')
 assert(logger.includes("'linucb-reward-ledger'"), 'LinUCB reward ledger must be visible in scheduler/OBS logs')
 assert(logger.includes("'meta-learning-shadow'"), 'Neural shadow closure must be visible in scheduler/OBS logs')
+assert(logger.includes("'ga-shadow-daily'"), 'GA frozen shadow closure must be visible in scheduler/OBS logs')
 assert(
   adminTasks.includes("'meta-learning-shadow': async () =>") &&
     adminTasks.includes("type: 'meta_learning_shadow_closure'") &&

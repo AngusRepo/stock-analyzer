@@ -102,6 +102,11 @@ class GAOptimizerReq(BaseModel):
     mc_simulations: int = Field(default=1000, ge=100, le=10000)
 
 
+class GAProductionShadowDailyReq(BaseModel):
+    run_date: str = Field(pattern=r"^\d{4}-\d{2}-\d{2}$")
+    run_id: str = Field(min_length=8, max_length=240)
+
+
 class OptunaResearchSweepReq(BaseModel):
     cadence: str = Field(default="weekly", pattern="^(weekly|monthly)$")
     n_trials: int = Field(default=200, ge=1, le=1000)
@@ -1133,11 +1138,17 @@ def _commit_ga_research_candidate(
         if isinstance(push.get("candidate_evidence_record"), dict)
         else {}
     )
+    shadow_enrollment = (
+        push.get("shadow_enrollment")
+        if isinstance(push.get("shadow_enrollment"), dict)
+        else {}
+    )
     closure_checks = {
         "worker_push": push.get("success") is True,
         "kv_readback": push.get("kv_readback_ok") is True,
         "d1_candidate": bool(candidate_record.get("candidate_id")),
         "d1_candidate_evidence": bool(candidate_evidence.get("status")),
+        "d1_frozen_shadow_enrollment": bool(shadow_enrollment.get("shadow_id")),
     }
     failed_closure_checks = [name for name, passed in closure_checks.items() if not passed]
     if failed_closure_checks:
@@ -1153,6 +1164,8 @@ def _commit_ga_research_candidate(
         "closure_checks": closure_checks,
         "candidate_id": candidate_record.get("candidate_id"),
         "candidate_evidence_status": candidate_evidence.get("status"),
+        "shadow_id": shadow_enrollment.get("shadow_id"),
+        "shadow_status": shadow_enrollment.get("status"),
         "candidate_key": push.get("candidate_key"),
         "champion_key": push.get("champion_key"),
         "push": push,
@@ -1318,6 +1331,8 @@ def execute_research_sweep(req: OptunaResearchSweepReq) -> dict[str, Any]:
             "run_id": run_id,
             "candidate_id": ga_staging.get("candidate_id"),
             "candidate_evidence_status": ga_staging.get("candidate_evidence_status"),
+            "shadow_id": ga_staging.get("shadow_id"),
+            "shadow_status": ga_staging.get("shadow_status"),
             "candidate_key": ga_staging.get("candidate_key"),
             "champion_key": ga_staging.get("champion_key"),
         },
@@ -1403,6 +1418,46 @@ def trigger_research_sweep_job(req: OptunaResearchSweepReq = Body(default=Optuna
         "message": (
             "optuna research Job triggered "
             f"backend=cloud_run_job remote_execution_id={execution.execution_id}; callback expected"
+        ),
+    }
+
+
+@router.post("/ga_shadow/daily/run")
+def trigger_ga_production_shadow_daily_job(req: GAProductionShadowDailyReq):
+    """Dispatch the frozen GA challenger replay without blocking Worker HTTP."""
+    env_overrides = {
+        "OPTUNA_JOB_MODE": "ga_shadow_daily",
+        "OPTUNA_CALLBACK_TASK": "ga-shadow-daily",
+        "OPTUNA_RUN_DATE": req.run_date,
+        "OPTUNA_RUN_ID": req.run_id,
+        "OPTUNA_PUSH_KV": "0",
+        "OPTUNA_DRY_RUN": "0",
+    }
+    try:
+        execution = _optuna_jobs_client.run_job(
+            env_overrides=env_overrides,
+            reject_if_running=False,
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("[Optuna/ga_shadow/daily/run] failed to trigger Job")
+        raise HTTPException(
+            status_code=502,
+            detail=f"Cloud Run GA shadow Job trigger failed: {type(exc).__name__}: {exc}",
+        ) from exc
+    return {
+        "status": "triggered",
+        "job": OPTUNA_JOB_NAME,
+        "mode": "ga_shadow_daily",
+        "run_date": req.run_date,
+        "run_id": req.run_id,
+        "execution_id": execution.execution_id,
+        "execution_name": execution.execution_name,
+        "remote_execution_id": execution.execution_id,
+        "backend": "cloud_run_job",
+        "production_effect": False,
+        "message": (
+            "GA prospective shadow Job triggered "
+            f"remote_execution_id={execution.execution_id}; callback expected"
         ),
     }
 

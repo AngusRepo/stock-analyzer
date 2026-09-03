@@ -47,6 +47,7 @@ const REPORT_ARTIFACT_TASKS = new Set([
   'monthly-optuna',
   'parameter-candidate-validation',
   'monthly-strategy-mining',
+  'ga-shadow-daily',
   'external-evidence',
 ])
 
@@ -839,6 +840,30 @@ async function handleSchedulerCallback(c: any) {
       }
       if (body.task === 'verify-v2') {
         verifyCallbackCanonicalRunId = String(stage.canonical_run_id ?? '').trim() || null
+      }
+    }
+  }
+
+  if (
+    body.task === 'ga-shadow-daily' &&
+    ['success', 'error', 'skipped'].includes(String(body.status))
+  ) {
+    if (!callbackRunDate || !callbackRunId) {
+      return c.json({ error: 'GA shadow callback missing run_date or run_id' }, 400)
+    }
+    if (body.status !== 'error') {
+      try {
+        const { refreshActiveGaShadowProjection } = await import('../lib/gaProductionShadow')
+        const projectionSummary = await refreshActiveGaShadowProjection(c.env)
+        body.summary = `${String(body.summary ?? '')} | ${projectionSummary}`.trim()
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error)
+        return c.json({
+          ok: false,
+          retryable: true,
+          error: 'ga_shadow_projection_readback_failed',
+          detail: message,
+        }, 503)
       }
     }
   }

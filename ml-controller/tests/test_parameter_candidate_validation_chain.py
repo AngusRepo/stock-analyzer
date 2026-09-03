@@ -33,6 +33,17 @@ def _candidate_row() -> dict:
     }
 
 
+@pytest.fixture
+def learning_batches(monkeypatch):
+    batches: list[list[tuple[str, list]]] = []
+    monkeypatch.setattr(
+        config_pool.LEARNING_D1_CLIENT,
+        "atomic_batch_execute",
+        lambda statements: batches.append(statements) or {"success": True},
+    )
+    return batches
+
+
 def test_trigger_validation_reuses_optuna_job_with_mode_override(monkeypatch):
     captured: dict = {}
 
@@ -67,7 +78,7 @@ def test_trigger_validation_reuses_optuna_job_with_mode_override(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_candidate_validation_persists_pass_packet_for_cscv(monkeypatch):
+async def test_candidate_validation_persists_pass_packet_for_cscv(monkeypatch, learning_batches):
     calls: list[tuple[str, str, dict | None]] = []
 
     async def fake_worker(path: str, method: str = "GET", json_body=None, **_kwargs):
@@ -78,8 +89,6 @@ async def test_candidate_validation_persists_pass_packet_for_cscv(monkeypatch):
             return {"position": {"maxPositions": 5}}
         if path.startswith("/api/admin/config/sandbox/"):
             return {"source": "research_sweep", "config": {"position": {"maxPositions": 6}}}
-        if path == "/api/internal/d1/batch":
-            return {"ok": True}
         raise AssertionError(path)
 
     monkeypatch.setattr(config_pool, "worker_fetch", fake_worker)
@@ -111,14 +120,15 @@ async def test_candidate_validation_persists_pass_packet_for_cscv(monkeypatch):
     assert result["blocked"] == 0
     assert result["validation_run_id"] == "weekly-run-1"
     assert result["results"][0]["promotion_packet_id"].startswith("promotion_packet:")
-    batch_calls = [body for path, _, body in calls if path == "/api/internal/d1/batch"]
-    evidence_batch = next(body for body in batch_calls if len(body["statements"]) == 5)
-    assert evidence_batch["statements"][0]["sql"].startswith("DELETE FROM parameter_candidate_evidence")
-    assert evidence_batch["statements"][0]["params"][-1] == "weekly-run-1"
+    assert all(path != "/api/internal/d1/batch" for path, _, _ in calls)
+    assert [len(batch) for batch in learning_batches] == [1, 5]
+    evidence_batch = learning_batches[1]
+    assert evidence_batch[0][0].startswith("DELETE FROM parameter_candidate_evidence")
+    assert evidence_batch[0][1][-1] == "weekly-run-1"
 
 
 @pytest.mark.asyncio
-async def test_candidate_validation_blocks_proxy_pbo(monkeypatch):
+async def test_candidate_validation_blocks_proxy_pbo(monkeypatch, learning_batches):
     async def fake_worker(path: str, method: str = "GET", json_body=None, **_kwargs):
         if path.startswith("/api/admin/config/parameter-candidates"):
             return {"success": True}
@@ -126,8 +136,6 @@ async def test_candidate_validation_blocks_proxy_pbo(monkeypatch):
             return {}
         if path.startswith("/api/admin/config/sandbox/"):
             return {"source": "research_sweep", "config": {}}
-        if path == "/api/internal/d1/batch":
-            return {"ok": True}
         raise AssertionError(path)
 
     monkeypatch.setattr(config_pool, "worker_fetch", fake_worker)
@@ -154,6 +162,7 @@ async def test_candidate_validation_blocks_proxy_pbo(monkeypatch):
     assert result["blocked"] == 1
     assert result["results"][0]["promotion_packet_id"] is None
     assert "proxy_pbo_blocked" in result["results"][0]["failed_gates"]
+    assert [len(batch) for batch in learning_batches] == [1, 5]
 
 
 @pytest.mark.asyncio
@@ -197,3 +206,40 @@ async def test_optuna_job_parameter_validation_callback_owns_final_status(monkey
     assert callbacks[0]["run_id"] == "weekly-run-1"
     assert callbacks[0]["metadata"]["blocked"] == 1
     assert callbacks[0]["metadata"]["candidate_ids"] == ["parameter:research_sweep:run-1"]
+
+@pytest.mark.asyncio
+async def test_optuna_job_ga_shadow_daily_callback_owns_terminal_status(monkeypatch):
+    from services import ga_production_shadow_service
+
+    callbacks: list[dict] = []
+
+    def fake_shadow(*, run_date, run_id):
+        return {
+            "status": "COMPLETED",
+            "shadow_id": "ga-shadow-v1:test",
+            "ga_candidate_id": "ga_optimizer:g3:c7",
+            "run_date": run_date,
+            "evidence_business_date": run_date,
+            "evidence_dates": 1,
+            "production_effect": False,
+        }
+
+    async def fake_callback(payload):
+        callbacks.append(payload)
+
+    monkeypatch.setattr(ga_production_shadow_service, "run_ga_production_shadow", fake_shadow)
+    monkeypatch.setattr(optuna_job_main, "_callback_worker", fake_callback)
+    monkeypatch.setenv("OPTUNA_JOB_MODE", "ga_shadow_daily")
+    monkeypatch.setenv("OPTUNA_CALLBACK_TASK", "ga-shadow-daily")
+    monkeypatch.setenv("OPTUNA_RUN_ID", "evening-2026-09-02")
+    monkeypatch.setenv("OPTUNA_RUN_DATE", "2026-09-02")
+
+    exit_code = await optuna_job_main._run()
+
+    assert exit_code == 0
+    assert callbacks[0]["task"] == "ga-shadow-daily"
+    assert callbacks[0]["status"] == "success"
+    assert callbacks[0]["run_id"] == "evening-2026-09-02"
+    assert callbacks[0]["run_date"] == "2026-09-02"
+    assert callbacks[0]["metadata"]["shadow_id"] == "ga-shadow-v1:test"
+    assert callbacks[0]["metadata"]["production_effect"] is False

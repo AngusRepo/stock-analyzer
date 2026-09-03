@@ -201,6 +201,41 @@ export async function runParameterCandidateValidationChain(
   ].join(' ')
 }
 
+export async function runGaProductionShadowDaily(
+  env: Bindings,
+  options: { runDate: string; runId: string },
+): Promise<string> {
+  requireController(env)
+  const resp = await controllerFetch(env, '/optuna/ga_shadow/daily/run', {
+    method: 'POST',
+    jsonBody: {
+      run_date: options.runDate,
+      run_id: options.runId,
+    },
+    timeoutMs: 60_000,
+  })
+  const text = await resp.text().catch(() => '')
+  if (!resp.ok) {
+    throw new Error(`GA shadow daily HTTP${resp.status}${text ? `(${text.slice(0, 300)})` : ''}`)
+  }
+  const result = text ? JSON.parse(text) as Record<string, any> : {}
+  if (result.status !== 'triggered') {
+    throw new Error(`GA shadow daily trigger invalid status=${result.status ?? 'missing'}`)
+  }
+  const remote = normalizeRemoteExecution(result)
+  if (!remote.remoteExecutionId) {
+    throw new Error('GA shadow daily trigger missing remote_execution_id')
+  }
+  return [
+    'triggered GA frozen prospective shadow Job',
+    `run_date=${options.runDate}`,
+    `run_id=${options.runId}`,
+    `remote_execution_id=${remote.remoteExecutionId}`,
+    'production_effect=false',
+    'callback expected',
+  ].join(' ')
+}
+
 export async function runWeeklyOptunaResearch(
   env: Bindings,
   runDate?: string,

@@ -34,6 +34,7 @@ const marketLegacySchemaAlignment = fs.readFileSync('domain-migrations/market/00
 const researchCutoverProbe = fs.readFileSync('domain-migrations/research/0003_data_domain_cutover_probe_canary.sql', 'utf8')
 const learningIncremental = fs.readFileSync('domain-migrations/learning/0002_learning_policy_evidence.sql', 'utf8')
 const learningForwardExtension = fs.readFileSync('domain-migrations/learning/0003_learning_active8_forward_extension.sql', 'utf8')
+const learningGaShadow = fs.readFileSync('domain-migrations/learning/0037_ga_optimizer_prospective_shadow_v1.sql', 'utf8')
 const opsIncremental = fs.readFileSync('domain-migrations/ops/0002_ops_retention_s12_pit.sql', 'utf8')
 for (const table of [
   'strategy_production_policy_history_v1',
@@ -43,6 +44,21 @@ for (const table of [
   'strategy_adaptive_policy_history_v2',
 ]) assert.match(learningIncremental, new RegExp(`CREATE TABLE IF NOT EXISTS ${table}`))
 assert.match(learningForwardExtension, /CREATE TABLE IF NOT EXISTS active8_oof_forward_extension_coverage/)
+for (const table of [
+  'ga_optimizer_shadow_candidates_v1',
+  'ga_optimizer_shadow_daily_evidence_v1',
+  'ga_optimizer_shadow_runs_v1',
+]) assert.match(learningGaShadow, new RegExp(`CREATE TABLE IF NOT EXISTS ${table}`))
+assert.match(learningGaShadow, /production_effect INTEGER NOT NULL DEFAULT 0 CHECK\(production_effect=0\)/)
+assert.match(learningGaShadow, /UNIQUE\(shadow_id, snapshot_business_date\)/)
+for (const domain of ['core', 'market', 'ops', 'execution', 'paper', 'research']) {
+  const schema = fs.readFileSync(`domain-schemas/${domain}.sql`, 'utf8')
+  for (const table of [
+    'ga_optimizer_shadow_candidates_v1',
+    'ga_optimizer_shadow_daily_evidence_v1',
+    'ga_optimizer_shadow_runs_v1',
+  ]) assert.doesNotMatch(schema, new RegExp(`CREATE TABLE IF NOT EXISTS ${table}`))
+}
 for (const table of [
   'data_retention_cursors',
   'data_retention_run_items',

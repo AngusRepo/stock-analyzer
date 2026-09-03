@@ -3570,6 +3570,59 @@ export async function processUpdateBatch(
     return
   }
 
+  if (msg.type === 'ga_optimizer_shadow_closure') {
+    const triggerTime = msg.triggerTime
+    const runId = msg.runId || `ga-shadow-daily-${triggerTime}`
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(triggerTime)) {
+      console.log(`[Queue] Invalid GA shadow date ${triggerTime}, skipping.`)
+      return
+    }
+    if (msg.productionAuthorityIntent !== true) {
+      throw new Error('ga_shadow_daily_requires_production_authority_intent')
+    }
+    const authority = await resolveEveningChainRunAuthority(env, {
+      businessDate: triggerTime,
+      canonicalRunId: runId,
+    })
+    if (!authority.allowed) {
+      throw new Error(`ga_shadow_daily_production_authority_denied:${authority.reason}`)
+    }
+
+    const startedAt = Date.now()
+    try {
+      const { ensureLatestGaShadowEnrolled } = await import('./gaProductionShadow')
+      const { runGaProductionShadowDaily } = await import('./controllerResearchWorkflows')
+      const enrollmentSummary = await ensureLatestGaShadowEnrolled(env, {
+        runDate: triggerTime,
+        runId,
+      })
+      const dispatchSummary = await runGaProductionShadowDaily(env, {
+        runDate: triggerTime,
+        runId,
+      })
+      const summary = `${enrollmentSummary} | ${dispatchSummary}`
+      await logSchedulerResult(env.KV, 'ga-shadow-daily', {
+        status: 'triggered',
+        summary,
+        duration_ms: Date.now() - startedAt,
+        run_id: runId,
+        run_date: triggerTime,
+      }, env)
+    } catch (error: any) {
+      const summary = error?.message ?? String(error)
+      await logSchedulerResult(env.KV, 'ga-shadow-daily', {
+        status: 'error',
+        summary,
+        duration_ms: Date.now() - startedAt,
+        run_id: runId,
+        run_date: triggerTime,
+        error: String(error),
+      }, env)
+      throw error
+    }
+    return
+  }
+
   if (msg.type === 'meta_learning_shadow_closure') {
     const triggerTime = msg.triggerTime
     const runId = msg.runId || `meta-learning-shadow-${triggerTime}`

@@ -3,6 +3,11 @@ import { buildAdminWorkerDomainTaskMap } from './adminTriggerWorkerDomainTasks'
 
 export type TaskHandler = () => Promise<any>
 
+export interface SchedulerCallbackContext {
+  schedulerTicketId?: string
+  schedulerRunId?: string
+}
+
 export interface TriggerDeps {
   runMarketScreener: (runDate?: string) => Promise<any>
   runScreenerV2?: (runDate?: string, options?: { chainRunId?: string }) => Promise<any>
@@ -24,8 +29,8 @@ export interface TriggerDeps {
   runWeeklyModelArtifactValidation: () => Promise<any>
   runWeeklyAlphaQuality: () => Promise<any>
   runWeeklyModelRegistryCheck: () => Promise<any>
-  runWeeklyOptunaResearch: (runDate?: string) => Promise<any>
-  runMonthlyOptunaResearch: (runDate?: string) => Promise<any>
+  runWeeklyOptunaResearch: (runDate?: string, schedulerContext?: SchedulerCallbackContext) => Promise<any>
+  runMonthlyOptunaResearch: (runDate?: string, schedulerContext?: SchedulerCallbackContext) => Promise<any>
   runL4AlphaEvRefresh: (runDate?: string, cadence?: 'weekly' | 'monthly') => Promise<any>
   runAllocatorEvFusionRefresh: (runDate?: string, cadence?: 'weekly' | 'monthly') => Promise<any>
   runOpbArmPriorRefresh: (
@@ -43,9 +48,13 @@ export interface TriggerDeps {
   runOptunaQueueProcessor: () => Promise<any>
 }
 
-export function buildAdminTriggerTaskMap(c: any, deps: TriggerDeps): Record<string, TaskHandler> {
+export function buildAdminTriggerTaskMap(
+  c: any,
+  deps: TriggerDeps,
+  schedulerContext: SchedulerCallbackContext = {},
+): Record<string, TaskHandler> {
   return {
     ...buildAdminWorkerDomainTaskMap(c, deps),
-    ...buildAdminGcpTriggerTaskMap(c, deps),
+    ...buildAdminGcpTriggerTaskMap(c, deps, schedulerContext),
   }
 }

@@ -56,6 +56,8 @@ interface OptunaResearchOptions {
   nTrials: number
   subsetSize: number
   runDate?: string
+  schedulerTicketId?: string
+  schedulerRunId?: string
   ga?: {
     populationSize: number
     generations: number
@@ -102,6 +104,8 @@ function buildOptunaSweepRequestBody(options: OptunaResearchOptions): Record<str
     research_data_source: 'snapshot',
     evidence_requirement: 'requires compute snapshots',
     run_date: options.runDate,
+    scheduler_ticket_id: options.schedulerTicketId,
+    scheduler_run_id: options.schedulerRunId,
     push_kv: true,
     dry_run: false,
   }
@@ -197,12 +201,18 @@ export async function runParameterCandidateValidationChain(
   ].join(' ')
 }
 
-export async function runWeeklyOptunaResearch(env: Bindings, runDate?: string) {
+export async function runWeeklyOptunaResearch(
+  env: Bindings,
+  runDate?: string,
+  schedulerContext: { schedulerTicketId?: string; schedulerRunId?: string } = {},
+) {
   return runOptunaResearch(env, {
     cadence: 'weekly',
     nTrials: 80,
     subsetSize: 400,
     runDate,
+    schedulerTicketId: schedulerContext.schedulerTicketId,
+    schedulerRunId: schedulerContext.schedulerRunId,
     ga: {
       populationSize: 12,
       generations: 4,
@@ -210,7 +220,11 @@ export async function runWeeklyOptunaResearch(env: Bindings, runDate?: string) {
   })
 }
 
-export async function runMonthlyOptunaResearch(env: Bindings, runDate?: string) {
+export async function runMonthlyOptunaResearch(
+  env: Bindings,
+  runDate?: string,
+  schedulerContext: { schedulerTicketId?: string; schedulerRunId?: string } = {},
+) {
   return runOptunaResearch(env, {
     cadence: 'monthly',
     nTrials: 300,
@@ -219,6 +233,8 @@ export async function runMonthlyOptunaResearch(env: Bindings, runDate?: string) 
     // parameter-candidate validation, which performs the full-universe replay.
     subsetSize: 400,
     runDate,
+    schedulerTicketId: schedulerContext.schedulerTicketId,
+    schedulerRunId: schedulerContext.schedulerRunId,
     ga: {
       populationSize: 36,
       generations: 12,

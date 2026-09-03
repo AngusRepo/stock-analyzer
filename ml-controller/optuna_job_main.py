@@ -528,6 +528,12 @@ async def _run() -> int:
         "duration_ms": int((time.time() - t0) * 1000),
         "run_id": run_id,
     }
+    scheduler_ticket_id = os.environ.get("OPTUNA_SCHEDULER_TICKET_ID", "").strip()
+    scheduler_run_id = os.environ.get("OPTUNA_SCHEDULER_RUN_ID", "").strip()
+    if scheduler_ticket_id:
+        payload["scheduler_ticket_id"] = scheduler_ticket_id
+    if scheduler_run_id:
+        payload["scheduler_run_id"] = scheduler_run_id
     if run_date:
         payload["run_date"] = run_date
     if error:

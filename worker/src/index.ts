@@ -61,7 +61,7 @@ import { setupMorningPendingBuys } from './lib/pendingBuyOrchestrator'
 
 const app = new Hono<{ Bindings: Bindings; Variables: Variables }>()
 const adminTriggerRoutes = createAdminTriggerRoutes({
-  buildTaskMap: (c: any) => buildAdminTriggerTaskMap(c, {
+  buildTaskMap: (c: any, schedulerContext) => buildAdminTriggerTaskMap(c, {
     runMarketScreener: (runDate?: string) => runMarketScreener(c.env, runDate),
     runScreenerV2: (runDate?: string, options?: { chainRunId?: string }) => runScreenerV2(c.env, runDate, options),
     runDailyUpdate: (force?: boolean, runDate?: string) => runDailyUpdateWorkflow(c.env, force, runDate),
@@ -82,8 +82,8 @@ const adminTriggerRoutes = createAdminTriggerRoutes({
     runWeeklyModelArtifactValidation: () => runWeeklyModelArtifactValidationWorkflow(c.env),
     runWeeklyAlphaQuality: () => runWeeklyAlphaQualityWorkflow(c.env),
     runWeeklyModelRegistryCheck: () => runWeeklyModelRegistryCheckWorkflow(c.env),
-    runWeeklyOptunaResearch: (runDate?: string) => runWeeklyOptunaResearchWorkflow(c.env, runDate),
-    runMonthlyOptunaResearch: (runDate?: string) => runMonthlyOptunaResearchWorkflow(c.env, runDate),
+    runWeeklyOptunaResearch: (runDate, context) => runWeeklyOptunaResearchWorkflow(c.env, runDate, context),
+    runMonthlyOptunaResearch: (runDate, context) => runMonthlyOptunaResearchWorkflow(c.env, runDate, context),
     runL4AlphaEvRefresh: (runDate?: string, cadence?: 'weekly' | 'monthly') => runL4AlphaEvRefreshWorkflow(c.env, runDate, cadence),
     runAllocatorEvFusionRefresh: (runDate?: string, cadence?: 'weekly' | 'monthly') => runAllocatorEvFusionRefreshWorkflow(c.env, runDate, cadence),
     runOpbArmPriorRefresh: (
@@ -92,7 +92,7 @@ const adminTriggerRoutes = createAdminTriggerRoutes({
     ) => runOpbArmPriorRefreshWorkflow(c.env, runDate, expectedReturnOwner),
     runAllocatorEvFeatureSnapshotBackfill: (params) => runAllocatorEvFeatureSnapshotBackfillWorkflow(c.env, params),
     runOptunaQueueProcessor: () => runOptunaQueueProcessorWorkflow(c.env),
-  }),
+  }, schedulerContext),
 })
 
 // P3 資安：Security headers（防 XSS + clickjacking + MIME sniffing）

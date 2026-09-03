@@ -566,6 +566,12 @@ async function handleSchedulerCallback(c: any) {
   const callbackMetadata = body.metadata && typeof body.metadata === 'object' && !Array.isArray(body.metadata)
     ? body.metadata as Record<string, unknown>
     : undefined
+  const callbackSchedulerTicketId = typeof body.scheduler_ticket_id === 'string'
+    ? body.scheduler_ticket_id.trim()
+    : ''
+  const callbackSchedulerRunId = typeof body.scheduler_run_id === 'string'
+    ? body.scheduler_run_id.trim()
+    : ''
   let active8FreshnessStatus: string | null = null
   let active8FreshnessBusinessDate: string | null = null
   let screenerCallbackMetadata: Record<string, any> = {}
@@ -1389,6 +1395,38 @@ async function handleSchedulerCallback(c: any) {
       run_id: verifyCallbackCanonicalRunId,
       run_date: callbackRunDate,
     }, c.env as any)
+  }
+
+  if (
+    ['weekly-optuna', 'monthly-optuna'].includes(String(body.task))
+    && ['success', 'error', 'skipped'].includes(String(body.status))
+  ) {
+    if (!callbackSchedulerTicketId || !callbackSchedulerRunId) {
+      return c.json({
+        ok: false,
+        retryable: true,
+        error: 'optuna_callback_missing_scheduler_ticket_identity',
+      }, 400)
+    }
+    try {
+      const { updateSchedulerExecutionTicket } = await import('../lib/schedulerExecutionTickets')
+      await updateSchedulerExecutionTicket(databaseForDataDomain(c.env, 'ops'), {
+        ticketId: callbackSchedulerTicketId,
+        runId: callbackSchedulerRunId,
+        status: body.status as 'success' | 'error' | 'skipped',
+        authority: 'scheduler_http',
+        summary: String(body.summary ?? body.status),
+        error: body.status === 'error' ? String(body.error ?? body.summary ?? body.status) : undefined,
+      })
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
+      return c.json({
+        ok: false,
+        retryable: true,
+        error: 'optuna_scheduler_ticket_settlement_failed',
+        detail: message,
+      }, 503)
+    }
   }
 
   console.log(

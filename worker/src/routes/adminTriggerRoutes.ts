@@ -2,7 +2,7 @@ import { Hono } from 'hono'
 import { twToday } from '../lib/dateUtils'
 import { requireServiceToken } from '../lib/auth'
 import type { Bindings, Variables } from '../types'
-import type { TaskHandler } from '../lib/adminTriggerTaskMap'
+import type { SchedulerCallbackContext, TaskHandler } from '../lib/adminTriggerTaskMap'
 import { shouldRunScheduledTask } from '../lib/schedulerPolicy'
 import { databaseForDataDomain } from '../lib/dataDomainRegistry'
 import {
@@ -16,7 +16,7 @@ import {
 } from '../lib/schedulerExecutionTickets'
 
 interface TriggerRouteDeps {
-  buildTaskMap: (c: any) => Record<string, TaskHandler>
+  buildTaskMap: (c: any, schedulerContext?: SchedulerCallbackContext) => Record<string, TaskHandler>
 }
 
 const SCHEDULER_TASK_ALIASES: Record<string, string> = {
@@ -135,7 +135,8 @@ export function createAdminTriggerRoutes(deps: TriggerRouteDeps) {
     const rateLimit = maintenanceBackfill ? 500 : 100
     const rlKey = `ratelimit:${rateLimitNamespace}:${new Date(Date.now() + 8 * 3600_000).toISOString().slice(0, 13)}`
     const requestedRunDate = c.req.query('date') || undefined
-    const taskMap = deps.buildTaskMap(c)
+    const schedulerContext: SchedulerCallbackContext = {}
+    const taskMap = deps.buildTaskMap(c, schedulerContext)
     const fn = taskMap[task]
     if (!fn) return c.json({ error: `Unknown task: ${task}`, available: Object.keys(taskMap) }, 400)
 
@@ -159,6 +160,8 @@ export function createAdminTriggerRoutes(deps: TriggerRouteDeps) {
     }
     const executionRunId = ticketAdmission.ticket.run_id
     const schedulerTicketId = ticketAdmission.ticket.ticket_id
+    schedulerContext.schedulerTicketId = schedulerTicketId
+    schedulerContext.schedulerRunId = executionRunId
     const updateTicket = (
       status: SchedulerExecutionTicketStatus,
       authority: SchedulerExecutionTicketAuthority,

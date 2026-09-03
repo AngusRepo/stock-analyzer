@@ -111,6 +111,8 @@ class OptunaResearchSweepReq(BaseModel):
     ga_generations: int = Field(default=8, ge=1, le=50)
     research_data_source: ResearchDataMode | None = "snapshot"
     run_date: str | None = Field(default=None, pattern=r"^\d{4}-\d{2}-\d{2}$")
+    scheduler_ticket_id: str | None = None
+    scheduler_run_id: str | None = None
     push_kv: bool = True
     dry_run: bool = False
 
@@ -1367,6 +1369,10 @@ def trigger_research_sweep_job(req: OptunaResearchSweepReq = Body(default=Optuna
     }
     if req.run_date:
         env_overrides["OPTUNA_RUN_DATE"] = req.run_date
+    if req.scheduler_ticket_id:
+        env_overrides["OPTUNA_SCHEDULER_TICKET_ID"] = req.scheduler_ticket_id
+    if req.scheduler_run_id:
+        env_overrides["OPTUNA_SCHEDULER_RUN_ID"] = req.scheduler_run_id
     try:
         execution = _optuna_jobs_client.run_job(env_overrides=env_overrides)
     except JobAlreadyRunningError as e:

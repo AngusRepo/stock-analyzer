@@ -193,10 +193,10 @@ assert(
 
 assert(
   workflows.includes('run_date: options.runDate') &&
-    adminGcp.includes("deps.runWeeklyOptunaResearch(requestedRunDate())") &&
-    adminGcp.includes("deps.runMonthlyOptunaResearch(requestedRunDate())") &&
-    index.includes('runWeeklyOptunaResearchWorkflow(c.env, runDate)') &&
-    index.includes('runMonthlyOptunaResearchWorkflow(c.env, runDate)'),
+    adminGcp.includes("deps.runWeeklyOptunaResearch(requestedRunDate(), schedulerContext)") &&
+    adminGcp.includes("deps.runMonthlyOptunaResearch(requestedRunDate(), schedulerContext)") &&
+    index.includes('runWeeklyOptunaResearchWorkflow(c.env, runDate, context)') &&
+    index.includes('runMonthlyOptunaResearchWorkflow(c.env, runDate, context)'),
   'manual weekly/monthly Optuna triggers must preserve requested run_date through the controller Job callback',
 )
 

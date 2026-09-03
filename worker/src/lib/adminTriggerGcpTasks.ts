@@ -14,7 +14,7 @@ import {
   runWeeklyDriftDetection,
   runWeeklyDriftRetrain,
 } from './controllerWorkflows'
-import type { TaskHandler, TriggerDeps } from './adminTriggerTaskMap'
+import type { SchedulerCallbackContext, TaskHandler, TriggerDeps } from './adminTriggerTaskMap'
 
 function parseBoundedInt(raw: string | null | undefined, fallback: number, min: number, max: number): number {
   const parsed = Number.parseInt(raw ?? '', 10)
@@ -22,7 +22,11 @@ function parseBoundedInt(raw: string | null | undefined, fallback: number, min: 
   return Math.max(min, Math.min(max, parsed))
 }
 
-export function buildAdminGcpTriggerTaskMap(c: any, deps: TriggerDeps): Record<string, TaskHandler> {
+export function buildAdminGcpTriggerTaskMap(
+  c: any,
+  deps: TriggerDeps,
+  schedulerContext: SchedulerCallbackContext = {},
+): Record<string, TaskHandler> {
   const requestedRunDate = () => c.req.query('date') || undefined
 
   return {
@@ -98,7 +102,7 @@ export function buildAdminGcpTriggerTaskMap(c: any, deps: TriggerDeps): Record<s
     'monte-carlo': () => deps.runWeeklyMonteCarlo(requestedRunDate()),
     pbo: () => deps.runWeeklyPBO(requestedRunDate()),
     'alpha-quality': () => deps.runWeeklyAlphaQuality(),
-    'weekly-optuna': () => deps.runWeeklyOptunaResearch(requestedRunDate()),
+    'weekly-optuna': () => deps.runWeeklyOptunaResearch(requestedRunDate(), schedulerContext),
     'l4-alpha-ev-refresh': () => deps.runL4AlphaEvRefresh(requestedRunDate(), 'weekly'),
     'allocator-ev-fusion-refresh': () => deps.runAllocatorEvFusionRefresh(requestedRunDate(), 'weekly'),
     'opb-arm-prior-refresh': () => deps.runOpbArmPriorRefresh(
@@ -117,7 +121,7 @@ export function buildAdminGcpTriggerTaskMap(c: any, deps: TriggerDeps): Record<s
       l4MinSamples: parseBoundedInt(c.req.query('l4_min_samples'), 500, 50, 10000),
       l4MinDates: parseBoundedInt(c.req.query('l4_min_dates'), 20, 5, 252),
     }),
-    'monthly-optuna': () => deps.runMonthlyOptunaResearch(requestedRunDate()),
+    'monthly-optuna': () => deps.runMonthlyOptunaResearch(requestedRunDate(), schedulerContext),
     'monthly-l4-alpha-ev-refresh': () => deps.runL4AlphaEvRefresh(requestedRunDate(), 'monthly'),
     'monthly-allocator-ev-fusion-refresh': () => deps.runAllocatorEvFusionRefresh(requestedRunDate(), 'monthly'),
     'monthly-opb-arm-prior-refresh': () => deps.runOpbArmPriorRefresh(

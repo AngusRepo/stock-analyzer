@@ -1,3 +1,5 @@
+from pathlib import Path
+
 import pytest
 
 from tools.repair_finlab_taxonomy_owner import (
@@ -100,3 +102,14 @@ def test_cleanup_removes_all_retired_owners_after_rebuild():
     assert "DELETE FROM stock_tags" in market.sql
     assert any("tag_type='concept'" in sql for sql in market.sql)
     assert any("classification='theme'" in sql for sql in market.sql)
+
+
+def test_repair_tool_is_in_cloud_run_build_context():
+    root = Path(__file__).resolve().parents[2]
+    dockerfile = (root / "Dockerfile").read_text(encoding="utf-8")
+    dockerignore = (root / ".dockerignore").read_text(encoding="utf-8")
+    gcloudignore = (root / ".gcloudignore").read_text(encoding="utf-8")
+
+    assert "COPY tools/repair_finlab_taxonomy_owner.py /app/tools/repair_finlab_taxonomy_owner.py" in dockerfile
+    assert "!tools/repair_finlab_taxonomy_owner.py" in dockerignore
+    assert "!tools/repair_finlab_taxonomy_owner.py" in gcloudignore

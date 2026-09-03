@@ -570,3 +570,43 @@ def test_parameter_candidate_evidence_bundle_and_gate_are_available():
     assert gate["decision"] == "PASS"
     assert gate["inputs"]["source"] == "parameter_candidate_evidence_bundle"
     assert gate["validation_packet"]["decision"] == "PASS"
+
+
+def test_normalize_latest_backtest_row_preserves_execution_and_optimizer_evidence():
+    row = {
+        "entry_attempts": 900,
+        "entries_filled": 9,
+        "fill_rate": 0.01,
+        "return_series": [0.01, -0.02],
+        "trial_sharpe_distribution": [0.1, 0.2],
+        "effective_trials": 2,
+        "trial_distribution_lineage": {"artifact_id": "ga-trials"},
+        "raw_results": json.dumps({
+            "mode": "B",
+            "summary": {
+                "total_trades": 9,
+                "sharpe": -2.35,
+                "profit_factor": 0.118,
+                "max_drawdown": 0.036,
+            },
+            "entry_attempts": 900,
+            "entries_filled": 9,
+            "fill_rate": 0.01,
+            "skip_reasons": {"no_fill": 891, "filled": 9},
+            "per_regime": {
+                "yellow": {"n_trades": 8, "avg_return": -0.0288},
+                "orange": {"n_trades": 1, "avg_return": -0.0464},
+            },
+        }),
+    }
+
+    out = normalize_latest_backtest_row(row)
+
+    assert out["entry_attempts"] == 900
+    assert out["entries_filled"] == 9
+    assert out["fill_rate"] == 0.01
+    assert out["skip_reasons"] == {"no_fill": 891, "filled": 9}
+    assert out["return_series"] == [0.01, -0.02]
+    assert out["trial_sharpe_distribution"] == [0.1, 0.2]
+    assert out["effective_trials"] == 2
+    assert out["trial_distribution_lineage"]["artifact_id"] == "ga-trials"

@@ -423,3 +423,30 @@ def test_strategy_lab_record_fails_closed_without_snapshot_or_packet():
     assert "hypothesis_present" in record["failed_gates"]
     assert "dataset_snapshot_present" in record["failed_gates"]
     assert "validation_packet_present" in record["failed_gates"]
+
+
+def test_regime_split_reads_backtest_engine_n_trades_and_avg_return():
+    packet = build_validation_packet(
+        source="promotion_gate",
+        backtest={
+            **_promotion_grade_backtest(),
+            "total_trades": 9,
+            "per_regime": {
+                "yellow": {"n_trades": 8, "avg_return": -0.0288},
+                "orange": {"n_trades": 1, "avg_return": -0.0464},
+            },
+        },
+        monte_carlo=_monte_carlo(),
+        pbo=_pbo(),
+        data_snooping=_data_snooping_pass(),
+        walk_forward={"passed": True, "windows": 6},
+    )
+    gate = next(g for g in packet["gates"] if g["name"] == "regime_split_validation")
+
+    assert gate["status"] == "FAIL"
+    assert gate["evidence"]["regime_count"] == 2
+    assert gate["evidence"]["eligible_regime_count"] == 0
+    assert gate["evidence"]["per_regime"] == {
+        "yellow": {"trades": 8, "return": -0.0288},
+        "orange": {"trades": 1, "return": -0.0464},
+    }

@@ -4520,6 +4520,9 @@ def compute_metrics(
         regime_trades: dict[str, list[Trade]] = {}
         for t in trades:
             r = regime_by_date.get(t.entry_date, "unknown")
+            # Downstream regime-block Monte Carlo consumes this same lineage.
+            # Keep per-trade and aggregate regime ownership identical.
+            t.entry_regime = r
             regime_trades.setdefault(r, []).append(t)
 
         for regime, r_trades in regime_trades.items():

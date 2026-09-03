@@ -729,15 +729,25 @@ def _regime_split_gate(
     for regime, raw in per_regime.items():
         if not isinstance(raw, dict):
             continue
-        trades = _as_int(raw.get("trades") or raw.get("total_trades"), 0)
-        ret = _as_float(raw.get("return") or raw.get("total_return") or raw.get("oos_return"), 0.0)
+        trades = _as_int(raw.get("trades") or raw.get("total_trades") or raw.get("n_trades"), 0)
+        ret = _as_float(
+            raw.get("return")
+            or raw.get("total_return")
+            or raw.get("oos_return")
+            or raw.get("avg_return"),
+            0.0,
+        )
         if trades <= 0:
             continue
         buckets[str(regime)] = {"trades": trades, "return": ret}
         if trades >= min_regime_trades and ret < min_regime_return:
             weak_regimes.append(str(regime))
 
-    enough_buckets = len(buckets) >= min_regime_buckets
+    eligible_buckets = [
+        regime for regime, evidence in buckets.items()
+        if evidence["trades"] >= min_regime_trades
+    ]
+    enough_buckets = len(eligible_buckets) >= min_regime_buckets
     passed = enough_buckets and not weak_regimes
     if not required and not per_regime:
         return _gate(
@@ -757,6 +767,8 @@ def _regime_split_gate(
         reason="promotion-grade validation must include OOS evidence across multiple regimes",
         evidence={
             "regime_count": len(buckets),
+            "eligible_regime_count": len(eligible_buckets),
+            "eligible_regimes": eligible_buckets,
             "min_regime_buckets": min_regime_buckets,
             "min_regime_trades": min_regime_trades,
             "min_regime_return": min_regime_return,

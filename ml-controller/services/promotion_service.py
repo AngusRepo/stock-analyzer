@@ -84,19 +84,35 @@ def normalize_latest_backtest_row(row: dict[str, Any] | None) -> dict[str, Any]:
         "max_drawdown": _as_float(row.get("max_drawdown") or summary.get("max_drawdown"), 1.0),
         "absolute_confidence": raw.get("absolute_confidence") or "low",
         "sanity_flags": raw.get("sanity_flags") or [],
+        "entry_attempts": _as_int(raw.get("entry_attempts", row.get("entry_attempts")), 0),
+        "entries_filled": _as_int(raw.get("entries_filled", row.get("entries_filled")), 0),
+        "fill_rate": _as_float(raw.get("fill_rate", row.get("fill_rate")), 0.0),
+        "skip_reasons": (
+            raw.get("skip_reasons")
+            if isinstance(raw.get("skip_reasons"), dict)
+            else row.get("skip_reasons") if isinstance(row.get("skip_reasons"), dict) else {}
+        ),
         "per_regime": raw.get("per_regime") if isinstance(raw.get("per_regime"), dict) else {},
         "parity_audit": raw.get("parity_audit") if isinstance(raw.get("parity_audit"), dict) else {},
         "walk_forward": raw.get("walk_forward") if isinstance(raw.get("walk_forward"), dict) else {},
-        "return_series": raw.get("return_series") if isinstance(raw.get("return_series"), list) else [],
+        "return_series": (
+            raw.get("return_series")
+            if isinstance(raw.get("return_series"), list)
+            else row.get("return_series") if isinstance(row.get("return_series"), list) else []
+        ),
         "trial_sharpe_distribution": (
             raw.get("trial_sharpe_distribution")
             if isinstance(raw.get("trial_sharpe_distribution"), list)
+            else row.get("trial_sharpe_distribution")
+            if isinstance(row.get("trial_sharpe_distribution"), list)
             else []
         ),
-        "effective_trials": _as_int(raw.get("effective_trials"), 0),
+        "effective_trials": _as_int(raw.get("effective_trials", row.get("effective_trials")), 0),
         "trial_distribution_lineage": (
             raw.get("trial_distribution_lineage")
             if isinstance(raw.get("trial_distribution_lineage"), dict)
+            else row.get("trial_distribution_lineage")
+            if isinstance(row.get("trial_distribution_lineage"), dict)
             else {}
         ),
         "data_snooping": raw.get("data_snooping") if isinstance(raw.get("data_snooping"), dict) else {},

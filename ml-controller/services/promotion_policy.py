@@ -93,8 +93,14 @@ def _regime_failures(per_regime: dict[str, Any], policy: PromotionPolicy) -> lis
     for regime, raw in (per_regime or {}).items():
         if not isinstance(raw, dict):
             continue
-        trades = _as_int(raw.get("trades") or raw.get("total_trades"), 0)
-        ret = _as_float(raw.get("return") or raw.get("total_return") or raw.get("oos_return"), 0.0)
+        trades = _as_int(raw.get("trades") or raw.get("total_trades") or raw.get("n_trades"), 0)
+        ret = _as_float(
+            raw.get("return")
+            or raw.get("total_return")
+            or raw.get("oos_return")
+            or raw.get("avg_return"),
+            0.0,
+        )
         if trades >= policy.min_regime_trades and ret < policy.min_regime_return:
             failures.append(f"regime_return:{regime}")
     return failures

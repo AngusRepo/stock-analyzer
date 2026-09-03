@@ -228,16 +228,22 @@ def _candidate_metrics(candidate: dict[str, Any], evaluator: Evaluator | None) -
 
 
 def _gate(metrics: dict[str, Any]) -> dict[str, Any]:
-    explicitly_non_promotable = metrics.get("promotion_eligible") is False
+    evidence_semantic = str(metrics.get("evidence_semantic") or "").strip().lower()
+    real_oos_evidence = (
+        metrics.get("oos_applied") is True
+        and evidence_semantic == "candidate_specific_pit_mode_b_replay"
+        and metrics.get("look_ahead_check") == "PASS"
+    )
     checks = {
-        "real_oos_evidence": not explicitly_non_promotable,
-        "pbo_evidence": not explicitly_non_promotable or metrics.get("pbo_applied") is True,
-        "monte_carlo_evidence": not explicitly_non_promotable or metrics.get("monte_carlo_applied") is True,
+        "real_oos_evidence": real_oos_evidence,
+        "pbo_evidence": metrics.get("pbo_applied") is True,
+        "monte_carlo_evidence": metrics.get("monte_carlo_applied") is True,
         "min_trade_count": _to_float(metrics.get("trade_count"), 0.0) >= 60,
         "min_sharpe": _to_float(metrics.get("sharpe"), -99.0) >= 0.50,
         "max_drawdown": _to_float(metrics.get("max_drawdown"), 99.0) <= 0.25,
         "pbo": _to_float(metrics.get("pbo"), 1.0) < 0.50,
         "monte_carlo_mdd_95th": _to_float(metrics.get("mdd_95th"), 99.0) <= 0.20,
+        "promotion_packet": metrics.get("promotion_eligible") is True,
     }
     failed = [name for name, passed in checks.items() if not passed]
     return {
@@ -246,6 +252,120 @@ def _gate(metrics: dict[str, Any]) -> dict[str, Any]:
         "failed_gates": failed,
         "checks": checks,
     }
+
+
+def attach_ga_candidate_evidence(
+    result: dict[str, Any],
+    evidence: dict[str, Any],
+    *,
+    evidence_clock: dict[str, Any],
+) -> dict[str, Any]:
+    """Bind the selected GA candidate to real, candidate-specific PIT evidence."""
+    out = copy.deepcopy(result)
+    best = out.get("best") if isinstance(out.get("best"), dict) else None
+    if not best:
+        return out
+
+    backtest = evidence.get("backtest") if isinstance(evidence.get("backtest"), dict) else {}
+    monte_carlo = evidence.get("monte_carlo") if isinstance(evidence.get("monte_carlo"), dict) else {}
+    pbo = evidence.get("pbo") if isinstance(evidence.get("pbo"), dict) else {}
+    validation_gate = evidence.get("gate") if isinstance(evidence.get("gate"), dict) else {}
+    validation_packet = (
+        validation_gate.get("validation_packet")
+        if isinstance(validation_gate.get("validation_packet"), dict)
+        else {}
+    )
+    pbo_method = str(pbo.get("method") or "").lower()
+    mc_method = str(monte_carlo.get("simulation_method") or "").lower()
+    promotion_eligible = (
+        str(validation_gate.get("decision") or "").upper() == "PASS"
+        and str(validation_packet.get("decision") or "").upper() == "PASS"
+    )
+    search_metrics = copy.deepcopy(best.get("metrics") or {})
+    metrics = {
+        "score": best.get("score"),
+        "search_score": best.get("score"),
+        "sharpe": backtest.get("sharpe"),
+        "max_drawdown": backtest.get("max_drawdown"),
+        "trade_count": backtest.get("total_trades"),
+        "profit_factor": backtest.get("profit_factor"),
+        "pbo": pbo.get("pbo"),
+        "pbo_method": pbo.get("method"),
+        "pbo_oos_mean_return": pbo.get("oos_mean_return"),
+        "mdd_95th": monte_carlo.get("mdd_95th"),
+        "monte_carlo_method": monte_carlo.get("simulation_method"),
+        "evidence_semantic": "candidate_specific_pit_mode_b_replay",
+        "promotion_eligible": promotion_eligible,
+        "oos_applied": bool(backtest) and str(backtest.get("mode") or "").upper() == "B",
+        "pbo_applied": pbo_method == "cscv_rank_logit",
+        "monte_carlo_applied": mc_method in {"block_bootstrap", "regime_block_bootstrap"},
+        "look_ahead_check": evidence_clock.get("look_ahead_check"),
+        "snapshot_id": evidence_clock.get("snapshot_id"),
+        "snapshot_business_date": evidence_clock.get("snapshot_business_date"),
+        "data_end_date": evidence_clock.get("data_end_date"),
+        "validation_failed_gates": list(validation_gate.get("failed_gates") or []),
+        "validation_packet_failed_gates": list(validation_packet.get("failed_gates") or []),
+    }
+    best["search_metrics"] = search_metrics
+    best["metrics"] = metrics
+    best["gate"] = _gate(metrics)
+    best["evidence"] = evidence
+    best["evidence_clock"] = copy.deepcopy(evidence_clock)
+
+    candidate_id = ((best.get("candidate") or {}).get("id"))
+    ranked = out.get("ranked") if isinstance(out.get("ranked"), list) else []
+    for row in ranked:
+        if not isinstance(row, dict) or ((row.get("candidate") or {}).get("id")) != candidate_id:
+            continue
+        row.update(copy.deepcopy(best))
+        break
+    out["validation"] = {
+        "status": "completed",
+        "candidate_id": candidate_id,
+        "decision": validation_gate.get("decision") or "FAIL",
+        "promotion_packet_decision": validation_packet.get("decision") or "FAIL",
+        "failed_gates": list(validation_gate.get("failed_gates") or []),
+        "evidence_clock": copy.deepcopy(evidence_clock),
+    }
+    return out
+
+
+def mark_ga_candidate_validation_unavailable(
+    result: dict[str, Any],
+    *,
+    reason: str,
+    as_of_date: str | None,
+) -> dict[str, Any]:
+    """Keep search output observable while failing promotion evidence closed."""
+    out = copy.deepcopy(result)
+    best = out.get("best") if isinstance(out.get("best"), dict) else None
+    if not best:
+        return out
+    search_metrics = copy.deepcopy(best.get("metrics") or {})
+    metrics = {
+        "score": best.get("score"),
+        "search_score": best.get("score"),
+        "evidence_semantic": "validation_unavailable",
+        "promotion_eligible": False,
+        "oos_applied": False,
+        "pbo_applied": False,
+        "monte_carlo_applied": False,
+        "look_ahead_check": "UNAVAILABLE",
+        "validation_error": reason,
+    }
+    best["search_metrics"] = search_metrics
+    best["metrics"] = metrics
+    best["gate"] = _gate(metrics)
+    best["evidence"] = None
+    out["validation"] = {
+        "status": "infra_blocked",
+        "as_of_date": as_of_date,
+        "reason": reason,
+        "decision": "FAIL",
+        "promotion_packet_decision": "FAIL",
+        "failed_gates": list(best["gate"].get("failed_gates") or []),
+    }
+    return out
 
 
 def evaluate_ga_population(

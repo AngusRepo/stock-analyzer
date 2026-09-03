@@ -7,7 +7,13 @@ import {
 import { getTradingConfig } from './tradingConfig'
 import { databaseForDataDomain } from './dataDomainRegistry'
 import { paperDomainDatabase } from './paperDomainDatabase'
-import { evaluateGaPromotion } from './gaPromotion'
+import {
+  GA_CANDIDATE_LATEST_KEY,
+  GA_CHAMPION_KEY,
+  GA_LEGACY_LATEST_KEY,
+  evaluateGaPromotion,
+  isApprovedGaRelease,
+} from './gaPromotion'
 import { readLatestMarketRegimeStateOnOrBefore } from './marketRegimeState'
 import type { Bindings } from '../types'
 
@@ -47,22 +53,38 @@ function stringList(value: unknown, limit = 12): string[] {
 }
 
 async function loadGaOptimizerAdaptiveContext(kv: KVNamespace): Promise<Record<string, unknown>> {
-  let latest: Record<string, any> | null = null
+  let candidate: Record<string, any> | null = null
+  let champion: Record<string, any> | null = null
+  let legacy: Record<string, any> | null = null
   try {
-    latest = objectValue(await kv.get('optimizer:ga:latest', 'json'))
+    const [candidateRaw, championRaw, legacyRaw] = await Promise.all([
+      kv.get(GA_CANDIDATE_LATEST_KEY, 'json'),
+      kv.get(GA_CHAMPION_KEY, 'json'),
+      kv.get(GA_LEGACY_LATEST_KEY, 'json'),
+    ])
+    candidate = objectValue(candidateRaw)
+    champion = objectValue(championRaw)
+    legacy = objectValue(legacyRaw)
   } catch (error: any) {
     return {
-      source: 'optimizer:ga:latest',
+      source: GA_CHAMPION_KEY,
       status: 'unavailable',
-      runtime_role: 'ga_learning_context_unavailable',
+      runtime_role: 'ga_champion_context_unavailable',
       error: String(error?.message ?? error),
       applies_to_trading_config: false,
     }
   }
 
+  const legacyChampion = isApprovedGaRelease(legacy) ? legacy : null
+  const latest = champion ?? legacyChampion ?? candidate
+  const runtimeSource = champion
+    ? GA_CHAMPION_KEY
+    : legacyChampion
+      ? GA_LEGACY_LATEST_KEY
+      : GA_CANDIDATE_LATEST_KEY
   if (!latest) {
     return {
-      source: 'optimizer:ga:latest',
+      source: GA_CHAMPION_KEY,
       status: 'missing',
       runtime_role: 'ga_learning_not_initialized',
       applies_to_trading_config: false,
@@ -74,8 +96,8 @@ async function loadGaOptimizerAdaptiveContext(kv: KVNamespace): Promise<Record<s
   const best = objectValue(latest.best) ?? {}
   const metrics = objectValue(best.metrics) ?? {}
   const gate = objectValue(best.gate) ?? {}
-  const candidate = objectValue(best.candidate) ?? {}
-  const candidateParams = objectValue(candidate.params) ?? {}
+  const bestCandidate = objectValue(best.candidate) ?? {}
+  const candidateParams = objectValue(bestCandidate.params) ?? {}
   const learnedAlphaFramework = objectValue(latest.best_alphaFramework)
     ?? objectValue(latest.bestAlphaFramework)
     ?? objectValue(candidateParams.alphaFramework)
@@ -90,7 +112,9 @@ async function loadGaOptimizerAdaptiveContext(kv: KVNamespace): Promise<Record<s
         : evaluatedPromotion.approvalRequiredForNextLevel || evaluatedPromotion.canRequestNextLevel
           ? 'promotion_review_candidate_context'
           : 'shadow_learning_context'
-  const approvedProductionContext = promotionStatus === 'approved' && (level === 'L3' || level === 'L4')
+  const approvedProductionContext =
+    runtimeSource !== GA_CANDIDATE_LATEST_KEY &&
+    isApprovedGaRelease(latest)
   const effectPolicy = {
     enabled: approvedProductionContext,
     scope: level === 'L4' && promotionStatus === 'approved'
@@ -102,14 +126,28 @@ async function loadGaOptimizerAdaptiveContext(kv: KVNamespace): Promise<Record<s
     mutates_trading_config: false,
     requires_wei_approval: evaluatedPromotion.approvalRequiredForNextLevel,
   }
+  const candidatePromotion = candidate ? evaluateGaPromotion(candidate) : null
 
   return {
-    source: 'optimizer:ga:latest',
+    source: runtimeSource,
     optimizer: stringOrNull(latest.optimizer) ?? 'GAOptimizer',
     status: promotionStatus,
     runtime_role: runtimeRole,
     applies_to_trading_config: false,
     requires_trading_config_review: true,
+    candidate_latest: candidate ? {
+      key: GA_CANDIDATE_LATEST_KEY,
+      status: candidatePromotion?.status ?? candidate.status ?? 'learning',
+      level: candidatePromotion?.level ?? 'L0',
+      updated_at: stringOrNull(candidate.updated_at),
+      validation: objectValue(candidate.validation),
+    } : null,
+    champion_release: {
+      key: runtimeSource,
+      available: approvedProductionContext,
+      level: approvedProductionContext ? level : null,
+      released_at: stringOrNull(objectValue(latest.release)?.released_at),
+    },
     promotion: {
       level,
       approved_level: approvedLevel,

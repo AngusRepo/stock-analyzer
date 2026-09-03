@@ -40,6 +40,16 @@ function normalizeLevel(value: unknown): GAPromotionLevel | null {
     : null
 }
 
+export const GA_CANDIDATE_LATEST_KEY = 'optimizer:ga:candidate:latest'
+export const GA_CHAMPION_KEY = 'optimizer:ga:champion'
+export const GA_LEGACY_LATEST_KEY = 'optimizer:ga:latest'
+
+export function isApprovedGaRelease(state: Record<string, any> | null | undefined): boolean {
+  const promotion = state?.promotion
+  const level = normalizeLevel(promotion?.level ?? promotion?.approved_level)
+  return promotion?.status === 'approved' && (level === 'L3' || level === 'L4')
+}
+
 function hasPassedGate(state: Record<string, any>): boolean {
   const best = state.best ?? {}
   const gate = best.gate ?? state.gate ?? state.meta?.gate

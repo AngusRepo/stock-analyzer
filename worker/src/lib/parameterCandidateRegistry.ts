@@ -364,6 +364,8 @@ export function buildGaOptimizerPolicyValidationEvidence(input: {
   const best = recordValue(learningState.best)
   const gate = recordValue(best.gate ?? learningState.gate)
   const metrics = recordValue(best.metrics ?? learningState.metrics)
+  const candidateValidation = recordValue(learningState.validation)
+  const candidateEvidence = recordValue(best.evidence)
   const bestCandidate = recordValue(best.candidate)
   const bestCandidateParams = recordValue(bestCandidate.params)
   const learnedAlphaFramework = recordValue(
@@ -396,6 +398,8 @@ export function buildGaOptimizerPolicyValidationEvidence(input: {
   const checks = {
     policy_candidate: Object.keys(learnedAlphaFramework).length > 0,
     primary_gate: boolValue(gate.passed) || boolValue(gate.decision),
+    candidate_specific_validation: candidateValidation.status === 'completed',
+    pit_look_ahead_check: metrics.look_ahead_check === 'PASS',
     stable_history: !missingEvidence.includes('stable_history'),
     pbo_mc_cost_governance: !missingEvidence.includes('pbo_mc_cost_governance'),
     kv_readback: input.kvReadbackOk === true,
@@ -404,6 +408,8 @@ export function buildGaOptimizerPolicyValidationEvidence(input: {
   }
   const pass = checks.policy_candidate &&
     checks.primary_gate &&
+    checks.candidate_specific_validation &&
+    checks.pit_look_ahead_check &&
     checks.stable_history &&
     checks.pbo_mc_cost_governance &&
     checks.kv_readback &&
@@ -438,6 +444,8 @@ export function buildGaOptimizerPolicyValidationEvidence(input: {
         mdd_95th: metrics.mdd_95th ?? null,
         trade_count: metrics.trade_count ?? null,
       },
+      candidate_validation: candidateValidation,
+      candidate_specific_evidence: candidateEvidence,
       checks,
       missing_evidence: missingEvidence,
       threshold_policy_candidate: thresholdPolicyValidation,

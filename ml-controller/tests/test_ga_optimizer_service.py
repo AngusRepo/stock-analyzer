@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from services.ga_optimizer_service import (
     GAOptimizerRequest,
+    attach_ga_candidate_evidence,
     build_ga_candidate,
     evaluate_ga_population,
     run_ga_optimizer,
@@ -22,6 +23,12 @@ def _score(candidate: dict) -> dict:
         "trade_count": 80,
         "pbo": 0.25,
         "mdd_95th": 0.18,
+        "evidence_semantic": "candidate_specific_pit_mode_b_replay",
+        "promotion_eligible": True,
+        "oos_applied": True,
+        "pbo_applied": True,
+        "monte_carlo_applied": True,
+        "look_ahead_check": "PASS",
     }
 
 
@@ -80,3 +87,48 @@ def test_ga_without_real_evaluator_cannot_pass_promotion_evidence_gate():
     assert "real_oos_evidence" in result["best"]["gate"]["failed_gates"]
     assert "pbo_evidence" in result["best"]["gate"]["failed_gates"]
     assert "monte_carlo_evidence" in result["best"]["gate"]["failed_gates"]
+
+
+def test_attached_candidate_evidence_replaces_search_proxy_with_real_pit_gate():
+    candidate = build_ga_candidate(None, generation=0, candidate_index=0)
+    search = evaluate_ga_population([candidate])
+    evidence = {
+        "backtest": {
+            "mode": "B",
+            "total_trades": 90,
+            "sharpe": 1.1,
+            "profit_factor": 1.2,
+            "max_drawdown": 0.12,
+        },
+        "monte_carlo": {
+            "simulation_method": "regime_block_bootstrap",
+            "mdd_95th": 0.18,
+        },
+        "pbo": {
+            "method": "cscv_rank_logit",
+            "pbo": 0.2,
+            "oos_mean_return": 0.01,
+        },
+        "gate": {
+            "decision": "PASS",
+            "failed_gates": [],
+            "validation_packet": {"decision": "PASS", "failed_gates": []},
+        },
+    }
+
+    result = attach_ga_candidate_evidence(
+        search,
+        evidence,
+        evidence_clock={
+            "look_ahead_check": "PASS",
+            "snapshot_id": "snapshot-1",
+            "snapshot_business_date": "2026-09-01",
+            "data_end_date": "2026-09-01",
+        },
+    )
+
+    assert result["validation"]["status"] == "completed"
+    assert result["best"]["search_metrics"]["evidence_semantic"] == "synthetic_parameter_prior_proxy"
+    assert result["best"]["metrics"]["evidence_semantic"] == "candidate_specific_pit_mode_b_replay"
+    assert result["best"]["gate"]["passed"] is True
+    assert result["best"]["gate"]["failed_gates"] == []

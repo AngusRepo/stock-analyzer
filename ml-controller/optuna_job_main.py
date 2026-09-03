@@ -573,24 +573,30 @@ async def _run() -> int:
             else {}
         )
         candidate_ids = [candidate_record.get("candidate_id")] if candidate_record.get("candidate_id") else []
-        ga_learning_state = staging.get("ga_learning_state") if isinstance(staging.get("ga_learning_state"), dict) else {}
+        ga_candidate = staging.get("ga_candidate") if isinstance(staging.get("ga_candidate"), dict) else {}
+        ga_push = ga_candidate.get("push") if isinstance(ga_candidate.get("push"), dict) else {}
+        ga_closure = result.get("ga_closure") if isinstance(result.get("ga_closure"), dict) else {}
         payload["metadata"] = {
             "source": "optuna_research_sweep",
             "executor": "cloud_run_job",
             "mode": mode,
             "cadence": cadence,
             "candidate_ids": candidate_ids,
-            "push_results": [item for item in (composite, ga_learning_state) if item],
+            "push_results": [item for item in (composite, ga_push) if item],
             "snapshot": staging,
+            "ga_closure": ga_closure,
             "performance": result.get("performance") if isinstance(result, dict) else None,
             "attempt_count": research_sweep_attempts,
         }
         payload.update({
             "sandbox_id": composite.get("sandbox_id"),
             "candidate_id": candidate_record.get("candidate_id"),
+            "ga_candidate_id": ga_closure.get("candidate_id"),
             "staging_status": staging.get("status"),
+            "ga_closure_status": ga_closure.get("status"),
             "result": {
                 "staging": staging,
+                "ga_closure": ga_closure,
                 "incomplete": result.get("incomplete") if isinstance(result, dict) else None,
             },
         })

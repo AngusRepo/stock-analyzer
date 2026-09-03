@@ -158,7 +158,7 @@ export async function runParameterCandidateValidationChain(
 ) {
   requireController(env)
   const { ensureParameterCandidateTables } = await import('./parameterCandidateRegistry')
-  await ensureParameterCandidateTables(env.DB)
+  await ensureParameterCandidateTables(databaseForDataDomain(env, 'learning'))
 
   const resp = await controllerFetch(env, '/config_pool/parameter_candidates/validation_chain/run', {
     method: 'POST',

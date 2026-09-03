@@ -351,12 +351,22 @@ def test_research_sweep_two_phase_commit_stages_once_after_all_sources_succeed(m
                 "success": True,
                 "target": "sandbox",
                 "sandbox_id": "trading:config:sandbox:research_sweep:test",
+                "materialization_complete": True,
+                "materialization_checks": {"sandbox_readback": True, "d1_candidate": True},
                 "candidate_record": {
                     "candidate_id": "parameter:research_sweep:test",
                     "status": "SHADOW_COLLECTING",
                 },
             }
-        return {"success": True, "target": "production_meta_optimizer_learning_state"}
+        return {
+            "success": True,
+            "target": "production_meta_optimizer_learning_state",
+            "kv_readback_ok": True,
+            "candidate_key": "optimizer:ga:candidate:latest",
+            "champion_key": "optimizer:ga:champion",
+            "candidate_record": {"candidate_id": "parameter:ga_optimizer:test"},
+            "candidate_evidence_record": {"status": "EVIDENCE_INSUFFICIENT"},
+        }
 
     monkeypatch.setattr(optuna, "push_optuna_result", fake_push)
     monkeypatch.setenv("CLOUD_RUN_EXECUTION", "execution-two-phase")
@@ -372,9 +382,12 @@ def test_research_sweep_two_phase_commit_stages_once_after_all_sources_succeed(m
 
     assert out["status"] == "completed"
     assert out["staging"]["status"] == "staged"
-    assert [item["source"] for item in pushes] == ["research_sweep", "ga_optimizer"]
-    assert pushes[0]["params"]["sources"]["screener"] == {"minPrice": 20}
-    assert pushes[0]["meta"]["run_id"] == "execution-two-phase"
+    assert [item["source"] for item in pushes] == ["ga_optimizer", "research_sweep"]
+    assert out["ga_closure"]["materialized"] is True
+    assert out["ga_closure"]["run_id"] == "execution-two-phase"
+    assert pushes[1]["params"]["sources"]["screener"] == {"minPrice": 20}
+    assert all(out["ga_closure"]["closure_checks"].values())
+    assert pushes[1]["meta"]["run_id"] == "execution-two-phase"
     assert all(req.push_kv is False and req.dry_run is True for _, req in calls)
     assert out["performance"]["total_elapsed_seconds"] >= 0
     assert out["performance"]["search_subset_size"] == 100
@@ -386,7 +399,7 @@ def test_research_sweep_two_phase_commit_stages_once_after_all_sources_succeed(m
     assert all(item["elapsed_seconds"] >= 0 for item in out["results"])
 
 
-def test_research_sweep_failure_performs_zero_pushes(monkeypatch):
+def test_research_sweep_failure_keeps_independent_ga_candidate_receipt(monkeypatch):
     pushes: list[dict] = []
 
     def fake_result(source: str):
@@ -420,7 +433,19 @@ def test_research_sweep_failure_performs_zero_pushes(monkeypatch):
     ):
         monkeypatch.setattr(optuna, name, fake_result(source))
 
-    monkeypatch.setattr(optuna, "push_optuna_result", lambda **kwargs: pushes.append(kwargs))
+    def fake_ga_push(**kwargs):
+        pushes.append(kwargs)
+        return {
+            "success": True,
+            "target": "production_meta_optimizer_learning_state",
+            "kv_readback_ok": True,
+            "candidate_key": "optimizer:ga:candidate:latest",
+            "champion_key": "optimizer:ga:champion",
+            "candidate_record": {"candidate_id": "parameter:ga_optimizer:test"},
+            "candidate_evidence_record": {"status": "EVIDENCE_INSUFFICIENT"},
+        }
+
+    monkeypatch.setattr(optuna, "push_optuna_result", fake_ga_push)
 
     out = optuna.execute_research_sweep(optuna.OptunaResearchSweepReq(
         cadence="monthly",
@@ -434,4 +459,35 @@ def test_research_sweep_failure_performs_zero_pushes(monkeypatch):
     assert out["status"] == "error"
     assert out["staging"]["status"] == "blocked"
     assert out["staging"]["reason"] == "source_failure"
-    assert pushes == []
+    assert [item["source"] for item in pushes] == ["ga_optimizer"]
+    assert out["ga_closure"]["materialized"] is True
+    assert all(out["ga_closure"]["closure_checks"].values())
+    assert out["staging"]["ga_candidate"]["status"] == "staged"
+
+
+def test_ga_commit_fails_closed_when_materialization_receipt_is_incomplete(monkeypatch):
+    req = optuna.OptunaResearchSweepReq(push_kv=True, dry_run=False)
+    results = [
+        {
+            "source": "ga_optimizer",
+            "status": "success",
+            "candidate_params": {"validation": {"status": "completed", "decision": "FAIL"}},
+        },
+    ]
+    monkeypatch.setattr(
+        optuna,
+        "push_optuna_result",
+        lambda **_kwargs: {
+            "success": True,
+            "kv_readback_ok": False,
+            "candidate_record": {"candidate_id": "parameter:ga_optimizer:test"},
+            "candidate_evidence_record": {"status": "EVIDENCE_INSUFFICIENT"},
+        },
+    )
+
+    try:
+        optuna._commit_ga_research_candidate(req, results, run_id="receipt-test")
+    except RuntimeError as exc:
+        assert "ga_candidate_materialization_incomplete:kv_readback" in str(exc)
+    else:
+        raise AssertionError("GA closure must fail when KV readback is missing")

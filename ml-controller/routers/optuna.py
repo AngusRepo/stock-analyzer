@@ -41,7 +41,11 @@ LEARNING_D1_CLIENT = client_proxy_for_domain(D1DataDomain.LEARNING)
 PAPER_D1_CLIENT = client_proxy_for_domain(D1DataDomain.PAPER)
 from services.alpha_quality_policy import alpha_quality_policy
 from services.alpha_policy_search import build_alpha_policy_candidate, load_alpha_outcome_rows
-from services.ga_optimizer_service import GAOptimizerRequest, run_ga_optimizer as run_ga_optimizer_service
+from services.ga_optimizer_service import (
+    GAOptimizerRequest,
+    mark_ga_candidate_validation_unavailable,
+    run_ga_optimizer as run_ga_optimizer_service,
+)
 from services.kv_pusher import push_optuna_result
 from services.optuna_route_policy import OptunaRoutePolicy
 from services.optuna_script_contracts import get_optuna_script_contract
@@ -93,6 +97,9 @@ class GAOptimizerReq(BaseModel):
     top_k: int = Field(default=5, ge=1, le=20)
     push_kv: bool = True
     dry_run: bool = False
+    validate_top_candidate: bool = True
+    validation_as_of_date: str | None = Field(default=None, pattern=r"^\d{4}-\d{2}-\d{2}$")
+    mc_simulations: int = Field(default=1000, ge=100, le=10000)
 
 
 class OptunaResearchSweepReq(BaseModel):
@@ -948,7 +955,7 @@ def run_ga_optimizer(req: GAOptimizerReq = Body(default=GAOptimizerReq())):
     contract = _contract_meta(
         source="ga_optimizer",
         scope="production_meta_optimizer_learning",
-        sample_scope="generated_policy_population_plus_gate_metrics",
+        sample_scope="generated_policy_population_plus_candidate_bound_pit_replay",
         applies_to_production="learning_state_only_until_gated_promotion",
         push_target="worker_kv_ga_optimizer_state",
         effective_fields=[
@@ -972,6 +979,22 @@ def run_ga_optimizer(req: GAOptimizerReq = Body(default=GAOptimizerReq())):
             top_k=req.top_k,
         )
     )
+    if req.validate_top_candidate:
+        try:
+            from services.ga_candidate_validator import validate_ga_top_candidate
+
+            result = validate_ga_top_candidate(
+                result,
+                as_of_date=req.validation_as_of_date,
+                mc_simulations=req.mc_simulations,
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.exception("[Optuna/ga_optimizer] candidate-specific validation unavailable")
+            result = mark_ga_candidate_validation_unavailable(
+                result,
+                reason=f"{type(exc).__name__}: {str(exc)[:300]}",
+                as_of_date=req.validation_as_of_date,
+            )
     best = ((result.get("best") or {}).get("candidate") or {}).get("params", {}).get("alphaFramework")
     learning_state = {
         "optimizer": "GAOptimizer",
@@ -983,6 +1006,7 @@ def run_ga_optimizer(req: GAOptimizerReq = Body(default=GAOptimizerReq())):
         "ranked": result.get("ranked") or [],
         "best_alphaFramework": best,
         "contract": result.get("contract"),
+        "validation": result.get("validation"),
     }
     push_response = None
     if req.push_kv and not req.dry_run and best:
@@ -998,6 +1022,8 @@ def run_ga_optimizer(req: GAOptimizerReq = Body(default=GAOptimizerReq())):
                 "best_score": (result.get("best") or {}).get("score"),
                 "gate": (result.get("best") or {}).get("gate"),
                 "plateau": (result.get("best") or {}).get("plateau"),
+                "validation": result.get("validation"),
+                "validation_status": (result.get("validation") or {}).get("status"),
                 "note": "GA production meta optimizer learning state; does not mutate trading:config without gated promotion",
             },
         )
@@ -1072,17 +1098,76 @@ def _run_optuna_sweep_source(source: str, runner) -> dict[str, Any]:
     return result
 
 
+def _research_sweep_run_id(req: OptunaResearchSweepReq) -> str:
+    return os.environ.get("CLOUD_RUN_EXECUTION") or f"optuna-{req.cadence}-{uuid.uuid4().hex[:12]}"
+
+
+def _commit_ga_research_candidate(
+    req: OptunaResearchSweepReq,
+    results: list[dict[str, Any]],
+    *,
+    run_id: str,
+) -> dict[str, Any]:
+    ga = next((item for item in results if item.get("source") == "ga_optimizer"), None)
+    if not ga or ga.get("status") != "success" or not ga.get("candidate_params"):
+        return {"status": "not_available", "reason": "ga_source_not_successful"}
+    validation = ga["candidate_params"].get("validation") or {}
+    push = push_optuna_result(
+        source="ga_optimizer",
+        params=ga["candidate_params"],
+        meta={
+            "run_id": run_id,
+            "cadence": req.cadence,
+            "run_date": req.run_date,
+            "source_names": [item["source"] for item in results],
+            "validation_status": validation.get("status"),
+            "validation_decision": validation.get("decision"),
+            "note": "GA candidate committed independently; unrelated Optuna source failures cannot discard it",
+        },
+    )
+    candidate_record = push.get("candidate_record") if isinstance(push.get("candidate_record"), dict) else {}
+    candidate_evidence = (
+        push.get("candidate_evidence_record")
+        if isinstance(push.get("candidate_evidence_record"), dict)
+        else {}
+    )
+    closure_checks = {
+        "worker_push": push.get("success") is True,
+        "kv_readback": push.get("kv_readback_ok") is True,
+        "d1_candidate": bool(candidate_record.get("candidate_id")),
+        "d1_candidate_evidence": bool(candidate_evidence.get("status")),
+    }
+    failed_closure_checks = [name for name, passed in closure_checks.items() if not passed]
+    if failed_closure_checks:
+        raise RuntimeError(
+            "ga_candidate_materialization_incomplete:"
+            + ",".join(failed_closure_checks)
+        )
+    return {
+        "status": "staged",
+        "run_id": run_id,
+        "validation_status": validation.get("status"),
+        "validation_decision": validation.get("decision"),
+        "closure_checks": closure_checks,
+        "candidate_id": candidate_record.get("candidate_id"),
+        "candidate_evidence_status": candidate_evidence.get("status"),
+        "candidate_key": push.get("candidate_key"),
+        "champion_key": push.get("champion_key"),
+        "push": push,
+    }
+
+
 def _commit_research_sweep_candidate(
     req: OptunaResearchSweepReq,
     results: list[dict[str, Any]],
+    *,
+    run_id: str,
 ) -> dict[str, Any]:
     source_params = {
         item["source"]: item.get("candidate_params")
         for item in results
         if item.get("source") != "ga_optimizer" and item.get("candidate_params")
     }
-    ga = next((item for item in results if item.get("source") == "ga_optimizer"), None)
-    run_id = os.environ.get("CLOUD_RUN_EXECUTION") or f"optuna-{req.cadence}-{uuid.uuid4().hex[:12]}"
     source_names = [item["source"] for item in results]
     composite = push_optuna_result(
         source="research_sweep",
@@ -1097,24 +1182,27 @@ def _commit_research_sweep_candidate(
             "note": "atomic composite Optuna candidate; production unchanged",
         },
     )
-    ga_push = None
-    if ga and ga.get("candidate_params"):
-        ga_push = push_optuna_result(
-            source="ga_optimizer",
-            params=ga["candidate_params"],
-            meta={
-                "run_id": run_id,
-                "cadence": req.cadence,
-                "run_date": req.run_date,
-                "source_names": source_names,
-                "note": "committed only after the complete research sweep succeeded",
-            },
+    candidate_record = (
+        composite.get("candidate_record")
+        if isinstance(composite.get("candidate_record"), dict)
+        else {}
+    )
+    closure_checks = {
+        "worker_push": composite.get("success") is True,
+        "sandbox_readback": composite.get("materialization_complete") is True,
+        "d1_candidate": bool(candidate_record.get("candidate_id")),
+    }
+    failed_closure_checks = [name for name, passed in closure_checks.items() if not passed]
+    if failed_closure_checks:
+        raise RuntimeError(
+            "research_sweep_materialization_incomplete:" + ",".join(failed_closure_checks)
         )
     return {
         "status": "staged",
         "run_id": run_id,
+        "closure_checks": closure_checks,
+        "candidate_id": candidate_record.get("candidate_id"),
         "composite": composite,
-        "ga_learning_state": ga_push,
     }
 
 
@@ -1158,6 +1246,8 @@ def execute_research_sweep(req: OptunaResearchSweepReq) -> dict[str, Any]:
                 GAOptimizerReq(
                     population_size=req.ga_population_size,
                     generations=req.ga_generations,
+                    validate_top_candidate=True,
+                    validation_as_of_date=req.run_date,
                     push_kv=False,
                     dry_run=True,
                 )
@@ -1177,9 +1267,22 @@ def execute_research_sweep(req: OptunaResearchSweepReq) -> dict[str, Any]:
     results = [item for item in ordered_results if item is not None]
     failures = [item["summary"] for item in results if item.get("status") == "error"]
     incomplete = [item["summary"] for item in results if item.get("status") == "skipped"]
+    run_id = _research_sweep_run_id(req)
+    ga_staging: dict[str, Any] = {
+        "status": "not_requested" if not req.push_kv or req.dry_run else "blocked",
+        "reason": None,
+    }
+    if req.push_kv and not req.dry_run:
+        try:
+            ga_staging = _commit_ga_research_candidate(req, results, run_id=run_id)
+        except Exception as exc:  # noqa: BLE001
+            logger.exception("[Optuna/research_sweep] independent GA staging failed")
+            failures.append(f"ga_staging:ERROR({type(exc).__name__}: {str(exc)[:180]})")
+            ga_staging = {"status": "error", "reason": str(exc), "run_id": run_id}
     staging: dict[str, Any] = {
         "status": "not_requested" if not req.push_kv or req.dry_run else "blocked",
         "reason": None,
+        "run_id": run_id,
     }
     if failures:
         staging["reason"] = "source_failure"
@@ -1187,11 +1290,12 @@ def execute_research_sweep(req: OptunaResearchSweepReq) -> dict[str, Any]:
         staging["reason"] = "source_incomplete"
     elif req.push_kv and not req.dry_run:
         try:
-            staging = _commit_research_sweep_candidate(req, results)
+            staging = _commit_research_sweep_candidate(req, results, run_id=run_id)
         except Exception as exc:  # noqa: BLE001
             logger.exception("[Optuna/research_sweep] composite staging failed")
             failures.append(f"composite_staging:ERROR({type(exc).__name__}: {str(exc)[:180]})")
-            staging = {"status": "error", "reason": str(exc)}
+            staging = {"status": "error", "reason": str(exc), "run_id": run_id}
+    staging["ga_candidate"] = ga_staging
     total_elapsed_seconds = round(time.monotonic() - sweep_started, 3)
     return {
         "status": "error" if failures else "completed",
@@ -1203,6 +1307,18 @@ def execute_research_sweep(req: OptunaResearchSweepReq) -> dict[str, Any]:
         "incomplete": incomplete,
         "staging": staging,
         "ga": next((item for item in results if item["source"] == "ga_optimizer"), None),
+        "ga_closure": {
+            "status": "completed" if ga_staging.get("status") == "staged" else ga_staging.get("status"),
+            "materialized": ga_staging.get("status") == "staged",
+            "validation_status": ga_staging.get("validation_status"),
+            "closure_checks": ga_staging.get("closure_checks") or {},
+            "promotion_decision": ga_staging.get("validation_decision"),
+            "run_id": run_id,
+            "candidate_id": ga_staging.get("candidate_id"),
+            "candidate_evidence_status": ga_staging.get("candidate_evidence_status"),
+            "candidate_key": ga_staging.get("candidate_key"),
+            "champion_key": ga_staging.get("champion_key"),
+        },
         "performance": {
             "total_elapsed_seconds": total_elapsed_seconds,
             "source_elapsed_seconds": {

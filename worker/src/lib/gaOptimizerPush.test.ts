@@ -51,7 +51,10 @@ class FakeDB {
 
 const env = {
   DB: new FakeDB(),
+  LEARNING_DB: new FakeDB(),
   KV: new FakeKV(),
+  MULTI_D1_ACTIVE_DOMAINS: 'learning',
+  MULTI_D1_STRICT: 'true',
   STOCKVISION_AUTH_TOKEN: 'service-token',
 } as unknown as Bindings
 
@@ -67,13 +70,14 @@ void (async () => {
       params: {
         optimizer: 'GAOptimizer',
         status: 'learning',
+        validation: { status: 'completed', decision: 'PASS', evidence_clock: { look_ahead_check: 'PASS' } },
         history: [
           { generation: 0, best_score: 1.0 },
           { generation: 1, best_score: 1.2 },
         ],
         best: {
           score: 1.2,
-          metrics: { pbo: 0.2, mdd_95th: 0.16, sharpe: 1.1, trade_count: 120 },
+          metrics: { pbo: 0.2, mdd_95th: 0.16, sharpe: 1.1, trade_count: 120, look_ahead_check: 'PASS' },
           gate: { decision: 'PASS', passed: true, failed_gates: [], checks: { pbo: true, monte_carlo_mdd_95th: true } },
         },
         best_alphaFramework: {
@@ -90,6 +94,7 @@ void (async () => {
   assert(body.target === 'production_meta_optimizer_learning_state', 'ga_optimizer should write production learning state, not sandbox')
   assert(body.updatedKeys.includes('optimizer:ga:latest'), 'ga_optimizer should update latest learning key')
   assert(body.kv_readback_ok === true, 'ga_optimizer push should read back latest KV state')
+  assert(body.updatedKeys.includes('optimizer:ga:candidate:latest'), 'ga_optimizer should update canonical candidate key')
   assert(body.candidate_record?.candidate_id?.startsWith('parameter:ga_optimizer:'), 'ga_optimizer push should persist a D1 parameter candidate record')
   assert(body.candidate_evidence_record?.status === 'PROMOTION_READY', 'L3-ready GA push should write a promotion-ready GA-specific evidence packet')
   assert(String(body.candidate_evidence_record?.promotion_packet_id ?? '').startsWith('promotion_packet:parameter:ga_optimizer:'), 'GA-specific evidence should mint a promotion packet id')
@@ -98,18 +103,19 @@ void (async () => {
   assert(body.promotion.canRequestNextLevel === true, 'L2 GA state should explicitly expose that L3 approval can be requested')
   assert(body.promotion.missingEvidence.length === 0, 'L3-ready GA state should have no missing evidence')
 
-  const latest = JSON.parse((env.KV as any).store.get('optimizer:ga:latest'))
+  const latest = JSON.parse((env.KV as any).store.get('optimizer:ga:candidate:latest'))
   assert(latest.status === 'shadow_config', 'latest GA state should expose promotion status')
   assert(latest.promotion.nextAction.includes('Ready to request Wei approval for L3'), 'latest GA state should expose the concrete L3 request action')
   assert(latest.production_learning_loop === true, 'GA must be a production learning loop')
   assert(latest.mutates_trading_config === false, 'GA learning push must not mutate trading:config')
   assert(latest.best_alphaFramework.riskOverlay.highVolThreshold === 0.045, 'latest GA state should preserve learned policy')
   assert(!(env.KV as any).store.has('trading:config'), 'ga_optimizer push must not write trading:config')
-  const evidenceRun = (env.DB as any).runs.find((run: any) =>
+  const evidenceRun = (env.LEARNING_DB as any).runs.find((run: any) =>
     String(run.sql).includes('parameter_candidate_evidence') &&
     String(run.values?.[1]) === 'ga_optimizer_policy_packet_validation'
   )
   assert(evidenceRun, 'ga_optimizer push should persist candidate-specific validation evidence')
+  assert((env.DB as any).runs.length === 0, 'GA registry must not write the legacy main D1 owner')
   assert(String(evidenceRun.values?.[3]).includes('"sandbox_config_required":false'), 'GA validation evidence must not depend on sandbox config state')
   assert(String(evidenceRun.values?.[3]).includes('"mutates_trading_config":false'), 'GA validation evidence must preserve no trading config mutation boundary')
 
@@ -122,7 +128,7 @@ void (async () => {
     body: JSON.stringify({ action: 'request', level: 'L3', reason: 'test_request' }),
   }, env)
   assert(requestReview.status === 200, 'GA L3 review request should be accepted from admin/service UI path')
-  const requested = JSON.parse((env.KV as any).store.get('optimizer:ga:latest'))
+  const requested = JSON.parse((env.KV as any).store.get('optimizer:ga:candidate:latest'))
   assert(requested.promotion.pendingApprovalLevel === 'L3', 'GA review request should create explicit pending L3 approval')
   assert(requested.mutates_trading_config === false, 'GA review request must not mutate trading:config')
 
@@ -135,11 +141,13 @@ void (async () => {
     body: JSON.stringify({ action: 'approve', level: 'L3', reason: 'test_approve' }),
   }, env)
   assert(approveReview.status === 200, 'GA L3 approval should be accepted from admin/service UI path')
-  const approved = JSON.parse((env.KV as any).store.get('optimizer:ga:latest'))
+  const approved = JSON.parse((env.KV as any).store.get('optimizer:ga:candidate:latest'))
   assert(approved.promotion.level === 'L3', 'approved GA review should advance promotion state to L3')
   assert(approved.promotion.approved_level === 'L3', 'GA L3 approval marker should be retained in KV state')
   assert(!(env.KV as any).store.has('trading:config'), 'GA review approval must not write trading:config directly')
 
+  const champion = JSON.parse((env.KV as any).store.get('optimizer:ga:champion'))
+  assert(champion.promotion.level === 'L3', 'approved L3 candidate should materialize an immutable champion release')
   const secondPush = await adminOptunaRoutes.request('/api/admin/optuna-push', {
     method: 'POST',
     headers: {
@@ -151,13 +159,14 @@ void (async () => {
       params: {
         optimizer: 'GAOptimizer',
         status: 'learning',
+        validation: { status: 'completed', decision: 'PASS', evidence_clock: { look_ahead_check: 'PASS' } },
         history: [
           { generation: 0, best_score: 1.0 },
           { generation: 1, best_score: 1.25 },
         ],
         best: {
           score: 1.25,
-          metrics: { pbo: 0.2, mdd_95th: 0.16, sharpe: 1.1, trade_count: 120 },
+          metrics: { pbo: 0.2, mdd_95th: 0.16, sharpe: 1.1, trade_count: 120, look_ahead_check: 'PASS' },
           gate: { decision: 'PASS', passed: true, failed_gates: [], checks: { pbo: true, monte_carlo_mdd_95th: true } },
         },
         best_alphaFramework: {
@@ -170,19 +179,68 @@ void (async () => {
   }, env)
   assert(secondPush.status === 200, 'GA push after L3 approval should be accepted')
   const secondBody = await secondPush.json() as any
-  assert(secondBody.promotion.level === 'L3', 'GA push must preserve prior L3 approval instead of dropping back to L2')
-  assert(secondBody.promotion.nextLevel === 'L4', 'GA L3 state should expose L4 as next level')
-  assert(secondBody.promotion.canRequestNextLevel === true, 'GA L3 state should be able to request L4 approval')
+  assert(secondBody.promotion.level === 'L2', 'new GA candidate must start from its own evidence-derived ladder')
+  assert(secondBody.promotion.nextLevel === 'L3', 'new candidate should expose its own next approval step')
+  const currentCandidate = JSON.parse((env.KV as any).store.get('optimizer:ga:candidate:latest'))
+  const preservedChampion = JSON.parse((env.KV as any).store.get('optimizer:ga:champion'))
+  assert(currentCandidate.best.score === 1.25, 'candidate key should advance to the new weekly candidate')
+  assert(preservedChampion.promotion.level === 'L3', 'new candidate must not downgrade the approved champion')
+  assert(preservedChampion.best.score === 1.2, 'champion payload must remain the previously approved release')
+  assert(secondBody.champion_key === 'optimizer:ga:champion', 'push response should expose champion lineage')
+})()
 
-  const approveL4 = await adminOptunaRoutes.request('/api/admin/ga-promotion/review', {
+class ReadbackFailKV extends FakeKV {
+  async get(key: string, mode?: string) {
+    if (key === 'optimizer:ga:candidate:latest' && this.store.has(key)) {
+      return null
+    }
+    return super.get(key, mode)
+  }
+}
+
+const brokenEnv = {
+  DB: new FakeDB(),
+  LEARNING_DB: new FakeDB(),
+  KV: new ReadbackFailKV(),
+  MULTI_D1_ACTIVE_DOMAINS: 'learning',
+  MULTI_D1_STRICT: 'true',
+  STOCKVISION_AUTH_TOKEN: 'service-token',
+} as unknown as Bindings
+
+void (async () => {
+  const res = await adminOptunaRoutes.request('/api/admin/optuna-push', {
     method: 'POST',
     headers: {
       Authorization: 'Bearer service-token',
       'Content-Type': 'application/json',
     },
-    body: JSON.stringify({ action: 'approve', level: 'L4', reason: 'test_approve_l4' }),
-  }, env)
-  assert(approveL4.status === 200, 'GA L4 approval should be accepted from admin/service UI path')
-  const full = JSON.parse((env.KV as any).store.get('optimizer:ga:latest'))
-  assert(full.promotion.level === 'L4', 'approved GA review should advance promotion state to L4')
+    body: JSON.stringify({
+      source: 'ga_optimizer',
+      params: {
+        optimizer: 'GAOptimizer',
+        status: 'learning',
+        validation: { status: 'completed', decision: 'FAIL' },
+        history: [
+          { generation: 0, best_score: 1.0 },
+          { generation: 1, best_score: 1.1 },
+        ],
+        best: {
+          score: 1.1,
+          metrics: { pbo: 0.6, mdd_95th: 0.3, sharpe: 0.2, trade_count: 20, look_ahead_check: 'PASS' },
+          gate: { decision: 'REJECT', passed: false, failed_gates: ['pbo'] },
+        },
+        best_alphaFramework: {
+          riskOverlay: { highVolThreshold: 0.05 },
+          allocation: { weights: { bull: { trend_following: 0.4 } } },
+        },
+      },
+      meta: { run_id: 'readback-fail-test' },
+    }),
+  }, brokenEnv)
+
+  assert(res.status === 503, 'GA push must fail closed when canonical candidate KV readback fails')
+  const body = await res.json() as any
+  assert(body.success === false, 'incomplete GA materialization must not report success')
+  assert(body.materialization_complete === false, 'incomplete GA materialization must be explicit')
+  assert(body.materialization_checks.kv_readback === false, 'failed KV readback must be named')
 })()

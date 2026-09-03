@@ -71,7 +71,7 @@ adminConfigLifecycleRoutes.post('/api/admin/config/challenger', async (c) => {
         promotion_packet_id: body.promotion_packet_id ?? null,
       }
     }
-    await recordParameterCandidateFromSandbox(c.env.DB, {
+    await recordParameterCandidateFromSandbox(databaseForDataDomain(c.env, 'learning'), {
       source: entry.source,
       sandboxId: body.sandbox_id,
       candidateId,
@@ -84,7 +84,7 @@ adminConfigLifecycleRoutes.post('/api/admin/config/challenger', async (c) => {
         metadata: entry.metadata ?? null,
       },
     })
-    const validation = await validateParameterCandidateEvidencePacket(c.env.DB, {
+    const validation = await validateParameterCandidateEvidencePacket(databaseForDataDomain(c.env, 'learning'), {
       candidateId,
       promotionPacketId: body.promotion_packet_id,
       evidencePacket,
@@ -98,7 +98,7 @@ adminConfigLifecycleRoutes.post('/api/admin/config/challenger', async (c) => {
       }, 400)
     }
     if (evidencePacket) {
-      await recordParameterCandidateEvidence(c.env.DB, {
+      await recordParameterCandidateEvidence(databaseForDataDomain(c.env, 'learning'), {
         candidateId,
         evidence: evidencePacket,
         decision: evidenceDecision(evidencePacket),
@@ -119,7 +119,7 @@ adminConfigLifecycleRoutes.post('/api/admin/config/challenger', async (c) => {
     }
     config = body.config
     source = 'manual'
-    await recordParameterCandidateEvent(c.env.DB, null, 'manual_challenger_override', {
+    await recordParameterCandidateEvent(databaseForDataDomain(c.env, 'learning'), null, 'manual_challenger_override', {
       reason: overrideReason,
       note: body.note ?? null,
     })
@@ -220,7 +220,7 @@ adminConfigLifecycleRoutes.get('/api/admin/config/parameter-candidates', async (
   if (authError) return authError
 
   const { ensureParameterCandidateTables } = await import('../lib/parameterCandidateRegistry')
-  await ensureParameterCandidateTables(c.env.DB)
+  await ensureParameterCandidateTables(databaseForDataDomain(c.env, 'learning'))
   const limit = Math.max(1, Math.min(100, Number(c.req.query('limit')) || 50))
   const rows = await databaseForDataDomain(c.env, 'learning').prepare(
     `SELECT candidate_id, source, config_hash, sandbox_id, cadence, run_id, status,

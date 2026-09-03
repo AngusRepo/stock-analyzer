@@ -123,7 +123,9 @@ assert(
 assert(
   optunaJob.includes('_callback_weekly_with_bounded_retry') &&
     optunaJob.includes('WEEKLY_BACKTEST_CALLBACK_MAX_ATTEMPTS') &&
-    optunaJob.includes('if attempt >= max_attempts or "HTTP 4" in message'),
+    optunaJob.includes('not _callback_failure_is_retryable(message)') &&
+    optunaJob.includes('"http 429"') &&
+    !optunaJob.includes('"http 4" in message'),
   'weekly terminal callback must retry transient delivery with a bounded attempt count and not retry stale 4xx callbacks',
 )
 

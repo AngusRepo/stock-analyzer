@@ -5,7 +5,12 @@ import { buildDataQualityReport, type DataQualityCheck } from './dataQualityMoni
 import { buildDeployGateReport } from './deployGate'
 import { getSchedulerStatus } from './schedulerStatus'
 import { controllerJson } from './controllerClient'
-import { evaluateGaPromotion } from './gaPromotion'
+import {
+  GA_CANDIDATE_LATEST_KEY,
+  GA_CHAMPION_KEY,
+  evaluateGaPromotion,
+  isApprovedGaRelease,
+} from './gaPromotion'
 
 export type ObservabilitySeverity = 'ok' | 'info' | 'warn' | 'error'
 export type ObservabilityDomain =
@@ -792,6 +797,7 @@ export function buildEventsFromMlThresholdPolicy(input: {
 export function buildEventsFromGaOptimizer(input: {
   generatedAt: string
   state?: Record<string, unknown> | null
+  championState?: Record<string, unknown> | null
   sourceError?: string
 }): ObservabilityEvent[] {
   if (input.sourceError) {
@@ -803,10 +809,10 @@ export function buildEventsFromGaOptimizer(input: {
       source: 'ga_optimizer',
       status: 'unavailable',
       title: 'GA optimizer unavailable',
-      summary: 'OBS could not read optimizer:ga:latest.',
+      summary: `OBS could not read ${GA_CANDIDATE_LATEST_KEY}.`,
       owner: 'Adaptive Meta Layer',
       impact: 'GA production learning evidence is not visible; promotion should remain blocked.',
-      next_action: 'Inspect Worker KV optimizer:ga:latest and the /optuna/ga_optimizer push path.',
+      next_action: `Inspect Worker KV ${GA_CANDIDATE_LATEST_KEY} and the /optuna/ga_optimizer push path.`,
       runbook: 'P8 GA production learning ladder',
       evidence: { error: input.sourceError },
     }]
@@ -822,15 +828,21 @@ export function buildEventsFromGaOptimizer(input: {
       source: 'ga_optimizer',
       status: 'not_initialized',
       title: 'GA optimizer not initialized',
-      summary: 'optimizer:ga:latest is missing; GA is not yet learning in production.',
+      summary: `${GA_CANDIDATE_LATEST_KEY} is missing; GA has not materialized a candidate yet.`,
       owner: 'Adaptive Meta Layer',
       impact: 'GA learned policy candidates cannot influence promotion review until the learning loop writes evidence.',
       next_action: 'Run /optuna/ga_optimizer with push_kv after validation inputs are ready.',
       runbook: 'P8 GA production learning ladder',
-      evidence: { latest_key: 'optimizer:ga:latest' },
+      evidence: { latest_key: GA_CANDIDATE_LATEST_KEY },
     }]
   }
 
+  const championState = input.championState && isApprovedGaRelease(input.championState)
+    ? input.championState
+    : null
+  const championPromotion = championState
+    ? evaluateGaPromotion(championState as Record<string, any>)
+    : null
   const storedPromotion = state.promotion as Record<string, unknown> | undefined
   const evaluatedPromotion = evaluateGaPromotion(state as Record<string, any>)
   const promotion = {
@@ -872,8 +884,8 @@ export function buildEventsFromGaOptimizer(input: {
     domain: 'adaptive_meta',
     source: 'ga_optimizer',
     status,
-    title: `GA optimizer ${level}`,
-    summary: `GA production learning is ${status}; level=${level}, next=${promotion?.nextLevel ?? 'none'}, ready_for_l3=${canRequestNextLevel ? 'yes' : 'no'}, approval=${approvalRequired ? 'required' : 'not required'}.`,
+    title: `GA candidate ${level}`,
+    summary: `GA candidate is ${status}; candidate=${level}, champion=${championPromotion?.level ?? 'none'}, next=${promotion?.nextLevel ?? 'none'}, ready_for_l3=${canRequestNextLevel ? 'yes' : 'no'}, approval=${approvalRequired ? 'required' : 'not required'}.`,
     owner: 'Adaptive Meta Layer',
     impact: approvalRequired
       ? 'Learned candidate is ready for the next production ladder step, but trading:config remains unchanged until Wei approval.'
@@ -889,6 +901,14 @@ export function buildEventsFromGaOptimizer(input: {
     )),
     runbook: 'P8 GA production learning ladder',
     evidence: {
+      candidate_key: GA_CANDIDATE_LATEST_KEY,
+      champion_key: GA_CHAMPION_KEY,
+      champion_release: championState ? {
+        level: championPromotion?.level ?? null,
+        status: championPromotion?.status ?? null,
+        approved_at: (championState.promotion as Record<string, unknown> | undefined)?.approved_at ?? null,
+        released_at: (championState.release as Record<string, unknown> | undefined)?.released_at ?? null,
+      } : null,
       promotion,
       production_learning_loop: state.production_learning_loop,
       mutates_trading_config: state.mutates_trading_config,
@@ -933,6 +953,7 @@ export function buildObservabilityEventReport(input: {
   mlThresholdPolicyLatestPredictionDate?: string | null
   mlThresholdPolicyError?: string
   gaOptimizerState?: Record<string, unknown> | null
+  gaOptimizerChampionState?: Record<string, unknown> | null
   gaOptimizerError?: string
 }): ObservabilityEventReport {
   const events = [
@@ -970,6 +991,7 @@ export function buildObservabilityEventReport(input: {
     ...buildEventsFromGaOptimizer({
       generatedAt: input.generatedAt,
       state: input.gaOptimizerState,
+      championState: input.gaOptimizerChampionState,
       sourceError: input.gaOptimizerError,
     }),
   ]
@@ -1229,8 +1251,14 @@ export async function buildLiveObservabilityEventReport(env: Bindings, options: 
       .then(({ getAdaptiveParamsForRegime }) => getAdaptiveParamsForRegime(env.KV))
       .then((params) => ({ params: params as unknown as Record<string, unknown> }))
       .catch((error: unknown) => ({ error: String(error) })),
-    env.KV.get('optimizer:ga:latest', 'json')
-      .then((state) => ({ state: state as Record<string, unknown> | null }))
+    Promise.all([
+      env.KV.get(GA_CANDIDATE_LATEST_KEY, 'json'),
+      env.KV.get(GA_CHAMPION_KEY, 'json'),
+    ])
+      .then(([state, championState]) => ({
+        state: state as Record<string, unknown> | null,
+        championState: championState as Record<string, unknown> | null,
+      }))
       .catch((error: unknown) => ({ error: String(error) })),
     readLinUcbLedgerSummary(env),
     readLatestMlThresholdPolicyEvidence(env, date),
@@ -1261,6 +1289,7 @@ export async function buildLiveObservabilityEventReport(env: Bindings, options: 
     mlThresholdPolicyError: thresholdPolicyResult.error,
     gaOptimizerState: 'state' in gaOptimizerResult ? gaOptimizerResult.state : undefined,
     gaOptimizerError: 'error' in gaOptimizerResult ? gaOptimizerResult.error : undefined,
+    gaOptimizerChampionState: 'championState' in gaOptimizerResult ? gaOptimizerResult.championState : undefined,
   })
 }
 

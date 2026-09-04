@@ -1261,6 +1261,7 @@ def test_forward_shadow_evaluation_packets_are_separate_from_candidates(monkeypa
         "base_cohort_id": "cohort-1",
         "base_manifest_checksum": "a" * 64,
         "dates": ["2026-07-22", "2026-07-23"],
+        "producer_source_sha": "c" * 64,
         "promotion_eligible": False,
         "training_dispatched": False,
     }
@@ -1307,11 +1308,15 @@ def test_forward_shadow_evaluation_packets_are_separate_from_candidates(monkeypa
     archived_payloads = [json.loads(raw.decode("utf-8")) for raw in blobs.values()]
     assert all(
         packet["evaluator_contract"]["evaluator_version"]
-        == "expected-return-frozen-forward-evaluator-v3"
+        == "expected-return-frozen-forward-evaluator-v4"
         for packet in archived_payloads
     )
     assert all(
-        "forward_extension_producer_source_sha" in packet["evaluator_contract"]
+        "forward_extension_producer_source_sha" not in packet["evaluator_contract"]
+        for packet in archived_payloads
+    )
+    assert all(
+        packet["producer_provenance"]["forward_extension_producer_source_sha"] == "c" * 64
         for packet in archived_payloads
     )
     assert all(

@@ -17,8 +17,8 @@
  *   - If P1 passes and P3 triggers (HIGH vol) AND P6 triggers (RED zone)
  *     → legacy uses P3 (pos=4%). Chain uses MIN(4%, 8% × 0.3 = 2.4%) = 2.4%.
  *
- * Net effect: **strictly more conservative**. Intended production default.
- * KV flag `risk:use_chain=v0` rolls back to legacy.
+ * Net effect: **strictly more conservative**. This is the only runtime path;
+ * the legacy early-return bypass has been removed.
  */
 import type { TradingConfig } from './tradingConfig'
 import type {
@@ -36,6 +36,7 @@ import { checkP7Streak } from './riskChecks/p7Streak'
 import { checkS1KillSwitch } from './riskChecks/s1KillSwitch'
 import { checkP8DailyPnl } from './riskChecks/p8DailyPnl'
 import { getRiskConfig } from './riskConfig'
+import { resolveCanonicalMarketRisk } from './marketRiskRuntime'
 
 export interface AggregatedPortfolioState extends CircuitBreakerState {
   triggeredLayers: string[]
@@ -61,14 +62,18 @@ export async function runPortfolioChecks(
   const databases: PortfolioRiskDatabases = 'paper' in db
     ? db
     : { paper: db, core: db, market: db, learning: db }
+  const marketRisk = await resolveCanonicalMarketRisk({
+    core: databases.core,
+    market: databases.market,
+  }, kv, riskCfg)
 
   // Run 9 checks in parallel — none depend on each other's output.
   const [s1, p1, p2, p3, p4, p5, p6, p7, p8] = await Promise.all([
     checkS1KillSwitch(kv, deps),
     checkP1Mdd(databases.paper, cfg, deps),
     checkP2Accuracy(databases.learning, kv, cfg, deps),
-    checkP3MarketRisk(databases.core, cfg, deps),
-    checkP4Breadth(databases.market, cfg, deps),
+    checkP3MarketRisk(marketRisk, cfg, deps),
+    checkP4Breadth(marketRisk, cfg, deps),
     checkP5Losses(databases.paper, deps),
     checkP6Momentum(databases.market, deps),
     checkP7Streak(databases.learning, cfg, deps),
@@ -120,5 +125,16 @@ export async function runPortfolioChecks(
     momentumZone,
     triggeredLayers,
     reason: halt ? haltReasons.join(' | ') : reasons.join(' | '),
+    targetExposurePct: marketRisk.targetExposureCap,
+    deRiskExistingPositions: marketRisk.deRiskExistingPositions,
+    marketRiskLevel: marketRisk.level,
+    marketRiskScore: marketRisk.score,
+    marketRiskDate: marketRisk.date,
+    marketRiskStatus: marketRisk.status,
+    marketRiskDailyChangePct: marketRisk.dailyChangePct,
+    marketRiskAdvanceRatio: marketRisk.advanceRatio,
+    marketRiskRegimeFamily: marketRisk.regimeFamily,
+    marketRiskReasons: marketRisk.reasons,
+    marketRiskBlockers: marketRisk.blockers,
   }
 }

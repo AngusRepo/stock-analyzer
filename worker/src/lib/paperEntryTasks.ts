@@ -16,7 +16,9 @@ import {
   type PendingBuy,
 } from './pendingBuyStore'
 import type { PendingBuyExecutionEvent, PendingBuyTerminalExecutionStatus } from './pendingBuyExecutionState'
-import { reconcilePendingBuyDebates } from './pendingBuyOrchestrator'
+import { checkCircuitBreakersForDomains, reconcilePendingBuyDebates } from './pendingBuyOrchestrator'
+import { mergeIntradayPortfolioRisk, readP9IntradayHalt } from './intradayPortfolioRisk'
+import { resolveCircuitAdjustedSingleNameCap } from './riskPositionSizing'
 import { acquirePaperBuyIntent, completePaperBuyIntent } from './paperOrderIntent'
 import { evaluatePreTradeExecution, type PreTradeMomentumContext, type PreTradeOhlcvTradePlan } from './preTradeExecutionPolicy'
 import { resolveAdaptiveExecutionPolicy } from './executionAdaptivePolicy'
@@ -485,7 +487,7 @@ async function runIntradayCheckUnlocked(env: Bindings, leaseRunId: string): Prom
   const opsDb = databaseForDataDomain(env, 'ops')
   const cfg = await getTradingConfig(env.KV)
   const riskCfg = await getRiskConfig(env.KV)
-  const maxSingleNamePct = Math.min(
+  const configuredMaxSingleNamePct = Math.min(
     cfg.position.maxPctOfPortfolio,
     riskCfg.position.maxSingleNamePct,
   )
@@ -531,13 +533,21 @@ async function runIntradayCheckUnlocked(env: Bindings, leaseRunId: string): Prom
     }
   }
 
-  let holdingPoll = await pollIntradayStopLoss(env)
-
-  const riskRaw = await env.KV.get('market:risk_level')
-  if (riskRaw && ['orange', 'red', 'black'].includes(riskRaw)) {
-    await new Promise((r) => setTimeout(r, 30_000))
-    holdingPoll = await pollIntradayStopLoss(env)
-  }
+  const baseCb = await checkCircuitBreakersForDomains(env, cfg, env.KV)
+  let holdingPoll = await pollIntradayStopLoss(env, baseCb)
+  const cb = mergeIntradayPortfolioRisk(
+    baseCb,
+    await readP9IntradayHalt(env.KV, today, {
+      defaults: baseCb,
+      effectiveBuy: baseCb.buyConfThreshold,
+      effectiveSell: baseCb.sellConfThreshold,
+    }),
+  )
+  const effectiveMaxPositionPct = resolveCircuitAdjustedSingleNameCap({
+    configuredSingleNameCap: configuredMaxSingleNamePct,
+    circuitBaselinePositionPct: cfg.circuit.maxPositionPct,
+    circuitEffectivePositionPct: cb.maxPositionPct,
+  })
   if (!await refreshIntradayExecutionLease(opsDb, leaseRunId)) {
     throw new Error('intraday_execution_lease_lost_after_holding_poll')
   }
@@ -577,6 +587,52 @@ async function runIntradayCheckUnlocked(env: Bindings, leaseRunId: string): Prom
   let pendingBuys: PendingBuy[] = pendingSnapshot.pendingBuys
   if (pendingBuys.length === 0) return holdingPoll
   const pendingRunId = pendingRunIdFromMeta(pendingSnapshot.meta)
+
+  {
+    const { writeAuditEntry } = await import('./riskAudit')
+    await writeAuditEntry(databaseForDataDomain(env, 'execution'), {
+      triggerEvent: 'intraday_buy',
+      decision: cb.halt ? 'halt' : 'executed',
+      side: 'buy',
+      riskState: cb,
+    })
+  }
+  if (cb.halt) {
+    const detail = [
+      `status=${cb.marketRiskStatus ?? 'unknown'}`,
+      `date=${cb.marketRiskDate ?? 'missing'}`,
+      `level=${cb.marketRiskLevel ?? 'unknown'}`,
+      `blockers=${(cb.marketRiskBlockers ?? []).join('|') || 'none'}`,
+      `reason=${cb.reason ?? 'circuit_breaker'}`,
+    ].join(';')
+    const transition = applyPendingBuyExecutionStatusUpdates(
+      pendingBuys,
+      pendingBuys.map((item) => ({
+        symbol: item.symbol,
+        status: 'checked_waiting' as const,
+        reason: 'portfolio_risk_halt',
+        detail,
+      })),
+    )
+    await persistPendingBuyActiveState(
+      env,
+      today,
+      transition.activeItems as PendingBuy[],
+      { stage: 'intraday_risk_gate', reason: 'portfolio_risk_halt', detail },
+    )
+    await Promise.all(pendingBuys.map((item) => recordPaperExecutionEvent(env, {
+      tradeDate: today,
+      symbol: item.symbol,
+      side: 'buy',
+      eventType: 'paper_order',
+      status: 'blocked',
+      reason: 'portfolio_risk_halt',
+      detail: { circuit_breaker: cb },
+      pendingRunId,
+      source: 'canonical_market_risk_runtime_v1',
+    })))
+    return holdingPoll
+  }
 
   const pendingSymbols = pendingBuys.map((b) => b.symbol)
   const ohlcMap = await batchGetIntradayOHLC(pendingSymbols, {
@@ -708,22 +764,15 @@ async function runIntradayCheckUnlocked(env: Bindings, leaseRunId: string): Prom
   let dailySwaps = 0
   const maxSwaps = cfg.position.maxDailySwaps ?? 1
 
-  let marketRisk: { risk_level: string; change_rate?: number; risk_reasons?: string[]; [key: string]: unknown } = { risk_level: 'unknown' }
-  if ((env as any).SHIOAJI_PROXY_URL) {
-    try {
-      const mrRes = await fetch(`${(env as any).SHIOAJI_PROXY_URL}/market-risk`, {
-        headers: { Authorization: `Bearer ${(env as any).PROXY_SERVICE_TOKEN ?? ''}` },
-        signal: AbortSignal.timeout(5000),
-      })
-      if (mrRes.ok) {
-        marketRisk = (await mrRes.json()) as any
-        if (marketRisk.risk_level !== 'low') {
-          console.log(`[RiskGate] market risk guard: ${marketRisk.risk_level} (${marketRisk.change_rate ?? 0}%) -> ${(marketRisk.risk_reasons ?? []).join(', ')}`)
-        }
-      }
-    } catch (e) {
-      console.warn('[RiskGate] market-risk fetch failed (fail-closed):', e)
-    }
+  const marketRisk: { risk_level: string; change_rate?: number | null; risk_reasons?: string[]; [key: string]: unknown } = {
+    risk_level: cb.marketRiskLevel ?? 'unknown',
+    risk_score: cb.marketRiskScore ?? null,
+    change_rate: cb.marketRiskDailyChangePct ?? null,
+    risk_reasons: cb.marketRiskReasons ?? [],
+    regime_family: cb.marketRiskRegimeFamily ?? null,
+    source: 'canonical_market_risk_runtime_v1',
+    source_date: cb.marketRiskDate ?? null,
+    target_exposure_cap: cb.targetExposurePct ?? null,
   }
   const allocatorMarketContext = {
     marketRiskLevel: marketRisk.risk_level,
@@ -735,6 +784,7 @@ async function runIntradayCheckUnlocked(env: Bindings, leaseRunId: string): Prom
         marketRisk.marketOutlookUpsidePct,
     ),
     regimeFamily: String(marketRisk.regime_family ?? (marketRisk.regimeState as any)?.family ?? '').trim() || null,
+    targetExposureCap: cb.targetExposurePct ?? null,
   }
 
   if (currentPositionCount >= maxPos && pendingBuys.length > 0) {
@@ -781,7 +831,7 @@ async function runIntradayCheckUnlocked(env: Bindings, leaseRunId: string): Prom
       marketContext: allocatorMarketContext,
       config: {
         maxPositions: maxPos,
-        maxPctOfPortfolio: maxSingleNamePct,
+        maxPctOfPortfolio: effectiveMaxPositionPct,
         maxPctOfCash: cfg.position.maxPctOfCash,
         dailyBuyLimit: cfg.position.dailyBuyLimit,
         minPositionValue: cfg.position.minPositionValue ?? 30_000,
@@ -1133,7 +1183,7 @@ async function runIntradayCheckUnlocked(env: Bindings, leaseRunId: string): Prom
     }
     const config = {
       maxPositions: maxPos,
-      maxPctOfPortfolio: maxSingleNamePct,
+      maxPctOfPortfolio: effectiveMaxPositionPct,
       maxPctOfCash: cfg.position.maxPctOfCash,
       dailyBuyLimit: DAILY_BUY_LIMIT,
       minPositionValue: cfg.position.minPositionValue ?? 30_000,
@@ -1207,7 +1257,7 @@ async function runIntradayCheckUnlocked(env: Bindings, leaseRunId: string): Prom
     marketContext: allocatorMarketContext,
     config: {
       maxPositions: maxPos,
-      maxPctOfPortfolio: maxSingleNamePct,
+      maxPctOfPortfolio: effectiveMaxPositionPct,
       maxPctOfCash: cfg.position.maxPctOfCash,
       dailyBuyLimit: DAILY_BUY_LIMIT,
       minPositionValue: cfg.position.minPositionValue ?? 30_000,
@@ -2103,7 +2153,7 @@ async function runIntradayCheckUnlocked(env: Bindings, leaseRunId: string): Prom
         ? allocatorDecision.slotFloorBudget
         : null
       const baseBudget = Math.min(requestedBaseBudget, kellyBudget)
-      budget = Math.min(baseBudget, allocatorDecision.budgetCap, totalPortfolio * maxSingleNamePct, acc.cash, dailyRemaining)
+      budget = Math.min(baseBudget, allocatorDecision.budgetCap, totalPortfolio * effectiveMaxPositionPct, acc.cash, dailyRemaining)
       sizingMode = requestedBaseBudget > kellyBudget
         ? 'kelly_cap'
         : navSlotFloorBudget != null ? 'nav_slot_floor' : sparseFloor.sizingMode
@@ -2121,7 +2171,7 @@ async function runIntradayCheckUnlocked(env: Bindings, leaseRunId: string): Prom
         ? allocatorDecision.slotFloorBudget
         : null
       const baseBudget = Math.max(sparseFloor.budget, allocatorDecision.slotFloorBudget)
-      budget = Math.min(baseBudget, allocatorDecision.budgetCap, totalPortfolio * maxSingleNamePct, acc.cash, dailyRemaining)
+      budget = Math.min(baseBudget, allocatorDecision.budgetCap, totalPortfolio * effectiveMaxPositionPct, acc.cash, dailyRemaining)
       sizingMode = navSlotFloorBudget != null ? 'nav_slot_floor' : sparseFloor.sizingMode
     }
 

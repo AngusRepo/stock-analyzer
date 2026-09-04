@@ -14,8 +14,10 @@ const postExit = source('postExit.ts')
 for (const required of [
   'checkP1Mdd(databases.paper',
   'checkP2Accuracy(databases.learning',
-  'checkP3MarketRisk(databases.core',
-  'checkP4Breadth(databases.market',
+  'core: databases.core',
+  'market: databases.market',
+  'checkP3MarketRisk(marketRisk',
+  'checkP4Breadth(marketRisk',
   'checkP5Losses(databases.paper',
   'checkP6Momentum(databases.market',
   'checkP7Streak(databases.learning',
@@ -23,9 +25,11 @@ for (const required of [
 ]) assert(riskChain.includes(required), `missing domain-aware risk mapping: ${required}`)
 
 assert(
-  pending.includes('checkP6Momentum(databases.market'),
-  'Pending-buy sequential fallback must read P6 momentum from Market D1',
+  pending.includes("const { runPortfolioChecks } = await import('./riskChain')"),
+  'Pending buys must use the strict aggregated risk chain',
 )
+assert(!pending.includes("risk:use_chain"), 'The retired risk-chain bypass must not be restored')
+assert(!pending.includes('checkP6Momentum('), 'Pending buys must not retain a second sequential risk path')
 
 for (const domain of ['paper', 'core', 'market', 'learning']) {
   assert(

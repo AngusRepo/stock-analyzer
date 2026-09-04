@@ -3,6 +3,7 @@ import type { ExpectedReturnOwner } from './expectedReturnServingState'
 import { databaseForDataDomain } from './dataDomainRegistry'
 
 type JsonRecord = Record<string, any>
+export const EXPECTED_RETURN_PROSPECTIVE_MIN_DATES = 10
 
 export type ExpectedReturnOwnerState = 'learned_champion' | 'safe_abstention' | 'no_champion'
 
@@ -360,7 +361,7 @@ export async function commitExpectedReturnChampion(
   const evaluableDates = Number(forwardEvidence?.evaluable_date_count ?? 0)
   const minimumDates = Number(prospective.minimum_evaluable_dates ?? 0)
   if (
-    minimumDates < 5
+    minimumDates !== EXPECTED_RETURN_PROSPECTIVE_MIN_DATES
     || evaluableDates !== Number(prospective.evaluable_date_count ?? -1)
     || evaluableDates < minimumDates
     || Number(forwardEvidence?.invalid_pre_freeze_rows ?? 0) !== 0

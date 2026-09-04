@@ -15,6 +15,7 @@ from typing import Any, Callable
 from scipy.stats import t as student_t
 
 from services.allocator_ev_fusion_artifact_builder import (
+    PRIMARY_MIN_OOS_DATES,
     _predict as _predict_fusion,
     _samples as _fusion_samples,
 )
@@ -24,7 +25,16 @@ from services.l4_alpha_ev_artifact_builder import _samples as _l4_samples
 
 SCHEMA_VERSION = "expected-return-candidate-forward-evaluation-v1"
 GATE_SCHEMA_VERSION = "expected-return-candidate-forward-gate-v1"
-MIN_EVALUABLE_DATES = 5
+MIN_EVALUABLE_DATES = PRIMARY_MIN_OOS_DATES
+ACTIVE_CANDIDATE_STATES = {"shadowing", "live_gate_passed", "production"}
+OBSERVABLE_REJECTED_CANDIDATE_STATES = {"offline_failed", "rejected"}
+ELIGIBLE_CANDIDATE_STATES = {
+    "offline_passed",
+    "offline_strong_pass",
+    "candidate_selected",
+    "shadowing",
+    "live_gate_passed",
+}
 
 
 def _mean(values: list[float]) -> float:
@@ -66,7 +76,7 @@ def _lcb90(values: list[float]) -> float | None:
 def _candidate_rows(
     query_fn: Callable[[str, list[Any]], list[dict[str, Any]]],
     cohort_id: str,
-) -> dict[str, dict[str, Any]]:
+) -> tuple[dict[str, dict[str, Any]], bool]:
     rows = query_fn(
         """
         SELECT artifact_id, model_name, version, state, artifact_path, checksum,
@@ -75,23 +85,98 @@ def _candidate_rows(
           FROM model_artifact_registry
          WHERE model_name IN ('l4_alpha_ev', 'allocator_ev_fusion')
            AND candidate_type IN ('l4_alpha_ev_refresh', 'allocator_ev_fusion_refresh')
-           AND training_run_id = ?
          ORDER BY source_run_date DESC, updated_at DESC, artifact_id DESC
-         LIMIT 40
+         LIMIT 80
         """,
-        [f"active8_oof:{cohort_id}"],
+        [],
     )
-    by_date: dict[str, dict[str, dict[str, Any]]] = defaultdict(dict)
+    current_training_run_id = f"active8_oof:{cohort_id}"
+    by_lane: dict[tuple[str, str], dict[str, dict[str, Any]]] = defaultdict(dict)
     for row in rows:
         owner = str(row.get("model_name") or "")
         source_date = str(row.get("source_run_date") or "")[:10]
-        if owner in {"l4_alpha_ev", "allocator_ev_fusion"} and source_date:
-            by_date[source_date].setdefault(owner, row)
-    for source_date in sorted(by_date, reverse=True):
-        pair = by_date[source_date]
-        if set(pair) == {"l4_alpha_ev", "allocator_ev_fusion"}:
-            return pair
-    return {}
+        training_run_id = str(row.get("training_run_id") or "")
+        if owner in {"l4_alpha_ev", "allocator_ev_fusion"} and source_date and training_run_id:
+            by_lane[(training_run_id, source_date)].setdefault(owner, row)
+    complete_pairs = [
+        pair
+        for lane in sorted(by_lane, key=lambda item: (item[1], item[0]), reverse=True)
+        if set((pair := by_lane[lane])) == {"l4_alpha_ev", "allocator_ev_fusion"}
+    ]
+    active_pairs = [
+        pair for pair in complete_pairs
+        if all(str(row.get("state") or "") in ACTIVE_CANDIDATE_STATES for row in pair.values())
+        and any(str(row.get("state") or "") != "production" for row in pair.values())
+    ]
+    if active_pairs:
+        # Preserve the oldest active lane. A newer weekly candidate must queue
+        # instead of resetting prospective evidence before T+5 labels mature.
+        return active_pairs[-1], False
+    for pair in complete_pairs:
+        if all(
+            str(row.get("training_run_id") or "") == current_training_run_id
+            and str(row.get("state") or "") in ELIGIBLE_CANDIDATE_STATES
+            and str(row.get("offline_gate_decision") or "").upper() == "PASS"
+            for row in pair.values()
+        ):
+            return pair, True
+    for pair in complete_pairs:
+        if all(
+            str(row.get("training_run_id") or "") == current_training_run_id
+            and str(row.get("state") or "") in OBSERVABLE_REJECTED_CANDIDATE_STATES
+            and str(row.get("offline_gate_decision") or "").upper() != "PASS"
+            for row in pair.values()
+        ):
+            return pair, False
+    return {}, False
+
+
+def _persist_candidate_gate_state(
+    *,
+    candidates: dict[str, dict[str, Any]],
+    gates: dict[str, dict[str, Any]],
+    activate: bool,
+    batch_fn: Callable[..., dict[str, Any]],
+) -> dict[str, Any]:
+    statements: list[tuple[str, list[Any]]] = []
+    for owner, candidate in candidates.items():
+        gate = gates[owner]
+        decision = str(gate.get("decision") or "PENDING").upper()
+        state = str(candidate["registry"].get("state") or "")
+        next_state = (
+            "rejected"
+            if decision == "FAIL"
+            else "shadowing"
+            if activate or state not in ACTIVE_CANDIDATE_STATES
+            else state
+        )
+        live_status = (
+            "passed" if decision == "PASS"
+            else "failed" if decision == "FAIL"
+            else "collecting_forward_evidence"
+        )
+        promotion_decision = (
+            "prospective_passed" if decision == "PASS"
+            else "prospective_failed" if decision == "FAIL"
+            else "prospective_collecting"
+        )
+        statements.append((
+            """
+            UPDATE model_artifact_registry
+               SET state=?, live_gate_status=?, live_evidence_json=?,
+                   promotion_decision=?, updated_at=CURRENT_TIMESTAMP
+             WHERE artifact_id=? AND checksum=?
+            """,
+            [
+                next_state,
+                live_status,
+                json.dumps(gate, ensure_ascii=False, sort_keys=True, allow_nan=False),
+                promotion_decision,
+                candidate["registry"]["artifact_id"],
+                candidate["checksum"],
+            ],
+        ))
+    return batch_fn(statements, timeout=30.0, chunk_size=2)
 
 
 def _load_candidate_packet(bucket: Any, row: dict[str, Any]) -> dict[str, Any]:
@@ -318,55 +403,67 @@ def _promotion_gate(
     candidate: dict[str, Any],
 ) -> dict[str, Any]:
     evaluable = [row for row in rows if row.get("quality_decision") in {"PASS", "DEGRADED"}]
-    failed: list[str] = []
+    maturity_blockers: list[str] = []
+    quality_blockers: list[str] = []
+    contract_blockers: list[str] = []
     if len(evaluable) < MIN_EVALUABLE_DATES:
-        failed.append("prospective_date_count_below_floor")
+        maturity_blockers.append("prospective_date_count_below_floor")
     top_lcb = _lcb90([float(row["top_return"]) for row in evaluable])
     if top_lcb is None or top_lcb <= 0.0:
-        failed.append("prospective_top_return_lcb90_not_positive")
+        quality_blockers.append("prospective_top_return_lcb90_not_positive")
     if owner == "l4_alpha_ev":
         corr_lcb = _lcb90([float(row["prediction_corr"]) for row in evaluable if row.get("prediction_corr") is not None])
         spread_lcb = _lcb90([float(row["spread"]) for row in evaluable])
         if corr_lcb is None or corr_lcb <= 0.0:
-            failed.append("prospective_corr_lcb90_not_positive")
+            quality_blockers.append("prospective_corr_lcb90_not_positive")
         if spread_lcb is None or spread_lcb <= 0.0:
-            failed.append("prospective_spread_lcb90_not_positive")
+            quality_blockers.append("prospective_spread_lcb90_not_positive")
     else:
         corr_lcb = _lcb90([float(row["corr_delta"]) for row in evaluable if row.get("corr_delta") is not None])
         spread_lcb = _lcb90([float(row["spread_delta"]) for row in evaluable if row.get("spread_delta") is not None])
         if corr_lcb is None or corr_lcb < 0.0:
-            failed.append("prospective_corr_delta_lcb90_inferior_to_l4")
+            quality_blockers.append("prospective_corr_delta_lcb90_inferior_to_l4")
         if spread_lcb is None or spread_lcb < 0.0:
-            failed.append("prospective_spread_delta_lcb90_inferior_to_l4")
+            quality_blockers.append("prospective_spread_delta_lcb90_inferior_to_l4")
         recent = evaluable[-2:]
         if len(recent) == 2 and all(
             float(row.get("corr_delta") or 0.0) < 0.0
             and float(row.get("spread_delta") or 0.0) < 0.0
             for row in recent
         ):
-            failed.append("prospective_recent_two_dates_jointly_inferior")
+            quality_blockers.append("prospective_recent_two_dates_jointly_inferior")
     registry = candidate["registry"]
     if str(registry.get("offline_gate_decision") or "").upper() != "PASS":
-        failed.append("offline_gate_not_pass")
+        contract_blockers.append("offline_gate_not_pass")
     validation = candidate["packet"].get("validation_packet") or {}
     if (
         str(validation.get("decision") or "").upper() != "PASS"
         or validation.get("failed_gates")
     ):
-        failed.append("offline_validation_packet_not_pass")
+        contract_blockers.append("offline_validation_packet_not_pass")
     parity = candidate["packet"].get("operational_parity") or {}
     owner_parity = (parity.get("owner_decisions") or {}).get(owner) or {}
     if str(owner_parity.get("decision") or "").upper() != "PASS" or owner_parity.get("failed_gates"):
-        failed.append("owner_operational_parity_not_pass")
+        contract_blockers.append("owner_operational_parity_not_pass")
     source_date = str(registry.get("source_run_date") or "")[:10]
     min_date = min((str(row["prediction_date"]) for row in evaluable), default=None)
     max_date = max((str(row["prediction_date"]) for row in evaluable), default=None)
     if min_date and min_date <= source_date:
-        failed.append("prospective_prediction_not_after_candidate_freeze")
+        contract_blockers.append("prospective_prediction_not_after_candidate_freeze")
+    decision = (
+        "FAIL" if contract_blockers
+        else "PENDING" if maturity_blockers
+        else "PASS" if not quality_blockers
+        else "FAIL"
+    )
+    failed = list(dict.fromkeys(contract_blockers + maturity_blockers + quality_blockers))
     return {
         "schema_version": GATE_SCHEMA_VERSION,
-        "decision": "PASS" if not failed else "FAIL",
-        "failed_gates": list(dict.fromkeys(failed)),
+        "decision": decision,
+        "failed_gates": failed,
+        "maturity_blockers": maturity_blockers,
+        "quality_blockers": quality_blockers,
+        "contract_blockers": contract_blockers,
         "candidate_artifact_id": registry["artifact_id"],
         "candidate_artifact_checksum": candidate["checksum"],
         "model_fingerprint": candidate["identity"]["model_fingerprint"],
@@ -396,11 +493,11 @@ def evaluate_expected_return_candidates_forward(
 ) -> dict[str, Any]:
     """Evaluate and persist exact candidate evidence on post-freeze mature rows."""
 
-    selected = _candidate_rows(query_fn, cohort_id)
+    selected, activate = _candidate_rows(query_fn, cohort_id)
     if not selected:
         return {
             "schema_version": SCHEMA_VERSION,
-            "status": "candidate_pair_missing",
+            "status": "offline_pass_candidate_pair_missing",
             "promotion_ready": False,
             "training_dispatched": False,
         }
@@ -421,14 +518,28 @@ def evaluate_expected_return_candidates_forward(
         and str(row.get("label_known_date") or "")[:10] <= business_date
     ]
     if not post_freeze_rows:
+        gates = {
+            owner: _promotion_gate([], owner=owner, candidate=candidate)
+            for owner, candidate in candidates.items()
+        }
+        terminal_contract_failure = any(gate["decision"] == "FAIL" for gate in gates.values())
+        lane_persistence = _persist_candidate_gate_state(
+            candidates=candidates,
+            gates=gates,
+            activate=activate,
+            batch_fn=batch_fn,
+        )
         return {
             "schema_version": SCHEMA_VERSION,
-            "status": "waiting_for_post_freeze_mature_dates",
+            "status": "evaluated" if terminal_contract_failure else "waiting_for_post_freeze_mature_dates",
             "candidate_source_run_date": source_date,
             "candidate_artifact_ids": {
                 owner: candidate["registry"]["artifact_id"]
                 for owner, candidate in candidates.items()
             },
+            "gates": gates,
+            "lane_persistence": lane_persistence,
+            "post_freeze_rows": 0,
             "promotion_ready": False,
             "training_dispatched": False,
         }
@@ -540,6 +651,12 @@ def evaluate_expected_return_candidates_forward(
                 "artifact_path": candidate["path"],
                 "artifact_checksum": candidate["checksum"],
             }
+    lane_persistence = _persist_candidate_gate_state(
+        candidates=candidates,
+        gates=gates,
+        activate=activate,
+        batch_fn=batch_fn,
+    )
     return {
         "schema_version": SCHEMA_VERSION,
         "status": "evaluated",
@@ -557,6 +674,7 @@ def evaluate_expected_return_candidates_forward(
         },
         "gates": gates,
         "persistence": persistence,
+        "lane_persistence": lane_persistence,
         "promotion_ready": bool(promotion_payload),
         "promotion_payload": promotion_payload,
         "training_dispatched": False,

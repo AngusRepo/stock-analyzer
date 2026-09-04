@@ -23,6 +23,12 @@ import { runLiveExecutionShadow } from './liveExecutionShadow'
 import { matchPaperOrderAgainstAuthoritativeDepth } from './paperOrderBookMatcher'
 import { resolveTwEquitySessionPhase } from './twEquityMarketContract'
 import { checkCircuitBreakersForDomains } from './pendingBuyOrchestrator'
+import type { CircuitBreakerState, LegacyLayerDeps } from './riskTypes'
+import { getRiskConfig } from './riskConfig'
+import { checkP9IntradayDrawdown, mergeIntradayPortfolioRisk } from './intradayPortfolioRisk'
+import { buildPortfolioDeRiskPlan, type PortfolioDeRiskPlan } from './portfolioDeRisk'
+import { fiveSlotHoldingWeaknessScore } from './fiveSlotCapitalAllocator'
+import { computePaperTotalValue, getUnsettledSettlementSummary } from './paperAccountValue'
 import {
   aggregateCompletedS12Bars,
   applyS12TakeoverContinuity,
@@ -1329,13 +1335,65 @@ export async function runEODExit(env: Bindings): Promise<void> {
   const exitAtrMap = await batchGetAtrByDomain(env, exitSymbols)
   const prevDay = await getPrevTradingDay(databaseForDataDomain(env, 'core'), env.KV)
   const cb = await checkCircuitBreakersForDomains(env, cfg, env.KV)
+
+  let eodDeRiskPlan: PortfolioDeRiskPlan | null = null
+  let eodDeRiskEvidenceMissing = Boolean(
+    cb.deRiskExistingPositions &&
+    !exitPositions.every((position: any) => exitQuoteMap.has(position.symbol)),
+  )
+  if (
+    cb.deRiskExistingPositions &&
+    cb.targetExposurePct != null &&
+    !eodDeRiskEvidenceMissing
+  ) {
+    const account = await paperDomainDatabase(env).prepare(
+      'SELECT cash FROM paper_accounts WHERE id=?',
+    ).bind(ACCOUNT_ID).first<{ cash: number }>()
+    if (!account) {
+      eodDeRiskEvidenceMissing = true
+    } else {
+      const positionsValue = exitPositions.reduce((sum: number, position: any) => (
+        sum + Number(position.shares ?? 0) * Number(exitQuoteMap.get(position.symbol)?.last ?? 0)
+      ), 0)
+      const settlement = await getUnsettledSettlementSummary(paperDomainDatabase(env), ACCOUNT_ID)
+      const totalPortfolio = computePaperTotalValue({
+        settledCash: Number(account.cash ?? 0),
+        positionsValue,
+        netUnsettledSettlement: settlement.netUnsettledSettlement,
+      })
+      eodDeRiskPlan = buildPortfolioDeRiskPlan({
+        totalPortfolio,
+        targetExposure: cb.targetExposurePct,
+        holdings: exitPositions.map((position: any) => ({
+          symbol: String(position.symbol),
+          shares: Number(position.shares ?? 0),
+          price: Number(exitQuoteMap.get(position.symbol)?.last ?? 0),
+          weakness: fiveSlotHoldingWeaknessScore({
+            symbol: String(position.symbol),
+            shares: Number(position.shares ?? 0),
+            avgCost: Number(position.avg_cost ?? position.entry_price ?? 0),
+            lastPrice: Number(exitQuoteMap.get(position.symbol)?.last ?? 0),
+            initialStop: finiteNumber(position.initial_stop),
+            trailingStop: finiteNumber(position.trailing_stop),
+            highestSinceEntry: finiteNumber(position.highest_since_entry),
+            tp1Hit: Boolean(position.tp1_hit),
+          }),
+        })),
+      })
+    }
+  }
+  const eodDeRiskSymbols = new Set(eodDeRiskPlan?.fullExitSymbols ?? [])
   {
     const { writeAuditEntry } = await import('./riskAudit')
-    writeAuditEntry(databaseForDataDomain(env, 'execution'), {
+    await writeAuditEntry(databaseForDataDomain(env, 'execution'), {
       triggerEvent: 'eod_exit',
-      decision: cb.halt ? 'halt' : 'executed',
+      decision: eodDeRiskEvidenceMissing
+        ? 'deferred'
+        : eodDeRiskPlan?.required
+          ? 'adjusted'
+          : cb.halt ? 'halt' : 'executed',
       riskState: cb,
-    }).catch(() => {})
+    })
   }
 
   const sellRecMap = new Map<string, any>()
@@ -1390,6 +1448,13 @@ export async function runEODExit(env: Bindings): Promise<void> {
     decision = continuation.lifecycleJson == null
       ? continuation.decision
       : { ...continuation.decision, tradeLifecycleJson: continuation.lifecycleJson }
+    if (eodDeRiskSymbols.has(String(pos.symbol))) {
+      decision = {
+        action: 'full_sell',
+        exitIntentKind: 'risk_stop',
+        reason: `[PortfolioRisk] ${cb.marketRiskLevel ?? 'unknown'} current=${((eodDeRiskPlan?.currentExposure ?? 0) * 100).toFixed(1)}% target=${((eodDeRiskPlan?.targetExposure ?? 0) * 100).toFixed(1)}% owner=canonical_market_risk_runtime_v1`,
+      }
+    }
 
     let dayTradeSell = false
     if (pos.entry_date === eodToday && decision.action !== 'hold') {
@@ -1594,8 +1659,12 @@ export type IntradayStopLossPollResult = {
   missing_symbols: string[]
 }
 
-export async function pollIntradayStopLoss(env: Bindings): Promise<IntradayStopLossPollResult> {
+export async function pollIntradayStopLoss(
+  env: Bindings,
+  portfolioRisk?: CircuitBreakerState,
+): Promise<IntradayStopLossPollResult> {
   const cfg = await getTradingConfig(env.KV)
+  let effectivePortfolioRisk = portfolioRisk ?? await checkCircuitBreakersForDomains(env, cfg, env.KV)
   const { results: positions } = await paperDomainDatabase(env).prepare(
     `SELECT symbol, shares, avg_cost, name, entry_price, entry_date,
             initial_stop, trailing_stop, highest_since_entry, stop_multiplier,
@@ -1674,6 +1743,64 @@ export async function pollIntradayStopLoss(env: Bindings): Promise<IntradayStopL
     throw new Error('holding_authoritative_market_data_unavailable_all_positions')
   }
 
+  let intradayDeRiskPlan: PortfolioDeRiskPlan | null = null
+  let p9Triggered = false
+  if (quoteMap.size === positions.length) {
+    const account = await paperDomainDatabase(env).prepare(
+      'SELECT cash FROM paper_accounts WHERE id=?',
+    ).bind(ACCOUNT_ID).first<{ cash: number }>()
+    if (!account) throw new Error('paper_account_missing_for_intraday_risk')
+    const positionsValue = positions.reduce((sum: number, position: any) => (
+      sum + Number(position.shares ?? 0) * Number(quoteMap.get(position.symbol)?.last ?? 0)
+    ), 0)
+    const settlement = await getUnsettledSettlementSummary(paperDomainDatabase(env), ACCOUNT_ID)
+    const totalPortfolio = computePaperTotalValue({
+      settledCash: Number(account.cash ?? 0),
+      positionsValue,
+      netUnsettledSettlement: settlement.netUnsettledSettlement,
+    })
+    const riskConfig = await getRiskConfig(env.KV)
+    const p9Deps: LegacyLayerDeps = {
+      defaults: effectivePortfolioRisk,
+      effectiveBuy: effectivePortfolioRisk.buyConfThreshold,
+      effectiveSell: effectivePortfolioRisk.sellConfThreshold,
+    }
+    const p9 = await checkP9IntradayDrawdown(env.KV, intradayToday, totalPortfolio, riskConfig, p9Deps)
+    p9Triggered = p9.state != null
+    effectivePortfolioRisk = mergeIntradayPortfolioRisk(effectivePortfolioRisk, p9.state)
+    if (effectivePortfolioRisk.deRiskExistingPositions && effectivePortfolioRisk.targetExposurePct != null) {
+      intradayDeRiskPlan = buildPortfolioDeRiskPlan({
+        totalPortfolio,
+        targetExposure: effectivePortfolioRisk.targetExposurePct,
+        holdings: positions.map((position: any) => ({
+          symbol: String(position.symbol),
+          shares: Number(position.shares ?? 0),
+          price: Number(quoteMap.get(position.symbol)?.last ?? 0),
+          weakness: fiveSlotHoldingWeaknessScore({
+            symbol: String(position.symbol),
+            shares: Number(position.shares ?? 0),
+            avgCost: Number(position.avg_cost ?? position.entry_price ?? 0),
+            lastPrice: Number(quoteMap.get(position.symbol)?.last ?? 0),
+            initialStop: finiteNumber(position.initial_stop),
+            trailingStop: finiteNumber(position.trailing_stop),
+            highestSinceEntry: finiteNumber(position.highest_since_entry),
+            tp1Hit: Boolean(position.tp1_hit),
+          }),
+        })),
+      })
+    }
+    if (p9Triggered || intradayDeRiskPlan?.required) {
+      const { writeAuditEntry } = await import('./riskAudit')
+      await writeAuditEntry(databaseForDataDomain(env, 'execution'), {
+        triggerEvent: 'intraday_exit',
+        decision: intradayDeRiskPlan?.required ? 'adjusted' : effectivePortfolioRisk.halt ? 'halt' : 'executed',
+        side: 'sell',
+        riskState: effectivePortfolioRisk,
+      })
+    }
+  }
+  const intradayDeRiskSymbols = new Set(intradayDeRiskPlan?.fullExitSymbols ?? [])
+
   await Promise.allSettled(
     [...quoteMap].map(([symbol, quote]) => putIntradayPrice(env.KV, symbol, quote.last, undefined, {
       source: quote.source ?? 'shioaji',
@@ -1723,6 +1850,13 @@ export async function pollIntradayStopLoss(env: Bindings): Promise<IntradayStopL
     decision = continuation.lifecycleJson == null
       ? continuation.decision
       : { ...continuation.decision, tradeLifecycleJson: continuation.lifecycleJson }
+    if (intradayDeRiskSymbols.has(String(pos.symbol))) {
+      decision = {
+        action: 'full_sell',
+        exitIntentKind: 'risk_stop',
+        reason: `[PortfolioRisk] ${effectivePortfolioRisk.marketRiskLevel ?? (p9Triggered ? 'p9' : 'unknown')} current=${((intradayDeRiskPlan?.currentExposure ?? 0) * 100).toFixed(1)}% target=${((intradayDeRiskPlan?.targetExposure ?? 0) * 100).toFixed(1)}% owner=${p9Triggered ? 'p9_intraday_drawdown' : 'canonical_market_risk_runtime_v1'}`,
+      }
+    }
 
     if (decision.action !== 'hold') {
       const prevC = prevCloseMapSell.get(pos.symbol)

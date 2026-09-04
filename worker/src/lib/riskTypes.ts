@@ -35,6 +35,19 @@ export interface CircuitBreakerState {
   buyConfThreshold: number
   sellConfThreshold: number
   momentumZone?: MomentumZone
+  targetExposurePct?: number | null
+  deRiskExistingPositions?: boolean
+  marketRiskLevel?: string | null
+  marketRiskScore?: number | null
+  marketRiskDate?: string | null
+  marketRiskStatus?: 'ready' | 'blocked'
+  marketRiskDailyChangePct?: number | null
+  marketRiskAdvanceRatio?: number | null
+  marketRiskRegimeFamily?: string | null
+  marketRiskReasons?: string[]
+  marketRiskBlockers?: string[]
+  triggeredLayers?: string[]
+  haltReasons?: string[]
 }
 
 /** R1 layer-check result: null = no trigger (continue), state = early-return. */

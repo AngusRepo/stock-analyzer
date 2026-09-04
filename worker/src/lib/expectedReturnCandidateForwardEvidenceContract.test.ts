@@ -21,12 +21,16 @@ assert(evaluator.includes("str(row.get(\"snapshot_date\") or \"\")[:10] > source
 assert(evaluator.includes("str(row.get(\"label_known_date\") or \"\")[:10] <= business_date"), 'evaluator must use only labels known by the lifecycle cutoff')
 assert(evaluator.includes('candidate_artifact_id=? AND model_fingerprint=?'), 'gate aggregation must stay bound to the exact candidate fingerprint')
 assert(evaluator.includes('"training_dispatched": False'), 'candidate forward evaluation must never train')
+assert(evaluator.includes('MIN_EVALUABLE_DATES = PRIMARY_MIN_OOS_DATES'), 'prospective maturity must reuse the formal 10 OOS-date floor')
+assert(evaluator.includes('return active_pairs[-1], False'), 'a newer weekly candidate must not reset an active prospective lane')
+assert(evaluator.includes('else "PENDING" if maturity_blockers'), 'sub-maturity evidence must remain pending rather than fail quality')
 
 assert(promotion.includes("prospective.schema_version !== 'expected-return-candidate-forward-gate-v1'"), 'promotion must require the prospective gate contract')
 assert(promotion.includes('prospective_prediction_not_after_candidate_freeze'), 'promotion must reject pre-freeze prospective ranges')
 assert(servingRegistry.includes('FROM expected_return_candidate_forward_evaluations'), 'pointer commit must re-read durable forward evidence')
 assert(servingRegistry.includes('invalid_pre_freeze_rows'), 'pointer commit must independently reject pre-freeze rows')
 assert(servingRegistry.includes('expected_return_registry_prospective_evidence_mismatch'), 'pointer commit must fail closed on payload/D1 mismatch')
+assert(servingRegistry.includes('EXPECTED_RETURN_PROSPECTIVE_MIN_DATES = 10'), 'pointer commit must enforce the exact 10-date prospective contract')
 assert(lifecycle.includes('if not req.dry_run and not dependency_retry_required'), 'terminal receipt must be withheld while promotion or OPB closure needs retry')
 
 console.log('expected return candidate forward evidence contract passed')

@@ -23,6 +23,7 @@ export interface FiveSlotMarketContext {
   riskScore?: number | null
   marketOutlookUpsidePct?: number | null
   regimeFamily?: string | null
+  targetExposureCap?: number | null
 }
 
 export interface FiveSlotHolding {
@@ -132,13 +133,17 @@ export function inferFiveSlotTargetExposureFromContext(context: FiveSlotMarketCo
   const rawRiskScore = finiteNumber(context.riskScore, impliedRiskScore(level))
   const riskScore = clamp(rawRiskScore, 0, 100)
   const continuousBase = 0.92 - riskScore * 0.008
-  return round4(clamp(
+  const contextualTarget = round4(clamp(
     continuousBase +
       regimeExposureAdjustment(context.regimeFamily) +
       outlookExposureAdjustment(context.marketOutlookUpsidePct),
     0,
     0.95,
   ))
+  const explicitCap = context.targetExposureCap
+  return explicitCap != null && Number.isFinite(explicitCap)
+    ? round4(Math.min(contextualTarget, clamp(explicitCap, 0, 1)))
+    : contextualTarget
 }
 
 export function inferFiveSlotTargetExposure(marketRiskLevel: string | null | undefined): number {

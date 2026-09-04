@@ -54,8 +54,8 @@ test('maturity lineage labels cadence, role, availability, and comparable contra
     'OOF 訊號截止日',
     '監控封包業務日（非成熟進度）',
     '目前正式服務中的產物（Production pointer）',
-    '${evidenceScopes.offline_candidate.cadence} 離線正式升級候選（只在新候選產生時更新）',
-    '日更監控（和 L1.5 對照；不影響正式結果）',
+    '${evidenceScopes.offline_candidate.cadence} 離線候選來源（只建立／排隊 candidate）',
+    'Rolling cohort 日更診斷（非升級門檻）',
     'First comparable',
   ]) {
     assert(panel.includes(label), `missing explicit maturity label: ${label}`)
@@ -64,11 +64,16 @@ test('maturity lineage labels cadence, role, availability, and comparable contra
   assert(panel.includes("metric.availability === 'pending'"))
   assert(panel.includes('point.artifact_contract_version === latestHistory?.artifact_contract_version'))
   assert(panel.includes('Current evidence unavailable or identity-blocked'))
-  assert(panel.includes('離線候選正式升級門檻（決定能否正式參與）'))
+  assert(panel.includes('每日鎖定候選正式升級門檻'))
+  assert(panel.includes('離線候選生成與入場門檻'))
   assert(panel.includes('Production 物化覆蓋與下一批候選 readiness'))
-  assert(panel.includes('日更 Frozen-forward 固定候選外推監控（非升級成熟度）'))
-  assert(panel.includes('sector-alpha dates 是此監控 usable dates 的可用子集合'))
-  assert(panel.indexOf('日更 Frozen-forward 固定候選外推監控（非升級成熟度）') < panel.indexOf('離線候選正式升級門檻（決定能否正式參與）'))
+  assert(panel.includes('Rolling cohort 日更診斷（非升級成熟度）'))
+  assert(panel.includes('0–9 日維持 PENDING，不判失敗'))
+  assert(panel.indexOf('每日鎖定候選正式升級門檻') < panel.indexOf('離線候選生成與入場門檻'))
+  assert(panel.indexOf('離線候選生成與入場門檻') < panel.indexOf('Rolling cohort 日更診斷（非升級成熟度）'))
+  for (const key of ['prospective_gate_decision', 'prospective_evaluable_dates', 'prospective_top_return_lcb90']) {
+    assert(panel.includes(key), `missing prospective gate label: ${key}`)
+  }
   assert(panel.indexOf("scope: 'frozen_forward'") < panel.indexOf("scope: 'offline_candidate'"))
   assert(panel.includes('診斷與不適用欄位（非必要門檻）'))
   assert(panel.includes('此範圍證據被 lineage 擋住'))

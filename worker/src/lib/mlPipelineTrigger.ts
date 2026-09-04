@@ -27,6 +27,7 @@ const MARKET_RISK_LATEST_CACHE_KEYS = [
   'market:risk:latest',
   'market:risk:latest:v4-context',
   'market:risk:latest:v19-finlab-risk-detail',
+  'market:risk:latest:v20-finlab-risk-detail-oi-delta',
 ]
 
 async function clearMarketRiskLatestCaches(env: Bindings): Promise<void> {

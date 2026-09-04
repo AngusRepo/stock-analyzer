@@ -10,6 +10,7 @@ import {
   type ExpectedReturnShadowEvidence,
 } from './expectedReturnMaturityEvidence'
 import { readCurrentExpectedReturnServingState } from './expectedReturnServingState'
+import { EXPECTED_RETURN_PROSPECTIVE_MIN_DATES } from './expectedReturnServingRegistry'
 import { SELECTION_REFERENCE_CONTRACT_VERSION } from './selectionReferenceEvidence'
 import {
   STRATEGY_ROUTE_AFFINITY_VERSION,
@@ -63,7 +64,7 @@ export interface PipelineMaturityMetric {
 }
 
 export interface PipelineMaturityBlockerGroup {
-  scope: 'offline_candidate' | 'serving_pointer' | 'frozen_forward' | 'runtime_guard'
+  scope: 'offline_candidate' | 'prospective_forward' | 'serving_pointer' | 'frozen_forward' | 'runtime_guard'
   title: string
   blockers: string[]
 }
@@ -239,6 +240,17 @@ type SectorPitReadiness = {
   signal_dates: number | null
 }
 
+type ExpectedReturnProspectiveEvidence = {
+  model_name: string
+  artifact_id: string
+  version: string
+  state: string
+  source_run_date: string
+  live_gate_status: string | null
+  updated_at: string | null
+  gate: Record<string, any>
+}
+
 type RouteEligibilityDbRow = {
   signal_date: string
   producer_run_id: string
@@ -399,16 +411,18 @@ function unavailableStage(
   }
 }
 
-function candidateStatus(
+function prospectiveCandidateStatus(
   servingState: string | undefined,
-  decision: string | null | undefined,
-  dateCount: number | null,
-  minDates: number,
+  gate: Record<string, any> | null | undefined,
 ): PipelineMaturityStatus {
   if (servingState === 'serving') return 'serving'
-  if (dateCount == null) return 'blocked'
-  if (String(decision ?? '').toUpperCase() === 'FAIL' && dateCount >= minDates) return 'failed_quality'
-  if (dateCount < minDates) return 'collecting'
+  if (!gate) return 'blocked'
+  const decision = String(gate.decision ?? '').toUpperCase()
+  if (decision === 'PENDING') return 'collecting'
+  if (decision === 'PASS') return 'ready'
+  if (decision === 'FAIL') {
+    return stringArray(gate.contract_blockers).length ? 'blocked' : 'failed_quality'
+  }
   return 'blocked'
 }
 
@@ -469,7 +483,7 @@ export async function buildPipelineDecisionMaturityPacket(
   `).bind(requestedDate).first<CanonicalHead>())
   const head = canonicalHead.value
 
-  const [reference, matrix, redundancy, routeRun, routeHead, evRows, evShadowRows, serving, l4Maturity, sectorPit, routeEligibility] = await Promise.all([
+  const [reference, matrix, redundancy, routeRun, routeHead, evRows, evProspectiveRows, evShadowRows, serving, l4Maturity, sectorPit, routeEligibility] = await Promise.all([
     safeQuery(() => head ? learningDb.prepare(`
       SELECT COUNT(*) reference_rows,
              SUM(CASE WHEN r.strategy_challenger_affinity_version=? THEN 1 ELSE 0 END) affinity_v2_rows,
@@ -621,6 +635,33 @@ export async function buildPipelineDecisionMaturityPacket(
              live_gate_status, updated_at, offline_evidence_json
         FROM ranked WHERE ordinal=1
     `).bind(requestedDate).all<ExpectedReturnCandidateDbRow>().then((result) => result.results ?? [])),
+    safeQuery(() => learningDb.prepare(`
+      WITH ranked AS (
+        SELECT model_name, artifact_id, version, state, source_run_date,
+               live_gate_status, live_evidence_json, updated_at,
+               ROW_NUMBER() OVER (
+                 PARTITION BY model_name
+                 ORDER BY
+                   CASE state
+                     WHEN 'shadowing' THEN 0
+                     WHEN 'live_gate_passed' THEN 1
+                     WHEN 'rejected' THEN 2
+                     WHEN 'production' THEN 3
+                     ELSE 4
+                   END,
+                   source_run_date DESC, updated_at DESC, artifact_id DESC
+               ) ordinal
+          FROM model_artifact_registry
+         WHERE model_name IN ('l4_alpha_ev', 'allocator_ev_fusion')
+           AND source_run_date<=?
+           AND json_extract(live_evidence_json, '$.schema_version')
+               ='expected-return-candidate-forward-gate-v1'
+      )
+      SELECT model_name, artifact_id, version, state, source_run_date,
+             live_gate_status, live_evidence_json, updated_at
+        FROM ranked
+       WHERE ordinal=1
+    `).bind(requestedDate).all<Record<string, any>>().then((result) => result.results ?? [])),
     safeQuery(() => learningDb.prepare(`
       WITH latest_batch AS (
         SELECT business_date, cohort_id, base_manifest_checksum, extension_manifest_checksum
@@ -968,6 +1009,10 @@ export async function buildPipelineDecisionMaturityPacket(
     const gates = jsonRecord(route.gate_json)
     const promoted = Boolean(promotedRoute?.run_id && promotedRoute.candidate_route_version === STRATEGY_ROUTE_CHALLENGER_VERSION)
     const dateCount = finite(route.date_count)
+    const dailyEligibleDateCount = routeMaturityProjection.eligibleDates
+    const latestDailyEligibleDate = eligibilityRows
+      .filter((row) => row.status === 'eligible')
+      .at(-1)?.signalDate ?? null
     const status: PipelineMaturityStatus = promoted
       ? 'serving'
       : route.status === 'pending_maturity'
@@ -983,17 +1028,19 @@ export async function buildPipelineDecisionMaturityPacket(
       status,
       contribution_mode: promoted ? 'production' : 'shadow',
       maturity_kind: 'calibration',
-      progress: maturityProgress(dateCount, STRATEGY_ROUTE_MIN_TOTAL_DATES, 'dates'),
+      progress: maturityProgress(dailyEligibleDateCount, STRATEGY_ROUTE_MIN_TOTAL_DATES, 'dates'),
       decision: promoted
         ? `使用 train-only 選出的 route floor ${finite(promotedRoute.route_floor).toFixed(2)} 路由正式候選。`
-        : `Challenger 已計算，但只有 ${dateCount}/${STRATEGY_ROUTE_MIN_TOTAL_DATES} 個成熟日期，未取代 incumbent route。`,
+        : `Daily eligibility 已累積 ${dailyEligibleDateCount}/${STRATEGY_ROUTE_MIN_TOTAL_DATES} 個成熟日期；最新 weekly calibration 使用 ${dateCount} dates，未通過前不取代 incumbent route。`,
       contribution: '融合 threshold-margin affinity、策略邊際支持、可靠度與市場情境，決定候選進入 L2/L3 的優先程度。',
       production_effect: promoted
         ? '通過 train/purge/OOS、成本後 top bucket、residual spread 與 calibration gate 後才作用於 production。'
         : 'shadow learning only；不因候選分數較高而改寫今日 production route。',
       blockers: promoted ? [] : Object.entries(gates).filter(([, passed]) => passed === false).map(([gate]) => gate),
       metrics: [
-        gateMetric('mature_dates', 'Mature labeled dates', dateCount, STRATEGY_ROUTE_MIN_TOTAL_DATES, 'dates'),
+        gateMetric('mature_dates', 'Daily mature eligible dates', dailyEligibleDateCount, STRATEGY_ROUTE_MIN_TOTAL_DATES, 'dates'),
+        metric('latest_daily_mature_date', 'Latest daily mature eligible date', latestDailyEligibleDate, { unit: 'status', scope: 'lifecycle' }),
+        metric('weekly_candidate_mature_dates', 'Latest weekly calibration mature dates', dateCount, { unit: 'dates', scope: 'promotion_gate', note: 'Weekly frozen calibration snapshot; daily eligibility continues accumulating between weekly runs.' }),
         gateMetric('train_dates', 'Train dates', STRATEGY_ROUTE_MIN_TRAIN_DATES, STRATEGY_ROUTE_MIN_TRAIN_DATES, 'dates'),
         gateMetric('purge_dates', 'Purged date groups', STRATEGY_ROUTE_PURGE_DATES, STRATEGY_ROUTE_PURGE_DATES, 'dates'),
         gateMetric('oos_dates', 'Required OOS dates', STRATEGY_ROUTE_MIN_OOS_DATES, STRATEGY_ROUTE_MIN_OOS_DATES, 'dates'),
@@ -1031,6 +1078,23 @@ export async function buildPipelineDecisionMaturityPacket(
       return [evidence.model_name, evidence]
     }),
   )
+  const evProspective = new Map<string, ExpectedReturnProspectiveEvidence>(
+    (evProspectiveRows.value ?? []).flatMap((row): Array<[string, ExpectedReturnProspectiveEvidence]> => {
+      const gate = jsonRecord(row.live_evidence_json)
+      if (gate.schema_version !== 'expected-return-candidate-forward-gate-v1') return []
+      const evidence: ExpectedReturnProspectiveEvidence = {
+        model_name: String(row.model_name ?? ''),
+        artifact_id: String(row.artifact_id ?? ''),
+        version: String(row.version ?? ''),
+        state: String(row.state ?? ''),
+        source_run_date: String(row.source_run_date ?? '').slice(0, 10),
+        live_gate_status: row.live_gate_status == null ? null : String(row.live_gate_status),
+        updated_at: row.updated_at == null ? null : String(row.updated_at),
+        gate,
+      }
+      return [[evidence.model_name, evidence]]
+    }),
+  )
   const servingState = serving.value
   const runtimeGuard = servingState?.runtime_forward_guard
   const maturity = l4Maturity.value
@@ -1049,10 +1113,11 @@ export async function buildPipelineDecisionMaturityPacket(
   )
 
   const l4 = evCandidates.get('l4_alpha_ev')
+  const l4Prospective = evProspective.get('l4_alpha_ev')
   const l4ShadowPacket = evShadow.get('l4_alpha_ev')
   const l4Shadow = shadowPairComplete && l4ShadowPacket?.identity_valid ? l4ShadowPacket : undefined
   const l4Serving = servingState?.artifacts.l4_alpha_ev
-  if (!l4 && !l4Serving) {
+  if (!l4 && !l4Serving && !l4Prospective) {
     stages.push(unavailableStage('l4', 'L4', 'Canonical L4 alpha EV', requestedDate, 'model_artifact_registry + allocator_ev_feature_snapshots', [evRows.error, serving.error, l4Maturity.error]))
   } else {
     const minSamples = Math.max(1, finite(l4?.fit_min_samples, 500))
@@ -1062,18 +1127,38 @@ export async function buildPipelineDecisionMaturityPacket(
     const offlineBlockers = l4?.offline_gate_failed_gates ?? ['offline_candidate_missing']
     const servingBlockers = l4Serving?.blockers ?? ['serving_pointer_missing']
     const shadowBlockers = shadowBatchReason ? [shadowBatchReason] : l4ShadowPacket?.failed_gates ?? ['frozen_forward_packet_missing']
+    const prospectiveGate = l4Prospective?.gate
+    const prospectiveDecision = String(prospectiveGate?.decision ?? 'MISSING').toUpperCase()
+    const prospectiveDateCount = optionalFinite(prospectiveGate?.evaluable_date_count)
+    const prospectiveQualityReady = prospectiveDecision === 'PASS' || prospectiveDecision === 'FAIL'
+    const prospectiveBlockers = prospectiveGate
+      ? stringArray(prospectiveDecision === 'PENDING'
+        ? prospectiveGate.maturity_blockers
+        : prospectiveGate.failed_gates)
+      : [evProspectiveRows.error ? 'prospective_forward_query_failed' : 'prospective_forward_evidence_missing']
+    const prospectiveMetricScope = prospectiveGate
+      ? { availability: 'available' as const, reason_code: null }
+      : {
+          availability: evProspectiveRows.error ? 'blocked' as const : 'missing' as const,
+          reason_code: evProspectiveRows.error ? 'prospective_forward_query_failed' : 'prospective_forward_evidence_missing',
+        }
     const candidateMetricScope = evidenceAvailability(l4, 'offline_candidate_missing')
     const shadowMetricScope = shadowBatchReason
       ? { availability: shadowRows.length ? 'blocked' as const : 'missing' as const, reason_code: shadowBatchReason }
       : evidenceAvailability(l4ShadowPacket, 'frozen_forward_packet_missing')
     const status = l4 && !l4.identity_valid
       ? 'blocked'
-      : candidateStatus(l4Serving?.artifact_state, l4?.offline_gate_decision, dateCount, minDates)
+      : prospectiveCandidateStatus(l4Serving?.artifact_state, prospectiveGate)
     const blockerGroups: PipelineMaturityBlockerGroup[] = [
       {
         scope: 'offline_candidate',
         title: 'Promotion candidate (not serving)',
         blockers: offlineBlockers,
+      },
+      {
+        scope: 'prospective_forward',
+        title: 'Locked candidate daily prospective gate',
+        blockers: prospectiveBlockers,
       },
       {
         scope: 'serving_pointer',
@@ -1094,19 +1179,19 @@ export async function buildPipelineDecisionMaturityPacket(
       status,
       contribution_mode: contributionModeForServing(l4Serving?.artifact_state),
       maturity_kind: 'artifact_quality',
-      progress: l4?.identity_valid ? maturityProgress(dateCount, minDates, 'dates') : null,
+      progress: l4?.identity_valid === false
+        ? null
+        : maturityProgress(prospectiveDateCount, EXPECTED_RETURN_PROSPECTIVE_MIN_DATES, 'dates'),
       decision: l4Serving?.artifact_state === 'serving'
         ? 'Canonical L4 是目前 production expected-return owner。'
-        : l4Serving?.artifact_state === 'safe_abstention'
-          ? 'Production 目前使用 safe-abstention fallback；L4 alpha 候選尚未 serving。'
-        : `候選資料 ${sampleCount ?? 'Missing'}/${minSamples} rows、${dateCount ?? 'Missing'}/${minDates} dates；${String(l4?.offline_gate_decision ?? 'PENDING').toUpperCase()}。`,
+        : `鎖定候選 ${l4Prospective?.source_run_date ?? '尚未建立'}；每日成熟 OOS ${prospectiveDateCount ?? 0}/${EXPECTED_RETURN_PROSPECTIVE_MIN_DATES}；gate ${prospectiveDecision}。${l4Serving?.artifact_state === 'safe_abstention' ? 'Production 目前維持 safe-abstention。' : ''}`,
       contribution: '把 Active-8、Score V2、基本面、籌碼、技術面與 PIT sector alpha 校準成五日成本後絕對報酬。',
       production_effect: l4Serving?.artifact_state === 'serving'
         ? '提供 L4 expected return，與風險/流動性 gate 一起決定 BUY/HOLD。'
         : l4Serving?.artifact_state === 'safe_abstention'
           ? 'Production pointer 有效，但只提供安全 abstention fallback；不代表 L4 alpha 品質通過或正在貢獻。'
         : '候選只保存 OOF evidence；不改寫 production expected return。',
-      blockers: offlineBlockers,
+      blockers: prospectiveBlockers,
       blocker_groups: blockerGroups,
       metrics: [
         gateMetric('samples', 'Usable OOF samples', sampleCount, minSamples, 'rows', 'gte', { ...candidateMetricScope, scope: 'promotion_gate' }),
@@ -1121,24 +1206,27 @@ export async function buildPipelineDecisionMaturityPacket(
         metric('strict_pit_rows', 'Materialized strict L4 PIT', maturity?.strictL4PitRows ?? null, { unit: 'rows', scope: 'lifecycle' }),
         metric('strict_pit_dates', 'Materialized strict L4 PIT dates', maturity?.strictL4PitDates ?? null, { unit: 'dates', scope: 'lifecycle' }),
         metric('sector_source_signal_dates', '目前可供後續 cohort 使用的 PIT sector signal dates', sectorReadiness?.signal_dates ?? null, { unit: 'dates', scope: 'lifecycle', note: `合法 prior-session source window：${sectorReadiness?.first_signal_date ?? '尚無'} → ${sectorReadiness?.latest_signal_date ?? '尚無'}。這是 source readiness，不是舊 candidate 的 promotion evidence。` }),
-        gateMetric('shadow_sector_samples', 'Latest shadow PIT sector-alpha samples', l4Shadow?.sector_samples, Math.max(1, finite(l4?.min_sector_samples, 300)), 'rows', 'gte', { ...shadowMetricScope, scope: 'monitoring' }),
-        gateMetric('shadow_sector_dates', 'Frozen-forward PIT sector-alpha available dates', l4Shadow?.sector_dates, Math.max(1, finite(l4?.min_sector_dates, 8)), 'dates', 'gte', {
-          ...shadowMetricScope,
-          scope: 'monitoring',
-          note: `固定候選外推監控的 sector-alpha 可用日期子集合：${l4Shadow?.sector_dates ?? '資料尚未具備'}/${l4Shadow?.date_count ?? '資料尚未具備'} usable dates。這不是正式 L4 PIT 物化日數，也不計入 promotion maturity。`,
-        }),
-        gateMetric('shadow_corr_lcb90', 'Latest shadow corr LCB90', l4Shadow?.l4_corr_lcb90, 0, 'ratio', 'gt', { ...shadowMetricScope, scope: 'monitoring' }),
-        gateMetric('shadow_spread_lcb90', 'Latest shadow spread LCB90', l4Shadow?.l4_spread_lcb90, 0, 'return', 'gt', { ...shadowMetricScope, scope: 'monitoring' }),
-        gateMetric('shadow_top_return', 'Latest shadow top-quintile mean', l4Shadow?.l4_top_return, 0, 'return', 'gt', { ...shadowMetricScope, scope: 'monitoring' }),
-        gateMetric('shadow_top_lcb90', 'Latest shadow top-quintile LCB90', l4Shadow?.l4_top_lcb90, 0, 'return', 'gt', { ...shadowMetricScope, scope: 'monitoring' }),
-        metric('shadow_walk_forward', 'Latest shadow walk-forward', l4Shadow?.walk_forward_passed, { target: true, comparator: 'eq', unit: 'status', passed: l4Shadow?.walk_forward_passed ?? null, ...shadowMetricScope, scope: 'monitoring', note: walkForwardNote(l4Shadow?.walk_forward ?? null) }),
-        metric('frozen_forward_quality', 'Active-8 cohort causal shadow quality', l4Shadow?.quality_decision ?? null, { target: 'PASS', comparator: 'eq', unit: 'status', passed: l4Shadow == null ? null : l4Shadow.quality_decision === 'PASS', ...shadowMetricScope, scope: 'monitoring' }),
+        metric('prospective_gate_decision', 'Locked candidate prospective decision', prospectiveGate ? prospectiveDecision : null, { target: 'PASS', comparator: 'eq', unit: 'status', passed: prospectiveDecision === 'PENDING' || !prospectiveGate ? null : prospectiveDecision === 'PASS', ...prospectiveMetricScope, scope: 'promotion_gate', note: 'Daily append-only evidence for one locked candidate; PENDING before 10 mature post-freeze OOS dates.' }),
+        metric('prospective_evaluable_dates', 'Locked candidate mature OOS dates', prospectiveGate?.evaluable_date_count ?? null, { target: EXPECTED_RETURN_PROSPECTIVE_MIN_DATES, comparator: 'gte', unit: 'dates', passed: !prospectiveGate || prospectiveDecision === 'PENDING' ? null : finite(prospectiveGate.evaluable_date_count) >= EXPECTED_RETURN_PROSPECTIVE_MIN_DATES, ...prospectiveMetricScope, scope: 'promotion_gate', note: '5 dates is early monitoring only; formal quality judgment starts at 10 dates.' }),
+        metric('prospective_corr_lcb90', 'Locked candidate corr LCB90', prospectiveGate?.corr_or_delta_lcb90 ?? null, { target: 0, comparator: 'gt', unit: 'ratio', passed: prospectiveQualityReady && optionalFinite(prospectiveGate?.corr_or_delta_lcb90) != null ? finite(prospectiveGate?.corr_or_delta_lcb90) > 0 : null, ...prospectiveMetricScope, scope: 'promotion_gate' }),
+        metric('prospective_spread_lcb90', 'Locked candidate spread LCB90', prospectiveGate?.spread_or_delta_lcb90 ?? null, { target: 0, comparator: 'gt', unit: 'return', passed: prospectiveQualityReady && optionalFinite(prospectiveGate?.spread_or_delta_lcb90) != null ? finite(prospectiveGate?.spread_or_delta_lcb90) > 0 : null, ...prospectiveMetricScope, scope: 'promotion_gate' }),
+        metric('prospective_top_return_lcb90', 'Locked candidate top-return LCB90', prospectiveGate?.top_return_lcb90 ?? null, { target: 0, comparator: 'gt', unit: 'return', passed: prospectiveQualityReady && optionalFinite(prospectiveGate?.top_return_lcb90) != null ? finite(prospectiveGate?.top_return_lcb90) > 0 : null, ...prospectiveMetricScope, scope: 'promotion_gate' }),
+        metric('prospective_prediction_max_date', 'Latest mature post-freeze prediction date', prospectiveGate?.prediction_date_max ?? null, { unit: 'status', passed: null, ...prospectiveMetricScope, scope: 'promotion_gate' }),
+        metric('prospective_candidate_state', 'Locked candidate registry state', l4Prospective?.state ?? null, { unit: 'status', passed: null, ...prospectiveMetricScope, scope: 'lifecycle' }),
+        metric('shadow_sector_samples', 'Rolling cohort diagnostic PIT sector-alpha samples', l4Shadow?.sector_samples ?? null, { unit: 'rows', passed: null, ...shadowMetricScope, scope: 'monitoring', note: 'Rolling 75/25 cohort refit diagnostic; not candidate promotion evidence.' }),
+        metric('shadow_sector_dates', 'Rolling cohort diagnostic PIT sector-alpha dates', l4Shadow?.sector_dates ?? null, { unit: 'dates', passed: null, ...shadowMetricScope, scope: 'monitoring', note: `Rolling 75/25 cohort sector subset：${l4Shadow?.sector_dates ?? '資料尚未具備'}/${l4Shadow?.date_count ?? '資料尚未具備'} usable dates；不是正式 L4 PIT 物化日數或 promotion maturity。` }),
+        metric('shadow_corr_lcb90', 'Rolling cohort diagnostic corr LCB90', l4Shadow?.l4_corr_lcb90 ?? null, { unit: 'ratio', passed: null, ...shadowMetricScope, scope: 'monitoring', note: 'Rolling 75/25 cohort refit diagnostic; not candidate promotion evidence.' }),
+        metric('shadow_spread_lcb90', 'Rolling cohort diagnostic spread LCB90', l4Shadow?.l4_spread_lcb90 ?? null, { unit: 'return', passed: null, ...shadowMetricScope, scope: 'monitoring', note: 'Rolling 75/25 cohort refit diagnostic; not candidate promotion evidence.' }),
+        metric('shadow_top_return', 'Rolling cohort diagnostic top-quintile mean', l4Shadow?.l4_top_return ?? null, { unit: 'return', passed: null, ...shadowMetricScope, scope: 'monitoring', note: 'Rolling 75/25 cohort refit diagnostic; not candidate promotion evidence.' }),
+        metric('shadow_top_lcb90', 'Rolling cohort diagnostic top-quintile LCB90', l4Shadow?.l4_top_lcb90 ?? null, { unit: 'return', passed: null, ...shadowMetricScope, scope: 'monitoring', note: 'Rolling 75/25 cohort refit diagnostic; not candidate promotion evidence.' }),
+        metric('shadow_walk_forward', 'Rolling cohort diagnostic walk-forward', l4Shadow?.walk_forward_passed, { unit: 'status', passed: null, ...shadowMetricScope, scope: 'monitoring', note: [walkForwardNote(l4Shadow?.walk_forward ?? null), 'Rolling diagnostic only; not candidate promotion evidence.'].filter(Boolean).join('；') }),
+        metric('frozen_forward_quality', 'Rolling cohort diagnostic quality', l4Shadow?.quality_decision ?? null, { unit: 'status', passed: null, ...shadowMetricScope, scope: 'monitoring', note: 'Rolling cohort quality label is diagnostic only; locked-candidate prospective gate is authoritative for promotion.' }),
         metric('shadow_usable_samples', 'Latest shadow usable samples', l4Shadow?.sample_count ?? null, { unit: 'rows', ...shadowMetricScope, scope: 'monitoring' }),
         metric('shadow_usable_dates', 'Latest shadow usable dates', l4Shadow?.date_count ?? null, { unit: 'dates', ...shadowMetricScope, scope: 'monitoring' }),
         metric('shadow_oof_rows', 'Latest shadow OOF rows', l4Shadow?.oof_row_count ?? null, { unit: 'rows', ...shadowMetricScope, scope: 'monitoring' }),
         metric('shadow_oof_max_date', 'Latest shadow OOF max date', l4Shadow?.oof_max_date ?? null, { unit: 'status', ...shadowMetricScope, scope: 'monitoring' }),
         metric('shadow_evidence_advanced', 'Shadow evidence advanced vs previous business date', l4Shadow?.evidence_advanced_from_previous_business_date == null ? null : l4Shadow.evidence_advanced_from_previous_business_date ? 'advanced' : 'no_new_mature_evidence', { unit: 'status', ...shadowMetricScope, scope: 'monitoring', note: `前次監控業務日：${l4Shadow?.previous_business_date ?? '首次證據'}。no_new_mature_evidence 代表只產生新業務日封包，成熟 OOF/usable evidence 未增加。` }),
-        metric('frozen_forward_dates', 'Active-8 cohort causal shadow dates', l4Shadow?.oof_date_count ?? null, { unit: 'dates', ...shadowMetricScope, scope: 'monitoring', note: 'Rebuilds causal validation on a fixed Active-8 cohort; it is not the production serving artifact, training evidence, or promotion evidence.' }),
+        metric('frozen_forward_dates', 'Rolling cohort diagnostic OOF dates', l4Shadow?.oof_date_count ?? null, { unit: 'dates', passed: null, ...shadowMetricScope, scope: 'monitoring', note: 'Rolling 75/25 causal cohort diagnostic; not the locked candidate, production artifact, training evidence, or promotion evidence.' }),
       ],
       lineage: {
         requested_date: requestedDate,
@@ -1227,10 +1315,11 @@ export async function buildPipelineDecisionMaturityPacket(
   }
 
   const fusion = evCandidates.get('allocator_ev_fusion')
+  const fusionProspective = evProspective.get('allocator_ev_fusion')
   const fusionShadowPacket = evShadow.get('allocator_ev_fusion')
   const fusionShadow = shadowPairComplete && fusionShadowPacket?.identity_valid ? fusionShadowPacket : undefined
   const fusionServing = servingState?.artifacts.allocator_ev_fusion
-  if (!fusion && !fusionServing) {
+  if (!fusion && !fusionServing && !fusionProspective) {
     stages.push(unavailableStage('fusion', 'L4+', 'Fusion final trade EV', requestedDate, 'model_artifact_registry + allocator EV snapshots', [evRows.error, serving.error]))
   } else {
     const minSamples = Math.max(1, finite(fusion?.min_primary_samples, 1500))
@@ -1241,6 +1330,21 @@ export async function buildPipelineDecisionMaturityPacket(
       .filter((blocker) => blocker !== 'residual_champion:residual_adjustment_model_not_validated')
     const servingBlockers = fusionServing?.blockers ?? ['serving_pointer_missing']
     const shadowBlockers = shadowBatchReason ? [shadowBatchReason] : fusionShadowPacket?.failed_gates ?? ['frozen_forward_packet_missing']
+    const prospectiveGate = fusionProspective?.gate
+    const prospectiveDecision = String(prospectiveGate?.decision ?? 'MISSING').toUpperCase()
+    const prospectiveDateCount = optionalFinite(prospectiveGate?.evaluable_date_count)
+    const prospectiveQualityReady = prospectiveDecision === 'PASS' || prospectiveDecision === 'FAIL'
+    const prospectiveBlockers = prospectiveGate
+      ? stringArray(prospectiveDecision === 'PENDING'
+        ? prospectiveGate.maturity_blockers
+        : prospectiveGate.failed_gates)
+      : [evProspectiveRows.error ? 'prospective_forward_query_failed' : 'prospective_forward_evidence_missing']
+    const prospectiveMetricScope = prospectiveGate
+      ? { availability: 'available' as const, reason_code: null }
+      : {
+          availability: evProspectiveRows.error ? 'blocked' as const : 'missing' as const,
+          reason_code: evProspectiveRows.error ? 'prospective_forward_query_failed' : 'prospective_forward_evidence_missing',
+        }
     const candidateMetricScope = evidenceAvailability(fusion, 'offline_candidate_missing')
     const shadowMetricScope = shadowBatchReason
       ? { availability: shadowRows.length ? 'blocked' as const : 'missing' as const, reason_code: shadowBatchReason }
@@ -1261,12 +1365,17 @@ export async function buildPipelineDecisionMaturityPacket(
         ? ['serving_forward_guard_residual_bypass_active'] : []
     const status = fusion && !fusion.identity_valid
       ? 'blocked'
-      : candidateStatus(fusionServing?.artifact_state, fusion?.offline_gate_decision, dateCount, minDates)
+      : prospectiveCandidateStatus(fusionServing?.artifact_state, prospectiveGate)
     const blockerGroups: PipelineMaturityBlockerGroup[] = [
       {
         scope: 'offline_candidate',
         title: 'Promotion candidate (not serving)',
         blockers: offlineBlockers,
+      },
+      {
+        scope: 'prospective_forward',
+        title: 'Locked candidate daily prospective gate',
+        blockers: prospectiveBlockers,
       },
       {
         scope: 'serving_pointer',
@@ -1292,19 +1401,19 @@ export async function buildPipelineDecisionMaturityPacket(
       status,
       contribution_mode: contributionModeForServing(fusionServing?.artifact_state),
       maturity_kind: 'artifact_quality',
-      progress: fusion?.identity_valid ? maturityProgress(dateCount, minDates, 'dates') : null,
+      progress: fusion?.identity_valid === false
+        ? null
+        : maturityProgress(prospectiveDateCount, EXPECTED_RETURN_PROSPECTIVE_MIN_DATES, 'dates'),
       decision: fusionServing?.artifact_state === 'serving'
         ? 'Fusion 是 production primary expected-return owner。'
-        : fusionServing?.artifact_state === 'safe_abstention'
-          ? 'Production 目前使用 safe-abstention fallback；Fusion residual 候選尚未 serving。'
-        : `候選資料 ${sampleCount ?? 'Missing'}/${minSamples} rows、${dateCount ?? 'Missing'}/${minDates} dates；tier ${fusion?.promotion_tier ?? 'shadow'}。`,
+        : `鎖定候選 ${fusionProspective?.source_run_date ?? '尚未建立'}；每日成熟 OOS ${prospectiveDateCount ?? 0}/${EXPECTED_RETURN_PROSPECTIVE_MIN_DATES}；gate ${prospectiveDecision}。${fusionServing?.artifact_state === 'safe_abstention' ? 'Production 目前維持 safe-abstention。' : ''}`,
       contribution: '以 canonical L4 expected return 為 base，只疊加通過驗證的 v14 residual adjustment；S12 僅保留 shadow diagnostic。',
       production_effect: fusionServing?.artifact_state === 'serving'
         ? '以 L4 base 加上已驗證 residual 作 final trade EV；sparse allocator 仍是選擇與權重 owner。'
         : fusionServing?.artifact_state === 'safe_abstention'
           ? 'Production pointer 有效，但 residual adjustment 固定為 0；sparse allocator 保留，Fusion alpha 尚未貢獻。'
         : 'Residual 未通過時 adjustment 固定為 0，不得抹除或否決合格 canonical L4 base EV。',
-      blockers: offlineBlockers,
+      blockers: prospectiveBlockers,
       blocker_groups: blockerGroups,
       metrics: [
         gateMetric('samples', 'Offline candidate usable samples', sampleCount, minSamples, 'rows', 'gte', { ...candidateMetricScope, scope: 'promotion_gate' }),
@@ -1320,6 +1429,13 @@ export async function buildPipelineDecisionMaturityPacket(
         gateMetric('sector_samples', 'Offline candidate PIT sector-alpha samples', fusion?.sector_samples, Math.max(1, finite(fusion?.min_sector_samples, 300)), 'rows', 'gte', { ...candidateMetricScope, scope: 'lifecycle', note: 'Fusion v14 不以此欄作獨立 serving blocker；它顯示 candidate 是否取得 sector feature coverage。' }),
         gateMetric('sector_dates', 'Offline candidate PIT sector-alpha dates', fusion?.sector_dates, Math.max(1, finite(fusion?.min_sector_dates, 8)), 'dates', 'gte', { ...candidateMetricScope, scope: 'lifecycle' }),
         metric('sector_source_signal_dates', '目前可供後續 cohort 使用的 PIT sector signal dates', sectorReadiness?.signal_dates ?? null, { unit: 'dates', scope: 'lifecycle', note: `合法 prior-session source window：${sectorReadiness?.first_signal_date ?? '尚無'} → ${sectorReadiness?.latest_signal_date ?? '尚無'}。這是 source readiness，不是舊 candidate 的 promotion evidence。` }),
+        metric('prospective_gate_decision', 'Locked candidate prospective decision', prospectiveGate ? prospectiveDecision : null, { target: 'PASS', comparator: 'eq', unit: 'status', passed: prospectiveDecision === 'PENDING' || !prospectiveGate ? null : prospectiveDecision === 'PASS', ...prospectiveMetricScope, scope: 'promotion_gate', note: 'Daily append-only evidence for one locked candidate; PENDING before 10 mature post-freeze OOS dates.' }),
+        metric('prospective_evaluable_dates', 'Locked candidate mature OOS dates', prospectiveGate?.evaluable_date_count ?? null, { target: EXPECTED_RETURN_PROSPECTIVE_MIN_DATES, comparator: 'gte', unit: 'dates', passed: !prospectiveGate || prospectiveDecision === 'PENDING' ? null : finite(prospectiveGate.evaluable_date_count) >= EXPECTED_RETURN_PROSPECTIVE_MIN_DATES, ...prospectiveMetricScope, scope: 'promotion_gate', note: '5 dates is early monitoring only; formal quality judgment starts at 10 dates.' }),
+        metric('prospective_corr_delta_lcb90', 'Locked candidate corr-delta LCB90 vs L4', prospectiveGate?.corr_or_delta_lcb90 ?? null, { target: 0, comparator: 'gte', unit: 'ratio', passed: prospectiveQualityReady && optionalFinite(prospectiveGate?.corr_or_delta_lcb90) != null ? finite(prospectiveGate?.corr_or_delta_lcb90) >= 0 : null, ...prospectiveMetricScope, scope: 'promotion_gate' }),
+        metric('prospective_spread_delta_lcb90', 'Locked candidate spread-delta LCB90 vs L4', prospectiveGate?.spread_or_delta_lcb90 ?? null, { target: 0, comparator: 'gte', unit: 'return', passed: prospectiveQualityReady && optionalFinite(prospectiveGate?.spread_or_delta_lcb90) != null ? finite(prospectiveGate?.spread_or_delta_lcb90) >= 0 : null, ...prospectiveMetricScope, scope: 'promotion_gate' }),
+        metric('prospective_top_return_lcb90', 'Locked candidate final top-return LCB90', prospectiveGate?.top_return_lcb90 ?? null, { target: 0, comparator: 'gt', unit: 'return', passed: prospectiveQualityReady && optionalFinite(prospectiveGate?.top_return_lcb90) != null ? finite(prospectiveGate?.top_return_lcb90) > 0 : null, ...prospectiveMetricScope, scope: 'promotion_gate' }),
+        metric('prospective_prediction_max_date', 'Latest mature post-freeze prediction date', prospectiveGate?.prediction_date_max ?? null, { unit: 'status', passed: null, ...prospectiveMetricScope, scope: 'promotion_gate' }),
+        metric('prospective_candidate_state', 'Locked candidate registry state', fusionProspective?.state ?? null, { unit: 'status', passed: null, ...prospectiveMetricScope, scope: 'lifecycle' }),
         gateMetric('residual_corr_lcb90', 'Residual adjustment corr LCB90', fusion?.residual_corr_lcb90, 0, 'ratio', 'gt', { ...candidateMetricScope, scope: 'promotion_gate' }),
         gateMetric('residual_spread_lcb90', 'Residual adjustment spread LCB90', fusion?.residual_spread_lcb90, 0, 'return', 'gt', { ...candidateMetricScope, scope: 'promotion_gate' }),
         metric('walk_forward', 'Offline candidate residual walk-forward', fusion?.walk_forward_passed, { target: true, comparator: 'eq', unit: 'status', passed: fusion?.walk_forward_passed ?? null, ...candidateMetricScope, scope: 'promotion_gate', note: walkForwardNote(fusion?.walk_forward ?? null) }),
@@ -1339,18 +1455,18 @@ export async function buildPipelineDecisionMaturityPacket(
         }),
         metric('execution_expert', 'Shadow diagnostic conditional execution expert', fusion?.execution_decision, { unit: 'status', scope: 'diagnostic', passed: null, availability: fusion?.execution_decision == null ? 'not_applicable' : 'available', reason_code: fusion?.execution_decision == null ? 'diagnostic_not_served_by_fusion_v14' : null, note: 'Diagnostic only; not served by Fusion v14.' }),
         metric('execution_probability', 'Shadow diagnostic execution probability expert', fusion?.execution_probability_decision, { unit: 'status', scope: 'diagnostic', passed: null, availability: fusion?.execution_probability_decision == null ? 'not_applicable' : 'available', reason_code: fusion?.execution_probability_decision == null ? 'diagnostic_not_served_by_fusion_v14' : null, note: 'Diagnostic only; not served by Fusion v14.' }),
-        gateMetric('shadow_sector_samples', 'Latest shadow PIT sector-alpha samples', fusionShadow?.sector_samples, Math.max(1, finite(fusion?.min_sector_samples, 300)), 'rows', 'gte', { ...shadowMetricScope, scope: 'monitoring' }),
-        gateMetric('shadow_sector_dates', 'Latest shadow PIT sector-alpha dates', fusionShadow?.sector_dates, Math.max(1, finite(fusion?.min_sector_dates, 8)), 'dates', 'gte', { ...shadowMetricScope, scope: 'monitoring' }),
-        gateMetric('shadow_residual_corr_lcb90', 'Latest shadow residual corr LCB90', fusionShadow?.residual_corr_lcb90, 0, 'ratio', 'gt', { ...shadowMetricScope, scope: 'monitoring' }),
-        gateMetric('shadow_residual_spread_lcb90', 'Latest shadow residual spread LCB90', fusionShadow?.residual_spread_lcb90, 0, 'return', 'gt', { ...shadowMetricScope, scope: 'monitoring' }),
-        metric('shadow_walk_forward', 'Latest shadow residual walk-forward', fusionShadow?.walk_forward_passed, { target: true, comparator: 'eq', unit: 'status', passed: fusionShadow?.walk_forward_passed ?? null, ...shadowMetricScope, scope: 'monitoring', note: walkForwardNote(fusionShadow?.walk_forward ?? null) }),
-        metric('frozen_forward_quality', 'Active-8 cohort causal shadow quality', fusionShadow?.quality_decision ?? null, { target: 'PASS', comparator: 'eq', unit: 'status', passed: fusionShadow == null ? null : fusionShadow.quality_decision === 'PASS', ...shadowMetricScope, scope: 'monitoring' }),
+        metric('shadow_sector_samples', 'Rolling cohort diagnostic PIT sector-alpha samples', fusionShadow?.sector_samples ?? null, { unit: 'rows', passed: null, ...shadowMetricScope, scope: 'monitoring', note: 'Rolling 75/25 cohort refit diagnostic; not candidate promotion evidence.' }),
+        metric('shadow_sector_dates', 'Rolling cohort diagnostic PIT sector-alpha dates', fusionShadow?.sector_dates ?? null, { unit: 'dates', passed: null, ...shadowMetricScope, scope: 'monitoring', note: 'Rolling 75/25 cohort refit diagnostic; not candidate promotion evidence.' }),
+        metric('shadow_residual_corr_lcb90', 'Rolling cohort diagnostic residual corr LCB90', fusionShadow?.residual_corr_lcb90 ?? null, { unit: 'ratio', passed: null, ...shadowMetricScope, scope: 'monitoring', note: 'Rolling 75/25 cohort refit diagnostic; not candidate promotion evidence.' }),
+        metric('shadow_residual_spread_lcb90', 'Rolling cohort diagnostic residual spread LCB90', fusionShadow?.residual_spread_lcb90 ?? null, { unit: 'return', passed: null, ...shadowMetricScope, scope: 'monitoring', note: 'Rolling 75/25 cohort refit diagnostic; not candidate promotion evidence.' }),
+        metric('shadow_walk_forward', 'Rolling cohort diagnostic residual walk-forward', fusionShadow?.walk_forward_passed, { unit: 'status', passed: null, ...shadowMetricScope, scope: 'monitoring', note: [walkForwardNote(fusionShadow?.walk_forward ?? null), 'Rolling diagnostic only; not candidate promotion evidence.'].filter(Boolean).join('；') }),
+        metric('frozen_forward_quality', 'Rolling cohort diagnostic quality', fusionShadow?.quality_decision ?? null, { unit: 'status', passed: null, ...shadowMetricScope, scope: 'monitoring', note: 'Rolling cohort quality label is diagnostic only; locked-candidate prospective gate is authoritative for promotion.' }),
         metric('shadow_usable_samples', 'Latest shadow usable samples', fusionShadow?.sample_count ?? null, { unit: 'rows', ...shadowMetricScope, scope: 'monitoring' }),
         metric('shadow_usable_dates', 'Latest shadow usable dates', fusionShadow?.date_count ?? null, { unit: 'dates', ...shadowMetricScope, scope: 'monitoring' }),
         metric('shadow_oof_rows', 'Latest shadow OOF rows', fusionShadow?.oof_row_count ?? null, { unit: 'rows', ...shadowMetricScope, scope: 'monitoring' }),
         metric('shadow_oof_max_date', 'Latest shadow OOF max date', fusionShadow?.oof_max_date ?? null, { unit: 'status', ...shadowMetricScope, scope: 'monitoring' }),
         metric('shadow_evidence_advanced', 'Shadow evidence advanced vs previous business date', fusionShadow?.evidence_advanced_from_previous_business_date == null ? null : fusionShadow.evidence_advanced_from_previous_business_date ? 'advanced' : 'no_new_mature_evidence', { unit: 'status', ...shadowMetricScope, scope: 'monitoring', note: `前次監控業務日：${fusionShadow?.previous_business_date ?? '首次證據'}。no_new_mature_evidence 代表只產生新業務日封包，成熟 OOF/usable evidence 未增加。` }),
-        metric('frozen_forward_dates', 'Active-8 cohort causal shadow dates', fusionShadow?.oof_date_count ?? null, { unit: 'dates', ...shadowMetricScope, scope: 'monitoring', note: 'Rebuilds causal validation on a fixed Active-8 cohort; it is not the production serving artifact.' }),
+        metric('frozen_forward_dates', 'Rolling cohort diagnostic OOF dates', fusionShadow?.oof_date_count ?? null, { unit: 'dates', passed: null, ...shadowMetricScope, scope: 'monitoring', note: 'Rolling 75/25 causal cohort diagnostic; not the locked candidate, production artifact, training evidence, or promotion evidence.' }),
         metric('serving_forward_guard_state', 'Actual serving artifact T+5 guard', runtimeGuardBound ? runtimeGuard?.state ?? null : runtimeGuard ? 'IDENTITY_MISMATCH' : null, { unit: 'status', passed: runtimeGuardBound ? runtimeGuard?.state !== 'residual_bypass' : null, ...runtimeGuardMetricScope, scope: 'production', note: 'Bound by artifact ID and model fingerprint; it can only bypass the Fusion residual back to canonical L4.' }),
         metric('serving_forward_evaluable_dates', 'Serving-forward evaluable dates', runtimeGuardBound ? runtimeGuard?.evaluable_date_count ?? 0 : null, { unit: 'dates', ...runtimeGuardMetricScope, scope: 'production' }),
         metric('serving_forward_degraded_streak', 'Serving-forward degraded streak', runtimeGuardBound ? runtimeGuard?.degraded_streak ?? 0 : null, { unit: 'dates', target: 3, comparator: 'lt', passed: runtimeGuardBound ? (runtimeGuard?.degraded_streak ?? 0) < 3 : null, ...runtimeGuardMetricScope, scope: 'production' }),

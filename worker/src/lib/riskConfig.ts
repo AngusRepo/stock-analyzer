@@ -20,6 +20,17 @@ export interface RiskConfig {
     dailyPnlLossLimit: number               // NT$ absolute, P8
     dailyPnlLossLimitPct: number            // fraction of account equity, P8
     intradayDrawdownHalt: number            // fraction, P9 (peak-to-trough intraday)
+    marketShockOrangePct: number            // fraction, one-day TWII shock overlay
+    marketShockRedPct: number               // fraction, one-day TWII severe shock overlay
+    marketShockBlackPct: number             // fraction, one-day TWII emergency halt
+    breadthOrangeAdvanceRatio: number       // fraction, advancing names / compared names
+    breadthRedAdvanceRatio: number
+    breadthBlackAdvanceRatio: number
+    greenTargetExposure: number             // portfolio exposure caps consumed by allocator + exits
+    yellowTargetExposure: number
+    orangeTargetExposure: number
+    redTargetExposure: number
+    blackTargetExposure: number
   }
   position: {
     maxPerSector: number                    // N1: max holdings per sector
@@ -49,6 +60,17 @@ export const DEFAULT_RISK_CONFIG: RiskConfig = {
     dailyPnlLossLimit: -30000,
     dailyPnlLossLimitPct: -0.03,
     intradayDrawdownHalt: 0.05,
+    marketShockOrangePct: -0.03,
+    marketShockRedPct: -0.05,
+    marketShockBlackPct: -0.08,
+    breadthOrangeAdvanceRatio: 0.25,
+    breadthRedAdvanceRatio: 0.15,
+    breadthBlackAdvanceRatio: 0.08,
+    greenTargetExposure: 0.95,
+    yellowTargetExposure: 0.68,
+    orangeTargetExposure: 0.45,
+    redTargetExposure: 0.20,
+    blackTargetExposure: 0,
   },
   position: {
     maxPerSector: 2,

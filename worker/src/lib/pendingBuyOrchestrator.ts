@@ -33,14 +33,7 @@ import {
 } from './pendingBuyExecutionState'
 import { recordPendingBuyPaperAttribution } from './paperActiveAttributionWiring'
 import { recordPaperExecutionEvent } from './paperExecutionEvents'
-import { checkP1Mdd } from './riskChecks/p1Mdd'
-import { checkP2Accuracy } from './riskChecks/p2Accuracy'
-import { checkP3MarketRisk } from './riskChecks/p3MarketRisk'
 import { loadTradingRestrictionBuckets } from './tradingRestrictions'
-import { checkP4Breadth } from './riskChecks/p4Breadth'
-import { checkP5Losses } from './riskChecks/p5Losses'
-import { checkP6Momentum } from './riskChecks/p6Momentum'
-import { checkP7Streak } from './riskChecks/p7Streak'
 import { readScoreV2Snapshot, serializeScoreV2Snapshot } from './scoreV2Taxonomy'
 import {
   batchLoadOhlcvTradePlanLevels,
@@ -583,38 +576,12 @@ export async function checkCircuitBreakers(
     sellConfThreshold: effectiveSell,
   }
   const deps: LegacyLayerDeps = { defaults, effectiveBuy, effectiveSell }
-  const databases: PortfolioRiskDatabases = 'paper' in db
-    ? db
-    : { paper: db, core: db, market: db, learning: db }
-
-  const flag = (await kv?.get('risk:use_chain')) ?? 'v1'
-  if (flag === 'v1') {
-    const { runPortfolioChecks } = await import('./riskChain')
-    const agg = await runPortfolioChecks(db, cfg, kv, deps)
-    return {
-      halt: agg.halt,
-      reason: agg.reason || undefined,
-      maxPositionPct: agg.maxPositionPct,
-      buyConfThreshold: agg.buyConfThreshold,
-      sellConfThreshold: agg.sellConfThreshold,
-      momentumZone: agg.momentumZone,
-    }
+  const { runPortfolioChecks } = await import('./riskChain')
+  const agg = await runPortfolioChecks(db, cfg, kv, deps)
+  return {
+    ...agg,
+    reason: agg.reason || undefined,
   }
-
-  const layers: Array<() => Promise<CircuitBreakerState | null>> = [
-    () => checkP1Mdd(databases.paper, cfg, deps),
-    () => checkP2Accuracy(databases.learning, kv, cfg, deps),
-    () => checkP3MarketRisk(databases.core, cfg, deps),
-    () => checkP4Breadth(databases.market, cfg, deps),
-    () => checkP6Momentum(databases.market, deps),
-    () => checkP7Streak(databases.learning, cfg, deps),
-    () => checkP5Losses(databases.paper, deps),
-  ]
-  for (const run of layers) {
-    const result = await run()
-    if (result) return result
-  }
-  return defaults
 }
 
 export async function checkCircuitBreakersForDomains(
@@ -663,6 +630,11 @@ export async function setupMorningPendingBuys(env: Bindings): Promise<void> {
     await persistPendingBuys(env, pendingDate, [], {
       status: 'halted',
       reason: cb.reason ?? 'circuit_breaker',
+      market_risk_owner: 'canonical_market_risk_runtime_v1',
+      market_risk_date: cb.marketRiskDate ?? null,
+      market_risk_status: cb.marketRiskStatus ?? 'blocked',
+      market_risk_level: cb.marketRiskLevel ?? 'unknown',
+      market_risk_blockers: cb.marketRiskBlockers ?? [],
     })
     return
   }
@@ -1073,6 +1045,7 @@ export async function setupMorningPendingBuys(env: Bindings): Promise<void> {
         reason: rec.reason ?? '',
         watch_points: [
           ...parseWatchPoints(rec.watch_points),
+          `portfolio_risk:owner=canonical_market_risk_runtime_v1;date=${cb.marketRiskDate ?? 'missing'};status=${cb.marketRiskStatus ?? 'blocked'};level=${cb.marketRiskLevel ?? 'unknown'};score=${cb.marketRiskScore ?? 'na'};max_position_pct=${cb.maxPositionPct};target_exposure=${cb.targetExposurePct ?? 'na'}`,
           ...([
             alphaWatchPoint(alphaContext),
             buildMarketStructureWatchPoint(alphaContext),
@@ -1107,6 +1080,15 @@ export async function setupMorningPendingBuys(env: Bindings): Promise<void> {
       execution_pool_policy: 'l4_sparse_final_buy_only',
       filter_audit: filterAudit,
       empty_reason: emptyReason,
+      market_risk_owner: 'canonical_market_risk_runtime_v1',
+      market_risk_date: cb.marketRiskDate ?? null,
+      market_risk_status: cb.marketRiskStatus ?? 'blocked',
+      market_risk_level: cb.marketRiskLevel ?? 'unknown',
+      market_risk_score: cb.marketRiskScore ?? null,
+      market_risk_max_position_pct: cb.maxPositionPct,
+      market_risk_target_exposure: cb.targetExposurePct ?? null,
+      market_risk_reasons: cb.marketRiskReasons ?? [],
+      market_risk_blockers: cb.marketRiskBlockers ?? [],
     })
     await persistPendingBuyFilterAudit(env, runId, pendingDate, sourceRecoDate, quadrantFilterLog)
 

@@ -37,9 +37,10 @@ def test_oof_job_preserves_forward_extension_root_cause(monkeypatch):
     monkeypatch.setenv("OOF_MATERIALIZE_END_DATE", "2026-07-29")
     monkeypatch.setenv("OOF_MATERIALIZE_RUN_ID", "run-forward-blocked")
 
-    assert asyncio.run(oof_materialize_job_main._run()) == 1
-    assert callbacks[0]["status"] == "error"
+    assert asyncio.run(oof_materialize_job_main._run()) == 0
+    assert callbacks[0]["status"] == "triggered"
+    root_cause = "daily_forward_extension_failed:forward_extension_no_mature_rows"
+    assert root_cause in callbacks[0]["summary"]
     assert (
-        "daily_forward_extension_failed:forward_extension_no_mature_rows"
-        in callbacks[0]["error"]
+        callbacks[0]["metadata"]["dependency_retry_reason"] == root_cause
     )

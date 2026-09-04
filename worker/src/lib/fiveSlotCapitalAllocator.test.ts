@@ -205,6 +205,16 @@ const baseConfig = {
     'high risk score plus weak outlook should cut exposure below the orange fallback',
   )
   assert(
+    inferFiveSlotTargetExposureFromContext({
+      marketRiskLevel: 'yellow',
+      riskScore: 20,
+      marketOutlookUpsidePct: 8,
+      regimeFamily: 'bull',
+      targetExposureCap: 0.45,
+    }) === 0.45,
+    'canonical portfolio exposure cap must not be lifted by bullish context',
+  )
+  assert(
     fiveSlotHoldingWeaknessScore({ symbol: 'WEAK', shares: 1000, avgCost: 100, lastPrice: 92, daysHeld: 8, tp1Hit: false }) > 35,
     'weakness score should expose the same replacement evidence used by paper auto-swap',
   )

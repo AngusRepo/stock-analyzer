@@ -15,6 +15,7 @@ from services.expected_return_artifact_identity import (
     attach_expected_return_artifact_identity,
 )
 from services.expected_return_candidate_forward_evaluator import (
+    _candidate_rows,
     _daily_evaluations,
     _l4_evidence_payload,
     _promotion_gate,
@@ -185,12 +186,16 @@ def test_promotion_gate_requires_post_freeze_dates_and_both_evidence_lanes() -> 
             "spread": 0.01,
             "top_return": 0.02,
         }
-        for day in range(1, 6)
+        for day in range(1, 11)
     ]
+
+    early_gate = _promotion_gate(rows[:5], owner="l4_alpha_ev", candidate=candidate)
+    assert early_gate["decision"] == "PENDING"
+    assert early_gate["maturity_blockers"] == ["prospective_date_count_below_floor"]
 
     gate = _promotion_gate(rows, owner="l4_alpha_ev", candidate=candidate)
     assert gate["decision"] == "PASS"
-    assert gate["evaluable_date_count"] == 5
+    assert gate["evaluable_date_count"] == 10
 
     candidate["registry"] = {**row, "offline_gate_decision": "FAIL"}
     assert "offline_gate_not_pass" in _promotion_gate(
@@ -205,6 +210,78 @@ def test_promotion_gate_requires_post_freeze_dates_and_both_evidence_lanes() -> 
     assert "offline_validation_packet_not_pass" in _promotion_gate(
         rows, owner="l4_alpha_ev", candidate=candidate
     )["failed_gates"]
+
+
+def test_candidate_lane_keeps_oldest_shadowing_pair_when_new_weekly_pair_arrives() -> None:
+    new_l4, _ = _candidate("l4_alpha_ev", "2026-08-30")
+    new_fusion, _ = _candidate("allocator_ev_fusion", "2026-08-30")
+    new_l4["training_run_id"] = "active8_oof:cohort-2"
+    new_fusion["training_run_id"] = "active8_oof:cohort-2"
+    active_l4, _ = _candidate("l4_alpha_ev", "2026-08-29")
+    active_fusion, _ = _candidate("allocator_ev_fusion", "2026-08-29")
+    active_l4["state"] = "shadowing"
+    active_fusion["state"] = "shadowing"
+
+    selected, activate = _candidate_rows(
+        lambda _sql, _params: [new_l4, new_fusion, active_l4, active_fusion],
+        "cohort-2",
+    )
+
+    assert selected["l4_alpha_ev"]["source_run_date"] == "2026-08-29"
+    assert selected["allocator_ev_fusion"]["source_run_date"] == "2026-08-29"
+    assert activate is False
+
+
+def test_candidate_lane_skips_newer_offline_failed_pair() -> None:
+    failed_l4, _ = _candidate("l4_alpha_ev", "2026-08-30")
+    failed_fusion, _ = _candidate("allocator_ev_fusion", "2026-08-30")
+    failed_l4["state"] = "offline_failed"
+    failed_l4["offline_gate_decision"] = "FAIL"
+    failed_fusion["state"] = "offline_failed"
+    failed_fusion["offline_gate_decision"] = "FAIL"
+    older_l4, _ = _candidate("l4_alpha_ev", "2026-08-29")
+    older_fusion, _ = _candidate("allocator_ev_fusion", "2026-08-29")
+
+    selected, activate = _candidate_rows(
+        lambda _sql, _params: [failed_l4, failed_fusion, older_l4, older_fusion],
+        "cohort-1",
+    )
+
+    assert selected["l4_alpha_ev"]["source_run_date"] == "2026-08-29"
+    assert selected["allocator_ev_fusion"]["source_run_date"] == "2026-08-29"
+    assert activate is True
+
+
+def test_candidate_lane_observes_complete_offline_failed_pair_without_activation() -> None:
+    l4, _ = _candidate("l4_alpha_ev")
+    fusion, _ = _candidate("allocator_ev_fusion")
+    l4["state"] = "offline_failed"
+    l4["offline_gate_decision"] = "FAIL"
+    fusion["state"] = "offline_failed"
+    fusion["offline_gate_decision"] = "FAIL"
+
+    selected, activate = _candidate_rows(
+        lambda _sql, _params: [l4, fusion],
+        "cohort-1",
+    )
+
+    assert set(selected) == {"l4_alpha_ev", "allocator_ev_fusion"}
+    assert activate is False
+
+
+def test_candidate_lane_never_reactivates_production_only_pair() -> None:
+    l4, _ = _candidate("l4_alpha_ev")
+    fusion, _ = _candidate("allocator_ev_fusion")
+    l4["state"] = "production"
+    fusion["state"] = "production"
+
+    selected, activate = _candidate_rows(
+        lambda _sql, _params: [l4, fusion],
+        "cohort-1",
+    )
+
+    assert selected == {}
+    assert activate is False
 
 
 def test_evaluator_waits_without_training_or_reusing_pre_freeze_rows() -> None:
@@ -244,9 +321,11 @@ def test_evaluator_waits_without_training_or_reusing_pre_freeze_rows() -> None:
 
     assert result["status"] == "waiting_for_post_freeze_mature_dates"
     assert result["candidate_source_run_date"] == "2026-08-30"
+    assert result["gates"]["l4_alpha_ev"]["decision"] == "PENDING"
+    assert result["gates"]["l4_alpha_ev"]["minimum_evaluable_dates"] == 10
     assert result["promotion_ready"] is False
     assert result["training_dispatched"] is False
-    assert calls == {"build": 0, "persist": 0}
+    assert calls == {"build": 0, "persist": 1}
 
 
 def test_evaluator_never_pairs_candidates_from_different_freeze_dates() -> None:
@@ -267,6 +346,6 @@ def test_evaluator_never_pairs_candidates_from_different_freeze_dates() -> None:
         query_fn=lambda _sql, _params: [l4_row, fusion_row],
         batch_fn=lambda *_args, **_kwargs: {"changes": 0},
     )
-    assert result["status"] == "candidate_pair_missing"
+    assert result["status"] == "offline_pass_candidate_pair_missing"
     assert result["promotion_ready"] is False
     assert result["training_dispatched"] is False

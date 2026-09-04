@@ -196,6 +196,25 @@ async def _execute_forward_extension_resume(
     return result
 
 
+def _dependency_retry_reason(result: dict[str, Any]) -> str:
+    forward_extension = result.get("daily_forward_extension")
+    forward_extension = forward_extension if isinstance(forward_extension, dict) else {}
+    full_fit = result.get("full_fit_dispatch")
+    full_fit = full_fit if isinstance(full_fit, dict) else {}
+    opb_refresh = result.get("opb_refresh")
+    opb_refresh = opb_refresh if isinstance(opb_refresh, dict) else {}
+    for value in (
+        forward_extension.get("reason"),
+        full_fit.get("reason"),
+        opb_refresh.get("error"),
+        result.get("candidate_forward_promotion_error"),
+        result.get("reason"),
+    ):
+        if str(value or "").strip():
+            return str(value).strip()
+    return "dependency_retry_required"
+
+
 def _summary(run_id: str, result: dict[str, Any], *, mode: str) -> str:
     if mode == "allocator_snapshot":
         return " ".join([
@@ -218,12 +237,17 @@ def _summary(run_id: str, result: dict[str, Any], *, mode: str) -> str:
             f"promotion_attempted={bool(result.get('promotion_attempted'))}",
             f"serving_pointer_changed={bool(result.get('serving_pointer_changed'))}",
         ])
+    summary_reason = (
+        result.get("promotion_reason")
+        or (_dependency_retry_reason(result) if result.get("dependency_retry_required") else result.get("reason"))
+        or "none"
+    )
     parts = [
         f"run_id={run_id}",
         f"status={result.get('status', 'unknown')}",
         f"cohort={result.get('cohort_id', 'none')}",
         f"promoted={bool(result.get('promoted'))}",
-        f"reason={result.get('promotion_reason') or result.get('reason') or 'none'}",
+        f"reason={summary_reason}",
         f"full_fit={str((result.get('full_fit_dispatch') or {}).get('status') or 'none')}",
     ]
     prep_lifecycle = result.get("prep_lifecycle")
@@ -428,14 +452,7 @@ async def _run() -> int:
             status = str(result.get("status") or "").lower()
             if result.get("dependency_retry_required"):
                 if continuation_attempt >= OOF_CONTINUATION_MAX_ATTEMPTS:
-                    forward_extension = result.get("daily_forward_extension") or {}
-                    reason = (
-                        result.get("reason")
-                        or forward_extension.get("reason")
-                        or (result.get("full_fit_dispatch") or {}).get("reason")
-                        or (result.get("opb_refresh") or {}).get("error")
-                        or "dependency_retry_required"
-                    )
+                    reason = _dependency_retry_reason(result)
                     raise RuntimeError(
                         "oof_dependency_continuation_exhausted:"
                         f"{reason}:attempt={continuation_attempt}"
@@ -489,6 +506,8 @@ async def _run() -> int:
             "continuation_only": continuation_only,
             "prep_lifecycle": result.get("prep_lifecycle") if isinstance(result.get("prep_lifecycle"), dict) else {},
         }
+        if result.get("dependency_retry_required"):
+            payload["metadata"]["dependency_retry_reason"] = _dependency_retry_reason(result)
         calendar = result.get("calendar")
         calendar = calendar if isinstance(calendar, dict) else {}
         payload["run_date"] = end_date or str(calendar.get("cutoff") or "")[:10]

@@ -41,11 +41,11 @@ const METRIC_LABELS: Record<string, string> = {
   incumbent_sample_count: '同日配對的現行 Route 樣本', paired_date_count: '現行與候選 Route 完整配對日期',
   absolute_spread_lcb90: '候選 Route 絕對報酬價差 LCB90', challenger_incumbent_delta_lcb90: '候選相對現行 Route 連續權重增量 LCB90',
   brier: '機率誤差（Brier，需優於基準）', walk_forward: '離線候選跨窗驗證', strict_pit_rows: '正式 L4 PIT 樣本列數',
-  strict_pit_dates: '正式 L4 PIT 交易日數', shadow_walk_forward: '最新影子候選跨窗驗證', frozen_forward_quality: '固定 Active-8 cohort 的因果影子品質',
+  strict_pit_dates: '正式 L4 PIT 交易日數', shadow_walk_forward: 'Rolling cohort 診斷跨窗驗證', frozen_forward_quality: 'Rolling cohort 診斷品質',
   shadow_usable_samples: '最新監控封包 usable samples', shadow_usable_dates: '最新監控封包 usable dates',
   shadow_oof_rows: '最新監控封包 OOF rows', shadow_oof_max_date: '最新監控封包 OOF 截止日',
   shadow_evidence_advanced: '相較前一監控業務日是否有新增成熟 evidence',
-  frozen_forward_dates: '固定 Active-8 cohort 的因果影子交易日數', structure_samples: 'S12 影子結構樣本', structure_dates: 'S12 影子結構交易日',
+  frozen_forward_dates: 'Rolling cohort 診斷 OOF 交易日數', structure_samples: 'S12 影子結構樣本', structure_dates: 'S12 影子結構交易日',
   execution_samples: 'S12 影子實際執行樣本', execution_dates: 'S12 影子實際執行交易日', selection_corr_lcb90: '選股相關性 90% 保守下界（診斷）',
   selection_spread_lcb90: '選股價差報酬 90% 保守下界（診斷）', champion_corr_delta: '相對正式 L4 的相關性增量下界（診斷）',
   champion_spread_delta: '相對正式 L4 的價差增量下界（診斷）', final_champion_comparison: '離線候選最終交易 EV 配對比較',
@@ -53,6 +53,11 @@ const METRIC_LABELS: Record<string, string> = {
   serving_forward_guard_state: '正式服務 artifact 的 T+5 保護狀態', serving_forward_evaluable_dates: '正式服務 forward 可評估交易日',
   serving_forward_degraded_streak: '正式服務品質連續惡化日數', serving_forward_recovery_streak: '正式服務品質連續恢復日數',
   sector_source_signal_dates: '目前已合法累積的 PIT sector signal dates（供後續 cohort）',
+  prospective_gate_decision: '每日鎖定候選正式判定', prospective_evaluable_dates: '每日鎖定候選成熟 OOS 日期',
+  prospective_corr_lcb90: 'L4 排序相關性 LCB90', prospective_spread_lcb90: 'L4 多空價差 LCB90',
+  prospective_corr_delta_lcb90: 'L4+ 相對 L4 排序增量 LCB90', prospective_spread_delta_lcb90: 'L4+ 相對 L4 價差增量 LCB90',
+  prospective_top_return_lcb90: '候選 Top bucket 成本後報酬 LCB90', prospective_prediction_max_date: '最新成熟 post-freeze 預測日',
+  prospective_candidate_state: '鎖定候選 registry 狀態',
 }
 
 const FIELD_LABELS: Record<string, string> = {
@@ -105,6 +110,19 @@ const BLOCKER_LABELS: Record<string, string> = {
   'data_validity:date_count_below_validation_floor': '可用交易日未達離線驗證下限',
   'residual_adjustment:insufficient_dates': 'Residual adjustment 的獨立交易日不足，尚不能執行正式 walk-forward',
   'residual_champion:residual_adjustment_model_not_validated': 'Residual candidate 尚未通過驗證；只阻擋 L4+ residual，production 維持 safe-abstention',
+  prospective_date_count_below_floor: '每日鎖定候選成熟 OOS 日期未滿 10 日；維持 PENDING，不判失敗',
+  prospective_top_return_lcb90_not_positive: 'Top bucket 成本後報酬 LCB90 尚未轉正',
+  prospective_corr_lcb90_not_positive: 'L4 排序相關性 LCB90 尚未轉正',
+  prospective_spread_lcb90_not_positive: 'L4 多空價差 LCB90 尚未轉正',
+  prospective_corr_delta_lcb90_inferior_to_l4: 'L4+ 排序相關性增量 LCB90 低於 L4',
+  prospective_spread_delta_lcb90_inferior_to_l4: 'L4+ 多空價差增量 LCB90 低於 L4',
+  prospective_recent_two_dates_jointly_inferior: 'L4+ 最近兩個成熟日的排序與價差增量同時為負',
+  offline_gate_not_pass: '候選離線入場門檻未通過',
+  offline_validation_packet_not_pass: '候選離線 validation packet 未通過',
+  owner_operational_parity_not_pass: '候選尚未通過正式 owner operational parity',
+  prospective_prediction_not_after_candidate_freeze: '前瞻預測日期未晚於候選 freeze 日期，不能算入成熟度',
+  prospective_forward_query_failed: '每日鎖定候選前瞻證據查詢失敗',
+  prospective_forward_evidence_missing: '每日鎖定候選前瞻證據尚未物化',
 }
 
 function stageIcon(id: PipelineMaturityStage['id']) {
@@ -254,9 +272,15 @@ function StageRow({ stage }: { stage: PipelineMaturityStage }) {
     ? stage.blocker_groups
     : [{ scope: 'stage', title: 'Blockers', blockers: stage.blockers }]
   const scopedCandidateStage = stage.id === 'l4' || stage.id === 'fusion'
-  const promotionMetrics = scopedCandidateStage
+  const allPromotionMetrics = scopedCandidateStage
     ? stage.metrics.filter((item) => item.scope === 'promotion_gate')
     : stage.metrics
+  const prospectiveMetrics = scopedCandidateStage
+    ? allPromotionMetrics.filter((item) => item.key.startsWith('prospective_'))
+    : []
+  const offlinePromotionMetrics = scopedCandidateStage
+    ? allPromotionMetrics.filter((item) => !item.key.startsWith('prospective_'))
+    : allPromotionMetrics
   const lifecycleMetrics = stage.metrics.filter((item) => item.scope === 'lifecycle')
   const productionMetrics = stage.metrics.filter((item) => item.scope === 'production')
   const monitoringMetrics = stage.metrics.filter((item) => item.scope === 'monitoring')
@@ -269,25 +293,22 @@ function StageRow({ stage }: { stage: PipelineMaturityStage }) {
         ? 'Production：learned expected-return artifact 正式服務中'
         : `Production：serving pointer ${evidenceScopes.serving_pointer.availability}`
     : null
-  const frozenForward = evidenceScopes?.frozen_forward
+  const metricByKey = new Map(stage.metrics.map((item) => [item.key, item]))
+  const prospectiveDateMetric = metricByKey.get('prospective_evaluable_dates')
+  const prospectiveDecisionMetric = metricByKey.get('prospective_gate_decision')
+  const prospectiveMaxDateMetric = metricByKey.get('prospective_prediction_max_date')
   const scopedEvidenceTruth = scopedCandidateStage && evidenceScopes?.offline_candidate
     ? [
-      `離線升級候選截止日 ${evidenceScopes.offline_candidate.source_run_date ?? '缺漏'}`,
-      `監控封包業務日 ${frozenForward?.business_date ?? '缺漏'}`,
-      `監控 OOF 截止日 ${frozenForward?.oof_max_date ?? '缺漏'}`,
-      frozenForward?.evidence_advanced_from_previous_business_date === true
-        ? '相較前一監控業務日：有新增成熟 evidence'
-        : frozenForward?.evidence_advanced_from_previous_business_date === false
-          ? '相較前一監控業務日：沒有新增成熟 evidence（只有封包日期前進）'
-          : frozenForward?.previous_business_date
-            ? '相較前一監控業務日：lineage 不同，不可直接比較'
-            : '相較前一監控業務日：首次證據',
+      `鎖定候選 freeze ${evidenceScopes.offline_candidate.source_run_date ?? '缺漏'}`,
+      `每日成熟 OOS ${prospectiveDateMetric?.value ?? 0}/${prospectiveDateMetric?.target ?? 10}`,
+      `最新成熟預測日 ${prospectiveMaxDateMetric?.value ?? '尚無'}`,
+      `正式 gate ${prospectiveDecisionMetric?.value ?? 'MISSING'}`,
     ].join(' · ')
     : null
   const evidenceScopeRows = [
     evidenceScopes?.frozen_forward ? {
       scope: 'frozen_forward',
-      title: '日更監控（和 L1.5 對照；不影響正式結果）',
+      title: 'Rolling cohort 日更診斷（非升級門檻）',
       rows: [
         ['Cohort', evidenceScopes.frozen_forward.cohort_id],
         ['Evaluation', evidenceScopes.frozen_forward.evaluation_id],
@@ -314,7 +335,7 @@ function StageRow({ stage }: { stage: PipelineMaturityStage }) {
     } : null,
     evidenceScopes?.offline_candidate ? {
       scope: 'offline_candidate',
-      title: `${evidenceScopes.offline_candidate.cadence} 離線正式升級候選（只在新候選產生時更新）`,
+      title: `${evidenceScopes.offline_candidate.cadence} 離線候選來源（只建立／排隊 candidate）`,
       rows: [
         ['Cadence', evidenceScopes.offline_candidate.cadence],
         ['Role', evidenceScopes.offline_candidate.role],
@@ -422,18 +443,23 @@ function StageRow({ stage }: { stage: PipelineMaturityStage }) {
             </div>
             <div className="space-y-4">
               <MetricSection
-                title="日更 Frozen-forward 固定候選外推監控（非升級成熟度）"
-                description="固定同一候選與 Active-8 OOF cohort，只檢查新增成熟標籤後是否退化；sector-alpha dates 是此監控 usable dates 的可用子集合，不等於正式 L4 PIT 物化日數，也不會改寫 promotion packet。"
-                metrics={monitoringMetrics}
-              />
-              <MetricSection
                 title={scopedCandidateStage
-                  ? `${evidenceScopes?.offline_candidate?.cadence ?? 'weekly'} 離線候選正式升級門檻（決定能否正式參與）`
+                  ? '每日鎖定候選正式升級門檻'
                   : '成熟度證據'}
                 description={scopedCandidateStage
-                  ? '這是同一個不可變候選的 promotion packet；每日監控日期前進不會改寫這些門檻統計，只有新候選完成離線評估後才更新。門檻全數通過並完成 promotion commit，learned artifact 才能正式參與。'
+                  ? '同一候選 freeze 後逐日只追加已成熟的 post-freeze OOS 證據；0–9 日維持 PENDING，不判失敗，滿 10 日才依 LCB90 品質門檻判定。Weekly 新候選不會重置已鎖定候選的成熟度。'
                   : '本階段的正式成熟度欄位。'}
-                metrics={promotionMetrics}
+                metrics={prospectiveMetrics}
+              />
+              <MetricSection
+                title={`${evidenceScopes?.offline_candidate?.cadence ?? 'weekly'} 離線候選生成與入場門檻`}
+                description="只負責建立可進入每日前瞻驗證的不可變候選；不直接 promote，也不取代每日累積的正式升級判定。"
+                metrics={offlinePromotionMetrics}
+              />
+              <MetricSection
+                title="Rolling cohort 日更診斷（非升級成熟度）"
+                description="用 rolling 75/25 cohort 觀察整體資料流是否退化；不是鎖定候選、不是 production artifact，也不會改寫 promotion maturity。"
+                metrics={monitoringMetrics}
               />
               <MetricSection
                 title="Production 物化覆蓋與下一批候選 readiness"

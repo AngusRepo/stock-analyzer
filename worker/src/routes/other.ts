@@ -215,11 +215,7 @@ import { getTradingConfig } from '../lib/tradingConfig'
 import { classifyBoard, resolveRecommendationGovernance } from '../lib/boardTradability'
 import { summarizeScreenerFunnelRows, summarizeStrategyPortfolioIntelligenceHealth } from '../lib/screenerFunnelEvidence'
 import { readMarketRegimeState } from '../lib/marketRegimeState'
-import {
-  buildMarketRegimeFactorPacket,
-  loadMarketRegimeFactorPacket,
-  upsertMarketRegimeFactorPacket,
-} from '../lib/marketRegimeFactorPacket'
+import { loadMarketRegimeFactorPacket } from '../lib/marketRegimeFactorPacket'
 import { buildMarketOptimisticOutlook } from '../lib/marketOutlook'
 import { loadRecommendationEvidenceLinks } from '../lib/recommendationEvidenceLinks'
 import { SCORE_V2_VERSION } from '../lib/scoreV2Taxonomy'
@@ -2683,12 +2679,10 @@ market.get('/risk', async (c) => {
     factor('lppls', 'LPPLS', String((monitors as any).lppls ?? 'context'), (transitionGuard as any).bubble_risk ? 'warn' : 'info', 'market_regime_state.monitors.lppls'),
     factor('hawkes', 'Hawkes', String((monitors as any).hawkes ?? 'context'), (transitionGuard as any).contagion_risk ? 'warn' : 'info', 'market_regime_state.monitors.hawkes'),
   ]
-  let factorPacket = await buildMarketRegimeFactorPacket(databaseForDataDomain(c.env, 'market'), row, regimeState).catch(() => null)
-  if (factorPacket) {
-    await upsertMarketRegimeFactorPacket(databaseForDataDomain(c.env, 'market'), factorPacket).catch(() => {})
-  } else {
-    factorPacket = await loadMarketRegimeFactorPacket(databaseForDataDomain(c.env, 'market'), row.date).catch(() => null)
-  }
+  const factorPacket = await loadMarketRegimeFactorPacket(
+    databaseForDataDomain(c.env, 'market'),
+    row.date,
+  ).catch(() => null)
   const [canonicalOverview, creditTradingBase, institutionalFlows, regimeContext, usMarketSignal, globalEventContext, marketRiskDetail] = await Promise.all([
     loadCanonicalMarketOverview(databaseForDataDomain(c.env, 'market')),
     loadCanonicalCreditTrading(databaseForDataDomain(c.env, 'market')),
@@ -2746,6 +2740,8 @@ market.get('/risk', async (c) => {
     limitDownPct:           row.limit_down_pct,
     riskScore:              factorPacket?.score ?? row.risk_score,
     riskLevel:              factorPacket?.level ?? row.risk_level,
+    riskOwner:              factorPacket ? 'market_regime_factor_packets' : 'market_risk_fallback',
+    riskStatus:             factorPacket ? 'ready' : 'degraded',
     riskSummary:            packetSummary,
     calculatedAt:           row.calculated_at,
     breadthSnapshot:        canonicalOverview?.breadthSnapshot ?? null,
@@ -2783,6 +2779,7 @@ market.get('/risk', async (c) => {
       'TAIFEX MIS only for live night futures',
     ],
     materializationGaps: {
+      factorPacket: factorPacket ? null : `market_regime_factor_packets missing for ${row.date}`,
       putCallRatio: regimeContext?.missing?.putCallRatio ? 'FinLab tw_option_put_call_ratio not materialized' : null,
       largeTraderNet: regimeContext?.missing?.largeTraderNet ? 'FinLab tw_taifex_futures_large_trader not materialized' : null,
       usdTwd: regimeContext?.missing?.usdTwd ? 'FinLab world_index USD/TWD not materialized' : null,
@@ -2810,12 +2807,32 @@ market.get('/risk', async (c) => {
 market.get('/risk/history', async (c) => {
   const days = Math.min(parsePosInt(c.req.query('days'), 30), 90)
   const since = new Date(Date.now() - days * 86400000).toISOString().split('T')[0]
-  const { results } = await databaseForDataDomain(c.env, 'core').prepare(
+  const { results: riskRows } = await databaseForDataDomain(c.env, 'core').prepare(
     `SELECT date, risk_score, risk_level, vix, twii_close, twii_vol20, twii_bias,
             foreign_consecutive_sell, foreign_net_5d
      FROM market_risk WHERE date >= ? ORDER BY date ASC`
   ).bind(since).all<any>()
-  return c.json(results ?? [])
+  const { results: packetRows } = await databaseForDataDomain(c.env, 'market').prepare(
+    `SELECT date, score, level, schema_version, generated_at
+       FROM market_regime_factor_packets
+      WHERE date >= ?
+      ORDER BY date ASC`
+  ).bind(since).all<any>()
+  const packetByDate = new Map((packetRows ?? []).map((packet: any) => [String(packet.date), packet]))
+  const results = (riskRows ?? []).map((row: any) => {
+    const packet = packetByDate.get(String(row.date)) as any
+    return {
+      ...row,
+      raw_risk_score: row.risk_score,
+      raw_risk_level: row.risk_level,
+      risk_score: packet?.score ?? row.risk_score,
+      risk_level: packet?.level ?? row.risk_level,
+      factor_packet_schema_version: packet?.schema_version ?? null,
+      factor_packet_generated_at: packet?.generated_at ?? null,
+      risk_owner: packet ? 'market_regime_factor_packets' : 'market_risk_fallback',
+    }
+  })
+  return c.json(results)
 })
 
 // GET /api/market/ex-dividend — 除權除息預告（KV 快取，Wave2 每日更新）

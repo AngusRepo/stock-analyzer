@@ -240,9 +240,15 @@ export async function updateSchedulerExecutionTicket(
     authority: SchedulerExecutionTicketAuthority
     summary?: string
     error?: string
+    recoverTerminalFailure?: boolean
   },
 ): Promise<SchedulerExecutionTicketRow> {
-  const allowed = ALLOWED_PREVIOUS[input.status]
+  if (input.recoverTerminalFailure === true && input.status !== 'success') {
+    throw new Error('scheduler ticket terminal recovery may only target success')
+  }
+  const allowed = input.recoverTerminalFailure === true
+    ? [...ALLOWED_PREVIOUS[input.status], 'error', 'blocked']
+    : ALLOWED_PREVIOUS[input.status]
   const terminal = TERMINAL_STATUSES.has(input.status)
   const placeholders = allowed.map(() => '?').join(', ')
   const result = await db.prepare(`
@@ -253,7 +259,11 @@ export async function updateSchedulerExecutionTicket(
              THEN COALESCE(started_at, CURRENT_TIMESTAMP)
              ELSE started_at
            END,
-           completed_at=CASE WHEN ?=1 THEN COALESCE(completed_at, CURRENT_TIMESTAMP) ELSE NULL END,
+           completed_at=CASE
+             WHEN ?=1 AND ?=1 THEN CURRENT_TIMESTAMP
+             WHEN ?=1 THEN COALESCE(completed_at, CURRENT_TIMESTAMP)
+             ELSE NULL
+           END,
            updated_at=CURRENT_TIMESTAMP
      WHERE ticket_id=? AND run_id=? AND status IN (${placeholders})
   `).bind(
@@ -262,6 +272,8 @@ export async function updateSchedulerExecutionTicket(
     input.summary ?? null,
     input.error ?? null,
     input.status,
+    terminal ? 1 : 0,
+    input.recoverTerminalFailure === true ? 1 : 0,
     terminal ? 1 : 0,
     input.ticketId,
     input.runId,

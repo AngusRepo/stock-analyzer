@@ -112,6 +112,14 @@ async function main(): Promise<void> {
     assert.deepEqual(pending.blockers, ['active8_oof_daily:accepted'])
 
     await updateSchedulerExecutionTicket(db, {
+      ticketId: root.ticket.ticket_id,
+      runId: root.ticket.run_id,
+      status: 'error',
+      authority: 'logical_child',
+      summary: 'transient downstream closure failure',
+      error: 'post_verify_chain:error,strategy_learning:missing',
+    })
+    await updateSchedulerExecutionTicket(db, {
       ticketId: active8.ticket_id,
       runId: active8.run_id,
       status: 'success',

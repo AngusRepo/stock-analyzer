@@ -123,11 +123,14 @@ export async function closeEveningChainRootIfComplete(
       summary: `evening-chain durable root absent date=${businessDate}`,
     }
   }
-  if (root.status === 'success' || terminalFailure(root.status)) {
+  const requestedCanonicalRunId = String(input.canonicalRunId ?? '').trim()
+  const recoverableTerminalRoot = ['error', 'blocked'].includes(root.status)
+    && Boolean(requestedCanonicalRunId)
+  if (root.status === 'success' || (terminalFailure(root.status) && !recoverableTerminalRoot)) {
     return {
       status: root.status === 'success' ? 'closed_success' : 'closed_error',
       business_date: businessDate,
-      canonical_run_id: String(input.canonicalRunId ?? '').trim() || null,
+      canonical_run_id: requestedCanonicalRunId || null,
       root_ticket_id: root.ticket_id,
       blockers: root.status === 'success' ? [] : [root.last_error || `root_${root.status}`],
       summary: root.last_summary || `evening-chain durable root already ${root.status}`,
@@ -256,6 +259,7 @@ export async function closeEveningChainRootIfComplete(
     authority: 'logical_child',
     summary,
     error: blockers.length ? blockers.join(',') : undefined,
+    recoverTerminalFailure: recoverableTerminalRoot && status === 'success',
   })
   return {
     status: status === 'success' ? 'closed_success' : 'closed_error',

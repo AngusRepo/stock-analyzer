@@ -197,6 +197,35 @@ def test_immutable_artifact_record_is_idempotent_and_rejects_identity_drift(monk
         [record["artifact_id"]],
     ).fetchone()[0] == 1
 
+    connection.execute(
+        """
+        UPDATE model_artifact_registry
+        SET state='shadowing', live_gate_status='shadowing_not_enough_data',
+            live_evidence_json='{\"decision\":\"PENDING\"}',
+            promotion_decision='not_evaluated', approval_state='not_required'
+        WHERE artifact_id=?
+        """,
+        [record["artifact_id"]],
+    )
+    connection.commit()
+    replay = registry.upsert_artifact_record(record, immutable_identity=True)
+    assert replay["immutable_verified"] is True
+    lifecycle = connection.execute(
+        """
+        SELECT state, live_gate_status, live_evidence_json, promotion_decision,
+               approval_state
+        FROM model_artifact_registry WHERE artifact_id=?
+        """,
+        [record["artifact_id"]],
+    ).fetchone()
+    assert dict(lifecycle) == {
+        "state": "shadowing",
+        "live_gate_status": "shadowing_not_enough_data",
+        "live_evidence_json": '{"decision":"PENDING"}',
+        "promotion_decision": "not_evaluated",
+        "approval_state": "not_required",
+    }
+
     drifted = {
         **record,
         "artifact_path": "universal/ev_candidates/cohort/l4_alpha_ev/drifted.json",

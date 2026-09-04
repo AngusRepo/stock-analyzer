@@ -928,19 +928,22 @@ def upsert_artifact_record(
     if not immutable_identity:
         return result
 
+    # Lifecycle state is intentionally excluded here. A durable candidate is
+    # first registered from its immutable packet, then the daily evaluator
+    # advances state/live-gate fields in place. Replaying the same packet must
+    # verify its identity without rolling those mutable fields back or treating
+    # their legitimate advancement as artifact drift.
     immutable_columns = (
         "artifact_id",
         "model_name",
         "version",
         "candidate_type",
-        "state",
         "artifact_path",
         "metadata_path",
         "training_run_id",
         "training_manifest_path",
         "trained_from_snapshot",
         "evaluation_baseline_version",
-        "final_compared_to",
         "feature_policy_version",
         "checksum",
         "source_run_date",
@@ -949,24 +952,18 @@ def upsert_artifact_record(
         "offline_gate_decision",
         "offline_gate_failed_gates",
         "offline_evidence_json",
-        "live_gate_status",
-        "live_evidence_json",
-        "promotion_decision",
-        "approval_state",
     )
     expected = {
         "artifact_id": record["artifact_id"],
         "model_name": record["model_name"],
         "version": record["version"],
         "candidate_type": record["candidate_type"],
-        "state": record["state"],
         "artifact_path": record.get("artifact_path"),
         "metadata_path": record.get("metadata_path"),
         "training_run_id": record.get("training_run_id"),
         "training_manifest_path": record.get("training_manifest_path"),
         "trained_from_snapshot": record.get("trained_from_snapshot"),
         "evaluation_baseline_version": record.get("evaluation_baseline_version"),
-        "final_compared_to": record.get("final_compared_to"),
         "feature_policy_version": record.get("feature_policy_version"),
         "checksum": record.get("checksum"),
         "source_run_date": record.get("source_run_date"),
@@ -975,10 +972,6 @@ def upsert_artifact_record(
         "offline_gate_decision": record.get("offline_gate_decision", "PENDING"),
         "offline_gate_failed_gates": record.get("offline_gate_failed_gates", "[]"),
         "offline_evidence_json": record.get("offline_evidence_json", "{}"),
-        "live_gate_status": record.get("live_gate_status", "not_started"),
-        "live_evidence_json": record.get("live_evidence_json", "{}"),
-        "promotion_decision": record.get("promotion_decision", "not_evaluated"),
-        "approval_state": record.get("approval_state", "not_required"),
     }
     rows = d1_client.query(
         f"SELECT {', '.join(immutable_columns)} "

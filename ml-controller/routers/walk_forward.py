@@ -1750,6 +1750,32 @@ def _without_frozen_forward_rows(
     return [row for row in rows if str(row.get("fold_id") or "") != "frozen_forward"]
 
 
+def _candidate_base_training_rows(
+    rows: list[dict[str, Any]],
+) -> tuple[list[dict[str, Any]], str]:
+    """Bind candidate fitting to the immutable base OOF prediction window."""
+
+    base_rows = _without_frozen_forward_rows(rows)
+    dates = sorted({
+        str(
+            row.get("prediction_date")
+            or row.get("snapshot_date")
+            or row.get("date")
+            or ""
+        )[:10]
+        for row in base_rows
+        if len(str(
+            row.get("prediction_date")
+            or row.get("snapshot_date")
+            or row.get("date")
+            or ""
+        )[:10]) == 10
+    })
+    if not base_rows or not dates:
+        raise ValueError("active8_oof_candidate_base_training_rows_missing")
+    return base_rows, dates[-1]
+
+
 def _can_reuse_indexed_oof_base(
     persisted: list[dict[str, Any]],
     materialized_indexes: list[dict[str, Any]],
@@ -2039,9 +2065,12 @@ async def materialize_walk_forward_oof(req: OofMaterializeRequest):
                 )
                 snapshot_evidence["reused_immutable_materialization"] = False
                 snapshot_evidence["deterministic_semantic_rebuild"] = True
+        candidate_snapshot_rows, candidate_trained_until = (
+            _candidate_base_training_rows(snapshot_rows)
+        )
         l4_result = build_l4_alpha_ev_artifact_from_rows(
-            snapshot_rows,
-            trained_until=req.knowledge_cutoff_date,
+            candidate_snapshot_rows,
+            trained_until=candidate_trained_until,
             generation_mode="purged_oof",
             cohort_id=req.cohort_id,
             artifact_generated_at=f"{req.knowledge_cutoff_date}T00:00:00+00:00",
@@ -2081,15 +2110,18 @@ async def materialize_walk_forward_oof(req: OofMaterializeRequest):
                 }
             else:
                 l4_predictions = rebuilt_l4_predictions
+        candidate_l4_predictions = _without_frozen_forward_rows(l4_predictions)
+        if not candidate_l4_predictions:
+            raise ValueError("active8_oof_candidate_base_l4_predictions_missing")
         fusion_rows = build_fusion_oof_rows(
-            snapshot_rows,
-            l4_predictions,
+            candidate_snapshot_rows,
+            candidate_l4_predictions,
             knowledge_cutoff_date=req.knowledge_cutoff_date,
             query_fn=learning_client.query,
         )
         fusion_result = build_allocator_ev_fusion_artifact_from_rows(
             fusion_rows,
-            trained_until=req.knowledge_cutoff_date,
+            trained_until=candidate_trained_until,
             knowledge_cutoff_date=req.knowledge_cutoff_date,
             generation_mode="purged_oof",
             cohort_id=req.cohort_id,

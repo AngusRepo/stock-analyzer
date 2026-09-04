@@ -33,6 +33,31 @@ def test_walk_forward_defaults_to_active8_contract():
     assert coverage["coverage_mode"] == "active8_purged_oof_retrain"
 
 
+def test_ev_candidate_fit_excludes_frozen_forward_rows_and_uses_base_cutoff():
+    from routers.walk_forward import _candidate_base_training_rows
+
+    base_rows, trained_until = _candidate_base_training_rows([
+        {
+            "fold_id": "fold-4",
+            "snapshot_date": "2026-08-18",
+            "symbol": "2330",
+        },
+        {
+            "fold_id": "frozen_forward",
+            "snapshot_date": "2026-08-25",
+            "symbol": "2330",
+        },
+        {
+            "fold_id": "frozen_forward",
+            "snapshot_date": "2026-08-27",
+            "symbol": "2317",
+        },
+    ])
+
+    assert trained_until == "2026-08-18"
+    assert [row["snapshot_date"] for row in base_rows] == ["2026-08-18"]
+
+
 def test_oof_full_fit_plan_keeps_all_structurally_valid_models_as_ensemble_bases():
     from routers.walk_forward import build_oof_full_fit_dispatch_plan
 

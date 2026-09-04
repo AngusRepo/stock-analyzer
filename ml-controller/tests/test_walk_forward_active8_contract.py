@@ -1599,6 +1599,9 @@ def test_oof_lifecycle_receipt_is_bound_to_active_materialization_policy():
     assert "dry_run=req.dry_run and not durable_shadow_base_materialization" in request_source
     assert '"durable_shadow_base_materialization": durable_shadow_base_materialization' in request_source
     assert "forward shadow coverage may only be recorded by the daily durable OOF lifecycle" in request_source
+    assert "req.forward_extension_manifest_path and req.promote" in request_source
+    assert "and not req.persist_forward_shadow_coverage" in request_source
+    assert "non-dry frozen forward extension may only persist isolated shadow" in request_source
     assert 'materialization_controls["frozen_forward_shadow"] and not req.dry_run' in request_source
     assert '"forward_shadow_coverage": result.get("forward_shadow_coverage")' in request_source
     assert _oof_lifecycle_receipt_path("cohort-1", "2026-07-29", "daily").endswith(

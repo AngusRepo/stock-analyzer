@@ -1849,10 +1849,22 @@ async def materialize_walk_forward_oof(req: OofMaterializeRequest):
             status_code=409,
             detail="non-dry OOF materialization must run in the durable Cloud Run Job",
         )
-    if req.forward_extension_manifest_path and (not req.dry_run or req.promote):
+    if req.forward_extension_manifest_path and req.promote:
         raise HTTPException(
             status_code=400,
-            detail="frozen forward extension is dry-run shadow evidence only and requires promote=false",
+            detail="frozen forward extension is shadow evidence only and requires promote=false",
+        )
+    if (
+        req.forward_extension_manifest_path
+        and not req.dry_run
+        and not req.persist_forward_shadow_coverage
+    ):
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "non-dry frozen forward extension may only persist isolated shadow "
+                "coverage"
+            ),
         )
     if req.persist_forward_shadow_coverage and (
         not req.forward_extension_manifest_path

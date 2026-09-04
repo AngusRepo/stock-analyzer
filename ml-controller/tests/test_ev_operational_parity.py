@@ -102,3 +102,37 @@ def test_l4_parity_can_pass_when_only_fusion_materialization_fails(monkeypatch):
     assert result["owner_decisions"]["l4_alpha_ev"]["decision"] == "PASS"
     assert result["owner_decisions"]["allocator_ev_fusion"]["decision"] == "FAIL"
     assert result["l4_serving_coverage"] == 1.0
+    assert result["fusion_materialization_blocker_counts"] == {"fusion_contract": 20}
+
+
+def test_operational_parity_simulates_admission_without_mutating_candidate(monkeypatch):
+    from services import ev_operational_parity as parity
+
+    observed = {}
+    _patch_materializers(monkeypatch, parity)
+
+    def capture_l4(*args, **kwargs):
+        observed["l4"] = kwargs["policy"]
+        return {"status": "loaded", "expected_return": 0.01}
+
+    def capture_fusion(*args, **kwargs):
+        observed["fusion"] = kwargs["policy"]
+        return {"status": "loaded", "expected_return": 0.008}
+
+    monkeypatch.setattr(parity, "materialize_l4_alpha_ev", capture_l4)
+    monkeypatch.setattr(parity, "materialize_allocator_ev_fusion", capture_fusion)
+    l4 = {"model_version": "l4-oof", "validation_packet": {"decision": "FAIL"}}
+    fusion = {"model_version": "fusion-oof", "validation_packet": {"decision": "FAIL"}}
+
+    result = parity.assess_ev_operational_parity(
+        l4_artifact=l4,
+        fusion_artifact=fusion,
+        native_rows=_native_rows(),
+    )
+
+    assert result["decision"] == "PASS"
+    assert result["validation_override_scope"] == "operational_parity_simulation_only"
+    assert observed["l4"]["validation_packet"] == {"decision": "PASS", "failed_gates": []}
+    assert observed["fusion"]["validation_packet"] == {"decision": "PASS", "failed_gates": []}
+    assert l4["validation_packet"]["decision"] == "FAIL"
+    assert fusion["validation_packet"]["decision"] == "FAIL"

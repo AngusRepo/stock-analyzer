@@ -247,6 +247,13 @@ def test_promotion_gate_requires_preoutcome_locked_dates_and_both_evidence_lanes
     assert "owner_operational_parity_not_pass" in _promotion_gate(
         rows, owner="l4_alpha_ev", candidate=candidate
     )["failed_gates"]
+    early_parity_gate = _promotion_gate(
+        rows[:5], owner="l4_alpha_ev", candidate=candidate
+    )
+    assert early_parity_gate["decision"] == "PENDING"
+    assert early_parity_gate["deferred_contract_blockers"] == [
+        "owner_operational_parity_not_pass"
+    ]
 
 
 def test_promotion_gate_holds_inconclusive_candidate_after_ten_dates() -> None:

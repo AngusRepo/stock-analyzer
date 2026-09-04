@@ -31,13 +31,29 @@ def assess_ev_operational_parity(
 ) -> dict[str, Any]:
     """Require identical feature semantics and successful production materializers."""
 
+    l4_validation = _loads(l4_artifact.get("validation_packet"))
+    fusion_validation = _loads(fusion_artifact.get("validation_packet"))
+    # This gate checks whether the exact candidate can execute through the
+    # production materializers. Efficacy remains owned by the offline and
+    # prospective gates, so their FAIL decision must not make parity fail by
+    # construction before the materializer contract is exercised.
     l4_candidate = {
         **l4_artifact,
+        "validation_packet": {
+            **l4_validation,
+            "decision": "PASS",
+            "failed_gates": [],
+        },
         "promotion_state": "production_approved",
         "approval_state": "production_approved",
     }
     fusion_candidate = {
         **fusion_artifact,
+        "validation_packet": {
+            **fusion_validation,
+            "decision": "PASS",
+            "failed_gates": [],
+        },
         "promotion_state": "production_primary",
         "promotion_tier": "primary",
         "primary_expected_return_allowed": True,
@@ -45,6 +61,8 @@ def assess_ev_operational_parity(
     }
     comparable = 0
     feature_mismatches: list[dict[str, Any]] = []
+    l4_materialization_blockers: dict[str, int] = {}
+    fusion_materialization_blockers: dict[str, int] = {}
     l4_loaded = 0
     fusion_loaded = 0
     for row in native_rows:
@@ -84,6 +102,10 @@ def assess_ev_operational_parity(
         if isinstance(l4_payload, dict) and l4_payload.get("status") == "loaded":
             l4_loaded += 1
             parsed_row["l4_alpha_ev"] = l4_payload
+        elif isinstance(l4_payload, dict):
+            for blocker in l4_payload.get("blockers") or ["l4_materializer_not_loaded"]:
+                key = str(blocker)
+                l4_materialization_blockers[key] = l4_materialization_blockers.get(key, 0) + 1
         l4_value, l4_source, resolved_l4_payload = extract_l4_alpha_ev(parsed_row)
         alpha_context = parsed_row.get("alpha_context") or {}
         fusion_payload = materialize_allocator_ev_fusion(
@@ -96,6 +118,10 @@ def assess_ev_operational_parity(
         )
         if isinstance(fusion_payload, dict) and fusion_payload.get("status") == "loaded":
             fusion_loaded += 1
+        elif isinstance(fusion_payload, dict):
+            for blocker in fusion_payload.get("blockers") or ["fusion_materializer_not_loaded"]:
+                key = str(blocker)
+                fusion_materialization_blockers[key] = fusion_materialization_blockers.get(key, 0) + 1
 
     denominator = max(1, comparable)
     l4_coverage = l4_loaded / denominator
@@ -136,8 +162,11 @@ def assess_ev_operational_parity(
         "feature_mismatch_examples": feature_mismatches[:20],
         "l4_serving_coverage": l4_coverage,
         "fusion_serving_coverage": fusion_coverage,
+        "l4_materialization_blocker_counts": l4_materialization_blockers,
+        "fusion_materialization_blocker_counts": fusion_materialization_blockers,
         "minimum_rows": MIN_PARITY_ROWS,
         "minimum_serving_coverage": MIN_SERVING_COVERAGE,
         "labels_required": False,
         "purpose": "training_serving_contract_and_materializer_parity_only",
+        "validation_override_scope": "operational_parity_simulation_only",
     }

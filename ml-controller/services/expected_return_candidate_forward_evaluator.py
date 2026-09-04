@@ -630,9 +630,20 @@ def _promotion_gate(
         )
     )
     maximum_window_exhausted = len(evaluable) >= MAX_EVALUABLE_DATES
+    terminal_contract_blockers = [
+        blocker
+        for blocker in contract_blockers
+        if blocker != "owner_operational_parity_not_pass"
+    ]
+    deferred_contract_blockers = [
+        blocker
+        for blocker in contract_blockers
+        if blocker == "owner_operational_parity_not_pass" and maturity_blockers
+    ]
     decision = (
-        "FAIL" if contract_blockers
+        "FAIL" if terminal_contract_blockers
         else "PENDING" if maturity_blockers
+        else "FAIL" if contract_blockers
         else "PASS" if not quality_blockers
         else "FAIL" if confidently_harmful or maximum_window_exhausted
         else "HOLD"
@@ -645,6 +656,7 @@ def _promotion_gate(
         "maturity_blockers": maturity_blockers,
         "quality_blockers": quality_blockers,
         "contract_blockers": contract_blockers,
+        "deferred_contract_blockers": deferred_contract_blockers,
         "candidate_artifact_id": registry["artifact_id"],
         "candidate_artifact_checksum": candidate["checksum"],
         "model_fingerprint": candidate["identity"]["model_fingerprint"],

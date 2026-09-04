@@ -1288,6 +1288,8 @@ def test_ev_oof_candidates_use_formal_registry_candidate_types():
     assert router.count('"artifact_id": (candidate_artifacts.get(') == 2
     assert "register_candidate=False" in receipt_block
     assert router.count("register_candidate=False") == 1
+    assert "and not durable_shadow_base_materialization" in router
+    assert "base_trained_until=candidate_trained_until" in router
 
 def test_daily_oof_materialization_reuses_checksum_verified_gcs_indexes():
     from routers.walk_forward import _can_reuse_indexed_oof_base

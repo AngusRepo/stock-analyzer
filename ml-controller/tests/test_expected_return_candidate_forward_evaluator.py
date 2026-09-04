@@ -301,6 +301,36 @@ def test_candidate_lane_keeps_oldest_shadowing_pair_when_new_weekly_pair_arrives
     assert activate == {"l4_alpha_ev": False, "allocator_ev_fusion": False}
 
 
+def test_candidate_lane_starts_oldest_base_bound_pair_not_daily_replay_artifact() -> None:
+    causal_l4, _ = _candidate("l4_alpha_ev", "2026-08-30")
+    causal_fusion, _ = _candidate("allocator_ev_fusion", "2026-08-30")
+    replay_l4, _ = _candidate("l4_alpha_ev", "2026-09-04")
+    replay_fusion, _ = _candidate("allocator_ev_fusion", "2026-09-04")
+    drift_l4, _ = _candidate("l4_alpha_ev", "2026-08-28")
+    drift_fusion, _ = _candidate("allocator_ev_fusion", "2026-08-28")
+    for row in (causal_l4, causal_fusion, replay_l4, replay_fusion):
+        row["artifact_trained_until"] = "2026-08-18"
+    for row in (drift_l4, drift_fusion):
+        row["artifact_trained_until"] = "2026-08-28"
+
+    selected, activate = _candidate_rows(
+        lambda _sql, _params: [
+            replay_l4,
+            replay_fusion,
+            causal_l4,
+            causal_fusion,
+            drift_l4,
+            drift_fusion,
+        ],
+        "cohort-1",
+        expected_trained_until="2026-08-18",
+    )
+
+    assert selected["l4_alpha_ev"]["source_run_date"] == "2026-08-30"
+    assert selected["allocator_ev_fusion"]["source_run_date"] == "2026-08-30"
+    assert activate == {"l4_alpha_ev": True, "allocator_ev_fusion": True}
+
+
 def test_candidate_lane_skips_newer_offline_failed_pair() -> None:
     failed_l4, _ = _candidate("l4_alpha_ev", "2026-08-30")
     failed_fusion, _ = _candidate("allocator_ev_fusion", "2026-08-30")

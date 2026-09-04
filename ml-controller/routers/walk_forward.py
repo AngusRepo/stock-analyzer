@@ -2201,6 +2201,7 @@ async def materialize_walk_forward_oof(req: OofMaterializeRequest):
                     build_fusion_rows_fn=build_fusion_oof_rows,
                     query_fn=learning_client.query,
                     batch_fn=learning_client.batch_execute,
+                    base_trained_until=candidate_trained_until,
                 )
         elif reuse_indexed:
             forward_shadow_coverage = load_verified_oof_forward_coverage(
@@ -2510,7 +2511,11 @@ async def materialize_walk_forward_oof(req: OofMaterializeRequest):
                 lifecycle_cadence=req.lifecycle_cadence,
                 allow_new_dispatch=not req.full_fit_poll_only,
             )
-        if not req.dry_run and candidate_artifacts is None:
+        if (
+            not req.dry_run
+            and candidate_artifacts is None
+            and not durable_shadow_base_materialization
+        ):
             candidate_artifacts = archive_ev_candidate_artifacts(
                 bucket=bucket,
                 cohort_id=req.cohort_id,

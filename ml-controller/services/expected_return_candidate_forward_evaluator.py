@@ -188,25 +188,43 @@ def _offline_admission(candidate: dict[str, Any]) -> dict[str, Any]:
 def _candidate_rows(
     query_fn: Callable[[str, list[Any]], list[dict[str, Any]]],
     cohort_id: str,
+    *,
+    expected_trained_until: str | None = None,
 ) -> tuple[dict[str, dict[str, Any]], dict[str, bool]]:
+    trained_until = str(expected_trained_until or "")[:10]
+    trained_until_clause = (
+        "AND json_extract(offline_evidence_json, '$.training_data.trained_until') = ?"
+        if len(trained_until) == 10
+        else ""
+    )
     rows = query_fn(
-        """
+        f"""
         SELECT artifact_id, model_name, version, state, artifact_path, checksum,
                source_run_date, offline_gate_decision, offline_gate_failed_gates,
-               training_run_id, updated_at
+               training_run_id, updated_at,
+               json_extract(
+                 offline_evidence_json,
+                 '$.training_data.trained_until'
+               ) AS artifact_trained_until
           FROM model_artifact_registry
          WHERE model_name IN ('l4_alpha_ev', 'allocator_ev_fusion')
            AND candidate_type IN ('l4_alpha_ev_refresh', 'allocator_ev_fusion_refresh')
+           {trained_until_clause}
          ORDER BY source_run_date DESC, updated_at DESC, artifact_id DESC
          LIMIT 80
         """,
-        [],
+        [trained_until] if trained_until_clause else [],
     )
     current_training_run_id = f"active8_oof:{cohort_id}"
     selected: dict[str, dict[str, Any]] = {}
     activate: dict[str, bool] = {}
     for owner in ("l4_alpha_ev", "allocator_ev_fusion"):
         owner_rows = [row for row in rows if str(row.get("model_name") or "") == owner]
+        if len(trained_until) == 10:
+            owner_rows = [
+                row for row in owner_rows
+                if str(row.get("artifact_trained_until") or "")[:10] == trained_until
+            ]
         active = [
             row for row in owner_rows
             if str(row.get("state") or "") in ACTIVE_CANDIDATE_STATES
@@ -226,7 +244,10 @@ def _candidate_rows(
             and _offline_admission_for_row(row)["decision"] == "PASS"
         ]
         if eligible:
-            selected[owner] = eligible[0]
+            # Start the oldest admissible lane. Daily evidence must advance one
+            # frozen candidate; a later replay artifact may not reset it before
+            # the original lane reaches a terminal prospective decision.
+            selected[owner] = eligible[-1]
             activate[owner] = True
 
     # Fusion is a residual over the exact L4 artifact. It may not delay an
@@ -721,10 +742,15 @@ def evaluate_expected_return_candidates_forward(
     build_fusion_rows_fn: Callable[..., list[dict[str, Any]]],
     query_fn: Callable[[str, list[Any]], list[dict[str, Any]]],
     batch_fn: Callable[..., dict[str, Any]],
+    base_trained_until: str | None = None,
 ) -> dict[str, Any]:
     """Evaluate exact candidates on immutable rows whose labels were unknown at freeze."""
 
-    selected, activate = _candidate_rows(query_fn, cohort_id)
+    selected, activate = _candidate_rows(
+        query_fn,
+        cohort_id,
+        expected_trained_until=base_trained_until,
+    )
     if not selected:
         return {
             "schema_version": SCHEMA_VERSION,
@@ -912,6 +938,10 @@ def evaluate_expected_return_candidates_forward(
         "schema_version": SCHEMA_VERSION,
         "status": "evaluated",
         "candidate_source_run_date": source_date,
+        "candidate_artifact_ids": {
+            owner: candidate["registry"]["artifact_id"]
+            for owner, candidate in candidates.items()
+        },
         "selection_semantic_floor_date": selection_semantic_floor_date,
         "candidate_states": {
             owner: str(candidate["registry"].get("state") or "")

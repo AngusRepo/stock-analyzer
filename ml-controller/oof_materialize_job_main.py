@@ -151,7 +151,11 @@ async def _execute_forward_extension_resume(
     result = await materialize_walk_forward_oof(OofMaterializeRequest(
         cohort_id=expected_cohort_id,
         knowledge_cutoff_date=knowledge_cutoff_date,
-        dry_run=True,
+        # This mode is mutation-isolated from serving, but it must persist the
+        # checksum-bound candidate artifact before the forward evaluator reads
+        # the registry. A dry run rebuilt the corrected artifact only in
+        # memory and then evaluated the stale pre-fix candidate instead.
+        dry_run=False,
         confirm=False,
         promote=False,
         dispatch_full_fit=False,

@@ -204,6 +204,41 @@ def test_forward_extension_resume_consumes_exact_manifest_without_training_or_pr
     }
 
 
+def test_forward_extension_resume_persists_candidate_before_forward_evaluation(monkeypatch):
+    from routers import walk_forward
+
+    requests = []
+
+    async def fake_materialize(request):
+        requests.append(request)
+        return {
+            "forward_extension": {"dates": ["2026-08-19", "2026-08-21"]},
+            "physical_prediction_coverage": {"base_max_date": "2026-08-18"},
+            "candidate_artifacts": {
+                "l4_alpha_ev": {"artifact_id": "l4:causal"},
+                "allocator_ev_fusion": {"artifact_id": "fusion:causal"},
+            },
+            "training_dispatched": False,
+            "promoted": False,
+        }
+
+    monkeypatch.setattr(walk_forward, "materialize_walk_forward_oof", fake_materialize)
+
+    result = asyncio.run(oof_materialize_job_main._execute_forward_extension_resume(
+        expected_cohort_id="cohort-v9",
+        knowledge_cutoff_date="2026-08-30",
+        forward_extension_manifest_path="forward/manifest.json",
+    ))
+
+    assert len(requests) == 1
+    request = requests[0]
+    assert request.dry_run is False
+    assert request.promote is False
+    assert request.dispatch_full_fit is False
+    assert result["status"] == "shadow_evaluated"
+    assert result["serving_pointer_changed"] is False
+
+
 def test_forward_extension_resume_rejects_mutating_controls(monkeypatch):
     callbacks = []
 

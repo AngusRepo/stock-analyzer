@@ -156,7 +156,7 @@ async def _execute_forward_extension_resume(
         # the registry. A dry run rebuilt the corrected artifact only in
         # memory and then evaluated the stale pre-fix candidate instead.
         dry_run=False,
-        confirm=False,
+        confirm=True,
         promote=False,
         dispatch_full_fit=False,
         lifecycle_cadence="daily",

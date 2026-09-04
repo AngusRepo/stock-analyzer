@@ -233,6 +233,7 @@ def test_forward_extension_resume_persists_candidate_before_forward_evaluation(m
     assert len(requests) == 1
     request = requests[0]
     assert request.dry_run is False
+    assert request.confirm is True
     assert request.promote is False
     assert request.dispatch_full_fit is False
     assert result["status"] == "shadow_evaluated"

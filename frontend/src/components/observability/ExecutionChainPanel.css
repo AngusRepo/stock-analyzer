@@ -359,6 +359,26 @@
 
 
 @media (min-width: 1180px) {
+  .obs-chain__topology.is-daily_readiness .obs-chain__branches {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    align-items: stretch;
+  }
+  .obs-chain__topology.is-daily_readiness .obs-chain__branch {
+    grid-template-columns: minmax(0, 1fr);
+    align-content: start;
+    gap: 12px;
+  }
+  .obs-chain__topology.is-daily_readiness .obs-chain__branch-anchor {
+    min-height: 118px;
+    padding: 0 0 11px;
+    border-right: 0;
+    border-bottom: 1px solid #2a3c50;
+  }
+  .obs-chain__topology.is-daily_readiness .obs-chain__branch-sequence {
+    width: 100%;
+    justify-content: center;
+  }
+
   .obs-chain__topology.is-intraday {
     display: grid;
     grid-template-columns: minmax(210px,.68fr) minmax(620px,2.25fr) minmax(240px,.75fr);

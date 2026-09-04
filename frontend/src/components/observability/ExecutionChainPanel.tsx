@@ -93,6 +93,7 @@ const STAGES: Record<string, StageDefinition> = {
   'obsidian-sync': { id: 'obsidian-sync', label: 'Obsidian sync', icon: Archive, optional: true },
   'meta-learning-shadow': { id: 'meta-learning-shadow', label: 'Meta shadow', icon: MoonStar, optional: true },
   'strategy-learning': { id: 'strategy-learning', label: 'Strategy learning', icon: BrainCircuit, optional: true },
+  'evening-closure': { id: 'evening-closure', label: 'Closure receipt', icon: FileCheck2, dependsOn: 'strategy-learning' },
   'morning-setup': { id: 'morning-setup', label: 'Morning setup', icon: Settings2 },
   'pre-market-warmup': { id: 'pre-market-warmup', label: 'Pre-market', icon: CircleGauge },
   'intraday-check': { id: 'intraday-check', label: 'Intraday check', icon: Radar },
@@ -165,6 +166,7 @@ const SCOPES: ChainScope[] = [
       ['paper-active-postmarket'],
       ['obsidian-sync'],
       ['meta-learning-shadow', 'strategy-learning'],
+      ['evening-closure'],
     ],
     branches: [
       {
@@ -506,6 +508,18 @@ export default function ExecutionChainPanel({
   const scopedJobMap = useMemo(() => {
     const attemptAware = buildAttemptAwareJobMap(jobMap, scope, inferOrchestratorStage)
     const next = new Map(attemptAware)
+    if (scope.id === 'daily_readiness') {
+      const rootClosure = next.get('evening-chain')
+      if (rootClosure) {
+        next.set('evening-closure', {
+          ...rootClosure,
+          id: 'evening-closure',
+          name: 'Evening root terminal receipt',
+          summary: rootClosure.summary || 'Root finalizer waits for both daily branches, then writes the terminal receipt consumed by this view.',
+          displayNote: 'This is the actual Evening Chain root ticket, shown again at the end as the post-20a/20b closure receipt.',
+        })
+      }
+    }
     scopeExecutionStageIds(scope).forEach((id) => {
       const definition = STAGES[id]
       const job = next.get(id)

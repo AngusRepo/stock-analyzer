@@ -69,6 +69,9 @@ test('maturity lineage labels cadence, role, availability, and comparable contra
   assert(panel.includes('Production 物化覆蓋與下一批候選 readiness'))
   assert(panel.includes('Rolling cohort 日更診斷（非升級成熟度）'))
   assert(panel.includes('0–9 日維持 PENDING，不判失敗'))
+  assert(panel.includes('鎖定候選 freeze'))
+  assert(panel.includes('訓練截止'))
+  assert(panel.includes('合格前瞻證據起算'))
   assert(panel.indexOf('每日鎖定候選正式升級門檻') < panel.indexOf('離線候選生成與入場門檻'))
   assert(panel.indexOf('離線候選生成與入場門檻') < panel.indexOf('Rolling cohort 日更診斷（非升級成熟度）'))
   for (const key of ['prospective_gate_decision', 'prospective_evaluable_dates', 'prospective_top_return_lcb90']) {

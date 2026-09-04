@@ -309,6 +309,8 @@ function StageRow({ stage }: { stage: PipelineMaturityStage }) {
   const prospectiveDateMetric = metricByKey.get('prospective_evaluable_dates')
   const prospectiveDecisionMetric = metricByKey.get('prospective_gate_decision')
   const prospectiveMaxDateMetric = metricByKey.get('prospective_prediction_max_date')
+  const prospectiveTrainedUntilMetric = metricByKey.get('prospective_trained_until')
+  const prospectiveSemanticFloorMetric = metricByKey.get('prospective_selection_semantic_floor')
   const offlineCandidateRejected = scopedCandidateStage && evidenceScopes?.offline_candidate
     ? ['offline_failed', 'rejected'].includes(String(metricByKey.get('prospective_candidate_state')?.value ?? '').toLowerCase())
       || offlinePromotionMetrics.some((item) => item.passed === false)
@@ -316,6 +318,8 @@ function StageRow({ stage }: { stage: PipelineMaturityStage }) {
   const scopedEvidenceTruth = scopedCandidateStage && evidenceScopes?.offline_candidate
     ? [
       `鎖定候選 freeze ${evidenceScopes.offline_candidate.source_run_date ?? '缺漏'}`,
+      `訓練截止 ${prospectiveTrainedUntilMetric?.value ?? '尚無'}`,
+      `合格前瞻證據起算 ${prospectiveSemanticFloorMetric?.value ?? '尚無'}`,
       offlineCandidateRejected
         ? '離線已拒絕 · 每日 pre-outcome 門檻不適用'
         : `每日成熟 OOS ${prospectiveDateMetric?.value ?? 0}/${prospectiveDateMetric?.target ?? 10}`,
@@ -466,7 +470,7 @@ function StageRow({ stage }: { stage: PipelineMaturityStage }) {
                   ? '每日鎖定候選正式升級門檻'
                   : '成熟度證據'}
                 description={scopedCandidateStage
-                  ? '固定同一候選，只計入訓練截止日後、且 candidate freeze 當下答案尚未揭露的 immutable PIT 日期；0–9 日維持 PENDING，滿 10 日才依 LCB90 判定。Weekly 新候選不會重置已鎖定候選成熟度。'
+                  ? '固定同一候選，只計入訓練截止日後、且 candidate freeze 當下答案尚未揭露的 immutable PIT 日期；0–9 日維持 PENDING，不判失敗；滿 10 日才依 LCB90 判定。Weekly 新候選不會重置已鎖定候選成熟度。'
                   : '本階段的正式成熟度欄位。'}
                 metrics={prospectiveMetrics}
               />

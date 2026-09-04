@@ -309,7 +309,7 @@ def test_candidate_lane_skips_newer_offline_failed_pair() -> None:
     failed_l4["offline_gate_failed_gates"] = '["insufficient_dates"]'
     failed_fusion["state"] = "offline_failed"
     failed_fusion["offline_gate_decision"] = "FAIL"
-    failed_fusion["offline_gate_failed_gates"] = '["data_validity:date_count_below_validation_floor"]'
+    failed_fusion["offline_gate_failed_gates"] = '["feature_contract_invalid"]'
     older_l4, _ = _candidate("l4_alpha_ev", "2026-08-29")
     older_fusion, _ = _candidate("allocator_ev_fusion", "2026-08-29")
 
@@ -342,6 +342,33 @@ def test_candidate_lane_observes_complete_offline_failed_pair_without_activation
     assert activate == {"l4_alpha_ev": True, "allocator_ev_fusion": True}
 
 
+def test_candidate_lane_accumulates_when_offline_history_is_not_yet_evaluable() -> None:
+    l4, _ = _candidate("l4_alpha_ev")
+    fusion, _ = _candidate("allocator_ev_fusion")
+    l4.update({
+        "state": "offline_failed",
+        "offline_gate_decision": "FAIL",
+        "offline_gate_failed_gates": '["walk_forward_no_valid_folds"]',
+    })
+    fusion.update({
+        "state": "offline_failed",
+        "offline_gate_decision": "FAIL",
+        "offline_gate_failed_gates": (
+            '["data_validity:date_count_below_validation_floor", '
+            '"residual_adjustment:insufficient_dates", '
+            '"residual_champion:residual_adjustment_model_not_validated"]'
+        ),
+    })
+
+    selected, activate = _candidate_rows(
+        lambda _sql, _params: [l4, fusion],
+        "cohort-1",
+    )
+
+    assert set(selected) == {"l4_alpha_ev", "allocator_ev_fusion"}
+    assert activate == {"l4_alpha_ev": True, "allocator_ev_fusion": True}
+
+
 def test_candidate_lane_admits_l4_without_structurally_invalid_fusion() -> None:
     l4, _ = _candidate("l4_alpha_ev")
     fusion, _ = _candidate("allocator_ev_fusion")
@@ -353,7 +380,7 @@ def test_candidate_lane_admits_l4_without_structurally_invalid_fusion() -> None:
     fusion.update({
         "state": "rejected",
         "offline_gate_decision": "FAIL",
-        "offline_gate_failed_gates": '["data_validity:date_count_below_validation_floor"]',
+        "offline_gate_failed_gates": '["feature_contract_invalid"]',
     })
 
     selected, activate = _candidate_rows(lambda _sql, _params: [l4, fusion], "cohort-1")

@@ -1,5 +1,5 @@
 import { lazy, Suspense, useEffect, useMemo, useRef, useState, type ComponentType, type ReactNode } from 'react'
-import { useQuery } from '@tanstack/react-query'
+import { useIsFetching, useQuery } from '@tanstack/react-query'
 import {
   Activity,
   BarChart3,
@@ -7,6 +7,7 @@ import {
   CircleDollarSign,
   Gauge,
   Globe2,
+  Loader2,
   Newspaper,
   PieChart,
   ShieldAlert,
@@ -1445,9 +1446,77 @@ function RecommendationPanel() {
   )
 }
 
+function HomeBootOverlay() {
+  const [visible, setVisible] = useState(true)
+  const observedFetch = useRef(false)
+  const pendingQueries = useIsFetching({
+    predicate: (query) => {
+      const key = query.queryKey
+      return (
+        (key[0] === 'market' && key[2] === 'home')
+        || (key[0] === 'recommendations' && key[1] === 'daily')
+        || (key[0] === 'recommendations' && key[1] === 'factor-flow-map' && key[2] === 'groups')
+      )
+    },
+  })
+
+  useEffect(() => {
+    if (!visible) return
+    if (pendingQueries > 0) {
+      observedFetch.current = true
+      return
+    }
+    const timer = window.setTimeout(
+      () => setVisible(false),
+      observedFetch.current ? 320 : 700,
+    )
+    return () => window.clearTimeout(timer)
+  }, [pendingQueries, visible])
+
+  useEffect(() => {
+    const failSafe = window.setTimeout(() => setVisible(false), 12_000)
+    return () => window.clearTimeout(failSafe)
+  }, [])
+
+  if (!visible) return null
+  return (
+    <div
+      data-home-boot-overlay
+      className="fixed inset-0 z-[80] grid place-items-center bg-[#090b10]/95 backdrop-blur-md"
+      role="status"
+      aria-live="polite"
+      aria-label="正在載入首頁最新市場與選股資料"
+    >
+      <div className="relative grid place-items-center rounded-[28px] border border-cyan-300/15 bg-[#10151f]/90 px-10 py-9 shadow-[0_30px_100px_rgba(0,0,0,0.55)]">
+        <div className="absolute inset-3 rounded-[22px] border border-white/[0.045]" />
+        <div className="relative grid h-16 w-16 place-items-center rounded-full border border-cyan-300/20 bg-cyan-300/[0.055]">
+          <Loader2 className="h-8 w-8 animate-spin text-cyan-300" aria-hidden="true" />
+          <span className="absolute h-2 w-2 animate-pulse rounded-full bg-amber-300 shadow-[0_0_16px_rgba(252,211,77,0.75)]" />
+        </div>
+        <strong className="relative mt-5 text-sm font-semibold tracking-[0.08em] text-slate-100">同步最新市場資料</strong>
+        <span className="relative mt-2 text-xs text-slate-500">指數、風險、選股與產業資金軌跡</span>
+      </div>
+    </div>
+  )
+}
+
 export default function MarketHomePage() {
+  useQuery({
+    queryKey: recommendationDailyKey(),
+    queryFn: () => recommendationsApi.daily(undefined, { view: 'card' }),
+    staleTime: queryTtl.dailyDecision,
+    retry: 1,
+  })
+  useQuery({
+    queryKey: ['recommendations', 'factor-flow-map', 'groups', 10, 'industry_theme', null],
+    queryFn: () => recommendationsApi.factorFlowMap({ days: 10, includeMovers: 0, layer: 'industry_theme' }),
+    staleTime: 30 * 60_000,
+    retry: 1,
+  })
+
   return (
     <AppShell>
+      <HomeBootOverlay />
       <div className="min-h-screen overflow-x-hidden text-slate-100">
         <main className="w-full max-w-none space-y-4 px-4 py-5 md:px-8 2xl:px-10">
           <div className="relative overflow-hidden rounded-[24px] border border-amber-300/12 bg-[radial-gradient(circle_at_78%_48%,rgba(196,154,76,0.18),transparent_34%),linear-gradient(100deg,rgba(42,36,25,0.92),rgba(18,19,24,0.97)_44%,rgba(38,34,24,0.92))] px-6 py-5 shadow-[inset_0_1px_0_rgba(255,255,255,0.05),0_24px_70px_rgba(0,0,0,0.28)]">
@@ -1468,7 +1537,7 @@ export default function MarketHomePage() {
 
           <MarketOverviewBlock />
           <DeferredRender className="sv-home-deferred-section" minHeight={760}>
-            <div className="grid items-start gap-4 xl:grid-cols-[minmax(380px,2fr)_minmax(0,3fr)]">
+            <div className="grid items-start gap-4 xl:grid-cols-2">
               <div className="min-w-0"><RecommendationPanel /></div>
               <div className="min-w-0"><GroupFactorTrajectoryPanel /></div>
             </div>

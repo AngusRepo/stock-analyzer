@@ -48,8 +48,11 @@ L4_OFFLINE_EFFICACY_FINDINGS = {
     "oos_top_quintile_return_not_positive",
     "oos_date_cluster_top_quintile_return_lcb90_not_positive",
     "walk_forward_not_stable",
+    "walk_forward_no_valid_folds",
 }
 FUSION_OFFLINE_EFFICACY_FINDINGS = {
+    "data_validity:date_count_below_validation_floor",
+    "residual_adjustment:insufficient_dates",
     "residual_adjustment:oos_prediction_target_corr_lcb90_not_positive",
     "residual_adjustment:oos_top_bottom_spread_lcb90_not_economic",
     "residual_adjustment:walk_forward_not_stable",

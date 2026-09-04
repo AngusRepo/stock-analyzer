@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { Pause, Play, Radar, RotateCcw } from 'lucide-react'
 import { useReducedMotion } from 'framer-motion'
@@ -91,6 +91,50 @@ function revealedTrajectoryPoints(points: FactorTrajectoryPoint[], currentDate: 
   return points.filter((point) => point.date <= currentDate && Number.isFinite(point.x) && Number.isFinite(point.y))
 }
 
+function interpolateNullable(before: number | null | undefined, after: number | null | undefined, progress: number) {
+  if (before == null || !Number.isFinite(before)) return after ?? null
+  if (after == null || !Number.isFinite(after)) return before
+  return before + (after - before) * progress
+}
+
+function trajectoryPointsAtPosition(
+  points: FactorTrajectoryPoint[],
+  timeline: string[],
+  playbackPosition: number,
+) {
+  const indexed = points
+    .filter((point) => Number.isFinite(point.x) && Number.isFinite(point.y))
+    .map((point) => ({ point, index: timeline.indexOf(point.date) }))
+    .filter((entry) => entry.index >= 0)
+    .sort((left, right) => left.index - right.index)
+  const completed = indexed.filter((entry) => entry.index <= playbackPosition)
+  const before = completed[completed.length - 1]
+  if (!before) return []
+  const after = indexed.find((entry) => entry.index > playbackPosition)
+  if (!after || Math.abs(playbackPosition - before.index) < 0.001) {
+    return completed.map((entry) => entry.point)
+  }
+  const progress = Math.max(0, Math.min(1, (playbackPosition - before.index) / (after.index - before.index)))
+  return [
+    ...completed.map((entry) => entry.point),
+    {
+      ...before.point,
+      x: before.point.x + (after.point.x - before.point.x) * progress,
+      y: interpolateNullable(before.point.y, after.point.y, progress),
+      flow: interpolateNullable(before.point.flow, after.point.flow, progress),
+      breadth: interpolateNullable(before.point.breadth, after.point.breadth, progress),
+      rank_delta: interpolateNullable(before.point.rank_delta, after.point.rank_delta, progress),
+      mean_rank_delta: interpolateNullable(before.point.mean_rank_delta, after.point.mean_rank_delta, progress),
+      raw_tilt: interpolateNullable(before.point.raw_tilt, after.point.raw_tilt, progress),
+    },
+  ]
+}
+
+function sameCoordinate(left: FactorTrajectoryPoint, right: FactorTrajectoryPoint) {
+  return Math.abs(Number(left.x) - Number(right.x)) < 0.001
+    && Math.abs(Number(left.y) - Number(right.y)) < 0.001
+}
+
 function defaultLabeledSeriesKeys(series: FactorTrajectorySeries[], currentDate: string | null) {
   const candidates = series
     .map((item) => {
@@ -134,7 +178,8 @@ function TrajectoryChart({
 }) {
   const [focusKey, setFocusKey] = useState<string | null>(null)
   const [replayKey, setReplayKey] = useState(0)
-  const [playbackIndex, setPlaybackIndex] = useState(0)
+  const [playbackPosition, setPlaybackPosition] = useState(0)
+  const playbackPositionRef = useRef(0)
   const [isPlaying, setIsPlaying] = useState(false)
   const [hovered, setHovered] = useState<{ label: string; point: FactorTrajectoryPoint } | null>(null)
   const prefersReducedMotion = useReducedMotion()
@@ -145,7 +190,7 @@ function TrajectoryChart({
   const timeline = useMemo(() => buildFactorTrajectoryTimeline(visible), [visible])
   const timelineKey = timeline.join('|')
   const lastPlaybackIndex = Math.max(0, timeline.length - 1)
-  const currentDate = timeline[Math.min(playbackIndex, lastPlaybackIndex)] ?? null
+  const currentDate = timeline[Math.min(Math.floor(playbackPosition), lastPlaybackIndex)] ?? null
   const labeledSeriesKeys = defaultLabeledSeriesKeys(visible, currentDate)
 
   useEffect(() => {
@@ -154,30 +199,48 @@ function TrajectoryChart({
 
   useEffect(() => {
     if (prefersReducedMotion || timeline.length <= 1) {
-      setPlaybackIndex(lastPlaybackIndex)
+      playbackPositionRef.current = lastPlaybackIndex
+      setPlaybackPosition(lastPlaybackIndex)
       setIsPlaying(false)
       return
     }
-    setPlaybackIndex(0)
+    playbackPositionRef.current = 0
+    setPlaybackPosition(0)
     setIsPlaying(true)
   }, [focusKey, lastPlaybackIndex, prefersReducedMotion, replayKey, timeline.length, timelineKey])
 
   useEffect(() => {
     if (!isPlaying) return
-    if (playbackIndex >= lastPlaybackIndex) {
+    if (playbackPositionRef.current >= lastPlaybackIndex) {
       setIsPlaying(false)
       return
     }
-    const timer = window.setTimeout(
-      () => setPlaybackIndex((current) => Math.min(lastPlaybackIndex, current + 1)),
-      factorTrajectoryPlaybackInterval(timeline.length),
-    )
-    return () => window.clearTimeout(timer)
-  }, [isPlaying, lastPlaybackIndex, playbackIndex, timeline.length])
+    const stepDuration = factorTrajectoryPlaybackInterval(timeline.length)
+    let frame = 0
+    let previousTimestamp: number | null = null
+    const advance = (timestamp: number) => {
+      if (previousTimestamp == null) previousTimestamp = timestamp
+      const elapsed = Math.max(0, timestamp - previousTimestamp)
+      previousTimestamp = timestamp
+      const next = Math.min(lastPlaybackIndex, playbackPositionRef.current + elapsed / stepDuration)
+      playbackPositionRef.current = next
+      setPlaybackPosition(next)
+      if (next >= lastPlaybackIndex) {
+        setIsPlaying(false)
+        return
+      }
+      frame = window.requestAnimationFrame(advance)
+    }
+    frame = window.requestAnimationFrame(advance)
+    return () => window.cancelAnimationFrame(frame)
+  }, [isPlaying, lastPlaybackIndex, timeline.length])
 
   function togglePlayback() {
     if (timeline.length <= 1) return
-    if (playbackIndex >= lastPlaybackIndex) setPlaybackIndex(0)
+    if (playbackPositionRef.current >= lastPlaybackIndex) {
+      playbackPositionRef.current = 0
+      setPlaybackPosition(0)
+    }
     setIsPlaying((current) => !current)
   }
 
@@ -225,7 +288,7 @@ function TrajectoryChart({
             className="inline-flex items-center gap-1.5 rounded-full border border-white/10 px-2.5 py-1 text-[11px] font-semibold text-slate-300 transition hover:border-cyan-300/30 hover:text-cyan-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-cyan-300/70 disabled:cursor-not-allowed disabled:opacity-40"
           >
             {isPlaying ? <Pause className="h-3 w-3" /> : <Play className="h-3 w-3" />}
-            {isPlaying ? '暫停' : playbackIndex >= lastPlaybackIndex ? '從頭播放' : '繼續播放'}
+            {isPlaying ? '暫停' : playbackPosition >= lastPlaybackIndex ? '從頭播放' : '繼續播放'}
           </button>
           <button
             type="button"
@@ -277,10 +340,17 @@ function TrajectoryChart({
           {visible.map((item) => {
             const sourceIndex = series.findIndex((candidate) => candidate.key === item.key)
             const color = COLORS[Math.max(0, sourceIndex) % COLORS.length]
-            const revealedPoints = revealedTrajectoryPoints(item.points, currentDate)
+            const revealedPoints = trajectoryPointsAtPosition(item.points, timeline, playbackPosition)
             const path = smoothPath(revealedPoints)
             const latest = revealedPoints[revealedPoints.length - 1]
             if (!path || !latest) return null
+            const sourcePoints = item.points
+              .filter((point) => Number.isFinite(point.x) && Number.isFinite(point.y))
+              .filter((point) => {
+                const index = timeline.indexOf(point.date)
+                return index >= 0 && index <= playbackPosition
+              })
+            const firstSourcePoint = item.points.find((point) => Number.isFinite(point.x) && Number.isFinite(point.y))
             const latestPosition = coordinate(latest)
             const labelOnLeft = latestPosition.x > PLOT_MID_X
             const labelBelow = latestPosition.y < PAD.top + 34
@@ -297,8 +367,23 @@ function TrajectoryChart({
                   strokeLinejoin="round"
                   strokeOpacity={focusKey ? 0.95 : 0.78}
                 />
-                {revealedPoints.map((point) => {
+                {sourcePoints.map((point) => {
+                  if (sameCoordinate(point, latest)) return null
                   const position = coordinate(point)
+                  const isStart = point === firstSourcePoint
+                  if (!isStart) {
+                    return (
+                      <circle
+                        key={`${item.key}-${point.date}`}
+                        data-trajectory-intermediate={`${item.key}:${point.date}`}
+                        cx={position.x}
+                        cy={position.y}
+                        r="1.15"
+                        fill={color}
+                        fillOpacity="0.5"
+                      />
+                    )
+                  }
                   return (
                     <g key={`${item.key}-${point.date}`} data-trajectory-point={`${item.key}:${point.date}`}>
                       <circle cx={position.x} cy={position.y} r={flowRingRadius(point)} fill="none" stroke={color} strokeOpacity="0.38" strokeWidth={flowRingWidth(point)} />
@@ -325,7 +410,6 @@ function TrajectoryChart({
                 <g
                   style={{
                     transform: `translate(${latestPosition.x}px, ${latestPosition.y}px)`,
-                    transition: prefersReducedMotion ? undefined : `transform ${Math.min(520, factorTrajectoryPlaybackInterval(timeline.length))}ms cubic-bezier(.22,.75,.2,1)`,
                   }}
                 >
                   {isPlaying ? <circle r={pointRadius(latest, true) + 6} fill="none" stroke={color} strokeOpacity="0.28" strokeWidth="2" /> : null}
@@ -506,7 +590,7 @@ export function GroupFactorTrajectoryPanel() {
   const [days, setDays] = useState<number>(10)
   const [selectedTheme, setSelectedTheme] = useState<string | null>(null)
   const groupLayer: 'industry_theme' | 'subindustry' = selectedTheme ? 'subindustry' : 'industry_theme'
-  const [showAllGroups, setShowAllGroups] = useState(false)
+  const [showAllGroups, setShowAllGroups] = useState(true)
   const query = useQuery({
     queryKey: ['recommendations', 'factor-flow-map', 'groups', days, groupLayer, selectedTheme],
     queryFn: () => recommendationsApi.factorFlowMap({
@@ -539,11 +623,11 @@ export function GroupFactorTrajectoryPanel() {
       selectedTheme={selectedTheme}
       onThemeSelect={(theme) => {
         setSelectedTheme(theme)
-        setShowAllGroups(false)
+        setShowAllGroups(true)
       }}
       onThemeClear={() => {
         setSelectedTheme(null)
-        setShowAllGroups(false)
+        setShowAllGroups(true)
       }}
       totalGroupCount={totalGroupCount}
       showAllGroups={showAllGroups}

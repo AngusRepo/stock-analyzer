@@ -87,6 +87,7 @@ logger = logging.getLogger(__name__)
 CORE_D1_CLIENT = client_proxy_for_domain(D1DataDomain.CORE)
 OPS_D1_CLIENT = client_for_domain(D1DataDomain.OPS)
 PREDICTIONS_D1_CLIENT = client_for_domain(D1DataDomain.LEARNING)
+LEARNING_LABELS_D1_CLIENT = client_for_domain(D1DataDomain.LEARNING)
 MARKET_D1_CLIENT = client_for_domain(D1DataDomain.MARKET)
 
 D1_IN_CLAUSE_CHUNK_SIZE = 80
@@ -3034,7 +3035,7 @@ def _load_canonical_opb_reward_rows(
     for chunk in _chunked(requested_pairs, 40):
         values_sql = ",".join("(?, ?)" for _ in chunk)
         params = [value for pair in chunk for value in pair]
-        rows = MARKET_D1_CLIENT.query(
+        rows = LEARNING_LABELS_D1_CLIENT.query(
             f"""
             WITH requested(stock_id, price_date) AS (VALUES {values_sql})
             SELECT ph.stock_id,
@@ -3110,9 +3111,7 @@ def _load_canonical_opb_reward_rows(
     for source_row in recommendation_rows:
         business_date = str(source_row.get("date") or "").strip()
         key = (str(source_row.get("stock_id")), business_date)
-        prediction = prediction_by_pair.get(key)
-        if not prediction:
-            continue
+        prediction = prediction_by_pair.get(key) or {}
         horizon = horizon_by_pair.get(key) or {}
         known_date = str(
             prediction.get("verification_label_known_date")
@@ -3247,8 +3246,7 @@ def load_online_portfolio_bandit_reward_ledger(
                      AND date(COALESCE(p.verification_label_known_date, p.verified_at)) <= date(?)
                    )
                    OR (
-                     p.stock_id IS NOT NULL
-                     AND ph.entry_raw_open > 0
+                     ph.entry_raw_open > 0
                      AND ph.exit_raw_close > 0
                      AND ph.entry_adjustment_factor > 0
                      AND ph.exit_adjustment_factor > 0

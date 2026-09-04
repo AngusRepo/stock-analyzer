@@ -26,6 +26,7 @@ import {
   markPipelineStageFenced,
 } from './pipelineStageLease'
 import { classifySchedulerSummary, logSchedulerResult } from './schedulerRunLogger'
+import { schedulerTicketStatusForRunLog } from './schedulerExecutionTickets'
 import { refreshExpectedReturnServingState } from './expectedReturnServingState'
 import {
   resolveEveningChainClosureDurationMs,
@@ -3118,15 +3119,30 @@ export async function processUpdateBatch(
     if (!Number.isInteger(attempt) || attempt < 1 || attempt > ACTIVE8_OOF_CONTINUATION_MAX_ATTEMPTS) {
       throw new Error(`active8_oof_continuation_exhausted:${cadence}:${runDate}:${attempt}`)
     }
-    if (cadence !== 'daily' && !expectedCohortId) {
-      throw new Error(`active8_oof_continuation_cohort_missing:${cadence}:${runDate}`)
-    }
     const { runActive8OofLifecycle } = await import('./controllerWorkflows')
     const summary = await runActive8OofLifecycle(env, runDate, cadence, {
       expectedCohortId,
       continuationAttempt: attempt,
       continuationOnly: Boolean(expectedCohortId),
+      schedulerTicketId: msg.schedulerTicketId,
+      schedulerRunId: msg.schedulerRunId,
     })
+    const schedulerTicketId = String(msg.schedulerTicketId ?? '').trim()
+    const schedulerRunId = String(msg.schedulerRunId ?? '').trim()
+    if (Boolean(schedulerTicketId) !== Boolean(schedulerRunId)) {
+      throw new Error('active8_oof_continuation_scheduler_identity_incomplete')
+    }
+    const schedulerStatus = classifySchedulerSummary(summary)
+    if (schedulerTicketId && schedulerStatus !== 'triggered') {
+      const { updateSchedulerExecutionTicket } = await import('./schedulerExecutionTickets')
+      await updateSchedulerExecutionTicket(databaseForDataDomain(env, 'ops'), {
+        ticketId: schedulerTicketId,
+        runId: schedulerRunId,
+        status: schedulerTicketStatusForRunLog(schedulerStatus),
+        authority: 'durable_queue',
+        summary,
+      })
+    }
     const collisionRetry = planActive8OofContinuationCollisionRetry(summary, attempt)
     if (collisionRetry) {
       await env.UPDATE_QUEUE.send({

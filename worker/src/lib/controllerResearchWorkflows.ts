@@ -485,6 +485,8 @@ export async function runActive8OofLifecycle(
     expectedCohortId?: string
     continuationAttempt?: number
     continuationOnly?: boolean
+    schedulerTicketId?: string
+    schedulerRunId?: string
   } = {},
 ) {
   requireController(env)
@@ -534,6 +536,8 @@ export async function runActive8OofLifecycle(
       expected_cohort_id: options.expectedCohortId,
       continuation_attempt: Math.max(0, Math.min(12, Number(options.continuationAttempt ?? 0))),
       continuation_only: options.continuationOnly === true,
+      scheduler_ticket_id: options.schedulerTicketId,
+      scheduler_run_id: options.schedulerRunId,
     },
     // The controller only dispatches a durable Cloud Run Job. The terminal
     // result arrives through /api/admin/scheduler-callback.
@@ -547,6 +551,25 @@ export async function runActive8OofLifecycle(
   const status = String(data.status ?? '').toLowerCase()
   if (!['skipped', 'pending', 'spawned', 'materialized', 'shadow_evaluated', 'idempotent_complete'].includes(status)) {
     throw new Error(`Active-8 OOF lifecycle unexpected status=${status || 'unknown'}`)
+  }
+  if (
+    status === 'pending'
+    && String(data.reason ?? '') === 'materialization_job_active'
+    && options.schedulerTicketId
+    && options.schedulerRunId
+    && options.continuationAttempt == null
+  ) {
+    await env.UPDATE_QUEUE.send({
+      type: 'active8_oof_continuation',
+      cursor: 0,
+      triggerTime: runDate || twToday(),
+      runId: options.schedulerRunId,
+      schedulerTicketId: options.schedulerTicketId,
+      schedulerRunId: options.schedulerRunId,
+      oofCadence: cadence,
+      oofExpectedCohortId: cleanText(data.cohort_id),
+      oofContinuationAttempt: 1,
+    }, { delaySeconds: 300 })
   }
   return [
     `active8_oof_lifecycle status=${status}`,

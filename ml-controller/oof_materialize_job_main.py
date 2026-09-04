@@ -327,6 +327,12 @@ async def _run() -> int:
         f"active8-oof-materialize-{int(time.time())}-{uuid.uuid4().hex[:8]}",
     )
     run_id = os.environ.get("OOF_MATERIALIZE_RUN_ID", "").strip() or execution_id
+    scheduler_ticket_id = os.environ.get(
+        "OOF_MATERIALIZE_SCHEDULER_TICKET_ID", ""
+    ).strip()
+    scheduler_run_id = os.environ.get(
+        "OOF_MATERIALIZE_SCHEDULER_RUN_ID", ""
+    ).strip()
     started = time.time()
     callback_status = "error"
     error: str | None = None
@@ -334,6 +340,8 @@ async def _run() -> int:
     freshness: dict[str, Any] | None = None
 
     try:
+        if bool(scheduler_ticket_id) != bool(scheduler_run_id):
+            raise RuntimeError("OOF scheduler ticket identity is incomplete")
         if mode == "allocator_snapshot":
             if not start_date or not end_date:
                 raise RuntimeError("allocator snapshot mode requires start and end dates")
@@ -495,6 +503,9 @@ async def _run() -> int:
         }
     if end_date:
         payload["run_date"] = end_date
+    if scheduler_ticket_id and scheduler_run_id:
+        payload["scheduler_ticket_id"] = scheduler_ticket_id
+        payload["scheduler_run_id"] = scheduler_run_id
     if error:
         payload["error"] = error
     await _callback_worker(payload)

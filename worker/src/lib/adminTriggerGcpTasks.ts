@@ -51,11 +51,11 @@ export function buildAdminGcpTriggerTaskMap(
     'active8-oof-lifecycle': async () => {
       const rawCadence = c.req.query('cadence')
       const cadence = rawCadence === 'monthly' ? 'monthly' : rawCadence === 'weekly' ? 'weekly' : 'daily'
-      return runActive8OofLifecycle(c.env, requestedRunDate(), cadence)
+      return runActive8OofLifecycle(c.env, requestedRunDate(), cadence, schedulerContext)
     },
-    'active8-oof-daily': () => runActive8OofLifecycle(c.env, requestedRunDate(), 'daily'),
-    'active8-oof-weekly': () => runActive8OofLifecycle(c.env, requestedRunDate(), 'weekly'),
-    'active8-oof-monthly': () => runActive8OofLifecycle(c.env, requestedRunDate(), 'monthly'),
+    'active8-oof-daily': () => runActive8OofLifecycle(c.env, requestedRunDate(), 'daily', schedulerContext),
+    'active8-oof-weekly': () => runActive8OofLifecycle(c.env, requestedRunDate(), 'weekly', schedulerContext),
+    'active8-oof-monthly': () => runActive8OofLifecycle(c.env, requestedRunDate(), 'monthly', schedulerContext),
     'meta-learning-shadow': async () => {
       const runDate = requestedRunDate() || twToday()
       const runId = `meta-learning-shadow-${runDate}-${Date.now()}`

@@ -3658,6 +3658,7 @@ interface StrategyReplacementCandidatePrefilterPersistenceRow {
   absolute_hit_return_mean: number | string | null
   production_eligible: number | string | boolean
   production_weight_raw: number | string
+  evidence_json?: string | null
 }
 
 export function strategyAtomicV7InapplicabilityReason(
@@ -3716,18 +3717,37 @@ export function projectStrategyReplacementCandidatePrefilters(
         production_weight_raw: null,
       }
     }
+    const observationDates = finiteNumber(row.observation_dates) ?? 0
+    const marginalEdgeLcb90 = finiteNumber(row.marginal_edge_lcb90)
+    const absoluteHitReturnMean = finiteNumber(row.absolute_hit_return_mean)
+    const evidence = parseJson<Record<string, unknown>>(row.evidence_json ?? '{}', {})
+    const persistedPrefilterEligible = typeof evidence.candidate_prefilter_eligible === 'boolean'
+      ? evidence.candidate_prefilter_eligible
+      : null
+    const minimumObservationDates = finiteNumber(evidence.min_dates)
+      ?? STRATEGY_REPLACEMENT_POLICY_V7.candidate_prefilter_min_observation_dates
+    const candidatePrefilterEligible = persistedPrefilterEligible ?? (
+      observationDates >= minimumObservationDates
+      && marginalEdgeLcb90 != null
+      && marginalEdgeLcb90 > 0
+      && absoluteHitReturnMean != null
+      && absoluteHitReturnMean > 0
+    )
+    const persistedPrefilterWeight = finiteNumber(evidence.candidate_prefilter_weight_raw)
+    const candidatePrefilterWeight = persistedPrefilterWeight
+      ?? (candidatePrefilterEligible ? marginalEdgeLcb90 ?? 0 : 0)
     return {
       strategy_id: row.strategy_id,
       strategy_version: row.strategy_version,
       evidence_status: 'ready',
       applicability_reason: null,
-      observation_dates: finiteNumber(row.observation_dates) ?? 0,
+      observation_dates: observationDates,
       candidate_observations: finiteNumber(row.candidate_observations) ?? 0,
       marginal_edge_mean: finiteNumber(row.marginal_edge_mean),
-      marginal_edge_lcb90: finiteNumber(row.marginal_edge_lcb90),
-      absolute_hit_return_mean: finiteNumber(row.absolute_hit_return_mean),
-      production_eligible: finiteNumber(row.production_eligible) === 1,
-      production_weight_raw: finiteNumber(row.production_weight_raw) ?? 0,
+      marginal_edge_lcb90: marginalEdgeLcb90,
+      absolute_hit_return_mean: absoluteHitReturnMean,
+      production_eligible: candidatePrefilterEligible,
+      production_weight_raw: candidatePrefilterWeight,
     }
   })
 }
@@ -3954,7 +3974,8 @@ async function loadStrategyReplacementGateSummary(
              edge.marginal_edge_lcb90,
              edge.absolute_hit_return_mean,
              edge.production_eligible,
-             edge.production_weight_raw
+             edge.production_weight_raw,
+             edge.evidence_json
         FROM strategy_marginal_edge_v4 edge
        WHERE edge.run_id = ?
          AND EXISTS (
@@ -3962,8 +3983,7 @@ async function loadStrategyReplacementGateSummary(
              FROM json_each(?) candidate_key
             WHERE candidate_key.value = edge.strategy_id || '|' || edge.strategy_version
          )
-       ORDER BY edge.production_eligible DESC,
-                edge.marginal_edge_lcb90 DESC,
+       ORDER BY edge.marginal_edge_lcb90 DESC,
                 edge.strategy_id,
                 edge.strategy_version
     `).bind(run.run_id, JSON.stringify([...candidateStrategyApplicability.keys()])).all<StrategyReplacementCandidatePrefilterPersistenceRow>()

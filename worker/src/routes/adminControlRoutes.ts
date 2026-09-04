@@ -605,6 +605,14 @@ async function handleSchedulerCallback(c: any) {
   }
 
   if (['active8-oof-daily', 'active8-oof-weekly', 'active8-oof-monthly'].includes(body.task)) {
+    const hasSchedulerTicketIdentity = Boolean(callbackSchedulerTicketId || callbackSchedulerRunId)
+    if (hasSchedulerTicketIdentity && !(callbackSchedulerTicketId && callbackSchedulerRunId)) {
+      return c.json({
+        ok: false,
+        retryable: true,
+        error: 'active8_callback_scheduler_ticket_identity_incomplete',
+      }, 400)
+    }
     const { persistActive8OofFreshnessAudit } = await import('../lib/active8OofFreshness')
     const freshnessEvidence = callbackMetadata?.oof_freshness
     const freshnessBusinessDate = freshnessEvidence && typeof freshnessEvidence === 'object'
@@ -654,10 +662,37 @@ async function handleSchedulerCallback(c: any) {
         cursor: 0,
         triggerTime: callbackRunDate,
         runId: callbackRunId,
+        schedulerTicketId: callbackSchedulerTicketId || undefined,
+        schedulerRunId: callbackSchedulerRunId || undefined,
         oofCadence: cadence as 'daily' | 'weekly' | 'monthly',
         oofExpectedCohortId: expectedCohortId || undefined,
         oofContinuationAttempt: continuationAttempt + 1,
       }, { delaySeconds: 300 })
+    }
+    if (
+      callbackSchedulerTicketId
+      && callbackSchedulerRunId
+      && ['success', 'error', 'skipped'].includes(String(body.status))
+    ) {
+      try {
+        const { updateSchedulerExecutionTicket } = await import('../lib/schedulerExecutionTickets')
+        await updateSchedulerExecutionTicket(databaseForDataDomain(c.env, 'ops'), {
+          ticketId: callbackSchedulerTicketId,
+          runId: callbackSchedulerRunId,
+          status: body.status as 'success' | 'error' | 'skipped',
+          authority: 'scheduler_http',
+          summary: String(body.summary ?? body.status),
+          error: body.status === 'error' ? String(body.error ?? body.summary ?? body.status) : undefined,
+        })
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error)
+        return c.json({
+          ok: false,
+          retryable: true,
+          error: 'active8_scheduler_ticket_settlement_failed',
+          detail: message,
+        }, 503)
+      }
     }
   }
 

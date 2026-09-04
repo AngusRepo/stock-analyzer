@@ -2581,6 +2581,8 @@ class OofLifecycleRequest(BaseModel):
     expected_cohort_id: str | None = None
     continuation_attempt: int = Field(default=0, ge=0, le=24)
     continuation_only: bool = False
+    scheduler_ticket_id: str | None = None
+    scheduler_run_id: str | None = None
 
 
 OOF_TRAIN_SESSIONS = 60
@@ -3261,6 +3263,13 @@ async def run_walk_forward_oof_lifecycle(req: OofLifecycleRequest):
     cadence = str(req.cadence or "daily").strip().lower()
     if cadence not in {"daily", "weekly", "monthly"}:
         raise HTTPException(status_code=400, detail="OOF lifecycle cadence must be daily, weekly, or monthly")
+    scheduler_ticket_id = str(req.scheduler_ticket_id or "").strip()
+    scheduler_run_id = str(req.scheduler_run_id or "").strip()
+    if bool(scheduler_ticket_id) != bool(scheduler_run_id):
+        raise HTTPException(
+            status_code=400,
+            detail="OOF lifecycle scheduler ticket identity must be complete",
+        )
     bucket = _get_bucket()
     if not req.dry_run and os.environ.get("OOF_MATERIALIZE_JOB_EXECUTION", "").strip() != "1":
         try:
@@ -3291,6 +3300,9 @@ async def run_walk_forward_oof_lifecycle(req: OofLifecycleRequest):
         }
         if req.expected_cohort_id:
             env_overrides["OOF_MATERIALIZE_EXPECTED_COHORT_ID"] = req.expected_cohort_id
+        if scheduler_ticket_id:
+            env_overrides["OOF_MATERIALIZE_SCHEDULER_TICKET_ID"] = scheduler_ticket_id
+            env_overrides["OOF_MATERIALIZE_SCHEDULER_RUN_ID"] = scheduler_run_id
         job_name = os.environ.get("OOF_MATERIALIZE_JOB_NAME", "active8-oof-materialize").strip()
         try:
             execution = CloudRunJobsClient(job_name=job_name).run_job(

@@ -238,6 +238,12 @@ function candidatePrefilterGate(
       absolute_hit_return_mean: 0.0061,
       production_eligible: 1,
       production_weight_raw: '0.28',
+      evidence_json: JSON.stringify({
+        candidate_prefilter_eligible: true,
+        candidate_prefilter_weight_raw: 0.28,
+        production_owner_effective: false,
+        production_owner_weight_raw: 0,
+      }),
     },
     {
       strategy_id: 'active-v7',
@@ -258,6 +264,52 @@ function candidatePrefilterGate(
   assert(prefilters[0].marginal_edge_mean === 0.0042 && prefilters[0].marginal_edge_lcb90 === 0.0013, 'Candidate prefilter projection must expose marginal-edge actuals')
   assert(prefilters[0].absolute_hit_return_mean === 0.0061, 'Candidate prefilter projection must expose absolute return actuals')
   assert(prefilters[0].production_eligible === true && prefilters[0].production_weight_raw === 0.28, 'Candidate prefilter projection must expose eligibility and raw weight')
+  const legacyOwnerMismatch = projectStrategyReplacementCandidatePrefilters([{
+    strategy_id: 'candidate-legacy-owner-mismatch',
+    strategy_version: 'v1',
+    observation_dates: 12,
+    candidate_observations: 20,
+    marginal_edge_mean: 0.004,
+    marginal_edge_lcb90: 0.0015,
+    absolute_hit_return_mean: 0.005,
+    production_eligible: 0,
+    production_weight_raw: 0,
+    evidence_json: JSON.stringify({ min_dates: 10 }),
+  }], new Map([['candidate-legacy-owner-mismatch|v1', null]]))[0]
+  assert(legacyOwnerMismatch.production_eligible === true, 'legacy production-owner columns must not override a passing Candidate prefilter')
+  assert(legacyOwnerMismatch.production_weight_raw === 0.0015, 'legacy Candidate prefilter weight must be reconstructed from its marginal LCB')
+  const legacyActiveOwnerMismatch = projectStrategyReplacementCandidatePrefilters([{
+    strategy_id: 'candidate-active-owner-mismatch',
+    strategy_version: 'v1',
+    observation_dates: 12,
+    candidate_observations: 20,
+    marginal_edge_mean: -0.002,
+    marginal_edge_lcb90: -0.004,
+    absolute_hit_return_mean: -0.001,
+    production_eligible: 1,
+    production_weight_raw: 1,
+  }], new Map([['candidate-active-owner-mismatch|v1', null]]))[0]
+  assert(legacyActiveOwnerMismatch.production_eligible === false, 'production ownership must not masquerade as a passing Candidate prefilter')
+  assert(legacyActiveOwnerMismatch.production_weight_raw === 0, 'failed Candidate prefilter must expose zero diagnostic weight')
+  const explicitPrefilterEvidence = projectStrategyReplacementCandidatePrefilters([{
+    strategy_id: 'candidate-explicit-prefilter',
+    strategy_version: 'v1',
+    observation_dates: 12,
+    candidate_observations: 20,
+    marginal_edge_mean: 0.004,
+    marginal_edge_lcb90: 0.0015,
+    absolute_hit_return_mean: 0.005,
+    production_eligible: 1,
+    production_weight_raw: 1,
+    evidence_json: JSON.stringify({
+      candidate_prefilter_eligible: false,
+      candidate_prefilter_weight_raw: 0,
+      production_owner_effective: true,
+      production_owner_weight_raw: 1,
+    }),
+  }], new Map([['candidate-explicit-prefilter|v1', null]]))[0]
+  assert(explicitPrefilterEvidence.production_eligible === false, 'explicit Candidate prefilter evidence must be authoritative')
+  assert(explicitPrefilterEvidence.production_weight_raw === 0, 'explicit Candidate prefilter weight must be authoritative')
   assert(prefilters[1].strategy_id === 'candidate-missing' && prefilters[1].strategy_version === 'v9', 'missing Candidate edge rows must retain registry identity')
   assert(prefilters[1].evidence_status === 'missing', 'missing Candidate edge rows must be explicit rather than silently omitted')
   assert(prefilters[1].observation_dates === null && prefilters[1].candidate_observations === null, 'missing Candidate counts must remain null instead of projecting fake zeroes')
@@ -615,7 +667,8 @@ class FakeCandidateFeatureD1 {
   assert(
     source.includes('FROM strategy_marginal_edge_v4 edge')
       && source.includes('FROM json_each(?) candidate_key')
-      && source.includes("candidate_key.value = edge.strategy_id || '|' || edge.strategy_version"),
+      && source.includes("candidate_key.value = edge.strategy_id || '|' || edge.strategy_version")
+      && source.includes('edge.evidence_json'),
     'Atomic V7 prefilter query must exclude Active rows before API projection',
   )
   assert(

@@ -1310,6 +1310,10 @@ export async function refreshStrategyMarginalEdgeV4(
       JSON.stringify({
         method: 'date_clustered_leave_one_strategy_out_then_hac_holm_cross_family_replacement_v7',
         outcome: 'sector_or_market_neutral_cost_net_return',
+        candidate_prefilter_eligible: row.productionEligible,
+        candidate_prefilter_weight_raw: row.productionWeightRaw,
+        production_owner_effective: finalOwnerKeys.has(row.strategyId + '|' + row.strategyVersion),
+        production_owner_weight_raw: replacement.finalWeights.get(row.strategyId + '|' + row.strategyVersion) ?? 0,
         candidate_prefilter_lcb_diagnostic: 'student_t_one_sided_90pct_date_clustered',
         replacement_lcb: 'newey_west_hac4_one_sided_95pct',
         multiple_testing: 'holm_bonferroni_familywise_5pct',

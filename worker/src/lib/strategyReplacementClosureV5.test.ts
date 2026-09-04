@@ -18,6 +18,11 @@ const selectionEvidence = readFileSync('src/lib/selectionReferenceEvidence.ts', 
 const adminWrite = readFileSync('src/routes/adminWriteRoutes.ts', 'utf8')
 const routes = readFileSync('src/routes/other.ts', 'utf8')
 
+assert(edge.includes('candidate_prefilter_eligible: row.productionEligible'), 'marginal-edge persistence must retain the Candidate prefilter decision separately from production ownership')
+assert(edge.includes('production_owner_effective: finalOwnerKeys.has'), 'marginal-edge persistence must expose effective production ownership separately')
+assert(learning.includes('persistedPrefilterEligible'), 'Atomic V7 consumer must prefer explicit Candidate prefilter evidence')
+assert(learning.includes('STRATEGY_REPLACEMENT_POLICY_V7.candidate_prefilter_min_observation_dates'), 'legacy Atomic V7 rows must reconstruct prefilter status from the versioned policy rather than owner columns')
+
 assert(migration.includes('evaluable INTEGER NOT NULL DEFAULT 0'), 'legacy strategy decisions must fail closed')
 assert(migration.includes('unavailable_decisions INTEGER NOT NULL DEFAULT 0'), 'daily projection must separate unavailable decisions')
 assert(migration.includes('strategy_evidence_rebuild_runs_v5'), 'historical PIT rebuild requires a durable ledger')

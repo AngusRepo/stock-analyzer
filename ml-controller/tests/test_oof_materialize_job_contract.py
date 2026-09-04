@@ -30,6 +30,8 @@ def test_oof_materialize_job_closes_scheduler_callback(monkeypatch):
     monkeypatch.setenv("OOF_MATERIALIZE_CADENCE", "daily")
     monkeypatch.setenv("OOF_MATERIALIZE_END_DATE", "2026-07-17")
     monkeypatch.setenv("OOF_MATERIALIZE_RUN_ID", "run-1")
+    monkeypatch.setenv("OOF_MATERIALIZE_SCHEDULER_TICKET_ID", "ticket-1")
+    monkeypatch.setenv("OOF_MATERIALIZE_SCHEDULER_RUN_ID", "scheduler-run-1")
     monkeypatch.setenv("CLOUD_RUN_EXECUTION", "execution-1")
 
     assert asyncio.run(oof_materialize_job_main._run()) == 0
@@ -39,12 +41,30 @@ def test_oof_materialize_job_closes_scheduler_callback(monkeypatch):
     assert callback["status"] == "success"
     assert callback["run_id"] == "run-1"
     assert callback["attempt_id"] == "execution-1"
+    assert callback["scheduler_ticket_id"] == "ticket-1"
+    assert callback["scheduler_run_id"] == "scheduler-run-1"
     assert callback["run_date"] == "2026-07-17"
     assert "status=materialized" in callback["summary"]
     assert "cohort=cohort-1" in callback["summary"]
     assert lifecycle_kwargs["dispatch_full_fit"] is False
     assert callback["metadata"]["oof_freshness"]["status"] == "fresh"
     assert callback["metadata"]["oof_freshness"]["business_date"] == "2026-07-16"
+
+
+def test_oof_materialize_job_rejects_partial_scheduler_ticket_identity(monkeypatch):
+    callbacks = []
+
+    async def fake_callback(payload):
+        callbacks.append(payload)
+
+    monkeypatch.setattr(oof_materialize_job_main, "_callback_worker", fake_callback)
+    monkeypatch.setenv("OOF_MATERIALIZE_SCHEDULER_TICKET_ID", "ticket-only")
+
+    assert asyncio.run(oof_materialize_job_main._run()) == 1
+    assert callbacks[0]["status"] == "error"
+    assert "OOF scheduler ticket identity is incomplete" in callbacks[0]["error"]
+    assert "scheduler_ticket_id" not in callbacks[0]
+    assert "scheduler_run_id" not in callbacks[0]
 
 
 def test_semantic_reconcile_only_forbids_training_promotion_and_serving_change(monkeypatch):

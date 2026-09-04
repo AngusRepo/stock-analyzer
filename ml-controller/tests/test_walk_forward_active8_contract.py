@@ -1718,6 +1718,24 @@ def test_oof_materialize_request_rejects_unknown_cadence():
     )
     assert manual.lifecycle_cadence == "manual"
 
+
+def test_oof_lifecycle_request_rejects_partial_scheduler_ticket_identity():
+    from fastapi import HTTPException
+    from routers.walk_forward import OofLifecycleRequest, run_walk_forward_oof_lifecycle
+
+    request = OofLifecycleRequest(
+        cadence="weekly",
+        end_date="2026-09-04",
+        scheduler_ticket_id="ticket-only",
+    )
+    try:
+        asyncio.run(run_walk_forward_oof_lifecycle(request))
+    except HTTPException as exc:
+        assert exc.status_code == 400
+        assert "scheduler ticket identity must be complete" in str(exc.detail)
+    else:
+        raise AssertionError("partial scheduler ticket identity must fail closed")
+
 def _canonical_release_dispatch_manifest(*, dlinear_folds: int) -> dict:
     from routers import walk_forward
 

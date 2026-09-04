@@ -10,13 +10,17 @@ const strategyOutcomes = fs.readFileSync('src/lib/strategyMultiHorizonOutcomes.t
 assert(
   postMarketChain.includes("'price-horizon-projection'") &&
     postMarketChain.includes('maxProcessDates: 8') &&
-    postMarketChain.includes('timeoutMs: 360_000') &&
+    postMarketChain.includes('timeoutMs: 240_000') &&
     postMarketChain.includes('stageMs.canonical_labels') &&
     postMarketChain.includes('stageMs.multi_horizon_labels') &&
     postMarketChain.includes('stageMs.multi_horizon_outcomes') &&
+    postMarketChain.includes("'strategy-evidence-current'") &&
     postMarketChain.includes('stageMs.strategy_evidence_metrics') &&
+    postMarketChain.includes('stageMs.strategy_evidence_owner_calibration') &&
+    postMarketChain.includes("'strategy-evidence-metric-backfill'") &&
+    postMarketChain.includes('critical: false, timeoutMs: 180_000') &&
     postMarketChain.includes('stage_ms=${JSON.stringify(stageMs)}'),
-  'post-verify projection must keep bounded work and a full-refresh safety budget',
+  'post-verify must isolate bounded price projection and current evidence from non-critical historical backfill',
 )
 assert(
   strategyOutcomes.includes('const DEFAULT_OUTCOME_LOOKBACK_DAYS = 120') &&

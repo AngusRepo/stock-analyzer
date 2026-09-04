@@ -123,8 +123,10 @@ assert(
 
 assert(
   postMarketChain.includes('maxProcessDates: 8') &&
-    postMarketChain.includes('post_verify_chain_failed:'),
-  'post-verify projection must be bounded and propagate the failing task into stage last_error',
+    postMarketChain.includes('post_verify_chain_failed:price-horizon-projection:') &&
+    postMarketChain.includes('post_verify_chain_failed:strategy-evidence-current:') &&
+    updateOrchestrator.includes('post_verify_chain_returned_error_without_detail'),
+  'post-verify critical tasks must throw into durable stage last_error and can never finalize an error return as success',
 )
 assert(
   postMarketChain.includes('const productionEligible = productionAuthority.allowed'),

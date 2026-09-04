@@ -749,8 +749,8 @@ export async function runPostVerifyCallbackChain(
   const productionEligible = productionAuthority.allowed
   ctx = { ...ctx, runScope: productionAuthority.runScope }
 
+  const outcomeAsOfDate = twDateToday()
   const projectionTask = await logChainedTask(env, ctx, 'price-horizon-projection', async () => {
-    const outcomeAsOfDate = twDateToday()
     const stageMs: Record<string, number> = {}
     let stageStartedAt = Date.now()
     const canonical = await materializePriceHorizonLabels(env, {
@@ -774,13 +774,17 @@ export async function runPostVerifyCallbackChain(
       endDate: ctx.runDate,
     })
     stageMs.multi_horizon_outcomes = Date.now() - stageStartedAt
-    stageStartedAt = Date.now()
-    const metricBackfill = await backfillMissingStrategyEvidenceMetricSnapshots(env, {
-      knowledgeCutoffDate: ctx.runDate!,
-      maxDates: 2,
-    })
-    stageMs.strategy_evidence_metric_backfill = Date.now() - stageStartedAt
-    stageStartedAt = Date.now()
+    return `${canonical.summary} | ${multiHorizon.summary} | ${outcomes.summary} | stage_ms=${JSON.stringify(stageMs)}`
+  }, { timeoutMs: 240_000 })
+  results.push(projectionTask)
+  if (projectionTask.status === 'error') {
+    await logChainSummary(env, ctx, 'post-verify-chain', startedAt, results)
+    throw new Error(`post_verify_chain_failed:price-horizon-projection:${projectionTask.summary}`)
+  }
+
+  const currentEvidenceTask = await logChainedTask(env, ctx, 'strategy-evidence-current', async () => {
+    const stageMs: Record<string, number> = {}
+    let stageStartedAt = Date.now()
     const metrics = await materializeStrategyEvidenceMetrics(env, { outcomeAsOfDate })
     stageMs.strategy_evidence_metrics = Date.now() - stageStartedAt
     stageStartedAt = Date.now()
@@ -790,13 +794,21 @@ export async function runPostVerifyCallbackChain(
       allowPromotion: productionEligible,
     })
     stageMs.strategy_evidence_owner_calibration = Date.now() - stageStartedAt
-    return `${canonical.summary} | ${multiHorizon.summary} | ${outcomes.summary} | ${metricBackfill.summary} | ${metrics.summary} | strategy_evidence_owner_calibration=${calibration.result.status}:${calibration.runId} | stage_ms=${JSON.stringify(stageMs)}`
-  }, { timeoutMs: 360_000 })
-  results.push(projectionTask)
-  if (projectionTask.status === 'error') {
+    return `${metrics.summary} | strategy_evidence_owner_calibration=${calibration.result.status}:${calibration.runId} | stage_ms=${JSON.stringify(stageMs)}`
+  }, { timeoutMs: 240_000 })
+  results.push(currentEvidenceTask)
+  if (currentEvidenceTask.status === 'error') {
     await logChainSummary(env, ctx, 'post-verify-chain', startedAt, results)
-    return 'error'
+    throw new Error(`post_verify_chain_failed:strategy-evidence-current:${currentEvidenceTask.summary}`)
   }
+
+  results.push(await logChainedTask(env, ctx, 'strategy-evidence-metric-backfill', async () => {
+    const metricBackfill = await backfillMissingStrategyEvidenceMetricSnapshots(env, {
+      knowledgeCutoffDate: ctx.runDate!,
+      maxDates: 1,
+    })
+    return metricBackfill.summary
+  }, { critical: false, timeoutMs: 180_000 }))
 
   results.push(await logChainedTask(env, ctx, 'model-ic-rolling', () => runModelIcRollingRefresh(env, ctx.runDate)))
   if (productionEligible) {

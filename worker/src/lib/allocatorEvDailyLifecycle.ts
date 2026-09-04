@@ -692,6 +692,19 @@ async function resolveLifecycleBusinessDate(
     if (!validDate(requestedDate)) throw new Error(`invalid allocator EV lifecycle date: ${requestedDate}`)
     return requestedDate
   }
+  const twToday = twTodayDate()
+  const staleVerifyTriggerRow = await db.prepare(`
+    SELECT business_date
+      FROM allocator_ev_daily_lifecycle
+     WHERE state = 'verify_triggered'
+       AND business_date <= ?
+       AND datetime(updated_at) <= datetime('now', '-15 minutes')
+     ORDER BY business_date DESC
+     LIMIT 1
+  `).bind(twToday).first<{ business_date?: string | null }>()
+  const staleVerifyDate = String(staleVerifyTriggerRow?.business_date ?? '').trim().slice(0, 10)
+  if (validDate(staleVerifyDate)) return staleVerifyDate
+
   const recoverableSourceError = await db.prepare(`
     SELECT business_date
       FROM allocator_ev_daily_lifecycle
@@ -716,7 +729,6 @@ async function resolveLifecycleBusinessDate(
     const coverage = await loadSplitFusionSnapshotReplayCoverage(env, pendingDate, twTodayDate())
     if (coverage.matureMissingRows > 0) return pendingDate
   }
-  const twToday = new Date(Date.now() + 8 * 3600_000).toISOString().slice(0, 10)
   const latest = await db.prepare(`
     SELECT MAX(prediction_date) AS business_date
       FROM predictions
@@ -739,11 +751,54 @@ export async function runAllocatorEvLifecycleWatchdog(
   const learningDb = databaseForDataDomain(env, 'learning')
   const businessDate = await resolveLifecycleBusinessDate(env, learningDb, requestedDate)
   const coreDb = databaseForDataDomain(env, 'core')
+  const opsDb = databaseForDataDomain(env, 'ops')
+  const lifecycle = await readAllocatorEvLifecycle(learningDb, businessDate)
+  if (staleVerifyTrigger(lifecycle)) {
+    const verifyStage = await opsDb.prepare(`
+      SELECT status, canonical_run_id, cursor_key
+        FROM pipeline_stage_runs
+       WHERE business_date=? AND stage='verify_v2'
+    `).bind(businessDate).first<{
+      status?: string | null
+      canonical_run_id?: string | null
+      cursor_key?: string | null
+    }>()
+    if (verifyStage?.status !== 'success') {
+      return `status=failed allocator EV lifecycle stale post-verify is not recoverable date=${businessDate} verify_status=${verifyStage?.status ?? 'missing'}`
+    }
+    const lifecycleRunId = String(lifecycle?.upstream_run_id ?? '').trim()
+    const verifyCanonicalRunId = String(verifyStage.canonical_run_id ?? '').trim()
+    const verifyCursorKey = String(verifyStage.cursor_key ?? '').trim()
+    if (!lifecycleRunId || verifyCanonicalRunId !== lifecycleRunId || !verifyCursorKey) {
+      return `status=failed allocator EV lifecycle post-verify authority mismatch date=${businessDate} `
+        + `lifecycle_run_id=${lifecycleRunId || 'missing'} `
+        + `verify_canonical_run_id=${verifyCanonicalRunId || 'missing'} `
+        + `verify_cursor_key=${verifyCursorKey || 'missing'}`
+    }
+    const { queuePostVerifyStage } = await import('./pipelineStageLease')
+    const continuation = await queuePostVerifyStage(env, {
+      businessDate,
+      runId: lifecycleRunId,
+      resumeWaiting: true,
+      expectedCanonicalRunId: lifecycleRunId,
+      authority: {
+        stage: 'verify_v2',
+        canonicalRunId: lifecycleRunId,
+        status: 'success',
+        cursorKey: verifyCursorKey,
+      },
+      attempt: Math.max(1, Number(lifecycle?.attempt_count ?? 0) + 1),
+    })
+    return continuation.queued
+      ? `status=success allocator EV lifecycle recovery_dispatch=post_verify_queued date=${businessDate} run_id=${continuation.canonicalRunId}`
+      : `status=success allocator EV lifecycle recovery_observation=post_verify_current date=${businessDate} downstream_status=${continuation.status}`
+  }
+
   const [snapshot, maturity, actionAuthority] = await Promise.all([
     inspectAllocatorSnapshotClosure(env.DB, businessDate, {
       allowPointInTimeReconstruction: true,
       learningDb,
-      opsDb: databaseForDataDomain(env, 'ops'),
+      opsDb,
       coreDb,
       kv: env.KV,
     }),
@@ -774,7 +829,7 @@ export async function runAllocatorEvLifecycleWatchdog(
     })
     throw new Error(`allocator_ev_missing_point_in_time_lineage:${businessDate}:${reason}`)
   }
-  const postPipelineStage = await databaseForDataDomain(env, 'ops').prepare(`
+  const postPipelineStage = await opsDb.prepare(`
     SELECT status, canonical_run_id, updated_at, lease_expires_at, attempt_count
       FROM pipeline_stage_runs
      WHERE business_date=? AND stage='post_pipeline_chain'
@@ -807,7 +862,6 @@ export async function runAllocatorEvLifecycleWatchdog(
       + `run_id=${postPipelineStage?.canonical_run_id ?? 'unknown'} `
       + `lineage=${snapshot.nativeLineageRows} expected=${snapshot.expectedRows} actual=${snapshot.actualRows}`
   }
-  const lifecycle = await readAllocatorEvLifecycle(databaseForDataDomain(env, 'learning'), businessDate)
   const postVerifyReached = lifecycle && ['replay_pending_maturity', 'replay_enqueued', 'replay_complete'].includes(lifecycle.state)
   const postPipelineReached = lifecycle
     && [
@@ -821,7 +875,7 @@ export async function runAllocatorEvLifecycleWatchdog(
     && postPipelineStage?.status === 'waiting'
   ) {
     const { markPipelineStageFenced } = await import('./pipelineStageLease')
-    await markPipelineStageFenced(env.DB, {
+    await markPipelineStageFenced(opsDb, {
       businessDate,
       stage: 'post_pipeline_chain',
       canonicalRunId: lifecycle.upstream_run_id,
@@ -867,45 +921,6 @@ export async function runAllocatorEvLifecycleWatchdog(
   )) {
     const lifecycleComplete = lifecycle?.state === 'replay_complete'
     return `status=success allocator EV lifecycle observed date=${businessDate} state=${lifecycle?.state} lifecycle_complete=${lifecycleComplete ? 1 : 0} snapshot_rows=${snapshot.actualRows}; ${maturitySummary(maturity)}`
-  }
-  if (snapshot.ready && lifecycle?.state === 'verify_triggered') {
-    const verifyStage = await databaseForDataDomain(env, 'ops').prepare(`
-      SELECT status, canonical_run_id, cursor_key
-        FROM pipeline_stage_runs
-       WHERE business_date=? AND stage='verify_v2'
-    `).bind(businessDate).first<{
-      status?: string | null
-      canonical_run_id?: string | null
-      cursor_key?: string | null
-    }>()
-    if (verifyStage?.status === 'success') {
-      const lifecycleRunId = String(lifecycle.upstream_run_id ?? '').trim()
-      const verifyCanonicalRunId = String(verifyStage.canonical_run_id ?? '').trim()
-      const verifyCursorKey = String(verifyStage.cursor_key ?? '').trim()
-      if (!lifecycleRunId || verifyCanonicalRunId !== lifecycleRunId || !verifyCursorKey) {
-        return `status=failed allocator EV lifecycle post-verify authority mismatch date=${businessDate} `
-          + `lifecycle_run_id=${lifecycleRunId || 'missing'} `
-          + `verify_canonical_run_id=${verifyCanonicalRunId || 'missing'} `
-          + `verify_cursor_key=${verifyCursorKey || 'missing'}`
-      }
-      const { queuePostVerifyStage } = await import('./pipelineStageLease')
-      const continuation = await queuePostVerifyStage(env, {
-        businessDate,
-        runId: lifecycleRunId,
-        resumeWaiting: true,
-        expectedCanonicalRunId: lifecycleRunId,
-        authority: {
-          stage: 'verify_v2',
-          canonicalRunId: lifecycleRunId,
-          status: 'success',
-          cursorKey: verifyCursorKey,
-        },
-        attempt: Math.max(1, Number(lifecycle.attempt_count ?? 0) + 1),
-      })
-      return continuation.queued
-        ? `status=success allocator EV lifecycle recovery_dispatch=post_verify_queued date=${businessDate} run_id=${continuation.canonicalRunId}`
-        : `status=success allocator EV lifecycle recovery_observation=post_verify_current date=${businessDate} downstream_status=${continuation.status}`
-    }
   }
   const repairBoundary = !snapshot.ready
     ? await historicalLearningLineageDecision(env.DB, env.KV, 'evening-chain', businessDate)

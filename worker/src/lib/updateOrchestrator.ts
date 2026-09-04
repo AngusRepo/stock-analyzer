@@ -3442,6 +3442,9 @@ export async function processUpdateBatch(
         assertStageLease: heartbeat.assertActive,
         recoveryAttempt: Math.max(0, Number(msg.attempt ?? 0)),
       })
+      if (status === 'error') {
+        throw new Error('post_verify_chain_returned_error_without_detail')
+      }
       await heartbeat.assertActive('post-verify:before_finalize')
       const finalized = await markPipelineStageFenced(databaseForDataDomain(env, 'ops'), {
         businessDate: triggerTime,

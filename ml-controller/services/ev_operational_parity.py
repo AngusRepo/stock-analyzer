@@ -89,7 +89,7 @@ def assess_ev_operational_parity(
             if serving_value is None or abs(float(serving_value) - float(builder_features[name])) > 1e-9:
                 feature_mismatches.append({
                     "symbol": row.get("symbol"),
-                    "date": row.get("prediction_date") or row.get("date"),
+                    "date": row.get("prediction_date") or row.get("snapshot_date") or row.get("date"),
                     "feature": name,
                     "builder": builder_features[name],
                     "serving": serving_value,

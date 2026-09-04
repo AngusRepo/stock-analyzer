@@ -743,6 +743,29 @@ def _selection_semantic_floor_date(
     return value if len(value) == 10 else None
 
 
+_FUTURE_OUTCOME_FIELDS = {
+    "l4_executable_return_pct",
+    "label_known_date",
+    "target_return",
+    "target",
+}
+
+
+def _operational_parity_rows(
+    snapshot_rows: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Expose the exact PIT feature surface while withholding future outcomes."""
+
+    return [
+        {
+            key: value
+            for key, value in row.items()
+            if key not in _FUTURE_OUTCOME_FIELDS
+        }
+        for row in snapshot_rows
+    ]
+
+
 def evaluate_expected_return_candidates_forward(
     *,
     bucket: Any,
@@ -774,20 +797,6 @@ def evaluate_expected_return_candidates_forward(
         owner: _load_candidate_packet(bucket, row)
         for owner, row in selected.items()
     }
-    if native_rows is not None:
-        from services.ev_operational_parity import assess_ev_operational_parity
-
-        parity = assess_ev_operational_parity(
-            l4_artifact=candidates["l4_alpha_ev"]["artifact"],
-            fusion_artifact=(
-                candidates["allocator_ev_fusion"]["artifact"]
-                if "allocator_ev_fusion" in candidates
-                else {}
-            ),
-            native_rows=native_rows,
-        )
-        for candidate in candidates.values():
-            candidate["operational_parity"] = parity
     source_date = str(selected["l4_alpha_ev"].get("source_run_date") or "")[:10]
     selection_semantic_floor_date = _selection_semantic_floor_date(query_fn, business_date)
     for candidate in candidates.values():
@@ -799,6 +808,24 @@ def evaluate_expected_return_candidates_forward(
         business_date=business_date,
         selection_semantic_floor_date=selection_semantic_floor_date or "",
     )
+    if native_rows is not None:
+        from services.ev_operational_parity import assess_ev_operational_parity
+
+        parity_rows = _operational_parity_rows(preoutcome_locked_rows)
+        parity = assess_ev_operational_parity(
+            l4_artifact=candidates["l4_alpha_ev"]["artifact"],
+            fusion_artifact=(
+                candidates["allocator_ev_fusion"]["artifact"]
+                if "allocator_ev_fusion" in candidates
+                else {}
+            ),
+            native_rows=parity_rows,
+        )
+        parity["input_row_source"] = "preoutcome_locked_oof_pit_snapshot"
+        parity["raw_native_row_count"] = len(native_rows)
+        parity["future_outcome_fields_withheld"] = sorted(_FUTURE_OUTCOME_FIELDS)
+        for candidate in candidates.values():
+            candidate["operational_parity"] = parity
     if not preoutcome_locked_rows:
         gates = {
             owner: _promotion_gate([], owner=owner, candidate=candidate)

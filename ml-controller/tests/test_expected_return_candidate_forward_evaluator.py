@@ -21,8 +21,29 @@ from services.expected_return_candidate_forward_evaluator import (
     _preoutcome_locked_rows,
     _persist_evaluations,
     _promotion_gate,
+    _operational_parity_rows,
     evaluate_expected_return_candidates_forward,
 )
+
+
+def test_operational_parity_uses_pit_snapshot_without_future_outcomes() -> None:
+    rows = _operational_parity_rows([{
+        "snapshot_date": "2026-08-25",
+        "score_components": "score",
+        "forecast_data": "forecast",
+        "alpha_context": "context",
+        "l4_executable_return_pct": 0.12,
+        "label_known_date": "2026-09-01",
+        "target_return": 0.12,
+        "target": 0.12,
+    }])
+
+    assert rows == [{
+        "snapshot_date": "2026-08-25",
+        "score_components": "score",
+        "forecast_data": "forecast",
+        "alpha_context": "context",
+    }]
 
 
 class _Blob:

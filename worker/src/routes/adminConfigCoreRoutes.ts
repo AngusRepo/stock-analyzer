@@ -176,6 +176,7 @@ adminConfigCoreRoutes.post('/api/admin/config/expected-return/promote', async (c
       artifact_path: String(rawCandidate.artifact_path ?? ''),
       artifact_checksum: String(rawCandidate.artifact_checksum ?? ''),
       prospective_validation: rawCandidate.prospective_validation ?? {},
+      offline_admission: rawCandidate.offline_admission ?? {},
     }
     const plan = buildExpectedReturnOwnerPromotionPlan(current, owner, candidate)
     await recordParameterCandidateFromSandbox(learningDb, {
@@ -213,6 +214,7 @@ adminConfigCoreRoutes.post('/api/admin/config/expected-return/promote', async (c
         decision: candidate.validation_packet.decision ?? null,
         failed_gates: candidate.validation_packet.failed_gates ?? [],
       },
+      offline_admission: candidate.offline_admission,
       operational_parity: {
         schema_version: candidate.operational_parity.schema_version ?? null,
         owner_decision: candidate.operational_parity.owner_decisions?.[owner] ?? null,

@@ -1473,7 +1473,7 @@ def test_oof_lifecycle_receipt_is_bound_to_active_materialization_policy():
                 "allocator_ev_fusion": {"policy_decision": "shadow_only"},
             },
             "candidate_forward_evaluation": {
-                "status": "waiting_for_post_freeze_mature_dates",
+                "status": "waiting_for_preoutcome_locked_mature_dates",
                 "training_dispatched": False,
             },
         },
@@ -1537,6 +1537,7 @@ def test_oof_lifecycle_receipt_is_bound_to_active_materialization_policy():
         require_full_fit=True,
     )
     controls = _oof_lifecycle_materialization_controls(
+        cadence="daily",
         requested_dry_run=False,
         requested_promote=True,
         requested_dispatch_full_fit=True,
@@ -1548,7 +1549,17 @@ def test_oof_lifecycle_receipt_is_bound_to_active_materialization_policy():
         "promote": False,
         "dispatch_full_fit": False,
         "frozen_forward_shadow": True,
+        "exact_candidate_promotion_requested": True,
     }
+    weekly_controls = _oof_lifecycle_materialization_controls(
+        cadence="weekly",
+        requested_dry_run=False,
+        requested_promote=True,
+        requested_dispatch_full_fit=True,
+        forward_extension_manifest_path=None,
+    )
+    assert weekly_controls["promote"] is False
+    assert weekly_controls["exact_candidate_promotion_requested"] is False
     rows = [
         {"fold_id": "w5", "row_id": "base"},
         {"fold_id": "frozen_forward", "row_id": "shadow"},

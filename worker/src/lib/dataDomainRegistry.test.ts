@@ -68,7 +68,7 @@ assert.deepEqual(
   [...migrationTransientTables].sort(),
   'every migration-created table must be explicitly owned or explicitly transient',
 )
-assert.equal(productionTableNames.length, 239, 'production schema table count changed; ownership review is required')
+assert.equal(productionTableNames.length, 240, 'production schema table count changed; ownership review is required')
 assert.equal(dataDomainForTable('pit_factor_shadow_daily_v1'), 'learning', 'PIT factor shadow has one Learning owner')
 assert.equal(dataDomainForTable('pit_residual_funnel_enrichment_runs_v1'), 'ops', 'PIT residual funnel receipts have one Ops owner')
 assert.equal(dataDomainForTable('canonical_revenue_observations_v2'), 'market', 'append-only revenue revisions require one Market owner')
@@ -113,6 +113,7 @@ for (const table of ['meta_reward_ledger', 'meta_shadow_decisions']) {
 }
 for (const [table, domain] of [
   ['expected_return_candidate_forward_evaluations', 'learning'],
+  ['expected_return_candidate_preoutcome_evaluations', 'learning'],
   ['pit_residual_funnel_enrichment_runs_v1', 'ops'],
   ['ga_optimizer_shadow_candidates_v1', 'learning'],
   ['ga_optimizer_shadow_daily_evidence_v1', 'learning'],

@@ -9,6 +9,11 @@ export interface ValidateOrderInput {
   limitPrice: number
   refClose: number | null
   avgVolume20d: number | null
+  sizingAuthorization?: {
+    owner: 'sparse_allocator'
+    authorizedValue: number
+    portfolioValue: number
+  } | null
 }
 
 export async function validateOrder(
@@ -52,13 +57,28 @@ export async function validateOrder(
   }
 
   const orderValue = requestedShares * adjPrice
-  if (orderValue > order.maxSingleOrderValue) {
+  const sparseAuthorization = input.sizingAuthorization?.owner === 'sparse_allocator'
+    ? input.sizingAuthorization
+    : null
+  const authorizedValue = Number(sparseAuthorization?.authorizedValue ?? 0)
+  const portfolioValue = Number(sparseAuthorization?.portfolioValue ?? 0)
+  const sparseAuthorizedCap = sparseAuthorization
+    && Number.isFinite(authorizedValue) && authorizedValue > 0
+    && Number.isFinite(portfolioValue) && portfolioValue > 0
+    ? Math.min(authorizedValue, portfolioValue * riskCfg.position.maxSingleNamePct)
+    : null
+  const effectiveOrderValueCap = sparseAuthorization
+    ? sparseAuthorizedCap ?? 0
+    : order.maxSingleOrderValue
+  if (orderValue > effectiveOrderValueCap) {
     violations.push({
       gate: 'G5',
       severity: 'block',
-      message: `single order value ${orderValue.toFixed(0)} exceeds cap ${order.maxSingleOrderValue}`,
+      message: sparseAuthorization
+        ? `allocator order value ${orderValue.toFixed(0)} exceeds signed sparse/position cap ${effectiveOrderValueCap.toFixed(0)}`
+        : `manual order value ${orderValue.toFixed(0)} exceeds fat-finger cap ${effectiveOrderValueCap}`,
       requestedValue: orderValue,
-      allowedValue: order.maxSingleOrderValue,
+      allowedValue: effectiveOrderValueCap,
     })
   }
 

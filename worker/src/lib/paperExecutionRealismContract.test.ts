@@ -105,6 +105,28 @@ assert(
   'paper positions API must be no-store so post-market EOD prices are not masked by stale intraday responses',
 )
 assert(
+  entryTasks.includes("import { validateOrder } from './validateOrder'") &&
+    entryTasks.indexOf('const paperRiskValidation = await validateOrder') < entryTasks.indexOf('const depthMatch = matchPaperOrderAgainstAuthoritativeDepth') &&
+    entryTasks.includes("owner: 'sparse_allocator'") &&
+    entryTasks.includes('authorizedValue: budget') &&
+    entryTasks.includes('portfolioValue: totalPortfolio') &&
+    !entryTasks.includes('budget = Math.min(budget, Math.max(0, Number(riskCfg.order.maxSingleOrderValue)))') &&
+    entryTasks.includes('riskCfg.order.maxDailyBuyOrders'),
+  'automatic Paper buys must preserve sparse target sizing and pass its signed NAV-relative authorization before depth matching',
+)
+assert(
+  paperRoutes.includes("import { validateOrder } from '../lib/validateOrder'") &&
+    paperRoutes.includes('const riskCfg = await getRiskConfig(c.env.KV)') &&
+    paperRoutes.includes('paper_order_risk_blocked') &&
+    paperRoutes.includes('riskCfg.order.maxDailyBuyOrders'),
+  'manual Paper buys must consume the same canonical risk config and may not bypass G5/G6/G7/G14 or the daily order-count cap',
+)
+assert(
+  entryTasks.indexOf('const paperRiskValidation = await validateOrder') >= 0 &&
+    entryTasks.indexOf('const paperRiskValidation = await validateOrder') < entryTasks.indexOf('const executionShadow = await runLiveExecutionShadow'),
+  'canonical Paper risk validation must execute before the optional live-execution shadow path',
+)
+assert(
   !entryTasks.includes('remaining_order_policy_pending'),
   'partial fill remaining orders must not be left as passive placeholder notes',
 )

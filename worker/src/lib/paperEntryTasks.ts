@@ -102,6 +102,7 @@ import {
 import { l4SparseSizingFromWatchPoints, resolveL4SparseBudgetFloor } from './l4SparseAllocationSizing'
 import { withD1ReadRetry } from './d1TransientRetry'
 import { getRiskConfig } from './riskConfig'
+import { validateOrder } from './validateOrder'
 import { assessPositionCorrelation } from './positionRiskDistribution'
 import {
   batchLoadOhlcvTradePlanLevels,
@@ -1088,9 +1089,10 @@ async function runIntradayCheckUnlocked(env: Bindings, leaseRunId: string): Prom
 
   const DAILY_BUY_LIMIT = cfg.position.dailyBuyLimit
   const todayBought = await paperDomainDatabase(env).prepare(
-    "SELECT COALESCE(SUM(total_cost), 0) as total FROM paper_orders WHERE account_id=? AND side='buy' AND created_at >= ?",
+    "SELECT COALESCE(SUM(total_cost), 0) as total, COUNT(*) as order_count FROM paper_orders WHERE account_id=? AND side='buy' AND created_at >= ?",
   ).bind(ACCOUNT_ID, today).first<any>()
-  let dailyBuyTotal = todayBought?.total ?? 0
+  let dailyBuyTotal = Number(todayBought?.total ?? 0)
+  let dailyBuyOrderCount = Number(todayBought?.order_count ?? 0)
 
   const { results: capitalPositionRows } = await paperDomainDatabase(env).prepare(
     'SELECT symbol, shares, avg_cost, entry_date, tp1_hit, initial_stop, trailing_stop, highest_since_entry FROM paper_positions WHERE account_id=? AND shares>0',
@@ -2095,6 +2097,19 @@ async function runIntradayCheckUnlocked(env: Bindings, leaseRunId: string): Prom
       continue
     }
 
+    if (riskCfg.system.killSwitch) {
+      recordActiveExecutionStatus(pending.symbol, 'checked_waiting', 'risk_kill_switch_active', 'trading:risk_config')
+      continue
+    }
+    if (dailyBuyOrderCount >= riskCfg.order.maxDailyBuyOrders) {
+      recordActiveExecutionStatus(
+        pending.symbol,
+        'checked_waiting',
+        'max_daily_buy_orders_reached',
+        `orders=${dailyBuyOrderCount};cap=${riskCfg.order.maxDailyBuyOrders}`,
+      )
+      break
+    }
     if (dailyBuyTotal >= DAILY_BUY_LIMIT) break
     if (acc.cash < cfg.position.minCashToTrade) break
 
@@ -2200,6 +2215,43 @@ async function runIntradayCheckUnlocked(env: Bindings, leaseRunId: string): Prom
         continue
       }
     }
+    const paperRiskValidation = await validateOrder({
+      symbol: pending.symbol,
+      side: 'buy',
+      shares,
+      limitPrice,
+      refClose: prevCloseMap.get(pending.symbol) ?? null,
+      avgVolume20d: avgVolume20dMap.get(pending.symbol) ?? null,
+      sizingAuthorization: {
+        owner: 'sparse_allocator',
+        authorizedValue: budget,
+        portfolioValue: totalPortfolio,
+      },
+    }, riskCfg)
+    if (!paperRiskValidation.approved) {
+      recordActiveExecutionStatus(
+        pending.symbol,
+        'checked_waiting',
+        'paper_order_risk_blocked',
+        JSON.stringify(paperRiskValidation),
+      )
+      continue
+    }
+    if (paperRiskValidation.adjustedOrder) {
+      const cappedShares = Math.min(shares, paperRiskValidation.adjustedOrder.shares)
+      // This execution path consumes one authoritative lot book at a time.
+      // Preserve the selected lot type when applying G14 participation caps.
+      shares = isOddLot ? Math.min(999, cappedShares) : Math.floor(cappedShares / 1000) * 1000
+      if (shares < 1) {
+        recordActiveExecutionStatus(
+          pending.symbol,
+          'checked_waiting',
+          'paper_order_risk_adjustment_below_lot',
+          JSON.stringify(paperRiskValidation),
+        )
+        continue
+      }
+    }
     const requestedShares = shares
     const lotType = isOddLot ? 'odd_lot' : 'board_lot'
     const twExecutionGate = resolveTwEquityExecutionGate({
@@ -2262,6 +2314,11 @@ async function runIntradayCheckUnlocked(env: Bindings, leaseRunId: string): Prom
         maxEntryChasePct: effectiveMaxEntryChasePct,
         minVolumeRatio: effectiveMomentumMinVolumeRatio,
         minRangePosition: adaptivePolicy.momentum.minRangePosition,
+      },
+      sizingAuthorization: {
+        owner: 'sparse_allocator',
+        authorizedValue: budget,
+        portfolioValue: totalPortfolio,
       },
     })
     const finLabExecutionPreview = await fetchFinLabExecutionPreview(env as any, orderIntent)
@@ -2581,6 +2638,7 @@ async function runIntradayCheckUnlocked(env: Bindings, leaseRunId: string): Prom
             finlab_preview_status: finLabExecutionPreview?.status ?? null,
             finlab_preview_reason: finLabExecutionPreview?.visible_reason ?? null,
             paper_broker_reconciliation_status: brokerReconciliation.status,
+            paper_risk_validation: paperRiskValidation,
             intent_key: intent.intentKey,
           }),
         ),
@@ -2642,6 +2700,7 @@ async function runIntradayCheckUnlocked(env: Bindings, leaseRunId: string): Prom
         quote_total_volume: intradayExecutableVolume || null,
         partial_fill_liquidity_base_volume: liquidityBaseVolume || null,
         partial_fill_liquidity_base_source: avgVolume20dMap.has(pending.symbol) ? 'avg_volume_20d' : 'intraday_total_volume',
+        paper_risk_validation: paperRiskValidation,
       },
       orderId: autoOrderId?.id ?? null,
       source: 'auto_ml',
@@ -2649,6 +2708,7 @@ async function runIntradayCheckUnlocked(env: Bindings, leaseRunId: string): Prom
 
     ;(acc as any).cash -= totalCost
     dailyBuyTotal += totalCost
+    dailyBuyOrderCount += 1
     sectorCountMap.set(recSector, (sectorCountMap.get(recSector) ?? 0) + 1)
 
     try {

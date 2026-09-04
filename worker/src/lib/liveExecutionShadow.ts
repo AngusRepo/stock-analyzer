@@ -54,6 +54,7 @@ export async function runLiveExecutionShadow(input: {
     limitPrice: input.intent.limitPrice,
     refClose: input.referencePrice,
     avgVolume20d: input.avgVolume20d ?? null,
+    sizingAuthorization: input.intent.riskContext.sizingAuthorization,
   }, riskConfig)
   const riskChecksPassed = validation.approved && validation.adjustedOrder == null
   let result: Record<string, unknown>

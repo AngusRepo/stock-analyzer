@@ -18,6 +18,8 @@ from services.expected_return_candidate_forward_evaluator import (
     _candidate_rows,
     _daily_evaluations,
     _l4_evidence_payload,
+    _preoutcome_locked_rows,
+    _persist_evaluations,
     _promotion_gate,
     evaluate_expected_return_candidates_forward,
 )
@@ -128,15 +130,19 @@ def test_daily_direction_metrics_treat_higher_prediction_as_higher_return() -> N
         candidate=candidate,
         samples=samples,
         predictions=[float(index) for index in range(30)],
+        baseline_predictions=[float(index) * 0.5 for index in range(30)],
     )[0]
     reversed_direction = _daily_evaluations(
         owner="l4_alpha_ev",
         candidate=candidate,
         samples=samples,
         predictions=[float(-index) for index in range(30)],
+        baseline_predictions=[float(index) * 0.5 for index in range(30)],
     )[0]
 
     assert positive["prediction_corr"] == pytest.approx(1.0)
+    assert positive["corr_delta"] == pytest.approx(0.0)
+    assert positive["baseline_owner"] == "formal_ml_buy_admission:ensemble_directional_margin"
     assert positive["spread"] > 0.0
     assert positive["quality_decision"] == "PASS"
     assert reversed_direction["prediction_corr"] == pytest.approx(-1.0)
@@ -167,23 +173,30 @@ def test_exact_l4_candidate_lineage_keeps_real_trained_until() -> None:
     assert payload["point_in_time_prediction_lineage"]["candidate_source_run_date"] == "2026-08-30"
 
 
-def test_promotion_gate_requires_post_freeze_dates_and_both_evidence_lanes() -> None:
+def test_promotion_gate_requires_preoutcome_locked_dates_and_both_evidence_lanes() -> None:
     row, raw = _candidate("l4_alpha_ev")
     packet = json.loads(raw)
     candidate = {
         "registry": row,
         "packet": packet,
+        "artifact": packet["artifact"],
         "identity": {
             "model_fingerprint": packet["artifact"]["model_fingerprint"],
         },
         "checksum": row["checksum"],
+        "selection_semantic_floor_date": "2026-08-25",
     }
     rows = [
         {
             "prediction_date": f"2026-09-{day:02d}",
+            "label_known_date": f"2026-09-{day + 10:02d}",
             "quality_decision": "PASS",
             "prediction_corr": 0.2,
+            "baseline_corr": 0.1,
+            "corr_delta": 0.1,
             "spread": 0.01,
+            "baseline_spread": 0.005,
+            "spread_delta": 0.005,
             "top_return": 0.02,
         }
         for day in range(1, 11)
@@ -196,9 +209,19 @@ def test_promotion_gate_requires_post_freeze_dates_and_both_evidence_lanes() -> 
     gate = _promotion_gate(rows, owner="l4_alpha_ev", candidate=candidate)
     assert gate["decision"] == "PASS"
     assert gate["evaluable_date_count"] == 10
+    assert gate["baseline_owner"] == "formal_ml_buy_admission:ensemble_directional_margin"
+    assert gate["comparison_mode"] == "same_prediction_date_paired_cross_section"
 
-    candidate["registry"] = {**row, "offline_gate_decision": "FAIL"}
-    assert "offline_gate_not_pass" in _promotion_gate(
+    candidate["registry"] = {
+        **row,
+        "offline_gate_decision": "FAIL",
+        "offline_gate_failed_gates": '["insufficient_dates"]',
+    }
+    candidate["packet"] = {
+        **packet,
+        "validation_packet": {"decision": "FAIL", "failed_gates": ["insufficient_dates"]},
+    }
+    assert "offline_admission_not_pass" in _promotion_gate(
         rows, owner="l4_alpha_ev", candidate=candidate
     )["failed_gates"]
 
@@ -207,9 +230,55 @@ def test_promotion_gate_requires_post_freeze_dates_and_both_evidence_lanes() -> 
         **packet,
         "validation_packet": {"decision": "FAIL", "failed_gates": ["quality"]},
     }
-    assert "offline_validation_packet_not_pass" in _promotion_gate(
+    assert "offline_admission_not_pass" in _promotion_gate(
         rows, owner="l4_alpha_ev", candidate=candidate
     )["failed_gates"]
+
+    candidate["packet"] = packet
+    candidate["operational_parity"] = {
+        "schema_version": "ev-operational-parity-v2",
+        "owner_decisions": {
+            "l4_alpha_ev": {
+                "decision": "FAIL",
+                "failed_gates": ["training_serving_feature_mismatch"],
+            },
+        },
+    }
+    assert "owner_operational_parity_not_pass" in _promotion_gate(
+        rows, owner="l4_alpha_ev", candidate=candidate
+    )["failed_gates"]
+
+
+def test_promotion_gate_holds_inconclusive_candidate_after_ten_dates() -> None:
+    row, raw = _candidate("l4_alpha_ev")
+    packet = json.loads(raw)
+    candidate = {
+        "registry": row,
+        "packet": packet,
+        "artifact": packet["artifact"],
+        "identity": {"model_fingerprint": packet["artifact"]["model_fingerprint"]},
+        "checksum": row["checksum"],
+        "selection_semantic_floor_date": "2026-08-25",
+    }
+    rows = [
+        {
+            "prediction_date": f"2026-09-{day:02d}",
+            "label_known_date": f"2026-09-{day + 10:02d}",
+            "quality_decision": "DEGRADED",
+            "corr_delta": 0.1 if day % 2 else -0.1,
+            "spread_delta": 0.01 if day % 2 else -0.01,
+            "top_return": 0.02,
+        }
+        for day in range(1, 11)
+    ]
+    gate = _promotion_gate(rows, owner="l4_alpha_ev", candidate=candidate)
+    assert gate["decision"] == "HOLD"
+    assert gate["confidently_harmful"] is False
+    assert gate["maximum_window_exhausted"] is False
+
+    exhausted = _promotion_gate(rows * 3, owner="l4_alpha_ev", candidate=candidate)
+    assert exhausted["decision"] == "FAIL"
+    assert exhausted["maximum_window_exhausted"] is True
 
 
 def test_candidate_lane_keeps_oldest_shadowing_pair_when_new_weekly_pair_arrives() -> None:
@@ -229,7 +298,7 @@ def test_candidate_lane_keeps_oldest_shadowing_pair_when_new_weekly_pair_arrives
 
     assert selected["l4_alpha_ev"]["source_run_date"] == "2026-08-29"
     assert selected["allocator_ev_fusion"]["source_run_date"] == "2026-08-29"
-    assert activate is False
+    assert activate == {"l4_alpha_ev": False, "allocator_ev_fusion": False}
 
 
 def test_candidate_lane_skips_newer_offline_failed_pair() -> None:
@@ -237,8 +306,10 @@ def test_candidate_lane_skips_newer_offline_failed_pair() -> None:
     failed_fusion, _ = _candidate("allocator_ev_fusion", "2026-08-30")
     failed_l4["state"] = "offline_failed"
     failed_l4["offline_gate_decision"] = "FAIL"
+    failed_l4["offline_gate_failed_gates"] = '["insufficient_dates"]'
     failed_fusion["state"] = "offline_failed"
     failed_fusion["offline_gate_decision"] = "FAIL"
+    failed_fusion["offline_gate_failed_gates"] = '["data_validity:date_count_below_validation_floor"]'
     older_l4, _ = _candidate("l4_alpha_ev", "2026-08-29")
     older_fusion, _ = _candidate("allocator_ev_fusion", "2026-08-29")
 
@@ -249,7 +320,7 @@ def test_candidate_lane_skips_newer_offline_failed_pair() -> None:
 
     assert selected["l4_alpha_ev"]["source_run_date"] == "2026-08-29"
     assert selected["allocator_ev_fusion"]["source_run_date"] == "2026-08-29"
-    assert activate is True
+    assert activate == {"l4_alpha_ev": True, "allocator_ev_fusion": True}
 
 
 def test_candidate_lane_observes_complete_offline_failed_pair_without_activation() -> None:
@@ -257,8 +328,10 @@ def test_candidate_lane_observes_complete_offline_failed_pair_without_activation
     fusion, _ = _candidate("allocator_ev_fusion")
     l4["state"] = "offline_failed"
     l4["offline_gate_decision"] = "FAIL"
+    l4["offline_gate_failed_gates"] = '["walk_forward_not_stable"]'
     fusion["state"] = "offline_failed"
     fusion["offline_gate_decision"] = "FAIL"
+    fusion["offline_gate_failed_gates"] = '["residual_adjustment:walk_forward_not_stable"]'
 
     selected, activate = _candidate_rows(
         lambda _sql, _params: [l4, fusion],
@@ -266,7 +339,41 @@ def test_candidate_lane_observes_complete_offline_failed_pair_without_activation
     )
 
     assert set(selected) == {"l4_alpha_ev", "allocator_ev_fusion"}
-    assert activate is False
+    assert activate == {"l4_alpha_ev": True, "allocator_ev_fusion": True}
+
+
+def test_candidate_lane_admits_l4_without_structurally_invalid_fusion() -> None:
+    l4, _ = _candidate("l4_alpha_ev")
+    fusion, _ = _candidate("allocator_ev_fusion")
+    l4.update({
+        "state": "rejected",
+        "offline_gate_decision": "FAIL",
+        "offline_gate_failed_gates": '["walk_forward_not_stable"]',
+    })
+    fusion.update({
+        "state": "rejected",
+        "offline_gate_decision": "FAIL",
+        "offline_gate_failed_gates": '["data_validity:date_count_below_validation_floor"]',
+    })
+
+    selected, activate = _candidate_rows(lambda _sql, _params: [l4, fusion], "cohort-1")
+
+    assert set(selected) == {"l4_alpha_ev"}
+    assert activate == {"l4_alpha_ev": True}
+
+
+def test_candidate_lane_fails_closed_when_offline_failure_has_no_evidence() -> None:
+    l4, _ = _candidate("l4_alpha_ev")
+    l4.update({
+        "state": "rejected",
+        "offline_gate_decision": "FAIL",
+        "offline_gate_failed_gates": "[]",
+    })
+
+    selected, activate = _candidate_rows(lambda _sql, _params: [l4], "cohort-1")
+
+    assert selected == {}
+    assert activate == {}
 
 
 def test_candidate_lane_never_reactivates_production_only_pair() -> None:
@@ -281,10 +388,86 @@ def test_candidate_lane_never_reactivates_production_only_pair() -> None:
     )
 
     assert selected == {}
-    assert activate is False
+    assert activate == {}
 
 
-def test_evaluator_waits_without_training_or_reusing_pre_freeze_rows() -> None:
+def test_preoutcome_lock_reuses_only_labels_unknown_at_candidate_freeze() -> None:
+    row, raw = _candidate("l4_alpha_ev")
+    packet = json.loads(raw)
+    candidate = {"artifact": packet["artifact"]}
+    rows = [
+        {"fold_id": "frozen_forward", "snapshot_date": "2026-08-18", "label_known_date": "2026-09-01"},
+        {"fold_id": "frozen_forward", "snapshot_date": "2026-08-24", "label_known_date": "2026-08-29"},
+        {"fold_id": "frozen_forward", "snapshot_date": "2026-08-25", "label_known_date": "2026-09-01"},
+        {"fold_id": "frozen_forward", "snapshot_date": "2026-08-26", "label_known_date": "2026-09-02"},
+        {"fold_id": "frozen_forward", "snapshot_date": "2026-08-27", "label_known_date": "2026-09-03"},
+        {"fold_id": "frozen_forward", "snapshot_date": "2026-08-28", "label_known_date": "2026-09-04"},
+    ]
+
+    eligible = _preoutcome_locked_rows(
+        rows,
+        candidates={"l4_alpha_ev": candidate},
+        source_date=str(row["source_run_date"]),
+        business_date="2026-09-03",
+        selection_semantic_floor_date="2026-08-25",
+    )
+
+    assert [item["snapshot_date"] for item in eligible] == [
+        "2026-08-25",
+        "2026-08-26",
+        "2026-08-27",
+    ]
+
+
+def test_preoutcome_persistence_binds_exact_v2_lineage() -> None:
+    row, raw = _candidate("l4_alpha_ev")
+    packet = json.loads(raw)
+    candidate = {
+        "registry": row,
+        "artifact": packet["artifact"],
+        "identity": {"model_fingerprint": packet["artifact"]["model_fingerprint"]},
+        "checksum": row["checksum"],
+        "selection_semantic_floor_date": "2026-08-25",
+    }
+    captured: list[tuple[str, list[Any]]] = []
+
+    def batch_fn(statements: list[tuple[str, list[Any]]], **_kwargs: Any) -> dict[str, Any]:
+        captured.extend(statements)
+        return {"changes": len(statements)}
+
+    result = _persist_evaluations(
+        [{
+            "evaluation_id": "evaluation",
+            "prediction_date": "2026-08-25",
+            "label_known_date": "2026-09-01",
+            "sample_count": 30,
+            "prediction_corr": 0.2,
+            "baseline_corr": 0.1,
+            "corr_delta": 0.1,
+            "spread": 0.01,
+            "baseline_spread": 0.005,
+            "spread_delta": 0.005,
+            "top_return": 0.02,
+            "quality_decision": "PASS",
+        }],
+        owner="l4_alpha_ev",
+        candidate=candidate,
+        cohort_id="cohort-1",
+        extension_manifest_checksum="e" * 64,
+        batch_fn=batch_fn,
+    )
+
+    sql, params = captured[0]
+    assert result == {"changes": 1}
+    assert "expected_return_candidate_preoutcome_evaluations" in sql
+    assert "artifact_trained_until" in sql
+    assert "selection_semantic_floor_date" in sql
+    assert sql.count("?") == len(params)
+    assert "2026-08-18" in params
+    assert "2026-08-25" in params
+
+
+def test_evaluator_waits_without_training_when_no_preoutcome_locked_rows() -> None:
     l4_row, l4_raw = _candidate("l4_alpha_ev")
     fusion_row, fusion_raw = _candidate("allocator_ev_fusion")
     bucket = _Bucket({
@@ -293,8 +476,12 @@ def test_evaluator_waits_without_training_or_reusing_pre_freeze_rows() -> None:
     })
     calls = {"build": 0, "persist": 0}
 
-    def query_fn(_sql: str, _params: list[Any]) -> list[dict[str, Any]]:
-        return [l4_row, fusion_row]
+    def query_fn(sql: str, _params: list[Any]) -> list[dict[str, Any]]:
+        if "MIN(signal_date)" in sql:
+            return [{"selection_semantic_floor_date": "2026-08-25"}]
+        if "FROM model_artifact_registry" in sql:
+            return [l4_row, fusion_row]
+        return []
 
     def build_fn(*_args: Any, **_kwargs: Any) -> list[dict[str, Any]]:
         calls["build"] += 1
@@ -312,14 +499,14 @@ def test_evaluator_waits_without_training_or_reusing_pre_freeze_rows() -> None:
         snapshot_rows=[{
             "fold_id": "frozen_forward",
             "snapshot_date": "2026-08-24",
-            "label_known_date": "2026-09-01",
+            "label_known_date": "2026-08-29",
         }],
         build_fusion_rows_fn=build_fn,
         query_fn=query_fn,
         batch_fn=batch_fn,
     )
 
-    assert result["status"] == "waiting_for_post_freeze_mature_dates"
+    assert result["status"] == "waiting_for_preoutcome_locked_mature_dates"
     assert result["candidate_source_run_date"] == "2026-08-30"
     assert result["gates"]["l4_alpha_ev"]["decision"] == "PENDING"
     assert result["gates"]["l4_alpha_ev"]["minimum_evaluable_dates"] == 10
@@ -336,6 +523,13 @@ def test_evaluator_never_pairs_candidates_from_different_freeze_dates() -> None:
         fusion_row["artifact_path"]: fusion_raw,
     })
 
+    def query_fn(sql: str, _params: list[Any]) -> list[dict[str, Any]]:
+        if "MIN(signal_date)" in sql:
+            return [{"selection_semantic_floor_date": "2026-08-25"}]
+        if "FROM model_artifact_registry" in sql:
+            return [l4_row, fusion_row]
+        return []
+
     result = evaluate_expected_return_candidates_forward(
         bucket=bucket,
         cohort_id="cohort-1",
@@ -343,9 +537,10 @@ def test_evaluator_never_pairs_candidates_from_different_freeze_dates() -> None:
         extension_manifest_checksum="e" * 64,
         snapshot_rows=[],
         build_fusion_rows_fn=lambda *_args, **_kwargs: [],
-        query_fn=lambda _sql, _params: [l4_row, fusion_row],
+        query_fn=query_fn,
         batch_fn=lambda *_args, **_kwargs: {"changes": 0},
     )
-    assert result["status"] == "offline_pass_candidate_pair_missing"
+    assert result["status"] == "waiting_for_preoutcome_locked_mature_dates"
+    assert set(result["candidate_artifact_ids"]) == {"l4_alpha_ev"}
     assert result["promotion_ready"] is False
     assert result["training_dispatched"] is False

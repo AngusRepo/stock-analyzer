@@ -326,8 +326,13 @@ export async function commitExpectedReturnChampion(
   const prospectiveTopLcb = prospective.top_return_lcb90 == null
     ? null
     : Number(prospective.top_return_lcb90)
+  const trainedUntil = String(input.artifact.trained_until ?? '').slice(0, 10)
+  const predictionDateMin = String(prospective.prediction_date_min ?? '').slice(0, 10)
+  const selectionSemanticFloorDate = String(prospective.selection_semantic_floor_date ?? '').slice(0, 10)
+  const labelKnownDateMin = String(prospective.label_known_date_min ?? '').slice(0, 10)
+  const sourceRunDate = input.sourceRunDate.slice(0, 10)
   if (
-    prospective.schema_version !== 'expected-return-candidate-forward-gate-v1'
+    prospective.schema_version !== 'expected-return-candidate-forward-gate-v2'
     || prospective.decision !== 'PASS'
     || !Array.isArray(prospective.failed_gates)
     || prospective.failed_gates.length > 0
@@ -335,6 +340,13 @@ export async function commitExpectedReturnChampion(
     || String(prospective.candidate_artifact_checksum ?? '').toLowerCase() !== artifactChecksum
     || String(prospective.model_fingerprint ?? '').toLowerCase() !== fingerprint
     || String(prospective.source_run_date ?? '').slice(0, 10) !== input.sourceRunDate.slice(0, 10)
+    || String(prospective.artifact_trained_until ?? '').slice(0, 10) !== trainedUntil
+    || !predictionDateMin
+    || predictionDateMin <= trainedUntil
+    || !selectionSemanticFloorDate
+    || predictionDateMin < selectionSemanticFloorDate
+    || !labelKnownDateMin
+    || labelKnownDateMin <= sourceRunDate
     || prospective.training_dispatched !== false
     || !Number.isFinite(prospectiveCorrLcb)
     || !Number.isFinite(prospectiveSpreadLcb)
@@ -346,12 +358,34 @@ export async function commitExpectedReturnChampion(
   ) {
     throw new Error('expected_return_registry_prospective_gate_invalid')
   }
+  const canonicalSemantic = await db.prepare(`
+    SELECT MIN(signal_date) AS selection_semantic_floor_date
+      FROM strategy_route_backfill_eligibility_v1
+     WHERE route_version='strategy-semantic-continuous-affinity-v5'
+       AND affinity_version='strategy-threshold-margin-affinity-v2'
+       AND status IN ('eligible','pending_maturity')
+       AND reference_rows > 0
+  `).first<Record<string, any>>()
+  if (
+    String(canonicalSemantic?.selection_semantic_floor_date ?? '').slice(0, 10)
+    !== selectionSemanticFloorDate
+  ) {
+    throw new Error('expected_return_registry_selection_semantic_floor_mismatch')
+  }
   const forwardEvidence = await db.prepare(`
     SELECT COUNT(*) AS evaluable_date_count,
            MIN(prediction_date) AS prediction_date_min,
            MAX(prediction_date) AS prediction_date_max,
-           SUM(CASE WHEN prediction_date <= source_run_date THEN 1 ELSE 0 END) AS invalid_pre_freeze_rows
-      FROM expected_return_candidate_forward_evaluations
+           MIN(label_known_date) AS label_known_date_min,
+           MAX(label_known_date) AS label_known_date_max,
+           MIN(artifact_trained_until) AS artifact_trained_until_min,
+           MAX(artifact_trained_until) AS artifact_trained_until_max,
+           MIN(selection_semantic_floor_date) AS selection_semantic_floor_date_min,
+           MAX(selection_semantic_floor_date) AS selection_semantic_floor_date_max,
+           SUM(CASE WHEN prediction_date <= artifact_trained_until THEN 1 ELSE 0 END) AS invalid_pre_training_rows,
+           SUM(CASE WHEN prediction_date < selection_semantic_floor_date THEN 1 ELSE 0 END) AS invalid_pre_semantic_rows,
+           SUM(CASE WHEN label_known_date <= source_run_date THEN 1 ELSE 0 END) AS invalid_label_known_before_freeze_rows
+      FROM expected_return_candidate_preoutcome_evaluations
      WHERE candidate_artifact_id = ?
        AND candidate_artifact_checksum = ?
        AND model_name = ?
@@ -364,9 +398,17 @@ export async function commitExpectedReturnChampion(
     minimumDates !== EXPECTED_RETURN_PROSPECTIVE_MIN_DATES
     || evaluableDates !== Number(prospective.evaluable_date_count ?? -1)
     || evaluableDates < minimumDates
-    || Number(forwardEvidence?.invalid_pre_freeze_rows ?? 0) !== 0
+    || Number(forwardEvidence?.invalid_pre_training_rows ?? 0) !== 0
+    || Number(forwardEvidence?.invalid_pre_semantic_rows ?? 0) !== 0
+    || Number(forwardEvidence?.invalid_label_known_before_freeze_rows ?? 0) !== 0
+    || String(forwardEvidence?.artifact_trained_until_min ?? '') !== String(prospective.artifact_trained_until ?? '')
+    || String(forwardEvidence?.artifact_trained_until_max ?? '') !== String(prospective.artifact_trained_until ?? '')
+    || String(forwardEvidence?.selection_semantic_floor_date_min ?? '') !== selectionSemanticFloorDate
+    || String(forwardEvidence?.selection_semantic_floor_date_max ?? '') !== selectionSemanticFloorDate
     || String(forwardEvidence?.prediction_date_min ?? '') !== String(prospective.prediction_date_min ?? '')
     || String(forwardEvidence?.prediction_date_max ?? '') !== String(prospective.prediction_date_max ?? '')
+    || String(forwardEvidence?.label_known_date_min ?? '') !== String(prospective.label_known_date_min ?? '')
+    || String(forwardEvidence?.label_known_date_max ?? '') !== String(prospective.label_known_date_max ?? '')
   ) {
     throw new Error('expected_return_registry_prospective_evidence_mismatch')
   }

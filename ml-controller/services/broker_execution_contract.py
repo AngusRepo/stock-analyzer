@@ -102,6 +102,28 @@ def limit_price(intent: Mapping[str, Any]) -> float:
     return 0.0
 
 
+def effective_order_value_cap(
+    intent: Mapping[str, Any],
+    risk_config: Mapping[str, Any],
+) -> float | None:
+    order = risk_config.get("order") if isinstance(risk_config.get("order"), Mapping) else {}
+    position = risk_config.get("position") if isinstance(risk_config.get("position"), Mapping) else {}
+    risk_context = intent.get("riskContext") if isinstance(intent.get("riskContext"), Mapping) else {}
+    authorization = (
+        risk_context.get("sizingAuthorization")
+        if isinstance(risk_context.get("sizingAuthorization"), Mapping)
+        else None
+    )
+    if authorization and str(authorization.get("owner") or "") == "sparse_allocator":
+        authorized_value = _positive(authorization.get("authorizedValue"))
+        portfolio_value = _positive(authorization.get("portfolioValue"))
+        max_single_name_pct = _positive(position.get("maxSingleNamePct"))
+        if authorized_value is None or portfolio_value is None or max_single_name_pct is None:
+            return None
+        return min(authorized_value, portfolio_value * max_single_name_pct)
+    return _positive(order.get("maxSingleOrderValue"))
+
+
 def _snapshot_errors(
     packet: Mapping[str, Any],
     intent: Mapping[str, Any],
@@ -227,7 +249,7 @@ def validate_execution_packet(
         order = risk_config.get("order") if isinstance(risk_config.get("order"), Mapping) else {}
         if system.get("killSwitch") is not False:
             errors.append("runtime_kill_switch_active_or_unknown")
-        max_single_order_value = _positive(order.get("maxSingleOrderValue"))
+        max_single_order_value = effective_order_value_cap(intent, risk_config)
         total_value = requested_shares(intent) * price
         if max_single_order_value is None or total_value > max_single_order_value:
             errors.append("max_single_order_value_exceeded")
@@ -338,7 +360,7 @@ def validate_execution_shadow_packet(
         order = risk_config.get("order") if isinstance(risk_config.get("order"), Mapping) else {}
         if system.get("killSwitch") is not False:
             errors.append("runtime_kill_switch_active_or_unknown")
-        max_value = _positive(order.get("maxSingleOrderValue"))
+        max_value = effective_order_value_cap(intent, risk_config)
         if max_value is None or shares * price > max_value:
             errors.append("max_single_order_value_exceeded")
         daily_key = "maxDailyBuyOrders" if side == "buy" else "maxDailySellOrders"

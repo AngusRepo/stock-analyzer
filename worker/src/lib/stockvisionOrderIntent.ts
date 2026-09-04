@@ -30,6 +30,11 @@ export interface StockVisionOrderIntent {
     confidence: number
     riskPct: number
     kellyPct?: number | null
+    sizingAuthorization?: {
+      owner: 'sparse_allocator'
+      authorizedValue: number
+      portfolioValue: number
+    } | null
   }
   executionConstraints: {
     quoteSource: string
@@ -63,6 +68,11 @@ export interface BuildStockVisionOrderIntentInput {
     minVolumeRatio?: number | null
     minRangePosition?: number | null
   }
+  sizingAuthorization?: {
+    owner: 'sparse_allocator'
+    authorizedValue: number
+    portfolioValue: number
+  } | null
 }
 
 export interface BuildStockVisionSellOrderIntentInput {
@@ -116,6 +126,7 @@ export function buildStockVisionOrderIntent(input: BuildStockVisionOrderIntentIn
       confidence: Number(input.pending.confidence ?? 0),
       riskPct: Number(input.pending.risk_pct ?? 0),
       kellyPct: input.pending.kelly_pct ?? null,
+      sizingAuthorization: input.sizingAuthorization ?? null,
     },
     executionConstraints: {
       quoteSource: String(input.quote.source || 'none'),
@@ -157,6 +168,7 @@ export function buildStockVisionSellOrderIntent(input: BuildStockVisionSellOrder
       confidence: 0,
       riskPct: 0,
       kellyPct: null,
+      sizingAuthorization: null,
     },
     executionConstraints: {
       quoteSource: String(input.quote.source || 'none'),

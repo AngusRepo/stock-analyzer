@@ -117,6 +117,7 @@ const postCutoverLearningTables = [
   'state_space_v2_evaluations',
   'pit_factor_shadow_daily_v1',
   'expected_return_candidate_forward_evaluations',
+  'expected_return_candidate_preoutcome_evaluations',
 ]
 const learningBackfillTables = tablesForDataDomainShadowBackfill('learning')
 for (const table of postCutoverLearningTables) {

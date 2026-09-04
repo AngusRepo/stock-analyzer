@@ -528,10 +528,10 @@ export async function runActive8OofLifecycle(
       cadence,
       end_date: runDate,
       dry_run: false,
-      // Daily continuations may finish promotion for the exact frozen
-      // candidates whose prospective evidence has already passed. The
-      // controller still forbids training/rebuilding through continuation_only.
-      promote: cadence === 'daily' || options.continuationOnly !== true,
+      // Only the daily exact-candidate forward evaluator may promote.
+      // Weekly/monthly runs generate immutable candidates and must never
+      // mutate production pointers, including their first (non-continuation) call.
+      promote: cadence === 'daily',
       dispatch_full_fit: cadence !== 'daily',
       expected_cohort_id: options.expectedCohortId,
       continuation_attempt: Math.max(0, Math.min(12, Number(options.continuationAttempt ?? 0))),
@@ -588,7 +588,7 @@ export async function runL4AlphaEvRefresh(env: Bindings, runDate?: string, caden
     jsonBody: {
       cadence,
       end_date: runDate,
-      promote: true,
+      promote: false,
       dry_run: false,
       trigger_source: 'worker_scheduler',
     },
@@ -601,7 +601,7 @@ export async function runL4AlphaEvRefresh(env: Bindings, runDate?: string, caden
   const data = text ? JSON.parse(text) as Record<string, any> : {}
   const status = String(data.status ?? '').toLowerCase()
   const summary = String(data.summary ?? `l4_alpha_ev_refresh status=${status || 'unknown'}`)
-  if (!['promoted', 'validated'].includes(status)) {
+  if (!['validated', 'failed_validation'].includes(status)) {
     throw new Error(summary)
   }
   return summary
@@ -616,7 +616,7 @@ export async function runAllocatorEvFusionRefresh(env: Bindings, runDate?: strin
       cadence,
       evidence_mode: 'purged_oof',
       end_date: runDate,
-      promote: true,
+      promote: false,
       dry_run: false,
       trigger_source: 'worker_scheduler',
     },
@@ -629,7 +629,7 @@ export async function runAllocatorEvFusionRefresh(env: Bindings, runDate?: strin
   const data = text ? JSON.parse(text) as Record<string, any> : {}
   const status = String(data.status ?? '').toLowerCase()
   const summary = String(data.summary ?? `allocator_ev_fusion_refresh status=${status || 'unknown'}`)
-  if (!['promoted', 'validated'].includes(status)) {
+  if (!['validated', 'failed_validation'].includes(status)) {
     throw new Error(summary)
   }
   return summary

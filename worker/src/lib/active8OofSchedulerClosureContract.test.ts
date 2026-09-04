@@ -29,7 +29,10 @@ assert(!['l4-alpha-ev-refresh', 'allocator-ev-fusion-refresh', 'monthly-l4-alpha
 
 assert(workflows.includes("'/walk_forward/oof/lifecycle'"), 'all Worker cadence tasks must call the same controller OOF lifecycle owner')
 assert(workflows.includes("dispatch_full_fit: cadence !== 'daily'"), 'daily evidence materialization must not implicitly dispatch Active-8 full-fit training')
-assert(workflows.includes("promote: cadence === 'daily' || options.continuationOnly !== true"), 'daily continuation must finish exact prospective candidate promotion while weekly/monthly continuation remains promotion-disabled')
+assert(workflows.includes("promote: cadence === 'daily'"), 'only daily may finish exact prospective candidate promotion; weekly/monthly must remain candidate-only from their first call')
+assert(!workflows.includes("promote: cadence === 'daily' || options.continuationOnly !== true"), 'weekly/monthly initial calls must not regain the legacy offline-promotion bypass')
+assert(/runL4AlphaEvRefresh[\s\S]*?promote: false/.test(workflows), 'standalone L4 refresh must be candidate-only')
+assert(/runAllocatorEvFusionRefresh[\s\S]*?promote: false/.test(workflows), 'standalone Fusion refresh must be candidate-only')
 assert(workflows.includes('loadLatestSchedulerChildTicket'), 'daily watchdog must inspect the durable snapshot child ticket before dispatch')
 assert(workflows.includes('assessActive8DailyTerminalFence'), 'daily watchdog must fence on exact snapshot identity and terminal status')
 assert(workflows.includes('active8_oof_lifecycle status=idempotent_complete'), 'an already closed exact snapshot must return terminal success without another Cloud Run dispatch')

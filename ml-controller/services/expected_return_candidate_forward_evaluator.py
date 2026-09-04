@@ -1,8 +1,9 @@
-"""Prospective evaluation for the exact frozen L4/Fusion candidate artifacts.
+"""Pre-outcome-locked evaluation for exact frozen L4/Fusion candidates.
 
-The evaluator never trains.  A candidate may only consume prediction dates
-strictly after its registry source date, and every result is bound to the
-candidate packet checksum plus the model fingerprint embedded in the payload.
+The evaluator never trains. It may consume an immutable PIT prediction date
+before artifact freeze only when that date is after the artifact training
+cutoff and its outcome label was still unknown at freeze time. Every result is
+bound to the candidate packet checksum plus the embedded model fingerprint.
 """
 from __future__ import annotations
 
@@ -23,9 +24,14 @@ from services.expected_return_artifact_identity import expected_return_artifact_
 from services.l4_alpha_ev_artifact_builder import _samples as _l4_samples
 
 
-SCHEMA_VERSION = "expected-return-candidate-forward-evaluation-v1"
-GATE_SCHEMA_VERSION = "expected-return-candidate-forward-gate-v1"
+SCHEMA_VERSION = "expected-return-candidate-forward-evaluation-v2"
+GATE_SCHEMA_VERSION = "expected-return-candidate-forward-gate-v2"
 MIN_EVALUABLE_DATES = PRIMARY_MIN_OOS_DATES
+MAX_EVALUABLE_DATES = 30
+L4_BASELINE_OWNER = "formal_ml_buy_admission:ensemble_directional_margin"
+FUSION_BASELINE_OWNER = "exact_frozen_l4_candidate"
+SELECTION_ROUTE_SEMANTIC_VERSION = "strategy-semantic-continuous-affinity-v5"
+SELECTION_AFFINITY_SEMANTIC_VERSION = "strategy-threshold-margin-affinity-v2"
 ACTIVE_CANDIDATE_STATES = {"shadowing", "live_gate_passed", "production"}
 OBSERVABLE_REJECTED_CANDIDATE_STATES = {"offline_failed", "rejected"}
 ELIGIBLE_CANDIDATE_STATES = {
@@ -34,6 +40,20 @@ ELIGIBLE_CANDIDATE_STATES = {
     "candidate_selected",
     "shadowing",
     "live_gate_passed",
+}
+
+L4_OFFLINE_EFFICACY_FINDINGS = {
+    "oos_date_cluster_corr_lcb90_not_positive",
+    "oos_date_cluster_spread_lcb90_not_above_cost",
+    "oos_top_quintile_return_not_positive",
+    "oos_date_cluster_top_quintile_return_lcb90_not_positive",
+    "walk_forward_not_stable",
+}
+FUSION_OFFLINE_EFFICACY_FINDINGS = {
+    "residual_adjustment:oos_prediction_target_corr_lcb90_not_positive",
+    "residual_adjustment:oos_top_bottom_spread_lcb90_not_economic",
+    "residual_adjustment:walk_forward_not_stable",
+    "residual_champion:residual_adjustment_model_not_validated",
 }
 
 
@@ -73,10 +93,99 @@ def _lcb90(values: list[float]) -> float | None:
     return mean - float(student_t.ppf(0.95, df=len(values) - 1)) * standard_error
 
 
+def _ucb90(values: list[float]) -> float | None:
+    if len(values) < 2:
+        return None
+    mean = _mean(values)
+    variance = sum((value - mean) ** 2 for value in values) / (len(values) - 1)
+    standard_error = math.sqrt(variance / len(values))
+    return mean + float(student_t.ppf(0.95, df=len(values) - 1)) * standard_error
+
+
+def _failed_gate_list(value: Any) -> list[str]:
+    if isinstance(value, list):
+        return [str(item) for item in value if str(item)]
+    if not isinstance(value, str) or not value.strip():
+        return []
+    try:
+        parsed = json.loads(value)
+    except json.JSONDecodeError:
+        return ["offline_gate_evidence_invalid_json"]
+    return [str(item) for item in parsed] if isinstance(parsed, list) else ["offline_gate_evidence_invalid_shape"]
+
+
+def _offline_admission_from_failed_gates(
+    owner: str,
+    failed_gates: list[str],
+    *,
+    source_decision: str | None = None,
+) -> dict[str, Any]:
+    allowed_findings = (
+        L4_OFFLINE_EFFICACY_FINDINGS
+        if owner == "l4_alpha_ev"
+        else FUSION_OFFLINE_EFFICACY_FINDINGS
+    )
+    efficacy_findings = [gate for gate in failed_gates if gate in allowed_findings]
+    hard_blockers = [gate for gate in failed_gates if gate not in allowed_findings]
+    normalized_source_decision = str(source_decision or "").upper()
+    if normalized_source_decision:
+        if normalized_source_decision == "PASS" and failed_gates:
+            hard_blockers.append("offline_gate_pass_with_failed_gates")
+        elif normalized_source_decision == "FAIL" and not failed_gates:
+            hard_blockers.append("offline_gate_failure_without_failed_gates")
+        elif normalized_source_decision not in {"PASS", "FAIL"}:
+            hard_blockers.append("offline_gate_not_terminal")
+    return {
+        "schema_version": "expected-return-offline-admission-v1",
+        "decision": "PASS" if not hard_blockers else "FAIL",
+        "hard_blockers": hard_blockers,
+        "efficacy_findings": efficacy_findings,
+        "policy": "integrity_fit_and_parity_only;efficacy_owned_by_prospective_forward_gate",
+    }
+
+
+def _offline_admission_for_row(row: dict[str, Any]) -> dict[str, Any]:
+    return _offline_admission_from_failed_gates(
+        str(row.get("model_name") or ""),
+        _failed_gate_list(row.get("offline_gate_failed_gates")),
+        source_decision=str(row.get("offline_gate_decision") or ""),
+    )
+
+
+def _offline_admission(candidate: dict[str, Any]) -> dict[str, Any]:
+    registry = candidate["registry"]
+    owner = str(registry.get("model_name") or "")
+    registry_failed = _failed_gate_list(registry.get("offline_gate_failed_gates"))
+    registry_decision = str(registry.get("offline_gate_decision") or "").upper()
+    validation = candidate["packet"].get("validation_packet") or {}
+    packet_failed = _failed_gate_list(validation.get("failed_gates"))
+    packet_decision = str(validation.get("decision") or "").upper()
+    admission = _offline_admission_from_failed_gates(
+        owner,
+        registry_failed,
+        source_decision=registry_decision,
+    )
+    if sorted(registry_failed) != sorted(packet_failed):
+        admission["decision"] = "FAIL"
+        admission["hard_blockers"] = list(dict.fromkeys([
+            *admission["hard_blockers"],
+            "offline_gate_registry_packet_mismatch",
+        ]))
+    if registry_decision != packet_decision:
+        admission["decision"] = "FAIL"
+        admission["hard_blockers"] = list(dict.fromkeys([
+            *admission["hard_blockers"],
+            "offline_gate_registry_packet_decision_mismatch",
+        ]))
+    admission["source_validation_decision"] = packet_decision or "PENDING"
+    admission["source_failed_gates"] = registry_failed
+    return admission
+
+
 def _candidate_rows(
     query_fn: Callable[[str, list[Any]], list[dict[str, Any]]],
     cohort_id: str,
-) -> tuple[dict[str, dict[str, Any]], bool]:
+) -> tuple[dict[str, dict[str, Any]], dict[str, bool]]:
     rows = query_fn(
         """
         SELECT artifact_id, model_name, version, state, artifact_path, checksum,
@@ -91,51 +200,52 @@ def _candidate_rows(
         [],
     )
     current_training_run_id = f"active8_oof:{cohort_id}"
-    by_lane: dict[tuple[str, str], dict[str, dict[str, Any]]] = defaultdict(dict)
-    for row in rows:
-        owner = str(row.get("model_name") or "")
-        source_date = str(row.get("source_run_date") or "")[:10]
-        training_run_id = str(row.get("training_run_id") or "")
-        if owner in {"l4_alpha_ev", "allocator_ev_fusion"} and source_date and training_run_id:
-            by_lane[(training_run_id, source_date)].setdefault(owner, row)
-    complete_pairs = [
-        pair
-        for lane in sorted(by_lane, key=lambda item: (item[1], item[0]), reverse=True)
-        if set((pair := by_lane[lane])) == {"l4_alpha_ev", "allocator_ev_fusion"}
-    ]
-    active_pairs = [
-        pair for pair in complete_pairs
-        if all(str(row.get("state") or "") in ACTIVE_CANDIDATE_STATES for row in pair.values())
-        and any(str(row.get("state") or "") != "production" for row in pair.values())
-    ]
-    if active_pairs:
-        # Preserve the oldest active lane. A newer weekly candidate must queue
-        # instead of resetting prospective evidence before T+5 labels mature.
-        return active_pairs[-1], False
-    for pair in complete_pairs:
-        if all(
-            str(row.get("training_run_id") or "") == current_training_run_id
-            and str(row.get("state") or "") in ELIGIBLE_CANDIDATE_STATES
-            and str(row.get("offline_gate_decision") or "").upper() == "PASS"
-            for row in pair.values()
+    selected: dict[str, dict[str, Any]] = {}
+    activate: dict[str, bool] = {}
+    for owner in ("l4_alpha_ev", "allocator_ev_fusion"):
+        owner_rows = [row for row in rows if str(row.get("model_name") or "") == owner]
+        active = [
+            row for row in owner_rows
+            if str(row.get("state") or "") in ACTIVE_CANDIDATE_STATES
+            and str(row.get("state") or "") != "production"
+            and _offline_admission_for_row(row)["decision"] == "PASS"
+        ]
+        if active:
+            # SQL is newest-first. Preserve the oldest active artifact so a new
+            # weekly candidate cannot reset an in-flight prospective lane.
+            selected[owner] = active[-1]
+            activate[owner] = False
+            continue
+        eligible = [
+            row for row in owner_rows
+            if str(row.get("training_run_id") or "") == current_training_run_id
+            and str(row.get("state") or "") in (ELIGIBLE_CANDIDATE_STATES | OBSERVABLE_REJECTED_CANDIDATE_STATES)
+            and _offline_admission_for_row(row)["decision"] == "PASS"
+        ]
+        if eligible:
+            selected[owner] = eligible[0]
+            activate[owner] = True
+
+    # Fusion is a residual over the exact L4 artifact. It may not delay an
+    # independently admissible L4 lane, but it may only evaluate beside the L4
+    # candidate frozen by the same cohort and source date.
+    if "allocator_ev_fusion" in selected:
+        fusion = selected["allocator_ev_fusion"]
+        l4 = selected.get("l4_alpha_ev")
+        if not l4 or any(
+            str(fusion.get(field) or "") != str(l4.get(field) or "")
+            for field in ("training_run_id", "source_run_date")
         ):
-            return pair, True
-    for pair in complete_pairs:
-        if all(
-            str(row.get("training_run_id") or "") == current_training_run_id
-            and str(row.get("state") or "") in OBSERVABLE_REJECTED_CANDIDATE_STATES
-            and str(row.get("offline_gate_decision") or "").upper() != "PASS"
-            for row in pair.values()
-        ):
-            return pair, False
-    return {}, False
+            selected.pop("allocator_ev_fusion", None)
+            activate.pop("allocator_ev_fusion", None)
+    return selected, activate
 
 
 def _persist_candidate_gate_state(
     *,
     candidates: dict[str, dict[str, Any]],
     gates: dict[str, dict[str, Any]],
-    activate: bool,
+    activate: dict[str, bool],
     batch_fn: Callable[..., dict[str, Any]],
 ) -> dict[str, Any]:
     statements: list[tuple[str, list[Any]]] = []
@@ -147,17 +257,19 @@ def _persist_candidate_gate_state(
             "rejected"
             if decision == "FAIL"
             else "shadowing"
-            if activate or state not in ACTIVE_CANDIDATE_STATES
+            if activate.get(owner, False) or state not in ACTIVE_CANDIDATE_STATES
             else state
         )
         live_status = (
             "passed" if decision == "PASS"
             else "failed" if decision == "FAIL"
+            else "holding_forward_evidence" if decision == "HOLD"
             else "collecting_forward_evidence"
         )
         promotion_decision = (
             "prospective_passed" if decision == "PASS"
             else "prospective_failed" if decision == "FAIL"
+            else "prospective_hold" if decision == "HOLD"
             else "prospective_collecting"
         )
         statements.append((
@@ -303,10 +415,11 @@ def _daily_evaluations(
         baseline_spread = _spread(baseline_values, targets)[0] if len(baseline_values) == len(rows) else None
         corr_delta = None if corr is None or baseline_corr is None else corr - baseline_corr
         spread_delta = None if baseline_spread is None else spread - baseline_spread
-        if len(rows) < 20 or corr is None:
+        baseline_complete = baseline_corr is not None and baseline_spread is not None
+        if len(rows) < 20 or corr is None or not baseline_complete:
             quality = "INSUFFICIENT"
         elif owner == "l4_alpha_ev":
-            quality = "PASS" if corr > 0.0 and spread > 0.0 and top_return > 0.0 else "DEGRADED"
+            quality = "PASS" if (corr_delta or 0.0) >= 0.0 and (spread_delta or 0.0) >= 0.0 and top_return > 0.0 else "DEGRADED"
         else:
             quality = "PASS" if (corr_delta or 0.0) >= 0.0 and (spread_delta or 0.0) >= 0.0 and top_return > 0.0 else "DEGRADED"
         identity_text = "|".join((
@@ -330,6 +443,9 @@ def _daily_evaluations(
             "spread_delta": spread_delta,
             "top_return": top_return,
             "quality_decision": quality,
+            "baseline_owner": (
+                L4_BASELINE_OWNER if owner == "l4_alpha_ev" else FUSION_BASELINE_OWNER
+            ),
         })
     return output
 
@@ -344,6 +460,8 @@ def _persist_evaluations(
     batch_fn: Callable[..., dict[str, Any]],
 ) -> dict[str, Any]:
     registry = candidate["registry"]
+    artifact_trained_until = str(candidate["artifact"].get("trained_until") or "")[:10]
+    selection_semantic_floor_date = str(candidate.get("selection_semantic_floor_date") or "")[:10]
     statements: list[tuple[str, list[Any]]] = []
     for row in rows:
         evidence = {
@@ -353,20 +471,25 @@ def _persist_evaluations(
             "model_fingerprint": candidate["identity"]["model_fingerprint"],
             "cohort_id": cohort_id,
             "extension_manifest_checksum": extension_manifest_checksum,
+            "artifact_trained_until": artifact_trained_until,
+            "selection_semantic_floor_date": selection_semantic_floor_date,
             **row,
         }
         statements.append((
             """
-            INSERT INTO expected_return_candidate_forward_evaluations (
+            INSERT INTO expected_return_candidate_preoutcome_evaluations (
               evaluation_id, candidate_artifact_id, candidate_artifact_checksum,
               model_name, model_version, model_fingerprint, cohort_id,
-              source_run_date, extension_manifest_checksum, prediction_date,
+              source_run_date, artifact_trained_until, selection_semantic_floor_date,
+              extension_manifest_checksum, prediction_date,
               label_known_date, sample_count, prediction_corr, baseline_corr,
               corr_delta, spread, baseline_spread, spread_delta, top_return,
               quality_decision, evidence_json, updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
             ON CONFLICT(candidate_artifact_id, model_fingerprint, prediction_date) DO UPDATE SET
               extension_manifest_checksum=excluded.extension_manifest_checksum,
+              artifact_trained_until=excluded.artifact_trained_until,
+              selection_semantic_floor_date=excluded.selection_semantic_floor_date,
               label_known_date=excluded.label_known_date,
               sample_count=excluded.sample_count,
               prediction_corr=excluded.prediction_corr,
@@ -385,6 +508,7 @@ def _persist_evaluations(
                 owner, candidate["artifact"]["model_version"],
                 candidate["identity"]["model_fingerprint"], cohort_id,
                 str(registry.get("source_run_date") or "")[:10],
+                artifact_trained_until, selection_semantic_floor_date,
                 extension_manifest_checksum, row["prediction_date"],
                 row["label_known_date"], row["sample_count"],
                 row["prediction_corr"], row["baseline_corr"], row["corr_delta"],
@@ -408,19 +532,25 @@ def _promotion_gate(
     contract_blockers: list[str] = []
     if len(evaluable) < MIN_EVALUABLE_DATES:
         maturity_blockers.append("prospective_date_count_below_floor")
-    top_lcb = _lcb90([float(row["top_return"]) for row in evaluable])
+    top_values = [float(row["top_return"]) for row in evaluable]
+    top_lcb = _lcb90(top_values)
+    top_ucb = _ucb90(top_values)
     if top_lcb is None or top_lcb <= 0.0:
         quality_blockers.append("prospective_top_return_lcb90_not_positive")
     if owner == "l4_alpha_ev":
-        corr_lcb = _lcb90([float(row["prediction_corr"]) for row in evaluable if row.get("prediction_corr") is not None])
-        spread_lcb = _lcb90([float(row["spread"]) for row in evaluable])
-        if corr_lcb is None or corr_lcb <= 0.0:
-            quality_blockers.append("prospective_corr_lcb90_not_positive")
-        if spread_lcb is None or spread_lcb <= 0.0:
-            quality_blockers.append("prospective_spread_lcb90_not_positive")
+        corr_values = [float(row["corr_delta"]) for row in evaluable if row.get("corr_delta") is not None]
+        spread_values = [float(row["spread_delta"]) for row in evaluable if row.get("spread_delta") is not None]
+        corr_lcb = _lcb90(corr_values)
+        spread_lcb = _lcb90(spread_values)
+        if corr_lcb is None or corr_lcb < 0.0:
+            quality_blockers.append("prospective_corr_delta_lcb90_inferior_to_formal_ml")
+        if spread_lcb is None or spread_lcb < 0.0:
+            quality_blockers.append("prospective_spread_delta_lcb90_inferior_to_formal_ml")
     else:
-        corr_lcb = _lcb90([float(row["corr_delta"]) for row in evaluable if row.get("corr_delta") is not None])
-        spread_lcb = _lcb90([float(row["spread_delta"]) for row in evaluable if row.get("spread_delta") is not None])
+        corr_values = [float(row["corr_delta"]) for row in evaluable if row.get("corr_delta") is not None]
+        spread_values = [float(row["spread_delta"]) for row in evaluable if row.get("spread_delta") is not None]
+        corr_lcb = _lcb90(corr_values)
+        spread_lcb = _lcb90(spread_values)
         if corr_lcb is None or corr_lcb < 0.0:
             quality_blockers.append("prospective_corr_delta_lcb90_inferior_to_l4")
         if spread_lcb is None or spread_lcb < 0.0:
@@ -432,29 +562,56 @@ def _promotion_gate(
             for row in recent
         ):
             quality_blockers.append("prospective_recent_two_dates_jointly_inferior")
+    corr_ucb = _ucb90(corr_values)
+    spread_ucb = _ucb90(spread_values)
     registry = candidate["registry"]
-    if str(registry.get("offline_gate_decision") or "").upper() != "PASS":
-        contract_blockers.append("offline_gate_not_pass")
-    validation = candidate["packet"].get("validation_packet") or {}
-    if (
-        str(validation.get("decision") or "").upper() != "PASS"
-        or validation.get("failed_gates")
-    ):
-        contract_blockers.append("offline_validation_packet_not_pass")
-    parity = candidate["packet"].get("operational_parity") or {}
+    offline_admission = _offline_admission(candidate)
+    if offline_admission["decision"] != "PASS":
+        contract_blockers.append("offline_admission_not_pass")
+    parity = candidate.get("operational_parity") or candidate["packet"].get("operational_parity") or {}
     owner_parity = (parity.get("owner_decisions") or {}).get(owner) or {}
     if str(owner_parity.get("decision") or "").upper() != "PASS" or owner_parity.get("failed_gates"):
         contract_blockers.append("owner_operational_parity_not_pass")
     source_date = str(registry.get("source_run_date") or "")[:10]
+    trained_until = str(candidate["artifact"].get("trained_until") or "")[:10]
+    selection_semantic_floor_date = str(
+        candidate.get("selection_semantic_floor_date") or ""
+    )[:10]
     min_date = min((str(row["prediction_date"]) for row in evaluable), default=None)
     max_date = max((str(row["prediction_date"]) for row in evaluable), default=None)
-    if min_date and min_date <= source_date:
-        contract_blockers.append("prospective_prediction_not_after_candidate_freeze")
+    label_known_dates = [
+        str(row.get("label_known_date") or "")[:10]
+        for row in evaluable
+        if len(str(row.get("label_known_date") or "")[:10]) == 10
+    ]
+    label_known_min = min(label_known_dates, default=None)
+    label_known_max = max(label_known_dates, default=None)
+    if not trained_until or trained_until > source_date:
+        contract_blockers.append("candidate_trained_until_invalid")
+    if min_date and min_date <= trained_until:
+        contract_blockers.append("prediction_not_after_candidate_trained_until")
+    if len(selection_semantic_floor_date) != 10:
+        contract_blockers.append("selection_semantic_floor_missing")
+    elif min_date and min_date < selection_semantic_floor_date:
+        contract_blockers.append("prediction_before_selection_semantic_floor")
+    if len(label_known_dates) != len(evaluable):
+        contract_blockers.append("label_known_date_missing")
+    if label_known_min and label_known_min <= source_date:
+        contract_blockers.append("label_known_not_after_candidate_freeze")
+    confidently_harmful = bool(
+        (top_ucb is not None and top_ucb <= 0.0)
+        or (
+            corr_ucb is not None and corr_ucb < 0.0
+            and spread_ucb is not None and spread_ucb < 0.0
+        )
+    )
+    maximum_window_exhausted = len(evaluable) >= MAX_EVALUABLE_DATES
     decision = (
         "FAIL" if contract_blockers
         else "PENDING" if maturity_blockers
         else "PASS" if not quality_blockers
-        else "FAIL"
+        else "FAIL" if confidently_harmful or maximum_window_exhausted
+        else "HOLD"
     )
     failed = list(dict.fromkeys(contract_blockers + maturity_blockers + quality_blockers))
     return {
@@ -468,16 +625,86 @@ def _promotion_gate(
         "candidate_artifact_checksum": candidate["checksum"],
         "model_fingerprint": candidate["identity"]["model_fingerprint"],
         "source_run_date": source_date,
+        "artifact_trained_until": trained_until,
+        "selection_semantic_floor_date": selection_semantic_floor_date or None,
         "minimum_evaluable_dates": MIN_EVALUABLE_DATES,
+        "maximum_evaluable_dates": MAX_EVALUABLE_DATES,
         "evaluable_date_count": len(evaluable),
         "prediction_date_min": min_date,
         "prediction_date_max": max_date,
+        "label_known_date_min": label_known_min,
+        "label_known_date_max": label_known_max,
         "corr_or_delta_lcb90": corr_lcb,
+        "corr_or_delta_ucb90": corr_ucb,
         "spread_or_delta_lcb90": spread_lcb,
+        "spread_or_delta_ucb90": spread_ucb,
         "top_return_lcb90": top_lcb,
-        "evaluation_unit": "post_freeze_prediction_date",
+        "top_return_ucb90": top_ucb,
+        "confidently_harmful": confidently_harmful,
+        "maximum_window_exhausted": maximum_window_exhausted,
+        "offline_admission": offline_admission,
+        "operational_parity": parity,
+        "baseline_owner": (
+            L4_BASELINE_OWNER if owner == "l4_alpha_ev" else FUSION_BASELINE_OWNER
+        ),
+        "comparison_mode": "same_prediction_date_paired_cross_section",
+        "evaluation_unit": "pre_outcome_locked_prediction_date",
+        "no_lookahead_guard": "prediction_after_trained_until_and_label_unknown_at_freeze",
         "training_dispatched": False,
     }
+
+
+def _preoutcome_locked_rows(
+    snapshot_rows: list[dict[str, Any]],
+    *,
+    candidates: dict[str, dict[str, Any]],
+    source_date: str,
+    business_date: str,
+    selection_semantic_floor_date: str,
+) -> list[dict[str, Any]]:
+    trained_until_dates = [
+        str(candidate["artifact"].get("trained_until") or "")[:10]
+        for candidate in candidates.values()
+    ]
+    if (
+        not trained_until_dates
+        or len(selection_semantic_floor_date) != 10
+        or any(len(value) != 10 or value > source_date for value in trained_until_dates)
+    ):
+        return []
+    evidence_trained_until = max(trained_until_dates)
+    return [
+        row for row in snapshot_rows
+        if str(row.get("fold_id") or "") == "frozen_forward"
+        and str(row.get("snapshot_date") or "")[:10] > evidence_trained_until
+        and str(row.get("snapshot_date") or "")[:10] >= selection_semantic_floor_date
+        and str(row.get("label_known_date") or "")[:10] > source_date
+        and str(row.get("label_known_date") or "")[:10] <= business_date
+    ]
+
+
+def _selection_semantic_floor_date(
+    query_fn: Callable[[str, list[Any]], list[dict[str, Any]]],
+    business_date: str,
+) -> str | None:
+    rows = query_fn(
+        """
+        SELECT MIN(signal_date) AS selection_semantic_floor_date
+          FROM strategy_route_backfill_eligibility_v1
+         WHERE route_version=?
+           AND affinity_version=?
+           AND status IN ('eligible','pending_maturity')
+           AND reference_rows > 0
+           AND signal_date <= ?
+        """,
+        [
+            SELECTION_ROUTE_SEMANTIC_VERSION,
+            SELECTION_AFFINITY_SEMANTIC_VERSION,
+            business_date,
+        ],
+    )
+    value = str((rows[0] if rows else {}).get("selection_semantic_floor_date") or "")[:10]
+    return value if len(value) == 10 else None
 
 
 def evaluate_expected_return_candidates_forward(
@@ -487,17 +714,18 @@ def evaluate_expected_return_candidates_forward(
     business_date: str,
     extension_manifest_checksum: str,
     snapshot_rows: list[dict[str, Any]],
+    native_rows: list[dict[str, Any]] | None = None,
     build_fusion_rows_fn: Callable[..., list[dict[str, Any]]],
     query_fn: Callable[[str, list[Any]], list[dict[str, Any]]],
     batch_fn: Callable[..., dict[str, Any]],
 ) -> dict[str, Any]:
-    """Evaluate and persist exact candidate evidence on post-freeze mature rows."""
+    """Evaluate exact candidates on immutable rows whose labels were unknown at freeze."""
 
     selected, activate = _candidate_rows(query_fn, cohort_id)
     if not selected:
         return {
             "schema_version": SCHEMA_VERSION,
-            "status": "offline_pass_candidate_pair_missing",
+            "status": "offline_admissible_candidate_missing",
             "promotion_ready": False,
             "training_dispatched": False,
         }
@@ -505,19 +733,32 @@ def evaluate_expected_return_candidates_forward(
         owner: _load_candidate_packet(bucket, row)
         for owner, row in selected.items()
     }
+    if native_rows is not None:
+        from services.ev_operational_parity import assess_ev_operational_parity
+
+        parity = assess_ev_operational_parity(
+            l4_artifact=candidates["l4_alpha_ev"]["artifact"],
+            fusion_artifact=(
+                candidates["allocator_ev_fusion"]["artifact"]
+                if "allocator_ev_fusion" in candidates
+                else {}
+            ),
+            native_rows=native_rows,
+        )
+        for candidate in candidates.values():
+            candidate["operational_parity"] = parity
     source_date = str(selected["l4_alpha_ev"].get("source_run_date") or "")[:10]
-    fusion_source_date = str(
-        selected["allocator_ev_fusion"].get("source_run_date") or ""
-    )[:10]
-    if fusion_source_date != source_date:
-        raise ValueError("candidate_forward_pair_source_date_mismatch")
-    post_freeze_rows = [
-        row for row in snapshot_rows
-        if str(row.get("fold_id") or "") == "frozen_forward"
-        and str(row.get("snapshot_date") or "")[:10] > source_date
-        and str(row.get("label_known_date") or "")[:10] <= business_date
-    ]
-    if not post_freeze_rows:
+    selection_semantic_floor_date = _selection_semantic_floor_date(query_fn, business_date)
+    for candidate in candidates.values():
+        candidate["selection_semantic_floor_date"] = selection_semantic_floor_date
+    preoutcome_locked_rows = _preoutcome_locked_rows(
+        snapshot_rows,
+        candidates=candidates,
+        source_date=source_date,
+        business_date=business_date,
+        selection_semantic_floor_date=selection_semantic_floor_date or "",
+    )
+    if not preoutcome_locked_rows:
         gates = {
             owner: _promotion_gate([], owner=owner, candidate=candidate)
             for owner, candidate in candidates.items()
@@ -531,27 +772,33 @@ def evaluate_expected_return_candidates_forward(
         )
         return {
             "schema_version": SCHEMA_VERSION,
-            "status": "evaluated" if terminal_contract_failure else "waiting_for_post_freeze_mature_dates",
+            "status": "evaluated" if terminal_contract_failure else "waiting_for_preoutcome_locked_mature_dates",
             "candidate_source_run_date": source_date,
+            "selection_semantic_floor_date": selection_semantic_floor_date,
             "candidate_artifact_ids": {
                 owner: candidate["registry"]["artifact_id"]
                 for owner, candidate in candidates.items()
             },
             "gates": gates,
             "lane_persistence": lane_persistence,
-            "post_freeze_rows": 0,
+            "preoutcome_locked_rows": 0,
             "promotion_ready": False,
             "training_dispatched": False,
         }
 
     l4_candidate = candidates["l4_alpha_ev"]
-    l4_sample_rows, l4_diagnostics = _l4_samples(post_freeze_rows)
+    l4_sample_rows, l4_diagnostics = _l4_samples(preoutcome_locked_rows)
     l4_predictions = [_l4_prediction(sample, l4_candidate["artifact"]) for sample in l4_sample_rows]
+    l4_baseline_predictions = [
+        float(sample["features"]["ensemble_directional_margin"])
+        for sample in l4_sample_rows
+    ]
     l4_daily = _daily_evaluations(
         owner="l4_alpha_ev",
         candidate=l4_candidate,
         samples=l4_sample_rows,
         predictions=l4_predictions,
+        baseline_predictions=l4_baseline_predictions,
     )
     l4_prediction_rows = []
     candidate_trained_until = str(l4_candidate["artifact"].get("trained_until") or "")[:10]
@@ -570,54 +817,54 @@ def evaluate_expected_return_candidates_forward(
             "prediction_json": json.dumps(payload, ensure_ascii=False, sort_keys=True),
         })
 
-    fusion_rows = build_fusion_rows_fn(
-        post_freeze_rows,
-        l4_prediction_rows,
-        knowledge_cutoff_date=business_date,
-        query_fn=query_fn,
-    )
-    fusion_samples, fusion_diagnostics = _fusion_samples(fusion_rows, execution_cost_bps=18.0)
-    fusion_candidate = candidates["allocator_ev_fusion"]
-    residual = fusion_candidate["artifact"].get("residual_adjustment_model") or {}
-    residual_intercept = float(residual.get("intercept") or 0.0)
-    residual_coefficients = {
-        str(name): float(value)
-        for name, value in (residual.get("coefficients") or {}).items()
-    }
-    residual_clip = dict(fusion_candidate["artifact"].get("residual_output_clip") or {})
-    baseline_predictions = [float(sample["features"]["l4_expected_return"]) for sample in fusion_samples]
-    fusion_predictions = [
-        base + _bounded_prediction(
-            _predict_fusion(sample, residual_intercept, residual_coefficients),
-            residual_clip,
+    fusion_daily: list[dict[str, Any]] = []
+    fusion_diagnostics: dict[str, Any] = {"status": "offline_admission_not_ready"}
+    if "allocator_ev_fusion" in candidates:
+        fusion_rows = build_fusion_rows_fn(
+            preoutcome_locked_rows,
+            l4_prediction_rows,
+            knowledge_cutoff_date=business_date,
+            query_fn=query_fn,
         )
-        for sample, base in zip(fusion_samples, baseline_predictions, strict=True)
-    ]
-    fusion_daily = _daily_evaluations(
-        owner="allocator_ev_fusion",
-        candidate=fusion_candidate,
-        samples=fusion_samples,
-        predictions=fusion_predictions,
-        baseline_predictions=baseline_predictions,
-    )
-
-    persistence = {
-        "l4_alpha_ev": _persist_evaluations(
-            l4_daily,
-            owner="l4_alpha_ev",
-            candidate=l4_candidate,
-            cohort_id=cohort_id,
-            extension_manifest_checksum=extension_manifest_checksum,
-            batch_fn=batch_fn,
-        ),
-        "allocator_ev_fusion": _persist_evaluations(
-            fusion_daily,
+        fusion_samples, fusion_diagnostics = _fusion_samples(fusion_rows, execution_cost_bps=18.0)
+        fusion_candidate = candidates["allocator_ev_fusion"]
+        residual = fusion_candidate["artifact"].get("residual_adjustment_model") or {}
+        residual_intercept = float(residual.get("intercept") or 0.0)
+        residual_coefficients = {
+            str(name): float(value)
+            for name, value in (residual.get("coefficients") or {}).items()
+        }
+        residual_clip = dict(fusion_candidate["artifact"].get("residual_output_clip") or {})
+        baseline_predictions = [float(sample["features"]["l4_expected_return"]) for sample in fusion_samples]
+        fusion_predictions = [
+            base + _bounded_prediction(
+                _predict_fusion(sample, residual_intercept, residual_coefficients),
+                residual_clip,
+            )
+            for sample, base in zip(fusion_samples, baseline_predictions, strict=True)
+        ]
+        fusion_daily = _daily_evaluations(
             owner="allocator_ev_fusion",
             candidate=fusion_candidate,
+            samples=fusion_samples,
+            predictions=fusion_predictions,
+            baseline_predictions=baseline_predictions,
+        )
+
+    daily_by_owner = {
+        "l4_alpha_ev": l4_daily,
+        **({"allocator_ev_fusion": fusion_daily} if "allocator_ev_fusion" in candidates else {}),
+    }
+    persistence = {
+        owner: _persist_evaluations(
+            daily,
+            owner=owner,
+            candidate=candidates[owner],
             cohort_id=cohort_id,
             extension_manifest_checksum=extension_manifest_checksum,
             batch_fn=batch_fn,
-        ),
+        )
+        for owner, daily in daily_by_owner.items()
     }
     gates: dict[str, dict[str, Any]] = {}
     promotion_payload: dict[str, Any] = {}
@@ -627,7 +874,7 @@ def evaluate_expected_return_candidates_forward(
             SELECT prediction_date, label_known_date, sample_count,
                    prediction_corr, baseline_corr, corr_delta, spread,
                    baseline_spread, spread_delta, top_return, quality_decision
-              FROM expected_return_candidate_forward_evaluations
+              FROM expected_return_candidate_preoutcome_evaluations
              WHERE candidate_artifact_id=? AND model_fingerprint=?
              ORDER BY prediction_date
             """,
@@ -643,7 +890,8 @@ def evaluate_expected_return_candidates_forward(
                 "artifact_id": candidate["registry"]["artifact_id"],
                 "artifact": candidate["artifact"],
                 "validation_packet": candidate["packet"].get("validation_packet") or {},
-                "operational_parity": candidate["packet"].get("operational_parity") or {},
+                "offline_admission": gate["offline_admission"],
+                "operational_parity": candidate.get("operational_parity") or candidate["packet"].get("operational_parity") or {},
                 "prospective_validation": gate,
                 "cohort_id": cohort_id,
                 "source_run_date": candidate["registry"]["source_run_date"],
@@ -661,16 +909,16 @@ def evaluate_expected_return_candidates_forward(
         "schema_version": SCHEMA_VERSION,
         "status": "evaluated",
         "candidate_source_run_date": source_date,
+        "selection_semantic_floor_date": selection_semantic_floor_date,
         "candidate_states": {
             owner: str(candidate["registry"].get("state") or "")
             for owner, candidate in candidates.items()
         },
-        "post_freeze_rows": len(post_freeze_rows),
+        "preoutcome_locked_rows": len(preoutcome_locked_rows),
         "l4_sample_audit": l4_diagnostics,
         "fusion_sample_audit": fusion_diagnostics,
         "daily_evaluations": {
-            "l4_alpha_ev": l4_daily,
-            "allocator_ev_fusion": fusion_daily,
+            **daily_by_owner,
         },
         "gates": gates,
         "persistence": persistence,

@@ -1,4 +1,5 @@
 import { resolveExpectedReturnServingState, type ExpectedReturnOwner } from './expectedReturnServingState'
+import { EXPECTED_RETURN_PROSPECTIVE_MIN_DATES } from './expectedReturnServingRegistry'
 
 type JsonRecord = Record<string, any>
 
@@ -12,6 +13,7 @@ export interface ExpectedReturnPromotionCandidate {
   artifact_path: string
   artifact_checksum: string
   prospective_validation: JsonRecord
+  offline_admission: JsonRecord
 }
 
 export interface ExpectedReturnOwnerPromotionPlan {
@@ -55,6 +57,22 @@ function finiteNumber(value: unknown): number | null {
   return Number.isFinite(parsed) ? parsed : null
 }
 
+const OFFLINE_EFFICACY_FINDINGS: Record<ExpectedReturnOwner, Set<string>> = {
+  l4_alpha_ev: new Set([
+    'oos_date_cluster_corr_lcb90_not_positive',
+    'oos_date_cluster_spread_lcb90_not_above_cost',
+    'oos_top_quintile_return_not_positive',
+    'oos_date_cluster_top_quintile_return_lcb90_not_positive',
+    'walk_forward_not_stable',
+  ]),
+  allocator_ev_fusion: new Set([
+    'residual_adjustment:oos_prediction_target_corr_lcb90_not_positive',
+    'residual_adjustment:oos_top_bottom_spread_lcb90_not_economic',
+    'residual_adjustment:walk_forward_not_stable',
+    'residual_champion:residual_adjustment_model_not_validated',
+  ]),
+}
+
 export function buildExpectedReturnOwnerPromotionPlan(
   currentConfig: JsonRecord,
   owner: ExpectedReturnOwner,
@@ -74,6 +92,7 @@ export function buildExpectedReturnOwnerPromotionPlan(
   const artifactId = String(candidate.artifact_id ?? '').trim()
   const artifactFingerprint = String(artifact.model_fingerprint ?? '').trim().toLowerCase()
   const prospective = recordValue(candidate.prospective_validation)
+  const offlineAdmission = recordValue(candidate.offline_admission)
   const trainedUntil = cleanDate(artifact.trained_until)
   const blockers: string[] = []
 
@@ -93,10 +112,29 @@ export function buildExpectedReturnOwnerPromotionPlan(
     blockers.push('artifact_path_checksum_lineage_mismatch')
   }
   if (artifact.expected_return_owner !== owner) blockers.push('expected_return_owner_mismatch')
-  if (decision(validationPacket.decision) !== 'PASS') blockers.push('offline_validation_not_pass')
-  if (stringArray(validationPacket.failed_gates).length > 0) blockers.push('offline_validation_has_failed_gates')
-  if (decision(artifactValidation.decision) !== 'PASS') blockers.push('artifact_validation_not_pass')
-  if (stringArray(artifactValidation.failed_gates).length > 0) blockers.push('artifact_validation_has_failed_gates')
+  const sourceValidationGates = stringArray(validationPacket.failed_gates)
+  const artifactValidationGates = stringArray(artifactValidation.failed_gates)
+  const admissionSourceGates = stringArray(offlineAdmission.source_failed_gates)
+  const sourceValidationDecision = decision(validationPacket.decision)
+  const artifactValidationDecision = decision(artifactValidation.decision)
+  const admissionSourceDecision = decision(offlineAdmission.source_validation_decision)
+  if (offlineAdmission.schema_version !== 'expected-return-offline-admission-v1') blockers.push('offline_admission_contract_incompatible')
+  if (decision(offlineAdmission.decision) !== 'PASS') blockers.push('offline_admission_not_pass')
+  if (stringArray(offlineAdmission.hard_blockers).length > 0) blockers.push('offline_admission_has_hard_blockers')
+  if (JSON.stringify([...sourceValidationGates].sort()) !== JSON.stringify([...artifactValidationGates].sort())) {
+    blockers.push('offline_validation_artifact_mismatch')
+  }
+  if (sourceValidationDecision !== artifactValidationDecision) blockers.push('offline_validation_artifact_decision_mismatch')
+  if (sourceValidationDecision !== admissionSourceDecision) blockers.push('offline_admission_source_decision_mismatch')
+  if (!['PASS', 'FAIL'].includes(sourceValidationDecision)) blockers.push('offline_source_validation_not_terminal')
+  if (sourceValidationDecision === 'PASS' && sourceValidationGates.length > 0) blockers.push('offline_source_pass_with_failed_gates')
+  if (sourceValidationDecision === 'FAIL' && sourceValidationGates.length === 0) blockers.push('offline_source_failure_without_failed_gates')
+  if (JSON.stringify([...sourceValidationGates].sort()) !== JSON.stringify([...admissionSourceGates].sort())) {
+    blockers.push('offline_admission_source_mismatch')
+  }
+  if (sourceValidationGates.some((gate) => !OFFLINE_EFFICACY_FINDINGS[owner].has(gate))) {
+    blockers.push('offline_admission_contains_non_efficacy_failure')
+  }
   if (parity.schema_version !== 'ev-operational-parity-v2') blockers.push('owner_parity_contract_incompatible')
   if (decision(ownerParity.decision) !== 'PASS') blockers.push('owner_operational_parity_not_pass')
   if (stringArray(ownerParity.failed_gates).length > 0) blockers.push('owner_operational_parity_has_failed_gates')
@@ -104,7 +142,7 @@ export function buildExpectedReturnOwnerPromotionPlan(
   if (cleanId(trainingData.cohort_id) !== cohortId) blockers.push('cohort_lineage_mismatch')
   if (!trainedUntil || (sourceRunDate && trainedUntil > sourceRunDate)) blockers.push('trained_until_after_source_run_date')
   if (artifact.output_is_net_of_costs !== true) blockers.push('expected_return_not_net_of_costs')
-  if (prospective.schema_version !== 'expected-return-candidate-forward-gate-v1') {
+  if (prospective.schema_version !== 'expected-return-candidate-forward-gate-v2') {
     blockers.push('prospective_validation_contract_incompatible')
   }
   if (decision(prospective.decision) !== 'PASS') blockers.push('prospective_validation_not_pass')
@@ -121,14 +159,25 @@ export function buildExpectedReturnOwnerPromotionPlan(
   const minimumProspectiveDates = Number(prospective.minimum_evaluable_dates ?? 0)
   const prospectiveMinDate = cleanDate(prospective.prediction_date_min)
   const prospectiveMaxDate = cleanDate(prospective.prediction_date_max)
+  const prospectiveLabelKnownMin = cleanDate(prospective.label_known_date_min)
+  const prospectiveLabelKnownMax = cleanDate(prospective.label_known_date_max)
+  const prospectiveTrainedUntil = cleanDate(prospective.artifact_trained_until)
+  const selectionSemanticFloorDate = cleanDate(prospective.selection_semantic_floor_date)
   if (
     !Number.isInteger(prospectiveDates)
     || !Number.isInteger(minimumProspectiveDates)
-    || minimumProspectiveDates < 5
+    || minimumProspectiveDates !== EXPECTED_RETURN_PROSPECTIVE_MIN_DATES
     || prospectiveDates < minimumProspectiveDates
   ) blockers.push('prospective_date_count_below_floor')
-  if (!prospectiveMinDate || prospectiveMinDate <= sourceRunDate) blockers.push('prospective_prediction_not_after_candidate_freeze')
+  if (!prospectiveTrainedUntil || prospectiveTrainedUntil !== trainedUntil) blockers.push('prospective_trained_until_mismatch')
+  if (!prospectiveMinDate || prospectiveMinDate <= trainedUntil) blockers.push('prediction_not_after_candidate_trained_until')
+  if (!selectionSemanticFloorDate) blockers.push('selection_semantic_floor_missing')
+  if (selectionSemanticFloorDate && prospectiveMinDate && prospectiveMinDate < selectionSemanticFloorDate) {
+    blockers.push('prediction_before_selection_semantic_floor')
+  }
   if (!prospectiveMaxDate || prospectiveMaxDate < prospectiveMinDate) blockers.push('prospective_prediction_range_invalid')
+  if (!prospectiveLabelKnownMin || prospectiveLabelKnownMin <= sourceRunDate) blockers.push('label_known_not_after_candidate_freeze')
+  if (!prospectiveLabelKnownMax || prospectiveLabelKnownMax < prospectiveLabelKnownMin) blockers.push('prospective_label_known_range_invalid')
   if (prospective.training_dispatched !== false) blockers.push('prospective_validation_dispatched_training')
   const corrOrDeltaLcb = finiteNumber(prospective.corr_or_delta_lcb90)
   const spreadOrDeltaLcb = finiteNumber(prospective.spread_or_delta_lcb90)
@@ -143,10 +192,17 @@ export function buildExpectedReturnOwnerPromotionPlan(
     || (owner === 'l4_alpha_ev' ? spreadOrDeltaLcb <= 0 : spreadOrDeltaLcb < 0)
   ) blockers.push('prospective_spread_or_delta_lcb90_not_pass')
 
+  const admittedValidationPacket = {
+    ...validationPacket,
+    decision: 'PASS',
+    failed_gates: [],
+    offline_admission: offlineAdmission,
+    offline_efficacy_findings: sourceValidationGates,
+  }
   const servingArtifact = blockers.length === 0
     ? {
       ...artifact,
-      validation_packet: validationPacket,
+      validation_packet: admittedValidationPacket,
       operational_parity: parity,
       prospective_validation: prospective,
       promotion_state: owner === 'l4_alpha_ev' ? 'production_approved' : 'production_primary',

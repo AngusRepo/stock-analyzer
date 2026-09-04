@@ -58,6 +58,9 @@ import { readScoreV2Snapshot, serializeScoreV2Snapshot, type ScoreV2StorageRow }
 import type { Bindings, Variables } from '../types'
 import { databaseForDataDomain } from '../lib/dataDomainRegistry'
 import { paperDomainDatabase } from '../lib/paperDomainDatabase'
+import { getRiskConfig } from '../lib/riskConfig'
+import { validateOrder } from '../lib/validateOrder'
+import { loadAverageMarketVolumeBySymbols, loadPreviousMarketCloseBySymbols } from '../lib/stockIdentityMarketBridge'
 
 const paper = new Hono<{ Bindings: Bindings; Variables: Variables }>()
 
@@ -1274,6 +1277,7 @@ paper.get('/gate-calibration', async (c) => {
 
 paper.post('/buy', async (c) => {
   const cfg = await getTradingConfig(c.env.KV)
+  const riskCfg = await getRiskConfig(c.env.KV)
   const body = await c.req.json<any>().catch(() => ({}))
   const symbol:  string  = String(body.symbol  ?? '').toUpperCase().trim()
   const sharesRaw        = parseInt(String(body.shares ?? 0))
@@ -1285,6 +1289,9 @@ paper.post('/buy', async (c) => {
 
   if (!symbol)       return c.json({ error: '缺少 symbol' }, 400)
   if (!sharesRaw || sharesRaw <= 0) return c.json({ error: 'shares 必須為正整數' }, 400)
+  if (riskCfg.system.killSwitch) {
+    return c.json({ error: '風控 kill switch 已啟用，禁止新增 Paper 買單', reason: 'risk_kill_switch_active' }, 409)
+  }
 
   const resolvedPrice = await resolveManualExecutablePrice(c, symbol, priceOverride)
   const rawPrice = resolvedPrice.price
@@ -1311,6 +1318,28 @@ paper.post('/buy', async (c) => {
   const initialStop = price - atr14 * slMult
   const tp1Price = price + atr14 * tpMult
   const tp2Price = price + atr14 * tpMult * tp2Mult
+  const [previousClose, averageVolume] = await Promise.all([
+    loadPreviousMarketCloseBySymbols(c.env, [symbol], todayStr),
+    loadAverageMarketVolumeBySymbols(c.env, [symbol], todayStr, 20),
+  ])
+  const paperRiskValidation = await validateOrder({
+    symbol,
+    side: 'buy',
+    shares: sharesRaw,
+    limitPrice: price,
+    refClose: previousClose.get(symbol)?.close ?? null,
+    avgVolume20d: averageVolume.get(symbol) ?? null,
+  }, riskCfg)
+  if (!paperRiskValidation.approved || paperRiskValidation.adjustedOrder) {
+    return c.json({
+      error: paperRiskValidation.approved
+        ? '買單需依風控調整，手動 Paper 下單不會靜默改單'
+        : '買單未通過 canonical risk validation',
+      reason: 'paper_order_risk_blocked',
+      risk_validation: paperRiskValidation,
+    }, 400)
+  }
+
   const txValue     = price * sharesRaw
   const commission  = calcCommission(txValue, cfg)
   const totalCost   = txValue + commission   // Buy orders do not include sell-side tax.
@@ -1358,8 +1387,14 @@ paper.post('/buy', async (c) => {
   // Guardrail: enforce manual daily buy limit.
   const MANUAL_DAILY_LIMIT = cfg.position.manualDailyLimit
   const todayBoughtManual = await paperDomainDatabase(c.env).prepare(
-    "SELECT COALESCE(SUM(total_cost), 0) as total FROM paper_orders WHERE account_id=? AND side='buy' AND created_at >= ?"
+    "SELECT COALESCE(SUM(total_cost), 0) as total, COUNT(*) as order_count FROM paper_orders WHERE account_id=? AND side='buy' AND created_at >= ?"
   ).bind(ACCOUNT_ID, todayStr).first<any>()
+  if (Number(todayBoughtManual?.order_count ?? 0) >= riskCfg.order.maxDailyBuyOrders) {
+    return c.json({
+      error: `已達每日買單筆數上限 ${riskCfg.order.maxDailyBuyOrders} 筆`,
+      reason: 'max_daily_buy_orders_reached',
+    }, 400)
+  }
   if ((todayBoughtManual?.total ?? 0) + totalCost > MANUAL_DAILY_LIMIT) {
     return c.json({
       error: `超過手動買入日限額 NT$${MANUAL_DAILY_LIMIT.toLocaleString()}，今日已買入 NT$${Math.round(todayBoughtManual?.total ?? 0).toLocaleString()}`,
@@ -1400,6 +1435,7 @@ paper.post('/buy', async (c) => {
       normalized_price: price,
       order_intent: orderIntent,
       order_legs: orderIntent.orderLegs,
+      paper_risk_validation: paperRiskValidation,
     }),
   )
 
@@ -1453,7 +1489,7 @@ paper.post('/buy', async (c) => {
     eventType: 'paper_order',
     status: 'filled',
     reason: 'manual_buy',
-    detail: { shares: sharesRaw, order_intent: orderIntent, order_legs: orderIntent.orderLegs, raw_price: rawPrice, price, price_source: resolvedPrice.source, total_cost: totalCost },
+    detail: { shares: sharesRaw, order_intent: orderIntent, order_legs: orderIntent.orderLegs, raw_price: rawPrice, price, price_source: resolvedPrice.source, total_cost: totalCost, paper_risk_validation: paperRiskValidation },
     orderId: lastOrder?.id ?? null,
     source,
   })

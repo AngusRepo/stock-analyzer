@@ -43,7 +43,7 @@ export type PipelineMaturityStage = {
   production_effect: string
   blockers: string[]
   blocker_groups?: Array<{
-    scope: 'offline_candidate' | 'serving_pointer' | 'frozen_forward' | 'runtime_guard'
+    scope: 'offline_candidate' | 'prospective_forward' | 'serving_pointer' | 'frozen_forward' | 'runtime_guard'
     title: string
     blockers: string[]
   }>
@@ -87,6 +87,7 @@ export type PipelineMaturityStage = {
         validation_schema_version: string | null
         source_run_date: string | null
         oof_max_date: string | null
+        label_known_max_date: string | null
         updated_at: string | null
       }
       serving_pointer?: {

@@ -2153,6 +2153,7 @@ async def materialize_walk_forward_oof(req: OofMaterializeRequest):
                     business_date=req.knowledge_cutoff_date,
                     extension_manifest_checksum=str(forward_extension["manifest_checksum"]),
                     snapshot_rows=snapshot_rows,
+                    native_rows=native_rows,
                     build_fusion_rows_fn=build_fusion_oof_rows,
                     query_fn=learning_client.query,
                     batch_fn=learning_client.batch_execute,
@@ -2652,6 +2653,7 @@ def _runtime_source_sha() -> str:
 
 def _oof_lifecycle_materialization_controls(
     *,
+    cadence: str,
     requested_dry_run: bool,
     requested_promote: bool,
     requested_dispatch_full_fit: bool,
@@ -2667,13 +2669,24 @@ def _oof_lifecycle_materialization_controls(
             "promote": False,
             "dispatch_full_fit": False,
             "frozen_forward_shadow": True,
+            # The materializer remains shadow-only, while the independent
+            # exact-candidate evaluator may promote an already-passed packet.
+            "exact_candidate_promotion_requested": bool(
+                cadence == "daily" and requested_promote and not requested_dry_run
+            ),
         }
     return {
         "dry_run": requested_dry_run,
         "confirm": not requested_dry_run,
-        "promote": requested_promote,
+        # Offline cohort materialization is candidate generation only. The
+        # sole promotion path is promote_exact_candidates below, which is
+        # bound to a daily post-freeze evaluator packet.
+        "promote": False,
         "dispatch_full_fit": requested_dispatch_full_fit,
         "frozen_forward_shadow": False,
+        "exact_candidate_promotion_requested": bool(
+            cadence == "daily" and requested_promote and not requested_dry_run
+        ),
     }
 
 
@@ -2784,7 +2797,7 @@ def _oof_lifecycle_receipt_matches_active_policy(
             packet.get("policy_decision") == "shadow_only" for packet in shadow_packets.values()
         )
         and candidate_forward.get("status") in {
-            "waiting_for_post_freeze_mature_dates",
+            "waiting_for_preoutcome_locked_mature_dates",
             "evaluated",
         }
         and candidate_forward.get("training_dispatched") is False
@@ -3714,6 +3727,7 @@ async def run_walk_forward_oof_lifecycle(req: OofLifecycleRequest):
             "dependency_retry_required": True,
         }
     materialization_controls = _oof_lifecycle_materialization_controls(
+        cadence=cadence,
         requested_dry_run=req.dry_run,
         requested_promote=req.promote,
         requested_dispatch_full_fit=req.dispatch_full_fit,
@@ -3727,7 +3741,7 @@ async def run_walk_forward_oof_lifecycle(req: OofLifecycleRequest):
         confirm=materialization_controls["confirm"],
         promote=materialization_controls["promote"],
         promote_exact_candidates=bool(
-            cadence == "daily" and req.promote and not req.dry_run
+            materialization_controls.get("exact_candidate_promotion_requested")
         ),
         dispatch_full_fit=materialization_controls["dispatch_full_fit"],
         full_fit_poll_only=req.continuation_only,
@@ -3763,7 +3777,7 @@ async def run_walk_forward_oof_lifecycle(req: OofLifecycleRequest):
     candidate_forward_retry_required = bool(
         materialization_controls["frozen_forward_shadow"]
         and candidate_forward_status not in {
-            "waiting_for_post_freeze_mature_dates",
+            "waiting_for_preoutcome_locked_mature_dates",
             "evaluated",
         }
     )

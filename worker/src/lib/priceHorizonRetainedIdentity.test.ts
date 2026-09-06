@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict'
-import { loadCandidateStockIds } from './priceHorizonProjection'
+import { loadCandidateStockIds, loadCandidateSignalDates } from './priceHorizonProjection'
 
 async function main(){
   const calls:{sql:string;params:unknown[]}[]=[]
@@ -16,6 +16,15 @@ async function main(){
   const five=await loadCandidateStockIds(db,'2026-08-07')
   assert.deepEqual(five.stockIds,[7,981])
   assert(!calls.some(c=>c.sql.includes('FROM price_horizon_labels_v2')),'canonical five-day must not invent identities from other horizons')
+  const dateDb={prepare(sql:string){return{bind(...params:unknown[]){
+    assert.equal((sql.match(/\?/g)??[]).length,params.length)
+    assert((sql.match(/\bUNION\b/g)??[]).length<5,'production D1 compound SELECT limit')
+    return{async all(){return{results:sql.includes('price_horizon_labels_v1')
+      ?[{signal_date:'2026-08-07'},{signal_date:'2026-08-12'}]
+      :[{signal_date:'2026-08-12'}]}}}
+  }}}} as unknown as D1Database
+  assert.deepEqual([...await loadCandidateSignalDates(dateDb,'2026-08-07','2026-08-12')].sort(),
+    ['2026-08-07','2026-08-12'])
   console.log('priceHorizonRetainedIdentity: PASS')
 }
 main().catch(error=>{console.error(error);process.exitCode=1})

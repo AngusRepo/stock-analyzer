@@ -365,7 +365,7 @@ type CandidateIdentityCoverage = {
   identifiedReferenceRows: number
 }
 
-async function loadCandidateSignalDates(
+export async function loadCandidateSignalDates(
   db: D1Database,
   startDate: string,
   endDate: string,
@@ -388,16 +388,19 @@ async function loadCandidateSignalDates(
         SELECT prediction_date AS signal_date
           FROM predictions
          WHERE prediction_date >= ? AND prediction_date <= ? AND model_name='ensemble'
-        UNION ALL
-        SELECT price_date AS signal_date FROM price_horizon_labels_v1
-         WHERE price_date >= ? AND price_date <= ?
-        UNION ALL
-        SELECT price_date AS signal_date FROM price_horizon_labels_v2
-         WHERE price_date >= ? AND price_date <= ?
       )
-  `).bind(startDate, endDate, startDate, endDate, startDate, endDate, startDate, endDate,
-    startDate, endDate, startDate, endDate).all<{ signal_date: string }>()
-  return new Set((result.results ?? []).map((row) => String(row.signal_date ?? '').slice(0, 10)).filter(Boolean))
+  `).bind(startDate, endDate, startDate, endDate, startDate, endDate, startDate, endDate).all<{ signal_date: string }>()
+  // Production D1 accepts at most five compound SELECT terms. Keep retained
+  // label dates in a second bounded query rather than dropping their coverage.
+  const retained = await db.prepare(`
+    SELECT DISTINCT price_date AS signal_date FROM price_horizon_labels_v1
+     WHERE price_date >= ? AND price_date <= ?
+    UNION
+    SELECT DISTINCT price_date AS signal_date FROM price_horizon_labels_v2
+     WHERE price_date >= ? AND price_date <= ?
+  `).bind(startDate, endDate, startDate, endDate).all<{ signal_date: string }>()
+  return new Set([...(result.results ?? []), ...(retained.results ?? [])]
+    .map((row) => String(row.signal_date ?? '').slice(0, 10)).filter(Boolean))
 }
 
 export async function loadCandidateStockIds(db: D1Database, signalDate: string, horizonDays?: number): Promise<CandidateIdentityCoverage> {

@@ -12,8 +12,8 @@ import {
 } from '../lib/strategyMiningGateway'
 import {
   LegacyEvidenceResolveError,
-  resolveLegacyScreenerEvidence,
 } from '../lib/legacyEvidenceResolver'
+import { resolveScreenerEvidence } from '../lib/screenerEvidenceResolver'
 import { isTransientD1Reset } from '../lib/d1TransientRetry'
 import {
   acceptPipelineExecutionCallback,
@@ -346,7 +346,7 @@ adminControlRoutes.post('/api/internal/evidence-artifacts/legacy-screener/resolv
 
   const body = await c.req.json().catch(() => null) as any
   try {
-    const result = await resolveLegacyScreenerEvidence(c.env, body?.artifacts)
+    const result = await resolveScreenerEvidence(c.env, body?.artifacts)
     return c.json({ ok: true, ...result })
   } catch (error) {
     const status = error instanceof LegacyEvidenceResolveError ? error.statusCode : 500

@@ -1,6 +1,7 @@
 import type { Bindings } from '../types'
 import { inspectAllocatorEvMaturityCoverage } from './allocatorEvDailyLifecycle'
 import { databaseForDataDomain } from './dataDomainRegistry'
+import { readIpoShadow, type IpoShadowReadModel } from './ipoShadowReadModel'
 import {
   adaptExpectedReturnCandidate,
   adaptExpectedReturnShadow,
@@ -211,6 +212,7 @@ export interface StrategyRouteBundleMaturity {
 
 
 export interface PipelineDecisionMaturityPacket {
+  ipo_shadow?: IpoShadowReadModel
   schema_version: 'pipeline-decision-maturity-v2'
   requested_date: string
   generated_at: string
@@ -471,6 +473,7 @@ export async function buildPipelineDecisionMaturityPacket(
 ): Promise<PipelineDecisionMaturityPacket> {
   if (!validDate(requestedDate)) throw new Error(`invalid_pipeline_maturity_date:${requestedDate}`)
   const learningDb = databaseForDataDomain(env, 'learning')
+  const ipoShadowPromise = readIpoShadow(learningDb, requestedDate)
   const marketDb = databaseForDataDomain(env, 'market')
   const formalLabelerPlaceholders = STRATEGY_FORMAL_LABELER_VERSIONS.map(() => '?').join(',')
 
@@ -1816,6 +1819,7 @@ export async function buildPipelineDecisionMaturityPacket(
 
   return {
     strategy_route_bundle: strategyRouteBundle,
+    ipo_shadow: await ipoShadowPromise,
     schema_version: 'pipeline-decision-maturity-v2',
     requested_date: requestedDate,
     generated_at: new Date().toISOString(),

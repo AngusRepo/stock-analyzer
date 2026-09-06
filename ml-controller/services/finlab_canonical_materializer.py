@@ -4,7 +4,7 @@ import ast
 import hashlib
 import json
 import math
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Iterable
@@ -35,6 +35,7 @@ class FinLabCanonicalOutputs:
     data_source_inventory: list[dict[str, Any]]
     source_quality_metrics: list[dict[str, Any]]
     manifest: dict[str, Any]
+    source_sessions: list[dict[str, Any]] = field(default_factory=list)
 
 
 def utc_now() -> str:
@@ -91,6 +92,31 @@ def _shift_start_date(start_date: str | None, lookback_days: int | None) -> str 
     except ValueError:
         return start_date
     return (parsed - timedelta(days=lookback_days)).isoformat()
+
+
+def build_source_sessions(root: Path, *, run_id: str, observed_at: str, end_date: str | None) -> list[dict[str, Any]]:
+    """Read dates from the raw source, independently of canonical filters/limits.
+
+    Missing projected sessions must not silently shorten a 5-session horizon.
+    This is calendar evidence only, not a backdated feature-availability claim.
+    """
+    frame = _read_parquet(root / "raw" / "daily_price" / "close.parquet")
+    if frame.is_empty() or "date" not in frame.columns:
+        return []
+    columns = [c for c in frame.columns if c != "date"]
+    if not columns:
+        return []
+    frame = frame.select(
+        _date_expr().alias("session_date"),
+        pl.sum_horizontal([(pl.col(c).cast(pl.Float64, strict=False).is_finite()
+                            & (pl.col(c).cast(pl.Float64, strict=False) > 0)).fill_null(False).cast(pl.Int32)
+                           for c in columns]).alias("positive_close_count"),
+    ).filter(pl.col("positive_close_count") >= 100)
+    if end_date:
+        frame = frame.filter(pl.col("session_date") <= end_date)
+    return [{**row, "source_run_id": run_id, "observed_at": observed_at,
+             "source_checksum": sha256_json({"run_id": run_id, **row})}
+            for row in frame.sort("session_date").to_dicts()]
 
 
 def _wide_field_to_long(path: Path, field: str, *, start_date: str | None, end_date: str | None) -> pl.DataFrame:
@@ -2333,6 +2359,8 @@ def materialize_finlab_canonical_outputs(
         data_source_inventory=inventory,
         source_quality_metrics=quality,
         manifest=manifest,
+        source_sessions=build_source_sessions(root, run_id=rid, observed_at=timestamp, end_date=end_date)
+            if wants("canonical_market_daily") else [],
     )
 
 
@@ -2977,11 +3005,32 @@ def build_d1_upsert_statements(outputs: FinLabCanonicalOutputs) -> list[tuple[st
         ["source", "dataset", "as_of_date"],
         ["freshness_status", "missing_rate", "duplicate_rate", "schema_drift_status", "entity_link_confidence", "latest_materialization", "metrics_json"],
     ))
+    # A run_id is shared by independent lanes, not a dataset/date receipt ID.
+    for dataset in sorted(outputs.manifest.get("row_counts", {})):
+        dated: dict[str, list[dict[str, Any]]] = {}
+        for row in getattr(outputs, dataset, []):
+            day = str(row.get("date") or row.get("revenue_month") or row.get("as_of_date") or "undated")[:10]
+            dated.setdefault(day, []).append(row)
+        for day, rows in sorted(dated.items()) or [("empty", [])]:
+            checksum = sha256_json(sorted(rows, key=_json))
+            identity = sha256_json([outputs.run_id, dataset, day, outputs.generated_at, checksum,
+                                    outputs.manifest.get("filters", {})])
+            statements.append(("""
+                INSERT OR IGNORE INTO finlab_materialization_receipts_v1
+                  (receipt_id,run_id,dataset,data_date,generated_at,row_count,payload_checksum,filters_json,status)
+                VALUES (?,?,?,?,?,?,?,?,'write_acknowledged')
+            """, [identity, outputs.run_id, dataset, day, outputs.generated_at, len(rows), checksum,
+                  _json(outputs.manifest.get("filters", {}))]))
+
     manifest_sql = _upsert_statement(
         "finlab_materialization_manifest",
         ["run_id", "generated_at", "source_run_id", "artifact_root", "row_counts_json", "freshness_json", "checksum", "status"],
         ["run_id"],
         ["generated_at", "source_run_id", "artifact_root", "row_counts_json", "freshness_json", "checksum", "status"],
+    )
+    manifest_sql = manifest_sql.replace(
+        "row_counts_json=excluded.row_counts_json",
+        "row_counts_json=json_patch(finlab_materialization_manifest.row_counts_json, excluded.row_counts_json)",
     )
     statements.append((
         manifest_sql,
@@ -3004,6 +3053,10 @@ def build_market_domain_insert_statements(
 ) -> list[tuple[str, list[Any]]]:
     """Build writes owned by the Market target and forbidden in legacy D1."""
     return _row_statements(
+        "finlab_source_sessions_v1", outputs.source_sessions,
+        ["session_date", "source_run_id", "positive_close_count", "source_checksum", "observed_at"],
+        ["session_date"], [],
+    ) + _row_statements(
         "canonical_revenue_observations_v2",
         outputs.canonical_revenue_monthly,
         [

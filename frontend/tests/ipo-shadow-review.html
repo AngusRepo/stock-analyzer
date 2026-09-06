@@ -1,0 +1,18 @@
+<!doctype html>
+<html lang="zh-Hant" class="dark"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><title>IPO 本機排版測試</title></head>
+<body style="background:#0b1018;color:#ddd;margin:0"><main style="max-width:1240px;margin:0 auto;padding:16px"><p>本機 UI 測試資料（非正式績效）</p><div id="root"></div></main>
+<script type="module">
+import React from 'react'
+import { createRoot } from 'react-dom/client'
+import IpoShadowComparison from '/src/components/IpoShadowComparison.tsx'
+import '/src/index.css'
+const root = createRoot(document.getElementById('root'))
+const data = { status:'observing',candidate_id:'ipo-shadow:test-fixture-not-a-real-result',registered_at:'2026-09-07T14:00:00Z',
+  latest_frozen_date:'2026-09-11',frozen_dates:5,mature_dates:1,paired_dates:1,frozen_rows:2500,blockers:[],promotion_allowed:false,exact_sparse_opb:false,
+  daily:[{signal_date:'2026-09-07',outcome_known_date:'2026-09-14',sample_count:500,paired:true,blockers:[],proxy_return_delta:0.011,
+    ipo:{rank_ic:0.045,rmse:0.083,proxy_net_return:0.006,invested_fraction:0.63,max_weight:0.18},
+    l4:{rank_ic:-0.022,rmse:0.072,proxy_net_return:-0.005,invested_fraction:0.82,max_weight:0.24}}]}
+window.renderIpo = (state) => root.render(React.createElement(IpoShadowComparison,{data:state}))
+window.ipoFixture = data
+window.renderIpo(data)
+</script></body></html>

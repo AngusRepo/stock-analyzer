@@ -111,6 +111,7 @@ assert.deepEqual(
 )
 const projectionSource = readFileSync(new URL('./priceHorizonProjection.ts', import.meta.url), 'utf8')
 assert.match(projectionSource, /price_horizon_v4_finlab_canonical_adjusted_price_lineage/)
+assert.match(projectionSource, /await verifiedCanonicalSessions/)
 assert.match(projectionSource, /FROM canonical_market_daily/)
 assert.match(projectionSource, /source IN \('finlab\.price', 'finlab\.rotc_price'\)/)
 assert.match(projectionSource, /loadCoreStockIdentitiesByIds/)

@@ -1,3 +1,5 @@
+import type { IpoShadowReadModel } from './ipoShadowContract'
+
 export type PipelineMaturityStatus =
   | 'serving'
   | 'ready'
@@ -184,6 +186,7 @@ export type StrategyRouteBundleMaturity = {
 }
 
 export type PipelineDecisionMaturityPacket = {
+  ipo_shadow?: IpoShadowReadModel
   schema_version: 'pipeline-decision-maturity-v2'
   requested_date: string
   generated_at: string

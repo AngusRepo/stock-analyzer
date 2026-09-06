@@ -10,6 +10,7 @@
  */
 
 import type { Bindings } from '../types'
+import { macdHistogramLast } from './technicalSignalMath'
 import { CANONICAL_SELECTION_ADJUSTMENT_SOURCE } from './canonicalSelectionLabels'
 import { databaseForDataDomain } from './dataDomainRegistry'
 import { syncFinLabIndustryProjection } from './finlabTaxonomy'
@@ -1220,28 +1221,6 @@ function scoreRsiTrendQuality(rsi: number): number {
   return round1(clamp(score, 0, 10))
 }
 
-function emaSeries(values: number[], period: number): number[] {
-  if (values.length === 0 || period <= 0) return []
-  const alpha = 2 / (period + 1)
-  const out: number[] = []
-  let ema = values[0]
-  out.push(ema)
-  for (let i = 1; i < values.length; i++) {
-    ema = values[i] * alpha + ema * (1 - alpha)
-    out.push(ema)
-  }
-  return out
-}
-
-function macdHistogramLast(closes: number[]): number | null {
-  if (closes.length < 35) return null
-  const ema12 = emaSeries(closes, 12)
-  const ema26 = emaSeries(closes, 26)
-  const macdLine = closes.map((_, idx) => ema12[idx] - ema26[idx])
-  const signal = emaSeries(macdLine, 9)
-  if (!signal.length) return null
-  return macdLine[macdLine.length - 1] - signal[signal.length - 1]
-}
 
 // ??? Sector mapping ??????????????????????????????????????????????????????????
 
@@ -3296,7 +3275,8 @@ export function scoreMultiFactor(
   // ?瘥?餈?3 ??vs 20 ?亙???(0-5)
   if (prices.length >= 5) {
     const recent3 = prices.slice(-3).reduce((s, p) => s + p.Trading_Volume, 0) / 3
-    const avg20 = prices.reduce((s, p) => s + p.Trading_Volume, 0) / prices.length
+    const volumeWindow = prices.slice(-20)
+    const avg20 = volumeWindow.reduce((s, p) => s + p.Trading_Volume, 0) / volumeWindow.length
     const volRatio = avg20 > 0 ? recent3 / avg20 : 1
     const vrRange = sc?.volRatioRange ?? [0.7, 2.5]
     momentum_score += normalize(volRatio, vrRange[0], vrRange[1], 5)

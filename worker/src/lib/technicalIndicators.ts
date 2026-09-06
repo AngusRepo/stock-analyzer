@@ -1,3 +1,5 @@
+import { macdComponents } from './technicalSignalMath'
+
 export interface TechnicalIndicatorResult {
   ma5: number | null
   ma10: number | null
@@ -32,13 +34,6 @@ export interface TechnicalIndicatorResult {
 function sma(arr: number[], n: number): number | null {
   if (arr.length < n) return null
   return arr.slice(-n).reduce((a, b) => a + b, 0) / n
-}
-
-function ema(arr: number[], n: number): number[] {
-  const k = 2 / (n + 1)
-  const result = [arr[0]]
-  for (let i = 1; i < arr.length; i++) result.push(arr[i] * k + result[i - 1] * (1 - k))
-  return result
 }
 
 function round4(value: number | null): number | null {
@@ -375,13 +370,10 @@ export function computeTechnicalIndicators(
   let macdSignal: number | null = null
   let macdHist: number | null = null
   if (closes.length >= 35) {
-    const ema12 = ema(closes, 12)
-    const ema26 = ema(closes, 26)
-    const macdLine = ema12.map((v, i) => v - ema26[i]).slice(25)
-    const signalLine = ema(macdLine, 9)
-    macd = macdLine[macdLine.length - 1]
-    macdSignal = signalLine[signalLine.length - 1]
-    macdHist = macd - macdSignal
+    const values = macdComponents(closes)
+    macd = values?.macd ?? null
+    macdSignal = values?.signal ?? null
+    macdHist = values?.histogram ?? null
   }
 
   let bbUpper: number | null = null

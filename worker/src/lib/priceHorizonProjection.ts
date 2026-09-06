@@ -5,7 +5,10 @@ import {
   SELECTION_REFERENCE_MATURE_COMPATIBLE_CONTRACT_VERSIONS,
 } from './selectionReferenceEvidence'
 import { loadCoreStockIdentitiesByIds, type CoreStockIdentity } from './stockIdentityMarketBridge'
+import { verifiedCanonicalSessions } from './canonicalSessionIntegrity'
 
+// Label semantics are unchanged: retain valid historic evidence. Recompute only
+// horizons whose entry/exit identity differs after source-calendar restoration.
 export const PRICE_HORIZON_PROJECTION_VERSION = 'price_horizon_v4_finlab_canonical_adjusted_price_lineage'
 export const STRATEGY_MULTI_HORIZON_PROJECTION_VERSION = 'strategy_multi_horizon_price_v2_finlab_canonical_adjusted_price_lineage'
 export const STRATEGY_EVIDENCE_HORIZON_DAYS = [3, 5, 10] as const
@@ -545,14 +548,10 @@ export async function materializePriceHorizonLabels(
 
   try {
     const sessionStart = shiftDate(startDate, -14)
-    const { results: observedSessions } = await marketDb.prepare(`
-      SELECT date AS session_date, COUNT(*) AS sample_size
-        FROM stock_prices INDEXED BY idx_prices_date_stock
-       WHERE date >= ? AND date <= ? AND close > 0
-       GROUP BY date
-      HAVING COUNT(*) >= ?
-       ORDER BY date
-    `).bind(sessionStart, outcomeAsOfDate, MIN_SESSION_SAMPLE_SIZE).all<ObservedSession>()
+    // Validate even cached/successful labels: the old calendar could omit an
+    // entire trading date and still report a successful projection.
+    const verifiedSessions = await verifiedCanonicalSessions(marketDb, sessionStart, outcomeAsOfDate)
+    const observedSessions = verifiedSessions.map(row => ({ session_date: row.session_date, sample_size: row.price_count }))
     for (const group of chunks(observedSessions ?? [], 20)) {
       const statements = group.map((row) => marketDb.prepare(`
         INSERT INTO market_trading_sessions (session_date, source, sample_size)
@@ -571,13 +570,13 @@ export async function materializePriceHorizonLabels(
     )
 
     const { results: horizonRows } = await marketDb.prepare(`
-      WITH horizons AS (
+      WITH source_sessions AS (SELECT DISTINCT session_date FROM finlab_source_sessions_v1), horizons AS (
         SELECT s.session_date AS signal_date,
-               (SELECT e.session_date FROM market_trading_sessions e
+               (SELECT e.session_date FROM source_sessions e
                  WHERE e.session_date > s.session_date ORDER BY e.session_date LIMIT 1) AS entry_date,
-               (SELECT x.session_date FROM market_trading_sessions x
+               (SELECT x.session_date FROM source_sessions x
                  WHERE x.session_date > s.session_date ORDER BY x.session_date LIMIT 1 OFFSET 4) AS exit_date
-          FROM market_trading_sessions s
+          FROM source_sessions s
          WHERE s.session_date >= ? AND s.session_date <= ?
       )
       SELECT signal_date, entry_date, exit_date
@@ -805,6 +804,7 @@ export async function materializeStrategyMultiHorizonPriceLabels(
   const sourceOpsDb = databaseForDataDomain(env, 'ops')
   const targetOpsDb = shadowDatabaseForDataDomain(env, 'ops') ?? sourceOpsDb
   const candidateSignalDates = await loadCandidateSignalDates(sourceLearningDb, startDate, endDate)
+  await verifiedCanonicalSessions(marketDb, startDate, outcomeAsOfDate)
   let eligibleSignalDates = 0
   let processedSignalDates = 0
   let skippedCompleteDates = 0
@@ -816,13 +816,13 @@ export async function materializeStrategyMultiHorizonPriceLabels(
   for (const horizonDays of STRATEGY_EVIDENCE_HORIZON_DAYS) {
     const exitOffset = horizonDays - 1
     const horizonResult = await marketDb.prepare(`
-      WITH horizons AS (
+      WITH source_sessions AS (SELECT DISTINCT session_date FROM finlab_source_sessions_v1), horizons AS (
         SELECT s.session_date AS signal_date,
-               (SELECT e.session_date FROM market_trading_sessions e
+               (SELECT e.session_date FROM source_sessions e
                  WHERE e.session_date > s.session_date ORDER BY e.session_date LIMIT 1) AS entry_date,
-               (SELECT x.session_date FROM market_trading_sessions x
+               (SELECT x.session_date FROM source_sessions x
                  WHERE x.session_date > s.session_date ORDER BY x.session_date LIMIT 1 OFFSET ${exitOffset}) AS exit_date
-          FROM market_trading_sessions s
+          FROM source_sessions s
          WHERE s.session_date >= ? AND s.session_date <= ?
       )
       SELECT signal_date, entry_date, exit_date

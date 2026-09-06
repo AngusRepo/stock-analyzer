@@ -2143,6 +2143,14 @@ async def materialize_walk_forward_oof(req: OofMaterializeRequest):
         forward_shadow_coverage = None
         serving_forward_guard = None
         candidate_forward_evaluation = None
+        ipo_shadow_maturity = None
+        if req.persist_forward_shadow_coverage:
+            from services.ipo_shadow import mature_daily
+            ipo_shadow_maturity = mature_daily(
+                business_date=req.knowledge_cutoff_date,
+                query=learning_client.query, writer=learning_client.batch_execute,
+                market_query=MARKET_D1_CLIENT.query,
+            )
         if forward_extension and req.persist_forward_shadow_coverage:
             forward_shadow_coverage = persist_verified_oof_forward_coverage(
                 cohort_id=req.cohort_id,
@@ -2571,6 +2579,7 @@ async def materialize_walk_forward_oof(req: OofMaterializeRequest):
             "shadow_evaluation_packets": shadow_evaluation_packets,
             "serving_forward_guard": serving_forward_guard,
             "candidate_forward_evaluation": candidate_forward_evaluation,
+            "ipo_shadow_maturity": ipo_shadow_maturity,
             "candidate_forward_promotion_response": candidate_forward_promotion_response,
             "candidate_forward_promotion_error": candidate_forward_promotion_error,
             "physical_prediction_coverage": {

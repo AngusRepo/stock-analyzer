@@ -5,6 +5,7 @@ import type {
   PipelineMaturityStatus,
 } from '@/lib/pipelineMaturityContract'
 import { Badge } from '@/components/ui/badge'
+import IpoShadowComparison from '@/components/IpoShadowComparison'
 import {
   Activity,
   BrainCircuit,
@@ -185,13 +186,20 @@ function blockerText(blocker: string): string {
   return suffix?.[1] ?? normalized.replace(/_/g, ' ')
 }
 
+function signedValueTone(value: number | null | undefined): string {
+  if (value == null || !Number.isFinite(value) || value === 0) return 'text-[#dfe7f5]'
+  return value > 0 ? 'text-emerald-300' : 'text-rose-300'
+}
+
 function MetricCell({ metric }: { metric: PipelineMaturityMetric }) {
   const target = targetText(metric)
-  const tone = metric.passed === true
-    ? 'text-emerald-300'
-    : metric.passed === false
-      ? 'text-rose-300'
-      : 'text-[#dfe7f5]'
+  const tone = typeof metric.value === 'number'
+    ? signedValueTone(metric.value)
+    : metric.passed === true
+      ? 'text-emerald-300'
+      : metric.passed === false
+        ? 'text-rose-300'
+        : 'text-[#dfe7f5]'
   return (
     <div className="min-w-0 border-b border-white/[0.06] py-3 last:border-b-0 sm:border-b-0 sm:border-r sm:px-3 sm:last:border-r-0">
       <div className="flex items-start justify-between gap-2">
@@ -279,7 +287,7 @@ function StageRow({ stage }: { stage: PipelineMaturityStage }) {
     .filter((point) => point.value != null
       && point.identity_valid !== false
       && point.artifact_contract_version === latestHistory?.artifact_contract_version)
-    .slice(-4).map((point) => `${point.evidence_date.slice(5)} ${displayValue({ key: 'history', label: 'history', value: point.value, unit: point.unit })}`).join(' | ')
+    .slice(-4)
   const blockerGroups = stage.blocker_groups?.length
     ? stage.blocker_groups
     : [{ scope: 'stage', title: 'Blockers', blockers: stage.blockers }]
@@ -462,6 +470,7 @@ function StageRow({ stage }: { stage: PipelineMaturityStage }) {
               <div>
                 <p className="text-xs font-semibold text-slate-100">責任邊界與決策用途</p>
                 <p className="mt-1 text-xs leading-5 text-slate-400">{stage.contribution}</p>
+                <p className="mt-1 text-[11px] leading-4 text-slate-500">數值正綠、負紅，零與缺值中性；是否通過門檻請看圖示。</p>
               </div>
             </div>
             <div className="space-y-4">
@@ -546,8 +555,16 @@ function StageRow({ stage }: { stage: PipelineMaturityStage }) {
                 {stage.lineage.cadence ? <><dt className="text-slate-600">更新頻率</dt><dd className="sv-num break-all text-slate-400">{stage.lineage.cadence}</dd></> : null}
                 {stage.lineage.role ? <><dt className="text-slate-600">用途角色</dt><dd className="sv-num break-all text-slate-400">{stage.lineage.role}</dd></> : null}
                 <dt className="text-slate-600">前次證據</dt><dd className="sv-num break-all text-slate-400">{previousHistory?.evidence_date ?? '首次證據'}</dd>
-                <dt className="text-slate-600">相較前次變化</dt><dd className="sv-num break-words text-cyan-300">{historyComparison}</dd>
-                <dt className="text-slate-600">近期趨勢</dt><dd className="sv-num break-words text-slate-400">{historyTrend || '尚無前次歷史'}</dd>
+                <dt className="text-slate-600">相較前次變化</dt><dd className={`sv-num break-words ${signedValueTone(historyDelta)}`}>{historyComparison}</dd>
+                <dt className="text-slate-600">近期趨勢</dt>
+                <dd className="sv-num break-words text-slate-400">
+                  {historyTrend.length ? historyTrend.map((point, index) => (
+                    <span key={point.evidence_date}>
+                      {index > 0 ? ' | ' : ''}{point.evidence_date.slice(5)}{' '}
+                      <span className={signedValueTone(point.value)}>{displayValue({ key: 'history', label: 'history', value: point.value, unit: point.unit })}</span>
+                    </span>
+                  )) : '尚無前次歷史'}
+                </dd>
                 <dt className="text-slate-600">版本</dt><dd className="sv-num break-all text-slate-400">{stage.version ?? '資料尚未具備'}</dd>
                 <dt className="text-slate-600">產物 ID</dt><dd className="sv-num break-all text-slate-400">{stage.lineage.artifact_id ?? '不適用'}</dd>
                 <dt className="text-slate-600">來源</dt><dd className="break-words text-slate-400">{stage.lineage.source}</dd>
@@ -751,6 +768,7 @@ export default function PipelineMaturityContribution({
         <div className="grid items-start gap-3 lg:grid-cols-2">
           {expectedReturnStages.map((stage) => <StageRow key={stage.id} stage={stage} />)}
         </div>
+        <IpoShadowComparison data={data.ipo_shadow} />
         {otherStages.length ? (
           <div className="grid items-start gap-3 lg:grid-cols-2">
             {otherStages.map((stage) => <StageRow key={stage.id} stage={stage} />)}

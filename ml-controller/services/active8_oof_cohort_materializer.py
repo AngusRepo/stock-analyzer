@@ -126,7 +126,7 @@ def _query_native_pit_component_domain_split(
                 str(row.get("prediction_date") or "")[:10],
             ))
         return rows
-    if "FROM stock_prices" in sql:
+    if "FROM stock_prices" in sql or "FROM finlab_source_sessions_v1" in sql:
         return MARKET_D1_CLIENT.query(sql, values)
     if "COUNT(i.id) component_rows" in sql:
         return OPS_D1_CLIENT.query(sql, values)
@@ -1281,25 +1281,18 @@ def load_native_pit_component_rows(
     # components. Resolve only runs completed before the next market open.
     calendar_rows = query_fn(
         """
-        SELECT substr(date, 1, 10) trading_date, COUNT(*) price_rows
-        FROM stock_prices
-        WHERE substr(date, 1, 10) BETWEEN date(?, '-30 days') AND date(?, '+14 days')
-        GROUP BY substr(date, 1, 10)
+        SELECT session_date trading_date, MAX(positive_close_count) price_rows
+        FROM finlab_source_sessions_v1
+        WHERE session_date BETWEEN date(?, '-30 days') AND date(?, '+14 days')
+        GROUP BY session_date
         ORDER BY trading_date
         """,
         [dates[0], dates[-1]],
     )
-    observed_counts = [
-        max(0, int(row.get("price_rows") or 0))
-        for row in calendar_rows
-        if str(row.get("trading_date") or "")
-    ]
-    coverage_reference = statistics.median(observed_counts) if observed_counts else 0.0
-    coverage_threshold = max(1, int(coverage_reference * 0.20))
     market_sessions = sorted({
         str(row.get("trading_date") or "")[:10]
         for row in calendar_rows
-        if int(row.get("price_rows") or 0) >= coverage_threshold
+        if int(row.get("price_rows") or 0) >= 100
     })
     next_session: dict[str, str] = {}
     for date in dates:
@@ -1332,6 +1325,13 @@ def load_native_pit_component_rows(
                   AND substr(json_extract(i.evidence, '$.r2_key'), 1, 69) = 'evidence/class=superseded_run/domain=legacy_screener_funnel_evidence/'
                   AND json_extract(i.evidence, '$.checksum') LIKE 'sha256:%'
                   AND CAST(json_extract(i.evidence, '$.row_id') AS INTEGER) = i.id
+                )
+                OR (
+                  json_extract(i.evidence, '$.schema_version') = 'd1-audit-json-pointer-v1'
+                  AND json_extract(i.evidence, '$.table') = 'screener_funnel_items'
+                  AND json_extract(i.evidence, '$.key_column') = 'id'
+                  AND json_extract(i.evidence, '$.blob_column') = 'evidence'
+                  AND CAST(json_extract(i.evidence, '$.key_value') AS INTEGER) = i.id
                 )
               )
             GROUP BY r.date, r.run_id, r.created_at
@@ -1390,6 +1390,13 @@ def load_native_pit_component_rows(
                   AND json_extract(i.evidence, '$.checksum') LIKE 'sha256:%'
                   AND CAST(json_extract(i.evidence, '$.row_id') AS INTEGER) = i.id
                 )
+                OR (
+                  json_extract(i.evidence, '$.schema_version') = 'd1-audit-json-pointer-v1'
+                  AND json_extract(i.evidence, '$.table') = 'screener_funnel_items'
+                  AND json_extract(i.evidence, '$.key_column') = 'id'
+                  AND json_extract(i.evidence, '$.blob_column') = 'evidence'
+                  AND CAST(json_extract(i.evidence, '$.key_value') AS INTEGER) = i.id
+                )
               )
             """,
             run_ids,
@@ -1397,9 +1404,11 @@ def load_native_pit_component_rows(
         pointer_requests: list[dict[str, Any]] = []
         for row in evidence_rows:
             pointer = _loads(row.get("evidence"))
-            if pointer.get("schema_version") != "legacy-screener-evidence-pointer-v1":
+            if pointer.get("schema_version") not in {"legacy-screener-evidence-pointer-v1", "d1-audit-json-pointer-v1"}:
                 continue
             pointer_requests.append({
+                "schema_version": pointer.get("schema_version"),
+                "snapshot_id": pointer.get("snapshot_id"),
                 "row_id": int(row.get("evidence_row_id") or 0),
                 "artifact_id": pointer.get("artifact_id"),
                 "r2_key": pointer.get("r2_key"),
@@ -1419,7 +1428,7 @@ def load_native_pit_component_rows(
                 continue
             pointer = _loads(row.get("evidence"))
             archive_lineage: dict[str, Any] = {"native_evidence_storage_mode": "d1_inline_v1"}
-            if pointer.get("schema_version") == "legacy-screener-evidence-pointer-v1":
+            if pointer.get("schema_version") in {"legacy-screener-evidence-pointer-v1", "d1-audit-json-pointer-v1"}:
                 row_id = int(row.get("evidence_row_id") or 0)
                 archived = archived_by_row_id.get(row_id)
                 if archived is None:

@@ -14,6 +14,7 @@ from statistics import pstdev
 from typing import Any, Callable
 
 from services.fusion_market_context import market_context_feature_values
+from services.sector_flow_pit_history import load_sector_generation, load_frozen_memberships
 
 
 SCHEMA_VERSION = "pit-sector-alpha-expert-v1"
@@ -94,10 +95,6 @@ def _centered_percentile(values_by_key: dict[tuple[str, str], float]) -> dict[tu
     return out
 
 
-def _chunked(values: list[str], size: int = 80) -> list[list[str]]:
-    return [values[index:index + size] for index in range(0, len(values), size)]
-
-
 def _knowledge_cutoff(value: Any) -> str | None:
     text = str(value or "").strip()
     if not text:
@@ -110,31 +107,6 @@ def _knowledge_cutoff(value: Any) -> str | None:
     if parsed.tzinfo is None:
         parsed = parsed.replace(tzinfo=timezone.utc)
     return parsed.astimezone(timezone.utc).isoformat()
-
-
-def _membership_rows(
-    query_fn: QueryFn,
-    *,
-    signal_date: str,
-    symbols: list[str],
-) -> list[dict[str, Any]]:
-    rows: list[dict[str, Any]] = []
-    for chunk in _chunked(symbols):
-        placeholders = ",".join("?" for _ in chunk)
-        rows.extend(query_fn(
-            f"""
-            SELECT symbol, tag, tag_type, source, weight, as_of_date
-              FROM finlab_taxonomy_tags
-             WHERE symbol IN ({placeholders})
-               AND ((tag_type='industry' AND source='finlab.security_categories')
-                 OR (tag_type IN ('industry_theme','subindustry')
-                     AND source='finlab.security_industry_themes'))
-               AND date(as_of_date)<=date(?)
-             ORDER BY symbol, tag_type, tag, date(as_of_date) DESC
-            """,
-            [*chunk, signal_date],
-        ))
-    return rows
 
 
 def unavailable_sector_alpha(signal_date: str, reason: str) -> dict[str, Any]:
@@ -186,7 +158,10 @@ def load_pit_sector_alpha_experts(
             for symbol in normalized_symbols
         }
 
-    source_rows = query_fn(
+    generation = load_sector_generation(
+        query_fn, signal_date=signal_day, cutoff=cutoff, symbols=normalized_symbols,
+    )
+    source_rows = [generation["meta"]] if generation else query_fn(
         """
         SELECT date,
                MAX(COALESCE(updated_at, created_at)) AS source_available_at,
@@ -236,13 +211,13 @@ def load_pit_sector_alpha_experts(
             for symbol in normalized_symbols
         }
 
-    flow_rows = query_fn(
+    flow_rows = generation["rows"] if generation else query_fn(
         """
         SELECT date, sector, classification, rs_ratio, rs_momentum,
                rotation_score, rotation_regime, total_net,
                stock_count, up_count, turnover_share_delta,
                COALESCE(updated_at, created_at) AS source_available_at,
-               pit_lineage_version
+               pit_lineage_version, taxonomy_snapshot_id, taxonomy_membership_checksum
           FROM sector_flow
          WHERE date = ?
            AND classification IN ('industry','industry_theme','subindustry')
@@ -279,11 +254,16 @@ def load_pit_sector_alpha_experts(
 
     memberships_by_symbol: dict[str, list[dict[str, Any]]] = defaultdict(list)
     seen_memberships: set[tuple[str, str, str]] = set()
-    for row in _membership_rows(
-        query_fn,
-        signal_date=signal_day,
-        symbols=normalized_symbols,
-    ):
+    if generation:
+        membership_rows = generation["memberships"]
+    else:
+        snapshot_ids = {str(row["classification"]): str(row.get("taxonomy_snapshot_id") or "") for row in flow_rows}
+        if set(snapshot_ids) != set(LAYERS) or not all(snapshot_ids.values()):
+            return {symbol: unavailable_sector_alpha(signal_day, "historical_sector_taxonomy_snapshot_missing")
+                    for symbol in normalized_symbols}
+        membership_rows = load_frozen_memberships(query_fn, snapshot_ids=snapshot_ids, rows=flow_rows,
+                                                  available_at=source_available_at, symbols=normalized_symbols)
+    for row in membership_rows:
         symbol = str(row.get("symbol") or "").strip()
         tag = str(row.get("tag") or "").strip()
         classification = TAG_TYPE_TO_CLASSIFICATION.get(str(row.get("tag_type") or "").strip())

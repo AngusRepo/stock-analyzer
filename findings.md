@@ -1,4 +1,20 @@
-# Findings — P0, L4 Lineage, and 10-Year D1 Closure
+# Current findings — 2026-09-05 L4 repair + IPO shadow
+
+- Accepted user decision supersedes prior recommendation: do not reduce L4 duties, do not replace it with monotonic calibration.
+- Prior evidence is audits/outbox/2026-09-05-l4-frozen-verification/PHASE2_REPORT.md through PHASE8_REPORT.md and DAY_CONCLUSION.md.
+- Confirmed defects: generic archive pointer discovery/resolution; Worker/Python MACD and warmup parity; avg20 using full history; missing canonical session causing 2,523 wrong horizons; per-run receipt overwriting dataset facts; mutable sector PIT version/history.
+- Missing full eight-model stored extension is a source availability/lineage question, not permission to retrain/promote the rejected ensemble.
+- Frozen training labels 7,744 and forward labels 1,940 reconcile; never overwrite these correct immutable labels as part of 8/20 repair.
+- Phase8 IPO proxy is sealed but not a production allocator: concentration, 60.88% clipping and function-tolerance optimizer stop are explicit limitations. Shadow must preserve semantic identity and not claim true EV or actual sparse+OPB ROI.
+- Existing dirty tracked change: frontend/src/components/PipelineMaturityContribution.tsx numeric sign colors. Preserve while integrating UI.
+- Obsidian recall found the full-day synthesis; new decision must be recorded as overriding its proposed narrowing, without deleting the old note.
+- Final legacy PIT fix: no consumer reads mutable finlab_taxonomy_tags as historical truth. Exact frozen membership checksum/count/source/completed_at must match the historical flow; missing original identity is unavailable, not reconstructed with today's tags.
+- Final receipt fix: each domain's success_count must equal actual submitted statement count, including when the client reports total=0 without an error. Manual dry-run and apply now share the daily domain routing.
+- Local verification completed 2026-09-06; 275 Python tests + 10 Worker suites + types/build/responsive browser pass. Runtime/historical closure still requires approval; no evidence that original 8/20 omission's producer cause is known.
+
+---
+
+# Historical findings — P0, L4 Lineage, and 10-Year D1 Closure
 
 ## Confirmed starting state
 

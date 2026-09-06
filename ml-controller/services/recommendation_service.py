@@ -1295,12 +1295,8 @@ def _derive_technical_snapshot(payload: dict, rec: dict) -> dict[str, float | No
         rsi14 = 100.0 if avg_loss == 0 else 100.0 - 100.0 / (1.0 + avg_gain / avg_loss)
 
     if macd_hist is None and len(closes) >= 35:
-        ema12 = _ema(closes, 12)
-        ema26 = _ema(closes, 26)
-        macd_line = [a - b for a, b in zip(ema12, ema26)][25:]
-        signal_line = _ema(macd_line, 9)
-        if macd_line and signal_line:
-            macd_hist = macd_line[-1] - signal_line[-1]
+        from services.technical_signal_math import macd_histogram_last
+        macd_hist = macd_histogram_last(closes)
 
     return {
         "ma20": ma20,

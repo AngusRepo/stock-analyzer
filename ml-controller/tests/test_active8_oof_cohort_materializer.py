@@ -100,7 +100,7 @@ def test_native_pit_loader_uses_earliest_complete_run_before_next_open():
         calls.append((sql, params))
         if "FROM daily_recommendations" in sql:
             return []
-        if "FROM stock_prices" in sql:
+        if "FROM finlab_source_sessions_v1" in sql:
             return [
                 {"trading_date": "2026-06-24", "price_rows": 1000},
                 {"trading_date": "2026-06-25", "price_rows": 1000},
@@ -184,7 +184,7 @@ def test_native_pit_loader_resolves_checksum_verified_r2_pointer():
     def query(sql, params):
         if "FROM daily_recommendations" in sql:
             return []
-        if "FROM stock_prices" in sql:
+        if "FROM finlab_source_sessions_v1" in sql:
             return [
                 {"trading_date": "2026-06-25", "price_rows": 1000},
                 {"trading_date": "2026-06-26", "price_rows": 1000},
@@ -213,6 +213,8 @@ def test_native_pit_loader_resolves_checksum_verified_r2_pointer():
 
     def resolve(requests):
         assert requests == [{
+            "schema_version": "legacy-screener-evidence-pointer-v1",
+            "snapshot_id": None,
             "row_id": 77,
             "artifact_id": pointer["artifact_id"],
             "r2_key": pointer["r2_key"],

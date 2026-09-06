@@ -8,6 +8,7 @@ dist/
 *.bak
 __pycache__/
 .pytest_cache/
+audits/local-test-runtime/
 pytest-cache-files-*/
 .venv/
 .venv-smoke/

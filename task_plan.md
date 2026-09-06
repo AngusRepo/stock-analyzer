@@ -1,4 +1,37 @@
-# StockVision P0, L4 Lineage, and 10-Year D1 Closure Plan — 2026-08-14
+# Current task — L4 confirmed bug closure and parallel IPO shadow — 2026-09-05
+
+## Current authorization and invariants
+
+- User explicitly rejects shrinking L4: retain its current multifeature learning/reranking and promotion mechanism.
+- Repair every confirmed Phase2–8 defect with root-cause tests and truthful closure status.
+- Add parallel IPO shadow accumulation and a same-page L4/IPO comparison; no IPO production allocation/promotion.
+- Never reuse known Ridge outcomes as IPO prospective maturity; freeze identity before outcomes and preserve old evidence.
+- User approved commit, push, deploy and required follow-up repairs on 2026-09-06 after reviewing the exact scope. No formal ML retrain, IPO promotion, manual serving-pointer moves or real orders.
+- Keep existing frontend sign-color edits and all sealed research files unchanged.
+- Worktree: codex_ev_fix_wt, branch codex/postverify-closure-20260905-v3, start HEAD e861b0a6.
+
+## Current phases
+
+1. Source/docs/memory and exact defect/consumer inventory — completed.
+2. Repair archive pointer, technical owner parity and true 20-session volume window — completed locally; cross-runtime regression passes.
+3. Repair canonical session completeness, exact horizon validation, dataset receipts and PIT revision reads; prepare bounded verified data repair — completed locally, including legacy immutable-taxonomy reads and expected-count acknowledgements. Real historical repair NOT executed.
+4. Implement immutable IPO shadow registration/prediction/maturity/readback on existing daily lifecycle — completed locally; isolated SQLite lifecycle, retry, no-lookahead and hook-order tests pass.
+5. Implement L4/IPO same-page observation with separate whole-history and paired-date metrics — completed locally; API/typechecks/build and 1280/390/320px browser checks pass with synthetic data.
+6. Run regression, lifecycle retry/idempotency, UI checks; closure matrix and authorized handoff — completed locally: 275 Python tests, 10 Worker suites, typechecks/build; closure/release report written.
+7. Approved release: verify origin/main and actual production lineage; preserve unrelated work — in_progress.
+8. Restore complete source calendar/8-20 source data, apply bounded additive migrations, preserve before images and read back — pending.
+9. Commit scoped source/tests, push main safely, deploy Worker/controller/Frontend with immutable provenance — pending.
+10. Reproject only incorrect labels, verify frozen evidence/pointers, current daily chain and IPO/UI freshness; record production closure — pending.
+
+## Current errors
+
+- Initial combined skill/worktree output truncated: re-read selected skills and status separately; no broad worktree cleanup.
+- React skill path under .codex missing: correct installed path is .agents/skills/vercel-react-best-practices.
+- Existing planning files are historical: preserve below, prepend dated current plan.
+
+---
+
+# Historical plan — StockVision P0, L4 Lineage, and 10-Year D1 Closure Plan — 2026-08-14
 
 ## Goal
 

@@ -3082,6 +3082,7 @@ def default_canonical_window(*, generated_at: str, window_days: int) -> tuple[st
 FINLAB_OPS_METADATA_TABLES = {
     "data_source_inventory",
     "finlab_materialization_manifest",
+    "finlab_materialization_receipts_v1",
 }
 
 FINLAB_MARKET_TABLES = {
@@ -3133,6 +3134,11 @@ def partition_finlab_canonical_statements(
     return legacy, ops, market
 
 
+def require_finlab_write_ack(result: dict[str, Any], expected: int, *, phase: str) -> None:
+    if int(result.get("error_count") or 0) or int(result.get("success_count") or 0) != expected:
+        raise RuntimeError(f"finlab_canonical_{phase}_write_incomplete_before_receipt")
+
+
 def materialize_canonical_to_d1(
     manifest: dict[str, Any],
     *,
@@ -3142,6 +3148,7 @@ def materialize_canonical_to_d1(
     limit_per_dataset: int | None = None,
     chunk_size: int = 250,
     dry_run: bool = False,
+    canonical_outputs: Any | None = None,
 ) -> dict[str, Any]:
     from services.finlab_canonical_materializer import (
         build_d1_upsert_statements,
@@ -3155,7 +3162,7 @@ def materialize_canonical_to_d1(
         if isinstance(dataset, dict)
     }
     include_emerging = bool(manifest_lanes & EMERGING_LANES)
-    outputs = materialize_finlab_canonical_outputs(
+    outputs = canonical_outputs or materialize_finlab_canonical_outputs(
         manifest["artifact_root"],
         run_id=manifest["run_id"],
         generated_at=manifest["generated_at"],
@@ -3178,17 +3185,8 @@ def materialize_canonical_to_d1(
             from services.d1_client import batch_execute
 
             legacy_result = batch_execute(statements, timeout=120.0, chunk_size=chunk_size)
+        require_finlab_write_ack(legacy_result, len(statements), phase="data")
         apply_result = dict(legacy_result)
-    if not dry_run and ops_statements:
-        ops_result = ops_d1_batch_execute(
-            ops_statements, timeout=120.0, chunk_size=chunk_size,
-        )
-        apply_result = {
-            "total": int(apply_result.get("total") or 0) + int(ops_result.get("total") or 0),
-            "success_count": int(apply_result.get("success_count") or 0) + int(ops_result.get("success_count") or 0),
-            "error_count": int(apply_result.get("error_count") or 0) + int(ops_result.get("error_count") or 0),
-            "changes_total": int(apply_result.get("changes_total") or 0) + int(ops_result.get("changes_total") or 0),
-        }
     if not dry_run and market_statements:
         if market_domain_active():
             market_result = d1_batch_execute(
@@ -3207,12 +3205,20 @@ def materialize_canonical_to_d1(
                 chunk_size=chunk_size,
                 database_id=shadow_database_id_for_domain(D1DataDomain.MARKET),
             )
+        require_finlab_write_ack(market_result, len(market_statements), phase="data")
         apply_result = {
             "total": int(apply_result.get("total") or 0) + int(market_result.get("total") or 0),
             "success_count": int(apply_result.get("success_count") or 0) + int(market_result.get("success_count") or 0),
             "error_count": int(apply_result.get("error_count") or 0) + int(market_result.get("error_count") or 0),
             "changes_total": int(apply_result.get("changes_total") or 0) + int(market_result.get("changes_total") or 0),
         }
+    # Publish metadata only after all data-domain writes have succeeded.
+    if not dry_run and ops_statements:
+        require_finlab_write_ack(apply_result, len(statements) + len(market_statements), phase="data")
+        ops_result = ops_d1_batch_execute(ops_statements, timeout=120.0, chunk_size=chunk_size)
+        require_finlab_write_ack(ops_result, len(ops_statements), phase="ops")
+        apply_result = {key: int(apply_result.get(key) or 0) + int(ops_result.get(key) or 0)
+                        for key in ("total", "success_count", "error_count", "changes_total")}
     return {
         "schema_version": "finlab-canonical-d1-apply-v1",
         "run_id": manifest["run_id"],

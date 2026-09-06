@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import sys
+import json
+import hashlib
 from pathlib import Path
 
 import pytest
@@ -31,7 +33,21 @@ DECISION_CUTOFF = "2026-07-24T13:30:00+00:00"
 SOURCE_AVAILABLE_AT = "2026-07-23T13:00:00+00:00"
 
 
+def _frozen_members(layer):
+    tags = {"industry": "SEMICONDUCTOR", "industry_theme": "AI", "subindustry": "IC_DESIGN"}
+    return [{"symbol": "2330", "tag": tags[layer], "tag_type": layer,
+             "source": "finlab.security_categories" if layer == "industry" else "finlab.security_industry_themes",
+             "weight": 1, "as_of_date": "2026-07-01"}]
+
+
+def _membership_digest(layer):
+    return hashlib.sha256(json.dumps([(r["tag"], r["symbol"]) for r in _frozen_members(layer)],
+                                     separators=(",", ":")).encode()).hexdigest()
+
+
 def _query(sql: str, params: list[object]) -> list[dict]:
+    if "FROM sector_flow_pit_generations_v1" in sql:
+        return []  # Explicit pre-migration fixture; generation behavior has SQLite tests.
     if "MAX(COALESCE(updated_at, created_at))" in sql:
         signal_date = str(params[0])
         cutoff = str(params[2])
@@ -72,17 +88,16 @@ def _query(sql: str, params: list[object]) -> list[dict]:
                     "turnover_share_delta": value / 10,
                     "source_available_at": SOURCE_AVAILABLE_AT,
                     "pit_lineage_version": SECTOR_FLOW_PIT_LINEAGE_VERSION,
+                    "taxonomy_snapshot_id": f"frozen:{classification}",
+                    "taxonomy_membership_checksum": _membership_digest(classification),
                 })
         return rows
-    if "FROM finlab_taxonomy_tags" in sql:
-        signal_date = str(params[-1])
-        rows = [
-            {"symbol": "2330", "tag": "SEMICONDUCTOR", "tag_type": "industry", "source": "finlab", "weight": 1, "as_of_date": "2026-07-01"},
-            {"symbol": "2330", "tag": "AI", "tag_type": "industry_theme", "source": "finlab", "weight": 1, "as_of_date": "2026-07-01"},
-            {"symbol": "2330", "tag": "IC_DESIGN", "tag_type": "subindustry", "source": "finlab", "weight": 1, "as_of_date": "2026-07-01"},
-            {"symbol": "9999", "tag": "SEMICONDUCTOR", "tag_type": "industry", "source": "future", "weight": 1, "as_of_date": "2026-07-25"},
-        ]
-        return [row for row in rows if row["as_of_date"] <= signal_date]
+    if "FROM sector_taxonomy_membership_snapshots_v1" in sql:
+        assert params[0] == f"frozen:{params[1]}"
+        return _frozen_members(str(params[1]))
+    if "FROM sector_taxonomy_snapshot_runs_v1" in sql:
+        return [{"membership_checksum": _membership_digest(str(params[1])), "expected_row_count": 1,
+                 "persisted_row_count": 1, "status": "ready", "completed_at": SOURCE_AVAILABLE_AT}]
     raise AssertionError(sql)
 
 
@@ -107,6 +122,19 @@ def test_pit_sector_expert_uses_prior_completed_snapshot_and_asof_memberships() 
     assert all(item["as_of_date"] <= "2026-07-24" for item in expert["memberships"])
     assert expert["checksum"].startswith("sha256:")
     assert experts["9999"]["status"] == "unavailable"
+
+
+def test_historical_flow_without_frozen_taxonomy_never_uses_current_tags() -> None:
+    def missing_snapshot(sql, params):
+        assert "finlab_taxonomy_tags" not in sql
+        rows = _query(sql, params)
+        if "SELECT date, sector, classification" in sql:
+            return [{key: value for key, value in row.items() if key != "taxonomy_snapshot_id"} for row in rows]
+        return rows
+    expert = load_pit_sector_alpha_experts(missing_snapshot, signal_date="2026-07-24", symbols=["2330"],
+                                          knowledge_cutoff=DECISION_CUTOFF)["2330"]
+    assert expert["status"] == "unavailable"
+    assert expert["blockers"] == ["historical_sector_taxonomy_snapshot_missing"]
 
 
 def test_same_signal_date_sector_flow_is_never_consumed() -> None:

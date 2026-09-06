@@ -1104,6 +1104,17 @@ def run_sector_flow_pipeline(
                 f"{tag_type}:participation_incomplete:{participation_ready}/{written}"
             )
 
+    if not failures:
+        try:
+            from services.sector_flow_pit_history import publish_sector_generation
+
+            summary["pit_generation"] = publish_sector_generation(
+                MARKET_D1_CLIENT, generation_id=run_id, signal_date=as_of_date,
+                snapshot_ids=taxonomy_snapshot_ids, expected_rows=rows_written,
+            )
+        except Exception as exc:
+            failures.append(f"pit_generation_publication_failed:{exc}")
+
     summary["closure"] = {
         "status": "failed" if failures else "complete",
         "required_paths": [tag_type for tag_type, _ in paths],

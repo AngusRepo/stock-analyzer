@@ -1023,7 +1023,20 @@ def test_allocator_ev_feature_snapshot_backfill_reuses_l4_but_removes_candidate_
     assert result["skip_reasons"] == {}
 
 
-def test_allocator_ev_feature_snapshot_backfill_keeps_raw_features_when_l4_cannot_fit():
+def test_allocator_ev_feature_snapshot_backfill_keeps_raw_features_when_l4_cannot_fit(monkeypatch):
+    import services.ipo_shadow as ipo
+    original_freeze = ipo.freeze_daily
+    published_readback = []
+    ipo_calls = []
+
+    def observed_freeze(**kwargs):
+        assert published_readback == [True]
+        assert kwargs["rows"][0]["generation_mode"] == "native"
+        assert kwargs["rows"][0]["l4_payload"] is None
+        ipo_calls.append(kwargs["snapshot_date"])
+        return original_freeze(**kwargs)
+
+    monkeypatch.setattr(ipo, "freeze_daily", observed_freeze)
     candidate = {
         "stock_id": 1,
         "symbol": "2330",
@@ -1064,6 +1077,7 @@ def test_allocator_ev_feature_snapshot_backfill_keeps_raw_features_when_l4_canno
         if "FROM allocator_ev_feature_snapshot_staging" in sql:
             return [{"row_count": 1}]
         if "SELECT status, published_rows FROM allocator_ev_snapshot_runs" in sql:
+            published_readback.append(True)
             return [{"status": "ready", "published_rows": 1}]
         return []
 
@@ -1078,6 +1092,8 @@ def test_allocator_ev_feature_snapshot_backfill_keeps_raw_features_when_l4_canno
     )
 
     assert result["status"] == "ok"
+    assert ipo_calls == ["2026-06-08"]
+    assert result["ipo_shadow"]["status"] == "historical_not_prospective"
     assert result["l4_usage_mode"] == "not_fit_eligible"
     assert result["snapshots_built"] == 1
     assert result["snapshots_without_l4"] == 1

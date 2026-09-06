@@ -42,19 +42,24 @@ def resolve_legacy_screener_evidence(
 
     if not pointers:
         return {}
-    grouped: dict[tuple[str, str, str, str], list[dict[str, Any]]] = defaultdict(list)
+    grouped: dict[tuple[str, str, str, str, str], list[dict[str, Any]]] = defaultdict(list)
     expected: dict[int, dict[str, Any]] = {}
     for pointer in pointers:
         row_id = int(pointer.get("row_id") or 0)
+        schema = str(pointer.get("schema_version") or "legacy-screener-evidence-pointer-v1")
+        if schema not in {"legacy-screener-evidence-pointer-v1", "d1-audit-json-pointer-v1"}:
+            raise RuntimeError("archived_evidence_pointer_schema_unsupported")
+        artifact_id = str(pointer.get("snapshot_id") or "") if schema == "d1-audit-json-pointer-v1" else str(pointer.get("artifact_id") or "")
         identity = (
-            str(pointer.get("artifact_id") or ""),
+            artifact_id,
             str(pointer.get("r2_key") or ""),
             str(pointer.get("checksum") or "").lower(),
             str(pointer.get("source_run_id") or ""),
+            schema,
         )
         if row_id <= 0 or not all(identity) or row_id in expected:
             raise RuntimeError(f"legacy_evidence_pointer_invalid:{row_id}")
-        expected[row_id] = pointer
+        expected[row_id] = {**pointer, "artifact_id": artifact_id}
         grouped[identity].append(pointer)
 
     requests: list[dict[str, Any]] = []
@@ -66,6 +71,8 @@ def resolve_legacy_screener_evidence(
                 "r2_key": identity[1],
                 "checksum": identity[2],
                 "source_run_id": identity[3],
+                "schema_version": identity[4],
+                **({"snapshot_id": identity[0]} if identity[4] == "d1-audit-json-pointer-v1" else {}),
                 "row_ids": row_ids[offset : offset + MAX_ROWS_PER_REQUEST],
             })
 

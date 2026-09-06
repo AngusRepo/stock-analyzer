@@ -414,6 +414,12 @@ def test_industry_theme_tag_type_maps_to_own_sector_flow_classification():
 
 
 def test_run_sector_flow_pipeline_includes_industry_theme_path(monkeypatch):
+    import services.sector_flow_pit_history as history
+    published = []
+    def fake_publish(client, **kwargs):
+        published.append(kwargs)
+        return {"generation_id": kwargs["generation_id"], "row_count": kwargs["expected_rows"]}
+    monkeypatch.setattr(history, "publish_sector_generation", fake_publish)
     captured_tag_types = []
     captured_classifications = []
 
@@ -461,6 +467,8 @@ def test_run_sector_flow_pipeline_includes_industry_theme_path(monkeypatch):
     monkeypatch.setattr(sector_flow_service, "write_sector_flow", fake_write)
 
     summary = sector_flow_service.run_sector_flow_pipeline("2026-05-15")
+    assert published[0]["expected_rows"] == 3
+    assert set(published[0]["snapshot_ids"]) == {"industry", "industry_theme", "subindustry"}
 
     assert "industry_theme" in captured_tag_types
     assert "industry_theme" in captured_classifications

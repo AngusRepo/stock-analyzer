@@ -63,6 +63,7 @@ from typing import Any, Optional
 
 import numpy as np
 import polars as pl
+from services.technical_signal_math import macd_histogram_last
 
 from services.d1_domain_client import D1DataDomain, client_proxy_for_domain
 from services.dataset_snapshots import latest_dataset_snapshot
@@ -1661,16 +1662,13 @@ def score_multi_factor_np(
         if rsi_score >= 6:
             reasons.append(f"RSI {rsi:.0f}")
 
-    # MACD approximation
-    if n >= 20:
-        ma12 = float(closes[-12:].mean())
-        ma26_window = min(26, n)
-        ma26 = float(closes[-ma26_window:].mean())
-        macd_approx = ma12 - ma26
-        if macd_approx > 0:
+    # Canonical Worker EMA histogram, including identical warmup and seed.
+    macd_histogram = macd_histogram_last(closes)
+    if macd_histogram is not None:
+        if macd_histogram > 0:
             tech_score += 6
             reasons.append("MACD 多頭")
-        elif macd_approx > -sc.macd_negative_factor * latest_close / 100:
+        elif macd_histogram > -sc.macd_negative_factor * latest_close / 100:
             tech_score += 2
 
     # MA alignment
@@ -1725,7 +1723,7 @@ def score_multi_factor_np(
     # Volume ratio: recent 3d vs 20d average
     if n >= 5:
         recent3 = float(volumes[-3:].mean())
-        avg20 = float(volumes.mean())
+        avg20 = float(volumes[-20:].mean())
         vol_ratio = recent3 / avg20 if avg20 > 0 else 1
         lo, hi = sc.vol_ratio_range
         momentum_score += _normalize(vol_ratio, lo, hi, 5)
@@ -1869,16 +1867,13 @@ def score_multi_factor(
         if rsi_score >= 6:
             reasons.append(f"RSI {rsi:.0f}")
 
-    # MACD approximation
-    if n >= 20:
-        ma12 = closes[-12:].mean()
-        ma26_window = min(26, n)
-        ma26 = closes[-ma26_window:].mean()
-        macd_approx = ma12 - ma26
-        if macd_approx > 0:
+    # Canonical Worker EMA histogram, including identical warmup and seed.
+    macd_histogram = macd_histogram_last(closes)
+    if macd_histogram is not None:
+        if macd_histogram > 0:
             tech_score += 6
             reasons.append("MACD 多頭")
-        elif macd_approx > -sc.macd_negative_factor * latest_close / 100:
+        elif macd_histogram > -sc.macd_negative_factor * latest_close / 100:
             tech_score += 2
 
     # MA alignment
@@ -1931,7 +1926,7 @@ def score_multi_factor(
     # Volume ratio: recent 3d vs 20d average
     if n >= 5:
         recent3 = volumes[-3:].mean()
-        avg20 = volumes.mean()
+        avg20 = volumes[-20:].mean()
         vol_ratio = recent3 / avg20 if avg20 > 0 else 1
         lo, hi = sc.vol_ratio_range
         momentum_score += _normalize(vol_ratio, lo, hi, 5)

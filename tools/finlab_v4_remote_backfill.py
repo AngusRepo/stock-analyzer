@@ -1769,6 +1769,20 @@ def normalize_broker_transactions_daily(frame: pd.DataFrame, start: str) -> pd.D
     return grouped
 
 
+def write_source_session_calendar(source_close: pd.DataFrame, *, run_dir: Path, years: int, end_date: str | None) -> Path:
+    import polars as pl
+    from services.finlab_canonical_materializer import source_session_counts
+
+    source = filter_date_range(source_close, start_date=start_date_for_years(years), end_date=end_date)
+    calendar = source_session_counts(pl.from_pandas(source.reset_index()))
+    if calendar.is_empty():
+        raise ValueError("finlab_source_calendar_source_empty")
+    path = run_dir / "raw" / "source_calendar" / "sessions.parquet"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    calendar.write_parquet(path, compression="zstd")
+    return path
+
+
 def materialize_specs(
     *,
     years: int,
@@ -1828,6 +1842,16 @@ def materialize_specs(
 
         if spec.kind == "wide_fields":
             field_frames: dict[str, pd.DataFrame] = {}
+            unsliced_frames: dict[str, pd.DataFrame] = {}
+            if spec.lane == "daily_price":
+                # Daily raw prices are clipped to one date. Keep source-calendar
+                # facts from the full FinLab window so a failed prior date is
+                # still observed by the next successful native run.
+                calendar_path = run_dir / "raw" / "source_calendar" / "sessions.parquet"
+                if not calendar_path.exists():
+                    source_close = normalize_finlab_wide_field(data.get(spec.keys["close"]), api_key_name=spec.keys["close"])
+                    write_source_session_calendar(source_close, run_dir=run_dir, years=years, end_date=source_end_date)
+                    unsliced_frames["close"] = source_close
             if reuse_successful_artifacts and key_scope and spec.lane in key_scope:
                 reused_artifacts, reused_reports = reuse_ready_field_artifacts(
                     run_id=run_dir.name,
@@ -1857,11 +1881,11 @@ def materialize_specs(
                     continue
                 path = lane_dir / f"{field}.parquet"
                 try:
+                    source_frame = unsliced_frames.get(field)
+                    if source_frame is None:
+                        source_frame = normalize_finlab_wide_field(data.get(api_key_name), api_key_name=api_key_name)
                     frame = filter_date_range(
-                        normalize_finlab_wide_field(
-                            data.get(api_key_name),
-                            api_key_name=api_key_name,
-                        ),
+                        source_frame,
                         start_date=start,
                         end_date=source_end_date,
                     )
@@ -3174,7 +3198,9 @@ def materialize_canonical_to_d1(
     )
     all_statements = build_d1_upsert_statements(outputs)
     statements, ops_statements, routed_market_statements = partition_finlab_canonical_statements(all_statements)
-    market_statements = routed_market_statements + build_market_domain_insert_statements(outputs)
+    # Calendar observations precede canonical prices. A partial data write must
+    # leave a visible session gap, not erase the date from the checking calendar.
+    market_statements = build_market_domain_insert_statements(outputs) + routed_market_statements
     apply_result = {"total": len(statements) + len(ops_statements) + len(market_statements), "success_count": 0, "error_count": 0, "changes_total": 0, "dry_run": True}
     writes_by_domain = {"legacy": len(statements), "ops": len(ops_statements), "market": len(market_statements)}
     if not dry_run:

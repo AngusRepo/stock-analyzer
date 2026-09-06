@@ -388,12 +388,19 @@ async function loadCandidateSignalDates(
         SELECT prediction_date AS signal_date
           FROM predictions
          WHERE prediction_date >= ? AND prediction_date <= ? AND model_name='ensemble'
+        UNION ALL
+        SELECT price_date AS signal_date FROM price_horizon_labels_v1
+         WHERE price_date >= ? AND price_date <= ?
+        UNION ALL
+        SELECT price_date AS signal_date FROM price_horizon_labels_v2
+         WHERE price_date >= ? AND price_date <= ?
       )
-  `).bind(startDate, endDate, startDate, endDate, startDate, endDate, startDate, endDate).all<{ signal_date: string }>()
+  `).bind(startDate, endDate, startDate, endDate, startDate, endDate, startDate, endDate,
+    startDate, endDate, startDate, endDate).all<{ signal_date: string }>()
   return new Set((result.results ?? []).map((row) => String(row.signal_date ?? '').slice(0, 10)).filter(Boolean))
 }
 
-async function loadCandidateStockIds(db: D1Database, signalDate: string): Promise<CandidateIdentityCoverage> {
+export async function loadCandidateStockIds(db: D1Database, signalDate: string, horizonDays?: number): Promise<CandidateIdentityCoverage> {
   const reference = await db.prepare(`
     SELECT COUNT(DISTINCT symbol) reference_rows,
            COUNT(DISTINCT CASE WHEN stock_id IS NOT NULL THEN symbol END) identified_reference_rows
@@ -430,8 +437,15 @@ async function loadCandidateStockIds(db: D1Database, signalDate: string): Promis
     signalDate, ...SELECTION_REFERENCE_MATURE_COMPATIBLE_CONTRACT_VERSIONS,
     signalDate, signalDate, signalDate,
   ).all<{ stock_id: number }>()
+  // Established labels survive hot-reference retention or membership changes.
+  // A horizon repair must validate those identities too, otherwise an old
+  // wrong label can remain behind while the date is marked successful.
+  const existing = horizonDays == null
+    ? await db.prepare('SELECT stock_id FROM price_horizon_labels_v1 WHERE price_date=?').bind(signalDate).all<{ stock_id: number }>()
+    : await db.prepare('SELECT stock_id FROM price_horizon_labels_v2 WHERE price_date=? AND horizon_days=?').bind(signalDate, horizonDays).all<{ stock_id: number }>()
   return {
-    stockIds: (results ?? []).map((row) => Number(row.stock_id)).filter((value) => Number.isInteger(value) && value > 0),
+    stockIds: [...new Set([...(results ?? []), ...(existing.results ?? [])].map((row) => Number(row.stock_id))
+      .filter((value) => Number.isInteger(value) && value > 0))].sort((a, b) => a - b),
     referenceRows: Number(reference?.reference_rows ?? 0),
     identifiedReferenceRows: Number(reference?.identified_reference_rows ?? 0),
   }
@@ -848,7 +862,7 @@ export async function materializeStrategyMultiHorizonPriceLabels(
     skippedCompleteDates += plan.skippedCompleteDates
     deferredSignalDates += plan.deferredSignalDates
     for (const horizon of plan.work) {
-      const coverage = await loadCandidateStockIds(sourceLearningDb, horizon.signal_date)
+      const coverage = await loadCandidateStockIds(sourceLearningDb, horizon.signal_date, horizonDays)
       if (coverage.referenceRows > 0 && coverage.identifiedReferenceRows !== coverage.referenceRows) {
         throw new Error(`multi_horizon_reference_identity_incomplete:${horizonDays}:${horizon.signal_date}`)
       }

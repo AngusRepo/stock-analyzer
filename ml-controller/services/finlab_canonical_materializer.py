@@ -94,24 +94,37 @@ def _shift_start_date(start_date: str | None, lookback_days: int | None) -> str 
     return (parsed - timedelta(days=lookback_days)).isoformat()
 
 
+def source_session_counts(frame: pl.DataFrame) -> pl.DataFrame:
+    """Source-only calendar facts, computed before any daily projection slice."""
+    if frame.is_empty() or "date" not in frame.columns:
+        return pl.DataFrame(schema={"session_date": pl.String, "positive_close_count": pl.Int64})
+    columns = [c for c in frame.columns if c != "date"]
+    if not columns:
+        return pl.DataFrame(schema={"session_date": pl.String, "positive_close_count": pl.Int64})
+    return frame.select(
+        _date_expr().alias("session_date"),
+        pl.sum_horizontal([(pl.col(c).cast(pl.Float64, strict=False).is_finite()
+                            & (pl.col(c).cast(pl.Float64, strict=False) > 0)).fill_null(False).cast(pl.Int32)
+                           for c in columns]).alias("positive_close_count"),
+    ).filter(pl.col("positive_close_count") >= 100).group_by("session_date").agg(
+        pl.col("positive_close_count").max(),
+    ).sort("session_date")
+
+
 def build_source_sessions(root: Path, *, run_id: str, observed_at: str, end_date: str | None) -> list[dict[str, Any]]:
     """Read dates from the raw source, independently of canonical filters/limits.
 
     Missing projected sessions must not silently shorten a 5-session horizon.
     This is calendar evidence only, not a backdated feature-availability claim.
     """
-    frame = _read_parquet(root / "raw" / "daily_price" / "close.parquet")
-    if frame.is_empty() or "date" not in frame.columns:
-        return []
-    columns = [c for c in frame.columns if c != "date"]
-    if not columns:
-        return []
-    frame = frame.select(
-        _date_expr().alias("session_date"),
-        pl.sum_horizontal([(pl.col(c).cast(pl.Float64, strict=False).is_finite()
-                            & (pl.col(c).cast(pl.Float64, strict=False) > 0)).fill_null(False).cast(pl.Int32)
-                           for c in columns]).alias("positive_close_count"),
-    ).filter(pl.col("positive_close_count") >= 100)
+    calendar_path = root / "raw" / "source_calendar" / "sessions.parquet"
+    if calendar_path.exists():
+        frame = pl.read_parquet(calendar_path).select("session_date", "positive_close_count")
+        if frame.is_empty() or frame["session_date"].n_unique() != frame.height or frame["positive_close_count"].min() < 100:
+            raise ValueError("finlab_source_calendar_artifact_invalid")
+    else:
+        # Original archived artifacts predate the independent calendar file.
+        frame = source_session_counts(_read_parquet(root / "raw" / "daily_price" / "close.parquet"))
     if end_date:
         frame = frame.filter(pl.col("session_date") <= end_date)
     return [{**row, "source_run_id": run_id, "observed_at": observed_at,

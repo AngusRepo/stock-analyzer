@@ -1,4 +1,18 @@
-# Current findings — 2026-09-05 L4 repair + IPO shadow
+# Current findings — 2026-09-06 prospective-only extension
+
+- Production 9/4 has 4,736 persisted per-model records, all eight artifact identities, 592 stocks. 36 stocks have three sequence models legitimately unavailable under the existing history-length contract (108 model/stock masks); all five core models are present. Preserve the original stacker's 0.5/availability=0 feature encoding only for that exact attested reason; no raw forecasts are filled.
+- Initial strict-all-eight-observed implementation rejected these legitimate masks. Corrected to the existing trained missingness semantics with regression tests, retaining the entire 592-stock universe.
+- Pure stacker output uses the latest already-persisted 8/28 chronological state, selected by date, not performance. Source file SHA bcdff758426529ccd4e4610509116f1da2eacb4ac418ccd56b57675c06459516. New seal canonical checksum 9658e55bc436cc17e10bd1a59cb4e061293cf71076bf1e4497cc6f4eb60351a0; first allowed prospective date 9/7. No historical credit or L4 maturity reset.
+- L4 comparison is the actual existing 8/30 frozen artifact 809bb8f1, all 19 features retained. Shadow inputs are not a serving ensemble and never write formal predictions or recommendations.
+- Post-ML abstention loses recorded regime surface. New observer reads the exact-day HMM history with checksum, computed/persisted cutoff checks, not runtime-current KV; this preserves L4's sector × defensive-regime interaction.
+
+- Wiki release note confirms 08b34a5f and actual IPO input absence: 592 seeds, zero complete native ensemble inputs. Latest user approval now covers separate pure shadow inference; prior no-fit/no-promote boundaries remain.
+- Source active8_oof_stacker.py rebuilds a chronological nonnegative ridge per prediction date, including label reads; direct reuse would violate pure inference. Serialized date_states contain exact weights/intercept, so inspect existing durable evidence rather than invoke fitting.
+- planning session-catchup completed without additional output. Historical release pending bullets below are superseded by RELEASE_REPORT.md.
+
+---
+
+# Previous findings — 2026-09-05 L4 repair + IPO shadow
 
 - Accepted user decision supersedes prior recommendation: do not reduce L4 duties, do not replace it with monotonic calibration.
 - Prior evidence is audits/outbox/2026-09-05-l4-frozen-verification/PHASE2_REPORT.md through PHASE8_REPORT.md and DAY_CONCLUSION.md.

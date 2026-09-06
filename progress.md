@@ -137,7 +137,18 @@ Phase 0 — restore source, memory, and planning.
 - Completed two-turn adversarial review and evidence challenge.
 - Result: no new repo-supported blocker; retained existing D1 cutover and L4/Fusion quality blockers only.
 - Temporary Worker processes, source/config, logs, and local ports were removed after the review.
-# 2026-09-06 approved release progress
+# 2026-09-06 pure prospective IPO extension
+
+- Prior release completed at 08b34a5f; the release report supersedes older pending entries below.
+- User approved pure shadow inference, keeping no-retrain/no-promote/no-formal-allocation boundaries.
+- Reused existing daily eight-model candidate predictions and exact persisted chronological stacker coefficients; no additional ML compute job was dispatched.
+- Real 9/4 dry-run verified 4,736 model records / 592 stocks, full PIT fundamentals and sector coverage. 108 attested optional sequence masks remain null raw outputs and use the original trained availability features. HMM history checksum/time attestation passes. No historical forward credit was written.
+- Full frozen 19-feature L4 comparator retained, IPO four-feature research identity unchanged. Per-row provenance and immutable retry checks added.
+- Verification: 31 Python tests, Worker read-model test and full typecheck; frontend typecheck and production build all passed.
+- Combined release command was denied before execution due to destination/authorization verification. Read-only origin verification confirms github.com/AngusRepo/stock-analyzer.git; main remains 08b34a5f. No release state has changed yet.
+- No migration, retrain, formal promotion, historical refreeze or shutdown.
+
+# Historical — 2026-09-06 approved release progress
 
 - Commit3263dfc1 (55 approved files) pushed and fast-forwarded to origin/main; formal services still e861b0a6 at preflight. No force push or unrelated worktree changes.
 - Original8/20 FinLab GCS prices/index plus TWSE/TPEX date-specific official margin responses obtained. Full source calendar has774 dates through9/4; only8/20 absent from canonical since5/15.

@@ -1,4 +1,23 @@
-# Current task — L4 confirmed bug closure and parallel IPO shadow — 2026-09-05
+# Current task — approved pure prospective IPO input — 2026-09-06
+
+Prior release is complete at 08b34a5f; authoritative closure receipt is audits/outbox/2026-09-06-l4-ipo-release/RELEASE_REPORT.md. Pending text below is historical, not current status.
+
+Authorization: frozen eight-model + existing stacker inference only. No fitting, formal promotion, serving pointer changes, orders, historical prospective credit, or L4 maturity reset.
+
+1. Verify persisted model, stacker and L4 identities, feature semantics, clock and existing compute call path — completed. Daily pipeline already writes all eight candidate identities; no duplicate ML job needed.
+2. Implement the smallest independent prospective producer with immutable full-universe receipts and explicit failure/retry semantics — completed locally. Existing chronological state is copied, never fitted; L4 retains all 19 features.
+3. Test no-fit, no-lookahead, identity, cohort completeness, retry and output parity — completed. 31 Python tests, Worker read-model and full TypeScript, frontend TypeScript/build pass. Read-only actual 9/4 inference including HMM history: 592/592 ready; zero prospective credit.
+4. Complete scoped release and actual runtime readback where authorized; distinguish future collection readiness from actual first frozen batch — in progress. Main/origin verified at 08b34a5f. Auto-review rejected a combined release command before execution; read-only verification confirms github.com/AngusRepo/stock-analyzer.git, no embedded credentials. No migration or historical freeze required.
+5. Record evidence and unresolved boundaries in a new wiki draft — pending.
+
+## Verified discovery
+
+- Existing build_chronological_oof_stack refits per date. It is NOT an inference-only entry point; do not call it from the approved producer.
+- Its evidence serializes per-date weights/intercept. Locate and attest the persisted exact state before reuse; do not manufacture a stacker artifact by refitting.
+
+---
+
+# Previous task — L4 confirmed bug closure and parallel IPO shadow — 2026-09-05
 
 ## Current authorization and invariants
 

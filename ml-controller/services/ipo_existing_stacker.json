@@ -1,0 +1,51 @@
+{
+  "schema_version": "ipo-existing-stacker-seal-v1",
+  "semantic_version": "active8-purged-oof-chronological-nonnegative-ridge-v5",
+  "source": "audits/outbox/2026-09-05-l4-frozen-verification/phase2/snapshot_reconstruction.json",
+  "source_sha256": "bcdff758426529ccd4e4610509116f1da2eacb4ac418ccd56b57675c06459516",
+  "state": {
+    "prediction_date": "2026-08-28",
+    "train_rows": 89344,
+    "train_dates": 51,
+    "eligible_for_efficacy": true,
+    "regularization": 10.0,
+    "selected_models": [
+      "ExtraTrees",
+      "TabM",
+      "GNN",
+      "DLinear",
+      "PatchTST"
+    ],
+    "intercept": -0.015032515258598186,
+    "weights": {
+      "LightGBM.rank": 0.0,
+      "XGBoost.rank": 0.0,
+      "ExtraTrees.rank": 0.0020858523459801087,
+      "TabM.rank": 0.00728624003988836,
+      "GNN.rank": 0.0010014590813400852,
+      "DLinear.rank": 0.0014470462561705295,
+      "PatchTST.rank": 0.009969401307315969,
+      "iTransformer.rank": 0.0,
+      "LightGBM.available": 0.0,
+      "XGBoost.available": 0.0,
+      "ExtraTrees.available": -2.168404344971009e-18,
+      "TabM.available": 1.212951180468158e-18,
+      "GNN.available": -4.81482486096809e-35,
+      "DLinear.available": 0.011293186824847413,
+      "PatchTST.available": -0.011523291178521241,
+      "iTransformer.available": 0.0
+    },
+    "source": "chronological_resolved_oof_nonnegative_ridge"
+  },
+  "selection_rule": "latest_already_persisted_chronological_state_not_performance_selection",
+  "first_prospective_signal_date": "2026-09-07",
+  "production_effect": false,
+  "training_dispatched": false,
+  "l4_comparator": {
+    "artifact_id": "l4_alpha_ev:l4-alpha-ev-ridge-v5-sector-20260818:809bb8f14a060733cb5854169e3c63b0c7b56f899e764060c78a315b9b8663ba",
+    "model_name": "l4_alpha_ev",
+    "version": "l4-alpha-ev-ridge-v5-sector-20260818",
+    "checksum": "809bb8f14a060733cb5854169e3c63b0c7b56f899e764060c78a315b9b8663ba",
+    "artifact_path": "universal/ev_candidates/active8-oof-v9-feature-semantic-source-attested-2026-03-09-2026-08-18-tr60-te10/l4_alpha_ev/809bb8f14a060733cb5854169e3c63b0c7b56f899e764060c78a315b9b8663ba.json"
+  }
+}

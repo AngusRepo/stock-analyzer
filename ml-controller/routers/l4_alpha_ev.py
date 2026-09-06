@@ -31,10 +31,15 @@ class IpoShadowFreezeReq(BaseModel):
     signal_date: str = Field(pattern=r"^\d{4}-\d{2}-\d{2}$")
     source_run_id: str = Field(min_length=1, max_length=300)
     dry_run: bool = False
+    input_mode: Literal['native', 'frozen_stacker_prospective'] = 'native'
 
 
 @router.post('/ipo-shadow/freeze')
 def freeze_ipo_shadow(req: IpoShadowFreezeReq) -> dict[str, Any]:
+    if req.input_mode == 'frozen_stacker_prospective':
+        from services.ipo_prospective_inputs import collect_prospective_daily
+        return collect_prospective_daily(signal_date=req.signal_date, source_run_id=req.source_run_id,
+            dry_run=req.dry_run, clients={name: client_proxy_for_domain(name) for name in ('core', 'market', 'learning', 'ops')})
     from services.ipo_shadow_collection import collect_native_daily
     return collect_native_daily(signal_date=req.signal_date, source_run_id=req.source_run_id, dry_run=req.dry_run,
         clients={name: client_proxy_for_domain(name) for name in ('core', 'market', 'learning', 'ops')})

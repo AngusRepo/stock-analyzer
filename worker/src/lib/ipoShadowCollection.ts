@@ -5,7 +5,7 @@ export const IPO_COLLECTION_STATUS_KEY = 'ipo-shadow:collection-status:v1'
 export async function collectIpoShadow(env: Bindings, signalDate: string, sourceRunId: string): Promise<string> {
   try {
     const result = await controllerPostJson<Record<string, any>>(env, '/l4_alpha_ev/ipo-shadow/freeze',
-      { signal_date: signalDate, source_run_id: sourceRunId, dry_run: false }, 180_000)
+      { signal_date: signalDate, source_run_id: sourceRunId, dry_run: false, input_mode: 'frozen_stacker_prospective' }, 180_000)
     if (result.production_effect !== false || result.promotion_allowed !== false || result.training_dispatched !== false) {
       throw new Error('ipo_shadow_authority_contract_invalid')
     }
@@ -17,7 +17,7 @@ export async function collectIpoShadow(env: Bindings, signalDate: string, source
     return `IPO frozen date=${signalDate} rows=${result.rows} production_effect=0`
   } catch (error) {
     // Preserve a structured input blocker above; transport errors must also be visible.
-    if (!(error instanceof Error && error.message.startsWith('ipo_shadow_awaiting_native_inputs'))) {
+    if (!(error instanceof Error && /^ipo_shadow_awaiting_(native|shadow)_inputs/.test(error.message))) {
       await env.KV.put(IPO_COLLECTION_STATUS_KEY, JSON.stringify({signal_date:signalDate,
         observed_at:new Date().toISOString(),status:'collection_failed',blockers:[String(error).slice(0,500)],
         promotion_allowed:false,production_effect:false}))

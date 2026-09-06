@@ -28,6 +28,7 @@ export default function IpoShadowComparison({ data }: { data?: IpoShadowReadMode
       <span className="rounded-full border border-violet-300/25 px-3 py-1 text-xs text-violet-200">僅 shadow · 不配置、不晉級</span>
     </div>
     <p className="mt-2 text-sm leading-6 text-slate-300">L4 保持現行多特徵學習與排序。IPO 在同一天、同一批股票上先封存預測，等五個交易日報酬成熟後，再跟當時記錄的 L4 比較。</p>
+    <p className="mt-2 text-xs leading-5 text-slate-400">純 shadow 使用每日當次凍結的八模型候選輸出＋已封存 stacker，不等待正式 ensemble 晉級。對照 L4 保留原本 19 個特徵；不重訓、不改正式分數或配置。</p>
     <div className="mt-4 grid grid-cols-2 gap-3 lg:grid-cols-4">
       {[
         ['最新封存預測日', unavailable ? '讀取未完成' : data?.latest_frozen_date ?? '尚未封存'],
@@ -40,12 +41,15 @@ export default function IpoShadowComparison({ data }: { data?: IpoShadowReadMode
     </div>
     {unavailable ? <p role="status" className="mt-4 text-sm text-rose-300">IPO 資料尚未接通；L4 現有資料不受影響。{data?.blockers.join(' · ')}</p>
       : data.status === 'not_registered' ? <p className="mt-4 text-sm text-amber-200">{collectionBlocked
-        ? '尚未開始累積：當日完整 ML／特徵輸入未具備。正式 ensemble 未晉級時，保留名單中的 ML 零分不是有效 IPO 輸入；不以補零或回放冒充前瞻樣本。'
-        : '等待第一批當日完整原生快照。每日流程會檢查輸入；歷史補跑不列入前瞻成熟日。'}</p>
+        ? '尚未開始累積：當日候選模型或 PIT 特徵尚未通過完整性檢查。請展開下方查看具體原因；不以補零或回放冒充前瞻樣本。'
+        : '等待第一批當日純 shadow 前瞻快照。每日流程會檢查並封存輸入；歷史補跑不列入前瞻成熟日。'}</p>
         : data.daily.length === 0 ? <p className="mt-4 text-sm text-amber-200">預測已封存，等待真實報酬成熟。尚無績效不等於報酬為 0。</p> : null}
     {data?.collection ? <details className="mt-3 text-xs leading-5 text-slate-400">
-      <summary className="cursor-pointer py-1">收集檢查：{data.collection.signal_date} · {collectionBlocked ? '輸入待補齊' : data.collection.status}</summary>
+      <summary className="cursor-pointer py-1">收集檢查：{data.collection.signal_date} · {collectionBlocked ? '輸入待補齊' : data.collection.status === 'ready_to_freeze' ? '銜接驗證通過，等待新交易日封存' : data.collection.status}</summary>
       <p>母體 {data.collection.candidate_rows ?? '尚無'} 列／完整輸入 {data.collection.eligible_rows ?? '尚無'} 列</p>
+      <p>輸入來源：{data.collection.input_mode === 'frozen_stacker_prospective' ? '八模型候選＋固定 stacker（純 shadow）' : '正式原生輸入檢查'}</p>
+      {data.collection.optional_model_missing_rows != null ? <p>序列歷史不足：{data.collection.optional_model_missing_rows} 個模型／股票組合；依既有 availability 特徵處理，不補造預測。</p> : null}
+      {data.collection.model_set_signature ? <p className="break-all">模型版本：{data.collection.model_set_signature}</p> : null}
       <p className="break-words">{data.collection.blockers.join(' · ')}</p>
     </details> : null}
     <div className="mt-4 space-y-3">

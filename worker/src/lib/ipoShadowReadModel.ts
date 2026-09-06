@@ -10,7 +10,7 @@ export type IpoShadowReadModel = {
   candidate_id: string | null; registered_at: string | null; latest_frozen_date: string | null
   frozen_dates: number; mature_dates: number; paired_dates: number; frozen_rows: number
   daily: IpoShadowDaily[]; blockers: string[]; promotion_allowed: false; exact_sparse_opb: false
-  collection?: { signal_date: string; observed_at: string; status: string; candidate_rows?: number; eligible_rows?: number; blockers: string[] } | null
+  collection?: { signal_date: string; observed_at: string; status: string; candidate_rows?: number; eligible_rows?: number; blockers: string[]; input_mode?: string; optional_model_missing_rows?: number; model_set_signature?: string } | null
 }
 
 function validMetrics(value: IpoModelMetrics | null): boolean {

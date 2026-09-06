@@ -84,7 +84,18 @@ def freeze_daily(*, snapshot_date: str, source_run_id: str, rows: list[dict[str,
         return {"status": "no_native_candidates", "promotion_allowed": False, "rows": 0}
     frozen = []
     for item in rows:
-        if item.get("generation_mode") != "native":
+        prospective = item.get('generation_mode') == 'frozen_stacker_prospective'
+        if prospective:
+            from services.ipo_prospective_inputs import MODE, SEAL_SHA256, load_seal, prospective_window
+            provenance = item.get('input_provenance') or {}
+            if (provenance.get('mode') != MODE or provenance.get('stacker_seal_checksum') != SEAL_SHA256
+                    or provenance.get('prediction_date') != snapshot_date
+                    or provenance.get('production_effect') is not False
+                    or provenance.get('training_dispatched') is not False
+                    or snapshot_date < load_seal()['first_prospective_signal_date']
+                    or not prospective_window(snapshot_date, now)):
+                raise RuntimeError('ipo_shadow_prospective_provenance_invalid')
+        elif item.get("generation_mode") != "native":
             raise RuntimeError("ipo_shadow_non_native_candidate")
         row, prediction = item["row"], item["prediction"]
         features = [_feature_value(name, row, prediction) for name in MODEL["names"]]
@@ -100,6 +111,9 @@ def freeze_daily(*, snapshot_date: str, source_run_id: str, rows: list[dict[str,
                        "l4_payload_checksum": checksum(l4),
                        "model_set_signature": item["model_set_signature"],
                        "target_semantic_version": item["target_semantic_version"]})
+        if prospective:
+            frozen[-1]['input_provenance'] = item['input_provenance']
+            frozen[-1]['input_mode'] = item['generation_mode']
     frozen.sort(key=lambda row: row["stock_id"])
     if len({r["stock_id"] for r in frozen}) != len(frozen):
         raise ValueError("ipo_shadow_duplicate_stock")

@@ -119,6 +119,22 @@ def test_no_synthetic_missing_values_or_reconstructed_features(local):
     assert local[1]("SELECT * FROM ipo_shadow_candidates_v1", []) == []
 
 
+def test_prospective_stacker_provenance_is_immutable_and_never_legacy_native(local):
+    from services.ipo_prospective_inputs import MODE, SEAL_SHA256
+    rows=candidates()
+    for row in rows:
+        row['generation_mode']=MODE
+        row['input_provenance']={'mode':MODE,'stacker_seal_checksum':SEAL_SHA256,
+            'prediction_date':'2026-09-07','production_effect':False,'training_dispatched':False}
+    assert freeze(local,rows=rows)['status']=='frozen'
+    assert freeze(local,rows=rows)['status']=='already_frozen'
+    stored=local[1]('SELECT input_json FROM ipo_shadow_predictions_v1 ORDER BY stock_id',[])
+    assert json.loads(stored[0]['input_json'])['input_mode']==MODE
+    rows[0]['input_provenance']['training_dispatched']=True
+    with pytest.raises(RuntimeError,match='provenance_invalid'):
+        freeze(local,rows=rows)
+
+
 def test_maturity_validates_real_sessions_and_l4_comparison_coverage(local):
     rows = candidates()
     rows[1]["l4_payload"] = None

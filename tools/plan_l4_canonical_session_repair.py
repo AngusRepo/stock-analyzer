@@ -9,6 +9,7 @@ import argparse
 import hashlib
 import json
 import math
+import re
 import sys
 from pathlib import Path
 from typing import Any
@@ -27,9 +28,20 @@ def plan_repair(outputs: Any, inventory: dict[str, Any], repair_date: str) -> di
                 and min(r["open"], r["high"], r["low"], r["close"], r["adj_close"]) > 0 and r["volume"] >= 0]
     if len(complete) < 100:
         raise ValueError("repair_full_original_ohlcv_missing_do_not_insert_calendar_only")
-    if len(complete) != len(rows):
+    # FinLab legitimately publishes volume/bid rows with no regular-session
+    # OHLC (including odd-lot-only trades). Preserve that absence; never invent
+    # a fill price or put these rows into compatibility return projections.
+    unpriced = [r for r in rows if all(r.get(k) is None for k in required[:-1])
+                and isinstance(r.get('volume'), (int, float))
+                and math.isfinite(r['volume']) and r['volume'] >= 0]
+    if len(complete) + len(unpriced) != len(rows):
         raise ValueError("repair_partial_original_ohlcv_would_overwrite_valid_fields")
     identities = {str(r["symbol"]): int(r["id"]) for r in inventory["stock_identities"]}
+    complete_identity_inventory = (
+        inventory.get('identity_inventory_scope') == 'all_core_stocks'
+        and inventory.get('identity_inventory_row_count') == len(identities)
+        and len(identities) == len(inventory['stock_identities'])
+    )
     compatible, unmatched = [], []
     for row in complete:
         symbol = str(row["stock_id"])
@@ -65,6 +77,10 @@ def plan_repair(outputs: Any, inventory: dict[str, Any], repair_date: str) -> di
     all_statements = build_d1_upsert_statements(outputs)
     market = [s for s in all_statements if any(f"INTO {table}" in s[0] for table in (
         "canonical_market_daily", "canonical_market_index_daily", "canonical_market_summary_daily"))]
+    unpriced_symbols = {r['stock_id'] for r in unpriced}
+    market = [(re.sub(r'ON CONFLICT\b.*', 'ON CONFLICT DO NOTHING', sql, flags=re.S)
+               if 'INTO canonical_market_daily' in sql and params[0] in unpriced_symbols else sql, params)
+              for sql, params in market]
     market += build_market_domain_insert_statements(outputs) + compatible
     ops = [s for s in all_statements if "INTO finlab_materialization_" in s[0]]
     missing_context = [table for table in ("canonical_market_index_daily", "canonical_market_summary_daily")
@@ -72,9 +88,13 @@ def plan_repair(outputs: Any, inventory: dict[str, Any], repair_date: str) -> di
     return {"schema_version": "l4-single-session-repair-plan-v1", "mode": "offline_plan_no_writes",
             "repair_date": repair_date, "source_run_id": outputs.run_id, "source_manifest": outputs.manifest,
             "canonical_rows": len(rows), "complete_ohlcv_rows": len(complete), "compatibility_rows": len(compatible),
+            "source_unpriced_symbols": sorted(unpriced_symbols),
+            "source_unpriced_policy": "preserve_source_nulls_insert_only_no_return_projection",
+            "compatibility_scope": "core_stock_identity_join",
+            "complete_core_identity_inventory": complete_identity_inventory,
             "unmatched_core_symbols": unmatched, "market_statements": market, "ops_after_market_success": ops,
             "additional_source_required": missing_context,
-            "ready_for_complete_date_repair": not missing_context and not unmatched,
+            "ready_for_complete_date_repair": not missing_context and (not unmatched or complete_identity_inventory),
             "labels_requiring_reprojection": impacted, "verified_unchanged_labels": len(verified_unchanged),
             "source_window_unverifiable_labels": pending,
             "label_rerun_dates": sorted({r["signal_date"] for r in impacted}),

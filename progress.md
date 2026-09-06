@@ -137,3 +137,12 @@ Phase 0 — restore source, memory, and planning.
 - Completed two-turn adversarial review and evidence challenge.
 - Result: no new repo-supported blocker; retained existing D1 cutover and L4/Fusion quality blockers only.
 - Temporary Worker processes, source/config, logs, and local ports were removed after the review.
+# 2026-09-06 approved release progress
+
+- Commit3263dfc1 (55 approved files) pushed and fast-forwarded to origin/main; formal services still e861b0a6 at preflight. No force push or unrelated worktree changes.
+- Original8/20 FinLab GCS prices/index plus TWSE/TPEX date-specific official margin responses obtained. Full source calendar has774 dates through9/4; only8/20 absent from canonical since5/15.
+- Source before-images, raw hashes/generations, model champion pointers, eight frozen preoutcome evaluations, and D1 recovery bookmarks are under audits/outbox/2026-09-06-l4-ipo-release/.
+- Applied four additive migrations; Learning0038 already existed and its idempotent migration registration was reconciled. Restored2387 canonical prices (37 genuinely unpriced rows remain null),1960 Core-compatible prices,3 indices,2 official summaries,774 calendar dates.5126 statements and per-field readback passed before Ops receipts.
+- Planner hardening: distinguish completely absent regular-session OHLC from partial corrupt prices; preserve null source rows insert-only; Core compatibility is the verified complete Core identity join, not all ETFs/preferred shares in FinLab.4 regression tests passed.
+- Preflight detected historical marketRisk reading runtime-current VIX/foreign/breadth and a70-calendar-day window insufficient for60-session MA. As-of reads, no current margin fallback,120-calendar-day input window and future-VIX exclusion implemented; executable PIT regression and Worker typechecks passed.
+- Still pending: historical8/20 risk readback; scoped follow-up commit/main fast-forward; all runtime deployments; incorrect-label reprojection; live archive/IPO/API/automation verification. No ML retrain, IPO promotion, original frozen evidence rewrite or manual pointer movement.

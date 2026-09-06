@@ -18,9 +18,9 @@
 4. Implement immutable IPO shadow registration/prediction/maturity/readback on existing daily lifecycle — completed locally; isolated SQLite lifecycle, retry, no-lookahead and hook-order tests pass.
 5. Implement L4/IPO same-page observation with separate whole-history and paired-date metrics — completed locally; API/typechecks/build and 1280/390/320px browser checks pass with synthetic data.
 6. Run regression, lifecycle retry/idempotency, UI checks; closure matrix and authorized handoff — completed locally: 275 Python tests, 10 Worker suites, typechecks/build; closure/release report written.
-7. Approved release: verify origin/main and actual production lineage; preserve unrelated work — in_progress.
-8. Restore complete source calendar/8-20 source data, apply bounded additive migrations, preserve before images and read back — pending.
-9. Commit scoped source/tests, push main safely, deploy Worker/controller/Frontend with immutable provenance — pending.
+7. Approved release: verify origin/main and actual production lineage; preserve unrelated work — completed. Old formal Worker/controller/Pages all e861b0a6; scoped 3263dfc1 pushed and fast-forwarded to main without force.
+8. Restore complete source calendar/8-20 source data, apply bounded additive migrations, preserve before images and read back — in_progress. Four new additive migrations applied; existing Learning0038 migration registration reconciled without modifying eight frozen evaluation rows. Restored 2,387 canonical / 1,960 Core prices, three indices, two official summaries and 774 source calendar dates, with every written field read back. Historical risk and labels remain pending.
+9. Commit scoped source/tests, push main safely, deploy Worker/controller/Frontend with immutable provenance — in_progress. Initial55-file commit done. Real-source repair-planner universe/null handling and historical risk as-of guards added after runtime preflight; new regressions pass. Deployment also requires Modal mounted producer code and the same immutable controller image on existing compute jobs.
 10. Reproject only incorrect labels, verify frozen evidence/pointers, current daily chain and IPO/UI freshness; record production closure — pending.
 
 ## Current errors

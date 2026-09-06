@@ -43,13 +43,18 @@ export interface MarketRiskResult {
 }
 
 // ── 1. 抓 VIX ─────────────────────────────────────────────────────────────────
-async function fetchVIX(): Promise<number | null> {
+async function fetchVIX(runDate?: string): Promise<number | null> {
   try {
-    const url = 'https://query1.finance.yahoo.com/v8/finance/chart/%5EVIX?interval=1d&range=5d'
+    const cutoff = runDate ? Date.parse(`${runDate}T00:00:00Z`) / 1000 : null
+    const url = cutoff == null
+      ? 'https://query1.finance.yahoo.com/v8/finance/chart/%5EVIX?interval=1d&range=5d'
+      : `https://query1.finance.yahoo.com/v8/finance/chart/%5EVIX?interval=1d&period1=${cutoff - 10 * 86400}&period2=${cutoff}`
     const res = await fetch(url, { headers: { 'User-Agent': 'Mozilla/5.0' } })
     const json = await res.json() as any
-    const closes = json.chart?.result?.[0]?.indicators?.quote?.[0]?.close ?? []
-    const valid = closes.filter((v: any) => v != null)
+    const chart = json.chart?.result?.[0]
+    const closes = chart?.indicators?.quote?.[0]?.close ?? []
+    const valid = closes.filter((v: any, i: number) =>
+      Number.isFinite(v) && v > 0 && (cutoff == null || Number(chart?.timestamp?.[i]) < cutoff))
     return valid.length ? Math.round(valid[valid.length - 1] * 100) / 100 : null
   } catch { return null }
 }
@@ -167,7 +172,7 @@ async function fetchTWIIHistory(db: D1Database, runDate: string): Promise<number
 }
 
 // ── 3. 外資整體買賣超（D1 chip_data SUM，TWSE T86 已每日寫入）──────────────────
-async function fetchMarketForeignChip(db: D1Database): Promise<{
+async function fetchMarketForeignChip(db: D1Database, runDate: string): Promise<{
   net5d: number | null
   consecutiveSell: number
 }> {
@@ -176,10 +181,10 @@ async function fetchMarketForeignChip(db: D1Database): Promise<{
       SELECT date, SUM(COALESCE(net_amount, 0)) / 1e8 AS daily_net
         FROM canonical_institutional_amount_daily
        WHERE investor = 'foreign'
-         AND date >= date('now', '-25 days')
+         AND date BETWEEN date(?, '-25 days') AND ?
        GROUP BY date
        ORDER BY date
-    `).all<{ date: string; daily_net: number }>()
+    `).bind(runDate, runDate).all<{ date: string; daily_net: number }>()
 
     if (!results?.length) return { net5d: null, consecutiveSell: 0 }
     const last5 = results.slice(-5)
@@ -229,7 +234,7 @@ async function fetchMarginRatio(controllerUrl?: string, controllerSecret?: strin
 }
 
 // ── 5. ADL 騰落線（D1 market_breadth table，Wave2 每日寫入）─────────────────
-async function fetchADL(db: D1Database): Promise<{
+async function fetchADL(db: D1Database, runDate: string): Promise<{
   adlValue: number | null
   adlTrend: 'up' | 'down' | 'flat' | null
 }> {
@@ -237,9 +242,10 @@ async function fetchADL(db: D1Database): Promise<{
     const { results } = await db.prepare(`
       SELECT date, advance_count, decline_count
       FROM market_breadth
+      WHERE date <= ?
       ORDER BY date DESC
       LIMIT 15
-    `).all<{ date: string; advance_count: number; decline_count: number }>()
+    `).bind(runDate).all<{ date: string; advance_count: number; decline_count: number }>()
 
     if (!results?.length || results.length < 2) return { adlValue: null, adlTrend: null }
 
@@ -265,7 +271,7 @@ async function fetchADL(db: D1Database): Promise<{
 }
 
 // ── 7. 多空排列家數（D1 stock_prices 計算 MA5/MA20/MA60）───────────────────
-async function fetchBullAlignmentCount(db: D1Database): Promise<{
+async function fetchBullAlignmentCount(db: D1Database, runDate: string): Promise<{
   count: number | null
   pct: number | null
 }> {
@@ -273,9 +279,9 @@ async function fetchBullAlignmentCount(db: D1Database): Promise<{
     const { results } = await db.prepare(`
       SELECT stock_id, date, close
       FROM stock_prices
-      WHERE date >= date('now', '-70 days') AND close IS NOT NULL
+      WHERE date BETWEEN date(?, '-120 days') AND ? AND close > 0
       ORDER BY stock_id, date
-    `).all<{ stock_id: number; date: string; close: number }>()
+    `).bind(runDate, runDate).all<{ stock_id: number; date: string; close: number }>()
 
     if (!results?.length) return { count: null, pct: null }
 
@@ -412,16 +418,18 @@ export async function calcMarketRisk(
   runDate?: string,
 ): Promise<MarketRiskResult> {
   const today = runDate || new Date(Date.now() + 8 * 3600_000).toISOString().slice(0, 10)
+  const historical = today < new Date(Date.now() + 8 * 3600_000).toISOString().slice(0, 10)
   _marginCache = null  // 清除快取
 
   // 平行抓所有資料（Phase 2: 加入 ADL + 多空排列）
   const [vix, twiiHistory, foreignChip, marginRatio, adlData, bullAlignment] = await Promise.all([
-    fetchVIX(),
+    fetchVIX(historical ? today : undefined),
     fetchTWIIHistory(db, today),
-    fetchMarketForeignChip(db),
-    fetchMarginRatio(controllerUrl, controllerSecret),
-    fetchADL(db),
-    fetchBullAlignmentCount(db),
+    fetchMarketForeignChip(db, today),
+    // This proxy is latest-only. Never stamp today's margin ratio onto an old date.
+    historical ? Promise.resolve(null) : fetchMarginRatio(controllerUrl, controllerSecret),
+    fetchADL(db, today),
+    fetchBullAlignmentCount(db, today),
   ])
 
   const twiiClose  = twiiHistory.length ? twiiHistory[twiiHistory.length - 1] : null

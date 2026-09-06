@@ -27,6 +27,19 @@ LEARNING_D1_CLIENT = client_proxy_for_domain(D1DataDomain.LEARNING)
 CORE_D1_CLIENT = client_proxy_for_domain(D1DataDomain.CORE)
 
 
+class IpoShadowFreezeReq(BaseModel):
+    signal_date: str = Field(pattern=r"^\d{4}-\d{2}-\d{2}$")
+    source_run_id: str = Field(min_length=1, max_length=300)
+    dry_run: bool = False
+
+
+@router.post('/ipo-shadow/freeze')
+def freeze_ipo_shadow(req: IpoShadowFreezeReq) -> dict[str, Any]:
+    from services.ipo_shadow_collection import collect_native_daily
+    return collect_native_daily(signal_date=req.signal_date, source_run_id=req.source_run_id, dry_run=req.dry_run,
+        clients={name: client_proxy_for_domain(name) for name in ('core', 'market', 'learning', 'ops')})
+
+
 DIRECT_REFRESH_PROMOTION_OWNER = "active8_oof_lifecycle"
 DIRECT_REFRESH_PROMOTION_ENDPOINT = "/walk_forward/oof/lifecycle"
 DIRECT_REFRESH_PROMOTION_DETAIL = "direct_refresh_promotion_disabled_use_active8_oof_lifecycle"

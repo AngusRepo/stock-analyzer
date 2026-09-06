@@ -10,6 +10,7 @@ export type IpoShadowReadModel = {
   candidate_id: string | null; registered_at: string | null; latest_frozen_date: string | null
   frozen_dates: number; mature_dates: number; paired_dates: number; frozen_rows: number
   daily: IpoShadowDaily[]; blockers: string[]; promotion_allowed: false; exact_sparse_opb: false
+  collection?: { signal_date: string; observed_at: string; status: string; candidate_rows?: number; eligible_rows?: number; blockers: string[] } | null
 }
 
 function validMetrics(value: IpoModelMetrics | null): boolean {
@@ -17,15 +18,24 @@ function validMetrics(value: IpoModelMetrics | null): boolean {
     && ['rmse', 'proxy_net_return', 'invested_fraction', 'max_weight'].every(key => Number.isFinite(value[key]))
 }
 
-export async function readIpoShadow(db: D1Database, requestedDate: string): Promise<IpoShadowReadModel> {
+export async function readIpoShadow(db: D1Database, requestedDate: string, kv?: KVNamespace): Promise<IpoShadowReadModel> {
   const base: IpoShadowReadModel = { status: 'not_registered', candidate_id: null, registered_at: null,
     latest_frozen_date: null, frozen_dates: 0, mature_dates: 0, paired_dates: 0, frozen_rows: 0,
     daily: [], blockers: [], promotion_allowed: false, exact_sparse_opb: false }
   try {
+    if (kv) {
+      const rawCollection = await kv.get('ipo-shadow:collection-status:v1')
+      const collection = rawCollection ? JSON.parse(rawCollection) as NonNullable<IpoShadowReadModel['collection']> : null
+      if (collection && collection.signal_date <= requestedDate
+        && new Date(new Date(collection.observed_at).getTime() + 8 * 3600_000).toISOString().slice(0,10) <= requestedDate) {
+        base.collection = collection
+      }
+    }
     const candidate = await db.prepare(`SELECT candidate_id, registered_at FROM ipo_shadow_candidates_v1
       WHERE date(registered_at, '+8 hours')<=?
       ORDER BY registered_at DESC, candidate_id DESC LIMIT 1`).bind(requestedDate).first<{ candidate_id: string; registered_at: string }>()
-    if (!candidate) return { ...base, blockers: ['awaiting_first_native_snapshot_registration'] }
+    if (!candidate) return { ...base, blockers: base.collection?.blockers?.length
+      ? base.collection.blockers : ['awaiting_first_native_snapshot_registration'] }
     const [coverage, evaluations] = await Promise.all([
       db.prepare(`SELECT COUNT(*) AS dates, COALESCE(SUM(row_count),0) AS rows, MAX(signal_date) AS latest
         FROM ipo_shadow_batches_v1 WHERE candidate_id=? AND signal_date<=?`)

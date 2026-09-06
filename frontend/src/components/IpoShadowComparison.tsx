@@ -21,6 +21,7 @@ function ModelResult({ title, values }: { title: string; values: IpoModelMetrics
 
 export default function IpoShadowComparison({ data }: { data?: IpoShadowReadModel }) {
   const unavailable = !data || data.status === 'unavailable'
+  const collectionBlocked = Boolean(data?.collection?.blockers?.length)
   return <section aria-labelledby="ipo-shadow-title" className="min-w-0 rounded-2xl border border-violet-300/20 bg-violet-400/[0.035] p-4 sm:p-5">
     <div className="flex flex-wrap items-center justify-between gap-2">
       <h3 id="ipo-shadow-title" className="text-base font-semibold text-slate-100">L4 × IPO 同步對照</h3>
@@ -38,8 +39,15 @@ export default function IpoShadowComparison({ data }: { data?: IpoShadowReadMode
       </div>)}
     </div>
     {unavailable ? <p role="status" className="mt-4 text-sm text-rose-300">IPO 資料尚未接通；L4 現有資料不受影響。{data?.blockers.join(' · ')}</p>
-      : data.status === 'not_registered' ? <p className="mt-4 text-sm text-amber-200">等待第一批當日原生快照。註冊與預測會由每日流程執行，歷史補跑不列入前瞻成熟日。</p>
+      : data.status === 'not_registered' ? <p className="mt-4 text-sm text-amber-200">{collectionBlocked
+        ? '尚未開始累積：當日完整 ML／特徵輸入未具備。正式 ensemble 未晉級時，保留名單中的 ML 零分不是有效 IPO 輸入；不以補零或回放冒充前瞻樣本。'
+        : '等待第一批當日完整原生快照。每日流程會檢查輸入；歷史補跑不列入前瞻成熟日。'}</p>
         : data.daily.length === 0 ? <p className="mt-4 text-sm text-amber-200">預測已封存，等待真實報酬成熟。尚無績效不等於報酬為 0。</p> : null}
+    {data?.collection ? <details className="mt-3 text-xs leading-5 text-slate-400">
+      <summary className="cursor-pointer py-1">收集檢查：{data.collection.signal_date} · {collectionBlocked ? '輸入待補齊' : data.collection.status}</summary>
+      <p>母體 {data.collection.candidate_rows ?? '尚無'} 列／完整輸入 {data.collection.eligible_rows ?? '尚無'} 列</p>
+      <p className="break-words">{data.collection.blockers.join(' · ')}</p>
+    </details> : null}
     <div className="mt-4 space-y-3">
       {(data?.daily ?? []).slice(0, 20).map(day => <details key={day.signal_date} className="rounded-xl border border-white/10 px-3 py-2" open={day.signal_date === data?.daily[0]?.signal_date}>
         <summary className="cursor-pointer py-2 text-sm text-slate-200">

@@ -922,7 +922,6 @@ def build_allocator_ev_feature_snapshots_for_date(
     )
 
     statements: list[tuple[str, list[Any]]] = []
-    ipo_shadow_rows: list[dict[str, Any]] = []
     skipped = 0
     skip_reasons: dict[str, int] = {}
     reused_l4 = 0
@@ -1065,10 +1064,6 @@ def build_allocator_ev_feature_snapshots_for_date(
         alpha_allocation.update(_recorded_serving_fusion_projection(existing))
         if l4_payload is not None:
             alpha_allocation["l4_alpha_ev"] = l4_payload
-        ipo_shadow_rows.append({"row": row, "prediction": prediction, "l4_payload": l4_payload,
-                                "generation_mode": generation_mode,
-                                "model_set_signature": model_set_signature,
-                                "target_semantic_version": target_semantic_version})
         statements.append(
             _snapshot_staging_statement(
                 snapshot_date,
@@ -1160,11 +1155,9 @@ def build_allocator_ev_feature_snapshots_for_date(
                 pass
             raise
 
-    ipo_shadow = {"status": "dry_run", "promotion_allowed": False}
-    if not dry_run:
-        from services.ipo_shadow import freeze_daily
-        ipo_shadow = freeze_daily(snapshot_date=snapshot_date, source_run_id=run_id,
-                                  rows=ipo_shadow_rows, query=learning_query, writer=learning_writer)
+    # A backfill may reconstruct L4, so it cannot own a prospective IPO freeze.
+    # The post-pipeline native collector runs independently of formal allocation.
+    ipo_shadow = {"status": "owned_by_post_pipeline_native_collector", "promotion_allowed": False}
     day_status = "ok" if statements else "skipped"
     day_reason = None if statements else (
         "no_eligible_score_v2_candidates"

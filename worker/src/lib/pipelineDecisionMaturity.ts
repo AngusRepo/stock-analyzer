@@ -473,7 +473,7 @@ export async function buildPipelineDecisionMaturityPacket(
 ): Promise<PipelineDecisionMaturityPacket> {
   if (!validDate(requestedDate)) throw new Error(`invalid_pipeline_maturity_date:${requestedDate}`)
   const learningDb = databaseForDataDomain(env, 'learning')
-  const ipoShadowPromise = readIpoShadow(learningDb, requestedDate)
+  const ipoShadowPromise = readIpoShadow(learningDb, requestedDate, env.KV)
   const marketDb = databaseForDataDomain(env, 'market')
   const formalLabelerPlaceholders = STRATEGY_FORMAL_LABELER_VERSIONS.map(() => '?').join(',')
 

@@ -17,6 +17,13 @@ async function main() {
     return stmt
   } }) as unknown as D1Database
   assert.equal((await readIpoShadow(db('empty'), '2026-09-07')).status, 'not_registered')
+  const collection={signal_date:'2026-09-07',observed_at:'2026-09-07T14:00:00Z',status:'awaiting_native_inputs',
+    candidate_rows:592,eligible_rows:0,blockers:['missing_point_in_time_ensemble_prediction']}
+  const kv={get:async()=>JSON.stringify(collection)} as unknown as KVNamespace
+  const blocked=await readIpoShadow(db('empty'),'2026-09-07',kv)
+  assert.equal(blocked.collection?.eligible_rows,0)
+  assert(blocked.blockers.includes('missing_point_in_time_ensemble_prediction'))
+  assert.equal((await readIpoShadow(db('empty'),'2026-09-06',kv)).collection,undefined)
   const missing = await readIpoShadow(db('error'), '2026-09-07')
   assert.equal(missing.status, 'unavailable')
   assert(missing.blockers.includes('ipo_shadow_migration_missing'))

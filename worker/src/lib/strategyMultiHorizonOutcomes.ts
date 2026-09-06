@@ -4,7 +4,7 @@ import {
   STRATEGY_EVIDENCE_HORIZON_DAYS,
   STRATEGY_MULTI_HORIZON_PROJECTION_VERSION,
 } from './priceHorizonProjection'
-import { SELECTION_REFERENCE_CONTRACT_VERSION } from './selectionReferenceEvidence'
+import { SELECTION_REFERENCE_MATURE_COMPATIBLE_CONTRACT_VERSIONS } from './selectionReferenceEvidence'
 
 export const STRATEGY_MULTI_HORIZON_OUTCOME_SCHEMA_VERSION = 'canonical-strategy-selection-outcome-v1'
 export const STRATEGY_MULTI_HORIZON_ROUNDTRIP_COST_BPS = 18
@@ -19,6 +19,7 @@ type ReferenceRow = {
   stock_id: number
   market_segment: string | null
   sector: string | null
+  feature_contract_version: string
 }
 
 type PriceOutcomeRow = {
@@ -59,6 +60,7 @@ export type StrategyMultiHorizonOutcomeResult = {
     pendingRows: number
     unavailableRows: number
     persistedRows: number
+    retiredRows: number
   }>
   summary: string
 }
@@ -154,7 +156,7 @@ async function canonicalRunIds(
   return new Set((result.results ?? []).map((row) => row.run_id))
 }
 
-async function listReferences(
+export async function listReferences(
   learningDb: D1Database,
   canonicalIds: Set<string>,
   startDate: string | undefined,
@@ -163,20 +165,22 @@ async function listReferences(
   const output: ReferenceRow[] = []
   let cursorDate = ''
   let cursorSymbol = ''
+  let cursorProducer = ''
   for (;;) {
     const clauses = [
       'signal_date <= ?',
       'hard_gate_passed=1',
-      'feature_contract_version=?',
-      '(signal_date > ? OR (signal_date = ? AND symbol > ?))',
+      `feature_contract_version IN (${SELECTION_REFERENCE_MATURE_COMPATIBLE_CONTRACT_VERSIONS.map(() => '?').join(',')})`,
+      '(signal_date, symbol, producer_run_id) > (?, ?, ?)',
     ]
-    const binds: unknown[] = [endDate, SELECTION_REFERENCE_CONTRACT_VERSION, cursorDate, cursorDate, cursorSymbol]
+    const binds: unknown[] = [endDate, ...SELECTION_REFERENCE_MATURE_COMPATIBLE_CONTRACT_VERSIONS,
+      cursorDate, cursorSymbol, cursorProducer]
     if (startDate) { clauses.push('signal_date >= ?'); binds.push(startDate) }
     const page = await learningDb.prepare(`
-      SELECT signal_date, symbol, producer_run_id, stock_id, market_segment, sector
+      SELECT signal_date, symbol, producer_run_id, stock_id, market_segment, sector, feature_contract_version
         FROM selection_reference_snapshots_v1
        WHERE ${clauses.join(' AND ')}
-       ORDER BY signal_date, symbol
+       ORDER BY signal_date, symbol, producer_run_id
        LIMIT 500
     `).bind(...binds).all<ReferenceRow>()
     const rows = page.results ?? []
@@ -184,6 +188,7 @@ async function listReferences(
     if (rows.length < 500) break
     cursorDate = rows.at(-1)!.signal_date
     cursorSymbol = rows.at(-1)!.symbol
+    cursorProducer = rows.at(-1)!.producer_run_id
   }
   return output
 }
@@ -214,7 +219,7 @@ async function loadPriceOutcomes(
   return output
 }
 
-async function persistOutcomes(
+export async function persistOutcomes(
   learningDb: D1Database,
   rows: MaterializedOutcome[],
   costBps: number,
@@ -232,7 +237,7 @@ async function persistOutcomes(
       row.exitDate, row.grossReturn, costBps, row.absoluteReturnNet,
       row.benchmarkReturnNet, row.benchmarkScope, row.residualReturnNet,
       row.crossSectionRank, 'price_horizon_labels_v2:finlab_primary_canonical_mirror',
-      SELECTION_REFERENCE_CONTRACT_VERSION,
+      row.reference.feature_contract_version,
     ])
     return learningDb.prepare(`
       INSERT INTO canonical_selection_outcomes_v1 (
@@ -263,6 +268,31 @@ async function persistOutcomes(
   return rows.length
 }
 
+export async function retireRejectedOutcomes(
+  db: D1Database, references: ReferenceRow[], horizonDays: number, asOfDate: string,
+): Promise<number> {
+  // Missing/pending inputs are not terminal. Retire only an exact canonical
+  // identity whose price projector explicitly rejected an already-known exit.
+  const statements = references.map(row => db.prepare(`
+    DELETE FROM canonical_selection_outcomes_v1
+     WHERE signal_date=? AND symbol=? AND producer_run_id=? AND horizon_days=? AND label_schema_version=?
+       AND EXISTS (SELECT 1 FROM price_horizon_label_rejections_v2 r
+         WHERE r.stock_id=? AND r.price_date=? AND r.horizon_days=? AND r.projection_version=?
+           AND r.exit_date IS NOT NULL AND r.exit_date<=?)
+       AND NOT EXISTS (SELECT 1 FROM price_horizon_labels_v2 p
+         WHERE p.stock_id=? AND p.price_date=? AND p.horizon_days=? AND p.projection_version=?)
+  `).bind(row.signal_date, row.symbol, row.producer_run_id, horizonDays,
+    STRATEGY_MULTI_HORIZON_OUTCOME_SCHEMA_VERSION, row.stock_id, row.signal_date, horizonDays,
+    STRATEGY_MULTI_HORIZON_PROJECTION_VERSION, asOfDate, row.stock_id, row.signal_date, horizonDays,
+    STRATEGY_MULTI_HORIZON_PROJECTION_VERSION))
+  let retired = 0
+  for (const group of chunks(statements, OUTCOME_BATCH_STATEMENTS)) {
+    const results = await db.batch(group)
+    retired += results.reduce((sum, result) => sum + Number(result.meta?.changes ?? 0), 0)
+  }
+  return retired
+}
+
 export async function materializeStrategyMultiHorizonOutcomes(
   env: Bindings,
   options: { asOfDate: string; startDate?: string; endDate?: string; transactionCostBps?: number },
@@ -288,24 +318,27 @@ export async function materializeStrategyMultiHorizonOutcomes(
     const pending: PendingOutcome[] = []
     let pendingRows = 0
     let unavailableRows = 0
+    const missing: ReferenceRow[] = []
     for (const reference of references) {
       const price = priceOutcomes.get(`${reference.stock_id}|${reference.signal_date}`)
-      if (!price) { unavailableRows += 1; continue }
+      if (!price) { unavailableRows += 1; missing.push(reference); continue }
       if (price.outcome_known_date > asOfDate) { pendingRows += 1; continue }
       const entryOpen = finite(price.entry_raw_open)
       const entryFactor = finite(price.entry_adjustment_factor)
       const exitClose = finite(price.exit_raw_close)
       const exitFactor = finite(price.exit_adjustment_factor)
-      if (!entryOpen || !entryFactor || !exitClose || !exitFactor) { unavailableRows += 1; continue }
+      if (entryOpen === null || entryFactor === null || exitClose === null || exitFactor === null
+        || Math.min(entryOpen, entryFactor, exitClose, exitFactor) <= 0) { unavailableRows += 1; continue }
       const grossReturn = (exitClose * exitFactor) / (entryOpen * entryFactor) - 1
       pending.push({ reference, horizonDays, entryDate: price.entry_date, exitDate: price.exit_date,
         grossReturn, absoluteReturnNet: grossReturn - costBps / 10_000 })
     }
     const outcomes = neutralize(pending)
+    const retiredRows = await retireRejectedOutcomes(targetLearningDb, missing, horizonDays, asOfDate)
     const persistedRows = await persistOutcomes(targetLearningDb, outcomes, costBps)
-    results.push({ horizonDays, matureRows: outcomes.length, pendingRows, unavailableRows, persistedRows })
+    results.push({ horizonDays, matureRows: outcomes.length, pendingRows, unavailableRows, persistedRows, retiredRows })
   }
-  const summary = results.map((row) => `${row.horizonDays}d=${row.persistedRows}/${row.matureRows},pending=${row.pendingRows},unavailable=${row.unavailableRows}`).join(' ')
+  const summary = results.map((row) => `${row.horizonDays}d=${row.persistedRows}/${row.matureRows},pending=${row.pendingRows},unavailable=${row.unavailableRows},retired=${row.retiredRows}`).join(' ')
   return { asOfDate, referenceRows: references.length, horizons: results,
     summary: `strategy_multi_horizon_outcomes window=${startDate}..${endDate} references=${references.length} ${summary}` }
 }

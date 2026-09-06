@@ -36,6 +36,7 @@ import {
 import { refreshStrategyEvidenceOwnerCalibration } from './strategyEvidenceOwnerCalibration'
 import { assertAutomaticPromotionAllowed } from './shadowPromotionGovernance'
 import { resolveEveningChainRunAuthority } from './eveningChainRunAuthority'
+import { collectIpoShadow } from './ipoShadowCollection'
 
 export type ChainContext = {
   runDate?: string
@@ -454,6 +455,11 @@ export async function runPostPipelineCallbackChain(
     await logChainSummary(env, ctx, 'post-pipeline-chain', startedAt, results)
     return 'error'
   }
+  // IPO is an observer, not a formal allocator dependency. Always attempt it
+  // before the evidence-only branch; failures remain explicit, never successful zero samples.
+  results.push(await logChainedTask(env, ctx, 'ipo-shadow-native-freeze',
+    () => collectIpoShadow(env, ctx.runDate!, String(ctx.upstreamRunId ?? 'post-pipeline')),
+    { critical: false, timeoutMs: 190_000 }))
   await assertChainStageAuthority(ctx, 'post-pipeline:before_snapshot_inspection')
   let snapshotClosure = await inspectAllocatorSnapshotClosure(env.DB, ctx.runDate, {
     // This stage owns the explicit PIT backfill. Reconstruction may close the

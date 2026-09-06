@@ -774,14 +774,18 @@ async function loadObservations(
   return output
 }
 
-async function persistMetricRows(db: D1Database, rows: StrategyEvidenceMetricRow[]): Promise<number> {
-  const statements = rows.map((row) => db.prepare(`
+export function metricWriteStatements(
+  db: D1Database, rows: StrategyEvidenceMetricRow[], snapshotRunId: string, payloadChecksum: string,
+): D1PreparedStatement[] {
+  return rows.map((row) => db.prepare(`
     INSERT INTO strategy_evidence_metrics_v1 (
       strategy_id, strategy_version, strategy_status, alpha_bucket,
       primary_horizon_days, metric_name, metric_value, metric_status,
       sample_count, mature_dates, date_start, date_end, outcome_as_of_date,
       definition_version, evidence_json, updated_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+    ) SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP
+      WHERE EXISTS (SELECT 1 FROM strategy_evidence_metric_snapshot_runs_v1
+        WHERE snapshot_run_id=? AND payload_checksum=?)
     ON CONFLICT(strategy_id, strategy_version, primary_horizon_days, metric_name, outcome_as_of_date) DO UPDATE SET
       strategy_status=excluded.strategy_status, alpha_bucket=excluded.alpha_bucket,
       metric_value=excluded.metric_value, metric_status=excluded.metric_status,
@@ -795,11 +799,8 @@ async function persistMetricRows(db: D1Database, rows: StrategyEvidenceMetricRow
     row.primary_horizon_days, row.metric_name, row.metric_value, row.metric_status,
     row.sample_count, row.mature_dates, row.date_start, row.date_end,
     row.outcome_as_of_date, row.definition_version, row.evidence_json,
+    snapshotRunId, payloadChecksum,
   ))
-  for (let offset = 0; offset < statements.length; offset += 100) {
-    await db.batch(statements.slice(offset, offset + 100))
-  }
-  return statements.length
 }
 
 type StrategyEvidencePriceRow = {
@@ -1062,7 +1063,6 @@ export async function materializeStrategyEvidenceMetrics(
           materialization_source: source,
         }),
       }))
-      await persistMetricRows(db, rows)
       receiptRows.push(...rows)
       observationCount += observations.length
       metricRowCount += rows.length
@@ -1105,7 +1105,6 @@ export async function materializeStrategyEvidenceMetrics(
         materialization_source: source,
       }),
     }))
-    await persistMetricRows(db, rows)
     receiptRows.push(...rows)
     observationCount = observations.length
     metricRowCount = rows.length
@@ -1126,7 +1125,7 @@ export async function materializeStrategyEvidenceMetrics(
     sourceMode,
     payloadChecksum.slice(0, 20),
   ].join(':')
-  await db.prepare(`
+  const receiptClaim = db.prepare(`
     INSERT OR IGNORE INTO strategy_evidence_metric_snapshot_runs_v1 (
       snapshot_run_id, outcome_as_of_date, definition_version, source_mode,
       materialization_source, status, profile_count, observation_count,
@@ -1143,7 +1142,10 @@ export async function materializeStrategyEvidenceMetrics(
     metricRowCount,
     readyRows,
     payloadChecksum,
-  ).run()
+  )
+  // One D1 transaction publishes the receipt and its values. A conflicting
+  // immutable receipt cannot overwrite metrics before validation fails.
+  await db.batch([receiptClaim, ...metricWriteStatements(db, canonicalReceiptRows, snapshotRunId, payloadChecksum)])
   const receipt = await db.prepare(`
     SELECT snapshot_run_id, status, profile_count, observation_count,
            metric_row_count, ready_row_count, payload_checksum

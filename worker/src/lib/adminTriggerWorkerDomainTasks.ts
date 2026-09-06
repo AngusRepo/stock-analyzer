@@ -1192,7 +1192,8 @@ export function buildAdminWorkerDomainTaskMap(c: any, deps: TriggerDeps): Record
       const canonicalRunIds = await loadCanonicalScreenerRunIds(c.env, asOfDate)
       const labels = await materializeCanonicalSelectionLabelsV4(
         databaseForDataDomain(c.env, 'learning'),
-        { asOfDate, canonicalRunIds },
+        { asOfDate, canonicalRunIds, startDate: c.req.query('start_date') || undefined,
+          endDate: c.req.query('end_date') || undefined },
       )
       return `canonical_selection_labels_rebuild as_of_date=${asOfDate} persisted=${labels.persisted_rows} pending=${labels.pending_rows} unavailable=${labels.unavailable_rows} idempotent=${labels.persisted_rows === 0}`
     },

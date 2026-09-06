@@ -39,6 +39,7 @@ import {
   type StrategyEvaluabilityStatus,
 } from './strategyEvaluability'
 import { STRATEGY_EVIDENCE_V5_LIVE_FRONTIER_START_DATE } from './strategyEvidenceV5Contract'
+import { SELECTION_REFERENCE_MATURE_COMPATIBLE_CONTRACT_VERSIONS } from './selectionReferenceEvidence'
 
 export const STRATEGY_LEARNING_VERSION = 'strategy-learning-v5'
 export const STRATEGY_EVIDENCE_RECONSTRUCTION_LABELER_VERSION =
@@ -2374,7 +2375,8 @@ export async function listStrategyRewardSourceRows(
     const clauses = [
       'm.strategy_hit = 1',
       'm.evaluable = 1',
-      "m.reference_contract_version = 'selection-reference-snapshot-v3'",
+      `m.reference_contract_version IN (${SELECTION_REFERENCE_MATURE_COMPATIBLE_CONTRACT_VERSIONS.map(() => '?').join(',')})`,
+      'm.reference_contract_version = r.feature_contract_version',
       "l.label_schema_version = 'canonical-strategy-selection-label-v4'",
       `m.labeler_version IN (${formalLabelerPlaceholders})`,
       'r.strategy_labeler_version = m.labeler_version',
@@ -2391,7 +2393,7 @@ export async function listStrategyRewardSourceRows(
       )`,
     ]
     const binds: unknown[] = [
-      ...STRATEGY_FORMAL_LABELER_VERSIONS,
+      ...SELECTION_REFERENCE_MATURE_COMPATIBLE_CONTRACT_VERSIONS, ...STRATEGY_FORMAL_LABELER_VERSIONS,
       cursorDate,
       cursorDate, cursorStrategyId,
       cursorDate, cursorStrategyId, cursorSymbol,

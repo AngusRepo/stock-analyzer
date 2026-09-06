@@ -143,13 +143,42 @@ function neutralize(rows: PendingLabel[]): MaterializedLabel[] {
   return rankByDate(rows, benchmarks)
 }
 
-async function listCanonicalReferences(
+export async function listCanonicalReferences(
   db: D1Database,
   asOfDate: string,
   startDate?: string,
   endDate?: string,
   canonicalRunIds?: Record<string, string>,
+  costBps = CANONICAL_SELECTION_ROUNDTRIP_COST_BPS,
 ): Promise<ReferenceRow[]> {
+  // Recompute the whole canonical date cohort whenever any source label
+  // changes. Filtering only missing rows leaves stale returns behind and
+  // computes sector benchmarks/ranks on a partial cross-section.
+  const dirty = await db.prepare(`
+    SELECT DISTINCT r.signal_date, r.producer_run_id
+      FROM selection_reference_snapshots_v1 r
+      LEFT JOIN canonical_selection_labels_v4 l
+        ON l.signal_date=r.signal_date AND l.symbol=r.symbol
+       AND l.producer_run_id=r.producer_run_id
+       AND l.label_schema_version='canonical-strategy-selection-label-v4'
+      LEFT JOIN price_horizon_labels_v1 h
+        ON h.price_date=r.signal_date AND h.stock_id=r.stock_id
+     WHERE r.signal_date<=? AND r.feature_contract_version IN (?, ?)
+       AND (l.signal_date IS NULL OR l.adjustment_source IS NOT ?
+         OR l.reference_contract_version IS NOT r.feature_contract_version
+         OR l.transaction_cost_bps IS NOT ?
+         OR l.entry_date IS NOT h.entry_date OR l.exit_date IS NOT h.exit_date
+         OR l.outcome_known_date IS NOT h.outcome_known_date
+         OR l.entry_raw_open IS NOT h.entry_raw_open OR l.exit_raw_close IS NOT h.exit_raw_close
+         OR l.entry_adjustment_factor IS NOT h.entry_adjustment_factor
+         OR l.exit_adjustment_factor IS NOT h.exit_adjustment_factor)
+  `).bind(asOfDate, ...SELECTION_REFERENCE_MATURE_COMPATIBLE_CONTRACT_VERSIONS,
+    CANONICAL_SELECTION_ADJUSTMENT_SOURCE, costBps)
+    .all<{signal_date: string; producer_run_id: string}>()
+  const dirtyGroups = (dirty.results ?? []).filter(row =>
+    (!startDate || row.signal_date >= startDate) && (!endDate || row.signal_date <= endDate)
+      && (!canonicalRunIds || canonicalRunIds[row.signal_date] === row.producer_run_id))
+  if (!dirtyGroups.length) return []
   const rows: ReferenceRow[] = []
   let cursorDate = ''
   let cursorSymbol = ''
@@ -173,8 +202,8 @@ async function listCanonicalReferences(
     } else {
       clauses.push("EXISTS (SELECT 1 FROM canonical_run_heads h WHERE h.logical_run_key = 'screener:' || r.signal_date || ':TW:production:market_screener' AND h.run_id = r.producer_run_id)")
     }
-    clauses.push("NOT EXISTS (SELECT 1 FROM canonical_selection_labels_v4 l WHERE l.signal_date = r.signal_date AND l.symbol = r.symbol AND l.producer_run_id = r.producer_run_id AND l.label_schema_version = 'canonical-strategy-selection-label-v4' AND l.reference_contract_version = r.feature_contract_version AND l.adjustment_source = ?)")
-    binds.push(CANONICAL_SELECTION_ADJUSTMENT_SOURCE)
+    clauses.push("EXISTS (SELECT 1 FROM json_each(?) d WHERE json_extract(d.value,'$.signal_date')=r.signal_date AND json_extract(d.value,'$.producer_run_id')=r.producer_run_id)")
+    binds.push(JSON.stringify(dirtyGroups))
     if (endDate) { clauses.push('r.signal_date <= ?'); binds.push(endDate) }
     const page = await db.prepare(`
       SELECT r.signal_date, r.symbol, r.producer_run_id, r.stock_id, r.market_segment, r.sector, r.feature_contract_version
@@ -242,7 +271,7 @@ export async function materializeCanonicalSelectionLabelsV4(
     ? Math.max(0, Number(options.transactionCostBps))
     : CANONICAL_SELECTION_ROUNDTRIP_COST_BPS
   const runId = `selection-label-v4-${options.asOfDate}-${options.startDate ?? 'all'}-${options.endDate ?? 'all'}`
-  const references = await listCanonicalReferences(db, options.asOfDate, options.startDate, options.endDate, options.canonicalRunIds)
+  const references = await listCanonicalReferences(db, options.asOfDate, options.startDate, options.endDate, options.canonicalRunIds, costBps)
   const horizonEvidence = references.length
     ? await loadPriceHorizonEvidence(db, references)
     : { labels: new Map<string, PriceHorizonEvidenceRow>(), rejections: new Map<string, PriceHorizonRejectionRow>() }

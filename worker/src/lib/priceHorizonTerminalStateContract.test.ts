@@ -12,4 +12,5 @@ test('price horizon persistence keeps label and rejection terminal states mutual
   assert.match(source, /async function deleteRejectedLabels/)
   assert.match(source, /DELETE FROM price_horizon_labels_v1/)
   assert.match(source, /observations\.rejections\.map\(\(row\) => row\.stockId\)/)
+  assert.match(source, /deleteRejectedMultiHorizonLabels\(targetLearningDb, horizonDays, observations\.rejections\)/)
 })

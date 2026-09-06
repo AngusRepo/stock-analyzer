@@ -144,8 +144,11 @@ Phase 0 — restore source, memory, and planning.
 - Reused existing daily eight-model candidate predictions and exact persisted chronological stacker coefficients; no additional ML compute job was dispatched.
 - Real 9/4 dry-run verified 4,736 model records / 592 stocks, full PIT fundamentals and sector coverage. 108 attested optional sequence masks remain null raw outputs and use the original trained availability features. HMM history checksum/time attestation passes. No historical forward credit was written.
 - Full frozen 19-feature L4 comparator retained, IPO four-feature research identity unchanged. Per-row provenance and immutable retry checks added.
-- Verification: 31 Python tests, Worker read-model test and full typecheck; frontend typecheck and production build all passed.
-- Combined release command was denied before execution due to destination/authorization verification. Read-only origin verification confirms github.com/AngusRepo/stock-analyzer.git; main remains 08b34a5f. No release state has changed yet.
+- Final verification: 32 Python tests pass with original sealed fixture; the clean release checkout has 31 passed and one expected fixture-dependent skip. Worker read-model/full typecheck and frontend typecheck/build passed.
+- Combined release command was initially denied before execution. After credential-free origin verification, scoped commits c86db455 and ed59ce1e were pushed and main fast-forwarded. No force push or unrelated changes.
+- Production code ed59ce1e: Worker 52b26e03-b1d6-4d17-9236-f5a809cd6325; Controller ml-controller-01099-xey at 100%; Pages public provenance verified. Modal apps and nine Job images updated, preserving Job configuration and executing zero Jobs.
+- Production dry-run and before/after readback passed: 592/592 inputs, eleven pointers and eight L4/L4+ rows unchanged, IPO predictions/batches/evaluations remain zero. Separate diagnostic KV publication read back as ready_to_freeze. Future 9/7 collection has not run; no efficacy claim.
+- Completion evidence: audits/outbox/2026-09-06-ipo-prospective/RELEASE_REPORT.md, final_readback.json, baseline_before.json and baseline_after.json. Post-deploy planning updates are documentation only; deployed program inputs stay ed59ce1e.
 - No migration, retrain, formal promotion, historical refreeze or shutdown.
 
 # Historical — 2026-09-06 approved release progress

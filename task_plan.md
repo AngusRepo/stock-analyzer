@@ -6,9 +6,11 @@ Authorization: frozen eight-model + existing stacker inference only. No fitting,
 
 1. Verify persisted model, stacker and L4 identities, feature semantics, clock and existing compute call path — completed. Daily pipeline already writes all eight candidate identities; no duplicate ML job needed.
 2. Implement the smallest independent prospective producer with immutable full-universe receipts and explicit failure/retry semantics — completed locally. Existing chronological state is copied, never fitted; L4 retains all 19 features.
-3. Test no-fit, no-lookahead, identity, cohort completeness, retry and output parity — completed. 31 Python tests, Worker read-model and full TypeScript, frontend TypeScript/build pass. Read-only actual 9/4 inference including HMM history: 592/592 ready; zero prospective credit.
-4. Complete scoped release and actual runtime readback where authorized; distinguish future collection readiness from actual first frozen batch — in progress. Main/origin verified at 08b34a5f. Auto-review rejected a combined release command before execution; read-only verification confirms github.com/AngusRepo/stock-analyzer.git, no embedded credentials. No migration or historical freeze required.
-5. Record evidence and unresolved boundaries in a new wiki draft — pending.
+3. Test no-fit, no-lookahead, identity, cohort completeness, retry and output parity — completed. 32 Python tests pass with the sealed research fixture; clean deployment checkout has 31 passed / 1 fixture-dependent skip. Worker read-model/full TypeScript and frontend TypeScript/build pass. Actual production 9/4 dry-run: 592/592 ready; zero prospective credit.
+4. Complete scoped release and runtime readback — completed at code ed59ce1e. Main fast-forwarded without force; Worker, Pages, Controller, nine existing Job images and Modal updated. Jobs were not executed. Eleven serving pointers and eight frozen L4/L4+ evaluation rows remain exactly equal to the baseline. IPO remains zero frozen/mature dates. Diagnostic KV explicitly updated and read back; first eligible future signal date is 9/7, not a claim that the future chain has run.
+5. Record evidence and unresolved boundaries in a new wiki draft — completed. Final receipt: audits/outbox/2026-09-06-ipo-prospective/RELEASE_REPORT.md. Wiki: 02_Products/StockVision/Sessions/2026-09-06-2026-09-06-ipo-pure-prospective-shadow-release-closure.draft.md; finish-task and both MOC updates verified. Raw audit sources remain local, outside the deployment bundle.
+
+Release verification notes: an initial combined release command was denied before execution; verified the credential-free GitHub remote and separated approved actions. A mixed read/write verification helper was replaced by a pure read-only checker plus a separately approved diagnostic publisher. A local audit query's incorrect table suffix was corrected to the actual migration name; no production schema mutation was needed.
 
 ## Verified discovery
 

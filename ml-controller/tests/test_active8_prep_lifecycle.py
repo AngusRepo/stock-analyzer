@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import io
 import json
 import os
 from datetime import datetime, timedelta
@@ -9,6 +10,7 @@ from pathlib import Path
 import sys
 
 import pytest
+import polars as pl
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / 'ml-controller'))
@@ -43,8 +45,10 @@ class _Blob:
 
 
 class _Bucket:
+    name = 'test-bucket'
+
     def __init__(self):
-        self.store: dict[str, bytes] = {}
+        self.store: dict[str, bytes] = {'snapshot/prices.parquet': _price_bytes()}
 
     def blob(self, name: str) -> _Blob:
         return _Blob(self.store, name)
@@ -73,6 +77,12 @@ def _seal_sequence(bucket: _Bucket, *, date_max: str = "2026-07-24") -> tuple[st
     return prefix, manifest
 
 
+def _price_bytes():
+    buffer = io.BytesIO()
+    pl.DataFrame({'date': ['2026-07-23', '2026-07-24']}).write_parquet(buffer)
+    return buffer.getvalue()
+
+
 def _snapshot(*, prefixed_checksum: bool = False, business_date: str = "2026-07-24") -> dict:
     checksum = "a" * 64
     start_date = (
@@ -84,7 +94,11 @@ def _snapshot(*, prefixed_checksum: bool = False, business_date: str = "2026-07-
         "business_date": business_date,
         "checksum": f"sha256:{checksum}" if prefixed_checksum else checksum,
         "manifest_errors": [],
-        "metadata_json": json.dumps({"start_date": start_date}),
+        "metadata_json": json.dumps({
+            "start_date": start_date,
+            "components": {"prices": "gs://test-bucket/snapshot/prices.parquet"},
+            "component_meta": {"prices": {"content_checksum": hashlib.sha256(_price_bytes()).hexdigest()}},
+        }),
     }
 
 

@@ -157,6 +157,7 @@ def _latest_market_session(
         )
     latest_row = next(row for row in reversed(rows) if str(row.get("trading_date") or "")[:10] == sessions[-1])
     return sessions[-1], {
+        "market_session_dates": sessions,
         "market_session_coverage_reference": reference,
         "market_session_coverage_threshold": threshold,
         "market_session_price_rows": int(latest_row.get("price_rows") or 0),
@@ -227,6 +228,13 @@ async def ensure_active8_daily_prep(
     bucket = _get_bucket()
     if bucket is None:
         raise RuntimeError("GCS unavailable")
+    from services.active8_snapshot_refresh import ensure_snapshot_price_dates
+
+    snapshot = await ensure_snapshot_price_dates(
+        snapshot, bucket=bucket,
+        expected_dates=market_session_evidence["market_session_dates"], dry_run=dry_run,
+    )
+    snapshot_checksum = _normalize_sha256(snapshot.get("checksum"))
     sequence_prefix, sequence_manifest = _latest_immutable_sequence(bucket, cutoff)
     sequence_date_max = str((sequence_manifest.get("summary") or {}).get("date_max") or "")[:10]
     if sequence_date_max < business_date:

@@ -79,6 +79,9 @@ def test_artifact_is_deterministic_learned_and_binds_all_eight_models():
     assert set(first["base_artifacts"]) == set(first["selected_models"])
     assert set(first["excluded_models"]) == set(ACTIVE8_MODELS) - set(first["selected_models"])
     assert first["validation"]["decision"] == "PASS"
+    assert first["validation"]["calibration_purge_policy"] == "label_known_before_validation_start"
+    assert first["validation"]["calibration_purged_rows"] > 0
+    assert first["validation"]["calibration_max_label_known_date"] < first["validation"]["validation_start_date"]
     assert first["validation"]["rank_ic_equal_date_market_lcb90"] > 0.0
     assert first["validation"]["top_bottom_net_return_spread_lcb90"] > 0.0
     assert set(first["validation"]["same_window_comparison"]["models"]) == set(ACTIVE8_MODELS)
@@ -91,6 +94,8 @@ def test_later_chronological_validation_can_reject_calibration_period_winner():
         _build(_rows(reverse_late=True))
     validation = exc_info.value.validation
     assert validation["decision"] == "FAIL"
+    assert validation["calibration_purged_rows"] > 0
+    assert validation["calibration_max_label_known_date"] < validation["validation_start_date"]
     assert (
         "chronological_validation_equal_date_market_rank_ic_lcb90_non_positive"
         in validation["failed_gates"]

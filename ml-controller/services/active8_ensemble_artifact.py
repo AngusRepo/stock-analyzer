@@ -244,7 +244,18 @@ def build_active8_ensemble_artifact(
     split_index = max(MIN_STACKER_TRAIN_DATES, math.floor(len(honest_dates) * 0.60))
     calibration_dates = set(honest_dates[:split_index])
     validation_dates = set(honest_dates[split_index:])
-    calibration_rows = [row for row in honest if row["prediction_date"] in calibration_dates]
+    if len(validation_dates) < MIN_VALIDATION_DATES:
+        raise ValueError("active8_ensemble_chronological_validation_dates_insufficient")
+    calibration_candidates = [row for row in honest if row["prediction_date"] in calibration_dates]
+    # A prediction made earlier can still have an outcome unknown at the
+    # holdout boundary. Both calibrators must only see labels already known.
+    calibration_rows = [
+        row for row in calibration_candidates
+        if row["label_known_date"] < min(validation_dates)
+    ]
+    calibration_dates = {row["prediction_date"] for row in calibration_rows}
+    if len(calibration_dates) < MIN_STACKER_TRAIN_DATES:
+        raise ValueError("active8_ensemble_purged_calibration_dates_insufficient")
     validation_rows = [row for row in honest if row["prediction_date"] in validation_dates]
     if len(calibration_rows) < MIN_VALIDATION_ROWS or len(validation_rows) < MIN_VALIDATION_ROWS:
         raise ValueError("active8_ensemble_chronological_split_rows_insufficient")
@@ -282,6 +293,9 @@ def build_active8_ensemble_artifact(
         "method": "chronological_oof_calibration_then_later_validation",
         "calibration_dates": len(calibration_dates),
         "calibration_rows": len(calibration_rows),
+        "calibration_purge_policy": "label_known_before_validation_start",
+        "calibration_purged_rows": len(calibration_candidates) - len(calibration_rows),
+        "calibration_max_label_known_date": max(row["label_known_date"] for row in calibration_rows),
         "validation_dates": len(validation_dates),
         "validation_rows": len(validation_rows),
         "validation_start_date": min(validation_dates),

@@ -615,6 +615,9 @@ def test_full_fit_poll_only_bootstraps_first_receipt_without_replacement(monkeyp
         def blob(self, _path):
             return Blob()
 
+        def list_blobs(self, prefix):
+            return []
+
     plan = {
         "status": "ready",
         "release_models": ["DLinear"],
@@ -793,6 +796,7 @@ def test_dispatch_reuses_completed_full_fit_receipt_across_cadences(monkeypatch)
             "validation_schema_version": "active8-oof-ensemble-validation-v1",
             "selection_method": "learned_chronological_oof_ensemble",
             "selection_policy_version": "active8-ensemble-conformal-isotonic-v1",
+            "calibration_purge_policy": "label_known_before_validation_start",
             "ensemble_candidate": {
                 "status": "persisted",
                 "artifact_id": "active8-ensemble:cohort-v3:1234",
@@ -872,6 +876,7 @@ def test_dispatch_reuses_terminal_ensemble_validation_block_and_repairs_projecti
             "validation_schema_version": "active8-oof-ensemble-validation-v1",
             "validation": {
                 "schema_version": "active8-oof-ensemble-validation-v1",
+                "calibration_purge_policy": "label_known_before_validation_start",
                 "decision": "FAIL",
                 "failed_gates": ["chronological_validation_equal_date_market_rank_ic_lcb90_non_positive"],
             },
@@ -970,6 +975,7 @@ def test_dispatch_recovers_retry_limit_pollution_from_terminal_evidence(monkeypa
         "release_registry": {
             "status": "materialized",
             "failed_models": ["DLinear"],
+            "calibration_purge_policy": "label_known_before_validation_start",
             "validation_schema_version": "active8-oof-ensemble-validation-v1",
             "selection_method": "learned_chronological_oof_ensemble",
             "selection_policy_version": "active8-ensemble-conformal-isotonic-v1",
@@ -1434,6 +1440,7 @@ def test_oof_lifecycle_receipt_is_bound_to_active_materialization_policy():
             "retry_required": False,
             "release_registry": {
                 "status": "materialized",
+                "calibration_purge_policy": "label_known_before_validation_start",
                 "validation_schema_version": "active8-oof-ensemble-validation-v1",
                 "selection_method": "learned_chronological_oof_ensemble",
                 "selection_policy_version": "active8-ensemble-conformal-isotonic-v1",

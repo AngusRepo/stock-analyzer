@@ -747,6 +747,7 @@ def _oof_release_registry_matches_active_policy(
     ensemble = registry.get("ensemble_candidate") if isinstance(registry.get("ensemble_candidate"), dict) else {}
     return bool(
         registry.get("status") == "materialized"
+        and registry.get("calibration_purge_policy") == "label_known_before_validation_start"
         and registry.get("selection_method") == "learned_chronological_oof_ensemble"
         and registry.get("validation_schema_version") == "active8-oof-ensemble-validation-v1"
         and ensemble.get("status") == "persisted"
@@ -994,6 +995,7 @@ def _materialize_completed_oof_release_aliases(
             "cohort_id": cohort_id,
             "manifest_checksum": checksum,
             "validation_schema_version": "active8-oof-ensemble-validation-v1",
+            "calibration_purge_policy": "label_known_before_validation_start",
             "selection_method": "learned_chronological_oof_ensemble",
             "selection_policy_version": "active8-ensemble-conformal-isotonic-v1",
             "validation": exc.validation,
@@ -1014,6 +1016,7 @@ def _materialize_completed_oof_release_aliases(
         "cohort_id": cohort_id,
         "manifest_checksum": checksum,
         "validation_schema_version": "active8-oof-ensemble-validation-v1",
+        "calibration_purge_policy": "label_known_before_validation_start",
         "selection_method": "learned_chronological_oof_ensemble",
         "selection_policy_version": "active8-ensemble-conformal-isotonic-v1",
         "ensemble_candidate": ensemble_candidate,
@@ -1055,6 +1058,21 @@ async def dispatch_oof_full_fit_training(
     )
     receipt_blob = bucket.blob(receipt_path)
     receipt: dict[str, Any] = {}
+    from services.active8_full_fit_reuse import find_prior_full_fit_receipt, full_fit_input_identity
+
+    input_identity = full_fit_input_identity(manifest, plan)
+    if not receipt_blob.exists():
+        prior_path = find_prior_full_fit_receipt(
+            bucket=bucket, manifest=manifest, plan=plan, cutoff=knowledge_cutoff_date,
+        )
+        if prior_path:
+            # Re-enter the normal owner/poll/validation path with its original
+            # cutoff. Do not relabel old evidence as newly matured evidence.
+            plan = {**plan, "requested_knowledge_cutoff_date": knowledge_cutoff_date,
+                    "reused_full_fit_inputs": True, "input_identity": input_identity}
+            receipt_path = prior_path
+            receipt_blob = bucket.blob(receipt_path)
+            knowledge_cutoff_date = prior_path.rsplit('/', 1)[-1].removesuffix('.json')
     if receipt_blob.exists():
         receipt = json.loads(receipt_blob.download_as_text())
 
@@ -1117,6 +1135,8 @@ async def dispatch_oof_full_fit_training(
         )
     terminal_validation_blocked = (
         receipt.get("status") == "blocked"
+        and (release_registry.get("validation") or {}).get("calibration_purge_policy")
+        == "label_known_before_validation_start"
         and receipt.get("reason") == "active8_ensemble_validation_failed"
         and receipt.get("retry_required") is False
         and str(receipt.get("cohort_id") or "") == cohort_id
@@ -1232,6 +1252,19 @@ async def dispatch_oof_full_fit_training(
     attempt = int(receipt.get("attempt") or 0)
     prior_run_id = str(receipt.get("run_id") or "")
     if prior_run_id:
+        if release_registry and (
+            release_registry.get("calibration_purge_policy") != "label_known_before_validation_start"
+            and (release_registry.get("validation") or {}).get("calibration_purge_policy")
+            != "label_known_before_validation_start"
+        ):
+            # Re-evaluate the existing base models below. Retain the original
+            # evaluation inside the receipt in addition to immutable D1 audits.
+            receipt = {**receipt, "superseded_evaluations": [
+                *(receipt.get("superseded_evaluations") or []),
+                {"release_registry": release_registry,
+                 "reason": "calibration_label_known_purge_upgrade",
+                 "knowledge_cutoff_date": knowledge_cutoff_date},
+            ]}
         rows = LEARNING_D1_CLIENT.query(
             """
             SELECT *
@@ -1641,6 +1674,7 @@ async def dispatch_oof_full_fit_training(
         raise RuntimeError("oof_full_fit_dispatch_run_id_missing")
     dispatched = {
         "schema_version": "active8-oof-full-fit-receipt-v1",
+        "input_identity": input_identity,
         "status": "dispatched",
         "cohort_id": cohort_id,
         "knowledge_cutoff_date": knowledge_cutoff_date,

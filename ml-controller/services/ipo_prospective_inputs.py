@@ -294,7 +294,9 @@ def collect_prospective_daily(*, signal_date: str, source_run_id: str, clients: 
             ev = _l4_prediction({'features': features}, l4['artifact'])
             provenance = {'schema_version': 'ipo-prospective-input-v1', 'mode': MODE,
                 'stacker_seal_checksum': SEAL_SHA256, 'prediction_date': signal_date,
-                'source_run_id': source_run_id, 'canonical_run_id': row['producer_run_id'],
+                # Caller/recovery request IDs are operational metadata in the
+                # batch receipt, not inputs to the immutable prediction identity.
+                'canonical_run_id': row['producer_run_id'],
                 'model_training_run_id': ml['training_run_id'], 'model_outputs': ml['models'],
                 'model_artifact_identities': ml['artifact_identities'], 'stacker_raw': ml['raw'],
                 'stacker_rank': ml['rank'], 'fundamental_pit': fundamental,

@@ -178,6 +178,14 @@ def test_collector_full_pair_with_explicit_shadow_lineage(collector):
     assert collector[0][0]['score_components']['components']['mlEdge']==0  # source not mutated
 
 
+def test_recovery_request_id_cannot_change_frozen_input_identity(collector):
+    collect(collector)
+    original=collector[2][-1]['rows']
+    consumer.collect_prospective_daily(signal_date=DAY,source_run_id='new-recovery-request',clients=collector[-1])
+    recovered=collector[2][-1]['rows']
+    assert checksum(original)==checksum(recovered)
+
+
 def test_missing_fundamental_never_becomes_seed_zero_or_partial_publication(collector):
     collector[1].pop((DAY,'1'))
     result=collect(collector)

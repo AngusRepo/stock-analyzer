@@ -68,6 +68,9 @@ memory/
 docs/
 notebooks/
 scripts/
+!ml-controller/scripts/
+ml-controller/scripts/*
+!ml-controller/scripts/repair_active8_source_and_evaluation.py
 !ml-service/scripts/
 !ml-service/scripts/**
 screen_*.png

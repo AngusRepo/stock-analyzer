@@ -23,3 +23,5 @@ Approved: repair duplicate full-fit versions, missing 8/20 in ML prep, calibrati
 5. Read back Learning validation attempt, calibration purge, model artifact counts, serving pointers, actual new prep dates and image provenance. A negative quality decision is valid closure, not a compute failure. Do not claim new cohort until its real 10-date extension exists. Existing validation window is 17 dates; no new 20-date gate was added.
 
 Raw baseline: audits/outbox/2026-09-06-ensemble-cohort-check/REPORT.md and JSON files. Raw licensed inputs, credentials, screenshots and unrelated audits must not be staged or packaged.
+
+Packaging: both source-upload and Docker ignore lists explicitly admit only the bounded repair script under controller scripts. The Docker build fails if the entrypoint is absent. For PowerShell, quote the entire comma-separated `--args=...` option; otherwise native argument conversion can turn all CLI arguments into one filename. Read back execution container args before diagnosing any runtime dependency failure.

@@ -506,6 +506,10 @@ def _institutional_investor(category: Any) -> str:
         return "foreign"
     if has_foreign and has_dealer:
         return "foreign_dealer"
+    # The OTC subtotal includes foreign dealers; it is not the ex-dealer
+    # foreign row. Mapping both to 'foreign' silently overwrites one D1 key.
+    if has_foreign and ("\u5408\u8a08" in text or "\u7e3d\u8a08" in text):
+        return "foreign_total"
     if has_foreign:
         return "foreign"
     if "\u6295\u4fe1" in text:
@@ -568,6 +572,8 @@ def build_institutional_amount_rows(
         "lineage_json",
         "as_of_date",
     ])
+    if df.select(["date", "market_segment", "investor", "source"]).is_duplicated().any():
+        raise RuntimeError("canonical_institutional_amount_duplicate_identity")
     return _rows(df, limit)
 
 

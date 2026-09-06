@@ -83,7 +83,7 @@ assert.match(learning, /refreshStrategyRewardLedger\(db, \{ endDate: date, dryRu
 assert.match(learning, /refreshStrategyMarginalEdgeV4\(db, date, \{[\s\S]*canonicalRunIds/)
 assert.match(learning, /refreshStrategyRouteCalibration\(db, date, \{[\s\S]*canonicalRunIds/)
 assert.match(canonicalLabels, /FROM json_each\(\?\) h WHERE h\.key=r\.signal_date AND h\.value=r\.producer_run_id/)
-assert.match(canonicalLabels, /listCanonicalReferences\(db, options\.asOfDate, options\.startDate, options\.endDate, options\.canonicalRunIds\)/)
+assert.match(canonicalLabels, /listCanonicalReferences\(db, options\.asOfDate, options\.startDate, options\.endDate, options\.canonicalRunIds, costBps\)/)
 assert.match(manualBlock, /loadCanonicalScreenerRunIds/)
 assert.match(orchestrator, /materializeCanonicalSelectionLabelsV4\(learningDb, \{ asOfDate, canonicalRunIds \}\)/)
 assert.match(orchestrator, /refreshStrategyRewardLedger\(learningDb, \{ endDate: asOfDate, dryRun: false, canonicalRunIds \}\)/)

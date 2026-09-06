@@ -17,7 +17,7 @@ assert.equal(
 
 const labels = readFileSync(new URL('./canonicalSelectionLabels.ts', import.meta.url), 'utf8')
 assert.match(labels, /r\.feature_contract_version IN \(\?, \?\)/)
-assert.match(labels, /l\.reference_contract_version = r\.feature_contract_version/)
+assert.match(labels, /l\.reference_contract_version IS NOT r\.feature_contract_version/)
 assert.match(labels, /row\.reference\.feature_contract_version/)
 assert.match(
   labels,
@@ -60,6 +60,6 @@ assert.match(
 const orchestrator = readFileSync(new URL('./updateOrchestrator.ts', import.meta.url), 'utf8')
 assert.match(
   orchestrator,
-  /strategy-learning:finalizer:\$\{triggerTime\}:\$\{canonicalRunId\}:\$\{finalizerCacheMode\}:v3-backlog-closure/,
+  /strategy-learning:finalizer:\$\{triggerTime\}:\$\{canonicalRunId\}:\$\{finalizerCacheMode\}:v4-canonical-matrix-parity/,
 )
 assert.match(orchestrator, /drainMatureSelectionEvidence/)

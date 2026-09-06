@@ -22,6 +22,13 @@ const consumers = [
 
 for (const relativePath of consumers) {
   const source = readFileSync(new URL(relativePath, import.meta.url), 'utf8')
+  if (relativePath === './strategyMarginalEdgeV4.ts') {
+    assert.match(source, /Object\.entries\(options\.canonicalRunIds \?\? \{\}\)/)
+    assert.match(source, /for \(const \[signalDate, producerRunId\] of canonicalOwners\)/)
+    assert.match(source, /WHERE m\.signal_date=\?\s+AND m\.producer_run_id=\?/)
+    assert.match(source, /signalDate, producerRunId, asOfDate/)
+    continue
+  }
   const canonicalChecks = [...source.matchAll(
     /logical_run_key\s*=\s*['"]screener:['"]\s*\|\|\s*[rm]\.signal_date([^\n]*)/g,
   )]

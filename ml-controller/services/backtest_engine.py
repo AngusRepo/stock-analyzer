@@ -2702,6 +2702,7 @@ class EntryAttempt:
     shares: int = 0
     sizing_mode: str = ""        # 'kelly' | 'risk_parity' | ''
     reason: str = ""
+    execution_data_missing: bool = False
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -3484,6 +3485,7 @@ def simulate_entries_for_date(
                 symbol=cand.symbol, decision_date=decision_date, entry_date=entry_date,
                 status="no_fill", adjusted_entry=adjusted_entry,
                 reason="no bar on T+1 (halted/delisted)",
+                execution_data_missing=True,
             ))
             continue
 
@@ -3494,15 +3496,7 @@ def simulate_entries_for_date(
                 symbol=cand.symbol, decision_date=decision_date, entry_date=entry_date,
                 status="no_fill", adjusted_entry=adjusted_entry,
                 reason=f"invalid low {next_low}",
-            ))
-            continue
-
-        if next_low > adjusted_entry:
-            # Limit never reached
-            attempts.append(EntryAttempt(
-                symbol=cand.symbol, decision_date=decision_date, entry_date=entry_date,
-                status="no_fill", adjusted_entry=adjusted_entry,
-                reason=f"low {next_low} > limit {adjusted_entry}",
+                execution_data_missing=True,
             ))
             continue
 
@@ -3551,6 +3545,16 @@ def simulate_entries_for_date(
                 symbol=cand.symbol, decision_date=decision_date, entry_date=entry_date,
                 status="skipped_daily_limit", adjusted_entry=adjusted_entry,
                 reason=f"would exceed daily limit {pos.daily_buy_limit}",
+            ))
+            continue
+
+        # Only affordable, sizeable orders can count as execution attempts.
+        # Filled orders are unchanged; rejected orders retain their policy cause.
+        if next_low > adjusted_entry:
+            attempts.append(EntryAttempt(
+                symbol=cand.symbol, decision_date=decision_date, entry_date=entry_date,
+                status="no_fill", adjusted_entry=adjusted_entry,
+                reason=f"low {next_low} > limit {adjusted_entry}",
             ))
             continue
 
@@ -4249,6 +4253,11 @@ class BacktestMetrics:
     entry_attempts: int = 0                      # EntryAttempt count
     entries_filled: int = 0                      # status='filled' count
     fill_rate: float = 0.0                       # entries_filled / entry_attempts
+    # Preserve legacy candidate conversion for existing consumers.
+    execution_attempts: int = 0
+    execution_fill_rate: Optional[float] = None
+    execution_data_missing: int = 0
+    candidate_conversion_rate: float = 0.0
     skip_reasons: dict[str, int] = field(default_factory=dict)  # status → count
 
     # Exit distribution
@@ -4496,6 +4505,15 @@ def compute_metrics(
     m.entry_attempts = len(entry_attempts)
     m.entries_filled = sum(1 for a in entry_attempts if a.status == "filled")
     m.fill_rate = m.entries_filled / m.entry_attempts if m.entry_attempts > 0 else 0.0
+    m.candidate_conversion_rate = m.fill_rate
+    m.execution_data_missing = sum(a.execution_data_missing for a in entry_attempts)
+    m.execution_attempts = sum(
+        a.status in {"filled", "no_fill"} and not a.execution_data_missing
+        for a in entry_attempts
+    )
+    m.execution_fill_rate = (
+        m.entries_filled / m.execution_attempts if m.execution_attempts else None
+    )
     m.candidates_generated = len([a for a in entry_attempts if a.status != "skipped_industry"])
 
     skip_counts: dict[str, int] = {}

@@ -27,12 +27,11 @@ Objective (Sprint 3 P0-3 pattern)：NSGA-II Multi-Objective
   Obj 1: BacktestMetrics.sharpe       (maximize)
   Obj 2: BacktestMetrics.max_drawdown (minimize)
 
-Mode A hardcode overrides（見 memory/project_sprint_5_2_hardcode_overrides.md）:
-  Override #1: ranking.alpha=1.0 / beta=0.0 / gamma=0.0
-    — Mode A 用 placeholder constants，rank 數學上只看 screener_norm。
-       Alpha=1.0 讓 screener 權重變化 100% 反映到 top-K。Sprint 6b revert。
-  Override #2: MIN_FILL_RATE=0.30 hardcoded reject threshold
-    — Sprint 6b 改讀 KV。
+Mode A compares the incumbent and candidates on one frozen dataset. Only
+screener fields are searched; ranking, liquidity and risk policy stay fixed.
+Execution fill rate excludes pre-order policy skips. Missing execution data
+is blocked independently; the default 30% floor and 30-trade minimum remain.
+Every trial and the incumbent have versioned Cloud Logging evidence.
 
 Realism caveat: backtest_engine Mode A 有 15 個 documented deviation (Sharpe ±0.3~0.8)，
   Optuna 結果「只能做相對比較」，不能當 absolute production prediction。
@@ -40,6 +39,9 @@ Realism caveat: backtest_engine Mode A 有 15 個 documented deviation (Sharpe �
 """
 from __future__ import annotations
 import logging
+import json
+import os
+import uuid
 import sys
 from copy import deepcopy
 from datetime import datetime, timedelta, timezone
@@ -56,20 +58,14 @@ except ImportError:
 from services.backtest_engine import replay_period, BacktestDataset  # noqa: E402
 from services.research_data_access import ResearchDataMode, latest_snapshot_business_end_date  # noqa: E402
 from services.stratified_subset import select_stratified_subset  # noqa: E402
+from services.screener_search_evidence import (
+    ScreenerSearchBlocked, assess_metrics, relative_comparison,
+)
 
 logger = logging.getLogger(__name__)
 
 # Sprint 3 P0-3: PENALTY tuple for infeasible trials (Pareto "worst corner")
 PENALTY = (-1e9, 1.0)
-
-# Sanity flag substrings that trigger trial rejection (inherited from Sprint 5.1)
-_REJECT_FLAG_KEYWORDS = ("overfit", "unrealistically", "No trading days")
-
-# Sprint 6b: these are now defaults, overridable via KV trading:config.optuna.*
-# create_objective reads from baseline dict (populated from KV by router).
-_DEFAULT_MIN_FILL_RATE = 0.30
-_DEFAULT_MIN_N_TRADES = 30
-
 
 def _default_baseline_params() -> dict:
     """Fallback baseline matching tradingConfig.ts defaults."""
@@ -109,9 +105,9 @@ def _build_trial_params(trial: optuna.Trial, baseline: dict) -> dict:
 
     # ── Chip score weights (5 dims, tiers [0] and [1] free, [2-4] scaled linearly) ──
     chip_tier0       = trial.suggest_int("chipScoreTier0", 28, 42, step=2)
-    chip_tier1       = trial.suggest_int("chipScoreTier1", 20, 32, step=2)
+    chip_tier1       = trial.suggest_int("chipScoreTier1", 20, min(32, chip_tier0 - 2), step=2)
     chip_th0         = trial.suggest_float("chipIntensityTh0", 0.12, 0.30, step=0.02)
-    chip_th1         = trial.suggest_float("chipIntensityTh1", 0.06, 0.14, step=0.01)
+    chip_th1         = trial.suggest_float("chipIntensityTh1", 0.06, round(min(0.14, chip_th0 - 0.01), 2), step=0.01)
     consec_bonus0    = trial.suggest_int("consecBuyBonus0", 2, 8, step=1)
 
     # ── Technical score weights (5 dims) ────────────────────────────────────
@@ -127,10 +123,7 @@ def _build_trial_params(trial: optuna.Trial, baseline: dict) -> dict:
 
     params = deepcopy(baseline)
     base_screener = params.setdefault("screener", {})
-    base_chip_tiers = list(base_screener.get("chipScoreTiers", [36, 28, 20, 12, 5]))
     base_chip_ths   = list(base_screener.get("chipIntensityThresholds", [0.20, 0.10, 0.05, 0, -0.05]))
-    base_cb_bonus   = list(base_screener.get("consecBuyBonusTiers", [4, 2]))
-    base_rsi_tiers  = list(base_screener.get("rsiScoreTiers", [12, 8, 6, 8, 3]))
     base_excess     = list(base_screener.get("excessReturnRange", [-0.03, 0.05]))
     base_vol_ratio  = list(base_screener.get("volRatioRange", [0.7, 2.5]))
 
@@ -163,19 +156,8 @@ def _build_trial_params(trial: optuna.Trial, baseline: dict) -> dict:
         "volRatioRange": [base_vol_ratio[0], vol_ratio_hi],
     })
 
-    # Sprint 6b: ranking weights are now searchable (reverted from Mode A alpha=1.0 hardcode).
-    # Mode B has real ML confidence plugged into replay_screener_for_date,
-    # so alpha/beta/gamma genuinely affect ranking composition.
-    base_ranking = params.setdefault("ranking", {})
-    params["ranking"] = {
-        "enabled": True,
-        "topK": base_ranking.get("topK", 3),
-        "alpha": trial.suggest_float("ranking_alpha", 0.3, 0.6),   # screener_norm weight
-        "beta":  trial.suggest_float("ranking_beta",  0.2, 0.5),   # ml_confidence weight
-        "gamma": trial.suggest_float("ranking_gamma", 0.1, 0.3),   # signal_tier weight
-        "screenerDenominator": base_ranking.get("screenerDenominator", 60.0),
-        "promoteMinConf": base_ranking.get("promoteMinConf", 0.60),
-    }
+    # Only screener fields are staged by the consumer. Keep all ranking and risk
+    # fields identical to the incumbent; Mode A has no real historical ML signal.
 
     return params
 
@@ -205,103 +187,52 @@ def _check_constraints(trial_params: dict) -> Optional[str]:
     return None
 
 
-def create_objective(
-    dataset: BacktestDataset,
-    start_date: str,
-    end_date: str,
-    baseline: dict,
-    reject_counter: Optional[dict] = None,
-):
-    """
-    Build Optuna objective fn closured over a pre-loaded BacktestDataset.
-    Dataset is loaded once in run_search; each trial just calls replay_period.
+def evaluate_params(dataset, start_date, end_date, params):
+    violation = _check_constraints(params)
+    if violation:
+        return {"category": "constraint", "reject_reason": violation, "metrics": {}}
+    try:
+        metrics = replay_period(dataset, start_date, end_date, deepcopy(params),
+                                initial_capital=1_000_000, mode="A", verbose=False)
+    except Exception as exc:
+        logger.exception("[optuna_screener] replay failed")
+        return {"category": "replay_error", "reject_reason": type(exc).__name__, "metrics": {}}
+    return assess_metrics(metrics, params.get("optuna") or {})
 
-    reject_counter: optional dict to accumulate rejection reasons across trials
-      Keys written: 'constraint', 'replay_error', 'sanity_flag', 'n_trades',
-                    'fill_rate', 'valid', plus per-constraint subkeys for
-                    diagnostic purposes.
-    """
+
+def emit_evidence(evidence_id, record):
+    # One bounded record per trial in durable Cloud Logging, including failures.
+    # Do not put all trial records into a Worker/D1 callback parameter.
+    logger.info("[optuna_screener:evidence] %s", json.dumps(
+        {"schema": "screener-search-v2", "evidence_id": evidence_id,
+         "execution": os.environ.get("CLOUD_RUN_EXECUTION"), **record},
+        ensure_ascii=False, allow_nan=False, sort_keys=True,
+    ))
+
+
+def create_objective(dataset, start_date, end_date, baseline, reject_counter=None,
+                     evidence_id=None):
     if reject_counter is None:
         reject_counter = {}
 
-    # Sprint 6b: read sanity thresholds from baseline (KV-driven) with defaults
-    optuna_cfg = baseline.get("optuna", {})
-    min_fill_rate = float(optuna_cfg.get("min_fill_rate", _DEFAULT_MIN_FILL_RATE))
-    min_n_trades = int(optuna_cfg.get("min_n_trades", _DEFAULT_MIN_N_TRADES))
-
-    def _bump(key: str) -> None:
-        reject_counter[key] = reject_counter.get(key, 0) + 1
-
-    def objective(trial: optuna.Trial):
+    def objective(trial):
         params = _build_trial_params(trial, baseline)
-
-        constraint_violation = _check_constraints(params)
-        if constraint_violation:
-            logger.debug(f"[optuna_screener] trial {trial.number} rejected: {constraint_violation}")
-            _bump("constraint")
-            _bump(f"constraint:{constraint_violation}")
-            trial.set_user_attr("reject_reason", f"constraint:{constraint_violation}")
+        record = evaluate_params(dataset, start_date, end_date, params)
+        category = record["category"]
+        reject_counter[category] = reject_counter.get(category, 0) + 1
+        if category == "constraint":
+            key = "constraint:" + record["reject_reason"]
+            reject_counter[key] = reject_counter.get(key, 0) + 1
+        trial.set_user_attr("evaluation", record)
+        for key, value in record["metrics"].items():
+            trial.set_user_attr(key, value)
+        trial.set_user_attr("n_trades", record["metrics"].get("total_trades"))
+        trial.set_user_attr("reject_reason", record["reject_reason"])
+        emit_evidence(evidence_id, {"trial": trial.number, "params": trial.params, **record})
+        if category != "valid":
             return PENALTY
-
-        try:
-            metrics = replay_period(
-                dataset,
-                start_date,
-                end_date,
-                params,
-                initial_capital=1_000_000,
-                mode="A",
-                verbose=False,
-            )
-        except Exception as e:
-            logger.warning(f"[optuna_screener] trial {trial.number} replay error: {e}")
-            _bump("replay_error")
-            trial.set_user_attr("reject_reason", f"replay_error:{type(e).__name__}")
-            return PENALTY
-
-        # Sanity reject: overfit / unrealistic / no-trades flags
-        for flag in metrics.sanity_flags:
-            for kw in _REJECT_FLAG_KEYWORDS:
-                if kw in flag:
-                    logger.debug(
-                        f"[optuna_screener] trial {trial.number} rejected (sanity): {flag}"
-                    )
-                    _bump("sanity_flag")
-                    _bump(f"sanity_flag:{kw}")
-                    trial.set_user_attr("reject_reason", f"sanity:{flag}")
-                    return PENALTY
-
-        # Hard reject tiny sample (KV-driven threshold)
-        if metrics.total_trades < min_n_trades:
-            logger.debug(
-                f"[optuna_screener] trial {trial.number} n_trades={metrics.total_trades} < {min_n_trades}, rejected"
-            )
-            _bump("n_trades")
-            trial.set_user_attr("reject_reason", f"n_trades<{min_n_trades}:{metrics.total_trades}")
-            trial.set_user_attr("n_trades_observed", metrics.total_trades)
-            trial.set_user_attr("fill_rate_observed", float(metrics.fill_rate or 0.0))
-            return PENALTY
-
-        # Fill rate reject (KV-driven threshold, Sprint 6b reverted from hardcode)
-        if metrics.fill_rate < min_fill_rate:
-            logger.debug(
-                f"[optuna_screener] trial {trial.number} fill_rate={metrics.fill_rate:.2f} < {min_fill_rate}, rejected"
-            )
-            _bump("fill_rate")
-            trial.set_user_attr("reject_reason", f"fill_rate<{min_fill_rate}:{metrics.fill_rate:.3f}")
-            trial.set_user_attr("n_trades_observed", metrics.total_trades)
-            trial.set_user_attr("fill_rate_observed", float(metrics.fill_rate or 0.0))
-            return PENALTY
-
-        # Valid trial — report to Optuna
-        _bump("valid")
-        sharpe = float(metrics.sharpe or 0.0)
-        max_dd = float(metrics.max_drawdown or 1.0)
-        trial.set_user_attr("n_trades", metrics.total_trades)
-        trial.set_user_attr("win_rate", float(metrics.win_rate or 0.0))
-        trial.set_user_attr("profit_factor", float(metrics.profit_factor or 0.0))
-        trial.set_user_attr("fill_rate", float(metrics.fill_rate or 0.0))
-        return sharpe, max_dd
+        # A genuine zero drawdown must remain zero, not become 100% via `or 1`.
+        return record["metrics"]["sharpe"], record["metrics"]["max_drawdown"]
 
     return objective
 
@@ -362,6 +293,22 @@ def run_search(
         mode=data_mode,
     )
 
+    evidence_id = 'screener-search-v2-' + uuid.uuid4().hex
+    baseline_evaluation = evaluate_params(dataset, start_date, end_date, baseline_params)
+    emit_evidence(evidence_id, {
+        'kind': 'baseline', 'params': baseline_params, 'symbols': symbols,
+        'date_window': f'{start_date}~{end_date}', 'data_access': data_access,
+        **baseline_evaluation,
+    })
+    if baseline_evaluation['category'] in {'replay_error', 'data_missing', 'invalid_metrics'}:
+        raise ScreenerSearchBlocked({
+            'evidence_id': evidence_id, 'schema': 'screener-search-v2',
+            'trial_count': 0, 'reject_summary': {}, 'baseline': baseline_evaluation,
+            'reason': 'baseline_not_evaluable', 'data_access': data_access,
+            'date_window': f'{start_date}~{end_date}', 'subset_size': len(symbols),
+            'production_effect': False, 'trial_evidence_store': 'cloud_logging',
+        })
+
     # ── Step 3: Optuna NSGA-II Pareto search ────────────────────────────────
     study = optuna.create_study(
         directions=["maximize", "minimize"],  # sharpe↑, max_dd↓
@@ -370,27 +317,41 @@ def run_search(
     )
     reject_counter: dict = {}
     study.optimize(
-        create_objective(dataset, start_date, end_date, baseline_params, reject_counter),
+        create_objective(dataset, start_date, end_date, baseline_params, reject_counter, evidence_id),
         n_trials=n_trials,
     )
 
     # Rejection breakdown diagnostics (top-level categories + detailed subkeys)
-    top_level_keys = ("valid", "constraint", "replay_error", "sanity_flag", "n_trades", "fill_rate")
+    top_level_keys = ("valid", "constraint", "replay_error", "sanity_flag", "n_trades", "fill_rate",
+                      "data_missing", "no_execution", "invalid_metrics")
     reject_summary = {k: reject_counter.get(k, 0) for k in top_level_keys}
     reject_details = {k: v for k, v in reject_counter.items() if k not in top_level_keys}
     logger.info(f"[optuna_screener] reject breakdown (top-level): {reject_summary}")
     logger.info(f"[optuna_screener] reject breakdown (details): {reject_details}")
+    diagnostics = {
+        'evidence_id': evidence_id, 'schema': 'screener-search-v2',
+        'trial_count': len(study.trials), 'reject_summary': reject_summary,
+        'reject_details': reject_details, 'baseline': baseline_evaluation,
+        'date_window': f'{start_date}~{end_date}', 'subset_size': len(symbols),
+        'data_access': data_access, 'mode': 'A',
+        'thresholds': {'execution_fill_rate': float((baseline_params.get('optuna') or {}).get('min_fill_rate', 0.30)),
+                       'min_n_trades': int((baseline_params.get('optuna') or {}).get('min_n_trades', 30))},
+        'trial_evidence_store': 'cloud_logging', 'production_effect': False,
+    }
+    emit_evidence(evidence_id, {'kind': 'summary', **diagnostics})
 
     # ── Step 4: extract Pareto front ────────────────────────────────────────
     pareto_trials = [t for t in study.best_trials if t.values and t.values[0] > -1e8]
     if not pareto_trials:
-        raise RuntimeError(
-            f"Optuna screener: no feasible Pareto trials out of {n_trials}; "
-            "check dataset quality / sanity constraints / search space bounds"
-        )
+        raise ScreenerSearchBlocked(diagnostics)
 
     chosen = max(pareto_trials, key=lambda t: t.values[0])
     best_sharpe, best_max_dd = chosen.values
+    diagnostics['selected_trial'] = chosen.number
+    diagnostics['selected_evaluation'] = chosen.user_attrs['evaluation']
+    comparison = relative_comparison(baseline_evaluation, chosen.user_attrs['evaluation'])
+    emit_evidence(evidence_id, {'kind': 'selection', 'selected_trial': chosen.number,
+                               'baseline_comparison': comparison})
 
     logger.info("=" * 60)
     logger.info(f"[optuna_screener] Pareto front size: {len(pareto_trials)}/{n_trials}")
@@ -440,6 +401,9 @@ def run_search(
         "pareto_size": len(pareto_trials),
         "reject_summary": reject_summary,
         "reject_details": reject_details,
+        "diagnostics": diagnostics,
+        "baseline_comparison": comparison,
+        "best_execution_fill_rate": chosen.user_attrs.get('execution_fill_rate'),
         "mode": "A",
         "data_source": "backtest_engine.replay_period",
         "data_access": data_access,
@@ -448,7 +412,7 @@ def run_search(
         "realism_note": (
             "Mode A has 15 documented deviations from production (Sharpe ±0.3~0.8). "
             "Use results for RELATIVE parameter ranking only, not absolute prediction. "
-            "Ranking alpha/beta/gamma hardcoded to 1/0/0 (Sprint 6b will revert). "
+            "Ranking and risk settings are frozen to the incumbent; Mode A ML/signal inputs are placeholders. "
             "See memory/project_sprint_5_2_hardcode_overrides.md"
         ),
     }

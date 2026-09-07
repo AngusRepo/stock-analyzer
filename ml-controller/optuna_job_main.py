@@ -646,6 +646,11 @@ async def _run() -> int:
             "ga_closure": ga_closure,
             "performance": result.get("performance") if isinstance(result, dict) else None,
             "attempt_count": research_sweep_attempts,
+            "source_diagnostics": {
+                item['source']: {'diagnostics': item.get('diagnostics'),
+                                 'baseline_comparison': item.get('baseline_comparison')}
+                for item in result.get('results', []) if item.get('diagnostics')
+            },
         }
         payload.update({
             "sandbox_id": composite.get("sandbox_id"),

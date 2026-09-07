@@ -605,15 +605,12 @@ def run_sltp(req: OptunaReq = Body(default=OptunaReq())):
 
 @router.post("/screener")
 def run_screener(req: OptunaReq = Body(default=OptunaReq())):
-    """Optuna Sprint 5.2→6b: Screener factor weights + ranking weights (via backtest_engine replay)
+    """Relative Mode A screener search; incumbent ranking/risk remain fixed.
 
-    Searches 15+ dims inside score_multi_factor: chip / tech / momentum tiers
-    plus liquidity filter bounds + ranking alpha/beta/gamma.
-    NSGA-II Pareto over (sharpe↑, max_dd↓).
-
-    Sprint 6b: Mode A hardcodes reverted — ranking weights now searchable,
-    fill_rate/n_trades thresholds now KV-driven (trading:config.optuna.*).
+    NSGA-II Pareto over Sharpe/max drawdown. This is research evidence, not a
+    full production allocator replay or an automatic production promotion.
     """
+    from services.screener_search_evidence import ScreenerSearchBlocked
     try:
         from optuna_screener import run_search  # type: ignore
     except ImportError as e:
@@ -639,6 +636,11 @@ def run_screener(req: OptunaReq = Body(default=OptunaReq())):
             baseline_params=baseline_params,
             data_mode=data_mode,
         )
+    except ScreenerSearchBlocked as e:
+        raise HTTPException(400, detail={
+            'code': 'screener_search_no_feasible', 'message': str(e),
+            'diagnostics': e.diagnostics,
+        }) from e
     except RuntimeError as e:
         raise HTTPException(400, f"Optuna screener failed: {e}")
 
@@ -699,6 +701,9 @@ def run_screener(req: OptunaReq = Body(default=OptunaReq())):
         "pareto_size": result.get("pareto_size"),
         "reject_summary": result.get("reject_summary"),
         "reject_details": result.get("reject_details"),
+        "diagnostics": result.get("diagnostics"),
+        "baseline_comparison": result.get("baseline_comparison"),
+        "best_execution_fill_rate": result.get("best_execution_fill_rate"),
         "subset_size": result.get("subset_size"),
         "date_window": result.get("date_window"),
         "mode": result.get("mode"),
@@ -1066,8 +1071,21 @@ def _run_optuna_sweep_source_inner(source: str, runner) -> dict[str, Any]:
             ) if isinstance(result, dict) else None,
             "contract": result.get("contract") if isinstance(result, dict) else None,
             "push": result.get("push") if isinstance(result, dict) else None,
+            "diagnostics": result.get("diagnostics"),
+            "baseline_comparison": result.get("baseline_comparison"),
         }
     except HTTPException as exc:
+        if isinstance(exc.detail, dict) and exc.detail.get('code') == 'screener_search_no_feasible':
+            diagnostics = exc.detail['diagnostics']
+            rejects = diagnostics.get('reject_summary') or {}
+            infrastructure = (
+                diagnostics.get('reason') == 'baseline_not_evaluable'
+                or any(rejects.get(k, 0) for k in ('replay_error', 'data_missing', 'invalid_metrics'))
+            )
+            status = 'error' if infrastructure else 'skipped'
+            label = 'ERROR' if infrastructure else 'SKIPPED_NOT_READY'
+            return {'source': source, 'status': status, 'diagnostics': diagnostics,
+                    'summary': f'{source}:{label}(rejects={rejects}; evidence={diagnostics["evidence_id"]})'}
         detail = str(exc.detail)
         if exc.status_code == 400 and any(
             token in detail.lower()
@@ -1196,6 +1214,11 @@ def _commit_research_sweep_candidate(
             "run_date": req.run_date,
             "source_names": source_names,
             "candidate_group": candidate_group,
+            "optimizer_evidence": {
+                item['source']: {'diagnostics': item.get('diagnostics'),
+                                 'baseline_comparison': item.get('baseline_comparison')}
+                for item in results if item.get('diagnostics')
+            },
             "n_trials": req.n_trials,
             "subset_size": req.subset_size,
             "note": "atomic composite Optuna candidate; production unchanged",

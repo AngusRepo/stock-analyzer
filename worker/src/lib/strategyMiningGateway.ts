@@ -1,5 +1,7 @@
 import type { Bindings } from '../types'
 import { normalizeSingleD1BatchStatement } from './d1BatchStatement'
+import { databaseForDataDomain } from './dataDomainRegistry'
+import { updateSchedulerExecutionTicket, type SchedulerExecutionTicketRow } from './schedulerExecutionTickets'
 
 const STRATEGY_MINING_TABLES = new Set([
   'strategy_mining_runs',
@@ -98,9 +100,13 @@ export async function handleStrategyMiningD1Gateway(c: any) {
     return c.json({ error: String(error?.message ?? error) }, 400)
   }
 
-  const prepared = statements.map(statement => c.env.DB.prepare(statement.sql).bind(...statement.params))
+  const researchDb = databaseForDataDomain(c.env, 'research')
+  const prepared = statements.map(statement => researchDb.prepare(statement.sql).bind(...statement.params))
   const started = Date.now()
-  const results = await c.env.DB.batch(prepared)
+  const results = await researchDb.batch(prepared)
+  if (results.length !== statements.length || results.some(result => result.success !== true)) {
+    return c.json({ ok: false, error: 'strategy_mining_d1_incomplete_acknowledgement' }, 502)
+  }
   const changesTotal = results.reduce((sum: number, result: any) => {
     const meta = result?.meta ?? {}
     return sum + Number(meta.changes ?? meta.rows_written ?? 0)
@@ -155,11 +161,48 @@ export async function handleStrategyMiningCallback(c: any) {
   if (!dispatch || dispatch.run_id !== body.run_id || dispatch.run_date !== body.run_date) {
     return c.json({ error: 'unknown or mismatched strategy-mining dispatch' }, 409)
   }
-  if (dispatch.terminal_status) {
-    if (dispatch.terminal_status === body.status) {
-      return c.json({ ok: true, ignored: true, reason: 'duplicate_terminal_callback', run_id: body.run_id })
-    }
+  const duplicate = dispatch.terminal_status === body.status
+  if (dispatch.terminal_status && !duplicate) {
     return c.json({ error: 'conflicting terminal callback' }, 409)
+  }
+
+  // Only server-persisted dispatch identity may close a scheduler ticket.
+  // Legacy dispatches must resolve exactly one parent, never the latest task.
+  let ticketId = dispatch.scheduler_ticket_id
+  let schedulerRunId = dispatch.scheduler_run_id
+  const opsDb = databaseForDataDomain(c.env, 'ops')
+  if (!ticketId && !schedulerRunId && dispatch.scheduler_tracking !== 'manual') {
+    const matches = await opsDb.prepare(`
+      SELECT * FROM scheduler_execution_tickets_v1
+       WHERE task=? AND business_date=? AND instr(COALESCE(last_summary,''), ?) > 0
+       LIMIT 2
+    `).bind(body.task, body.run_date, `run_id=${body.run_id}`).all<SchedulerExecutionTicketRow>()
+    const exactMatches = matches.results.filter(row =>
+      [...String(row.last_summary ?? '').matchAll(/\brun_id=([A-Za-z0-9._:-]+)/g)]
+        .some(match => match[1] === body.run_id))
+    if (exactMatches.length !== 1) {
+      return c.json({ error: 'strategy_mining_scheduler_identity_unresolved' }, 409)
+    }
+    ticketId = exactMatches[0].ticket_id
+    schedulerRunId = exactMatches[0].run_id
+    // Save the recovered binding before replacing the only legacy summary
+    // that identified this leaf. Otherwise a KV outage could strand retries.
+    await c.env.KV.put(key, JSON.stringify({ ...dispatch,
+      scheduler_ticket_id: ticketId, scheduler_run_id: schedulerRunId,
+    }), { expirationTtl: DISPATCH_TTL_SECONDS })
+  }
+  if (ticketId || schedulerRunId) {
+    const parent = await opsDb.prepare(`
+      SELECT * FROM scheduler_execution_tickets_v1 WHERE ticket_id=? AND run_id=?
+    `).bind(ticketId, schedulerRunId).first<SchedulerExecutionTicketRow>()
+    if (!parent || parent.task !== body.task || parent.business_date !== body.run_date) {
+      return c.json({ error: 'strategy_mining_scheduler_identity_mismatch' }, 409)
+    }
+    // Ops first, then KV. A retry finishes either projection idempotently.
+    await updateSchedulerExecutionTicket(opsDb, {
+      ticketId, runId: schedulerRunId, status: body.status, authority: 'scheduler_http',
+      summary: body.summary, error: body.error,
+    })
   }
 
   const { logSchedulerResult } = await import('./schedulerRunLogger')
@@ -168,19 +211,21 @@ export async function handleStrategyMiningCallback(c: any) {
     summary: body.summary,
     duration_ms: body.duration_ms,
     error: body.error,
-    run_id: body.run_id,
+    run_id: schedulerRunId || body.run_id,
     run_date: body.run_date,
     strict: true,
   }, c.env as Bindings)
 
   await c.env.KV.put(key, JSON.stringify({
     ...dispatch,
+    scheduler_ticket_id: ticketId ?? null,
+    scheduler_run_id: schedulerRunId ?? null,
     status: 'terminal',
     terminal_status: body.status,
     terminal_at: new Date().toISOString(),
   }), { expirationTtl: DISPATCH_TTL_SECONDS })
 
-  if (body.status === 'success' && c.env.ARTIFACTS) {
+  if (!duplicate && body.status === 'success' && c.env.ARTIFACTS) {
     c.executionCtx.waitUntil((async () => {
       try {
         const { recordSchedulerRunReportArtifact } = await import('./datasetSnapshots')
@@ -199,5 +244,6 @@ export async function handleStrategyMiningCallback(c: any) {
   }
 
   console.log(`[strategy-mining-callback] ${body.status} run_id=${body.run_id}`)
-  return c.json({ ok: true, task: body.task, status: body.status, run_id: body.run_id })
+  return c.json({ ok: true, task: body.task, status: body.status, run_id: body.run_id,
+    ...(duplicate ? { ignored: true, reason: 'duplicate_terminal_callback' } : {}) })
 }

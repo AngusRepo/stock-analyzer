@@ -1,4 +1,16 @@
-# Current task — approved pure prospective IPO input — 2026-09-06
+# Current task — monthly automation root-cause closure — 2026-09-06
+
+Authorization: local repairs/tests only. No commit, push, deploy, remote ticket repair, training, cadence change or serving-pointer mutation.
+
+1. Verify September mining, Optuna and Active-8 evidence, wiki and call paths — completed; raw evidence: audits/outbox/2026-09-06-monthly-diagnosis/.
+2. Repair least-privilege Research gateway and mining durable callback identity — completed locally; query/write/batch/atomic, 100-statement cap, explicit Research owner, identity binding, legacy recovery and KV outage retry verified.
+3. Reject future physical deliveries; fence/repair falsely terminal tickets with before images; correct readiness and partial Optuna closure — completed locally. Two exact historical tickets pass the offline quarantine planner. Production rows NOT changed. Pre-result Optuna callback failure also repaired.
+4. Executable regressions, type checks, auditable production follow-up and cadence literature comparison — completed: 72 Python tests, 10 Worker suites, both Worker TS checks, diff whitespace check. Valid receipt reuse does not dispatch training or reset maturity. Report: docs/runbooks/2026-09-06-monthly-automation-local-closure.md.
+5. Record local closure and deployment boundary in wiki draft — completed. Note: 02_Products/StockVision/Sessions/2026-09-06-2026-09-06-monthly-automation-local-root-cause-closure-and-cadence-evidence.draft.md; both MOCs updated, wiki health OK. No production release or repair claimed.
+
+---
+
+# Previous task — approved pure prospective IPO input — 2026-09-06
 
 Prior release is complete at 08b34a5f; authoritative closure receipt is audits/outbox/2026-09-06-l4-ipo-release/RELEASE_REPORT.md. Pending text below is historical, not current status.
 

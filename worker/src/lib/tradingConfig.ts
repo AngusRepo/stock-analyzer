@@ -1396,9 +1396,23 @@ export async function writeSandbox(
   config: TradingConfig,
   meta?: { push_id?: string; note?: string; metadata?: Record<string, unknown> },
 ): Promise<string> {
-  const pushed_at = new Date().toISOString()
+  let pushed_at = new Date().toISOString()
   const hash = await hashConfig(config)
-  const id = `trading:config:sandbox:${source}:${pushed_at}:${hash}`
+  // Retry identity includes the complete config, source and input/run attestation.
+  // Unknown input lineage deliberately cannot deduplicate across research runs.
+  const lineage = meta?.push_id
+  const identityBytes = lineage ? await crypto.subtle.digest('SHA-256', new TextEncoder().encode(
+    canonicalJson({ source, config, lineage, group: meta?.metadata?.candidate_group ?? null }),
+  )) : null
+  const identity = identityBytes
+    ? Array.from(new Uint8Array(identityBytes)).map(b => b.toString(16).padStart(2, '0')).join('')
+    : pushed_at
+  const id = `trading:config:sandbox:${source}:${identity}:${hash}`
+  const existing = identityBytes ? await getSandboxEntry(kv, id) : null
+  if (existing && canonicalJson(existing.config) !== canonicalJson(config)) {
+    throw new Error('sandbox_identity_content_mismatch')
+  }
+  if (existing) pushed_at = existing.pushed_at
   const body = JSON.stringify({
     config, source, pushed_at, hash,
     push_id: meta?.push_id,
@@ -1412,7 +1426,7 @@ export async function writeSandbox(
 
   // Index — no TTL, truncate to last SANDBOX_MAX_ENTRIES
   const idxRaw = await kv.get(SANDBOX_INDEX_KEY, 'json') as SandboxEntry[] | null
-  const idx = Array.isArray(idxRaw) ? idxRaw : []
+  const idx = Array.isArray(idxRaw) ? idxRaw.filter(entry => entry.id !== id) : []
   const entry: SandboxEntry = {
     id, pushed_at, source, hash, bytes,
     push_id: meta?.push_id,

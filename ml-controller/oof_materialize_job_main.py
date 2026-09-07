@@ -55,10 +55,11 @@ async def _execute_lifecycle(
         ensure_active8_daily_prep,
     )
 
-    if continuation_only and expected_cohort_id:
+    if continuation_only and expected_cohort_id and cadence != "daily":
         # Exact continuation reuses the checksum-bound cohort. Rebuilding a
         # current prep cannot change its evidence and would conflate the
         # orchestration deploy with the historical ML artifact producer.
+        # Daily still verifies its separate current forward-evidence prep.
         prep = {
             "status": "reused_immutable_cohort",
             "cohort_id": expected_cohort_id,
@@ -252,7 +253,7 @@ def _summary(run_id: str, result: dict[str, Any], *, mode: str) -> str:
         f"cohort={result.get('cohort_id', 'none')}",
         f"promoted={bool(result.get('promoted'))}",
         f"reason={summary_reason}",
-        f"full_fit={str((result.get('full_fit_dispatch') or {}).get('status') or 'none')}",
+        f"full_fit={str((result.get('full_fit_dispatch') or (result.get('receipt') or {}).get('full_fit_dispatch') or {}).get('status') or 'none')}",
     ]
     prep_lifecycle = result.get("prep_lifecycle")
     prep_lifecycle = prep_lifecycle if isinstance(prep_lifecycle, dict) else {}
@@ -471,7 +472,7 @@ async def _run() -> int:
                         f"effective={freshness['effective_max_date']}"
                     )
                 callback_status = "success"
-            elif status in {"pending", "spawned"} and cadence in {"weekly", "monthly"}:
+            elif status in {"pending", "spawned"} and cadence in {"daily", "weekly", "monthly"}:
                 if continuation_attempt >= OOF_CONTINUATION_MAX_ATTEMPTS:
                     raise RuntimeError(
                         "oof_cohort_continuation_exhausted:"

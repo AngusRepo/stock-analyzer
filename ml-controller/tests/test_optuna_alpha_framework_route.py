@@ -386,14 +386,15 @@ def test_research_sweep_two_phase_commit_stages_once_after_all_sources_succeed(m
 
     assert out["status"] == "completed"
     assert out["staging"]["status"] == "staged"
-    assert [item["source"] for item in pushes] == ["ga_optimizer", "research_sweep"]
+    assert [item["source"] for item in pushes] == ["ga_optimizer"] + ["research_sweep"] * 3
+    assert [item["meta"]["candidate_group"] for item in pushes[1:]] == list(optuna.OPTUNA_CANDIDATE_GROUPS)
     assert out["ga_closure"]["materialized"] is True
     assert out["ga_closure"]["run_id"] == "execution-two-phase"
     assert out["ga_closure"]["shadow_id"] == "ga-shadow-v1:execution-two-phase"
     assert out["ga_closure"]["shadow_status"] == "ACTIVE"
     assert pushes[1]["params"]["sources"]["screener"] == {"minPrice": 20}
     assert all(out["ga_closure"]["closure_checks"].values())
-    assert pushes[1]["meta"]["run_id"] == "execution-two-phase"
+    assert pushes[1]["meta"]["run_id"] == "execution-two-phase:selection"
     assert all(req.push_kv is False and req.dry_run is True for _, req in calls)
     assert out["performance"]["total_elapsed_seconds"] >= 0
     assert out["performance"]["search_subset_size"] == 100
@@ -441,6 +442,9 @@ def test_research_sweep_failure_keeps_independent_ga_candidate_receipt(monkeypat
 
     def fake_ga_push(**kwargs):
         pushes.append(kwargs)
+        if kwargs["source"] == "research_sweep":
+            return {"success": True, "materialization_complete": True,
+                    "candidate_record": {"candidate_id": kwargs["meta"]["run_id"]}}
         return {
             "success": True,
             "target": "production_meta_optimizer_learning_state",
@@ -467,9 +471,11 @@ def test_research_sweep_failure_keeps_independent_ga_candidate_receipt(monkeypat
     ))
 
     assert out["status"] == "error"
-    assert out["staging"]["status"] == "blocked"
-    assert out["staging"]["reason"] == "source_failure"
-    assert [item["source"] for item in pushes] == ["ga_optimizer"]
+    assert out["staging"]["status"] == "partial"
+    assert out["staging"]["groups"]["selection"]["status"] == "blocked"
+    assert out["staging"]["groups"]["execution_risk"]["status"] == "staged"
+    assert out["staging"]["groups"]["label_uncertainty"]["status"] == "staged"
+    assert [item["source"] for item in pushes] == ["ga_optimizer", "research_sweep", "research_sweep"]
     assert out["ga_closure"]["materialized"] is True
     assert all(out["ga_closure"]["closure_checks"].values())
     assert out["ga_closure"]["shadow_id"] == "ga-shadow-v1:partial-sweep"

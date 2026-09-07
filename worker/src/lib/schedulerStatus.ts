@@ -11,6 +11,7 @@ import { schedulerGovernanceSummary, schedulerJobAccounting } from './schedulerM
 import { databaseForDataDomain } from './dataDomainRegistry'
 import {
   loadSchedulerExecutionTickets,
+  schedulerTicketClosureDefect,
   SCHEDULER_TICKET_CONTRACT_ROOTS,
   type SchedulerExecutionTicketRow,
 } from './schedulerExecutionTickets'
@@ -430,8 +431,9 @@ export function reconcileSchedulerExecutionTicketStatus(input: {
   const ticketTimestamp = sqliteUtcTimestamp(ticket.updated_at)
   const ticketMs = Date.parse(ticketTimestamp)
   const baseMs = input.baseTimestamp ? Date.parse(input.baseTimestamp) : Number.NEGATIVE_INFINITY
-  if (!Number.isFinite(ticketMs) || (Number.isFinite(baseMs) && ticketMs < baseMs)) return null
-  const lastStatus: SchedulerLastStatus = ticket.status === 'success'
+  const closureDefect = schedulerTicketClosureDefect(ticket)
+  if (!Number.isFinite(ticketMs) || (!closureDefect && Number.isFinite(baseMs) && ticketMs < baseMs)) return null
+  const lastStatus: SchedulerLastStatus = closureDefect ? 'failed' : ticket.status === 'success'
     ? 'success'
     : ticket.status === 'error' || ticket.status === 'blocked'
       ? 'failed'
@@ -441,8 +443,10 @@ export function reconcileSchedulerExecutionTicketStatus(input: {
   return {
     lastStatus,
     lastRunAt: ticketTimestamp,
-    summary: ticket.last_summary || `${ticket.status}; durable scheduler execution ticket`,
-    lastError: lastStatus === 'failed' ? (ticket.last_error || ticket.last_summary || undefined) : undefined,
+    summary: closureDefect
+      ? `${closureDefect}; historical record is not current-cycle completion; ${ticket.last_summary ?? ''}`
+      : ticket.last_summary || `${ticket.status}; durable scheduler execution ticket`,
+    lastError: closureDefect || (lastStatus === 'failed' ? (ticket.last_error || ticket.last_summary || undefined) : undefined),
     statusAuthority: 'scheduler_execution_ticket',
     runId: ticket.run_id,
     attemptId: ticket.attempt_id,

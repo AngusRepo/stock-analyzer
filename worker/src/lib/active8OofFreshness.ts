@@ -91,3 +91,24 @@ export async function persistActive8OofFreshnessAudit(env: any, input: {
   ).run()
   return audit
 }
+
+export function freshnessFromReusedCadenceReceipt(data: Record<string, any>, cadence: string, runDate: string) {
+  const receipt = data.receipt ?? {}
+  const calendar = receipt.calendar ?? {}
+  const fullFit = receipt.full_fit_dispatch ?? {}
+  if (data.status !== 'idempotent_complete' || receipt.status !== 'materialized'
+    || receipt.cadence !== cadence || receipt.knowledge_cutoff_date !== runDate
+    || calendar.cutoff !== runDate || !data.cohort_id || receipt.cohort_id !== data.cohort_id
+    || receipt.evidence_closure?.materialized !== true || receipt.evidence_closure?.candidate_artifacts !== true
+    || fullFit.status !== 'completed' || fullFit.retry_required !== false) {
+    throw new Error('active8_reused_cadence_receipt_invalid')
+  }
+  const evidence = {
+    business_date: runDate, cohort_id: receipt.cohort_id,
+    prep_manifest_checksum: calendar.prep_manifest_checksum,
+    expected_max_date: calendar.mature_max_date,
+    effective_max_date: receipt.physical_prediction_coverage?.max_date,
+  }
+  if (evaluateActive8OofFreshness(evidence).status !== 'fresh') throw new Error('active8_reused_cadence_receipt_stale')
+  return evidence
+}

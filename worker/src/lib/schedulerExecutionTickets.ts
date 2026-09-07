@@ -62,6 +62,26 @@ const MANIFEST_JOBS = (schedulerManifest as { jobs: ManifestJob[] }).jobs
 const MANIFEST_BY_ID = new Map(MANIFEST_JOBS.map((job) => [job.id, job]))
 const TERMINAL_STATUSES = new Set<SchedulerExecutionTicketStatus>(['success', 'error', 'skipped', 'blocked'])
 const MAX_ATTEMPTS = 3
+const SCHEDULER_CLOCK_SKEW_MS = 5 * 60_000
+
+function persistedUtcMs(value: string | null): number {
+  if (!value) return Number.NaN
+  return Date.parse(/[zZ]|[+-]\d\d:\d\d$/.test(value) ? value : `${value.replace(' ', 'T')}Z`)
+}
+
+export function schedulerTicketClosureDefect(ticket: Pick<SchedulerExecutionTicketRow,
+  'ticket_kind' | 'scheduled_at' | 'accepted_at' | 'status' | 'task' | 'last_summary'>): string | null {
+  if (!['success', 'skipped'].includes(ticket.status)) return null
+  if (ticket.ticket_kind === 'physical_root'
+    && persistedUtcMs(ticket.scheduled_at) - persistedUtcMs(ticket.accepted_at) > SCHEDULER_CLOCK_SKEW_MS) {
+    return 'scheduler_ticket_accepted_before_schedule'
+  }
+  if (ticket.status === 'success' && ticket.task.startsWith('active8-oof-')
+    && /\bstatus=(?:spawned|pending|triggered|running)\b/.test(ticket.last_summary ?? '')) {
+    return 'scheduler_ticket_dispatch_is_not_closure'
+  }
+  return null
+}
 
 function normalizeSchedulerTimestamp(value: string | null): string | null {
   if (!value) return null
@@ -105,6 +125,9 @@ export function assertSchedulerManifestDelivery(identity: SchedulerDeliveryIdent
     throw new Error(
       `Cloud Scheduler task mismatch: job=${identity.schedulerJobId} manifest=${manifestJob.task} request=${task}`,
     )
+  }
+  if (Date.parse(identity.scheduledAt ?? '') > Date.now() + SCHEDULER_CLOCK_SKEW_MS) {
+    throw new Error('Cloud Scheduler future delivery rejected; use a manual request without scheduler headers')
   }
 }
 
@@ -184,6 +207,12 @@ export async function admitSchedulerExecutionTicket(
   const existing = await readTicket(db, ticketId)
   if (existing.dedupe_key !== dedupeKey || existing.payload_checksum !== payloadChecksum) {
     throw new Error(`scheduler execution ticket immutable identity conflict: ${ticketId}`)
+  }
+  const closureDefect = schedulerTicketClosureDefect(existing)
+  if (closureDefect) {
+    // Do not acknowledge an unexecuted schedule as completed, or silently
+    // launch another training job over an unverified historical attempt.
+    throw new Error(`${closureDefect}: ${ticketId}; audited ticket repair required`)
   }
   if ((existing.status === 'error' || existing.status === 'blocked') && existing.attempt_count < MAX_ATTEMPTS) {
     const nextAttempt = existing.attempt_count + 1

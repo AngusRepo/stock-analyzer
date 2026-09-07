@@ -362,7 +362,7 @@ adminOptunaRoutes.post('/api/admin/optuna-push', async (c) => {
       }
       try {
         const { mergeCompositeOptunaCandidate } = await import('../lib/optunaConfigMerge')
-        const candidate = mergeCompositeOptunaCandidate(current, sourcePatches, mergeAlphaFrameworkConfig)
+        const candidate = mergeCompositeOptunaCandidate(current, sourcePatches, mergeAlphaFrameworkConfig, meta?.candidate_group)
         merged = candidate.config
         updatedFields = candidate.updatedFields
       } catch (error: any) {
@@ -731,6 +731,7 @@ adminOptunaRoutes.post('/api/admin/optuna-push', async (c) => {
     candidateRecord = await recordParameterCandidateFromSandbox(databaseForDataDomain(c.env, 'learning'), {
       source: String(source),
       sandboxId,
+      configHash: sandboxReadback?.hash,
       cadence: typeof meta?.cadence === 'string' ? meta.cadence : undefined,
       runId: typeof meta?.run_id === 'string'
         ? meta.run_id
@@ -741,6 +742,7 @@ adminOptunaRoutes.post('/api/admin/optuna-push', async (c) => {
         audit_source: 'optuna-push',
         updated_fields: updatedFields,
         source_names: Array.isArray(meta?.source_names) ? meta.source_names : undefined,
+        candidate_group: meta?.candidate_group,
         optimizer_evidence: meta?.optimizer_evidence ?? null,
         data_access: meta?.data_access ?? null,
       },

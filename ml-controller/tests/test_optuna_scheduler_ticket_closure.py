@@ -73,3 +73,48 @@ async def test_research_sweep_job_callback_preserves_scheduler_ticket_identity(m
     assert callback_payload['status'] == 'success'
     assert callback_payload['scheduler_ticket_id'] == 'scheduler-ticket-v1-test'
     assert callback_payload['scheduler_run_id'] == 'weekly-optuna-run-test'
+
+
+@pytest.mark.asyncio
+async def test_infeasible_source_is_partial_not_false_success_or_training_retry(monkeypatch):
+    callbacks = []
+    calls = []
+    def sweep(_req):
+        calls.append(1)
+        return {
+            'status': 'completed', 'failures': [],
+            'incomplete': ['screener:SKIPPED_NOT_READY(no feasible Pareto candidate)'],
+            'results': [{'source': 'screener', 'status': 'skipped'}],
+            'staging': {'status': 'blocked', 'reason': 'source_incomplete'},
+            'ga_closure': {'status': 'staged', 'candidate_id': 'ga-independent'},
+        }
+    async def callback(payload):
+        callbacks.append(payload)
+    monkeypatch.setattr(optuna_job_main, 'execute_research_sweep', sweep)
+    monkeypatch.setattr(optuna_job_main, '_callback_optuna_with_bounded_retry', callback)
+    monkeypatch.setenv('OPTUNA_JOB_MODE', 'research_sweep')
+    monkeypatch.setenv('OPTUNA_CADENCE', 'monthly')
+    assert await optuna_job_main._run() == 0
+    assert len(calls) == 1
+    payload = callbacks[0]
+    assert payload['status'] == 'skipped'
+    assert 'closure=partial' in payload['summary']
+    assert payload['metadata']['closure_status'] == 'partial'
+    assert payload['ga_candidate_id'] == 'ga-independent'
+    assert payload['staging_status'] == 'blocked'
+
+
+@pytest.mark.asyncio
+async def test_pre_result_failure_still_sends_terminal_callback(monkeypatch):
+    payloads = []
+    async def fail(_req):
+        raise RuntimeError('research source unavailable')
+    async def callback(payload):
+        payloads.append(payload)
+    monkeypatch.setattr(optuna_job_main, '_execute_research_sweep_with_bounded_retry', fail)
+    monkeypatch.setattr(optuna_job_main, '_callback_optuna_with_bounded_retry', callback)
+    monkeypatch.setenv('OPTUNA_JOB_MODE', 'research_sweep')
+    assert await optuna_job_main._run() == 1
+    assert payloads[0]['status'] == 'error'
+    assert payloads[0]['metadata']['closure_status'] == 'failed'
+    assert 'research source unavailable' in payloads[0]['error']

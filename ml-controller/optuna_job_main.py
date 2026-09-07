@@ -367,9 +367,12 @@ async def _execute_research_sweep_with_bounded_retry(
     max_attempts = max(1, min(5, _env_int("OPTUNA_SWEEP_MAX_ATTEMPTS", 3)))
     base_delay_seconds = max(0.0, min(10.0, _env_float("OPTUNA_SWEEP_RETRY_BASE_SECONDS", 2.0)))
     last_result: dict[str, Any] | None = None
+    successful_results: dict[str, dict] = {}
     for attempt in range(1, max_attempts + 1):
         try:
-            result = await asyncio.to_thread(execute_research_sweep, req)
+            result = await asyncio.to_thread(execute_research_sweep, req, **(
+                {"successful_results": successful_results} if successful_results else {}
+            ))
         except Exception as exc:
             message = f"{type(exc).__name__}: {exc}"
             if attempt >= max_attempts or not _is_transient_research_sweep_failure(message):
@@ -386,6 +389,9 @@ async def _execute_research_sweep_with_bounded_retry(
             continue
 
         last_result = result
+        for item in result.get("results") or []:
+            if item.get("status") == "success" and item.get("candidate_params"):
+                successful_results[item["source"]] = item
         failures = _research_sweep_failures(result)
         if result.get("status") == "completed" and not failures:
             result["attempt_count"] = attempt
@@ -532,16 +538,22 @@ async def _run() -> int:
         else:
             result, research_sweep_attempts = await _execute_research_sweep_with_bounded_retry(req)
             failures = result.get("failures") if isinstance(result, dict) else None
-            if isinstance(result, dict) and result.get("status") == "completed" and not failures:
-                status = "success"
+            if isinstance(result, dict) and result.get("status") in {"completed", "partial"} and not failures:
+                # A valid infeasible search is not a transport failure to retry,
+                # but it also did not close the full composite candidate.
+                status = "skipped" if result.get("status") == "partial" or result.get("incomplete") else "success"
             else:
                 error = "; ".join(str(item) for item in (failures or [])) or str(result)
             summary = _summarize_result(result if isinstance(result, dict) else {})
+            if isinstance(result, dict) and result.get("incomplete"):
+                summary = f"closure=partial source_incomplete; {summary}"[:1200]
     except Exception as exc:  # noqa: BLE001
         logger.exception("[OptunaJob] failed")
         error = f"{type(exc).__name__}: {exc}"
         summary = error[:1200]
 
+    # Even pre-result failures must reach the terminal callback.
+    result = result if isinstance(result, dict) else {}
     payload: dict[str, Any] = {
         "task": task,
         "status": status,
@@ -612,16 +624,24 @@ async def _run() -> int:
             else {}
         )
         candidate_ids = [candidate_record.get("candidate_id")] if candidate_record.get("candidate_id") else []
+        groups = staging.get("groups") if isinstance(staging.get("groups"), dict) else {}
+        group_pushes = [group["composite"] for group in groups.values()
+                        if group.get("status") == "staged" and isinstance(group.get("composite"), dict)]
+        candidate_ids += [group["candidate_id"] for group in groups.values()
+                          if group.get("status") == "staged" and group.get("candidate_id")]
+        candidate_ids = list(dict.fromkeys(candidate_ids))
         ga_candidate = staging.get("ga_candidate") if isinstance(staging.get("ga_candidate"), dict) else {}
         ga_push = ga_candidate.get("push") if isinstance(ga_candidate.get("push"), dict) else {}
         ga_closure = result.get("ga_closure") if isinstance(result.get("ga_closure"), dict) else {}
         payload["metadata"] = {
             "source": "optuna_research_sweep",
+            "closure_status": "failed" if status == "error" else "partial" if result.get("incomplete") else "complete",
+            "incomplete": result.get("incomplete", []),
             "executor": "cloud_run_job",
             "mode": mode,
             "cadence": cadence,
             "candidate_ids": candidate_ids,
-            "push_results": [item for item in (composite, ga_push) if item],
+            "push_results": [item for item in (composite, ga_push, *group_pushes) if item],
             "snapshot": staging,
             "ga_closure": ga_closure,
             "performance": result.get("performance") if isinstance(result, dict) else None,

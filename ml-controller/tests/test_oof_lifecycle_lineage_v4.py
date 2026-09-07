@@ -113,7 +113,8 @@ def test_lifecycle_uses_latest_prep_as_maturity_owner():
     latest = source.index("_latest_canonical_prep_prefix(bucket) or")
     calendar = source.index("dates, calendar_evidence = _oof_lifecycle_calendar(")
     assert latest < calendar
-    assert 'prep_gcs_prefix = "" if exact_producer_source_sha else' in source
+    assert 'prep_gcs_prefix = "" if pinned_prep else' in source
+    assert 'pinned_prep = bool(exact_producer_source_sha and cadence != "daily")' in source
     assert "expected_producer_source_sha=exact_producer_source_sha" in source
     assert 'calendar_evidence.get("sequence_gcs_prefix")' in source
     assert "parent_physical_coverage" in source

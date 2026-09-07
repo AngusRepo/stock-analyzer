@@ -362,6 +362,8 @@ def atomic_batch_execute(
         }
     if len(statements) > 500:
         raise RuntimeError(f"Atomic D1 batch exceeds 500 statements: {len(statements)}")
+    if STRATEGY_MINING_D1_WORKER_ONLY and len(statements) > 100:
+        raise RuntimeError("Atomic strategy mining gateway batch exceeds 100 statements")
     if allocator_contract_guard_enabled():
         raise RuntimeError("Atomic D1 batch cannot run while allocator contract guard is enabled")
     if not WORKER_URL or not WORKER_AUTH:
@@ -475,7 +477,7 @@ def _worker_batch_execute(
     error_count = 0
     changes_total = 0
     first_error: str | None = None
-    chunk = max(1, min(int(chunk_size or 250), 500))
+    chunk = max(1, min(int(chunk_size or 250), 100 if STRATEGY_MINING_D1_WORKER_ONLY else 500))
 
     for i in range(0, len(statements), chunk):
         part = statements[i:i + chunk]
@@ -496,6 +498,14 @@ def _worker_batch_execute(
         data = resp.json()
         if not data.get("ok"):
             raise RuntimeError(f"Worker D1 batch unsuccessful: {data}")
+        if STRATEGY_MINING_D1_WORKER_ONLY and (
+            data.get("total") != len(part)
+            or data.get("success_count") != len(part)
+            or data.get("error_count") != 0
+            or len(data.get("results") or []) != len(part)
+            or any(item.get("success") is not True for item in data.get("results", []))
+        ):
+            raise RuntimeError("Strategy mining gateway incomplete batch acknowledgement")
         total += int(data["total"]) if data.get("total") is not None else len(part)
         success_count += int(data["success_count"]) if data.get("success_count") is not None else len(part)
         error_count += int(data.get("error_count") or 0)
@@ -539,6 +549,6 @@ def _worker_strategy_mining_statement(
         raise RuntimeError(f"Strategy mining D1 gateway HTTP {resp.status_code}: {resp.text[:300]}")
     payload = resp.json()
     results = payload.get("results") or []
-    if not payload.get("ok") or len(results) != 1:
+    if not payload.get("ok") or len(results) != 1 or results[0].get("success") is not True:
         raise RuntimeError(f"Strategy mining D1 gateway invalid response: {payload}")
     return results[0]

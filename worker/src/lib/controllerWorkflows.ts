@@ -66,7 +66,6 @@ export {
   runWeeklyValidationChain,
   runWeeklyDriftDetection,
   runWeeklyDriftRetrain,
-  runWeeklyRetrain,
   summarizeWeeklyValidationChain,
   weeklyBacktestResearchBundleEnabled,
 } from './controllerResearchWorkflows'

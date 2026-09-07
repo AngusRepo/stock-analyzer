@@ -6,6 +6,14 @@ import oof_materialize_job_main
 ROOT = Path(__file__).resolve().parents[2]
 
 
+def test_idempotent_summary_retains_verified_full_fit_receipt():
+    summary = oof_materialize_job_main._summary('r', {
+        'status': 'idempotent_complete', 'cohort_id': 'c',
+        'receipt': {'full_fit_dispatch': {'status': 'completed'}},
+    }, mode='oof_lifecycle')
+    assert 'full_fit=completed' in summary
+
+
 def test_oof_materialize_job_closes_scheduler_callback(monkeypatch):
     callbacks = []
     lifecycle_kwargs = {}

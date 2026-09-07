@@ -987,7 +987,9 @@ async function handleSchedulerCallback(c: any) {
   }
   if (
     (String(body.task) === 'weekly-optuna' || String(body.task) === 'monthly-optuna') &&
-    body.status === 'success'
+    ['success', 'error', 'skipped'].includes(String(body.status)) &&
+    (Array.isArray(callbackMetadata?.candidate_ids) && callbackMetadata.candidate_ids.length > 0
+      || typeof body.candidate_id === 'string' && Boolean(body.candidate_id))
   ) {
     c.executionCtx.waitUntil((async () => {
       try {

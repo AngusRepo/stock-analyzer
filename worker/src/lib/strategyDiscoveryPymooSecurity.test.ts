@@ -108,6 +108,7 @@ async function main() {
     run_id: runId,
     run_date: runDate,
     status: 'accepted',
+    scheduler_tracking: 'manual',
   }))
   const accepted = await post('/api/internal/strategy-mining/callback', token, callbackBody, kv, db)
   assert.equal(accepted.status, 200)

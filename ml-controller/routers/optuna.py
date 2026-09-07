@@ -1051,6 +1051,8 @@ def _run_optuna_sweep_source_inner(source: str, runner) -> dict[str, Any]:
         if isinstance(result, dict) and result.get("status") in {"skipped", "insufficient_data"}:
             summary = f"{source}:SKIPPED_NOT_READY({str(result.get('reason') or result.get('status'))[:140]})"
             return {"source": source, "status": "skipped", "summary": summary}
+        if not isinstance(result, dict) or result.get("status") in {"error", "failed", "blocked"}:
+            raise RuntimeError(f"source_result_not_successful:{result}")
         return {
             "source": source,
             "status": "success",
@@ -1177,6 +1179,7 @@ def _commit_research_sweep_candidate(
     results: list[dict[str, Any]],
     *,
     run_id: str,
+    candidate_group: str | None = None,
 ) -> dict[str, Any]:
     source_params = {
         item["source"]: item.get("candidate_params")
@@ -1192,6 +1195,7 @@ def _commit_research_sweep_candidate(
             "cadence": req.cadence,
             "run_date": req.run_date,
             "source_names": source_names,
+            "candidate_group": candidate_group,
             "n_trials": req.n_trials,
             "subset_size": req.subset_size,
             "note": "atomic composite Optuna candidate; production unchanged",
@@ -1221,7 +1225,38 @@ def _commit_research_sweep_candidate(
     }
 
 
-def execute_research_sweep(req: OptunaResearchSweepReq) -> dict[str, Any]:
+# Shared-field owners remain atomic; unrelated owners can finish independently.
+OPTUNA_CANDIDATE_GROUPS = {
+    "selection": ("signal", "screener", "rrg", "alpha_framework"),
+    "execution_risk": ("sltp", "risk_params"),
+    "label_uncertainty": ("barrier", "conformal"),
+}
+
+
+def _stage_research_groups(req: OptunaResearchSweepReq, results: list[dict], run_id: str) -> dict:
+    indexed = {item["source"]: item for item in results}
+    groups = {}
+    for owner, sources in OPTUNA_CANDIDATE_GROUPS.items():
+        blocked = [name for name in sources if indexed.get(name, {}).get("status") != "success"
+                   or not indexed.get(name, {}).get("candidate_params")]
+        if blocked:
+            groups[owner] = {"status": "blocked", "reason": "source_incomplete", "sources": blocked}
+            continue
+        try:
+            groups[owner] = _commit_research_sweep_candidate(
+                req, [indexed[name] for name in sources], run_id=f"{run_id}:{owner}",
+                candidate_group=owner,
+            )
+        except Exception as exc:
+            groups[owner] = {"status": "error", "reason": str(exc)}
+    complete = all(group["status"] == "staged" for group in groups.values())
+    return {"status": "staged" if complete else "partial", "groups": groups, "run_id": run_id,
+            "reason": None if complete else "candidate_groups_incomplete"}
+
+
+def execute_research_sweep(
+    req: OptunaResearchSweepReq, *, successful_results: dict[str, dict] | None = None,
+) -> dict[str, Any]:
     """Controller-owned weekly/monthly Optuna sweep with per-route evidence.
 
     This is intentionally an internal execution function. Production triggers
@@ -1271,10 +1306,15 @@ def execute_research_sweep(req: OptunaResearchSweepReq) -> dict[str, Any]:
     ]
     max_workers = min(req.max_parallel_sources, len(sweep_plan))
     ordered_results: list[dict[str, Any] | None] = [None] * len(sweep_plan)
+    for idx, (source, _) in enumerate(sweep_plan):
+        prior = (successful_results or {}).get(source)
+        if prior and prior.get("source") == source and prior.get("status") == "success" and prior.get("candidate_params"):
+            ordered_results[idx] = {**prior, "reused_in_run": True}
     with ThreadPoolExecutor(max_workers=max_workers, thread_name_prefix=f"optuna-{req.cadence}") as executor:
         futures = {
             executor.submit(_run_optuna_sweep_source, source, runner): idx
             for idx, (source, runner) in enumerate(sweep_plan)
+            if ordered_results[idx] is None
         }
         for future in as_completed(futures):
             ordered_results[futures[future]] = future.result()
@@ -1299,27 +1339,24 @@ def execute_research_sweep(req: OptunaResearchSweepReq) -> dict[str, Any]:
         "reason": None,
         "run_id": run_id,
     }
-    if failures:
-        staging["reason"] = "source_failure"
-    elif incomplete:
-        staging["reason"] = "source_incomplete"
-    elif req.push_kv and not req.dry_run:
-        try:
-            staging = _commit_research_sweep_candidate(req, results, run_id=run_id)
-        except Exception as exc:  # noqa: BLE001
-            logger.exception("[Optuna/research_sweep] composite staging failed")
-            failures.append(f"composite_staging:ERROR({type(exc).__name__}: {str(exc)[:180]})")
-            staging = {"status": "error", "reason": str(exc), "run_id": run_id}
+    if req.push_kv and not req.dry_run:
+        staging = _stage_research_groups(req, results, run_id)
+        for owner, group in staging["groups"].items():
+            if group["status"] == "error":
+                failures.append(f"{owner}_staging:ERROR({group['reason']})")
+            elif group["status"] == "blocked":
+                incomplete.append(f"{owner}:candidate_not_materialized:{','.join(group['sources'])}")
     staging["ga_candidate"] = ga_staging
     total_elapsed_seconds = round(time.monotonic() - sweep_started, 3)
     return {
-        "status": "error" if failures else "completed",
+        "status": "error" if failures else "partial" if incomplete else "completed",
         "cadence": req.cadence,
         "max_parallel_sources": max_workers,
         "summary": ", ".join(item["summary"] for item in results),
         "results": results,
         "failures": failures,
         "incomplete": incomplete,
+        "closure_status": "failed" if failures else "partial" if incomplete else "complete",
         "staging": staging,
         "ga": next((item for item in results if item["source"] == "ga_optimizer"), None),
         "ga_closure": {

@@ -172,7 +172,10 @@ export async function recordParameterCandidateFromSandbox(
        sandbox_id = COALESCE(excluded.sandbox_id, parameter_candidate_registry.sandbox_id),
        cadence = COALESCE(excluded.cadence, parameter_candidate_registry.cadence),
        run_id = COALESCE(excluded.run_id, parameter_candidate_registry.run_id),
-       status = excluded.status,
+       status = CASE
+         WHEN parameter_candidate_registry.sandbox_id = excluded.sandbox_id
+          AND parameter_candidate_registry.config_hash = excluded.config_hash
+         THEN parameter_candidate_registry.status ELSE excluded.status END,
        metadata_json = excluded.metadata_json,
        updated_at = datetime('now')`,
   ).bind(
@@ -193,7 +196,10 @@ export async function recordParameterCandidateFromSandbox(
     run_id: input.runId ?? null,
     status,
   })
-  return { candidate_id: candidateId, status }
+  const stored = await db.prepare(
+    'SELECT status FROM parameter_candidate_registry WHERE candidate_id = ?',
+  ).bind(candidateId).first<{ status: ParameterCandidateStatus }>()
+  return { candidate_id: candidateId, status: stored?.status ?? status }
 }
 
 export async function recordGaParameterCandidate(

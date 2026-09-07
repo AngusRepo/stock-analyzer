@@ -532,7 +532,8 @@ export async function runActive8OofLifecycle(
       // Weekly/monthly runs generate immutable candidates and must never
       // mutate production pointers, including their first (non-continuation) call.
       promote: cadence === 'daily',
-      dispatch_full_fit: cadence !== 'daily',
+      // Daily uses the same input-deduplicated factory when a mature batch is ready.
+      dispatch_full_fit: true,
       expected_cohort_id: options.expectedCohortId,
       continuation_attempt: Math.max(0, Math.min(12, Number(options.continuationAttempt ?? 0))),
       continuation_only: options.continuationOnly === true,
@@ -551,6 +552,19 @@ export async function runActive8OofLifecycle(
   const status = String(data.status ?? '').toLowerCase()
   if (!['skipped', 'pending', 'spawned', 'materialized', 'shadow_evaluated', 'idempotent_complete'].includes(status)) {
     throw new Error(`Active-8 OOF lifecycle unexpected status=${status || 'unknown'}`)
+  }
+  const receiptSummaryFields: string[] = []
+  if (status === 'idempotent_complete' && cadence !== 'daily') {
+    if (!options.schedulerRunId) throw new Error('active8_reused_cadence_scheduler_identity_missing')
+    const { freshnessFromReusedCadenceReceipt, persistActive8OofFreshnessAudit } = await import('./active8OofFreshness')
+    const date = runDate || twToday()
+    const evidence = freshnessFromReusedCadenceReceipt(data, cadence, date)
+    await persistActive8OofFreshnessAudit(env, {
+      task: 'active8-oof-' + cadence, runId: options.schedulerRunId,
+      attemptId: 'verified-receipt-reuse', runDate: date, cadence,
+      callbackStatus: 'success', evidence,
+    })
+    receiptSummaryFields.push('run_id=' + options.schedulerRunId, 'full_fit=completed', 'evidence=reused_verified_receipt')
   }
   if (
     status === 'pending'
@@ -577,6 +591,7 @@ export async function runActive8OofLifecycle(
     `cohort=${data.cohort_id ?? 'none'}`,
     `promoted=${Boolean(data.promoted)}`,
     `reason=${data.promotion_reason ?? data.reason ?? 'none'}`,
+    ...receiptSummaryFields,
   ].join(' ')
 }
 
@@ -784,8 +799,15 @@ export async function runAllocatorEvFeatureSnapshotBackfill(
   return String(data.summary ?? `allocator_ev_feature_snapshot_backfill status=${data.status ?? 'unknown'}`)
 }
 
-export async function runMonthlyStrategyMining(env: Bindings, runDate?: string) {
+export async function runMonthlyStrategyMining(
+  env: Bindings,
+  runDate?: string,
+  options: { schedulerTicketId?: string; schedulerRunId?: string } = {},
+) {
   requireController(env)
+  if (Boolean(options.schedulerTicketId) !== Boolean(options.schedulerRunId)) {
+    throw new Error('strategy mining requires paired scheduler ticket/run identity')
+  }
 
   const dispatchRunDate = runDate ?? new Date(Date.now() + 8 * 3600_000).toISOString().slice(0, 10)
   const runId = `strategy-mining-${dispatchRunDate}-${crypto.randomUUID()}`
@@ -793,6 +815,9 @@ export async function runMonthlyStrategyMining(env: Bindings, runDate?: string) 
   const pendingDispatch = {
     run_id: runId,
     run_date: dispatchRunDate,
+    scheduler_ticket_id: options.schedulerTicketId ?? null,
+    scheduler_run_id: options.schedulerRunId ?? null,
+    scheduler_tracking: options.schedulerTicketId ? 'ticket' : 'manual',
     status: 'pending',
     created_at: new Date().toISOString(),
   }
@@ -1737,21 +1762,6 @@ export async function runWeeklyDriftRetrain(
     promotion_eligible_models: [],
   })
   return `weekly_drift candidate dispatched status=${result?.status ?? 'unknown'} run_id=${result?.run_id ?? '-'} models=${driftTargetModels.join(',')}`
-}
-
-export async function runWeeklyRetrain(env: Bindings) {
-  requireController(env)
-
-  const result = await controllerPostJson<any>(env, '/retrain/universal', { limit: 2500 })
-  const trainResult = result?.train_result ?? {}
-  console.log(
-    `[WeeklyRetrain] Universal done: ` +
-    `${result.stocks_sent ?? 0} stocks, ${result.total_prep_rows ?? 0} rows, ` +
-    `${result.batch_count ?? 0} batches. ` +
-    `Models: ${JSON.stringify(Object.fromEntries(
-      Object.entries(trainResult.results ?? {}).map(([key, value]: [string, any]) => [key, value.accuracy ?? value.error ?? 'unknown']),
-    ))}`,
-  )
 }
 
 type ExternalEvidenceReadbackRow = {

@@ -116,6 +116,15 @@ def database_id_for_domain(domain: D1DataDomain | str) -> str:
 class DomainD1Client:
     domain: D1DataDomain
 
+    def _uses_mining_gateway(self) -> bool:
+        # Modal has a scoped Worker token, not direct database credentials.
+        # Domain routing must preserve that least-privilege transport.
+        if not d1_client.STRATEGY_MINING_D1_WORKER_ONLY:
+            return False
+        if self.domain != D1DataDomain.RESEARCH:
+            raise RuntimeError(f"Strategy mining gateway cannot access domain: {self.domain.value}")
+        return True
+
     @property
     def database_id(self) -> str:
         return database_id_for_domain(self.domain)
@@ -126,6 +135,8 @@ class DomainD1Client:
         params: list[Any] | None = None,
         timeout: float = 60.0,
     ) -> list[dict]:
+        if self._uses_mining_gateway():
+            return d1_client.query(sql, params, timeout=timeout)
         if allocator_contract_guard_enabled() and d1_client._is_mutating_sql(sql):
             return []
         body: dict[str, Any] = {"sql": sql}
@@ -141,6 +152,8 @@ class DomainD1Client:
         params: list[Any] | None = None,
         timeout: float = 60.0,
     ) -> dict:
+        if self._uses_mining_gateway():
+            return d1_client.execute(sql, params, timeout=timeout)
         if allocator_contract_guard_enabled():
             return {"success": True, "meta": d1_client._noop_write_meta(1), "results": []}
         body: dict[str, Any] = {"sql": sql}
@@ -162,6 +175,8 @@ class DomainD1Client:
         timeout: float = 30.0,
         chunk_size: int = 250,
     ) -> dict:
+        if self._uses_mining_gateway():
+            return d1_client.batch_execute(statements, timeout=timeout, chunk_size=chunk_size)
         if allocator_contract_guard_enabled():
             total = len(statements)
             return {
@@ -183,6 +198,8 @@ class DomainD1Client:
         statements: list[tuple[str, list[Any]]],
         timeout: float = 30.0,
     ) -> dict:
+        if self._uses_mining_gateway():
+            return d1_client.atomic_batch_execute(statements, timeout=timeout)
         if not statements:
             return {
                 "total": 0,

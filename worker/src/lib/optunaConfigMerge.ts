@@ -13,6 +13,12 @@ export const COMPOSITE_OPTUNA_CONFIG_SOURCES = [
 
 type AlphaFrameworkMerger = (config: any) => any
 
+export const OPTUNA_CANDIDATE_GROUPS: Readonly<Record<string, readonly string[]>> = {
+  selection: ['signal', 'screener', 'rrg', 'alpha_framework'],
+  execution_risk: ['sltp', 'risk_params'],
+  label_uncertainty: ['barrier', 'conformal'],
+}
+
 export function mergeOptunaConfigSource(
   current: TradingConfig,
   source: string,
@@ -221,13 +227,18 @@ export function mergeCompositeOptunaCandidate(
   current: TradingConfig,
   sources: Record<string, any>,
   mergeAlphaFrameworkConfig: AlphaFrameworkMerger,
+  candidateGroup?: string,
 ): { config: TradingConfig; updatedFields: string[] } {
-  const missing = COMPOSITE_OPTUNA_CONFIG_SOURCES.filter((source) => !sources[source])
+  const required = candidateGroup ? OPTUNA_CANDIDATE_GROUPS[candidateGroup] : COMPOSITE_OPTUNA_CONFIG_SOURCES
+  if (!required) throw new Error(`unknown Optuna candidate group: ${candidateGroup}`)
+  const extra = Object.keys(sources).filter(source => !required.includes(source as never))
+  if (extra.length) throw new Error(`unexpected Optuna sources: ${extra.join(',')}`)
+  const missing = required.filter((source) => !sources[source])
   if (missing.length > 0) throw new Error(`composite Optuna candidate missing sources: ${missing.join(',')}`)
 
   let config = current
   const updatedFields: string[] = []
-  for (const source of COMPOSITE_OPTUNA_CONFIG_SOURCES) {
+  for (const source of COMPOSITE_OPTUNA_CONFIG_SOURCES.filter(source => required.includes(source as never))) {
     const merged = mergeOptunaConfigSource(config, source, sources[source], mergeAlphaFrameworkConfig)
     config = merged.config
     updatedFields.push(...merged.updatedFields)

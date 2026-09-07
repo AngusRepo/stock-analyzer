@@ -132,7 +132,7 @@ export function buildAdminGcpTriggerTaskMap(
           ? 'allocator_ev_fusion'
           : 'auto',
     ),
-    'monthly-strategy-mining': () => runMonthlyStrategyMining(c.env, requestedRunDate()),
+    'monthly-strategy-mining': () => runMonthlyStrategyMining(c.env, requestedRunDate(), schedulerContext),
     'external-evidence': () => runExternalEvidenceMaterialize(c.env, requestedRunDate()),
     'optuna-queue': () => deps.runOptunaQueueProcessor(),
   }

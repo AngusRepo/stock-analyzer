@@ -1,4 +1,16 @@
-# Approved deployment follow-up — 2026-09-06
+# Current task — monthly automation local closure — 2026-09-06
+
+- Read wiki diagnosis/August cadence history, actual scheduler tickets, source and immutable artifact receipts; no new remote mutations.
+- Implemented gateway/parent callback closure, future-ticket rejection and auditable repair planner, truthful partial Optuna outcomes and null-result exception callbacks, current-cycle + existing receipt readiness, and valid idempotent receipt reuse.
+- Verification complete: 72 Python tests; 10 Worker suites including real SQLite/Miniflare CAS and callback KV failure injection; production/tests TypeScript checks; git diff --check.
+- Offline planner validated the two observed future monthly tickets with expected_changes=1, dispatch=false. SQL was NOT applied.
+- Test development exposed a synchronous runner mocked incorrectly as async; corrected the fixture. Its exception path also exposed the genuine pre-result Optuna callback null dereference, now fixed and regression-tested. Direct apply_patch hit environment ACL; used the approved elevated apply_patch wrapper. One compound patch partially applied; inspected diff before applying remaining hunks.
+- No commit/push/deploy, ML retrain, remote mining rerun, pointer change, threshold change, maturity reset or shutdown. Prior deployment approval below is historical only.
+- Handoff: docs/runbooks/2026-09-06-monthly-automation-local-closure.md.
+
+---
+
+# Previous approved deployment follow-up — 2026-09-06
 
 - Wei approved commit/push/deploy and required follow-up repairs after reviewing the scoped inventory. Previous local-only restriction is superseded for this release, not for formal retraining/promotion/orders.
 - Restored deployment wrappers, current worktree and memory. Inspecting origin/main and production source before changes. No remote mutation yet.

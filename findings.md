@@ -1,4 +1,15 @@
-# Current findings — 2026-09-06 prospective-only extension
+# Current findings — 2026-09-06 monthly automation repair
+
+- Production evidence is unchanged since the read-only diagnosis: Research gateway bypass before first ledger; old future monthly physical tickets falsely successful at dispatch; Optuna eight sources OK and screener infeasible/partial.
+- Local repairs keep the dedicated mining token, one Research owner, and normal failed-quality HOLD. No training cadence, model thresholds, serving pointers or maturity evidence changed.
+- Added 100-statement gateway chunking and strict acknowledgement, durable mining parent/leaf settlement with legacy exact-match recovery, future header rejection, false-terminal display/admission fence, offline CAS quarantine with whole-row before images, current-cycle/exact-run freshness receipt verification, valid idempotent receipt reuse, partial Optuna status and pre-result exception callback protection.
+- Existing full-fit storage is keyed by cohort + knowledge cutoff, not cadence. Weekly and monthly can reuse the same attested result without claiming that a different cadence actually executed. Current weekly full-fit is explicit in source, present at least since 6d63a6ff (2026-07-26). No wiki decision permanently forbidding weekly artifacts was established.
+- Google Cloud MLOps treats retraining frequency as conditional on labeled-data arrival, distribution changes and cost; GKX 2020 predicts monthly but refits annually. These support separating inference, training and deployment, not a universal weekly/monthly cadence or a proven return advantage for changing ours.
+- Verification: 72 Python tests, 10 Worker suites, both TypeScript projects; offline planner accepts only the two exact diagnosed monthly tickets. Production repair/deploy remains unapproved this turn.
+
+---
+
+# Previous findings — 2026-09-06 prospective-only extension
 
 - Release closed at code ed59ce1e. Actual production input validation and public/API readbacks pass; IPO still has zero forward rows, as required before the first eligible 9/7 signal date. All eleven formal pointers and eight retained L4/L4+ evidence rows are unchanged. Recovery request IDs are excluded from immutable input identity; the operational request ID remains in the batch receipt.
 - Production 9/4 has 4,736 persisted per-model records, all eight artifact identities, 592 stocks. 36 stocks have three sequence models legitimately unavailable under the existing history-length contract (108 model/stock masks); all five core models are present. Preserve the original stacker's 0.5/availability=0 feature encoding only for that exact attested reason; no raw forecasts are filled.

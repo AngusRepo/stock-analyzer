@@ -2689,7 +2689,7 @@ OOF_SCORE_SEMANTIC_VERSION = "same-market-same-date-average-tie-percentile-rank-
 OOF_FEATURE_SEMANTIC_VERSION = "formal137-pit-rolling-rank-and-imputation-v2"
 OOF_FEATURE_IMPUTATION_SEMANTIC_VERSION = "prior_252_row_median_then_zero_v2"
 OOF_COHORT_ID_VERSION = "v9-feature-semantic-source-attested"
-OOF_LIFECYCLE_RECEIPT_SCHEMA_VERSION = "active8-oof-lifecycle-receipt-v13-candidate-forward-closed"
+OOF_LIFECYCLE_RECEIPT_SCHEMA_VERSION = "active8-oof-lifecycle-receipt-v14-data-ready-release"
 
 
 def _candidate_forward_promotion_closure(
@@ -2780,6 +2780,20 @@ def _oof_lifecycle_materialization_controls(
             cadence == "daily" and requested_promote and not requested_dry_run
         ),
     }
+
+
+def _daily_cohort_batch_ready(manifest: dict, mature_dates: list[str], physical_dates: list[str]) -> bool:
+    """Only a complete new physical OOS batch may advance the existing parent."""
+    return bool(
+        manifest.get("start_date") in mature_dates
+        and int(manifest.get("train_window_days") or 0) == OOF_TRAIN_SESSIONS
+        and int(manifest.get("test_window_days") or 0) == OOF_TEST_SESSIONS
+        and manifest.get("target_semantic_version") == _OOF_TARGET_SEMANTIC_VERSION
+        and manifest.get("score_semantic_version") == OOF_SCORE_SEMANTIC_VERSION
+        and len(manifest.get("windows") or []) >= OOF_PROMOTION_MIN_FOLDS
+        and physical_dates
+        and len({day for day in mature_dates if day > max(physical_dates)}) >= OOF_TEST_SESSIONS
+    )
 
 
 def _active_oof_materialization_policy_version() -> str:
@@ -2903,8 +2917,6 @@ def _oof_lifecycle_receipt_matches_active_policy(
         return False
     if not require_full_fit:
         return True
-    if shadow_complete:
-        return False
     return (
         full_fit.get("status") == "completed"
         and _oof_release_registry_matches_active_policy(full_fit.get("release_registry"))
@@ -3268,6 +3280,8 @@ def _exact_ready_oof_manifest(
     if not blob.exists():
         raise ValueError("oof_exact_cohort_manifest_missing")
     manifest = json.loads(blob.download_as_text())
+    if str(manifest.get("cohort_id") or "") == normalized and manifest.get("status") in {"pending", "running", "spawned", "building"}:
+        raise ValueError("oof_exact_cohort_manifest_not_ready")
     producer_source_sha = str(
         (manifest.get("prep_manifest") or {}).get("producer_source_sha") or ""
     ).strip().lower()
@@ -3314,8 +3328,9 @@ def _pre_dispatch_completed_oof_lifecycle(
     if parent is None:
         return None
     parent_path, manifest = parent
+    pinned_prep = bool(exact_producer_source_sha and cadence != "daily")
     prep_gcs_prefix = (
-        "" if exact_producer_source_sha else (_latest_canonical_prep_prefix(bucket) or "")
+        "" if pinned_prep else (_latest_canonical_prep_prefix(bucket) or "")
     )
     if not prep_gcs_prefix:
         prep_gcs_prefix = str(manifest.get("prep_gcs_prefix") or "").strip().rstrip("/")
@@ -3325,10 +3340,14 @@ def _pre_dispatch_completed_oof_lifecycle(
         req.end_date,
         bucket=bucket,
         prep_gcs_prefix=prep_gcs_prefix,
-        expected_producer_source_sha=exact_producer_source_sha,
+        expected_producer_source_sha=exact_producer_source_sha if pinned_prep else None,
     )
     if len(dates) < OOF_LIFECYCLE_MIN_SESSIONS:
         return None
+    if cadence == "daily" and req.dispatch_full_fit and not req.continuation_only:
+        physical_dates, _ = _oof_manifest_observed_core_dates(bucket, manifest)
+        if _daily_cohort_batch_ready(manifest, dates, physical_dates):
+            return None
     cohort_id = str(manifest.get("cohort_id") or "")
     if not cohort_id or (req.expected_cohort_id and cohort_id != req.expected_cohort_id):
         return None
@@ -3446,6 +3465,10 @@ async def run_walk_forward_oof_lifecycle(req: OofLifecycleRequest):
                 req.expected_cohort_id,
             )
         except ValueError as exc:
+            if str(exc) in {"oof_exact_cohort_manifest_missing", "oof_exact_cohort_manifest_not_ready"}:
+                return {"status": "pending", "reason": str(exc), "cadence": cadence,
+                        "cohort_id": req.expected_cohort_id, "training_dispatched": False,
+                        "promotion_attempted": False}
             raise HTTPException(status_code=422, detail=str(exc)) from exc
         parent = (exact_path, exact_manifest)
     else:
@@ -3453,7 +3476,9 @@ async def run_walk_forward_oof_lifecycle(req: OofLifecycleRequest):
     parent_manifest = parent[1] if parent is not None else {}
     # Parent owns reusable fold lineage; the calendar and every new fold must
     # use the latest independently verified immutable prep.
-    prep_gcs_prefix = "" if exact_producer_source_sha else (_latest_canonical_prep_prefix(bucket) or "")
+    # Pin model lineage, not the daily maturity watermark, during release polling.
+    pinned_prep = bool(exact_producer_source_sha and cadence != "daily")
+    prep_gcs_prefix = "" if pinned_prep else (_latest_canonical_prep_prefix(bucket) or "")
     if not prep_gcs_prefix:
         prep_gcs_prefix = str(parent_manifest.get("prep_gcs_prefix") or "").strip().rstrip("/")
     if not prep_gcs_prefix or prep_gcs_prefix == "universal":
@@ -3463,7 +3488,7 @@ async def run_walk_forward_oof_lifecycle(req: OofLifecycleRequest):
             req.end_date,
             bucket=bucket,
             prep_gcs_prefix=prep_gcs_prefix,
-            expected_producer_source_sha=exact_producer_source_sha,
+            expected_producer_source_sha=exact_producer_source_sha if pinned_prep else None,
         )
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
@@ -3480,7 +3505,12 @@ async def run_walk_forward_oof_lifecycle(req: OofLifecycleRequest):
     selected: tuple[str, dict] | None = None
     daily_forward_extension: dict[str, Any] | None = None
     daily_forward_extension_plan: dict[str, Any] | None = None
-    if cadence == "daily":
+    daily_batch_ready = False
+    if cadence == "daily" and req.dispatch_full_fit and parent and not req.continuation_only:
+        physical_dates, coverage = _oof_manifest_observed_core_dates(bucket, parent_manifest)
+        calendar_evidence["parent_physical_coverage"] = coverage
+        daily_batch_ready = _daily_cohort_batch_ready(parent_manifest, dates, physical_dates)
+    if cadence == "daily" and not daily_batch_ready:
         selected = parent
         if selected is None:
             return {
@@ -3739,6 +3769,21 @@ async def run_walk_forward_oof_lifecycle(req: OofLifecycleRequest):
             )
             return {"status": "spawned", "cadence": cadence, **spawned}
 
+    # A catch-up may have more than one batch. Preserve the residual daily
+    # evidence beyond the formal cohort endpoint; never claim freshness from dates alone.
+    if daily_batch_ready and selected is not None:
+        ready_path, ready_manifest = selected
+        physical_dates, coverage = _oof_manifest_observed_core_dates(bucket, ready_manifest)
+        remaining = [day for day in dates if physical_dates and day > max(physical_dates)]
+        if remaining:
+            daily_forward_extension_plan = {
+                "base_manifest_path": ready_path, "prep_gcs_prefix": prep_gcs_prefix,
+                "sequence_gcs_prefix": str(calendar_evidence.get("sequence_gcs_prefix")
+                                           or ready_manifest.get("sequence_gcs_prefix") or ""),
+                "sequence_batch_count": int(ready_manifest.get("sequence_batch_count") or 5),
+                "start_date": remaining[0], "end_date": remaining[-1],
+                "knowledge_cutoff_date": knowledge_cutoff_date, "confirm": True,
+            }
     manifest_path, manifest = selected
     cohort_id = str(manifest.get("cohort_id") or "")
     if req.expected_cohort_id and cohort_id != req.expected_cohort_id:
@@ -3771,6 +3816,18 @@ async def run_walk_forward_oof_lifecycle(req: OofLifecycleRequest):
                 "calendar": calendar_evidence,
                 "receipt": receipt,
             }
+    # Formal release and frozen forward inference have separate evidence.
+    # Existing full-fit input identity owns deduplication across cadences.
+    canonical_release = None
+    if daily_forward_extension_plan and req.dispatch_full_fit and not req.dry_run:
+        canonical_release = await materialize_walk_forward_oof(OofMaterializeRequest(
+            cohort_id=cohort_id, knowledge_cutoff_date=knowledge_cutoff_date,
+            manifest_path=manifest_path, dry_run=False, confirm=True,
+            promote=False, promote_exact_candidates=False, dispatch_full_fit=True,
+            full_fit_poll_only=req.continuation_only,
+            expected_producer_source_sha=exact_producer_source_sha,
+            lifecycle_cadence=cadence,
+        ))
     if daily_forward_extension_plan and not req.dry_run:
         try:
             from services import modal_client
@@ -3845,6 +3902,9 @@ async def run_walk_forward_oof_lifecycle(req: OofLifecycleRequest):
         ),
     ))
     result["daily_forward_extension"] = daily_forward_extension
+    if canonical_release is not None:
+        result["full_fit_dispatch"] = canonical_release.get("full_fit_dispatch")
+        result["full_fit_retry_required"] = bool(canonical_release.get("full_fit_retry_required"))
     if materialization_controls["frozen_forward_shadow"]:
         result["materialization_status"] = result.get("status")
         result["status"] = "shadow_evaluated"

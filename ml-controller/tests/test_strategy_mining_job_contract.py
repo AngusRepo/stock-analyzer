@@ -10,6 +10,33 @@ from strategy_mining_job_main import _callback_worker_scheduler, _deduped_finlab
 from services import d1_client
 
 
+def test_mining_preflight_failure_stops_compute_and_reaches_error_callback(monkeypatch, tmp_path):
+    from types import SimpleNamespace
+    import types
+
+    called = []
+    monkeypatch.setenv("STRATEGY_MINING_BACKEND", "modal")
+    monkeypatch.setenv("STRATEGY_MINING_RUN_ID", "test-preflight")
+    monkeypatch.setenv("STRATEGY_MINING_OUTPUT_DIR", str(tmp_path))
+    monkeypatch.setenv("GCS_BUCKET_NAME", "test-bucket")
+    monkeypatch.setattr(job, "_assert_runtime_files", lambda: None)
+    monkeypatch.setattr(job, "_login_finlab", lambda: None)
+    monkeypatch.setattr(job, "_load_alpha_miner", lambda: SimpleNamespace(run=lambda args: called.append("compute")))
+    monkeypatch.setattr(job, "_build_args", lambda *a, **k: SimpleNamespace())
+    monkeypatch.setattr(job, "_insert_run", lambda *a: None)
+    monkeypatch.setattr(job, "_update_run", lambda *a, **k: called.append(k["status"]))
+    monkeypatch.setattr(job, "_callback_worker_scheduler", lambda p: called.append(p["status"]))
+    module = types.ModuleType("app.gcs_preflight")
+    def denied(*a, **k):
+        raise PermissionError("WIF denied")
+    module.verify_gcs_object_lifecycle = denied
+    monkeypatch.setitem(sys.modules, "app.gcs_preflight", module)
+    from google.cloud import storage
+    monkeypatch.setattr(storage, "Client", lambda: SimpleNamespace(bucket=lambda name: object()))
+    assert job.main() == 1
+    assert called == ["error", "error"]
+
+
 class _CallbackResponse:
     status_code = 200
     text = '{"ok":true}'

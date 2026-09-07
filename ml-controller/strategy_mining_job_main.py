@@ -875,6 +875,17 @@ def _run_strategy_mining() -> int:
     _insert_run(run_id, run_date, cadence, args)
 
     try:
+        if os.environ.get("STRATEGY_MINING_BACKEND") == "modal":
+            from app.gcs_preflight import verify_gcs_object_lifecycle
+            from google.cloud import storage
+
+            bucket_name = os.environ.get("GCS_BUCKET_NAME", "").strip()
+            if not bucket_name:
+                raise RuntimeError("strategy_mining_gcs_bucket_missing")
+            preflight = verify_gcs_object_lifecycle(
+                storage.Client().bucket(bucket_name), workload="strategy-mining", run_id=run_id,
+            )
+            LOGGER.info("strategy mining GCS preflight: %s", _json_dumps(preflight))
         report = alpha.run(args)
         report["strategy_research_evidence"] = build_strategy_mining_evidence(
             list(report.get("rows") or []),

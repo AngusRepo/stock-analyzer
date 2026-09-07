@@ -18,7 +18,7 @@ def test_modal_uses_dedicated_bucket_scoped_writer_secret():
     assert contract["google_subject_mapping"] == (
         "assertion.workspace_id + ':' + assertion.app_id + ':' + assertion.function_id"
     )
-    assert contract["allowed_app_name"] == "stockvision-ml"
+    assert contract["allowed_app_names"] == ["stockvision-ml", "stockvision-strategy-mining"]
     assert contract["bucket_roles"] == ["roles/storage.objectAdmin"]
     assert contract["project_roles"] == []
     assert "roles/editor" in contract["forbidden_roles"]

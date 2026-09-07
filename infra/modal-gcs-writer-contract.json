@@ -11,7 +11,7 @@
   "google_subject_mapping": "assertion.workspace_id + ':' + assertion.app_id + ':' + assertion.function_id",
   "allowed_workspace_id": "ac-W0gMGaAlY1JUaxXgATRCPO",
   "allowed_environment_name": "main",
-  "allowed_app_name": "stockvision-ml",
+  "allowed_app_names": ["stockvision-ml", "stockvision-strategy-mining"],
   "bucket": "stockvision-models",
   "bucket_roles": [
     "roles/storage.objectAdmin"

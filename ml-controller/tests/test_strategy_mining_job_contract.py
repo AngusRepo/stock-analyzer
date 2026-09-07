@@ -42,6 +42,32 @@ class _CallbackResponse:
     text = '{"ok":true}'
 
 
+def test_completion_summary_keeps_adaptive_metrics_and_full_evidence_pointer():
+    data = {
+        "artifact_paths": {"gcs": {"json": "gs://test/report.json"}},
+        "runtime_seconds": 100,
+        "summary": {"algo": {"median_top10_novelty": 0.3, "pbo": {"pbo": 0.7}, "rows": ["x" * 1000] * 500}},
+        "adaptive_strategy_families": {"eligible_count": 3, "family_count": 2, "evaluated_count": 500, "families": ["x"] * 10000},
+        "strategy_research_evidence": {"status": "failed", "candidate_evidence": {str(i): "x" * 1000 for i in range(500)}},
+        "ledger": {"candidates": {"selected": 300, "batch": {"success_count": 300, "results": ["x"] * 100000}}},
+    }
+    result = job._compact_completion_telemetry(data)
+    assert len(job._json_dumps(result).encode()) < 10000
+    assert result["strategy_research_evidence"]["status"] == "failed"
+    assert result["strategy_research_evidence"]["candidate_evidence_count"] == 500
+    assert result["full_report"] == "gs://test/report.json"
+    assert result["adaptive_strategy_families"]["evaluated_count"] == 500
+    assert result["ledger"]["candidates"]["batch"]["success_count"] == 300
+    assert job._pbo_failure_rate(result["summary"]) == 1.0
+    assert job._median_summary_metric(result["summary"], "median_top10_novelty") == 0.3
+    assert "rows" in data["summary"]["algo"]
+
+
+def test_completion_summary_requires_durable_full_report():
+    with pytest.raises(RuntimeError, match="completion_full_report_missing"):
+        job._compact_completion_telemetry({})
+
+
 def test_finlab_confirm_dedupes_exact_factor_sets_before_backtest_persist():
     report = {
         "rows": [

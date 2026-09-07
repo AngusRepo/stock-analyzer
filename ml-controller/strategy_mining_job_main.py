@@ -548,7 +548,45 @@ def _insert_run(run_id: str, run_date: str, cadence: str, args: argparse.Namespa
     )
 
 
+def _compact_completion_telemetry(telemetry: dict[str, Any]) -> dict[str, Any]:
+    """Keep consumer scalars in D1; full research evidence remains in artifacts."""
+    def scalars(value: Any) -> dict[str, Any]:
+        return {k: v for k, v in (value or {}).items()
+                if v is None or isinstance(v, (str, int, float, bool))}
+
+    result = dict(telemetry)
+    result["schema_version"] = "strategy-mining-completion-summary-v2"
+    result["full_report"] = (telemetry.get("artifact_paths") or {}).get("gcs", {}).get("json")
+    if not result["full_report"]:
+        raise RuntimeError("strategy_mining_completion_full_report_missing")
+    result["summary"] = {
+        name: {**scalars(summary), "pbo": scalars(summary.get("pbo"))}
+        for name, summary in (telemetry.get("summary") or {}).items()
+        if isinstance(summary, dict)
+    }
+    result["adaptive_strategy_families"] = scalars(telemetry.get("adaptive_strategy_families"))
+    evidence = telemetry.get("strategy_research_evidence") or {}
+    result["strategy_research_evidence"] = {
+        **scalars(evidence),
+        **{key: scalars(evidence.get(key)) for key in
+           ("common_candidate_matrix", "pbo", "walk_forward", "multiple_testing")},
+        "candidate_evidence_count": len(evidence.get("candidate_evidence") or {}),
+        "full_evidence_ref": result["full_report"] + "#strategy_research_evidence",
+    }
+    result["factor_universe_summary"] = scalars(telemetry.get("factor_universe_summary"))
+    result["ledger"] = {
+        name: {**scalars(item), "batch": scalars(item.get("batch"))}
+        for name, item in (telemetry.get("ledger") or {}).items()
+        if isinstance(item, dict)
+    }
+    if len(_json_dumps(result).encode("utf-8")) > 100_000:
+        raise RuntimeError("strategy_mining_completion_summary_too_large")
+    return result
+
+
 def _update_run(run_id: str, *, status: str, telemetry: dict[str, Any]) -> None:
+    if status == "completed":
+        telemetry = _compact_completion_telemetry(telemetry)
     d1_client.execute(
         """
         UPDATE strategy_mining_runs

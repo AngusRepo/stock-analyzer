@@ -846,6 +846,47 @@ def build_artifact_records_from_retrain_followup(payload: Any) -> list[dict[str,
     return list(out_by_id.values())
 
 
+def _same_ev_candidate_registration(stored: dict, expected: dict) -> bool:
+    """Cadence/call date do not mint a new content-addressed EV candidate.
+
+    Keep the first registry row byte-for-byte; all packet identity columns are
+    still checked by immutable upsert. No compatibility rule for ML releases.
+    """
+    owners = {'l4_alpha_ev': 'l4_alpha_ev_refresh',
+              'allocator_ev_fusion': 'allocator_ev_fusion_refresh'}
+    owner = expected.get('model_name')
+    if owner not in owners or expected.get('candidate_type') != owners[owner]:
+        return False
+    checksum = str(expected.get('checksum') or '')
+    if len(checksum) != 64 or any(c not in '0123456789abcdef' for c in checksum):
+        return False
+    evidence = []
+    for row in (stored, expected):
+        try:
+            value = json.loads(row.get('offline_evidence_json') or '{}')
+        except (TypeError, ValueError):
+            return False
+        if not isinstance(value, dict) or (
+            value.get('identity_schema_version') != 'expected-return-candidate-identity-v3'
+            or value.get('expected_return_owner') != owner
+            or value.get('artifact_checksum') != checksum
+            or value.get('model_version') != expected.get('version')
+            or 'active8_oof:' + str(value.get('cohort_id') or '') != expected.get('training_run_id')
+            or value.get('cadence') not in {'daily', 'weekly', 'monthly'}
+        ):
+            return False
+        evidence.append({k: v for k, v in value.items() if k != 'cadence'})
+    # source_run_date is this registry packet's first registration cutoff,
+    # not a new training date on every replay. Never backdate a candidate.
+    try:
+        from datetime import date
+        first_date = date.fromisoformat(str(stored.get('source_run_date') or ''))
+        replay_date = date.fromisoformat(str(expected.get('source_run_date') or ''))
+    except ValueError:
+        return False
+    return evidence[0] == evidence[1] and replay_date >= first_date
+
+
 def upsert_artifact_record(
     record: dict[str, Any],
     *,
@@ -980,6 +1021,11 @@ def upsert_artifact_record(
     )
     if len(rows) != 1:
         raise RuntimeError(f"immutable_artifact_persistence_missing:{record['artifact_id']}")
+    if _same_ev_candidate_registration(rows[0], expected):
+        # INSERT ... DO NOTHING already retained these original values. This
+        # only recognizes an equivalent replay; it does not overwrite history.
+        for column in ('offline_evidence_json', 'source_run_date'):
+            expected[column] = rows[0].get(column)
     mismatches = [
         column for column in immutable_columns
         if rows[0].get(column) != expected[column]

@@ -242,7 +242,60 @@ def test_immutable_artifact_record_is_idempotent_and_rejects_identity_drift(monk
         "artifact_path": record["artifact_path"],
         "checksum": checksum,
     }
+    evidence = {'identity_schema_version': 'expected-return-candidate-identity-v3',
+                'expected_return_owner': 'l4_alpha_ev', 'model_version': 'v2',
+                'artifact_checksum': checksum, 'cohort_id': 'cohort', 'cadence': 'weekly',
+                'validation_packet': {'decision': 'FAIL', 'lcb': -0.1}}
+    candidate = {**record, 'artifact_id': f'l4_alpha_ev:v2:{checksum}', 'version': 'v2',
+                 'source_run_date': '2026-09-06', 'offline_evidence_json': json.dumps(evidence)}
+    registry.upsert_artifact_record(candidate, immutable_identity=True)
+    connection.execute('UPDATE model_artifact_registry SET state=? WHERE artifact_id=?',
+                       ['shadowing', candidate['artifact_id']])
+    connection.commit()
+    for cadence in ('monthly', 'daily'):
+        replay = {**candidate, 'source_run_date': '2026-09-07',
+                  'offline_evidence_json': json.dumps({**evidence, 'cadence': cadence})}
+        assert registry.upsert_artifact_record(replay, immutable_identity=True)['immutable_verified']
+    actual = dict(connection.execute('SELECT * FROM model_artifact_registry WHERE artifact_id=?',
+                                     [candidate['artifact_id']]).fetchone())
+    assert actual['source_run_date'] == '2026-09-06'
+    assert actual['offline_evidence_json'] == candidate['offline_evidence_json']
+    assert actual['state'] == 'shadowing'
+    for changed in ({'artifact_path': 'changed'}, {'checksum': 'b' * 64},
+                    {'offline_evidence_json': json.dumps({**evidence, 'validation_packet': {'decision': 'PASS'}})},
+                    {'source_run_date': '2026-09-05'}):
+        with pytest.raises(ValueError, match='immutable_artifact_identity_conflict'):
+            registry.upsert_artifact_record({**candidate, **changed}, immutable_identity=True)
+    assert connection.execute('SELECT COUNT(*) FROM model_artifact_registry WHERE artifact_id=?',
+                              [candidate['artifact_id']]).fetchone()[0] == 1
     connection.close()
+
+
+def test_ev_registration_identity_excludes_only_execution_cadence_and_later_call_date():
+    checksum = 'a' * 64
+    evidence = {
+        'identity_schema_version': 'expected-return-candidate-identity-v3',
+        'expected_return_owner': 'l4_alpha_ev', 'model_version': 'v1',
+        'artifact_checksum': checksum, 'cohort_id': 'cohort', 'cadence': 'weekly',
+        'validation_packet': {'decision': 'FAIL', 'lcb': -0.1},
+        'training_data': {'dates': 24},
+    }
+    stored = {'model_name': 'l4_alpha_ev', 'candidate_type': 'l4_alpha_ev_refresh',
+              'version': 'v1', 'checksum': checksum, 'training_run_id': 'active8_oof:cohort',
+              'source_run_date': '2026-09-06', 'offline_evidence_json': json.dumps(evidence)}
+    for cadence in ('daily', 'weekly', 'monthly'):
+        incoming = {**stored, 'source_run_date': '2026-09-07',
+                    'offline_evidence_json': json.dumps({**evidence, 'cadence': cadence})}
+        assert registry._same_ev_candidate_registration(stored, incoming)
+        assert stored['source_run_date'] == '2026-09-06'
+    for change in ({'validation_packet': {'decision': 'PASS'}},
+                   {'training_data': {'dates': 25}}, {'cohort_id': 'other'},
+                   {'artifact_checksum': 'b' * 64}, {'cadence': 'unknown'},
+                   {'identity_schema_version': 'unverified'}):
+        incoming = {**stored, 'offline_evidence_json': json.dumps({**evidence, **change})}
+        assert not registry._same_ev_candidate_registration(stored, incoming)
+    assert not registry._same_ev_candidate_registration(stored, {**stored, 'source_run_date': '2026-09-05'})
+    assert not registry._same_ev_candidate_registration(stored, {**stored, 'candidate_type': 'monthly_retrain'})
 
 
 def _retired_test_build_artifact_records_from_weekly_followup_failed_registration():

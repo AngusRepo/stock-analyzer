@@ -108,3 +108,34 @@ def test_bundle_confirmation_fails_closed_on_pointer_readback_drift(monkeypatch)
         )
     assert d1.statements is not None
     assert len(d1.statements) == 38
+
+
+@pytest.mark.parametrize("state", ["offline_passed", "offline_strong_pass", "production"])
+def test_bundle_accepts_selected_model_with_passed_offline_state(monkeypatch, state):
+    rows, pointers, ensemble = _fixture()
+    selected = json.loads(ensemble["payload_json"])["selected_models"]
+    for row in rows:
+        if row["model_name"] in selected:
+            row["state"] = state
+    d1 = AtomicD1(rows, ensemble)
+    monkeypatch.setattr(registry, "d1_client", d1)
+    result = registry.run_active8_ensemble_bundle_promotion_controller(
+        training_run_id="run-new", registry_rows=rows, d1_pointers=pointers,
+        ensemble_rows=[ensemble], confirm=True,
+    )
+    assert result["can_promote"] is True
+    assert result["readback_verified"] is True
+    assert d1.statements is not None
+
+
+@pytest.mark.parametrize("state", ["offline_failed", "offline_passed_weak", "registration_failed", "rejected"])
+def test_bundle_rejects_selected_model_with_nonpassing_offline_state(state):
+    rows, pointers, ensemble = _fixture()
+    row = next(row for row in rows if row["model_name"] == "DLinear")
+    row["state"] = state
+    result = registry.run_active8_ensemble_bundle_promotion_controller(
+        training_run_id="run-new", registry_rows=rows, d1_pointers=pointers,
+        ensemble_rows=[ensemble],
+    )
+    assert result["can_promote"] is False
+    assert result["blockers"] == ["base_artifact_contract:DLinear"]

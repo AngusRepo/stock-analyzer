@@ -3440,7 +3440,7 @@ def _active8_base_artifact_blocker(
             not require_individual_pass
             or (
                 oof.get("decision") == "PASS"
-                and str(row.get("state") or "") in {"offline_passed", "production"}
+                and str(row.get("state") or "") in {"offline_passed", "offline_strong_pass", "production"}
             )
         )
         and str(row.get("state") or "") not in {"registration_failed", "rejected"}

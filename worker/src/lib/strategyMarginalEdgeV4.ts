@@ -1,3 +1,4 @@
+import { StrategyOutcomeStream } from './strategyOutcomeStream'
 import {
   STRATEGY_FORMAL_LABELER_VERSIONS,
 } from './strategySpec'
@@ -1065,16 +1066,6 @@ export function evaluatePairedStrategyReplacementsV7(
   }
 }
 
-async function sourceFingerprint(cells: OutcomeCell[]): Promise<string> {
-  const payload = JSON.stringify(cells.map((row) => [
-    row.signal_date, row.symbol, row.strategy_id, row.strategy_version, row.family_id,
-    Number(row.production_owner), Number(row.strategy_hit),
-    Number(row.absolute_return_net), Number(row.residual_return_net),
-  ]))
-  const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(payload))
-  return [...new Uint8Array(digest)].slice(0, 10).map((value) => value.toString(16).padStart(2, '0')).join('')
-}
-
 export async function refreshStrategyMarginalEdgeV4(
   db: D1Database,
   asOfDate: string,
@@ -1084,7 +1075,8 @@ export async function refreshStrategyMarginalEdgeV4(
   if (!Number.isFinite(asOfMs)) throw new Error(`invalid_strategy_edge_as_of_date:${asOfDate}`)
   const startDate = new Date(asOfMs - EDGE_LOOKBACK_CALENDAR_DAYS * 86_400_000).toISOString().slice(0, 10)
   const formalLabelerPlaceholders = STRATEGY_FORMAL_LABELER_VERSIONS.map(() => '?').join(',')
-  const cells: OutcomeCell[] = []
+  const source = new StrategyOutcomeStream()
+  const cells = source.cells
   const canonicalOwners = Object.entries(options.canonicalRunIds ?? {})
     .filter(([signalDate, producerRunId]) => (
       signalDate >= startDate && signalDate <= asOfDate && producerRunId.trim().length > 0
@@ -1134,7 +1126,7 @@ export async function refreshStrategyMarginalEdgeV4(
         EDGE_PAGE_SIZE,
       ).all<OutcomeCell>()
       const rows = page.results ?? []
-      cells.push(...rows)
+      source.append(rows)
       if (rows.length < EDGE_PAGE_SIZE) break
       const last = rows.at(-1)!
       cursorSymbol = last.symbol
@@ -1143,6 +1135,7 @@ export async function refreshStrategyMarginalEdgeV4(
     }
   }
 
+  const fingerprint = source.finish()
   const edges = evaluateStrategyMarginalEdgesV4(cells)
   const eligible = edges.filter((row) => row.productionEligible)
   const previousHead = await db.prepare("SELECT run_id FROM strategy_marginal_edge_head_v4 WHERE owner_key='production'")
@@ -1187,7 +1180,6 @@ export async function refreshStrategyMarginalEdgeV4(
   const paired = replacement.globalPaired
   const finalOwnerKeys = new Set(replacement.finalWeights.keys())
 
-  const fingerprint = await sourceFingerprint(cells)
   const runId = `strategy-marginal-edge-v7-${asOfDate}-${fingerprint}`
   if (previousHead?.run_id === runId) {
     const existing = await db.prepare('SELECT status FROM strategy_marginal_edge_runs_v4 WHERE run_id=?')

@@ -1,3 +1,4 @@
+import { METRIC_ROWS_BEFORE_CUTOFF_SQL } from './strategyMetricSnapshots'
 import { listStrategyEvidenceProfiles } from './strategyEvidenceProfile'
 import { STRATEGY_EVIDENCE_METRIC_DEFINITION_VERSION } from './strategyEvidenceMetrics'
 import type { StrategySpec } from './strategySpec'
@@ -245,15 +246,15 @@ export async function loadStrategyEvidenceOwnerSnapshotBefore(
   knowledgeCutoffDate: string,
 ): Promise<StrategyEvidenceOwnerSnapshot> {
   const [rows, calibrationHistory] = await Promise.all([
-    db.prepare(`
+    db.prepare(`${METRIC_ROWS_BEFORE_CUTOFF_SQL}
       SELECT strategy_id, strategy_version, primary_horizon_days, metric_name,
              metric_value, metric_status, sample_count, mature_dates,
              outcome_as_of_date, definition_version
-        FROM strategy_evidence_metrics_v1
-       WHERE outcome_as_of_date < ?
+        FROM metric_revisions
+       WHERE snapshot_rank=1
          AND definition_version=?
        ORDER BY outcome_as_of_date DESC, strategy_id, metric_name
-    `).bind(knowledgeCutoffDate, STRATEGY_EVIDENCE_METRIC_DEFINITION_VERSION).all<StrategyEvidenceOwnerMetricRow>()
+    `).bind(knowledgeCutoffDate, knowledgeCutoffDate, STRATEGY_EVIDENCE_METRIC_DEFINITION_VERSION).all<StrategyEvidenceOwnerMetricRow>()
       .catch(() => ({ results: [] as StrategyEvidenceOwnerMetricRow[] })),
     loadPromotedStrategyEvidenceOwnerCalibrationHistoryBefore(db, knowledgeCutoffDate).catch(() => []),
   ])

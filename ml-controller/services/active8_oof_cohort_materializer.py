@@ -60,7 +60,7 @@ OOF_MATERIALIZED_ARTIFACT_KINDS = {
     "allocator_ev_snapshots": "snapshot_date",
     "l4_predictions": "prediction_date",
 }
-OOF_FORWARD_COVERAGE_POLICY_VERSION = "verified-frozen-forward-monitoring-v2"
+OOF_FORWARD_COVERAGE_POLICY_VERSION = "verified-frozen-forward-native-frontier-v3"
 EXPECTED_RETURN_SHADOW_EVALUATION_IDENTITY_VERSION = (
     "expected-return-shadow-evaluation-identity-v2"
 )
@@ -710,8 +710,12 @@ def load_oof_prediction_rows(
     cohort_id = str(manifest["cohort_id"])
     formal_lineage = manifest.get("schema_version") == "active8-oof-cohort-manifest-v5"
     prep_lineage = manifest.get("prep_manifest") or {}
+    from services.oof_fold_lineage import verified_fold_producer_sha
+    fold_source_cache: dict = {}
     rows: list[dict[str, Any]] = []
     for window in manifest.get("windows") or []:
+        fold_source_sha = (verified_fold_producer_sha(manifest, window, bucket=bucket, cache=fold_source_cache)
+                           if formal_lineage else None)
         fold_id = f"w{window['window_id']}"
         source_fold_id = str(window.get("source_fold_id") or fold_id)
         source_cohort_id = str(window.get("source_cohort_id") or cohort_id)
@@ -747,8 +751,7 @@ def load_oof_prediction_rows(
                     FEATURE_IMPUTATION_SEMANTIC_VERSION if formal_lineage else None
                 ),
                 expected_producer_source_sha=(
-                    str(prep_lineage.get("producer_source_sha") or "")
-                    if formal_lineage else None
+                    fold_source_sha
                 ),
             ))
     return rows
@@ -1563,7 +1566,10 @@ def _classify_forward_evaluability(
             and native_count == 0
             and rejected == {"native_pit_components_missing": stacker_count}
         ):
-            not_evaluable.append({
+            # Historical exclusions remain explicit; from the restored canonical
+            # producer frontier onward missing native evidence is a retryable defect.
+            target = unresolved if date >= "2026-09-01" else not_evaluable
+            target.append({
                 "date": date,
                 "reason": "missing_native_pit_components",
                 "stacker_eligible_rows": stacker_count,

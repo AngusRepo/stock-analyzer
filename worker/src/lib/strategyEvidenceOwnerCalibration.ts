@@ -1,3 +1,4 @@
+import { METRIC_ROWS_BEFORE_CUTOFF_SQL } from './strategyMetricSnapshots'
 import type { Bindings } from '../types'
 import { databaseForDataDomain } from './dataDomainRegistry'
 import { listStrategyEvidenceProfiles } from './strategyEvidenceProfile'
@@ -386,18 +387,13 @@ export async function refreshStrategyEvidenceOwnerCalibration(
     specs.filter((spec) => spec.status !== 'retired'),
     { availableOutcomeHorizonDays: [3, 5, 10] },
   ).filter((profile) => profile.strategy_status === 'active' || profile.strategy_status === 'shadow')
-  const metricQuery = await db.prepare(`
-    SELECT m.strategy_id, m.strategy_version, m.primary_horizon_days, m.metric_name,
-           m.metric_value, m.metric_status, m.outcome_as_of_date, m.definition_version
-      FROM strategy_evidence_metrics_v1 m
-      JOIN strategy_evidence_metric_snapshot_runs_v1 s
-        ON s.outcome_as_of_date=m.outcome_as_of_date
-       AND s.definition_version=m.definition_version
-       AND s.source_mode='authority_bridge'
-       AND s.status='ready'
-     WHERE m.outcome_as_of_date < ? AND m.definition_version='strategy-evidence-metrics-v4'
-     ORDER BY m.outcome_as_of_date, m.strategy_id, m.strategy_version, m.metric_name
-  `).bind(input.knowledgeCutoffDate).all<StrategyEvidenceCalibrationMetricRow>()
+  const metricQuery = await db.prepare(`${METRIC_ROWS_BEFORE_CUTOFF_SQL}
+    SELECT strategy_id, strategy_version, primary_horizon_days, metric_name,
+           metric_value, metric_status, outcome_as_of_date, definition_version
+      FROM metric_revisions
+     WHERE snapshot_rank=1 AND definition_version='strategy-evidence-metrics-v4'
+     ORDER BY outcome_as_of_date,strategy_id,strategy_version,metric_name
+  `).bind(input.knowledgeCutoffDate,input.knowledgeCutoffDate).all<StrategyEvidenceCalibrationMetricRow>()
   const canonical = await canonicalRunIdsBefore(databaseForDataDomain(env, 'ops'), input.knowledgeCutoffDate)
   const dateReturns = await loadDateReturns(db, profiles, input.knowledgeCutoffDate, canonical)
   const result = await evaluateStrategyEvidenceOwnerCalibration({

@@ -1270,7 +1270,8 @@ def test_oof_lifecycle_uses_latest_prep_instead_of_stale_parent_contract():
     latest_lookup = '_latest_canonical_prep_prefix(bucket) or ""'
     stale_parent_lookup = 'prep_gcs_prefix = str(parent_manifest.get("prep_gcs_prefix") or "").strip().rstrip("/")'
     assert source.index(latest_lookup) < source.index(stale_parent_lookup)
-    assert 'prep_gcs_prefix = "" if exact_producer_source_sha else' in source
+    assert 'pinned_prep = bool(exact_producer_source_sha and cadence != "daily")' in source
+    assert 'prep_gcs_prefix = "" if pinned_prep else' in source
     assert "expected_producer_source_sha=exact_producer_source_sha" in source
     assert '                prep_gcs_prefix = str(parent_manifest.get("prep_gcs_prefix") or "")' not in source.splitlines()
     assert 'calendar_evidence.get("sequence_gcs_prefix")' in source

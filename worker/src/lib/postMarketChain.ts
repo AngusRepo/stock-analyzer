@@ -755,7 +755,8 @@ export async function runPostVerifyCallbackChain(
   const productionEligible = productionAuthority.allowed
   ctx = { ...ctx, runScope: productionAuthority.runScope }
 
-  const outcomeAsOfDate = twDateToday()
+  const outcomeAsOfDate = String(ctx.runDate ?? '')
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(outcomeAsOfDate)) throw new Error('post_verify_business_date_missing')
   const projectionTask = await logChainedTask(env, ctx, 'price-horizon-projection', async () => {
     const stageMs: Record<string, number> = {}
     let stageStartedAt = Date.now()
@@ -791,7 +792,7 @@ export async function runPostVerifyCallbackChain(
   const currentEvidenceTask = await logChainedTask(env, ctx, 'strategy-evidence-current', async () => {
     const stageMs: Record<string, number> = {}
     let stageStartedAt = Date.now()
-    const metrics = await materializeStrategyEvidenceMetrics(env, { outcomeAsOfDate })
+    const metrics = await materializeStrategyEvidenceMetrics(env, { outcomeAsOfDate, publicationScope: `canonical:${ctx.upstreamRunId}` })
     stageMs.strategy_evidence_metrics = Date.now() - stageStartedAt
     stageStartedAt = Date.now()
     if (productionEligible) assertAutomaticPromotionAllowed('multi_horizon_evidence', 'decision_artifact')

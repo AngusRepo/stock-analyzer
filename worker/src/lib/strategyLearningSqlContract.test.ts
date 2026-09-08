@@ -20,7 +20,9 @@ function csvArity(value: string): number {
 
 function assertInsertArities(table: string, expectedPlaceholders: number[]): void {
   const matches = [...source.matchAll(new RegExp(
-    `INSERT INTO ${table}\\s*\\(([\\s\\S]*?)\\)\\s*VALUES\\s*\\(([\\s\\S]*?)\\)`,
+    // Do not cross a template-literal boundary: INSERT...SELECT is a
+    // different statement and must not consume the next INSERT...VALUES.
+    `INSERT INTO ${table}\\s*\\(([^\x60]*?)\\)\\s*VALUES\\s*\\(([^\x60]*?)\\)`,
     'g',
   ))]
   assert.equal(matches.length, expectedPlaceholders.length, `${table} INSERT count changed`)
@@ -35,7 +37,7 @@ assertInsertArities('strategy_learning_daily_stats', [10, 10])
 assertInsertArities('strategy_learning_head', [15])
 assertInsertArities('strategy_reward_ledger', [20])
 assert.match(source, /m\.evaluable = 1/)
-assert.match(source, /m\.reference_contract_version = 'selection-reference-snapshot-v3'/)
+assert.match(source, /m\.reference_contract_version IN \(\$\{SELECTION_REFERENCE_MATURE_COMPATIBLE_CONTRACT_VERSIONS/)
 assert.match(source, /evaluation_contract_version = 'strategy-evaluation-v2'/)
 assert.match(source, /selection_contract_version = 'selection-reference-snapshot-v3'/)
 assert.match(source, /decision_contract_version = 'strategy-evaluation-v2'/)
@@ -47,7 +49,7 @@ assert.doesNotMatch(source, /SUM\(decisions\) AS lifetime_decisions/)
 assert.match(source, /decision_contract_version = 'strategy-evaluation-v2'\s+OR reward_contract_version = 'selection-reference-snapshot-v3'/)
 assert.match(source, /SET evaluable=\?, evaluability_status=\?, unavailable_reason=\?,\s*evaluation_contract_version='strategy-evaluation-v2'/)
 assert.match(source, /COALESCE\(r\.evaluation_contract_version, ''\) <> 'strategy-evaluation-v2'/)
-assert.match(source, /existingMatrix\.reference_contract_version\) === SELECTION_REFERENCE_CONTRACT_VERSION/)
+assert.match(source, /existingMatrix\.reference_contract_version\) === sourceReferenceContractVersion/)
 assert.match(source, /SET status='success'[\s\S]*evaluation_contract_version='strategy-evaluation-v2'/)
 assert.match(source, /valid_runs AS \([\s\S]*STRATEGY_FORMAL_LABELER_VERSION[\s\S]*STRATEGY_FORMAL_RECONSTRUCTION_LABELER_VERSION[\s\S]*LEFT JOIN valid_runs v ON v\.signal_date=d\.date[\s\S]*r\.status='success' AND v\.signal_date IS NULL/)
 assert.match(source, /m\.labeler_version=mr\.labeler_version/)
@@ -57,7 +59,10 @@ assert.match(source, /sr\.strategy_labeler_version=mr\.labeler_version/)
 assert.match(source, /sr\.strategy_registry_checksum=mr\.strategy_registry_checksum/)
 assert.match(source, /sourceMatrixLabeler !== referenceLabeler/)
 assert.doesNotMatch(source, /candidateStrategyEvidenceMode/)
-assert.match(source, /mr\.reference_contract_version='selection-reference-snapshot-v3'/)
+assert.match(source, /mr\.reference_contract_version IN \([\s\S]*SELECTION_REFERENCE_LEGACY_MATURE_CONTRACT_VERSION/)
 assert.match(source, /mr\.persisted_cell_count=mr\.expected_cell_count/)
 assert.match(source, /m\.producer_run_id=\?/)
 assert.doesNotMatch(source, /JOIN canonical_run_heads h[\s\S]{0,240}m\.signal_date=d\.date/)
+assert.match(source, /l\.outcome_known_date IS NOT NULL/)
+assert.match(source, /l\.outcome_known_date <= \?/)
+assert.match(source, /if \(!frozenProjectionComplete\)/)

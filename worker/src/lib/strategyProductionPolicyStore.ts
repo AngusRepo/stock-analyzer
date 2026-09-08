@@ -40,6 +40,14 @@ export const STRATEGY_PRODUCTION_POLICY_POINT_IN_TIME_SQL = `
    LIMIT 1
 `
 
+// A late computation is not a policy that was available at the earlier open.
+// Serving admits it from the next Taipei decision date, preserving created_at.
+// Historical reconstruction retains its separately verified frozen-policy path.
+export const STRATEGY_PRODUCTION_POLICY_SERVING_SQL = STRATEGY_PRODUCTION_POLICY_POINT_IN_TIME_SQL.replace(
+  'ORDER BY knowledge_cutoff_date',
+  "AND datetime(created_at) < datetime(?, '-8 hours') ORDER BY knowledge_cutoff_date",
+)
+
 export const LEGACY_STRATEGY_PRODUCTION_FIREWALL_POLICY_ID =
   'strategy-production-contribution-firewall-v1' as const
 export const LEGACY_STRATEGY_PRODUCTION_FIREWALL_VERSION = 1 as const
@@ -557,12 +565,12 @@ export async function loadStrategyProductionPolicyBefore(
   expectedStrategyIds: readonly string[],
 ): Promise<LoadedStrategyProductionPolicy | null> {
   await ensureStrategyProductionPolicyHistoryTable(db)
-  const row = await db.prepare(STRATEGY_PRODUCTION_POLICY_POINT_IN_TIME_SQL)
-    .bind(STRATEGY_PRODUCTION_FIREWALL_POLICY_ID, knowledgeCutoffDate)
+  const row = await db.prepare(STRATEGY_PRODUCTION_POLICY_SERVING_SQL)
+    .bind(STRATEGY_PRODUCTION_FIREWALL_POLICY_ID, knowledgeCutoffDate, knowledgeCutoffDate)
     .first<StrategyProductionPolicyHistoryRow>()
   if (row) return deserializeStrategyProductionPolicyRow(row, expectedStrategyIds)
-  const previous = await db.prepare(STRATEGY_PRODUCTION_POLICY_POINT_IN_TIME_SQL)
-    .bind(PREVIOUS_STRATEGY_PRODUCTION_FIREWALL_POLICY_ID, knowledgeCutoffDate)
+  const previous = await db.prepare(STRATEGY_PRODUCTION_POLICY_SERVING_SQL)
+    .bind(PREVIOUS_STRATEGY_PRODUCTION_FIREWALL_POLICY_ID, knowledgeCutoffDate, knowledgeCutoffDate)
     .first<StrategyProductionPolicyHistoryRow>()
   return previous ? deserializePreviousStrategyProductionPolicyRow(previous, expectedStrategyIds) : null
 }

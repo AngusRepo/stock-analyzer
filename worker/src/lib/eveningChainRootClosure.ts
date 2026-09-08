@@ -31,6 +31,7 @@ type StrategyLearningClosureRow = {
   persisted_decision_rows: number
   production_authority_intent: number
   policy_closure_status: string
+  policy_closure_reason?: string | null
   completed_at: string | null
 }
 
@@ -160,7 +161,7 @@ export async function closeEveningChainRootIfComplete(
       SELECT canonical_run_id, producer_run_id, status,
              expected_candidates, processed_candidates,
              expected_decision_rows, persisted_decision_rows,
-             production_authority_intent, policy_closure_status, completed_at
+             production_authority_intent, policy_closure_status, policy_closure_reason, completed_at
         FROM strategy_learning_runs
        WHERE business_date=? AND canonical_run_id=?
        LIMIT 1
@@ -258,8 +259,9 @@ export async function closeEveningChainRootIfComplete(
   }
 
   const status = blockers.length === 0 ? 'success' : 'error'
+  const historicalExclusion = learning?.policy_closure_reason?.match(/historical_excluded=\S+/)?.[0] ?? 'historical_excluded=none'
   const summary = blockers.length === 0
-    ? `evening-chain durable DAG complete date=${businessDate} run_id=${canonicalRunId} stages=${REQUIRED_STAGES.length} strategy_learning=success dataset_snapshot=success active8_oof_daily=success`
+    ? `evening-chain durable DAG complete date=${businessDate} run_id=${canonicalRunId} stages=${REQUIRED_STAGES.length} strategy_learning=success dataset_snapshot=success active8_oof_daily=success ${historicalExclusion}`
     : `evening-chain durable DAG failed date=${businessDate} run_id=${canonicalRunId} blockers=${blockers.join(',')}`
   await updateSchedulerExecutionTicket(db, {
     ticketId: root.ticket_id,

@@ -3762,6 +3762,15 @@ export async function processUpdateBatch(
       productionAuthorityIntent: Boolean(msg.productionAuthorityIntent ?? msg.force),
     })
     if (await handleFinalizedRetry(state)) return
+    if (state.status === 'error') {
+      const { propagateStrategyLearningTerminalFailure } = await import('./strategyLearningRunState')
+      await propagateStrategyLearningTerminalFailure(runStateDb, {
+        businessDate: triggerTime, canonicalRunId: state.canonical_run_id,
+      })
+      // Terminal errors require an explicit repaired continuation, not a fresh
+      // pagination run on every queue redelivery.
+      return
+    }
     const expectedCandidates = Math.max(0, Number(state.expected_candidates ?? 0))
     const expectedRows = Math.max(0, Number(state.expected_decision_rows ?? 0))
     const materializationAlreadyComplete = expectedCandidates > 0
@@ -3909,10 +3918,13 @@ export async function processUpdateBatch(
       const assertFinalizerLease = async (_stage: string): Promise<void> => finalizerHeartbeat!.assertActive()
 
       const productionAuthorityIntent = state.production_authority_intent === 1
+      const { resolveStrategyLearningCompletionAuthority } = await import('./strategyLearningCompletionAuthority')
       const productionAuthority = productionAuthorityIntent
-        ? await resolveEveningChainRunAuthority(env, {
+        ? await resolveStrategyLearningCompletionAuthority(env, {
             businessDate: triggerTime,
             canonicalRunId,
+            producerRunId: String(state.producer_run_id ?? ''),
+            specs,
           })
         : null
       const currentBusinessDateRun = productionAuthority?.allowed === true
@@ -3923,7 +3935,7 @@ export async function processUpdateBatch(
       }
       const policyMutationAllowed = productionAuthorityIntent && currentBusinessDateRun
       const finalizerCacheMode = policyMutationAllowed ? 'policy-mutation' : 'evidence-only'
-      const finalizerCacheKey = `strategy-learning:finalizer:${triggerTime}:${canonicalRunId}:${finalizerCacheMode}:v4-canonical-matrix-parity`
+      const finalizerCacheKey = `strategy-learning:finalizer:${triggerTime}:${canonicalRunId}:${finalizerCacheMode}:v5-known-date-publication-fence`
       const cachedFinalizer = await env.KV.get(finalizerCacheKey, 'json') as {
         canonical_run_id?: string
         stages?: Record<string, unknown>
@@ -3981,7 +3993,7 @@ export async function processUpdateBatch(
       let closureSummary = ''
       const { decisionEvidence, historicalEvidence, labels, marginalEdge, routeBackfillEligibility, rewards, policy, productionPolicy }
         = await finalizeStrategyLearningEvidenceV5(learningDb, triggerTime, {
-          allowPromotion: policyMutationAllowed,
+          allowPromotion: policyMutationAllowed && !productionAuthority?.lateCompletion,
           persistPolicy: policyMutationAllowed,
           historicalPriorityDate,
           identityDb: databaseForDataDomain(env, 'core'),
@@ -4038,7 +4050,7 @@ export async function processUpdateBatch(
       const policyClosureRecorded = await recordStrategyLearningPolicyClosure(runStateDb, {
         ...leaseIdentity,
         status: policyClosureStatus,
-        reason: policyClosureReason,
+        reason: `${policyClosureReason} ${closureSummary.match(/historical_excluded=\S+/)?.[0] ?? 'historical_excluded=none'}`,
       })
       if (!policyClosureRecorded) {
         throw new Error(`strategy_learning_policy_closure_fence_lost:${triggerTime}:${canonicalRunId}`)
@@ -4066,6 +4078,7 @@ export async function processUpdateBatch(
       `evidence_closure=${closureSummary}`,
       `run_scope=${runScope}`,
       `production_authority=${authorityReason}`,
+      `late_completion=${productionAuthority?.lateCompletion === true}`,
       `production_authority_intent=${productionAuthorityIntent}`,
       `policy_mutation=${policyMutationAllowed}`,
       `policy_closure=${policyClosureStatus}`,
@@ -4139,8 +4152,9 @@ export async function processUpdateBatch(
         console.warn(`[Queue] strategy-learning lease lost; queue retry required date=${triggerTime} run_id=${canonicalRunId}`)
         throw error
       }
-        const terminalPolicyClosureFailure = errorMessage.startsWith('strategy_learning_production_authority_denied:')
-          || errorMessage.startsWith('strategy_learning_live_policy_closure_missing:')
+        const { isStrategyLearningTerminalFailure, propagateStrategyLearningTerminalFailure }
+          = await import('./strategyLearningRunState')
+        const terminalPolicyClosureFailure = isStrategyLearningTerminalFailure(error)
         const transitioned = materializationValidated && !terminalPolicyClosureFailure
           ? await deferStrategyLearningFinalizer(runStateDb, {
               ...leaseIdentity,
@@ -4153,6 +4167,11 @@ export async function processUpdateBatch(
       if (!transitioned) {
         console.warn(`[Queue] strategy-learning terminal fence lost; queue retry required date=${triggerTime} run_id=${canonicalRunId}`)
         throw error
+      }
+      if (terminalPolicyClosureFailure || !materializationValidated) {
+        await propagateStrategyLearningTerminalFailure(runStateDb, {
+          businessDate: triggerTime, canonicalRunId,
+        })
       }
       await Promise.allSettled([
         logSchedulerResult(env.KV, 'strategy-learning', {

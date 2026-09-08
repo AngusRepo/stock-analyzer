@@ -2380,6 +2380,7 @@ export async function listStrategyRewardSourceRows(
       "l.label_schema_version = 'canonical-strategy-selection-label-v4'",
       `m.labeler_version IN (${formalLabelerPlaceholders})`,
       'r.strategy_labeler_version = m.labeler_version',
+      "NOT EXISTS (SELECT 1 FROM strategy_evidence_gap_dispositions_v1 d WHERE d.signal_date=m.signal_date AND d.status='excluded_missing_source')",
       `EXISTS (
         SELECT 1 FROM strategy_label_matrix_runs_v4 mr
          WHERE mr.producer_run_id=m.producer_run_id AND mr.status='ready'
@@ -2406,7 +2407,10 @@ export async function listStrategyRewardSourceRows(
       clauses.push("EXISTS (SELECT 1 FROM canonical_run_heads h WHERE h.logical_run_key = 'screener:' || m.signal_date || ':TW:production:market_screener' AND h.run_id = m.producer_run_id)")
     }
     if (options.startDate) { clauses.push('m.signal_date >= ?'); binds.push(options.startDate) }
-    if (options.endDate) { clauses.push('m.signal_date <= ?'); binds.push(options.endDate) }
+    if (options.endDate) {
+      clauses.push('m.signal_date <= ?', 'l.outcome_known_date IS NOT NULL', 'l.outcome_known_date <= ?')
+      binds.push(options.endDate, options.endDate)
+    }
     binds.push(pageSize)
     const page = await db.prepare(`
       SELECT m.signal_date date,
@@ -3476,9 +3480,10 @@ export async function getStrategyPolicyStateBeforeDate(
      WHERE policy_id = ?
        AND status = 'active'
        AND knowledge_cutoff_date < ?
+       AND datetime(created_at) < datetime(?, '-8 hours')
      ORDER BY knowledge_cutoff_date DESC, created_at DESC
      LIMIT 1
-  `).bind(STRATEGY_POLICY_ID, signalDate).first<StrategyPolicyStateRow>()
+  `).bind(STRATEGY_POLICY_ID, signalDate, signalDate).first<StrategyPolicyStateRow>()
   return row ? parseStrategyPolicyStateRow(row) : null
 }
 
@@ -3506,6 +3511,8 @@ export async function persistStrategyPolicyState(db: D1Database, state: Strategy
       threshold_deltas_json=excluded.threshold_deltas_json,
       evidence_json=excluded.evidence_json,
       updated_at=excluded.updated_at
+    WHERE COALESCE(json_extract(strategy_policy_state.evidence_json, '$.date'), '')
+      <= json_extract(excluded.evidence_json, '$.date')
   `).bind(
     state.policy_id,
     state.version,
@@ -4921,6 +4928,21 @@ export async function rebuildHistoricalStrategyEvidenceV5(
           && Number(projectionSource.matched_rows) > 0
           && Number(projectionSource.threshold_evidence_rows) === Number(projectionSource.matched_rows)
         if (projectionSourceReady && !artifactBackedV1Carrier) {
+          const frozenProjection = await db.prepare(`
+            SELECT
+              (SELECT COUNT(*) FROM strategy_label_matrix_v4
+                WHERE signal_date=? AND producer_run_id=? AND challenger_affinity_version=?) matrix_rows,
+              (SELECT COUNT(*) FROM selection_reference_snapshots_v1
+                WHERE signal_date=? AND producer_run_id=? AND hard_gate_passed=1
+                  AND strategy_challenger_affinity_version=?) reference_rows
+          `).bind(date, producerRunId, STRATEGY_AFFINITY_CHALLENGER_VERSION,
+            date, producerRunId, STRATEGY_AFFINITY_CHALLENGER_VERSION,
+          ).first<{ matrix_rows: number; reference_rows: number }>()
+          // A complete native projection is original evidence, not a request
+          // to recompute its affinities using today's evaluator/configuration.
+          const frozenProjectionComplete = Number(frozenProjection?.matrix_rows) === expectedMatrixRows
+            && Number(frozenProjection?.reference_rows) === references.length
+          if (!frozenProjectionComplete) {
           const regime = await options.resolveHistoricalRegime?.(date) ?? artifactEvidence?.regime ?? null
           if (!regime) throw new Error(`strategy_regime_pit_missing:${date}`)
           const projectionUpdates: D1PreparedStatement[] = []
@@ -4955,6 +4977,7 @@ export async function rebuildHistoricalStrategyEvidenceV5(
                SET strategy_challenger_affinity_version=?
              WHERE signal_date=? AND producer_run_id=?
           `).bind(STRATEGY_AFFINITY_CHALLENGER_VERSION, date, producerRunId).run()
+          }
           projectedExistingMatrix = true
         }
       }

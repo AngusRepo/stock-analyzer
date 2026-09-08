@@ -397,7 +397,7 @@ export function buildAdminWorkerDomainTaskMap(c: any, deps: TriggerDeps): Record
       } = await import('./strategyLearningFinalizedTelemetry')
       const learningDb = databaseForDataDomain(c.env, 'learning')
       const runStateDb = databaseForDataDomain(c.env, 'ops')
-      const runState = await loadStrategyLearningRun(runStateDb, runDate)
+      let runState = await loadStrategyLearningRun(runStateDb, runDate)
       if (!runState) throw new Error(`strategy_learning_run_missing:${runDate}`)
       const finalizedRetry = await reconcileStrategyLearningFinalizedRetryFastPath(
         runStateDb,
@@ -415,6 +415,30 @@ export function buildAdminWorkerDomainTaskMap(c: any, deps: TriggerDeps): Record
       }
       if (finalizedRetry === 'authority_changed') {
         return `strategy_learning_finalize date=${runDate} already_finalized_authority_changed run_id=${runState.canonical_run_id}`
+      }
+
+      if (runState.status === 'error') {
+        if (c.req.query('retry_after_repair') !== '1') {
+          throw new Error(`strategy_learning_terminal_requires_explicit_repair_retry:${runDate}`)
+        }
+        const { listStrategySpecsForLearning, assertCanonicalStrategyDecisionGridParity }
+          = await import('./strategyLearning')
+        const { resolveStrategyLearningCompletionAuthority } = await import('./strategyLearningCompletionAuthority')
+        const authority = await resolveStrategyLearningCompletionAuthority(c.env, {
+          businessDate:runDate,canonicalRunId:runState.canonical_run_id,
+          producerRunId:String(runState.producer_run_id ?? ''),
+          specs:(await listStrategySpecsForLearning(learningDb)).specs,
+        })
+        if (!authority.allowed) throw new Error(`strategy_learning_repair_authority_denied:${authority.reason}`)
+        await assertCanonicalStrategyDecisionGridParity(learningDb,{
+          date:runDate,canonicalProducerRunId:runState.producer_run_id,
+        })
+        const { resumeRepairedStrategyLearningRun } = await import('./strategyLearningRunState')
+        if (!(await resumeRepairedStrategyLearningRun(runStateDb,{
+          businessDate:runDate,canonicalRunId:runState.canonical_run_id,
+          producerRunId:String(runState.producer_run_id ?? ''),
+        }))) throw new Error(`strategy_learning_repair_resume_fence_lost:${runDate}`)
+        runState = (await loadStrategyLearningRun(runStateDb,runDate))!
       }
 
       const {
@@ -468,9 +492,11 @@ export function buildAdminWorkerDomainTaskMap(c: any, deps: TriggerDeps): Record
           throw new Error(`strategy_learning_durable_production_authority_intent_required:${runDate}`)
         }
         const productionAuthority = productionAuthorityIntent
-          ? await resolveEveningChainRunAuthority(c.env, {
+          ? await (await import('./strategyLearningCompletionAuthority')).resolveStrategyLearningCompletionAuthority(c.env, {
               businessDate: runDate,
               canonicalRunId: runState.canonical_run_id,
+              producerRunId: String(runState.producer_run_id ?? ''),
+              specs: (await (await import('./strategyLearning')).listStrategySpecsForLearning(learningDb)).specs,
             })
           : null
         const currentBusinessDateRun = productionAuthority?.allowed === true
@@ -496,7 +522,7 @@ export function buildAdminWorkerDomainTaskMap(c: any, deps: TriggerDeps): Record
         let closureSummary = ''
         const { decisionEvidence, historicalEvidence, labels, marginalEdge, routeBackfillEligibility, rewards, policy, productionPolicy }
           = await finalizeStrategyLearningEvidenceV5(learningDb, runDate, {
-            allowPromotion: currentBusinessDateRun,
+            allowPromotion: currentBusinessDateRun && !productionAuthority?.lateCompletion,
             persistPolicy: currentBusinessDateRun,
             historicalPriorityDate,
             identityDb: databaseForDataDomain(c.env, 'core'),
@@ -546,7 +572,7 @@ export function buildAdminWorkerDomainTaskMap(c: any, deps: TriggerDeps): Record
         const policyClosureRecorded = await recordStrategyLearningPolicyClosure(runStateDb, {
           ...leaseIdentity,
           status: policyClosureStatus,
-          reason: policyClosureReason,
+          reason: `${policyClosureReason} ${closureSummary.match(/historical_excluded=\S+/)?.[0] ?? 'historical_excluded=none'}`,
         })
         if (!policyClosureRecorded) {
           throw new Error(`strategy_learning_policy_closure_fence_lost:${runDate}:${runState.canonical_run_id}`)
@@ -616,9 +642,9 @@ export function buildAdminWorkerDomainTaskMap(c: any, deps: TriggerDeps): Record
           console.warn(`[Admin] strategy-learning lease lost; explicit retry required date=${runDate} run_id=${runState.canonical_run_id}`)
           throw error
         }
-        const terminalPolicyClosureFailure = errorMessage.startsWith('strategy_learning_production_authority_denied:')
-          || errorMessage.startsWith('strategy_learning_live_policy_closure_missing:')
-          || errorMessage.startsWith('strategy_learning_durable_production_authority_intent_required:')
+        const { isStrategyLearningTerminalFailure, propagateStrategyLearningTerminalFailure }
+          = await import('./strategyLearningRunState')
+        const terminalPolicyClosureFailure = isStrategyLearningTerminalFailure(error)
         const transitioned = materializationValidated && !terminalPolicyClosureFailure
           ? await deferStrategyLearningFinalizer(runStateDb, {
               ...leaseIdentity,
@@ -631,6 +657,11 @@ export function buildAdminWorkerDomainTaskMap(c: any, deps: TriggerDeps): Record
         if (!transitioned) {
           console.warn(`[Admin] strategy-learning terminal fence lost; explicit retry required date=${runDate} run_id=${runState.canonical_run_id}`)
           throw error
+        }
+        if (terminalPolicyClosureFailure || !materializationValidated) {
+          await propagateStrategyLearningTerminalFailure(runStateDb, {
+            businessDate: runDate, canonicalRunId: runState.canonical_run_id,
+          })
         }
         await Promise.allSettled([
           logSchedulerResult(c.env.KV, 'strategy-learning', {

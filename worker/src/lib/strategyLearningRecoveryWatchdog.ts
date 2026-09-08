@@ -153,6 +153,10 @@ export async function runStrategyLearningRecoveryWatchdog(
   }
   if (!decision.resume) {
     if (decision.reason.startsWith('run_error:') || decision.reason === 'recoverable_progress_invalid') {
+      const { propagateStrategyLearningTerminalFailure } = await import('./strategyLearningRunState')
+      await propagateStrategyLearningTerminalFailure(opsDb, {
+        businessDate: row.business_date, canonicalRunId: row.canonical_run_id,
+      })
       const summary = `strategy-learning recovery blocked date=${row.business_date} reason=${decision.reason}`
       await logWatchdog(env, row, 'error', summary)
       throw new Error(summary)

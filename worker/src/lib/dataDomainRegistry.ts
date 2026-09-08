@@ -107,7 +107,7 @@ const DOMAIN_TABLES: Record<DataDomain, ReadonlySet<string>> = {
     'strategy_route_backfill_eligibility_v1', 'strategy_route_versioned_evidence_v1',
     'strategy_redundancy_artifacts_v1',
     'strategy_reward_ledger', 'strategy_learning_daily_stats', 'strategy_learning_head',
-    'strategy_policy_state', 'strategy_evidence_rebuild_runs_v5',
+    'strategy_policy_state', 'strategy_evidence_rebuild_runs_v5', 'strategy_evidence_gap_dispositions_v1',
     'strategy_replacement_decisions_v5', 'strategy_replacement_cutover_guards_v5',
     'parameter_candidate_registry', 'parameter_candidate_evidence',
     'parameter_candidate_events', 'entry_model_replay_reports',

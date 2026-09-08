@@ -40,7 +40,7 @@ async function main(): Promise<void> {
         expected_candidates INTEGER NOT NULL, processed_candidates INTEGER NOT NULL,
         expected_decision_rows INTEGER NOT NULL, persisted_decision_rows INTEGER NOT NULL,
         production_authority_intent INTEGER NOT NULL, policy_closure_status TEXT NOT NULL,
-        completed_at TEXT
+        completed_at TEXT, policy_closure_reason TEXT
       )
     `).run()
     const businessDate = '2026-08-31'

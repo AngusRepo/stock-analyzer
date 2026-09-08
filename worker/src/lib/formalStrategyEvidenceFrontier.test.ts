@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict'
+import { validHistoricalEvidenceExclusion } from './historicalEvidenceExclusions'
 
 import { auditFormalStrategyEvidenceFrontier } from './eveningChainEvidenceClosure'
 import { SELECTION_REFERENCE_LEGACY_MATURE_CONTRACT_VERSION } from './selectionReferenceEvidence'
@@ -82,11 +83,22 @@ class FakeD1 {
     private readonly staleDate: string | null = null,
     private readonly invalidLineageDate: string | null = null,
     private readonly missingHeadDate: string | null = null,
+    private readonly excludedDate: string | null = null,
   ) {}
 
   prepare(_sql: string): FakeStatement {
+    if (_sql.includes('FROM strategy_evidence_gap_dispositions_v1 d')) {
+      const rows = this.excludedDate ? [exclusion(this.excludedDate)] : []
+      return {bind() {return this},all:async () => ({results:rows})} as any
+    }
     return new FakeStatement(this.role, this.staleDate, this.invalidLineageDate, this.missingHeadDate)
   }
+}
+
+function exclusion(date: string) {
+  return {signal_date:date,status:'excluded_missing_source',reason:'original_missing',
+    approval_ref:'explicit-test-approval',evidence_ref:'test:audit',evidence_sha256:'a'.repeat(64),
+    approved_at:'2026-08-20T00:00:00Z',source_rows:0}
 }
 
 async function main(): Promise<void> {
@@ -134,6 +146,22 @@ async function main(): Promise<void> {
     date: '2026-08-19',
     blockers: ['formal_canonical_head_missing'],
   }])
+  const excluded = await auditFormalStrategyEvidenceFrontier(
+    new FakeD1('learning',null,null,null,'2026-08-19') as any,
+    new FakeD1('ops',null,null,'2026-08-19') as any,
+    new FakeD1('market') as any,'2026-08-19')
+  assert.deepEqual(excluded.readyDates,['2026-08-18'],'excluded day never becomes mature/ready')
+  assert.deepEqual(excluded.backlog,[])
+  assert.equal(excluded.exclusions[0].signal_date,'2026-08-19')
+  const reappeared = await auditFormalStrategyEvidenceFrontier(
+    new FakeD1('learning',null,null,null,'2026-08-19') as any,
+    new FakeD1('ops') as any,new FakeD1('market') as any,'2026-08-19')
+  assert.deepEqual(reappeared.readyDates,['2026-08-18'])
+  assert.ok(reappeared.backlog.some(row=>row.blockers.includes('historical_exclusion_invalid_or_source_reappeared')))
+  assert.equal(validHistoricalEvidenceExclusion({...exclusion('2026-08-19'),source_rows:1}),false)
+  assert.equal(validHistoricalEvidenceExclusion({...exclusion('2026-08-19'),approval_ref:''}),false)
+  assert.equal(validHistoricalEvidenceExclusion({...exclusion('2026-08-19'),evidence_sha256:'bad'}),false)
+  assert.equal(validHistoricalEvidenceExclusion({...exclusion('2026-08-19'),approved_at:'2099-01-01T00:00:00Z'}),false)
 }
 
 void main()

@@ -20,6 +20,33 @@ export type StrategyLearningRunRow = {
 
 export const STRATEGY_LEARNING_LEASE_SECONDS = 900
 
+export function isStrategyLearningTerminalFailure(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error)
+  return message.startsWith('strategy_learning_production_authority_denied:')
+    || message.startsWith('strategy_learning_live_policy_closure_missing:')
+    || message.startsWith('strategy_learning_durable_production_authority_intent_required:')
+    || (message.startsWith('evening_chain_formal_evidence_backlog:')
+      && message.includes('formal_canonical_head_missing'))
+}
+
+export async function propagateStrategyLearningTerminalFailure(
+  db: D1Database,
+  input: { businessDate: string; canonicalRunId: string },
+): Promise<void> {
+  await db.prepare(`
+    UPDATE pipeline_stage_runs SET status='error', completed_at=CURRENT_TIMESTAMP,
+      updated_at=CURRENT_TIMESTAMP,
+      last_error=(SELECT last_error FROM strategy_learning_runs WHERE business_date=?)
+    WHERE business_date=? AND stage='post_verify_chain' AND canonical_run_id=?
+      AND status IN ('waiting','running') AND lease_owner IS NULL
+      AND EXISTS (SELECT 1 FROM strategy_learning_runs l
+        WHERE l.business_date=pipeline_stage_runs.business_date
+          AND l.canonical_run_id=pipeline_stage_runs.canonical_run_id AND l.status='error')
+  `).bind(input.businessDate, input.businessDate, input.canonicalRunId).run()
+  const { closeEveningChainRootIfComplete } = await import('./eveningChainRootClosure')
+  await closeEveningChainRootIfComplete(db, input)
+}
+
 export type StrategyLearningLeaseIdentity = {
   businessDate: string
   canonicalRunId: string
@@ -111,28 +138,23 @@ export async function initializeStrategyLearningRun(
       canonical_run_id=CASE
         WHEN strategy_learning_runs.producer_run_id IS NOT excluded.producer_run_id
           THEN excluded.canonical_run_id
-        WHEN strategy_learning_runs.status='error' THEN excluded.canonical_run_id
         ELSE strategy_learning_runs.canonical_run_id
       END,
       producer_run_id=excluded.producer_run_id,
       status=CASE
         WHEN strategy_learning_runs.producer_run_id IS NOT excluded.producer_run_id THEN 'queued'
-        WHEN strategy_learning_runs.status='error' THEN 'queued'
         ELSE strategy_learning_runs.status
       END,
       cursor_symbol=CASE
         WHEN strategy_learning_runs.producer_run_id IS NOT excluded.producer_run_id THEN NULL
-        WHEN strategy_learning_runs.status='error' THEN NULL
         ELSE strategy_learning_runs.cursor_symbol
       END,
       processed_candidates=CASE
         WHEN strategy_learning_runs.producer_run_id IS NOT excluded.producer_run_id THEN 0
-        WHEN strategy_learning_runs.status='error' THEN 0
         ELSE strategy_learning_runs.processed_candidates
       END,
       persisted_decision_rows=CASE
         WHEN strategy_learning_runs.producer_run_id IS NOT excluded.producer_run_id THEN 0
-        WHEN strategy_learning_runs.status='error' THEN 0
         ELSE strategy_learning_runs.persisted_decision_rows
       END,
       expected_candidates=excluded.expected_candidates,
@@ -145,27 +167,22 @@ export async function initializeStrategyLearningRun(
       END,
       policy_closure_status=CASE
         WHEN strategy_learning_runs.producer_run_id IS NOT excluded.producer_run_id THEN 'pending'
-        WHEN strategy_learning_runs.status='error' THEN 'pending'
         ELSE strategy_learning_runs.policy_closure_status
       END,
       policy_closure_reason=CASE
         WHEN strategy_learning_runs.producer_run_id IS NOT excluded.producer_run_id THEN NULL
-        WHEN strategy_learning_runs.status='error' THEN NULL
         ELSE strategy_learning_runs.policy_closure_reason
       END,
       policy_closure_completed_at=CASE
         WHEN strategy_learning_runs.producer_run_id IS NOT excluded.producer_run_id THEN NULL
-        WHEN strategy_learning_runs.status='error' THEN NULL
         ELSE strategy_learning_runs.policy_closure_completed_at
       END,
       lease_owner=CASE
         WHEN strategy_learning_runs.producer_run_id IS NOT excluded.producer_run_id THEN NULL
-        WHEN strategy_learning_runs.status='error' THEN NULL
         ELSE strategy_learning_runs.lease_owner
       END,
       lease_expires_at=CASE
         WHEN strategy_learning_runs.producer_run_id IS NOT excluded.producer_run_id THEN NULL
-        WHEN strategy_learning_runs.status='error' THEN NULL
         ELSE strategy_learning_runs.lease_expires_at
       END,
       completed_at=CASE
@@ -174,6 +191,8 @@ export async function initializeStrategyLearningRun(
       END,
       updated_at=CURRENT_TIMESTAMP
     WHERE strategy_learning_runs.status<>'success'
+      AND (strategy_learning_runs.status<>'error'
+        OR strategy_learning_runs.producer_run_id IS NOT excluded.producer_run_id)
   `).bind(
     input.businessDate,
     input.runId,
@@ -202,6 +221,40 @@ export async function loadStrategyLearningRun(
       FROM strategy_learning_runs
      WHERE business_date=?
   `).bind(businessDate).first<StrategyLearningRunRow>()
+}
+
+/** Operator-only continuation after source/parity verification. Never reset progress. */
+export async function resumeRepairedStrategyLearningRun(
+  db: D1Database,
+  input: { businessDate: string; canonicalRunId: string; producerRunId: string },
+): Promise<boolean> {
+  const receipt = `explicit_repair_resume:${crypto.randomUUID()}`
+  await db.batch([
+    db.prepare(`UPDATE strategy_learning_runs SET status='queued',last_error=NULL,
+      policy_closure_reason=?,updated_at=CURRENT_TIMESTAMP
+      WHERE business_date=? AND canonical_run_id=? AND producer_run_id=?
+        AND status='error' AND lease_owner IS NULL AND lease_expires_at IS NULL
+        AND EXISTS (SELECT 1 FROM pipeline_stage_runs p
+          WHERE p.business_date=strategy_learning_runs.business_date
+            AND p.stage='post_verify_chain' AND p.canonical_run_id=strategy_learning_runs.canonical_run_id
+            AND p.status IN ('error','waiting') AND p.lease_owner IS NULL)
+        AND EXISTS (SELECT 1 FROM pipeline_stage_runs p
+          WHERE p.business_date=strategy_learning_runs.business_date
+            AND p.stage='pipeline_execution' AND p.canonical_run_id=strategy_learning_runs.canonical_run_id
+            AND p.status='success')
+    `).bind(receipt,input.businessDate,input.canonicalRunId,input.producerRunId),
+    db.prepare(`UPDATE pipeline_stage_runs SET status='waiting',completed_at=NULL,last_error=NULL,
+      updated_at=CURRENT_TIMESTAMP
+      WHERE business_date=? AND stage='post_verify_chain' AND canonical_run_id=?
+        AND status IN ('error','waiting') AND lease_owner IS NULL
+        AND EXISTS (SELECT 1 FROM strategy_learning_runs l WHERE l.business_date=pipeline_stage_runs.business_date
+          AND l.canonical_run_id=pipeline_stage_runs.canonical_run_id AND l.status='queued'
+          AND l.policy_closure_reason=?)
+    `).bind(input.businessDate,input.canonicalRunId,receipt),
+  ])
+  const row = await loadStrategyLearningRun(db,input.businessDate)
+  return row?.canonical_run_id === input.canonicalRunId && row?.status === 'queued'
+    && row?.policy_closure_reason === receipt
 }
 
 export async function claimStrategyLearningPage(

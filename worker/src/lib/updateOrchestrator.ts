@@ -3905,6 +3905,7 @@ export async function processUpdateBatch(
       })
       const coverage = await completeStrategyLearningRun(runStateDb, {
         ...leaseIdentity,
+        evidenceDb: learningDb,
         leaseSeconds: STRATEGY_LEARNING_LEASE_SECONDS,
       })
       if (!coverage) {

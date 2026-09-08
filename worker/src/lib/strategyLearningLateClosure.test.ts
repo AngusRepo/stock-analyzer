@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import { DatabaseSync } from 'node:sqlite'
 import { readFileSync } from 'node:fs'
-import { initializeStrategyLearningRun, isStrategyLearningTerminalFailure, resumeRepairedStrategyLearningRun } from './strategyLearningRunState'
+import { initializeStrategyLearningRun, isStrategyLearningTerminalFailure, resumeRepairedStrategyLearningRun, completeStrategyLearningRun } from './strategyLearningRunState'
 import { resolveStrategyLearningCompletionAuthority } from './strategyLearningCompletionAuthority'
 import { STRATEGY_PRODUCTION_POLICY_POINT_IN_TIME_SQL, STRATEGY_PRODUCTION_POLICY_SERVING_SQL } from './strategyProductionPolicyStore'
 import { DEFAULT_STRATEGY_SPECS } from './strategySpec'
@@ -108,6 +108,21 @@ async function main() {
   assert.equal(resumed.persisted_decision_rows,before!.persisted_decision_rows)
   assert.equal(sql.prepare("SELECT status FROM pipeline_stage_runs WHERE stage='post_verify_chain'").get()?.status,'waiting')
   assert.equal(await resumeRepairedStrategyLearningRun(db,resumeInput),false,'operator retry is idempotent')
+  const learning = new DatabaseSync(':memory:')
+  learning.exec(`CREATE TABLE strategy_spec_registry(strategy_id TEXT,version INTEGER,status TEXT);
+    CREATE TABLE strategy_decision_log(date TEXT,symbol TEXT,strategy_id TEXT,strategy_version INTEGER);
+    INSERT INTO strategy_spec_registry VALUES ('test',1,'active');
+    INSERT INTO strategy_decision_log VALUES ('2026-09-07','2330','test',1);`)
+  const evidenceDb = {prepare(query: string) {
+    const statement = learning.prepare(query)
+    return {bind(...values: any[]) {return {first:async () => statement.get(...values)}}}
+  }} as unknown as D1Database
+  sql.exec("UPDATE strategy_learning_runs SET status='running',cursor_symbol=NULL,processed_candidates=0,persisted_decision_rows=0,lease_owner='repair',lease_expires_at=datetime('now','+1 hour')")
+  const restored = await completeStrategyLearningRun(db,{businessDate:'2026-09-07',canonicalRunId:'pipeline',leaseOwner:'repair',evidenceDb})
+  assert.equal(restored?.candidateRows,1,'reset counters recover from Learning, never Ops')
+  assert.equal(restored?.decisionRows,1)
+  assert.equal(sql.prepare('SELECT processed_candidates FROM strategy_learning_runs').get()?.processed_candidates,1)
+  learning.close()
 
   sql.exec(`INSERT INTO strategy_production_policy_history_v1(policy_id,knowledge_cutoff_date,status,checksum,created_at)
     VALUES ('policy','2026-09-04','active','old','2026-09-04 15:41:12'),

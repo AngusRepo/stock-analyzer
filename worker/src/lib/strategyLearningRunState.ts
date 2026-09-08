@@ -426,7 +426,7 @@ export async function checkpointStrategyLearningPage(
 
 export async function completeStrategyLearningRun(
   db: D1Database,
-  input: StrategyLearningLeaseIdentity & { leaseSeconds?: number },
+  input: StrategyLearningLeaseIdentity & { leaseSeconds?: number; evidenceDb?: D1Database },
 ): Promise<{ candidateRows: number; decisionRows: number; expectedCandidates: number; expectedRows: number } | null> {
   const state = await loadStrategyLearningRun(db, input.businessDate)
   if (!state) throw new Error(`strategy_learning_run_missing:${input.businessDate}`)
@@ -445,7 +445,7 @@ export async function completeStrategyLearningRun(
   let candidateRows = Math.max(0, Number(state.processed_candidates ?? 0))
   let decisionRows = Math.max(0, Number(state.persisted_decision_rows ?? 0))
   if (!durableCoverageComplete) {
-    const coverage = await db.prepare(`
+    const coverage = await (input.evidenceDb ?? db).prepare(`
       SELECT COUNT(DISTINCT d.symbol) AS candidate_rows,
              COUNT(*) AS decision_rows
         FROM strategy_decision_log d

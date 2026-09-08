@@ -476,6 +476,7 @@ export function buildAdminWorkerDomainTaskMap(c: any, deps: TriggerDeps): Record
         })
         const coverage = await completeStrategyLearningRun(runStateDb, {
           ...leaseIdentity,
+          evidenceDb: learningDb,
           leaseSeconds: STRATEGY_LEARNING_LEASE_SECONDS,
         })
         if (!coverage) {

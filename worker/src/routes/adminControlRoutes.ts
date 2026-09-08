@@ -1330,6 +1330,11 @@ async function handleSchedulerCallback(c: any) {
           run_id: callbackRunId,
           run_date: callbackRunDate,
         }, c.env as any)
+        // Failure before post-verify/Active-8 still terminalizes the durable root.
+        const { closeEveningChainRootIfComplete } = await import('../lib/eveningChainRootClosure')
+        await closeEveningChainRootIfComplete(databaseForDataDomain(c.env, 'ops'), {
+          businessDate: callbackRunDate!, canonicalRunId: callbackRunId,
+        })
       }
     } catch (e: any) {
       const callbackError = e?.message ?? 'post-pipeline callback chain failed'

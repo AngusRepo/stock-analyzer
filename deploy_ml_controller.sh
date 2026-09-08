@@ -1224,7 +1224,13 @@ fi
 # ── Step 1/4: Deploy Service (from repo root so Dockerfile sees ml-service/) ─
 cd "$SCRIPT_DIR"
 echo "=== Step 1/4: Deploy Service $SERVICE (CWD=$SCRIPT_DIR, Dockerfile=repo root) ==="
+RELEASE_SUFFIX="sv-${SOURCE_SHA:0:12}-$(date -u +%Y%m%d%H%M%S)"
+RELEASE_REVISION="${SERVICE}-${RELEASE_SUFFIX}"
+RELEASE_TAG="release-${SOURCE_SHA:0:12}"
 if ! gcloud run deploy "$SERVICE" \
+    --revision-suffix="$RELEASE_SUFFIX" \
+    --no-traffic \
+    --tag="$RELEASE_TAG" \
     --source . \
     --build-service-account="projects/${GCP_PROJECT_ID}/serviceAccounts/${BUILD_SERVICE_ACCOUNT}" \
     --region="$REGION" \
@@ -1237,6 +1243,22 @@ if ! gcloud run deploy "$SERVICE" \
   echo "❌ Service deploy failed" >&2
   exit 2
 fi
+# Existing services may pin production traffic to an older tagged revision.
+# Verify the candidate HTTP runtime before switching the exact revision, then
+# verify both the routed revision and the public HTTP runtime before job sync.
+RELEASE_URL=$("$PYTHON_BIN" "$SCRIPT_DIR/tools/verify_cloud_run_release.py" tag-url \
+  --service "$SERVICE" --region "$REGION" --revision "$RELEASE_REVISION" --tag "$RELEASE_TAG")
+verify_release_http() {
+  "$PYTHON_BIN" "$SCRIPT_DIR/tools/verify_cloud_run_release.py" health \
+    --url "$1" --source-sha "$SOURCE_SHA" --tree-sha "$SOURCE_TREE_SHA" \
+    --branch "$SOURCE_BRANCH" --scheduler-sha "$SCHEDULER_MANIFEST_SHA256"
+}
+verify_release_http "$RELEASE_URL"
+gcloud run services update-traffic "$SERVICE" --region="$REGION" \
+  --to-revisions="${RELEASE_REVISION}=100" --quiet
+"$PYTHON_BIN" "$SCRIPT_DIR/tools/verify_cloud_run_release.py" traffic \
+  --service "$SERVICE" --region "$REGION" --revision "$RELEASE_REVISION"
+verify_release_http "$ML_CONTROLLER_PUBLIC_URL"
 echo "✅ Service deploy succeeded"
 echo ""
 

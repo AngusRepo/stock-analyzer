@@ -321,7 +321,7 @@ function StageRow({ stage }: { stage: PipelineMaturityStage }) {
   const prospectiveSemanticFloorMetric = metricByKey.get('prospective_selection_semantic_floor')
   const offlineCandidateRejected = scopedCandidateStage && evidenceScopes?.offline_candidate
     ? ['offline_failed', 'rejected'].includes(String(metricByKey.get('prospective_candidate_state')?.value ?? '').toLowerCase())
-      || offlinePromotionMetrics.some((item) => item.passed === false)
+      || prospectiveDateMetric?.availability === 'not_applicable'
     : false
   const scopedEvidenceTruth = scopedCandidateStage && evidenceScopes?.offline_candidate
     ? [

@@ -649,7 +649,7 @@ export type ShadowEvidenceClock = {
   auto_promote: false
   status: string
   latest_evidence_date: string | null
-  sample_count: number
+  sample_count: number | null
   distinct_dates: number
   supported_regimes: string[]
   coverage: number | null

@@ -243,3 +243,24 @@ def test_rfs_shadow_cannot_replace_sparse_production_weights(monkeypatch):
     assert by_symbol["BBB"]["has_buy_signal"] == 0
     assert by_symbol["BBB"]["alpha_allocation"]["rfs_shadow_challenger"]["challenger_aim_weight"] == 1.0
     assert by_symbol["BBB"]["alpha_allocation"]["rfs_shadow_challenger"]["production_effect"] is False
+
+
+def test_rfs_packet_metadata_survives_zero_selected_rows(monkeypatch):
+    monkeypatch.setattr(recommendation_service, "allocate_sparse_tangent_with_evidence",
+                        lambda *a, **k: {"weights": {}, "candidate_diagnostics": {}})
+    monkeypatch.setattr(recommendation_service, "build_rfs_implementable_frontier_shadow",
+                        lambda *a, **k: {"status": "insufficient_evidence", "weights": {},
+                          "source_expected_return_candidate_count": 2,
+                          "validation_blockers": ["return_history_coverage_below_80pct"],
+                          "packet_checksum": "full-packet"})
+    rows = recommendation_service._apply_sparse_tangent_buy_selection(
+        [_formal_l4_row("AAA"), _formal_l4_row("BBB")],
+        {"promoteMinForecastPct": 0.0, "promoteMinMlEdge": 0.0},
+        {"allocation": {"engine": "sparse_tangent_inverse_risk", "controller": "SparseTangent"}},
+        confidence_floor=0.60, return_history={})
+    for row in rows:
+        assert row["has_buy_signal"] == 0
+        packet = row["alpha_allocation"]["rfs_shadow_challenger"]
+        assert packet["source_expected_return_candidate_count"] == 2
+        assert packet["validation_blockers"] == ["return_history_coverage_below_80pct"]
+        assert packet["production_effect"] is False

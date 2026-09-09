@@ -4243,6 +4243,7 @@ def _apply_sparse_tangent_buy_selection(
             "covariance_shrinkage": similarity_evidence.get("covariance_shrinkage"),
             "cluster_penalty_applied": cluster_penalty_applied,
             "rfs_shadow_challenger": {
+                **allocation_contract["rfs_shadow_challenger"],
                 "status": rfs_shadow_packet.get("status"),
                 "production_effect": False,
                 "promotion_eligible": False,

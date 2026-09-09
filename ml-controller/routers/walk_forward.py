@@ -1989,6 +1989,7 @@ async def materialize_walk_forward_oof(req: OofMaterializeRequest):
     )
     from services.expected_return_candidate_forward_evaluator import (
         evaluate_expected_return_candidates_forward,
+        candidate_forward_frontier,
     )
     from services.fusion_market_context import load_pit_market_contexts
     from services.d1_domain_client import D1DataDomain, client_for_domain
@@ -2283,17 +2284,27 @@ async def materialize_walk_forward_oof(req: OofMaterializeRequest):
                 serving_forward_guard = evaluate_serving_forward_guard(
                     as_of_date=req.knowledge_cutoff_date,
                 )
-                candidate_forward_evaluation = evaluate_expected_return_candidates_forward(
-                    bucket=bucket,
-                    cohort_id=req.cohort_id,
+                candidate_forward_evaluation = await _evaluate_active_candidate_on_original_cohort(
+                    request_cohort_id=req.cohort_id,
                     business_date=req.knowledge_cutoff_date,
-                    extension_manifest_checksum=str(forward_extension["manifest_checksum"]),
-                    snapshot_rows=snapshot_rows,
-                    native_rows=native_rows,
-                    build_fusion_rows_fn=build_fusion_oof_rows,
                     query_fn=learning_client.query,
-                    batch_fn=learning_client.batch_execute,
-                    base_trained_until=candidate_trained_until,
+                    evaluate_current=lambda: evaluate_expected_return_candidates_forward(
+                        bucket=bucket,
+                        cohort_id=req.cohort_id,
+                        business_date=req.knowledge_cutoff_date,
+                        extension_manifest_checksum=str(forward_extension["manifest_checksum"]),
+                        snapshot_rows=snapshot_rows,
+                        native_rows=native_rows,
+                        build_fusion_rows_fn=build_fusion_oof_rows,
+                        query_fn=learning_client.query,
+                        batch_fn=learning_client.batch_execute,
+                        base_trained_until=candidate_trained_until,
+                    ),
+                )
+                candidate_forward_evaluation["frontier"] = candidate_forward_frontier(
+                    candidate_forward_evaluation,
+                    expected_prediction_date=max(forward_extension.get("dates") or [""]),
+                    business_date=req.knowledge_cutoff_date,
                 )
         elif reuse_indexed:
             forward_shadow_coverage = load_verified_oof_forward_coverage(
@@ -2739,7 +2750,7 @@ OOF_SCORE_SEMANTIC_VERSION = "same-market-same-date-average-tie-percentile-rank-
 OOF_FEATURE_SEMANTIC_VERSION = "formal137-pit-rolling-rank-and-imputation-v2"
 OOF_FEATURE_IMPUTATION_SEMANTIC_VERSION = "prior_252_row_median_then_zero_v2"
 OOF_COHORT_ID_VERSION = "v9-feature-semantic-source-attested"
-OOF_LIFECYCLE_RECEIPT_SCHEMA_VERSION = "active8-oof-lifecycle-receipt-v15-native-frontier"
+OOF_LIFECYCLE_RECEIPT_SCHEMA_VERSION = "active8-oof-lifecycle-receipt-v16-locked-lane"
 
 
 def _candidate_forward_promotion_closure(
@@ -2966,6 +2977,7 @@ def _oof_lifecycle_receipt_matches_active_policy(
             or (bool(candidate_forward.get("offline_rejections"))
                 and candidate_forward.get("promotion_ready") is False)
         )
+        and not (candidate_forward.get("frontier") or {}).get("retry_required")
         and candidate_forward.get("training_dispatched") is False
         and persistence.get("status") in {"ready", "ready_refreshed", "idempotent_ready"}
         and persistence.get("prediction_storage_mode") == "gcs_indexed_v1"
@@ -3434,6 +3446,42 @@ def _pre_dispatch_completed_oof_lifecycle(
         "calendar": calendar,
         "receipt": receipt,
     }
+
+
+async def _evaluate_active_candidate_on_original_cohort(
+    *, request_cohort_id: str, business_date: str, query_fn: Any, evaluate_current: Any,
+) -> dict[str, Any]:
+    from services.expected_return_candidate_forward_evaluator import active_locked_candidate_lane
+
+    lane = active_locked_candidate_lane(query_fn, business_date)
+    if lane is None or lane["cohort_id"] == request_cohort_id:
+        return evaluate_current()
+    # This is continuation of the existing lane, never training or activation of
+    # an additional challenger. The exact manifest loader verifies its producer.
+    continuation = await run_walk_forward_oof_lifecycle(OofLifecycleRequest(
+        cadence="daily", end_date=business_date, dry_run=False, promote=False,
+        dispatch_full_fit=False, continuation_only=True,
+        expected_cohort_id=lane["cohort_id"],
+    ))
+    receipt = continuation.get("receipt") or {}
+    evaluation = (continuation.get("candidate_forward_evaluation")
+                  or (receipt.get("evidence_closure") or {}).get("candidate_forward_evaluation") or {})
+    ids = evaluation.get("candidate_artifact_ids") or {}
+    gate = (evaluation.get("gates") or {}).get("l4_alpha_ev") or {}
+    valid = (not continuation.get("dependency_retry_required")
+             and evaluation.get("status") in {"evaluated", "waiting_for_preoutcome_locked_mature_dates"}
+             and ids.get("l4_alpha_ev") == lane["artifact_id"]
+             and gate.get("evaluated_as_of_date") == business_date
+             and gate.get("evaluation_cohort_id") == lane["cohort_id"])
+    if not valid:
+        return {"status": "active_candidate_original_cohort_pending",
+                "active_lane": lane, "continuation_status": continuation.get("status"),
+                "continuation_reason": continuation.get("reason"),
+                "promotion_ready": False, "training_dispatched": False}
+    return {**evaluation, "active_lane": lane,
+            "evaluation_cohort_id": lane["cohort_id"],
+            "request_cohort_id": request_cohort_id,
+            "continuation_policy": "exact_original_cohort_no_training"}
 
 
 @router.post("/walk_forward/oof/lifecycle")
@@ -4006,6 +4054,7 @@ async def run_walk_forward_oof_lifecycle(req: OofLifecycleRequest):
         opb_failed
         or full_fit_retry_required
         or candidate_forward_retry_required
+        or bool((candidate_forward.get("frontier") or {}).get("retry_required"))
         or candidate_forward_promotion_failed
     )
     if not req.dry_run and not dependency_retry_required:

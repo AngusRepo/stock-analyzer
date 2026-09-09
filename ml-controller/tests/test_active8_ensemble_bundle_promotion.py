@@ -28,10 +28,17 @@ def _fixture():
             "model_name": model,
             "training_run_id": "run-new",
             "state": "offline_failed" if model == "PatchTST" else "offline_passed",
-            "artifact_path": f"{model}/v-new.bin",
+            "artifact_path": f"{model}/v-new." + ("joblib" if model in {"LightGBM", "XGBoost", "ExtraTrees"} else "zip" if model == "iTransformer" else "pt"),
+            "offline_gate_decision": "PASS",
             "metadata_path": f"{model}/v-new.json",
             "offline_evidence_json": json.dumps({
-                "registration": {"oof_promotion_evidence": {
+                "registration": {"metadata": {
+                    "target_semantic_version": "next-session-canonical-adjusted-open-to-fifth-session-canonical-adjusted-close-net-v4",
+                    "feature_semantic_version": "formal137-pit-rolling-rank-and-imputation-v2",
+                    "graph_context": {"semantic_version": "gnn-same-date-feature-cosine-sector-v2"},
+                    "seq_len": 512, "pred_len": 5,
+                    "rank_ic_semantic_version": "same-date-average-rank-tie-neutral-spearman-v2",
+                }, "oof_promotion_evidence": {
                     "schema_version": "model-cpcv-evidence-v1",
                     "method": "outer_purged_walk_forward_rank_ic",
                     "folds": 5,

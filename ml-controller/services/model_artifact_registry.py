@@ -3535,6 +3535,20 @@ def run_active8_ensemble_bundle_promotion_controller(
             "status": "blocked", "decision": "active8_bundle_contract_invalid", "can_promote": False,
             "training_run_id": training_run_id, "blockers": blockers,
         }
+    # Validate the projected post-promotion state with the same resolver as the
+    # pipeline. Only the state transition is projected; no metadata is invented.
+    from services.model_serving_resolver import build_pool_from_champion_pointers
+    projected = build_pool_from_champion_pointers(
+        pointers=[{"model_name": name, "champion_version": by_model[name].get("version"),
+                   "champion_artifact_id": by_model[name].get("artifact_id")} for name in release_models],
+        artifacts=[{**by_model[name], "state": "production"} for name in release_models],
+        required_models=tuple(release_models), sidecar_models=(),
+    )
+    serving_blockers = [f"base_serving_contract:{name}:{entry.get('serving_block_reason')}"
+                        for name, entry in projected["models"].items() if entry.get("serving_eligible") is not True]
+    if serving_blockers:
+        return {"status": "blocked", "decision": "active8_bundle_serving_contract_invalid", "can_promote": False,
+                "training_run_id": training_run_id, "blockers": serving_blockers}
     if not confirm:
         return {
             "status": "dry_run", "decision": "promote_active8_ensemble_atomic_bundle", "can_promote": True,

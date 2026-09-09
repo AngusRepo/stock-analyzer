@@ -60,11 +60,15 @@ def _formal_model_scores(pred: dict) -> dict[str, float]:
     }
 
 
-def build_formal_model_input_contract(pred: dict | None) -> dict[str, Any]:
+def build_formal_model_input_contract(pred: dict | None, *, selected_models: list[str] | None = None) -> dict[str, Any]:
     prediction = pred if isinstance(pred, dict) else {}
     scores = _formal_model_scores(prediction)
     lineage = prediction.get("model_score_lineage") if isinstance(prediction.get("model_score_lineage"), dict) else {}
-    required = [name for name in CORE_CROSS_SECTIONAL_ALPHA_MODELS]
+    if selected_models is None and lineage.get("coverage_policy") == "validated-bundle-selected-core-sequence-missingness-v1" and lineage.get("ensemble_payload_checksum"):
+        selected_models = lineage.get("selected_models")
+    bundle_selected = isinstance(selected_models, list) and bool(selected_models) and set(selected_models).issubset(set(ACTIVE_ALPHA_MODELS))
+    required = [name for name in CORE_CROSS_SECTIONAL_ALPHA_MODELS if not bundle_selected or name in selected_models]
+    minimum_core_models = len(required) if bundle_selected else MIN_REQUIRED_CROSS_SECTIONAL_MODELS
     missing_core = [name for name in required if name not in scores]
     missing_optional = [name for name in OPTIONAL_SEQUENCE_ALPHA_MODELS if name not in scores]
     lineage_blockers: list[str] = []
@@ -76,13 +80,13 @@ def build_formal_model_input_contract(pred: dict | None) -> dict[str, Any]:
         lineage_blockers.append("target_semantic_mismatch")
     if lineage.get("complete") is not True:
         lineage_blockers.extend(str(value) for value in (lineage.get("blockers") or []))
-    if len(required) < MIN_REQUIRED_CROSS_SECTIONAL_MODELS:
+    if len(required) < minimum_core_models:
         lineage_blockers.append("required_cross_sectional_model_count_below_minimum")
     return {
         "schema_version": "formal-layer3-active8-input-contract-v4",
         "active_models": list(ACTIVE_ALPHA_MODELS),
         "required_models": required,
-        "minimum_required_cross_sectional_models": MIN_REQUIRED_CROSS_SECTIONAL_MODELS,
+        "minimum_required_cross_sectional_models": minimum_core_models,
         "optional_sequence_models": list(OPTIONAL_SEQUENCE_ALPHA_MODELS),
         "available_models": [name for name in ACTIVE_ALPHA_MODELS if name in scores],
         "missing_models": [name for name in ACTIVE_ALPHA_MODELS if name not in scores],
@@ -91,7 +95,7 @@ def build_formal_model_input_contract(pred: dict | None) -> dict[str, Any]:
         "model_availability": {name: name in scores for name in ACTIVE_ALPHA_MODELS},
         "full_active8_coverage": len(scores) == len(ACTIVE_ALPHA_MODELS),
         "complete": not missing_core and not lineage_blockers,
-        "coverage_policy": "core5-required-sequence-missingness-learned-v1",
+        "coverage_policy": "validated-bundle-selected-core-sequence-missingness-v1" if bundle_selected else "core5-required-sequence-missingness-learned-v1",
         "finite_scores_required": True,
         "score_semantic_version": lineage.get("semantic_version"),
         "target_semantic_version": lineage.get("target_semantic_version"),
@@ -186,8 +190,11 @@ def validate_active8_ensemble_artifact(payload: dict[str, Any], pool_models: dic
             "version": str(expected.get("version") or ""),
             "checksum": str(expected.get("checksum") or "").lower(),
         }
-        if actual_identity != expected_identity or actual.get("serving_eligible") is not True:
+        if actual_identity != expected_identity:
             raise RuntimeError(f"active8_ensemble_base_identity_mismatch:{model}")
+        if actual.get("serving_eligible") is not True:
+            reason = actual.get("serving_block_reason") or "eligibility_missing"
+            raise RuntimeError(f"active8_ensemble_base_not_serving:{model}:{reason}")
 
 
 def attach_ensemble_v2(
@@ -195,12 +202,12 @@ def attach_ensemble_v2(
     artifact: dict[str, Any],
     pool_models: dict[str, dict[str, Any]],
 ) -> None:
-    formal = build_formal_model_input_contract(pred)
+    validate_active8_ensemble_artifact(artifact, pool_models)
+    formal = build_formal_model_input_contract(pred, selected_models=artifact["selected_models"])
     pred["formal_layer3_contract"] = formal
     if not formal["complete"]:
         pred["ensemble_v2_error"] = "formal_layer3_contract_incomplete"
         return
-    validate_active8_ensemble_artifact(artifact, pool_models)
     scores = _formal_model_scores(pred)
     values = [scores.get(name, 0.5) for name in ACTIVE_ALPHA_MODELS]
     available = [1.0 if name in scores else 0.0 for name in ACTIVE_ALPHA_MODELS]

@@ -8,6 +8,7 @@ import os
 import threading
 import time
 from datetime import datetime, timezone
+from app.sequence_semantic_contract import sequence_rank_ic_semantic
 from typing import Any
 
 from .sequence_training import SEQUENCE_RETURN_SEMANTIC_VERSION
@@ -754,7 +755,7 @@ def _sequence_artifact_contract(
     metadata = _artifact_metadata(artifact)
     seq_len = _positive_int(metadata.get("seq_len"))
     pred_len = _positive_int(metadata.get("pred_len"))
-    rank_ic_semantic = str(metadata.get("rank_ic_semantic_version") or "").strip()
+    rank_ic_semantic = sequence_rank_ic_semantic(metadata, model_name)
     version = str(artifact.get("version") or metadata.get("version") or "").strip()
     artifact_id = str(artifact.get("artifact_id") or "").strip()
     if (

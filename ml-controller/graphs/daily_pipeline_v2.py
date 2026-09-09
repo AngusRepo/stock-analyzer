@@ -1119,6 +1119,8 @@ async def node_ml_predict(state: PipelineStateV2) -> dict:
             for model_name in ACTIVE_ALPHA_MODELS
         },
         run_date=rank_run_date,
+        active8_ensemble=serving_manifest.get("active8_ensemble") if isinstance(serving_manifest, dict) else None,
+        pool_models=serving_pool.get("models") or {},
     )
     logger.info("[Pipeline V2] Active-8 rank normalization: %s", rank_normalization)
 
@@ -3489,6 +3491,11 @@ def _build_pipeline_modal_serving_manifest(
         }
         return manifest, _pipeline_modal_canonical_digest(manifest)
 
+    # Only the validated nonzero-weight base set owns serving authority.
+    # Other slots retain frozen audit identity, never their legacy vote.
+    from services.ensemble_v2 import validate_active8_ensemble_artifact
+    validate_active8_ensemble_artifact(active8_ensemble, pool_models)
+    selected_models = set(active8_ensemble["selected_models"])
     models: list[dict[str, Any]] = []
     for model_name in ACTIVE_ALPHA_MODELS:
         entry = pool_models.get(model_name)
@@ -3503,12 +3510,15 @@ def _build_pipeline_modal_serving_manifest(
             )
         serving_block_reason = str(entry.get("serving_block_reason") or "").strip()
         serving_eligible = entry.get("serving_eligible") is not False and not serving_block_reason
-        if not serving_eligible:
+        if model_name in selected_models and not serving_eligible:
             raise RuntimeError(
                 "pipeline_modal_serving_manifest:active8_base_not_serving:"
                 f"{model_name}:{serving_block_reason or 'serving_eligible_false'}"
             )
-        effective_status = status
+        if model_name not in selected_models:
+            serving_eligible = False
+            serving_block_reason = "active8_ensemble_zero_weight_excluded"
+        effective_status = status if serving_eligible else "challenger"
         if len(serving_block_reason) > 4096:
             raise RuntimeError(
                 f"pipeline_modal_serving_manifest:exclusion_reason_too_large:{model_name}"

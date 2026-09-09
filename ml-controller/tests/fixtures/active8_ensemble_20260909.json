@@ -1,0 +1,329 @@
+{
+  "base_artifact_set_checksum": "97b19252408a47ecb4cebb584e270d8f69b9b124fabbcd257bd0a563f1699097",
+  "base_artifacts": {
+    "DLinear": {
+      "artifact_id": "DLinear:v20260908191049:oof_full_fit_release",
+      "candidate_type": "oof_full_fit_release",
+      "checksum": "sha256:d81f80391d60907d36dd7ea5bb6c2ca47d88a23d5f7efa919908bed5cf2fe391",
+      "version": "v20260908191049"
+    },
+    "GNN": {
+      "artifact_id": "GNN:v20260908191049:oof_full_fit_release",
+      "candidate_type": "oof_full_fit_release",
+      "checksum": "sha256:9b171c40b4ea7c4c12c2bf80994c55d2933d6e9ec9f53b56605bca458548e0a7",
+      "version": "v20260908191049"
+    },
+    "PatchTST": {
+      "artifact_id": "PatchTST:v20260908191049:oof_full_fit_release",
+      "candidate_type": "oof_full_fit_release",
+      "checksum": "sha256:87541cb8c0e24c516ae61cf834f30334bfd438d819896de36b91763eb9a749fb",
+      "version": "v20260908191049"
+    },
+    "TabM": {
+      "artifact_id": "TabM:v20260908191049:oof_full_fit_release",
+      "candidate_type": "oof_full_fit_release",
+      "checksum": "sha256:f3512cfca1441f2794a450d582dd58f149fab0263ea9f50e9a6b8a95e96b8d9f",
+      "version": "v20260908191049"
+    },
+    "iTransformer": {
+      "artifact_id": "iTransformer:v20260908191049:oof_full_fit_release",
+      "candidate_type": "oof_full_fit_release",
+      "checksum": "sha256:38e4160bb7821a0e198b9e38e849c93a11be151dc2716a30da4c15cb10c7dced",
+      "version": "v20260908191049"
+    }
+  },
+  "calibration": {
+    "absolute_residual_quantiles": {
+      "0.9": 0.1273702704810816,
+      "0.95": 0.16934007255393244
+    },
+    "oof_dates": 51,
+    "oof_rows": 83782,
+    "probability_x_thresholds": [
+      -0.034665843710418226,
+      -0.034331823484797526,
+      -0.034147943990955484,
+      -0.03402928835437524,
+      0.01752918369308693,
+      0.017530318963617057,
+      0.018940020156759954,
+      0.018940094843638622,
+      0.018991962452498012,
+      0.018992815597724505,
+      0.020443258247248765,
+      0.020444141942282133,
+      0.05154748221414336,
+      0.05156400908588363,
+      0.05196245915689188,
+      0.05200443902497236,
+      0.054652603797517185
+    ],
+    "probability_y_thresholds": [
+      0.0,
+      0.25,
+      0.25,
+      0.42368424583104125,
+      0.42368424583104125,
+      0.42543859649122806,
+      0.42543859649122806,
+      0.4318181818181818,
+      0.4318181818181818,
+      0.43197616683217477,
+      0.43197616683217477,
+      0.44976552508171097,
+      0.44976552508171097,
+      0.6666666666666666,
+      0.6666666666666666,
+      0.8571428571428571,
+      0.8571428571428571
+    ]
+  },
+  "calibration_schema_version": "active8-chronological-conformal-isotonic-v1",
+  "cohort_id": "active8-oof-v9-feature-semantic-source-attested-2026-03-09-2026-09-01-tr60-te10",
+  "ensemble_semantic_version": "active8-purged-oof-chronological-nonnegative-ridge-v5",
+  "excluded_models": [
+    "LightGBM",
+    "XGBoost",
+    "ExtraTrees"
+  ],
+  "feature_names": [
+    "LightGBM.rank",
+    "XGBoost.rank",
+    "ExtraTrees.rank",
+    "TabM.rank",
+    "GNN.rank",
+    "DLinear.rank",
+    "PatchTST.rank",
+    "iTransformer.rank",
+    "LightGBM.available",
+    "XGBoost.available",
+    "ExtraTrees.available",
+    "TabM.available",
+    "GNN.available",
+    "DLinear.available",
+    "PatchTST.available",
+    "iTransformer.available"
+  ],
+  "fit": {
+    "coefficients": [
+      0.0,
+      0.0,
+      0.0,
+      0.00621733934697088,
+      0.0033598814366361945,
+      0.0030056312362051634,
+      0.012230470858386753,
+      0.0032652413279284816,
+      0.0,
+      0.0,
+      0.0,
+      -1.734723475976807e-17,
+      1.962405932198763e-17,
+      -0.0017624012880463349,
+      0.0031564884728293263,
+      0.0006468665089027659
+    ],
+    "intercept": -0.018583909833997138,
+    "method": "nonnegative_rank_ridge_full_fit_after_heldout_chronological_oof_validation",
+    "outer_folds": 6,
+    "rank_coefficient_constraint": "nonnegative",
+    "regularization": 10.0,
+    "train_dates": 60,
+    "train_rows": 100844
+  },
+  "knowledge_cutoff_date": "2026-09-08",
+  "model_order": [
+    "LightGBM",
+    "XGBoost",
+    "ExtraTrees",
+    "TabM",
+    "GNN",
+    "DLinear",
+    "PatchTST",
+    "iTransformer"
+  ],
+  "observation_artifact_set_checksum": "4948cb1c4cbd83faf2321306a19c94da988ebe4df87801e40918410f840232d2",
+  "observation_artifacts": {
+    "DLinear": {
+      "artifact_id": "DLinear:v20260908191049:oof_full_fit_release",
+      "candidate_type": "oof_full_fit_release",
+      "checksum": "sha256:d81f80391d60907d36dd7ea5bb6c2ca47d88a23d5f7efa919908bed5cf2fe391",
+      "version": "v20260908191049"
+    },
+    "ExtraTrees": {
+      "artifact_id": "ExtraTrees:v20260908191049:oof_full_fit_release",
+      "candidate_type": "oof_full_fit_release",
+      "checksum": "sha256:14661de074c2171bdfd402c50b1d62b82b9c449286b8eee3c85da6f8e95f3e95",
+      "version": "v20260908191049"
+    },
+    "GNN": {
+      "artifact_id": "GNN:v20260908191049:oof_full_fit_release",
+      "candidate_type": "oof_full_fit_release",
+      "checksum": "sha256:9b171c40b4ea7c4c12c2bf80994c55d2933d6e9ec9f53b56605bca458548e0a7",
+      "version": "v20260908191049"
+    },
+    "LightGBM": {
+      "artifact_id": "LightGBM:v20260908191049:oof_full_fit_release",
+      "candidate_type": "oof_full_fit_release",
+      "checksum": "sha256:ee55e9f54a39c01079df8f48bffee007bcc80261a38e635191ce7b84f082fd21",
+      "version": "v20260908191049"
+    },
+    "PatchTST": {
+      "artifact_id": "PatchTST:v20260908191049:oof_full_fit_release",
+      "candidate_type": "oof_full_fit_release",
+      "checksum": "sha256:87541cb8c0e24c516ae61cf834f30334bfd438d819896de36b91763eb9a749fb",
+      "version": "v20260908191049"
+    },
+    "TabM": {
+      "artifact_id": "TabM:v20260908191049:oof_full_fit_release",
+      "candidate_type": "oof_full_fit_release",
+      "checksum": "sha256:f3512cfca1441f2794a450d582dd58f149fab0263ea9f50e9a6b8a95e96b8d9f",
+      "version": "v20260908191049"
+    },
+    "XGBoost": {
+      "artifact_id": "XGBoost:v20260908191049:oof_full_fit_release",
+      "candidate_type": "oof_full_fit_release",
+      "checksum": "sha256:5ae9bd1e6406f18498a38c77d33a8b5fed9c63e0007735f699e8d990f876d8ca",
+      "version": "v20260908191049"
+    },
+    "iTransformer": {
+      "artifact_id": "iTransformer:v20260908191049:oof_full_fit_release",
+      "candidate_type": "oof_full_fit_release",
+      "checksum": "sha256:38e4160bb7821a0e198b9e38e849c93a11be151dc2716a30da4c15cb10c7dced",
+      "version": "v20260908191049"
+    }
+  },
+  "payload_checksum": "642b02a20494521748d7579661c19961bef037a8037cd5a5d97e62dc0ab32e07",
+  "schema_version": "active8-oof-ensemble-serving-artifact-v1",
+  "selected_models": [
+    "TabM",
+    "GNN",
+    "DLinear",
+    "PatchTST",
+    "iTransformer"
+  ],
+  "signal_policy": {
+    "buy_coverage": 0.9,
+    "buy_rule": "conformal_lower_bound_gt_zero",
+    "net_return_zero_boundary": 0.0,
+    "schema_version": "active8-net-return-conformal-signal-policy-v1",
+    "sell_rule": "conformal_upper_bound_lt_zero",
+    "strong_coverage": 0.95,
+    "target_semantic_version": "next-session-canonical-adjusted-open-to-fifth-session-canonical-adjusted-close-net-v4",
+    "top_k": null
+  },
+  "source_manifest_checksum": "fbbb5862c190f09acec67586bd616276ea64db0a7a611c4c0b7f09c0ed586adf",
+  "stacker_evidence": {
+    "efficacy_rows": 83782,
+    "eligible_candidate_coverage": 0.863265,
+    "missing_by_model": {
+      "DLinear": 9604,
+      "ExtraTrees": 15973,
+      "GNN": 15973,
+      "LightGBM": 15973,
+      "PatchTST": 7633,
+      "TabM": 15973,
+      "XGBoost": 15973,
+      "iTransformer": 54458
+    },
+    "schema_version": "active8-oof-stacker-evidence-v1"
+  },
+  "validation": {
+    "buy_interval_empirical_coverage": 0.9450010509353325,
+    "calibration_dates": 25,
+    "calibration_max_label_known_date": "2026-08-03",
+    "calibration_purge_policy": "label_known_before_validation_start",
+    "calibration_purged_rows": 8620,
+    "calibration_rows": 46616,
+    "decision": "PASS",
+    "directional_signal_net_mean": null,
+    "directional_signal_rows": 0,
+    "failed_gates": [],
+    "method": "chronological_oof_calibration_then_later_validation",
+    "probability_brier": 0.3168560920952782,
+    "rank_ic": 0.06864076388949887,
+    "rank_ic_dates": 21,
+    "rank_ic_equal_date_market_lcb90": 0.04222811174014245,
+    "rank_ic_equal_date_market_mean": 0.06864076388949887,
+    "rank_ic_pooled_diagnostic": -0.0037764602908939514,
+    "same_window_comparison": {
+      "equal_weight_baseline": {
+        "dates": 21,
+        "lcb90": 0.04480860410675962,
+        "mean": 0.08771808291934281,
+        "pooled_rank_ic_diagnostic": 0.06814217835228131,
+        "rows": 28546
+      },
+      "models": {
+        "DLinear": {
+          "dates": 21,
+          "lcb90": 0.06145197168295508,
+          "mean": 0.08380761644460422,
+          "pooled_rank_ic_diagnostic": 0.07157897972401298,
+          "rows": 26077
+        },
+        "ExtraTrees": {
+          "dates": 21,
+          "lcb90": -0.027546065798592,
+          "mean": 0.02784358735932657,
+          "pooled_rank_ic_diagnostic": 0.016124856315195703,
+          "rows": 28546
+        },
+        "GNN": {
+          "dates": 21,
+          "lcb90": 0.0127387920072373,
+          "mean": 0.05640110129206635,
+          "pooled_rank_ic_diagnostic": 0.043766468226675216,
+          "rows": 28546
+        },
+        "LightGBM": {
+          "dates": 21,
+          "lcb90": -0.012151867252724671,
+          "mean": 0.03836354002307559,
+          "pooled_rank_ic_diagnostic": 0.022249746810962045,
+          "rows": 28546
+        },
+        "PatchTST": {
+          "dates": 21,
+          "lcb90": 0.020972587680301642,
+          "mean": 0.06421127136960807,
+          "pooled_rank_ic_diagnostic": 0.06981689460173494,
+          "rows": 26400
+        },
+        "TabM": {
+          "dates": 21,
+          "lcb90": 0.0030444944797065887,
+          "mean": 0.032981354205245034,
+          "pooled_rank_ic_diagnostic": 0.022996511244958464,
+          "rows": 28546
+        },
+        "XGBoost": {
+          "dates": 21,
+          "lcb90": -0.015089344525403128,
+          "mean": 0.03651062769929246,
+          "pooled_rank_ic_diagnostic": 0.020877671061973104,
+          "rows": 28546
+        },
+        "iTransformer": {
+          "dates": 21,
+          "lcb90": 0.056140522168132624,
+          "mean": 0.09442282067499053,
+          "pooled_rank_ic_diagnostic": 0.07923168661912627,
+          "rows": 15252
+        }
+      },
+      "schema_version": "active8-same-window-model-comparison-v1",
+      "window_end": "2026-09-01",
+      "window_start": "2026-08-04"
+    },
+    "schema_version": "active8-oof-ensemble-validation-v1",
+    "spread_dates": 21,
+    "strong_interval_empirical_coverage": 0.9694177818258249,
+    "top_bottom_net_return_spread": 0.0075145230971182305,
+    "top_bottom_net_return_spread_lcb90": 0.0026637156632935456,
+    "validation_dates": 21,
+    "validation_end_date": "2026-09-01",
+    "validation_rows": 28546,
+    "validation_start_date": "2026-08-04"
+  }
+}

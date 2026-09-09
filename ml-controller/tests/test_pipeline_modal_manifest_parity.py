@@ -154,7 +154,7 @@ def test_manifest_rejects_any_non_serving_base_before_modal_dispatch() -> None:
             active8_ensemble=artifact,
         )
     except RuntimeError as exc:
-        assert "active8_base_not_serving:XGBoost:test_block" in str(exc)
+        assert "active8_ensemble_base_not_serving:XGBoost:test_block" in str(exc)
     else:
         raise AssertionError("non-serving Active-8 base must block manifest construction")
 
@@ -238,3 +238,28 @@ def test_modal_rejects_evidence_only_manifest_with_ensemble_payload() -> None:
         assert "evidence_only_ensemble_must_be_absent" in str(exc)
     else:
         raise AssertionError("evidence-only manifest must reject any ensemble payload")
+
+
+def test_zero_weight_models_do_not_block_or_vote_in_five_model_bundle():
+    import hashlib
+    import json
+    artifact = _artifact()
+    pool, rows = _pool_and_rows(artifact)
+    excluded = {"LightGBM", "XGBoost", "ExtraTrees"}
+    artifact["selected_models"] = [name for name in controller_pipeline.ACTIVE_ALPHA_MODELS if name not in excluded]
+    artifact["excluded_models"] = sorted(excluded)
+    artifact["base_artifacts"] = {name: identity for name, identity in artifact["base_artifacts"].items() if name not in excluded}
+    for name in excluded:
+        idx = list(controller_pipeline.ACTIVE_ALPHA_MODELS).index(name)
+        artifact["fit"]["coefficients"][idx] = 0.0
+        artifact["fit"]["coefficients"][idx + 8] = 0.0
+        pool["models"][name]["serving_eligible"] = False
+        pool["models"][name]["serving_block_reason"] = "legacy_feature_semantic_missing"
+    unsigned = {key:value for key,value in artifact.items() if key != "payload_checksum"}
+    artifact["payload_checksum"] = hashlib.sha256(json.dumps(unsigned,ensure_ascii=False,sort_keys=True,separators=(",",":"),allow_nan=False).encode()).hexdigest()
+    manifest, digest = controller_pipeline._build_pipeline_modal_serving_manifest(pool,registry_rows=rows,active8_ensemble=artifact)
+    modal_pool = modal_resolver.build_pool_from_frozen_manifest(manifest,expected_digest=digest)
+    assert modal_pool["serving_coverage"]["serving_model_count"] == 5
+    assert {row["model"] for row in modal_pool["serving_coverage"]["excluded_models"]} == excluded
+    assert all(modal_pool["models"][name]["status"] == "challenger" for name in excluded)
+    assert all(modal_pool["models"][name]["serving_eligible"] is False for name in excluded)

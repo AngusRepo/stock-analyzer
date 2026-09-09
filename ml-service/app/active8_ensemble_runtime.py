@@ -190,7 +190,7 @@ def score_active8_ensemble(
     current_price: float,
 ) -> Active8EnsembleResult:
     validate_active8_ensemble_artifact(artifact, pool_models=pool_models)
-    missing_core = [name for name in CORE_MODELS if name not in rank_scores]
+    missing_core = [name for name in CORE_MODELS if name in artifact["selected_models"] and (name not in rank_scores or not np.isfinite(float(rank_scores[name])))]
     if missing_core:
         raise Active8EnsembleContractError(
             "active8_ensemble_core_score_missing:" + ",".join(missing_core)

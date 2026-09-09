@@ -642,6 +642,15 @@ async def artifact_registry_champion_pointers(model_name: str | None = None, lim
         }
         bundle = load_active8_ensemble_serving_bundle()
         base_artifacts = bundle.get("base_artifacts") if isinstance(bundle.get("base_artifacts"), dict) else {}
+        from services.model_serving_resolver import build_pool_from_champion_pointers
+        from services.model_artifact_registry import list_artifacts_by_ids
+        missing_ids = [str(item.get("artifact_id") or "") for item in base_artifacts.values()
+                       if isinstance(item, dict) and item.get("artifact_id") not in artifacts_by_id]
+        if missing_ids:
+            rows = [*rows, *list_artifacts_by_ids(missing_ids)]
+        runtime_pool = build_pool_from_champion_pointers(
+            pointers=pointers, artifacts=rows, required_models=tuple(base_artifacts), sidecar_models=(),
+        )
         bundle_status = str(bundle.get("status") or "")
         bundle_blockers = [str(item) for item in bundle.get("blockers") or []]
         pointer_by_model = {
@@ -657,17 +666,27 @@ async def artifact_registry_champion_pointers(model_name: str | None = None, lim
         for name in model_names:
             pointer = pointer_by_model.get(name) or {}
             serving = base_artifacts.get(name) if isinstance(base_artifacts.get(name), dict) else {}
-            is_serving = bundle.get("production_effect") is True and bool(serving)
+            is_member = bundle.get("production_effect") is True and bool(serving)
+            runtime = runtime_pool["models"].get(name) or {}
+            runtime_identity_matches = (
+                runtime.get("serving_artifact_id") == serving.get("artifact_id")
+                and runtime.get("version") == serving.get("version")
+                and runtime.get("checksum") == serving.get("checksum")
+            )
+            is_serving = is_member and runtime_identity_matches and runtime.get("serving_eligible") is True
+            block_reason = (runtime.get("serving_block_reason") or "bundle_pointer_identity_mismatch") if is_member and not is_serving else None
             models[name] = {
-                "serving_version": serving.get("version") if is_serving else None,
-                "serving_artifact_id": serving.get("artifact_id") if is_serving else None,
-                "serving_checksum": serving.get("checksum") if is_serving else None,
+                "serving_version": serving.get("version") if is_member else None,
+                "serving_artifact_id": serving.get("artifact_id") if is_member else None,
+                "serving_checksum": serving.get("checksum") if is_member else None,
                 "d1_pointer_version": pointer.get("champion_version"),
                 "d1_pointer_artifact_id": pointer.get("champion_artifact_id"),
-                "artifact_link_status": "v5_bundle_bound" if is_serving else "legacy_audit_only",
+                "serving_block_reason": block_reason,
+                "artifact_link_status": "v5_bundle_bound" if is_member else "legacy_audit_only",
                 "readiness": (
                     "v5_serving"
                     if is_serving
+                    else "serving_contract_blocked" if is_member
                     else "validation_failed"
                     if bundle_status == "validation_failed"
                     else "evidence_only_no_action"
@@ -675,6 +694,7 @@ async def artifact_registry_champion_pointers(model_name: str | None = None, lim
                 "next_action": (
                     "V5 bundle is the production serving owner."
                     if is_serving
+                    else "Resolve runtime serving contract: " + str(block_reason) if is_member
                     else "Latest V5 bundle failed held-out quality gates: " + ", ".join(bundle_blockers)
                     if bundle_status == "validation_failed"
                     else "Wait for a validated V5 bundle; the legacy champion pointer is rollback/audit lineage only."
@@ -685,7 +705,7 @@ async def artifact_registry_champion_pointers(model_name: str | None = None, lim
             "source_of_truth": "active8_ensemble_pointer_v1/model_artifact_registry",
             "target_source_of_truth": "active8_ensemble_pointer_v1",
             "production_reader": "active8_ensemble_pointer_v1",
-            "migration_ready": bundle.get("production_effect") is True,
+            "migration_ready": bundle.get("production_effect") is True and all(models[name]["readiness"] == "v5_serving" for name in base_artifacts),
             "ready_count": sum(1 for row in models.values() if row["readiness"] == "v5_serving"),
             "model_count": len(models),
             "count": len(pointers),

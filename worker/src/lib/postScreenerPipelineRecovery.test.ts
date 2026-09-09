@@ -5,6 +5,7 @@ import type { Bindings } from '../types'
 import {
   enqueuePostScreenerPipelineContinuation,
   enqueuePostScreenerPipelineRecovery,
+  pipelineProvenanceRecoveryDecision,
 } from './postScreenerContinuation'
 
 test('pipeline provenance recovery is exact-error CAS fenced and once per Worker release', async () => {
@@ -203,3 +204,14 @@ test('stale queued post-screener continuation is re-enqueued once and remains le
     await mf.dispose()
   }
 })
+
+for (const error of ['active8_ensemble_base_identity_mismatch:DLinear', 'active8_ensemble_base_not_serving:PatchTST:artifact_sequence_contract_missing_or_invalid']) {
+  test(`serving contract recovery requires a newer release: ${error}`, () => {
+    const failure = {canonical_run_id:'failed-run',status:'error',last_error:error,updated_at:'2026-09-09 13:46:18'};
+    const workerVersion = {id:'new-release',tag:'a'.repeat(40),timestamp:'2026-09-09T14:00:00Z'};
+    assert.equal(pipelineProvenanceRecoveryDecision({failure,workerVersion}).retry,true);
+    assert.equal(pipelineProvenanceRecoveryDecision({failure,workerVersion:{...workerVersion,timestamp:'2026-09-09T13:00:00Z'}}).retry,false);
+    assert.equal(pipelineProvenanceRecoveryDecision({failure:{...failure,status:'running'},workerVersion}).retry,false);
+    assert.equal(pipelineProvenanceRecoveryDecision({failure:{...failure,last_error:'unrelated failure'},workerVersion}).retry,false);
+  });
+}

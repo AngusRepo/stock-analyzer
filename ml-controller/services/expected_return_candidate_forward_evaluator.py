@@ -190,6 +190,7 @@ def _candidate_rows(
     cohort_id: str,
     *,
     expected_trained_until: str | None = None,
+    admission_diagnostics: dict[str, Any] | None = None,
 ) -> tuple[dict[str, dict[str, Any]], dict[str, bool]]:
     trained_until = str(expected_trained_until or "")[:10]
     trained_until_clause = (
@@ -216,6 +217,37 @@ def _candidate_rows(
         [trained_until] if trained_until_clause else [],
     )
     current_training_run_id = f"active8_oof:{cohort_id}"
+    # A completed offline rejection is a quality result, not a transient
+    # dependency. Missing, malformed or pending admission evidence still retries.
+    if admission_diagnostics is not None:
+        current_l4 = [
+            row for row in rows
+            if row.get("model_name") == "l4_alpha_ev"
+            and row.get("training_run_id") == current_training_run_id
+            and trained_until
+            and str(row.get("artifact_trained_until") or "")[:10] == trained_until
+        ]
+        rejections = []
+        for row in current_l4:
+            try:
+                failed = json.loads(row.get("offline_gate_failed_gates") or "null")
+            except (TypeError, json.JSONDecodeError):
+                break
+            if not (
+                row.get("state") in OBSERVABLE_REJECTED_CANDIDATE_STATES
+                and row.get("offline_gate_decision") == "FAIL"
+                and isinstance(failed, list) and failed
+                and all(isinstance(gate, str) and gate for gate in failed)
+                and _offline_admission_for_row(row)["decision"] == "FAIL"
+            ):
+                break
+            rejections.append({
+                "artifact_id": row["artifact_id"],
+                "failed_gates": failed,
+                "admission": _offline_admission_for_row(row),
+            })
+        if current_l4 and len(rejections) == len(current_l4):
+            admission_diagnostics["offline_rejections"] = rejections
     selected: dict[str, dict[str, Any]] = {}
     activate: dict[str, bool] = {}
     for owner in ("l4_alpha_ev", "allocator_ev_fusion"):
@@ -781,15 +813,19 @@ def evaluate_expected_return_candidates_forward(
 ) -> dict[str, Any]:
     """Evaluate exact candidates on immutable rows whose labels were unknown at freeze."""
 
+    admission_diagnostics: dict[str, Any] = {}
     selected, activate = _candidate_rows(
         query_fn,
         cohort_id,
         expected_trained_until=base_trained_until,
+        admission_diagnostics=admission_diagnostics,
     )
     if not selected:
+        rejected = admission_diagnostics.get("offline_rejections") or []
         return {
             "schema_version": SCHEMA_VERSION,
-            "status": "offline_admissible_candidate_missing",
+            "status": "offline_admission_blocked" if rejected else "offline_admissible_candidate_missing",
+            "offline_rejections": rejected,
             "promotion_ready": False,
             "training_dispatched": False,
         }

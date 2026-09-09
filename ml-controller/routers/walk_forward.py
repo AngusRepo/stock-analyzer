@@ -3972,6 +3972,8 @@ async def run_walk_forward_oof_lifecycle(req: OofLifecycleRequest):
         result["promotion_reason"] = (
             "exact_frozen_candidate_post_freeze_gate_promoted"
             if result.get("promoted")
+            else "offline_candidate_admission_blocked"
+            if exact_evaluation.get("status") == "offline_admission_blocked"
             else "exact_frozen_candidate_post_freeze_evaluation_complete"
         )
     opb_failed = (
@@ -3987,6 +3989,7 @@ async def run_walk_forward_oof_lifecycle(req: OofLifecycleRequest):
         and candidate_forward_status not in {
             "waiting_for_preoutcome_locked_mature_dates",
             "evaluated",
+            "offline_admission_blocked",
         }
     )
     candidate_forward_promotion_failed = bool(

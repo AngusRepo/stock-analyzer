@@ -629,3 +629,32 @@ def test_evaluator_never_pairs_candidates_from_different_freeze_dates() -> None:
     assert set(result["candidate_artifact_ids"]) == {"l4_alpha_ev"}
     assert result["promotion_ready"] is False
     assert result["training_dispatched"] is False
+
+
+@pytest.mark.parametrize("case,terminal", [
+    ("explicit_rejection", True), ("missing", False), ("malformed", False),
+    ("pending", False), ("other_cohort", False), ("other_cutoff", False),
+])
+def test_offline_admission_terminal_requires_exact_rejected_l4_evidence(case, terminal):
+    from services.expected_return_candidate_forward_evaluator import evaluate_expected_return_candidates_forward
+    row = {"artifact_id": "l4-20260901", "model_name": "l4_alpha_ev",
+           "state": "offline_failed", "training_run_id": "active8_oof:cohort-1",
+           "artifact_trained_until": "2026-09-01", "offline_gate_decision": "FAIL",
+           "offline_gate_failed_gates": '["pit_sector_alpha_samples_low","pit_sector_alpha_dates_low"]'}
+    rows = [row]
+    if case == "missing": rows = []
+    if case == "malformed": row["offline_gate_failed_gates"] = "{broken"
+    if case == "pending": row["offline_gate_decision"] = "PENDING"
+    if case == "other_cohort": row["training_run_id"] = "active8_oof:older-cohort"
+    if case == "other_cutoff": row["artifact_trained_until"] = "2026-08-18"
+    def forbidden(*args, **kwargs):
+        raise AssertionError("No model load, mutation or promotion for rejected admission")
+    result = evaluate_expected_return_candidates_forward(
+        bucket=None, cohort_id="cohort-1", business_date="2026-09-09",
+        extension_manifest_checksum="a" * 64, snapshot_rows=[],
+        build_fusion_rows_fn=forbidden, query_fn=lambda *_: rows,
+        batch_fn=forbidden, base_trained_until="2026-09-01")
+    assert result["status"] == ("offline_admission_blocked" if terminal else "offline_admissible_candidate_missing")
+    assert result["promotion_ready"] is False and result["training_dispatched"] is False
+    if terminal:
+        assert result["offline_rejections"][0]["failed_gates"] == ["pit_sector_alpha_samples_low", "pit_sector_alpha_dates_low"]

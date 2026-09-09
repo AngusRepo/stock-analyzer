@@ -272,3 +272,28 @@ def test_daily_exact_continuation_checks_current_prep(monkeypatch):
         dispatch_full_fit=True, expected_cohort_id="fixed", continuation_attempt=1, continuation_only=True))
     prep.assert_awaited_once()
     assert route.call_args.args[0].expected_cohort_id == "fixed"
+
+
+@pytest.mark.parametrize("candidate_status,retry", [
+    ("offline_admission_blocked", False),
+    ("offline_admissible_candidate_missing", True),
+    ("waiting_for_preoutcome_locked_mature_dates", False),
+])
+def test_daily_closes_explicit_admission_rejection_without_promotion(monkeypatch, lifecycle, candidate_status, retry):
+    days, parent, bucket, materialize, _ = lifecycle
+    monkeypatch.setattr(wf, "_oof_lifecycle_calendar", lambda *a, **k: (days[:149], {"cutoff": days[154]}))
+    materialize.return_value["candidate_forward_evaluation"] = {
+        "status": candidate_status, "promotion_ready": False,
+        "offline_rejections": [{"artifact_id": "l4", "failed_gates": ["pit_sector_alpha_samples_low"]}],
+    }
+    result = asyncio.run(wf.run_walk_forward_oof_lifecycle(wf.OofLifecycleRequest(
+        cadence="daily", end_date=days[154], dry_run=False, promote=True, dispatch_full_fit=True)))
+    assert result["dependency_retry_required"] is retry
+    assert result["promotion_allowed"] is False
+    receipts = [json.loads(v) for k, v in bucket.store.items() if "/lifecycle/" in k]
+    assert bool(receipts) is not retry
+    if not retry:
+        assert receipts[-1]["promoted"] is False
+        assert receipts[-1]["evidence_closure"]["candidate_forward_evaluation"]["status"] == candidate_status
+    if candidate_status == "offline_admission_blocked":
+        assert result["promotion_reason"] == "offline_candidate_admission_blocked"

@@ -2959,7 +2959,13 @@ def _oof_lifecycle_receipt_matches_active_policy(
         and candidate_forward.get("status") in {
             "waiting_for_preoutcome_locked_mature_dates",
             "evaluated",
+            "offline_admission_blocked",
         }
+        and (
+            candidate_forward.get("status") != "offline_admission_blocked"
+            or (bool(candidate_forward.get("offline_rejections"))
+                and candidate_forward.get("promotion_ready") is False)
+        )
         and candidate_forward.get("training_dispatched") is False
         and persistence.get("status") in {"ready", "ready_refreshed", "idempotent_ready"}
         and persistence.get("prediction_storage_mode") == "gcs_indexed_v1"

@@ -1026,6 +1026,8 @@ sync_dataset_snapshot_job() {
   if gcloud run jobs describe "$DATASET_SNAPSHOT_JOB_NAME" \
       --region="$REGION" \
       --format="value(metadata.name)" >/dev/null 2>&1; then
+    # A container can fail before Python starts, so no terminal callback can
+    # be sent. Bounded platform retries preserve the same run/date overrides.
     echo "=== Step 3g/4: Update Job $DATASET_SNAPSHOT_JOB_NAME ==="
     if ! gcloud run jobs update "$DATASET_SNAPSHOT_JOB_NAME" \
         --region="$REGION" \
@@ -1036,7 +1038,7 @@ sync_dataset_snapshot_job() {
         --cpu="${DATASET_SNAPSHOT_JOB_CPU:-4}" \
         --memory="${DATASET_SNAPSHOT_JOB_MEMORY:-8Gi}" \
         --task-timeout="$DATASET_SNAPSHOT_JOB_TIMEOUT" \
-        --max-retries=0 \
+        --max-retries=2 \
         "${service_account_args[@]}" \
         --update-labels="$PROVENANCE_LABELS" \
         --update-secrets="$RUN_SECRET_BINDINGS" \
@@ -1055,7 +1057,7 @@ sync_dataset_snapshot_job() {
         --cpu="${DATASET_SNAPSHOT_JOB_CPU:-4}" \
         --memory="${DATASET_SNAPSHOT_JOB_MEMORY:-8Gi}" \
         --task-timeout="$DATASET_SNAPSHOT_JOB_TIMEOUT" \
-        --max-retries=0 \
+        --max-retries=2 \
         "${service_account_args[@]}" \
         --labels="$PROVENANCE_LABELS" \
         --set-secrets="$RUN_SECRET_BINDINGS" \

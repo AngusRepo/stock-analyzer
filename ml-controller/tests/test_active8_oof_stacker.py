@@ -126,3 +126,94 @@ def test_spearman_and_rank_paths_preserve_ties_and_match_serving_semantics():
     serving = _percentile_by_average_rank([(row["symbol"], row["ensemble_raw"]) for row in rows])
     assert {value for value in serving.values()} == {0.5}
     assert {row["symbol"]: row["ensemble_rank"] for row in rows} == serving
+
+
+def _inner_panel():
+    import numpy as np
+
+    # Unequal rows per date and shuffled input catch accidental row-based gaps.
+    dates = np.repeat([f"2026-01-{day:02d}" for day in range(1, 11)], range(25, 35))
+    known = np.asarray([f"2026-01-{int(day[-2:]) + 2:02d}" for day in dates])
+    order = np.random.default_rng(42).permutation(len(dates))
+    x = np.zeros((len(dates), 16))
+    y = np.arange(len(dates), dtype=float)
+    return x[order], y[order], dates[order], np.full(len(dates), "TW"), known[order]
+
+
+def test_both_inner_tuning_passes_purge_labels_at_and_after_validation_start(monkeypatch):
+    import numpy as np
+    import services.active8_oof_stacker as stacker
+
+    x, y, dates, markets, known = _inner_panel()
+    calls = []
+
+    def fit(features, target, regularization, *, active_models=None):
+        calls.append((target.copy(), active_models))
+        weights = np.zeros(16)
+        weights[:2] = 1.0
+        return weights, 0.0
+
+    monkeypatch.setattr(stacker, "_fit_ridge", fit)
+    stacker._fit_selected_ridge(x, y, dates, markets, label_known_dates=known)
+    expected = y[(dates < "2026-01-09") & (known < "2026-01-09")]
+    assert len(expected) >= 100
+    assert np.any(known == "2026-01-09")
+    # Four lambda fits, then full training fit, repeated for the selected subset.
+    assert len(calls) == 10
+    for index in (0, 1, 2, 3, 5, 6, 7, 8):
+        np.testing.assert_array_equal(calls[index][0], expected)
+        assert calls[index][1] == (None if index < 5 else stacker.ACTIVE8_MODELS[:2])
+    for index in (4, 9):
+        np.testing.assert_array_equal(calls[index][0], y)
+
+
+def test_inner_tuning_falls_back_after_purge_without_fitting_unresolved_targets(monkeypatch):
+    import numpy as np
+    import services.active8_oof_stacker as stacker
+
+    x, y, dates, markets, known = _inner_panel()
+    known[:] = "2026-02-01"
+
+    def unexpected_fit(*args, **kwargs):
+        raise AssertionError("insufficient purged rows must use the fixed fallback")
+
+    monkeypatch.setattr(stacker, "_fit_ridge", unexpected_fit)
+    assert stacker._select_regularization(
+        x, y, dates, markets, label_known_dates=known
+    ) == 1.0
+
+
+def test_inner_tuning_requires_complete_label_maturity():
+    import pytest
+    import services.active8_oof_stacker as stacker
+
+    x, y, dates, markets, known = _inner_panel()
+    with pytest.raises(TypeError, match="label_known_dates"):
+        stacker._select_regularization(x, y, dates, markets)
+    with pytest.raises(ValueError, match="shape_mismatch"):
+        stacker._select_regularization(x, y, dates, markets, label_known_dates=known[:-1])
+    missing = known.astype(object)
+    missing[0] = None
+    with pytest.raises(ValueError, match="date_missing"):
+        stacker._select_regularization(x, y, dates, markets, label_known_dates=missing)
+    with pytest.raises(ValueError, match="not_after_prediction"):
+        stacker._select_regularization(x, y, dates, markets, label_known_dates=dates)
+
+
+def test_chronological_stacker_passes_actual_label_maturity(monkeypatch):
+    import numpy as np
+    import services.active8_oof_stacker as stacker
+
+    original = stacker._fit_selected_ridge
+    calls = []
+
+    def capture(x, y, dates, markets, *, label_known_dates):
+        calls.append(label_known_dates.copy())
+        assert np.all(label_known_dates == "2026-01-16")
+        return original(x, y, dates, markets, label_known_dates=label_known_dates)
+
+    monkeypatch.setattr(stacker, "_fit_selected_ridge", capture)
+    _, evidence = stacker.build_chronological_oof_stack(_rows())
+    assert len(calls) == 1
+    assert len(calls[0]) == 520
+    assert evidence["inner_tuning_policy"] == stacker.INNER_TUNING_POLICY

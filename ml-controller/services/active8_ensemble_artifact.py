@@ -22,6 +22,7 @@ from services.active8_oof_stacker import (
     MIN_STACKER_TRAIN_ROWS,
     STACKER_FEATURE_NAMES,
     STACKER_SEMANTIC_VERSION,
+    INNER_TUNING_POLICY,
     _equal_date_market_ic,
     _fit_selected_ridge,
     _spearman,
@@ -346,7 +347,10 @@ def build_active8_ensemble_artifact(
     fit_dates = np.asarray([row["prediction_date"] for row in resolved], dtype=object)
     fit_markets = np.asarray([row["market_segment"] for row in resolved], dtype=object)
     coefficients, intercept, regularization, selected_models = _fit_selected_ridge(
-        x, y, fit_dates, fit_markets
+        x, y, fit_dates, fit_markets,
+        label_known_dates=np.asarray(
+            [row["label_known_date"] for row in resolved], dtype=object
+        ),
     )
     if not selected_models:
         raise Active8EnsembleValidationError({
@@ -398,6 +402,7 @@ def build_active8_ensemble_artifact(
         "feature_names": list(STACKER_FEATURE_NAMES),
         "model_order": list(ACTIVE8_MODELS),
         "fit": {
+            "inner_tuning_policy": INNER_TUNING_POLICY,
             "method": "nonnegative_rank_ridge_full_fit_after_heldout_chronological_oof_validation",
             "rank_coefficient_constraint": "nonnegative",
             "regularization": regularization,

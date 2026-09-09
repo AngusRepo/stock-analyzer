@@ -24,6 +24,7 @@ STACKER_SEMANTIC_VERSION = OOF_ENSEMBLE_SEMANTIC_VERSION
 MIN_STACKER_TRAIN_ROWS = 500
 MIN_STACKER_TRAIN_DATES = 5
 RIDGE_CANDIDATES = (0.01, 0.1, 1.0, 10.0)
+INNER_TUNING_POLICY = "date_split_80_20_label_known_before_validation_start_v1"
 TARGET_AGREEMENT_TOLERANCE = 1e-6
 MODEL_WEIGHT_ZERO_TOLERANCE = 1e-10
 CORE_CROSS_SECTIONAL_MODELS = ACTIVE8_MODELS[:5]
@@ -150,15 +151,29 @@ def _select_regularization(
     dates: np.ndarray,
     markets: np.ndarray,
     *,
+    label_known_dates: np.ndarray,
     active_models: tuple[str, ...] | None = None,
 ) -> float:
+    # Never substitute prediction dates for label maturity: that would silently
+    # restore overlapping targets across the inner validation boundary.
+    label_known_dates = np.asarray(label_known_dates, dtype=object)
+    if label_known_dates.shape != dates.shape:
+        raise ValueError("active8_inner_tuning_label_known_dates_shape_mismatch")
+    if any(not isinstance(value, str) or not value for value in label_known_dates):
+        raise ValueError("active8_inner_tuning_label_known_date_missing")
+    if np.any(label_known_dates <= dates):
+        raise ValueError("active8_inner_tuning_label_known_date_not_after_prediction")
     unique_dates = sorted(set(dates.tolist()))
     if len(unique_dates) < 5:
         return 1.0
     split = max(1, int(len(unique_dates) * 0.8))
     train_dates = set(unique_dates[:split])
     validation_dates = set(unique_dates[split:])
-    train_idx = np.asarray([date in train_dates for date in dates], dtype=bool)
+    validation_start = unique_dates[split]
+    train_idx = (
+        np.asarray([date in train_dates for date in dates], dtype=bool)
+        & (label_known_dates < validation_start)
+    )
     validation_idx = np.asarray([date in validation_dates for date in dates], dtype=bool)
     if train_idx.sum() < 100 or validation_idx.sum() < 20:
         return 1.0
@@ -187,10 +202,14 @@ def _fit_selected_ridge(
     y: np.ndarray,
     dates: np.ndarray,
     markets: np.ndarray,
+    *,
+    label_known_dates: np.ndarray,
 ) -> tuple[np.ndarray, float, float, tuple[str, ...]]:
     """Use the convex nonnegative-ridge active set; no hand-ranked model quota."""
 
-    regularization = _select_regularization(x, y, dates, markets)
+    regularization = _select_regularization(
+        x, y, dates, markets, label_known_dates=label_known_dates
+    )
     weights, intercept = _fit_ridge(x, y, regularization)
     selected_models = tuple(
         model_name
@@ -210,6 +229,7 @@ def _fit_selected_ridge(
             y,
             dates,
             markets,
+            label_known_dates=label_known_dates,
             active_models=selected_models,
         )
         weights, intercept = _fit_ridge(
@@ -372,7 +392,10 @@ def build_chronological_oof_stack(
                     [row["market_segment"] for row in prior], dtype=object
                 )
                 weights, intercept, regularization, selected_models = _fit_selected_ridge(
-                    x_train, y_train, dates_train, markets_train
+                    x_train, y_train, dates_train, markets_train,
+                    label_known_dates=np.asarray(
+                        [row["label_known_date"] for row in prior], dtype=object
+                    ),
                 )
                 source = (
                     "chronological_resolved_oof_nonnegative_ridge"
@@ -424,6 +447,7 @@ def build_chronological_oof_stack(
         })
     return output, {
         "schema_version": "active8-oof-stacker-evidence-v1",
+        "inner_tuning_policy": INNER_TUNING_POLICY,
         "stacker_semantic_version": STACKER_SEMANTIC_VERSION,
         "input_rows": len(prediction_rows),
         "complete_candidate_rows": sum(

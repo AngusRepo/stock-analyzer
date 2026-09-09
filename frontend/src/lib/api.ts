@@ -1936,7 +1936,37 @@ export type ModelChampionPointersResponse = {
   }>
 }
 
+export type ModelPoolOverview = {
+  status: string
+  generated_at: string
+  bundle_artifact_id?: string | null
+  cohort_id?: string | null
+  knowledge_cutoff_date?: string | null
+  rank_coefficients: Record<string, number>
+  validation: {
+    decision?: string | null
+    validation_start_date?: string | null
+    validation_end_date?: string | null
+    rank_ic_equal_date_market_mean?: number | null
+    rank_ic_equal_date_market_lcb90?: number | null
+    top_bottom_net_return_spread?: number | null
+    top_bottom_net_return_spread_lcb90?: number | null
+  }
+  cohort: {
+    status: string
+    as_of?: string | null
+    completed_at?: string | null
+    phase?: string | null
+    covered_through?: string | null
+    mature_through?: string | null
+    pending_mature_dates: number | null
+    required_dates: number
+    reason?: string
+  }
+}
+
 export const modelPoolApi = {
+  overview: () => get<ModelPoolOverview>('/model-pool/overview'),
   status: () => get<any>('/model-pool/status'),
   lineage: () => get<ModelPoolLineage>('/model-pool/lineage'),
   artifactRegistry: (limit = 100) => get<ModelArtifactRegistryResponse>(`/model-pool/artifact_registry?limit=${limit}`),

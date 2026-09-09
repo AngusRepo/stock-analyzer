@@ -1,3 +1,4 @@
+import { modelPoolHealth, modelMembership, membershipLabel, presentationTime, type PoolMembership } from '@/lib/modelPoolPresentation'
 import { useMemo, useState, type ReactNode } from 'react'
 import {
   MODEL_POOL_ACTIVE_ALPHA_MODEL_IDS,
@@ -11,6 +12,7 @@ import type {
   ModelArtifactSelectionResponse,
   ModelChampionPointersResponse,
   ModelPoolLineageModel,
+  ModelPoolOverview,
   ModelUpgradeResearchStatusRow,
 } from '@/lib/api'
 import {
@@ -22,6 +24,10 @@ type ModelEntry = [string, ModelPoolLineageModel]
 
 type ModelPoolNewFlowWorkbenchProps = {
   models: ModelEntry[]
+  overview?: ModelPoolOverview
+  overviewLoading?: boolean
+  capturedAt?: number
+  stale?: boolean
   selection?: ModelArtifactSelectionResponse
   pointers?: ModelChampionPointersResponse
   promotionQueue?: ModelArtifactPromotionQueueResponse
@@ -256,6 +262,7 @@ type GrafanaModelRecord = {
   slotStatus: string
   servingStatus: string
   statusTone: WorkstationTone
+  membership: PoolMembership
   fleetTone: WorkstationTone
   artifactVersion: string
   selectedArtifact?: SelectedArtifactRow | null
@@ -298,17 +305,6 @@ function maxTone(tones: WorkstationTone[]): WorkstationTone {
   ), 'neutral')
 }
 
-function fleetToneFromMatrix(statusTone: WorkstationTone, blockers: string[], history: GrafanaModelRecord['history']): WorkstationTone {
-  const requiredGateLabels = new Set(['FULL OOF IC', 'LIVE IC', 'BASE CPCV', 'COMPARE'])
-  const gateTones = history
-    .filter((cell) => requiredGateLabels.has(cell.label))
-    .map((cell) => (cell.tone === 'neutral' ? 'warn' : cell.tone))
-  return maxTone([
-    statusTone,
-    blockers.length ? 'warn' : 'ok',
-    ...gateTones,
-  ])
-}
 
 function statusLabel(tone: WorkstationTone): string {
   if (tone === 'ok') return 'OK'
@@ -769,7 +765,7 @@ function buildEvidenceCells({
   selectedCandidate?: SelectedArtifactRow | null
   promotionRows: PromotionQueueRow[]
 }): GrafanaModelRecord['history'] {
-  const weekly = (model?.weekly_ic ?? []).slice(-3)
+  const weekly = (model?.version === artifact?.version ? model?.weekly_ic ?? [] : []).slice(-3)
   const paddedWeekly = [
     ...Array(Math.max(0, 3 - weekly.length)).fill(null),
     ...weekly,
@@ -781,9 +777,9 @@ function buildEvidenceCells({
     evidence.modelCpcv.oos_ic_mean,
     evidence.foundationForecastValidation.oos_ic_mean,
     evidence.offline.oos_ic,
-    model?.challenger?.artifact_evidence?.oos_ic,
+    model?.challenger?.version === artifact?.version ? model?.challenger?.artifact_evidence?.oos_ic : null,
   )
-  const liveIc = firstFiniteNumber(model?.rolling_ic, model?.challenger?.rolling_ic)
+  const liveIc = model?.version === artifact?.version ? firstFiniteNumber(model?.rolling_ic) : null
   const baseCpcv = baseCpcvCell(candidateId, evidence)
   const finalComparedTo = firstText(
     promotionRows[0]?.final_compared_to,
@@ -853,7 +849,11 @@ function buildGrafanaRecord({
   statusRow,
   promotionRows,
   modelUpgradeStatusReady,
+  membership,
+  memberReady,
 }: {
+  membership: PoolMembership
+  memberReady: boolean
   candidate: typeof MODEL_UPGRADE_CANDIDATES[number]
   model?: ModelPoolLineageModel
   selectionRow?: SelectionModelRow
@@ -869,16 +869,11 @@ function buildGrafanaRecord({
   const evidenceOk = evidenceReady(model, latestRetrainArtifact)
   const pointerOk = pointerReady(pointerRow)
   const queueTone = promotionPressureTone(promotionRows)
-  const blockers = uniqueTokens([
-    ...(!artifactOk ? ['artifact_missing'] : []),
-    ...(!pointerOk ? ['active8_v5_bundle_not_promoted'] : []),
-    ...promotionRows.flatMap((row) => (row.blockers ?? []).map((blocker) => (
-      typeof blocker === 'string' ? blocker : blocker.code ?? blocker.label ?? 'promotion_blocker'
-    ))),
-  ])
+  const blockers = membership === 'selected' && !memberReady
+    ? ['required_bundle_member_not_ready'] : []
   const rawStatus = latestRetrainArtifact?.state ?? 'no_data'
   const slotStatus = model?.model_slot_status ?? 'active'
-  const servingStatus = pointerOk ? 'V5 bundle serving' : 'V5 evidence-only'
+  const servingStatus = membership === 'not_selected' ? '觀測池保留' : memberReady ? '正式成員就緒' : '服務待確認'
   const statusTone = blockers.length
     ? maxTone([toneFromStatus(rawStatus), queueTone, 'warn'])
     : maxTone([toneFromStatus(rawStatus), queueTone])
@@ -890,7 +885,7 @@ function buildGrafanaRecord({
     selectedCandidate: artifact,
     promotionRows,
   })
-  const fleetTone = fleetToneFromMatrix(statusTone, blockers, history)
+  const fleetTone: WorkstationTone = membership === 'selected' ? memberReady ? 'ok' : 'error' : membership === 'not_selected' ? 'info' : 'neutral'
 
   return {
     candidate,
@@ -900,6 +895,7 @@ function buildGrafanaRecord({
     slotStatus,
     servingStatus,
     statusTone,
+    membership,
     fleetTone,
     artifactVersion: pointerRow?.serving_version ?? 'V5 evidence-only · no production bundle',
     selectedArtifact: artifact,
@@ -974,73 +970,86 @@ function GrafanaStat({
   )
 }
 
-function GrafanaDashboardHeader({
-  records,
-  readyPointers,
-  pointerTotal,
-  selectedArtifacts,
-  promotionCount,
-}: {
+function GrafanaDashboardHeader({ records, pointers, promotionCount, capturedAt, stale }: {
   records: GrafanaModelRecord[]
-  readyPointers: number
-  pointerTotal: number
-  selectedArtifacts: number
+  pointers?: ModelChampionPointersResponse
   promotionCount: number
+  capturedAt?: number
+  stale?: boolean
 }) {
-  const okCount = records.filter((record) => record.fleetTone === 'ok').length
-  const blockedCount = records.filter((record) => record.blockers.length > 0 || record.fleetTone === 'error').length
-  const warnCount = records.filter((record) => record.fleetTone === 'warn').length
-  const fleetTone = blockedCount ? 'error' : warnCount ? 'warn' : okCount === records.length ? 'ok' : 'info'
-  const now = new Date()
-
+  const health = modelPoolHealth(pointers)
+  const artifacts = records.filter(row => row.artifactOk).length
+  const passed = records.filter(row => row.history.some(cell => cell.label === 'BASE CPCV' && cell.tone === 'ok')).length
+  const unselected = records.filter(row => row.membership === 'not_selected').length
   return (
-    <div className="border-b border-[#2d3a49] bg-[#0b1118]">
-      <div className="flex flex-col gap-3 border-b border-[#2d3a49] px-4 py-3 xl:flex-row xl:items-center xl:justify-between">
-        <div>
-          <p className="sv-num text-[12px] normal-case text-[#f0c365]">Grafana-style model operations</p>
-          <h2 className="mt-1 font-['Space_Grotesk'] text-[28px] font-semibold text-[#f4efe4]">Active-8 Model Pool</h2>
-        </div>
-        <div className="flex flex-wrap items-center gap-2 sv-num text-[12px] normal-case text-[#a7b5c8]">
-          <span className="rounded-full border border-[#2d3a49] bg-[#121a24] px-3 py-1">env prod</span>
-          <span className="rounded-full border border-[#2d3a49] bg-[#121a24] px-3 py-1">weekly + OOS/live gates</span>
-          <span className="rounded-full border border-[#2d3a49] bg-[#121a24] px-3 py-1">refresh 60s</span>
-          <span className="rounded-full border border-[#2d3a49] bg-[#121a24] px-3 py-1">local {now.toLocaleTimeString()}</span>
-        </div>
+    <div className="border-b border-[#2d3a49] bg-[#0b1118] p-4">
+      <div className="mb-4 flex flex-wrap items-end justify-between gap-3">
+        <div><p className="text-sm text-[#f0c365]">正式 ensemble · 八模型觀測池</p><h2 className="mt-1 text-2xl font-semibold text-[#f4efe4]">模型池</h2></div>
+        <p className="text-sm text-[#a7b5c8]">{stale ? '快照更新失敗 · 以下為上次成功資料' : '成功讀取'} {presentationTime(capturedAt)} · 台北時間</p>
       </div>
-      <div className="grid gap-2 bg-[#0b1118] p-3 md:grid-cols-2 xl:grid-cols-5">
-        <GrafanaStat
-          label="Fleet state"
-          value={statusLabel(fleetTone)}
-          detail={`${okCount}/${records.length} active slots green`}
-          tone={fleetTone}
-        />
-        <GrafanaStat
-          label="Blocked"
-          value={blockedCount}
-          detail="artifact, evidence, pointer, or gate blockers"
-          tone={blockedCount ? 'error' : 'ok'}
-        />
-        <GrafanaStat
-          label="V5 bundle members"
-          value={`${readyPointers}/${pointerTotal || 'N/A'}`}
-          detail="atomic bundle serving parity"
-          tone={pointerTotal && readyPointers === pointerTotal ? 'ok' : 'warn'}
-        />
-        <GrafanaStat
-          label="Artifacts"
-          value={selectedArtifacts}
-          detail="selected canonical OOF candidates"
-          tone={selectedArtifacts ? 'info' : 'neutral'}
-        />
-        <GrafanaStat
-          label="Promotion queue"
-          value={promotionCount}
-          detail="rows needing review or release action"
-          tone={promotionCount ? 'warn' : 'ok'}
-        />
+      <div className="grid grid-cols-2 gap-3 xl:grid-cols-5">
+        <GrafanaStat label="正式 ensemble" value={stale ? '快照待更新' : health.label} detail={health.blockers.length ? health.blockers.join('；') : '依正式 bundle 的必要成員與 identity 判斷'} tone={stale ? 'warn' : health.tone} />
+        <GrafanaStat label="必要成員" value={`${health.ready}/${health.selected.length || '—'}`} detail={`本輪未入選 ${unselected} 組 · 正常保留於觀測池`} tone={stale ? 'neutral' : health.tone} />
+        <GrafanaStat label="個別 OOF 通過" value={`${passed}/${records.length}`} detail="個別模型證據；與 ensemble held-out 驗證分開" tone={passed === records.length ? 'ok' : 'warn'} />
+        <GrafanaStat label="最新模型 artifacts" value={`${artifacts}/${records.length}`} detail="包含入選與未入選模型" tone={artifacts === records.length ? 'ok' : 'warn'} />
+        <GrafanaStat label="當前候選待辦" value={promotionCount} detail="僅計入目前選定候選的對應 queue 項目" tone={promotionCount ? 'info' : 'ok'} />
       </div>
     </div>
   )
+}
+
+function EnsembleContext({ pointers, overview, loading }: {
+  pointers?: ModelChampionPointersResponse; overview?: ModelPoolOverview; loading?: boolean
+}) {
+  const bundle = pointers?.active8_bundle
+  const current = overview?.bundle_artifact_id && overview.bundle_artifact_id === bundle?.artifact_id ? overview : undefined
+  const cohort = current?.cohort
+  const value = (n: number | null | undefined) => n == null ? '尚無資料' : n.toFixed(4)
+  return <div className="grid gap-4 lg:grid-cols-2">
+    <GrafanaPanel title="正式組合與驗證" kicker="當前 serving owner">
+      <div className="space-y-3 p-4 text-sm text-[#a7b5c8]">
+        <p className="font-medium text-[#eef4fb]">{bundle?.selected_models?.join(' · ') || '尚無正式成員'}</p>
+        <p className="break-all">Cohort：{bundle?.cohort_id || '尚未取得'}</p>
+        <p>晉級：{presentationTime(bundle?.promoted_at)} · 台北時間</p>
+        <p>驗證期間：{current?.validation.validation_start_date || '—'} ～ {current?.validation.validation_end_date || '—'}</p>
+        <p>Rank IC {value(current?.validation.rank_ic_equal_date_market_mean)} · LCB90 {value(current?.validation.rank_ic_equal_date_market_lcb90)}</p>
+        <p>Top-bottom spread {value(current?.validation.top_bottom_net_return_spread)} · LCB90 {value(current?.validation.top_bottom_net_return_spread_lcb90)}</p>
+        <p className="text-xs">Spread 為報酬差（小數），不是 portfolio P&amp;L。單模完整 OOF 與這個驗證窗口不同。</p>
+      </div>
+    </GrafanaPanel>
+    <GrafanaPanel title="下一個 cohort" kicker="依最近 daily lifecycle 紀錄">
+      <div className="space-y-3 p-4 text-sm text-[#a7b5c8]">
+        <p className="text-2xl font-semibold text-[#eef4fb]">{cohort?.pending_mature_dates ?? '—'} / {cohort?.required_dates ?? 10} <span className="text-sm font-normal">新成熟交易日</span></p>
+        <p>資料截止：{cohort?.as_of || '尚未取得'} · 成熟至：{cohort?.mature_through || '—'}</p>
+        <p>已納入 base OOF：{cohort?.covered_through || '—'}</p>
+        <p>最近紀錄：{presentationTime(cohort?.completed_at)}</p>
+        <p>{loading ? '正在讀取 cohort 證據…' : cohort?.status !== 'observed' ? '暫無可驗證的 lifecycle receipt；不以日曆天數推算進度。' : cohort.pending_mature_dates == null ? '目前 receipt 未提供完整的新日期清單；精確進度未知。' : '以上為該截止日的紀錄；新的日期由正常 lifecycle 更新。'}</p>
+        <p className="text-xs">滿十個新成熟交易日後，仍需 PIT 與既有品質門檻通過。</p>
+      </div>
+    </GrafanaPanel>
+  </div>
+}
+
+function ModelObservationTable({ records, overview }: { records: GrafanaModelRecord[]; overview?: ModelPoolOverview }) {
+  return <GrafanaPanel title="八模型觀測池" kicker="角色、服務與證據分開判斷">
+    <p className="px-3 pt-3 text-xs text-[#a7b5c8] md:hidden">表格可左右滑動，查看 OOF 與 Live 證據。</p>
+    <div className="overflow-x-auto" role="region" aria-label="八模型觀測資料" tabIndex={0}><table className="!table min-w-[680px] w-full text-left text-sm text-[#c6d2e2]">
+      <thead className="border-b border-[#2d3a49] bg-[#0b1118] text-[#a7b5c8]"><tr>{['模型', '本輪角色', 'Rank 係數', '個別 OOF', 'Live 證據'].map(label => <th key={label} scope="col" className="whitespace-nowrap p-3">{label}</th>)}</tr></thead>
+      <tbody>{records.map(record => {
+        const live = record.history.find(cell => cell.label === 'LIVE IC')
+        const oof = record.history.find(cell => cell.label === 'BASE CPCV')
+        const coefficient = overview?.rank_coefficients[record.candidate.id]
+        return <tr key={record.candidate.id} className="border-b border-[#263247] align-top">
+          <th scope="row" className="p-3 text-[#eef4fb]">{record.candidate.id}</th>
+          <td className="p-3">{membershipLabel(record.membership)}<div className={`mt-1 text-xs ${grafanaTextClass(record.fleetTone)}`}>{record.servingStatus}</div></td>
+          <td className="p-3 tabular-nums">{coefficient == null ? '未提供' : coefficient.toFixed(6)}</td>
+          <td className={`p-3 ${grafanaTextClass(oof?.tone || 'neutral')}`}>{oof?.value || '待確認'}</td>
+          <td className="p-3">{live?.value === 'N/A' ? '待累積／尚無可用數值' : `IC ${live?.value ?? '—'}`}<div className="mt-1 text-xs text-[#a7b5c8]">{record.model?.version === record.latestRetrainArtifact?.version && record.model?.last_ic_status != null && record.model?.last_ic_sample_count != null ? `最近回報樣本 ${record.model.last_ic_sample_count}` : '同版本樣本數尚未提供'}</div></td>
+        </tr>
+      })}</tbody>
+    </table></div>
+    <p className="p-3 text-xs text-[#a7b5c8]">Rank 係數不是資金權重。未入選模型仍保留觀測與下次擬合資格；LIVE IC 空白不代表模型失效。</p>
+  </GrafanaPanel>
 }
 
 function candidateHousekeepingSummary(
@@ -1170,7 +1179,7 @@ function FleetStatusStrip({
 }) {
   return (
     <GrafanaPanel title="Fleet status" kicker="compact active-8 direct-alpha state cells">
-      <div className="grid gap-2 bg-[#0b1118] p-3 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-9">
+      <div className="grid gap-2 bg-[#0b1118] p-3 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
         {records.map((record) => {
           const isSelected = selectedModelId === record.candidate.id
           return (
@@ -1188,7 +1197,7 @@ function FleetStatusStrip({
             <p className="mt-1 truncate text-[12px] text-[#90a0b8]">{record.family} / {record.dataset?.window ?? 'model-specific'}</p>
             <p className="mt-1 truncate sv-num text-[11px] normal-case text-[#a7b5c8]">slot {record.slotStatus} / {record.servingStatus}</p>
             <div className={`mt-2 border px-2 py-1.5 text-center sv-num text-[12px] font-semibold ${grafanaCellClass(record.fleetTone)}`}>
-              {statusLabel(record.fleetTone)}
+              {membershipLabel(record.membership)}
             </div>
           </button>
           )
@@ -1387,6 +1396,10 @@ function MetaBoundaryPanel() {
 
 export default function ModelPoolNewFlowWorkbench({
   models,
+  overview,
+  overviewLoading,
+  capturedAt,
+  stale,
   selection,
   pointers,
   promotionQueue,
@@ -1413,10 +1426,9 @@ export default function ModelPoolNewFlowWorkbench({
       return acc
     }, {})
   }, [serving])
-  const readyPointers = pointers?.ready_count ?? 0
-  const pointerTotal = pointers?.model_count ?? 0
-  const selectedArtifacts = Object.values(selection?.models ?? {}).filter((row) => Boolean(selectionCandidate(row))).length
-  const promotionCount = promotionQueue?.count ?? promotionQueue?.queue?.length ?? 0
+  const health = modelPoolHealth(pointers)
+  const currentOverview = overview?.bundle_artifact_id === pointers?.active8_bundle?.artifact_id ? overview : undefined
+  const promotionCount = activeSlots.filter(candidate => selectedPromotionRow(candidate.id, selection?.models?.[candidate.id], promotionQueue?.queue ?? [])).length
   const grafanaRecords = useMemo(() => activeSlots.map((candidate) => {
     const selectionRow = selection?.models?.[candidate.id]
     const promotionRow = selectedPromotionRow(candidate.id, selectionRow, promotionQueue?.queue ?? [])
@@ -1428,6 +1440,8 @@ export default function ModelPoolNewFlowWorkbench({
       statusRow: latestStatusFor(candidate.id, statusRows),
       promotionRows: promotionRow ? [promotionRow] : [],
       modelUpgradeStatusReady,
+      membership: modelMembership(candidate.id, pointers),
+      memberReady: health.readyModels.includes(candidate.id),
     })
   }), [activeSlots, byName, selection, pointers, statusRows, promotionQueue, modelUpgradeStatusReady])
   const defaultSelectedModelId = useMemo(() => (
@@ -1449,20 +1463,23 @@ export default function ModelPoolNewFlowWorkbench({
 
   return (
     <WorkstationPanel
-      title="Model Ops Dashboard"
-      kicker="Grafana-style fleet monitoring for TimesFM L2 sidecar -> L3 active-8 family registry"
+      title="模型運作概覽"
+      kicker="服務狀態、模型角色與證據成熟度"
       className="sv-readable-card-content sv-model-pool-readable"
     >
       <GrafanaDashboardHeader
         records={grafanaRecords}
-        readyPointers={readyPointers}
-        pointerTotal={pointerTotal}
-        selectedArtifacts={selectedArtifacts}
+        pointers={pointers}
+        capturedAt={capturedAt}
+        stale={stale}
         promotionCount={promotionCount}
       />
 
       <div className="grid gap-4 bg-[#0b1118] p-4">
-        <CandidateHousekeepingPanel selection={selection} promotionQueue={promotionQueue} />
+        <EnsembleContext pointers={pointers} overview={currentOverview} loading={overviewLoading} />
+        <ModelObservationTable records={grafanaRecords} overview={currentOverview} />
+        <details className="rounded-xl border border-[#2d3a49] p-3">
+          <summary className="cursor-pointer text-sm text-[#c6d2e2]">模型卡片與完整證據</summary>
 
         <FleetStatusStrip
           records={grafanaRecords}
@@ -1481,7 +1498,11 @@ export default function ModelPoolNewFlowWorkbench({
           selectedModelId={selectedModelId}
           onSelectModel={selectModel}
         />
-        <MetaBoundaryPanel />
+        </details>
+        <details className="rounded-xl border border-[#2d3a49] p-3">
+          <summary className="cursor-pointer text-sm text-[#c6d2e2]">歷史候選與治理 · 原始 queue {promotionQueue?.count ?? 0} 筆（非當前待辦）</summary>
+          <div className="mt-3 space-y-4"><CandidateHousekeepingPanel selection={selection} promotionQueue={promotionQueue} /><MetaBoundaryPanel /></div>
+        </details>
       </div>
 
       <div className="border-t border-[#263247] bg-[#071018] p-4 text-[15px] leading-6 text-[#a7b5c8]">

@@ -619,6 +619,16 @@ async def artifact_registry_feature_release_promotion_controller(
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"feature release promotion controller failed: {e}")
 
+@router.get("/overview")
+def model_pool_overview():
+    """Optional read-only ensemble/cohort context; not a serving-health gate."""
+    from google.cloud import storage
+    from services.model_pool_overview import load_model_pool_overview
+
+    bundle = load_active8_ensemble_serving_bundle(include_observability=True)
+    return load_model_pool_overview(bundle, storage.Client().bucket(_bucket_name()))
+
+
 @router.get("/artifact_registry/champion_pointers")
 async def artifact_registry_champion_pointers(model_name: str | None = None, limit: int = 200):
     """Return the V5 serving bundle plus legacy pointers as audit lineage."""

@@ -3303,7 +3303,7 @@ def _validated_active8_ensemble_payload(row: dict[str, Any]) -> dict[str, Any]:
     return payload
 
 
-def load_active8_ensemble_serving_bundle() -> dict[str, Any]:
+def load_active8_ensemble_serving_bundle(*, include_observability: bool = False) -> dict[str, Any]:
     """Return the only production-grade Active-8 serving owner.
 
     Per-model champion pointers remain immutable rollback/audit lineage. They
@@ -3401,6 +3401,12 @@ def load_active8_ensemble_serving_bundle() -> dict[str, Any]:
         "cohort_id": row.get("cohort_id"),
         "training_run_id": row.get("training_run_id"),
         "promoted_at": row.get("promoted_at"),
+        **({"observability": {
+            "knowledge_cutoff_date": payload.get("knowledge_cutoff_date"),
+            "fit": payload.get("fit") or {},
+            "feature_names": payload.get("feature_names") or [],
+            "validation": payload.get("validation") or {},
+        }} if include_observability else {}),
         "selected_models": list(selected_models),
         "base_artifacts": dict(base_artifacts),
         "blockers": [],

@@ -317,6 +317,16 @@ dashboardReadRoutes.post('/api/model-pool/artifact_registry/promotion_controller
   }
 })
 
+dashboardReadRoutes.get('/api/model-pool/overview', async (c) => {
+  const authError = await requireValidToken(c)
+  if (authError) return authError
+  try {
+    return c.json(await controllerJson<any>(c.env, '/model_pool/overview', { timeoutMs: 30_000 }))
+  } catch {
+    return c.json({ status: 'unavailable', error: 'Model pool overview unavailable' }, 502)
+  }
+})
+
 dashboardReadRoutes.get('/api/model-pool/artifact_registry/champion_pointers', async (c) => {
   const authError = await requireValidToken(c)
   if (authError) return authError

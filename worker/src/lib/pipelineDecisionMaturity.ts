@@ -216,12 +216,12 @@ export interface PipelineDecisionMaturityPacket {
   schema_version: 'pipeline-decision-maturity-v2'
   requested_date: string
   generated_at: string
-  current_selection_signal_owner: 'score_v2_formal_ml'
+  current_selection_signal_owner: 'allocator_opb_policy'
   current_expected_return_owner: 'l4_alpha_ev' | 'allocator_ev_fusion' | null
-  current_allocation_utility_owner: 'expected_return_owner' | 'formal_ml_buy_admission'
+  current_allocation_utility_owner: 'expected_return_owner' | 'risk_abstention'
   current_execution_owner: 'allocator_opb_policy'
   execution_scope: 'recommendation_allocation_only_no_order_submission'
-  action_gate: 'expected_return_owner' | 'selection_signal_owner'
+  action_gate: 'expected_return_owner' | 'validated_expected_return_required'
   strategy_route_bundle: StrategyRouteBundleMaturity
   summary: {
     production: number
@@ -1856,12 +1856,12 @@ export async function buildPipelineDecisionMaturityPacket(
     schema_version: 'pipeline-decision-maturity-v2',
     requested_date: requestedDate,
     generated_at: new Date().toISOString(),
-    current_selection_signal_owner: servingState?.selection_signal_owner ?? 'score_v2_formal_ml',
+    current_selection_signal_owner: servingState?.selection_signal_owner ?? 'allocator_opb_policy',
     current_expected_return_owner: servingState?.expected_return_owner ?? null,
-    current_allocation_utility_owner: servingState?.allocation_utility_owner ?? 'formal_ml_buy_admission',
+    current_allocation_utility_owner: servingState?.allocation_utility_owner ?? 'risk_abstention',
     current_execution_owner: servingState?.execution_owner ?? 'allocator_opb_policy',
     execution_scope: servingState?.execution_scope ?? 'recommendation_allocation_only_no_order_submission',
-    action_gate: servingState?.action_gate ?? 'selection_signal_owner',
+    action_gate: servingState?.action_gate ?? 'validated_expected_return_required',
     summary: {
       production: stages.filter((stage) => stage.contribution_mode === 'production').length,
       shadow: stages.filter((stage) => stage.contribution_mode === 'shadow').length,

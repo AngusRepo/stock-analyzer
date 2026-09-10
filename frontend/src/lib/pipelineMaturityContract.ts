@@ -190,12 +190,12 @@ export type PipelineDecisionMaturityPacket = {
   schema_version: 'pipeline-decision-maturity-v2'
   requested_date: string
   generated_at: string
-  current_selection_signal_owner: 'score_v2_formal_ml'
+  current_selection_signal_owner: 'allocator_opb_policy'
   current_expected_return_owner: 'l4_alpha_ev' | 'allocator_ev_fusion' | null
-  current_allocation_utility_owner: 'expected_return_owner' | 'formal_ml_buy_admission'
+  current_allocation_utility_owner: 'expected_return_owner' | 'risk_abstention'
   current_execution_owner: 'allocator_opb_policy'
   execution_scope: 'recommendation_allocation_only_no_order_submission'
-  action_gate: 'expected_return_owner' | 'selection_signal_owner'
+  action_gate: 'expected_return_owner' | 'validated_expected_return_required'
   strategy_route_bundle?: StrategyRouteBundleMaturity
   summary: {
     production: number

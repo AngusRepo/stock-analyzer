@@ -123,5 +123,7 @@ def qualify_directional_signal(signal: str, payload: dict) -> dict[str, Any]:
         for reason in qualification["directional"]["signals"][name]["blockers"]
     )) if blocked else []
     return {"signal": signal, "unqualified_signal": unqualified_signal,
+            "advisory_signal": unqualified_signal, "signal_role": "advisory_only",
+            "final_decision_owner": "allocator_opb_policy",
             "signal_status": "policy_blocked" if blocked else "market_hold" if signal == "HOLD" else "qualified",
             "signal_blockers": blockers, "qualifications": qualification}

@@ -111,9 +111,8 @@ def test_continuity_allocator_cannot_turn_formal_hold_into_buy() -> None:
         {"promoteMinForecastPct": 0.0, "promoteMinMlEdge": 0.0},
         alpha_policy={"allocation": {}},
     ) is False
-    assert row["promotion_blocked_reason"] == "formal_ml_buy_admission_failed"
-    assert row["formal_ml_continuity_admission"]["direction_owner"] == "formal_ml_signal"
-    assert row["formal_ml_continuity_admission"]["allocator_role"] == "weight_only_not_direction_owner"
+    assert row["promotion_blocked_reason"] == "validated_l4_expected_return_unavailable"
+    assert "formal_ml_continuity_admission" not in row
 
 
 def test_risk_overlay_skip_blocks_allocator_even_for_formal_ml_buy() -> None:
@@ -264,3 +263,53 @@ def test_rfs_packet_metadata_survives_zero_selected_rows(monkeypatch):
         assert packet["source_expected_return_candidate_count"] == 2
         assert packet["validation_blockers"] == ["return_history_coverage_below_80pct"]
         assert packet["production_effect"] is False
+
+
+@pytest.mark.parametrize("signal", ["BUY", "STRONG_BUY", "HOLD", "SELL", "STRONG_SELL"])
+def test_l4_selects_valid_ev_independently_of_ml_advice(signal):
+    row = _formal_l4_row("AAA")
+    row["signal"] = signal
+    row["score_components"]["components"]["mlEdge"] = 0.0
+    row["score_components"]["mlEdgePolicy"].update({
+        "signal": signal, "signal_status": "policy_blocked",
+        "qualifications": {"ranking": {"decision": "PASS"},
+                           "directional": {"decision": "BLOCKED", "allowed_signals": []}},
+    })
+    allocated = recommendation_service._apply_sparse_tangent_buy_selection(
+        [row], {}, {"allocation": {"controller": "SparseTangent"}},
+        confidence_floor=.6, return_history={})
+    result = allocated[0]
+    assert result["has_buy_signal"] == 1
+    assert result["signal"] == "BUY"
+    assert result["signal_raw"] == signal
+    assert result["ml_advisory"]["signal"] == signal
+    assert result["alpha_allocation"]["expected_return_owner"] == "l4_alpha_ev"
+
+
+@pytest.mark.parametrize("signal", ["BUY", "HOLD", "SELL"])
+def test_ml_advice_cannot_replace_unavailable_l4_ev(signal):
+    row = _continuity_row("AAA")
+    row["signal"] = signal
+    row["score_components"]["mlEdgePolicy"]["signal"] = signal
+    result = recommendation_service._apply_sparse_tangent_buy_selection(
+        [row], {}, {"allocation": {"controller": "SparseTangent"}},
+        confidence_floor=.6, return_history={})[0]
+    assert result["signal"] == "HOLD" and result["has_buy_signal"] == 0
+    assert result["ml_advisory"]["signal"] == signal
+    assert result["alpha_allocation"]["allocation_candidate_pool_size"] == 0
+    assert result["promotion_blocked_reason"] == "validated_l4_expected_return_unavailable"
+
+
+@pytest.mark.parametrize("failure", ["missing_family", "ranking_failed", "risk", "research", "negative_ev"])
+def test_advisory_separation_does_not_bypass_quality_or_risk(failure):
+    row = _formal_l4_row("AAA")
+    if failure == "missing_family": row["score_components"].pop("coreFamilyEvidence")
+    elif failure == "ranking_failed": row["score_components"]["mlEdgePolicy"]["qualifications"] = {"ranking": {"decision": "FAIL"}}
+    elif failure == "risk": row["alpha_context"] = {"risk_overlay": {"skip": True}}
+    elif failure == "research": row["eligible_for_pending_buy"] = False
+    else: row["l4_alpha_ev"] = _l4_alpha_ev(-.01)
+    result = recommendation_service._apply_sparse_tangent_buy_selection(
+        [row], {}, {"allocation": {"controller": "SparseTangent"}},
+        confidence_floor=.6, return_history={})[0]
+    assert result["has_buy_signal"] == 0
+    assert result["alpha_allocation"]["selected"] is False

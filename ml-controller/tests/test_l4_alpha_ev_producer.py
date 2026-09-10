@@ -425,7 +425,7 @@ def test_filter_and_score_keeps_valid_l4_base_when_fusion_residual_abstains(monk
     assert allocation["allocator_edge_resolver"]["fusion_adjustment_allowed"] is False
     assert allocation["allocator_ev_fusion"] is None
     assert allocation["allocator_edge_resolver"]["expected_return_contract_version"] == L4_ARTIFACT_CONTRACT_VERSION
-    assert allocation["allocator_edge_resolver"]["selection_signal_owner"] == "score_v2_formal_ml"
+    assert allocation["allocator_edge_resolver"]["selection_signal_owner"] == "allocator_opb_policy"
     assert allocation["allocator_edge_resolver"]["formal_expected_return_owner"] == "l4_alpha_ev"
     assert allocation["allocator_edge_resolver"]["execution_owner"] == "allocator_opb_policy"
 

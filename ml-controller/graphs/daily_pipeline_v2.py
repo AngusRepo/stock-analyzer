@@ -583,7 +583,7 @@ class PipelineStateV2(TypedDict, total=False):
     final_recommendations: list[dict]       # after filter + scoring + allocation
     layer2_recommendation_symbols: list[str] # symbols entering formal L3 family evidence
     layer3_formal_gate_target_size: int      # legacy audit field; now equals L3 evidence input count
-    sell_filtered_symbols: list[str]        # symbols dropped due to SELL/NO_SIGNAL
+    sell_filtered_symbols: list[str]        # symbols without usable formal prediction evidence
     sell_filtered_diagnostics: dict          # symbol -> diagnostic payload for preserved non-buy seed rows
     expected_return_serving_preflight: dict  # L4/Fusion compatibility before row materialization
     expected_return_owner_coverage: dict     # valid owner or explicit abstention for every screener seed
@@ -2084,7 +2084,7 @@ def _build_active8_evidence_only_recommendation_result(
 
 async def node_recommend(state: PipelineStateV2) -> dict:
     """
-    Filter SELL, compute canonical Score V2 finalScore, then run L2/L3 ranking and sparse allocation.
+    Preserve ML advice, compute Score V2, then let L4 own sparse allocation.
     """
     logger.info("[Pipeline V2] node_recommend")
 
@@ -2380,7 +2380,7 @@ async def node_recommend(state: PipelineStateV2) -> dict:
         )
 
     logger.info(
-        "[Pipeline V2] Recommend done: %s kept, %s SELL filtered, owner_coverage=%s",
+        "[Pipeline V2] Recommend done: %s kept, %s unavailable predictions, owner_coverage=%s",
         len(final),
         sell_count,
         owner_coverage,

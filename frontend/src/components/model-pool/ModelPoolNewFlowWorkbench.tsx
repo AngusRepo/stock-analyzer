@@ -1015,7 +1015,8 @@ function EnsembleContext({ pointers, overview, loading }: {
         <div className="space-y-1 border-l-2 border-[#70859f] pl-3">
           <p>{qualification.ranking}</p>
           <p>{qualification.calibration}</p>
-          <p>{qualification.direction}</p>
+          <p>ML 建議：{qualification.direction}</p>
+          <p className="text-xs">ML 建議供 L4 參考；最終選股與配置由 sparse／OPB 決定。</p>
           <p className="text-xs">{qualification.detail}</p>
         </div>
         <p>驗證期間：{current?.validation.validation_start_date || '—'} ～ {current?.validation.validation_end_date || '—'}</p>

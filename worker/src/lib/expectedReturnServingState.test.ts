@@ -43,17 +43,17 @@ const stale = resolveExpectedReturnServingState({
   },
 }, { evaluatedAt: '2026-07-16T00:00:00.000Z' })
 assert.equal(stale.expected_return_owner, null)
-assert.equal(stale.allocation_utility_owner, 'formal_ml_buy_admission')
+assert.equal(stale.allocation_utility_owner, 'risk_abstention')
 assert.equal(stale.execution_owner, 'allocator_opb_policy')
 assert.equal(stale.execution_scope, 'recommendation_allocation_only_no_order_submission')
-assert.equal(stale.action_gate, 'selection_signal_owner')
+assert.equal(stale.action_gate, 'validated_expected_return_required')
 assert.equal(stale.artifacts.l4_alpha_ev.artifact_state, 'retired_incompatible')
 assert(stale.artifacts.l4_alpha_ev.blockers.includes('artifact_contract_version_incompatible'))
 
 const l4Primary = resolveExpectedReturnServingState({
   ensemble_v2: { l4_alpha_ev: validL4() },
 })
-assert.equal(l4Primary.selection_signal_owner, 'score_v2_formal_ml')
+assert.equal(l4Primary.selection_signal_owner, 'allocator_opb_policy')
 assert.equal(l4Primary.expected_return_owner, 'l4_alpha_ev')
 assert.equal(l4Primary.allocation_utility_owner, 'expected_return_owner')
 assert.equal(l4Primary.execution_owner, 'allocator_opb_policy')
@@ -95,9 +95,9 @@ const pointerOnlyAbstention = resolveExpectedReturnServingState(
 assert.equal(pointerOnlyAbstention.artifacts.l4_alpha_ev.artifact_state, 'safe_abstention')
 assert.equal(pointerOnlyAbstention.artifacts.l4_alpha_ev.artifact_id, null)
 assert.equal(pointerOnlyAbstention.expected_return_owner, null)
-assert.equal(pointerOnlyAbstention.allocation_utility_owner, 'formal_ml_buy_admission')
+assert.equal(pointerOnlyAbstention.allocation_utility_owner, 'risk_abstention')
 assert.equal(pointerOnlyAbstention.execution_owner, 'allocator_opb_policy')
-assert.equal(pointerOnlyAbstention.action_gate, 'selection_signal_owner')
+assert.equal(pointerOnlyAbstention.action_gate, 'validated_expected_return_required')
 
 const fusionPrimary = resolveExpectedReturnServingState({
   ensemble_v2: {

@@ -393,6 +393,10 @@ def _ml_threshold_policy_edge_seed30(ev2: dict[str, Any]) -> tuple[float | None,
         "artifact_checksum": checksum,
         "cohort_id": ev2.get("cohort_id"),
         "signal": ev2.get("signal"),
+        "unqualified_signal": ev2.get("unqualified_signal"),
+        "signal_status": ev2.get("signal_status"),
+        "signal_blockers": ev2.get("signal_blockers") or [],
+        "qualifications": ev2.get("qualifications"),
         "probability_positive_net_return": probability,
         "score_seed30": score,
         "status": "scored",
@@ -1930,7 +1934,14 @@ def _formal_ml_buy_admission(row: dict[str, Any]) -> tuple[bool, dict[str, Any]]
         and family_evidence.get("evidence_status") == "sufficient_family_breadth"
         and active_family_count >= 2
     )
-    allowed = _is_formal_buy_signal(formal_signal) and family_contract_passed
+    qualifications = ml_policy.get("qualifications") if isinstance(ml_policy.get("qualifications"), dict) else {}
+    directional = qualifications.get("directional") if isinstance(qualifications.get("directional"), dict) else {}
+    bundle_signal = len(str(ml_policy.get("artifact_checksum") or "")) == 64
+    direction_qualified = (
+        formal_signal in (directional.get("allowed_signals") or [])
+        if bundle_signal or qualifications else ml_policy.get("signal_status") != "policy_blocked"
+    )
+    allowed = _is_formal_buy_signal(formal_signal) and family_contract_passed and direction_qualified
     return allowed, {
         "schema_version": "formal-ml-continuity-admission-v1",
         "direction_owner": "formal_ml_signal",
@@ -1941,6 +1952,9 @@ def _formal_ml_buy_admission(row: dict[str, Any]) -> tuple[bool, dict[str, Any]]
         "active_family_count": active_family_count,
         "minimum_active_family_count": 2,
         "admission_allowed": allowed,
+        "direction_qualified": direction_qualified,
+        "signal_status": ml_policy.get("signal_status"),
+        "signal_blockers": ml_policy.get("signal_blockers") or [],
         "allocator_role": "weight_only_not_direction_owner",
     }
 

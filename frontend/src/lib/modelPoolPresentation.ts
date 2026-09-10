@@ -52,3 +52,19 @@ export function presentationTime(value?: string | number | null): string {
     timeZone: 'Asia/Taipei', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hour12: false,
   }).format(date)
 }
+
+
+export function ensembleQualificationPresentation(pointers?: ModelChampionPointersResponse) {
+  const q = pointers?.active8_bundle?.qualifications
+  const signals = Object.values(q?.directional.signals ?? {})
+  const unreachable = signals.length > 0 && signals.every(signal => signal.reachable === false)
+  return {
+    ranking: q?.ranking.decision === 'PASS' ? '排名資格通過' : q ? '排名資格未通過' : '排名資格待確認',
+    calibration: q?.calibration.decision === 'PASS' ? '區間 coverage 通過' : '區間校準證據不足或待確認',
+    direction: !q ? '訊號資格待確認' : q.directional.allowed_signals.length
+      ? `已具備訊號資格：${q.directional.allowed_signals.join('、')}` : '方向訊號資格受阻',
+    detail: unreachable ? '目前模型輸出無法跨過訊號門檻；預測與排名仍可服務。'
+      : q?.directional.decision === 'BLOCKED' ? '方向訊號證據不足；不影響排名資格晉級。'
+      : '交易訊號資格與 ensemble 排名晉級分開判定。',
+  }
+}

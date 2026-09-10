@@ -54,7 +54,7 @@ def _fixture():
         "base_artifacts": {model: base[model] for model in selected},
         "selected_models": selected,
         "excluded_models": ["PatchTST"],
-        "validation": {"decision": "PASS", "failed_gates": []},
+        "validation": {"decision": "PASS", "failed_gates": [], "rank_ic_equal_date_market_lcb90": 0.05, "top_bottom_net_return_spread_lcb90": 0.002, "validation_dates": 21, "spread_dates": 21},
     }
     payload["payload_checksum"] = hashlib.sha256(_canonical(payload).encode()).hexdigest()
     ensemble = {

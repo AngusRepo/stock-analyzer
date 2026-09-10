@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict'
-import { modelPoolHealth, modelMembership, presentationTime } from './modelPoolPresentation.ts'
+import { ensembleQualificationPresentation, modelPoolHealth, modelMembership, presentationTime } from './modelPoolPresentation.ts'
 import type { ModelChampionPointersResponse } from './api'
 
 const names = ['TabM', 'GNN', 'DLinear', 'PatchTST', 'iTransformer']
@@ -42,3 +42,21 @@ assert.equal(modelPoolHealth(duplicate).tone, 'error')
 assert.equal(presentationTime(null), '尚未取得')
 assert.equal(presentationTime('bad date'), '日期未知')
 console.log('modelPoolPresentation: OK')
+
+const qualifiedRanking = structuredClone(pointers)
+qualifiedRanking.active8_bundle.qualifications = {
+  schema_version: 'active8-ensemble-qualifications-v1', promotion_scope: 'ranking',
+  ranking: { decision: 'PASS', blockers: [] },
+  calibration: { decision: 'PASS', scope: 'prediction_interval_coverage', probability_status: 'diagnostic_only', blockers: [] },
+  directional: { decision: 'BLOCKED', allowed_signals: [], signals: Object.fromEntries(
+    ['BUY', 'STRONG_BUY', 'SELL', 'STRONG_SELL'].map(signal => [signal, {
+      decision: 'BLOCKED', blockers: ['signal_unreachable'], reachable: false, rows: 0, dates: 0,
+    }])) },
+}
+assert.equal(modelPoolHealth(qualifiedRanking).tone, 'ok', 'directional block must not downgrade serving fleet health')
+assert.equal(modelPoolHealth(qualifiedRanking).ready, 5)
+const separate = ensembleQualificationPresentation(qualifiedRanking)
+assert.equal(separate.ranking, '排名資格通過')
+assert.equal(separate.direction, '方向訊號資格受阻')
+assert.ok(separate.detail.includes('預測與排名仍可服務'))
+assert.equal(ensembleQualificationPresentation(pointers).direction, '訊號資格待確認')

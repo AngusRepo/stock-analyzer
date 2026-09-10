@@ -26,6 +26,8 @@ from services.active8_score_semantics import (
     MODEL_TARGET_SEMANTIC_VERSION,
 )
 
+from services.ensemble_qualification import qualify_directional_signal
+
 ENSEMBLE_V2_SCHEMA_VERSION = "active8-oof-ensemble-runtime-v1"
 ENSEMBLE_V2_SEMANTIC_VERSION = "active8-purged-oof-chronological-nonnegative-ridge-v5"
 ARTIFACT_SCHEMA_VERSION = "active8-oof-ensemble-serving-artifact-v1"
@@ -231,6 +233,8 @@ def attach_ensemble_v2(
         signal = "SELL"
     else:
         signal = "HOLD"
+    signal_decision = qualify_directional_signal(signal, artifact)
+    signal = signal_decision["signal"]
     probability = _isotonic_predict(
         [float(value) for value in calibration["probability_x_thresholds"]],
         [float(value) for value in calibration["probability_y_thresholds"]],
@@ -261,7 +265,7 @@ def attach_ensemble_v2(
         "target_semantic_version": policy.get("target_semantic_version"),
         "lineage_status": "complete",
         "lineage_blockers": [],
-        "signal": signal,
+        **signal_decision,
         "signal_source": "active8_ensemble_artifact",
         "confidence": round(max(0.0, min(1.0, confidence)), 6),
         "probability_positive_net_return": round(probability, 6),

@@ -53,7 +53,7 @@ def payload():
         "cohort_id": "cohort-1",
         "knowledge_cutoff_date": "2026-08-25",
         "base_artifact_set_checksum": "b" * 64,
-        "validation": {"decision": "PASS"},
+        "validation": {"decision": "PASS", "rank_ic_equal_date_market_lcb90": 0.05, "top_bottom_net_return_spread_lcb90": 0.002, "validation_dates": 21, "spread_dates": 21},
     }
     value["payload_checksum"] = payload_checksum(value)
     return value

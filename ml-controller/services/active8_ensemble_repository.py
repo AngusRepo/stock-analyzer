@@ -12,6 +12,8 @@ from services.active8_ensemble_artifact import (
 )
 from services.d1_domain_client import D1DataDomain, client_for_domain
 
+from services.ensemble_qualification import assess_ensemble_qualifications
+
 LEARNING_D1_CLIENT = client_for_domain(D1DataDomain.LEARNING)
 
 
@@ -23,6 +25,7 @@ def _exact_artifact_row(payload: dict[str, Any], *, training_run_id: str, archiv
         payload.get("schema_version") != ARTIFACT_SCHEMA_VERSION
         or checksum != payload_checksum({key: value for key, value in payload.items() if key != "payload_checksum"})
         or validation.get("decision") != "PASS"
+        or assess_ensemble_qualifications(payload)["ranking"]["decision"] != "PASS"
         or not cohort_id
         or not training_run_id
         or not archive_uri
@@ -46,6 +49,8 @@ def _exact_artifact_row(payload: dict[str, Any], *, training_run_id: str, archiv
 
 
 def archive_active8_ensemble_payload(payload: dict[str, Any], *, bucket: Any) -> str:
+    if assess_ensemble_qualifications(payload)["ranking"]["decision"] != "PASS":
+        raise ValueError("active8_ensemble_candidate_contract_invalid")
     raw = canonical_json(payload)
     checksum = str(payload.get("payload_checksum") or "")
     cohort_id = str(payload.get("cohort_id") or "")

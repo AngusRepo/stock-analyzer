@@ -8,6 +8,7 @@ import re
 from copy import deepcopy
 from datetime import datetime, timezone
 from typing import Any, Callable, Literal
+from services.ensemble_qualification import assess_ensemble_qualifications
 
 from services.active8_release_training_contract import (
     ACTIVE8_MODEL_NAMES,
@@ -3300,6 +3301,8 @@ def _validated_active8_ensemble_payload(row: dict[str, Any]) -> dict[str, Any]:
         or str(row.get("state") or "") not in {"candidate", "production"}
     ):
         raise ValueError("active8_ensemble_candidate_not_promotion_grade")
+    if assess_ensemble_qualifications(payload)["ranking"]["decision"] != "PASS":
+        raise ValueError("active8_ensemble_candidate_not_promotion_grade")
     return payload
 
 
@@ -3401,6 +3404,7 @@ def load_active8_ensemble_serving_bundle(*, include_observability: bool = False)
         "cohort_id": row.get("cohort_id"),
         "training_run_id": row.get("training_run_id"),
         "promoted_at": row.get("promoted_at"),
+        "qualifications": assess_ensemble_qualifications(payload),
         **({"observability": {
             "knowledge_cutoff_date": payload.get("knowledge_cutoff_date"),
             "fit": payload.get("fit") or {},
@@ -3552,6 +3556,7 @@ def run_active8_ensemble_bundle_promotion_controller(
     if not confirm:
         return {
             "status": "dry_run", "decision": "promote_active8_ensemble_atomic_bundle", "can_promote": True,
+            "promotion_scope": "ranking", "qualifications": assess_ensemble_qualifications(ensemble_payload),
             "training_run_id": training_run_id, "release_models": release_models,
             "observation_models": sorted(expected_models),
             "ensemble_artifact_id": ensemble_row.get("artifact_id"), "validation": ensemble_payload.get("validation"),
@@ -3663,6 +3668,7 @@ def run_active8_ensemble_bundle_promotion_controller(
         )
     return {
         "status": "ok", "decision": "promoted_active8_ensemble_atomic_bundle", "can_promote": True,
+        "promotion_scope": "ranking", "qualifications": assess_ensemble_qualifications(ensemble_payload),
         "training_run_id": training_run_id, "release_models": release_models,
         "observation_models": sorted(expected_models),
         "artifacts": [by_model[name] for name in release_models],

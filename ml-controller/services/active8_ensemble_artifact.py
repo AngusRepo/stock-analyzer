@@ -29,6 +29,8 @@ from services.active8_oof_stacker import (
     build_chronological_oof_stack,
 )
 
+from services.ensemble_qualification import QUALIFICATION_SCHEMA, assess_ensemble_qualifications
+
 ARTIFACT_SCHEMA_VERSION = "active8-oof-ensemble-serving-artifact-v1"
 CALIBRATION_SCHEMA_VERSION = "active8-chronological-conformal-isotonic-v1"
 SIGNAL_POLICY_VERSION = "active8-net-return-conformal-signal-policy-v1"
@@ -147,6 +149,38 @@ def _daily_spread_values(rows: list[dict[str, Any]]) -> list[float]:
         for prediction_date in sorted(daily)
         if daily[prediction_date]
     ]
+
+
+def _directional_validation_evidence(rows, predictions, q_buy, q_strong):
+    """Past-only held-out directional evidence; five-date blocks preserve overlap."""
+    target = np.asarray([row["target_return"] for row in rows], dtype=float)
+    dates = np.asarray([row["prediction_date"] for row in rows])
+    unique = sorted(set(dates))
+    output = {}
+    for signal, mask, net in (
+        ("BUY", predictions > q_buy, target),
+        ("STRONG_BUY", predictions > q_strong, target),
+        # target already subtracts 18 bps. Negating it alone would credit costs.
+        ("SELL", predictions < -q_buy, -target - 2 * .0018),
+        ("STRONG_SELL", predictions < -q_strong, -target - 2 * .0018),
+    ):
+        daily = np.asarray([float(net[mask & (dates == day)].mean())
+                            if np.any(mask & (dates == day)) else 0. for day in unique])
+        lcb = None
+        if len(daily) >= 10:
+            rng = np.random.default_rng(20260911)
+            starts = rng.integers(0, len(daily)-4, size=(5000, math.ceil(len(daily)/5)))
+            indices = (starts[:, :, None] + np.arange(5)).reshape(5000, -1)[:, :len(daily)]
+            lcb = float(np.quantile(daily[indices].mean(axis=1), .1))
+        output[signal] = {
+            "rows": int(mask.sum()), "dates": len(set(dates[mask])),
+            "net_mean": float(net[mask].mean()) if mask.any() else None,
+            "date_net_mean_lcb90": lcb, "evaluation_dates": len(unique),
+            "uncertainty_method": "five_date_moving_block_bootstrap_5000_lcb90",
+            "net_semantic": "long_target_net_18bps" if signal.endswith("BUY") else "negative_long_target_minus_36bps_directional_proxy",
+            "execution_qualification": False,
+        }
+    return output
 
 
 def _same_window_diagnostics(rows: list[dict[str, Any]]) -> dict[str, Any]:
@@ -287,10 +321,13 @@ def build_active8_ensemble_artifact(
     same_window = _same_window_diagnostics(validation_rows)
     buy_mask = val_prediction - q_buy > 0.0
     sell_mask = val_prediction + q_buy < 0.0
-    directional = np.concatenate([val_target[buy_mask], -val_target[sell_mask]])
+    directional = np.concatenate([val_target[buy_mask], -val_target[sell_mask] - 2 * .0018])
     directional_mean = float(np.mean(directional)) if len(directional) else None
     validation = {
         "schema_version": "active8-oof-ensemble-validation-v1",
+        "qualification_schema_version": QUALIFICATION_SCHEMA,
+        "decision_scope": "ranking",
+        "directional_evidence": _directional_validation_evidence(validation_rows, val_prediction, q_buy, q_strong),
         "method": "chronological_oof_calibration_then_later_validation",
         "calibration_dates": len(calibration_dates),
         "calibration_rows": len(calibration_rows),
@@ -332,12 +369,8 @@ def build_active8_ensemble_artifact(
         validation["failed_gates"].append(
             "chronological_validation_daily_spread_lcb90_non_positive"
         )
-    if validation["buy_interval_empirical_coverage"] < BUY_COVERAGE - 0.05:
-        validation["failed_gates"].append("buy_conformal_coverage_below_policy")
-    if validation["strong_interval_empirical_coverage"] < STRONG_COVERAGE - 0.05:
-        validation["failed_gates"].append("strong_conformal_coverage_below_policy")
-    if directional_mean is not None and directional_mean <= 0.0:
-        validation["failed_gates"].append("directional_signal_net_mean_non_positive")
+    # Ranking promotion is independent of interval/directional qualification.
+    # Preserve calibration and per-side evidence for the serving policy assessor.
     validation["decision"] = "PASS" if not validation["failed_gates"] else "FAIL"
     if validation["decision"] != "PASS":
         raise Active8EnsembleValidationError(validation)
@@ -429,6 +462,12 @@ def build_active8_ensemble_artifact(
             "eligible_candidate_coverage": stack_evidence.get("eligible_candidate_coverage"),
             "missing_by_model": stack_evidence.get("missing_by_model"),
         },
+    }
+    qualification = assess_ensemble_qualifications(payload)
+    validation["directional_decision"] = qualification["directional"]["decision"]
+    validation["final_fit_signal_reachability"] = {
+        signal: evidence["reachable"]
+        for signal, evidence in qualification["directional"]["signals"].items()
     }
     payload["payload_checksum"] = payload_checksum(payload)
     return payload

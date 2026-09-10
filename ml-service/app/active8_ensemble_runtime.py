@@ -10,6 +10,7 @@ from typing import Any, Literal
 import numpy as np
 
 from .model_serving_contract import ALPHA_PREDICTION_MODELS
+from .ensemble_qualification import qualify_directional_signal
 
 ARTIFACT_SCHEMA_VERSION = "active8-oof-ensemble-serving-artifact-v1"
 ENSEMBLE_SEMANTIC_VERSION = "active8-purged-oof-chronological-nonnegative-ridge-v5"
@@ -221,6 +222,9 @@ def score_active8_ensemble(
         signal, direction = "SELL", "down"
     else:
         signal, direction = "HOLD", "neutral"
+    signal_decision = qualify_directional_signal(signal, artifact)
+    signal = signal_decision["signal"]
+    direction = "up" if signal.endswith("BUY") else "down" if signal.endswith("SELL") else "neutral"
     probability_up = _isotonic_predict(
         [float(value) for value in calibration["probability_x_thresholds"]],
         [float(value) for value in calibration["probability_y_thresholds"]],
@@ -266,6 +270,7 @@ def score_active8_ensemble(
         signal_strength=strength,
         evidence={
             "schema_version": "active8-ensemble-runtime-evidence-v1",
+            **signal_decision,
             "artifact_checksum": artifact["payload_checksum"],
             "cohort_id": artifact["cohort_id"],
             "base_artifact_set_checksum": artifact["base_artifact_set_checksum"],

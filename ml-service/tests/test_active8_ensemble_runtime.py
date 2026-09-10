@@ -90,7 +90,12 @@ def _artifact():
             "decision": "PASS",
             "method": "chronological_oof_calibration_then_later_validation",
             "failed_gates": [],
-            "validation_dates": 8,
+            "validation_dates": 21,
+            "spread_dates": 21,
+            "buy_interval_empirical_coverage": .92,
+            "strong_interval_empirical_coverage": .96,
+            "directional_evidence": {signal: {"rows": 220, "dates": 11, "net_mean": .02, "date_net_mean_lcb90": .01}
+                                     for signal in ("BUY", "STRONG_BUY", "SELL", "STRONG_SELL")},
             "validation_rows": 320,
             "rank_ic": 0.1,
             "rank_ic_equal_date_market_lcb90": 0.02,

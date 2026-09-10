@@ -105,7 +105,7 @@ assert(
   'continuation must stop before training dispatch while the existing cohort manifest is not ready',
 )
 assert(
-  walkForward.includes('active8-oof-lifecycle-receipt-v14-data-ready-release') &&
+  walkForward.includes('receipt.get("schema_version") == OOF_LIFECYCLE_RECEIPT_SCHEMA_VERSION') &&
     walkForward.includes('_oof_lifecycle_receipt_matches_active_policy'),
   'materialization/promotion must invalidate stale receipts when the active PIT policy changes',
 )

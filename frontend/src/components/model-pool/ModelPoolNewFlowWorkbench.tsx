@@ -1,4 +1,4 @@
-import { modelPoolHealth, modelMembership, membershipLabel, presentationTime, type PoolMembership } from '@/lib/modelPoolPresentation'
+import { ensembleQualificationPresentation, modelPoolHealth, modelMembership, membershipLabel, presentationTime, type PoolMembership } from '@/lib/modelPoolPresentation'
 import { useMemo, useState, type ReactNode } from 'react'
 import {
   MODEL_POOL_ACTIVE_ALPHA_MODEL_IDS,
@@ -1004,13 +1004,20 @@ function EnsembleContext({ pointers, overview, loading }: {
   const bundle = pointers?.active8_bundle
   const current = overview?.bundle_artifact_id && overview.bundle_artifact_id === bundle?.artifact_id ? overview : undefined
   const cohort = current?.cohort
+  const qualification = ensembleQualificationPresentation(pointers)
   const value = (n: number | null | undefined) => n == null ? '尚無資料' : n.toFixed(4)
   return <div className="grid gap-4 lg:grid-cols-2">
     <GrafanaPanel title="正式組合與驗證" kicker="當前 serving owner">
       <div className="space-y-3 p-4 text-sm text-[#a7b5c8]">
         <p className="font-medium text-[#eef4fb]">{bundle?.selected_models?.join(' · ') || '尚無正式成員'}</p>
         <p className="break-all">Cohort：{bundle?.cohort_id || '尚未取得'}</p>
-        <p>晉級：{presentationTime(bundle?.promoted_at)} · 台北時間</p>
+        <p>排名 bundle 晉級：{presentationTime(bundle?.promoted_at)} · 台北時間</p>
+        <div className="space-y-1 border-l-2 border-[#70859f] pl-3">
+          <p>{qualification.ranking}</p>
+          <p>{qualification.calibration}</p>
+          <p>{qualification.direction}</p>
+          <p className="text-xs">{qualification.detail}</p>
+        </div>
         <p>驗證期間：{current?.validation.validation_start_date || '—'} ～ {current?.validation.validation_end_date || '—'}</p>
         <p>Rank IC {value(current?.validation.rank_ic_equal_date_market_mean)} · LCB90 {value(current?.validation.rank_ic_equal_date_market_lcb90)}</p>
         <p>Top-bottom spread {value(current?.validation.top_bottom_net_return_spread)} · LCB90 {value(current?.validation.top_bottom_net_return_spread_lcb90)}</p>

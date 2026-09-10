@@ -1874,6 +1874,18 @@ export type ModelArtifactPromotionControllerResponse = {
   note?: string
 }
 
+export type EnsembleQualifications = {
+  schema_version: string
+  promotion_scope: 'ranking'
+  ranking: { decision: string; blockers: string[] }
+  calibration: { decision: string; scope: string; probability_status: string; blockers: string[] }
+  directional: {
+    decision: string
+    allowed_signals: string[]
+    signals: Record<string, { decision: string; blockers: string[]; reachable: boolean | null; rows: number | null; dates: number | null }>
+  }
+}
+
 export type Active8ServingBundleReadModel = {
   status: string
   production_effect: boolean
@@ -1888,6 +1900,7 @@ export type Active8ServingBundleReadModel = {
     checksum?: string | null
   }>
   blockers: string[]
+  qualifications?: EnsembleQualifications
   latest_validation_attempt?: {
     attempt_id?: string | null
     cohort_id?: string | null

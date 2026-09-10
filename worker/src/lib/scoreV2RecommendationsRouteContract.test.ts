@@ -21,7 +21,7 @@ assert(
 assert(
   route.includes('FINAL_RECOMMENDATION_ROW_WHERE')
     && route.includes("r.signal IS NOT NULL AND r.confidence IS NOT NULL AND r.score_components LIKE '%score_v2%'")
-    && route.includes('WHERE r.date = ? AND ${FINAL_RECOMMENDATION_ROW_WHERE}'),
+    && route.replace(/\s+/g, '').includes('WHEREr.date=?AND${FINAL_RECOMMENDATION_ROW_WHERE}'),
   'daily recommendations route must not return L1 seed/observe rows as recommendation cards',
 )
 assert(
@@ -47,7 +47,7 @@ for (const text of [
   'function buildDailyPipelineSummaries',
   'daily_pipeline_funnel_summary_v1',
   'daily_active_strategy_summary_v2',
-  'screener_funnel_runs + screener_funnel_items',
+  'same_run_conservation_receipt + protected_stage_evidence + scoped_signals',
   'funnel_summary: pipelineSummaries.funnel_summary',
   'strategy_summary: pipelineSummaries.strategy_summary',
 ]) {

@@ -603,24 +603,16 @@ function PipelineColumnError({
   )
 }
 function FunnelSummaryColumn({ summary, fallbackCount }: { summary: any; fallbackCount: number }) {
-  const layers = Array.isArray(summary?.layers) ? summary.layers : [
-    {
-      layer: 'L0-L4',
-      label: 'observed final recommendations',
-      stage: 'daily_recommendations',
-      passed: fallbackCount,
-      eliminated: null,
-    },
-  ]
+  const layers = Array.isArray(summary?.layers) ? summary.layers : []
   return (
     <PipelineColumn
-      title="L0-L4 通過 / 淘汰"
-      subtitle={summary?.run_id ? `${summary.run_id} / BUY ${countValue(summary?.buy_signal_count)} / published ${countValue(summary?.recommendation_count ?? summary?.final_count)}` : 'API 尚未提供完整 funnel stage counts；先顯示推薦列可觀測數。'}
+      title="篩選、模型證據與交易訊號"
+      subtitle={summary?.run_id ? `${summary.date} · 已發布 ${countValue(summary?.recommendation_count)} 檔` : `已觀測 ${countValue(fallbackCount)} 檔；完整批次統計尚未提供。`}
     >
       <div className="space-y-2">
         {layers.map((row: any, index: number) => {
           const accent = SECTOR_ACCENTS[index % SECTOR_ACCENTS.length]
-          const evidenceOnly = row.mode === 'evidence_only'
+          const metrics = Array.isArray(row.metrics) ? row.metrics : []
           return (
             <div key={row.layer} className={`rounded-xl border ${accent.border} ${accent.bg} p-3`}>
               <div className="flex items-center justify-between gap-2">
@@ -628,20 +620,19 @@ function FunnelSummaryColumn({ summary, fallbackCount }: { summary: any; fallbac
                   <p className={`sv-num text-base font-semibold ${accent.text}`}>{row.layer}</p>
                   <p className="mt-1 text-xs text-[#9aa4b7]">{row.label}</p>
                 </div>
-                <Badge variant="outline" className="max-w-[10rem] truncate border-white/[0.12] bg-black/20 sv-num text-[10px]" title={row.stage}>
-                  {row.stage}
+                <Badge variant="outline" className="border-white/[0.12] bg-black/20 text-[10px]">
+                  {row.availability === 'available' ? '完整統計' : '資料未完整'}
                 </Badge>
               </div>
               <div className="mt-3 grid grid-cols-2 gap-2 text-xs">
-                <div className="rounded-md border border-emerald-500/20 bg-emerald-500/10 p-2">
-                  <p className="text-[10px] text-emerald-300">{evidenceOnly ? '完成評估' : '通過'}</p>
-                  <p className="mt-1 sv-num text-lg font-semibold text-emerald-200">{countValue(evidenceOnly ? row.evaluated : row.passed)}</p>
-                </div>
-                <div className={`rounded-md border p-2 ${evidenceOnly ? 'border-cyan-500/20 bg-cyan-500/10' : 'border-rose-500/20 bg-rose-500/10'}`}>
-                  <p className={`text-[10px] ${evidenceOnly ? 'text-cyan-300' : 'text-rose-300'}`}>{evidenceOnly ? '證據合格' : '淘汰'}</p>
-                  <p className={`mt-1 sv-num text-lg font-semibold ${evidenceOnly ? 'text-cyan-200' : 'text-rose-200'}`}>{countValue(evidenceOnly ? row.passed : row.eliminated)}</p>
-                </div>
+                {metrics.map((metric: any) => (
+                  <div key={metric.label} className="rounded-md border border-white/10 bg-white/[0.04] p-2">
+                    <p className="text-[10px] text-[#9aa4b7]">{metric.label}</p>
+                    <p className="mt-1 sv-num text-lg font-semibold text-[#f5f7fb]">{countValue(metric.value)}</p>
+                  </div>
+                ))}
               </div>
+              {row.note && <p className="mt-2 text-[11px] leading-relaxed text-[#9aa4b7]">{row.note}</p>}
             </div>
           )
         })}
@@ -999,7 +990,7 @@ export default function PipelinePage() {
             />
           ) : recLoading ? (
             <>
-              <PipelineColumnLoading title="L0-L4 通過 / 淘汰" subtitle="讀取正式 funnel aggregate" />
+              <PipelineColumnLoading title="篩選、模型證據與交易訊號" subtitle="讀取正式 funnel aggregate" />
               <PipelineColumnLoading title="Active strategy" subtitle="讀取正式策略與產業 aggregate" className="xl:col-span-2" />
             </>
           ) : (

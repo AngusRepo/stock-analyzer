@@ -2040,6 +2040,7 @@ def archive_ev_shadow_evaluation_packets(
             "label_schema_version": artifact.get("label_schema_version"),
             "validation_schema_version": validation.get("schema_version"),
             "target_source": "active8_oof_predictions.target_return",
+            "validation_scope": (validation.get("monitoring_policy") or {}).get("validation_scope", "legacy_unspecified"),
             "fit_feature_policy": "drop_degenerate_and_affine_duplicate_features_v1",
             "walk_forward_policy": "minimum_training_dates_enforced_per_fold_v1",
             "policy_decision": "shadow_only",

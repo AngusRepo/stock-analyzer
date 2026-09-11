@@ -1,3 +1,22 @@
+export type CandidateVersionSummary = {
+  artifact_id: string | null; cohort_id: string | null; model_version: string | null
+  trained_until: string | null; generated_date: string | null; state: string | null
+  identity_valid: boolean; offline_decision: string | null; offline_findings: string[]
+}
+export type CandidateVersionComparison = {
+  latest_candidate: CandidateVersionSummary | null
+  evaluated_candidate: CandidateVersionSummary | null
+  different_artifacts: boolean | null
+  latest_query_status: 'available' | 'missing' | 'error'
+  evaluation_query_status: 'available' | 'missing' | 'error'
+}
+
+export type ActiveMlEnsembleVersion = {
+  status: 'serving' | 'blocked' | 'missing' | 'error'
+  artifact_id: string | null; cohort_id: string | null; validation_end_date: string | null
+  knowledge_cutoff_date: string | null; promoted_at: string | null
+}
+
 import type { IpoShadowReadModel } from './ipoShadowContract'
 
 export type PipelineMaturityStatus =
@@ -25,6 +44,7 @@ export type PipelineMaturityMetric = {
 }
 
 export type PipelineMaturityStage = {
+  candidate_versions?: CandidateVersionComparison
   id: 'threshold_margin_affinity_v2' | 'oof_redundancy' | 'route_score_v2' | 'l4' | 'fusion'
   layer: string
   title: string
@@ -186,6 +206,7 @@ export type StrategyRouteBundleMaturity = {
 }
 
 export type PipelineDecisionMaturityPacket = {
+  active_ml_ensemble?: ActiveMlEnsembleVersion
   ipo_shadow?: IpoShadowReadModel
   schema_version: 'pipeline-decision-maturity-v2'
   requested_date: string

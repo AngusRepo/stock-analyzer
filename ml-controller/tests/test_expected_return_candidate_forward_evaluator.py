@@ -658,3 +658,75 @@ def test_offline_admission_terminal_requires_exact_rejected_l4_evidence(case, te
     assert result["promotion_ready"] is False and result["training_dispatched"] is False
     if terminal:
         assert result["offline_rejections"][0]["failed_gates"] == ["pit_sector_alpha_samples_low", "pit_sector_alpha_dates_low"]
+
+
+@pytest.mark.parametrize("successor", [False, True])
+def test_terminal_rejection_never_reactivates_even_with_offline_pass(successor):
+    rejected_l4, _ = _candidate("l4_alpha_ev", "2026-08-30")
+    rejected_fusion, _ = _candidate("allocator_ev_fusion", "2026-08-30")
+    for row in (rejected_l4, rejected_fusion):
+        row["state"] = "rejected"
+        row["artifact_trained_until"] = "2026-08-18"
+    rows = [rejected_l4, rejected_fusion]
+    if successor:
+        next_l4, _ = _candidate("l4_alpha_ev", "2026-09-02")
+        next_fusion, _ = _candidate("allocator_ev_fusion", "2026-09-02")
+        for row in (next_l4, next_fusion):
+            row["artifact_trained_until"] = "2026-08-18"
+        rows = [next_l4, next_fusion, *rows]
+    selected, activate = _candidate_rows(lambda _sql, _params: rows, "cohort-1",
+                                          expected_trained_until="2026-08-18")
+    if successor:
+        assert selected["l4_alpha_ev"]["artifact_id"] == next_l4["artifact_id"]
+        assert selected["allocator_ev_fusion"]["artifact_id"] == next_fusion["artifact_id"]
+        assert activate == {"l4_alpha_ev": True, "allocator_ev_fusion": True}
+    else:
+        assert selected == {}
+        assert activate == {}
+
+
+@pytest.mark.parametrize("failure_evidence", [
+    {"live_gate_status": "failed"},
+    {"promotion_decision": "prospective_failed"},
+    {"live_evidence_json": '{"schema_version":"expected-return-candidate-forward-gate-v2","decision":"FAIL"}'},
+    {"live_evidence_json": "invalid"},
+])
+def test_forward_failure_cannot_be_reclassified_as_legacy_offline_rejection(failure_evidence):
+    l4, _ = _candidate("l4_alpha_ev")
+    l4.update({"state": "rejected", "offline_gate_decision": "FAIL",
+               "offline_gate_failed_gates": '["walk_forward_not_stable"]', **failure_evidence})
+    selected, activate = _candidate_rows(lambda _sql, _params: [l4], "cohort-1")
+    assert selected == {}
+    assert activate == {}
+
+
+@pytest.mark.parametrize("offline_hard_fail", [False, True])
+@pytest.mark.parametrize("corruption", [None, "checksum", "artifact_id", "json", "cutoff", "pending", "missing"])
+def test_terminal_lane_closes_only_with_exact_failed_evidence(corruption, offline_hard_fail):
+    from services.expected_return_candidate_forward_evaluator import GATE_SCHEMA_VERSION
+    row, _ = _candidate("l4_alpha_ev")
+    row.update(state="rejected", live_gate_status="failed", promotion_decision="prospective_failed",
+               artifact_trained_until="2026-08-18")
+    if offline_hard_fail:
+        row.update(offline_gate_decision="FAIL", offline_gate_failed_gates='["pit_sector_alpha_dates_low"]')
+    gate = {"schema_version": GATE_SCHEMA_VERSION, "decision": "FAIL",
+            "candidate_artifact_id": row["artifact_id"], "candidate_artifact_checksum": row["checksum"],
+            "artifact_trained_until": "2026-08-18", "source_run_date": row["source_run_date"],
+            "failed_gates": ["maximum_window_exhausted"], "training_dispatched": False}
+    if corruption == "checksum": gate["candidate_artifact_checksum"] = "wrong"
+    if corruption == "artifact_id": gate["candidate_artifact_id"] = "other"
+    if corruption == "cutoff": gate["artifact_trained_until"] = "2026-09-01"
+    if corruption == "pending": gate["decision"] = "PENDING"
+    row["live_evidence_json"] = "invalid" if corruption == "json" else json.dumps(gate)
+    if corruption == "missing": row["live_evidence_json"] = None
+    def forbidden(*args, **kwargs):
+        raise AssertionError("Terminal candidates must not load artifacts, train or mutate")
+    result = evaluate_expected_return_candidates_forward(
+        bucket=None, cohort_id="cohort-1", business_date="2026-09-10",
+        extension_manifest_checksum="a" * 64, snapshot_rows=[],
+        build_fusion_rows_fn=forbidden, query_fn=lambda *_: [row], batch_fn=forbidden,
+        base_trained_until="2026-08-18")
+    assert result["status"] == ("prospective_candidates_exhausted" if corruption is None
+                                else "offline_admissible_candidate_missing")
+    assert result["promotion_ready"] is False
+    assert result["training_dispatched"] is False

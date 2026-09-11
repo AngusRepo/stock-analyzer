@@ -40,6 +40,7 @@ export default function IpoShadowComparison({ data }: { data?: IpoShadowReadMode
       </div>)}
     </div>
     {unavailable ? <p role="status" className="mt-4 text-sm text-rose-300">IPO 資料尚未接通；L4 現有資料不受影響。{data?.blockers.join(' · ')}</p>
+      : collectionBlocked && data.frozen_dates > 0 ? <p role="status" className="mt-4 text-sm text-amber-200">新日期封存受阻：{data.collection?.signal_date} 的模型／PIT 輸入不完整。既有 {data.frozen_dates} 日快照仍保留並等待或接受成熟驗證；不代表每天持續新增。</p>
       : data.status === 'not_registered' ? <p className="mt-4 text-sm text-amber-200">{collectionBlocked
         ? '尚未開始累積：當日候選模型或 PIT 特徵尚未通過完整性檢查。請展開下方查看具體原因；不以補零或回放冒充前瞻樣本。'
         : '等待第一批當日純 shadow 前瞻快照。每日流程會檢查並封存輸入；歷史補跑不列入前瞻成熟日。'}</p>

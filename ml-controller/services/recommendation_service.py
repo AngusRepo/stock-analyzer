@@ -4562,12 +4562,16 @@ def write_predictions_to_d1(
                 for model_name, score in per_model_scores.items()
                 if model_name.endswith("::challenger")
             }
+        # IPO consumes challenger evidence in both authority modes. Optional
+        # sequence masks remain observations after the formal ensemble promotes.
+        if observation_only or any(name.endswith("::challenger") for name in per_model_scores):
             expected_observation_models = {
                 f"{model_name}::challenger"
                 for model_name in ACTIVE_ALPHA_MODELS
             }
             missing = sorted(expected_observation_models - set(per_model_scores))
-            unexpected = sorted(set(per_model_scores) - expected_observation_models)
+            unexpected = sorted({name for name in per_model_scores if name.endswith("::challenger")}
+                                - expected_observation_models)
             eligibility = (
                 data.get("l3_model_eligibility")
                 if isinstance(data.get("l3_model_eligibility"), dict)
@@ -4601,7 +4605,7 @@ def write_predictions_to_d1(
                     "production_effect": False,
                     "vote_weight": 0.0,
                 }
-            if unexpected or invalid_missing:
+            if observation_only and (unexpected or invalid_missing):
                 raise ValueError(
                     "active8_evidence_only_candidate_rows_incomplete:"
                     f"missing={invalid_missing}:unexpected={unexpected}"

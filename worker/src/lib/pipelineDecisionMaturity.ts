@@ -1,3 +1,4 @@
+import { compareCandidateVersions, readActiveMlEnsembleVersion, type CandidateVersionComparison, type ActiveMlEnsembleVersion } from './pipelineCandidateVersions'
 import type { Bindings } from '../types'
 import { inspectAllocatorEvMaturityCoverage } from './allocatorEvDailyLifecycle'
 import { databaseForDataDomain } from './dataDomainRegistry'
@@ -71,6 +72,7 @@ export interface PipelineMaturityBlockerGroup {
 }
 
 export interface PipelineMaturityStage {
+  candidate_versions?: CandidateVersionComparison
   id: 'threshold_margin_affinity_v2' | 'oof_redundancy' | 'route_score_v2' | 'l4' | 'fusion'
   layer: string
   title: string
@@ -212,6 +214,7 @@ export interface StrategyRouteBundleMaturity {
 
 
 export interface PipelineDecisionMaturityPacket {
+  active_ml_ensemble?: ActiveMlEnsembleVersion
   ipo_shadow?: IpoShadowReadModel
   schema_version: 'pipeline-decision-maturity-v2'
   requested_date: string
@@ -488,6 +491,7 @@ export async function buildPipelineDecisionMaturityPacket(
   `).bind(requestedDate).first<CanonicalHead>())
   const head = canonicalHead.value
 
+  const mlVersionPromise = safeQuery(() => readActiveMlEnsembleVersion(learningDb))
   const [reference, matrix, redundancy, routeRun, routeHead, evRows, evProspectiveRows, evShadowRows, serving, l4Maturity, sectorPit, routeEligibility] = await Promise.all([
     safeQuery(() => head ? learningDb.prepare(`
       SELECT COUNT(*) reference_rows,
@@ -1144,6 +1148,7 @@ export async function buildPipelineDecisionMaturityPacket(
   const l4 = l4Prospective?.candidate ?? l4Latest
   const l4ShadowPacket = evShadow.get('l4_alpha_ev')
   const l4Shadow = shadowPairComplete && l4ShadowPacket?.identity_valid ? l4ShadowPacket : undefined
+  const l4BaseOnly = l4Shadow?.validation_scope === 'base_cohort_offline_validation'
   const l4Serving = servingState?.artifacts.l4_alpha_ev
   if (!l4 && !l4Serving && !l4Prospective) {
     stages.push(unavailableStage('l4', 'L4', 'Canonical L4 alpha EV', requestedDate, 'model_artifact_registry + allocator_ev_feature_snapshots', [evRows.error, serving.error, l4Maturity.error]))
@@ -1186,6 +1191,9 @@ export async function buildPipelineDecisionMaturityPacket(
     const shadowMetricScope = shadowBatchReason
       ? { availability: shadowRows.length ? 'blocked' as const : 'missing' as const, reason_code: shadowBatchReason }
       : evidenceAvailability(l4ShadowPacket, 'frozen_forward_packet_missing')
+    const shadowPerformanceScope = l4BaseOnly
+      ? { availability: 'not_applicable' as const, reason_code: 'base_validation_not_forward_performance' }
+      : shadowMetricScope
     const status = l4Serving?.artifact_state === 'serving'
       ? 'serving'
       : l4 && !l4.identity_valid
@@ -1216,6 +1224,7 @@ export async function buildPipelineDecisionMaturityPacket(
     ]
     stages.push({
       id: 'l4',
+      candidate_versions: compareCandidateVersions(l4Latest, l4Prospective?.candidate, evRows.error, evProspectiveRows.error),
       layer: 'L4',
       title: 'Canonical L4 alpha EV',
       version: l4?.version ?? l4Serving?.model_version ?? null,
@@ -1266,14 +1275,14 @@ export async function buildPipelineDecisionMaturityPacket(
         metric('prospective_label_known_min', 'First counted label-known date', prospectiveGate?.label_known_date_min ?? null, { unit: 'status', passed: null, ...prospectiveMetricScope, scope: 'promotion_gate', note: `必須晚於 candidate freeze ${l4Prospective?.source_run_date ?? '未知'}，確保 freeze 當下答案尚未揭露。` }),
         metric('prospective_label_known_max', 'Latest counted label-known date', prospectiveGate?.label_known_date_max ?? null, { unit: 'status', passed: null, ...prospectiveMetricScope, scope: 'promotion_gate' }),
         metric('prospective_candidate_state', 'Locked candidate registry state', l4Prospective?.state ?? null, { unit: 'status', passed: null, ...prospectiveMetricScope, scope: 'lifecycle' }),
-        metric('shadow_sector_samples', 'Rolling cohort diagnostic PIT sector-alpha samples', l4Shadow?.sector_samples ?? null, { unit: 'rows', passed: null, ...shadowMetricScope, scope: 'monitoring', note: 'Rolling 75/25 cohort refit diagnostic; not candidate promotion evidence.' }),
+        metric('shadow_sector_samples', 'Rolling cohort diagnostic PIT sector-alpha samples', l4Shadow?.sector_samples ?? null, { unit: 'rows', passed: null, ...shadowMetricScope, scope: 'monitoring', note: '監控封包可能附帶基底離線驗證；沒有 forward 評估時不提供新日期績效。' }),
         metric('shadow_sector_dates', 'Rolling cohort diagnostic PIT sector-alpha dates', l4Shadow?.sector_dates ?? null, { unit: 'dates', passed: null, ...shadowMetricScope, scope: 'monitoring', note: `Rolling 75/25 cohort sector subset：${l4Shadow?.sector_dates ?? '資料尚未具備'}/${l4Shadow?.date_count ?? '資料尚未具備'} usable dates；不是正式 L4 PIT 物化日數或 promotion maturity。` }),
-        metric('shadow_corr_lcb90', 'Rolling cohort diagnostic corr LCB90', l4Shadow?.l4_corr_lcb90 ?? null, { unit: 'ratio', passed: null, ...shadowMetricScope, scope: 'monitoring', note: 'Rolling 75/25 cohort refit diagnostic; not candidate promotion evidence.' }),
-        metric('shadow_spread_lcb90', 'Rolling cohort diagnostic spread LCB90', l4Shadow?.l4_spread_lcb90 ?? null, { unit: 'return', passed: null, ...shadowMetricScope, scope: 'monitoring', note: 'Rolling 75/25 cohort refit diagnostic; not candidate promotion evidence.' }),
-        metric('shadow_top_return', 'Rolling cohort diagnostic top-quintile mean', l4Shadow?.l4_top_return ?? null, { unit: 'return', passed: null, ...shadowMetricScope, scope: 'monitoring', note: 'Rolling 75/25 cohort refit diagnostic; not candidate promotion evidence.' }),
-        metric('shadow_top_lcb90', 'Rolling cohort diagnostic top-quintile LCB90', l4Shadow?.l4_top_lcb90 ?? null, { unit: 'return', passed: null, ...shadowMetricScope, scope: 'monitoring', note: 'Rolling 75/25 cohort refit diagnostic; not candidate promotion evidence.' }),
-        metric('shadow_walk_forward', 'Rolling cohort diagnostic walk-forward', l4Shadow?.walk_forward_passed, { unit: 'status', passed: null, ...shadowMetricScope, scope: 'monitoring', note: [walkForwardNote(l4Shadow?.walk_forward ?? null), 'Rolling diagnostic only; not candidate promotion evidence.'].filter(Boolean).join('；') }),
-        metric('frozen_forward_quality', 'Rolling cohort diagnostic quality', l4Shadow?.quality_decision ?? null, { unit: 'status', passed: null, ...shadowMetricScope, scope: 'monitoring', note: 'Rolling cohort quality label is diagnostic only; locked-candidate prospective gate is authoritative for promotion.' }),
+        metric('shadow_corr_lcb90', 'Rolling cohort diagnostic corr LCB90', l4Shadow?.l4_corr_lcb90 ?? null, { unit: 'ratio', passed: null, ...shadowMetricScope, ...shadowPerformanceScope, scope: 'monitoring', note: '監控封包可能附帶基底離線驗證；沒有 forward 評估時不提供新日期績效。' }),
+        metric('shadow_spread_lcb90', 'Rolling cohort diagnostic spread LCB90', l4Shadow?.l4_spread_lcb90 ?? null, { unit: 'return', passed: null, ...shadowMetricScope, ...shadowPerformanceScope, scope: 'monitoring', note: '監控封包可能附帶基底離線驗證；沒有 forward 評估時不提供新日期績效。' }),
+        metric('shadow_top_return', 'Rolling cohort diagnostic top-quintile mean', l4Shadow?.l4_top_return ?? null, { unit: 'return', passed: null, ...shadowMetricScope, ...shadowPerformanceScope, scope: 'monitoring', note: '監控封包可能附帶基底離線驗證；沒有 forward 評估時不提供新日期績效。' }),
+        metric('shadow_top_lcb90', 'Rolling cohort diagnostic top-quintile LCB90', l4Shadow?.l4_top_lcb90 ?? null, { unit: 'return', passed: null, ...shadowMetricScope, ...shadowPerformanceScope, scope: 'monitoring', note: '監控封包可能附帶基底離線驗證；沒有 forward 評估時不提供新日期績效。' }),
+        metric('shadow_walk_forward', 'Rolling cohort diagnostic walk-forward', l4Shadow?.walk_forward_passed, { unit: 'status', passed: null, ...shadowMetricScope, ...shadowPerformanceScope, scope: 'monitoring', note: [walkForwardNote(l4Shadow?.walk_forward ?? null), '沒有 forward 評估時不提供新日期績效；不計入晉級證據。'].filter(Boolean).join('；') }),
+        metric('frozen_forward_quality', 'Rolling cohort diagnostic quality', l4BaseOnly ? null : l4Shadow?.quality_decision ?? null, { unit: 'status', passed: null, ...shadowMetricScope, ...shadowPerformanceScope, scope: 'monitoring', note: 'Rolling cohort quality label is diagnostic only; locked-candidate prospective gate is authoritative for promotion.' }),
         metric('shadow_usable_samples', 'Latest shadow usable samples', l4Shadow?.sample_count ?? null, { unit: 'rows', ...shadowMetricScope, scope: 'monitoring' }),
         metric('shadow_usable_dates', 'Latest shadow usable dates', l4Shadow?.date_count ?? null, { unit: 'dates', ...shadowMetricScope, scope: 'monitoring' }),
         metric('shadow_oof_rows', 'Latest shadow OOF rows', l4Shadow?.oof_row_count ?? null, { unit: 'rows', ...shadowMetricScope, scope: 'monitoring' }),
@@ -1373,6 +1382,7 @@ export async function buildPipelineDecisionMaturityPacket(
   const fusion = fusionProspective?.candidate ?? fusionLatest
   const fusionShadowPacket = evShadow.get('allocator_ev_fusion')
   const fusionShadow = shadowPairComplete && fusionShadowPacket?.identity_valid ? fusionShadowPacket : undefined
+  const fusionBaseOnly = fusionShadow?.validation_scope === 'base_cohort_offline_validation'
   const fusionServing = servingState?.artifacts.allocator_ev_fusion
   if (!fusion && !fusionServing && !fusionProspective) {
     stages.push(unavailableStage('fusion', 'L4+', 'Fusion final trade EV', requestedDate, 'model_artifact_registry + allocator EV snapshots', [evRows.error, serving.error]))
@@ -1415,6 +1425,9 @@ export async function buildPipelineDecisionMaturityPacket(
     const shadowMetricScope = shadowBatchReason
       ? { availability: shadowRows.length ? 'blocked' as const : 'missing' as const, reason_code: shadowBatchReason }
       : evidenceAvailability(fusionShadowPacket, 'frozen_forward_packet_missing')
+    const shadowPerformanceScope = fusionBaseOnly
+      ? { availability: 'not_applicable' as const, reason_code: 'base_validation_not_forward_performance' }
+      : shadowMetricScope
     const runtimeGuardBound = Boolean(
       runtimeGuard
       && runtimeGuard.artifact_id === fusionServing?.artifact_id
@@ -1464,6 +1477,7 @@ export async function buildPipelineDecisionMaturityPacket(
     ]
     stages.push({
       id: 'fusion',
+      candidate_versions: compareCandidateVersions(fusionLatest, fusionProspective?.candidate, evRows.error, evProspectiveRows.error),
       layer: 'L4+',
       title: 'Fusion final trade EV',
       version: fusion?.version ?? fusionServing?.model_version ?? null,
@@ -1534,12 +1548,12 @@ export async function buildPipelineDecisionMaturityPacket(
         }),
         metric('execution_expert', 'Shadow diagnostic conditional execution expert', fusion?.execution_decision, { unit: 'status', scope: 'diagnostic', passed: null, availability: fusion?.execution_decision == null ? 'not_applicable' : 'available', reason_code: fusion?.execution_decision == null ? 'diagnostic_not_served_by_fusion_v14' : null, note: 'Diagnostic only; not served by Fusion v14.' }),
         metric('execution_probability', 'Shadow diagnostic execution probability expert', fusion?.execution_probability_decision, { unit: 'status', scope: 'diagnostic', passed: null, availability: fusion?.execution_probability_decision == null ? 'not_applicable' : 'available', reason_code: fusion?.execution_probability_decision == null ? 'diagnostic_not_served_by_fusion_v14' : null, note: 'Diagnostic only; not served by Fusion v14.' }),
-        metric('shadow_sector_samples', 'Rolling cohort diagnostic PIT sector-alpha samples', fusionShadow?.sector_samples ?? null, { unit: 'rows', passed: null, ...shadowMetricScope, scope: 'monitoring', note: 'Rolling 75/25 cohort refit diagnostic; not candidate promotion evidence.' }),
-        metric('shadow_sector_dates', 'Rolling cohort diagnostic PIT sector-alpha dates', fusionShadow?.sector_dates ?? null, { unit: 'dates', passed: null, ...shadowMetricScope, scope: 'monitoring', note: 'Rolling 75/25 cohort refit diagnostic; not candidate promotion evidence.' }),
-        metric('shadow_residual_corr_lcb90', 'Rolling cohort diagnostic residual corr LCB90', fusionShadow?.residual_corr_lcb90 ?? null, { unit: 'ratio', passed: null, ...shadowMetricScope, scope: 'monitoring', note: 'Rolling 75/25 cohort refit diagnostic; not candidate promotion evidence.' }),
-        metric('shadow_residual_spread_lcb90', 'Rolling cohort diagnostic residual spread LCB90', fusionShadow?.residual_spread_lcb90 ?? null, { unit: 'return', passed: null, ...shadowMetricScope, scope: 'monitoring', note: 'Rolling 75/25 cohort refit diagnostic; not candidate promotion evidence.' }),
-        metric('shadow_walk_forward', 'Rolling cohort diagnostic residual walk-forward', fusionShadow?.walk_forward_passed, { unit: 'status', passed: null, ...shadowMetricScope, scope: 'monitoring', note: [walkForwardNote(fusionShadow?.walk_forward ?? null), 'Rolling diagnostic only; not candidate promotion evidence.'].filter(Boolean).join('；') }),
-        metric('frozen_forward_quality', 'Rolling cohort diagnostic quality', fusionShadow?.quality_decision ?? null, { unit: 'status', passed: null, ...shadowMetricScope, scope: 'monitoring', note: 'Rolling cohort quality label is diagnostic only; locked-candidate prospective gate is authoritative for promotion.' }),
+        metric('shadow_sector_samples', 'Rolling cohort diagnostic PIT sector-alpha samples', fusionShadow?.sector_samples ?? null, { unit: 'rows', passed: null, ...shadowMetricScope, scope: 'monitoring', note: '監控封包可能附帶基底離線驗證；沒有 forward 評估時不提供新日期績效。' }),
+        metric('shadow_sector_dates', 'Rolling cohort diagnostic PIT sector-alpha dates', fusionShadow?.sector_dates ?? null, { unit: 'dates', passed: null, ...shadowMetricScope, scope: 'monitoring', note: '監控封包可能附帶基底離線驗證；沒有 forward 評估時不提供新日期績效。' }),
+        metric('shadow_residual_corr_lcb90', 'Rolling cohort diagnostic residual corr LCB90', fusionShadow?.residual_corr_lcb90 ?? null, { unit: 'ratio', passed: null, ...shadowMetricScope, ...shadowPerformanceScope, scope: 'monitoring', note: '監控封包可能附帶基底離線驗證；沒有 forward 評估時不提供新日期績效。' }),
+        metric('shadow_residual_spread_lcb90', 'Rolling cohort diagnostic residual spread LCB90', fusionShadow?.residual_spread_lcb90 ?? null, { unit: 'return', passed: null, ...shadowMetricScope, ...shadowPerformanceScope, scope: 'monitoring', note: '監控封包可能附帶基底離線驗證；沒有 forward 評估時不提供新日期績效。' }),
+        metric('shadow_walk_forward', 'Rolling cohort diagnostic residual walk-forward', fusionShadow?.walk_forward_passed, { unit: 'status', passed: null, ...shadowMetricScope, ...shadowPerformanceScope, scope: 'monitoring', note: [walkForwardNote(fusionShadow?.walk_forward ?? null), '沒有 forward 評估時不提供新日期績效；不計入晉級證據。'].filter(Boolean).join('；') }),
+        metric('frozen_forward_quality', 'Rolling cohort diagnostic quality', fusionBaseOnly ? null : fusionShadow?.quality_decision ?? null, { unit: 'status', passed: null, ...shadowMetricScope, ...shadowPerformanceScope, scope: 'monitoring', note: 'Rolling cohort quality label is diagnostic only; locked-candidate prospective gate is authoritative for promotion.' }),
         metric('shadow_usable_samples', 'Latest shadow usable samples', fusionShadow?.sample_count ?? null, { unit: 'rows', ...shadowMetricScope, scope: 'monitoring' }),
         metric('shadow_usable_dates', 'Latest shadow usable dates', fusionShadow?.date_count ?? null, { unit: 'dates', ...shadowMetricScope, scope: 'monitoring' }),
         metric('shadow_oof_rows', 'Latest shadow OOF rows', fusionShadow?.oof_row_count ?? null, { unit: 'rows', ...shadowMetricScope, scope: 'monitoring' }),
@@ -1850,8 +1864,10 @@ export async function buildPipelineDecisionMaturityPacket(
     maturity_projection: routeMaturityProjection,
   }
 
+  const mlVersion = await mlVersionPromise
   return {
     strategy_route_bundle: strategyRouteBundle,
+    active_ml_ensemble: mlVersion.value ?? { status: 'error', artifact_id: null, cohort_id: null, validation_end_date: null, knowledge_cutoff_date: null, promoted_at: null },
     ipo_shadow: await ipoShadowPromise,
     schema_version: 'pipeline-decision-maturity-v2',
     requested_date: requestedDate,

@@ -75,6 +75,7 @@ const FIELD_LABELS: Record<string, string> = {
 }
 
 const BLOCKER_LABELS: Record<string, string> = {
+  base_validation_not_forward_performance: '此封包僅附帶基底離線驗證，未計算 forward 績效',
   insufficient_paired_mature_oof_residual_returns: '同日配對的成熟 OOF residual return 日期仍不足',
   enough_total_dates: '總成熟日期不足',
   enough_train_dates: '訓練日期不足',
@@ -212,7 +213,7 @@ function MetricCell({ metric }: { metric: PipelineMaturityMetric }) {
         {target ? <span className="sv-num text-[11px] text-slate-600">門檻 {target}</span> : null}
       </div>
       {metric.note ? <p className="mt-1 text-[11px] leading-4 text-slate-600">{metric.note}</p> : null}
-      {metric.reason_code ? <code className="mt-1 block break-all text-[10px] leading-4 text-slate-700">{metric.reason_code}</code> : null}
+      {metric.reason_code ? <code className="mt-1 block break-all text-[10px] leading-4 text-slate-700">{BLOCKER_LABELS[metric.reason_code] ?? metric.reason_code}</code> : null}
     </div>
   )
 }
@@ -248,6 +249,42 @@ function MetricSection({
       </div>
     </details>
   )
+}
+
+function CandidateVersionPanel({ stage }: { stage: PipelineMaturityStage }) {
+  const versions = stage.candidate_versions
+  if (!versions) return null
+  const stateLabels: Record<string, string> = {
+    offline_failed: '離線未通過', offline_passed: '離線通過，等待入場', offline_strong_pass: '離線通過，等待入場',
+    shadowing: '鎖定驗證中', live_gate_passed: '前瞻通過，等待正式切換', rejected: '已淘汰', production: '正式服務中',
+  }
+  return <div className="mb-4 rounded-lg border border-white/10 p-3 text-xs leading-5">
+    <p className="font-semibold text-slate-200">候選版本對照</p>
+    <p className="mt-1 text-slate-400">基底資料截止日隨候選固定；最新成熟預測日才是每天推進的驗證進度。新候選不會繼承舊候選的成熟日數。</p>
+    <div className="mt-3 grid gap-3 md:grid-cols-2">
+      {([
+        ['最新生成候選', versions.latest_candidate, versions.latest_query_status],
+        ['鎖定／最近驗證候選', versions.evaluated_candidate, versions.evaluation_query_status],
+      ] as const).map(([title, candidate, queryStatus]) => <div key={title} className="min-w-0 rounded border border-white/[0.08] p-3">
+        <p className="font-semibold text-slate-200">{title}</p>
+        {queryStatus === 'error' ? <p className="text-amber-200">讀取失敗，不能判定沒有候選</p>
+          : !candidate ? <p className="text-slate-400">尚無候選紀錄</p>
+            : <>
+              <p className="mt-1 text-slate-300">基底資料截止：<span className="sv-num">{candidate.trained_until ?? '未驗證'}</span></p>
+              <p className="text-slate-400">候選生成日：{candidate.generated_date ?? '未知'}</p>
+              <p className={candidate.identity_valid ? 'text-slate-300' : 'text-amber-200'}>{candidate.identity_valid ? stateLabels[candidate.state ?? ''] ?? candidate.state ?? '未知狀態' : '候選身分驗證受阻'}</p>
+              {candidate.offline_findings.length > 0 && <ul className="mt-2 space-y-1 text-amber-200">
+                {candidate.offline_findings.map(reason => <li key={reason}>{BLOCKER_LABELS[reason] ?? reason}</li>)}
+              </ul>}
+              <details className="mt-2 text-slate-500"><summary className="cursor-pointer">Cohort 與產物身分</summary>
+                <p className="break-all">{candidate.cohort_id ?? '未驗證'}</p><p className="break-all">{candidate.artifact_id ?? '未知'}</p>
+              </details>
+            </>}
+      </div>)}
+    </div>
+    {versions.different_artifacts === true && <p className="mt-2 text-slate-400">兩者是不同候選：下方成熟進度與升級門檻綁定鎖定／最近驗證候選，不代表最新候選已通過。</p>}
+    {versions.different_artifacts === false && <p className="mt-2 text-slate-400">兩欄目前是同一候選，沒有另外一組成熟度。</p>}
+  </div>
 }
 
 function StageRow({ stage }: { stage: PipelineMaturityStage }) {
@@ -303,7 +340,10 @@ function StageRow({ stage }: { stage: PipelineMaturityStage }) {
     : allPromotionMetrics
   const lifecycleMetrics = stage.metrics.filter((item) => item.scope === 'lifecycle')
   const productionMetrics = stage.metrics.filter((item) => item.scope === 'production')
-  const monitoringMetrics = stage.metrics.filter((item) => item.scope === 'monitoring')
+  const offlineDiagnosticKeys = new Set(['corr_lcb90', 'spread_lcb90', 'top_return', 'top_lcb90',
+    'walk_forward', 'residual_corr_lcb90', 'residual_spread_lcb90'])
+  const offlineDiagnosticMetrics = stage.metrics.filter((item) => item.scope === 'monitoring' && offlineDiagnosticKeys.has(item.key))
+  const monitoringMetrics = stage.metrics.filter((item) => item.scope === 'monitoring' && !offlineDiagnosticKeys.has(item.key))
   const diagnosticMetrics = stage.metrics.filter((item) => item.scope === 'diagnostic')
   const evidenceScopes = stage.lineage.evidence_scopes
   const productionServingState = evidenceScopes?.serving_pointer
@@ -463,6 +503,7 @@ function StageRow({ stage }: { stage: PipelineMaturityStage }) {
       </summary>
 
       <div className="border-t border-white/[0.06] bg-black/[0.12] px-4 py-4 lg:px-5">
+        <CandidateVersionPanel stage={stage} />
         <div className="grid gap-4 2xl:grid-cols-[minmax(0,1.5fr)_minmax(240px,0.8fr)]">
           <div className="min-w-0">
             <div className="mb-3 flex items-start gap-2">
@@ -489,8 +530,13 @@ function StageRow({ stage }: { stage: PipelineMaturityStage }) {
                 metrics={offlinePromotionMetrics}
               />
               <MetricSection
+                title="離線候選固定診斷（隨候選版本更新）"
+                description="原始 cohort 的離線驗證；每天封包日期前進不會改變這組數值。"
+                metrics={offlineDiagnosticMetrics}
+              />
+              <MetricSection
                 title="Rolling cohort 日更診斷（非升級成熟度）"
-                description="用 rolling 75/25 cohort 觀察整體資料流是否退化；不是鎖定候選、不是 production artifact，也不會改寫 promotion maturity。"
+                description="顯示 forward 輸入覆蓋；基底離線驗證不當作新增日期績效。每日候選成績請看上方 pre-outcome 正式升級門檻。"
                 metrics={monitoringMetrics}
               />
               <MetricSection
@@ -693,6 +739,14 @@ export default function PipelineMaturityContribution({
             </div>
           ))}
         </div>
+        {data.active_ml_ensemble && <div className="mt-3 rounded-xl border border-white/[0.07] px-3 py-3 text-xs leading-5 text-slate-400">
+          <p className="font-semibold text-slate-200">目前正式 L3 ensemble</p>
+          {data.active_ml_ensemble.status === 'serving' ? <>
+            <p>驗證樣本截止：{data.active_ml_ensemble.validation_end_date ?? '未知'} · 結果已知截止：{data.active_ml_ensemble.knowledge_cutoff_date ?? '未知'}</p>
+            <p className="break-all">{data.active_ml_ensemble.cohort_id}</p>
+            <p>此為目前 serving pointer；L4／L4+ 各自候選的基底日期與成熟資格分別列於下方。</p>
+          </> : <p className="text-amber-200">{data.active_ml_ensemble.status === 'missing' ? '尚無正式 ensemble pointer' : '正式 ensemble 身分讀取或驗證受阻'}</p>}
+        </div>}
         <details className="mt-3 rounded-xl border border-white/[0.07] bg-black/20 px-3 py-2 text-xs text-slate-400">
           <summary className="cursor-pointer font-semibold text-slate-200">頁面名詞白話說明</summary>
           <div className="mt-2 grid gap-2 leading-5 md:grid-cols-2 xl:grid-cols-4">

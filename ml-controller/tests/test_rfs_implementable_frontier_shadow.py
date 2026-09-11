@@ -190,3 +190,28 @@ def test_portfolio_ml_shadow_alpha_requires_explicit_comparison_opt_in():
     assert accepted["formal_expected_return_owner_only"] is False
     assert accepted["production_effect"] is False
     assert accepted["promotion_eligible"] is False
+
+
+def test_no_formal_owner_is_not_a_liquidity_or_history_failure():
+    packet = build_rfs_implementable_frontier_shadow(
+        [{"symbol": "AAA", "expected_return": 0.02, "expected_return_owner": "risk_abstention"}],
+        {}, inherited_weights={}, portfolio_ml_inputs={"status": "shadow_ready"},
+    )
+    assert packet["source_expected_return_candidate_count"] == 0
+    assert packet["validation_blockers"] == ["formal_expected_return_candidates_missing"]
+    assert packet["weights"] == {}
+    assert packet["production_effect"] is False
+    assert packet["promotion_eligible"] is False
+
+
+def test_real_missing_liquidity_and_history_remain_blockers():
+    no_adv = build_rfs_implementable_frontier_shadow(
+        [{"symbol": "AAA", "expected_return": 0.02, "expected_return_owner": "l4_alpha_ev"}],
+        {}, inherited_weights={}, portfolio_ml_inputs={"status": "shadow_ready"},
+    )
+    assert "adv_coverage_below_80pct" in no_adv["validation_blockers"]
+    missing_history = build_rfs_implementable_frontier_shadow(
+        [_candidate("AAA", 0.02, 100_000_000)], {},
+        inherited_weights={}, portfolio_ml_inputs={"status": "shadow_ready"},
+    )
+    assert "return_history_coverage_below_80pct" in missing_history["validation_blockers"]

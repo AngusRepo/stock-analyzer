@@ -235,6 +235,53 @@ def active_locked_candidate_lane(query_fn: Callable, business_date: str) -> dict
     return None
 
 
+def _terminal_forward_rejection(row: dict[str, Any]) -> dict[str, Any] | None:
+    """Only exact, persisted terminal evidence can complete a lane without retry."""
+    if (row.get("state") != "rejected" or row.get("live_gate_status") != "failed"
+            or row.get("promotion_decision") != "prospective_failed"):
+        return None
+    try:
+        raw = row.get("live_evidence_json")
+        gate = json.loads(raw) if isinstance(raw, str) else raw
+    except (TypeError, ValueError):
+        return None
+    if not isinstance(gate, dict) or not (
+        gate.get("schema_version") == GATE_SCHEMA_VERSION
+        and gate.get("decision") == "FAIL"
+        and gate.get("candidate_artifact_id") == row.get("artifact_id")
+        and bool(row.get("checksum"))
+        and gate.get("candidate_artifact_checksum") == row.get("checksum")
+        and gate.get("artifact_trained_until") == row.get("artifact_trained_until")
+        and gate.get("source_run_date") == row.get("source_run_date")
+        and isinstance(gate.get("failed_gates"), list) and gate["failed_gates"]
+        and all(isinstance(reason, str) and reason for reason in gate["failed_gates"])
+        and gate.get("training_dispatched") is False
+    ):
+        return None
+    return {"artifact_id": row["artifact_id"], "gate": gate}
+
+
+def _candidate_can_start_forward(row: dict[str, Any]) -> bool:
+    """Keep legacy offline-only rejections distinct from terminal forward FAIL."""
+    if row.get("live_gate_status") == "failed" or row.get("promotion_decision") == "prospective_failed":
+        return False
+    raw = row.get("live_evidence_json")
+    if raw:
+        try:
+            gate = json.loads(raw) if isinstance(raw, str) else raw
+        except (TypeError, ValueError):
+            return False
+        if not isinstance(gate, dict) or gate.get("decision") == "FAIL":
+            return False
+    if row.get("state") == "rejected":
+        # Pre-forward legacy admission used this state for offline diagnostics.
+        # Only that explicit offline-only case may be admitted for the first time.
+        return (row.get("offline_gate_decision") == "FAIL" and not raw
+                and row.get("live_gate_status") in (None, "", "not_started")
+                and not str(row.get("promotion_decision") or "").startswith("prospective_"))
+    return True
+
+
 def _candidate_rows(
     query_fn: Callable[[str, list[Any]], list[dict[str, Any]]],
     cohort_id: str,
@@ -252,7 +299,7 @@ def _candidate_rows(
         f"""
         SELECT artifact_id, model_name, version, state, artifact_path, checksum,
                source_run_date, offline_gate_decision, offline_gate_failed_gates,
-               training_run_id, updated_at,
+               training_run_id, updated_at, live_gate_status, live_evidence_json, promotion_decision,
                json_extract(
                  offline_evidence_json,
                  '$.training_data.trained_until'
@@ -278,7 +325,15 @@ def _candidate_rows(
             and str(row.get("artifact_trained_until") or "")[:10] == trained_until
         ]
         rejections = []
+        terminal_rejections = []
         for row in current_l4:
+            terminal = _terminal_forward_rejection(row)
+            if terminal:
+                terminal_rejections.append(terminal)
+                continue
+            if row.get("live_gate_status") == "failed" or row.get("promotion_decision") == "prospective_failed":
+                # An invalid terminal record cannot fall back to offline-only closure.
+                break
             try:
                 failed = json.loads(row.get("offline_gate_failed_gates") or "null")
             except (TypeError, json.JSONDecodeError):
@@ -296,8 +351,9 @@ def _candidate_rows(
                 "failed_gates": failed,
                 "admission": _offline_admission_for_row(row),
             })
-        if current_l4 and len(rejections) == len(current_l4):
+        if current_l4 and len(rejections) + len(terminal_rejections) == len(current_l4):
             admission_diagnostics["offline_rejections"] = rejections
+            admission_diagnostics["terminal_rejections"] = terminal_rejections
     selected: dict[str, dict[str, Any]] = {}
     activate: dict[str, bool] = {}
     for owner in ("l4_alpha_ev", "allocator_ev_fusion"):
@@ -323,6 +379,7 @@ def _candidate_rows(
             row for row in owner_rows
             if str(row.get("training_run_id") or "") == current_training_run_id
             and str(row.get("state") or "") in (ELIGIBLE_CANDIDATE_STATES | OBSERVABLE_REJECTED_CANDIDATE_STATES)
+            and _candidate_can_start_forward(row)
             and _offline_admission_for_row(row)["decision"] == "PASS"
         ]
         if eligible:
@@ -872,9 +929,12 @@ def evaluate_expected_return_candidates_forward(
     )
     if not selected:
         rejected = admission_diagnostics.get("offline_rejections") or []
+        terminal = admission_diagnostics.get("terminal_rejections") or []
         return {
             "schema_version": SCHEMA_VERSION,
-            "status": "offline_admission_blocked" if rejected else "offline_admissible_candidate_missing",
+            "status": ("prospective_candidates_exhausted" if terminal else
+                       "offline_admission_blocked" if rejected else "offline_admissible_candidate_missing"),
+            "terminal_rejections": terminal,
             "offline_rejections": rejected,
             "promotion_ready": False,
             "training_dispatched": False,

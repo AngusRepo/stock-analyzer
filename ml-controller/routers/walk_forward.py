@@ -2258,6 +2258,8 @@ async def materialize_walk_forward_oof(req: OofMaterializeRequest):
                 packet = result.get("validation_packet") if isinstance(result, dict) else None
                 if isinstance(packet, dict):
                     packet["monitoring_policy"] = {
+                        "validation_scope": "base_cohort_offline_validation",
+                        "forward_metrics_computed": False,
                         "policy_decision": "shadow_only",
                         "promotion_eligible": False,
                         "training_dispatched": False,
@@ -2874,6 +2876,27 @@ def _oof_lifecycle_receipt_path(
     )
 
 
+def _candidate_forward_is_complete(evaluation: dict) -> bool:
+    status = evaluation.get("status")
+    if status in {"waiting_for_preoutcome_locked_mature_dates", "evaluated"}:
+        return True
+    if evaluation.get("promotion_ready") is not False:
+        return False
+    if status == "offline_admission_blocked":
+        return bool(evaluation.get("offline_rejections"))
+    if status == "prospective_candidates_exhausted":
+        rejections = evaluation.get("terminal_rejections")
+        return isinstance(rejections, list) and bool(rejections) and all(
+            isinstance(item, dict) and bool(item.get("artifact_id"))
+            and isinstance(item.get("gate"), dict)
+            and item["gate"].get("candidate_artifact_id") == item["artifact_id"]
+            and item["gate"].get("decision") == "FAIL"
+            and bool(item["gate"].get("failed_gates"))
+            for item in rejections
+        )
+    return False
+
+
 def _oof_lifecycle_receipt_matches_active_policy(
     receipt: dict[str, Any],
     *,
@@ -2967,16 +2990,7 @@ def _oof_lifecycle_receipt_matches_active_policy(
         and all(
             packet.get("policy_decision") == "shadow_only" for packet in shadow_packets.values()
         )
-        and candidate_forward.get("status") in {
-            "waiting_for_preoutcome_locked_mature_dates",
-            "evaluated",
-            "offline_admission_blocked",
-        }
-        and (
-            candidate_forward.get("status") != "offline_admission_blocked"
-            or (bool(candidate_forward.get("offline_rejections"))
-                and candidate_forward.get("promotion_ready") is False)
-        )
+        and _candidate_forward_is_complete(candidate_forward)
         and not (candidate_forward.get("frontier") or {}).get("retry_required")
         and candidate_forward.get("training_dispatched") is False
         and persistence.get("status") in {"ready", "ready_refreshed", "idempotent_ready"}
@@ -4028,6 +4042,8 @@ async def run_walk_forward_oof_lifecycle(req: OofLifecycleRequest):
             if result.get("promoted")
             else "offline_candidate_admission_blocked"
             if exact_evaluation.get("status") == "offline_admission_blocked"
+            else "prospective_candidates_exhausted"
+            if exact_evaluation.get("status") == "prospective_candidates_exhausted"
             else "exact_frozen_candidate_post_freeze_evaluation_complete"
         )
     opb_failed = (
@@ -4037,14 +4053,9 @@ async def run_walk_forward_oof_lifecycle(req: OofLifecycleRequest):
     full_fit_retry_required = bool(result.get("full_fit_retry_required"))
     candidate_forward = result.get("candidate_forward_evaluation")
     candidate_forward = candidate_forward if isinstance(candidate_forward, dict) else {}
-    candidate_forward_status = str(candidate_forward.get("status") or "")
     candidate_forward_retry_required = bool(
         materialization_controls["frozen_forward_shadow"]
-        and candidate_forward_status not in {
-            "waiting_for_preoutcome_locked_mature_dates",
-            "evaluated",
-            "offline_admission_blocked",
-        }
+        and not _candidate_forward_is_complete(candidate_forward)
     )
     candidate_forward_promotion_failed = bool(
         result.get("candidate_forward_promotion_error")

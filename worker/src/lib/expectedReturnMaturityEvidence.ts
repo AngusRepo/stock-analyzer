@@ -43,6 +43,8 @@ export interface ExpectedReturnCandidateDbRow {
 }
 
 export interface ExpectedReturnCandidateEvidence {
+  cohort_id: string | null
+  trained_until: string | null
   model_name: ExpectedReturnMaturityModel
   artifact_id: string | null
   artifact_path: string | null
@@ -144,6 +146,8 @@ export interface ExpectedReturnShadowDbRow {
 }
 
 export interface ExpectedReturnShadowEvidence {
+  validation_scope: 'base_cohort_offline_validation' | 'legacy_unspecified'
+  validation_oof_max_date: string | null
   evaluation_id: string
   cohort_id: string
   identity_schema_version: string
@@ -364,6 +368,9 @@ export function adaptExpectedReturnCandidate(row: ExpectedReturnCandidateDbRow):
   const executionProbabilityModel = record(shadowDiagnostics.execution_probability_model)
 
   return {
+    cohort_id: trusted ? stringOrNull(record(artifact.training_data).cohort_id)
+      ?? (String(row.training_run_id ?? '').startsWith('active8_oof:') ? String(row.training_run_id).slice('active8_oof:'.length) : null) : null,
+    trained_until: trusted ? stringOrNull(record(artifact.training_data).trained_until ?? artifact.trained_until) : null,
     model_name: row.model_name,
     artifact_id: row.artifact_id,
     version: row.version,
@@ -478,15 +485,23 @@ export function adaptExpectedReturnShadow(row: ExpectedReturnShadowDbRow): Expec
   const trusted = blockers.length === 0
   const trustedPacket = trusted ? packet : {}
   const sampleAudit = record(trustedPacket.sample_audit)
-  const l4Oos = record(trustedPacket.oos_metrics)
-  const residual = record(trustedPacket.residual_adjustment_model)
+  const validationMaxDate = stringOrNull(sampleAudit.oof_max_date ?? sampleAudit.evidence_max_date)
+  // Older immutable packets attached new extension dates to base-only validation.
+  // Infer this only from disjoint date lineage, never from equal metric values.
+  const baseOnly = record(trustedPacket.monitoring_policy).validation_scope === 'base_cohort_offline_validation'
+    || Boolean(validationMaxDate && row.oof_min_date && validationMaxDate < row.oof_min_date)
+  const diagnosticPacket = baseOnly ? {} : trustedPacket
+  const l4Oos = record(diagnosticPacket.oos_metrics)
+  const residual = record(diagnosticPacket.residual_adjustment_model)
   const residualOos = record(residual.oos_metrics)
-  const selectionOos = record(trustedPacket.selection_diagnostic_oos_metrics_not_served)
+  const selectionOos = record(diagnosticPacket.selection_diagnostic_oos_metrics_not_served)
   const walkForward = row.model_name === 'l4_alpha_ev'
-    ? record(trustedPacket.walk_forward)
+    ? record(diagnosticPacket.walk_forward)
     : record(residual.walk_forward)
-  const shadowDiagnostics = record(trustedPacket.shadow_diagnostics)
+  const shadowDiagnostics = record(diagnosticPacket.shadow_diagnostics)
   return {
+    validation_scope: baseOnly ? 'base_cohort_offline_validation' : 'legacy_unspecified',
+    validation_oof_max_date: validationMaxDate,
     evaluation_id: row.evaluation_id,
     cohort_id: row.cohort_id,
     base_manifest_checksum: row.base_manifest_checksum,
@@ -503,13 +518,13 @@ export function adaptExpectedReturnShadow(row: ExpectedReturnShadowDbRow): Expec
     oof_max_date: row.oof_max_date,
     oof_date_count: finiteOrNull(row.oof_date_count) ?? 0,
     oof_row_count: finiteOrNull(row.oof_row_count) ?? 0,
-    quality_decision: row.quality_decision,
+    quality_decision: baseOnly ? 'NOT_EVALUATED' : row.quality_decision,
     policy_decision: row.policy_decision,
     updated_at: row.updated_at,
     validation_schema_version: stringOrNull(packet.schema_version),
     identity_valid: trusted,
     identity_blockers: blockers,
-    failed_gates: [...new Set([...stringArray(trustedPacket.failed_gates), ...blockers])],
+    failed_gates: [...new Set([...stringArray(diagnosticPacket.failed_gates), ...blockers])],
     sample_count: finiteOrNull(sampleAudit.sample_count),
     date_count: finiteOrNull(sampleAudit.date_count),
     sector_samples: finiteOrNull(sampleAudit.sector_alpha_available_count),

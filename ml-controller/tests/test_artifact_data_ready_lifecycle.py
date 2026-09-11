@@ -276,6 +276,7 @@ def test_daily_exact_continuation_checks_current_prep(monkeypatch):
 
 @pytest.mark.parametrize("candidate_status,retry", [
     ("offline_admission_blocked", False),
+    ("prospective_candidates_exhausted", False),
     ("offline_admissible_candidate_missing", True),
     ("waiting_for_preoutcome_locked_mature_dates", False),
 ])
@@ -284,6 +285,8 @@ def test_daily_closes_explicit_admission_rejection_without_promotion(monkeypatch
     monkeypatch.setattr(wf, "_oof_lifecycle_calendar", lambda *a, **k: (days[:149], {"cutoff": days[154]}))
     materialize.return_value["candidate_forward_evaluation"] = {
         "status": candidate_status, "promotion_ready": False,
+        "terminal_rejections": [{"artifact_id": "l4", "gate": {"candidate_artifact_id": "l4",
+            "decision": "FAIL", "failed_gates": ["maximum_window_exhausted"]}}],
         "offline_rejections": [{"artifact_id": "l4", "failed_gates": ["pit_sector_alpha_samples_low"]}],
     }
     result = asyncio.run(wf.run_walk_forward_oof_lifecycle(wf.OofLifecycleRequest(
@@ -297,3 +300,11 @@ def test_daily_closes_explicit_admission_rejection_without_promotion(monkeypatch
         assert receipts[-1]["evidence_closure"]["candidate_forward_evaluation"]["status"] == candidate_status
     if candidate_status == "offline_admission_blocked":
         assert result["promotion_reason"] == "offline_candidate_admission_blocked"
+
+
+@pytest.mark.parametrize("gate", [None, {}, {"decision": "PENDING"},
+    {"decision": "FAIL", "candidate_artifact_id": "other", "failed_gates": ["bad"]}])
+def test_unproven_terminal_receipt_must_retry(gate):
+    assert not wf._candidate_forward_is_complete({
+        "status": "prospective_candidates_exhausted", "promotion_ready": False,
+        "terminal_rejections": [{"artifact_id": "l4", "gate": gate}]})

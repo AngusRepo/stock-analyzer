@@ -1148,7 +1148,7 @@ function EvidenceClockPanel({
                     <p>packets {String(asRecord(clock.details).latest_packet_count ?? 0)} · persisted rows {String(asRecord(clock.details).latest_recommendation_rows ?? 0)}</p>
                     <p>formal candidates {String(asRecord(clock.details).candidate_count ?? 'N/A')} · usable {String(asRecord(clock.details).usable_candidate_count ?? 'N/A')}</p>
                     {asRecord(clock.details).zero_candidate_run_materialized === true && (
-                      <p className="text-amber-200">producer completed with zero formal candidates; this is materialized evidence, not a missing run.</p>
+                      <p className="text-amber-200">本次已記錄空集合：缺少具正式 L4／Fusion 預期報酬的候選。L3 模型晉級不代表此條件已滿足；空封包不算有效配置比較樣本。</p>
                     )}
                   </div>
                 )}

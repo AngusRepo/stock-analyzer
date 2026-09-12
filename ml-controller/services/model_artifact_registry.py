@@ -3138,7 +3138,9 @@ def load_latest_active8_ensemble_validation_attempt() -> dict[str, Any] | None:
     }
 
 
-def _validated_active8_ensemble_payload(row: dict[str, Any]) -> dict[str, Any]:
+def _validated_active8_ensemble_payload(
+    row: dict[str, Any], *, require_current_qualification: bool = True,
+) -> dict[str, Any]:
     try:
         payload = json.loads(str(row.get("payload_json") or ""))
     except json.JSONDecodeError as exc:
@@ -3158,7 +3160,7 @@ def _validated_active8_ensemble_payload(row: dict[str, Any]) -> dict[str, Any]:
         or str(row.get("state") or "") not in {"candidate", "production"}
     ):
         raise ValueError("active8_ensemble_candidate_not_promotion_grade")
-    if assess_ensemble_qualifications(payload)["ranking"]["decision"] != "PASS":
+    if require_current_qualification and assess_ensemble_qualifications(payload)["ranking"]["decision"] != "PASS":
         raise ValueError("active8_ensemble_candidate_not_promotion_grade")
     return payload
 
@@ -3370,7 +3372,12 @@ def run_active8_ensemble_bundle_promotion_controller(
             ensemble_payload = json.loads(ensemble_row['payload_json'])
             _validate_payload_identity(ensemble_row, ensemble_payload)
         else:
-            ensemble_payload = _validated_active8_ensemble_payload(ensemble_row)
+            # Read-only recovery proves the original immutable commit below.
+            # Do not reinterpret an old receipt using today's qualification
+            # schema; this branch cannot publish or activate a new bundle.
+            ensemble_payload = _validated_active8_ensemble_payload(
+                ensemble_row, require_current_qualification=not require_existing_commit,
+            )
     except ValueError as exc:
         return {"status": "blocked", "decision": str(exc), "can_promote": False, "training_run_id": training_run_id}
     expected_observation = (

@@ -109,7 +109,10 @@ def test_original_dispatch_modal_compute_and_controller_merge_use_same_nav_recei
             'serving_pool': graph._pipeline_modal_runtime_pool_from_manifest(pool, manifest),
             'serving_manifest': manifest, 'serving_manifest_digest': checksum,
             'model_status': {r['model']: r['effective_status'] for r in manifest['models']},
-            'active_versions': {r['model']: r['version'] for r in manifest['models']},
+            # Match the original context builder: excluded observations retain
+            # identities in the manifest, never active dispatch versions.
+            'active_versions': {r['model']: r['version'] for r in manifest['models']
+                                if r['effective_status'] in graph.MODEL_POOL_SERVING_STATUSES},
             'pool_versions_loaded': True, 'expected_source_sha': 'a' * 40}}
     monkeypatch.setattr(graph, 'build_state_space_series_from_payloads', lambda _: deepcopy(series))
     monkeypatch.setattr(graph, 'enrich_state_space_series_with_long_history',

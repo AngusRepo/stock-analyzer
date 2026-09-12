@@ -2,9 +2,28 @@ import assert from 'node:assert/strict'
 import {
   adaptExpectedReturnCandidate,
   adaptExpectedReturnShadow,
+  readExpectedReturnCrossSectionDiagnostic,
   type ExpectedReturnCandidateDbRow,
 } from './expectedReturnMaturityEvidence'
 import { ALLOCATOR_EV_FUSION_CONTRACT, L4_ALPHA_EV_CONTRACT } from './evidenceContracts'
+
+// A daily NAV write nests, not discards, the already mature cross-section evidence.
+const diagnosticIdentity = { identity_valid: true, artifact_id: 'l4:locked', checksum: 'a'.repeat(64) }
+const preservedDiagnostic = { schema_version: 'expected-return-candidate-forward-gate-v2',
+  candidate_artifact_id: diagnosticIdentity.artifact_id, candidate_artifact_checksum: diagnosticIdentity.checksum,
+  evaluable_date_count: 9, prediction_date_max: '2026-09-04', decision: 'PENDING' }
+const navEnvelope = { ...preservedDiagnostic, schema_version: 'expected-return-candidate-nav-gate-v1',
+  evaluable_date_count: 0, decision: 'PENDING', cross_section_diagnostic: preservedDiagnostic }
+const diagnosticCandidate = diagnosticIdentity as Parameters<typeof readExpectedReturnCrossSectionDiagnostic>[1]
+assert.equal(readExpectedReturnCrossSectionDiagnostic(preservedDiagnostic, diagnosticCandidate), preservedDiagnostic)
+assert.equal(readExpectedReturnCrossSectionDiagnostic(navEnvelope, diagnosticCandidate), preservedDiagnostic)
+assert.equal(navEnvelope.evaluable_date_count, 0, 'diagnostic maturity must not become NAV maturity')
+assert.equal(readExpectedReturnCrossSectionDiagnostic({ ...navEnvelope, candidate_artifact_id: 'other' }, diagnosticCandidate), null)
+assert.equal(readExpectedReturnCrossSectionDiagnostic({ ...navEnvelope,
+  cross_section_diagnostic: { ...preservedDiagnostic, candidate_artifact_checksum: 'b'.repeat(64) } }, diagnosticCandidate), null)
+assert.equal(readExpectedReturnCrossSectionDiagnostic({ ...navEnvelope,
+  cross_section_diagnostic: { status: 'failed', decision: 'MISSING' } }, diagnosticCandidate), null)
+assert.equal(readExpectedReturnCrossSectionDiagnostic(navEnvelope, { ...diagnosticCandidate, identity_valid: false }), null)
 
 function row(
   model_name: ExpectedReturnCandidateDbRow['model_name'],

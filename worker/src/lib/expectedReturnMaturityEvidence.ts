@@ -5,6 +5,21 @@ import {
 
 export type ExpectedReturnMaturityModel = 'l4_alpha_ev' | 'allocator_ev_fusion'
 
+/** Read diagnostics for the same candidate; NAV remains the only promotion owner. */
+export function readExpectedReturnCrossSectionDiagnostic(
+  stored: Record<string, any>, candidate: ExpectedReturnCandidateEvidence,
+): Record<string, any> | null {
+  if (!candidate.identity_valid
+      || stored.candidate_artifact_id !== candidate.artifact_id
+      || stored.candidate_artifact_checksum !== candidate.checksum) return null
+  const gate = stored.schema_version === 'expected-return-candidate-nav-gate-v1'
+    ? stored.cross_section_diagnostic : stored
+  if (!gate || gate.schema_version !== 'expected-return-candidate-forward-gate-v2'
+      || gate.candidate_artifact_id !== candidate.artifact_id
+      || gate.candidate_artifact_checksum !== candidate.checksum) return null
+  return gate
+}
+
 export type WalkForwardFoldEvidence = {
   fold: number | null
   train_start_date: string | null

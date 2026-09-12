@@ -11,6 +11,7 @@ import { readPairedNav, type PairedNavReadModel } from './pairedNavReadModel'
 import {
   adaptExpectedReturnCandidate,
   adaptExpectedReturnShadow,
+  readExpectedReturnCrossSectionDiagnostic,
   type ExpectedReturnCandidateDbRow,
   type ExpectedReturnCandidateEvidence,
   type ExpectedReturnShadowDbRow,
@@ -1168,11 +1169,9 @@ export async function buildPipelineDecisionMaturityPacket(
   )
   const evProspective = new Map<string, ExpectedReturnProspectiveEvidence>(
     (evProspectiveRows.value ?? []).flatMap((row): Array<[string, ExpectedReturnProspectiveEvidence]> => {
-      const gate = jsonRecord(row.live_evidence_json)
       const candidate = adaptExpectedReturnCandidate(row as ExpectedReturnCandidateDbRow)
-      if (gate.schema_version !== 'expected-return-candidate-forward-gate-v2'
-          || !candidate.identity_valid || gate.candidate_artifact_id !== candidate.artifact_id
-          || gate.candidate_artifact_checksum !== candidate.checksum) return []
+      const gate = readExpectedReturnCrossSectionDiagnostic(jsonRecord(row.live_evidence_json), candidate)
+      if (!gate) return []
       const evidence: ExpectedReturnProspectiveEvidence = {
         model_name: String(row.model_name ?? ''),
         artifact_id: String(row.artifact_id ?? ''),

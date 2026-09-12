@@ -1,3 +1,4 @@
+import { buildDailyFunnelLayers, buildFinalSignalLayer } from '../lib/dailyFunnelSummary'
 import { Hono } from 'hono'
 
 import { d1SafeInChunks } from '../lib/d1BindChunks'
@@ -3334,18 +3335,6 @@ function buildBrokerTopFlowsToday(
 }
 
 
-function stageEffectivePass(row: Record<string, any> | null | undefined): number | null {
-  if (!row) return null
-  const selected = finiteNumber(row.selected_count)
-  const pass = finiteNumber(row.pass_count)
-  const observe = finiteNumber(row.observe_count)
-  const total = finiteNumber(row.total_count)
-  const drop = finiteNumber(row.drop_count) ?? 0
-  const candidates = [selected, pass, observe, total == null ? null : Math.max(0, total - drop)]
-    .filter((value): value is number => value != null && Number.isFinite(value))
-  return candidates.length ? Math.max(...candidates) : null
-}
-
 function roundMetric(value: number | null, digits = 3): number | null {
   if (value == null || !Number.isFinite(value)) return null
   const factor = 10 ** digits
@@ -3384,7 +3373,7 @@ async function buildDailyPipelineSummaries(
   date: string,
 ): Promise<Record<string, any>> {
   const latestRun = await opsDb.prepare(`
-    SELECT run_id, date, status, universe_count, candidate_count, final_count, emerging_count, created_at
+    SELECT run_id, date, status, universe_count, candidate_count, final_count, emerging_count, metadata, created_at
       FROM screener_funnel_runs
      WHERE date = ?
      ORDER BY created_at DESC
@@ -3408,61 +3397,29 @@ async function buildDailyPipelineSummaries(
      WHERE run_id = ?
      GROUP BY stage
   `).bind(latestRun.run_id).all<any>()
-  const byStage = new Map<string, Record<string, any>>((stageRows ?? []).map((row: any) => [String(row.stage ?? ''), row]))
-  const pickStage = (...names: string[]) => names.map((name) => byStage.get(name)).find(Boolean) ?? null
+  const seedSymbols = await opsDb.prepare(`
+    SELECT json_group_array(symbol) AS symbols FROM (
+      SELECT DISTINCT symbol FROM screener_funnel_items
+       WHERE run_id=? AND stage='l1_candidate_seed_after_overlay' AND decision='selected'
+       ORDER BY symbol
+    )
+  `).bind(latestRun.run_id).first<any>()
+  // Recommendations are a mutable daily snapshot; created_at is not a run watermark.
+  // Scope by date and exact seed membership, and do not claim immutable run lineage.
   const signalCounts = await coreDb.prepare(`
     SELECT COUNT(DISTINCT symbol) AS recommendation_count,
-           COUNT(DISTINCT CASE WHEN signal IN ('BUY', 'STRONG_BUY') OR has_buy_signal = 1 THEN symbol END) AS buy_signal_count,
-           COUNT(DISTINCT CASE WHEN signal = 'HOLD' THEN symbol END) AS hold_count
+           COUNT(DISTINCT CASE WHEN signal IN ('BUY','STRONG_BUY') THEN symbol END) AS buy_signal_count,
+           COUNT(DISTINCT CASE WHEN signal='HOLD' THEN symbol END) AS hold_count,
+           COUNT(DISTINCT CASE WHEN signal IN ('SELL','STRONG_SELL') THEN symbol END) AS sell_count,
+           COUNT(DISTINCT CASE WHEN signal IS NULL OR signal NOT IN ('BUY','STRONG_BUY','HOLD','SELL','STRONG_SELL') THEN symbol END) AS other_count
       FROM daily_recommendations
-     WHERE date = ?
-  `).bind(date).first<any>().catch(() => null)
-  const layer0Stage = pickStage('universe')
-  const layer1Stage = pickStage('l1_candidate_seed_after_overlay', 'layer1_strategy_breadth_gate', 'final_selection')
-  const layer2Stage = pickStage('l15_ml_slate_queue', 'layer2_coarse_ml_gate', 'layer2_timesfm_enrichment')
-  const layer3Stage = pickStage('layer3_formal_ml_gate')
-  const l0Pass = finiteNumber(layer0Stage?.pass_count) ?? finiteNumber(latestRun.candidate_count)
-  const l0Drop = finiteNumber(layer0Stage?.drop_count)
-  const l1Pass = stageEffectivePass(layer1Stage)
-  const l2Pass = stageEffectivePass(layer2Stage)
-  const l3Pass = stageEffectivePass(layer3Stage)
-  const recommendationCount = finiteNumber(signalCounts?.recommendation_count) ?? finiteNumber(latestRun.final_count)
+     WHERE date=?
+       AND symbol IN (SELECT value FROM json_each(?))
+  `).bind(date, seedSymbols?.symbols ?? '[]').first<any>().catch(() => null)
+  const recommendationCount = finiteNumber(signalCounts?.recommendation_count)
   const buySignalCount = finiteNumber(signalCounts?.buy_signal_count)
   const holdCount = finiteNumber(signalCounts?.hold_count)
-  const l4Pass = buySignalCount ?? finiteNumber(latestRun.final_count)
-  type PipelineLayerDef = {
-    layer: string
-    label: string
-    stage: string
-    passed: number | null
-    eliminated?: number | null
-    previous?: number | null
-    mode?: 'gate' | 'evidence_only'
-    evaluated?: number | null
-  }
-  const layerDefs: PipelineLayerDef[] = [
-    { layer: 'L0', label: 'Universe gate', stage: String(layer0Stage?.stage ?? 'universe'), passed: l0Pass, eliminated: l0Drop },
-    { layer: 'L1', label: 'Active strategy breadth', stage: String(layer1Stage?.stage ?? 'l1_candidate_seed_after_overlay'), passed: l1Pass, eliminated: finiteNumber(layer1Stage?.drop_count), previous: l0Pass },
-    { layer: 'L2', label: 'ML slate queue', stage: String(layer2Stage?.stage ?? 'l15_ml_slate_queue'), passed: l2Pass, eliminated: finiteNumber(layer2Stage?.drop_count), previous: l1Pass },
-    { layer: 'L3', label: 'Formal ML evidence', stage: String(layer3Stage?.stage ?? 'layer3_formal_ml_gate'), passed: l3Pass, eliminated: 0, previous: l2Pass, mode: 'evidence_only', evaluated: finiteNumber(layer3Stage?.total_count) },
-    { layer: 'L4', label: 'BUY signal allocation', stage: 'daily_recommendations.signal BUY', passed: l4Pass, previous: l2Pass ?? l1Pass },
-  ]
-  const layers = layerDefs.map((row) => {
-    const eliminated = row.eliminated != null
-      ? row.eliminated
-      : row.previous != null && row.passed != null
-        ? Math.max(0, row.previous - row.passed)
-        : null
-    return {
-      layer: row.layer,
-      label: row.label,
-      stage: row.stage,
-      passed: row.passed,
-      eliminated,
-      mode: row.mode ?? 'gate',
-      evaluated: row.evaluated ?? null,
-    }
-  })
+  const layers = buildDailyFunnelLayers(latestRun, stageRows ?? [], signalCounts)
 
   const { results: rawMatrixRows } = await learningDb.prepare(`
     SELECT symbol, strategy_id
@@ -3626,13 +3583,13 @@ async function buildDailyPipelineSummaries(
   return {
     funnel_summary: {
       schema_version: 'daily_pipeline_funnel_summary_v1',
-      source_of_truth: 'screener_funnel_runs + screener_funnel_items',
+      source_of_truth: 'same_run_conservation_receipt + protected_stage_evidence + scoped_signals',
       run_id: latestRun.run_id,
       status: latestRun.status,
       date: latestRun.date,
       created_at: latestRun.created_at,
-      universe_count: finiteNumber(latestRun.universe_count),
-      candidate_count: finiteNumber(latestRun.candidate_count),
+      universe_count: layers[0].input_count,
+      candidate_count: layers[0].passed,
       final_count: finiteNumber(latestRun.final_count),
       recommendation_count: recommendationCount,
       buy_signal_count: buySignalCount,
@@ -3831,19 +3788,13 @@ async function buildDailyPipelineViewPayload(
     status: 'materialized',
     date,
     ...counts,
-    layers: [
-      {
-        layer: 'L4',
-        label: 'BUY signal allocation',
-        stage: 'daily_recommendations.signal BUY',
-        passed: counts.buy_signal_count,
-        eliminated: Math.max(0, counts.recommendation_count - counts.buy_signal_count),
-      },
-    ],
+    layers: [buildFinalSignalLayer({
+      ...counts, sell_count: null, other_count: null,
+    })],
     stage_counts: [],
   }
   const funnelSummary = pipelineSummaries.funnel_summary
-    ? { ...pipelineSummaries.funnel_summary, ...counts }
+    ? pipelineSummaries.funnel_summary
     : fallbackFunnelSummary
 
   const payload = {

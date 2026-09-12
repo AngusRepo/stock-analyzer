@@ -173,9 +173,9 @@ def build_rfs_implementable_frontier_shadow(
         if owner_eligible else 0.0
     )
     history_coverage = len(history_covered) / len(symbols) if symbols else 0.0
-    if adv_coverage < 0.8:
+    if owner_eligible and adv_coverage < 0.8:
         validation_blockers.append("adv_coverage_below_80pct")
-    if history_coverage < 0.8:
+    if symbols and history_coverage < 0.8:
         validation_blockers.append("return_history_coverage_below_80pct")
     if inherited is None:
         validation_blockers.append("inherited_portfolio_weights_missing")

@@ -30,6 +30,8 @@ def _score_v2(final_score: float, ml_edge: float = 12.0) -> dict:
         },
         "total": final_score,
         "finalScore": final_score,
+        "coreFamilyEvidence": {"formal_model_contract_passed": True,
+            "evidence_status": "sufficient_family_breadth", "active_family_count": 3},
     }
 
 

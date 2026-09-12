@@ -35,7 +35,7 @@ if (source) test('original NAV L3 -> original NAV OPB -> projection -> next-day 
   function bridge(mode: string, formal?: any) {
     const result = spawnSync(f.python, ['tests/nav_l3_opb_bridge.py'], { cwd: path.resolve('../ml-controller'),
       input: JSON.stringify({ mode, formal, database: f.database, now: f.now, current }),
-      encoding: 'utf8', env: { ...process.env, PYTHONPATH: '.;../.tmp/nav-controller-runtime-deps' }, timeout: 60000 })
+      encoding: 'utf8', env: process.env, timeout: 60000 })
     assert.equal(result.status, 0, result.stdout + result.stderr)
     return JSON.parse(result.stdout)
   }
@@ -110,7 +110,8 @@ if (source) test('original NAV L3 -> original NAV OPB -> projection -> next-day 
 })
 else test('original sequential L3 and OPB evidence', () => {
   const python = process.env.NAV_TEST_PYTHON ?? path.resolve('../../ml-service/.venv/Scripts/python.exe')
-  const env: NodeJS.ProcessEnv = { ...process.env, PYTHONIOENCODING: 'utf-8', PYTHONPATH: '../.tmp/nav-controller-runtime-deps' }
+  const env: NodeJS.ProcessEnv = { ...process.env, PYTHONIOENCODING: 'utf-8',
+    PYTHONPATH: process.env.PYTHONPATH ?? path.resolve('../.tmp/nav-controller-runtime-deps') }
   delete env.NODE_TEST_CONTEXT
   const result = spawnSync(python, ['-m', 'pytest', 'tests/test_nav_l3_opb_handoff.py', '-q', '--tb=short'],
     { cwd: path.resolve('../ml-controller'), env, encoding: 'utf8', timeout: 240000 })

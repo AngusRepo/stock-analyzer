@@ -1,3 +1,9 @@
+export type ActiveMlEnsembleVersion = {
+  status: 'serving' | 'blocked' | 'missing' | 'error'
+  artifact_id: string | null; cohort_id: string | null; validation_end_date: string | null
+  knowledge_cutoff_date: string | null; promoted_at: string | null
+}
+
 import type { IpoShadowReadModel } from './ipoShadowContract'
 
 export type CandidateVersionSummary = {
@@ -224,6 +230,7 @@ export type PairedNavShadowReadModel = {
 
 export type PipelineDecisionMaturityPacket = {
   paired_nav_shadow?: PairedNavShadowReadModel
+  active_ml_ensemble?: ActiveMlEnsembleVersion
   ipo_shadow?: IpoShadowReadModel
   schema_version: 'pipeline-decision-maturity-v2'
   requested_date: string

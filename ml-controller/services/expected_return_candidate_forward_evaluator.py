@@ -1108,3 +1108,55 @@ def _evaluate_cross_section_diagnostics(*, candidates, preoutcome_locked_rows, b
     }
     return {'l4_sample_audit': l4_diagnostics, 'fusion_sample_audit': fusion_diagnostics,
         'daily_evaluations': daily_by_owner, 'persistence': persistence}
+
+
+# Legacy non-publishing diagnostic utility. Daily NAV inventory is the adoption owner.
+def active_locked_candidate_lane(query_fn: Callable, business_date: str) -> dict[str, Any] | None:
+    """Resolve the single oldest admissible L4 lane before choosing a daily base.
+
+    The candidate's original cohort owns its frozen feature producer. A new ML
+    cohort must not reset this lane or evaluate it using a different base.
+    """
+    rows = query_fn(
+        """
+        SELECT artifact_id, model_name, training_run_id, source_run_date,
+               state, offline_gate_decision, offline_gate_failed_gates,
+               json_extract(offline_evidence_json, '$.training_data.trained_until')
+                 AS artifact_trained_until
+          FROM model_artifact_registry
+         WHERE model_name='l4_alpha_ev' AND candidate_type='l4_alpha_ev_refresh'
+           AND state IN ('shadowing','live_gate_passed') AND source_run_date<=?
+         ORDER BY source_run_date ASC, updated_at ASC, artifact_id ASC
+        """, [business_date],
+    )
+    for row in rows:
+        if _offline_admission_for_row(row)["decision"] != "PASS":
+            continue
+        training_run_id = str(row.get("training_run_id") or "")
+        cutoff = str(row.get("artifact_trained_until") or "")
+        if not training_run_id.startswith("active8_oof:") or len(cutoff) != 10:
+            raise ValueError("active_candidate_original_cohort_identity_missing")
+        return {"artifact_id": row["artifact_id"],
+                "cohort_id": training_run_id.removeprefix("active8_oof:"),
+                "trained_until": cutoff, "source_run_date": row["source_run_date"]}
+    return None
+
+
+# Legacy non-publishing diagnostic utility. Daily NAV inventory is the adoption owner.
+def candidate_forward_frontier(evaluation: dict[str, Any], *,
+                               expected_prediction_date: str, business_date: str) -> dict[str, Any]:
+    """A completed evaluator invocation alone does not prove daily maturity."""
+    gaps = []
+    for owner, gate in (evaluation.get("gates") or {}).items():
+        if gate.get("decision") not in {"PENDING", "HOLD"}:
+            continue
+        freeze = str(evaluation.get("candidate_source_run_date") or "")[:10]
+        trained = str(gate.get("artifact_trained_until") or "")[:10]
+        observed = str(gate.get("prediction_date_max") or "")[:10]
+        if (freeze and business_date > freeze and expected_prediction_date > trained
+                and observed < expected_prediction_date):
+            gaps.append({"owner": owner, "expected_prediction_date": expected_prediction_date,
+                         "observed_prediction_date": observed or None,
+                         "reason": "locked_candidate_mature_frontier_incomplete"})
+    return {"business_date": business_date, "expected_prediction_date": expected_prediction_date,
+            "retry_required": bool(gaps), "gaps": gaps}

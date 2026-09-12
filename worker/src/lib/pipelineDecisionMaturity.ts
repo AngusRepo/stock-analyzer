@@ -1,3 +1,4 @@
+import { readActiveMlEnsembleVersion, type ActiveMlEnsembleVersion } from './pipelineCandidateVersions'
 import type { Bindings } from '../types'
 import { compareNavCandidateVersions, type CandidateVersionComparison } from './pipelineCandidateVersions'
 import { projectExpectedReturnNavMaturity, type ExpectedReturnNavView } from './expectedReturnNavMaturity'
@@ -219,6 +220,7 @@ export interface StrategyRouteBundleMaturity {
 
 
 export interface PipelineDecisionMaturityPacket {
+  active_ml_ensemble?: ActiveMlEnsembleVersion
   ipo_shadow?: IpoShadowReadModel
   paired_nav_shadow?: PairedNavReadModel
   schema_version: 'pipeline-decision-maturity-v2'
@@ -260,6 +262,7 @@ type ExpectedReturnProspectiveEvidence = {
   live_gate_status: string | null
   updated_at: string | null
   gate: Record<string, any>
+  candidate: ExpectedReturnCandidateEvidence
 }
 
 type RouteEligibilityDbRow = {
@@ -504,6 +507,7 @@ export async function buildPipelineDecisionMaturityPacket(
   `).bind(requestedDate).first<CanonicalHead>())
   const head = canonicalHead.value
 
+  const mlVersionPromise = safeQuery(() => readActiveMlEnsembleVersion(learningDb, env))
   const [reference, matrix, redundancy, routeRun, routeHead, evRows, evProspectiveRows, evShadowRows, serving, l4Maturity, sectorPit, routeEligibility] = await Promise.all([
     safeQuery(() => head ? learningDb.prepare(`
       SELECT COUNT(*) reference_rows,
@@ -676,6 +680,7 @@ export async function buildPipelineDecisionMaturityPacket(
                      WHEN 'production' THEN 3
                      ELSE 4
                    END,
+                   CASE WHEN state IN ('shadowing','live_gate_passed') THEN source_run_date END ASC,
                    source_run_date DESC, updated_at DESC, artifact_id DESC
                ) ordinal
           FROM model_artifact_registry
@@ -767,17 +772,30 @@ export async function buildPipelineDecisionMaturityPacket(
                LAG(trading_date) OVER (ORDER BY trading_date) previous_session
           FROM session_calendar
       ), sector_sources AS (
-        SELECT date(date) source_date, COUNT(DISTINCT classification) layer_count,
-               MAX(COALESCE(updated_at, created_at)) source_available_at
-          FROM sector_flow
-         WHERE pit_lineage_version='sector-flow-pit-v1'
-         GROUP BY date(date)
+        SELECT signal_date source_date, available_at source_available_at
+          FROM sector_flow_pit_generations_v1 g
+         WHERE row_count > 0
+           AND json_extract(payload_json, '$.schema_version')='sector-flow-pit-generation-v1'
+           AND json_extract(payload_json, '$.date')=signal_date
+           AND json_array_length(json_extract(payload_json, '$.rows'))=row_count
+           AND length(payload_checksum)=64
+           AND (SELECT COUNT(*) FROM json_each(g.payload_json, '$.snapshot_ids'))=3
+           AND (SELECT COUNT(DISTINCT json_extract(value, '$.classification'))
+                  FROM json_each(g.payload_json, '$.rows')
+                 WHERE json_extract(value, '$.pit_lineage_version')='sector-flow-pit-v1'
+                   AND json_extract(value, '$.classification') IN ('industry','industry_theme','subindustry'))=3
+           AND (SELECT COUNT(*) FROM sector_taxonomy_snapshot_runs_v1 t
+                 WHERE t.snapshot_id IN (
+                   json_extract(g.payload_json, '$.snapshot_ids.industry'),
+                   json_extract(g.payload_json, '$.snapshot_ids.industry_theme'),
+                   json_extract(g.payload_json, '$.snapshot_ids.subindustry'))
+                   AND t.status='ready' AND t.expected_row_count=t.persisted_row_count
+                   AND datetime(t.completed_at)<=datetime(g.available_at))=3
       ), ready_signals AS (
-        SELECT sessions.trading_date signal_date
+        SELECT DISTINCT sessions.trading_date signal_date
           FROM sessions
           JOIN sector_sources ON sector_sources.source_date=sessions.previous_session
-         WHERE sector_sources.layer_count=4
-           AND datetime(sector_sources.source_available_at)
+         WHERE datetime(sector_sources.source_available_at)
                <= datetime(sessions.trading_date || 'T13:30:00+08:00')
       )
       SELECT MIN(signal_date) first_signal_date,
@@ -1151,7 +1169,10 @@ export async function buildPipelineDecisionMaturityPacket(
   const evProspective = new Map<string, ExpectedReturnProspectiveEvidence>(
     (evProspectiveRows.value ?? []).flatMap((row): Array<[string, ExpectedReturnProspectiveEvidence]> => {
       const gate = jsonRecord(row.live_evidence_json)
-      if (gate.schema_version !== 'expected-return-candidate-forward-gate-v2') return []
+      const candidate = adaptExpectedReturnCandidate(row as ExpectedReturnCandidateDbRow)
+      if (gate.schema_version !== 'expected-return-candidate-forward-gate-v2'
+          || !candidate.identity_valid || gate.candidate_artifact_id !== candidate.artifact_id
+          || gate.candidate_artifact_checksum !== candidate.checksum) return []
       const evidence: ExpectedReturnProspectiveEvidence = {
         model_name: String(row.model_name ?? ''),
         artifact_id: String(row.artifact_id ?? ''),
@@ -1161,6 +1182,7 @@ export async function buildPipelineDecisionMaturityPacket(
         live_gate_status: row.live_gate_status == null ? null : String(row.live_gate_status),
         updated_at: row.updated_at == null ? null : String(row.updated_at),
         gate,
+        candidate,
       }
       return [[evidence.model_name, evidence]]
     }),
@@ -1182,10 +1204,12 @@ export async function buildPipelineDecisionMaturityPacket(
     shadowRows.map((row) => [row.model_name, adaptExpectedReturnShadow(row)]),
   )
 
-  const l4 = evCandidates.get('l4_alpha_ev')
+  const l4Latest = evCandidates.get('l4_alpha_ev')
   const l4Prospective = evProspective.get('l4_alpha_ev')
+  const l4 = l4Prospective?.candidate ?? l4Latest
   const l4ShadowPacket = evShadow.get('l4_alpha_ev')
   const l4Shadow = shadowPairComplete && l4ShadowPacket?.identity_valid ? l4ShadowPacket : undefined
+  const l4BaseOnly = l4Shadow?.validation_scope === 'base_cohort_offline_validation'
   const l4Serving = servingState?.artifacts.l4_alpha_ev
   if (!l4 && !l4Serving && !l4Prospective) {
     stages.push(unavailableStage('l4', 'L4', 'Canonical L4 alpha EV', requestedDate, 'model_artifact_registry + allocator_ev_feature_snapshots', [evRows.error, serving.error, l4Maturity.error]))
@@ -1228,6 +1252,9 @@ export async function buildPipelineDecisionMaturityPacket(
     const shadowMetricScope = shadowBatchReason
       ? { availability: shadowRows.length ? 'blocked' as const : 'missing' as const, reason_code: shadowBatchReason }
       : evidenceAvailability(l4ShadowPacket, 'frozen_forward_packet_missing')
+    const shadowPerformanceScope = l4BaseOnly
+      ? { availability: 'not_applicable' as const, reason_code: 'base_validation_not_forward_performance' }
+      : shadowMetricScope
     const status = l4Serving?.artifact_state === 'serving'
       ? 'serving'
       : l4 && !l4.identity_valid
@@ -1292,7 +1319,11 @@ export async function buildPipelineDecisionMaturityPacket(
         metric('walk_forward', 'Offline diagnostic walk-forward', l4?.walk_forward_passed, { unit: 'status', passed: null, ...candidateMetricScope, scope: 'monitoring', note: walkForwardNote(l4?.walk_forward ?? null) }),
         metric('strict_pit_rows', 'Materialized strict L4 PIT', maturity?.strictL4PitRows ?? null, { unit: 'rows', scope: 'lifecycle' }),
         metric('strict_pit_dates', 'Materialized strict L4 PIT dates', maturity?.strictL4PitDates ?? null, { unit: 'dates', scope: 'lifecycle' }),
-        metric('sector_source_signal_dates', '目前可供後續 cohort 使用的 PIT sector signal dates', sectorReadiness?.signal_dates ?? null, { unit: 'dates', scope: 'lifecycle', note: `合法 prior-session source window：${sectorReadiness?.first_signal_date ?? '尚無'} → ${sectorReadiness?.latest_signal_date ?? '尚無'}。這是 source readiness，不是舊 candidate 的 promotion evidence。` }),
+        metric('latest_candidate_version', '最新候選版本（獨立於鎖定評估）', l4Latest?.version ?? null, { scope: 'lifecycle', unit: 'status' }),
+        metric('latest_candidate_date', '最新候選建立日', l4Latest?.source_run_date ?? null, { scope: 'lifecycle', unit: 'status' }),
+        metric('latest_candidate_offline_decision', '最新候選離線診斷結果', l4Latest?.offline_gate_decision ?? null, { scope: 'lifecycle', unit: 'status', note: (l4Latest?.offline_gate_failed_gates ?? []).join(' · ') }),
+        metric('prospective_evaluated_as_of', '鎖定候選最近評估業務日', prospectiveGate?.evaluated_as_of_date ?? null, { scope: 'lifecycle', unit: 'status' }),
+        metric('sector_source_signal_dates', '目前可供後續 cohort 使用的 PIT sector signal dates', sectorReadiness?.signal_dates ?? null, { unit: 'dates', scope: 'lifecycle', note: `已發布 immutable generation／taxonomy 完整的 prior-session source window：${sectorReadiness?.first_signal_date ?? '尚無'} → ${sectorReadiness?.latest_signal_date ?? '尚無'}。這是 source readiness，不是舊 candidate 的 promotion evidence。` }),
         metric('prospective_gate_decision', 'Locked candidate pre-outcome decision', prospectiveGate ? prospectiveDecision : null, { target: 'PASS', comparator: 'eq', unit: 'status', passed: ['PENDING', 'HOLD'].includes(prospectiveDecision) || !prospectiveGate ? null : prospectiveDecision === 'PASS', ...prospectiveMetricScope, scope: 'promotion_gate', note: 'PENDING：未滿10個成熟日；HOLD：10日後仍未定論，持續累積，最長30日。' }),
         metric('prospective_evaluable_dates', 'Locked candidate mature OOS dates', prospectiveGate?.evaluable_date_count ?? null, { target: EXPECTED_RETURN_PROSPECTIVE_MIN_DATES, comparator: 'gte', unit: 'dates', passed: !prospectiveGate || prospectiveDecision === 'PENDING' ? null : finite(prospectiveGate.evaluable_date_count) >= EXPECTED_RETURN_PROSPECTIVE_MIN_DATES, ...prospectiveMetricScope, scope: 'promotion_gate', note: '5 dates is early monitoring only; formal quality judgment starts at 10 dates.' }),
         metric('prospective_corr_lcb90', 'Locked candidate corr-delta LCB90 vs formal ML', prospectiveGate?.corr_or_delta_lcb90 ?? null, { target: 0, comparator: 'gte', unit: 'ratio', passed: prospectiveQualityReady && optionalFinite(prospectiveGate?.corr_or_delta_lcb90) != null ? finite(prospectiveGate?.corr_or_delta_lcb90) >= 0 : null, ...prospectiveMetricScope, scope: 'promotion_gate', note: `同一預測日、同一股票截面的 paired comparison；baseline=${prospectiveGate?.baseline_owner ?? 'formal_ml_buy_admission:ensemble_directional_margin'}。` }),
@@ -1408,10 +1439,12 @@ export async function buildPipelineDecisionMaturityPacket(
     })
   }
 
-  const fusion = evCandidates.get('allocator_ev_fusion')
+  const fusionLatest = evCandidates.get('allocator_ev_fusion')
   const fusionProspective = evProspective.get('allocator_ev_fusion')
+  const fusion = fusionProspective?.candidate ?? fusionLatest
   const fusionShadowPacket = evShadow.get('allocator_ev_fusion')
   const fusionShadow = shadowPairComplete && fusionShadowPacket?.identity_valid ? fusionShadowPacket : undefined
+  const fusionBaseOnly = fusionShadow?.validation_scope === 'base_cohort_offline_validation'
   const fusionServing = servingState?.artifacts.allocator_ev_fusion
   if (!fusion && !fusionServing && !fusionProspective) {
     stages.push(unavailableStage('fusion', 'L4+', 'Fusion final trade EV', requestedDate, 'model_artifact_registry + allocator EV snapshots', [evRows.error, serving.error]))
@@ -1454,6 +1487,9 @@ export async function buildPipelineDecisionMaturityPacket(
     const shadowMetricScope = shadowBatchReason
       ? { availability: shadowRows.length ? 'blocked' as const : 'missing' as const, reason_code: shadowBatchReason }
       : evidenceAvailability(fusionShadowPacket, 'frozen_forward_packet_missing')
+    const shadowPerformanceScope = fusionBaseOnly
+      ? { availability: 'not_applicable' as const, reason_code: 'base_validation_not_forward_performance' }
+      : shadowMetricScope
     const runtimeGuardBound = Boolean(
       runtimeGuard
       && runtimeGuard.artifact_id === fusionServing?.artifact_id
@@ -1538,7 +1574,11 @@ export async function buildPipelineDecisionMaturityPacket(
         gateMetric('market_dates', 'Offline candidate PIT market-context dates', fusion?.market_dates, Math.max(1, finite(fusion?.min_market_dates, 8)), 'dates', 'gte', { ...candidateMetricScope, scope: 'promotion_gate' }),
         gateMetric('sector_samples', 'Offline candidate PIT sector-alpha samples', fusion?.sector_samples, Math.max(1, finite(fusion?.min_sector_samples, 300)), 'rows', 'gte', { ...candidateMetricScope, scope: 'lifecycle', note: 'Fusion v14 不以此欄作獨立 serving blocker；它顯示 candidate 是否取得 sector feature coverage。' }),
         gateMetric('sector_dates', 'Offline candidate PIT sector-alpha dates', fusion?.sector_dates, Math.max(1, finite(fusion?.min_sector_dates, 8)), 'dates', 'gte', { ...candidateMetricScope, scope: 'lifecycle' }),
-        metric('sector_source_signal_dates', '目前可供後續 cohort 使用的 PIT sector signal dates', sectorReadiness?.signal_dates ?? null, { unit: 'dates', scope: 'lifecycle', note: `合法 prior-session source window：${sectorReadiness?.first_signal_date ?? '尚無'} → ${sectorReadiness?.latest_signal_date ?? '尚無'}。這是 source readiness，不是舊 candidate 的 promotion evidence。` }),
+        metric('latest_candidate_version', '最新候選版本（獨立於鎖定評估）', fusionLatest?.version ?? null, { scope: 'lifecycle', unit: 'status' }),
+        metric('latest_candidate_date', '最新候選建立日', fusionLatest?.source_run_date ?? null, { scope: 'lifecycle', unit: 'status' }),
+        metric('latest_candidate_offline_decision', '最新候選離線診斷結果', fusionLatest?.offline_gate_decision ?? null, { scope: 'lifecycle', unit: 'status', note: (fusionLatest?.offline_gate_failed_gates ?? []).join(' · ') }),
+        metric('prospective_evaluated_as_of', '鎖定候選最近評估業務日', prospectiveGate?.evaluated_as_of_date ?? null, { scope: 'lifecycle', unit: 'status' }),
+        metric('sector_source_signal_dates', '目前可供後續 cohort 使用的 PIT sector signal dates', sectorReadiness?.signal_dates ?? null, { unit: 'dates', scope: 'lifecycle', note: `已發布 immutable generation／taxonomy 完整的 prior-session source window：${sectorReadiness?.first_signal_date ?? '尚無'} → ${sectorReadiness?.latest_signal_date ?? '尚無'}。這是 source readiness，不是舊 candidate 的 promotion evidence。` }),
         metric('prospective_gate_decision', 'Locked candidate prospective decision', prospectiveGate ? prospectiveDecision : null, { target: 'PASS', comparator: 'eq', unit: 'status', passed: ['PENDING', 'HOLD'].includes(prospectiveDecision) || !prospectiveGate ? null : prospectiveDecision === 'PASS', ...prospectiveMetricScope, scope: 'promotion_gate', note: 'PENDING：未滿10個成熟日；HOLD：10日後仍未定論，持續累積，最長30日。' }),
         metric('prospective_evaluable_dates', 'Locked candidate mature OOS dates', prospectiveGate?.evaluable_date_count ?? null, { target: EXPECTED_RETURN_PROSPECTIVE_MIN_DATES, comparator: 'gte', unit: 'dates', passed: !prospectiveGate || prospectiveDecision === 'PENDING' ? null : finite(prospectiveGate.evaluable_date_count) >= EXPECTED_RETURN_PROSPECTIVE_MIN_DATES, ...prospectiveMetricScope, scope: 'promotion_gate', note: '5 dates is early monitoring only; formal quality judgment starts at 10 dates.' }),
         metric('prospective_corr_delta_lcb90', 'Locked candidate corr-delta LCB90 vs L4', prospectiveGate?.corr_or_delta_lcb90 ?? null, { target: 0, comparator: 'gte', unit: 'ratio', passed: prospectiveQualityReady && optionalFinite(prospectiveGate?.corr_or_delta_lcb90) != null ? finite(prospectiveGate?.corr_or_delta_lcb90) >= 0 : null, ...prospectiveMetricScope, scope: 'promotion_gate' }),
@@ -1902,8 +1942,10 @@ export async function buildPipelineDecisionMaturityPacket(
     maturity_projection: routeMaturityProjection,
   }
 
+  const mlVersion = await mlVersionPromise
   return {
     strategy_route_bundle: strategyRouteBundle,
+    active_ml_ensemble: mlVersion.value ?? { status: 'error', artifact_id: null, cohort_id: null, validation_end_date: null, knowledge_cutoff_date: null, promoted_at: null },
     ipo_shadow: await ipoShadowPromise,
     paired_nav_shadow: await pairedNavPromise,
     schema_version: 'pipeline-decision-maturity-v2',

@@ -1107,15 +1107,15 @@ function EvidenceClockPanel({
                 <dl className="mt-3 grid grid-cols-2 gap-2 text-xs">
                   <div><dt className="text-slate-500">latest</dt><dd className="sv-num mt-1 text-slate-200">{clock.latest_evidence_date ?? 'N/A'}</dd></div>
                   <div>
-                    <dt className="text-slate-500">samples</dt>
+                    <dt className="text-slate-500">{clock.mechanism === 'rfs_allocator' ? '當日候選數' : 'samples'}</dt>
                     <dd className="sv-num mt-1 text-slate-200">
                       {clock.mechanism === 'execution_parity' && clock.status === 'not_applicable_no_real_intents'
                         ? 'N/A'
-                        : clock.sample_count}
+                        : (clock.sample_count ?? 'N/A')}
                     </dd>
                   </div>
                   <div>
-                    <dt className="text-slate-500">dates</dt>
+                    <dt className="text-slate-500">{clock.mechanism === 'rfs_allocator' ? '封包日期數（含空集合）' : 'dates'}</dt>
                     <dd className="sv-num mt-1 text-slate-200">
                       {clock.mechanism === 'execution_parity' && clock.status === 'not_applicable_no_real_intents'
                         ? 'N/A'
@@ -1146,9 +1146,9 @@ function EvidenceClockPanel({
                 {clock.mechanism === 'rfs_allocator' && (
                   <div className="mt-2 rounded-lg border border-[#263247] bg-[#070a10] p-2 text-xs leading-5 text-slate-400">
                     <p>packets {String(asRecord(clock.details).latest_packet_count ?? 0)} · persisted rows {String(asRecord(clock.details).latest_recommendation_rows ?? 0)}</p>
-                    <p>formal candidates {String(asRecord(clock.details).candidate_count ?? 0)} · usable {String(asRecord(clock.details).usable_candidate_count ?? 0)}</p>
+                    <p>formal candidates {String(asRecord(clock.details).candidate_count ?? 'N/A')} · usable {String(asRecord(clock.details).usable_candidate_count ?? 'N/A')}</p>
                     {asRecord(clock.details).zero_candidate_run_materialized === true && (
-                      <p className="text-amber-200">producer completed with zero formal candidates; this is materialized evidence, not a missing run.</p>
+                      <p className="text-amber-200">本次已記錄空集合：缺少具正式 L4／Fusion 預期報酬的候選。L3 模型晉級不代表此條件已滿足；空封包不算有效配置比較樣本。</p>
                     )}
                   </div>
                 )}

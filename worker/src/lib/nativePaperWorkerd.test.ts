@@ -25,7 +25,7 @@ test('native execution scope also works in real local workerd with the deployed 
     d1Databases: ['PRIVATE_DB'], d1Persist: false })
   try {
     const db = await mf.getD1Database('PRIVATE_DB')
-    await db.exec('CREATE TABLE paper_accounts(id INTEGER PRIMARY KEY); INSERT INTO paper_accounts VALUES(2),(3); CREATE TABLE paper_orders(id INTEGER,account_id INTEGER,symbol TEXT,side TEXT,shares REAL,price REAL,commission REAL,tax REAL,created_at TEXT);')
+    await db.exec('CREATE TABLE paper_accounts(id INTEGER PRIMARY KEY); INSERT INTO paper_accounts VALUES(2),(3); CREATE TABLE paper_orders(id INTEGER,account_id INTEGER,symbol TEXT,side TEXT,shares REAL,price REAL,commission REAL,tax REAL,note TEXT,created_at TEXT);')
     const response = await mf.dispatchFetch('http://localhost/native-scope')
     assert.equal(response.status, 200, await response.clone().text())
     assert.deepEqual(await response.json(), { accounts: [2, 3], credits: [0, 0], after: 1 })

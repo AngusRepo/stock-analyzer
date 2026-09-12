@@ -12,6 +12,8 @@ from services.active8_ensemble_artifact import (
 )
 from services.d1_domain_client import D1DataDomain, client_for_domain
 
+from services.ensemble_qualification import assess_ensemble_qualifications
+
 LEARNING_D1_CLIENT = client_for_domain(D1DataDomain.LEARNING)
 
 

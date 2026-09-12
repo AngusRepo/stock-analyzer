@@ -4,6 +4,7 @@ import fs from 'node:fs'
 const source = fs.readFileSync('src/lib/strategyEvidenceMetrics.ts', 'utf8')
 const migration = fs.readFileSync('domain-migrations/learning/0018_strategy_evidence_metrics_pit_identity.sql', 'utf8')
 const fusion = fs.readFileSync('src/lib/strategyEvidenceOwnerFusion.ts', 'utf8')
+const snapshots = fs.readFileSync('src/lib/strategyMetricSnapshots.ts', 'utf8')
 
 assert.match(
   source,
@@ -17,7 +18,7 @@ assert.match(
 )
 assert.match(migration, /INSERT INTO strategy_evidence_metrics_v1[\s\S]*FROM strategy_evidence_metrics_v1_legacy_identity/)
 assert.match(
-  fusion,
+  snapshots,
   /WHERE outcome_as_of_date < \?/,
   'production policy must keep strict prior-date cutoff and reject look-ahead evidence',
 )

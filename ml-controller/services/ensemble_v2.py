@@ -28,6 +28,8 @@ from services.active8_score_semantics import (
     MODEL_TARGET_SEMANTIC_VERSION,
 )
 
+from services.ensemble_qualification import qualify_directional_signal
+
 ENSEMBLE_V2_SCHEMA_VERSION = "active8-oof-ensemble-runtime-v1"
 ENSEMBLE_V2_SEMANTIC_VERSION = "active8-purged-oof-chronological-nonnegative-ridge-v5"
 ARTIFACT_SCHEMA_VERSION = "active8-oof-ensemble-serving-artifact-v1"

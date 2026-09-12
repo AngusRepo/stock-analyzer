@@ -1,5 +1,7 @@
 import type { ExpectedReturnCandidateEvidence } from './expectedReturnMaturityEvidence'
 import type { ExpectedReturnNavView } from './expectedReturnNavMaturity'
+import type { Bindings } from '../types'
+import { verifyNavFormalBaseline } from './pairedNavPromotionContext'
 
 export type CandidateVersionSummary = {
   artifact_id: string | null; checksum: string | null; cohort_id: string | null
@@ -44,5 +46,41 @@ export function compareNavCandidateVersions(
     latest_query_status: latestError ? 'error' : latest ? 'available' : 'missing',
     evaluation_query_status: evaluationError ? 'error' : !evaluated ? 'missing'
       : navMatches ? 'available' : 'blocked',
+  }
+}
+
+export type ActiveMlEnsembleVersion = {
+  status: 'serving' | 'blocked' | 'missing' | 'error'
+  artifact_id: string | null; cohort_id: string | null; validation_end_date: string | null
+  knowledge_cutoff_date: string | null; promoted_at: string | null
+}
+export async function readActiveMlEnsembleVersion(db: D1Database, env?: Bindings): Promise<ActiveMlEnsembleVersion> {
+  const row = await db.prepare(`
+    SELECT p.*, a.knowledge_cutoff_date, a.validation_decision,
+           json_extract(a.validation_json, '$.validation_end_date') validation_end_date,
+           CASE WHEN a.artifact_id IS NOT NULL AND a.cohort_id=p.cohort_id
+                AND a.payload_checksum=p.payload_checksum
+                AND a.base_artifact_set_checksum=p.base_artifact_set_checksum
+                AND a.state='production' AND a.production_effect=1
+                THEN 1 ELSE 0 END valid_serving
+      FROM active8_ensemble_pointer_v1 p
+      LEFT JOIN active8_ensemble_artifacts_v1 a ON a.artifact_id=p.artifact_id
+     WHERE p.singleton_id=1
+  `).first<Record<string, any>>()
+  let valid = Number(row?.valid_serving) === 1
+  if (valid && row) {
+    try {
+      const receipt = JSON.parse(row.promotion_evidence_json ?? '{}')
+      if (receipt && Object.hasOwn(receipt, 'nav_validation')) {
+        await verifyNavFormalBaseline(db, row, env)
+      } else valid = row.validation_decision === 'PASS'
+    } catch { valid = false }
+  }
+  return {
+    status: !row ? 'missing' : valid ? 'serving' : 'blocked',
+    artifact_id: row?.artifact_id ?? null, cohort_id: valid ? row?.cohort_id ?? null : null,
+    validation_end_date: valid ? row?.validation_end_date ?? null : null,
+    knowledge_cutoff_date: valid ? row?.knowledge_cutoff_date ?? null : null,
+    promoted_at: row?.promoted_at ?? null,
   }
 }

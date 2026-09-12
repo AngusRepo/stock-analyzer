@@ -1,3 +1,4 @@
+import { readMetricSnapshot, publishMetricSnapshot } from './strategyMetricSnapshots'
 import type { Bindings } from '../types'
 import { databaseForDataDomain, shadowDatabaseForDataDomain } from './dataDomainRegistry'
 import {
@@ -995,7 +996,7 @@ async function attachFundamentalRevisionPersistence(
 
 export async function materializeStrategyEvidenceMetrics(
   env: Bindings,
-  options: { outcomeAsOfDate: string; sourceMode?: 'authority_bridge' | 'learning_target' },
+  options: { outcomeAsOfDate: string; sourceMode?: 'authority_bridge' | 'learning_target'; publicationScope?: string },
 ): Promise<{
   profiles: number
   observations: number
@@ -1014,6 +1015,11 @@ export async function materializeStrategyEvidenceMetrics(
   if (targetJoinRequested && !learningTargetDb) {
     throw new Error('strategy_evidence_metric_learning_target_missing')
   }
+  const sourceMode = options.sourceMode ?? 'authority_bridge'
+  const publicationScope = options.publicationScope ?? `daily:${options.outcomeAsOfDate}`
+  if (!publicationScope.trim() || publicationScope.length > 500) throw new Error('invalid_strategy_metric_publication_scope')
+  const existing = await readMetricSnapshot(db, options.outcomeAsOfDate, STRATEGY_EVIDENCE_METRIC_DEFINITION_VERSION, sourceMode, publicationScope)
+  if (existing) return existing
   const observationDb = targetJoinRequested ? learningTargetDb! : authorityDb
   const source = observationDb === db ? 'learning_target_join' : 'authoritative_cross_d1_bridge'
   const { specs } = await listStrategySpecsForLearning(observationDb, {
@@ -1030,7 +1036,6 @@ export async function materializeStrategyEvidenceMetrics(
     options.outcomeAsOfDate,
   )
   let observationCount = 0
-  let metricRowCount = 0
   let readyRows = 0
   const receiptRows: StrategyEvidenceMetricRow[] = []
 
@@ -1065,7 +1070,6 @@ export async function materializeStrategyEvidenceMetrics(
       }))
       receiptRows.push(...rows)
       observationCount += observations.length
-      metricRowCount += rows.length
       readyRows += rows.filter((row) => row.metric_status === 'ready').length
     }
   } else {
@@ -1107,85 +1111,20 @@ export async function materializeStrategyEvidenceMetrics(
     }))
     receiptRows.push(...rows)
     observationCount = observations.length
-    metricRowCount = rows.length
     readyRows = rows.filter((row) => row.metric_status === 'ready').length
   }
 
-  const sourceMode = options.sourceMode ?? 'authority_bridge'
   const canonicalReceiptRows = [...receiptRows].sort((left, right) => (
     left.strategy_id.localeCompare(right.strategy_id)
     || left.strategy_version.localeCompare(right.strategy_version)
     || left.primary_horizon_days - right.primary_horizon_days
     || left.metric_name.localeCompare(right.metric_name)
   ))
-  const payloadChecksum = await sha256Hex(JSON.stringify(canonicalReceiptRows))
-  const snapshotRunId = [
-    STRATEGY_EVIDENCE_METRIC_DEFINITION_VERSION,
-    options.outcomeAsOfDate,
-    sourceMode,
-    payloadChecksum.slice(0, 20),
-  ].join(':')
-  const receiptClaim = db.prepare(`
-    INSERT OR IGNORE INTO strategy_evidence_metric_snapshot_runs_v1 (
-      snapshot_run_id, outcome_as_of_date, definition_version, source_mode,
-      materialization_source, status, profile_count, observation_count,
-      metric_row_count, ready_row_count, payload_checksum
-    ) VALUES (?, ?, ?, ?, ?, 'ready', ?, ?, ?, ?, ?)
-  `).bind(
-    snapshotRunId,
-    options.outcomeAsOfDate,
-    STRATEGY_EVIDENCE_METRIC_DEFINITION_VERSION,
-    sourceMode,
-    source,
-    profiles.length,
-    observationCount,
-    metricRowCount,
-    readyRows,
-    payloadChecksum,
-  )
-  // One D1 transaction publishes the receipt and its values. A conflicting
-  // immutable receipt cannot overwrite metrics before validation fails.
-  await db.batch([receiptClaim, ...metricWriteStatements(db, canonicalReceiptRows, snapshotRunId, payloadChecksum)])
-  const receipt = await db.prepare(`
-    SELECT snapshot_run_id, status, profile_count, observation_count,
-           metric_row_count, ready_row_count, payload_checksum
-      FROM strategy_evidence_metric_snapshot_runs_v1
-     WHERE outcome_as_of_date=? AND definition_version=? AND source_mode=?
-  `).bind(
-    options.outcomeAsOfDate,
-    STRATEGY_EVIDENCE_METRIC_DEFINITION_VERSION,
-    sourceMode,
-  ).first<{
-    snapshot_run_id: string
-    status: string
-    profile_count: number
-    observation_count: number
-    metric_row_count: number
-    ready_row_count: number
-    payload_checksum: string
-  }>()
-  if (!receipt
-    || receipt.status !== 'ready'
-    || receipt.snapshot_run_id !== snapshotRunId
-    || Number(receipt.profile_count) !== profiles.length
-    || Number(receipt.observation_count) !== observationCount
-    || Number(receipt.metric_row_count) !== metricRowCount
-    || Number(receipt.ready_row_count) !== readyRows
-    || receipt.payload_checksum !== payloadChecksum
-  ) {
-    throw new Error(`strategy_evidence_metric_snapshot_receipt_conflict:${options.outcomeAsOfDate}:${sourceMode}`)
-  }
-
-  return {
-    profiles: profiles.length,
-    observations: observationCount,
-    metric_rows: metricRowCount,
-    ready_rows: readyRows,
-    source,
-    snapshot_run_id: snapshotRunId,
-    payload_checksum: payloadChecksum,
-    summary: `strategy_evidence_metrics source=${source} profiles=${profiles.length} observations=${observationCount} rows=${metricRowCount} ready=${readyRows} receipt=${snapshotRunId}`,
-  }
+  return publishMetricSnapshot(db, {
+    date: options.outcomeAsOfDate, definition: STRATEGY_EVIDENCE_METRIC_DEFINITION_VERSION,
+    mode: sourceMode, scope: publicationScope, source, profiles: profiles.length,
+    observations: observationCount, readyRows, rows: canonicalReceiptRows,
+  })
 }
 
 export async function backfillMissingStrategyEvidenceMetricSnapshots(
@@ -1217,11 +1156,14 @@ export async function backfillMissingStrategyEvidenceMetricSnapshots(
       FROM strategy_evidence_observations_v1 v
      WHERE v.outcome_known_date < ?
        AND NOT EXISTS (
-         SELECT 1 FROM strategy_evidence_metric_snapshot_runs_v1 r
+         SELECT 1 FROM (
+           SELECT outcome_as_of_date,definition_version,source_mode FROM strategy_evidence_metric_snapshot_runs_v1 WHERE status='ready'
+           UNION ALL
+           SELECT outcome_as_of_date,definition_version,source_mode FROM strategy_evidence_metric_snapshot_runs_v2 WHERE status='ready'
+         ) r
           WHERE r.outcome_as_of_date=v.outcome_known_date
             AND r.definition_version='strategy-evidence-metrics-v4'
             AND r.source_mode=?
-            AND r.status='ready'
        )
      ORDER BY v.outcome_known_date
      LIMIT ?

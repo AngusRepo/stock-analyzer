@@ -112,6 +112,8 @@ const SCREENER_FUNNEL_PIPELINE_SEED_STAGES = new Set([
   'final_selection',
 ])
 const SCREENER_FUNNEL_AUDIT_CRITICAL_STAGES = new Set([
+  // Native PIT consumers require these complete components before formal ML promotion.
+  'scoring',
   'l15_ml_slate_queue',
   'layer2_timesfm_enrichment',
   'strategy_pool_ml_queue',
@@ -828,6 +830,24 @@ function round1(value: number): number {
 
 
 
+export function selectScreenerFunnelItemsForPersistence(items: ScreenerFunnelItemInput[]): ScreenerFunnelItemInput[] {
+      const pipelineSeed = items.filter((item) => SCREENER_FUNNEL_PIPELINE_SEED_STAGES.has(item.stage))
+      const auditCritical = items.filter((item) =>
+        !SCREENER_FUNNEL_PIPELINE_SEED_STAGES.has(item.stage) &&
+        SCREENER_FUNNEL_AUDIT_CRITICAL_STAGES.has(item.stage)
+      )
+      const nonCritical = items.filter((item) =>
+        !SCREENER_FUNNEL_PIPELINE_SEED_STAGES.has(item.stage) &&
+        !SCREENER_FUNNEL_AUDIT_CRITICAL_STAGES.has(item.stage)
+      )
+      const persistedItems = [
+        ...pipelineSeed,
+        ...auditCritical,
+        ...nonCritical.slice(0, Math.max(0, SCREENER_FUNNEL_MAX_ITEMS - pipelineSeed.length - auditCritical.length)),
+      ] // The soft cap must never discard required seed or native PIT evidence.
+      return persistedItems
+}
+
 async function writeScreenerFunnel(
   env: Bindings,
   input: {
@@ -978,20 +998,7 @@ async function writeScreenerFunnel(
     ).run()
 
     if (input.items.length) {
-      const pipelineSeed = input.items.filter((item) => SCREENER_FUNNEL_PIPELINE_SEED_STAGES.has(item.stage))
-      const auditCritical = input.items.filter((item) =>
-        !SCREENER_FUNNEL_PIPELINE_SEED_STAGES.has(item.stage) &&
-        SCREENER_FUNNEL_AUDIT_CRITICAL_STAGES.has(item.stage)
-      )
-      const nonCritical = input.items.filter((item) =>
-        !SCREENER_FUNNEL_PIPELINE_SEED_STAGES.has(item.stage) &&
-        !SCREENER_FUNNEL_AUDIT_CRITICAL_STAGES.has(item.stage)
-      )
-      const persistedItems = [
-        ...pipelineSeed,
-        ...auditCritical,
-        ...nonCritical.slice(0, Math.max(0, SCREENER_FUNNEL_MAX_ITEMS - pipelineSeed.length - auditCritical.length)),
-      ].slice(0, SCREENER_FUNNEL_MAX_ITEMS)
+      const persistedItems = selectScreenerFunnelItemsForPersistence(input.items)
       const batch = persistedItems.map((item) =>
         opsDb.prepare(`
           INSERT INTO screener_funnel_items

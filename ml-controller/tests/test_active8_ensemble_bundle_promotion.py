@@ -54,7 +54,7 @@ def _fixture():
         "base_artifacts": {model: base[model] for model in selected},
         "selected_models": selected,
         "excluded_models": ["PatchTST"],
-        "validation": {"decision": "PASS", "failed_gates": []},
+        "validation": {"decision": "PASS", "failed_gates": [], "rank_ic_equal_date_market_lcb90": 0.05, "top_bottom_net_return_spread_lcb90": 0.002, "validation_dates": 21, "spread_dates": 21},
     }
     payload["payload_checksum"] = hashlib.sha256(_canonical(payload).encode()).hexdigest()
     ensemble = {
@@ -168,6 +168,11 @@ def test_serving_bundle_read_model_never_falls_back_to_legacy_pointers(monkeypat
     monkeypatch.setattr(registry, "d1_client", d1)
 
     serving = registry.load_active8_ensemble_serving_bundle()
+    assert "observability" not in serving
+    observed = registry.load_active8_ensemble_serving_bundle(include_observability=True)
+    assert observed.pop("observability")["validation"]["decision"] == "PASS"
+    assert observed == serving
+    assert d1.statements is None
     assert serving["status"] == "production"
     assert serving["production_effect"] is True
     assert serving["artifact_id"] == ensemble["artifact_id"]

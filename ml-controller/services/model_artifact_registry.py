@@ -8,6 +8,7 @@ import re
 from copy import deepcopy
 from datetime import datetime, timezone
 from typing import Any, Callable, Literal
+from services.ensemble_qualification import assess_ensemble_qualifications
 
 from services.active8_release_training_contract import (
     ACTIVE8_MODEL_NAMES,
@@ -3157,10 +3158,12 @@ def _validated_active8_ensemble_payload(row: dict[str, Any]) -> dict[str, Any]:
         or str(row.get("state") or "") not in {"candidate", "production"}
     ):
         raise ValueError("active8_ensemble_candidate_not_promotion_grade")
+    if assess_ensemble_qualifications(payload)["ranking"]["decision"] != "PASS":
+        raise ValueError("active8_ensemble_candidate_not_promotion_grade")
     return payload
 
 
-def load_active8_ensemble_serving_bundle() -> dict[str, Any]:
+def load_active8_ensemble_serving_bundle(*, include_observability: bool = False) -> dict[str, Any]:
     """Return the only production-grade Active-8 serving owner.
 
     Per-model champion pointers remain immutable rollback/audit lineage. They
@@ -3270,10 +3273,16 @@ def load_active8_ensemble_serving_bundle() -> dict[str, Any]:
         "cohort_id": row.get("cohort_id"),
         "training_run_id": row.get("training_run_id"),
         "promoted_at": row.get("promoted_at"),
+        "qualifications": assess_ensemble_qualifications(payload),
+        **({"observability": {
+            "knowledge_cutoff_date": payload.get("knowledge_cutoff_date"),
+            "fit": payload.get("fit") or {},
+            "feature_names": payload.get("feature_names") or [],
+            "validation": payload.get("validation") or {},
+        }} if include_observability else {}),
         "selected_models": list(selected_models),
         "base_artifacts": dict(base_artifacts),
         "blockers": [],
-        "qualifications": assess_ensemble_qualifications(payload),
         **({'adoption_basis': 'committed_paired_nav',
             'nav_decision_checksum': json.loads(nav_grant.receipt_json)['nav_validation']['decision_checksum']}
            if nav_grant is not None else {}),
@@ -3313,7 +3322,7 @@ def _active8_base_artifact_blocker(
             not require_individual_pass
             or (
                 oof.get("decision") == "PASS"
-                and str(row.get("state") or "") in {"offline_passed", "production"}
+                and str(row.get("state") or "") in {"offline_passed", "offline_strong_pass", "production"}
             )
         )
         and str(row.get("state") or "") not in {"registration_failed", "rejected"}
@@ -3632,6 +3641,7 @@ def run_active8_ensemble_bundle_promotion_controller(
         verify_current_configuration(nav_adoption['configuration'])
     return {
         "status": "ok", "decision": "promoted_active8_ensemble_atomic_bundle", "can_promote": True,
+        "promotion_scope": "paired_nav", "qualifications": assess_ensemble_qualifications(ensemble_payload),
         "training_run_id": training_run_id, "release_models": release_models,
         "observation_models": sorted(expected_models),
         "artifacts": [by_model[name] for name in release_models],

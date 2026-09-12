@@ -118,6 +118,7 @@ def test_original_nav_can_commit_offline_failed_bundle_without_rewriting_diagnos
     assert client.batches == 0
     result = publish(ready)
     assert result['readback_verified'] and result['nav_validation'] == nav
+    assert result['promotion_scope'] == 'paired_nav'
     assert result['serving_activation_verified'] is False  # Serving reader integration is separate, not fake complete.
     pointer = client.query('SELECT * FROM active8_ensemble_pointer_v1')[0]
     evidence = json.loads(pointer['promotion_evidence_json'])

@@ -425,6 +425,14 @@ export default function ModelPoolPage() {
     staleTime: 60_000,
     refetchOnMount: 'always',
   })
+  const overview = useQuery({
+    queryKey: ['model-pool', 'overview'],
+    queryFn: modelPoolApi.overview,
+    retry: false,
+    staleTime: 60_000,
+    refetchOnMount: 'always',
+  })
+  const snapshotHasError = Boolean(error || modelUpgradeStatus.error || artifactSelection.error || artifactPromotionQueue.error || championPointers.error)
   const [modelPoolSnapshot, setModelPoolSnapshot] = useState<ModelPoolWorkbenchSnapshot | null>(null)
   const modelPoolFetching = (
     isFetching ||
@@ -447,11 +455,12 @@ export default function ModelPoolPage() {
       artifactSelection.refetch(),
       artifactPromotionQueue.refetch(),
       championPointers.refetch(),
+      overview.refetch(),
     ])
-  }, [artifactPromotionQueue, artifactSelection, championPointers, modelUpgradeStatus, refetch])
+  }, [artifactPromotionQueue, artifactSelection, championPointers, modelUpgradeStatus, overview, refetch])
 
   useEffect(() => {
-    if (!modelPoolHydrated || modelPoolFetching) return
+    if (!modelPoolHydrated || modelPoolFetching || snapshotHasError) return
     setModelPoolSnapshot({
       lineage: data!,
       selection: artifactSelection.data!,
@@ -467,6 +476,7 @@ export default function ModelPoolPage() {
     data,
     modelPoolFetching,
     modelPoolHydrated,
+    snapshotHasError,
     modelUpgradeStatus.data,
   ])
 
@@ -516,7 +526,7 @@ export default function ModelPoolPage() {
         <WorkstationPageTitle
           kicker="Model registry"
           title="Model Pool"
-          description="Registry, lineage, L2 TimesFM sidecar、L3 active-8 ML evidence, adaptive replay, promotion queue, and champion pointer governance. L1 strategy diversity stays in Strategy Lab; single-run tracing stays in Pipeline Trace."
+          description="正式 ensemble、八模型角色、證據成熟度與下一個 cohort。模型選擇與服務狀態分開呈現。"
           action={
             <div className="flex flex-wrap items-center gap-2">
               {modelPoolSnapshotReady && modelPoolFetching && <WorkstationPill tone="info">refreshing snapshot</WorkstationPill>}
@@ -538,14 +548,18 @@ export default function ModelPoolPage() {
           </div>
         )}
 
-        {modelPoolError && !modelPoolSnapshotReady && (
-          <div className="border border-red-500/30 bg-red-500/10 p-4 text-sm text-red-300">{modelPoolError.message}</div>
+        {modelPoolError && (
+          <div className="border border-red-500/30 bg-red-500/10 p-4 text-sm text-red-300" role="status">{modelPoolSnapshotReady ? '更新失敗，保留上次成功快照：' : '讀取失敗：'}{modelPoolError.message}</div>
         )}
 
         {modelPoolSnapshotReady && (
           <>
             <ModelPoolNewFlowWorkbench
               models={modelList}
+              overview={overview.error ? undefined : overview.data}
+              overviewLoading={overview.isFetching}
+              capturedAt={modelPoolSnapshot!.capturedAt}
+              stale={Boolean(modelPoolError)}
               selection={modelPoolSnapshot!.selection}
               pointers={modelPoolSnapshot!.pointers}
               promotionQueue={modelPoolSnapshot!.promotionQueue}

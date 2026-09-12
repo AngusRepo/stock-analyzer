@@ -54,7 +54,7 @@ assert(page.includes('Promise.allSettled'), 'ModelPool refresh should hydrate ev
 assert(page.includes('modelPoolSnapshotReady'), 'ModelPool should wait for a complete snapshot')
 assert(!page.includes('refetchInterval: 60_000'), 'Independent query intervals should not stagger the UI')
 assert(!page.includes('window.setInterval'), 'ModelPool should not poll while the page remains mounted')
-assert((page.match(/refetchOnMount: 'always'/g) ?? []).length === 5, 'Each evidence feed should refresh once whenever ModelPool mounts')
+assert((page.match(/refetchOnMount: 'always'/g) ?? []).length === 6, 'Each evidence feed should refresh once whenever ModelPool mounts')
 assert(page.includes('onClick={refreshModelPoolSnapshot}') && page.includes('> Refresh'), 'ModelPool should retain explicit manual snapshot refresh')
 assert(page.includes('onSuccess: async () =>') && page.includes('await refreshModelPoolSnapshot()'), 'Promotion success should refresh the complete model-pool snapshot')
 assert(page.includes('!isRetiredModelName(name)'), 'Retired models should stay outside the main evidence table')

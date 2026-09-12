@@ -94,7 +94,8 @@ test('pipeline maturity API preserves canonical lineage and explicit evidence fi
   const shadowMigration = fs.readFileSync(path.join(process.cwd(), 'migrations/0100_expected_return_shadow_evaluation_packets.sql'), 'utf8')
   assert.match(source, /databaseForDataDomain\(env, 'learning'\)/)
   assert.match(source, /databaseForDataDomain\(env, 'market'\)/)
-  assert.match(source, /pit_lineage_version='sector-flow-pit-v1'/)
+  assert.match(source, /sector_flow_pit_generations_v1/)
+  assert.match(source, /sector-flow-pit-v1/)
   assert.match(source, /sector_source_signal_dates/)
   assert.match(source, /scope: 'promotion_gate'/)
   assert.match(source, /scope: 'lifecycle'/)
@@ -233,4 +234,30 @@ test('shadow maturity SQL selects one deterministic successor and projects v2 id
   } finally {
     db.close()
   }
+})
+
+
+test('sector readiness accepts three immutable layers, rejects future or incomplete evidence', () => {
+  const source = fs.readFileSync(path.join(process.cwd(), 'src/lib/pipelineDecisionMaturity.ts'), 'utf8')
+  const start = source.indexOf('      WITH session_calendar AS (')
+  const end = source.indexOf('`).bind(requestedDate).first<SectorPitReadiness>()', start)
+  const sql = source.slice(start, end).trim()
+  const db = new DatabaseSync(':memory:')
+  try {
+    db.exec(`CREATE TABLE canonical_market_daily (date TEXT, stock_id TEXT, source TEXT);
+      CREATE TABLE sector_flow_pit_generations_v1 (signal_date TEXT, available_at TEXT, payload_json TEXT, payload_checksum TEXT, row_count INTEGER);
+      CREATE TABLE sector_taxonomy_snapshot_runs_v1 (snapshot_id TEXT, status TEXT, expected_row_count INTEGER, persisted_row_count INTEGER, completed_at TEXT);
+      INSERT INTO canonical_market_daily VALUES ('2026-09-08','0050','finlab.price'),('2026-09-09','0050','finlab.price');`)
+    const layers = ['industry', 'industry_theme', 'subindustry']
+    const payload = { schema_version: 'sector-flow-pit-generation-v1', date: '2026-09-08',
+      snapshot_ids: Object.fromEntries(layers.map(x => [x, x])),
+      rows: layers.map(classification => ({ classification, pit_lineage_version: 'sector-flow-pit-v1' })) }
+    for (const layer of layers) db.prepare('INSERT INTO sector_taxonomy_snapshot_runs_v1 VALUES (?, ?, 1, 1, ?)').run(layer, 'ready', '2026-09-08T10:00:00Z')
+    db.prepare('INSERT INTO sector_flow_pit_generations_v1 VALUES (?, ?, ?, ?, 3)').run('2026-09-08','2026-09-08T15:00:00Z', JSON.stringify(payload), 'a'.repeat(64))
+    assert.equal(db.prepare(sql).get('2026-09-09')?.signal_dates, 1)
+    db.exec("UPDATE sector_flow_pit_generations_v1 SET available_at='2026-09-09T14:00:00Z'")
+    assert.equal(db.prepare(sql).get('2026-09-09')?.signal_dates, 0)
+    db.exec("UPDATE sector_flow_pit_generations_v1 SET available_at='2026-09-08T15:00:00Z'; UPDATE sector_taxonomy_snapshot_runs_v1 SET status='pending' WHERE snapshot_id='industry'")
+    assert.equal(db.prepare(sql).get('2026-09-09')?.signal_dates, 0)
+  } finally { db.close() }
 })

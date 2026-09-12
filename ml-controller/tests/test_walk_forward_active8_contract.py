@@ -1518,6 +1518,18 @@ def test_oof_lifecycle_receipt_is_bound_to_active_materialization_policy():
         cadence="daily",
         require_full_fit=False,
     )
+    for status, rejected, ready, accepted in [
+        ("offline_admission_blocked", [{"artifact_id": "l4", "failed_gates": ["pit_sector_alpha_dates_low"]}], False, False),
+        ("offline_admission_blocked", [], False, False),
+        ("offline_admission_blocked", [{"artifact_id": "l4"}], True, False),
+        ("offline_admissible_candidate_missing", [], False, False),
+    ]:
+        candidate = {"status": status, "offline_rejections": rejected,
+                     "promotion_ready": ready, "training_dispatched": False}
+        receipt = {**shadow, "evidence_closure": {
+            **shadow["evidence_closure"], "candidate_forward_evaluation": candidate}}
+        assert _oof_lifecycle_receipt_matches_active_policy(
+            receipt, cadence="daily", require_full_fit=False) is accepted
     assert _oof_lifecycle_receipt_matches_active_policy(
         {
             **shadow,

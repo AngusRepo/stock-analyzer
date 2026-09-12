@@ -1,0 +1,281 @@
+"""Capture the REAL daily allocator boundary, not a reconstruction from picks.
+
+No alternate configuration owner, ML retraining, promotion, or orders here.
+Allocation replay is useful evidence but never claims execution parity/NAV.
+"""
+from __future__ import annotations
+
+import json
+import re
+from pathlib import Path
+from typing import Any
+
+from services.paired_nav_journal import Query, Writer, digest, encode, freeze_snapshot, read_snapshot
+
+
+def shadow_failure(stage: str, exc: Exception) -> dict[str, Any]:
+    # Provider exceptions can contain credentials/URLs. Only publish our codes.
+    reason = str(exc)
+    if not re.fullmatch(r'(?:paired_nav_|native_|paired_native_)[a-z0-9_]+', reason):
+        reason = 'paired_nav_source_or_capture_failed'
+    return {'status': 'failed', 'stage': stage, 'reason': reason,
+            'error_type': type(exc).__name__, 'production_effect': False,
+            'promotion_allowed': False, 'nav_maturity_credit': 0}
+
+
+def baseline_model_identity(manifest: dict[str, Any]) -> dict[str, Any]:
+    """Project only stable identity from the pipeline's already-verified manifest."""
+    authority = manifest.get('active8_action_authority') or {}
+    ensemble = manifest.get('active8_ensemble') or {}
+    if ensemble and not ensemble.get('artifact_id'):
+        from services.ensemble_v2 import ensemble_artifact_id
+        ensemble = {**ensemble, 'artifact_id': ensemble_artifact_id(ensemble)}
+    fields = ('artifact_id', 'cohort_id', 'payload_checksum', 'base_artifact_set_checksum')
+    if (authority.get('buy_authorized') is not True or authority.get('production_effect') is not True
+            or any(not isinstance(ensemble.get(key), str) or not ensemble[key] for key in fields)
+            or any(authority.get(key) != ensemble.get(key) for key in fields[:3])):
+        raise ValueError('paired_nav_formal_baseline_identity_missing_or_mismatched')
+    for key in fields[2:]:
+        value = ensemble[key]
+        if len(value) != 64 or any(char not in '0123456789abcdef' for char in value):
+            raise ValueError('paired_nav_formal_baseline_checksum_invalid')
+    return {'schema_version': 'paired-nav-formal-ml-baseline-v1', **{key: ensemble[key] for key in fields}}
+
+
+def allocator_source_identity() -> dict[str, str]:
+    import hashlib
+    base = Path(__file__).parent
+    names = ('recommendation_service.py', 'portfolio_allocation.py', 'online_portfolio_bandit.py',
+             'alpha_framework.py', 'l4_alpha_ev_producer.py', 'allocator_ev_fusion.py',
+             'paired_nav_intervention.py', 'expected_return_numeric.py', 'active_model_policy.py',
+             'paired_nav_collection.py', 'paired_nav_opb_prior.py', 'opb_nav_control.py',
+             'opb_nav_serving_source.json')
+    return {name: hashlib.sha256((base / name).read_bytes()).hexdigest() for name in names}
+
+
+def allocation_projection(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return sorted([{'symbol': row['symbol'], 'signal': row.get('signal'),
+                    'has_buy_signal': row.get('has_buy_signal'),
+                    'allocation_weight': row.get('allocation_weight'),
+                    'selected': (row.get('alpha_allocation') or {}).get('selected'),
+                    'owner': (row.get('alpha_allocation') or {}).get('expected_return_owner'),
+                    'blocked_reason': row.get('promotion_blocked_reason')}
+                   for row in rows], key=lambda row: row['symbol'])
+
+
+def capture_allocator_return_history(*, payloads, signal_date, saved=None):
+    """Freeze the original risk-window owner once; never infer it from length."""
+    from services.recommendation_service import build_return_history_from_payloads, gnn_return_history_lookback
+    if saved is not None:
+        replay_allocator_return_history(saved, payloads=payloads, signal_date=signal_date)
+        return json.loads(encode(saved))
+    lookback = gnn_return_history_lookback()
+    body = {'schema_version': 'allocator-return-history-context-v1', 'signal_date': signal_date,
+        'lookback': lookback, 'payload_checksum': digest(payloads),
+        'source_identity': allocator_source_identity(),
+        'return_history': build_return_history_from_payloads(payloads, lookback=lookback),
+        'production_effect': False, 'promotion_allowed': False, 'nav_maturity_credit': 0}
+    context = {**body, 'content_checksum': digest(body)}
+    replay_allocator_return_history(context, payloads=payloads, signal_date=signal_date)
+    return context
+
+
+def replay_allocator_return_history(context, *, payloads, signal_date):
+    from datetime import date
+    from services.recommendation_service import build_return_history_from_payloads
+    if (not isinstance(context, dict) or context.get('schema_version') != 'allocator-return-history-context-v1'
+            or context.get('content_checksum') != digest({k:v for k,v in context.items() if k != 'content_checksum'})
+            or context.get('source_identity') != allocator_source_identity()
+            or context.get('signal_date') != signal_date or context.get('payload_checksum') != digest(payloads)
+            or type(context.get('lookback')) is not int or not 2 <= context['lookback'] <= 504):
+        raise ValueError('paired_nav_allocator_history_context_invalid')
+    cutoff = date.fromisoformat(signal_date)
+    for payload in payloads:
+        for row in payload.get('prices') or []:
+            if date.fromisoformat(str(row.get('date') or '')[:10]) > cutoff:
+                raise ValueError('paired_nav_allocator_history_future_price')
+    result = build_return_history_from_payloads(payloads, lookback=context['lookback'])
+    if result != context.get('return_history'):
+        raise ValueError('paired_nav_allocator_history_replay_mismatch')
+    return result
+
+
+def run_and_capture_allocation(*, recommendations: list[dict[str, Any]], ranking_config: dict[str, Any],
+                               ensemble_v2_cfg: dict[str, Any], regime_label: str,
+                               regime_surface: dict[str, Any], alpha_policy: dict[str, Any],
+                               return_history: dict[str, Any], opb_reward_ledger: list[dict[str, Any]],
+                               trading_config: dict[str, Any], risk_config: dict[str, Any] | None,
+                               signal_date: str, source_run_id: str, query: Query, writer: Writer,
+                               model_predictions: dict[str, Any] | None = None,
+                               formal_model_manifest: dict[str, Any] | None = None,
+                               recommendation_context: dict[str, Any] | None = None,
+                               allocator_history_context: dict[str, Any] | None = None,
+                               atomic_recommendation_inputs: dict[str, Any] | None = None,
+                               atomic_recommendation_result: dict[str, Any] | None = None,
+                               risk_config_reader=None,
+                               execution_environment_reader=None,
+                               run_allocation=None) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    from services.recommendation_service import apply_sparse_tangent_allocation
+    from services.opb_nav_control import (
+        needs_nav_control, capture_nav_control, restore_captured_nav_control, control_scope,
+        verify_control_inputs, control_execution,
+    )
+
+    failure = None
+    control_grant, control_parent = None, None
+    try:
+        inputs = json.loads(encode({'recommendations': recommendations, 'ranking_config': ranking_config,
+            'ensemble_v2_cfg': ensemble_v2_cfg, 'regime_label': regime_label, 'regime_surface': regime_surface,
+            'alpha_policy': alpha_policy, 'return_history': return_history, 'opb_reward_ledger': opb_reward_ledger}))
+        baseline_identity = baseline_model_identity(formal_model_manifest) if formal_model_manifest is not None else None
+        if risk_config_reader is not None:
+            risk_config = risk_config_reader()
+        if allocator_history_context is not None:
+            original_history = replay_allocator_return_history(allocator_history_context,
+                payloads=recommendation_context['inputs']['payloads'], signal_date=signal_date)
+            if original_history != return_history:
+                raise ValueError('paired_nav_allocator_history_input_mismatch')
+        if needs_nav_control(trading_config):
+            identity = digest(['allocation_context', signal_date, source_run_id])
+            existing = query('SELECT snapshot_id FROM paired_nav_frozen_manifests_v1 WHERE snapshot_id=?', [identity])
+            previous = read_snapshot(query, identity)['payload']['content'] if existing else None
+            control_parent = identity, existing, previous
+            if previous is None:
+                control_context, control_grant = capture_nav_control(query=query,
+                    trading_config=trading_config, risk_config=risk_config)
+                inputs['nav_control_context'] = control_context
+            elif 'nav_control_context' in previous['inputs']:
+                control_context = previous['inputs']['nav_control_context']
+                control_grant = restore_captured_nav_control(control_context,
+                    query=query, trading_config=trading_config, risk_config=risk_config)
+                inputs['nav_control_context'] = control_context
+            # Legacy frozen inputs are not retroactively granted NAV authority.
+            verify_control_inputs(control_grant, alpha_policy, baseline_identity, ranking_config, ensemble_v2_cfg)
+    except Exception as exc:
+        control_grant = None
+        failure = shadow_failure('allocation_context_inputs', exc)
+    captured = []
+    # Deep-copy in the callback: later diagnostic annotation must not mutate the seal.
+    def sink(packet):
+        nonlocal failure
+        if failure is None:
+            try:
+                captured.append(json.loads(encode(packet)))
+            except Exception as exc:
+                failure = shadow_failure('allocation_evidence_sink', exc)
+    # Preserve the production function's existing mutation semantics. Only the
+    # archived inputs are copied; shadow recording must not change live behavior.
+    with control_scope(control_grant):
+        output = (run_allocation or apply_sparse_tangent_allocation)(
+            recommendations=recommendations, ranking_config=ranking_config,
+            ensemble_v2_cfg=ensemble_v2_cfg, regime_label=regime_label,
+            regime_surface=regime_surface, alpha_policy=alpha_policy,
+            return_history=return_history, opb_reward_ledger=opb_reward_ledger,
+            allocation_evidence_sink=sink)
+    # Only observation failures are isolated. An exception from the formal
+    # allocator above still propagates; never retry it or invent its output.
+    if recommendation_context is not None and recommendation_context.get('status') == 'failed':
+        return output, recommendation_context
+    if failure is not None:
+        return output, failure
+    if not captured and (not ranking_config or not ranking_config.get('enabled', True)):
+        captured.append({'schema_version': 'formal-sparse-allocation-capture-v1',
+                         'status': 'allocation_disabled_by_frozen_config', 'effective_weights': None})
+    if len(captured) != 1:
+        return output, shadow_failure('allocation_evidence_sink',
+            RuntimeError('paired_nav_allocation_capture_missing_or_multiple'))
+    try:
+        extra = {}
+        control_result = control_execution(control_grant, captured[0])
+        if control_result is not None:
+            extra['opb_control_execution'] = control_result
+        if control_parent is None:
+            identity = digest(['allocation_context', signal_date, source_run_id])
+            existing = query('SELECT snapshot_id FROM paired_nav_frozen_manifests_v1 WHERE snapshot_id=?', [identity])
+            previous = read_snapshot(query, identity)['payload']['content'] if existing else None
+        else:
+            identity, existing, previous = control_parent
+        if previous is not None:
+            if 'ev_candidate_selection' in previous:
+                extra['ev_candidate_selection'] = previous['ev_candidate_selection']
+            if 'opb_candidate_selection' in previous:
+                extra['opb_candidate_selection'] = previous['opb_candidate_selection']
+        elif baseline_identity is not None:
+            # Fix the denominator before any candidate artifact read/inference.
+            # A source failure is retained, not changed to zero candidates or
+            # allowed to suppress the incumbent/other independent shadow owners.
+            from services.paired_nav_ev_selection import select_ev_candidates
+            try:
+                extra['ev_candidate_selection'] = select_ev_candidates(
+                    snapshot_id=identity, signal_date=signal_date, query=query)
+            except Exception as exc:
+                extra['ev_candidate_selection'] = shadow_failure('ev_candidate_selection', exc)
+            from services.paired_nav_opb_candidate import select_opb_candidates
+            try:
+                extra['opb_candidate_selection'] = select_opb_candidates(query=query, signal_date=signal_date)
+            except Exception as exc:
+                extra['opb_candidate_selection'] = shadow_failure('opb_candidate_selection', exc)
+        if atomic_recommendation_inputs is not None:
+            extra['atomic_recommendation_inputs'] = json.loads(encode(atomic_recommendation_inputs))
+            extra['atomic_recommendation_result'] = json.loads(encode(atomic_recommendation_result))
+        if allocator_history_context is not None:
+            extra['allocator_history_context'] = json.loads(encode(allocator_history_context))
+        if execution_environment_reader is not None:
+            # A same-parent retry uses the first seal, not today's refreshed
+            # Worker response. Legacy immutable captures must remain byte-identical.
+            if existing:
+                if 'native_execution_environment' in previous:
+                    extra['native_execution_environment'] = previous['native_execution_environment']
+            else:
+                from services.paired_nav_execution_environment import execution_policy
+                environment = execution_environment_reader()
+                execution_policy(environment)
+                extra['native_execution_environment'] = environment
+        receipt = freeze_snapshot(signal_date=signal_date, source_run_id=source_run_id,
+            snapshot_kind='allocation_context', query=query, writer=writer, content={
+                **extra,
+                'allocator_source_identity': allocator_source_identity(), 'inputs': inputs,
+                'trading_config': trading_config, 'risk_config': risk_config,
+                'model_predictions': model_predictions,
+                'recommendation_context': recommendation_context,
+                'formal_baseline_identity': baseline_identity,
+                'capture': captured[0], 'formal_output': allocation_projection(output),
+                'production_effect': False, 'promotion_allowed': False,
+                'execution_evidence_status': 'awaiting_paired_execution_owner',
+                'nav_maturity_credit': 0,
+            })
+    except Exception as exc:
+        return output, shadow_failure('allocation_context_seal', exc)
+    if control_result is not None and control_result['status'] == 'failed':
+        return output, {**shadow_failure('opb_control_execution',
+            ValueError(control_result['reason'])), 'snapshot_id': receipt['snapshot_id'],
+            'opb_control_execution': control_result}
+    return output, {'status': 'allocation_context_frozen', 'snapshot_id': receipt['snapshot_id'],
+                    **({'opb_control_execution': control_result} if control_result is not None else {}),
+                    'prospective': bool(receipt['prospective']), 'nav_maturity_credit': 0,
+                    'execution_evidence_status': 'awaiting_paired_execution_owner'}
+
+
+def replay_frozen_allocation(*, snapshot_id: str, query: Query, run_allocation=None) -> dict[str, Any]:
+    from services.recommendation_service import apply_sparse_tangent_allocation
+
+    frozen = read_snapshot(query, snapshot_id)
+    if frozen['manifest']['snapshot_kind'] != 'allocation_context':
+        raise ValueError('paired_nav_allocation_context_required')
+    packet = frozen['payload']['content']
+    if packet.get('status') == 'not_applicable_no_formal_ml_ensemble':
+        return {'snapshot_id': snapshot_id, 'allocation_replay_decision': 'NOT_APPLICABLE',
+                'reason': packet['status'], 'execution_parity_decision': 'MISSING',
+                'nav_maturity_credit': 0, 'promotion_allowed': False}
+    if packet['allocator_source_identity'] != allocator_source_identity():
+        raise ValueError('paired_nav_allocator_source_changed')
+    if run_allocation is not None and 'nav_control_context' not in packet['inputs']:
+        replay = allocation_projection(run_allocation(**packet['inputs']))
+    else:
+        from services.paired_nav_intervention import run_isolated_allocation
+        replay = run_isolated_allocation(inputs=packet['inputs'],
+            inherited_state=packet['capture'].get('inherited_state') or {})['output']
+    matches = replay == packet['formal_output']
+    return {'snapshot_id': snapshot_id, 'allocation_replay_decision': 'PASS' if matches else 'FAIL',
+            'expected_checksum': digest(packet['formal_output']), 'actual_checksum': digest(replay),
+            'execution_parity_decision': 'MISSING', 'nav_maturity_credit': 0, 'promotion_allowed': False}

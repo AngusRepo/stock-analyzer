@@ -80,6 +80,7 @@ const FIELD_LABELS: Record<string, string> = {
 }
 
 const BLOCKER_LABELS: Record<string, string> = {
+  base_validation_not_forward_performance: '此封包僅附帶基底離線驗證，未計算 forward 績效',
   insufficient_paired_mature_oof_residual_returns: '同日配對的成熟 OOF residual return 日期仍不足',
   enough_total_dates: '總成熟日期不足',
   enough_train_dates: '訓練日期不足',
@@ -219,7 +220,7 @@ function MetricCell({ metric }: { metric: PipelineMaturityMetric }) {
         {target ? <span className="sv-num text-[11px] text-slate-600">門檻 {target}</span> : null}
       </div>
       {metric.note ? <p className="mt-1 text-[11px] leading-4 text-slate-600">{metric.note}</p> : null}
-      {metric.reason_code ? <code className="mt-1 block break-all text-[10px] leading-4 text-slate-700">{metric.reason_code}</code> : null}
+      {metric.reason_code ? <code className="mt-1 block break-all text-[10px] leading-4 text-slate-700">{BLOCKER_LABELS[metric.reason_code] ?? metric.reason_code}</code> : null}
     </div>
   )
 }
@@ -332,7 +333,7 @@ function StageRow({ stage }: { stage: PipelineMaturityStage }) {
   const prospectiveSemanticFloorMetric = metricByKey.get('prospective_selection_semantic_floor')
   const offlineCandidateRejected = scopedCandidateStage && evidenceScopes?.offline_candidate
     ? ['offline_failed', 'rejected'].includes(String(metricByKey.get('prospective_candidate_state')?.value ?? '').toLowerCase())
-      || offlinePromotionMetrics.some((item) => item.passed === false)
+      || prospectiveDateMetric?.availability === 'not_applicable'
     : false
   const scopedEvidenceTruth = navGate
     ? [
@@ -510,6 +511,11 @@ function StageRow({ stage }: { stage: PipelineMaturityStage }) {
                 title={`${evidenceScopes?.offline_candidate?.cadence ?? 'weekly'} 離線候選生成與入場門檻`}
                 description="只負責建立可進入每日 pre-outcome 驗證的不可變候選；不直接 promote，也不取代每日累積的正式升級判定。"
                 metrics={offlinePromotionMetrics}
+              />
+              <MetricSection
+                title="離線候選固定診斷（隨候選版本更新）"
+                description="原始 cohort 的離線驗證；每天封包日期前進不會改變這組數值。"
+                metrics={offlineDiagnosticMetrics}
               />
               <MetricSection
                 title="Rolling cohort 日更診斷（非升級成熟度）"
@@ -723,6 +729,14 @@ export default function PipelineMaturityContribution({
             </div>
           ))}
         </div>
+        {data.active_ml_ensemble && <div className="mt-3 rounded-xl border border-white/[0.07] px-3 py-3 text-xs leading-5 text-slate-400">
+          <p className="font-semibold text-slate-200">目前正式 L3 ensemble</p>
+          {data.active_ml_ensemble.status === 'serving' ? <>
+            <p>驗證樣本截止：{data.active_ml_ensemble.validation_end_date ?? '未知'} · 結果已知截止：{data.active_ml_ensemble.knowledge_cutoff_date ?? '未知'}</p>
+            <p className="break-all">{data.active_ml_ensemble.cohort_id}</p>
+            <p>此為目前 serving pointer；L4／L4+ 各自候選的基底日期與成熟資格分別列於下方。</p>
+          </> : <p className="text-amber-200">{data.active_ml_ensemble.status === 'missing' ? '尚無正式 ensemble pointer' : '正式 ensemble 身分讀取或驗證受阻'}</p>}
+        </div>}
         <details className="mt-3 rounded-xl border border-white/[0.07] bg-black/20 px-3 py-2 text-xs text-slate-400">
           <summary className="cursor-pointer font-semibold text-slate-200">頁面名詞白話說明</summary>
           <div className="mt-2 grid gap-2 leading-5 md:grid-cols-2 xl:grid-cols-4">

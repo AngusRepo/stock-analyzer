@@ -94,7 +94,7 @@ assert(
 )
 assert(updateOrchestrator.includes('refreshExpectedReturnServingState'), 'daily readiness must persist canonical expected-return serving state')
 assert(expectedReturnServingState.includes("'retired_incompatible'"), 'stale promoted artifacts must be explicitly retired from serving without rewriting evidence')
-assert(decisionOwnerContract.includes("'selection_signal_owner'"), 'no-EV-owner production behavior must retain formal Score V2 allocation utility')
+assert(decisionOwnerContract.includes("'validated_expected_return_required'"), 'no-EV-owner allocation must abstain without ML direction fallback')
 assert(decisionOwnerContract.includes("'recommendation_allocation_only_no_order_submission'"), 'selection utility continuity must never imply order submission authority')
 assert(!decisionOwnerContract.includes("'canonical_l4_required'"), 'L4 challenger maturity must not remain a global recommendation veto')
 const schedulerLockMigration = fs.readFileSync('migration_scheduler_locks.sql', 'utf8')

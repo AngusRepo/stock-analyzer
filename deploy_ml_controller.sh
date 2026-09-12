@@ -1026,6 +1026,8 @@ sync_dataset_snapshot_job() {
   if gcloud run jobs describe "$DATASET_SNAPSHOT_JOB_NAME" \
       --region="$REGION" \
       --format="value(metadata.name)" >/dev/null 2>&1; then
+    # A container can fail before Python starts, so no terminal callback can
+    # be sent. Bounded platform retries preserve the same run/date overrides.
     echo "=== Step 3g/4: Update Job $DATASET_SNAPSHOT_JOB_NAME ==="
     if ! gcloud run jobs update "$DATASET_SNAPSHOT_JOB_NAME" \
         --region="$REGION" \
@@ -1036,7 +1038,7 @@ sync_dataset_snapshot_job() {
         --cpu="${DATASET_SNAPSHOT_JOB_CPU:-4}" \
         --memory="${DATASET_SNAPSHOT_JOB_MEMORY:-8Gi}" \
         --task-timeout="$DATASET_SNAPSHOT_JOB_TIMEOUT" \
-        --max-retries=0 \
+        --max-retries=2 \
         "${service_account_args[@]}" \
         --update-labels="$PROVENANCE_LABELS" \
         --update-secrets="$RUN_SECRET_BINDINGS" \
@@ -1055,7 +1057,7 @@ sync_dataset_snapshot_job() {
         --cpu="${DATASET_SNAPSHOT_JOB_CPU:-4}" \
         --memory="${DATASET_SNAPSHOT_JOB_MEMORY:-8Gi}" \
         --task-timeout="$DATASET_SNAPSHOT_JOB_TIMEOUT" \
-        --max-retries=0 \
+        --max-retries=2 \
         "${service_account_args[@]}" \
         --labels="$PROVENANCE_LABELS" \
         --set-secrets="$RUN_SECRET_BINDINGS" \
@@ -1224,7 +1226,13 @@ fi
 # ── Step 1/4: Deploy Service (from repo root so Dockerfile sees ml-service/) ─
 cd "$SCRIPT_DIR"
 echo "=== Step 1/4: Deploy Service $SERVICE (CWD=$SCRIPT_DIR, Dockerfile=repo root) ==="
+RELEASE_SUFFIX="sv-${SOURCE_SHA:0:12}-$(date -u +%Y%m%d%H%M%S)"
+RELEASE_REVISION="${SERVICE}-${RELEASE_SUFFIX}"
+RELEASE_TAG="release-${SOURCE_SHA:0:12}"
 if ! gcloud run deploy "$SERVICE" \
+    --revision-suffix="$RELEASE_SUFFIX" \
+    --no-traffic \
+    --tag="$RELEASE_TAG" \
     --source . \
     --build-service-account="projects/${GCP_PROJECT_ID}/serviceAccounts/${BUILD_SERVICE_ACCOUNT}" \
     --region="$REGION" \
@@ -1237,6 +1245,22 @@ if ! gcloud run deploy "$SERVICE" \
   echo "❌ Service deploy failed" >&2
   exit 2
 fi
+# Existing services may pin production traffic to an older tagged revision.
+# Verify the candidate HTTP runtime before switching the exact revision, then
+# verify both the routed revision and the public HTTP runtime before job sync.
+RELEASE_URL=$("$PYTHON_BIN" "$SCRIPT_DIR/tools/verify_cloud_run_release.py" tag-url \
+  --service "$SERVICE" --region "$REGION" --revision "$RELEASE_REVISION" --tag "$RELEASE_TAG")
+verify_release_http() {
+  "$PYTHON_BIN" "$SCRIPT_DIR/tools/verify_cloud_run_release.py" health \
+    --url "$1" --source-sha "$SOURCE_SHA" --tree-sha "$SOURCE_TREE_SHA" \
+    --branch "$SOURCE_BRANCH" --scheduler-sha "$SCHEDULER_MANIFEST_SHA256"
+}
+verify_release_http "$RELEASE_URL"
+gcloud run services update-traffic "$SERVICE" --region="$REGION" \
+  --to-revisions="${RELEASE_REVISION}=100" --quiet
+"$PYTHON_BIN" "$SCRIPT_DIR/tools/verify_cloud_run_release.py" traffic \
+  --service "$SERVICE" --region "$REGION" --revision "$RELEASE_REVISION"
+verify_release_http "$ML_CONTROLLER_PUBLIC_URL"
 echo "✅ Service deploy succeeded"
 echo ""
 

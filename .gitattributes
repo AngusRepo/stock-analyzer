@@ -1,0 +1,4 @@
+# Runtime identities and evidence bind exact committed bytes. Preserve existing
+# LF, CRLF and mixed legacy files across Windows/Linux; never rewrite a receipt
+# or normalize old sources merely to accommodate a different checkout host.
+* -text

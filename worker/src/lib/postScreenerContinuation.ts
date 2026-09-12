@@ -157,7 +157,8 @@ export function pipelineProvenanceRecoveryDecision(input: {
   const failure = input.failure
   if (!failure || failure.status !== 'error') return { retry: false, reason: 'pipeline_not_error' }
   const error = String(failure.last_error ?? '')
-  if (!error.includes('pipeline_modal_source_sha_mismatch')) {
+  const servingContractFailure = /(?:^|Error: )active8_ensemble_base_(?:identity_mismatch|not_serving):(?:LightGBM|XGBoost|ExtraTrees|TabM|GNN|DLinear|PatchTST|iTransformer)(?::|$)/.test(error)
+  if (!error.includes('pipeline_modal_source_sha_mismatch') && !servingContractFailure) {
     return { retry: false, reason: 'pipeline_error_not_provenance_mismatch' }
   }
   const sourceSha = String(input.workerVersion?.tag ?? '').trim()

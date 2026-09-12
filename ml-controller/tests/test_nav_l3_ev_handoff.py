@@ -7,6 +7,7 @@ from pathlib import Path
 import re
 import sqlite3
 import subprocess
+import sys
 
 import pytest
 
@@ -125,7 +126,7 @@ def test_original_l3_then_ev_publication_keeps_l3_serving(ready, environment, mo
     fixture.write_text(json.dumps({'database': str(database), 'current': ready[4],
         'payloads': {item['owner']: item['payload'] for item in candidates},
         'l3_pointer': original_l3, 'now': (clock + timedelta(seconds=1)).isoformat(),
-        'python': str(root.parent / 'ml-service/.venv/Scripts/python.exe')}), encoding='utf-8')
+        'python': sys.executable}), encoding='utf-8')
     env = {**os.environ, 'NAV_L3_EV_FIXTURE': str(fixture)}
     env.pop('NODE_TEST_CONTEXT', None)
     result = subprocess.run(['node', '--import', 'tsx', '--test', 'src/lib/navL3EvHandoff.test.ts'],

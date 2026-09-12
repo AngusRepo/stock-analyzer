@@ -16,7 +16,7 @@ export type EvidenceClock = {
   auto_promote: false
   status: string
   latest_evidence_date: string | null
-  sample_count: number
+  sample_count: number | null
   distinct_dates: number
   supported_regimes: string[]
   coverage: number | null
@@ -163,7 +163,7 @@ async function shadowAClock(env: Bindings): Promise<EvidenceClock> {
 
 type RfsRow = { date: string; market_segment: string | null; evidence: string }
 
-async function rfsClock(env: Bindings): Promise<EvidenceClock> {
+export async function rfsClock(env: Bindings): Promise<EvidenceClock> {
   const db = databaseForDataDomain(env, 'core')
   const { results } = await db.prepare(`
     SELECT date, market_segment,
@@ -190,6 +190,12 @@ async function rfsClock(env: Bindings): Promise<EvidenceClock> {
   const blockers = [...new Set(latestPackets.flatMap((row) => stringList(row.packet.validation_blockers)))]
   if (latestPackets.some((row) => String(row.packet.status ?? '') === 'shadow_error')) blockers.push('rfs_shadow_builder_error')
   if (latestPackets.length > 1) blockers.push('rfs_packet_mismatch_same_date')
+  const metadataComplete = latestPackets.length > 0 && latestPackets.every((row) =>
+    typeof row.packet.source_expected_return_candidate_count === 'number'
+    && Number.isInteger(row.packet.source_expected_return_candidate_count)
+    && row.packet.source_expected_return_candidate_count >= 0
+    && Array.isArray(row.packet.validation_blockers))
+  if (latestPackets.length && !metadataComplete) blockers.push('rfs_packet_metadata_missing')
   const candidateCount = latestPackets.reduce(
     (sum, row) => sum + Math.max(0, Number(row.packet.source_expected_return_candidate_count ?? 0)),
     0,
@@ -204,6 +210,8 @@ async function rfsClock(env: Bindings): Promise<EvidenceClock> {
     ? 'not_materialized'
     : latestPackets.length > 1
       ? 'blocked_mixed_packets'
+      : !metadataComplete
+        ? 'blocked_missing_packet_metadata'
       : candidateCount === 0
         ? 'observed_zero_candidates'
         : uniqueBlockers.length
@@ -216,10 +224,10 @@ async function rfsClock(env: Bindings): Promise<EvidenceClock> {
     auto_promote: false,
     status,
     latest_evidence_date: latestDate,
-    sample_count: candidateCount,
+    sample_count: metadataComplete ? candidateCount : null,
     distinct_dates: dates.length,
     supported_regimes: [...new Set(packets.map((row) => String(row.market_segment ?? '')).filter(Boolean))],
-    coverage: candidateCount > 0 ? usableCandidateCount / candidateCount : null,
+    coverage: metadataComplete && candidateCount > 0 ? usableCandidateCount / candidateCount : null,
     incumbent_delta: null,
     confidence_bound: null,
     blockers: uniqueBlockers,
@@ -227,9 +235,11 @@ async function rfsClock(env: Bindings): Promise<EvidenceClock> {
     details: {
       latest_recommendation_rows: latest.length,
       latest_packet_count: latestPackets.length,
-      candidate_count: candidateCount,
-      usable_candidate_count: usableCandidateCount,
-      zero_candidate_run_materialized: latestPackets.length === 1 && candidateCount === 0,
+      sample_count_semantic: 'latest_packet_formal_expected_return_candidates',
+      date_count_semantic: 'observed_packet_dates_including_empty_runs',
+      candidate_count: metadataComplete ? candidateCount : null,
+      usable_candidate_count: metadataComplete ? usableCandidateCount : null,
+      zero_candidate_run_materialized: metadataComplete && latestPackets.length === 1 && candidateCount === 0,
       packet_statuses: latestPackets.map((row) => String(row.packet.status ?? 'unknown')),
       production_effect: false,
     },

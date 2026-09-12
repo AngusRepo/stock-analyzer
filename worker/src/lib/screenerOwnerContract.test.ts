@@ -1,4 +1,5 @@
 const fs = require('fs')
+const personaSource = fs.readFileSync('../ml-controller/services/pipeline_persona_context.py', 'utf8')
 
 export {}
 
@@ -182,8 +183,10 @@ const screenerSeedDomainOwner = fs.readFileSync('../ml-controller/services/scree
   assert(!pendingBuyOrchestrator.includes('loadQuadrantMap'), 'pending-buy must not load RRG quadrant authority')
   assert(schema.includes('turnover_share_delta'), 'sector_flow schema must persist turnover share delta')
   assert(sectorFlowTurnoverMigration.includes('ALTER TABLE sector_flow ADD COLUMN turnover_share_delta REAL'), 'sector_flow turnover-share migration must add turnover_share_delta')
-  assert(dailyPipeline.includes("WHERE tag_type='industry_theme'")
-    && dailyPipeline.includes("AND source='finlab.security_industry_themes'"),
+  assert(dailyPipeline.includes('from services.pipeline_persona_context import capture_persona_context')
+    && dailyPipeline.includes('context = capture_persona_context(')
+    && personaSource.includes("WHERE tag_type='industry_theme'")
+    && personaSource.includes("AND source='finlab.security_industry_themes'"),
     'pipeline sentiment must use the existing canonical FinLab industry-theme owner, not legacy mixed tags')
   assert(marketScreener.includes('for (const event of applyScreenerBuzz(scored, overlayEligibleSymbols, {')
     && marketScreener.includes('})) pushFunnelItem(funnelItems, event)')

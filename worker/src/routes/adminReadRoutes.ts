@@ -1,3 +1,4 @@
+import { METRIC_ROWS_CTE_SQL } from '../lib/strategyMetricSnapshots'
 import { Hono } from 'hono'
 import { twToday } from '../lib/dateUtils'
 import { requireAdminOrServiceToken } from '../lib/auth'
@@ -441,21 +442,13 @@ adminReadRoutes.get('/api/admin/strategy/evidence-profiles', async (c) => {
     evidence_json: string
   }
   const metricArtifactResult = await shadowLearningDb.prepare(`
-    SELECT strategy_id, strategy_version, primary_horizon_days, metric_name,
-           metric_value, metric_status, sample_count, mature_dates,
-           outcome_as_of_date, definition_version, evidence_json
-      FROM strategy_evidence_metrics_v1
-     WHERE definition_version=?
-       AND outcome_as_of_date=(
-         SELECT MAX(outcome_as_of_date)
-           FROM strategy_evidence_metrics_v1
-          WHERE definition_version=?
-       )
-     ORDER BY strategy_id, strategy_version, metric_name
-  `).bind(
-    STRATEGY_EVIDENCE_METRIC_DEFINITION_VERSION,
-    STRATEGY_EVIDENCE_METRIC_DEFINITION_VERSION,
-  ).all<StrategyEvidenceMetricApiRow>().catch(() => ({ results: [] }))
+    ${METRIC_ROWS_CTE_SQL}, revisions AS (
+      SELECT *,DENSE_RANK() OVER (ORDER BY outcome_as_of_date DESC,datetime(snapshot_created_at) DESC,snapshot_run_id DESC) snapshot_rank
+      FROM metric_snapshot_rows WHERE definition_version=? AND source_mode='authority_bridge'
+    ) SELECT strategy_id,strategy_version,primary_horizon_days,metric_name,metric_value,metric_status,
+      sample_count,mature_dates,outcome_as_of_date,definition_version,evidence_json
+      FROM revisions WHERE snapshot_rank=1 ORDER BY strategy_id,strategy_version,metric_name
+  `).bind(STRATEGY_EVIDENCE_METRIC_DEFINITION_VERSION).all<StrategyEvidenceMetricApiRow>().catch(() => ({results: []}))
   const multiHorizonCoverage = (horizonRows.results ?? [])
     .map((row) => ({ horizon_days: Number(row.horizon_days), outcome_rows: Number(row.outcome_rows) }))
     .filter((row) => [3, 5, 10].includes(row.horizon_days) && row.outcome_rows > 0)

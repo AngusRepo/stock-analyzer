@@ -7,6 +7,7 @@ from pathlib import Path
 import re
 import sqlite3
 import subprocess
+import sys
 
 import pytest
 
@@ -151,7 +152,7 @@ def test_original_l3_then_opb_projection_keeps_next_day_serving(ready, monkeypat
     fixture = tmp_path / 'sequential-original-nav.json'
     fixture.write_text(json.dumps({'database': str(database), 'now': (clock + timedelta(seconds=1)).isoformat(),
         'payload': payload, 'current': current, 'l3_receipt': original_receipt,
-        'python': str(root.parent / 'ml-service/.venv/Scripts/python.exe')}, ensure_ascii=False), encoding='utf-8')
+        'python': sys.executable}, ensure_ascii=False), encoding='utf-8')
     env = {**os.environ, 'NAV_L3_OPB_FIXTURE': str(fixture)}
     env.pop('NODE_TEST_CONTEXT', None)
     checked = subprocess.run(['node', '--import', 'tsx', '--test', 'src/lib/navL3OpbHandoff.test.ts'],

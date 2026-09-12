@@ -90,7 +90,12 @@ def _artifact():
             "decision": "PASS",
             "method": "chronological_oof_calibration_then_later_validation",
             "failed_gates": [],
-            "validation_dates": 8,
+            "validation_dates": 21,
+            "spread_dates": 21,
+            "buy_interval_empirical_coverage": .92,
+            "strong_interval_empirical_coverage": .96,
+            "directional_evidence": {signal: {"rows": 220, "dates": 11, "net_mean": .02, "date_net_mean_lcb90": .01}
+                                     for signal in ("BUY", "STRONG_BUY", "SELL", "STRONG_SELL")},
             "validation_rows": 320,
             "rank_ic": 0.1,
             "rank_ic_equal_date_market_lcb90": 0.02,
@@ -102,23 +107,27 @@ def _artifact():
     return payload
 
 
-def test_runtime_uses_learned_return_and_conformal_bounds_without_top_k():
+@pytest.mark.parametrize('qualified', [True, False])
+def test_runtime_uses_learned_return_and_conformal_bounds_without_top_k(qualified):
     scores = {name: 0.6 for name in ALPHA_PREDICTION_MODELS}
     scores["LightGBM"] = 0.9
+    artifact = _artifact()
+    if not qualified:
+        artifact['validation'].pop('directional_evidence')
+        artifact['payload_checksum'] = _payload_checksum(artifact)
     result = score_active8_ensemble(
         rank_scores=scores,
-        artifact=_artifact(),
+        artifact=artifact,
         pool_models=_pool_models(),
         current_price=100.0,
     )
-    # Learned forecasts remain available; this fixture has no qualified
-    # directional evidence. Raw advice is not a final allocation instruction.
-    assert result.signal == "HOLD"
+    # Qualified and unqualified signals are both advice, never allocation authority.
+    assert result.signal == ('STRONG_BUY' if qualified else 'HOLD')
     assert result.evidence["unqualified_signal"] == "STRONG_BUY"
     assert result.evidence["advisory_signal"] == "STRONG_BUY"
     assert result.evidence["signal_role"] == "advisory_only"
     assert result.evidence["final_decision_owner"] == "allocator_opb_policy"
-    assert "directional_evidence_missing" in result.evidence["signal_blockers"]
+    assert ('directional_evidence_missing' in result.evidence['signal_blockers']) is (not qualified)
     assert result.forecast_pct == pytest.approx(0.04)
     assert result.stop_loss is None and result.target1 is None and result.target2 is None
     assert result.evidence["signal_policy"]["top_k"] is None

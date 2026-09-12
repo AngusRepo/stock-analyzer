@@ -74,3 +74,16 @@ def test_ml_release_requires_modal_and_reads_back_exact_provenance() -> None:
     assert '"tree_sha": os.environ["EXPECTED_TREE_SHA"]' in deploy
     assert '"source_branch": os.environ["EXPECTED_BRANCH"]' in deploy
     assert '"scheduler_manifest_sha256": os.environ["EXPECTED_SCHEDULER_SHA"]' in deploy
+
+
+def test_cloud_run_release_checks_candidate_before_exact_traffic_and_public_health():
+    deploy = (ROOT / "deploy_ml_controller.sh").read_text(encoding="utf-8")
+    assert '--revision-suffix="$RELEASE_SUFFIX"' in deploy
+    assert '--no-traffic' in deploy
+    assert '--tag="$RELEASE_TAG"' in deploy
+    candidate = deploy.index('verify_release_http "$RELEASE_URL"')
+    traffic = deploy.index('gcloud run services update-traffic "$SERVICE"')
+    public = deploy.index('verify_release_http "$ML_CONTROLLER_PUBLIC_URL"')
+    jobs = deploy.index('# ── Step 3/4: Update Job image')
+    assert candidate < traffic < public < jobs
+    assert '--to-revisions="${RELEASE_REVISION}=100"' in deploy

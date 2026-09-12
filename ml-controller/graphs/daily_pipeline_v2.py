@@ -674,7 +674,7 @@ class PipelineStateV2(TypedDict, total=False):
     final_recommendations: list[dict]       # after filter + scoring + allocation
     layer2_recommendation_symbols: list[str] # symbols entering formal L3 family evidence
     layer3_formal_gate_target_size: int      # legacy audit field; now equals L3 evidence input count
-    sell_filtered_symbols: list[str]        # symbols dropped due to SELL/NO_SIGNAL
+    sell_filtered_symbols: list[str]        # symbols without usable formal prediction evidence
     sell_filtered_diagnostics: dict          # symbol -> diagnostic payload for preserved non-buy seed rows
     expected_return_serving_preflight: dict  # L4/Fusion compatibility before row materialization
     expected_return_owner_coverage: dict     # valid owner or explicit abstention for every screener seed
@@ -2254,7 +2254,7 @@ def _build_active8_evidence_only_recommendation_result(
 
 async def node_recommend(state: PipelineStateV2) -> dict:
     """
-    Filter SELL, compute canonical Score V2 finalScore, then run L2/L3 ranking and sparse allocation.
+    Preserve ML advice, compute Score V2, then let L4 own sparse allocation.
     """
     logger.info("[Pipeline V2] node_recommend")
 
@@ -2608,7 +2608,7 @@ async def node_recommend(state: PipelineStateV2) -> dict:
         )
 
     logger.info(
-        "[Pipeline V2] Recommend done: %s kept, %s SELL filtered, owner_coverage=%s",
+        "[Pipeline V2] Recommend done: %s kept, %s unavailable predictions, owner_coverage=%s",
         len(final),
         sell_count,
         owner_coverage,
@@ -3777,6 +3777,17 @@ def _build_pipeline_modal_serving_manifest(
         }
         return manifest, _pipeline_modal_canonical_digest(manifest)
 
+    # Only the validated nonzero-weight base set owns serving authority.
+    # Other slots retain frozen audit identity, never their legacy vote.
+    from services.ensemble_v2 import validate_active8_ensemble_artifact
+    nav_context = serving_pool.get('active8_nav_inference')
+    nav_authority = None
+    if nav_context is not None:
+        from services.active8_nav_inference import restore_frozen_nav_inference
+        nav_authority = restore_frozen_nav_inference(
+            nav_context, artifact=active8_ensemble, pool_models=pool_models)
+    validate_active8_ensemble_artifact(active8_ensemble, pool_models, nav_authority=nav_authority)
+    selected_models = set(active8_ensemble["selected_models"])
     models: list[dict[str, Any]] = []
     for model_name in ACTIVE_ALPHA_MODELS:
         entry = pool_models.get(model_name)
@@ -3791,12 +3802,15 @@ def _build_pipeline_modal_serving_manifest(
             )
         serving_block_reason = str(entry.get("serving_block_reason") or "").strip()
         serving_eligible = entry.get("serving_eligible") is not False and not serving_block_reason
-        if not serving_eligible:
+        if model_name in selected_models and not serving_eligible:
             raise RuntimeError(
                 "pipeline_modal_serving_manifest:active8_base_not_serving:"
                 f"{model_name}:{serving_block_reason or 'serving_eligible_false'}"
             )
-        effective_status = status
+        if model_name not in selected_models:
+            serving_eligible = False
+            serving_block_reason = "active8_ensemble_zero_weight_excluded"
+        effective_status = status if serving_eligible else "challenger"
         if len(serving_block_reason) > 4096:
             raise RuntimeError(
                 f"pipeline_modal_serving_manifest:exclusion_reason_too_large:{model_name}"
@@ -3924,11 +3938,8 @@ def _build_pipeline_modal_serving_manifest(
             else None
         ),
     }
-    if serving_pool.get('active8_nav_inference') is not None:
-        from services.active8_nav_inference import restore_frozen_nav_inference
-        context = serving_pool['active8_nav_inference']
-        restore_frozen_nav_inference(context, artifact=active8_ensemble, pool_models=pool_models)
-        manifest['active8_nav_inference'] = json.loads(json.dumps(context, allow_nan=False))
+    if nav_context is not None:
+        manifest['active8_nav_inference'] = json.loads(json.dumps(nav_context, allow_nan=False))
     return manifest, _pipeline_modal_canonical_digest(manifest)
 
 

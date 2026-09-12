@@ -38,8 +38,8 @@ if (source) test('L3 remains usable after genuinely committed EV projections', a
   const bridge = (mode: string, formal?: any, readFault?: string) => {
     const result = spawnSync(f.python, ['tests/nav_l3_opb_bridge.py'], { cwd: path.resolve('../ml-controller'),
       input: JSON.stringify({ mode, formal, readFault, database: f.database, now: f.now, current }), encoding: 'utf8',
-      env: { ...process.env, PYTHONPATH: '.;../.tmp/nav-controller-runtime-deps' }, timeout: 60000 })
-    assert.equal(result.status, 0, result.stdout + result.stderr)
+      env: process.env, timeout: 60000 })
+    assert.equal(result.status, 0, String(result.error ?? '') + result.stdout + result.stderr)
     return JSON.parse(result.stdout)
   }
   const oldFetch = globalThis.fetch
@@ -155,7 +155,8 @@ if (source) test('L3 remains usable after genuinely committed EV projections', a
 })
 else test('original L3 and EV handoff fixture is supplied by Python', () => {
   const python = process.env.NAV_TEST_PYTHON ?? path.resolve('../../ml-service/.venv/Scripts/python.exe')
-  const env: NodeJS.ProcessEnv = { ...process.env, PYTHONIOENCODING: 'utf-8', PYTHONPATH: '../.tmp/nav-controller-runtime-deps' }
+  const env: NodeJS.ProcessEnv = { ...process.env, PYTHONIOENCODING: 'utf-8',
+    PYTHONPATH: process.env.PYTHONPATH ?? path.resolve('../.tmp/nav-controller-runtime-deps') }
   delete env.NODE_TEST_CONTEXT
   const result = spawnSync(python, ['-m', 'pytest', 'tests/test_nav_l3_ev_handoff.py', '-q', '--tb=short'],
     { cwd: path.resolve('../ml-controller'), env, encoding: 'utf8', timeout: 240000 })

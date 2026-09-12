@@ -48,6 +48,8 @@ class WalkForwardRequest(BaseModel):
     sequence_gcs_prefix: str = "universal/sequence_long/latest"
     sequence_batch_count: int = 5
     resume_manifest_path: str | None = None
+    knowledge_cutoff_date: str | None = None
+    expected_producer_source_sha: str | None = None
 
 
 def _window_split_key(window) -> tuple[str, str, str, str]:
@@ -169,18 +171,71 @@ def _load_trading_calendar(start_date: str, end_date: str) -> tuple[list[str], d
     }
 
 
+def _walk_forward_calendar_and_windows(req: WalkForwardRequest):
+    """Use verified training data dates; immutable parent folds never get replanned."""
+    from services.backtest_engine import WalkForwardWindow, walk_forward_windows
+    from services.walk_forward_retrain import _get_bucket
+    from services.active8_oof_cohort_materializer import load_verified_oof_manifest
+
+    prefix = req.prep_gcs_prefix.strip().rstrip("/")
+    if prefix and prefix != "universal":
+        bucket = _get_bucket()
+        if bucket is None:
+            raise HTTPException(status_code=503, detail="GCS unavailable for immutable calendar")
+        dates, evidence = _oof_lifecycle_calendar(
+            req.knowledge_cutoff_date or req.end_date,
+            bucket=bucket, prep_gcs_prefix=prefix,
+            expected_producer_source_sha=req.expected_producer_source_sha,
+        )
+        dates = [day for day in dates if req.start_date <= day <= req.end_date]
+    else:
+        if req.resume_manifest_path:
+            raise HTTPException(status_code=400, detail="resume requires immutable prep calendar")
+        dates, evidence = _load_trading_calendar(req.start_date, req.end_date)
+        bucket = None
+    if not req.resume_manifest_path:
+        return dates, evidence, walk_forward_windows(
+            dates, req.train_window_days, req.test_window_days,
+        )
+    parent, _ = load_verified_oof_manifest(
+        req.resume_manifest_path, bucket=bucket, require_formal_lineage=True,
+    )
+    if (str(parent.get("start_date") or "") < req.start_date
+        or int(parent.get("train_window_days") or 0) != req.train_window_days
+        or int(parent.get("test_window_days") or 0) != req.test_window_days):
+        raise HTTPException(status_code=400, detail="resume calendar contract mismatch")
+    if req.start_date < str(parent.get("start_date") or ""):
+        # The existing bootstrap path may prepend folds. Its exact split
+        # reuse remains checked by _load_resume_plan before any training.
+        return dates, evidence, walk_forward_windows(dates, req.train_window_days, req.test_window_days)
+    windows = []
+    for row in parent.get("windows") or []:
+        key = _window_split_key(row)
+        wid = int(row["window_id"])
+        if (wid != len(windows) or not (req.start_date <= key[0] <= key[1] < key[2] <= key[3] <= req.end_date)
+            or (windows and key[2] <= windows[-1].test_end)):
+            raise HTTPException(status_code=400, detail="resume parent fold order invalid")
+        windows.append(WalkForwardWindow(wid, *key))
+    if not windows:
+        raise HTTPException(status_code=400, detail="resume parent folds missing")
+    new_dates = [day for day in dates if day > windows[-1].test_end]
+    for offset in range(0, len(new_dates) - req.test_window_days + 1, req.test_window_days):
+        test = new_dates[offset:offset + req.test_window_days]
+        train = [day for day in dates if day < test[0]][-req.train_window_days:]
+        if len(train) != req.train_window_days:
+            raise HTTPException(status_code=400, detail="resume immutable training sessions missing")
+        windows.append(WalkForwardWindow(len(windows), train[0], train[-1], test[0], test[-1]))
+    return dates, {**evidence, "parent_fold_policy": "preserve_verified_parent_append_mature_sessions_v1",
+        "parent_manifest_checksum": parent["manifest_checksum"]}, windows
+
+
 @router.post("/walk_forward/dry-run")
 async def walk_forward_dry_run(req: WalkForwardRequest):
     """Preview window plan + compute budget without triggering retrains."""
     from services.walk_forward_retrain import MODELS_ALL, walk_forward_model_coverage
     from services.backtest_engine import walk_forward_windows
 
-    trading_days, data_access = _load_trading_calendar(req.start_date, req.end_date)
-    windows = walk_forward_windows(
-        trading_days=trading_days,
-        train_window_days=req.train_window_days,
-        test_window_days=req.test_window_days,
-    )
+    trading_days, data_access, windows = _walk_forward_calendar_and_windows(req)
     if not windows:
         raise HTTPException(
             status_code=400,
@@ -254,12 +309,7 @@ async def walk_forward_run(req: WalkForwardRequest):
     from dataclasses import asdict
     from datetime import datetime, timezone, timedelta
 
-    trading_days, data_access = _load_trading_calendar(req.start_date, req.end_date)
-    windows = walk_forward_windows(
-        trading_days=trading_days,
-        train_window_days=req.train_window_days,
-        test_window_days=req.test_window_days,
-    )
+    trading_days, data_access, windows = _walk_forward_calendar_and_windows(req)
     if not windows:
         raise HTTPException(
             status_code=400,
@@ -2673,7 +2723,7 @@ OOF_SCORE_SEMANTIC_VERSION = "same-market-same-date-average-tie-percentile-rank-
 OOF_FEATURE_SEMANTIC_VERSION = "formal137-pit-rolling-rank-and-imputation-v2"
 OOF_FEATURE_IMPUTATION_SEMANTIC_VERSION = "prior_252_row_median_then_zero_v2"
 OOF_COHORT_ID_VERSION = "v9-feature-semantic-source-attested"
-OOF_LIFECYCLE_RECEIPT_SCHEMA_VERSION = "active8-oof-lifecycle-receipt-v14-data-ready-release"
+OOF_LIFECYCLE_RECEIPT_SCHEMA_VERSION = "active8-oof-lifecycle-receipt-v17-nav-inventory-native-frontier"
 
 
 def _materialize_nav_with_reviews(*, business_date, learning_client, now=None):
@@ -2960,6 +3010,10 @@ def _oof_lifecycle_receipt_matches_active_policy(
         and forward_coverage.get("training_dispatched") is False
         and isinstance(snapshot_coverage, dict) and snapshot_coverage.get("status") == "verified"
         and isinstance(l4_coverage, dict) and l4_coverage.get("status") == "verified"
+        and (not expected_mature_max or expected_mature_max < "2026-09-01" or (
+            str(snapshot_coverage.get("max_date") or "")[:10] >= expected_mature_max
+            and str(l4_coverage.get("max_date") or "")[:10] >= expected_mature_max
+        ))
         and set(shadow_packets) == {"l4_alpha_ev", "allocator_ev_fusion"}
         and all(
             packet.get("policy_decision") == "shadow_only" for packet in shadow_packets.values()
@@ -3791,6 +3845,8 @@ async def run_walk_forward_oof_lifecycle(req: OofLifecycleRequest):
                 prep_gcs_prefix=prep_gcs_prefix,
                 sequence_gcs_prefix=sequence_gcs_prefix,
                 resume_manifest_path=resume_manifest_path,
+                knowledge_cutoff_date=knowledge_cutoff_date,
+                expected_producer_source_sha=exact_producer_source_sha,
             )
             if req.dry_run:
                 preview = await walk_forward_dry_run(plan)
@@ -4231,3 +4287,62 @@ async def walk_forward_report(start_date: str, end_date: str):
         raise HTTPException(status_code=404, detail="run not found")
     import json
     return json.loads(blob.download_as_text())
+
+
+# Legacy non-publishing diagnostic utility. Daily NAV inventory is the adoption owner.
+def _candidate_forward_is_complete(evaluation: dict) -> bool:
+    status = evaluation.get("status")
+    if status in {"waiting_for_preoutcome_locked_mature_dates", "evaluated"}:
+        return True
+    if evaluation.get("promotion_ready") is not False:
+        return False
+    if status == "offline_admission_blocked":
+        return bool(evaluation.get("offline_rejections"))
+    if status == "prospective_candidates_exhausted":
+        rejections = evaluation.get("terminal_rejections")
+        return isinstance(rejections, list) and bool(rejections) and all(
+            isinstance(item, dict) and bool(item.get("artifact_id"))
+            and isinstance(item.get("gate"), dict)
+            and item["gate"].get("candidate_artifact_id") == item["artifact_id"]
+            and item["gate"].get("decision") == "FAIL"
+            and bool(item["gate"].get("failed_gates"))
+            for item in rejections
+        )
+    return False
+
+
+# Legacy non-publishing diagnostic utility. Daily NAV inventory is the adoption owner.
+async def _evaluate_active_candidate_on_original_cohort(
+    *, request_cohort_id: str, business_date: str, query_fn: Any, evaluate_current: Any,
+) -> dict[str, Any]:
+    from services.expected_return_candidate_forward_evaluator import active_locked_candidate_lane
+
+    lane = active_locked_candidate_lane(query_fn, business_date)
+    if lane is None or lane["cohort_id"] == request_cohort_id:
+        return evaluate_current()
+    # This is continuation of the existing lane, never training or activation of
+    # an additional challenger. The exact manifest loader verifies its producer.
+    continuation = await run_walk_forward_oof_lifecycle(OofLifecycleRequest(
+        cadence="daily", end_date=business_date, dry_run=False, promote=False,
+        dispatch_full_fit=False, continuation_only=True,
+        expected_cohort_id=lane["cohort_id"],
+    ))
+    receipt = continuation.get("receipt") or {}
+    evaluation = (continuation.get("candidate_forward_evaluation")
+                  or (receipt.get("evidence_closure") or {}).get("candidate_forward_evaluation") or {})
+    ids = evaluation.get("candidate_artifact_ids") or {}
+    gate = (evaluation.get("gates") or {}).get("l4_alpha_ev") or {}
+    valid = (not continuation.get("dependency_retry_required")
+             and evaluation.get("status") in {"evaluated", "waiting_for_preoutcome_locked_mature_dates"}
+             and ids.get("l4_alpha_ev") == lane["artifact_id"]
+             and gate.get("evaluated_as_of_date") == business_date
+             and gate.get("evaluation_cohort_id") == lane["cohort_id"])
+    if not valid:
+        return {"status": "active_candidate_original_cohort_pending",
+                "active_lane": lane, "continuation_status": continuation.get("status"),
+                "continuation_reason": continuation.get("reason"),
+                "promotion_ready": False, "training_dispatched": False}
+    return {**evaluation, "active_lane": lane,
+            "evaluation_cohort_id": lane["cohort_id"],
+            "request_cohort_id": request_cohort_id,
+            "continuation_policy": "exact_original_cohort_no_training"}

@@ -242,3 +242,84 @@ def test_rfs_shadow_cannot_replace_sparse_production_weights(monkeypatch):
     assert by_symbol["BBB"]["has_buy_signal"] == 0
     assert by_symbol["BBB"]["alpha_allocation"]["rfs_shadow_challenger"]["challenger_aim_weight"] == 1.0
     assert by_symbol["BBB"]["alpha_allocation"]["rfs_shadow_challenger"]["production_effect"] is False
+
+
+def test_rfs_packet_metadata_survives_zero_selected_rows(monkeypatch):
+    monkeypatch.setattr(recommendation_service, "allocate_sparse_tangent_with_evidence",
+                        lambda *a, **k: {"weights": {}, "candidate_diagnostics": {}})
+    monkeypatch.setattr(recommendation_service, "build_rfs_implementable_frontier_shadow",
+                        lambda *a, **k: {"status": "insufficient_evidence", "weights": {},
+                          "source_expected_return_candidate_count": 2,
+                          "validation_blockers": ["return_history_coverage_below_80pct"],
+                          "packet_checksum": "full-packet"})
+    rows = recommendation_service._apply_sparse_tangent_buy_selection(
+        [_formal_l4_row("AAA"), _formal_l4_row("BBB")],
+        {"promoteMinForecastPct": 0.0, "promoteMinMlEdge": 0.0},
+        {"allocation": {"engine": "sparse_tangent_inverse_risk", "controller": "SparseTangent"}},
+        confidence_floor=0.60, return_history={})
+    for row in rows:
+        assert row["has_buy_signal"] == 0
+        packet = row["alpha_allocation"]["rfs_shadow_challenger"]
+        assert packet["source_expected_return_candidate_count"] == 2
+        assert packet["validation_blockers"] == ["return_history_coverage_below_80pct"]
+        assert packet["production_effect"] is False
+
+
+@pytest.mark.parametrize("signal", ["BUY", "STRONG_BUY", "HOLD", "SELL", "STRONG_SELL"])
+def test_l4_selects_valid_ev_independently_of_ml_advice(signal):
+    row = _formal_l4_row("AAA")
+    row["signal"] = signal
+    row["score_components"]["components"]["mlEdge"] = 0.0
+    row["score_components"]["mlEdgePolicy"].update({
+        "signal": signal, "signal_status": "policy_blocked",
+        "qualifications": {"ranking": {"decision": "PASS"},
+                           "directional": {"decision": "BLOCKED", "allowed_signals": []}},
+    })
+    allocated = recommendation_service._apply_sparse_tangent_buy_selection(
+        [row], {}, {"allocation": {"controller": "SparseTangent"}},
+        confidence_floor=.6, return_history={})
+    result = allocated[0]
+    assert result["has_buy_signal"] == 1
+    assert result["signal"] == "BUY"
+    assert result["signal_raw"] == signal
+    assert result["ml_advisory"]["signal"] == signal
+    assert result["alpha_allocation"]["expected_return_owner"] == "l4_alpha_ev"
+
+
+@pytest.mark.parametrize("signal", ["BUY", "HOLD", "SELL"])
+def test_ml_advice_cannot_replace_unavailable_l4_ev(signal):
+    row = _continuity_row("AAA")
+    row["signal"] = signal
+    row["score_components"]["mlEdgePolicy"]["signal"] = signal
+    result = recommendation_service._apply_sparse_tangent_buy_selection(
+        [row], {}, {"allocation": {"controller": "SparseTangent"}},
+        confidence_floor=.6, return_history={})[0]
+    assert result["signal"] == "HOLD" and result["has_buy_signal"] == 0
+    assert result["ml_advisory"]["signal"] == signal
+    assert result["alpha_allocation"]["allocation_candidate_pool_size"] == 0
+    assert result["promotion_blocked_reason"] == "validated_l4_expected_return_unavailable"
+
+
+@pytest.mark.parametrize("failure", ["missing_family", "formal_contract_failed", "risk", "research", "negative_ev"])
+def test_advisory_separation_does_not_bypass_quality_or_risk(failure):
+    row = _formal_l4_row("AAA")
+    if failure == "missing_family": row["score_components"].pop("coreFamilyEvidence")
+    elif failure == "formal_contract_failed": row["score_components"]["coreFamilyEvidence"]["formal_model_contract_passed"] = False
+    elif failure == "risk": row["alpha_context"] = {"risk_overlay": {"skip": True}}
+    elif failure == "research": row["eligible_for_pending_buy"] = False
+    else: row["l4_alpha_ev"] = _l4_alpha_ev(-.01)
+    result = recommendation_service._apply_sparse_tangent_buy_selection(
+        [row], {}, {"allocation": {"controller": "SparseTangent"}},
+        confidence_floor=.6, return_history={})[0]
+    assert result["has_buy_signal"] == 0
+    assert result["alpha_allocation"]["selected"] is False
+
+
+def test_offline_ranking_diagnostic_cannot_veto_verified_formal_l4():
+    row = _formal_l4_row('AAA')
+    row['score_components']['mlEdgePolicy']['qualifications'] = {'ranking': {'decision': 'FAIL'}}
+    result = recommendation_service._apply_sparse_tangent_buy_selection(
+        [row], {}, {'allocation': {'controller': 'SparseTangent'}},
+        confidence_floor=.6, return_history={})[0]
+    assert result['has_buy_signal'] == 1
+    assert result['alpha_allocation']['expected_return_owner'] == 'l4_alpha_ev'

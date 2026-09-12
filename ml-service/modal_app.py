@@ -2606,7 +2606,6 @@ def _load_verified_oof_resume_windows(
     if (
         prep_lineage.get("feature_semantic_version") != expected_feature_semantic
         or prep_lineage.get("feature_imputation_semantic") != expected_imputation_semantic
-        or prep_lineage.get("producer_source_sha") != producer_source_sha
     ):
         raise ValueError("active8_oof_resume_feature_lineage_mismatch")
     if parent.get("target_semantic_version") != expected_target:
@@ -2632,10 +2631,15 @@ def _load_verified_oof_resume_windows(
         ): window
         for window in requested_windows
     }
+    from services.oof_fold_lineage import verified_fold_producer_sha
+    fold_source_cache: dict = {}
     reused: dict[int, dict] = {}
     parent_cohort_id = str(parent.get("cohort_id") or "")
     parent_manifest_checksum = str(parent["manifest_checksum"])
     for parent_window in parent.get("windows") or []:
+        fold_producer_source_sha = verified_fold_producer_sha(
+            parent, parent_window, bucket=bucket, cache=fold_source_cache,
+        )
         train_range = list(parent_window.get("train_range") or [None, None])
         test_range = list(parent_window.get("test_range") or [None, None])
         split = tuple(str(value or "") for value in (*train_range, *test_range))
@@ -2690,7 +2694,7 @@ def _load_verified_oof_resume_windows(
                 "generation_mode": "purged_oof",
                 "feature_semantic_version": expected_feature_semantic,
                 "feature_imputation_semantic": expected_imputation_semantic,
-                "producer_source_sha": producer_source_sha,
+                "producer_source_sha": fold_producer_source_sha,
                 "cohort_id": source_cohort_id,
                 "fold_id": source_fold_id,
                 "model_name": model_name,
@@ -2704,6 +2708,7 @@ def _load_verified_oof_resume_windows(
         reused_window = json.loads(json.dumps(parent_window, default=str))
         reused_window["window_id"] = window_id
         reused_window["source_fold_id"] = source_fold_id
+        reused_window["source_producer_source_sha"] = fold_producer_source_sha
         reused_window["source_cohort_id"] = source_cohort_id
         reused_window["source_manifest_checksum"] = source_manifest_checksum
         reused_window["source_prep_gcs_prefix"] = str(
@@ -3019,6 +3024,7 @@ def walk_forward_orchestrator(payload: dict) -> dict:
             "model_coverage": model_coverage,
             "source_prep_gcs_prefix": prep_prefix,
             "source_prep_manifest_checksum": prep_manifest_checksum,
+            "source_producer_source_sha": producer_source_sha,
             "source_sequence_gcs_prefix": sequence_prefix,
             "source_sequence_manifest_checksum": sequence_manifest_evidence["artifact_checksum"],
         }

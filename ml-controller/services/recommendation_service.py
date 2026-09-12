@@ -1954,7 +1954,14 @@ def _formal_ml_buy_admission(row: dict[str, Any]) -> tuple[bool, dict[str, Any]]
         and family_evidence.get("evidence_status") == "sufficient_family_breadth"
         and active_family_count >= 2
     )
-    allowed = _is_formal_buy_signal(formal_signal) and family_contract_passed
+    qualifications = ml_policy.get("qualifications") if isinstance(ml_policy.get("qualifications"), dict) else {}
+    directional = qualifications.get("directional") if isinstance(qualifications.get("directional"), dict) else {}
+    bundle_signal = len(str(ml_policy.get("artifact_checksum") or "")) == 64
+    direction_qualified = (
+        formal_signal in (directional.get("allowed_signals") or [])
+        if bundle_signal or qualifications else ml_policy.get("signal_status") != "policy_blocked"
+    )
+    allowed = _is_formal_buy_signal(formal_signal) and family_contract_passed and direction_qualified
     return allowed, {
         "schema_version": "formal-ml-continuity-admission-v1",
         "direction_owner": "formal_ml_signal",
@@ -1965,6 +1972,9 @@ def _formal_ml_buy_admission(row: dict[str, Any]) -> tuple[bool, dict[str, Any]]
         "active_family_count": active_family_count,
         "minimum_active_family_count": 2,
         "admission_allowed": allowed,
+        "direction_qualified": direction_qualified,
+        "signal_status": ml_policy.get("signal_status"),
+        "signal_blockers": ml_policy.get("signal_blockers") or [],
         "allocator_role": "weight_only_not_direction_owner",
     }
 
@@ -4312,6 +4322,7 @@ def _apply_sparse_tangent_buy_selection(
             "covariance_shrinkage": similarity_evidence.get("covariance_shrinkage"),
             "cluster_penalty_applied": cluster_penalty_applied,
             "rfs_shadow_challenger": {
+                **allocation_contract["rfs_shadow_challenger"],
                 "status": rfs_shadow_packet.get("status"),
                 "production_effect": False,
                 "promotion_eligible": False,
@@ -4655,12 +4666,16 @@ def write_predictions_to_d1(
                 for model_name, score in per_model_scores.items()
                 if model_name.endswith("::challenger")
             }
+        # IPO consumes challenger evidence in both authority modes. Optional
+        # sequence masks remain observations after the formal ensemble promotes.
+        if observation_only or any(name.endswith("::challenger") for name in per_model_scores):
             expected_observation_models = {
                 f"{model_name}::challenger"
                 for model_name in ACTIVE_ALPHA_MODELS
             }
             missing = sorted(expected_observation_models - set(per_model_scores))
-            unexpected = sorted(set(per_model_scores) - expected_observation_models)
+            unexpected = sorted({name for name in per_model_scores if name.endswith("::challenger")}
+                                - expected_observation_models)
             eligibility = (
                 data.get("l3_model_eligibility")
                 if isinstance(data.get("l3_model_eligibility"), dict)
@@ -4694,7 +4709,7 @@ def write_predictions_to_d1(
                     "production_effect": False,
                     "vote_weight": 0.0,
                 }
-            if unexpected or invalid_missing:
+            if observation_only and (unexpected or invalid_missing):
                 raise ValueError(
                     "active8_evidence_only_candidate_rows_incomplete:"
                     f"missing={invalid_missing}:unexpected={unexpected}"

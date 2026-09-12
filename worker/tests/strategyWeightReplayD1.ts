@@ -50,6 +50,10 @@ async function fixture(run: (db: D1Database) => Promise<void>) {
     await db.prepare(table).run()
     const calibration = readFileSync(new URL('../domain-migrations/learning/0026_strategy_evidence_owner_calibration.sql', import.meta.url), 'utf8')
     await db.batch(calibration.split(';').map(sql => sql.trim()).filter(Boolean).map(sql => db.prepare(sql)))
+    for (const name of ['0029_strategy_evidence_metric_snapshot_receipts.sql', '0042_strategy_metric_run_snapshots.sql']) {
+      const sql = readFileSync(new URL('../domain-migrations/learning/' + name, import.meta.url), 'utf8')
+      await db.batch(sql.split(';').map(part => part.trim()).filter(Boolean).map(part => db.prepare(part)))
+    }
     const rows = listStrategyEvidenceProfiles(specs).flatMap(profile => profile.required_metrics.map(metric =>
       db.prepare(`INSERT INTO strategy_evidence_metrics_v1(strategy_id,strategy_version,strategy_status,alpha_bucket,
         primary_horizon_days,metric_name,metric_value,metric_status,sample_count,mature_dates,outcome_as_of_date,definition_version)
@@ -57,6 +61,14 @@ async function fixture(run: (db: D1Database) => Promise<void>) {
         .bind(profile.strategy_id, profile.strategy_version, profile.strategy_status,
           specs.find(spec => spec.id === profile.strategy_id)!.alphaBucket, profile.primary_horizon_days, metric)))
     await db.batch(rows)
+    // Published legacy baseline with an actual receipt before the knowledge cutoff.
+    // Later tests mutate this isolated fixture, never historical production rows.
+    await db.prepare(`INSERT INTO strategy_evidence_metric_snapshot_runs_v1
+      (snapshot_run_id,outcome_as_of_date,definition_version,source_mode,materialization_source,
+       status,profile_count,observation_count,metric_row_count,ready_row_count,payload_checksum,created_at)
+      VALUES('fixture-baseline','2026-09-08','strategy-evidence-metrics-v4','authority_bridge',
+       'private-test','ready',3,135,?,?,?,'2026-09-08T12:00:00Z')`)
+      .bind(rows.length, rows.length, 'a'.repeat(64)).run()
     await run(db)
   } finally { await mf.dispose() }
 }

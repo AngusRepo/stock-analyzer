@@ -7,6 +7,7 @@ const workerRoot = path.resolve(process.cwd())
 const repoRoot = path.resolve(workerRoot, '..')
 const routeSource = fs.readFileSync(path.join(workerRoot, 'src/routes/other.ts'), 'utf8')
 const frontendSource = fs.readFileSync(path.join(repoRoot, 'frontend/src/pages/PipelinePage.tsx'), 'utf8')
+const apiClientSource = fs.readFileSync(path.join(repoRoot, 'frontend/src/lib/apiClient.ts'), 'utf8')
 const apiSource = fs.readFileSync(path.join(repoRoot, 'frontend/src/lib/api.ts'), 'utf8')
 
 function section(source: string, start: string, end: string): string {
@@ -77,15 +78,16 @@ test('pipeline strategy summary projects strategy ids in SQL without full eviden
   assert(!/SELECT\s+symbol\s*,\s*evidence/i.test(summaryBuilder))
   assert(!summaryBuilder.includes('parseJsonObject(row.evidence)'))
 })
-test('L3 is summarized as evidence-only and never as candidate elimination', () => {
-  const summaryBuilder = section(routeSource, 'async function buildDailyPipelineSummaries(', 'type DailyPipelineSectorAggregateRow')
-  assert(summaryBuilder.includes("mode: 'evidence_only'"))
-  assert(summaryBuilder.includes("label: 'Formal ML evidence'"))
-  assert(summaryBuilder.includes('eliminated: 0'))
-  assert(frontendSource.includes("const evidenceOnly = row.mode === 'evidence_only'"))
-  assert(frontendSource.includes("evidenceOnly ? '完成評估' : '通過'"))
-  assert(frontendSource.includes("evidenceOnly ? '證據合格' : '淘汰'"))
+test('complete counters and same-run signals feed semantic UI metrics', () => {
+  const helper = section(routeSource, 'async function buildDailyPipelineSummaries(', 'type DailyPipelineSectorAggregateRow')
+  assert(helper.includes('buildDailyFunnelLayers(latestRun, stageRows ?? [], signalCounts)'))
+  assert(helper.includes('emerging_count, metadata, created_at'))
+  assert(helper.includes('.bind(date, seedSymbols?.symbols'))
+  assert(!helper.includes('created_at>=?'))
+  assert(helper.includes('symbol IN (SELECT value FROM json_each(?))'))
+  assert(frontendSource.includes('Array.isArray(row.metrics)'))
 })
+
 test('frontend requests pipeline aggregate with cancellation and independent loading boundaries', () => {
   assert(frontendSource.includes("view: 'pipeline', signal, timeoutMs: 15_000"))
   assert(frontendSource.includes('queryTtl.dailyDecision'))
@@ -97,6 +99,7 @@ test('frontend requests pipeline aggregate with cancellation and independent loa
   assert(!frontendSource.includes('const isLoading = recLoading || pbLoading'))
   assert(!frontendSource.includes('queryFn: () => recommendationsApi.daily()'))
   assert(apiSource.includes("view?: 'full' | 'card' | 'pipeline'"))
-  assert(apiSource.includes('signal?: AbortSignal'))
-  assert(apiSource.includes('timeoutMs?: number'))
+  assert(apiSource.includes('ApiRequestOptions'))
+  assert(apiClientSource.includes('signal?: AbortSignal'))
+  assert(apiClientSource.includes('timeoutMs?: number'))
 })

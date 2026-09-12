@@ -8,6 +8,7 @@ import { spawnSync } from 'node:child_process'
 import { DatabaseSync } from 'node:sqlite'
 import { verifyNavFormalBaseline } from './pairedNavPromotionContext'
 import { readCommittedNavBaseline } from './active8NavBaseline'
+import { readActiveMlEnsembleVersion } from './pipelineCandidateVersions'
 import type { Bindings } from '../types'
 
 const source = process.env.NAV_L3_SQLITE
@@ -52,6 +53,9 @@ if (!source) {
   test('genuine committed NAV PASS serves as L4/OPB baseline despite offline FAIL', async t => {
     const { sql, db, formal } = fixture(t)
     await verifyNavFormalBaseline(db, formal, env)
+    const displayed = await readActiveMlEnsembleVersion(db, env)
+    assert.equal(displayed.status, 'serving', 'the current-version UI must accept verified NAV authority')
+    assert.equal(displayed.artifact_id, formal.artifact_id)
     assert.equal(sql.prepare('SELECT validation_decision FROM active8_ensemble_artifacts_v1 WHERE artifact_id=?')
       .get(formal.artifact_id)?.validation_decision, 'FAIL')
   })

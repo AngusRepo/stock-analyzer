@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+import ast
 
 
 def test_weekly_ic_reads_canonical_learning_d1() -> None:
@@ -9,7 +10,9 @@ def test_weekly_ic_reads_canonical_learning_d1() -> None:
     ).read_text(encoding="utf-8")
 
     assert "LEARNING_D1_CLIENT = client_for_domain(D1DataDomain.LEARNING)" in source
-    weekly_ic = source[source.index("async def compute_weekly_ic("):]
+    function = next(node for node in ast.parse(source).body
+        if isinstance(node, ast.AsyncFunctionDef) and node.name == 'compute_weekly_ic')
+    weekly_ic = ast.get_source_segment(source, function)
     assert weekly_ic.count("rows = LEARNING_D1_CLIENT.query(") == 2
     assert "rows = d1_query(" not in weekly_ic
     assert "FROM predictions" in weekly_ic

@@ -1,4 +1,25 @@
 -- Generated from schema.sql plus production snapshot fallback; do not edit by hand.
+-- Atomic NAV original-registry adoption (Learning migration 0047).
+CREATE TABLE IF NOT EXISTS strategy_atomic_nav_adoptions_v1 (
+  artifact_checksum TEXT PRIMARY KEY,
+  artifact_id TEXT NOT NULL UNIQUE,
+  decision_checksum TEXT NOT NULL,
+  policy_checksum TEXT NOT NULL,
+  knowledge_cutoff_date TEXT NOT NULL,
+  receipt_json TEXT NOT NULL CHECK(json_valid(receipt_json)),
+  receipt_checksum TEXT NOT NULL,
+  created_at TEXT NOT NULL DEFAULT (STRFTIME('%Y-%m-%dT%H:%M:%fZ','now'))
+);
+CREATE TRIGGER IF NOT EXISTS strategy_atomic_nav_adoptions_no_update_v1
+BEFORE UPDATE ON strategy_atomic_nav_adoptions_v1
+BEGIN SELECT RAISE(ABORT,'strategy_atomic_nav_immutable_receipt'); END;
+CREATE TRIGGER IF NOT EXISTS strategy_atomic_nav_adoptions_no_delete_v1
+BEFORE DELETE ON strategy_atomic_nav_adoptions_v1
+BEGIN SELECT RAISE(ABORT,'strategy_atomic_nav_immutable_receipt'); END;
+CREATE TRIGGER IF NOT EXISTS strategy_atomic_nav_adoptions_no_replace_v1
+BEFORE INSERT ON strategy_atomic_nav_adoptions_v1
+WHEN EXISTS(SELECT 1 FROM strategy_atomic_nav_adoptions_v1 WHERE artifact_checksum=NEW.artifact_checksum)
+BEGIN SELECT RAISE(ABORT,'strategy_atomic_nav_immutable_receipt'); END;
 CREATE TABLE IF NOT EXISTS predictions (
   id                 INTEGER PRIMARY KEY AUTOINCREMENT,
   stock_id           INTEGER NOT NULL,
@@ -337,7 +358,7 @@ CREATE TABLE IF NOT EXISTS model_artifact_registry (
   artifact_id                 TEXT NOT NULL PRIMARY KEY CHECK(length(trim(artifact_id)) > 0),
   model_name                  TEXT NOT NULL,
   version                     TEXT NOT NULL,
-  candidate_type              TEXT NOT NULL CHECK(candidate_type IN ('monthly_release','weekly_drift','oof_full_fit_release','manual_hotfix','model_family_shadow','research_benchmark','timesfm_l175_l2_feature_release','l4_alpha_ev_refresh','allocator_ev_fusion_refresh','unknown')),
+  candidate_type              TEXT NOT NULL CHECK(candidate_type IN ('monthly_release','weekly_drift','oof_full_fit_release','manual_hotfix','model_family_shadow','research_benchmark','timesfm_l175_l2_feature_release','l4_alpha_ev_refresh','allocator_ev_fusion_refresh','opb_arm_prior_refresh','unknown')),
   state                       TEXT NOT NULL CHECK(state IN (
     'registered',
     'registration_failed',
@@ -1272,6 +1293,19 @@ CREATE TABLE IF NOT EXISTS strategy_policy_state (
   updated_at               TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
+-- Explicit operator dispositions only. A missing source is never a successful evidence day.
+CREATE TABLE IF NOT EXISTS strategy_evidence_gap_dispositions_v1 (
+  signal_date TEXT PRIMARY KEY,
+  status TEXT NOT NULL CHECK(status IN ('excluded_missing_source','revoked')),
+  reason TEXT NOT NULL CHECK(length(trim(reason))>0),
+  approval_ref TEXT NOT NULL CHECK(length(trim(approval_ref))>0),
+  evidence_ref TEXT NOT NULL CHECK(length(trim(evidence_ref))>0),
+  evidence_sha256 TEXT NOT NULL CHECK(length(evidence_sha256)=64),
+  approved_at TEXT NOT NULL,
+  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
 CREATE TABLE IF NOT EXISTS strategy_evidence_rebuild_runs_v5 (
   signal_date TEXT PRIMARY KEY,
   status TEXT NOT NULL CHECK(status IN ('pending','success','blocked','failed')),
@@ -1629,8 +1663,9 @@ CREATE TABLE IF NOT EXISTS strategy_route_calibration_head_v1 (
   run_id TEXT NOT NULL,
   artifact_version TEXT NOT NULL,
   candidate_route_version TEXT NOT NULL,
-  route_floor REAL NOT NULL,
+  route_floor REAL,
   promoted_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  CHECK(route_floor IS NOT NULL OR artifact_version='strategy-route-nav-adoption-v1'),
   FOREIGN KEY(run_id) REFERENCES strategy_route_calibration_runs_v1(run_id)
 );
 
@@ -2264,3 +2299,109 @@ CREATE TABLE IF NOT EXISTS ga_optimizer_shadow_runs_v1 (
 
 CREATE INDEX IF NOT EXISTS idx_ga_optimizer_shadow_runs_date_v1
   ON ga_optimizer_shadow_runs_v1(business_date DESC, updated_at DESC);
+
+-- Separate from EV prediction-date maturity. No serving pointer or order ownership.
+-- Payloads are chunked to stay below D1's per-value limit. A published manifest
+-- is valid only after every immutable part has been read back and hashed.
+CREATE TABLE IF NOT EXISTS paired_nav_frozen_parts_v1 (
+  snapshot_id TEXT NOT NULL, part_no INTEGER NOT NULL CHECK(part_no >= 0),
+  payload_text TEXT NOT NULL, PRIMARY KEY(snapshot_id, part_no)
+);
+CREATE TABLE IF NOT EXISTS paired_nav_frozen_manifests_v1 (
+  snapshot_id TEXT PRIMARY KEY, signal_date TEXT NOT NULL, source_run_id TEXT NOT NULL,
+  frozen_at TEXT NOT NULL, payload_checksum TEXT NOT NULL,
+  part_count INTEGER NOT NULL CHECK(part_count > 0),
+  prospective INTEGER NOT NULL CHECK(prospective IN (0,1)),
+  snapshot_kind TEXT NOT NULL CHECK(snapshot_kind IN ('allocation_context','allocation_pair','execution_pair','execution_receipt')),
+  parent_snapshot_id TEXT,
+  UNIQUE(signal_date, source_run_id, snapshot_kind)
+);
+CREATE TABLE IF NOT EXISTS paired_nav_daily_journal_v1 (
+  pair_id TEXT NOT NULL, session_date TEXT NOT NULL,
+  snapshot_id TEXT NOT NULL, previous_checksum TEXT,
+  payload_json TEXT NOT NULL CHECK(json_valid(payload_json)),
+  payload_checksum TEXT NOT NULL, recorded_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY(pair_id, session_date), UNIQUE(pair_id, snapshot_id)
+);
+CREATE INDEX IF NOT EXISTS paired_nav_context_date_v1
+  ON paired_nav_frozen_manifests_v1(signal_date, snapshot_kind);
+CREATE TRIGGER IF NOT EXISTS paired_nav_parts_no_update_v1 BEFORE UPDATE ON paired_nav_frozen_parts_v1
+BEGIN SELECT RAISE(ABORT,'paired_nav_immutable_part'); END;
+CREATE TRIGGER IF NOT EXISTS paired_nav_manifest_no_update_v1 BEFORE UPDATE ON paired_nav_frozen_manifests_v1
+BEGIN SELECT RAISE(ABORT,'paired_nav_immutable_manifest'); END;
+CREATE TRIGGER IF NOT EXISTS paired_nav_journal_no_update_v1 BEFORE UPDATE ON paired_nav_daily_journal_v1
+BEGIN SELECT RAISE(ABORT,'paired_nav_immutable_journal'); END;
+CREATE TRIGGER IF NOT EXISTS paired_nav_parts_no_delete_v1 BEFORE DELETE ON paired_nav_frozen_parts_v1
+BEGIN SELECT RAISE(ABORT,'paired_nav_immutable_part'); END;
+CREATE TRIGGER IF NOT EXISTS paired_nav_manifest_no_delete_v1 BEFORE DELETE ON paired_nav_frozen_manifests_v1
+BEGIN SELECT RAISE(ABORT,'paired_nav_immutable_manifest'); END;
+CREATE TRIGGER IF NOT EXISTS paired_nav_journal_no_delete_v1 BEFORE DELETE ON paired_nav_daily_journal_v1
+BEGIN SELECT RAISE(ABORT,'paired_nav_immutable_journal'); END;
+
+-- SQLite REPLACE can bypass DELETE triggers when recursive_triggers is off.
+-- Intercept every conflicting INSERT before conflict resolution. An identical
+-- retry is ignored (preserving the first timestamp); different evidence aborts.
+CREATE TRIGGER IF NOT EXISTS paired_nav_parts_no_replace_v1 BEFORE INSERT ON paired_nav_frozen_parts_v1
+WHEN EXISTS (SELECT 1 FROM paired_nav_frozen_parts_v1 p WHERE p.snapshot_id=NEW.snapshot_id AND p.part_no=NEW.part_no)
+BEGIN
+  SELECT CASE WHEN EXISTS (SELECT 1 FROM paired_nav_frozen_parts_v1 p
+    WHERE p.snapshot_id=NEW.snapshot_id AND p.part_no=NEW.part_no AND p.payload_text=NEW.payload_text)
+    THEN RAISE(IGNORE) ELSE RAISE(ABORT,'paired_nav_immutable_part') END;
+END;
+CREATE TRIGGER IF NOT EXISTS paired_nav_manifest_no_replace_v1 BEFORE INSERT ON paired_nav_frozen_manifests_v1
+WHEN EXISTS (SELECT 1 FROM paired_nav_frozen_manifests_v1 m WHERE m.snapshot_id=NEW.snapshot_id
+  OR (m.signal_date=NEW.signal_date AND m.source_run_id=NEW.source_run_id AND m.snapshot_kind=NEW.snapshot_kind))
+BEGIN
+  SELECT CASE WHEN EXISTS (SELECT 1 FROM paired_nav_frozen_manifests_v1 m
+    WHERE m.snapshot_id=NEW.snapshot_id AND m.signal_date=NEW.signal_date
+      AND m.source_run_id=NEW.source_run_id AND m.payload_checksum=NEW.payload_checksum
+      AND m.part_count=NEW.part_count AND m.prospective=NEW.prospective
+      AND m.snapshot_kind=NEW.snapshot_kind AND m.parent_snapshot_id IS NEW.parent_snapshot_id)
+    THEN RAISE(IGNORE) ELSE RAISE(ABORT,'paired_nav_immutable_manifest') END;
+END;
+CREATE TRIGGER IF NOT EXISTS paired_nav_journal_no_replace_v1 BEFORE INSERT ON paired_nav_daily_journal_v1
+WHEN EXISTS (SELECT 1 FROM paired_nav_daily_journal_v1 j WHERE j.pair_id=NEW.pair_id
+  AND (j.session_date=NEW.session_date OR j.snapshot_id=NEW.snapshot_id))
+BEGIN
+  SELECT CASE WHEN EXISTS (SELECT 1 FROM paired_nav_daily_journal_v1 j
+    WHERE j.pair_id=NEW.pair_id AND j.session_date=NEW.session_date AND j.snapshot_id=NEW.snapshot_id
+      AND j.previous_checksum IS NEW.previous_checksum AND j.payload_json=NEW.payload_json
+      AND j.payload_checksum=NEW.payload_checksum)
+    THEN RAISE(IGNORE) ELSE RAISE(ABORT,'paired_nav_immutable_journal') END;
+END;
+
+-- Immutable experiment transitions, not promotion authority or accounting gates.
+CREATE TABLE IF NOT EXISTS paired_nav_lifecycle_closures_v1 (
+  pair_id TEXT PRIMARY KEY,
+  root_pair_id TEXT NOT NULL,
+  successor_pair_id TEXT NOT NULL CHECK(successor_pair_id<>pair_id),
+  successor_snapshot_id TEXT NOT NULL,
+  transition_signal_date TEXT NOT NULL,
+  final_session_date TEXT NOT NULL CHECK(final_session_date<=transition_signal_date),
+  payload_json TEXT NOT NULL CHECK(json_valid(payload_json)),
+  payload_checksum TEXT NOT NULL,
+  recorded_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS paired_nav_lifecycle_root_v1
+  ON paired_nav_lifecycle_closures_v1(root_pair_id,transition_signal_date);
+CREATE INDEX IF NOT EXISTS paired_nav_lifecycle_successor_v1
+  ON paired_nav_lifecycle_closures_v1(successor_snapshot_id);
+CREATE TRIGGER IF NOT EXISTS paired_nav_lifecycle_no_update_v1
+BEFORE UPDATE ON paired_nav_lifecycle_closures_v1
+BEGIN SELECT RAISE(ABORT,'paired_nav_immutable_lifecycle'); END;
+CREATE TRIGGER IF NOT EXISTS paired_nav_lifecycle_no_delete_v1
+BEFORE DELETE ON paired_nav_lifecycle_closures_v1
+BEGIN SELECT RAISE(ABORT,'paired_nav_immutable_lifecycle'); END;
+CREATE TRIGGER IF NOT EXISTS paired_nav_lifecycle_no_replace_v1
+BEFORE INSERT ON paired_nav_lifecycle_closures_v1
+WHEN EXISTS (SELECT 1 FROM paired_nav_lifecycle_closures_v1 WHERE pair_id=NEW.pair_id)
+BEGIN
+  SELECT CASE WHEN EXISTS (SELECT 1 FROM paired_nav_lifecycle_closures_v1 p
+    WHERE p.pair_id=NEW.pair_id AND p.root_pair_id=NEW.root_pair_id
+      AND p.successor_pair_id=NEW.successor_pair_id
+      AND p.successor_snapshot_id=NEW.successor_snapshot_id
+      AND p.transition_signal_date=NEW.transition_signal_date
+      AND p.final_session_date=NEW.final_session_date
+      AND p.payload_json=NEW.payload_json AND p.payload_checksum=NEW.payload_checksum)
+    THEN RAISE(IGNORE) ELSE RAISE(ABORT,'paired_nav_immutable_lifecycle') END;
+END;

@@ -10,6 +10,7 @@ from typing import Any, Literal
 import numpy as np
 
 from .model_serving_contract import ALPHA_PREDICTION_MODELS
+from .ensemble_qualification import qualify_directional_signal
 
 ARTIFACT_SCHEMA_VERSION = "active8-oof-ensemble-serving-artifact-v1"
 ENSEMBLE_SEMANTIC_VERSION = "active8-purged-oof-chronological-nonnegative-ridge-v5"
@@ -71,6 +72,7 @@ def validate_active8_ensemble_artifact(
     payload: dict[str, Any],
     *,
     pool_models: dict[str, dict[str, Any]],
+    nav_authority=None,
 ) -> None:
     if not isinstance(payload, dict):
         raise Active8EnsembleContractError("active8_ensemble_payload_not_object")
@@ -102,7 +104,13 @@ def validate_active8_ensemble_artifact(
     ):
         raise Active8EnsembleContractError("active8_ensemble_fit_contract_invalid")
     validation = payload.get("validation") if isinstance(payload.get("validation"), dict) else {}
-    if (
+    if nav_authority is not None:
+        from services.ensemble_v2 import validate_active8_ensemble_candidate
+        from services.active8_nav_inference import permits_inference
+        validate_active8_ensemble_candidate(payload)
+        if not permits_inference(nav_authority, artifact=payload, pool_models=pool_models):
+            raise Active8EnsembleContractError('active8_nav_inference_authority_invalid')
+    if nav_authority is None and (
         validation.get("decision") != "PASS"
         or validation.get("method") != "chronological_oof_calibration_then_later_validation"
         or validation.get("failed_gates")
@@ -188,9 +196,18 @@ def score_active8_ensemble(
     artifact: dict[str, Any],
     pool_models: dict[str, dict[str, Any]],
     current_price: float,
+    nav_authority=None,
 ) -> Active8EnsembleResult:
-    validate_active8_ensemble_artifact(artifact, pool_models=pool_models)
-    missing_core = [name for name in CORE_MODELS if name not in rank_scores]
+    validate_active8_ensemble_artifact(artifact, pool_models=pool_models, nav_authority=nav_authority)
+    finite_scores = {}
+    for name in ALPHA_PREDICTION_MODELS:
+        try:
+            value = float(rank_scores[name])
+        except (KeyError, TypeError, ValueError):
+            continue
+        if np.isfinite(value):
+            finite_scores[name] = value
+    missing_core = [name for name in CORE_MODELS if name in artifact['selected_models'] and name not in finite_scores]
     if missing_core:
         raise Active8EnsembleContractError(
             "active8_ensemble_core_score_missing:" + ",".join(missing_core)
@@ -198,9 +215,9 @@ def score_active8_ensemble(
     vector: list[float] = []
     availability: dict[str, bool] = {}
     for model_name in ALPHA_PREDICTION_MODELS:
-        available = model_name in rank_scores and np.isfinite(float(rank_scores.get(model_name, 0.5)))
+        available = model_name in finite_scores
         availability[model_name] = available
-        vector.append(float(np.clip(rank_scores.get(model_name, 0.5), 0.0, 1.0)))
+        vector.append(float(np.clip(finite_scores.get(model_name, 0.5), 0.0, 1.0)))
     vector.extend(1.0 if availability[name] else 0.0 for name in ALPHA_PREDICTION_MODELS)
     fit = artifact["fit"]
     expected_return = float(fit["intercept"] + np.dot(vector, fit["coefficients"]))
@@ -221,6 +238,9 @@ def score_active8_ensemble(
         signal, direction = "SELL", "down"
     else:
         signal, direction = "HOLD", "neutral"
+    signal_decision = qualify_directional_signal(signal, artifact)
+    signal = signal_decision['signal']
+    direction = 'up' if signal.endswith('BUY') else 'down' if signal.endswith('SELL') else 'neutral'
     probability_up = _isotonic_predict(
         [float(value) for value in calibration["probability_x_thresholds"]],
         [float(value) for value in calibration["probability_y_thresholds"]],
@@ -266,6 +286,7 @@ def score_active8_ensemble(
         signal_strength=strength,
         evidence={
             "schema_version": "active8-ensemble-runtime-evidence-v1",
+            **signal_decision,
             "artifact_checksum": artifact["payload_checksum"],
             "cohort_id": artifact["cohort_id"],
             "base_artifact_set_checksum": artifact["base_artifact_set_checksum"],

@@ -1,3 +1,4 @@
+import { paperExecutionDate } from './paperExecutionScope'
 import type { Bindings } from '../types'
 import { paperDomainDatabase } from './paperDomainDatabase'
 import { databaseForTable } from './dataDomainRegistry'
@@ -157,7 +158,7 @@ function arrayOfRecords(value: unknown): Record<string, unknown>[] {
 
 function dateFromGeneratedAt(value: unknown): string {
   if (typeof value === 'string' && value.length >= 10) return value.slice(0, 10)
-  return new Date().toISOString().slice(0, 10)
+  return paperExecutionDate().toISOString().slice(0, 10)
 }
 
 async function runSafely(action: () => Promise<unknown>, label: string): Promise<void> {

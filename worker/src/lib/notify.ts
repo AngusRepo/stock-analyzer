@@ -12,6 +12,7 @@ import { resolveReportDeliveryChannel } from './reportDeliveryChannel'
 import { readScoreV2Snapshot, type ScoreV2StorageRow } from './scoreV2Taxonomy'
 import { databaseForDataDomain } from './dataDomainRegistry'
 import type { Bindings } from '../types'
+import { capturePaperNotification, paperExecutionDate, paperExecutionFetch } from './paperExecutionScope'
 
 type Env = Pick<Bindings, 'DB' | 'KV'> & Partial<Bindings>
 
@@ -41,7 +42,7 @@ export async function notifyCronFailure(
   meta?: Record<string, any>,
 ): Promise<void> {
   const msg = error instanceof Error ? error.message : String(error)
-  const fullMeta = { ...meta, error: msg, timestamp: new Date().toISOString() }
+  const fullMeta = { ...meta, error: msg, timestamp: paperExecutionDate().toISOString() }
 
   console.error(`[CronFail] ${cronName}: ${msg}`, meta)
   await writeSystemLog(databaseForDataDomain(env, 'ops'), 'error', cronName, `Cron 失敗: ${msg}`, fullMeta)
@@ -63,9 +64,10 @@ export async function sendDiscordNotification(
   webhookUrl: string | undefined,
   message: string,
 ): Promise<void> {
+  if (capturePaperNotification('discord', message)) return
   if (!webhookUrl) return
   try {
-    await fetch(webhookUrl, {
+    await paperExecutionFetch(webhookUrl, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ content: message }),
@@ -80,9 +82,10 @@ export async function sendLinePush(
   userId: string | undefined,
   message: string,
 ): Promise<boolean> {
+  if (capturePaperNotification('line', message)) return true
   if (!channelAccessToken || !userId) return false
   try {
-    const res = await fetch('https://api.line.me/v2/bot/message/push', {
+    const res = await paperExecutionFetch('https://api.line.me/v2/bot/message/push', {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -127,7 +130,7 @@ export async function sendOperatorNotification(
     await sendEmailReport(env.RESEND_API_KEY, env.ADMIN_EMAIL, 'StockVision notification', [{
       title: 'StockVision notification',
       description: message,
-      timestamp: new Date().toISOString(),
+      timestamp: paperExecutionDate().toISOString(),
     }])
     return 'email'
   }
@@ -179,7 +182,7 @@ export async function sendDiscordEmbeds(
     // Discord 一次最多 10 embeds，超過分批
     for (let i = 0; i < embeds.length; i += 10) {
       const batch = embeds.slice(i, i + 10)
-      await fetch(webhookUrl, {
+      await paperExecutionFetch(webhookUrl, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -230,7 +233,7 @@ export async function sendEmailReport(
     }
     html += `</div>`
 
-    await fetch('https://api.resend.com/emails', {
+    await paperExecutionFetch('https://api.resend.com/emails', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${resendApiKey}` },
       body: JSON.stringify({
@@ -440,6 +443,6 @@ export function buildTripartiteDailyEmbed(args: {
       { name: '📈 Summary',            value: summaryText.slice(0, 1024),    inline: false },
     ],
     footer: { text: 'StockVision • 三段式 v1 (zone-aware)' },
-    timestamp: new Date().toISOString(),
+    timestamp: paperExecutionDate().toISOString(),
   }
 }

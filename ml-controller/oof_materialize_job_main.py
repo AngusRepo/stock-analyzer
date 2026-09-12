@@ -49,6 +49,151 @@ async def _execute_lifecycle(
     continuation_attempt: int,
     continuation_only: bool,
 ) -> dict[str, Any]:
+    """Run independent NAV reconciliation before prep can block the OOF branch.
+
+    NAV reads only its original sealed receipts. OOF failures remain failures;
+    NAV failures preserve healthy OOF evidence work but cannot certify closure.
+    This reuses the same owner called by direct forward materialization.
+    """
+    kwargs = dict(cadence=cadence, end_date=end_date, promote=promote,
+        dispatch_full_fit=dispatch_full_fit, expected_cohort_id=expected_cohort_id,
+        continuation_attempt=continuation_attempt, continuation_only=continuation_only)
+    if cadence != "daily":
+        return await _execute_oof_lifecycle(**kwargs)
+    nav = _execute_daily_nav(end_date=end_date)
+    nav_failed = nav.get("status") == "failed"
+    candidates = nav.pop('_adoption_candidates', [])
+    if promote and not nav_failed:
+        from services.paired_nav_daily_adoption import run_daily_ev_adoption
+        nav['adoption'] = await run_daily_ev_adoption(candidates=candidates, business_date=nav['as_of_date'])
+        if nav['adoption']['status'] == 'incomplete':
+            nav = {**nav, 'accounting_status': nav['status'], 'status': 'failed',
+                   'reason': 'paired_nav_daily_closure_incomplete'}
+            nav_failed = True
+    else:
+        nav['adoption'] = {'status': 'blocked_by_nav_failure' if nav_failed else 'disabled_by_request'}
+    # A failed NAV handoff must not authorize a challenger pointer transition.
+    # Existing serving/trading is untouched; prep and shadow work still proceed.
+    # Daily adoption has a single owner before OOF. Its diagnostics may continue,
+    # but the old late path must not make a second, differently selected decision.
+    kwargs["promote"] = False
+    try:
+        result = await _execute_oof_lifecycle(**kwargs)
+    except Exception as exc:  # Keep NAV evidence on the existing error callback.
+        logger.exception("[OofMaterializeJob] OOF branch failed after independent NAV")
+        result = {"status": "failed", "reason": f"{type(exc).__name__}: {exc}"}
+    result["paired_nav_maturity"] = nav
+    result["nav_retry_required"] = nav_failed
+    if nav_failed and result.get("status") != "failed":
+        result["oof_lifecycle_status"] = result.get("status")
+        # Worker continuation accepts pending, not an OOF-only cached complete.
+        result["status"] = "pending"
+        result["dependency_retry_required"] = True
+    return result
+
+
+def _execute_daily_nav(*, end_date: str | None, now=None) -> dict[str, Any]:
+    from datetime import date, datetime, timedelta, timezone
+
+    clock = now or datetime.now(timezone.utc)
+    today = clock.astimezone(timezone(timedelta(hours=8))).date()
+    business_date = end_date or today.isoformat()
+    result = {}
+    try:
+        from routers.walk_forward import _materialize_nav_with_reviews
+        from services.d1_domain_client import D1DataDomain, client_for_domain
+        parsed = date.fromisoformat(business_date)
+        if parsed.isoformat() != business_date or parsed > today:
+            raise ValueError("paired_nav_business_date_invalid_or_future")
+        client = client_for_domain(D1DataDomain.LEARNING)
+        from services.paired_nav_daily_review import NavDailyReviewIncomplete
+        review_incomplete = False
+        try:
+            result = _materialize_nav_with_reviews(business_date=business_date, learning_client=client, now=clock)
+        except NavDailyReviewIncomplete as exc:
+            # Accounting already completed. Keep the review failure visible,
+            # but do not strand candidate date/status projections behind it.
+            result = exc.nav_maturity
+            review_incomplete = True
+        from services.paired_nav_daily_candidates import refresh_registered_ev_nav_decisions
+        from services.walk_forward_retrain import _get_bucket
+        from services.paired_nav_opb_daily import refresh_registered_opb_nav_decisions
+        from services.paired_nav_l3_daily import refresh_registered_l3_nav_decisions
+        from services.paired_nav_policy_daily import (
+            refresh_registered_atomic_nav_decisions, refresh_registered_route_nav_decisions,
+        )
+        adoption_candidates = []
+        projections = (
+            ('candidate_decisions', refresh_registered_ev_nav_decisions,
+             {'writer': client.batch_execute, 'bucket_factory': _get_bucket}),
+            ('opb_candidate_decisions', refresh_registered_opb_nav_decisions,
+             {'writer': client.batch_execute}),
+            ('l3_candidate_decisions', refresh_registered_l3_nav_decisions, {}),
+            ('atomic_candidate_decisions', refresh_registered_atomic_nav_decisions, {}),
+            ('route_candidate_decisions', refresh_registered_route_nav_decisions, {}),
+        )
+        for component, refresh, extra in projections:
+            try:
+                result[component] = refresh(
+                    business_date=business_date, query=client.query, now=clock,
+                    adoption_candidates=adoption_candidates, **extra)
+            except Exception as exc:
+                # A failed inventory/projection must not starve healthy owners.
+                # Unknown progress is not an empty successful inventory: partial
+                # writes may exist. The outer lifecycle still blocks adoption
+                # and retries the original idempotent owners without re-review.
+                logger.exception('[OofMaterializeJob] NAV projection failed: %s', component)
+                result[component] = {
+                    'schema_version': 'paired-nav-daily-candidates-v1',
+                    'as_of_date': business_date, 'status': 'partial_nav_candidate_decisions',
+                    'candidate_count': None, 'evaluated_count': None,
+                    'inventory_checksum': None, 'decisions_checksum': None,
+                    'decisions': [], 'failure_count': 1,
+                    'failures': [{'component': component, 'stage': 'refresh',
+                        'reason': 'nav_candidate_projection_incomplete',
+                        'error_type': type(exc).__name__}],
+                    'registry_state_unchanged': None, 'promotion_allowed': False,
+                }
+        result['_adoption_candidates'] = adoption_candidates
+        if review_incomplete or any(result[key]['failures'] for key, _, _ in projections):
+            return {**result, 'status': 'failed', 'accounting_status': result['status'],
+                'as_of_date': business_date, 'reason': 'paired_nav_daily_closure_incomplete'}
+        return {**result, "as_of_date": business_date}
+    except Exception as exc:
+        logger.exception("[OofMaterializeJob] Independent NAV closure failed")
+        maturity = getattr(exc, 'nav_maturity', None)
+        preserved = maturity if isinstance(maturity, dict) else result
+        return {**preserved, "status": "failed", "as_of_date": business_date,
+            "accounting_status": preserved.get("status"),
+            "reason": "paired_nav_daily_closure_incomplete", "error_type": type(exc).__name__}
+
+
+def _nav_callback_summary(nav: dict[str, Any]) -> dict[str, Any]:
+    """Callback carries closure evidence, not entire portfolios or row histories."""
+    reviews = nav.get("family_reviews") or {}
+    failure_counts: dict[str, int] = {}
+    for failure in reviews.get("failures", []):
+        reason = failure["reason"]
+        failure_counts[reason] = failure_counts.get(reason, 0) + 1
+    return {key: nav[key] for key in (
+        "status", "accounting_status", "as_of_date", "reason", "error_type", "journal_chain_verified",
+        "journal_chain_checksum", "accounted_pair_sessions", "recorded_pair_sessions",
+        "processed_pair_sessions", "latest_nav_session", "latest_accounting_session",
+    ) if key in nav} | {"family_reviews": {key: reviews[key] for key in (
+        "status", "policy_checksum", "source_population_checksum", "promotion_allowed",
+    ) if key in reviews} | {"failure_counts": failure_counts},
+        'candidate_decisions': nav.get('candidate_decisions') or {},
+        'opb_candidate_decisions': nav.get('opb_candidate_decisions') or {},
+        'l3_candidate_decisions': nav.get('l3_candidate_decisions') or {},
+        'atomic_candidate_decisions': nav.get('atomic_candidate_decisions') or {},
+        'route_candidate_decisions': nav.get('route_candidate_decisions') or {},
+        'adoption': nav.get('adoption') or {}}
+
+
+async def _execute_oof_lifecycle(
+    *, cadence: str, end_date: str | None, promote: bool, dispatch_full_fit: bool,
+    expected_cohort_id: str | None, continuation_attempt: int, continuation_only: bool,
+) -> dict[str, Any]:
     from routers.walk_forward import OofLifecycleRequest, run_walk_forward_oof_lifecycle
     from services.active8_prep_lifecycle import (
         Active8PrepDependencyPending,
@@ -202,6 +347,8 @@ async def _execute_forward_extension_resume(
 
 
 def _dependency_retry_reason(result: dict[str, Any]) -> str:
+    if result.get("nav_retry_required"):
+        return "paired_nav_daily_closure_incomplete"
     forward_extension = result.get("daily_forward_extension")
     forward_extension = forward_extension if isinstance(forward_extension, dict) else {}
     full_fit = result.get("full_fit_dispatch")
@@ -255,6 +402,25 @@ def _summary(run_id: str, result: dict[str, Any], *, mode: str) -> str:
         f"reason={summary_reason}",
         f"full_fit={str((result.get('full_fit_dispatch') or (result.get('receipt') or {}).get('full_fit_dispatch') or {}).get('status') or 'none')}",
     ]
+    adoption = (result.get('paired_nav_maturity') or {}).get('adoption')
+    if isinstance(adoption, dict):
+        committed = dict((adoption.get('closure') or {}).get('promoted_by_owner') or {})
+        for key, owner in (('ensemble', 'ensemble'), ('route', 'l15_route'),
+                           ('atomic', 'atomic_strategy'), ('opb', 'opb_arm_prior')):
+            receipt = adoption.get(key)
+            if (isinstance(receipt, dict) and receipt.get('complete') is True
+                    and receipt.get('pointer_committed') is True and receipt.get('owner') == owner
+                    and receipt.get('completion_scope') == 'publication'):
+                committed[owner] = True
+        waiting = sorted({f"{item['owner']}:{item.get('state') or item.get('reason') or 'pending'}"
+            for item in adoption.get('waiting', []) if isinstance(item, dict) and item.get('owner')})
+        parts.extend([f"nav_adoption={adoption.get('status', 'unknown')}",
+            'nav_committed=' + (','.join(owner for owner in sorted(committed) if committed[owner]) or 'none'),
+            'nav_waiting=' + (','.join(waiting) or 'none')])
+        opb = adoption.get('opb') or {}
+        if (opb.get('complete') is True and opb.get('completion_scope') == 'retirement'
+                and opb.get('retired') is True and opb.get('pointer_committed') is False):
+            parts.append('nav_retired=opb_arm_prior')
     prep_lifecycle = result.get("prep_lifecycle")
     prep_lifecycle = prep_lifecycle if isinstance(prep_lifecycle, dict) else {}
     if prep_lifecycle.get("expected_business_date") or prep_lifecycle.get("snapshot_business_date"):
@@ -482,7 +648,10 @@ async def _run() -> int:
             elif status in {"skipped", "pending", "spawned"}:
                 callback_status = "skipped"
             else:
-                raise RuntimeError(f"unexpected OOF materialization status: {status or 'unknown'}")
+                raise RuntimeError(
+                    f"unexpected OOF materialization status: {status or 'unknown'}:"
+                    f"{result.get('reason') or 'no_reason'}"
+                )
     except Exception as exc:  # noqa: BLE001 - callback must close every terminal job state.
         logger.exception("[OofMaterializeJob] Failed")
         error = f"{type(exc).__name__}: {exc}"
@@ -511,6 +680,10 @@ async def _run() -> int:
             "continuation_only": continuation_only,
             "prep_lifecycle": result.get("prep_lifecycle") if isinstance(result.get("prep_lifecycle"), dict) else {},
         }
+        if isinstance(result.get("paired_nav_maturity"), dict):
+            payload["metadata"]["paired_nav_maturity"] = _nav_callback_summary(result["paired_nav_maturity"])
+            payload["metadata"]["nav_retry_required"] = bool(result.get("nav_retry_required"))
+            payload["metadata"]["oof_lifecycle_status"] = result.get("oof_lifecycle_status", result.get("status"))
         if result.get("dependency_retry_required"):
             payload["metadata"]["dependency_retry_reason"] = _dependency_retry_reason(result)
         calendar = result.get("calendar")

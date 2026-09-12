@@ -29,6 +29,10 @@ def _closed_metrics(**overrides):
     return metrics
 
 
+def _closed_nav():
+    return {'status': 'awaiting_frozen_l4_candidate', 'snapshot_id': 'verified-setup'}
+
+
 def test_pipeline_terminal_allows_only_explicit_advisory_errors():
     classified = classify_pipeline_terminal_errors(["llm_reasons: provider timeout"])
     assert classified == {
@@ -36,7 +40,7 @@ def test_pipeline_terminal_allows_only_explicit_advisory_errors():
         "advisory": ["llm_reasons: provider timeout"],
     }
     result = _pipeline_terminal_result(
-        {"metrics": _closed_metrics(), "errors": ["llm_reasons: timeout"]},
+        {"metrics": _closed_metrics(), "errors": ["llm_reasons: timeout"], "paired_nav_collection": _closed_nav()},
         run_date="2026-08-14",
         elapsed=2.34,
     )
@@ -49,6 +53,7 @@ def test_pipeline_terminal_fails_closed_on_unclassified_error():
         {
             "metrics": _closed_metrics(),
             "errors": ["d1_write: reset stream", "llm_reasons: timeout"],
+            "paired_nav_collection": _closed_nav(),
         },
         run_date="2026-08-14",
         elapsed=1.0,
@@ -61,7 +66,7 @@ def test_pipeline_terminal_fails_closed_on_unclassified_error():
 
 def test_pipeline_terminal_allows_safe_abstention_when_rows_close():
     result = _pipeline_terminal_result(
-        {"metrics": _closed_metrics(recommendations_updated=0), "errors": []},
+        {"metrics": _closed_metrics(recommendations_updated=0), "errors": [], "paired_nav_collection": _closed_nav()},
         run_date="2026-08-14",
         elapsed=1.0,
     )
@@ -78,6 +83,7 @@ def test_pipeline_terminal_fails_when_prediction_symbol_closure_is_false():
                 incomplete_active_model_symbols=2,
             ),
             "errors": [],
+            "paired_nav_collection": _closed_nav(),
         },
         run_date="2026-08-14",
         elapsed=1.0,
@@ -97,7 +103,7 @@ def test_pipeline_terminal_fails_when_recommendation_rows_do_not_close():
     ]
 
     result = _pipeline_terminal_result(
-        {"metrics": metrics, "errors": []},
+        {"metrics": metrics, "errors": [], "paired_nav_collection": _closed_nav()},
         run_date="2026-08-14",
         elapsed=1.0,
     )

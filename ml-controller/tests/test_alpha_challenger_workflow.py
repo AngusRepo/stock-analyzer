@@ -8,6 +8,9 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from routers import config_pool  # noqa: E402
+from test_promotion_service import _exact_dsr_inputs, _promotion_grade_data_snooping
+
+CID = 'parameter:alpha_framework:alpha_framework:2026-04-26T00:00:00Z:abcd1234'
 
 
 def _sandbox_record() -> dict:
@@ -58,6 +61,11 @@ def _evidence(candidate_id: str) -> dict:
 
 def _passing_evidence(candidate_id: str) -> dict:
     bundle = _evidence(candidate_id)
+    bundle['backtest'].update(_exact_dsr_inputs())
+    bundle['backtest']['per_regime'] = {'bull': {'trades': 60, 'return': .03},
+                                       'bear': {'trades': 60, 'return': .01}}
+    bundle['walk_forward'] = {'passed': True, 'windows': 6}
+    bundle['data_snooping'] = _promotion_grade_data_snooping()
     bundle["gate"] = {"decision": "PASS", "passed": True, "failed_gates": []}
     return bundle
 
@@ -73,21 +81,12 @@ async def test_alpha_challenger_dry_run_does_not_set_challenger(monkeypatch):
         raise AssertionError(f"unexpected worker call: {method} {path}")
 
     monkeypatch.setattr(config_pool, "worker_fetch", fake_worker_fetch)
-    monkeypatch.setattr(
-        config_pool,
-        "evaluate_latest_alpha_policy_gate",
-        lambda candidate, source="backtest", pbo_source=None: {
-            "decision": "PASS",
-            "passed": True,
-            "failed_gates": [],
-            "candidate": {"sample_count": 96},
-        },
-    )
 
     out = await config_pool.alpha_challenger_gate(
         config_pool.AlphaChallengerRequest(
             sandbox_id="trading:config:sandbox:alpha_framework:2026-04-26T00:00:00Z:abcd1234",
             apply=False,
+            evidence=_passing_evidence(CID),
         )
     )
 
@@ -107,15 +106,6 @@ async def test_alpha_challenger_apply_requires_passed_gate(monkeypatch):
         raise AssertionError(f"unexpected worker call: {method} {path}")
 
     monkeypatch.setattr(config_pool, "worker_fetch", fake_worker_fetch)
-    monkeypatch.setattr(
-        config_pool,
-        "evaluate_latest_alpha_policy_gate",
-        lambda candidate, source="backtest", pbo_source=None: {
-            "decision": "FAIL",
-            "passed": False,
-            "failed_gates": ["alpha_min_outcomes"],
-        },
-    )
 
     out = await config_pool.alpha_challenger_gate(
         config_pool.AlphaChallengerRequest(
@@ -126,7 +116,7 @@ async def test_alpha_challenger_apply_requires_passed_gate(monkeypatch):
     )
 
     assert out["status"] == "gate_failed"
-    assert "alpha_min_outcomes" in out["gate"]["failed_gates"]
+    assert "alpha_evidence_candidate_missing" in out["gate"]["failed_gates"]
     assert all(call[0] != "/api/admin/config/challenger" for call in calls)
 
 
@@ -142,24 +132,14 @@ async def test_alpha_challenger_apply_sets_challenger_only_with_confirmed_pass(m
             return {"success": True, "challenger": {"hash": "abc"}}
         raise AssertionError(f"unexpected worker call: {method} {path}")
 
-    gate = {
-        "decision": "PASS",
-        "passed": True,
-        "failed_gates": [],
-        "candidate": {"sample_count": 96},
-    }
     monkeypatch.setattr(config_pool, "worker_fetch", fake_worker_fetch)
-    monkeypatch.setattr(
-        config_pool,
-        "evaluate_latest_alpha_policy_gate",
-        lambda candidate, source="backtest", pbo_source=None: gate,
-    )
 
     out = await config_pool.alpha_challenger_gate(
         config_pool.AlphaChallengerRequest(
             sandbox_id="trading:config:sandbox:alpha_framework:2026-04-26T00:00:00Z:abcd1234",
             apply=True,
             confirm=True,
+            evidence=_passing_evidence(CID),
         )
     )
 
@@ -168,6 +148,36 @@ async def test_alpha_challenger_apply_sets_challenger_only_with_confirmed_pass(m
     assert challenger_calls
     assert challenger_calls[0][2]["sandbox_id"].startswith("trading:config:sandbox:alpha_framework:")
     assert challenger_calls[0][2]["gate"]["decision"] == "PASS"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('fault,reason', [('wrong_candidate', 'alpha_evidence_candidate_mismatch'),
+    ('bad_metrics', 'backtest_sharpe'), ('producer_failure', 'alpha_replay_not_applied')])
+async def test_generated_embedded_pass_cannot_bypass_identity_metrics_or_producer_failure(monkeypatch, fault, reason):
+    async def worker(path, method='GET', json_body=None, headers=None):
+        if path.startswith('/api/admin/config/sandbox/'):
+            return _sandbox_record()
+        if path == '/api/admin/config':
+            return {'alphaFramework': {}}
+        raise AssertionError('invalid evidence must never reach challenger writer')
+
+    def generated(candidate, **kwargs):
+        evidence = _passing_evidence(candidate['id'])
+        if fault == 'wrong_candidate':
+            evidence['candidate_id'] = 'different-candidate'
+        elif fault == 'bad_metrics':
+            evidence['backtest']['sharpe'] = -1
+        else:
+            evidence['gate'] = {'decision': 'FAIL', 'failed_gates': ['alpha_replay_not_applied']}
+        return evidence
+
+    monkeypatch.setattr(config_pool, 'worker_fetch', worker)
+    monkeypatch.setattr(config_pool, 'run_alpha_candidate_evidence', generated)
+    result = await config_pool.alpha_challenger_gate(config_pool.AlphaChallengerRequest(
+        sandbox_id=_sandbox_record()['id'], generate_evidence=True, start_date='2026-01-01',
+        end_date='2026-03-31', apply=True, confirm=True))
+    assert result['status'] == 'gate_failed'
+    assert reason in result['gate']['failed_gates']
 
 
 @pytest.mark.asyncio

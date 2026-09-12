@@ -1,0 +1,35 @@
+{
+  "schema_version": "allocator-source-equivalence-v1",
+  "scope": "frozen_allocation_economics_unchanged",
+  "evidence_fixture_sha256": "02437b0c28dd8bd73a09c5204dad1044584bcc9a0fd0099f1657e60c4e0cfea0",
+  "policy_source_identity": {
+    "active_model_policy.py": "3d51ff740bbd312533379f43dc0e313941b9d7b647feaf8719e8498d0b21aeb6",
+    "allocator_ev_fusion.py": "5f97c971fa5d3db4e966a1c91c7bf73f43ca27cc81e1572da2d52d7fc41021c1",
+    "alpha_framework.py": "955507e02c65a84c95f606ae4d7a2dd7870a5514ac7f9e4b20f844c04ff9546b",
+    "expected_return_numeric.py": "8a7b117581404a58c2fe3382c65ea3ba5ccffb3d503a1233e3f59b58b646e11c",
+    "l4_alpha_ev_producer.py": "037c807c3f2467c913345d1ac34ae576685c0198ece965baf02a158a5320997d",
+    "online_portfolio_bandit.py": "4f802541c026a61272f3f0d6bc93aaa58a200f9a0ed1486cd2cff876e36a2525",
+    "opb_nav_control.py": "ba3ece094e42c208c36e73b8763c9c157fb790418542f8c3a28ceb8eaab1b562",
+    "opb_nav_serving_source.json": "64f3437a284cc5eaff5380ef271926a99ea4a458cb9cebff1922dfb8d4731eda",
+    "paired_nav_collection.py": "899369860a7fa570f1c4f526ea88841e6bf3c297fc4b785968baaaa0371d353d",
+    "paired_nav_intervention.py": "429546c59e0b4ef2409acc6d0eb45daaede1db9b697acb2470463e651bceed0d",
+    "paired_nav_opb_prior.py": "1a562eff2121c4bab8d5cfb7b13db4ea0aa769ea239bc27d5a7004a3bc0ca590",
+    "portfolio_allocation.py": "2016860b0083b4b23172c10b30b8937009fe7a0a7e152acd066a99519b870a67",
+    "recommendation_service.py": "d0c60cc3f2e26a3d1de244dcd55193c51a4fdbb0c96958fc39c4c9247eee892a"
+  },
+  "runtime_source_identity": {
+    "recommendation_service.py": "d0c60cc3f2e26a3d1de244dcd55193c51a4fdbb0c96958fc39c4c9247eee892a",
+    "portfolio_allocation.py": "2016860b0083b4b23172c10b30b8937009fe7a0a7e152acd066a99519b870a67",
+    "online_portfolio_bandit.py": "4f802541c026a61272f3f0d6bc93aaa58a200f9a0ed1486cd2cff876e36a2525",
+    "alpha_framework.py": "955507e02c65a84c95f606ae4d7a2dd7870a5514ac7f9e4b20f844c04ff9546b",
+    "l4_alpha_ev_producer.py": "037c807c3f2467c913345d1ac34ae576685c0198ece965baf02a158a5320997d",
+    "allocator_ev_fusion.py": "5f97c971fa5d3db4e966a1c91c7bf73f43ca27cc81e1572da2d52d7fc41021c1",
+    "paired_nav_intervention.py": "429546c59e0b4ef2409acc6d0eb45daaede1db9b697acb2470463e651bceed0d",
+    "expected_return_numeric.py": "8a7b117581404a58c2fe3382c65ea3ba5ccffb3d503a1233e3f59b58b646e11c",
+    "active_model_policy.py": "3d51ff740bbd312533379f43dc0e313941b9d7b647feaf8719e8498d0b21aeb6",
+    "paired_nav_collection.py": "d601487f423f7c26c528707874861cefcd259d4861866d075dc6ea33cd532fb9",
+    "paired_nav_opb_prior.py": "1a562eff2121c4bab8d5cfb7b13db4ea0aa769ea239bc27d5a7004a3bc0ca590",
+    "opb_nav_control.py": "6706a7441cac2fa56ec11690747d559f85894f8a0ec366ab3b41a0eb0df59204",
+    "opb_nav_serving_source.json": "9bd8eda868edbafdb735af72d61ee27bb7f8db0913862717c3165be1e1231543"
+  }
+}

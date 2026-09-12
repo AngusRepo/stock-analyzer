@@ -11,8 +11,10 @@ import io
 import hashlib
 import json
 import os
+import math
+from copy import deepcopy
 from dataclasses import asdict, is_dataclass
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -224,8 +226,16 @@ def enrich_state_space_series_with_long_history(
     *,
     target_points: int | None = None,
     prefix: str | None = None,
+    payloads: list[dict] | None = None,
+    decision_date: str | None = None,
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     """Prefer long-history close series while preserving the serving payload shape."""
+
+    if payloads is not None or decision_date is not None:
+        if payloads is None or decision_date is None:
+            raise ValueError('sequence_daily_inputs_missing')
+        return _enrich_daily_canonical_sequences(payloads, decision_date=decision_date,
+            target_points=target_points, prefix=prefix)
 
     target = int(target_points or daily_sequence_target_points())
     base = list(series or [])
@@ -282,6 +292,213 @@ def enrich_state_space_series_with_long_history(
         "max_points": max(lengths) if lengths else 0,
     })
     return enriched, meta
+
+
+def _sequence_day(value):
+    if not isinstance(value, str) or len(value) != 10 or date.fromisoformat(value).isoformat() != value:
+        raise ValueError('sequence_date_invalid')
+    return value
+
+
+def _sequence_price(value):
+    if isinstance(value, bool) or value is None:
+        raise ValueError('sequence_adjusted_price_invalid')
+    parsed = float(value)
+    if not math.isfinite(parsed) or parsed <= 0:
+        raise ValueError('sequence_adjusted_price_invalid')
+    return parsed
+
+
+def load_dated_long_history_records(*, symbols: set[str], decision_date: str, prefix: str | None = None):
+    """Use the producer's existing checksum inventory, never the mutable cache.
+
+    Validate bytes BEFORE deserializing the trusted GCS NPZ. Keep actual dates
+    and lane price semantics; no undated legacy row or raw-price lane is an
+    adjusted-price substitute. Observation-now is not historical PIT authority.
+    """
+    from google.cloud import storage
+    import numpy as np
+    _sequence_day(decision_date)
+    prefix = (prefix or long_history_sequence_prefix()).strip().rstrip('/')
+    bucket_name = _configured_bucket_name()
+    if not bucket_name:
+        raise ValueError('sequence_bucket_missing')
+    bucket = storage.Client().bucket(bucket_name)
+    manifest_blob = bucket.blob(f'{prefix}/prep/sequence_manifest.json')
+    manifest = json.loads(manifest_blob.download_as_bytes().decode('utf-8-sig'))
+    unsigned = {k: v for k, v in manifest.items() if k != 'manifest_checksum'}
+    expected = hashlib.sha256(json.dumps(unsigned, sort_keys=True, separators=(',', ':')).encode()).hexdigest()
+    count = manifest.get('batch_count')
+    if (manifest.get('schema_version') != 'finlab-long-history-sequence-prep-v2'
+            or manifest.get('contract') != 'sequence_records_v3' or manifest.get('status') != 'ready'
+            or manifest.get('output_gcs_prefix') != prefix or manifest.get('manifest_checksum') != expected
+            or type(count) is not int or count <= 0 or not isinstance(manifest.get('output_checksums'), dict)):
+        raise ValueError('sequence_manifest_invalid')
+    # Source-lane fields are already declared by the actual FinLab producer.
+    adjusted_lanes = {r['lane'] for r in manifest.get('lane_reports', [])
+                      if r.get('close_field') == 'adj_close'}
+    if not adjusted_lanes:
+        raise ValueError('sequence_adjusted_lane_missing')
+    records = {}
+    for idx in range(count):
+        path = f'{prefix}/prep/batch_{idx}.npz'
+        checksum = manifest['output_checksums'].get(path)
+        raw = bucket.blob(path).download_as_bytes()
+        if not checksum or hashlib.sha256(raw).hexdigest() != checksum:
+            raise ValueError('sequence_batch_checksum_mismatch')
+        with np.load(io.BytesIO(raw), allow_pickle=True) as data:
+            if 'sequence_records' not in data.files:
+                raise ValueError('sequence_dated_records_missing')
+            rows = data['sequence_records'].tolist()
+        for row in rows:
+            symbol = row.get('symbol') if isinstance(row, dict) else None
+            if symbol not in symbols:
+                continue
+            if symbol in records or row.get('source_lane') not in adjusted_lanes:
+                raise ValueError('sequence_source_identity_or_basis_invalid')
+            dates, prices = row.get('dates'), row.get('close')
+            if not isinstance(dates, list) or not isinstance(prices, list) or len(dates) != len(prices) or not dates:
+                raise ValueError('sequence_date_price_alignment_invalid')
+            days = [_sequence_day(d) for d in dates]
+            if days != sorted(set(days)):
+                raise ValueError('sequence_dates_not_strictly_increasing')
+            values = [_sequence_price(p) for p in prices]
+            records[symbol] = {d: p for d, p in zip(days, values) if d <= decision_date}
+    # A concurrent mutable-prefix refresh cannot produce a mixed valid batch set
+    # because each batch is checked against the single manifest read above.
+    return records, {'manifest_checksum': expected, 'records_checksum': manifest.get('records_checksum'),
+        'output_checksums': manifest['output_checksums'],
+        'prefix': prefix, 'price_basis': 'finlab_adjusted_close', 'cutoff_date': decision_date}
+
+
+def _enrich_daily_canonical_sequences(payloads, *, decision_date, target_points=None, prefix=None):
+    from services.payload_builder import MARKET_D1_CLIENT, _d1_bind_chunks
+    from services.paired_nav_journal import digest
+    _sequence_day(decision_date)
+    target = daily_sequence_target_points() if target_points is None else target_points
+    if type(target) is not int or target <= 0:
+        raise ValueError('sequence_target_points_invalid')
+    symbols = [p.get('symbol') for p in payloads]
+    if any(not isinstance(s, str) or not s or s != s.strip() for s in symbols) or len(symbols) != len(set(symbols)):
+        raise ValueError('sequence_symbols_invalid')
+    required = {}
+    for payload in payloads:
+        days = []
+        for row in payload.get('prices') or []:
+            day = _sequence_day(row.get('date'))
+            if day > decision_date:
+                raise ValueError('sequence_payload_after_decision')
+            if row.get('close') is not None:
+                _sequence_price(row['close'])
+                days.append(day)
+        if days != sorted(set(days)):
+            raise ValueError('sequence_payload_dates_not_strictly_increasing')
+        required[payload['symbol']] = days[-target:]
+    canonical = {s: {} for s in symbols}
+    observations = []
+    for chunk in _d1_bind_chunks(symbols):
+        rows = MARKET_D1_CLIENT.query(
+            f"SELECT symbol,date,adj_close,as_of_date,source FROM ("
+            f"SELECT stock_id AS symbol,date,adj_close,as_of_date,source,"
+            f"ROW_NUMBER() OVER(PARTITION BY stock_id ORDER BY date DESC) AS rn "
+            f"FROM canonical_market_daily WHERE stock_id IN ({','.join('?' for _ in chunk)}) "
+            f"AND source='finlab.price' AND date<=? AND as_of_date<=?) "
+            f"WHERE rn<=? ORDER BY symbol,date", [*chunk, decision_date, decision_date, target], timeout=120.0)
+        seen = set()
+        for row in rows:
+            s, day = row.get('symbol'), _sequence_day(row.get('date'))
+            as_of = _sequence_day(row.get('as_of_date'))
+            if (s not in chunk or (s, day) in seen or day > decision_date or as_of > decision_date
+                    or as_of < day or row.get('source') != 'finlab.price'):
+                raise ValueError('sequence_canonical_identity_or_time_invalid')
+            seen.add((s, day))
+            observations.append(deepcopy(row))
+            if row.get('adj_close') is not None:
+                canonical[s][day] = _sequence_price(row['adj_close'])
+    needed = {s for s in symbols if len(canonical[s]) < target or not set(required[s]) <= set(canonical[s])}
+    long, history_meta, issues = {}, None, []
+    if needed and long_history_sequence_enabled():
+        try:
+            long, history_meta = load_dated_long_history_records(symbols=needed, decision_date=decision_date, prefix=prefix)
+        except Exception as exc:
+            # Optional historical extension cannot erase verified daily prices.
+            # Keep the failure visible; NEVER replace missing adjusted data with
+            # raw close, a stale tail, padded zeros or undated historical prices.
+            code = str(exc)
+            issues.append({'stage': 'long_history', 'reason': code if code.startswith('sequence_')
+                           and code.replace('_', '').isalnum() else 'sequence_history_read_failed',
+                           'error_type': type(exc).__name__})
+    out = []
+    for symbol in symbols:
+        base, older = canonical[symbol], long.get(symbol, {})
+        conflict = any(not math.isclose(base[d], older[d], rel_tol=1e-8, abs_tol=1e-8) for d in base.keys() & older.keys())
+        if conflict:
+            issues.append({'symbol': symbol, 'reason': 'sequence_adjusted_vintage_mismatch'})
+            older = {}
+        # If both series are present, overlap is necessary to verify same scale.
+        if base and older and not base.keys() & older.keys():
+            issues.append({'symbol': symbol, 'reason': 'sequence_adjusted_overlap_missing'})
+            older = {}
+        combined = {**older, **base}
+        missing = sorted(set(required[symbol]) - set(combined))
+        available_days = sorted(combined)[-target:]
+        latest_mismatch = bool(required[symbol] and combined and max(combined) != required[symbol][-1])
+        unavailable = bool(missing) or not required[symbol] or latest_mismatch
+        days = [] if unavailable else available_days
+        out.append({'symbol': symbol, 'prices': [combined[d] for d in days], 'dates': days,
+            'sequence_source': 'finlab_canonical_and_verified_history' if older else 'finlab_canonical_adjusted',
+            'price_basis': 'finlab_adjusted_close', 'history_points_available': len(combined),
+            'status': 'unavailable' if unavailable else 'ready', 'missing_adjusted_dates': missing,
+            'reason': 'canonical_adjusted_dates_missing' if missing else 'payload_market_dates_missing' if not required[symbol]
+                      else 'payload_canonical_latest_date_mismatch' if latest_mismatch else None})
+    return out, {'schema_version': 'state-space-dated-adjusted-enrichment-v1',
+        'source': 'finlab_dated_adjusted_prices', 'decision_date': decision_date, 'target_points': target,
+        'input_series': len(payloads), 'output_series': len(out),
+        'canonical_observation_checksum': digest(observations), 'canonical_observations': observations,
+        'history': history_meta, 'history_observations': long, 'source_issues': issues,
+        'unavailable_symbols': [r['symbol'] for r in out if r['status'] == 'unavailable'],
+        'knowledge_scope': 'observed_at_capture_not_historical_asof'}
+
+
+def sequence_input_fingerprints(payloads):
+    from services.paired_nav_journal import digest
+    fingerprints = {}
+    for row in payloads:
+        symbol = row.get('symbol')
+        if not isinstance(symbol, str) or not symbol or symbol in fingerprints:
+            raise ValueError('sequence_snapshot_input_symbols_invalid')
+        fingerprints[symbol] = digest({'symbol': symbol, 'stock_id': row.get('stock_id'), 'prices': row.get('prices') or []})
+    return fingerprints
+
+
+def read_frozen_sequence_inputs(packet, *, decision_date, payloads, observed_before=None):
+    from services.paired_nav_journal import digest, _timestamp
+    if (not isinstance(packet, dict) or packet.get('schema_version') != 'pipeline-sequence-observations-v1'
+            or packet.get('signal_date') != decision_date
+            or packet.get('source_checksum') != digest({k: v for k, v in packet.items() if k != 'source_checksum'})
+            or not isinstance(packet.get('input_fingerprints'), dict) or not isinstance(packet.get('series'), list)):
+        raise ValueError('sequence_snapshot_invalid')
+    observed = _timestamp(packet['observed_at'])
+    if observed_before is not None and observed > _timestamp(observed_before):
+        raise ValueError('sequence_snapshot_observed_after_parent')
+    inputs = sequence_input_fingerprints(payloads)
+    if any(packet['input_fingerprints'].get(s) != value for s, value in inputs.items()):
+        raise ValueError('sequence_snapshot_raw_inputs_changed')
+    rows = {}
+    for row in packet['series']:
+        s = row.get('symbol')
+        if s not in packet['input_fingerprints'] or s in rows or not isinstance(row.get('prices'), list):
+            raise ValueError('sequence_snapshot_coverage_invalid')
+        for price in row['prices']:
+            _sequence_price(price)
+        if 'dates' in row:
+            days = [_sequence_day(d) for d in row['dates']]
+            if len(days) != len(row['prices']) or days != sorted(set(days)) or any(d > decision_date for d in days):
+                raise ValueError('sequence_snapshot_dates_invalid')
+        rows[s] = row
+    selected = [deepcopy(rows[s]) for s in inputs if s in rows]
+    return selected, {**deepcopy(packet.get('metadata') or {}), 'frozen_source_checksum': packet['source_checksum'],
+                       'input_series': len(payloads), 'output_series': len(selected)}
 
 
 def build_state_space_series_export(

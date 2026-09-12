@@ -1,8 +1,9 @@
+import { paperExecutionNow, paperExecutionDate } from './paperExecutionScope'
 import { getExitMultiplier, getExitOrder, type MarketRegime } from './dynamicExitPriority'
 import { readCurrentRegimeFamily } from './marketRegimeState'
 
 export async function getPrevTradingDay(db: D1Database, kv?: KVNamespace): Promise<string> {
-  const today = new Date(Date.now() + 8 * 3600_000).toISOString().slice(0, 10)
+  const today = new Date(paperExecutionNow() + 8 * 3600_000).toISOString().slice(0, 10)
   if (kv) {
     const dt = new Date(`${today}T00:00:00Z`)
     for (let i = 1; i <= 14; i += 1) {
@@ -19,7 +20,7 @@ export async function getPrevTradingDay(db: D1Database, kv?: KVNamespace): Promi
   const row = await db.prepare(
     'SELECT date FROM daily_recommendations WHERE date < ? ORDER BY date DESC LIMIT 1',
   ).bind(today).first<{ date: string }>()
-  return row?.date ?? new Date(Date.now() + 8 * 3600_000 - 86400_000).toISOString().slice(0, 10)
+  return row?.date ?? new Date(paperExecutionNow() + 8 * 3600_000 - 86400_000).toISOString().slice(0, 10)
 }
 
 export async function getCurrentRegime(kv: KVNamespace): Promise<MarketRegime | null> {
@@ -42,7 +43,7 @@ export function logRegimeShadow(
     tp2: getExitMultiplier(regime, 'tp2'),
     timeStop: getExitMultiplier(regime, 'timeStop'),
   }
-  const ts = new Date().toISOString()
+  const ts = paperExecutionDate().toISOString()
   console.log(JSON.stringify({
     event: 'regime_shadow',
     caller,
@@ -56,7 +57,7 @@ export function logRegimeShadow(
   }))
 
   if (db) {
-    const twDate = new Date(Date.now() + 8 * 3600_000).toISOString().slice(0, 10)
+    const twDate = new Date(paperExecutionNow() + 8 * 3600_000).toISOString().slice(0, 10)
     db.prepare(
       'INSERT INTO exit_shadow_log (ts, date, caller, symbol, regime, actual_action, actual_reason, hypothetical_order, hypothetical_mult) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
     ).bind(
@@ -81,7 +82,7 @@ export async function recordSellSettlement(
   proceeds: number,
 ): Promise<number | null> {
   const { getSettlementDate } = await import('./dateUtils')
-  const todayStr = new Date(Date.now() + 8 * 3600_000).toISOString().slice(0, 10)
+  const todayStr = new Date(paperExecutionNow() + 8 * 3600_000).toISOString().slice(0, 10)
   const settleDate = await getSettlementDate(todayStr, kv)
   const lastOrder = await db.prepare(
     "SELECT id FROM paper_orders WHERE account_id=? AND symbol=? AND side='sell' ORDER BY id DESC LIMIT 1",

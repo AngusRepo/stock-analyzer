@@ -1,0 +1,4 @@
+{
+  "controller_read_timeout_seconds": 60,
+  "worker_operation_overhead_seconds": 60
+}

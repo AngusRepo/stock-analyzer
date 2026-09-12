@@ -355,3 +355,35 @@ export function buildCanonicalTradeLifecycle(input: {
 export function serializeCanonicalTradeLifecycle(lifecycle: CanonicalTradeLifecycle): string {
   return JSON.stringify(lifecycle)
 }
+
+/** Price-coordinate change only. Never rescale returns, confidence, quantities,
+ * risk multipliers, dates or immutable original order notes. */
+export function adjustCanonicalCorporatePriceBasis(raw: unknown, factor: number, actionIds: string[]): string | null {
+  if (raw == null || raw === '') return null
+  if (!Number.isFinite(factor) || factor <= 0 || !actionIds.length) throw new Error('corporate_price_basis_invalid')
+  const value = typeof raw === 'string' ? JSON.parse(raw) : JSON.parse(JSON.stringify(raw))
+  if (value?.version !== 'canonical_trade_lifecycle_v1') throw new Error('corporate_lifecycle_version_unknown')
+  const old = value.corporatePriceBasis ?? { factor: 1, actionIds: [] }
+  if (!Number.isFinite(old.factor) || old.factor <= 0 || !Array.isArray(old.actionIds)
+    || actionIds.some(id => old.actionIds.includes(id))) throw new Error('corporate_price_basis_repeated_or_invalid')
+  const scale = (object: Record<string, any> | null | undefined, fields: string[]) => {
+    if (!object) return
+    for (const key of fields) {
+      const price = object[key]
+      if (price == null) continue
+      if (typeof price !== 'number' || !Number.isFinite(price) || price < 0) throw new Error('corporate_lifecycle_price_invalid:' + key)
+      object[key] = price * factor
+    }
+  }
+  scale(value.entry, ['entryPrice', 'stopLoss', 'chaseCeiling'])
+  const s12 = value.entry?.s12
+  scale(s12, ['demandZoneLow', 'demandZoneHigh', 'supplyZoneLow', 'supplyZoneHigh', 'structureStop'])
+  scale(s12?.quality?.vwapContext, ['session', 'h1', 'h4', 'session60', 'daily', 'anchoredDay', 'anchoredWeek',
+    'anchoredMonth', 'anchoredQuarter', 'anchoredYear', 'rolling7d', 'rolling30d', 'rolling90d', 'rolling365d',
+    'previousDay', 'previousWeek', 'previousMonth', 'nearestAbove', 'nearestBelow', 'initialBalanceHigh', 'initialBalanceLow'])
+  scale(s12?.exitPlan, ['tp1', 'mainExit', 'tp3', 'tp4', 'manualTp', 'trailingInitial'])
+  scale(value.exit, ['initialStop', 'trailingStop', 'tp1', 'tp2', 'atr14'])
+  scale(value.exit?.anchors, ['atrTp1', 'atrTp2', 'mlTp1', 'mlTp2'])
+  value.corporatePriceBasis = { factor: old.factor * factor, actionIds: [...old.actionIds, ...actionIds] }
+  return JSON.stringify(value)
+}

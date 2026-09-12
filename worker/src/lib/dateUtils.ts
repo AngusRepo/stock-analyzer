@@ -1,3 +1,4 @@
+import { paperExecutionNow } from './paperExecutionScope'
 /**
  * dateUtils.ts — Taiwan timezone helpers
  *
@@ -7,7 +8,7 @@
 const TW_OFFSET_MS = 8 * 3600_000
 
 export function twNow(): Date {
-  return new Date(Date.now() + TW_OFFSET_MS)
+  return new Date(paperExecutionNow() + TW_OFFSET_MS)
 }
 
 export function twToday(): string {
@@ -15,7 +16,7 @@ export function twToday(): string {
 }
 
 export function twDaysAgo(days: number): string {
-  return new Date(Date.now() + TW_OFFSET_MS - days * 86400000).toISOString().slice(0, 10)
+  return new Date(paperExecutionNow() + TW_OFFSET_MS - days * 86400000).toISOString().slice(0, 10)
 }
 
 /**

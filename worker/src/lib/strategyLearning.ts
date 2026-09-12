@@ -1,3 +1,6 @@
+import navReviewPolicy from '../../../ml-controller/services/paired_nav_review_policy.json'
+import { buildStrategyReadinessWeights, strategyWeightEvidenceReady,
+  STRATEGY_WEIGHT_MIN_SAMPLES, STRATEGY_WEIGHT_MIN_MATURE_DATES } from './strategyWeightReadiness'
 import {
   DEFAULT_STRATEGY_SPECS,
   STRATEGY_FORMAL_LABELER_LEGACY_VERSION,
@@ -237,6 +240,7 @@ export interface StrategyReplacementCandidatePrefilterSummary {
 }
 
 export interface StrategyReplacementGateSummary {
+  replacement_owner?: 'original_paired_daily_nav' | 'legacy_atomic_v7' | 'unavailable'
   policy: typeof STRATEGY_REPLACEMENT_POLICY_V7
   evidence_status: 'ready' | 'pending' | 'unavailable'
   status_reason: string
@@ -301,14 +305,14 @@ export interface StrategyPromotionGateRow {
   l3_requires_wei_approval: boolean
   production_effect: false
   allocation_eligible: boolean
-  gate_policy: 'candidate_evidence_then_atomic_replacement_v7'
+  gate_policy: 'candidate_evidence_then_atomic_replacement_v7' | 'original_paired_daily_nav'
   gate_role: 'atomic_replacement_to_active' | 'incumbent_monitoring' | 'non_selection_owner_monitoring'
   hard_gate_metrics: string[]
   diagnostic_only_metrics: string[]
   activation_gate: {
     policy_version: string
     required: boolean
-    status: 'not_applicable' | 'evidence_pending' | 'prefilter_failed' | 'not_evaluated' | 'proposed' | 'rejected' | 'accepted'
+    status: 'not_applicable' | 'evidence_pending' | 'prefilter_failed' | 'not_evaluated' | 'proposed' | 'rejected' | 'accepted' | 'nav_review'
     decision_id: string | null
     run_id: string | null
     applicability_reason: string | null
@@ -453,8 +457,8 @@ const LEGACY_RETIRED_STRATEGY_SPEC_IDS = [
 ]
 
 const PROMOTION_MIN_DECISIONS = 30
-const PROMOTION_MIN_SAMPLES = 30
-const PROMOTION_MIN_MATURE_DATES = 10
+const PROMOTION_MIN_SAMPLES = STRATEGY_WEIGHT_MIN_SAMPLES
+const PROMOTION_MIN_MATURE_DATES = STRATEGY_WEIGHT_MIN_MATURE_DATES
 export const STRATEGY_PROMOTION_THRESHOLDS = Object.freeze({
   min_evaluable_decisions: PROMOTION_MIN_DECISIONS,
   min_match_rate: null,
@@ -2380,6 +2384,7 @@ export async function listStrategyRewardSourceRows(
       "l.label_schema_version = 'canonical-strategy-selection-label-v4'",
       `m.labeler_version IN (${formalLabelerPlaceholders})`,
       'r.strategy_labeler_version = m.labeler_version',
+      "NOT EXISTS (SELECT 1 FROM strategy_evidence_gap_dispositions_v1 d WHERE d.signal_date=m.signal_date AND d.status='excluded_missing_source')",
       `EXISTS (
         SELECT 1 FROM strategy_label_matrix_runs_v4 mr
          WHERE mr.producer_run_id=m.producer_run_id AND mr.status='ready'
@@ -2406,7 +2411,10 @@ export async function listStrategyRewardSourceRows(
       clauses.push("EXISTS (SELECT 1 FROM canonical_run_heads h WHERE h.logical_run_key = 'screener:' || m.signal_date || ':TW:production:market_screener' AND h.run_id = m.producer_run_id)")
     }
     if (options.startDate) { clauses.push('m.signal_date >= ?'); binds.push(options.startDate) }
-    if (options.endDate) { clauses.push('m.signal_date <= ?'); binds.push(options.endDate) }
+    if (options.endDate) {
+      clauses.push('m.signal_date <= ?', 'l.outcome_known_date IS NOT NULL', 'l.outcome_known_date <= ?')
+      binds.push(options.endDate, options.endDate)
+    }
     binds.push(pageSize)
     const page = await db.prepare(`
       SELECT m.signal_date date,
@@ -3154,6 +3162,8 @@ function gateEvidenceFromSpec(spec: StrategyLearningSummary['specs'][number]): S
 }
 
 export function evaluateStrategyPromotionGate(summary: StrategyLearningSummary): StrategyPromotionGateRow[] {
+  const navOwner = summary.replacement_gate.replacement_owner === 'original_paired_daily_nav'
+  const ownerUnavailable = summary.replacement_gate.replacement_owner === 'unavailable'
   return summary.specs.map((spec) => {
     const lifecycleStatus = canonicalStrategyLifecycleStatus(spec.status)
     const evidence = gateEvidenceFromSpec(spec)
@@ -3167,8 +3177,7 @@ export function evaluateStrategyPromotionGate(summary: StrategyLearningSummary):
       missing.push(`mature_dates_lt_${PROMOTION_MIN_MATURE_DATES}`)
     }
     const activeMonitor = lifecycleStatus === 'active'
-    const activeEvidenceReady = evidence.samples >= PROMOTION_MIN_SAMPLES
-      && evidence.mature_dates >= PROMOTION_MIN_MATURE_DATES
+    const activeEvidenceReady = strategyWeightEvidenceReady(evidence.samples, evidence.mature_dates)
     const activeRetentionMissing = activeMonitor
       ? [
         evidence.samples < PROMOTION_MIN_SAMPLES ? `samples_lt_${PROMOTION_MIN_SAMPLES}` : null,
@@ -3190,6 +3199,8 @@ export function evaluateStrategyPromotionGate(summary: StrategyLearningSummary):
       && candidatePrefilter?.evidence_status !== 'not_applicable'
     const activationStatus: StrategyPromotionGateRow['activation_gate']['status'] = !activationRequired
       ? 'not_applicable'
+      : navOwner ? 'nav_review'
+      : ownerUnavailable ? 'evidence_pending'
       : activationDecision
         ? activationDecision.status
         : summary.replacement_gate.evidence_status !== 'ready'
@@ -3201,7 +3212,12 @@ export function evaluateStrategyPromotionGate(summary: StrategyLearningSummary):
               : candidatePrefilter.production_eligible === true
                 ? 'not_evaluated'
                 : 'evidence_pending'
-    if (activationRequired && !acceptedReplacement) {
+    if (activationRequired && navOwner) {
+      // Legacy reward/prefilter metrics are not a second NAV efficacy veto.
+      missing.length = 0
+    } else if (activationRequired && ownerUnavailable) {
+      missing.push('replacement_owner_unavailable')
+    } else if (activationRequired && !acceptedReplacement) {
       missing.push(activationStatus === 'evidence_pending'
         ? 'atomic_replacement_v7_evidence_pending'
         : activationStatus === 'prefilter_failed'
@@ -3211,7 +3227,7 @@ export function evaluateStrategyPromotionGate(summary: StrategyLearningSummary):
             : 'atomic_replacement_v7_not_accepted')
     }
     const allocationEligible = activeMonitor && activeEvidenceReady
-    const ready = activationRequired && missing.length === 0
+    const ready = activationRequired && missing.length === 0 && !navOwner && !ownerUnavailable
     const currentStage = stageForStrategyStatus(lifecycleStatus)
     const recommendedNextStatus = activeMonitor
       ? 'active'
@@ -3237,7 +3253,7 @@ export function evaluateStrategyPromotionGate(summary: StrategyLearningSummary):
       l3_requires_wei_approval: false,
       production_effect: false,
       allocation_eligible: allocationEligible,
-      gate_policy: 'candidate_evidence_then_atomic_replacement_v7',
+      gate_policy: navOwner ? 'original_paired_daily_nav' : 'candidate_evidence_then_atomic_replacement_v7',
       gate_role: activeMonitor
         ? 'incumbent_monitoring'
         : activationRequired
@@ -3245,14 +3261,14 @@ export function evaluateStrategyPromotionGate(summary: StrategyLearningSummary):
           : 'non_selection_owner_monitoring',
       hard_gate_metrics: activeMonitor
         ? ['reward_samples', 'mature_dates']
-        : ['evaluable_decisions', 'reward_samples', 'mature_dates', 'atomic_replacement_v7'],
+        : navOwner ? ['original_paired_daily_nav'] : ['evaluable_decisions', 'reward_samples', 'mature_dates', 'atomic_replacement_v7'],
       diagnostic_only_metrics: ['match_rate', 'hit_rate', 'avg_cost_net_alpha', 'max_drawdown', 'date_return_lcb90'],
       activation_gate: {
-        policy_version: STRATEGY_REPLACEMENT_POLICY_V7.policy_version,
+        policy_version: navOwner ? navReviewPolicy.revision : STRATEGY_REPLACEMENT_POLICY_V7.policy_version,
         required: activationRequired,
         status: activationStatus,
-        decision_id: activationRequired ? activationDecision?.decision_id ?? null : null,
-        run_id: activationRequired ? activationDecision?.run_id ?? null : null,
+        decision_id: activationRequired && !navOwner && !ownerUnavailable ? activationDecision?.decision_id ?? null : null,
+        run_id: activationRequired && !navOwner && !ownerUnavailable ? activationDecision?.run_id ?? null : null,
         applicability_reason: candidatePrefilter?.applicability_reason ?? null,
       },
       missing_evidence: activeMonitor ? activeRetentionMissing : missing,
@@ -3260,17 +3276,6 @@ export function evaluateStrategyPromotionGate(summary: StrategyLearningSummary):
       evidence,
     }
   })
-}
-
-function strategyPolicyScore(spec: StrategyLearningSummary['specs'][number], gate: StrategyPromotionGateRow): number {
-  if (!gate.allocation_eligible) return 0
-  if (
-    spec.learning.rolling_samples < PROMOTION_MIN_SAMPLES
-    || spec.learning.rolling_reward_dates < PROMOTION_MIN_MATURE_DATES
-  ) return 0
-  // The adaptive base owns readiness only. Strategy-specific performance is
-  // applied later by the immutable, OOS-promoted multi-horizon evidence owner.
-  return 1
 }
 
 function clampPolicyValue(value: number, minimum: number, maximum: number): number {
@@ -3347,23 +3352,16 @@ export function buildStrategyAdaptivePolicyState(
   const nowIso = options.nowIso ?? new Date().toISOString()
   const gates = summary.promotion_gate.length ? summary.promotion_gate : evaluateStrategyPromotionGate(summary)
   const gateById = new Map(gates.map((gate) => [`${gate.strategy_id}|${gate.strategy_version}`, gate]))
-  const strategyWeights: Record<string, number> = {}
+  const strategyWeights = buildStrategyReadinessWeights(summary.specs.map(spec => ({
+    id: spec.id, version: spec.version, status: spec.status,
+    samples: spec.learning.rolling_samples, matureDates: spec.learning.rolling_reward_dates,
+  })), gates)
   const thresholdDeltas: Record<string, StrategyAdaptiveThresholdDelta> = {}
   const lifecycleRecommendations: Record<string, StrategyAdaptiveLifecycleRecommendation> = {}
-  const activeScores = summary.specs
-    .filter((spec) => spec.status === 'active')
-    .map((spec) => {
-      const gate = gateById.get(`${spec.id}|${spec.version}`)
-      const score = gate ? strategyPolicyScore(spec, gate) : 0
-      return { spec, gate, score }
-    })
-  const total = activeScores.reduce((sum, row) => sum + row.score, 0)
   for (const spec of summary.specs.filter((row) => row.status !== 'retired')) {
     const lifecycleStatus = canonicalStrategyLifecycleStatus(spec.status)
     const gate = gateById.get(`${spec.id}|${spec.version}`)
-    const active = activeScores.find((row) => row.spec.id === spec.id)
-    const weight = active && total > 0 ? round6(active.score / total) ?? 0 : 0
-    strategyWeights[spec.id] = weight
+    const weight = strategyWeights[spec.id]
     // Thresholds define the label and therefore stay owned by the immutable,
     // versioned Strategy Spec. Performance evidence only changes contribution.
     const decision = gate?.decision ?? 'not_ready'
@@ -3476,9 +3474,10 @@ export async function getStrategyPolicyStateBeforeDate(
      WHERE policy_id = ?
        AND status = 'active'
        AND knowledge_cutoff_date < ?
+       AND datetime(created_at) < datetime(?, '-8 hours')
      ORDER BY knowledge_cutoff_date DESC, created_at DESC
      LIMIT 1
-  `).bind(STRATEGY_POLICY_ID, signalDate).first<StrategyPolicyStateRow>()
+  `).bind(STRATEGY_POLICY_ID, signalDate, signalDate).first<StrategyPolicyStateRow>()
   return row ? parseStrategyPolicyStateRow(row) : null
 }
 
@@ -3506,6 +3505,8 @@ export async function persistStrategyPolicyState(db: D1Database, state: Strategy
       threshold_deltas_json=excluded.threshold_deltas_json,
       evidence_json=excluded.evidence_json,
       updated_at=excluded.updated_at
+    WHERE COALESCE(json_extract(strategy_policy_state.evidence_json, '$.date'), '')
+      <= json_extract(excluded.evidence_json, '$.date')
   `).bind(
     state.policy_id,
     state.version,
@@ -3930,6 +3931,8 @@ async function loadStrategyReplacementGateSummary(
   candidateStrategyApplicability: ReadonlyMap<string, string | null>,
 ): Promise<StrategyReplacementGateSummary> {
   try {
+    const { atomicNavOwnsRegistry } = await import('./strategyAtomicNavReceipt')
+    const replacementOwner = await atomicNavOwnsRegistry(db) ? 'original_paired_daily_nav' : 'legacy_atomic_v7'
     const run = await db.prepare(`
       SELECT run_id,
              as_of_date,
@@ -3959,6 +3962,7 @@ async function loadStrategyReplacementGateSummary(
       return {
         policy: STRATEGY_REPLACEMENT_POLICY_V7,
         evidence_status: 'pending',
+        replacement_owner: replacementOwner,
         status_reason: 'No contract-valid V7 replacement run exists on or before this date.',
         latest_run: null,
         candidate_prefilters: projectStrategyReplacementCandidatePrefilters([], candidateStrategyApplicability),
@@ -4024,6 +4028,7 @@ async function loadStrategyReplacementGateSummary(
     return {
       policy: STRATEGY_REPLACEMENT_POLICY_V7,
       evidence_status: 'ready',
+      replacement_owner: replacementOwner,
       status_reason: decisions.length > 0
         ? `${decisions.length} paired replacement decisions loaded from ${run.run_id}.`
         : `V7 run ${run.run_id} completed without a paired replacement proposal.`,
@@ -4044,6 +4049,7 @@ async function loadStrategyReplacementGateSummary(
     return {
       policy: STRATEGY_REPLACEMENT_POLICY_V7,
       evidence_status: 'unavailable',
+      replacement_owner: 'unavailable',
       status_reason: cause instanceof Error ? cause.message : 'Replacement evidence query failed.',
       latest_run: null,
       candidate_prefilters: projectStrategyReplacementCandidatePrefilters([], candidateStrategyApplicability),
@@ -4921,6 +4927,21 @@ export async function rebuildHistoricalStrategyEvidenceV5(
           && Number(projectionSource.matched_rows) > 0
           && Number(projectionSource.threshold_evidence_rows) === Number(projectionSource.matched_rows)
         if (projectionSourceReady && !artifactBackedV1Carrier) {
+          const frozenProjection = await db.prepare(`
+            SELECT
+              (SELECT COUNT(*) FROM strategy_label_matrix_v4
+                WHERE signal_date=? AND producer_run_id=? AND challenger_affinity_version=?) matrix_rows,
+              (SELECT COUNT(*) FROM selection_reference_snapshots_v1
+                WHERE signal_date=? AND producer_run_id=? AND hard_gate_passed=1
+                  AND strategy_challenger_affinity_version=?) reference_rows
+          `).bind(date, producerRunId, STRATEGY_AFFINITY_CHALLENGER_VERSION,
+            date, producerRunId, STRATEGY_AFFINITY_CHALLENGER_VERSION,
+          ).first<{ matrix_rows: number; reference_rows: number }>()
+          // A complete native projection is original evidence, not a request
+          // to recompute its affinities using today's evaluator/configuration.
+          const frozenProjectionComplete = Number(frozenProjection?.matrix_rows) === expectedMatrixRows
+            && Number(frozenProjection?.reference_rows) === references.length
+          if (!frozenProjectionComplete) {
           const regime = await options.resolveHistoricalRegime?.(date) ?? artifactEvidence?.regime ?? null
           if (!regime) throw new Error(`strategy_regime_pit_missing:${date}`)
           const projectionUpdates: D1PreparedStatement[] = []
@@ -4955,6 +4976,7 @@ export async function rebuildHistoricalStrategyEvidenceV5(
                SET strategy_challenger_affinity_version=?
              WHERE signal_date=? AND producer_run_id=?
           `).bind(STRATEGY_AFFINITY_CHALLENGER_VERSION, date, producerRunId).run()
+          }
           projectedExistingMatrix = true
         }
       }

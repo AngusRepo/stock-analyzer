@@ -64,7 +64,7 @@ OOF_FORWARD_COVERAGE_POLICY_VERSION = "verified-frozen-forward-monitoring-v2"
 EXPECTED_RETURN_SHADOW_EVALUATION_IDENTITY_VERSION = (
     "expected-return-shadow-evaluation-identity-v2"
 )
-EXPECTED_RETURN_SHADOW_EVALUATOR_VERSION = "expected-return-frozen-forward-evaluator-v4"
+EXPECTED_RETURN_SHADOW_EVALUATOR_VERSION = "expected-return-rolling-population-evaluator-v5"
 
 CORE_D1_CLIENT = client_proxy_for_domain(D1DataDomain.CORE)
 MARKET_D1_CLIENT = client_proxy_for_domain(D1DataDomain.MARKET)
@@ -2014,6 +2014,20 @@ def archive_ev_shadow_evaluation_packets(
     ):
         artifact = dict(result.get("artifact") or {})
         validation = dict(result.get("validation_packet") or {})
+        population = validation.get("diagnostic_population") or {}
+        if (population.get("schema_version") != "expected-return-rolling-population-v1"
+                or population.get("promotion_eligible") is not False
+                or population.get("extension_dates") != dates
+                or not set(dates).intersection(population.get("available_dates") or [])):
+            raise ValueError(f"expected_return_shadow_population_unverified:{model_name}")
+        evaluated_dates = population.get("evaluated_dates") or []
+        oos_metrics = (validation.get("oos_metrics") or {}) if model_name == "l4_alpha_ev" else (
+            (validation.get("residual_adjustment_model") or {}).get("oos_metrics") or {})
+        if (evaluated_dates != sorted(set(evaluated_dates))
+                or evaluated_dates != (oos_metrics.get("evaluated_dates") or [])
+                or not set(evaluated_dates).issubset(population["available_dates"])
+                or population.get("usable_max_date") != (validation.get("sample_audit") or {}).get("evidence_max_date")):
+            raise ValueError(f"expected_return_shadow_population_inconsistent:{model_name}")
         model_version = str(artifact.get("model_version") or "unknown")
         # The model fingerprint excludes observation timestamps and validation
         # telemetry.  Re-evaluating the same immutable model and extension must
@@ -2033,6 +2047,8 @@ def archive_ev_shadow_evaluation_packets(
             "feature_semantic_version": artifact.get("feature_semantic_version"),
             "label_schema_version": artifact.get("label_schema_version"),
             "validation_schema_version": validation.get("schema_version"),
+            "population_schema_version": population["schema_version"],
+            "diagnostic_method": population.get("method"),
             "target_source": "active8_oof_predictions.target_return",
             "fit_feature_policy": "drop_degenerate_and_affine_duplicate_features_v1",
             "walk_forward_policy": "minimum_training_dates_enforced_per_fold_v1",

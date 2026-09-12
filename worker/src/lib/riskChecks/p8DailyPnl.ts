@@ -1,3 +1,4 @@
+import { paperAccountId } from '../paperExecutionScope'
 /**
  * p8DailyPnl.ts — Level 2 P8: Daily P&L loss gate (2026-04-21 R3)
  *
@@ -7,7 +8,6 @@
 import type { RiskConfig } from '../riskConfig'
 import type { CircuitBreakerState, LegacyLayerDeps, LegacyLayerResult } from '../riskTypes'
 
-const ACCOUNT_ID = 1
 
 export async function checkP8DailyPnl(
   db: D1Database,
@@ -21,7 +21,7 @@ export async function checkP8DailyPnl(
   // paper_daily_snapshots is updated daily via 'daily-snapshot' cron.
   const { results: snaps } = await db.prepare(
     'SELECT date, total_value FROM paper_daily_snapshots WHERE account_id=? ORDER BY date DESC LIMIT 2'
-  ).bind(ACCOUNT_ID).all<{ date: string; total_value: number }>()
+  ).bind(paperAccountId()).all<{ date: string; total_value: number }>()
 
   if (!snaps || snaps.length < 2) return null
   const [today, yday] = snaps

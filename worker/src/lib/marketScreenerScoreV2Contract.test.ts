@@ -1,6 +1,7 @@
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { scoreMultiFactor } from './marketScreener'
+import { applyScoreV2NewsThemeAdjustment } from './screenerPostRouteOverlays'
 import type { CanonicalScreenerPrice } from './screenerMarketData'
 
 function assert(condition: unknown, message: string): void {
@@ -155,11 +156,18 @@ for (let index = 0; index < 5; index++) {
     'marketScreener must not restore legacy chip+tech+momentum score owner',
   )
   assert(
-    marketScreenerSource.includes('if (riskAdjustment === 0) return 0'),
-    'positive news/theme buzz must not add Score V2 points',
+    marketScreenerSource.includes('applyScreenerBuzz(scored, overlayEligibleSymbols'),
+    'formal screener must use the shared original buzz owner',
   )
+  const scored = scoreMultiFactor(prices, chipDates as any, 0.02, prices[prices.length - 1].close)
+  const row = { score: scored.base_score, score_components: scored.score_components }
+  const before = JSON.stringify(row)
+  assert(applyScoreV2NewsThemeAdjustment(row, 5, 'positive_news_sentiment') === 0,
+    'positive news/theme buzz must not add Score V2 points')
+  assert(JSON.stringify(row) === before, 'positive news must not mutate Score V2 or its components')
+  const overlaySource = readFileSync(join(process.cwd(), 'src/lib/screenerPostRouteOverlays.ts'), 'utf8')
   assert(
-    !marketScreenerSource.includes('c.score += buzzBonus'),
+    !marketScreenerSource.includes('c.score += buzzBonus') && !overlaySource.includes('c.score += buzzBonus'),
     'news/theme buzz must not bypass Score V2 components',
   )
 }

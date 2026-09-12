@@ -3,7 +3,7 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
 import test from 'node:test'
-import { maturityProgress } from './pipelineDecisionMaturity'
+import { maturityProgress, routeCalibrationSplitCounts } from './pipelineDecisionMaturity'
 import {
   STRATEGY_ROUTE_MIN_TOTAL_DATES,
   STRATEGY_ROUTE_MIN_TRAIN_DATES,
@@ -29,6 +29,13 @@ test('maturity progress separates completed evidence volume from artifact qualit
     complete: true,
   })
   assert.equal(maturityProgress(0, 0, 'rows'), null)
+})
+
+test('route split counts are observed evidence, never requirement constants', () => {
+  assert.deepEqual(routeCalibrationSplitCounts({}), { train: null, purge: null, oos: null })
+  assert.deepEqual(routeCalibrationSplitCounts({ train_dates: [], purge_dates: ['2026-08-25'], oos_dates: ['2026-08-26', '2026-08-27', '2026-08-28'] }), { train: 0, purge: 1, oos: 3 })
+  assert.equal(routeCalibrationSplitCounts({ train_dates: ['2026-08-25', '2026-08-25'] }).train, null)
+  assert.equal(routeCalibrationSplitCounts({ oos_dates: 3 }).oos, null)
 })
 
 test('route maturity threshold has one exported source of truth', () => {

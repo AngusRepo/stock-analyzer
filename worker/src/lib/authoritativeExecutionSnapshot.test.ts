@@ -1,4 +1,4 @@
-import { resolveAuthoritativeBuyExecutionSnapshot } from './authoritativeExecutionSnapshot'
+import { resolveAuthoritativeBuyExecutionSnapshot, resolveAuthoritativeSellExecutionSnapshot } from './authoritativeExecutionSnapshot'
 
 function assert(condition: unknown, message: string): void {
   if (!condition) throw new Error(message)
@@ -50,3 +50,20 @@ const wrongLot = resolveAuthoritativeBuyExecutionSnapshot({
 assert(wrongLot.status === 'blocked' && wrongLot.reason === 'execution_book_unavailable', 'board-lot book must not authorize odd-lot fills')
 
 console.log('authoritativeExecutionSnapshot tests passed')
+
+for (const resolver of [resolveAuthoritativeBuyExecutionSnapshot, resolveAuthoritativeSellExecutionSnapshot]) {
+  const base = { source: 'shioaji_hub' as const, lotType: 'board_lot' as const, bid: 100, ask: 100 }
+  const nowMs = Date.parse('2026-09-07T01:00:10Z')
+  for (const observation of [
+    { ...base, ageMs: null },
+    { ...base, ageMs: 0, sourceTime: '2026-09-07T01:00:11Z' },
+    { ...base, ageMs: 0, sourceTime: '2026-09-07T01:00:00Z' },
+    { ...base, ageMs: 0, receivedAt: 'not-a-date' },
+  ]) {
+    assert(resolver({ limitPrice: 100, lotType: 'board_lot', nowMs, observations: [observation] }).status === 'blocked',
+      'missing, future, stale or invalid timestamp must not become a fresh quote')
+  }
+  assert(resolver({ limitPrice: 100, lotType: 'board_lot', nowMs,
+    observations: [{ ...base, ageMs: null, sourceTime: '2026-09-07T01:00:09Z' }] }).status === 'ready',
+    'a valid real source timestamp supplies age without fabricating zero')
+}

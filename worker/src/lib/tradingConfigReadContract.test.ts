@@ -54,6 +54,11 @@ async function run(): Promise<void> {
     kv.store.set('trading:config', JSON.stringify({ signal: { buySignalScore: 0.51 } }))
     const cfg = await getTradingConfig(kv as unknown as KVNamespace)
     assert.equal(cfg.signal.buySignalScore, 0.51)
+    kv.store.set('trading:config', JSON.stringify({ signal: { buySignalScore: 0.61 } }))
+    assert.equal((await getTradingConfig(kv as unknown as KVNamespace)).signal.buySignalScore, 0.51)
+    assert.equal((await getTradingConfig(kv as unknown as KVNamespace, { bypassCache: true })).signal.buySignalScore, 0.61)
+    kv.failRead = true
+    await assert.rejects(() => getTradingConfig(kv as unknown as KVNamespace, { bypassCache: true }), /read failed/)
     assert.equal(
       cfg.alphaFramework.allocation.engine,
       buildChampionTradingConfig(null).alphaFramework.allocation.engine,

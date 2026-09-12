@@ -43,6 +43,8 @@ export interface ExpectedReturnCandidateDbRow {
 }
 
 export interface ExpectedReturnCandidateEvidence {
+  cohort_id: string | null
+  trained_until: string | null
   model_name: ExpectedReturnMaturityModel
   artifact_id: string | null
   artifact_path: string | null
@@ -144,6 +146,8 @@ export interface ExpectedReturnShadowDbRow {
 }
 
 export interface ExpectedReturnShadowEvidence {
+  usable_max_date?: string | null
+  evaluated_dates?: string[]
   evaluation_id: string
   cohort_id: string
   identity_schema_version: string
@@ -364,6 +368,9 @@ export function adaptExpectedReturnCandidate(row: ExpectedReturnCandidateDbRow):
   const executionProbabilityModel = record(shadowDiagnostics.execution_probability_model)
 
   return {
+    cohort_id: trusted ? stringOrNull(record(artifact.training_data).cohort_id)
+      ?? (String(row.training_run_id ?? '').startsWith('active8_oof:') ? String(row.training_run_id).slice('active8_oof:'.length) : null) : null,
+    trained_until: trusted ? stringOrNull(record(artifact.training_data).trained_until ?? artifact.trained_until) : null,
     model_name: row.model_name,
     artifact_id: row.artifact_id,
     version: row.version,
@@ -475,6 +482,19 @@ export function adaptExpectedReturnShadow(row: ExpectedReturnShadowDbRow): Expec
     blockers.push('shadow_quality_decision_mismatch')
   }
   if (row.policy_decision !== 'shadow_only') blockers.push('shadow_policy_scope_mismatch')
+  const population = record(packet.diagnostic_population)
+  const evaluatedDates = stringArray(population.evaluated_dates)
+  const availableDates = stringArray(population.available_dates)
+  const actualMetrics = row.model_name === 'l4_alpha_ev' ? record(packet.oos_metrics) : record(record(packet.residual_adjustment_model).oos_metrics)
+  if (population.schema_version !== 'expected-return-rolling-population-v1'
+      || population.promotion_eligible !== false) {
+    blockers.push('shadow_diagnostic_population_unverified')
+  } else if (stringOrNull(population.usable_max_date) !== stringOrNull(record(packet.sample_audit).evidence_max_date)
+      || JSON.stringify(evaluatedDates) !== JSON.stringify(stringArray(actualMetrics.evaluated_dates))
+      || evaluatedDates.some(date => !availableDates.includes(date))
+      || !stringArray(population.extension_dates).includes(row.oof_max_date)) {
+    blockers.push('shadow_diagnostic_population_mismatch')
+  }
   const trusted = blockers.length === 0
   const trustedPacket = trusted ? packet : {}
   const sampleAudit = record(trustedPacket.sample_audit)
@@ -488,6 +508,8 @@ export function adaptExpectedReturnShadow(row: ExpectedReturnShadowDbRow): Expec
   const shadowDiagnostics = record(trustedPacket.shadow_diagnostics)
   return {
     evaluation_id: row.evaluation_id,
+    usable_max_date: trusted ? stringOrNull(population.usable_max_date) : null,
+    evaluated_dates: trusted ? evaluatedDates : [],
     cohort_id: row.cohort_id,
     base_manifest_checksum: row.base_manifest_checksum,
     extension_manifest_checksum: row.extension_manifest_checksum,
@@ -527,12 +549,12 @@ export function adaptExpectedReturnShadow(row: ExpectedReturnShadowDbRow): Expec
     execution_decision: stringOrNull(record(shadowDiagnostics.conditional_execution_return_model).decision),
     execution_probability_decision: stringOrNull(record(shadowDiagnostics.execution_probability_model).decision),
     previous_business_date: stringOrNull(row.previous_business_date),
-    evidence_comparable_to_previous_business_date: !row.previous_business_date
+    evidence_comparable_to_previous_business_date: !trusted || !row.previous_business_date
       ? null
       : row.cohort_id === stringOrNull(row.previous_cohort_id)
         && row.base_manifest_checksum === stringOrNull(row.previous_base_manifest_checksum)
         && row.evaluator_contract_checksum === stringOrNull(row.previous_evaluator_contract_checksum),
-    evidence_advanced_from_previous_business_date: !row.previous_business_date
+    evidence_advanced_from_previous_business_date: !trusted || !row.previous_business_date
       || row.cohort_id !== stringOrNull(row.previous_cohort_id)
       || row.base_manifest_checksum !== stringOrNull(row.previous_base_manifest_checksum)
       || row.evaluator_contract_checksum !== stringOrNull(row.previous_evaluator_contract_checksum)

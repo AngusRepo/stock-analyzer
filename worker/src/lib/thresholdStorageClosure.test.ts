@@ -6,20 +6,20 @@ import { classifyStorageAdmission } from './storageAdmissionControl'
 
 const source = (name: string) => fs.readFileSync(path.join(process.cwd(), 'src/lib', name), 'utf8')
 
-test('selection evidence UPSERT preserves and refreshes route fields', () => {
+test('selection evidence preserves route version/score together without relabeling observations', () => {
   const selection = source('selectionReferenceEvidence.ts')
-  for (const field of [
-    'strategy_router_version', 'strategy_router_score',
-    'strategy_challenger_route_version', 'strategy_challenger_route_score',
-  ]) {
-    assert(selection.includes(`${field}=COALESCE(`), `missing conflict refresh for ${field}`)
-    assert(selection.includes(`selection_reference_snapshots_v1.${field}`), `historical null must preserve ${field}`)
-    if (field === 'strategy_challenger_route_score') {
-      assert(selection.includes('previousRoutingRows'))
-      assert(selection.includes('previousRoutingBySymbol'))
-      assert(selection.includes('row.strategy_challenger_route_score ?? previousRouting?.strategy_challenger_route_score ?? null'))
-    }
-  }
+  // The original native-D1 selectionEvidenceWriterCas.test.ts exercises this
+  // behavior, including exact zero, conflicting versions and foreign dates.
+  // Independent column COALESCE used to allow a new version to borrow an old
+  // score; requiring that obsolete SQL would undo the source identity repair.
+  assert(selection.includes('previousRoutingRows'))
+  assert(selection.includes('previousRoutingBySymbol'))
+  assert(selection.includes('selection_reference_route_evidence_conflict'))
+  assert(selection.includes('version: version ?? previousVersion ?? null, score: score ?? previousScore ?? null'))
+  assert(selection.includes('strategy_router_version: incumbent.version'))
+  assert(selection.includes('strategy_router_score: incumbent.score'))
+  assert(selection.includes('strategy_challenger_route_version: challenger.version'))
+  assert(selection.includes('strategy_challenger_route_score: challenger.score'))
 })
 
 test('Threshold V2 and Route V2 promotion is one evidence bundle', () => {
@@ -36,7 +36,7 @@ test('storage admission blocks high-write producers but never trading serving', 
   assert.equal(classifyStorageAdmission('weekly-optuna', 79).allowed, false)
   assert.equal(classifyStorageAdmission('l4-alpha-ev-refresh', 79).allowed, true)
   assert.equal(classifyStorageAdmission('l4-alpha-ev-refresh', 86).allowed, false)
-  assert.equal(classifyStorageAdmission('monthly-retrain', null).allowed, false)
+  assert.equal(classifyStorageAdmission('active8-oof-monthly', null).allowed, false)
   assert.equal(classifyStorageAdmission('evening-chain', 99).allowed, true)
   assert.equal(classifyStorageAdmission('intraday-check', 99).allowed, true)
 })

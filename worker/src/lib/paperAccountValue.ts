@@ -8,6 +8,7 @@ export interface PaperAccountValueInput {
   settledCash: number
   positionsValue: number
   netUnsettledSettlement?: number | null
+  corporateReceivablesValue?: number
 }
 
 export interface PaperPositionValueInput {
@@ -33,12 +34,25 @@ function positiveFiniteNumber(value: unknown): number | null {
   return numeric > 0 ? numeric : null
 }
 
+function requiredAmount(value: unknown, field: string, nonnegative = false): number {
+  if (typeof value !== 'number' || !Number.isFinite(value) || (nonnegative && value < 0)) {
+    throw new Error(`paper_nav_amount_invalid:${field}`)
+  }
+  return value
+}
+
 export function computePaperTotalValue(input: PaperAccountValueInput): number {
-  return (
-    finiteNumber(input.settledCash)
-    + finiteNumber(input.positionsValue)
-    + finiteNumber(input.netUnsettledSettlement)
+  if (input.corporateReceivablesValue !== undefined &&
+    (!Number.isFinite(input.corporateReceivablesValue) || input.corporateReceivablesValue < 0)) {
+    throw new Error('paper_corporate_receivable_value_invalid')
+  }
+  const total = (
+    requiredAmount(input.settledCash, 'settledCash')
+    + requiredAmount(input.positionsValue, 'positionsValue', true)
+    + requiredAmount(input.netUnsettledSettlement === undefined ? 0 : input.netUnsettledSettlement, 'netUnsettledSettlement')
+    + (input.corporateReceivablesValue ?? 0)
   )
+  return requiredAmount(total, 'totalValue')
 }
 
 export function computePaperPositionValuation(input: {
@@ -80,6 +94,30 @@ export function computePaperPositionValuation(input: {
   }
 }
 
+/** A partial mark is useful for diagnostics, never for a persisted NAV. */
+export function requireCompletePaperPositionValue(
+  positions: PaperPositionValueInput[], prices: Map<string, number>,
+): number {
+  const symbols = new Set<string>()
+  for (const position of positions) {
+    if (!position.symbol?.trim() || position.symbol !== position.symbol.trim() || typeof position.shares !== 'number'
+      || !Number.isSafeInteger(position.shares) || position.shares < 0
+      || symbols.has(position.symbol)) {
+      throw new Error('paper_snapshot_position_invalid')
+    }
+    symbols.add(position.symbol)
+    const price = prices.get(position.symbol)
+    if (position.shares > 0 && (typeof price !== 'number' || !Number.isFinite(price) || price <= 0)) {
+      throw new Error(`paper_snapshot_held_marks_missing:${position.symbol}`)
+    }
+  }
+  const valuation = computePaperPositionValuation({ positions, quotePrices: prices })
+  if (valuation.missingSymbols.length) {
+    throw new Error(`paper_snapshot_held_marks_missing:${valuation.missingSymbols.join(',')}`)
+  }
+  return requiredAmount(valuation.positionsValue, 'positionsValue', true)
+}
+
 export async function getUnsettledSettlementSummary(
   db: D1Database,
   accountId: number,
@@ -87,17 +125,24 @@ export async function getUnsettledSettlementSummary(
   const row = await db.prepare(`
     SELECT
       COALESCE(SUM(CASE WHEN side='buy' THEN amount ELSE 0 END), 0) AS unsettled_buy_amount,
-      COALESCE(SUM(CASE WHEN side='sell' THEN amount ELSE 0 END), 0) AS unsettled_sell_amount
+      COALESCE(SUM(CASE WHEN side='sell' THEN amount ELSE 0 END), 0) AS unsettled_sell_amount,
+      COALESCE(SUM(CASE WHEN side IS NULL OR side NOT IN ('buy','sell')
+        OR amount IS NULL OR typeof(amount) NOT IN ('integer','real') OR amount < 0
+        THEN 1 ELSE 0 END), 0) AS invalid_amount_rows
     FROM paper_settlements
     WHERE account_id=?
       AND settled=0
   `).bind(accountId).first<{
     unsettled_buy_amount: number
     unsettled_sell_amount: number
+    invalid_amount_rows: number
   }>()
 
-  const unsettledBuyAmount = finiteNumber(row?.unsettled_buy_amount)
-  const unsettledSellAmount = finiteNumber(row?.unsettled_sell_amount)
+  // Aggregate over an empty table returns a real row with zero values. A
+  // missing response is a database failure, not proof of zero liabilities.
+  if (!row || row.invalid_amount_rows !== 0) throw new Error('paper_nav_settlement_rows_invalid')
+  const unsettledBuyAmount = requiredAmount(row?.unsettled_buy_amount, 'unsettledBuyAmount', true)
+  const unsettledSellAmount = requiredAmount(row?.unsettled_sell_amount, 'unsettledSellAmount', true)
   return {
     unsettledBuyAmount,
     unsettledSellAmount,

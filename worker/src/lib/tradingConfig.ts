@@ -1,3 +1,4 @@
+import { paperExecutionNow, paperExecutionDate } from './paperExecutionScope'
 /**
  * tradingConfig.ts — 統一交易參數管理
  *
@@ -44,6 +45,7 @@ export interface AlphaFrameworkConfig {
   allocation: {
     engine: string
     controller: string
+    opbArmPrior?: Record<string, unknown> | null
     buySignalCount: number
     slateSize: number
     scoreRoundDecimals: number
@@ -838,14 +840,21 @@ export const DEFAULT_TRADING_CONFIG: TradingConfig = {
 const KV_KEY = 'trading:config'
 const CACHE_TTL_MS = 300_000  // 5 min in-memory cache
 
-let _cached: TradingConfig | null = null
-let _cachedAt = 0
+let configCache = new WeakMap<KVNamespace, { value: TradingConfig; at: number }>()
 
 export function mergeAlphaFrameworkConfig(partial?: Partial<AlphaFrameworkConfig> | any): AlphaFrameworkConfig {
   const d = DEFAULT_TRADING_CONFIG.alphaFramework
   const raw = partial ?? {}
   const rawOverlay = raw.riskOverlay ?? raw.risk_overlay ?? {}
   const rawAllocation = raw.allocation ?? {}
+  // Carry the existing prior to the Python allocator under one canonical key.
+  // Absence preserves the historical default shape; explicit null clears it.
+  const rawOpbPrior = Object.prototype.hasOwnProperty.call(rawAllocation, 'opbArmPrior')
+    ? rawAllocation.opbArmPrior : rawAllocation.opb_arm_prior
+  if (rawOpbPrior !== undefined && rawOpbPrior !== null
+    && (typeof rawOpbPrior !== 'object' || Array.isArray(rawOpbPrior))) {
+    throw new Error('opb_arm_prior_config_invalid')
+  }
   const rawClassification = raw.classification ?? {}
   const rawRegimeMultipliers = raw.regimeBucketMultipliers ?? raw.regime_bucket_multipliers ?? {}
   const rawScoring = raw.scoring ?? {}
@@ -893,6 +902,7 @@ export function mergeAlphaFrameworkConfig(partial?: Partial<AlphaFrameworkConfig
       ...d.allocation,
       engine: rawAllocation.engine ?? rawAllocation.method ?? d.allocation.engine,
       controller: rawAllocation.controller ?? d.allocation.controller,
+      ...(rawOpbPrior === undefined ? {} : { opbArmPrior: rawOpbPrior }),
       buySignalCount: rawAllocation.buySignalCount ?? rawAllocation.buy_signal_count ?? d.allocation.buySignalCount,
       slateSize: rawAllocation.slateSize ?? rawAllocation.slate_size ?? d.allocation.slateSize,
       scoreRoundDecimals: rawAllocation.scoreRoundDecimals ?? rawAllocation.score_round_decimals ?? d.allocation.scoreRoundDecimals,
@@ -1166,9 +1176,10 @@ export async function repairTradingConfigOperationalDefaults(
   return { ...plan, written: true, snapshotId: result.snapshotId, skipped: result.skipped }
 }
 
-export async function getTradingConfig(kv: KVNamespace): Promise<TradingConfig> {
+export async function getTradingConfig(kv: KVNamespace, options: { bypassCache?: boolean } = {}): Promise<TradingConfig> {
   // In-memory cache（同一個 Worker isolate 內有效）
-  if (_cached && Date.now() - _cachedAt < CACHE_TTL_MS) return _cached
+  const cached = configCache.get(kv)
+  if (!options.bypassCache && cached && paperExecutionNow() - cached.at < CACHE_TTL_MS) return cached.value
 
   let raw: Partial<TradingConfig> | null
   try {
@@ -1184,9 +1195,8 @@ export async function getTradingConfig(kv: KVNamespace): Promise<TradingConfig> 
   if (errors.length > 0) {
     throw new Error(`trading:config validation failed: ${errors.join('; ')}`)
   }
-  _cached = merged
-  _cachedAt = Date.now()
-  return _cached
+  configCache.set(kv, { value: merged, at: paperExecutionNow() })
+  return merged
 }
 
 /** 寫入 KV（admin API 用）+ 清除 cache + auto snapshot (#28b T3.1)
@@ -1201,12 +1211,14 @@ export async function setTradingConfig(
   kv: KVNamespace,
   config: TradingConfig,
   meta?: { source?: string; push_id?: string },
+  beforeWrite?: () => Promise<void>,
 ): Promise<{ snapshotId: string | null; skipped: boolean }> {
   // 先 snapshot（讀 prev + hash compare）— main write 後面永遠跑
   let snapshotId: string | null = null
   let skipped = false
   try {
-    const prevHash = _cached ? await hashConfig(_cached) : null
+    const cached = configCache.get(kv)
+    const prevHash = cached ? await hashConfig(cached.value) : null
     const newHash = await hashConfig(config)
     if (prevHash === newHash) {
       skipped = true  // no-op write，不 pollute snapshot history
@@ -1222,17 +1234,17 @@ export async function setTradingConfig(
     throw new Error(`trading:config snapshot failed; main config write blocked: ${e?.message ?? e}`)
   }
 
-  // Main write — 永遠跑，與 snapshot 成敗無關
+  // Recheck publication context AFTER asynchronous snapshot writes and before
+  // replacing the current config. Callers without a guard retain existing behavior.
+  await beforeWrite?.()
   await kv.put(KV_KEY, JSON.stringify(config))
-  _cached = config
-  _cachedAt = Date.now()
+  configCache.set(kv, { value: config, at: paperExecutionNow() })
   return { snapshotId, skipped }
 }
 
 /** 強制清除 in-memory cache（deploy 後或手動 reset） */
 export function invalidateConfigCache(): void {
-  _cached = null
-  _cachedAt = 0
+  configCache = new WeakMap()
 }
 
 // ─── #28b T3.1: KV Snapshot Versioning (2026-04-20) ─────────────────────────
@@ -1301,7 +1313,7 @@ async function writeSnapshot(
   config: TradingConfig,
   meta: ConfigSnapshotMeta,
 ): Promise<string> {
-  const pushed_at = new Date().toISOString()
+  const pushed_at = paperExecutionDate().toISOString()
   const id = `trading:config:snapshot:${pushed_at}:${meta.new_hash}`
   const body = JSON.stringify({ config, meta, pushed_at } satisfies Omit<ConfigSnapshotRecord, 'bytes'>)
   const bytes = body.length
@@ -1396,7 +1408,7 @@ export async function writeSandbox(
   config: TradingConfig,
   meta?: { push_id?: string; note?: string; metadata?: Record<string, unknown> },
 ): Promise<string> {
-  let pushed_at = new Date().toISOString()
+  let pushed_at = paperExecutionDate().toISOString()
   const hash = await hashConfig(config)
   // Retry identity includes the complete config, source and input/run attestation.
   // Unknown input lineage deliberately cannot deduplicate across research runs.
@@ -1501,7 +1513,7 @@ export async function setChallenger(
   const state: ChallengerState = {
     config,
     hash,
-    shadow_since: new Date().toISOString(),
+    shadow_since: paperExecutionDate().toISOString(),
     source: meta.source,
     source_id: meta.source_id,
     note: meta.note,

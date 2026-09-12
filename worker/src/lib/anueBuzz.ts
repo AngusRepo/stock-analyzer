@@ -20,7 +20,7 @@ interface AnueNewsItem {
  * 從 Anue 鉅亨網抓最新台股新聞，統計概念熱度
  * @param keywords — 動態概念關鍵字（由 loadBuzzKeywords 預載）
  */
-export async function detectAnueBuzz(keywords?: Record<string, string[]>): Promise<ConceptBuzzResult[]> {
+export async function detectAnueBuzz(keywords?: Record<string, string[]>, options: { strict?: boolean } = {}): Promise<ConceptBuzzResult[]> {
   const kwMap = keywords ?? {}
   try {
     // Anue News API v3 — 台股分類
@@ -28,11 +28,13 @@ export async function detectAnueBuzz(keywords?: Record<string, string[]>): Promi
       headers: { 'User-Agent': 'StockVision/12.3 (buzz-scanner)' },
     })
     if (!res.ok) {
+      if (options.strict) throw new Error(`anue_http_${res.status}`)
       console.warn(`[AnueBuzz] API returned ${res.status}`)
       return []
     }
 
     const body = await res.json() as any
+    if (options.strict && !Array.isArray(body?.items?.data)) throw new Error('anue_payload_invalid')
     const items: AnueNewsItem[] = body?.items?.data ?? []
     if (!items.length) {
       console.log('[AnueBuzz] No news items returned')
@@ -72,6 +74,7 @@ export async function detectAnueBuzz(keywords?: Record<string, string[]>): Promi
     console.log(`[AnueBuzz] Found ${results.length} concepts: ${results.slice(0, 5).map(r => `${r.concept}(${r.mentionCount})`).join(', ')}`)
     return results
   } catch (e) {
+    if (options.strict) throw e
     console.warn('[AnueBuzz] Failed (non-fatal):', e)
     return []
   }

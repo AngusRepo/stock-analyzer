@@ -1,3 +1,4 @@
+import { paperExecutionDate } from './paperExecutionScope'
 import type { RiskConfig } from './riskConfig'
 import type { CircuitBreakerState, LegacyLayerDeps } from './riskTypes'
 
@@ -23,6 +24,7 @@ function finitePositive(value: unknown): number | null {
 export function evaluateIntradayDrawdown(params: {
   tradeDate: string
   currentNav: number
+  currentNavUpperBound?: number
   previous: IntradayNavState | null
   haltThreshold: number
   nowIso?: string
@@ -32,7 +34,11 @@ export function evaluateIntradayDrawdown(params: {
   const previousPeak = params.previous?.tradeDate === params.tradeDate
     ? finitePositive(params.previous.peakNav)
     : null
-  const peakNav = Math.max(previousPeak ?? currentNav, currentNav)
+  const upper = params.currentNavUpperBound === undefined ? currentNav : finitePositive(params.currentNavUpperBound)
+  if (upper == null || upper < currentNav) throw new Error('intraday_nav_bound_invalid')
+  // Conservative interval comparison: current lower value versus historical
+  // upper peak. Uncertainty can tighten risk, never hide a potential drawdown.
+  const peakNav = Math.max(previousPeak ?? upper, upper)
   const drawdown = peakNav > 0 ? (peakNav - currentNav) / peakNav : 0
   const drawdownTriggered = drawdown >= Math.max(0, params.haltThreshold)
   const halted = params.previous?.tradeDate === params.tradeDate && params.previous.halted === true
@@ -44,7 +50,7 @@ export function evaluateIntradayDrawdown(params: {
       peakNav,
       lastNav: currentNav,
       halted,
-      updatedAt: params.nowIso ?? new Date().toISOString(),
+      updatedAt: params.nowIso ?? paperExecutionDate().toISOString(),
     },
     drawdown,
     triggered: halted,
@@ -84,12 +90,14 @@ export async function checkP9IntradayDrawdown(
   currentNav: number,
   riskConfig: RiskConfig,
   deps: LegacyLayerDeps,
+  currentNavUpperBound?: number,
 ): Promise<{ state: CircuitBreakerState | null; evaluation: IntradayDrawdownEvaluation }> {
   const key = `risk:intraday_nav_peak:${tradeDate}`
   const previous = await kv.get(key, 'json').catch(() => null) as IntradayNavState | null
   const evaluation = evaluateIntradayDrawdown({
     tradeDate,
     currentNav,
+    currentNavUpperBound,
     previous,
     haltThreshold: riskConfig.portfolio.intradayDrawdownHalt,
   })

@@ -4,6 +4,7 @@ import json
 import os
 import re
 from datetime import datetime, timezone
+from services.sequence_semantic_contract import sequence_rank_ic_semantic
 from typing import Any
 
 from services.evidence_contracts import LABEL_SCHEMA_VERSION
@@ -127,7 +128,7 @@ def _sequence_artifact_contract(
     metadata = _artifact_metadata(artifact)
     seq_len = _positive_int(metadata.get("seq_len"))
     pred_len = _positive_int(metadata.get("pred_len"))
-    rank_ic_semantic = str(metadata.get("rank_ic_semantic_version") or "").strip()
+    rank_ic_semantic = sequence_rank_ic_semantic(metadata, model_name)
     version = str(artifact.get("version") or metadata.get("version") or "").strip()
     artifact_id = str(artifact.get("artifact_id") or "").strip()
     if (
@@ -189,23 +190,31 @@ def _artifact_block_reason(
     *,
     model_name: str,
     artifact_role: str,
+    nav_grant=None,
 ) -> str | None:
     if not artifact:
         return "missing_registry_artifact"
     state = str(artifact.get("state") or "").strip()
     if state not in SERVING_OK_STATES:
         return f"artifact_state_{state or 'missing'}"
+    from services.active8_nav_adoption import is_serving_grant
+    nav_owned = is_serving_grant(nav_grant) and nav_grant.authorizes(model_name, artifact)
     offline_decision = str(artifact.get("offline_gate_decision") or "").strip().upper()
     allowed_offline_decisions = (
         L2_SIDECAR_OK_OFFLINE_DECISIONS
         if artifact_role == "l2_feature_sidecar"
         else SERVING_OK_OFFLINE_DECISIONS
     )
-    if offline_decision and offline_decision not in allowed_offline_decisions:
+    if not nav_owned and offline_decision and offline_decision not in allowed_offline_decisions:
         return f"offline_gate_{offline_decision.lower()}"
     live_status = str(artifact.get("live_gate_status") or "").strip().lower()
-    if live_status in SERVING_BAD_LIVE_STATUSES:
+    if not nav_owned and live_status in SERVING_BAD_LIVE_STATUSES:
         return f"live_gate_{live_status}"
+    return _artifact_structure_block_reason(artifact, model_name=model_name, artifact_role=artifact_role)
+
+
+def _artifact_structure_block_reason(artifact, *, model_name, artifact_role):
+    """Same structural checks before adoption and while serving, no efficacy veto."""
     artifact_path = str(artifact.get("artifact_path") or "").strip()
     if not artifact_path:
         return "missing_artifact_path"
@@ -360,7 +369,11 @@ def build_pool_from_champion_pointers(
     artifacts: list[dict[str, Any]],
     required_models: tuple[str, ...] = DIRECT_ALPHA_MODELS,
     sidecar_models: tuple[str, ...] = L2_SIDECARS,
+    nav_grant=None,
 ) -> dict[str, Any]:
+    from services.active8_nav_adoption import is_serving_grant
+    if nav_grant is not None and not is_serving_grant(nav_grant):
+        raise ValueError('active8_nav_serving_grant_not_original')
     pool: dict[str, Any] = {
         "schema_version": "model_pool_v3_d1_pointer_owned",
         "last_updated": datetime.now(timezone.utc).isoformat(),
@@ -382,10 +395,15 @@ def build_pool_from_champion_pointers(
             artifacts_by_id=artifacts_by_id,
         ) if pointer and version else None
         block_reason = None if pointer and version else "missing_d1_champion_pointer"
+        if nav_grant is not None and model_name in json.loads(nav_grant.payload_json)['selected_models']:
+            if (not nav_grant.authorizes(model_name, artifact)
+                    or _json_obj((pointer or {}).get('promotion_evidence_json')) != json.loads(nav_grant.receipt_json)):
+                block_reason = 'active8_nav_serving_snapshot_mismatch'
         block_reason = block_reason or _artifact_block_reason(
             artifact,
             model_name=model_name,
             artifact_role=artifact_role,
+            nav_grant=nav_grant if artifact_role == 'direct_alpha' else None,
         )
         entry: dict[str, Any] = {
             "version": version,
@@ -397,6 +415,8 @@ def build_pool_from_champion_pointers(
             "serving_block_reason": block_reason,
         }
         if artifact:
+            if nav_grant is not None and artifact_role == 'direct_alpha' and nav_grant.authorizes(model_name, artifact):
+                entry['efficacy_owner'] = 'committed_paired_nav'
             artifact_metadata = _artifact_metadata(artifact)
             entry["gcs_path"] = str(artifact.get("artifact_path") or "")
             entry["metadata_path"] = str(artifact.get("metadata_path") or "")
@@ -443,11 +463,20 @@ def load_d1_champion_pool(
         )
     ))
     artifacts = list_artifacts_by_ids(artifact_ids, max_ids=len(requested_models))
+    nav_grant = None
+    if any('nav_validation' in _json_obj(pointer.get('promotion_evidence_json')) for pointer in pointers
+           if pointer.get('model_name') in required_models):
+        from services.model_artifact_registry import d1_client
+        from services.active8_nav_adoption import load_committed_nav_serving_grant
+        nav_grant = load_committed_nav_serving_grant(query=d1_client.query)
+        if nav_grant is None:
+            raise RuntimeError('active8_nav_serving_bundle_missing_for_model_pointer')
     return build_pool_from_champion_pointers(
         pointers=pointers,
         artifacts=artifacts,
         required_models=required_models,
         sidecar_models=sidecar_models,
+        nav_grant=nav_grant,
     )
 
 def resolve_serving_pool(

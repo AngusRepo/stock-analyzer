@@ -293,7 +293,8 @@ CORE_SPECS = [
     DatasetSpec(
         lane="security_master",
         kind="table",
-        keys={"security_categories": "security_categories"},
+        keys={"table": "security_categories", "company_basic_info": "company_basic_info",
+              "tw_etf_basic_info": "tw_etf_basic_info"},
     ),
     DatasetSpec(
         lane="taxonomy_expansion",
@@ -337,6 +338,7 @@ TRADING_RESTRICTION_CLEANUP_ENABLED = str(
     os.environ.get("FINLAB_TRADING_RESTRICTION_CLEANUP_ENABLED", "0")
 ).strip().lower() in {"1", "true", "yes", "on"}
 DEFAULT_CANONICAL_DATASETS = [
+    "stocks",
     "canonical_market_daily",
     "canonical_chip_daily",
     "canonical_institutional_amount_daily",
@@ -2067,55 +2069,50 @@ def materialize_specs(
                         "non_null_cells": non_null_cells(frame),
                     })
         elif spec.kind == "table":
-            field = next(iter(spec_keys))
-            api_key_name = next(iter(spec_keys.values()))
-            path = lane_dir / "table.parquet"
-            table_error: Exception | None = None
-            try:
-                frame = pd.DataFrame(data.get(api_key_name))
-            except Exception as exc:
-                table_error = exc
-                status = source_key_status_for_exception(exc)
-                source_key_reports.append(source_key_report_row(
-                    run_id=run_dir.name,
-                    generated_at=generated_at,
-                    target_date=target_date,
-                    lane=spec.lane,
-                    field=field,
-                    api_key=api_key_name,
-                    status=status,
-                    error=exc,
-                    metadata={"kind": spec.kind},
-                ))
-                if status == "quota_blocked":
-                    raise
-                frame = pd.DataFrame()
-            path = lane_dir / "table.parquet"
-            write_parquet(path, frame)
-            finlab_rows = int(len(frame))
-            latest = utc_now()
-            schema_fields = [str(col) for col in frame.columns]
-            target_rows = int(len(filter_rows_date_range(frame, start_date=target_date, end_date=target_date))) if "date" in frame.columns else finlab_rows
-            status = source_key_status(rows=finlab_rows, target_rows=target_rows, target_date=target_date)
-            artifacts.append({"field": field, "api_key": api_key_name, "path": str(path), "shape": list(frame.shape)})
-            if table_error is None:
-                source_key_reports.append(source_key_report_row(
-                    run_id=run_dir.name,
-                    generated_at=generated_at,
-                    target_date=target_date,
-                    lane=spec.lane,
-                    field=field,
-                    api_key=api_key_name,
-                    status=status,
-                    rows=finlab_rows,
-                    target_rows=target_rows,
-                    latest_date=latest_index(frame),
-                    path=path,
-                    run_dir=run_dir,
-                    gcs_bucket=gcs_bucket,
-                    gcs_prefix=gcs_prefix,
-                    metadata={"kind": spec.kind, "shape": list(frame.shape)},
-                ))
+            # Multiple source tables share one lane/manifest, but never a path
+            # or field receipt. Do not overwrite the taxonomy table with a master.
+            for field, api_key_name in spec_keys.items():
+                listing_source = api_key_name in {"company_basic_info", "tw_etf_basic_info"}
+                path = lane_dir / (f"{api_key_name}.parquet" if listing_source else "table.parquet")
+                table_error: Exception | None = None
+                try:
+                    frame = pd.DataFrame(data.get(api_key_name))
+                    if listing_source:
+                        frame['__observed_at'] = utc_now()
+                except Exception as exc:
+                    table_error = exc
+                    status = source_key_status_for_exception(exc)
+                    source_key_reports.append(source_key_report_row(
+                        run_id=run_dir.name, generated_at=generated_at, target_date=target_date,
+                        lane=spec.lane, field=field, api_key=api_key_name,
+                        status=status, error=exc, metadata={"kind": spec.kind},
+                    ))
+                    if status == "quota_blocked":
+                        raise
+                    frame = pd.DataFrame()
+                write_parquet(path, frame)
+                field_rows = int(len(frame))
+                finlab_rows += field_rows
+                latest = utc_now()
+                schema_fields.extend(str(col) for col in frame.columns if str(col) not in schema_fields)
+                target_rows = int(len(filter_rows_date_range(frame, start_date=target_date, end_date=target_date))) if "date" in frame.columns else field_rows
+                status = source_key_status(rows=field_rows, target_rows=target_rows, target_date=target_date)
+                if source_key_required(spec.lane, field) and (table_error is not None or status != 'ok'):
+                    source_key_blockers.append({
+                        'lane': spec.lane, 'kind': spec.kind, 'reason': 'required_table_field_incomplete',
+                        'required_fields': [field],
+                        'errors': [{'field': field, 'status': source_key_status_for_exception(table_error)
+                                    if table_error is not None else status}],
+                    })
+                artifacts.append({"field": field, "api_key": api_key_name, "path": str(path), "shape": list(frame.shape)})
+                if table_error is None:
+                    source_key_reports.append(source_key_report_row(
+                        run_id=run_dir.name, generated_at=generated_at, target_date=target_date,
+                        lane=spec.lane, field=field, api_key=api_key_name, status=status,
+                        rows=field_rows, target_rows=target_rows, latest_date=latest_index(frame),
+                        path=path, run_dir=run_dir, gcs_bucket=gcs_bucket, gcs_prefix=gcs_prefix,
+                        metadata={"kind": spec.kind, "shape": list(frame.shape)},
+                    ))
         elif spec.kind == "official_market_summary":
             frames = fetch_official_market_summary_frames(OFFICIAL_MARKET_SUMMARY_LOOKBACK_DAYS)
             if require_official_market_summary:
@@ -3198,13 +3195,32 @@ def materialize_canonical_to_d1(
     )
     all_statements = build_d1_upsert_statements(outputs)
     statements, ops_statements, routed_market_statements = partition_finlab_canonical_statements(all_statements)
+    core_statements = [s for s in statements if re.match(r'INSERT INTO stocks\b', s[0], re.I)]
+    statements = [s for s in statements if not re.match(r'INSERT INTO stocks\b', s[0], re.I)]
     # Calendar observations precede canonical prices. A partial data write must
     # leave a visible session gap, not erase the date from the checking calendar.
     market_statements = build_market_domain_insert_statements(outputs) + routed_market_statements
-    apply_result = {"total": len(statements) + len(ops_statements) + len(market_statements), "success_count": 0, "error_count": 0, "changes_total": 0, "dry_run": True}
+    apply_result = {"total": len(statements) + len(core_statements) + len(ops_statements) + len(market_statements), "success_count": 0, "error_count": 0, "changes_total": 0, "dry_run": True}
     writes_by_domain = {"legacy": len(statements), "ops": len(ops_statements), "market": len(market_statements)}
+    if core_statements:
+        writes_by_domain['core'] = len(core_statements)
     if not dry_run:
         apply_result = {"total": 0, "success_count": 0, "error_count": 0, "changes_total": 0}
+    if not dry_run and core_statements:
+        # Refuse before ANY data/receipt writes if rollout prerequisites lag.
+        d1_query('SELECT listing_market,listed_date_source,listing_observed_at,listing_checksum FROM stocks LIMIT 0', domain='core')
+        triggers = d1_query("SELECT sql FROM sqlite_master WHERE type='trigger' AND name='stocks_listing_capture_conflict'", domain='core')
+        trigger = ' '.join(str(triggers[0].get('sql') or '').lower().split()) if len(triggers) == 1 else ''
+        if not all(part in trigger for part in (
+            'before update of listing_observed_at,listing_checksum on stocks',
+            'new.listing_observed_at=old.listing_observed_at',
+            'new.listing_checksum is not old.listing_checksum',
+            "raise(abort,'stocks_listing_capture_conflict')",
+        )):
+            raise RuntimeError('finlab_core_listing_immutable_capture_migration_missing')
+        core_result = d1_batch_execute(core_statements, timeout=120., chunk_size=chunk_size, domain='core')
+        require_finlab_write_ack(core_result, len(core_statements), phase='core_security_master')
+        apply_result = dict(core_result)
     if not dry_run and statements:
         legacy_result = controller_d1_batch_execute(statements, timeout=120.0, chunk_size=chunk_size)
         if legacy_result is None:
@@ -3212,7 +3228,8 @@ def materialize_canonical_to_d1(
 
             legacy_result = batch_execute(statements, timeout=120.0, chunk_size=chunk_size)
         require_finlab_write_ack(legacy_result, len(statements), phase="data")
-        apply_result = dict(legacy_result)
+        apply_result = {key: int(apply_result.get(key) or 0) + int(legacy_result.get(key) or 0)
+                        for key in ('total', 'success_count', 'error_count', 'changes_total')}
     if not dry_run and market_statements:
         if market_domain_active():
             market_result = d1_batch_execute(
@@ -3240,7 +3257,7 @@ def materialize_canonical_to_d1(
         }
     # Publish metadata only after all data-domain writes have succeeded.
     if not dry_run and ops_statements:
-        require_finlab_write_ack(apply_result, len(statements) + len(market_statements), phase="data")
+        require_finlab_write_ack(apply_result, len(statements) + len(core_statements) + len(market_statements), phase="data")
         ops_result = ops_d1_batch_execute(ops_statements, timeout=120.0, chunk_size=chunk_size)
         require_finlab_write_ack(ops_result, len(ops_statements), phase="ops")
         apply_result = {key: int(apply_result.get(key) or 0) + int(ops_result.get(key) or 0)
@@ -3254,7 +3271,7 @@ def materialize_canonical_to_d1(
         "end_date": end_date,
         "datasets": datasets,
         "row_counts": outputs.manifest.get("row_counts", {}),
-        "statement_count": len(statements) + len(ops_statements) + len(market_statements),
+        "statement_count": len(statements) + len(core_statements) + len(ops_statements) + len(market_statements),
         "writes_by_domain": writes_by_domain,
         "apply_result": apply_result,
         "checksum": outputs.manifest.get("checksum"),

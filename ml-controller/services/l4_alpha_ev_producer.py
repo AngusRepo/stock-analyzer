@@ -20,7 +20,6 @@ from services.l4_alpha_ev_resolver import (
 from services.expected_return_cost_contract import (
     ExpectedReturnCostContractError,
     expected_return_cost_contract_blockers,
-    normalize_expected_return_to_net,
 )
 from services.evidence_contracts import (
     L4_ARTIFACT_CONTRACT_VERSION,
@@ -30,6 +29,7 @@ from services.evidence_contracts import (
     SUPPORTED_L4_SERVING_CONTRACT_PAIRS,
 )
 from services.pit_sector_alpha import SECTOR_ALPHA_FEATURE_NAMES, sector_alpha_feature_values
+from services.expected_return_numeric import evaluate_linear_net
 
 
 PRODUCER_SCHEMA_VERSION = "l4-alpha-ev-producer-v2"
@@ -457,25 +457,12 @@ def materialize_l4_alpha_ev(
             [f"feature_missing:{name}" for name in sorted(missing_features)],
         )
 
-    expected_return = float(intercept or 0.0)
-    for name, coef in (coefs or {}).items():
-        expected_return += coef * feature_values[name]
-
     try:
-        expected_return, cost_metadata = normalize_expected_return_to_net(
-            expected_return,
-            artifact,
-        )
-    except ExpectedReturnCostContractError as exc:
+        expected_return, cost_metadata = evaluate_linear_net(
+            intercept=intercept, coefficients=coefs, features=feature_values,
+            artifact=artifact, clip=artifact.get('output_clip') or {})
+    except (ExpectedReturnCostContractError, ValueError) as exc:
         return _rejected_payload(artifact, str(exc).split(","))
-
-    clip = artifact.get("output_clip") if isinstance(artifact.get("output_clip"), dict) else {}
-    min_value = _float_or_none(clip.get("min"))
-    max_value = _float_or_none(clip.get("max"))
-    if min_value is not None:
-        expected_return = max(min_value, expected_return)
-    if max_value is not None:
-        expected_return = min(max_value, expected_return)
 
     payload = {
         **artifact,

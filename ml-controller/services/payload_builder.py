@@ -886,9 +886,9 @@ def _bulk_load_per_stock_misc(
             f"FROM margin_data m1 "
             f"INNER JOIN ("
             f"  SELECT stock_id, MAX(date) as max_date "
-            f"  FROM margin_data WHERE stock_id IN ({placeholders}) GROUP BY stock_id"
+            f"  FROM margin_data WHERE stock_id IN ({placeholders}) AND date <= ? GROUP BY stock_id"
             f") m2 ON m1.stock_id = m2.stock_id AND m1.date = m2.max_date",
-            list(chunk),
+            [*chunk, decision_date],
             timeout=60.0,
         ))
     for r in margin_rows:
@@ -909,9 +909,9 @@ def _bulk_load_per_stock_misc(
             f"FROM shareholding s1 "
             f"INNER JOIN ("
             f"  SELECT stock_id, MAX(date) as max_date "
-            f"  FROM shareholding WHERE stock_id IN ({placeholders}) GROUP BY stock_id"
+            f"  FROM shareholding WHERE stock_id IN ({placeholders}) AND date <= ? GROUP BY stock_id"
             f") s2 ON s1.stock_id = s2.stock_id AND s1.date = s2.max_date",
-            list(chunk),
+            [*chunk, decision_date],
             timeout=60.0,
         ))
     for r in sh_rows:
@@ -947,22 +947,21 @@ def _bulk_load_per_stock_misc(
 
     # canonical_fundamental_features: latest point-in-time value per field owner.
     fin_rows: list[dict] = []
-    try:
-        for chunk in _d1_bind_chunks(symbols):
-            placeholders = ",".join("?" * len(chunk))
-            fin_rows.extend(MARKET_D1_CLIENT.query(
-                f"SELECT f.stock_id AS symbol, f.eps, f.roe, f.pe, f.pb, f.dividend_yield "
-                f"FROM canonical_fundamental_features f "
-                f"WHERE f.stock_id IN ({placeholders}) "
-                f"  AND f.available_date <= ? "
-                f"  AND f.as_of_date <= ? "
-                f"  AND f.source IN ('finlab.fundamental_factor_diversity', 'finlab.daily_valuation') "
-                f"ORDER BY f.stock_id, f.available_date DESC, f.period DESC",
-                [*chunk, decision_date, decision_date],
-                timeout=60.0,
-            ))
-    except Exception:
-        fin_rows = []
+    # Query failures must reach the normal retry/error owner, not become an
+    # apparently successful empty fundamental observation.
+    for chunk in _d1_bind_chunks(symbols):
+        placeholders = ",".join("?" * len(chunk))
+        fin_rows.extend(MARKET_D1_CLIENT.query(
+            f"SELECT f.stock_id AS symbol, f.eps, f.roe, f.pe, f.pb, f.dividend_yield "
+            f"FROM canonical_fundamental_features f "
+            f"WHERE f.stock_id IN ({placeholders}) "
+            f"  AND f.available_date <= ? "
+            f"  AND f.as_of_date <= ? "
+            f"  AND f.source IN ('finlab.fundamental_factor_diversity', 'finlab.daily_valuation') "
+            f"ORDER BY f.stock_id, f.available_date DESC, f.period DESC",
+            [*chunk, decision_date, decision_date],
+            timeout=60.0,
+        ))
     canonical_by_stock: dict[int, dict[str, Any]] = {}
     for r in fin_rows:
         sid = r.get("stock_id")
@@ -1176,6 +1175,133 @@ def _build_stock_meta(
     }
 
 
+def capture_payload_sources(active_stocks: list[dict], decision_date: str) -> dict:
+    """Read the original data owners once; retain observations, not NAV credit.
+
+    A latest accuracy row is captured at observed_at, NOT backdated knowledge.
+    The enclosing daily state/publication remains responsible for PIT eligibility.
+    """
+    from datetime import datetime, timezone
+    from services.paired_nav_journal import digest
+    date.fromisoformat(decision_date)
+    identities = [{'id': stock['id'], 'symbol': stock['symbol']} for stock in active_stocks]
+    if (any(type(row['id']) is not int or row['id'] <= 0 or not isinstance(row['symbol'], str)
+            or not row['symbol'] or row['symbol'] != row['symbol'].strip() for row in identities)
+            or len({row['id'] for row in identities}) != len(identities)
+            or len({row['symbol'] for row in identities}) != len(identities)):
+        raise ValueError('payload_source_identity_invalid')
+    started_at = datetime.now(timezone.utc).isoformat()
+    if not active_stocks:
+        raw = {name: {} for name in ('prices_by_id', 'indicators_by_id', 'chips_by_sym',
+            'sentiment_by_id', 'real_acc_by_id', 'model_stats_by_id', 'misc_by_id')}
+        raw['tag_rows'] = []
+    else:
+        stock_ids = [s["id"] for s in active_stocks]
+        symbols = [s["symbol"] for s in active_stocks]
+        logger.info(f"[payload_builder] Building payloads for {len(stock_ids)} active stocks")
+    
+        # ?? Bulk load all per-stock data ????????????????????????????????????????
+        prices_by_id = _bulk_load_prices(stock_ids, as_of_date=decision_date)
+        indicators_by_id = _bulk_load_indicators(stock_ids, as_of_date=decision_date)
+        chips_by_sym = _bulk_load_chips(symbols, as_of_date=decision_date)
+        sentiment_by_id = _bulk_load_sentiment(stock_ids, as_of_date=decision_date)
+        real_acc_by_id, model_stats_by_id = _bulk_load_accuracies(stock_ids)
+        misc_by_id = _bulk_load_per_stock_misc(
+            stock_ids,
+            {int(s["id"]): str(s["symbol"]) for s in active_stocks},
+            decision_date=decision_date,
+        )
+    
+        # ?? Stock meta: sector encoding + cross-sectional features ??????????????
+        # Sector tags
+        tag_rows = MARKET_D1_CLIENT.query(
+            """
+            SELECT symbol, tag
+              FROM (
+                SELECT symbol, tag,
+                       ROW_NUMBER() OVER (
+                         PARTITION BY symbol ORDER BY date(as_of_date) DESC, tag ASC
+                       ) AS rn
+                  FROM finlab_taxonomy_tags
+                 WHERE tag_type='industry'
+                   AND source='finlab.security_categories'
+                   AND date(as_of_date)<=date(?)
+              )
+             WHERE rn=1
+            """,
+            [decision_date],
+        )
+        raw = dict(prices_by_id=prices_by_id, indicators_by_id=indicators_by_id, chips_by_sym=chips_by_sym,
+            sentiment_by_id=sentiment_by_id, real_acc_by_id=real_acc_by_id, model_stats_by_id=model_stats_by_id,
+            misc_by_id=misc_by_id, tag_rows=tag_rows)
+    # Successful empty reads are explicit for every requested stock; later
+    # missing keys mean an incomplete snapshot, not a zero/default observation.
+    for field in ('prices_by_id', 'indicators_by_id', 'sentiment_by_id',
+                  'real_acc_by_id', 'model_stats_by_id', 'misc_by_id'):
+        empty = [] if field in ('prices_by_id', 'indicators_by_id', 'sentiment_by_id') else {}
+        raw[field] = {row['id']: raw[field].get(row['id'], empty) for row in identities}
+    raw['chips_by_sym'] = {row['symbol']: raw['chips_by_sym'].get(row['symbol'], []) for row in identities}
+    # Normalize map keys exactly as the existing JSON async state transport.
+    body = json.loads(json.dumps({'schema_version': 'payload-source-observations-v1',
+        'decision_date': decision_date, 'started_at': started_at,
+        'observed_at': datetime.now(timezone.utc).isoformat(), 'stocks': identities, 'sources': raw,
+        'knowledge_scope': 'observed_at_capture_not_historical_asof'}, ensure_ascii=False, allow_nan=False))
+    return {**body, 'source_checksum': digest(body)}
+
+
+def _read_frozen_payload_sources(packet: dict, active_stocks: list[dict], decision_date: str) -> dict:
+    from copy import deepcopy
+    from services.paired_nav_journal import digest, _timestamp
+    if not isinstance(packet, dict):
+        raise ValueError('payload_source_missing')
+    body = {key: value for key, value in packet.items() if key != 'source_checksum'}
+    if (body.get('schema_version') != 'payload-source-observations-v1'
+            or body.get('decision_date') != decision_date
+            or body.get('knowledge_scope') != 'observed_at_capture_not_historical_asof'
+            or packet.get('source_checksum') != digest(body)
+            or _timestamp(body['started_at']) > _timestamp(body['observed_at'])):
+        raise ValueError('payload_source_identity_or_checksum_invalid')
+    identities = body.get('stocks')
+    if not isinstance(identities, list) or any(not isinstance(row, dict) or set(row) != {'id', 'symbol'}
+            or type(row['id']) is not int or row['id'] <= 0 or not isinstance(row['symbol'], str)
+            or not row['symbol'] or row['symbol'] != row['symbol'].strip() for row in identities):
+        raise ValueError('payload_source_stocks_invalid')
+    by_symbol = {row['symbol']: row['id'] for row in identities}
+    if len(by_symbol) != len(identities) or len({row['id'] for row in identities}) != len(identities):
+        raise ValueError('payload_source_stocks_invalid')
+    if (len({row['symbol'] for row in active_stocks}) != len(active_stocks)
+            or any(by_symbol.get(row['symbol']) != row['id'] for row in active_stocks)):
+        raise ValueError('payload_source_slate_not_covered')
+    raw = body.get('sources')
+    fields = ('prices_by_id', 'indicators_by_id', 'chips_by_sym', 'sentiment_by_id',
+              'real_acc_by_id', 'model_stats_by_id', 'misc_by_id')
+    if (not isinstance(raw, dict) or set(raw) != {*fields, 'tag_rows'}
+            or any(not isinstance(raw[field], dict) for field in fields) or not isinstance(raw['tag_rows'], list)):
+        raise ValueError('payload_source_fields_missing')
+    ids, symbols = {row['id'] for row in active_stocks}, {row['symbol'] for row in active_stocks}
+    for field in fields:
+        keys = {str(sid) for sid in ids} if field.endswith('_by_id') else symbols
+        if not keys <= set(raw[field]):
+            raise ValueError('payload_source_slate_values_missing')
+    result = {field: {sid: raw[field][str(sid)] for sid in ids if str(sid) in raw[field]}
+              if field.endswith('_by_id') else {symbol: raw[field][symbol] for symbol in symbols if symbol in raw[field]}
+              for field in fields}
+    result['tag_rows'] = raw['tag_rows']
+    for field in ('prices_by_id', 'indicators_by_id', 'sentiment_by_id'):
+        for stock in active_stocks:
+            rows = result[field].get(stock['id'], [])
+            if not isinstance(rows, list) or any(not isinstance(row, dict) or not isinstance(row.get('date'), str)
+                    or row['date'][:10] > decision_date for row in rows):
+                raise ValueError('payload_source_future_or_invalid_rows')
+    for symbol in symbols:
+        rows = result['chips_by_sym'].get(symbol, [])
+        if not isinstance(rows, list) or any(not isinstance(row, dict) or not isinstance(row.get('date'), str)
+                or row['date'][:10] > decision_date for row in rows):
+            raise ValueError('payload_source_future_or_invalid_rows')
+    # Returned lists/dicts must not alias the state artifact or another slate.
+    return deepcopy(result)
+
+
 def build_payloads(
     active_stocks: list[dict],
     market_env: MarketEnv,
@@ -1184,6 +1310,7 @@ def build_payloads(
     lifecycle_weights: dict[str, float],
     decision_date: str,
     trading_config: dict | None = None,
+    *, frozen_sources: dict | None = None,
 ) -> list[PredictPayload]:
     """
     Build PredictPayload list for all active stocks.
@@ -1199,41 +1326,12 @@ def build_payloads(
     except (TypeError, ValueError) as exc:
         raise ValueError("build_payloads requires an ISO decision_date") from exc
 
-    stock_ids = [s["id"] for s in active_stocks]
-    symbols = [s["symbol"] for s in active_stocks]
-    logger.info(f"[payload_builder] Building payloads for {len(stock_ids)} active stocks")
-
-    # ?? Bulk load all per-stock data ????????????????????????????????????????
-    prices_by_id = _bulk_load_prices(stock_ids, as_of_date=decision_date)
-    indicators_by_id = _bulk_load_indicators(stock_ids, as_of_date=decision_date)
-    chips_by_sym = _bulk_load_chips(symbols, as_of_date=decision_date)
-    sentiment_by_id = _bulk_load_sentiment(stock_ids, as_of_date=decision_date)
-    real_acc_by_id, model_stats_by_id = _bulk_load_accuracies(stock_ids)
-    misc_by_id = _bulk_load_per_stock_misc(
-        stock_ids,
-        {int(s["id"]): str(s["symbol"]) for s in active_stocks},
-        decision_date=decision_date,
-    )
-
-    # ?? Stock meta: sector encoding + cross-sectional features ??????????????
-    # Sector tags
-    tag_rows = MARKET_D1_CLIENT.query(
-        """
-        SELECT symbol, tag
-          FROM (
-            SELECT symbol, tag,
-                   ROW_NUMBER() OVER (
-                     PARTITION BY symbol ORDER BY date(as_of_date) DESC, tag ASC
-                   ) AS rn
-              FROM finlab_taxonomy_tags
-             WHERE tag_type='industry'
-               AND source='finlab.security_categories'
-               AND date(as_of_date)<=date(?)
-          )
-         WHERE rn=1
-        """,
-        [decision_date],
-    )
+    source_packet = frozen_sources if frozen_sources is not None else capture_payload_sources(active_stocks, decision_date)
+    raw = _read_frozen_payload_sources(source_packet, active_stocks, decision_date)
+    prices_by_id, indicators_by_id = raw['prices_by_id'], raw['indicators_by_id']
+    chips_by_sym, sentiment_by_id = raw['chips_by_sym'], raw['sentiment_by_id']
+    real_acc_by_id, model_stats_by_id = raw['real_acc_by_id'], raw['model_stats_by_id']
+    misc_by_id, tag_rows = raw['misc_by_id'], raw['tag_rows']
     sym_to_sector: dict[str, str] = {}
     for r in tag_rows:
         sym_to_sector[r["symbol"]] = r["tag"]

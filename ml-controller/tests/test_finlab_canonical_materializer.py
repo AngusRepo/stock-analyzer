@@ -407,6 +407,15 @@ def test_materialize_outputs_report_nonzero_canonical_rows() -> None:
     for field in ["mom", "yoy"]:
         _write(root / "raw" / "revenue" / f"{field}.parquet", pl.DataFrame({"date": ["2026-05-01"], "2330": [1.0]}))
 
+    _write(root / "raw" / "security_master" / "company_basic_info.parquet", pl.DataFrame({
+        'symbol': ['2330'], '公司簡稱': ['TSMC'], '市場別': ['sii'], '上市日期': ['1994-09-05'],
+        '上櫃日期': [None], '興櫃日期': [None], '__observed_at': ['2026-05-18T00:00:00+00:00'],
+    }))
+    _write(root / 'raw' / 'security_master' / 'tw_etf_basic_info.parquet', pl.DataFrame({
+        'symbol': ['0050'], '證券簡稱': ['元大台灣50'], '上市日期': ['2003-06-30'],
+        'ETF詳情頁': ['https://www.twse.com.tw/zh/ETFortune-institute/etfInfo/0050'],
+        '__observed_at': ['2026-05-18T00:00:00+00:00'],
+    }))
     outputs = materialize_finlab_canonical_outputs(
         root,
         generated_at="2026-05-18T00:00:00+00:00",

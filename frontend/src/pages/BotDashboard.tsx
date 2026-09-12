@@ -56,7 +56,8 @@ function fmt(n: number | null | undefined, decimals = 0): string {
   return n.toLocaleString('zh-TW', { minimumFractionDigits: decimals, maximumFractionDigits: decimals })
 }
 
-function pctClass(pct: number): string {
+function pctClass(pct: number | null): string {
+  if (pct == null) return 'text-muted-foreground'
   if (pct > 0) return 'text-red-400'
   if (pct < 0) return 'text-emerald-400'
   return 'text-muted-foreground'
@@ -241,8 +242,9 @@ function PortfolioSummary() {
     ? posArr.reduce((s: number, p: any) => s + (p.current_price ?? p.avg_cost ?? 0) * (p.shares ?? 0), 0)
     : 0
   const netUnsettledSettlement = positionSummary?.net_unsettled_settlement ?? 0
-  const totalAssets = positionSummary?.total_value ?? (cash + positionValue + netUnsettledSettlement)
-  const totalReturn = initialCash > 0 ? (totalAssets - initialCash) / initialCash : 0
+  const valuationPending = positionSummary?.valuation_complete === false
+  const totalAssets = valuationPending ? null : positionSummary?.total_value ?? (cash + positionValue + netUnsettledSettlement)
+  const totalReturn = totalAssets == null ? null : initialCash > 0 ? (totalAssets - initialCash) / initialCash : 0
 
   // PnL snapshots for advanced metrics
   const snapshots = paperPnlSnapshotsFromPayload(pnlData)
@@ -253,7 +255,7 @@ function PortfolioSummary() {
   const daysSinceStart = first?.date
     ? Math.max(1, (Date.now() - new Date(first.date).getTime()) / 86400000)
     : 1
-  const annualizedReturn = typeof latest?.cagr === 'number' && Number.isFinite(latest.cagr)
+  const annualizedReturn = totalReturn == null ? null : typeof latest?.cagr === 'number' && Number.isFinite(latest.cagr)
     ? latest.cagr
     : daysSinceStart > 0
       ? Math.pow(1 + totalReturn, 365 / daysSinceStart) - 1
@@ -269,6 +271,7 @@ function PortfolioSummary() {
 
   // 近期報酬（週/月/季）
   function getReturnSince(daysAgo: number): number | null {
+    if (valuationPending) return null
     if (snapshots.length < 2) return null
     const cutoff = new Date(Date.now() - daysAgo * 86400000).toISOString().slice(0, 10)
     const ref = snapshots.find((s: any) => s.date >= cutoff) ?? snapshots[0]
@@ -305,8 +308,11 @@ function PortfolioSummary() {
       {/* 總資產 */}
       <div>
         <div className="text-xs text-muted-foreground normal-case font-medium mb-1">總資產</div>
-        <div className="text-3xl sv-num font-bold text-foreground leading-tight">${fmt(totalAssets)}</div>
-        <span className={`text-sm sv-num font-semibold ${pctClass(totalReturn)}`}>{totalReturn >= 0 ? '+' : ''}{(totalReturn * 100).toFixed(2)}%</span>
+        <div className="text-3xl sv-num font-bold text-foreground leading-tight">{valuationPending ? 'NAV 待估值' : `$${fmt(totalAssets)}`}</div>
+        <span className={`text-sm sv-num font-semibold ${pctClass(totalReturn)}`}>{totalReturn == null ? '報酬率暫不可評估' : `${totalReturn >= 0 ? '+' : ''}${(totalReturn * 100).toFixed(2)}%`}</span>
+        {valuationPending ? <div className="text-xs text-amber-300 whitespace-normal mt-1">
+          權利尚無可靠市價；資產區間 ${fmt(positionSummary.nav_lower_bound)}–${fmt(positionSummary.nav_upper_bound)}。不是已實現損失，也不計晉級證據。
+        </div> : null}
         {netUnsettledSettlement !== 0 && (
           <div className="text-[11px] text-muted-foreground/70 mt-1">
             含未交割 {netUnsettledSettlement > 0 ? '+' : ''}${fmt(Math.round(netUnsettledSettlement))}
@@ -316,9 +322,9 @@ function PortfolioSummary() {
       {/* 指標列 */}
       {[
         { label: '已實現', val: `${totalRealizedPnl >= 0 ? '+' : ''}$${fmt(Math.round(totalRealizedPnl))}`, sub: `${sellOrderCount}筆`, cls: pctClass(totalRealizedPnl) },
-        { label: '年化', val: `${annualizedReturn >= 0 ? '+' : ''}${(annualizedReturn * 100).toFixed(1)}%`, sub: `${Math.round(daysSinceStart)}天`, cls: pctClass(annualizedReturn) },
-        { label: 'MDD', val: `-${(maxDrawdown * 100).toFixed(1)}%`, sub: '', cls: maxDrawdown > 0 ? pctClass(-maxDrawdown) : 'text-muted-foreground' },
-        { label: 'Sharpe', val: sharpe30d != null ? sharpe30d.toFixed(2) : '-', sub: '30d', cls: sharpe30d != null ? (sharpe30d > 1 ? 'text-emerald-400' : sharpe30d > 0 ? 'text-foreground' : 'text-red-400') : 'text-muted-foreground' },
+        { label: '年化', val: annualizedReturn == null ? '-' : `${annualizedReturn >= 0 ? '+' : ''}${(annualizedReturn * 100).toFixed(1)}%`, sub: valuationPending ? '待估值' : `${Math.round(daysSinceStart)}天`, cls: pctClass(annualizedReturn) },
+        { label: 'MDD', val: valuationPending ? '-' : `-${(maxDrawdown * 100).toFixed(1)}%`, sub: valuationPending ? '待估值' : '', cls: !valuationPending && maxDrawdown > 0 ? pctClass(-maxDrawdown) : 'text-muted-foreground' },
+        { label: 'Sharpe', val: !valuationPending && sharpe30d != null ? sharpe30d.toFixed(2) : '-', sub: valuationPending ? '待估值' : '30d', cls: !valuationPending && sharpe30d != null ? (sharpe30d > 1 ? 'text-emerald-400' : sharpe30d > 0 ? 'text-foreground' : 'text-red-400') : 'text-muted-foreground' },
       ].map(m => (
         <div key={m.label}>
           <div className="text-xs text-muted-foreground normal-case font-medium mb-1">{m.label}</div>
@@ -900,7 +906,7 @@ function PositionsTable() {
                 </div>
                 <div className="rounded-lg border border-[#2b3a49] bg-[#0d141d] p-2">
                   <p className="text-[#8b9bab]">總資產</p>
-                  <p className="sv-num text-[#e6edf3]">${fmt(summary.total_value)}</p>
+                  <p className="sv-num text-[#e6edf3]">{summary.valuation_complete === false ? `待估值 $${fmt(summary.nav_lower_bound)}–$${fmt(summary.nav_upper_bound)}` : `$${fmt(summary.total_value)}`}</p>
                 </div>
               </div>
             )}

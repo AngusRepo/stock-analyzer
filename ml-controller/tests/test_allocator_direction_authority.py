@@ -111,9 +111,8 @@ def test_continuity_allocator_cannot_turn_formal_hold_into_buy() -> None:
         {"promoteMinForecastPct": 0.0, "promoteMinMlEdge": 0.0},
         alpha_policy={"allocation": {}},
     ) is False
-    assert row["promotion_blocked_reason"] == "formal_ml_buy_admission_failed"
-    assert row["formal_ml_continuity_admission"]["direction_owner"] == "formal_ml_signal"
-    assert row["formal_ml_continuity_admission"]["allocator_role"] == "weight_only_not_direction_owner"
+    assert row["promotion_blocked_reason"] == "validated_l4_expected_return_unavailable"
+    assert "formal_ml_continuity_admission" not in row
 
 
 def test_risk_overlay_skip_blocks_allocator_even_for_formal_ml_buy() -> None:

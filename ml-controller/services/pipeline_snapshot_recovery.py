@@ -70,8 +70,13 @@ def load_pipeline_state_envelope(
         raise ValueError("pipeline_snapshot_recovery_source_bucket_mismatch")
     client = storage_client or storage.Client()
     blob = client.bucket(bucket_name).blob(blob_name)
-    raw = blob.download_as_bytes()
+    # Bind metadata and bytes to the same object generation. Reloading after
+    # download could label old bytes with a concurrently replaced generation.
     blob.reload()
+    generation = blob.generation
+    if generation is None:
+        raise ValueError('pipeline_snapshot_recovery_source_generation_missing')
+    raw = blob.download_as_bytes(if_generation_match=int(generation))
     try:
         payload = decode_pipeline_state_envelope(raw)
     except (TypeError, ValueError) as exc:
@@ -83,7 +88,7 @@ def load_pipeline_state_envelope(
         "state": state,
         "artifact": {
             "gcs_uri": gcs_uri,
-            "generation": str(blob.generation or ""),
+            "generation": str(generation),
             "updated_at": _utc_datetime(blob.updated).isoformat(),
             "size": int(blob.size or len(raw)),
             "sha256": hashlib.sha256(raw).hexdigest(),
@@ -124,6 +129,10 @@ def validate_snapshot_recovery_source(
         payloads = validate_pipeline_payload_identity(state)
     except ValueError as exc:
         raise ValueError("pipeline_snapshot_recovery_payload_identity_mismatch") from exc
+    if state.get('pipeline_sequence_observations') is not None:
+        from services.state_space_series import read_frozen_sequence_inputs
+        read_frozen_sequence_inputs(state['pipeline_sequence_observations'], decision_date=run_date,
+            payloads=payloads, observed_before=source_created_at.isoformat())
     if state.get("modal_prediction_bundle") or state.get("modal_prediction_state_gcs_uri"):
         raise ValueError("pipeline_snapshot_recovery_source_already_continued")
 
@@ -253,10 +262,11 @@ async def run_pipeline_snapshot_recovery(
     )
     lineage["next_session_evidence"] = next_session_evidence
     source_pit_checksum = lineage["source_pit_state_checksum"]
-    sequence_evidence = await asyncio.to_thread(
-        long_history_sequence_artifact_evidence,
-        as_of_utc=lineage["source_state_created_at"],
-    )
+    frozen_sequence = state.get('pipeline_sequence_observations')
+    sequence_evidence = ({'source': 'frozen_pipeline_sequence_observations',
+        'object_fingerprint': frozen_sequence['source_checksum']} if frozen_sequence is not None else
+        await asyncio.to_thread(long_history_sequence_artifact_evidence,
+                              as_of_utc=lineage['source_state_created_at']))
     lineage["sequence_artifact_evidence"] = sequence_evidence
     lineage["recovered_at"] = datetime.now(timezone.utc).isoformat()
 
@@ -272,14 +282,31 @@ async def run_pipeline_snapshot_recovery(
         raise ValueError("pipeline_snapshot_recovery_pit_state_mutated")
 
     modal_payload = await build_modal_payload(state, state_gcs_uri="")
+
+    async def validate_sequence_handoff():
+        if frozen_sequence is not None:
+            from services.state_space_series import read_frozen_sequence_inputs
+            expected_series, metadata = read_frozen_sequence_inputs(
+                state['pipeline_sequence_observations'], decision_date=run_date,
+                payloads=state['payloads'], observed_before=lineage['source_state_created_at'])
+            fingerprint = metadata['frozen_source_checksum']
+            if fingerprint != sequence_evidence['object_fingerprint']:
+                raise ValueError('pipeline_snapshot_recovery_sequence_artifact_changed_during_build')
+            if (modal_payload.get('sequence_series') != expected_series
+                    or (modal_payload.get('sequence_dataset_meta') or {}).get('frozen_source_checksum') != fingerprint):
+                raise ValueError('pipeline_snapshot_recovery_sequence_request_mismatch')
+        else:
+            after = await asyncio.to_thread(long_history_sequence_artifact_evidence,
+                                            as_of_utc=lineage['source_state_created_at'])
+            if after['object_fingerprint'] != sequence_evidence['object_fingerprint']:
+                raise ValueError('pipeline_snapshot_recovery_sequence_artifact_changed_during_build')
+
+    # Never publish a known-invalid derived snapshot. Recheck after persistence
+    # as well, before allowing the request to leave this process.
+    await validate_sequence_handoff()
     derived_state_gcs_uri = await asyncio.to_thread(write_state_artifact, state)
     modal_payload["state_gcs_uri"] = derived_state_gcs_uri
-    sequence_after = await asyncio.to_thread(
-        long_history_sequence_artifact_evidence,
-        as_of_utc=lineage["source_state_created_at"],
-    )
-    if sequence_after["object_fingerprint"] != sequence_evidence["object_fingerprint"]:
-        raise ValueError("pipeline_snapshot_recovery_sequence_artifact_changed_during_build")
+    await validate_sequence_handoff()
     spawn_info = await asyncio.to_thread(spawn_prediction_bundle, modal_payload)
     return {
         "status": "deferred",

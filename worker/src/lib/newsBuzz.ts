@@ -8,18 +8,26 @@
  * keywords 由 marketScreener 從 FinLab taxonomy 動態載入後傳入
  */
 import type { ConceptBuzzResult } from './pttBuzz'
+import { screenerOverlayCutoff } from './screenerOverlayReads'
 
 /**
  * 從 D1 news 表統計最近 24h 新聞標題的概念熱度
  * @param keywords — 動態概念關鍵字（由 loadBuzzKeywords 預載）
  */
-export async function detectNewsBuzz(db: D1Database, keywords?: Record<string, string[]>): Promise<ConceptBuzzResult[]> {
+export async function detectNewsBuzz(db: D1Database, keywords?: Record<string, string[]>,
+  observation?: { signalDate: string; observedAt: string }): Promise<ConceptBuzzResult[]> {
   const kwMap = keywords ?? {}
-  const cutoff = new Date(Date.now() - 24 * 3600_000).toISOString()
-
-  const { results: newsRows } = await db.prepare(
-    `SELECT title, sentiment FROM news WHERE published_at >= ? OR created_at >= ? ORDER BY id DESC LIMIT 500`
-  ).bind(cutoff, cutoff).all<{ title: string; sentiment: number | null }>()
+  const at = observation?.observedAt ?? new Date().toISOString()
+  const date = observation?.signalDate ?? new Date(Date.parse(at) + 8 * 3600_000).toISOString().slice(0, 10)
+  const { cutoff } = screenerOverlayCutoff(date, at)
+  const response = await db.prepare(
+    `SELECT title, sentiment FROM news
+      WHERE julianday(published_at) >= julianday(?, '-1 day')
+        AND julianday(published_at) < julianday(?) AND julianday(created_at) < julianday(?)
+      ORDER BY id DESC LIMIT 500`
+  ).bind(cutoff, cutoff, cutoff).all<{ title: string; sentiment: string | number | null }>()
+  if (!response.success || !Array.isArray(response.results)) throw new Error('news_buzz_query_failed')
+  const newsRows = response.results
 
   if (!newsRows?.length) {
     console.log('[NewsBuzz] No recent news found')
@@ -39,7 +47,11 @@ export async function detectNewsBuzz(db: D1Database, keywords?: Record<string, s
       if (kws.some(kw => titleLower.includes(kw.toLowerCase()))) {
         const s = stats.get(concept)!
         s.count++
-        s.sentimentSum += news.sentiment ?? 0
+        // Ingested news uses labels; legacy numeric rows remain supported.
+        const sentiment = news.sentiment === 'positive' ? 1 : news.sentiment === 'negative' ? -1
+          : news.sentiment === 'neutral' || news.sentiment == null ? 0 : Number(news.sentiment)
+        if (!Number.isFinite(sentiment)) throw new Error('news_buzz_sentiment_invalid')
+        s.sentimentSum += Math.min(1, Math.max(-1, sentiment))
         if (s.titles.length < 3) s.titles.push(news.title)
       }
     }

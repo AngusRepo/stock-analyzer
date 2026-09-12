@@ -1,4 +1,5 @@
 import { useMemo, useState, type ReactNode } from 'react'
+import EnsembleAuthority from './EnsembleAuthority'
 import {
   MODEL_POOL_ACTIVE_ALPHA_MODEL_IDS,
   MODEL_POOL_PRODUCTION_SLOT_IDS,
@@ -1463,6 +1464,7 @@ export default function ModelPoolNewFlowWorkbench({
 
       <div className="grid gap-4 bg-[#0b1118] p-4">
         <CandidateHousekeepingPanel selection={selection} promotionQueue={promotionQueue} />
+        <EnsembleAuthority bundle={pointers?.active8_bundle} />
 
         <FleetStatusStrip
           records={grafanaRecords}

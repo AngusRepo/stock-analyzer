@@ -1,3 +1,4 @@
+import { paperExecutionDate, paperExecutionNow } from './paperExecutionScope'
 const INTRADAY_EXECUTION_LOCK_KEY = 'intraday:execution-loop'
 const INTRADAY_EXECUTION_LOCK_OWNER = 'intraday_execution_loop'
 
@@ -7,8 +8,8 @@ export async function acquireIntradayExecutionLease(
   runDate: string,
   ttlSec = 180,
 ): Promise<boolean> {
-  const now = new Date().toISOString()
-  const expiresAt = new Date(Date.now() + Math.max(60, ttlSec) * 1000).toISOString()
+  const now = paperExecutionDate().toISOString()
+  const expiresAt = new Date(paperExecutionNow() + Math.max(60, ttlSec) * 1000).toISOString()
   const result = await db.prepare(`
     INSERT INTO scheduler_locks (lock_key, owner, run_date, run_id, created_at, expires_at)
     VALUES (?, ?, ?, ?, ?, ?)
@@ -36,7 +37,7 @@ export async function refreshIntradayExecutionLease(
   runId: string,
   ttlSec = 180,
 ): Promise<boolean> {
-  const expiresAt = new Date(Date.now() + Math.max(60, ttlSec) * 1000).toISOString()
+  const expiresAt = new Date(paperExecutionNow() + Math.max(60, ttlSec) * 1000).toISOString()
   const result = await db.prepare(`
     UPDATE scheduler_locks
        SET expires_at = ?

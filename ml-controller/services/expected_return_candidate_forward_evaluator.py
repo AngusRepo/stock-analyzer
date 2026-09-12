@@ -50,6 +50,47 @@ L4_OFFLINE_EFFICACY_FINDINGS = {
     "walk_forward_not_stable",
     "walk_forward_no_valid_folds",
 }
+
+
+def _complete_write(result: dict[str, Any], expected: int, phase: str) -> dict[str, Any]:
+    """A transport ACK/no-op is not evidence that the whole materialization ran."""
+    if (
+        not isinstance(result, dict)
+        or type(result.get("success_count")) is not int
+        or type(result.get("error_count")) is not int
+        or result.get("success_count") != expected
+        or result.get("error_count") != 0
+        or result.get("partial_failure")
+        or result.get("mode") == "allocator_contract_noop"
+    ):
+        raise RuntimeError(f"candidate_forward_{phase}_write_incomplete")
+    return result
+
+
+EVALUATION_FIELDS = (
+    "prediction_date", "label_known_date", "sample_count", "prediction_corr",
+    "baseline_corr", "corr_delta", "spread", "baseline_spread", "spread_delta",
+    "top_return", "quality_decision",
+)
+
+
+def _verify_evaluation_readback(
+    expected: list[dict[str, Any]], stored: list[dict[str, Any]],
+    *, candidate: dict[str, Any], extension_manifest_checksum: str,
+) -> None:
+    by_date = {row["prediction_date"]: row for row in stored}
+    if len(by_date) != len(stored):
+        raise RuntimeError("candidate_forward_duplicate_prediction_dates")
+    for row in expected:
+        actual = by_date.get(row["prediction_date"])
+        if actual is None:
+            raise RuntimeError("candidate_forward_evaluation_readback_missing")
+        if (
+            actual.get("candidate_artifact_checksum") != candidate["checksum"]
+            or actual.get("extension_manifest_checksum") != extension_manifest_checksum
+            or any(actual.get(key) != row.get(key) for key in EVALUATION_FIELDS)
+        ):
+            raise RuntimeError("candidate_forward_evaluation_readback_mismatch")
 FUSION_OFFLINE_EFFICACY_FINDINGS = {
     "data_validity:date_count_below_validation_floor",
     "residual_adjustment:insufficient_dates",
@@ -201,7 +242,7 @@ def _candidate_rows(
         f"""
         SELECT artifact_id, model_name, version, state, artifact_path, checksum,
                source_run_date, offline_gate_decision, offline_gate_failed_gates,
-               training_run_id, updated_at,
+               training_run_id, updated_at, live_gate_status, live_evidence_json, promotion_decision,
                json_extract(
                  offline_evidence_json,
                  '$.training_data.trained_until'
@@ -271,14 +312,28 @@ def _persist_candidate_gate_state(
     gates: dict[str, dict[str, Any]],
     activate: dict[str, bool],
     batch_fn: Callable[..., dict[str, Any]],
+    query_fn: Callable[[str, list[Any]], list[dict[str, Any]]],
+    preserve_state: bool = False,
 ) -> dict[str, Any]:
     statements: list[tuple[str, list[Any]]] = []
+    expected: list[tuple[str, str, str, str, str, str, dict[str, Any]]] = []
     for owner, candidate in candidates.items():
         gate = gates[owner]
         decision = str(gate.get("decision") or "PENDING").upper()
         state = str(candidate["registry"].get("state") or "")
+        registry = candidate['registry']
+        terminal_rejected = state == 'rejected' and (
+            registry.get('live_gate_status') not in (None, '', 'not_started')
+            or bool(registry.get('live_evidence_json'))
+            or str(registry.get('promotion_decision') or '').startswith('prospective_')
+        )
+        # Re-evaluation updates evidence, not adopted/closed lifecycle state.
+        # Legacy offline-only rejection may still enter its FIRST observation.
+        preserve_row = preserve_state or state in {'production', 'archived', 'retired'} or terminal_rejected
         next_state = (
-            "rejected"
+            state
+            if preserve_row
+            else "rejected"
             if decision == "FAIL"
             else "shadowing"
             if activate.get(owner, False) or state not in ACTIVE_CANDIDATE_STATES
@@ -296,13 +351,33 @@ def _persist_candidate_gate_state(
             else "prospective_hold" if decision == "HOLD"
             else "prospective_collecting"
         )
+        if preserve_row and state in {'production', 'archived', 'retired', 'rejected'}:
+            # Auditing a champion or a closed candidate updates evidence, not
+            # its adopted/replaced/retired lifecycle labels.
+            live_status = candidate['registry'].get('live_gate_status')
+            promotion_decision = candidate['registry'].get('promotion_decision')
+        # Every writer compares its observed evidence, including first activation.
+        # A concurrent rejection/review can keep state unchanged; state-only CAS
+        # would then reopen a closed candidate or overwrite newer evidence.
+        evidence_guard = (
+            " AND COALESCE(live_evidence_json,'')=?"
+            " AND COALESCE(live_gate_status,'')=? AND COALESCE(promotion_decision,'')=?"
+        )
+        # Optional sealed identity: a concurrent metadata edit with the same
+        # checksum must not receive another artifact's NAV projection.
+        identity = candidate.get('registry_identity_guard') or {}
+        allowed_identity = {'artifact_id', 'model_name', 'version', 'candidate_type', 'checksum',
+            'source_run_date', 'training_run_id', 'created_at', 'offline_evidence_json'}
+        if not isinstance(identity, dict) or set(identity) - allowed_identity:
+            raise ValueError('candidate_forward_registry_guard_invalid')
+        identity_guard = ''.join(f' AND {key} IS ?' for key in identity)
         statements.append((
             """
             UPDATE model_artifact_registry
                SET state=?, live_gate_status=?, live_evidence_json=?,
                    promotion_decision=?, updated_at=CURRENT_TIMESTAMP
-             WHERE artifact_id=? AND checksum=?
-            """,
+             WHERE artifact_id=? AND checksum=? AND state=?
+            """ + evidence_guard + identity_guard,
             [
                 next_state,
                 live_status,
@@ -310,9 +385,29 @@ def _persist_candidate_gate_state(
                 promotion_decision,
                 candidate["registry"]["artifact_id"],
                 candidate["checksum"],
-            ],
+                state,
+            ] + [candidate['registry'].get(key) or '' for key in
+                  ('live_evidence_json', 'live_gate_status', 'promotion_decision')]
+                  + list(identity.values()),
         ))
-    return batch_fn(statements, timeout=30.0, chunk_size=2)
+        expected.append((candidate["registry"]["artifact_id"], candidate["checksum"],
+                         next_state, live_status, statements[-1][1][2], promotion_decision, identity))
+    result = _complete_write(batch_fn(statements, timeout=30.0, chunk_size=2),
+                             len(statements), "gate_state")
+    for artifact_id, checksum, state, live_status, evidence, promotion, identity in expected:
+        columns = ['state', 'live_gate_status', 'live_evidence_json', 'promotion_decision', *identity]
+        rows = query_fn(
+            'SELECT ' + ', '.join(columns)
+            + ' FROM model_artifact_registry WHERE artifact_id=? AND checksum=?',
+            [artifact_id, checksum],
+        )
+        if len(rows) != 1 or any(rows[0].get(key) != value for key, value in {
+            "state": state, "live_gate_status": live_status,
+            "live_evidence_json": evidence, "promotion_decision": promotion,
+            **identity,
+        }.items()):
+            raise RuntimeError("candidate_forward_gate_state_readback_mismatch")
+    return result
 
 
 def _load_candidate_packet(bucket: Any, row: dict[str, Any]) -> dict[str, Any]:
@@ -327,6 +422,10 @@ def _load_candidate_packet(bucket: Any, row: dict[str, Any]) -> dict[str, Any]:
     owner = str(row.get("model_name") or "")
     version = str(row.get("version") or "")
     expected_registry_id = f"{owner}:{version}:{checksum}"
+    cohort_id = packet.get("cohort_id")
+    if (not isinstance(cohort_id, str) or not cohort_id.strip()
+            or str(row.get("training_run_id") or "") != f"active8_oof:{cohort_id}"):
+        raise ValueError("candidate_forward_training_cohort_identity_mismatch")
     if (
         str(row.get("artifact_id") or "") != expected_registry_id
         or identity["artifact_id"] != f"{owner}:{version}"
@@ -541,7 +640,32 @@ def _persist_evaluations(
                 json.dumps(evidence, ensure_ascii=False, sort_keys=True, allow_nan=False),
             ],
         ))
-    return batch_fn(statements, timeout=30.0, chunk_size=20) if statements else {"changes": 0}
+    return (_complete_write(batch_fn(statements, timeout=30.0, chunk_size=20),
+                            len(statements), "evaluations")
+            if statements else {"total": 0, "success_count": 0, "error_count": 0})
+
+
+def _stored_evaluations(query_fn, candidate: dict[str, Any], business_date: str) -> list[dict[str, Any]]:
+    rows = query_fn(
+        """SELECT prediction_date, label_known_date, sample_count,
+                  prediction_corr, baseline_corr, corr_delta, spread,
+                  baseline_spread, spread_delta, top_return, quality_decision,
+                  candidate_artifact_checksum, extension_manifest_checksum, evidence_json
+             FROM expected_return_candidate_preoutcome_evaluations
+            WHERE candidate_artifact_id=? AND model_fingerprint=?
+              AND (label_known_date<=? OR label_known_date IS NULL OR label_known_date='')
+            ORDER BY prediction_date""",
+        [candidate['registry']['artifact_id'], candidate['identity']['model_fingerprint'], business_date],
+    )
+    for row in rows:
+        if row.get('candidate_artifact_checksum') != candidate['checksum']:
+            raise RuntimeError('candidate_forward_stored_identity_mismatch')
+        if not row.get('label_known_date') or row['label_known_date'] > business_date:
+            raise RuntimeError('candidate_forward_stored_outcome_not_yet_known')
+        evidence = json.loads(row['evidence_json'])
+        if any(row.get(field) != evidence.get(field) for field in EVALUATION_FIELDS):
+            raise RuntimeError('candidate_forward_stored_scalar_json_mismatch')
+    return rows
 
 
 def _promotion_gate(
@@ -554,6 +678,20 @@ def _promotion_gate(
     maturity_blockers: list[str] = []
     quality_blockers: list[str] = []
     contract_blockers: list[str] = []
+    if len({row.get("prediction_date") for row in rows}) != len(rows):
+        contract_blockers.append("prospective_duplicate_prediction_dates")
+        # The fatal contract error prevents inference; the displayed maturity
+        # must still count unique dates, never duplicate rows.
+        evaluable = list({row["prediction_date"]: row for row in evaluable}.values())
+    if any(
+        isinstance(row.get(key), bool)
+        or not isinstance(row.get(key), (int, float))
+        or not math.isfinite(row[key])
+        for row in evaluable for key in ("top_return", "corr_delta", "spread_delta")
+    ):
+        contract_blockers.append("prospective_nonfinite_or_missing_paired_metrics")
+        # Never drop only the invalid dates and test an outcome-selected remainder.
+        evaluable = []
     if len(evaluable) < MIN_EVALUABLE_DATES:
         maturity_blockers.append("prospective_date_count_below_floor")
     top_values = [float(row["top_return"]) for row in evaluable]
@@ -685,6 +823,12 @@ def _promotion_gate(
         ),
         "comparison_mode": "same_prediction_date_paired_cross_section",
         "evaluation_unit": "pre_outcome_locked_prediction_date",
+        "evaluation_evidence_checksum": (
+            hashlib.sha256("\n".join(str(row["evidence_json"]) for row in sorted(
+                rows, key=lambda item: item["prediction_date"]
+            )).encode("utf-8")).hexdigest()
+            if all(isinstance(row.get("evidence_json"), str) for row in rows) else None
+        ),
         "no_lookahead_guard": "prediction_after_trained_until_and_label_unknown_at_freeze",
         "training_dispatched": False,
     }
@@ -781,6 +925,8 @@ def evaluate_expected_return_candidates_forward(
 ) -> dict[str, Any]:
     """Evaluate exact candidates on immutable rows whose labels were unknown at freeze."""
 
+    from services.paired_nav_expected_return_gate import nav_promotion_gate, candidate_promotion_payload
+
     selected, activate = _candidate_rows(
         query_fn,
         cohort_id,
@@ -797,63 +943,89 @@ def evaluate_expected_return_candidates_forward(
         owner: _load_candidate_packet(bucket, row)
         for owner, row in selected.items()
     }
+    from services.paired_nav_expected_return_gate import diagnostic_failure
     source_date = str(selected["l4_alpha_ev"].get("source_run_date") or "")[:10]
-    selection_semantic_floor_date = _selection_semantic_floor_date(query_fn, business_date)
+    selection_semantic_floor_date = None
+    preoutcome_locked_rows = []
+    errors = {}
+    diagnostic = {}
+    try:
+        selection_semantic_floor_date = _selection_semantic_floor_date(query_fn, business_date)
+        preoutcome_locked_rows = _preoutcome_locked_rows(snapshot_rows, candidates=candidates,
+            source_date=source_date, business_date=business_date,
+            selection_semantic_floor_date=selection_semantic_floor_date or "")
+    except Exception as exc:
+        errors = {owner: diagnostic_failure('cross_section_source', exc) for owner in candidates}
     for candidate in candidates.values():
         candidate["selection_semantic_floor_date"] = selection_semantic_floor_date
-    preoutcome_locked_rows = _preoutcome_locked_rows(
-        snapshot_rows,
-        candidates=candidates,
-        source_date=source_date,
-        business_date=business_date,
-        selection_semantic_floor_date=selection_semantic_floor_date or "",
-    )
-    if native_rows is not None:
+
+    if native_rows is not None and preoutcome_locked_rows:
         from services.ev_operational_parity import assess_ev_operational_parity
-
-        parity_rows = _operational_parity_rows(preoutcome_locked_rows)
-        parity = assess_ev_operational_parity(
-            l4_artifact=candidates["l4_alpha_ev"]["artifact"],
-            fusion_artifact=(
-                candidates["allocator_ev_fusion"]["artifact"]
-                if "allocator_ev_fusion" in candidates
-                else {}
-            ),
-            native_rows=parity_rows,
-        )
-        parity["input_row_source"] = "preoutcome_locked_oof_pit_snapshot"
-        parity["raw_native_row_count"] = len(native_rows)
-        parity["future_outcome_fields_withheld"] = sorted(_FUTURE_OUTCOME_FIELDS)
+        try:
+            parity = assess_ev_operational_parity(
+                l4_artifact=candidates["l4_alpha_ev"]["artifact"],
+                fusion_artifact=candidates.get("allocator_ev_fusion", {}).get("artifact", {}),
+                native_rows=_operational_parity_rows(preoutcome_locked_rows))
+            parity.update(input_row_source="preoutcome_locked_oof_pit_snapshot",
+                raw_native_row_count=len(native_rows), future_outcome_fields_withheld=sorted(_FUTURE_OUTCOME_FIELDS))
+        except Exception as exc:
+            error = diagnostic_failure('operational_parity', exc)
+            errors.update({owner: error for owner in candidates})
+            # An attempted structural validation failure must not fall back to
+            # the artifact's older PASS. Both owners remain unpromotable.
+            parity = {'status': 'failed', 'owner_decisions': {owner: {
+                'decision': 'FAIL', 'failed_gates': ['operational_parity_evaluation_failed']}
+                for owner in candidates}}
         for candidate in candidates.values():
-            candidate["operational_parity"] = parity
-    if not preoutcome_locked_rows:
-        gates = {
-            owner: _promotion_gate([], owner=owner, candidate=candidate)
-            for owner, candidate in candidates.items()
-        }
-        terminal_contract_failure = any(gate["decision"] == "FAIL" for gate in gates.values())
-        lane_persistence = _persist_candidate_gate_state(
-            candidates=candidates,
-            gates=gates,
-            activate=activate,
-            batch_fn=batch_fn,
-        )
-        return {
-            "schema_version": SCHEMA_VERSION,
-            "status": "evaluated" if terminal_contract_failure else "waiting_for_preoutcome_locked_mature_dates",
-            "candidate_source_run_date": source_date,
-            "selection_semantic_floor_date": selection_semantic_floor_date,
-            "candidate_artifact_ids": {
-                owner: candidate["registry"]["artifact_id"]
-                for owner, candidate in candidates.items()
-            },
-            "gates": gates,
-            "lane_persistence": lane_persistence,
-            "preoutcome_locked_rows": 0,
-            "promotion_ready": False,
-            "training_dispatched": False,
-        }
+            candidate['operational_parity'] = parity
 
+    if preoutcome_locked_rows:
+        try:
+            diagnostic = _evaluate_cross_section_diagnostics(candidates=candidates,
+                preoutcome_locked_rows=preoutcome_locked_rows, business_date=business_date,
+                cohort_id=cohort_id, extension_manifest_checksum=extension_manifest_checksum,
+                build_fusion_rows_fn=build_fusion_rows_fn, query_fn=query_fn, batch_fn=batch_fn)
+        except Exception as exc:
+            errors.update({owner: diagnostic_failure('cross_section_compute_or_persist', exc)
+                for owner in candidates if owner not in errors})
+
+    gates = {}
+    for owner, candidate in candidates.items():
+        stored = []
+        if owner not in errors:
+            try:
+                stored = _stored_evaluations(query_fn, candidate, business_date)
+                if preoutcome_locked_rows:
+                    _verify_evaluation_readback(diagnostic['daily_evaluations'][owner], stored,
+                        candidate=candidate, extension_manifest_checksum=extension_manifest_checksum)
+            except Exception as exc:
+                errors[owner] = diagnostic_failure('cross_section_readback', exc)
+        # No diagnostic exception is caught around the ORIGINAL NAV consumer or
+        # its durable writeback. Those failures still fail the main evaluation.
+        gates[owner] = nav_promotion_gate(stored, owner=owner, candidate=candidate,
+            business_date=business_date, query_fn=query_fn, diagnostic_error=errors.get(owner))
+        if gates[owner]['cross_section_diagnostic'].get('status') == 'failed':
+            errors[owner] = gates[owner]['cross_section_diagnostic']
+    promotion_payload = candidate_promotion_payload(candidates, gates, cohort_id)
+    lane_persistence = _persist_candidate_gate_state(candidates=candidates, gates=gates,
+        activate=activate, batch_fn=batch_fn, query_fn=query_fn)
+    return {'schema_version': SCHEMA_VERSION,
+        'status': 'evaluated_with_diagnostic_failures' if errors else 'evaluated',
+        'candidate_source_run_date': source_date,
+        'candidate_artifact_ids': {owner: c['registry']['artifact_id'] for owner, c in candidates.items()},
+        'candidate_states': {owner: str(c['registry'].get('state') or '') for owner, c in candidates.items()},
+        'selection_semantic_floor_date': selection_semantic_floor_date,
+        'preoutcome_locked_rows': len(preoutcome_locked_rows), **diagnostic,
+        'gates': gates, 'lane_persistence': lane_persistence,
+        'diagnostic_failures': [{'owner': owner, **error} for owner, error in sorted(errors.items())],
+        'diagnostics_retry_required': bool(errors),
+        'promotion_ready': bool(promotion_payload), 'promotion_payload': promotion_payload,
+        'training_dispatched': False}
+
+
+def _evaluate_cross_section_diagnostics(*, candidates, preoutcome_locked_rows, business_date,
+        cohort_id, extension_manifest_checksum, build_fusion_rows_fn, query_fn, batch_fn):
+    """Existing exact OOF arithmetic/storage, with no NAV or serving authority."""
     l4_candidate = candidates["l4_alpha_ev"]
     l4_sample_rows, l4_diagnostics = _l4_samples(preoutcome_locked_rows)
     l4_predictions = [_l4_prediction(sample, l4_candidate["artifact"]) for sample in l4_sample_rows]
@@ -934,68 +1106,5 @@ def evaluate_expected_return_candidates_forward(
         )
         for owner, daily in daily_by_owner.items()
     }
-    gates: dict[str, dict[str, Any]] = {}
-    promotion_payload: dict[str, Any] = {}
-    for owner, candidate in candidates.items():
-        stored = query_fn(
-            """
-            SELECT prediction_date, label_known_date, sample_count,
-                   prediction_corr, baseline_corr, corr_delta, spread,
-                   baseline_spread, spread_delta, top_return, quality_decision
-              FROM expected_return_candidate_preoutcome_evaluations
-             WHERE candidate_artifact_id=? AND model_fingerprint=?
-             ORDER BY prediction_date
-            """,
-            [candidate["registry"]["artifact_id"], candidate["identity"]["model_fingerprint"]],
-        )
-        gate = _promotion_gate(stored, owner=owner, candidate=candidate)
-        gates[owner] = gate
-        if (
-            gate["decision"] == "PASS"
-            and str(candidate["registry"].get("state") or "") != "production"
-        ):
-            promotion_payload[owner] = {
-                "artifact_id": candidate["registry"]["artifact_id"],
-                "artifact": candidate["artifact"],
-                "validation_packet": candidate["packet"].get("validation_packet") or {},
-                "offline_admission": gate["offline_admission"],
-                "operational_parity": candidate.get("operational_parity") or candidate["packet"].get("operational_parity") or {},
-                "prospective_validation": gate,
-                "cohort_id": cohort_id,
-                "source_run_date": candidate["registry"]["source_run_date"],
-                "cadence": "daily_candidate_forward",
-                "artifact_path": candidate["path"],
-                "artifact_checksum": candidate["checksum"],
-            }
-    lane_persistence = _persist_candidate_gate_state(
-        candidates=candidates,
-        gates=gates,
-        activate=activate,
-        batch_fn=batch_fn,
-    )
-    return {
-        "schema_version": SCHEMA_VERSION,
-        "status": "evaluated",
-        "candidate_source_run_date": source_date,
-        "candidate_artifact_ids": {
-            owner: candidate["registry"]["artifact_id"]
-            for owner, candidate in candidates.items()
-        },
-        "selection_semantic_floor_date": selection_semantic_floor_date,
-        "candidate_states": {
-            owner: str(candidate["registry"].get("state") or "")
-            for owner, candidate in candidates.items()
-        },
-        "preoutcome_locked_rows": len(preoutcome_locked_rows),
-        "l4_sample_audit": l4_diagnostics,
-        "fusion_sample_audit": fusion_diagnostics,
-        "daily_evaluations": {
-            **daily_by_owner,
-        },
-        "gates": gates,
-        "persistence": persistence,
-        "lane_persistence": lane_persistence,
-        "promotion_ready": bool(promotion_payload),
-        "promotion_payload": promotion_payload,
-        "training_dispatched": False,
-    }
+    return {'l4_sample_audit': l4_diagnostics, 'fusion_sample_audit': fusion_diagnostics,
+        'daily_evaluations': daily_by_owner, 'persistence': persistence}

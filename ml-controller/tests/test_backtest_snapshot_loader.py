@@ -43,11 +43,18 @@ def test_backtest_dataset_loads_from_snapshot_manifest():
                 "listed_date": "2030-01-01",
                 "delisted_date": None,
             },
+            {"id": 3, "symbol": "8888", "name": "mid-window IPO", "market": "TWSE",
+             "sector": "test", "in_current_watchlist": 0, "listed_date": "2026-05-05", "delisted_date": None},
+            {"id": 4, "symbol": "7777", "name": "emerging watch only", "market": "ROTC",
+             "sector": "test", "in_current_watchlist": 0, "listed_date": "2025-01-01", "delisted_date": None},
         ]),
         "prices": _write_component("prices", [
             {"stock_id": 1, "date": "2026-05-04", "open": 900.0, "high": 910.0, "low": 895.0, "close": 905.0, "volume": 1000, "avg_price": 903.0},
             {"stock_id": 1, "date": "2026-05-05", "open": 905.0, "high": 920.0, "low": 902.0, "close": 918.0, "volume": 1200, "avg_price": 914.0},
             {"stock_id": 2, "date": "2026-05-05", "open": 10.0, "high": 11.0, "low": 9.0, "close": 10.5, "volume": 1, "avg_price": 10.2},
+            {"stock_id": 3, "date": "2026-05-04", "open": 10.0, "high": 11.0, "low": 9.0, "close": 10.5, "volume": 1, "avg_price": 10.2},
+            {"stock_id": 3, "date": "2026-05-05", "open": 10.0, "high": 11.0, "low": 9.0, "close": 10.5, "volume": 1, "avg_price": 10.2},
+            {"stock_id": 4, "date": "2026-05-05", "open": 10.0, "high": 11.0, "low": 9.0, "close": 10.5, "volume": 1, "avg_price": 10.2},
         ]),
         "indicators": _write_component("indicators", [
             {"stock_id": 1, "date": "2026-05-05", "ma5": 900.0, "ma20": 880.0, "rsi14": 60.0, "macd_hist": 1.2, "atr14": 10.0},
@@ -72,8 +79,9 @@ def test_backtest_dataset_loads_from_snapshot_manifest():
     )
 
     assert dataset.trading_days == ["2026-05-04", "2026-05-05"]
-    assert dataset.stocks.get_column("symbol").to_list() == ["2330"]
-    assert set(dataset.get_universe_at("2026-05-05")) == {"2330"}
+    assert dataset.stocks.get_column("symbol").to_list() == ["2330", "8888", "7777"]
+    assert set(dataset.get_universe_at("2026-05-04")) == {"2330"}
+    assert set(dataset.get_universe_at("2026-05-05")) == {"2330", "8888"}
     assert dataset.get_price_history_np("2330", "2026-05-05", 5)["n"] == 2
     assert dataset.get_chip_history_np("2330", "2026-05-05", 5)["n"] == 1
 

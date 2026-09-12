@@ -1,3 +1,4 @@
+import { paperExecutionDate } from './paperExecutionScope'
 import type { Bindings } from '../types'
 import { databaseForDataDomain, databaseForTable } from './dataDomainRegistry'
 
@@ -285,7 +286,7 @@ export async function recordR2ReportArtifact(
     artifact_kind: kind,
     business_date: businessDate,
     producer_run_id: producerRunId,
-    written_at: new Date().toISOString(),
+    written_at: paperExecutionDate().toISOString(),
   }, null, 2)
   const r2Key = `reports/${kind}/business_date=${businessDate}/run_id=${producerRunId}.json`
   await (env.ARTIFACTS as any).put(r2Key, body, {

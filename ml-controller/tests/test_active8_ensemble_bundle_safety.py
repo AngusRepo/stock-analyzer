@@ -4,6 +4,7 @@ import pytest
 
 from services import model_artifact_registry as registry
 from test_active8_ensemble_bundle_promotion import AtomicD1, _fixture
+from test_nav_l3_adoption import ready, prepared, environment, publish as publish_nav
 
 
 class BrokenReadbackD1(AtomicD1):
@@ -94,17 +95,15 @@ def test_bundle_rejects_selected_model_without_individual_oof_pass():
     assert result["blockers"] == ["base_artifact_contract:PatchTST"]
 
 
-def test_bundle_confirmation_fails_closed_on_pointer_readback_drift(monkeypatch):
-    rows, pointers, ensemble = _fixture()
-    d1 = BrokenReadbackD1(rows, ensemble)
-    monkeypatch.setattr(registry, "d1_client", d1)
+def test_bundle_confirmation_fails_closed_on_pointer_readback_drift(ready, monkeypatch):
+    d1 = ready[0]
+    original = d1.query
+    def corrupted_readback(sql, params=None):
+        rows = original(sql, params)
+        if d1.batches and 'FROM active8_ensemble_pointer_v1 AS p' in sql:
+            return [{**rows[0], 'payload_checksum': '0' * 64}]
+        return rows
+    monkeypatch.setattr(d1, 'query', corrupted_readback)
     with pytest.raises(RuntimeError, match="active8_bundle_atomic_readback_mismatch"):
-        registry.run_active8_ensemble_bundle_promotion_controller(
-            training_run_id="run-new",
-            registry_rows=rows,
-            d1_pointers=pointers,
-            ensemble_rows=[ensemble],
-            confirm=True,
-        )
-    assert d1.statements is not None
-    assert len(d1.statements) == 38
+        publish_nav(ready)
+    assert d1.batches == 1 and d1.statements

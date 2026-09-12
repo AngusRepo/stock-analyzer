@@ -40,7 +40,7 @@ async function main(): Promise<void> {
         expected_candidates INTEGER NOT NULL, processed_candidates INTEGER NOT NULL,
         expected_decision_rows INTEGER NOT NULL, persisted_decision_rows INTEGER NOT NULL,
         production_authority_intent INTEGER NOT NULL, policy_closure_status TEXT NOT NULL,
-        completed_at TEXT
+        completed_at TEXT, policy_closure_reason TEXT
       )
     `).run()
     const businessDate = '2026-08-31'
@@ -61,6 +61,34 @@ async function main(): Promise<void> {
       authority: 'scheduler_http',
       summary: 'pipeline triggered',
     })
+    // Early inference failure has no post-verify or Active-8 child yet. It must
+    // still close the physical root as error, not leave it triggered forever.
+    await db.prepare(`INSERT INTO pipeline_stage_runs (business_date,stage,canonical_run_id,status)
+      VALUES (?,'pipeline_execution',?,'error')`).bind(businessDate, canonicalRunId).run()
+    const early = await closeEveningChainRootIfComplete(db, { businessDate })
+    assert.equal(early.status, 'closed_error')
+    assert(early.blockers.includes('pipeline_execution:error'))
+    const failedRoot = await loadLatestSchedulerRootTicket(db, { schedulerJobId: 'evening-chain', businessDate })
+    assert.equal(failedRoot?.status, 'error')
+    assert(failedRoot?.completed_at)
+    const stale = await closeEveningChainRootIfComplete(db, { businessDate, canonicalRunId: 'old-pipeline' })
+    assert.equal(stale.status, 'pending')
+    assert.deepEqual(stale.blockers, ['pipeline_execution:canonical_run_id_mismatch'])
+    await assert.rejects(updateSchedulerExecutionTicket(db, {
+      ticketId: root.ticket.ticket_id, runId: root.ticket.run_id,
+      status: 'error', authority: 'logical_child', expectedPipelineCanonicalRunId: 'old-pipeline',
+    }), /transition rejected/)
+    await db.prepare("UPDATE pipeline_stage_runs SET status='running' WHERE business_date=? AND stage='pipeline_execution'")
+      .bind(businessDate).run()
+    await db.prepare(`INSERT INTO pipeline_stage_runs (business_date,stage,canonical_run_id,status)
+      VALUES (?,'post_pipeline_chain','old-pipeline','error')`).bind(businessDate).run()
+    const retryPending = await closeEveningChainRootIfComplete(db, { businessDate })
+    assert.equal(retryPending.status, 'pending')
+    assert(retryPending.blockers.includes('post_pipeline_chain:canonical_run_id_mismatch'))
+    await db.prepare("DELETE FROM pipeline_stage_runs WHERE business_date=? AND stage='post_pipeline_chain'")
+      .bind(businessDate).run()
+    await db.prepare("DELETE FROM pipeline_stage_runs WHERE business_date=? AND stage='pipeline_execution'")
+      .bind(businessDate).run()
     for (const stage of ['pipeline_execution', 'post_pipeline_chain', 'verify_v2', 'screener_v2', 'post_verify_chain']) {
       await db.prepare(`
         INSERT INTO pipeline_stage_runs (business_date,stage,canonical_run_id,status,cursor_key)
@@ -140,7 +168,9 @@ async function main(): Promise<void> {
          SET policy_closure_status='materialized'
        WHERE business_date=? AND canonical_run_id=?
     `).bind(businessDate, canonicalRunId).run()
-    const closed = await closeEveningChainRootIfComplete(db, { businessDate, canonicalRunId })
+    // The final Active-8 callback only supplies businessDate. Recovery must use
+    // the actual canonical stage plus CAS, not require a caller-invented run ID.
+    const closed = await closeEveningChainRootIfComplete(db, { businessDate })
     assert.equal(closed.status, 'closed_success')
     assert.deepEqual(closed.blockers, [])
     const durableRoot = await loadLatestSchedulerRootTicket(db, {

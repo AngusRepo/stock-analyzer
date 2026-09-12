@@ -253,3 +253,39 @@ def test_sequence_artifact_evidence_rejects_object_newer_than_pit_source(monkeyp
             as_of_utc="2026-07-23T00:16:15Z",
             storage_client=_FakeStorage("2026-07-23T00:17:00Z"),
         )
+
+
+@pytest.mark.parametrize('replaced', [False, True])
+def test_recovery_source_bytes_are_bound_to_observed_object_generation(monkeypatch, replaced):
+    from services.pipeline_async_state_transport import encode_pipeline_state_envelope
+    monkeypatch.setenv('GCS_BUCKET_NAME', 'stockvision-models')
+    events = []
+    raw = encode_pipeline_state_envelope(_envelope()['payload'])
+    class SourceBlob:
+        def reload(self):
+            events.append('reload')
+            self.generation = 7
+            self.updated = datetime(2026, 7, 23, 0, 16, 15, tzinfo=timezone.utc)
+            self.size = len(raw)
+            self.md5_hash = self.crc32c = 'fixture'
+        def download_as_bytes(self, *, if_generation_match):
+            events.append('download')
+            assert if_generation_match == 7
+            if replaced:
+                raise RuntimeError('isolated generation precondition failed')
+            return raw
+    class SourceStorage:
+        def bucket(self, name):
+            assert name == 'stockvision-models'
+            return self
+        def blob(self, name):
+            assert name.endswith('/partial_state.json')
+            return SourceBlob()
+    if replaced:
+        with pytest.raises(RuntimeError, match='generation precondition'):
+            recovery.load_pipeline_state_envelope(SOURCE_URI, storage_client=SourceStorage())
+    else:
+        result = recovery.load_pipeline_state_envelope(SOURCE_URI, storage_client=SourceStorage())
+        assert result['artifact']['generation'] == '7'
+        assert result['state'] == _state()
+    assert events == ['reload', 'download']

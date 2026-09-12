@@ -198,6 +198,9 @@ class BacktestDataset:
     start_date: str
     end_date: str
 
+    # Optional sealed daily source component; absence is not proof of no action.
+    corporate_sources: dict[str, dict] = field(default_factory=dict)
+
     # Lazy-computed universe cache — point-in-time tradable set per date
     _universe_cache: dict[str, set[str]] = field(default_factory=dict)
 
@@ -249,7 +252,7 @@ class BacktestDataset:
         """
         logger.info(f"[BacktestEngine] Loading D1 data {start_date}~{end_date}...")
 
-        stocks_df = cls._load_stocks(symbols, start_date)
+        stocks_df = cls._load_stocks(symbols, start_date, end_date)
         if stocks_df.is_empty():
             raise RuntimeError("No stocks matched filter")
 
@@ -312,6 +315,8 @@ class BacktestDataset:
             name: _read_snapshot_parquet(uri)
             for name, uri in component_uris.items()
         }
+        from services.backtest_corporate_accounting import load_corporate_tape
+        corporate_sources = load_corporate_tape(frames.get('corporate_source_records'))
 
         stocks_df = frames["stocks"]
         if stocks_df.is_empty() or "symbol" not in stocks_df.columns:
@@ -322,7 +327,7 @@ class BacktestDataset:
         ])
         stocks_df = stocks_df.filter(
             ((pl.col("delisted_date").is_null()) | (pl.col("delisted_date") >= start_date))
-            & ((pl.col("listed_date").is_null()) | (pl.col("listed_date") <= start_date))
+            & ((pl.col("listed_date").is_null()) | (pl.col("listed_date") <= end_date))
         )
         stocks_df = _filter_snapshot_symbols(stocks_df, symbols)
         if stocks_df.is_empty():
@@ -362,6 +367,7 @@ class BacktestDataset:
             trading_days=trading_days,
             start_date=start_date,
             end_date=end_date,
+            corporate_sources=corporate_sources,
         )
         ds._build_hot_caches()
         return ds
@@ -555,7 +561,7 @@ class BacktestDataset:
     # ─────────────────────────────────────────────────────────────────────────
     @staticmethod
     def _load_stocks(
-        symbols: Optional[list[str]], start_date: str
+        symbols: Optional[list[str]], start_date: str, end_date: Optional[str] = None
     ) -> pl.DataFrame:
         """
         Load stock metadata with point-in-time universe filter.
@@ -564,7 +570,7 @@ class BacktestDataset:
         NOTE (2026-04-09 F1 fix): 不濾 in_current_watchlist=1。in_current_watchlist
         是 ML 運算成本收束（每週 ~33 檔進 Modal），不是 tradable universe 定義。
         SLTP/L2 Optuna 需要 vol-branched full universe 樣本。真正的 tradability
-        是 listed_date <= start_date AND (delisted_date IS NULL OR >= start_date)。
+        載入與區間相交的股票；上市資格由 get_universe_at 逐日判斷。
 
         D1 SQLite 變數上限 ~100，若 symbols > 80 改用「無 IN filter 拉全宇宙 +
         Polars 後過濾」避免 too-many-variables。
@@ -573,7 +579,7 @@ class BacktestDataset:
             "(delisted_date IS NULL OR delisted_date >= ?)",
             "(listed_date IS NULL OR listed_date <= ?)",
         ]
-        base_params: list = [start_date, start_date]
+        base_params: list = [start_date, end_date or start_date]
 
         # Small subset → inline SQL IN; large subset → Polars post-filter
         if symbols and len(symbols) <= 80:
@@ -582,8 +588,8 @@ class BacktestDataset:
             base_params.extend(symbols)
 
         sql = f"""
-            SELECT id, symbol, name, market, sector, in_current_watchlist,
-                   listed_date, delisted_date
+            SELECT id, symbol, name, COALESCE(listing_market,market) AS market, sector, in_current_watchlist,
+                   listed_date, delisted_date, listed_date_source, listing_observed_at, listing_checksum
             FROM stocks
             WHERE {' AND '.join(base_where)}
         """
@@ -816,6 +822,11 @@ class BacktestDataset:
             & ((pl.col("delisted_date").is_null()) | (pl.col("delisted_date") > date))
         )
         active = set(active_df.get_column("symbol").to_list())
+        # The existing emerging lane is watchlist/shadow only, not a paper-buy
+        # universe. Preserve exact FinLab venue instead of treating ROTC as OTC.
+        if 'market' in active_df.columns:
+            active = set(active_df.filter(pl.col('market').fill_null('') != 'ROTC')
+                         .get_column('symbol').to_list())
 
         universe = has_bar & active
         self._universe_cache[date] = universe
@@ -2628,6 +2639,8 @@ class AccountState:
     daily_buy_total: float = 0.0
     daily_buy_date: str = ""   # date that daily_buy_total was last reset
     pending_settlements: list[PendingSettlement] = field(default_factory=list)
+    corporate_receivables: dict[str, dict] = field(default_factory=dict)
+    corporate_sessions: dict[str, str] = field(default_factory=dict)
 
     @property
     def settlement_adjusted_cash(self) -> float:
@@ -2641,8 +2654,11 @@ class AccountState:
         """cash + position market value. For sizing we use `cash + sum(cost)`
         as a conservative proxy (paper.ts does same). Uses entry_price as the
         'cost basis' since OpenPosition tracks entry_price (post-slippage fill)."""
-        pos_value = sum(p.shares * p.entry_price for p in self.positions.values())
-        return self.settlement_adjusted_cash + pos_value
+        pos_value = sum(p.shares * p.cost_basis for p in self.positions.values())
+        # Sizing's conservative cost proxy includes non-spendable rights.
+        rights = sum(r['cash_due'] + r['whole_shares_due'] * r['share_cost_basis']
+                     for r in self.corporate_receivables.values())
+        return self.settlement_adjusted_cash + pos_value + rights
 
     @property
     def available_cash(self) -> float:
@@ -2688,6 +2704,13 @@ class OpenPosition:
     tp1_hit: bool = False
     # For per-regime analytics (6a.4)
     entry_regime: Optional[str] = None
+    average_cost: Optional[float] = None
+
+    @property
+    def cost_basis(self) -> float:
+        # Corporate price anchors are not acquisition cost. In particular a
+        # cash dividend adjusts the stop anchor, not the original cash spent.
+        return self.entry_price if self.average_cost is None else self.average_cost
 
 
 @dataclass
@@ -2703,6 +2726,7 @@ class EntryAttempt:
     sizing_mode: str = ""        # 'kelly' | 'risk_parity' | ''
     reason: str = ""
     execution_data_missing: bool = False
+    missing_execution_fields: tuple[str, ...] = ()
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -3484,21 +3508,37 @@ def simulate_entries_for_date(
             attempts.append(EntryAttempt(
                 symbol=cand.symbol, decision_date=decision_date, entry_date=entry_date,
                 status="no_fill", adjusted_entry=adjusted_entry,
-                reason="no bar on T+1 (halted/delisted)",
+                reason="T+1 bar absent; halt/delisting/source-gap cause unverified",
                 execution_data_missing=True,
+                missing_execution_fields=("bar",),
             ))
             continue
 
-        next_low = float(next_bar.get("low") or 0)
-        next_open = float(next_bar.get("open") or 0)
-        if next_low <= 0:
+        required_prices = {}
+        invalid_fields = []
+        for field_name in ("open", "low"):
+            raw_price = next_bar.get(field_name)
+            try:
+                price = float(raw_price) if raw_price is not None and not isinstance(raw_price, bool) else float('nan')
+            except (TypeError, ValueError, OverflowError):
+                price = float('nan')
+            if not np.isfinite(price) or price <= 0:
+                invalid_fields.append(field_name)
+            required_prices[field_name] = price
+        if not invalid_fields and required_prices['low'] > required_prices['open']:
+            invalid_fields.append('low_gt_open')
+        if invalid_fields:
             attempts.append(EntryAttempt(
                 symbol=cand.symbol, decision_date=decision_date, entry_date=entry_date,
                 status="no_fill", adjusted_entry=adjusted_entry,
-                reason=f"invalid low {next_low}",
+                reason="invalid T+1 execution fields:" + ','.join(invalid_fields),
                 execution_data_missing=True,
+                missing_execution_fields=tuple(invalid_fields),
             ))
             continue
+
+        next_low = required_prices['low']
+        next_open = required_prices['open']
 
         # Fill: execution price = min(open, adjusted_entry) + 1 tick slippage
         # (open-or-limit, whichever is worse for buyer)
@@ -3994,11 +4034,11 @@ def step_position_one_bar(
     if open_pnl <= exit_p.hard_stop_pct:
         # Gap-down past hard stop → fill at open
         sell_px = apply_slippage(open_px, "sell", 1)
-        pr, pa = _calc_sell_net(sell_px, pos.shares, entry, fees)
+        pr, pa = _calc_sell_net(sell_px, pos.shares, pos.cost_basis, fees)
         trades.append(Trade(
             symbol=pos.symbol, industry=pos.industry,
             entry_date=pos.entry_date, exit_date=bar_date,
-            entry_price=entry, exit_price=sell_px, shares=pos.shares,
+            entry_price=pos.cost_basis, exit_price=sell_px, shares=pos.shares,
             profit_ratio=pr, profit_amount=pa,
             exit_reason=f"GapHardStop ({open_pnl * 100:.1f}%)",
             days_held=_date_diff(pos.entry_date, bar_date),
@@ -4009,11 +4049,11 @@ def step_position_one_bar(
     if open_px <= pos.initial_stop:
         # Gap-down past initial stop → fill at open
         sell_px = apply_slippage(open_px, "sell", 1)
-        pr, pa = _calc_sell_net(sell_px, pos.shares, entry, fees)
+        pr, pa = _calc_sell_net(sell_px, pos.shares, pos.cost_basis, fees)
         trades.append(Trade(
             symbol=pos.symbol, industry=pos.industry,
             entry_date=pos.entry_date, exit_date=bar_date,
-            entry_price=entry, exit_price=sell_px, shares=pos.shares,
+            entry_price=pos.cost_basis, exit_price=sell_px, shares=pos.shares,
             profit_ratio=pr, profit_amount=pa,
             exit_reason=f"GapStop @ {pos.initial_stop:.1f} ({open_pnl * 100:.1f}%)",
             days_held=_date_diff(pos.entry_date, bar_date),
@@ -4030,11 +4070,11 @@ def step_position_one_bar(
             "HardStop" if pnl <= exit_p.hard_stop_pct
             else f"Trail/InitStop @ {pos.initial_stop:.1f}"
         )
-        pr, pa = _calc_sell_net(sell_px, pos.shares, entry, fees)
+        pr, pa = _calc_sell_net(sell_px, pos.shares, pos.cost_basis, fees)
         trades.append(Trade(
             symbol=pos.symbol, industry=pos.industry,
             entry_date=pos.entry_date, exit_date=bar_date,
-            entry_price=entry, exit_price=sell_px, shares=pos.shares,
+            entry_price=pos.cost_basis, exit_price=sell_px, shares=pos.shares,
             profit_ratio=pr, profit_amount=pa,
             exit_reason=f"{reason} ({pnl * 100:.1f}%)",
             days_held=_date_diff(pos.entry_date, bar_date),
@@ -4046,11 +4086,11 @@ def step_position_one_bar(
     if pos.tp1_hit and high >= pos.tp2_price:
         sell_px = apply_slippage(pos.tp2_price, "sell", 1)
         pnl = (sell_px - entry) / entry
-        pr, pa = _calc_sell_net(sell_px, pos.shares, entry, fees)
+        pr, pa = _calc_sell_net(sell_px, pos.shares, pos.cost_basis, fees)
         trades.append(Trade(
             symbol=pos.symbol, industry=pos.industry,
             entry_date=pos.entry_date, exit_date=bar_date,
-            entry_price=entry, exit_price=sell_px, shares=pos.shares,
+            entry_price=pos.cost_basis, exit_price=sell_px, shares=pos.shares,
             profit_ratio=pr, profit_amount=pa,
             exit_reason=f"TP2 @ {pos.tp2_price:.1f} (+{pnl * 100:.1f}%)",
             days_held=_date_diff(pos.entry_date, bar_date),
@@ -4067,11 +4107,11 @@ def step_position_one_bar(
             # Partial fill
             sell_px = apply_slippage(pos.tp1_price, "sell", 1)
             pnl = (sell_px - entry) / entry
-            pr, pa = _calc_sell_net(sell_px, sell_shares, entry, fees)
+            pr, pa = _calc_sell_net(sell_px, sell_shares, pos.cost_basis, fees)
             trades.append(Trade(
                 symbol=pos.symbol, industry=pos.industry,
                 entry_date=pos.entry_date, exit_date=bar_date,
-                entry_price=entry, exit_price=sell_px, shares=sell_shares,
+                entry_price=pos.cost_basis, exit_price=sell_px, shares=sell_shares,
                 profit_ratio=pr, profit_amount=pa,
                 exit_reason=f"TP1 partial @ {pos.tp1_price:.1f} (+{pnl * 100:.1f}%)",
                 days_held=_date_diff(pos.entry_date, bar_date),
@@ -4086,11 +4126,11 @@ def step_position_one_bar(
             # Single lot — full exit
             sell_px = apply_slippage(pos.tp1_price, "sell", 1)
             pnl = (sell_px - entry) / entry
-            pr, pa = _calc_sell_net(sell_px, pos.shares, entry, fees)
+            pr, pa = _calc_sell_net(sell_px, pos.shares, pos.cost_basis, fees)
             trades.append(Trade(
                 symbol=pos.symbol, industry=pos.industry,
                 entry_date=pos.entry_date, exit_date=bar_date,
-                entry_price=entry, exit_price=sell_px, shares=pos.shares,
+                entry_price=pos.cost_basis, exit_price=sell_px, shares=pos.shares,
                 profit_ratio=pr, profit_amount=pa,
                 exit_reason=f"TP1 full (single lot) @ {pos.tp1_price:.1f} (+{pnl * 100:.1f}%)",
                 days_held=_date_diff(pos.entry_date, bar_date),
@@ -4108,11 +4148,11 @@ def step_position_one_bar(
     days_held = _date_diff(pos.entry_date, bar_date)
     if days_held > exit_p.time_stop_days and close_pnl > exit_p.time_stop_min_profit:
         sell_px = apply_slippage(close, "sell", 1)
-        pr, pa = _calc_sell_net(sell_px, pos.shares, entry, fees)
+        pr, pa = _calc_sell_net(sell_px, pos.shares, pos.cost_basis, fees)
         trades.append(Trade(
             symbol=pos.symbol, industry=pos.industry,
             entry_date=pos.entry_date, exit_date=bar_date,
-            entry_price=entry, exit_price=sell_px, shares=pos.shares,
+            entry_price=pos.cost_basis, exit_price=sell_px, shares=pos.shares,
             profit_ratio=pr, profit_amount=pa,
             exit_reason=f"TimeStop ({days_held}d, +{close_pnl * 100:.1f}%)",
             days_held=days_held,
@@ -4257,6 +4297,7 @@ class BacktestMetrics:
     execution_attempts: int = 0
     execution_fill_rate: Optional[float] = None
     execution_data_missing: int = 0
+    execution_data_issues: list[dict] = field(default_factory=list)
     candidate_conversion_rate: float = 0.0
     skip_reasons: dict[str, int] = field(default_factory=dict)  # status → count
 
@@ -4332,17 +4373,23 @@ def _compute_sortino(returns: list[float], periods_per_year: int = 250) -> Optio
     return (mean_r / ds_std) * math.sqrt(n)
 
 
-def _compute_max_drawdown(equity_curve: list[tuple[str, float]]) -> tuple[float, str]:
+def _compute_max_drawdown(equity_curve: list[tuple[str, float]], *, initial_equity: float) -> tuple[float, str]:
     """
     Returns (max_drawdown_fraction, date_of_trough).
     max_drawdown is positive (0.15 = 15% drawdown).
     """
+    if isinstance(initial_equity, bool) or not math.isfinite(initial_equity) or initial_equity <= 0:
+        raise ValueError('backtest_drawdown_invalid_initial_equity')
     if not equity_curve:
         return 0.0, ""
-    peak = equity_curve[0][1]
+    # The opening account is the first high-water mark. Starting from the first
+    # close silently forgives that session's transaction costs or market loss.
+    peak = initial_equity
     max_dd = 0.0
-    max_dd_date = equity_curve[0][0]
+    max_dd_date = ""
     for date, equity in equity_curve:
+        if isinstance(equity, bool) or not math.isfinite(equity) or equity < 0:
+            raise ValueError('backtest_drawdown_invalid_nav:' + date)
         if equity > peak:
             peak = equity
         if peak > 0:
@@ -4495,7 +4542,8 @@ def compute_metrics(
         m.sortino = _compute_sortino(returns)
 
     # Max drawdown
-    m.max_drawdown, m.max_dd_date = _compute_max_drawdown(equity_curve)
+    m.max_drawdown, m.max_drawdown_date = _compute_max_drawdown(
+        equity_curve, initial_equity=initial_capital)
 
     # Calmar
     if m.cagr is not None and m.max_drawdown > 0:
@@ -4507,6 +4555,12 @@ def compute_metrics(
     m.fill_rate = m.entries_filled / m.entry_attempts if m.entry_attempts > 0 else 0.0
     m.candidate_conversion_rate = m.fill_rate
     m.execution_data_missing = sum(a.execution_data_missing for a in entry_attempts)
+    m.execution_data_issues = [
+        {'symbol': a.symbol, 'decision_date': a.decision_date, 'entry_date': a.entry_date,
+         'missing_fields': list(a.missing_execution_fields), 'reason': a.reason,
+         'source_cause': 'unverified_requires_source_audit'}
+        for a in entry_attempts if a.execution_data_missing
+    ]
     m.execution_attempts = sum(
         a.status in {"filled", "no_fill"} and not a.execution_data_missing
         for a in entry_attempts
@@ -4803,25 +4857,52 @@ def walk_forward_windows(
 #   written by runBottomUpScreener on T-1 evening.
 
 
+def _valuation_price(dataset: BacktestDataset, symbol: str, date: str) -> float:
+    """No cost-price substitution for an unobserved market valuation.
+
+    A missing bar is not evidence of a trading halt. Halt valuation requires
+    an independently sourced mark; it cannot be inferred from a data gap.
+    """
+    bar = dataset.get_bar(symbol, date)
+    raw = bar.get('close') if bar else None
+    try:
+        value = float(raw)
+    except (TypeError, ValueError):
+        value = math.nan
+    if isinstance(raw, bool) or not math.isfinite(value) or value <= 0:
+        raise ValueError(f'backtest_valuation_price_missing:{symbol}:{date}')
+    return value
+
+
 def _mark_to_market(account: AccountState, dataset: BacktestDataset, date: str) -> float:
     """
     Compute total portfolio value = cash + unrealized position value at date's close.
 
-    Missing bars (halted / data gaps) fall back to last known close → avg_cost
-    (conservative: no unrealized markup for halted positions).
+    Missing prices invalidate the NAV; original cost is not a market mark.
     """
     # T+2 settlement changes buying power, not economic NAV.  A pending buy is
     # a payable and a pending sell is a receivable; omitting either creates an
     # artificial equity spike or near-100% drawdown around every settlement.
     total = account.settlement_adjusted_cash
     for symbol, pos in account.positions.items():
-        bar = dataset.get_bar(symbol, date)
-        close = float(bar.get("close") or 0) if bar else 0
-        if close <= 0:
-            # Halted / no data → mark at entry price (neutral)
-            close = pos.entry_price
+        close = _valuation_price(dataset, symbol, date)
         total += close * pos.shares
+    from services.backtest_corporate_accounting import receivables_value
+    total += receivables_value(account, lambda symbol: _valuation_price(dataset, symbol, date))
     return total
+
+
+def _apply_daily_corporate(account: AccountState, dataset: BacktestDataset, day: str) -> None:
+    from services.backtest_corporate_accounting import apply_corporate_session
+    snapshot = getattr(dataset, 'corporate_sources', {}).get(day)
+    previous_closes = {}
+    if snapshot:
+        symbols = {a['symbol'] for a in snapshot['actions'] if a['ex_date'] == day} & set(account.positions)
+        for symbol in symbols:
+            hist = dataset.get_price_history(symbol, _date_add(day, -1), 1)
+            if not hist.is_empty():
+                previous_closes[symbol] = hist['close'][-1]
+    apply_corporate_session(account, snapshot, day, previous_closes)
 
 
 def _get_settlement_date(trade_date: str, trading_days: list[str]) -> str:
@@ -4980,6 +5061,7 @@ def replay_period(
     for i, day in enumerate(replay_days):
         # Step 0: T+2 settle matured settlements
         account.settle_matured(day)
+        _apply_daily_corporate(account, dataset, day)
 
         # Step 1: exit sweep on existing positions
         trades_today = step_all_positions(account, dataset, day, exit_p, fees_p, replay_days)
@@ -5096,20 +5178,15 @@ def replay_period(
         )
         for symbol in list(account.positions.keys()):
             pos = account.positions[symbol]
-            bar = dataset.get_bar(symbol, final_day)
-            if not bar:
-                continue
-            close = float(bar.get("close") or 0)
-            if close <= 0:
-                continue
+            close = _valuation_price(dataset, symbol, final_day)
             sell_px = apply_slippage(close, "sell", 1)
-            pr, pa = _calc_sell_net(sell_px, pos.shares, pos.entry_price, fees_p)
+            pr, pa = _calc_sell_net(sell_px, pos.shares, pos.cost_basis, fees_p)
             all_trades.append(Trade(
                 symbol=pos.symbol,
                 industry=pos.industry,
                 entry_date=pos.entry_date,
                 exit_date=final_day,
-                entry_price=pos.entry_price,
+                entry_price=pos.cost_basis,
                 exit_price=sell_px,
                 shares=pos.shares,
                 profit_ratio=pr,
@@ -5129,7 +5206,7 @@ def replay_period(
 
         # Update final equity snapshot post-force-close
         if equity_curve:
-            equity_curve[-1] = (final_day, account.cash)
+            equity_curve[-1] = (final_day, _mark_to_market(account, dataset, final_day))
 
     # ── Compute final metrics ──────────────────────────────────────────────
     regime_map = build_regime_map(dataset)

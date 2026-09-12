@@ -40,11 +40,16 @@ for (const field of ['state', 'schedule', 'timeZone', 'description', 'attemptDea
   assert(manifest.governance.parityFields.includes(field), `manifest parity field missing: ${field}`)
 }
 
-assert(schedulerManifestJobs().length === 59, 'physical Scheduler root inventory must remain 59 during governance-only phase')
-assert(manifestTasks.length === 52, 'logical manifest task inventory must remain 52')
-assert(summary.physicalRoots === 59, 'summary physical root count mismatch')
-assert(summary.uniqueLogicalTasks === 52 && summary.accountedLogicalTasks === 52, 'logical task accounting must be 52/52')
-assert(summary.reviewedDependencies === 35, 'reviewed dependency baseline must include all verified Daily Operations roots')
+const nativeJobs = manifest.jobs.filter(job => job.task === 'paired-native-execution')
+assert(JSON.stringify(nativeJobs.map(job => job.id).sort()) === JSON.stringify([
+  'paired-native-execution-day', 'paired-native-execution-morning',
+]), 'private native collection has exactly two UTC slots under one logical owner')
+assert(nativeJobs.every(job => job.query === 'sync=1'), 'native collector failures must reach the scheduler ticket')
+assert(schedulerManifestJobs().length - nativeJobs.length === 59, 'all 59 pre-existing physical roots must remain accounted')
+assert(manifestTasks.filter(task => task !== 'paired-native-execution').length === 52, 'existing logical inventory remains 52')
+assert(summary.physicalRoots === 61, 'summary physical root count mismatch')
+assert(summary.uniqueLogicalTasks === 53 && summary.accountedLogicalTasks === 53, 'logical task accounting must be 53/53')
+assert(summary.reviewedDependencies === 36, 'reviewed dependency baseline includes the new private native owner')
 assert(summary.unmappedDependencies === 17 && summary.unmappedTasks.length === 17, 'unreviewed non-daily dependency debt must remain fail-visible')
 assert(summary.pausedPhysicalRoots === 3, 'exactly three manifest-owned physical roots should be paused')
 assert(summary.internalLogicalSteps === 23, 'internal logical step accounting must preserve caller total')

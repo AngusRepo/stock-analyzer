@@ -715,6 +715,22 @@ adminReadRoutes.get('/api/admin/strategy/learning', async (c) => {
   })
 })
 
+adminReadRoutes.get('/api/admin/strategy/nav-evidence', async (c) => {
+  const authError = await requireAdminOrServiceToken(c)
+  if (authError) return authError
+  const input = { strategy_id: c.req.query('strategy_id') ?? '',
+    strategy_version: c.req.query('strategy_version') ?? '', business_date: c.req.query('date') ?? twToday() }
+  if (!input.strategy_id || input.strategy_id.length > 200 || !input.strategy_version
+    || input.strategy_version.length > 200 || !/^\d{4}-\d{2}-\d{2}$/.test(input.business_date))
+    return c.json({ success: false, error: 'invalid_strategy_nav_request' }, 400)
+  try {
+    const { readStrategyNavEvidence } = await import('../lib/strategyNavEvidence')
+    return c.json({ success: true, ...(await readStrategyNavEvidence(c.env, input)) })
+  } catch {
+    return c.json({ success: false, error: 'strategy_nav_original_evidence_unavailable', read_only: true }, 503)
+  }
+})
+
 adminReadRoutes.get('/api/admin/strategy/policy-state', async (c) => {
   const authError = await requireAdminOrServiceToken(c)
   if (authError) return authError

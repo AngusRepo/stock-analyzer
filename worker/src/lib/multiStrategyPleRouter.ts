@@ -27,7 +27,7 @@ export const STRATEGY_AFFINITY_CHALLENGER_VERSION = 'strategy-threshold-margin-a
 export const STRATEGY_EVIDENCE_ALIGNED_ROUTE_VERSION = SELECTION_ROUTE_SEMANTIC_VERSION
 export const FINLAB_PORTFOLIO_INTELLIGENCE_VERSION = 'strategy-portfolio-evidence-v2'
 export const MULTI_STRATEGY_PLE_ROUTER_VERSION = 'multi-strategy-policy-router-v2'
-export const L15_MARGINAL_SLATE_BUILDER_VERSION = 'l15-continuous-full-universe-priority-v3'
+export const L15_MARGINAL_SLATE_BUILDER_VERSION = 'l15-continuous-full-universe-priority-v4'
 export const ACTIVE_8_ML_TEACHERS = [
   'LightGBM',
   'XGBoost',
@@ -40,6 +40,16 @@ export const ACTIVE_8_ML_TEACHERS = [
 ] as const
 
 export type StrategyRouterDecision = 'ml_slate' | 'observe_only' | 'research_only' | 'capacity_overflow'
+
+export interface L15RouteContrastEvidence {
+  schema_version: 'l15-route-contrast-v1'
+  slate_builder_version: string
+  incumbent: { version: string; score: number }
+  challenger: { version: string; score: number }
+  serving_arm: 'incumbent' | 'challenger'
+  effect_scope: 'dispatch_priority_only'
+  allocation_weight_applied: false
+}
 
 export interface StrategyPortfolioMetrics {
   strategy_metric_status?: 'ready' | 'reward_only' | 'backtest_only' | 'decision_log_only' | 'insufficient_samples' | 'research_only' | 'no_evidence'
@@ -158,6 +168,7 @@ export interface MultiStrategyPleAnnotatedCandidate extends StrategyCandidatePoo
   strategy_router_version?: typeof MULTI_STRATEGY_PLE_ROUTER_VERSION
   strategy_router_score?: number
   strategy_incumbent_route_score?: number
+  l15_route_contrast?: L15RouteContrastEvidence
   candidate_route_score?: number
   ml_slate_eligibility?: number
   family_exposure?: Partial<Record<StrategyFamilyId, number>>
@@ -317,7 +328,7 @@ export interface MultiStrategyPleRoutingOptions {
   strategySimilarityEdgeThreshold?: number | null
   strategySimilarityThresholdQuantile?: number | null
   previousSlateSymbols?: string[]
-  promotedRouteCalibration?: { runId: string; routeVersion: string; routeFloor: number } | null
+  promotedRouteCalibration?: { runId: string; routeVersion: string; routeFloor: number | null } | null
 }
 
 export interface StrategySimilarityEvidencePayload {
@@ -650,7 +661,8 @@ function resolveAdaptiveRouteFloor<T extends StrategyCandidatePoolCandidate>(
   if (explicit != null) {
     return { value: round3(clamp(explicit, 0, 100)), source: 'config_explicit', distribution }
   }
-  if (options.promotedRouteCalibration?.routeVersion === STRATEGY_EVIDENCE_ALIGNED_ROUTE_VERSION) {
+  if (options.promotedRouteCalibration?.routeVersion === STRATEGY_EVIDENCE_ALIGNED_ROUTE_VERSION
+    && options.promotedRouteCalibration.routeFloor != null) {
     return {
       value: round3(clamp(options.promotedRouteCalibration.routeFloor, 0, 100)),
       source: 'promoted_route_calibration_artifact',
@@ -1128,7 +1140,10 @@ function annotateCandidate<T extends StrategyCandidatePoolCandidate>(
   const activeLabels = state.labels.filter((label) => label.production_owner && label.strategy_hit > 0 && label.affinity > 0)
   const challengerActiveLabels = challengerState.labels.filter((label) => label.production_owner && label.strategy_hit > 0 && label.affinity > 0)
   const challengerServing = options.promotedRouteCalibration?.routeVersion === STRATEGY_EVIDENCE_ALIGNED_ROUTE_VERSION
-  const servingLabels = challengerServing ? challengerActiveLabels : activeLabels
+  // Route calibration owns priority, not Strategy Spec promotion. The semantic
+  // challenger labels remain counterfactual evidence until the registry itself
+  // promotes those specs; selecting them here silently changed the L1 universe.
+  const servingLabels = activeLabels
   const researchLabels = state.labels.filter((label) => !label.production_owner && label.strategy_hit > 0 && label.affinity > 0)
   const familyIds = uniqueTexts(servingLabels.map((label) => label.family_id)) as StrategyFamilyId[]
   const activeStrategyIds = uniqueTexts(servingLabels.map((label) => label.strategy_id))
@@ -1384,7 +1399,7 @@ function annotateCandidate<T extends StrategyCandidatePoolCandidate>(
     strategy_counterfactual_affinity_vector: strategyCounterfactualAffinityVector,
     strategy_counterfactual_production_effect_vector: strategyCounterfactualProductionEffectVector,
     strategy_production_weight_vector: strategyProductionWeightVector,
-    strategy_position_weight_vector: challengerServing ? strategyChallengerPositionWeights : strategyPositionWeights,
+    strategy_position_weight_vector: strategyPositionWeights,
     strategy_raw_position_weight_vector: strategyPositionWeights,
     strategy_challenger_position_weight_vector: strategyChallengerPositionWeights,
     strategy_overlap_vector: strategyOverlapVector,
@@ -1395,6 +1410,15 @@ function annotateCandidate<T extends StrategyCandidatePoolCandidate>(
     strategy_router_version: MULTI_STRATEGY_PLE_ROUTER_VERSION,
     strategy_router_score: servingRouteScore,
     strategy_incumbent_route_score: routeScore,
+    l15_route_contrast: {
+      schema_version: 'l15-route-contrast-v1',
+      slate_builder_version: L15_MARGINAL_SLATE_BUILDER_VERSION,
+      incumbent: { version: MULTI_STRATEGY_PLE_ROUTER_VERSION, score: routeScore },
+      challenger: { version: STRATEGY_EVIDENCE_ALIGNED_ROUTE_VERSION, score: challengerRouteScore },
+      serving_arm: challengerServing ? 'challenger' : 'incumbent',
+      effect_scope: 'dispatch_priority_only',
+      allocation_weight_applied: false,
+    },
     strategy_challenger_route_score: challengerRouteScore,
     strategy_challenger_route_version: STRATEGY_EVIDENCE_ALIGNED_ROUTE_VERSION,
     candidate_route_score: servingRouteScore,

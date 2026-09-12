@@ -68,6 +68,8 @@ export type StrategyEvidenceOwnerSnapshot = {
 }
 
 function finite(value: unknown): number | null {
+  if (typeof value !== 'number' && typeof value !== 'string') return null
+  if (typeof value === 'string' && !value.trim()) return null
   const parsed = Number(value)
   return Number.isFinite(parsed) ? parsed : null
 }
@@ -84,8 +86,9 @@ export async function buildStrategyEvidenceOwnerSnapshot(input: {
   calibration?: PromotedStrategyEvidenceOwnerCalibration | null
   calibrationHistory?: readonly PromotedStrategyEvidenceOwnerCalibration[]
 }): Promise<StrategyEvidenceOwnerSnapshot> {
+  // Candidate is the canonical learning lifecycle now. It needs its own profile
+  // before an Atomic substitution; inclusion does not grant production weight.
   const profiles = listStrategyEvidenceProfiles([...input.strategies])
-    .filter((profile) => profile.strategy_status === 'active' || profile.strategy_status === 'shadow')
   const validRows = input.rows.filter((row) => (
     /^\d{4}-\d{2}-\d{2}$/.test(row.outcome_as_of_date)
     && row.outcome_as_of_date < input.knowledgeCutoffDate
@@ -203,6 +206,50 @@ export async function buildStrategyEvidenceOwnerSnapshot(input: {
       metric_evidence: metricEvidence,
     }
   }).sort((left, right) => left.strategy_id.localeCompare(right.strategy_id))
+  return sealStrategyEvidenceOwnerSnapshot({
+    knowledgeCutoffDate: input.knowledgeCutoffDate, outcomeAsOfDate,
+    calibrationRunId: calibrationValid ? input.calibration!.runId : null,
+    calibrationArtifactChecksum: calibrationValid ? input.calibration!.artifactChecksum : null,
+    weightEffect: calibrationValid ? 'immutable_oos_calibrated_bounded_bidirectional' : 'neutral_until_immutable_calibration',
+    profiles: ownerProfiles,
+  })
+}
+
+/** Same status-dependent summary for source construction and frozen replay.
+ * Raw metrics/calibration stay unchanged; this does not promote calibration.
+ */
+export async function sealStrategyEvidenceOwnerSnapshot(input: {
+  knowledgeCutoffDate: string; outcomeAsOfDate: string | null;
+  calibrationRunId: string | null; calibrationArtifactChecksum: string | null;
+  weightEffect: StrategyEvidenceOwnerSnapshot['weight_effect']; profiles: StrategyEvidenceOwnerProfile[];
+}): Promise<StrategyEvidenceOwnerSnapshot> {
+  // Preserve the original v3 producer's field order even after sorted JSON
+  // transport. Sorting every key here would change existing v3 checksums;
+  // spreading transported objects instead made equal evidence hash differently.
+  const ownerProfiles: StrategyEvidenceOwnerProfile[] = input.profiles.map(profile => ({
+    strategy_id: profile.strategy_id,
+    strategy_status: profile.strategy_status,
+    primary_horizon_days: profile.primary_horizon_days,
+    materialized_metrics: profile.materialized_metrics,
+    ready_metrics: profile.ready_metrics,
+    required_metrics: profile.required_metrics,
+    integration_status: profile.integration_status,
+    multi_horizon_score: profile.multi_horizon_score,
+    weight_multiplier: profile.weight_multiplier,
+    weight_effect: profile.weight_effect,
+    performance_state: profile.performance_state,
+    performance_reason: profile.performance_reason,
+    negative_calibration_streak: profile.negative_calibration_streak,
+    positive_calibration_streak: profile.positive_calibration_streak,
+    calibration_history: profile.calibration_history.map(row => ({
+      run_id: row.run_id, knowledge_cutoff_date: row.knowledge_cutoff_date,
+      multi_horizon_score: row.multi_horizon_score,
+    })),
+    metric_evidence: profile.metric_evidence.map(row => ({
+      metric_name: row.metric_name, metric_value: row.metric_value,
+      metric_status: row.metric_status, normalized_score: row.normalized_score,
+    })),
+  })).sort((a, b) => a.strategy_id.localeCompare(b.strategy_id))
   const active = ownerProfiles.filter((profile) => profile.strategy_status === 'active')
   const activeMaterialized = active.filter((profile) => (
     profile.materialized_metrics === profile.required_metrics
@@ -214,26 +261,24 @@ export async function buildStrategyEvidenceOwnerSnapshot(input: {
   const canonical = JSON.stringify({
     version: STRATEGY_EVIDENCE_OWNER_FUSION_VERSION,
     knowledge_cutoff_date: input.knowledgeCutoffDate,
-    outcome_as_of_date: outcomeAsOfDate,
-    calibration_run_id: calibrationValid ? input.calibration!.runId : null,
-    calibration_artifact_checksum: calibrationValid ? input.calibration!.artifactChecksum : null,
+    outcome_as_of_date: input.outcomeAsOfDate,
+    calibration_run_id: input.calibrationRunId,
+    calibration_artifact_checksum: input.calibrationArtifactChecksum,
     profiles: ownerProfiles,
   })
   return {
     version: STRATEGY_EVIDENCE_OWNER_FUSION_VERSION,
     knowledge_cutoff_date: input.knowledgeCutoffDate,
-    outcome_as_of_date: outcomeAsOfDate,
+    outcome_as_of_date: input.outcomeAsOfDate,
     active_profile_count: active.length,
     active_materialized_profile_count: activeMaterialized,
     active_ready_profile_count: activeReady,
     active_cooldown_profile_count: activeCooldown,
     learning_profile_count: ownerProfiles.length,
     integration_ready: active.length > 0 && activeMaterialized === active.length,
-    weight_effect: calibrationValid
-      ? 'immutable_oos_calibrated_bounded_bidirectional'
-      : 'neutral_until_immutable_calibration',
-    calibration_run_id: calibrationValid ? input.calibration!.runId : null,
-    calibration_artifact_checksum: calibrationValid ? input.calibration!.artifactChecksum : null,
+    weight_effect: input.weightEffect,
+    calibration_run_id: input.calibrationRunId,
+    calibration_artifact_checksum: input.calibrationArtifactChecksum,
     profiles: ownerProfiles,
     checksum: await sha256(canonical),
   }

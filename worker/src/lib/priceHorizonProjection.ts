@@ -1,3 +1,4 @@
+import { paperExecutionNow } from './paperExecutionScope'
 import type { Bindings } from '../types'
 import { databaseForDataDomain, shadowDatabaseForDataDomain } from './dataDomainRegistry'
 import {
@@ -107,7 +108,7 @@ export function planPriceHorizonWork(
   const force = options.force === true
   const maxProcessDates = Math.max(1, Math.floor(options.maxProcessDates ?? DEFAULT_MAX_PROCESS_DATES))
   const retryAfterMs = INCOMPLETE_RETRY_DAYS * 86400_000
-  const nowMs = options.nowMs ?? Date.now()
+  const nowMs = options.nowMs ?? paperExecutionNow()
   const projectionVersion = options.projectionVersion ?? PRICE_HORIZON_PROJECTION_VERSION
   const statusByDate = new Map(statuses.map((row) => [row.signal_date, row]))
   const pending: PriceHorizonRow[] = []
@@ -540,14 +541,14 @@ export async function materializePriceHorizonLabels(
     force?: boolean
   } = {},
 ): Promise<PriceHorizonProjectionResult> {
-  const today = new Date(Date.now() + 8 * 3600_000).toISOString().slice(0, 10)
+  const today = new Date(paperExecutionNow() + 8 * 3600_000).toISOString().slice(0, 10)
   const outcomeAsOfDate = isoDate(options.outcomeAsOfDate ?? today, 'outcome_as_of_date')
   const endDate = isoDate(options.endDate ?? outcomeAsOfDate, 'end_date')
   const startDate = isoDate(options.startDate ?? shiftDate(endDate, -DEFAULT_LOOKBACK_DAYS), 'start_date')
   if (startDate > endDate || endDate > outcomeAsOfDate) throw new Error('invalid_price_horizon_date_range')
   const maxSignalDates = Math.max(1, Math.min(Number(options.maxSignalDates ?? DEFAULT_MAX_SIGNAL_DATES), 260))
   const maxProcessDates = Math.max(1, Math.min(Number(options.maxProcessDates ?? DEFAULT_MAX_PROCESS_DATES), 40))
-  const runId = `price-horizon-${startDate}-${endDate}-${Date.now().toString(36)}`
+  const runId = `price-horizon-${startDate}-${endDate}-${paperExecutionNow().toString(36)}`
   const marketDb = databaseForDataDomain(env, 'market')
   const learningDb = databaseForDataDomain(env, 'learning')
   const opsDb = databaseForDataDomain(env, 'ops')
@@ -816,7 +817,7 @@ export async function materializeStrategyMultiHorizonPriceLabels(
     force?: boolean
   } = {},
 ): Promise<StrategyMultiHorizonProjectionResult> {
-  const today = new Date(Date.now() + 8 * 3600_000).toISOString().slice(0, 10)
+  const today = new Date(paperExecutionNow() + 8 * 3600_000).toISOString().slice(0, 10)
   const outcomeAsOfDate = isoDate(options.outcomeAsOfDate ?? today, 'outcome_as_of_date')
   const endDate = isoDate(options.endDate ?? outcomeAsOfDate, 'end_date')
   const startDate = isoDate(options.startDate ?? shiftDate(endDate, -DEFAULT_LOOKBACK_DAYS), 'start_date')

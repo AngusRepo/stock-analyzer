@@ -1280,6 +1280,9 @@ def test_forward_shadow_evaluation_packets_are_separate_from_candidates(monkeypa
             },
             "validation_packet": {
                 "decision": "PASS",
+                "diagnostic_population": {"schema_version": "expected-return-rolling-population-v1", "promotion_eligible": False,
+                    "extension_dates": extension["dates"], "available_dates": extension["dates"], "evaluated_dates": extension["dates"]},
+                "oos_metrics": {"evaluated_dates": extension["dates"]},
             },
         },
         fusion_result={
@@ -1289,6 +1292,9 @@ def test_forward_shadow_evaluation_packets_are_separate_from_candidates(monkeypa
             },
             "validation_packet": {
                 "decision": "FAIL",
+                "diagnostic_population": {"schema_version": "expected-return-rolling-population-v1", "promotion_eligible": False,
+                    "extension_dates": extension["dates"], "available_dates": extension["dates"], "evaluated_dates": extension["dates"]},
+                "residual_adjustment_model": {"oos_metrics": {"evaluated_dates": extension["dates"]}},
             },
         },
         forward_row_count=20,
@@ -1310,7 +1316,7 @@ def test_forward_shadow_evaluation_packets_are_separate_from_candidates(monkeypa
     archived_payloads = [json.loads(raw.decode("utf-8")) for raw in blobs.values()]
     assert all(
         packet["evaluator_contract"]["evaluator_version"]
-        == "expected-return-frozen-forward-evaluator-v4"
+        == "expected-return-rolling-population-evaluator-v5"
         for packet in archived_payloads
     )
     assert all(
@@ -1335,7 +1341,8 @@ def test_forward_shadow_evaluation_packets_are_separate_from_candidates(monkeypa
     ]
     assert 'packet["decision"] = "FAIL"' not in forward_policy
     assert 'frozen_forward_oos_shadow_only' not in forward_policy
-    assert 'packet["monitoring_policy"]' in forward_policy
+    assert 'l4_result=rolling["l4_alpha_ev"]' in forward_policy
+    assert 'fusion_result=rolling["allocator_ev_fusion"]' in forward_policy
 
     migration = (ROOT / "worker" / "migrations" / "0100_expected_return_shadow_evaluation_packets.sql").read_text()
     assert "policy_decision TEXT NOT NULL CHECK(policy_decision = 'shadow_only')" in migration

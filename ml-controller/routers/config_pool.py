@@ -10,14 +10,11 @@ which:
      trading:config:challenger, may be null).
   2. If no challenger → skip (return {status: 'no_challenger'}).
   3. Run replay_period on last N days (Mode A, default lookback=30d calendar)
-     with each config as params. Compare sharpe / win_rate / max_dd.
+     with each config as params. Compare paired cost-net daily NAV.
   4. Update Worker D1 config_lifecycle_state via REST (worker admin endpoint)
      + append event to config_lifecycle_events.
-  5. Apply shadow stability logic from services.config_pool_policy:
-       - Challenger wins or loses are evaluated by active policy thresholds.
-       - Consecutive wins emit promotion-ready signal only.
-       - Consecutive losses or stale shadow age → retire challenger.
-  6. Discord alert on promotion-ready / retire / warning.
+  5. Persist a historical diagnostic, not an independent promotion/retirement
+     vote. Candidate-specific prospective evidence owns lifecycle decisions.
 
 Threshold / window are resolved by services.config_pool_policy from
 trading:config configPool / alphaFramework.configPool with audited defaults.
@@ -25,6 +22,7 @@ trading:config configPool / alphaFramework.configPool with audited defaults.
 from __future__ import annotations
 import json
 import logging
+import math
 import os
 import time
 import uuid
@@ -42,7 +40,7 @@ from services.alpha_quality_policy import resolve_alpha_quality_inputs
 from services.config_pool_policy import DEFAULT_CONFIG_POOL_POLICY, ConfigPoolPolicy
 from services.d1_domain_client import D1DataDomain, client_proxy_for_domain
 from services.market_structure_validation import load_market_structure_rows, validate_market_structure
-from services.promotion_service import evaluate_alpha_policy_evidence_gate, evaluate_latest_alpha_policy_gate
+from services.promotion_service import evaluate_alpha_policy_evidence_gate
 from services.worker_config_client import WorkerConfigClientError, worker_fetch
 
 LEARNING_D1_CLIENT = client_proxy_for_domain(D1DataDomain.LEARNING)
@@ -193,17 +191,16 @@ async def alpha_challenger_gate(req: AlphaChallengerRequest = Body(default=...))
             )
         )
 
-    gate = (
-        evidence.get("gate")
-        if req.generate_evidence and isinstance(evidence, dict) and isinstance(evidence.get("gate"), dict)
-        else evaluate_alpha_policy_evidence_gate(sandbox, evidence)
-        if evidence
-        else evaluate_latest_alpha_policy_gate(
-            sandbox,
-            source=req.source,
-            pbo_source=req.pbo_source,
-        )
-    )
+    # Never borrow unrelated latest research or trust an embedded PASS. Both
+    # supplied and locally generated packets must bind this candidate and pass
+    # the same raw-evidence evaluator. Keep extra producer failures as failures.
+    evidence = evidence if isinstance(evidence, dict) else {}
+    gate = evaluate_alpha_policy_evidence_gate(sandbox, evidence)
+    producer_gate = evidence.get('gate')
+    if req.generate_evidence and isinstance(producer_gate, dict) and producer_gate.get('decision') != 'PASS':
+        failures = producer_gate.get('failed_gates') or ['alpha_evidence_producer_not_pass']
+        gate.update(decision='FAIL', passed=False,
+                    failed_gates=list(dict.fromkeys([*gate.get('failed_gates', []), *failures])))
     if gate.get("decision") != "PASS":
         return {
             "status": "gate_failed",
@@ -237,16 +234,7 @@ async def alpha_challenger_gate(req: AlphaChallengerRequest = Body(default=...))
             ),
             "note": req.note or "alpha_framework gate PASS",
             "gate": gate,
-            "evidence_packet": (
-                evidence
-                if isinstance(evidence, dict)
-                else {
-                    "candidate_id": candidate_id,
-                    "decision": gate.get("decision"),
-                    "gate": gate,
-                    "validation_packet": gate.get("validation_packet"),
-                }
-            ),
+            "evidence_packet": {**evidence, "gate": gate, "decision": gate["decision"]},
         },
     )
     return {
@@ -692,13 +680,20 @@ async def parameter_candidates_validation_chain(
 def _perf_summary(metrics: Any) -> dict:
     """Extract comparable subset from BacktestMetrics dataclass (or dict)."""
     g = lambda k, d=None: getattr(metrics, k, d) if not isinstance(metrics, dict) else metrics.get(k, d)
+    def diagnostic(key: str) -> float | None:
+        try:
+            raw = g(key)
+            value = float(raw) if raw is not None else None
+            return value if value is not None and math.isfinite(value) else None
+        except (TypeError, ValueError, OverflowError):
+            return None
     return {
-        "sharpe":        float(g("sharpe") or 0.0),
-        "win_rate":      float(g("win_rate") or 0.0),
-        "max_drawdown":  float(g("max_drawdown") or 0.0),
+        "sharpe":        diagnostic('sharpe'),
+        "win_rate":      diagnostic('win_rate'),
+        "max_drawdown":  diagnostic('max_drawdown'),
         "total_trades":  int(g("total_trades") or 0),
         "total_return":  float(g("total_return") or 0.0),
-        "profit_factor": float(g("profit_factor") or 0.0),
+        "profit_factor": diagnostic('profit_factor'),
     }
 
 
@@ -738,9 +733,8 @@ async def weekly_eval(
     # /api/admin/config returns bare config JSON (legacy endpoint). Hash
     # computed client-side below.
     champion_config = await fetch_worker_admin("/api/admin/config", method="GET")
-    if not isinstance(champion_config, dict):
-        logger.warning("[config_pool/weekly_eval] unexpected champion config type, defaulting empty")
-        champion_config = {}
+    if not isinstance(champion_config, dict) or not champion_config:
+        raise HTTPException(status_code=502, detail='config_pool_champion_config_unavailable')
     policy = ConfigPoolPolicy.from_config(champion_config)
     champion_hash = _client_hash(champion_config)
 
@@ -753,6 +747,8 @@ async def weekly_eval(
 
     challenger_state = challenger_resp["challenger"]
     challenger_config = challenger_state["config"]
+    if not isinstance(challenger_config, dict) or not challenger_config:
+        raise HTTPException(status_code=502, detail='config_pool_challenger_config_unavailable')
     challenger_hash = challenger_state["hash"]
     shadow_since = challenger_state["shadow_since"]
 
@@ -783,9 +779,12 @@ async def weekly_eval(
 
     champion_perf = _perf_summary(champion_metrics)
     challenger_perf = _perf_summary(challenger_metrics)
-    sharpe_delta = challenger_perf["sharpe"] - champion_perf["sharpe"]
-    win_rate_delta = challenger_perf["win_rate"] - champion_perf["win_rate"]
-    max_dd_delta = challenger_perf["max_drawdown"] - champion_perf["max_drawdown"]
+    def delta(key):
+        a, b = champion_perf[key], challenger_perf[key]
+        return b - a if a is not None and b is not None else None
+    sharpe_delta = delta('sharpe')
+    win_rate_delta = delta('win_rate')
+    max_dd_delta = delta('max_drawdown')
 
     # ── 4. Fetch previous state to compute consecutive counters ────────────
     prev_state_resp = await fetch_worker_admin("/api/admin/config/challenger/state")
@@ -798,28 +797,23 @@ async def weekly_eval(
         consecutive_wins = 0
         consecutive_losses = 0
 
-    this_is_win = policy.is_win(sharpe_delta, challenger_perf["win_rate"])
-    this_is_loss = policy.is_loss(sharpe_delta, challenger_perf["win_rate"])
-    if this_is_win:
-        consecutive_wins += 1
-        consecutive_losses = 0
-    elif this_is_loss:
-        consecutive_losses += 1
-        consecutive_wins = 0
-    else:
-        # Neutral — reset both (tie result doesn't progress toward either outcome)
-        consecutive_wins = 0
-        consecutive_losses = 0
+    paired_nav = policy.evaluate(champion_metrics, challenger_metrics, [
+        day for day in dataset.trading_days if start_date <= day <= end_date
+    ])
+    if paired_nav.get('status') == 'invalid':
+        raise HTTPException(status_code=422, detail={
+            'error': 'config_pool_paired_nav_not_evaluable', 'evidence': paired_nav,
+        })
+    # Rolling historical replays are not new votes. Keep prior counters only
+    # as legacy diagnostics; never accumulate or consume them for an action.
+    this_is_win = this_is_loss = False
 
     # Shadow age
     shadow_age_days = (datetime.now(timezone.utc) - datetime.fromisoformat(shadow_since.replace("Z", "+00:00"))).days
 
     # ── 5. Decide action ────────────────────────────────────────────────────
-    action, action_reason = policy.decide_action(
-        consecutive_wins=consecutive_wins,
-        consecutive_losses=consecutive_losses,
-        shadow_age_days=shadow_age_days,
-    )
+    action = paired_nav['action']
+    action_reason = paired_nav.get('action_reason') or paired_nav.get('reason', '')
 
     eval_result = {
         "evaluated_at": datetime.now(timezone.utc).isoformat(),
@@ -832,11 +826,13 @@ async def weekly_eval(
         "shadow_since": shadow_since,
         "shadow_age_days": shadow_age_days,
         "policy": policy.to_dict(),
+        "paired_nav_evidence": paired_nav,
+        "legacy_counters_diagnostic_only": True,
         "champion_perf": champion_perf,
         "challenger_perf": challenger_perf,
-        "sharpe_delta": round(sharpe_delta, 4),
-        "win_rate_delta": round(win_rate_delta, 4),
-        "max_dd_delta": round(max_dd_delta, 4),
+        "sharpe_delta": round(sharpe_delta, 4) if sharpe_delta is not None else None,
+        "win_rate_delta": round(win_rate_delta, 4) if win_rate_delta is not None else None,
+        "max_dd_delta": round(max_dd_delta, 4) if max_dd_delta is not None else None,
         "this_is_win": this_is_win,
         "this_is_loss": this_is_loss,
         "consecutive_wins": consecutive_wins,
@@ -861,6 +857,8 @@ async def weekly_eval(
         "shadow_since": shadow_since,
         "shadow_age_days": shadow_age_days,
         "last_action": action,
+        "policy_version": policy.to_dict()['policy_version'],
+        "paired_nav_evidence": paired_nav,
     }
 
     # Write state + event via worker admin (single call bundles both)
@@ -876,20 +874,5 @@ async def weekly_eval(
             "detail": eval_result,
         },
     })
-
-    # weekly_eval only evaluates shadow stability. Candidate-specific evidence
-    # owns the final production gate and this route never writes prod directly.
-    if action == "promote":
-        eval_result["promotion_signal"] = {
-            "status": "PROMOTION_READY_SIGNAL",
-            "reason": action_reason,
-            "next_action": "run final promotion controller with candidate-specific evidence packet",
-        }
-    elif action == "retire":
-        retire_resp = await fetch_worker_admin(
-            f"/api/admin/config/challenger?reason={action_reason.replace(' ', '+')}",
-            method="DELETE",
-        )
-        eval_result["retire_result"] = retire_resp
 
     return {"status": "applied", **eval_result}

@@ -63,6 +63,19 @@ assert.equal(materializedButUnavailable.active_materialized_profile_count, 1)
 assert.equal(materializedButUnavailable.active_ready_profile_count, 0)
 assert.equal(materializedButUnavailable.profiles[0]?.integration_status, 'materialized_learning')
 assert.equal(materializedButUnavailable.profiles[0]?.weight_multiplier, 1, 'unavailable estimator stays neutral without becoming missing evidence')
+assert.equal(materializedButUnavailable.profiles[0]?.metric_evidence[0].metric_value, null,
+  'missing estimate is not a measured zero')
+for (const value of ['', '   ', 'invalid', 'Infinity']) {
+  const unavailable = await buildStrategyEvidenceOwnerSnapshot({ strategies: [active],
+    rows: profileRows.map((row, index) => index === 0
+      ? { ...row, metric_value: value, metric_status: 'not_available' } : row),
+    knowledgeCutoffDate: '2026-08-17' })
+  assert.equal(unavailable.profiles[0].metric_evidence[0].metric_value, null)
+}
+const measuredZero = await buildStrategyEvidenceOwnerSnapshot({ strategies: [active],
+  rows: profileRows.map((row, index) => index === 0 ? { ...row, metric_value: '0' } : row),
+  knowledgeCutoffDate: '2026-08-17' })
+assert.equal(measuredZero.profiles[0].metric_evidence[0].metric_value, 0)
 
 
 const futureOnly = await buildStrategyEvidenceOwnerSnapshot({

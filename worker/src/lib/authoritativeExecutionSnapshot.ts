@@ -1,3 +1,4 @@
+import { paperExecutionNow } from './paperExecutionScope'
 import { getTwTickSize, normalizeTwLimitPrice, type TwOrderLotType } from './twMarketRules'
 
 export interface ExecutionBookObservation {
@@ -127,12 +128,21 @@ function positive(value: unknown): number | null {
 }
 
 function normalizedAge(observation: ExecutionBookObservation, nowMs: number): number | null {
-  const explicit = Number(observation.ageMs)
-  if (Number.isFinite(explicit) && explicit >= 0) return explicit
-  const text = observation.sourceTime ?? observation.receivedAt
-  if (!text) return null
-  const timestamp = new Date(text).getTime()
-  return Number.isFinite(timestamp) ? Math.max(0, nowMs - timestamp) : null
+  const ages: number[] = []
+  if (!Number.isFinite(nowMs)) return null
+  if (observation.ageMs != null) {
+    if (typeof observation.ageMs !== 'number' || !Number.isFinite(observation.ageMs) || observation.ageMs < 0) return null
+    ages.push(observation.ageMs)
+  }
+  for (const text of [observation.sourceTime, observation.receivedAt]) {
+    if (text == null) continue
+    const timestamp = Date.parse(text)
+    if (!Number.isFinite(timestamp) || timestamp > nowMs) return null
+    ages.push(nowMs - timestamp)
+  }
+  // Null must not coerce to 0; an explicit age cannot overrule a future/stale
+  // source timestamp. One owner serves BOTH the buy and sell fill paths.
+  return ages.length ? Math.max(...ages) : null
 }
 
 export function resolveAuthoritativeBuyExecutionSnapshot(input: {
@@ -143,7 +153,7 @@ export function resolveAuthoritativeBuyExecutionSnapshot(input: {
   maxDisagreementTicks?: number
   nowMs?: number
 }): AuthoritativeExecutionSnapshot {
-  const nowMs = input.nowMs ?? Date.now()
+  const nowMs = input.nowMs ?? paperExecutionNow()
   const maxAgeMs = Math.max(100, Number(input.maxAgeMs ?? 1500))
   const maxDisagreementTicks = Math.max(0, Number(input.maxDisagreementTicks ?? 1))
   const limitPrice = normalizeTwLimitPrice(input.limitPrice, 'buy')
@@ -250,7 +260,7 @@ export function resolveAuthoritativeSellExecutionSnapshot(input: {
   maxDisagreementTicks?: number
   nowMs?: number
 }): AuthoritativeExecutionSnapshot {
-  const nowMs = input.nowMs ?? Date.now()
+  const nowMs = input.nowMs ?? paperExecutionNow()
   const maxAgeMs = Math.max(100, Number(input.maxAgeMs ?? 1500))
   const maxDisagreementTicks = Math.max(0, Number(input.maxDisagreementTicks ?? 1))
   const limitPrice = normalizeTwLimitPrice(input.limitPrice, 'sell')

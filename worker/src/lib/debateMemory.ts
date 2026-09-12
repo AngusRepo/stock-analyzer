@@ -1,3 +1,4 @@
+import { paperExecutionNow, paperExecutionDate } from './paperExecutionScope'
 /**
  * debateMemory.ts — 2026-04-20 #18 FinMem 分層歷史記憶
  *
@@ -41,7 +42,7 @@ export interface HistoricalThesisBundle {
 
 // Format YYYY-MM-DD in TW timezone (UTC+8)
 function twDate(offsetDays: number = 0): string {
-  return new Date(Date.now() + 8 * 3600_000 + offsetDays * 86400_000).toISOString().slice(0, 10)
+  return new Date(paperExecutionNow() + 8 * 3600_000 + offsetDays * 86400_000).toISOString().slice(0, 10)
 }
 
 export async function insertDebateMemory(
@@ -63,7 +64,7 @@ export async function insertDebateMemory(
       row.verdict,
       Math.max(0, Math.min(100, row.conviction_score)),
       row.llm_source,
-      new Date().toISOString(),
+      paperExecutionDate().toISOString(),
     ).run()
   } catch (e) {
     console.warn(`[DebateMemory] insert failed for ${row.symbol}: ${e}`)

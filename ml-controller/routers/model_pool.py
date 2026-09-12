@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 import logging
+import json
 import os
 import time
 from datetime import datetime, timezone
@@ -57,6 +58,9 @@ class AutoPromotionRequest(BaseModel):
 
 class Active8BundlePromotionControllerRequest(BaseModel):
     training_run_id: str
+    ensemble_artifact_id: str | None = None
+    ensemble_payload_checksum: str | None = None
+    evaluation_business_date: str | None = None
     confirm: bool = False
     reason: str = "active8_ensemble_atomic_bundle"
 
@@ -419,50 +423,12 @@ async def artifact_registry_auto_promote(req: AutoPromotionRequest = AutoPromoti
         results: list[dict] = []
         promoted_artifacts: list[dict] = []
 
-        feature_runs = sorted({
-            str(by_id.get(str(item.get("artifact_id")), {}).get("training_run_id") or "")
-            for item in eligible
-            if str(item.get("candidate_type") or "") == "timesfm_l175_l2_feature_release"
-        } - {""})
-        for training_run_id in feature_runs:
-            result = run_feature_release_promotion_controller(
-                training_run_id=training_run_id,
-                registry_rows=rows,
-                d1_pointers=pointers,
-                confirm=True,
-                approved=False,
-                approved_by="artifact_auto_promotion",
-                reason=req.reason,
-            )
-            artifacts = [dict(row) for row in result.pop("artifacts", [])]
-            results.append(result)
-            if result.get("can_promote") is True:
-                promoted_artifacts.extend(artifacts)
-
-        active8_candidates = [
-            row for row in list_active8_ensemble_artifacts()
-            if str(row.get("state") or "") == "candidate"
-            and str(row.get("training_run_id") or "")
-        ]
-        # Query order is updated_at DESC. Only the newest candidate may own
-        # automatic promotion; an older bundle must never overwrite a newer one.
-        active8_runs = (
-            [str(active8_candidates[0].get("training_run_id") or "")]
-            if active8_candidates
-            else []
-        )
-        for training_run_id in active8_runs:
-            result = run_active8_ensemble_bundle_promotion_controller(
-                training_run_id=training_run_id,
-                registry_rows=rows,
-                d1_pointers=pointers,
-                confirm=True,
-                reason=req.reason,
-            )
-            artifacts = [dict(row) for row in result.pop("artifacts", [])]
-            results.append(result)
-            if result.get("can_promote") is True:
-                promoted_artifacts.extend(artifacts)
+        # Weekly/monthly artifact creation is not publication authority. The
+        # existing daily NAV job selects from its frozen complete inventory;
+        # this generic endpoint must not select a second latest-N winner.
+        results.append({'status': 'delegated', 'can_promote': False,
+            'decision': 'active8_new_publication_owned_by_daily_nav',
+            'publication_owner': 'daily_paired_nav', 'training_dispatched': False})
         seen_models: set[str] = set()
         for item in eligible:
             if str(item.get("candidate_type") or "") in {"timesfm_l175_l2_feature_release", "oof_full_fit_release"}:
@@ -535,15 +501,52 @@ async def artifact_registry_active8_bundle_promotion_controller(
     if not req.training_run_id.strip():
         raise HTTPException(status_code=400, detail="training_run_id is required")
     try:
-        rows = list_artifact_registry(limit=1000)
+        evaluation_date = req.evaluation_business_date
+        recovery_only = req.confirm and evaluation_date is None
+        if req.confirm and (not req.ensemble_artifact_id or not req.ensemble_payload_checksum):
+            return {'status': 'blocked', 'can_promote': False,
+                    'decision': 'active8_ensemble_exact_identity_required', 'readback_verified': False}
+        if recovery_only:
+            committed = LEARNING_D1_CLIENT.query('''
+                SELECT p.*, e.training_run_id, e.state, e.production_effect
+                FROM active8_ensemble_pointer_v1 p
+                JOIN active8_ensemble_artifacts_v1 e ON e.artifact_id=p.artifact_id
+                WHERE p.singleton_id=1 AND p.artifact_id=? AND p.payload_checksum=?
+                  AND e.payload_checksum=p.payload_checksum AND e.training_run_id=?
+                  AND e.state='production' AND e.production_effect=1
+                ''', [req.ensemble_artifact_id, req.ensemble_payload_checksum, req.training_run_id])
+            if len(committed) != 1:
+                return {'status': 'blocked', 'can_promote': False, 'readback_verified': False,
+                        'decision': 'active8_new_publication_requires_daily_nav',
+                        'publication_owner': 'daily_paired_nav'}
+            evidence = json.loads(committed[0].get('promotion_evidence_json') or '{}')
+            if 'nav_validation' in evidence:
+                evaluation_date = evidence['evaluation_business_date']
+                if not evaluation_date or evaluation_date != evidence['nav_validation']['as_of_date']:
+                    raise ValueError('active8_recovery_original_nav_date_invalid')
+            # The original publisher must still prove receipt/history recovery.
+            # A pointer change after this read must NEVER turn recovery into a
+            # fresh publication using the original historical NAV date.
+        # A named cohort must not disappear behind an unrelated latest-N page.
+        rows = LEARNING_D1_CLIENT.query(
+            "SELECT * FROM model_artifact_registry WHERE training_run_id=? AND candidate_type='oof_full_fit_release'",
+            [req.training_run_id])
         result = run_active8_ensemble_bundle_promotion_controller(
             training_run_id=req.training_run_id,
             registry_rows=rows,
             d1_pointers=list_champion_pointers(),
+            ensemble_artifact_id=req.ensemble_artifact_id,
+            ensemble_payload_checksum=req.ensemble_payload_checksum,
+            evaluation_business_date=evaluation_date,
+            recovery_only=recovery_only,
             confirm=req.confirm,
             reason=req.reason,
         )
         artifacts = [dict(row) for row in result.pop("artifacts", [])]
+        if not req.confirm and evaluation_date is None:
+            result = {**result, 'offline_diagnostic_can_promote': result.get('offline_diagnostic_can_promote', result.get('can_promote')) is True,
+                      'can_promote': False, 'completion_scope': 'offline_diagnostic_only',
+                      'publication_owner': 'daily_paired_nav'}
         if req.confirm and result.get("can_promote") is True:
             readback = {
                 str(pointer.get("model_name") or ""): pointer
@@ -578,7 +581,7 @@ async def artifact_registry_active8_bundle_promotion_controller(
 async def artifact_registry_feature_release_promotion_controller(
     req: FeatureReleasePromotionControllerRequest,
 ):
-    """Promote a complete TimesFM feature cohort through one atomic D1 batch."""
+    """Report the retired five-base-model publisher without mutating serving."""
     if not req.training_run_id.strip():
         raise HTTPException(status_code=400, detail="training_run_id is required")
     try:
@@ -632,6 +635,26 @@ async def artifact_registry_champion_pointers(model_name: str | None = None, lim
         }
         bundle = load_active8_ensemble_serving_bundle()
         base_artifacts = bundle.get("base_artifacts") if isinstance(bundle.get("base_artifacts"), dict) else {}
+        from services.model_serving_resolver import build_pool_from_champion_pointers, _json_obj
+        from services.model_artifact_registry import list_artifacts_by_ids
+        missing_ids = [str(item.get("artifact_id") or "") for item in base_artifacts.values()
+                       if isinstance(item, dict) and item.get("artifact_id") not in artifacts_by_id]
+        if missing_ids:
+            rows = [*rows, *list_artifacts_by_ids(missing_ids)]
+            artifacts_by_id.update({str(row['artifact_id']): row for row in rows if row.get('artifact_id')})
+        runtime_pointers = pointers if model_name is None else list_champion_pointers()
+        nav_grant = None
+        if any('nav_validation' in _json_obj(pointer.get('promotion_evidence_json'))
+               for pointer in runtime_pointers if pointer.get('model_name') in base_artifacts):
+            from services import model_artifact_registry as artifact_registry
+            from services.active8_nav_adoption import load_committed_nav_serving_grant
+            nav_grant = load_committed_nav_serving_grant(query=artifact_registry.d1_client.query)
+            if nav_grant is None:
+                raise RuntimeError('active8_nav_serving_bundle_missing_for_readiness')
+        runtime_pool = build_pool_from_champion_pointers(
+            pointers=runtime_pointers, artifacts=rows, required_models=tuple(base_artifacts), sidecar_models=(),
+            nav_grant=nav_grant,
+        )
         bundle_status = str(bundle.get("status") or "")
         bundle_blockers = [str(item) for item in bundle.get("blockers") or []]
         pointer_by_model = {
@@ -647,17 +670,27 @@ async def artifact_registry_champion_pointers(model_name: str | None = None, lim
         for name in model_names:
             pointer = pointer_by_model.get(name) or {}
             serving = base_artifacts.get(name) if isinstance(base_artifacts.get(name), dict) else {}
-            is_serving = bundle.get("production_effect") is True and bool(serving)
+            is_member = bundle.get("production_effect") is True and bool(serving)
+            runtime = runtime_pool["models"].get(name) or {}
+            runtime_identity_matches = (
+                runtime.get("serving_artifact_id") == serving.get("artifact_id")
+                and runtime.get("version") == serving.get("version")
+                and runtime.get("checksum") == serving.get("checksum")
+            )
+            is_serving = is_member and runtime_identity_matches and runtime.get("serving_eligible") is True
+            block_reason = (runtime.get("serving_block_reason") or "bundle_pointer_identity_mismatch") if is_member and not is_serving else None
             models[name] = {
-                "serving_version": serving.get("version") if is_serving else None,
-                "serving_artifact_id": serving.get("artifact_id") if is_serving else None,
-                "serving_checksum": serving.get("checksum") if is_serving else None,
+                "serving_version": serving.get("version") if is_member else None,
+                "serving_artifact_id": serving.get("artifact_id") if is_member else None,
+                "serving_checksum": serving.get("checksum") if is_member else None,
                 "d1_pointer_version": pointer.get("champion_version"),
                 "d1_pointer_artifact_id": pointer.get("champion_artifact_id"),
-                "artifact_link_status": "v5_bundle_bound" if is_serving else "legacy_audit_only",
+                "serving_block_reason": block_reason,
+                "artifact_link_status": "v5_bundle_bound" if is_member else "legacy_audit_only",
                 "readiness": (
                     "v5_serving"
                     if is_serving
+                    else "serving_contract_blocked" if is_member
                     else "validation_failed"
                     if bundle_status == "validation_failed"
                     else "evidence_only_no_action"
@@ -665,6 +698,7 @@ async def artifact_registry_champion_pointers(model_name: str | None = None, lim
                 "next_action": (
                     "V5 bundle is the production serving owner."
                     if is_serving
+                    else "Resolve runtime serving contract: " + str(block_reason) if is_member
                     else "Latest V5 bundle failed held-out quality gates: " + ", ".join(bundle_blockers)
                     if bundle_status == "validation_failed"
                     else "Wait for a validated V5 bundle; the legacy champion pointer is rollback/audit lineage only."
@@ -675,7 +709,7 @@ async def artifact_registry_champion_pointers(model_name: str | None = None, lim
             "source_of_truth": "active8_ensemble_pointer_v1/model_artifact_registry",
             "target_source_of_truth": "active8_ensemble_pointer_v1",
             "production_reader": "active8_ensemble_pointer_v1",
-            "migration_ready": bundle.get("production_effect") is True,
+            "migration_ready": bundle.get("production_effect") is True and bool(base_artifacts) and all(models[name]["readiness"] == "v5_serving" for name in base_artifacts),
             "ready_count": sum(1 for row in models.values() if row["readiness"] == "v5_serving"),
             "model_count": len(models),
             "count": len(pointers),

@@ -4,6 +4,15 @@ import path from 'node:path'
 const root = path.resolve(import.meta.dirname, '..')
 const registry = fs.readFileSync(path.join(root, 'src/lib/dataDomainRegistry.ts'), 'utf8')
 const domains = ['core', 'market', 'learning', 'ops', 'execution', 'paper', 'research']
+// NAV tables/triggers have an immutable additive migration owner. Rebuilding a
+// schema from the older production snapshot must not remove these safeguards.
+const immutableSchemaExtensions = {
+  learning: ['0040_paired_nav_shadow_journal.sql', '0043_paired_nav_lifecycle.sql', '0047_atomic_nav_adoption.sql'],
+}
+const extensions = Object.fromEntries(Object.entries(immutableSchemaExtensions).map(([domain, files]) => [domain,
+  files.map(file => fs.readFileSync(path.join(root, 'domain-migrations', domain, file), 'utf8')).join('\n')]))
+const extensionTables = new Set(Object.values(extensions).flatMap(sql =>
+  [...sql.matchAll(/CREATE TABLE IF NOT EXISTS\s+([A-Za-z0-9_]+)/g)].map(match => match[1])))
 const permanentLegacyControlTable = (table) => (
   table.startsWith('data_domain_') || table.startsWith('domain_projection_')
 )
@@ -73,6 +82,20 @@ function statementIdentity(statement) {
 }
 
 function normalizeCreate(statement) {
+  if (/^CREATE TABLE(?: IF NOT EXISTS)?\s+strategy_route_calibration_head_v1\b/i.test(statement)) {
+    const migration = fs.readFileSync(path.join(root, 'domain-migrations/learning/0046_route_nav_diagnostic_floor.sql'), 'utf8')
+    const ddl = migration.match(/CREATE TABLE strategy_route_calibration_head_nav_migration \([\s\S]*?\n\);/)?.[0]
+    if (!ddl) throw new Error('route_nav_head_migration_missing')
+    statement = ddl.replace('strategy_route_calibration_head_nav_migration', 'strategy_route_calibration_head_v1').replace(/;$/, '')
+  }
+  // The immutable 0045 migration owns this added candidate kind. Rebuilding
+  // from the older production snapshot must not remove the admitted type.
+  if (/^CREATE TABLE(?: IF NOT EXISTS)?\s+model_artifact_registry\b/i.test(statement)
+      && !statement.includes("'opb_arm_prior_refresh'")) {
+    const prior = statement
+    statement = statement.replace(/'allocator_ev_fusion_refresh'\s*,/, "'allocator_ev_fusion_refresh','opb_arm_prior_refresh',")
+    if (statement === prior) throw new Error('opb_registry_candidate_type_anchor_missing')
+  }
   return statement
     .replace(/^CREATE TABLE\s+(?!IF NOT EXISTS)/i, 'CREATE TABLE IF NOT EXISTS ')
     .replace(/^CREATE UNIQUE INDEX\s+(?!IF NOT EXISTS)/i, 'CREATE UNIQUE INDEX IF NOT EXISTS ')
@@ -105,6 +128,7 @@ function addStatement(raw, source, strict) {
     if (strict) throw new Error(`unclassified ${source} statement: ${statement.slice(0, 120)}`)
     return
   }
+  if (extensionTables.has(identity.table)) return
   const domain = owner.get(identity.table) ?? (identity.table.startsWith('paper_') ? 'paper' : null)
   if (!domain) {
     if (permanentLegacyControlTable(identity.table)) return
@@ -137,7 +161,7 @@ fs.mkdirSync(migrationOutput, { recursive: true })
 
 for (const domain of domains) {
   const statements = grouped[domain].join('\n\n')
-  const body = statements ? statements + '\n' : ''
+  const body = (statements ? statements + '\n' : '') + (extensions[domain] ? '\n' + extensions[domain].trimEnd() + '\n' : '')
   const schema = (`-- Generated from schema.sql plus production snapshot fallback; do not edit by hand.\n${body}`)
     .replace(/[ \t]+$/gm, '')
   fs.writeFileSync(path.join(schemaOutput, `${domain}.sql`), schema)

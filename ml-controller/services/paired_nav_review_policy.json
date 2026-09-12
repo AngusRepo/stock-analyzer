@@ -1,0 +1,9 @@
+{
+  "revision": "paired-nav-daily-review-policy-v1",
+  "minimum_sessions": 10,
+  "final_sessions": 30,
+  "family_alpha": 0.05,
+  "block_length": 3,
+  "resamples": 19999,
+  "family_scope": "owner_and_first_frozen_hypothesis_introduction_date"
+}

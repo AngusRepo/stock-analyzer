@@ -208,14 +208,16 @@ def test_market_risk_session_calendar_uses_core_domain_query() -> None:
 
 
 def test_production_oof_and_allocator_replay_route_market_risk_to_core_d1() -> None:
-    walk_forward_source = Path("ml-controller/routers/walk_forward.py").read_text(encoding="utf-8")
-    allocator_source = Path(
-        "ml-controller/services/allocator_ev_feature_snapshot_backfill.py"
-    ).read_text(encoding="utf-8")
+    controller = Path(__file__).resolve().parents[1]
+    walk_forward_source = (controller / "routers/walk_forward.py").read_text(encoding="utf-8")
+    allocator_source = (controller / "services/allocator_ev_feature_snapshot_backfill.py").read_text(encoding="utf-8")
 
     assert walk_forward_source.count("core_query_fn=CORE_D1_CLIENT.query") >= 4
     assert "market_query if production_domain_routing else query_fn" in allocator_source
     assert "core_query_fn=core_query if production_domain_routing else query_fn" in allocator_source
+    daily_source = (controller / 'graphs/daily_pipeline_v2.py').read_text(encoding='utf-8')
+    assert 'CORE_D1_CLIENT = client_proxy_for_domain(D1DataDomain.CORE)' in daily_source
+    assert 'core_query=CORE_D1_CLIENT.query' in daily_source
 
 
 def test_sector_defensive_interaction_is_derived_from_pit_market_context() -> None:

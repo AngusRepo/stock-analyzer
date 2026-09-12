@@ -166,6 +166,8 @@ export class RestEvidenceArtifactWriter implements EvidenceArtifactWriter {
       || manifest.domain !== input.domain
       || manifest.schema_version !== input.schemaVersion
       || manifest.row_count !== input.rowCount
+      || manifest.business_date !== input.businessDate
+      || manifest.producer_run_id !== input.producerRunId
       || !manifest.artifact_id
       || !manifest.r2_key
       || !/^sha256:[a-f0-9]{64}$/i.test(manifest.checksum)
@@ -207,6 +209,9 @@ export class RestEvidenceArtifactWriter implements EvidenceArtifactWriter {
     items: unknown[],
   ): Promise<EvidenceArtifactManifest> {
     const chunks = this.partitionScreenerItems(items)
+    // Empty evidence rows still have explicit coverage when a large source
+    // header requires chunk transport; never invent a placeholder stock.
+    if (!chunks.length) chunks.push([])
     const chunkManifests: Array<Record<string, unknown>> = []
     let rowOffset = 0
     for (let index = 0; index < chunks.length; index++) {
@@ -256,8 +261,42 @@ export class RestEvidenceArtifactWriter implements EvidenceArtifactWriter {
     }
 
     const { items: _items, ...payloadHeader } = input.payload as Record<string, unknown> & { items: unknown[] }
+    // Full L0 inputs are not item telemetry. Preserve them in their own stream
+    // using the same verified artifact transport, not an unbounded index header.
+    if (payloadHeader.atomic_strategy_source != null) {
+      const json = JSON.stringify(payloadHeader.atomic_strategy_source)
+      if (utf8ByteLength(json) > SCREENER_ARTIFACT_CHUNK_TARGET_BYTES / 2) {
+        const fragments: string[] = []
+        // At most six JSON bytes per UTF-16 code unit (including lone surrogate
+        // escaping). Reassembly precedes JSON parsing, preserving exact text.
+        const maxChars = Math.floor(SCREENER_ARTIFACT_CHUNK_TARGET_BYTES / 6)
+        for (let offset = 0; offset < json.length; offset += maxChars) fragments.push(json.slice(offset, offset + maxChars))
+        const manifests: Array<Pick<EvidenceArtifactManifest, 'artifact_id' | 'status' | 'domain' | 'business_date'
+          | 'producer_run_id' | 'r2_key' | 'checksum' | 'schema_version' | 'row_count' | 'created_at'>> = []
+        for (const [index, fragment] of fragments.entries()) {
+          const child: EvidenceArtifactWriteInput = { ...input,
+            domain: SCREENER_ARTIFACT_CHUNK_DOMAIN, schemaVersion: SCREENER_ARTIFACT_CHUNK_SCHEMA,
+            rowCount: 1, payload: { storage_mode: 'chunked_r2_child_v1',
+              logical_domain: input.domain, logical_schema_version: input.schemaVersion,
+              collection: 'atomic_strategy_source_json_v1', chunk_index: index, chunk_count: fragments.length,
+              row_start: index, row_end_exclusive: index + 1, items: [fragment] } }
+          if (utf8ByteLength(JSON.stringify(child)) > SCREENER_ARTIFACT_DIRECT_WRITE_MAX_BYTES) {
+            throw new Error('atomic_source_fragment_exceeds_transport_limit')
+          }
+          const manifest = await this.post(child)
+          // Verification timestamps/retention telemetry are mutable on retry;
+          // they must not change the content-addressed parent artifact identity.
+          const { artifact_id, status, domain, business_date, producer_run_id, r2_key,
+            checksum, schema_version, row_count, created_at } = manifest
+          manifests.push({ artifact_id, status, domain, business_date, producer_run_id, r2_key,
+            checksum, schema_version, row_count, created_at })
+        }
+        payloadHeader.atomic_strategy_source = { schema_version: 'atomic-strategy-source-chunks-v1',
+          json_checksum: await sha256Text(json), byte_size: utf8ByteLength(json), fragments: manifests }
+      }
+    }
     const logicalPayloadChecksum = await sha256Text(JSON.stringify(input.payload))
-    return this.post({
+    const parent: EvidenceArtifactWriteInput = {
       ...input,
       schemaVersion: SCREENER_ARTIFACT_INDEX_SCHEMA,
       payload: {
@@ -276,7 +315,11 @@ export class RestEvidenceArtifactWriter implements EvidenceArtifactWriter {
           logical_schema_version: input.schemaVersion,
         },
       },
-    })
+    }
+    if (utf8ByteLength(JSON.stringify(parent)) > SCREENER_ARTIFACT_DIRECT_WRITE_MAX_BYTES) {
+      throw new Error('screener_funnel_index_exceeds_transport_limit')
+    }
+    return this.post(parent)
   }
 
   async write(input: EvidenceArtifactWriteInput): Promise<EvidenceArtifactManifest> {

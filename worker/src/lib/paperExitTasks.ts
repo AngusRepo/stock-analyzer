@@ -1,3 +1,4 @@
+import { paperAccountId, paperExecutionNow, paperExecutionDate } from './paperExecutionScope'
 import type { Bindings } from '../types'
 import { paperDomainDatabase } from './paperDomainDatabase'
 import { formatTradeNotification, sendDiscordNotification } from './notify'
@@ -29,6 +30,7 @@ import { checkP9IntradayDrawdown, mergeIntradayPortfolioRisk } from './intradayP
 import { buildPortfolioDeRiskPlan, type PortfolioDeRiskPlan } from './portfolioDeRisk'
 import { fiveSlotHoldingWeaknessScore } from './fiveSlotCapitalAllocator'
 import { computePaperTotalValue, getUnsettledSettlementSummary } from './paperAccountValue'
+import { corporateAccountRiskBounds } from './paperCorporateActions'
 import {
   aggregateCompletedS12Bars,
   applyS12TakeoverContinuity,
@@ -64,7 +66,6 @@ import {
   resolveTwEquityExitFusionV2,
 } from './twEquityExitFusion'
 
-const ACCOUNT_ID = 1
 const S12_HOLDING_DEFENSE_EVENT_MIN_INTERVAL_MS = 10 * 60_000
 const S12_M15_MS = 15 * 60_000
 
@@ -263,7 +264,7 @@ function buildPaperSellOrderIntent(params: {
   strategyType: string
 }) {
   return buildStockVisionSellOrderIntent({
-    accountId: ACCOUNT_ID,
+    accountId: paperAccountId(),
     tradeDate: params.tradeDate,
     symbol: params.symbol,
     limitPrice: params.fillPrice,
@@ -314,7 +315,7 @@ async function persistExitPositionUpdate(
     nextHighest,
     nextTp2,
     nextLifecycleJson,
-    ACCOUNT_ID,
+    paperAccountId(),
     pos.symbol,
   ).run()
 
@@ -397,7 +398,7 @@ function buildSellShadowSnapshots(
             volumeUnit: quote.volumeUnit,
             sourceTime: quote.quoteTime ?? null,
             receivedAt: quote.confirmationTime ?? null,
-            ageMs: quote.confirmationTime ? Math.max(0, Date.now() - (parseTimeMs(quote.confirmationTime) ?? Date.now())) : quote.quoteAgeMs ?? null,
+            ageMs: quote.confirmationTime ? Math.max(0, paperExecutionNow() - (parseTimeMs(quote.confirmationTime) ?? paperExecutionNow())) : quote.quoteAgeMs ?? null,
             sessionEpoch: quote.sessionEpoch ?? null,
           }]
         : [],
@@ -414,7 +415,7 @@ export function resolvePositionExitSellFill(
   const legs = buildTwOrderLegs(shares)
   if (legs.length === 0) return { fillable: false, reason: 'invalid_exit_shares', detail: { shares } }
 
-  const nowMs = options.nowMs ?? Date.now()
+  const nowMs = options.nowMs ?? paperExecutionNow()
   const maxAgeMs = Math.max(100, Number(options.maxAgeMs ?? 1500))
   const fills: Array<{ lot_type: 'board_lot' | 'odd_lot'; shares: number; price: number; reason: string; match: unknown; snapshot: AuthoritativeExecutionSnapshot }> = []
   const unfilled: Array<{ lot_type: 'board_lot' | 'odd_lot'; shares: number; reason: string; snapshot?: AuthoritativeExecutionSnapshot }> = []
@@ -443,7 +444,7 @@ export function resolvePositionExitSellFill(
         bidVolumes: quote.bidVolumes ?? [], askVolumes: quote.askVolumes ?? [],
         volumeUnit: quote.volumeUnit, sourceTime: quote.quoteTime ?? null,
         receivedAt: quote.confirmationTime ?? null,
-        ageMs: quote.confirmationTime ? Math.max(0, Date.now() - (parseTimeMs(quote.confirmationTime) ?? Date.now())) : quote.quoteAgeMs ?? null,
+        ageMs: quote.confirmationTime ? Math.max(0, paperExecutionNow() - (parseTimeMs(quote.confirmationTime) ?? paperExecutionNow())) : quote.quoteAgeMs ?? null,
         sessionEpoch: quote.sessionEpoch ?? null,
       }],
     })
@@ -533,7 +534,7 @@ async function recordPendingExitAttempt(
     detail: Record<string, unknown>
   },
 ): Promise<boolean> {
-  const supersededAt = new Date().toISOString()
+  const supersededAt = paperExecutionDate().toISOString()
   await paperDomainDatabase(env).prepare(`
     UPDATE paper_execution_events
        SET status = 'superseded',
@@ -570,7 +571,7 @@ async function recordPendingExitAttempt(
      ORDER BY id DESC
      LIMIT 1
   `).bind(input.tradeDate, input.symbol, input.intentKey).first<{ id: number; detail_json?: string | null }>()
-  const attemptedAt = new Date().toISOString()
+  const attemptedAt = paperExecutionDate().toISOString()
   let previous: Record<string, unknown> | null = null
   try {
     previous = existing?.detail_json ? JSON.parse(existing.detail_json) as Record<string, unknown> : null
@@ -626,7 +627,7 @@ async function resolvePendingExitIntent(
     input.status,
     `exit_intent_${input.status}`,
     input.orderId,
-    new Date().toISOString(),
+    paperExecutionDate().toISOString(),
     input.status,
     input.orderId,
     input.tradeDate,
@@ -651,7 +652,7 @@ async function resolvePendingExitIntent(
        AND source IN ('intraday_exit', 'intraday_tp1')
        AND json_extract(detail_json, '$.exit_intent_key') <> ?
   `).bind(
-    new Date().toISOString(),
+    paperExecutionDate().toISOString(),
     input.intentKey,
     input.tradeDate,
     input.symbol,
@@ -876,7 +877,7 @@ async function evaluateS12HoldingDefense(
            AND source = 's12_holding_defense'
          ORDER BY id DESC
          LIMIT 1
-      `).bind(ACCOUNT_ID, pos.symbol, tradeDate).first<any>(),
+      `).bind(paperAccountId(), pos.symbol, tradeDate).first<any>(),
       databaseForDataDomain(env, 'core').prepare('SELECT market FROM stocks WHERE symbol = ? LIMIT 1').bind(pos.symbol).first<{ market?: string | null }>(),
       listApprovedS12TwCalibrationArtifacts(databaseForDataDomain(env, 'learning')).catch(() => []),
     ])
@@ -893,7 +894,7 @@ async function evaluateS12HoldingDefense(
       quote.last,
       Number(quote.totalVolume ?? 0),
     )
-    const completed15m = aggregateCompletedS12Bars(s12Base.bars, S12_M15_MS, Date.now())
+    const completed15m = aggregateCompletedS12Bars(s12Base.bars, S12_M15_MS, paperExecutionNow())
     const entryPrice = positiveNumber(pos.entry_price) ?? positiveNumber(pos.avg_cost) ?? 0
     const previousTrailingStop = positiveNumber(pos.trailing_stop)
     const lifecycleStop = lifecycleS12StopFromPosition(pos)
@@ -926,7 +927,7 @@ async function evaluateS12HoldingDefense(
         lifecycleFusionTargets.runnerTp1,
         lifecycleFusionTargets.runnerTp2,
         migratedLifecycle,
-        ACCOUNT_ID,
+        paperAccountId(),
         pos.symbol,
       ).run()
       pos.tp1_price = lifecycleFusionTargets.runnerTp1
@@ -966,7 +967,7 @@ async function evaluateS12HoldingDefense(
       fallback4hBars: s12Base.fallback4hBars,
       fallbackDailyBars: s12Base.fallbackDailyBars,
       fallback1hBars: s12Base.fallback1hBars,
-      nowMs: Date.now(),
+      nowMs: paperExecutionNow(),
       policy,
       barDiagnostics: {
         ...s12Base.diagnostics,
@@ -1090,7 +1091,7 @@ async function evaluateS12HoldingDefense(
       nextReason: eventReason,
       nextActive: update != null || s12Decision.action === 'QUOTE_UNAVAILABLE',
       nextTrailingAfter: update?.newTrailingStop ?? null,
-      nowMs: Date.now(),
+      nowMs: paperExecutionNow(),
     })) {
       await recordPaperExecutionEvent(env, {
         tradeDate,
@@ -1129,7 +1130,7 @@ async function runPostExitDiscipline(
 ): Promise<void> {
   try {
     const { onPostExit } = await import('./postExit')
-    const twToday = new Date(Date.now() + 8 * 3600_000).toISOString().slice(0, 10)
+    const twToday = new Date(paperExecutionNow() + 8 * 3600_000).toISOString().slice(0, 10)
     const rerankEnabled = (cfg as any).postExit?.enableRerank === true
     const outcome = await onPostExit(
       {
@@ -1138,7 +1139,7 @@ async function runPostExitDiscipline(
         soldSymbol: symbol,
         exitReason: reason,
         exitAction: stage,
-        accountId: ACCOUNT_ID,
+        accountId: paperAccountId(),
       },
       { enableRerank: rerankEnabled, maxPositions: cfg.position.maxPositions ?? 5 },
     )
@@ -1153,7 +1154,7 @@ async function runPostExitDiscipline(
 export async function forceDayTradeClose(env: Bindings, cfg: TradingConfig, today: string): Promise<void> {
   const { results: sameDayPos } = await paperDomainDatabase(env).prepare(
     'SELECT * FROM paper_positions WHERE account_id=? AND shares>0 AND entry_date=?',
-  ).bind(ACCOUNT_ID, today).all<any>()
+  ).bind(paperAccountId(), today).all<any>()
   if (!sameDayPos?.length) return
 
   const symbols = sameDayPos.map((p: any) => p.symbol)
@@ -1261,19 +1262,20 @@ export async function forceDayTradeClose(env: Bindings, cfg: TradingConfig, toda
     const entryPrice = pos.entry_price ?? pos.avg_cost
     const sellNote = buildSellOrderNote({
       reason: `[13:25 daytrade force close] ${decision.reason}`,
+      is_day_trade: true,
       entry_date: pos.entry_date,
       order_intent: sellOrderIntent,
       order_legs: sellOrderIntent.orderLegs,
     }, { entryPrice, exitPrice: fillPrice, shares, commission, tax })
 
     await paperDomainDatabase(env).batch([
-      paperDomainDatabase(env).prepare('DELETE FROM paper_positions WHERE account_id=? AND symbol=?').bind(ACCOUNT_ID, pos.symbol),
+      paperDomainDatabase(env).prepare('DELETE FROM paper_positions WHERE account_id=? AND symbol=?').bind(paperAccountId(), pos.symbol),
       paperDomainDatabase(env).prepare(`
         INSERT INTO paper_orders
           (account_id, symbol, name, side, shares, price, commission, tax, total_cost, source, signal, confidence, note)
         VALUES (?, ?, ?, 'sell', ?, ?, ?, ?, ?, 'daytrade_force_close', 'EXIT', ?, ?)
       `).bind(
-        ACCOUNT_ID,
+        paperAccountId(),
         pos.symbol,
         pos.name,
         shares,
@@ -1285,7 +1287,7 @@ export async function forceDayTradeClose(env: Bindings, cfg: TradingConfig, toda
         sellNote,
       ),
     ])
-    const orderId = await recordSellSettlement(paperDomainDatabase(env), env.KV, ACCOUNT_ID, pos.symbol, proceeds)
+    const orderId = await recordSellSettlement(paperDomainDatabase(env), env.KV, paperAccountId(), pos.symbol, proceeds)
     await recordPaperExecutionEvent(env, {
       tradeDate: today,
       symbol: pos.symbol,
@@ -1319,7 +1321,7 @@ export async function runEODExit(env: Bindings): Promise<void> {
                 AND po.symbol=paper_positions.symbol AND po.side='buy'
               ORDER BY po.id DESC LIMIT 1) AS entry_order_note
      FROM paper_positions WHERE account_id=? AND shares>0`,
-  ).bind(ACCOUNT_ID).all<any>()
+  ).bind(paperAccountId()).all<any>()
 
   if (!exitPositions || exitPositions.length === 0) {
     console.log('[EODExit] no open positions')
@@ -1348,18 +1350,20 @@ export async function runEODExit(env: Bindings): Promise<void> {
   ) {
     const account = await paperDomainDatabase(env).prepare(
       'SELECT cash FROM paper_accounts WHERE id=?',
-    ).bind(ACCOUNT_ID).first<{ cash: number }>()
+    ).bind(paperAccountId()).first<{ cash: number }>()
     if (!account) {
       eodDeRiskEvidenceMissing = true
     } else {
       const positionsValue = exitPositions.reduce((sum: number, position: any) => (
         sum + Number(position.shares ?? 0) * Number(exitQuoteMap.get(position.symbol)?.last ?? 0)
       ), 0)
-      const settlement = await getUnsettledSettlementSummary(paperDomainDatabase(env), ACCOUNT_ID)
+      const settlement = await getUnsettledSettlementSummary(paperDomainDatabase(env), paperAccountId())
       const totalPortfolio = computePaperTotalValue({
         settledCash: Number(account.cash ?? 0),
         positionsValue,
         netUnsettledSettlement: settlement.netUnsettledSettlement,
+        corporateReceivablesValue: (await corporateAccountRiskBounds(env, paperAccountId(),
+          new Map([...exitQuoteMap].map(([symbol, quote]) => [symbol, Number(quote.last)])))).lower,
       })
       eodDeRiskPlan = buildPortfolioDeRiskPlan({
         totalPortfolio,
@@ -1407,7 +1411,7 @@ export async function runEODExit(env: Bindings): Promise<void> {
     for (const r of sellRecs ?? []) sellRecMap.set(r.symbol, r)
   }
 
-  const eodToday = new Date(Date.now() + 8 * 3600_000).toISOString().slice(0, 10)
+  const eodToday = new Date(paperExecutionNow() + 8 * 3600_000).toISOString().slice(0, 10)
   const promotedProfitContinuation = await loadPromotedS12ProfitContinuationPolicy(
     databaseForDataDomain(env, 'learning'),
     eodToday,
@@ -1442,7 +1446,7 @@ export async function runEODExit(env: Bindings): Promise<void> {
       baseDecision: decision,
       position: pos,
       tradeDate: eodToday,
-      nowMs: Date.now(),
+      nowMs: paperExecutionNow(),
       allowActivation: false,
     })
     decision = continuation.lifecycleJson == null
@@ -1522,9 +1526,10 @@ export async function runEODExit(env: Bindings): Promise<void> {
       const tax = calcTax(txValue, cfg, dayTradeSell)
       const proceeds = txValue - commission - tax
       const entryPx = pos.entry_price ?? pos.avg_cost
-      const daysHeld = pos.entry_date ? Math.round((Date.now() - new Date(pos.entry_date).getTime()) / 86400000) : null
+      const daysHeld = pos.entry_date ? Math.round((paperExecutionNow() - new Date(pos.entry_date).getTime()) / 86400000) : null
       const sellNote = buildSellOrderNote({
         reason: decision.reason,
+        is_day_trade: dayTradeSell,
         entry_date: pos.entry_date,
         days_held: daysHeld,
         order_intent: sellOrderIntent,
@@ -1532,13 +1537,13 @@ export async function runEODExit(env: Bindings): Promise<void> {
       }, { entryPrice: entryPx, exitPrice: fillPrice, shares, commission, tax })
 
       await paperDomainDatabase(env).batch([
-        paperDomainDatabase(env).prepare('DELETE FROM paper_positions WHERE account_id=? AND symbol=?').bind(ACCOUNT_ID, pos.symbol),
+        paperDomainDatabase(env).prepare('DELETE FROM paper_positions WHERE account_id=? AND symbol=?').bind(paperAccountId(), pos.symbol),
         paperDomainDatabase(env).prepare(`
           INSERT INTO paper_orders
             (account_id, symbol, name, side, shares, price, commission, tax, total_cost, source, signal, confidence, note)
           VALUES (?, ?, ?, 'sell', ?, ?, ?, ?, ?, 'eod_exit', ?, ?, ?)
         `).bind(
-          ACCOUNT_ID,
+          paperAccountId(),
           pos.symbol,
           pos.name,
           shares,
@@ -1551,7 +1556,7 @@ export async function runEODExit(env: Bindings): Promise<void> {
           sellNote,
         ),
       ])
-      const orderId = await recordSellSettlement(paperDomainDatabase(env), env.KV, ACCOUNT_ID, pos.symbol, proceeds)
+      const orderId = await recordSellSettlement(paperDomainDatabase(env), env.KV, paperAccountId(), pos.symbol, proceeds)
       await recordPaperExecutionEvent(env, {
         tradeDate: eodToday,
         symbol: pos.symbol,
@@ -1606,8 +1611,9 @@ export async function runEODExit(env: Bindings): Promise<void> {
       const partialLifecycleJson = updateLifecycleS12TrailingStop(pos.trade_lifecycle_json, partialTrailingStop, decision.reason)
       const sellNote = buildSellOrderNote({
         reason: decision.reason,
+        is_day_trade: dayTradeSell,
         entry_date: pos.entry_date,
-        days_held: pos.entry_date ? Math.round((Date.now() - new Date(pos.entry_date).getTime()) / 86400000) : null,
+        days_held: pos.entry_date ? Math.round((paperExecutionNow() - new Date(pos.entry_date).getTime()) / 86400000) : null,
         order_intent: sellOrderIntent,
         order_legs: sellOrderIntent.orderLegs,
       }, { entryPrice: entryPx, exitPrice: fillPrice, shares: sellShares, commission, tax })
@@ -1619,14 +1625,14 @@ export async function runEODExit(env: Bindings): Promise<void> {
             trade_lifecycle_json=COALESCE(?, trade_lifecycle_json),
             updated_at=datetime('now')
           WHERE account_id=? AND symbol=?
-        `).bind(remainingShares, partialTrailingStop, partialTrailingStop, partialLifecycleJson, ACCOUNT_ID, pos.symbol),
+        `).bind(remainingShares, partialTrailingStop, partialTrailingStop, partialLifecycleJson, paperAccountId(), pos.symbol),
         paperDomainDatabase(env).prepare(`
           INSERT INTO paper_orders
             (account_id, symbol, name, side, shares, price, commission, tax, total_cost, source, signal, confidence, note)
           VALUES (?, ?, ?, 'sell', ?, ?, ?, ?, ?, 'eod_tp1', 'TP1', ?, ?)
-        `).bind(ACCOUNT_ID, pos.symbol, pos.name, sellShares, fillPrice, commission, tax, proceeds, null, sellNote),
+        `).bind(paperAccountId(), pos.symbol, pos.name, sellShares, fillPrice, commission, tax, proceeds, null, sellNote),
       ])
-      const orderId = await recordSellSettlement(paperDomainDatabase(env), env.KV, ACCOUNT_ID, pos.symbol, proceeds)
+      const orderId = await recordSellSettlement(paperDomainDatabase(env), env.KV, paperAccountId(), pos.symbol, proceeds)
       await recordPaperExecutionEvent(env, {
         tradeDate: eodToday,
         symbol: pos.symbol,
@@ -1649,6 +1655,13 @@ export async function runEODExit(env: Bindings): Promise<void> {
     }
   }
 
+  const missingEodQuotes = exitSymbols.filter(symbol => {
+    const quote = exitQuoteMap.get(symbol)
+    return !quote || !Number.isFinite(quote.last) || quote.last <= 0
+  })
+  if (missingEodQuotes.length) {
+    throw new Error('paper_eod_quote_coverage_incomplete:' + missingEodQuotes.join(','))
+  }
   console.log('[EODExit] Done.')
 }
 
@@ -1674,7 +1687,7 @@ export async function pollIntradayStopLoss(
                 AND po.symbol=paper_positions.symbol AND po.side='buy'
               ORDER BY po.id DESC LIMIT 1) AS entry_order_note
      FROM paper_positions WHERE account_id=? AND shares>0`,
-  ).bind(ACCOUNT_ID).all<any>()
+  ).bind(paperAccountId()).all<any>()
 
   if (!positions || positions.length === 0) {
     return { status: 'healthy_empty', positions: 0, quoted: 0, missing_symbols: [] }
@@ -1703,7 +1716,7 @@ export async function pollIntradayStopLoss(
     const quote = shares >= 1000 ? boardLotQuoteMap.get(pos.symbol) : oddLotQuoteMap.get(pos.symbol)
     if (quote) quoteMap.set(pos.symbol, quote)
   }
-  const intradayToday = new Date(Date.now() + 8 * 3600_000).toISOString().slice(0, 10)
+  const intradayToday = new Date(paperExecutionNow() + 8 * 3600_000).toISOString().slice(0, 10)
   const promotedProfitContinuation = await loadPromotedS12ProfitContinuationPolicy(
     databaseForDataDomain(env, 'learning'),
     intradayToday,
@@ -1718,7 +1731,7 @@ export async function pollIntradayStopLoss(
         AND reason='holding_authoritative_market_data_unavailable'
         AND created_at >= datetime('now', '-10 minutes')
       LIMIT 1
-    `).bind(ACCOUNT_ID, intradayToday, pos.symbol).first<{ id: number }>()
+    `).bind(paperAccountId(), intradayToday, pos.symbol).first<{ id: number }>()
     if (recent) return
     await recordPaperExecutionEvent(env, {
       tradeDate: intradayToday,
@@ -1748,16 +1761,19 @@ export async function pollIntradayStopLoss(
   if (quoteMap.size === positions.length) {
     const account = await paperDomainDatabase(env).prepare(
       'SELECT cash FROM paper_accounts WHERE id=?',
-    ).bind(ACCOUNT_ID).first<{ cash: number }>()
+    ).bind(paperAccountId()).first<{ cash: number }>()
     if (!account) throw new Error('paper_account_missing_for_intraday_risk')
     const positionsValue = positions.reduce((sum: number, position: any) => (
       sum + Number(position.shares ?? 0) * Number(quoteMap.get(position.symbol)?.last ?? 0)
     ), 0)
-    const settlement = await getUnsettledSettlementSummary(paperDomainDatabase(env), ACCOUNT_ID)
+    const settlement = await getUnsettledSettlementSummary(paperDomainDatabase(env), paperAccountId())
+    const corporateBounds = await corporateAccountRiskBounds(env, paperAccountId(),
+      new Map([...quoteMap].map(([symbol, quote]) => [symbol, Number(quote.last)])))
     const totalPortfolio = computePaperTotalValue({
       settledCash: Number(account.cash ?? 0),
       positionsValue,
       netUnsettledSettlement: settlement.netUnsettledSettlement,
+      corporateReceivablesValue: corporateBounds.lower,
     })
     const riskConfig = await getRiskConfig(env.KV)
     const p9Deps: LegacyLayerDeps = {
@@ -1765,7 +1781,8 @@ export async function pollIntradayStopLoss(
       effectiveBuy: effectivePortfolioRisk.buyConfThreshold,
       effectiveSell: effectivePortfolioRisk.sellConfThreshold,
     }
-    const p9 = await checkP9IntradayDrawdown(env.KV, intradayToday, totalPortfolio, riskConfig, p9Deps)
+    const p9 = await checkP9IntradayDrawdown(env.KV, intradayToday, totalPortfolio, riskConfig, p9Deps,
+      totalPortfolio + corporateBounds.upper - corporateBounds.lower)
     p9Triggered = p9.state != null
     effectivePortfolioRisk = mergeIntradayPortfolioRisk(effectivePortfolioRisk, p9.state)
     if (effectivePortfolioRisk.deRiskExistingPositions && effectivePortfolioRisk.targetExposurePct != null) {
@@ -1844,7 +1861,7 @@ export async function pollIntradayStopLoss(
       baseDecision: decision,
       position: pos,
       tradeDate: intradayToday,
-      nowMs: Date.now(),
+      nowMs: paperExecutionNow(),
       allowActivation: true,
     })
     decision = continuation.lifecycleJson == null
@@ -1884,7 +1901,7 @@ export async function pollIntradayStopLoss(
       const exitIntentKind = decision.exitIntentKind ?? 'risk_stop'
       const dtCheck = await isDayTradeAllowed(pos.symbol, pos.shares, exitIntentKind, env.KV)
       if (!dtCheck.allowed) {
-        if (new Date().getUTCMinutes() % 10 === 0) {
+        if (paperExecutionDate().getUTCMinutes() % 10 === 0) {
           console.log(`[Intraday] daytrade blocked ${pos.symbol}: ${dtCheck.reason}`)
         }
         await recordPaperExecutionEvent(env, {
@@ -1905,7 +1922,7 @@ export async function pollIntradayStopLoss(
     if (decision.action === 'full_sell') {
       const requestedExitShares = pos.shares
       const exitIntentKey = buildExitIntentKey({
-        accountId: ACCOUNT_ID,
+        accountId: paperAccountId(),
         symbol: pos.symbol,
         entryDate: pos.entry_date,
         shares: requestedExitShares,
@@ -1913,7 +1930,7 @@ export async function pollIntradayStopLoss(
         action: decision.action,
       })
       const freshExecutionBooks = await fetchFreshPositionExitBooks(pos.symbol, requestedExitShares, quoteEnv)
-      const executionSnapshotAtMs = Date.now()
+      const executionSnapshotAtMs = paperExecutionNow()
       const sellFill = resolvePositionExitSellFill(requestedExitShares, freshExecutionBooks, {
         maxAgeMs: executionMaxAgeMs,
         nowMs: executionSnapshotAtMs,
@@ -1973,6 +1990,7 @@ export async function pollIntradayStopLoss(
       const entryPx = pos.entry_price ?? pos.avg_cost
       const sellNote = buildSellOrderNote({
         reason: `[intraday] ${decision.reason} (mkt=${currentPrice}, -1 tick fill)`,
+        is_day_trade: dayTradeSell,
         entry_date: pos.entry_date,
         order_intent: sellOrderIntent,
         order_legs: sellOrderIntent.orderLegs,
@@ -1980,15 +1998,15 @@ export async function pollIntradayStopLoss(
 
       await paperDomainDatabase(env).batch([
         remainingExitShares === 0
-          ? paperDomainDatabase(env).prepare('DELETE FROM paper_positions WHERE account_id=? AND symbol=?').bind(ACCOUNT_ID, pos.symbol)
+          ? paperDomainDatabase(env).prepare('DELETE FROM paper_positions WHERE account_id=? AND symbol=?').bind(paperAccountId(), pos.symbol)
           : paperDomainDatabase(env).prepare(`UPDATE paper_positions SET shares=?, updated_at=datetime('now') WHERE account_id=? AND symbol=?`)
-            .bind(remainingExitShares, ACCOUNT_ID, pos.symbol),
+            .bind(remainingExitShares, paperAccountId(), pos.symbol),
         paperDomainDatabase(env).prepare(`
           INSERT INTO paper_orders
             (account_id, symbol, name, side, shares, price, commission, tax, total_cost, source, signal, confidence, note)
           VALUES (?, ?, ?, 'sell', ?, ?, ?, ?, ?, 'intraday_exit', 'EXIT', ?, ?)
         `).bind(
-          ACCOUNT_ID,
+          paperAccountId(),
           pos.symbol,
           pos.name,
           shares,
@@ -2000,7 +2018,7 @@ export async function pollIntradayStopLoss(
           sellNote,
         ),
       ])
-      const orderId = await recordSellSettlement(paperDomainDatabase(env), env.KV, ACCOUNT_ID, pos.symbol, proceeds)
+      const orderId = await recordSellSettlement(paperDomainDatabase(env), env.KV, paperAccountId(), pos.symbol, proceeds)
       await recordPaperExecutionEvent(env, {
         tradeDate: intradayToday,
         symbol: pos.symbol,
@@ -2031,7 +2049,7 @@ export async function pollIntradayStopLoss(
     } else if (decision.action === 'partial_sell' && decision.sellShares) {
       const requestedSellShares = Math.min(pos.shares, decision.sellShares)
       const exitIntentKey = buildExitIntentKey({
-        accountId: ACCOUNT_ID,
+        accountId: paperAccountId(),
         symbol: pos.symbol,
         entryDate: pos.entry_date,
         shares: requestedSellShares,
@@ -2039,7 +2057,7 @@ export async function pollIntradayStopLoss(
         action: decision.action,
       })
       const freshExecutionBooks = await fetchFreshPositionExitBooks(pos.symbol, requestedSellShares, quoteEnv)
-      const executionSnapshotAtMs = Date.now()
+      const executionSnapshotAtMs = paperExecutionNow()
       const sellFill = resolvePositionExitSellFill(requestedSellShares, freshExecutionBooks, {
         maxAgeMs: executionMaxAgeMs,
         nowMs: executionSnapshotAtMs,
@@ -2103,6 +2121,7 @@ export async function pollIntradayStopLoss(
       const partialLifecycleJson = updateLifecycleS12TrailingStop(pos.trade_lifecycle_json, partialTrailingStop, decision.reason)
       const sellNote = buildSellOrderNote({
         reason: `[intraday] ${decision.reason}`,
+        is_day_trade: dayTradeSell,
         entry_date: pos.entry_date,
         order_intent: sellOrderIntent,
         order_legs: sellOrderIntent.orderLegs,
@@ -2115,13 +2134,13 @@ export async function pollIntradayStopLoss(
             trade_lifecycle_json=COALESCE(?, trade_lifecycle_json),
             updated_at=datetime('now')
           WHERE account_id=? AND symbol=?
-        `).bind(remainingShares, tp1Complete ? 1 : (pos.tp1_hit ?? 0), partialTrailingStop, partialTrailingStop, partialLifecycleJson, ACCOUNT_ID, pos.symbol),
+        `).bind(remainingShares, tp1Complete ? 1 : (pos.tp1_hit ?? 0), partialTrailingStop, partialTrailingStop, partialLifecycleJson, paperAccountId(), pos.symbol),
         paperDomainDatabase(env).prepare(`
           INSERT INTO paper_orders
             (account_id, symbol, name, side, shares, price, commission, tax, total_cost, source, signal, confidence, note)
           VALUES (?, ?, ?, 'sell', ?, ?, ?, ?, ?, 'intraday_tp1', 'TP1', ?, ?)
         `).bind(
-          ACCOUNT_ID,
+          paperAccountId(),
           pos.symbol,
           pos.name,
           sellShares,
@@ -2133,7 +2152,7 @@ export async function pollIntradayStopLoss(
           sellNote,
         ),
       ])
-      const orderId = await recordSellSettlement(paperDomainDatabase(env), env.KV, ACCOUNT_ID, pos.symbol, proceeds)
+      const orderId = await recordSellSettlement(paperDomainDatabase(env), env.KV, paperAccountId(), pos.symbol, proceeds)
       await recordPaperExecutionEvent(env, {
         tradeDate: intradayToday,
         symbol: pos.symbol,

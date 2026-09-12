@@ -1,3 +1,4 @@
+import { paperExecutionDate, paperExecutionFetch } from './paperExecutionScope'
 import type { AuthoritativeExecutionSnapshot } from './authoritativeExecutionSnapshot'
 import type { StockVisionOrderIntent } from './stockvisionOrderIntent'
 import type { TwOrderLotType } from './twMarketRules'
@@ -134,7 +135,7 @@ export function buildExecutionShadowPacket(input: {
   if (![reference.referencePrice, reference.limitUp, reference.limitDown].every((value) => Number.isFinite(value) && value > 0)) {
     throw new Error('execution_shadow_market_reference_invalid')
   }
-  const generatedAt = input.generatedAt ?? new Date()
+  const generatedAt = input.generatedAt ?? paperExecutionDate()
   const ttlMs = Math.max(500, Math.min(Number(input.ttlMs ?? 3000), 5000))
   const executionSnapshots: Partial<Record<TwOrderLotType, Record<string, unknown>>> = {}
   for (const leg of input.intent.orderLegs) {
@@ -169,7 +170,7 @@ export function buildExecutionShadowPacket(input: {
 export async function submitSignedExecutionShadowPacket(
   env: ExecutionShadowClientEnv,
   packet: ExecutionShadowPacket,
-  fetchFn: typeof fetch = fetch,
+  fetchFn: typeof fetch = paperExecutionFetch,
 ): Promise<Record<string, unknown>> {
   if (!truthy(env.LIVE_EXECUTION_SHADOW_CLIENT_ENABLED)) {
     return { status: 'blocked', reason: 'execution_shadow_client_disabled', can_submit_real_order: false, live_submit_enabled: false }
@@ -269,7 +270,7 @@ export function buildLiveExecutionPacket(input: {
     throw new Error('live_execution_market_session_not_continuous')
   }
   if (!input.controls.tradingDayConfirmed) throw new Error('live_execution_trading_day_not_confirmed')
-  const generatedAt = input.generatedAt ?? new Date()
+  const generatedAt = input.generatedAt ?? paperExecutionDate()
   const ttlMs = Math.max(500, Math.min(Number(input.ttlMs ?? 3000), 5000))
   const executionSnapshots: Partial<Record<TwOrderLotType, Record<string, unknown>>> = {}
   for (const leg of input.intent.orderLegs) {
@@ -301,7 +302,7 @@ export function buildLiveExecutionPacket(input: {
 export async function submitSignedLiveExecutionPacket(
   env: LiveExecutionClientEnv,
   packet: LiveExecutionPacket,
-  fetchFn: typeof fetch = fetch,
+  fetchFn: typeof fetch = paperExecutionFetch,
 ): Promise<Record<string, unknown>> {
   if (!truthy(env.LIVE_EXECUTION_CLIENT_ENABLED)) {
     return { status: 'blocked', reason: 'live_execution_client_disabled', live_submit_enabled: false }
@@ -348,7 +349,7 @@ export async function submitSignedLiveExecutionPacket(
 export async function submitOrReconcileSignedLiveExecutionPacket(
   env: LiveExecutionClientEnv,
   packet: LiveExecutionPacket,
-  fetchFn: typeof fetch = fetch,
+  fetchFn: typeof fetch = paperExecutionFetch,
 ): Promise<Record<string, unknown>> {
   const submitted = await submitSignedLiveExecutionPacket(env, packet, fetchFn)
   if (String(submitted.status ?? '').toLowerCase() !== 'unknown') return submitted
@@ -365,7 +366,7 @@ export async function submitOrReconcileSignedLiveExecutionPacket(
 export async function fetchLiveExecutionIntentStatus(
   env: LiveExecutionClientEnv,
   idempotencyKey: string,
-  fetchFn: typeof fetch = fetch,
+  fetchFn: typeof fetch = paperExecutionFetch,
 ): Promise<Record<string, unknown>> {
   const gatewayUrl = env.EXECUTION_GATEWAY_URL?.trim().replace(/\/$/, '')
   const serviceToken = env.EXECUTION_GATEWAY_SERVICE_TOKEN?.trim()

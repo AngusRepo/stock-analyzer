@@ -28,10 +28,17 @@ def _fixture():
             "model_name": model,
             "training_run_id": "run-new",
             "state": "offline_failed" if model == "PatchTST" else "offline_passed",
-            "artifact_path": f"{model}/v-new.bin",
+            "artifact_path": f"{model}/v-new." + ("joblib" if model in {"LightGBM", "XGBoost", "ExtraTrees"} else "zip" if model in {"PatchTST", "iTransformer"} else "pt"),
+            "offline_gate_decision": "PASS",
             "metadata_path": f"{model}/v-new.json",
             "offline_evidence_json": json.dumps({
-                "registration": {"oof_promotion_evidence": {
+                "registration": {"metadata": {
+                    "target_semantic_version": "next-session-canonical-adjusted-open-to-fifth-session-canonical-adjusted-close-net-v4",
+                    "feature_semantic_version": "formal137-pit-rolling-rank-and-imputation-v2",
+                    "graph_context": {"semantic_version": "gnn-same-date-feature-cosine-sector-v2"},
+                    "seq_len": 512, "pred_len": 5,
+                    "rank_ic_semantic_version": "same-date-average-rank-tie-neutral-spearman-v2",
+                }, "oof_promotion_evidence": {
                     "schema_version": "model-cpcv-evidence-v1",
                     "method": "outer_purged_walk_forward_rank_ic",
                     "folds": 5,
@@ -73,12 +80,26 @@ class AtomicD1:
         self.statements = None
         self.rows = rows
         self.ensemble = ensemble
+        self.evidence_json = '{}'
 
     def atomic_batch_execute(self, statements, timeout=0):
         self.statements = statements
+        self.evidence_json = next(params[-1] for sql, params in statements
+            if 'INSERT INTO active8_ensemble_pointer_v1 (' in sql)
         return {"atomic": True, "total": len(statements)}
 
     def query(self, sql, params=None):
+        if sql.startswith('SELECT * FROM model_artifact_registry WHERE artifact_id IN'):
+            return self.rows
+        if sql.startswith('SELECT * FROM model_champion_pointers WHERE model_name IN'):
+            return [{'model_name': row['model_name'], 'champion_version': 'v-old',
+                     'champion_artifact_id': 'old:' + row['model_name']} for row in self.rows]
+        if sql.startswith('SELECT * FROM active8_ensemble_artifacts_v1 WHERE artifact_id='):
+            return [{**self.ensemble, 'production_effect': 0}]
+        if sql.startswith('SELECT * FROM active8_ensemble_pointer_v1 WHERE singleton_id='):
+            return []
+        if sql.startswith('SELECT * FROM model_champion_history WHERE retired_at IS NULL'):
+            return []
         if "FROM model_champion_pointers AS p" in sql:
             return [
                 {
@@ -86,6 +107,9 @@ class AtomicD1:
                     "champion_artifact_id": row["artifact_id"],
                     "training_run_id": row["training_run_id"],
                     "state": "production",
+                    "version": row['version'], "champion_version": row['version'],
+                    "checksum": row['checksum'], "promotion_evidence_json": self.evidence_json,
+                    "active_history_count": 1, "exact_history_count": 1,
                 }
                 for row in self.rows
             ]
@@ -101,6 +125,7 @@ class AtomicD1:
                 "promoted_at": "2026-08-27T00:00:00Z",
                 "state": "production",
                 "production_effect": 1,
+                "promotion_evidence_json": self.evidence_json,
             }]
         raise AssertionError(sql)
 
@@ -114,14 +139,14 @@ def test_bundle_dry_run_observes_weak_learner_but_promotes_only_selected_models(
         ensemble_rows=[ensemble],
         confirm=False,
     )
-    assert result["can_promote"] is True
+    assert result["can_promote"] is False and result['offline_diagnostic_can_promote'] is True
     assert len(result["observation_models"]) == 8
     assert len(result["release_models"]) == 7
     assert "PatchTST" not in result["release_models"]
     assert result["validation"]["decision"] == "PASS"
 
 
-def test_bundle_commit_is_one_atomic_batch(monkeypatch):
+def test_offline_bundle_cannot_commit_without_original_nav(monkeypatch):
     rows, pointers, ensemble = _fixture()
     d1 = AtomicD1(rows, ensemble)
     monkeypatch.setattr(registry, "d1_client", d1)
@@ -132,13 +157,9 @@ def test_bundle_commit_is_one_atomic_batch(monkeypatch):
         ensemble_rows=[ensemble],
         confirm=True,
     )
-    assert result["status"] == "ok"
-    assert result["d1_batch"]["atomic"] is True
-    assert result["readback_verified"] is True
-    assert len(d1.statements) == 38
-    sql = "\n".join(statement[0] for statement in d1.statements)
-    assert "active8_ensemble_pointer_v1" in sql
-    assert "model_champion_pointers" in sql
+    assert result['can_promote'] is False
+    assert result['decision'] == 'active8_new_publication_requires_daily_nav'
+    assert d1.statements is None
 
 
 def test_serving_bundle_read_model_never_falls_back_to_legacy_pointers(monkeypatch):

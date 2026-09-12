@@ -79,7 +79,8 @@ def test_tabm_semantic_reconciliation_rejects_snapshot_checksum_mismatch():
         )
 
 
-def test_terminal_validation_reconciles_missing_tabm_alias_once(monkeypatch):
+@pytest.mark.parametrize('purge_verified', [True, False])
+def test_terminal_validation_reconciles_missing_tabm_alias_once(monkeypatch, purge_verified):
     import asyncio
     import json
     from routers import walk_forward
@@ -109,6 +110,8 @@ def test_terminal_validation_reconciles_missing_tabm_alias_once(monkeypatch):
         },
     }
     uploads = []
+    if purge_verified:
+        receipt['release_registry']['validation']['calibration_purge_policy'] = 'label_known_before_validation_start'
 
     class Blob:
         def exists(self):
@@ -175,5 +178,11 @@ def test_terminal_validation_reconciles_missing_tabm_alias_once(monkeypatch):
 
     assert len(calls) == 1
     assert result["status"] == "blocked"
-    assert result["semantic_reconciliation"]["status"] == "complete"
-    assert uploads[0][0]["semantic_reconciliation"]["source"] == "immutable_oof_snapshot_binding"
+    if purge_verified:
+        assert result["semantic_reconciliation"]["status"] == "complete"
+        assert uploads[0][0]["semantic_reconciliation"]["source"] == "immutable_oof_snapshot_binding"
+    else:
+        # An old receipt without the verified time-boundary policy must not be
+        # labelled as a reconciled, immutable terminal validation.
+        assert 'semantic_reconciliation' not in result
+        assert all('semantic_reconciliation' not in packet for packet, _ in uploads)

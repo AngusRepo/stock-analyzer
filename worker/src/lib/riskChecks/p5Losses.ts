@@ -1,8 +1,8 @@
+import { paperAccountId } from '../paperExecutionScope'
 import { summarizeSellOrderLosses } from '../paperOrderAccounting'
 import type { LegacyLayerDeps, LegacyLayerResult } from '../riskTypes'
 import { failClosedRiskCheck } from './failClosed'
 
-const ACCOUNT_ID = 1
 
 export async function checkP5Losses(
   db: D1Database,
@@ -17,7 +17,7 @@ export async function checkP5Losses(
         WHERE account_id=? AND side='sell'
         ORDER BY id DESC
         LIMIT 5`,
-    ).bind(ACCOUNT_ID).all<any>()
+    ).bind(paperAccountId()).all<any>()
 
     if (!recentSells || recentSells.length < 3) return null
 
@@ -26,9 +26,10 @@ export async function checkP5Losses(
 
     console.warn(`[CircuitBreaker] Layer5 HALT: ${summary.losses}/${summary.total} recent closed trades are losses`)
     return {
+      ...defaults,
       halt: true,
       reason: `近 ${summary.total} 筆已平倉交易中有 ${summary.losses} 筆虧損，啟動 SafetyMode`,
-      ...defaults,
+      maxPositionPct: 0,
     }
   } catch (e) {
     console.error('[CircuitBreaker] Layer5 check failed; fail closed:', e)

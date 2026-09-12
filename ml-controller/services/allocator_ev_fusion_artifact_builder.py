@@ -666,6 +666,7 @@ def _samples(
         "sparse_date_rows_rejected": sparse_date_rows_rejected,
         "raw_date_counts": dict(sorted(raw_day_counts.items())),
         "generation_mode_counts": dict(sorted(generation_mode_counts.items())),
+        "evidence_min_date": min((row["date"] for row in out), default=None),
         "evidence_max_date": max((row["date"] for row in out), default=None),
         "oof_max_date": (
             max((row["date"] for row in out), default=None)
@@ -955,6 +956,7 @@ def _metrics(
         "prediction_target_corr": None if corr is None else round(corr, 8),
         "prediction_target_corr_lcb90": None if corr_lcb is None else round(corr_lcb, 8),
         "oos_date_count": len(by_date),
+        "evaluated_dates": sorted(by_date),
         "top_quintile_mean_return": round(_mean(daily_top), 8),
         "bottom_quintile_mean_return": round(_mean(daily_bottom), 8),
         "top_bottom_spread": round(spread, 8),

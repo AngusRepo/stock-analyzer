@@ -90,6 +90,13 @@ export function resolveTwEquityExitFusionV2(
   if (lifecycle?.version !== 'canonical_trade_lifecycle_v1') return empty
   if (!isTwEquityExitFusionEligible(lifecycle)) return empty
 
+  // Fallback anchors come from immutable original buy-order notes. Stored
+  // lifecycle anchors already use the current price basis; adjust only fallback.
+  const corporateFactor = lifecycle.corporatePriceBasis?.factor ?? 1
+  if (!Number.isFinite(corporateFactor) || corporateFactor <= 0) throw new Error('exit_fusion_corporate_basis_invalid')
+  fallbackAnchors = Object.fromEntries(Object.entries(fallbackAnchors).map(([key, price]) =>
+    [key, positiveNumber(price) == null ? price : Number(price) * corporateFactor]))
+
   const s12 = lifecycle.entry?.s12
   const entryPrice = positiveNumber(lifecycle.entry?.entryPrice) ?? 0
   const exit = lifecycle.exit && typeof lifecycle.exit === 'object' ? lifecycle.exit : {}

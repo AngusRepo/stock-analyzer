@@ -1,3 +1,4 @@
+import { paperExecutionDate, paperExecutionNow } from './paperExecutionScope'
 import {
   runBuyDebateBatchViaController,
   type BatchDebateCandidate,
@@ -66,7 +67,7 @@ async function recordMorningSetupFailureWithoutReplacingState(
     env.KV.put(`paper:pending_buys_setup_error:${tradeDate}`, JSON.stringify({
       status: 'error',
       reason: message,
-      failed_at: new Date().toISOString(),
+      failed_at: paperExecutionDate().toISOString(),
       snapshot_policy: 'preserve_last_valid_state',
     }), { expirationTtl: 7 * 86400 }),
     recordPaperExecutionEvent(env, {
@@ -191,7 +192,7 @@ async function persistPendingDebateFailure(
 }
 
 function getTwDate(offsetDays = 0): string {
-  const now = Date.now() + 8 * 3600_000 + offsetDays * 86400_000
+  const now = paperExecutionNow() + 8 * 3600_000 + offsetDays * 86400_000
   return new Date(now).toISOString().slice(0, 10)
 }
 
@@ -444,12 +445,12 @@ async function loadStockProfiles(db: D1Database, symbols: string[]): Promise<Map
   return profileMap
 }
 
-async function loadPendingBuyRestrictionPolicy(db: D1Database, kv: KVNamespace, tradeDate: string): Promise<{
+async function loadPendingBuyRestrictionPolicy(env: Bindings, tradeDate: string): Promise<{
   hardBlockedSymbols: Set<string>
   riskEvidenceSymbols: Set<string>
 }> {
   try {
-    const policy = await loadTradingRestrictionBuckets({ DB: db, KV: kv } as any, tradeDate, { refreshOfficialIfStale: false })
+    const policy = await loadTradingRestrictionBuckets(env, tradeDate, { refreshOfficialIfStale: false })
     return {
       hardBlockedSymbols: policy.hardBlockedSymbols,
       riskEvidenceSymbols: policy.riskEvidenceSymbols,
@@ -799,8 +800,7 @@ export async function setupMorningPendingBuys(env: Bindings): Promise<void> {
       }
     }
 
-    const marketDb = databaseForDataDomain(env, 'market')
-    const restrictionPolicy = await loadPendingBuyRestrictionPolicy(marketDb, env.KV, pendingDate)
+    const restrictionPolicy = await loadPendingBuyRestrictionPolicy(env, pendingDate)
     const { cooldownSet, stopDayFrozen } = await collectCooldownSet(env.KV, pendingDate, buyRecs)
     if (stopDayFrozen) {
       await persistPendingBuys(env, pendingDate, [], {

@@ -6,7 +6,7 @@ import { nextTwTradingDate } from './schedulerPolicy'
 import { twToday } from './dateUtils'
 import { strategyMiningDispatchKey } from './strategyMiningGateway'
 import { databaseForDataDomain } from './dataDomainRegistry'
-import { loadLatestSchedulerChildTicket, type SchedulerExecutionTicketRow } from './schedulerExecutionTickets'
+import type { SchedulerExecutionTicketRow } from './schedulerExecutionTickets'
 
 function requireController(env: Bindings): void {
   if (!env.ML_CONTROLLER_URL) {
@@ -413,6 +413,8 @@ export function assessActive8DailyTerminalFence(
   preflight: Active8DailySnapshotPreflight,
   ticket: Active8DailyTerminalTicketEvidence | null,
 ): { closed: boolean; reason: string } {
+  // OOF-only diagnostic. This ticket cannot attest NAV journal/review closure
+  // and must not short-circuit the shared daily job.
   if (!preflight.ready || !preflight.snapshot_business_date || !preflight.snapshot_id) {
     return { closed: false, reason: 'snapshot_preflight_not_ready' }
   }
@@ -439,44 +441,6 @@ export function assessActive8DailyTerminalFence(
   return { closed: true, reason: 'exact_snapshot_terminal_success' }
 }
 
-async function loadActive8DailyTerminalTicket(
-  env: Bindings,
-  preflight: Active8DailySnapshotPreflight,
-): Promise<SchedulerExecutionTicketRow | null> {
-  if (!preflight.snapshot_business_date) return null
-  return loadLatestSchedulerChildTicket(databaseForDataDomain(env, 'ops'), {
-    task: 'active8-oof-daily',
-    businessDate: preflight.snapshot_business_date,
-    origin: 'dataset_snapshot_ready',
-  })
-}
-
-async function inspectActive8DailySnapshotPreflight(
-  env: Bindings,
-  cutoff: string,
-): Promise<Active8DailySnapshotPreflight> {
-  const [marketResult, snapshot] = await Promise.all([
-    databaseForDataDomain(env, 'market').prepare(`
-      SELECT substr(date, 1, 10) AS trading_date, COUNT(*) AS price_rows
-        FROM stock_prices
-       WHERE substr(date, 1, 10) BETWEEN date(?, '-45 days') AND date(?)
-       GROUP BY substr(date, 1, 10)
-       ORDER BY trading_date
-    `).bind(cutoff, cutoff).all<Active8MarketSessionRow>(),
-    databaseForDataDomain(env, 'learning').prepare(`
-      SELECT snapshot_id, business_date, metadata_json
-        FROM dataset_snapshots
-       WHERE kind='backtest_dataset'
-         AND access_tier='compute'
-         AND status='ready'
-         AND business_date <= ?
-       ORDER BY business_date DESC, created_at DESC
-       LIMIT 1
-    `).bind(cutoff).first<Active8ComputeSnapshotRow>(),
-  ])
-  return assessActive8DailySnapshotPreflight(cutoff, marketResult.results ?? [], snapshot)
-}
-
 export async function runActive8OofLifecycle(
   env: Bindings,
   runDate?: string,
@@ -491,36 +455,10 @@ export async function runActive8OofLifecycle(
 ) {
   requireController(env)
 
-  if (cadence === 'daily' && options.continuationOnly !== true) {
-    const cutoff = runDate || twToday()
-    const preflight = await inspectActive8DailySnapshotPreflight(env, cutoff)
-    if (preflight && !preflight.ready) {
-      return [
-        'active8_oof_lifecycle status=skipped',
-        'cadence=daily',
-        `reason=${preflight.reason}`,
-        `expected_business_date=${preflight.expected_business_date ?? 'none'}`,
-        `snapshot_business_date=${preflight.snapshot_business_date ?? 'none'}`,
-        `snapshot_id=${preflight.snapshot_id ?? 'none'}`,
-        'cloud_run_dispatched=false',
-      ].join(' ')
-    }
-    const terminalTicket = await loadActive8DailyTerminalTicket(env, preflight)
-    const terminalFence = assessActive8DailyTerminalFence(preflight, terminalTicket)
-    if (terminalFence.closed) {
-      return [
-        'active8_oof_lifecycle status=idempotent_complete',
-        'cadence=daily',
-        'cohort=none',
-        'promoted=false',
-        `reason=${terminalFence.reason}`,
-        `expected_business_date=${preflight.expected_business_date ?? 'none'}`,
-        `snapshot_business_date=${preflight.snapshot_business_date ?? 'none'}`,
-        `snapshot_id=${preflight.snapshot_id ?? 'none'}`,
-        'cloud_run_dispatched=false',
-      ].join(' ')
-    }
-  }
+  // The existing durable job reconciles original NAV receipts independently
+  // BEFORE OOF prep. An absent compute snapshot or OOF-only success ticket
+  // cannot skip that work. Prep/PIT checks still run inside the OOF owner;
+  // singleton job collision handling and bounded continuation remain below.
 
   const resp = await controllerFetch(env, '/walk_forward/oof/lifecycle', {
     method: 'POST',
@@ -552,6 +490,12 @@ export async function runActive8OofLifecycle(
   const status = String(data.status ?? '').toLowerCase()
   if (!['skipped', 'pending', 'spawned', 'materialized', 'shadow_evaluated', 'idempotent_complete'].includes(status)) {
     throw new Error(`Active-8 OOF lifecycle unexpected status=${status || 'unknown'}`)
+  }
+  if (cadence === 'daily' && !['pending', 'spawned'].includes(status)) {
+    // The daily dispatch endpoint deliberately never reuses an OOF-only
+    // completion receipt: the original durable job must also reconcile NAV.
+    // Do not let an older/misrouted response settle the queue ticket as success.
+    throw new Error(`active8_daily_completion_requires_original_job_callback:${status}`)
   }
   const receiptSummaryFields: string[] = []
   if (status === 'idempotent_complete' && cadence !== 'daily') {
@@ -657,19 +601,19 @@ export async function runOpbArmPriorRefresh(
 ) {
   requireController(env)
 
-  let resolvedOwner: ExpectedReturnOwner
-  if (expectedReturnOwner === 'auto') {
-    const servingState = await readCurrentExpectedReturnServingState(env, runDate)
-    if (!servingState.expected_return_owner) {
-      throw new Error(
-        'OPB arm prior refresh requires a contract-compatible expected-return owner; '
-        + `l4=${servingState.artifacts.l4_alpha_ev.artifact_state} `
-        + `fusion=${servingState.artifacts.allocator_ev_fusion.artifact_state}`,
-      )
-    }
-    resolvedOwner = servingState.expected_return_owner
-  } else {
-    resolvedOwner = expectedReturnOwner
+  const servingState = await readCurrentExpectedReturnServingState(env, runDate)
+  const resolvedOwner = servingState.expected_return_owner
+  if (!resolvedOwner) {
+    throw new Error(
+      'OPB arm prior refresh requires a contract-compatible expected-return owner; '
+      + `l4=${servingState.artifacts.l4_alpha_ev.artifact_state} `
+      + `fusion=${servingState.artifacts.allocator_ev_fusion.artifact_state}`,
+    )
+  }
+  // An explicit owner is an assertion, never a bypass of pointer/baseline/guard
+  // resolution. Daily callers use auto because confirmed != currently serving.
+  if (expectedReturnOwner !== 'auto' && expectedReturnOwner !== resolvedOwner) {
+    throw new Error(`opb_serving_owner_mismatch:expected=${expectedReturnOwner}:actual=${resolvedOwner}`)
   }
 
   const resp = await controllerFetch(env, '/opb_arm_prior/refresh', {
@@ -681,8 +625,9 @@ export async function runOpbArmPriorRefresh(
       min_dates: 20,
       limit: 10000,
       roundtrip_cost_bps: 18.0,
-      promote: true,
+      promote: false,
       dry_run: false,
+      reuse_registered: true,
       trigger_source: 'worker_scheduler',
     },
     timeoutMs: 120_000,
@@ -697,17 +642,36 @@ export async function runOpbArmPriorRefresh(
     ? data.artifact.validation as Record<string, any>
     : {}
   const failedChecks = Array.isArray(validation.failed_checks) ? validation.failed_checks.join(',') : ''
+  if (data.registry_error || data.promotion_error || data.registry_verified !== true
+    || status !== 'candidate_registered'
+    || data.schema_version !== 'opb-candidate-registration-v1'
+    || data.completion_scope !== 'candidate_registration' || data.promotion_owner !== 'daily_nav'
+    || data.promoted !== false || data.production_mutation_allowed !== false
+    || data.config_projection_verified !== false
+    || typeof data.artifact?.artifact_id !== 'string' || !data.artifact.artifact_id.trim()
+    || !/^[0-9a-f]{64}$/.test(String(data.artifact_checksum ?? ''))) {
+    throw new Error('opb_arm_prior_refresh candidate_registration_closure_incomplete')
+  }
+  if (data.artifact?.expected_return_owner !== resolvedOwner || data.artifact?.trained_until !== runDate) {
+    throw new Error('opb_arm_prior_refresh candidate_identity_mismatch')
+  }
   const summary = [
     `opb_arm_prior_refresh status=${status || 'unknown'}`,
     `owner=${resolvedOwner}`,
+    `date=${runDate}`,
+    'scope=candidate_registration',
+    'receipt=opb-candidate-registration-v1',
+    'registered=1',
+    'promotion_owner=daily_nav',
+    `artifact=${encodeURIComponent(data.artifact.artifact_id)}`,
+    `checksum=${data.artifact_checksum}`,
     `rows=${Number(data.rows_loaded ?? 0)}`,
     `price_rows=${Number(data.price_rows_loaded ?? 0)}`,
     `promoted=${data.promoted === true ? 1 : 0}`,
     failedChecks ? `failed_checks=${failedChecks}` : '',
   ].filter(Boolean).join(' ')
-  if (status !== 'validated' || data.promoted !== true) {
-    throw new Error(summary)
-  }
+  // Offline checks remain visible diagnostics, not a second promotion owner.
+  // A registered candidate is allowed to accumulate daily NAV while HOLD.
   return summary
 }
 

@@ -31,12 +31,18 @@ RUN cd /app/worker && npm ci
 COPY worker/ /app/worker/
 RUN mkdir -p /app/data
 COPY data/finlab_source_contract.json /app/data/finlab_source_contract.json
+COPY ml-controller/services/paired_nav_review_policy.json /app/ml-controller/services/paired_nav_review_policy.json
+COPY ml-controller/services/paired_nav_transport_policy.json /app/ml-controller/services/paired_nav_transport_policy.json
+COPY ml-controller/services/opb_nav_serving_source.json /app/ml-controller/services/opb_nav_serving_source.json
 RUN cd /app/worker && npx tsc -p tsconfig.json --noEmit false --rootDir src --outDir /app/worker-dist/src --module commonjs --moduleResolution node --ignoreDeprecations 6.0
+# Seal the exact native execution dependency graph into one fingerprintable
+# artifact. It has only a private stdio host, never production REST bindings.
+RUN cd /app/worker && npx esbuild src/node-runner/nativePaperJobMain.ts --bundle --platform=node --format=cjs --outfile=/app/worker-dist/native-paper.cjs
 # Preserve the source-root depth used by runtime JSON imports and fail the
 # image build before deployment if either Cloud Run Node dependency graph is
 # incomplete. Requiring library modules is side-effect free; runner entrypoints
 # are intentionally not imported because they execute jobs at module load.
-RUN node -e "require('/app/worker-dist/src/lib/evidenceContracts.js'); require('/app/worker-dist/src/lib/finlabSourceContract.js'); require('/app/worker-dist/src/lib/schedulerExecutionTickets.js'); require('/app/worker-dist/src/lib/marketScreener.js'); require('/app/worker-dist/src/lib/s12ResearchStructureSnapshots.js')"
+RUN node -e "require('/app/worker-dist/src/lib/evidenceContracts.js'); require('/app/worker-dist/src/lib/finlabSourceContract.js'); require('/app/worker-dist/src/lib/schedulerExecutionTickets.js'); require('/app/worker-dist/src/lib/marketScreener.js'); require('/app/worker-dist/src/lib/s12ResearchStructureSnapshots.js'); require('/app/worker-dist/src/lib/pairedNavPromotionEvidence.js'); require('/app/worker-dist/src/lib/opbNavPublication.js')"
 
 # Application source.
 COPY ml-controller/ /app/

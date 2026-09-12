@@ -1,4 +1,6 @@
-export function getTwClockParts(now = new Date()): { hour: number; minute: number } {
+import { paperExecutionDate } from './paperExecutionScope'
+
+export function getTwClockParts(now = paperExecutionDate()): { hour: number; minute: number } {
   return {
     hour: (now.getUTCHours() + 8) % 24,
     minute: now.getUTCMinutes(),
@@ -6,7 +8,7 @@ export function getTwClockParts(now = new Date()): { hour: number; minute: numbe
 }
 
 export function isTwIntradayTradingMinute(
-  now = new Date(),
+  now = paperExecutionDate(),
   options: { holiday?: boolean; delayedClose?: boolean } = {},
 ): boolean {
   const twNow = new Date(now.getTime() + 8 * 60 * 60_000)

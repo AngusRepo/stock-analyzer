@@ -347,7 +347,7 @@ const candidates: StrategyCandidatePoolCandidate[] = Array.from({ length: 90 }, 
   assert(plan.telemetry.route_gate_authority === 'continuous_weight_unvalidated', 'unvalidated route must expose continuous-weight-only authority')
   assert(plan.telemetry.route_veto_applied === false && plan.telemetry.route_veto_candidate_count === 0, 'unvalidated route must never veto a candidate')
   assert(plan.telemetry.route_priority_only_candidate_count === plan.telemetry.route_score_below_floor_count, 'below-floor rows must remain priority diagnostics before promotion')
-  assert(plan.telemetry.slate_selection_policy === 'l15-continuous-full-universe-priority-v3', 'L1.5 router must use rank only for dispatch priority, not top-k admission')
+  assert(plan.telemetry.slate_selection_policy === 'l15-continuous-full-universe-priority-v4', 'L1.5 router must use rank only for dispatch priority, not top-k admission')
   assert(plan.telemetry.strategy_matrix_candidate_count === broadCandidates.length, 'L1 label matrix candidate count must follow runtime L0 universe size')
   assert(plan.telemetry.strategy_matrix_strategy_count === [broadSpec, nicheSpec].length, 'L1 label matrix strategy dimension must follow current strategy count')
   assert(plan.telemetry.strategy_matrix_cell_count === broadCandidates.length * [broadSpec, nicheSpec].length, 'L1 label matrix must cover runtime candidates x current strategies')

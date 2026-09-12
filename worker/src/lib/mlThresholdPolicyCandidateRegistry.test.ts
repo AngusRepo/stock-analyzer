@@ -61,12 +61,13 @@ assert(blocked.decision === 'FAIL', 'invalid threshold policy candidate should f
 assert(blockers.includes('threshold_policy_candidate_must_not_mutate_trading_config'), 'candidate must not mutate trading config')
 assert(blockers.includes('all_hold_collapse'), 'all-HOLD collapse must block promotion')
 
-const gaEvidence = buildGaOptimizerPolicyValidationEvidence({
+const gaInput = {
   learningState: {
+    validation: { status: 'completed' },
     best: {
       score: 0.77,
       gate: { decision: 'PASS' },
-      metrics: { sharpe: 1.1, pbo: 0.15, mdd_95th: 0.08, trade_count: 160 },
+      metrics: { sharpe: 1.1, pbo: 0.15, mdd_95th: 0.08, trade_count: 160, look_ahead_check: 'PASS' },
       candidate: {
         params: {
           alphaFramework: { allocation: { weights: {} } },
@@ -82,10 +83,21 @@ const gaEvidence = buildGaOptimizerPolicyValidationEvidence({
   latestKey: 'optimizer:ga:latest',
   kvReadbackOk: true,
   candidateId: 'parameter:ga_optimizer:threshold-policy-candidate-20260704',
-})
+}
+const gaEvidence = buildGaOptimizerPolicyValidationEvidence(gaInput)
 
 assert(gaEvidence.decision === 'PASS', 'GA packet with valid threshold candidate should pass')
 assert(
   (gaEvidence.validation_packet as Record<string, unknown>).threshold_policy_candidate != null,
   'GA validation packet must include threshold policy candidate evidence when provided',
 )
+
+for (const missing of ['validation', 'pit']) {
+  const input = structuredClone(gaInput)
+  if (missing === 'validation') input.learningState.validation.status = 'pending'
+  else input.learningState.best.metrics.look_ahead_check = 'MISSING'
+  assert(buildGaOptimizerPolicyValidationEvidence(input).decision === 'FAIL', `${missing} must not become PASS`)
+}
+const contradictory = structuredClone(gaInput)
+Object.assign(contradictory.learningState.best.gate, { decision: 'FAIL', passed: true })
+assert(buildGaOptimizerPolicyValidationEvidence(contradictory).decision === 'FAIL', 'explicit GA gate failure cannot be overridden by passed=true')

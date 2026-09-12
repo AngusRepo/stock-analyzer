@@ -12,6 +12,7 @@ import {
   type StrategyEvaluabilityStatus,
 } from './strategyEvaluability'
 import { sha256Text } from './datasetSnapshots'
+import { paperExecutionUUID } from './paperExecutionScope'
 
 export const SELECTION_REFERENCE_CONTRACT_VERSION = 'selection-reference-snapshot-v4-regime-veto-evidence'
 export const SELECTION_REFERENCE_LEGACY_MATURE_CONTRACT_VERSION = 'selection-reference-snapshot-v3'
@@ -196,6 +197,13 @@ function finite(value: unknown, fallback = 0): number {
   return Number.isFinite(parsed) ? parsed : fallback
 }
 
+function optionalScore(value: unknown): number | null {
+  if ((typeof value !== 'number' && typeof value !== 'string') ||
+      (typeof value === 'string' && !value.trim())) return null
+  const parsed = Number(value)
+  return Number.isFinite(parsed) ? parsed : null
+}
+
 function canonicalScoreV2Json(value: unknown): string | null {
   try {
     const parsed = typeof value === 'string' ? JSON.parse(value) : value
@@ -279,17 +287,17 @@ export function buildSelectionEvidenceV4(input: {
       strategy_selected: selected ? 1 : 0,
       selection_stage: selected ? 'l15_router_selected' : 'l1_labeled_observe',
       rejection_reason: selected ? null : clean(candidate.strategy_router_reason) || 'not_selected_by_l15_router',
-      score_v2: Number.isFinite(Number(candidate.score)) ? Number(candidate.score) : null,
+      score_v2: optionalScore(candidate.score),
       score_components: scoreComponents,
       feature_available: scoreComponents ? 1 : 0,
       feature_rejection_reason: scoreComponents ? null : 'score_v2_components_missing_or_invalid',
       strategy_labeler_version: labelerVersion,
       strategy_affinity_version: clean(candidate.strategy_affinity_version) || null,
       strategy_router_version: clean(candidate.strategy_router_version) || null,
-      strategy_router_score: Number.isFinite(Number(candidate.strategy_router_score)) ? Number(candidate.strategy_router_score) : null,
+      strategy_router_score: optionalScore(candidate.strategy_router_score),
       strategy_challenger_affinity_version: clean(candidate.strategy_challenger_affinity_version) || null,
       strategy_challenger_route_version: clean(candidate.strategy_challenger_route_version) || null,
-      strategy_challenger_route_score: Number.isFinite(Number(candidate.strategy_challenger_route_score)) ? Number(candidate.strategy_challenger_route_score) : null,
+      strategy_challenger_route_score: optionalScore(candidate.strategy_challenger_route_score),
       strategy_registry_checksum: input.strategyRegistryChecksum,
     })
 
@@ -702,13 +710,13 @@ export async function persistSelectionEvidenceV4(
   }
   const stockIds = await resolveReferenceStockIds(identityDb, input.references)
   const previousRoutingRows = await db.prepare(`
-    SELECT symbol, strategy_router_version, strategy_router_score,
+    SELECT signal_date, symbol, strategy_router_version, strategy_router_score,
            strategy_challenger_route_version, strategy_challenger_route_score
       FROM selection_reference_snapshots_v1
      WHERE producer_run_id=?
   `).bind(input.producerRunId).all<Pick<
     SelectionReferenceRowV1,
-    'symbol' | 'strategy_router_version' | 'strategy_router_score'
+    'signal_date' | 'symbol' | 'strategy_router_version' | 'strategy_router_score'
       | 'strategy_challenger_route_version' | 'strategy_challenger_route_score'
   >>()
   const previousRoutingBySymbol = new Map(
@@ -716,14 +724,41 @@ export async function persistSelectionEvidenceV4(
   )
   const effectiveReferences = input.references.map((row) => {
     const previousRouting = previousRoutingBySymbol.get(clean(row.symbol))
+    if (previousRouting && previousRouting.signal_date !== row.signal_date) {
+      throw new Error(`selection_reference_route_evidence_conflict:signal_date:${row.symbol}`)
+    }
+    const mergeRoute = (
+      owner: string,
+      version: string | null,
+      score: number | null,
+      previousVersion: string | null | undefined,
+      previousScore: number | null | undefined,
+    ): { version: string | null; score: number | null } => {
+      // One producer cannot relabel an observed score or silently replace it.
+      // This also applies to legacy rows without a sealed ready-run checksum.
+      if (
+        (version != null && previousVersion != null && version !== previousVersion)
+        || (score != null && previousScore != null && score !== previousScore)
+        || (version != null && previousVersion == null && score == null && previousScore != null)
+      ) {
+        throw new Error(`selection_reference_route_evidence_conflict:${owner}:${row.symbol}`)
+      }
+      return { version: version ?? previousVersion ?? null, score: score ?? previousScore ?? null }
+    }
+    const incumbent = mergeRoute(
+      'incumbent', row.strategy_router_version, row.strategy_router_score,
+      previousRouting?.strategy_router_version, previousRouting?.strategy_router_score,
+    )
+    const challenger = mergeRoute(
+      'challenger', row.strategy_challenger_route_version, row.strategy_challenger_route_score,
+      previousRouting?.strategy_challenger_route_version, previousRouting?.strategy_challenger_route_score,
+    )
     return {
       ...row,
-      strategy_router_version: row.strategy_router_version ?? previousRouting?.strategy_router_version ?? null,
-      strategy_router_score: row.strategy_router_score ?? previousRouting?.strategy_router_score ?? null,
-      strategy_challenger_route_version:
-        row.strategy_challenger_route_version ?? previousRouting?.strategy_challenger_route_version ?? null,
-      strategy_challenger_route_score:
-        row.strategy_challenger_route_score ?? previousRouting?.strategy_challenger_route_score ?? null,
+      strategy_router_version: incumbent.version,
+      strategy_router_score: incumbent.score,
+      strategy_challenger_route_version: challenger.version,
+      strategy_challenger_route_score: challenger.score,
     }
   })
   const referencePayload = [...effectiveReferences]
@@ -880,6 +915,41 @@ export async function persistSelectionEvidenceV4(
         + `:${matrixCoverage?.contract_count ?? 0}/${expectedCells}:payload=${payloadChecksum}`,
       )
     }
+    // The deployed v1 checksum predates these regime-veto fields. Keep its
+    // identity stable, but do not let a checksum-only retry attest different
+    // regime evidence. Keyed joins are chunked instead of scanning a whole
+    // JSON matrix once for every stored cell. Downstream mutable projections
+    // (e.g. challenger affinity) are deliberately not compared here.
+    for (let offset = 0; offset < input.matrix.length; offset += 500) {
+      const regimeRows = input.matrix.slice(offset, offset + 500).map((row) => ({
+        signal_date: row.signal_date, symbol: row.symbol,
+        producer_run_id: row.producer_run_id,
+        strategy_id: row.strategy_id, strategy_version: row.strategy_version,
+        pre_regime_setup_hit: row.pre_regime_setup_hit,
+        regime_eligible: row.regime_eligible,
+        formal_veto_reason: row.formal_veto_reason,
+        counterfactual_affinity: row.counterfactual_affinity,
+        counterfactual_production_effect: row.counterfactual_production_effect,
+      }))
+      const coverage = await db.prepare(`
+        SELECT COUNT(*) AS matching_cells
+          FROM json_each(?) expected
+          JOIN strategy_label_matrix_v4 m
+            ON m.signal_date=json_extract(expected.value, '$.signal_date')
+           AND m.symbol=json_extract(expected.value, '$.symbol')
+           AND m.producer_run_id=json_extract(expected.value, '$.producer_run_id')
+           AND m.strategy_id=json_extract(expected.value, '$.strategy_id')
+           AND m.strategy_version=json_extract(expected.value, '$.strategy_version')
+         WHERE m.pre_regime_setup_hit IS json_extract(expected.value, '$.pre_regime_setup_hit')
+           AND m.regime_eligible IS json_extract(expected.value, '$.regime_eligible')
+           AND m.formal_veto_reason IS json_extract(expected.value, '$.formal_veto_reason')
+           AND m.counterfactual_affinity IS json_extract(expected.value, '$.counterfactual_affinity')
+           AND m.counterfactual_production_effect IS json_extract(expected.value, '$.counterfactual_production_effect')
+      `).bind(JSON.stringify(regimeRows)).first<{ matching_cells: number }>()
+      if (Number(coverage?.matching_cells ?? 0) !== regimeRows.length) {
+        throw new Error(`strategy_label_matrix_ready_regime_evidence_mismatch:${input.producerRunId}:${offset}`)
+      }
+    }
     return true
   }
 
@@ -887,7 +957,7 @@ export async function persistSelectionEvidenceV4(
     return { referenceRows: effectiveReferences.length, matrixRows: expectedCells }
   }
 
-  const attemptId = crypto.randomUUID()
+  const attemptId = paperExecutionUUID()
   const acquisition = await db.prepare(`
     INSERT INTO selection_evidence_staging_runs_v1 (
       producer_run_id, attempt_id, signal_date, status,

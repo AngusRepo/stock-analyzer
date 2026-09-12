@@ -237,7 +237,7 @@ assert(
     updateOrchestrator.includes('inspectExpectedReturnLifecycleHealth') &&
     !updateOrchestrator.includes('runL4AlphaEvRefresh') &&
     !updateOrchestrator.includes('runAllocatorEvFusionRefresh') &&
-    updateOrchestrator.includes('runOpbArmPriorRefresh') &&
+    !updateOrchestrator.includes('runOpbArmPriorRefresh') &&
     updateOrchestrator.indexOf('const evReadiness = await runDailyAllocatorEvReadiness') <
       updateOrchestrator.indexOf('const summary = await deps.runMLAndRiskV2'),
   'evening-chain must inspect pointer-backed L4/Fusion readiness before triggering pipeline',

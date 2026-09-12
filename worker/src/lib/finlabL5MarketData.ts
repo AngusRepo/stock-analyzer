@@ -1,3 +1,4 @@
+import { paperExecutionDate, paperExecutionFetch } from './paperExecutionScope'
 export interface FinLabL5Quote {
   provider: string
   symbol: string
@@ -169,7 +170,7 @@ function depthRatio(first: number, last: number): number | null {
 export function normalizeFinLabL5Quote(
   symbol: string,
   payload: Record<string, unknown> | null | undefined,
-  now: Date = new Date(),
+  now: Date = paperExecutionDate(),
 ): FinLabL5Quote | null {
   if (!payload) return null
   const bidPrices = numbersFrom(payload.bid_prices ?? payload.bidPrices ?? payload.bid_prices_top5 ?? payload.bids).slice(0, 5)
@@ -465,7 +466,7 @@ async function applyShioajiProxyL5Fallback(
 
   for (const symbol of symbols) {
     try {
-      const res = await fetch(`${proxyUrl}/orderbook/${encodeURIComponent(symbol)}`, {
+      const res = await paperExecutionFetch(`${proxyUrl}/orderbook/${encodeURIComponent(symbol)}`, {
         headers,
         signal: AbortSignal.timeout(3000),
       })
@@ -526,7 +527,7 @@ export async function fetchFinLabL5MarketDataSnapshot(
 
   try {
     const route = '/finlab/execution/l5-market-data'
-    const res = await fetch(`${controllerUrl.replace(/\/$/, '')}${route}`, {
+    const res = await paperExecutionFetch(`${controllerUrl.replace(/\/$/, '')}${route}`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',

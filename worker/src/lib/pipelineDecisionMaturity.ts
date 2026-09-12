@@ -1,7 +1,12 @@
 import type { Bindings } from '../types'
+import { compareNavCandidateVersions, type CandidateVersionComparison } from './pipelineCandidateVersions'
+import { projectExpectedReturnNavMaturity, type ExpectedReturnNavView } from './expectedReturnNavMaturity'
+import { ROUTE_NAV_ARTIFACT_VERSION, readRouteNavReceipt, routeReceiptHash } from './strategyRouteNavReceipt'
+import { observeRouteCanonicalUse } from './navScreenerObservation'
 import { inspectAllocatorEvMaturityCoverage } from './allocatorEvDailyLifecycle'
 import { databaseForDataDomain } from './dataDomainRegistry'
 import { readIpoShadow, type IpoShadowReadModel } from './ipoShadowReadModel'
+import { readPairedNav, type PairedNavReadModel } from './pairedNavReadModel'
 import {
   adaptExpectedReturnCandidate,
   adaptExpectedReturnShadow,
@@ -55,7 +60,7 @@ export interface PipelineMaturityMetric {
   label: string
   value: number | string | boolean | null
   target?: number | string | boolean | null
-  comparator?: 'gte' | 'gt' | 'lt' | 'eq'
+  comparator?: 'gte' | 'gt' | 'lt' | 'lte' | 'eq'
   unit?: 'rows' | 'dates' | 'ratio' | 'return' | 'r_multiple' | 'score' | 'count' | 'status'
   passed?: boolean | null
   note?: string
@@ -71,6 +76,8 @@ export interface PipelineMaturityBlockerGroup {
 }
 
 export interface PipelineMaturityStage {
+  candidate_versions?: CandidateVersionComparison
+  nav_gate?: ExpectedReturnNavView
   id: 'threshold_margin_affinity_v2' | 'oof_redundancy' | 'route_score_v2' | 'l4' | 'fusion'
   layer: string
   title: string
@@ -108,7 +115,7 @@ export interface PipelineMaturityStage {
     updated_at?: string | null
     cadence?: 'daily' | 'weekly' | 'monthly' | 'manual' | 'event-driven' | 'unknown'
     role?: 'candidate' | 'serving' | 'monitoring' | 'runtime_guard'
-    date_semantic?: 'candidate_cutoff' | 'current_pointer_effective_at' | 'monitoring_business_date' | 'latest_prediction_date'
+    date_semantic?: 'candidate_cutoff' | 'current_pointer_effective_at' | 'monitoring_business_date' | 'latest_prediction_date' | 'nav_decision_as_of'
     oof_unavailable_reason?: string | null
     evidence_scopes?: {
       offline_candidate?: {
@@ -203,8 +210,8 @@ export interface StrategyRouteBundleMaturity {
   current_route_rows: number
   current_reference_rows: number
   route_calibration_status: string | null
-  route_mature_dates: number
-  route_required_dates: number
+  route_mature_dates: number | null
+  route_required_dates: number | null
   promoted_run_id: string | null
   blockers: string[]
   maturity_projection: StrategyRouteMaturityProjection
@@ -213,15 +220,16 @@ export interface StrategyRouteBundleMaturity {
 
 export interface PipelineDecisionMaturityPacket {
   ipo_shadow?: IpoShadowReadModel
+  paired_nav_shadow?: PairedNavReadModel
   schema_version: 'pipeline-decision-maturity-v2'
   requested_date: string
   generated_at: string
-  current_selection_signal_owner: 'score_v2_formal_ml'
+  current_selection_signal_owner: 'allocator_opb_policy'
   current_expected_return_owner: 'l4_alpha_ev' | 'allocator_ev_fusion' | null
-  current_allocation_utility_owner: 'expected_return_owner' | 'formal_ml_buy_admission'
+  current_allocation_utility_owner: 'expected_return_owner' | 'risk_abstention'
   current_execution_owner: 'allocator_opb_policy'
   execution_scope: 'recommendation_allocation_only_no_order_submission'
-  action_gate: 'expected_return_owner' | 'selection_signal_owner'
+  action_gate: 'expected_return_owner' | 'validated_expected_return_required'
   strategy_route_bundle: StrategyRouteBundleMaturity
   summary: {
     production: number
@@ -360,6 +368,14 @@ export function maturityProgress(
   }
 }
 
+export function routeCalibrationSplitCounts(metadata: Record<string, any>) {
+  const count = (value: unknown): number | null => {
+    if (!Array.isArray(value) || value.some((day) => typeof day !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(day))) return null
+    return new Set(value).size === value.length ? value.length : null
+  }
+  return { train: count(metadata.train_dates), purge: count(metadata.purge_dates), oos: count(metadata.oos_dates) }
+}
+
 function metric(
   key: string,
   label: string,
@@ -474,6 +490,7 @@ export async function buildPipelineDecisionMaturityPacket(
   if (!validDate(requestedDate)) throw new Error(`invalid_pipeline_maturity_date:${requestedDate}`)
   const learningDb = databaseForDataDomain(env, 'learning')
   const ipoShadowPromise = readIpoShadow(learningDb, requestedDate, env.KV)
+  const pairedNavPromise = readPairedNav(learningDb, requestedDate)
   const marketDb = databaseForDataDomain(env, 'market')
   const formalLabelerPlaceholders = STRATEGY_FORMAL_LABELER_VERSIONS.map(() => '?').join(',')
 
@@ -609,11 +626,13 @@ export async function buildPipelineDecisionMaturityPacket(
     ).first<any>()),
     safeQuery(() => learningDb.prepare(`
       SELECT h.run_id, h.artifact_version, h.candidate_route_version,
-             h.route_floor, h.promoted_at
+             h.route_floor, h.promoted_at, r.gate_json, r.status, r.as_of_date
         FROM strategy_route_calibration_head_v1 h
         JOIN strategy_route_calibration_runs_v1 r ON r.run_id=h.run_id
        WHERE h.singleton_id=1 AND r.status='promoted' AND r.as_of_date<=?
          AND h.candidate_route_version=?
+         AND h.artifact_version=r.artifact_version AND h.candidate_route_version=r.candidate_route_version
+         AND h.route_floor IS r.route_floor
        LIMIT 1
     `).bind(requestedDate, STRATEGY_ROUTE_CHALLENGER_VERSION).first<any>()),
     safeQuery(() => learningDb.prepare(`
@@ -641,11 +660,15 @@ export async function buildPipelineDecisionMaturityPacket(
     `).bind(requestedDate).all<ExpectedReturnCandidateDbRow>().then((result) => result.results ?? [])),
     safeQuery(() => learningDb.prepare(`
       WITH ranked AS (
-        SELECT model_name, artifact_id, version, state, source_run_date,
+        SELECT model_name, artifact_id, checksum, version, state, source_run_date,
+               candidate_type, training_run_id, artifact_path, offline_gate_decision,
+               offline_gate_failed_gates, offline_evidence_json,
                live_gate_status, live_evidence_json, updated_at,
                ROW_NUMBER() OVER (
                  PARTITION BY model_name
                  ORDER BY
+                   CASE json_extract(live_evidence_json, '$.schema_version')
+                     WHEN 'expected-return-candidate-nav-gate-v1' THEN 0 ELSE 1 END,
                    CASE state
                      WHEN 'shadowing' THEN 0
                      WHEN 'live_gate_passed' THEN 1
@@ -659,9 +682,11 @@ export async function buildPipelineDecisionMaturityPacket(
          WHERE model_name IN ('l4_alpha_ev', 'allocator_ev_fusion')
            AND source_run_date<=?
            AND json_extract(live_evidence_json, '$.schema_version')
-               ='expected-return-candidate-forward-gate-v2'
+               IN ('expected-return-candidate-nav-gate-v1', 'expected-return-candidate-forward-gate-v2')
       )
-      SELECT model_name, artifact_id, version, state, source_run_date,
+      SELECT model_name, artifact_id, checksum, version, state, source_run_date,
+             candidate_type, training_run_id, artifact_path, offline_gate_decision,
+             offline_gate_failed_gates, offline_evidence_json,
              live_gate_status, live_evidence_json, updated_at
         FROM ranked
        WHERE ordinal=1
@@ -730,7 +755,7 @@ export async function buildPipelineDecisionMaturityPacket(
        WHERE latest.ordinal=1
        ORDER BY latest.model_name
     `).bind(requestedDate).all<ExpectedReturnShadowDbRow>().then((result) => result.results ?? [])),
-    safeQuery(() => readCurrentExpectedReturnServingState({ ...env, DB: learningDb }, requestedDate)),
+    safeQuery(() => readCurrentExpectedReturnServingState(env, requestedDate)),
     safeQuery(() => inspectAllocatorEvMaturityCoverage(learningDb, requestedDate)),
     safeQuery(() => marketDb.prepare(`
       WITH session_calendar AS (
@@ -1007,10 +1032,51 @@ export async function buildPipelineDecisionMaturityPacket(
 
   const route = routeRun.value
   const promotedRoute = routeHead.value
-  if (!route) {
+  if (promotedRoute?.artifact_version === ROUTE_NAV_ARTIFACT_VERSION) {
+    try {
+      const receipt = await readRouteNavReceipt(promotedRoute)
+      const nav = receipt.gate.nav_validation
+      const execution = await observeRouteCanonicalUse(env, { owner: 'l15_route',
+        artifact_id: receipt.artifact_id, artifact_checksum: receipt.artifact_checksum,
+        publication_receipt_checksum: await routeReceiptHash(promotedRoute.gate_json),
+        published_at: promotedRoute.promoted_at, business_date: requestedDate,
+        run_id: promotedRoute.run_id, route_version: receipt.policy_definition.challenger_version })
+      stages.push({
+        id: 'route_score_v2', layer: 'L1.5', title: 'New route score',
+        version: receipt.policy_definition.challenger_version, status: execution.executed ? 'serving' : 'ready', contribution_mode: 'production',
+        maturity_kind: 'daily_coverage',
+        progress: maturityProgress(nav.evaluable_date_count, nav.minimum_evaluable_dates, 'dates'),
+        decision: '已依成本後配對 NAV 證據採用 route；未設定診斷 floor，不以缺少 floor 阻擋路由。',
+        contribution: '只調整既有 L1 合格候選的路由優先程度，不改策略命中或直接乘上配置權重。',
+        production_effect: execution.executed
+          ? '當日 canonical 選股已使用發布版本；此證據只涵蓋 L1／L1.5 選股，不代表成交或成熟報酬。'
+          : '版本已發布，尚未在當日 canonical 選股觀察到使用；不把發布成功當成已生效。',
+        blockers: execution.executed ? [] : ['route_canonical_execution_not_observed'],
+        metrics: [
+          metric('canonical_execution_observed', 'Published route used by canonical selection', execution.executed,
+            { unit: 'status', scope: 'lifecycle', note: execution.reason }),
+          metric('canonical_execution_run', 'Observed canonical screener run', execution.producer_run_id, { unit: 'status', scope: 'lifecycle' }),
+          gateMetric('nav_sessions', 'Paired NAV evaluable dates at adoption', nav.evaluable_date_count,
+            nav.minimum_evaluable_dates, 'dates'),
+          metric('nav_delta', 'Candidate minus incumbent mean daily net NAV return', nav.mean_daily_nav_delta,
+            { unit: 'return', scope: 'production' }),
+          metric('nav_review_date', 'Original NAV review date', nav.checkpoint_as_of_date, { unit: 'status' }),
+          metric('route_floor', 'Diagnostic route floor (not required)', null, { unit: 'score', scope: 'diagnostic' }),
+        ],
+        lineage: { requested_date: requestedDate, evidence_date: promotedRoute.as_of_date,
+          artifact_id: promotedRoute.run_id, oof_applicable: false,
+          evidence_semantics: 'Original costed paired NAV adoption receipt; not weekly route OOS calibration.',
+          source: ROUTE_NAV_ARTIFACT_VERSION, updated_at: promotedRoute.promoted_at },
+      })
+    } catch {
+      stages.push(unavailableStage('route_score_v2', 'L1.5', 'New route score', requestedDate,
+        'strategy_route_calibration_head_v1', ['strategy_route_nav_publication_or_execution_unverified']))
+    }
+  } else if (!route) {
     stages.push(unavailableStage('route_score_v2', 'L1.5', 'New route score', requestedDate, 'strategy_route_calibration_runs_v1', [routeRun.error, routeHead.error]))
   } else {
     const gates = jsonRecord(route.gate_json)
+    const splitCounts = routeCalibrationSplitCounts(jsonRecord(gates._metadata))
     const promoted = Boolean(promotedRoute?.run_id && promotedRoute.candidate_route_version === STRATEGY_ROUTE_CHALLENGER_VERSION)
     const dateCount = finite(route.date_count)
     const dailyEligibleDateCount = routeMaturityProjection.eligibleDates
@@ -1045,9 +1111,9 @@ export async function buildPipelineDecisionMaturityPacket(
         gateMetric('mature_dates', 'Daily mature eligible dates', dailyEligibleDateCount, STRATEGY_ROUTE_MIN_TOTAL_DATES, 'dates'),
         metric('latest_daily_mature_date', 'Latest daily mature eligible date', latestDailyEligibleDate, { unit: 'status', scope: 'lifecycle' }),
         metric('weekly_candidate_mature_dates', 'Latest weekly calibration mature dates', dateCount, { unit: 'dates', scope: 'promotion_gate', note: 'Weekly frozen calibration snapshot; daily eligibility continues accumulating between weekly runs.' }),
-        gateMetric('train_dates', 'Train dates', STRATEGY_ROUTE_MIN_TRAIN_DATES, STRATEGY_ROUTE_MIN_TRAIN_DATES, 'dates'),
-        gateMetric('purge_dates', 'Purged date groups', STRATEGY_ROUTE_PURGE_DATES, STRATEGY_ROUTE_PURGE_DATES, 'dates'),
-        gateMetric('oos_dates', 'Required OOS dates', STRATEGY_ROUTE_MIN_OOS_DATES, STRATEGY_ROUTE_MIN_OOS_DATES, 'dates'),
+        gateMetric('train_dates', 'Observed train dates', splitCounts.train, STRATEGY_ROUTE_MIN_TRAIN_DATES, 'dates'),
+        gateMetric('purge_dates', 'Observed purged date groups', splitCounts.purge, STRATEGY_ROUTE_PURGE_DATES, 'dates'),
+        gateMetric('oos_dates', 'Observed OOS dates', splitCounts.oos, STRATEGY_ROUTE_MIN_OOS_DATES, 'dates'),
         metric('sample_count', 'Labeled route observations', route.sample_count, { unit: 'rows' }),
         metric('incumbent_sample_count', 'Paired incumbent observations', route.incumbent_sample_count, { unit: 'rows' }),
         metric('paired_date_count', 'Paired incumbent dates', route.paired_date_count, { unit: 'dates' }),
@@ -1238,20 +1304,22 @@ export async function buildPipelineDecisionMaturityPacket(
         metric('prospective_label_known_min', 'First counted label-known date', prospectiveGate?.label_known_date_min ?? null, { unit: 'status', passed: null, ...prospectiveMetricScope, scope: 'promotion_gate', note: `必須晚於 candidate freeze ${l4Prospective?.source_run_date ?? '未知'}，確保 freeze 當下答案尚未揭露。` }),
         metric('prospective_label_known_max', 'Latest counted label-known date', prospectiveGate?.label_known_date_max ?? null, { unit: 'status', passed: null, ...prospectiveMetricScope, scope: 'promotion_gate' }),
         metric('prospective_candidate_state', 'Locked candidate registry state', l4Prospective?.state ?? null, { unit: 'status', passed: null, ...prospectiveMetricScope, scope: 'lifecycle' }),
-        metric('shadow_sector_samples', 'Rolling cohort diagnostic PIT sector-alpha samples', l4Shadow?.sector_samples ?? null, { unit: 'rows', passed: null, ...shadowMetricScope, scope: 'monitoring', note: 'Rolling 75/25 cohort refit diagnostic; not candidate promotion evidence.' }),
-        metric('shadow_sector_dates', 'Rolling cohort diagnostic PIT sector-alpha dates', l4Shadow?.sector_dates ?? null, { unit: 'dates', passed: null, ...shadowMetricScope, scope: 'monitoring', note: `Rolling 75/25 cohort sector subset：${l4Shadow?.sector_dates ?? '資料尚未具備'}/${l4Shadow?.date_count ?? '資料尚未具備'} usable dates；不是正式 L4 PIT 物化日數或 promotion maturity。` }),
-        metric('shadow_corr_lcb90', 'Rolling cohort diagnostic corr LCB90', l4Shadow?.l4_corr_lcb90 ?? null, { unit: 'ratio', passed: null, ...shadowMetricScope, scope: 'monitoring', note: 'Rolling 75/25 cohort refit diagnostic; not candidate promotion evidence.' }),
-        metric('shadow_spread_lcb90', 'Rolling cohort diagnostic spread LCB90', l4Shadow?.l4_spread_lcb90 ?? null, { unit: 'return', passed: null, ...shadowMetricScope, scope: 'monitoring', note: 'Rolling 75/25 cohort refit diagnostic; not candidate promotion evidence.' }),
-        metric('shadow_top_return', 'Rolling cohort diagnostic top-quintile mean', l4Shadow?.l4_top_return ?? null, { unit: 'return', passed: null, ...shadowMetricScope, scope: 'monitoring', note: 'Rolling 75/25 cohort refit diagnostic; not candidate promotion evidence.' }),
-        metric('shadow_top_lcb90', 'Rolling cohort diagnostic top-quintile LCB90', l4Shadow?.l4_top_lcb90 ?? null, { unit: 'return', passed: null, ...shadowMetricScope, scope: 'monitoring', note: 'Rolling 75/25 cohort refit diagnostic; not candidate promotion evidence.' }),
+        metric('shadow_sector_samples', 'Rolling cohort diagnostic PIT sector-alpha samples', l4Shadow?.sector_samples ?? null, { unit: 'rows', passed: null, ...shadowMetricScope, scope: 'monitoring', note: 'Rolling purged temporal cohort refit diagnostic; not candidate promotion evidence.' }),
+        metric('shadow_sector_dates', 'Rolling cohort diagnostic PIT sector-alpha dates', l4Shadow?.sector_dates ?? null, { unit: 'dates', passed: null, ...shadowMetricScope, scope: 'monitoring', note: `Rolling purged temporal cohort sector subset：${l4Shadow?.sector_dates ?? '資料尚未具備'}/${l4Shadow?.date_count ?? '資料尚未具備'} usable dates；不是正式 L4 PIT 物化日數或 promotion maturity。` }),
+        metric('shadow_corr_lcb90', 'Rolling cohort diagnostic corr LCB90', l4Shadow?.l4_corr_lcb90 ?? null, { unit: 'ratio', passed: null, ...shadowMetricScope, scope: 'monitoring', note: 'Rolling purged temporal cohort refit diagnostic; not candidate promotion evidence.' }),
+        metric('shadow_spread_lcb90', 'Rolling cohort diagnostic spread LCB90', l4Shadow?.l4_spread_lcb90 ?? null, { unit: 'return', passed: null, ...shadowMetricScope, scope: 'monitoring', note: 'Rolling purged temporal cohort refit diagnostic; not candidate promotion evidence.' }),
+        metric('shadow_top_return', 'Rolling cohort diagnostic top-quintile mean', l4Shadow?.l4_top_return ?? null, { unit: 'return', passed: null, ...shadowMetricScope, scope: 'monitoring', note: 'Rolling purged temporal cohort refit diagnostic; not candidate promotion evidence.' }),
+        metric('shadow_top_lcb90', 'Rolling cohort diagnostic top-quintile LCB90', l4Shadow?.l4_top_lcb90 ?? null, { unit: 'return', passed: null, ...shadowMetricScope, scope: 'monitoring', note: 'Rolling purged temporal cohort refit diagnostic; not candidate promotion evidence.' }),
         metric('shadow_walk_forward', 'Rolling cohort diagnostic walk-forward', l4Shadow?.walk_forward_passed, { unit: 'status', passed: null, ...shadowMetricScope, scope: 'monitoring', note: [walkForwardNote(l4Shadow?.walk_forward ?? null), 'Rolling diagnostic only; not candidate promotion evidence.'].filter(Boolean).join('；') }),
         metric('frozen_forward_quality', 'Rolling cohort diagnostic quality', l4Shadow?.quality_decision ?? null, { unit: 'status', passed: null, ...shadowMetricScope, scope: 'monitoring', note: 'Rolling cohort quality label is diagnostic only; locked-candidate prospective gate is authoritative for promotion.' }),
         metric('shadow_usable_samples', 'Latest shadow usable samples', l4Shadow?.sample_count ?? null, { unit: 'rows', ...shadowMetricScope, scope: 'monitoring' }),
         metric('shadow_usable_dates', 'Latest shadow usable dates', l4Shadow?.date_count ?? null, { unit: 'dates', ...shadowMetricScope, scope: 'monitoring' }),
         metric('shadow_oof_rows', 'Latest shadow OOF rows', l4Shadow?.oof_row_count ?? null, { unit: 'rows', ...shadowMetricScope, scope: 'monitoring' }),
-        metric('shadow_oof_max_date', 'Latest shadow OOF max date', l4Shadow?.oof_max_date ?? null, { unit: 'status', ...shadowMetricScope, scope: 'monitoring' }),
+        metric('shadow_oof_max_date', '延伸資料已載入截止日（非驗證截止日）', l4Shadow?.oof_max_date ?? null, { unit: 'status', ...shadowMetricScope, scope: 'monitoring' }),
+        metric('shadow_usable_max_date', '診斷有效樣本截止日', l4Shadow?.usable_max_date ?? null, { unit: 'status', ...shadowMetricScope, scope: 'monitoring' }),
+        metric('shadow_evaluated_dates', '實際 OOS 驗證日期', l4Shadow?.evaluated_dates?.join('、') || null, { unit: 'status', ...shadowMetricScope, scope: 'monitoring' }),
         metric('shadow_evidence_advanced', 'Shadow evidence advanced vs previous business date', l4Shadow?.evidence_advanced_from_previous_business_date == null ? null : l4Shadow.evidence_advanced_from_previous_business_date ? 'advanced' : 'no_new_mature_evidence', { unit: 'status', ...shadowMetricScope, scope: 'monitoring', note: `前次監控業務日：${l4Shadow?.previous_business_date ?? '首次證據'}。no_new_mature_evidence 代表只產生新業務日封包，成熟 OOF/usable evidence 未增加。` }),
-        metric('frozen_forward_dates', 'Rolling cohort diagnostic OOF dates', l4Shadow?.oof_date_count ?? null, { unit: 'dates', passed: null, ...shadowMetricScope, scope: 'monitoring', note: 'Rolling 75/25 causal cohort diagnostic; not the locked candidate, production artifact, training evidence, or promotion evidence.' }),
+        metric('frozen_forward_dates', 'Rolling cohort diagnostic OOF dates', l4Shadow?.oof_date_count ?? null, { unit: 'dates', passed: null, ...shadowMetricScope, scope: 'monitoring', note: 'Rolling purged temporal causal cohort diagnostic; not the locked candidate, production artifact, training evidence, or promotion evidence.' }),
       ],
       lineage: {
         requested_date: requestedDate,
@@ -1501,18 +1569,20 @@ export async function buildPipelineDecisionMaturityPacket(
         }),
         metric('execution_expert', 'Shadow diagnostic conditional execution expert', fusion?.execution_decision, { unit: 'status', scope: 'diagnostic', passed: null, availability: fusion?.execution_decision == null ? 'not_applicable' : 'available', reason_code: fusion?.execution_decision == null ? 'diagnostic_not_served_by_fusion_v14' : null, note: 'Diagnostic only; not served by Fusion v14.' }),
         metric('execution_probability', 'Shadow diagnostic execution probability expert', fusion?.execution_probability_decision, { unit: 'status', scope: 'diagnostic', passed: null, availability: fusion?.execution_probability_decision == null ? 'not_applicable' : 'available', reason_code: fusion?.execution_probability_decision == null ? 'diagnostic_not_served_by_fusion_v14' : null, note: 'Diagnostic only; not served by Fusion v14.' }),
-        metric('shadow_sector_samples', 'Rolling cohort diagnostic PIT sector-alpha samples', fusionShadow?.sector_samples ?? null, { unit: 'rows', passed: null, ...shadowMetricScope, scope: 'monitoring', note: 'Rolling 75/25 cohort refit diagnostic; not candidate promotion evidence.' }),
-        metric('shadow_sector_dates', 'Rolling cohort diagnostic PIT sector-alpha dates', fusionShadow?.sector_dates ?? null, { unit: 'dates', passed: null, ...shadowMetricScope, scope: 'monitoring', note: 'Rolling 75/25 cohort refit diagnostic; not candidate promotion evidence.' }),
-        metric('shadow_residual_corr_lcb90', 'Rolling cohort diagnostic residual corr LCB90', fusionShadow?.residual_corr_lcb90 ?? null, { unit: 'ratio', passed: null, ...shadowMetricScope, scope: 'monitoring', note: 'Rolling 75/25 cohort refit diagnostic; not candidate promotion evidence.' }),
-        metric('shadow_residual_spread_lcb90', 'Rolling cohort diagnostic residual spread LCB90', fusionShadow?.residual_spread_lcb90 ?? null, { unit: 'return', passed: null, ...shadowMetricScope, scope: 'monitoring', note: 'Rolling 75/25 cohort refit diagnostic; not candidate promotion evidence.' }),
+        metric('shadow_sector_samples', 'Rolling cohort diagnostic PIT sector-alpha samples', fusionShadow?.sector_samples ?? null, { unit: 'rows', passed: null, ...shadowMetricScope, scope: 'monitoring', note: 'Rolling purged temporal cohort refit diagnostic; not candidate promotion evidence.' }),
+        metric('shadow_sector_dates', 'Rolling cohort diagnostic PIT sector-alpha dates', fusionShadow?.sector_dates ?? null, { unit: 'dates', passed: null, ...shadowMetricScope, scope: 'monitoring', note: 'Rolling purged temporal cohort refit diagnostic; not candidate promotion evidence.' }),
+        metric('shadow_residual_corr_lcb90', 'Rolling cohort diagnostic residual corr LCB90', fusionShadow?.residual_corr_lcb90 ?? null, { unit: 'ratio', passed: null, ...shadowMetricScope, scope: 'monitoring', note: 'Rolling purged temporal cohort refit diagnostic; not candidate promotion evidence.' }),
+        metric('shadow_residual_spread_lcb90', 'Rolling cohort diagnostic residual spread LCB90', fusionShadow?.residual_spread_lcb90 ?? null, { unit: 'return', passed: null, ...shadowMetricScope, scope: 'monitoring', note: 'Rolling purged temporal cohort refit diagnostic; not candidate promotion evidence.' }),
         metric('shadow_walk_forward', 'Rolling cohort diagnostic residual walk-forward', fusionShadow?.walk_forward_passed, { unit: 'status', passed: null, ...shadowMetricScope, scope: 'monitoring', note: [walkForwardNote(fusionShadow?.walk_forward ?? null), 'Rolling diagnostic only; not candidate promotion evidence.'].filter(Boolean).join('；') }),
         metric('frozen_forward_quality', 'Rolling cohort diagnostic quality', fusionShadow?.quality_decision ?? null, { unit: 'status', passed: null, ...shadowMetricScope, scope: 'monitoring', note: 'Rolling cohort quality label is diagnostic only; locked-candidate prospective gate is authoritative for promotion.' }),
         metric('shadow_usable_samples', 'Latest shadow usable samples', fusionShadow?.sample_count ?? null, { unit: 'rows', ...shadowMetricScope, scope: 'monitoring' }),
         metric('shadow_usable_dates', 'Latest shadow usable dates', fusionShadow?.date_count ?? null, { unit: 'dates', ...shadowMetricScope, scope: 'monitoring' }),
         metric('shadow_oof_rows', 'Latest shadow OOF rows', fusionShadow?.oof_row_count ?? null, { unit: 'rows', ...shadowMetricScope, scope: 'monitoring' }),
-        metric('shadow_oof_max_date', 'Latest shadow OOF max date', fusionShadow?.oof_max_date ?? null, { unit: 'status', ...shadowMetricScope, scope: 'monitoring' }),
+        metric('shadow_oof_max_date', '延伸資料已載入截止日（非驗證截止日）', fusionShadow?.oof_max_date ?? null, { unit: 'status', ...shadowMetricScope, scope: 'monitoring' }),
+        metric('shadow_usable_max_date', '診斷有效樣本截止日', fusionShadow?.usable_max_date ?? null, { unit: 'status', ...shadowMetricScope, scope: 'monitoring' }),
+        metric('shadow_evaluated_dates', '實際 OOS 驗證日期', fusionShadow?.evaluated_dates?.join('、') || null, { unit: 'status', ...shadowMetricScope, scope: 'monitoring' }),
         metric('shadow_evidence_advanced', 'Shadow evidence advanced vs previous business date', fusionShadow?.evidence_advanced_from_previous_business_date == null ? null : fusionShadow.evidence_advanced_from_previous_business_date ? 'advanced' : 'no_new_mature_evidence', { unit: 'status', ...shadowMetricScope, scope: 'monitoring', note: `前次監控業務日：${fusionShadow?.previous_business_date ?? '首次證據'}。no_new_mature_evidence 代表只產生新業務日封包，成熟 OOF/usable evidence 未增加。` }),
-        metric('frozen_forward_dates', 'Rolling cohort diagnostic OOF dates', fusionShadow?.oof_date_count ?? null, { unit: 'dates', passed: null, ...shadowMetricScope, scope: 'monitoring', note: 'Rolling 75/25 causal cohort diagnostic; not the locked candidate, production artifact, training evidence, or promotion evidence.' }),
+        metric('frozen_forward_dates', 'Rolling cohort diagnostic OOF dates', fusionShadow?.oof_date_count ?? null, { unit: 'dates', passed: null, ...shadowMetricScope, scope: 'monitoring', note: 'Rolling purged temporal causal cohort diagnostic; not the locked candidate, production artifact, training evidence, or promotion evidence.' }),
         metric('serving_forward_guard_state', 'Actual serving artifact T+5 guard', runtimeGuardBound ? runtimeGuard?.state ?? null : runtimeGuard ? 'IDENTITY_MISMATCH' : null, { unit: 'status', passed: runtimeGuardBound ? runtimeGuard?.state !== 'residual_bypass' : null, ...runtimeGuardMetricScope, scope: 'production', note: 'Bound by artifact ID and model fingerprint; it can only bypass the Fusion residual back to canonical L4.' }),
         metric('serving_forward_evaluable_dates', 'Serving-forward evaluable dates', runtimeGuardBound ? runtimeGuard?.evaluable_date_count ?? 0 : null, { unit: 'dates', ...runtimeGuardMetricScope, scope: 'production' }),
         metric('serving_forward_degraded_streak', 'Serving-forward degraded streak', runtimeGuardBound ? runtimeGuard?.degraded_streak ?? 0 : null, { unit: 'dates', target: 3, comparator: 'lt', passed: runtimeGuardBound ? (runtimeGuard?.degraded_streak ?? 0) < 3 : null, ...runtimeGuardMetricScope, scope: 'production' }),
@@ -1764,6 +1834,16 @@ export async function buildPipelineDecisionMaturityPacket(
     ['fusion', { rows: fusionHistory.value ?? [], unit: 'return' }],
   ])
   for (const stage of stages) {
+    if (stage.id === 'l4' || stage.id === 'fusion') {
+      const owner = stage.id === 'l4' ? 'l4_alpha_ev' : 'allocator_ev_fusion'
+      const evaluatedRow = (evProspectiveRows.value ?? []).find(row => row.model_name === owner)
+      await projectExpectedReturnNavMaturity(stage,
+        evaluatedRow,
+        requestedDate, Boolean(evProspectiveRows.error))
+      stage.candidate_versions = compareNavCandidateVersions(evCandidates.get(owner),
+        evaluatedRow ? adaptExpectedReturnCandidate(evaluatedRow as ExpectedReturnCandidateDbRow) : undefined,
+        stage.nav_gate, Boolean(evRows.error), Boolean(evProspectiveRows.error))
+    }
     const history = historyByStage.get(stage.id)
     stage.history = (history?.rows ?? [])
       .filter((row) => validDate(String(row.evidence_date ?? '')))
@@ -1785,6 +1865,7 @@ export async function buildPipelineDecisionMaturityPacket(
   const thresholdCoverageReady = thresholdStage?.status === 'ready' || thresholdStage?.status === 'serving'
   const currentRouteCoverageComplete = currentReferenceRows > 0 && currentRouteRows === currentReferenceRows
   const routePromoted = Boolean(promotedRoute?.run_id && promotedRoute.candidate_route_version === STRATEGY_ROUTE_CHALLENGER_VERSION)
+  const routeUseObserved = promotedRoute?.artifact_version !== ROUTE_NAV_ARTIFACT_VERSION || routeStage?.status === 'serving'
   const bundleBlockers = [...new Set([
     ...(thresholdStage?.blockers ?? []),
     ...(!currentRouteCoverageComplete ? ['current_day_challenger_route_incomplete'] : []),
@@ -1793,10 +1874,12 @@ export async function buildPipelineDecisionMaturityPacket(
   ])]
   const strategyRouteBundle: StrategyRouteBundleMaturity = {
     version: STRATEGY_ROUTE_CHALLENGER_VERSION,
-    status: routePromoted && thresholdCoverageReady && currentRouteCoverageComplete
+    status: routePromoted && routeUseObserved && thresholdCoverageReady && currentRouteCoverageComplete
       ? 'serving'
       : !thresholdCoverageReady || !currentRouteCoverageComplete
         ? 'blocked'
+        : promotedRoute?.artifact_version === ROUTE_NAV_ARTIFACT_VERSION
+          ? routeStage?.status ?? 'unavailable'
         : route?.status === 'pending_maturity'
           ? 'collecting'
           : route?.status === 'pass'
@@ -1804,14 +1887,16 @@ export async function buildPipelineDecisionMaturityPacket(
             : route?.status === 'fail'
               ? 'failed_quality'
               : 'unavailable',
-    contribution_mode: routePromoted && thresholdCoverageReady && currentRouteCoverageComplete ? 'production' : 'shadow',
+    contribution_mode: routePromoted && routeUseObserved && thresholdCoverageReady && currentRouteCoverageComplete ? 'production' : 'shadow',
     threshold_coverage_ready: thresholdCoverageReady,
     current_route_coverage_complete: currentRouteCoverageComplete,
     current_route_rows: currentRouteRows,
     current_reference_rows: currentReferenceRows,
     route_calibration_status: route?.status ?? null,
-    route_mature_dates: finite(route?.date_count),
-    route_required_dates: STRATEGY_ROUTE_MIN_TOTAL_DATES,
+    route_mature_dates: promotedRoute?.artifact_version === ROUTE_NAV_ARTIFACT_VERSION
+      ? routeStage?.progress?.current ?? null : finite(route?.date_count),
+    route_required_dates: promotedRoute?.artifact_version === ROUTE_NAV_ARTIFACT_VERSION
+      ? routeStage?.progress?.required ?? null : STRATEGY_ROUTE_MIN_TOTAL_DATES,
     promoted_run_id: routePromoted ? promotedRoute.run_id : null,
     blockers: bundleBlockers,
     maturity_projection: routeMaturityProjection,
@@ -1820,15 +1905,16 @@ export async function buildPipelineDecisionMaturityPacket(
   return {
     strategy_route_bundle: strategyRouteBundle,
     ipo_shadow: await ipoShadowPromise,
+    paired_nav_shadow: await pairedNavPromise,
     schema_version: 'pipeline-decision-maturity-v2',
     requested_date: requestedDate,
     generated_at: new Date().toISOString(),
-    current_selection_signal_owner: servingState?.selection_signal_owner ?? 'score_v2_formal_ml',
+    current_selection_signal_owner: servingState?.selection_signal_owner ?? 'allocator_opb_policy',
     current_expected_return_owner: servingState?.expected_return_owner ?? null,
-    current_allocation_utility_owner: servingState?.allocation_utility_owner ?? 'formal_ml_buy_admission',
+    current_allocation_utility_owner: servingState?.allocation_utility_owner ?? 'risk_abstention',
     current_execution_owner: servingState?.execution_owner ?? 'allocator_opb_policy',
     execution_scope: servingState?.execution_scope ?? 'recommendation_allocation_only_no_order_submission',
-    action_gate: servingState?.action_gate ?? 'selection_signal_owner',
+    action_gate: servingState?.action_gate ?? 'validated_expected_return_required',
     summary: {
       production: stages.filter((stage) => stage.contribution_mode === 'production').length,
       shadow: stages.filter((stage) => stage.contribution_mode === 'shadow').length,

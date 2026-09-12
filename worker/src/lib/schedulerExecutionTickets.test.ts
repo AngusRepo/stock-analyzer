@@ -67,6 +67,27 @@ async function main(): Promise<void> {
     })
     assert.equal(completed.status, 'success')
     assert.ok(completed.completed_at)
+    await db.prepare("UPDATE scheduler_execution_tickets_v1 SET updated_at='2026-08-23 21:00:00' WHERE ticket_id=?")
+      .bind(root.ticket_id).run()
+    const frozenTerminal = await db.prepare('SELECT * FROM scheduler_execution_tickets_v1 WHERE ticket_id=?').bind(root.ticket_id).first()
+    const repeated = await updateSchedulerExecutionTicket(db, {
+      ticketId: root.ticket_id, runId: root.run_id, status: 'success', authority: 'scheduler_http',
+      summary: 'duplicate delivery must not replace the original receipt',
+    })
+    assert.deepEqual(repeated, frozenTerminal)
+    await db.prepare('CREATE TABLE pipeline_stage_runs(business_date TEXT,stage TEXT,canonical_run_id TEXT)').run()
+    await db.prepare("INSERT INTO pipeline_stage_runs VALUES(?,'pipeline_execution','matching-canonical')").bind(root.business_date).run()
+    assert.deepEqual(await updateSchedulerExecutionTicket(db, {
+      ticketId: root.ticket_id, runId: root.run_id, status: 'success', authority: 'scheduler_http',
+      expectedPipelineCanonicalRunId: 'matching-canonical',
+    }), frozenTerminal)
+    await assert.rejects(updateSchedulerExecutionTicket(db, {
+      ticketId: root.ticket_id, runId: root.run_id, status: 'success', authority: 'scheduler_http',
+      expectedPipelineCanonicalRunId: 'wrong-canonical',
+    }), /transition rejected/)
+    await assert.rejects(updateSchedulerExecutionTicket(db, {
+      ticketId: root.ticket_id, runId: 'wrong-physical-run', status: 'success', authority: 'scheduler_http',
+    }), /transition rejected/)
     await assert.rejects(
       updateSchedulerExecutionTicket(db, {
         ticketId: root.ticket_id,

@@ -1,4 +1,5 @@
 import type { ConceptBuzzResult } from './pttBuzz'
+import { screenerOverlayCutoff } from './screenerOverlayReads'
 
 export type ThemeEvidenceSourceId =
   | 'ptt'
@@ -115,17 +116,22 @@ export function buzzResultsToThemeEvidence(
   }))
 }
 
-export async function loadRuntimeThemeSignals(db: D1Database, date: string): Promise<ThemeEvidenceInput[]> {
+export async function loadRuntimeThemeSignals(db: D1Database, date: string,
+  options: { strict?: boolean; observedAt?: string } = {}): Promise<ThemeEvidenceInput[]> {
   try {
-    const { results } = await db.prepare(`
+    const cutoff = options.strict || options.observedAt
+      ? screenerOverlayCutoff(date, options.observedAt ?? new Date().toISOString()).cutoff : null
+    const timeClause = cutoff ? 'AND julianday(generated_at) < julianday(?) AND julianday(created_at) < julianday(?)' : ''
+    const response = await db.prepare(`
       SELECT concept, score, sentiment_avg, source, evidence_count, top_titles, allowed_use, decision_effect
       FROM theme_signals
       WHERE date >= date(?, '-4 days')
         AND date <= date(?)
+        ${timeClause}
         AND source NOT IN ('finnhub_news', 'company_ir_rss', 'gdelt_events')
       ORDER BY date DESC, score DESC
       LIMIT 500
-    `).bind(date, date).all<{
+    `).bind(date, date, ...(cutoff ? [cutoff, cutoff] : [])).all<{
       concept: string
       score: number | null
       sentiment_avg: number | null
@@ -135,7 +141,8 @@ export async function loadRuntimeThemeSignals(db: D1Database, date: string): Pro
       allowed_use: string | null
       decision_effect: string | null
     }>()
-    return (results ?? []).map(row => {
+    if (options.strict && (!response.success || !Array.isArray(response.results))) throw new Error('theme_signals_query_failed')
+    return (response.results ?? []).map(row => {
       let topPosts: string[] = []
       try {
         const parsed = JSON.parse(row.top_titles || '[]')
@@ -155,6 +162,7 @@ export async function loadRuntimeThemeSignals(db: D1Database, date: string): Pro
       }
     })
   } catch (error) {
+    if (options.strict) throw error
     console.warn('[ThemeEvidence] theme_signals unavailable, using live buzz only:', error)
     return []
   }

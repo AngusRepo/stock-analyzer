@@ -1,3 +1,5 @@
+import { screenerOverlayCutoff } from './screenerOverlayReads'
+
 export type ExternalEvidenceRiskAction = 'none' | 'penalize' | 'veto'
 
 export interface ExternalEvidenceRiskRow {
@@ -102,42 +104,64 @@ export async function loadExternalEvidenceRiskOverlays(
   db: D1Database,
   date: string,
   symbols: string[],
+  observedAt = new Date().toISOString(),
 ): Promise<Map<string, SymbolExternalEvidenceRiskOverlay>> {
-  const overlays = new Map<string, SymbolExternalEvidenceRiskOverlay>()
-  const uniqueSymbols = [...new Set(symbols.map(cleanSymbol).filter(Boolean))]
-  if (!uniqueSymbols.length) return overlays
+  return (await readExternalEvidenceRiskSnapshot(db, date, symbols, observedAt)).overlays
+}
 
-  try {
+/** Raw admitted evidence plus its existing classifier output, frozen together.
+ * No row cap may silently drop a safety event based on other stocks in a batch.
+ * Any query failure rejects the whole observation, not a partial-success map.
+ */
+export async function readExternalEvidenceRiskSnapshot(db: D1Database, date: string, symbols: string[], observedAt: string) {
+  const observations: Array<{ symbols: string[]; rows: ExternalEvidenceRiskRow[] }> = []
+  const { start, cutoff } = screenerOverlayCutoff(date, observedAt)
+  const uniqueSymbols = [...new Set(symbols.map(cleanSymbol).filter(Boolean))]
+
     for (let i = 0; i < uniqueSymbols.length; i += 40) {
       const chunk = uniqueSymbols.slice(i, i + 40)
       const symbolPredicates = chunk.map(() => 'symbols_json LIKE ?').join(' OR ')
       const params = [
+        start,
+        cutoff,
+        cutoff,
         date,
         date,
-        date,
-        date,
+        cutoff,
         ...chunk.map(symbol => `%"${symbol}"%`),
       ]
-      const { results } = await db.prepare(`
+      const result = await db.prepare(`
         SELECT source_id, source_kind, title, published_at, symbols_json,
                allowed_use, decision_effect, source_quality_score, entity_linking_confidence
           FROM external_evidence_items
          WHERE accepted = 1
-           AND date(published_at) >= date(?, '-10 days')
-           AND date(published_at) <= date(?)
+           AND julianday(published_at) >= julianday(?, '-10 days')
+           AND julianday(published_at) < julianday(?)
+           AND julianday(created_at) < julianday(?)
            AND EXISTS (
              SELECT 1
                FROM source_quality_metrics quality
               WHERE quality.source = external_evidence_items.source_id
                 AND date(quality.as_of_date) >= date(?, '-4 days')
                 AND date(quality.as_of_date) <= date(?)
+                AND julianday(quality.created_at) < julianday(?)
                 AND quality.freshness_status IN ('present', 'degraded_context_only')
            )
            AND (${symbolPredicates})
-         ORDER BY source_quality_score DESC, entity_linking_confidence DESC, published_at DESC
-         LIMIT 240
+         ORDER BY source_quality_score DESC, entity_linking_confidence DESC, published_at DESC, id DESC
       `).bind(...params).all<ExternalEvidenceRiskRow>()
+      if (!result.success || !Array.isArray(result.results)) throw new Error('external_risk_query_failed')
+      const results = result.results
+      observations.push({ symbols: chunk, rows: results })
 
+    }
+  return { overlays: materializeExternalEvidenceRisk(observations), observations, observed_at: observedAt, cutoff }
+}
+
+/** The same classifier/merge owner for actual reads and immutable replay. */
+export function materializeExternalEvidenceRisk(observations: Array<{ symbols: string[]; rows: ExternalEvidenceRiskRow[] }>) {
+  const overlays = new Map<string, SymbolExternalEvidenceRiskOverlay>()
+  for (const { symbols: chunk, rows: results } of observations) {
       for (const row of results ?? []) {
         const risk = classifyExternalEvidenceRisk(row)
         if (!risk) continue
@@ -147,9 +171,5 @@ export async function loadExternalEvidenceRiskOverlays(
         }
       }
     }
-  } catch {
-    return overlays
-  }
-
   return overlays
 }

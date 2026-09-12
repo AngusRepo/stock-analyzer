@@ -31,6 +31,7 @@ type StrategyLearningClosureRow = {
   persisted_decision_rows: number
   production_authority_intent: number
   policy_closure_status: string
+  policy_closure_reason?: string | null
   completed_at: string | null
 }
 
@@ -69,7 +70,7 @@ async function resolveCanonicalRunId(
   const row = await db.prepare(`
     SELECT canonical_run_id
       FROM pipeline_stage_runs
-     WHERE business_date=? AND stage='post_verify_chain'
+     WHERE business_date=? AND stage='pipeline_execution'
      LIMIT 1
   `).bind(businessDate).first<{ canonical_run_id?: string | null }>()
   return String(row?.canonical_run_id ?? '').trim() || null
@@ -123,29 +124,28 @@ export async function closeEveningChainRootIfComplete(
       summary: `evening-chain durable root absent date=${businessDate}`,
     }
   }
-  const requestedCanonicalRunId = String(input.canonicalRunId ?? '').trim()
+  const canonicalRunId = await resolveCanonicalRunId(db, businessDate, input.canonicalRunId)
   const recoverableTerminalRoot = ['error', 'blocked'].includes(root.status)
-    && Boolean(requestedCanonicalRunId)
+    && Boolean(canonicalRunId)
   if (root.status === 'success' || (terminalFailure(root.status) && !recoverableTerminalRoot)) {
     return {
       status: root.status === 'success' ? 'closed_success' : 'closed_error',
       business_date: businessDate,
-      canonical_run_id: requestedCanonicalRunId || null,
+      canonical_run_id: canonicalRunId,
       root_ticket_id: root.ticket_id,
       blockers: root.status === 'success' ? [] : [root.last_error || `root_${root.status}`],
       summary: root.last_summary || `evening-chain durable root already ${root.status}`,
     }
   }
 
-  const canonicalRunId = await resolveCanonicalRunId(db, businessDate, input.canonicalRunId)
   if (!canonicalRunId) {
     return {
       status: 'pending',
       business_date: businessDate,
       canonical_run_id: null,
       root_ticket_id: root.ticket_id,
-      blockers: ['post_verify_canonical_run_id_missing'],
-      summary: `evening-chain root pending date=${businessDate} blocker=post_verify_canonical_run_id_missing`,
+      blockers: ['pipeline_execution_canonical_run_id_missing'],
+      summary: `evening-chain root pending date=${businessDate} blocker=pipeline_execution_canonical_run_id_missing`,
     }
   }
 
@@ -160,7 +160,7 @@ export async function closeEveningChainRootIfComplete(
       SELECT canonical_run_id, producer_run_id, status,
              expected_candidates, processed_candidates,
              expected_decision_rows, persisted_decision_rows,
-             production_authority_intent, policy_closure_status, completed_at
+             production_authority_intent, policy_closure_status, policy_closure_reason, completed_at
         FROM strategy_learning_runs
        WHERE business_date=? AND canonical_run_id=?
        LIMIT 1
@@ -170,6 +170,14 @@ export async function closeEveningChainRootIfComplete(
   const stageByName = new Map(
     (stageResult.results ?? []).map((row) => [row.stage as RequiredStage, row]),
   )
+  const execution = stageByName.get('pipeline_execution')
+  if (!execution || execution.canonical_run_id !== canonicalRunId) {
+    return {
+      status: 'pending', business_date: businessDate, canonical_run_id: canonicalRunId,
+      root_ticket_id: root.ticket_id, blockers: ['pipeline_execution:canonical_run_id_mismatch'],
+      summary: `evening-chain stale closure ignored date=${businessDate} run_id=${canonicalRunId}`,
+    }
+  }
   const blockers: string[] = []
   let terminalError = false
   for (const stage of REQUIRED_STAGES) {
@@ -183,7 +191,8 @@ export async function closeEveningChainRootIfComplete(
     // below; forcing its canonical ID to equal the pipeline ID deadlocks root closure.
     if (stage !== 'screener_v2' && row.canonical_run_id !== canonicalRunId) {
       blockers.push(`${stage}:canonical_run_id_mismatch`)
-      terminalError = terminalError || terminalFailure(row.status)
+      // A previous attempt's terminal result cannot fail the active run.
+      // Keep waiting until this stage is owned by the current canonical run.
       continue
     }
     if (row.status !== 'success') {
@@ -249,8 +258,9 @@ export async function closeEveningChainRootIfComplete(
   }
 
   const status = blockers.length === 0 ? 'success' : 'error'
+  const historicalExclusion = learning?.policy_closure_reason?.match(/historical_excluded=\S+/)?.[0] ?? 'historical_excluded=none'
   const summary = blockers.length === 0
-    ? `evening-chain durable DAG complete date=${businessDate} run_id=${canonicalRunId} stages=${REQUIRED_STAGES.length} strategy_learning=success dataset_snapshot=success active8_oof_daily=success`
+    ? `evening-chain durable DAG complete date=${businessDate} run_id=${canonicalRunId} stages=${REQUIRED_STAGES.length} strategy_learning=success dataset_snapshot=success active8_oof_daily=success ${historicalExclusion}`
     : `evening-chain durable DAG failed date=${businessDate} run_id=${canonicalRunId} blockers=${blockers.join(',')}`
   await updateSchedulerExecutionTicket(db, {
     ticketId: root.ticket_id,
@@ -260,6 +270,7 @@ export async function closeEveningChainRootIfComplete(
     summary,
     error: blockers.length ? blockers.join(',') : undefined,
     recoverTerminalFailure: recoverableTerminalRoot && status === 'success',
+    expectedPipelineCanonicalRunId: canonicalRunId,
   })
   return {
     status: status === 'success' ? 'closed_success' : 'closed_error',

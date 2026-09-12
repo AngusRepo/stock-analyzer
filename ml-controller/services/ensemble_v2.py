@@ -14,6 +14,8 @@ from typing import Any
 
 import numpy as np
 
+from services.ensemble_qualification import qualify_directional_signal
+
 from services.active_model_policy import (
     ACTIVE_ALPHA_MODELS,
     CORE_CROSS_SECTIONAL_ALPHA_MODELS,
@@ -41,6 +43,11 @@ def _canonical_json(value: Any) -> str:
     return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"), allow_nan=False)
 
 
+def ensemble_artifact_id(payload: dict) -> str:
+    """Registry ID is derived, not inserted into the checksummed model payload."""
+    return f"active8-ensemble:{payload.get('cohort_id')}:{str(payload.get('payload_checksum'))[:16]}"
+
+
 def _finite_rank(value: object) -> float | None:
     try:
         rank = float(value)
@@ -60,11 +67,15 @@ def _formal_model_scores(pred: dict) -> dict[str, float]:
     }
 
 
-def build_formal_model_input_contract(pred: dict | None) -> dict[str, Any]:
+def build_formal_model_input_contract(pred: dict | None, *, selected_models: list[str] | None = None) -> dict[str, Any]:
     prediction = pred if isinstance(pred, dict) else {}
     scores = _formal_model_scores(prediction)
     lineage = prediction.get("model_score_lineage") if isinstance(prediction.get("model_score_lineage"), dict) else {}
-    required = [name for name in CORE_CROSS_SECTIONAL_ALPHA_MODELS]
+    if selected_models is None and lineage.get('coverage_policy') == 'validated-bundle-selected-core-sequence-missingness-v1' and lineage.get('ensemble_payload_checksum'):
+        selected_models = lineage.get('selected_models')
+    bundle_selected = isinstance(selected_models, list) and bool(selected_models) and set(selected_models).issubset(set(ACTIVE_ALPHA_MODELS))
+    required = [name for name in CORE_CROSS_SECTIONAL_ALPHA_MODELS if not bundle_selected or name in selected_models]
+    minimum_core_models = len(required) if bundle_selected else MIN_REQUIRED_CROSS_SECTIONAL_MODELS
     missing_core = [name for name in required if name not in scores]
     missing_optional = [name for name in OPTIONAL_SEQUENCE_ALPHA_MODELS if name not in scores]
     lineage_blockers: list[str] = []
@@ -76,13 +87,13 @@ def build_formal_model_input_contract(pred: dict | None) -> dict[str, Any]:
         lineage_blockers.append("target_semantic_mismatch")
     if lineage.get("complete") is not True:
         lineage_blockers.extend(str(value) for value in (lineage.get("blockers") or []))
-    if len(required) < MIN_REQUIRED_CROSS_SECTIONAL_MODELS:
+    if len(required) < minimum_core_models:
         lineage_blockers.append("required_cross_sectional_model_count_below_minimum")
     return {
         "schema_version": "formal-layer3-active8-input-contract-v4",
         "active_models": list(ACTIVE_ALPHA_MODELS),
         "required_models": required,
-        "minimum_required_cross_sectional_models": MIN_REQUIRED_CROSS_SECTIONAL_MODELS,
+        "minimum_required_cross_sectional_models": minimum_core_models,
         "optional_sequence_models": list(OPTIONAL_SEQUENCE_ALPHA_MODELS),
         "available_models": [name for name in ACTIVE_ALPHA_MODELS if name in scores],
         "missing_models": [name for name in ACTIVE_ALPHA_MODELS if name not in scores],
@@ -91,7 +102,7 @@ def build_formal_model_input_contract(pred: dict | None) -> dict[str, Any]:
         "model_availability": {name: name in scores for name in ACTIVE_ALPHA_MODELS},
         "full_active8_coverage": len(scores) == len(ACTIVE_ALPHA_MODELS),
         "complete": not missing_core and not lineage_blockers,
-        "coverage_policy": "core5-required-sequence-missingness-learned-v1",
+        "coverage_policy": "validated-bundle-selected-core-sequence-missingness-v1" if bundle_selected else "core5-required-sequence-missingness-learned-v1",
         "finite_scores_required": True,
         "score_semantic_version": lineage.get("semantic_version"),
         "target_semantic_version": lineage.get("target_semantic_version"),
@@ -113,7 +124,9 @@ def _isotonic_predict(xs: list[float], ys: list[float], value: float) -> float:
     return float(ys[left] + ratio * (ys[right] - ys[left]))
 
 
-def validate_active8_ensemble_artifact(payload: dict[str, Any], pool_models: dict[str, dict[str, Any]]) -> None:
+def validate_active8_ensemble_candidate(payload: dict[str, Any]) -> None:
+    """Executable immutable model + truthful diagnostics, never serving approval."""
+    from services.active8_ensemble_artifact import OFFLINE_DIAGNOSTIC_GATES
     unsigned = {key: value for key, value in payload.items() if key != "payload_checksum"}
     checksum = hashlib.sha256(_canonical_json(unsigned).encode("utf-8")).hexdigest()
     fit = payload.get("fit") if isinstance(payload.get("fit"), dict) else {}
@@ -134,16 +147,37 @@ def validate_active8_ensemble_artifact(payload: dict[str, Any], pool_models: dic
             float(value) < -1e-12
             for value in (fit.get("coefficients") or [])[: len(ACTIVE_ALPHA_MODELS)]
         )
-        or validation.get("decision") != "PASS"
-        or float(validation.get("rank_ic_equal_date_market_lcb90") or 0.0) <= 0.0
-        or float(validation.get("top_bottom_net_return_spread_lcb90") or 0.0) <= 0.0
-        or validation.get("failed_gates")
+        or validation.get("decision") not in {"PASS", "FAIL"}
+        or not isinstance(validation.get("failed_gates"), list)
+        or any(not isinstance(reason, str) or reason not in OFFLINE_DIAGNOSTIC_GATES
+               for reason in validation.get("failed_gates", []))
+        or (validation.get("decision") == "PASS") != (not validation.get("failed_gates"))
         or policy.get("schema_version") != SIGNAL_POLICY_VERSION
         or policy.get("top_k") is not None
         or policy.get("buy_rule") != "conformal_lower_bound_gt_zero"
         or policy.get("sell_rule") != "conformal_upper_bound_lt_zero"
     ):
         raise RuntimeError("active8_ensemble_artifact_contract_invalid")
+    if validation['decision'] == 'PASS' and (
+        float(validation.get('rank_ic_equal_date_market_lcb90') or 0.) <= 0.
+        or float(validation.get('top_bottom_net_return_spread_lcb90') or 0.) <= 0.
+    ):
+        raise RuntimeError('active8_ensemble_diagnostic_contract_invalid')
+    calibration = payload.get('calibration') or {}
+    quantiles = calibration.get('absolute_residual_quantiles') or {}
+    xs = calibration.get('probability_x_thresholds')
+    ys = calibration.get('probability_y_thresholds')
+    def finite(value):
+        return isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(value)
+    if (not finite(fit.get('intercept')) or not all(finite(v) for v in fit['coefficients'])
+            or policy.get('buy_coverage') != .9 or policy.get('strong_coverage') != .95
+            or not finite(quantiles.get('0.9')) or not finite(quantiles.get('0.95'))
+            or not 0 <= quantiles['0.9'] <= quantiles['0.95']
+            or not isinstance(xs, list) or not isinstance(ys, list) or len(xs) < 2 or len(xs) != len(ys)
+            or not all(finite(v) for v in [*xs, *ys])
+            or any(a >= b for a, b in zip(xs, xs[1:]))
+            or any(a > b for a, b in zip(ys, ys[1:])) or any(not 0 <= y <= 1 for y in ys)):
+        raise RuntimeError('active8_ensemble_calibration_contract_invalid')
     selected = payload.get("selected_models")
     excluded = payload.get("excluded_models")
     coefficient = [float(value) for value in fit.get("coefficients") or []]
@@ -173,7 +207,25 @@ def validate_active8_ensemble_artifact(payload: dict[str, Any], pool_models: dic
             or abs(coefficient[index + len(ACTIVE_ALPHA_MODELS)]) > 1e-12
         ):
             raise RuntimeError(f"active8_ensemble_excluded_model_has_weight:{model}")
-    for model in selected:
+
+
+def validate_active8_ensemble_payload(payload: dict[str, Any]) -> None:
+    """Legacy serving validation; candidate admission alone grants no authority."""
+    validate_active8_ensemble_candidate(payload)
+    if payload['validation']['decision'] != 'PASS':
+        raise RuntimeError('active8_ensemble_artifact_contract_invalid')
+
+
+def validate_active8_ensemble_artifact(payload: dict[str, Any], pool_models: dict[str, dict[str, Any]], *, nav_authority=None) -> None:
+    if nav_authority is None:
+        validate_active8_ensemble_payload(payload)
+    else:
+        from services.active8_nav_inference import permits_inference
+        validate_active8_ensemble_candidate(payload)
+        if not permits_inference(nav_authority, artifact=payload, pool_models=pool_models):
+            raise RuntimeError('active8_nav_inference_authority_invalid')
+    base = payload['base_artifacts']
+    for model in payload['selected_models']:
         expected = base.get(model) if isinstance(base.get(model), dict) else {}
         actual = pool_models.get(model) if isinstance(pool_models.get(model), dict) else {}
         actual_identity = {
@@ -186,21 +238,35 @@ def validate_active8_ensemble_artifact(payload: dict[str, Any], pool_models: dic
             "version": str(expected.get("version") or ""),
             "checksum": str(expected.get("checksum") or "").lower(),
         }
-        if actual_identity != expected_identity or actual.get("serving_eligible") is not True:
+        if actual_identity != expected_identity:
             raise RuntimeError(f"active8_ensemble_base_identity_mismatch:{model}")
+        if actual.get('serving_eligible') is not True:
+            reason = actual.get('serving_block_reason') or 'eligibility_missing'
+            raise RuntimeError(f'active8_ensemble_base_not_serving:{model}:{reason}')
 
 
 def attach_ensemble_v2(
     pred: dict,
     artifact: dict[str, Any],
     pool_models: dict[str, dict[str, Any]],
+    *, nav_authority=None,
 ) -> None:
-    formal = build_formal_model_input_contract(pred)
+    pred.pop('ensemble_v2', None)
+    pred.pop('ensemble_v2_error', None)
+    validate_active8_ensemble_artifact(artifact, pool_models, nav_authority=nav_authority)
+    formal = build_formal_model_input_contract(pred, selected_models=artifact['selected_models'])
     pred["formal_layer3_contract"] = formal
     if not formal["complete"]:
         pred["ensemble_v2_error"] = "formal_layer3_contract_incomplete"
         return
-    validate_active8_ensemble_artifact(artifact, pool_models)
+    pred['ensemble_v2'] = _evaluate_validated_ensemble(pred, artifact, formal)
+    if nav_authority is not None:
+        pred['ensemble_v2'].update(adoption_basis='committed_paired_nav',
+            nav_inference_context_checksum=nav_authority.context_checksum)
+
+
+def _evaluate_validated_ensemble(pred: dict, artifact: dict, formal: dict) -> dict:
+    """Pure shared arithmetic; callers own artifact/input validation and scope."""
     scores = _formal_model_scores(pred)
     values = [scores.get(name, 0.5) for name in ACTIVE_ALPHA_MODELS]
     available = [1.0 if name in scores else 0.0 for name in ACTIVE_ALPHA_MODELS]
@@ -224,6 +290,8 @@ def attach_ensemble_v2(
         signal = "SELL"
     else:
         signal = "HOLD"
+    signal_decision = qualify_directional_signal(signal, artifact)
+    signal = signal_decision['signal']
     probability = _isotonic_predict(
         [float(value) for value in calibration["probability_x_thresholds"]],
         [float(value) for value in calibration["probability_y_thresholds"]],
@@ -244,17 +312,17 @@ def attach_ensemble_v2(
         if name in scores
     ]
     confidence = probability if signal in {"BUY", "STRONG_BUY"} else 1.0 - probability if signal in {"SELL", "STRONG_SELL"} else max(probability, 1.0 - probability)
-    pred["ensemble_v2"] = {
+    return {
         "schema_version": ENSEMBLE_V2_SCHEMA_VERSION,
         "semantic_version": ENSEMBLE_V2_SEMANTIC_VERSION,
-        "artifact_id": f"active8-ensemble:{artifact.get('cohort_id')}:{str(artifact.get('payload_checksum'))[:16]}",
+        "artifact_id": ensemble_artifact_id(artifact),
         "artifact_checksum": artifact.get("payload_checksum"),
         "cohort_id": artifact.get("cohort_id"),
         "base_artifact_set_checksum": artifact.get("base_artifact_set_checksum"),
         "target_semantic_version": policy.get("target_semantic_version"),
         "lineage_status": "complete",
         "lineage_blockers": [],
-        "signal": signal,
+        **signal_decision,
         "signal_source": "active8_ensemble_artifact",
         "confidence": round(max(0.0, min(1.0, confidence)), 6),
         "probability_positive_net_return": round(probability, 6),

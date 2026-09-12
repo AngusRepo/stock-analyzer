@@ -43,12 +43,29 @@ def resolve_portfolio_bandit_arms(
     expected_return_owner: str | None,
     expected_return_contract_version: str | None,
     expected_return_semantic: str | None,
+    expected_return_model_version: str | None = None,
+    expected_return_trained_until: str | None = None,
 ) -> tuple[tuple[PortfolioBanditArm, ...], dict[str, Any]]:
     """Apply a validated, owner-specific replay prior without changing arm knobs."""
 
     owner = str(expected_return_owner or "").strip()
     if not isinstance(artifact, dict):
         return DEFAULT_ARMS, {"status": "default_static_prior", "reason": "artifact_missing"}
+    if artifact.get('schema_version') == 'opb-arm-prior-artifact-v3':
+        from services.opb_nav_control import resolve_nav_control
+        grant, reason = resolve_nav_control(artifact, owner=expected_return_owner,
+            contract=expected_return_contract_version, semantic=expected_return_semantic,
+            model_version=expected_return_model_version, trained_until=expected_return_trained_until)
+        if grant is None:
+            return DEFAULT_ARMS, {'status': 'default_static_prior', 'reason': reason,
+                'production_control_ready': False, 'control_authority': 'original_nav_publication'}
+        return grant.arms, {'status': 'artifact_loaded', 'artifact_id': grant.artifact_id,
+            'model_version': artifact['model_version'], 'production_control_ready': True,
+            'control_authority': 'original_nav_publication',
+            'publication_receipt_checksum': grant.receipt_checksum,
+            'candidate_checksum': grant.checksum, 'expected_return_owner': artifact['expected_return_owner'],
+            'source_expected_return_contract_version': artifact['source_expected_return_contract_version'],
+            'source_expected_return_semantic': artifact['source_expected_return_semantic']}
     validation = artifact.get("validation") if isinstance(artifact.get("validation"), dict) else {}
     artifact_owner = str(artifact.get("expected_return_owner") or "").strip()
     if str(validation.get("decision") or "").upper() != "PASS":

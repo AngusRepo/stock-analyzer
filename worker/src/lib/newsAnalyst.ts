@@ -1,3 +1,4 @@
+import { paperExecutionNow } from './paperExecutionScope'
 import { databaseForDataDomain } from './dataDomainRegistry'
 /**
  * newsAnalyst.ts — Daily macro news analyst agent
@@ -223,7 +224,7 @@ function parseReportJson(raw: string): Omit<NewsAnalystReport, 'date' | 'source'
  * morning-setup can still consume (bias=neutral, empty sector_bias).
  */
 export async function runDailyNewsAnalysis(env: NewsAnalystEnv): Promise<NewsAnalystReport> {
-  const today = new Date(Date.now() + 8 * 3600_000).toISOString().slice(0, 10)
+  const today = new Date(paperExecutionNow() + 8 * 3600_000).toISOString().slice(0, 10)
 
   const ctx = await gatherContext(env, today)
   const prompts = buildPrompts(today, ctx)

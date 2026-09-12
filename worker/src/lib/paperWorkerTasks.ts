@@ -1,3 +1,4 @@
+import { paperExecutionNow, paperAccountId, scopedPaperAccountId } from './paperExecutionScope'
 import type { Bindings } from '../types'
 import { formatDailySummary, sendDiscordNotification } from './notify'
 import { recordSellSettlement } from './paperMarketData'
@@ -8,38 +9,41 @@ import { calcCommission, calcTax, resolveMarketSellFill } from './paperTradeMath
 import { buildSellOrderNote } from './paperOrderAccounting'
 import { recordPaperExecutionEvent } from './paperExecutionEvents'
 import { reconcilePendingBuyDebates, setupMorningPendingBuys } from './pendingBuyOrchestrator'
-import { computePaperTotalValue, getUnsettledSettlementSummary } from './paperAccountValue'
+import { computePaperTotalValue, getUnsettledSettlementSummary, requireCompletePaperPositionValue } from './paperAccountValue'
 import { buildStockVisionSellOrderIntent } from './stockvisionOrderIntent'
 import { writeDailyExecutionPaperClosureArtifacts } from './dailyExecutionPaperLineage'
 import { databaseForDataDomain } from './dataDomainRegistry'
 import { paperDomainDatabase } from './paperDomainDatabase'
+import { outstandingCorporateEntitlements, corporateReceivableBounds } from './paperCorporateActions'
 
-const ACCOUNT_ID = 1
 
 export type DailySnapshotOptions = {
   date?: string
+  allowUnpricedRights?: boolean
 }
 
 function snapshotDate(raw?: string): string {
   const value = String(raw ?? '').trim()
   if (/^\d{4}-\d{2}-\d{2}$/.test(value)) return value
-  return new Date(Date.now() + 8 * 3600_000).toISOString().slice(0, 10)
+  return new Date(paperExecutionNow() + 8 * 3600_000).toISOString().slice(0, 10)
 }
 
-export async function runDailySnapshot(env: Bindings, options: DailySnapshotOptions = {}): Promise<{ date: string }> {
+export async function runDailySnapshot(env: Bindings, options: DailySnapshotOptions = {}) {
   console.log('[Snapshot] Starting...')
   const today = snapshotDate(options.date)
   const paperDb = paperDomainDatabase(env)
 
-  const updatedAcc = await paperDb.prepare('SELECT cash, initial_cash FROM paper_accounts WHERE id=?').bind(ACCOUNT_ID).first<any>()
-  if (!updatedAcc) return
+  const updatedAcc = await paperDb.prepare('SELECT cash, initial_cash FROM paper_accounts WHERE id=?').bind(paperAccountId()).first<any>()
+  if (!updatedAcc) throw new Error('paper_snapshot_account_missing')
 
   const { results: finalPos } = await paperDb.prepare(
     'SELECT symbol, shares FROM paper_positions WHERE account_id=? AND shares>0',
-  ).bind(ACCOUNT_ID).all<any>()
+  ).bind(paperAccountId()).all<any>()
 
-  const finalSymbols = (finalPos ?? []).map((p: any) => p.symbol)
-  const postCloseRefresh = await refreshOpenPositionPostClosePriceCache(env, { tradeDate: today })
+  const corporateRights = await outstandingCorporateEntitlements(paperDb, paperAccountId())
+  const stockRights = corporateRights.filter(row => row.shares_due > 0 || row.kind === 'subscription').map(row => row.symbol)
+  const finalSymbols = [...new Set([...(finalPos ?? []).map((p: any) => p.symbol), ...stockRights])]
+  const postCloseRefresh = await refreshOpenPositionPostClosePriceCache(env, { tradeDate: today, additionalSymbols: stockRights })
   const finalPriceMap = new Map<string, number>(
     [...postCloseRefresh.prices.entries()].map(([symbol, snapshot]) => [symbol, snapshot.price]),
   )
@@ -64,18 +68,43 @@ export async function runDailySnapshot(env: Bindings, options: DailySnapshotOpti
     console.log(`[Snapshot] price coverage post_close=${postCloseRefresh.refreshed}/${finalSymbols.length} eod_fallback=0/0`)
   }
 
-  let finalPosValue = 0
-  for (const p of (finalPos ?? [])) {
-    const px = finalPriceMap.get(p.symbol)
-    if (px) finalPosValue += px * p.shares
-  }
+  // Never persist a partial valuation as a genuine account loss. Retrying after
+  // prices arrive is safe; no snapshot/closure has been written at this point.
+  const finalPosValue = requireCompletePaperPositionValue(finalPos ?? [], finalPriceMap)
 
-  const settlement = await getUnsettledSettlementSummary(paperDb, ACCOUNT_ID)
+  const settlement = await getUnsettledSettlementSummary(paperDb, paperAccountId())
+  const bounds = corporateReceivableBounds(corporateRights, finalPriceMap)
+  const corporateValue = bounds.lower
   const totalValue = computePaperTotalValue({
     settledCash: updatedAcc.cash,
     positionsValue: finalPosValue,
     netUnsettledSettlement: settlement.netUnsettledSettlement,
+    corporateReceivablesValue: corporateValue,
   })
+  const valuation = {
+    settled_cash: updatedAcc.cash, cash: updatedAcc.cash + settlement.netUnsettledSettlement,
+    positions: Object.fromEntries((finalPos ?? []).map((p: any) => [p.symbol, p.shares])),
+    corporate_receivables: corporateRights,
+    corporate_receivables_value: bounds.complete ? corporateValue : null,
+    marks: Object.fromEntries(finalPriceMap), nav: bounds.complete ? totalValue : null,
+    nav_lower_bound: totalValue, nav_upper_bound: totalValue + bounds.upper - bounds.lower,
+    unpriced_rights: bounds.unpricedRights, valuation_complete: bounds.complete,
+  }
+  if (!bounds.complete) {
+    if (!options.allowUnpricedRights || scopedPaperAccountId() === null) {
+      // Persist uncertainty, never an invented exact NAV or green closure.
+      // Exits, settlements and rights expiry have independent cron owners.
+      await recordPaperExecutionEvent(env, {
+        tradeDate: today, eventType: 'snapshot_audit', status: 'pending_valuation',
+        reason: 'paper_subscription_fair_value_unobservable', detail: valuation,
+        source: 'daily-snapshot',
+      })
+      throw new Error('paper_subscription_fair_value_unobservable:' + bounds.unpricedRights.join(','))
+    }
+    // Only the isolated native runner owns accounting-only continuation. Do
+    // not write an invented NAV into formal snapshots or a green closure.
+    return { date: today, valuation }
+  }
   const pnl = totalValue - updatedAcc.initial_cash
   const pnlPct = updatedAcc.initial_cash > 0 ? pnl / updatedAcc.initial_cash * 100 : 0
 
@@ -90,7 +119,7 @@ export async function runDailySnapshot(env: Bindings, options: DailySnapshotOpti
 
   const { results: allSnapshots } = await paperDb.prepare(
     'SELECT total_value FROM paper_daily_snapshots WHERE account_id=? AND date < ? ORDER BY date ASC',
-  ).bind(ACCOUNT_ID, today).all<any>()
+  ).bind(paperAccountId(), today).all<any>()
   let maxDrawdownToDate: number | null = null
   if (allSnapshots && allSnapshots.length > 0) {
     let peak = updatedAcc.initial_cash
@@ -111,7 +140,7 @@ export async function runDailySnapshot(env: Bindings, options: DailySnapshotOpti
 
   const { results: recent30 } = await paperDb.prepare(
     'SELECT total_value FROM paper_daily_snapshots WHERE account_id=? AND date < ? ORDER BY date DESC LIMIT 30',
-  ).bind(ACCOUNT_ID, today).all<any>()
+  ).bind(paperAccountId(), today).all<any>()
   if (recent30 && recent30.length >= 9) {
     const values = [...recent30.map((s: any) => s.total_value as number).reverse(), totalValue]
     const returns: number[] = []
@@ -131,7 +160,7 @@ export async function runDailySnapshot(env: Bindings, options: DailySnapshotOpti
 
   const firstSnapshot = await paperDb.prepare(
     'SELECT date FROM paper_daily_snapshots WHERE account_id=? ORDER BY date ASC LIMIT 1',
-  ).bind(ACCOUNT_ID).first<any>()
+  ).bind(paperAccountId()).first<any>()
   if (firstSnapshot?.date && updatedAcc.initial_cash > 0 && totalValue > 0) {
     const d0 = new Date(firstSnapshot.date)
     const d1 = new Date(today)
@@ -156,7 +185,7 @@ export async function runDailySnapshot(env: Bindings, options: DailySnapshotOpti
       sharpe_30d=excluded.sharpe_30d,
       sortino_30d=excluded.sortino_30d, calmar=excluded.calmar, cagr=excluded.cagr
   `).bind(
-    ACCOUNT_ID,
+    paperAccountId(),
     today,
     updatedAcc.cash,
     finalPosValue,
@@ -185,13 +214,13 @@ export async function runDailySnapshot(env: Bindings, options: DailySnapshotOpti
 
   const todayOrderCount = await paperDb.prepare(
     "SELECT COUNT(*) as cnt FROM paper_orders WHERE account_id=? AND created_at >= ?",
-  ).bind(ACCOUNT_ID, today).first<any>()
+  ).bind(paperAccountId(), today).first<any>()
   void sendDiscordNotification(
     (env as any).DISCORD_WEBHOOK_URL,
     formatDailySummary(totalValue, pnlPct / 100, todayOrderCount?.cnt ?? 0, maxDrawdownToDate, sharpe30d),
   )
 
-  return { date: today }
+  return { date: today, valuation }
 }
 
 export async function runPaperAutoTrade(env: Bindings): Promise<void> {
@@ -255,15 +284,20 @@ export async function executeRescoreSell(env: Bindings, params: RescoreSellParam
   const proceeds = txValue - commission - tax
 
   const pos = await paperDb.prepare(
-    'SELECT name, entry_price, entry_date, avg_cost FROM paper_positions WHERE account_id=? AND symbol=?',
-  ).bind(ACCOUNT_ID, symbol).first<any>()
+    'SELECT name, shares, entry_price, entry_date, avg_cost FROM paper_positions WHERE account_id=? AND symbol=?',
+  ).bind(paperAccountId(), symbol).first<any>()
+
+  if (!pos || !Number.isSafeInteger(Number(pos.shares)) || Number(pos.shares) <= 0
+    || !Number.isSafeInteger(shares) || shares <= 0 || shares > Number(pos.shares)) {
+    throw new Error('rescore_sell_position_or_quantity_invalid')
+  }
 
   const name = pos?.name ?? symbol
   const entryPrice = pos?.entry_price ?? pos?.avg_cost ?? price
-  const daysHeld = pos?.entry_date ? Math.round((Date.now() - new Date(pos.entry_date).getTime()) / 86400000) : 0
-  const tradeDate = new Date(Date.now() + 8 * 3600_000).toISOString().slice(0, 10)
+  const daysHeld = pos?.entry_date ? Math.round((paperExecutionNow() - new Date(pos.entry_date).getTime()) / 86400000) : 0
+  const tradeDate = new Date(paperExecutionNow() + 8 * 3600_000).toISOString().slice(0, 10)
   const sellOrderIntent = buildStockVisionSellOrderIntent({
-    accountId: ACCOUNT_ID,
+    accountId: paperAccountId(),
     tradeDate,
     symbol,
     limitPrice: sellPrice,
@@ -279,18 +313,21 @@ export async function executeRescoreSell(env: Bindings, params: RescoreSellParam
     },
   })
   const sellNote = buildSellOrderNote(
-    { reason, entry_date: pos?.entry_date, days_held: daysHeld, order_intent: sellOrderIntent, order_legs: sellOrderIntent.orderLegs },
+    { reason, is_day_trade: false, entry_date: pos?.entry_date, days_held: daysHeld, order_intent: sellOrderIntent, order_legs: sellOrderIntent.orderLegs },
     { entryPrice, exitPrice: sellPrice, shares, commission, tax },
   )
 
   await paperDb.batch([
-    paperDb.prepare('DELETE FROM paper_positions WHERE account_id=? AND symbol=?').bind(ACCOUNT_ID, symbol),
+    shares === Number(pos.shares)
+      ? paperDb.prepare('DELETE FROM paper_positions WHERE account_id=? AND symbol=?').bind(paperAccountId(), symbol)
+      : paperDb.prepare('UPDATE paper_positions SET shares=shares-? WHERE account_id=? AND symbol=?')
+          .bind(shares, paperAccountId(), symbol),
     paperDb.prepare(`
       INSERT INTO paper_orders
         (account_id, symbol, name, side, shares, price, commission, tax, total_cost, source, signal, confidence, note)
       VALUES (?, ?, ?, 'sell', ?, ?, ?, ?, ?, ?, 'EXIT', NULL, ?)
     `).bind(
-      ACCOUNT_ID,
+      paperAccountId(),
       symbol,
       name,
       shares,
@@ -302,7 +339,7 @@ export async function executeRescoreSell(env: Bindings, params: RescoreSellParam
       sellNote,
     ),
   ])
-  const orderId = await recordSellSettlement(paperDb, env.KV, ACCOUNT_ID, symbol, proceeds)
+  const orderId = await recordSellSettlement(paperDb, env.KV, paperAccountId(), symbol, proceeds)
   await recordPaperExecutionEvent(env, {
     symbol,
     side: 'sell',

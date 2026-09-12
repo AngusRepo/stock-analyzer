@@ -1,3 +1,4 @@
+import { paperExecutionDate } from './paperExecutionScope'
 import type { Bindings } from '../types'
 import { databaseForDataDomain } from './dataDomainRegistry'
 import { resolveExpectedCompletedDataDate } from './dataQualityMonitor'
@@ -140,7 +141,7 @@ export async function writeEvidenceArtifact(
   env: Pick<Bindings, 'DB' | 'ARTIFACTS' | 'EVIDENCE_ARTIFACT_WRITER'>,
   input: EvidenceArtifactWriteInput,
 ): Promise<EvidenceArtifactManifest> {
-  const createdAt = input.createdAt ?? new Date().toISOString()
+  const createdAt = input.createdAt ?? paperExecutionDate().toISOString()
   if (!env.ARTIFACTS) {
     if (env.EVIDENCE_ARTIFACT_WRITER) {
       return env.EVIDENCE_ARTIFACT_WRITER.write({ ...input, createdAt })
@@ -176,7 +177,7 @@ export async function writeEvidenceArtifact(
     throw new Error(`artifact_r2_checksum_mismatch:${r2Key}`)
   }
 
-  const verifiedAt = new Date().toISOString()
+  const verifiedAt = paperExecutionDate().toISOString()
   const manifest: EvidenceArtifactManifest = {
     artifact_id: artifactId,
     retention_class: input.retentionClass,
@@ -313,7 +314,7 @@ export async function promoteCanonicalRun(
   logicalRunKey: string,
   runId: string,
   artifactId: string,
-  promotedAt = new Date().toISOString(),
+  promotedAt = paperExecutionDate().toISOString(),
 ): Promise<{ previous_run_id: string | null }> {
   const run = await db.prepare(`
     SELECT status FROM pipeline_runs WHERE run_id = ? AND logical_run_key = ? LIMIT 1
@@ -409,7 +410,7 @@ export async function runR2RetentionSweep(
   options: { now?: string; limit?: number } = {},
 ): Promise<{ candidates: number; deleted: number; failed: number; errors: string[] }> {
   if (!env.ARTIFACTS) throw new Error('artifact_r2_binding_missing')
-  const now = options.now ?? new Date().toISOString()
+  const now = options.now ?? paperExecutionDate().toISOString()
   const limit = Math.max(1, Math.min(Math.floor(options.limit ?? 250), 1000))
   const opsDb = artifactOpsDb(env)
   const { results } = await opsDb.prepare(`
@@ -552,7 +553,7 @@ export async function runD1EvidenceScrub(
 ): Promise<{ candidates: number; scrubbed: number; failed: number; blocked: number; errors: string[] }> {
   const opsDb = artifactOpsDb(env)
   const limit = Math.max(1, Math.min(Math.floor(options.limit ?? 250), 1000))
-  const now = options.now ?? new Date().toISOString()
+  const now = options.now ?? paperExecutionDate().toISOString()
   const selectRows = async (status: 'failed' | 'pending', rowLimit: number): Promise<any[]> => {
     if (rowLimit <= 0) return []
     const dueClause = status === 'failed'
@@ -656,7 +657,7 @@ export async function runOrphanReachabilityGc(
   options: { now?: Date; limit?: number } = {},
 ): Promise<{ scanned: number; deleted: number; referenced: number }> {
   if (!env.ARTIFACTS) throw new Error('artifact_r2_binding_missing')
-  const now = options.now ?? new Date()
+  const now = options.now ?? paperExecutionDate()
   const limit = Math.max(1, Math.min(Math.floor(options.limit ?? 500), 1000))
   const listed = await (env.ARTIFACTS as any).list({ prefix: 'staging/uncommitted/', limit })
   let deleted = 0
@@ -717,7 +718,7 @@ export async function runStorageHealthCheck(
   let capacityRows: StorageCapacityRow[] = []
   let capacityError: string | null = null
   try {
-    const observedDate = new Date().toLocaleDateString('en-CA', { timeZone: 'Asia/Taipei' })
+    const observedDate = paperExecutionDate().toLocaleDateString('en-CA', { timeZone: 'Asia/Taipei' })
     capacityRows = await collectStorageCapacityTelemetry(env, observedDate)
   } catch (error) {
     capacityError = error instanceof Error ? error.message : String(error)

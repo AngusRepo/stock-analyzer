@@ -1,4 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useQuery } from '@tanstack/react-query'
+import StrategyNavEvidence from '@/components/StrategyNavEvidence'
 import { Activity, Loader2, RefreshCw, ShieldCheck } from 'lucide-react'
 import AppShell from '@/components/AppShell'
 import { Badge } from '@/components/ui/badge'
@@ -69,6 +71,7 @@ function gateResultLabel(pass: boolean | null): string {
 }
 
 function activationGateStatusLabel(status: string): string {
+  if (status === 'nav_review') return '查看原始 NAV 判定'
   if (status === 'not_applicable') return 'not-applicable'
   if (status === 'not_evaluated') return 'not-evaluated'
   return status
@@ -136,8 +139,8 @@ const ACTIVE_STRATEGY_HEALTH_SECTIONS: StrategyHealthSection[] = [
   },
   {
     key: 'formal_policy_pending',
-    label: '正式政策待封存',
-    description: '資料與成熟度正常，但 formal policy 尚未物化正權重；不是資料待修或績效降溫。',
+    label: '當日正式政策未配置',
+    description: '當日可生效的 formal policy 未配置正權重；不代表新政策尚未封存。盤後發布的政策不追溯套用當日，亦不等於績效降溫。',
     className: 'border-violet-400/20 bg-violet-400/[0.04]',
     countClassName: 'border-violet-400/25 bg-violet-400/[0.08] text-violet-200',
   },
@@ -182,7 +185,7 @@ const CANDIDATE_STRATEGY_HEALTH_SECTIONS: StrategyHealthSection[] = [
   {
     key: 'promotion_pending',
     label: '升級待比較',
-    description: '成熟 Candidate 等待 Atomic V7 同日配對與投組風險比較；不是被共用績效門檻淘汰。',
+    description: '查看實際替換 owner 的原始比較與發布狀態；不以其他版本的門檻代判。',
     className: 'border-amber-400/20 bg-amber-400/[0.04]',
     countClassName: 'border-amber-400/25 bg-amber-400/[0.08] text-amber-200',
   },
@@ -226,6 +229,7 @@ function strategyHealthBucket(
   formalWeight: number | null,
   ownerDecision?: StrategyFormalOwnerDecision,
 ): StrategyHealthBucket {
+  if (strategyLifecycleLane(row) === 'candidate' && gate?.activation_gate.status === 'nav_review') return 'promotion_pending'
   if (
     !gate
     || row.learning.reward_state === 'reward_join_missing'
@@ -265,12 +269,12 @@ function strategyHealthLabel(bucket: StrategyHealthBucket): string {
   return {
     execution_eligible: '可進待買',
     performance_cooldown: '績效降溫 · bounded sleeve',
-    formal_policy_pending: '正式政策待封存',
+    formal_policy_pending: '當日正式政策未配置',
     evidence_repair: '資料管線待修',
     accumulating: '證據累積中',
     atomic_not_applicable: 'Atomic V7 不適用',
     prefilter_failed: 'Atomic 前置門檻未過',
-    promotion_pending: '等待 Atomic V7 比較',
+    promotion_pending: '查看正式替換評估',
   }[bucket]
 }
 
@@ -418,12 +422,14 @@ function GateMetric({
   value,
   target,
   pass,
+  diagnostic = false,
 }: {
   label: string
   description: string
   value: string
   target: string
   pass: boolean | null
+  diagnostic?: boolean
 }) {
   return (
     <div className="grid min-w-0 grid-cols-[minmax(0,1fr)_minmax(8rem,auto)] items-start gap-4 border-b border-slate-800/60 py-2 last:border-0">
@@ -433,7 +439,7 @@ function GateMetric({
       </span>
       <span className="min-w-0 break-words text-right font-mono text-slate-300">
         {value} <span className="text-slate-600">/ {target}</span>{' '}
-        <span className={gateResultClass(pass)}>{gateResultLabel(pass)}</span>
+        <span className={diagnostic ? 'text-cyan-200/70' : gateResultClass(pass)}>{diagnostic ? '敏感度診斷 · 非門檻' : gateResultLabel(pass)}</span>
       </span>
     </div>
   )
@@ -468,6 +474,7 @@ function StrategyGateDetails({ row, gate, onOpenAtomicV7 }: { row: LearningRow; 
   const thresholds = gate.thresholds
   const evidence = gate.evidence
   const isActiveIncumbent = gate.strategy_status === 'active'
+  const isNavOwner = gate.gate_policy === 'original_paired_daily_nav'
   const isS12ExecutionOwner = row.learning.reward_owner === 's12_execution_replay_v3_net'
   const hardGates = [
     { label: '可評估決策數', description: 'PIT 欄位齊全、可公平判定策略是否命中的決策筆數。', value: String(evidence.decisions), target: `>= ${thresholds.min_evaluable_decisions}`, pass: evidence.decisions >= thresholds.min_evaluable_decisions },
@@ -479,37 +486,38 @@ function StrategyGateDetails({ row, gate, onOpenAtomicV7 }: { row: LearningRow; 
     { label: '勝率', description: '必須搭配平均獲利／虧損幅度解讀；不以共用 52%／48% 判定升降級。', value: pct(evidence.hit_rate), role: '僅供診斷 · 非門檻' },
     {
       label: isS12ExecutionOwner ? '扣成本平均 R' : '相對基準扣成本平均 Alpha',
-      description: isS12ExecutionOwner ? '每筆執行 replay 扣除成本後的平均 R multiple。' : '先扣來回成本，再扣同產業／市場同期報酬；Candidate → Active 仍只走 Atomic V7。',
+      description: isS12ExecutionOwner ? '每筆執行 replay 扣除成本後的平均 R multiple。' : '先扣來回成本，再扣同產業／市場同期報酬；此診斷不是配對 NAV 報酬。',
       value: rewardMetric(evidence.avg_return_pct, row.learning.reward_unit),
       role: isActiveIncumbent ? 'Active 權重輸入 · 非門檻' : '僅供診斷 · 非門檻',
     },
-    { label: '日期 Alpha 均值 LCB90', description: '平均 Alpha 的單側 90% 下界，不代表每天或每筆交易都不會虧損；升級使用 Atomic V7 paired LCB95 HAC。', value: rewardMetric(evidence.date_return_lcb90, row.learning.reward_unit), role: '僅供診斷 · 非門檻' },
+    { label: '日期 Alpha 均值 LCB90', description: '平均 Alpha 的單側 90% 下界，不代表每天或每筆交易都不會虧損；升級依實際替換 owner 的原始證據。', value: rewardMetric(evidence.date_return_lcb90, row.learning.reward_unit), role: '僅供診斷 · 非門檻' },
     { label: '日期投組 Alpha 曲線 MDD', description: '成熟日期相對基準扣成本 Alpha 複利曲線的回撤；不是單一股票一天的漲跌幅。Atomic V7 只比較相對惡化。', value: rewardMetric(evidence.max_drawdown_pct, row.learning.reward_unit), role: '僅供診斷 · 非門檻' },
   ]
   return (
     <div className="mt-3 border-t border-slate-800 pt-3 text-[11px]">
       <div className="mb-1 flex items-center justify-between gap-2">
-        <span className="font-semibold text-slate-300">{isActiveIncumbent ? 'Active：成熟度與權重監控' : 'Candidate evidence → Active：Atomic V7'}</span>
+        <span className="font-semibold text-slate-300">{isActiveIncumbent ? 'Active：成熟度與權重監控' : isNavOwner ? 'Candidate → Active：原始配對 NAV' : 'Candidate evidence → Active：Atomic V7'}</span>
         <span className="text-slate-500">門檻路由比較（原 Shadow A；非 lifecycle stage）</span>
       </div>
-      <p className="mb-2 rounded-md border border-emerald-400/20 bg-emerald-400/[0.05] px-2 py-1.5 text-[10px] leading-4 text-emerald-100/80">{isActiveIncumbent ? 'Active 不再用共用勝率或 MDD hard gate 判定績效降溫；正式 policy 由每個策略自己的 primary-horizon OOS promoted calibration 管理：連續兩個不同 knowledge cutoff 負分才降溫，連續兩個正分才恢復。資料與風控 readiness 仍採 fail-closed；Threshold route comparison 只校準送評路由，不接管策略 lifecycle。' : '共用 hard gate 只管 Candidate 的資料可比性與成熟度。平均 Alpha、match rate、hit rate、MDD、LCB90 保留為診斷；正式升級只由 Atomic V7 相對替換管理。'}</p>
-      <section aria-label="共用成熟度門檻">
+      <p className="mb-2 rounded-md border border-emerald-400/20 bg-emerald-400/[0.05] px-2 py-1.5 text-[10px] leading-4 text-emerald-100/80">{isActiveIncumbent ? 'Active 不再用共用勝率或 MDD hard gate 判定績效降溫；正式 policy 由每個策略自己的 primary-horizon OOS promoted calibration 管理：連續兩個不同 knowledge cutoff 負分才降溫，連續兩個正分才恢復。資料與風控 readiness 仍採 fail-closed；Threshold route comparison 只校準送評路由，不接管策略 lifecycle。' : isNavOwner ? '正式替換由原始配對 NAV 負責；Alpha、命中率與舊 V7 統計保留診斷，不構成另一套 NAV 否決門檻。' : '共用 hard gate 只管 Candidate 的資料可比性與成熟度。平均 Alpha、match rate、hit rate、MDD、LCB90 保留為診斷；正式升級只由 Atomic V7 相對替換管理。'}</p>
+      {isNavOwner && !isActiveIncumbent ? <p className="my-2 text-xs leading-5 text-cyan-200">正式替換由原始配對 NAV 負責；下列 Alpha 與命中樣本只作診斷，不換算成 NAV 成熟日。請由指標按鈕查看每一組原始比較。</p> : null}
+      {!isNavOwner || isActiveIncumbent ? <section aria-label="共用成熟度門檻">
         <h3 className="text-xs font-semibold text-slate-200">共用成熟度門檻</h3>
         <div className="mt-1 grid gap-x-4 md:grid-cols-2">{hardGates.map((item) => <GateMetric key={item.label} {...item} />)}</div>
-      </section>
-      {!isActiveIncumbent ? (
+      </section> : null}
+      {!isActiveIncumbent || isNavOwner ? (
         <section className="mt-3 rounded-xl border border-violet-400/25 bg-violet-400/[0.06] p-3" aria-label="Atomic V7 相對替換指標">
           <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
             <div className="min-w-0">
               <div className="flex flex-wrap items-center gap-2">
-                <h3 className="text-xs font-semibold text-violet-100">Atomic V7 相對替換</h3>
+                <h3 className="text-xs font-semibold text-violet-100">{isNavOwner ? 'Atomic NAV 原始比較' : 'Atomic V7 相對替換'}</h3>
                 <Badge variant="outline" className={statusClass(gate.activation_gate.status)}>{activationGateStatusLabel(gate.activation_gate.status)}</Badge>
-                <span className={['text-[10px] font-semibold', gateResultClass(activationGatePass(gate.activation_gate.status))].join(' ')}>{gate.activation_gate.required ? gateResultLabel(activationGatePass(gate.activation_gate.status)) + ' · target accepted' : 'owner boundary · 不進入替換判定'}</span>
+                <span className={['text-[10px] font-semibold', gateResultClass(activationGatePass(gate.activation_gate.status))].join(' ')}>{isNavOwner ? '逐組原始判定；不由舊 V7 代判' : gate.activation_gate.required ? gateResultLabel(activationGatePass(gate.activation_gate.status)) + ' · target accepted' : 'owner boundary · 不進入替換判定'}</span>
               </div>
-              <p className="mt-1 text-[10px] leading-4 text-slate-500">{gate.activation_gate.required ? '同日 paired、HAC4、Holm family-wise correction、minimum economic delta、power 與完整 cutover firewall。' : atomicV7InapplicabilityLabel(gate.activation_gate.applicability_reason)}</p>
+              <p className="mt-1 text-[10px] leading-4 text-slate-500">{isNavOwner ? '查看成本後 NAV 比較、原始成熟度、固定檢查點、家族調整證據與歷史發布紀錄。' : gate.activation_gate.required ? '同日 paired、HAC4、完整候選家族 Holm 校正與 cutover firewall；power／10bps 效應參考依版本標示，planning-v2 僅供診斷。' : atomicV7InapplicabilityLabel(gate.activation_gate.applicability_reason)}</p>
             </div>
             <Button type="button" size="sm" variant="outline" className="shrink-0 border-violet-400/30 bg-slate-950/45 text-violet-100 hover:bg-violet-400/[0.12]" onClick={onOpenAtomicV7}>
-              {gate.activation_gate.required ? '查看全門檻' : '查看不適用原因'}
+              {isNavOwner ? '查看原始 NAV 評估' : gate.activation_gate.required ? '查看全門檻' : '查看不適用原因'}
             </Button>
           </div>
         </section>
@@ -527,21 +535,30 @@ function CandidateAtomicV7Dialog({
   row,
   gate,
   replacementGate,
+  date,
   open,
   onOpenChange,
 }: {
   row: LearningRow | null
   gate: StrategyPromotionGate | undefined
   replacementGate: StrategyReplacementGateSummary | null
+  date: string | null
   open: boolean
   onOpenChange: (open: boolean) => void
 }) {
+  const navQuery = useQuery({ queryKey: ['strategy-nav-evidence', row?.id, row?.version, date],
+    queryFn: () => strategyLabApi.navEvidence(row!.id, row!.version, date!),
+    enabled: open && row != null && date != null, retry: false })
+  const replacementOwner = navQuery.isError || navQuery.isFetching ? 'unavailable'
+    : navQuery.data?.current_replacement_owner ?? replacementGate?.replacement_owner ?? 'unavailable'
   const [phase, setPhase] = useState<'prefilter' | 'pair' | 'cutover'>('prefilter')
   useEffect(() => {
     if (open) setPhase('prefilter')
   }, [open, row?.id, row?.version])
   const policy = replacementGate?.policy ?? null
   const run = replacementGate?.latest_run ?? null
+  const powerDiagnostic = policy?.policy_version.endsWith('-planning-v2') === true
+  const runPowerDiagnostic = String(run?.promotion_gates.statistical_policy_version ?? '').endsWith('-planning-v2')
   const champion = run?.champion_comparison ?? null
   const candidatePortfolio = run?.candidate_portfolio ?? null
   const candidatePrefilters = (replacementGate?.candidate_prefilters ?? []).filter((prefilter) => (
@@ -585,10 +602,11 @@ function CandidateAtomicV7Dialog({
     },
     {
       label: 'Full portfolio power',
-      description: '在 minimum economic delta 下的 Holm-local-alpha power。',
+      description: '以觀察到的 HAC 變異及固定 10bps 效應估計敏感度；非獨立事前 power，整體使用 family alpha（非 pair Holm local alpha）。',
       value: pct(champion?.power_at_minimum_economic_delta),
-      target: '>= ' + pct(policy.min_power_at_minimum_economic_delta),
+      target: (runPowerDiagnostic ? '規劃參考 ' : '>= ') + pct(policy.min_power_at_minimum_economic_delta),
       pass: policyGateBoolean(run.promotion_gates.full_portfolio_power_80pct_pass),
+      diagnostic: runPowerDiagnostic,
     },
     {
       label: 'Full portfolio absolute LCB95 HAC',
@@ -643,7 +661,7 @@ function CandidateAtomicV7Dialog({
     },
     {
       label: 'Holm-accepted replacement exists',
-      description: '至少一組 pair 通過 HAC、Holm、power 與 pair risk gates。',
+      description: '至少一組 pair 通過該版本的 HAC、Holm 與 pair risk gates；planning-v2 不以 power 另行否決。',
       value: gateResultLabel(policyGateBoolean(run.promotion_gates.accepted_hac_holm_replacement_exists)),
       target: '通過',
       pass: policyGateBoolean(run.promotion_gates.accepted_hac_holm_replacement_exists),
@@ -669,7 +687,7 @@ function CandidateAtomicV7Dialog({
     { label: 'HAC lag', description: 'Newey-West Bartlett dependence adjustment。', value: '未評估', target: '= ' + policy.hac_lag, pass: null },
     { label: 'Paired delta LCB95 HAC', description: 'Candidate 取代 incumbent 的正式 improvement confidence gate。', value: '未評估', target: '> ' + percentageMetric(policy.min_paired_delta_lcb95_hac_exclusive), pass: null },
     { label: 'Holm adjusted significance', description: '同一比較 family 的 Holm-Bonferroni 校正。', value: '未評估', target: 'adjusted p <= ' + numericMetric(policy.familywise_alpha, 3), pass: null },
-    { label: 'Power at minimum economic delta', description: '以 Holm local alpha 與 minimum economic delta 計算。', value: '未評估', target: '>= ' + pct(policy.min_power_at_minimum_economic_delta), pass: null },
+    { label: 'Power at minimum economic delta', description: '固定效應與觀察變異的敏感度，不是已獨立驗證的事前檢定力。', value: '未評估', target: '參考 ' + pct(policy.min_power_at_minimum_economic_delta), pass: null, diagnostic: powerDiagnostic },
     { label: 'Candidate absolute cost-net mean', description: 'Candidate 自身扣成本絕對報酬。', value: '未評估', target: '> ' + percentageMetric(policy.min_candidate_absolute_cost_net_mean_exclusive), pass: null },
     { label: 'Candidate absolute LCB95 HAC', description: 'Candidate 自身絕對報酬安全下界。', value: '未評估', target: '> ' + percentageMetric(policy.min_candidate_absolute_cost_net_lcb95_hac_exclusive), pass: null },
     { label: 'MDD Candidate / incumbent', description: 'Candidate MDD 不得 materially worse。', value: '未評估', target: 'degradation <= ' + pct(policy.max_drawdown_degradation), pass: null },
@@ -680,7 +698,7 @@ function CandidateAtomicV7Dialog({
     { label: 'Full portfolio paired dates', description: '此 Candidate 尚未進入 final cutover portfolio。', value: '未評估', target: '>= ' + policy.min_paired_dates, pass: null },
     { label: 'Full portfolio effective dates', description: 'HAC 調整後的有效樣本。', value: '未評估', target: '>= ' + policy.min_effective_paired_dates, pass: null },
     { label: 'Full portfolio paired LCB95 HAC', description: '相對 champion 的 final portfolio improvement gate。', value: '未評估', target: '> 0%', pass: null },
-    { label: 'Full portfolio power', description: 'Minimum economic delta 下的 Holm-local-alpha power。', value: '未評估', target: '>= ' + pct(policy.min_power_at_minimum_economic_delta), pass: null },
+    { label: 'Full portfolio power', description: '固定效應的 family-alpha 敏感度診斷。', value: '未評估', target: '參考 ' + pct(policy.min_power_at_minimum_economic_delta), pass: null, diagnostic: powerDiagnostic },
     { label: 'Full portfolio absolute LCB95 HAC', description: 'Final portfolio 絕對 cost-net safety gate。', value: '未評估', target: '> ' + percentageMetric(policy.min_final_portfolio_absolute_cost_net_lcb95_hac_exclusive), pass: null },
     { label: 'Full portfolio absolute mean', description: 'Final portfolio 絕對 cost-net mean。', value: '未評估', target: '> 0%', pass: null },
     { label: 'Full portfolio MDD baseline / final', description: 'Final portfolio MDD 惡化限制。', value: '未評估', target: 'degradation <= ' + pct(policy.max_drawdown_degradation), pass: null },
@@ -694,16 +712,20 @@ function CandidateAtomicV7Dialog({
   ] : []
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="grid h-[min(92dvh,920px)] w-[calc(100vw-1rem)] grid-rows-[auto_auto_auto_minmax(0,1fr)] gap-3 overflow-hidden border-slate-700 bg-slate-950 p-0 text-slate-100 sm:max-w-[96vw] xl:max-w-[1500px]">
+      <DialogContent className="grid h-[min(92dvh,920px)] w-[calc(100vw-1rem)] grid-rows-[auto_minmax(0,1fr)] gap-3 overflow-hidden border-slate-700 bg-slate-950 p-0 text-slate-100 sm:max-w-[96vw] xl:max-w-[1500px]">
         <DialogHeader className="border-b border-slate-800 px-5 pb-4 pt-5">
           <div className="flex flex-wrap items-center gap-2 pr-8">
-            <DialogTitle className="text-xl">{row?.name ?? 'Candidate'} · Atomic V7 全門檻</DialogTitle>
-            <Badge variant="outline" className={statusClass(gate?.activation_gate.status ?? 'not_ready')}>{activationGateStatusLabel(gate?.activation_gate.status ?? 'evidence_pending')}</Badge>
+            <DialogTitle className="text-xl">{row?.name ?? 'Strategy'} · 原始替換評估</DialogTitle>
+            <Badge variant="outline">{replacementOwner === 'original_paired_daily_nav' ? 'NAV owner' : replacementOwner === 'legacy_atomic_v7' ? 'Legacy V7 owner' : 'Owner 待驗證'}</Badge>
           </div>
           <DialogDescription className="max-w-5xl text-left text-xs leading-5 text-slate-400">
             只顯示 {row ? [row.id, row.version].join(':') : '目前 Candidate'} 的 actual／target／pass。灰色「尚無判定」代表該門檻尚未執行，不等於未通過。
           </DialogDescription>
         </DialogHeader>
+        <div className="min-h-0 space-y-4 overflow-y-auto pb-5">
+        <StrategyNavEvidence data={navQuery.data} loading={navQuery.isFetching} error={navQuery.error} onRetry={() => { void navQuery.refetch() }} />
+        <details open={replacementOwner === 'legacy_atomic_v7'} className="space-y-3">
+        <summary className="mx-5 cursor-pointer text-sm text-slate-300">{replacementOwner === 'legacy_atomic_v7' ? '目前 Legacy V7 門檻' : '舊 V7 診斷（不作 NAV 晉級門檻）'}</summary>
         {policy ? <p className="mx-5 rounded-lg border border-slate-800 bg-slate-900/40 px-3 py-2 font-mono text-[10px] text-slate-500">policy {policy.policy_version} · run {run?.run_id ?? '尚無'} · as-of {run?.as_of_date ?? '尚無'}</p> : <p className="mx-5 text-xs text-slate-500">Replacement policy evidence is unavailable.</p>}
         <nav className="grid gap-2 px-5 md:grid-cols-3" aria-label="Atomic V7 phases">
           <button type="button" aria-selected={phase === 'prefilter'} onClick={() => setPhase('prefilter')} className={['rounded-xl border px-4 py-3 text-left transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-cyan-300/70', phase === 'prefilter' ? 'border-cyan-300/45 bg-cyan-300/[0.1] text-cyan-50' : 'border-slate-800 bg-slate-900/40 text-slate-400 hover:border-slate-700'].join(' ')}>
@@ -722,7 +744,7 @@ function CandidateAtomicV7Dialog({
             <span className="mt-1 block text-[10px]">{candidateCutoverEvaluated ? '已連結本 Candidate' : '尚未評估'}</span>
           </button>
         </nav>
-        <div className="min-h-0 overflow-y-auto px-5 pb-5">
+        <div className="px-5 pb-5">
         <div className={phase === 'prefilter' ? 'min-h-0' : 'hidden'}>
       {policy && candidatePrefilters.length > 0 ? (
         <section className="rounded-xl border border-cyan-400/20 bg-cyan-400/[0.04] p-4">
@@ -922,9 +944,10 @@ function CandidateAtomicV7Dialog({
               },
               {
                 label: 'Power at minimum economic delta',
-                description: '使用此 pair Holm local alpha 計算的檢定力。',
+                description: '固定 10bps 效應、此 pair Holm local alpha 與觀察 HAC 變異的敏感度；planning-v2 僅供規劃參考。',
                 value: pct(decision.paired_delta_power_at_minimum_economic_delta),
                 target: '>= ' + pct(policy.min_power_at_minimum_economic_delta),
+                diagnostic: decision.statistical_policy_version?.endsWith('-planning-v2') === true,
                 pass: decision.paired_delta_power_at_minimum_economic_delta == null
                   ? null
                   : decision.paired_delta_power_at_minimum_economic_delta >= policy.min_power_at_minimum_economic_delta,
@@ -1013,6 +1036,8 @@ function CandidateAtomicV7Dialog({
         </section>
       ) : null}
         </div>
+        </div>
+        </details>
         </div>
       </DialogContent>
     </Dialog>
@@ -1500,13 +1525,14 @@ function StrategyLineageInspector({
       <section className="rounded-2xl border border-slate-800 bg-slate-950/70 p-4">
         <div className="flex flex-wrap items-center justify-between gap-2">
           <h3 className="text-xs font-semibold text-slate-200">正式 pending-buy contribution</h3>
-          <Badge variant="outline" className={statusClass(executionEligible && !formalCooldown ? 'active' : 'not_ready')}>{formalCooldown ? '績效降溫 · bounded sleeve' : executionEligible ? '可讓推薦進入待買' : formalPolicyPending ? '正式政策待封存' : '只選股與評估'}</Badge>
+          <Badge variant="outline" className={statusClass(executionEligible && !formalCooldown ? 'active' : 'not_ready')}>{formalCooldown ? '績效降溫 · bounded sleeve' : executionEligible ? '可讓推薦進入待買' : formalPolicyPending ? '當日正式政策未配置' : '只選股與評估'}</Badge>
         </div>
         <p className="mt-2 font-mono text-lg text-slate-100">{formalPolicyWeight == null ? '未取得正式 contribution' : pct(formalPolicyWeight)}</p>
         <div className="mt-2 h-2 overflow-hidden rounded-full bg-slate-800">
           <div className="h-full bg-emerald-300" style={{ width: (formalPolicyWeight == null ? 0 : Math.max(0, Math.min(100, formalPolicyWeight * 100))) + '%' }} />
         </div>
         <p className="mt-2 text-[11px] leading-5 text-slate-500">此值只來自封存 formal policy。必須同時滿足 allocation gate 與 formal contribution &gt; 0 才能標示「可進待買」；不是帳戶資金、下單金額或部位比例。</p>
+        {formalPolicyPending ? <p className="mt-2 text-[11px] leading-5 text-violet-200">依本日可生效的正式政策判定；零權重不代表新政策尚未封存。盤後發布的新政策不追溯生效，最新學習樣本也不直接覆寫今日權重。</p> : null}
         <div className="mt-3 rounded-lg border border-cyan-400/20 bg-cyan-400/[0.05] p-2">
           <div className="flex items-center justify-between gap-2 text-[11px]"><span className="font-semibold text-cyan-100">Preview weight（診斷）</span><span className="font-mono text-cyan-200">{previewPolicyWeight == null ? '未取得' : pct(previewPolicyWeight)}</span></div>
           <p className="mt-1 text-[10px] leading-4 text-slate-500">Read-time preview；不是 formal production policy，不能單獨判定待買資格。</p>
@@ -1684,7 +1710,7 @@ export default function StrategyLearningPage() {
   const selectedProfile = selectedRow ? profileById.get([selectedRow.id, selectedRow.version].join(':')) : undefined
   const selectedFormalRecommendation = selectedRow ? formalLifecycleRecommendations[selectedRow.id] : undefined
   const selectedFormalOwnerDecision = selectedRow ? formalOwnerDecisions[selectedRow.id] : undefined
-  const atomicV7Row = useMemo(() => orderedRows.find((row) => [row.id, row.version].join(':') === atomicV7StrategyKey && row.status === 'candidate') ?? null, [orderedRows, atomicV7StrategyKey])
+  const atomicV7Row = useMemo(() => orderedRows.find((row) => [row.id, row.version].join(':') === atomicV7StrategyKey) ?? null, [orderedRows, atomicV7StrategyKey])
   const atomicV7Gate = atomicV7Row ? gateById.get([atomicV7Row.id, atomicV7Row.version].join(':')) : undefined
   const executionEligibleCount = useMemo(() => {
     return (learning?.promotion_gate ?? []).filter((gate) => (
@@ -1818,6 +1844,7 @@ export default function StrategyLearningPage() {
               row={atomicV7Row}
               gate={atomicV7Gate}
               replacementGate={learning?.replacement_gate ?? null}
+              date={learning?.date ?? null}
               open={atomicV7Row != null}
               onOpenChange={(open) => { if (!open) setAtomicV7StrategyKey(null) }}
             />
@@ -1844,7 +1871,7 @@ export default function StrategyLearningPage() {
                 ) : <div className="rounded-2xl border border-slate-800 bg-slate-950/70 p-6 text-sm text-slate-500">目前篩選沒有可顯示的策略。</div>}
               </div>
               <StrategyStageTransitionCard row={selectedRow} gate={selectedGate} onOpenAtomicV7={() => {
-                if (selectedRow?.status === 'candidate') setAtomicV7StrategyKey([selectedRow.id, selectedRow.version].join(':'))
+                if (selectedRow) setAtomicV7StrategyKey([selectedRow.id, selectedRow.version].join(':'))
               }} />
               <StrategyLineageInspector
                 row={selectedRow}

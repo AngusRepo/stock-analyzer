@@ -36,6 +36,7 @@ class FinLabCanonicalOutputs:
     source_quality_metrics: list[dict[str, Any]]
     manifest: dict[str, Any]
     source_sessions: list[dict[str, Any]] = field(default_factory=list)
+    security_master: list[dict[str, Any]] = field(default_factory=list)
 
 
 def utc_now() -> str:
@@ -2315,8 +2316,24 @@ def materialize_finlab_canonical_outputs(
         limit=limit_per_dataset,
     ) if wants("canonical_fundamental_features") else []
     taxonomy = build_taxonomy_rows(root, generated_at=timestamp, limit=limit_per_dataset) if wants("finlab_taxonomy_tags") else []
+    security_master = []
+    if wants("stocks"):
+        from services.finlab_security_master import normalize_security_master, normalize_etf_master, merge_security_masters
+        master_frame = _read_parquet(root / "raw" / "security_master" / "company_basic_info.parquet")
+        if '__observed_at' not in master_frame.columns or master_frame['__observed_at'].n_unique() != 1:
+            raise ValueError('finlab_security_master_raw_capture_missing')
+        security_master = normalize_security_master(master_frame, master_frame['__observed_at'][0])
+        etf_frame = _read_parquet(root / 'raw' / 'security_master' / 'tw_etf_basic_info.parquet')
+        if '__observed_at' not in etf_frame.columns or etf_frame['__observed_at'].n_unique() != 1:
+            raise ValueError('finlab_etf_master_raw_capture_missing')
+        security_master = merge_security_masters(security_master,
+            normalize_etf_master(etf_frame, etf_frame['__observed_at'][0]))
+        if limit_per_dataset:
+            security_master = security_master[:limit_per_dataset]
 
     output_rows: dict[str, list[dict[str, Any]]] = {}
+    if wants("stocks"):
+        output_rows["stocks"] = security_master
     if wants("canonical_market_daily"):
         output_rows["canonical_market_daily"] = listed_market + emerging_market
     if wants("canonical_chip_daily"):
@@ -2380,6 +2397,7 @@ def materialize_finlab_canonical_outputs(
         manifest=manifest,
         source_sessions=build_source_sessions(root, run_id=rid, observed_at=timestamp, end_date=end_date)
             if wants("canonical_market_daily") else [],
+        security_master=security_master,
     )
 
 
@@ -2542,6 +2560,19 @@ def build_d1_upsert_statements(outputs: FinLabCanonicalOutputs) -> list[tuple[st
     through an explicit apply step.
     """
     statements: list[tuple[str, list[Any]]] = []
+    # Preserve IDs, pinning, watchlists, taxonomy and delisting history.
+    listing_statements = _row_statements(
+        "stocks", outputs.security_master,
+        ["symbol", "name", "market", "listing_market", "listed_date", "listed_date_source", "listing_observed_at",
+         "listing_checksum", "in_current_watchlist", "source"],
+        ["symbol"], ["name", "market", "listing_market", "listed_date", "listed_date_source", "listing_observed_at", "listing_checksum"],
+        required_columns=["symbol", "listing_market", "listed_date", "listed_date_source", "listing_observed_at", "listing_checksum"],
+    )
+    # Capture clocks are normalized UTC. Replaying an old raw run cannot roll
+    # listing facts backward or overwrite an equally timed conflicting receipt.
+    statements.extend((sql + ' WHERE stocks.listing_observed_at IS NULL OR '
+        'excluded.listing_observed_at >= stocks.listing_observed_at', params)
+        for sql, params in listing_statements)
     statements.extend(_row_statements(
         "canonical_market_daily",
         outputs.canonical_market_daily,

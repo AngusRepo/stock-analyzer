@@ -1,3 +1,4 @@
+import { paperAccountId } from '../paperExecutionScope'
 /**
  * p1Mdd.ts — Layer 1: 30d rolling drawdown gate (P1-9 MDD-based sizing)
  *
@@ -8,7 +9,6 @@
 import type { TradingConfig } from '../tradingConfig'
 import type { CircuitBreakerState, LegacyLayerDeps, LegacyLayerResult } from '../riskTypes'
 
-const ACCOUNT_ID = 1
 
 export async function checkP1Mdd(
   db: D1Database,
@@ -20,7 +20,7 @@ export async function checkP1Mdd(
 
   const { results: snapshots } = await db.prepare(
     'SELECT total_value FROM paper_daily_snapshots WHERE account_id=? ORDER BY date DESC LIMIT 30'
-  ).bind(ACCOUNT_ID).all<any>()
+  ).bind(paperAccountId()).all<any>()
 
   if (!snapshots || snapshots.length < 3) return null
 

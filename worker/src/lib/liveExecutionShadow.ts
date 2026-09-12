@@ -1,4 +1,5 @@
 import type { Bindings } from '../types'
+import { paperExecutionFetch } from './paperExecutionScope'
 import type { AuthoritativeExecutionSnapshot } from './authoritativeExecutionSnapshot'
 import {
   buildExecutionShadowPacket,
@@ -77,7 +78,7 @@ export async function runLiveExecutionShadow(input: {
         marketPhase: input.marketPhase,
       },
     })
-    result = await submitSignedExecutionShadowPacket(input.env, packet, input.fetchFn ?? fetch)
+    result = await submitSignedExecutionShadowPacket(input.env, packet, input.fetchFn ?? paperExecutionFetch)
   } catch (error) {
     result = {
       status: 'blocked',

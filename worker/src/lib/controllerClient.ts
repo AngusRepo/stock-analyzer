@@ -1,3 +1,4 @@
+import { paperExecutionFetch } from './paperExecutionScope'
 import type { Bindings } from '../types'
 
 type ControllerMethod = 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE'
@@ -42,7 +43,7 @@ export async function controllerFetch(
     headers = {},
   } = options
 
-  return fetch(`${getControllerBaseUrl(env)}${path}`, {
+  return paperExecutionFetch(`${getControllerBaseUrl(env)}${path}`, {
     method,
     headers: buildControllerHeaders(env, headers, jsonBody !== undefined),
     body: jsonBody !== undefined ? JSON.stringify(jsonBody) : undefined,

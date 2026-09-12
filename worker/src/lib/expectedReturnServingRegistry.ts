@@ -1,6 +1,9 @@
 import type { Bindings } from '../types'
 import type { ExpectedReturnOwner } from './expectedReturnServingState'
 import { databaseForDataDomain } from './dataDomainRegistry'
+import { expectedReturnOfflineAdmissionBlockers, finiteExpectedReturnMetric } from './expectedReturnOfflineAdmission'
+import { verifyNavPromotionEvidence, navJournalFrontierGuard, originalNavComparisonContext } from './pairedNavPromotionEvidence'
+import { verifyNavCurrentContext, verifyNavFormalBaseline, comparableConfig, navPointerCompareAndSwapGuard, type NavCurrentConfigReader } from './pairedNavPromotionContext'
 
 type JsonRecord = Record<string, any>
 export const EXPECTED_RETURN_PROSPECTIVE_MIN_DATES = 10
@@ -163,6 +166,7 @@ export async function loadExpectedReturnPointerProjections(
       continue
     }
     const blockers: string[] = []
+    if (row.serving_mode !== 'alpha') blockers.push('champion_serving_mode_not_alpha')
     if (declaredState && declaredState.owner_state !== 'learned_champion') {
       blockers.push('owner_state_champion_pointer_inconsistent')
     }
@@ -229,6 +233,9 @@ export async function loadExpectedReturnPointerProjections(
         deprecated_pointer_ignored: current.deprecated_pointer_ignored,
       }
     } else if (state.owner_state === 'learned_champion' && !current.valid) {
+      // Preserve declared authority when its pointer disappears. Otherwise a
+      // corrupt learned owner looks like an ordinary never-promoted owner.
+      current.owner_state = 'learned_champion'
       current.blockers = [...new Set([...current.blockers, 'owner_state_champion_pointer_inconsistent'])]
     }
   }
@@ -272,6 +279,135 @@ export async function hydrateExpectedReturnConfigFromPointers(
   return { config, projections, alerts: [...new Set(alerts)] }
 }
 
+export type ExpectedReturnCommitReceipt = {
+  artifact_id: string
+  previous_version: string | null
+  payload_checksum: string
+  nav_review_date?: string
+}
+
+/** Recovery acknowledges an existing authoritative commit, never a new verdict.
+ * The latest diagnostic/NAV verdict may differ from the immutable adoption packet.
+ * No caller artifact bytes, current gate, or config cache can replace that packet.
+ */
+export async function readExpectedReturnCommitReceipt(
+  db: D1Database,
+  input: { owner: ExpectedReturnOwner; artifactId: string; modelVersion: string;
+    artifactChecksum: string; artifactPath: string },
+): Promise<ExpectedReturnCommitReceipt | null> {
+  const checksum = input.artifactChecksum.trim().toLowerCase()
+  const artifactId = input.artifactId.trim()
+  if (!/^[0-9a-f]{64}$/.test(checksum)
+      || artifactId !== `${input.owner}:${input.modelVersion}:${checksum}`
+      || !input.artifactPath.endsWith(`/${checksum}.json`)) {
+    throw new Error('expected_return_commit_receipt_identity_invalid')
+  }
+  const pointer = await db.prepare('SELECT champion_artifact_id FROM model_champion_pointers WHERE model_name=?')
+    .bind(input.owner).first<JsonRecord>()
+  if (pointer?.champion_artifact_id !== artifactId) return null
+  const row = await db.prepare(`
+    SELECT p.champion_artifact_id, p.champion_version, p.rollback_version, p.promotion_evidence_json,
+           r.state, r.model_name AS registry_owner, r.version AS registry_version,
+           r.checksum AS registry_checksum, r.artifact_path AS registry_path,
+           x.model_name AS payload_owner, x.model_version AS payload_version,
+           x.serving_mode, x.artifact_json, x.payload_checksum, x.source_artifact_checksum, x.source_artifact_path,
+           s.owner_state, s.champion_artifact_id AS state_artifact_id,
+           h.evidence_json AS history_evidence, h.version AS history_version,
+           (SELECT COUNT(*) FROM model_champion_history active
+             WHERE active.model_name=p.model_name AND active.retired_at IS NULL) AS active_history_count
+      FROM model_champion_pointers p
+      JOIN model_artifact_registry r ON r.artifact_id=p.champion_artifact_id
+      JOIN expected_return_artifact_payloads x ON x.artifact_id=p.champion_artifact_id
+      JOIN expected_return_owner_state_v2 s ON s.owner=p.model_name
+      JOIN model_champion_history h ON h.model_name=p.model_name
+        AND h.artifact_id=p.champion_artifact_id AND h.retired_at IS NULL
+     WHERE p.model_name=?
+  `).bind(input.owner).first<JsonRecord>()
+  let artifact: JsonRecord | null = null
+  let evidence: JsonRecord | null = null
+  try {
+    artifact = JSON.parse(row?.artifact_json ?? 'null')
+    evidence = JSON.parse(row?.promotion_evidence_json ?? 'null')
+  } catch { /* malformed committed bytes fail the same readback boundary below */ }
+  if (!row || row.champion_artifact_id !== artifactId || row.champion_version !== input.modelVersion
+      || row.state !== 'production' || row.registry_owner !== input.owner || row.registry_version !== input.modelVersion
+      || row.registry_checksum !== checksum || row.registry_path !== input.artifactPath
+      || row.payload_owner !== input.owner || row.payload_version !== input.modelVersion || row.serving_mode !== 'alpha'
+      || row.source_artifact_checksum !== checksum || row.source_artifact_path !== input.artifactPath
+      || row.owner_state !== 'learned_champion' || row.state_artifact_id !== artifactId
+      || row.active_history_count !== 1 || row.history_version !== input.modelVersion
+      || row.history_evidence !== row.promotion_evidence_json
+      || artifact?.model_version !== input.modelVersion || artifact?.expected_return_owner !== input.owner
+      || !/^[0-9a-f]{64}$/.test(row.payload_checksum ?? '')
+      || await sha256Hex(row.artifact_json ?? '') !== row.payload_checksum
+      || evidence?.schema_version !== 'expected-return-pointer-promotion-v1' || evidence?.owner !== input.owner
+      || evidence?.artifact_checksum !== checksum || evidence?.artifact_path !== input.artifactPath
+      || evidence?.payload_checksum !== row.payload_checksum) {
+    throw new Error('expected_return_registry_pointer_commit_readback_mismatch')
+  }
+  const originalGate = evidence!.prospective_validation
+  const reviewDate = originalGate?.nav_validation?.as_of_date
+  const hasNavDate = originalGate?.schema_version === 'expected-return-candidate-nav-gate-v1'
+  if (hasNavDate && (typeof reviewDate !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(reviewDate)
+      || !Number.isFinite(Date.parse(reviewDate + 'T00:00:00Z'))
+      || new Date(reviewDate + 'T00:00:00Z').toISOString().slice(0, 10) !== reviewDate)) {
+    throw new Error('expected_return_commit_review_date_invalid')
+  }
+  return { artifact_id: artifactId, previous_version: row.rollback_version ?? null,
+    payload_checksum: row.payload_checksum, ...(hasNavDate ? { nav_review_date: reviewDate } : {}) }
+}
+
+export async function verifyExpectedReturnCandidate(db: D1Database,
+  input: Parameters<typeof commitExpectedReturnChampion>[1],
+  identity: { artifactId: string; artifactChecksum: string; modelVersion: string }) {
+  const { artifactId, artifactChecksum, modelVersion } = identity
+  if (input.artifact.expected_return_owner !== input.owner) {
+    throw new Error('expected_return_registry_payload_owner_mismatch')
+  }
+  const registry = await db.prepare(`
+    SELECT artifact_id, model_name, version, state, artifact_path, checksum,
+           offline_gate_decision, offline_gate_failed_gates, live_evidence_json
+      FROM model_artifact_registry
+     WHERE artifact_id = ? AND model_name = ? AND version = ?
+     LIMIT 1
+  `).bind(artifactId, input.owner, modelVersion).first<Record<string, any>>()
+  if (!registry) throw new Error('expected_return_registry_candidate_missing')
+  let failedGates: unknown
+  try { failedGates = JSON.parse(registry.offline_gate_failed_gates) }
+  catch { throw new Error('expected_return_registry_offline_evidence_invalid_json') }
+  const admissionBlockers = expectedReturnOfflineAdmissionBlockers(input.owner, {
+    decision: registry.offline_gate_decision, failed_gates: failedGates,
+  }, input.offlineAdmission)
+  if (admissionBlockers.length) {
+    throw new Error(`expected_return_registry_offline_admission_invalid:${admissionBlockers.join(',')}`)
+  }
+  if (String(registry.artifact_path ?? '') !== input.artifactPath) {
+    throw new Error('expected_return_registry_artifact_path_mismatch')
+  }
+  if (String(registry.checksum ?? '').toLowerCase() !== artifactChecksum) {
+    throw new Error('expected_return_registry_artifact_checksum_mismatch')
+  }
+  const prospective = input.prospectiveValidation ?? {}
+  const canonical = (value: any): any => Array.isArray(value) ? value.map(canonical)
+    : value && typeof value === 'object'
+      ? Object.fromEntries(Object.keys(value).sort().map(key => [key, canonical(value[key])])) : value
+  let recordedGate: JsonRecord
+  try { recordedGate = JSON.parse(registry.live_evidence_json) }
+  catch { throw new Error('expected_return_registry_live_gate_missing') }
+  if (JSON.stringify(canonical(recordedGate)) !== JSON.stringify(canonical(prospective))) {
+    throw new Error('expected_return_registry_live_gate_mismatch')
+  }
+  const fingerprint = String(input.artifact.model_fingerprint ?? '').trim().toLowerCase()
+  if (String(prospective.model_fingerprint ?? '').toLowerCase() !== fingerprint
+    || prospective.source_run_date !== input.sourceRunDate.slice(0, 10)
+    || prospective.artifact_trained_until !== String(input.artifact.trained_until ?? '').slice(0, 10)) {
+    throw new Error('expected_return_registry_prospective_identity_mismatch')
+  }
+  const navProof = await verifyNavPromotionEvidence(db, { owner: input.owner, artifactId,
+    artifactChecksum, gate: prospective })
+  return { registry, navProof }
+}
+
 export async function commitExpectedReturnChampion(
   db: D1Database,
   input: {
@@ -284,8 +420,11 @@ export async function commitExpectedReturnChampion(
     candidateId: string
     sourceRunDate: string
     prospectiveValidation: JsonRecord
+    offlineAdmission: JsonRecord
+    currentConfigReader?: NavCurrentConfigReader
+    navBindings?: import('../types').Bindings
   },
-): Promise<{ artifact_id: string; previous_version: string | null; payload_checksum: string }> {
+): Promise<ExpectedReturnCommitReceipt> {
   const modelVersion = String(input.artifact.model_version ?? '').trim()
   const artifactChecksum = input.artifactChecksum.trim().toLowerCase()
   const artifactId = input.artifactId.trim()
@@ -298,127 +437,26 @@ export async function commitExpectedReturnChampion(
   if (!input.artifactPath.endsWith(`/${artifactChecksum}.json`)) {
     throw new Error('expected_return_registry_artifact_path_checksum_mismatch')
   }
-  const registry = await db.prepare(`
-    SELECT artifact_id, model_name, version, state, artifact_path, checksum,
-           offline_gate_decision
-      FROM model_artifact_registry
-     WHERE artifact_id = ? AND model_name = ? AND version = ?
-     LIMIT 1
-  `).bind(artifactId, input.owner, modelVersion).first<Record<string, any>>()
-  if (!registry) throw new Error('expected_return_registry_candidate_missing')
-  if (registry.offline_gate_decision !== 'PASS') {
-    throw new Error('expected_return_registry_candidate_offline_gate_not_pass')
-  }
-  if (String(registry.artifact_path ?? '') !== input.artifactPath) {
-    throw new Error('expected_return_registry_artifact_path_mismatch')
-  }
-  if (String(registry.checksum ?? '').toLowerCase() !== artifactChecksum) {
-    throw new Error('expected_return_registry_artifact_checksum_mismatch')
-  }
+  const existingReceipt = await readExpectedReturnCommitReceipt(db, { ...input, modelVersion })
+  if (existingReceipt) return existingReceipt
   const prospective = input.prospectiveValidation ?? {}
-  const fingerprint = String(input.artifact.model_fingerprint ?? '').trim().toLowerCase()
-  const prospectiveCorrLcb = prospective.corr_or_delta_lcb90 == null
-    ? null
-    : Number(prospective.corr_or_delta_lcb90)
-  const prospectiveSpreadLcb = prospective.spread_or_delta_lcb90 == null
-    ? null
-    : Number(prospective.spread_or_delta_lcb90)
-  const prospectiveTopLcb = prospective.top_return_lcb90 == null
-    ? null
-    : Number(prospective.top_return_lcb90)
-  const trainedUntil = String(input.artifact.trained_until ?? '').slice(0, 10)
-  const predictionDateMin = String(prospective.prediction_date_min ?? '').slice(0, 10)
-  const selectionSemanticFloorDate = String(prospective.selection_semantic_floor_date ?? '').slice(0, 10)
-  const labelKnownDateMin = String(prospective.label_known_date_min ?? '').slice(0, 10)
-  const sourceRunDate = input.sourceRunDate.slice(0, 10)
-  if (
-    prospective.schema_version !== 'expected-return-candidate-forward-gate-v2'
-    || prospective.decision !== 'PASS'
-    || !Array.isArray(prospective.failed_gates)
-    || prospective.failed_gates.length > 0
-    || prospective.candidate_artifact_id !== artifactId
-    || String(prospective.candidate_artifact_checksum ?? '').toLowerCase() !== artifactChecksum
-    || String(prospective.model_fingerprint ?? '').toLowerCase() !== fingerprint
-    || String(prospective.source_run_date ?? '').slice(0, 10) !== input.sourceRunDate.slice(0, 10)
-    || String(prospective.artifact_trained_until ?? '').slice(0, 10) !== trainedUntil
-    || !predictionDateMin
-    || predictionDateMin <= trainedUntil
-    || !selectionSemanticFloorDate
-    || predictionDateMin < selectionSemanticFloorDate
-    || !labelKnownDateMin
-    || labelKnownDateMin <= sourceRunDate
-    || prospective.training_dispatched !== false
-    || !Number.isFinite(prospectiveCorrLcb)
-    || !Number.isFinite(prospectiveSpreadLcb)
-    || !Number.isFinite(prospectiveTopLcb)
-    || Number(prospectiveTopLcb) <= 0
-    || (input.owner === 'l4_alpha_ev'
-      ? Number(prospectiveCorrLcb) <= 0 || Number(prospectiveSpreadLcb) <= 0
-      : Number(prospectiveCorrLcb) < 0 || Number(prospectiveSpreadLcb) < 0)
-  ) {
-    throw new Error('expected_return_registry_prospective_gate_invalid')
-  }
-  const canonicalSemantic = await db.prepare(`
-    SELECT MIN(signal_date) AS selection_semantic_floor_date
-      FROM strategy_route_backfill_eligibility_v1
-     WHERE route_version='strategy-semantic-continuous-affinity-v5'
-       AND affinity_version='strategy-threshold-margin-affinity-v2'
-       AND status IN ('eligible','pending_maturity')
-       AND reference_rows > 0
-  `).first<Record<string, any>>()
-  if (
-    String(canonicalSemantic?.selection_semantic_floor_date ?? '').slice(0, 10)
-    !== selectionSemanticFloorDate
-  ) {
-    throw new Error('expected_return_registry_selection_semantic_floor_mismatch')
-  }
-  const forwardEvidence = await db.prepare(`
-    SELECT COUNT(*) AS evaluable_date_count,
-           MIN(prediction_date) AS prediction_date_min,
-           MAX(prediction_date) AS prediction_date_max,
-           MIN(label_known_date) AS label_known_date_min,
-           MAX(label_known_date) AS label_known_date_max,
-           MIN(artifact_trained_until) AS artifact_trained_until_min,
-           MAX(artifact_trained_until) AS artifact_trained_until_max,
-           MIN(selection_semantic_floor_date) AS selection_semantic_floor_date_min,
-           MAX(selection_semantic_floor_date) AS selection_semantic_floor_date_max,
-           SUM(CASE WHEN prediction_date <= artifact_trained_until THEN 1 ELSE 0 END) AS invalid_pre_training_rows,
-           SUM(CASE WHEN prediction_date < selection_semantic_floor_date THEN 1 ELSE 0 END) AS invalid_pre_semantic_rows,
-           SUM(CASE WHEN label_known_date <= source_run_date THEN 1 ELSE 0 END) AS invalid_label_known_before_freeze_rows
-      FROM expected_return_candidate_preoutcome_evaluations
-     WHERE candidate_artifact_id = ?
-       AND candidate_artifact_checksum = ?
-       AND model_name = ?
-       AND model_fingerprint = ?
-       AND quality_decision IN ('PASS','DEGRADED')
-  `).bind(artifactId, artifactChecksum, input.owner, fingerprint).first<Record<string, any>>()
-  const evaluableDates = Number(forwardEvidence?.evaluable_date_count ?? 0)
-  const minimumDates = Number(prospective.minimum_evaluable_dates ?? 0)
-  if (
-    minimumDates !== EXPECTED_RETURN_PROSPECTIVE_MIN_DATES
-    || evaluableDates !== Number(prospective.evaluable_date_count ?? -1)
-    || evaluableDates < minimumDates
-    || Number(forwardEvidence?.invalid_pre_training_rows ?? 0) !== 0
-    || Number(forwardEvidence?.invalid_pre_semantic_rows ?? 0) !== 0
-    || Number(forwardEvidence?.invalid_label_known_before_freeze_rows ?? 0) !== 0
-    || String(forwardEvidence?.artifact_trained_until_min ?? '') !== String(prospective.artifact_trained_until ?? '')
-    || String(forwardEvidence?.artifact_trained_until_max ?? '') !== String(prospective.artifact_trained_until ?? '')
-    || String(forwardEvidence?.selection_semantic_floor_date_min ?? '') !== selectionSemanticFloorDate
-    || String(forwardEvidence?.selection_semantic_floor_date_max ?? '') !== selectionSemanticFloorDate
-    || String(forwardEvidence?.prediction_date_min ?? '') !== String(prospective.prediction_date_min ?? '')
-    || String(forwardEvidence?.prediction_date_max ?? '') !== String(prospective.prediction_date_max ?? '')
-    || String(forwardEvidence?.label_known_date_min ?? '') !== String(prospective.label_known_date_min ?? '')
-    || String(forwardEvidence?.label_known_date_max ?? '') !== String(prospective.label_known_date_max ?? '')
-  ) {
-    throw new Error('expected_return_registry_prospective_evidence_mismatch')
-  }
+  // Re-read original immutable review immediately before the serving transaction.
+  // A plan's in-memory proof or HTTP PASS cannot replace this boundary check.
+  const { registry, navProof } = await verifyExpectedReturnCandidate(db, input,
+    { artifactId, artifactChecksum, modelVersion })
   const previous = await db.prepare(`
-    SELECT champion_version, champion_artifact_id
+    SELECT champion_version, champion_artifact_id, rollback_version
       FROM model_champion_pointers
      WHERE model_name = ?
-  `).bind(input.owner).first<{ champion_version?: string; champion_artifact_id?: string }>()
+  `).bind(input.owner).first<{ champion_version?: string; champion_artifact_id?: string; rollback_version?: string | null }>()
   const artifactJson = JSON.stringify(input.artifact)
   const payloadChecksum = await sha256Hex(artifactJson)
+  if (previous?.champion_artifact_id === artifactId) {
+    const receipt = await readExpectedReturnCommitReceipt(db, { ...input, modelVersion })
+    if (!receipt) throw new Error('expected_return_registry_pointer_commit_readback_mismatch')
+    return receipt
+  }
+  const currentContext = await verifyNavCurrentContext(db, navProof, input.currentConfigReader!, input.navBindings)
   const evidence = JSON.stringify({
     schema_version: 'expected-return-pointer-promotion-v1',
     owner: input.owner,
@@ -429,9 +467,12 @@ export async function commitExpectedReturnChampion(
     artifact_checksum: artifactChecksum,
     payload_checksum: payloadChecksum,
     prospective_validation: prospective,
+    offline_admission: input.offlineAdmission,
   })
   const eventId = `expected-return:${input.owner}:${modelVersion}:${artifactChecksum.slice(0, 16)}`
-  await db.batch([
+  const statements = [
+    navJournalFrontierGuard(db, navProof),
+    navPointerCompareAndSwapGuard(db, navProof, currentContext, previous?.champion_artifact_id ?? null),
     db.prepare(`
       INSERT INTO expected_return_artifact_payloads (
         artifact_id, model_name, model_version, serving_mode,
@@ -512,8 +553,17 @@ export async function commitExpectedReturnChampion(
       ) VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP, NULL,
                 'model_champion_history', 'exact', ?)
     `).bind(eventId, input.owner, modelVersion, artifactId, evidence),
-  ])
+  ]
+  const committed = await db.batch(statements)
+  if (committed.length !== statements.length || committed.some(result => result.success !== true)) {
+    throw new Error('expected_return_registry_pointer_batch_incomplete')
+  }
+  const receipt = await readExpectedReturnCommitReceipt(db, { ...input, modelVersion })
+  if (!receipt || receipt.payload_checksum !== payloadChecksum) {
+    throw new Error('expected_return_registry_pointer_commit_readback_mismatch')
+  }
   return {
+    ...receipt,
     artifact_id: artifactId,
     previous_version: previous?.champion_version ?? null,
     payload_checksum: payloadChecksum,

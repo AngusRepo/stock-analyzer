@@ -20,7 +20,7 @@ interface PttPost {
 }
 
 /** 爬 PTT Stock 板指定頁面 */
-async function fetchPttPage(pageNum?: number): Promise<PttPost[]> {
+async function fetchPttPage(pageNum?: number, strict = false): Promise<PttPost[]> {
   const suffix = pageNum ? `index${pageNum}.html` : 'index.html'
   const url = `https://www.ptt.cc/bbs/Stock/${suffix}`
   const res = await fetch(url, {
@@ -29,7 +29,10 @@ async function fetchPttPage(pageNum?: number): Promise<PttPost[]> {
       'Cookie': 'over18=1',
     },
   })
-  if (!res.ok) return []
+  if (!res.ok) {
+    if (strict) throw new Error(`ptt_page_http_${res.status}`)
+    return []
+  }
   const html = await res.text()
 
   const posts: PttPost[] = []
@@ -66,11 +69,14 @@ async function fetchPttPage(pageNum?: number): Promise<PttPost[]> {
 }
 
 /** 從 PTT 頁面提取上一頁頁碼 */
-async function getPttPrevPage(): Promise<number | null> {
+async function getPttPrevPage(strict = false): Promise<number | null> {
   const res = await fetch('https://www.ptt.cc/bbs/Stock/index.html', {
     headers: { 'User-Agent': 'Mozilla/5.0', 'Cookie': 'over18=1' },
   })
-  if (!res.ok) return null
+  if (!res.ok) {
+    if (strict) throw new Error(`ptt_index_http_${res.status}`)
+    return null
+  }
   const html = await res.text()
   const match = html.match(/href="\/bbs\/Stock\/index(\d+)\.html">&lsaquo; 上頁/)
   return match ? parseInt(match[1], 10) : null
@@ -138,13 +144,13 @@ export async function loadBuzzKeywords(
 
 /**
  * 偵測 PTT Stock 板的概念題材熱度
- */export async function detectPttBuzz(keywords?: Record<string, string[]>): Promise<ConceptBuzzResult[]> {
+ */export async function detectPttBuzz(keywords?: Record<string, string[]>, options: { strict?: boolean } = {}): Promise<ConceptBuzzResult[]> {
   const kwMap = keywords ?? {}
   // 抓最新 2 頁（~40 篇）
-  const prevPage = await getPttPrevPage()
+  const prevPage = await getPttPrevPage(options.strict)
   const [page1, page2] = await Promise.all([
-    fetchPttPage(),
-    prevPage ? fetchPttPage(prevPage) : Promise.resolve([]),
+    fetchPttPage(undefined, options.strict),
+    prevPage ? fetchPttPage(prevPage, options.strict) : Promise.resolve([]),
   ])
 
   const allPosts = [...page1, ...page2]

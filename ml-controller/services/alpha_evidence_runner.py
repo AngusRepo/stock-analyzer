@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import math
 from copy import deepcopy
 from typing import Any, Callable
 
@@ -12,18 +13,16 @@ from services.promotion_service import (
     build_parameter_candidate_evidence_bundle,
     evaluate_alpha_policy_evidence_gate,
     evaluate_parameter_candidate_evidence_gate,
+    _candidate_id as _resolved_candidate_id,
 )
+from services.paired_replay_nav import paired_calendar_nav, field as _field
 
 
 def _candidate_id(candidate: dict[str, Any]) -> str:
-    metadata = candidate.get("metadata") if isinstance(candidate.get("metadata"), dict) else {}
-    return str(
-        candidate.get("id")
-        or candidate.get("sandbox_id")
-        or candidate.get("source_id")
-        or metadata.get("sandbox_id")
-        or "alpha_candidate"
-    )
+    identity = _resolved_candidate_id(candidate)
+    if identity is None:
+        raise ValueError('candidate_evidence_identity_missing')
+    return identity
 
 
 def _candidate_config(candidate: dict[str, Any]) -> dict[str, Any]:
@@ -61,7 +60,12 @@ def _trade_returns_and_regimes(metrics: Any) -> tuple[list[float], list[str] | N
     regimes: list[str] = []
     for trade in trades:
         value = trade.get("profit_ratio") if isinstance(trade, dict) else getattr(trade, "profit_ratio", None)
-        returns.append(_as_float(value))
+        if isinstance(value, bool) or value is None:
+            raise ValueError('candidate_evidence_trade_return_missing')
+        parsed = _as_float(value, math.nan)
+        if not math.isfinite(parsed):
+            raise ValueError('candidate_evidence_trade_return_invalid')
+        returns.append(parsed)
         regime = trade.get("entry_regime") if isinstance(trade, dict) else getattr(trade, "entry_regime", None)
         regimes.append(str(regime or "unknown"))
     return returns, regimes if len(regimes) == len(returns) and returns else None
@@ -164,9 +168,13 @@ def _monte_carlo_row(metrics: Any, *, n_simulations: int) -> dict[str, Any]:
     }
 
 
-def _pbo_row(champion_metrics: Any, candidate_metrics: Any) -> dict[str, Any]:
-    champion_partitions = [_as_float(v) for v in (_metric_attr(champion_metrics, "partition_returns", []) or [])]
-    candidate_partitions = [_as_float(v) for v in (_metric_attr(candidate_metrics, "partition_returns", []) or [])]
+def _pbo_row(champion_metrics: Any, candidate_metrics: Any, *, nav: dict) -> dict[str, Any]:
+    if nav['status'] != 'complete':
+        return {'source': 'backtest', 'n_trades': _metric_attr(candidate_metrics, 'total_trades', 0),
+                'pbo': None, 'oos_mean_return': None, 'go_live_verdict': 'FAIL',
+                'raw_details': json.dumps({'method': 'not_evaluable', 'reason': nav['status']})}
+    champion_partitions = nav['champion']['partition_returns']
+    candidate_partitions = nav['candidate']['partition_returns']
     pbo = _run_cscv_rank_logit_pbo({
         "champion": champion_partitions,
         "alpha_candidate": candidate_partitions,
@@ -179,6 +187,9 @@ def _pbo_row(champion_metrics: Any, candidate_metrics: Any) -> dict[str, Any]:
         "oos_mean_return": pbo.oos_mean_return,
         "go_live_verdict": pbo.go_live_verdict,
         "raw_details": json.dumps({
+            'partition_source': nav['schema'],
+            'calendar_checksum': nav['calendar_checksum'],
+            'partition_dates': nav['partition_dates'],
             "method": pbo.method,
             "n_partitions": pbo.n_partitions,
             "n_combinations": pbo.n_combinations,
@@ -187,7 +198,7 @@ def _pbo_row(champion_metrics: Any, candidate_metrics: Any) -> dict[str, Any]:
     }
 
 
-def _paired_comparison_row(champion_metrics: Any, candidate_metrics: Any) -> dict[str, Any]:
+def _paired_comparison_row(champion_metrics: Any, candidate_metrics: Any, *, nav: dict) -> dict[str, Any]:
     champion_returns, _ = _trade_returns_and_regimes(champion_metrics)
     candidate_returns, _ = _trade_returns_and_regimes(candidate_metrics)
 
@@ -211,6 +222,7 @@ def _paired_comparison_row(champion_metrics: Any, candidate_metrics: Any) -> dic
     candidate = _summary(candidate_metrics, candidate_returns)
     return {
         "schema_version": "paired-candidate-champion-comparison-v1",
+        'paired_nav': nav,
         "champion": champion,
         "candidate": candidate,
         "delta": {
@@ -223,10 +235,13 @@ def _paired_comparison_row(champion_metrics: Any, candidate_metrics: Any) -> dic
     }
 
 
-def _walk_forward_row(champion_metrics: Any, candidate_metrics: Any) -> dict[str, Any]:
-    champion_partitions = [_as_float(v) for v in (_metric_attr(champion_metrics, "partition_returns", []) or [])]
-    candidate_partitions = [_as_float(v) for v in (_metric_attr(candidate_metrics, "partition_returns", []) or [])]
-    windows = min(len(champion_partitions), len(candidate_partitions))
+def _walk_forward_row(champion_metrics: Any, candidate_metrics: Any, *, nav: dict) -> dict[str, Any]:
+    if nav['status'] != 'complete':
+        return {'method': 'paired_calendar_nav_partition_diagnostic', 'passed': False,
+                'gate_pass': False, 'reason': nav['status'], 'windows': len(nav['partition_dates'])}
+    champion_partitions = nav['champion']['partition_returns']
+    candidate_partitions = nav['candidate']['partition_returns']
+    windows = len(nav['partition_dates'])
     if windows <= 0:
         return {
             "method": "paired_partition_walk_forward",
@@ -235,17 +250,19 @@ def _walk_forward_row(champion_metrics: Any, candidate_metrics: Any) -> dict[str
             "windows": 0,
         }
 
-    paired = list(zip(champion_partitions[:windows], candidate_partitions[:windows]))
+    paired = list(zip(champion_partitions, candidate_partitions, strict=True))
     candidate_mean = sum(v for _, v in paired) / windows
     champion_mean = sum(v for v, _ in paired) / windows
     positive_ratio = sum(1 for _, v in paired if v > 0) / windows
     beats_ratio = sum(1 for champion, candidate in paired if candidate >= champion) / windows
     passed = windows >= 3 and candidate_mean > 0 and positive_ratio >= 0.5 and beats_ratio >= 0.5
     return {
-        "method": "paired_partition_walk_forward",
-        "passed": passed,
-        "gate_pass": passed,
-        "reason": "ok" if passed else "partition_walk_forward_not_stable",
+        'method': 'paired_calendar_nav_partition_diagnostic',
+        # A fixed-parameter replay partition is not a purged train/test window.
+        'passed': False, 'gate_pass': False, 'diagnostic_stable': passed,
+        'reason': 'calendar_partition_is_not_purged_walk_forward',
+        'partition_dates': nav['partition_dates'],
+        'calendar_checksum': nav['calendar_checksum'],
         "windows": windows,
         "candidate_mean_return": round(candidate_mean, 8),
         "champion_mean_return": round(champion_mean, 8),
@@ -254,9 +271,11 @@ def _walk_forward_row(champion_metrics: Any, candidate_metrics: Any) -> dict[str
     }
 
 
-def _data_snooping_row(champion_metrics: Any, candidate_metrics: Any) -> dict[str, Any]:
-    champion_partitions = [_as_float(v) for v in (_metric_attr(champion_metrics, "partition_returns", []) or [])]
-    candidate_partitions = [_as_float(v) for v in (_metric_attr(candidate_metrics, "partition_returns", []) or [])]
+def _data_snooping_row(champion_metrics: Any, candidate_metrics: Any, *, nav: dict) -> dict[str, Any]:
+    if nav['status'] != 'complete':
+        return {'method': 'not_evaluable', 'passed': False, 'decision': 'FAIL', 'reason': nav['status']}
+    champion_partitions = nav['champion']['partition_returns']
+    candidate_partitions = nav['candidate']['partition_returns']
     return hansen_spa_reality_check(
         {
             "champion": champion_partitions,
@@ -285,6 +304,7 @@ def run_alpha_candidate_evidence(
 ) -> dict[str, Any]:
     from services.backtest_engine import BacktestDataset, replay_period
 
+    identity = _candidate_id(candidate)
     dataset_loader = dataset_loader or BacktestDataset.load_from_d1
     replay_fn = replay_fn or replay_period
 
@@ -300,14 +320,17 @@ def run_alpha_candidate_evidence(
     }
     champion_metrics = replay_fn(**replay_args, params=baseline)
     candidate_metrics = replay_fn(**replay_args, params=candidate_params)
+    nav = paired_calendar_nav(champion_metrics, candidate_metrics,
+        calendar=_field(dataset, 'trading_days'), start_date=start_date,
+        end_date=end_date, initial_capital=initial_capital)
 
     evidence = build_alpha_policy_evidence_bundle(
-        candidate_id=_candidate_id(candidate),
+        candidate_id=identity,
         backtest=_backtest_row(candidate_metrics, parity_audit=parity_audit),
         monte_carlo=_monte_carlo_row(candidate_metrics, n_simulations=mc_simulations),
-        pbo=_pbo_row(champion_metrics, candidate_metrics),
-        data_snooping=_data_snooping_row(champion_metrics, candidate_metrics),
-        walk_forward=_walk_forward_row(champion_metrics, candidate_metrics),
+        pbo=_pbo_row(champion_metrics, candidate_metrics, nav=nav),
+        data_snooping=_data_snooping_row(champion_metrics, candidate_metrics, nav=nav),
+        walk_forward=_walk_forward_row(champion_metrics, candidate_metrics, nav=nav),
     )
     gate = evaluate_alpha_policy_evidence_gate(candidate, evidence)
     if not alpha_replay_applied:
@@ -323,7 +346,7 @@ def run_alpha_candidate_evidence(
     return {
         **evidence,
         "gate": gate,
-        "comparison": _paired_comparison_row(champion_metrics, candidate_metrics),
+        "comparison": _paired_comparison_row(champion_metrics, candidate_metrics, nav=nav),
         "provenance": {
             "start_date": start_date,
             "end_date": end_date,
@@ -352,6 +375,7 @@ def run_parameter_candidate_evidence(
 ) -> dict[str, Any]:
     from services.backtest_engine import BacktestDataset, replay_period
 
+    identity = _candidate_id(candidate)
     using_canonical_loader = dataset_loader is None
     dataset_loader = dataset_loader or (
         lambda **kwargs: BacktestDataset.load_for_research(
@@ -380,24 +404,27 @@ def run_parameter_candidate_evidence(
     }
     champion_metrics = replay_fn(**replay_args, params=baseline)
     candidate_metrics = replay_fn(**replay_args, params=candidate_params)
+    nav = paired_calendar_nav(champion_metrics, candidate_metrics,
+        calendar=_field(dataset, 'trading_days'), start_date=start_date,
+        end_date=end_date, initial_capital=initial_capital)
 
     evidence = build_parameter_candidate_evidence_bundle(
-        candidate_id=_candidate_id(candidate),
+        candidate_id=identity,
         backtest=_backtest_row(
             candidate_metrics,
             parity_audit=parity_audit,
             optimizer_evidence=optimizer_evidence,
         ),
         monte_carlo=_monte_carlo_row(candidate_metrics, n_simulations=mc_simulations),
-        pbo=_pbo_row(champion_metrics, candidate_metrics),
-        data_snooping=_data_snooping_row(champion_metrics, candidate_metrics),
-        walk_forward=_walk_forward_row(champion_metrics, candidate_metrics),
+        pbo=_pbo_row(champion_metrics, candidate_metrics, nav=nav),
+        data_snooping=_data_snooping_row(champion_metrics, candidate_metrics, nav=nav),
+        walk_forward=_walk_forward_row(champion_metrics, candidate_metrics, nav=nav),
     )
     gate = evaluate_parameter_candidate_evidence_gate(candidate, evidence)
     return {
         **evidence,
         "gate": gate,
-        "comparison": _paired_comparison_row(champion_metrics, candidate_metrics),
+        "comparison": _paired_comparison_row(champion_metrics, candidate_metrics, nav=nav),
         "provenance": {
             "start_date": start_date,
             "end_date": end_date,

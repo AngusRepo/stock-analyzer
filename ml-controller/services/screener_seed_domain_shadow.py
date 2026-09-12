@@ -2,10 +2,12 @@
 from __future__ import annotations
 
 import os
+from datetime import datetime, timezone
 from typing import Any, Protocol
 
 from services.d1_domain_client import D1DataDomain, client_for_domain, shadow_client_for_domain
 from services.screener_seed_domain_merge import (
+    capture_screener_seed_context,
     compare_screener_seed_domain_results,
     merge_screener_seed_domains,
 )
@@ -148,19 +150,33 @@ def load_screener_seed_domain_rows(
     run_date: str,
     ops_client: ReadOnlyD1Client | None = None,
     core_client: ReadOnlyD1Client | None = None,
+    captured_context: dict | None = None,
 ) -> list[dict[str, Any]]:
     """Load the production screener seed from its formal Ops/Core owners."""
+    read_started_at = datetime.now(timezone.utc).isoformat()
     ops_reader = ops_client or client_for_domain(D1DataDomain.OPS)
     core_reader = core_client or client_for_domain(D1DataDomain.CORE)
     ops_rows = _ops_seed_rows(ops_reader, run_date)
     symbols = sorted({str(row.get("symbol") or "").strip() for row in ops_rows if row.get("symbol")})
     daily_rows, stock_rows = _core_rows(core_reader, run_date, symbols)
-    return merge_screener_seed_domains(
+    merged = merge_screener_seed_domains(
         ops_seed_rows=ops_rows,
         daily_rows=daily_rows,
         stock_rows=stock_rows,
         run_date=run_date,
     )
+    if captured_context is not None:
+        try:
+            packet = capture_screener_seed_context(run_date=run_date, ops_seed_rows=ops_rows,
+                daily_rows=daily_rows, stock_rows=stock_rows, merged_rows=merged,
+                read_started_at=read_started_at)
+        except Exception as exc:
+            # Optional evidence capture cannot erase valid formal rows. A
+            # failed packet cannot be used as paired NAV or replay authority.
+            from services.paired_nav_collection import shadow_failure
+            packet = shadow_failure("screener_seed_context", exc)
+        captured_context.update(packet)
+    return merged
 
 
 def run_screener_seed_domain_shadow_comparison(

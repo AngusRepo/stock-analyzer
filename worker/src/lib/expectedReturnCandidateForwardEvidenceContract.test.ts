@@ -7,6 +7,7 @@ const domainMigration = fs.readFileSync('domain-migrations/learning/0038_expecte
 const registry = fs.readFileSync('src/lib/dataDomainRegistry.ts', 'utf8')
 const servingRegistry = fs.readFileSync('src/lib/expectedReturnServingRegistry.ts', 'utf8')
 const promotion = fs.readFileSync('src/lib/expectedReturnArtifactPromotion.ts', 'utf8')
+const navVerifier = fs.readFileSync('src/lib/pairedNavPromotionEvidence.ts', 'utf8')
 const evaluator = fs.readFileSync('../ml-controller/services/expected_return_candidate_forward_evaluator.py', 'utf8')
 const lifecycle = fs.readFileSync('../ml-controller/routers/walk_forward.py', 'utf8')
 
@@ -35,16 +36,13 @@ assert(evaluator.includes('offline_admission_not_pass'), 'prospective evaluation
 assert(evaluator.includes('assess_ev_operational_parity'), 'daily exact-candidate evaluation must independently rebuild parity for immutable legacy packets')
 assert(lifecycle.includes('native_rows=native_rows'), 'lifecycle must provide current native rows for daily exact-candidate parity')
 
-assert(promotion.includes("prospective.schema_version !== 'expected-return-candidate-forward-gate-v2'"), 'promotion must require the pre-outcome-lock gate contract')
-assert(promotion.includes('prediction_not_after_candidate_trained_until'), 'promotion must reject evidence inside the training window')
-assert(promotion.includes('label_known_not_after_candidate_freeze'), 'promotion must reject outcomes known at freeze')
-assert(promotion.includes('prediction_before_selection_semantic_floor'), 'promotion must reject evidence before the V5 semantic floor')
-assert(servingRegistry.includes('FROM expected_return_candidate_preoutcome_evaluations'), 'pointer commit must re-read durable pre-outcome evidence')
-assert(servingRegistry.includes('invalid_pre_training_rows'), 'pointer commit must independently reject training-window rows')
-assert(servingRegistry.includes('invalid_label_known_before_freeze_rows'), 'pointer commit must independently reject labels known at freeze')
-assert(servingRegistry.includes('expected_return_registry_selection_semantic_floor_mismatch'), 'pointer commit must re-read the canonical V5 semantic floor')
-assert(servingRegistry.includes('expected_return_registry_prospective_evidence_mismatch'), 'pointer commit must fail closed on payload/D1 mismatch')
-assert(servingRegistry.includes('EXPECTED_RETURN_PROSPECTIVE_MIN_DATES = 10'), 'pointer commit must enforce the exact 10-date prospective contract')
+// OOF remains a causal diagnostic, not a second efficacy veto after NAV.
+assert(promotion.includes('hasVerifiedNavPromotion(navProof'), 'planner requires an original NAV verification')
+assert(servingRegistry.includes('await verifyNavPromotionEvidence(db'), 'pointer boundary re-reads original NAV')
+assert(navVerifier.includes('FROM paired_nav_review_records_v1'), 'original durable review is required')
+assert(navVerifier.includes('record_checksum_mismatch'), 'original bytes must verify')
+assert(navVerifier.includes('hypothesis_mismatch'), 'candidate and baseline identity must verify')
+assert(navVerifier.includes('paired_nav_review_policy.json'), 'Worker and Python share one policy source')
 assert(lifecycle.includes('if not req.dry_run and not dependency_retry_required'), 'terminal receipt must be withheld while promotion or OPB closure needs retry')
 
 const db = new DatabaseSync(':memory:')

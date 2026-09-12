@@ -1,3 +1,4 @@
+import { paperExecutionDate } from './paperExecutionScope'
 import { getTwTickSize, snapToTwPriceTick, type TwOrderLotType } from './twMarketRules'
 
 export type TwEquitySessionPhase =
@@ -45,7 +46,7 @@ function twParts(now: Date): { weekday: number; minuteOfDay: number } {
 }
 
 export function resolveTwEquitySessionPhase(
-  now = new Date(),
+  now = paperExecutionDate(),
   status: Pick<TwEquityTradingStatus, 'holiday' | 'delayedClose'> = {},
 ): TwEquitySessionPhase {
   const { weekday, minuteOfDay } = twParts(now)
@@ -100,7 +101,7 @@ export function resolveTwEquityExecutionGate(params: {
   status?: TwEquityTradingStatus
 }): TwEquityExecutionGate {
   const status = params.status ?? {}
-  const now = params.now ?? new Date()
+  const now = params.now ?? paperExecutionDate()
   const phase = resolveTwEquitySessionPhase(now, status)
   const requiresDedicatedOddLotBook = params.lotType === 'odd_lot'
   if (status.suspended || status.halted) {

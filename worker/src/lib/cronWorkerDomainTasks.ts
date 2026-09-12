@@ -8,6 +8,8 @@ import { reconcilePendingBuyDebates, setupMorningPendingBuys } from './pendingBu
 import { formatPendingBuyCronSummary } from './pendingBuyCronSummary'
 import { buildPendingBuyStateSummary } from './pendingBuyStateSummary'
 import { databaseForTable } from './dataDomainRegistry'
+import { ensurePaperCorporateSource } from './paperCorporateSource'
+import { recoverPaperMorningSetup } from './paperMorningRecovery'
 
 interface WorkerCronDeps {
   cron: string
@@ -27,16 +29,18 @@ export async function handleWorkerDomainCron(deps: WorkerCronDeps): Promise<bool
   if (cron === '50 0 * * 1-5') {
     runWithLog('pre-market-warmup', async () => {
       const warmup = await runPreMarketWarmup(env)
+      const recovery = await recoverPaperMorningSetup(env, twTodayStr, settlePaperT2)
       const debate = await reconcilePendingBuyDebates(env, twTodayStr)
       const snapshot = await loadPendingBuySnapshot(env, twTodayStr, { allowFallbackRecent: false })
       const state = buildPendingBuyStateSummary(snapshot.pendingBuys, snapshot.meta)
-      return formatPendingBuyCronSummary(warmup, state, { debate })
+      return formatPendingBuyCronSummary(`${warmup}; morning=${recovery}`, state, { debate })
     })
     return true
   }
 
   if (cron === '15 23 * * SUN-THU') {
     runWithLog('morning-setup', async () => {
+      await ensurePaperCorporateSource(env, twTodayStr)
       await settlePaperT2(env)
       await runMorningWarmup(env)
       await setupMorningPendingBuys(env)

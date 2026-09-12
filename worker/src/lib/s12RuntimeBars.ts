@@ -1,3 +1,4 @@
+import { paperExecutionFetch, paperExecutionNow } from './paperExecutionScope'
 import type { Bindings } from '../types'
 import { databaseForDataDomain } from './dataDomainRegistry'
 import { writeEvidenceArtifact } from './artifactLifecycle'
@@ -110,7 +111,7 @@ export async function loadS12ResearchUsageStatus(env: Bindings): Promise<S12Rese
   const token = String(env.PROXY_SERVICE_TOKEN ?? '').trim()
   if (!researchUrl) throw new Error('s12_research_service_url_missing')
   if (!token) throw new Error('s12_research_service_token_missing')
-  const response = await fetch(`${researchUrl}/usage`, {
+  const response = await paperExecutionFetch(`${researchUrl}/usage`, {
     headers: { Authorization: `Bearer ${token}` },
     signal: AbortSignal.timeout(15_000),
   })
@@ -440,7 +441,7 @@ function s12ResearchProducerRunId(tradeDate: string, symbol: string): string {
   return `shioaji-research:${tradeDate}:${symbol}`
 }
 
-function isResearchWindow(tradeDate: string, nowMs = Date.now()): boolean {
+function isResearchWindow(tradeDate: string, nowMs = paperExecutionNow()): boolean {
   const tw = new Date(nowMs + TW_OFFSET_MS)
   const currentDate = tw.toISOString().slice(0, 10)
   if (tradeDate < currentDate) return true
@@ -531,7 +532,7 @@ async function fetchS12ResearchKbars(
   let lastError = 'unknown'
   for (let attempt = 1; attempt <= 3; attempt += 1) {
     try {
-      const response = await fetch(url, {
+      const response = await paperExecutionFetch(url, {
         headers: { Authorization: `Bearer ${token}` },
         signal: AbortSignal.timeout(Math.max(3_000, Math.min(60_000, Math.floor(timeoutMs)))),
       })
@@ -624,7 +625,7 @@ export async function fetchS12ResearchKbarsBatch(
   if (!researchUrl) throw new Error('s12_research_service_url_missing')
   if (!token) throw new Error('s12_research_service_token_missing')
   const startDate = dateDaysBefore(tradeDate, 7)
-  const response = await fetch(`${researchUrl}/kbars/batch`, {
+  const response = await paperExecutionFetch(`${researchUrl}/kbars/batch`, {
     method: 'POST',
     headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
     body: JSON.stringify({ symbols: misses, start: startDate, end: tradeDate, limit: 5000 }),
@@ -823,7 +824,7 @@ async function fetchS12ShioajiKbars(
       cacheHit = research.cacheHit
       cacheBusinessDate = research.cacheBusinessDate
     } catch (error) {
-      if (tradeDate !== twDateText(Date.now()) || !proxyUrl) throw error
+      if (tradeDate !== twDateText(paperExecutionNow()) || !proxyUrl) throw error
       researchFallbackReason = error instanceof Error ? error.message : String(error)
       provider = 'shioaji_streaming_tick_accumulator_same_session_fallback'
       loadCurrentSessionProxy = true
@@ -831,7 +832,7 @@ async function fetchS12ShioajiKbars(
   }
   if (loadCurrentSessionProxy) {
     const url = `${proxyUrl}/kbars/${encodeURIComponent(symbol)}?start=${encodeURIComponent(tradeDate)}&end=${encodeURIComponent(tradeDate)}&limit=${limit}`
-    const res = await fetch(url, {
+    const res = await paperExecutionFetch(url, {
       headers: (env as any).PROXY_SERVICE_TOKEN ? { Authorization: `Bearer ${(env as any).PROXY_SERVICE_TOKEN}` } : {},
       signal: AbortSignal.timeout(5000),
     })
@@ -1080,7 +1081,7 @@ export async function loadIntradayTechnicalRollingBars(
     .map(parseIntradaySnapshotSample)
     .filter((sample): sample is IntradaySnapshotSample => sample != null)
   samples.push({
-    startMs: Date.now(),
+    startMs: paperExecutionNow(),
     close: currentPrice,
     totalVolume: Math.max(0, currentTotalVolume),
   })
@@ -1088,7 +1089,7 @@ export async function loadIntradayTechnicalRollingBars(
   return bars.length > 0
     ? bars.slice(-lookback)
     : [{
-      startMs: Date.now(),
+      startMs: paperExecutionNow(),
       open: currentPrice,
       high: currentPrice,
       low: currentPrice,

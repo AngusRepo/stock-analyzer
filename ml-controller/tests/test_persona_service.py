@@ -103,7 +103,8 @@ class TestTrustAgent:
                 trust_net=float(v),
             ))
         today_in_wd = date(2026, 3, 30)  # near end of March
-        op = compute_trust_opinion(bars, today_in_wd)
+        op = compute_trust_opinion(bars, today_in_wd,
+            scheduled_trading_dates=['2026-03-30', '2026-03-31'])
         assert op.signal == "BUY"
         assert op.is_window_dress is True
         # Strength should be the un-dampened × 0.7

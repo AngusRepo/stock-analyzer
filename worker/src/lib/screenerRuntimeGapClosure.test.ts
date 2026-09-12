@@ -14,7 +14,7 @@ void (async () => {
           calls.push({ sql, params })
           if (params.length > 40) throw new Error(`too many SQL variables: ${params.length}`)
           return {
-            async all<T>() { return { results: existing as T[] } },
+            async all<T>() { return { success: true, results: existing as T[] } },
             async run() { return { success: true, meta: { changes: 1 } } },
           }
         },

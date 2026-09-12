@@ -27,6 +27,7 @@ def test_async_modal_continuation_persists_pit_shadow_before_export() -> None:
         "node_recommend",
         "node_llm_reasons",
         "node_write_d1",
+        "node_paired_nav_setup",
         "node_compute_sector_flow",
         "node_compute_pit_residual_shadow",
         "node_export_dataset_snapshot",

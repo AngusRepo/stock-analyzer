@@ -16,13 +16,14 @@ LEARNING_D1_CLIENT = client_for_domain(D1DataDomain.LEARNING)
 
 
 def _exact_artifact_row(payload: dict[str, Any], *, training_run_id: str, archive_uri: str) -> dict[str, Any]:
+    from services.ensemble_v2 import validate_active8_ensemble_candidate
+    validate_active8_ensemble_candidate(payload)
     checksum = str(payload.get("payload_checksum") or "")
     cohort_id = str(payload.get("cohort_id") or "")
     validation = payload.get("validation") if isinstance(payload.get("validation"), dict) else {}
     if (
         payload.get("schema_version") != ARTIFACT_SCHEMA_VERSION
         or checksum != payload_checksum({key: value for key, value in payload.items() if key != "payload_checksum"})
-        or validation.get("decision") != "PASS"
         or not cohort_id
         or not training_run_id
         or not archive_uri
@@ -37,7 +38,7 @@ def _exact_artifact_row(payload: dict[str, Any], *, training_run_id: str, archiv
         "payload_json": canonical_json(payload),
         "payload_checksum": checksum,
         "base_artifact_set_checksum": str(payload.get("base_artifact_set_checksum") or ""),
-        "validation_decision": "PASS",
+        "validation_decision": validation['decision'],
         "validation_json": canonical_json(validation),
         "archive_uri": archive_uri,
         "state": "candidate",
@@ -45,23 +46,33 @@ def _exact_artifact_row(payload: dict[str, Any], *, training_run_id: str, archiv
     }
 
 
-def archive_active8_ensemble_payload(payload: dict[str, Any], *, bucket: Any) -> str:
-    raw = canonical_json(payload)
+def _archive_identity(payload: dict[str, Any], bucket: Any) -> tuple[str, str]:
     checksum = str(payload.get("payload_checksum") or "")
     cohort_id = str(payload.get("cohort_id") or "")
-    if not checksum or not cohort_id:
+    if (not cohort_id or checksum != payload_checksum({k: v for k, v in payload.items() if k != 'payload_checksum'})):
         raise ValueError("active8_ensemble_archive_identity_missing")
-    path = f"active8/ensemble/{cohort_id}/{checksum}.json"
-    blob = bucket.blob(path)
-    if blob.exists():
-        if blob.download_as_text() != raw:
-            raise RuntimeError("active8_ensemble_archive_immutable_conflict")
-    else:
-        blob.upload_from_string(raw, content_type="application/json")
     bucket_name = str(getattr(bucket, "name", "") or "").strip()
     if not bucket_name:
         raise RuntimeError("active8_ensemble_archive_bucket_identity_missing")
-    return f"gs://{bucket_name}/{path}"
+    path = f"active8/ensemble/{cohort_id}/{checksum}.json"
+    return path, f"gs://{bucket_name}/{path}"
+
+
+def archive_active8_ensemble_payload(payload: dict[str, Any], *, bucket: Any) -> str:
+    from google.api_core.exceptions import PreconditionFailed
+
+    path, uri = _archive_identity(payload, bucket)
+    raw = canonical_json(payload)
+    blob = bucket.blob(path)
+    try:
+        blob.upload_from_string(raw, content_type="application/json", if_generation_match=0)
+    except PreconditionFailed:
+        # A completed retry/concurrent writer is acceptable ONLY if the exact
+        # object reads back. Never retry as an unconditional overwrite.
+        pass
+    if blob.download_as_text() != raw:
+        raise RuntimeError("active8_ensemble_archive_immutable_conflict")
+    return uri
 
 
 VALIDATION_ATTEMPT_SCHEMA_VERSION = "active8-oof-ensemble-validation-attempt-v1"
@@ -200,8 +211,10 @@ def persist_active8_ensemble_candidate(
     bucket: Any,
     d1_client: Any = LEARNING_D1_CLIENT,
 ) -> dict[str, Any]:
-    archive_uri = archive_active8_ensemble_payload(payload, bucket=bucket)
+    _, archive_uri = _archive_identity(payload, bucket)
     row = _exact_artifact_row(payload, training_run_id=training_run_id, archive_uri=archive_uri)
+    if archive_active8_ensemble_payload(payload, bucket=bucket) != archive_uri:
+        raise RuntimeError('active8_ensemble_archive_uri_changed')
     d1_client.execute(
         """
         INSERT INTO active8_ensemble_artifacts_v1 (

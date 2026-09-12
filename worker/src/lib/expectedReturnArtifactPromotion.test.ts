@@ -63,6 +63,7 @@ function l4Candidate() {
     offline_admission: offlineAdmission(),
     prospective_validation: {
       schema_version: 'expected-return-candidate-forward-gate-v2',
+      evaluation_evidence_checksum: 'e'.repeat(64),
       decision: 'PASS',
       failed_gates: [],
       candidate_artifact_id: `l4_alpha_ev:${version}:${l4Checksum}`,
@@ -114,6 +115,7 @@ function fusionCandidate(ownerParity = parity) {
     offline_admission: offlineAdmission(),
     prospective_validation: {
       schema_version: 'expected-return-candidate-forward-gate-v2',
+      evaluation_evidence_checksum: 'e'.repeat(64),
       decision: 'PASS',
       failed_gates: [],
       candidate_artifact_id: `allocator_ev_fusion:${version}:${fusionChecksum}`,
@@ -148,9 +150,11 @@ const staleConfig = {
 }
 
 const l4Plan = buildExpectedReturnOwnerPromotionPlan(staleConfig, 'l4_alpha_ev', l4Candidate())
-assert.equal(l4Plan.eligible, true)
-assert.equal(l4Plan.serving_state.artifacts.l4_alpha_ev.eligible, true)
-assert.equal(l4Plan.serving_state.expected_return_owner, 'l4_alpha_ev')
+// Legacy cross-section PASS is no longer an alternative route to promotion.
+// Positive original NAV planner coverage lives in pairedNavPromotionEvidence.
+assert.equal(l4Plan.eligible, false)
+assert(l4Plan.blockers.includes('nav_original_evidence_unverified'))
+assert.deepEqual(l4Plan.next_config, staleConfig)
 
 const efficacyFinding = 'oos_date_cluster_corr_lcb90_not_positive'
 const migratedL4 = l4Candidate()
@@ -158,7 +162,9 @@ migratedL4.validation_packet = { decision: 'FAIL', failed_gates: [efficacyFindin
 migratedL4.artifact.validation_packet = migratedL4.validation_packet
 migratedL4.offline_admission = offlineAdmission([efficacyFinding])
 const migratedPlan = buildExpectedReturnOwnerPromotionPlan(staleConfig, 'l4_alpha_ev', migratedL4)
-assert.equal(migratedPlan.eligible, true, 'legacy offline efficacy failure must enter prospective admission without bypassing hard blockers')
+assert.equal(migratedPlan.eligible, false)
+assert(!migratedPlan.blockers.includes('offline_admission_not_pass'))
+assert(migratedPlan.blockers.includes('nav_original_evidence_unverified'))
 
 const hardFailedL4 = l4Candidate()
 hardFailedL4.validation_packet = { decision: 'FAIL', failed_gates: ['insufficient_dates'] }
@@ -188,7 +194,7 @@ fiveDateFloorL4.prospective_validation.minimum_evaluable_dates = 5
 fiveDateFloorL4.prospective_validation.evaluable_date_count = 5
 const fiveDateFloorPlan = buildExpectedReturnOwnerPromotionPlan(staleConfig, 'l4_alpha_ev', fiveDateFloorL4)
 assert.equal(fiveDateFloorPlan.eligible, false)
-assert(fiveDateFloorPlan.blockers.includes('prospective_date_count_below_floor'))
+assert(fiveDateFloorPlan.blockers.includes('nav_original_evidence_unverified'))
 
 const tamperedL4 = { ...l4Candidate(), artifact_checksum: 'c'.repeat(64) }
 const tamperedPlan = buildExpectedReturnOwnerPromotionPlan(
@@ -234,14 +240,40 @@ const fusionDependencyBlocked = buildExpectedReturnOwnerPromotionPlan(
   fusionCandidate(fullParity),
 )
 assert.equal(fusionDependencyBlocked.eligible, false)
-assert(fusionDependencyBlocked.blockers.includes('fusion_requires_serving_compatible_l4'))
+assert(fusionDependencyBlocked.blockers.includes('nav_original_evidence_unverified'))
 const fusionPlan = buildExpectedReturnOwnerPromotionPlan(
   l4Plan.next_config,
   'allocator_ev_fusion',
   fusionCandidate(fullParity),
 )
-assert.equal(fusionPlan.eligible, true)
-assert.equal(fusionPlan.serving_state.expected_return_owner, 'allocator_ev_fusion')
+assert.equal(fusionPlan.eligible, false)
+assert(fusionPlan.blockers.includes('nav_original_evidence_unverified'))
+
+// Every Python-classified offline efficacy finding must agree with the final
+// Worker consumer. Fit/integrity/parity and ten-date forward evidence still gate.
+const pythonForward = fs.readFileSync('../ml-controller/services/expected_return_candidate_forward_evaluator.py', 'utf8')
+for (const [owner, constant] of [
+  ['l4_alpha_ev', 'L4_OFFLINE_EFFICACY_FINDINGS'],
+  ['allocator_ev_fusion', 'FUSION_OFFLINE_EFFICACY_FINDINGS'],
+] as const) {
+  const block = pythonForward.match(new RegExp(`${constant} = \\{([\\s\\S]*?)\\}`))
+  assert(block, `${constant} must be present in Python owner`)
+  const findings = [...block[1].matchAll(/"([^"]+)"/g)].map((match) => match[1])
+  assert(findings.length > 0)
+  for (const finding of findings) {
+    const candidate = owner === 'l4_alpha_ev' ? l4Candidate() : fusionCandidate(fullParity)
+    candidate.validation_packet = { decision: 'FAIL', failed_gates: [finding] } as any
+    candidate.artifact.validation_packet = candidate.validation_packet
+    candidate.offline_admission = offlineAdmission([finding])
+    const plan = buildExpectedReturnOwnerPromotionPlan(l4Plan.next_config, owner, candidate)
+    assert.equal(plan.eligible, false, 'offline admission alone cannot replace verified NAV')
+    assert(!plan.blockers.includes('offline_admission_not_pass'), `${owner}:${finding} disagrees with Python admission`)
+    candidate.prospective_validation.evaluable_date_count = 4
+    const immature = buildExpectedReturnOwnerPromotionPlan(l4Plan.next_config, owner, candidate)
+    assert.equal(immature.eligible, false)
+    assert(immature.blockers.includes('nav_original_evidence_unverified'))
+  }
+}
 
 const route = fs.readFileSync('src/routes/adminConfigCoreRoutes.ts', 'utf8')
 const start = route.indexOf("adminConfigCoreRoutes.post('/api/admin/config/expected-return/promote'")

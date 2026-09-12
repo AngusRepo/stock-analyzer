@@ -28,6 +28,7 @@ async def call_llm(
     max_tokens: int = 512,
     client: Optional[httpx.AsyncClient] = None,
     ab_force: Optional[str] = None,
+    cost_sink=None,
 ) -> tuple[str, str]:
     """Call Gemini for formal debate.
 
@@ -83,6 +84,11 @@ async def call_llm(
             if not text:
                 raise RuntimeError("Gemini debate API returned empty text")
 
+            if cost_sink is not None:
+                usage = data.get('usageMetadata') or {}
+                await cost_sink('llm_debate', 'gemini', GEMINI_MODEL_DEFAULT,
+                    int(usage.get('promptTokenCount', 0) or 0), int(usage.get('candidatesTokenCount', 0) or 0))
+                return text, 'gemini_api'
             try:
                 from .cost_tracker import record_llm_call
 
@@ -98,7 +104,8 @@ async def call_llm(
                 pass
             return text, "gemini_api"
         except Exception as exc:
-            logger.warning("[LLM-Debate] Gemini failed: %s", exc)
+            # HTTP exceptions can contain the full URL, including its API key.
+            logger.warning("[LLM-Debate] Gemini failed (%s)", type(exc).__name__)
             raise RuntimeError(
                 "Gemini debate LLM unavailable; no secondary provider configured by policy"
             ) from exc

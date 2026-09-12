@@ -12,6 +12,7 @@ import random
 from statistics import NormalDist
 from datetime import datetime, timezone
 from typing import Any
+from services.promotion_policy import _as_float, _as_int, risk_metric_within, optional_metric, parse_regime_evidence
 
 
 VALIDATION_PACKET_SCHEMA_VERSION = "validation-governance-packet-v1"
@@ -46,29 +47,6 @@ DSR_PROXY_MISSING_INPUTS = [
 ]
 
 
-def _as_float(value: Any, default: float = 0.0) -> float:
-    if value is None:
-        return default
-    if isinstance(value, (int, float)):
-        return float(value)
-    text = str(value).strip()
-    if not text:
-        return default
-    try:
-        if text.endswith("%"):
-            return float(text[:-1]) / 100.0
-        return float(text)
-    except ValueError:
-        return default
-
-
-def _as_int(value: Any, default: int = 0) -> int:
-    try:
-        return int(value)
-    except (TypeError, ValueError):
-        return default
-
-
 def _policy_dict(policy: Any) -> dict[str, Any]:
     if isinstance(policy, dict):
         return policy
@@ -86,6 +64,7 @@ def _requires_promotion_grade_evidence(source: str, external_risk_required: bool
         "promotion_gate",
         "alpha_policy_latest_gate",
         "alpha_policy_evidence_gate",
+        "parameter_candidate_evidence_gate",
     }
 
 
@@ -720,36 +699,23 @@ def _regime_split_gate(
     policy: dict[str, Any],
     required: bool,
 ) -> dict[str, Any]:
-    per_regime = backtest.get("per_regime") if isinstance(backtest.get("per_regime"), dict) else {}
+    per_regime = backtest.get('per_regime', {})
     min_regime_trades = _as_int(policy.get("min_regime_trades"), 10)
     min_regime_return = _as_float(policy.get("min_regime_return"), -0.02)
     min_regime_buckets = _as_int(policy.get("min_regime_buckets"), 2)
-    buckets: dict[str, dict[str, Any]] = {}
-    weak_regimes: list[str] = []
-    for regime, raw in per_regime.items():
-        if not isinstance(raw, dict):
-            continue
-        trades = _as_int(raw.get("trades") or raw.get("total_trades") or raw.get("n_trades"), 0)
-        ret = _as_float(
-            raw.get("return")
-            or raw.get("total_return")
-            or raw.get("oos_return")
-            or raw.get("avg_return"),
-            0.0,
-        )
-        if trades <= 0:
-            continue
-        buckets[str(regime)] = {"trades": trades, "return": ret}
-        if trades >= min_regime_trades and ret < min_regime_return:
-            weak_regimes.append(str(regime))
+    buckets, invalid = parse_regime_evidence(per_regime)
+    weak_regimes = [regime for regime, row in buckets.items()
+        if row['trades'] >= min_regime_trades and row['return'] is not None and row['return'] < min_regime_return]
+    missing_returns = [regime for regime, row in buckets.items()
+        if row['trades'] >= min_regime_trades and row['return'] is None]
 
     eligible_buckets = [
         regime for regime, evidence in buckets.items()
-        if evidence["trades"] >= min_regime_trades
+        if evidence["trades"] >= min_regime_trades and evidence['return'] is not None
     ]
     enough_buckets = len(eligible_buckets) >= min_regime_buckets
-    passed = enough_buckets and not weak_regimes
-    if not required and not per_regime:
+    passed = enough_buckets and not weak_regimes and not invalid and not missing_returns
+    if not required and per_regime == {}:
         return _gate(
             "regime_split_validation",
             True,
@@ -773,6 +739,8 @@ def _regime_split_gate(
             "min_regime_trades": min_regime_trades,
             "min_regime_return": min_regime_return,
             "weak_regimes": weak_regimes,
+            'invalid_evidence': invalid,
+            'missing_return_regimes': missing_returns,
             "per_regime": buckets,
         },
     )
@@ -832,12 +800,12 @@ def build_validation_packet(
             "backtest_return_quality",
             _as_float(backtest.get("sharpe")) >= min_sharpe
             and _as_float(backtest.get("profit_factor")) >= min_profit_factor
-            and _as_float(backtest.get("max_drawdown"), 1.0) <= max_backtest_mdd,
+            and risk_metric_within(backtest.get('max_drawdown'), max_backtest_mdd),
             reason="Sharpe, profit factor, and max drawdown must pass together",
             evidence={
                 "sharpe": _as_float(backtest.get("sharpe")),
                 "profit_factor": _as_float(backtest.get("profit_factor")),
-                "max_drawdown": _as_float(backtest.get("max_drawdown"), 1.0),
+                "max_drawdown": optional_metric(backtest.get('max_drawdown')),
             },
         ),
         _gate(
@@ -886,11 +854,11 @@ def build_validation_packet(
                 "monte_carlo_tail_risk",
                 str(monte_carlo.get("go_live_verdict") or "").upper() == "PASS"
                 and mc_method in {"block_bootstrap", "regime_block_bootstrap"}
-                and _as_float(monte_carlo.get("mdd_95th"), 1.0) <= max_mc_mdd_95th,
+                and risk_metric_within(monte_carlo.get('mdd_95th'), max_mc_mdd_95th),
                 reason="MC must use block/regime bootstrap and keep 95% MDD below policy",
                 evidence={
                     "method": mc_method,
-                    "mdd_95th": _as_float(monte_carlo.get("mdd_95th"), 1.0),
+                    "mdd_95th": optional_metric(monte_carlo.get('mdd_95th')),
                     "verdict": monte_carlo.get("go_live_verdict"),
                 },
             )
@@ -912,13 +880,13 @@ def build_validation_packet(
                 "pbo_overfit_risk",
                 str(pbo.get("go_live_verdict") or "").upper() == "PASS"
                 and str(pbo.get("method") or "").lower() == "cscv_rank_logit"
-                and _as_float(pbo.get("pbo"), 1.0) < max_pbo
+                and risk_metric_within(pbo.get('pbo'), max_pbo, inclusive=False)
                 and _as_float(pbo.get("oos_mean_return"), -1.0)
                 >= _as_float(p.get("min_oos_mean_return"), 0.0),
                 reason="PBO must use CSCV rank-logit and show positive OOS mean return",
                 evidence={
                     "method": pbo.get("method"),
-                    "pbo": _as_float(pbo.get("pbo"), 1.0),
+                    "pbo": optional_metric(pbo.get('pbo')),
                     "oos_mean_return": _as_float(pbo.get("oos_mean_return"), -1.0),
                     "verdict": pbo.get("go_live_verdict"),
                 },
@@ -945,7 +913,7 @@ def build_validation_packet(
                 "white_reality_check_stationary_bootstrap_v2",
                 "hansen_spa_studentized_stationary_bootstrap_v2",
             }
-            and _as_float(data_snooping.get("p_value"), 1.0) <= max_data_snooping_p
+            and risk_metric_within(data_snooping.get('p_value'), max_data_snooping_p)
         )
         gates.append(
             _gate(

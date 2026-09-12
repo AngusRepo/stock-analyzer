@@ -8,6 +8,7 @@ import os
 import threading
 import time
 from datetime import datetime, timezone
+from app.sequence_semantic_contract import sequence_rank_ic_semantic
 from typing import Any
 
 from .sequence_training import SEQUENCE_RETURN_SEMANTIC_VERSION
@@ -650,9 +651,15 @@ def build_pool_from_frozen_manifest(
         if not isinstance(active8_ensemble, dict):
             raise ServingPoolResolutionError("frozen_serving_manifest_active8_ensemble_missing")
         try:
+            nav_authority = None
+            if manifest.get('active8_nav_inference') is not None:
+                from services.active8_nav_inference import restore_frozen_nav_inference
+                nav_authority = restore_frozen_nav_inference(manifest['active8_nav_inference'],
+                    artifact=active8_ensemble, pool_models=pool['models'])
             validate_active8_ensemble_artifact(
                 active8_ensemble,
                 pool_models=pool["models"],
+                nav_authority=nav_authority,
             )
         except Exception as exc:
             raise ServingPoolResolutionError(
@@ -660,6 +667,8 @@ def build_pool_from_frozen_manifest(
             ) from exc
         pool["active8_ensemble"] = dict(active8_ensemble)
     elif mode == ACTIVE8_ACTION_MODE_EVIDENCE_ONLY:
+        if manifest.get('active8_nav_inference') is not None:
+            raise ServingPoolResolutionError('frozen_serving_manifest_observation_has_nav_authority')
         if source_of_truth != "immutable_active8_observation_bundle+active8_action_authority_v1":
             raise ServingPoolResolutionError("frozen_serving_manifest_observation_source_invalid")
         if authority.get("buy_authorized") is not False or authority.get("production_effect") is not False:
@@ -754,7 +763,7 @@ def _sequence_artifact_contract(
     metadata = _artifact_metadata(artifact)
     seq_len = _positive_int(metadata.get("seq_len"))
     pred_len = _positive_int(metadata.get("pred_len"))
-    rank_ic_semantic = str(metadata.get("rank_ic_semantic_version") or "").strip()
+    rank_ic_semantic = sequence_rank_ic_semantic(metadata, model_name)
     version = str(artifact.get("version") or metadata.get("version") or "").strip()
     artifact_id = str(artifact.get("artifact_id") or "").strip()
     if (

@@ -1,3 +1,4 @@
+import { paperExecutionFetch } from './paperExecutionScope'
 import { isValidTwTickPrice } from './twMarketRules'
 
 export interface IntradayOHLC {
@@ -273,7 +274,7 @@ async function enrichSnapshotContext(
   const proxyUrl = env?.SHIOAJI_PROXY_URL
   if (!proxyUrl || map.size === 0) return
   try {
-    const res = await fetch(`${proxyUrl}/snapshots`, {
+    const res = await paperExecutionFetch(`${proxyUrl}/snapshots`, {
       method: 'POST',
       headers: proxyHeaders(env, true),
       body: JSON.stringify({ symbols }),
@@ -300,7 +301,7 @@ async function fetchShioajiMonitoringQuotes(
   if (!proxyUrl || symbols.length === 0) return map
 
   try {
-    const res = await fetch(`${proxyUrl}/snapshots`, {
+    const res = await paperExecutionFetch(`${proxyUrl}/snapshots`, {
       method: 'POST',
       headers: proxyHeaders(env, true),
       body: JSON.stringify({ symbols }),
@@ -320,7 +321,7 @@ async function fetchShioajiMonitoringQuotes(
   }
 
   try {
-    const res = await fetch(`${proxyUrl}/quotes`, {
+    const res = await paperExecutionFetch(`${proxyUrl}/quotes`, {
       method: 'POST',
       headers: proxyHeaders(env, true),
       body: JSON.stringify({ symbols }),
@@ -359,7 +360,7 @@ async function fetchSingleOrderbookQuotes(
   const lotType = env?.marketDataLotType ?? 'board_lot'
 
   const results = await Promise.allSettled(symbols.map(async (symbol) => {
-    const res = await fetch(`${proxyUrl}/orderbook/${symbol}?lot_type=${encodeURIComponent(lotType)}`, {
+    const res = await paperExecutionFetch(`${proxyUrl}/orderbook/${symbol}?lot_type=${encodeURIComponent(lotType)}`, {
       headers: proxyHeaders(env),
       signal: AbortSignal.timeout(3000),
     })
@@ -392,7 +393,7 @@ async function fetchFreshOrderbookQuotes(
   const lotType = env?.marketDataLotType ?? 'board_lot'
 
   try {
-    const res = await fetch(`${proxyUrl}/orderbooks`, {
+    const res = await paperExecutionFetch(`${proxyUrl}/orderbooks`, {
       method: 'POST',
       headers: proxyHeaders(env, true),
       body: JSON.stringify({ symbols, lot_type: lotType }),
@@ -452,7 +453,7 @@ async function enrichMissingOrderbookQuotes(
   if (missingExecutable.length === 0) return
 
   const results = await Promise.allSettled(missingExecutable.map(async (symbol) => {
-    const res = await fetch(`${proxyUrl}/orderbook/${symbol}`, {
+    const res = await paperExecutionFetch(`${proxyUrl}/orderbook/${symbol}`, {
       headers: proxyHeaders(env),
       signal: AbortSignal.timeout(3000),
     })
@@ -495,7 +496,7 @@ async function getIntradayPrice(symbol: string, env?: IntradayEnv): Promise<numb
   const proxyUrl = env?.SHIOAJI_PROXY_URL
   if (proxyUrl) {
     try {
-      const res = await fetch(`${proxyUrl}/quote/${symbol}`, {
+      const res = await paperExecutionFetch(`${proxyUrl}/quote/${symbol}`, {
         headers: proxyHeaders(env),
         signal: AbortSignal.timeout(5000),
       })
@@ -513,7 +514,7 @@ async function getIntradayPrice(symbol: string, env?: IntradayEnv): Promise<numb
 
   try {
     const twSymbol = `${symbol}.TW`
-    const res = await fetch(
+    const res = await paperExecutionFetch(
       `https://query1.finance.yahoo.com/v8/finance/chart/${twSymbol}?interval=1m&range=1d`,
       { headers: { 'User-Agent': 'Mozilla/5.0' } },
     )
@@ -562,7 +563,7 @@ export async function batchGetIntradayOHLC(
   }
 
   try {
-    const res = await fetch(`${proxyUrl}/snapshots`, {
+    const res = await paperExecutionFetch(`${proxyUrl}/snapshots`, {
       method: 'POST',
       headers: proxyHeaders(env, true),
       body: JSON.stringify({ symbols }),
@@ -590,7 +591,7 @@ export async function batchGetIntradayOHLC(
 
   if (proxyUrl) {
     try {
-      const res = await fetch(`${proxyUrl}/quotes`, {
+      const res = await paperExecutionFetch(`${proxyUrl}/quotes`, {
         method: 'POST',
         headers: proxyHeaders(env, true),
         body: JSON.stringify({ symbols }),
@@ -632,7 +633,7 @@ export async function batchGetIntradayPrices(
 
   if (proxyUrl) {
     try {
-      const res = await fetch(`${proxyUrl}/quotes`, {
+      const res = await paperExecutionFetch(`${proxyUrl}/quotes`, {
         method: 'POST',
         headers: proxyHeaders(env, true),
         body: JSON.stringify({ symbols }),

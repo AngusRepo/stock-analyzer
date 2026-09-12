@@ -1,3 +1,4 @@
+import { paperExecutionFetch, paperExecutionNow, paperExecutionDate } from './paperExecutionScope'
 export interface MarketRegimeFactorTile {
   id: string
   label: string
@@ -424,7 +425,7 @@ async function latestCnyesHeadlines(): Promise<{ value: string; sourceDate: stri
   try {
     const controller = new AbortController()
     const timer = setTimeout(() => controller.abort(), 1500)
-    const res = await fetch(url, {
+    const res = await paperExecutionFetch(url, {
       headers: { 'User-Agent': 'StockVision/12.3 (market-regime-context)' },
       signal: controller.signal,
     })
@@ -462,7 +463,7 @@ export async function buildMarketRegimeFactorPacket(
   marketRiskRow: Record<string, any>,
   regimeState: any,
 ): Promise<MarketRegimeFactorPacket> {
-  const date = String(marketRiskRow.date ?? new Date(Date.now() + 8 * 3600_000).toISOString().slice(0, 10))
+  const date = String(marketRiskRow.date ?? new Date(paperExecutionNow() + 8 * 3600_000).toISOString().slice(0, 10))
   const [canonicalChip, leverage, cnyesEvent] = await Promise.all([
     canonicalInstitutionalNet5d(db, date),
     canonicalLeverageStress(db, date),
@@ -624,7 +625,7 @@ export async function buildMarketRegimeFactorPacket(
       finlab_primary: ['canonical_chip_daily', 'canonical_market_daily', 'sector_flow', 'market_regime_state'],
       official_fallback: ['market_risk', 'TWSE/TPEX audit'],
     },
-    generated_at: new Date().toISOString(),
+    generated_at: paperExecutionDate().toISOString(),
   }
 }
 

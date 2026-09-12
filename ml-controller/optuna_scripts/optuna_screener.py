@@ -24,17 +24,20 @@ optuna_screener.py — Sprint 5.2: Screener factor-weights Optuna search via bac
     volRatioRangeHi          [2.0, 4.0]     量比 normalize 上界
 
 Objective (Sprint 3 P0-3 pattern)：NSGA-II Multi-Objective
-  Obj 1: BacktestMetrics.sharpe       (maximize)
-  Obj 2: BacktestMetrics.max_drawdown (minimize)
+  Obj 1: daily marked-to-market portfolio NAV Sharpe (maximize)
+  Obj 2: portfolio NAV max drawdown, including initial capital (minimize)
 
 Mode A compares the incumbent and candidates on one frozen dataset. Only
 screener fields are searched; ranking, liquidity and risk policy stay fixed.
 Execution fill rate excludes pre-order policy skips. Missing execution data
 is blocked independently; the default 30% floor and 30-trade minimum remain.
-Every trial and the incumbent have versioned Cloud Logging evidence.
+Every trial and the incumbent have versioned Cloud Logging evidence. Search
+uses development dates only, locks one candidate, then audits a later holdout
+without reselection. Historical holdout never grants prospective credit.
 
-Realism caveat: backtest_engine Mode A 有 15 個 documented deviation (Sharpe ±0.3~0.8)，
-  Optuna 結果「只能做相對比較」，不能當 absolute production prediction。
+Realism caveat: Mode A has documented signal/execution approximations. The new
+  NAV objective has no measured production-error bound. Results remain research,
+  not absolute production predictions or a permission to promote.
   詳見 memory/project_backtest_engine_design_rationale.md
 """
 from __future__ import annotations
@@ -60,6 +63,9 @@ from services.research_data_access import ResearchDataMode, latest_snapshot_busi
 from services.stratified_subset import select_stratified_subset  # noqa: E402
 from services.screener_search_evidence import (
     ScreenerSearchBlocked, assess_metrics, relative_comparison,
+)
+from services.screener_search_validation import (
+    SCHEMA, OBJECTIVE, chronological_split, portfolio_metrics, freeze_selection, paired_holdout,
 )
 
 logger = logging.getLogger(__name__)
@@ -197,14 +203,35 @@ def evaluate_params(dataset, start_date, end_date, params):
     except Exception as exc:
         logger.exception("[optuna_screener] replay failed")
         return {"category": "replay_error", "reject_reason": type(exc).__name__, "metrics": {}}
-    return assess_metrics(metrics, params.get("optuna") or {})
+    try:
+        nav = portfolio_metrics(metrics)
+        expected = [day for day in dataset.trading_days if start_date <= day <= end_date]
+        if [row['date'] for row in nav['daily_nav_returns']] != expected:
+            raise ValueError('portfolio_nav_calendar_incomplete')
+    except (ValueError, TypeError, AttributeError, OverflowError) as exc:
+        record = assess_metrics(metrics, params.get("optuna") or {})
+        # Do not mask an earlier, more specific data/execution failure.
+        if record['category'] not in {'data_missing', 'replay_error'}:
+            record.update(category='invalid_metrics', reject_reason=str(exc))
+        return record
+    return assess_metrics(metrics, params.get("optuna") or {}, portfolio=nav)
 
 
 def emit_evidence(evidence_id, record):
-    # One bounded record per trial in durable Cloud Logging, including failures.
-    # Do not put all trial records into a Worker/D1 callback parameter.
+    # Keep the trial summary bounded and emit every missing event separately.
+    # Never truncate the worst dates from an audit to fit one logging entry.
+    record = deepcopy(record)
+    metrics = record.get('metrics')
+    issues = metrics.pop('execution_data_issues', None) if isinstance(metrics, dict) else None
+    if issues is not None:
+        metrics['execution_data_issue_count'] = len(issues)
+        for index, issue in enumerate(issues):
+            logger.info("[optuna_screener:execution_issue] %s", json.dumps(
+                {'schema': SCHEMA, 'evidence_id': evidence_id, 'trial': record.get('trial'),
+                 'kind': record.get('kind'), 'issue_index': index, 'issue_count': len(issues),
+                 **issue}, ensure_ascii=False, allow_nan=False, sort_keys=True))
     logger.info("[optuna_screener:evidence] %s", json.dumps(
-        {"schema": "screener-search-v2", "evidence_id": evidence_id,
+        {"schema": SCHEMA, "evidence_id": evidence_id,
          "execution": os.environ.get("CLOUD_RUN_EXECUTION"), **record},
         ensure_ascii=False, allow_nan=False, sort_keys=True,
     ))
@@ -232,7 +259,7 @@ def create_objective(dataset, start_date, end_date, baseline, reject_counter=Non
         if category != "valid":
             return PENALTY
         # A genuine zero drawdown must remain zero, not become 100% via `or 1`.
-        return record["metrics"]["sharpe"], record["metrics"]["max_drawdown"]
+        return record["metrics"]["portfolio_sharpe"], record["metrics"]["portfolio_max_drawdown"]
 
     return objective
 
@@ -247,7 +274,7 @@ def run_search(
 ) -> dict:
     """
     Sprint 5.2 entry point. Loads stratified subset + BacktestDataset, runs NSGA-II
-    Pareto optimization over screener factor weights, returns best-sharpe trial.
+    Development-only Pareto search, followed by one locked-candidate audit.
     """
     # ── Date defaults: 90 day window ending today (TW) ──────────────────────
     if end_date is None:
@@ -273,7 +300,9 @@ def run_search(
     # ── Step 1: stratified subset (M12 fix: tradable universe, not in_current_watchlist) ──
     symbols = select_stratified_subset(
         target_size=subset_size,
-        end_date=end_date,
+        # Freeze the compute universe before the first scored decision. Using
+        # end_date lets future liquidity select the historical research sample.
+        end_date=(datetime.fromisoformat(start_date) - timedelta(days=1)).date().isoformat(),
         lookback_days=30,
         min_median_daily_traded_value=float(baseline_params["screener"]["minDailyTurnover"]),
     )
@@ -293,16 +322,26 @@ def run_search(
         mode=data_mode,
     )
 
-    evidence_id = 'screener-search-v2-' + uuid.uuid4().hex
-    baseline_evaluation = evaluate_params(dataset, start_date, end_date, baseline_params)
+    evidence_id = SCHEMA + '-' + uuid.uuid4().hex
+    try:
+        split = chronological_split(dataset.trading_days, start_date, end_date)
+    except ValueError as exc:
+        raise ScreenerSearchBlocked({
+            'evidence_id': evidence_id, 'schema': SCHEMA, 'trial_count': 0,
+            'reject_summary': {}, 'reason': str(exc), 'data_access': data_access,
+            'production_effect': False,
+        }) from exc
+    development_start, development_end = split['development'][0], split['development'][-1]
+    baseline_evaluation = evaluate_params(dataset, development_start, development_end, baseline_params)
     emit_evidence(evidence_id, {
         'kind': 'baseline', 'params': baseline_params, 'symbols': symbols,
-        'date_window': f'{start_date}~{end_date}', 'data_access': data_access,
+        'date_window': f'{development_start}~{development_end}', 'data_access': data_access,
+        'split': split, 'objective_metric': OBJECTIVE,
         **baseline_evaluation,
     })
     if baseline_evaluation['category'] in {'replay_error', 'data_missing', 'invalid_metrics'}:
         raise ScreenerSearchBlocked({
-            'evidence_id': evidence_id, 'schema': 'screener-search-v2',
+            'evidence_id': evidence_id, 'schema': SCHEMA,
             'trial_count': 0, 'reject_summary': {}, 'baseline': baseline_evaluation,
             'reason': 'baseline_not_evaluable', 'data_access': data_access,
             'date_window': f'{start_date}~{end_date}', 'subset_size': len(symbols),
@@ -311,13 +350,13 @@ def run_search(
 
     # ── Step 3: Optuna NSGA-II Pareto search ────────────────────────────────
     study = optuna.create_study(
-        directions=["maximize", "minimize"],  # sharpe↑, max_dd↓
+        directions=["maximize", "minimize"],  # development NAV Sharpe↑, max_dd↓
         sampler=NSGAIISampler(seed=42),
-        study_name="screener_factor_weights_pareto_s52",
+        study_name="screener_factor_weights_nav_development_v3",
     )
     reject_counter: dict = {}
     study.optimize(
-        create_objective(dataset, start_date, end_date, baseline_params, reject_counter, evidence_id),
+        create_objective(dataset, development_start, development_end, baseline_params, reject_counter, evidence_id),
         n_trials=n_trials,
     )
 
@@ -329,11 +368,13 @@ def run_search(
     logger.info(f"[optuna_screener] reject breakdown (top-level): {reject_summary}")
     logger.info(f"[optuna_screener] reject breakdown (details): {reject_details}")
     diagnostics = {
-        'evidence_id': evidence_id, 'schema': 'screener-search-v2',
+        'evidence_id': evidence_id, 'schema': SCHEMA,
         'trial_count': len(study.trials), 'reject_summary': reject_summary,
         'reject_details': reject_details, 'baseline': baseline_evaluation,
         'date_window': f'{start_date}~{end_date}', 'subset_size': len(symbols),
         'data_access': data_access, 'mode': 'A',
+        'split': split, 'objective_metric': OBJECTIVE,
+        'universe_as_of': (datetime.fromisoformat(start_date) - timedelta(days=1)).date().isoformat(),
         'thresholds': {'execution_fill_rate': float((baseline_params.get('optuna') or {}).get('min_fill_rate', 0.30)),
                        'min_n_trades': int((baseline_params.get('optuna') or {}).get('min_n_trades', 30))},
         'trial_evidence_store': 'cloud_logging', 'production_effect': False,
@@ -345,23 +386,46 @@ def run_search(
     if not pareto_trials:
         raise ScreenerSearchBlocked(diagnostics)
 
-    chosen = max(pareto_trials, key=lambda t: t.values[0])
+    # Tie-breaking is also predeclared and development-only. Never inspect
+    # holdout results to choose another Pareto candidate.
+    chosen = max(pareto_trials, key=lambda t: (t.values[0], -t.values[1], -t.number))
     best_sharpe, best_max_dd = chosen.values
     diagnostics['selected_trial'] = chosen.number
     diagnostics['selected_evaluation'] = chosen.user_attrs['evaluation']
     comparison = relative_comparison(baseline_evaluation, chosen.user_attrs['evaluation'])
+    comparison['scope'] = 'development_only_selection_biased_not_validation'
+    resolved_params = _build_trial_params(chosen, baseline_params)
+    selection_lock = freeze_selection(resolved_params, split, data_access, symbols,
+                                      baseline_params=baseline_params)
     emit_evidence(evidence_id, {'kind': 'selection', 'selected_trial': chosen.number,
-                               'baseline_comparison': comparison})
+                               'baseline_comparison': comparison, 'selection_lock': selection_lock,
+                               'resolved_screener': resolved_params['screener']})
+
+    validation_start, validation_end = split['validation'][0], split['validation'][-1]
+    baseline_validation = evaluate_params(dataset, validation_start, validation_end, baseline_params)
+    candidate_validation = evaluate_params(dataset, validation_start, validation_end, resolved_params)
+    holdout = paired_holdout(baseline_validation, candidate_validation, split['validation'])
+    diagnostics.update(selection_lock=selection_lock, holdout=holdout,
+                       holdout_baseline=baseline_validation, holdout_candidate=candidate_validation)
+    emit_evidence(evidence_id, {'kind': 'holdout', 'selection_lock': selection_lock,
+                               'baseline': baseline_validation, 'candidate': candidate_validation,
+                               'paired_evaluation': holdout})
+    if (holdout['status'] == 'invalid' or any(
+        record['category'] in {'replay_error', 'data_missing', 'invalid_metrics'}
+        for record in (baseline_validation, candidate_validation)
+    )):
+        diagnostics['reason'] = 'holdout_not_evaluable'
+        raise ScreenerSearchBlocked(diagnostics)
 
     logger.info("=" * 60)
     logger.info(f"[optuna_screener] Pareto front size: {len(pareto_trials)}/{n_trials}")
     logger.info(
         f"[optuna_screener] chosen trial #{chosen.number}: "
-        f"sharpe={best_sharpe:.3f} max_dd={best_max_dd:.3%} "
+        f"portfolio_nav_sharpe={best_sharpe:.3f} max_dd={best_max_dd:.3%} "
         f"n_trades={chosen.user_attrs.get('n_trades')} "
         f"win_rate={chosen.user_attrs.get('win_rate', 0):.1%} "
         f"fill_rate={chosen.user_attrs.get('fill_rate', 0):.1%} "
-        f"pf={chosen.user_attrs.get('profit_factor', 0):.2f}"
+        f"trade_pf_diagnostic={chosen.user_attrs.get('profit_factor')}"
     )
     for k, v in chosen.params.items():
         logger.info(f"  {k}: {v}")
@@ -372,6 +436,8 @@ def run_search(
             {
                 "trial_number": t.number,
                 "sharpe": float(t.values[0]),
+                "objective_metric": OBJECTIVE,
+                "evaluation_scope": "development_only",
                 "max_dd": float(t.values[1]),
                 "n_trades": t.user_attrs.get("n_trades"),
                 "win_rate": t.user_attrs.get("win_rate"),
@@ -386,12 +452,17 @@ def run_search(
     )
 
     # Build the resolved screener-section dict from chosen trial (what worker will merge)
-    resolved_screener = _build_trial_params(chosen, baseline_params)["screener"]
+    resolved_screener = resolved_params["screener"]
 
     return {
         "best_params": chosen.params,             # raw Optuna suggest_* values
         "resolved_screener": resolved_screener,    # full screener-section dict for push
         "best_sharpe": float(best_sharpe),
+        "best_sharpe_definition": OBJECTIVE,
+        "best_trade_sharpe_diagnostic": chosen.user_attrs.get('sharpe'),
+        "selection_lock": selection_lock,
+        "holdout": holdout,
+        "validation_is_promotion_gate": False,
         "best_max_dd": float(best_max_dd),
         "best_n_trades": chosen.user_attrs.get("n_trades"),
         "best_win_rate": chosen.user_attrs.get("win_rate"),
@@ -410,8 +481,10 @@ def run_search(
         "subset_size": len(symbols),
         "date_window": f"{start_date}~{end_date}",
         "realism_note": (
-            "Mode A has 15 documented deviations from production (Sharpe ±0.3~0.8). "
-            "Use results for RELATIVE parameter ranking only, not absolute prediction. "
+            "Mode A has documented signal/execution deviations; no empirical error bound is claimed. "
+            "Development NAV Sharpe selects one candidate; historical holdout only audits it, without reselection. "
+            "Holdout isolation is within this invocation, not proof prior studies never viewed these dates. "
+            "Results are research evidence, not production promotion or prospective maturity credit. "
             "Ranking and risk settings are frozen to the incumbent; Mode A ML/signal inputs are placeholders. "
             "See memory/project_sprint_5_2_hardcode_overrides.md"
         ),

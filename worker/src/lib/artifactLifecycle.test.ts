@@ -252,7 +252,7 @@ function readyDomainDb(baseline: string, tables: string[]): MockDb {
 const executionDomainDb = readyDomainDb('0001_execution_baseline.sql', [
   'broker_execution_intents', 'broker_execution_legs', 'broker_execution_events', 'risk_audit_log',
 ])
-const paperDomainDb = readyDomainDb('0001_paper_baseline.sql', [
+const paperDomainTables = [
   'debate_memory', 'decision_logs', 'exit_shadow_log', 'paper_accounts', 'paper_orders',
   'paper_positions', 'paper_settlements', 'paper_daily_snapshots', 'paper_execution_events',
   'paper_order_intents', 'paper_exit_intents', 'paper_challenger_candidates',
@@ -260,7 +260,9 @@ const paperDomainDb = readyDomainDb('0001_paper_baseline.sql', [
   'pending_buy_items', 'pending_buy_runs', 'promotion_audit_events',
   'paper_kelly_calibration_artifacts_v1', 'paper_kelly_calibration_head_v1',
   'paper_kelly_calibration_runs_v1',
-])
+  'paper_corporate_entitlements_v1', 'paper_corporate_sessions_v1',
+]
+const paperDomainDb = readyDomainDb('0001_paper_baseline.sql', paperDomainTables)
 
 async function testStorageHealthCheckUsesD1ResultSizeAndReportsTruthfulScope(): Promise<void> {
   const healthyDb = new MockDb()
@@ -282,6 +284,12 @@ async function testStorageHealthCheckUsesD1ResultSizeAndReportsTruthfulScope(): 
   assert.equal(healthy.artifact_active_references, 1998)
   assert.equal(healthy.artifact_true_orphan_references, 0)
   assert.equal(healthy.domain_schema.every((row) => row.ready), true)
+  for (const missing of ['paper_corporate_entitlements_v1', 'paper_corporate_sessions_v1']) {
+    const incomplete = await runStorageHealthCheck({ DB: healthyDb as any, ...splitBindings,
+      PAPER_DB: readyDomainDb('0001_paper_baseline.sql', paperDomainTables.filter(name => name !== missing)) as any })
+    assert.equal(incomplete.healthy, false)
+    assert(incomplete.domain_schema.some(row => row.domain === 'paper' && row.missing_tables.includes(missing)))
+  }
   assert.equal(healthy.d1_bytes, 7_000_000_000)
   assert.equal(healthy.allocator_ev_snapshot_dates, 10)
   assert.equal(healthy.legacy_retention_stalled, false)

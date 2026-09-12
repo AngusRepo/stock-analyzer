@@ -50,13 +50,20 @@ class FakeMetrics:
     sanity_flags: list[str] = field(default_factory=list)
     trades: list[FakeTrade] = field(default_factory=list)
     partition_returns: list[float] = field(default_factory=list)
+    equity_curve: list[tuple[str, float]] = field(default_factory=list)
 
 
 def _metrics(returns: list[float], partitions: list[float]) -> FakeMetrics:
+    equity = 1_000_000.
+    curve = []
+    for i, value in enumerate(partitions):
+        equity *= 1 + value
+        curve.append((f'2026-01-{i + 1:02d}', equity))
     return FakeMetrics(
         total_trades=len(returns),
         trades=[FakeTrade(value, "green" if idx % 2 == 0 else "red") for idx, value in enumerate(returns)],
         partition_returns=partitions,
+        equity_curve=curve, final_equity=equity, total_return=equity / 1_000_000 - 1,
     )
 
 
@@ -67,7 +74,7 @@ def test_run_alpha_candidate_evidence_keeps_iid_spa_diagnostic_out_of_promotion(
 
     def fake_dataset_loader(**kwargs):
         assert kwargs["start_date"] == "2026-01-01"
-        return {"dataset": True}
+        return {'trading_days': [d for d, _ in champion.equity_curve]}
 
     def fake_replay(**kwargs):
         calls.append(kwargs)
@@ -135,7 +142,7 @@ def test_alpha_candidate_evidence_fails_closed_without_alpha_aware_replay():
         start_date="2026-01-01",
         end_date="2026-03-31",
         baseline_config={"alphaFramework": {"allocation": {"slateSize": 10}}},
-        dataset_loader=lambda **kwargs: {},
+        dataset_loader=lambda **kwargs: {'trading_days': [d for d, _ in metrics.equity_curve]},
         replay_fn=lambda **kwargs: metrics,
         mc_simulations=20,
         parity_audit={"worker_parity": {"decision": "PASS"}},

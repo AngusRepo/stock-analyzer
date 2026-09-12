@@ -1,3 +1,4 @@
+import { paperExecutionNow, paperExecutionFetch } from './paperExecutionScope'
 /**
  * debateTrader.ts — Bull/Bear 多空辯論 for Paper Trading
  *
@@ -104,20 +105,21 @@ declare const KVNamespace: any
 type KVNamespace = { get(k: string, t?: string): Promise<any>; put(k: string, v: string): Promise<void> }
 
 // in-memory cache for ml:config（5 min，避免每次 debate 都讀 KV）
-let _mlConfigCached: Record<string, any> | null = null
-let _mlConfigCachedAt = 0
+const mlConfigCache = new WeakMap<KVNamespace, { value: Record<string, any>; at: number }>()
 const ML_CONFIG_TTL = 5 * 60_000
 
 async function getMlConfig(kv: KVNamespace): Promise<Record<string, any>> {
-  if (_mlConfigCached && Date.now() - _mlConfigCachedAt < ML_CONFIG_TTL) return _mlConfigCached
+  const cached = mlConfigCache.get(kv)
+  if (cached && paperExecutionNow() - cached.at < ML_CONFIG_TTL) return cached.value
+  let value: Record<string, any>
   try {
     const raw = await kv.get('ml:config', 'json') as Record<string, any> | null
-    _mlConfigCached = raw ?? {}
+    value = raw ?? {}
   } catch {
-    _mlConfigCached = {}
+    value = {}
   }
-  _mlConfigCachedAt = Date.now()
-  return _mlConfigCached
+  mlConfigCache.set(kv, { value, at: paperExecutionNow() })
+  return value
 }
 
 // ─── 三層 LLM Fallback ──────────────────────────────────────────────────────
@@ -138,11 +140,11 @@ export async function callLLM(
   // ── Layer 1: 本地 Tunnel (Claude Opus) ──────────────────────────────────
   if (env.LOCAL_TUNNEL_URL) {
     try {
-      const health = await fetch(`${env.LOCAL_TUNNEL_URL}/health`, {
+      const health = await paperExecutionFetch(`${env.LOCAL_TUNNEL_URL}/health`, {
         signal: AbortSignal.timeout(2000),
       })
       if (health.ok) {
-        const res = await fetch(`${env.LOCAL_TUNNEL_URL}/chat`, {
+        const res = await paperExecutionFetch(`${env.LOCAL_TUNNEL_URL}/chat`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ system: systemPrompt, user: userPrompt, max_tokens: 512, temperature }),
@@ -162,7 +164,7 @@ export async function callLLM(
   // ── Layer 2: Gemini 3.5 Flash — stable primary ──────────
   if (env.GEMINI_API_KEY) {
     try {
-      const res = await fetch(
+      const res = await paperExecutionFetch(
         `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_FLASH_MODEL}:generateContent?key=${env.GEMINI_API_KEY}`,
         {
           method: 'POST',
@@ -190,7 +192,7 @@ export async function callLLM(
       const debateModel = env.KV
         ? (await getMlConfig(env.KV)).debate_model ?? 'claude-haiku-4-5-20251001'
         : 'claude-haiku-4-5-20251001'
-      const res = await fetch('https://api.anthropic.com/v1/messages', {
+      const res = await paperExecutionFetch('https://api.anthropic.com/v1/messages', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -324,7 +326,7 @@ export async function runBuyDebateBatchViaController(
 
   try {
     const timeoutMs = Math.min(290_000, 60_000 + candidates.length * 20_000)
-    const resp = await fetch(`${url}/debate/buy_batch`, {
+    const resp = await paperExecutionFetch(`${url}/debate/buy_batch`, {
       method: 'POST', headers,
       body: JSON.stringify({ candidates, concurrent }),
       signal: AbortSignal.timeout(timeoutMs),
@@ -629,7 +631,7 @@ export async function runBuyDebate(
   // 2026-04-20 #18 FinMem: 寫入 debate_memory（graceful no-op 若 env.DB 缺）
   // thesis_summary = Fulcrum 判決理由（裁掉 prompt-side 元信息），最能代表當日 thesis。
   const thesisForMemory = fulcrumResponse.replace(/VERDICT:.*\n?/i, '').trim().slice(0, 200)
-  const twToday = new Date(Date.now() + 8 * 3600_000).toISOString().slice(0, 10)
+  const twToday = new Date(paperExecutionNow() + 8 * 3600_000).toISOString().slice(0, 10)
   await insertDebateMemory(debateDb, {
     symbol,
     debate_date: twToday,

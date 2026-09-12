@@ -11,12 +11,14 @@ assert(
 )
 
 assert(
-  source.includes("setTradingConfig(c.env.KV, merged, snapshotMeta)"),
-  'admin config PUT must pass snapshot metadata into setTradingConfig',
+  /setTradingConfig\(c\.env\.KV, merged, \{\s*\.\.\.snapshotMeta,/.test(source)
+    && source.includes("source: overrideAudit ? 'manual_override' : 'parameter_promotion'")
+    && source.includes('push_id: promotionPacketId ?? snapshotMeta.push_id'),
+  'admin config PUT must preserve caller metadata and authoritative promotion/override audit',
 )
 
 assert(
-  source.includes("snapshot })"),
+  /return c\.json\(\{\s*success: true,\s*config: merged,\s*snapshot,/.test(source),
   'admin config PUT response must expose snapshot write result for audit',
 )
 

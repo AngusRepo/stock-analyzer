@@ -1,3 +1,4 @@
+import { paperExecutionDate } from './paperExecutionScope'
 /**
  * postExit.ts - Post-exit discipline and candidate re-rank
  *
@@ -80,7 +81,7 @@ export async function setCooldown(
     symbol,
     category,
     days,
-    set_at: new Date().toISOString(),
+    set_at: paperExecutionDate().toISOString(),
   }
   try {
     await kv.put(cooldownKey(symbol), JSON.stringify(payload), { expirationTtl: ttl })
@@ -124,7 +125,7 @@ export async function markStopDayFreeze(
     date: today,
     trigger_symbol: triggerSymbol,
     category,
-    set_at: new Date().toISOString(),
+    set_at: paperExecutionDate().toISOString(),
   }
   try {
     await kv.put(stopDayFreezeKey(today), JSON.stringify(payload), { expirationTtl: 86400 })

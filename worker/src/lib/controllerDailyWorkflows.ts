@@ -154,7 +154,7 @@ export async function runModelIcFullCheck(env: Bindings) {
       const data = await ceRes.json() as any
       configEval = data.status === 'no_challenger'
         ? 'no_challenger'
-        : `${data.action}(wins=${data.consecutive_wins} losses=${data.consecutive_losses} sharpe=${data.sharpe_delta?.toFixed?.(3) ?? data.sharpe_delta})`
+        : `${data.action}(paired_nav=${data.paired_nav_evidence?.status ?? 'missing'} delta=${data.paired_nav_evidence?.mean_daily_nav_delta ?? 'NA'}; historical_diagnostic_only)`
     } else {
       configEval = `HTTP ${ceRes.status}`
     }

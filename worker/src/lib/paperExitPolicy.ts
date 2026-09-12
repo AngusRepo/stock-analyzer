@@ -1,3 +1,4 @@
+import { paperExecutionNow } from './paperExecutionScope'
 import type { MarketRegime } from './dynamicExitPriority'
 import type { TradingConfig } from './tradingConfig'
 import { normalizeTwEquityStopPrice, normalizeTwEquityTargetPrice } from './twEquityMarketContract'
@@ -131,7 +132,7 @@ export function checkExitConditions(
   }
 
   if (isEOD && pos.entry_date) {
-    const daysSinceEntry = Math.floor((Date.now() - new Date(pos.entry_date).getTime()) / 86400000)
+    const daysSinceEntry = Math.floor((paperExecutionNow() - new Date(pos.entry_date).getTime()) / 86400000)
     if (daysSinceEntry > ex.timeStopDays && pnlPct > ex.timeStopMinProfit) {
       return { action: 'full_sell', reason: `Time stop ${daysSinceEntry}d +${(pnlPct * 100).toFixed(1)}%`, exitIntentKind: 'time_stop' }
     }

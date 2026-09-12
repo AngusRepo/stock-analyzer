@@ -110,10 +110,6 @@ def rescore_positions(req: RescoreRequest = Body(...)):
         return {"results": [], "config": _get_intraday_config()}
 
     cfg = _get_intraday_config()
-    exit_th = cfg["rescoreExitThreshold"]
-    warn_th = cfg["rescoreWarnThreshold"]
-    decay_sens = cfg["rescoreDecaySensitivity"]
-
     tw_today = req.today
     if not tw_today:
         tw_now = datetime.now(timezone.utc) + timedelta(hours=8)
@@ -121,6 +117,18 @@ def rescore_positions(req: RescoreRequest = Body(...)):
 
     symbols = [p.symbol for p in req.positions]
     predictions_map = load_latest_ensemble_predictions(symbols, d1_query)
+    return evaluate_rescore(req, cfg=cfg, predictions_map=predictions_map, tw_today=tw_today)
+
+
+def evaluate_rescore(req: RescoreRequest, *, cfg: dict, predictions_map: dict, tw_today: str) -> dict:
+    """Original calculation with explicit inputs; no live KV/D1/time reads.
+
+    The API resolves live inputs above. Paired execution supplies its sealed
+    configuration and prediction identities without calling the live endpoint.
+    """
+    exit_th = cfg["rescoreExitThreshold"]
+    warn_th = cfg["rescoreWarnThreshold"]
+    decay_sens = cfg["rescoreDecaySensitivity"]
     results: list[dict] = []
 
     for pos in req.positions:
@@ -130,7 +138,8 @@ def rescore_positions(req: RescoreRequest = Body(...)):
         # Get original confidence
         orig_conf = pos.ml_confidence
         if orig_conf is None and pred:
-            orig_conf = float(pred.get("direction_accuracy") or 0.5)
+            confidence = pred.get("direction_accuracy")
+            orig_conf = 0.5 if confidence is None else float(confidence)
         if orig_conf is None:
             orig_conf = 0.5
 

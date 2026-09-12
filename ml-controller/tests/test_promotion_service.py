@@ -50,6 +50,17 @@ def _promotion_grade_data_snooping() -> dict:
     }
 
 
+def test_normalization_preserves_zero_and_rejects_nonfinite_instead_of_using_better_summary():
+    row = {'sharpe': 0, 'profit_factor': 0, 'max_drawdown': 0,
+           'raw_results': {'mode': 'B', 'summary': {'sharpe': 3, 'profit_factor': 3, 'max_drawdown': .2}}}
+    result = normalize_latest_backtest_row(row)
+    assert result['sharpe'] == result['profit_factor'] == result['max_drawdown'] == 0
+    row['max_drawdown'] = float('nan')
+    assert normalize_latest_backtest_row(row)['max_drawdown'] is None
+    from services.validation_governance import _as_float
+    assert _as_float(float('nan'), 1) == 1
+
+
 def test_normalize_latest_backtest_row_prefers_raw_summary_and_preserves_mode_b():
     row = {
         "total_trades": 50,

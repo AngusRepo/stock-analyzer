@@ -1,4 +1,5 @@
 import type { Bindings } from '../types'
+import { scopedPaperDatabase } from './paperExecutionScope'
 
 export type DataDomain = 'core' | 'market' | 'learning' | 'ops' | 'execution' | 'paper' | 'research'
 
@@ -107,7 +108,7 @@ const DOMAIN_TABLES: Record<DataDomain, ReadonlySet<string>> = {
     'strategy_route_backfill_eligibility_v1', 'strategy_route_versioned_evidence_v1',
     'strategy_redundancy_artifacts_v1',
     'strategy_reward_ledger', 'strategy_learning_daily_stats', 'strategy_learning_head',
-    'strategy_policy_state', 'strategy_evidence_rebuild_runs_v5',
+    'strategy_policy_state', 'strategy_evidence_rebuild_runs_v5', 'strategy_evidence_gap_dispositions_v1',
     'strategy_replacement_decisions_v5', 'strategy_replacement_cutover_guards_v5',
     'parameter_candidate_registry', 'parameter_candidate_evidence',
     'parameter_candidate_events', 'entry_model_replay_reports',
@@ -159,6 +160,7 @@ const DOMAIN_TABLES: Record<DataDomain, ReadonlySet<string>> = {
     'paper_challenger_daily_metrics', 'paper_decision_attribution',
     'paper_kelly_calibration_runs_v1', 'paper_kelly_calibration_artifacts_v1',
     'paper_kelly_calibration_head_v1',
+    'paper_corporate_entitlements_v1', 'paper_corporate_sessions_v1',
   ]),
   research: new Set([
     'input_snapshots', 'feature_versions', 'features', 'strategy_versions', 'strategies',
@@ -234,6 +236,15 @@ const EXTENDED_PRODUCTION_TABLE_OWNERSHIP: readonly TableOwnershipMetadata[] = [
   { table: 'finlab_materialization_receipts_v1', domain: 'ops', disposition: 'full_scalar', route_ready: true, shadow_ready: false },
   { table: 'sector_flow_pit_generations_v1', domain: 'market', disposition: 'full_scalar', route_ready: true, shadow_ready: false },
   { table: 'ipo_shadow_candidates_v1', domain: 'learning', disposition: 'full_scalar', route_ready: true, shadow_ready: false },
+  { table: 'paired_nav_frozen_parts_v1', domain: 'learning', disposition: 'full_scalar', route_ready: true, shadow_ready: false },
+  { table: 'paired_nav_frozen_manifests_v1', domain: 'learning', disposition: 'full_scalar', route_ready: true, shadow_ready: false },
+  { table: 'paired_nav_daily_journal_v1', domain: 'learning', disposition: 'full_scalar', route_ready: true, shadow_ready: false },
+  { table: 'paired_nav_lifecycle_closures_v1', domain: 'learning', disposition: 'full_scalar', route_ready: true, shadow_ready: false },
+  { table: 'strategy_atomic_nav_adoptions_v1', domain: 'learning', disposition: 'full_scalar', route_ready: true, shadow_ready: false },
+  { table: 'paired_nav_review_records_v1', domain: 'learning', disposition: 'full_scalar', route_ready: true, shadow_ready: false },
+  { table: 'paired_nav_review_parts_v1', domain: 'learning', disposition: 'full_scalar', route_ready: true, shadow_ready: false },
+  { table: 'paired_nav_nominations_v1', domain: 'learning', disposition: 'full_scalar', route_ready: true, shadow_ready: false },
+  { table: 'paired_nav_assessment_reservations_v1', domain: 'learning', disposition: 'full_scalar', route_ready: true, shadow_ready: false },
   { table: 'ipo_shadow_predictions_v1', domain: 'learning', disposition: 'full_scalar', route_ready: true, shadow_ready: false },
   { table: 'ipo_shadow_batches_v1', domain: 'learning', disposition: 'full_scalar', route_ready: true, shadow_ready: false },
   { table: 'ipo_shadow_daily_evaluations_v1', domain: 'learning', disposition: 'full_scalar', route_ready: true, shadow_ready: false },
@@ -519,6 +530,8 @@ export function databaseForDataDomain(
   env: Pick<Bindings, 'DB'> & Partial<Bindings>,
   domain: DataDomain,
 ): D1Database {
+  const scoped = scopedPaperDatabase(env, domain)
+  if (scoped) return scoped
   const bindings = domainBindings(env)
   const active = activeDataDomains(env)
   const route = resolveDataDomainRoute({

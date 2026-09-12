@@ -297,8 +297,8 @@ def build_finlab_5y_raw_archive_metadata(req: FinLabRawArchiveMetadataRequest) -
 def _query_active_stocks(start_date: str, end_date: str) -> pl.DataFrame:
     return _frame(CORE_D1_CLIENT.query(
         """
-        SELECT id, symbol, name, market, sector, in_current_watchlist,
-               listed_date, delisted_date
+        SELECT id, symbol, name, COALESCE(listing_market,market) AS market, sector, in_current_watchlist,
+               listed_date, delisted_date, listed_date_source, listing_observed_at, listing_checksum
         FROM stocks
         WHERE (delisted_date IS NULL OR delisted_date >= ?)
           AND (listed_date IS NULL OR listed_date <= ?)

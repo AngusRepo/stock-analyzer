@@ -1,4 +1,5 @@
 import type { Bindings } from '../types'
+import { loadHistoricalEvidenceExclusions, validHistoricalEvidenceExclusion, type HistoricalEvidenceExclusion } from './historicalEvidenceExclusions'
 import { databaseForDataDomain } from './dataDomainRegistry'
 import {
   SELECTION_REFERENCE_CONTRACT_VERSION,
@@ -49,6 +50,8 @@ export type EveningChainEvidenceClosure = {
   formalLatestClosureDate: string | null
   formalReadyDates: string[]
   formalBacklogDates: string[]
+  formalExcludedDates: string[]
+  historicalCoverage: 'complete' | 'known_missing_source'
 }
 
 type FormalClosureRow = {
@@ -84,9 +87,9 @@ export async function auditFormalStrategyEvidenceFrontier(
   opsDb: D1Database,
   marketDb: D1Database,
   matureSignalDate: string | null,
-): Promise<{ readyDates: string[]; backlog: Array<{ date: string; blockers: string[] }> }> {
+): Promise<{ readyDates: string[]; backlog: Array<{ date: string; blockers: string[] }>; exclusions: HistoricalEvidenceExclusion[] }> {
   if (!matureSignalDate || matureSignalDate < STRATEGY_EVIDENCE_V5_LIVE_FRONTIER_START_DATE) {
-    return { readyDates: [], backlog: [] }
+    return { readyDates: [], backlog: [], exclusions: [] }
   }
   const heads = await opsDb.prepare(`
     SELECT substr(logical_run_key, 10, 10) signal_date, run_id producer_run_id
@@ -174,10 +177,24 @@ export async function auditFormalStrategyEvidenceFrontier(
     rows.push(...(result.results ?? []))
   }
   const readyDates: string[] = []
+  const dispositions = await loadHistoricalEvidenceExclusions(learningDb, STRATEGY_EVIDENCE_V5_LIVE_FRONTIER_START_DATE, matureSignalDate)
+  const exclusions: HistoricalEvidenceExclusion[] = []
   const canonicalHeadDates = new Set(canonicalHeads.map((head) => head.signal_date))
   const backlog: Array<{ date: string; blockers: string[] }> = (sessions.results ?? [])
     .filter((row) => !canonicalHeadDates.has(row.session_date))
     .map((row) => ({ date: row.session_date, blockers: ['formal_canonical_head_missing'] }))
+  for (const disposition of dispositions) {
+    if (validHistoricalEvidenceExclusion(disposition) && !canonicalHeadDates.has(disposition.signal_date)) {
+      const index = backlog.findIndex(row => row.date === disposition.signal_date
+        && row.blockers.length === 1 && row.blockers[0] === 'formal_canonical_head_missing')
+      if (index >= 0) {
+        backlog.splice(index,1)
+        exclusions.push(disposition)
+      }
+    } else {
+      backlog.push({date:disposition.signal_date,blockers:['historical_exclusion_invalid_or_source_reappeared']})
+    }
+  }
   for (const row of rows) {
     const blockers: string[] = []
     const referenceRows = Number(row.reference_candidate_count ?? 0)
@@ -223,11 +240,11 @@ export async function auditFormalStrategyEvidenceFrontier(
       || Number(row.projected_threshold_rows ?? 0) !== matchedRows
     ) blockers.push('formal_affinity_projection_incomplete')
     if (blockers.length) backlog.push({ date: row.signal_date, blockers })
-    else readyDates.push(row.signal_date)
+    else if (!dispositions.some(d => d.signal_date === row.signal_date)) readyDates.push(row.signal_date)
   }
   readyDates.sort()
   backlog.sort((left, right) => left.date.localeCompare(right.date))
-  return { readyDates, backlog }
+  return { readyDates, backlog, exclusions }
 }
 
 function dateOnly(value: unknown): string {
@@ -558,6 +575,8 @@ export async function auditEveningChainEvidenceClosure(
     formalLatestClosureDate: formalFrontier.readyDates.at(-1) ?? null,
     formalReadyDates: formalFrontier.readyDates,
     formalBacklogDates: formalFrontier.backlog.map((row) => row.date),
+    formalExcludedDates: formalFrontier.exclusions.map(row => row.signal_date),
+    historicalCoverage: formalFrontier.exclusions.length ? 'known_missing_source' : 'complete',
   }
 }
 
@@ -577,5 +596,7 @@ export function summarizeEveningChainEvidenceClosure(audit: EveningChainEvidence
     `formal_latest=${audit.formalLatestClosureDate ?? 'none'}`,
     `formal_ready=${audit.formalReadyDates.join(',') || 'none'}`,
     `formal_backlog=${audit.formalBacklogDates.join(',') || 'none'}`,
+    `historical_excluded=${audit.formalExcludedDates?.join(',') || 'none'}`,
+    `historical_coverage=${audit.historicalCoverage ?? 'complete'}`,
   ].join(' ')
 }

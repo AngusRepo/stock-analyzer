@@ -19,6 +19,12 @@ export interface SchedulerDependencySpec {
 }
 
 export const SCHEDULER_DEPENDENCY_MAP: Record<string, SchedulerDependencySpec> = {
+  'paired-native-execution': {
+    task: 'paired-native-execution', owner: 'gcp_scheduler', consolidationClass: 'keep_scheduler',
+    currentFunction: 'Collects immutable current-session source frames for both private native paper arms, then derives and replays the close receipt.',
+    upstream: ['pipeline'], downstream: ['active8-oof-daily'], requiredBeforeDisable: ['no_open_native_pair_sessions'], operatorRisk: 'high',
+    recommendation: 'One private execution owner across morning/day slots; never backfill missing expired inputs or mutate formal paper accounts. Nightly materialization consumes its verified receipts.',
+  },
   'daily-execution-paper-lineage': {
     task: 'daily-execution-paper-lineage', owner: 'gcp_scheduler', consolidationClass: 'keep_scheduler',
     currentFunction: 'Calls ensureDailyExecutionPaperClosureArtifacts after the paper account snapshot.',

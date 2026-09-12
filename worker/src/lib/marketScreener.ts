@@ -31,22 +31,27 @@ import {
 } from './stockIdentityMarketBridge'
 import { getTradingConfig, type TradingConfig } from './tradingConfig'
 import { buildScreenerSeedRow, buildScreenerSeedUpsertSql } from './screenerSeedQuality'
-import { hasPositiveStrategyAllocation } from './strategyProductionPolicyStore'
+import { assertScreenerSeedWriteResults, writeScreenerSeedBatches, readScreenerCoreBeforeWrite } from './screenerSeedPersistence'
+import { materializeScreenerCoreSeeds, screenerCoreSeedUpsertBindings, type ScreenerCoreSeedContext } from './screenerCoreSeedMaterializer'
 import { computeAndStoreIndicators, computeTechnicalIndicators } from './technicalIndicators'
+import { applyScreenerTechnicalOverlay } from './screenerTechnicalOverlay'
+import { materializePostOverlayStrategySeed, dedupeScreenerCandidatesBySymbol, assertCanonicalL15SeedIdentity, buildScreenerL1MergeItem } from './screenerPostOverlaySeed'
+export { dedupeScreenerCandidatesBySymbol, assertCanonicalL15SeedIdentity } from './screenerPostOverlaySeed'
+import { applyScreenerNewsSentiment, applyScreenerBuzz, applyScreenerExternalRisk, applyScreenerForeignFlow, applyScreenerSelectionHistory, applyScreenerRecentSessionSafety } from './screenerPostRouteOverlays'
+import { readScreenerNewsSentiment, readScreenerForeignFlow } from './screenerOverlayReads'
 import { loadMarketDataFromD1, type CanonicalScreenerChip, type CanonicalScreenerPrice } from './screenerMarketData'
 import {
   annotateCandidatesWithStrategySpecs,
-  reconcileCandidatesStrategyPoolAttribution,
 } from './screenerStrategyConsumer'
 import { getAdaptiveParamsForRegime } from './adaptiveConfig'
 import { readMarketRegimeState } from './marketRegimeState'
 import { applyScreenerScoreCalibration, resolveScreenerPolicy } from './screenerPolicy'
-import { enrichScreenerCandidatesWithBreeze2, extractBreeze2WatchPoint, type Breeze2CandidateShape } from './breeze2Runtime'
+import { enrichScreenerCandidatesWithBreeze2, extractBreeze2WatchPoint, mapScreenerBreeze2Candidates } from './breeze2Runtime'
 import { controllerPostJson } from './controllerClient'
 import { assertTradingRestrictionPromotionAuthority, loadTradingRestrictionBuckets } from './tradingRestrictions'
 import { isEtfPatternSymbol } from './boardTradability'
-import { buildPartialScreenerScoreV2, buildScoreV2Components, readScoreV2Snapshot, type ScoreV2StorageRow } from './scoreV2Taxonomy'
-import { loadExternalEvidenceRiskOverlays } from './newsThemeRiskOverlay'
+import { buildPartialScreenerScoreV2, readScoreV2Snapshot, type ScoreV2StorageRow } from './scoreV2Taxonomy'
+import { readExternalEvidenceRiskSnapshot } from './newsThemeRiskOverlay'
 import { buildPriceActionStructure } from './priceActionStructure'
 import { FINLAB_PORTFOLIO_INTELLIGENCE_VERSION, buildStrategySimilarityEvidencePayload, type StrategySimilarityEvidencePayload } from './multiStrategyPleRouter'
 import { coerceModalStrategySimilarityGraphEvidence, modalStrategySimilarityBlockedReason, type StrategySimilarityGraphEvidence } from './strategyPortfolioMetrics'
@@ -85,6 +90,8 @@ import {
   evaluateL05LiquidityCapacity,
 } from './l05LiquidityCapacity'
 import { buildStrategyRouteRecoveryPacket } from "./strategyRouteRecoveryPacket"
+import { buildLayer1WithAtomicSource, sealAtomicPostOverlaySource, type AtomicStrategySource } from './atomicStrategyShadow'
+import { ScreenerOverlayCapture } from './screenerOverlayCapture'
 import {
   buildSelectionEvidenceV4,
   buildStrategyFormalMatureCompatibilitySql,
@@ -554,7 +561,7 @@ export async function loadSelectionHistoryFlags(
   for (let i = 0; i < uniqueSymbols.length; i += D1_IN_CHUNK_SIZE) {
     const chunk = uniqueSymbols.slice(i, i + D1_IN_CHUNK_SIZE)
     const placeholders = chunk.map(() => '?').join(',')
-    const { results } = await db.prepare(
+    const response = await db.prepare(
       `SELECT
          symbol,
          SUM(CASE WHEN date >= date(?, '-20 days') THEN 1 ELSE 0 END) as freq20d,
@@ -563,7 +570,8 @@ export async function loadSelectionHistoryFlags(
        WHERE date >= date(?, '-30 days') AND date < ? AND symbol IN (${placeholders})
        GROUP BY symbol`,
     ).bind(endDate, endDate, endDate, ...chunk).all<{ symbol: string; freq20d: number; freq30d: number }>()
-    historyRows.push(...(results ?? []))
+    if (!response.success || !Array.isArray(response.results)) throw new Error('selection_history_query_failed')
+    historyRows.push(...response.results)
   }
 
   const historyMap = new Map(historyRows.map(r => [r.symbol, {
@@ -705,44 +713,6 @@ function pushFunnelItem(items: ScreenerFunnelItemInput[], item: ScreenerFunnelIt
   })
 }
 
-export function dedupeScreenerCandidatesBySymbol<T extends { symbol?: unknown }>(candidates: T[]): T[] {
-  const seen = new Set<string>()
-  const deduped: T[] = []
-  for (const candidate of candidates) {
-    const symbol = String(candidate.symbol ?? '').trim().toUpperCase()
-    if (!symbol || seen.has(symbol)) continue
-    seen.add(symbol)
-    deduped.push(candidate)
-  }
-  return deduped
-}
-
-export function assertCanonicalL15SeedIdentity(input: {
-  routeSymbols: Iterable<unknown>
-  finalSymbols: Iterable<unknown>
-  safetyExcludedSymbols?: Iterable<unknown>
-}): void {
-  const normalize = (values: Iterable<unknown>) => new Set(
-    [...values].map((value) => String(value ?? '').trim().toUpperCase()).filter(Boolean),
-  )
-  const routeSymbols = normalize(input.routeSymbols)
-  const finalSymbols = normalize(input.finalSymbols)
-  const safetyExcludedSymbols = normalize(input.safetyExcludedSymbols ?? [])
-  const missingRoute = [...finalSymbols].filter((symbol) => !routeSymbols.has(symbol))
-  const excludedAfterRoute = [...routeSymbols].filter((symbol) => !finalSymbols.has(symbol))
-  const unexplainedExclusions = excludedAfterRoute.filter((symbol) => !safetyExcludedSymbols.has(symbol))
-  const invalidSafetyReceipts = [...safetyExcludedSymbols].filter(
-    (symbol) => !routeSymbols.has(symbol) || finalSymbols.has(symbol),
-  )
-  if (missingRoute.length > 0 || unexplainedExclusions.length > 0 || invalidSafetyReceipts.length > 0) {
-    throw new Error(
-      `l15_canonical_seed_identity_mismatch:route=${routeSymbols.size}:final=${finalSymbols.size}:` +
-      `missing_route=${missingRoute.join(',') || 'none'}:` +
-      `unexplained_exclusion=${unexplainedExclusions.join(',') || 'none'}:` +
-      `invalid_safety_receipt=${invalidSafetyReceipts.join(',') || 'none'}`,
-    )
-  }
-}
 
 export async function queryTopTaxonomyTagsForSymbols(
   db: D1Database,
@@ -856,38 +826,7 @@ function round1(value: number): number {
   return Math.round(value * 10) / 10
 }
 
-function clampScore(value: number, min: number, max: number): number {
-  return Math.max(min, Math.min(max, Number.isFinite(value) ? value : min))
-}
 
-function applyScoreV2NewsThemeAdjustment(
-  candidate: { score: number; score_components?: string | null },
-  requestedDelta: number,
-  reason: string,
-  riskFlags: string[] = [],
-): number {
-  const snapshot = readScoreV2Snapshot({ score_components: candidate.score_components } as ScoreV2StorageRow)
-  if (!snapshot) return 0
-  const riskAdjustment = requestedDelta < 0 ? requestedDelta : 0
-  if (riskAdjustment === 0) return 0
-  const alphaAdjustment = round1((snapshot.alphaAdjustment ?? 0) + riskAdjustment)
-  const payload = buildScoreV2Components({
-    ...snapshot.components,
-    newsTheme: snapshot.components.newsTheme,
-    technicalBreakdown: snapshot.technicalBreakdown,
-    riskFlags: [...snapshot.riskFlags, ...riskFlags],
-    reasons: [...snapshot.reasons, reason],
-  })
-  const finalScore = clampScore(round1(payload.total + alphaAdjustment), 0, 100)
-  candidate.score_components = JSON.stringify({
-    ...payload,
-    alphaAdjustment,
-    finalScore,
-  })
-  const appliedRankingDelta = round1(riskAdjustment)
-  candidate.score = round1(candidate.score + appliedRankingDelta)
-  return appliedRankingDelta
-}
 
 async function writeScreenerFunnel(
   env: Bindings,
@@ -909,6 +848,7 @@ async function writeScreenerFunnel(
       strategyRegistryChecksum: string
       labelerVersion: string
     }
+    atomicShadowSource?: AtomicStrategySource | null
   },
 ): Promise<void> {
   const opsDb = databaseForDataDomain(env, 'ops')
@@ -963,6 +903,7 @@ async function writeScreenerFunnel(
     metadata: metadataWithRouteRecovery,
     debug_log: input.debugLog,
     items: input.items,
+    ...(input.atomicShadowSource ? { atomic_strategy_source: input.atomicShadowSource } : {}),
   }
   const inputFingerprint = await sha256Text(JSON.stringify({
     date: input.date,
@@ -1160,13 +1101,15 @@ export async function pruneScreenerSeedRows(
   const keep = new Set(symbols.map(symbol => String(symbol || '').trim()).filter(Boolean))
   if (!keep.size) {
     const result = await db.prepare('DELETE FROM daily_recommendations WHERE date = ?').bind(date).run()
+    assertScreenerSeedWriteResults([result], 1)
     return Number(result.meta?.changes ?? result.meta?.rows_written ?? 0)
   }
 
-  const { results } = await db.prepare(
+  const response = await db.prepare(
     'SELECT symbol FROM daily_recommendations WHERE date = ?',
   ).bind(date).all<{ symbol: string }>()
-  const stale = (results ?? [])
+  if (!response.success || !Array.isArray(response.results)) throw new Error('screener_seed_prune_read_failed')
+  const stale = response.results
     .map(row => String(row.symbol || '').trim())
     .filter(symbol => symbol && !keep.has(symbol))
   let deleted = 0
@@ -1175,6 +1118,7 @@ export async function pruneScreenerSeedRows(
       'DELETE FROM daily_recommendations WHERE date = ? AND symbol = ?',
     ).bind(date, symbol))
     const batchResults = await db.batch(batch)
+    assertScreenerSeedWriteResults(batchResults, batch.length)
     deleted += batchResults.reduce(
       (sum, result) => sum + Number(result.meta?.changes ?? result.meta?.rows_written ?? 0),
       0,
@@ -3442,16 +3386,22 @@ export async function runBottomUpScreener(env: Bindings, runDate?: string | null
   let combinedBuzz: BuzzResult = []
   let conceptBuzzScore = new Map<string, number>()
   let conceptEvidenceBreakdown = new Map<string, Record<string, number>>()
+  const atomicOverlayCapture = new ScreenerOverlayCapture()
 
   try {
-    const buzzKeywords = await loadBuzzKeywords(env, env.KV).catch(() => ({}))
+    const buzzKeywords = await atomicOverlayCapture.read('theme_keywords', null,
+      () => loadBuzzKeywords(env, env.KV)).catch(() => ({}))
+    const themeObservedAt = new Date().toISOString()
 
     const [marketData, pttBuzz, newsBuzz, anueBuzz, runtimeThemeSignals] = await Promise.all([
       loadMarketDataFromD1(env, STOCK_TECHNICAL_HISTORY_PRICE_DAYS, 5, endDate),
-      detectPttBuzz(buzzKeywords).catch(() => [] as BuzzResult),
-      detectNewsBuzz(databaseForDataDomain(env, 'market'), buzzKeywords).catch(() => [] as BuzzResult),
-      detectAnueBuzz(buzzKeywords).catch(() => [] as BuzzResult),
-      loadRuntimeThemeSignals(databaseForDataDomain(env, 'market'), endDate).catch(() => []),
+      atomicOverlayCapture.read('theme_ptt', null, () => detectPttBuzz(buzzKeywords, { strict: true })).catch(() => [] as BuzzResult),
+      atomicOverlayCapture.read('theme_news', null, () => detectNewsBuzz(databaseForDataDomain(env, 'market'), buzzKeywords,
+        { signalDate: endDate, observedAt: themeObservedAt })).catch(() => [] as BuzzResult),
+      atomicOverlayCapture.read('theme_anue', null, () => detectAnueBuzz(buzzKeywords, { strict: true })).catch(() => [] as BuzzResult),
+      atomicOverlayCapture.read('theme_runtime', null,
+        () => loadRuntimeThemeSignals(databaseForDataDomain(env, 'market'), endDate,
+          { strict: true, observedAt: themeObservedAt })).catch(() => []),
     ])
     stockTechnicalLongPrices = marketData.allPrices
     const primaryDates = new Set([...new Set(stockTechnicalLongPrices.map((row) => row.date))]
@@ -3812,8 +3762,10 @@ export async function runBottomUpScreener(env: Bindings, runDate?: string | null
   let strategySelectionTelemetry: Record<string, unknown> | null = null
   let strategySelectionPlan: any | null = null
   const strategySourceUniverse = featureEnrichedUniverse
+  let atomicShadowSource: AtomicStrategySource | null = null
   let layer1BreadthPool: ScoredCandidate[] = []
   let layer2CoarseQueueSeed: ScoredCandidate[] = []
+  const postL15SafetyExcludedSymbols = new Set<string>()
   let layer1AdaptiveTargetSize = screenerPolicy.sizing.candidatePoolSize
   let overlayEligibleSymbols = new Set<string>()
   let passesLayer1TopUpQualityGuard: ((candidate: any) => boolean) | null = null
@@ -3835,7 +3787,8 @@ export async function runBottomUpScreener(env: Bindings, runDate?: string | null
       import('./strategyCandidatePool'),
       import('./strategyPortfolioMetrics'),
     ])
-    const { buildLayer1StrategyBreadthPlan } = strategyCandidatePoolModule
+    // Formal breadth is still computed once by the same kernel; its complete
+    // pre-overlay inputs are preserved for genuine one-in/one-out observation.
     const { loadStrategyPortfolioMetricOverrides } = strategyPortfolioMetricsModule
     passesLayer1TopUpQualityGuard = (candidate) => strategyCandidatePoolModule.passesLayer1TopUpQualityGuard(
       candidate,
@@ -3843,9 +3796,8 @@ export async function runBottomUpScreener(env: Bindings, runDate?: string | null
     )
     const currentRegime = canonicalRegimeState.family
     runtimeStrategyRegime = currentRegime
-    const { specs, source, registryRowCount, activeCount } = await listStrategySpecsForLearning(databaseForDataDomain(env, 'learning'), { asOfDate: endDate })
-    runtimeStrategySpecs = specs
-    const strategyIds = specs
+    const { specs: registrySpecs, source, registryRowCount, activeCount } = await listStrategySpecsForLearning(databaseForDataDomain(env, 'learning'), { asOfDate: endDate })
+    const strategyIds = registrySpecs
       .filter((spec: StrategySpec) => spec.status !== 'retired')
       .map((spec: StrategySpec) => spec.id)
     const { loadStrategyProductionPolicyBefore, resolveRuntimeStrategyWeights } = await import('./strategyProductionPolicyStore')
@@ -3867,6 +3819,9 @@ export async function runBottomUpScreener(env: Bindings, runDate?: string | null
         })),
     ])
     const productionPolicyState = productionPolicyLoad.value
+    const { resolveStrategyServingSpecs } = await import('./strategyProductionWeightReplay')
+    const specs = await resolveStrategyServingSpecs(registrySpecs, productionPolicyState, endDate)
+    runtimeStrategySpecs = specs
     const strategyOofReturns = strategyOofLoad.returns
     const runtimeStrategyWeightResolution = resolveRuntimeStrategyWeights(strategyIds, productionPolicyState)
     const evaluationStrategyWeights = runtimeStrategyWeightResolution.evaluationWeights
@@ -3918,10 +3873,11 @@ export async function runBottomUpScreener(env: Bindings, runDate?: string | null
     ])
     const previousL15Slate = previousL15SlateLoad.value
     const promotedRouteCalibration = promotedRouteCalibrationLoad.value
-    const layer1BreadthPlan = buildLayer1StrategyBreadthPlan(
-      strategySourceUniverse as any,
-      specs,
-      {
+    const atomicSourceCapture = await buildLayer1WithAtomicSource({
+      universe: strategySourceUniverse as any,
+      specs, signalDate: endDate, producerRunId: runId, observedAt: new Date().toISOString(),
+      productionWeightSource: productionPolicyState?.state.evidence.evidence_owner?.weight_source,
+      options: {
         targetSize: screenerPolicy.sizing.candidatePoolSize,
         coarseMlQueueSize: coarseQueueSize,
         regime: currentRegime,
@@ -3936,7 +3892,9 @@ export async function runBottomUpScreener(env: Bindings, runDate?: string | null
         previousSlateSymbols: previousL15Slate.symbols,
         promotedRouteCalibration,
       },
-    )
+    })
+    const layer1BreadthPlan = atomicSourceCapture.plan
+    atomicShadowSource = atomicSourceCapture.source
     strategySelectionPlan = layer1BreadthPlan.selection
     layer1BreadthPool = layer1BreadthPlan.breadthPool as ScoredCandidate[]
     layer2CoarseQueueSeed = layer1BreadthPlan.coarseQueue as ScoredCandidate[]
@@ -3962,6 +3920,7 @@ export async function runBottomUpScreener(env: Bindings, runDate?: string | null
       spec_source: source,
       strategy_registry_row_count: registryRowCount,
       strategy_registry_active_count: activeCount,
+      strategy_serving_active_count: specs.filter(spec => spec.status === 'active').length,
       strategy_registry_runtime_count: specs.length,
       capacity: strategySelectionPlan.capacity,
       telemetry: strategySelectionPlan.telemetry,
@@ -4107,6 +4066,7 @@ export async function runBottomUpScreener(env: Bindings, runDate?: string | null
           strategy_router_decision: (candidate as any).strategy_router_decision ?? null,
           strategy_router_reason: (candidate as any).strategy_router_reason ?? null,
           strategy_router_components: (candidate as any).strategy_router_components ?? null,
+          l15_route_contrast: (candidate as any).l15_route_contrast ?? null,
           strategy_portfolio_metric_source: strategyPortfolioMetrics.telemetry.source,
           strategy_portfolio_metric_status: strategyPortfolioMetrics.telemetry.status,
           strategy_portfolio_metric_count: strategyPortfolioMetrics.telemetry.metric_count,
@@ -4214,6 +4174,7 @@ export async function runBottomUpScreener(env: Bindings, runDate?: string | null
           strategy_router_decision: (candidate as any).strategy_router_decision ?? null,
           strategy_router_reason: (candidate as any).strategy_router_reason ?? null,
           strategy_router_components: (candidate as any).strategy_router_components ?? null,
+          l15_route_contrast: (candidate as any).l15_route_contrast ?? null,
           strategy_portfolio_metric_source: strategyPortfolioMetrics.telemetry.source,
           strategy_portfolio_metric_status: strategyPortfolioMetrics.telemetry.status,
           strategy_portfolio_metric_count: strategyPortfolioMetrics.telemetry.metric_count,
@@ -4291,6 +4252,7 @@ export async function runBottomUpScreener(env: Bindings, runDate?: string | null
           strategy_router_decision: entry.strategy_router_decision ?? null,
           strategy_router_reason: entry.strategy_router_reason ?? null,
           strategy_router_components: entry.strategy_router_components ?? null,
+          l15_route_contrast: entry.l15_route_contrast ?? null,
           strategy_portfolio_metric_source: strategyPortfolioMetrics.telemetry.source,
           strategy_portfolio_metric_status: strategyPortfolioMetrics.telemetry.status,
           strategy_portfolio_metric_count: strategyPortfolioMetrics.telemetry.metric_count,
@@ -4365,6 +4327,10 @@ export async function runBottomUpScreener(env: Bindings, runDate?: string | null
   }
 
   // Step 3: prospective PIT residual-momentum challenger.
+  const atomicOverlayUniverse = atomicShadowSource?.expected_universe_symbols ?? []
+  atomicOverlayCapture.record('theme_context', {
+    combinedBuzz, conceptBuzzScore, conceptEvidenceBreakdown, symbolConceptTags, conceptCrowding,
+  })
   // Breadth and flow diffusion are confirmation diagnostics only; production score stays unchanged.
   const sectorHeatScores: SectorHeatScore[] = []
   if (scored.length > 0) {
@@ -4461,45 +4427,27 @@ export async function runBottomUpScreener(env: Bindings, runDate?: string | null
   try {
     // ?寞活?交???? 7 憭拇??蝺?
     const topSymbols = [...overlayEligibleSymbols]
-    if (topSymbols.length > 0) {
+    { // An explicitly empty universe is a successful empty read, not a missing stage.
+      const newsObservedAt = new Date().toISOString()
       // ??stocks 銵冽 stock_id
-      const newsAgg: { symbol: string; sentiment: string; cnt: number }[] = []
-      const identities = await loadCoreStockIdentitiesBySymbols(env, topSymbols)
-      const symbolById = new Map([...identities.values()].map((row) => [row.id, row.symbol]))
-      const ids = [...symbolById.keys()]
-      for (const chunk of chunkArray(ids, 400)) {
-        const ph = chunk.map(() => '?').join(',')
-        const { results } = await databaseForDataDomain(env, 'market').prepare(`
-          SELECT stock_id, sentiment, COUNT(*) as cnt
-            FROM news
-           WHERE stock_id IN (${ph}) AND published_at >= date('now', '-7 days')
-           GROUP BY stock_id, sentiment
-        `).bind(...chunk).all<{ stock_id: number; sentiment: string; cnt: number }>()
-        for (const row of results ?? []) {
-          const symbol = symbolById.get(Number(row.stock_id))
-          if (symbol) newsAgg.push({ symbol, sentiment: row.sentiment, cnt: Number(row.cnt ?? 0) })
+      const newsRead = await atomicOverlayCapture.partitioned('news_sentiment', topSymbols, atomicOverlayUniverse, async (symbols) => {
+        const newsAgg: { symbol: string; sentiment: string; cnt: number }[] = []
+        const identities = await loadCoreStockIdentitiesBySymbols(env, symbols, { requireQuerySuccess: true })
+        const symbolById = new Map([...identities.values()].map((row) => [row.id, row.symbol]))
+        const ids = [...symbolById.keys()]
+        for (const chunk of chunkArray(ids, 400)) {
+          const results = await readScreenerNewsSentiment(databaseForDataDomain(env, 'market'), chunk, endDate, newsObservedAt)
+          for (const row of results) {
+            const symbol = symbolById.get(Number(row.stock_id))
+            if (symbol) newsAgg.push({ symbol, sentiment: row.sentiment, cnt: Number(row.cnt ?? 0) })
+          }
         }
-      }
 
-      const sentimentMap = new Map<string, { pos: number; neg: number; total: number }>()
-      for (const r of (newsAgg ?? [])) {
-        if (!sentimentMap.has(r.symbol)) sentimentMap.set(r.symbol, { pos: 0, neg: 0, total: 0 })
-        const s = sentimentMap.get(r.symbol)!
-        s.total += r.cnt
-        if (r.sentiment === 'positive') s.pos += r.cnt
-        if (r.sentiment === 'negative') s.neg += r.cnt
-      }
-
-      for (const c of scored) {
-        if (!overlayEligibleSymbols.has(c.symbol)) continue
-        const s = sentimentMap.get(c.symbol)
-        if (!s || s.total === 0) continue
-        const posRatio = s.pos / s.total
-        const negRatio = s.neg / s.total
-        if (posRatio > 0.6) applyScoreV2NewsThemeAdjustment(c, 5, 'positive_news_sentiment')
-        else if (posRatio > 0.4) applyScoreV2NewsThemeAdjustment(c, 3, 'positive_news_sentiment')
-        else if (negRatio > 0.4) applyScoreV2NewsThemeAdjustment(c, -3, 'negative_news_sentiment', ['negative_news_sentiment'])
-      }
+        return { rows: newsAgg, observed_at: newsObservedAt,
+          missing_identity_symbols: symbols.filter(symbol => !identities.has(symbol)) }
+      })
+      const newsAgg = newsRead.rows
+      applyScreenerNewsSentiment(scored, overlayEligibleSymbols, newsAgg)
     }
   } catch (e) {
     console.warn('[Screener v2] News sentiment failed:', e)
@@ -4507,85 +4455,19 @@ export async function runBottomUpScreener(env: Bindings, runDate?: string | null
 
   // 4b. PTT buzz ??璁艙 ?????
   const hotConcepts = new Set(combinedBuzz.slice(0, 10).map(b => b.concept))
-  for (const c of scored) {
-    if (!overlayEligibleSymbols.has(c.symbol)) continue
-    const tags = symbolConceptTags.get(c.symbol) ?? []
-    const matchedHot = tags.filter(t => hotConcepts.has(t))
-    if (matchedHot.length > 0) {
-      const bestTag = matchedHot
-        .map(tag => ({ tag, score: conceptBuzzScore.get(tag) ?? 0, crowding: conceptCrowding.get(tag) ?? 1 }))
-        .sort((a, b) => b.score - a.score)[0]
-      const sourceStrength = Math.max(0, bestTag?.score ?? 0)
-      const crowdingPenalty = Math.min(2, Math.log10(Math.max(1, bestTag?.crowding ?? 1)))
-      const buzzBonus = Math.max(0, Math.min(4, sourceStrength * 1.5 + matchedHot.length - crowdingPenalty))
-      const before = c.score
-      const appliedBuzzBonus = applyScoreV2NewsThemeAdjustment(c, buzzBonus, `buzz_evidence:${bestTag.tag}`)
-      if (appliedBuzzBonus <= 0) continue
-      c.reason += ` | buzz_evidence:${bestTag.tag}+${appliedBuzzBonus.toFixed(1)}`
-      pushFunnelItem(funnelItems, {
-        symbol: c.symbol,
-        name: c.name,
-        stage: 'buzz_evidence',
-        decision: 'observe',
-        reasonCode: 'weighted_keyword_evidence',
-        scoreBefore: before,
-        scoreAfter: c.score,
-        evidence: {
-          concept: bestTag.tag,
-          matchedHot,
-          sourceStrength,
-          sourceBreakdown: conceptEvidenceBreakdown.get(bestTag.tag) ?? {},
-          crowding: bestTag.crowding,
-          crowdingPenalty,
-          buzzBonus,
-          appliedBuzzBonus,
-        },
-      })
-    }
-  }
+  for (const event of applyScreenerBuzz(scored, overlayEligibleSymbols, {
+    hotConcepts, symbolConceptTags, conceptBuzzScore, conceptCrowding, conceptEvidenceBreakdown,
+  })) pushFunnelItem(funnelItems, event)
 
   // ?? Step 5: ?? + ?駁? + ?芣 ??
   try {
-    const evidenceRisk = await loadExternalEvidenceRiskOverlays(databaseForDataDomain(env, 'market'), endDate, [...overlayEligibleSymbols])
-    let vetoed = 0
-    let penalized = 0
-    for (let i = scored.length - 1; i >= 0; i--) {
-      const c = scored[i]
-      if (!overlayEligibleSymbols.has(c.symbol)) continue
-      const overlay = evidenceRisk.get(c.symbol)
-      if (!overlay) continue
-      if (overlay.action === 'veto') {
-        vetoed++
-        pushFunnelItem(funnelItems, {
-          symbol: c.symbol,
-          name: c.name,
-          stage: 'external_evidence_risk',
-          decision: 'drop',
-          reasonCode: overlay.flags[0] ?? 'major_negative_event',
-          scoreBefore: c.score,
-          scoreAfter: null,
-          evidence: { ...overlay },
-        })
-        scored.splice(i, 1)
-        continue
-      }
-      const before = c.score
-      const appliedPenalty = applyScoreV2NewsThemeAdjustment(c, overlay.penalty, overlay.flags[0] ?? 'external_evidence_risk', overlay.flags)
-      if (appliedPenalty < 0) {
-        penalized++
-        c.reason += ` | risk_overlay:${overlay.flags[0] ?? 'external_evidence'}`
-        pushFunnelItem(funnelItems, {
-          symbol: c.symbol,
-          name: c.name,
-          stage: 'external_evidence_risk',
-          decision: 'observe',
-          reasonCode: overlay.flags[0] ?? 'external_evidence_risk',
-          scoreBefore: before,
-          scoreAfter: c.score,
-          evidence: { ...overlay },
-        })
-      }
-    }
+    const riskObservedAt = new Date().toISOString()
+    const riskRead = await atomicOverlayCapture.partitioned('external_risk', [...overlayEligibleSymbols], atomicOverlayUniverse,
+      symbols => readExternalEvidenceRiskSnapshot(databaseForDataDomain(env, 'market'), endDate, symbols, riskObservedAt))
+    const evidenceRisk = riskRead.overlays
+    const { vetoed, penalized, events } = applyScreenerExternalRisk(
+      scored, overlayEligibleSymbols, evidenceRisk, layer2CoarseQueueSeed, postL15SafetyExcludedSymbols)
+    for (const event of events) pushFunnelItem(funnelItems, event)
     if (vetoed || penalized) debugLog.push(`[Step 4c] external evidence risk overlay veto=${vetoed} penalized=${penalized}`)
   } catch (e) {
     console.warn('[Screener v2] external evidence risk overlay failed:', e)
@@ -4605,37 +4487,15 @@ export async function runBottomUpScreener(env: Bindings, runDate?: string | null
   // ?? P2-10: 憭?瘛刻眺頞予?訾?瘥?憭抒撅斤? risk overlay嚗??
   // P3-11: ATR V 頧?璅?
   try {
-    let foreignSource = 'canonical_chip_daily'
-    let foreignRows: Array<{ date: string; total_foreign_net: number }> = []
-    try {
-      const canonical = await databaseForDataDomain(env, 'market').prepare(`
-        SELECT date, SUM(foreign_net) as total_foreign_net
-        FROM canonical_chip_daily
-        WHERE date >= date('now', '-40 days')
-        GROUP BY date ORDER BY date
-      `).all<{ date: string; total_foreign_net: number }>()
-      foreignRows = canonical.results ?? []
-    } catch {
-      foreignRows = []
-    }
+    const { rows: foreignRows, source: foreignSource } =
+      await atomicOverlayCapture.read('foreign_flow', null,
+        () => readScreenerForeignFlow(databaseForDataDomain(env, 'market'), endDate))
 
-    if (foreignRows.length < 10) {
-      const legacy = await databaseForDataDomain(env, 'market').prepare(`
-        SELECT date, SUM(foreign_net) as total_foreign_net
-        FROM chip_data
-        WHERE date >= date('now', '-40 days')
-        GROUP BY date ORDER BY date
-      `).all<{ date: string; total_foreign_net: number }>()
-      foreignRows = legacy.results ?? []
-      foreignSource = 'legacy.chip_data'
-    }
-
-    if (foreignRows && foreignRows.length >= 10) {
-      const buyDays = foreignRows.filter(r => r.total_foreign_net > 0).length
-      const foreignBuyRatio = buyDays / foreignRows.length
+    const foreignBuyRatio = applyScreenerForeignFlow(scored, foreignRows)
+    if (foreignBuyRatio !== null) {
       // < 0.4 = 憭???鞈?? ???券?????
       if (foreignBuyRatio < 0.35) {
-        for (const c of scored) c.score -= 3
+
         debugLog.push(`[Step 4d] Foreign net weak: source=${foreignSource} buy_ratio=${foreignBuyRatio.toFixed(2)} penalty=-3`)
       } else if (foreignBuyRatio > 0.65) {
         debugLog.push(`[Step 4d] Foreign net supportive: source=${foreignSource} buy_ratio=${foreignBuyRatio.toFixed(2)}`)
@@ -4650,12 +4510,13 @@ export async function runBottomUpScreener(env: Bindings, runDate?: string | null
   // ?? Step 4c: 頞典?釭 + ADX + 瘚??批?蝝?D1 60 憭拇風?莎???
   try {
     const policyPoolSymbols = [...overlayEligibleSymbols]
-    if (policyPoolSymbols.length > 0) {
-      const histRows = await loadMarketPriceHistoryBySymbols(env, policyPoolSymbols, {
-        onOrBeforeDate: endDate,
-        rowsPerSymbol: 65,
-      })
-        .then((rows) => rows.map((row) => ({
+    { // The bridge performs no SQL for an explicitly empty symbol list.
+      const histRows = await atomicOverlayCapture.partitioned('technical_history', policyPoolSymbols, atomicOverlayUniverse,
+        symbols => loadMarketPriceHistoryBySymbols(env, symbols, {
+          onOrBeforeDate: endDate,
+          rowsPerSymbol: 65,
+          requireQuerySuccess: true,
+        }).then((rows) => rows.map((row) => ({
             symbol: row.symbol,
             date: row.date,
             open: Number(row.open ?? row.close ?? 0),
@@ -4663,99 +4524,13 @@ export async function runBottomUpScreener(env: Bindings, runDate?: string | null
             low: Number(row.low ?? row.close ?? 0),
             close: Number(row.close ?? 0),
             volume: Number(row.volume ?? 0),
-          })))
+          }))))
       // Keep the bounded 65-session bridge window; indicator calculations below require at most 60 bars.
       histRows.sort((a, b) => a.symbol.localeCompare(b.symbol) || a.date.localeCompare(b.date))
 
       // ??symbol ??
-      const histBySymbol = new Map<string, { close: number; high: number; low: number; volume: number }[]>()
-      for (const r of histRows) {
-        if (!histBySymbol.has(r.symbol)) histBySymbol.set(r.symbol, [])
-        histBySymbol.get(r.symbol)!.push({ close: r.close, high: r.high ?? r.close, low: r.low ?? r.close, volume: r.volume ?? 0 })
-      }
-
-      // ?? G1: ??universe ??intent ?曉?雿???adaptive ?瑼鳴???
-      const intentMap = new Map<string, number>()
-      for (const [sym, bars] of histBySymbol) {
-        if (bars.length < 20) continue
-        const latest = bars[bars.length - 1].close
-        const first = bars[0].close
-        let sumAbsRet = 0
-        for (let i = 1; i < bars.length; i++) {
-          if (bars[i - 1].close > 0) sumAbsRet += Math.abs((bars[i].close - bars[i - 1].close) / bars[i - 1].close)
-        }
-        const netReturn = first > 0 ? (latest - first) / first : 0
-        intentMap.set(sym, sumAbsRet > 0 ? netReturn / sumAbsRet : 0)
-      }
-      // 閮??曉?雿?瑼?
-      const intentValues = [...intentMap.values()].sort((a, b) => a - b)
-      const p10 = intentValues[Math.floor(intentValues.length * 0.10)] ?? -0.3
-      const p20 = intentValues[Math.floor(intentValues.length * 0.20)] ?? -0.1
-
-      let trendPenalty = 0, intentPenalty = 0, adxPenalty = 0, liqPenalty = 0
-
-      for (const c of scored) {
-        const bars = histBySymbol.get(c.symbol)
-        if (!bars || bars.length < 20) continue
-
-        const latest = bars[bars.length - 1].close
-        const first = bars[0].close
-        const high60 = Math.max(...bars.map(b => b.close))
-
-        // ??頝 60 ?仿?暺???
-        const fromHigh = (latest - high60) / high60
-        if (fromHigh < -0.15) {
-          c.score -= 8
-          c.reason += `嚗?擃?${(fromHigh * 100).toFixed(0)}%`
-          trendPenalty++
-        } else if (fromHigh < -0.10) {
-          c.score -= 5
-          trendPenalty++
-        }
-
-        // ??G1: Intent adaptive ?曉?雿??
-        const intent = intentMap.get(c.symbol) ?? 0
-        if (intent < p10 && intent < 0) {
-          c.score -= 8  // ?撌?10%嚗楊頝?擃??迎?
-          intentPenalty++
-        } else if (intent < p20 && intent < 0) {
-          c.score -= 5  // ?撌?20%
-          intentPenalty++
-        } else if (intent > 0.4) {
-          c.score += 3  // ?芾釭?渡?銝撞
-        }
-
-        // ??G2+ADX: ?梁摰 ADX 14 閮?嚗????DX 餈撮 ADX??
-        if (bars.length >= 28) {
-          const technicals = computeTechnicalIndicators(
-            bars.map(b => b.close),
-            bars.map(b => b.high),
-            bars.map(b => b.low),
-            bars.map(b => b.volume),
-          )
-          const adx = technicals.adx14
-
-          if (adx != null && adx < 15 && (c as any).chip_score >= 20) {
-            c.score -= 5
-            c.reason += ` | weak_adx_${adx.toFixed(0)}`
-            adxPenalty++
-          } else if (adx != null && adx > 30) {
-            if (intent > 0.1) c.score += 2
-          }
-        }
-
-        // ??G4: 瘚??批?蝝?銝?擃′?瑼鳴??典??豢??塚?
-        const avgTurnover = bars.reduce((s, b) => s + b.close * b.volume, 0) / bars.length
-        if (avgTurnover < 10_000_000) {        // < 1000 ??
-          c.score -= 5
-          liqPenalty++
-        } else if (avgTurnover < 30_000_000) { // 1000~3000 ??
-          c.score -= 2
-          liqPenalty++
-        } else if (avgTurnover > 100_000_000) { // > 1 ??
-          c.score += 2  // 擃??批??
-        }
-      }
+      const { trendPenalty, intentPenalty, adxPenalty, liqPenalty, p10, p20 } =
+        applyScreenerTechnicalOverlay(scored, histRows, policyPoolSymbols)
 
       debugLog.push(`[Step 4c] 頞典?釭: 頝?暺?${trendPenalty} intent=${intentPenalty} ADX?∟隅??${adxPenalty} 雿???${liqPenalty}`)
       debugLog.push(`[Step 4c] Intent adaptive: p10=${p10.toFixed(3)} p20=${p20.toFixed(3)}`)
@@ -4768,49 +4543,15 @@ export async function runBottomUpScreener(env: Bindings, runDate?: string | null
   let selectionFlagMap = new Map<string, ScreenerSelectionFlag>()
   try {
     const policyPoolSymbols = [...overlayEligibleSymbols]
-    selectionFlagMap = await loadSelectionHistoryFlags(databaseForDataDomain(env, 'market'), policyPoolSymbols, endDate, {
-      highFreqThreshold: (sc as any).highFreq20dThreshold ?? 12,
-    })
+    selectionFlagMap = await atomicOverlayCapture.partitioned('selection_history', policyPoolSymbols, atomicOverlayUniverse,
+      symbols => loadSelectionHistoryFlags(databaseForDataDomain(env, 'market'), symbols, endDate, {
+        highFreqThreshold: (sc as any).highFreq20dThreshold ?? 12,
+      }))
     const highFreqPenalty = Number((sc as any).highFreqPenalty ?? 6)
     const newMoneyBonus = Number((sc as any).newMoneyBonus ?? 2)
-    let highFreqAdjusted = 0
-    let newMoneyAdjusted = 0
-    for (const c of scored) {
-      const flag = selectionFlagMap.get(c.symbol)
-      if (!flag) continue
-      if (flag.highFreq && highFreqPenalty > 0) {
-        const before = c.score
-        c.score -= highFreqPenalty
-        c.reason += ` | high_freq_penalty -${highFreqPenalty}`
-        highFreqAdjusted++
-        pushFunnelItem(funnelItems, {
-          symbol: c.symbol,
-          name: c.name,
-          stage: 'diversity_cooldown',
-          decision: 'observe',
-          reasonCode: 'high_frequency_cooldown',
-          scoreBefore: before,
-          scoreAfter: c.score,
-          evidence: { freq20d: flag.freq20d, highFreqPenalty },
-        })
-      }
-      if (flag.newMoney && newMoneyBonus > 0) {
-        const before = c.score
-        c.score += newMoneyBonus
-        c.reason += ` | new_money +${newMoneyBonus}`
-        newMoneyAdjusted++
-        pushFunnelItem(funnelItems, {
-          symbol: c.symbol,
-          name: c.name,
-          stage: 'diversity_cooldown',
-          decision: 'observe',
-          reasonCode: 'new_money_boost',
-          scoreBefore: before,
-          scoreAfter: c.score,
-          evidence: { freq20d: flag.freq20d, newMoneyBonus },
-        })
-      }
-    }
+    const { highFreqAdjusted, newMoneyAdjusted, events } = applyScreenerSelectionHistory(
+      scored, selectionFlagMap, highFreqPenalty, newMoneyBonus)
+    for (const event of events) pushFunnelItem(funnelItems, event)
     debugLog.push(`[Step 4e] selection diversity: high_freq_penalty=${highFreqAdjusted} new_money_bonus=${newMoneyAdjusted}`)
   } catch (e) {
     console.warn('[Screener v2] selection diversity failed:', e)
@@ -4848,42 +4589,12 @@ export async function runBottomUpScreener(env: Bindings, runDate?: string | null
   let finalCandidates: ScreenerCandidate[] = []
   if (layer1BreadthPool.length > 0) {
     const layer1TargetSize = selectionTargetSize
-    const updatedBySymbol = new Map(scored.map((candidate) => [String(candidate.symbol || '').trim(), candidate]))
-    const layer1Queue = layer2CoarseQueueSeed
-      .filter((candidate) => {
-        const symbol = String(candidate.symbol || '').trim()
-        const isFormalStrategyHit =
-          String((candidate as any).strategy_pool_decision ?? '') === 'ml_queue' &&
-          String((candidate as any).strategy_pool_fallback_source ?? '') !== 'raw_signal_top_up' &&
-          ((candidate as any).strategy_pool_ids ?? []).length > 0
-        if (!isFormalStrategyHit) return false
-        return updatedBySymbol.has(symbol)
+    const selectedCandidates = materializePostOverlayStrategySeed(
+      layer2CoarseQueueSeed, scored, runtimeStrategySpecs, {
+        regime: runtimeStrategyRegime,
+        evidenceMode: monthlyRevenue.evidenceMode,
       })
-    const selectedSymbols = new Set(layer1Queue.map((candidate: any) => String(candidate.symbol || '').trim()))
-    const selectedCandidates = reconcileCandidatesStrategyPoolAttribution(layer1Queue.map((entry: any) => {
-      const symbol = String(entry.symbol || '').trim()
-      const updated = updatedBySymbol.get(symbol)
-      return {
-        ...(updated ?? entry),
-        strategy_pool_decision: entry.strategy_pool_decision,
-        strategy_pool_reason: entry.strategy_pool_reason,
-        strategy_pool_rank: entry.strategy_pool_rank,
-        strategy_pool_ids: entry.strategy_pool_ids,
-        strategy_family_ids: entry.strategy_family_ids,
-        strategy_variant_ids: entry.strategy_variant_ids,
-        strategy_owner_types: entry.strategy_owner_types,
-        research_strategy_ids: entry.research_strategy_ids,
-        strategy_pool_fallback_source: entry.strategy_pool_fallback_source,
-        strategy_pool_score: entry.strategy_pool_score,
-        strategy_watch_points: Array.from(new Set([
-          ...((updated as any)?.strategy_watch_points ?? []),
-          ...((entry as any).strategy_watch_points ?? []),
-        ])),
-      }
-    }), runtimeStrategySpecs, {
-      regime: runtimeStrategyRegime,
-      evidenceMode: monthlyRevenue.evidenceMode,
-    })
+    const selectedSymbols = new Set(selectedCandidates.map(candidate => String(candidate.symbol || '').trim()))
     const topUpCandidates = afterIndustryLimit
       .filter((candidate) => {
         const symbol = String(candidate.symbol || '').trim()
@@ -5056,81 +4767,47 @@ export async function runBottomUpScreener(env: Bindings, runDate?: string | null
   }
 
   // ?? Step 6: 鞈??釭嚗elistingMonitor嚗??
-  const postL15SafetyExcludedSymbols = new Set<string>()
   try {
     const candSymbols = finalCandidates.map(c => c.symbol)
-    if (candSymbols.length > 0) {
-      const identities = await loadCoreStockIdentitiesBySymbols(env, candSymbols)
-      const symbolById = new Map([...identities.values()].map((row) => [row.id, row.symbol]))
-      const recentCountBySymbol = new Map(candSymbols.map((symbol) => [symbol, 0]))
-      const ids = [...symbolById.keys()]
-      for (const chunk of chunkArray(ids, D1_IN_CHUNK_SIZE)) {
-        const ph = chunk.map(() => '?').join(',')
-        const { results } = await databaseForDataDomain(env, 'market').prepare(`
-          SELECT stock_id, COUNT(date) AS days_count
-            FROM stock_prices
-           WHERE stock_id IN (${ph}) AND date >= date(?, '-7 days') AND date <= ?
-           GROUP BY stock_id
-        `).bind(...chunk, endDate, endDate).all<{ stock_id: number; days_count: number }>()
-        for (const row of results ?? []) {
-          const symbol = symbolById.get(Number(row.stock_id))
-          if (symbol) recentCountBySymbol.set(symbol, Number(row.days_count ?? 0))
+    { // Preserve an explicit no-hit day without inventing missing market rows.
+      const recentRead = await atomicOverlayCapture.partitioned('recent_sessions', candSymbols, atomicOverlayUniverse, async (symbols) => {
+        const identities = await loadCoreStockIdentitiesBySymbols(env, symbols, { requireQuerySuccess: true })
+        const symbolById = new Map([...identities.values()].map((row) => [row.id, row.symbol]))
+        const recentCountBySymbol = new Map(symbols.map((symbol) => [symbol, 0]))
+        const ids = [...symbolById.keys()]
+        for (const chunk of chunkArray(ids, D1_IN_CHUNK_SIZE)) {
+          const ph = chunk.map(() => '?').join(',')
+          const response = await databaseForDataDomain(env, 'market').prepare(`
+            SELECT stock_id, COUNT(date) AS days_count
+              FROM stock_prices
+             WHERE stock_id IN (${ph}) AND date >= date(?, '-7 days') AND date <= ?
+             GROUP BY stock_id
+          `).bind(...chunk, endDate, endDate).all<{ stock_id: number; days_count: number }>()
+          if (!response.success || !Array.isArray(response.results)) throw new Error('recent_sessions_query_failed')
+          for (const row of response.results) {
+            const symbol = symbolById.get(Number(row.stock_id))
+            if (symbol) recentCountBySymbol.set(symbol, Number(row.days_count ?? 0))
+          }
         }
-      }
-      const recentRows = [...recentCountBySymbol].map(([symbol, days_count]) => ({ symbol, days_count }))
-      const delistRisk = new Set<string>()
-      for (const r of recentRows) {
-        if (r.days_count <= 2) delistRisk.add(r.symbol)
-      }
-      if (delistRisk.size > 0) {
-        const removed = finalCandidates.filter(c => delistRisk.has(c.symbol))
-        for (const candidate of removed) {
-          const symbol = String(candidate.symbol || '').trim().toUpperCase()
-          if (!symbol) continue
-          postL15SafetyExcludedSymbols.add(symbol)
-          pushFunnelItem(funnelItems, {
-            symbol,
-            name: candidate.name,
-            stage: 'l1_post_route_safety_gate',
-            decision: 'drop',
-            reasonCode: 'delisting_monitor_insufficient_recent_sessions',
-            scoreBefore: Number((candidate as any).score ?? 0),
-            scoreAfter: null,
-            evidence: {
-              canonical_l15_route_present: true,
-              recent_market_sessions_max: 2,
-            },
-          })
-        }
-        for (let i = finalCandidates.length - 1; i >= 0; i--) {
-          if (delistRisk.has(finalCandidates[i].symbol)) finalCandidates.splice(i, 1)
-        }
-        if (removed.length) debugLog.push(`[Step 6] DelistingMonitor removed ${removed.map(c => c.symbol).join(', ')}`)
-      }
+        return { rows: [...recentCountBySymbol].map(([symbol, days_count]) => ({ symbol, days_count })),
+          missing_identity_symbols: symbols.filter(symbol => !identities.has(symbol)) }
+      })
+      const recentRows = recentRead.rows
+      const { removed, events } = applyScreenerRecentSessionSafety(finalCandidates, recentRows, postL15SafetyExcludedSymbols)
+      for (const event of events) pushFunnelItem(funnelItems, event)
+      if (removed.length) debugLog.push(`[Step 6] DelistingMonitor removed ${removed.map(c => c.symbol).join(', ')}`)
     }
   } catch (e) {
     console.warn('[Screener v2] DelistingMonitor failed:', e)
   }
 
+  // Capture this stage separately; Core materialization applies another real
+  // sector bonus, so canonical sealing must happen AFTER its inputs are read.
+  const atomicPostOverlayFinalSeed = structuredClone(finalCandidates)
+
   const breeze2ScreenerContext = await enrichScreenerCandidatesWithBreeze2(
     env,
-    finalCandidates.map((candidate, index) => {
-      const rawCandidate = candidate as ScoredCandidate & Breeze2CandidateShape
-      return {
-        symbol: candidate.symbol,
-        name: candidate.name,
-        stock_name: candidate.name,
-        score_v2: rawCandidate.score_v2 ?? rawCandidate.score_components ?? null,
-        reason: candidate.reason,
-        strategy_watch_points: candidate.strategy_watch_points ?? [],
-        recommendation_lane: 'tradable',
-        major_event: rawCandidate.major_event,
-        theme: rawCandidate.theme,
-        news: rawCandidate.news,
-        evidence_items: rawCandidate.evidence_items,
-        rank: index + 1,
-      } satisfies Breeze2CandidateShape
-    }),
+    mapScreenerBreeze2Candidates(finalCandidates),
     { runDate: endDate, maxCandidates: 5, executeModal: true },
   ).catch((error) => {
     console.warn('[Screener v2] Breeze2 enrichment skipped:', error)
@@ -5179,10 +4856,11 @@ export async function runBottomUpScreener(env: Bindings, runDate?: string | null
     const routeCandidate = routeOwner.candidate as any
     const flag = selectionFlagMap.get(c.symbol)
     const layer1Telemetry = ((strategySelectionTelemetry as any)?.layer1_telemetry ?? {}) as Record<string, any>
+    const mergeItem = buildScreenerL1MergeItem(sc, routeCandidate, index + 1)
     const l1CandidateSeedEvidence = {
+      ...mergeItem.evidence,
       semantic_stage: 'l1_candidate_seed_after_overlay',
       legacy_alias_stage: 'final_selection',
-      industry: sc.industry ?? c.sector,
       chip_score: sc.chip_score,
       tech_score: sc.tech_score,
       momentum_score: sc.momentum_score,
@@ -5197,7 +4875,6 @@ export async function runBottomUpScreener(env: Bindings, runDate?: string | null
       research_strategy_ids: sc.research_strategy_ids ?? [],
       strategy_pool_fallback_source: sc.strategy_pool_fallback_source ?? null,
       strategy_pool_score: sc.strategy_pool_score ?? null,
-      strategy_pool_reason: sc.strategy_pool_reason ?? null,
       strategy_labeler_version: sc.strategy_labeler_version ?? null,
       finlab_portfolio_intelligence_version: FINLAB_PORTFOLIO_INTELLIGENCE_VERSION,
       strategy_router_version: routeCandidate.strategy_router_version ?? null,
@@ -5252,13 +4929,7 @@ export async function runBottomUpScreener(env: Bindings, runDate?: string | null
       layer3_core_ml_target_size: maxCandidates,
     }
     pushFunnelItem(funnelItems, {
-      symbol: c.symbol,
-      name: c.name,
-      stage: 'l1_candidate_seed_after_overlay',
-      decision: 'selected',
-      reasonCode: 'selected_for_l1_breadth_seed',
-      scoreAfter: Number(sc.score ?? 0),
-      rank: index + 1,
+      ...mergeItem,
       evidence: l1CandidateSeedEvidence,
     })
     pushFunnelItem(funnelItems, {
@@ -5297,15 +4968,20 @@ export async function runBottomUpScreener(env: Bindings, runDate?: string | null
   // Fire-and-forget: table 蝻箸???憭望???0 bonus 銝?銝餅?蝔?
   const sectorBonusMap = new Map<string, { bonus: number; avgCorr: number | null }>()
   try {
-    const { sectorLeaderBonusBatch } = await import('./sectorCorrelation')
+    const { readSectorLeaderBonusSnapshot } = await import('./sectorCorrelationSource')
     const bonusPoints = sc.sectorLeaderBonusPoints ?? 5
     const corrThreshold = sc.sectorLeaderCorrThreshold ?? 0.7
-    const bulkBonus = await sectorLeaderBonusBatch(
-      env,
-      finalCandidates.map(c => ({ symbol: c.symbol, sector: c.sector ?? null })),
-      corrThreshold,
-      bonusPoints,
-    )
+    const bonusCandidates = atomicShadowSource?.inputs.universe.map(candidate => ({
+      symbol: candidate.symbol, sector: typeof candidate.sector === 'string' ? candidate.sector : null,
+    })) ?? finalCandidates.map(candidate => ({ symbol: candidate.symbol, sector: candidate.sector ?? null }))
+    const bonusSnapshot = await atomicOverlayCapture.read('sector_bonus', bonusCandidates.map(row => row.symbol),
+      () => readSectorLeaderBonusSnapshot(env, {
+        signalDate: endDate, observedAt: new Date().toISOString(), candidates: bonusCandidates,
+        fullIndustryUniverse: taxonomyUniverse.map(symbol => ({ symbol, sector: taxonomyProfiles.get(symbol)?.industry ?? null })),
+        corrThreshold, bonusPoints,
+      }))
+    const finalSymbols = new Set(finalCandidates.map(candidate => candidate.symbol))
+    const bulkBonus = new Map([...bonusSnapshot.output].filter(([symbol]) => finalSymbols.has(symbol)))
     for (const [symbol, value] of bulkBonus) {
       sectorBonusMap.set(symbol, { bonus: value.bonus, avgCorr: value.avgCorr })
     }
@@ -5317,57 +4993,34 @@ export async function runBottomUpScreener(env: Bindings, runDate?: string | null
 
   // Screener ?芾?鞎?seed chip/tech/price嚗L-enriched recommendations ??ml-controller ????
   let themeRuntimeTelemetry: Record<string, unknown> = { status: 'not_started' }
+  const atomicCoreSeedReceipts: unknown[] = []
+  const coreSourceCandidates = atomicShadowSource?.inputs.universe ?? finalCandidates
+  const coreSeedContext: ScreenerCoreSeedContext = {
+    prices: new Map(coreSourceCandidates.map(({ symbol }) => {
+      const prices = data.prices.get(symbol)
+      return [symbol, prices?.length ? prices[prices.length - 1].close : null]
+    })),
+    selectionFlags: selectionFlagMap, sectorBonus: sectorBonusMap,
+    breezeWatchPoints: new Map(coreSourceCandidates.map(({ symbol }) => [symbol, extractBreeze2WatchPoint(breeze2ScreenerContext.get(symbol))])),
+    chipMetadata: new Map(coreSourceCandidates.map(({ symbol }) => [symbol, latestChipMeta(data.chips.get(symbol)) ?? null])),
+    taxonomyPoints: new Map(coreSourceCandidates.map(candidate => [candidate.symbol, taxonomyWatchPoint((candidate as any).taxonomy)])),
+    tpexSymbols: tpexSymbolSet, allocationWeights: runtimeStrategyAllocationWeights,
+  }
+  atomicOverlayCapture.record('core_seed_context', {
+    context: coreSeedContext, taxonomy: [...taxonomyProfiles],
+    breeze2ScreenerContext, breeze2Scope: finalCandidates.map(candidate => candidate.symbol),
+  })
 
   try {
-    const recBatch = finalCandidates.map((c, i) => {
-      const sc = c as any
-      // 敺??API 鞈????唳?文嚗?撖?null嚗?
-      const latestPrices = data.prices.get(c.symbol)
-      const currentPrice = latestPrices?.length ? latestPrices[latestPrices.length - 1].close : null
-      // #15 tag prefix + #16 sector leader bonus 銝韏?append ??reason
-      const flag = selectionFlagMap.get(c.symbol)
-      const sectorB = sectorBonusMap.get(c.symbol)
-      const breeze2WatchPoint = extractBreeze2WatchPoint(breeze2ScreenerContext.get(c.symbol))
-      const chipMeta = latestChipMeta(data.chips.get(c.symbol))
-      const taxPoint = taxonomyWatchPoint((c as any).taxonomy)
-      const tagParts: string[] = []
-      if (flag?.highFreq) tagParts.push(`?? 擃 (20d ?仿 ${flag.freq20d} 甈?`)
-      if (flag?.newMoney) tagParts.push('?? ?啗???(30d 擐?)')
-      if (sectorB && sectorB.bonus > 0 && sectorB.avgCorr !== null) {
-        tagParts.push(`?? ?黎??? (corr=${sectorB.avgCorr.toFixed(2)}, +${sectorB.bonus})`)
-      }
-      for (const tag of sc.strategy_tags ?? []) tagParts.push(tag)
-      const seed = buildScreenerSeedRow({
-        candidate: c as any,
-        rank: i + 1,
-        currentPrice,
-        sectorBonus: sectorB?.bonus ?? 0,
-        tags: tagParts,
-      })
-      const watchPoints = Array.from(new Set([
-        ...seed.watchPoints,
-        `screener_funnel:rank=${i + 1},freq20d=${flag?.freq20d ?? 0},high_freq=${flag?.highFreq ? 'yes' : 'no'},new_money=${flag?.newMoney ? 'yes' : 'no'}`,
-        ...(chipMeta ? [chipMeta] : ['chip_source:missing']),
-        ...(taxPoint ? [taxPoint] : ['taxonomy:missing']),
-        ...(breeze2WatchPoint ? [breeze2WatchPoint] : []),
-        ...(sc.strategy_watch_points ?? []),
-      ]))
-      const eligibleForPendingBuy = hasPositiveStrategyAllocation(
-        sc.strategy_pool_ids ?? [],
-        runtimeStrategyAllocationWeights,
-      )
-      return databaseForDataDomain(env, 'core').prepare(buildScreenerSeedUpsertSql()).bind(
-        endDate, seed.row.symbol, seed.row.symbol, seed.row.name, seed.row.sector,
-        seed.rank, seed.row.seedScore,
-        seed.row.chipScore, seed.row.techScore, seed.row.momentumScore,
-        seed.row.currentPrice,
-        seed.row.reason, JSON.stringify(watchPoints), seed.row.scoreComponents, seed.row.industry,
-        tpexSymbolSet.has(c.symbol) ? 'OTC' : 'LISTED',
-        'tradable',
-        1,
-        eligibleForPendingBuy ? 1 : 0,
-      )
-    })
+    const materializedCoreSeeds = materializeScreenerCoreSeeds(finalCandidates, coreSeedContext)
+    atomicCoreSeedReceipts.push(...materializedCoreSeeds)
+    await atomicOverlayCapture.read('core_seed_persistence', coreSourceCandidates.map(row => row.symbol), async () => ({
+      before: await readScreenerCoreBeforeWrite(databaseForDataDomain(env, 'core'), endDate, coreSourceCandidates.map(row => row.symbol)),
+      upsert_sql: buildScreenerSeedUpsertSql(),
+      baseline_bindings: materializedCoreSeeds.map(row => screenerCoreSeedUpsertBindings(endDate, row)),
+    })).catch(() => { debugLog.push('[Atomic shadow] Core pre-write state unavailable; formal seed write unchanged') })
+    const recBatch = materializedCoreSeeds.map(row => databaseForDataDomain(env, 'core')
+      .prepare(buildScreenerSeedUpsertSql()).bind(...screenerCoreSeedUpsertBindings(endDate, row)))
     const emergingRecBatch = emergingResearchCandidates.map((c, i) => {
       const sc = c as any
       const latestPrices = emergingData.prices.get(c.symbol)
@@ -5405,10 +5058,7 @@ export async function runBottomUpScreener(env: Bindings, runDate?: string | null
       )
     })
     recBatch.push(...emergingRecBatch)
-    const BATCH = 50
-    for (let b = 0; b < recBatch.length; b += BATCH) {
-      await databaseForDataDomain(env, 'core').batch(recBatch.slice(b, b + BATCH))
-    }
+    await writeScreenerSeedBatches(databaseForDataDomain(env, 'core'), recBatch)
 
     const seedSymbols = [
       ...finalCandidates.map(c => c.symbol),
@@ -5420,9 +5070,10 @@ export async function runBottomUpScreener(env: Bindings, runDate?: string | null
     if (finalCandidates.length > 0) {
       for (const chunk of chunkArray(finalCandidates.map(c => c.symbol), D1_IN_CHUNK_SIZE)) {
         const ph = chunk.map(() => '?').join(',')
-        await databaseForDataDomain(env, 'core').prepare(
+        const watchlistResult = await databaseForDataDomain(env, 'core').prepare(
           `UPDATE stocks SET in_current_watchlist=1 WHERE symbol IN (${ph})`
         ).bind(...chunk).run()
+        assertScreenerSeedWriteResults([watchlistResult], 1)
       }
     }
 
@@ -5528,6 +5179,7 @@ export async function runBottomUpScreener(env: Bindings, runDate?: string | null
     }
   } catch (e) {
     console.warn('[Screener v2] daily_recommendations 撖怠憭望?:', e)
+    throw new Error('screener_seed_persistence_failed', { cause: e })
   }
 
   try {
@@ -5587,6 +5239,20 @@ export async function runBottomUpScreener(env: Bindings, runDate?: string | null
 
   try {
     if (!selectionEvidence) throw new Error('canonical_strategy_selection_evidence_missing')
+    if (atomicShadowSource) {
+      atomicOverlayCapture.record('core_seed_materialization', {
+        owner: 'screener_pre_ml_seed_request', write_status: 'acknowledged', rows: atomicCoreSeedReceipts,
+      })
+      atomicShadowSource = await sealAtomicPostOverlaySource(atomicShadowSource, atomicOverlayCapture.freeze({
+        signalDate: endDate, universeSymbols: atomicOverlayUniverse, formalSymbols: [...overlayEligibleSymbols],
+        finalSeed: atomicPostOverlayFinalSeed, safetyExcludedSymbols: [...postL15SafetyExcludedSymbols],
+        policy: { regime: runtimeStrategyRegime, evidenceMode: monthlyRevenue.evidenceMode,
+          highFreqThreshold: (sc as any).highFreq20dThreshold ?? 12,
+          highFreqPenalty: Number((sc as any).highFreqPenalty ?? 6),
+          newMoneyBonus: Number((sc as any).newMoneyBonus ?? 2),
+          technicalRowsPerSymbol: 65, recentSessionsMaxExcluded: 2 },
+      }))
+    }
     const l0DropReasonConservation = buildL0DropReasonConservation({
       sourceUniverseSymbols: data.prices.keys(),
       rows: funnelItems
@@ -5643,6 +5309,7 @@ export async function runBottomUpScreener(env: Bindings, runDate?: string | null
       debugLog,
       items: funnelItems,
       selectionEvidence,
+      atomicShadowSource,
     })
   } catch (e) {
     console.warn('[Screener v2] funnel write failed:', e)

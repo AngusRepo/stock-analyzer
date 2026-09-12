@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import sys
 from pathlib import Path
+from types import SimpleNamespace
+import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
@@ -57,3 +59,14 @@ def test_pending_sell_is_receivable_not_temporary_drawdown():
 
     assert account.settlement_adjusted_cash == 1_000_000.0
     assert _mark_to_market(account, _Dataset(), "2026-08-17") == 1_000_000.0
+
+
+@pytest.mark.parametrize('bar', [None, {}, {'close': None}, {'close': 0}, {'close': -1},
+                                {'close': float('nan')}, {'close': float('inf')}, {'close': True}])
+def test_missing_market_mark_never_becomes_entry_cost_or_valid_nav(bar):
+    account = AccountState(cash=900_000., initial_capital=1_000_000.)
+    account.positions['2330'] = _position()
+    dataset = SimpleNamespace(get_bar=lambda symbol, date: bar)
+    with pytest.raises(ValueError, match='backtest_valuation_price_missing:2330:2026-08-17'):
+        _mark_to_market(account, dataset, '2026-08-17')
+    assert account.cash == 900_000. and account.positions['2330'].shares == 1000

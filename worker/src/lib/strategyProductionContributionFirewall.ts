@@ -46,6 +46,7 @@ export interface StrategyProductionFirewallBaseWeights {
   run_id?: string | null
   weights?: Readonly<Record<string, number>> | null
   evidence_owner?: {
+    weight_source?: import('./strategyProductionWeightReplay').StrategyProductionWeightSource
     version: string
     checksum: string
     weight_effect: string

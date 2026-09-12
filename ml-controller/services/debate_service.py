@@ -331,7 +331,10 @@ async def run_buy_debate(
 
     # #44 W5 A/B routing — deterministic per (symbol, TW date)
     from .debate_ab import assign_model, log_debate
-    ab_model = assign_model(symbol)
+    from .debate_execution_scope import current_debate_execution
+    private_execution = current_debate_execution()
+    ab_model = private_execution.model_assignment if private_execution else assign_model(symbol)
+    infer = private_execution.infer if private_execution else call_llm
 
     try:
         # ── Compose mlContext (matches TS ordering) ────────────────────────
@@ -364,7 +367,7 @@ async def run_buy_debate(
         ml_context = "\n".join(ml_context_parts)
 
         # ── Read config ────────────────────────────────────────────────────
-        max_rounds = await _read_max_rounds(client)
+        max_rounds = private_execution.max_rounds if private_execution else await _read_max_rounds(client)
         logger.info(f"[Debate] {symbol} max_rounds={max_rounds}")
 
         zealot_cases: list[str] = []
@@ -393,7 +396,7 @@ async def run_buy_debate(
                     f"你的反駁（Round {r}）：",
                 ])
             try:
-                text, source = await call_llm(
+                text, source = await infer(
                     zealot_system, zealot_prompt, temperature=0.5,
                     max_tokens=max_tokens, client=client, ab_force=ab_model,
                 )
@@ -424,7 +427,7 @@ async def run_buy_debate(
                     f"你的再反擊（Round {r}）：",
                 ])
             try:
-                text, source = await call_llm(
+                text, source = await infer(
                     reaper_system, reaper_prompt, temperature=0.7,
                     max_tokens=max_tokens, client=client, ab_force=ab_model,
                 )
@@ -465,7 +468,7 @@ async def run_buy_debate(
 
         total_rounds = 2 * rounds_completed + 1
         try:
-            fulcrum_response, source = await call_llm(
+            fulcrum_response, source = await infer(
                 _FULCRUM_SYS_PROMPT, fulcrum_user_prompt,
                 temperature=0.2, max_tokens=256, client=client, ab_force=ab_model,
             )
@@ -542,7 +545,7 @@ async def run_buy_debate(
         # #44 fire-and-forget A/B log (only when ab_model assigned)
         if ab_model:
             try:
-                await log_debate(
+                await (private_execution.audit if private_execution else log_debate)(
                     symbol=symbol,
                     model_assigned=ab_model,
                     model_actual=llm_source,
@@ -578,6 +581,15 @@ async def run_buy_debate_cached(
     `paper:debate:{symbol}:{date}` lookup in setupMorningPendingBuys."""
     import json as _json
     from datetime import datetime, timezone, timedelta
+
+    from .debate_execution_scope import current_debate_execution
+    if current_debate_execution() is not None:
+        # The outer immutable source-delivery journal owns private retries by
+        # full request identity. Never read/write the formal symbol/date cache.
+        return await run_buy_debate(symbol=symbol, stock_name=stock_name, signal=signal,
+            confidence=confidence, reasoning=reasoning, us_context=us_context,
+            stock_profile=stock_profile, taifex_context=taifex_context,
+            breeze2_context=breeze2_context, client=client)
 
     close_client = False
     if client is None:

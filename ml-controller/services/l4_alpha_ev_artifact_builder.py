@@ -274,6 +274,7 @@ def _samples(
         "sparse_dates_rejected": sparse_dates,
         "sparse_date_rows_rejected": sparse_date_rows_rejected,
         "date_count": len({row["date"] for row in out}),
+        "evidence_min_date": min((row["date"] for row in out), default=None),
         "evidence_max_date": max((row["date"] for row in out), default=None),
         "oof_max_date": (
             max((row["date"] for row in out), default=None)
@@ -473,6 +474,7 @@ def _metrics(samples: list[dict[str, Any]], intercept: float, coefs: dict[str, f
         corr_lcb = math.tanh(fisher_lcb)
     return {
         "samples": len(samples),
+        "evaluated_dates": sorted({sample["date"] for sample in samples}),
         "mean_target": round(_mean(targets), 8),
         "mean_prediction": round(_mean(preds), 8),
         "mae": round(_mean([abs(err) for err in errors]), 8),
@@ -711,6 +713,7 @@ def build_l4_alpha_ev_artifact_from_rows(
             "target": "next_session_raw_open_to_fifth_session_raw_close_factor_stable_net_return",
             "label_schema_version": LABEL_SCHEMA_VERSION,
             "method": "date_split_oos_plus_walk_forward_with_date_clustered_uncertainty",
+            "temporal_train_fraction": 0.8,
             "lookback_days": lookback_days,
             "promotion_confidence_level": 0.90,
             "minimum_economic_spread": 0.0,

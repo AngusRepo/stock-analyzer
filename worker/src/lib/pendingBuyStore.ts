@@ -1,3 +1,4 @@
+import { paperExecutionDate } from './paperExecutionScope'
 import type { Bindings } from '../types'
 import { databaseForDataDomain, databaseForTable } from './dataDomainRegistry'
 import { paperDomainDatabase } from './paperDomainDatabase'
@@ -170,7 +171,7 @@ const PENDING_BUY_BASE_COLUMNS = `
   kelly_pct, chip_score, tech_score, ml_score, score, source, original_entry, retry_count
 `
 const PENDING_BUY_COLUMNS_WITH_TURNS = `${PENDING_BUY_BASE_COLUMNS}, debate_turns_json`
-let debateTurnsColumnCache: boolean | null = null
+const debateTurnsColumnCache = new WeakMap<D1Database, boolean>()
 
 function isMissingTableError(error: unknown): boolean {
   return /no such table/i.test(String(error))
@@ -247,14 +248,15 @@ function normalizePendingBuyScoreProjections(pendingBuys: PendingBuy[]): Pending
 }
 
 async function hasDebateTurnsColumn(db: D1Database): Promise<boolean> {
-  if (debateTurnsColumnCache != null) return debateTurnsColumnCache
+  const cached = debateTurnsColumnCache.get(db)
+  if (cached != null) return cached
   try {
     const { results } = await db.prepare('PRAGMA table_info(pending_buy_items)').all<{ name: string }>()
-    debateTurnsColumnCache = (results ?? []).some((row) => row.name === 'debate_turns_json')
+    debateTurnsColumnCache.set(db, (results ?? []).some((row) => row.name === 'debate_turns_json'))
   } catch {
-    debateTurnsColumnCache = false
+    debateTurnsColumnCache.set(db, false)
   }
-  return debateTurnsColumnCache
+  return debateTurnsColumnCache.get(db)!
 }
 
 function mapItemRow(row: PendingBuyItemRow): PendingBuy {
@@ -390,7 +392,7 @@ async function syncKvSnapshot(
   if (!meta) return
   await env.KV.put(
     `paper:pending_buys_meta:${tradeDate}`,
-    JSON.stringify({ updated_at: new Date().toISOString(), ...meta }),
+    JSON.stringify({ updated_at: paperExecutionDate().toISOString(), ...meta }),
     { expirationTtl: 86400 },
   )
 }
@@ -593,7 +595,7 @@ async function readD1Snapshot(
     itemRows = results ?? []
   } catch (error) {
     if (!withDebateTurns || !isMissingColumnError(error)) throw error
-    debateTurnsColumnCache = false
+    debateTurnsColumnCache.set(pendingBuyDatabase(env), false)
     const { results } = await pendingBuyDatabase(env).prepare(
       `SELECT ${PENDING_BUY_BASE_COLUMNS}
        FROM pending_buy_items
@@ -820,7 +822,7 @@ export async function replacePendingBuyState(
           }
         } catch (error) {
           if (!withDebateTurns || !isMissingColumnError(error)) throw error
-          debateTurnsColumnCache = false
+          debateTurnsColumnCache.set(pendingBuyDatabase(env), false)
           await pendingBuyDatabase(env).prepare(
             `INSERT INTO pending_buy_items
               (run_id, symbol, name, signal, confidence, ml_entry_price, ml_stop_loss, ml_target1, ml_target2,

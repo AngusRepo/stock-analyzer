@@ -63,11 +63,29 @@ def _build(rows):
     )
 
 
-def test_artifact_is_deterministic_learned_and_binds_all_eight_models():
+def test_artifact_is_deterministic_learned_and_binds_all_eight_models(monkeypatch):
+    import numpy as np
+    import services.active8_ensemble_artifact as artifact
+    from services.active8_oof_stacker import INNER_TUNING_POLICY
+
+    original = artifact._fit_selected_ridge
+    fit_calls = []
+
+    def capture(x, y, dates, markets, *, label_known_dates):
+        expected = np.asarray([
+            (date.fromisoformat(day) + timedelta(days=6)).isoformat() for day in dates
+        ])
+        np.testing.assert_array_equal(label_known_dates, expected)
+        fit_calls.append(len(dates))
+        return original(x, y, dates, markets, label_known_dates=label_known_dates)
+
+    monkeypatch.setattr(artifact, "_fit_selected_ridge", capture)
     first = _build(_rows())
     second = _build(_rows())
 
     assert first == second
+    assert fit_calls == [1800, 1800]
+    assert first["fit"]["inner_tuning_policy"] == INNER_TUNING_POLICY
     assert first["schema_version"] == ARTIFACT_SCHEMA_VERSION
     assert first["payload_checksum"] == second["payload_checksum"]
     assert first["fit"]["outer_folds"] == 5
@@ -89,10 +107,13 @@ def test_artifact_is_deterministic_learned_and_binds_all_eight_models():
     assert first["signal_policy"]["buy_rule"] == "conformal_lower_bound_gt_zero"
 
 
-def test_later_chronological_validation_can_reject_calibration_period_winner():
-    with pytest.raises(Active8EnsembleValidationError, match="active8_ensemble_validation_failed") as exc_info:
-        _build(_rows(reverse_late=True))
-    validation = exc_info.value.validation
+def test_later_validation_failure_is_retained_without_erasing_executable_candidate():
+    from services.ensemble_v2 import validate_active8_ensemble_candidate, validate_active8_ensemble_payload
+    artifact = _build(_rows(reverse_late=True))
+    validation = artifact['validation']
+    validate_active8_ensemble_candidate(artifact)
+    with pytest.raises(RuntimeError, match='artifact_contract_invalid'):
+        validate_active8_ensemble_payload(artifact)
     assert validation["decision"] == "FAIL"
     assert validation["calibration_purged_rows"] > 0
     assert validation["calibration_max_label_known_date"] < validation["validation_start_date"]

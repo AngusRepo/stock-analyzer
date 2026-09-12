@@ -16,6 +16,7 @@ from services.opb_counterfactual_prior import (  # noqa: E402
     load_opb_counterfactual_inputs,
 )
 from routers import opb_arm_prior as opb_route  # noqa: E402
+from test_opb_publication_closure import publication  # real schema/SQLite fixture
 
 
 def _l4(expected_return: float, version: str = "l4-test") -> dict:
@@ -33,6 +34,52 @@ def _l4(expected_return: float, version: str = "l4-test") -> dict:
         "cost_model_bps": 18.0,
         "output_is_net_of_costs": True,
     }
+
+
+def test_artifact_identity_binds_validation_policy_not_only_arm_rewards():
+    a = build_opb_arm_prior_artifact([], [], expected_return_owner='l4_alpha_ev',
+                                   trained_until='2026-09-09', min_dates=20)['artifact']
+    b = build_opb_arm_prior_artifact([], [], expected_return_owner='l4_alpha_ev',
+                                   trained_until='2026-09-09', min_dates=21)['artifact']
+    assert a['arm_priors'] == b['arm_priors']
+    assert a['artifact_id'] != b['artifact_id']
+
+
+def test_artifact_identity_is_stable_across_generation_time(monkeypatch):
+    from datetime import datetime, timezone
+    class Clock:
+        instant = datetime(2026, 9, 9, 14, tzinfo=timezone.utc)
+        @classmethod
+        def now(cls, *args): return cls.instant
+    monkeypatch.setattr(opb_counterfactual_prior, 'datetime', Clock)
+    a = build_opb_arm_prior_artifact([], [], expected_return_owner='l4_alpha_ev', trained_until='2026-09-09')['artifact']
+    Clock.instant = datetime(2026, 9, 10, 1, tzinfo=timezone.utc)
+    b = build_opb_arm_prior_artifact([], [], expected_return_owner='l4_alpha_ev', trained_until='2026-09-09')['artifact']
+    assert a['artifact_id'] == b['artifact_id']
+    assert a['generated_at'] != b['generated_at']
+
+
+@pytest.mark.parametrize('change', ['source_version', 'source_training_cutoff', 'source_signal', 'cost', 'arm_policy'])
+def test_identity_binds_sources_cost_and_arm_policy_even_when_rewards_match(monkeypatch, change):
+    from dataclasses import replace
+    monkeypatch.setattr(opb_counterfactual_prior, 'build_online_portfolio_bandit_l2_packet',
+                        lambda **kw: {'controlled_allocation': {'weights': {}}})
+    rows = [{'prediction_date': '2026-06-01', 'symbol': 'AAA', 'actual_return_pct': .01,
+             'alpha_allocation': {'l4_alpha_ev': _l4(.02)}}]
+    a = build_opb_arm_prior_artifact(rows, [], expected_return_owner='l4_alpha_ev', trained_until='2026-06-09')['artifact']
+    cost = 18
+    if change == 'source_version': rows[0]['alpha_allocation']['l4_alpha_ev']['model_version'] = 'changed'
+    elif change == 'source_training_cutoff': rows[0]['alpha_allocation']['l4_alpha_ev']['trained_until'] = '2026-05-30'
+    elif change == 'source_signal': rows[0]['alpha_allocation']['l4_alpha_ev']['expected_return'] = .03
+    elif change == 'cost': cost = 19
+    else:
+        arms = list(opb_counterfactual_prior.DEFAULT_ARMS)
+        arms[0] = replace(arms[0], max_weight=arms[0].max_weight / 2)
+        monkeypatch.setattr(opb_counterfactual_prior, 'DEFAULT_ARMS', tuple(arms))
+    b = build_opb_arm_prior_artifact(rows, [], expected_return_owner='l4_alpha_ev', trained_until='2026-06-09',
+                                   roundtrip_cost_bps=cost)['artifact']
+    assert a['arm_priors'] == b['arm_priors']  # deliberately identical zero-exposure rewards
+    assert a['artifact_id'] != b['artifact_id']
 
 
 def test_counterfactual_prior_replays_every_arm_and_discount_overlapping_dates(monkeypatch):
@@ -181,27 +228,14 @@ def test_prior_resolver_requires_owner_match_and_preserves_arm_knobs():
     assert stale_evidence["runtime_contract"] == "allocator-ev-fusion-contract-v14"
 
 
-def test_refresh_route_promotes_only_a_pass_artifact(monkeypatch):
-    artifact = {
-        "artifact_id": "opb_arm_prior:test",
-        "model_version": "test",
-        "expected_return_owner": "l4_alpha_ev",
-        "trained_until": "2026-07-02",
-        "validation": {"decision": "PASS", "failed_checks": []},
-        "arm_priors": [],
-    }
-    writes: list[dict] = []
-    monkeypatch.setattr(opb_route, "load_opb_counterfactual_inputs", lambda **_: ([{}], [{}]))
-    monkeypatch.setattr(opb_route, "build_opb_arm_prior_artifact", lambda *_, **__: {"status": "validated", "artifact": artifact})
-    monkeypatch.setattr(opb_route, "upsert_artifact_record", lambda record: record)
-
-    async def fake_worker_fetch(path, **kwargs):
-        writes.append({"path": path, **kwargs})
-        return {"ok": True}
-
-    monkeypatch.setattr(opb_route, "worker_fetch", fake_worker_fetch)
-    result = asyncio.run(opb_route.refresh_opb_arm_prior(opb_route.OpbArmPriorRefreshReq(
-        end_date="2026-07-02", promote=True, dry_run=False,
-    )))
-    assert result["promoted"] is True
-    assert writes[0]["json_body"]["alphaFramework"]["allocation"]["opbArmPrior"] == artifact
+def test_refresh_route_registers_pass_and_fail_without_promotion(publication):
+    artifact, db, _, writes, request = publication
+    result = asyncio.run(opb_route.refresh_opb_arm_prior(request))
+    assert result["promoted"] is False and result['registry_verified']
+    assert writes == []
+    writes.clear()
+    artifact.update(artifact_id='opb_arm_prior:failed', model_version='failed',
+                    validation={'decision': 'FAIL', 'failed_checks': ['fixture_insufficient_dates']})
+    result = asyncio.run(opb_route.refresh_opb_arm_prior(request))
+    assert not result['promoted'] and writes == []
+    assert db.execute("SELECT state FROM model_artifact_registry WHERE artifact_id='opb_arm_prior:failed'").fetchone()[0] == 'offline_failed'

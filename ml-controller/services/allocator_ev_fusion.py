@@ -6,6 +6,7 @@ features. Missing, rejected, or incompatible Fusion artifacts are handled by
 the recommendation layer as a zero adjustment; S12 is never a serving owner.
 """
 from __future__ import annotations
+from services.expected_return_numeric import evaluate_linear_net
 
 import json
 import math
@@ -21,7 +22,6 @@ from services.evidence_contracts import (
 from services.expected_return_cost_contract import (
     ExpectedReturnCostContractError,
     expected_return_cost_contract_blockers,
-    normalize_expected_return_to_net,
 )
 from services.expected_return_artifact_identity import expected_return_artifact_identity
 from services.fusion_market_context import market_context_feature_values
@@ -335,28 +335,17 @@ def materialize_allocator_ev_fusion(
             feature_values=values,
         )
 
-    raw_residual_adjustment = float(residual_intercept or 0.0)
-    for name, coef in (residual_coefs or {}).items():
-        raw_residual_adjustment += coef * values[name]
     try:
-        residual_adjustment, cost_metadata = normalize_expected_return_to_net(
-            raw_residual_adjustment,
-            artifact,
-        )
-    except ExpectedReturnCostContractError as exc:
+        residual_adjustment, cost_metadata = evaluate_linear_net(
+            intercept=residual_intercept, coefficients=residual_coefs, features=values,
+            artifact=artifact, clip=artifact.get('residual_output_clip') or {})
+    except (ExpectedReturnCostContractError, ValueError) as exc:
         return _rejected_payload(
             artifact,
             str(exc).split(","),
             l4_payload=l4_payload,
             feature_values=values,
         )
-    clip = artifact.get("residual_output_clip") if isinstance(artifact.get("residual_output_clip"), dict) else {}
-    min_value = _float_or_none(clip.get("min"))
-    max_value = _float_or_none(clip.get("max"))
-    if min_value is not None:
-        residual_adjustment = max(min_value, residual_adjustment)
-    if max_value is not None:
-        residual_adjustment = min(max_value, residual_adjustment)
     base_expected_return = float(l4_value)
     final_expected_return = base_expected_return + residual_adjustment
     primary_allowed = _primary_expected_return_allowed(artifact)
@@ -373,7 +362,7 @@ def materialize_allocator_ev_fusion(
         "policy_value": round(final_expected_return, 10),
         "base_expected_return_owner": "l4_alpha_ev",
         "base_expected_return": round(base_expected_return, 10),
-        "raw_fusion_residual_adjustment": round(raw_residual_adjustment, 10),
+        "raw_fusion_residual_adjustment": round(cost_metadata['raw_linear_prediction'], 10),
         "fusion_residual_adjustment": round(residual_adjustment, 10),
         "final_expected_return": round(final_expected_return, 10),
         "policy_value_head_count": 1,

@@ -290,7 +290,7 @@ def backfill_stock(stock: dict) -> int:
         stock_id = existing[0]["id"]
         # Update with delisted info
         d1_exec(
-            "UPDATE stocks SET delisted_date = ?, delist_reason = ?, listed_date = COALESCE(listed_date, '2020-01-01') WHERE id = ?",
+            "UPDATE stocks SET delisted_date = ?, delist_reason = ? WHERE id = ?",
             [stock["delisted_date"], stock["delist_reason"], stock_id],
         )
         print(f"  [{symbol}] Already exists (id={stock_id}), updated delist info")
@@ -298,7 +298,7 @@ def backfill_stock(stock: dict) -> int:
         # Insert new stock
         d1_exec(
             """INSERT INTO stocks (symbol, name, market, in_current_watchlist, listed_date, delisted_date, delist_reason, added_at, updated_at)
-               VALUES (?, ?, ?, 0, '2020-01-01', ?, ?, datetime('now'), datetime('now'))""",
+               VALUES (?, ?, ?, 0, NULL, ?, ?, datetime('now'), datetime('now'))""",
             [symbol, name, stock.get("market", "TWSE"), stock["delisted_date"], stock["delist_reason"]],
         )
         result = d1_query("SELECT id FROM stocks WHERE symbol = ?", [symbol])

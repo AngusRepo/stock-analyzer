@@ -1,3 +1,4 @@
+import { paperExecutionDate } from './paperExecutionScope'
 import type { RiskConfig } from './riskConfig'
 import type { OrderValidation, OrderViolation } from './riskTypes'
 import { buildTwOrderLegs, isValidTwTickPrice, normalizeTwLimitPrice } from './twMarketRules'
@@ -141,6 +142,6 @@ export async function validateOrder(
           adjustmentReasons: adjustReasons,
         }
       : null,
-    checkedAt: new Date().toISOString(),
+    checkedAt: paperExecutionDate().toISOString(),
   }
 }

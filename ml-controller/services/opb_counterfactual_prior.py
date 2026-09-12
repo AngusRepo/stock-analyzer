@@ -7,6 +7,7 @@ import json
 import math
 import random
 from collections import defaultdict
+from dataclasses import asdict
 from datetime import datetime, timezone
 from typing import Any, Callable
 
@@ -22,7 +23,7 @@ from services.allocator_ev_fusion_artifact_builder import load_allocator_ev_fusi
 from services.l4_alpha_ev_resolver import SNAPSHOT_BACKFILL_USAGE_SCOPE, extract_l4_alpha_ev
 from services.online_portfolio_bandit import DEFAULT_ARMS, build_online_portfolio_bandit_l2_packet
 
-SCHEMA_VERSION = "opb-arm-prior-artifact-v2"
+SCHEMA_VERSION = "opb-arm-prior-artifact-v3"
 EXPECTED_RETURN_SEMANTICS = {
     "l4_alpha_ev": L4_EXPECTED_RETURN_SEMANTIC,
     "allocator_ev_fusion": ALLOCATOR_EV_EXPECTED_RETURN_SEMANTIC,
@@ -159,6 +160,7 @@ def build_opb_arm_prior_artifact(
 
     by_date: dict[str, list[dict[str, Any]]] = defaultdict(list)
     source_versions: set[str] = set()
+    source_lineage: list[dict[str, Any]] = []
     missing_owner_rows = 0
     for row in rows:
         day = str(row.get("prediction_date") or row.get("snapshot_date") or "")[:10]
@@ -174,6 +176,8 @@ def build_opb_arm_prior_artifact(
             continue
         if source_version:
             source_versions.add(source_version)
+        source_lineage.append({'date': day, 'symbol': str(row.get('symbol') or '').strip(),
+                               'model_version': source_version, 'trained_until': source_trained_until})
         by_date[day].append({
             "symbol": str(row.get("symbol") or "").strip(),
             "score": _finite(row.get("score")) or 0.0,
@@ -183,12 +187,14 @@ def build_opb_arm_prior_artifact(
 
     arm_rewards: dict[str, list[dict[str, Any]]] = {arm.arm_id: [] for arm in DEFAULT_ARMS}
     replay_failures: list[dict[str, str]] = []
+    replay_inputs: list[dict[str, Any]] = []
     for day in sorted(by_date):
         candidates = [row for row in by_date[day] if row["symbol"] and row["expected_return"] > 0.0]
         if not candidates:
             continue
         actual_by_symbol = {row["symbol"]: row["actual_return"] for row in candidates}
         histories = _return_history(price_rows, day)
+        replay_inputs.append({'date': day, 'candidates': candidates, 'return_history': histories})
         for arm in DEFAULT_ARMS:
             try:
                 packet = build_online_portfolio_bandit_l2_packet(
@@ -249,10 +255,6 @@ def build_opb_arm_prior_artifact(
     if replay_failures:
         failed.append("counterfactual_replay_failures")
     decision = "PASS" if not failed else "FAIL"
-    fingerprint = hashlib.sha256(
-        json.dumps(arm_priors, sort_keys=True, separators=(",", ":")).encode("utf-8")
-    ).hexdigest()[:16]
-    model_version = f"opb-prior-{expected_return_owner}-{trained_until.replace('-', '')}-{fingerprint}"
     validation = {
         "decision": decision,
         "failed_checks": failed,
@@ -263,14 +265,13 @@ def build_opb_arm_prior_artifact(
     }
     artifact = {
         "schema_version": SCHEMA_VERSION,
-        "artifact_id": f"opb_arm_prior:{model_version}",
-        "model_version": model_version,
         "expected_return_owner": expected_return_owner,
         "source_expected_return_contract_version": EXPECTED_RETURN_CONTRACTS[expected_return_owner],
         "source_expected_return_semantic": EXPECTED_RETURN_SEMANTICS[expected_return_owner],
         "source_model_versions": sorted(source_versions),
+        "source_lineage_checksum": hashlib.sha256(json.dumps(source_lineage,
+            sort_keys=True, separators=(',', ':'), allow_nan=False).encode('utf-8')).hexdigest(),
         "trained_until": trained_until,
-        "generated_at": datetime.now(timezone.utc).isoformat(),
         "roundtrip_cost_bps": roundtrip_cost_bps,
         "reward_definition": "five_session_forward_portfolio_return_net_of_roundtrip_cost",
         "prior_method": "counterfactual_fixed_arm_replay_empirical_bayes_shrinkage",
@@ -279,7 +280,17 @@ def build_opb_arm_prior_artifact(
         "replay_failures": replay_failures[:50],
         "arm_priors": arm_priors,
         "validation": validation,
+        "arm_policy": [asdict(arm) for arm in DEFAULT_ARMS],
+        "source_evidence_checksum": hashlib.sha256(json.dumps(replay_inputs,
+            sort_keys=True, separators=(',', ':'), allow_nan=False).encode('utf-8')).hexdigest(),
     }
+    # Bind all semantics/policy/source evidence, not only resulting arm means.
+    # Wall-clock generation time is provenance, not a new candidate identity.
+    fingerprint = hashlib.sha256(json.dumps(artifact, sort_keys=True,
+        separators=(',', ':'), allow_nan=False).encode('utf-8')).hexdigest()
+    model_version = f"opb-prior-{expected_return_owner}-{trained_until.replace('-', '')}-{fingerprint}"
+    artifact.update(artifact_id=f'opb_arm_prior:{model_version}', model_version=model_version,
+                    generated_at=datetime.now(timezone.utc).isoformat())
     return {"status": "validated" if decision == "PASS" else "failed_validation", "artifact": artifact}
 
 

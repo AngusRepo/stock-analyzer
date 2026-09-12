@@ -1,6 +1,7 @@
 import json
 
 import pytest
+from google.api_core.exceptions import PreconditionFailed
 
 from services.active8_ensemble_artifact import payload_checksum
 from services.active8_ensemble_repository import (
@@ -12,13 +13,18 @@ from services.active8_ensemble_repository import (
 class Blob:
     def __init__(self):
         self.value = None
+        self.writes = 0
     def exists(self):
         return self.value is not None
     def download_as_text(self):
         return self.value
-    def upload_from_string(self, value, content_type=None):
+    def upload_from_string(self, value, content_type=None, if_generation_match=None):
         assert content_type == "application/json"
+        assert if_generation_match == 0
+        if self.value is not None:
+            raise PreconditionFailed('already exists')
         self.value = value
+        self.writes += 1
 
 
 class Bucket:
@@ -48,15 +54,8 @@ class D1:
 
 
 def payload():
-    value = {
-        "schema_version": "active8-oof-ensemble-serving-artifact-v1",
-        "cohort_id": "cohort-1",
-        "knowledge_cutoff_date": "2026-08-25",
-        "base_artifact_set_checksum": "b" * 64,
-        "validation": {"decision": "PASS"},
-    }
-    value["payload_checksum"] = payload_checksum(value)
-    return value
+    from test_paired_nav_l3_candidate import fixed_artifact
+    return fixed_artifact('registry-fixture')
 
 
 def test_candidate_is_archived_then_exactly_read_back():
@@ -87,6 +86,74 @@ def test_d1_identity_conflict_fails_closed():
     d1.row["payload_json"] = "{}"
     with pytest.raises(RuntimeError, match="immutable_conflict"):
         persist_active8_ensemble_candidate(first, training_run_id="run-1", bucket=bucket, d1_client=d1)
+
+
+@pytest.mark.parametrize('fault', ['checksum', 'failed_validation', 'training_run', 'bucket_name'])
+def test_invalid_candidate_is_rejected_before_any_archive_or_d1_write(fault):
+    bucket, d1, candidate = Bucket(), D1(), payload()
+    training = 'run-1'
+    if fault == 'checksum':
+        candidate['knowledge_cutoff_date'] = '2026-08-26'
+    elif fault == 'failed_validation':
+        candidate['validation'] = {'decision': 'FAIL'}
+        candidate['payload_checksum'] = payload_checksum({k: v for k, v in candidate.items() if k != 'payload_checksum'})
+    elif fault == 'training_run':
+        training = ''
+    else:
+        bucket.name = ''
+    with pytest.raises((ValueError, RuntimeError), match='identity|contract'):
+        persist_active8_ensemble_candidate(candidate, training_run_id=training, bucket=bucket, d1_client=d1)
+    assert bucket.blobs == {} and d1.row is None
+
+
+def test_lost_upload_ack_retries_without_overwriting_and_only_then_registers():
+    bucket, d1, candidate = Bucket(), D1(), payload()
+    path = f"active8/ensemble/{candidate['cohort_id']}/{candidate['payload_checksum']}.json"
+    blob = bucket.blob(path)
+    upload = blob.upload_from_string
+
+    def lost_ack(*args, **kwargs):
+        upload(*args, **kwargs)
+        raise TimeoutError('simulated upload acknowledgement loss')
+
+    blob.upload_from_string = lost_ack
+    with pytest.raises(TimeoutError):
+        persist_active8_ensemble_candidate(candidate, training_run_id='run-1', bucket=bucket, d1_client=d1)
+    assert d1.row is None and blob.writes == 1
+    blob.upload_from_string = upload
+    first = persist_active8_ensemble_candidate(candidate, training_run_id='run-1', bucket=bucket, d1_client=d1)
+    assert persist_active8_ensemble_candidate(candidate, training_run_id='run-1', bucket=bucket, d1_client=d1) == first
+    assert blob.writes == 1
+
+
+@pytest.mark.parametrize('same_payload', [True, False])
+def test_concurrent_creator_never_gets_overwritten(same_payload):
+    bucket, d1, candidate = Bucket(), D1(), payload()
+    path = f"active8/ensemble/{candidate['cohort_id']}/{candidate['payload_checksum']}.json"
+    blob = bucket.blob(path)
+
+    def competing_upload(value, **kwargs):
+        assert kwargs['if_generation_match'] == 0
+        blob.value = value if same_payload else '{}'
+        raise PreconditionFailed('another writer won')
+
+    blob.upload_from_string = competing_upload
+    if same_payload:
+        assert persist_active8_ensemble_candidate(candidate, training_run_id='run-1', bucket=bucket, d1_client=d1)['status'] == 'persisted'
+    else:
+        with pytest.raises(RuntimeError, match='immutable_conflict'):
+            persist_active8_ensemble_candidate(candidate, training_run_id='run-1', bucket=bucket, d1_client=d1)
+        assert d1.row is None and blob.value == '{}'
+
+
+def test_successful_upload_ack_without_exact_readback_does_not_register():
+    bucket, d1, candidate = Bucket(), D1(), payload()
+    path = f"active8/ensemble/{candidate['cohort_id']}/{candidate['payload_checksum']}.json"
+    blob = bucket.blob(path)
+    blob.upload_from_string = lambda *args, **kwargs: None
+    with pytest.raises(RuntimeError, match='immutable_conflict'):
+        persist_active8_ensemble_candidate(candidate, training_run_id='run-1', bucket=bucket, d1_client=d1)
+    assert d1.row is None
 
 
 class AttemptD1:

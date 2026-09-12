@@ -13,6 +13,7 @@ from services.promotion_policy import (
     PromotionPolicy,
     _as_float,
     _as_int,
+    optional_metric,
     evaluate_alpha_policy_candidate,
     evaluate_promotion_candidate,
 )
@@ -39,6 +40,11 @@ def _safe_json(raw: Any) -> dict[str, Any]:
 
 def _first(rows: list[dict[str, Any]]) -> dict[str, Any] | None:
     return rows[0] if rows else None
+
+
+def _present(*values: Any) -> Any:
+    """Zero is evidence, not a request to substitute another metric."""
+    return next((value for value in values if value is not None), None)
 
 
 def _attach_validation_packet(result: dict[str, Any], validation_packet: dict[str, Any]) -> dict[str, Any]:
@@ -77,11 +83,11 @@ def normalize_latest_backtest_row(row: dict[str, Any] | None) -> dict[str, Any]:
             "raw_mode_present": bool(raw_mode),
             "row_mode_ignored": row.get("mode") if row.get("mode") and not raw_mode else None,
         },
-        "total_trades": _as_int(summary.get("total_trades") or row.get("total_trades"), 0),
-        "sharpe": _as_float(row.get("sharpe") or summary.get("sharpe"), 0.0),
-        "sortino": _as_float(row.get("sortino") or summary.get("sortino"), 0.0),
-        "profit_factor": _as_float(row.get("profit_factor") or summary.get("profit_factor"), 0.0),
-        "max_drawdown": _as_float(row.get("max_drawdown") or summary.get("max_drawdown"), 1.0),
+        "total_trades": _as_int(_present(summary.get("total_trades"), row.get("total_trades")), 0),
+        "sharpe": _as_float(_present(row.get("sharpe"), summary.get("sharpe")), 0.0),
+        "sortino": _as_float(_present(row.get("sortino"), summary.get("sortino")), 0.0),
+        "profit_factor": _as_float(_present(row.get("profit_factor"), summary.get("profit_factor")), 0.0),
+        "max_drawdown": optional_metric(_present(row.get("max_drawdown"), summary.get("max_drawdown"))),
         "absolute_confidence": raw.get("absolute_confidence") or "low",
         "sanity_flags": raw.get("sanity_flags") or [],
         "entry_attempts": _as_int(raw.get("entry_attempts", row.get("entry_attempts")), 0),
@@ -92,7 +98,7 @@ def normalize_latest_backtest_row(row: dict[str, Any] | None) -> dict[str, Any]:
             if isinstance(raw.get("skip_reasons"), dict)
             else row.get("skip_reasons") if isinstance(row.get("skip_reasons"), dict) else {}
         ),
-        "per_regime": raw.get("per_regime") if isinstance(raw.get("per_regime"), dict) else {},
+        "per_regime": raw.get('per_regime', {}),
         "parity_audit": raw.get("parity_audit") if isinstance(raw.get("parity_audit"), dict) else {},
         "walk_forward": raw.get("walk_forward") if isinstance(raw.get("walk_forward"), dict) else {},
         "return_series": (
@@ -128,7 +134,7 @@ def normalize_latest_monte_carlo_row(row: dict[str, Any] | None) -> dict[str, An
         "simulation_method": raw.get("simulation_method") or row.get("simulation_method") or "unknown",
         "block_size": raw.get("block_size") or row.get("block_size"),
         "regime_counts": raw.get("regime_counts") if isinstance(raw.get("regime_counts"), dict) else {},
-        "mdd_95th": _as_float(row.get("mdd_95th"), 1.0),
+        "mdd_95th": optional_metric(row.get('mdd_95th')),
         "go_live_verdict": row.get("go_live_verdict") or "",
     }
 
@@ -140,7 +146,7 @@ def normalize_latest_pbo_row(row: dict[str, Any] | None) -> dict[str, Any]:
         "source": row.get("source"),
         "n_trades": _as_int(row.get("n_trades"), 0),
         "method": raw.get("method") or row.get("method") or "unknown",
-        "pbo": _as_float(row.get("pbo"), 1.0),
+        "pbo": optional_metric(row.get('pbo')),
         "oos_mean_return": _as_float(row.get("oos_mean_return"), -1.0),
         "go_live_verdict": row.get("go_live_verdict") or "",
     }
@@ -335,12 +341,13 @@ def evaluate_latest_alpha_policy_gate(
 
 
 def _candidate_id(candidate: dict[str, Any]) -> str | None:
-    return (
+    value = (
         candidate.get("id")
         or candidate.get("sandbox_id")
         or candidate.get("source_id")
         or (candidate.get("metadata") if isinstance(candidate.get("metadata"), dict) else {}).get("sandbox_id")
     )
+    return value.strip() if isinstance(value, str) and value.strip() else None
 
 
 def evaluate_alpha_policy_evidence_gate(
@@ -353,6 +360,8 @@ def evaluate_alpha_policy_evidence_gate(
     candidate_id = _candidate_id(candidate)
     evidence_candidate_id = evidence.get("candidate_id")
     failed: list[str] = []
+    if not candidate_id:
+        failed.append('alpha_candidate_identity_missing')
     if candidate_id and evidence_candidate_id and candidate_id != evidence_candidate_id:
         failed.append("alpha_evidence_candidate_mismatch")
     if not evidence_candidate_id:
@@ -426,6 +435,8 @@ def evaluate_parameter_candidate_evidence_gate(
     candidate_id = _candidate_id(candidate)
     evidence_candidate_id = evidence.get("candidate_id")
     failed: list[str] = []
+    if not candidate_id:
+        failed.append('parameter_candidate_identity_missing')
     if candidate_id and evidence_candidate_id and candidate_id != evidence_candidate_id:
         failed.append("parameter_evidence_candidate_mismatch")
     if not evidence_candidate_id:

@@ -78,6 +78,12 @@ const tableNames = [...new Set([
     .filter((table) => !migrationTransientTables.has(table) && !domainMigrationTransientTables.has(table)),
 ])]
 assertSingleDomainOwnership(tableNames)
+for (const table of ['paired_nav_frozen_parts_v1', 'paired_nav_frozen_manifests_v1', 'paired_nav_daily_journal_v1',
+  'paired_nav_lifecycle_closures_v1', 'paired_nav_nominations_v1', 'paired_nav_assessment_reservations_v1',
+  'paired_nav_review_records_v1', 'paired_nav_review_parts_v1']) {
+  assert.deepEqual(tableOwnershipMetadata(table), { table, domain: 'learning', disposition: 'full_scalar',
+    route_ready: true, shadow_ready: false }, 'NAV has one Learning owner and no legacy shadow-backfill owner')
+}
 
 for (const table of new Set(tableNames)) {
   const owner = dataDomainForTable(table)

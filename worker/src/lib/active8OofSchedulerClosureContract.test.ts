@@ -33,9 +33,10 @@ assert(workflows.includes("promote: cadence === 'daily'"), 'only daily may finis
 assert(!workflows.includes("promote: cadence === 'daily' || options.continuationOnly !== true"), 'weekly/monthly initial calls must not regain the legacy offline-promotion bypass')
 assert(/runL4AlphaEvRefresh[\s\S]*?promote: false/.test(workflows), 'standalone L4 refresh must be candidate-only')
 assert(/runAllocatorEvFusionRefresh[\s\S]*?promote: false/.test(workflows), 'standalone Fusion refresh must be candidate-only')
-assert(workflows.includes('loadLatestSchedulerChildTicket'), 'daily watchdog must inspect the durable snapshot child ticket before dispatch')
-assert(workflows.includes('assessActive8DailyTerminalFence'), 'daily watchdog must fence on exact snapshot identity and terminal status')
-assert(workflows.includes('active8_oof_lifecycle status=idempotent_complete'), 'an already closed exact snapshot must return terminal success without another Cloud Run dispatch')
+const dailyDispatch = workflows.slice(workflows.indexOf('export async function runActive8OofLifecycle('), workflows.indexOf('export async function runL4AlphaEvRefresh('))
+assert(!dailyDispatch.includes('inspectActive8DailySnapshotPreflight'), 'OOF-only prep preflight must not starve independent NAV reconciliation')
+assert(!dailyDispatch.includes('assessActive8DailyTerminalFence'), 'an OOF-only terminal ticket cannot attest NAV closure')
+assert(dailyDispatch.includes("'/walk_forward/oof/lifecycle'"), 'daily watchdog must reach the original durable NAV+OOF owner')
 assert(workflows.includes('dispatch_full_fit: true'), 'every cadence must complete the same full-fit lifecycle')
 assert(workflows.includes('continuation_only: options.continuationOnly === true'), 'Worker must explicitly attest materialization-only continuation')
 assert(workflows.includes('scheduler_ticket_id: options.schedulerTicketId'), 'Worker must propagate the exact scheduler ticket into the controller lifecycle')
@@ -55,7 +56,8 @@ assert(adminControlRoutes.includes("body.task === 'dataset-snapshot-export' && b
 assert(adminControlRoutes.includes('enqueueActive8AfterDatasetSnapshot'), 'snapshot success callback must enqueue the durable Active-8 child ticket')
 assert(snapshotContinuation.includes("type: 'active8_oof_after_snapshot'"), 'snapshot-ready event must use a dedicated durable queue message')
 assert(snapshotContinuation.includes('claimSchedulerExecutionTicket'), 'at-least-once queue delivery must be protected by a ticket CAS claim')
-assert(snapshotContinuation.includes("runActive8OofLifecycle(env, businessDate, 'daily')"), 'snapshot-ready continuation must invoke daily materialization without retraining')
+assert(/runActive8OofLifecycle\(env, businessDate, 'daily', \{\s*schedulerTicketId: ticketId,\s*schedulerRunId: runId,/.test(snapshotContinuation),
+  'snapshot-ready continuation must use the existing daily owner with exact scheduler identity')
 assert(
   adminControlRoutes.includes("['pending', 'spawned', 'materialized', 'shadow_evaluated'].includes(lifecycleStatus)"),
   'daily/weekly/monthly callbacks must continue polling while a durable lifecycle dependency is still active',

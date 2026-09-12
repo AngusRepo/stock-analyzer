@@ -5,6 +5,90 @@ import type { Bindings, Variables } from '../types'
 
 export const adminConfigCoreRoutes = new Hono<{ Bindings: Bindings; Variables: Variables }>()
 
+adminConfigCoreRoutes.post('/api/admin/config/strategy-atomic/reconcile', async (c) => {
+  const authError = await requireServiceToken(c)
+  if (authError) return authError
+  const payload = await c.req.json<any>().catch(() => null)
+  if (!payload) return c.json({ error: 'strategy_atomic_nav_payload_required' }, 400)
+  const { reconcileAtomicNavCandidates } = await import('../lib/strategyAtomicNavLifecycle')
+  const db = databaseForDataDomain(c.env, 'learning')
+  const { getTradingConfig } = await import('../lib/tradingConfig')
+  const { hydrateExpectedReturnConfigFromPointers } = await import('../lib/expectedReturnServingRegistry')
+  const readCurrent = async () => ({
+    tradingConfig: (await hydrateExpectedReturnConfigFromPointers(db,
+      await getTradingConfig(c.env.KV, { bypassCache: true }))).config,
+    riskConfig: await c.env.KV.get('trading:risk_config', 'json') as Record<string, any>,
+  })
+  try { return c.json(await reconcileAtomicNavCandidates(db, c.env, payload, undefined, readCurrent)) }
+  catch (error) {
+    const reason = error instanceof Error ? error.message : ''
+    return c.json({ complete: false, owner: 'atomic_strategy', reason:
+      /^(strategy_atomic_nav_|atomic_source_)[a-z_]+$/.test(reason) ? reason : 'strategy_atomic_nav_reconciliation_failed' }, 409)
+  }
+})
+
+adminConfigCoreRoutes.post('/api/admin/config/strategy-atomic/promote', async (c) => {
+  const authError = await requireServiceToken(c)
+  if (authError) return authError
+  const payload = await c.req.json<Record<string, any>>().catch(() => null)
+  if (!payload) return c.json({ error: 'strategy_atomic_nav_payload_required' }, 400)
+  const db = databaseForDataDomain(c.env, 'learning')
+  const { adoptNavAtomicStrategy } = await import('../lib/strategyAtomicNavAdoption')
+  const { getTradingConfig } = await import('../lib/tradingConfig')
+  const { hydrateExpectedReturnConfigFromPointers } = await import('../lib/expectedReturnServingRegistry')
+  const readCurrent = async () => ({
+    tradingConfig: (await hydrateExpectedReturnConfigFromPointers(db,
+      await getTradingConfig(c.env.KV, { bypassCache: true }))).config,
+    riskConfig: await c.env.KV.get('trading:risk_config', 'json') as Record<string, any>,
+  })
+  try { return c.json(await adoptNavAtomicStrategy(db, c.env, payload, readCurrent)) }
+  catch (error) {
+    const reason = error instanceof Error ? error.message : 'strategy_atomic_nav_publication_failed'
+    return c.json({ complete: false, owner: 'atomic_strategy', reason:
+      /^(strategy_atomic_nav_|atomic_source_|nav_promotion_)[a-z_]+$/.test(reason) ? reason : 'strategy_atomic_nav_publication_failed' }, 409)
+  }
+})
+
+adminConfigCoreRoutes.post('/api/admin/config/strategy-route/reconcile', async (c) => {
+  const authError = await requireServiceToken(c)
+  if (authError) return authError
+  const payload = await c.req.json<any>().catch(() => null)
+  if (!payload) return c.json({ error: 'strategy_route_nav_payload_required' }, 400)
+  const { reconcileNavStrategyRoute } = await import('../lib/strategyRouteNavAdoption')
+  const db = databaseForDataDomain(c.env, 'learning')
+  const { getTradingConfig } = await import('../lib/tradingConfig')
+  const { hydrateExpectedReturnConfigFromPointers } = await import('../lib/expectedReturnServingRegistry')
+  const readCurrent = async () => ({
+    tradingConfig: (await hydrateExpectedReturnConfigFromPointers(db,
+      await getTradingConfig(c.env.KV, { bypassCache: true }))).config,
+    riskConfig: await c.env.KV.get('trading:risk_config', 'json') as Record<string, any>,
+  })
+  try { return c.json(await reconcileNavStrategyRoute(db, c.env, payload, undefined, readCurrent)) }
+  catch { return c.json({ complete: false, owner: 'l15_route', reason: 'strategy_route_nav_reconciliation_failed' }, 409) }
+})
+
+adminConfigCoreRoutes.post('/api/admin/config/strategy-route/promote', async (c) => {
+  const authError = await requireServiceToken(c)
+  if (authError) return authError
+  const payload = await c.req.json<Record<string, any>>().catch(() => null)
+  if (!payload) return c.json({ error: 'strategy_route_nav_payload_required' }, 400)
+  const db = databaseForDataDomain(c.env, 'learning')
+  const { adoptNavStrategyRoute } = await import('../lib/strategyRouteNavAdoption')
+  const { getTradingConfig } = await import('../lib/tradingConfig')
+  const { hydrateExpectedReturnConfigFromPointers } = await import('../lib/expectedReturnServingRegistry')
+  const readCurrent = async () => ({
+    tradingConfig: (await hydrateExpectedReturnConfigFromPointers(db,
+      await getTradingConfig(c.env.KV, { bypassCache: true }))).config,
+    riskConfig: await c.env.KV.get('trading:risk_config', 'json') as Record<string, any>,
+  })
+  try { return c.json(await adoptNavStrategyRoute(db, c.env, payload, readCurrent)) }
+  catch (error) {
+    const reason = error instanceof Error ? error.message : 'strategy_route_nav_publication_failed'
+    return c.json({ complete: false, owner: 'l15_route', reason:
+      /^(strategy_route_nav_|nav_promotion_)[a-z_]+$/.test(reason) ? reason : 'strategy_route_nav_publication_failed' }, 409)
+  }
+})
+
 adminConfigCoreRoutes.get('/api/admin/config', async (c) => {
   const authError = await requireServiceToken(c)
   if (authError) return authError
@@ -12,7 +96,7 @@ adminConfigCoreRoutes.get('/api/admin/config', async (c) => {
 
   const { getTradingConfig } = await import('../lib/tradingConfig')
   const { hydrateExpectedReturnConfigFromPointers } = await import('../lib/expectedReturnServingRegistry')
-  const config = await getTradingConfig(c.env.KV)
+  const config = await getTradingConfig(c.env.KV, { bypassCache: c.req.query('fresh') === '1' })
   const hydrated = await hydrateExpectedReturnConfigFromPointers(learningDb, config as any)
   return c.json(hydrated.config)
 })
@@ -133,6 +217,59 @@ adminConfigCoreRoutes.put('/api/admin/config', async (c) => {
   })
 })
 
+adminConfigCoreRoutes.post('/api/admin/config/opb/promote', async (c) => {
+  const authError = await requireServiceToken(c)
+  if (authError) return authError
+  const body = await c.req.json<Record<string, any>>().catch(() => null)
+  if (!body || typeof body.artifact_id !== 'string' || typeof body.artifact_checksum !== 'string'
+    || !body.prospective_validation || typeof body.prospective_validation !== 'object') {
+    return c.json({ error: 'opb_nav_candidate_required' }, 400)
+  }
+  const outcome = { owner: 'opb_arm_prior', artifact_id: body.artifact_id,
+    artifact_checksum: body.artifact_checksum, pointer_committed: false, already_committed: false,
+    config_projection_verified: false, control_activation_verified: false }
+  try {
+    const db = databaseForDataDomain(c.env, 'learning')
+    const { getTradingConfig } = await import('../lib/tradingConfig')
+    const { hydrateExpectedReturnConfigFromPointers } = await import('../lib/expectedReturnServingRegistry')
+    const { commitOpbNavChampion, readOpbNavCommitReceipt, inspectOpbNavComparison, projectOpbNavChampion,
+      readOpbNavControlExecution } = await import('../lib/opbNavPublication')
+    const identity = { artifactId: body.artifact_id, artifactChecksum: body.artifact_checksum }
+    const readCurrent = async () => ({
+      tradingConfig: (await hydrateExpectedReturnConfigFromPointers(db,
+        await getTradingConfig(c.env.KV, { bypassCache: true }))).config,
+      riskConfig: await c.env.KV.get('trading:risk_config', 'json') as Record<string, any>,
+    })
+    outcome.already_committed = Boolean(await readOpbNavCommitReceipt(db, identity))
+    const { reconcileOpbNavPublication } = await import('../lib/opbNavRetirement')
+    const retirement = await reconcileOpbNavPublication(db, c.env.KV, identity,
+      body.prospective_validation, readCurrent, c.env)
+    if (retirement) return c.json(retirement)
+    if (!outcome.already_committed) {
+      const comparison = await inspectOpbNavComparison(db, { ...identity,
+        gate: body.prospective_validation, currentConfigReader: readCurrent, navBindings: c.env })
+      if (comparison) return c.json({ ...outcome, success: false, status: 'waiting',
+        completion_scope: 'candidate_comparison', comparison })
+    }
+    const receipt = await commitOpbNavChampion(db, { ...identity,
+      gate: body.prospective_validation, currentConfigReader: readCurrent, navBindings: c.env })
+    outcome.pointer_committed = true
+    const projection = await projectOpbNavChampion(db, c.env.KV, receipt, readCurrent, c.env)
+    outcome.config_projection_verified = true
+    const control = await readOpbNavControlExecution(db, receipt, projection.config)
+    await projection.verifyCurrent()
+    outcome.control_activation_verified = control.status === 'completed'
+    const complete = control.status !== 'failed'
+    return c.json({ ...outcome, schema_version: 'opb-nav-adoption-receipt-v1', completion_scope: 'publication',
+      success: complete, status: complete ? 'completed' : 'incomplete', control,
+      reason: complete ? null : control.reason, snapshot: projection.snapshot,
+      publication_receipt_checksum: receipt.payload_checksum })
+  } catch (error) {
+    return c.json({ ...outcome, success: false, status: 'incomplete',
+      reason: error instanceof Error ? error.message : 'opb_nav_publication_failed' })
+  }
+})
+
 adminConfigCoreRoutes.post('/api/admin/config/expected-return/promote', async (c) => {
   const authError = await requireServiceToken(c)
   if (authError) return authError
@@ -147,6 +284,8 @@ adminConfigCoreRoutes.post('/api/admin/config/expected-return/promote', async (c
   }
 
   const { buildExpectedReturnOwnerPromotionPlan } = await import('../lib/expectedReturnArtifactPromotion')
+  const { verifyNavPromotionEvidence } = await import('../lib/pairedNavPromotionEvidence')
+  const { verifyNavCurrentContext } = await import('../lib/pairedNavPromotionContext')
   const { getTradingConfig, setTradingConfig, validateTradingConfig } = await import('../lib/tradingConfig')
   const {
     markParameterCandidatePromoted,
@@ -156,8 +295,51 @@ adminConfigCoreRoutes.post('/api/admin/config/expected-return/promote', async (c
   } = await import('../lib/parameterCandidateRegistry')
 
   const rawCurrent = await getTradingConfig(c.env.KV) as unknown as Record<string, any>
-  const { hydrateExpectedReturnConfigFromPointers } = await import('../lib/expectedReturnServingRegistry')
+  const { hydrateExpectedReturnConfigFromPointers, readExpectedReturnCommitReceipt } = await import('../lib/expectedReturnServingRegistry')
   let current = (await hydrateExpectedReturnConfigFromPointers(learningDb, rawCurrent)).config
+  const projectCommittedConfig = async (
+    identity: Parameters<typeof readExpectedReturnCommitReceipt>[1],
+    receipt: NonNullable<Awaited<ReturnType<typeof readExpectedReturnCommitReceipt>>>,
+    pushId: string,
+  ) => {
+    const hydrated = await hydrateExpectedReturnConfigFromPointers(learningDb,
+      await getTradingConfig(c.env.KV, { bypassCache: true }))
+    const projection = hydrated.projections[identity.owner]
+    const before = await readExpectedReturnCommitReceipt(learningDb, identity)
+    const damagedOwner = Object.values(hydrated.projections).some(p => !p.valid
+      && (p.pointer_present || p.owner_state === 'learned_champion'))
+    if (damagedOwner || !projection.valid || projection.champion_artifact_id !== receipt.artifact_id
+        || !before || before.payload_checksum !== receipt.payload_checksum) {
+      throw new Error('expected_return_projection_pointer_changed')
+    }
+    const errors = validateTradingConfig(hydrated.config as any)
+    if (errors.length) throw new Error(`expected_return_projection_config_invalid:${errors.join(',')}`)
+    const snapshot = await setTradingConfig(c.env.KV, hydrated.config as any, {
+      source: 'expected_return_oof_auto_promotion', push_id: pushId,
+    })
+    // Read the backing KV, not getTradingConfig's isolate cache. An acknowledged
+    // put or a changed pointer cannot manufacture a successful closure receipt.
+    const stored = await c.env.KV.get('trading:config', 'json')
+    const after = await readExpectedReturnCommitReceipt(learningDb, identity)
+    const currentPointers = await hydrateExpectedReturnConfigFromPointers(learningDb, hydrated.config)
+    const pointersChanged = Object.entries(hydrated.projections).some(([owner, p]) => {
+      const next = currentPointers.projections[owner as keyof typeof hydrated.projections]
+      return next.valid !== p.valid || next.owner_state !== p.owner_state
+        || next.champion_artifact_id !== p.champion_artifact_id
+        || JSON.stringify(next.artifact) !== JSON.stringify(p.artifact)
+    })
+    if (JSON.stringify(stored) !== JSON.stringify(hydrated.config)
+        || pointersChanged || !after || after.payload_checksum !== receipt.payload_checksum) {
+      throw new Error('expected_return_projection_readback_mismatch')
+    }
+    current = hydrated.config
+    return snapshot
+  }
+  const readCurrentNavConfig = async () => ({
+    tradingConfig: (await hydrateExpectedReturnConfigFromPointers(learningDb,
+      await getTradingConfig(c.env.KV, { bypassCache: true }))).config,
+    riskConfig: await c.env.KV.get('trading:risk_config', 'json') as Record<string, any>,
+  })
   const outcomes: Record<string, any> = {}
   const orderedCandidates = [
     ['l4_alpha_ev', body.l4_alpha_ev],
@@ -178,7 +360,88 @@ adminConfigCoreRoutes.post('/api/admin/config/expected-return/promote', async (c
       prospective_validation: rawCandidate.prospective_validation ?? {},
       offline_admission: rawCandidate.offline_admission ?? {},
     }
-    const plan = buildExpectedReturnOwnerPromotionPlan(current, owner, candidate)
+    const commitIdentity = { owner, artifactId: candidate.artifact_id,
+      modelVersion: String(candidate.artifact.model_version ?? ''),
+      artifactChecksum: candidate.artifact_checksum, artifactPath: candidate.artifact_path }
+    let existingReceipt
+    try {
+      existingReceipt = await readExpectedReturnCommitReceipt(learningDb, commitIdentity)
+    } catch (error) {
+      outcomes[owner] = { promoted: false,
+        blockers: [`champion_pointer_receipt:${error instanceof Error ? error.message : String(error)}`] }
+      continue
+    }
+    if (existingReceipt) {
+      let snapshot = null
+      let configProjectionError: string | null = null
+      try {
+        snapshot = await projectCommittedConfig(commitIdentity, existingReceipt,
+          `expected-return-recovery:${existingReceipt.artifact_id}`)
+      } catch (error) {
+        configProjectionError = error instanceof Error ? error.message : String(error)
+      }
+      // Maintenance of an already adopted model is not a fresh NAV comparison.
+      // Do not create candidates/packets, rewrite history, or consume a review.
+      outcomes[owner] = { promoted: true, already_committed: true,
+        model_version: commitIdentity.modelVersion, pointer_commit: existingReceipt,
+        snapshot, config_projection_error: configProjectionError }
+      continue
+    }
+    let navProof
+    let comparisonProof
+    let navVerificationError: string | null = null
+    try {
+      navProof = await verifyNavPromotionEvidence(learningDb, {
+        owner, artifactId: candidate.artifact_id, artifactChecksum: candidate.artifact_checksum,
+        gate: candidate.prospective_validation,
+      })
+      comparisonProof = navProof
+      const freshConfig = await readCurrentNavConfig()
+      current = freshConfig.tradingConfig
+      const existing = await learningDb.prepare('SELECT champion_artifact_id FROM model_champion_pointers WHERE model_name=?')
+        .bind(owner).first<{ champion_artifact_id: string }>()
+      // An already-committed pointer is a non-mutating receipt verification,
+      // not a new comparison against the configuration it just replaced.
+      if (existing?.champion_artifact_id !== candidate.artifact_id) {
+        await verifyNavCurrentContext(learningDb, navProof, async () => freshConfig, c.env)
+      }
+    } catch (error) {
+      navProof = undefined
+      navVerificationError = error instanceof Error ? error.message : 'nav_promotion_verification_failed'
+    }
+    const plan = buildExpectedReturnOwnerPromotionPlan(current, owner, candidate, navProof)
+    if (navVerificationError) plan.blockers.push(navVerificationError)
+    // ORIGINAL current-context rejection and ineligible plan stay intact.
+    // This branch can only report read-only waiting; it cannot promote.
+    if (!plan.eligible && comparisonProof && navVerificationError && [
+      'nav_promotion_current_configuration_changed', 'nav_promotion_current_ml_baseline_changed',
+      'nav_promotion_exact_l4_dependency_changed',
+    ].includes(navVerificationError)) {
+      const sourcePlan = buildExpectedReturnOwnerPromotionPlan(current, owner, candidate, comparisonProof)
+      if (sourcePlan.blockers.every(blocker => owner === 'allocator_ev_fusion' && [
+        'fusion_requires_serving_compatible_l4', 'serving_contract:nav_exact_l4_dependency_not_serving',
+      ].includes(blocker))) {
+        try {
+          const { inspectExpectedReturnComparison } = await import('../lib/expectedReturnComparison')
+          const comparison = await inspectExpectedReturnComparison(learningDb, {
+            owner, artifact: sourcePlan.serving_artifact ?? candidate.artifact,
+            artifactId: candidate.artifact_id, artifactPath: candidate.artifact_path,
+            artifactChecksum: candidate.artifact_checksum, sourceRunDate: candidate.source_run_date,
+            candidateId: plan.candidate_id, promotionPacketId: '',
+            prospectiveValidation: candidate.prospective_validation, offlineAdmission: candidate.offline_admission,
+            currentConfigReader: readCurrentNavConfig, navBindings: c.env,
+          })
+          if (comparison) {
+            outcomes[owner] = { owner, artifact_id: candidate.artifact_id, artifact_checksum: candidate.artifact_checksum,
+              status: 'waiting', promoted: false, pointer_committed: false, already_committed: false,
+              completion_scope: 'candidate_comparison', comparison }
+            continue
+          }
+        } catch (error) {
+          plan.blockers.push(error instanceof Error ? error.message : 'nav_ev_comparison_verification_failed')
+        }
+      }
+    }
     await recordParameterCandidateFromSandbox(learningDb, {
       source: 'expected_return_oof',
       candidateId: plan.candidate_id,
@@ -288,6 +551,9 @@ adminConfigCoreRoutes.post('/api/admin/config/expected-return/promote', async (c
         candidateId: plan.candidate_id,
         sourceRunDate: candidate.source_run_date,
         prospectiveValidation: candidate.prospective_validation,
+        offlineAdmission: candidate.offline_admission,
+        currentConfigReader: readCurrentNavConfig,
+        navBindings: c.env,
       })
     } catch (error) {
       outcomes[owner] = {
@@ -301,10 +567,9 @@ adminConfigCoreRoutes.post('/api/admin/config/expected-return/promote', async (c
     let snapshot: Awaited<ReturnType<typeof setTradingConfig>> | null = null
     let configProjectionError: string | null = null
     try {
-      snapshot = await setTradingConfig(c.env.KV, plan.next_config as any, {
-        source: 'expected_return_oof_auto_promotion',
-        push_id: recorded.promotion_packet_id,
-      })
+      // Project the freshly re-read config + D1 pointers, not the plan's stale
+      // full config. Preserve unrelated changes made during promotion work.
+      snapshot = await projectCommittedConfig(commitIdentity, pointerCommit, recorded.promotion_packet_id)
     } catch (error) {
       // D1 pointer + payload is the serving authority. KV is a repairable projection.
       configProjectionError = error instanceof Error ? error.message : String(error)
@@ -314,7 +579,6 @@ adminConfigCoreRoutes.post('/api/admin/config/expected-return/promote', async (c
       promotionPacketId: recorded.promotion_packet_id,
       detail: { expected_return_owner: owner, model_version: plan.model_version },
     })
-    current = plan.next_config
     outcomes[owner] = {
       promoted: true,
       candidate_id: plan.candidate_id,
@@ -330,10 +594,20 @@ adminConfigCoreRoutes.post('/api/admin/config/expected-return/promote', async (c
   const promotedOwners = Object.entries(outcomes)
     .filter(([, outcome]) => outcome?.promoted === true)
     .map(([owner]) => owner)
+  const complete = Object.keys(outcomes).length > 0 && Object.values(outcomes)
+    .every(outcome => outcome.promoted === true && outcome.config_projection_error === null)
+  const processingComplete = Object.keys(outcomes).length > 0 && Object.values(outcomes)
+    .every(outcome => outcome.status === 'waiting' || outcome.promoted === true && outcome.config_projection_error === null)
+  const { readCurrentExpectedReturnServingState } = await import('../lib/expectedReturnServingState')
+  const effectiveOwner = promotedOwners.length > 0 && promotedOwners.every(owner => outcomes[owner].config_projection_error === null)
+    ? (await readCurrentExpectedReturnServingState(c.env)).expected_return_owner : null
   return c.json({
-    success: promotedOwners.length > 0,
-    status: promotedOwners.length > 0 ? 'promoted' : 'failed_validation',
+    success: complete,
+    effective_owner: effectiveOwner,
+    status: complete ? 'promoted' : processingComplete
+      ? 'waiting' : promotedOwners.length > 0 ? 'incomplete' : 'failed_validation',
     promoted_owners: promotedOwners,
+    processing_complete: processingComplete,
     outcomes,
   })
 })

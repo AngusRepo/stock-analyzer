@@ -78,6 +78,14 @@ export function candidateIdFromSandbox(source: string, sandboxId: string): strin
 }
 
 export function evidenceDecision(evidence: JsonRecord | null | undefined): string {
+  const root = recordValue(evidence)
+  const declared = [root, recordValue(root.gate), recordValue(root.validation_packet),
+    recordValue(recordValue(root.gate).validation_packet)]
+  // A top-level PASS must never override a failed evaluator or validation
+  // packet. Check every declared result, not just the first truthy alias.
+  if (declared.some((item) =>
+    (item.decision != null && String(item.decision).toUpperCase() !== 'PASS') ||
+    item.passed === false || (Array.isArray(item.failed_gates) && item.failed_gates.length > 0))) return 'FAIL'
   const gate = evidence?.gate && typeof evidence.gate === 'object' ? evidence.gate as JsonRecord : {}
   const packet = evidence?.validation_packet && typeof evidence.validation_packet === 'object'
     ? evidence.validation_packet as JsonRecord
@@ -87,7 +95,6 @@ export function evidenceDecision(evidence: JsonRecord | null | undefined): strin
   const gateDecision = String(gate.decision ?? evidence?.decision ?? '').toUpperCase()
   const packetDecision = String(packet.decision ?? '').toUpperCase()
   if (gateDecision === 'PASS' && packetDecision === 'PASS') return 'PASS'
-  if (String(evidence?.decision ?? '').toUpperCase() === 'PASS' && packetDecision === 'PASS') return 'PASS'
   return 'FAIL'
 }
 
@@ -403,7 +410,9 @@ export function buildGaOptimizerPolicyValidationEvidence(input: {
   const targetLevel = pendingApprovalLevel ?? nextLevel ?? level
   const checks = {
     policy_candidate: Object.keys(learnedAlphaFramework).length > 0,
-    primary_gate: boolValue(gate.passed) || boolValue(gate.decision),
+    primary_gate: gate.passed !== false &&
+      (gate.decision == null || String(gate.decision).toUpperCase() === 'PASS') &&
+      (boolValue(gate.passed) || boolValue(gate.decision)),
     candidate_specific_validation: candidateValidation.status === 'completed',
     pit_look_ahead_check: metrics.look_ahead_check === 'PASS',
     stable_history: !missingEvidence.includes('stable_history'),
@@ -470,11 +479,19 @@ export async function recordParameterCandidateEvidence(
   db: D1Database,
   input: ParameterCandidateEvidenceInput,
 ): Promise<{ candidate_id: string; status: ParameterCandidateStatus; promotion_packet_id: string | null }> {
+  if (!input.candidateId?.trim() || input.evidence?.candidate_id !== input.candidateId) {
+    throw new Error('candidate_evidence_identity_mismatch')
+  }
   await ensureParameterCandidateTables(db)
-  const decision = String(input.decision ?? evidenceDecision(input.evidence)).toUpperCase() === 'PASS' ? 'PASS' : 'FAIL'
-  const promotionPacketId = input.promotionPacketId ?? (
-    decision === 'PASS' ? `promotion_packet:${sanitizeIdPart(input.candidateId)}:${Date.now()}` : null
-  )
+  const previous = await latestCandidateRow(db, input.candidateId)
+  if (!previous) throw new Error('candidate_not_registered')
+  const decision = evidenceDecision(input.evidence) === 'PASS' &&
+    (input.decision == null || String(input.decision).toUpperCase() === 'PASS') ? 'PASS' : 'FAIL'
+  if (input.promotionPacketId && input.evidence?.promotion_packet_id &&
+      input.promotionPacketId !== input.evidence.promotion_packet_id) throw new Error('promotion_packet_mismatch')
+  let promotionPacketId = decision === 'PASS'
+    ? input.promotionPacketId ?? previous.promotion_packet_id ?? `promotion_packet:${sanitizeIdPart(input.candidateId)}:${crypto.randomUUID()}`
+    : null
   const requestedStatus = String(input.evidence?.validation_status ?? '').toUpperCase()
   const nonPromotionStatus = requestedStatus === 'EVIDENCE_INSUFFICIENT' ||
     requestedStatus === 'NOT_PROMOTION_READY' ||
@@ -490,30 +507,50 @@ export async function recordParameterCandidateEvidence(
     promotion_packet_id: promotionPacketId,
   }
 
-  await db.prepare(
+  let serialized = safeJson(evidence)
+  if (previous.status === status && previous.latest_evidence_json === serialized &&
+      previous.promotion_packet_id === promotionPacketId) {
+    return { candidate_id: input.candidateId, status, promotion_packet_id: promotionPacketId }
+  }
+  if (decision === 'PASS' && !input.promotionPacketId && previous.promotion_packet_id) {
+    promotionPacketId = `promotion_packet:${sanitizeIdPart(input.candidateId)}:${crypto.randomUUID()}`
+    evidence.promotion_packet_id = promotionPacketId
+    serialized = safeJson(evidence)
+  }
+  const results = await db.batch([db.prepare(
     `INSERT INTO parameter_candidate_evidence
        (candidate_id, evidence_type, decision, evidence_json, promotion_packet_id)
-     VALUES (?, ?, ?, ?, ?)`,
+     VALUES ((SELECT candidate_id FROM parameter_candidate_registry
+       WHERE candidate_id=? AND status=? AND latest_evidence_json IS ? AND promotion_packet_id IS ?), ?, ?, ?, ?)`,
   ).bind(
     input.candidateId,
+    previous.status,
+    previous.latest_evidence_json,
+    previous.promotion_packet_id,
     input.evidenceType ?? 'candidate_specific_validation',
     decision,
-    safeJson(evidence),
+    serialized,
     promotionPacketId,
-  ).run()
+  ),
 
-  await db.prepare(
+  db.prepare(
     `UPDATE parameter_candidate_registry
      SET status = ?, latest_evidence_json = ?, promotion_packet_id = ?, updated_at = datetime('now')
      WHERE candidate_id = ?`,
-  ).bind(status, safeJson(evidence), promotionPacketId, input.candidateId).run()
-
-  await recordParameterCandidateEvent(db, input.candidateId, 'candidate_evidence_recorded', {
+  ).bind(status, serialized, promotionPacketId, input.candidateId),
+  db.prepare(`INSERT INTO parameter_candidate_events (candidate_id,event_type,detail_json) VALUES (?,?,?)`)
+    .bind(input.candidateId, 'candidate_evidence_recorded', safeJson({
     decision,
     status,
     promotion_packet_id: promotionPacketId,
     evidence_type: input.evidenceType ?? 'candidate_specific_validation',
-  })
+  }))])
+  if (results.length !== 3 || results.some((result) => !result.success || Number(result.meta?.changes) !== 1)) {
+    throw new Error('candidate_evidence_write_incomplete')
+  }
+  const verified = await latestCandidateRow(db, input.candidateId)
+  if (verified?.status !== status || verified.latest_evidence_json !== serialized ||
+      verified.promotion_packet_id !== promotionPacketId) throw new Error('candidate_evidence_readback_mismatch')
   return { candidate_id: input.candidateId, status, promotion_packet_id: promotionPacketId }
 }
 
@@ -561,8 +598,14 @@ export async function validateParameterCandidateEvidencePacket(
 
   if (packet) {
     const packetCandidateId = String(packet.candidate_id ?? '').trim()
-    if (packetCandidateId && packetCandidateId !== candidateId) {
+    if (!packetCandidateId || typeof packet.candidate_id !== 'string') {
+      return { ok: false, error: 'evidence_candidate_id_required', candidate_id: candidateId }
+    }
+    if (packetCandidateId !== candidateId) {
       return { ok: false, error: 'candidate_id_evidence_mismatch', candidate_id: candidateId }
+    }
+    if (input.promotionPacketId && packet.promotion_packet_id && input.promotionPacketId !== packet.promotion_packet_id) {
+      return { ok: false, error: 'promotion_packet_mismatch', candidate_id: candidateId }
     }
     if (evidenceDecision(packet) !== 'PASS') {
       return { ok: false, error: 'evidence_packet_not_pass', candidate_id: candidateId }
@@ -583,6 +626,9 @@ export async function validateParameterCandidateEvidencePacket(
     return { ok: false, error: 'promotion_packet_mismatch', candidate_id: candidateId }
   }
   const evidence = parseJson(row.latest_evidence_json)
+  if (evidence?.candidate_id !== candidateId) {
+    return { ok: false, error: 'candidate_id_evidence_mismatch', candidate_id: candidateId }
+  }
   if (evidenceDecision(evidence) !== 'PASS') {
     return { ok: false, error: 'latest_evidence_not_pass', candidate_id: candidateId }
   }

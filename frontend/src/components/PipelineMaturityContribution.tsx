@@ -6,6 +6,8 @@ import type {
 } from '@/lib/pipelineMaturityContract'
 import { Badge } from '@/components/ui/badge'
 import IpoShadowComparison from '@/components/IpoShadowComparison'
+import PairedNavShadow from '@/components/PairedNavShadow'
+import CandidateVersionPanel from '@/components/CandidateVersionPanel'
 import {
   Activity,
   BrainCircuit,
@@ -18,6 +20,8 @@ import {
   Route,
   SlidersHorizontal,
 } from 'lucide-react'
+
+const OFFLINE_DIAGNOSTIC_KEYS = new Set(['corr_lcb90', 'spread_lcb90', 'top_return', 'top_lcb90', 'walk_forward', 'residual_corr_lcb90', 'residual_spread_lcb90'])
 
 const STATUS_STYLE: Record<PipelineMaturityStatus, { label: string; cls: string }> = {
   serving: { label: '正式服務中', cls: 'border-emerald-400/30 bg-emerald-400/10 text-emerald-200' },
@@ -44,7 +48,8 @@ const METRIC_LABELS: Record<string, string> = {
   brier: '機率誤差（Brier，需優於基準）', walk_forward: '離線候選跨窗驗證', strict_pit_rows: '正式 L4 PIT 樣本列數',
   strict_pit_dates: '正式 L4 PIT 交易日數', shadow_walk_forward: 'Rolling cohort 診斷跨窗驗證', frozen_forward_quality: 'Rolling cohort 診斷品質',
   shadow_usable_samples: '最新監控封包 usable samples', shadow_usable_dates: '最新監控封包 usable dates',
-  shadow_oof_rows: '最新監控封包 OOF rows', shadow_oof_max_date: '最新監控封包 OOF 截止日',
+  shadow_oof_rows: '延伸資料已載入列數', shadow_oof_max_date: '延伸資料已載入截止日（非驗證截止日）',
+  shadow_usable_max_date: '診斷有效樣本截止日', shadow_evaluated_dates: '實際 OOS 驗證日期',
   shadow_evidence_advanced: '相較前一監控業務日是否有新增成熟 evidence',
   frozen_forward_dates: 'Rolling cohort 診斷 OOF 交易日數', structure_samples: 'S12 影子結構樣本', structure_dates: 'S12 影子結構交易日',
   execution_samples: 'S12 影子實際執行樣本', execution_dates: 'S12 影子實際執行交易日', selection_corr_lcb90: '選股相關性 90% 保守下界（診斷）',
@@ -97,6 +102,8 @@ const BLOCKER_LABELS: Record<string, string> = {
   oos_top_quintile_return_not_positive: 'OOS top quintile 平均成本後報酬未轉正',
   oos_date_cluster_top_quintile_return_lcb90_not_positive: 'OOS top quintile 報酬 LCB90 未轉正',
   walk_forward_not_stable: 'Purged walk-forward 跨窗不穩定',
+  shadow_diagnostic_population_unverified: '舊監控封包未驗證實際母體，不能把延伸資料日期視為這些指標的驗證截止日；需由修正後 producer 重建診斷',
+  shadow_diagnostic_population_mismatch: '監控封包所述母體與實際 OOS 指標日期不一致，不能用作日更診斷',
   artifact_missing: '正式 artifact 不存在',
   champion_pointer_missing: 'Champion pointer 不存在',
   validation_not_pass: 'Artifact validation 尚未 PASS',
@@ -170,7 +177,7 @@ function displayValue(metric: PipelineMaturityMetric): string {
 
 function targetText(metric: PipelineMaturityMetric): string | null {
   if (metric.target == null || metric.target === '') return null
-  const operator = metric.comparator === 'gt' ? '>' : metric.comparator === 'lt' ? '<' : metric.comparator === 'eq' ? '=' : '≥'
+  const operator = metric.comparator === 'gt' ? '>' : metric.comparator === 'lt' ? '<' : metric.comparator === 'lte' ? '≤' : metric.comparator === 'eq' ? '=' : '≥'
   const target = displayValue({ ...metric, value: metric.target })
   return `${operator} ${target}`
 }
@@ -292,19 +299,23 @@ function StageRow({ stage }: { stage: PipelineMaturityStage }) {
     ? stage.blocker_groups
     : [{ scope: 'stage', title: 'Blockers', blockers: stage.blockers }]
   const scopedCandidateStage = stage.id === 'l4' || stage.id === 'fusion'
+  const navGate = stage.nav_gate
+  const navRoute = stage.id === 'route_score_v2' && stage.metrics.some(item => item.key === 'nav_sessions')
   const allPromotionMetrics = scopedCandidateStage
     ? stage.metrics.filter((item) => item.scope === 'promotion_gate')
     : stage.metrics
   const prospectiveMetrics = scopedCandidateStage
-    ? allPromotionMetrics.filter((item) => item.key.startsWith('prospective_'))
-    : []
+    ? allPromotionMetrics.filter((item) => item.key.startsWith(navGate ? 'nav_' : 'prospective_'))
+    : navRoute ? stage.metrics.filter(item => item.key.startsWith('nav_')) : []
   const offlinePromotionMetrics = scopedCandidateStage
-    ? allPromotionMetrics.filter((item) => !item.key.startsWith('prospective_'))
-    : allPromotionMetrics
+    ? allPromotionMetrics.filter((item) => !item.key.startsWith(navGate ? 'nav_' : 'prospective_'))
+    : navRoute ? [] : allPromotionMetrics
   const lifecycleMetrics = stage.metrics.filter((item) => item.scope === 'lifecycle')
   const productionMetrics = stage.metrics.filter((item) => item.scope === 'production')
-  const monitoringMetrics = stage.metrics.filter((item) => item.scope === 'monitoring')
-  const diagnosticMetrics = stage.metrics.filter((item) => item.scope === 'diagnostic')
+  const offlineDiagnosticMetrics = scopedCandidateStage
+    ? stage.metrics.filter((item) => OFFLINE_DIAGNOSTIC_KEYS.has(item.key)) : []
+  const monitoringMetrics = stage.metrics.filter((item) => item.scope === 'monitoring' && !OFFLINE_DIAGNOSTIC_KEYS.has(item.key))
+  const diagnosticMetrics = stage.metrics.filter((item) => item.scope === 'diagnostic' && !OFFLINE_DIAGNOSTIC_KEYS.has(item.key))
   const evidenceScopes = stage.lineage.evidence_scopes
   const productionServingState = evidenceScopes?.serving_pointer
     ? evidenceScopes.serving_pointer.artifact_state === 'safe_abstention'
@@ -323,7 +334,16 @@ function StageRow({ stage }: { stage: PipelineMaturityStage }) {
     ? ['offline_failed', 'rejected'].includes(String(metricByKey.get('prospective_candidate_state')?.value ?? '').toLowerCase())
       || offlinePromotionMetrics.some((item) => item.passed === false)
     : false
-  const scopedEvidenceTruth = scopedCandidateStage && evidenceScopes?.offline_candidate
+  const scopedEvidenceTruth = navGate
+    ? [
+      `NAV 候選 ${navGate.artifact_id ?? '尚無'}`,
+      `候選來源日 ${navGate.source_date ?? '尚無'}`,
+      `已核對 NAV ${navGate.evaluable_dates ?? '未知'}/${navGate.minimum_dates} 日`,
+      `決策截止 ${navGate.as_of_date ?? '尚無'}`,
+      `正式 gate ${navGate.decision ?? navGate.availability.toUpperCase()}`,
+      navGate.reason,
+    ].join(' · ')
+    : scopedCandidateStage && evidenceScopes?.offline_candidate
     ? [
       `鎖定候選 freeze ${evidenceScopes.offline_candidate.source_run_date ?? '缺漏'}`,
       `訓練截止 ${prospectiveTrainedUntilMetric?.value ?? '尚無'}`,
@@ -463,6 +483,7 @@ function StageRow({ stage }: { stage: PipelineMaturityStage }) {
       </summary>
 
       <div className="border-t border-white/[0.06] bg-black/[0.12] px-4 py-4 lg:px-5">
+        <CandidateVersionPanel versions={stage.candidate_versions} />
         <div className="grid gap-4 2xl:grid-cols-[minmax(0,1.5fr)_minmax(240px,0.8fr)]">
           <div className="min-w-0">
             <div className="mb-3 flex items-start gap-2">
@@ -475,10 +496,12 @@ function StageRow({ stage }: { stage: PipelineMaturityStage }) {
             </div>
             <div className="space-y-4">
               <MetricSection
-                title={scopedCandidateStage
+                title={navGate ? '成本後配對 NAV 正式升級判定' : navRoute ? '已採用版本的原始 NAV 證據' : scopedCandidateStage
                   ? '每日鎖定候選正式升級門檻'
                   : '成熟度證據'}
-                description={scopedCandidateStage
+                description={navGate
+                  ? `同一候選與比較基準每日累積真實帳務證據，在 ${navGate.minimum_dates}／${navGate.maximum_dates} 日固定檢查點評估成本後淨報酬差與家族調整證據；不是每天重試到通過。PASS 不代表 serving pointer 已移動。`
+                  : scopedCandidateStage
                   ? '固定同一候選，只計入訓練截止日後、且 candidate freeze 當下答案尚未揭露的 immutable PIT 日期；0–9 日維持 PENDING，不判失敗；滿 10 日才依 LCB90 判定。Weekly 新候選不會重置已鎖定候選成熟度。'
                   : '本階段的正式成熟度欄位。'}
                 metrics={prospectiveMetrics}
@@ -490,8 +513,13 @@ function StageRow({ stage }: { stage: PipelineMaturityStage }) {
               />
               <MetricSection
                 title="Rolling cohort 日更診斷（非升級成熟度）"
-                description="用 rolling 75/25 cohort 觀察整體資料流是否退化；不是鎖定候選、不是 production artifact，也不會改寫 promotion maturity。"
+                description="使用含延伸資料的母體，依原 evaluator 的 purged 時間切割重算診斷；請分開看已載入、有效樣本與實際 OOS 日期。不是鎖定候選或 production artifact，不會改寫升級成熟度。"
                 metrics={monitoringMetrics}
+              />
+              <MetricSection
+                title="離線候選驗證診斷（固定母體，非日更績效）"
+                description="這是該候選建模時的驗證結果；同一母體可連續多日維持相同數值，不代表新成熟日期的表現。"
+                metrics={offlineDiagnosticMetrics}
               />
               <MetricSection
                 title="Production 物化覆蓋與下一批候選 readiness"
@@ -505,7 +533,7 @@ function StageRow({ stage }: { stage: PipelineMaturityStage }) {
               />
               <MetricSection
                 title="診斷與不適用欄位（非必要門檻）"
-                description="供 root-cause 分析；FAIL、缺值或 N/A 不會單獨阻擋 Fusion v14 serving。"
+                description="供 root-cause 分析；舊 EV／離線統計不再作為第二套 NAV 正式晉級門檻。資料完整性與 serving 安全檢查仍須通過。"
                 metrics={diagnosticMetrics}
                 collapsible
               />
@@ -556,7 +584,7 @@ function StageRow({ stage }: { stage: PipelineMaturityStage }) {
                 {stage.lineage.role ? <><dt className="text-slate-600">用途角色</dt><dd className="sv-num break-all text-slate-400">{stage.lineage.role}</dd></> : null}
                 <dt className="text-slate-600">前次證據</dt><dd className="sv-num break-all text-slate-400">{previousHistory?.evidence_date ?? '首次證據'}</dd>
                 <dt className="text-slate-600">相較前次變化</dt><dd className={`sv-num break-words ${signedValueTone(historyDelta)}`}>{historyComparison}</dd>
-                <dt className="text-slate-600">近期趨勢</dt>
+                <dt className="text-slate-600">{scopedCandidateStage ? '離線候選驗證歷史（非每日績效）' : '近期趨勢'}</dt>
                 <dd className="sv-num break-words text-slate-400">
                   {historyTrend.length ? historyTrend.map((point, index) => (
                     <span key={point.evidence_date}>
@@ -658,6 +686,8 @@ export default function PipelineMaturityContribution({
     { label: '必要門檻未通過', value: String(data.summary.failed_or_blocked) },
   ]
   const strategyRouteBundle = data.strategy_route_bundle
+  const navRouteStage = data.stages.find(stage => stage.id === 'route_score_v2'
+    && stage.metrics.some(item => item.key === 'nav_sessions'))
   const upstreamStageIds = new Set<PipelineMaturityStage['id']>([
     'threshold_margin_affinity_v2',
     'oof_redundancy',
@@ -714,7 +744,7 @@ export default function PipelineMaturityContribution({
             <div className="min-w-0">
               <div className="flex flex-wrap items-center gap-2">
                 <Route className="h-4 w-4 text-cyan-300" />
-                <h3 className="text-sm font-semibold text-slate-100">門檻證據 V2 + 路由分數 V2 必須一起升級</h3>
+                <h3 className="text-sm font-semibold text-slate-100">{navRouteStage ? 'NAV 路由採用與當日選股生效確認' : '門檻證據 V2 + 路由分數 V2 必須一起升級'}</h3>
                 <Badge variant="outline" className={`h-auto rounded-full px-2 py-0.5 text-[11px] ${STATUS_STYLE[strategyRouteBundle.status].cls}`}>
                   {STATUS_STYLE[strategyRouteBundle.status].label}
                 </Badge>
@@ -723,7 +753,9 @@ export default function PipelineMaturityContribution({
                 </Badge>
               </div>
               <p className="mt-2 text-xs leading-5 text-slate-400">
-                Threshold 完整只代表當日策略門檻資料可用；必須同時具備全 universe Route 分數、purged OOS 品質通過與同一份 promotion commit，才會進 production。
+                {navRouteStage
+                  ? '原始 NAV 證據負責路由採用；當日門檻資料、全 universe Route 分數及 canonical 使用紀錄負責確認已生效。不再加一套 weekly OOS 晉級門檻。'
+                  : 'Threshold 完整只代表當日策略門檻資料可用；必須同時具備全 universe Route 分數、purged OOS 品質通過與同一份 promotion commit，才會進 production。'}
               </p>
             </div>
             <div className="grid shrink-0 grid-cols-3 gap-2 text-center text-xs">
@@ -769,6 +801,7 @@ export default function PipelineMaturityContribution({
           {expectedReturnStages.map((stage) => <StageRow key={stage.id} stage={stage} />)}
         </div>
         <IpoShadowComparison data={data.ipo_shadow} />
+        <PairedNavShadow data={data.paired_nav_shadow} />
         {otherStages.length ? (
           <div className="grid items-start gap-3 lg:grid-cols-2">
             {otherStages.map((stage) => <StageRow key={stage.id} stage={stage} />)}

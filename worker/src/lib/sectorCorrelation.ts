@@ -39,15 +39,8 @@ async function loadSectorLeaderRows(
   return rows
 }
 
-export async function computeSectorLeaders(env: DomainEnv): Promise<{
-  sectorCount: number
-  leaderCount: number
-}> {
-  const identities = await loadActiveCoreStockIdentities(env)
-  const eligible = [...identities.values()].filter((row) => String(row.sector ?? '').trim())
-  const prices = await loadMarketPriceHistoryBySymbols(env, eligible.map((row) => row.symbol), {
-    rowsPerSymbol: LOOKBACK_DAYS_TURNOVER * 2,
-  })
+export function deriveSectorLeaders(eligible: Array<{ id: number; symbol: string; sector: string | null }>,
+  prices: Array<{ symbol: string; close: number | null; volume: number | null }>): LeaderRow[] {
   const bySymbol = new Map<string, Array<{ close: number; volume: number }>>()
   for (const row of prices) {
     const close = Number(row.close)
@@ -74,6 +67,20 @@ export async function computeSectorLeaders(env: DomainEnv): Promise<{
     rows.sort((a, b) => b.avg_turnover - a.avg_turnover)
     leaders.push(...rows.slice(0, 3).map((row, index) => ({ ...row, rank: index + 1 })))
   }
+  return leaders
+}
+
+
+export async function computeSectorLeaders(env: DomainEnv): Promise<{
+  sectorCount: number
+  leaderCount: number
+}> {
+  const identities = await loadActiveCoreStockIdentities(env)
+  const eligible = [...identities.values()].filter((row) => String(row.sector ?? '').trim())
+  const prices = await loadMarketPriceHistoryBySymbols(env, eligible.map((row) => row.symbol), {
+    rowsPerSymbol: LOOKBACK_DAYS_TURNOVER * 2,
+  })
+  const leaders = deriveSectorLeaders(eligible, prices)
   if (!leaders.length) return { sectorCount: 0, leaderCount: 0 }
 
   const marketDb = databaseForDataDomain(env, 'market')
@@ -169,6 +176,29 @@ export async function sectorLeaderBonusBatch(
     const refresh = await ensureSectorLeadersForScreener(env, sectors)
     if (refresh.leaderCount > 0) leaderRows = await loadSectorLeaderRows(env, sectors)
   }
+  const symbols = new Set(clean.map(row => row.symbol))
+  for (const row of leaderRows) symbols.add(row.symbol)
+  const prices = await loadMarketPriceHistoryBySymbols(env, [...symbols], { rowsPerSymbol: LOOKBACK_DAYS_CORR * 2 })
+  return computeSectorLeaderBonusFromInputs({ candidates, leaderRows, prices }, corrThreshold, bonusPoints)
+}
+
+export interface SectorLeaderBonusInputs {
+  candidates: Array<{ symbol: string; sector?: string | null }>
+  leaderRows: Array<{ sector: string; symbol: string }>
+  prices: Array<{ symbol: string; date: string; close: number | null }>
+}
+
+/** Original correlation kernel, shared by legacy cache reads and frozen replay. */
+export function computeSectorLeaderBonusFromInputs(input: SectorLeaderBonusInputs, corrThreshold: number, bonusPoints: number) {
+  const { candidates, leaderRows, prices } = input
+  const output = new Map<string, { bonus: number; avgCorr: number | null; leaderCount: number }>()
+  const clean = candidates
+    .map((row) => ({ symbol: String(row.symbol ?? '').trim(), sector: row.sector ?? null }))
+    .filter((row) => row.symbol)
+  for (const row of clean) output.set(row.symbol, { bonus: 0, avgCorr: null, leaderCount: 0 })
+  const sectors = [...new Set(clean.map((row) => row.sector).filter(Boolean) as string[])]
+  if (!clean.length || !sectors.length) return output
+
   const leadersBySector = new Map<string, string[]>()
   for (const row of leaderRows) {
     const leaders = leadersBySector.get(row.sector) ?? []
@@ -176,9 +206,6 @@ export async function sectorLeaderBonusBatch(
     leadersBySector.set(row.sector, leaders)
   }
 
-  const symbols = new Set(clean.map((row) => row.symbol))
-  for (const leaders of leadersBySector.values()) for (const symbol of leaders) symbols.add(symbol)
-  const prices = await loadMarketPriceHistoryBySymbols(env, [...symbols], { rowsPerSymbol: LOOKBACK_DAYS_CORR * 2 })
   const seriesBySymbol = new Map<string, Array<{ date: string; close: number }>>()
   for (const row of prices) {
     const close = Number(row.close)

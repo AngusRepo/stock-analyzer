@@ -607,7 +607,8 @@ def run_sltp(req: OptunaReq = Body(default=OptunaReq())):
 def run_screener(req: OptunaReq = Body(default=OptunaReq())):
     """Relative Mode A screener search; incumbent ranking/risk remain fixed.
 
-    NSGA-II Pareto over Sharpe/max drawdown. This is research evidence, not a
+    Development-only NSGA-II over portfolio NAV Sharpe/max drawdown, then one
+    locked-candidate chronological holdout. This is research evidence, not a
     full production allocator replay or an automatic production promotion.
     """
     from services.screener_search_evidence import ScreenerSearchBlocked
@@ -671,6 +672,10 @@ def run_screener(req: OptunaReq = Body(default=OptunaReq())):
                 "pareto_size": result.get("pareto_size"),
                 "raw_suggest_params": result.get("best_params"),
                 "realism_note": result.get("realism_note"),
+                "best_sharpe_definition": result.get("best_sharpe_definition"),
+                "selection_lock": result.get("selection_lock"),
+                "holdout": result.get("holdout"),
+                "diagnostics": result.get("diagnostics"),
             },
         )
 
@@ -683,8 +688,8 @@ def run_screener(req: OptunaReq = Body(default=OptunaReq())):
         effective_fields=list(push_payload.keys()),
         excluded_fields=excluded_fields,
         notes=[
-            "Screener Optuna may search ranking.* internally, but ranking.* is intentionally excluded from live KV push.",
-            "A successful screener search does not mean ranking weights were promoted to production.",
+            "Only screener fields are searched; ranking and risk policy remain fixed.",
+            "Historical holdout is audited after selection; it cannot reselect or grant prospective credit.",
         ],
     )
 
@@ -704,6 +709,11 @@ def run_screener(req: OptunaReq = Body(default=OptunaReq())):
         "diagnostics": result.get("diagnostics"),
         "baseline_comparison": result.get("baseline_comparison"),
         "best_execution_fill_rate": result.get("best_execution_fill_rate"),
+        "best_sharpe_definition": result.get("best_sharpe_definition"),
+        "best_trade_sharpe_diagnostic": result.get("best_trade_sharpe_diagnostic"),
+        "selection_lock": result.get("selection_lock"),
+        "holdout": result.get("holdout"),
+        "validation_is_promotion_gate": False,
         "subset_size": result.get("subset_size"),
         "date_window": result.get("date_window"),
         "mode": result.get("mode"),
@@ -1079,7 +1089,7 @@ def _run_optuna_sweep_source_inner(source: str, runner) -> dict[str, Any]:
             diagnostics = exc.detail['diagnostics']
             rejects = diagnostics.get('reject_summary') or {}
             infrastructure = (
-                diagnostics.get('reason') == 'baseline_not_evaluable'
+                diagnostics.get('reason') in {'baseline_not_evaluable', 'holdout_not_evaluable'}
                 or any(rejects.get(k, 0) for k in ('replay_error', 'data_missing', 'invalid_metrics'))
             )
             status = 'error' if infrastructure else 'skipped'

@@ -18,17 +18,22 @@ export function normalizeStockIdentitySymbols(symbols: readonly string[]): strin
 export async function loadCoreStockIdentitiesBySymbols(
   env: Pick<Bindings, 'DB'> & Partial<Bindings>,
   symbols: readonly string[],
+  options: { requireQuerySuccess?: boolean } = {},
 ): Promise<Map<string, CoreStockIdentity>> {
   const normalized = normalizeStockIdentitySymbols(symbols)
   const mapped = new Map<string, CoreStockIdentity>()
   for (let offset = 0; offset < normalized.length; offset += D1_BIND_CHUNK_SIZE) {
     const chunk = normalized.slice(offset, offset + D1_BIND_CHUNK_SIZE)
     const marks = chunk.map(() => '?').join(',')
-    const { results } = await databaseForDataDomain(env, 'core').prepare(`
+    const response = await databaseForDataDomain(env, 'core').prepare(`
       SELECT id, symbol, name, market, sector
         FROM stocks
        WHERE symbol IN (${marks})
     `).bind(...chunk).all<CoreStockIdentity>()
+    if (options.requireQuerySuccess && (!response.success || !Array.isArray(response.results))) {
+      throw new Error('core_stock_identity_query_failed')
+    }
+    const results = response.results
     for (const row of results ?? []) mapped.set(String(row.symbol), { ...row, id: Number(row.id) })
   }
   return mapped
@@ -77,9 +82,9 @@ export type MarketPriceBridgeRow = {
 export async function loadMarketPriceHistoryBySymbols(
   env: Pick<Bindings, 'DB'> & Partial<Bindings>,
   symbols: readonly string[],
-  options: { beforeDate?: string; onOrBeforeDate?: string; rowsPerSymbol?: number } = {},
+  options: { beforeDate?: string; onOrBeforeDate?: string; rowsPerSymbol?: number; requireQuerySuccess?: boolean } = {},
 ): Promise<MarketPriceBridgeRow[]> {
-  const identities = await loadCoreStockIdentitiesBySymbols(env, symbols)
+  const identities = await loadCoreStockIdentitiesBySymbols(env, symbols, options)
   const byId = new Map([...identities.values()].map((row) => [Number(row.id), row.symbol]))
   const ids = [...byId.keys()]
   const rows: MarketPriceBridgeRow[] = []
@@ -97,7 +102,7 @@ export async function loadMarketPriceHistoryBySymbols(
       : options.onOrBeforeDate
         ? [options.onOrBeforeDate]
         : []
-    const { results } = await databaseForDataDomain(env, 'market').prepare(`
+    const response = await databaseForDataDomain(env, 'market').prepare(`
       SELECT stock_id, date, open, high, low, close, avg_price, volume
         FROM (
           SELECT stock_id, date, open, high, low, close, avg_price, volume,
@@ -109,6 +114,10 @@ export async function loadMarketPriceHistoryBySymbols(
        WHERE rn <= ?
        ORDER BY stock_id, date DESC
     `).bind(...chunk, ...dateBinds, perSymbol).all<Omit<MarketPriceBridgeRow, 'symbol'>>()
+    if (options.requireQuerySuccess && (!response.success || !Array.isArray(response.results))) {
+      throw new Error('market_price_history_query_failed')
+    }
+    const results = response.results
     for (const row of results ?? []) {
       const symbol = byId.get(Number(row.stock_id))
       if (symbol) rows.push({ ...row, stock_id: Number(row.stock_id), symbol })

@@ -14,6 +14,7 @@ import hashlib
 import json
 import logging
 import os
+import re
 import statistics
 from typing import Any, Literal
 from fastapi import APIRouter, HTTPException, Response
@@ -1007,8 +1008,23 @@ def _materialize_completed_oof_release_aliases(
         training_run_id=expected_run_id,
         bucket=bucket,
     )
+    validation = ensemble_payload['validation']
+    validation_attempt = None
+    if validation['decision'] == 'FAIL':
+        validation_attempt = persist_active8_ensemble_validation_attempt(
+            validation,
+            base_artifacts=normalized_sources,
+            cohort_id=cohort_id,
+            training_run_id=expected_run_id,
+            knowledge_cutoff_date=knowledge_cutoff_date,
+            source_manifest_checksum=checksum,
+        )
     return {
         "status": "materialized",
+        "completion_scope": "candidate_registration",
+        "validation": validation,
+        "validation_attempt": validation_attempt,
+        "production_effect": False,
         "candidate_type": "oof_full_fit_release",
         "written": len(written),
         "artifact_ids": written,
@@ -2178,7 +2194,10 @@ async def materialize_walk_forward_oof(req: OofMaterializeRequest):
         serving_forward_guard = None
         candidate_forward_evaluation = None
         ipo_shadow_maturity = None
+        paired_nav_maturity = None
         if req.persist_forward_shadow_coverage:
+            paired_nav_maturity = _materialize_nav_with_reviews(
+                business_date=req.knowledge_cutoff_date, learning_client=learning_client)
             from services.ipo_shadow import mature_daily
             ipo_shadow_maturity = mature_daily(
                 business_date=req.knowledge_cutoff_date,
@@ -2199,34 +2218,24 @@ async def materialize_walk_forward_oof(req: OofMaterializeRequest):
                 batch_fn=learning_client.batch_execute,
             )
         if forward_extension:
-            for result in (l4_result, fusion_result):
-                artifact = result.get("artifact") if isinstance(result, dict) else None
-                if isinstance(artifact, dict):
-                    artifact["generation_mode"] = "purged_oof_plus_frozen_forward_oos_shadow"
-                    artifact["promotion_state"] = "shadow_only"
-                packet = result.get("validation_packet") if isinstance(result, dict) else None
-                if isinstance(packet, dict):
-                    packet["monitoring_policy"] = {
-                        "policy_decision": "shadow_only",
-                        "promotion_eligible": False,
-                        "training_dispatched": False,
-                    }
-                    packet["forward_extension"] = {
-                        "manifest_path": req.forward_extension_manifest_path,
-                        "manifest_checksum": forward_extension["manifest_checksum"],
-                        "rows": len(forward_prediction_rows),
-                        "dates": forward_extension["dates"],
-                        "promotion_eligible": False,
-                    }
+            # Never relabel the base-only candidate as an extended evaluation.
+            # Daily diagnostic results have their own verified population.
             if req.persist_forward_shadow_coverage:
+                from services.expected_return_rolling_diagnostic import build_rolling_diagnostics
+                rolling = build_rolling_diagnostics(
+                    snapshot_rows=snapshot_rows, l4_predictions=l4_predictions,
+                    cohort_id=req.cohort_id, knowledge_cutoff_date=req.knowledge_cutoff_date,
+                    extension_dates=forward_extension["dates"],
+                    build_fusion_rows=build_fusion_oof_rows, query_fn=learning_client.query,
+                )
                 shadow_evaluation_packets = archive_ev_shadow_evaluation_packets(
                     bucket=bucket,
                     cohort_id=req.cohort_id,
                     business_date=req.knowledge_cutoff_date,
                     base_manifest_checksum=str(manifest["manifest_checksum"]),
                     extension_manifest=forward_extension,
-                    l4_result=l4_result,
-                    fusion_result=fusion_result,
+                    l4_result=rolling["l4_alpha_ev"],
+                    fusion_result=rolling["allocator_ev_fusion"],
                     forward_row_count=len(forward_prediction_rows),
                     execute_fn=learning_client.execute,
                 )
@@ -2320,38 +2329,29 @@ async def materialize_walk_forward_oof(req: OofMaterializeRequest):
             from services.worker_config_client import worker_fetch
 
             try:
+                from services.paired_nav_daily_adoption import nav_worker_timeout
                 candidate_forward_promotion_response = await worker_fetch(
                     "/api/admin/config/expected-return/promote",
                     method="POST",
                     json_body=candidate_forward_evaluation["promotion_payload"],
-                    timeout=30.0,
+                    timeout=nav_worker_timeout(2 * len(candidate_forward_evaluation['promotion_payload'])),
                 )
                 promotion_closure = _candidate_forward_promotion_closure(
                     candidate_forward_evaluation["promotion_payload"],
                     candidate_forward_promotion_response,
+                    business_date=req.knowledge_cutoff_date,
                 )
                 promoted_by_owner.update(promotion_closure["promoted_by_owner"])
                 promotion_errors_by_owner.update(promotion_closure["errors_by_owner"])
                 promoted = bool(promotion_closure["promoted_any"])
-                if not promotion_closure["complete"]:
+                if not promotion_closure["processing_complete"]:
                     candidate_forward_promotion_error = (
                         "exact_candidate_forward_promotion_incomplete:"
                         + ",".join(promotion_closure["failed_owners"])
                     )
                 if promoted:
-                    serving_owner = (
-                        "allocator_ev_fusion"
-                        if promoted_by_owner["allocator_ev_fusion"]
-                        else "l4_alpha_ev"
-                    )
                     try:
-                        opb_refresh = await worker_fetch(
-                            "/api/admin/trigger/opb-arm-prior-refresh"
-                            f"?sync=1&date={req.knowledge_cutoff_date}"
-                            f"&expected_return_owner={serving_owner}",
-                            method="POST",
-                            timeout=120.0,
-                        )
+                        opb_refresh = await _refresh_expected_return_opb(req.knowledge_cutoff_date, 'auto')
                     except Exception as exc:  # noqa: BLE001 - promotion is durable; retry OPB closure.
                         opb_refresh = {"status": "failed", "error": str(exc)}
             except Exception as exc:  # noqa: BLE001 - evidence stays durable; promotion fails closed.
@@ -2371,13 +2371,7 @@ async def materialize_walk_forward_oof(req: OofMaterializeRequest):
             from services.worker_config_client import worker_fetch
 
             try:
-                opb_refresh = await worker_fetch(
-                    "/api/admin/trigger/opb-arm-prior-refresh"
-                    f"?sync=1&date={req.knowledge_cutoff_date}"
-                    f"&expected_return_owner={opb_retry_owner}",
-                    method="POST",
-                    timeout=120.0,
-                )
+                opb_refresh = await _refresh_expected_return_opb(req.knowledge_cutoff_date, 'auto')
             except Exception as exc:  # noqa: BLE001 - retry until OPB closure is durable.
                 opb_refresh = {"status": "failed", "error": str(exc)}
         l4_artifact = l4_result.get("artifact") if isinstance(l4_result, dict) else None
@@ -2486,19 +2480,8 @@ async def materialize_walk_forward_oof(req: OofMaterializeRequest):
                     if not promoted:
                         promotion_error = "expected_return_owner_promotion_not_confirmed"
                     else:
-                        serving_owner = (
-                            "allocator_ev_fusion"
-                            if promoted_by_owner["allocator_ev_fusion"]
-                            else "l4_alpha_ev"
-                        )
                         try:
-                            opb_refresh = await worker_fetch(
-                                "/api/admin/trigger/opb-arm-prior-refresh"
-                                f"?sync=1&date={req.knowledge_cutoff_date}"
-                                f"&expected_return_owner={serving_owner}",
-                                method="POST",
-                                timeout=120.0,
-                            )
+                            opb_refresh = await _refresh_expected_return_opb(req.knowledge_cutoff_date, 'auto')
                         except Exception as exc:  # noqa: BLE001 - EV promotion is durable; daily lifecycle retries OPB.
                             opb_refresh = {"status": "failed", "error": str(exc)}
                         try:
@@ -2614,6 +2597,7 @@ async def materialize_walk_forward_oof(req: OofMaterializeRequest):
             "serving_forward_guard": serving_forward_guard,
             "candidate_forward_evaluation": candidate_forward_evaluation,
             "ipo_shadow_maturity": ipo_shadow_maturity,
+            "paired_nav_maturity": paired_nav_maturity,
             "candidate_forward_promotion_response": candidate_forward_promotion_response,
             "candidate_forward_promotion_error": candidate_forward_promotion_error,
             "physical_prediction_coverage": {
@@ -2692,18 +2676,58 @@ OOF_COHORT_ID_VERSION = "v9-feature-semantic-source-attested"
 OOF_LIFECYCLE_RECEIPT_SCHEMA_VERSION = "active8-oof-lifecycle-receipt-v14-data-ready-release"
 
 
+def _materialize_nav_with_reviews(*, business_date, learning_client, now=None):
+    """Actual nightly NAV boundary: accounting first, then owned daily reviews."""
+    from services.paired_nav_journal import mature_staged_pairs
+    from services.paired_nav_daily_review import run_daily_nav_reviews, NavDailyReviewIncomplete
+    result = mature_staged_pairs(business_date=business_date,
+        query=learning_client.query, writer=learning_client.batch_execute, now=now)
+    atomic_writer = getattr(learning_client, 'atomic_batch_execute', None)
+    if not callable(atomic_writer):
+        raise RuntimeError('paired_nav_review_atomic_writer_missing')
+    result['family_reviews'] = run_daily_nav_reviews(business_date=business_date,
+        query=learning_client.query, writer=atomic_writer, now=now)
+    if result['family_reviews']['failures']:
+        raise NavDailyReviewIncomplete(result)
+    return result
+
+
 def _candidate_forward_promotion_closure(
     requested_payload: dict[str, Any],
     response: dict[str, Any],
+    *, business_date: str | None = None,
 ) -> dict[str, Any]:
     owners = ("l4_alpha_ev", "allocator_ev_fusion")
     requested = [owner for owner in owners if isinstance(requested_payload.get(owner), dict)]
     outcomes = response.get("outcomes") if isinstance(response.get("outcomes"), dict) else {}
     promoted_by_owner = {owner: False for owner in owners}
     errors_by_owner: dict[str, list[str]] = {}
+    waiting_by_owner: dict[str, dict[str, Any]] = {}
     for owner in requested:
         outcome = outcomes.get(owner) if isinstance(outcomes.get(owner), dict) else {}
+        if outcome.get('status') == 'waiting':
+            from services.paired_nav_daily_adoption import candidate_comparison_wait
+            candidate = requested_payload[owner]
+            waiting_by_owner[owner] = candidate_comparison_wait(candidate, outcome,
+                business_date=business_date, owner=owner)
+            continue
         promoted_by_owner[owner] = outcome.get("promoted") is True
+        if promoted_by_owner[owner]:
+            commit = outcome.get('pointer_commit') or {}
+            candidate = requested_payload[owner]
+            expected_version = (candidate.get('artifact') or {}).get('model_version')
+            if (not isinstance(commit, dict) or not expected_version
+                    or outcome.get('model_version') != expected_version
+                    or commit.get('artifact_id') != candidate.get('artifact_id')
+                    or not re.fullmatch('[0-9a-f]{64}', str(commit.get('payload_checksum') or ''))):
+                promoted_by_owner[owner] = False
+                errors_by_owner[owner] = ['pointer_commit_identity_unverified']
+                continue
+            if 'config_projection_error' not in outcome:
+                errors_by_owner[owner] = ['config_projection_receipt_missing']
+            elif outcome.get('config_projection_error'):
+                # Pointer success is real; the remaining projection must retry.
+                errors_by_owner[owner] = ['config_projection_incomplete']
         if not promoted_by_owner[owner]:
             blockers = outcome.get("blockers") if isinstance(outcome.get("blockers"), list) else []
             errors_by_owner[owner] = [str(value) for value in blockers] or [
@@ -2714,9 +2738,47 @@ def _candidate_forward_promotion_closure(
         "promoted_by_owner": promoted_by_owner,
         "errors_by_owner": errors_by_owner,
         "promoted_any": any(promoted_by_owner.values()),
-        "complete": bool(requested) and not errors_by_owner,
+        "complete": bool(requested) and not errors_by_owner and not waiting_by_owner,
+        "processing_complete": bool(requested) and not errors_by_owner,
+        "waiting_by_owner": waiting_by_owner,
         "failed_owners": list(errors_by_owner),
     }
+
+
+def _candidate_forward_requires_retry(evaluation: Any) -> bool:
+    """Main NAV decisions can be ready while diagnostic repair remains due."""
+    return (not isinstance(evaluation, dict)
+        or evaluation.get('status') not in {'waiting_for_preoutcome_locked_mature_dates', 'evaluated'}
+        or bool(evaluation.get('diagnostics_retry_required'))
+        or bool(evaluation.get('diagnostic_failures')))
+
+
+async def _refresh_expected_return_opb(business_date: str, owner: str) -> dict[str, Any]:
+    """Require the actual synchronous Worker owner/result, not transport ACK."""
+    from services.worker_config_client import worker_fetch
+    allowed_owners = {'l4_alpha_ev', 'allocator_ev_fusion'}
+    if owner not in allowed_owners | {'auto'}:
+        raise ValueError('opb_refresh_owner_invalid')
+    response = await worker_fetch('/api/admin/trigger/opb-arm-prior-refresh'
+        f'?sync=1&date={business_date}&expected_return_owner={owner}', method='POST', timeout=120.0)
+    summary = response.get('result') if isinstance(response, dict) else None
+    tokens = summary.split() if isinstance(summary, str) else []
+    pairs = [token.split('=', 1) for token in tokens[1:] if '=' in token]
+    fields = dict(pairs)
+    if (not isinstance(response, dict) or response.get('success') is not True
+            or response.get('mode') == 'async' or not tokens or tokens[0] != 'opb_arm_prior_refresh'
+            or len(fields) != len(pairs) or fields.get('status') != 'candidate_registered'
+            or fields.get('scope') != 'candidate_registration'
+            or fields.get('receipt') != 'opb-candidate-registration-v1'
+            or fields.get('registered') != '1' or fields.get('promotion_owner') != 'daily_nav'
+            or fields.get('date') != business_date or not fields.get('artifact')
+            or not re.fullmatch('[0-9a-f]{64}', fields.get('checksum', ''))
+            or fields.get('owner') not in allowed_owners
+            or (owner != 'auto' and fields.get('owner') != owner)
+            or fields.get('promoted') != '0'):
+        raise RuntimeError('opb_refresh_receipt_unverified')
+    return {**response, 'status': 'completed', 'owner': fields['owner'],
+            'completion_scope': 'candidate_registration', 'promoted': False}
 
 
 def _candidate_forward_opb_retry_owner(
@@ -2902,10 +2964,7 @@ def _oof_lifecycle_receipt_matches_active_policy(
         and all(
             packet.get("policy_decision") == "shadow_only" for packet in shadow_packets.values()
         )
-        and candidate_forward.get("status") in {
-            "waiting_for_preoutcome_locked_mature_dates",
-            "evaluated",
-        }
+        and not _candidate_forward_requires_retry(candidate_forward)
         and candidate_forward.get("training_dispatched") is False
         and persistence.get("status") in {"ready", "ready_refreshed", "idempotent_ready"}
         and persistence.get("prediction_storage_mode") == "gcs_indexed_v1"
@@ -3314,6 +3373,11 @@ def _pre_dispatch_completed_oof_lifecycle(
 ) -> dict[str, Any] | None:
     """Return only a checksum-verified terminal receipt; never create work."""
 
+    if cadence == "daily":
+        # OOF completion does not attest the current original NAV journal or
+        # review records. The durable daily job reconciles NAV first, then may
+        # reuse the exact OOF receipt internally without retraining anything.
+        return None
     if bucket is None:
         return None
     exact_producer_source_sha: str | None = None
@@ -3925,13 +3989,9 @@ async def run_walk_forward_oof_lifecycle(req: OofLifecycleRequest):
     full_fit_retry_required = bool(result.get("full_fit_retry_required"))
     candidate_forward = result.get("candidate_forward_evaluation")
     candidate_forward = candidate_forward if isinstance(candidate_forward, dict) else {}
-    candidate_forward_status = str(candidate_forward.get("status") or "")
     candidate_forward_retry_required = bool(
         materialization_controls["frozen_forward_shadow"]
-        and candidate_forward_status not in {
-            "waiting_for_preoutcome_locked_mature_dates",
-            "evaluated",
-        }
+        and _candidate_forward_requires_retry(candidate_forward)
     )
     candidate_forward_promotion_failed = bool(
         result.get("candidate_forward_promotion_error")

@@ -111,7 +111,14 @@ def test_runtime_uses_learned_return_and_conformal_bounds_without_top_k():
         pool_models=_pool_models(),
         current_price=100.0,
     )
-    assert result.signal == "STRONG_BUY"
+    # Learned forecasts remain available; this fixture has no qualified
+    # directional evidence. Raw advice is not a final allocation instruction.
+    assert result.signal == "HOLD"
+    assert result.evidence["unqualified_signal"] == "STRONG_BUY"
+    assert result.evidence["advisory_signal"] == "STRONG_BUY"
+    assert result.evidence["signal_role"] == "advisory_only"
+    assert result.evidence["final_decision_owner"] == "allocator_opb_policy"
+    assert "directional_evidence_missing" in result.evidence["signal_blockers"]
     assert result.forecast_pct == pytest.approx(0.04)
     assert result.stop_loss is None and result.target1 is None and result.target2 is None
     assert result.evidence["signal_policy"]["top_k"] is None

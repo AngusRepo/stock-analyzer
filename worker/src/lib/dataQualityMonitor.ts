@@ -1,3 +1,4 @@
+import { paperExecutionDate } from './paperExecutionScope'
 import type { Bindings } from '../types'
 import { twNow, twToday } from './dateUtils'
 import { databaseForDataDomain } from './dataDomainRegistry'
@@ -2073,7 +2074,7 @@ export async function buildDataQualityReport(env: Bindings, options: { date?: st
 
   return {
     date: targetDate,
-    generated_at: new Date().toISOString(),
+    generated_at: paperExecutionDate().toISOString(),
     overall: summarizeDataQualityChecks(checks),
     checks,
   }

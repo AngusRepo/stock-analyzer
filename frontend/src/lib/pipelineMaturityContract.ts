@@ -1,5 +1,19 @@
 import type { IpoShadowReadModel } from './ipoShadowContract'
 
+export type CandidateVersionSummary = {
+  artifact_id: string | null; checksum: string | null; cohort_id: string | null
+  model_version: string | null; trained_until: string | null; generated_date: string | null
+  state: string | null; identity_valid: boolean; offline_decision: string | null
+  offline_findings: string[]
+}
+export type CandidateVersionComparison = {
+  latest_candidate: CandidateVersionSummary | null
+  evaluated_candidate: CandidateVersionSummary | null
+  different_artifacts: boolean | null
+  latest_query_status: 'available' | 'missing' | 'error'
+  evaluation_query_status: 'available' | 'missing' | 'error' | 'blocked'
+}
+
 export type PipelineMaturityStatus =
   | 'serving'
   | 'ready'
@@ -15,7 +29,7 @@ export type PipelineMaturityMetric = {
   label: string
   value: number | string | boolean | null
   target?: number | string | boolean | null
-  comparator?: 'gte' | 'gt' | 'lt' | 'eq'
+  comparator?: 'gte' | 'gt' | 'lt' | 'lte' | 'eq'
   unit?: 'rows' | 'dates' | 'ratio' | 'return' | 'r_multiple' | 'score' | 'count' | 'status'
   passed?: boolean | null
   note?: string
@@ -25,6 +39,14 @@ export type PipelineMaturityMetric = {
 }
 
 export type PipelineMaturityStage = {
+  candidate_versions?: CandidateVersionComparison
+  nav_gate?: {
+    kind: 'paired_nav'; availability: 'available' | 'missing' | 'blocked';
+    artifact_id: string | null; artifact_checksum: string | null; source_date: string | null; as_of_date: string | null;
+    decision: string | null; reason: string; evaluable_dates: number | null;
+    minimum_dates: number; maximum_dates: number; review_id: string | null;
+    checkpoint_date: string | null; promotion_allowed: false;
+  }
   id: 'threshold_margin_affinity_v2' | 'oof_redundancy' | 'route_score_v2' | 'l4' | 'fusion'
   layer: string
   title: string
@@ -73,7 +95,7 @@ export type PipelineMaturityStage = {
     updated_at?: string | null
     cadence?: 'daily' | 'weekly' | 'monthly' | 'manual' | 'event-driven' | 'unknown'
     role?: 'candidate' | 'serving' | 'monitoring' | 'runtime_guard'
-    date_semantic?: 'candidate_cutoff' | 'current_pointer_effective_at' | 'monitoring_business_date' | 'latest_prediction_date'
+    date_semantic?: 'candidate_cutoff' | 'current_pointer_effective_at' | 'monitoring_business_date' | 'latest_prediction_date' | 'nav_decision_as_of'
     oof_unavailable_reason?: string | null
     evidence_scopes?: {
       offline_candidate?: {
@@ -178,24 +200,40 @@ export type StrategyRouteBundleMaturity = {
   current_route_rows: number
   current_reference_rows: number
   route_calibration_status: string | null
-  route_mature_dates: number
-  route_required_dates: number
+  route_mature_dates: number | null
+  route_required_dates: number | null
   promoted_run_id: string | null
   blockers: string[]
   maturity_projection?: StrategyRouteMaturityProjection
 }
 
+export type PairedNavShadowReadModel = {
+  status: 'awaiting_allocation_context' | 'awaiting_execution_pairs' | 'observing' | 'valuation_incomplete' | 'terminal_zero_nav' | 'historical_comparisons' | 'unavailable'
+  allocation_context_dates: number | null
+  latest_allocation_context_date: string | null
+  pairs: Array<{ pair_id: string; sessions: number; latest_session: string | null; accounted_sessions: number;
+    unverified_sessions: number; undefined_return_sessions?: number; zero_nav_sessions?: number;
+    latest_accounting_session: string; candidate_checksum: string; baseline_checksum: string;
+    comparison?: { owner: string; kind: 'incumbent_replacement' | 'incremental_layer' | 'route_policy_contrast' | 'allocator_policy_contrast' | 'atomic_strategy_replacement'; baseline_kind: string; metadata_sessions: number };
+    lifecycle?: { reason: 'comparison_changed'; transition_signal_date: string; final_session_date: string;
+      successor_pair_id: string; changed_fields: string[] } }>
+  promotion_allowed: false
+  ev_prediction_dates_added: 0
+  blockers: string[]
+}
+
 export type PipelineDecisionMaturityPacket = {
+  paired_nav_shadow?: PairedNavShadowReadModel
   ipo_shadow?: IpoShadowReadModel
   schema_version: 'pipeline-decision-maturity-v2'
   requested_date: string
   generated_at: string
-  current_selection_signal_owner: 'score_v2_formal_ml'
+  current_selection_signal_owner: 'allocator_opb_policy'
   current_expected_return_owner: 'l4_alpha_ev' | 'allocator_ev_fusion' | null
-  current_allocation_utility_owner: 'expected_return_owner' | 'formal_ml_buy_admission'
+  current_allocation_utility_owner: 'expected_return_owner' | 'risk_abstention'
   current_execution_owner: 'allocator_opb_policy'
   execution_scope: 'recommendation_allocation_only_no_order_submission'
-  action_gate: 'expected_return_owner' | 'selection_signal_owner'
+  action_gate: 'expected_return_owner' | 'validated_expected_return_required'
   strategy_route_bundle?: StrategyRouteBundleMaturity
   summary: {
     production: number

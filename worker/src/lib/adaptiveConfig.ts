@@ -1,3 +1,4 @@
+import { paperExecutionDate, paperExecutionNow } from './paperExecutionScope'
 import { readMarketRegimeState } from './marketRegimeState'
 
 export type AdaptiveRegime = 'bull' | 'bear' | 'volatile' | 'sideways'
@@ -126,7 +127,7 @@ const KV_KEY = ADAPTIVE_PARAMS_KV_KEY
 const CACHE_TTL_MS = 300_000
 
 function nowIso(): string {
-  return new Date().toISOString()
+  return paperExecutionDate().toISOString()
 }
 
 function adaptiveParamsDateKey(params: Pick<AdaptiveParams, 'computed_at'>): string | null {
@@ -160,8 +161,7 @@ export const DEFAULT_ADAPTIVE_PARAMS: AdaptiveParams = {
   version: 0,
 }
 
-let _cached: AdaptiveParams | null = null
-let _cachedAt = 0
+let configCache = new WeakMap<KVNamespace, { value: AdaptiveParams; at: number }>()
 
 function finiteNumber(value: unknown, fallback: number): number {
   const n = Number(value)
@@ -364,7 +364,8 @@ export function resolveAdaptiveParamsForRegime(
 }
 
 export async function getAdaptiveParams(kv: KVNamespace): Promise<AdaptiveParams> {
-  if (_cached && Date.now() - _cachedAt < CACHE_TTL_MS) return _cached
+  const cached = configCache.get(kv)
+  if (cached && paperExecutionNow() - cached.at < CACHE_TTL_MS) return cached.value
   let raw: AdaptiveParams | null
   try {
     raw = await kv.get(KV_KEY, 'json') as AdaptiveParams | null
@@ -381,9 +382,8 @@ export async function getAdaptiveParams(kv: KVNamespace): Promise<AdaptiveParams
   if (normalized.provenance.fallback === true) {
     throw new Error(`adaptive params fallback/legacy provenance: source=${normalized.provenance.source}`)
   }
-  _cached = normalized
-  _cachedAt = Date.now()
-  return _cached
+  configCache.set(kv, { value: normalized, at: paperExecutionNow() })
+  return normalized
 }
 
 async function readCurrentRegime(kv: KVNamespace): Promise<string | null> {
@@ -416,11 +416,9 @@ export async function setAdaptiveParams(
   if (!persisted || typeof persisted !== 'object') {
     throw new Error(`adaptive params KV write verification failed: ${KV_KEY} missing after put`)
   }
-  _cached = normalized
-  _cachedAt = Date.now()
+  configCache.set(kv, { value: normalized, at: paperExecutionNow() })
 }
 
 export function invalidateAdaptiveCache(): void {
-  _cached = null
-  _cachedAt = 0
+  configCache = new WeakMap()
 }

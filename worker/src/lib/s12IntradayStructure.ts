@@ -1,3 +1,4 @@
+import { paperExecutionNow } from './paperExecutionScope'
 import {
   normalizeTwEquityStopPrice,
   normalizeTwEquityTargetPrice,
@@ -1054,7 +1055,7 @@ function normalizeBars(bars: S12Bar[]): S12Bar[] {
 export function aggregateCompletedS12Bars(
   bars: S12Bar[],
   timeframeMs: number,
-  nowMs = Date.now(),
+  nowMs = paperExecutionNow(),
   options: S12AggregationOptions = {},
 ): S12Bar[] {
   const tf = Math.max(60_000, Math.floor(timeframeMs))
@@ -1105,7 +1106,7 @@ function sessionAggregationDiagnostics(baseBars: S12Bar[], nowMs: number): S12Ru
   }
 }
 
-function aggregateTwDailyS12Bars(bars: S12Bar[], nowMs = Date.now()): S12Bar[] {
+function aggregateTwDailyS12Bars(bars: S12Bar[], nowMs = paperExecutionNow()): S12Bar[] {
   const buckets = new Map<number, S12Bar>()
   for (const bar of normalizeBars(bars)) {
     const sessionStart = twLocalDayStartUtcMs(bar.startMs) + TW_SESSION_OPEN_MS
@@ -2254,7 +2255,7 @@ function buildEquityMutationZone(params: {
             : 'support',
         low: stopPlan.zoneLow,
         high: Math.min(params.entryPrice - 0.01, Math.max(stopPlan.zoneHigh, stopPlan.price)),
-        createdMs: params.bars15m[params.bars15m.length - 1]?.startMs ?? Date.now(),
+        createdMs: params.bars15m[params.bars15m.length - 1]?.startMs ?? paperExecutionNow(),
         ageBars: 0,
       },
     }
@@ -2275,7 +2276,7 @@ function buildEquityMutationZone(params: {
       type: 'support',
       low: stop,
       high: zoneHigh,
-      createdMs: recent[recent.length - 1]?.startMs ?? Date.now(),
+      createdMs: recent[recent.length - 1]?.startMs ?? paperExecutionNow(),
       ageBars: 0,
     },
     stopPlan: {
@@ -4262,7 +4263,7 @@ export function assessS12IntradayStructure(input: S12IntradayInput): S12Intraday
 }
 
 export function assessS12IntradayStructureFromBaseBars(input: S12FromBaseBarsInput): S12IntradayAssessment {
-  const nowMs = input.nowMs ?? Date.now()
+  const nowMs = input.nowMs ?? paperExecutionNow()
   const currentSession15m = aggregateCompletedS12Bars(input.baseBars, M15_MS, nowMs, { alignToTwSession: true })
   const fallback15m = aggregateCompletedS12Bars(input.fallback15mBars ?? [], M15_MS, nowMs, { alignToTwSession: true })
   const bars1h = aggregateCompletedS12Bars(input.baseBars, H1_MS, nowMs, { alignToTwSession: true })

@@ -194,6 +194,25 @@ assert(matureV7.accepted[0].effectivePairedDates! >= STRATEGY_REPLACEMENT_POLICY
 assert(matureV7.accepted[0].pairedDeltaPowerAtMinimumEconomicDelta! >= 0.8)
 assert.equal(matureV7.globalRiskPass, true)
 assert.equal(matureV7.finalWeights.size, 1)
+const largeEffectCells = matureCells.map((row) => ({
+  ...row,
+  absolute_return_net: Number(row.absolute_return_net) * 10,
+  residual_return_net: Number(row.residual_return_net) * 10,
+}))
+const lowReferencePower = evaluatePairedStrategyReplacementsV7(
+  largeEffectCells, evaluateStrategyMarginalEdgesV4(largeEffectCells), new Map([['INCUMBENT|v1', 1]]),
+)
+assert.equal(lowReferencePower.accepted.length, 1, 'significant economic benefit is not vetoed by power at a smaller reference effect')
+assert(lowReferencePower.accepted[0].pairedDeltaPowerAtMinimumEconomicDelta! < 0.8)
+assert.equal(lowReferencePower.globalPowerPass, false, 'low reference sensitivity stays visible, never fabricated as PASS')
+assert.equal(lowReferencePower.globalRiskPass, true)
+assert.equal(STRATEGY_REPLACEMENT_POLICY_V7.power_role, 'sensitivity_diagnostic_not_promotion_gate')
+const fullFamily = evaluatePairedStrategyReplacementsV7(
+  matureCells, [...matureEdges, { ...matureEdges[0], strategyId: 'PREFILTER_FAILED', productionEligible: false }],
+  new Map([['INCUMBENT|v1', 1]]), ['MATURE|v1', 'PREFILTER_FAILED|v1', 'MISSING_DATA|v1'],
+)
+assert.equal(fullFamily.holmFamilySize, 3, 'failed or missing candidates must not shrink the tested family')
+assert.equal(fullFamily.proposals[0].holmCriticalAlpha, 0.05 / 3)
 const source = fs.readFileSync('src/lib/strategyMarginalEdgeV4.ts', 'utf8')
 const orchestratorSource = fs.readFileSync('src/lib/updateOrchestrator.ts', 'utf8')
 assert.match(source, /canonicalRunIds\?: Record<string, string>/)

@@ -7,6 +7,7 @@ promotion must survive Mode B replay, tail-risk Monte Carlo, and PBO checks.
 from __future__ import annotations
 
 import os
+import math
 from dataclasses import asdict, dataclass
 from typing import Any
 
@@ -17,8 +18,8 @@ def _env_int(name: str, default: int) -> int:
         return default
     try:
         return int(raw)
-    except ValueError:
-        return default
+    except ValueError as exc:
+        raise ValueError(f'promotion_policy_invalid_integer:{name}') from exc
 
 
 def _env_float(name: str, default: float) -> float:
@@ -26,32 +27,52 @@ def _env_float(name: str, default: float) -> float:
     if not raw:
         return default
     try:
-        return float(raw)
-    except ValueError:
-        return default
+        value = float(raw)
+    except ValueError as exc:
+        raise ValueError(f'promotion_policy_invalid_number:{name}') from exc
+    if not math.isfinite(value):
+        raise ValueError(f'promotion_policy_nonfinite:{name}')
+    return value
 
 
 def _as_float(value: Any, default: float = 0.0) -> float:
     if value is None:
         return default
-    if isinstance(value, (int, float)):
-        return float(value)
     text = str(value).strip()
     if not text:
         return default
     try:
         if text.endswith("%"):
-            return float(text[:-1]) / 100.0
-        return float(text)
+            parsed = float(text[:-1]) / 100.0
+        else:
+            parsed = float(text)
+        return parsed if math.isfinite(parsed) else default
     except ValueError:
         return default
 
 
 def _as_int(value: Any, default: int = 0) -> int:
-    try:
-        return int(value)
-    except (TypeError, ValueError):
+    if isinstance(value, bool):
         return default
+    try:
+        number = float(value)
+        if not math.isfinite(number) or not number.is_integer():
+            return default
+        return int(number)
+    except (TypeError, ValueError, OverflowError):
+        return default
+
+
+def risk_metric_within(value: Any, maximum: float, *, inclusive: bool = True) -> bool:
+    """Risk fields are nonnegative magnitudes/probabilities, never signed P&L."""
+    observed = _as_float(value, math.nan)
+    return (type(maximum) in (int, float) and math.isfinite(maximum) and 0 <= maximum <= 1
+            and math.isfinite(observed) and 0 <= observed <= maximum and (inclusive or observed < maximum))
+
+
+def optional_metric(value: Any) -> float | None:
+    observed = _as_float(value, math.nan)
+    return observed if math.isfinite(observed) else None
 
 
 @dataclass(frozen=True)
@@ -67,6 +88,24 @@ class PromotionPolicy:
     min_regime_return: float = -0.02
     alpha_min_outcomes: int = 60
     alpha_min_regime_outcomes: int = 10
+
+    def __post_init__(self) -> None:
+        # Reject malformed configuration rather than silently installing a
+        # different gate. Defaults and legitimate overrides remain unchanged.
+        for name in ('min_trades', 'min_regime_trades', 'alpha_min_outcomes', 'alpha_min_regime_outcomes'):
+            value = getattr(self, name)
+            if type(value) is not int or value <= 0:
+                raise ValueError('promotion_policy_invalid_count:' + name)
+        for name in ('min_sharpe', 'min_profit_factor', 'max_backtest_mdd',
+                     'max_mc_mdd_95th', 'max_pbo', 'min_oos_mean_return', 'min_regime_return'):
+            value = getattr(self, name)
+            if type(value) not in (int, float) or not math.isfinite(value):
+                raise ValueError('promotion_policy_nonfinite:' + name)
+        for name in ('max_backtest_mdd', 'max_mc_mdd_95th', 'max_pbo'):
+            if not 0 < getattr(self, name) <= 1:
+                raise ValueError('promotion_policy_invalid_probability:' + name)
+        if self.min_profit_factor <= 0:
+            raise ValueError('promotion_policy_invalid_profit_factor')
 
     @classmethod
     def from_env(cls) -> "PromotionPolicy":
@@ -88,21 +127,37 @@ class PromotionPolicy:
         return asdict(self)
 
 
-def _regime_failures(per_regime: dict[str, Any], policy: PromotionPolicy) -> list[str]:
-    failures: list[str] = []
+def parse_regime_evidence(per_regime: Any) -> tuple[dict[str, dict[str, Any]], list[str]]:
+    """One numeric/source parser for the promotion owner and its UI packet."""
+    rows, failures = {}, []
+    if not isinstance(per_regime, dict):
+        return rows, ['regime_evidence_invalid']
     for regime, raw in (per_regime or {}).items():
         if not isinstance(raw, dict):
+            failures.append(f'regime_evidence_invalid:{regime}')
             continue
-        trades = _as_int(raw.get("trades") or raw.get("total_trades") or raw.get("n_trades"), 0)
-        ret = _as_float(
-            raw.get("return")
-            or raw.get("total_return")
-            or raw.get("oos_return")
-            or raw.get("avg_return"),
-            0.0,
+        trades = _as_int(next((raw[key] for key in ('trades', 'total_trades', 'n_trades')
+                              if raw.get(key) is not None), None), -1)
+        if trades < 0:
+            failures.append(f'regime_count_invalid:{regime}')
+            continue
+        ret = optional_metric(
+            next((raw[key] for key in ('return', 'total_return', 'oos_return', 'avg_return')
+                  if raw.get(key) is not None), None),
         )
-        if trades >= policy.min_regime_trades and ret < policy.min_regime_return:
-            failures.append(f"regime_return:{regime}")
+        rows[str(regime)] = {'trades': trades, 'return': ret}
+    return rows, failures
+
+
+def _regime_failures(per_regime: dict[str, Any], policy: PromotionPolicy) -> list[str]:
+    rows, failures = parse_regime_evidence(per_regime)
+    for regime, evidence in rows.items():
+        trades, ret = evidence['trades'], evidence['return']
+        if trades >= policy.min_regime_trades:
+            if ret is None:
+                failures.append(f"regime_return_missing:{regime}")
+            elif ret < policy.min_regime_return:
+                failures.append(f"regime_return:{regime}")
     return failures
 
 
@@ -143,7 +198,7 @@ def evaluate_promotion_candidate(
     if _as_float(backtest.get("profit_factor"), 0.0) < policy.min_profit_factor:
         failed.append("backtest_profit_factor")
 
-    if _as_float(backtest.get("max_drawdown"), 1.0) > policy.max_backtest_mdd:
+    if not risk_metric_within(backtest.get('max_drawdown'), policy.max_backtest_mdd):
         failed.append("backtest_max_drawdown")
 
     if str(monte_carlo.get("go_live_verdict") or "").upper() not in {"PASS"}:
@@ -153,7 +208,7 @@ def evaluate_promotion_candidate(
     if mc_method not in {"block_bootstrap", "regime_block_bootstrap"}:
         failed.append("monte_carlo_method")
 
-    if _as_float(monte_carlo.get("mdd_95th"), 1.0) > policy.max_mc_mdd_95th:
+    if not risk_metric_within(monte_carlo.get('mdd_95th'), policy.max_mc_mdd_95th):
         failed.append("monte_carlo_mdd_95th")
 
     if str(pbo.get("go_live_verdict") or "").upper() not in {"PASS"}:
@@ -162,13 +217,13 @@ def evaluate_promotion_candidate(
     if str(pbo.get("method") or "").lower() != "cscv_rank_logit":
         failed.append("pbo_method")
 
-    if _as_float(pbo.get("pbo"), 1.0) >= policy.max_pbo:
+    if not risk_metric_within(pbo.get('pbo'), policy.max_pbo, inclusive=False):
         failed.append("pbo_probability")
 
     if _as_float(pbo.get("oos_mean_return"), -1.0) < policy.min_oos_mean_return:
         failed.append("pbo_oos_mean_return")
 
-    failed.extend(_regime_failures(backtest.get("per_regime") or {}, policy))
+    failed.extend(_regime_failures(backtest.get('per_regime', {}), policy))
 
     if str(monte_carlo.get("source") or "").lower() != "backtest":
         warnings.append("monte_carlo_source_not_backtest")
@@ -188,12 +243,12 @@ def evaluate_promotion_candidate(
             "worker_parity_decision": worker_parity_decision,
             "sharpe": _as_float(backtest.get("sharpe"), 0.0),
             "profit_factor": _as_float(backtest.get("profit_factor"), 0.0),
-            "backtest_mdd": _as_float(backtest.get("max_drawdown"), 0.0),
+            "backtest_mdd": optional_metric(backtest.get('max_drawdown')),
             "mc_method": str(monte_carlo.get("simulation_method") or ""),
             "mc_block_size": monte_carlo.get("block_size"),
-            "mc_mdd_95th": _as_float(monte_carlo.get("mdd_95th"), 0.0),
+            "mc_mdd_95th": optional_metric(monte_carlo.get('mdd_95th')),
             "pbo_method": str(pbo.get("method") or ""),
-            "pbo": _as_float(pbo.get("pbo"), 1.0),
+            "pbo": optional_metric(pbo.get('pbo')),
             "oos_mean_return": _as_float(pbo.get("oos_mean_return"), 0.0),
         },
     }

@@ -80,6 +80,9 @@ def normalize_active8_cross_sectional_scores(
     artifact_target_semantics: dict[str, str],
     run_date: str,
     min_cross_section: int = 3,
+    active8_ensemble: dict[str, Any] | None = None,
+    pool_models: dict[str, dict[str, Any]] | None = None,
+    nav_authority=None,
 ) -> dict[str, Any]:
     """Replace incomparable model outputs with same-run market percentiles.
 
@@ -107,6 +110,15 @@ def normalize_active8_cross_sectional_scores(
         for model_name in CORE_CROSS_SECTIONAL_ALPHA_MODELS
         if model_name in eligible_models
     ]
+    selected_models = None
+    minimum_core_models = MIN_REQUIRED_CROSS_SECTIONAL_MODELS
+    if active8_ensemble is not None:
+        from services.ensemble_v2 import validate_active8_ensemble_artifact
+        validate_active8_ensemble_artifact(active8_ensemble, pool_models or {}, nav_authority=nav_authority)
+        selected_models = list(active8_ensemble["selected_models"])
+        required_core_models = [name for name in CORE_CROSS_SECTIONAL_ALPHA_MODELS if name in selected_models]
+        eligible_models = [name for name in eligible_models if name in selected_models]
+        minimum_core_models = len(required_core_models)
     ineligible_artifact_models = [
         model_name for model_name in ACTIVE_ALPHA_MODELS if model_name not in eligible_models
     ]
@@ -147,10 +159,10 @@ def normalize_active8_cross_sectional_scores(
         missing_versions = [name for name in available_models if name not in normalized_versions]
         row_blockers = [f"rank_missing:{name}" for name in missing_core_scores]
         row_blockers.extend(f"artifact_version_missing:{name}" for name in missing_versions)
-        if len(required_core_models) < MIN_REQUIRED_CROSS_SECTIONAL_MODELS:
+        if len(required_core_models) < minimum_core_models:
             row_blockers.append(
                 "verified_cross_sectional_model_count_below_minimum:"
-                f"{len(required_core_models)}<{MIN_REQUIRED_CROSS_SECTIONAL_MODELS}"
+                f"{len(required_core_models)}<{minimum_core_models}"
             )
         if not segment:
             row_blockers.append("market_segment_missing")
@@ -188,12 +200,14 @@ def normalize_active8_cross_sectional_scores(
                 for name in ACTIVE_ALPHA_MODELS
             },
             "required_core_models": list(required_core_models),
-            "minimum_required_cross_sectional_models": MIN_REQUIRED_CROSS_SECTIONAL_MODELS,
+            "minimum_required_cross_sectional_models": minimum_core_models,
+            "selected_models": selected_models,
+            "ensemble_payload_checksum": active8_ensemble.get("payload_checksum") if active8_ensemble else None,
             "ineligible_artifact_models": list(ineligible_artifact_models),
             "optional_sequence_models": list(OPTIONAL_SEQUENCE_ALPHA_MODELS),
             "optional_missing_models": optional_missing_models,
             "full_active8_coverage": not missing_scores,
-            "coverage_policy": "verified-core3-min-sequence-missingness-aware-oof-parity-v1",
+            "coverage_policy": "validated-bundle-selected-core-sequence-missingness-v1" if selected_models else "verified-core3-min-sequence-missingness-aware-oof-parity-v1",
             "model_set_signature": signature,
             "raw_scores": dict(raw_by_symbol.get(symbol, {})),
             "complete": not row_blockers,

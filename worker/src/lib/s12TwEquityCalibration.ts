@@ -1,3 +1,4 @@
+import { paperExecutionNow, paperExecutionDate } from './paperExecutionScope'
 import {
   DEFAULT_S12_TIMING_POLICY,
   normalizeS12TimingPolicy,
@@ -346,7 +347,7 @@ export async function inspectS12TwCalibrationLifecycleCensoring(
   db: D1Database,
   runDate: string,
   cadence: S12TwCalibrationCadence,
-  nowMs = Date.now(),
+  nowMs = paperExecutionNow(),
 ): Promise<S12TwCalibrationLifecycleCensoring> {
   const startDate = daysBefore(runDate, cadence === 'monthly' ? 180 : 90)
   const recentCutoff = new Date(nowMs - CALIBRATION_LIFECYCLE_RECENT_MS).toISOString()
@@ -407,7 +408,7 @@ export async function loadS12TwCalibrationEvidence(
   startDate: string,
   endDate: string,
 ): Promise<CalibrationEvidence[]> {
-  const lifecycleSnapshotAt = new Date().toISOString()
+  const lifecycleSnapshotAt = paperExecutionDate().toISOString()
   const snapshot = await db.prepare(`
     SELECT COALESCE(MAX(o.id), 0) AS max_id
       FROM s12_replay_trade_outcomes o
@@ -594,7 +595,7 @@ function buildArtifactCandidate(
   if (selectedDrawdown < baselineDrawdown) failedGates.push('validation_drawdown_non_degradation')
   if (validationMean < baselineValidationMean) failedGates.push('validation_mean_non_degradation')
   const approved = failedGates.length === 0
-  const nowIso = new Date().toISOString()
+  const nowIso = paperExecutionDate().toISOString()
   const tp1Mfe = Math.max(0, Math.min(0.5, quantile(profitable.map((row) => row.mfePct), 0.5) ?? 0))
   const tp2Mfe = Math.max(tp1Mfe, Math.min(0.8, quantile(profitable.map((row) => row.mfePct), 0.75) ?? tp1Mfe))
   const stopMae = Math.max(0, Math.min(0.25, quantile(train.filter((row) => row.pnlR > 0).map((row) => row.maePct), 0.8) ?? 0))

@@ -152,6 +152,34 @@ def test_promotion_policy_reads_env_threshold_overrides(monkeypatch):
     assert "monte_carlo_mdd_95th" in verdict["failed_gates"]
 
 
+def test_nonfinite_metrics_cannot_bypass_risk_comparisons():
+    for value in (float('nan'), float('inf'), '-Infinity', 'NaN%'):
+        backtest, monte_carlo, pbo = _passing_inputs()
+        backtest['max_drawdown'] = value
+        monte_carlo['mdd_95th'] = value
+        pbo['pbo'] = value
+        verdict = evaluate_promotion_candidate(backtest, monte_carlo, pbo)
+        assert verdict['decision'] == 'FAIL'
+        assert {'backtest_max_drawdown', 'monte_carlo_mdd_95th', 'pbo_probability'} <= set(verdict['failed_gates'])
+
+
+def test_nonfinite_policy_environment_cannot_disable_gate(monkeypatch):
+    monkeypatch.setenv('PROMOTION_MAX_MC_MDD_95TH', 'nan')
+    import pytest
+    with pytest.raises(ValueError, match='promotion_policy_nonfinite'):
+        PromotionPolicy.from_env()
+
+
+def test_regime_missing_performance_is_not_zero_or_proven_harm():
+    backtest, monte_carlo, pbo = _passing_inputs()
+    backtest['per_regime'] = {'bear': {'trades': 15, 'return': float('nan')}}
+    verdict = evaluate_promotion_candidate(backtest, monte_carlo, pbo)
+    assert 'regime_return_missing:bear' in verdict['failed_gates']
+    assert 'regime_return:bear' not in verdict['failed_gates']
+    backtest['per_regime']['bear'] = {'trades': 15, 'return': 0, 'total_return': -.5}
+    assert evaluate_promotion_candidate(backtest, monte_carlo, pbo)['decision'] == 'PASS'
+
+
 def test_alpha_policy_gate_requires_sandbox_candidate_with_enough_outcomes():
     backtest, monte_carlo, pbo = _passing_inputs()
     candidate = {

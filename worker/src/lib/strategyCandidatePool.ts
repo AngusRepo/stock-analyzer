@@ -1416,7 +1416,7 @@ export function buildLayer1StrategyBreadthPlan<T extends StrategyCandidatePoolCa
     strategySimilarityGraphEvidence?: StrategySimilarityGraphEvidence | null
     runtimeTeacherEvidence?: Record<string, Record<string, number>>
     previousSlateSymbols?: string[]
-    promotedRouteCalibration?: { runId: string; routeVersion: string; routeFloor: number } | null
+    promotedRouteCalibration?: { runId: string; routeVersion: string; routeFloor: number | null } | null
     policy?: StrategyCandidatePoolPolicy
   },
 ): Layer1StrategyBreadthPlan<T> {

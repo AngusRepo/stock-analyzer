@@ -109,19 +109,14 @@ from services.breeze2_reason_shadow import (
 from services.sector_flow_service import run_sector_flow_pipeline
 from services.pit_residual_shadow_service import run_pit_residual_shadow
 from services.pit_sector_alpha import load_pit_sector_alpha_experts, unavailable_sector_alpha
-from services.persona_service import (
-    ChipBar,
-    MarginBar,
-    PersonaOpinions,
-    compute_trust_opinion,
-    compute_retail_opinion,
-    write_opinions as write_persona_opinions,
-)
+from services.persona_service import write_opinions as write_persona_opinions
 from services.screener_seed_domain_shadow import load_screener_seed_domain_rows
 
 logger = logging.getLogger(__name__)
 MARKET_D1_CLIENT = client_proxy_for_domain(D1DataDomain.MARKET)
+CORE_D1_CLIENT = client_proxy_for_domain(D1DataDomain.CORE)
 LEARNING_D1_CLIENT = client_proxy_for_domain(D1DataDomain.LEARNING)
+PAPER_D1_CLIENT = client_proxy_for_domain(D1DataDomain.PAPER)
 
 
 DEFAULT_TIMESFM_SEQUENCE_CONTRACT_POINTS = daily_sequence_target_points()
@@ -430,6 +425,83 @@ def _sequence_model_subsets(
     return usable_by_model, excluded_by_model
 
 
+def _dispatch_sequence_point_counts(payloads: list[dict], series: list[dict]) -> dict:
+    """Capture actual dispatch counts, including absent histories (not zero)."""
+    counts = {}
+    for row in payloads:
+        symbol = str(row.get("symbol") or row.get("stock_id") or "").strip()
+        if not symbol or symbol in counts:
+            raise RuntimeError("pipeline_modal_sequence_membership:invalid_payload_symbols")
+        counts[symbol] = None
+    seen = set()
+    for row in series:
+        symbol = str(row.get("symbol") or row.get("stock_id") or "").strip()
+        if symbol not in counts or symbol in seen:
+            raise RuntimeError("pipeline_modal_sequence_membership:invalid_history_symbols")
+        seen.add(symbol)
+        prices = row.get("prices")
+        # Match the actual dispatch subset rule; a present malformed/empty
+        # history has zero usable points, an absent row remains unknown.
+        counts[symbol] = len(prices) if isinstance(prices, list) else 0
+    return counts
+
+
+def _frozen_sequence_membership(*, payloads, contract, bundle_contract,
+                                manifest_digest, contracts):
+    """Read sealed membership only. Never reconstruct prices during callback."""
+    prefix = "pipeline_modal_sequence_membership:"
+    if (not isinstance(contract, dict)
+            or contract.get("schema_version") != "pipeline-modal-sequence-input-contract-v2"
+            or contract.get("serving_manifest_digest") != manifest_digest
+            or contract.get("digest") != _pipeline_modal_canonical_digest(
+                {k: v for k, v in contract.items() if k != "digest"})
+            or bundle_contract != contract):
+        raise RuntimeError(prefix + "contract_mismatch")
+    symbols = list(_dispatch_sequence_point_counts(payloads, []))
+    points = contract.get("sequence_point_counts")
+    if "sequence_point_counts" in contract:
+        if (not isinstance(points, dict) or set(points) != set(symbols)
+                or any(p is not None and (type(p) is not int or p < 0) for p in points.values())):
+            raise RuntimeError(prefix + "point_counts_invalid")
+    else:
+        # Older sealed requests know eligibility, but not every stock's exact
+        # point count. Do not turn a minimum or truncated diagnostic into fact.
+        points = dict.fromkeys(symbols)
+    by_model = contract.get("by_model")
+    if not isinstance(by_model, dict) or set(by_model) != set(contracts):
+        raise RuntimeError(prefix + "model_set_mismatch")
+    usable, excluded = {}, {}
+    for field in ("by_model", "shadow_by_model"):
+        entries = contract.get(field)
+        if not isinstance(entries, dict):
+            raise RuntimeError(prefix + "models_missing")
+        for name, entry in entries.items():
+            if not isinstance(entry, dict):
+                raise RuntimeError(prefix + "entry_invalid")
+            model_contract = entry.get("sequence_contract")
+            required = model_contract.get("seq_len") if isinstance(model_contract, dict) else None
+            members = entry.get("symbols")
+            if (type(required) is not int or required <= 0
+                    or not isinstance(members, list)
+                    or any(not isinstance(s, str) or s not in points for s in members)
+                    or len(set(members)) != len(members)):
+                raise RuntimeError(prefix + "symbols_or_contract_invalid")
+            if field == "by_model" and model_contract != contracts[name]:
+                raise RuntimeError(prefix + "artifact_contract_mismatch")
+            eligible = set(members)
+            if "sequence_point_counts" in contract and any(
+                    (s in eligible) != (points[s] is not None and points[s] >= required)
+                    for s in symbols):
+                raise RuntimeError(prefix + "points_membership_mismatch")
+            if field == "by_model":
+                # These are membership rows, not invented zero/empty prices.
+                usable[name] = [{"symbol": s} for s in members]
+                excluded[name] = [{"symbol": s, "points": points[s],
+                                   "reason": "insufficient_sequence_points"}
+                                  for s in symbols if s not in eligible]
+    return usable, excluded, points
+
+
 def _sequence_coverage(series: list[dict], *, min_points: int = 50) -> dict[str, Any]:
     total = len(series or [])
     usable, _excluded = _sequence_contract_subset(series, min_points=min_points)
@@ -482,6 +554,7 @@ def _timesfm_sync_gate(
     model_status: dict[str, str],
     pool: dict | None,
     sequence_series: list[dict],
+    sequence_contract_points: int | None = None,
 ) -> tuple[bool, dict[str, Any]]:
     status = model_status.get("TimesFM", "retired")
     if status not in {"active", "degraded"}:
@@ -492,7 +565,8 @@ def _timesfm_sync_gate(
             "role": "l2_feature_sidecar",
         }
 
-    sequence_contract_points = _timesfm_sequence_contract_points(pool)
+    if sequence_contract_points is None:
+        sequence_contract_points = _timesfm_sequence_contract_points(pool)
     coverage = _sequence_coverage(sequence_series, min_points=sequence_contract_points)
     usable_series, excluded = _sequence_contract_subset(
         sequence_series,
@@ -569,6 +643,22 @@ class PipelineStateV2(TypedDict, total=False):
 
     # Computed
     payloads: list[dict]                    # PredictPayload as dict
+    payload_source_observations: dict       # Original bulk-read observations; retained by existing async state artifact
+    pipeline_sequence_observations: dict    # Dated adjusted prices shared by L2, formal L3 and Atomic slates
+    paired_nav_atomic_inputs: dict          # Canonical full replacement population and own pre-L2 stock slates
+    paired_nav_atomic_pre_l2: dict           # Original payload builder output per candidate; not inference/NAV
+    paired_nav_atomic_l2: dict              # Own-slate original L2 outputs, no native NAV credit
+    paired_nav_atomic_dispatch: dict        # Frozen v2 request plus every unavailable definition
+    paired_nav_atomic_ml: dict              # Own-slate original prediction merge, not allocation/NAV
+    paired_nav_atomic_personas: dict        # Same persona owner, candidate-specific membership
+    pipeline_persona_context: dict          # Immutable completed sentiment observations across retries
+    pipeline_recommendation_source_context: dict  # Original fundamental/sector observations, shared across arms
+    paired_nav_atomic_recommendation: dict  # Own recommendation execution, not native NAV completion
+    pipeline_allocator_history_context: dict  # Original risk lookback and adjusted return history
+    paired_nav_atomic_allocation: dict      # Original sparse/OPB outputs; no native/ledger authority
+    pipeline_screener_seed_context: dict    # Actual OPS/Core inputs and original merge, no historical PIT credit
+    persona_computation: dict               # Explicit missing/failed source diagnostics
+    pipeline_timesfm_context: dict          # Frozen release policy/version/sequence requirement shared by all slates
     timesfm_l2_sidecars: dict                # symbol -> TimesFM L2 sidecar payload
     timesfm_l2_summary: dict                 # L2 feature enrichment telemetry
     timesfm_l175_sidecars: dict              # Legacy key for TimesFM L2 sidecar payload
@@ -578,6 +668,7 @@ class PipelineStateV2(TypedDict, total=False):
     pipeline_modal_serving_context: dict      # Frozen model_pool/trading context for async Modal split path
     snapshot_recovery_lineage: dict           # Explicit non-native PIT recovery evidence
     predictions: dict                       # symbol ??ml result
+    nav_inference_receipt: dict             # Actual L3 outputs; not a publication or maturity grant
     l3_payloads: list[dict]                  # optional override; default is the full L1.5 slate after L2 TimesFM enrichment
     l3_predictions: dict                     # symbol -> formal L3 merged result
     final_recommendations: list[dict]       # after filter + scoring + allocation
@@ -588,6 +679,7 @@ class PipelineStateV2(TypedDict, total=False):
     expected_return_serving_preflight: dict  # L4/Fusion compatibility before row materialization
     expected_return_owner_coverage: dict     # valid owner or explicit abstention for every screener seed
     pit_sector_alpha_coverage: dict          # prior completed PIT sector expert coverage
+    paired_nav_collection: dict             # sealed allocation context; separate from EV/NAV maturity
     llm_reasons: dict                       # symbol ??{reason, watchPoints}
 
     breeze2_reason_shadow: dict             # symbol -> advisory-only Breeze2 shadow reason
@@ -611,10 +703,18 @@ async def node_load_inputs(state: PipelineStateV2) -> dict:
     logger.info("[Pipeline V2] node_load_inputs")
     run_date = state["run_date"]
 
-    screener_recs = await asyncio.to_thread(
-        load_screener_seed_domain_rows,
-        run_date=run_date,
-    )
+    seed_context = state.get("pipeline_screener_seed_context")
+    if seed_context and seed_context.get("status") == "captured":
+        from services.screener_seed_domain_merge import replay_screener_seed_context
+        screener_recs = replay_screener_seed_context(seed_context, run_date=run_date,
+            producer_run_id=state.get("screener_run_id"))
+    else:
+        seed_context = {}
+        screener_recs = await asyncio.to_thread(
+            load_screener_seed_domain_rows,
+            run_date=run_date,
+            captured_context=seed_context,
+        )
     if not screener_recs:
         raise RuntimeError(
             "screener_recs_missing: daily pipeline requires latest screener "
@@ -631,6 +731,7 @@ async def node_load_inputs(state: PipelineStateV2) -> dict:
     return {
         "active_stocks": active_stocks,
         "screener_recs": screener_recs,
+        "pipeline_screener_seed_context": seed_context,
         "screener_run_id": str(screener_recs[0].get("screener_run_id") or ""),
         "decision_universe_frozen_at": str(
             screener_recs[0].get("decision_universe_frozen_at") or ""
@@ -662,28 +763,89 @@ async def node_load_market_env(state: PipelineStateV2) -> dict:
     }
 
 
+async def node_capture_atomic_inputs(state: PipelineStateV2) -> dict:
+    from services.paired_nav_atomic_inputs import read_daily_population, prepare_daily_inputs, validate_daily_inputs
+    from services.payload_builder import CORE_D1_CLIENT, capture_payload_sources
+    from services.paired_nav_collection import shadow_failure
+    try:
+        saved = state.get('paired_nav_atomic_inputs')
+        if isinstance(saved, dict) and saved.get('status') == 'pre_l2_inputs_captured':
+            validate_daily_inputs(saved, signal_date=state['run_date'], producer_run_id=state['screener_run_id'],
+                                  formal_stocks=state['active_stocks'])
+            if state.get('pipeline_screener_seed_context') is not None:
+                from services.screener_seed_domain_merge import verify_canonical_seed_boundary
+                boundary = verify_canonical_seed_boundary(saved['population'], state['pipeline_screener_seed_context'])
+                if boundary != saved.get('screener_seed_boundary'):
+                    raise ValueError('paired_nav_atomic_screener_boundary_changed')
+            if not state.get('payload_source_observations'):
+                raise ValueError('paired_nav_atomic_frozen_raw_sources_missing')
+            return {}
+        if state.get('payload_source_observations') is not None:
+            # Do not add a freshly read candidate to an already-frozen baseline.
+            raise ValueError('paired_nav_atomic_capture_after_formal_freeze')
+        population = await read_daily_population(signal_date=state['run_date'], producer_run_id=state['screener_run_id'],
+            query=LEARNING_D1_CLIENT.query)
+        packet = await asyncio.to_thread(prepare_daily_inputs, population, signal_date=state['run_date'],
+            producer_run_id=state['screener_run_id'], formal_stocks=state['active_stocks'], query=CORE_D1_CLIENT.query,
+            screener_seed_context=state.get('pipeline_screener_seed_context'))
+        from services.paired_nav_native_holdings import capture_native_holdings, attach_holding_scopes
+        holdings = await asyncio.to_thread(capture_native_holdings, signal_date=state['run_date'],
+            definition_checksums=[r['definition_checksum'] for r in population['replacements']],
+            query=LEARNING_D1_CLIENT.query, writer=LEARNING_D1_CLIENT.batch_execute, paper_query=PAPER_D1_CLIENT.query)
+        packet = await asyncio.to_thread(attach_holding_scopes, packet, holdings, core_query=CORE_D1_CLIENT.query)
+        sources = await asyncio.to_thread(capture_payload_sources, packet['required_stocks'], state['run_date'])
+        return {'paired_nav_atomic_inputs': packet, 'payload_source_observations': sources}
+    except Exception as exc:
+        # Candidate setup failure cannot suppress valid formal recommendations.
+        # This explicit lane failure is retained for the terminal closure owner.
+        return {'paired_nav_atomic_inputs': shadow_failure('atomic_daily_inputs', exc)}
+
+
 async def node_build_payloads(state: PipelineStateV2) -> dict:
     """
     Build PredictPayload list for all active stocks (bulk D1 reads).
     """
     logger.info("[Pipeline V2] node_build_payloads")
-    from services.payload_builder import MarketEnv
+    from services.payload_builder import MarketEnv, capture_payload_sources
 
     # Reconstruct MarketEnv from dict
     me_dict = state["market_env"]
     market_env = MarketEnv(**{k: v for k, v in me_dict.items() if k in MarketEnv.__dataclass_fields__})
 
-    payloads = build_payloads(
-        active_stocks=state["active_stocks"],
-        market_env=market_env,
-        adaptive_params=state.get("adaptive_params") or {},
-        barrier_params=state.get("barrier_params") or {},
-        lifecycle_weights=state.get("lifecycle_weights") or {},
-        decision_date=state["run_date"],
-        trading_config=state.get("trading_config") or {},
-    )
-    payloads_dict = [_to_dict(p) for p in payloads]
-    return {"payloads": payloads_dict}
+    # Same-run retries reuse the captured raw observations. Never fetch a newer
+    # accuracy/taxonomy/price snapshot for only one side of a NAV comparison.
+    sources = state.get('payload_source_observations')
+    if sources is None:
+        sources = capture_payload_sources(state['active_stocks'], state['run_date'])
+    def build_slate(stocks):
+        return build_payloads(
+            active_stocks=stocks,
+            market_env=market_env,
+            adaptive_params=state.get("adaptive_params") or {},
+            barrier_params=state.get("barrier_params") or {},
+            lifecycle_weights=state.get("lifecycle_weights") or {},
+            decision_date=state["run_date"],
+            trading_config=state.get("trading_config") or {},
+            frozen_sources=sources,
+        )
+    payloads_dict = [_to_dict(p) for p in build_slate(state['active_stocks'])]
+    result = {"payloads": payloads_dict, "payload_source_observations": sources}
+    atomic = state.get('paired_nav_atomic_inputs')
+    if isinstance(atomic, dict) and atomic.get('status') == 'pre_l2_inputs_captured':
+        from services.paired_nav_atomic_inputs import validate_daily_inputs
+        from services.paired_nav_collection import shadow_failure
+        try:
+            packet = validate_daily_inputs(atomic, signal_date=state['run_date'], producer_run_id=state['screener_run_id'],
+                                           formal_stocks=state['active_stocks'])
+            result['paired_nav_atomic_pre_l2'] = {'status': 'pre_l2_payloads_built',
+                'input_checksum': packet['input_checksum'], 'source_checksum': sources['source_checksum'],
+                'slates': {key: [_to_dict(p) for p in build_slate(stocks)] for key, stocks in packet['candidate_stocks'].items()},
+                'holding_slates': {key: [_to_dict(p) for p in build_slate(scope['stocks'])]
+                    for key, scope in packet.get('holding_scopes', {}).items()},
+                'production_effect': False, 'promotion_allowed': False, 'nav_maturity_credit': 0}
+        except Exception as exc:
+            result['paired_nav_atomic_pre_l2'] = shadow_failure('atomic_pre_l2_payloads', exc)
+    return result
 
 
 async def node_ml_predict(state: PipelineStateV2) -> dict:
@@ -712,14 +874,6 @@ async def node_ml_predict(state: PipelineStateV2) -> dict:
     if not payloads:
         return {"predictions": {}}
 
-    # Build shared close-price series once for time-series predictors, then
-    # enrich from the FinLab long-history sequence artifact when available.
-    base_sequence_series = build_state_space_series_from_payloads(payloads)
-    sequence_series, sequence_dataset_meta = enrich_state_space_series_with_long_history(
-        base_sequence_series,
-        target_points=daily_sequence_target_points(),
-    )
-
     modal_prediction_bundle = state.get("modal_prediction_bundle") or {}
     use_modal_prediction_bundle = (
         isinstance(modal_prediction_bundle, dict)
@@ -739,8 +893,11 @@ async def node_ml_predict(state: PipelineStateV2) -> dict:
         pool=serving_pool,
         model_status=model_status,
     )
-    sequence_series_by_model, sequence_excluded_by_model = _sequence_model_subsets(
-        sequence_series,
+    sequence_series_by_model, sequence_excluded_by_model, sequence_point_counts = _frozen_sequence_membership(
+        payloads=payloads,
+        contract=state.get("pipeline_modal_sequence_input_contract"),
+        bundle_contract=modal_prediction_bundle.get("sequence_input_contract"),
+        manifest_digest=serving_context.get("serving_manifest_digest"),
         contracts=sequence_contracts,
     )
     sequence_eligible_by_model = {
@@ -751,16 +908,10 @@ async def node_ml_predict(state: PipelineStateV2) -> dict:
         }
         for model_name, rows in sequence_series_by_model.items()
     }
-    sequence_excluded_by_model_symbol = {
-        model_name: {
-            str(row.get("symbol") or ""): row
-            for row in rows
-            if isinstance(row, dict) and row.get("symbol")
-        }
-        for model_name, rows in sequence_excluded_by_model.items()
-    }
     sequence_dataset_meta = {
-        **sequence_dataset_meta,
+        **(modal_prediction_bundle.get("sequence_dataset_meta") or {}),
+        "membership_source": "frozen_dispatch_sequence_input_contract",
+        "sequence_point_counts": sequence_point_counts,
         "sequence_model_contracts": {
             model_name: {
                 **contract,
@@ -776,14 +927,21 @@ async def node_ml_predict(state: PipelineStateV2) -> dict:
         "[Pipeline V2] node_ml_predict using async Modal prediction bundle run_id=%s",
         modal_prediction_bundle.get("run_id"),
     )
-    results = modal_prediction_bundle.get("predict_batch_v2_results") or []
-    gnn_raw = modal_prediction_bundle.get("gnn_graphsage_raw") or {"results": []}
-    dlinear_raw = modal_prediction_bundle.get("dlinear_raw") or {"results": []}
-    patchtst_raw = modal_prediction_bundle.get("patchtst_raw") or {"results": []}
-    itransformer_raw = modal_prediction_bundle.get("itransformer_raw") or {"results": []}
+    # Normalization/ensemble attachment mutate their inputs. Preserve raw
+    # dispatch evidence for retries and NAV consumers; do not copy the much
+    # larger nested candidate bundles, which are not inputs to this merge.
+    from copy import deepcopy
+    merge_outputs = deepcopy({key: modal_prediction_bundle.get(key) for key in (
+        "predict_batch_v2_results", "gnn_graphsage_raw", "dlinear_raw",
+        "patchtst_raw", "itransformer_raw", "active8_sequence_shadow_raw")})
+    results = merge_outputs.get("predict_batch_v2_results") or []
+    gnn_raw = merge_outputs.get("gnn_graphsage_raw") or {"results": []}
+    dlinear_raw = merge_outputs.get("dlinear_raw") or {"results": []}
+    patchtst_raw = merge_outputs.get("patchtst_raw") or {"results": []}
+    itransformer_raw = merge_outputs.get("itransformer_raw") or {"results": []}
     active8_sequence_shadow_raw = (
-        modal_prediction_bundle.get("active8_sequence_shadow_raw")
-        if isinstance(modal_prediction_bundle.get("active8_sequence_shadow_raw"), dict)
+        merge_outputs.get("active8_sequence_shadow_raw")
+        if isinstance(merge_outputs.get("active8_sequence_shadow_raw"), dict)
         else {}
     )
     stage_timings = dict(modal_prediction_bundle.get("stage_timings") or {})
@@ -1018,15 +1176,10 @@ async def node_ml_predict(state: PipelineStateV2) -> dict:
         sequence_model_eligibility = {}
         for model_name, contract in sequence_contracts.items():
             eligible = sym in (sequence_eligible_by_model.get(model_name) or set())
-            exclusion = (sequence_excluded_by_model_symbol.get(model_name) or {}).get(sym) or {}
             sequence_model_eligibility[model_name] = {
                 "eligible": eligible,
                 "required_sequence_points": int(contract["seq_len"]),
-                "available_sequence_points": (
-                    int(contract["seq_len"])
-                    if eligible
-                    else exclusion.get("points")
-                ),
+                "available_sequence_points": sequence_point_counts[sym],
                 "reason": (
                     "active8_sequence_history_contract_met"
                     if eligible
@@ -1107,6 +1260,13 @@ async def node_ml_predict(state: PipelineStateV2) -> dict:
         rank_run_date = max(payload_dates, default="")
     if not rank_run_date:
         raise RuntimeError("active8_rank_run_date_missing")
+    pool_models = serving_pool.get('models') if isinstance(serving_pool.get('models'), dict) else {}
+    active8_ensemble = serving_manifest.get('active8_ensemble')
+    nav_authority = None
+    if serving_manifest.get('active8_nav_inference') is not None:
+        from services.active8_nav_inference import restore_frozen_nav_inference
+        nav_authority = restore_frozen_nav_inference(serving_manifest['active8_nav_inference'],
+            artifact=active8_ensemble, pool_models=pool_models)
     rank_normalization = normalize_active8_cross_sectional_scores(
         pred_map,
         artifact_versions=active_versions,
@@ -1119,6 +1279,9 @@ async def node_ml_predict(state: PipelineStateV2) -> dict:
             for model_name in ACTIVE_ALPHA_MODELS
         },
         run_date=rank_run_date,
+        active8_ensemble=active8_ensemble,
+        pool_models=pool_models,
+        nav_authority=nav_authority,
     )
     logger.info("[Pipeline V2] Active-8 rank normalization: %s", rank_normalization)
 
@@ -1159,8 +1322,6 @@ async def node_ml_predict(state: PipelineStateV2) -> dict:
         f"challenger_shadow={sum(1 for v in pred_map.values() if v.get('challenger_rank_scores'))}"
     )
 
-    pool_models = serving_pool.get("models") if isinstance(serving_pool.get("models"), dict) else {}
-    active8_ensemble = serving_manifest.get("active8_ensemble") if isinstance(serving_manifest, dict) else None
     if evidence_only:
         if active8_ensemble is not None:
             raise RuntimeError("formal_layer3_evidence_only_ensemble_must_be_absent")
@@ -1176,7 +1337,10 @@ async def node_ml_predict(state: PipelineStateV2) -> dict:
             raise RuntimeError("formal_layer3_active8_ensemble_unavailable")
         for sym, row in pred_map.items():
             try:
-                _attach_ensemble_v2(row, active8_ensemble, pool_models)
+                if nav_authority is None:
+                    _attach_ensemble_v2(row, active8_ensemble, pool_models)
+                else:
+                    _attach_ensemble_v2(row, active8_ensemble, pool_models, nav_authority=nav_authority)
             except Exception as exc:
                 row["ensemble_v2_error"] = f"{type(exc).__name__}: {exc}"
                 raise RuntimeError(f"formal_layer3_active8_ensemble_failed:{sym}:{exc}") from exc
@@ -1185,6 +1349,10 @@ async def node_ml_predict(state: PipelineStateV2) -> dict:
             raise RuntimeError(f"formal_layer3_active8_ensemble_incomplete:{merged_count}/{len(pred_map)}")
         logger.info("[Pipeline V2] learned Active-8 ensemble attached: %s/%s", merged_count, len(pred_map))
 
+    from services.active8_nav_execution import attach_execution_receipt
+    nav_execution = attach_execution_receipt(predictions=pred_map, manifest=serving_manifest,
+        pool_models=pool_models, run_id=state.get('producer_run_id') or state.get('run_id'),
+        run_date=state['run_date'])
     dispersion = build_prediction_dispersion_report(pred_map)
     logger.info(
         "[Pipeline V2] Prediction dispersion: "
@@ -1196,6 +1364,7 @@ async def node_ml_predict(state: PipelineStateV2) -> dict:
     )
     return {
         "predictions": pred_map,
+        "nav_inference_receipt": nav_execution,
         "prediction_dispersion": dispersion,
         "modal_wait_telemetry": wait_telemetry,
     }
@@ -1271,12 +1440,64 @@ def _payload_with_timesfm_l175_sidecar(payload: dict, sidecar: dict[str, Any]) -
     return out
 
 
+def _pipeline_sequence_inputs(state: PipelineStateV2, payloads: list[dict]):
+    from services.paired_nav_journal import digest
+    from services.state_space_series import sequence_input_fingerprints, read_frozen_sequence_inputs
+    saved = state.get('pipeline_sequence_observations')
+    if saved is None:
+        # A price-only union is safe for a univariate source read, NOT for peer
+        # features, ranking, graph inference or a combined candidate payload.
+        union = {row['symbol']: row for row in payloads}
+        fingerprints = sequence_input_fingerprints(payloads)
+        atomic = state.get('paired_nav_atomic_pre_l2') or {}
+        if atomic.get('status') == 'pre_l2_payloads_built':
+            for rows in [*atomic['slates'].values(), *atomic.get('holding_slates', {}).values()]:
+                for row in rows:
+                    symbol = row['symbol']
+                    fingerprint = sequence_input_fingerprints([row])[symbol]
+                    if symbol in fingerprints and fingerprints[symbol] != fingerprint:
+                        raise ValueError('sequence_snapshot_shared_raw_inputs_changed')
+                    fingerprints[symbol] = fingerprint
+                    union.setdefault(symbol, row)
+        raw = list(union.values())
+        base = build_state_space_series_from_payloads(raw)
+        series, metadata = enrich_state_space_series_with_long_history(base,
+            target_points=daily_sequence_target_points(), payloads=raw, decision_date=state['run_date'])
+        body = _json_safe({'schema_version': 'pipeline-sequence-observations-v1', 'signal_date': state['run_date'],
+            'input_fingerprints': fingerprints, 'series': series, 'metadata': metadata,
+            'observed_at': datetime.now(timezone.utc).isoformat()})
+        saved = {**body, 'source_checksum': digest(body)}
+        # Validate before publishing into the shared state.
+        read_frozen_sequence_inputs(saved, decision_date=state['run_date'], payloads=raw)
+        state['pipeline_sequence_observations'] = saved
+    return read_frozen_sequence_inputs(saved, decision_date=state['run_date'], payloads=payloads)
+
+
 async def node_l2_timesfm_enrich(state: PipelineStateV2) -> dict:
+    result = await _node_l2_timesfm_enrich(state)
+    # LangGraph persists returned updates, not arbitrary input-dict mutations.
+    if state.get('pipeline_sequence_observations') is not None:
+        result['pipeline_sequence_observations'] = state['pipeline_sequence_observations']
+    if state.get('pipeline_timesfm_context') is not None:
+        result['pipeline_timesfm_context'] = state['pipeline_timesfm_context']
+    if (state.get('paired_nav_atomic_pre_l2') or {}).get('status') == 'pre_l2_payloads_built':
+        from services.paired_nav_atomic_l2 import prepare_atomic_l2
+        from services.paired_nav_collection import shadow_failure
+        try:
+            result['paired_nav_atomic_l2'] = await prepare_atomic_l2(state, result, enrich=_node_l2_timesfm_enrich)
+        except Exception as exc:
+            result['paired_nav_atomic_l2'] = shadow_failure('atomic_l2', exc)
+    return result
+
+
+async def _node_l2_timesfm_enrich(state: PipelineStateV2) -> dict:
     """Build TimesFM L2 sidecar features before formal L3 8ML inference."""
     from services import modal_client
 
     payloads = state.get("payloads") or []
-    if not payloads:
+    # A no-pick baseline can still have Atomic candidates. Capture their shared
+    # source/policy before returning the baseline's empty/no-sidecar outcome.
+    if not payloads and (state.get('paired_nav_atomic_pre_l2') or {}).get('status') != 'pre_l2_payloads_built':
         summary = {"status": "skipped", "reason": "empty_payloads", "layer": "L2"}
         return {
             "timesfm_l2_sidecars": {},
@@ -1285,25 +1506,40 @@ async def node_l2_timesfm_enrich(state: PipelineStateV2) -> dict:
             "timesfm_l175_summary": summary,
         }
 
-    release_policy = _timesfm_l175_release_policy()
     try:
-        model_status, active_versions, _challenger_versions, _pool_versions_loaded = await asyncio.to_thread(_load_model_pool_versions)
-        serving_model_status, serving_pool = await asyncio.to_thread(
-            _load_active8_serving_pool
-        )
-        if serving_model_status:
-            model_status = _merge_model_status_preserving_sidecars(model_status, serving_model_status)
+        from services.paired_nav_journal import digest
+        from copy import deepcopy
+        frozen = state.get('pipeline_timesfm_context')
+        if frozen is not None:
+            if (frozen.get('schema_version') != 'pipeline-timesfm-context-v1'
+                    or frozen.get('signal_date') != state['run_date']
+                    or frozen.get('source_checksum') != digest({k: v for k, v in frozen.items() if k != 'source_checksum'})):
+                raise ValueError('paired_nav_timesfm_frozen_context_invalid')
+            release_policy = deepcopy(frozen['release_policy'])
+            model_status, active_versions, serving_pool = (deepcopy(frozen[k]) for k in ('model_status', 'active_versions', 'serving_pool'))
+            if (model_status.get('TimesFM') in {'active', 'degraded'}
+                    and (type(frozen.get('sequence_contract_points')) is not int or frozen['sequence_contract_points'] <= 0)):
+                raise ValueError('paired_nav_timesfm_frozen_sequence_contract_missing')
+        else:
+            release_policy = _timesfm_l175_release_policy()
+            model_status, active_versions, _challenger_versions, _pool_versions_loaded = await asyncio.to_thread(_load_model_pool_versions)
+            serving_model_status, serving_pool = await asyncio.to_thread(_load_active8_serving_pool)
+            if serving_model_status:
+                model_status = _merge_model_status_preserving_sidecars(model_status, serving_model_status)
 
-        base_sequence_series = build_state_space_series_from_payloads(payloads)
-        sequence_series, sequence_dataset_meta = enrich_state_space_series_with_long_history(
-            base_sequence_series,
-            target_points=daily_sequence_target_points(),
-        )
+        sequence_series, sequence_dataset_meta = _pipeline_sequence_inputs(state, payloads)
         timesfm_allowed, timesfm_gate = _timesfm_sync_gate(
             model_status=model_status,
             pool=serving_pool,
             sequence_series=sequence_series,
+            **({'sequence_contract_points': frozen.get('sequence_contract_points')} if frozen else {}),
         )
+        if frozen is None:
+            core = _json_safe({'schema_version': 'pipeline-timesfm-context-v1', 'signal_date': state['run_date'],
+                'release_policy': release_policy, 'model_status': model_status, 'active_versions': active_versions,
+                'serving_pool': serving_pool, 'sequence_contract_points': timesfm_gate.get('sequence_contract_points'),
+                'observed_at': datetime.now(timezone.utc).isoformat()})
+            state['pipeline_timesfm_context'] = {**core, 'source_checksum': digest(core)}
         if not timesfm_allowed:
             return {
                 "timesfm_l175_sidecars": {},
@@ -1422,6 +1658,19 @@ async def node_l2_timesfm_enrich(state: PipelineStateV2) -> dict:
 
 
 async def node_l3_formal_predict(state: PipelineStateV2) -> dict:
+    result = await _node_l3_formal_predict(state)
+    if 'paired_nav_atomic_dispatch' in state:
+        from services.paired_nav_atomic_dispatch import consume_atomic_results
+        from services.paired_nav_collection import shadow_failure
+        try:
+            result['paired_nav_atomic_ml'] = await consume_atomic_results(state, result,
+                validate=_validate_pipeline_modal_feature_bundle_before_writes, merge=node_ml_predict)
+        except Exception as exc:
+            result['paired_nav_atomic_ml'] = shadow_failure('atomic_ml_callback', exc)
+    return result
+
+
+async def _node_l3_formal_predict(state: PipelineStateV2) -> dict:
     """Run formal L3 families on the full post-L2 TimesFM-enriched slate."""
     l3_payloads = state.get("l3_payloads") or state.get("payloads") or []
     l2_predictions = dict(state.get("l2_predictions") or state.get("predictions") or {})
@@ -1458,6 +1707,7 @@ async def node_l3_formal_predict(state: PipelineStateV2) -> dict:
     return {
         "predictions": merged_predictions,
         "l3_predictions": l3_predictions,
+        "nav_inference_receipt": l3_result.get('nav_inference_receipt'),
         "prediction_dispersion": dispersion,
         "modal_wait_telemetry": l3_result.get("modal_wait_telemetry"),
         "l3_modal_wait_telemetry": l3_result.get("modal_wait_telemetry"),
@@ -1808,131 +2058,53 @@ def _attach_ensemble_v2(
     pred: dict,
     artifact: dict[str, Any],
     pool_models: dict[str, dict[str, Any]],
+    *, nav_authority=None,
 ) -> None:
     """Attach only the immutable learned Active-8 ensemble; no legacy policy fallback."""
-    attach_ensemble_v2(pred, artifact, pool_models)
+    if nav_authority is None:
+        attach_ensemble_v2(pred, artifact, pool_models)
+    else:
+        attach_ensemble_v2(pred, artifact, pool_models, nav_authority=nav_authority)
 
 async def node_compute_personas(state: PipelineStateV2) -> dict:
-    """
-    Taiwan-persona augmentation layer (??? + ????contrarian).
-
-    For each active stock with a payload, compute two opinions using
-    chip_data (trust_net) and margin_data (margin_balance) already loaded
-    into the payload, plus FinLab industry-theme PTT sentiment via
-    concept_buzz.
-
-    Written to persona_opinions D1 table AND returned in state for the
-    recommendation node (Phase 2 score integration).
-
-    Non-fatal: failures log a warning but do not block the pipeline.
-    """
+    """Same calculator for formal/candidate slates; persist only formal rows."""
     logger.info("[Pipeline V2] node_compute_personas")
+    from services.pipeline_persona_context import capture_persona_context, compute_payload_personas
+    from services.paired_nav_collection import shadow_failure
     run_date = state["run_date"]
     payloads = state.get("payloads") or []
-    if not payloads:
-        return {"persona_opinions": {}}
-
-    # ???? Bulk-load concept sentiment: symbol ??best_concept ??sentiment_avg ????
-    # One query each for tags + buzz, then join in memory. Keeps D1 QPS low.
-    symbols = [p.get("stock_id") or p.get("symbol") for p in payloads]
-    symbols = [s for s in symbols if s]
-    sentiment_by_symbol: dict[str, float] = {}
-    try:
-        # Top FinLab industry theme per symbol (highest weight)
-        tag_rows: list[dict[str, Any]] = []
-        for chunk in _d1_bind_chunks(list(symbols)):
-            placeholders = ",".join("?" * len(chunk))
-            tag_rows.extend(MARKET_D1_CLIENT.query(
-                f"SELECT symbol, tag FROM finlab_taxonomy_tags "
-                f"WHERE tag_type='industry_theme' "
-                f"AND source='finlab.security_industry_themes' "
-                f"AND symbol IN ({placeholders}) ORDER BY symbol, weight DESC, tag",
-                chunk,
-            ) or [])
-        top_concept_by_symbol: dict[str, str] = {}
-        for r in tag_rows or []:
-            sym = r.get("symbol")
-            if sym and sym not in top_concept_by_symbol:
-                top_concept_by_symbol[sym] = r.get("tag")
-
-        # Today's concept_buzz sentiment for those concepts
-        concepts = list({c for c in top_concept_by_symbol.values() if c})
-        if concepts:
-            buzz_rows: list[dict[str, Any]] = []
-            for chunk in _d1_bind_chunks(concepts):
-                cp_placeholders = ",".join("?" * len(chunk))
-                buzz_rows.extend(MARKET_D1_CLIENT.query(
-                    f"SELECT concept, sentiment_avg FROM concept_buzz "
-                    f"WHERE date = ? AND concept IN ({cp_placeholders})",
-                    [run_date, *chunk],
-                ) or [])
-            sent_by_concept: dict[str, float] = {}
-            for r in buzz_rows or []:
-                c = r.get("concept")
-                s = r.get("sentiment_avg")
-                if c is not None and s is not None:
-                    sent_by_concept[c] = float(s)
-            for sym, concept in top_concept_by_symbol.items():
-                if concept in sent_by_concept:
-                    sentiment_by_symbol[sym] = sent_by_concept[concept]
-    except Exception as e:
-        logger.warning(f"[Pipeline V2] persona sentiment lookup failed (non-fatal): {e}")
-
-    # ???? Compute per-symbol opinions ??????????????????????????????????????????????????????????????????????????????????
-    from datetime import date as _date
-    try:
-        today_dt = _date.fromisoformat(run_date)
-    except Exception:
-        today_dt = _date.today()
-
-    opinions: list[PersonaOpinions] = []
-    opinions_dict: dict[str, dict] = {}
-    for p in payloads:
-        sym = p.get("stock_id") or p.get("symbol")
-        if not sym:
-            continue
-        chips = p.get("chips") or []
-        if not chips:
-            continue
-
-        chip_bars: list[ChipBar] = []
-        margin_bars: list[MarginBar] = []
-        for row in chips:
-            d = row.get("date")
-            if not d:
-                continue
-            tn = row.get("trust_net")
-            if tn is not None:
-                chip_bars.append(ChipBar(date=str(d), trust_net=float(tn)))
-            mb = row.get("margin_balance")
-            if mb is not None:
-                margin_bars.append(MarginBar(date=str(d), margin_balance=float(mb)))
-
-        sentiment = sentiment_by_symbol.get(sym)
-
+    prepared, extra_payloads, atomic_failure = None, [], None
+    if 'paired_nav_atomic_ml' in state:
         try:
-            trust = compute_trust_opinion(chip_bars, today_dt)
-            retail = compute_retail_opinion(margin_bars, sentiment)
-        except Exception as e:
-            logger.warning(f"[Pipeline V2] persona compute failed for {sym}: {e}")
-            continue
-
-        opinions.append(PersonaOpinions(
-            symbol=sym, date=run_date, trust=trust, retail=retail,
-        ))
-        opinions_dict[sym] = {
-            "trust": trust.to_dict(),
-            "retail": retail.to_dict(),
-        }
-
-    # ???? Persist to D1 (non-fatal) ??????????????????????????????????????????????????????????????????????????????????????
+            from services.paired_nav_atomic_personas import atomic_persona_slates
+            prepared = atomic_persona_slates(state)
+            extra_payloads = [p for rows in prepared['slates'].values() for p in rows]
+        except Exception as exc:
+            atomic_failure = shadow_failure('atomic_persona_inputs', exc)
+    context = capture_persona_context(run_date=run_date, formal_payloads=payloads,
+        extra_payloads=extra_payloads, query=MARKET_D1_CLIENT.query,
+        saved=state.get('pipeline_persona_context'),
+        read_holiday=lambda key: kv_client.get(key, strict=True))
+    opinions, computation = compute_payload_personas(payloads=payloads, run_date=run_date, context=context,
+        allow_unavailable_sentiment=True)
+    if computation['errors']:
+        logger.warning('[Pipeline V2] persona evidence incomplete for %s', sorted(computation['errors']))
+    # No candidate can write its opinion into the formal persona table.
     try:
         written = write_persona_opinions(client_for_domain(D1DataDomain.LEARNING), opinions)
         logger.info(f"[Pipeline V2] persona opinions written: {written}/{len(opinions)}")
     except Exception as e:
         logger.warning(f"[Pipeline V2] persona D1 write failed (non-fatal): {e}")
 
-    return {"persona_opinions": opinions_dict}
+    result = {'persona_opinions': computation['opinions'], 'persona_computation': computation,
+              'pipeline_persona_context': context}
+    if prepared is not None:
+        from services.paired_nav_atomic_personas import compute_atomic_personas
+        result['paired_nav_atomic_personas'] = compute_atomic_personas(
+            prepared=prepared, run_date=run_date, context=context)
+    elif atomic_failure is not None:
+        result['paired_nav_atomic_personas'] = atomic_failure
+    return result
 
 
 async def node_compute_sector_flow(state: PipelineStateV2) -> dict:
@@ -2168,6 +2340,27 @@ async def node_recommend(state: PipelineStateV2) -> dict:
         expected_return_serving_preflight,
     )
     if evidence_only_result is not None:
+        from services.paired_nav_journal import freeze_snapshot
+        from services.paired_nav_collection import shadow_failure
+        try:
+            seal = await asyncio.to_thread(freeze_snapshot,
+                signal_date=state["run_date"],
+                source_run_id=str(state.get("producer_run_id") or f"daily:{state['run_date']}"),
+                snapshot_kind="allocation_context", query=LEARNING_D1_CLIENT.query,
+                writer=LEARNING_D1_CLIENT.batch_execute,
+                content={"status": "not_applicable_no_formal_ml_ensemble",
+                         "serving_preflight": expected_return_serving_preflight,
+                         "trading_config": trading_cfg,
+                         "candidate_symbols": sorted(str(row["symbol"]) for row in screener_recs),
+                         "production_effect": False, "promotion_allowed": False,
+                         "nav_maturity_credit": 0},
+            )
+            evidence_only_result["paired_nav_collection"] = {
+                "status": "not_applicable_no_formal_ml_ensemble",
+                "snapshot_id": seal["snapshot_id"], "nav_maturity_credit": 0,
+            }
+        except Exception as exc:
+            evidence_only_result["paired_nav_collection"] = shadow_failure('abstention_context_seal', exc)
         logger.warning(
             "[Pipeline V2] Active-8 evidence-only lane closed %s seeds with zero actionable recommendations",
             len(screener_recs),
@@ -2175,24 +2368,23 @@ async def node_recommend(state: PipelineStateV2) -> dict:
         return evidence_only_result
 
     decision_cutoff = str(state.get("decision_universe_frozen_at") or "").strip()
-    fallback_industries = {
-        str(rec.get("symbol") or ""): str(rec.get("industry") or rec.get("sector") or "")
-        for rec in screener_recs
-        if rec.get("symbol")
-    }
-    try:
-        sector_experts = await asyncio.to_thread(
-            load_pit_sector_alpha_experts,
-            MARKET_D1_CLIENT.query,
-            signal_date=state["run_date"],
-            symbols=[str(rec.get("symbol") or "") for rec in screener_recs],
-            fallback_industry_by_symbol=fallback_industries,
-            knowledge_cutoff=decision_cutoff,
-        )
-        sector_load_error = None
-    except Exception as exc:  # noqa: BLE001 - unavailable evidence must remain explicit.
-        sector_experts = {}
-        sector_load_error = f"{type(exc).__name__}:{exc}"
+    from services.recommendation_source_context import capture_recommendation_sources
+    from services.paired_nav_collection import shadow_failure
+    atomic_prepared, atomic_recommendation, candidate_recs = None, None, {}
+    if state.get('paired_nav_atomic_inputs'):
+        try:
+            from services.paired_nav_atomic_recommendation import prepare_atomic_recommendations
+            atomic_prepared = prepare_atomic_recommendations(state)
+            candidate_recs = {k: d['screener_recs'] for k, d in atomic_prepared['definitions'].items() if d['status'] == 'ready'}
+        except Exception as exc:
+            atomic_recommendation = shadow_failure('atomic_recommendation_inputs', exc)
+    recommendation_sources = await asyncio.to_thread(capture_recommendation_sources,
+        run_date=state['run_date'], formal_recs=screener_recs, candidate_recs=candidate_recs,
+        knowledge_cutoff=decision_cutoff, query=MARKET_D1_CLIENT.query,
+        core_query=CORE_D1_CLIENT.query,
+        saved=state.get('pipeline_recommendation_source_context'))
+    sector_experts = recommendation_sources['formal']['pit_sector_alpha_by_symbol']
+    sector_load_error = recommendation_sources['formal']['sector_load_error']
     sector_loaded = sum(
         1
         for expert in sector_experts.values()
@@ -2218,50 +2410,53 @@ async def node_recommend(state: PipelineStateV2) -> dict:
         "same_signal_date_sector_flow_allowed": False,
     }
 
-    fundamental_quality_by_symbol = load_fundamental_quality_by_symbol(screener_recs, state["run_date"])
+    fundamental_quality_by_symbol = recommendation_sources['formal']['fundamental_quality_by_symbol']
 
-    final, sell_count, filter_stage_diagnostics = filter_and_score_recommendations(
-        screener_recs,
-        state["predictions"],
-        state["payloads"],
-        persona_opinions=state.get("persona_opinions") or {},
-        persona_weight=persona_weight,
-        regime_label=regime_label,
-        regime_surface=regime_surface,
-        alpha_policy=alpha_policy,
-        fundamental_quality_by_symbol=fundamental_quality_by_symbol,
-        pit_sector_alpha_by_symbol=sector_experts,
-        run_date=state["run_date"],
-        include_filtered_diagnostics=True,
+    from services.paired_nav_recommendation_path import run_and_capture_recommendation_path
+    from services.paired_nav_l3_candidate import load_candidate_ensembles
+    from services.paired_nav_l3_dispatch import capture_candidate_selection
+    recommendation_result, recommendation_context = run_and_capture_recommendation_path(
+        inputs={
+            "screener_recs": screener_recs, "predictions": state["predictions"],
+            "payloads": state["payloads"],
+            "persona_context": state.get("pipeline_persona_context"),
+            "screener_seed_context": state.get("pipeline_screener_seed_context"),
+            "recommendation_source_context": recommendation_sources,
+            "filter_options": {
+                "persona_opinions": state.get("persona_opinions") or {},
+                "persona_weight": persona_weight, "regime_label": regime_label,
+                "regime_surface": regime_surface, "alpha_policy": alpha_policy,
+                "fundamental_quality_by_symbol": fundamental_quality_by_symbol,
+                "pit_sector_alpha_by_symbol": sector_experts, "run_date": state["run_date"],
+            },
+            "l2_summary": state.get("timesfm_l2_summary") or state.get("timesfm_l175_summary"),
+        },
+        filter_rows=filter_and_score_recommendations,
+        enrich_l2=apply_l2_timesfm_evidence, enrich_core=apply_core_family_evidence,
+        candidate_reader=lambda: (
+            capture_candidate_selection(state=state, predictions=state['predictions'])
+            if 'paired_nav_l3_dispatch' in state else load_candidate_ensembles(
+                manifest=_pipeline_frozen_serving_manifest(state), signal_date=state['run_date'],
+                decision_cutoff=decision_cutoff, query=LEARNING_D1_CLIENT.query)),
     )
-    final = apply_l2_timesfm_evidence(
-        final,
-        state["predictions"],
-        l2_summary=state.get("timesfm_l2_summary") or state.get("timesfm_l175_summary"),
-    )
-    layer2_symbols = [str(row.get("symbol") or "") for row in final if row.get("symbol")]
-    layer2_count = len(final)
+    if atomic_prepared is not None:
+        try:
+            from services.paired_nav_atomic_recommendation import run_atomic_recommendations
+            atomic_recommendation = await asyncio.to_thread(run_atomic_recommendations,
+                prepared=atomic_prepared, formal_context=recommendation_context, source_context=recommendation_sources)
+        except Exception as exc:
+            atomic_recommendation = shadow_failure('atomic_recommendation_execution', exc)
+    final = recommendation_result["recommendations"]
+    sell_count = recommendation_result["sell_count"]
+    filter_stage_diagnostics = recommendation_result["filter_stage_diagnostics"]
+    layer2_symbols = recommendation_result["layer2_symbols"]
+    layer2_count = recommendation_result["layer2_count"]
     logger.info(
         "[Pipeline V2] Layer2 TimesFM evidence attached to %s/%s candidates (no L3 queue shrink)",
         layer2_count,
         len(screener_recs),
     )
-    screener_sizing = resolve_controller_screener_sizing(
-        trading_cfg,
-        state.get("adaptive_params"),
-    )
-    core_family_target_size = _resolve_core_family_evidence_target(
-        layer2_count,
-        screener_sizing,
-        trading_cfg,
-    )
-    final = apply_core_family_evidence(
-        final,
-        state["predictions"],
-        target_size=core_family_target_size,
-        require_lifecycle_weights=True,
-        require_complete_active_models=True,
-    )
+    core_family_target_size = recommendation_result["core_family_target_size"]
     active_family_counts = [
         int(((row.get("core_family_evidence") or row.get("core_family_vote") or {}).get("active_family_count") or 0))
         for row in final
@@ -2274,7 +2469,10 @@ async def node_recommend(state: PipelineStateV2) -> dict:
         core_family_target_size,
         sorted(set(active_family_counts)),
     )
-    return_history = build_return_history_from_payloads(state["payloads"])
+    from services.paired_nav_collection import capture_allocator_return_history
+    allocator_history = capture_allocator_return_history(payloads=state['payloads'], signal_date=state['run_date'],
+        saved=state.get('pipeline_allocator_history_context'))
+    return_history = allocator_history['return_history']
     opb_reward_ledger = load_online_portfolio_bandit_reward_ledger()
     logger.info(
         "[Pipeline V2] OnlinePortfolioBandit reward ledger loaded arms=%s samples=%s",
@@ -2286,16 +2484,48 @@ async def node_recommend(state: PipelineStateV2) -> dict:
                                               "alpha": 0.40, "beta": 0.40, "gamma": 0.20,
                                               "screenerDenominator": 60.0, "promoteMinConf": 0.60})
     ev2_cfg = trading_cfg.get("ensemble_v2", {}) or {}
-    final = apply_sparse_tangent_allocation(
-        final,
-        ranking_cfg,
-        ev2_cfg,
+    from services.paired_nav_collection import run_and_capture_allocation
+    from services.paired_nav_execution_environment import capture_pipeline_execution_environment
+    paired_nav_source_run_id = str(state.get("producer_run_id") or f"daily:{state['run_date']}")
+    # Read the independent risk owner, never infer it from trading:config.
+    # Missing risk config is recorded as missing, not filled with current defaults.
+    final, paired_nav_collection = await asyncio.to_thread(run_and_capture_allocation,
+        recommendations=final,
+        ranking_config=ranking_cfg,
+        ensemble_v2_cfg=ev2_cfg,
         regime_label=regime_label,
         regime_surface=regime_surface,
         alpha_policy=alpha_policy,
         return_history=return_history,
         opb_reward_ledger=opb_reward_ledger,
+        trading_config=trading_cfg,
+        risk_config=None,
+        risk_config_reader=lambda: kv_client.get_json("trading:risk_config", default=None, strict=True),
+        execution_environment_reader=lambda: capture_pipeline_execution_environment(
+            signal_date=state["run_date"], source_run_id=paired_nav_source_run_id),
+        signal_date=state["run_date"],
+        source_run_id=paired_nav_source_run_id,
+        model_predictions=state.get('predictions'),
+        formal_model_manifest=_pipeline_frozen_serving_manifest(state),
+        recommendation_context=recommendation_context,
+        allocator_history_context=allocator_history,
+        atomic_recommendation_inputs=atomic_prepared,
+        atomic_recommendation_result=atomic_recommendation,
+        query=LEARNING_D1_CLIENT.query,
+        writer=LEARNING_D1_CLIENT.batch_execute,
+        run_allocation=apply_sparse_tangent_allocation,
     )
+    atomic_allocation = None
+    if atomic_prepared is not None and atomic_recommendation is not None:
+        try:
+            if paired_nav_collection.get('status') != 'allocation_context_frozen':
+                raise ValueError('paired_nav_atomic_formal_allocation_context_missing')
+            from services.paired_nav_atomic_allocation import run_atomic_allocations
+            atomic_allocation = await asyncio.to_thread(run_atomic_allocations,
+                snapshot_id=paired_nav_collection['snapshot_id'], query=LEARNING_D1_CLIENT.query,
+                prepared=atomic_prepared, recommendations=atomic_recommendation)
+        except Exception as exc:
+            atomic_allocation = shadow_failure('atomic_allocation_execution', exc)
     for row in final:
         allocation = row.get("alpha_allocation")
         symbol = row.get("symbol")
@@ -2392,7 +2622,26 @@ async def node_recommend(state: PipelineStateV2) -> dict:
         "expected_return_serving_preflight": expected_return_serving_preflight,
         "expected_return_owner_coverage": owner_coverage,
         "pit_sector_alpha_coverage": sector_alpha_coverage,
+        "paired_nav_collection": paired_nav_collection,
+        "pipeline_recommendation_source_context": recommendation_sources,
+        "paired_nav_atomic_recommendation": atomic_recommendation,
+        "pipeline_allocator_history_context": allocator_history,
+        "paired_nav_atomic_allocation": atomic_allocation,
     }
+
+
+async def node_paired_nav_setup(state: PipelineStateV2) -> dict:
+    """After formal D1 writes, before terminal closure; never an advisory error."""
+    from services.paired_nav_pipeline import complete_pipeline_shadow
+    collection = await asyncio.to_thread(complete_pipeline_shadow,
+        state.get('paired_nav_collection'), query=LEARNING_D1_CLIENT.query,
+        writer=LEARNING_D1_CLIENT.batch_execute)
+    if 'paired_nav_atomic_inputs' in state:
+        from services.paired_nav_atomic_inputs import daily_setup_status
+        collection = {**collection, 'atomic_daily': daily_setup_status({**state, 'paired_nav_collection': collection})}
+    # Terminal derives NAV errors from this latest state, so a successful retry
+    # can resolve its own failure without clearing unrelated pipeline errors.
+    return {'paired_nav_collection': collection}
 
 
 async def node_llm_reasons(state: PipelineStateV2) -> dict:
@@ -2456,15 +2705,54 @@ async def node_llm_reasons(state: PipelineStateV2) -> dict:
 async def node_write_d1(state: PipelineStateV2) -> dict:
     """
     Write predictions + update recommendations + delete SELL-filtered + re-rank.
-    All in D1 batch_execute for atomicity.
+    Predictions and recommendation projections use separate checked writes.
+    NAV execution is reported only after exact prediction readback.
     """
     logger.info("[Pipeline V2] node_write_d1")
     run_date = state["run_date"]
 
     # 1. Predictions
     stock_id_map = {s["symbol"]: s["id"] for s in state["active_stocks"]}
+    prediction_seed_symbols = {
+        str(row.get('symbol') or '').strip() for row in (state.get('screener_recs') or [])
+        if str(row.get('symbol') or '').strip()
+    }
+    successful_prediction_symbols = {
+        str(symbol) for symbol, prediction in (state.get('predictions') or {}).items()
+        if isinstance(prediction, dict) and not prediction.get('error')
+    }
+    missing_prediction_symbols = sorted(prediction_seed_symbols - successful_prediction_symbols)
+    unexpected_prediction_symbols = sorted(set(state.get('predictions') or {}) - prediction_seed_symbols)
+    unmapped_seed_symbols = sorted(prediction_seed_symbols - set(stock_id_map))
+    foreign_stock_symbols = sorted(set(stock_id_map) - prediction_seed_symbols)
+    prediction_symbol_closure_passed = bool(prediction_seed_symbols) and not any((
+        missing_prediction_symbols, unexpected_prediction_symbols, unmapped_seed_symbols, foreign_stock_symbols))
+    if not prediction_symbol_closure_passed:
+        # Check the original full seed identity before prune/write/recommendation
+        # mutations. Do not intersect away unexpected outputs or silently drop
+        # missing rows. L2-only/research eligibility is a separate later scope.
+        raise RuntimeError('prediction_universe_closure_failed:' + json.dumps({
+            'missing': missing_prediction_symbols[:20], 'unexpected': unexpected_prediction_symbols[:20],
+            'unmapped_seed': unmapped_seed_symbols[:20], 'foreign_stock_map': foreign_stock_symbols[:20],
+            'seed_count': len(prediction_seed_symbols), 'successful_count': len(successful_prediction_symbols)},
+            sort_keys=True))
+    nav_observations = []
+    from services.active8_nav_execution import pending_execution_receipt
+    expected_nav_execution = pending_execution_receipt(state['predictions'])
+    nav_context = ((state.get('pipeline_modal_serving_context') or {}).get('serving_manifest') or {}).get('active8_nav_inference')
+    if (nav_context is not None or state.get('nav_inference_receipt') is not None) and expected_nav_execution is None:
+        raise ValueError('active8_nav_execution_state_missing')
+    if expected_nav_execution is not None:
+        if expected_nav_execution != state.get('nav_inference_receipt'):
+            raise ValueError('active8_nav_execution_state_mismatch')
     stale_predictions_deleted = prune_predictions_outside_universe(list(stock_id_map.values()), run_date)
-    predictions_written = write_predictions_to_d1(state["predictions"], stock_id_map, run_date)
+    if expected_nav_execution is not None:
+        predictions_written = write_predictions_to_d1(state['predictions'], stock_id_map, run_date,
+            execution_sink=nav_observations.append)
+        if len(nav_observations) != 1 or nav_observations[0].get('readback_verified') is not True:
+            raise ValueError('active8_nav_execution_readback_missing')
+    else:
+        predictions_written = write_predictions_to_d1(state['predictions'], stock_id_map, run_date)
     layer2_audit_rows = write_layer2_timesfm_enrichment_audit(
         predictions=state["predictions"],
         screener_recs=state.get("screener_recs") or [],
@@ -2552,19 +2840,6 @@ async def node_write_d1(state: PipelineStateV2) -> dict:
                 if isinstance(pred.get(src_key), dict):
                     model_names.add(model_name)
         prediction_output_models = len(model_names)
-    prediction_seed_symbols = {
-        str(row.get("symbol") or "").strip()
-        for row in (state.get("screener_recs") or [])
-        if str(row.get("symbol") or "").strip()
-    }
-    successful_prediction_symbols = {
-        str(symbol)
-        for symbol, prediction in (state.get("predictions") or {}).items()
-        if isinstance(prediction, dict) and not prediction.get("error") and str(symbol) in prediction_seed_symbols
-    }
-    missing_prediction_symbols = sorted(prediction_seed_symbols - successful_prediction_symbols)
-    unexpected_prediction_symbols = sorted(successful_prediction_symbols - prediction_seed_symbols)
-    prediction_symbol_closure_passed = not missing_prediction_symbols and not unexpected_prediction_symbols
     prediction_rows_per_symbol = (
         round(predictions_written / len(successful_prediction_symbols), 3)
         if successful_prediction_symbols else 0
@@ -2605,6 +2880,7 @@ async def node_write_d1(state: PipelineStateV2) -> dict:
 
     metrics = {
         "predictions_written": predictions_written,
+        **({'active8_nav_execution': nav_observations[0]} if nav_observations else {}),
         "active8_action_authority": action_authority,
         "active8_observation_only": observation_only,
         "layer2_timesfm_enrichment_audit_rows": layer2_audit_rows,
@@ -3267,11 +3543,12 @@ def _pipeline_modal_registry_identity_rows(serving_pool: dict[str, Any]) -> list
 
 
 def _load_active8_ensemble_snapshot(serving_pool: dict[str, Any]) -> dict[str, Any] | None:
+    serving_pool.pop('active8_nav_inference', None)
     rows = LEARNING_D1_CLIENT.query(
         """
         SELECT a.payload_json, a.payload_checksum, a.state, a.production_effect,
                p.artifact_id, p.cohort_id, p.payload_checksum AS pointer_payload_checksum,
-               p.base_artifact_set_checksum AS pointer_base_checksum
+               p.base_artifact_set_checksum AS pointer_base_checksum, p.promotion_evidence_json
           FROM active8_ensemble_pointer_v1 AS p
           JOIN active8_ensemble_artifacts_v1 AS a ON a.artifact_id = p.artifact_id
          WHERE p.singleton_id = 1
@@ -3298,7 +3575,17 @@ def _load_active8_ensemble_snapshot(serving_pool: dict[str, Any]) -> dict[str, A
         raise RuntimeError("active8_ensemble_pointer_identity_mismatch")
     pool_models = serving_pool.get("models") if isinstance(serving_pool.get("models"), dict) else {}
     from services.ensemble_v2 import validate_active8_ensemble_artifact
-    validate_active8_ensemble_artifact(payload, pool_models)
+    receipt = row.get('promotion_evidence_json') or '{}'
+    receipt = json.loads(receipt) if isinstance(receipt, str) else receipt
+    nav_authority = None
+    if 'nav_validation' in receipt:
+        from services.active8_nav_adoption import load_committed_nav_serving_grant
+        from services.active8_nav_inference import capture_frozen_nav_inference, restore_frozen_nav_inference
+        grant = load_committed_nav_serving_grant(query=LEARNING_D1_CLIENT.query)
+        context = capture_frozen_nav_inference(grant, artifact=payload, pool_models=pool_models)
+        nav_authority = restore_frozen_nav_inference(context, artifact=payload, pool_models=pool_models)
+        serving_pool['active8_nav_inference'] = context
+    validate_active8_ensemble_artifact(payload, pool_models, nav_authority=nav_authority)
     return payload
 
 
@@ -3306,13 +3593,14 @@ def _active8_action_authority(
     active8_ensemble: dict[str, Any] | None,
 ) -> dict[str, Any]:
     if isinstance(active8_ensemble, dict):
+        from services.ensemble_v2 import ensemble_artifact_id
         return {
             "schema_version": ACTIVE8_ACTION_AUTHORITY_SCHEMA,
             "mode": ACTIVE8_ACTION_MODE_PRODUCTION,
             "buy_authorized": True,
             "production_effect": True,
             "reason": "promoted_active8_ensemble_pointer",
-            "artifact_id": active8_ensemble.get("artifact_id"),
+            "artifact_id": active8_ensemble.get("artifact_id") or ensemble_artifact_id(active8_ensemble),
             "cohort_id": active8_ensemble.get("cohort_id"),
             "payload_checksum": active8_ensemble.get("payload_checksum"),
         }
@@ -3636,6 +3924,11 @@ def _build_pipeline_modal_serving_manifest(
             else None
         ),
     }
+    if serving_pool.get('active8_nav_inference') is not None:
+        from services.active8_nav_inference import restore_frozen_nav_inference
+        context = serving_pool['active8_nav_inference']
+        restore_frozen_nav_inference(context, artifact=active8_ensemble, pool_models=pool_models)
+        manifest['active8_nav_inference'] = json.loads(json.dumps(context, allow_nan=False))
     return manifest, _pipeline_modal_canonical_digest(manifest)
 
 
@@ -3842,11 +4135,7 @@ async def _build_pipeline_modal_prediction_payload(state: PipelineStateV2, *, st
         if isinstance(p, dict) and (p.get("symbol") or p.get("stock_id"))
     ))
     predict_contract = batch_predict_contract(ab_key=batch_ab_key)
-    base_sequence_series = build_state_space_series_from_payloads(payloads)
-    sequence_series, sequence_dataset_meta = enrich_state_space_series_with_long_history(
-        base_sequence_series,
-        target_points=daily_sequence_target_points(),
-    )
+    sequence_series, sequence_dataset_meta = _pipeline_sequence_inputs(state, payloads)
     sequence_contracts = _sequence_model_contracts(
         pool=serving_pool,
         model_status=model_status,
@@ -3892,10 +4181,26 @@ async def _build_pipeline_modal_prediction_payload(state: PipelineStateV2, *, st
         sequence_series,
         contracts=active8_shadow_sequence_contracts,
     )
+    nav_requests = None
+    if isinstance(serving_manifest.get('active8_ensemble'), dict):
+        from services.paired_nav_l3_dispatch import prepare_candidate_requests
+        from services.paired_nav_collection import shadow_failure
+        try:
+            selection = prepare_candidate_requests(signal_date=state['run_date'],
+                decision_cutoff=state['decision_universe_frozen_at'], sequence_series=_json_safe(sequence_series),
+                query=LEARNING_D1_CLIENT.query, project=_pipeline_modal_active8_shadow_projection,
+                subsets=_sequence_model_subsets)
+            state['paired_nav_l3_dispatch'] = selection
+            nav_requests = selection['requests']
+        except Exception as exc:
+            # Serving still computes; NAV setup later carries this explicit
+            # failure into closure instead of substituting the newest bundle.
+            state['paired_nav_l3_dispatch'] = shadow_failure('l3_candidate_dispatch', exc)
     recovery_lineage = state.get("snapshot_recovery_lineage") if isinstance(state.get("snapshot_recovery_lineage"), dict) else {}
     sequence_input_contract_core = {
         "schema_version": "pipeline-modal-sequence-input-contract-v2",
         "serving_manifest_digest": serving_manifest_digest,
+        "sequence_point_counts": _dispatch_sequence_point_counts(payloads, sequence_series),
         "by_model": {
             model_name: {
                 "symbols": [
@@ -3926,8 +4231,9 @@ async def _build_pipeline_modal_prediction_payload(state: PipelineStateV2, *, st
         "digest": _pipeline_modal_canonical_digest(sequence_input_contract_core),
     }
     state["pipeline_modal_sequence_input_contract"] = sequence_input_contract
-    return {
+    request = {
         "schema_version": "pipeline-modal-prediction-request-v1",
+        **({'paired_nav_l3_requests': nav_requests} if nav_requests is not None else {}),
         "run_date": state["run_date"],
         "run_id": state.get("producer_run_id"),
         "state_gcs_uri": state_gcs_uri,
@@ -3975,6 +4281,17 @@ async def _build_pipeline_modal_prediction_payload(state: PipelineStateV2, *, st
         "callback_token": _pipeline_modal_prediction_callback_token(),
         "snapshot_recovery_lineage": _json_safe(recovery_lineage) if recovery_lineage else None,
     }
+    if 'paired_nav_atomic_inputs' in state:
+        from services.paired_nav_atomic_dispatch import prepare_atomic_request
+        from services.paired_nav_collection import shadow_failure
+        try:
+            dispatch = prepare_atomic_request(state, request)
+            state['paired_nav_atomic_dispatch'] = dispatch
+            if dispatch['request'] is not None:
+                request['paired_nav_atomic_slates'] = dispatch['request']
+        except Exception as exc:
+            state['paired_nav_atomic_dispatch'] = shadow_failure('atomic_ml_dispatch', exc)
+    return request
 
 
 def _validate_pipeline_modal_feature_bundle_before_writes(
@@ -4468,18 +4785,31 @@ def classify_pipeline_terminal_invariants(metrics: Any) -> list[str]:
 
 
 def _pipeline_terminal_result(state: PipelineStateV2, *, run_date: str, elapsed: float) -> dict:
-    classified = classify_pipeline_terminal_errors(state.get("errors"))
+    from services.paired_nav_pipeline import pipeline_shadow_errors
+    nav_errors = pipeline_shadow_errors(state.get('paired_nav_collection'))
+    errors = list(dict.fromkeys([*list(state.get('errors') or []), *nav_errors]))
+    classified = classify_pipeline_terminal_errors(errors)
     invariant_errors = classify_pipeline_terminal_invariants(state.get("metrics"))
-    critical_errors = [*classified["critical"], *invariant_errors]
+    nav_context = ((state.get('pipeline_modal_serving_context') or {}).get('serving_manifest') or {}).get('active8_nav_inference')
+    if nav_context is not None or state.get('nav_inference_receipt') is not None:
+        expected = state.get('nav_inference_receipt') or {}
+        observed = (state.get('metrics') or {}).get('active8_nav_execution') or {}
+        if (not expected or not nav_context or expected.get('context_checksum') != nav_context.get('context_checksum')
+                or expected.get('run_date') != run_date
+                or observed.get('execution_checksum') != expected.get('execution_checksum')
+                or observed.get('readback_verified') is not True or observed.get('executed') is not True):
+            invariant_errors.append('pipeline_terminal_invariant:nav_inference_execution_unverified')
+    critical_errors = list(dict.fromkeys([*classified["critical"], *invariant_errors]))
     result = {
         "status": "error" if critical_errors else "completed",
         "run_date": run_date,
         "elapsed_s": round(elapsed, 1),
         "metrics": state.get("metrics", {}),
-        "errors": list(state.get("errors") or []),
+        "errors": errors,
         "advisory_errors": classified["advisory"],
         "critical_errors": critical_errors,
         "terminal_invariant_errors": invariant_errors,
+        "paired_nav_collection": state.get('paired_nav_collection'),
     }
     if critical_errors:
         result["error"] = "; ".join(critical_errors[:3])
@@ -4519,12 +4849,14 @@ def build_graph():
     g.add_node("compute_sector_flow", node_compute_sector_flow)
     g.add_node("compute_pit_residual_shadow", node_compute_pit_residual_shadow)
     g.add_node("build_payloads",    node_build_payloads)
+    g.add_node("capture_atomic_inputs", node_capture_atomic_inputs)
     g.add_node("l2_timesfm_enrich", node_l2_timesfm_enrich, retry=ml_retry)
     g.add_node("l3_formal_predict", node_l3_formal_predict, retry=ml_retry)
     g.add_node("compute_personas", node_compute_personas)
     g.add_node("recommend",         node_recommend)
     g.add_node("gen_llm_reasons",   node_llm_reasons)
     g.add_node("write_d1",          node_write_d1)
+    g.add_node("paired_nav_setup",  node_paired_nav_setup)
     g.add_node("export_dataset_snapshot", node_export_dataset_snapshot)
 
     # Keep D1-heavy sector_flow out of the hot-path fan-out. The 22:00 chain
@@ -4532,14 +4864,16 @@ def build_graph():
     # Cloudflare D1 queued-too-long 429s.
     g.set_entry_point("load_inputs")
     g.add_edge("load_inputs",         "load_market_env")
-    g.add_edge("load_market_env",     "build_payloads")
+    g.add_edge("load_market_env",     "capture_atomic_inputs")
+    g.add_edge("capture_atomic_inputs", "build_payloads")
     g.add_edge("build_payloads",      "l2_timesfm_enrich")
     g.add_edge("l2_timesfm_enrich",   "l3_formal_predict")
     g.add_edge("l3_formal_predict",   "compute_personas")
     g.add_edge("compute_personas",    "recommend")
     g.add_edge("recommend",           "gen_llm_reasons")
     g.add_edge("gen_llm_reasons",     "write_d1")
-    g.add_edge("write_d1",            "compute_sector_flow")
+    g.add_edge("write_d1",            "paired_nav_setup")
+    g.add_edge("paired_nav_setup",    "compute_sector_flow")
     g.add_edge("compute_sector_flow", "compute_pit_residual_shadow")
     g.add_edge("compute_pit_residual_shadow", "export_dataset_snapshot")
     g.add_edge("export_dataset_snapshot", END)
@@ -4642,6 +4976,7 @@ async def run_pipeline_v2_until_modal_prediction_spawn(run_date: str = "", produ
         await _run_pipeline_nodes(state, [
             node_load_inputs,
             node_load_market_env,
+            node_capture_atomic_inputs,
             node_build_payloads,
             node_l2_timesfm_enrich,
         ])
@@ -4769,6 +5104,7 @@ async def run_pipeline_v2_from_modal_prediction_callback(callback_payload: dict)
             node_recommend,
             node_llm_reasons,
             node_write_d1,
+            node_paired_nav_setup,
             node_compute_sector_flow,
             node_compute_pit_residual_shadow,
             node_export_dataset_snapshot,

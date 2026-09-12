@@ -1037,14 +1037,14 @@ export type StrategyPromotionGate = {
   l3_requires_wei_approval?: boolean
   production_effect: false
   allocation_eligible: boolean
-  gate_policy: 'candidate_evidence_then_atomic_replacement_v7'
+  gate_policy: 'candidate_evidence_then_atomic_replacement_v7' | 'original_paired_daily_nav'
   gate_role: 'atomic_replacement_to_active' | 'incumbent_monitoring' | 'non_selection_owner_monitoring'
   hard_gate_metrics: string[]
   diagnostic_only_metrics: string[]
   activation_gate: {
     policy_version: string
     required: boolean
-    status: 'not_applicable' | 'evidence_pending' | 'prefilter_failed' | 'not_evaluated' | 'proposed' | 'rejected' | 'accepted'
+    status: 'not_applicable' | 'evidence_pending' | 'prefilter_failed' | 'not_evaluated' | 'proposed' | 'rejected' | 'accepted' | 'nav_review'
     run_id: string | null
     decision_id: string | null
     applicability_reason: string | null
@@ -1134,6 +1134,7 @@ export type StrategyReplacementCandidatePrefilterSummary = {
 }
 
 export type StrategyReplacementGateSummary = {
+  replacement_owner?: 'original_paired_daily_nav' | 'legacy_atomic_v7' | 'unavailable'
   policy: {
     schema_version: string
     policy_version: string
@@ -1507,6 +1508,8 @@ export type ResearchGateResponse = {
 }
 
 export const strategyLabApi = {
+  navEvidence: (strategyId: string, strategyVersion: string, date: string) =>
+    get<import('./strategyNavContract').StrategyNavEvidence>(`/admin/strategy/nav-evidence?${new URLSearchParams({ strategy_id: strategyId, strategy_version: strategyVersion, date })}`),
   specs: () => get<StrategySpecsResponse>('/admin/strategy/specs'),
   evidenceProfiles: () => get<StrategyEvidenceProfilesResponse>('/admin/strategy/evidence-profiles'),
   dryRun: (date?: string) => post<StrategyDryRunResponse>(`/admin/strategy/dry-run${date ? `?date=${date}` : ''}`),
@@ -1874,6 +1877,18 @@ export type ModelArtifactPromotionControllerResponse = {
   note?: string
 }
 
+export type EnsembleQualifications = {
+  schema_version: string
+  promotion_scope: 'ranking'
+  ranking: { decision: string; blockers: string[] }
+  calibration: { decision: string; scope: string; probability_status: string; blockers: string[] }
+  directional: {
+    decision: string
+    allowed_signals: string[]
+    signals: Record<string, { decision: string; blockers: string[]; reachable: boolean | null; rows: number | null; dates: number | null }>
+  }
+}
+
 export type Active8ServingBundleReadModel = {
   status: string
   production_effect: boolean
@@ -1882,6 +1897,9 @@ export type Active8ServingBundleReadModel = {
   training_run_id?: string | null
   promoted_at?: string | null
   selected_models: string[]
+  adoption_basis?: 'committed_paired_nav'
+  nav_decision_checksum?: string
+  qualifications?: EnsembleQualifications
   base_artifacts: Record<string, {
     artifact_id?: string | null
     version?: string | null

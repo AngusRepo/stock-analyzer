@@ -1,3 +1,4 @@
+import { paperExecutionDate, paperExecutionNow } from './paperExecutionScope'
 import { databaseForDataDomain } from './dataDomainRegistry'
 import type { Bindings } from '../types'
 import { fetchAttentionStocks, fetchPunishedStocks, fetchTpexAttentionStocks, fetchTpexPunishedStocks } from './twseApi'
@@ -87,7 +88,7 @@ function addSourceCount(counts: Record<string, number>, source: string, amount =
 
 function isoDateDaysAgo(tradeDate: string, days: number): string {
   const base = new Date(`${tradeDate}T00:00:00.000Z`)
-  const validBase = Number.isFinite(base.getTime()) ? base : new Date()
+  const validBase = Number.isFinite(base.getTime()) ? base : paperExecutionDate()
   validBase.setUTCDate(validBase.getUTCDate() - days)
   return validBase.toISOString().slice(0, 10)
 }
@@ -311,7 +312,7 @@ export async function refreshOfficialTradingRestrictions(env: Bindings, tradeDat
       status: 'error',
       trade_date: tradeDate,
       failed_sources: failedSources,
-      checked_at: new Date().toISOString(),
+      checked_at: paperExecutionDate().toISOString(),
     }), { expirationTtl: 86400 })
     throw new Error(`official_trading_restrictions_incomplete:${failedSources.map((row) => row.source).join(',')}`)
   }
@@ -337,14 +338,14 @@ export async function refreshOfficialTradingRestrictions(env: Bindings, tradeDat
     counts['official.tpex_notice'] = tpexAttentionResult.value.length
     await reconcileOfficialRestrictions(env, tradeDate, 'attention', tpexAttentionResult.value, 'OTC')
   }
-  const checkedAt = new Date().toISOString()
+  const checkedAt = paperExecutionDate().toISOString()
   await env.KV.put('market:trading_restrictions:refresh_status', JSON.stringify({
     status: 'success',
     trade_date: tradeDate,
     source_counts: counts,
     checked_at: checkedAt,
   }), { expirationTtl: 86400 })
-  await env.KV.put('market:restricted_execution_checked_at', new Date().toISOString(), { expirationTtl: 3600 })
+  await env.KV.put('market:restricted_execution_checked_at', paperExecutionDate().toISOString(), { expirationTtl: 3600 })
   await env.KV.put('market:trading_restrictions:checked_at', checkedAt, { expirationTtl: 86400 })
   return counts
 }
@@ -383,7 +384,7 @@ export async function loadTradingRestrictionSet(
 
     const refreshTtlMs = options.refreshTtlMs ?? 12 * 60 * 60_000
     const checkedAtMs = currentKv.checkedAt ? Date.parse(currentKv.checkedAt) : 0
-    const stale = !Number.isFinite(checkedAtMs) || Date.now() - checkedAtMs > refreshTtlMs
+    const stale = !Number.isFinite(checkedAtMs) || paperExecutionNow() - checkedAtMs > refreshTtlMs
     const canonicalFresh = Boolean(canonical.latestSourceDate && canonical.latestSourceDate >= tradeDate)
     if (options.refreshOfficialIfStale && stale && !canonicalFresh) {
       const officialCounts = await refreshOfficialTradingRestrictions(env, tradeDate).catch(() => ({}))

@@ -16,6 +16,7 @@ from services.active8_release_training_contract import (
 from services.d1_domain_client import D1DataDomain, DomainD1Client, client_for_domain
 from services.evidence_contracts import LABEL_SCHEMA_VERSION
 from services.model_validation_policy import resolve_model_validation_policy
+from services.ensemble_qualification import assess_ensemble_qualifications
 
 
 class _LearningArtifactRegistryD1Client:
@@ -50,6 +51,7 @@ class _LearningArtifactRegistryD1Client:
 d1_client = _LearningArtifactRegistryD1Client()
 
 CandidateType = Literal[
+    "opb_arm_prior_refresh",
     "oof_full_fit_release",
     "manual_hotfix",
     "model_family_shadow",
@@ -2561,7 +2563,13 @@ def build_promotion_queue(
             champion_version=champion_version,
             champion_artifact=champion_artifact,
         )
-        if not champion_version:
+        requires_canonical_bundle = model_name in ACTIVE8_ARTIFACT_MODEL_NAMES and candidate_type in {
+            'manual_hotfix', 'timesfm_l175_l2_feature_release'}
+        if requires_canonical_bundle:
+            decision = 'active8_single_model_requires_canonical_bundle'
+            approval_required = False
+            next_action = 'Register a canonical ensemble candidate; the daily NAV owner publishes the exact bundle, never an individual base model.'
+        elif not champion_version:
             decision = "blocked_missing_champion_pointer"
             next_action = "Resolve the exact D1 champion pointer before final comparison."
         elif blockers:
@@ -2592,6 +2600,7 @@ def build_promotion_queue(
             "final_compared_to": row.get("final_compared_to"),
             "current_champion_version": champion_version,
             "promotion_decision": decision,
+            **({'publication_owner': 'daily_paired_nav'} if requires_canonical_bundle else {}),
             "approval_required": approval_required,
             "next_action": next_action,
             "blockers": blockers,
@@ -2812,9 +2821,9 @@ def run_promotion_controller(
 ) -> dict[str, Any]:
     """Run final comparison and optionally update the champion pointer.
 
-    ``confirm=False`` is a dry-run. ``confirm=True`` may mutate
-    model_artifact_registry and model_champion_pointers, but it still does not
-    change D1 champion pointers or live serving ownership.
+    Active-8 bases can only change with their canonical ensemble transaction.
+    Exact already-current requests remain read-only; approval is not authority
+    to split a committed bundle. Other model policies are unchanged.
     """
     artifact = next((row for row in registry_rows if str(row.get("artifact_id")) == artifact_id), None)
     if not artifact:
@@ -2860,6 +2869,16 @@ def run_promotion_controller(
             "serving_reader": "model_champion_pointers/model_artifact_registry",
             "note": "Idempotent promotion-controller guard prevented rollback overwrite.",
         }
+    if model_name in ACTIVE8_ARTIFACT_MODEL_NAMES:
+        # Structural ownership, not another performance gate. Do not alter the
+        # artifact's state/evidence merely because an obsolete endpoint was used.
+        return {'status': 'delegated', 'can_promote': False,
+            'decision': 'active8_single_model_requires_canonical_bundle',
+            'publication_owner': 'daily_paired_nav', 'artifact_id': artifact_id,
+            'model_name': model_name, 'candidate_version': artifact.get('version'),
+            'approval_required': False, 'production_effect': False,
+            'next_action': 'Register a canonical ensemble candidate and use its original daily NAV adoption transaction.',
+            'errors': []}
     champion_artifact = next(
         (
             row
@@ -3032,185 +3051,23 @@ def run_feature_release_promotion_controller(
     approved_by: str | None = None,
     reason: str = "feature_release_bundle_controller",
 ) -> dict[str, Any]:
-    """Promote one complete TimesFM L175 feature cohort as one D1 batch."""
-    artifacts_by_model = {
-        str(row.get("model_name") or ""): row
-        for row in registry_rows
-        if str(row.get("candidate_type") or "") == "timesfm_l175_l2_feature_release"
-        and str(row.get("training_run_id") or "") == str(training_run_id or "")
-        and str(row.get("model_name") or "") in TIMESFM_L175_RELEASE_COHORT
-    }
-    missing = sorted(TIMESFM_L175_RELEASE_COHORT - set(artifacts_by_model))
-    if missing:
-        return {
-            "status": "blocked",
-            "decision": "feature_release_cohort_incomplete",
-            "can_promote": False,
-            "training_run_id": training_run_id,
-            "missing_models": missing,
-        }
+    """Retired feature-era endpoint; never a second Active-8 pointer writer.
 
-    pointer_by_model = {str(row.get("model_name") or ""): row for row in d1_pointers}
-    cohort_rows = list(artifacts_by_model.values())
-    shared_blockers = feature_release_cohort_blockers(cohort_rows[0], registry_rows)
-    decisions: dict[str, dict[str, Any]] = {}
-    evidences: dict[str, dict[str, Any]] = {}
-    for model_name in sorted(TIMESFM_L175_RELEASE_COHORT):
-        artifact = artifacts_by_model[model_name]
-        pointer = pointer_by_model.get(model_name)
-        champion_version = (
-            str(pointer.get("champion_version"))
-            if pointer and pointer.get("champion_version")
-            else None
-        )
-        decision = _promotion_row_decision(
-            artifact=artifact,
-            pointer=pointer,
-            champion_version=champion_version,
-            approved=approved,
-            cohort_blockers=shared_blockers,
-        )
-        decisions[model_name] = decision
-        evidences[model_name] = {
-            **decision["evidence"],
-            "approved_by": approved_by,
-            "reason": reason,
-            "confirmed": bool(confirm),
-            "atomic_release_training_run_id": training_run_id,
-        }
-
-    blocked = {
-        model_name: decision.get("evidence", {}).get("blockers", [])
-        for model_name, decision in decisions.items()
-        if decision.get("can_promote") is not True
-    }
-    if blocked:
-        return {
-            "status": "dry_run" if not confirm else "blocked",
-            "decision": "blocked",
-            "can_promote": False,
-            "training_run_id": training_run_id,
-            "approved": approved,
-            "blocked_models": blocked,
-            "model_decisions": decisions,
-        }
-    if not confirm:
-        return {
-            "status": "dry_run",
-            "decision": "promote_atomic_feature_release",
-            "can_promote": True,
-            "training_run_id": training_run_id,
-            "release_models": sorted(artifacts_by_model),
-            "model_decisions": decisions,
-        }
-
-    promotion_time = _now_iso()
-    statements: list[tuple[str, list[Any]]] = []
-    for model_name in sorted(TIMESFM_L175_RELEASE_COHORT):
-        artifact = artifacts_by_model[model_name]
-        pointer = pointer_by_model.get(model_name)
-        decision = decisions[model_name]
-        evidence = evidences[model_name]
-        artifact_id = str(artifact.get("artifact_id") or "")
-        champion_version = decision.get("final_compared_to")
-        old_artifact_id = pointer.get("champion_artifact_id") if pointer else None
-        statements.extend([
-            (
-                """
-                UPDATE model_artifact_registry
-                SET state = ?, final_compared_to = ?, promotion_decision = ?,
-                    approval_state = ?, live_evidence_json = ?, updated_at = CURRENT_TIMESTAMP
-                WHERE artifact_id = ?
-                """,
-                [
-                    decision["target_state"],
-                    champion_version,
-                    "atomic_feature_release_promote",
-                    decision["approval_state"],
-                    _json_dumps({
-                        **_json_loads(artifact.get("live_evidence_json")),
-                        "promotion_controller": evidence,
-                    }),
-                    artifact_id,
-                ],
-            ),
-            (
-                """
-                UPDATE model_artifact_registry
-                SET state = 'archived', promotion_decision = 'replaced_by_atomic_feature_release',
-                    updated_at = CURRENT_TIMESTAMP
-                WHERE model_name = ? AND state = 'production' AND artifact_id != ?
-                """,
-                [model_name, artifact_id],
-            ),
-            (
-                """
-                INSERT INTO model_champion_pointers (
-                  model_name, champion_version, champion_artifact_id,
-                  rollback_version, rollback_artifact_id, promoted_at,
-                  promotion_reason, promotion_evidence_json, updated_at
-                ) VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP, ?, ?, CURRENT_TIMESTAMP)
-                ON CONFLICT(model_name) DO UPDATE SET
-                  champion_version = excluded.champion_version,
-                  champion_artifact_id = excluded.champion_artifact_id,
-                  rollback_version = excluded.rollback_version,
-                  rollback_artifact_id = excluded.rollback_artifact_id,
-                  promoted_at = CURRENT_TIMESTAMP,
-                  promotion_reason = excluded.promotion_reason,
-                  promotion_evidence_json = excluded.promotion_evidence_json,
-                  updated_at = CURRENT_TIMESTAMP
-                """,
-                [
-                    model_name,
-                    artifact.get("version"),
-                    artifact_id,
-                    champion_version,
-                    old_artifact_id,
-                    reason,
-                    _json_dumps(evidence),
-                ],
-            ),
-            (
-                """
-                UPDATE model_champion_history
-                SET retired_at = ?
-                WHERE model_name = ? AND retired_at IS NULL
-                """,
-                [promotion_time, model_name],
-            ),
-            (
-                """
-                INSERT INTO model_champion_history (
-                  event_id, model_name, version, artifact_id, effective_at,
-                  retired_at, source, evidence_grade, evidence_json
-                ) VALUES (?, ?, ?, ?, ?, NULL, 'model_champion_history', 'exact', ?)
-                ON CONFLICT(model_name, version, effective_at) DO NOTHING
-                """,
-                [
-                    f"champion:{model_name}:{artifact.get('version')}:{training_run_id}",
-                    model_name,
-                    artifact.get("version"),
-                    artifact_id,
-                    promotion_time,
-                    _json_dumps(evidence),
-                ],
-            ),
-        ])
-
-    batch_result = d1_client.atomic_batch_execute(statements, timeout=60.0)
-    now = promotion_time
-    return {
-        "status": "ok",
-        "decision": "promoted_atomic_feature_release",
-        "can_promote": True,
-        "training_run_id": training_run_id,
-        "release_models": sorted(artifacts_by_model),
-        "artifacts": [artifacts_by_model[name] for name in sorted(artifacts_by_model)],
-        "confirmed_at": now,
-        "d1_batch": batch_result,
-        "model_decisions": decisions,
-        "serving_reader": "model_champion_pointers/model_artifact_registry",
-    }
+    This legacy cohort contains five direct-alpha base models, not the TimesFM
+    sidecar. Preserve historical artifacts/serving; new base-model changes belong
+    to the canonical ensemble's original NAV publication transaction. Explicit
+    approval cannot make this obsolete five-model operation atomic with ensemble.
+    """
+    models = sorted({str(row.get('model_name') or '') for row in registry_rows
+        if row.get('candidate_type') == 'timesfm_l175_l2_feature_release'
+        and row.get('training_run_id') == training_run_id
+        and row.get('model_name') in TIMESFM_L175_RELEASE_COHORT})
+    return {'status': 'retired', 'can_promote': False,
+        'decision': 'feature_era_publication_retired_use_canonical_ensemble',
+        'publication_owner': 'daily_paired_nav', 'training_run_id': training_run_id,
+        'legacy_registered_models': models, 'production_effect': False,
+        'next_action': 'Use canonical Active-8 ensemble candidate registration and paired NAV; '
+                       'do not relabel or redate historical feature artifacts.'}
 
 ACTIVE8_ENSEMBLE_ARTIFACT_SCHEMA = "active8-oof-ensemble-serving-artifact-v1"
 
@@ -3313,7 +3170,7 @@ def load_active8_ensemble_serving_bundle() -> dict[str, Any]:
     rows = d1_client.query(
         """
         SELECT p.artifact_id, p.cohort_id, p.payload_checksum,
-               p.base_artifact_set_checksum, p.promoted_at,
+               p.base_artifact_set_checksum, p.promoted_at, p.promotion_evidence_json,
                a.training_run_id, a.state, a.production_effect,
                a.validation_decision, a.payload_json
           FROM active8_ensemble_pointer_v1 AS p
@@ -3360,9 +3217,21 @@ def load_active8_ensemble_serving_bundle() -> dict[str, Any]:
             "blockers": ["active8_v5_serving_pointer_cardinality"],
         }
     row = rows[0]
+    nav_grant = None
     try:
-        payload = _validated_active8_ensemble_payload(row)
-    except ValueError as exc:
+        receipt = row.get('promotion_evidence_json') or '{}'
+        receipt = json.loads(receipt) if isinstance(receipt, str) else receipt
+        if 'nav_validation' in receipt:
+            from services.active8_nav_adoption import load_committed_nav_serving_grant
+            nav_grant = load_committed_nav_serving_grant(query=d1_client.query)
+            if nav_grant is None:
+                raise ValueError('active8_nav_serving_authority_missing')
+            payload = json.loads(nav_grant.payload_json)
+            if json.loads(row['payload_json']) != payload:
+                raise ValueError('active8_nav_serving_pointer_changed')
+        else:
+            payload = _validated_active8_ensemble_payload(row)
+    except (ValueError, RuntimeError, KeyError, TypeError) as exc:
         return {
             "status": "invalid_bundle",
             "production_effect": False,
@@ -3377,7 +3246,7 @@ def load_active8_ensemble_serving_bundle() -> dict[str, Any]:
     pointer_matches = (
         str(row.get("state") or "") == "production"
         and int(row.get("production_effect") or 0) == 1
-        and str(row.get("validation_decision") or "") == "PASS"
+        and (nav_grant is not None or str(row.get("validation_decision") or "") == "PASS")
         and str(row.get("payload_checksum") or "") == str(payload.get("payload_checksum") or "")
         and isinstance(selected_models, list)
         and bool(selected_models)
@@ -3404,6 +3273,10 @@ def load_active8_ensemble_serving_bundle() -> dict[str, Any]:
         "selected_models": list(selected_models),
         "base_artifacts": dict(base_artifacts),
         "blockers": [],
+        "qualifications": assess_ensemble_qualifications(payload),
+        **({'adoption_basis': 'committed_paired_nav',
+            'nav_decision_checksum': json.loads(nav_grant.receipt_json)['nav_validation']['decision_checksum']}
+           if nav_grant is not None else {}),
     }
 
 
@@ -3454,16 +3327,55 @@ def run_active8_ensemble_bundle_promotion_controller(
     registry_rows: list[dict[str, Any]],
     d1_pointers: list[dict[str, Any]],
     ensemble_rows: list[dict[str, Any]] | None = None,
+    ensemble_artifact_id: str | None = None,
+    ensemble_payload_checksum: str | None = None,
+    evaluation_business_date: str | None = None,
+    recovery_only: bool = False,
     confirm: bool = False,
     reason: str = "active8_ensemble_atomic_bundle",
 ) -> dict[str, Any]:
     """Atomically switch the validated selected subset and its learned ensemble owner."""
+    require_existing_commit = recovery_only or (confirm and evaluation_business_date is None)
     expected_models = set(ACTIVE8_MODEL_NAMES)
+    exact_identity = ensemble_artifact_id is not None or ensemble_payload_checksum is not None
+    if exact_identity and (not ensemble_artifact_id or not ensemble_payload_checksum):
+        return {"status": "blocked", "decision": "active8_ensemble_exact_identity_required",
+                "can_promote": False, "training_run_id": training_run_id}
+    if ensemble_rows is None and exact_identity:
+        ensemble_rows = d1_client.query(
+            'SELECT * FROM active8_ensemble_artifacts_v1 WHERE artifact_id=? AND payload_checksum=? AND training_run_id=?',
+            [ensemble_artifact_id, ensemble_payload_checksum, training_run_id])
+    candidates = ensemble_rows if ensemble_rows is not None else list_active8_ensemble_artifacts(training_run_id=training_run_id)
+    candidates = [row for row in candidates if str(row.get("training_run_id") or "") == training_run_id
+        and (not exact_identity or row.get('artifact_id') == ensemble_artifact_id
+             and row.get('payload_checksum') == ensemble_payload_checksum)]
+    if len(candidates) != 1:
+        return {
+            "status": "blocked", "decision": "active8_ensemble_candidate_cardinality", "can_promote": False,
+            "training_run_id": training_run_id, "ensemble_candidate_count": len(candidates),
+        }
+    ensemble_row = candidates[0]
+    try:
+        if evaluation_business_date is not None:
+            from services.paired_nav_l3_candidate import _validate_payload_identity
+            ensemble_payload = json.loads(ensemble_row['payload_json'])
+            _validate_payload_identity(ensemble_row, ensemble_payload)
+        else:
+            ensemble_payload = _validated_active8_ensemble_payload(ensemble_row)
+    except ValueError as exc:
+        return {"status": "blocked", "decision": str(exc), "can_promote": False, "training_run_id": training_run_id}
+    expected_observation = (
+        ensemble_payload.get("observation_artifacts")
+        if isinstance(ensemble_payload.get("observation_artifacts"), dict)
+        else {}
+    )
     base_rows = [
         row for row in registry_rows
         if str(row.get("candidate_type") or "") == "oof_full_fit_release"
         and str(row.get("training_run_id") or "") == str(training_run_id or "")
         and str(row.get("model_name") or "") in expected_models
+        and (not exact_identity or row.get('artifact_id') ==
+             (expected_observation.get(row.get('model_name')) or {}).get('artifact_id'))
     ]
     by_model: dict[str, dict[str, Any]] = {}
     duplicates: list[str] = []
@@ -3479,23 +3391,6 @@ def run_active8_ensemble_bundle_promotion_controller(
             "training_run_id": training_run_id, "missing_models": missing,
             "duplicate_models": sorted(set(duplicates)),
         }
-    candidates = ensemble_rows if ensemble_rows is not None else list_active8_ensemble_artifacts(training_run_id=training_run_id)
-    candidates = [row for row in candidates if str(row.get("training_run_id") or "") == training_run_id]
-    if len(candidates) != 1:
-        return {
-            "status": "blocked", "decision": "active8_ensemble_candidate_cardinality", "can_promote": False,
-            "training_run_id": training_run_id, "ensemble_candidate_count": len(candidates),
-        }
-    ensemble_row = candidates[0]
-    try:
-        ensemble_payload = _validated_active8_ensemble_payload(ensemble_row)
-    except ValueError as exc:
-        return {"status": "blocked", "decision": str(exc), "can_promote": False, "training_run_id": training_run_id}
-    expected_observation = (
-        ensemble_payload.get("observation_artifacts")
-        if isinstance(ensemble_payload.get("observation_artifacts"), dict)
-        else {}
-    )
     expected_base = ensemble_payload.get("base_artifacts") if isinstance(ensemble_payload.get("base_artifacts"), dict) else {}
     selected_models = ensemble_payload.get("selected_models")
     if (
@@ -3520,24 +3415,86 @@ def run_active8_ensemble_bundle_promotion_controller(
                 model_name,
                 by_model[model_name],
                 expected_observation.get(model_name) or {},
-                require_individual_pass=model_name in selected_models,
+                require_individual_pass=model_name in selected_models and evaluation_business_date is None,
             )
         )
     ]
+    from services.active8_bundle_transaction import prepare_bundle_transaction
+    transaction, nav_adoption = None, None
+    if not blockers and (evaluation_business_date is not None or require_existing_commit):
+        transaction = prepare_bundle_transaction(query=d1_client.query, by_model=by_model,
+            supplied_pointers=d1_pointers, ensemble_row=ensemble_row, selected_models=release_models)
+        if require_existing_commit and not transaction['recovered_existing_commit']:
+            return {'status': 'blocked', 'decision': ('active8_recovery_requires_existing_commit' if recovery_only
+                    else 'active8_new_publication_requires_daily_nav'),
+                    'can_promote': False, 'training_run_id': training_run_id}
+    from services.model_serving_resolver import _artifact_structure_block_reason
+    for model_name in release_models:
+        # A fully verified old receipt is read-only recovery, not a new model
+        # activation. Current inference still checks structure independently.
+        if transaction is not None and transaction['recovered_existing_commit']:
+            continue
+        if evaluation_business_date is not None and by_model[model_name].get('state') not in {'offline_failed', 'offline_passed', 'production'}:
+            blockers.append(f'{model_name}:nav_candidate_lifecycle_not_adoptable')
+        # Use the SAME structural reader as inference, for both legacy offline
+        # diagnostics and NAV adoption. Do not reintroduce an offline efficacy
+        # veto into an original NAV-authorized publication.
+        structural = _artifact_structure_block_reason(by_model[model_name],
+            model_name=model_name, artifact_role='direct_alpha')
+        if structural:
+            blockers.append(f'{model_name}:{structural}')
     if blockers:
         return {
             "status": "blocked", "decision": "active8_bundle_contract_invalid", "can_promote": False,
             "training_run_id": training_run_id, "blockers": blockers,
         }
+    if transaction is not None:
+        if not transaction['recovered_existing_commit']:
+            from services.active8_nav_adoption import prepare_nav_adoption
+            nav_adoption = prepare_nav_adoption(ensemble_row=ensemble_row, business_date=evaluation_business_date,
+                query=d1_client.query)
+            if nav_adoption.get('comparison'):
+                return {'status': 'waiting', 'decision': 'awaiting_next_frozen_comparison',
+                    'can_promote': False, 'pointer_committed': False, 'already_committed': False,
+                    'completion_scope': 'candidate_comparison', 'owner': 'ensemble',
+                    'training_run_id': training_run_id, 'ensemble_artifact_id': ensemble_row['artifact_id'],
+                    'artifact_id': ensemble_row['artifact_id'], 'artifact_checksum': ensemble_row['payload_checksum'],
+                    'nav_validation': nav_adoption['nav_validation'], 'comparison': nav_adoption['comparison']}
+            if nav_adoption['decision'] != 'PASS':
+                return {'status': 'hold', 'decision': nav_adoption['nav_validation']['reason'], 'can_promote': False,
+                    'training_run_id': training_run_id, 'ensemble_artifact_id': ensemble_row['artifact_id'],
+                    'nav_validation': nav_adoption['nav_validation']}
+            transaction['guards'].extend(nav_adoption['guards'])
     if not confirm:
         return {
-            "status": "dry_run", "decision": "promote_active8_ensemble_atomic_bundle", "can_promote": True,
+            "status": "dry_run", "decision": "promote_active8_ensemble_atomic_bundle" if evaluation_business_date
+                else "offline_diagnostic_only", "can_promote": evaluation_business_date is not None,
+            **({'offline_diagnostic_can_promote': True} if evaluation_business_date is None else {}),
             "training_run_id": training_run_id, "release_models": release_models,
             "observation_models": sorted(expected_models),
             "ensemble_artifact_id": ensemble_row.get("artifact_id"), "validation": ensemble_payload.get("validation"),
+            **({'nav_validation': nav_adoption['nav_validation']} if nav_adoption else {}),
         }
 
-    pointer_by_model = {str(row.get("model_name") or ""): row for row in d1_pointers}
+    if transaction is None:
+        transaction = prepare_bundle_transaction(query=d1_client.query, by_model=by_model,
+            supplied_pointers=d1_pointers, ensemble_row=ensemble_row, selected_models=release_models)
+    if transaction['recovered_existing_commit']:
+        return {
+            "status": "ok", "decision": "recovered_active8_ensemble_atomic_bundle", "can_promote": True,
+            "training_run_id": training_run_id, "release_models": release_models,
+            "observation_models": sorted(expected_models),
+            "artifacts": [by_model[name] for name in release_models],
+            "ensemble_artifact_id": ensemble_row['artifact_id'], "readback_verified": True,
+            "recovered_existing_commit": True, "confirmed_at": transaction['confirmed_at'],
+            "serving_activation_verified": False,
+            "serving_reader": "model_champion_pointers+active8_ensemble_pointer_v1",
+            **({'nav_validation': transaction['promotion_evidence']['nav_validation']}
+               if 'nav_validation' in transaction.get('promotion_evidence', {}) else {}),
+        }
+    # Use the same live rows protected by this transaction's SQL guards. The
+    # caller may carry older rollback fields even when champion identity agrees.
+    pointer_by_model = {str(row.get("model_name") or ""): row for row in transaction['current_pointers']}
     promoted_at = _now_iso()
     evidence = {
         "schema_version": "active8-ensemble-atomic-promotion-evidence-v1",
@@ -3550,6 +3507,9 @@ def run_active8_ensemble_bundle_promotion_controller(
         "validation": ensemble_payload.get("validation"),
         "reason": reason,
     }
+    if nav_adoption:
+        evidence.update(nav_validation=nav_adoption['nav_validation'], nav_configuration=nav_adoption['configuration'],
+                        evaluation_business_date=evaluation_business_date)
     pointer_sql = """
         INSERT INTO model_champion_pointers (
           model_name, champion_version, champion_artifact_id, rollback_version,
@@ -3568,19 +3528,23 @@ def run_active8_ensemble_bundle_promotion_controller(
           event_id, model_name, version, artifact_id, effective_at,
           retired_at, source, evidence_grade, evidence_json
         ) VALUES (?, ?, ?, ?, ?, NULL, 'model_champion_history', 'exact', ?)
-        ON CONFLICT(model_name, version, effective_at) DO NOTHING
     """
     statements: list[tuple[str, list[Any]]] = []
     for model_name in release_models:
         artifact = by_model[model_name]
         pointer = pointer_by_model.get(model_name) or {}
         artifact_id = str(artifact.get("artifact_id") or "")
+        same_base = pointer.get('champion_artifact_id') == artifact_id
+        if same_base and pointer.get('champion_version') != artifact.get('version'):
+            raise RuntimeError('active8_bundle_current_base_pointer_version_mismatch')
+        rollback_version = pointer.get('rollback_version') if same_base else pointer.get('champion_version')
+        rollback_artifact = pointer.get('rollback_artifact_id') if same_base else pointer.get('champion_artifact_id')
         statements.extend([
             ("UPDATE model_artifact_registry SET state='archived', promotion_decision='replaced_by_active8_bundle', updated_at=CURRENT_TIMESTAMP WHERE model_name=? AND state='production' AND artifact_id != ?", [model_name, artifact_id]),
             ("UPDATE model_artifact_registry SET state='production', promotion_decision='active8_bundle_promoted', approval_state='not_required', updated_at=CURRENT_TIMESTAMP WHERE artifact_id=? AND training_run_id=?", [artifact_id, training_run_id]),
-            (pointer_sql, [model_name, artifact.get("version"), artifact_id, pointer.get("champion_version"), pointer.get("champion_artifact_id"), reason, _json_dumps(evidence)]),
+            (pointer_sql, [model_name, artifact.get("version"), artifact_id, rollback_version, rollback_artifact, reason, _json_dumps(evidence)]),
             ("UPDATE model_champion_history SET retired_at=? WHERE model_name=? AND retired_at IS NULL", [promoted_at, model_name]),
-            (history_sql, [f"champion:{model_name}:{artifact.get('version')}:{training_run_id}", model_name, artifact.get("version"), artifact_id, promoted_at, _json_dumps(evidence)]),
+            (history_sql, [f"champion:{model_name}:{artifact.get('version')}:{training_run_id}:ensemble:{ensemble_row['payload_checksum']}", model_name, artifact.get("version"), artifact_id, promoted_at, _json_dumps(evidence)]),
         ])
     ensemble_artifact_id = str(ensemble_row.get("artifact_id") or "")
     ensemble_pointer_sql = """
@@ -3600,16 +3564,29 @@ def run_active8_ensemble_bundle_promotion_controller(
         ("UPDATE active8_ensemble_artifacts_v1 SET state='production', production_effect=1, updated_at=CURRENT_TIMESTAMP WHERE artifact_id=? AND training_run_id=? AND state IN ('candidate','production')", [ensemble_artifact_id, training_run_id]),
         (ensemble_pointer_sql, [ensemble_artifact_id, ensemble_row.get("cohort_id"), ensemble_row.get("payload_checksum"), ensemble_row.get("base_artifact_set_checksum"), reason, _json_dumps(evidence)]),
     ])
-    batch_result = d1_client.atomic_batch_execute(statements, timeout=60.0)
+    # The immutable-source and baseline guards are part of this same commit,
+    # not a preflight-only check that can race another adoption.
+    if nav_adoption:
+        from services.active8_nav_adoption import verify_current_configuration
+        verify_current_configuration(nav_adoption['configuration'])
+    batch_result = d1_client.atomic_batch_execute([*transaction['guards'], *statements], timeout=60.0)
     placeholders = ",".join("?" for _ in release_models)
     base_readback = d1_client.query(
         f"""
-        SELECT p.model_name, p.champion_artifact_id, r.training_run_id, r.state
+        SELECT p.model_name, p.champion_artifact_id, p.champion_version,
+               p.promotion_evidence_json, r.training_run_id, r.state, r.version, r.checksum,
+               (SELECT COUNT(*) FROM model_champion_history AS h
+                 WHERE h.model_name=p.model_name AND h.retired_at IS NULL) AS active_history_count,
+               (SELECT COUNT(*) FROM model_champion_history AS h
+                 WHERE h.model_name=p.model_name AND h.retired_at IS NULL
+                   AND h.artifact_id=p.champion_artifact_id AND h.version=p.champion_version
+                   AND h.evidence_json=p.promotion_evidence_json AND h.effective_at=?
+                   AND h.evidence_grade='exact' AND h.source='model_champion_history') AS exact_history_count
           FROM model_champion_pointers AS p
           JOIN model_artifact_registry AS r ON r.artifact_id = p.champion_artifact_id
          WHERE p.model_name IN ({placeholders})
         """,
-        release_models,
+        [promoted_at, *release_models],
     )
     readback_by_model = {str(row.get("model_name") or ""): row for row in base_readback}
     base_mismatches = [
@@ -3618,11 +3595,18 @@ def run_active8_ensemble_bundle_promotion_controller(
         != str(by_model[model_name].get("artifact_id") or "")
         or str((readback_by_model.get(model_name) or {}).get("training_run_id") or "") != training_run_id
         or str((readback_by_model.get(model_name) or {}).get("state") or "") != "production"
+        or any((readback_by_model.get(model_name) or {}).get(key) != by_model[model_name]['version']
+               for key in ('version', 'champion_version'))
+        or (readback_by_model.get(model_name) or {}).get('checksum') != by_model[model_name]['checksum']
+        or (readback_by_model.get(model_name) or {}).get('promotion_evidence_json') != _json_dumps(evidence)
+        or any((readback_by_model.get(model_name) or {}).get(key) != 1
+               for key in ('active_history_count', 'exact_history_count'))
     ]
     ensemble_readback = d1_client.query(
         """
         SELECT p.artifact_id, p.payload_checksum, p.base_artifact_set_checksum,
-               a.training_run_id, a.state, a.production_effect
+               p.cohort_id, p.promotion_evidence_json,
+               a.training_run_id, a.state, a.production_effect, a.payload_json, a.validation_decision
           FROM active8_ensemble_pointer_v1 AS p
           JOIN active8_ensemble_artifacts_v1 AS a ON a.artifact_id = p.artifact_id
          WHERE p.singleton_id = 1
@@ -3636,11 +3620,16 @@ def run_active8_ensemble_bundle_promotion_controller(
         and int(ensemble_readback[0].get("production_effect") or 0) == 1
         and str(ensemble_readback[0].get("payload_checksum") or "") == str(ensemble_row.get("payload_checksum") or "")
         and str(ensemble_readback[0].get("base_artifact_set_checksum") or "") == str(ensemble_row.get("base_artifact_set_checksum") or "")
+        and ensemble_readback[0].get('promotion_evidence_json') == _json_dumps(evidence)
+        and all(ensemble_readback[0].get(key) == ensemble_row[key]
+                for key in ('cohort_id', 'payload_json', 'validation_decision'))
     )
     if base_mismatches or not ensemble_ok:
         raise RuntimeError(
             "active8_bundle_atomic_readback_mismatch:" + ",".join(base_mismatches)
         )
+    if nav_adoption:
+        verify_current_configuration(nav_adoption['configuration'])
     return {
         "status": "ok", "decision": "promoted_active8_ensemble_atomic_bundle", "can_promote": True,
         "training_run_id": training_run_id, "release_models": release_models,
@@ -3649,4 +3638,5 @@ def run_active8_ensemble_bundle_promotion_controller(
         "ensemble_artifact_id": ensemble_artifact_id, "d1_batch": batch_result,
         "readback_verified": True,
         "confirmed_at": promoted_at, "serving_reader": "model_champion_pointers+active8_ensemble_pointer_v1",
+        **({'nav_validation': nav_adoption['nav_validation'], 'serving_activation_verified': False} if nav_adoption else {}),
     }

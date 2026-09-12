@@ -125,7 +125,7 @@ assert.match(
 )
 assert.match(
   screenerSource,
-  /buildLayer1StrategyBreadthPlan\([\s\S]*?productionStrategyWeights: runtimeStrategyRoutingWeights,[\s\S]*?performanceWeightOwner: runtimeStrategyPerformanceWeightOwner/,
+  /buildLayer1WithAtomicSource\([\s\S]*?productionStrategyWeights: runtimeStrategyRoutingWeights,[\s\S]*?performanceWeightOwner: runtimeStrategyPerformanceWeightOwner/,
   'production L1/PLE routing must consume numeric formal weights and the single performance-weight owner',
 )
 assert.doesNotMatch(

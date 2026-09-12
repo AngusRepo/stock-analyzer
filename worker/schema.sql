@@ -1,4 +1,25 @@
 -- StockVision Cloudflare D1 Schema
+-- Atomic NAV original-registry adoption (Learning migration 0047).
+CREATE TABLE IF NOT EXISTS strategy_atomic_nav_adoptions_v1 (
+  artifact_checksum TEXT PRIMARY KEY,
+  artifact_id TEXT NOT NULL UNIQUE,
+  decision_checksum TEXT NOT NULL,
+  policy_checksum TEXT NOT NULL,
+  knowledge_cutoff_date TEXT NOT NULL,
+  receipt_json TEXT NOT NULL CHECK(json_valid(receipt_json)),
+  receipt_checksum TEXT NOT NULL,
+  created_at TEXT NOT NULL DEFAULT (STRFTIME('%Y-%m-%dT%H:%M:%fZ','now'))
+);
+CREATE TRIGGER IF NOT EXISTS strategy_atomic_nav_adoptions_no_update_v1
+BEFORE UPDATE ON strategy_atomic_nav_adoptions_v1
+BEGIN SELECT RAISE(ABORT,'strategy_atomic_nav_immutable_receipt'); END;
+CREATE TRIGGER IF NOT EXISTS strategy_atomic_nav_adoptions_no_delete_v1
+BEFORE DELETE ON strategy_atomic_nav_adoptions_v1
+BEGIN SELECT RAISE(ABORT,'strategy_atomic_nav_immutable_receipt'); END;
+CREATE TRIGGER IF NOT EXISTS strategy_atomic_nav_adoptions_no_replace_v1
+BEFORE INSERT ON strategy_atomic_nav_adoptions_v1
+WHEN EXISTS(SELECT 1 FROM strategy_atomic_nav_adoptions_v1 WHERE artifact_checksum=NEW.artifact_checksum)
+BEGIN SELECT RAISE(ABORT,'strategy_atomic_nav_immutable_receipt'); END;
 -- Converted from MySQL (drizzle/mysql) to SQLite (D1)
 
 CREATE TABLE IF NOT EXISTS users (
@@ -2622,8 +2643,9 @@ CREATE TABLE IF NOT EXISTS strategy_route_calibration_head_v1 (
   run_id TEXT NOT NULL,
   artifact_version TEXT NOT NULL,
   candidate_route_version TEXT NOT NULL,
-  route_floor REAL NOT NULL,
+  route_floor REAL,
   promoted_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  CHECK(route_floor IS NOT NULL OR artifact_version='strategy-route-nav-adoption-v1'),
   FOREIGN KEY(run_id) REFERENCES strategy_route_calibration_runs_v1(run_id)
 );
 

@@ -67,7 +67,6 @@ adminConfigLifecycleRoutes.post('/api/admin/config/challenger', async (c) => {
     if (!evidencePacket && body.gate) {
       evidencePacket = {
         ...body.gate,
-        candidate_id: candidateId,
         promotion_packet_id: body.promotion_packet_id ?? null,
       }
     }

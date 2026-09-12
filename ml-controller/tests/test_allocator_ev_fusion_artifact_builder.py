@@ -1025,18 +1025,12 @@ def test_allocator_ev_feature_snapshot_backfill_reuses_l4_but_removes_candidate_
 
 def test_allocator_ev_feature_snapshot_backfill_keeps_raw_features_when_l4_cannot_fit(monkeypatch):
     import services.ipo_shadow as ipo
-    original_freeze = ipo.freeze_daily
     published_readback = []
-    ipo_calls = []
 
-    def observed_freeze(**kwargs):
-        assert published_readback == [True]
-        assert kwargs["rows"][0]["generation_mode"] == "native"
-        assert kwargs["rows"][0]["l4_payload"] is None
-        ipo_calls.append(kwargs["snapshot_date"])
-        return original_freeze(**kwargs)
+    def forbidden_freeze(**kwargs):
+        pytest.fail('historical backfill must not own prospective IPO evidence')
 
-    monkeypatch.setattr(ipo, "freeze_daily", observed_freeze)
+    monkeypatch.setattr(ipo, "freeze_daily", forbidden_freeze)
     candidate = {
         "stock_id": 1,
         "symbol": "2330",
@@ -1092,8 +1086,8 @@ def test_allocator_ev_feature_snapshot_backfill_keeps_raw_features_when_l4_canno
     )
 
     assert result["status"] == "ok"
-    assert ipo_calls == ["2026-06-08"]
-    assert result["ipo_shadow"]["status"] == "historical_not_prospective"
+    assert published_readback == [True]
+    assert result["ipo_shadow"] == {"status": "owned_by_post_pipeline_native_collector", "promotion_allowed": False}
     assert result["l4_usage_mode"] == "not_fit_eligible"
     assert result["snapshots_built"] == 1
     assert result["snapshots_without_l4"] == 1

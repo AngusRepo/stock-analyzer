@@ -2,6 +2,7 @@ import json
 import logging
 from copy import deepcopy
 from types import SimpleNamespace
+from datetime import date, timedelta
 
 import optuna
 import pytest
@@ -57,6 +58,7 @@ def test_no_orders_is_not_one_hundred_percent():
     ('total_trades', 29, 'n_trades'), ('sharpe', float('nan'), 'invalid_metrics'),
     ('max_drawdown', float('inf'), 'invalid_metrics'),
     ('sanity_flags', ['unrealistically high Sharpe'], 'sanity_flag'),
+    ('sanity_flags', ['unknown_vendor_lineage_warning'], 'sanity_flag'),
 ])
 def test_other_guards_remain(field, value, category):
     m = metric()
@@ -82,11 +84,17 @@ def test_search_samples_only_legal_and_delivered_dimensions():
 
 
 def stub_dataset(monkeypatch, replay):
-    dataset = object()
+    days = [(date(2026, 6, 6) + timedelta(days=i)).isoformat() for i in range(91)
+            if (date(2026, 6, 6) + timedelta(days=i)).weekday() < 5]
+    dataset = SimpleNamespace(trading_days=days)
     monkeypatch.setattr(search, 'select_stratified_subset', lambda **_: ['2330'])
     monkeypatch.setattr(search.BacktestDataset, 'load_for_research',
                         lambda **_: (dataset, {'snapshot': 'fixed-test'}))
-    monkeypatch.setattr(search, 'replay_period', replay)
+    def with_nav(dataset, start, end, params, **kwargs):
+        result = replay(dataset, start, end, params, **kwargs)
+        result.equity_curve = [(day, 1e6) for day in days if start <= day <= end]
+        return result
+    monkeypatch.setattr(search, 'replay_period', with_nav)
     return dataset
 
 
@@ -100,8 +108,11 @@ def test_baseline_same_dataset_and_zero_drawdown_preserved(monkeypatch, caplog):
     with caplog.at_level(logging.INFO, logger=search.__name__):
         result = search.run_search(n_trials=3, start_date='2026-06-06', end_date='2026-09-04',
                                    baseline_params=baseline)
-    assert len(seen) == 4
-    assert all(r[0] is dataset and r[1:3] == ('2026-06-06', '2026-09-04') for r in seen)
+    assert len(seen) == 6  # baseline + three development trials + two holdout replays
+    split = result['diagnostics']['split']
+    assert all(r[0] is dataset for r in seen)
+    assert all(r[1:3] == (split['development'][0], split['development'][-1]) for r in seen[:4])
+    assert all(r[1:3] == (split['validation'][0], split['validation'][-1]) for r in seen[4:])
     assert seen[0][3] == baseline
     assert result['best_max_dd'] == 0
     assert result['baseline_comparison']['delta_candidate_minus_baseline']['sharpe'] == 0
@@ -152,6 +163,10 @@ def test_broken_baseline_stops_before_search(monkeypatch):
     ({'open': 100, 'low': 99}, 1, 'filled', False),
     (None, 1, 'no_fill', True),
     ({'open': 100, 'low': 0}, 1, 'no_fill', True),
+    ({'low': 99}, 1, 'no_fill', True),
+    ({'open': float('nan'), 'low': 99}, 1, 'no_fill', True),
+    ({'open': True, 'low': 99}, 1, 'no_fill', True),
+    ({'open': 100, 'low': 101}, 1, 'no_fill', True),
 ])
 def test_entry_producer_marks_policy_and_data_separately(monkeypatch, bar, min_value, status, missing):
     from services import backtest_engine as engine
@@ -168,4 +183,20 @@ def test_entry_producer_marks_policy_and_data_separately(monkeypatch, bar, min_v
     assert len(attempts) == 1
     assert attempts[0].status == status
     assert attempts[0].execution_data_missing == missing
+    assert bool(attempts[0].missing_execution_fields) == missing
     assert bool(account.positions) == (status == 'filled')
+
+
+def test_missing_execution_events_are_logged_individually_without_mutating_metrics(caplog):
+    issue = {'symbol': '2330', 'decision_date': '2026-08-25', 'entry_date': '2026-08-26',
+             'missing_fields': ['open'], 'source_cause': 'unverified_requires_source_audit'}
+    record = {'trial': 7, 'metrics': {'execution_data_issues': [issue, issue], 'execution_data_missing': 2}}
+    original = deepcopy(record)
+    with caplog.at_level(logging.INFO, logger=search.__name__):
+        search.emit_evidence('test-only', record)
+    assert record == original
+    events = [json.loads(r.message.split('] ', 1)[1]) for r in caplog.records
+              if r.message.startswith('[optuna_screener:execution_issue]')]
+    assert len(events) == 2
+    assert [r['issue_index'] for r in events] == [0, 1]
+    assert all(r['trial'] == 7 and r['symbol'] == '2330' for r in events)

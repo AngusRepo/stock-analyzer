@@ -1,8 +1,10 @@
+import { paperAccountId } from './paperExecutionScope'
 import type { Bindings } from '../types'
 import { writeSystemLog } from './notify'
 import { recordPaperExecutionEvent } from './paperExecutionEvents'
+import { paperDomainDatabase } from './paperDomainDatabase'
+import { databaseForDataDomain } from './dataDomainRegistry'
 
-const ACCOUNT_ID = 1
 
 export interface PaperSnapshotAuditInput {
   date: string
@@ -33,35 +35,37 @@ async function countRows(db: D1Database, sql: string, ...params: unknown[]): Pro
 }
 
 export async function auditPaperSnapshotConsistency(
-  env: Pick<Bindings, 'DB'>,
+  env: Pick<Bindings, 'DB'> & Partial<Bindings>,
   input: PaperSnapshotAuditInput,
 ): Promise<PaperSnapshotAuditSummary> {
+  const paperDb = paperDomainDatabase(env)
+  const opsDb = databaseForDataDomain(env, 'ops')
   try {
     const issues = {
       negative_sell_total_cost: await countRows(
-        env.DB,
+        paperDb,
         "SELECT COUNT(*) AS cnt FROM paper_orders WHERE account_id=? AND side='sell' AND total_cost < 0",
-        ACCOUNT_ID,
+        paperAccountId(),
       ),
       settlement_missing_order: await countRows(
-        env.DB,
+        paperDb,
         'SELECT COUNT(*) AS cnt FROM paper_settlements WHERE account_id=? AND (order_id IS NULL OR order_id <= 0)',
-        ACCOUNT_ID,
+        paperAccountId(),
       ),
       nonpositive_settlement_amount: await countRows(
-        env.DB,
+        paperDb,
         'SELECT COUNT(*) AS cnt FROM paper_settlements WHERE account_id=? AND amount <= 0',
-        ACCOUNT_ID,
+        paperAccountId(),
       ),
       invalid_open_position: await countRows(
-        env.DB,
+        paperDb,
         'SELECT COUNT(*) AS cnt FROM paper_positions WHERE account_id=? AND (shares <= 0 OR avg_cost <= 0)',
-        ACCOUNT_ID,
+        paperAccountId(),
       ),
     }
     const summary = buildPaperSnapshotAuditSummary(issues)
     if (!summary.ok) {
-      await writeSystemLog(env.DB, 'warn', 'paper-snapshot-audit', 'Paper snapshot consistency issues detected', {
+      await writeSystemLog(opsDb, 'warn', 'paper-snapshot-audit', 'Paper snapshot consistency issues detected', {
         ...summary,
         date: input.date,
         cash: Math.round(input.cash),
@@ -84,7 +88,7 @@ export async function auditPaperSnapshotConsistency(
     }
     return summary
   } catch (error) {
-    await writeSystemLog(env.DB, 'warn', 'paper-snapshot-audit', 'Paper snapshot audit failed', {
+    await writeSystemLog(opsDb, 'warn', 'paper-snapshot-audit', 'Paper snapshot audit failed', {
       date: input.date,
       error: error instanceof Error ? error.message : String(error),
     })

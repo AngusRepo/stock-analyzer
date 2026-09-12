@@ -1,7 +1,7 @@
+import { paperAccountId, paperExecutionDate } from './paperExecutionScope'
 import type { Bindings } from '../types'
 import { paperDomainDatabase } from './paperDomainDatabase'
 
-const ACCOUNT_ID = 1
 
 function isMissingTableError(error: unknown): boolean {
   return /no such table/i.test(String(error))
@@ -23,7 +23,7 @@ export interface PaperOrderIntentRow {
 export type PaperBuyIntentCompletionStatus = 'filled' | 'partial' | 'failed'
 
 export function buildPaperBuyIntentKey(tradeDate: string, symbol: string): string {
-  return `${ACCOUNT_ID}:${tradeDate}:${symbol}:buy:auto_ml`
+  return `${paperAccountId()}:${tradeDate}:${symbol}:buy:auto_ml`
 }
 
 function parseD1Date(value: string | null | undefined): number | null {
@@ -35,7 +35,7 @@ function parseD1Date(value: string | null | undefined): number | null {
 
 export function shouldRecoverPaperBuyIntent(
   row: PaperOrderIntentRow | null | undefined,
-  now = new Date(),
+  now = paperExecutionDate(),
   staleMs = 15 * 60_000,
 ): boolean {
   if (!row) return false
@@ -57,7 +57,7 @@ export async function acquirePaperBuyIntent(
       `INSERT OR IGNORE INTO paper_order_intents
         (intent_key, account_id, trade_date, symbol, side, source, status, created_at, updated_at)
        VALUES (?, ?, ?, ?, 'buy', 'auto_ml', 'running', datetime('now'), datetime('now'))`,
-    ).bind(intentKey, ACCOUNT_ID, tradeDate, symbol).run()
+    ).bind(intentKey, paperAccountId(), tradeDate, symbol).run()
     if (Number(result.meta?.changes ?? 0) > 0) {
       return { acquired: true, intentKey, fallback: false }
     }

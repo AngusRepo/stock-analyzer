@@ -30,6 +30,7 @@ const SYNC_REQUIRED_TASKS = new Set([
   'evening-chain',
   'market-close-refresh',
   'daily-execution-paper-lineage',
+  'paired-native-execution',
   'update', 'pipeline', 'post-screener-pipeline',
   'intraday-rescore',
   'alpha-quality', 'sector-leaders', 'optuna-queue',

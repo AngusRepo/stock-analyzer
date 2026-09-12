@@ -4,12 +4,24 @@ import {
   type StrategyCandidateInput,
   type StrategySpec,
   type StrategySpecEvaluationOptions,
-  type StrategySpecAssessment,
 } from './strategySpec'
 import { assertOwnerCanOwn } from './strategyOwnerFreeze'
 
+// Existing screener snapshots can contain the original five-field match shape.
+// Preserve it accurately; do not assert or fabricate newer assessment metrics.
+export interface InheritedStrategyMatch {
+  specId: string
+  alphaBucket: string
+  status: string
+  label: string
+  reason: string
+  matchStrength?: number
+  thresholdMargin?: number
+  evidenceCount?: number
+}
+
 export interface StrategyAnnotatedCandidate extends StrategyCandidateInput {
-  strategy_matches?: StrategySpecAssessment['matches']
+  strategy_matches?: InheritedStrategyMatch[]
   strategy_tags?: string[]
   strategy_watch_points?: string[]
 }

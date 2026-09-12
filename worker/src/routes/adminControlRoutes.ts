@@ -28,8 +28,26 @@ import {
 } from '../lib/multiStrategyPleRouter'
 import { SELECTION_REFERENCE_CONTRACT_VERSION } from '../lib/selectionReferenceEvidence'
 import { STRATEGY_ROUTE_RECOVERY_PACKET_SCHEMA } from '../lib/strategyRouteRecoveryPacket'
+import { captureNativePaperSourceContext } from '../lib/nativePaperSourceContext'
 
 export const adminControlRoutes = new Hono<{ Bindings: Bindings; Variables: Variables }>()
+
+// Read/compute only. POST carries the exact pinned run; never resolve "latest".
+adminControlRoutes.post('/api/internal/evidence-artifacts/atomic-population', async (c) => {
+  const authError = await requireAdminOrServiceToken(c)
+  if (authError) return authError
+  const input = await c.req.json().catch(() => null)
+  if (!input || typeof input !== 'object' || Array.isArray(input)
+    || !['decisionDeadline,producerRunId,signalDate', 'continuations,decisionDeadline,producerRunId,signalDate'].includes(Object.keys(input).sort().join(','))
+    || [input.signalDate, input.producerRunId, input.decisionDeadline].some(value => typeof value !== 'string')) {
+    return c.json({ error: 'atomic_source_request_identity_invalid' }, 400)
+  }
+  const { replayCanonicalAtomicPopulation, validAtomicContinuations } = await import('../lib/atomicStrategySource')
+  if (Object.hasOwn(input, 'continuations') && !validAtomicContinuations(input.continuations)) {
+    return c.json({ error: 'atomic_source_continuations_invalid' }, 400)
+  }
+  return c.json(await replayCanonicalAtomicPopulation(c.env, input))
+})
 
 const REPORT_ARTIFACT_TASKS = new Set([
   'screener',
@@ -105,6 +123,12 @@ adminControlRoutes.post('/api/internal/d1/batch', async (c) => {
 
 adminControlRoutes.post('/api/internal/strategy-mining/d1', handleStrategyMiningD1Gateway)
 adminControlRoutes.post('/api/internal/strategy-mining/callback', handleStrategyMiningCallback)
+
+adminControlRoutes.post('/api/internal/paper-native/context', async (c) => {
+  const authError = requireServiceToken(c)
+  if (authError) return authError
+  return c.json(await captureNativePaperSourceContext(c.env))
+})
 
 export function parseScreenerArtifactInput(body: any): EvidenceArtifactWriteInput {
   if (!body || typeof body !== 'object') throw new Error('JSON object body is required')
@@ -640,10 +664,39 @@ async function handleSchedulerCallback(c: any) {
       ].join(':')
       body.summary = `${String(body.summary ?? '')} ${body.error}`.trim()
     }
-    const lifecycleStatus = String(callbackMetadata?.lifecycle_status ?? '').toLowerCase()
     const cadence = String(callbackMetadata?.cadence ?? '').toLowerCase()
     const continuationAttempt = Math.max(0, Number(callbackMetadata?.continuation_attempt ?? 0))
     const continuationMaxAttempts = Math.max(1, Number(callbackMetadata?.continuation_max_attempts ?? 12))
+    if (body.task === 'active8-oof-daily' && body.status === 'success'
+      && active8FreshnessStatus === 'fresh' && callbackRunDate) {
+      // The materialization callback must refresh its real serving consumer
+      // BEFORE settling child/root tickets. A detached best-effort refresh could
+      // leave a successful root with stale state and no durable retry.
+      const readinessRunDate = active8FreshnessBusinessDate ?? callbackRunDate
+      try {
+        const { runDailyAllocatorEvReadiness } = await import('../lib/updateOrchestrator')
+        const readiness = await runDailyAllocatorEvReadiness(c.env, readinessRunDate, {
+          knowledgeCutoffDate: callbackRunDate,
+          runId: `${callbackRunId ?? `active8-oof-daily:${callbackRunDate}`}:allocator-readiness:${callbackAttemptId ?? Date.now()}`,
+          attemptId: callbackAttemptId,
+        })
+        if (!readiness.ok) throw new Error(readiness.summary)
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error)
+        body.status = continuationAttempt < continuationMaxAttempts ? 'triggered' : 'error'
+        body.error = `active8_allocator_readiness_incomplete:${message}`
+        body.summary = `${String(body.summary ?? '')} ${body.error}`.trim()
+        if (callbackMetadata) {
+          callbackMetadata.lifecycle_status = 'pending'
+          callbackMetadata.dependency_retry_reason = 'active8_allocator_readiness_incomplete'
+        }
+        await logSchedulerResult(c.env.KV, 'allocator-ev-readiness', {
+          status: 'error', summary: body.error, duration_ms: 0, error: message,
+          run_id: callbackRunId, attempt_id: callbackAttemptId, run_date: readinessRunDate,
+        })
+      }
+    }
+    const lifecycleStatus = String(callbackMetadata?.lifecycle_status ?? '').toLowerCase()
     const expectedCohortId = String(callbackMetadata?.cohort_id ?? '').trim()
     if (
       body.status === 'triggered'
@@ -707,6 +760,8 @@ async function handleSchedulerCallback(c: any) {
       await settleActive8SnapshotContinuationTicket(c.env, {
         businessDate: callbackRunDate,
         callbackRunId,
+        schedulerTicketId: callbackSchedulerTicketId || undefined,
+        schedulerRunId: callbackSchedulerRunId || undefined,
         status: body.status as 'success' | 'error' | 'skipped',
         summary: String(body.summary ?? body.status),
         error: body.error != null ? String(body.error) : undefined,
@@ -931,35 +986,6 @@ async function handleSchedulerCallback(c: any) {
         supersedePrevious: true,
       })
     }
-  }
-
-  if (
-    body.task === 'active8-oof-daily'
-    && body.status === 'success'
-    && active8FreshnessStatus === 'fresh'
-    && callbackRunDate
-  ) {
-    c.executionCtx.waitUntil((async () => {
-      const readinessRunDate = active8FreshnessBusinessDate ?? callbackRunDate
-      try {
-        const { runDailyAllocatorEvReadiness } = await import('../lib/updateOrchestrator')
-        await runDailyAllocatorEvReadiness(c.env, readinessRunDate, {
-          knowledgeCutoffDate: callbackRunDate,
-          runId: `${callbackRunId ?? `active8-oof-daily:${callbackRunDate}`}:allocator-readiness:${callbackAttemptId ?? Date.now()}`,
-          attemptId: callbackAttemptId,
-        })
-      } catch (error) {
-        const message = error instanceof Error ? error.message : String(error)
-        await logSchedulerResult(c.env.KV, 'allocator-ev-readiness', {
-          status: 'error',
-          summary: `OOF freshness follow-up readiness failed for ${readinessRunDate}: ${message}`,
-          duration_ms: 0,
-          error: message,
-          run_id: callbackRunId,
-          run_date: readinessRunDate,
-        })
-      }
-    })())
   }
 
   if (body.task === 'optuna-per-regime' && ['success', 'error', 'skipped'].includes(String(body.status))) {
@@ -1330,6 +1356,12 @@ async function handleSchedulerCallback(c: any) {
           run_id: callbackRunId,
           run_date: callbackRunDate,
         }, c.env as any)
+        // The pipeline may fail before post-verify/Active-8 ever exists. The
+        // same root closure owner must terminalize its durable ticket now.
+        const { closeEveningChainRootIfComplete } = await import('../lib/eveningChainRootClosure')
+        await closeEveningChainRootIfComplete(databaseForDataDomain(c.env, 'ops'), {
+          businessDate: callbackRunDate!, canonicalRunId: callbackRunId,
+        })
       }
     } catch (e: any) {
       const callbackError = e?.message ?? 'post-pipeline callback chain failed'

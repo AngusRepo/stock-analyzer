@@ -11,6 +11,15 @@ const first = evaluateIntradayDrawdown({
 assert.equal(first.triggered, false)
 assert.equal(first.state.peakNav, 1_000_000)
 
+const smallUncertainty = evaluateIntradayDrawdown({ tradeDate: '2026-09-04', currentNav: 1_000_000,
+  currentNavUpperBound: 1_000_500, previous: null, haltThreshold: .05 })
+assert.equal(smallUncertainty.triggered, false, 'A small uncertain right must not globally halt buying')
+const materialUncertainty = evaluateIntradayDrawdown({ tradeDate: '2026-09-04', currentNav: 1_000_000,
+  currentNavUpperBound: 1_060_000, previous: null, haltThreshold: .05 })
+assert.equal(materialUncertainty.triggered, true, 'Uncertain exposure must not bypass drawdown safety')
+assert.throws(() => evaluateIntradayDrawdown({ tradeDate: '2026-09-04', currentNav: 1_000_000,
+  currentNavUpperBound: 990_000, previous: null, haltThreshold: .05 }), /bound_invalid/)
+
 const newHigh = evaluateIntradayDrawdown({
   tradeDate: '2026-09-04',
   currentNav: 1_020_000,

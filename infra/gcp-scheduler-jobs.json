@@ -43,6 +43,8 @@
     { "id": "eod-exit", "schedule": "25 5 * * 1-5", "task": "eod-exit", "description": "TW 13:25 EOD exit" },
     { "id": "post-close-price-refresh", "schedule": "40 5 * * 1-5", "task": "post-close-price-refresh", "query": "sync=1", "description": "TW 13:40 refresh open-position post-close quote cache for holdings and risk readability" },
     { "id": "daily-snapshot", "schedule": "20 6 * * 1-5", "task": "daily-snapshot", "description": "TW 14:20 paper account snapshot" },
+    { "id": "paired-native-execution-morning", "schedule": "15-59 23 * * SUN-THU", "task": "paired-native-execution", "query": "sync=1", "description": "TW 07:15-07:59 private paired native morning capture; no production accounts or promotion" },
+    { "id": "paired-native-execution-day", "schedule": "* 0-6 * * 1-5", "task": "paired-native-execution", "query": "sync=1", "description": "TW 08:00-14:59 private paired native frames and idempotent evidence-derived close; expired inputs cannot be backfilled" },
     { "id": "daily-execution-paper-lineage", "schedule": "35,50 6 * * 1-5", "task": "daily-execution-paper-lineage", "query": "sync=1", "description": "TW 14:35/14:50 idempotent watchdog: require daily snapshot then verify canonical execution and paper-shadow lineage artifacts" },
     { "id": "market-close-refresh", "schedule": "10 10 * * 1-5", "task": "market-close-refresh", "query": "sync=1", "description": "TW 18:10 early post-close refresh for official prices, market breadth, futures snapshot, and close-data cache" },
     { "id": "evening-chain", "schedule": "0 13 * * 1-5", "task": "evening-chain", "query": "sync=1", "description": "TW 21:00 primary evening-chain root" },

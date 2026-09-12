@@ -1270,8 +1270,9 @@ def test_oof_lifecycle_uses_latest_prep_instead_of_stale_parent_contract():
     latest_lookup = '_latest_canonical_prep_prefix(bucket) or ""'
     stale_parent_lookup = 'prep_gcs_prefix = str(parent_manifest.get("prep_gcs_prefix") or "").strip().rstrip("/")'
     assert source.index(latest_lookup) < source.index(stale_parent_lookup)
-    assert 'prep_gcs_prefix = "" if exact_producer_source_sha else' in source
-    assert "expected_producer_source_sha=exact_producer_source_sha" in source
+    assert 'pinned_prep = bool(exact_producer_source_sha and cadence != "daily")' in source
+    assert 'prep_gcs_prefix = "" if pinned_prep else' in source
+    assert "expected_producer_source_sha=exact_producer_source_sha if pinned_prep else None" in source
     assert '                prep_gcs_prefix = str(parent_manifest.get("prep_gcs_prefix") or "")' not in source.splitlines()
     assert 'calendar_evidence.get("sequence_gcs_prefix")' in source
 
@@ -1555,6 +1556,17 @@ def test_oof_lifecycle_receipt_is_bound_to_active_materialization_policy():
     assert not _oof_lifecycle_receipt_matches_active_policy(
         missing_candidate_forward, cadence="daily", require_full_fit=False
     )
+    from routers.walk_forward import _candidate_forward_requires_retry
+    for diagnostic in (
+        {'status': 'evaluated_with_diagnostic_failures'},
+        {'status': 'evaluated', 'diagnostics_retry_required': True},
+        {'status': 'evaluated', 'diagnostic_failures': [{'owner': 'l4_alpha_ev'}]},
+    ):
+        value = {**shadow['evidence_closure']['candidate_forward_evaluation'], **diagnostic}
+        assert _candidate_forward_requires_retry(value)
+        assert not _oof_lifecycle_receipt_matches_active_policy({**shadow,
+            'evidence_closure': {**shadow['evidence_closure'], 'candidate_forward_evaluation': value}},
+            cadence='daily', require_full_fit=False)
     missing_coverage = {
         **shadow,
         "evidence_closure": {
@@ -1625,12 +1637,15 @@ def test_exact_candidate_multi_owner_promotion_requires_every_requested_owner():
     from routers.walk_forward import _candidate_forward_promotion_closure
 
     requested = {
-        "l4_alpha_ev": {"artifact_id": "l4"},
-        "allocator_ev_fusion": {"artifact_id": "fusion"},
+        "l4_alpha_ev": {"artifact_id": "l4", "artifact": {"model_version": "l4v"}},
+        "allocator_ev_fusion": {"artifact_id": "fusion", "artifact": {"model_version": "fv"}},
     }
+    receipts = {owner: {'promoted': True, 'config_projection_error': None, 'model_version': packet['artifact']['model_version'],
+        'pointer_commit': {'artifact_id': packet['artifact_id'], 'payload_checksum': 'a' * 64}}
+        for owner, packet in requested.items()}
     partial = _candidate_forward_promotion_closure(requested, {
         "outcomes": {
-            "l4_alpha_ev": {"promoted": True},
+            "l4_alpha_ev": receipts['l4_alpha_ev'],
             "allocator_ev_fusion": {
                 "promoted": False,
                 "blockers": ["fusion_requires_serving_compatible_l4"],
@@ -1646,10 +1661,7 @@ def test_exact_candidate_multi_owner_promotion_requires_every_requested_owner():
     ]
 
     complete = _candidate_forward_promotion_closure(requested, {
-        "outcomes": {
-            "l4_alpha_ev": {"promoted": True},
-            "allocator_ev_fusion": {"promoted": True},
-        },
+        "outcomes": receipts,
     })
     assert complete["complete"] is True
     assert complete["failed_owners"] == []

@@ -154,12 +154,14 @@
       }
     },
     "security_master": {
-      "canonical_datasets": ["finlab_taxonomy_tags"],
-      "required_fields": ["table"],
+      "canonical_datasets": ["finlab_taxonomy_tags", "stocks"],
+      "required_fields": ["table", "company_basic_info", "tw_etf_basic_info"],
       "optional_fields": [],
       "sentinel_field": "table",
       "fields": {
-        "table": { "required": true }
+        "table": { "required": true },
+        "company_basic_info": { "required": true },
+        "tw_etf_basic_info": { "required": true }
       }
     },
     "taxonomy_expansion": {

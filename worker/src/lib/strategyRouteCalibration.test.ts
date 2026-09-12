@@ -24,6 +24,11 @@ for (let day = 0; day < 20; day += 1) {
   }
 }
 const pass = evaluateStrategyRouteCalibration(informative)
+const missingIncumbent = evaluateStrategyRouteCalibration(informative.map((row) => ({ ...row, incumbent_route_score: null })))
+assert.equal(missingIncumbent.gates.incumbent_route_lineage_complete, false)
+assert.equal(missingIncumbent.pairedSampleCount, 0)
+assert.equal(missingIncumbent.challengerIncumbentDelta, null)
+assert.equal(missingIncumbent.status, 'fail', 'null incumbent cannot become score=0 and fabricate a complete pair')
 assert.equal(pass.status, 'pass', 'stable cost-net OOS edge should pass route calibration')
 assert((pass.routeFloor ?? 0) > 0, 'route floor must be learned from train dates')
 assert((pass.topBucketNetReturnLcb90 ?? 0) > 0, 'top bucket OOS net-return LCB must be positive')

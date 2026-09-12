@@ -8,14 +8,23 @@ from datetime import date, timedelta
 from unittest.mock import AsyncMock
 
 import pytest
+import google.cloud as google_cloud
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-google_cloud = sys.modules.setdefault("google.cloud", types.ModuleType("google.cloud"))
-if not hasattr(google_cloud, "run_v2"):
+try:
+    from google.cloud import run_v2
+except ImportError:
+    # Only this optional client is absent locally. Preserve the REAL namespace
+    # so Storage (and other installed GCP clients) remain importable in a suite.
     google_cloud.run_v2 = types.SimpleNamespace(JobsClient=object, ExecutionsClient=object)
     sys.modules.setdefault("google.cloud.run_v2", google_cloud.run_v2)
 from routers import walk_forward as wf
 from routers import optuna
 import oof_materialize_job_main as job
+
+
+def test_optional_run_client_stub_preserves_installed_storage_namespace():
+    from google.cloud import storage
+    assert callable(storage.Client)
 
 
 class Blob:
@@ -264,6 +273,9 @@ def test_terminal_fast_path_cannot_hide_new_complete_cohort_batch(monkeypatch, l
 
 def test_daily_exact_continuation_checks_current_prep(monkeypatch):
     from services import active8_prep_lifecycle
+    # This test isolates prep lineage; real NAV/job/receipt integration lives
+    # in test_nav_oof_job_independence, using the original SQLite owner.
+    monkeypatch.setattr(job, '_execute_daily_nav', lambda **kw: {'status': 'up_to_date'})
     prep = AsyncMock(return_value={"status": "idempotent_ready", "business_date": "2026-09-08"})
     route = AsyncMock(return_value={"status": "shadow_evaluated"})
     monkeypatch.setattr(active8_prep_lifecycle, "ensure_active8_daily_prep", prep)

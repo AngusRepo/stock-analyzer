@@ -304,7 +304,12 @@ def test_promotion_gate_holds_inconclusive_candidate_after_ten_dates() -> None:
     assert gate["confidently_harmful"] is False
     assert gate["maximum_window_exhausted"] is False
 
-    exhausted = _promotion_gate(rows * 3, owner="l4_alpha_ev", candidate=candidate)
+    from datetime import date, timedelta
+    extended = [{**rows[i % 10],
+                 'prediction_date': (date(2026, 9, 1) + timedelta(days=i)).isoformat(),
+                 'label_known_date': (date(2026, 9, 11) + timedelta(days=i)).isoformat()}
+                for i in range(30)]
+    exhausted = _promotion_gate(extended, owner="l4_alpha_ev", candidate=candidate)
     assert exhausted["decision"] == "FAIL"
     assert exhausted["maximum_window_exhausted"] is True
 
@@ -518,7 +523,7 @@ def test_preoutcome_persistence_binds_exact_v2_lineage() -> None:
 
     def batch_fn(statements: list[tuple[str, list[Any]]], **_kwargs: Any) -> dict[str, Any]:
         captured.extend(statements)
-        return {"changes": len(statements)}
+        return {"success_count": len(statements), "error_count": 0}
 
     result = _persist_evaluations(
         [{
@@ -543,7 +548,7 @@ def test_preoutcome_persistence_binds_exact_v2_lineage() -> None:
     )
 
     sql, params = captured[0]
-    assert result == {"changes": 1}
+    assert result == {"success_count": 1, "error_count": 0}
     assert "expected_return_candidate_preoutcome_evaluations" in sql
     assert "artifact_trained_until" in sql
     assert "selection_semantic_floor_date" in sql
@@ -552,7 +557,23 @@ def test_preoutcome_persistence_binds_exact_v2_lineage() -> None:
     assert "2026-08-25" in params
 
 
-def test_evaluator_waits_without_training_when_no_preoutcome_locked_rows() -> None:
+@pytest.fixture
+def empty_nav_db(monkeypatch):
+    from datetime import datetime, timezone
+    from services import paired_nav_candidate_decision
+    from test_paired_nav_journal import DB
+    from test_paired_nav_review_store import migrate
+    db = DB(legacy_assessments=False)
+    migrate(db)
+    class Clock(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return datetime(2026, 9, 10, 14, tzinfo=timezone.utc)
+    monkeypatch.setattr(paired_nav_candidate_decision, 'datetime', Clock)
+    return db
+
+
+def test_evaluator_waits_for_nav_without_training_when_no_preoutcome_locked_rows(empty_nav_db) -> None:
     l4_row, l4_raw = _candidate("l4_alpha_ev")
     fusion_row, fusion_raw = _candidate("allocator_ev_fusion")
     bucket = _Bucket({
@@ -562,19 +583,28 @@ def test_evaluator_waits_without_training_when_no_preoutcome_locked_rows() -> No
     calls = {"build": 0, "persist": 0}
 
     def query_fn(sql: str, _params: list[Any]) -> list[dict[str, Any]]:
+        if "SELECT state, live_gate_status" in sql:
+            return [row for row in [l4_row, fusion_row] if row['artifact_id'] == _params[0]]
         if "MIN(signal_date)" in sql:
             return [{"selection_semantic_floor_date": "2026-08-25"}]
         if "FROM model_artifact_registry" in sql:
             return [l4_row, fusion_row]
-        return []
+        if 'expected_return_candidate_preoutcome_evaluations' in sql:
+            return []
+        return empty_nav_db.query(sql, _params)
 
     def build_fn(*_args: Any, **_kwargs: Any) -> list[dict[str, Any]]:
         calls["build"] += 1
         return []
 
-    def batch_fn(*_args: Any, **_kwargs: Any) -> dict[str, Any]:
+    def batch_fn(statements: Any, **_kwargs: Any) -> dict[str, Any]:
         calls["persist"] += 1
-        return {"changes": 0}
+        for _sql, params in statements:
+            for row in [l4_row, fusion_row]:
+                if row['artifact_id'] == params[4]:
+                    row.update(dict(zip(('state', 'live_gate_status', 'live_evidence_json',
+                                         'promotion_decision'), params[:4])))
+        return {"success_count": len(statements), "error_count": 0}
 
     result = evaluate_expected_return_candidates_forward(
         bucket=bucket,
@@ -591,7 +621,7 @@ def test_evaluator_waits_without_training_when_no_preoutcome_locked_rows() -> No
         batch_fn=batch_fn,
     )
 
-    assert result["status"] == "waiting_for_preoutcome_locked_mature_dates"
+    assert result["status"] == "evaluated"
     assert result["candidate_source_run_date"] == "2026-08-30"
     assert result["gates"]["l4_alpha_ev"]["decision"] == "PENDING"
     assert result["gates"]["l4_alpha_ev"]["minimum_evaluable_dates"] == 10
@@ -600,7 +630,7 @@ def test_evaluator_waits_without_training_when_no_preoutcome_locked_rows() -> No
     assert calls == {"build": 0, "persist": 1}
 
 
-def test_evaluator_never_pairs_candidates_from_different_freeze_dates() -> None:
+def test_evaluator_never_pairs_candidates_from_different_freeze_dates(empty_nav_db) -> None:
     l4_row, l4_raw = _candidate("l4_alpha_ev")
     fusion_row, fusion_raw = _candidate("allocator_ev_fusion", "2026-08-29")
     bucket = _Bucket({
@@ -609,11 +639,23 @@ def test_evaluator_never_pairs_candidates_from_different_freeze_dates() -> None:
     })
 
     def query_fn(sql: str, _params: list[Any]) -> list[dict[str, Any]]:
+        if "SELECT state, live_gate_status" in sql:
+            return [row for row in [l4_row, fusion_row] if row['artifact_id'] == _params[0]]
         if "MIN(signal_date)" in sql:
             return [{"selection_semantic_floor_date": "2026-08-25"}]
         if "FROM model_artifact_registry" in sql:
             return [l4_row, fusion_row]
-        return []
+        if 'expected_return_candidate_preoutcome_evaluations' in sql:
+            return []
+        return empty_nav_db.query(sql, _params)
+
+    def batch_fn(statements: Any, **_kwargs: Any) -> dict[str, Any]:
+        for _sql, params in statements:
+            for row in [l4_row, fusion_row]:
+                if row['artifact_id'] == params[4]:
+                    row.update(dict(zip(('state', 'live_gate_status', 'live_evidence_json',
+                                         'promotion_decision'), params[:4])))
+        return {"success_count": len(statements), "error_count": 0}
 
     result = evaluate_expected_return_candidates_forward(
         bucket=bucket,
@@ -623,9 +665,9 @@ def test_evaluator_never_pairs_candidates_from_different_freeze_dates() -> None:
         snapshot_rows=[],
         build_fusion_rows_fn=lambda *_args, **_kwargs: [],
         query_fn=query_fn,
-        batch_fn=lambda *_args, **_kwargs: {"changes": 0},
+        batch_fn=batch_fn,
     )
-    assert result["status"] == "waiting_for_preoutcome_locked_mature_dates"
+    assert result["status"] == "evaluated"
     assert set(result["candidate_artifact_ids"]) == {"l4_alpha_ev"}
     assert result["promotion_ready"] is False
     assert result["training_dispatched"] is False

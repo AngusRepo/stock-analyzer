@@ -1,3 +1,4 @@
+import { paperExecutionFetch, paperExecutionNow } from './paperExecutionScope'
 /**
  * twseApi.ts — TWSE/TPEX 官方 API bulk fetcher
  *
@@ -17,7 +18,7 @@ async function fetchWithRetry(
   const { maxRetries = 3, baseDelay = 2000, label = url.slice(0, 60) } = opts
   for (let attempt = 1; attempt <= maxRetries; attempt++) {
     try {
-      const res = await fetch(url, init)
+      const res = await paperExecutionFetch(url, init)
       if (res.status === 429 || res.status === 503) {
         if (attempt < maxRetries) {
           const delay = baseDelay * Math.pow(2, attempt - 1)
@@ -61,7 +62,7 @@ async function fetchTpexStockDayAllViaController(
   if (!controllerUrl) return []
   const headers: Record<string, string> = { 'Content-Type': 'application/json' }
   if (controllerSecret) headers['X-Controller-Token'] = controllerSecret
-  const res = await fetch(`${controllerUrl}/tpex-prices`, {
+  const res = await paperExecutionFetch(`${controllerUrl}/tpex-prices`, {
     method: 'POST',
     headers,
     body: JSON.stringify({ date }),
@@ -91,7 +92,7 @@ async function fetchTwseStockDayAllViaController(
   if (!controllerUrl) return { reportDate: null, rows: [] }
   const headers: Record<string, string> = { 'Content-Type': 'application/json' }
   if (controllerSecret) headers['X-Controller-Token'] = controllerSecret
-  const res = await fetch(`${controllerUrl}/twse-prices`, {
+  const res = await paperExecutionFetch(`${controllerUrl}/twse-prices`, {
     method: 'POST',
     headers,
     body: JSON.stringify({ date }),
@@ -295,7 +296,7 @@ export interface ExDividendRow {
 export async function fetchExDividendForecast(): Promise<ExDividendRow[]> {
   const fetchTwse = async (): Promise<ExDividendRow[]> => {
     try {
-      const res = await fetch('https://openapi.twse.com.tw/v1/exchangeReport/TWT48U', {
+      const res = await paperExecutionFetch('https://openapi.twse.com.tw/v1/exchangeReport/TWT48U', {
         headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36' },
         signal: AbortSignal.timeout(15000),
       })
@@ -338,7 +339,7 @@ export async function fetchExDividendForecast(): Promise<ExDividendRow[]> {
 
   const fetchTpex = async (): Promise<ExDividendRow[]> => {
     try {
-      const res = await fetch('https://www.tpex.org.tw/openapi/v1/tpex_mainboard_ex_dividend_forecast', {
+      const res = await paperExecutionFetch('https://www.tpex.org.tw/openapi/v1/tpex_mainboard_ex_dividend_forecast', {
         headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36' },
         signal: AbortSignal.timeout(15000),
       })
@@ -393,7 +394,7 @@ export async function fetchExDividendForecast(): Promise<ExDividendRow[]> {
 
 export async function fetchAttentionStocks(): Promise<string[]> {
   try {
-    const res = await fetch('https://www.twse.com.tw/rwd/zh/announcement/notice?response=json', {
+    const res = await paperExecutionFetch('https://www.twse.com.tw/rwd/zh/announcement/notice?response=json', {
       headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36' },
       signal: AbortSignal.timeout(15000),
     })
@@ -411,7 +412,7 @@ export async function fetchAttentionStocks(): Promise<string[]> {
 }
 
 export async function fetchPunishedStocks(): Promise<string[]> {
-  const res = await fetch('https://www.twse.com.tw/rwd/zh/announcement/punish?response=json', {
+  const res = await paperExecutionFetch('https://www.twse.com.tw/rwd/zh/announcement/punish?response=json', {
     headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36' },
     signal: AbortSignal.timeout(15000),
   })
@@ -441,7 +442,7 @@ function extractTpexRestrictionCodes(rows: unknown): string[] {
 
 async function fetchTpexRestrictionCodes(endpoint: string, label: string): Promise<string[]> {
   try {
-    const res = await fetch(`https://www.tpex.org.tw/openapi/v1/${endpoint}`, {
+    const res = await paperExecutionFetch(`https://www.tpex.org.tw/openapi/v1/${endpoint}`, {
       headers: TWSE_HEADERS,
       signal: AbortSignal.timeout(15000),
     })
@@ -463,9 +464,9 @@ export async function fetchTpexPunishedStocks(): Promise<string[]> {
 
 export async function fetchDayTradeEligible(): Promise<string[]> {
   try {
-    const today = new Date(Date.now() + 8 * 3600_000).toISOString().slice(0, 10).replace(/-/g, '')
+    const today = new Date(paperExecutionNow() + 8 * 3600_000).toISOString().slice(0, 10).replace(/-/g, '')
     const url = `https://www.twse.com.tw/exchangeReport/TWTB4U?response=json&date=${today}&selectType=All`
-    const res = await fetch(url, {
+    const res = await paperExecutionFetch(url, {
       headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36' },
       signal: AbortSignal.timeout(15000),
     })
@@ -493,7 +494,7 @@ export interface BulkValuationRow {
 
 export async function fetchTwseValuation(date: string): Promise<BulkValuationRow[]> {
   const url = `https://www.twse.com.tw/rwd/zh/afterTrading/BWIBBU_ALL?date=${twseDate(date)}&response=json`
-  const res = await fetch(url, {
+  const res = await paperExecutionFetch(url, {
     headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36' },
     signal: AbortSignal.timeout(30000),
   })
@@ -522,7 +523,7 @@ export interface MonthlyRevenueRow {
 }
 
 export async function fetchTwseMonthlyRevenue(): Promise<MonthlyRevenueRow[]> {
-  const res = await fetch('https://openapi.twse.com.tw/v1/opendata/t187ap05_L', {
+  const res = await paperExecutionFetch('https://openapi.twse.com.tw/v1/opendata/t187ap05_L', {
     headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36' },
     signal: AbortSignal.timeout(30000),
   })
@@ -554,7 +555,7 @@ export async function fetchTwseMonthlyRevenue(): Promise<MonthlyRevenueRow[]> {
 // ─── TPEX 月營收（openapi）────────────────────────────────────────────────────
 
 export async function fetchTpexMonthlyRevenue(): Promise<MonthlyRevenueRow[]> {
-  const res = await fetch('https://www.tpex.org.tw/openapi/v1/mopsfin_t187ap05_O', {
+  const res = await paperExecutionFetch('https://www.tpex.org.tw/openapi/v1/mopsfin_t187ap05_O', {
     headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36' },
     signal: AbortSignal.timeout(30000),
   })
@@ -601,7 +602,7 @@ export async function fetchTpexFinancials(): Promise<BulkFinancialRow[]> {
 
   const fetchJson = async (url: string) => {
     try {
-      const res = await fetch(url, {
+      const res = await paperExecutionFetch(url, {
         headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36' },
         signal: AbortSignal.timeout(30000),
       })
@@ -676,7 +677,7 @@ export async function fetchTpexFinancials(): Promise<BulkFinancialRow[]> {
 // ─── TPEX PER/PBR/殖利率（全市場）────────────────────────────────────────────
 
 export async function fetchTpexValuation(): Promise<BulkValuationRow[]> {
-  const res = await fetch('https://www.tpex.org.tw/openapi/v1/tpex_mainboard_peratio_analysis', {
+  const res = await paperExecutionFetch('https://www.tpex.org.tw/openapi/v1/tpex_mainboard_peratio_analysis', {
     headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36' },
     signal: AbortSignal.timeout(30000),
   })
@@ -707,7 +708,7 @@ export interface MarketBreadthData {
 }
 
 export async function fetchMarketBreadth(): Promise<MarketBreadthData | null> {
-  const res = await fetch('https://openapi.twse.com.tw/v1/opendata/twtazu_od', {
+  const res = await paperExecutionFetch('https://openapi.twse.com.tw/v1/opendata/twtazu_od', {
     headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36' },
     signal: AbortSignal.timeout(15000),
   })
@@ -767,7 +768,7 @@ export async function fetchTwseFinancials(): Promise<BulkFinancialRow[]> {
 
   const fetchJson = async (url: string) => {
     try {
-      const res = await fetch(url, {
+      const res = await paperExecutionFetch(url, {
         headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36' },
         signal: AbortSignal.timeout(30000),
       })
@@ -879,7 +880,7 @@ export async function fetchTpexChips(date: string): Promise<BulkChipRow[]> {
 
 export async function fetchTwseMargin(date: string): Promise<BulkMarginRow[]> {
   const url = `https://www.twse.com.tw/rwd/zh/marginTrading/MI_MARGN?date=${twseDate(date)}&selectType=ALL&response=json`
-  const res = await fetch(url, {
+  const res = await paperExecutionFetch(url, {
     headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36' },
     signal: AbortSignal.timeout(30000),
   })
@@ -907,7 +908,7 @@ export async function fetchTwseMargin(date: string): Promise<BulkMarginRow[]> {
 
 export async function fetchTpexMargin(_date: string): Promise<BulkMarginRow[]> {
   const url = 'https://www.tpex.org.tw/openapi/v1/tpex_mainboard_margin_balance'
-  const res = await fetch(url, {
+  const res = await paperExecutionFetch(url, {
     headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36' },
     signal: AbortSignal.timeout(30000),
   })
@@ -948,7 +949,7 @@ export async function bulkFetchAndStoreChipData(
     if (!controllerUrl) return { chips: [], margins: [] }
     const headers: Record<string, string> = { 'Content-Type': 'application/json' }
     if (controllerSecret) headers['X-Controller-Token'] = controllerSecret
-    const res = await fetch(`${controllerUrl}/${endpoint}`, {
+    const res = await paperExecutionFetch(`${controllerUrl}/${endpoint}`, {
       method: 'POST', headers,
       body: JSON.stringify({ date }),
       signal: AbortSignal.timeout(60000),
@@ -1308,7 +1309,7 @@ export async function fetchTpexStockDayAll(options: TpexStockDayAllOptions = {})
 /** TPEX 興櫃每日行情（含均價 — 興櫃漲跌幅基準是前日均價，非收盤價）*/
 export async function fetchEmergingStockDayAll(): Promise<StockDayAllRow[]> {
   const url = 'https://www.tpex.org.tw/openapi/v1/tpex_esb_latest_statistics'
-  const res = await fetch(url, {
+  const res = await paperExecutionFetch(url, {
     headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36' },
     signal: AbortSignal.timeout(30000),
   })
@@ -1469,7 +1470,7 @@ export interface TaifexNightSession {
  */
 export async function fetchTaifexDayClose(): Promise<TaifexNightSession | null> {
   try {
-    const res = await fetch('https://mis.taifex.com.tw/futures/api/getQuoteList', {
+    const res = await paperExecutionFetch('https://mis.taifex.com.tw/futures/api/getQuoteList', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36' },
       body: JSON.stringify({ CID: '', SymbolID: '', MarketType: '0' }),
@@ -1545,7 +1546,7 @@ async function fetchTaifexNightViaController(
   if (!controllerUrl) return null
   const headers: Record<string, string> = { 'Content-Type': 'application/json' }
   if (controllerSecret) headers['X-Controller-Token'] = controllerSecret
-  const response = await fetch(`${controllerUrl.replace(/\/$/, '')}/taifex-quote`, {
+  const response = await paperExecutionFetch(`${controllerUrl.replace(/\/$/, '')}/taifex-quote`, {
     method: 'POST',
     headers,
     body: JSON.stringify({ market_type: '1' }),
@@ -1561,7 +1562,7 @@ export async function fetchTaifexNightClose(
   controllerSecret?: string,
 ): Promise<TaifexNightSession | null> {
   try {
-    const response = await fetch('https://mis.taifex.com.tw/futures/api/getQuoteList', {
+    const response = await paperExecutionFetch('https://mis.taifex.com.tw/futures/api/getQuoteList', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36' },
       body: JSON.stringify({ CID: '', SymbolID: '', MarketType: '1' }),

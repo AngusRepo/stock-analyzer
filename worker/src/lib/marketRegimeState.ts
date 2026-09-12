@@ -1,3 +1,4 @@
+import { paperExecutionDate } from './paperExecutionScope'
 export const MARKET_REGIME_STATE_KEY = 'market_regime_state'
 export const MARKET_REGIME_STATE_ARCHIVE_PREFIX = 'market_regime_state:date:'
 export const LEGACY_REGIME_KEY = 'ml:regime'
@@ -104,7 +105,7 @@ export function buildMarketRegimeState(input: {
     label: 'sideways' as const,
     family: 'sideways' as const,
   }
-  const computedAt = String(input.computedAt || params.computed_at || new Date().toISOString())
+  const computedAt = String(input.computedAt || params.computed_at || paperExecutionDate().toISOString())
   const runDate = input.runDate ?? String(params.run_date ?? '')
   const rawLabel = normalizeRegimeLabel(params.raw_label)?.label ?? normalized.label
   const regimeEvidence = normalizeObject(params.regime_evidence)
@@ -375,7 +376,7 @@ export async function persistMarketRegimeState(
 ): Promise<void> {
   const ttl = options.expirationTtl ?? 2 * 86400
   const archiveTtl = options.archiveExpirationTtl ?? 400 * 86400
-  const pushedAt = new Date().toISOString()
+  const pushedAt = paperExecutionDate().toISOString()
   const payload: MarketRegimeState = { ...state, downstream_contract: contract(), pushed_at: pushedAt }
   if (options.historyDb && payload.run_date) {
     await persistMarketRegimeStateHistory(options.historyDb, payload)

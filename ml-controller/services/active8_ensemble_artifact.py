@@ -2,8 +2,9 @@
 
 All model parameters come from label-resolved chronological OOF rows.  The
 calibration slice precedes the validation slice; validation never selects or
-fits the final parameters.  Full-fit parameters are emitted only after the
-held-out chronological validation passes.
+fits the final parameters. Structurally valid full-fit parameters are retained
+as immutable candidates even when held-out efficacy diagnostics fail. Candidate
+registration grants no serving authority.
 """
 from __future__ import annotations
 
@@ -22,11 +23,14 @@ from services.active8_oof_stacker import (
     MIN_STACKER_TRAIN_ROWS,
     STACKER_FEATURE_NAMES,
     STACKER_SEMANTIC_VERSION,
+    INNER_TUNING_POLICY,
     _equal_date_market_ic,
     _fit_selected_ridge,
     _spearman,
     build_chronological_oof_stack,
 )
+
+from services.ensemble_qualification import QUALIFICATION_SCHEMA, assess_ensemble_qualifications
 
 ARTIFACT_SCHEMA_VERSION = "active8-oof-ensemble-serving-artifact-v1"
 CALIBRATION_SCHEMA_VERSION = "active8-chronological-conformal-isotonic-v1"
@@ -35,6 +39,16 @@ BUY_COVERAGE = 0.90
 STRONG_COVERAGE = 0.95
 MIN_VALIDATION_DATES = 5
 MIN_VALIDATION_ROWS = 200
+
+# These are measurable offline diagnostics, not data-integrity failures. Unknown
+# failures and an unusable fitted model must never enter executable candidates.
+OFFLINE_DIAGNOSTIC_GATES = frozenset({
+    'chronological_validation_equal_date_market_rank_ic_lcb90_non_positive',
+    'chronological_validation_daily_spread_lcb90_non_positive',
+    'buy_conformal_coverage_below_policy',
+    'strong_conformal_coverage_below_policy',
+    'directional_signal_net_mean_non_positive',
+})
 
 
 class Active8EnsembleValidationError(ValueError):
@@ -146,6 +160,38 @@ def _daily_spread_values(rows: list[dict[str, Any]]) -> list[float]:
         for prediction_date in sorted(daily)
         if daily[prediction_date]
     ]
+
+
+def _directional_validation_evidence(rows, predictions, q_buy, q_strong):
+    """Past-only held-out directional evidence; five-date blocks preserve overlap."""
+    target = np.asarray([row["target_return"] for row in rows], dtype=float)
+    dates = np.asarray([row["prediction_date"] for row in rows])
+    unique = sorted(set(dates))
+    output = {}
+    for signal, mask, net in (
+        ("BUY", predictions > q_buy, target),
+        ("STRONG_BUY", predictions > q_strong, target),
+        # target already subtracts 18 bps. Negating it alone would credit costs.
+        ("SELL", predictions < -q_buy, -target - 2 * .0018),
+        ("STRONG_SELL", predictions < -q_strong, -target - 2 * .0018),
+    ):
+        daily = np.asarray([float(net[mask & (dates == day)].mean())
+                            if np.any(mask & (dates == day)) else 0. for day in unique])
+        lcb = None
+        if len(daily) >= 10:
+            rng = np.random.default_rng(20260911)
+            starts = rng.integers(0, len(daily)-4, size=(5000, math.ceil(len(daily)/5)))
+            indices = (starts[:, :, None] + np.arange(5)).reshape(5000, -1)[:, :len(daily)]
+            lcb = float(np.quantile(daily[indices].mean(axis=1), .1))
+        output[signal] = {
+            "rows": int(mask.sum()), "dates": len(set(dates[mask])),
+            "net_mean": float(net[mask].mean()) if mask.any() else None,
+            "date_net_mean_lcb90": lcb, "evaluation_dates": len(unique),
+            "uncertainty_method": "five_date_moving_block_bootstrap_5000_lcb90",
+            "net_semantic": "long_target_net_18bps" if signal.endswith("BUY") else "negative_long_target_minus_36bps_directional_proxy",
+            "execution_qualification": False,
+        }
+    return output
 
 
 def _same_window_diagnostics(rows: list[dict[str, Any]]) -> dict[str, Any]:
@@ -286,10 +332,13 @@ def build_active8_ensemble_artifact(
     same_window = _same_window_diagnostics(validation_rows)
     buy_mask = val_prediction - q_buy > 0.0
     sell_mask = val_prediction + q_buy < 0.0
-    directional = np.concatenate([val_target[buy_mask], -val_target[sell_mask]])
+    directional = np.concatenate([val_target[buy_mask], -val_target[sell_mask] - 2 * .0018])
     directional_mean = float(np.mean(directional)) if len(directional) else None
     validation = {
         "schema_version": "active8-oof-ensemble-validation-v1",
+        "qualification_schema_version": QUALIFICATION_SCHEMA,
+        "decision_scope": "ranking",
+        "directional_evidence": _directional_validation_evidence(validation_rows, val_prediction, q_buy, q_strong),
         "method": "chronological_oof_calibration_then_later_validation",
         "calibration_dates": len(calibration_dates),
         "calibration_rows": len(calibration_rows),
@@ -331,22 +380,18 @@ def build_active8_ensemble_artifact(
         validation["failed_gates"].append(
             "chronological_validation_daily_spread_lcb90_non_positive"
         )
-    if validation["buy_interval_empirical_coverage"] < BUY_COVERAGE - 0.05:
-        validation["failed_gates"].append("buy_conformal_coverage_below_policy")
-    if validation["strong_interval_empirical_coverage"] < STRONG_COVERAGE - 0.05:
-        validation["failed_gates"].append("strong_conformal_coverage_below_policy")
-    if directional_mean is not None and directional_mean <= 0.0:
-        validation["failed_gates"].append("directional_signal_net_mean_non_positive")
+    # Keep ranking/calibration/direction diagnostics separate. Executable
+    # candidates are retained even when ranking FAILs; NAV owns publication.
     validation["decision"] = "PASS" if not validation["failed_gates"] else "FAIL"
-    if validation["decision"] != "PASS":
-        raise Active8EnsembleValidationError(validation)
-
     x = np.asarray([row["stacker_features"] for row in resolved], dtype=float)
     y = np.asarray([row["target_return"] for row in resolved], dtype=float)
     fit_dates = np.asarray([row["prediction_date"] for row in resolved], dtype=object)
     fit_markets = np.asarray([row["market_segment"] for row in resolved], dtype=object)
     coefficients, intercept, regularization, selected_models = _fit_selected_ridge(
-        x, y, fit_dates, fit_markets
+        x, y, fit_dates, fit_markets,
+        label_known_dates=np.asarray(
+            [row["label_known_date"] for row in resolved], dtype=object
+        ),
     )
     if not selected_models:
         raise Active8EnsembleValidationError({
@@ -398,6 +443,7 @@ def build_active8_ensemble_artifact(
         "feature_names": list(STACKER_FEATURE_NAMES),
         "model_order": list(ACTIVE8_MODELS),
         "fit": {
+            "inner_tuning_policy": INNER_TUNING_POLICY,
             "method": "nonnegative_rank_ridge_full_fit_after_heldout_chronological_oof_validation",
             "rank_coefficient_constraint": "nonnegative",
             "regularization": regularization,
@@ -424,6 +470,12 @@ def build_active8_ensemble_artifact(
             "eligible_candidate_coverage": stack_evidence.get("eligible_candidate_coverage"),
             "missing_by_model": stack_evidence.get("missing_by_model"),
         },
+    }
+    qualification = assess_ensemble_qualifications(payload)
+    validation["directional_decision"] = qualification["directional"]["decision"]
+    validation["final_fit_signal_reachability"] = {
+        signal: evidence["reachable"]
+        for signal, evidence in qualification["directional"]["signals"].items()
     }
     payload["payload_checksum"] = payload_checksum(payload)
     return payload

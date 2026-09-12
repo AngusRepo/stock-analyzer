@@ -15,7 +15,6 @@ import { readMarketRegimeState, restoreMarketRegimeStateFromHistory } from './ma
 import {
   runAllocatorEvFeatureSnapshotBackfill,
   runFinLabV4Backfill,
-  runOpbArmPriorRefresh,
 } from './controllerResearchWorkflows'
 import { runOfficialMarketSummaryRefresh } from './officialMarketSummaryRefresh'
 import { enqueuePostScreenerPipelineContinuation } from './postScreenerContinuation'
@@ -2214,66 +2213,16 @@ export async function runDailyAllocatorEvReadiness(
   for (const owner of ['l4_alpha_ev', 'allocator_ev_fusion'] as const) {
     const artifactState = servingState.artifacts[owner]
     const candidate = health.latest_candidates[owner]
-    const task = owner === 'l4_alpha_ev' ? 'l4-alpha-ev-refresh' : 'allocator-ev-fusion-refresh'
     const candidateDecision = String(candidate?.offline_gate_decision ?? 'missing')
     const candidateVersion = String(candidate?.version ?? 'missing')
-    const ownerAlerts = [...health.alerts, ...servingState.hard_alerts]
-      .filter((alert) => alert.startsWith(`${owner}:`))
     parts.push(`${owner}_serving=${artifactState.artifact_state}:${artifactState.model_version ?? 'none'}`)
     parts.push(`${owner}_latest_candidate=${candidateVersion}:${candidateDecision}`)
-    await logSchedulerResult(env.KV, task, {
-      status: ownerAlerts.length > 0 ? 'error' : artifactState.eligible ? 'success' : 'skipped',
-      summary: [
-        `canonical OOF owner inspection for ${triggerTime}`,
-        `serving=${artifactState.artifact_state}`,
-        `version=${artifactState.model_version ?? 'none'}`,
-        `candidate=${candidateVersion}`,
-        `candidate_gate=${candidateDecision}`,
-        ownerAlerts.length > 0 ? `alerts=${ownerAlerts.join(',')}` : '',
-      ].filter(Boolean).join(' '),
-      duration_ms: Date.now() - started,
-      run_id: schedulerRunId,
-      attempt_id: options.attemptId,
-      run_date: triggerTime,
-    })
+    // Inspection is not execution of an artifact refresh. Keep its evidence in
+    // this readiness receipt; never replace the original generation/retry log.
   }
-  if (priorOwner) {
-    const opbStarted = Date.now()
-    try {
-      const opbSummary = await runOpbArmPriorRefresh(env, knowledgeCutoffDate, priorOwner)
-      parts.push(`opb_prior=${opbSummary}`)
-      await logSchedulerResult(env.KV, 'opb-arm-prior-refresh', {
-        status: 'success',
-        summary: `daily-chain ${opbSummary}`,
-        duration_ms: Date.now() - opbStarted,
-        run_id: schedulerRunId,
-        attempt_id: options.attemptId,
-        run_date: triggerTime,
-      })
-    } catch (e) {
-      const message = e instanceof Error ? e.message : String(e)
-      parts.push(`opb_prior_not_ready=${message}`)
-      await logSchedulerResult(env.KV, 'opb-arm-prior-refresh', {
-        status: 'skipped',
-        summary: `daily-chain OPB prior retained; challenger not ready owner=${priorOwner}`,
-        duration_ms: Date.now() - opbStarted,
-        error: message,
-        run_id: schedulerRunId,
-        attempt_id: options.attemptId,
-        run_date: triggerTime,
-      })
-    }
-  } else {
-    parts.push('opb_prior_not_ready=no_production_expected_return_owner')
-    await logSchedulerResult(env.KV, 'opb-arm-prior-refresh', {
-      status: 'skipped',
-      summary: 'daily-chain OPB prior retained; no contract-compatible production expected-return owner',
-      duration_ms: 0,
-      run_id: schedulerRunId,
-      attempt_id: options.attemptId,
-      run_date: triggerTime,
-    })
-  }
+  // Readiness observes serving state. Candidate registration belongs to the EV
+  // adoption event/its durable continuation, not every readiness callback.
+  parts.push('opb_candidate_registration=ev_adoption_event')
 
   const hardAlerts = [...new Set([...health.alerts, ...servingState.hard_alerts])]
   const warnings = [...new Set([...health.warnings, ...servingState.warnings])]
@@ -2294,6 +2243,7 @@ export async function runDailyAllocatorEvReadiness(
   const summary = `allocator EV model readiness before pipeline for ${triggerTime}; ${parts.join(' | ')}`
   await logSchedulerResult(env.KV, 'allocator-ev-readiness', {
     status: state === 'fatal' ? 'error' : 'success',
+    strict: true,
     summary,
     duration_ms: Date.now() - started,
     error: state === 'fatal' ? hardAlerts.join(',') || 'no_validated_expected_return_lane' : undefined,
@@ -3119,6 +3069,21 @@ export async function processUpdateBatch(
     if (!Number.isInteger(attempt) || attempt < 1 || attempt > ACTIVE8_OOF_CONTINUATION_MAX_ATTEMPTS) {
       throw new Error(`active8_oof_continuation_exhausted:${cadence}:${runDate}:${attempt}`)
     }
+    const schedulerTicketId = String(msg.schedulerTicketId ?? '').trim()
+    const schedulerRunId = String(msg.schedulerRunId ?? '').trim()
+    if (Boolean(schedulerTicketId) !== Boolean(schedulerRunId)) {
+      throw new Error('active8_oof_continuation_scheduler_identity_incomplete')
+    }
+    if (schedulerTicketId) {
+      // Validate ownership before creating external work. Settlement after
+      // dispatch is too late, and pending/spawned results do not settle here.
+      const owner = await databaseForDataDomain(env, 'ops').prepare(`
+        SELECT ticket_id FROM scheduler_execution_tickets_v1
+         WHERE ticket_id=? AND run_id=? AND business_date=? AND task=?
+         LIMIT 1
+      `).bind(schedulerTicketId, schedulerRunId, runDate, `active8-oof-${cadence}`).first()
+      if (!owner) throw new Error('active8_oof_continuation_scheduler_identity_mismatch')
+    }
     const { runActive8OofLifecycle } = await import('./controllerWorkflows')
     const summary = await runActive8OofLifecycle(env, runDate, cadence, {
       expectedCohortId,
@@ -3127,11 +3092,6 @@ export async function processUpdateBatch(
       schedulerTicketId: msg.schedulerTicketId,
       schedulerRunId: msg.schedulerRunId,
     })
-    const schedulerTicketId = String(msg.schedulerTicketId ?? '').trim()
-    const schedulerRunId = String(msg.schedulerRunId ?? '').trim()
-    if (Boolean(schedulerTicketId) !== Boolean(schedulerRunId)) {
-      throw new Error('active8_oof_continuation_scheduler_identity_incomplete')
-    }
     const schedulerStatus = classifySchedulerSummary(summary)
     if (schedulerTicketId && schedulerStatus !== 'triggered') {
       const { updateSchedulerExecutionTicket } = await import('./schedulerExecutionTickets')
@@ -3762,6 +3722,15 @@ export async function processUpdateBatch(
       productionAuthorityIntent: Boolean(msg.productionAuthorityIntent ?? msg.force),
     })
     if (await handleFinalizedRetry(state)) return
+    if (state.status === 'error') {
+      const { propagateStrategyLearningTerminalFailure } = await import('./strategyLearningRunState')
+      await propagateStrategyLearningTerminalFailure(runStateDb, {
+        businessDate: triggerTime, canonicalRunId: state.canonical_run_id,
+      })
+      // Terminal errors require an explicit repaired continuation, not a fresh
+      // pagination run on every queue redelivery.
+      return
+    }
     const expectedCandidates = Math.max(0, Number(state.expected_candidates ?? 0))
     const expectedRows = Math.max(0, Number(state.expected_decision_rows ?? 0))
     const materializationAlreadyComplete = expectedCandidates > 0
@@ -3896,6 +3865,7 @@ export async function processUpdateBatch(
       })
       const coverage = await completeStrategyLearningRun(runStateDb, {
         ...leaseIdentity,
+        evidenceDb: learningDb,
         leaseSeconds: STRATEGY_LEARNING_LEASE_SECONDS,
       })
       if (!coverage) {
@@ -3909,10 +3879,13 @@ export async function processUpdateBatch(
       const assertFinalizerLease = async (_stage: string): Promise<void> => finalizerHeartbeat!.assertActive()
 
       const productionAuthorityIntent = state.production_authority_intent === 1
+      const { resolveStrategyLearningCompletionAuthority } = await import('./strategyLearningCompletionAuthority')
       const productionAuthority = productionAuthorityIntent
-        ? await resolveEveningChainRunAuthority(env, {
+        ? await resolveStrategyLearningCompletionAuthority(env, {
             businessDate: triggerTime,
             canonicalRunId,
+            producerRunId: String(state.producer_run_id ?? ''),
+            specs,
           })
         : null
       const currentBusinessDateRun = productionAuthority?.allowed === true
@@ -3923,7 +3896,7 @@ export async function processUpdateBatch(
       }
       const policyMutationAllowed = productionAuthorityIntent && currentBusinessDateRun
       const finalizerCacheMode = policyMutationAllowed ? 'policy-mutation' : 'evidence-only'
-      const finalizerCacheKey = `strategy-learning:finalizer:${triggerTime}:${canonicalRunId}:${finalizerCacheMode}:v4-canonical-matrix-parity`
+      const finalizerCacheKey = `strategy-learning:finalizer:${triggerTime}:${canonicalRunId}:${finalizerCacheMode}:v5-known-date-publication-fence`
       const cachedFinalizer = await env.KV.get(finalizerCacheKey, 'json') as {
         canonical_run_id?: string
         stages?: Record<string, unknown>
@@ -3981,7 +3954,7 @@ export async function processUpdateBatch(
       let closureSummary = ''
       const { decisionEvidence, historicalEvidence, labels, marginalEdge, routeBackfillEligibility, rewards, policy, productionPolicy }
         = await finalizeStrategyLearningEvidenceV5(learningDb, triggerTime, {
-          allowPromotion: policyMutationAllowed,
+          allowPromotion: policyMutationAllowed && !productionAuthority?.lateCompletion,
           persistPolicy: policyMutationAllowed,
           historicalPriorityDate,
           identityDb: databaseForDataDomain(env, 'core'),
@@ -4038,7 +4011,7 @@ export async function processUpdateBatch(
       const policyClosureRecorded = await recordStrategyLearningPolicyClosure(runStateDb, {
         ...leaseIdentity,
         status: policyClosureStatus,
-        reason: policyClosureReason,
+        reason: `${policyClosureReason} ${closureSummary.match(/historical_excluded=\S+/)?.[0] ?? 'historical_excluded=none'}`,
       })
       if (!policyClosureRecorded) {
         throw new Error(`strategy_learning_policy_closure_fence_lost:${triggerTime}:${canonicalRunId}`)
@@ -4066,6 +4039,7 @@ export async function processUpdateBatch(
       `evidence_closure=${closureSummary}`,
       `run_scope=${runScope}`,
       `production_authority=${authorityReason}`,
+      `late_completion=${productionAuthority?.lateCompletion === true}`,
       `production_authority_intent=${productionAuthorityIntent}`,
       `policy_mutation=${policyMutationAllowed}`,
       `policy_closure=${policyClosureStatus}`,
@@ -4139,8 +4113,9 @@ export async function processUpdateBatch(
         console.warn(`[Queue] strategy-learning lease lost; queue retry required date=${triggerTime} run_id=${canonicalRunId}`)
         throw error
       }
-        const terminalPolicyClosureFailure = errorMessage.startsWith('strategy_learning_production_authority_denied:')
-          || errorMessage.startsWith('strategy_learning_live_policy_closure_missing:')
+        const { isStrategyLearningTerminalFailure, propagateStrategyLearningTerminalFailure }
+          = await import('./strategyLearningRunState')
+        const terminalPolicyClosureFailure = isStrategyLearningTerminalFailure(error)
         const transitioned = materializationValidated && !terminalPolicyClosureFailure
           ? await deferStrategyLearningFinalizer(runStateDb, {
               ...leaseIdentity,
@@ -4153,6 +4128,11 @@ export async function processUpdateBatch(
       if (!transitioned) {
         console.warn(`[Queue] strategy-learning terminal fence lost; queue retry required date=${triggerTime} run_id=${canonicalRunId}`)
         throw error
+      }
+      if (terminalPolicyClosureFailure || !materializationValidated) {
+        await propagateStrategyLearningTerminalFailure(runStateDb, {
+          businessDate: triggerTime, canonicalRunId,
+        })
       }
       await Promise.allSettled([
         logSchedulerResult(env.KV, 'strategy-learning', {

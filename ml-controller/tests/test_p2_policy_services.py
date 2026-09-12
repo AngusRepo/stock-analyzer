@@ -55,7 +55,7 @@ def test_config_pool_policy_uses_trading_config_section():
         }
     })
 
-    assert policy.is_win(0.34, 0.7) is False
-    assert policy.is_win(0.35, 0.6) is True
-    assert policy.decide_action(3, 0, 10)[0] == "promote"
-    assert policy.decide_action(0, 0, 46)[0] == "retire"
+    assert policy.to_dict()['win_rate_role'] == 'diagnostic_only'
+    assert policy.to_dict()['stale_age_action'] == 'hold_not_evidence_of_harm'
+    assert 'win_rate_floor' not in policy.to_dict()
+    assert policy.lookback_days == 90

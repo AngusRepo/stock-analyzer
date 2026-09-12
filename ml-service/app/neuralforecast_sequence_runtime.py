@@ -33,6 +33,7 @@ from .sequence_training import (
     build_sequence_window_dataset,
     canonical_session_calendar,
 )
+from .sequence_semantic_contract import RANK_IC_SEMANTIC_VERSION
 from .model_validation import build_model_cpcv_evidence
 from .oof_lineage import date_market_rank_ic_evidence
 from .artifact_contract import ArtifactValidationError, verify_artifact_bytes
@@ -596,6 +597,7 @@ def _train_dense_purged_oof(
         coverage_mode="sequence_window",
         method="outer_train_fixed_dense_test_purged_rank_ic",
     )
+    model_cpcv["rank_ic_semantic_version"] = RANK_IC_SEMANTIC_VERSION
     model_cpcv["validation_design"] = {
         "split_owner": "outer_walk_forward_train_end",
         "refit_each_outer_fold": True,
@@ -1280,6 +1282,7 @@ def train_neuralforecast_sequence_artifact(payload: dict[str, Any], *, model_nam
         coverage_mode="sequence_window",
         method="purged_walk_forward_retrain_rank_ic",
     )
+    model_cpcv["rank_ic_semantic_version"] = RANK_IC_SEMANTIC_VERSION
     model_cpcv["validation_design"] = {
         "split_owner": "chronological_signal_date",
         "refit_each_fold": True,
@@ -1416,6 +1419,7 @@ def train_neuralforecast_sequence_artifact(payload: dict[str, Any], *, model_nam
         "training_options": training_options,
         "metrics": metrics,
         "model_cpcv": model_cpcv,
+        "rank_ic_semantic_version": RANK_IC_SEMANTIC_VERSION,
         "validation_design": model_cpcv["validation_design"],
         "target_semantic_version": SEQUENCE_RETURN_SEMANTIC_VERSION,
         "deployment_fit": {

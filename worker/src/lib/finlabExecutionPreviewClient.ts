@@ -1,3 +1,4 @@
+import { paperExecutionFetch } from './paperExecutionScope'
 import type { StockVisionOrderIntent } from './stockvisionOrderIntent'
 
 export interface FinLabExecutionPreviewResult {
@@ -42,7 +43,7 @@ export async function fetchFinLabExecutionPreview(
   if (!controllerUrl) return errorPreview('ml_controller_url_missing')
 
   try {
-    const res = await fetch(`${controllerUrl.replace(/\/$/, '')}/finlab/execution/preview`, {
+    const res = await paperExecutionFetch(`${controllerUrl.replace(/\/$/, '')}/finlab/execution/preview`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',

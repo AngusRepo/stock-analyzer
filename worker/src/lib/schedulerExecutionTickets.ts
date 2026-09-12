@@ -270,6 +270,7 @@ export async function updateSchedulerExecutionTicket(
     summary?: string
     error?: string
     recoverTerminalFailure?: boolean
+    expectedPipelineCanonicalRunId?: string
   },
 ): Promise<SchedulerExecutionTicketRow> {
   if (input.recoverTerminalFailure === true && input.status !== 'success') {
@@ -280,6 +281,11 @@ export async function updateSchedulerExecutionTicket(
     : ALLOWED_PREVIOUS[input.status]
   const terminal = TERMINAL_STATUSES.has(input.status)
   const placeholders = allowed.map(() => '?').join(', ')
+  const canonicalGuard = input.expectedPipelineCanonicalRunId
+    ? ` AND EXISTS (SELECT 1 FROM pipeline_stage_runs stage
+          WHERE stage.business_date=scheduler_execution_tickets_v1.business_date
+            AND stage.stage='pipeline_execution' AND stage.canonical_run_id=?)`
+    : ''
   const result = await db.prepare(`
     UPDATE scheduler_execution_tickets_v1
        SET status=?, status_authority=?, last_summary=?, last_error=?,
@@ -295,6 +301,7 @@ export async function updateSchedulerExecutionTicket(
            END,
            updated_at=CURRENT_TIMESTAMP
      WHERE ticket_id=? AND run_id=? AND status IN (${placeholders})
+       AND (?=0 OR status<>?)${canonicalGuard}
   `).bind(
     input.status,
     input.authority,
@@ -307,9 +314,21 @@ export async function updateSchedulerExecutionTicket(
     input.ticketId,
     input.runId,
     ...allowed,
+    terminal ? 1 : 0,
+    input.status,
+    ...(input.expectedPipelineCanonicalRunId ? [input.expectedPipelineCanonicalRunId] : []),
   ).run()
   const row = await readTicket(db, input.ticketId)
-  if (Number(result.meta?.changes ?? 0) !== 1 && row.status !== input.status) {
+  const unchangedTerminal = terminal && row.run_id === input.runId && row.status === input.status
+  const canonicalStillMatches = input.expectedPipelineCanonicalRunId && unchangedTerminal
+    ? Boolean(await db.prepare(`SELECT 1 FROM pipeline_stage_runs
+        WHERE business_date=? AND stage='pipeline_execution' AND canonical_run_id=?`)
+      .bind(row.business_date, input.expectedPipelineCanonicalRunId).first())
+    : !input.expectedPipelineCanonicalRunId
+  // Same terminal delivery is an observation, not a new receipt timestamp or
+  // authority. An unmatched run must never pass merely because status matches.
+  if (row.run_id !== input.runId || (Number(result.meta?.changes ?? 0) !== 1
+    && (!canonicalStillMatches || row.status !== input.status))) {
     throw new Error(
       `scheduler ticket transition rejected: ticket=${input.ticketId} current=${row.status} requested=${input.status}`,
     )

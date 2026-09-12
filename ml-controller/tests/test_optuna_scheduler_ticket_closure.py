@@ -5,6 +5,7 @@ import types
 from types import SimpleNamespace
 
 import pytest
+from fastapi import HTTPException
 
 google_cloud = sys.modules.setdefault('google.cloud', types.ModuleType('google.cloud'))
 if not hasattr(google_cloud, 'run_v2'):
@@ -172,3 +173,13 @@ def test_composite_candidate_keeps_optimizer_evidence(monkeypatch):
         run_id='test', candidate_group='selection')
     assert result['status'] == 'staged'
     assert captured['meta']['optimizer_evidence']['screener']['diagnostics'] == diagnostic
+
+
+def test_holdout_failure_is_infrastructure_not_a_successful_search(monkeypatch):
+    def fail():
+        raise HTTPException(400, detail={'code': 'screener_search_no_feasible',
+            'diagnostics': {'evidence_id': 'locked-candidate', 'reason': 'holdout_not_evaluable',
+                            'reject_summary': {'valid': 300}}})
+    result = optuna._run_optuna_sweep_source_inner('screener', fail)
+    assert result['status'] == 'error'
+    assert result['diagnostics']['reason'] == 'holdout_not_evaluable'

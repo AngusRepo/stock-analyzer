@@ -4,6 +4,7 @@ import { hydrateExpectedReturnConfigFromPointers } from './expectedReturnServing
 import type { ExpectedReturnPointerProjection } from './expectedReturnServingRegistry'
 import { ALLOCATOR_EV_FUSION_CONTRACT, L4_ALPHA_EV_CONTRACT } from './evidenceContracts'
 import { resolveDecisionOwnerContract, type ExpectedReturnActionGate } from './decisionOwnerContract'
+import { NAV_GATE_SCHEMA } from './pairedNavPromotionEvidence'
 import {
   isExactActiveForwardGuard,
   loadExpectedReturnForwardGuard,
@@ -41,9 +42,9 @@ export interface ExpectedReturnArtifactServingState {
 export interface ExpectedReturnServingState {
   schema_version: 'expected-return-serving-state-v1'
   state: 'production_primary' | 'no_eligible_owner'
-  selection_signal_owner: 'score_v2_formal_ml'
+  selection_signal_owner: 'allocator_opb_policy'
   expected_return_owner: ExpectedReturnOwner | null
-  allocation_utility_owner: 'expected_return_owner' | 'formal_ml_buy_admission'
+  allocation_utility_owner: 'expected_return_owner' | 'risk_abstention'
   execution_owner: 'allocator_opb_policy'
   execution_scope: 'recommendation_allocation_only_no_order_submission'
   action_gate: ExpectedReturnActionGate
@@ -216,18 +217,35 @@ export function resolveExpectedReturnServingState(
   } = {},
 ): ExpectedReturnServingState {
   const ensembleV2 = artifactObject(rawConfig?.ensemble_v2) ?? {}
+  const l4Artifact = artifactObject(ensembleV2.l4AlphaEv ?? ensembleV2.l4_alpha_ev)
+  const fusionArtifact = artifactObject(ensembleV2.allocatorEvFusion ?? ensembleV2.allocator_ev_fusion)
   const l4 = evaluateArtifact(
     'l4_alpha_ev',
-    artifactObject(ensembleV2.l4AlphaEv ?? ensembleV2.l4_alpha_ev),
+    l4Artifact,
     L4_ALPHA_EV_CONTRACT,
     options.pointerProjections?.l4_alpha_ev,
   )
   let fusion = evaluateArtifact(
     'allocator_ev_fusion',
-    artifactObject(ensembleV2.allocatorEvFusion ?? ensembleV2.allocator_ev_fusion),
+    fusionArtifact,
     ALLOCATOR_EV_FUSION_CONTRACT,
     options.pointerProjections?.allocator_ev_fusion,
   )
+  const fusionGate = artifactObject(fusionArtifact?.prospective_validation)
+  if (fusion.eligible && fusionGate?.schema_version === NAV_GATE_SCHEMA) {
+    const baseline = String(fusionGate.nav_validation?.baseline_checksum ?? '')
+    // Production uses the authoritative pointer identity; candidate planning
+    // uses the already verified L4 artifact's embedded promotion packet.
+    const l4Checksum = options.pointerProjections
+      ? /^l4_alpha_ev:.+:([0-9a-f]{64})$/.exec(
+        options.pointerProjections.l4_alpha_ev.champion_artifact_id ?? '')?.[1]
+      : l4Artifact?.prospective_validation?.candidate_artifact_checksum
+    if (!l4.eligible || !/^[0-9a-f]{64}$/.test(baseline) || baseline !== l4Checksum) {
+      fusion = { ...fusion, artifact_state: 'candidate_not_ready', eligible: false,
+        serving_available: false,
+        blockers: [...new Set([...fusion.blockers, 'nav_exact_l4_dependency_not_serving'])] }
+    }
+  }
   if (isExactActiveForwardGuard(options.forwardGuard, fusion.artifact_id, fusion.model_fingerprint)) {
     fusion = {
       ...fusion,
@@ -243,6 +261,9 @@ export function resolveExpectedReturnServingState(
     .map((item) => `${item.owner}:alpha_champion_not_promoted`)
   if (fusion.artifact_state === 'runtime_guarded') {
     warnings.push('allocator_ev_fusion:serving_forward_guard_residual_bypass_active')
+  }
+  if (fusion.blockers.includes('nav_exact_l4_dependency_not_serving')) {
+    warnings.push('allocator_ev_fusion:nav_exact_l4_dependency_not_serving')
   }
 
   const decisionOwners = resolveDecisionOwnerContract(owner)

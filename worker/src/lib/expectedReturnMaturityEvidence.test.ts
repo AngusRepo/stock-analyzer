@@ -278,7 +278,11 @@ const shadow = adaptExpectedReturnShadow({
   oof_row_count: 1000,
   quality_decision: 'FAIL',
   policy_decision: 'shadow_only',
-  validation_packet_json: JSON.stringify(fusionArtifact.validation_packet),
+  validation_packet_json: JSON.stringify({ ...fusionArtifact.validation_packet,
+    residual_adjustment_model: { ...fusionArtifact.validation_packet.residual_adjustment_model,
+      oos_metrics: { ...fusionArtifact.validation_packet.residual_adjustment_model.oos_metrics, evaluated_dates: ['2026-07-31'] } },
+    diagnostic_population: { schema_version: 'expected-return-rolling-population-v1', promotion_eligible: false,
+      available_dates: ['2026-07-31'], extension_dates: ['2026-07-31'], evaluated_dates: ['2026-07-31'] } }),
   updated_at: '2026-08-08T12:30:00Z',
 })
 assert.equal(shadow.identity_valid, true)
@@ -334,6 +338,6 @@ const legacyShadow = adaptExpectedReturnShadow({
   updated_at: '2026-08-08T12:30:00Z',
 })
 assert.equal(legacyShadow.identity_valid, false)
-assert.deepEqual(legacyShadow.identity_blockers, ['shadow_identity_legacy_unverified'])
+assert.deepEqual(legacyShadow.identity_blockers, ['shadow_identity_legacy_unverified', 'shadow_diagnostic_population_unverified'])
 
 console.log('expectedReturnMaturityEvidence tests passed')

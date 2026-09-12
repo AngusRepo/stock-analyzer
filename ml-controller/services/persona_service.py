@@ -134,18 +134,18 @@ def _percentile_rank(value: float, history: Sequence[float]) -> float:
 _QUARTER_END_MONTHS = {3, 6, 9, 12}
 
 
-def is_window_dressing_zone(d: _date, recent_trading_dates: Sequence[str]) -> bool:
+def is_window_dressing_zone(d: _date, scheduled_trading_dates: Sequence[str]) -> bool:
     """
     Is `d` in a window-dressing zone (last 10 trading days of Mar/Jun/Sep/Dec)?
 
-    We approximate "trading day rank within month" by counting trading-day
-    dates in the same calendar month that are <= d. If d is among the last
-    10 such days in a quarter-end month, it's the dressing zone.
+    The caller supplies the observed exchange schedule through month end,
+    NOT price/chip history truncated at d. Scheduled future sessions are
+    calendar information, not future market outcomes.
     """
     if d.month not in _QUARTER_END_MONTHS:
         return False
     same_month = sorted(
-        [s for s in recent_trading_dates if s.startswith(f"{d.year}-{d.month:02d}")]
+        [s for s in scheduled_trading_dates if s.startswith(f"{d.year}-{d.month:02d}")]
     )
     if d.isoformat() not in same_month:
         # d may be today and not yet indexed as a trading day
@@ -172,6 +172,7 @@ class ChipBar:
 def compute_trust_opinion(
     chip_history: Sequence[ChipBar],
     today: _date,
+    *, scheduled_trading_dates: Optional[Sequence[str]] = None,
 ) -> TrustOpinion:
     """
     Pure function. Given at least MIN_TRUST_HISTORY days of chip data
@@ -231,8 +232,9 @@ def compute_trust_opinion(
     raw_strength = min(1.0, abs(pct - 0.5) * 2.0)
 
     # Window-dressing dampening
-    recent_dates = [b.date for b in chip_history[-40:]]
-    in_wd = is_window_dressing_zone(today, recent_dates)
+    if today.month in _QUARTER_END_MONTHS and scheduled_trading_dates is None:
+        raise ValueError('paired_nav_persona_quarter_calendar_missing')
+    in_wd = is_window_dressing_zone(today, scheduled_trading_dates or [])
     strength = raw_strength * (TRUST_WINDOW_DRESS_DAMPEN if in_wd else 1.0)
     if in_wd:
         reason_bits.append(f"window-dress (×{TRUST_WINDOW_DRESS_DAMPEN})")

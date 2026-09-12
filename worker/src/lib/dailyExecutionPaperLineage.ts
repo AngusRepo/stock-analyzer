@@ -1,4 +1,5 @@
 import type { Bindings } from '../types'
+import { paperAccountId } from './paperExecutionScope'
 import { writeEvidenceArtifact, type EvidenceArtifactManifest } from './artifactLifecycle'
 import {
   activeDataDomains, databaseForDataDomain, MULTI_D1_STRICT_ROUTING_READY,
@@ -23,10 +24,10 @@ async function paperSnapshot(db: D1Database, businessDate: string): Promise<Reco
   return db.prepare(`
     SELECT account_id, date, cash, positions_value, total_value, pnl, pnl_pct, created_at
       FROM paper_daily_snapshots
-     WHERE date=?
+     WHERE date=? AND account_id=?
      ORDER BY account_id
      LIMIT 1
-  `).bind(businessDate).first<Record<string, unknown>>()
+  `).bind(businessDate, paperAccountId()).first<Record<string, unknown>>()
 }
 
 export interface DailyExecutionPaperClosureResult {
@@ -133,8 +134,8 @@ export async function ensureDailyExecutionPaperClosureArtifacts(
 ): Promise<{ status: 'reused' | 'written'; business_date: string; execution_ready: boolean; paper_ready: boolean }> {
   const canonicalPaperDb = databaseForDataDomain(env, 'paper')
   const snapshot = await canonicalPaperDb.prepare(`
-    SELECT COUNT(*) count FROM paper_daily_snapshots WHERE date=?
-  `).bind(businessDate).first<CountResult>()
+    SELECT COUNT(*) count FROM paper_daily_snapshots WHERE date=? AND account_id=?
+  `).bind(businessDate, paperAccountId()).first<CountResult>()
   if (Number(snapshot?.count ?? 0) < 1) throw new Error(`daily_paper_snapshot_not_ready:${businessDate}`)
 
   const existing = await env.DB.prepare(`

@@ -1298,6 +1298,21 @@ runStrategyCandidateDailyFeatureHydrationTest().catch((error) => {
   assert(gate[0].activation_gate.status === 'prefilter_failed', 'ineligible ready Candidate prefilter must expose prefilter_failed')
   assert(gate[0].missing_evidence.includes('atomic_replacement_v7_prefilter_failed'), 'prefilter failure must expose its own blocker reason')
   assert(!gate[0].missing_evidence.includes('atomic_replacement_v7_not_accepted'), 'prefilter failure must not masquerade as a replacement rejection')
+  const navSummary: StrategyLearningSummary = { ...summary, replacement_gate: {
+    ...summary.replacement_gate, replacement_owner: 'original_paired_daily_nav' } }
+  const navGate = evaluateStrategyPromotionGate(navSummary)[0]
+  assert(navGate.activation_gate.status === 'nav_review', 'original NAV must not inherit failed V7 prefilter')
+  assert(navGate.missing_evidence.length === 0, 'legacy Alpha maturity is not a second NAV gate')
+  assert(navGate.decision === 'not_ready' && !navGate.allocation_eligible, 'display is never a NAV publication grant')
+  assert(navGate.activation_gate.decision_id === null && navGate.activation_gate.run_id === null, 'do not relabel V7 lineage as NAV')
+  const unavailable = evaluateStrategyPromotionGate({ ...navSummary, replacement_gate: {
+    ...navSummary.replacement_gate, replacement_owner: 'unavailable' } })[0]
+  assert(unavailable.decision === 'not_ready' && unavailable.missing_evidence.includes('replacement_owner_unavailable'), 'unknown owner cannot grant promotion')
+  const active = { ...summary, specs: [{ ...summary.specs[0], status: 'active' as const }] }
+  const legacyActive = evaluateStrategyPromotionGate(active)[0]
+  const navActive = evaluateStrategyPromotionGate({ ...active, replacement_gate: navSummary.replacement_gate })[0]
+  assert(navActive.allocation_eligible === legacyActive.allocation_eligible, 'owner display must not change active readiness')
+  assert(JSON.stringify(navActive.missing_evidence) === JSON.stringify(legacyActive.missing_evidence), 'active weight evidence unchanged')
 }
 
 {

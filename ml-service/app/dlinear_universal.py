@@ -391,6 +391,7 @@ def train_dlinear(
             "oos_samples": ic_metrics.get("oos_samples"),
             "daily_ic_count": ic_metrics.get("daily_ic_count"),
             "model_cpcv": model_cpcv_evidence,
+            "rank_ic_semantic_version": model_cpcv_evidence.get("rank_ic_semantic_version"),
             "model_cpcv_policy": model_cpcv_policy or {},
         },
         "ic_tracking": {

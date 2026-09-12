@@ -1,4 +1,5 @@
 import { SELECTION_ROUTE_SEMANTIC_VERSION } from './evidenceContracts'
+import { ROUTE_NAV_ARTIFACT_VERSION, readRouteNavReceipt } from './strategyRouteNavReceipt'
 
 export const STRATEGY_ROUTE_CALIBRATION_ARTIFACT_VERSION = 'strategy-route-calibration-v2'
 export const STRATEGY_ROUTE_CHALLENGER_VERSION = SELECTION_ROUTE_SEMANTIC_VERSION
@@ -71,6 +72,7 @@ export interface StrategyRouteCurrentCoverage {
 }
 
 function finite(value: unknown): number | null {
+  if (value == null || typeof value === 'boolean' || (typeof value === 'string' && !value.trim())) return null
   const parsed = Number(value)
   return Number.isFinite(parsed) ? parsed : null
 }
@@ -349,7 +351,8 @@ export async function refreshStrategyRouteCalibration(
   db: D1Database,
   asOfDate: string,
   options: { allowPromotion?: boolean; canonicalRunIds?: Record<string, string> } = {},
-): Promise<{ runId: string; status: 'pass' | 'fail' | 'pending_maturity' | 'promoted'; result: StrategyRouteCalibrationResult }> {
+): Promise<{ runId: string; status: 'pass' | 'fail' | 'pending_maturity' | 'promoted'; result: StrategyRouteCalibrationResult;
+  publication: { requested: boolean; pointerChanged: boolean; servingRunId: string | null } }> {
   const endMs = Date.parse(asOfDate + 'T00:00:00Z')
   if (!Number.isFinite(endMs)) throw new Error('invalid_strategy_route_calibration_date:' + asOfDate)
   const startDate = new Date(endMs - LOOKBACK_CALENDAR_DAYS * 86_400_000).toISOString().slice(0, 10)
@@ -425,9 +428,12 @@ export async function refreshStrategyRouteCalibration(
     },
   }
   const runId = `${STRATEGY_ROUTE_CALIBRATION_ARTIFACT_VERSION}-${asOfDate}-${await fingerprint(rows)}`
-  const promoted = result.status === 'pass' && currentCoverageReady && options.allowPromotion === true && result.routeFloor != null
+  const navHead = await db.prepare('SELECT artifact_version FROM strategy_route_calibration_head_v1 WHERE singleton_id=1')
+    .first<{ artifact_version: string }>()
+  const promoted = navHead?.artifact_version !== ROUTE_NAV_ARTIFACT_VERSION
+    && result.status === 'pass' && currentCoverageReady && options.allowPromotion === true && result.routeFloor != null
   const status: 'pass' | 'fail' | 'pending_maturity' | 'promoted' = promoted ? 'promoted' : result.status
-  await db.prepare(`
+  const statements = [db.prepare(`
     INSERT INTO strategy_route_calibration_runs_v1 (
       run_id, artifact_version, as_of_date, status, candidate_route_version, route_floor,
       sample_count, date_count, train_start_date, train_end_date, oos_start_date, oos_end_date,
@@ -448,6 +454,7 @@ export async function refreshStrategyRouteCalibration(
       challenger_incumbent_delta_lcb90=excluded.challenger_incumbent_delta_lcb90,
       brier_score=excluded.brier_score, climatology_brier_score=excluded.climatology_brier_score,
       log_loss=excluded.log_loss, gate_json=excluded.gate_json
+    WHERE strategy_route_calibration_runs_v1.status <> 'promoted'
   `).bind(
     runId, STRATEGY_ROUTE_CALIBRATION_ARTIFACT_VERSION, asOfDate, status,
     STRATEGY_ROUTE_CHALLENGER_VERSION, result.routeFloor, result.sampleCount, result.dateCount,
@@ -462,7 +469,9 @@ export async function refreshStrategyRouteCalibration(
     JSON.stringify({
       ...result.gates,
       _metadata: {
+        train_dates: result.trainDates,
         purge_dates: result.purgeDates,
+        oos_dates: result.oosDates,
         no_top_k: true,
         incumbent_comparison: 'full_universe_continuous_positive_weight_0_75_to_1_25',
         point_in_time: true,
@@ -472,33 +481,63 @@ export async function refreshStrategyRouteCalibration(
         current_day_incumbent_route_rows: currentCoverage.incumbentRouteRows,
       },
     }),
-  ).run()
+  )]
   if (promoted) {
-    await db.prepare(`
+    // A legacy diagnostic refresh cannot replace a NAV adoption that committed
+    // after the read above. Abort the batch rather than overwrite that owner.
+    statements.push(db.prepare(`SELECT CASE WHEN NOT EXISTS(
+      SELECT 1 FROM strategy_route_calibration_head_v1 WHERE singleton_id=1 AND artifact_version=?
+    ) THEN 1 ELSE json('strategy_route_nav_owner_changed') END`).bind(ROUTE_NAV_ARTIFACT_VERSION))
+    statements.push(db.prepare(`
       INSERT INTO strategy_route_calibration_head_v1 (
         singleton_id, run_id, artifact_version, candidate_route_version, route_floor
-      ) VALUES (1, ?, ?, ?, ?)
+      ) SELECT 1, run_id, artifact_version, candidate_route_version, route_floor
+          FROM strategy_route_calibration_runs_v1 WHERE run_id=? AND status='promoted'
       ON CONFLICT(singleton_id) DO UPDATE SET
         run_id=excluded.run_id, artifact_version=excluded.artifact_version,
         candidate_route_version=excluded.candidate_route_version,
         route_floor=excluded.route_floor, promoted_at=CURRENT_TIMESTAMP
-    `).bind(
-      runId, STRATEGY_ROUTE_CALIBRATION_ARTIFACT_VERSION,
-      STRATEGY_ROUTE_CHALLENGER_VERSION, result.routeFloor,
-    ).run()
+      WHERE strategy_route_calibration_head_v1.run_id IS NOT excluded.run_id
+         OR strategy_route_calibration_head_v1.artifact_version IS NOT excluded.artifact_version
+         OR strategy_route_calibration_head_v1.candidate_route_version IS NOT excluded.candidate_route_version
+         OR strategy_route_calibration_head_v1.route_floor IS NOT excluded.route_floor
+    `).bind(runId))
   }
-  return { runId, status, result }
+  // A receipt and its serving head are one publication. An evidence-only retry
+  // cannot rewrite an already published receipt into an unapproved status.
+  const writes = await db.batch(statements)
+  if (writes.length !== statements.length || writes.some(write => !write.success)) {
+    throw new Error('strategy_route_publication_incomplete')
+  }
+  const persisted = await db.prepare('SELECT status FROM strategy_route_calibration_runs_v1 WHERE run_id=?')
+    .bind(runId).first<{ status: typeof status }>()
+  const serving = await loadPromotedStrategyRouteCalibration(db)
+  if (!persisted || promoted && (persisted.status !== 'promoted' || serving?.runId !== runId)) {
+    throw new Error('strategy_route_publication_readback_failed')
+  }
+  return { runId, status: persisted.status, result, publication: {
+    requested: options.allowPromotion === true,
+    pointerChanged: promoted && Number(writes.at(-1)?.meta.changes ?? 0) > 0,
+    servingRunId: serving?.runId ?? null,
+  } }
 }
 
 export async function loadPromotedStrategyRouteCalibration(
   db: D1Database,
-): Promise<{ runId: string; routeVersion: string; routeFloor: number } | null> {
+): Promise<{ runId: string; routeVersion: string; routeFloor: number | null } | null> {
   const row = await db.prepare(`
-    SELECT h.run_id, h.candidate_route_version, h.route_floor
+    SELECT h.run_id, h.candidate_route_version, h.route_floor, h.artifact_version, r.status, r.gate_json
       FROM strategy_route_calibration_head_v1 h
       JOIN strategy_route_calibration_runs_v1 r ON r.run_id=h.run_id
      WHERE h.singleton_id=1 AND r.status='promoted'
-  `).first<{ run_id?: string; candidate_route_version?: string; route_floor?: number | string }>()
+       AND h.artifact_version=r.artifact_version AND h.candidate_route_version=r.candidate_route_version
+       AND h.route_floor IS r.route_floor
+  `).first<Record<string, any>>()
+  if (row?.artifact_version === ROUTE_NAV_ARTIFACT_VERSION) {
+    const receipt = await readRouteNavReceipt(row)
+    if (receipt.policy_definition.challenger_version !== STRATEGY_ROUTE_CHALLENGER_VERSION) return null
+    return { runId: row.run_id, routeVersion: row.candidate_route_version, routeFloor: null }
+  }
   const floor = finite(row?.route_floor)
   if (!row?.run_id || row.candidate_route_version !== STRATEGY_ROUTE_CHALLENGER_VERSION || floor == null) return null
   return { runId: row.run_id, routeVersion: row.candidate_route_version, routeFloor: floor }

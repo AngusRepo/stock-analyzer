@@ -32,6 +32,7 @@ import { runDailySnapshot, type RescoreSellParams } from '../lib/paperWorkerTask
 import { loadPendingBuyRunHistory, loadPendingBuySnapshot } from '../lib/pendingBuyStore'
 import { buildPendingBuyStateSummary } from '../lib/pendingBuyStateSummary'
 import { computePaperTotalValue, getUnsettledSettlementSummary } from '../lib/paperAccountValue'
+import { corporateAccountRiskBounds } from '../lib/paperCorporateActions'
 import { isTwIntradayTradingMinute } from '../lib/twMarketSession'
 import { normalizeTwLimitPrice } from '../lib/twMarketRules'
 import { buildStockVisionOrderIntent, buildStockVisionSellOrderIntent } from '../lib/stockvisionOrderIntent'
@@ -970,10 +971,13 @@ paper.get('/positions', async (c) => {
   }))
 
   const settlement = await getUnsettledSettlementSummary(paperDomainDatabase(c.env), ACCOUNT_ID)
+  const corporateBounds = await corporateAccountRiskBounds(c.env, ACCOUNT_ID,
+    new Map(enriched.map((position: any) => [position.symbol, Number(position.current_price)])))
   const totalValue    = computePaperTotalValue({
     settledCash: acc.cash,
     positionsValue: totalPositionValue,
     netUnsettledSettlement: settlement.netUnsettledSettlement,
+    corporateReceivablesValue: corporateBounds.lower,
   })
   const totalPnl      = totalValue - acc.initial_cash
   const totalPnlPct   = acc.initial_cash > 0 ? (totalPnl / acc.initial_cash * 100) : 0
@@ -987,10 +991,15 @@ paper.get('/positions', async (c) => {
       unsettled_buy_amount: Math.round(settlement.unsettledBuyAmount),
       unsettled_sell_amount: Math.round(settlement.unsettledSellAmount),
       net_unsettled_settlement: Math.round(settlement.netUnsettledSettlement),
-      total_value:      Math.round(totalValue),
+      corporate_receivables_value: corporateBounds.complete ? corporateBounds.lower : null,
+      valuation_complete: corporateBounds.complete,
+      unpriced_rights: corporateBounds.unpricedRights,
+      nav_lower_bound: totalValue,
+      nav_upper_bound: totalValue + corporateBounds.upper - corporateBounds.lower,
+      total_value:      corporateBounds.complete ? Math.round(totalValue) : null,
       initial_cash:     acc.initial_cash,
-      total_pnl:        Math.round(totalPnl),
-      total_pnl_pct:    Math.round(totalPnlPct * 100) / 100,
+      total_pnl:        corporateBounds.complete ? Math.round(totalPnl) : null,
+      total_pnl_pct:    corporateBounds.complete ? Math.round(totalPnlPct * 100) / 100 : null,
     },
   })
 })

@@ -188,7 +188,7 @@ export async function breeze2AdvisoryCacheKey(request: Breeze2FactCheckRequest):
   return `breeze2:fact-check:v1:${await sha256Hex(identity)}`
 }
 
-function validReport(report: Breeze2Report): boolean {
+export function validReport(report: Breeze2Report): boolean {
   return report?.schema_version === 'breeze2-research-context-v1'
     && report.allowed_use === 'research_context_only'
     && report.decision_effect === 'advisory_only'
@@ -240,17 +240,31 @@ export async function enrichScreenerCandidatesWithBreeze2<T extends Breeze2Candi
   candidates: T[],
   options: { runDate?: string; maxCandidates?: number; executeModal?: boolean } = {},
 ): Promise<Map<string, Breeze2Report>> {
-  const selected = selectBreeze2ScreenerCandidates(candidates, options.maxCandidates ?? 5)
-  const pairs = await Promise.all(selected.map(async (candidate, index) => {
-    const request = buildBreeze2FactCheckRequest(candidate, 'screener_enrichment', {
-      executeModal: options.executeModal ?? true,
-      runDate: options.runDate,
-      rank: index + 1,
-    })
+  const pairs = await Promise.all(buildScreenerBreeze2Requests(candidates, options).map(async (request) => {
     const report = await requestBreeze2FactCheck(env, request)
-    return [String(candidate.symbol ?? '').trim(), report] as const
+    return [request.symbol, report] as const
   }))
   return new Map(pairs.filter((pair): pair is readonly [string, Breeze2Report] => Boolean(pair[0] && pair[1])))
+}
+
+/** Same request identity for live enrichment and frozen replacement replay. */
+export function buildScreenerBreeze2Requests(candidates: Breeze2CandidateShape[],
+  options: { runDate?: string; maxCandidates?: number; executeModal?: boolean } = {}) {
+  return selectBreeze2ScreenerCandidates(candidates, options.maxCandidates ?? 5).map((candidate, index) =>
+    buildBreeze2FactCheckRequest(candidate, 'screener_enrichment', {
+      executeModal: options.executeModal ?? true, runDate: options.runDate, rank: index + 1,
+    }))
+}
+
+export function mapScreenerBreeze2Candidates(candidates: Array<Breeze2CandidateShape & { score_components?: unknown }>): Breeze2CandidateShape[] {
+  return candidates.map((candidate, index) => ({
+    symbol: candidate.symbol, name: candidate.name, stock_name: candidate.name,
+    score_v2: candidate.score_v2 ?? candidate.score_components ?? null,
+    reason: candidate.reason, strategy_watch_points: candidate.strategy_watch_points ?? [],
+    recommendation_lane: 'tradable', major_event: candidate.major_event,
+    theme: candidate.theme, news: candidate.news, evidence_items: candidate.evidence_items,
+    rank: index + 1,
+  }))
 }
 
 export async function enrichMorningDebateCandidatesWithBreeze2<T extends Breeze2CandidateShape>(

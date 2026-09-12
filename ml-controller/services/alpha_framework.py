@@ -497,12 +497,12 @@ def normalize_alpha_policy(raw: dict | None = None) -> dict[str, Any]:
             or raw_ensemble_v2.get("allocationEvFusion")
         )
 
-    opb_arm_prior = (
-        raw_alloc.get("opb_arm_prior")
-        or raw_alloc.get("opbArmPrior")
-        or raw.get("opb_arm_prior")
-        or raw.get("opbArmPrior")
-    )
+    # Match the canonical Worker owner: presence, not truthiness, determines
+    # precedence. Explicit null clears a prior; {} cannot revive a stale alias.
+    opb_arm_prior = _camel_or_snake(raw_alloc, "opbArmPrior", "opb_arm_prior",
+        _camel_or_snake(raw, "opbArmPrior", "opb_arm_prior", None))
+    if opb_arm_prior is not None and not isinstance(opb_arm_prior, dict):
+        raise ValueError('opb_arm_prior_config_invalid')
 
     return {
         "risk_overlay": overlay,

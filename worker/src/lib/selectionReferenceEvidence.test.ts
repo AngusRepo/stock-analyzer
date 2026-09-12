@@ -8,6 +8,23 @@ import {
 import { DEFAULT_STRATEGY_SPECS, STRATEGY_FORMAL_LABELER_VERSION, STRATEGY_FORMAL_RECONSTRUCTION_LABELER_VERSION } from './strategySpec'
 
 const spec = DEFAULT_STRATEGY_SPECS.find((row) => row.status === 'active')!
+for (const [raw, expected] of [
+  [null, null], [undefined, null], ['', null], ['  ', null], [false, null], [true, null],
+  [[], null], [{}, null], [NaN, null], [Infinity, null], ['not-a-score', null],
+  [0, 0], ['0', 0], [32.8, 32.8], ['36.26', 36.26],
+] as const) {
+  const reference = buildSelectionEvidenceV4({
+    signalDate: '2026-09-08', producerRunId: 'missing-score-control',
+    strategyRegistryChecksum: 'registry-checksum', specs: [spec], candidates: [{
+      symbol: '2330', strategy_labeler_version: STRATEGY_FORMAL_LABELER_VERSION,
+      score: raw as any, strategy_router_score: raw as any,
+      strategy_challenger_route_score: raw as any,
+    }],
+  }).references[0]
+  assert.equal(reference.score_v2, expected, 'score_v2 must not turn missing into observed zero')
+  assert.equal(reference.strategy_router_score, expected, 'incumbent route must preserve missing')
+  assert.equal(reference.strategy_challenger_route_score, expected, 'candidate route must preserve missing')
+}
 const built = buildSelectionEvidenceV4({
   signalDate: '2026-07-17',
   producerRunId: 'screener-2026-07-17-v4',

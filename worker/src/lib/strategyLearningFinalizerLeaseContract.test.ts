@@ -136,7 +136,7 @@ const manualEnd = manual.indexOf("'selection-reference-identity-repair': async (
 const manualBlock = manual.slice(manualStart, manualEnd)
 assert.match(manualBlock, /reconcileStrategyLearningFinalizedRetryFastPath/)
 assert.match(manualBlock, /no_live_telemetry_lease[\s\S]*already_finalized_without_live_telemetry_lease/)
-const manualStateLoad = manualBlock.indexOf('const runState = await loadStrategyLearningRun')
+const manualStateLoad = manualBlock.search(/(?:const|let) runState = await loadStrategyLearningRun/)
 const manualFastPath = manualBlock.indexOf('await reconcileStrategyLearningFinalizedRetryFastPath', manualStateLoad)
 const manualStrategyImport = manualBlock.indexOf("await import('./strategyLearning')", manualStateLoad)
 const manualCoverage = manualBlock.indexOf('await completeStrategyLearningRun', manualStateLoad)

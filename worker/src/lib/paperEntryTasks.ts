@@ -1,3 +1,4 @@
+import { paperExecutionDate, paperExecutionNow, paperAccountId, paperExecutionFetch, paperExecutionUUID } from './paperExecutionScope'
 import { databaseForDataDomain } from './dataDomainRegistry'
 import { sendDiscordNotification } from './notify'
 import { getCurrentRegime as getCurrentSltpRegime, getTradingConfig, resolveSltpForRegime } from './tradingConfig'
@@ -17,7 +18,7 @@ import {
 } from './pendingBuyStore'
 import type { PendingBuyExecutionEvent, PendingBuyTerminalExecutionStatus } from './pendingBuyExecutionState'
 import { checkCircuitBreakersForDomains, reconcilePendingBuyDebates } from './pendingBuyOrchestrator'
-import { mergeIntradayPortfolioRisk, readP9IntradayHalt } from './intradayPortfolioRisk'
+import { mergeIntradayPortfolioRisk, readP9IntradayHalt, checkP9IntradayDrawdown } from './intradayPortfolioRisk'
 import { resolveCircuitAdjustedSingleNameCap } from './riskPositionSizing'
 import { acquirePaperBuyIntent, completePaperBuyIntent } from './paperOrderIntent'
 import { evaluatePreTradeExecution, type PreTradeMomentumContext, type PreTradeOhlcvTradePlan } from './preTradeExecutionPolicy'
@@ -87,7 +88,8 @@ import { recordPaperExecutionEvent } from './paperExecutionEvents'
 import { runLiveExecutionShadow } from './liveExecutionShadow'
 import { shouldMarkPendingDebateSlaReached } from './pendingDebateSla'
 import { computeProjectedVolumeRatio } from './preTradeMomentum'
-import { computePaperPositionValuation, computePaperTotalValue, getUnsettledSettlementSummary } from './paperAccountValue'
+import { computePaperPositionValuation, computePaperTotalValue, getUnsettledSettlementSummary, requireCompletePaperPositionValue } from './paperAccountValue'
+import { corporateAccountRiskBounds } from './paperCorporateActions'
 import { loadTradingRestrictionBuckets } from './tradingRestrictions'
 import { readScoreV2Snapshot } from './scoreV2Taxonomy'
 import {
@@ -121,7 +123,6 @@ import {
   loadPreviousMarketCloseBySymbols,
 } from './stockIdentityMarketBridge'
 
-const ACCOUNT_ID = 1
 const EXECUTION_RESTRICTED_REFRESH_TTL_MS = 30 * 60_000
 
 function truthyFlag(value: unknown): boolean {
@@ -360,7 +361,7 @@ function parseFinLabL5EventQuote(symbol: string, row: { created_at?: string | nu
       source_time: detail.source_time,
       received_at: detail.received_at ?? row.created_at,
       status: detail.status,
-    }, row.created_at ? new Date(row.created_at) : new Date())
+    }, row.created_at ? new Date(row.created_at) : paperExecutionDate())
   } catch {
     return null
   }
@@ -411,14 +412,14 @@ async function loadPreTradeMomentum(
 
   try {
     const auth = { Authorization: `Bearer ${(env as any).PROXY_SERVICE_TOKEN ?? ''}` }
-    const snapRes = await fetch(`${proxyUrl}/snapshot/${symbol}`, {
+    const snapRes = await paperExecutionFetch(`${proxyUrl}/snapshot/${symbol}`, {
       headers: auth,
       signal: AbortSignal.timeout(5000),
     })
     const snapData = snapRes.ok ? ((await snapRes.json()) as any)?.data : null
     if (!snapData) return { error: `snapshot_http_${snapRes.status}` }
 
-    const trendRes = await fetch(`${proxyUrl}/trend/${symbol}?minutes=5`, {
+    const trendRes = await paperExecutionFetch(`${proxyUrl}/trend/${symbol}?minutes=5`, {
       headers: auth,
       signal: AbortSignal.timeout(5000),
     })
@@ -427,7 +428,7 @@ async function loadPreTradeMomentum(
     const avgVolumeLookbackDays = Math.max(1, Math.floor(Number(cfg.momentum?.avgVolumeLookbackDays ?? 20)))
     const avgVolume = await loadAverageMarketVolumeBySymbols(env, [symbol], undefined, avgVolumeLookbackDays)
     const avgVol = avgVolume.get(symbol) ?? 0
-    const twNow = new Date(Date.now() + 8 * 3600_000)
+    const twNow = new Date(paperExecutionNow() + 8 * 3600_000)
     const minutesSinceOpen = Math.max(1, twNow.getUTCHours() * 60 + twNow.getUTCMinutes() - 9 * 60)
     const tradingMin = cfg.momentum?.tradingDayMinutes ?? 270
     const minutesFloor = cfg.momentum?.minutesFractionFloor ?? 0.1
@@ -460,7 +461,7 @@ async function loadPreTradeMomentum(
 async function hasFilledBuyToday(env: Bindings, symbol: string, today: string): Promise<boolean> {
   const existing = await paperDomainDatabase(env).prepare(
     "SELECT id FROM paper_orders WHERE account_id=? AND symbol=? AND side='buy' AND created_at >= ? LIMIT 1",
-  ).bind(ACCOUNT_ID, symbol, today).first<{ id: number }>()
+  ).bind(paperAccountId(), symbol, today).first<{ id: number }>()
   return Boolean(existing?.id)
 }
 
@@ -469,7 +470,7 @@ function quoteAgeMs(quoteTime?: string): number | null {
   const normalized = quoteTime.includes('T') ? quoteTime : quoteTime.replace(' ', 'T')
   const ts = new Date(normalized).getTime()
   if (!Number.isFinite(ts)) return null
-  return Math.max(0, Date.now() - ts)
+  return Math.max(0, paperExecutionNow() - ts)
 }
 
 function pendingRunIdFromMeta(meta: Record<string, unknown> | undefined): number | null {
@@ -497,7 +498,7 @@ async function runIntradayCheckUnlocked(env: Bindings, leaseRunId: string): Prom
   const isMarketOpen = isTwIntradayTradingMinute()
 
   if (!isMarketOpen) return { status: 'healthy_empty', positions: 0, quoted: 0, missing_symbols: [] }
-  const today = new Date(Date.now() + 8 * 3600_000).toISOString().slice(0, 10)
+  const today = new Date(paperExecutionNow() + 8 * 3600_000).toISOString().slice(0, 10)
   await reconcilePendingBuyDebates(env, today).catch((e) =>
     console.warn('[Intraday] pending debate reconcile failed:', e),
   )
@@ -514,7 +515,7 @@ async function runIntradayCheckUnlocked(env: Bindings, leaseRunId: string): Prom
     (item.debate_verdict ?? 'PENDING') === 'PENDING' || (item.debate_status ?? 'pending') === 'pending',
   )
   const pendingDebateSlaMinutes = Number((cfg.position as any).pendingDebateSlaMinutes ?? 10)
-  if (staleDebateItems.length > 0 && shouldMarkPendingDebateSlaReached(new Date(), pendingDebateSlaMinutes)) {
+  if (staleDebateItems.length > 0 && shouldMarkPendingDebateSlaReached(paperExecutionDate(), pendingDebateSlaMinutes)) {
     const transition = applyPendingBuyExecutionStatusUpdates(
       debateSnapshot.pendingBuys,
       staleDebateItems.map((item) => ({
@@ -652,7 +653,7 @@ async function runIntradayCheckUnlocked(env: Bindings, leaseRunId: string): Prom
     console.error(`[Intraday] error ${errMsg}`)
     await env.KV.put(
       `scheduler:run:intraday-error:${today}`,
-      JSON.stringify({ error: errMsg, symbols: zeroPriceSymbols, timestamp: new Date().toISOString() }),
+      JSON.stringify({ error: errMsg, symbols: zeroPriceSymbols, timestamp: paperExecutionDate().toISOString() }),
       { expirationTtl: 86400 },
     )
     if ((env as any).DISCORD_WEBHOOK_URL) {
@@ -698,12 +699,12 @@ async function runIntradayCheckUnlocked(env: Bindings, leaseRunId: string): Prom
   const acc = await withD1ReadRetry(
     'account_snapshot',
     'paper_accounts',
-    () => paperDomainDatabase(env).prepare('SELECT cash, initial_cash FROM paper_accounts WHERE id=?').bind(ACCOUNT_ID).first<any>(),
+    () => paperDomainDatabase(env).prepare('SELECT cash, initial_cash FROM paper_accounts WHERE id=?').bind(paperAccountId()).first<any>(),
   )
   if (!acc) return holdingPoll
   const settledCash = Number(acc.cash ?? 0)
   const { getAvailableCash: getAvailCash } = await import('./dateUtils')
-  const availableCash = await getAvailCash(paperDomainDatabase(env), ACCOUNT_ID)
+  const availableCash = await getAvailCash(paperDomainDatabase(env), paperAccountId())
   ;(acc as any).cash = availableCash
   if (availableCash < cfg.position.minCashToTrade) return holdingPoll
 
@@ -712,7 +713,7 @@ async function runIntradayCheckUnlocked(env: Bindings, leaseRunId: string): Prom
     'paper_positions',
     () => paperDomainDatabase(env).prepare(
       'SELECT symbol, shares FROM paper_positions WHERE account_id=? AND shares>0',
-    ).bind(ACCOUNT_ID).all<any>(),
+    ).bind(paperAccountId()).all<any>(),
   )
   const posSymbols = (positions ?? []).map((p: any) => p.symbol)
   const posQuoteMap = await batchGetIntradayOHLC(posSymbols, {
@@ -742,7 +743,7 @@ async function runIntradayCheckUnlocked(env: Bindings, leaseRunId: string): Prom
     fallbackPrices: posFallbackPriceMap,
   })
   const posValueMap = positionValuation.symbolPrices
-  const positionValue = positionValuation.positionsValue
+  const positionValue = requireCompletePaperPositionValue(positions ?? [], posValueMap)
   if (positionValuation.fallbackSymbols.length > 0 || positionValuation.missingSymbols.length > 0) {
     console.warn(
       `[Allocator] position valuation fallback=${positionValuation.fallbackSymbols.join(',') || '-'} ` +
@@ -752,13 +753,39 @@ async function runIntradayCheckUnlocked(env: Bindings, leaseRunId: string): Prom
   const settlement = await withD1ReadRetry(
     'settlement_snapshot',
     'paper_settlement_ledger',
-    () => getUnsettledSettlementSummary(paperDomainDatabase(env), ACCOUNT_ID),
+    () => getUnsettledSettlementSummary(paperDomainDatabase(env), paperAccountId()),
   )
+  const corporateBounds = await corporateAccountRiskBounds(env, paperAccountId(), posValueMap)
   const totalPortfolio = computePaperTotalValue({
     settledCash,
     positionsValue: positionValue,
     netUnsettledSettlement: settlement.netUnsettledSettlement,
+    corporateReceivablesValue: corporateBounds.lower,
   })
+  if (!corporateBounds.complete) {
+    // Parent shares may already be sold: the empty-holdings exit poll does not
+    // evaluate P9. Check retained rights here before ANY new entry or swap.
+    const risk = await checkP9IntradayDrawdown(env.KV, today, totalPortfolio, riskCfg,
+      { defaults: cb, effectiveBuy: cb.buyConfThreshold, effectiveSell: cb.sellConfThreshold },
+      totalPortfolio + corporateBounds.upper - corporateBounds.lower)
+    if (risk.evaluation.triggered) {
+      const reason = 'subscription_valuation_risk_bound'
+      const detail = JSON.stringify({ lower: totalPortfolio,
+        upper: totalPortfolio + corporateBounds.upper - corporateBounds.lower,
+        uncertain_rights: corporateBounds.unpricedRights, drawdown_bound: risk.evaluation.drawdown })
+      const transition = applyPendingBuyExecutionStatusUpdates(pendingBuys, pendingBuys.map(item => ({
+        symbol: item.symbol, status: 'checked_waiting' as const, reason, detail,
+      })))
+      await persistPendingBuyActiveState(env, today, transition.activeItems as PendingBuy[],
+        { stage: 'intraday_risk_gate', reason, detail })
+      await Promise.all(pendingBuys.map(item => recordPaperExecutionEvent(env, {
+        tradeDate: today, symbol: item.symbol, side: 'buy', eventType: 'paper_order', status: 'blocked',
+        reason, detail: { bounds: corporateBounds, evaluation: risk.evaluation }, pendingRunId,
+        source: 'p9_intraday_drawdown',
+      })))
+      return holdingPoll
+    }
+  }
   const currentPositionCount = (positions ?? []).length
 
   const maxPos = cfg.position.maxPositions ?? 5
@@ -798,13 +825,13 @@ async function runIntradayCheckUnlocked(env: Bindings, leaseRunId: string): Prom
         SELECT symbol, name, shares, avg_cost, entry_date, entry_price,
                initial_stop, trailing_stop, tp1_price, tp1_hit, highest_since_entry
         FROM paper_positions WHERE account_id=? AND shares>0
-      `).bind(ACCOUNT_ID).all<any>(),
+      `).bind(paperAccountId()).all<any>(),
     )
 
     const weaknessScores: { symbol: string; score: number }[] = []
     for (const pos of fullPositions ?? []) {
       const daysHeld = pos.entry_date
-        ? Math.floor((Date.now() + 8 * 3600_000 - new Date(pos.entry_date + 'T00:00:00+08:00').getTime()) / 86400_000)
+        ? Math.floor((paperExecutionNow() + 8 * 3600_000 - new Date(pos.entry_date + 'T00:00:00+08:00').getTime()) / 86400_000)
         : 0
       const score = fiveSlotHoldingWeaknessScore({
         symbol: String(pos.symbol),
@@ -847,7 +874,7 @@ async function runIntradayCheckUnlocked(env: Bindings, leaseRunId: string): Prom
         trailingStop: finiteNumber(pos.trailing_stop),
         highestSinceEntry: finiteNumber(pos.highest_since_entry),
         daysHeld: pos.entry_date
-          ? Math.floor((Date.now() + 8 * 3600_000 - new Date(String(pos.entry_date).slice(0, 10) + 'T00:00:00+08:00').getTime()) / 86400_000)
+          ? Math.floor((paperExecutionNow() + 8 * 3600_000 - new Date(String(pos.entry_date).slice(0, 10) + 'T00:00:00+08:00').getTime()) / 86400_000)
           : 0,
         tp1Hit: Boolean(pos.tp1_hit),
       })),
@@ -909,7 +936,7 @@ async function runIntradayCheckUnlocked(env: Bindings, leaseRunId: string): Prom
       }
 
       const daysHeld = weakPos.entry_date
-        ? Math.floor((Date.now() + 8 * 3600_000 - new Date(weakPos.entry_date).getTime()) / 86400_000)
+        ? Math.floor((paperExecutionNow() + 8 * 3600_000 - new Date(weakPos.entry_date).getTime()) / 86400_000)
         : 0
       if (daysHeld < minHoldDays) {
         console.log(`[Swap] ${weakest.symbol} held only ${daysHeld}d < ${minHoldDays}d, skip swap`)
@@ -970,7 +997,7 @@ async function runIntradayCheckUnlocked(env: Bindings, leaseRunId: string): Prom
       }
       const sellPrice = sellFill.fillPrice
       const sellOrderIntent = buildStockVisionSellOrderIntent({
-        accountId: ACCOUNT_ID,
+        accountId: paperAccountId(),
         tradeDate: today,
         symbol: weakest.symbol,
         limitPrice: sellPrice,
@@ -1013,7 +1040,7 @@ async function runIntradayCheckUnlocked(env: Bindings, leaseRunId: string): Prom
           INSERT INTO paper_orders (account_id, symbol, name, side, shares, price, commission, tax, total_cost, source, note, created_at)
           VALUES (?, ?, ?, 'sell', ?, ?, ?, ?, ?, 'auto_swap', ?, datetime('now'))
         `).bind(
-          ACCOUNT_ID,
+          paperAccountId(),
           weakest.symbol,
           weakPos.name ?? weakest.symbol,
           weakPos.shares,
@@ -1023,9 +1050,9 @@ async function runIntradayCheckUnlocked(env: Bindings, leaseRunId: string): Prom
           sellProceeds,
           sellNote,
         ),
-        paperDomainDatabase(env).prepare('DELETE FROM paper_positions WHERE account_id=? AND symbol=?').bind(ACCOUNT_ID, weakest.symbol),
+        paperDomainDatabase(env).prepare('DELETE FROM paper_positions WHERE account_id=? AND symbol=?').bind(paperAccountId(), weakest.symbol),
       ])
-      const swapOrderId = await recordSellSettlement(paperDomainDatabase(env), env.KV, ACCOUNT_ID, weakest.symbol, sellProceeds)
+      const swapOrderId = await recordSellSettlement(paperDomainDatabase(env), env.KV, paperAccountId(), weakest.symbol, sellProceeds)
       await recordPaperExecutionEvent(env, {
         tradeDate: today,
         symbol: weakest.symbol,
@@ -1082,7 +1109,7 @@ async function runIntradayCheckUnlocked(env: Bindings, leaseRunId: string): Prom
 
   const recentSells = await paperDomainDatabase(env).prepare(
     "SELECT SUM(total_cost) as unsettled FROM paper_orders WHERE account_id=? AND side='sell' AND created_at > datetime('now', '-2 days')",
-  ).bind(ACCOUNT_ID).first<any>()
+  ).bind(paperAccountId()).first<any>()
   if (recentSells?.unsettled > 0) {
     console.warn(`[Paper] T+2 warning: $${recentSells.unsettled} unsettled from recent sells`)
   }
@@ -1090,13 +1117,13 @@ async function runIntradayCheckUnlocked(env: Bindings, leaseRunId: string): Prom
   const DAILY_BUY_LIMIT = cfg.position.dailyBuyLimit
   const todayBought = await paperDomainDatabase(env).prepare(
     "SELECT COALESCE(SUM(total_cost), 0) as total, COUNT(*) as order_count FROM paper_orders WHERE account_id=? AND side='buy' AND created_at >= ?",
-  ).bind(ACCOUNT_ID, today).first<any>()
+  ).bind(paperAccountId(), today).first<any>()
   let dailyBuyTotal = Number(todayBought?.total ?? 0)
   let dailyBuyOrderCount = Number(todayBought?.order_count ?? 0)
 
   const { results: capitalPositionRows } = await paperDomainDatabase(env).prepare(
     'SELECT symbol, shares, avg_cost, entry_date, tp1_hit, initial_stop, trailing_stop, highest_since_entry FROM paper_positions WHERE account_id=? AND shares>0',
-  ).bind(ACCOUNT_ID).all<any>()
+  ).bind(paperAccountId()).all<any>()
   const capitalPositionSymbols = (capitalPositionRows ?? []).map((p: any) => p.symbol).filter(Boolean)
   const positionPriceRows = await loadMarketPriceHistoryBySymbols(
     env,
@@ -1140,7 +1167,7 @@ async function runIntradayCheckUnlocked(env: Bindings, leaseRunId: string): Prom
       trailingStop: finiteNumber(pos.trailing_stop),
       highestSinceEntry: finiteNumber(pos.highest_since_entry),
       daysHeld: pos.entry_date
-        ? Math.floor((Date.now() + 8 * 3600_000 - new Date(String(pos.entry_date).slice(0, 10) + 'T00:00:00+08:00').getTime()) / 86400_000)
+        ? Math.floor((paperExecutionNow() + 8 * 3600_000 - new Date(String(pos.entry_date).slice(0, 10) + 'T00:00:00+08:00').getTime()) / 86400_000)
         : 0,
       tp1Hit: Boolean(pos.tp1_hit),
     }
@@ -1149,7 +1176,7 @@ async function runIntradayCheckUnlocked(env: Bindings, leaseRunId: string): Prom
     const { results } = await paperDomainDatabase(env).prepare(`
       SELECT symbol, name, shares, avg_cost, entry_date, tp1_hit, initial_stop, trailing_stop, highest_since_entry
       FROM paper_positions WHERE account_id=? AND shares>0
-    `).bind(ACCOUNT_ID).all<any>()
+    `).bind(paperAccountId()).all<any>()
     return (results ?? []).map(toCapitalHolding)
   }
   const buildExecutionAllocatorEvaluation = async (
@@ -1359,7 +1386,7 @@ async function runIntradayCheckUnlocked(env: Bindings, leaseRunId: string): Prom
              AND source = 's12_intraday_structure'
            ORDER BY id DESC
            LIMIT 1
-        `).bind(ACCOUNT_ID, pending.symbol, today).first<any>(),
+        `).bind(paperAccountId(), pending.symbol, today).first<any>(),
         databaseForDataDomain(env, 'core').prepare('SELECT market FROM stocks WHERE symbol = ? LIMIT 1').bind(pending.symbol).first<{ market?: string | null }>(),
         s12CalibrationArtifactsPromise,
       ])
@@ -1372,7 +1399,7 @@ async function runIntradayCheckUnlocked(env: Bindings, leaseRunId: string): Prom
         fallback4hBars: s12Base.fallback4hBars,
         fallbackDailyBars: s12Base.fallbackDailyBars,
         fallback1hBars: s12Base.fallback1hBars,
-        nowMs: Date.now(),
+        nowMs: paperExecutionNow(),
         policy: applyS12TwCalibrationArtifact(s12TimingPolicyFromEnv(env as any), calibration),
         barDiagnostics: {
           ...s12Base.diagnostics,
@@ -2083,7 +2110,7 @@ async function runIntradayCheckUnlocked(env: Bindings, leaseRunId: string): Prom
 
     const currentCount = await paperDomainDatabase(env).prepare(
       'SELECT COUNT(*) as cnt FROM paper_positions WHERE account_id=? AND shares>0',
-    ).bind(ACCOUNT_ID).first<any>()
+    ).bind(paperAccountId()).first<any>()
     if ((currentCount?.cnt ?? 0) >= maxPos && allocatorDecision.action !== 'add') {
       console.log(`[Intraday] ${pending.symbol}: position cap (${maxPos}) reached, skip`)
       recordActiveExecutionStatus(
@@ -2295,7 +2322,7 @@ async function runIntradayCheckUnlocked(env: Bindings, leaseRunId: string): Prom
     const isPartialFill = depthMatch.status === 'partial'
     const filledOrderLegs = buildTwOrderLegs(shares)
     const orderIntent = buildStockVisionOrderIntent({
-      accountId: ACCOUNT_ID,
+      accountId: paperAccountId(),
       tradeDate: today,
       pending,
       limitPrice,
@@ -2508,7 +2535,7 @@ async function runIntradayCheckUnlocked(env: Bindings, leaseRunId: string): Prom
 
     const existing = await paperDomainDatabase(env).prepare(
       'SELECT shares, avg_cost FROM paper_positions WHERE account_id=? AND symbol=?',
-    ).bind(ACCOUNT_ID, pending.symbol).first<any>()
+    ).bind(paperAccountId(), pending.symbol).first<any>()
     const oldShares = existing?.shares ?? 0
     const oldAvgCost = existing?.avg_cost ?? 0
     const updatedShares = oldShares + shares
@@ -2534,7 +2561,7 @@ async function runIntradayCheckUnlocked(env: Bindings, leaseRunId: string): Prom
             shares=excluded.shares, avg_cost=excluded.avg_cost, name=excluded.name,
             trade_lifecycle_json=excluded.trade_lifecycle_json, updated_at=datetime('now')
         `).bind(
-          ACCOUNT_ID,
+          paperAccountId(),
           pending.symbol,
           pending.name,
           updatedShares,
@@ -2555,7 +2582,7 @@ async function runIntradayCheckUnlocked(env: Bindings, leaseRunId: string): Prom
             (account_id, symbol, name, side, shares, price, commission, tax, total_cost, source, signal, confidence, note)
           VALUES (?, ?, ?, 'buy', ?, ?, ?, 0, ?, 'auto_ml', ?, ?, ?)
         `).bind(
-          ACCOUNT_ID,
+          paperAccountId(),
           pending.symbol,
           pending.name,
           shares,
@@ -2656,13 +2683,13 @@ async function runIntradayCheckUnlocked(env: Bindings, leaseRunId: string): Prom
 
     const autoOrderId = await paperDomainDatabase(env).prepare(
       "SELECT id FROM paper_orders WHERE account_id=? AND symbol=? AND side='buy' ORDER BY id DESC LIMIT 1",
-    ).bind(ACCOUNT_ID, pending.symbol).first<{ id: number }>()
+    ).bind(paperAccountId(), pending.symbol).first<{ id: number }>()
     await completePaperBuyIntent(env, intent.intentKey, isPartialFill ? 'partial' : 'filled', autoOrderId?.id ?? null)
     const { getSettlementDate } = await import('./dateUtils')
     const settleDate = await getSettlementDate(today, env.KV)
     await paperDomainDatabase(env).prepare(
       "INSERT INTO paper_settlements (account_id, order_id, symbol, side, amount, trade_date, settlement_date) VALUES (?, ?, ?, 'buy', ?, ?, ?)",
-    ).bind(ACCOUNT_ID, autoOrderId?.id ?? 0, pending.symbol, totalCost, today, settleDate).run()
+    ).bind(paperAccountId(), autoOrderId?.id ?? 0, pending.symbol, totalCost, today, settleDate).run()
     await recordPaperExecutionEvent(env, {
       tradeDate: today,
       symbol: pending.symbol,
@@ -2793,8 +2820,8 @@ export async function runIntradayCheck(env: Bindings): Promise<IntradayStopLossP
   if (!isTwIntradayTradingMinute()) {
     return { status: 'healthy_empty', positions: 0, quoted: 0, missing_symbols: [] }
   }
-  const today = new Date(Date.now() + 8 * 3600_000).toISOString().slice(0, 10)
-  const runId = `intraday-check:${today}:${crypto.randomUUID()}`
+  const today = new Date(paperExecutionNow() + 8 * 3600_000).toISOString().slice(0, 10)
+  const runId = `intraday-check:${today}:${paperExecutionUUID()}`
   const opsDb = databaseForDataDomain(env, 'ops')
   const acquired = await acquireIntradayExecutionLease(opsDb, runId, today)
   if (!acquired) {

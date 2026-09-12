@@ -141,6 +141,18 @@ async function main(): Promise<void> {
        WHERE producer_run_id=?
     `).bind(input.producerRunId).first<any>()), immutableReceipt)
 
+    for (const changedRegime of [
+      { pre_regime_setup_hit: 0 },
+      { regime_eligible: 0 },
+      { formal_veto_reason: 'regime_not_allowed' },
+      { counterfactual_affinity: 0.9 },
+    ]) {
+      await assert.rejects(persistSelectionEvidenceV4(learning, {
+        ...input,
+        matrix: input.matrix.map((row) => ({ ...row, ...changedRegime })),
+      }, identity), /strategy_label_matrix_ready_regime_evidence_mismatch/)
+    }
+
     const changedPayload = {
       ...input,
       matrix: input.matrix.map((row) => ({ ...row, affinity: 0.9 })),
@@ -156,6 +168,78 @@ async function main(): Promise<void> {
     assert.equal(Number((await learning.prepare(
       'SELECT affinity FROM strategy_label_matrix_v4 WHERE producer_run_id=?',
     ).bind(input.producerRunId).first<any>())?.affinity), 0.6)
+
+    // Legacy/unsealed rows must not lend a score to another route version.
+    // There is no ready-run checksum yet, so this exercises the actual merge.
+    for (const mode of ['incumbent-version', 'challenger-version', 'score', 'unknown-version', 'foreign-date', 'exact-zero']) {
+      const producerRunId = `${input.producerRunId}-${mode}`
+      await learning.prepare(`
+        INSERT INTO selection_reference_snapshots_v1 (
+          signal_date, symbol, producer_run_id, stock_id, hard_gate_passed,
+          hard_gate_reason, feature_available, strategy_labeled, strategy_selected,
+          selection_stage, strategy_registry_checksum, feature_contract_version,
+          strategy_router_version, strategy_router_score,
+          strategy_challenger_route_version, strategy_challenger_route_score
+        ) SELECT signal_date, symbol, ?, stock_id, hard_gate_passed,
+                 hard_gate_reason, feature_available, strategy_labeled, strategy_selected,
+                 selection_stage, strategy_registry_checksum, feature_contract_version,
+                 'router-v1', 0, 'challenger-v1', 0
+            FROM selection_reference_snapshots_v1 WHERE producer_run_id=?
+      `).bind(producerRunId, input.producerRunId).run()
+      if (mode === 'unknown-version') {
+        await learning.prepare(`UPDATE selection_reference_snapshots_v1
+          SET strategy_router_version=NULL WHERE producer_run_id=?`).bind(producerRunId).run()
+      }
+      if (mode === 'foreign-date') {
+        await learning.prepare(`UPDATE selection_reference_snapshots_v1
+          SET signal_date='2026-08-23' WHERE producer_run_id=?`).bind(producerRunId).run()
+      }
+      const candidate = {
+        ...input,
+        producerRunId,
+        references: input.references.map((row) => ({
+          ...row, producer_run_id: producerRunId,
+          strategy_router_version: mode === 'incumbent-version' ? 'router-v2' : 'router-v1',
+          strategy_router_score: mode === 'score' ? 0.9 : null,
+          strategy_challenger_route_version: mode === 'challenger-version' ? 'challenger-v2' : 'challenger-v1',
+          strategy_challenger_route_score: null,
+        })),
+        matrix: input.matrix.map((row) => ({ ...row, producer_run_id: producerRunId })),
+      }
+      if (mode === 'exact-zero') {
+        await persistSelectionEvidenceV4(learning, candidate, identity)
+        await persistSelectionEvidenceV4(learning, candidate, identity)
+      } else {
+        await assert.rejects(
+          persistSelectionEvidenceV4(learning, candidate, identity),
+          /selection_reference_route_evidence_conflict/,
+          mode,
+        )
+        assert.equal(await learning.prepare(
+          'SELECT status FROM strategy_label_matrix_runs_v4 WHERE producer_run_id=?',
+        ).bind(producerRunId).first(), null)
+      }
+      assert.deepEqual(await learning.prepare(`
+        SELECT strategy_router_version, strategy_router_score,
+               strategy_challenger_route_version, strategy_challenger_route_score
+          FROM selection_reference_snapshots_v1 WHERE producer_run_id=?
+      `).bind(producerRunId).first(), {
+        strategy_router_version: mode === 'unknown-version' ? null : 'router-v1', strategy_router_score: 0,
+        strategy_challenger_route_version: 'challenger-v1', strategy_challenger_route_score: 0,
+      })
+    }
+
+    await learning.prepare(`UPDATE strategy_label_matrix_v4
+      SET regime_eligible=0 WHERE producer_run_id=?`).bind(input.producerRunId).run()
+    await assert.rejects(persistSelectionEvidenceV4(learning, input, identity),
+      /strategy_label_matrix_ready_regime_evidence_mismatch/)
+    await learning.prepare(`UPDATE strategy_label_matrix_v4
+      SET regime_eligible=1, challenger_affinity=0.7, challenger_affinity_version='projection-v2'
+      WHERE producer_run_id=?`).bind(input.producerRunId).run()
+    await learning.prepare(`UPDATE selection_reference_snapshots_v1
+      SET selection_stage='pending_buy_candidate', rejection_reason=NULL
+      WHERE producer_run_id=?`).bind(input.producerRunId).run()
+    await persistSelectionEvidenceV4(learning, input, identity)
 
     await learning.prepare(
       'UPDATE selection_reference_snapshots_v1 SET stock_id=99 WHERE producer_run_id=?',

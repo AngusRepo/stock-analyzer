@@ -1,8 +1,8 @@
+import { paperExecutionNow, paperExecutionDate, paperAccountId } from './paperExecutionScope'
 import type { Bindings } from '../types'
 import { paperDomainDatabase } from './paperDomainDatabase'
 import { batchGetIntradayOHLC } from './paperIntradayData'
 
-const ACCOUNT_ID = 1
 export const INTRADAY_PRICE_PREFIX = 'intraday:price:'
 // Storage lifetime for the last observed intraday trade. Execution callers
 // still enforce their short freshness window through getFreshIntradayPriceMap.
@@ -38,7 +38,7 @@ export type PostClosePriceRefreshResult = {
 }
 
 function twToday(): string {
-  return new Date(Date.now() + 8 * 3600_000).toISOString().slice(0, 10)
+  return new Date(paperExecutionNow() + 8 * 3600_000).toISOString().slice(0, 10)
 }
 
 function finitePositive(value: unknown): number | null {
@@ -79,7 +79,7 @@ export async function putIntradayPrice(
   ttlSeconds = INTRADAY_PRICE_TTL_SECONDS,
   metadata: { source?: string; quoteTime?: string | null; updatedAt?: string } = {},
 ): Promise<void> {
-  const updatedAt = metadata.updatedAt ?? new Date().toISOString()
+  const updatedAt = metadata.updatedAt ?? paperExecutionDate().toISOString()
   const quoteTime = metadata.quoteTime ?? null
   const asOfMs = snapshotAsOfMs({ quote_time: quoteTime, updated_at: updatedAt })
   const snapshot: IntradayPriceSnapshot = {
@@ -97,7 +97,7 @@ export async function getFreshIntradayPriceMap(
   kv: KVNamespace,
   symbols: string[],
   maxAgeMs = INTRADAY_PRICE_DISPLAY_MAX_AGE_MS,
-  nowMs = Date.now(),
+  nowMs = paperExecutionNow(),
 ): Promise<Map<string, IntradayPriceSnapshot>> {
   return getIntradayPriceMap(kv, symbols, maxAgeMs, nowMs)
 }
@@ -106,7 +106,7 @@ export async function getIntradayPriceMap(
   kv: KVNamespace,
   symbols: string[],
   maxAgeMs = INTRADAY_PRICE_TTL_SECONDS * 1000,
-  nowMs = Date.now(),
+  nowMs = paperExecutionNow(),
 ): Promise<Map<string, IntradayPriceSnapshot>> {
   const uniqueSymbols = [...new Set(symbols.map((symbol) => String(symbol ?? '').trim()).filter(Boolean))]
   const rows = await Promise.all(uniqueSymbols.map((symbol) => kv.get(`${INTRADAY_PRICE_PREFIX}${symbol}`)))
@@ -162,13 +162,14 @@ export async function getPostClosePriceMap(
 
 export async function refreshOpenPositionPostClosePriceCache(
   env: Pick<Bindings, 'DB' | 'KV' | 'SHIOAJI_PROXY_URL' | 'PROXY_SERVICE_TOKEN'>,
-  options: { tradeDate?: string } = {},
+  options: { tradeDate?: string; additionalSymbols?: string[] } = {},
 ): Promise<PostClosePriceRefreshResult> {
   const tradeDate = options.tradeDate ?? twToday()
   const { results } = await paperDomainDatabase(env).prepare(
     'SELECT symbol FROM paper_positions WHERE account_id=? AND shares>0',
-  ).bind(ACCOUNT_ID).all<{ symbol: string }>()
-  const symbols = [...new Set((results ?? []).map((row) => String(row.symbol ?? '').trim()).filter(Boolean))]
+  ).bind(paperAccountId()).all<{ symbol: string }>()
+  const symbols = [...new Set([...(results ?? []).map((row) => String(row.symbol ?? '').trim()).filter(Boolean),
+    ...(options.additionalSymbols ?? [])])]
   if (!symbols.length) {
     return {
       tradeDate,
@@ -184,7 +185,7 @@ export async function refreshOpenPositionPostClosePriceCache(
     SHIOAJI_PROXY_URL: env.SHIOAJI_PROXY_URL,
     PROXY_SERVICE_TOKEN: env.PROXY_SERVICE_TOKEN,
   })
-  const updatedAt = new Date().toISOString()
+  const updatedAt = paperExecutionDate().toISOString()
   const snapshots = symbols
     .map((symbol) => {
       const quote = quoteMap.get(symbol)
@@ -227,7 +228,7 @@ export async function refreshOpenPositionPostClosePriceCache(
 
 export async function clearOpenPositionIntradayPriceCache(
   env: Pick<Bindings, 'DB' | 'KV'>,
-  accountId = ACCOUNT_ID,
+  accountId = paperAccountId(),
 ): Promise<string> {
   const { results } = await paperDomainDatabase(env).prepare(
     'SELECT symbol FROM paper_positions WHERE account_id=? AND shares>0',

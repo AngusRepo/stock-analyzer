@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict'
 import fs from 'node:fs'
+import { SCHEDULER_TICKET_CONTRACT_ROOTS } from './schedulerExecutionTickets'
 
 const route = fs.readFileSync('src/routes/adminTriggerRoutes.ts', 'utf8')
 const consumer = fs.readFileSync('src/lib/durableSchedulerTask.ts', 'utf8')
@@ -14,7 +15,9 @@ const manifest = JSON.parse(fs.readFileSync('../infra/gcp-scheduler-jobs.json', 
   jobs: Array<{ id: string; task: string; attemptDeadline?: string; retryConfig?: { retryCount?: number; maxRetryDuration?: string } }>
 }
 
-assert.equal(manifest.jobs.length, 59)
+assert.equal(SCHEDULER_TICKET_CONTRACT_ROOTS, manifest.jobs.length)
+assert.equal(new Set(manifest.jobs.map(job => job.id)).size, manifest.jobs.length)
+assert(manifest.jobs.some(job => job.id === 'active8-oof-daily' && job.task === 'active8-oof-daily'))
 const retryEnabled = manifest.jobs.filter((job) => Number(job.retryConfig?.retryCount ?? 0) > 0)
 assert.deepEqual(
   retryEnabled.map((job) => job.id).sort(),

@@ -3,11 +3,151 @@ from __future__ import annotations
 
 import hashlib
 import json
+from copy import deepcopy
+from datetime import date, datetime, timezone
+from pathlib import Path
 from typing import Any
 
 
 EMERGING_SEGMENTS = {"EMERGING", "ESB", "ROTC"}
 TRADABLE_MARKETS = {"TWSE", "TSE", "LISTED", "OTC", "TPEX"}
+
+
+def _context_digest(value: Any) -> str:
+    body = json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"), allow_nan=False)
+    return hashlib.sha256(body.encode("utf-8")).hexdigest()
+
+
+def _merge_source_identity() -> str:
+    return hashlib.sha256(Path(__file__).read_bytes()).hexdigest()
+
+
+def capture_screener_seed_context(*, run_date: str, ops_seed_rows: list[dict],
+                                  daily_rows: list[dict], stock_rows: list[dict],
+                                  merged_rows: list[dict], read_started_at: str) -> dict:
+    """Keep the actual reads, not rows reconstructed from the merged output.
+
+    Observation time is NOT a historical PIT attestation. Cross-domain reads
+    are not a database transaction; the original inputs and their observation
+    interval are retained so a later verifier can check producer consistency.
+    """
+    packet = {
+        "schema_version": "screener-seed-context-v1", "status": "captured",
+        "signal_date": run_date, "source_identity": _merge_source_identity(),
+        "knowledge_scope": "observed_at_capture_not_historical_asof",
+        "read_started_at": read_started_at,
+        "observed_at": datetime.now(timezone.utc).isoformat(),
+        "inputs": deepcopy({"ops_seed_rows": ops_seed_rows, "daily_rows": daily_rows,
+                            "stock_rows": stock_rows}),
+        "expected": deepcopy(merged_rows),
+    }
+    packet["content_checksum"] = _context_digest(packet)
+    replay_screener_seed_context(packet, run_date=run_date)
+    return packet
+
+
+def replay_screener_seed_context(context: dict, *, run_date: str,
+                                 producer_run_id: str | None = None) -> list[dict]:
+    """Re-run the ORIGINAL merge without a new OPS/Core read."""
+    if (not isinstance(context, dict) or context.get("schema_version") != "screener-seed-context-v1"
+            or context.get("status") != "captured" or context.get("signal_date") != run_date
+            or date.fromisoformat(run_date).isoformat() != run_date
+            or context.get("knowledge_scope") != "observed_at_capture_not_historical_asof"
+            or context.get("content_checksum") != _context_digest(
+                {k: v for k, v in context.items() if k != "content_checksum"})):
+        raise ValueError("screener_seed_context_invalid")
+    if context.get("source_identity") != _merge_source_identity():
+        raise ValueError("screener_seed_merge_source_changed")
+    started = datetime.fromisoformat(context["read_started_at"].replace("Z", "+00:00"))
+    observed = datetime.fromisoformat(context["observed_at"].replace("Z", "+00:00"))
+    if (started.tzinfo is None or observed.tzinfo is None
+            or not started <= observed <= datetime.now(timezone.utc)):
+        raise ValueError("screener_seed_context_time_invalid")
+    inputs = context.get("inputs")
+    if (not isinstance(inputs, dict) or set(inputs) != {"ops_seed_rows", "daily_rows", "stock_rows"}
+            or any(not isinstance(rows, list) or any(not isinstance(r, dict) for r in rows)
+                   for rows in inputs.values())):
+        raise ValueError("screener_seed_context_inputs_invalid")
+    runs = {row.get("screener_run_id") for row in inputs["ops_seed_rows"]}
+    if len(runs) > 1 or (producer_run_id and runs != {producer_run_id}):
+        raise ValueError("screener_seed_context_producer_mismatch")
+    result = merge_screener_seed_domains(run_date=run_date, **deepcopy(inputs))
+    # Exact whole-row comparison also binds Route contrast, ordering and fields
+    # not covered by the legacy migration comparator's abbreviated field list.
+    if _context_digest(result) != _context_digest(context.get("expected")):
+        raise ValueError("screener_seed_merge_replay_mismatch")
+    return result
+
+
+def verify_canonical_seed_boundary(population: dict, context: dict) -> dict:
+    """Reconcile original canonical funnel items with the ACTUAL OPS reads.
+
+    Raw scoring is common upstream evidence, not a candidate's post-calibration
+    replacement. Selection evidence here verifies the incumbent only; candidate
+    selection must come from that candidate's own post-route replay.
+    """
+    run_date, producer = population['signal_date'], population['producer_run_id']
+    replay_screener_seed_context(context, run_date=run_date, producer_run_id=producer)
+    source = population.get('screener_seed_source')
+    if (not isinstance(source, dict) or source.get('schema_version') != 'atomic-screener-seed-source-v1'
+            or not isinstance(source.get('items'), list)
+            or type(source.get('source_item_count')) is not int
+            or source['source_item_count'] < len(source['items'])):
+        raise ValueError('atomic_canonical_screener_seed_source_missing')
+    by_symbol: dict[str, list[dict]] = {}
+    for item in source['items']:
+        if (not isinstance(item, dict) or not isinstance(item.get('symbol'), str)
+                or not item['symbol'] or item['symbol'] != item['symbol'].strip()
+                or (item.get('stage'), item.get('decision')) not in {
+                    ('scoring', 'pass'), ('l1_candidate_seed_after_overlay', 'selected'),
+                    ('final_selection', 'selected')}):
+            raise ValueError('atomic_canonical_funnel_item_invalid')
+        by_symbol.setdefault(item['symbol'], []).append(item)
+
+    def selected(rows: list[dict], stage: str) -> dict | None:
+        matches = [row for row in rows if row['stage'] == stage]
+        if not matches:
+            return None
+        rank = min(_sort_number(row.get('rank'), 999999) for row in matches)
+        tied = [row for row in matches if _sort_number(row.get('rank'), 999999) == rank]
+        # Original SQL uses created_at for tied scoring/L1 rows. Canonical items
+        # do not carry that D1 timestamp: do not invent it or pick a lucky row.
+        if len({_context_digest(row) for row in tied}) > 1:
+            raise ValueError('atomic_canonical_funnel_tie_timestamp_missing')
+        return tied[0]
+
+    actual = context['inputs']['ops_seed_rows']
+    cutoffs = {row.get('decision_universe_frozen_at') for row in actual}
+    if len(cutoffs) > 1:
+        raise ValueError('atomic_canonical_seed_cutoff_ambiguous')
+    cutoff = next(iter(cutoffs), None)
+    replayed = []
+    for symbol, rows in by_symbol.items():
+        l1 = selected(rows, 'l1_candidate_seed_after_overlay')
+        seed = l1 or selected(rows, 'final_selection')
+        if seed is None:
+            continue
+        scoring = selected(rows, 'scoring') or {}
+        replayed.append({
+            'screener_run_id': producer, 'decision_universe_frozen_at': cutoff,
+            'symbol': symbol, 'seed_name': seed.get('name'), 'seed_stage': seed['stage'],
+            'seed_reason_code': seed.get('reasonCode'), 'seed_rank': seed.get('rank'),
+            'seed_score': seed.get('scoreAfter'), 'seed_evidence': seed.get('evidence'),
+            'scoring_score': scoring.get('scoreAfter'), 'scoring_evidence': scoring.get('evidence'),
+            'l1_evidence': l1.get('evidence') if l1 else None,
+        })
+
+    def normalized(rows):
+        return [{key: _canonical_json_value(value) for key, value in row.items()}
+                for row in sorted(rows, key=lambda row: row['symbol'])]
+
+    if _context_digest(normalized(actual)) != _context_digest(normalized(replayed)):
+        raise ValueError('atomic_canonical_ops_seed_boundary_mismatch')
+    return {'status': 'matched', 'canonical_artifact_id': population['canonical_artifact_id'],
+        'canonical_artifact_checksum': population['canonical_artifact_checksum'],
+        'screener_seed_context_checksum': context['content_checksum'],
+        'ops_seed_count': len(actual), 'raw_scoring_symbol_count': sum(
+            any(row['stage'] == 'scoring' for row in rows) for rows in by_symbol.values())}
 
 
 def _coalesce(*values: Any) -> Any:
@@ -28,7 +168,9 @@ def _json_object(value: Any) -> dict[str, Any]:
 
 def _json_extract_value(value: Any) -> Any:
     if isinstance(value, (dict, list)):
-        return json.dumps(value, ensure_ascii=False, separators=(",", ":"))
+        # Outer snapshot JSON sorts object keys. Make embedded JSON equally
+        # deterministic so a gzip/JSON round trip cannot change merge output.
+        return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
     return value
 
 
@@ -99,6 +241,16 @@ def merge_screener_seed_domains(
             "id": daily.get("id"),
             "screener_run_id": seed.get("screener_run_id"),
             "decision_universe_frozen_at": seed.get("decision_universe_frozen_at"),
+            # Preserve the whole per-run PIT contrast, never reconstruct its
+            # missing half from mutable Core recommendation score_components.
+            "l15_route_source": {
+                "schema_version": "l15-route-source-v1",
+                "signal_date": run_date,
+                "screener_run_id": seed.get("screener_run_id"),
+                "decision_universe_frozen_at": seed.get("decision_universe_frozen_at"),
+                "l1_contrast": deepcopy(l1_evidence.get("l15_route_contrast")),
+                "seed_contrast": deepcopy(seed_evidence.get("l15_route_contrast")),
+            } if "l15_route_contrast" in l1_evidence or "l15_route_contrast" in seed_evidence else None,
             "date": run_date,
             "stock_id": stock_id,
             "symbol": symbol,

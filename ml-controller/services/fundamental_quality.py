@@ -116,6 +116,15 @@ def _available_rows(rows: list[dict[str, Any]], decision_date: str, date_fn) -> 
     dropped = 0
     for row in rows:
         available_date = date_fn(row)
+        # Announcement/period availability does not authorize a later observed
+        # revision. Match the canonical payload owner's as_of_date boundary.
+        observed_raw = row.get('as_of_date')
+        observed_date = _iso(observed_raw)
+        if observed_raw not in (None, '') and observed_date is None:
+            dropped += 1
+            continue
+        if available_date is not None and observed_date is not None:
+            available_date = max(available_date, observed_date)
         if available_date is None or available_date > decision_date:
             dropped += 1
             continue

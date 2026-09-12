@@ -1552,6 +1552,9 @@ def _post_pipeline_prediction_error_callback(input_payload: dict, error: Excepti
 
 def _hydrate_pipeline_prediction_request_reference(payload: dict) -> dict:
     if payload.get("schema_version") == "pipeline-modal-prediction-request-v1":
+        manifest = payload.get('serving_manifest')
+        if isinstance(manifest, dict) and manifest.get('active8_nav_inference') is not None:
+            raise ValueError('active8_nav_inference_requires_generation_bound_request')
         return payload
     if payload.get("schema_version") != "pipeline-modal-prediction-request-ref-v1":
         raise ValueError("pipeline_modal_request_reference_schema_invalid")
@@ -1762,8 +1765,8 @@ def _pipeline_runtime_expected_symbols(
     ]
 
 
-def _pipeline_prediction_bundle_impl(payload: dict) -> dict:
-    """Run pipeline-v2 raw L3 prediction families inside Modal, then callback controller."""
+def _compute_pipeline_prediction_bundle(payload: dict) -> dict:
+    """Same L3 engine without publication or callback side effects."""
     _setup_env()
     import time
     import traceback
@@ -2143,11 +2146,39 @@ def _pipeline_prediction_bundle_impl(payload: dict) -> dict:
         "capacity_contract": capacity_contract,
         "request_transport": payload.get("request_transport") or {},
     }
+    return bundle
+
+
+def _pipeline_prediction_bundle_impl(payload: dict) -> dict:
+    """One parent publication, including separately identified NAV predictions."""
+    import time
+    from app.paired_nav_inference import run_candidate_bundles
+    from app.paired_nav_atomic_inference import run_atomic_slates, atomic_inference_failure, ATOMIC_RESULT_SCHEMA
+    started = time.monotonic()
+    bundle = _compute_pipeline_prediction_bundle(payload)
+    try:
+        nav = run_candidate_bundles(payload, compute=_compute_pipeline_prediction_bundle)
+    except Exception as exc:
+        nav = {'schema_version': 'paired-nav-l3-inference-v1', 'status': 'failed',
+               'production_effect': False, 'error_type': type(exc).__name__, 'bundles': {}}
+    if nav is not None:
+        bundle['paired_nav_l3_inference'] = nav
+    try:
+        atomic = run_atomic_slates(payload, compute=_compute_pipeline_prediction_bundle, formal_bundle=bundle)
+    except Exception as exc:
+        atomic = {'schema_version': ATOMIC_RESULT_SCHEMA, 'status': 'failed',
+                  'production_effect': False, 'nav_maturity_credit': 0, 'promotion_allowed': False,
+                  **atomic_inference_failure(exc), 'slates': {}}
+    if atomic is not None:
+        bundle['paired_nav_atomic_inference'] = atomic
+    if nav is not None or atomic is not None:
+        bundle['elapsed_s'] = round(time.monotonic() - started, 3)
+        capacity = bundle.get('capacity_contract')
+        if isinstance(capacity, dict):
+            elapsed = bundle['elapsed_s']
+            capacity['status'] = 'healthy' if elapsed <= 900 else ('watch' if elapsed <= 1800 else 'breached')
     bundle["durable_handoff"] = _persist_pipeline_prediction_bundle(payload, bundle)
-    callback_status = _post_pipeline_prediction_callback(payload, bundle, elapsed_s)
-
-
-    bundle["callback_status"] = callback_status
+    bundle["callback_status"] = _post_pipeline_prediction_callback(payload, bundle, bundle['elapsed_s'])
     return bundle
 @app.function(
     cpu=4,

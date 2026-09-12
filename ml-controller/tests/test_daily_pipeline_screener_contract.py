@@ -4,6 +4,7 @@ import asyncio
 from pathlib import Path
 
 import sys
+import importlib
 import types
 
 import pytest
@@ -19,16 +20,10 @@ from services.active_model_policy import CORE_CROSS_SECTIONAL_ALPHA_MODELS  # no
 
 
 def _install_daily_pipeline_import_stubs():
-    graph_mod = types.ModuleType("langgraph.graph")
-    graph_mod.END = object()
-    graph_mod.StateGraph = object
-    types_mod = types.ModuleType("langgraph.types")
-    types_mod.RetryPolicy = object
-    sys.modules.setdefault("langgraph.graph", graph_mod)
-    sys.modules.setdefault("langgraph.types", types_mod)
-    httpx_mod = types.ModuleType("httpx")
-    httpx_mod.AsyncClient = object
-    sys.modules.setdefault("httpx", httpx_mod)
+    # Do not poison subsequent real graph tests with process-global object stubs.
+    # Missing runtime dependencies must be visible, not a fake executable graph.
+    for module in ('langgraph.graph', 'langgraph.types', 'httpx'):
+        importlib.import_module(module)
 
 
 def test_daily_pipeline_refuses_watchlist_screener_fallback():
@@ -71,10 +66,12 @@ def test_pipeline_keeps_sector_flow_out_of_market_env_fanout():
     assert 'g.add_edge("load_inputs",         "compute_sector_flow")' not in source
     assert 'g.add_edge("compute_sector_flow", "build_payloads")' not in source
     assert 'g.add_edge("compute_personas",    "compute_sector_flow")' not in source
-    assert 'g.add_edge("write_d1",            "compute_sector_flow")' in source
-    assert 'g.add_edge("compute_sector_flow", "export_dataset_snapshot")' in source
+    assert 'g.add_edge("write_d1",            "paired_nav_setup")' in source
+    assert 'g.add_edge("paired_nav_setup",    "compute_sector_flow")' in source
+    assert 'g.add_edge("compute_sector_flow", "compute_pit_residual_shadow")' in source
+    assert 'g.add_edge("compute_pit_residual_shadow", "export_dataset_snapshot")' in source
     assert source.index('g.add_edge("compute_personas",    "recommend")') < source.index(
-        'g.add_edge("write_d1",            "compute_sector_flow")'
+        'g.add_edge("write_d1",            "paired_nav_setup")'
     )
     assert "_load_market_env_with_backoff" in source
     assert "D1_RETRYABLE_MARKERS" in source
@@ -86,7 +83,8 @@ def test_sector_expert_is_late_pit_evidence_and_cannot_mutate_candidate_slate():
 
     assert "decision_universe_frozen_at" in graph_source
     assert "knowledge_cutoff=decision_cutoff" in graph_source
-    assert "pit_sector_alpha_by_symbol=sector_experts" in graph_source
+    assert '"pit_sector_alpha_by_symbol": sector_experts' in graph_source
+    assert 'recommendation_context=recommendation_context' in graph_source
     assert recommendation_source.index("apply_alpha_context(") < recommendation_source.index(
         'row["pit_sector_alpha_expert"] = sector_expert'
     )
@@ -342,24 +340,14 @@ def test_daily_pipeline_does_not_create_alternate_only_prediction_fallback():
     assert "feature_missing_no_fallback" in source
 
 
-def test_daily_pipeline_blocks_degraded_state_space_overlay_rows():
-    _install_daily_pipeline_import_stubs()
-    from graphs.daily_pipeline_v2 import _state_space_overlay_block_reason  # noqa: E402
-
-    assert _state_space_overlay_block_reason({
-        "symbol": "2330",
-        "degraded": True,
-        "fallback_reason": "svd_not_converged",
-    }) == "svd_not_converged"
-    assert _state_space_overlay_block_reason({
-        "symbol": "2317",
-        "degraded": True,
-    }) == "degraded_state_space_overlay"
-    assert _state_space_overlay_block_reason({
-        "symbol": "2454",
-        "degraded": False,
-        "forecast_pct": 0.01,
-    }) is None
+def test_daily_pipeline_cannot_ingest_retired_state_space_overlay_rows():
+    # bb639800 removed the whole daily StateSpace dispatch/ingestion path.
+    # Do not resurrect its old degraded-row helper just to satisfy a stale test.
+    source = Path(__file__).resolve().parent.parent.joinpath("graphs", "daily_pipeline_v2.py").read_text(encoding="utf-8")
+    assert "_state_space_overlay_block_reason" not in source
+    assert "state_space_raw" not in source
+    assert "state_space_overlays_batch_predict(" not in source
+    assert "spawn_state_space_overlays_batch_predict(" not in source
 
 
 def test_daily_pipeline_fails_closed_on_degraded_trading_config_contract():

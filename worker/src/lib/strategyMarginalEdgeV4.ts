@@ -1,6 +1,7 @@
 import {
   STRATEGY_FORMAL_LABELER_VERSIONS,
 } from './strategySpec'
+import { atomicNavOwnsRegistry, legacyAtomicPromotionGuard } from './strategyAtomicNavReceipt'
 
 export const STRATEGY_MARGINAL_EDGE_SCHEMA_VERSION_V6 = 'strategy-marginal-edge-v6'
 export const STRATEGY_MARGINAL_EDGE_SCHEMA_VERSION = 'strategy-marginal-edge-v7'
@@ -17,7 +18,7 @@ const MINIMUM_ECONOMIC_PAIRED_DELTA = 0.001
 const MIN_REPLACEMENT_POWER = 0.8
 const REPLACEMENT_FAMILYWISE_ALPHA = 0.05
 const ONE_SIDED_95_Z = 1.6448536269514722
-export const STRATEGY_REPLACEMENT_POLICY_VERSION_V7 = 'strategy-replacement-policy-v7-hac4-holm-power80-v1'
+export const STRATEGY_REPLACEMENT_POLICY_VERSION_V7 = 'strategy-replacement-policy-v7-hac4-holm-planning-v2'
 
 export const STRATEGY_REPLACEMENT_POLICY_V6 = Object.freeze({
   schema_version: STRATEGY_MARGINAL_EDGE_SCHEMA_VERSION_V6,
@@ -46,6 +47,8 @@ export const STRATEGY_REPLACEMENT_POLICY_V7 = Object.freeze({
   min_paired_delta_lcb95_hac_exclusive: 0,
   minimum_economic_paired_delta: MINIMUM_ECONOMIC_PAIRED_DELTA,
   min_power_at_minimum_economic_delta: MIN_REPLACEMENT_POWER,
+  power_role: 'sensitivity_diagnostic_not_promotion_gate' as const,
+  power_variance_source: 'observed_hac_not_independent_ex_ante_estimate' as const,
   multiple_testing: 'holm_bonferroni' as const,
   familywise_alpha: REPLACEMENT_FAMILYWISE_ALPHA,
   min_candidate_absolute_cost_net_mean_exclusive: 0,
@@ -101,6 +104,7 @@ export interface StrategyEdgeResult {
 }
 
 function finite(value: unknown): number | null {
+  if (value == null || typeof value === 'boolean' || (typeof value === 'string' && !value.trim())) return null
   const parsed = Number(value)
   return Number.isFinite(parsed) ? parsed : null
 }
@@ -809,12 +813,14 @@ export interface StrategyReplacementEvaluationV7 {
 /**
  * V7 preserves the V6 atomic/risk contract and adds a separate statistical
  * policy: T+5 HAC(4), one-sided 95% LCB, Holm family-wise control, effective
- * sample size, and 80% power at the versioned minimum economic effect.
+ * sample size. Power at the reference effect is a sensitivity diagnostic,
+ * not a second veto after the paired confidence test.
  */
 export function evaluatePairedStrategyReplacementsV7(
   cells: OutcomeCell[],
   edges: StrategyEdgeResult[],
   baselineWeights: Map<string, number>,
+  candidateFamilyKeys?: string[],
 ): StrategyReplacementEvaluationV7 {
   const familyByKey = new Map<string, string>()
   for (const cell of cells) {
@@ -924,12 +930,19 @@ export function evaluatePairedStrategyReplacementsV7(
     }
   }
 
-  const holm = applyHolmCorrectionV7(proposals.map((proposal) => ({
-    key: proposal.candidateKey + '->' + proposal.incumbentKey,
-    pValue: proposal.pairedDeltaOneSidedPValue,
-  })))
-  proposals.forEach((proposal, index) => {
-    const correction = holm[index]
+  // Prefilter sees the same outcomes. Excluding its failures from the family
+  // would condition the multiplicity penalty on favourable performance.
+  // Reserve every registered candidate/incumbent pair; untested pairs get p=1.
+  const family = new Map<string, number | null>()
+  for (const key of candidateFamilyKeys ?? edges.map((edge) => edge.strategyId + '|' + edge.strategyVersion)) {
+    if (baselineWeights.has(key)) continue
+    for (const incumbentKey of baselineWeights.keys()) family.set(key + '->' + incumbentKey, null)
+  }
+  for (const proposal of proposals) family.set(proposal.candidateKey + '->' + proposal.incumbentKey, proposal.pairedDeltaOneSidedPValue)
+  const holm = applyHolmCorrectionV7([...family].map(([key, pValue]) => ({ key, pValue })))
+  const corrections = new Map(holm.map((item) => [item.key, item]))
+  proposals.forEach((proposal) => {
+    const correction = corrections.get(proposal.candidateKey + '->' + proposal.incumbentKey)
     proposal.holmFamilySize = correction?.familySize ?? proposals.length
     proposal.holmRank = correction?.rank ?? null
     proposal.holmCriticalAlpha = correction?.criticalAlpha ?? null
@@ -940,10 +953,6 @@ export function evaluatePairedStrategyReplacementsV7(
       proposal.holmCriticalAlpha ?? 0,
     )
     if (!proposal.holmRejected) proposal.rejectionReasons.push('holm_familywise_significance_not_met')
-    if (
-      proposal.pairedDeltaPowerAtMinimumEconomicDelta == null
-      || proposal.pairedDeltaPowerAtMinimumEconomicDelta < MIN_REPLACEMENT_POWER
-    ) proposal.rejectionReasons.push('paired_delta_power_below_80pct_at_holm_local_alpha')
     proposal.pass = proposal.rejectionReasons.length === 0
   })
 
@@ -996,7 +1005,6 @@ export function evaluatePairedStrategyReplacementsV7(
   if (globalPaired.lcb95Hac == null || globalPaired.lcb95Hac <= 0) {
     globalRejectionReasons.push('full_portfolio_delta_lcb95_hac_not_positive')
   }
-  if (!globalPowerPass) globalRejectionReasons.push('full_portfolio_power_below_80pct')
   if (globalAbsoluteMean == null || globalAbsoluteMean <= 0) {
     globalRejectionReasons.push('full_portfolio_absolute_cost_net_mean_not_positive')
   }
@@ -1038,7 +1046,7 @@ export function evaluatePairedStrategyReplacementsV7(
       globalPowerPass,
       globalRiskPass: false,
       globalRejectionReasons,
-      holmFamilySize: proposals.length,
+      holmFamilySize: holm.length,
     }
   }
   return {
@@ -1061,7 +1069,7 @@ export function evaluatePairedStrategyReplacementsV7(
     globalPowerPass,
     globalRiskPass: true,
     globalRejectionReasons,
-    holmFamilySize: proposals.length,
+    holmFamilySize: holm.length,
   }
 }
 
@@ -1177,7 +1185,14 @@ export async function refreshStrategyMarginalEdgeV4(
   }
   const servingCoverageComplete = registryActiveKeys.size === championWeights.size
     && [...registryActiveKeys].every((key) => championWeights.has(key))
-  const replacement = evaluatePairedStrategyReplacementsV7(cells, edges, championWeights)
+  const familyRows = await db.prepare(`
+    SELECT strategy_id, version FROM strategy_spec_registry
+     WHERE owner_type='strategy' AND status IN ('active','candidate')
+       AND promotion_status <> 'retired' AND variant_id NOT LIKE 's12_%'
+     ORDER BY strategy_id, version
+  `).all<{ strategy_id: string; version: string }>()
+  const replacement = evaluatePairedStrategyReplacementsV7(cells, edges, championWeights,
+    (familyRows.results ?? []).map((row) => row.strategy_id + '|' + row.version))
   const candidateDates = replacement.finalDates
   const championDates = replacement.baselineDates
   const championByDate = new Map(championDates.map((row) => [row.signalDate, row]))
@@ -1188,15 +1203,16 @@ export async function refreshStrategyMarginalEdgeV4(
   const finalOwnerKeys = new Set(replacement.finalWeights.keys())
 
   const fingerprint = await sourceFingerprint(cells)
-  const runId = `strategy-marginal-edge-v7-${asOfDate}-${fingerprint}`
-  if (previousHead?.run_id === runId) {
+  const runId = `strategy-marginal-edge-v7-${asOfDate}-${fingerprint}-planning-v2`
+  const navOwnsRegistry = await atomicNavOwnsRegistry(db)
+  if (!navOwnsRegistry && previousHead?.run_id === runId) {
     const existing = await db.prepare('SELECT status FROM strategy_marginal_edge_runs_v4 WHERE run_id=?')
       .bind(runId).first<{ status?: string }>()
     if (existing?.status === 'promoted') {
       return { runId, status: 'promoted', sampleDates: candidateDates.length, eligibleStrategies: eligible.length }
     }
   }
-  const promotionAllowed = options.allowPromotion === true
+  const promotionAllowed = options.allowPromotion === true && !navOwnsRegistry
   const cutoverRiskPass = replacement.globalRiskPass && servingCoverageComplete
   const status: 'shadow' | 'promoted' = promotionAllowed && replacement.accepted.length > 0 && cutoverRiskPass
     ? 'promoted'
@@ -1212,10 +1228,11 @@ export async function refreshStrategyMarginalEdgeV4(
       status=excluded.status, strategy_count=excluded.strategy_count,
       eligible_strategy_count=excluded.eligible_strategy_count,
       sample_dates=excluded.sample_dates, evidence_json=excluded.evidence_json, error_code=NULL
-  `).bind(runId, asOfDate, status, edges.length, replacement.accepted.length, sampleDates, JSON.stringify({
+  `).bind(runId, asOfDate, 'shadow', edges.length, replacement.accepted.length, sampleDates, JSON.stringify({
     schema_version: STRATEGY_MARGINAL_EDGE_SCHEMA_VERSION,
     replacement_policy: STRATEGY_REPLACEMENT_POLICY_V7,
     source: 'strategy_label_matrix_v4+canonical_selection_labels_v4',
+    replacement_owner: navOwnsRegistry ? 'original_paired_daily_nav' : 'legacy_atomic_v7',
     source_fingerprint: fingerprint,
     lookback_start_date: startDate,
     pagination: { page_size: EDGE_PAGE_SIZE, complete: true },
@@ -1267,7 +1284,7 @@ export async function refreshStrategyMarginalEdgeV4(
       full_portfolio_positive_cost_net_lcb95_hac: paired.lcb95Hac != null && paired.lcb95Hac > 0,
       full_portfolio_absolute_cost_net_lcb95_hac: candidateAbsoluteConfidence.lcb95Hac != null && candidateAbsoluteConfidence.lcb95Hac > 0,
       full_portfolio_effective_sample_pass: replacement.globalEffectiveSamplePass,
-      full_portfolio_power_80pct_pass: replacement.globalPowerPass,
+      full_portfolio_power_80pct_diagnostic: replacement.globalPowerPass,
       full_portfolio_correlation_pass: replacement.globalCorrelationPass,
       full_portfolio_turnover_pass: replacement.globalTurnoverPass,
       full_portfolio_all_gates_pass: replacement.globalRiskPass,
@@ -1319,6 +1336,7 @@ export async function refreshStrategyMarginalEdgeV4(
         multiple_testing: 'holm_bonferroni_familywise_5pct',
         min_effective_dates: MIN_EFFECTIVE_PAIRED_DATES,
         min_power: MIN_REPLACEMENT_POWER,
+        power_role: STRATEGY_REPLACEMENT_POLICY_V7.power_role,
         minimum_economic_delta: MINIMUM_ECONOMIC_PAIRED_DELTA,
         min_dates: MIN_EDGE_DATES,
         lookback_calendar_days: EDGE_LOOKBACK_CALENDAR_DAYS,
@@ -1423,7 +1441,7 @@ export async function refreshStrategyMarginalEdgeV4(
     })
 
     if (status === 'promoted') {
-      const cutoverStatements: D1PreparedStatement[] = [...replacementStatements]
+      const cutoverStatements: D1PreparedStatement[] = [legacyAtomicPromotionGuard(db), ...replacementStatements]
       for (const proposal of replacement.accepted) {
         const [candidateId, candidateVersion] = proposal.candidateKey.split('|')
         const [incumbentId, incumbentVersion] = proposal.incumbentKey.split('|')
@@ -1535,6 +1553,7 @@ export async function refreshStrategyMarginalEdgeV4(
         `strategy-edge-v7-promotion:${runId}`,
         asOfDate,
       ))
+      cutoverStatements.push(db.prepare("UPDATE strategy_marginal_edge_runs_v4 SET status='promoted' WHERE run_id=?").bind(runId))
       await db.batch(cutoverStatements)
     } else if (replacementStatements.length) {
       for (let offset = 0; offset < replacementStatements.length; offset += 100) {

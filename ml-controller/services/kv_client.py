@@ -43,7 +43,7 @@ def _check_env():
         )
 
 
-def get(key: str, timeout: float = 30.0) -> Optional[str]:
+def get(key: str, timeout: float = 30.0, *, strict: bool = False) -> Optional[str]:
     """
     Read raw string from KV. Returns None if key not found.
     """
@@ -59,23 +59,29 @@ def get(key: str, timeout: float = 30.0) -> Optional[str]:
     try:
         resp = httpx.get(url, headers=headers, timeout=timeout)
     except httpx.RequestError as e:
+        if strict:
+            raise RuntimeError('kv_read_transport_failed') from None
         logger.warning(f"[KV] Get failed: {key}: {e}")
         return None
     if resp.status_code == 404:
         return None
     if resp.status_code != 200:
+        if strict:
+            raise RuntimeError(f'kv_read_http_failed:{resp.status_code}')
         logger.warning(f"[KV] Get HTTP {resp.status_code} for {key}: {resp.text[:200]}")
         return None
     return resp.text
 
 
-def get_json(key: str, default: Any = None, timeout: float = 30.0) -> Any:
+def get_json(key: str, default: Any = None, timeout: float = 30.0, *, strict: bool = False) -> Any:
     """Read KV value as parsed JSON. Returns default if key missing or unparseable."""
-    raw = get(key, timeout=timeout)
+    raw = get(key, timeout=timeout, strict=True) if strict else get(key, timeout=timeout)
     if raw is None:
         return default
     try:
         return json.loads(raw.lstrip("\ufeff"))
     except json.JSONDecodeError as e:
+        if strict:
+            raise RuntimeError('kv_read_json_invalid') from None
         logger.warning(f"[KV] Failed to parse JSON for {key}: {e}")
         return default

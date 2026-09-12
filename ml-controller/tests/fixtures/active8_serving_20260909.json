@@ -1,0 +1,1051 @@
+{
+  "pointers": [
+    {
+      "model_name": "DLinear",
+      "champion_version": "v20260908191049",
+      "champion_artifact_id": "DLinear:v20260908191049:oof_full_fit_release"
+    },
+    {
+      "model_name": "GNN",
+      "champion_version": "v20260908191049",
+      "champion_artifact_id": "GNN:v20260908191049:oof_full_fit_release"
+    },
+    {
+      "model_name": "PatchTST",
+      "champion_version": "v20260908191049",
+      "champion_artifact_id": "PatchTST:v20260908191049:oof_full_fit_release"
+    },
+    {
+      "model_name": "TabM",
+      "champion_version": "v20260908191049",
+      "champion_artifact_id": "TabM:v20260908191049:oof_full_fit_release"
+    },
+    {
+      "model_name": "iTransformer",
+      "champion_version": "v20260908191049",
+      "champion_artifact_id": "iTransformer:v20260908191049:oof_full_fit_release"
+    }
+  ],
+  "artifacts": [
+    {
+      "model_name": "TabM",
+      "artifact_id": "TabM:v20260908191049:oof_full_fit_release",
+      "version": "v20260908191049",
+      "artifact_path": "universal/tabm/v20260908191049.pt",
+      "metadata_path": "universal/tabm/metadata_v20260908191049.json",
+      "checksum": "sha256:f3512cfca1441f2794a450d582dd58f149fab0263ea9f50e9a6b8a95e96b8d9f",
+      "candidate_type": "oof_full_fit_release",
+      "state": "production",
+      "offline_gate_decision": "STRONG_PASS",
+      "live_gate_status": "not_started",
+      "offline_evidence_json": {
+        "registration": {
+          "metadata": {
+            "version": "v20260908191049",
+            "schema_version": "tabm_formal_artifact_v1",
+            "model_name": "TabM",
+            "target_semantic_version": "next-session-canonical-adjusted-open-to-fifth-session-canonical-adjusted-close-net-v4",
+            "feature_semantic_version": "formal137-pit-rolling-rank-and-imputation-v2",
+            "model_cpcv": {
+              "schema_version": "model-cpcv-evidence-v1",
+              "method": "purged_cpcv_rank_ic"
+            },
+            "model_training_config_attestation": {
+              "attestation_checksum": "1afe19570dcc5c2c89e0d8251cdeebabf3a7ced3ffae908e629ffde8b122791f",
+              "configuration_selection_mode": "single_predeclared_config",
+              "dataset_snapshot_checksum": "10761676bb7ffc04d1b30ee8a248ea2b515240101fd3794e04a999a2074bc996",
+              "dataset_snapshot_id": "oof_full_fit:active8-oof-v9-feature-semantic-source-attested-2026-03-09-2026-09-01-tr60-te10:fbbb5862c190f09acec67586bd616276ea64db0a7a611c4c0b7f09c0ed586adf",
+              "dataset_snapshot_schema_version": "active8-oof-full-fit-prep-lineage-v2",
+              "effective_config": {
+                "batch_size": 1024,
+                "device": "cuda",
+                "epochs": 16,
+                "feature_names": [
+                  "l1_bbBandwidthPct",
+                  "l1_bestFvgStrength",
+                  "l1_bestOrderBlockStrength",
+                  "l1_bosBullish",
+                  "l1_brokerConcentration",
+                  "l1_brokerNetAmount5d",
+                  "l1_closeAboveMa60Pct",
+                  "l1_dealerNet5d",
+                  "l1_diTrend",
+                  "l1_displacementPct",
+                  "l1_eps",
+                  "l1_foreignTrustNet5d",
+                  "l1_macdHist",
+                  "l1_monthlyRevenueMoM",
+                  "l1_monthlyRevenueYoY",
+                  "l1_return20d",
+                  "l1_revenueGrowthYoY",
+                  "l1_roe",
+                  "l1_sectorFlowCore",
+                  "l1_sectorRsRatio",
+                  "l1_sectorTurnoverShareDelta",
+                  "l1_smcBullishScore",
+                  "l1_smcNetScore",
+                  "l1_squeezeMomentum",
+                  "l1_squeezeRelease",
+                  "l1_volumeExpansion20",
+                  "l1_volumeMomentumDivergence132710",
+                  "liq_amihud_21d",
+                  "mom_12m_1m",
+                  "mom_9m",
+                  "mom_close_to_52w_high",
+                  "mom_hl52",
+                  "mom_ma50_200_ratio",
+                  "mom_macd_trend_10",
+                  "mom_reversal_1m",
+                  "mom_reversal_6m",
+                  "mom_rsi_14",
+                  "mom_vol_adj_12m",
+                  "size_log_mktcap",
+                  "tech_adx_14",
+                  "tech_atr_14",
+                  "tech_bbands_pctb_20",
+                  "tech_bbi",
+                  "tech_bias_20",
+                  "tech_bullish_streak_5",
+                  "tech_cmo_14",
+                  "tech_disposal_active",
+                  "tech_dma_10_50",
+                  "tech_donchian_pos_20",
+                  "tech_ema_12_pos",
+                  "tech_emv_14",
+                  "tech_gap_down",
+                  "tech_gap_up",
+                  "tech_granville_score",
+                  "tech_kd9_k",
+                  "tech_kdj_j_9",
+                  "tech_keltner_pos_20",
+                  "tech_limit_down_count_10",
+                  "tech_limit_up_streak_10",
+                  "tech_locked_open_down_10",
+                  "tech_locked_open_up_10",
+                  "tech_ma_convergence",
+                  "tech_mfi_14",
+                  "tech_mtm_10",
+                  "tech_obv",
+                  "tech_psy_12",
+                  "tech_roc_10",
+                  "tech_sar",
+                  "tech_slow_kd_14",
+                  "tech_sma_20_pos",
+                  "tech_tower_3",
+                  "tech_trix_12",
+                  "tech_volume_ratio_5",
+                  "tech_vr_26",
+                  "tech_williams_r_14",
+                  "tech_wma_10_pos",
+                  "val_bp",
+                  "val_dp",
+                  "val_ep",
+                  "val_sp",
+                  "vol_chg_turnover_1y",
+                  "vol_cv_volprice_20d",
+                  "vol_money_flow_5d",
+                  "vol_share_turnover_21d",
+                  "vol_signal_5d",
+                  "vola_cv_90d",
+                  "vola_min_130d",
+                  "vola_realized_12m",
+                  "vola_realized_1m",
+                  "margin_balance",
+                  "VSTD_10",
+                  "linear_factor",
+                  "CNTP_20",
+                  "RSQR_20",
+                  "VSTD_20",
+                  "margin_change_5d_ts",
+                  "CNTD_20",
+                  "RESI_5",
+                  "foreign_5d",
+                  "BETA_60",
+                  "KMID",
+                  "rsi5_dulling",
+                  "dealer_ratio_5d",
+                  "chip_5d",
+                  "institutional_net",
+                  "RESI_20",
+                  "RESI_10",
+                  "RSQR_60",
+                  "vwap_bias",
+                  "IMXD_20",
+                  "RESI_60",
+                  "KLEN",
+                  "IMIN_20",
+                  "KSFT",
+                  "RSQR_10",
+                  "KLOW",
+                  "vol_ratio_20d",
+                  "KUP",
+                  "KUP2",
+                  "CNTP_5",
+                  "CORR_10",
+                  "ma10_bias",
+                  "CNTD_5",
+                  "return_3d",
+                  "volatility_5d",
+                  "CNTN_20",
+                  "CORD_10",
+                  "margin_ratio",
+                  "short_squeeze_proxy",
+                  "volatility_20d",
+                  "CNTN_5",
+                  "ma60_bias",
+                  "return_5d",
+                  "KLOW2",
+                  "us_sentiment_score",
+                  "advance_ratio",
+                  "KSFT2"
+                ],
+                "lr": 0.002,
+                "reproducibility": {
+                  "cublas_workspace_config": ":4096:8",
+                  "cudnn_benchmark": false,
+                  "cudnn_deterministic": true,
+                  "numpy_random": true,
+                  "python_random": true,
+                  "seed": 42,
+                  "torch_available": true,
+                  "torch_deterministic_algorithms": true,
+                  "torch_deterministic_warn_only": true
+                },
+                "seed": 42,
+                "standardization_clip": 8,
+                "target_semantic_version": "next-session-canonical-adjusted-open-to-fifth-session-canonical-adjusted-close-net-v4",
+                "validation_split": {
+                  "embargo_dates": 10,
+                  "method": "date_holdout_with_embargo",
+                  "train_dates": 258,
+                  "train_range": [
+                    "2025-04-22",
+                    "2026-05-13"
+                  ],
+                  "unique_dates": 335,
+                  "validation_dates": 67,
+                  "validation_range": [
+                    "2026-05-28",
+                    "2026-09-01"
+                  ]
+                },
+                "weight_decay": 0.0003
+              },
+              "effective_config_checksum": "9184f02c4fb932ee0ff9485ccaac6e7324a5ed79ac8a9b6b42af98e8339e1648",
+              "input_lineage": {
+                "feature_pool_checksum": "b5b8c270b50bbcd7068ec7b5888ac59a5dd0bbe4c453b658ec8f79a8c7597208",
+                "prep_manifest_checksum": "727605ef52195f74c1ee4bce956c3efdb9205264d234c93bfdbcddab953187c4",
+                "prep_producer_source_sha": "200ed626624970b1eaf880279e7ad262c2be6fde",
+                "sequence_manifest_checksum": "4b8f10c1476279626eddce0bfdbe7e9318e05dfcf0c4e3d53862f6b5640948bd",
+                "source_cohort_id": "active8-oof-v9-feature-semantic-source-attested-2026-03-09-2026-09-01-tr60-te10",
+                "source_manifest_checksum": "fbbb5862c190f09acec67586bd616276ea64db0a7a611c4c0b7f09c0ed586adf"
+              },
+              "model_name": "TabM",
+              "model_profile": {
+                "payload_config": {
+                  "batch_size": 1024,
+                  "epochs": 16,
+                  "lr": 0.002,
+                  "seed": 42,
+                  "standardization_clip": 8,
+                  "weight_decay": 0.0003
+                },
+                "required_effective_config": {
+                  "batch_size": 1024,
+                  "device": "cuda",
+                  "epochs": 16,
+                  "lr": 0.002,
+                  "reproducibility": {
+                    "cublas_workspace_config": ":4096:8",
+                    "cudnn_benchmark": false,
+                    "seed": 42,
+                    "torch_available": true,
+                    "torch_deterministic_algorithms": true,
+                    "torch_deterministic_warn_only": true
+                  },
+                  "seed": 42,
+                  "standardization_clip": 8,
+                  "target_semantic_version": "next-session-canonical-adjusted-open-to-fifth-session-canonical-adjusted-close-net-v4",
+                  "weight_decay": 0.0003
+                },
+                "runtime": {
+                  "configuration_selection": "none",
+                  "executor": "modal_l4"
+                }
+              },
+              "model_profile_checksum": "d5c59c19b47fa66185344296b31034cdbdad7e0a33b8943ace6e1648dd6e0318",
+              "model_profile_schema_version": "active8-release-model-profiles-v1",
+              "model_spec": {
+                "family": "tabular_neural",
+                "feature_schema": "formal137_selected_tabular_v1",
+                "trainer": "tabm_artifact"
+              },
+              "pbo_applicability": "not_applicable_without_model_configuration_selection",
+              "producer_source_sha": "200ed626624970b1eaf880279e7ad262c2be6fde",
+              "release_contract_checksum": "793d9576202080274d658149cda164bdae0840d14fda97f5e0d5e7aad592ef78",
+              "run_date": "2026-09-08",
+              "schema_version": "model-training-config-attestation-v2",
+              "selection_trials": 1
+            }
+          }
+        }
+      }
+    },
+    {
+      "model_name": "GNN",
+      "artifact_id": "GNN:v20260908191049:oof_full_fit_release",
+      "version": "v20260908191049",
+      "artifact_path": "universal/gnn/v20260908191049.pt",
+      "metadata_path": "universal/gnn/metadata_v20260908191049.json",
+      "checksum": "sha256:9b171c40b4ea7c4c12c2bf80994c55d2933d6e9ec9f53b56605bca458548e0a7",
+      "candidate_type": "oof_full_fit_release",
+      "state": "production",
+      "offline_gate_decision": "PASS",
+      "live_gate_status": "not_started",
+      "offline_evidence_json": {
+        "registration": {
+          "metadata": {
+            "version": "v20260908191049",
+            "schema_version": "graphsage_formal_artifact_v1",
+            "model_name": "GNN",
+            "target_semantic_version": "next-session-canonical-adjusted-open-to-fifth-session-canonical-adjusted-close-net-v4",
+            "feature_semantic_version": "formal137-pit-rolling-rank-and-imputation-v2",
+            "graph_context": {
+              "graph_cache": {
+                "reused_across_epochs": true,
+                "schema_version": "date-graph-cache-v1",
+                "train": {
+                  "edge_count": 5291602,
+                  "node_count": 444612,
+                  "snapshot_count": 258
+                },
+                "validation": {
+                  "edge_count": 1438552,
+                  "node_count": 117292,
+                  "snapshot_count": 67
+                }
+              },
+              "semantic_version": "gnn-same-date-feature-cosine-sector-v2",
+              "serving_edge_source": "same_date_feature_cosine_plus_sector",
+              "threshold": 0.25,
+              "top_k": 8,
+              "training_edge_source": "same_date_feature_cosine_plus_sector",
+              "training_edge_threshold": 0.25,
+              "training_edge_top_k": 8
+            },
+            "model_cpcv": {
+              "schema_version": "model-cpcv-evidence-v1",
+              "method": "purged_cpcv_rank_ic"
+            },
+            "model_training_config_attestation": {
+              "attestation_checksum": "ccfafad796bd12f175ebe1c200a9131f6c9c78c9c4bd96f5443cef8f3938a6c7",
+              "configuration_selection_mode": "single_predeclared_config",
+              "dataset_snapshot_checksum": "10761676bb7ffc04d1b30ee8a248ea2b515240101fd3794e04a999a2074bc996",
+              "dataset_snapshot_id": "oof_full_fit:active8-oof-v9-feature-semantic-source-attested-2026-03-09-2026-09-01-tr60-te10:fbbb5862c190f09acec67586bd616276ea64db0a7a611c4c0b7f09c0ed586adf",
+              "dataset_snapshot_schema_version": "active8-oof-full-fit-prep-lineage-v2",
+              "effective_config": {
+                "device": "cuda",
+                "dropout": 0.12,
+                "edge_threshold": 0.25,
+                "edge_top_k": 8,
+                "epochs": 36,
+                "feature_names": [
+                  "l1_bbBandwidthPct",
+                  "l1_bestFvgStrength",
+                  "l1_bestOrderBlockStrength",
+                  "l1_bosBullish",
+                  "l1_brokerConcentration",
+                  "l1_brokerNetAmount5d",
+                  "l1_closeAboveMa60Pct",
+                  "l1_dealerNet5d",
+                  "l1_diTrend",
+                  "l1_displacementPct",
+                  "l1_eps",
+                  "l1_foreignTrustNet5d",
+                  "l1_macdHist",
+                  "l1_monthlyRevenueMoM",
+                  "l1_monthlyRevenueYoY",
+                  "l1_return20d",
+                  "l1_revenueGrowthYoY",
+                  "l1_roe",
+                  "l1_sectorFlowCore",
+                  "l1_sectorRsRatio",
+                  "l1_sectorTurnoverShareDelta",
+                  "l1_smcBullishScore",
+                  "l1_smcNetScore",
+                  "l1_squeezeMomentum",
+                  "l1_squeezeRelease",
+                  "l1_volumeExpansion20",
+                  "l1_volumeMomentumDivergence132710",
+                  "liq_amihud_21d",
+                  "mom_12m_1m",
+                  "mom_9m",
+                  "mom_close_to_52w_high",
+                  "mom_hl52",
+                  "mom_ma50_200_ratio",
+                  "mom_macd_trend_10",
+                  "mom_reversal_1m",
+                  "mom_reversal_6m",
+                  "mom_rsi_14",
+                  "mom_vol_adj_12m",
+                  "size_log_mktcap",
+                  "tech_adx_14",
+                  "tech_atr_14",
+                  "tech_bbands_pctb_20",
+                  "tech_bbi",
+                  "tech_bias_20",
+                  "tech_bullish_streak_5",
+                  "tech_cmo_14",
+                  "tech_disposal_active",
+                  "tech_dma_10_50",
+                  "tech_donchian_pos_20",
+                  "tech_ema_12_pos",
+                  "tech_emv_14",
+                  "tech_gap_down",
+                  "tech_gap_up",
+                  "tech_granville_score",
+                  "tech_kd9_k",
+                  "tech_kdj_j_9",
+                  "tech_keltner_pos_20",
+                  "tech_limit_down_count_10",
+                  "tech_limit_up_streak_10",
+                  "tech_locked_open_down_10",
+                  "tech_locked_open_up_10",
+                  "tech_ma_convergence",
+                  "tech_mfi_14",
+                  "tech_mtm_10",
+                  "tech_obv",
+                  "tech_psy_12",
+                  "tech_roc_10",
+                  "tech_sar",
+                  "tech_slow_kd_14",
+                  "tech_sma_20_pos",
+                  "tech_tower_3",
+                  "tech_trix_12",
+                  "tech_volume_ratio_5",
+                  "tech_vr_26",
+                  "tech_williams_r_14",
+                  "tech_wma_10_pos",
+                  "val_bp",
+                  "val_dp",
+                  "val_ep",
+                  "val_sp",
+                  "vol_chg_turnover_1y",
+                  "vol_cv_volprice_20d",
+                  "vol_money_flow_5d",
+                  "vol_share_turnover_21d",
+                  "vol_signal_5d",
+                  "vola_cv_90d",
+                  "vola_min_130d",
+                  "vola_realized_12m",
+                  "vola_realized_1m",
+                  "margin_balance",
+                  "VSTD_10",
+                  "linear_factor",
+                  "CNTP_20",
+                  "RSQR_20",
+                  "VSTD_20",
+                  "margin_change_5d_ts",
+                  "CNTD_20",
+                  "RESI_5",
+                  "foreign_5d",
+                  "BETA_60",
+                  "KMID",
+                  "rsi5_dulling",
+                  "dealer_ratio_5d",
+                  "chip_5d",
+                  "institutional_net",
+                  "RESI_20",
+                  "RESI_10",
+                  "RSQR_60",
+                  "vwap_bias",
+                  "IMXD_20",
+                  "RESI_60",
+                  "KLEN",
+                  "IMIN_20",
+                  "KSFT",
+                  "RSQR_10",
+                  "KLOW",
+                  "vol_ratio_20d",
+                  "KUP",
+                  "KUP2",
+                  "CNTP_5",
+                  "CORR_10",
+                  "ma10_bias",
+                  "CNTD_5",
+                  "return_3d",
+                  "volatility_5d",
+                  "CNTN_20",
+                  "CORD_10",
+                  "margin_ratio",
+                  "short_squeeze_proxy",
+                  "volatility_20d",
+                  "CNTN_5",
+                  "ma60_bias",
+                  "return_5d",
+                  "KLOW2",
+                  "us_sentiment_score",
+                  "advance_ratio",
+                  "KSFT2"
+                ],
+                "graph_semantic_version": "gnn-same-date-feature-cosine-sector-v2",
+                "hidden_dim": 64,
+                "lr": 0.003,
+                "max_train_dates_per_epoch": 120,
+                "reproducibility": {
+                  "cublas_workspace_config": ":4096:8",
+                  "cudnn_benchmark": false,
+                  "cudnn_deterministic": true,
+                  "numpy_random": true,
+                  "python_random": true,
+                  "seed": 42,
+                  "torch_available": true,
+                  "torch_deterministic_algorithms": true,
+                  "torch_deterministic_warn_only": true
+                },
+                "seed": 42,
+                "standardization_clip": 8,
+                "target_semantic_version": "next-session-canonical-adjusted-open-to-fifth-session-canonical-adjusted-close-net-v4",
+                "validation_split": {
+                  "embargo_dates": 10,
+                  "method": "date_holdout_with_embargo",
+                  "train_dates": 258,
+                  "train_range": [
+                    "2025-04-22",
+                    "2026-05-13"
+                  ],
+                  "unique_dates": 335,
+                  "validation_dates": 67,
+                  "validation_range": [
+                    "2026-05-28",
+                    "2026-09-01"
+                  ]
+                },
+                "weight_decay": 0.0001
+              },
+              "effective_config_checksum": "b4576783ee620e189e6f6ff99cc38c1b8b0e64acef65070538cba57ee4cb4dce",
+              "input_lineage": {
+                "feature_pool_checksum": "b5b8c270b50bbcd7068ec7b5888ac59a5dd0bbe4c453b658ec8f79a8c7597208",
+                "prep_manifest_checksum": "727605ef52195f74c1ee4bce956c3efdb9205264d234c93bfdbcddab953187c4",
+                "prep_producer_source_sha": "200ed626624970b1eaf880279e7ad262c2be6fde",
+                "sequence_manifest_checksum": "4b8f10c1476279626eddce0bfdbe7e9318e05dfcf0c4e3d53862f6b5640948bd",
+                "source_cohort_id": "active8-oof-v9-feature-semantic-source-attested-2026-03-09-2026-09-01-tr60-te10",
+                "source_manifest_checksum": "fbbb5862c190f09acec67586bd616276ea64db0a7a611c4c0b7f09c0ed586adf"
+              },
+              "model_name": "GNN",
+              "model_profile": {
+                "payload_config": {
+                  "dropout": 0.12,
+                  "edge_threshold": 0.25,
+                  "edge_top_k": 8,
+                  "epochs": 36,
+                  "hidden_dim": 64,
+                  "lr": 0.003,
+                  "max_train_dates_per_epoch": 120,
+                  "seed": 42,
+                  "standardization_clip": 8,
+                  "weight_decay": 0.0001
+                },
+                "required_effective_config": {
+                  "device": "cuda",
+                  "dropout": 0.12,
+                  "edge_threshold": 0.25,
+                  "edge_top_k": 8,
+                  "epochs": 36,
+                  "hidden_dim": 64,
+                  "lr": 0.003,
+                  "max_train_dates_per_epoch": 120,
+                  "reproducibility": {
+                    "cublas_workspace_config": ":4096:8",
+                    "cudnn_benchmark": false,
+                    "seed": 42,
+                    "torch_available": true,
+                    "torch_deterministic_algorithms": true,
+                    "torch_deterministic_warn_only": true
+                  },
+                  "seed": 42,
+                  "standardization_clip": 8,
+                  "target_semantic_version": "next-session-canonical-adjusted-open-to-fifth-session-canonical-adjusted-close-net-v4",
+                  "weight_decay": 0.0001
+                },
+                "runtime": {
+                  "configuration_selection": "none",
+                  "executor": "modal_l4"
+                }
+              },
+              "model_profile_checksum": "61e9804db7933f877a212e077e15328e8e3e2f9b1a17b5598d3114f433ef5443",
+              "model_profile_schema_version": "active8-release-model-profiles-v1",
+              "model_spec": {
+                "family": "graph",
+                "feature_schema": "graph_node_features_from_governed_tabular_universe",
+                "trainer": "graphsage_artifact"
+              },
+              "pbo_applicability": "not_applicable_without_model_configuration_selection",
+              "producer_source_sha": "200ed626624970b1eaf880279e7ad262c2be6fde",
+              "release_contract_checksum": "793d9576202080274d658149cda164bdae0840d14fda97f5e0d5e7aad592ef78",
+              "run_date": "2026-09-08",
+              "schema_version": "model-training-config-attestation-v2",
+              "selection_trials": 1
+            }
+          }
+        }
+      }
+    },
+    {
+      "model_name": "DLinear",
+      "artifact_id": "DLinear:v20260908191049:oof_full_fit_release",
+      "version": "v20260908191049",
+      "artifact_path": "universal/dlinear/v20260908191049.pt",
+      "metadata_path": "universal/dlinear/metadata_v20260908191049.json",
+      "checksum": "sha256:d81f80391d60907d36dd7ea5bb6c2ca47d88a23d5f7efa919908bed5cf2fe391",
+      "candidate_type": "oof_full_fit_release",
+      "state": "production",
+      "offline_gate_decision": "STRONG_PASS",
+      "live_gate_status": "not_started",
+      "offline_evidence_json": {
+        "registration": {
+          "metadata": {
+            "version": "v20260908191049",
+            "target_semantic_version": "next-session-canonical-adjusted-open-to-fifth-session-canonical-adjusted-close-net-v4",
+            "seq_len": 512,
+            "pred_len": 5,
+            "model_cpcv": {
+              "schema_version": "model-cpcv-evidence-v2",
+              "method": "chronological_holdout_rank_ic",
+              "rank_ic_semantic_version": "same-date-average-rank-tie-neutral-spearman-v2",
+              "target_semantic_version": "next-session-canonical-adjusted-open-to-fifth-session-canonical-adjusted-close-net-v4",
+              "validation_design": {
+                "promotion_grade": false,
+                "refit_each_fold": false,
+                "split_owner": "chronological_target_date"
+              }
+            },
+            "model_training_config_attestation": {
+              "attestation_checksum": "cfa3a22c90c0ef86b309203686f587b786e5bb894ed8c5baf9d44b3f8019566d",
+              "configuration_selection_mode": "single_predeclared_config",
+              "dataset_snapshot_checksum": "10761676bb7ffc04d1b30ee8a248ea2b515240101fd3794e04a999a2074bc996",
+              "dataset_snapshot_id": "oof_full_fit:active8-oof-v9-feature-semantic-source-attested-2026-03-09-2026-09-01-tr60-te10:fbbb5862c190f09acec67586bd616276ea64db0a7a611c4c0b7f09c0ed586adf",
+              "dataset_snapshot_schema_version": "active8-oof-full-fit-prep-lineage-v2",
+              "effective_config": {
+                "batch_size": 256,
+                "device": "cuda",
+                "kernel": 25,
+                "lr": 0.001,
+                "n_epochs": 30,
+                "pred_len": 5,
+                "reproducibility": {
+                  "cublas_workspace_config": ":4096:8",
+                  "cudnn_benchmark": false,
+                  "cudnn_deterministic": true,
+                  "numpy_random": true,
+                  "python_random": true,
+                  "seed": 42,
+                  "torch_available": true,
+                  "torch_deterministic_algorithms": true,
+                  "torch_deterministic_warn_only": true
+                },
+                "seed": 42,
+                "seq_len": 512,
+                "target_semantic_version": "next-session-canonical-adjusted-open-to-fifth-session-canonical-adjusted-close-net-v4",
+                "val_ratio": 0.15
+              },
+              "effective_config_checksum": "870a9ce0f96f93ee7c55b5c0e0e64aa79655021b4b118d0a179a8f84ffb34845",
+              "input_lineage": {
+                "feature_pool_checksum": "b5b8c270b50bbcd7068ec7b5888ac59a5dd0bbe4c453b658ec8f79a8c7597208",
+                "prep_manifest_checksum": "727605ef52195f74c1ee4bce956c3efdb9205264d234c93bfdbcddab953187c4",
+                "prep_producer_source_sha": "200ed626624970b1eaf880279e7ad262c2be6fde",
+                "sequence_manifest_checksum": "4b8f10c1476279626eddce0bfdbe7e9318e05dfcf0c4e3d53862f6b5640948bd",
+                "source_cohort_id": "active8-oof-v9-feature-semantic-source-attested-2026-03-09-2026-09-01-tr60-te10",
+                "source_manifest_checksum": "fbbb5862c190f09acec67586bd616276ea64db0a7a611c4c0b7f09c0ed586adf"
+              },
+              "model_name": "DLinear",
+              "model_profile": {
+                "payload_config": {
+                  "batch_size": 256,
+                  "device": "cuda",
+                  "kernel": 25,
+                  "lr": 0.001,
+                  "n_epochs": 30,
+                  "pred_len": 5,
+                  "seed": 42,
+                  "seq_len": 512,
+                  "val_ratio": 0.15
+                },
+                "required_effective_config": {
+                  "batch_size": 256,
+                  "device": "cuda",
+                  "kernel": 25,
+                  "lr": 0.001,
+                  "n_epochs": 30,
+                  "pred_len": 5,
+                  "reproducibility": {
+                    "cublas_workspace_config": ":4096:8",
+                    "cudnn_benchmark": false,
+                    "seed": 42,
+                    "torch_available": true,
+                    "torch_deterministic_algorithms": true,
+                    "torch_deterministic_warn_only": true
+                  },
+                  "seed": 42,
+                  "seq_len": 512,
+                  "target_semantic_version": "next-session-canonical-adjusted-open-to-fifth-session-canonical-adjusted-close-net-v4",
+                  "val_ratio": 0.15
+                },
+                "runtime": {
+                  "configuration_selection": "none",
+                  "executor": "modal_l4"
+                }
+              },
+              "model_profile_checksum": "8787e4a7b4502af056ea3a0b5b821fe3b922045b02b02a885649d35c2c7d4597",
+              "model_profile_schema_version": "active8-release-model-profiles-v1",
+              "model_spec": {
+                "family": "sequence",
+                "feature_schema": "close_univariate_decomposition_v1",
+                "trainer": "dlinear_sequence"
+              },
+              "pbo_applicability": "not_applicable_without_model_configuration_selection",
+              "producer_source_sha": "200ed626624970b1eaf880279e7ad262c2be6fde",
+              "release_contract_checksum": "793d9576202080274d658149cda164bdae0840d14fda97f5e0d5e7aad592ef78",
+              "run_date": "2026-09-08",
+              "schema_version": "model-training-config-attestation-v2",
+              "selection_trials": 1
+            }
+          }
+        }
+      }
+    },
+    {
+      "model_name": "PatchTST",
+      "artifact_id": "PatchTST:v20260908191049:oof_full_fit_release",
+      "version": "v20260908191049",
+      "artifact_path": "universal/patchtst/v20260908191049.zip",
+      "metadata_path": "universal/patchtst/metadata_v20260908191049.json",
+      "checksum": "sha256:87541cb8c0e24c516ae61cf834f30334bfd438d819896de36b91763eb9a749fb",
+      "candidate_type": "oof_full_fit_release",
+      "state": "production",
+      "offline_gate_decision": "STRONG_PASS",
+      "live_gate_status": "not_started",
+      "offline_evidence_json": {
+        "registration": {
+          "metadata": {
+            "version": "v20260908191049",
+            "schema_version": "neuralforecast_patchtst_universal_v1_metadata_v1",
+            "model_name": "PatchTST",
+            "target_semantic_version": "next-session-canonical-adjusted-open-to-fifth-session-canonical-adjusted-close-net-v4",
+            "seq_len": 512,
+            "pred_len": 5,
+            "model_cpcv": {
+              "schema_version": "model-cpcv-evidence-v1",
+              "method": "purged_walk_forward_retrain_rank_ic",
+              "validation_design": {
+                "fold_order": "oldest_to_newest",
+                "non_overlapping_horizons": true,
+                "purge_horizon": 5,
+                "refit_each_fold": true,
+                "split_owner": "chronological_signal_date"
+              }
+            },
+            "model_training_config_attestation": {
+              "attestation_checksum": "cd077eada77d8b652109c06548476e61fd7e221777f9030d4a9003c80d1b284f",
+              "configuration_selection_mode": "single_predeclared_config",
+              "dataset_snapshot_checksum": "10761676bb7ffc04d1b30ee8a248ea2b515240101fd3794e04a999a2074bc996",
+              "dataset_snapshot_id": "oof_full_fit:active8-oof-v9-feature-semantic-source-attested-2026-03-09-2026-09-01-tr60-te10:fbbb5862c190f09acec67586bd616276ea64db0a7a611c4c0b7f09c0ed586adf",
+              "dataset_snapshot_schema_version": "active8-oof-full-fit-prep-lineage-v2",
+              "effective_config": {
+                "batch_size": 256,
+                "max_series": 1024,
+                "max_steps": 120,
+                "pred_len": 5,
+                "reproducibility": {
+                  "cublas_workspace_config": ":4096:8",
+                  "cudnn_benchmark": false,
+                  "cudnn_deterministic": true,
+                  "numpy_random": true,
+                  "python_random": true,
+                  "seed": 42,
+                  "torch_available": true,
+                  "torch_deterministic_algorithms": true,
+                  "torch_deterministic_warn_only": true
+                },
+                "runtime_device": "cuda",
+                "runtime_package": "neuralforecast==3.1.9",
+                "seed": 42,
+                "seq_len": 512,
+                "target_semantic_version": "next-session-canonical-adjusted-open-to-fifth-session-canonical-adjusted-close-net-v4",
+                "training_options": {
+                  "inference_windows_batch_size": 1024,
+                  "learning_rate": 0.0001,
+                  "oof_training_history_mode": "full_pit_history",
+                  "patch_len": 16,
+                  "revin": true,
+                  "scaler_type": "identity",
+                  "step_size": 1,
+                  "stride": 8,
+                  "trainer_benchmark": false,
+                  "trainer_deterministic": true,
+                  "windows_batch_size": 1024
+                },
+                "validation_design": {
+                  "fold_order": "oldest_to_newest",
+                  "non_overlapping_horizons": true,
+                  "purge_horizon": 5,
+                  "refit_each_fold": true,
+                  "split_owner": "chronological_signal_date"
+                },
+                "validation_folds": 5
+              },
+              "effective_config_checksum": "3d5af2fe22c8af25e16eb4da12e17c4f4a005b7467c7c4c1d988c87b442217fb",
+              "input_lineage": {
+                "feature_pool_checksum": "b5b8c270b50bbcd7068ec7b5888ac59a5dd0bbe4c453b658ec8f79a8c7597208",
+                "prep_manifest_checksum": "727605ef52195f74c1ee4bce956c3efdb9205264d234c93bfdbcddab953187c4",
+                "prep_producer_source_sha": "200ed626624970b1eaf880279e7ad262c2be6fde",
+                "sequence_manifest_checksum": "4b8f10c1476279626eddce0bfdbe7e9318e05dfcf0c4e3d53862f6b5640948bd",
+                "source_cohort_id": "active8-oof-v9-feature-semantic-source-attested-2026-03-09-2026-09-01-tr60-te10",
+                "source_manifest_checksum": "fbbb5862c190f09acec67586bd616276ea64db0a7a611c4c0b7f09c0ed586adf"
+              },
+              "model_name": "PatchTST",
+              "model_profile": {
+                "payload_config": {
+                  "batch_size": 256,
+                  "device": "cuda",
+                  "inference_windows_batch_size": 1024,
+                  "learning_rate": 0.0001,
+                  "max_series": 1024,
+                  "max_steps": 120,
+                  "oof_training_history_mode": "full_pit_history",
+                  "patch_len": 16,
+                  "pred_len": 5,
+                  "revin": true,
+                  "scaler_type": "identity",
+                  "seed": 42,
+                  "seq_len": 512,
+                  "step_size": 1,
+                  "stride": 8,
+                  "trainer_deterministic": true,
+                  "validation_folds": 5,
+                  "windows_batch_size": 1024
+                },
+                "required_effective_config": {
+                  "batch_size": 256,
+                  "max_series": 1024,
+                  "max_steps": 120,
+                  "pred_len": 5,
+                  "reproducibility": {
+                    "cublas_workspace_config": ":4096:8",
+                    "cudnn_benchmark": false,
+                    "seed": 42,
+                    "torch_available": true,
+                    "torch_deterministic_algorithms": true,
+                    "torch_deterministic_warn_only": true
+                  },
+                  "runtime_device": "cuda",
+                  "runtime_package": "neuralforecast==3.1.9",
+                  "seed": 42,
+                  "seq_len": 512,
+                  "target_semantic_version": "next-session-canonical-adjusted-open-to-fifth-session-canonical-adjusted-close-net-v4",
+                  "training_options": {
+                    "inference_windows_batch_size": 1024,
+                    "learning_rate": 0.0001,
+                    "oof_training_history_mode": "full_pit_history",
+                    "patch_len": 16,
+                    "revin": true,
+                    "scaler_type": "identity",
+                    "step_size": 1,
+                    "stride": 8,
+                    "trainer_benchmark": false,
+                    "trainer_deterministic": true,
+                    "windows_batch_size": 1024
+                  },
+                  "validation_folds": 5
+                },
+                "runtime": {
+                  "configuration_selection": "none",
+                  "executor": "modal_l4",
+                  "research_gate_passed": true,
+                  "research_production_effect": false,
+                  "research_receipt": "patchtst-full-pit-outer-oof-5x3-2026-08-25",
+                  "research_receipt_sha256": "e369dc7541a91d03dad4c66d8bac6ced8092c6fc3b8e7b193f7a31336712a675",
+                  "research_runs": 15,
+                  "research_source_bundle_checksum": "68106ea56ca74d8c31a3475107a2ee71c589290dced584a2386a144e5a1f693a",
+                  "research_summary_receipt_path": "ml-controller/research_receipts/patchtst-full-pit-outer-oof-5x3-2026-08-25.json",
+                  "research_summary_receipt_sha256": "2fd06a7531729417ce05d0f4a3292469f510761f11fcb44d02817cc252d4497e"
+                }
+              },
+              "model_profile_checksum": "989f137687eebf31cb4d9b549be2de704f4de53ad1f2e5d274f3d1e12ee744eb",
+              "model_profile_schema_version": "active8-release-model-profiles-v1",
+              "model_spec": {
+                "family": "learned_sequence",
+                "feature_schema": "close_channel_independent_v1",
+                "trainer": "neuralforecast_patchtst"
+              },
+              "pbo_applicability": "not_applicable_without_model_configuration_selection",
+              "producer_source_sha": "200ed626624970b1eaf880279e7ad262c2be6fde",
+              "release_contract_checksum": "793d9576202080274d658149cda164bdae0840d14fda97f5e0d5e7aad592ef78",
+              "run_date": "2026-09-08",
+              "schema_version": "model-training-config-attestation-v2",
+              "selection_trials": 1
+            }
+          }
+        }
+      }
+    },
+    {
+      "model_name": "iTransformer",
+      "artifact_id": "iTransformer:v20260908191049:oof_full_fit_release",
+      "version": "v20260908191049",
+      "artifact_path": "universal/itransformer/v20260908191049.zip",
+      "metadata_path": "universal/itransformer/metadata_v20260908191049.json",
+      "checksum": "sha256:38e4160bb7821a0e198b9e38e849c93a11be151dc2716a30da4c15cb10c7dced",
+      "candidate_type": "oof_full_fit_release",
+      "state": "production",
+      "offline_gate_decision": "STRONG_PASS",
+      "live_gate_status": "not_started",
+      "offline_evidence_json": {
+        "registration": {
+          "metadata": {
+            "version": "v20260908191049",
+            "schema_version": "neuralforecast_itransformer_universal_v1_metadata_v1",
+            "model_name": "iTransformer",
+            "target_semantic_version": "next-session-canonical-adjusted-open-to-fifth-session-canonical-adjusted-close-net-v4",
+            "seq_len": 512,
+            "pred_len": 5,
+            "model_cpcv": {
+              "schema_version": "model-cpcv-evidence-v1",
+              "method": "purged_walk_forward_retrain_rank_ic",
+              "validation_design": {
+                "fold_order": "oldest_to_newest",
+                "non_overlapping_horizons": true,
+                "purge_horizon": 5,
+                "refit_each_fold": true,
+                "split_owner": "chronological_signal_date"
+              }
+            },
+            "model_training_config_attestation": {
+              "attestation_checksum": "d9377d1de4fa74d97d0cdb0530457f19208be62d88fa5c769572fdab1c1f2239",
+              "configuration_selection_mode": "single_predeclared_config",
+              "dataset_snapshot_checksum": "10761676bb7ffc04d1b30ee8a248ea2b515240101fd3794e04a999a2074bc996",
+              "dataset_snapshot_id": "oof_full_fit:active8-oof-v9-feature-semantic-source-attested-2026-03-09-2026-09-01-tr60-te10:fbbb5862c190f09acec67586bd616276ea64db0a7a611c4c0b7f09c0ed586adf",
+              "dataset_snapshot_schema_version": "active8-oof-full-fit-prep-lineage-v2",
+              "effective_config": {
+                "batch_size": 128,
+                "max_series": 1024,
+                "max_steps": 30,
+                "pred_len": 5,
+                "reproducibility": {
+                  "cublas_workspace_config": ":4096:8",
+                  "cudnn_benchmark": false,
+                  "cudnn_deterministic": true,
+                  "numpy_random": true,
+                  "python_random": true,
+                  "seed": 42,
+                  "torch_available": true,
+                  "torch_deterministic_algorithms": true,
+                  "torch_deterministic_warn_only": true
+                },
+                "runtime_device": "cuda",
+                "runtime_package": "neuralforecast==3.1.9",
+                "seed": 42,
+                "seq_len": 512,
+                "target_semantic_version": "next-session-canonical-adjusted-open-to-fifth-session-canonical-adjusted-close-net-v4",
+                "training_options": {
+                  "inference_windows_batch_size": 32,
+                  "learning_rate": 0.001,
+                  "oof_training_history_mode": "full_pit_history",
+                  "scaler_type": "identity",
+                  "step_size": 1,
+                  "trainer_benchmark": false,
+                  "trainer_deterministic": true,
+                  "windows_batch_size": 32
+                },
+                "validation_design": {
+                  "fold_order": "oldest_to_newest",
+                  "non_overlapping_horizons": true,
+                  "purge_horizon": 5,
+                  "refit_each_fold": true,
+                  "split_owner": "chronological_signal_date"
+                },
+                "validation_folds": 5
+              },
+              "effective_config_checksum": "cd91c168ce0d2545d2831514877e3b36a9df396e296f109f50c7c3ff466cfc40",
+              "input_lineage": {
+                "feature_pool_checksum": "b5b8c270b50bbcd7068ec7b5888ac59a5dd0bbe4c453b658ec8f79a8c7597208",
+                "prep_manifest_checksum": "727605ef52195f74c1ee4bce956c3efdb9205264d234c93bfdbcddab953187c4",
+                "prep_producer_source_sha": "200ed626624970b1eaf880279e7ad262c2be6fde",
+                "sequence_manifest_checksum": "4b8f10c1476279626eddce0bfdbe7e9318e05dfcf0c4e3d53862f6b5640948bd",
+                "source_cohort_id": "active8-oof-v9-feature-semantic-source-attested-2026-03-09-2026-09-01-tr60-te10",
+                "source_manifest_checksum": "fbbb5862c190f09acec67586bd616276ea64db0a7a611c4c0b7f09c0ed586adf"
+              },
+              "model_name": "iTransformer",
+              "model_profile": {
+                "payload_config": {
+                  "batch_size": 128,
+                  "device": "cuda",
+                  "inference_windows_batch_size": 32,
+                  "learning_rate": 0.001,
+                  "max_series": 1024,
+                  "max_steps": 30,
+                  "oof_training_history_mode": "full_pit_history",
+                  "pred_len": 5,
+                  "scaler_type": "identity",
+                  "seed": 42,
+                  "seq_len": 512,
+                  "step_size": 1,
+                  "trainer_deterministic": true,
+                  "validation_folds": 5,
+                  "windows_batch_size": 32
+                },
+                "required_effective_config": {
+                  "batch_size": 128,
+                  "max_series": 1024,
+                  "max_steps": 30,
+                  "pred_len": 5,
+                  "reproducibility": {
+                    "cublas_workspace_config": ":4096:8",
+                    "cudnn_benchmark": false,
+                    "seed": 42,
+                    "torch_available": true,
+                    "torch_deterministic_algorithms": true,
+                    "torch_deterministic_warn_only": true
+                  },
+                  "runtime_device": "cuda",
+                  "runtime_package": "neuralforecast==3.1.9",
+                  "seed": 42,
+                  "seq_len": 512,
+                  "target_semantic_version": "next-session-canonical-adjusted-open-to-fifth-session-canonical-adjusted-close-net-v4",
+                  "training_options": {
+                    "inference_windows_batch_size": 32,
+                    "learning_rate": 0.001,
+                    "oof_training_history_mode": "full_pit_history",
+                    "scaler_type": "identity",
+                    "step_size": 1,
+                    "trainer_benchmark": false,
+                    "trainer_deterministic": true,
+                    "windows_batch_size": 32
+                  },
+                  "validation_folds": 5
+                },
+                "runtime": {
+                  "configuration_selection": "none",
+                  "executor": "modal_l4"
+                }
+              },
+              "model_profile_checksum": "ba1fadc01497633631528b25915035a0f4c1d9f186a1039ba54ddd9f66c6675a",
+              "model_profile_schema_version": "active8-release-model-profiles-v1",
+              "model_spec": {
+                "family": "learned_sequence",
+                "feature_schema": "close_cross_stock_panel_v1",
+                "trainer": "neuralforecast_itransformer"
+              },
+              "pbo_applicability": "not_applicable_without_model_configuration_selection",
+              "producer_source_sha": "200ed626624970b1eaf880279e7ad262c2be6fde",
+              "release_contract_checksum": "793d9576202080274d658149cda164bdae0840d14fda97f5e0d5e7aad592ef78",
+              "run_date": "2026-09-08",
+              "schema_version": "model-training-config-attestation-v2",
+              "selection_trials": 1
+            }
+          }
+        }
+      }
+    }
+  ]
+}

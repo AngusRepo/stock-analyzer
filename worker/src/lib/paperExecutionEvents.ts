@@ -1,6 +1,8 @@
 import type { Bindings } from '../types'
+import { paperExecutionUUID } from './paperExecutionScope'
 import { paperDomainDatabase } from './paperDomainDatabase'
 import { twToday } from './dateUtils'
+import { paperAccountId } from './paperExecutionScope'
 import { writeEvidenceArtifact } from './artifactLifecycle'
 
 export interface PaperExecutionEventInput {
@@ -19,7 +21,7 @@ export interface PaperExecutionEventInput {
 
 export function normalizePaperExecutionEvent(input: PaperExecutionEventInput): Required<PaperExecutionEventInput> {
   return {
-    accountId: input.accountId ?? 1,
+    accountId: input.accountId ?? paperAccountId(),
     tradeDate: input.tradeDate ?? twToday(),
     symbol: input.symbol ?? null,
     side: input.side ?? null,
@@ -43,13 +45,14 @@ export async function recordPaperExecutionEvent(
 ): Promise<void> {
   const event = normalizePaperExecutionEvent(input)
   const executionCritical = (
+    (event.eventType === 'snapshot_audit' && event.status === 'pending_valuation') ||
     event.eventType === 'paper_broker_reconciliation' ||
     event.eventType === 'live_execution_shadow' ||
     (event.eventType === 'paper_order' && ['filled', 'partial'].includes(event.status))
   )
   let detail = event.detail
   if (executionCritical && env.ARTIFACTS && event.detail) {
-    const producerRunId = `paper-execution:${event.tradeDate}:${event.symbol ?? 'market'}:${event.eventType}:${crypto.randomUUID()}`
+    const producerRunId = `paper-execution:${event.tradeDate}:${event.symbol ?? 'market'}:${event.eventType}:${paperExecutionUUID()}`
     const manifest = await writeEvidenceArtifact(env as Pick<Bindings, 'DB' | 'ARTIFACTS'>, {
       domain: 'paper_execution',
       businessDate: event.tradeDate,

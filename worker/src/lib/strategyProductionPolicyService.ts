@@ -31,7 +31,7 @@ function finitePositive(value: unknown): number {
  */
 export function buildFormalOwnerWeightInputs(input: {
   strategies: readonly StrategySpec[]
-  gates: readonly StrategyPromotionGateRow[]
+  gates: readonly Pick<StrategyPromotionGateRow, 'strategy_id' | 'allocation_eligible'>[]
   adaptiveWeights: Readonly<Record<string, number>>
   evidenceFusion: StrategyEvidenceOwnerSnapshot
 }): {
@@ -80,26 +80,28 @@ export function buildFormalOwnerWeightInputs(input: {
 
 /**
  * Materializes the production firewall from existing promotion-gate evidence.
- * It does not evaluate new promotion criteria and therefore cannot supersede
- * the Edge V5/V6 lifecycle owner.
+ * It does not evaluate replacement criteria or change registry roles. Those
+ * belong to the replacement owner, not to this daily weight materializer.
  */
-export async function refreshStrategyProductionContributionPolicy(
-  db: D1Database,
-  input: {
-    knowledgeCutoffDate: string
-    strategies: readonly StrategySpec[]
-    gates: readonly StrategyPromotionGateRow[]
-    adaptiveState: StrategyAdaptivePolicyState
-  },
-): Promise<RefreshStrategyProductionPolicyResult> {
+export interface StrategyProductionPolicyInput {
+  knowledgeCutoffDate: string
+  strategies: readonly StrategySpec[]
+  gates: readonly (Pick<StrategyPromotionGateRow,
+    'strategy_id' | 'strategy_version' | 'strategy_status' | 'allocation_eligible' | 'decision'> & {
+      evidence: Pick<StrategyPromotionGateRow['evidence'], 'samples' | 'mature_dates'>
+    })[]
+  adaptiveState: Pick<StrategyAdaptivePolicyState, 'strategy_weights' | 'updated_at'> & {
+    evidence: Pick<StrategyAdaptivePolicyState['evidence'], 'date'>
+  }
+  evidenceFusion: StrategyEvidenceOwnerSnapshot
+}
+
+/** Original formal owner, without I/O, shared by serving materialization/replay. */
+export function buildStrategyProductionPolicyState(input: StrategyProductionPolicyInput): StrategyProductionFirewallState {
   const runtimeStrategies = input.strategies
     .filter((strategy) => strategy.status !== 'retired')
     .map((strategy) => ({ id: strategy.id, status: strategy.status }))
-  const evidenceFusion = await loadStrategyEvidenceOwnerSnapshotBefore(
-    db,
-    input.strategies,
-    input.knowledgeCutoffDate,
-  )
+  const evidenceFusion = input.evidenceFusion
   if (!evidenceFusion.integration_ready) {
     throw new Error(`strategy_evidence_owner_integration_not_ready:${evidenceFusion.active_materialized_profile_count}/${evidenceFusion.active_profile_count}`)
   }
@@ -143,6 +145,21 @@ export async function refreshStrategyProductionContributionPolicy(
       },
     },
   })
+  return state
+}
+
+export async function refreshStrategyProductionContributionPolicy(db: D1Database,
+  input: Omit<StrategyProductionPolicyInput, 'evidenceFusion'>): Promise<RefreshStrategyProductionPolicyResult> {
+  const evidenceFusion = await loadStrategyEvidenceOwnerSnapshotBefore(db, input.strategies, input.knowledgeCutoffDate)
+  const captured = structuredClone({ ...input, evidenceFusion })
+  const state = buildStrategyProductionPolicyState(captured)
+  const { captureStrategyWeightSource } = await import('./strategyProductionWeightReplay')
+  const source = await captureStrategyWeightSource(captured, state)
+  // Preserve original inputs inside the SAME immutable policy owner. No second
+  // snapshot table, latest-input fallback, or backdated history reconstruction.
+  state.evidence.evidence_owner!.weight_source = source
+  state.canonical_payload = JSON.stringify({ ...JSON.parse(state.canonical_payload),
+    evidence_owner: state.evidence.evidence_owner })
   const persisted = await persistStrategyProductionPolicy(db, state)
   return { state, evidenceFusion, ...persisted }
 }

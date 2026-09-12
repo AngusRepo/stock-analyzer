@@ -81,9 +81,9 @@ export async function installDataDomainControlRevisionTriggers(
   const triggerResult = await db.prepare(`
     SELECT name, sql
       FROM sqlite_master
-     WHERE type='trigger' AND name LIKE 'trg_%_revision_%'
+     WHERE type='trigger' AND name IN (${expectedNames.map(() => '?').join(',')})
      ORDER BY name
-  `).all<{ name?: string; sql?: string | null }>()
+  `).bind(...expectedNames).all<{ name?: string; sql?: string | null }>()
   const triggers = (triggerResult.results ?? []).map((row) => ({
     name: String(row.name ?? ''),
     sql: String(row.sql ?? ''),

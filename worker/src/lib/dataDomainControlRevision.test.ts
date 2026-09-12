@@ -61,10 +61,21 @@ async function verifyMigration(relativePath: string): Promise<void> {
     const migrationSql = readFileSync(new URL(relativePath, workerRoot), 'utf8')
     assert.doesNotMatch(migrationSql.replace(/^--.*$/gm, ''), /CREATE\s+TRIGGER/i)
     db.exec(migrationSql)
+    // Active-8 has four independent revision fences in production. They are
+    // not this installer's twelve control-table triggers and must survive.
+    db.exec('CREATE TABLE active8_ensemble_artifacts_v1 (id INTEGER PRIMARY KEY)')
+    const independent = ['artifacts_insert', 'artifacts_update', 'pointer_delete', 'pointer_update']
+      .map(name => `trg_active8_ensemble_${name.replace('_', '_revision_')}`)
+    for (const name of independent)
+      db.exec(`CREATE TRIGGER ${name} AFTER INSERT ON active8_ensemble_artifacts_v1 BEGIN SELECT 1; END;`)
     const installed = await installDataDomainControlRevisionTriggers(sqliteD1(db))
     assert.equal(installed.revisionRows, 4)
     assert.equal(installed.triggerCount, 12)
     assert.deepEqual(installed.triggerNames, [...installed.triggerNames].sort())
+    assert.equal(db.prepare("SELECT count(*) n FROM sqlite_master WHERE type='trigger'").get()?.n, 16)
+    for (const name of independent)
+      assert(db.prepare("SELECT name FROM sqlite_master WHERE type='trigger' AND name=?").get(name))
+    assert.deepEqual(await installDataDomainControlRevisionTriggers(sqliteD1(db)), installed)
     for (const table of DATA_DOMAIN_CONTROL_TABLES) {
       const initial = db.prepare(
         'SELECT revision FROM data_domain_control_revisions WHERE table_name=?',

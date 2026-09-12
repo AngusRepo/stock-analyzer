@@ -111,3 +111,9 @@ tools/*
 !tools/feature_strategy_overlap_numeric.py
 !tools/repair_finlab_taxonomy_owner.py
 *.sh
+
+# Runtime secrets are provided by the platform, never baked into the image.
+.env
+.env.*
+**/.env
+**/.env.*

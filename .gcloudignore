@@ -110,3 +110,9 @@ deploy_ml_controller.sh
 *.tmp
 osv-report*.json
 osv-report*.html
+
+# Runtime secrets are provided by the platform, never uploaded as dotenv files.
+.env
+.env.*
+**/.env
+**/.env.*

@@ -42,28 +42,31 @@ BEGIN SELECT RAISE(ABORT,'paired_nav_immutable_journal'); END;
 CREATE TRIGGER IF NOT EXISTS paired_nav_parts_no_replace_v1 BEFORE INSERT ON paired_nav_frozen_parts_v1
 WHEN EXISTS (SELECT 1 FROM paired_nav_frozen_parts_v1 p WHERE p.snapshot_id=NEW.snapshot_id AND p.part_no=NEW.part_no)
 BEGIN
-  SELECT CASE WHEN EXISTS (SELECT 1 FROM paired_nav_frozen_parts_v1 p
+  SELECT RAISE(IGNORE) WHERE EXISTS (SELECT 1 FROM paired_nav_frozen_parts_v1 p
     WHERE p.snapshot_id=NEW.snapshot_id AND p.part_no=NEW.part_no AND p.payload_text=NEW.payload_text)
-    THEN RAISE(IGNORE) ELSE RAISE(ABORT,'paired_nav_immutable_part') END;
+    ;
+  SELECT RAISE(ABORT,'paired_nav_immutable_part');
 END;
 CREATE TRIGGER IF NOT EXISTS paired_nav_manifest_no_replace_v1 BEFORE INSERT ON paired_nav_frozen_manifests_v1
 WHEN EXISTS (SELECT 1 FROM paired_nav_frozen_manifests_v1 m WHERE m.snapshot_id=NEW.snapshot_id
   OR (m.signal_date=NEW.signal_date AND m.source_run_id=NEW.source_run_id AND m.snapshot_kind=NEW.snapshot_kind))
 BEGIN
-  SELECT CASE WHEN EXISTS (SELECT 1 FROM paired_nav_frozen_manifests_v1 m
+  SELECT RAISE(IGNORE) WHERE EXISTS (SELECT 1 FROM paired_nav_frozen_manifests_v1 m
     WHERE m.snapshot_id=NEW.snapshot_id AND m.signal_date=NEW.signal_date
       AND m.source_run_id=NEW.source_run_id AND m.payload_checksum=NEW.payload_checksum
       AND m.part_count=NEW.part_count AND m.prospective=NEW.prospective
       AND m.snapshot_kind=NEW.snapshot_kind AND m.parent_snapshot_id IS NEW.parent_snapshot_id)
-    THEN RAISE(IGNORE) ELSE RAISE(ABORT,'paired_nav_immutable_manifest') END;
+    ;
+  SELECT RAISE(ABORT,'paired_nav_immutable_manifest');
 END;
 CREATE TRIGGER IF NOT EXISTS paired_nav_journal_no_replace_v1 BEFORE INSERT ON paired_nav_daily_journal_v1
 WHEN EXISTS (SELECT 1 FROM paired_nav_daily_journal_v1 j WHERE j.pair_id=NEW.pair_id
   AND (j.session_date=NEW.session_date OR j.snapshot_id=NEW.snapshot_id))
 BEGIN
-  SELECT CASE WHEN EXISTS (SELECT 1 FROM paired_nav_daily_journal_v1 j
+  SELECT RAISE(IGNORE) WHERE EXISTS (SELECT 1 FROM paired_nav_daily_journal_v1 j
     WHERE j.pair_id=NEW.pair_id AND j.session_date=NEW.session_date AND j.snapshot_id=NEW.snapshot_id
       AND j.previous_checksum IS NEW.previous_checksum AND j.payload_json=NEW.payload_json
       AND j.payload_checksum=NEW.payload_checksum)
-    THEN RAISE(IGNORE) ELSE RAISE(ABORT,'paired_nav_immutable_journal') END;
+    ;
+  SELECT RAISE(ABORT,'paired_nav_immutable_journal');
 END;

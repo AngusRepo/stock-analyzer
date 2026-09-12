@@ -24,12 +24,13 @@ WHEN EXISTS (SELECT 1 FROM paired_nav_nominations_v1 n WHERE n.pair_id=NEW.pair_
   OR n.hypothesis_checksum=NEW.hypothesis_checksum
   OR (n.family_id=NEW.family_id AND n.family_ordinal=NEW.family_ordinal))
 BEGIN
-  SELECT CASE WHEN EXISTS (SELECT 1 FROM paired_nav_nominations_v1 n
+  SELECT RAISE(IGNORE) WHERE EXISTS (SELECT 1 FROM paired_nav_nominations_v1 n
     WHERE n.pair_id=NEW.pair_id AND n.hypothesis_checksum=NEW.hypothesis_checksum
       AND n.family_id=NEW.family_id AND n.family_ordinal=NEW.family_ordinal
       AND n.signal_date=NEW.signal_date AND n.allocation_snapshot_id=NEW.allocation_snapshot_id
       AND n.payload_json=NEW.payload_json AND n.payload_checksum=NEW.payload_checksum)
-    THEN RAISE(IGNORE) ELSE RAISE(ABORT,'nav_nomination_immutable') END;
+    ;
+  SELECT RAISE(ABORT,'nav_nomination_immutable');
 END;
 CREATE TRIGGER IF NOT EXISTS nav_assessment_no_update_v1 BEFORE UPDATE ON paired_nav_assessment_reservations_v1
 BEGIN SELECT RAISE(ABORT,'nav_assessment_immutable'); END;
@@ -39,9 +40,10 @@ CREATE TRIGGER IF NOT EXISTS nav_assessment_no_replace_v1 BEFORE INSERT ON paire
 WHEN EXISTS (SELECT 1 FROM paired_nav_assessment_reservations_v1 a WHERE a.pair_id=NEW.pair_id
   AND (a.session_date=NEW.session_date OR a.look_ordinal=NEW.look_ordinal))
 BEGIN
-  SELECT CASE WHEN EXISTS (SELECT 1 FROM paired_nav_assessment_reservations_v1 a
+  SELECT RAISE(IGNORE) WHERE EXISTS (SELECT 1 FROM paired_nav_assessment_reservations_v1 a
     WHERE a.pair_id=NEW.pair_id AND a.session_date=NEW.session_date AND a.look_ordinal=NEW.look_ordinal
       AND a.journal_checksum=NEW.journal_checksum AND a.payload_json=NEW.payload_json
       AND a.payload_checksum=NEW.payload_checksum)
-    THEN RAISE(IGNORE) ELSE RAISE(ABORT,'nav_assessment_immutable') END;
+    ;
+  SELECT RAISE(ABORT,'nav_assessment_immutable');
 END;

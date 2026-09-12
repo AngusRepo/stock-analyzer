@@ -22,11 +22,12 @@ CREATE TRIGGER IF NOT EXISTS nav_review_record_no_replace_v1 BEFORE INSERT ON pa
 WHEN EXISTS(SELECT 1 FROM paired_nav_review_records_v1 r WHERE r.record_id=NEW.record_id
  OR (r.protocol_id=NEW.protocol_id AND r.family_id=NEW.family_id AND r.review_id=NEW.review_id AND r.record_kind=NEW.record_kind))
 BEGIN
- SELECT CASE WHEN EXISTS(SELECT 1 FROM paired_nav_review_records_v1 r
+ SELECT RAISE(IGNORE) WHERE EXISTS(SELECT 1 FROM paired_nav_review_records_v1 r
   WHERE r.record_id=NEW.record_id AND r.record_kind=NEW.record_kind
   AND r.protocol_id=NEW.protocol_id AND r.family_id=NEW.family_id AND r.review_id=NEW.review_id
   AND r.as_of_date=NEW.as_of_date AND r.payload_checksum=NEW.payload_checksum AND r.part_count=NEW.part_count)
- THEN RAISE(IGNORE) ELSE RAISE(ABORT,'nav_review_record_immutable') END;
+ ;
+ SELECT RAISE(ABORT,'nav_review_record_immutable');
 END;
 CREATE TRIGGER IF NOT EXISTS nav_review_part_no_update_v1 BEFORE UPDATE ON paired_nav_review_parts_v1
 BEGIN SELECT RAISE(ABORT,'nav_review_part_immutable'); END;
@@ -35,7 +36,8 @@ BEGIN SELECT RAISE(ABORT,'nav_review_part_immutable'); END;
 CREATE TRIGGER IF NOT EXISTS nav_review_part_no_replace_v1 BEFORE INSERT ON paired_nav_review_parts_v1
 WHEN EXISTS(SELECT 1 FROM paired_nav_review_parts_v1 p WHERE p.record_id=NEW.record_id AND p.part_no=NEW.part_no)
 BEGIN
- SELECT CASE WHEN EXISTS(SELECT 1 FROM paired_nav_review_parts_v1 p
+ SELECT RAISE(IGNORE) WHERE EXISTS(SELECT 1 FROM paired_nav_review_parts_v1 p
   WHERE p.record_id=NEW.record_id AND p.part_no=NEW.part_no AND p.payload_text=NEW.payload_text)
- THEN RAISE(IGNORE) ELSE RAISE(ABORT,'nav_review_part_immutable') END;
+ ;
+ SELECT RAISE(ABORT,'nav_review_part_immutable');
 END;

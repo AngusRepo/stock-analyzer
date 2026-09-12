@@ -24,12 +24,13 @@ CREATE TRIGGER IF NOT EXISTS paired_nav_lifecycle_no_replace_v1
 BEFORE INSERT ON paired_nav_lifecycle_closures_v1
 WHEN EXISTS (SELECT 1 FROM paired_nav_lifecycle_closures_v1 WHERE pair_id=NEW.pair_id)
 BEGIN
-  SELECT CASE WHEN EXISTS (SELECT 1 FROM paired_nav_lifecycle_closures_v1 p
+  SELECT RAISE(IGNORE) WHERE EXISTS (SELECT 1 FROM paired_nav_lifecycle_closures_v1 p
     WHERE p.pair_id=NEW.pair_id AND p.root_pair_id=NEW.root_pair_id
       AND p.successor_pair_id=NEW.successor_pair_id
       AND p.successor_snapshot_id=NEW.successor_snapshot_id
       AND p.transition_signal_date=NEW.transition_signal_date
       AND p.final_session_date=NEW.final_session_date
       AND p.payload_json=NEW.payload_json AND p.payload_checksum=NEW.payload_checksum)
-    THEN RAISE(IGNORE) ELSE RAISE(ABORT,'paired_nav_immutable_lifecycle') END;
+    ;
+  SELECT RAISE(ABORT,'paired_nav_immutable_lifecycle');
 END;

@@ -1,9 +1,26 @@
 import sqlite3
 import pytest
+from pathlib import Path
+import re
 
 from services.paired_nav_schema import validate_paired_nav_schema
 from services.paired_nav_journal import freeze_snapshot
 from test_paired_nav_journal import DB, NOW, packet, seal, receipt, mature
+
+
+def test_remote_d1_trigger_grammar_keeps_immutable_guards_without_nested_case():
+    directory = Path(__file__).parents[2] / 'worker/domain-migrations/learning'
+    names = ('0040_paired_nav_shadow_journal.sql', '0042_paired_nav_assessment_reservations.sql',
+             '0043_paired_nav_lifecycle.sql', '0044_paired_nav_review_records.sql')
+    for name in names:
+        source = (directory / name).read_text(encoding='utf-8')
+        triggers = re.findall(r'CREATE TRIGGER[\s\S]*?\bEND;', source)
+        assert triggers, name
+        for trigger in triggers:
+            assert not re.search(r'\bCASE\b', trigger), (name, 'remote D1 rejects nested CASE END')
+            assert 'RAISE(ABORT,' in trigger
+            if '_no_replace_' in trigger:
+                assert 'SELECT RAISE(IGNORE) WHERE EXISTS' in trigger
 
 
 def test_current_migration_is_ready_and_read_only():

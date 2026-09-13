@@ -157,6 +157,13 @@ def test_real_ten_session_nav_gate_does_not_require_positive_cross_section_diagn
         assert gate['schema_version'] == 'expected-return-candidate-nav-gate-v1'
         assert gate['evaluable_date_count'] == 10
         assert gate['cross_section_diagnostic']['decision'] != 'PASS'
+        assert gate['cross_section_diagnostic']['evaluated_as_of_date'] == day
+        preserved = deepcopy(gate['cross_section_diagnostic'])
+        preserved['evaluated_as_of_date'] = '2026-09-09'
+        refreshed = nav_promotion_gate([], owner=owner, candidate=candidate(environment, owner),
+            business_date=day, query_fn=db.query, diagnostic_error=preserved)
+        assert refreshed['cross_section_diagnostic'] == preserved
+        assert refreshed['nav_validation'] == gate['nav_validation']
         assert gate['nav_validation']['review_record_id']
         assert gate['nav_validation']['universal_profit_guarantee'] is False
         # Real ten-session numerical support, not a fabricated PASS. Even a
@@ -227,6 +234,10 @@ def test_real_ten_session_nav_gate_does_not_require_positive_cross_section_diagn
         cwd=Path(__file__).parents[2] / 'worker', env={**os.environ, 'NAV_ORIGINAL_FIXTURE': str(fixture)},
         capture_output=True, text=True, timeout=90, encoding='utf-8')
     assert checked_maturity.returncode == 0, checked_maturity.stdout + checked_maturity.stderr
+    checked_room = subprocess.run(['node', '--import', 'tsx', 'tests/navTradingRoom.ts'],
+        cwd=Path(__file__).parents[2] / 'worker', env={**os.environ, 'NAV_ORIGINAL_FIXTURE': str(fixture)},
+        capture_output=True, text=True, timeout=90, encoding='utf-8')
+    assert checked_room.returncode == 0, checked_room.stdout + checked_room.stderr
     checked_render = subprocess.run(['node', '--import', 'tsx', '--test', '../frontend/tests/nav-maturity.render.test.tsx'],
         cwd=Path(__file__).parents[2] / 'worker', env={**os.environ, 'NAV_ORIGINAL_FIXTURE': str(fixture),
             'TSX_TSCONFIG_PATH': str(Path(__file__).parents[2] / 'frontend/tsconfig.json')},

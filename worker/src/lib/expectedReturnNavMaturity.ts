@@ -118,7 +118,10 @@ export async function projectExpectedReturnNavMaturity(stage: PipelineMaturitySt
   // Legacy EV thresholds remain visible as diagnostics, never a second gate.
   stage.metrics = [...metrics, ...stage.metrics.map(m => m.scope === 'promotion_gate'
     ? { ...m, scope: 'diagnostic' as const, passed: null, target: null,
-        note: '舊 EV／離線診斷；不是 NAV 正式晉級門檻。' } : m)]
+        label: m.key === 'prospective_gate_decision' ? '原 pre-outcome 規則診斷結果（非現行晉級判定）' : m.label,
+        note: m.key.startsWith('prospective_')
+          ? `原鎖定候選的 pre-outcome 證據，持續累積；不是 NAV 交易日，不代表 NAV 通過。${m.note ?? ''}`
+          : `離線診斷；不是 NAV 正式晉級門檻。${m.note ?? ''}` } : m)]
   stage.blockers = gate ? gate.failed_gates : [view.reason]
   stage.blocker_groups = [{ scope: 'prospective_forward', title: '成本後配對 NAV 正式門檻', blockers: stage.blockers },
     ...(stage.blocker_groups ?? []).filter(g => ['serving_pointer', 'frozen_forward', 'runtime_guard'].includes(g.scope))]

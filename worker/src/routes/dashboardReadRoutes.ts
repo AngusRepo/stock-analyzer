@@ -1,6 +1,6 @@
 import { Hono } from 'hono'
 import { twToday } from '../lib/dateUtils'
-import { requireValidToken } from '../lib/auth'
+import { requireValidToken, requireAdminOrServiceToken } from '../lib/auth'
 import { controllerJson } from '../lib/controllerClient'
 import type { Bindings, Variables } from '../types'
 import { buildDashboardV4ChartPacket } from '../lib/dashboardV4Contract'
@@ -10,6 +10,32 @@ import { databaseForDataDomain, databaseForTable } from '../lib/dataDomainRegist
 import { paperDomainDatabase } from '../lib/paperDomainDatabase'
 
 export const dashboardReadRoutes = new Hono<{ Bindings: Bindings; Variables: Variables }>()
+
+function navReadDate(value: string | undefined): string | null {
+  const date = value ?? twToday()
+  return /^\d{4}-\d{2}-\d{2}$/.test(date) && Number.isFinite(Date.parse(date))
+    && new Date(date).toISOString().slice(0, 10) === date && date <= twToday() ? date : null
+}
+
+dashboardReadRoutes.get('/api/dashboard/v4/nav/comparisons', async c => {
+  const authError = await requireAdminOrServiceToken(c)
+  if (authError) return authError
+  c.header('Cache-Control', 'no-store, max-age=0')
+  const date = navReadDate(c.req.query('date'))
+  if (!date) return c.json({ error: 'invalid_date' }, 400)
+  const { readPairedNav } = await import('../lib/pairedNavReadModel')
+  return c.json(await readPairedNav(databaseForDataDomain(c.env, 'learning'), date))
+})
+
+dashboardReadRoutes.get('/api/dashboard/v4/nav/comparisons/:pairId', async c => {
+  const authError = await requireAdminOrServiceToken(c)
+  if (authError) return authError
+  c.header('Cache-Control', 'no-store, max-age=0')
+  const date = navReadDate(c.req.query('date')), pair = c.req.param('pairId')
+  if (!date || !/^[a-f0-9]{64}$/.test(pair)) return c.json({ error: 'invalid_nav_query' }, 400)
+  const { readNavComparison } = await import('../lib/navTradingRoom')
+  return c.json(await readNavComparison(databaseForDataDomain(c.env, 'learning'), pair, date))
+})
 
 function parseDashboardId(s: string | undefined | null): number | null {
   const n = Number.parseInt(s ?? '', 10)

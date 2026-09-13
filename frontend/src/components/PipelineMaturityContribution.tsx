@@ -6,8 +6,9 @@ import type {
 } from '@/lib/pipelineMaturityContract'
 import { Badge } from '@/components/ui/badge'
 import IpoShadowComparison from '@/components/IpoShadowComparison'
-import PairedNavShadow from '@/components/PairedNavShadow'
+import NavCollectionSummary from '@/components/NavCollectionSummary'
 import CandidateVersionPanel from '@/components/CandidateVersionPanel'
+import { navReadinessReason, preoutcomeSummary } from '@/lib/expectedReturnEvidencePresentation'
 import {
   Activity,
   BrainCircuit,
@@ -301,6 +302,9 @@ function StageRow({ stage }: { stage: PipelineMaturityStage }) {
     : [{ scope: 'stage', title: 'Blockers', blockers: stage.blockers }]
   const scopedCandidateStage = stage.id === 'l4' || stage.id === 'fusion'
   const navGate = stage.nav_gate
+  const retainedEvidenceSummary = preoutcomeSummary(stage)
+  const retainedPreoutcomeMetrics = navGate
+    ? stage.metrics.filter(item => item.key.startsWith('prospective_')) : []
   const navRoute = stage.id === 'route_score_v2' && stage.metrics.some(item => item.key === 'nav_sessions')
   const allPromotionMetrics = scopedCandidateStage
     ? stage.metrics.filter((item) => item.scope === 'promotion_gate')
@@ -316,7 +320,8 @@ function StageRow({ stage }: { stage: PipelineMaturityStage }) {
   const offlineDiagnosticMetrics = scopedCandidateStage
     ? stage.metrics.filter((item) => OFFLINE_DIAGNOSTIC_KEYS.has(item.key)) : []
   const monitoringMetrics = stage.metrics.filter((item) => item.scope === 'monitoring' && !OFFLINE_DIAGNOSTIC_KEYS.has(item.key))
-  const diagnosticMetrics = stage.metrics.filter((item) => item.scope === 'diagnostic' && !OFFLINE_DIAGNOSTIC_KEYS.has(item.key))
+  const diagnosticMetrics = stage.metrics.filter((item) => item.scope === 'diagnostic'
+    && !OFFLINE_DIAGNOSTIC_KEYS.has(item.key) && !(navGate && item.key.startsWith('prospective_')))
   const evidenceScopes = stage.lineage.evidence_scopes
   const productionServingState = evidenceScopes?.serving_pointer
     ? evidenceScopes.serving_pointer.artifact_state === 'safe_abstention'
@@ -342,7 +347,7 @@ function StageRow({ stage }: { stage: PipelineMaturityStage }) {
       `已核對 NAV ${navGate.evaluable_dates ?? '未知'}/${navGate.minimum_dates} 日`,
       `決策截止 ${navGate.as_of_date ?? '尚無'}`,
       `正式 gate ${navGate.decision ?? navGate.availability.toUpperCase()}`,
-      navGate.reason,
+      navReadinessReason(navGate.reason),
     ].join(' · ')
     : scopedCandidateStage && evidenceScopes?.offline_candidate
     ? [
@@ -461,11 +466,12 @@ function StageRow({ stage }: { stage: PipelineMaturityStage }) {
           </div>
           {productionServingState ? <p className="mt-2 text-xs font-semibold leading-5 text-emerald-200">{productionServingState}</p> : null}
           {scopedEvidenceTruth ? <p className="mt-2 rounded-md border border-cyan-300/15 bg-cyan-300/[0.05] px-2.5 py-2 text-[11px] leading-5 text-cyan-100">{scopedEvidenceTruth}</p> : null}
+          {retainedEvidenceSummary ? <p className="mt-2 text-xs leading-5 text-slate-200">{retainedEvidenceSummary}</p> : null}
         </div>
 
         <div className="min-w-0">
           <div className="flex items-center justify-between gap-3 text-xs">
-            <span className="font-semibold text-slate-500">成熟進度</span>
+            <span className="font-semibold text-slate-500">{navGate ? 'NAV 審查進度（非 pre-outcome 成熟度）' : '成熟進度'}</span>
             <span className="sv-num text-right text-slate-300">{progressLabel}</span>
           </div>
           <div className="mt-2 h-2 overflow-hidden rounded-sm bg-black/35">
@@ -512,20 +518,22 @@ function StageRow({ stage }: { stage: PipelineMaturityStage }) {
                 description="只負責建立可進入每日 pre-outcome 驗證的不可變候選；不直接 promote，也不取代每日累積的正式升級判定。"
                 metrics={offlinePromotionMetrics}
               />
-              <MetricSection
-                title="離線候選固定診斷（隨候選版本更新）"
-                description="原始 cohort 的離線驗證；每天封包日期前進不會改變這組數值。"
-                metrics={offlineDiagnosticMetrics}
-              />
+              {navGate ? <MetricSection
+                title="原鎖定候選 pre-outcome 持續累積"
+                description="追蹤同一候選在結果揭曉前已鎖定的預測；原成熟日期與數值仍保留。這不是交易組合 NAV，也不是另一套現行晉級門檻；NAV 尚未具備時不會因本區成熟而自動晉級。"
+                metrics={retainedPreoutcomeMetrics}
+              /> : null}
               <MetricSection
                 title="Rolling cohort 日更診斷（非升級成熟度）"
-                description="使用含延伸資料的母體，依原 evaluator 的 purged 時間切割重算診斷；請分開看已載入、有效樣本與實際 OOS 日期。不是鎖定候選或 production artifact，不會改寫升級成熟度。"
+                description="模型健康檢查：用擴充資料重新切分訓練／測試並擬合診斷模型，查看排序與跨窗穩定性。不是原鎖定候選的逐日績效，不直接決定晉級、權重或買股。產生／封存失敗仍會要求日更流程修復重試。"
                 metrics={monitoringMetrics}
+                collapsible
               />
               <MetricSection
                 title="離線候選驗證診斷（固定母體，非日更績效）"
                 description="這是該候選建模時的驗證結果；同一母體可連續多日維持相同數值，不代表新成熟日期的表現。"
                 metrics={offlineDiagnosticMetrics}
+                collapsible
               />
               <MetricSection
                 title="Production 物化覆蓋與下一批候選 readiness"
@@ -815,7 +823,7 @@ export default function PipelineMaturityContribution({
           {expectedReturnStages.map((stage) => <StageRow key={stage.id} stage={stage} />)}
         </div>
         <IpoShadowComparison data={data.ipo_shadow} />
-        <PairedNavShadow data={data.paired_nav_shadow} />
+      <NavCollectionSummary data={data.paired_nav_shadow} />
         {otherStages.length ? (
           <div className="grid items-start gap-3 lg:grid-cols-2">
             {otherStages.map((stage) => <StageRow key={stage.id} stage={stage} />)}

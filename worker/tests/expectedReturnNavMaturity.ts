@@ -68,6 +68,24 @@ for (const [owner, id] of [['l4_alpha_ev', 'l4'], ['allocator_ev_fusion', 'fusio
   assert.ok(stage.metrics.filter(m => m.scope === 'promotion_gate').every(m => m.key.startsWith('nav_')))
   assert.notEqual(stage.status, 'serving')
 
+  // Display regression only: synthetic nine-day cross-section metrics must not
+  // change the independent ORIGINAL ten-session NAV decision or its progress.
+  const retained = structuredClone(stage)
+  retained.metrics.push({ key: 'prospective_evaluable_dates', label: 'Pre-outcome days',
+    value: 9, scope: 'promotion_gate', target: 10, passed: false,
+    availability: 'available', note: 'Original PIT identity and date guard.' })
+  await projectExpectedReturnNavMaturity(retained, row, data.now.slice(0, 10))
+  const evidence = retained.metrics.find(m => m.key === 'prospective_evaluable_dates' && m.value === 9)!
+  assert.equal(evidence.scope, 'diagnostic')
+  assert.equal(evidence.target, null)
+  assert.equal(evidence.passed, null)
+  assert.match(evidence.note!, /Original PIT identity and date guard/)
+  assert.equal(retained.nav_gate?.evaluable_dates, 10)
+  assert.equal(retained.progress?.current, 10)
+  const projectedMetrics = structuredClone(retained.metrics)
+  await projectExpectedReturnNavMaturity(retained, row, data.now.slice(0, 10))
+  assert.deepEqual(retained.metrics, projectedMetrics, 'projection is idempotent')
+
   for (const fault of ['checksum', 'candidate', 'future', 'count', 'raw', 'wrapper']) {
     const bad = structuredClone(row)
     const gate = JSON.parse(bad.live_evidence_json)

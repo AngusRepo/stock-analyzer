@@ -6,6 +6,7 @@
  */
 import { Fragment, lazy, Suspense, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
+import { useLocation, useSearch } from 'wouter'
 import { paperApi, marketApi, recommendationsApi, systemApi, backtestApi, cronApi, adaptiveApi } from '@/lib/api'
 import { useAuth } from '@/_core/hooks/useAuth'
 import { Badge } from '@/components/ui/badge'
@@ -39,6 +40,7 @@ const RecommendationCard = lazy(() => import('@/components/RecommendationCardCle
 })))
 const CandlestickChart = lazy(() => import('@/components/CandlestickChart'))
 const PaperTradePerformanceChart = lazy(() => import('@/components/charts/PaperTradePerformanceChart'))
+const NavTradingRoom = lazy(() => import('@/components/NavTradingRoom'))
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
 
@@ -1601,6 +1603,9 @@ function AdaptiveParamsCard() {
 
 export default function BotDashboard() {
   const { isAuthenticated, login } = useAuth()
+  const search = useSearch()
+  const [, setLocation] = useLocation()
+  const activeTab = new URLSearchParams(search).get('tab') === 'nav' ? 'nav' : 'paper'
 
   // ⚠ All hooks BEFORE conditional return（React rules of hooks — M15 教訓）
   const [selectedSymbol, setSelectedSymbol] = useState<string | null>(null)
@@ -1665,6 +1670,13 @@ export default function BotDashboard() {
           }
         />
 
+        <Tabs value={activeTab} onValueChange={value => setLocation(value === 'nav' ? '/bot?tab=nav' : '/bot')}>
+          <TabsList className="mb-3 h-auto flex-wrap">
+            <TabsTrigger value="paper" className="min-h-11">現行 Paper</TabsTrigger>
+            <TabsTrigger value="nav" className="min-h-11">NAV 候選比較</TabsTrigger>
+          </TabsList>
+          <TabsContent value="nav"><Suspense fallback={<p role="status" className="p-4">載入 NAV 交易室…</p>}><NavTradingRoom/></Suspense></TabsContent>
+          <TabsContent value="paper" className="space-y-3">
         <WorkstationPanel title="資產摘要" kicker="cash, settlement, pnl">
           <div className="px-4 pb-2 pt-3">
             <PortfolioSummary />
@@ -1746,6 +1758,8 @@ export default function BotDashboard() {
           </WorkstationPanel>
         </details>
 
+          </TabsContent>
+        </Tabs>
       </div>
     </AppShell>
   )

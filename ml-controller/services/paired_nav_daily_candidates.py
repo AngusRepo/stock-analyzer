@@ -102,7 +102,14 @@ transitions and still validates original evidence at its transaction boundary.
                 'reason': 'cross_section_owned_by_oof_diagnostic_stage'}
             if (previous.get('candidate_artifact_checksum') == checksum
                     and previous.get('candidate_artifact_id') == artifact_id):
-                diagnostic = previous.get('cross_section_diagnostic') or diagnostic
+                # The first NAV-only refresh may encounter the original forward
+                # gate, not a NAV envelope yet. Preserve that exact diagnostic
+                # rather than replacing nine existing dates with "not_run".
+                diagnostic = (previous if previous.get('schema_version') ==
+                    'expected-return-candidate-forward-gate-v2'
+                    else previous.get('cross_section_diagnostic')) or diagnostic
+                if str(diagnostic.get('evaluated_as_of_date') or '') > business_date:
+                    raise ValueError('nav_candidate_projection_newer_than_request')
                 # Do not erase an observed parity failure with the packet's older
                 # PASS while OOF is unavailable. Only an actual parity recheck can
                 # clear it. A prior PASS is never used as primary NAV evidence.

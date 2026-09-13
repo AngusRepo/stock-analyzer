@@ -9,6 +9,15 @@ const panel = fs.readFileSync(path.join(root, 'components/PipelineMaturityContri
 const api = fs.readFileSync(path.join(root, 'lib/api.ts'), 'utf8')
 const contract = fs.readFileSync(path.join(root, 'lib/pipelineMaturityContract.ts'), 'utf8')
 
+test('NAV panel exposes preserved pre-outcome separately and collapses only optional diagnostics', () => {
+  assert(panel.includes('NAV 審查進度（非 pre-outcome 成熟度）'))
+  assert(panel.includes('原鎖定候選 pre-outcome 持續累積'))
+  assert(panel.includes('retainedEvidenceSummary ? <p'))
+  assert.match(panel, /title="原鎖定候選 pre-outcome 持續累積"[^]*?metrics=\{retainedPreoutcomeMetrics\}\s*\/>/)
+  assert.match(panel, /metrics=\{monitoringMetrics\}\s*collapsible/)
+  assert.equal(panel.match(/metrics=\{offlineDiagnosticMetrics\}/g)?.length, 1)
+})
+
 test('Pipeline page renders maturity evidence after the daily flow', () => {
   assert(page.includes('dashboardV4Api.pipelineMaturity(today)'))
   assert(!page.includes('dashboardV4Api.pipelineMaturity(recDate)'))

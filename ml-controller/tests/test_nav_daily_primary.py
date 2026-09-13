@@ -120,6 +120,33 @@ def test_primary_keeps_previously_observed_parity_failure(isolated_job):
     assert updated['nav_validation'] == gate['nav_validation']
 
 
+@pytest.mark.parametrize('identity_matches', [True, False])
+def test_nav_refresh_preserves_original_preoutcome_envelope_without_recounting_as_nav(isolated_job, identity_matches):
+    db, _, *_ = isolated_job
+    rows = db.query('SELECT * FROM model_artifact_registry', [])
+    saved = {}
+    for row in rows:
+        # Migration/storage fixture, NOT evidence of returns or a promotable gate.
+        diagnostic = {'schema_version': 'expected-return-candidate-forward-gate-v2',
+            'candidate_artifact_id': row['artifact_id'],
+            'candidate_artifact_checksum': row['checksum'] if identity_matches else 'other-candidate',
+            'decision': 'PENDING', 'evaluable_date_count': 9,
+            'prediction_date_max': '2026-09-04', 'evaluated_as_of_date': '2026-09-08'}
+        saved[row['model_name']] = diagnostic
+        db.conn.execute('UPDATE model_artifact_registry SET live_evidence_json=? WHERE artifact_id=?',
+            (json.dumps(diagnostic), row['artifact_id']))
+    for _ in range(2):
+        assert asyncio.run(job._run()) == 0
+        for owner, gate in written(db).items():
+            if identity_matches:
+                assert gate['cross_section_diagnostic'] == saved[owner]
+            else:
+                assert gate['cross_section_diagnostic']['status'] == 'not_run'
+                assert 'evaluable_date_count' not in gate['cross_section_diagnostic']
+            assert gate['nav_validation']['evaluable_date_count'] == 2
+            assert gate['decision'] != 'PASS'
+
+
 def test_concurrent_diagnostic_write_is_not_overwritten_by_primary_projection(isolated_job):
     db, client, callbacks, *_ = isolated_job
     concurrent = json.dumps({'diagnostic': 'newer concurrent receipt'})

@@ -23,6 +23,9 @@ def nav_promotion_gate(rows, *, owner, candidate, business_date, query_fn, diagn
     if diagnostic is None:
         try:
             diagnostic = _promotion_gate(rows, owner=owner, candidate=candidate)
+            # Only a real cross-section evaluation advances this timestamp.
+            # NAV-only refreshes pass the retained diagnostic unchanged.
+            diagnostic['evaluated_as_of_date'] = business_date
             json.dumps(diagnostic, allow_nan=False)
         except Exception as exc:
             diagnostic = diagnostic_failure('cross_section_summary', exc)

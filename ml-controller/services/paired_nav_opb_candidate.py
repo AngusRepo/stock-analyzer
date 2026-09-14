@@ -212,6 +212,8 @@ def collect_opb_allocations(*, snapshot_id, query, writer):
     manifest, context = saved['manifest'], saved['payload']['content']
     base = {'plans': [], 'production_effect': False, 'promotion_allowed': False,
         'can_write_order': False, 'nav_maturity_credit': 0}
+    if context.get('inputs', {}).get('alpha_policy', {}).get('l4Distribution') is not None:
+        return {**base, 'status': 'retired_legacy_opb_candidates'}
     if manifest['snapshot_kind'] != 'allocation_context':
         raise ValueError('paired_nav_allocation_context_required')
     if not manifest['prospective']:

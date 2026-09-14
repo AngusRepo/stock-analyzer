@@ -171,7 +171,9 @@ def run_paired_session(*, snapshot_id: str, tapes: dict[str, Any], states: dict[
             raise ValueError('paired_native_start_state_corrupt')
         private = PrivatePaperStore(state['state_sql'], state['state_checksum'], {})
         try:
-            for key, expected in (('trading:config', configuration['trading_config']),
+            from services.paired_nav_strategy_bundle import arm_configuration
+            arm_config=arm_configuration(configuration,arm,signal_date=packet['session_date'])
+            for key, expected in (('trading:config', arm_config),
                                   ('trading:risk_config', configuration['risk_config'])):
                 row = private.db.execute('SELECT value FROM _native_private_kv WHERE key=?', (key,)).fetchone()
                 if row is None or json.loads(row[0]) != expected:

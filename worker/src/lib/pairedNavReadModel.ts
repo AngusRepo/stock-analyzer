@@ -6,7 +6,7 @@ export interface PairedNavReadModel {
   pairs: Array<{ pair_id: string; sessions: number; latest_session: string | null; accounted_sessions: number;
     unverified_sessions: number; undefined_return_sessions: number; zero_nav_sessions: number;
     latest_accounting_session: string; candidate_checksum: string; baseline_checksum: string;
-    comparison?: { owner: string; kind: 'incumbent_replacement' | 'incremental_layer' | 'route_policy_contrast' | 'allocator_policy_contrast' | 'atomic_strategy_replacement'; baseline_kind: string; metadata_sessions: number };
+    comparison?: { owner: string; kind: 'incumbent_replacement' | 'incremental_layer' | 'route_policy_contrast' | 'allocator_policy_contrast' | 'atomic_strategy_replacement' | 'strategy_bundle_replacement'; baseline_kind: string; metadata_sessions: number };
     lifecycle?: { reason: 'comparison_changed'; transition_signal_date: string; final_session_date: string;
       successor_pair_id: string; changed_fields: string[] } }>
   promotion_allowed: false
@@ -67,6 +67,9 @@ export async function readPairedNav(db: D1Database, requestedDate: string): Prom
             AND ((json_extract(payload_json,'$.comparison.owner') IN ('ensemble','l4_alpha_ev')
               AND json_extract(payload_json,'$.comparison.kind')='incumbent_replacement'
               AND json_extract(payload_json,'$.comparison.baseline_kind')='frozen_incumbent_policy')
+            OR (json_extract(payload_json,'$.comparison.owner')='ensemble'
+              AND json_extract(payload_json,'$.comparison.kind')='strategy_bundle_replacement'
+              AND json_extract(payload_json,'$.comparison.baseline_kind')='frozen_incumbent_complete_chain')
             OR (json_extract(payload_json,'$.comparison.owner')='allocator_ev_fusion'
               AND json_extract(payload_json,'$.comparison.kind')='incremental_layer'
               AND json_extract(payload_json,'$.comparison.baseline_kind')='exact_frozen_l4_candidate')

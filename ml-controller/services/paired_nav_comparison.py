@@ -49,6 +49,14 @@ def resolve_allocation_comparison(*, query, allocation, parent=None):
         if plan['baseline_checksum'] != expected or plan['baseline']['output'] != context['formal_output']:
             raise ValueError('paired_nav_comparison_incumbent_mismatch')
         kind, baseline_kind = 'incumbent_replacement', 'frozen_incumbent_policy'
+        if plan['configuration'].get('strategy_bundle') is not None:
+            if owner!='ensemble':
+                raise ValueError('paired_nav_strategy_comparison_owner_invalid')
+            from services.paired_nav_strategy_bundle import verify_strategy_inputs
+            verify_strategy_inputs(plan['configuration'],context,signal_date=am['signal_date'])
+            if plan['configuration']['strategy_bundle']['candidate_l3_identity']['payload_checksum']!=plan['candidate_checksum']:
+                raise ValueError('paired_nav_strategy_comparison_candidate_mismatch')
+            kind,baseline_kind='strategy_bundle_replacement','frozen_incumbent_complete_chain'
     elif owner == 'opb_arm_prior':
         from services.paired_nav_opb_candidate import verify_opb_comparison
         verify_opb_comparison(plan, parent)

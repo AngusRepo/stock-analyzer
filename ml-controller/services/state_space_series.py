@@ -381,7 +381,7 @@ def _enrich_daily_canonical_sequences(payloads, *, decision_date, target_points=
     symbols = [p.get('symbol') for p in payloads]
     if any(not isinstance(s, str) or not s or s != s.strip() for s in symbols) or len(symbols) != len(set(symbols)):
         raise ValueError('sequence_symbols_invalid')
-    required = {}
+    required, invalid_payload_symbols, issues = {}, set(), []
     for payload in payloads:
         days = []
         for row in payload.get('prices') or []:
@@ -389,7 +389,14 @@ def _enrich_daily_canonical_sequences(payloads, *, decision_date, target_points=
             if day > decision_date:
                 raise ValueError('sequence_payload_after_decision')
             if row.get('close') is not None:
-                _sequence_price(row['close'])
+                try:
+                    _sequence_price(row['close'])
+                except (TypeError, ValueError, OverflowError):
+                    # A stock-specific bad quote must not abort the whole pool.
+                    # Keep its date and provenance, but provide no usable series.
+                    invalid_payload_symbols.add(payload['symbol'])
+                    issues.append({'symbol': payload['symbol'], 'date': day,
+                                   'reason': 'sequence_payload_price_invalid'})
                 days.append(day)
         if days != sorted(set(days)):
             raise ValueError('sequence_payload_dates_not_strictly_increasing')
@@ -416,7 +423,7 @@ def _enrich_daily_canonical_sequences(payloads, *, decision_date, target_points=
             if row.get('adj_close') is not None:
                 canonical[s][day] = _sequence_price(row['adj_close'])
     needed = {s for s in symbols if len(canonical[s]) < target or not set(required[s]) <= set(canonical[s])}
-    long, history_meta, issues = {}, None, []
+    long, history_meta = {}, None
     if needed and long_history_sequence_enabled():
         try:
             long, history_meta = load_dated_long_history_records(symbols=needed, decision_date=decision_date, prefix=prefix)
@@ -443,13 +450,14 @@ def _enrich_daily_canonical_sequences(payloads, *, decision_date, target_points=
         missing = sorted(set(required[symbol]) - set(combined))
         available_days = sorted(combined)[-target:]
         latest_mismatch = bool(required[symbol] and combined and max(combined) != required[symbol][-1])
-        unavailable = bool(missing) or not required[symbol] or latest_mismatch
+        invalid_payload = symbol in invalid_payload_symbols
+        unavailable = invalid_payload or bool(missing) or not required[symbol] or latest_mismatch
         days = [] if unavailable else available_days
         out.append({'symbol': symbol, 'prices': [combined[d] for d in days], 'dates': days,
             'sequence_source': 'finlab_canonical_and_verified_history' if older else 'finlab_canonical_adjusted',
             'price_basis': 'finlab_adjusted_close', 'history_points_available': len(combined),
             'status': 'unavailable' if unavailable else 'ready', 'missing_adjusted_dates': missing,
-            'reason': 'canonical_adjusted_dates_missing' if missing else 'payload_market_dates_missing' if not required[symbol]
+            'reason': 'sequence_payload_price_invalid' if invalid_payload else 'canonical_adjusted_dates_missing' if missing else 'payload_market_dates_missing' if not required[symbol]
                       else 'payload_canonical_latest_date_mismatch' if latest_mismatch else None})
     return out, {'schema_version': 'state-space-dated-adjusted-enrichment-v1',
         'source': 'finlab_dated_adjusted_prices', 'decision_date': decision_date, 'target_points': target,

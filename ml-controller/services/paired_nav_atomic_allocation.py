@@ -29,6 +29,8 @@ def run_atomic_allocations(*, snapshot_id, query, prepared=None, recommendations
     from services.recommendation_service import build_return_history_from_payloads
     parent = read_snapshot(query, snapshot_id)
     manifest, context = parent['manifest'], parent['payload']['content']
+    if context.get('inputs', {}).get('alpha_policy', {}).get('l4Distribution') is not None:
+        raise ValueError('paired_nav_atomic_requires_compatible_l4_artifact')
     if 'atomic_recommendation_inputs' in context:
         if ((prepared is not None and prepared != context['atomic_recommendation_inputs'])
                 or (recommendations is not None and recommendations != context['atomic_recommendation_result'])):

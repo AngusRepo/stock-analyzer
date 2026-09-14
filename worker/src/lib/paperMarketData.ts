@@ -2,8 +2,8 @@ import { paperExecutionNow, paperExecutionDate } from './paperExecutionScope'
 import { getExitMultiplier, getExitOrder, type MarketRegime } from './dynamicExitPriority'
 import { readCurrentRegimeFamily } from './marketRegimeState'
 
-export async function getPrevTradingDay(db: D1Database, kv?: KVNamespace): Promise<string> {
-  const today = new Date(paperExecutionNow() + 8 * 3600_000).toISOString().slice(0, 10)
+export async function getPrevTradingDay(db: D1Database, kv?: KVNamespace, referenceDate?: string): Promise<string> {
+  const today = referenceDate ?? new Date(paperExecutionNow() + 8 * 3600_000).toISOString().slice(0, 10)
   if (kv) {
     const dt = new Date(`${today}T00:00:00Z`)
     for (let i = 1; i <= 14; i += 1) {
@@ -20,7 +20,7 @@ export async function getPrevTradingDay(db: D1Database, kv?: KVNamespace): Promi
   const row = await db.prepare(
     'SELECT date FROM daily_recommendations WHERE date < ? ORDER BY date DESC LIMIT 1',
   ).bind(today).first<{ date: string }>()
-  return row?.date ?? new Date(paperExecutionNow() + 8 * 3600_000 - 86400_000).toISOString().slice(0, 10)
+  return row?.date ?? new Date(Date.parse(today+'T00:00:00Z') - 86400_000).toISOString().slice(0, 10)
 }
 
 export async function getCurrentRegime(kv: KVNamespace): Promise<MarketRegime | null> {

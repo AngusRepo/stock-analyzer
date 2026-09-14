@@ -204,7 +204,7 @@ def collect_ensemble_allocations(*, snapshot_id, query, writer):
         l3_inference_source_identity=recommendation_source_identity())
     from services.paired_nav_execution_environment import configuration_environment
     configuration.update(configuration_environment(saved))
-    config_checksum = digest(configuration)
+    baseline_configuration = deepcopy(configuration)
     plans = []
     for candidate in selection['candidates']:
         registry = candidate['registry']
@@ -226,6 +226,15 @@ def collect_ensemble_allocations(*, snapshot_id, query, writer):
                 or (selection['schema_version'] == 'paired-nav-l3-candidate-selection-v1'
                     and candidate['artifact']['observation_artifacts'] != selection['base_artifacts'])):
             raise ValueError('paired_nav_l3_frozen_candidate_time_or_identity_invalid')
+        from services.paired_nav_strategy_bundle import validate_comparison_configuration
+        configuration = deepcopy(baseline_configuration)
+        bundle = candidate.get('strategy_bundle')
+        if bundle is not None:
+            configuration['strategy_bundle'] = deepcopy(bundle)
+            validate_comparison_configuration(configuration,signal_date=manifest['signal_date'])
+        elif context['inputs']['alpha_policy'].get('l4Distribution') is not None:
+            raise ValueError('paired_nav_strategy_paired_l4_required')
+        config_checksum = digest(configuration)
         inputs = deepcopy(rec_context['inputs'])
         if selection['schema_version'] == 'paired-nav-l3-candidate-selection-v2':
             key = digest(candidate['artifact']['observation_artifacts'])
@@ -237,8 +246,33 @@ def collect_ensemble_allocations(*, snapshot_id, query, writer):
                 raise ValueError('paired_nav_l3_frozen_bundle_universe_mismatch')
         inputs['predictions'] = infer_candidate_predictions(predictions=inputs['predictions'],
             candidate=candidate, signal_date=manifest['signal_date'])
-        result = run_recommendation_path(inputs=inputs)
         allocation_inputs = deepcopy(context['inputs'])
+        if bundle is not None:
+            identity = {'schema_version':'paired-nav-formal-ml-baseline-v1',
+                'artifact_id':registry['artifact_id'], **{k:candidate['artifact'][k] for k in
+                    ('cohort_id','payload_checksum','base_artifact_set_checksum')}}
+            from services.paired_nav_strategy_bundle import validate_strategy_bundle
+            validate_strategy_bundle(bundle,candidate_identity=identity,signal_date=manifest['signal_date'])
+            account = context.get('strategy_bundle_account')
+            if not account or account.get('signal_date') != manifest['signal_date']:
+                raise ValueError('paired_nav_strategy_account_missing')
+            native_identity={k:identity[v] for k,v in (
+                ('artifact_id','artifact_id'),('cohort_id','cohort_id'),('artifact_checksum','payload_checksum'))}
+            inputs['predictions'] = _native_predictions(inputs['predictions'],native_identity)
+            policy=deepcopy(bundle['candidate_trading_config']['l4Distribution'])
+            policy['runtime']={'signal_date':manifest['signal_date'],'l3_identity':identity,
+                'account':deepcopy(account),'predictions':deepcopy(inputs['predictions'])}
+            alpha={k:v for k,v in allocation_inputs['alpha_policy'].items()
+                if k not in {'l4AlphaEv','l4_alpha_ev','allocatorEvFusion','allocator_ev_fusion','l4Distribution'}}
+            alpha['l4Distribution']=policy
+            inputs['filter_options']['alpha_policy']=deepcopy(alpha)
+            allocation_inputs['alpha_policy']=alpha
+            allocation_inputs.pop('nav_control_context',None)
+            # Each private account learns from its own sealed reward ledger.
+            allocation_inputs['opb_reward_ledger']=[]
+            if context.get('strategy_bundle_risk_context') is not None:
+                allocation_inputs['return_history']=deepcopy(context['strategy_bundle_risk_context']['return_history'])
+        result = run_recommendation_path(inputs=inputs)
         allocation_inputs['recommendations'] = result['recommendations']
         challenger = run_isolated_allocation(inputs=allocation_inputs,
             inherited_state=context['capture'].get('inherited_state') or {})
@@ -251,10 +285,18 @@ def collect_ensemble_allocations(*, snapshot_id, query, writer):
             for arm, model, pred in (
                 ('baseline', baseline_identity, context['model_predictions']),
                 ('candidate', identity, inputs['predictions']))}
+        extra = {}
+        if bundle is not None:
+            allocation_inputs['alpha_policy']['l4Distribution']['runtime']['predictions']=deepcopy(arms['candidate']['predictions'])
+            extra['strategy_allocation_input_arms']={'baseline':deepcopy(context['inputs']),
+                'candidate':deepcopy(allocation_inputs)}
         # Each ensemble gets its own immutable parent; EV comparisons must not
         # inherit another candidate's per-arm model context.
-        parent_content = {**deepcopy(context), 'upstream_allocation_context_snapshot_id': snapshot_id,
+        parent_content = {**deepcopy(context), **extra, 'upstream_allocation_context_snapshot_id': snapshot_id,
             'model_predictions': arms['baseline']['predictions'], 'model_prediction_arms': arms}
+        if bundle is not None:
+            from services.paired_nav_strategy_bundle import verify_strategy_inputs
+            verify_strategy_inputs(configuration,parent_content,signal_date=manifest['signal_date'])
         parent = freeze_snapshot(signal_date=manifest['signal_date'], source_run_id='l3:' + pair_id,
             snapshot_kind='allocation_context', content=parent_content, query=query, writer=writer)
         seal = freeze_snapshot(signal_date=manifest['signal_date'], source_run_id=pair_id,

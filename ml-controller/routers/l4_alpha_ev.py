@@ -36,13 +36,7 @@ class IpoShadowFreezeReq(BaseModel):
 
 @router.post('/ipo-shadow/freeze')
 def freeze_ipo_shadow(req: IpoShadowFreezeReq) -> dict[str, Any]:
-    if req.input_mode == 'frozen_stacker_prospective':
-        from services.ipo_prospective_inputs import collect_prospective_daily
-        return collect_prospective_daily(signal_date=req.signal_date, source_run_id=req.source_run_id,
-            dry_run=req.dry_run, clients={name: client_proxy_for_domain(name) for name in ('core', 'market', 'learning', 'ops')})
-    from services.ipo_shadow_collection import collect_native_daily
-    return collect_native_daily(signal_date=req.signal_date, source_run_id=req.source_run_id, dry_run=req.dry_run,
-        clients={name: client_proxy_for_domain(name) for name in ('core', 'market', 'learning', 'ops')})
+    raise HTTPException(status_code=410, detail='ipo_collection_retired_new_l4_distribution')
 
 
 DIRECT_REFRESH_PROMOTION_OWNER = "active8_oof_lifecycle"
@@ -163,6 +157,9 @@ def _registry_record(
 async def refresh_l4_alpha_ev_artifact(req: L4AlphaEvRefreshReq) -> dict[str, Any]:
     """Build and persist a research candidate; Active8 OOF lifecycle owns promotion."""
 
+    from services.trading_config_loader import load_merged_trading_config_with_contract
+    if load_merged_trading_config_with_contract().config.get('l4Distribution') is not None:
+        raise HTTPException(status_code=410,detail='legacy_ev_refresh_retired_use_l4_distribution')
     if req.promote:
         raise HTTPException(
             status_code=409,

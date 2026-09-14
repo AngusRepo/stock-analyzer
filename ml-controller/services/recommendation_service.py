@@ -4469,6 +4469,13 @@ def apply_sparse_tangent_allocation(
                 row["score_components"]["mlAdvisory"] = row["ml_advisory"]
         return recommendations
 
+    distribution = (alpha_policy or {}).get('l4Distribution')
+    if distribution is not None:
+        from services.l4_distribution_runtime import run as run_distribution
+        return run_distribution(recommendations, distribution,
+            return_history=return_history or {}, reward_ledger=opb_reward_ledger or [],
+            evidence_sink=allocation_evidence_sink)
+
     policy = normalize_alpha_policy(alpha_policy)
     promote_min_conf = ranking_config.get("promoteMinConf", 0.60)
     effective_boost = float(promote_min_conf)

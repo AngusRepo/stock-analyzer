@@ -340,3 +340,50 @@ def test_atomic_daily_predictions_advance_without_replacing_model_or_strategy():
     changed['model_prediction_arms_checksum'] = digest(changed['model_prediction_arms'])
     with pytest.raises(ValueError, match='carry_atomic_definition_changed'): validate_prediction_carry(previous, changed)
     with pytest.raises(ValueError, match='carry_model_owner_changed'): validate_prediction_carry(previous, packet())
+
+
+def test_held_outside_today_pool_reuses_latest_own_signal_in_actual_native_rescore():
+    from services.paired_native_rescore_carry import build_rescore_carry, rescore_prediction_arms
+    previous = packet()
+    current = deepcopy(previous)
+    current['session_date'] = '2026-09-08'
+    for model in current['model_prediction_arms'].values():
+        model['predictions'] = {'2317': {'signal_raw':'BUY','direction_accuracy':.7}}
+    current['model_predictions'] = deepcopy(current['model_prediction_arms']['baseline']['predictions'])
+    current['model_predictions_checksum'] = digest(current['model_predictions'])
+    current['model_prediction_arms_checksum'] = digest(current['model_prediction_arms'])
+    original = deepcopy(current)
+    current['model_rescore_context'] = build_rescore_carry(current=current, previous=previous,
+        held_symbols={'baseline':['2330'],'candidate':['2330']}, signal_date='2026-09-07',
+        previous_snapshot_id='a'*64, previous_signal_date='2026-09-04')
+    assert current['model_predictions'] == original['model_predictions']
+    assert set(current['model_prediction_arms']['candidate']['predictions']) == {'2317'}
+    assert rescore_prediction_arms(current)['candidate']['predictions']['2330']['direction_accuracy'] == .3
+    clock = datetime(2026,9,8,2,tzinfo=timezone.utc)
+    frame = {**FRAME, 'input_id':'2026-09-08:rescore', 'observed_at':clock.isoformat()}
+    req = request()
+    body = json.loads(req['body']);body['today']='2026-09-08';req['body']=json.dumps(body)
+    source = capture(current,ImmutableNativeObjects(Bucket()),clock=lambda:clock)
+    for arm, expected in [('baseline',.9),('candidate',.3)]:
+        response = source.for_arm(arm).read('frozen_fetch',req,frame)
+        assert outcome(response)['original_confidence'] == expected
+        validate_model_frame(current,arm,{**frame,'responses':[response]})
+    third = deepcopy(original);third['session_date']='2026-09-09'
+    third['model_rescore_context'] = build_rescore_carry(current=third,previous=current,
+        held_symbols={'baseline':['2330'],'candidate':['2330']},signal_date='2026-09-08',
+        previous_snapshot_id='b'*64,previous_signal_date='2026-09-07')
+    assert third['model_rescore_context']['carried']['candidate']['2330']['signal_date'] == '2026-09-04'
+    assert rescore_prediction_arms(third)['candidate']['predictions']['2330']['direction_accuracy'] == .3
+    bad = deepcopy(third)
+    bad['model_rescore_context']['carried']['candidate']['2330']['model_identity'] = previous['model_prediction_arms']['baseline']['model_identity']
+    bad['model_rescore_context']['context_checksum'] = digest({k:v for k,v in bad['model_rescore_context'].items() if k!='context_checksum'})
+    with pytest.raises(ValueError, match='rescore_carry_source_invalid'):
+        rescore_prediction_arms(bad)
+
+
+def test_initial_held_symbol_without_own_forecast_never_borrows_incumbent_or_makes_neutral_prediction():
+    from services.paired_native_rescore_carry import build_rescore_carry
+    current = packet()
+    with pytest.raises(ValueError, match='rescore_held_history_missing'):
+        build_rescore_carry(current=current,previous=None,
+            held_symbols={'baseline':[],'candidate':['9999']},signal_date='2026-09-04')

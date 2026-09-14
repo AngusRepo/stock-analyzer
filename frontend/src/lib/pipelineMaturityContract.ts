@@ -220,7 +220,7 @@ export type PairedNavShadowReadModel = {
   pairs: Array<{ pair_id: string; sessions: number; latest_session: string | null; accounted_sessions: number;
     unverified_sessions: number; undefined_return_sessions?: number; zero_nav_sessions?: number;
     latest_accounting_session: string; candidate_checksum: string; baseline_checksum: string;
-    comparison?: { owner: string; kind: 'incumbent_replacement' | 'incremental_layer' | 'route_policy_contrast' | 'allocator_policy_contrast' | 'atomic_strategy_replacement'; baseline_kind: string; metadata_sessions: number };
+    comparison?: { owner: string; kind: 'incumbent_replacement' | 'incremental_layer' | 'route_policy_contrast' | 'allocator_policy_contrast' | 'atomic_strategy_replacement' | 'strategy_bundle_replacement'; baseline_kind: string; metadata_sessions: number };
     lifecycle?: { reason: 'comparison_changed'; transition_signal_date: string; final_session_date: string;
       successor_pair_id: string; changed_fields: string[] } }>
   promotion_allowed: false
@@ -229,6 +229,16 @@ export type PairedNavShadowReadModel = {
 }
 
 export type PipelineDecisionMaturityPacket = {
+  l4_distribution?: { status: string; reason?: string; efficacy_status?: string; acceptance_mode?: string; plan?: {
+    plan_id: string; signal_date: string; model_checksum: string; nav_at_decision: number;
+    weights: Record<string, number>; cash_weight: number;
+    prediction_coverage?: { available: number; candidate_count: number; unavailable: Record<string, string[]> };
+    targets: Record<string, { weight: number; expected_return_gross: number | null; current_weight: number; locked: boolean; distribution?: {p_loss:number;gain:number;loss:number}|null }>;
+    proof: { evaluated_candidate_count: number; absolute_objective_gap: number };
+    constraints: { max_positions: number | null; exposure_cap: number };
+    opb: { status: string; arm_id: string; samples?: number };
+  } | null }
+
   paired_nav_shadow?: PairedNavShadowReadModel
   active_ml_ensemble?: ActiveMlEnsembleVersion
   ipo_shadow?: IpoShadowReadModel
@@ -236,10 +246,10 @@ export type PipelineDecisionMaturityPacket = {
   requested_date: string
   generated_at: string
   current_selection_signal_owner: 'allocator_opb_policy'
-  current_expected_return_owner: 'l4_alpha_ev' | 'allocator_ev_fusion' | null
+  current_expected_return_owner: 'l4_alpha_ev' | 'allocator_ev_fusion' | 'l4_distribution' | null
   current_allocation_utility_owner: 'expected_return_owner' | 'risk_abstention'
   current_execution_owner: 'allocator_opb_policy'
-  execution_scope: 'recommendation_allocation_only_no_order_submission'
+  execution_scope: 'recommendation_allocation_only_no_order_submission' | 'full_pool_paper_target_and_fill_feedback'
   action_gate: 'expected_return_owner' | 'validated_expected_return_required'
   strategy_route_bundle?: StrategyRouteBundleMaturity
   summary: {

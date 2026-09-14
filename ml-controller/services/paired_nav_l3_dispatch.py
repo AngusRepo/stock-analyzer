@@ -52,8 +52,39 @@ def registered_candidate_pins(*, signal_date, query):
     return pins
 
 
+
+def freeze_candidate_selection_context(*, signal_date, universe_frozen_at, declarations, saved=None, now=None):
+    """Freeze the model inventory when it is selected, after the L1.5 universe.
+
+    The universe timestamp is not rewritten. Retry uses its first declaration
+    and clock, so a later registry/model change cannot enter an in-flight trial.
+    """
+    clock = now or datetime.now(timezone.utc)
+    if clock.tzinfo is None:
+        raise ValueError('paired_nav_l3_selection_clock_naive')
+    universe = _timestamp(universe_frozen_at)
+    if saved is not None:
+        if (saved.get('schema_version') != 'paired-nav-l3-selection-context-v1'
+                or saved.get('context_checksum') != digest({k:v for k,v in saved.items() if k != 'context_checksum'})
+                or saved.get('signal_date') != signal_date
+                or saved.get('universe_frozen_at') != universe_frozen_at
+                or not universe <= _timestamp(saved['candidate_frozen_at']) <= clock):
+            raise ValueError('paired_nav_l3_selection_context_changed')
+        return deepcopy(saved)
+    if declarations is None:
+        return None
+    if not universe <= clock:
+        raise ValueError('paired_nav_l3_selection_before_universe')
+    if (clock.astimezone(timezone(timedelta(hours=8))).date().isoformat() < signal_date
+            or clock.astimezone(timezone.utc).date().isoformat() > signal_date):
+        raise ValueError('paired_nav_l3_selection_outside_prospective_window')
+    body = {'schema_version': 'paired-nav-l3-selection-context-v1', 'signal_date': signal_date,
+        'universe_frozen_at': universe_frozen_at, 'candidate_frozen_at': clock.isoformat(),
+        'declarations': deepcopy(declarations), 'production_effect': False}
+    return {**body, 'context_checksum': digest(body)}
+
 def prepare_candidate_requests(*, signal_date, decision_cutoff, sequence_series,
-                               query, project, subsets):
+                               query, project, subsets, strategy_bundles=None):
     cutoff = _timestamp(decision_cutoff)
     if (cutoff.astimezone(timezone(timedelta(hours=8))).date().isoformat() < signal_date
             or cutoff.date().isoformat() > signal_date):
@@ -111,11 +142,13 @@ def prepare_candidate_requests(*, signal_date, decision_cutoff, sequence_series,
         bundles[key] = {'bundle_key': key, 'candidates': projected,
             'sequence_series_by_model': usable, 'sequence_contracts': contracts}
     requests = list(bundles.values())
-    return {'schema_version': 'paired-nav-l3-candidate-selection-v2',
+    selection = {'schema_version': 'paired-nav-l3-candidate-selection-v2',
         'signal_date': signal_date, 'decision_cutoff': decision_cutoff,
         'status': 'candidate_ensembles_frozen' if candidates else 'awaiting_matching_executable_ensemble',
         'candidates': candidates, 'requests': requests, 'request_checksum': digest(requests),
         'production_effect': False}
+    from services.paired_nav_strategy_bundle import attach_strategy_bundles
+    return attach_strategy_bundles(selection,declarations=strategy_bundles,registered=registered)
 
 
 def capture_candidate_selection(*, state, predictions):

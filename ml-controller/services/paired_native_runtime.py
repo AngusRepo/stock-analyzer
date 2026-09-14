@@ -24,7 +24,8 @@ def build_capture_source(*, snapshot_id, packet, objects, domain_queries, kv_rea
     from services.paired_native_sources import PairSourceKV
     from services.paired_native_models import prediction_arms, ModelScopedReader, PairedModelCapture
     from copy import copy
-    models = prediction_arms(packet)
+    from services.paired_native_rescore_carry import rescore_prediction_arms
+    models = rescore_prediction_arms(packet)
     context = packet['source_context']
     if context['variables'] != packet['variables']:
         raise ValueError('native_capture_worker_context_mismatch')
@@ -54,6 +55,8 @@ def build_capture_source(*, snapshot_id, packet, objects, domain_queries, kv_rea
         for arm, model in models.items():
             scoped = copy(capabilities)
             scoped.predictions = model['predictions']
+            from services.paired_nav_strategy_bundle import arm_configuration
+            scoped.trading_config=arm_configuration(packet['configuration'],arm,signal_date=packet['session_date'])
             captures[arm] = NativeSourceCapture(objects=objects, domain_queries=domain_queries,
                 inference_reads={'frozen_fetch': ModelScopedReader(scoped, model['model_identity'],
                     model.get('input_identity'))}, clock=clock)

@@ -242,6 +242,8 @@ def test_declared_sequence_unavailability_preserves_missingness_not_fake_scores(
 
 
 def test_actual_payload_builder_freezes_every_candidate_before_spawn(prepared, monkeypatch):
+    from services import kv_client
+    monkeypatch.setattr(kv_client,'get_json',lambda *args,**kwargs:None)
     import asyncio
     from datetime import datetime, timezone
     from types import SimpleNamespace
@@ -279,3 +281,60 @@ def test_changed_configuration_cannot_reset_registered_pair(prepared):
     receipt = seal((db, bucket, manifest, inputs, selection))
     with pytest.raises(ValueError, match='registered_pin_invalid'):
         collect_ensemble_allocations(snapshot_id=receipt['snapshot_id'], query=db.query, writer=db.writer)
+
+
+
+def test_whole_chain_model_inventory_freezes_after_screener_without_backdating():
+    from datetime import datetime
+    declarations = {'schema_version': 'paired-nav-strategy-bundles-v1', 'bundles': []}
+    args = dict(signal_date='2026-09-14', universe_frozen_at='2026-09-14T13:00:00Z')
+    now = datetime.fromisoformat('2026-09-15T00:30:00+08:00')
+    frozen = dispatch.freeze_candidate_selection_context(**args, declarations=declarations, now=now)
+    assert frozen['universe_frozen_at'] == args['universe_frozen_at']
+    assert frozen['candidate_frozen_at'] == now.isoformat()
+    retry = dispatch.freeze_candidate_selection_context(**args, declarations={'changed': True},
+        saved=frozen, now=datetime.fromisoformat('2026-09-15T01:00:00+08:00'))
+    assert retry == frozen
+    assert retry['declarations'] == declarations
+    with pytest.raises(ValueError, match='selection_context_changed'):
+        dispatch.freeze_candidate_selection_context(**args, declarations=declarations,
+            saved={**frozen, 'candidate_frozen_at': '2026-09-14T13:00:00Z'}, now=now)
+
+
+@pytest.mark.parametrize('clock', ['2026-09-14T12:59:00+00:00', '2026-09-15T09:00:00+08:00'])
+def test_new_model_inventory_cannot_freeze_before_universe_or_as_historical_nav(clock):
+    from datetime import datetime
+    with pytest.raises(ValueError, match='selection_(before_universe|outside_prospective_window)'):
+        dispatch.freeze_candidate_selection_context(signal_date='2026-09-14',
+            universe_frozen_at='2026-09-14T13:00:00Z', declarations={'bundles': []},
+            now=datetime.fromisoformat(clock))
+
+
+@pytest.mark.parametrize('corrupt_semantics', [False, True])
+def test_complete_nav_bundle_preserves_failed_individual_diagnostics_but_requires_data_contract(prepared, corrupt_semantics):
+    state = setup_dispatch(prepared)
+    db = prepared[0]
+    failed = ['LightGBM', 'XGBoost', 'ExtraTrees', 'GNN', 'PatchTST']
+    db.conn.execute("UPDATE model_artifact_registry SET state='offline_failed', offline_gate_decision='FAIL' WHERE model_name IN (?,?,?,?,?)", failed)
+    if corrupt_semantics:
+        row = db.query("SELECT * FROM model_artifact_registry WHERE model_name='LightGBM'", [])[0]
+        evidence = json.loads(row['offline_evidence_json'])
+        evidence['registration']['metadata']['target_semantic_version'] = 'wrong-target'
+        db.conn.execute('UPDATE model_artifact_registry SET offline_evidence_json=? WHERE artifact_id=?',
+                        [json.dumps(evidence), row['artifact_id']])
+    def dispatch_again():
+        return dispatch.prepare_candidate_requests(signal_date=DAY, decision_cutoff=CUTOFF,
+            sequence_series=[], query=db.query, project=graph._pipeline_modal_active8_shadow_projection,
+            subsets=graph._sequence_model_subsets)
+    if corrupt_semantics:
+        with pytest.raises(ValueError, match='base_contract_invalid'):
+            dispatch_again()
+        return
+    selected = dispatch_again()
+    assert len(selected['requests']) == len(state['paired_nav_l3_dispatch']['requests']) == 2
+    for request in selected['requests']:
+        assert len(request['candidates']) == 8
+        for row in request['candidates']:
+            assert row['production_effect'] is False and row['vote_weight'] == 0
+            if row['model'] in failed:
+                assert row['offline_gate_decision'] == 'FAIL' and row['registry_state'] == 'offline_failed'

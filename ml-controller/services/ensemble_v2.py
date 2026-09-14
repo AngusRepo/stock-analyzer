@@ -269,7 +269,8 @@ def attach_ensemble_v2(
 
 def _evaluate_validated_ensemble(pred: dict, artifact: dict, formal: dict) -> dict:
     """Pure shared arithmetic; callers own artifact/input validation and scope."""
-    scores = _formal_model_scores(pred)
+    scores = {name:value for name,value in _formal_model_scores(pred).items()
+              if name in artifact["selected_models"]}
     values = [scores.get(name, 0.5) for name in ACTIVE_ALPHA_MODELS]
     available = [1.0 if name in scores else 0.0 for name in ACTIVE_ALPHA_MODELS]
     vector = np.asarray([*values, *available], dtype=float)

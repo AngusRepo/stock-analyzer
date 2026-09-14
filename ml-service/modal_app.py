@@ -3595,6 +3595,7 @@ def train_dlinear_universal(payload: dict) -> dict:
             f"[DLinearTrain] starting series={len(sequence_records)} "
             f"seq_len={payload.get('seq_len', 512)} device={device}"
         )
+        from app.deployment_refit import requested as deployment_refit_requested
         result = train_dlinear(
             series_close=payload.get("series_close") or [],
             sequence_records=sequence_records or None,
@@ -3612,6 +3613,8 @@ def train_dlinear_universal(payload: dict) -> dict:
             test_start=payload.get("test_start"),
             test_end=payload.get("test_end"),
             seed=int(payload.get("seed") or 42),
+            full_fit=deployment_refit_requested(payload),
+            knowledge_cutoff_date=payload.get("as_of_date") or payload.get("run_date"),
         )
         if result.get("error"):
             return result
@@ -3662,6 +3665,8 @@ def train_dlinear_universal(payload: dict) -> dict:
                 label_known_dates=np.asarray(oof.get("label_known_dates") or [], dtype=object),
                 split_metadata={
                     "method": "explicit_signal_date_with_actual_label_purge",
+                    "score_semantic_version": oof.get("score_semantic_version"),
+                    "checkpoint_selection": result["metadata"].get("checkpoint_selection"),
                     "train_range": [payload.get("train_start"), payload.get("train_end")],
                     "test_range": [payload.get("test_start"), payload.get("test_end")],
                 },

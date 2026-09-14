@@ -288,6 +288,20 @@ def build_sequence_window_dataset(
     )
 
 
+SEQUENCE_SCORE_SEMANTIC_VERSION = "forecast-t5-over-signal-close-gross-v1"
+
+
+def forecast_return_from_signal_close(forecast_prices, signal_closes):
+    """Serving-compatible model score; future execution prices are label-only."""
+    forecast = np.asarray(forecast_prices, dtype=float)
+    anchor = np.asarray(signal_closes, dtype=float)
+    if forecast.shape != anchor.shape or not np.isfinite(forecast).all():
+        raise ValueError("sequence_forecast_shape_or_value_invalid")
+    if not np.isfinite(anchor).all() or np.any(anchor <= 0):
+        raise ValueError("sequence_signal_close_invalid")
+    return forecast / anchor - 1.0
+
+
 def sequence_oos_ic_from_forecast(
     *,
     forecast_prices: np.ndarray,
@@ -296,8 +310,8 @@ def sequence_oos_ic_from_forecast(
     forecast = np.asarray(forecast_prices, dtype=float).reshape(-1)
     oos_meta = [dataset.meta[int(idx)] for idx in dataset.oos_index]
     actual_returns = np.asarray([row["forward_return"] for row in oos_meta], dtype=float)
-    entry_open = np.asarray([row["entry_open"] for row in oos_meta], dtype=float)
-    pred_returns = (forecast - entry_open) / np.maximum(entry_open, 1e-9)
+    signal_close = np.asarray([row["last_close"] for row in oos_meta], dtype=float)
+    pred_returns = forecast_return_from_signal_close(forecast, signal_close)
     target_dates = [row["target_date"] for row in oos_meta]
     ic = mean_daily_spearman_ic(
         predictions=pred_returns,

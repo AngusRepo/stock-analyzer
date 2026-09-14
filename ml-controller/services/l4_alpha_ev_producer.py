@@ -376,6 +376,10 @@ def materialize_l4_alpha_ev(
     usage_scope: str = "production",
 ) -> dict[str, Any] | None:
     """Return validated row-level L4 alpha EV, or None when no producer is configured."""
+    if (policy or {}).get('l4Distribution') is not None:
+        # The new model consumes the complete post-L3 batch, not this legacy
+        # per-row materializer. It has its own release and lineage contract.
+        return None
     artifact = _policy_artifact(policy)
     existing = _existing_payload(row, prediction)
     existing_rejection: dict[str, Any] | None = None

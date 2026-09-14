@@ -124,6 +124,21 @@ adminControlRoutes.post('/api/internal/d1/batch', async (c) => {
 adminControlRoutes.post('/api/internal/strategy-mining/d1', handleStrategyMiningD1Gateway)
 adminControlRoutes.post('/api/internal/strategy-mining/callback', handleStrategyMiningCallback)
 
+adminControlRoutes.post('/api/internal/l4-distribution/plan', async (c) => {
+  const authError = requireServiceToken(c)
+  if (authError) return authError
+  const { storeL4PortfolioPlan } = await import('../lib/l4PortfolioPlan')
+  return c.json(await storeL4PortfolioPlan(c.env, await c.req.json()))
+})
+
+adminControlRoutes.post('/api/internal/l4-distribution/account', async (c) => {
+  const authError = requireServiceToken(c)
+  if (authError) return authError
+  const body = await c.req.json<{ signal_date: string }>()
+  const { captureL4AccountContext } = await import('../lib/l4AccountContext')
+  return c.json(await captureL4AccountContext(c.env, body.signal_date))
+})
+
 adminControlRoutes.post('/api/internal/paper-native/context', async (c) => {
   const authError = requireServiceToken(c)
   if (authError) return authError
@@ -637,6 +652,17 @@ async function handleSchedulerCallback(c: any) {
         error: 'active8_callback_scheduler_ticket_identity_incomplete',
       }, 400)
     }
+    const nativeClosure=callbackMetadata?.native_l4_daily_closure as Record<string,unknown>|undefined
+    if (nativeClosure && body.task==='active8-oof-daily') {
+      const { verifyL4DailyClosure }=await import('../lib/l4DistributionClosure')
+      if (body.status==='success') {
+        try {
+          await verifyL4DailyClosure(c.env,nativeClosure,callbackRunDate ?? '')
+        } catch {
+          body.status='error';body.error='new_l4_daily_closure_unverified'
+        }
+      }
+    } else {
     const { persistActive8OofFreshnessAudit } = await import('../lib/active8OofFreshness')
     const freshnessEvidence = callbackMetadata?.oof_freshness
     const freshnessBusinessDate = freshnessEvidence && typeof freshnessEvidence === 'object'
@@ -663,6 +689,7 @@ async function handleSchedulerCallback(c: any) {
         `effective=${freshness.effectiveMaxDate ?? 'missing'}`,
       ].join(':')
       body.summary = `${String(body.summary ?? '')} ${body.error}`.trim()
+    }
     }
     const cadence = String(callbackMetadata?.cadence ?? '').toLowerCase()
     const continuationAttempt = Math.max(0, Number(callbackMetadata?.continuation_attempt ?? 0))

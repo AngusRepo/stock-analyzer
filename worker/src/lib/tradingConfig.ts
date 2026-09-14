@@ -1,4 +1,5 @@
-import { paperExecutionNow, paperExecutionDate } from './paperExecutionScope'
+import { L4_FEATURE_SCHEMA, l4ReleaseEvidenceError } from './l4ReleaseEvidence'
+import { paperExecutionNow, paperExecutionDate, privateL4ResearchAllowed } from './paperExecutionScope'
 /**
  * tradingConfig.ts — 統一交易參數管理
  *
@@ -111,6 +112,8 @@ export interface AlphaFrameworkConfig {
 }
 
 export interface TradingConfig {
+  l4Distribution?: { scope: 'paper' | 'private_research'; artifact: Record<string, unknown>; constraints: Record<string, unknown>; opb?: Record<string, unknown> }
+
   fees: {
     commission: number     // 買賣手續費率（預設 0.001425 = 0.1425%）
     tax: number            // 賣出交易稅率（預設 0.003 = 0.3%）
@@ -993,6 +996,7 @@ function mergeConfig(partial: Partial<any>): TradingConfig {
     swapWeights: { ...d.position.swapWeights, ...(partial.position?.swapWeights ?? {}) },
   }
   return {
+    ...(partial.l4Distribution ? { l4Distribution: partial.l4Distribution } : {}),
     fees: { ...d.fees, ...partial.fees },
     circuit: { ...d.circuit, ...partial.circuit },
     exit: { ...d.exit, ...partial.exit },
@@ -1191,11 +1195,12 @@ export async function getTradingConfig(kv: KVNamespace, options: { bypassCache?:
     throw new Error('trading:config missing; runtime config defaults are disabled')
   }
   const merged = buildChampionTradingConfig(raw)
-  const errors = validateTradingConfig(merged)
+  const privateResearch = privateL4ResearchAllowed(kv)
+  const errors = validateTradingConfig(merged, privateResearch)
   if (errors.length > 0) {
     throw new Error(`trading:config validation failed: ${errors.join('; ')}`)
   }
-  configCache.set(kv, { value: merged, at: paperExecutionNow() })
+  if (merged.l4Distribution?.scope!=='private_research') configCache.set(kv, { value: merged, at: paperExecutionNow() })
   return merged
 }
 
@@ -1610,10 +1615,29 @@ export async function restoreSnapshot(
 
 // ─── C4: Config Validation ──────────────────────────────────────────────────
 
-export function validateTradingConfig(config: TradingConfig): string[] {
+export function validateTradingConfig(config: TradingConfig, privateResearch = false): string[] {
   const errors: string[] = []
   const isFiniteNumber = (value: unknown): value is number =>
     typeof value === 'number' && Number.isFinite(value)
+  if (config.l4Distribution!=null) {
+    const policy=config.l4Distribution
+    const c=policy.constraints
+    const a=policy.artifact as any
+    const isolatedCandidate = privateResearch && policy.scope==='private_research'
+    if ((!isolatedCandidate && policy.scope!=='paper') || a?.schema_version!=='l4-distribution-v1'
+      || a?.feature_schema!==L4_FEATURE_SCHEMA
+      || !/^[a-f0-9]{64}$/.test(a?.model_checksum ?? '')
+      || (!isolatedCandidate && (a?.release?.scope!=='paper' || a?.release?.decision!=='PASS'
+        || a?.release?.model_checksum!==a?.model_checksum
+        || !/^[a-f0-9]{64}$/.test(a?.release?.validation_receipt_checksum ?? '')))) errors.push('l4Distribution requires a validated Paper release')
+    if (!c || !isFiniteNumber(c.exposure_cap) || c.exposure_cap<0 || c.exposure_cap>1
+      || !isFiniteNumber(c.name_cap) || c.name_cap<=0 || c.name_cap>1
+      || !isFiniteNumber(c.min_weight) || c.min_weight<0 || c.min_weight>c.name_cap
+      || !(c.max_positions===null || typeof c.max_positions==='number' && Number.isSafeInteger(c.max_positions) && c.max_positions>0))
+      errors.push('l4Distribution portfolio constraints are invalid')
+    if (!isolatedCandidate) { const error=l4ReleaseEvidenceError(a); if (error) errors.push(error) }
+    if (a?.l4plus?.enabled===true) errors.push('l4Distribution L4+ has not passed acceptance')
+  }
   if (config.exit.hardStopPct > 0 || config.exit.hardStopPct < -0.30)
     errors.push('hardStopPct must be between -0.30 and 0')
   if (config.circuit.maxPositionPct < 0.01 || config.circuit.maxPositionPct > 0.50)

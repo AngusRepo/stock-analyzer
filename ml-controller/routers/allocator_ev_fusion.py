@@ -208,6 +208,9 @@ def _registry_record(
 async def refresh_allocator_ev_fusion_artifact(req: AllocatorEvFusionRefreshReq) -> dict[str, Any]:
     """Build and persist a research candidate; Active8 OOF lifecycle owns promotion."""
 
+    from services.trading_config_loader import load_merged_trading_config_with_contract
+    if load_merged_trading_config_with_contract().config.get('l4Distribution') is not None:
+        raise HTTPException(status_code=410,detail='legacy_ev_refresh_retired_use_l4_distribution')
     if req.promote:
         raise HTTPException(
             status_code=409,

@@ -32,7 +32,9 @@ export default function PairedNavShadow({ data }: { data?: PairedNavShadowReadMo
     </dl>
     {data?.pairs.length ? <div className="mt-4 grid gap-3 md:grid-cols-2">
       {data.pairs.map(pair => <article key={pair.pair_id} className="min-w-0 rounded-lg border border-slate-700 p-3">
-        <p className="mb-2 text-sm leading-6 text-sky-200">{pair.comparison?.kind === 'incremental_layer'
+        <p className="mb-2 text-sm leading-6 text-sky-200">{pair.comparison?.kind === 'strategy_bundle_replacement'
+          ? '新 L3＋三頭 L4＋配置對凍結的原完整流程：比較成本後 NAV；結果屬於整鏈，不推論 L3 單層優劣。'
+          : pair.comparison?.kind === 'incremental_layer'
           ? 'L4+ 對同一凍結 L4 候選：觀察多加殘差調整的效果，不代表勝過現行正式配置。'
           : pair.comparison?.kind === 'incumbent_replacement'
             ? `${pair.comparison.owner === 'ensemble' ? 'L3 ML' : 'L4'} 候選對當時凍結的現行配置：觀察替換後的整體效果。`

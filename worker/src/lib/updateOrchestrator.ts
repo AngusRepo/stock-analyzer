@@ -1228,11 +1228,11 @@ export async function syncLegacyMarketDataFromFinLabCanonical(
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(stock_id, date) DO UPDATE SET
         open=excluded.open, high=excluded.high, low=excluded.low, close=excluded.close,
-        adj_close=excluded.adj_close, volume=excluded.volume,
+        adj_close=COALESCE(excluded.adj_close, stock_prices.adj_close), volume=excluded.volume,
         avg_price=COALESCE(stock_prices.avg_price, excluded.avg_price)
     `).bind(
       identity.id, row.date, row.open, row.high, row.low, row.close,
-      row.adj_close ?? row.close, Math.round(Number(row.volume ?? 0)), row.avg_price,
+      row.adj_close ?? null, Math.round(Number(row.volume ?? 0)), row.avg_price,
     )]
   })
   const chipStatements: D1PreparedStatement[] = []

@@ -238,6 +238,8 @@ def materialize_allocator_ev_fusion(
     market_heat_expected_return: float,
     policy: dict[str, Any] | None = None,
 ) -> dict[str, Any] | None:
+    if (policy or {}).get('l4Distribution') is not None:
+        return None
     artifact = policy_artifact(policy)
     if artifact is None:
         return None

@@ -1,5 +1,5 @@
 export type SelectionSignalOwner = 'allocator_opb_policy'
-export type ExpectedReturnDecisionOwner = 'l4_alpha_ev' | 'allocator_ev_fusion' | null
+export type ExpectedReturnDecisionOwner = 'l4_alpha_ev' | 'allocator_ev_fusion' | 'l4_distribution' | null
 export type AllocationUtilityOwner = 'expected_return_owner' | 'risk_abstention'
 export type ExecutionDecisionOwner = 'allocator_opb_policy'
 export type ExpectedReturnActionGate = 'expected_return_owner' | 'validated_expected_return_required'

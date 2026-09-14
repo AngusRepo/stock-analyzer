@@ -1,3 +1,5 @@
+import { requestL4Replan } from './l4Replan'
+import { l4HasTargetBuyGap, assertL4PlanCurrentPolicy, planIdFromAllocation, planIdFromWatchPoints, readL4PortfolioPlan } from './l4PortfolioPlan'
 import { paperExecutionDate, paperExecutionNow } from './paperExecutionScope'
 import {
   runBuyDebateBatchViaController,
@@ -643,13 +645,18 @@ export async function setupMorningPendingBuys(env: Bindings): Promise<void> {
   try {
     const prevDay = await withD1Retry('previous_trading_day', () => getPrevTradingDay(databaseForDataDomain(env, 'core'), env.KV))
     const sourceRecoDate = prevDay
-    const kellyArtifact = await loadPromotedPaperKellyCalibrationBefore(
+    const kellyArtifact = cfg.l4Distribution ? null : await loadPromotedPaperKellyCalibrationBefore(
       databaseForDataDomain(env, 'paper'),
       pendingDate,
     ).catch((error) => {
       console.warn('[MorningSetup] promoted Paper Kelly artifact unavailable; neutral sizing:', error)
       return null
     })
+    const activeL4Plan = cfg.l4Distribution ? await readL4PortfolioPlan(env) : null
+    if (activeL4Plan) await assertL4PlanCurrentPolicy(env,activeL4Plan,cfg)
+    if (cfg.l4Distribution && (!activeL4Plan || activeL4Plan.signal_date !== sourceRecoDate)) {
+      throw new Error('l4_distribution_pending_plan_unavailable')
+    }
     const configuredBuySignalCount = Math.max(1, Math.floor(cfg.alphaFramework?.allocation?.buySignalCount ?? 3))
     const { results: coreRecommendationRows } = await withD1Retry('buy_recommendations', () => databaseForDataDomain(env, 'core').prepare(`
       SELECT s.id AS stock_id, dr.symbol, dr.name, dr.signal, dr.confidence, dr.has_buy_signal,
@@ -674,28 +681,37 @@ export async function setupMorningPendingBuys(env: Bindings): Promise<void> {
         LEFT JOIN stocks s ON s.symbol = dr.symbol
        WHERE dr.date = ?
          AND dr.eligible_for_pending_buy = 1
-         AND COALESCE(dr.has_buy_signal, 0) = 1
+         AND (?=1 OR COALESCE(dr.has_buy_signal, 0) = 1)
          AND json_valid(dr.alpha_allocation)
-         AND json_extract(dr.alpha_allocation, '$.selected') = 1
+         AND (?=1 OR json_extract(dr.alpha_allocation, '$.selected') = 1)
          AND json_extract(dr.alpha_allocation, '$.engine') = 'sparse_tangent_inverse_risk'
          AND COALESCE(UPPER(s.market), '') NOT IN ('EMERGING', 'ESB')
-        ORDER BY CASE WHEN json_valid(dr.score_components) THEN
-           COALESCE(
-             CAST(json_extract(dr.score_components, '$.finalScore') AS REAL),
-             CAST(json_extract(dr.score_components, '$.total') AS REAL),
-             0
-           ) ELSE 0 END DESC,
-           dr.confidence DESC
-    `).bind(sourceRecoDate).all<BuyRecommendationRow>())
+        ORDER BY CAST(json_extract(dr.alpha_allocation, '$.allocation_rank') AS INTEGER), dr.symbol
+    `).bind(sourceRecoDate, activeL4Plan ? 1 : 0, activeL4Plan ? 1 : 0).all<BuyRecommendationRow>())
     const marketPriceRows = await loadMarketPriceHistoryBySymbols(
       env,
       (coreRecommendationRows ?? []).map((row) => row.symbol),
       { onOrBeforeDate: sourceRecoDate, rowsPerSymbol: 1 },
     )
     const marketPriceBySymbol = new Map(marketPriceRows.map((row) => [row.symbol, row]))
+    const actualL4Account=activeL4Plan ? await (await import('./l4AccountContext')).captureL4AccountContext(env,sourceRecoDate) : null
+    if (actualL4Account && !actualL4Account.complete) throw new Error('l4_morning_account_incomplete')
     const buyRecs = (coreRecommendationRows ?? [])
-      .map((row) => {
-        const price = marketPriceBySymbol.get(row.symbol)
+      .filter(row => {
+        if (!activeL4Plan || !actualL4Account) return true
+        const held=actualL4Account.holdings.find(position=>position.symbol===row.symbol)
+        const price=held?.price ?? Number(marketPriceBySymbol.get(row.symbol)?.close)
+        return Number.isFinite(price) && price>0 && l4HasTargetBuyGap(activeL4Plan,row.symbol,
+          {nav:actualL4Account.nav,shares:held?.shares ?? 0,price})
+      })
+      .map((originalRow) => {
+        const row = activeL4Plan ? { ...originalRow, signal: 'BUY', has_buy_signal: 1,
+          alpha_allocation: JSON.stringify({ engine:'sparse_tangent_inverse_risk', expected_return_owner:'l4_distribution',
+            selected:true, allocation_weight:activeL4Plan.weights[originalRow.symbol], plan_id:activeL4Plan.plan_id,
+            expected_return:activeL4Plan.targets[originalRow.symbol]?.expected_return_gross }),
+        } : originalRow
+        const foundPrice = marketPriceBySymbol.get(row.symbol)
+        const price = activeL4Plan && foundPrice?.date!==sourceRecoDate ? undefined : foundPrice
         return {
           ...row,
           latest_close: price?.close ?? null,
@@ -703,7 +719,7 @@ export async function setupMorningPendingBuys(env: Bindings): Promise<void> {
           latest_avg_price: price?.avg_price ?? null,
         }
       })
-      .filter((row) => row.latest_open != null) as BuyRecommendationRow[]
+      .filter((row) => activeL4Plan || row.latest_open != null) as BuyRecommendationRow[]
     const filterAudit = newFilterAuditSummary(buyRecs.length)
     if (buyRecs.length === 0) {
       await persistPendingBuys(env, pendingDate, [], {
@@ -712,6 +728,7 @@ export async function setupMorningPendingBuys(env: Bindings): Promise<void> {
         prev_day: sourceRecoDate,
         filter_audit: filterAudit,
         empty_reason: 'no_buy_recommendations',
+        ...(activeL4Plan ? {l4_plan_id:activeL4Plan.plan_id} : {}),
       })
       return
     }
@@ -849,6 +866,11 @@ export async function setupMorningPendingBuys(env: Bindings): Promise<void> {
         incAudit(filterAudit, 'cooldown_reject')
         continue
       }
+      const ohlcvEntryPlan = resolveOhlcvEntryPlan(
+        ohlcvLevelsByStock.get(Number(rec.stock_id)), { latestPrice: rec.latest_close })
+      // L3 directional HOLD can still receive a positive L4 target. Execution
+      // reference prices must not require an independent L3 BUY qualification.
+      if (activeL4Plan) rec.ml_entry_price=ohlcvEntryPlan?.entryPrice ?? rec.latest_close
       if (!rec.ml_entry_price || rec.ml_entry_price <= 0) {
         quadrantFilterLog.push({
           symbol: rec.symbol,
@@ -871,8 +893,9 @@ export async function setupMorningPendingBuys(env: Bindings): Promise<void> {
       const alphaContext = parseAlphaContext(forecastData)
       const sparseAllocation = buildSparseAllocationSummary(rec.alpha_allocation)
       const mlVoteSummary = buildMlVoteSummary(forecastData, perModelByStock.get(Number(rec.stock_id)) ?? [])
+      const allocationPlanId = planIdFromAllocation(rec.alpha_allocation)
       const scoreV2 = readScoreV2Snapshot(rec)
-      if (!scoreV2) {
+      if (!scoreV2 && !allocationPlanId) {
         quadrantFilterLog.push({
           symbol: rec.symbol,
           name: rec.name ?? rec.symbol,
@@ -941,10 +964,7 @@ export async function setupMorningPendingBuys(env: Bindings): Promise<void> {
       const entryWatchPoints: string[] = []
       if (mlConfidenceSemantic) entryWatchPoints.push(`ml_confidence_semantic:${mlConfidenceSemantic}`)
       let originalEntry = rec.ml_entry_price
-      const ohlcvEntryPlan = resolveOhlcvEntryPlan(
-        ohlcvLevelsByStock.get(Number(rec.stock_id)),
-        { latestPrice: rec.latest_close },
-      )
+      if (activeL4Plan) entryWatchPoints.push(`l4_execution_reference:${ohlcvEntryPlan ? 'ohlcv_plan' : 'canonical_signal_close'}`)
       if (ohlcvEntryPlan) {
         adjustedEntry = ohlcvEntryPlan.entryPrice
         adjustedStop = ohlcvEntryPlan.stopLoss
@@ -1019,7 +1039,7 @@ export async function setupMorningPendingBuys(env: Bindings): Promise<void> {
         }
       }
 
-      const kellyResult = resolvePaperKellyPct(
+      const kellyResult = allocationPlanId ? null : resolvePaperKellyPct(
         kellyArtifact,
         rec.confidence,
         cfg.position.kelly.maxKellyPct,
@@ -1031,7 +1051,7 @@ export async function setupMorningPendingBuys(env: Bindings): Promise<void> {
       }
 
       entryWatchPoints.push(
-        `execution_pool:${executionRole}:mlEdge=${scoreV2.components.mlEdge};finalScore=${scoreV2.finalScore}`,
+        `execution_pool:${executionRole}:mlEdge=${scoreV2?.components.mlEdge ?? 'missing'};finalScore=${scoreV2?.finalScore ?? 'missing'}`,
       )
       pendingBuys.push({
         symbol: rec.symbol,
@@ -1045,6 +1065,7 @@ export async function setupMorningPendingBuys(env: Bindings): Promise<void> {
         reason: rec.reason ?? '',
         watch_points: [
           ...parseWatchPoints(rec.watch_points),
+          ...(allocationPlanId ? [`l4_plan:${allocationPlanId}`] : []),
           `portfolio_risk:owner=canonical_market_risk_runtime_v1;date=${cb.marketRiskDate ?? 'missing'};status=${cb.marketRiskStatus ?? 'blocked'};level=${cb.marketRiskLevel ?? 'unknown'};score=${cb.marketRiskScore ?? 'na'};max_position_pct=${cb.maxPositionPct};target_exposure=${cb.targetExposurePct ?? 'na'}`,
           ...([
             alphaWatchPoint(alphaContext),
@@ -1058,8 +1079,8 @@ export async function setupMorningPendingBuys(env: Bindings): Promise<void> {
         debate_verdict: debateVerdict,
         debate_status: debateVerdict === 'PENDING' ? 'pending' : 'completed',
         risk_pct: riskPct,
-        kelly_pct: kellyResult?.pct ?? null,
-        score_v2: serializeScoreV2Snapshot(scoreV2),
+        kelly_pct: allocationPlanId ? null : kellyResult?.pct ?? null,
+        score_v2: scoreV2 ? serializeScoreV2Snapshot(scoreV2) : null,
         source: 'morning_setup_l4_sparse',
         original_entry: originalEntry,
       })
@@ -1069,6 +1090,10 @@ export async function setupMorningPendingBuys(env: Bindings): Promise<void> {
     filterAudit.debate_pending = pendingBuys.filter((item) => (item.debate_status ?? 'pending') === 'pending').length
     filterAudit.debate_completed = pendingBuys.filter((item) => (item.debate_status ?? 'pending') === 'completed').length
     const emptyReason = inferEmptyReason(filterAudit)
+    if (activeL4Plan) {
+      const vetoes=quadrantFilterLog.filter(row=>row.stage==='hard_safety').map(row=>row.symbol)
+      if (vetoes.length) await requestL4Replan(env,activeL4Plan.plan_id,vetoes,'pending_setup_hard_veto')
+    }
     const runId = await persistPendingBuys(env, pendingDate, pendingBuys, {
       status: 'ready',
       count: pendingBuys.length,
@@ -1076,6 +1101,7 @@ export async function setupMorningPendingBuys(env: Bindings): Promise<void> {
       final_buy_limit: pendingBuys.length,
       execution_pool_limit: pendingBuys.length,
       configured_buy_signal_count: configuredBuySignalCount,
+      l4_plan_id: activeL4Plan?.plan_id ?? null,
       debate_pool_policy: 'all_l4_sparse_buy_signals',
       execution_pool_policy: 'l4_sparse_final_buy_only',
       filter_audit: filterAudit,
@@ -1195,6 +1221,7 @@ export async function reconcilePendingBuyDebates(
 
   const downgradeMultiplier = cfg.position.downgradeRiskMultiplier ?? 0.5
   const nextPendingBuys: PendingBuy[] = []
+  const l4Rejected = new Map<string, string[]>()
   let failedCount = 0
 
   for (const item of snapshot.pendingBuys) {
@@ -1224,7 +1251,21 @@ export async function reconcilePendingBuyDebates(
       nextPendingBuys.push(transition.allItems[0] as PendingBuy)
       continue
     }
-    if (debate.verdict === 'REJECT') continue
+    if (debate.verdict === 'REJECT') {
+      const planId = planIdFromWatchPoints(item.watch_points)
+      if (planId) l4Rejected.set(planId, [...(l4Rejected.get(planId) ?? []), item.symbol])
+      continue
+    }
+    const downgradePlanId=planIdFromWatchPoints(item.watch_points)
+    if (downgradePlanId && debate.verdict==='DOWNGRADE') {
+      const source=await readL4PortfolioPlan(env,downgradePlanId)
+      if (!source?.targets[item.symbol]) throw new Error('l4_debate_target_missing')
+      if (source.constraints.name_caps?.[item.symbol] == null) {
+        await requestL4Replan(env,downgradePlanId,[],'debate_risk_cap',
+          {[item.symbol]:source.targets[item.symbol].weight*downgradeMultiplier})
+        continue
+      }
+    }
     const breeze2WatchPoint = extractBreeze2WatchPoint(breeze2Context.get(item.symbol))
     nextPendingBuys.push({
       ...item,
@@ -1234,11 +1275,12 @@ export async function reconcilePendingBuyDebates(
       ],
       debate_verdict: debate.verdict,
       debate_status: 'completed',
-      risk_pct: debate.verdict === 'DOWNGRADE' ? item.risk_pct * downgradeMultiplier : item.risk_pct,
+      risk_pct: !downgradePlanId && debate.verdict === 'DOWNGRADE' ? item.risk_pct * downgradeMultiplier : item.risk_pct,
       debate_turns: debate.agentTurns ?? [],
     })
   }
 
+  for (const [planId, symbols] of l4Rejected) await requestL4Replan(env, planId, symbols, 'debate_risk_reject')
   await replacePendingBuyState(env, {
     tradeDate,
     sourceRecoDate,

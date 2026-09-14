@@ -60,7 +60,10 @@ async def _execute_lifecycle(
         continuation_attempt=continuation_attempt, continuation_only=continuation_only)
     if cadence != "daily":
         return await _execute_oof_lifecycle(**kwargs)
-    nav = _execute_daily_nav(end_date=end_date)
+    from services.trading_config_loader import load_merged_trading_config_with_contract
+    config=load_merged_trading_config_with_contract().config
+    new_distribution=config.get('l4Distribution') is not None
+    nav = _execute_daily_nav(end_date=end_date, retire_legacy_owners=new_distribution)
     nav_failed = nav.get("status") == "failed"
     candidates = nav.pop('_adoption_candidates', [])
     if promote and not nav_failed:
@@ -72,6 +75,14 @@ async def _execute_lifecycle(
             nav_failed = True
     else:
         nav['adoption'] = {'status': 'blocked_by_nav_failure' if nav_failed else 'disabled_by_request'}
+    if new_distribution:
+        from services.l4_oof_lifecycle import daily_plan_closure
+        from services.d1_domain_client import client_proxy_for_domain
+        if nav_failed:
+            return {'status':'pending','dependency_retry_required':True,'nav_retry_required':True,'paired_nav_maturity':nav}
+        closure=daily_plan_closure(config,nav['as_of_date'],client_proxy_for_domain('paper'))
+        return {'status':'native_l4_daily_accounted','native_l4_daily_closure':closure,
+                'paired_nav_maturity':nav,'nav_retry_required':False,'promoted':False}
     # A failed NAV handoff must not authorize a challenger pointer transition.
     # Existing serving/trading is untouched; prep and shadow work still proceed.
     # Daily adoption has a single owner before OOF. Its diagnostics may continue,
@@ -92,7 +103,7 @@ async def _execute_lifecycle(
     return result
 
 
-def _execute_daily_nav(*, end_date: str | None, now=None) -> dict[str, Any]:
+def _execute_daily_nav(*, end_date: str | None, now=None, retire_legacy_owners=False) -> dict[str, Any]:
     from datetime import date, datetime, timedelta, timezone
 
     clock = now or datetime.now(timezone.utc)
@@ -133,6 +144,10 @@ def _execute_daily_nav(*, end_date: str | None, now=None) -> dict[str, Any]:
             ('route_candidate_decisions', refresh_registered_route_nav_decisions, {}),
         )
         for component, refresh, extra in projections:
+            if retire_legacy_owners and component!='route_candidate_decisions':
+                result[component]={'status':'retired_or_requires_paired_l3_l4_release','failures':[],
+                    'promotion_allowed':False,'legacy_evidence_retained':True}
+                continue
             try:
                 result[component] = refresh(
                     business_date=business_date, query=client.query, now=clock,
@@ -629,6 +644,10 @@ async def _run() -> int:
                         f"{reason}:attempt={continuation_attempt}"
                     )
                 callback_status = "triggered"
+            elif status=='native_l4_daily_accounted' and cadence=='daily':
+                if not result.get('native_l4_daily_closure') or result.get('nav_retry_required'):
+                    raise RuntimeError('l4_daily_closure_incomplete')
+                callback_status='success'
             elif status in {"materialized", "shadow_evaluated", "idempotent_complete"}:
                 freshness = _oof_freshness_evidence(result)
                 if freshness["status"] != "fresh":
@@ -680,6 +699,9 @@ async def _run() -> int:
             "continuation_only": continuation_only,
             "prep_lifecycle": result.get("prep_lifecycle") if isinstance(result.get("prep_lifecycle"), dict) else {},
         }
+        if result.get('native_l4_daily_closure'):
+            payload['metadata']['native_l4_daily_closure']=result['native_l4_daily_closure']
+            payload['metadata'].pop('oof_freshness',None)
         if isinstance(result.get("paired_nav_maturity"), dict):
             payload["metadata"]["paired_nav_maturity"] = _nav_callback_summary(result["paired_nav_maturity"])
             payload["metadata"]["nav_retry_required"] = bool(result.get("nav_retry_required"))

@@ -61,6 +61,10 @@ def capture_native_bootstrap(*, domain_queries: dict, ownership: dict[str, str],
                 # Paper-owned shared calibrations / pending state have no
                 # account field in the native schema; clone them only at start.
                 where, args = '', []
+            if table.startswith('l4_'):
+                # Private comparisons own fresh plans and rewards, never the formal account's ledger.
+                rows[table] = []
+                continue
             copied = []
             while True:
                 page = query('SELECT * FROM ' + table + where + ' ORDER BY ' + ','.join(primary) + ' LIMIT ? OFFSET ?',

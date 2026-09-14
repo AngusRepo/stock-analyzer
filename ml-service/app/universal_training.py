@@ -780,13 +780,10 @@ def prep_universal_batch(req: UniversalPrepRequest) -> dict:
     ]
     if "target_5d" in pooled.columns:
         select_cols.append("target_5d")
-    if "target_dir" in pooled.columns:
-        select_cols.append("target_dir")
+    # Rank/T5 eligibility must not depend on a separate future barrier hit.
     required_targets = ["target_rank"]
     if "target_5d" in select_cols:
         required_targets.append("target_5d")
-    if "target_dir" in select_cols:
-        required_targets.append("target_dir")
     raw_selected = pooled.select(select_cols)
     missingness_by_feature = {
         col: float(raw_selected[col].null_count() / max(raw_selected.height, 1))
@@ -1020,6 +1017,12 @@ def train_universal_from_gcs(req: UniversalTrainRequest) -> dict:
         and req.test_start is not None
         and req.test_end is not None
     )
+    from .deployment_refit import requested, validate_full_history
+    full_fit = requested(req.model_dump())
+    deployment_fit = validate_full_history(
+        signal_dates=dates_arr, label_known_dates=label_known_dates_arr,
+        cutoff=req.as_of_date or req.run_date,
+    ) if full_fit else None
     original_output_version = req.output_model_version
     req = normalize_universal_lifecycle_request(
         req,
@@ -1445,7 +1448,7 @@ def train_universal_from_gcs(req: UniversalTrainRequest) -> dict:
                 "computed_at": now_utc_iso(),
                 "models": ic_tracking,
                 "circuit_breaker": circuit_breaker_triggered,
-                "train_samples": len(X_train),
+                "train_samples": fitted_rows,
                 "test_samples": len(X_test),
             }
             if walk_forward_mode:
@@ -1479,7 +1482,7 @@ def train_universal_from_gcs(req: UniversalTrainRequest) -> dict:
         print("[IC-Breaker] At least one model OOS IC <= 0; models still saved, ensemble will downweight")
 
     try:
-        medians_arr = np.nanmedian(X_train, axis=0)
+        medians_arr = np.nanmedian(X if full_fit else X_train, axis=0)
         feature_medians = {
             feature_names[i]: float(medians_arr[i]) if not np.isnan(medians_arr[i]) else 0.0
             for i in range(len(feature_names))
@@ -1545,6 +1548,15 @@ def train_universal_from_gcs(req: UniversalTrainRequest) -> dict:
         )
     else:
         prep_freshness = {"status": "skipped", "reason": "walk_forward_or_explicit_native_research"}
+    if deployment_fit is not None:
+        from sklearn.base import clone
+        for model_name, validation_model in list(trained_models.items()):
+            print(f"[TrainUniversal] full-history refit {model_name} rows={len(X)}", flush=True)
+            deployment_model = clone(validation_model)
+            deployment_model.fit(X, y)
+            trained_models[model_name] = deployment_model
+        deployment_fit["performed"] = True
+    fitted_rows = len(X) if deployment_fit else len(X_train)
     manifest = build_training_run_manifest(
         run_id=training_run_id,
         model_names=list(trained_models.keys()),
@@ -1552,7 +1564,9 @@ def train_universal_from_gcs(req: UniversalTrainRequest) -> dict:
         dataset={
             "source": f"{gcs_prefix}/prep",
             "rows": int(len(X)),
-            "train_rows": int(len(X_train)),
+            "train_rows": int(fitted_rows),
+            "validation_train_rows": int(len(X_train)),
+            "deployment_fit": deployment_fit,
             "test_rows": int(len(X_test)),
             "date_min": date_min,
             "date_max": date_max,
@@ -1579,6 +1593,7 @@ def train_universal_from_gcs(req: UniversalTrainRequest) -> dict:
     extra_meta = attach_prep_lineage_aliases({
         "training_run_id": training_run_id,
         "training_manifest_path": manifest_path,
+        "deployment_fit": deployment_fit,
         "target_semantic_version": SEQUENCE_RETURN_SEMANTIC_VERSION,
         "rank_ic_semantic_version": RANK_IC_SEMANTIC_VERSION,
         "feature_semantic_version": FEATURE_SEMANTIC_VERSION,
@@ -1658,7 +1673,7 @@ def train_universal_from_gcs(req: UniversalTrainRequest) -> dict:
                     model_name=model_name,
                     model=model_obj,
                     feature_names=feature_names,
-                    sample_count=len(X_train),
+                    sample_count=fitted_rows,
                     version=req.output_model_version,
                     feature_medians=feature_medians,
                     extra_metadata=model_extra_meta or None,
@@ -1708,7 +1723,7 @@ def train_universal_from_gcs(req: UniversalTrainRequest) -> dict:
                 model_name,
                 model_obj,
                 feature_names,
-                len(X_train),
+                fitted_rows,
                 feature_medians=feature_medians,
                 gcs_prefix=req.gcs_prefix,
                 extra_metadata=model_extra_meta or None,
@@ -1731,7 +1746,7 @@ def train_universal_from_gcs(req: UniversalTrainRequest) -> dict:
                 "gcs_prefix": req.gcs_prefix or "universal",
                 "window_id": req.window_id,
                 "total_samples": len(X),
-                "train_samples": len(X_train),
+                "train_samples": fitted_rows,
                 "feature_count": len(feature_names),
                 "elapsed_s": elapsed,
                 "circuit_breaker": circuit_breaker_triggered,
@@ -1762,7 +1777,7 @@ def train_universal_from_gcs(req: UniversalTrainRequest) -> dict:
     return {
         "type": "universal",
         "total_samples": len(X),
-        "train_samples": len(X_train),
+        "train_samples": fitted_rows,
         "test_samples": len(X_test),
         "feature_count": len(feature_names),
         "embargo_days": 10,

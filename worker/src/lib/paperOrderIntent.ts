@@ -50,14 +50,20 @@ export async function acquirePaperBuyIntent(
   env: Bindings,
   tradeDate: string,
   symbol: string,
+  targetRevision?: {planId:string; currentShares:number},
 ): Promise<PaperOrderIntent> {
-  const intentKey = buildPaperBuyIntentKey(tradeDate, symbol)
+  if (targetRevision && (!/^[a-f0-9]{64}$/.test(targetRevision.planId) || !Number.isSafeInteger(targetRevision.currentShares) || targetRevision.currentShares<0))
+    throw new Error('l4_buy_intent_revision_invalid')
+  const intentKey = buildPaperBuyIntentKey(tradeDate, symbol) + (targetRevision ? `:l4:${targetRevision.planId}:from:${targetRevision.currentShares}` : '')
+  const revisionGuard = targetRevision ? ` AND EXISTS(SELECT 1 FROM l4_portfolio_head_v1 WHERE account_id=? AND plan_id=?)
+    AND COALESCE((SELECT shares FROM paper_positions WHERE account_id=? AND symbol=?),0)=?` : ''
+  const revisionArgs = targetRevision ? [paperAccountId(),targetRevision.planId,paperAccountId(),symbol,targetRevision.currentShares] : []
   try {
     const result = await paperDomainDatabase(env).prepare(
       `INSERT OR IGNORE INTO paper_order_intents
         (intent_key, account_id, trade_date, symbol, side, source, status, created_at, updated_at)
-       VALUES (?, ?, ?, ?, 'buy', 'auto_ml', 'running', datetime('now'), datetime('now'))`,
-    ).bind(intentKey, paperAccountId(), tradeDate, symbol).run()
+       SELECT ?, ?, ?, ?, 'buy', 'auto_ml', 'running', datetime('now'), datetime('now') WHERE 1=1${revisionGuard}`,
+    ).bind(intentKey, paperAccountId(), tradeDate, symbol,...revisionArgs).run()
     if (Number(result.meta?.changes ?? 0) > 0) {
       return { acquired: true, intentKey, fallback: false }
     }
@@ -76,8 +82,8 @@ export async function acquirePaperBuyIntent(
           AND (
             status='failed'
             OR (status='running' AND updated_at <= datetime('now', '-15 minutes'))
-          )`,
-    ).bind(intentKey).run()
+          )${revisionGuard}`,
+    ).bind(intentKey,...revisionArgs).run()
     const recovered = Number(recover.meta?.changes ?? 0) > 0
     return { acquired: recovered, intentKey, fallback: false, recovered, reason: recovered ? 'recovered' : existing?.status ?? 'duplicate' }
   } catch (error) {
@@ -103,4 +109,23 @@ export async function completePaperBuyIntent(
     if (isMissingTableError(error)) throw new Error('paper_order_intents_missing')
     throw error
   }
+}
+
+/** Append after the native buy order in the SAME D1 batch as its position. */
+export function l4BuySettlementStatements(env:Bindings, input:{symbol:string;totalCost:number;tradeDate:string;
+  settlementDate:string;intentKey:string;status:'partial'|'filled'}):D1PreparedStatement[] {
+  const {symbol,totalCost,tradeDate,settlementDate,intentKey,status}=input
+  return [
+    paperDomainDatabase(env).prepare(`INSERT INTO paper_settlements
+      (account_id,order_id,symbol,side,amount,trade_date,settlement_date)
+      SELECT ?,id,?,'buy',?,?,? FROM paper_orders
+       WHERE account_id=? AND symbol=? AND side='buy' AND json_extract(note,'$.intent_key')=?
+       ORDER BY id DESC LIMIT 1`).bind(paperAccountId(),symbol,totalCost,tradeDate,settlementDate,
+         paperAccountId(),symbol,intentKey),
+    paperDomainDatabase(env).prepare(`UPDATE paper_order_intents
+       SET status=?,order_id=(SELECT id FROM paper_orders WHERE account_id=? AND symbol=?
+         AND side='buy' AND json_extract(note,'$.intent_key')=? ORDER BY id DESC LIMIT 1),
+         error_message=NULL,updated_at=datetime('now') WHERE intent_key=?`)
+      .bind(status,paperAccountId(),symbol,intentKey,intentKey),
+  ]
 }

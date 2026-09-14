@@ -40,6 +40,8 @@ S12_STRUCTURE_JOB_NAME="${S12_STRUCTURE_JOB_NAME:-s12-structure-batch}"
 OPTUNA_JOB_NAME="${OPTUNA_JOB_NAME:-optuna-research-sweep}"
 BACKTEST_RESEARCH_JOB_NAME="${BACKTEST_RESEARCH_JOB_NAME:-weekly-backtest-research}"
 OOF_MATERIALIZE_JOB_NAME="${OOF_MATERIALIZE_JOB_NAME:-active8-oof-materialize}"
+L4_DISTRIBUTION_JOB_NAME="${L4_DISTRIBUTION_JOB_NAME:-l4-distribution-refresh}"
+L4_DISTRIBUTION_JOB_TIMEOUT="${L4_DISTRIBUTION_JOB_TIMEOUT:-3600s}"
 DATASET_SNAPSHOT_JOB_NAME="${DATASET_SNAPSHOT_JOB_NAME:-dataset-snapshot-export}"
 OPTUNA_JOB_TIMEOUT="${OPTUNA_JOB_TIMEOUT:-10800s}"
 BACKTEST_RESEARCH_JOB_TIMEOUT="${BACKTEST_RESEARCH_JOB_TIMEOUT:-3600s}"
@@ -115,7 +117,7 @@ FINLAB_BACKFILL_EXECUTOR="${FINLAB_BACKFILL_EXECUTOR:-modal}"
 STRATEGY_MINING_JOB_NAME="${STRATEGY_MINING_JOB_NAME:-strategy-mining-research}"
 STRATEGY_MINING_EXECUTION_ENABLED="${STRATEGY_MINING_EXECUTION_ENABLED:-true}"
 STRATEGY_MINING_BACKEND="${STRATEGY_MINING_BACKEND:-modal}"
-RUNTIME_ENV_VARS="GCS_BUCKET_NAME=${GCS_BUCKET_NAME},RETRAIN_LOCK_BUCKET=${RETRAIN_LOCK_BUCKET},GCP_PROJECT_ID=${GCP_PROJECT_ID},GCP_REGION=${GCP_REGION},PIPELINE_JOB_NAME=${PIPELINE_JOB_NAME},VERIFY_JOB_NAME=${VERIFY_JOB_NAME},SCREENER_JOB_NAME=${SCREENER_JOB_NAME},S12_STRUCTURE_JOB_NAME=${S12_STRUCTURE_JOB_NAME},OPTUNA_JOB_NAME=${OPTUNA_JOB_NAME},BACKTEST_RESEARCH_JOB_NAME=${BACKTEST_RESEARCH_JOB_NAME},OOF_MATERIALIZE_JOB_NAME=${OOF_MATERIALIZE_JOB_NAME},STOCKVISION_WORKER_URL=${STOCKVISION_WORKER_URL},ML_CONTROLLER_PUBLIC_URL=${ML_CONTROLLER_PUBLIC_URL},CF_D1_DB_ID=${CF_D1_DB_ID},CF_KV_NAMESPACE_ID=${CF_KV_NAMESPACE_ID},S12_RESEARCH_KBARS_URL=https://shioaji-research-530028717113.asia-east1.run.app,SHIOAJI_CERT_PATH=${SHIOAJI_CERT_MOUNT_PATH},MODAL_PREDICT_BATCH_SIZE_CANDIDATES=${MODAL_PREDICT_BATCH_SIZE_CANDIDATES},MODAL_PREDICT_BATCH_SIZE_OBSERVATION_SOURCE=${MODAL_PREDICT_BATCH_SIZE_OBSERVATION_SOURCE},TIMESFM_MIN_SEQUENCE_COVERAGE=${TIMESFM_MIN_SEQUENCE_COVERAGE},TIMESFM_MIN_SEQUENCE_POINTS=${TIMESFM_MIN_SEQUENCE_POINTS},FINLAB_BACKFILL_EXECUTOR=${FINLAB_BACKFILL_EXECUTOR},STRATEGY_MINING_JOB_NAME=${STRATEGY_MINING_JOB_NAME},STRATEGY_MINING_EXECUTION_ENABLED=${STRATEGY_MINING_EXECUTION_ENABLED},STRATEGY_MINING_BACKEND=${STRATEGY_MINING_BACKEND}"
+RUNTIME_ENV_VARS="GCS_BUCKET_NAME=${GCS_BUCKET_NAME},RETRAIN_LOCK_BUCKET=${RETRAIN_LOCK_BUCKET},GCP_PROJECT_ID=${GCP_PROJECT_ID},GCP_REGION=${GCP_REGION},PIPELINE_JOB_NAME=${PIPELINE_JOB_NAME},VERIFY_JOB_NAME=${VERIFY_JOB_NAME},SCREENER_JOB_NAME=${SCREENER_JOB_NAME},S12_STRUCTURE_JOB_NAME=${S12_STRUCTURE_JOB_NAME},OPTUNA_JOB_NAME=${OPTUNA_JOB_NAME},BACKTEST_RESEARCH_JOB_NAME=${BACKTEST_RESEARCH_JOB_NAME},OOF_MATERIALIZE_JOB_NAME=${OOF_MATERIALIZE_JOB_NAME},L4_DISTRIBUTION_JOB_NAME=${L4_DISTRIBUTION_JOB_NAME},STOCKVISION_WORKER_URL=${STOCKVISION_WORKER_URL},ML_CONTROLLER_PUBLIC_URL=${ML_CONTROLLER_PUBLIC_URL},CF_D1_DB_ID=${CF_D1_DB_ID},CF_KV_NAMESPACE_ID=${CF_KV_NAMESPACE_ID},S12_RESEARCH_KBARS_URL=https://shioaji-research-530028717113.asia-east1.run.app,SHIOAJI_CERT_PATH=${SHIOAJI_CERT_MOUNT_PATH},MODAL_PREDICT_BATCH_SIZE_CANDIDATES=${MODAL_PREDICT_BATCH_SIZE_CANDIDATES},MODAL_PREDICT_BATCH_SIZE_OBSERVATION_SOURCE=${MODAL_PREDICT_BATCH_SIZE_OBSERVATION_SOURCE},TIMESFM_MIN_SEQUENCE_COVERAGE=${TIMESFM_MIN_SEQUENCE_COVERAGE},TIMESFM_MIN_SEQUENCE_POINTS=${TIMESFM_MIN_SEQUENCE_POINTS},FINLAB_BACKFILL_EXECUTOR=${FINLAB_BACKFILL_EXECUTOR},STRATEGY_MINING_JOB_NAME=${STRATEGY_MINING_JOB_NAME},STRATEGY_MINING_EXECUTION_ENABLED=${STRATEGY_MINING_EXECUTION_ENABLED},STRATEGY_MINING_BACKEND=${STRATEGY_MINING_BACKEND}"
 RUNTIME_ENV_VARS="${RUNTIME_ENV_VARS},DATASET_SNAPSHOT_JOB_NAME=${DATASET_SNAPSHOT_JOB_NAME}"
 RUNTIME_ENV_VARS="${RUNTIME_ENV_VARS},CF_D1_LEARNING_DB_ID=${CF_D1_LEARNING_DB_ID}"
 RUNTIME_ENV_VARS="${RUNTIME_ENV_VARS},CF_D1_OPS_DB_ID=${CF_D1_OPS_DB_ID}"
@@ -1016,6 +1018,58 @@ sync_oof_materialize_job() {
   echo ""
 }
 
+sync_l4_distribution_job() {
+  local env_file="$1"
+  local service_account_args=()
+  if [ -n "${VERIFY_JOB_SERVICE_ACCOUNT:-}" ]; then
+    service_account_args=(--service-account="$VERIFY_JOB_SERVICE_ACCOUNT")
+  fi
+
+  if gcloud run jobs describe "$L4_DISTRIBUTION_JOB_NAME" \
+      --region="$REGION" \
+      --format="value(metadata.name)" >/dev/null 2>&1; then
+    echo "=== L4 Job: Update Job $L4_DISTRIBUTION_JOB_NAME ==="
+    if ! gcloud run jobs update "$L4_DISTRIBUTION_JOB_NAME" \
+        --region="$REGION" \
+        --image="$NEW_IMAGE" \
+        --command=python \
+        --args=-m \
+        --args=scripts.l4_distribution_refresh_job \
+        --cpu="${L4_DISTRIBUTION_JOB_CPU:-4}" \
+        --memory="${L4_DISTRIBUTION_JOB_MEMORY:-8Gi}" \
+        --task-timeout="$L4_DISTRIBUTION_JOB_TIMEOUT" \
+        --max-retries=0 \
+        "${service_account_args[@]}" \
+        --update-labels="$PROVENANCE_LABELS" \
+        --update-secrets="$RUN_SECRET_BINDINGS" \
+        --env-vars-file="$env_file"; then
+      echo "L4 distribution candidate job update failed" >&2
+      exit 4
+    fi
+  else
+    echo "=== L4 Job: Create Job $L4_DISTRIBUTION_JOB_NAME ==="
+    if ! gcloud run jobs create "$L4_DISTRIBUTION_JOB_NAME" \
+        --region="$REGION" \
+        --image="$NEW_IMAGE" \
+        --command=python \
+        --args=-m \
+        --args=scripts.l4_distribution_refresh_job \
+        --cpu="${L4_DISTRIBUTION_JOB_CPU:-4}" \
+        --memory="${L4_DISTRIBUTION_JOB_MEMORY:-8Gi}" \
+        --task-timeout="$L4_DISTRIBUTION_JOB_TIMEOUT" \
+        --max-retries=0 \
+        "${service_account_args[@]}" \
+        --labels="$PROVENANCE_LABELS" \
+        --set-secrets="$RUN_SECRET_BINDINGS" \
+        --env-vars-file="$env_file"; then
+      echo "L4 distribution candidate job create failed" >&2
+      exit 4
+    fi
+  fi
+  echo "L4 distribution candidate job sync succeeded"
+  echo ""
+}
+
 sync_dataset_snapshot_job() {
   local env_file="$1"
   local service_account_args=()
@@ -1326,6 +1380,7 @@ sync_optuna_job "$VERIFY_JOB_ENV_FILE"
 sync_backtest_research_job "$BACKTEST_RESEARCH_JOB_ENV_FILE"
 sync_strategy_mining_job "$STRATEGY_MINING_JOB_ENV_FILE"
 sync_oof_materialize_job "$OOF_MATERIALIZE_JOB_ENV_FILE"
+sync_l4_distribution_job "$VERIFY_JOB_ENV_FILE"
 sync_dataset_snapshot_job "$VERIFY_JOB_ENV_FILE"
 
 echo "=== Step 4/4: Verify Service and Job image match ==="
@@ -1413,6 +1468,17 @@ DATASET_SNAPSHOT_JOB_COMMAND=$(gcloud run jobs describe "$DATASET_SNAPSHOT_JOB_N
   --format="value(spec.template.spec.template.spec.containers[0].command[0])")
 DATASET_SNAPSHOT_JOB_ARGS=$(gcloud run jobs describe "$DATASET_SNAPSHOT_JOB_NAME" --region="$REGION" \
   --format="value(spec.template.spec.template.spec.containers[0].args)")
+
+L4_DISTRIBUTION_JOB_IMG=$(gcloud run jobs describe "$L4_DISTRIBUTION_JOB_NAME" --region="$REGION" \
+  --format="value(spec.template.spec.template.spec.containers[0].image)")
+L4_DISTRIBUTION_JOB_COMMAND=$(gcloud run jobs describe "$L4_DISTRIBUTION_JOB_NAME" --region="$REGION" \
+  --format="value(spec.template.spec.template.spec.containers[0].command[0])")
+L4_DISTRIBUTION_JOB_ARGS=$(gcloud run jobs describe "$L4_DISTRIBUTION_JOB_NAME" --region="$REGION" \
+  --format="value(spec.template.spec.template.spec.containers[0].args)")
+if [ "$SERVICE_IMG" != "$L4_DISTRIBUTION_JOB_IMG" ] || [ "$L4_DISTRIBUTION_JOB_COMMAND" != "python" ] || [ "$L4_DISTRIBUTION_JOB_ARGS" != "-m;scripts.l4_distribution_refresh_job" ]; then
+  echo "VERIFICATION FAILED - L4 candidate job image or entrypoint differs" >&2
+  exit 5
+fi
 
 if [ "$SERVICE_IMG" != "$JOB_IMG" ] || [ "$SERVICE_IMG" != "$VERIFY_JOB_IMG" ] || [ "$SERVICE_IMG" != "$SCREENER_JOB_IMG" ] || [ "$SERVICE_IMG" != "$S12_STRUCTURE_JOB_IMG" ] || [ "$SERVICE_IMG" != "$OPTUNA_JOB_IMG" ] || [ "$SERVICE_IMG" != "$BACKTEST_RESEARCH_JOB_IMG" ] || [ "$SERVICE_IMG" != "$STRATEGY_MINING_JOB_IMG" ] || [ "$SERVICE_IMG" != "$OOF_MATERIALIZE_JOB_IMG" ]; then
   echo "❌ VERIFICATION FAILED — images differ:" >&2
@@ -1569,6 +1635,7 @@ echo "  Verify job       : synced"
 echo "  Optuna job       : synced"
 echo "  Weekly backtest  : synced"
 echo "  Strategy mining  : synced"
+echo "  L4 candidate job : synced; no training execution triggered"
 [ -n "$MODAL_RESULT" ] && echo "  $MODAL_RESULT"
 echo ""
 echo "Next step: trigger pipeline-v2 to verify new code path executes. Example:"

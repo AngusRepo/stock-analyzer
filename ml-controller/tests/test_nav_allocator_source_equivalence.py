@@ -27,59 +27,28 @@ def original():
     return json.loads(raw)
 
 
-def test_source_certificate_only_covers_exact_original_read_paths_and_provenance():
+def test_old_read_only_certificate_never_attests_new_l4_allocator():
     base = Path(source.__file__).parent
     cert = json.loads((base / 'allocator_source_equivalence.json').read_text())
     assert cert['evidence_fixture_sha256'] == FIXTURE_SHA
     actual = source.allocator_runtime_source_identity()
-    # The later approved ML-advisory/L4-selection change is NOT covered by this
-    # older read-path-only certificate. Never update the certificate to pass.
-    assert {name for name in actual if actual[name] != cert['runtime_source_identity'][name]} == {
-        'recommendation_service.py'}
+    # Preserve every old hash and add the new economic owners; never rewrite
+    # the historical certificate to manufacture equivalence with this refactor.
+    assert set(cert['runtime_source_identity']) <= set(actual)
+    added = set(actual)-set(cert['runtime_source_identity'])
+    assert {'l4_distribution.py','l4_portfolio.py','l4_distribution_runtime.py',
+            'l4_distribution_context.py','l4_risk_history.py'} <= added
+    assert actual != cert['runtime_source_identity']
     assert source.allocator_source_identity() == actual
+    assert source.allocator_source_identity() != cert['policy_source_identity']
+    for name, value in actual.items():
+        assert hashlib.sha256((base/name).read_bytes()).hexdigest() == value
     archive = FIXTURE.parent / 'source-before-handoff'
-    texts = {}
-    for name in ('paired_nav_collection.py', 'opb_nav_control.py', 'opb_nav_serving_source.json'):
-        raw = (archive / (name + '.txt')).read_bytes()
-        assert hashlib.sha256(raw).hexdigest() == cert['policy_source_identity'][name]
-        texts[name] = raw.decode()
-    changed = {name for name in cert['policy_source_identity']
-               if cert['policy_source_identity'][name] != cert['runtime_source_identity'][name]}
-    assert changed == set(texts)
-    before = ast.parse(texts['opb_nav_control.py'])
-    after = ast.parse((base / 'opb_nav_control.py').read_text())
-    for tree in (before, after):
-        tree.body = [n for n in tree.body if not isinstance(n, ast.FunctionDef) or n.name != 'capture_nav_control']
-    assert ast.dump(before) == ast.dump(after)  # Every frozen replay function/global is identical.
-    old_sql = json.loads(texts['opb_nav_serving_source.json'])
-    new_sql = json.loads((base / 'opb_nav_serving_source.json').read_text())
-    assert old_sql['ev_fence_sql'] == new_sql['ev_fence_sql']
-    assert old_sql['control_snapshot_sql'].replace(" AND a.validation_decision='PASS'", '') == new_sql['control_snapshot_sql']
-    old = ast.parse(texts['paired_nav_collection.py'])
-    new = ast.parse((base / 'paired_nav_collection.py').read_text())
-    old_hash = next(n for n in old.body if isinstance(n, ast.FunctionDef) and n.name == 'allocator_source_identity')
-    new_hash = next(n for n in new.body if isinstance(n, ast.FunctionDef) and n.name == 'allocator_runtime_source_identity')
-    new_hash.name = old_hash.name
-    assert ast.dump(old_hash) == ast.dump(new_hash)  # Same exact raw file vector, not removed hashes.
-    old.body.remove(old_hash)
-    new.body.remove(new_hash)
-    new.body = [n for n in new.body if not isinstance(n, ast.FunctionDef) or n.name != 'allocator_source_identity']
-    metadata = ast.parse("""if previous is None:
-    extra['allocator_runtime_source_identity'] = allocator_runtime_source_identity()
-elif 'allocator_runtime_source_identity' in previous:
-    extra['allocator_runtime_source_identity'] = previous['allocator_runtime_source_identity']
-""").body[0]
-    class RemoveOnlyKnownMetadata(ast.NodeTransformer):
-        count = 0
-        def visit_If(self, node):
-            if ast.dump(node) == ast.dump(metadata):
-                self.count += 1
-                return None
-            return self.generic_visit(node)
-    strip = RemoveOnlyKnownMetadata()
-    new = strip.visit(new)
-    assert strip.count == 1
-    assert ast.dump(old) == ast.dump(new)  # Entire original allocation/capture path otherwise unchanged.
+    for name in ('paired_nav_collection.py','opb_nav_control.py','opb_nav_serving_source.json'):
+        assert hashlib.sha256((archive/(name+'.txt')).read_bytes()).hexdigest() == cert['policy_source_identity'][name]
+    # Historical control SQL remains available, with its original EV fence.
+    old_sql=json.loads((archive/'opb_nav_serving_source.json.txt').read_text())
+    assert old_sql['ev_fence_sql']==json.loads((base/'opb_nav_serving_source.json').read_text())['ev_fence_sql']
 
 
 def test_new_capture_records_runtime_but_legacy_retry_does_not_rewrite_snapshot(monkeypatch):

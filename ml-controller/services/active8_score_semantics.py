@@ -117,7 +117,8 @@ def normalize_active8_cross_sectional_scores(
         validate_active8_ensemble_artifact(active8_ensemble, pool_models or {}, nav_authority=nav_authority)
         selected_models = list(active8_ensemble["selected_models"])
         required_core_models = [name for name in CORE_CROSS_SECTIONAL_ALPHA_MODELS if name in selected_models]
-        eligible_models = [name for name in eligible_models if name in selected_models]
+        # Selection controls ensemble weights, not downstream information.
+        # Preserve every verified available model score for full-signal L4.
         minimum_core_models = len(required_core_models)
     ineligible_artifact_models = [
         model_name for model_name in ACTIVE_ALPHA_MODELS if model_name not in eligible_models
@@ -158,6 +159,8 @@ def normalize_active8_cross_sectional_scores(
         optional_missing_models = [name for name in OPTIONAL_SEQUENCE_ALPHA_MODELS if name not in ranks]
         missing_versions = [name for name in available_models if name not in normalized_versions]
         row_blockers = [f"rank_missing:{name}" for name in missing_core_scores]
+        if selected_models and not any(name in ranks for name in selected_models):
+            row_blockers.append("selected_model_evidence_missing")
         row_blockers.extend(f"artifact_version_missing:{name}" for name in missing_versions)
         if len(required_core_models) < minimum_core_models:
             row_blockers.append(

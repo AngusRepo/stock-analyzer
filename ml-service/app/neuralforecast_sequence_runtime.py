@@ -423,11 +423,11 @@ def _dense_oof_eval_panel(
     pred_len: int,
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     signal_idx = calendar.index(signal_date)
-    if signal_idx < seq_len - 1 or signal_idx + pred_len >= len(calendar):
+    if signal_idx < seq_len - 1:
         return [], []
     context_dates = calendar[signal_idx - seq_len + 1:signal_idx + 1]
-    entry_date = calendar[signal_idx + 1]
-    outcome_date = calendar[signal_idx + pred_len]
+    entry_date = calendar[signal_idx + 1] if signal_idx + 1 < len(calendar) else None
+    outcome_date = calendar[signal_idx + pred_len] if signal_idx + pred_len < len(calendar) else None
     context_rows: list[dict[str, Any]] = []
     labels: list[dict[str, Any]] = []
     for record in records:
@@ -451,6 +451,7 @@ def _dense_oof_eval_panel(
             "unique_id": symbol,
             "market": str(record.get("market") or record.get("market_type") or "TW").upper(),
             "entry_open": entry_open,
+            "last_close": float(values[-1]),
             "actual_last": outcome_close,
             "signal_date": signal_date,
             "outcome_date": outcome_date,
@@ -528,6 +529,7 @@ def _train_dense_purged_oof(
     test_dates = [date for date in calendar if test_start <= date <= test_end]
     evaluation_records = _dense_oof_evaluation_records(model_name, records, panel_records)
     all_rows: list[dict[str, Any]] = []
+    asof_rows: list[dict[str, Any]] = []
     daily_metrics: list[dict[str, Any]] = []
     import pandas as pd
 
@@ -539,7 +541,7 @@ def _train_dense_purged_oof(
             seq_len=seq_len,
             pred_len=pred_len,
         )
-        if len(labels) < 10 or not context_rows:
+        if not context_rows:
             continue
         pred_by_id, _pred_col = _predict_horizon_by_id_with_column(
             nf,
@@ -547,6 +549,20 @@ def _train_dense_purged_oof(
             horizon_idx=pred_len,
             model_name=model_name,
         )
+        # Decision predictions exist before outcomes mature. Persist them apart
+        # from labelled OOF rows so replay never selects on future availability.
+        from .sequence_training import forecast_return_from_signal_close
+        anchors = {str(row["unique_id"]): float(row["y"]) for row in context_rows}
+        for uid, forecast in pred_by_id.items():
+            asof_rows.append({
+                "date": signal_date, "symbol": uid,
+                "forecast_price": float(forecast), "signal_close": anchors[uid],
+                "raw_score": float(forecast_return_from_signal_close(
+                    np.asarray(float(forecast)), np.asarray(anchors[uid])
+                )),
+            })
+        if len(labels) < 10:
+            continue
         pred_return: list[float] = []
         actual_return: list[float] = []
         market_segments: list[str] = []
@@ -556,7 +572,10 @@ def _train_dense_purged_oof(
                 continue
             entry_open = float(label["entry_open"])
             cost = CANONICAL_ROUNDTRIP_COST_BPS / 10000.0
-            predicted = (float(pred_by_id[uid]) - entry_open) / max(entry_open, 1e-9) - cost
+            from .sequence_training import forecast_return_from_signal_close
+            predicted = float(forecast_return_from_signal_close(
+                np.asarray(float(pred_by_id[uid])), np.asarray(float(label["last_close"]))
+            ))
             actual = (float(label["actual_last"]) - entry_open) / max(entry_open, 1e-9) - cost
             pred_return.append(predicted)
             actual_return.append(actual)
@@ -586,7 +605,7 @@ def _train_dense_purged_oof(
     panel_report["evaluation_universe_series"] = len(evaluation_records)
     panel_report["evaluation_prediction_rows"] = len(all_rows)
     panel_report["training_series_cap_applied"] = len(panel_records) < len(records)
-    if not all_rows:
+    if not asof_rows:
         raise ValueError("oof_sequence_dense_predictions_empty")
     non_overlapping_metrics = daily_metrics[::max(1, pred_len)]
     model_cpcv = build_model_cpcv_evidence(
@@ -608,7 +627,40 @@ def _train_dense_purged_oof(
     }
     persist_oof_artifact = bool(payload.get("persist_oof_artifact", True))
     oof_artifact = None
+    asof_artifact = None
+    fold_model_artifact = None
     if persist_oof_artifact:
+        fold_prefix = (
+            f"{gcs_prefix.rstrip('/')}/oof/{str(payload.get('cohort_id') or '')}/"
+            f"{str(payload.get('fold_id') or payload.get('window_id') or '')}"
+        )
+        # Content addressing makes research recovery possible without overwriting
+        # any serving model or a previously completed fold.
+        with tempfile.TemporaryDirectory(prefix="nf_oof_replay_") as tmp:
+            model_dir = Path(tmp) / "model"
+            nf.save(path=str(model_dir), overwrite=True, save_dataset=False)
+            raw_model = _zip_dir(model_dir)
+        model_checksum = hashlib.sha256(raw_model).hexdigest()
+        model_path = f"{fold_prefix}/{model_name.lower()}.{model_checksum}.zip"
+        model_blob = bucket.blob(model_path)
+        if not model_blob.exists():
+            try:
+                model_blob.upload_from_string(raw_model, content_type="application/zip", if_generation_match=0)
+            except Exception:
+                if not model_blob.exists():
+                    raise
+        if hashlib.sha256(model_blob.download_as_bytes()).hexdigest() != model_checksum:
+            raise ValueError("oof_fold_model_checksum_mismatch")
+        fold_model_artifact = {"path": model_path, "checksum": model_checksum}
+        asof_artifact = _save_immutable_oof_fold_evidence(
+            bucket, path=f"{fold_prefix}/{model_name.lower()}.asof-predictions.json",
+            evidence={
+                "schema_version": "sequence-asof-predictions-v1",
+                "score_semantic_version": "forecast-t5-over-signal-close-gross-v1",
+                "future_labels_required": False, "model": fold_model_artifact,
+                "train_end": train_end, "rows": asof_rows,
+            },
+        )
         from .oof_lineage import save_oof_prediction_artifact
 
         oof_artifact = save_oof_prediction_artifact(
@@ -626,6 +678,7 @@ def _train_dense_purged_oof(
             label_known_dates=np.asarray([row["label_known_date"] for row in all_rows], dtype=object),
             split_metadata={
                 "method": "outer_train_fixed_dense_test_purged_rank_ic",
+                "score_semantic_version": "forecast-t5-over-signal-close-gross-v1",
                 "train_start": payload.get("train_start"),
                 "train_end": train_end,
                 "test_start": test_start,
@@ -633,8 +686,8 @@ def _train_dense_purged_oof(
                 "purge_horizon": pred_len,
                 "refit_inside_test": False,
             },
-        )
-    oos_ic = float(np.mean([metric["oos_ic"] for metric in daily_metrics]))
+        ) if all_rows else None
+    oos_ic = float(np.mean([metric["oos_ic"] for metric in daily_metrics])) if daily_metrics else 0.0
     cohort_id = str(payload.get("cohort_id") or "")
     fold_id = str(payload.get("fold_id") or payload.get("window_id") or "")
     evidence_path = (
@@ -699,6 +752,8 @@ def _train_dense_purged_oof(
         },
         "version": version,
         "type": f"{model_name.lower()}_purged_oof",
+        "fold_model_artifact": fold_model_artifact,
+        "asof_prediction_artifact": ({"path": asof_artifact["path"], "checksum": asof_artifact["evidence_checksum"], "rows": len(asof_rows)} if asof_artifact else None),
         "oof_artifact": oof_artifact,
         "oof_evidence_path": fold_evidence["path"] if fold_evidence else None,
         "oof_evidence_checksum": fold_evidence["evidence_checksum"] if fold_evidence else None,
@@ -1134,8 +1189,12 @@ def train_neuralforecast_sequence_artifact(payload: dict[str, Any], *, model_nam
         runtime_device = "cuda" if torch.cuda.is_available() else "cpu"
     except ImportError:
         runtime_device = "cpu"
-    if payload.get("release_training_contract") is not None and runtime_device != "cuda":
-        raise RuntimeError(f"monthly_training_gpu_required:{model_name}")
+    contract = payload.get("release_training_contract")
+    if contract is not None and runtime_device != "cuda":
+        if (contract.get("execution_profile") != "local-cpu-directml-v1"
+                or ((contract.get("model_profiles") or {}).get(model_name) or {}).get(
+                    "required_effective_config", {}).get("runtime_device") != runtime_device):
+            raise RuntimeError(f"monthly_training_gpu_required:{model_name}")
     max_series = int(payload.get("max_series") or payload.get("data_slice", {}).get("max_series") or DEFAULT_MAX_SERIES)
     training_options = _resolve_nf_training_options(payload, model_name)
     gcs_prefix = str(payload.get("gcs_prefix") or payload.get("data_slice", {}).get("gcs_prefix") or "universal").strip().rstrip("/")
@@ -1184,16 +1243,23 @@ def train_neuralforecast_sequence_artifact(payload: dict[str, Any], *, model_nam
     pred_col = model_name
     series_filter: dict[str, Any] = {}
     fixed_panel_history = model_name == "iTransformer"
+    full_history = training_options.get("oof_training_history_mode") == "full_pit_history"
+    if full_history:
+        from .sequence_full_fit import full_history_fold_rows, full_history_fit_rows
+        cutoff = str(payload.get("run_date") or payload.get("as_of_date") or "")[:10]
+        if cutoff and any(str(d)[:10] > cutoff for r in dataset_source.records for d in r.get("dates", [])):
+            raise ValueError("full_fit_sequence_future_observations")
     for fold_index in range(validation_folds):
-        holdout_offset = fold_index * pred_len
-        fold_train_rows, eval_rows, fold_filter = _panel_train_eval_rows(
-            dataset_source.records,
-            seq_len=seq_len,
-            pred_len=pred_len,
-            max_series=max_series,
-            holdout_offset=holdout_offset,
-            fixed_panel_history=fixed_panel_history,
-        )
+        holdout_offset = (validation_folds - 1 - fold_index) * pred_len if full_history else fold_index * pred_len
+        if full_history:
+            fold_train_rows, eval_rows, fold_filter = full_history_fold_rows(
+                dataset_source.records, seq_len=seq_len, pred_len=pred_len,
+                max_series=max_series, holdout_offset=holdout_offset)
+        else:
+            fold_train_rows, eval_rows, fold_filter = _panel_train_eval_rows(
+                dataset_source.records, seq_len=seq_len, pred_len=pred_len,
+                max_series=max_series, holdout_offset=holdout_offset,
+                fixed_panel_history=fixed_panel_history)
         if fold_index == 0:
             series_filter = fold_filter
         if len(eval_rows) < 10:
@@ -1214,7 +1280,7 @@ def train_neuralforecast_sequence_artifact(payload: dict[str, Any], *, model_nam
             max_steps=max_steps,
             batch_size=batch_size,
             seed=seed + fold_index,
-            n_series=len(eval_rows),
+            n_series=int(fold_filter.get("selected_series", len(eval_rows))),
             training_options=training_options,
         )
         pred_by_id, pred_col = _predict_horizon_by_id_with_column(
@@ -1232,8 +1298,8 @@ def train_neuralforecast_sequence_artifact(payload: dict[str, Any], *, model_nam
             if uid not in pred_by_id:
                 continue
             entry_open = float(row["entry_open"])
-            pred_return.append((float(pred_by_id[uid]) - entry_open) / max(entry_open, 1e-9))
-            actual_return.append((float(row["actual_last"]) - entry_open) / max(entry_open, 1e-9))
+            pred_return.append(float(pred_by_id[uid]) / float(row["last_close"]) - 1.0)
+            actual_return.append(float(row["actual_last"]) / entry_open - 1.0 - CANONICAL_ROUNDTRIP_COST_BPS / 10000.0)
             market_segments.append(str(row.get("market") or ""))
             signal_dates_per_row.append(str(row.get("signal_date") or ""))
             all_oof_rows.append({
@@ -1267,6 +1333,7 @@ def train_neuralforecast_sequence_artifact(payload: dict[str, Any], *, model_nam
             "outcome_date": outcome_dates[-1] if outcome_dates else None,
             "holdout_offset": holdout_offset,
             "purge_horizon": pred_len,
+            **({"training_panel": fold_filter} if full_history else {}),
         })
     if len(folds) < 3:
         raise ValueError(
@@ -1333,13 +1400,15 @@ def train_neuralforecast_sequence_artifact(payload: dict[str, Any], *, model_nam
 
     # Validation models are discarded. The serving artifact is refit once on all
     # point-in-time data known at training time.
-    train_rows, deployment_series = _panel_full_train_rows(
-        dataset_source.records,
-        seq_len=seq_len,
-        pred_len=pred_len,
-        max_series=max_series,
-        fixed_panel_history=fixed_panel_history,
-    )
+    deployment_panel = None
+    if full_history:
+        train_rows, selected_panel, deployment_panel = full_history_fit_rows(
+            dataset_source.records, seq_len=seq_len, pred_len=pred_len, max_series=max_series)
+        deployment_series = len(selected_panel)
+    else:
+        train_rows, deployment_series = _panel_full_train_rows(
+            dataset_source.records, seq_len=seq_len, pred_len=pred_len,
+            max_series=max_series, fixed_panel_history=fixed_panel_history)
     if deployment_series < 10:
         raise ValueError(f"{model_name} deployment refit requires >=10 valid series, got {deployment_series}")
     nf, _deployment_df = _train_nf(
@@ -1395,6 +1464,7 @@ def train_neuralforecast_sequence_artifact(payload: dict[str, Any], *, model_nam
             "runtime_device": runtime_device,
             "reproducibility": reproducibility,
             "training_options": training_options,
+            "deployment_training_panel": deployment_panel,
             "validation_design": model_cpcv["validation_design"],
             "target_semantic_version": SEQUENCE_RETURN_SEMANTIC_VERSION,
         },
@@ -1417,6 +1487,7 @@ def train_neuralforecast_sequence_artifact(payload: dict[str, Any], *, model_nam
         "batch_size": batch_size,
         "seed": seed,
         "training_options": training_options,
+        "deployment_training_panel": deployment_panel,
         "metrics": metrics,
         "model_cpcv": model_cpcv,
         "rank_ic_semantic_version": RANK_IC_SEMANTIC_VERSION,

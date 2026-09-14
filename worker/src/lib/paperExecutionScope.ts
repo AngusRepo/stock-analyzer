@@ -7,6 +7,7 @@ export interface PaperExecutionPorts {
   accountId: number
   nowMs: number
   executionUUID?: () => string
+  allocateL4Private?: (account: unknown) => Promise<unknown>
   databases: Readonly<Record<string, D1Database>>
   fetchFrozen: (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>
 }
@@ -79,4 +80,17 @@ export async function withPaperExecutionScope<T>(ports: PaperExecutionPorts, exe
     if (scope.violations.length) throw new Error('paper_execution_scope_incomplete:' + scope.violations.join(','))
     return { result, notifications: scope.notifications, production_effect: false as const }
   })
+}
+
+/** Pure allocator in the private host; never fall through to a remote controller. */
+export async function allocatePrivateL4(account: unknown): Promise<unknown> {
+  const scope=storage.getStore()
+  if (!scope?.allocateL4Private) throw new Error('paper_execution_private_l4_port_missing')
+  return scope.allocateL4Private(account)
+}
+
+/** Capability comes from the sealed host, never a request/config boolean. */
+export function privateL4ResearchAllowed(kv:KVNamespace):boolean {
+  const scope=storage.getStore()
+  return !!scope && scope.environment.KV===kv && typeof scope.allocateL4Private==='function'
 }

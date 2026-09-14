@@ -213,3 +213,39 @@ def test_feature_challenger_partial_cross_section_is_rejected_all_or_none():
         key.startswith("candidate_feature_cross_section_incomplete:XGBoost:LISTED")
         for key in summary["blockers"]
     )
+
+
+def test_full_l4_information_survives_l3_weight_selection(monkeypatch):
+    import json
+    from copy import deepcopy
+    from services import ensemble_v2
+    from services.l4_distribution_runtime import native_features
+    artifact=json.loads((Path(__file__).parent/'fixtures/active8_ensemble_20260909.json').read_text(encoding='utf-8-sig'))
+    artifact['selected_models']=['ExtraTrees']
+    coefficients=[0.]*16;coefficients[list(ACTIVE_ALPHA_MODELS).index('ExtraTrees')]=.04
+    artifact['fit']['coefficients']=coefficients
+    monkeypatch.setattr(ensemble_v2,'validate_active8_ensemble_artifact',lambda *args,**kwargs:None)
+    predictions={s:_prediction(v) for s,v in [('A',.2),('B',.5),('C',.8)]}
+    normalize_active8_cross_sectional_scores(predictions,artifact_versions={n:n+'-v1' for n in ACTIVE_ALPHA_MODELS},artifact_target_semantics={n:MODEL_TARGET_SEMANTIC_VERSION for n in ACTIVE_ALPHA_MODELS},run_date='2026-09-01',active8_ensemble=artifact)
+    pred=predictions['C'];assert set(pred['rank_scores'])==set(ACTIVE_ALPHA_MODELS)
+    restricted=deepcopy(pred);restricted['rank_scores']={'ExtraTrees':pred['rank_scores']['ExtraTrees']}
+    full=ensemble_v2._evaluate_validated_ensemble(pred,artifact,{'complete':True})
+    selected=ensemble_v2._evaluate_validated_ensemble(restricted,artifact,{'complete':True})
+    assert full['ml_expected_net_return']==selected['ml_expected_net_return']
+    assert full['probability_positive_net_return']==selected['probability_positive_net_return']
+    pred['ensemble_v2']=full
+    data=native_features({'score_components':{'components':{'mlEdge':12.5}}},pred)
+    assert sum(data[n+'_available'] for n in ACTIVE_ALPHA_MODELS)==8
+    assert data['TabM_raw']==.8 and data['TabM_rank']==1.
+
+
+def test_unselected_information_cannot_bypass_no_selected_model_evidence(monkeypatch):
+    from services import ensemble_v2
+    monkeypatch.setattr(ensemble_v2,'validate_active8_ensemble_artifact',lambda *args,**kwargs:None)
+    predictions={s:_prediction(v) for s,v in [('A',.2),('B',.5),('C',.8)]}
+    for pred in predictions.values():pred.pop('dlinear')
+    normalize_active8_cross_sectional_scores(predictions,artifact_versions={n:n+'-v1' for n in ACTIVE_ALPHA_MODELS},artifact_target_semantics={n:MODEL_TARGET_SEMANTIC_VERSION for n in ACTIVE_ALPHA_MODELS},run_date='2026-09-01',active8_ensemble={'selected_models':['DLinear'],'payload_checksum':'a'*64})
+    for pred in predictions.values():
+        assert pred['rank_scores']['ExtraTrees'] is not None
+        assert not pred['model_score_lineage']['complete']
+        assert 'selected_model_evidence_missing' in pred['model_score_lineage']['blockers']

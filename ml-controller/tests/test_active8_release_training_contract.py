@@ -155,3 +155,53 @@ def test_nonfinite_estimator_params_are_canonicalized_before_attestation():
     assert params["missing"] == "nonfinite:nan"
     assert params["max_delta_step"] == "nonfinite:inf"
     assert validate_model_training_config_attestation(attestation, expected_model_name="XGBoost") == attestation
+
+
+@pytest.mark.parametrize("model", ACTIVE8_MODEL_NAMES)
+def test_local_execution_preserves_capacity_and_attests_actual_backend(model):
+    from services.active8_release_model_profiles import LOCAL_EXECUTION_PROFILE, model_profiles
+    contract = build_release_training_contract(
+        run_date="2026-08-24",
+        dataset_snapshot={"snapshot_id": "local-frozen", "business_date": "2026-08-24"},
+        producer_source_sha=SOURCE_SHA, execution_profile=LOCAL_EXECUTION_PROFILE,
+    )
+    assert validate_release_training_contract(contract) == contract
+    expected = copy.deepcopy(model_profile(model))
+    expected["runtime"]["executor"] = "local_directml" if model == "TabM" else "local_cpu"
+    for settings in (expected["payload_config"], expected["required_effective_config"]):
+        for key in ("device", "runtime_device"):
+            if key in settings:
+                settings[key] = "privateuseone:0" if model == "TabM" else "cpu"
+    profile = model_profiles(execution_profile=LOCAL_EXECUTION_PROFILE)[model]
+    assert profile == expected
+    attestation = build_model_training_config_attestation(
+        contract=contract, model_name=model, effective_config=profile["required_effective_config"],
+    )
+    assert validate_model_training_config_attestation(attestation, expected_model_name=model) == attestation
+    tampered = copy.deepcopy(attestation)
+    tampered.pop("execution_profile")
+    tampered["attestation_checksum"] = _checksum({k: v for k, v in tampered.items() if k != "attestation_checksum"})
+    with pytest.raises(ValueError, match="profile_mismatch"):
+        validate_model_training_config_attestation(tampered, expected_model_name=model)
+
+
+def test_local_execution_does_not_allow_resealed_capacity_reduction():
+    from services.active8_release_model_profiles import LOCAL_EXECUTION_PROFILE
+    contract = build_release_training_contract(
+        run_date="2026-08-24", dataset_snapshot={"snapshot_id": "local", "business_date": "2026-08-24"},
+        producer_source_sha=SOURCE_SHA, execution_profile=LOCAL_EXECUTION_PROFILE,
+    )
+    contract["model_profiles"]["TabM"]["required_effective_config"]["epochs"] = 1
+    contract["contract_checksum"] = _checksum({k: v for k, v in contract.items() if k != "contract_checksum"})
+    with pytest.raises(ValueError, match="release_model_profiles_mismatch"):
+        validate_release_training_contract(contract)
+
+
+def test_default_contract_still_requires_cuda_and_unknown_backend_rejected():
+    assert "execution_profile" not in _contract()
+    assert _contract()["model_profiles"]["TabM"]["required_effective_config"]["device"] == "cuda"
+    with pytest.raises(ValueError, match="release_execution_profile_invalid"):
+        build_release_training_contract(
+            run_date="2026-08-24", dataset_snapshot={"snapshot_id": "local", "business_date": "2026-08-24"},
+            producer_source_sha=SOURCE_SHA, execution_profile="allow_any_device",
+        )

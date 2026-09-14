@@ -369,6 +369,8 @@ def train_graphsage_universal(payload: dict | None = None) -> dict[str, Any]:
     reproducibility = configure_training_reproducibility(seed)
 
     generation_mode = str(payload.get("generation_mode") or "native").strip().lower()
+    from .deployment_refit import requested, validate_full_history
+    full_fit = requested(payload)
     stage_timings: dict[str, float] = {}
     stage_t0 = time.time()
     x_raw, batch_local_y, target_returns, dates, sectors, symbols, markets, label_known_dates, io_report = _load_npz_batches(
@@ -438,6 +440,10 @@ def train_graphsage_universal(payload: dict | None = None) -> dict[str, Any]:
             test_ratio=float(payload.get("test_ratio") or 0.2),
             embargo_dates=int(payload.get("embargo_dates") or 10),
         )
+    deployment_fit = validate_full_history(
+        signal_dates=dates, label_known_dates=label_known_dates,
+        cutoff=payload.get("as_of_date") or payload.get("run_date"),
+    ) if full_fit else None
     stage_t0 = time.time()
     x, medians, scales = _robust_standardize(x_raw[train_idx], x_raw, clip_value=standardization_clip)
     stage_timings["standardize_s"] = round(time.time() - stage_t0, 3)
@@ -478,31 +484,36 @@ def train_graphsage_universal(payload: dict | None = None) -> dict[str, Any]:
     import torch.nn.functional as F
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    model = _build_model(n_features=x.shape[1], hidden_dim=hidden_dim, dropout=dropout).to(device)
-    optimizer = torch.optim.AdamW(model.parameters(), lr=lr, weight_decay=weight_decay)
-    rng = np.random.default_rng(seed)
-    train_losses: list[float] = []
+    def fit_model(fit_x, fit_graphs):
+        model = _build_model(n_features=x.shape[1], hidden_dim=hidden_dim, dropout=dropout).to(device)
+        optimizer = torch.optim.AdamW(model.parameters(), lr=lr, weight_decay=weight_decay)
+        rng = np.random.default_rng(seed)
+        train_losses: list[float] = []
+
+        stage_t0 = time.time()
+        for epoch in range(max(1, epochs)):
+            model.train()
+            graph_order = np.arange(len(fit_graphs), dtype=np.int64)
+            rng.shuffle(graph_order)
+            graph_order = graph_order[: max(1, min(max_train_dates_per_epoch, len(graph_order)))]
+            epoch_losses: list[float] = []
+            for graph_idx in graph_order.tolist():
+                idx, edge_np = fit_graphs[int(graph_idx)]
+                xb = torch.tensor(fit_x[idx], dtype=torch.float32, device=device)
+                yb = torch.tensor(y[idx], dtype=torch.float32, device=device)
+                edge = torch.tensor(edge_np, dtype=torch.long, device=device)
+                optimizer.zero_grad(set_to_none=True)
+                pred = torch.sigmoid(model(xb, edge))
+                loss = F.smooth_l1_loss(pred, yb)
+                loss.backward()
+                torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=3.0)
+                optimizer.step()
+                epoch_losses.append(float(loss.detach().cpu().item()))
+            train_losses.append(round(float(np.mean(epoch_losses)), 6) if epoch_losses else 0.0)
+        return model, train_losses
 
     stage_t0 = time.time()
-    for epoch in range(max(1, epochs)):
-        model.train()
-        graph_order = np.arange(len(train_graphs), dtype=np.int64)
-        rng.shuffle(graph_order)
-        graph_order = graph_order[: max(1, min(max_train_dates_per_epoch, len(graph_order)))]
-        epoch_losses: list[float] = []
-        for graph_idx in graph_order.tolist():
-            idx, edge_np = train_graphs[int(graph_idx)]
-            xb = torch.tensor(x[idx], dtype=torch.float32, device=device)
-            yb = torch.tensor(y[idx], dtype=torch.float32, device=device)
-            edge = torch.tensor(edge_np, dtype=torch.long, device=device)
-            optimizer.zero_grad(set_to_none=True)
-            pred = torch.sigmoid(model(xb, edge))
-            loss = F.smooth_l1_loss(pred, yb)
-            loss.backward()
-            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=3.0)
-            optimizer.step()
-            epoch_losses.append(float(loss.detach().cpu().item()))
-        train_losses.append(round(float(np.mean(epoch_losses)), 6) if epoch_losses else 0.0)
+    model, train_losses = fit_model(x, train_graphs)
     stage_timings["train_s"] = round(time.time() - stage_t0, 3)
     print(
         f"[GNNTrain] trained epochs={epochs} dates_per_epoch={min(max_train_dates_per_epoch, len(train_graphs))} "
@@ -551,6 +562,21 @@ def train_graphsage_universal(payload: dict | None = None) -> dict[str, Any]:
         family="graph",
         coverage_mode="graph_snapshot",
     )
+
+    fitted_rows = len(train_idx)
+    deployment_graph_report = None
+    if deployment_fit is not None:
+        configure_training_reproducibility(seed)
+        stage_t0 = time.time()
+        x, medians, scales = _robust_standardize(x_raw, x_raw, clip_value=standardization_clip)
+        deployment_graphs, deployment_graph_report = _build_graph_snapshots(
+            _group_by_date(np.arange(len(y)), dates), x=x, sectors=sectors,
+            top_k=edge_top_k, threshold=edge_threshold,
+        )
+        model, deployment_losses = fit_model(x, deployment_graphs)
+        fitted_rows = len(y)
+        deployment_fit.update(performed=True, epochs=epochs, loss_history=deployment_losses)
+        stage_timings["deployment_refit_s"] = round(time.time() - stage_t0, 3)
 
     trained_at = datetime.now(timezone.utc).isoformat()
     architecture = {
@@ -617,7 +643,8 @@ def train_graphsage_universal(payload: dict | None = None) -> dict[str, Any]:
             "training_edge_threshold": edge_threshold,
             "graph_cache": {
                 "schema_version": "date-graph-cache-v1",
-                "train": train_graph_report,
+                "train": deployment_graph_report or train_graph_report,
+                "validation_train": train_graph_report,
                 "validation": test_graph_report,
                 "reused_across_epochs": True,
             },
@@ -633,10 +660,13 @@ def train_graphsage_universal(payload: dict | None = None) -> dict[str, Any]:
         "model_cpcv": model_cpcv,
         "oos_ic": eval_metrics["oos_ic"],
         "daily_ic_count": eval_metrics["daily_ic_count"],
-        "train_range": split_meta["train_range"],
+        "train_range": deployment_fit["train_range"] if deployment_fit else split_meta["train_range"],
+        "validation_train_range": split_meta["train_range"],
+        "deployment_fit": deployment_fit,
         "validation_range": split_meta["validation_range"],
         "validation_split": split_meta,
-        "sample_count": int(len(train_idx)),
+        "sample_count": int(fitted_rows),
+        "validation_train_sample_count": int(len(train_idx)),
         "validation_sample_count": int(len(test_idx)),
         "dataset_snapshot": {
             "gcs_prefix": gcs_prefix,
@@ -703,7 +733,7 @@ def train_graphsage_universal(payload: dict | None = None) -> dict[str, Any]:
         },
         "oos_ic": saved["metadata"]["oos_ic"],
         "daily_ic_count": saved["metadata"]["daily_ic_count"],
-        "train_samples": int(len(train_idx)),
+        "train_samples": int(fitted_rows),
         "validation_samples": int(len(test_idx)),
         "feature_count": len(feature_names),
         "stage_timings": stage_timings,

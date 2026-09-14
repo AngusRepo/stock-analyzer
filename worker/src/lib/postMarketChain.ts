@@ -1,3 +1,4 @@
+import { inspectL4DistributionClosure } from './l4DistributionClosure'
 import type { Bindings } from '../types'
 import { databaseForDataDomain } from './dataDomainRegistry'
 import { runAdaptiveUpdate, runLinUcbRewardLedgerRefresh } from './adaptiveEngine'
@@ -36,7 +37,6 @@ import {
 import { refreshStrategyEvidenceOwnerCalibration } from './strategyEvidenceOwnerCalibration'
 import { assertAutomaticPromotionAllowed } from './shadowPromotionGovernance'
 import { resolveEveningChainRunAuthority } from './eveningChainRunAuthority'
-import { collectIpoShadow } from './ipoShadowCollection'
 
 export type ChainContext = {
   runDate?: string
@@ -326,6 +326,8 @@ async function enqueueStrategyLearningClosureTask(
 }
 
 async function enqueueS12ReplayBackfillTask(env: Bindings, ctx: ChainContext): Promise<string> {
+  const config=await env.KV.get('trading:config','json') as {l4Distribution?:unknown}|null
+  if (config?.l4Distribution) return 'skipped retired_fusion_maturity_backfill_new_l4_active'
   const runDate = ctx.runDate ?? new Date(Date.now() + 8 * 3600_000).toISOString().slice(0, 10)
   const canonicalRunId = String(ctx.upstreamRunId ?? '').trim()
   const leaseOwner = String(ctx.stageLeaseOwner ?? '').trim()
@@ -455,13 +457,11 @@ export async function runPostPipelineCallbackChain(
     await logChainSummary(env, ctx, 'post-pipeline-chain', startedAt, results)
     return 'error'
   }
-  // IPO is an observer, not a formal allocator dependency. Always attempt it
-  // before the evidence-only branch; failures remain explicit, never successful zero samples.
-  results.push(await logChainedTask(env, ctx, 'ipo-shadow-native-freeze',
-    () => collectIpoShadow(env, ctx.runDate!, String(ctx.upstreamRunId ?? 'post-pipeline')),
-    { critical: false, timeoutMs: 190_000 }))
+  // IPO collection is retired; immutable research history remains available.
   await assertChainStageAuthority(ctx, 'post-pipeline:before_snapshot_inspection')
-  let snapshotClosure = await inspectAllocatorSnapshotClosure(env.DB, ctx.runDate, {
+  const distributionConfig=await env.KV.get('trading:config','json') as {l4Distribution?:unknown}|null
+  const newDistribution=distributionConfig?.l4Distribution != null
+  let snapshotClosure = newDistribution ? await inspectL4DistributionClosure(env,ctx.runDate) : await inspectAllocatorSnapshotClosure(env.DB, ctx.runDate, {
     // This stage owns the explicit PIT backfill. Reconstruction may close the
     // operational evidence chain, while Fusion promotion remains native-only.
     learningDb: databaseForDataDomain(env, 'learning'),
@@ -470,6 +470,7 @@ export async function runPostPipelineCallbackChain(
     allowPointInTimeReconstruction: true,
     kv: env.KV,
   })
+  if (newDistribution && !snapshotClosure.ready) throw new Error('l4_distribution_original_plan_closure_incomplete')
   await assertChainStageAuthority(ctx, 'post-pipeline:after_snapshot_inspection')
   const actionAuthority = await inspectActive8ActionAuthorityState(
     databaseForDataDomain(env, 'learning'),
@@ -578,7 +579,7 @@ export async function runPostPipelineCallbackChain(
   }
   if (!snapshotUnavailableInEvidenceOnlyMode) {
     await assertChainStageAuthority(ctx, 'post-pipeline:before_snapshot_readback')
-    snapshotClosure = await inspectAllocatorSnapshotClosure(env.DB, ctx.runDate, {
+    snapshotClosure = newDistribution ? await inspectL4DistributionClosure(env,ctx.runDate) : await inspectAllocatorSnapshotClosure(env.DB, ctx.runDate, {
       allowPointInTimeReconstruction: true,
       learningDb: databaseForDataDomain(env, 'learning'),
       opsDb: databaseForDataDomain(env, 'ops'),

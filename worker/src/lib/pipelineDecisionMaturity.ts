@@ -6,7 +6,7 @@ import { ROUTE_NAV_ARTIFACT_VERSION, readRouteNavReceipt, routeReceiptHash } fro
 import { observeRouteCanonicalUse } from './navScreenerObservation'
 import { inspectAllocatorEvMaturityCoverage } from './allocatorEvDailyLifecycle'
 import { databaseForDataDomain } from './dataDomainRegistry'
-import { readIpoShadow, type IpoShadowReadModel } from './ipoShadowReadModel'
+import type { IpoShadowReadModel } from './ipoShadowReadModel'
 import { readPairedNav, type PairedNavReadModel } from './pairedNavReadModel'
 import {
   adaptExpectedReturnCandidate,
@@ -221,6 +221,7 @@ export interface StrategyRouteBundleMaturity {
 
 
 export interface PipelineDecisionMaturityPacket {
+  l4_distribution?: { status: string; plan?: unknown; reason?: string }
   active_ml_ensemble?: ActiveMlEnsembleVersion
   ipo_shadow?: IpoShadowReadModel
   paired_nav_shadow?: PairedNavReadModel
@@ -228,10 +229,10 @@ export interface PipelineDecisionMaturityPacket {
   requested_date: string
   generated_at: string
   current_selection_signal_owner: 'allocator_opb_policy'
-  current_expected_return_owner: 'l4_alpha_ev' | 'allocator_ev_fusion' | null
+  current_expected_return_owner: 'l4_alpha_ev' | 'allocator_ev_fusion' | 'l4_distribution' | null
   current_allocation_utility_owner: 'expected_return_owner' | 'risk_abstention'
   current_execution_owner: 'allocator_opb_policy'
-  execution_scope: 'recommendation_allocation_only_no_order_submission'
+  execution_scope: 'recommendation_allocation_only_no_order_submission' | 'full_pool_paper_target_and_fill_feedback'
   action_gate: 'expected_return_owner' | 'validated_expected_return_required'
   strategy_route_bundle: StrategyRouteBundleMaturity
   summary: {
@@ -493,7 +494,7 @@ export async function buildPipelineDecisionMaturityPacket(
 ): Promise<PipelineDecisionMaturityPacket> {
   if (!validDate(requestedDate)) throw new Error(`invalid_pipeline_maturity_date:${requestedDate}`)
   const learningDb = databaseForDataDomain(env, 'learning')
-  const ipoShadowPromise = readIpoShadow(learningDb, requestedDate, env.KV)
+
   const pairedNavPromise = readPairedNav(learningDb, requestedDate)
   const marketDb = databaseForDataDomain(env, 'market')
   const formalLabelerPlaceholders = STRATEGY_FORMAL_LABELER_VERSIONS.map(() => '?').join(',')
@@ -1941,11 +1942,31 @@ export async function buildPipelineDecisionMaturityPacket(
     maturity_projection: routeMaturityProjection,
   }
 
+  const distributionConfig = await env.KV.get('trading:config', 'json') as { l4Distribution?: {artifact?:{release?:{efficacy_status?:string;acceptance_mode?:string}}} } | null
+  let distributionStatus: { status: string; plan?: unknown; reason?: string; efficacy_status?: string; acceptance_mode?: string } | undefined
+  if (distributionConfig?.l4Distribution) {
+    try {
+      const { readL4PortfolioPlan } = await import('./l4PortfolioPlan')
+      const plan = await readL4PortfolioPlan(env)
+      distributionStatus = { status: !plan ? 'awaiting_first_plan' : plan.signal_date === requestedDate ? 'ready' : 'stale', plan,
+          ...(plan && plan.signal_date !== requestedDate ? { reason: 'plan_date_differs_from_requested_date' } : {}) }
+    } catch {
+      distributionStatus = { status: 'failed', reason: 'portfolio_plan_unavailable' }
+    }
+  }
+  if (distributionStatus) {
+    const release=distributionConfig?.l4Distribution?.artifact?.release
+    distributionStatus.efficacy_status=release?.efficacy_status ?? 'unproven'
+    distributionStatus.acceptance_mode=release?.acceptance_mode ?? 'unknown'
+  }
+  // Legacy evidence remains in its original storage; it is no longer a current-flow stage.
+  const visibleStages=stages.filter(stage=>!['l4','fusion'].includes(stage.id))
   const mlVersion = await mlVersionPromise
   return {
+    l4_distribution: distributionStatus,
     strategy_route_bundle: strategyRouteBundle,
     active_ml_ensemble: mlVersion.value ?? { status: 'error', artifact_id: null, cohort_id: null, validation_end_date: null, knowledge_cutoff_date: null, promoted_at: null },
-    ipo_shadow: await ipoShadowPromise,
+
     paired_nav_shadow: await pairedNavPromise,
     schema_version: 'pipeline-decision-maturity-v2',
     requested_date: requestedDate,
@@ -1957,12 +1978,12 @@ export async function buildPipelineDecisionMaturityPacket(
     execution_scope: servingState?.execution_scope ?? 'recommendation_allocation_only_no_order_submission',
     action_gate: servingState?.action_gate ?? 'validated_expected_return_required',
     summary: {
-      production: stages.filter((stage) => stage.contribution_mode === 'production').length,
-      shadow: stages.filter((stage) => stage.contribution_mode === 'shadow').length,
-      ready: stages.filter((stage) => ['serving', 'ready'].includes(stage.status)).length,
-      collecting: stages.filter((stage) => stage.status === 'collecting').length,
-      failed_or_blocked: stages.filter((stage) => ['failed_quality', 'blocked', 'unavailable'].includes(stage.status)).length,
+      production: visibleStages.filter((stage) => stage.contribution_mode === 'production').length,
+      shadow: visibleStages.filter((stage) => stage.contribution_mode === 'shadow').length,
+      ready: visibleStages.filter((stage) => ['serving', 'ready'].includes(stage.status)).length,
+      collecting: visibleStages.filter((stage) => stage.status === 'collecting').length,
+      failed_or_blocked: visibleStages.filter((stage) => ['failed_quality', 'blocked', 'unavailable'].includes(stage.status)).length,
     },
-    stages,
+    stages: visibleStages,
   }
 }

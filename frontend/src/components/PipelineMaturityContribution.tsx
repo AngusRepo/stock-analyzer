@@ -1,3 +1,4 @@
+import L4DistributionPanel from './L4DistributionPanel'
 import type {
   PipelineDecisionMaturityPacket,
   PipelineMaturityMetric,
@@ -5,7 +6,6 @@ import type {
   PipelineMaturityStatus,
 } from '@/lib/pipelineMaturityContract'
 import { Badge } from '@/components/ui/badge'
-import IpoShadowComparison from '@/components/IpoShadowComparison'
 import NavCollectionSummary from '@/components/NavCollectionSummary'
 import CandidateVersionPanel from '@/components/CandidateVersionPanel'
 import { navReadinessReason, preoutcomeSummary } from '@/lib/expectedReturnEvidencePresentation'
@@ -683,14 +683,14 @@ export default function PipelineMaturityContribution({
     )
   }
 
-  const ownerLabel = data.current_expected_return_owner === 'allocator_ev_fusion'
+  const ownerLabel = data.l4_distribution ? '新 L4 收益分布模型' : data.current_expected_return_owner === 'allocator_ev_fusion'
     ? 'Fusion'
     : data.current_expected_return_owner === 'l4_alpha_ev'
       ? 'Canonical L4'
       : '無正式 EV owner'
   const allocationOwnerLabel = data.current_allocation_utility_owner === 'expected_return_owner'
     ? ownerLabel
-    : 'Score V2 正式選股效用'
+    : '未提供配置效用（保留現金）'
   const summaryItems = [
     { label: '正式預期報酬負責者', value: ownerLabel },
     { label: '目前配置效用負責者', value: allocationOwnerLabel },
@@ -709,7 +709,6 @@ export default function PipelineMaturityContribution({
   ])
   const expectedReturnStageIds = new Set<PipelineMaturityStage['id']>(['l4', 'fusion'])
   const upstreamStages = data.stages.filter((stage) => upstreamStageIds.has(stage.id))
-  const expectedReturnStages = data.stages.filter((stage) => expectedReturnStageIds.has(stage.id))
   const otherStages = data.stages.filter((stage) => !upstreamStageIds.has(stage.id) && !expectedReturnStageIds.has(stage.id))
 
   return (
@@ -720,7 +719,7 @@ export default function PipelineMaturityContribution({
             <p className="text-[11px] font-semibold text-amber-300">誰負責正式決策、證據成熟到哪裡</p>
             <h2 id="pipeline-maturity-title" className="mt-1 text-base font-semibold text-slate-100">各階段目前是否真的影響正式選股</h2>
             <p className="mt-1 max-w-4xl text-xs leading-5 text-slate-500">
-              本區只列需要獨立成熟度門檻的 owner，不代表流程跳過 L2/L3。完整 runtime 為 L0 → L0.5 → L1 → L1.25 → L1.5 → L2 → L3 → L4 → L4+；L3.5 只保留 observe-only conflict telemetry，不是 serving gate。
+              重構流程：完整 L3 訊號 → 三頭 L4 → sparse＋OPB → 全池配置 → Paper 成交與持倉回饋。下列狀態以實際設定與執行證據為準。
             </p>
           </div>
           <div className="flex items-center gap-2 text-[11px] text-slate-600">
@@ -742,7 +741,7 @@ export default function PipelineMaturityContribution({
           {data.active_ml_ensemble.status === 'serving' ? <>
             <p>驗證樣本截止：{data.active_ml_ensemble.validation_end_date ?? '未知'} · 結果已知截止：{data.active_ml_ensemble.knowledge_cutoff_date ?? '未知'}</p>
             <p className="break-all">{data.active_ml_ensemble.cohort_id}</p>
-            <p>此為目前 serving pointer；L4／L4+ 各自候選的基底日期與成熟資格分別列於下方。</p>
+            <p>{data.l4_distribution ? '新 L4 必須與此 L3 版本相容；版本不符時暫停新配置。' : '此為目前正式 L3 版本；收益模型證據列於下方。'}</p>
           </> : <p className="text-amber-200">{data.active_ml_ensemble.status === 'missing' ? '尚無正式 ensemble pointer' : '正式 ensemble 身分讀取或驗證受阻'}</p>}
         </div>}
         <details className="mt-3 rounded-xl border border-white/[0.07] bg-black/20 px-3 py-2 text-xs text-slate-400">
@@ -819,10 +818,13 @@ export default function PipelineMaturityContribution({
         <div className="grid items-start gap-3 lg:grid-cols-[minmax(0,32fr)_minmax(0,32fr)_minmax(0,36fr)]">
           {upstreamStages.map((stage) => <StageRow key={stage.id} stage={stage} />)}
         </div>
-        <div className="grid items-start gap-3 lg:grid-cols-2">
-          {expectedReturnStages.map((stage) => <StageRow key={stage.id} stage={stage} />)}
-        </div>
-        <IpoShadowComparison data={data.ipo_shadow} />
+      {data.l4_distribution ? <L4DistributionPanel data={data.l4_distribution} /> : (
+        <section className="rounded-2xl border border-amber-300/20 bg-amber-300/[0.04] p-5" aria-label="重構流程發布狀態">
+          <h3 className="font-semibold text-slate-100">新 L3＋三頭 L4 · 尚未正式採用</h3>
+          <p role="status" className="mt-2 text-sm leading-6 text-amber-100/80">目前尚未讀到新 L4 的正式設定。模型配對、候選執行與 NAV 發布資格須分別驗證；此頁更新不代表新策略已啟用。</p>
+          <p className="mt-2 text-xs leading-5 text-slate-400">上方負責者顯示現行正式設定；下方 NAV 區顯示實際封存與帳務證據。舊收益模型與 IPO 比較卡已退出重構主流程。</p>
+        </section>
+      )}
       <NavCollectionSummary data={data.paired_nav_shadow} />
         {otherStages.length ? (
           <div className="grid items-start gap-3 lg:grid-cols-2">

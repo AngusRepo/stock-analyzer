@@ -17,7 +17,8 @@ def prepare_native_state(*, base_state: dict[str, str], seed_rows: list[dict[str
                          recommendations: list[dict[str, Any]], signal_date: str,
                          trading_config: dict, risk_config: dict,
                          stock_rows: list[dict[str, Any]] | None = None,
-                         frozen_kv: dict[str, str | None] | None = None) -> dict:
+                         frozen_kv: dict[str, str | None] | None = None,
+                         l4_allocation_inputs: dict | None = None, allocation_snapshot_id: str | None = None) -> dict:
     from services.recommendation_service import (
         build_recommendation_update_statements, build_filtered_recommendation_update_statements)
 
@@ -98,6 +99,17 @@ def prepare_native_state(*, base_state: dict[str, str], seed_rows: list[dict[str
             if raw is not None:
                 json.loads(raw)
                 store.db.execute('INSERT INTO _native_private_kv VALUES(?,?,NULL,NULL)', (key, raw))
+        if trading_config.get('l4Distribution'):
+            if not l4_allocation_inputs or not allocation_snapshot_id:
+                raise ValueError('native_state_new_l4_frozen_inputs_required')
+            native_inputs=deepcopy(l4_allocation_inputs)
+            native_inputs['recommendations']=deepcopy(recommendations)
+            for row in native_inputs['recommendations']:
+                row.pop('_l4_portfolio_plan',None)
+            packet={'inputs':native_inputs,'allocation_snapshot_id':allocation_snapshot_id}
+            store.db.execute('INSERT OR REPLACE INTO _native_private_kv VALUES(?,?,NULL,NULL)',
+                ('l4:private_allocation_inputs',encode(packet)))
+            store.db.execute('INSERT OR IGNORE INTO l4_portfolio_head_v1(account_id,plan_id) VALUES(1,NULL)')
         actual = [dict(row) for row in store.db.execute('SELECT * FROM daily_recommendations WHERE date=? ORDER BY stock_id',
                                                        (signal_date,))]
         return {**store.export(), 'seed_checksum': digest(seeds), 'recommendations_checksum': digest(actual),

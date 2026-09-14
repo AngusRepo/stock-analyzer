@@ -218,6 +218,9 @@ class PrivatePaperStore:
             return None
         if not self.in_frame:
             raise ValueError('native_paper_operation_outside_frame')
+        if op == 'l4_allocate':
+            from services.l4_private_execution import allocate_private
+            return allocate_private(self,packet['account'])
         if op == 'sql':
             return self._sql(packet)
         if op == 'batch':
@@ -308,7 +311,7 @@ def native_execution_identity(runner: Path | None = None) -> str:
         'pipeline': {name: hashlib.sha256(Path(__file__).with_name(name).read_bytes()).hexdigest()
             for name in ('native_paper_source_capture.py', 'native_paper_bootstrap.py', 'native_paper_state.py',
                            'paired_native_session.py', 'paired_native_collector.py', 'paired_native_registration.py',
-                           'paired_native_models.py',
+                           'paired_native_models.py', 'paired_native_rescore_carry.py', 'paired_nav_strategy_bundle.py',
                            'native_paper_read_capabilities.py', 'paired_nav_journal.py', 'paired_nav_schema.py',
                            'paired_nav_chain.py',
                            'paired_nav_execution_environment.py', 'adaptive.py',
@@ -316,7 +319,11 @@ def native_execution_identity(runner: Path | None = None) -> str:
                            'llm_debate_client.py', 'finlab_corporate_actions.py',
                            'mops_corporate_terms.py', 'native_paper_time.py', 'paper_corporate_source.py',
                            'paired_native_runtime.py', 'paired_native_sources.py', 'etf_corporate_source.py',
-                           'capital_corporate_source.py', 'subscription_rights.py')},
+                           'capital_corporate_source.py', 'subscription_rights.py',
+                           'l4_private_execution.py','l4_distribution.py','l4_distribution_runtime.py',
+                           'l4_distribution_lifecycle.py','l4_portfolio.py',
+                           'l4_l3_baseline.py','l4_incremental_acceptance.py',
+                           'l4_prediction_evaluation.py','l4_allocation_contract.py')},
         'rescore': hashlib.sha256(Path(__file__).parent.parent.joinpath('routers/intraday.py').read_bytes()).hexdigest(),
     })
 

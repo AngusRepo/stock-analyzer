@@ -1,3 +1,5 @@
+import { executePaperSellBatch } from './paperSellTransaction'
+import { assertL4PlanCurrentPolicy, readL4PortfolioPlan, l4TargetExitShares } from './l4PortfolioPlan'
 import { paperAccountId, paperExecutionNow, paperExecutionDate } from './paperExecutionScope'
 import type { Bindings } from '../types'
 import { paperDomainDatabase } from './paperDomainDatabase'
@@ -7,7 +9,6 @@ import { batchGetExecutionOrderbooks, batchGetIntradayOHLC, type IntradayOHLC } 
 import {
   getPrevTradingDay,
   isDayTradeAllowed,
-  recordSellSettlement,
 } from './paperMarketData'
 import { batchGetAtrByDomain } from './paperMarketDomainData'
 import { loadPreviousMarketCloseBySymbols } from './stockIdentityMarketBridge'
@@ -550,7 +551,7 @@ async function recordPendingExitAttempt(
        AND side = 'sell'
        AND event_type = 'paper_order'
        AND status = 'pending'
-       AND source IN ('intraday_exit', 'intraday_tp1')
+       AND source IN ('intraday_exit', 'intraday_tp1', 'intraday_l4_rebalance')
        AND json_extract(detail_json, '$.exit_intent_key') <> ?
   `).bind(
     supersededAt,
@@ -649,7 +650,7 @@ async function resolvePendingExitIntent(
        AND side = 'sell'
        AND event_type = 'paper_order'
        AND status = 'pending'
-       AND source IN ('intraday_exit', 'intraday_tp1')
+       AND source IN ('intraday_exit', 'intraday_tp1', 'intraday_l4_rebalance')
        AND json_extract(detail_json, '$.exit_intent_key') <> ?
   `).bind(
     paperExecutionDate().toISOString(),
@@ -1268,7 +1269,7 @@ export async function forceDayTradeClose(env: Bindings, cfg: TradingConfig, toda
       order_legs: sellOrderIntent.orderLegs,
     }, { entryPrice, exitPrice: fillPrice, shares, commission, tax })
 
-    await paperDomainDatabase(env).batch([
+    const orderId = await executePaperSellBatch(env,[
       paperDomainDatabase(env).prepare('DELETE FROM paper_positions WHERE account_id=? AND symbol=?').bind(paperAccountId(), pos.symbol),
       paperDomainDatabase(env).prepare(`
         INSERT INTO paper_orders
@@ -1286,8 +1287,8 @@ export async function forceDayTradeClose(env: Bindings, cfg: TradingConfig, toda
         null,
         sellNote,
       ),
-    ])
-    const orderId = await recordSellSettlement(paperDomainDatabase(env), env.KV, paperAccountId(), pos.symbol, proceeds)
+    ],pos.symbol,proceeds)
+
     await recordPaperExecutionEvent(env, {
       tradeDate: today,
       symbol: pos.symbol,
@@ -1536,7 +1537,7 @@ export async function runEODExit(env: Bindings): Promise<void> {
         order_legs: sellOrderIntent.orderLegs,
       }, { entryPrice: entryPx, exitPrice: fillPrice, shares, commission, tax })
 
-      await paperDomainDatabase(env).batch([
+      const orderId = await executePaperSellBatch(env,[
         paperDomainDatabase(env).prepare('DELETE FROM paper_positions WHERE account_id=? AND symbol=?').bind(paperAccountId(), pos.symbol),
         paperDomainDatabase(env).prepare(`
           INSERT INTO paper_orders
@@ -1555,8 +1556,8 @@ export async function runEODExit(env: Bindings): Promise<void> {
           sellRecMap.get(pos.symbol)?.confidence ?? null,
           sellNote,
         ),
-      ])
-      const orderId = await recordSellSettlement(paperDomainDatabase(env), env.KV, paperAccountId(), pos.symbol, proceeds)
+      ],pos.symbol,proceeds)
+
       await recordPaperExecutionEvent(env, {
         tradeDate: eodToday,
         symbol: pos.symbol,
@@ -1618,7 +1619,7 @@ export async function runEODExit(env: Bindings): Promise<void> {
         order_legs: sellOrderIntent.orderLegs,
       }, { entryPrice: entryPx, exitPrice: fillPrice, shares: sellShares, commission, tax })
 
-      await paperDomainDatabase(env).batch([
+      const orderId = await executePaperSellBatch(env,[
         paperDomainDatabase(env).prepare(`
           UPDATE paper_positions SET shares=?, tp1_hit=1,
             trailing_stop=CASE WHEN ? > COALESCE(trailing_stop, 0) THEN ? ELSE trailing_stop END,
@@ -1631,8 +1632,8 @@ export async function runEODExit(env: Bindings): Promise<void> {
             (account_id, symbol, name, side, shares, price, commission, tax, total_cost, source, signal, confidence, note)
           VALUES (?, ?, ?, 'sell', ?, ?, ?, ?, ?, 'eod_tp1', 'TP1', ?, ?)
         `).bind(paperAccountId(), pos.symbol, pos.name, sellShares, fillPrice, commission, tax, proceeds, null, sellNote),
-      ])
-      const orderId = await recordSellSettlement(paperDomainDatabase(env), env.KV, paperAccountId(), pos.symbol, proceeds)
+      ],pos.symbol,proceeds)
+
       await recordPaperExecutionEvent(env, {
         tradeDate: eodToday,
         symbol: pos.symbol,
@@ -1756,6 +1757,17 @@ export async function pollIntradayStopLoss(
     throw new Error('holding_authoritative_market_data_unavailable_all_positions')
   }
 
+  let applicableL4Plan: Awaited<ReturnType<typeof readL4PortfolioPlan>> = null
+  try {
+    const plan = cfg.l4Distribution ? await readL4PortfolioPlan(env) : null
+    if (plan?.signal_date === await getPrevTradingDay(databaseForDataDomain(env, 'core'), env.KV)) {
+      await assertL4PlanCurrentPolicy(env,plan,cfg)
+      applicableL4Plan=plan
+    }
+  } catch {
+    console.warn('[L4Target] target unavailable; holding risk exits remain active')
+  }
+  let l4CurrentNav: number | null = null
   let intradayDeRiskPlan: PortfolioDeRiskPlan | null = null
   let p9Triggered = false
   if (quoteMap.size === positions.length) {
@@ -1775,6 +1787,7 @@ export async function pollIntradayStopLoss(
       netUnsettledSettlement: settlement.netUnsettledSettlement,
       corporateReceivablesValue: corporateBounds.lower,
     })
+    if (corporateBounds.complete) l4CurrentNav = totalPortfolio
     const riskConfig = await getRiskConfig(env.KV)
     const p9Deps: LegacyLayerDeps = {
       defaults: effectivePortfolioRisk,
@@ -1867,6 +1880,14 @@ export async function pollIntradayStopLoss(
     decision = continuation.lifecycleJson == null
       ? continuation.decision
       : { ...continuation.decision, tradeLifecycleJson: continuation.lifecycleJson }
+    if (applicableL4Plan && l4CurrentNav != null && decision.action === 'hold') {
+      const reduceShares = l4TargetExitShares({ plan: applicableL4Plan, symbol: pos.symbol,
+        shares: Number(pos.shares), price: currentPrice, nav: l4CurrentNav,
+        minTradeValue: cfg.position.minPositionValue ?? 30_000 })
+      if (reduceShares > 0) decision = { action: reduceShares === pos.shares ? 'full_sell' : 'partial_sell',
+        sellShares: reduceShares, exitIntentKind: 'take_profit',
+        reason: `[L4Target] plan=${applicableL4Plan.plan_id};target=${applicableL4Plan.weights[pos.symbol]}` }
+    }
     if (intradayDeRiskSymbols.has(String(pos.symbol))) {
       decision = {
         action: 'full_sell',
@@ -1996,7 +2017,7 @@ export async function pollIntradayStopLoss(
         order_legs: sellOrderIntent.orderLegs,
       }, { entryPrice: entryPx, exitPrice: sellFillPrice, shares, commission, tax })
 
-      await paperDomainDatabase(env).batch([
+      const orderId = await executePaperSellBatch(env,[
         remainingExitShares === 0
           ? paperDomainDatabase(env).prepare('DELETE FROM paper_positions WHERE account_id=? AND symbol=?').bind(paperAccountId(), pos.symbol)
           : paperDomainDatabase(env).prepare(`UPDATE paper_positions SET shares=?, updated_at=datetime('now') WHERE account_id=? AND symbol=?`)
@@ -2017,8 +2038,8 @@ export async function pollIntradayStopLoss(
           null,
           sellNote,
         ),
-      ])
-      const orderId = await recordSellSettlement(paperDomainDatabase(env), env.KV, paperAccountId(), pos.symbol, proceeds)
+      ],pos.symbol,proceeds)
+
       await recordPaperExecutionEvent(env, {
         tradeDate: intradayToday,
         symbol: pos.symbol,
@@ -2056,6 +2077,8 @@ export async function pollIntradayStopLoss(
         stopVersion: resolveEffectiveS12PositionStop(pos, pos.entry_price ?? pos.avg_cost),
         action: decision.action,
       })
+      const isL4Rebalance = decision.reason.startsWith('[L4Target]')
+      const partialSource = isL4Rebalance ? 'intraday_l4_rebalance' : 'intraday_tp1'
       const freshExecutionBooks = await fetchFreshPositionExitBooks(pos.symbol, requestedSellShares, quoteEnv)
       const executionSnapshotAtMs = paperExecutionNow()
       const sellFill = resolvePositionExitSellFill(requestedSellShares, freshExecutionBooks, {
@@ -2069,7 +2092,7 @@ export async function pollIntradayStopLoss(
           reason: sellFill.reason,
           intentKey: exitIntentKey,
           detail: { shares: requestedSellShares, exit_reason: decision.reason, ...sellFill.detail },
-          source: 'intraday_tp1',
+          source: partialSource,
         })
         continue
       }
@@ -2085,7 +2108,7 @@ export async function pollIntradayStopLoss(
         fillPrice,
         quote: executionQuote,
         reason: decision.reason,
-        strategyType: 'intraday_tp1',
+        strategyType: partialSource,
       })
       const shadowReferencePrice = Number(executionQuote.referencePrice ?? quote.referencePrice ?? prevCloseMapSell.get(pos.symbol) ?? currentPrice)
       const shadowBand = resolveTwEquityPriceBand(shadowReferencePrice)
@@ -2117,8 +2140,8 @@ export async function pollIntradayStopLoss(
       const proceeds = txValue - commission - tax
       const remainingShares = pos.shares - sellShares
       const entryPx = pos.entry_price ?? pos.avg_cost
-      const partialTrailingStop = resolveEffectiveS12PositionStop(pos, entryPx) ?? entryPx
-      const partialLifecycleJson = updateLifecycleS12TrailingStop(pos.trade_lifecycle_json, partialTrailingStop, decision.reason)
+      const partialTrailingStop = isL4Rebalance ? Number(pos.trailing_stop ?? 0) : resolveEffectiveS12PositionStop(pos, entryPx) ?? entryPx
+      const partialLifecycleJson = isL4Rebalance ? null : updateLifecycleS12TrailingStop(pos.trade_lifecycle_json, partialTrailingStop, decision.reason)
       const sellNote = buildSellOrderNote({
         reason: `[intraday] ${decision.reason}`,
         is_day_trade: dayTradeSell,
@@ -2127,18 +2150,18 @@ export async function pollIntradayStopLoss(
         order_legs: sellOrderIntent.orderLegs,
       }, { entryPrice: entryPx, exitPrice: fillPrice, shares: sellShares, commission, tax })
 
-      await paperDomainDatabase(env).batch([
+      const orderId = await executePaperSellBatch(env,[
         paperDomainDatabase(env).prepare(`
           UPDATE paper_positions SET shares=?, tp1_hit=?,
             trailing_stop=CASE WHEN ? > COALESCE(trailing_stop, 0) THEN ? ELSE trailing_stop END,
             trade_lifecycle_json=COALESCE(?, trade_lifecycle_json),
             updated_at=datetime('now')
           WHERE account_id=? AND symbol=?
-        `).bind(remainingShares, tp1Complete ? 1 : (pos.tp1_hit ?? 0), partialTrailingStop, partialTrailingStop, partialLifecycleJson, paperAccountId(), pos.symbol),
+        `).bind(remainingShares, !isL4Rebalance && tp1Complete ? 1 : (pos.tp1_hit ?? 0), partialTrailingStop, partialTrailingStop, partialLifecycleJson, paperAccountId(), pos.symbol),
         paperDomainDatabase(env).prepare(`
           INSERT INTO paper_orders
             (account_id, symbol, name, side, shares, price, commission, tax, total_cost, source, signal, confidence, note)
-          VALUES (?, ?, ?, 'sell', ?, ?, ?, ?, ?, 'intraday_tp1', 'TP1', ?, ?)
+          VALUES (?, ?, ?, 'sell', ?, ?, ?, ?, ?, ?, ?, ?, ?)
         `).bind(
           paperAccountId(),
           pos.symbol,
@@ -2148,21 +2171,23 @@ export async function pollIntradayStopLoss(
           commission,
           tax,
           proceeds,
+          partialSource,
+          isL4Rebalance ? 'REBALANCE' : 'TP1',
           null,
           sellNote,
         ),
-      ])
-      const orderId = await recordSellSettlement(paperDomainDatabase(env), env.KV, paperAccountId(), pos.symbol, proceeds)
+      ],pos.symbol,proceeds)
+
       await recordPaperExecutionEvent(env, {
         tradeDate: intradayToday,
         symbol: pos.symbol,
         side: 'sell',
         eventType: 'paper_order',
         status: tp1Complete ? 'filled' : 'partial',
-        reason: tp1Complete ? 'intraday_tp1' : 'intraday_tp1_partial_depth',
+        reason: tp1Complete ? partialSource : `${partialSource}_partial_depth`,
         detail: { shares: sellShares, requested_shares: requestedSellShares, exit_intent_key: exitIntentKey, order_intent: sellOrderIntent, order_legs: sellOrderIntent.orderLegs, remaining_shares: remainingShares, price: fillPrice, proceeds, exit_reason: decision.reason, ...sellFill.detail },
         orderId,
-        source: 'intraday_tp1',
+        source: partialSource,
       })
       await resolvePendingExitIntent(env, {
         tradeDate: intradayToday,
@@ -2171,11 +2196,11 @@ export async function pollIntradayStopLoss(
         status: tp1Complete ? 'filled' : 'partial',
         orderId,
       })
-      console.log(`[Intraday] TP1 ${pos.symbol} ${sellShares} 股 @ ${fillPrice} | ${decision.reason}`)
+      console.log(`[Intraday] ${partialSource} ${pos.symbol} ${sellShares} 股 @ ${fillPrice} | ${decision.reason}`)
       const tp1IntradayPnl = calcRealizedPnlSnapshot({ entryPrice: entryPx, exitPrice: fillPrice, shares: sellShares, commission, tax }).realized_pnl_pct / 100
       void sendDiscordNotification(
         env.DISCORD_WEBHOOK_URL,
-        formatTradeNotification('sell', pos.symbol, pos.name, sellShares, fillPrice, `盤中 TP1，剩餘 ${remainingShares} 股`, tp1IntradayPnl),
+        formatTradeNotification('sell', pos.symbol, pos.name, sellShares, fillPrice, `${isL4Rebalance ? 'L4 目標減倉' : '盤中 TP1'}，剩餘 ${remainingShares} 股`, tp1IntradayPnl),
       )
     } else if (decision.action === 'hold') {
       await persistExitPositionUpdate(env, intradayToday, pos, decision, 'intraday_exit_hold_update')

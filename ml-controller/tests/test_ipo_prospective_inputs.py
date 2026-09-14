@@ -205,4 +205,10 @@ def test_consumer_has_no_remote_write_or_fit_call_path():
     assert not any(isinstance(n.func,ast.Attribute) and n.func.attr in {'execute','fit','upload_from_string'} for n in calls)
     assert not any(isinstance(n.func,ast.Name) and n.func.id in {'build_chronological_oof_stack','_fit_ridge','build_oof_snapshot_rows'} for n in calls)
     router=(Path(consumer.__file__).parents[1]/'routers/l4_alpha_ev.py').read_text(encoding='utf-8')
-    assert "req.input_mode == 'frozen_stacker_prospective'" in router
+    from routers.l4_alpha_ev import freeze_ipo_shadow,IpoShadowFreezeReq
+    from fastapi import HTTPException
+    for mode in ('native','frozen_stacker_prospective'):
+        with pytest.raises(HTTPException) as stopped:
+            freeze_ipo_shadow(IpoShadowFreezeReq(signal_date='2026-09-11',source_run_id='retired-test',input_mode=mode))
+        assert stopped.value.status_code==410
+        assert stopped.value.detail=='ipo_collection_retired_new_l4_distribution'

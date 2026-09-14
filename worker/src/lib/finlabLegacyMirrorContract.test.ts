@@ -16,8 +16,10 @@ assert(
   'FinLab canonical market rows must mirror into legacy stock_prices serving table',
 )
 assert(
-  source.includes('row.adj_close ?? row.close'),
-  'legacy stock_prices.adj_close must use FinLab canonical adj_close when available',
+  source.includes('row.adj_close ?? null') &&
+    !source.includes('row.adj_close ?? row.close') &&
+    source.includes('adj_close=COALESCE(excluded.adj_close, stock_prices.adj_close)'),
+  'legacy adj_close must preserve canonical ownership and never fall back to raw close',
 )
 assert(
   source.includes('row.avg_price'),

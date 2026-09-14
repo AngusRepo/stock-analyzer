@@ -184,6 +184,9 @@ def load_committed_nav_serving_grant(*, query, now=None):
     if publication is None:
         return None
     configuration = json.loads(publication.receipt_json)['nav_configuration']
+    from services.paired_nav_strategy_bundle import publication_configuration
+    configuration=publication_configuration(configuration,
+        signal_date=json.loads(publication.receipt_json)['nav_validation']['as_of_date'])
     current = current_execution_configuration()
     from services.opb_nav_control import _same_json, _without_prior, needs_nav_control, capture_nav_control
     if (not current.get('trading_config') or not current.get('risk_config')
@@ -227,6 +230,10 @@ def current_execution_configuration():
 
 
 def verify_current_configuration(configuration):
+    if configuration.get('strategy_bundle') is not None:
+        from services.paired_nav_strategy_bundle import publication_configuration
+        configuration=publication_configuration(configuration,
+            signal_date=configuration['strategy_bundle']['declared_signal_date'])
     current = current_execution_configuration()
     if (not current.get('trading_config') or not current.get('risk_config')
             or any(key not in configuration or digest(configuration[key]) != digest(value)
@@ -284,7 +291,15 @@ def prepare_nav_adoption(*, ensemble_row, business_date, query, now=None):
     committed = load_committed_nav_publication(query=query, now=clock)
     if committed is None and rows[0]['validation_decision'] != 'PASS':
         raise RuntimeError('active8_nav_current_baseline_unverified')
-    changed = sorted(key for key in required if digest(current[key]) != digest(configuration[key]))
+    from services.paired_nav_strategy_bundle import publication_configuration
+    target_configuration=publication_configuration(configuration,signal_date=saved['manifest']['signal_date'])
+    if configuration.get('strategy_bundle') is not None:
+        from services.paired_nav_strategy_bundle import verify_strategy_inputs
+        parent=read_snapshot(query,plan['allocation_context_snapshot_id'])
+        verify_strategy_inputs(configuration,parent['payload']['content'],signal_date=saved['manifest']['signal_date'])
+        if configuration['strategy_bundle']['candidate_l3_identity']['payload_checksum']!=ensemble_row['payload_checksum']:
+            raise RuntimeError('active8_nav_strategy_l3_identity_mismatch')
+    changed = sorted(key for key in required if digest(current[key]) != digest(target_configuration[key]))
     if any(baseline[key] != frozen_baseline.get(key) for key in keys):
         changed.append('formal_ml')
     guards = _snapshot_guards('active8_ensemble_pointer_v1', 'singleton_id=1', [], pointers)

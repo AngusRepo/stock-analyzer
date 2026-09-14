@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Literal, TypedDict
 
-ExpectedReturnOwner = Literal["l4_alpha_ev", "allocator_ev_fusion"]
+ExpectedReturnOwner = Literal["l4_alpha_ev", "allocator_ev_fusion", "l4_distribution"]
 
 
 class DecisionOwnerContract(TypedDict):

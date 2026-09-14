@@ -243,3 +243,13 @@ def test_historical_training_neutralizes_latest_scalar_snapshot_without_pit_hist
     assert df["l1_monthlyRevenueYoY"].max() == 0.0
     assert df["sector_encoded"].max() == 0.0
     assert df["stock_vs_sector"].max() == 0.0
+
+
+def test_linear_factor_requires_twenty_nonnull_observations():
+    frame = build_feature_matrix(_price_rows(100), [], [], [], historical_training=True)
+    # The first finite 60-row volume/intent value is at index59; index78 is
+    # the twentieth observation. Leading nulls must not satisfy min_samples.
+    values = frame["linear_factor"].to_numpy()
+    np.testing.assert_array_equal(values[:78], np.zeros(78))
+    assert np.isfinite(values[78:]).all()
+    assert np.any(values[78:] > 0.0)

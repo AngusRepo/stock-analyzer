@@ -1,3 +1,6 @@
+import { initializePrivateL4 } from './l4PrivateExecution'
+import { getTradingConfig } from './tradingConfig'
+import { getPrevTradingDay } from './paperMarketData'
 import { runIntradayCheck } from './paperEntryTasks'
 import { runEODExit } from './paperExitTasks'
 import { runDailySnapshot } from './paperWorkerTasks'
@@ -31,7 +34,9 @@ export async function runNativePaperExecutionFrame(ports: NativePaperFramePorts,
     let valuation: Awaited<ReturnType<typeof runDailySnapshot>>['valuation'] | undefined
     switch (stage) {
       case 'settlement': await settlePaperT2(env); break
-      case 'morning': await setupMorningPendingBuys(env); break
+      case 'morning':
+        if ((await getTradingConfig(env.KV)).l4Distribution) await initializePrivateL4(env,await getPrevTradingDay(ports.databases.core,env.KV))
+        await setupMorningPendingBuys(env); break
       case 'preopen': await reconcilePendingBuyDebates(env, twToday()); break
       case 'rescore': {
         if (!context.cron) throw new Error('native_paper_rescore_cron_missing')

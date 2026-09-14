@@ -26,6 +26,7 @@ from .target_rank_scope import GLOBAL_CROSS_SECTIONAL_RANK_VERSION, recompute_gl
 from .training_policy import (
     build_model_feature_policy_metadata,
     build_model_training_config_attestation,
+    validate_release_training_dataset_binding,
 )
 from .training_reproducibility import configure_training_reproducibility
 from .sequence_training import SEQUENCE_RETURN_SEMANTIC_VERSION
@@ -206,8 +207,22 @@ def _save_artifact(*, bucket, model, version: str, metadata: dict) -> dict:
     return {"artifact_path": artifact_path, "metadata_path": metadata_path, "checksum": checksum, "metadata": metadata}
 
 
-def train_tabm_universal(payload: dict | None = None) -> dict[str, Any]:
+def train_tabm_universal(payload: dict | None = None, *, research_device=None, execution_device=None) -> dict[str, Any]:
     payload = dict(payload or {})
+    if execution_device is not None:
+        if research_device is not None:
+            raise ValueError("tabm_execution_devices_conflict")
+        contract = payload.get("release_training_contract") or {}
+        if (
+            payload.get("candidate_type") != "oof_full_fit_release"
+            or payload.get("generation_mode") != "oof_full_fit_release"
+            or contract.get("execution_profile") != "local-cpu-directml-v1"
+            or str(execution_device) != "privateuseone:0"
+            or ((contract.get("model_profiles") or {}).get(MODEL_NAME) or {}).get(
+                "required_effective_config", {}).get("device") != str(execution_device)
+        ):
+            raise ValueError("tabm_local_execution_contract_invalid")
+        validate_release_training_dataset_binding(contract, payload.get("dataset_snapshot"))
     t0 = time.time()
     bucket = _get_bucket()
     if bucket is None:
@@ -219,7 +234,9 @@ def train_tabm_universal(payload: dict | None = None) -> dict[str, Any]:
     eval_batch_size = int(payload.get("eval_batch_size") or min(batch_size, 1024))
     lr = float(payload.get("lr") or DEFAULT_LR)
     weight_decay = float(payload.get("weight_decay") or DEFAULT_WEIGHT_DECAY)
-    max_rows = int(payload.get("max_rows") or payload.get("data_slice", {}).get("max_rows") or DEFAULT_MAX_ROWS)
+    from .deployment_refit import requested, validate_full_history, row_limit
+    full_fit = requested(payload)
+    max_rows = row_limit(payload, full_fit=full_fit, default=DEFAULT_MAX_ROWS)
     standardization_clip = float(
         payload.get("standardization_clip")
         if payload.get("standardization_clip") is not None
@@ -295,37 +312,59 @@ def train_tabm_universal(payload: dict | None = None) -> dict[str, Any]:
             test_ratio=float(payload.get("test_ratio") or 0.2),
             embargo_dates=int(payload.get("embargo_dates") or 10),
         )
+    deployment_fit = None
+    if full_fit:
+        deployment_fit = validate_full_history(
+            signal_dates=dates, label_known_dates=label_known_dates,
+            cutoff=payload.get("as_of_date") or payload.get("run_date"),
+        )
+        if 0 < max_rows < len(y):
+            raise ValueError("deployment_refit_row_truncation_forbidden")
     train_fit_idx = _subsample_indices(train_idx, max_rows=max_rows)
     x, medians, scales = _robust_standardize(x_raw[train_fit_idx], x_raw, clip_value=standardization_clip)
 
     import torch
     import torch.nn.functional as F
 
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    model = _build_tabm_ranker(x.shape[1]).to(device)
-    optimizer = torch.optim.AdamW(model.parameters(), lr=lr, weight_decay=weight_decay)
-    x_train = torch.tensor(x[train_fit_idx], dtype=torch.float32)
-    y_train = torch.tensor(y[train_fit_idx], dtype=torch.float32)
-    loader = torch.utils.data.DataLoader(
-        torch.utils.data.TensorDataset(x_train, y_train),
-        batch_size=batch_size,
-        shuffle=True,
+    if research_device is not None and (
+        generation_mode not in {"purged_oof", "local_full_fit"}
+        or payload.get("candidate_type") == "oof_full_fit_release"
+        or payload.get("release_training_contract") is not None
+    ):
+        raise ValueError("research_device_requires_unreleased_training")
+    device = execution_device if execution_device is not None else (
+        research_device if research_device is not None else torch.device("cuda" if torch.cuda.is_available() else "cpu")
     )
-    train_losses: list[float] = []
-    model.train()
-    for _epoch in range(max(1, epochs)):
-        losses: list[float] = []
-        for xb, yb in loader:
-            xb = xb.to(device)
-            yb = yb.to(device)
-            optimizer.zero_grad(set_to_none=True)
-            pred = torch.sigmoid(_reduce_tabm_output(_tabm_forward(model, xb)))
-            loss = F.smooth_l1_loss(pred, yb)
-            loss.backward()
-            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=3.0)
-            optimizer.step()
-            losses.append(float(loss.detach().cpu().item()))
-        train_losses.append(round(float(np.mean(losses)), 6) if losses else 0.0)
+    def fit_model(fit_x, fit_indices):
+        model = _build_tabm_ranker(x.shape[1]).to(device)
+        optimizer = torch.optim.AdamW(model.parameters(), lr=lr, weight_decay=weight_decay)
+        x_train = torch.tensor(fit_x[fit_indices], dtype=torch.float32)
+        y_train = torch.tensor(y[fit_indices], dtype=torch.float32)
+        loader = torch.utils.data.DataLoader(
+            torch.utils.data.TensorDataset(x_train, y_train),
+            batch_size=batch_size,
+            shuffle=True,
+        )
+        train_losses: list[float] = []
+        model.train()
+        for _epoch in range(max(1, epochs)):
+            losses: list[float] = []
+            for xb, yb in loader:
+                xb = xb.to(device)
+                yb = yb.to(device)
+                optimizer.zero_grad(set_to_none=True)
+                pred = torch.sigmoid(_reduce_tabm_output(_tabm_forward(model, xb)))
+                loss = F.smooth_l1_loss(pred, yb)
+                loss.backward()
+                torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=3.0)
+                optimizer.step()
+                losses.append(float(loss.detach().cpu().item()))
+            train_losses.append(round(float(np.mean(losses)), 6) if losses else 0.0)
+            if research_device is not None or execution_device is not None:
+                print(f"[TabMTrain] epoch={_epoch + 1}/{epochs} loss={train_losses[-1]} device={device}", flush=True)
+        return model, train_losses
+
+    model, train_losses = fit_model(x, train_fit_idx)
 
     pred = _predict_tabm_batches(model, x[test_idx], batch_size=eval_batch_size, device=device)
     y_test = y[test_idx]
@@ -346,6 +385,15 @@ def train_tabm_universal(payload: dict | None = None) -> dict[str, Any]:
         "loss_last": train_losses[-1] if train_losses else None,
         "model_cpcv_decision": model_cpcv.get("decision"),
     }
+
+    fitted_rows = len(train_fit_idx)
+    if deployment_fit is not None:
+        # OOS predictions/metrics above remain exclusively from the validation model.
+        configure_training_reproducibility(seed)
+        x, medians, scales = _robust_standardize(x_raw, x_raw, clip_value=standardization_clip)
+        model, deployment_losses = fit_model(x, np.arange(len(y)))
+        fitted_rows = len(y)
+        deployment_fit.update(performed=True, epochs=epochs, loss_history=deployment_losses)
 
     trained_at = datetime.now(timezone.utc).isoformat()
     training_params = {
@@ -400,10 +448,13 @@ def train_tabm_universal(payload: dict | None = None) -> dict[str, Any]:
         "model_cpcv": model_cpcv,
         "oos_ic": metrics["oos_ic"],
         "direction_accuracy": metrics["direction_accuracy"],
-        "train_range": split_meta["train_range"],
+        "train_range": deployment_fit["train_range"] if deployment_fit else split_meta["train_range"],
+        "validation_train_range": split_meta["train_range"],
+        "deployment_fit": deployment_fit,
         "validation_range": split_meta["validation_range"],
         "validation_split": split_meta,
-        "sample_count": int(len(train_fit_idx)),
+        "sample_count": int(fitted_rows),
+        "validation_train_sample_count": int(len(train_fit_idx)),
         "validation_sample_count": int(len(test_idx)),
         "dataset_snapshot": {
             "source": dataset.source,
@@ -462,7 +513,7 @@ def train_tabm_universal(payload: dict | None = None) -> dict[str, Any]:
             },
         },
         "oos_ic": saved["metadata"]["oos_ic"],
-        "train_samples": int(len(train_fit_idx)),
+        "train_samples": int(fitted_rows),
         "validation_samples": int(len(test_idx)),
         "feature_count": len(dataset.feature_names),
 

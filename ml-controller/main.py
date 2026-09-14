@@ -117,6 +117,8 @@ app.include_router(external_evidence.router, dependencies=[Depends(verify_token)
 app.include_router(strategy_similarity.router, dependencies=[Depends(verify_token)])
 app.include_router(strategy_mining.router, dependencies=[Depends(verify_token)])
 app.include_router(screener.router, dependencies=[Depends(verify_token)])
+from routers import l4_distribution
+app.include_router(l4_distribution.router, dependencies=[Depends(verify_token)])
 app.include_router(l4_alpha_ev.router, dependencies=[Depends(verify_token)])
 app.include_router(allocator_ev_fusion.router, dependencies=[Depends(verify_token)])
 app.include_router(opb_arm_prior.router, dependencies=[Depends(verify_token)])

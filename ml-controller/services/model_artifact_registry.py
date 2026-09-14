@@ -3508,6 +3508,17 @@ def run_active8_ensemble_bundle_promotion_controller(
             **({'nav_validation': transaction['promotion_evidence']['nav_validation']}
                if 'nav_validation' in transaction.get('promotion_evidence', {}) else {}),
         }
+    from services.trading_config_loader import load_merged_trading_config_with_contract
+    distribution=load_merged_trading_config_with_contract().config.get('l4Distribution')
+    if distribution is not None:
+        from services.l4_distribution import validate_bundle
+        identity={'schema_version':'paired-nav-formal-ml-baseline-v1',
+            **{key:ensemble_row[key] for key in ('artifact_id','cohort_id','payload_checksum','base_artifact_set_checksum')}}
+        try:
+            validate_bundle(distribution['artifact'],l3_identity=identity,signal_date=evaluation_business_date or _now_iso()[:10])
+        except ValueError as exc:
+            return {'status':'blocked','decision':'paired_l4_required:'+str(exc),'can_promote':False,
+                    'training_run_id':training_run_id,'pointer_committed':False}
     # Use the same live rows protected by this transaction's SQL guards. The
     # caller may carry older rollback fields even when champion identity agrees.
     pointer_by_model = {str(row.get("model_name") or ""): row for row in transaction['current_pointers']}

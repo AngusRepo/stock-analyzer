@@ -696,6 +696,8 @@ def _load_prediction_artifact(
             "artifact_checksum": expected_checksum,
             "target_semantic_version": TARGET_SEMANTIC_VERSION,
             "score_semantic_version": str(metadata["score_semantic"]),
+            "raw_score_semantic_version": (metadata.get("split_metadata") or {}).get("score_semantic_version"),
+            "checkpoint_selection": (metadata.get("split_metadata") or {}).get("checkpoint_selection"),
             **split,
         }
         for idx in range(next(iter(lengths), 0))

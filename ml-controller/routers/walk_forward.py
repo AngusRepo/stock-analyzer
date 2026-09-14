@@ -1975,6 +1975,13 @@ async def materialize_walk_forward_oof(req: OofMaterializeRequest):
             status_code=409,
             detail="forward shadow coverage may only be recorded by the daily durable OOF lifecycle",
         )
+    from services.trading_config_loader import load_merged_trading_config_with_contract
+    if load_merged_trading_config_with_contract().config.get('l4Distribution') is not None:
+        from services.l4_oof_lifecycle import materialize_native_base
+        from services.walk_forward_retrain import _get_bucket
+        return await materialize_native_base(manifest_path=req.manifest_path or f'walk_forward/oof_cohorts/{req.cohort_id}/manifest.json',
+            cohort_id=req.cohort_id,as_of=req.knowledge_cutoff_date,cadence=req.lifecycle_cadence,dry_run=req.dry_run,
+            dispatch_full_fit=req.dispatch_full_fit,poll_only=req.full_fit_poll_only,bucket=_get_bucket(),client=LEARNING_D1_CLIENT)
     from services.walk_forward_retrain import _get_bucket
     from services.active8_oof_cohort_materializer import (
         build_oof_snapshot_rows,
@@ -2248,12 +2255,6 @@ async def materialize_walk_forward_oof(req: OofMaterializeRequest):
         if req.persist_forward_shadow_coverage:
             paired_nav_maturity = _materialize_nav_with_reviews(
                 business_date=req.knowledge_cutoff_date, learning_client=learning_client)
-            from services.ipo_shadow import mature_daily
-            ipo_shadow_maturity = mature_daily(
-                business_date=req.knowledge_cutoff_date,
-                query=learning_client.query, writer=learning_client.batch_execute,
-                market_query=MARKET_D1_CLIENT.query,
-            )
         if forward_extension and req.persist_forward_shadow_coverage:
             forward_shadow_coverage = persist_verified_oof_forward_coverage(
                 cohort_id=req.cohort_id,
@@ -3502,6 +3503,8 @@ async def run_walk_forward_oof_lifecycle(req: OofLifecycleRequest):
     from datetime import datetime, timezone
     from services.walk_forward_retrain import _get_bucket
 
+    from services.trading_config_loader import load_merged_trading_config_with_contract
+    new_distribution = load_merged_trading_config_with_contract().config.get('l4Distribution') is not None
     cadence = str(req.cadence or "daily").strip().lower()
     if cadence not in {"daily", "weekly", "monthly"}:
         raise HTTPException(status_code=400, detail="OOF lifecycle cadence must be daily, weekly, or monthly")
@@ -3522,7 +3525,7 @@ async def run_walk_forward_oof_lifecycle(req: OofLifecycleRequest):
             )
         except Exception:  # noqa: BLE001 - durable job owns full error reporting.
             completed = None
-        if completed is not None:
+        if completed is not None and not new_distribution:
             return completed
         from datetime import datetime, timedelta, timezone
         from services.cloud_run_jobs_client import CloudRunJobsClient, JobAlreadyRunningError
@@ -3914,6 +3917,11 @@ async def run_walk_forward_oof_lifecycle(req: OofLifecycleRequest):
                 f"expected={req.expected_cohort_id} selected={cohort_id}"
             ),
         )
+    if new_distribution:
+        from services.l4_oof_lifecycle import materialize_native_base
+        return await materialize_native_base(manifest_path=manifest_path,cohort_id=cohort_id,
+            as_of=knowledge_cutoff_date,cadence=cadence,dry_run=req.dry_run,
+            dispatch_full_fit=req.dispatch_full_fit,poll_only=req.continuation_only,bucket=bucket,client=LEARNING_D1_CLIENT,calendar=calendar_evidence)
     lifecycle_path = _oof_lifecycle_receipt_path(
         cohort_id,
         knowledge_cutoff_date,

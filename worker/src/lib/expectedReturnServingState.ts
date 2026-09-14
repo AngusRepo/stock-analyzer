@@ -1,3 +1,4 @@
+import { L4_FEATURE_SCHEMA, l4ReleaseEvidenceError } from './l4ReleaseEvidence'
 import type { Bindings } from '../types'
 import { databaseForDataDomain } from './dataDomainRegistry'
 import { hydrateExpectedReturnConfigFromPointers } from './expectedReturnServingRegistry'
@@ -43,14 +44,14 @@ export interface ExpectedReturnServingState {
   schema_version: 'expected-return-serving-state-v1'
   state: 'production_primary' | 'no_eligible_owner'
   selection_signal_owner: 'allocator_opb_policy'
-  expected_return_owner: ExpectedReturnOwner | null
+  expected_return_owner: ExpectedReturnOwner | 'l4_distribution' | null
   allocation_utility_owner: 'expected_return_owner' | 'risk_abstention'
   execution_owner: 'allocator_opb_policy'
-  execution_scope: 'recommendation_allocation_only_no_order_submission'
+  execution_scope: 'recommendation_allocation_only_no_order_submission' | 'full_pool_paper_target_and_fill_feedback'
   action_gate: ExpectedReturnActionGate
   run_date: string | null
   evaluated_at: string
-  source_of_truth: 'candidate_projection' | 'model_champion_pointers+artifact_payloads'
+  source_of_truth: 'candidate_projection' | 'model_champion_pointers+artifact_payloads' | 'l4_release+paired_l3_pointer'
   artifacts: {
     l4_alpha_ev: ExpectedReturnArtifactServingState
     allocator_ev_fusion: ExpectedReturnArtifactServingState
@@ -294,11 +295,37 @@ type ExpectedReturnServingEnv = Pick<Bindings, 'KV' | 'DB'> & Partial<Pick<
   'LEARNING_DB' | 'MULTI_D1_ACTIVE_DOMAINS' | 'MULTI_D1_STRICT'
 >>
 
+async function readNewL4ServingState(env: ExpectedReturnServingEnv, config: Record<string,any>,runDate?:string|null):Promise<ExpectedReturnServingState> {
+  const artifact=config.l4Distribution?.artifact
+  const identity=artifact?.l3_identity
+  const pointer=await databaseForDataDomain(env,'learning').prepare('SELECT artifact_id,cohort_id,payload_checksum,base_artifact_set_checksum FROM active8_ensemble_pointer_v1 WHERE singleton_id=1')
+    .first<Record<string,string>>()
+  const ready=config.l4Distribution?.scope==='paper' && artifact?.schema_version==='l4-distribution-v1'
+    && artifact?.feature_schema===L4_FEATURE_SCHEMA && artifact?.release?.decision==='PASS'
+    && artifact?.release?.scope==='paper' && artifact?.release?.model_checksum===artifact?.model_checksum
+    && /^[a-f0-9]{64}$/.test(artifact?.release?.validation_receipt_checksum ?? '')
+    && l4ReleaseEvidenceError(artifact)===null
+    && pointer && ['artifact_id','cohort_id','payload_checksum','base_artifact_set_checksum'].every(k=>pointer[k]===identity?.[k])
+  const result=resolveExpectedReturnServingState({}, {runDate})
+  for (const owner of ['l4_alpha_ev','allocator_ev_fusion'] as const) {
+    result.artifacts[owner]={...result.artifacts[owner],artifact_state:'retired_incompatible',blockers:['replaced_by_l4_distribution']}
+  }
+  return {...result,execution_scope:'full_pool_paper_target_and_fill_feedback',source_of_truth:'l4_release+paired_l3_pointer',state:ready?'production_primary':'no_eligible_owner',expected_return_owner:ready?'l4_distribution':null,
+    allocation_utility_owner:ready?'expected_return_owner':'risk_abstention',
+    action_gate:ready?'expected_return_owner':'validated_expected_return_required',runtime_forward_guard:null,
+    hard_alerts:ready?[]:['new_l4_release_or_l3_identity_invalid'],warnings:['new_l4plus_disabled_by_design']}
+}
+
 export async function refreshExpectedReturnServingState(
   env: ExpectedReturnServingEnv,
   runDate?: string | null,
 ): Promise<ExpectedReturnServingState> {
   const rawConfig = await env.KV.get('trading:config', 'json') as Record<string, any> | null
+  if (rawConfig?.l4Distribution != null) {
+    const state=await readNewL4ServingState(env,rawConfig,runDate)
+    await env.KV.put(EXPECTED_RETURN_SERVING_STATE_KEY,JSON.stringify(state))
+    return state
+  }
   const learningDb = databaseForDataDomain(env, 'learning')
   const [hydrated, forwardGuard] = await Promise.all([
     hydrateExpectedReturnConfigFromPointers(learningDb, rawConfig ?? {}),
@@ -320,6 +347,7 @@ export async function readCurrentExpectedReturnServingState(
   runDate?: string | null,
 ): Promise<ExpectedReturnServingState> {
   const rawConfig = await env.KV.get('trading:config', 'json') as Record<string, any> | null
+  if (rawConfig?.l4Distribution != null) return readNewL4ServingState(env,rawConfig,runDate)
   const learningDb = databaseForDataDomain(env, 'learning')
   const [hydrated, forwardGuard] = await Promise.all([
     hydrateExpectedReturnConfigFromPointers(learningDb, rawConfig ?? {}),

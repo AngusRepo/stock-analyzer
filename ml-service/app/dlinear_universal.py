@@ -170,6 +170,8 @@ def train_dlinear(
     test_start: str | None = None,
     test_end: str | None = None,
     seed: int = 42,
+    full_fit: bool = False,
+    knowledge_cutoff_date: str | None = None,
 ) -> dict:
     """Train universal DLinear on pooled (stock, window) samples.
 
@@ -194,6 +196,11 @@ def train_dlinear(
         sequence_oos_ic_from_forecast,
     )
 
+    from .deployment_refit import validate_full_history
+    if full_fit and any((train_start, train_end, test_start, test_end)):
+        raise ValueError("deployment_refit_cannot_use_outer_test_split")
+    if full_fit and not sequence_records:
+        raise ValueError("deployment_refit_row_lineage_incomplete")
     t0 = time.time()
     reproducibility = configure_training_reproducibility(seed)
     dev = torch.device(device)
@@ -243,6 +250,13 @@ def train_dlinear(
             "lifecycle_ready": False,
             "reason": "series_close_missing_symbol_date_metadata",
         }
+    deployment_fit = None
+    if full_fit:
+        deployment_fit = validate_full_history(
+            signal_dates=[row["asof_date"] for row in sequence_dataset.meta],
+            label_known_dates=[row["target_date"] for row in sequence_dataset.meta],
+            cutoff=knowledge_cutoff_date,
+        )
     n_total = len(X)
     logger.info(f"[DLinearUniversal] Built {n_total} windows from {sequence_report.get('input_series')} series")
 
@@ -262,11 +276,7 @@ def train_dlinear(
     opt = torch.optim.Adam(model.parameters(), lr=lr)
     crit = nn.MSELoss()
 
-    # ── 4. Train loop ──────────────────────────────────────────────────────
-    best_val_loss = float("inf")
-    best_state = None
-    history = []
-    for epoch in range(n_epochs):
+    def fit_epoch(model, train_loader, opt):
         model.train()
         train_loss_sum, train_cnt = 0.0, 0
         for xb, yb in train_loader:
@@ -280,6 +290,16 @@ def train_dlinear(
             train_cnt += len(xb)
         train_loss = train_loss_sum / max(train_cnt, 1)
 
+        return train_loss
+
+    # ── 4. Train loop ──────────────────────────────────────────────────────
+    best_val_loss = float("inf")
+    best_state = None
+    history = []
+    fixed_outer_epochs = all((train_start, train_end, test_start, test_end))
+    for epoch in range(n_epochs):
+        train_loss = fit_epoch(model, train_loader, opt)
+
         # Val
         model.eval()
         with torch.no_grad():
@@ -288,6 +308,9 @@ def train_dlinear(
         history.append({"epoch": epoch + 1, "train_loss": round(train_loss, 6), "val_loss": round(v_loss, 6)})
         if v_loss < best_val_loss:
             best_val_loss = v_loss
+        if fixed_outer_epochs or v_loss == best_val_loss:
+            # Outer test labels are monitoring only. The preregistered final
+            # epoch is independent of their values and preserves full capacity.
             best_state = {k: v.cpu().clone() for k, v in model.state_dict().items()}
 
     if best_state is None:
@@ -354,15 +377,37 @@ def train_dlinear(
     oof_predictions = None
     if sequence_dataset is not None and all((train_start, train_end, test_start, test_end)):
         oos_meta = [sequence_dataset.meta[int(idx)] for idx in sequence_dataset.oos_index]
-        entry_open = np.asarray([row["entry_open"] for row in oos_meta], dtype=float)
+        from .sequence_training import forecast_return_from_signal_close, SEQUENCE_SCORE_SEMANTIC_VERSION
+        signal_close = np.asarray([row["last_close"] for row in oos_meta], dtype=float)
         oof_predictions = {
-            "raw_scores": ((pred_5d - entry_open) / np.maximum(entry_open, 1e-9)).tolist(),
+            "score_semantic_version": SEQUENCE_SCORE_SEMANTIC_VERSION,
+            "raw_scores": forecast_return_from_signal_close(pred_5d, signal_close).tolist(),
             "targets": [float(row["forward_return"]) for row in oos_meta],
             "dates": [str(row["asof_date"]) for row in oos_meta],
             "symbols": [str(row["symbol"]) for row in oos_meta],
             "markets": [str(row["market_type"]) for row in oos_meta],
             "label_known_dates": [str(row["target_date"]) for row in oos_meta],
         }
+
+    if deployment_fit is not None:
+        # Validate first, then fit a fresh deployment model on every eligible window.
+        configure_training_reproducibility(seed)
+        full_x, full_mean, full_std = _normalize(sequence_dataset.X_all)
+        full_y = (sequence_dataset.y_all - full_mean) / full_std
+        full_loader = DataLoader(
+            TensorDataset(torch.from_numpy(full_x), torch.from_numpy(full_y)),
+            batch_size=batch_size, shuffle=True,
+        )
+        model = _build_model(seq_len, pred_len, kernel).to(dev)
+        opt = torch.optim.Adam(model.parameters(), lr=lr)
+        deployment_losses = []
+        for epoch in range(n_epochs):
+            deployment_losses.append(round(fit_epoch(model, full_loader, opt), 6))
+            logger.info("[DLinearUniversal] full refit epoch=%s/%s loss=%s",
+                        epoch + 1, n_epochs, deployment_losses[-1])
+        best_state = {k: v.cpu().clone() for k, v in model.state_dict().items()}
+        deployment_fit.update(performed=True, epochs=n_epochs, loss_history=deployment_losses)
+        elapsed = round(time.time() - t0, 1)
 
     return {
         "state_dict": {k: v.numpy().tolist() for k, v in best_state.items()},  # JSON-friendly for sanity, will save as torch
@@ -374,11 +419,16 @@ def train_dlinear(
             "seq_len": seq_len,
             "pred_len": pred_len,
             "kernel": kernel,
-            "n_train_windows": int(len(train_idx)),
+            "n_train_windows": deployment_fit["rows"] if deployment_fit else int(len(train_idx)),
+            "validation_train_windows": int(len(train_idx)),
+            "deployment_fit": deployment_fit,
             "n_val_windows": int(len(val_idx)),
             "n_input_series": input_series_count,
             "best_val_loss": round(best_val_loss, 6),
             "val_dir_accuracy": round(dir_acc, 3),
+            "checkpoint_selection": "full_refit_final_epoch" if deployment_fit else ("fixed_final_epoch_outer_test_monitor_only" if fixed_outer_epochs else "best_internal_validation"),
+            "validation_checkpoint_selection": "fixed_final_epoch_outer_test_monitor_only" if fixed_outer_epochs else "best_internal_validation",
+            "score_semantic_version": "forecast-t5-over-signal-close-gross-v1",
             "n_epochs": n_epochs,
             "batch_size": batch_size,
             "lr": lr,

@@ -233,7 +233,8 @@ def validate_model_frame(packet: dict, arm: str, frame: dict) -> None:
         return
     if arm not in ARMS:
         raise ValueError('paired_native_unknown_model_arm')
-    model = prediction_arms(packet)[arm]
+    from services.paired_native_rescore_carry import rescore_prediction_arms
+    model = rescore_prediction_arms(packet)[arm]
     controller = packet['variables'].get('ML_CONTROLLER_URL', '').rstrip('/')
     records = [record for record in frame.get('responses', [])
                if (record.get('request') or {}).get('url') == controller + '/intraday/rescore']
@@ -242,8 +243,10 @@ def validate_model_frame(packet: dict, arm: str, frame: dict) -> None:
     from services.native_paper_read_capabilities import NativeReadCapabilities
     def forbidden(*args, **kwargs):
         raise RuntimeError('paired_native_model_replay_external_read_forbidden')
+    from services.paired_nav_strategy_bundle import arm_configuration
+    trading_config=arm_configuration(packet['configuration'],arm,signal_date=packet['session_date'])
     capability = NativeReadCapabilities(broker_url='', broker_token='', controller_url=controller,
-        trading_config=packet['configuration']['trading_config'], predictions=model['predictions'],
+        trading_config=trading_config, predictions=model['predictions'],
         session_date=packet['session_date'], transport=forbidden, kv_read=forbidden)
     reader = ModelScopedReader(capability, model['model_identity'], model.get('input_identity'))
     for record in records:
@@ -256,7 +259,7 @@ def validate_model_frame(packet: dict, arm: str, frame: dict) -> None:
                 or context.get('model_identity') != model['model_identity']
                 or context.get('input_identity') != model.get('input_identity')
                 or context.get('predictions_checksum') != digest(model['predictions'])
-                or context.get('trading_config_checksum') != digest(packet['configuration']['trading_config'])
+                or context.get('trading_config_checksum') != digest(trading_config)
                 or context.get('session_date') != packet['session_date']):
             raise ValueError('paired_native_model_transcript_identity_mismatch')
         if record.get('response') != reader.read_native(request, frame):

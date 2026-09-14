@@ -562,10 +562,12 @@ def build_feature_matrix(
             .rolling_sum(window_size=252, min_samples=1)
         )
         df = df.with_columns(
-            pit_intent
-            .rolling_rank(window_size=252, method="average", min_samples=20)
-            .truediv(valid_window_count)
-            .clip(0.0, 1.0)
+            pl.when(valid_window_count >= 20)
+            .then(
+                pit_intent.rolling_rank(window_size=252, method="average", min_samples=20)
+                .truediv(valid_window_count).clip(0.0, 1.0)
+            )
+            .otherwise(None)
             .alias("linear_factor")
         )
     else:

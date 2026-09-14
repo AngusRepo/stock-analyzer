@@ -539,7 +539,22 @@ export async function runActive8OofLifecycle(
   ].join(' ')
 }
 
+async function newL4Configured(env: Bindings): Promise<boolean> {
+  const config = await env.KV.get('trading:config','json') as {l4Distribution?:unknown}|null
+  return config?.l4Distribution != null
+}
+
+export async function runL4DistributionRefresh(env: Bindings, runDate: string, cadence: 'weekly'|'monthly') {
+  const response=await controllerFetch(env,'/l4_distribution/refresh',{method:'POST',timeoutMs:45_000,
+    jsonBody:{end_date:runDate,cadence,promote:false,dry_run:false}})
+  if (!response.ok) throw new Error(`l4_distribution_refresh_http_${response.status}`)
+  const result=await response.json() as {status?:string;execution_id?:string}
+  if (!['spawned','pending'].includes(result.status ?? '')) throw new Error('l4_distribution_refresh_dispatch_invalid')
+  return `l4_distribution_refresh status=${result.status} execution=${result.execution_id} candidate_only=true`
+}
+
 export async function runL4AlphaEvRefresh(env: Bindings, runDate?: string, cadence: 'weekly' | 'monthly' = 'weekly') {
+  if (await newL4Configured(env)) return runL4DistributionRefresh(env,runDate ?? twToday(),cadence)
   requireController(env)
 
   const resp = await controllerFetch(env, '/l4_alpha_ev/refresh', {
@@ -567,6 +582,7 @@ export async function runL4AlphaEvRefresh(env: Bindings, runDate?: string, caden
 }
 
 export async function runAllocatorEvFusionRefresh(env: Bindings, runDate?: string, cadence: 'weekly' | 'monthly' = 'weekly') {
+  if (await newL4Configured(env)) return 'skipped new_l4plus_disabled_by_design'
   requireController(env)
 
   const resp = await controllerFetch(env, '/allocator_ev_fusion/refresh', {
@@ -599,6 +615,7 @@ export async function runOpbArmPriorRefresh(
   runDate: string,
   expectedReturnOwner: 'auto' | ExpectedReturnOwner = 'auto',
 ) {
+  if (await newL4Configured(env)) return 'skipped new_l4_opb_uses_complete_account_rewards'
   requireController(env)
 
   const servingState = await readCurrentExpectedReturnServingState(env, runDate)

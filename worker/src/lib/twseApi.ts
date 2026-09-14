@@ -1433,13 +1433,14 @@ export async function bulkFetchAndStorePrices(
     const stmts = validRows.slice(i, i + BATCH)
       .filter(r => idMap.has(r.symbol))
       .map(r => marketDb.prepare(
-        `INSERT INTO stock_prices (stock_id, date, open, high, low, close, adj_close, volume, avg_price)
-         VALUES (?,?,?,?,?,?,?,?,?)
+        // Raw exchange quotes cannot supply or overwrite an adjusted-price series.
+        `INSERT INTO stock_prices (stock_id, date, open, high, low, close, volume, avg_price)
+         VALUES (?,?,?,?,?,?,?,?)
          ON CONFLICT(stock_id, date) DO UPDATE SET
            open=excluded.open, high=excluded.high, low=excluded.low,
-           close=excluded.close, adj_close=excluded.adj_close,
+           close=excluded.close,
            volume=excluded.volume, avg_price=excluded.avg_price`
-      ).bind(idMap.get(r.symbol)!, effectiveDate, r.open, r.high, r.low, r.close, r.close, r.volume, r.avg_price ?? null))
+      ).bind(idMap.get(r.symbol)!, effectiveDate, r.open, r.high, r.low, r.close, r.volume, r.avg_price ?? null))
     if (stmts.length) {
       await marketDb.batch(stmts)
       count += stmts.length

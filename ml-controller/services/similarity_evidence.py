@@ -310,8 +310,9 @@ def similarity_components(
     threshold_quantile: float = 0.9,
     daily_vol_floor: float = 0.01,
     min_observations: int = 3,
+    dated_covariance_packet: dict | None = None,
 ) -> dict[str, Any]:
-    covariance_packet = ledoit_wolf_covariance(
+    covariance_packet = dated_covariance_packet or ledoit_wolf_covariance(
         symbols,
         return_history,
         daily_vol_floor=daily_vol_floor,
@@ -320,11 +321,13 @@ def similarity_components(
     clean_symbols = covariance_packet["symbols"]
     covariance = covariance_packet["covariance"]
     covariance_correlation = correlation_from_covariance(covariance)
-    graph_correlation, correlation_method = sample_return_correlation_matrix(
-        clean_symbols,
-        return_history,
-        min_observations=min_observations,
-    )
+    if dated_covariance_packet is not None:
+        if clean_symbols != symbols:raise ValueError('l4_risk_covariance_symbol_order')
+        graph_correlation = np.asarray(dated_covariance_packet['graph_correlation'],float)
+        correlation_method = dated_covariance_packet['correlation_method']
+    else:
+        graph_correlation, correlation_method = sample_return_correlation_matrix(
+            clean_symbols, return_history, min_observations=min_observations)
     threshold, threshold_source = adaptive_abs_corr_threshold(
         graph_correlation,
         explicit_threshold=edge_threshold,

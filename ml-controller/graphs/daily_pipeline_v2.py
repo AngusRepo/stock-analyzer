@@ -635,6 +635,8 @@ class PipelineStateV2(TypedDict, total=False):
     screener_recs: list[dict]              # screener-owned seed rows, enriched with optional daily_recommendations state
     screener_run_id: str                    # latest screener_funnel_runs.run_id used as candidate source
     decision_universe_frozen_at: str          # canonical L1.5 slate availability cutoff
+    paired_nav_l3_selection_context: dict    # independently frozen model inventory, never a revised L1.5 time
+    paired_nav_l3_dispatch: dict             # frozen own-model request selection, retained through graph/callback
     market_env: dict                        # market_risk + twii + breadth + us + history
     adaptive_params: dict                   # from KV ml:adaptive_params
     barrier_params: dict                    # from KV trading:config.barrier
@@ -679,6 +681,7 @@ class PipelineStateV2(TypedDict, total=False):
     expected_return_serving_preflight: dict  # L4/Fusion compatibility before row materialization
     expected_return_owner_coverage: dict     # valid owner or explicit abstention for every screener seed
     pit_sector_alpha_coverage: dict          # prior completed PIT sector expert coverage
+    l4_pending_plan: dict
     paired_nav_collection: dict             # sealed allocation context; separate from EV/NAV maturity
     llm_reasons: dict                       # symbol ??{reason, watchPoints}
 
@@ -1460,8 +1463,9 @@ def _pipeline_sequence_inputs(state: PipelineStateV2, payloads: list[dict]):
                     fingerprints[symbol] = fingerprint
                     union.setdefault(symbol, row)
         raw = list(union.values())
-        base = build_state_space_series_from_payloads(raw)
-        series, metadata = enrich_state_space_series_with_long_history(base,
+        # The dated canonical path reads payload dates and verified adjusted
+        # prices itself; eagerly parsing an unused raw series can abort the pool.
+        series, metadata = enrich_state_space_series_with_long_history([],
             target_points=daily_sequence_target_points(), payloads=raw, decision_date=state['run_date'])
         body = _json_safe({'schema_version': 'pipeline-sequence-observations-v1', 'signal_date': state['run_date'],
             'input_fingerprints': fingerprints, 'series': series, 'metadata': metadata,
@@ -2276,48 +2280,60 @@ async def node_recommend(state: PipelineStateV2) -> dict:
     _require_trading_config_contract(cfg_result, "recommend")
     trading_cfg = cfg_result.config
     alpha_policy = trading_cfg.get("alphaFramework", {}) or trading_cfg.get("alpha_framework", {}) or {}
-    l4_alpha_ev_policy = (
-        trading_cfg.get("l4AlphaEv")
-        or trading_cfg.get("l4_alpha_ev")
-        or trading_cfg.get("alphaEvResolver")
-        or (trading_cfg.get("ensemble_v2", {}) or {}).get("l4AlphaEv")
-        or (trading_cfg.get("ensemble_v2", {}) or {}).get("l4_alpha_ev")
-    )
-    if isinstance(l4_alpha_ev_policy, dict):
-        alpha_policy = dict(alpha_policy) if isinstance(alpha_policy, dict) else {}
-        alpha_policy.setdefault("l4_alpha_ev", l4_alpha_ev_policy)
-    l4_serving_preflight = assess_l4_policy_cutover(alpha_policy)
-    if l4_serving_preflight.get("ready") is not True:
-        logger.error(
-            "[Pipeline V2] configured L4 artifact is not serving-compatible; "
-            "expected-return allocation will fail closed while evidence continues: %s",
-            l4_serving_preflight,
+    if trading_cfg.get('l4Distribution') is not None:
+        alpha_policy = dict(alpha_policy or {})
+        alpha_policy['l4Distribution'] = trading_cfg['l4Distribution']
+    if trading_cfg.get('l4Distribution') is not None:
+        from services.l4_distribution import validate_bundle
+        from services.paired_nav_collection import baseline_model_identity
+        validate_bundle(trading_cfg['l4Distribution']['artifact'],
+            l3_identity=baseline_model_identity(_pipeline_frozen_serving_manifest(state)),signal_date=state['run_date'])
+        l4_serving_preflight = {'ready':True,'owner':'l4_distribution'}
+        fusion_serving_preflight = {'ready':False,'status':'disabled_by_design'}
+        l4_ready, fusion_ready, serving_owner = True, False, 'l4_distribution'
+    else:
+        l4_alpha_ev_policy = (
+            trading_cfg.get("l4AlphaEv")
+            or trading_cfg.get("l4_alpha_ev")
+            or trading_cfg.get("alphaEvResolver")
+            or (trading_cfg.get("ensemble_v2", {}) or {}).get("l4AlphaEv")
+            or (trading_cfg.get("ensemble_v2", {}) or {}).get("l4_alpha_ev")
         )
-    allocator_ev_fusion_policy = (
-        trading_cfg.get("allocatorEvFusion")
-        or trading_cfg.get("allocator_ev_fusion")
-        or (trading_cfg.get("ensemble_v2", {}) or {}).get("allocatorEvFusion")
-        or (trading_cfg.get("ensemble_v2", {}) or {}).get("allocator_ev_fusion")
-    )
-    if isinstance(allocator_ev_fusion_policy, dict):
-        allocator_ev_fusion_policy = dict(allocator_ev_fusion_policy)
-        allocator_ev_fusion_policy["runtime_forward_guard"] = await asyncio.to_thread(
-            load_allocator_ev_fusion_forward_guard,
-            allocator_ev_fusion_policy,
+        if isinstance(l4_alpha_ev_policy, dict):
+            alpha_policy = dict(alpha_policy) if isinstance(alpha_policy, dict) else {}
+            alpha_policy.setdefault("l4_alpha_ev", l4_alpha_ev_policy)
+        l4_serving_preflight = assess_l4_policy_cutover(alpha_policy)
+        if l4_serving_preflight.get("ready") is not True:
+            logger.error(
+                "[Pipeline V2] configured L4 artifact is not serving-compatible; "
+                "expected-return allocation will fail closed while evidence continues: %s",
+                l4_serving_preflight,
+            )
+        allocator_ev_fusion_policy = (
+            trading_cfg.get("allocatorEvFusion")
+            or trading_cfg.get("allocator_ev_fusion")
+            or (trading_cfg.get("ensemble_v2", {}) or {}).get("allocatorEvFusion")
+            or (trading_cfg.get("ensemble_v2", {}) or {}).get("allocator_ev_fusion")
         )
-        alpha_policy = dict(alpha_policy) if isinstance(alpha_policy, dict) else {}
-        alpha_policy.setdefault("allocatorEvFusion", allocator_ev_fusion_policy)
-        alpha_policy.setdefault("allocator_ev_fusion", allocator_ev_fusion_policy)
-    fusion_serving_preflight = assess_allocator_ev_fusion_policy(alpha_policy)
-    l4_ready = l4_serving_preflight.get("ready") is True
-    fusion_ready = l4_ready and fusion_serving_preflight.get("ready") is True
-    serving_owner = (
-        "allocator_ev_fusion"
-        if fusion_ready
-        else "l4_alpha_ev"
-        if l4_ready
-        else None
-    )
+        if isinstance(allocator_ev_fusion_policy, dict):
+            allocator_ev_fusion_policy = dict(allocator_ev_fusion_policy)
+            allocator_ev_fusion_policy["runtime_forward_guard"] = await asyncio.to_thread(
+                load_allocator_ev_fusion_forward_guard,
+                allocator_ev_fusion_policy,
+            )
+            alpha_policy = dict(alpha_policy) if isinstance(alpha_policy, dict) else {}
+            alpha_policy.setdefault("allocatorEvFusion", allocator_ev_fusion_policy)
+            alpha_policy.setdefault("allocator_ev_fusion", allocator_ev_fusion_policy)
+        fusion_serving_preflight = assess_allocator_ev_fusion_policy(alpha_policy)
+        l4_ready = l4_serving_preflight.get("ready") is True
+        fusion_ready = l4_ready and fusion_serving_preflight.get("ready") is True
+        serving_owner = (
+            "allocator_ev_fusion"
+            if fusion_ready
+            else "l4_alpha_ev"
+            if l4_ready
+            else None
+        )
     decision_owners = resolve_decision_owner_contract(serving_owner)
     expected_return_serving_preflight = {
         "schema_version": "expected-return-serving-preflight-v1",
@@ -2470,10 +2486,7 @@ async def node_recommend(state: PipelineStateV2) -> dict:
         sorted(set(active_family_counts)),
     )
     from services.paired_nav_collection import capture_allocator_return_history
-    allocator_history = capture_allocator_return_history(payloads=state['payloads'], signal_date=state['run_date'],
-        saved=state.get('pipeline_allocator_history_context'))
-    return_history = allocator_history['return_history']
-    opb_reward_ledger = load_online_portfolio_bandit_reward_ledger()
+    opb_reward_ledger = [] if trading_cfg.get('l4Distribution') is not None else load_online_portfolio_bandit_reward_ledger()
     logger.info(
         "[Pipeline V2] OnlinePortfolioBandit reward ledger loaded arms=%s samples=%s",
         len(opb_reward_ledger),
@@ -2484,6 +2497,32 @@ async def node_recommend(state: PipelineStateV2) -> dict:
                                               "alpha": 0.40, "beta": 0.40, "gamma": 0.20,
                                               "screenerDenominator": 60.0, "promoteMinConf": 0.60})
     ev2_cfg = trading_cfg.get("ensemble_v2", {}) or {}
+    distribution_policy = trading_cfg.get('l4Distribution')
+    if distribution_policy is not None:
+        from services.l4_distribution_context import prepare_runtime_policy
+        alpha_policy = dict(alpha_policy or {})
+        alpha_policy['l4Distribution'] = await asyncio.to_thread(prepare_runtime_policy,
+            policy=distribution_policy, signal_date=state['run_date'],
+            predictions=state['predictions'], manifest=_pipeline_frozen_serving_manifest(state))
+        opb_reward_ledger = alpha_policy['l4Distribution'].pop('_account_rewards')
+
+    held_risk_payloads = None
+    canonical_risk_payloads = None
+    if distribution_policy is not None and not state.get('pipeline_allocator_history_context'):
+        from services.l4_risk_history import load_held_risk_payloads, load_canonical_risk_payloads
+        from services.recommendation_service import gnn_return_history_lookback
+        held_risk_payloads = await asyncio.to_thread(load_held_risk_payloads,
+            holdings=alpha_policy['l4Distribution']['runtime']['account']['holdings'],
+            payloads=state['payloads'], signal_date=state['run_date'], lookback=gnn_return_history_lookback())
+        canonical_risk_payloads = await asyncio.to_thread(load_canonical_risk_payloads,
+            payloads=state['payloads'],held_payloads=held_risk_payloads,signal_date=state['run_date'],lookback=gnn_return_history_lookback())
+    allocator_history = capture_allocator_return_history(payloads=state['payloads'], signal_date=state['run_date'],
+        saved=state.get('pipeline_allocator_history_context'), held_payloads=held_risk_payloads,canonical_risk_payloads=canonical_risk_payloads)
+    if distribution_policy is not None and (allocator_history['schema_version'] != 'allocator-return-history-context-v3'
+            or 'canonical_risk_payloads' not in allocator_history):
+        raise ValueError('l4_risk_dated_history_required')
+    return_history = allocator_history['return_history']
+
     from services.paired_nav_collection import run_and_capture_allocation
     from services.paired_nav_execution_environment import capture_pipeline_execution_environment
     paired_nav_source_run_id = str(state.get("producer_run_id") or f"daily:{state['run_date']}")
@@ -2515,6 +2554,15 @@ async def node_recommend(state: PipelineStateV2) -> dict:
         writer=LEARNING_D1_CLIENT.batch_execute,
         run_allocation=apply_sparse_tangent_allocation,
     )
+    if distribution_policy is not None:
+        plans = [row.pop('_l4_portfolio_plan') for row in final if '_l4_portfolio_plan' in row]
+        if len(plans) != 1:
+            raise RuntimeError('l4_distribution_portfolio_plan_missing')
+        # Publish only after all formal recommendation writes are checked.
+        l4_pending_plan = plans[0]
+    else:
+        l4_pending_plan = None
+
     atomic_allocation = None
     if atomic_prepared is not None and atomic_recommendation is not None:
         try:
@@ -2569,6 +2617,7 @@ async def node_recommend(state: PipelineStateV2) -> dict:
         diagnostic["decision_expected_return_owner"] = "risk_abstention"
 
     allowed_owners = {
+        "l4_distribution",
         "l4_alpha_ev",
         "allocator_ev_fusion",
         "risk_abstention",
@@ -2627,6 +2676,7 @@ async def node_recommend(state: PipelineStateV2) -> dict:
         "paired_nav_atomic_recommendation": atomic_recommendation,
         "pipeline_allocator_history_context": allocator_history,
         "paired_nav_atomic_allocation": atomic_allocation,
+        "l4_pending_plan": l4_pending_plan,
     }
 
 
@@ -2919,6 +2969,9 @@ async def node_write_d1(state: PipelineStateV2) -> dict:
     timesfm_l2_summary = state.get("timesfm_l2_summary") or state.get("timesfm_l175_summary")
     if timesfm_l2_summary:
         metrics["timesfm_l2_summary"] = timesfm_l2_summary
+    if state.get('l4_pending_plan') is not None:
+        from services.l4_distribution_context import publish_plan
+        await asyncio.to_thread(publish_plan, state['l4_pending_plan'], state['paired_nav_collection']['snapshot_id'])
     logger.info(f"[Pipeline V2] write_d1 done: {metrics}")
     return {"metrics": metrics}
 
@@ -4194,13 +4247,24 @@ async def _build_pipeline_modal_prediction_payload(state: PipelineStateV2, *, st
     )
     nav_requests = None
     if isinstance(serving_manifest.get('active8_ensemble'), dict):
-        from services.paired_nav_l3_dispatch import prepare_candidate_requests
+        from services.paired_nav_l3_dispatch import prepare_candidate_requests, freeze_candidate_selection_context
+        from services import kv_client
         from services.paired_nav_collection import shadow_failure
         try:
+            saved_selection = state.get('paired_nav_l3_selection_context')
+            declarations = (saved_selection['declarations'] if saved_selection is not None
+                else kv_client.get_json('l4:nav_candidate_bundles:v1',default=None,strict=True))
+            selection_context = freeze_candidate_selection_context(signal_date=state['run_date'],
+                universe_frozen_at=state['decision_universe_frozen_at'], declarations=declarations,
+                saved=saved_selection)
+            if selection_context is not None:
+                state['paired_nav_l3_selection_context'] = selection_context
             selection = prepare_candidate_requests(signal_date=state['run_date'],
-                decision_cutoff=state['decision_universe_frozen_at'], sequence_series=_json_safe(sequence_series),
+                decision_cutoff=(selection_context['candidate_frozen_at'] if selection_context is not None
+                    else state['decision_universe_frozen_at']), sequence_series=_json_safe(sequence_series),
                 query=LEARNING_D1_CLIENT.query, project=_pipeline_modal_active8_shadow_projection,
-                subsets=_sequence_model_subsets)
+                subsets=_sequence_model_subsets,
+                strategy_bundles=declarations)
             state['paired_nav_l3_dispatch'] = selection
             nav_requests = selection['requests']
         except Exception as exc:

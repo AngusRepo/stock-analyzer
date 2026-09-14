@@ -58,9 +58,10 @@ def test_dry_run_and_historical_replay_cannot_create_forward_evidence(inputs):
     assert captured==[]
 
 
-def test_collector_runs_before_formal_snapshot_skip_and_backfill_cannot_refreeze_ipo():
+def test_retired_collector_is_not_scheduled_and_backfill_cannot_refreeze_ipo():
     root=Path(__file__).resolve().parents[2]
     chain=(root/'worker/src/lib/postMarketChain.ts').read_text(encoding='utf-8')
-    assert chain.index("'ipo-shadow-native-freeze'") < chain.index('const snapshotUnavailableInEvidenceOnlyMode')
+    assert "ipo-shadow-native-freeze" not in chain
+    assert "/ipo-shadow/freeze" not in chain
     backfill=(root/'ml-controller/services/allocator_ev_feature_snapshot_backfill.py').read_text(encoding='utf-8')
     assert 'from services.ipo_shadow import freeze_daily' not in backfill

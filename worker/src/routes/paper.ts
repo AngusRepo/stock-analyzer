@@ -666,7 +666,8 @@ async function reconcileLegacyP6DisplayMeta(
     const rank = current.percentile_rank == null ? 'n/a' : current.percentile_rank.toFixed(4)
     return {
       ...(meta ?? {}),
-      error_message: `P6 owner ��Market D1 ${current.date ?? 'latest'} zone=${current.zone} rank=${rank}${snapshotDate} w� setup �Y halted ��M� look-ahead`,
+      error_message: `P6 owner ��Market D1 ${current.date ?? 'latest'} zone=${current.zone} rank=${rank}${snapshotDate} w� setup �Y halted 
+��M� look-ahead`,
       p6_runtime_reconciliation: {
         status: 'owner_repaired_historical_run_not_replayed',
         production_effect: false,
@@ -1690,6 +1691,8 @@ paper.post('/reset', async (c) => {
   if (!serviceToken || token !== serviceToken) {
     return c.json({ error: 'Reset 只允許 service token 執行' }, 403)
   }
+
+  if ((await getTradingConfig(c.env.KV)).l4Distribution) return c.json({error:'new_l4_requires_explicit_account_epoch_migration_before_reset'},409)
 
   await paperDomainDatabase(c.env).batch([
     paperDomainDatabase(c.env).prepare("UPDATE paper_accounts SET cash=1000000.0, updated_at=datetime('now') WHERE id=?").bind(ACCOUNT_ID),

@@ -848,6 +848,8 @@ def build_model_training_config_attestation(
         "dataset_snapshot_checksum": contract.get("dataset_snapshot_checksum"),
         "input_lineage": contract.get("input_lineage"),
     }
+    if contract.get("execution_profile") is not None:
+        attestation["execution_profile"] = contract["execution_profile"]
     attestation["attestation_checksum"] = _contract_payload_checksum(attestation)
     return attestation
 

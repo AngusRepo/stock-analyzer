@@ -124,7 +124,7 @@ export function sealedPaperBindings(bridge: PaperBridge, variables: Record<strin
       body: ['GET', 'HEAD'].includes(req.method) ? '' : await req.text() })
     return new Response(packet.body, { status: packet.status, headers: packet.headers })
   }
-  return { environment, databases, fetchFrozen, call, drain }
+  return { environment, databases, fetchFrozen, call, drain, allocateL4Private:(account:unknown)=>call('l4_allocate',{account}) }
 }
 
 export async function runSealedPaperFrames(bridge: PaperBridge, input: {

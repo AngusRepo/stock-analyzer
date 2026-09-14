@@ -26,6 +26,8 @@ def collect_atomic_allocations(*, snapshot_id, query, writer):
     manifest, context = saved['manifest'], saved['payload']['content']
     empty = {'plans': [], 'lifecycle_transition_plan': [], 'production_effect': False,
              'promotion_allowed': False, 'nav_maturity_credit': 0}
+    if context.get('inputs', {}).get('alpha_policy', {}).get('l4Distribution') is not None:
+        return {**empty, 'status': 'awaiting_paired_l3_l4_release'}
     if manifest['snapshot_kind'] != 'allocation_context':
         raise ValueError('paired_nav_atomic_allocation_parent_invalid')
     prepared = context.get('atomic_recommendation_inputs')

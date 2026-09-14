@@ -273,19 +273,35 @@ def checksum(value: dict[str, Any]) -> str:
     return hashlib.sha256(raw).hexdigest()
 
 
-def model_profile(model_name: str) -> dict[str, Any]:
+LOCAL_EXECUTION_PROFILE = "local-cpu-directml-v1"
+
+
+def model_profile(model_name: str, *, execution_profile: str | None = None) -> dict[str, Any]:
     model = str(model_name or "").strip()
     if model not in ACTIVE8_RELEASE_MODEL_PROFILES:
         raise ValueError(f"release_model_profile_missing:{model}")
-    return copy.deepcopy(ACTIVE8_RELEASE_MODEL_PROFILES[model])
+    return model_profiles(execution_profile=execution_profile)[model]
 
 
-def model_profiles() -> dict[str, dict[str, Any]]:
-    return copy.deepcopy(ACTIVE8_RELEASE_MODEL_PROFILES)
+def model_profiles(*, execution_profile: str | None = None) -> dict[str, dict[str, Any]]:
+    profiles = copy.deepcopy(ACTIVE8_RELEASE_MODEL_PROFILES)
+    if execution_profile is None:
+        return profiles
+    if execution_profile != LOCAL_EXECUTION_PROFILE:
+        raise ValueError("release_execution_profile_invalid")
+    # Only execution placement differs. Capacity, data and validation stay fixed.
+    for model, profile in profiles.items():
+        device = "privateuseone:0" if model == "TabM" else "cpu"
+        profile["runtime"]["executor"] = "local_directml" if model == "TabM" else "local_cpu"
+        for settings in (profile["payload_config"], profile["required_effective_config"]):
+            for key in ("device", "runtime_device"):
+                if key in settings:
+                    settings[key] = device
+    return profiles
 
 
-def release_model_payload(model_name: str) -> dict[str, Any]:
-    return copy.deepcopy(model_profile(model_name)["payload_config"])
+def release_model_payload(model_name: str, *, execution_profile: str | None = None) -> dict[str, Any]:
+    return copy.deepcopy(model_profile(model_name, execution_profile=execution_profile)["payload_config"])
 
 
 def require_nested_subset(actual: Any, required: Any, *, path: str = "effective_config") -> None:
@@ -301,7 +317,7 @@ def require_nested_subset(actual: Any, required: Any, *, path: str = "effective_
         raise ValueError(f"release_model_profile_value_mismatch:{path}:expected={required}:actual={actual}")
 
 
-def validate_profiles(profiles: dict[str, Any]) -> dict[str, Any]:
-    if profiles != ACTIVE8_RELEASE_MODEL_PROFILES:
+def validate_profiles(profiles: dict[str, Any], *, execution_profile: str | None = None) -> dict[str, Any]:
+    if profiles != model_profiles(execution_profile=execution_profile):
         raise ValueError("release_model_profiles_mismatch")
     return profiles

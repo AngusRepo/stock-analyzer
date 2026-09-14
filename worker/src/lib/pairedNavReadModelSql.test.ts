@@ -50,6 +50,7 @@ async function main() {
     for (const [owner, kind, baseline_kind] of [
       ['opb_arm_prior', 'allocator_policy_contrast', 'exact_frozen_incumbent_allocator'],
       ['atomic_strategy', 'atomic_strategy_replacement', 'frozen_incumbent_strategy_policy'],
+      ['ensemble', 'strategy_bundle_replacement', 'frozen_incumbent_complete_chain'],
     ]) {
       const original = { ...comparison, owner, kind, baseline_kind }
       for (const change of [{}, { kind: 'incumbent_replacement' }, { baseline_kind: 'frozen_incumbent_policy' },

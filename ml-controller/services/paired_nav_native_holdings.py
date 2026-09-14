@@ -39,7 +39,7 @@ def _prediction_symbols(source, definition, arm):
 
 
 def capture_native_holdings(*, signal_date, definition_checksums, query, writer,
-                            paper_query=None, objects=None, account_id=1, now=None):
+                            paper_query=None, objects=None, account_id=1, now=None, owner="atomic_strategy"):
     """Observe potential new-pair symbols; existing pairs retain their own state.
 
     The observation is a required-symbol superset, not a replacement account
@@ -49,11 +49,13 @@ def capture_native_holdings(*, signal_date, definition_checksums, query, writer,
     clock = now or datetime.now(timezone.utc)
     if clock.tzinfo is None or type(account_id) is not int or account_id <= 0:
         raise ValueError('paired_native_holdings_context_invalid')
+    if owner not in {'atomic_strategy','ensemble'}:
+        raise ValueError('paired_native_holdings_owner_invalid')
     wanted = set(definition_checksums)
     by_definition = {key: [] for key in wanted}
     for entry in registered_pairs(signal_date=signal_date, query=query) if wanted else []:
         allocation = entry['allocation']['payload']['content']
-        if allocation['owner'] == 'atomic_strategy' and allocation['candidate_checksum'] in wanted:
+        if allocation['owner'] == owner and allocation['candidate_checksum'] in wanted:
             by_definition[allocation['candidate_checksum']].append(entry)
     initial = None
     if wanted:
@@ -110,6 +112,7 @@ def capture_native_holdings(*, signal_date, definition_checksums, query, writer,
         'account_id': account_id, 'observed_at': (now or datetime.now(timezone.utc)).isoformat(), 'definitions': definitions,
         'initial_observation': initial, 'production_effect': False,
         'promotion_allowed': False, 'nav_maturity_credit': 0}
+    if owner != 'atomic_strategy':body['owner']=owner
     return {**body, 'source_checksum': digest(body)}
 
 

@@ -70,6 +70,8 @@ def run_isolated_allocation(*, inputs: dict[str, Any], inherited_state: dict[str
         raise RuntimeError('paired_nav_nested_intervention_forbidden')
     if not inputs.get('ranking_config', {}).get('enabled', True):
         raise ValueError('paired_nav_allocator_disabled')
+    if inputs.get('alpha_policy', {}).get('l4Distribution') is not None and (forecasts is not None or opb_prior is not None):
+        raise ValueError('paired_nav_legacy_intervention_incompatible_with_new_l4')
     copied = deepcopy(inputs)
     # Sealed metadata is used only in this isolated runner. It is NOT an accepted
     # parameter of the production allocator and cannot grant control through JSON.

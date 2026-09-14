@@ -15,6 +15,8 @@ from test_paired_nav_review_store import migrate, two_sessions
 def isolated_job(environment, monkeypatch, local_policy):
     from routers import walk_forward
     from services import active8_prep_lifecycle, d1_domain_client
+    from services import trading_config_loader
+    monkeypatch.setattr(trading_config_loader,'load_merged_trading_config_with_contract',lambda:SimpleNamespace(config={}))
     db, bucket, *_ = environment
     migrate(db)
     two_sessions(environment, monkeypatch)

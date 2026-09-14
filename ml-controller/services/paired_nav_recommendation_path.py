@@ -17,7 +17,8 @@ from services.paired_nav_journal import digest, encode, read_snapshot
 def recommendation_source_identity() -> dict[str, str]:
     base = Path(__file__).parent
     return {name: hashlib.sha256((base / name).read_bytes()).hexdigest() for name in (
-        'paired_nav_recommendation_path.py', 'paired_nav_l3_candidate.py', 'paired_nav_l3_dispatch.py', 'recommendation_service.py',
+        'paired_nav_recommendation_path.py', 'paired_nav_l3_candidate.py', 'paired_nav_l3_dispatch.py',
+        'paired_nav_strategy_bundle.py', 'recommendation_service.py',
         'ensemble_v2.py', 'alpha_framework.py', 'l4_alpha_ev_producer.py',
         'allocator_ev_fusion.py', 'expected_return_numeric.py', 'persona_service.py',
         'pipeline_persona_context.py', 'paired_nav_atomic_personas.py',

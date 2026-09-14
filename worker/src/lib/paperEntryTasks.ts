@@ -1,8 +1,11 @@
+import { requestL4Replan, flushL4Replans } from './l4Replan'
+import { getPrevTradingDay as getL4PreviousSession } from './paperMarketData'
+import { assertL4PlanCurrentPolicy, readL4PortfolioPlan, planIdFromWatchPoints, l4TargetExecutionDecision } from './l4PortfolioPlan'
 import { paperExecutionDate, paperExecutionNow, paperAccountId, paperExecutionFetch, paperExecutionUUID } from './paperExecutionScope'
 import { databaseForDataDomain } from './dataDomainRegistry'
 import { sendDiscordNotification } from './notify'
 import { getCurrentRegime as getCurrentSltpRegime, getTradingConfig, resolveSltpForRegime } from './tradingConfig'
-import { batchGetIntradayOHLC, batchGetIntradayPrices } from './paperIntradayData'
+import { batchGetExecutionOrderbooks, batchGetIntradayOHLC, batchGetIntradayPrices } from './paperIntradayData'
 import { recordSellSettlement } from './paperMarketData'
 import { batchGetAtrByDomain, batchGetLatestPricesByDomain } from './paperMarketDomainData'
 import { calcCommission, calcTax, resolveLimitBuyFill, resolveMarketSellFill } from './paperTradeMath'
@@ -20,7 +23,7 @@ import type { PendingBuyExecutionEvent, PendingBuyTerminalExecutionStatus } from
 import { checkCircuitBreakersForDomains, reconcilePendingBuyDebates } from './pendingBuyOrchestrator'
 import { mergeIntradayPortfolioRisk, readP9IntradayHalt, checkP9IntradayDrawdown } from './intradayPortfolioRisk'
 import { resolveCircuitAdjustedSingleNameCap } from './riskPositionSizing'
-import { acquirePaperBuyIntent, completePaperBuyIntent } from './paperOrderIntent'
+import { acquirePaperBuyIntent, completePaperBuyIntent, l4BuySettlementStatements } from './paperOrderIntent'
 import { evaluatePreTradeExecution, type PreTradeMomentumContext, type PreTradeOhlcvTradePlan } from './preTradeExecutionPolicy'
 import { resolveAdaptiveExecutionPolicy } from './executionAdaptivePolicy'
 import {
@@ -537,6 +540,27 @@ async function runIntradayCheckUnlocked(env: Bindings, leaseRunId: string): Prom
 
   const baseCb = await checkCircuitBreakersForDomains(env, cfg, env.KV)
   let holdingPoll = await pollIntradayStopLoss(env, baseCb)
+  if (cfg.l4Distribution) {
+    const signalDate = await getL4PreviousSession(databaseForDataDomain(env, 'core'), env.KV)
+    if (!await flushL4Replans(env, signalDate)) return holdingPoll
+    const latest = await readL4PortfolioPlan(env)
+    if (latest && latest.signal_date===signalDate) {
+      const nameCap=resolveCircuitAdjustedSingleNameCap({configuredSingleNameCap:configuredMaxSingleNamePct,
+        circuitBaselinePositionPct:cfg.circuit.maxPositionPct,circuitEffectivePositionPct:baseCb.maxPositionPct})
+      if (latest.constraints.exposure_cap>(baseCb.targetExposurePct ?? 0)+1e-8 || latest.constraints.name_cap>nameCap+1e-8) {
+        await requestL4Replan(env,latest.plan_id,[],'account_risk_changed')
+        return holdingPoll
+      }
+    }
+    const pendingState = await loadPendingBuySnapshot(env, today, { allowFallbackRecent: false })
+    const allPlanIds = new Set(pendingState.pendingBuys.map(item => planIdFromWatchPoints(item.watch_points)))
+    if (latest && (allPlanIds.size !== 1 || !allPlanIds.has(latest.plan_id))
+      && pendingState.meta?.l4_plan_id !== latest.plan_id) {
+      const { setupMorningPendingBuys } = await import('./pendingBuyOrchestrator')
+      await setupMorningPendingBuys(env)
+    }
+  }
+
   const cb = mergeIntradayPortfolioRisk(
     baseCb,
     await readP9IntradayHalt(env.KV, today, {
@@ -815,7 +839,11 @@ async function runIntradayCheckUnlocked(env: Bindings, leaseRunId: string): Prom
     targetExposureCap: cb.targetExposurePct ?? null,
   }
 
-  if (currentPositionCount >= maxPos && pendingBuys.length > 0) {
+  const distributionEnabled = Boolean((cfg as any).l4Distribution)
+  if (distributionEnabled && pendingBuys.some(item => !planIdFromWatchPoints(item.watch_points))) {
+    throw new Error('l4_distribution_pending_plan_missing')
+  }
+  if (!distributionEnabled && !pendingBuys.some(item => planIdFromWatchPoints(item.watch_points)) && currentPositionCount >= maxPos && pendingBuys.length > 0) {
     console.log(`[Intraday] Position cap ${currentPositionCount}/${maxPos} reached, evaluating replacements...`)
 
     const { results: fullPositions } = await withD1ReadRetry(
@@ -1218,14 +1246,23 @@ async function runIntradayCheckUnlocked(env: Bindings, leaseRunId: string): Prom
       minPositionValue: cfg.position.minPositionValue ?? 30_000,
       swapThreshold: cfg.position.swapThreshold,
     }
-    const decision = buildFiveSlotExecutionDecision({
-      account,
-      marketRiskLevel: marketRisk.risk_level,
-      marketContext: allocatorMarketContext,
-      config,
-      holdings,
-      candidate,
-    })
+    const planId = planIdFromWatchPoints(pending.watch_points)
+    const plan = planId ? await readL4PortfolioPlan(env, planId) : null
+    if (planId && (await readL4PortfolioPlan(env))?.plan_id!==planId) throw new Error('l4_distribution_execution_head_changed')
+    if (planId && !plan) throw new Error('l4_distribution_execution_plan_not_found')
+    if (plan && plan.signal_date !== await getL4PreviousSession(databaseForDataDomain(env, 'core'), env.KV)) {
+      throw new Error('l4_distribution_execution_plan_expired')
+    }
+    if (plan) await assertL4PlanCurrentPolicy(env,plan,cfg)
+    const decision = plan ? l4TargetExecutionDecision({
+      plan, symbol: pending.symbol, holdings, nav: account.totalPortfolio, cash: account.cash,
+      dailyRemaining: account.dailyRemaining, riskExposureCap: cb.targetExposurePct ?? 0,
+      nameCap: effectiveMaxPositionPct, maxPositions: maxPos,
+      hardVeto: s12HardVeto || l5Quality?.status !== 'pass',
+      feeRate: cfg.fees.commission, minCommission: cfg.fees.minCommission,
+    }) : buildFiveSlotExecutionDecision({ account, marketRiskLevel: marketRisk.risk_level,
+      marketContext: allocatorMarketContext, config, holdings, candidate })
+
     return {
       decision,
       context: {
@@ -1301,6 +1338,7 @@ async function runIntradayCheckUnlocked(env: Bindings, leaseRunId: string): Prom
   )
 
   let stateChanged = false
+  const l4HardVetoes = new Set<string>()
   const executionEvents: PendingBuyExecutionEvent[] = []
   const executionAuditEvents: { symbol: string; status: string; reason: string; detail?: string | null }[] = []
   const recordExecutionEvent = (
@@ -1322,6 +1360,7 @@ async function runIntradayCheckUnlocked(env: Bindings, leaseRunId: string): Prom
     detail?: string | null,
   ) => {
     recordExecutionNote(symbol, status, reason, detail)
+    if (['position_sector_cap', 'position_correlation_cap', 'paper_order_risk_blocked'].includes(reason)) l4HardVetoes.add(symbol)
     if (!shouldPersistActiveExecutionStatus(status)) return
     const transition = applyPendingBuyExecutionStatusUpdates(pendingBuys, [{ symbol, status, reason, detail }])
     pendingBuys = transition.allItems as PendingBuy[]
@@ -1539,7 +1578,9 @@ async function runIntradayCheckUnlocked(env: Bindings, leaseRunId: string): Prom
     if ((pending.debate_verdict ?? 'PENDING') === 'PENDING') continue
     const price = priceMap.get(pending.symbol)
     if (!price) continue
-    if (pending.execution_status === 'partially_filled') {
+    // L4 partials re-enter all risk/quote checks against the current signed target.
+    // Legacy keep-state only parks the remainder; it never submits another Paper fill.
+    if (pending.execution_status === 'partially_filled' && !planIdFromWatchPoints(pending.watch_points)) {
       const partial = extractPartialFillRemaining(pending)
       const decision = evaluatePartialFillRemainingPolicy({
         requestedShares: partial?.requested ?? 0,
@@ -1576,20 +1617,19 @@ async function runIntradayCheckUnlocked(env: Bindings, leaseRunId: string): Prom
       continue
     }
 
-    const currentOhlc = ohlcMap.get(pending.symbol)
+    let currentOhlc = ohlcMap.get(pending.symbol)
     const s12Sidecar = await runS12Sidecar(pending, price, currentOhlc)
-    const finLabL5Quote = finLabL5MarketDataMap.get(pending.symbol) ?? null
-    const finLabL5Quality = finLabL5Quote
-      ? quoteQualityFromL5(finLabL5Quote, {
+    let finLabL5Quote = finLabL5MarketDataMap.get(pending.symbol) ?? null
+    const l5Thresholds={
         maxQuoteAgeMs: optionalPositiveNumber(env.FINLAB_L5_MAX_QUOTE_AGE_MS, Math.min(cfg.position.maxQuoteAgeMs ?? 60_000, 3000)),
         maxSpreadPct: optionalPositiveNumber(env.FINLAB_L5_MAX_SPREAD_PCT, 0.006),
         minDepthLevels: Math.max(1, Math.floor(optionalPositiveNumber(env.FINLAB_L5_MIN_DEPTH_LEVELS, 5))),
         minTopAskVolume: optionalPositiveNumber(env.FINLAB_L5_MIN_TOP_ASK_VOLUME, 1),
         minOrderBookImbalance: Number.isFinite(Number(env.FINLAB_L5_MIN_ORDER_BOOK_IMBALANCE))
           ? Number(env.FINLAB_L5_MIN_ORDER_BOOK_IMBALANCE)
-          : -0.7,
-      })
-      : null
+          : -0.7
+    }
+    let finLabL5Quality = finLabL5Quote ? quoteQualityFromL5(finLabL5Quote,l5Thresholds) : null
     const allocatorPlan = await buildExecutionAllocatorPlan(pending, s12Sidecar, finLabL5Quality)
     const allocatorDecision = allocatorPlan.decision
     if (allocatorDecision) recordAllocatorDecision(pending.symbol, allocatorDecision, allocatorPlan.context)
@@ -1609,6 +1649,23 @@ async function runIntradayCheckUnlocked(env: Bindings, leaseRunId: string): Prom
       )
       console.log(`[Allocator] ${pending.symbol}: ${reason}`)
       continue
+    }
+
+    if (planIdFromWatchPoints(pending.watch_points) && allocatorDecision.budgetCap<pending.ml_entry_price*1000) {
+      // A small target gap requires the actual odd-lot book; never relabel a board-lot quote.
+      const odd=(await batchGetExecutionOrderbooks([pending.symbol],{
+        SHIOAJI_PROXY_URL:env.SHIOAJI_PROXY_URL,PROXY_SERVICE_TOKEN:env.PROXY_SERVICE_TOKEN,
+        marketDataLotType:'odd_lot'})).get(pending.symbol)
+      const oddL5=odd?.lotType==='odd_lot' ? normalizeFinLabL5Quote(pending.symbol,{
+        provider:'shioaji_proxy_orderbook',lot_type:'odd_lot',last_price:odd.last,
+        bid_prices:odd.bidPrices,ask_prices:odd.askPrices,bid_volumes:odd.bidVolumes,ask_volumes:odd.askVolumes,
+        source_time:odd.quoteTime,received_at:odd.confirmationTime},paperExecutionDate()) : null
+      const quality=quoteQualityFromL5(oddL5,l5Thresholds)
+      if (!odd || quality.status!=='pass') {
+        recordActiveExecutionStatus(pending.symbol,'quote_unavailable','l4_odd_lot_book_not_ready',JSON.stringify(quality))
+        continue
+      }
+      currentOhlc={...currentOhlc,...odd};finLabL5Quote=oddL5;finLabL5Quality=quality
     }
 
     if (currentOhlc?.source !== 'shioaji') {
@@ -2025,7 +2082,7 @@ async function runIntradayCheckUnlocked(env: Bindings, leaseRunId: string): Prom
     const limitPrice = normalizeTwLimitPrice(rawLimitPrice, 'buy')
     const authoritativeSnapshot = resolveAuthoritativeBuyExecutionSnapshot({
       limitPrice,
-      lotType: 'board_lot',
+      lotType: currentOhlc.lotType ?? 'board_lot',
       maxAgeMs: optionalPositiveNumber((env as any).EXECUTION_BOOK_MAX_AGE_MS, 1500),
       maxDisagreementTicks: optionalPositiveNumber((env as any).EXECUTION_BOOK_MAX_DISAGREEMENT_TICKS, 1),
       observations: [
@@ -2101,7 +2158,7 @@ async function runIntradayCheckUnlocked(env: Bindings, leaseRunId: string): Prom
     }
     const fillPriceOverride = fill.fillPrice
 
-    if (await hasFilledBuyToday(env, pending.symbol, today)) {
+    if (!cfg.l4Distribution && await hasFilledBuyToday(env, pending.symbol, today)) {
       console.log(`[Intraday] ${pending.symbol}: already filled today, removing stale pending buy`)
       recordExecutionEvent(pending.symbol, 'filled', 'already_filled_today')
       stateChanged = true
@@ -2180,7 +2237,11 @@ async function runIntradayCheckUnlocked(env: Bindings, leaseRunId: string): Prom
     let sizingMode: 'kelly_cap' | 'risk_parity' | 'l4_sparse_weight' | 'nav_slot_floor'
     let allocationTargetBudget: number | null = null
     let navSlotFloorBudget: number | null = null
-    if (pending.kelly_pct != null && pending.kelly_pct > 0) {
+    if (planIdFromWatchPoints(pending.watch_points)) {
+      allocationTargetBudget = allocatorDecision.targetPositionValue
+      budget = allocatorDecision.budgetCap
+      sizingMode = 'l4_sparse_weight'
+    } else if (pending.kelly_pct != null && pending.kelly_pct > 0) {
       const kellyAdj = pending.kelly_pct * mediumRiskDampen
       const kellyBudget = totalPortfolio * kellyAdj
       const sparseFloor = resolveL4SparseBudgetFloor({
@@ -2218,7 +2279,9 @@ async function runIntradayCheckUnlocked(env: Bindings, leaseRunId: string): Prom
     }
 
     const minPosVal = cfg.position.minPositionValue ?? 30_000
-    if (budget < minPosVal) {
+    const l4TargetContinuation = Boolean(planIdFromWatchPoints(pending.watch_points)
+      && allocatorDecision.currentPositionValue > 0 && allocatorDecision.targetPositionValue >= minPosVal)
+    if (budget < minPosVal && !l4TargetContinuation) {
       recordActiveExecutionStatus(
         pending.symbol,
         'checked_waiting',
@@ -2412,7 +2475,9 @@ async function runIntradayCheckUnlocked(env: Bindings, leaseRunId: string): Prom
     const intradayExecutableVolume = Number(currentOhlc?.totalVolume ?? 0)
     const liquidityBaseVolume = Number(avgVolume20dMap.get(pending.symbol) ?? intradayExecutableVolume)
     const txValue = fillPrice * shares
-    if (txValue < minPosVal) {
+    const authorizedL4Partial = Boolean(planIdFromWatchPoints(pending.watch_points)
+      && isPartialFill && requestedShares * fillPrice >= minPosVal)
+    if (txValue < minPosVal && !authorizedL4Partial && !l4TargetContinuation) {
       console.log('[Intraday] txValue below minimum', pending.symbol, txValue, minPosVal)
       continue
     }
@@ -2541,7 +2606,14 @@ async function runIntradayCheckUnlocked(env: Bindings, leaseRunId: string): Prom
     const updatedShares = oldShares + shares
     const updatedAvgCost = oldShares > 0 ? (oldShares * oldAvgCost + txValue + commission) / updatedShares : totalCost / shares
 
-    const intent = await acquirePaperBuyIntent(env, today, pending.symbol)
+    const targetPlanId = planIdFromWatchPoints(pending.watch_points)
+    const currentTargetPosition = targetPlanId ? await paperDomainDatabase(env).prepare('SELECT shares FROM paper_positions WHERE account_id=? AND symbol=?')
+      .bind(paperAccountId(),pending.symbol).first<{shares:number}>() : null
+    const { getSettlementDate } = await import('./dateUtils')
+    const settleDate = await getSettlementDate(today, env.KV)
+    const intent = await acquirePaperBuyIntent(env, today, pending.symbol, targetPlanId ? {
+      planId:targetPlanId, currentShares:Number(currentTargetPosition?.shares ?? 0),
+    } : undefined)
     if (!intent.acquired) {
       const intentReason = intent.reason ?? 'duplicate_buy_intent'
       console.log(`[Intraday] ${pending.symbol}: buy intent unavailable, skip reason=${intentReason}`)
@@ -2669,6 +2741,10 @@ async function runIntradayCheckUnlocked(env: Bindings, leaseRunId: string): Prom
             intent_key: intent.intentKey,
           }),
         ),
+        // A new L4 plan may read the account as soon as the intent completes.
+        // Publish shares, the order, T+2 liability and completion atomically.
+        ...(targetPlanId ? l4BuySettlementStatements(env, {symbol:pending.symbol,totalCost,tradeDate:today,
+          settlementDate:settleDate,intentKey:intent.intentKey,status:isPartialFill ? 'partial' : 'filled'}) : []),
       ])
     } catch (error) {
       await completePaperBuyIntent(
@@ -2684,12 +2760,12 @@ async function runIntradayCheckUnlocked(env: Bindings, leaseRunId: string): Prom
     const autoOrderId = await paperDomainDatabase(env).prepare(
       "SELECT id FROM paper_orders WHERE account_id=? AND symbol=? AND side='buy' ORDER BY id DESC LIMIT 1",
     ).bind(paperAccountId(), pending.symbol).first<{ id: number }>()
-    await completePaperBuyIntent(env, intent.intentKey, isPartialFill ? 'partial' : 'filled', autoOrderId?.id ?? null)
-    const { getSettlementDate } = await import('./dateUtils')
-    const settleDate = await getSettlementDate(today, env.KV)
-    await paperDomainDatabase(env).prepare(
-      "INSERT INTO paper_settlements (account_id, order_id, symbol, side, amount, trade_date, settlement_date) VALUES (?, ?, ?, 'buy', ?, ?, ?)",
-    ).bind(paperAccountId(), autoOrderId?.id ?? 0, pending.symbol, totalCost, today, settleDate).run()
+    if (!targetPlanId) {
+      await completePaperBuyIntent(env, intent.intentKey, isPartialFill ? 'partial' : 'filled', autoOrderId?.id ?? null)
+      await paperDomainDatabase(env).prepare(
+        "INSERT INTO paper_settlements (account_id, order_id, symbol, side, amount, trade_date, settlement_date) VALUES (?, ?, ?, 'buy', ?, ?, ?)",
+      ).bind(paperAccountId(), autoOrderId?.id ?? 0, pending.symbol, totalCost, today, settleDate).run()
+    }
     await recordPaperExecutionEvent(env, {
       tradeDate: today,
       symbol: pending.symbol,
@@ -2793,12 +2869,16 @@ async function runIntradayCheckUnlocked(env: Bindings, leaseRunId: string): Prom
       `Auto buy filled: ${pending.symbol} ${pending.name}\n${shares}${lotTag} @ $${fillPrice} (mkt ${price})\nSL $${effectiveInitialStop.toFixed(1)} | TP1 $${effectiveTp1Price.toFixed(1)} | TP2 $${effectiveTp2Price.toFixed(1)}`,
     )
 
-    if (isPartialFill) {
+    const postFillNav=totalPortfolio+shares*(price-fillPrice)-commission
+    const remainingL4Shares=targetPlanId ? Math.max(0,Math.floor((
+      allocatorDecision.targetPositionValue/totalPortfolio*postFillNav
+      -allocatorDecision.currentPositionValue-shares*price)/price)) : 0
+    if (isPartialFill || remainingL4Shares>0) {
       recordActiveExecutionStatus(
         pending.symbol,
         'partially_filled',
-        'paper_order_partial_fill',
-        `requested=${requestedShares};filled=${shares};remaining=${requestedShares - shares}`,
+        remainingL4Shares>0 ? 'l4_target_remaining' : 'paper_order_partial_fill',
+        `requested=${targetPlanId ? shares+remainingL4Shares : requestedShares};filled=${shares};remaining=${targetPlanId ? remainingL4Shares : requestedShares - shares}`,
       )
     } else {
       recordExecutionEvent(pending.symbol, 'filled', 'paper_order_created')
@@ -2806,12 +2886,22 @@ async function runIntradayCheckUnlocked(env: Bindings, leaseRunId: string): Prom
     stateChanged = true
   }
 
+
+
   if (executionEvents.length > 0) {
     await markPendingBuyExecutionEvents(env, today, pendingBuys, executionEvents, { stage: 'intraday_check', execution_events: executionAuditEvents })
   } else if (stateChanged) {
     await persistPendingBuyActiveState(env, today, pendingBuys, { stage: 'intraday_check', execution_events: executionAuditEvents })
   } else if (executionAuditEvents.length > 0) {
     await recordPendingBuyAuditOnly(env, today, pendingRunId, 'intraday_check', executionAuditEvents)
+  }
+  if (l4HardVetoes.size) {
+    const groups = new Map<string, string[]>()
+    for (const item of pendingBuys) {
+      const planId = planIdFromWatchPoints(item.watch_points)
+      if (planId && l4HardVetoes.has(item.symbol)) groups.set(planId, [...(groups.get(planId) ?? []), item.symbol])
+    }
+    for (const [planId, symbols] of groups) await requestL4Replan(env, planId, symbols, 'execution_hard_risk_veto')
   }
   return holdingPoll
 }

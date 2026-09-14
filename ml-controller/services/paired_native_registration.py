@@ -185,13 +185,19 @@ def register_allocation_pair(*, snapshot_id: str, query, writer, domain_queries:
             initial['nav'] = account_value(initial, marks)
         finally:
             store.db.close()
+    from services.paired_nav_strategy_bundle import arm_configuration,verify_strategy_inputs
+    strategy_inputs=verify_strategy_inputs(configuration,parent['payload']['content'],signal_date=signal_date)
     states = {}
     for arm in ARMS:
+        arm_config=arm_configuration(configuration,arm,signal_date=signal_date)
+        arm_inputs=(strategy_inputs[arm] if strategy_inputs is not None else parent['payload']['content'].get('inputs'))
         prepared = prepare_native_state(base_state=starts[arm],
             seed_rows=atomic_seeds[arm] if atomic_seeds is not None else bootstrap['seed_rows'],
             recommendations=allocation[arm]['recommendations'], signal_date=signal_date,
-            trading_config=configuration['trading_config'], risk_config=configuration['risk_config'],
-            stock_rows=bootstrap['stock_rows'], frozen_kv=(source_context or {}).get('frozen_kv'))
+            trading_config=arm_config, risk_config=configuration['risk_config'],
+            stock_rows=bootstrap['stock_rows'], frozen_kv=(source_context or {}).get('frozen_kv'),
+            l4_allocation_inputs=arm_inputs if arm_config.get('l4Distribution') else None,
+            allocation_snapshot_id=parent_id)
         # The generic serializer may ignore ML-only/nonseed rows, but a paired
         # allocation must execute its entire sealed slate or the NAV contrast
         # no longer measures the candidate we registered.
@@ -207,6 +213,22 @@ def register_allocation_pair(*, snapshot_id: str, query, writer, domain_queries:
                     raise ValueError('paired_native_registration_holding_predictions_missing')
             finally:
                 store.db.close()
+    if allocation.get('owner') == 'ensemble' and configuration.get('strategy_bundle'):
+        from services.paired_native_rescore_carry import build_rescore_carry
+        from services.paired_nav_native_holdings import _account_rows, _symbols
+        held_symbols = {}
+        for arm in ARMS:
+            store = PrivatePaperStore(**states[arm], inputs={})
+            try:
+                held_symbols[arm] = _symbols(_account_rows(
+                    lambda sql,args:[dict(r) for r in store.db.execute(sql,args)], account_id))
+            finally:
+                store.db.close()
+        previous_id = previous['reference']['execution_snapshot_id'] if previous else None
+        previous_signal = read_snapshot(query, previous_id)['manifest']['signal_date'] if previous_id else None
+        models['model_rescore_context'] = build_rescore_carry(current={**allocation, **models},
+            previous=previous['registration'] if previous else None, held_symbols=held_symbols,
+            signal_date=signal_date, previous_snapshot_id=previous_id, previous_signal_date=previous_signal)
     # Freeze fee config in the exact journal contract without changing original
     # allocation identity; no efficacy or serving approval is manufactured.
     configuration = {**configuration, 'fees': configuration['trading_config']['fees']}

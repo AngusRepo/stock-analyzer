@@ -489,12 +489,13 @@ async function fetchAndStoreYahoo(db: D1Database, stock: any) {
       const o = q.open?.[i], h = q.high?.[i], l = q.low?.[i], cl = q.close?.[i], v = q.volume?.[i]
       if (cl == null) continue
       batch.push(db.prepare(
-        `INSERT INTO stock_prices (stock_id, date, open, high, low, close, adj_close, volume)
-         VALUES (?,?,?,?,?,?,?,?)
+        // This endpoint reads Yahoo raw quote OHLC, not its adjusted series.
+        `INSERT INTO stock_prices (stock_id, date, open, high, low, close, volume)
+         VALUES (?,?,?,?,?,?,?)
          ON CONFLICT(stock_id, date) DO UPDATE SET
            open=excluded.open, high=excluded.high, low=excluded.low,
-           close=excluded.close, adj_close=excluded.adj_close, volume=excluded.volume`
-      ).bind(stock.id, date, o??null, h??null, l??null, cl, cl, v??null))
+           close=excluded.close, volume=excluded.volume`
+      ).bind(stock.id, date, o??null, h??null, l??null, cl, v??null))
     }
     if (batch.length) await db.batch(batch)
     // 指標計算已移至 computeAndStoreIndicators()，由 Queue consumer 呼叫（SRP）

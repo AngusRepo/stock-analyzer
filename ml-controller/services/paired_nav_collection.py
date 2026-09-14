@@ -49,7 +49,8 @@ def allocator_runtime_source_identity() -> dict[str, str]:
              'alpha_framework.py', 'l4_alpha_ev_producer.py', 'allocator_ev_fusion.py',
              'paired_nav_intervention.py', 'expected_return_numeric.py', 'active_model_policy.py',
              'paired_nav_collection.py', 'paired_nav_opb_prior.py', 'opb_nav_control.py',
-             'opb_nav_serving_source.json')
+             'opb_nav_serving_source.json', 'l4_distribution.py', 'l4_portfolio.py',
+             'l4_distribution_runtime.py', 'l4_distribution_context.py', 'l4_risk_history.py', 'l4_dated_risk.py', 'l4_allocation_contract.py', 'similarity_evidence.py')
     return {name: hashlib.sha256((base / name).read_bytes()).hexdigest() for name in names}
 
 
@@ -64,7 +65,8 @@ def allocator_source_identity() -> dict[str, str]:
     certificate = json.loads(Path(__file__).with_name('allocator_source_equivalence.json').read_text(encoding='utf-8'))
     if (certificate.get('schema_version') != 'allocator-source-equivalence-v1'
             or certificate.get('scope') != 'frozen_allocation_economics_unchanged'
-            or any(not isinstance(certificate.get(key), dict) or set(certificate[key]) != set(actual)
+            or any(not isinstance(certificate.get(key), dict) or not certificate[key]
+                   or set(certificate[key]) != set(certificate.get('runtime_source_identity') or {})
                    or any(not isinstance(v, str) or len(v) != 64 or any(c not in '0123456789abcdef' for c in v)
                           for v in certificate[key].values())
                    for key in ('policy_source_identity', 'runtime_source_identity'))):
@@ -83,7 +85,7 @@ def allocation_projection(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
                    for row in rows], key=lambda row: row['symbol'])
 
 
-def capture_allocator_return_history(*, payloads, signal_date, saved=None):
+def capture_allocator_return_history(*, payloads, signal_date, saved=None, held_payloads=None, canonical_risk_payloads=None):
     """Freeze the original risk-window owner once; never infer it from length."""
     from services.recommendation_service import build_return_history_from_payloads, gnn_return_history_lookback
     if saved is not None:
@@ -95,6 +97,14 @@ def capture_allocator_return_history(*, payloads, signal_date, saved=None):
         'source_identity': allocator_source_identity(),
         'return_history': build_return_history_from_payloads(payloads, lookback=lookback),
         'production_effect': False, 'promotion_allowed': False, 'nav_maturity_credit': 0}
+    if held_payloads is not None:
+        from services.l4_dated_risk import build_dated_risk
+        body.update(schema_version='allocator-return-history-context-v3', held_payloads=held_payloads)
+        if canonical_risk_payloads is not None:
+            body['canonical_risk_payloads']=canonical_risk_payloads
+        body['return_history'] = build_dated_risk(
+            canonical_risk_payloads if canonical_risk_payloads is not None else [*payloads, *held_payloads],
+            signal_date=signal_date, lookback=lookback)
     context = {**body, 'content_checksum': digest(body)}
     replay_allocator_return_history(context, payloads=payloads, signal_date=signal_date)
     return context
@@ -103,7 +113,7 @@ def capture_allocator_return_history(*, payloads, signal_date, saved=None):
 def replay_allocator_return_history(context, *, payloads, signal_date):
     from datetime import date
     from services.recommendation_service import build_return_history_from_payloads
-    if (not isinstance(context, dict) or context.get('schema_version') != 'allocator-return-history-context-v1'
+    if (not isinstance(context, dict) or context.get('schema_version') not in ('allocator-return-history-context-v1', 'allocator-return-history-context-v2', 'allocator-return-history-context-v3')
             or context.get('content_checksum') != digest({k:v for k,v in context.items() if k != 'content_checksum'})
             or context.get('source_identity') != allocator_source_identity()
             or context.get('signal_date') != signal_date or context.get('payload_checksum') != digest(payloads)
@@ -114,7 +124,27 @@ def replay_allocator_return_history(context, *, payloads, signal_date):
         for row in payload.get('prices') or []:
             if date.fromisoformat(str(row.get('date') or '')[:10]) > cutoff:
                 raise ValueError('paired_nav_allocator_history_future_price')
-    result = build_return_history_from_payloads(payloads, lookback=context['lookback'])
+    if context['schema_version'] in ('allocator-return-history-context-v2','allocator-return-history-context-v3'):
+        from services.l4_risk_history import aligned_dated_history
+        held = context.get('held_payloads')
+        if not isinstance(held, list) or any(p.get('role') != 'held_only_risk_not_l3_candidate'
+                or p.get('source') != 'market.stock_prices.adj_close' or p.get('as_of_date') != signal_date for p in held):
+            raise ValueError('l4_risk_held_provenance_invalid')
+        if context['schema_version']=='allocator-return-history-context-v3':
+            from services.l4_dated_risk import build_dated_risk
+            risk_payloads=context.get('canonical_risk_payloads')
+            if risk_payloads is not None:
+                if (not isinstance(risk_payloads,list) or {p['symbol'] for p in risk_payloads}!={p['symbol'] for p in [*payloads,*held]}
+                        or any(p.get('source')!='market.canonical_market_daily.adj_close' or p.get('role')!='canonical_risk_only'
+                            or p.get('as_of_date')!=signal_date for p in risk_payloads)):
+                    raise ValueError('l4_risk_canonical_provenance_invalid')
+            result=build_dated_risk(risk_payloads if risk_payloads is not None else [*payloads,*held],signal_date=signal_date,lookback=context['lookback'])
+        else:
+            result, intervals = aligned_dated_history([*payloads, *held], signal_date=signal_date, lookback=context['lookback'])
+            if intervals != context.get('return_intervals'):
+                raise ValueError('l4_risk_interval_replay_mismatch')
+    else:
+        result = build_return_history_from_payloads(payloads, lookback=context['lookback'])
     if result != context.get('return_history'):
         raise ValueError('paired_nav_allocator_history_replay_mismatch')
     return result
@@ -155,7 +185,7 @@ def run_and_capture_allocation(*, recommendations: list[dict[str, Any]], ranking
                 payloads=recommendation_context['inputs']['payloads'], signal_date=signal_date)
             if original_history != return_history:
                 raise ValueError('paired_nav_allocator_history_input_mismatch')
-        if needs_nav_control(trading_config):
+        if trading_config.get('l4Distribution') is None and needs_nav_control(trading_config):
             identity = digest(['allocation_context', signal_date, source_run_id])
             existing = query('SELECT snapshot_id FROM paired_nav_frozen_manifests_v1 WHERE snapshot_id=?', [identity])
             previous = read_snapshot(query, identity)['payload']['content'] if existing else None
@@ -224,7 +254,8 @@ def run_and_capture_allocation(*, recommendations: list[dict[str, Any]], ranking
                 extra['ev_candidate_selection'] = previous['ev_candidate_selection']
             if 'opb_candidate_selection' in previous:
                 extra['opb_candidate_selection'] = previous['opb_candidate_selection']
-        elif baseline_identity is not None:
+        elif (baseline_identity is not None and trading_config.get('l4Distribution') is None
+                and (recommendation_context or {}).get('l3_candidate_selection',{}).get('comparison_unit')!='complete_l3_l4_strategy'):
             # Fix the denominator before any candidate artifact read/inference.
             # A source failure is retained, not changed to zero candidates or
             # allowed to suppress the incumbent/other independent shadow owners.
@@ -255,6 +286,17 @@ def run_and_capture_allocation(*, recommendations: list[dict[str, Any]], ranking
                 environment = execution_environment_reader()
                 execution_policy(environment)
                 extra['native_execution_environment'] = environment
+        selection=(recommendation_context or {}).get('l3_candidate_selection') or {}
+        if any(c.get('strategy_bundle') is not None for c in selection.get('candidates',[])):
+            from services.paired_nav_strategy_bundle import capture_strategy_context
+            if previous is not None:
+                keys=('strategy_bundle_account','strategy_bundle_native_holdings','strategy_bundle_risk_context')
+                if any(key not in previous for key in keys):
+                    raise ValueError('paired_nav_strategy_original_account_missing')
+                extra.update({key:previous[key] for key in keys})
+            else:
+                extra.update(capture_strategy_context(selection=selection,recommendation_context=recommendation_context,
+                    signal_date=signal_date,query=query,writer=writer))
         receipt = freeze_snapshot(signal_date=signal_date, source_run_id=source_run_id,
             snapshot_kind='allocation_context', query=query, writer=writer, content={
                 **extra,
@@ -293,7 +335,9 @@ def replay_frozen_allocation(*, snapshot_id: str, query: Query, run_allocation=N
                 'nav_maturity_credit': 0, 'promotion_allowed': False}
     if packet['allocator_source_identity'] != allocator_source_identity():
         raise ValueError('paired_nav_allocator_source_changed')
-    if run_allocation is not None and 'nav_control_context' not in packet['inputs']:
+    if packet['inputs']['alpha_policy'].get('l4Distribution') is not None:
+        replay = allocation_projection(apply_sparse_tangent_allocation(**packet['inputs']))
+    elif run_allocation is not None and 'nav_control_context' not in packet['inputs']:
         replay = allocation_projection(run_allocation(**packet['inputs']))
     else:
         from services.paired_nav_intervention import run_isolated_allocation

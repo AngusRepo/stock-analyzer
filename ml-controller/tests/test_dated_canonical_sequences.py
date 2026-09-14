@@ -299,3 +299,37 @@ def test_frozen_recovery_uses_actual_request_builder_without_live_sequence_reads
         assert spawned[0]['sequence_series'] == state['pipeline_sequence_observations']['series']
         assert spawned[0]['snapshot_recovery_lineage']['eligible_for_native_learning'] is False
         assert spawned[0]['state_gcs_uri'] == 'gs://fixture/derived/partial_state.json.gz'
+
+
+@pytest.mark.parametrize('bad_close', [0, -1, True, 'invalid'])
+def test_bad_raw_quote_is_unavailable_without_aborting_other_symbols(monkeypatch, canonical, bad_close):
+    from graphs import daily_pipeline_v2 as graph
+    db, _ = canonical
+    db.executemany('INSERT INTO canonical_market_daily VALUES(?,?,?,?,?)', [
+        ('2317', '2026-09-05', 50, '2026-09-05', 'finlab.price'),
+        ('2317', '2026-09-06', 51, '2026-09-06', 'finlab.price')])
+    payloads = _payload() + [{'symbol': '2317', 'stock_id': 2, 'prices': [
+        {'date': '2026-09-05', 'close': 50}, {'date': '2026-09-06', 'close': bad_close}]}]
+    before = deepcopy(payloads)
+    monkeypatch.setattr(graph, 'daily_sequence_target_points', lambda: 2)
+    state = {'run_date': '2026-09-06', 'payloads': payloads}
+    out, meta = graph._pipeline_sequence_inputs(state, payloads)
+    assert [row['symbol'] for row in out] == ['2330', '2317']
+    assert out[0]['status'] == 'ready' and out[0]['prices'] == [98, 100]
+    assert out[1]['status'] == 'unavailable' and out[1]['prices'] == [] and out[1]['dates'] == []
+    assert out[1]['reason'] == 'sequence_payload_price_invalid'
+    assert meta['unavailable_symbols'] == ['2317']
+    assert meta['source_issues'] == [{'symbol': '2317', 'date': '2026-09-06',
+                                      'reason': 'sequence_payload_price_invalid'}]
+    assert payloads == before
+    monkeypatch.setattr(payload_builder.MARKET_D1_CLIENT, 'query', lambda *a, **k: pytest.fail('re-read canonical'))
+    assert graph._pipeline_sequence_inputs(state, payloads) == (out, meta)
+
+
+def test_bad_raw_quote_does_not_hide_future_date_or_duplicate_symbol(canonical):
+    payloads = _payload()
+    payloads[0]['prices'][-1].update(close=0, date='2026-09-07')
+    with pytest.raises(ValueError, match='sequence_payload_after_decision'):
+        _run(payloads, target=2)
+    with pytest.raises(ValueError, match='sequence_symbols_invalid'):
+        _run(_payload() + _payload(), target=2)

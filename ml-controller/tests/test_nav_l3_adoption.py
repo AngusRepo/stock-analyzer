@@ -89,6 +89,10 @@ def ready(prepared, monkeypatch, request):
     db.conn.create_function('current_timestamp', 0, lambda: '2026-09-21 14:00:00')
     monkeypatch.setattr(registry, 'd1_client', client)
     configuration = plan['configuration']
+    from services import trading_config_loader
+    from types import SimpleNamespace
+    monkeypatch.setattr(trading_config_loader,'load_merged_trading_config_with_contract',
+                        lambda:SimpleNamespace(config=deepcopy(configuration['trading_config'])))
     current = {key: deepcopy(configuration[key]) for key in ('trading_config','risk_config',
         'allocator_source_identity','l3_inference_source_identity','native_execution_policy')}
     monkeypatch.setattr(authority, 'current_execution_configuration', lambda: deepcopy(current))

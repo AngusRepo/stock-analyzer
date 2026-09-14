@@ -44,6 +44,8 @@ def allocation_policy_identity(inputs: dict[str, Any]) -> dict[str, Any]:
         fusion = policies['alpha_policy'].get(alias)
         if isinstance(fusion, dict):
             fusion.pop('runtime_forward_guard', None)
+    if isinstance(policies['alpha_policy'].get('l4Distribution'), dict):
+        policies['alpha_policy']['l4Distribution'].pop('runtime', None)
     return policies
 
 
@@ -138,6 +140,8 @@ def collect_candidate_allocations(*, snapshot_id: str, query: Query, writer: Wri
         return ev
     plans = [*ev['plans'], *l3['plans'], *opb['plans']]
     status = 'allocation_pairs_frozen' if plans else ev['status']
+    if not plans and ev['status']=='retired_legacy_ev_candidates':
+        status='awaiting_paired_l3_l4_release'
     if failures:
         status = 'partial_allocation_pairs' if plans else 'candidate_allocations_failed'
     return {**ev, 'plans': plans, 'production_effect': False, 'can_write_order': False,
@@ -156,6 +160,9 @@ def _collect_ev_allocations(*, snapshot_id: str, query: Query, writer: Writer, b
     if manifest['snapshot_kind'] != 'allocation_context':
         raise ValueError('paired_nav_allocation_context_required')
     base = {'production_effect': False, 'can_write_order': False, 'nav_maturity_credit': 0, 'plans': []}
+    if (context.get('inputs', {}).get('alpha_policy', {}).get('l4Distribution') is not None
+            or (context.get('recommendation_context') or {}).get('l3_candidate_selection',{}).get('comparison_unit')=='complete_l3_l4_strategy'):
+        return {**base, 'status': 'retired_legacy_ev_candidates'}
     if not manifest['prospective']:
         return {**base, 'status': 'historical_not_prospective'}
     if context.get('allocator_source_identity') != allocator_source_identity():

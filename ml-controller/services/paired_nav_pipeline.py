@@ -121,7 +121,7 @@ def _complete_existing_pipeline_shadow(collection, *, query, writer):
         try:
             candidates = collect_candidate_allocations(snapshot_id=result['snapshot_id'], query=query, writer=writer)
             failures.update(candidates.get('owner_failures', {}))
-            pending = candidates['status'] in {'awaiting_frozen_l4_candidate', 'historical_not_prospective'}
+            pending = candidates['status'] in {'awaiting_frozen_l4_candidate', 'historical_not_prospective', 'awaiting_paired_l3_l4_release'}
             if pending and candidates.get('plans'):
                 raise ValueError('paired_nav_unexpected_pending_plans')
             if not pending and not failures and (
@@ -177,7 +177,7 @@ def pipeline_shadow_errors(collection):
     errors = []
     atomic_collection = collection.get('atomic_collection')
     if atomic_collection is not None and atomic_collection.get('status') not in {
-            'native_execution_pairs_registered', 'no_structural_candidates'}:
+            'native_execution_pairs_registered', 'no_structural_candidates', 'awaiting_paired_l3_l4_release'}:
         errors.append('paired_nav:atomic_collection:' + str(atomic_collection.get('reason') or atomic_collection.get('status')))
     atomic = collection.get('atomic_daily')
     if atomic is not None and (not isinstance(atomic, dict) or atomic.get('status') not in {
@@ -190,7 +190,7 @@ def pipeline_shadow_errors(collection):
     if collection.get('status') == 'failed':
         return [*errors, f"paired_nav:{collection.get('stage', 'unknown')}:{collection.get('reason', 'failed')}"]
     if not collection.get('snapshot_id') or collection.get('status') not in {
-            'native_execution_pairs_registered', 'awaiting_frozen_l4_candidate',
+            'native_execution_pairs_registered', 'awaiting_frozen_l4_candidate', 'awaiting_paired_l3_l4_release',
             'historical_not_prospective', 'not_applicable_no_formal_ml_ensemble'}:
         return [*errors, 'paired_nav:setup_not_completed']
     return errors

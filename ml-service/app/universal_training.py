@@ -1275,6 +1275,11 @@ def train_universal_from_gcs(req: UniversalTrainRequest) -> dict:
         try:
             from .model_validation import evaluate_model_cpcv_rank_ic
 
+            # Nested diagnostics must not see the outer test or later prep rows.
+            cpcv_X, cpcv_y, cpcv_dates = (
+                (X_train, y_train, dates_train) if walk_forward_mode else (X, y, dates_arr)
+            )
+
             def _tree_cpcv_fit_predict(model_name: str, train_idx: np.ndarray, test_idx: np.ndarray) -> np.ndarray:
                 if model_name == "XGBoost":
                     from xgboost import XGBRegressor
@@ -1323,8 +1328,8 @@ def train_universal_from_gcs(req: UniversalTrainRequest) -> dict:
                     )
                 else:
                     raise ValueError(f"Unsupported CPCV model family: {model_name}")
-                model.fit(X[train_idx], y[train_idx])
-                return np.asarray(model.predict(X[test_idx]), dtype=float)
+                model.fit(cpcv_X[train_idx], cpcv_y[train_idx])
+                return np.asarray(model.predict(cpcv_X[test_idx]), dtype=float)
 
             for model_name in TREE_MODEL_NAMES:
                 if model_name not in trained_models:
@@ -1332,9 +1337,9 @@ def train_universal_from_gcs(req: UniversalTrainRequest) -> dict:
                 print(f"[TrainUniversal] {model_name} CPCV starting")
                 evidence = evaluate_model_cpcv_rank_ic(
                     model=model_name,
-                    X=X,
-                    y=y,
-                    dates=dates_arr,
+                    X=cpcv_X,
+                    y=cpcv_y,
+                    dates=cpcv_dates,
                     fit_predict=lambda train_idx, test_idx, name=model_name: _tree_cpcv_fit_predict(
                         name,
                         train_idx,
@@ -1348,6 +1353,12 @@ def train_universal_from_gcs(req: UniversalTrainRequest) -> dict:
                     max_embargo_days=int(validation_policy["max_embargo_days"]),
                     policy=req.model_cpcv_policy,
                 )
+                evidence["data_scope"] = {
+                    "source": "purged_outer_train" if walk_forward_mode else "full_training_prep",
+                    "rows": int(len(cpcv_X)),
+                    "date_min": str(min(cpcv_dates)),
+                    "date_max": str(max(cpcv_dates)),
+                }
                 model_cpcv_evidence_by_model[model_name] = evidence
                 results.setdefault(model_name, {})["model_cpcv"] = evidence
                 print(

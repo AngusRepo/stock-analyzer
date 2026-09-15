@@ -333,3 +333,22 @@ def test_bad_raw_quote_does_not_hide_future_date_or_duplicate_symbol(canonical):
         _run(payloads, target=2)
     with pytest.raises(ValueError, match='sequence_symbols_invalid'):
         _run(_payload() + _payload(), target=2)
+
+
+@pytest.mark.parametrize('configured', ['universal/sequence_long/latest', 'universal/sequence_long/runs'])
+def test_daily_sequence_resolves_immutable_producer_run_instead_of_stale_latest(monkeypatch, canonical, configured):
+    from services import active8_prep_lifecycle
+    bucket = _prep(monkeypatch)
+    calls = []
+    def resolve(actual_bucket, cutoff):
+        assert actual_bucket is bucket
+        calls.append(cutoff)
+        return 'frozen', json.loads(bucket.blob('frozen/prep/sequence_manifest.json').raw)
+    monkeypatch.setattr(active8_prep_lifecycle, '_latest_immutable_sequence', resolve)
+    monkeypatch.setenv('STOCKVISION_SEQUENCE_LONG_GCS_PREFIX', configured)
+    out, meta = _run()
+    assert out[0]['prices'] == [90, 92, 94, 96, 98, 100]
+    assert calls == ['2026-09-06']
+    assert meta['history']['prefix'] == 'frozen'
+    assert meta['history']['requested_prefix'] == configured
+    assert configured + '/prep/sequence_manifest.json' not in bucket.blobs

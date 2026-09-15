@@ -324,8 +324,15 @@ def load_dated_long_history_records(*, symbols: set[str], decision_date: str, pr
     if not bucket_name:
         raise ValueError('sequence_bucket_missing')
     bucket = storage.Client().bucket(bucket_name)
-    manifest_blob = bucket.blob(f'{prefix}/prep/sequence_manifest.json')
-    manifest = json.loads(manifest_blob.download_as_bytes().decode('utf-8-sig'))
+    # Daily refresh publishes immutable runs; the old mutable latest object
+    # predates the checksummed contract and is no longer a serving source.
+    requested_prefix = prefix
+    if prefix in {'universal/sequence_long/latest', 'universal/sequence_long/runs'}:
+        from services.active8_prep_lifecycle import _latest_immutable_sequence
+        prefix, manifest = _latest_immutable_sequence(bucket, decision_date)
+    else:
+        manifest_blob = bucket.blob(f'{prefix}/prep/sequence_manifest.json')
+        manifest = json.loads(manifest_blob.download_as_bytes().decode('utf-8-sig'))
     unsigned = {k: v for k, v in manifest.items() if k != 'manifest_checksum'}
     expected = hashlib.sha256(json.dumps(unsigned, sort_keys=True, separators=(',', ':')).encode()).hexdigest()
     count = manifest.get('batch_count')
@@ -368,7 +375,8 @@ def load_dated_long_history_records(*, symbols: set[str], decision_date: str, pr
     # because each batch is checked against the single manifest read above.
     return records, {'manifest_checksum': expected, 'records_checksum': manifest.get('records_checksum'),
         'output_checksums': manifest['output_checksums'],
-        'prefix': prefix, 'price_basis': 'finlab_adjusted_close', 'cutoff_date': decision_date}
+        'prefix': prefix, 'requested_prefix': requested_prefix,
+        'price_basis': 'finlab_adjusted_close', 'cutoff_date': decision_date}
 
 
 def _enrich_daily_canonical_sequences(payloads, *, decision_date, target_points=None, prefix=None):

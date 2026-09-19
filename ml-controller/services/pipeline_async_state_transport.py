@@ -5,6 +5,8 @@ import hashlib
 import json
 from typing import Any
 
+from services.pipeline_json_transport import compress_json
+
 
 STATE_SCHEMA_V1 = "pipeline-async-state-v1"
 STATE_SCHEMA_V2 = "pipeline-async-state-v2"
@@ -61,18 +63,15 @@ def validate_pipeline_payload_identity(state: dict[str, Any]) -> list[dict[str, 
 
 
 def encode_pipeline_state_envelope(payload: dict[str, Any]) -> bytes:
-    raw = json.dumps(
-        payload,
-        ensure_ascii=False,
-        separators=(",", ":"),
-        default=str,
-    ).encode("utf-8")
-    return gzip.compress(raw, compresslevel=6, mtime=0)
+    compressed, _, _ = compress_json(payload)
+    return compressed
 
 
 def decode_pipeline_state_envelope(raw: bytes) -> dict[str, Any]:
-    decoded = gzip.decompress(raw) if raw.startswith(b"\x1f\x8b") else raw
-    payload = json.loads(decoded.lstrip(b"\xef\xbb\xbf"))
+    # Decode before parsing: json.loads(bytes) otherwise keeps decompressed
+    # bytes alive alongside its Unicode copy and the entire restored pool.
+    decoded = (gzip.decompress(raw) if raw.startswith(b"\x1f\x8b") else raw).decode("utf-8-sig")
+    payload = json.loads(decoded)
     if payload.get("schema_version") not in {STATE_SCHEMA_V1, STATE_SCHEMA_V2}:
         raise ValueError("pipeline_async_state_schema_invalid")
     state = payload.get("state")

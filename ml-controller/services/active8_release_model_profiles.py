@@ -8,7 +8,9 @@ import json
 from typing import Any
 
 
-MODEL_PROFILE_SCHEMA_VERSION = "active8-release-model-profiles-v1"
+LEGACY_MODEL_PROFILE_SCHEMA_VERSION = "active8-release-model-profiles-v1"
+MODEL_PROFILE_SCHEMA_VERSION = "active8-release-model-profiles-v2"
+SUPPORTED_MODEL_PROFILE_SCHEMAS = {LEGACY_MODEL_PROFILE_SCHEMA_VERSION, MODEL_PROFILE_SCHEMA_VERSION}
 TARGET_SEMANTIC = "next-session-canonical-adjusted-open-to-fifth-session-canonical-adjusted-close-net-v4"
 SCORE_SEMANTIC = "same-market-same-date-average-tie-percentile-rank-v2"
 
@@ -258,6 +260,14 @@ ACTIVE8_RELEASE_MODEL_PROFILES: dict[str, dict[str, Any]] = {
 }
 
 
+# Keep historical attestation validation exact. New releases remove stock-count
+# caps while preserving every neural architecture and optimization setting.
+_LEGACY_MODEL_PROFILES = copy.deepcopy(ACTIVE8_RELEASE_MODEL_PROFILES)
+for _model in ("PatchTST", "iTransformer"):
+    for _section in ("payload_config", "required_effective_config"):
+        ACTIVE8_RELEASE_MODEL_PROFILES[_model][_section]["max_series"] = 0
+
+
 def _canonical(value: Any) -> Any:
     if isinstance(value, dict):
         return {str(key): _canonical(item) for key, item in value.items()}
@@ -283,8 +293,12 @@ def model_profile(model_name: str, *, execution_profile: str | None = None) -> d
     return model_profiles(execution_profile=execution_profile)[model]
 
 
-def model_profiles(*, execution_profile: str | None = None) -> dict[str, dict[str, Any]]:
-    profiles = copy.deepcopy(ACTIVE8_RELEASE_MODEL_PROFILES)
+def model_profiles(*, execution_profile: str | None = None,
+                   schema_version: str = MODEL_PROFILE_SCHEMA_VERSION) -> dict[str, dict[str, Any]]:
+    if schema_version not in SUPPORTED_MODEL_PROFILE_SCHEMAS:
+        raise ValueError("release_model_profile_schema_invalid")
+    profiles = copy.deepcopy(_LEGACY_MODEL_PROFILES if schema_version == LEGACY_MODEL_PROFILE_SCHEMA_VERSION
+                             else ACTIVE8_RELEASE_MODEL_PROFILES)
     if execution_profile is None:
         return profiles
     if execution_profile != LOCAL_EXECUTION_PROFILE:
@@ -317,7 +331,8 @@ def require_nested_subset(actual: Any, required: Any, *, path: str = "effective_
         raise ValueError(f"release_model_profile_value_mismatch:{path}:expected={required}:actual={actual}")
 
 
-def validate_profiles(profiles: dict[str, Any], *, execution_profile: str | None = None) -> dict[str, Any]:
-    if profiles != model_profiles(execution_profile=execution_profile):
+def validate_profiles(profiles: dict[str, Any], *, execution_profile: str | None = None,
+                      schema_version: str = MODEL_PROFILE_SCHEMA_VERSION) -> dict[str, Any]:
+    if profiles != model_profiles(execution_profile=execution_profile, schema_version=schema_version):
         raise ValueError("release_model_profiles_mismatch")
     return profiles

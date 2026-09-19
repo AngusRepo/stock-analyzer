@@ -2721,7 +2721,7 @@ OOF_MIN_MATURE_SESSIONS = (
     OOF_TRAIN_SESSIONS + OOF_TEST_SESSIONS * OOF_PROMOTION_MIN_FOLDS
 )
 OOF_SCORE_SEMANTIC_VERSION = "same-market-same-date-average-tie-percentile-rank-v2"
-OOF_FEATURE_SEMANTIC_VERSION = "formal137-pit-rolling-rank-and-imputation-v2"
+OOF_FEATURE_SEMANTIC_VERSION = "formal137-pit-asof-source-quality-v3"
 OOF_FEATURE_IMPUTATION_SEMANTIC_VERSION = "prior_252_row_median_then_zero_v2"
 OOF_COHORT_ID_VERSION = "v9-feature-semantic-source-attested"
 OOF_LIFECYCLE_RECEIPT_SCHEMA_VERSION = "active8-oof-lifecycle-receipt-v17-nav-inventory-native-frontier"
@@ -3504,7 +3504,6 @@ async def run_walk_forward_oof_lifecycle(req: OofLifecycleRequest):
     from services.walk_forward_retrain import _get_bucket
 
     from services.trading_config_loader import load_merged_trading_config_with_contract
-    new_distribution = load_merged_trading_config_with_contract().config.get('l4Distribution') is not None
     cadence = str(req.cadence or "daily").strip().lower()
     if cadence not in {"daily", "weekly", "monthly"}:
         raise HTTPException(status_code=400, detail="OOF lifecycle cadence must be daily, weekly, or monthly")
@@ -3515,6 +3514,7 @@ async def run_walk_forward_oof_lifecycle(req: OofLifecycleRequest):
             status_code=400,
             detail="OOF lifecycle scheduler ticket identity must be complete",
         )
+    new_distribution = load_merged_trading_config_with_contract().config.get('l4Distribution') is not None
     bucket = _get_bucket()
     if not req.dry_run and os.environ.get("OOF_MATERIALIZE_JOB_EXECUTION", "").strip() != "1":
         try:

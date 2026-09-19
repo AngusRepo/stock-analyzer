@@ -83,9 +83,19 @@ class CloudRunJobsClient:
         conditions = getattr(execution, "conditions", None) or []
         for cond in conditions:
             cond_type = getattr(cond, "type_", None) or getattr(cond, "type", None)
-            if cond_type == "Completed" and str(getattr(cond, "status", "")).lower() in {"true", "false"}:
+            if cond_type == "Completed" and (
+                getattr(cond, "state", None) in {
+                    run_v2.Condition.State.CONDITION_FAILED,
+                    run_v2.Condition.State.CONDITION_SUCCEEDED,
+                } or str(getattr(cond, "status", "")).lower() in {"true", "false"}
+            ):
                 return True
         return False
+
+    def pipeline_execution_status(self, *, run_date: str, run_id: str, execution_name: str = "") -> dict:
+        from services.pipeline_execution_status import lookup_execution
+        return lookup_execution(self._get_executions_client(), parent=self._parent,
+                                run_date=run_date, run_id=run_id, execution_name=execution_name)
 
     def get_active_execution(self) -> JobExecution | None:
         """Return the newest in-flight execution for this Job, if any."""

@@ -21,7 +21,7 @@ def verified_fold_producer_sha(manifest: dict, window: dict, *, bucket, cache: d
         if (actual != expected or prep.get("manifest_checksum") != expected
             or prep.get("schema_version") != "active8-canonical-adjusted-prep-v3"
             or prep.get("status") != "ready" or str(prep.get("output_gcs_prefix") or "").rstrip("/") != prefix
-            or prep.get("feature_semantic_version") != "formal137-pit-rolling-rank-and-imputation-v2"
+            or prep.get("feature_semantic_version") != "formal137-pit-asof-source-quality-v3"
             or prep.get("feature_imputation_semantic") != "prior_252_row_median_then_zero_v2"
             or prep.get("target_semantic_version") != "next-session-canonical-adjusted-open-to-fifth-session-canonical-adjusted-close-net-v4"
             or float(prep.get("roundtrip_cost_bps") or 0) != 18.0

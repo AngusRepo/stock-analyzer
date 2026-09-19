@@ -10,6 +10,7 @@ from typing import Any, Iterable
 from .active8_release_model_profiles import (
     ACTIVE8_RELEASE_MODEL_PROFILES,
     MODEL_PROFILE_SCHEMA_VERSION,
+    SUPPORTED_MODEL_PROFILE_SCHEMAS,
     checksum as profile_checksum,
     model_profiles,
     require_nested_subset,
@@ -102,6 +103,7 @@ def build_release_training_contract(
     dataset_snapshot: dict[str, Any] | None,
     producer_source_sha: str,
     execution_profile: str | None = None,
+    model_profile_schema_version: str = MODEL_PROFILE_SCHEMA_VERSION,
 ) -> dict[str, Any]:
     source_sha = str(producer_source_sha or "").strip().lower()
     if len(source_sha) != 40 or any(char not in "0123456789abcdef" for char in source_sha):
@@ -152,8 +154,8 @@ def build_release_training_contract(
         "artifact_lifecycle_targets": list(RELEASE_ARTIFACT_LIFECYCLE_TARGETS),
         "target_semantic_version": TARGET_SEMANTIC,
         "score_semantic": SCORE_SEMANTIC,
-        "model_profile_schema_version": MODEL_PROFILE_SCHEMA_VERSION,
-        "model_profiles": model_profiles(execution_profile=execution_profile),
+        "model_profile_schema_version": model_profile_schema_version,
+        "model_profiles": model_profiles(execution_profile=execution_profile, schema_version=model_profile_schema_version),
         "validation": dict(RELEASE_VALIDATION_CONTRACT),
         "configuration_selection": {
             "release_mode": "single_predeclared_config",
@@ -190,7 +192,7 @@ def validate_release_training_contract(contract: dict[str, Any]) -> dict[str, An
         raise ValueError("release_training_contract_score_semantic_mismatch")
     if contract.get("validation") != RELEASE_VALIDATION_CONTRACT:
         raise ValueError("release_training_contract_validation_semantic_mismatch")
-    if contract.get("model_profile_schema_version") != MODEL_PROFILE_SCHEMA_VERSION:
+    if contract.get("model_profile_schema_version") not in SUPPORTED_MODEL_PROFILE_SCHEMAS:
         raise ValueError("release_training_contract_profile_schema_mismatch")
     if len(str(contract.get("dataset_snapshot_checksum") or "")) != 64:
         raise ValueError("release_training_contract_snapshot_checksum_missing")
@@ -207,7 +209,7 @@ def validate_release_training_contract(contract: dict[str, Any]) -> dict[str, An
             or not str(input_lineage.get("source_cohort_id") or "").strip()
         ):
             raise ValueError("release_training_contract_input_lineage_invalid")
-    validate_profiles(contract.get("model_profiles") or {}, execution_profile=contract.get("execution_profile"))
+    validate_profiles(contract.get("model_profiles") or {}, execution_profile=contract.get("execution_profile"), schema_version=contract["model_profile_schema_version"])
     return contract
 
 
@@ -233,7 +235,7 @@ def build_model_training_config_attestation(
         "release_contract_checksum": verified["contract_checksum"],
         "model_name": model,
         "model_spec": _MODEL_SPECS[model],
-        "model_profile_schema_version": MODEL_PROFILE_SCHEMA_VERSION,
+        "model_profile_schema_version": verified["model_profile_schema_version"],
         "model_profile": profile,
         "model_profile_checksum": profile_checksum(profile),
         "configuration_selection_mode": "single_predeclared_config",
@@ -275,9 +277,9 @@ def validate_model_training_config_attestation(
     if attestation.get("model_spec") != _MODEL_SPECS[str(expected_model_name)]:
         raise ValueError("model_training_config_attestation_model_spec_mismatch")
     profile = dict(attestation.get("model_profile") or {})
-    if attestation.get("model_profile_schema_version") != MODEL_PROFILE_SCHEMA_VERSION:
+    if attestation.get("model_profile_schema_version") not in SUPPORTED_MODEL_PROFILE_SCHEMAS:
         raise ValueError("model_training_config_attestation_profile_schema_mismatch")
-    if profile != model_profiles(execution_profile=attestation.get("execution_profile"))[str(expected_model_name)]:
+    if profile != model_profiles(execution_profile=attestation.get("execution_profile"), schema_version=attestation["model_profile_schema_version"])[str(expected_model_name)]:
         raise ValueError("model_training_config_attestation_profile_mismatch")
     if str(attestation.get("model_profile_checksum") or "") != profile_checksum(profile):
         raise ValueError("model_training_config_attestation_profile_checksum_mismatch")
@@ -351,6 +353,8 @@ def validate_release_artifact_receipts(
             metadata.get("model_training_config_attestation"),
             expected_model_name=model,
         )
+        if attestation["model_profile_schema_version"] != verified["model_profile_schema_version"]:
+            raise ValueError(f"release_artifact_receipt_profile_schema_mismatch:{model}")
         if attestation.get("execution_profile") != verified.get("execution_profile"):
             raise ValueError(f"release_artifact_receipt_execution_profile_mismatch:{model}")
         if attestation["release_contract_checksum"] != verified["contract_checksum"]:
@@ -400,6 +404,7 @@ def reconcile_release_artifact_receipts_from_immutable_metadata(
     }
     producer_source_shas: set[str] = set()
     execution_profiles: set[str | None] = set()
+    profile_schemas: set[str] = set()
     for model in ACTIVE8_MODEL_NAMES:
         metadata = dict(receipts[model].get("metadata") or {})
         attestation = validate_model_training_config_attestation(
@@ -408,6 +413,9 @@ def reconcile_release_artifact_receipts_from_immutable_metadata(
         )
         producer_source_shas.add(str(attestation.get("producer_source_sha") or ""))
         execution_profiles.add(attestation.get("execution_profile"))
+        profile_schemas.add(attestation["model_profile_schema_version"])
+    if len(profile_schemas) != 1:
+        raise ValueError("monthly_completion_reconciliation_profile_schema_mismatch")
     if len(execution_profiles) != 1:
         raise ValueError("monthly_completion_reconciliation_execution_profile_mismatch")
     if len(producer_source_shas) != 1:
@@ -418,6 +426,7 @@ def reconcile_release_artifact_receipts_from_immutable_metadata(
         dataset_snapshot=dataset_snapshot,
         producer_source_sha=next(iter(producer_source_shas)),
         execution_profile=next(iter(execution_profiles)),
+        model_profile_schema_version=next(iter(profile_schemas)),
     )
     if contract["contract_checksum"] != expected_checksum:
         raise ValueError("monthly_completion_reconciliation_contract_checksum_mismatch")

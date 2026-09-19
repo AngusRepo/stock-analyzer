@@ -1,10 +1,10 @@
 from __future__ import annotations
 
-import gzip
 import hashlib
-import json
 import os
 from typing import Any
+
+from services.pipeline_json_transport import compress_json
 
 
 REQUEST_SCHEMA = "pipeline-modal-prediction-request-v1"
@@ -68,13 +68,6 @@ def prepare_pipeline_modal_request(payload: dict[str, Any]) -> tuple[bytes, dict
         for key, value in payload.items()
         if key not in {"callback_url", "callback_token"}
     }
-    raw = json.dumps(
-        durable_payload,
-        ensure_ascii=False,
-        sort_keys=True,
-        separators=(",", ":"),
-        default=str,
-    ).encode("utf-8")
     max_raw = min(
         DEFAULT_MAX_UNCOMPRESSED_BYTES,
         _positive_int_env(
@@ -82,9 +75,6 @@ def prepare_pipeline_modal_request(payload: dict[str, Any]) -> tuple[bytes, dict
             DEFAULT_MAX_UNCOMPRESSED_BYTES,
         ),
     )
-    if len(raw) > max_raw:
-        raise ValueError(f"pipeline_modal_request_bytes_exceeded:{len(raw)}:{max_raw}")
-    compressed = gzip.compress(raw, compresslevel=6, mtime=0)
     max_compressed = min(
         DEFAULT_MAX_COMPRESSED_BYTES,
         _positive_int_env(
@@ -92,12 +82,10 @@ def prepare_pipeline_modal_request(payload: dict[str, Any]) -> tuple[bytes, dict
             DEFAULT_MAX_COMPRESSED_BYTES,
         ),
     )
-    if len(compressed) > max_compressed:
-        raise ValueError(
-            f"pipeline_modal_request_compressed_bytes_exceeded:{len(compressed)}:{max_compressed}"
-        )
-
-    raw_sha = hashlib.sha256(raw).hexdigest()
+    compressed, raw_bytes, raw_sha = compress_json(
+        durable_payload, sort_keys=True, max_raw_bytes=max_raw,
+        max_compressed_bytes=max_compressed, error_prefix="pipeline_modal_request",
+    )
     compressed_sha = hashlib.sha256(compressed).hexdigest()
     envelope = {
         "schema_version": REQUEST_REF_SCHEMA,
@@ -107,7 +95,7 @@ def prepare_pipeline_modal_request(payload: dict[str, Any]) -> tuple[bytes, dict
         "expected_source_sha": expected_source_sha,
         "request_sha256": raw_sha,
         "request_compressed_sha256": compressed_sha,
-        "request_uncompressed_bytes": len(raw),
+        "request_uncompressed_bytes": raw_bytes,
         "request_compressed_bytes": len(compressed),
         "n_input": len(rows),
         "max_symbols": max_symbols,

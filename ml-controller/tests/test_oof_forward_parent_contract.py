@@ -80,7 +80,7 @@ def _manifest() -> tuple[dict, set[str]]:
         ),
         "score_semantic_version": "same-market-same-date-average-tie-percentile-rank-v2",
         "prep_manifest": {
-            "feature_semantic_version": "formal137-pit-rolling-rank-and-imputation-v2",
+            "feature_semantic_version": "formal137-pit-asof-source-quality-v3",
             "feature_imputation_semantic": "prior_252_row_median_then_zero_v2",
             "producer_source_sha": TEST_SOURCE_SHA,
         },

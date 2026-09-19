@@ -330,6 +330,27 @@ async def pipeline_modal_prediction_callback(request: Request) -> JSONResponse:
         },
     )
 
+@router.post("/v2/reconcile")
+async def reconcile_pipeline_execution(
+    request: Request, date: str = Query(...), run_id: str = Query(..., max_length=180),
+    execution_name: str = Query("", max_length=512),
+):
+    """Reconcile only verified Cloud Run failures through the existing root owner."""
+    _check_service_token(request)
+    from services.pipeline_execution_status import failure_callback
+    try:
+        snapshot = await asyncio.to_thread(_jobs_client.pipeline_execution_status,
+            run_date=date, run_id=run_id, execution_name=execution_name)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    callback = failure_callback(snapshot)
+    if callback is not None:
+        # Callback authority rejects stale runs and refuses to overwrite success.
+        # Never synthesize success from an async dispatcher having exited zero.
+        await _callback_worker(callback)
+    return {**snapshot, "failure_callback_sent": callback is not None}
+
+
 @router.post("/v2/run")
 async def trigger_pipeline_v2(
     request: Request,

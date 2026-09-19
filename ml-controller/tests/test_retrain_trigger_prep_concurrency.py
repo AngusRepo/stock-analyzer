@@ -227,14 +227,15 @@ def test_snapshot_per_stock_ts_map_builds_wave3_history():
             "eps": 10.0, "roe": 25.0, "pe": 20.0, "pb": 5.0,
         }],
         margin_rows=[{"stock_id": 1, "date": "2026-05-06", "margin_balance": 1000, "short_ratio": 0.2}],
-        shareholding_rows=[{"stock_id": 1, "date": "2026-05-06", "retail_pct": 45.6}],
+        shareholding_rows=[{"stock_id": 1, "date": "2026-05-06", "retail_pct": 45.6, "created_at": "2026-05-08 12:00:00"}],
         symbol_to_id={"2330": 1},
     )
 
     assert mapped[1]["2026-05-12"]["revenue_yoy"] == 12.5
     assert mapped[1]["2026-05-06"]["margin_balance"] == 1000
     assert mapped[1]["2026-05-06"]["short_ratio"] == 0.2
-    assert mapped[1]["2026-05-06"]["retail_pct"] == 45.6
+    assert "retail_pct" not in mapped[1]["2026-05-06"]
+    assert mapped[1]["2026-05-08"]["retail_pct"] == 45.6
     assert mapped[1]["2026-05-15"]["eps"] == 10.0
     assert mapped[1]["2026-05-15"]["pb"] == 5.0
 

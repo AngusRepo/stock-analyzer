@@ -401,10 +401,10 @@ def _query_margin_data(start_date: str, end_date: str, chunk_days: int) -> tuple
 def _query_shareholding(start_date: str, end_date: str, chunk_days: int) -> tuple[pl.DataFrame, int]:
     return _query_date_range(
         """
-        SELECT stock_id, date, total_shares, holder_count, retail_shares,
-               retail_pct, large_holder_shares, large_holder_pct
+        SELECT stock_id, CASE WHEN length(date)=8 THEN substr(date,1,4)||'-'||substr(date,5,2)||'-'||substr(date,7,2) ELSE date END AS date, total_shares, holder_count, retail_shares,
+               retail_pct, large_holder_shares, large_holder_pct, created_at
         FROM shareholding
-        WHERE date >= ? AND date <= ?
+        WHERE replace(date, '-', '') >= replace(?, '-', '') AND replace(date, '-', '') <= replace(?, '-', '')
         ORDER BY stock_id, date
         """,
         start_date,
@@ -521,7 +521,9 @@ def export_backtest_dataset_snapshot(req: DatasetSnapshotExportRequest) -> dict[
     indicators, indicator_queries = _query_date_range(
         """
         SELECT stock_id, date, ma5, ma10, ma20, ma60, rsi14, macd, macd_signal,
-               macd_hist, atr14, bb_upper, bb_mid, bb_lower
+               macd_hist, atr14, bb_upper, bb_mid, bb_lower,
+               plus_di14, minus_di14, adx14, parabolic_sar, cci20,
+               volume_weighted_rsi14, volume_momentum_divergence_13_27_10
         FROM technical_indicators
         WHERE date >= ? AND date <= ?
         ORDER BY stock_id, date
@@ -545,6 +547,18 @@ def export_backtest_dataset_snapshot(req: DatasetSnapshotExportRequest) -> dict[
         chunk_days,
         query_client=MARKET_D1_CLIENT,
     )
+    broker_flows, broker_queries = _query_date_range(
+        """
+        SELECT stock_id AS symbol, date, market_segment, net_shares,
+               estimated_amount, broker_count, concentration, as_of_date
+          FROM canonical_broker_flow_daily
+         WHERE date >= ? AND date <= ? AND date(as_of_date) <= date
+         ORDER BY stock_id, date
+        """, req.start_date, req.end_date, chunk_days,
+        query_client=MARKET_D1_CLIENT,
+    )
+    if broker_flows.is_empty():
+        broker_flows = _empty_frame(["symbol", "date", "net_shares", "estimated_amount", "concentration", "as_of_date"])
     market_risk = _query_market_risk(req.start_date, req.end_date)
     sentiment, sentiment_queries = _query_sentiment_scores(req.start_date, req.end_date, chunk_days)
     monthly_revenue = _query_monthly_revenue(req.start_date, req.end_date)
@@ -578,6 +592,7 @@ def export_backtest_dataset_snapshot(req: DatasetSnapshotExportRequest) -> dict[
         "prices": prices,
         "indicators": indicators,
         "chips": chips,
+        "broker_flows": broker_flows,
         "market_risk": market_risk,
         "sentiment": sentiment,
         "monthly_revenue": monthly_revenue,
@@ -616,6 +631,7 @@ def export_backtest_dataset_snapshot(req: DatasetSnapshotExportRequest) -> dict[
             "prices": price_queries,
             "indicators": indicator_queries,
             "chips": chip_queries,
+            "broker_flows": broker_queries,
             "market_risk": 1,
             "sentiment": sentiment_queries,
             "monthly_revenue": 1,

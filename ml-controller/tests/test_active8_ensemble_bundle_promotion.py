@@ -34,7 +34,7 @@ def _fixture():
             "offline_evidence_json": json.dumps({
                 "registration": {"metadata": {
                     "target_semantic_version": "next-session-canonical-adjusted-open-to-fifth-session-canonical-adjusted-close-net-v4",
-                    "feature_semantic_version": "formal137-pit-rolling-rank-and-imputation-v2",
+                    "feature_semantic_version": "formal137-pit-asof-source-quality-v3",
                     "graph_context": {"semantic_version": "gnn-same-date-feature-cosine-sector-v2"},
                     "seq_len": 512, "pred_len": 5,
                     "rank_ic_semantic_version": "same-date-average-rank-tie-neutral-spearman-v2",

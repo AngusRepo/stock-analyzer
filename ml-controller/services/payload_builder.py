@@ -885,9 +885,9 @@ def _bulk_load_per_stock_misc(
             f"SELECT m1.stock_id, m1.margin_balance, m1.short_ratio "
             f"FROM margin_data m1 "
             f"INNER JOIN ("
-            f"  SELECT stock_id, MAX(date) as max_date "
-            f"  FROM margin_data WHERE stock_id IN ({placeholders}) AND date <= ? GROUP BY stock_id"
-            f") m2 ON m1.stock_id = m2.stock_id AND m1.date = m2.max_date",
+            f"  SELECT stock_id, MAX(replace(date, '-', '')) as max_date "
+            f"  FROM margin_data WHERE stock_id IN ({placeholders}) AND replace(date, '-', '') <= replace(?, '-', '') GROUP BY stock_id"
+            f") m2 ON m1.stock_id = m2.stock_id AND replace(m1.date, '-', '') = m2.max_date",
             [*chunk, decision_date],
             timeout=60.0,
         ))
@@ -908,10 +908,11 @@ def _bulk_load_per_stock_misc(
             f"SELECT s1.stock_id, s1.retail_pct "
             f"FROM shareholding s1 "
             f"INNER JOIN ("
-            f"  SELECT stock_id, MAX(date) as max_date "
-            f"  FROM shareholding WHERE stock_id IN ({placeholders}) AND date <= ? GROUP BY stock_id"
-            f") s2 ON s1.stock_id = s2.stock_id AND s1.date = s2.max_date",
-            [*chunk, decision_date],
+            f"  SELECT stock_id, MAX(replace(date, '-', '')) as max_date "
+            f"  FROM shareholding WHERE stock_id IN ({placeholders}) AND replace(date, '-', '') <= replace(?, '-', '') "
+            f"  AND date(created_at, '+8 hours') <= ? GROUP BY stock_id"
+            f") s2 ON s1.stock_id = s2.stock_id AND replace(s1.date, '-', '') = s2.max_date",
+            [*chunk, decision_date, decision_date],
             timeout=60.0,
         ))
     for r in sh_rows:

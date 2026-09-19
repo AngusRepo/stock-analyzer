@@ -881,7 +881,7 @@ def test_forward_extension_manifest_is_shadow_only_and_bound_to_base():
         "status": "ready",
         "output_gcs_prefix": prep_prefix,
         "target_semantic_version": "next-session-canonical-adjusted-open-to-fifth-session-canonical-adjusted-close-net-v4",
-        "feature_semantic_version": "formal137-pit-rolling-rank-and-imputation-v2",
+        "feature_semantic_version": "formal137-pit-asof-source-quality-v3",
         "feature_imputation_semantic": "prior_252_row_median_then_zero_v2",
         "producer_source_sha": "1" * 40,
     }
@@ -897,7 +897,7 @@ def test_forward_extension_manifest_is_shadow_only_and_bound_to_base():
         "training_dispatched": False,
         "counterfactual_reconstruction": True,
         "target_semantic_version": "next-session-canonical-adjusted-open-to-fifth-session-canonical-adjusted-close-net-v4",
-        "feature_semantic_version": "formal137-pit-rolling-rank-and-imputation-v2",
+        "feature_semantic_version": "formal137-pit-asof-source-quality-v3",
         "feature_imputation_semantic": "prior_252_row_median_then_zero_v2",
         "producer_source_sha": "1" * 40,
         "prep_gcs_prefix": prep_prefix,

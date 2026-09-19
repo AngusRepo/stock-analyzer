@@ -7,5 +7,5 @@ def test_tabm_artifact_metadata_declares_current_pit_feature_semantics():
 
     assert '"feature_semantic_version": FEATURE_SEMANTIC_VERSION' in source
     assert '"feature_imputation_semantic": FEATURE_IMPUTATION_SEMANTIC_VERSION' in source
-    assert FEATURE_SEMANTIC_VERSION == "formal137-pit-rolling-rank-and-imputation-v2"
+    assert FEATURE_SEMANTIC_VERSION == "formal137-pit-asof-source-quality-v3"
     assert FEATURE_IMPUTATION_SEMANTIC_VERSION == "prior_252_row_median_then_zero_v2"

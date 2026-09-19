@@ -2597,7 +2597,7 @@ def _load_verified_oof_resume_windows(
     if list(parent.get("model_set") or []) != list(models):
         raise ValueError("active8_oof_resume_model_set_mismatch")
     expected_target = "next-session-canonical-adjusted-open-to-fifth-session-canonical-adjusted-close-net-v4"
-    expected_feature_semantic = "formal137-pit-rolling-rank-and-imputation-v2"
+    expected_feature_semantic = "formal137-pit-asof-source-quality-v3"
     expected_imputation_semantic = "prior_252_row_median_then_zero_v2"
     producer_source_sha = str(os.environ.get("STOCKVISION_SOURCE_SHA") or "").strip().lower()
     if len(producer_source_sha) != 40 or any(char not in "0123456789abcdef" for char in producer_source_sha):

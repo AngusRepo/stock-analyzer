@@ -17,7 +17,7 @@ SEQUENCE_PREFIX = "universal/sequence_long/runs/"
 FEATURE_PREP_PREFIX = "universal/oof_forward_prep_v2"
 ADJUSTED_PREP_PREFIX = "universal/canonical_adjusted_v6"
 ADJUSTED_PREP_SCHEMA = "active8-canonical-adjusted-prep-v3"
-FEATURE_SEMANTIC_VERSION = "formal137-pit-rolling-rank-and-imputation-v2"
+FEATURE_SEMANTIC_VERSION = "formal137-pit-asof-source-quality-v3"
 FEATURE_IMPUTATION_SEMANTIC_VERSION = "prior_252_row_median_then_zero_v2"
 ACTIVE8_COMPUTE_SNAPSHOT_LOOKBACK_DAYS = 504
 

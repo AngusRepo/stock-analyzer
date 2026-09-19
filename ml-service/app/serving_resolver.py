@@ -27,7 +27,7 @@ DIRECT_ALPHA_MODELS = (
 )
 SEQUENCE_ALPHA_MODELS = ("DLinear", "PatchTST", "iTransformer")
 FORMAL_FEATURE_MODELS = ("LightGBM", "XGBoost", "ExtraTrees", "TabM", "GNN")
-FORMAL_FEATURE_SEMANTIC_VERSION = "formal137-pit-rolling-rank-and-imputation-v2"
+FORMAL_FEATURE_SEMANTIC_VERSION = "formal137-pit-asof-source-quality-v3"
 FORMAL_GNN_GRAPH_SEMANTIC_VERSION = "gnn-same-date-feature-cosine-sector-v2"
 FORMAL_RANK_IC_SEMANTIC_VERSION = "same-date-average-rank-tie-neutral-spearman-v2"
 SEQUENCE_CONTRACT_FIELDS = ("seq_len", "pred_len", "sequence_contract")

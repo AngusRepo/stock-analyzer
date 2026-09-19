@@ -79,6 +79,7 @@ class UniversalPrepRequest(BaseModel):
     shared_market_history: dict = {}
     per_stock_ts_map: dict = {}
     active_features: list[str] | None = None
+    retain_unlabeled_features: bool = False  # Immutable source stage; canonical prep owns label eligibility.
     gcs_prefix: str = "universal"
 
 
@@ -733,6 +734,7 @@ def prep_universal_batch(req: UniversalPrepRequest) -> dict:
             df = df.with_columns(
                 pl.lit(symbol).alias("_symbol"),
                 pl.lit(market).alias("_market"),
+                (pl.col("sector").cast(pl.String).fill_null("unknown") if "sector" in df.columns else pl.lit("unknown")).alias("_sector"),
                 pl.col("_date").shift(-5).alias("_label_known_date"),
             )
             all_dfs.append(df)
@@ -746,6 +748,8 @@ def prep_universal_batch(req: UniversalPrepRequest) -> dict:
                 sequence_records.append(seq_record)
                 sequence_series.append(seq_record["close"])
         except Exception as exc:
+            if str(exc).startswith("feature_data_quality_"):
+                raise
             skipped += 1
             print(f"[PrepBatch] Skip stock: {exc}")
 
@@ -755,7 +759,7 @@ def prep_universal_batch(req: UniversalPrepRequest) -> dict:
     pooled = pl.concat(all_dfs, how="diagonal_relaxed")
     pooled = compute_cross_sectional_rank(pooled, return_col="target_5d", date_col="_date")
     print(
-        f"[PrepBatch] Cross-sectional rank: mean={pooled['target_rank'].mean():.3f}, "
+        f"[PrepBatch] Cross-sectional rank: mean={pooled['target_rank'].mean()}, "
         f"nulls={pooled['target_rank'].null_count()}"
     )
 
@@ -771,7 +775,9 @@ def prep_universal_batch(req: UniversalPrepRequest) -> dict:
         c for c in TIMESFM_L175_FEATURE_COLS if c not in FEATURE_COLS
     ]
     available = [c for c in candidate_feature_cols if c in pooled.columns]
-    select_cols = available + [
+    quality_cols = ["_source_missing__" + c for c in available if "_source_missing__" + c in pooled.columns]
+    select_cols = available + quality_cols + [
+        "_sector",
         "target_rank",
         "_date",
         "_symbol",
@@ -784,9 +790,13 @@ def prep_universal_batch(req: UniversalPrepRequest) -> dict:
     required_targets = ["target_rank"]
     if "target_5d" in select_cols:
         required_targets.append("target_5d")
+    if req.retain_unlabeled_features:
+        required_targets = []
     raw_selected = pooled.select(select_cols)
     missingness_by_feature = {
-        col: float(raw_selected[col].null_count() / max(raw_selected.height, 1))
+        col: float(raw_selected["_source_missing__" + col].mean())
+        if "_source_missing__" + col in raw_selected.columns else
+        float((~raw_selected[col].cast(pl.Float64, strict=False).is_finite().fill_null(False)).mean())
         for col in available
     }
     df_clean, cleaning_report = sanitize_feature_frame(
@@ -801,7 +811,7 @@ def prep_universal_batch(req: UniversalPrepRequest) -> dict:
                 | (pl.col(column).cast(pl.Utf8).str.strip_chars() == "")
             ).to_series().sum()
         )
-        for column in ("_date", "_symbol", "_market", "_label_known_date")
+        for column in (("_date", "_symbol", "_market") if req.retain_unlabeled_features else ("_date", "_symbol", "_market", "_label_known_date"))
     }
     missing_lineage = {key: value for key, value in missing_lineage.items() if value > 0}
     if missing_lineage:
@@ -815,11 +825,15 @@ def prep_universal_batch(req: UniversalPrepRequest) -> dict:
     symbols_arr = df_clean["_symbol"].to_numpy()
     markets_arr = df_clean["_market"].to_numpy()
     label_known_dates_arr = df_clean["_label_known_date"].to_numpy()
-    sectors_arr = (
-        df_clean["sector_encoded"].to_numpy()
-        if "sector_encoded" in df_clean.columns
-        else np.array(["unknown"] * len(df_clean), dtype=object)
-    )
+    sectors_arr = df_clean["_sector"].to_numpy()
+    if df_clean.unique(["_market", "_symbol", "_date"]).height != df_clean.height:
+        raise ValueError("feature_data_quality_duplicate_training_keys")
+    cleaning_report["canonical_targets_required"] = req.retain_unlabeled_features
+    cleaning_report["source_missingness_by_feature"] = missingness_by_feature
+    cleaning_report["source_coverage_complete"] = all(rate < 1.0 for rate in missingness_by_feature.values())
+    cleaning_report["sector_unknown_rows"] = int(np.isin(np.char.lower(sectors_arr.astype(str)), ["unknown", "", "0", "0.0"]).sum())
+    cleaning_report["constant_features"] = [name for name in available if df_clean[name].n_unique() <= 1]
+    cleaning_report["quality_status"] = "needs_source_review" if not cleaning_report["source_coverage_complete"] or cleaning_report["sector_unknown_rows"] else "source_checks_passed"
     missingness_rates_arr = np.array([missingness_by_feature.get(name, 0.0) for name in available], dtype=float)
     feature_names = available
     assert len(X) == len(y) == len(target_returns_arr) == len(dates_arr) == len(sectors_arr) == len(symbols_arr) == len(label_known_dates_arr), (

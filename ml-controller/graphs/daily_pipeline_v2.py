@@ -131,7 +131,7 @@ PIPELINE_MODAL_SERVING_MANIFEST_SCHEMA = "pipeline-modal-serving-manifest-v5"
 ACTIVE8_ACTION_AUTHORITY_SCHEMA = "active8-action-authority-v1"
 ACTIVE8_ACTION_MODE_PRODUCTION = "production_ensemble"
 ACTIVE8_ACTION_MODE_EVIDENCE_ONLY = "evidence_only_no_action"
-FORMAL_FEATURE_SEMANTIC_VERSION = "formal137-pit-rolling-rank-and-imputation-v2"
+FORMAL_FEATURE_SEMANTIC_VERSION = "formal137-pit-asof-source-quality-v3"
 FORMAL_GNN_GRAPH_SEMANTIC_VERSION = "gnn-same-date-feature-cosine-sector-v2"
 ACTIVE8_OBSERVATION_ALLOWED_GATES = {"WEAK_PASS", "PASS", "STRONG_PASS"}
 
@@ -3119,9 +3119,10 @@ def _write_pipeline_async_state_artifact(state: PipelineStateV2) -> str:
     run_date = state["run_date"]
     producer_run_id = state.get("producer_run_id") or f"pipeline-v2:{run_date}"
     bucket_name, blob_name = _pipeline_async_bucket_and_blob(run_date=run_date, producer_run_id=producer_run_id)
-    persisted_state = _json_safe(dict(state))
+    # No concurrent mutation: this synchronous writer seals the state before
+    # dispatch. Drop the optional alias before encoding, never clone the pool.
+    persisted_state = {key: value for key, value in state.items() if key != "l3_payloads"}
     payloads = persisted_state.get("payloads") if isinstance(persisted_state.get("payloads"), list) else []
-    persisted_state.pop("l3_payloads", None)
     persisted_state["pipeline_payload_identity"] = build_pipeline_payload_identity(payloads)
     payload = {
         "schema_version": STATE_SCHEMA_V2,
@@ -3928,7 +3929,7 @@ def _build_pipeline_modal_serving_manifest(
             raise RuntimeError(
                 "pipeline_modal_serving_manifest:feature_semantic_mismatch:"
                 f"{model_name}:{feature_semantic_version or '<missing>'}:"
-                "expected=formal137-pit-rolling-rank-and-imputation-v2"
+                "expected=formal137-pit-asof-source-quality-v3"
             )
         gnn_graph_semantic_version = str(
             registry.get("registry_gnn_graph_semantic_version")
@@ -4312,15 +4313,15 @@ async def _build_pipeline_modal_prediction_payload(state: PipelineStateV2, *, st
         "run_date": state["run_date"],
         "run_id": state.get("producer_run_id"),
         "state_gcs_uri": state_gcs_uri,
-        "payloads": _json_safe(payloads),
+        # Borrow frozen inputs only until the request is synchronously sealed.
+        # The runner never mutates them between construction and upload.
+        "payloads": payloads,
         "predict_batch_v2_contract": predict_contract,
         "predict_batch_v2_chunk_size": int(predict_contract.get("chunk_size") or len(payloads) or 1),
-        "sequence_series": _json_safe(sequence_series),
-        "sequence_model_series_by_model": _json_safe(sequence_series_by_model),
+        "sequence_series": sequence_series,
+        "sequence_model_series_by_model": sequence_series_by_model,
         "sequence_model_contracts": _json_safe(sequence_contracts),
-        "active8_shadow_sequence_series_by_model": _json_safe(
-            active8_shadow_sequence_series_by_model
-        ),
+        "active8_shadow_sequence_series_by_model": active8_shadow_sequence_series_by_model,
         "active8_shadow_sequence_contracts": _json_safe(
             active8_shadow_sequence_contracts
         ),

@@ -67,10 +67,6 @@ export async function reservePipelineExecutionDispatch(
       queued_at=CURRENT_TIMESTAMP, started_at=CURRENT_TIMESTAMP, completed_at=NULL,
       last_error=NULL, updated_at=CURRENT_TIMESTAMP
     WHERE pipeline_stage_runs.status='error'
-       OR (
-         pipeline_stage_runs.status IN ('running', 'waiting')
-         AND pipeline_stage_runs.lease_expires_at < CURRENT_TIMESTAMP
-       )
     RETURNING business_date, stage, canonical_run_id, status, cursor_key,
               processed_count, expected_count, persisted_count, attempt_count,
               lease_owner, lease_expires_at
@@ -89,6 +85,7 @@ export async function commitPipelineExecutionDispatch(
     attemptId: string
     runId: string
     callbackLeaseSeconds?: number
+    executionName?: string
   },
 ): Promise<PipelineStageRow | null> {
   const runId = input.runId.trim()
@@ -97,7 +94,7 @@ export async function commitPipelineExecutionDispatch(
   }
   return db.prepare(`
     UPDATE pipeline_stage_runs
-       SET canonical_run_id=?, status='waiting',
+       SET canonical_run_id=?, status='waiting', cursor_key=?,
            lease_expires_at=datetime('now', ?), updated_at=CURRENT_TIMESTAMP
      WHERE business_date=? AND stage='pipeline_execution'
        AND canonical_run_id=? AND status='running'
@@ -107,6 +104,7 @@ export async function commitPipelineExecutionDispatch(
               lease_owner, lease_expires_at
   `).bind(
     runId,
+    input.executionName?.trim() || null,
     leaseModifier(input.callbackLeaseSeconds ?? PIPELINE_EXECUTION_CALLBACK_SECONDS),
     input.businessDate,
     input.attemptId,

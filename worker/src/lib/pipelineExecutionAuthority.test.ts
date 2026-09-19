@@ -23,7 +23,7 @@ class FakeDispatchD1 {
   first(sql: string, values: unknown[]): PipelineStageRow | null {
     if (sql.includes("INSERT INTO pipeline_stage_runs") && sql.includes("'pipeline_execution'")) {
       const [businessDate, attemptId] = values.map(String)
-      if (this.row && this.row.status !== 'error' && this.leaseLive) return null
+      if (this.row && this.row.status !== 'error') return null
       this.row = {
         business_date: businessDate,
         stage: 'pipeline_execution',
@@ -41,10 +41,10 @@ class FakeDispatchD1 {
       return { ...this.row }
     }
     if (sql.includes("SET canonical_run_id=?, status='waiting'")) {
-      const [runId, , businessDate, attemptId, owner] = values.map(String)
+      const [runId, executionName, , businessDate, attemptId, owner] = values.map(String)
       if (!this.row || this.row.business_date !== businessDate || this.row.status !== 'running') return null
       if (this.row.canonical_run_id !== attemptId || this.row.lease_owner !== owner || !this.leaseLive) return null
-      this.row = { ...this.row, canonical_run_id: runId, status: 'waiting', lease_owner: attemptId }
+      this.row = { ...this.row, canonical_run_id: runId, cursor_key: executionName, status: 'waiting', lease_owner: attemptId }
       return { ...this.row }
     }
     if (sql.includes("SET status=?, last_error=?") && sql.includes("stage='pipeline_execution'")) {

@@ -12,13 +12,13 @@ def source_db(monkeypatch):
     db.row_factory = sqlite3.Row
     db.executescript("""
         CREATE TABLE margin_data(stock_id INTEGER,date TEXT,margin_balance REAL,short_ratio REAL);
-        CREATE TABLE shareholding(stock_id INTEGER,date TEXT,retail_pct REAL);
+        CREATE TABLE shareholding(stock_id INTEGER,date TEXT,retail_pct REAL,created_at TEXT);
         CREATE TABLE canonical_revenue_monthly(stock_id TEXT,revenue_month TEXT,as_of_date TEXT,
             yoy REAL,mom REAL,revenue REAL);
         CREATE TABLE canonical_fundamental_features(stock_id TEXT,available_date TEXT,as_of_date TEXT,
             period TEXT,source TEXT,eps REAL,roe REAL,pe REAL,pb REAL,dividend_yield REAL);
         INSERT INTO margin_data VALUES(1,'2026-09-05',100,.1),(1,'2026-09-07',900,.9);
-        INSERT INTO shareholding VALUES(1,'2026-09-05',.2),(1,'2026-09-07',.8);
+        INSERT INTO shareholding VALUES(1,'2026-09-05',.2,'2026-09-05 12:00:00'),(1,'2026-09-07',.8,'2026-09-07 12:00:00');
         INSERT INTO canonical_revenue_monthly VALUES('1000','2026-08','2026-09-04',5,6,1000);
         INSERT INTO canonical_fundamental_features VALUES
           ('1000','2026-09-04','2026-09-04','2026Q2','finlab.fundamental_factor_diversity',3,10,15,2,4),
@@ -73,3 +73,19 @@ def test_successful_empty_fundamental_table_remains_distinct_from_failure(source
     result = builder._bulk_load_per_stock_misc([1], {1: '1000'}, decision_date='2026-09-06')[1]
     assert result['margin_balance'] == 100
     assert 'eps' not in result
+
+
+def test_shareholding_late_arrival_cannot_hide_earlier_known_observation(source_db):
+    db,_=source_db
+    db.execute("UPDATE shareholding SET created_at='2026-09-09 20:00:00' WHERE date='2026-09-07'")
+    for day in ('2026-09-07','2026-09-09'):
+        assert builder._bulk_load_per_stock_misc([1],{1:'1000'},decision_date=day)[1]['retail_pct']==.2
+    assert builder._bulk_load_per_stock_misc([1],{1:'1000'},decision_date='2026-09-10')[1]['retail_pct']==.8
+
+
+def test_margin_compact_and_iso_dates_have_same_causal_result(source_db):
+    db, _ = source_db
+    db.execute("UPDATE margin_data SET date=replace(date, '-', '')")
+    result = builder._bulk_load_per_stock_misc([1], {1: '1000'}, decision_date='2026-09-06')[1]
+    assert result['margin_balance'] == 100
+    assert result['short_ratio'] == .1

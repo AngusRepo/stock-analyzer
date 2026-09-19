@@ -18,7 +18,7 @@ class Bucket:
 
 def fixture():
     prep={'schema_version':'active8-canonical-adjusted-prep-v3','status':'ready','output_gcs_prefix':'old',
-      'feature_semantic_version':'formal137-pit-rolling-rank-and-imputation-v2',
+      'feature_semantic_version':'formal137-pit-asof-source-quality-v3',
       'feature_imputation_semantic':'prior_252_row_median_then_zero_v2',
       'target_semantic_version':'next-session-canonical-adjusted-open-to-fifth-session-canonical-adjusted-close-net-v4',
       'roundtrip_cost_bps':18.,'producer_source_sha':'a'*40}
@@ -44,3 +44,13 @@ def test_cross_prep_window_uses_own_verified_lineage():
     prep,_=fixture();parent={'prep_gcs_prefix':'new','prep_manifest':{'manifest_checksum':'f'*64}}
     window={'source_prep_gcs_prefix':'old','source_prep_manifest_checksum':prep['manifest_checksum']}
     assert verified_fold_producer_sha(parent,window,bucket=Bucket(prep))=='a'*40
+
+
+def test_validly_checksummed_v2_fold_cannot_be_reused_with_v3_features():
+    prep,parent=fixture()
+    prep['feature_semantic_version']='formal137-pit-rolling-rank-and-imputation-v2'
+    prep.pop('manifest_checksum')
+    prep['manifest_checksum']=hashlib.sha256(json.dumps(prep,sort_keys=True).encode()).hexdigest()
+    parent['prep_manifest']['manifest_checksum']=prep['manifest_checksum']
+    with pytest.raises(ValueError,match='prep_lineage_mismatch'):
+        verified_fold_producer_sha(parent,{},bucket=Bucket(prep))

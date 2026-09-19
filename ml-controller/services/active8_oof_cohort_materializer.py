@@ -40,7 +40,7 @@ from services.worker_evidence_archive_client import resolve_legacy_screener_evid
 
 TARGET_SEMANTIC_VERSION = LABEL_SCHEMA_VERSION
 SCORE_SEMANTIC_VERSION = "score-v2-active8-components-v3"
-FEATURE_SEMANTIC_VERSION = "formal137-pit-rolling-rank-and-imputation-v2"
+FEATURE_SEMANTIC_VERSION = "formal137-pit-asof-source-quality-v3"
 FEATURE_IMPUTATION_SEMANTIC_VERSION = "prior_252_row_median_then_zero_v2"
 D1_IN_CLAUSE_CHUNK_SIZE = 80
 def _runtime_source_sha() -> str:

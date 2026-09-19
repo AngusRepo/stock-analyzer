@@ -266,9 +266,71 @@ def test_predict_horizon_uses_named_model_column_not_index_column():
     assert pred_by_id == {"2330": 101.0, "2317": 202.0}
 
 
-def test_dense_oof_evaluation_universe_is_model_aware():
+def test_dense_oof_evaluation_keeps_unseen_eligible_stocks_for_both_models():
     records = [{"symbol": "all"}]
     panel_records = [{"symbol": "selected"}]
 
-    assert _dense_oof_evaluation_records("iTransformer", records, panel_records) is panel_records
+    assert _dense_oof_evaluation_records("iTransformer", records, panel_records) is records
     assert _dense_oof_evaluation_records("PatchTST", records, panel_records) is records
+
+
+def test_zero_series_limit_preserves_full_pool_in_all_training_paths():
+    from app.neuralforecast_sequence_runtime import _resolve_max_series
+    records = [{"symbol": f"S{i:04d}", "market": "LISTED",
+                "dates": [f"d{j:03d}" for j in range(25)],
+                "close": [100.+j for j in range(25)], "open": [100.+j for j in range(25)]}
+               for i in range(1031)]
+    calendar = records[0]["dates"]
+    _, panel, report = _build_fixed_oof_panel(records, calendar=calendar, train_end=calendar[-1],
+        seq_len=8, pred_len=2, max_series=0, training_history_mode="full_pit_history")
+    assert len(panel) == report["eligible_series"] == 1031
+    _, evaluation, _ = _panel_train_eval_rows(records, seq_len=8, pred_len=2, max_series=0)
+    _, count = _panel_full_train_rows(records, seq_len=8, pred_len=2, max_series=0)
+    assert len(evaluation) == count == 1031
+    assert _resolve_max_series({"max_series": 0, "data_slice": {"max_series": 2}}) == 0
+    assert _resolve_max_series({"data_slice": {"max_series": 0}}) == 0
+    assert _resolve_max_series({}) == 0
+    import pytest
+    with pytest.raises(ValueError, match="nonnegative"):
+        _resolve_max_series({"max_series": -1})
+
+
+def test_itransformer_predict_uses_whole_panel_and_restores_on_failure():
+    from types import SimpleNamespace
+    import pytest
+    model = SimpleNamespace(valid_batch_size=2)
+    class Predictor:
+        models = [model]
+        fail = False
+        def predict(self, df):
+            assert model.valid_batch_size == 5
+            if self.fail:
+                raise RuntimeError("inference failed")
+            return pd.DataFrame({"unique_id": [f"S{i}" for i in range(5)],
+                                 "ds": [9]*5, "iTransformer": list(range(5))})
+    nf = Predictor()
+    df = pd.DataFrame({"unique_id": [f"S{i}" for i in range(5)], "ds": [8]*5, "y": [1.]*5})
+    scores, _ = _predict_horizon_by_id_with_column(nf, df, horizon_idx=1, model_name="iTransformer")
+    assert set(scores) == set(df.unique_id)
+    assert model.valid_batch_size == 2
+    nf.fail = True
+    with pytest.raises(RuntimeError, match="inference failed"):
+        _predict_horizon_by_id_with_column(nf, df, horizon_idx=1, model_name="iTransformer")
+    assert model.valid_batch_size == 2
+
+
+def test_actual_itransformer_weights_accept_variable_count_and_permutation():
+    import torch
+    from neuralforecast.models import iTransformer
+    model = iTransformer(h=2, input_size=8, n_series=2, hidden_size=16,
+                         n_heads=2, e_layers=1, d_ff=16, dropout=0., logger=False)
+    model.eval()
+    values = torch.arange(40, dtype=torch.float32).reshape(1, 8, 5) / 40 + 1
+    permutation = [4, 1, 3, 0, 2]
+    with torch.inference_mode():
+        output = model({"insample_y": values})
+        permuted = model({"insample_y": values[:, :, permutation]})
+        subset = model({"insample_y": values[:, :, :3]})
+    assert output.shape == (1, 2, 5)
+    assert subset.shape == (1, 2, 3)
+    torch.testing.assert_close(permuted, output[:, :, permutation], rtol=1e-5, atol=1e-6)

@@ -158,7 +158,8 @@ export function pipelineProvenanceRecoveryDecision(input: {
   if (!failure || failure.status !== 'error') return { retry: false, reason: 'pipeline_not_error' }
   const error = String(failure.last_error ?? '')
   const servingContractFailure = /(?:^|Error: )active8_ensemble_base_(?:identity_mismatch|not_serving):(?:LightGBM|XGBoost|ExtraTrees|TabM|GNN|DLinear|PatchTST|iTransformer)(?::|$)/.test(error)
-  if (!error.includes('pipeline_modal_source_sha_mismatch') && !servingContractFailure) {
+  const cloudFailure = /^pipeline_cloud_run_failed:(memory_limit|task_failed);completed_at=([^;]+);execution=[a-z0-9-]+$/.exec(error)
+  if (!error.includes('pipeline_modal_source_sha_mismatch') && !servingContractFailure && !cloudFailure) {
     return { retry: false, reason: 'pipeline_error_not_provenance_mismatch' }
   }
   const sourceSha = String(input.workerVersion?.tag ?? '').trim()
@@ -167,7 +168,7 @@ export function pipelineProvenanceRecoveryDecision(input: {
   if (!/^[0-9a-f]{40}$/.test(sourceSha) || !versionId || !deployedAt) {
     return { retry: false, reason: 'worker_release_identity_unavailable' }
   }
-  const failureMs = sqliteUtcMs(String(failure.updated_at ?? ''))
+  const failureMs = sqliteUtcMs(cloudFailure ? cloudFailure[2] : String(failure.updated_at ?? ''))
   const deployedMs = Date.parse(deployedAt)
   if (!Number.isFinite(failureMs) || !Number.isFinite(deployedMs)) {
     return { retry: false, reason: 'release_timestamp_unparseable' }
@@ -175,7 +176,41 @@ export function pipelineProvenanceRecoveryDecision(input: {
   if (deployedMs <= failureMs) {
     return { retry: false, reason: 'worker_release_not_newer_than_failure' }
   }
-  return { retry: true, reason: 'new_worker_release_after_provenance_failure' }
+  return { retry: true, reason: cloudFailure ? 'new_worker_release_after_cloud_failure' : 'new_worker_release_after_provenance_failure' }
+}
+
+export async function reconcilePipelineCloudFailure(
+  env: Bindings, businessDate: string,
+): Promise<{ reason: string }> {
+  const row = await databaseForDataDomain(env, 'ops').prepare(`
+    SELECT canonical_run_id, status, cursor_key, last_error
+      FROM pipeline_stage_runs WHERE business_date=? AND stage='pipeline_execution'
+  `).bind(businessDate).first<{
+    canonical_run_id: string; status: string; cursor_key: string | null; last_error: string | null
+  }>()
+  if (!row || !(['running', 'waiting'].includes(row.status)
+    || (row.status === 'error' && row.last_error?.startsWith('pipeline_cloud_run_failed:')))) {
+    return { reason: 'no_unclosed_cloud_execution' }
+  }
+  if (!env.ML_CONTROLLER_URL || !env.ML_CONTROLLER_SECRET) return { reason: 'controller_status_unavailable' }
+  const params = new URLSearchParams({ date: businessDate, run_id: row.canonical_run_id })
+  if (row.cursor_key) params.set('execution_name', row.cursor_key)
+  const response = await fetch(`${env.ML_CONTROLLER_URL}/pipeline/v2/reconcile?${params}`, {
+    method: 'POST', headers: { 'X-Controller-Token': env.ML_CONTROLLER_SECRET },
+    signal: AbortSignal.timeout(90_000),
+  })
+  if (!response.ok) throw new Error(`pipeline_cloud_reconcile_http:${response.status}`)
+  const result = await response.json() as {
+    schema_version?: string; run_id?: string; run_date?: string; state?: string;
+    reason?: string; failure_callback_sent?: boolean
+  }
+  if (result.schema_version !== 'pipeline-cloud-execution-status-v1'
+    || result.run_id !== row.canonical_run_id || result.run_date !== businessDate) {
+    throw new Error('pipeline_cloud_reconcile_identity_mismatch')
+  }
+  // The controller invokes the existing exact-run Worker callback/root owner.
+  // Re-read D1 below; never manufacture terminal success from a process exit.
+  return { reason: result.failure_callback_sent ? 'cloud_failure_callback_closed' : String(result.reason ?? result.state) }
 }
 
 export async function enqueuePostScreenerPipelineRecovery(
@@ -186,6 +221,7 @@ export async function enqueuePostScreenerPipelineRecovery(
     source: string
   },
 ): Promise<{ queued: boolean; canonicalRunId: string | null; status: string; reason: string }> {
+  await reconcilePipelineCloudFailure(env, options.businessDate)
   const opsDb = databaseForDataDomain(env, 'ops')
   const failure = await opsDb.prepare(`
     SELECT canonical_run_id, status, last_error, updated_at

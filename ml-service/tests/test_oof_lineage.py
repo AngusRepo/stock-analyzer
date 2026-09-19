@@ -81,7 +81,7 @@ def test_oof_rank_is_same_date_same_market_and_artifact_is_immutable_payload():
     )
     assert result["rows"] == 3
     assert result["schema_version"] == "active8-oof-predictions-v2"
-    assert result["feature_semantic_version"] == "formal137-pit-rolling-rank-and-imputation-v2"
+    assert result["feature_semantic_version"] == "formal137-pit-asof-source-quality-v3"
     assert result["producer_source_sha"] == "0123456789abcdef0123456789abcdef01234567"
     assert result["payload_checksum"]
     assert bucket.objects[result["path"]].payload

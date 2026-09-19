@@ -65,7 +65,7 @@ def _verified_source_receipt(bucket: Any, prefix: str, batch_count: int) -> dict
         raise ValueError("canonical_adjusted_source_receipt_invalid")
     checksums = receipt.get("output_checksums") or {}
     expected = [f"{prefix}/prep/batch_{index}.npz" for index in range(batch_count)]
-    if sorted(checksums) != expected:
+    if sorted(checksums) != sorted(expected):
         raise ValueError("canonical_adjusted_source_inventory_invalid")
     for artifact_path, checksum in checksums.items():
         raw = bucket.blob(artifact_path).download_as_bytes()

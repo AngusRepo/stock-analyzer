@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import os
-from datetime import date
+from datetime import date, datetime, timedelta, timezone
 
 
 def _availability_day(default: int = 12) -> int:
@@ -42,3 +42,24 @@ def monthly_revenue_available_date(period_or_date: str, availability_day: int | 
     day = availability_day if availability_day is not None else _availability_day()
     day = min(max(int(day), 1), 28)
     return date(next_year, next_month, day).isoformat()
+
+
+def normalize_daily_source_date(value: str) -> str:
+    """Canonicalize ISO and compact source dates without changing availability."""
+    return date.fromisoformat(str(value).strip()).isoformat()
+
+
+def shareholding_available_date(row: dict) -> str | None:
+    """Conservative observed availability; weekly observation date is not publication."""
+    observation = normalize_daily_source_date(row['date'])
+    available = row.get('available_date')
+    recorded = row.get('created_at')
+    evidence = []
+    if available:
+        evidence.append(normalize_daily_source_date(available))
+    if recorded:
+        stamp = datetime.fromisoformat(str(recorded).replace('Z', '+00:00'))
+        if stamp.tzinfo is None:
+            stamp = stamp.replace(tzinfo=timezone.utc)  # D1 datetime('now')
+        evidence.append(stamp.astimezone(timezone(timedelta(hours=8))).date().isoformat())
+    return max(observation, *evidence) if evidence else None

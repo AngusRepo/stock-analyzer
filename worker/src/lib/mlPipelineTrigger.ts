@@ -207,10 +207,12 @@ export async function runMLAndRiskV2(
     }
 
     controllerAccepted = true
+    let executionName: string | undefined
     let responseRunId = dispatchAttemptId
     try {
       const body = await res.json() as any
       responseRunId = String(body?.run_id ?? dispatchAttemptId)
+      executionName = typeof body?.execution_name === 'string' ? body.execution_name : undefined
     } catch {
       responseRunId = dispatchAttemptId
     }
@@ -229,6 +231,7 @@ export async function runMLAndRiskV2(
           businessDate: twDate,
           attemptId: dispatchAttemptId!,
           runId: dispatchAttemptId!,
+          executionName,
         })
       } catch (error) {
         commitError = error

@@ -11,6 +11,7 @@ from pathlib import Path
 import numpy as np
 import polars as pl
 from typing import Optional
+from app.feature_data_quality import join_available_history, require_unique_dates, feature_missing_masks
 
 # ── Thread 控制（避免與 NumPy/torch 搶 CPU）──────────────────────────────────
 # Modal container CPU 配置：prep=1 CPU, train=L4 GPU (~4 CPU), selection=L4 (~4 CPU)
@@ -211,6 +212,13 @@ def build_feature_matrix(
         .with_columns(pl.col("date").cast(pl.Date))
         .sort("date")
     )
+    require_unique_dates(df, "prices")
+    raw_target = df.select(
+        pl.when((pl.col("open").shift(-1) > 0) & (pl.col("close").shift(-5) > 0)
+                & pl.col("open").shift(-1).is_finite() & pl.col("close").shift(-5).is_finite())
+        .then(pl.col("close").shift(-5) / pl.col("open").shift(-1) - 1.0)
+        .otherwise(None).alias("target_5d")
+    ).to_series()
     num_cols = ["close", "high", "low", "open", "volume", "adj_close"]
     for col in num_cols:
         if col in df.columns:
@@ -225,6 +233,7 @@ def build_feature_matrix(
             pl.DataFrame(indicators, infer_schema_length=None)
             .with_columns(pl.col("date").cast(pl.Date))
         )
+        require_unique_dates(df_ind, "indicators")
         ind_num_cols = [c for c in df_ind.columns if c != "date"]
         for col in ind_num_cols:
             df_ind = df_ind.with_columns(pl.col(col).cast(pl.Float64, strict=False))
@@ -234,62 +243,40 @@ def build_feature_matrix(
     high = df["high"] if "high" in df.columns else close
     low = df["low"] if "low" in df.columns else close
 
-    # Fallback: 從 prices 計算缺失指標
-    if "ma5" not in df.columns or df["ma5"].is_null().all():
-        df = df.with_columns(pl.col("close").rolling_mean(5).alias("ma5"))
-    if "ma10" not in df.columns or df["ma10"].is_null().all():
-        df = df.with_columns(pl.col("close").rolling_mean(10).alias("ma10"))
-    if "ma20" not in df.columns or df["ma20"].is_null().all():
-        df = df.with_columns(pl.col("close").rolling_mean(20).alias("ma20"))
-    if "ma60" not in df.columns or df["ma60"].is_null().all():
-        df = df.with_columns(pl.col("close").rolling_mean(60).alias("ma60"))
+    # Fill each missing observation causally; testing whole-column availability
+    # lets a later indicator record change how the past was reconstructed.
+    def _fill_indicator(name: str, fallback: pl.Expr) -> None:
+        nonlocal df
+        if name in df.columns:
+            source = pl.col(name).cast(pl.Float64, strict=False)
+            fallback = pl.when(source.is_finite()).then(source).otherwise(fallback)
+        df = df.with_columns(fallback.alias(name))
 
-    if "rsi14" not in df.columns or df["rsi14"].is_null().all():
-        delta = pl.col("close").diff()
-        gain = delta.clip(0, None).rolling_mean(14)
-        loss = (-delta.clip(None, 0)).rolling_mean(14)
-        df = df.with_columns(
-            (pl.lit(100.0) - pl.lit(100.0) / (pl.lit(1.0) + _safe_div(gain, loss, 1.0)))
-            .alias("rsi14")
-        )
+    for window in (5, 10, 20, 60):
+        _fill_indicator(f"ma{window}", pl.col("close").rolling_mean(window))
+    delta = pl.col("close").diff()
+    gain = delta.clip(0, None).rolling_mean(14)
+    loss = (-delta.clip(None, 0)).rolling_mean(14)
+    _fill_indicator("rsi14", 100.0 - 100.0 / (1.0 + _safe_div(gain, loss, 1.0)))
+    macd_fallback = pl.col("close").ewm_mean(span=12, adjust=False) - pl.col("close").ewm_mean(span=26, adjust=False)
+    signal_fallback = macd_fallback.ewm_mean(span=9, adjust=False)
+    _fill_indicator("macd", macd_fallback)
+    _fill_indicator("macd_signal", signal_fallback)
+    _fill_indicator("macd_hist", macd_fallback - signal_fallback)
+    _fill_indicator("macdHist", pl.col("macd_hist"))
+    _fill_indicator("atr14", pl.max_horizontal(
+        pl.col("high") - pl.col("low"),
+        (pl.col("high") - pl.col("close").shift(1)).abs(),
+        (pl.col("low") - pl.col("close").shift(1)).abs(),
+    ).rolling_mean(14))
+    mid = pl.col("close").rolling_mean(20)
+    std = pl.col("close").rolling_std(20)
+    _fill_indicator("bb_mid", mid)
+    _fill_indicator("bb_upper", mid + 2 * std)
+    _fill_indicator("bb_lower", mid - 2 * std)
 
-    if "macd_hist" not in df.columns or df["macd_hist"].is_null().all():
-        df = df.with_columns([
-            pl.col("close").ewm_mean(span=12, adjust=False).alias("_ema12"),
-            pl.col("close").ewm_mean(span=26, adjust=False).alias("_ema26"),
-        ])
-        df = df.with_columns(
-            (pl.col("_ema12") - pl.col("_ema26")).alias("macd")
-        )
-        df = df.with_columns(
-            pl.col("macd").ewm_mean(span=9, adjust=False).alias("macd_signal")
-        )
-        df = df.with_columns(
-            (pl.col("macd") - pl.col("macd_signal")).alias("macd_hist")
-        )
-        df = df.drop(["_ema12", "_ema26"])
-    if "macdHist" not in df.columns and "macd_hist" in df.columns:
-        df = df.with_columns(pl.col("macd_hist").alias("macdHist"))
-
-    if "atr14" not in df.columns or df["atr14"].is_null().all():
-        df = df.with_columns(
-            pl.max_horizontal(
-                pl.col("high") - pl.col("low"),
-                (pl.col("high") - pl.col("close").shift(1)).abs(),
-                (pl.col("low") - pl.col("close").shift(1)).abs(),
-            ).rolling_mean(14).alias("atr14")
-        )
-
-    if "bb_upper" not in df.columns or df["bb_upper"].is_null().all():
-        df = df.with_columns([
-            pl.col("close").rolling_mean(20).alias("bb_mid"),
-            pl.col("close").rolling_std(20).alias("_bb_std"),
-        ])
-        df = df.with_columns([
-            (pl.col("bb_mid") + 2 * pl.col("_bb_std")).alias("bb_upper"),
-            (pl.col("bb_mid") - 2 * pl.col("_bb_std")).alias("bb_lower"),
-        ])
-        df = df.drop("_bb_std")
+    # Historical keys are availability dates. Join before deriving chip ratios.
+    df = join_available_history(df, (market_env or {}).get("per_stock_ts") or {})
 
     # ── 3. Chips features ────────────────────────────────────────────────────
     if chips:
@@ -297,6 +284,7 @@ def build_feature_matrix(
             pl.DataFrame(chips, infer_schema_length=None)
             .with_columns(pl.col("date").cast(pl.Date))
         )
+        require_unique_dates(df_chip, "chips")
         chip_cols = [
             "foreign_net", "trust_net", "dealer_net",
             "margin_balance", "short_balance",
@@ -308,6 +296,10 @@ def build_feature_matrix(
                 df_chip = df_chip.with_columns(pl.col(col).cast(pl.Float64, strict=False))
         avail_chip = [c for c in chip_cols if c in df_chip.columns]
         df = df.join(df_chip.select(["date"] + avail_chip), on="date", how="left", suffix="_chip")
+        overlaps = [c for c in avail_chip if c + "_chip" in df.columns]
+        if overlaps:
+            df = df.with_columns([pl.coalesce(c, c + "_chip").alias(c) for c in overlaps])
+            df = df.drop([c + "_chip" for c in overlaps])
 
         # institutional_net = foreign + trust + dealer
         fn = pl.col("foreign_net").fill_null(0.0) if "foreign_net" in df.columns else pl.lit(0.0)
@@ -330,46 +322,46 @@ def build_feature_matrix(
             ).alias("dealer_ratio_5d")
         )
 
-        # margin_balance time-series features
-        if "margin_balance" in df.columns:
-            df = df.with_columns(pl.col("margin_balance").forward_fill().alias("margin_balance"))
-            vol_close = pl.col("volume").fill_null(1.0) * pl.col("close").fill_null(1.0)
-            df = df.with_columns(
-                _clip_expr(_safe_div(pl.col("margin_balance"), vol_close), 0.0, 10.0)
-                .alias("margin_ratio")
-            )
-            # NOTE: shift(5) assumes 5 consecutive rows = 5 trading days. If data has
-            # gaps (holidays, trading halts), the actual calendar span may differ.
-            # Accepted tradeoff: date-aware shift requires date join (complex + slow).
-            # Models are trained on this definition, so changing it requires retrain.
-            df = df.with_columns(
-                _clip_expr(
-                    _safe_div(
-                        pl.col("margin_balance") - pl.col("margin_balance").shift(5),
-                        pl.col("margin_balance").shift(5),
-                    ),
-                    -1.0, 1.0
-                ).alias("margin_change_5d_ts")
-            )
+    # margin_balance time-series features
+    if "margin_balance" in df.columns:
+        df = df.with_columns(pl.col("margin_balance").forward_fill().alias("margin_balance"))
+        vol_close = pl.col("volume").fill_null(1.0) * pl.col("close").fill_null(1.0)
+        df = df.with_columns(
+            _clip_expr(_safe_div(pl.col("margin_balance"), vol_close), 0.0, 10.0)
+            .alias("margin_ratio")
+        )
+        # NOTE: shift(5) assumes 5 consecutive rows = 5 trading days. If data has
+        # gaps (holidays, trading halts), the actual calendar span may differ.
+        # Accepted tradeoff: date-aware shift requires date join (complex + slow).
+        # Models are trained on this definition, so changing it requires retrain.
+        df = df.with_columns(
+            _clip_expr(
+                _safe_div(
+                    pl.col("margin_balance") - pl.col("margin_balance").shift(5),
+                    pl.col("margin_balance").shift(5),
+                ),
+                -1.0, 1.0
+            ).alias("margin_change_5d_ts")
+        )
 
-        if "short_balance" in df.columns:
-            df = df.with_columns(pl.col("short_balance").forward_fill().alias("short_balance"))
-            df = df.with_columns(
-                _clip_expr(
-                    _safe_div(
-                        pl.col("short_balance") - pl.col("short_balance").shift(5),
-                        pl.col("short_balance").shift(5),
-                    ),
-                    -1.0, 1.0
-                ).alias("short_change_5d")
-            )
-            # short_squeeze_proxy
-            ret_5d_expr = _safe_div(
-                pl.col("close") - pl.col("close").shift(5),
-                pl.col("close").shift(5),
-            ).clip(0.0, None)
-            short_incr = pl.when(pl.col("short_balance") > pl.col("short_balance").shift(5)).then(1.0).otherwise(0.0)
-            df = df.with_columns((ret_5d_expr * short_incr).clip(0.0, 1.0).alias("short_squeeze_proxy"))
+    if "short_balance" in df.columns:
+        df = df.with_columns(pl.col("short_balance").forward_fill().alias("short_balance"))
+        df = df.with_columns(
+            _clip_expr(
+                _safe_div(
+                    pl.col("short_balance") - pl.col("short_balance").shift(5),
+                    pl.col("short_balance").shift(5),
+                ),
+                -1.0, 1.0
+            ).alias("short_change_5d")
+        )
+        # short_squeeze_proxy
+        ret_5d_expr = _safe_div(
+            pl.col("close") - pl.col("close").shift(5),
+            pl.col("close").shift(5),
+        ).clip(0.0, None)
+        short_incr = pl.when(pl.col("short_balance") > pl.col("short_balance").shift(5)).then(1.0).otherwise(0.0)
+        df = df.with_columns((ret_5d_expr * short_incr).clip(0.0, 1.0).alias("short_squeeze_proxy"))
 
     # ── 4. Sentiment features ────────────────────────────────────────────────
     # Keep V2 feature schema stable even when chip sources are absent.
@@ -401,6 +393,7 @@ def build_feature_matrix(
             ])
             .select(["date", "sentiment"])
         )
+        require_unique_dates(df_sent, "sentiment")
         df = df.join(df_sent, on="date", how="left", suffix="_sent")
         df = df.with_columns([
             pl.col("sentiment").forward_fill(limit=5).alias("sentiment"),
@@ -762,35 +755,11 @@ def build_feature_matrix(
         "dividend_yield": _pit_default("dividend_yield"),
         "revenue_growth_yoy": _pit_default("revenue_growth_yoy"),
     }
-    if per_stock_ts:
-        ps_records = []
-        for date_str, vals in per_stock_ts.items():
-            rec = {"date": date_str}
-            rec.update(vals)
-            ps_records.append(rec)
-        if ps_records:
-            ps_df = (
-                pl.DataFrame(ps_records, infer_schema_length=None)
-                .with_columns(pl.col("date").cast(pl.Date))
-                .sort("date")
-            )
-            # forward-fill monthly/weekly features
-            for ffill_col in [
-                "revenue_yoy", "revenue_mom", "revenue", "retail_pct",
-                "eps", "roe", "pe", "pb", "dividend_yield", "revenue_growth_yoy",
-            ]:
-                if ffill_col in ps_df.columns:
-                    ps_df = ps_df.with_columns(pl.col(ffill_col).cast(pl.Float64, strict=False).forward_fill())
-            # margin_change_5d from margin_balance
-            if "margin_balance" in ps_df.columns and "margin_change_5d" not in ps_df.columns:
-                mb = pl.col("margin_balance").cast(pl.Float64, strict=False).forward_fill()
-                ps_df = ps_df.with_columns(
-                    _clip_expr(_safe_div(mb - mb.shift(5), mb.shift(5)), -1.0, 1.0)
-                    .alias("margin_change_5d")
-                )
-            ps_join_cols = [c for c in wave3_defaults if c in ps_df.columns and c not in df.columns]
-            if ps_join_cols:
-                df = df.join(ps_df.select(["date"] + ps_join_cols), on="date", how="left")
+    # Capture missing source values before compatibility defaults hide gaps.
+    source_masks = feature_missing_masks(df, market_env or {}, stock_meta or {}, historical_training)
+    if "margin_balance" in df.columns and "margin_change_5d" not in df.columns:
+        mb = pl.col("margin_balance").cast(pl.Float64, strict=False).forward_fill()
+        df = df.with_columns(_clip_expr(_safe_div(mb - mb.shift(5), mb.shift(5)), -1.0, 1.0).alias("margin_change_5d"))
 
     for col, default in wave3_defaults.items():
         if col not in df.columns:
@@ -939,9 +908,9 @@ def build_feature_matrix(
         ("l1_return20d", ret20_raw),
         ("l1_revenueGrowthYoY", _point_in_time_feature("revenue_growth_yoy", _series_scalar("revenue_yoy"))),
         ("l1_roe", roe),
-        ("l1_sectorFlowCore", pl.lit(_meta_scalar("sector_flow_core", _series_scalar("sector_flow_core")))),
-        ("l1_sectorRsRatio", pl.lit(_meta_scalar("stock_vs_sector", _series_scalar("sector_rs_ratio")))),
-        ("l1_sectorTurnoverShareDelta", pl.lit(_series_scalar("sector_turnover_share_delta"))),
+        ("l1_sectorFlowCore", _point_in_time_feature("sector_flow_core") if historical_training or "sector_flow_core" in df.columns else pl.lit(_meta_scalar("sector_flow_core", _series_scalar("sector_flow_core")))),
+        ("l1_sectorRsRatio", _point_in_time_feature("sector_rs_ratio") if historical_training or "sector_rs_ratio" in df.columns else pl.lit(_meta_scalar("stock_vs_sector", _series_scalar("sector_rs_ratio")))),
+        ("l1_sectorTurnoverShareDelta", _point_in_time_feature("sector_turnover_share_delta")),
         ("l1_smcBullishScore", (bos_bullish + fvg_strength.clip(0.0, 1.0) + displacement.clip(0.0, 0.5) * 2.0) / 3.0),
         ("l1_smcNetScore", bos_bullish + displacement + fvg_strength.clip(0.0, 1.0) - (1.0 - bos_bullish) * 0.25),
         ("l1_squeezeMomentum", (bb_width_expr - bb_width_expr.rolling_mean(20)) * close_expr.sign()),
@@ -959,7 +928,7 @@ def build_feature_matrix(
         ("mom_reversal_6m", -ret126_raw),
         ("mom_rsi_14", _feature_col("rsi14")),
         ("mom_vol_adj_12m", _safe_div(ret252_raw, ret1_raw.rolling_std(252).clip(1e-9, None))),
-        ("size_log_mktcap", pl.lit(size_value)),
+        ("size_log_mktcap", pl.col("market_cap_proxy").clip(0, None).log1p() if "market_cap_proxy" in df.columns else pl.lit(size_value)),
         ("tech_adx_14", _feature_col("adx14")),
         ("tech_atr_14", _feature_col("atr14")),
         ("tech_bbands_pctb_20", _feature_col("bb_position")),
@@ -967,7 +936,7 @@ def build_feature_matrix(
         ("tech_bias_20", -_feature_col("ma20_bias")),
         ("tech_bullish_streak_5", (close_expr > close_expr.shift(1)).cast(pl.Float64).rolling_sum(5)),
         ("tech_cmo_14", _safe_div(cmo_num, cmo_den.clip(1e-9, None)) * 100.0),
-        ("tech_disposal_active", pl.lit(_series_scalar("disposal_active"))),
+        ("tech_disposal_active", _point_in_time_feature("disposal_active")),
         ("tech_dma_10_50", _safe_div(close_expr.rolling_mean(10), ma50_expr) - 1.0),
         ("tech_donchian_pos_20", _safe_div(close_expr - donchian_low20, donchian_range20)),
         ("tech_ema_12_pos", _safe_div(close_expr, ema12_expr) - 1.0),
@@ -978,9 +947,9 @@ def build_feature_matrix(
         ("tech_kd9_k", kd_k_expr),
         ("tech_kdj_j_9", 3.0 * kd_k_expr - 2.0 * kd_d_expr),
         ("tech_keltner_pos_20", _feature_col("keltner_position")),
-        ("tech_limit_down_count_10", pl.lit(_series_scalar("limit_down_count"))),
+        ("tech_limit_down_count_10", _point_in_time_feature("limit_down_count")),
         ("tech_limit_up_streak_10", (ret1_raw > 0.095).cast(pl.Float64).rolling_sum(10)),
-        ("tech_locked_open_down_10", pl.lit(_series_scalar("locked_open_down"))),
+        ("tech_locked_open_down_10", _point_in_time_feature("locked_open_down")),
         ("tech_locked_open_up_10", (open_expr >= close_expr.shift(1) * 1.095).cast(pl.Float64).rolling_sum(10)),
         ("tech_ma_convergence", (_safe_div(close_expr.rolling_mean(5), close_expr.rolling_mean(20)) - 1.0).abs() + (_safe_div(close_expr.rolling_mean(20), close_expr.rolling_mean(60)) - 1.0).abs()),
         ("tech_mfi_14", 100.0 - 100.0 / (1.0 + _safe_div(pos_flow, neg_flow.clip(1e-9, None)))),
@@ -1069,6 +1038,17 @@ def build_feature_matrix(
         print(f"[Features] Z-score: {len(_zscore_const_cols)} constant-variance cols "
               f"(neutralized to 0.0): {_zscore_const_cols[:5]}")
 
+    # Audit masks are metadata, never model inputs; record before imputation.
+    masks = []
+    for name in FEATURE_COLS:
+        if name in df.columns:
+            missing = ~df[name].cast(pl.Float64, strict=False).is_finite().fill_null(False)
+            if name in source_masks:
+                missing = missing | source_masks[name]
+            masks.append(missing.alias("_source_missing__" + name))
+    if masks:
+        df = df.with_columns(masks)
+
     # ── 14. PIT NaN handling (features only, not targets) ────────────────────
     # Carry prior known values forward, then impute only from the prior 252-row
     # window. A full-frame median rewrites early features when future rows arrive.
@@ -1077,9 +1057,10 @@ def build_feature_matrix(
         c for c in df.columns
         if c not in target_cols
         and c != "date"
+        and not c.startswith("_source_missing__")
         and df.schema[c].is_numeric()
     ]
-    df = df.with_columns(pl.exclude(target_cols + ["date"]).forward_fill())
+    df = df.with_columns(pl.exclude(target_cols + ["date"] + [c for c in df.columns if c.startswith("_source_missing__")]).forward_fill())
     pit_fills = []
     for col in feature_cols:
         if col in df.columns:
@@ -1096,18 +1077,8 @@ def build_feature_matrix(
     # Production verification enters at the next observable session open and
     # marks the outcome at the fifth session close. Training must learn that
     # same executable outcome; today's close remains an input, not the entry.
-    future_close = pl.col("close").shift(-5)
-    entry_open = pl.col("open").shift(-1)
-    df = df.with_columns(
-        pl.when(
-            future_close.is_not_null()
-            & entry_open.is_not_null()
-            & (entry_open != 0)
-        )
-        .then((future_close / entry_open) - 1.0)
-        .otherwise(None)
-        .alias("target_5d")
-    )
+    # Never create an executable label from an imputed entry/exit price.
+    df = df.with_columns(raw_target)
 
     # Triple Barrier Label (using raw ATR, not Z-scored)
     close_np = df["close"].to_numpy().astype(np.float64)
@@ -1168,7 +1139,7 @@ TIMESFM_L175_FEATURE_COLS = [
 ]
 
 FEATURE_SCHEMA = "formal137"
-FEATURE_SEMANTIC_VERSION = "formal137-pit-rolling-rank-and-imputation-v2"
+FEATURE_SEMANTIC_VERSION = "formal137-pit-asof-source-quality-v3"
 FEATURE_IMPUTATION_SEMANTIC_VERSION = "prior_252_row_median_then_zero_v2"
 
 
@@ -1254,7 +1225,7 @@ def sanitize_feature_frame(
         finite_expr = pl.when(cast_expr.is_finite()).then(cast_expr).otherwise(None)
         prior_median = finite_expr.shift(1).rolling_median(window_size=252, min_samples=1)
         if "_symbol" in cleaned.columns and "_date" in cleaned.columns:
-            prior_median = prior_median.over("_symbol", order_by="_date")
+            prior_median = prior_median.over(["_market", "_symbol"] if "_market" in cleaned.columns else "_symbol", order_by="_date")
         feature_exprs.append(
             finite_expr
             .fill_null(prior_median)

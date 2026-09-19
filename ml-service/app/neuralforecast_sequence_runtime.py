@@ -15,6 +15,7 @@ import zipfile
 from bisect import bisect_right
 from datetime import datetime, timezone
 from pathlib import Path
+from threading import RLock
 from typing import Any
 
 import numpy as np
@@ -49,7 +50,7 @@ DEFAULT_SEQ_LEN = 512
 DEFAULT_PRED_LEN = 5
 DEFAULT_MAX_STEPS = 30
 DEFAULT_BATCH_SIZE = 128
-DEFAULT_MAX_SERIES = 1024
+DEFAULT_MAX_SERIES = 0
 DEFAULT_BATCH_COUNT = 5
 OOF_MIN_PANEL_OBSERVED_RATIO = 0.95
 _RUNTIME_CONFIGURED = False
@@ -236,6 +237,22 @@ def _coerce_open(row: dict[str, Any]) -> list[float]:
     return open_prices
 
 
+def _sequence_series_limit(max_series: int, available: int) -> int:
+    """Zero means all eligible series; a positive cap is research-only."""
+    if max_series < 0:
+        raise ValueError("sequence_max_series_must_be_nonnegative")
+    return available if max_series == 0 else max_series
+
+
+def _resolve_max_series(payload: dict[str, Any]) -> int:
+    value = payload.get("max_series")
+    if value is None:
+        value = (payload.get("data_slice") or {}).get("max_series")
+    result = int(DEFAULT_MAX_SERIES if value is None else value)
+    _sequence_series_limit(result, 0)
+    return result
+
+
 def _panel_train_eval_rows(
     records: list[dict[str, Any]],
     *,
@@ -255,7 +272,7 @@ def _panel_train_eval_rows(
     considered = 0
     for record in records:
         considered += 1
-        if len(eval_rows) >= max(1, max_series):
+        if len(eval_rows) >= _sequence_series_limit(max_series, len(records)):
             break
         close = _coerce_close(record)
         open_prices = _coerce_open(record)
@@ -316,7 +333,7 @@ def _panel_full_train_rows(
     rows: list[dict[str, Any]] = []
     valid_series = 0
     for record in records:
-        if valid_series >= max(1, max_series):
+        if valid_series >= _sequence_series_limit(max_series, len(records)):
             break
         close = _coerce_close(record)
         min_history = int(seq_len) + int(pred_len)
@@ -388,7 +405,7 @@ def _build_fixed_oof_panel(
             continue
         candidates.append((observed_ratio, symbol, record, values))
     candidates.sort(key=lambda item: (-item[0], item[1]))
-    selected = candidates[:max(1, max_series)]
+    selected = candidates[:_sequence_series_limit(max_series, len(candidates))]
     train_rows = [
         {"unique_id": symbol, "ds": idx, "y": float(value)}
         for _ratio, symbol, _record, values in selected
@@ -464,9 +481,11 @@ def _dense_oof_evaluation_records(
     records: list[dict[str, Any]],
     panel_records: list[dict[str, Any]],
 ) -> list[dict[str, Any]]:
-    # iTransformer encodes n_series in its learned projection. Its inference
-    # panel must therefore match the point-in-time training panel exactly.
-    return panel_records if model_name == "iTransformer" else records
+    # NeuralForecast 3.1.9 iTransformer projects each variate's temporal
+    # embedding; its learned weights do not fix the number or identity of stocks.
+    # Evaluation eligibility comes from the signal-date context, not membership
+    # in the training panel. The predictor keeps all variates in one batch.
+    return records
 
 
 def _train_dense_purged_oof(
@@ -604,7 +623,7 @@ def _train_dense_purged_oof(
         })
     panel_report["evaluation_universe_series"] = len(evaluation_records)
     panel_report["evaluation_prediction_rows"] = len(all_rows)
-    panel_report["training_series_cap_applied"] = len(panel_records) < len(records)
+    panel_report["training_series_cap_applied"] = len(panel_records) < panel_report["eligible_series"]
     if not asof_rows:
         raise ValueError("oof_sequence_dense_predictions_empty")
     non_overlapping_metrics = daily_metrics[::max(1, pred_len)]
@@ -904,6 +923,9 @@ def _prediction_column(pred_df: Any, model_name: str | None = None) -> str | Non
     return candidate_cols[0] if len(candidate_cols) == 1 else None
 
 
+_ITRANSFORMER_PREDICT_LOCK = RLock()
+
+
 def _predict_horizon_by_id_with_column(
     nf: Any,
     df: Any,
@@ -911,7 +933,23 @@ def _predict_horizon_by_id_with_column(
     horizon_idx: int,
     model_name: str | None = None,
 ) -> tuple[dict[str, float], str]:
-    pred_df = nf.predict(df=df).reset_index()
+    if model_name == "iTransformer":
+        # NF uses the fitted valid_batch_size when predicting. A larger current
+        # universe would otherwise split cross-stock attention by arbitrary
+        # loader batches. Serialize its existing mutable predict call and restore
+        # configuration even on error; model weights and identities are intact.
+        with _ITRANSFORMER_PREDICT_LOCK:
+            models = list(getattr(nf, "models", []))
+            previous = [(model, model.valid_batch_size) for model in models]
+            try:
+                for model, _ in previous:
+                    model.valid_batch_size = int(df["unique_id"].nunique())
+                pred_df = nf.predict(df=df).reset_index()
+            finally:
+                for model, value in previous:
+                    model.valid_batch_size = value
+    else:
+        pred_df = nf.predict(df=df).reset_index()
     pred_col = _prediction_column(pred_df, model_name)
     if not pred_col:
         columns = ",".join(str(col) for col in pred_df.columns)
@@ -1195,7 +1233,7 @@ def train_neuralforecast_sequence_artifact(payload: dict[str, Any], *, model_nam
                 or ((contract.get("model_profiles") or {}).get(model_name) or {}).get(
                     "required_effective_config", {}).get("runtime_device") != runtime_device):
             raise RuntimeError(f"monthly_training_gpu_required:{model_name}")
-    max_series = int(payload.get("max_series") or payload.get("data_slice", {}).get("max_series") or DEFAULT_MAX_SERIES)
+    max_series = _resolve_max_series(payload)
     training_options = _resolve_nf_training_options(payload, model_name)
     gcs_prefix = str(payload.get("gcs_prefix") or payload.get("data_slice", {}).get("gcs_prefix") or "universal").strip().rstrip("/")
     sequence_gcs_prefix = str(
@@ -1424,7 +1462,7 @@ def train_neuralforecast_sequence_artifact(payload: dict[str, Any], *, model_nam
     )
 
     lineage_dates = []
-    for row in dataset_source.records[:max_series]:
+    for row in dataset_source.records[:_sequence_series_limit(max_series, len(dataset_source.records))]:
         dates = row.get("dates") or []
         if dates:
             lineage_dates.extend(str(v) for v in dates[-pred_len:])

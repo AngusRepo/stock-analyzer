@@ -56,3 +56,33 @@ def test_sequence_manifest_checksum_matches_long_history_producer():
     }
 
     assert _sequence_manifest_checksum(manifest) == producer_manifest_checksum(manifest)
+
+@pytest.mark.parametrize("batch_count", [1, 10, 12, 20])
+def test_source_receipt_inventory_uses_same_order_for_multi_digit_batches(monkeypatch, batch_count):
+    import hashlib
+    import json
+    from app import canonical_adjusted_prep as prep
+    monkeypatch.setenv("STOCKVISION_SOURCE_SHA", "a" * 40)
+    objects = {f"features/prep/batch_{i}.npz": f"batch-{i}".encode() for i in range(batch_count)}
+    receipt = {
+        "schema_version": prep.SOURCE_RECEIPT_SCHEMA_VERSION,
+        "feature_semantic_version": prep.FEATURE_SEMANTIC_VERSION,
+        "feature_imputation_semantic": prep.FEATURE_IMPUTATION_SEMANTIC_VERSION,
+        "producer_source_sha": "a" * 40,
+        "status": "ready", "output_gcs_prefix": "features", "batch_count": batch_count,
+        "output_checksums": {k: hashlib.sha256(v).hexdigest() for k, v in objects.items()},
+    }
+    receipt["receipt_checksum"] = hashlib.sha256(json.dumps(receipt, sort_keys=True).encode()).hexdigest()
+    objects["features/prep/immutable_receipt.json"] = json.dumps(receipt).encode()
+    class Bucket:
+        def blob(self, name):
+            class Blob:
+                def exists(self): return name in objects
+                def download_as_text(self): return objects[name].decode()
+                def download_as_bytes(self): return objects[name]
+            return Blob()
+    assert prep._verified_source_receipt(Bucket(), "features", batch_count) == receipt
+    # Real missing and altered batches must still be rejected.
+    objects["features/prep/batch_0.npz"] = b"changed"
+    with pytest.raises(ValueError, match="checksum_mismatch"):
+        prep._verified_source_receipt(Bucket(), "features", batch_count)

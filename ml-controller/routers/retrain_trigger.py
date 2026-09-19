@@ -41,7 +41,7 @@ from services.active8_release_training_contract import (
     build_release_training_contract,
     normalize_release_execution_scope,
 )
-from services.training_calendar import monthly_revenue_available_date
+from services.training_calendar import monthly_revenue_available_date, normalize_daily_source_date, shareholding_available_date
 from services.training_policy import TrainingPolicy
 from services.modal_client import prep_universal_batch, train_universal, shap_audit
 
@@ -52,7 +52,7 @@ MARKET_D1_CLIENT = client_proxy_for_domain(D1DataDomain.MARKET)
 LEARNING_D1_CLIENT = client_proxy_for_domain(D1DataDomain.LEARNING)
 router = APIRouter(prefix="/retrain", tags=["retrain"])
 
-ACTIVE8_FEATURE_SEMANTIC_VERSION = "formal137-pit-rolling-rank-and-imputation-v2"
+ACTIVE8_FEATURE_SEMANTIC_VERSION = "formal137-pit-asof-source-quality-v3"
 ACTIVE8_FEATURE_IMPUTATION_SEMANTIC_VERSION = "prior_252_row_median_then_zero_v2"
 ACTIVE8_PREP_RECEIPT_SCHEMA_VERSION = "active8-immutable-feature-prep-receipt-v2"
 ACTIVE8_ADJUSTED_PREP_SCHEMA_VERSION = "active8-canonical-adjusted-prep-v3"
@@ -666,7 +666,7 @@ def _snapshot_per_stock_ts_map(
 
     for row in monthly_revenue_rows or []:
         sid = row.get("stock_id")
-        if sid not in stock_id_set or row.get("revenue_yoy") is None:
+        if sid not in stock_id_set:
             continue
         date_key = monthly_revenue_available_date(str(row.get("date") or ""))
         values = ensure_date(sid, date_key)
@@ -699,11 +699,13 @@ def _snapshot_per_stock_ts_map(
         if row.get("short_ratio") is not None:
             values["short_ratio"] = row["short_ratio"]
 
-    for row in shareholding_rows or []:
+    for row in sorted(shareholding_rows or [], key=lambda r: str(r.get('date') or '').replace('-', '')):
         sid = row.get("stock_id")
         if sid not in stock_id_set or not row.get("date") or row.get("retail_pct") is None:
             continue
-        ensure_date(sid, str(row.get("date")))["retail_pct"] = row.get("retail_pct")
+        available_date = shareholding_available_date(row)
+        if available_date is not None:
+            ensure_date(sid, available_date)["retail_pct"] = row.get("retail_pct")
 
     return per_stock_ts
 
@@ -924,6 +926,13 @@ def _load_training_maps_from_snapshot(
             "bb_upper": r.get("bb_upper"),
             "bb_lower": r.get("bb_lower"),
             "atr14": r.get("atr14"),
+            "plusDi14": r.get("plus_di14", r.get("plusDi14")),
+            "minusDi14": r.get("minus_di14", r.get("minusDi14")),
+            "adx14": r.get("adx14"),
+            "parabolicSar": r.get("parabolic_sar", r.get("parabolicSar")),
+            "cci20": r.get("cci20"),
+            "volumeWeightedRsi14": r.get("volume_weighted_rsi14"),
+            "volumeMomentumDivergence132710": r.get("volume_momentum_divergence_13_27_10"),
         },
     )
     chips_map = _group_rows_by_key(
@@ -940,6 +949,22 @@ def _load_training_maps_from_snapshot(
             "short_balance": r.get("short_balance"),
         },
     )
+    if component_uris.get("broker_flows"):
+        broker_rows = _read_gcs_parquet_rows(component_uris["broker_flows"])
+        by_symbol_date = {symbol: {row["date"]: row for row in rows} for symbol, rows in chips_map.items()}
+        seen = set()
+        for row in broker_rows:
+            symbol, day = str(row.get("symbol") or ""), str(row.get("date") or "")
+            available = str(row.get("as_of_date") or "")[:10]
+            if symbol not in symbol_set or not day or not available or available > day:
+                continue
+            if (symbol, day) in seen:
+                raise ValueError("feature_data_quality_duplicate_broker_keys")
+            seen.add((symbol, day))
+            target = by_symbol_date.setdefault(symbol, {}).setdefault(day, {"date": day})
+            for source, destination in (("net_shares", "broker_net_shares"), ("estimated_amount", "broker_estimated_amount"), ("concentration", "broker_concentration"), ("broker_count", "broker_count")):
+                target[destination] = row.get(source)
+        chips_map = {symbol: sorted(rows.values(), key=lambda row: row["date"])[-252:] for symbol, rows in by_symbol_date.items()}
     sentiment_map = _snapshot_sentiment_map(sentiment_rows, stock_ids) if sentiment_rows else {}
     per_stock_ts_map = _snapshot_per_stock_ts_map(
         monthly_revenue_rows=monthly_revenue_rows,
@@ -1503,8 +1528,8 @@ async def trigger_universal_retrain(
     rev_rows = []
     if "monthly_revenue" not in snapshot_components:
         rev_rows = MARKET_D1_CLIENT.query(
-            "SELECT stock_id, date, revenue_yoy FROM monthly_revenue "
-            "WHERE revenue_yoy IS NOT NULL ORDER BY stock_id, date ASC",
+            "SELECT stock_id, date, revenue_yoy, revenue_mom, revenue FROM monthly_revenue "
+            "ORDER BY stock_id, date ASC",
             timeout=120.0,
         )
         for r in (rev_rows or []):
@@ -1515,7 +1540,9 @@ async def trigger_universal_retrain(
             date_key = monthly_revenue_available_date(ym)
             if date_key not in per_stock_ts_map[sid]:
                 per_stock_ts_map[sid][date_key] = {}
-            per_stock_ts_map[sid][date_key]["revenue_yoy"] = r.get("revenue_yoy", 0)
+            for field in ("revenue_yoy", "revenue_mom", "revenue"):
+                if r.get(field) is not None:
+                    per_stock_ts_map[sid][date_key][field] = r[field]
 
     # margin_data: all stocks ? all dates (margin_balance, short_ratio)
     for ci in range(0, len(stock_ids), D1_CHUNK):
@@ -1544,7 +1571,7 @@ async def trigger_universal_retrain(
         # shareholding: retail_pct (same chunk)
         if "shareholding" not in snapshot_components:
             sh_rows = MARKET_D1_CLIENT.query(
-                f"SELECT stock_id, date, retail_pct "
+                f"SELECT stock_id, date, retail_pct, created_at "
                 f"FROM shareholding WHERE stock_id IN ({placeholders}) "
                 f"ORDER BY stock_id, date ASC",
                 list(chunk_ids),
@@ -1552,7 +1579,9 @@ async def trigger_universal_retrain(
             )
             for r in (sh_rows or []):
                 sid = r["stock_id"]
-                date_key = r["date"]
+                date_key = shareholding_available_date(r)
+                if date_key is None:
+                    continue
                 if sid not in per_stock_ts_map:
                     per_stock_ts_map[sid] = {}
                 if date_key not in per_stock_ts_map[sid]:
@@ -1780,6 +1809,7 @@ async def trigger_universal_retrain(
                 "shared_market_history": shared_history,
                 "per_stock_ts_map": batch_ps_ts,
                 "gcs_prefix": prep_output_gcs_prefix if req.prep_only else "universal",
+                "retain_unlabeled_features": req.prep_only,
             }
             if active_features:
                 prep_payload["active_features"] = active_features

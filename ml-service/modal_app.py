@@ -4023,7 +4023,7 @@ def feature_selection_per_window(payload: dict) -> dict:
         train_end_date (str, ISO date)
         gcs_prefix (str, e.g., "walk_forward/w0")
         max_rounds (int, default from FeatureSelectionPolicy window policy)
-        force_refresh (bool, default False) - if False and pool already exists, skip
+        force_refresh (bool, legacy) - accepted; exact input evidence cache owns reuse
     """
     _setup_env()
     import time
@@ -4034,34 +4034,11 @@ def feature_selection_per_window(payload: dict) -> dict:
     train_end_date = payload["train_end_date"]
     gcs_prefix = payload["gcs_prefix"].rstrip("/")
     prep_gcs_prefix = str(payload.get("prep_gcs_prefix") or "universal").strip().rstrip("/")
-    force = bool(payload.get("force_refresh", False))
     from app.training_policy import FeatureSelectionPolicy, build_feature_selection_run_kwargs
     selection_params = FeatureSelectionPolicy.from_env().to_window_selection_params(payload)
 
-    # Idempotency: skip if pool already exists for this window
-    if not force:
-        try:
-            from google.cloud import storage
-            bucket_name = _get_gcs_bucket_name()
-            if not bucket_name:
-                raise RuntimeError("GCS bucket not configured")
-            bucket = storage.Client().bucket(bucket_name)
-            existing = bucket.blob(f"{gcs_prefix}/feature_pool.json")
-            if existing.exists():
-                import json as _json
-                pool = _json.loads(existing.download_as_text())
-                active = pool.get("tree_active") or pool.get("active", [])
-                print(f"[FS-Window] w{window_id} skip: pool exists ({len(active)} tree_active)")
-                return {
-                    "skipped": True,
-                    "window_id": window_id,
-                    "gcs_prefix": gcs_prefix,
-                    "tree_active_count": len(active),
-                    "elapsed_s": round(time.time() - t0, 1),
-                }
-        except Exception as e:
-            print(f"[FS-Window] w{window_id} idempotency check failed ({e}) -> proceeding")
-
+    # The native evidence cache verifies prep bytes, cutoff and policy. A pool
+    # merely existing at this path cannot prove label availability or lineage.
     try:
         result = run_feature_selection_pipeline(
             **build_feature_selection_run_kwargs(selection_params),

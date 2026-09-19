@@ -32,7 +32,7 @@ from app.model_store import _get_bucket
 from app.purged_cv import dynamic_embargo_days
 
 
-FEATURE_SELECTION_CACHE_SCHEMA_VERSION = "feature-selection-cache-v1"
+FEATURE_SELECTION_CACHE_SCHEMA_VERSION = "feature-selection-cache-v2"
 FEATURE_SELECTION_STAGE_CHECKPOINT_SCHEMA_VERSION = "feature-selection-stage-checkpoint-v1"
 FEATURE_SELECTION_STAGE_LOCK_SCHEMA_VERSION = "feature-selection-stage-lock-v1"
 FEATURE_SELECTION_ALGORITHM_EVIDENCE_SCHEMA_VERSION = "feature-selection-algorithm-evidence-v1"
@@ -1943,6 +1943,40 @@ def build_feature_selection_algorithm_evidence(
     }
 
 
+def _load_selection_prep(prep_blobs, *, train_end_date: str | None):
+    """Filter each batch by actual label availability before concatenating it."""
+    parts = []
+    evidence = {"semantic": "signal_date_and_label_known_date_v1", "cutoff": train_end_date,
+                "source_rows": 0, "retained_rows": 0, "unavailable_label_rows": 0}
+    for blob in prep_blobs:
+        with io.BytesIO() as buf:
+            blob.download_to_file(buf)
+            buf.seek(0)
+            with np.load(buf, allow_pickle=True) as data:
+                dates = data["dates"].astype(str)
+                keep = np.ones(len(dates), dtype=bool)
+                evidence["source_rows"] += len(dates)
+                if train_end_date is not None:
+                    if "label_known_dates" not in data.files:
+                        raise ValueError("feature_selection_label_known_dates_required")
+                    known = data["label_known_dates"].astype(str)
+                    if known.shape != dates.shape:
+                        raise ValueError("feature_selection_label_known_dates_shape_mismatch")
+                    signal_ready = dates <= train_end_date
+                    label_ready = (known != "") & (known > dates) & (known <= train_end_date)
+                    evidence["unavailable_label_rows"] += int((signal_ready & ~label_ready).sum())
+                    keep = signal_ready & label_ready
+                evidence["retained_rows"] += int(keep.sum())
+                parts.append((data["X"][keep], data["y"][keep], dates[keep],
+                              data["sectors"][keep] if "sectors" in data.files else None))
+    if not parts or not evidence["retained_rows"]:
+        raise ValueError("feature_selection_no_available_samples")
+    return (np.vstack([p[0] for p in parts]), np.concatenate([p[1] for p in parts]),
+            np.concatenate([p[2] for p in parts]),
+            np.concatenate([p[3] for p in parts]) if all(p[3] is not None for p in parts) else None,
+            evidence)
+
+
 def run_feature_selection_pipeline(
     max_rounds: int | None = None,
     alpha: float | None = None,
@@ -1960,7 +1994,7 @@ def run_feature_selection_pipeline(
     Reads training data from GCS prep npz (same format as retrain).
 
     Walk-forward mode (train_end_date + gcs_prefix set):
-      - Filter prep data to dates ≤ train_end_date BEFORE any computation
+      - Filter signal dates and actual label_known_dates ≤ train_end_date BEFORE computation
         → no look-ahead bias for that window
       - Write per-window pool to {gcs_prefix}/feature_pool.json (no monthly snapshot)
     """
@@ -2047,44 +2081,10 @@ def run_feature_selection_pipeline(
         return cached
     checkpoint_stats: dict[str, dict] = {}
 
-    all_X, all_y, all_dates, all_sectors = [], [], [], []
-    sector_blob_count = 0
-    for blob in prep_blobs:
-        buf = io.BytesIO()
-        blob.download_to_file(buf)
-        buf.seek(0)
-        data = np.load(buf, allow_pickle=True)
-        all_X.append(data["X"])
-        all_y.append(data["y"])
-        all_dates.append(data["dates"])
-        if "sectors" in data.files:
-            all_sectors.append(data["sectors"])
-            sector_blob_count += 1
-    X = np.vstack(all_X)
-    y = np.concatenate(all_y)
-    dates = np.concatenate(all_dates)
-    sectors = np.concatenate(all_sectors) if sector_blob_count == len(prep_blobs) else None
-
-    print(f"[FeatureSelection] Loaded {len(X)} samples, {len(feature_names)} features")
-
-    # ── 1b. Walk-forward date-range filter (zero look-ahead) ─────────────────
-    # Apply BEFORE nan_to_num + cluster + signal gate so all downstream stages
-    # only see data ≤ train_end_date. target_rank in prep is per-date cross-
-    # sectional (compute_cross_sectional_rank, features/__init__.py:93) so
-    # post-hoc date filtering preserves rank validity for retained dates.
-    if train_end_date is not None:
-        dates_str = np.array([str(d) for d in dates])
-        wf_mask = dates_str <= train_end_date
-        kept = int(wf_mask.sum())
-        if kept == 0:
-            return {"error": f"walk_forward_filter: no samples ≤ {train_end_date}"}
-        print(f"[FeatureSelection] WF filter: dates ≤ {train_end_date} → "
-              f"{kept}/{len(X)} samples retained")
-        X = X[wf_mask]
-        y = y[wf_mask]
-        dates = dates[wf_mask]
-        if sectors is not None:
-            sectors = sectors[wf_mask]
+    X, y, dates, sectors, input_availability = _load_selection_prep(
+        prep_blobs, train_end_date=train_end_date
+    )
+    print(f'[FeatureSelection] Available {len(X)}/{input_availability["source_rows"]} samples, {len(feature_names)} features')
 
     X = np.nan_to_num(X, nan=0.0, posinf=0.0, neginf=0.0)
 
@@ -2121,6 +2121,7 @@ def run_feature_selection_pipeline(
     sectors_train = sectors[train_mask] if sectors is not None else None
 
     split_evidence.update({
+        "input_availability": input_availability,
         "train_samples": int(len(X_train)),
         "val_samples": int(len(X_val)),
         "test_samples": int(len(X_test)),

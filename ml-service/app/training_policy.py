@@ -750,6 +750,10 @@ def validate_release_training_dataset_binding(
         raise ValueError("release_training_contract_schema_mismatch")
     if str(contract.get("contract_checksum") or "") != _contract_payload_checksum(unsigned_contract):
         raise ValueError("release_training_contract_checksum_mismatch")
+    if contract.get("model_profile_schema_version") not in (
+        "active8-release-model-profiles-v1", "active8-release-model-profiles-v2"
+    ):
+        raise ValueError("release_training_contract_profile_schema_mismatch")
     snapshot = dict(dataset_snapshot or {})
     if not snapshot:
         raise ValueError("release_training_dataset_snapshot_missing")
@@ -809,8 +813,6 @@ def build_model_training_config_attestation(
     config = _canonical_contract_value(dict(effective_config or {}))
     if not config:
         raise ValueError(f"monthly_training_effective_config_missing:{model}")
-    if contract.get("model_profile_schema_version") != "active8-release-model-profiles-v1":
-        raise ValueError("release_training_contract_profile_schema_mismatch")
     profile = dict((contract.get("model_profiles") or {}).get(model) or {})
     if not profile:
         raise ValueError(f"release_training_model_profile_missing:{model}")

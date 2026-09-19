@@ -573,6 +573,7 @@ def test_full_fit_base_payload_preserves_exact_dataset_and_feature_lineage():
 def _release_binding_contract(snapshot: dict) -> dict:
     contract = {
         "schema_version": "active8-release-training-contract-v2",
+        "model_profile_schema_version": "active8-release-model-profiles-v2",
         "producer_source_sha": os.environ["STOCKVISION_SOURCE_SHA"],
         "dataset_snapshot_id": snapshot["snapshot_id"],
         "dataset_snapshot_business_date": snapshot["business_date"],

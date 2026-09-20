@@ -242,7 +242,8 @@ def run(recommendations, policy, *, return_history, reward_ledger=(), evidence_s
     result = allocate(symbols=symbols,expected_gross=gross,covariance=covariance,
                       current_weights=current,capital_available=capital,name_caps={s:min(v,constraints['name_cap']) for s,v in (account.get('name_caps') or {}).items()},
                       locked_symbols=locked,forbidden_buys=forbidden,exposure_groups=groups,turnover_pressure=pressure,**constraints)
-    attribution=full_l3_attribution(by_symbol,predictions,outputs,feature_rows,unavailable=unavailable)
+    attribution=full_l3_attribution(by_symbol,predictions,outputs,feature_rows,
+        model_feature_names=bundle['model']['recipe']['names'],unavailable=unavailable)
     plan = {'schema_version':PLAN_SCHEMA,'owner':OWNER,'signal_date':signal_date,
             'execution_scope':'private_research' if research else 'paper',
             'account_id':1,'account_anchor':account.get('account_anchor'),'parent_plan_id':account.get('active_plan_id'),'account_checksum':digest(account),'policy_identity':policy_identity,

@@ -1,7 +1,7 @@
 """Preserve native sparse controls and full L3 evidence at the new boundary."""
 from copy import deepcopy
 from collections import defaultdict
-from services.l4_distribution import finite,digest,FEATURE_NAMES
+from services.l4_distribution import finite,digest
 from services.similarity_evidence import similarity_components
 
 UNKNOWN = {'','UNKNOWN','UNCLASSIFIED','NONE','NULL'}
@@ -48,12 +48,12 @@ def risk_groups(symbols,history,rows,holdings,constraints, *, dated_covariance_p
     return knobs,groups,pressure,horizon,evidence
 
 
-def full_l3_attribution(rows,predictions,outputs,feature_rows,*,unavailable=None):
+def full_l3_attribution(rows,predictions,outputs,feature_rows,*,model_feature_names,unavailable=None):
     """Preserve full upstream packets; modeling and audit roles stay explicit."""
     ordered=sorted(rows)
     feature_by_symbol={row['symbol']:row['features'] for row in feature_rows}
     packet={'schema_version':'l4-full-l3-input-attribution-v1',
-        'model_feature_names':FEATURE_NAMES,'model_feature_count':len(FEATURE_NAMES),
+        'model_feature_names':list(model_feature_names),'model_feature_count':len(model_feature_names),
         'unmodeled_fields_role':'retained_for_audit_no_implicit_extra_alpha',
         'candidates':{s:{'native_prediction':deepcopy(predictions[s]),
             'model_features':deepcopy(feature_by_symbol.get(s)),

@@ -84,3 +84,14 @@ def test_adaptive_quality_uses_declared_timeXer_without_legacy_double_count():
     assert result['model_quality_30d']==.8 and result['sample_count_30d']==20
     assert result['ignored_non_active_models']==['DLinear']
     assert compute_pf_quality_mults(rows,rows,alpha_model_order=list(TIMEXER_MODELS))=={'TimeXer':1.2}
+
+
+@pytest.mark.parametrize('order', [LEGACY_MODELS, TIMEXER_MODELS])
+def test_allocation_attribution_names_follow_exact_model_even_with_empty_modeled_pool(order):
+    from services.l4_allocation_contract import full_l3_attribution
+    names = l4.feature_names(order)
+    packet = full_l3_attribution({}, {}, {}, [], model_feature_names=names)
+    assert packet['model_feature_names'] == names
+    assert packet['model_feature_count'] == 30
+    assert any(name.startswith('TimeXer_') for name in packet['model_feature_names']) == ('TimeXer' in order)
+    assert any(name.startswith('DLinear_') for name in packet['model_feature_names']) == ('DLinear' in order)

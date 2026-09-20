@@ -507,7 +507,10 @@ def _retired_test_monthly_registry_backfill_appends_receipt_after_exact_readback
     assert persisted["production_effect"] is False
 
 
-def test_oof_full_fit_followup_resumes_checksum_bound_lifecycle(monkeypatch):
+@pytest.mark.parametrize("profile", ["active8-release-model-profiles-v3",
+    "active8-release-model-profiles-v4-timexer-price", "active8-release-model-profiles-v4-timexer-exo137"])
+@pytest.mark.parametrize("cadence", ["daily", "weekly", "monthly"])
+def test_oof_full_fit_followup_resumes_checksum_bound_lifecycle(monkeypatch, profile, cadence):
     from routers import walk_forward
     from services import walk_forward_retrain
     import hashlib
@@ -515,6 +518,7 @@ def test_oof_full_fit_followup_resumes_checksum_bound_lifecycle(monkeypatch):
     unsigned = {
         "cohort_id": "cohort-resume",
         "schema_version": "active8-oof-cohort-manifest-v3",
+        "model_profile_schema_version": profile,
     }
     checksum = hashlib.sha256(
         json.dumps(unsigned, sort_keys=True).encode("utf-8")
@@ -543,12 +547,16 @@ def test_oof_full_fit_followup_resumes_checksum_bound_lifecycle(monkeypatch):
         "cohort_id": "cohort-resume",
         "source_manifest_checksum": checksum,
         "knowledge_cutoff_date": "2026-07-17",
-        "cadence": "weekly",
+        "cadence": cadence,
     }))
 
     assert result["status"] == "spawned"
     assert calls[0].expected_cohort_id == "cohort-resume"
-    assert calls[0].cadence == "weekly"
+    assert calls[0].cadence == cadence
+    assert calls[0].model_profile_schema_version == profile
+    assert calls[0].continuation_only is True
+    assert calls[0].dispatch_full_fit is True
+    assert calls[0].promote is (cadence == "daily")
 
 
 def test_oof_full_fit_followup_rejects_manifest_identity_mismatch(monkeypatch):
@@ -572,3 +580,26 @@ def test_oof_full_fit_followup_rejects_manifest_identity_mismatch(monkeypatch):
             "knowledge_cutoff_date": "2026-07-17",
             "cadence": "weekly",
         }))
+
+@pytest.mark.parametrize("slot", ["DLinear", "TimeXer"])
+def test_completion_rebuild_preserves_exact_replacement_roster(monkeypatch, slot):
+    from services.alpha_model_roster import LEGACY_MODELS
+    order = tuple(slot if name == "DLinear" else name for name in LEGACY_MODELS)
+    observed = []
+    def reconcile(**kwargs):
+        observed.append(kwargs["raw_receipts"])
+        return {"status": "complete", "contract_checksum": "c" * 64, "models_completed": 8}
+    monkeypatch.setattr(followup_router, "reconcile_release_artifact_receipts_from_immutable_metadata", reconcile)
+    payload = {"candidate_type": "oof_full_fit_release", "run_date": "2026-09-18",
+        "oof_lifecycle_resume": {"schema_version": "active8-oof-lifecycle-resume-v1"},
+        "stages": {"train": {"artifact_registrations": {name: {"model": name} for name in order[:5]}},
+            "artifact_lifecycle": {"results": {name: {"model": name} for name in order[5:]}},
+            "release_training_contract": {"status": "verified"}}}
+    result = followup_router._reconcile_release_completion_payload(payload, dataset_snapshot={})
+    assert result["models_completed"] == 8
+    assert tuple(observed[0]) == order
+    assert all(row["model"] == name for name, row in observed[0].items())
+    payload["stages"].pop("release_model_completion")
+    payload["stages"]["train"]["artifact_registrations"]["DLinear" if slot == "TimeXer" else "TimeXer"] = {"model": "mixed"}
+    with pytest.raises(ValueError, match="mixed_replacement_slot"):
+        followup_router._reconcile_release_completion_payload(payload, dataset_snapshot={})

@@ -25,7 +25,6 @@ from pydantic import BaseModel, Field
 
 from services import d1_client, retrain_lock
 from services.active8_release_training_contract import (
-    ACTIVE8_MODEL_NAMES,
     reconcile_release_artifact_receipts_from_immutable_metadata,
 )
 from services.d1_domain_client import D1DataDomain, client_proxy_for_domain
@@ -80,11 +79,16 @@ async def _resume_oof_full_fit_lifecycle(context: dict[str, Any]) -> dict[str, A
     ):
         raise ValueError("oof_lifecycle_resume_manifest_identity_mismatch")
 
+    from services.active8_release_model_profiles import MODEL_PROFILE_SCHEMA_VERSION
+
     result = await run_walk_forward_oof_lifecycle(OofLifecycleRequest(
+        model_profile_schema_version=manifest.get("model_profile_schema_version", MODEL_PROFILE_SCHEMA_VERSION),
         cadence=cadence,
         end_date=cutoff,
         dry_run=False,
-        promote=True,
+        promote=cadence == "daily",
+        dispatch_full_fit=True,
+        continuation_only=True,
         expected_cohort_id=cohort_id,
     ))
     if str(result.get("status") or "") not in {
@@ -492,9 +496,13 @@ def _reconcile_release_completion_payload(
         if isinstance(lifecycle.get("results"), dict)
         else {}
     )
+    from services.alpha_model_roster import SUPPORTED_MODELS, model_order
+
+    names = (set(registrations) | set(lifecycle_results)) & SUPPORTED_MODELS
+    order = model_order(names, complete=True)
     raw_receipts = {
         model: registrations.get(model) or lifecycle_results.get(model) or {}
-        for model in ACTIVE8_MODEL_NAMES
+        for model in order
     }
     completion = reconcile_release_artifact_receipts_from_immutable_metadata(
         contract_stage=(

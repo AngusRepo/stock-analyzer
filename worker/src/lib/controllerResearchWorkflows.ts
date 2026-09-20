@@ -1,4 +1,5 @@
 import { publishedAlphaModelOrder } from './alphaModelRoster'
+import { ACTIVE8_OOF_CONTINUATION_MAX_ATTEMPTS } from './active8OofContinuationPolicy'
 import type { Bindings } from '../types'
 import { controllerFetch, controllerJson, controllerPostJson } from './controllerClient'
 import { invalidateModelPoolReadCache } from './modelPoolReadCache'
@@ -475,7 +476,7 @@ export async function runActive8OofLifecycle(
       // Daily uses the same input-deduplicated factory when a mature batch is ready.
       dispatch_full_fit: true,
       expected_cohort_id: options.expectedCohortId,
-      continuation_attempt: Math.max(0, Math.min(12, Number(options.continuationAttempt ?? 0))),
+      continuation_attempt: Math.max(0, Math.min(ACTIVE8_OOF_CONTINUATION_MAX_ATTEMPTS, Number(options.continuationAttempt ?? 0))),
       continuation_only: options.continuationOnly === true,
       scheduler_ticket_id: options.schedulerTicketId,
       scheduler_run_id: options.schedulerRunId,

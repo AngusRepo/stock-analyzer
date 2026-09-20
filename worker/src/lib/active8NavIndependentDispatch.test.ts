@@ -64,3 +64,21 @@ test('incomplete continuation identity must fail before dispatching a job', asyn
     }
   } finally { globalThis.fetch = previousFetch }
 })
+
+
+test('long-running exact cohort preserves its attempt beyond the former twelve-poll cap', async () => {
+  const previousFetch = globalThis.fetch
+  let request: any
+  globalThis.fetch = async (_input, init) => {
+    request = JSON.parse(String(init?.body))
+    return Response.json({ status: 'spawned', promoted: false })
+  }
+  try {
+    await runActive8OofLifecycle({ ML_CONTROLLER_URL: 'https://isolated-controller.invalid' } as Bindings,
+      '2026-09-18', 'weekly', { continuationAttempt: 13, continuationOnly: true, expectedCohortId: 'immutable-B' })
+    assert.equal(request.continuation_attempt, 13)
+    assert.equal(request.expected_cohort_id, 'immutable-B')
+    assert.equal(request.continuation_only, true)
+    assert.equal(request.promote, false)
+  } finally { globalThis.fetch = previousFetch }
+})

@@ -259,3 +259,22 @@ test('an old-root child callback cannot reconcile a newer physical root', async 
   assert.deepEqual(await f.row(newer.ticket.ticket_id), before)
   assert.equal((await f.row(f.root.ticket_id)).status, 'triggered')
 }))
+
+
+test('healthy long compute callback queues a delayed exact continuation without closing its root', async () => fixture(async f => {
+  const queued: any[] = []
+  f.env.UPDATE_QUEUE.send = async (message: any, options: any) => { queued.push({ message, options }) }
+  const response = await adminControlRoutes.request('https://local.test/api/admin/cron-callback', {
+    method: 'POST', headers: { Authorization: 'Bearer isolated-nav-token', 'Content-Type': 'application/json' },
+    body: JSON.stringify({ task: 'active8-oof-daily', status: 'triggered', run_date: f.day,
+      run_id: f.callbackRunId, attempt_id: 'running-compute', scheduler_ticket_id: f.child.ticket_id,
+      scheduler_run_id: f.child.run_id, metadata: { cadence: 'daily', lifecycle_status: 'pending',
+        cohort_id: 'immutable-B', continuation_attempt: 12, continuation_max_attempts: 64 } }),
+  }, f.env)
+  assert.equal(response.status, 200)
+  assert.equal(queued.length, 1)
+  assert.equal(queued[0].message.oofContinuationAttempt, 13)
+  assert.equal(queued[0].message.oofExpectedCohortId, 'immutable-B')
+  assert.equal(queued[0].options.delaySeconds, 1800)
+  assert.notEqual((await f.row(f.root.ticket_id)).status, 'success')
+}))

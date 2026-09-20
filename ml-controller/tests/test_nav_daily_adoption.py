@@ -12,6 +12,14 @@ import oof_materialize_job_main as job
 from test_nav_oof_job_independence import isolated_job, environment, local_policy
 
 
+@pytest.fixture
+def legacy_trading_config(monkeypatch):
+    from types import SimpleNamespace
+    from services import trading_config_loader
+    monkeypatch.setattr(trading_config_loader, 'load_merged_trading_config_with_contract',
+        lambda: SimpleNamespace(config={}))
+
+
 def entry(owner='l4_alpha_ev', state='shadowing', decision='PASS', day='2026-08-25', token='a'):
     checksum = token * 64
     return {'registry_state': state, 'payload': {
@@ -64,7 +72,7 @@ def acknowledged(payload, error=None):
         'config_projection_error': error} for owner, p in payload.items()}}
 
 
-def test_daily_actual_adoption_finishes_before_failed_oof_and_is_not_repeated(monkeypatch):
+def test_daily_actual_adoption_finishes_before_failed_oof_and_is_not_repeated(monkeypatch, legacy_trading_config):
     from services import worker_config_client
     events = []
     monkeypatch.setattr(job, '_execute_daily_nav', lambda **kw: {
@@ -106,7 +114,7 @@ def test_real_hold_daily_gate_does_not_dispatch_or_leave_late_promotion(isolated
 
 
 @pytest.mark.parametrize('failure', ['projection', 'transport', 'opb'])
-def test_daily_adoption_failures_use_existing_continuation_without_hiding_healthy_oof(monkeypatch, failure):
+def test_daily_adoption_failures_use_existing_continuation_without_hiding_healthy_oof(monkeypatch, failure, legacy_trading_config):
     from services import worker_config_client
     monkeypatch.setattr(job, '_execute_daily_nav', lambda **kw: {
         'status': 'up_to_date', 'as_of_date': '2026-09-09', '_adoption_candidates':

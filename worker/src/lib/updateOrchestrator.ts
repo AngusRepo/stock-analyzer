@@ -1,3 +1,4 @@
+import { ACTIVE8_OOF_CONTINUATION_MAX_ATTEMPTS, active8OofContinuationDelay } from './active8OofContinuationPolicy'
 import type { Bindings, UpdateQueueMsg } from '../types'
 import { databaseForDataDomain } from './dataDomainRegistry'
 import { loadActiveCoreStockIdentities, loadCoreStockIdentitiesBySymbols } from './stockIdentityMarketBridge'
@@ -77,8 +78,6 @@ export function s12ReplayLifecycleMutationAllowed(
 const S12_REPLAY_LEASE_RETRY_BASE_DELAY_SECONDS = 60
 const S12_REPLAY_LEASE_RETRY_MAX_DELAY_SECONDS = 180
 const S12_REPLAY_LEASE_RETRY_MAX_ATTEMPTS = 60
-const ACTIVE8_OOF_CONTINUATION_MAX_ATTEMPTS = 12
-const ACTIVE8_OOF_CONTINUATION_DELAY_SECONDS = 300
 
 export function planActive8OofContinuationCollisionRetry(
   summary: string,
@@ -100,7 +99,7 @@ export function planActive8OofContinuationCollisionRetry(
   }
   return {
     attempt: currentAttempt + 1,
-    delaySeconds: ACTIVE8_OOF_CONTINUATION_DELAY_SECONDS,
+    delaySeconds: active8OofContinuationDelay(currentAttempt + 1),
   }
 }
 

@@ -9,13 +9,16 @@ import time
 import uuid
 from typing import Any
 
+from services.oof_continuation import COMPUTE_WAIT_MAX_ATTEMPTS, continuation_limit
+
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s %(levelname)s [%(name)s] %(message)s",
 )
 logger = logging.getLogger("oof_materialize_job")
 
-OOF_CONTINUATION_MAX_ATTEMPTS = 12
+
+OOF_CONTINUATION_MAX_ATTEMPTS = COMPUTE_WAIT_MAX_ATTEMPTS
 
 
 async def _callback_worker(payload: dict[str, Any]) -> None:
@@ -639,8 +642,9 @@ async def _run() -> int:
                 continuation_only=continuation_only,
             )
             status = str(result.get("status") or "").lower()
+            continuation_max_attempts = continuation_limit(result)
             if result.get("dependency_retry_required"):
-                if continuation_attempt >= OOF_CONTINUATION_MAX_ATTEMPTS:
+                if continuation_attempt >= continuation_max_attempts:
                     reason = _dependency_retry_reason(result)
                     raise RuntimeError(
                         "oof_dependency_continuation_exhausted:"
@@ -661,7 +665,7 @@ async def _run() -> int:
                     )
                 callback_status = "success"
             elif status in {"pending", "spawned"} and cadence in {"daily", "weekly", "monthly"}:
-                if continuation_attempt >= OOF_CONTINUATION_MAX_ATTEMPTS:
+                if continuation_attempt >= continuation_max_attempts:
                     raise RuntimeError(
                         "oof_cohort_continuation_exhausted:"
                         f"status={status}:attempt={continuation_attempt}"
@@ -698,7 +702,7 @@ async def _run() -> int:
             "cohort_id": result.get("cohort_id"),
             "mode": mode,
             "continuation_attempt": continuation_attempt,
-            "continuation_max_attempts": OOF_CONTINUATION_MAX_ATTEMPTS,
+            "continuation_max_attempts": continuation_limit(result),
             "continuation_only": continuation_only,
             "prep_lifecycle": result.get("prep_lifecycle") if isinstance(result.get("prep_lifecycle"), dict) else {},
         }

@@ -5,7 +5,7 @@ const collision = planActive8OofContinuationCollisionRetry(
   'active8_oof_lifecycle status=pending cadence=monthly cohort=none promoted=false reason=materialization_job_active',
   2,
 )
-assert.deepEqual(collision, { attempt: 3, delaySeconds: 300 })
+assert.deepEqual(collision, { attempt: 3, delaySeconds: 1200 })
 
 assert.equal(
   planActive8OofContinuationCollisionRetry(
@@ -25,9 +25,9 @@ assert.equal(
 assert.throws(
   () => planActive8OofContinuationCollisionRetry(
     'active8_oof_lifecycle status=pending cadence=monthly reason=materialization_job_active',
-    12,
+    64,
   ),
-  /active8_oof_continuation_collision_exhausted:12/,
+  /active8_oof_continuation_collision_exhausted:64/,
 )
 
 console.log('active8 OOF continuation collision tests passed')

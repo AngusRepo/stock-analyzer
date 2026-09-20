@@ -83,7 +83,7 @@ assert(adminControlRoutes.includes('oofExpectedCohortId: expectedCohortId'), 'co
 assert(adminControlRoutes.includes('schedulerTicketId: callbackSchedulerTicketId || undefined'), 'triggered callback continuations must retain their exact D1 ticket')
 assert(adminControlRoutes.includes('schedulerRunId: callbackSchedulerRunId || undefined'), 'triggered callback continuations must retain the immutable scheduler run')
 assert(adminControlRoutes.includes('active8_scheduler_ticket_settlement_failed'), 'terminal Active8 callback must fail retryably if exact-ticket CAS settlement fails')
-assert(adminControlRoutes.includes('delaySeconds: 300'), 'continuation retries must be delayed instead of hot-looping')
+assert(adminControlRoutes.includes('active8OofContinuationDelay(continuationAttempt + 1)'), 'continuation retries must use bounded backoff instead of hot-looping')
 assert(updateOrchestrator.includes("if (msg.type === 'active8_oof_continuation')"), 'update queue must consume the durable OOF continuation')
 assert(updateOrchestrator.includes('continuationOnly: Boolean(expectedCohortId)'), 'exact-cohort continuation must be materialization-only while pre-cohort daily prep remains safely retryable')
 assert(updateOrchestrator.includes('schedulerTicketId: msg.schedulerTicketId'), 'durable continuation must pass the exact scheduler ticket back to the controller')

@@ -21,6 +21,7 @@ from fastapi import APIRouter, HTTPException, Response
 from pydantic import BaseModel, Field
 
 from services.d1_domain_client import D1DataDomain, client_proxy_for_domain
+from services.oof_continuation import COMPUTE_WAIT_MAX_ATTEMPTS
 
 logger = logging.getLogger("walk_forward")
 OPS_D1_CLIENT = client_proxy_for_domain(D1DataDomain.OPS)
@@ -2752,7 +2753,7 @@ class OofLifecycleRequest(BaseModel):
     promote: bool = True
     dispatch_full_fit: bool = False
     expected_cohort_id: str | None = None
-    continuation_attempt: int = Field(default=0, ge=0, le=24)
+    continuation_attempt: int = Field(default=0, ge=0, le=COMPUTE_WAIT_MAX_ATTEMPTS)
     continuation_only: bool = False
     scheduler_ticket_id: str | None = None
     scheduler_run_id: str | None = None
@@ -3638,10 +3639,16 @@ async def run_walk_forward_oof_lifecycle(req: OofLifecycleRequest):
             )
         except ValueError as exc:
             if str(exc) in {"oof_exact_cohort_manifest_missing", "oof_exact_cohort_manifest_not_ready"}:
-                return {"status": "pending", "reason": str(exc), "cadence": cadence,
-                        "cohort_id": req.expected_cohort_id, "training_dispatched": False,
-                        "promotion_attempted": False}
-            raise HTTPException(status_code=422, detail=str(exc)) from exc
+                from services.oof_continuation import probe_exact_cohort_wait
+                compute = await probe_exact_cohort_wait(bucket, req.expected_cohort_id)
+                if compute.get('manifest_published'):
+                    exact_path, exact_manifest, exact_producer_source_sha = _exact_ready_oof_manifest(bucket, req.expected_cohort_id)
+                else:
+                    return {"status": "pending", "reason": str(exc), "cadence": cadence,
+                            "cohort_id": req.expected_cohort_id, "training_dispatched": False,
+                            "promotion_attempted": False, **compute}
+            else:
+                raise HTTPException(status_code=422, detail=str(exc)) from exc
         parent = (exact_path, exact_manifest)
         # An exact continuation keeps its immutable cohort's recipe.
         req.model_profile_schema_version = exact_manifest.get("model_profile_schema_version", MODEL_PROFILE_SCHEMA_VERSION)
@@ -3849,15 +3856,9 @@ async def run_walk_forward_oof_lifecycle(req: OofLifecycleRequest):
         else:
             if dispatch_blob.exists():
                 dispatch = json.loads(dispatch_blob.download_as_text())
-                spawned_at = str(dispatch.get("spawned_at") or "")
-                try:
-                    age_seconds = (
-                        datetime.now(timezone.utc)
-                        - datetime.fromisoformat(spawned_at.replace("Z", "+00:00"))
-                    ).total_seconds()
-                except ValueError:
-                    age_seconds = 24 * 3600
-                if dispatch.get("status") == "spawned" and age_seconds < 6 * 3600:
+                # Provider liveness, not age, owns duplicate-training protection.
+                # The OOF function may run eight hours, plus time in its queue.
+                if dispatch.get("status") == "spawned":
                     from services import modal_client
 
                     call_state = await modal_client.probe_modal_function_call(
@@ -3867,6 +3868,7 @@ async def run_walk_forward_oof_lifecycle(req: OofLifecycleRequest):
                         return {
                             "status": "pending",
                             "reason": "cohort_orchestrator_active",
+                            "external_compute_pending": True,
                             "cadence": cadence,
                             "cohort_id": cohort_id,
                             "function_call_id": dispatch.get("function_call_id"),

@@ -1,4 +1,5 @@
 import { Hono } from 'hono'
+import { ACTIVE8_OOF_CONTINUATION_MAX_ATTEMPTS, active8OofContinuationDelay } from '../lib/active8OofContinuationPolicy'
 import type { Bindings, Variables } from '../types'
 import { hasServiceToken, requireAdminOrServiceToken } from '../lib/auth'
 import { databaseForDataDomain } from '../lib/dataDomainRegistry'
@@ -693,7 +694,8 @@ async function handleSchedulerCallback(c: any) {
     }
     const cadence = String(callbackMetadata?.cadence ?? '').toLowerCase()
     const continuationAttempt = Math.max(0, Number(callbackMetadata?.continuation_attempt ?? 0))
-    const continuationMaxAttempts = Math.max(1, Number(callbackMetadata?.continuation_max_attempts ?? 12))
+    const continuationMaxAttempts = Math.min(ACTIVE8_OOF_CONTINUATION_MAX_ATTEMPTS,
+      Math.max(1, Number(callbackMetadata?.continuation_max_attempts ?? 12)))
     if (body.task === 'active8-oof-daily' && body.status === 'success'
       && active8FreshnessStatus === 'fresh' && callbackRunDate) {
       // The materialization callback must refresh its real serving consumer
@@ -747,7 +749,7 @@ async function handleSchedulerCallback(c: any) {
         oofCadence: cadence as 'daily' | 'weekly' | 'monthly',
         oofExpectedCohortId: expectedCohortId || undefined,
         oofContinuationAttempt: continuationAttempt + 1,
-      }, { delaySeconds: 300 })
+      }, { delaySeconds: active8OofContinuationDelay(continuationAttempt + 1) })
     }
     if (
       callbackSchedulerTicketId

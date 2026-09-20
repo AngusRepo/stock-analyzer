@@ -56,12 +56,12 @@ def percentile_rank_by_date_market(
     if len(scores) != len(dates_clean) or len(scores) != len(markets_clean):
         raise ValueError("oof_score_date_market_length_mismatch")
     ranks = np.full(len(scores), np.nan, dtype=float)
-    cohorts = sorted({(str(date), str(market)) for date, market in zip(dates_clean, markets_clean)})
-    for date, market in cohorts:
-        idx = np.flatnonzero(np.asarray([
-            str(row_date) == date and str(row_market) == market
-            for row_date, row_market in zip(dates_clean, markets_clean)
-        ]))
+    # Build cohort membership once; expanded histories must not rescan every row per date.
+    groups: dict[tuple[str, str], list[int]] = {}
+    for index, (day, market) in enumerate(zip(dates_clean, markets_clean)):
+        groups.setdefault((str(day), str(market)), []).append(index)
+    for key in sorted(groups):
+        idx = np.asarray(groups[key], dtype=np.intp)
         finite_idx = idx[np.isfinite(scores[idx])]
         if not len(finite_idx):
             continue

@@ -188,3 +188,29 @@ def test_oof_artifact_write_is_idempotent_and_rejects_content_drift():
     with pytest.raises(ValueError, match="immutable_conflict"):
         save_oof_prediction_artifact(**changed)
     assert blob.upload_count == 1
+
+
+def test_grouped_rank_matches_scipy_for_shuffled_ties_nonfinite_and_singletons():
+    from scipy.stats import rankdata
+    from app.oof_lineage import percentile_rank_by_date_market
+
+    rng = np.random.default_rng(42)
+    scores = np.round(rng.normal(size=1003), 1)
+    scores[::17] = np.nan
+    scores[1::31] = np.inf
+    scores[2::37] = -np.inf
+    dates = np.asarray([str(i % 29) for i in range(len(scores))], dtype=object)
+    markets = np.asarray(["OTC" if i % 3 else "LISTED" for i in range(len(scores))], dtype=object)
+    dates[-3:] = ["one-finite", "one-invalid", "another-finite"]
+    scores[-3:] = [2.0, np.nan, -3.0]
+    expected = np.full(len(scores), np.nan)
+    for day, market in set(zip(dates, markets)):
+        indices = np.flatnonzero((dates == day) & (markets == market) & np.isfinite(scores))
+        if len(indices):
+            expected[indices] = .5 if len(indices) == 1 else (rankdata(scores[indices], method="average") - 1) / (len(indices) - 1)
+    actual = percentile_rank_by_date_market(scores, dates, markets)
+    np.testing.assert_array_equal(actual, expected)
+    permutation = rng.permutation(len(scores))
+    shuffled = percentile_rank_by_date_market(scores[permutation], dates[permutation], markets[permutation])
+    np.testing.assert_array_equal(shuffled, expected[permutation])
+    assert percentile_rank_by_date_market(np.array([]), np.array([]), np.array([])).size == 0

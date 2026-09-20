@@ -101,7 +101,7 @@ assert(
 )
 
 assert(
-  strategySpec.includes("STRATEGY_FORMAL_LABELER_VERSION = 'strategy-labeler-v2-revenue-pit-fuse-v1'") &&
+  strategySpec.includes("STRATEGY_FORMAL_LABELER_VERSION = 'strategy-labeler-v3-regime-veto-counterfactual-v1'") &&
     multiStrategyPleRouter.includes('STRATEGY_LABELER_VERSION = STRATEGY_FORMAL_LABELER_VERSION') &&
     !multiStrategyPleRouter.includes("STRATEGY_LABELER_VERSION = 'strategy-labeler-v1'"),
   'screener router must publish only the formal PIT-safe strategy labeler identity',

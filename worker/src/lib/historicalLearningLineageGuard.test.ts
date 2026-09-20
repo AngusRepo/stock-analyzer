@@ -53,11 +53,11 @@ assert(
   'controller snapshot recovery must read the existing Worker calendar owner without triggering a pipeline',
 )
 assert(
-  adminTriggerRoutes.includes('historicalLearningLineageDecision(c.env.DB, c.env.KV, task, requestedRunDate)'),
+  adminTriggerRoutes.includes("historicalLearningLineageDecision(databaseForDataDomain(c.env, 'market'), c.env.KV, task, requestedRunDate)"),
   'all manual canonical writers must pass the historical event-time boundary',
 )
 assert(
-  updateOrchestrator.includes("historicalLearningLineageDecision(env.DB, env.KV, 'evening-chain', twDate)"),
+  updateOrchestrator.includes("historicalLearningLineageDecision(databaseForDataDomain(env, 'market'), env.KV, 'evening-chain', twDate)"),
   'direct evening-chain calls must pass the historical event-time boundary',
 )
 
@@ -96,3 +96,22 @@ void (async () => {
   console.error(error)
   process.exit(1)
 })
+void (async () => {
+  const { createAdminTriggerRoutes } = await import('../routes/adminTriggerRoutes')
+  let marketReads = 0
+  const routes = createAdminTriggerRoutes({ buildTaskMap: () => ({}) })
+  const response = await routes.request('/api/admin/historical-lineage-boundary?task=pipeline&date=2026-07-14', {}, {
+    LOCAL_AUTH_BYPASS: '1', ENVIRONMENT: 'test', MULTI_D1_ACTIVE_DOMAINS: 'market', MULTI_D1_STRICT: 'true',
+    DB: { prepare() { throw new Error('legacy calendar must not be read') } },
+    MARKET_DB: { prepare(sql: string) {
+      assert(sql.includes('FROM canonical_market_daily'), 'calendar must use canonical market bars')
+      return { bind(day: string) {
+        assert(day === '2026-07-14', 'signal date must reach Market D1 unchanged')
+        return { async first() { marketReads++; return { next_session_date: '2026-07-15' } } }
+      } }
+    } }, KV: { get: async () => null },
+  } as any)
+  assert(response.status === 200, `historical boundary route failed: ${response.status}`)
+  const body = await response.json() as any
+  assert(marketReads === 1 && body.boundary.nextSessionDate === '2026-07-15', 'route must consume the formal Market calendar')
+})().catch(error => { console.error(error); process.exitCode = 1 })

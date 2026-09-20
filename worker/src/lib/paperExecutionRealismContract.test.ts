@@ -7,7 +7,7 @@ function assert(condition: unknown, message: string): void {
 const exitTasks = readFileSync('src/lib/paperExitTasks.ts', 'utf8')
 const entryTasks = readFileSync('src/lib/paperEntryTasks.ts', 'utf8')
 const workerTasks = readFileSync('src/lib/paperWorkerTasks.ts', 'utf8')
-const cronOrchestrator = readFileSync('src/lib/cronOrchestrator.ts', 'utf8')
+const cronOrchestrator = readFileSync('src/lib/cronOrchestrator.ts', 'utf8') + readFileSync('src/lib/paperRescoreTasks.ts', 'utf8')
 const intradayData = readFileSync('src/lib/paperIntradayData.ts', 'utf8')
 const intradayPriceCache = readFileSync('src/lib/paperIntradayPriceCache.ts', 'utf8')
 const paperRoutes = readFileSync('src/routes/paper.ts', 'utf8')

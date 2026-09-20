@@ -43,5 +43,6 @@ for (const pattern of legacyFlatArtifactPatterns) {
   assert(!pattern.test(controllerModelPool), `ml-controller model_pool router must not expose legacy artifact path: ${pattern}`)
 }
 
-assert(controllerModelPool.includes('legacy model artifact migration is disabled'), 'legacy migration route must stay disabled')
+assert(!controllerModelPool.includes('@router.post("/migrate'), 'removed legacy migration route must not return')
+assert(controllerModelPool.includes('legacy_rollback_audit_only'), 'legacy pointers remain audit-only')
 assert(mlServiceModelPool.includes('def list_legacy_artifacts()') && mlServiceModelPool.includes('legacy artifact migration is disabled'), 'ml-service legacy migration helpers must fail closed')

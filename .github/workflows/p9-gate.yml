@@ -20,6 +20,19 @@ jobs:
         with:
           node-version: '22'
 
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+          cache-dependency-path: ml-controller/requirements.txt
+
+      - name: Install controller test dependencies
+        shell: powershell
+        run: |
+          python -m venv ml-controller/.venv
+          ml-controller/.venv/Scripts/python.exe -m pip install -r ml-controller/requirements.txt pytest
+
       - name: Install worker dependencies
         working-directory: worker
         run: npm ci

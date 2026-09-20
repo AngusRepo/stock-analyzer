@@ -1,3 +1,5 @@
+import { DatabaseSync } from 'node:sqlite'
+import { readFileSync } from 'node:fs'
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import { createAdminTriggerRoutes } from '../routes/adminTriggerRoutes'
@@ -38,19 +40,32 @@ async function triggerManagedTask(input: { sizeAfter?: number; error?: Error }) 
       },
     }),
   })
+  const sql = new DatabaseSync(':memory:')
+  sql.exec(readFileSync('domain-migrations/ops/0011_scheduler_execution_tickets.sql', 'utf8'))
+  const ops = { prepare(query: string) {
+    let args: any[] = []
+    const statement = { bind(...values: any[]) { args = values; return statement },
+      async first() { return sql.prepare(query).get(...args) ?? null },
+      async all() { return { results: sql.prepare(query).all(...args), meta: { size_after: 0 } } },
+      async run() { return { success: true, meta: { changes: Number(sql.prepare(query).run(...args).changes) } } }
+    }
+    return statement
+  } }
   const kv = memoryKv()
   const env = {
     LOCAL_AUTH_BYPASS: '1',
     ENVIRONMENT: 'test',
     DB: capacityDb(input.sizeAfter, input.error),
-    KV: kv,
+    KV: kv, OPS_DB: ops, MULTI_D1_ACTIVE_DOMAINS: 'ops',
   } as any
   const response = await routes.request(
     'https://stockvision.invalid/api/admin/trigger/weekly-backtest?force=1&sync=1',
     { method: 'POST' },
     env,
   )
-  return { response, body: await response.json() as any, taskCalls, kv }
+  const body = await response.json() as any
+  sql.close()
+  return { response, body, taskCalls, kv }
 }
 
 test('admin trigger returns 507 and never calls task function at critical capacity', async () => {

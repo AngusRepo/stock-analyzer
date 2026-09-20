@@ -8,6 +8,7 @@ function fakeDb(handler: (sql: string) => any[]) {
   return {
     prepare(sql: string) {
       const query = {
+        async first() { return sql.includes('active8_ensemble_pointer_v1') ? null : handler(sql)[0] ?? null },
         async all() {
           return { results: handler(sql) }
         },

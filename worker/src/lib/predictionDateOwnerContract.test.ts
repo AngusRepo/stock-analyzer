@@ -86,7 +86,7 @@ assert(
   'morning setup must name the previous trading day as sourceRecoDate to separate source recommendations from pending date',
 )
 assert(
-  /WHERE dr\.date = \?[\s\S]*\.bind\(sourceRecoDate\)\.all<BuyRecommendationRow>/.test(pendingBuyOrchestrator),
+  /WHERE dr\.date = \?[\s\S]*\.bind\(sourceRecoDate, activeL4Plan \? 1 : 0, activeL4Plan \? 1 : 0\)\.all<BuyRecommendationRow>/.test(pendingBuyOrchestrator),
   'morning setup must bind sourceRecoDate to the canonical daily recommendation query',
 )
 assert(

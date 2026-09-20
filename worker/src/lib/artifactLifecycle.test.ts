@@ -261,6 +261,8 @@ const paperDomainTables = [
   'paper_kelly_calibration_artifacts_v1', 'paper_kelly_calibration_head_v1',
   'paper_kelly_calibration_runs_v1',
   'paper_corporate_entitlements_v1', 'paper_corporate_sessions_v1',
+  'l4_policy_account_rewards_v1', 'l4_portfolio_head_v1', 'l4_portfolio_plans_v1',
+  'l4_replan_outbox_v1', 'l4_replan_requests_v1', 'paper_p5_rearms_v1',
 ]
 const paperDomainDb = readyDomainDb('0001_paper_baseline.sql', paperDomainTables)
 

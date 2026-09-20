@@ -333,6 +333,9 @@ def test_original_ten_session_opb_nav_reaches_worker_verifier(environment, monke
     root_identity, = [json.loads(line.removeprefix('NAV_ROOT_IDENTITY='))
         for line in root('prepare').splitlines() if line.startswith('NAV_ROOT_IDENTITY=')]
     with monkeypatch.context() as scoped:
+        from services import trading_config_loader
+        scoped.setattr(trading_config_loader, 'load_merged_trading_config_with_contract',
+            lambda: SimpleNamespace(config=config['trading']))
         scoped.setattr(d1_domain_client, 'client_for_domain', lambda _domain:
             SimpleNamespace(query=db.query, batch_execute=db.writer, atomic_batch_execute=db.writer))
         scoped.setattr(job, '_execute_daily_nav', lambda **kw: original_daily(**kw, now=clock(day)))
@@ -386,6 +389,7 @@ def test_original_ten_session_opb_nav_reaches_worker_verifier(environment, monke
         for attempt in range(3):
             if attempt == 1:
                 continuation_request = {'cadence': 'daily', 'end_date': day, 'dry_run': False,
+                    'model_profile_schema_version': 'active8-release-model-profiles-v4-timexer-price',
                     'promote': True, 'dispatch_full_fit': True,
                     'expected_cohort_id': root_callbacks[0]['metadata']['cohort_id'],
                     'continuation_attempt': 1, 'continuation_only': True,

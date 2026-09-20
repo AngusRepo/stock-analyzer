@@ -27,7 +27,7 @@ assert(risk.includes('FROM source_quality_metrics quality'))
 assert(risk.includes("date(quality.as_of_date) >= date(?, '-4 days')"))
 assert(risk.includes("quality.freshness_status IN ('present', 'degraded_context_only')"))
 assert(themes.includes("WHERE date >= date(?, '-4 days')"))
-assert(themes.includes(').bind(date, date).all<'))
+assert(themes.includes(').bind(date, date, ...(cutoff ? [cutoff, cutoff] : [])).all<'))
 assert(links.match(/date\(published_at\) <= date\(\?\)/))
 assert(links.match(/\.bind\(\.\.\.ids, date, date\)\.all<\{ stock_id: number;/))
 

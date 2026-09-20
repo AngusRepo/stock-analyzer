@@ -7,7 +7,8 @@ const paper = fs.readFileSync('src/routes/paper.ts', 'utf8')
 
 assert(riskChain.includes('checkP6Momentum(databases.market, deps)'))
 assert(!riskChain.includes('checkP6Momentum(databases.core, deps)'))
-assert(pending.includes('checkP6Momentum(databases.market, deps)'))
+assert(pending.includes('runPortfolioChecks(db, cfg, kv, deps'))
+assert(pending.includes("market: databaseForDataDomain(env, 'market')"))
 assert(!pending.includes('checkP6Momentum(databases.core, deps)'))
 
 assert(paper.includes('resolvePendingBuySourceRecoDate('))

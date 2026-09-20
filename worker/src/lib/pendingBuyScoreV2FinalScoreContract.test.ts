@@ -51,7 +51,7 @@ const paperRoute = readFileSync('src/routes/paper.ts', 'utf8')
   )
   const morningSetupQuery = pendingBuyOrchestrator.slice(morningSetupQueryStart, morningSetupQueryEnd)
   assert(
-    pendingBuyOrchestrator.includes('score_v2: serializeScoreV2Snapshot(scoreV2)'),
+    pendingBuyOrchestrator.includes('score_v2: scoreV2 ? serializeScoreV2Snapshot(scoreV2) : null'),
     'morning setup pending buys should persist canonical score_v2 payload',
   )
   assert(
@@ -59,8 +59,8 @@ const paperRoute = readFileSync('src/routes/paper.ts', 'utf8')
     'morning setup pending buys should read canonical Score V2 payload from daily_recommendations',
   )
   assert(
-    morningSetupQuery.includes("json_extract(dr.score_components, '$.finalScore')"),
-    'morning setup pending buys should rank by canonical Score V2 finalScore',
+    morningSetupQuery.includes("ORDER BY CAST(json_extract(dr.alpha_allocation, '$.allocation_rank') AS INTEGER), dr.symbol"),
+    'morning setup must preserve upstream allocation rank',
   )
   assert(
     morningSetupQuery.includes('COALESCE(dr.has_buy_signal, 0) = 1') &&

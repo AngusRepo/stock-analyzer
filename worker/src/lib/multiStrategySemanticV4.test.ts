@@ -61,7 +61,9 @@ const promoted = buildMultiStrategyPleRoutingPlan(candidates, [spec], {
     routeFloor: 0,
   },
 })
-assert.deepEqual(promoted.mlSlate.map((row) => row.symbol), ['2222'])
+// Router calibration changes priority; only Strategy Spec promotion may replace L1 semantics.
+assert.deepEqual(promoted.mlSlate.map((row) => row.symbol), ['1111'])
+assert.equal(promoted.l0Annotated.find(row => row.symbol === '2222')?.strategy_challenger_hit_vector?.[spec.id], 1)
 assert.equal(promoted.telemetry.route_gate_authority, 'continuous_weight_promoted')
 assert.equal(promoted.telemetry.route_veto_applied, false)
 assert.equal(promoted.l0Annotated.length, candidates.length)

@@ -3,6 +3,7 @@ import fs from 'node:fs'
 import path from 'node:path'
 import {
   DATA_DOMAINS,
+  LEGACY_CONTROL_PLANE_TABLES,
   MULTI_D1_PROJECTION_CONTRACT_GATES,
   MULTI_D1_ROUTING_CONTRACT_GATES,
   tablesForDataDomain,
@@ -53,6 +54,7 @@ for (const file of runtimeSources) {
     const tableReference = /\b(?:FROM|JOIN|INTO|UPDATE|DELETE\s+FROM)\s+["`]?([A-Za-z_][A-Za-z0-9_]*)/gi
     for (const match of sql.matchAll(tableReference)) {
       const table = match[1].toLowerCase()
+      if (LEGACY_CONTROL_PLANE_TABLES.has(table)) continue
       const domain = ownership.get(table)
       if (domain) findings.push({
         file: file.replaceAll('\\', '/'),
@@ -80,7 +82,7 @@ const pythonDomainProxyContracts = new Map<string, {
     classMarker: 'class _LearningArtifactRegistryD1Client:',
     factoryMarker: 'return client_for_domain(D1DataDomain.LEARNING)',
     bindingMarker: 'd1_client = _LearningArtifactRegistryD1Client()',
-    expectedQueryCalls: 4,
+    expectedQueryCalls: 11,
   }],
   ['ml-controller/strategy_mining_job_main.py', {
     classMarker: 'class _ResearchD1ClientProxy:',
@@ -115,6 +117,19 @@ for (const file of pythonFiles) {
   const source = fs.readFileSync(file, 'utf8')
   const relativeFile = path.relative(repoRoot, file).replaceAll('\\', '/')
   const rawDirectCalls = [...source.matchAll(/\bd1_client\.query\s*\(/g)].length
+  if (relativeFile === 'ml-controller/services/active8_ensemble_repository.py') {
+    assert(source.includes('LEARNING_D1_CLIENT = client_for_domain(D1DataDomain.LEARNING)'))
+    assert.equal([...source.matchAll(/d1_client: Any = LEARNING_D1_CLIENT/g)].length, 2)
+    assert.equal(rawDirectCalls, 2)
+    continue
+  }
+  if (relativeFile === 'ml-controller/services/d1_domain_client.py') {
+    assert(source.includes('if self.domain != D1DataDomain.RESEARCH:'))
+    assert(source.includes('Strategy mining gateway cannot access domain:'))
+    assert(source.includes('if self._uses_mining_gateway():\n            return d1_client.query('))
+    assert.equal(rawDirectCalls, 1)
+    continue
+  }
   const proxyContract = pythonDomainProxyContracts.get(relativeFile)
   if (proxyContract) {
     assert(source.includes(proxyContract.classMarker), `${relativeFile}: domain proxy class missing`)

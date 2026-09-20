@@ -114,7 +114,7 @@ export function createAdminTriggerRoutes(deps: TriggerRouteDeps) {
     if (!HISTORICAL_CANONICAL_LINEAGE_WRITER_TASKS.has(task)) {
       return c.json({ success: false, error: `unsupported historical lineage task: ${task}` }, 400)
     }
-    const boundary = await historicalLearningLineageDecision(c.env.DB, c.env.KV, task, signalDate)
+    const boundary = await historicalLearningLineageDecision(databaseForDataDomain(c.env, 'market'), c.env.KV, task, signalDate)
     return c.json({
       success: true,
       schema_version: 'historical-learning-lineage-boundary-v1',
@@ -202,7 +202,7 @@ export function createAdminTriggerRoutes(deps: TriggerRouteDeps) {
         historicalLearningLineageBlockedMessage,
         historicalLearningLineageDecision,
       } = await import('../lib/historicalLearningLineageGuard')
-      const lineageBoundary = await historicalLearningLineageDecision(c.env.DB, c.env.KV, task, requestedRunDate)
+      const lineageBoundary = await historicalLearningLineageDecision(databaseForDataDomain(c.env, 'market'), c.env.KV, task, requestedRunDate)
       if (!lineageBoundary.allowed) {
         await updateTicket('blocked', 'scheduler_http', 'historical learning lineage boundary blocked')
         return c.json({

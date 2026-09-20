@@ -16,5 +16,5 @@ assert.throws(
 )
 assert.throws(
   () => normalizeSingleD1BatchStatement('SELECT * FROM t', 1),
-  /only INSERT\/UPDATE\/DELETE\/REPLACE/,
+  /statement 1: SQL verb SELECT is not allowed/,
 )

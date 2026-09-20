@@ -27,6 +27,19 @@
     "worker-final-typecheck.log": "3fc6b62425edabc51d07e1b089334c0539e4beeebe3f5bee15ca5332d3e00e3b",
     "worker-final-contract.log": "bc7830c59347fc4afddf5641cbaa52960f2d2476af53c63b3d7618cd9a48398e",
     "frontend-final-build.log": "96656b28e32abb09ff1646a6544dd8ba41b57df44a030813690b7863e615bbbd",
-    "final-native-chain.log": "150d405e2d819a6ca30e1af88aa92e938a89e6ab3965b69b1f31d85eccfeb95d"
+    "final-native-chain.log": "150d405e2d819a6ca30e1af88aa92e938a89e6ab3965b69b1f31d85eccfeb95d",
+    "p9-final.log": "74fc03e7d7fb4b1b081355f2580a05b5972c564597822b130e21a4a4ef1608eb",
+    "full-market-prep-tests.log": "7ef73aff3222ee1f74956742f24da7023691d6579cc7d969a7876dbd617a7152",
+    "final-paired-nav-test.log": "8b6dccf3ee360316c9a1693f4595f8ab862fb2efe4b5c6b3296b952a567cc007"
+  },
+  "expanded_release_audit": {
+    "completed_at": "2026-09-20T19:35:28.511349+00:00",
+    "p9_exit_code": 0,
+    "worker_test_files": 536,
+    "controller_test_modules": 10,
+    "full_market_policy_tests": 31,
+    "formal_v4_pool": "all 2789 inventory rows; bounded transport preserved",
+    "lineage_calendar": "Market D1 for scheduled and manual routes",
+    "formal_candidate_registration": "pending; not an activation claim"
   }
 }

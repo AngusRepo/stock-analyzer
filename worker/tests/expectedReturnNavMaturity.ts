@@ -1,3 +1,5 @@
+import { compareNavCandidateVersions } from '../src/lib/pipelineCandidateVersions'
+import { adaptExpectedReturnCandidate } from '../src/lib/expectedReturnMaturityEvidence'
 import assert from 'node:assert/strict'
 import fs from 'node:fs'
 import { DatabaseSync } from 'node:sqlite'
@@ -43,10 +45,14 @@ const binding = {
 const packet = await buildPipelineDecisionMaturityPacket({ DB: binding,
   KV: { get: async () => null } } as any, data.now.slice(0, 10))
 for (const [owner, id] of [['l4_alpha_ev', 'l4'], ['allocator_ev_fusion', 'fusion']]) {
-  const row = rows.find((r: any) => r.model_name === owner)
+  const row = db.prepare('SELECT * FROM model_artifact_registry WHERE model_name=? AND artifact_id NOT LIKE ?').get(owner, '%:new-unverified') as any
   const original = JSON.parse(row.live_evidence_json).nav_validation
-  const stage = packet.stages.find(s => s.id === id)!
-  assert.ok(stage)
+  assert.ok(!packet.stages.some(s => s.id === id), 'retired L4/Fusion must not reappear as current-flow stages')
+  // Audit the retained read-only projection directly with original evaluator rows.
+  const stage: any = { id, metrics: [], blockers: [], status: 'unavailable', lineage: {} }
+  await projectExpectedReturnNavMaturity(stage, row, data.now.slice(0, 10))
+  const latest = db.prepare('SELECT * FROM model_artifact_registry WHERE artifact_id=?').get(`${row.artifact_id}:new-unverified`) as any
+  stage.candidate_versions = compareNavCandidateVersions(adaptExpectedReturnCandidate(latest), adaptExpectedReturnCandidate(row), stage.nav_gate, false, false)
   assert.equal(stage.nav_gate?.availability, 'available', JSON.stringify(stage.nav_gate))
   assert.equal(stage.nav_gate?.decision, original.decision)
   assert.equal(stage.nav_gate?.evaluable_dates, original.evaluable_date_count)

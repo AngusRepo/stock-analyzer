@@ -11,6 +11,21 @@ param(
 $ErrorActionPreference = 'Stop'
 $Root = Split-Path -Parent $PSScriptRoot
 
+$ControllerPython = $env:NAV_TEST_PYTHON
+if (-not $ControllerPython) {
+  $ControllerPython = Join-Path $Root 'ml-controller\.venv\Scripts\python.exe'
+  if (-not (Test-Path $ControllerPython)) {
+    $ControllerPython = Join-Path $Root 'ml-service\.venv\Scripts\python.exe'
+  }
+}
+if (-not (Test-Path $ControllerPython)) {
+  throw "controller python not found; install controller requirements or set NAV_TEST_PYTHON"
+}
+$env:NAV_TEST_PYTHON = (Resolve-Path -LiteralPath $ControllerPython).Path
+$env:PYTHONUTF8 = '1'
+$env:PYTHONIOENCODING = 'utf-8'
+$env:PYTHONPATH = (Join-Path $Root 'ml-controller') + [IO.Path]::PathSeparator + (Join-Path $Root 'ml-service')
+
 Write-Host '[P9 gate] worker type-check'
 Push-Location (Join-Path $Root 'worker')
 npm run type-check
@@ -33,13 +48,7 @@ Write-Host '[P9 gate] runtime E2E tests are gated separately with an explicit lo
 Pop-Location
 
 Write-Host '[P9 gate] ml-controller contract tests'
-$ControllerPython = Join-Path $Root 'ml-controller\.venv\Scripts\python.exe'
-if (-not (Test-Path $ControllerPython)) {
-  $ControllerPython = Join-Path $Root 'ml-service\.venv\Scripts\python.exe'
-}
-if (-not (Test-Path $ControllerPython)) {
-  throw "controller python not found in ml-controller/.venv or ml-service/.venv"
-}
+
 Push-Location (Join-Path $Root 'ml-controller')
 & $ControllerPython -m pytest tests\test_verify_pipeline_graph.py tests\test_p6_emerging_ml_contract.py tests\test_p7_model_upgrade_research_track.py tests\test_p8_adaptive_meta_contract.py tests\test_market_segment_policy.py tests\test_model_ic_tracker.py tests\test_train_serve_parity_contract.py tests\test_sector_flow_proxy.py tests\test_pipeline_callback_contract.py tests\test_retrain_followup_telemetry.py -q
 if ($LASTEXITCODE -ne 0) { throw "ml-controller contract tests failed" }

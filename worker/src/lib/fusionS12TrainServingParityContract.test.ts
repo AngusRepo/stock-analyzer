@@ -37,12 +37,15 @@ assert(
 )
 assert(
   builder.includes('failed_gates = [') &&
-    builder.includes('(\"execution_probability\", execution_probability_model)') &&
-    builder.includes('(\"final_champion\", champion_comparison)'),
-  'top-level validation must aggregate every fitted expert and the final trade-EV champion comparison',
+    builder.includes('*component_failed_gates') && builder.includes('*statistical_failed_gates') &&
+    builder.includes('*economic_utility_failed_gates') &&
+    builder.includes('"s12_execution_targets_role": "shadow_diagnostic_only_not_serving_or_promotion"'),
+  'residual owner must aggregate its data, skill, statistical and champion gates; S12 remains diagnostic',
 )
 assert(
   postMarketChain.indexOf("'allocator-ev-feature-snapshot-backfill'") < postMarketChain.indexOf("'verify-v2'") &&
-    postMarketChain.includes("if (snapshotTask.status === 'error' || !snapshotClosure.ready)"),
+    postMarketChain.includes("if (snapshotTask.status === 'error' || (!snapshotUnavailableInEvidenceOnlyMode && !snapshotClosure.ready))") &&
+    postMarketChain.includes('if (newDistribution && !snapshotClosure.ready) throw') &&
+    postMarketChain.includes('active8_evidence_only_action_leak'),
   'same-date feature snapshots must be materialized after pipeline and fail closed before verify',
 )

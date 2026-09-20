@@ -26,7 +26,8 @@ assert(
     pendingBuyOrchestrator.includes('preserve_last_valid_state') &&
     !pendingBuyOrchestrator.includes("persistPendingBuys(env, pendingDate, [], { status: 'error'") &&
     adminTriggerTasks.includes('morning_setup_repair') &&
-    adminTriggerTasks.includes('paper:pending_buys_setup_error:'),
+    adminTriggerTasks.includes('recoverPaperMorningSetup(c.env, tradeDate, settlePaperT2)') &&
+    fs.readFileSync('src/lib/paperMorningRecovery.ts', 'utf8').includes('recovered_missing_morning_decision'),
   'Morning Setup transient failures must preserve the last valid state and pre-market warmup must self-heal the failed setup',
 )
 

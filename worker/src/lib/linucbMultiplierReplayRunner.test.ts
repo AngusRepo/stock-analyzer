@@ -6,8 +6,12 @@ function assert(condition: unknown, message: string): void {
 
 function makeFakeDb(rows: any[] = []) {
   return {
-    prepare() {
+    prepare(sql: string) {
       return {
+        async first() {
+          if (sql.includes('FROM active8_ensemble_pointer_v1')) return null
+          throw new Error(`unexpected first query: ${sql}`)
+        },
         bind() {
           return {
             async all() {

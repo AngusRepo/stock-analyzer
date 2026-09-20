@@ -10,7 +10,7 @@ const dailyContext = source.slice(
   source.indexOf('export function rollingBarsToOhlcvRows'),
 )
 
-assert(dailyContext.includes('cmd.open AS open'), 'S12 daily context must use raw tradable open')
-assert(dailyContext.includes('cmd.close AS close'), 'S12 daily context must use raw tradable close')
+assert(dailyContext.includes('cmd.open, cmd.high, cmd.low, cmd.close'), 'S12 daily context must use raw tradable open')
+assert(dailyContext.includes('cmd.close AS raw_close'), 'S12 daily context must use raw tradable close')
 assert(!dailyContext.includes('COALESCE(cmd.adj_'), 'S12 must not mix adjusted daily levels with raw intraday prices')
 assert(source.includes('date >= tradeDate || !isTwSessionTime(bar.startMs)'), 'previous-session fallback must exclude after-hours bars')

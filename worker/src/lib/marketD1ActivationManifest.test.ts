@@ -15,7 +15,9 @@ assert(deploy.includes('MULTI_D1_MARKET_ROUTING_CONTRACT=${MULTI_D1_MARKET_ROUTI
 assert(deploy.includes('MULTI_D1_MARKET_CUTOVER_RECEIPT_ID=${MULTI_D1_MARKET_CUTOVER_RECEIPT_ID}'))
 assert(deploy.includes('MULTI_D1_MARKET_WRITER_EPOCH=${MULTI_D1_MARKET_WRITER_EPOCH}'))
 
-assert(!registry.match(/domain: 'market'.*route_ready: false/), 'all Market tables must route to their formal D1 owner')
+const retiredMarketRows = registry.split('\n').filter(row => /domain: 'market'.*route_ready: false/.test(row))
+assert.equal(retiredMarketRows.length, 1)
+assert(retiredMarketRows[0].includes("table: 'stock_tags'") && retiredMarketRows[0].includes("disposition: 'legacy_only'"), 'only retired stock_tags may remain unrouted')
 assert(!stocksRoute.includes('computeAndStoreIndicators(c.env.DB'), 'on-demand indicators must write Market D1')
 assert(!stocksRoute.includes('fetchAndStoreStockData(c.env.DB'), 'manual stock refresh must write Market D1')
 assert(!stocksRoute.includes('c.env.DB.prepare'), 'stocks route must not inspect or read Market tables through Legacy D1')

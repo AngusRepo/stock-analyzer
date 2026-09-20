@@ -8,7 +8,10 @@ const pendingBuy = readFileSync(resolve(root, 'pendingBuyOrchestrator.ts'), 'utf
 const postExit = readFileSync(resolve(root, 'postExit.ts'), 'utf8')
 const entryReplay = readFileSync(resolve(root, 'entryModelReplay.ts'), 'utf8')
 
-assert.match(screener, /hasPositiveStrategyAllocation\([\s\S]*?runtimeStrategyAllocationWeights/)
+const coreSeed = readFileSync(resolve(root, 'screenerCoreSeedMaterializer.ts'), 'utf8')
+assert.match(screener, /materializeScreenerCoreSeeds\(finalCandidates, coreSeedContext\)/)
+assert.match(screener, /allocationWeights: runtimeStrategyAllocationWeights/)
+assert.match(coreSeed, /hasPositiveStrategyAllocation\([\s\S]*?context\.allocationWeights/)
 assert.match(pendingBuy, /dr\.eligible_for_pending_buy = 1/)
 assert.match(postExit, /dr\.eligible_for_pending_buy = 1/)
 assert.match(entryReplay, /dr\.eligible_for_pending_buy = 1/)

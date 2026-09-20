@@ -56,7 +56,7 @@ function twText(ms: number): string {
   assert(source.includes('ORDER BY business_date ASC'), 'historical reconstruction must choose the nearest later artifact')
   assert(source.includes('document.business_date !== manifest.business_date'), 'cache validation must bind payload lineage to the selected manifest')
   assert(source.includes('kbars_point_in_time_reconstruction'), 'later overlapping artifacts must remain observable as counterfactual reconstruction')
-  assert(source.includes('tradeDate !== twDateText(Date.now())'), 'research failure may fall back only for the current TW session')
+  assert(source.includes('tradeDate !== twDateText(paperExecutionNow())'), 'research failure may fall back only for the current TW session')
   assert(source.includes('shioaji_streaming_tick_accumulator_same_session_fallback'), 'same-session fallback must remain observable')
   assert(source.includes('kbars_research_fallback_reason'), 'same-session research failure must preserve its root cause')
   assert(source.includes("[...requestedSessionDates].reverse()"), 'multi-session replay must load newest first so one R2 range artifact can serve older sessions')
@@ -68,7 +68,7 @@ function twText(ms: number): string {
   assert(source.includes('const numericNamespaceCollision = namespaceIdentities.has(numericNamespace)') && source.includes('AND ? = 0'), 'internal-id fallback must reject collisions with real symbols')
   assert(!source.includes('CAST((SELECT id FROM stocks WHERE symbol = ? LIMIT 1) AS TEXT)'), 'ambiguous internal stock ids must not share the canonical symbol namespace')
   assert(source.includes('export async function loadS12ResearchUsageStatus'), 'quota recovery must expose a typed usage preflight')
-  assert(source.includes('fetch(`${researchUrl}/usage`'), 'quota preflight must use the isolated research usage endpoint')
+  assert(source.includes('paperExecutionFetch(`${researchUrl}/usage`'), 'quota preflight must use the isolated research usage endpoint')
   assert(source.includes("status: remainingBytes > 0 ? 'ok' : 'exhausted'"), 'quota preflight must fail closed when bandwidth is exhausted')
 }
 

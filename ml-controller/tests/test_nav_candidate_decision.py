@@ -286,6 +286,9 @@ def test_real_ten_session_nav_gate_does_not_require_positive_cross_section_diagn
     from types import SimpleNamespace
     import oof_materialize_job_main as job
     from services import d1_domain_client, walk_forward_retrain, worker_config_client
+    from services import trading_config_loader
+    monkeypatch.setattr(trading_config_loader, 'load_merged_trading_config_with_contract',
+        lambda: SimpleNamespace(config=environment[3]['trading_config']))
     monkeypatch.setattr(d1_domain_client, 'client_for_domain', lambda _domain:
         SimpleNamespace(query=db.query, batch_execute=db.writer, atomic_batch_execute=db.writer))
     monkeypatch.setattr(walk_forward_retrain, '_get_bucket', lambda: environment[1])

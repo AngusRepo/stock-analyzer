@@ -613,6 +613,17 @@ def _snapshot_component_uris(snapshot: dict) -> dict[str, str]:
     return out
 
 
+def _training_stock_rows(req: UniversalRetrainTriggerRequest) -> list[dict]:
+    from services.active8_release_model_profiles import TIMEXER_PRICE_PROFILE_SCHEMA, TIMEXER_EXO_PROFILE_SCHEMA
+    full_pool = req.model_profile_schema_version in (TIMEXER_PRICE_PROFILE_SCHEMA, TIMEXER_EXO_PROFILE_SCHEMA)
+    sql = "SELECT id, symbol, market FROM stocks WHERE market IN ('TW','TWO','TWSE','OTC') ORDER BY id"
+    # The accepted v4 policies use the complete market inventory. Bounded batch
+    # transport owns memory limits; a stock-ID cutoff must not change the pool.
+    rows = CORE_D1_CLIENT.query(sql if full_pool else sql + " LIMIT ?", [] if full_pool else [req.limit])
+    logger.info("[retrain/universal] universe_policy=%s stock_count=%d", "full_market" if full_pool else "requested_limit", len(rows))
+    return rows
+
+
 def _read_gcs_parquet_rows(gcs_uri: str) -> Iterator[dict]:
     import polars as pl
     from google.cloud import storage
@@ -1417,12 +1428,7 @@ async def trigger_universal_retrain(
                 "run_id": run_id,
                 "lock_key": lock_key,
             }
-    stock_rows = CORE_D1_CLIENT.query(
-        "SELECT id, symbol, market FROM stocks "
-        "WHERE market IN ('TW','TWO','TWSE','OTC') "
-        "ORDER BY id LIMIT ?",
-        [req.limit],
-    )
+    stock_rows = _training_stock_rows(req)
     if not stock_rows:
         retrain_lock.release(lock_key, expected_metadata={"run_id": run_id})
         _upsert_retrain_status(

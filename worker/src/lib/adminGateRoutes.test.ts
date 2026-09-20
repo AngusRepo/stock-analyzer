@@ -19,6 +19,7 @@ class FakeStatement {
 
   async first<T = unknown>(): Promise<T | null> {
     const sql = this.sql
+    if (sql.includes('FROM active8_ensemble_pointer_v1')) return null
     if (sql.includes('FROM canonical_market_index_daily')) return { latest_date: '2026-04-30', rows_on_latest: 1 } as T
     if (sql.includes('FROM canonical_futures_daily')) return { latest_date: '2026-04-30', rows_on_latest: 1 } as T
     if (sql.includes('FROM canonical_market_daily')) {
@@ -31,6 +32,7 @@ class FakeStatement {
     if (sql.includes('FROM canonical_regime_context_daily')) return { latest_date: '2026-04-30', rows_on_latest: 1 } as T
     if (sql.includes('FROM external_evidence_items')) return { latest_date: '2026-04-30', rows_on_latest: 5 } as T
     if (sql.includes('FROM source_quality_metrics')) return { freshness_status: 'fresh', latest_materialization: '2026-04-30', root_cause: null } as T
+    if (sql.includes('AS observed_days')) return { observed_days: 3, upstream_signal_days: 3, recent_stranded_days: 0, consecutive_stranded_days: 0, final_buy_rows: 3, potential_buy_rows: 0, latest_date: '2026-04-30', latest_upstream_formal_buy_count: 1, latest_final_buy_count: 1 } as T
     if (sql.includes('MAX(date) AS latest_date')) return { latest_date: '2026-04-30' } as T
     if (sql.includes('COUNT(*) AS count FROM stock_prices')) return { count: 2300 } as T
     if (sql.includes('COUNT(*) AS count FROM chip_data')) return { count: 2300 } as T
@@ -80,7 +82,7 @@ class FakeStatement {
     }
     if (sql.includes('pending_buy_runs')) {
       return {
-        run_trade_date: String(this.binds[0]),
+        id: 1, trade_date: String(this.binds[0]),
         source_reco_date: '2026-04-29',
         candidate_count: 3,
         active_count: 1,
@@ -124,6 +126,10 @@ class FakeStatement {
 
   async all<T = unknown>(): Promise<{ results: T[] }> {
     const sql = this.sql
+    if (sql.includes('SELECT symbol, recommendation_lane')) return { results: [{ symbol: '2330', recommendation_lane: 'tradable' }] as T[] }
+    if (sql.includes('FROM finlab_taxonomy_tags')) return { results: [{ symbol: '2330' }] as T[] }
+    if (sql.includes('FROM pending_buy_items')) return { results: [{ symbol: '2330', signal: 'BUY', source: 'l4_sparse' }] as T[] }
+    if (sql.includes('SELECT symbol, has_buy_signal')) return { results: [{ symbol: '2330', has_buy_signal: 1, alpha_allocation: JSON.stringify({ selected: 1, engine: 'sparse_tangent_inverse_risk' }) }] as T[] }
     if (sql.includes('FROM predictions')) {
       return {
         results: EXPECTED_V2_MODELS.map((model_name) => ({ model_name, count: 30, stocks: 30, latest_date: '2026-04-30' })) as T[],

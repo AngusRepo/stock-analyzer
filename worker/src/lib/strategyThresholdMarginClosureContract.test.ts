@@ -25,7 +25,7 @@ assert.match(closure, /evening_chain_challenger_affinity_projection_incomplete/)
 assert.match(learning, /threshold_margin_evidence_incomplete/)
 assert.match(
   learning,
-  /WITH decision_dates AS \([\s\S]*GROUP BY date[\s\S]*valid_runs AS \(/,
+  /WITH source_dates AS \([\s\S]*GROUP BY mr\.signal_date, mr\.producer_run_id[\s\S]*valid_runs AS \(/,
   'historical candidate discovery must validate each date once instead of once per decision row',
 )
 assert.match(

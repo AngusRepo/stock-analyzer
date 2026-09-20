@@ -1,3 +1,5 @@
+import { readFileSync } from 'node:fs'
+import { DatabaseSync } from 'node:sqlite'
 import { adminOptunaRoutes } from '../routes/adminOptunaRoutes'
 import type { Bindings } from '../types'
 import { DEFAULT_TRADING_CONFIG } from './tradingConfig'
@@ -21,92 +23,25 @@ class FakeKV {
 }
 
 class FakeStatement {
-  values: unknown[] = []
-
-  constructor(private readonly db: FakeDB, private readonly sql: string) {}
-
-  bind(...values: unknown[]) {
-    this.values = values
-    return this
-  }
-
+  values: any[] = []
+  constructor(readonly db: FakeDB, readonly sql: string) {}
+  bind(...values: any[]) { this.values = values; return this }
   async run() {
     this.db.runs.push({ sql: this.sql, values: this.values })
-    if (this.sql.includes('INSERT INTO ga_optimizer_shadow_candidates_v1')) {
-      const [
-        shadowId,
-        candidateRegistryId,
-        gaCandidateId,
-        candidateConfigJson,
-        candidateConfigChecksum,
-        baselineConfigJson,
-        baselineConfigChecksum,
-        evaluatorVersion,
-        enrolledBusinessDate,
-        enrollmentSnapshotId,
-        enrollmentSnapshotChecksum,
-        sourceRunId,
-        sourceCadence,
-      ] = this.values
-      const exists = this.db.shadowRows.some((row) =>
-        row.ga_candidate_id === gaCandidateId &&
-        row.candidate_config_checksum === candidateConfigChecksum &&
-        row.baseline_config_checksum === baselineConfigChecksum &&
-        row.enrolled_business_date === enrolledBusinessDate &&
-        row.source_run_id === sourceRunId
-      )
-      if (!exists) {
-        this.db.shadowRows.push({
-          shadow_id: shadowId,
-          candidate_registry_id: candidateRegistryId,
-          ga_candidate_id: gaCandidateId,
-          status: this.db.shadowRows.some((row) => row.status === 'ACTIVE') ? 'QUEUED' : 'ACTIVE',
-          candidate_config_json: candidateConfigJson,
-          candidate_config_checksum: candidateConfigChecksum,
-          baseline_config_json: baselineConfigJson,
-          baseline_config_checksum: baselineConfigChecksum,
-          evaluator_version: evaluatorVersion,
-          enrolled_business_date: enrolledBusinessDate,
-          enrollment_snapshot_id: enrollmentSnapshotId,
-          enrollment_snapshot_checksum: enrollmentSnapshotChecksum,
-          source_run_id: sourceRunId,
-          source_cadence: sourceCadence,
-        })
-      }
-    }
-    return { success: true }
+    const result = this.db.sql.prepare(this.sql).run(...this.values)
+    return { success: true, meta: { changes: Number(result.changes) } }
   }
-
-  async first() {
-    if (this.sql.includes('FROM ga_optimizer_shadow_candidates_v1') && this.sql.includes('ga_candidate_id=?')) {
-      const [candidateId, candidateChecksum, baselineChecksum, enrolledDate, sourceRunId] = this.values
-      return this.db.shadowRows.find((row) =>
-        row.ga_candidate_id === candidateId &&
-        row.candidate_config_checksum === candidateChecksum &&
-        row.baseline_config_checksum === baselineChecksum &&
-        row.enrolled_business_date === enrolledDate &&
-        row.source_run_id === sourceRunId
-      ) ?? null
-    }
-    if (this.sql.includes('FROM ga_optimizer_shadow_candidates_v1') && this.sql.includes("status='ACTIVE'")) {
-      return this.db.shadowRows.find((row) => row.status === 'ACTIVE') ?? null
-    }
-    return null
-  }
+  async first() { return this.db.sql.prepare(this.sql).get(...this.values) ?? null }
+  async all() { return { results: this.db.sql.prepare(this.sql).all(...this.values) } }
 }
-
 class FakeDB {
-  runs: Array<{ sql: string; values: unknown[] }> = []
-  batches: string[][] = []
-  shadowRows: any[] = []
-
-  prepare(sql: string) {
-    return new FakeStatement(this, sql)
-  }
-
+  sql = new DatabaseSync(':memory:')
+  runs: Array<{ sql: string; values: any[] }> = []
+  prepare(sql: string) { return new FakeStatement(this, sql) }
   async batch(statements: FakeStatement[]) {
-    this.batches.push(statements.map((stmt) => (stmt as any).sql))
-    return statements.map(() => ({ success: true }))
+    this.sql.exec('BEGIN')
+    try { const rows=[]; for (const statement of statements) rows.push(await statement.run()); this.sql.exec('COMMIT'); return rows }
+    catch (error) { this.sql.exec('ROLLBACK'); throw error }
   }
 }
 
@@ -120,6 +55,7 @@ const env = {
 } as unknown as Bindings
 
 void (async () => {
+  ;(env.LEARNING_DB as any).sql.exec(readFileSync('domain-migrations/learning/0037_ga_optimizer_prospective_shadow_v1.sql', 'utf8'))
   const originalTradingConfig = JSON.stringify(DEFAULT_TRADING_CONFIG)
   ;(env.KV as any).store.set('trading:config', originalTradingConfig)
 
@@ -154,7 +90,7 @@ void (async () => {
     }),
   }, env)
 
-  assert(res.status === 200, 'ga_optimizer push should be accepted')
+  assert(res.status === 200, `ga_optimizer push should be accepted: ${await res.clone().text()}`)
   const body = await res.json() as any
   assert(body.target === 'production_meta_optimizer_learning_state', 'ga_optimizer should write production learning state, not sandbox')
   assert(body.updatedKeys.includes('optimizer:ga:latest'), 'ga_optimizer should update latest learning key')
@@ -179,13 +115,13 @@ void (async () => {
   assert((env.KV as any).store.has('optimizer:ga:shadow:active'), 'active frozen challenger must be materialized')
   const evidenceRun = (env.LEARNING_DB as any).runs.find((run: any) =>
     String(run.sql).includes('parameter_candidate_evidence') &&
-    String(run.values?.[1]) === 'ga_optimizer_policy_packet_validation'
+    String(run.values?.[4]) === 'ga_optimizer_policy_packet_validation'
   )
   assert(evidenceRun, 'ga_optimizer push should persist candidate-specific validation evidence')
   assert((env.DB as any).runs.length === 0, 'GA registry must not write the legacy main D1 owner')
-  assert(String(evidenceRun.values?.[3]).includes('"sandbox_config_required":false'), 'GA validation evidence must not depend on sandbox config state')
-  assert(String(evidenceRun.values?.[3]).includes('"mutates_trading_config":false'), 'GA validation evidence must preserve no trading config mutation boundary')
-  assert(String(evidenceRun.values?.[3]).includes('"promotion_mode":"automatic_candidate_specific_evidence"'), 'GA evidence must declare automatic evidence-driven promotion')
+  assert(String(evidenceRun.values?.[6]).includes('"sandbox_config_required":false'), 'GA validation evidence must not depend on sandbox config state')
+  assert(String(evidenceRun.values?.[6]).includes('"mutates_trading_config":false'), 'GA validation evidence must preserve no trading config mutation boundary')
+  assert(String(evidenceRun.values?.[6]).includes('"promotion_mode":"automatic_candidate_specific_evidence"'), 'GA evidence must declare automatic evidence-driven promotion')
 
   assert(!(env.KV as any).store.has('optimizer:ga:champion'), 'a new challenger must not release before prospective maturity')
   const secondPush = await adminOptunaRoutes.request('/api/admin/optuna-push', {

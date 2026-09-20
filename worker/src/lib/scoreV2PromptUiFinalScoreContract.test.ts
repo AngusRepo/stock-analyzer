@@ -40,8 +40,8 @@ const pipelinePage = readFileSync('../frontend/src/pages/PipelinePage.tsx', 'utf
 
 {
   assert(
-    pipelinePage.includes('scoreFinalValue(b) - scoreFinalValue(a)'),
-    'Pipeline recommendation previews should sort by Score V2 finalScore',
+    !pipelinePage.includes('scoreFinalValue(b) - scoreFinalValue(a)') && pipelinePage.includes("view: 'pipeline'"),
+    'Pipeline must consume the canonical server aggregate without Score V2 reranking',
   )
   assert(
     !pipelinePage.includes('(b.score ?? 0) - (a.score ?? 0)'),

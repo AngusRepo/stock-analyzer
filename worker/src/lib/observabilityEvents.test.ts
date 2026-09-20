@@ -80,12 +80,12 @@ const generatedAt = '2026-04-30T01:00:00.000Z'
   assert(events.length === 1, 'GA optimizer should emit one adaptive meta event')
   assert(events[0].domain === 'adaptive_meta', 'GA optimizer belongs to adaptive meta owner')
   assert(events[0].source === 'ga_optimizer', 'GA optimizer event source should be explicit')
-  assert(events[0].summary.includes('next=L3'), 'GA optimizer event should expose promotion ladder next step')
-  assert(events[0].summary.includes('ready_for_l3=yes'), 'GA optimizer event should expose L3 request readiness')
-  assert((events[0].evidence.promotion as any).level === 'L2', 'GA optimizer evidence should include promotion level')
-  assert((events[0].evidence.promotion as any).canRequestNextLevel === true, 'GA optimizer evidence should expose L3 approval request readiness')
-  assert((events[0].evidence.promotion as any).missingEvidence.length === 0, 'GA optimizer should recompute stale missing evidence from current gates')
-  assert((events[0].evidence.promotion as any).nextAction.includes('Ready to request Wei approval for L3'), 'GA optimizer should backfill concrete next action for older KV states')
+  assert(events[0].summary.includes('next=L2'), 'GA optimizer event should expose promotion ladder next step')
+  assert(events[0].summary.includes('ready_for_l3=no'), 'GA optimizer event should expose L3 request readiness')
+  assert((events[0].evidence.promotion as any).level === 'L1', 'GA optimizer evidence should include promotion level')
+  assert((events[0].evidence.promotion as any).canRequestNextLevel === false, 'a stale GA level must not bypass prospective evidence')
+  assert((events[0].evidence.promotion as any).missingEvidence.includes('prospective_shadow_l2'), 'GA optimizer should recompute stale missing evidence from current gates')
+  assert((events[0].evidence.promotion as any).nextAction.includes('Collect missing frozen prospective GA evidence'), 'GA optimizer must derive missing prospective evidence from the current gate')
   assert((events[0].evidence as any).mutates_trading_config === false, 'GA learning must not mutate trading config')
 }
 

@@ -128,3 +128,23 @@ def test_native_oof_completion_refreshes_matching_l4_role(profile,role,monkeypat
     assert calls[0].get("strategy_role","A")==role
     assert calls[0]["target_l3_artifact_id"]=="verified-"+role
     assert result["promotion_allowed"] is False
+
+
+
+def test_accepted_profiles_do_not_truncate_the_market_inventory(monkeypatch):
+    import sqlite3
+    from routers import retrain_trigger as rt
+    db=sqlite3.connect(':memory:');db.row_factory=sqlite3.Row
+    db.execute('CREATE TABLE stocks(id INTEGER,symbol TEXT,market TEXT)')
+    db.executemany('INSERT INTO stocks VALUES(?,?,?)',[(i,str(i),'TWSE') for i in range(1,2790)])
+    db.execute("INSERT INTO stocks VALUES(9999,'FOREIGN','USA')")
+    class Client:
+        def query(self,sql,params): return [dict(r) for r in db.execute(sql,params)]
+    monkeypatch.setattr(rt,'CORE_D1_CLIENT',Client())
+    for schema in (TIMEXER_PRICE_PROFILE_SCHEMA,TIMEXER_EXO_PROFILE_SCHEMA):
+        request=rt.UniversalRetrainTriggerRequest(limit=2500,model_profile_schema_version=schema)
+        rows=rt._training_stock_rows(request)
+        assert len(rows)==2789 and rows[-1]['id']==2789
+    legacy=rt._training_stock_rows(rt.UniversalRetrainTriggerRequest(limit=2500))
+    assert len(legacy)==2500
+    db.close()

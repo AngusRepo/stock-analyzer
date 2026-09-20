@@ -26,7 +26,7 @@ const viteConfigSource = fs.readFileSync(path.join(root, 'frontend', 'vite.confi
 assert(fs.existsSync(queryPolicyPath), 'frontend must centralize React Query cache and prefetch policy')
 assert(fs.existsSync(virtualListPath), 'frontend must provide a reusable virtualized list for large OBS/funnel tables')
 
-const queryPolicy = fs.existsSync(queryPolicyPath) ? fs.readFileSync(queryPolicyPath, 'utf8') : ''
+const queryPolicy = fs.readFileSync(queryPolicyPath, 'utf8') + fs.readFileSync(path.join(frontend, 'lib', 'queryDefaults.ts'), 'utf8')
 assert(queryPolicy.includes('refetchOnWindowFocus: false'), 'query policy must stop focus-driven duplicate refetches')
 assert(queryPolicy.includes('gcTime'), 'query policy must tune cache retention for page switches')
 assert(queryPolicy.includes('prefetchWorkstationRoute'), 'query policy must expose route-level prefetch for heavy workstations')

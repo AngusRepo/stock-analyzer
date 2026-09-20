@@ -26,6 +26,7 @@ export default function StrategyCandidateComparison() {
     <div className={panel}>
       <div className="flex flex-wrap items-center justify-between gap-3"><h2 className="text-lg font-semibold text-slate-100">主候選 vs 第一挑戰</h2><span className="rounded border border-amber-400/30 px-2 py-1 text-xs text-amber-200">研究回放 · 固定快照</span></div>
       <p className="mt-2 text-sm leading-6 text-slate-300">兩邊都保留八組 L3 模型，以 TimeXer 取代 DLinear，接相同 signed EV sparse＋OPB 配置。</p>
+      <p role="note" className="mt-3 rounded-lg border border-amber-400/40 bg-amber-950/20 p-3 text-sm leading-6 text-amber-100">資料完整性待重驗：此歷史快照的 TimeXer 輸入受上櫃歷史資料缺漏影響。下列收益保留供追溯，不能代表修復後 A/B 的績效；修復後結果將由每日配對帳本驗證。</p>
       <div className="mt-3 grid gap-3 md:grid-cols-2">
         <div className="rounded-lg border border-sky-500/30 p-3"><p className="font-medium text-sky-200">A · 已選定主候選</p><p className="mt-1 text-sm text-slate-300">價格 TimeXer ＋ 三頭 L4</p></div>
         <div className="rounded-lg border border-violet-400/30 p-3"><p className="font-medium text-violet-200">B · 第一挑戰候選</p><p className="mt-1 text-sm text-slate-300">137 外生特徵 TimeXer ＋ 三頭 L4 ＋ EV 殘差 MLP</p><p className="mt-1 text-xs text-slate-400">MLP 接收 L3 與三頭訊號，修正 EV；不是聯合修正三個頭的版本。</p></div>

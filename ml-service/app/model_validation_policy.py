@@ -17,6 +17,7 @@ MODEL_FAMILY_BY_NAME: dict[str, str] = {
     "TabM": "tabular_neural",
     "GNN": "graph",
     "DLinear": "learned_sequence",
+    "TimeXer": "learned_sequence",
     "PatchTST": "learned_sequence",
     "iTransformer": "learned_sequence",
     "TimesFM": "l2_feature_sidecar",

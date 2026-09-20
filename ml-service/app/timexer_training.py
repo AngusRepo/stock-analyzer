@@ -133,6 +133,14 @@ def train(job, inputs, *, device="cuda", full_fit=False):
     series, rows, coverage = load_windows(inputs, job)
     training = [r for r in rows if r['date'] <= job['train_end'] and r['label_known_date'] < job['test_start']]
     testing = [] if full_fit else [r for r in rows if job['test_start'] <= r['date'] <= job['test_end']]
+    expected_market_dates = job.get('expected_market_dates')
+    if expected_market_dates is not None:
+        from .timexer_coverage import validate_market_coverage
+        check_dates = (sorted(day for day in expected_market_dates if day <= job['train_end'])[-10:]
+                       if full_fit else [day for day in expected_market_dates
+                                         if job['test_start'] <= day <= job['test_end']])
+        coverage['market_preflight'] = validate_market_coverage(
+            training if full_fit else testing, expected_market_dates, set(check_dates))
     days = sorted({r['date'] for r in training})
     if len(days) < 20 or (not testing and not full_fit):
         raise ValueError('insufficient_timexer_train_or_test_dates')

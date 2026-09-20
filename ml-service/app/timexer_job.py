@@ -59,7 +59,8 @@ def materialize_inputs(bucket, payload, directory):
     # The canonical target owner fixes market membership; derive it from its
     # checksum-bound output, not a mutable market-map side file.
     import numpy as np
-    markets, eligible_by_date = {}, {}
+    import polars as pl
+    markets, eligible_by_date, eligible_market_dates = {}, {}, {}
     for path, checksum in manifest['output_checksums'].items():
         if not path.endswith('.npz'):
             continue
@@ -68,7 +69,12 @@ def materialize_inputs(bucket, payload, directory):
             raise ValueError('timexer_training_canonical_shard_changed')
         with np.load(io.BytesIO(raw),allow_pickle=True) as shard:
             symbols, values = shard['symbols'].astype(str), shard['markets'].astype(str)
-            days, counts = np.unique(shard['dates'].astype(str),return_counts=True)
+            row_dates = shard['dates'].astype(str)
+            days, counts = np.unique(row_dates,return_counts=True)
+            panel_counts = pl.DataFrame({'date': row_dates, 'market': values}).group_by('date', 'market').len()
+            for day, label, size in panel_counts.iter_rows():
+                target_counts = eligible_market_dates.setdefault(day, {})
+                target_counts[label] = target_counts.get(label, 0) + size
             for day, count in zip(days,counts):
                 eligible_by_date[day] = eligible_by_date.get(day,0)+int(count)
         for symbol, market in set(zip(symbols,values)):
@@ -78,6 +84,7 @@ def materialize_inputs(bucket, payload, directory):
     target = directory/'canonical/prep/symbol_market.json'
     target.parent.mkdir(parents=True,exist_ok=True)
     target.write_text(json.dumps(markets),encoding='utf-8')
+    (target.parent/'eligible_market_dates.json').write_text(json.dumps(eligible_market_dates),encoding='utf-8')
     return manifest, eligible_by_date
 
 
@@ -112,7 +119,8 @@ def run(payload, *, bucket=None):
                'train_start':payload.get('train_start') or manifest['source_feature_date_min'],
                'train_end':payload.get('train_end') or cutoff,
                'test_start':(date.fromisoformat(cutoff)+timedelta(days=1)).isoformat() if full_fit else payload['test_start'],
-               'test_end':cutoff if full_fit else payload['test_end']}
+               'test_end':cutoff if full_fit else payload['test_end'],
+               'expected_market_dates':json.loads((Path(temp)/'canonical/prep/eligible_market_dates.json').read_text(encoding='utf-8'))}
         result = train(job,Path(temp),device='cuda',full_fit=full_fit)
     report = result['report']
     effective = {'settings':job['settings'], 'exogenous':job['exogenous'], 'device':report['device'],

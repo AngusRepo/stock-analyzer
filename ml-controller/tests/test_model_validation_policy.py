@@ -143,3 +143,10 @@ def test_tabm_and_patchtst_policy_requires_tail_segment_and_return_quality_guard
         assert cpcv["segment_ic_guard"]["required_for_serving_promotion"] is True
         assert cpcv["return_quality_guard"]["exclude_all_zero_return_days"] is True
         assert cpcv["return_quality_guard"]["required_for_serving_promotion"] is True
+
+
+def test_timexer_uses_sequence_coverage_without_relaxing_minimum():
+    policy = resolve_model_validation_policy(model_name="TimeXer", stage="lifecycle", sample_count=10000)
+    assert policy["family"] == "learned_sequence"
+    assert policy["cpcv"]["coverage_mode"] == "sequence_window"
+    assert policy["cpcv"]["min_coverage"] == 0.80

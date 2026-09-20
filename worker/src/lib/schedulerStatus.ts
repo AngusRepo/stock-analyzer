@@ -325,7 +325,7 @@ export function getSchedulerScanDates(anchorDate?: string): string[] {
     : new Date(Date.now() + 8 * 3600_000)
   for (let i = 0; i < SCHEDULER_STATUS_SCAN_DAYS; i += 1) {
     const d = new Date(now)
-    d.setDate(d.getDate() - i)
+    d.setUTCDate(d.getUTCDate() - i)
     dates.push(d.toISOString().slice(0, 10))
   }
   return dates
@@ -612,9 +612,8 @@ function inferPipelineChildLog(logs: CronLogEntry[] | undefined, taskId: string)
 function formatTimestamp(ts: string): string {
   if (!ts) return 'N/A'
   try {
-    const d = new Date(ts)
-    d.setHours(d.getHours() + 8)
-    return `${d.getMonth() + 1}/${d.getDate()} ${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`
+    const d = new Date(Date.parse(ts) + 8 * 3600_000)
+    return `${d.getUTCMonth() + 1}/${d.getUTCDate()} ${String(d.getUTCHours()).padStart(2, '0')}:${String(d.getUTCMinutes()).padStart(2, '0')}`
   } catch {
     return ts
   }
@@ -655,8 +654,9 @@ function nextRunTwDate(value: string): string | null {
 }
 
 function isWeekdayTw(date: string): boolean {
-  const d = new Date(`${date}T00:00:00+08:00`)
-  const day = d.getDay()
+  // The input is already a Taiwan calendar date, not a UTC instant.
+  const d = new Date(`${date}T00:00:00.000Z`)
+  const day = d.getUTCDay()
   return day >= 1 && day <= 5
 }
 

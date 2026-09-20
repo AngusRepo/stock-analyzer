@@ -34,7 +34,7 @@ jobs:
         shell: powershell
         run: |
           python -m venv ml-controller/.venv
-          ml-controller/.venv/Scripts/python.exe -m pip install -r ml-controller/requirements.txt pytest
+          ml-controller/.venv/Scripts/python.exe -m pip install -r ml-controller/requirements.txt pytest==9.0.3 pytest-asyncio==1.4.0
 
       - name: Install worker dependencies
         working-directory: worker
